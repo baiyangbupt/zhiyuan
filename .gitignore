@@ -35,3 +35,7 @@ zhiyuan-agent/.env
 
 # Production configs with credentials
 zhiyuan-server/src/main/resources/application-online.yml
+
+# Local scripts runtime
+.pids/
+logs/

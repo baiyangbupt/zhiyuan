@@ -125,6 +125,34 @@ Profile 文件：`src/main/resources/application-{profile}.yml`
 | `INTERNAL_SERVICE_URL` | 后端地址 | http://localhost:8080 |
 | `RANK_SERVICE_URL` | 排序服务地址 | http://localhost:5001 |
 
+## 本地开发脚本
+
+`scripts/` 目录提供了一套本地开发管理脚本：
+
+```bash
+# 首次使用：一键初始化环境（安装依赖、编译、初始化数据库）
+bash scripts/setup.sh
+
+# 启动全部服务（含 MySQL/Redis）
+bash scripts/start-all.sh
+
+# 查看所有服务运行状态
+bash scripts/status.sh
+
+# 停止全部服务
+bash scripts/stop-all.sh
+
+# 单个服务管理
+bash scripts/start.sh <web|server|agent|rank>
+bash scripts/stop.sh <web|server|agent|rank>
+
+# 查看日志
+bash scripts/logs.sh <web|server|agent|rank>          # 最后 50 行
+bash scripts/logs.sh <web|server|agent|rank> --follow  # 实时跟踪
+```
+
+服务启动后日志输出到 `logs/` 目录，PID 文件保存在 `.pids/` 目录。
+
 ## 部署
 
 各模块均支持 Docker 部署，统一使用 Aliyun Container Registry：
@@ -147,6 +175,14 @@ zhiyuan/
 ├── docker-compose.yml          # 全栈本地联调
 ├── .gitignore
 ├── README.md
+├── scripts/                    # 本地开发脚本
+│   ├── setup.sh                # 一键环境初始化
+│   ├── start-all.sh            # 启动全部服务
+│   ├── stop-all.sh             # 停止全部服务
+│   ├── status.sh               # 查看服务状态
+│   ├── start.sh                # 启动单个服务
+│   ├── stop.sh                 # 停止单个服务
+│   └── logs.sh                 # 查看服务日志
 ├── zhiyuan-web/                # 前端
 │   ├── src/pages/              # Next.js 路由
 │   ├── src/pageComponents/     # 页面组件
