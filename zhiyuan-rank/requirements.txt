@@ -1,0 +1,14 @@
+# 高考志愿排序服务依赖包
+
+# Web框架 - 核心必需
+Flask==2.3.3
+
+# 生产环境WSGI服务器
+gunicorn==21.2.0
+
+# 数据处理相关包
+pandas==2.3.2
+numpy==2.2.6
+
+# Excel文件处理（pandas读取.xlsx文件必需）
+openpyxl==3.1.2

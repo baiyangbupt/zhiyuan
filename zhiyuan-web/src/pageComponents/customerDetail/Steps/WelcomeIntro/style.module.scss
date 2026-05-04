@@ -1,0 +1,77 @@
+.confirmGkInfoContainer {
+  .confirmSubSteps {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+
+    .confirmWrapper {
+      width: 90%;
+      color: #23252d;
+      & > img {
+        width: 80%;
+      }
+      .confirmTitle {
+        margin-bottom: 20px;
+      }
+      .confirmMessage {
+      }
+    }
+  }
+  .confirmForm {
+    width: 90%;
+    background: linear-gradient(#fff2f1 2%, #ffffff 20%);
+    padding: 16px;
+    border-radius: 16px;
+    .title {
+      padding: 0 0 16px;
+      font-size: 16px;
+      font-weight: 500;
+      color: #2c2e40;
+      border-bottom: 1px solid #ebebef;
+    }
+    :global {
+      .ant-form {
+        padding: 16px 0 0;
+      }
+      .ant-btn {
+        width: 240px;
+        height: 38px;
+        border-radius: 24px;
+        background-color: #ff443d;
+      }
+      .ant-btn-variant-solid:not(:disabled):not(.ant-btn-disabled):hover {
+        background-color: #ff443d;
+      }
+    }
+  }
+  .buttons {
+    .nextBtn {
+      width: 220px;
+      height: 40px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      border-radius: 8px;
+      color: #ff443d;
+      background-color: #fff2f1;
+      cursor: pointer;
+      & > img {
+        width: 24px;
+        height: 24px;
+      }
+    }
+    .rightAnswer {
+      float: right;
+      .answerBtn {
+        padding: 10px;
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        background-color: #ff443d;
+        border-radius: 16px;
+        color: #fff;
+      }
+    }
+  }
+}

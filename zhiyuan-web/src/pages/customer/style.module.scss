@@ -1,0 +1,300 @@
+.skeletonWrapper {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: #fafafa;
+}
+
+.skeletonContent {
+  width: 300px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.customerWrapper {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+
+  .firstPart {
+    background: url(../../images/icons/customBg1.png) center;
+    background-size: 100% 100%;
+  }
+  .assistant {
+    width: 1200px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 30px;
+    margin: 40px auto 0;
+    .assInteraction {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      .assTop {
+        margin-bottom: 40px;
+        .assTip {
+          width: 118px;
+          height: 48px;
+        }
+        .assText {
+          height: 56px;
+        }
+      }
+      .assButton {
+        width: 200px;
+        height: 56px;
+        // border: 6px solid #6031d566;
+        // border-radius: 28px;
+        text-align: center;
+        cursor: pointer;
+        background: url('../../images/icons/assBtn.png') center;
+        background-size: 100% 100%;
+        & > span {
+          width: 100%;
+          height: 100%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 20px;
+          border-radius: 28px;
+          font-weight: bold;
+          color: #fff;
+          // background-color: #6031d5;
+        }
+      }
+      .illustrationButton {
+        cursor: pointer;
+      }
+    }
+    .assInfo {
+      height: 466px;
+    }
+  }
+  .illustrationImage {
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+
+  // 老师信息图：保持原图比例，避免拉伸
+  .teacherInfoImage {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    object-position: center;
+    display: block;
+  }
+  .service {
+    background: url(../../images/icons/customBg2.png) center;
+    background-size: 100% 100%;
+  }
+  .partContainer {
+    width: 1200px;
+    margin: 0 auto;
+    padding: 60px 0;
+    .title {
+      font-size: 28px;
+      font-weight: 600;
+      color: #2c2e40;
+    }
+    .serviceContainer {
+      margin-top: 40px;
+      .caseWrapper {
+        position: relative;
+        width: 100%;
+        padding: 20px 0;
+        overflow: hidden; // ⚠️ 防止伪元素撑开布局
+
+        // // 左侧渐变
+        // &::before {
+        //   content: '';
+        //   position: absolute;
+        //   top: 0;
+        //   left: 0;
+        //   width: 120px; // 渐变宽度
+        //   height: 100%;
+        //   z-index: 2;
+        //   pointer-events: none; // 不影响滑动
+        //   background: linear-gradient(to right, #fff 0%, rgba(255, 255, 255, 0) 100%);
+        // }
+
+        // 右侧渐变
+        &::after {
+          content: '';
+          position: absolute;
+          top: 0;
+          right: 0;
+          width: 120px;
+          height: 100%;
+          z-index: 2;
+          pointer-events: none;
+          background: linear-gradient(to left, #fff 0%, rgba(255, 255, 255, 0) 100%);
+        }
+
+        .caseCard {
+          display: flex;
+          flex-direction: column;
+          justify-content: flex-start;
+          cursor: pointer;
+          transition: transform 0.3s ease;
+
+          &:hover {
+            transform: translateY(-4px);
+          }
+
+          .caseImage {
+            width: 100%;
+            border-radius: 12px;
+            object-fit: cover;
+          }
+        }
+      }
+    }
+  }
+  .lastPart {
+    width: 100%;
+    background: url(../../images/icons/customBg3.png) center;
+    background-size: 100% 100%;
+  }
+  .process {
+  }
+  .case {
+  }
+  .title {
+    font-size: 14px;
+    color: #fff;
+  }
+  .serviceContainer {
+    margin-top: 10px;
+  }
+  .blockBtn {
+    height: 52px;
+    background: linear-gradient(135deg, #1e88e5 0%, #5ca9ed 100%);
+    border: none;
+    border-radius: 12px;
+    margin-top: 16px;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: 0 4px 12px rgba(139, 69, 255, 0.2);
+
+    &:hover {
+      background: linear-gradient(135deg, #1e88e5 0%, #5ca9ed 100%);
+      transform: translateY(-2px);
+      box-shadow: 0 8px 24px #5facff;
+    }
+
+    &:active {
+      transform: translateY(-1px);
+      box-shadow: 0 6px 16px rgba(139, 69, 255, 0.3);
+    }
+  }
+}
+
+.sessionListFab {
+  position: fixed;
+  right: 20px;
+  bottom: 24px;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: #ff443d;
+  color: #fff;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(255, 68, 61, 0.4);
+  z-index: 100;
+  font-size: 12px;
+  gap: 2px;
+
+  .anticon {
+    font-size: 20px;
+  }
+
+  &:hover {
+    transform: scale(1.05);
+    box-shadow: 0 6px 16px rgba(255, 68, 61, 0.5);
+  }
+}
+
+.customerDetailDrawer {
+  :global {
+    .ant-drawer-close {
+      touch-action: manipulation;
+      -webkit-tap-highlight-color: transparent;
+      min-width: 44px;
+      min-height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .ant-drawer-header {
+      touch-action: manipulation;
+    }
+  }
+}
+
+@media (max-width: 768px) {
+  .customerWrapper {
+    .assistant {
+      width: 100%;
+      max-width: 100%;
+      padding: 0 16px;
+      margin: 12px auto 0;
+      gap: 10px;
+
+      .assInteraction {
+        .assTop {
+          margin-bottom: 14px;
+          .assTip {
+            width: 80px;
+            height: 32px;
+          }
+          .assText {
+            height: 40px;
+          }
+        }
+        .assButton {
+          width: 160px;
+          height: 48px;
+          & > span {
+            font-size: 16px;
+          }
+        }
+      }
+      .assInfo {
+        width: 100%;
+        height: auto;
+        max-width: 720px;
+      }
+      .teacherInfoImage {
+        width: 100%;
+        height: auto;
+        object-fit: contain;
+        object-position: center;
+      }
+    }
+    .partContainer {
+      width: 100%;
+      max-width: 100%;
+      padding: 18px 16px;
+
+      .title {
+        font-size: 20px;
+      }
+      .serviceContainer {
+        margin-top: 12px;
+      }
+    }
+  }
+
+  .sessionListFab {
+    right: 16px;
+    bottom: 80px;
+  }
+}

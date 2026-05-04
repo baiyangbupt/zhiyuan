@@ -1,0 +1,115 @@
+.preferredMajor {
+  margin-bottom: 16px;
+  .majorRow {
+    height: 480px;
+    margin-top: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    .majorColLeft {
+      height: 100%;
+      width: 30%;
+      flex-shrink: 0;
+      // background: #f6f7fa;
+      border-radius: 4px;
+      overflow-y: auto;
+      .majorItem {
+        background: #f6f7fa;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        cursor: pointer;
+        min-height: 40px;
+        padding: 8px 20px;
+        color: rgba(145, 146, 150, 1);
+        word-break: break-all;
+        // border-top-right-radius: 8px;
+        // border-bottom-right-radius: 8px;
+      }
+      .majorActiveBefore {
+        border-bottom-right-radius: 12px;
+        background: #f6f7fa;
+      }
+      .majorActiveAfter {
+        border-top-right-radius: 12px;
+        background: #f6f7fa;
+      }
+      .majorItemActive {
+        background: #ffffff;
+        color: rgba(35, 37, 45, 1);
+        border-radius: 0;
+      }
+    }
+    .majorColRight {
+      height: 100%;
+      flex: 1;
+      overflow-y: auto;
+      .majorItem {
+        cursor: pointer;
+        min-height: 40px;
+        padding: 8px 20px;
+        color: rgba(0, 0, 0, 1);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        word-break: break-all;
+        .ant-checkbox .ant-checkbox-inner {
+          border-radius: 50%;
+        }
+      }
+      .majorItemActive {
+        color: rgba(255, 68, 61, 1);
+        .ant-checkbox-checked .ant-checkbox-inner {
+          background: rgba(255, 68, 61, 1);
+          border-color: rgba(255, 68, 61, 1);
+        }
+      }
+    }
+  }
+}
+
+.regionMajor {
+  .title {
+    font-weight: 400;
+    font-size: 14px;
+    color: rgba(44, 46, 64, 1);
+    margin-top: 5px;
+    margin-bottom: 12px;
+  }
+  .regionFlex {
+    margin-top: 12px;
+    display: flex;
+    align-items: center;
+    overflow-y: auto;
+    .regionItem {
+      cursor: pointer;
+      width: 12%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 4px 8px;
+      min-height: 32px;
+      border-radius: 8px;
+      background: rgba(246, 247, 250, 1);
+      font-family: PingFang SC;
+      font-weight: 400;
+      font-size: 14px;
+      color: rgba(44, 46, 64, 1);
+      flex-shrink: 0;
+    }
+    .regionItemActive {
+      border-color: rgba(255, 224, 224, 1);
+      background-color: rgba(255, 244, 244, 1);
+      color: rgba(255, 87, 80, 1);
+    }
+  }
+}
+
+.modalForm {
+  :global {
+    .ant-input-number-group-wrapper {
+      width: 100%;
+    }
+  }
+}

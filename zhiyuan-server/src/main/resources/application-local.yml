@@ -1,0 +1,94 @@
+#app
+server:
+  port: 8080
+#spring
+spring:
+  #mysql
+  datasource:
+    dynamic:
+      druid:
+        initial-size: 5
+        max-active: 20
+        min-idle: 5
+        validation-query: SELECT 1
+        time-between-eviction-runs-millis: 2000
+        test-while-idle: true
+      datasource:
+        master:
+          driver-class-name: com.mysql.cj.jdbc.Driver
+          username: root
+          password: 12345678
+          url: jdbc:mysql://127.0.0.1:3306/sales_bot?useUnicode=true&useSSL=false&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+  #redis
+  redis:
+    host: 127.0.0.1
+    port: 6379
+    password: #密码
+    database: 0 #指定数据库，默认为0
+    timeout: 0 #连接超时时间，单位毫秒，默认为0
+    ssl: false # 是否启用SSL连接，默认false
+    pool: #连接池配置
+      max-active: 8 #最大活跃连接数，默认8个。
+      max-idle: 8 #最大空闲连接数，默认8个。
+      max-wait: 20000 #获取连接的最大等待时间，默认-1，表示无限制，单位毫秒。默认值可能会因为获取不到连接，导致事务无法提交，数据库被锁，大量线程处于等待状态的情况。
+      min-idle: 2 #最小空闲连接数，默认0。
+#mybatis-plus
+mybatis-plus:
+  typeAliasesPackage: com.ytell.zhiyuan.model
+  typeEnumsPackage: com.ytell.zhiyuan.model.enums
+  global-config:
+    # 数据库相关配置
+    db-config:
+      insert-strategy: NOT_NULL
+      update-strategy: NOT_NULL
+      #驼峰下划线转换
+      column-underline: true
+    refresh: true
+  # 原生配置
+  configuration:
+    map-underscore-to-camel-case: true
+    cache-enabled: false
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
+
+# 日志配置
+logging:
+  level:
+    com.ytell.zhiyuan.mapper: info
+
+
+# OSS配置
+ali:
+  oss:
+    endpoint: oss-cn-beijing.aliyuncs.com
+    accessKeyId: LTAI5tNLRTLnwDheAgdGKskE
+    accessKeySecret: h0r7Mg51n1PFlKqiM3qPHc6lMsFZG6
+    bucket: ytell-gaotu-test
+    region: cn-beijing
+  sms:
+    endpoint: dysmsapi.aliyuncs.com
+    accessKeyId: LTAI5tNLRTLnwDheAgdGKskE
+    accessKeySecret: h0r7Mg51n1PFlKqiM3qPHc6lMsFZG6
+    signName: 语知未来
+    template: SMS_259810013
+
+# 高途机器人代理配置
+agent:
+  zhiyuan:
+    url: http://127.0.0.1:8000
+
+# 志愿排名服务配置
+volunteer:
+  rank:
+    url: http://127.0.0.1:5001
+    env: local
+
+# 高途配置
+gaotu:
+  zhiyuan:
+    evn: grayTest
+    zhiyuan-url: https://www.gaotuzhiyuan.com
+    user-url: https://internal-user.gaotu100.com
+    risk-url: https://risk.gaotu100.com
+    risk-open: false
+    auth-open: false
+    temp-data-path: ./data/tmp

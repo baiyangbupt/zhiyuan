@@ -1,0 +1,265 @@
+.antLayout {
+  height: 100vh;
+  width: 100%;
+  overflow: hidden;
+  .headerStyle {
+    background: rgba(255, 255, 255, 1);
+    height: 80px;
+    display: flex;
+    align-items: center;
+    cursor: pointer;
+    img {
+      width: 158px;
+      height: 26px;
+      display: flex;
+    }
+    .divider {
+      background: rgb(66, 66, 77);
+      height: 18px;
+    }
+    .text {
+      font-family: PingFang SC;
+      font-weight: 400;
+      font-style: Regular;
+      font-size: 16px;
+      line-height: 100%;
+      letter-spacing: 0px;
+    }
+  }
+
+  .sideStyle {
+    display: flex;
+    align-items: end;
+    justify-content: center;
+    background: linear-gradient(180deg, rgba(239, 229, 255, 0.5) 50%, #efe5ff 81.1%);
+
+    :global {
+      .ant-layout-sider-children {
+        width: 100%;
+        display: flex;
+        align-items: end;
+        justify-content: center;
+        position: relative;
+        img {
+          width: 72%;
+          height: 91%;
+          object-fit: contain; // ✅ 保持比例并裁剪多余部分
+          object-position: center; // ✅ 居中显示
+        }
+        .step-container {
+          position: absolute;
+          bottom: 0;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          width: 100%;
+          height: 179px;
+          // background: linear-gradient(0deg, #ffffff 64.25%, rgba(255, 255, 255, 0.8) 100%);
+          background-color: #fff;
+          border-top-left-radius: 20px;
+          border-top-right-radius: 20px;
+          border-width: 1.5px;
+          padding: 36px 0;
+          .ant-typography {
+            margin-bottom: 20px;
+          }
+
+          .ant-steps {
+            width: 76%;
+            color: #fff;
+          }
+          .ant-steps.ant-steps-label-vertical .ant-steps-item-content {
+            width: 72px;
+          }
+          .ant-steps.ant-steps-label-vertical .ant-steps-item-tail {
+            margin-left: 38px;
+          }
+          .ant-steps-item-title {
+            font-family: PingFang SC;
+            font-weight: 400;
+            font-style: Regular;
+            font-size: 12px;
+            text-align: center;
+          }
+          .ant-steps-item-icon {
+            display: flex;
+            justify-content: center; // ✅ 水平居中
+            align-items: center; // ✅ 垂直居中
+            background-color: #cedefc;
+          }
+
+          .ant-steps-icon {
+            font-size: 14px; // ✅ 可根据需要调整数字大小
+            line-height: 1;
+            text-align: center;
+            color: #fff;
+          }
+          .ant-steps-item-finish {
+            .ant-steps-item-icon {
+              background-color: rgba(255, 68, 61, 1);
+              border-color: rgba(255, 68, 61, 0.15);
+              .anticon {
+                color: rgba(255, 255, 255, 1);
+              }
+            }
+            .ant-steps-item-title {
+              color: rgba(0, 0, 0, 0.45);
+            }
+          }
+          .ant-steps-item-active {
+            .ant-steps-item-icon {
+              background-color: rgba(255, 68, 61, 1);
+              border-color: rgba(255, 68, 61, 0.15);
+              .anticon {
+                color: rgba(255, 68, 61, 1);
+              }
+            }
+          }
+          .ant-steps-item-tail::after {
+            background: rgba(206, 222, 252, 1);
+          }
+          .ant-steps.ant-steps-label-vertical.ant-steps-small:not(.ant-steps-dot)
+            .ant-steps-item-icon {
+            margin-left: 26px;
+          }
+          :global {
+            .ant-steps-item-finish .ant-steps-item-icon,
+            .ant-steps-item-process .ant-steps-item-icon {
+              background: none !important;
+              border: none !important;
+              box-shadow: none !important;
+              width: 24px; // 固定宽度或 auto
+              height: 24px;
+              display: flex !important;
+              justify-content: center !important;
+              align-items: center !important;
+              padding: 0 !important;
+            }
+
+            .ant-steps-item-finish .ant-steps-item-icon img,
+            .ant-steps-item-process .ant-steps-item-icon img {
+              width: 24px; // 控制图片大小
+              height: 24px;
+              display: block;
+              object-fit: contain;
+            }
+          }
+        }
+      }
+    }
+  }
+  .mainStyle {
+    padding: 20px 80px;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    overflow-y: auto;
+    overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
+    touch-action: manipulation;
+    overscroll-behavior-y: contain;
+  }
+}
+
+@media (max-width: 768px) {
+  .antLayout {
+    :global {
+      .ant-layout {
+        flex-direction: column !important;
+      }
+      .ant-layout-sider {
+        width: 100% !important;
+        max-width: 100% !important;
+        min-width: 100% !important;
+        flex: 0 0 auto !important;
+      }
+      .ant-layout-sider-children {
+        display: flex !important;
+        flex-direction: column !important;
+        align-items: stretch !important;
+        justify-content: flex-start !important;
+
+        /* 移动端隐藏图片，只保留步骤和表单 */
+        img {
+          display: none !important;
+        }
+        .step-container {
+          position: relative !important;
+          width: 100% !important;
+          height: auto !important;
+          min-height: auto !important;
+          padding: 16px !important;
+          border-radius: 0 !important;
+          border-top: none !important;
+          border-bottom: 1px solid #f0f0f0 !important;
+
+          .ant-typography {
+            font-size: 14px !important;
+            margin-bottom: 12px !important;
+            text-align: center;
+          }
+          .ant-steps {
+            width: 100% !important;
+          }
+          .ant-steps.ant-steps-label-vertical .ant-steps-item-content {
+            width: 48px !important;
+          }
+          .ant-steps.ant-steps-label-vertical .ant-steps-item-tail {
+            margin-left: 24px !important;
+          }
+          .ant-steps-item-title {
+            font-size: 10px !important;
+          }
+        }
+      }
+    }
+  }
+
+  .sideStyle {
+    background: #fff !important;
+  }
+
+  .mainStyle {
+    padding: 16px !important;
+    flex: 1 !important;
+    min-height: 0 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    overflow-x: hidden !important;
+    box-sizing: border-box !important;
+  }
+}
+
+/* 移动端：去掉左侧图，仅保留步骤条 + 表单 */
+.mobileLayout {
+  flex-direction: column !important;
+  width: 100%;
+  overflow-x: hidden;
+}
+
+.mobileStepBar {
+  flex-shrink: 0;
+  padding: 12px 16px;
+  border-bottom: 1px solid #f0f0f0;
+  background: #fff;
+  width: 100%;
+  overflow-x: hidden;
+}
+
+.mobileStepIndicator {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.mobileStepLabel {
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.45);
+}
+
+.mobileStepTitle {
+  font-size: 16px;
+  font-weight: 600;
+  color: #ff443d;
+}

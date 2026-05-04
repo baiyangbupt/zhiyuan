@@ -1,0 +1,334 @@
+.confirmGkInfoContainer {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
+  .confirmSubSteps {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+
+    .confirmWrapper {
+      width: 90%;
+      color: #23252d;
+      & > img {
+        width: 80%;
+      }
+      .confirmTitle {
+        margin-bottom: 20px;
+      }
+      .confirmMessage {
+      }
+    }
+    .link {
+      display: flex;
+      align-items: center;
+      cursor: pointer;
+      .answerBtn {
+        height: 40px;
+        padding: 0 20px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        border-radius: 8px;
+        color: #4984fa;
+        background-color: #fff;
+      }
+    }
+  }
+  .confirmForm {
+    width: 90%;
+    background: linear-gradient(#fff2f1 2%, #ffffff 20%);
+    padding: 16px;
+    border-radius: 16px;
+    .title {
+      padding: 0 0 16px;
+      font-size: 16px;
+      font-weight: 500;
+      color: #2c2e40;
+      border-bottom: 1px solid #ebebef;
+    }
+    :global {
+      .title {
+        font-weight: 600;
+        font-size: 16px;
+        color: rgba(44, 46, 64, 1);
+        margin-top: 16px;
+        margin-bottom: 12px;
+      }
+      .preferred-major {
+        margin-bottom: 24px;
+        .major-row {
+          height: 480px;
+          margin-top: 12px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          .major-col-left {
+            height: 100%;
+            width: 30%;
+            flex-shrink: 0;
+            background: #f6f7fa;
+            border-radius: 4px;
+            overflow-y: auto;
+            .major-item {
+              display: flex;
+              align-items: center;
+              justify-content: space-between;
+              cursor: pointer;
+              height: 40px;
+              padding: 0 20px;
+              color: rgba(145, 146, 150, 1);
+              border-top-right-radius: 8px;
+              border-bottom-right-radius: 8px;
+            }
+            .major-item-active {
+              background: #ffffff;
+              color: rgba(35, 37, 45, 1);
+              // border-radius: 8px;
+            }
+            .major-item-disabled {
+              pointer-events: none;
+              opacity: 0.5;
+            }
+          }
+          .major-col-right {
+            height: 100%;
+            flex: 1;
+            overflow-y: auto;
+            .major-item {
+              cursor: pointer;
+              height: 40px;
+              line-height: 40px;
+              padding-left: 20px;
+              color: rgba(0, 0, 0, 1);
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+              .ant-checkbox .ant-checkbox-inner {
+                border-radius: 50%;
+              }
+            }
+            .major-item-active {
+              color: rgba(255, 68, 61, 1);
+              .ant-checkbox-checked .ant-checkbox-inner {
+                background: rgba(255, 68, 61, 1);
+                border-color: rgba(255, 68, 61, 1);
+              }
+            }
+            .major-item-disabled {
+              pointer-events: none;
+              opacity: 0.5;
+            }
+          }
+        }
+      }
+      .unacceptable-major {
+        // display: flex;
+        // flex-wrap: wrap;
+        margin-bottom: 24px;
+        .unacceptable-flex {
+          margin-top: 12px;
+          display: flex;
+          align-items: center;
+          // justify-content: center;
+          overflow-y: auto;
+          .unacceptable-item {
+            cursor: pointer;
+            width: 18%;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            padding: 4px 0;
+            min-height: 40px;
+            border-radius: 8px;
+            background: rgba(246, 247, 250, 1);
+            font-family: PingFang SC;
+            font-weight: 400;
+            font-size: 14px;
+            color: rgba(44, 46, 64, 1);
+          }
+          .unacceptable-item-active {
+            border-color: rgba(255, 224, 224, 1);
+            background-color: rgba(255, 244, 244, 1);
+            color: rgba(255, 87, 80, 1);
+          }
+          .unacceptable-item-disabled {
+            pointer-events: none;
+            opacity: 0.5;
+          }
+        }
+      }
+      .accept-foreign-school {
+        .unacceptable-item {
+          cursor: pointer;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          text-align: center;
+          padding: 4px 0;
+          min-height: 40px;
+          border-radius: 8px;
+          background: rgba(246, 247, 250, 1);
+          font-family: PingFang SC;
+          font-weight: 400;
+          font-size: 14px;
+          color: rgba(44, 46, 64, 1);
+        }
+        .unacceptable-item-active {
+          border-color: rgba(255, 224, 224, 1);
+          background-color: rgba(255, 244, 244, 1);
+          color: rgba(255, 87, 80, 1);
+        }
+        .unacceptable-item-disabled {
+          pointer-events: none;
+          opacity: 0.5;
+        }
+      }
+      // 学费区间字段（与其他 field 共用全局 .title / .subTitle，对齐保持一致）
+      .tuitionRange {
+        padding: 0; // 不额外加左右 padding，沿用表单统一布局
+        margin-bottom: 24px;
+
+        // 学费区间滑块容器
+        .sliderWrapper {
+          padding: 20px 0 8px;
+          max-width: 380px; // 固定宽度，整体居中
+          margin: 0 auto;
+
+          :global {
+            .ant-slider {
+              margin: 0;
+              padding: 0; // 宽度完全由 max-width 控制
+              border: none;
+              box-shadow: none;
+              outline: none;
+
+              .ant-slider-rail {
+                background-color: #f2f3f5;
+                height: 4px;
+              }
+
+              .ant-slider-track {
+                background-color: #ffb3ad; // 柔一点的红色选中段
+                height: 4px;
+                border-radius: 4px;
+              }
+
+              .ant-slider-handle {
+                width: 16px;
+                height: 16px;
+                border: 2px solid #ff5750;
+                background-color: #ffffff;
+                box-shadow: 0 2px 6px rgba(255, 87, 80, 0.25);
+                border-radius: 50%; // 确保手柄本身是圆形
+
+                &::after {
+                  // 去掉 antd 默认的聚焦高亮（那个外层红色方块）
+                  content: none;
+                }
+
+                &:hover,
+                &:focus {
+                  border-color: #ff5750;
+                  box-shadow: 0 2px 8px rgba(255, 87, 80, 0.35);
+                  outline: none;
+                }
+              }
+
+              .ant-slider-mark {
+                top: 22px;
+
+                .ant-slider-mark-text {
+                  color: #8c8c8c;
+                  font-size: 12px;
+                  white-space: nowrap;
+                }
+              }
+            }
+          }
+        }
+
+        // 已选择区间文案
+        .selectedRange {
+          margin-top: 8px;
+          text-align: center;
+          font-size: 14px;
+          color: #4e5266;
+          font-weight: 400;
+
+          .rangeValue {
+            color: #ff5750;
+            font-weight: 600;
+            margin-left: 4px;
+          }
+        }
+      }
+      .ant-btn {
+        width: 240px;
+        height: 38px;
+        border-radius: 24px;
+        color: #fff;
+        background-color: #ff443d;
+      }
+      .ant-btn-variant-outlined:not(:disabled):not(.ant-btn-disabled):hover,
+      .ant-btn-variant-dashed:not(:disabled):not(.ant-btn-disabled):hover {
+        background-color: #ff443d;
+        color: #fff;
+        border-color: #ff443d;
+      }
+      .ant-select {
+        height: 40px;
+      }
+      .ant-select-outlined.ant-select-disabled:not(.ant-select-customize-input)
+        .ant-select-selector {
+        background: #f6f7fa;
+        color: rgba(0, 0, 0, 0.25);
+        border: none;
+        height: 40px;
+      }
+    }
+  }
+  .buttons {
+    .nextBtn {
+      width: 220px;
+      height: 40px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      border-radius: 8px;
+      color: #ff443d;
+      background-color: #fff2f1;
+      cursor: pointer;
+      & > img {
+        width: 24px;
+        height: 24px;
+      }
+    }
+  }
+  .rightAnswer {
+    display: flex;
+    justify-content: flex-end;
+    .answerBtn {
+      padding: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      background-color: #ff443d;
+      border-radius: 16px;
+      color: #fff;
+    }
+  }
+}
+
+@media (max-width: 768px) {
+  .confirmGkInfoContainer {
+    .confirmSubSteps {
+      .confirmWrapper,
+      .confirmForm {
+        width: 100%;
+      }
+    }
+  }
+}

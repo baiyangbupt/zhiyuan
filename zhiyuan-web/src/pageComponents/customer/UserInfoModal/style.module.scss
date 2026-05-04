@@ -1,0 +1,210 @@
+.userInfoModal {
+  background-color: #fff;
+  border-radius: 8px;
+  padding: 0;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  // max-height: 40%;
+
+  .subTitle {
+    margin: 20px 0 40px;
+    font-size: 14px;
+    color: #9698a1;
+    text-align: center;
+  }
+  .stepContainer {
+    width: 70%;
+    margin: 0 auto;
+  }
+  :global(.ant-steps) {
+    :global(.ant-steps-item-content) {
+      margin-top: 0;
+    }
+  }
+  :global {
+    .ant-modal-title {
+      font-size: 22px;
+      text-align: center;
+    }
+  }
+  :global {
+    // 已完成步骤的连接线
+    .ant-steps-item-finish .ant-steps-item-tail::after {
+      background-color: transparent !important;
+      border-top: 2px dashed #b9a4ff !important;
+      height: 0 !important;
+    }
+
+    // 进行中步骤的连接线
+    .ant-steps-item-process .ant-steps-item-tail::after {
+      background-color: transparent !important;
+      border-top: 1px dashed rgba(185, 164, 255, 0.5) !important;
+      height: 0 !important;
+    }
+
+    // 未完成步骤的连接线
+    .ant-steps-item-wait .ant-steps-item-tail::after {
+      background-color: transparent !important;
+      border-top: 1px dashed rgba(185, 164, 255, 0.5) !important;
+      height: 0 !important;
+    }
+  }
+  .searchForm {
+    width: 100%;
+    background: #fff;
+    margin-bottom: 0;
+
+    :global(.ant-form-item) {
+      margin-bottom: 0;
+      border: 1px solid #d9d9d9;
+      padding: 0 12px;
+      border-radius: 12px;
+      transition: border-color 0.3s ease;
+      display: flex;
+      align-items: center;
+      height: 48px;
+      width: 100%;
+      :global(.ant-row) {
+        width: 100%;
+        display: flex;
+        align-items: center;
+      }
+
+      &:hover {
+        border-color: #4f5157;
+      }
+
+      &:focus-within {
+        border-color: #4f5157;
+        box-shadow: 0;
+      }
+    }
+    .formItemBlock {
+      :global(.ant-form-item) {
+        border: none;
+        .formItemStyle {
+          .styleTitle {
+            margin-bottom: 10px;
+            span {
+              color: #9698a1;
+            }
+          }
+        }
+      }
+    }
+
+    :global(.ant-select-selector) {
+      border: none !important;
+      box-shadow: none !important;
+      height: 32px !important;
+      line-height: 30px !important;
+      display: flex !important;
+      align-items: center !important;
+    }
+
+    :global(.ant-input-outlined) {
+      border: none;
+      box-shadow: none;
+      height: 32px;
+      line-height: 32px;
+    }
+
+    :global(.ant-form-item-label) {
+      flex-shrink: 0;
+      padding: 0;
+      margin-right: 12px;
+
+      label {
+        color: #000000a6;
+        font-size: 14px;
+        line-height: 18px;
+        height: auto;
+        margin-bottom: 0;
+
+        &::after {
+          display: none;
+        }
+      }
+    }
+
+    :global(.ant-form-item-control) {
+      flex: 1;
+      line-height: 1;
+    }
+
+    :global(.ant-form-item-control-input) {
+      min-height: auto;
+    }
+
+    :global(.ant-picker-outlined) {
+      border: none;
+      box-shadow: none;
+      height: 32px;
+      line-height: 32px;
+      display: flex;
+      align-items: center;
+    }
+
+    :global(.ant-input-outlined:focus-within) {
+      box-shadow: none !important;
+    }
+
+    :global(.ant-select-selection-item) {
+      line-height: 30px !important;
+      display: flex !important;
+      align-items: center !important;
+    }
+
+    :global(.ant-select-selection-placeholder) {
+      line-height: 30px !important;
+      display: flex !important;
+      align-items: center !important;
+    }
+
+    :global(.ant-picker-input) {
+      input {
+        height: 30px !important;
+        line-height: 30px !important;
+      }
+    }
+    :global(.ant-btn-variant-solid:disabled),
+    :global(.ant-btn-variant-solid.ant-btn-disabled) {
+      border-color: #ffbab0;
+      color: #fff;
+      background: #ffbab0;
+      box-shadow: none;
+    }
+    :global(.ant-btn-default) {
+      border-color: #ff443d;
+      background: #ffffff;
+      color: #ff443d;
+      box-shadow: none;
+      border-radius: 24px;
+    }
+    :global(.ant-btn-primary) {
+      background: #ff443d;
+      border-color: #ff443d;
+      box-shadow: none;
+      color: #fff;
+      border-radius: 24px;
+
+      &:hover {
+        background: #ff443d;
+        border-color: #ff443d;
+      }
+    }
+    :global(.buttonGroup) {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      :global(.ant-btn) {
+        flex: 1;
+        border-radius: 24px;
+      }
+    }
+  }
+  .stepsContent {
+    min-height: 200px;
+    margin-top: 20px;
+  }
+}

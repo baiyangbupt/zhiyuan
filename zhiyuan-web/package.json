@@ -1,0 +1,83 @@
+{
+  "name": "zhiyuan-web",
+  "version": "0.1.0",
+  "description": "高途志愿",
+  "private": true,
+  "license": "UNLICENSED",
+  "scripts": {
+    "dev": "env-cmd -f .env.dev next dev -p 3001",
+    "dev:expert": "env-cmd -f .env.expert next dev -p 3002",
+    "dev:test": "env-cmd -f .env.test next dev",
+    "dev:prod": "env-cmd -f .env.prod next dev -p 3001",
+    "test:server": "env-cmd -f .env.test next dev -p 28688",
+    "build:dev": "env-cmd -f .env.dev next build && node source-map.js",
+    "build:test": "env-cmd -f .env.test next build && node source-map.js",
+    "build:beta": "env-cmd -f .env.beta next build && node source-map.js",
+    "build:prod": "env-cmd -f .env.prod next build && node source-map.js",
+    "build:analyzer": "env-cmd -f .env.prod next build",
+    "server:dev": "npx env-cmd -f .env.dev next dev -p 28688",
+    "server:test": "npx env-cmd -f .env.test next start -p 28688",
+    "server:beta": "npx env-cmd -f .env.beta next start -p 28688",
+    "server:prod": "npx env-cmd -f .env.prod next start -p 28688",
+    "start": "next start -p 28688"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git@git.baijia.com:hl/zy-pc-react.git"
+  },
+  "dependencies": {
+    "@ant-design/cssinjs": "^1.20.0",
+    "@ant-design/icons": "^5.2.6",
+    "@next/bundle-analyzer": "^13.5.0",
+    "@sentry/nextjs": "^8.54.0",
+    "@wavesurfer/react": "^1.0.11",
+    "ahooks": "^3.7.1",
+    "antd": "^5.16.0",
+    "axios": "^1.3.4",
+    "classnames": "^2.3.2",
+    "crypto-js": "^4.1.1",
+    "file-saver": "^2.0.5",
+    "js-base64": "^3.7.5",
+    "js-cookie": "^3.0.5",
+    "jsencrypt": "^3.3.2",
+    "marked": "17.0.6",
+    "md5": "^2.3.0",
+    "next": "^13.2.4",
+    "qs": "^6.11.0",
+    "react": "18.2.0",
+    "react-dom": "18.2.0",
+    "swiper": "^12.0.2",
+    "wavesurfer.js": "^7.10.2"
+  },
+  "devDependencies": {
+    "@types/js-cookie": "^3.0.6",
+    "@types/node": "18.13.0",
+    "@types/qs": "^6.9.7",
+    "@types/react": "18.0.27",
+    "@types/react-dom": "18.0.10",
+    "@types/webpack-env": "^1.18.4",
+    "cross-env": "^7.0.3",
+    "env-cmd": "10.1.0",
+    "eslint": "^9.28.0",
+    "http-proxy-middleware": "^2.0.6",
+    "husky": "^8.0.1",
+    "lint-staged": "^13.1.1",
+    "lodash": "^4.17.21",
+    "sass": "^1.58.0",
+    "svg-sprite-loader": "^6.0.11",
+    "ts-node": "^10.9.2",
+    "tslib": "^2.6.2",
+    "typescript": "4.9.5"
+  },
+  "engines": {
+    "node": ">=22.14.0"
+  },
+  "husky": {
+    "hooks": {
+      "pre-commit": "lint-staged"
+    }
+  },
+  "lint-staged": {
+    "*.{html,js,jsx,ts,tsx}": "mew"
+  }
+}

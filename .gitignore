@@ -1,0 +1,37 @@
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Frontend
+zhiyuan-web/node_modules/
+zhiyuan-web/.next/
+zhiyuan-web/logs/
+
+# Backend
+zhiyuan-server/target/
+zhiyuan-server/logs/
+zhiyuan-server/*.log
+
+# Agent
+zhiyuan-agent/.venv/
+zhiyuan-agent/__pycache__/
+zhiyuan-agent/*.egg-info/
+zhiyuan-agent/logs/
+zhiyuan-agent/data/chat_history.db
+
+# Rank
+zhiyuan-rank/.venv/
+zhiyuan-rank/__pycache__/
+zhiyuan-rank/logs/
+
+# Environment files with secrets
+*.env.local
+zhiyuan-agent/.env
+
+# Production configs with credentials
+zhiyuan-server/src/main/resources/application-online.yml

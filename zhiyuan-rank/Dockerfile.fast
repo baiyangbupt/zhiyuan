@@ -1,0 +1,52 @@
+FROM crpi-zmigon88wuzuzy3k.cn-hangzhou.personal.cr.aliyuncs.com/gt_test_123/python:3.10-slim
+
+WORKDIR /app
+
+# 复制依赖文件
+COPY requirements.txt .
+
+# 安装依赖
+RUN pip install --no-cache-dir -r requirements.txt -i https://mirrors.tencent.com/pypi/simple/
+
+# 创建日志目录
+RUN mkdir -p /app/logs
+
+# 复制项目文件
+COPY . .
+
+# 默认dev
+ARG ENV=dev
+ENV APP_ENV=$ENV
+
+# 根据环境复制对应的.env文件
+RUN if [ "$APP_ENV" = "prod" ]; then \
+        if [ -f .env.prod ]; then \
+            cp .env.prod .env; \
+        else \
+            echo "prod .env file not found"; \
+            exit 1; \
+        fi; \
+    elif [ "$APP_ENV" = "test" ]; then \
+        if [ -f .env.test ]; then \
+            cp .env.test .env; \
+        else \
+            echo "test .env file not found"; \
+            exit 1; \
+        fi; \
+    else \
+        if [ -f .env.dev ]; then \
+            cp .env.dev .env; \
+        else \
+            echo "dev .env file not found"; \
+            exit 1; \
+        fi; \
+    fi
+
+# 确保启动脚本有执行权限
+RUN chmod +x /app/start.sh
+
+# 暴露端口
+EXPOSE 5001
+
+# 使用启动脚本
+CMD ["/app/start.sh"]

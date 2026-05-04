@@ -1,0 +1,225 @@
+[
+  {
+    "name": "correctness-query-state-35",
+    "sessionId": "35",
+    "flow": ["query_state"],
+    "coverage": ["query_state", "tier_distribution_report", "existing_plan_honesty"],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "我现在的方案是什么情况",
+        "assertContains": ["冲", "稳", "保"]
+      },
+      {
+        "prompt": "冲稳保各有几个",
+        "assertContains": ["冲", "稳", "保"]
+      }
+    ]
+  },
+  {
+    "name": "correctness-query-ordered-26",
+    "sessionId": "26",
+    "flow": ["query_ordered"],
+    "coverage": ["query_ordered", "item_list", "school_name_present"],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "给我看看方案里都有哪些学校",
+        "assertContains": ["方案"]
+      },
+      {
+        "prompt": "排在最前面的冲档是哪个学校",
+        "assertContains": ["冲"]
+      }
+    ]
+  },
+  {
+    "name": "correctness-query-candidates-keyword-35",
+    "sessionId": "35",
+    "flow": ["query_candidates"],
+    "coverage": ["query_candidates", "keyword_filter", "candidate_results"],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "帮我看看候选里有哪些计算机类的机会",
+        "assertContains": ["计算机"]
+      }
+    ]
+  },
+  {
+    "name": "correctness-query-candidates-tier-35",
+    "sessionId": "35",
+    "flow": ["query_candidates"],
+    "coverage": ["query_candidates", "tier_filter", "stable_tier_report"],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "候选里稳档的有哪些",
+        "assertContains": ["稳"]
+      }
+    ]
+  },
+  {
+    "name": "correctness-review-plan-26",
+    "sessionId": "26",
+    "flow": ["review_plan"],
+    "coverage": ["review_plan", "risk_report", "structure_check"],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "帮我审查一下这个方案有什么问题",
+        "assertContains": ["审查", "方案"]
+      }
+    ]
+  },
+  {
+    "name": "correctness-review-safety-26",
+    "sessionId": "26",
+    "flow": ["review_plan"],
+    "coverage": ["review_plan", "safety_check", "bottom_tier_evaluation"],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "保底够稳吗 会不会滑档",
+        "assertContains": ["保"]
+      }
+    ]
+  },
+  {
+    "name": "correctness-tier-count-26",
+    "sessionId": "26",
+    "flow": ["query_state"],
+    "coverage": ["tier_count_accuracy", "numeric_response"],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "方案里冲档几个稳档几个保底几个",
+        "assertContains": ["冲", "稳", "保"]
+      }
+    ]
+  },
+  {
+    "name": "correctness-total-count-35",
+    "sessionId": "35",
+    "flow": ["query_state"],
+    "coverage": ["total_count", "plan_size_report"],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "方案一共有多少个志愿",
+        "assertContains": ["个"]
+      }
+    ]
+  },
+  {
+    "name": "correctness-pin-and-verify-35",
+    "sessionId": "35",
+    "flow": ["pin", "verify"],
+    "coverage": ["pin_unit", "position_lock", "pin_persistence_query"],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "把第一个冲档锁定在第一位",
+        "assertContains": ["锁定", "第1位"]
+      },
+      {
+        "prompt": "确认锁定",
+        "assertContains": ["锁定"]
+      },
+      {
+        "prompt": "现在哪些志愿是锁定的",
+        "assertContains": ["锁定"]
+      },
+      {
+        "prompt": "取消锁定",
+        "assertContains": ["锁定"]
+      },
+      "确认取消"
+    ]
+  },
+  {
+    "name": "correctness-no-plan-honesty",
+    "sessionId": "99901501",
+    "flow": ["no_plan_query"],
+    "coverage": ["no_plan_honesty", "refuse_fabricate", "guide_to_generate"],
+    "assertPlanStyle": true,
+    "prompts": [
+      "我600湖南物化生",
+      {
+        "prompt": "方案有了么 保底稳不稳",
+        "assertNotContains": ["保底有3个", "方案已经生成好了", "保底够了"],
+        "assertContainsAny": ["还没", "尚未生成", "没有正式方案", "0个志愿", "暂停"]
+      }
+    ]
+  },
+  {
+    "name": "correctness-generate-needs-info",
+    "sessionId": "99901599",
+    "flow": ["generate_prerequisite"],
+    "coverage": ["generate_plan_prereq", "info_gathering", "no_premature_generate"],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "帮我出一版志愿方案",
+        "assertContains": ["信息"]
+      }
+    ]
+  },
+  {
+    "name": "correctness-move-unit-26",
+    "sessionId": "26",
+    "flow": ["move", "verify"],
+    "coverage": ["move_unit", "position_change"],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "把方案里第10个往前移到第3位",
+        "assertContains": ["移", "第3位"]
+      },
+      "确认移动"
+    ]
+  },
+  {
+    "name": "correctness-query-specific-school-26",
+    "sessionId": "26",
+    "flow": ["query_ordered"],
+    "coverage": ["specific_school_query", "plan_search"],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "方案里有没有南京航空航天大学的",
+        "assertContains": ["南京航空航天"]
+      }
+    ]
+  },
+  {
+    "name": "correctness-analyze-adjustment-35",
+    "sessionId": "35",
+    "flow": ["analyze"],
+    "coverage": ["analyze_adjustment", "optimization_advice"],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "帮我分析一下方案还有什么可以优化的",
+        "assertContains": ["优化"]
+      }
+    ]
+  },
+  {
+    "name": "correctness-state-then-review-chain-35",
+    "sessionId": "35",
+    "flow": ["query_state", "review_plan"],
+    "coverage": ["chain_query_review", "consistent_state"],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "方案有多少个志愿",
+        "assertContains": ["个"]
+      },
+      {
+        "prompt": "然后审查一下有没有什么风险",
+        "assertContains": ["审查", "风险"]
+      }
+    ]
+  }
+]

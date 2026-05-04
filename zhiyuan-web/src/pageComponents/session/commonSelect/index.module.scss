@@ -1,0 +1,58 @@
+.wrapper {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-wrap: wrap;
+
+    .item {
+        flex: none;
+        height: 32px;
+        border-radius: 8px;
+        background: #f3f4f6;
+        text-align: center;
+        font-size: 12px;
+        line-height: 32px;
+        color: #2c2e40;
+        margin-bottom: 8px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+
+        //disbled需要在active之前
+        &.disabled {
+            color: #c0c4cc;
+        }
+
+        &.active {
+            background: #e6f4ff;
+            color: #1677ff;
+        }
+    }
+
+    .smallItem {
+        width: 106px;
+        margin-right: calc((100% - 318px) / 2);
+
+        &:nth-child(3n) {
+            margin-right: 0;
+        }
+    }
+
+    .smallTypeItem {
+        width: 120px;
+        margin-right: calc((100% - 500px) / 4);
+
+        &:nth-child(4n) {
+            margin-right: 0;
+        }
+    }
+
+    .bigItem {
+        width: 165.5px;
+        margin-right: calc(100% - 400px);
+
+        &:nth-child(2n) {
+            margin-right: 0;
+        }
+    }
+}

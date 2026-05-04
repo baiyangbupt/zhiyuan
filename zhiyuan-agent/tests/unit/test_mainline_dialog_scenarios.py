@@ -1,0 +1,436 @@
+"""Mainline user-dialog scenario tests for Explore/Intent/Plan handoff."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
+
+from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, ToolCallPart, ToolReturnPart, UserPromptPart
+
+from app.data.history_store import ChatHistoryStore
+from app.service import ChatService, ChatServiceResponseEnvelope
+
+MAINLINE_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_mainline_cases.json"
+SCIENCE_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_science_cases.json"
+
+
+def _run(coro):
+    return asyncio.run(coro)
+
+
+class _ScenarioAgent:
+    def __init__(self, turns: list[dict]):
+        self.calls: list[dict] = []
+        self._turns = turns
+
+    async def run_with_message_deltas(self, user_prompt, message_history=None, deps=None, on_progress=None):
+        self.calls.append(
+            {
+                "user_prompt": user_prompt,
+                "message_history_len": len(message_history or []),
+                "pending_plan_action": deps.pending_plan_action if deps else None,
+                "planning_summary": deps.planning_summary if deps else None,
+            }
+        )
+        turn = self._turns[len(self.calls) - 1]
+        reply = turn["reply"]
+        tool_calls = turn.get("tool_calls") or []
+        tool_returns = turn.get("tool_returns") or []
+        new_messages = [ModelRequest(parts=[UserPromptPart(content=user_prompt)])]
+        if tool_calls:
+            new_messages.append(ModelResponse(parts=tool_calls, model_name="test-model"))
+        if tool_returns:
+            new_messages.append(ModelRequest(parts=tool_returns))
+        new_messages.append(ModelResponse(parts=[TextPart(content=reply)], model_name="test-model"))
+        usage = MagicMock(
+            input_tokens=1,
+            output_tokens=1,
+            total_tokens=2,
+            requests=1,
+            tool_calls=len(tool_calls),
+        )
+        return reply, new_messages, (message_history or []) + new_messages, usage
+
+
+def _tool_call(name: str, args: dict | None = None, call_id: str = "call-1") -> ToolCallPart:
+    return ToolCallPart(tool_name=name, args=args or {}, tool_call_id=call_id)
+
+
+def _tool_return(name: str, content: dict, call_id: str = "call-1") -> ToolReturnPart:
+    return ToolReturnPart(tool_name=name, content=json.dumps(content, ensure_ascii=False), tool_call_id=call_id)
+
+
+def _workspace_targets(reply: ChatServiceResponseEnvelope) -> list[str]:
+    return [json.loads(item.content)["targetView"] for item in reply.followups]
+
+
+def _build_service(tmp_path, agent: _ScenarioAgent) -> ChatService:
+    store = ChatHistoryStore(str(tmp_path / "history.db"))
+    client = MagicMock()
+    client.model = MagicMock()
+    client.model_settings = {}
+    with patch("app.service.ChatAgent", return_value=agent):
+        return ChatService(client, store)
+
+
+def _load_mainline_cases() -> list[dict]:
+    return json.loads(MAINLINE_CASES_PATH.read_text(encoding="utf-8"))
+
+
+def _load_science_cases() -> list[dict]:
+    return json.loads(SCIENCE_CASES_PATH.read_text(encoding="utf-8"))
+
+
+def test_mainline_dialog_case_catalog_has_31_explore_intent_plan_scenarios():
+    cases = _load_mainline_cases()
+
+    assert len(cases) == 31
+    assert len({case["name"] for case in cases}) == 31
+    for case in cases:
+        assert case["assertPlanStyle"] is True
+        assert case["prompts"]
+        assert set(case["flow"]).issubset({"explore", "intent", "plan"})
+        assert "plan" in case["flow"]
+        assert case["coverage"]
+
+    complete_flow_cases = [case for case in cases if case["flow"] == ["explore", "intent", "plan"]]
+    assert len(complete_flow_cases) >= 6
+
+
+def test_mainline_dialog_case_catalog_covers_session57_risks_and_plan_boundaries():
+    cases = _load_mainline_cases()
+    case_names = {case["name"] for case in cases}
+    coverage = {tag for case in cases for tag in case["coverage"]}
+    required_case_names = {
+        "risk-followup-remove-preview-apply-review",
+        "compensation-preview-apply-post-review",
+        "ordered-move-preview-apply",
+        "pin-unpin-after-review",
+        "school-major-group-query-then-replace",
+        "colloquial-review-remove-compensation-mainline",
+        "colloquial-adjustment-then-reorder-mainline",
+    }
+    required_tags = {
+        "positive_major_intent",
+        "negative_major_intent",
+        "major_alias",
+        "candidate_match",
+        "historical_intent",
+        "no_stale_candidate_refresh",
+        "plan_generate",
+        "plan_query",
+        "plan_status",
+        "plan_analysis",
+        "plan_preview",
+        "plan_apply",
+        "confirmation_boundary",
+        "ordered_workspace",
+        "review_workspace",
+        "plan_review",
+        "risk_followup",
+        "remove_units",
+        "compensation_apply",
+        "move_unit",
+        "pin_unit",
+        "unpin_unit",
+        "group_mode",
+        "school_major_query",
+        "replace_units",
+    }
+
+    assert required_case_names.issubset(case_names)
+    assert required_tags.issubset(coverage)
+    all_prompts = "\n".join(prompt for case in cases for prompt in case["prompts"])
+    assert "网络与新媒体" in all_prompts
+    assert "跨境电商" in all_prompts or "跨境电子商务" in all_prompts
+    assert "审计" in all_prompts
+    assert "会计" in all_prompts
+    assert "确认生成" in all_prompts
+    assert "确认" in all_prompts
+    assert "中外合作" in all_prompts
+    assert "固定住" in all_prompts
+    assert "取消固定" in all_prompts
+    assert "广西师范大学" in all_prompts
+    assert "这版有啥问题" in all_prompts
+    assert "贵的先去掉" in all_prompts
+    assert "现在少的这些咋补" in all_prompts
+    assert "这版怎么排更合适" in all_prompts
+    assert "帮我顺一下" in all_prompts
+
+
+def test_science_dialog_case_catalog_has_40_engineering_scenarios():
+    cases = _load_science_cases()
+
+    assert len(cases) == 40
+    assert len({case["name"] for case in cases}) == 40
+    for case in cases:
+        assert case["assertPlanStyle"] is True
+        assert case["prompts"]
+        assert set(case["flow"]).issubset({"explore", "intent", "plan"})
+        assert "plan" in case["flow"]
+        assert case["coverage"]
+
+    complete_flow_cases = [case for case in cases if case["flow"] == ["explore", "intent", "plan"]]
+    assert len(complete_flow_cases) >= 12
+
+
+def test_science_dialog_case_catalog_covers_main_engineering_branches_and_plan_boundaries():
+    cases = _load_science_cases()
+    coverage = {tag for case in cases for tag in case["coverage"]}
+    required_tags = {
+        "computer_science",
+        "electronic_information",
+        "automation",
+        "mechanical_engineering",
+        "civil_engineering",
+        "materials",
+        "biomedical_engineering",
+        "subject_requirement",
+        "negative_major_intent",
+        "plan_preview",
+        "plan_apply",
+        "plan_review",
+    }
+
+    assert required_tags.issubset(coverage)
+    all_prompts = "\n".join(prompt for case in cases for prompt in case["prompts"])
+    assert "计算机" in all_prompts
+    assert "电子信息" in all_prompts
+    assert "不想学土木" in all_prompts
+    assert "确认" in all_prompts
+
+
+def test_mainline_dialog_intent_preview_then_plan_status_does_not_reopen_candidate_workspace(tmp_path):
+    agent = _ScenarioAgent(
+        [
+            {
+                "reply": "我先把网络与新媒体整理成待确认偏好。确认后再作为后续报考参考。",
+                "tool_calls": [
+                    _tool_call(
+                        "preview_current_major_intent_confirmation",
+                        {"major_intents": {"level3": ["网络与新媒体"]}},
+                        "intent-1",
+                    )
+                ],
+                "tool_returns": [
+                    _tool_return(
+                        "preview_current_major_intent_confirmation",
+                        {"status": "pending", "items": [{"content": "网络与新媒体"}]},
+                        "intent-1",
+                    )
+                ],
+            },
+            {
+                "reply": "**当前方案状态**\n\n排序总数：45/45。冲8 / 稳18 / 保19。风险0项，提醒3项。",
+                "tool_calls": [
+                    _tool_call(
+                        "execute_plan_action",
+                        {"plan_payload": json.dumps({"stage": "apply", "action_family": "query_state"}, ensure_ascii=False)},
+                        "plan-state-1",
+                    )
+                ],
+                "tool_returns": [
+                    _tool_return(
+                        "execute_plan_action",
+                        {"action_family": "query_state", "summary": "45/45，冲8 / 稳18 / 保19"},
+                        "plan-state-1",
+                    )
+                ],
+            },
+        ]
+    )
+    service = _build_service(tmp_path, agent)
+
+    with (
+        patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})),
+        patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})),
+        patch("app.service.get_planning_state", AsyncMock(return_value={"code": 1})),
+    ):
+        first = _run(service.handle_message("session-mainline-57", "user-57", "想学网络与新媒体"))
+        second = _run(service.handle_message("session-mainline-57", "user-57", "现在方案怎么样"))
+
+    assert isinstance(first, ChatServiceResponseEnvelope)
+    assert first.primary.startswith("我先把网络与新媒体整理成待确认偏好")
+    assert _workspace_targets(first) == ["candidate"]
+    assert not isinstance(second, ChatServiceResponseEnvelope)
+    assert "45/45" in second
+    assert "冲8 / 稳18 / 保19" in second
+    assert agent.calls[1]["message_history_len"] > 0
+
+
+def test_mainline_dialog_cross_border_ecommerce_uses_full_major_name_and_candidate_refresh(tmp_path):
+    agent = _ScenarioAgent(
+        [
+            {
+                "reply": "**待确认偏好**\n\n我先把跨境电子商务整理成后续偏好。这个方向和英语、经贸类基础比较相关。",
+                "tool_calls": [
+                    _tool_call(
+                        "preview_current_major_intent_confirmation",
+                        {"major_intents": {"add": ["跨境电商"]}},
+                        "intent-ecommerce",
+                    )
+                ],
+                "tool_returns": [
+                    _tool_return(
+                        "preview_current_major_intent_confirmation",
+                        {
+                            "status": "pending",
+                            "items": [{"content": "跨境电子商务"}],
+                            "impactAnalysis": "候选库里有广州工商学院第201组-跨境电子商务。",
+                        },
+                        "intent-ecommerce",
+                    )
+                ],
+            }
+        ]
+    )
+    service = _build_service(tmp_path, agent)
+
+    with (
+        patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})),
+        patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})),
+        patch("app.service.get_planning_state", AsyncMock(return_value={"code": 1})),
+    ):
+        reply = _run(service.handle_message("session-mainline-cross-border", "user-57", "想学跨境电商"))
+
+    assert isinstance(reply, ChatServiceResponseEnvelope)
+    assert "跨境电子商务" in reply.primary
+    assert "画像" not in reply.primary
+    assert _workspace_targets(reply) == ["candidate"]
+    assert agent.calls[0]["user_prompt"] == "想学跨境电商"
+
+
+def test_mainline_dialog_negative_accounting_then_confirm_plan_adjustment_uses_model_reply(tmp_path):
+    preview_payload = {
+        "stage": "preview",
+        "action_family": "replace_units",
+        "user_goal": "移出会计和审计相关志愿，补入跨境电子商务和网络与新媒体",
+        "missing_inputs": [],
+        "atomic_actions": [{"action_type": "replace_units"}],
+        "preview_summary": "会移出会计和审计相关志愿，再补入更匹配的新方向。",
+    }
+    agent = _ScenarioAgent(
+        [
+            {
+                "reply": "我先把“不想学会计”整理成待确认排除要求。当前方案里会计学占比较高，确认后可以继续看怎么替换。",
+                "tool_calls": [
+                    _tool_call(
+                        "preview_current_major_intent_confirmation",
+                        {"major_intents": {"remove": ["会计"]}},
+                        "intent-accounting",
+                    )
+                ],
+                "tool_returns": [
+                    _tool_return(
+                        "preview_current_major_intent_confirmation",
+                        {"status": "pending", "items": [{"content": "会计学"}]},
+                        "intent-accounting",
+                    )
+                ],
+            },
+            {
+                "reply": "**调整预览**\n\n计划移出会计学和审计学相关志愿，再优先补入跨境电子商务、网络与新媒体等方向。确认后才会改动当前方案。",
+                "tool_calls": [
+                    _tool_call(
+                        "execute_plan_action",
+                        {"plan_payload": json.dumps(preview_payload, ensure_ascii=False)},
+                        "preview-replace",
+                    )
+                ],
+                "tool_returns": [
+                    _tool_return(
+                        "execute_plan_action",
+                        {
+                            "applied": False,
+                            "action_family": "replace_units",
+                            "stage": "preview",
+                            "result_kind": "preview_only",
+                            "summary": "会移出会计和审计相关志愿，再补入更匹配的新方向。",
+                        },
+                        "preview-replace",
+                    )
+                ],
+            },
+        ]
+    )
+    service = _build_service(tmp_path, agent)
+    execution_result = json.dumps(
+        {
+            "applied": True,
+            "action_family": "replace_units",
+            "stage": "apply",
+            "result_kind": "mutation_result",
+            "summary": "已移出不匹配志愿，并同步刷新排序和审查结果。新的补入方向包括跨境电子商务和网络与新媒体。",
+            "workspace_refresh_targets": ["ordered", "review"],
+        },
+        ensure_ascii=False,
+    )
+
+    with (
+        patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})),
+        patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})),
+        patch("app.service.get_planning_state", AsyncMock(return_value={"code": 1})),
+        patch("app.service.get_intent_change_cache", AsyncMock(return_value={"data": {"planEditCache": None}})),
+        patch("app.service.execute_plan_action", AsyncMock(return_value=execution_result)),
+    ):
+        intent_reply = _run(service.handle_message("session-mainline-adjust", "user-57", "不想学会计"))
+        preview_reply = _run(service.handle_message("session-mainline-adjust", "user-57", "那帮我替换掉"))
+        apply_reply = _run(service.handle_message("session-mainline-adjust", "user-57", "确认"))
+
+    assert isinstance(intent_reply, ChatServiceResponseEnvelope)
+    assert _workspace_targets(intent_reply) == ["candidate"]
+    assert not isinstance(preview_reply, ChatServiceResponseEnvelope)
+    assert "确认后才会改动当前方案" in preview_reply
+    assert isinstance(apply_reply, ChatServiceResponseEnvelope)
+    assert apply_reply.primary.startswith("已移出不匹配志愿")
+    assert "跨境电子商务" in apply_reply.primary
+    assert _workspace_targets(apply_reply) == ["ordered", "review"]
+    assert len(agent.calls) == 2
+    assert agent.calls[1]["pending_plan_action"] is None
+
+
+def test_mainline_dialog_review_result_keeps_informative_summary_and_review_workspace(tmp_path):
+    agent = _ScenarioAgent(
+        [
+            {
+                "reply": "**审查结论**\n\n当前方案可用：45/45，冲8 / 稳18 / 保19，风险0项。\n\n主要提醒是高收费、边缘分和中外合作办学，建议先看审查页确认具体位置。",
+                "tool_calls": [
+                    _tool_call(
+                        "execute_plan_action",
+                        {"plan_payload": json.dumps({"stage": "apply", "action_family": "review_plan"}, ensure_ascii=False)},
+                        "review-1",
+                    )
+                ],
+                "tool_returns": [
+                    _tool_return(
+                        "execute_plan_action",
+                        {
+                            "applied": True,
+                            "action_family": "review_plan",
+                            "summary": "风险0项，提醒3项。",
+                            "workspace_refresh_targets": ["review"],
+                        },
+                        "review-1",
+                    )
+                ],
+            }
+        ]
+    )
+    service = _build_service(tmp_path, agent)
+
+    with (
+        patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})),
+        patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})),
+        patch("app.service.get_planning_state", AsyncMock(return_value={"code": 1})),
+    ):
+        reply = _run(service.handle_message("session-mainline-review", "user-57", "帮我审查一下"))
+
+    assert isinstance(reply, ChatServiceResponseEnvelope)
+    assert "45/45" in reply.primary
+    assert "冲8 / 稳18 / 保19" in reply.primary
+    assert "风险0项" in reply.primary
+    assert "提醒" in reply.primary
+    assert len(reply.primary) > 60
+    assert _workspace_targets(reply) == ["review"]

@@ -1,0 +1,30 @@
+.content {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    margin: 20px;
+
+    .title {
+        font-weight: 500;
+        font-size: 16px;
+        line-height: 24px;
+        color: #2c2e40;
+        text-align: center;
+    }
+
+    .main {
+        min-height: 0;
+        flex: 1;
+
+        .selectItem {
+            margin-top: 5px;
+        }
+
+        .name {
+            font-size: 12px;
+            line-height: 18px;
+            color: #000;
+            margin-bottom: 8px;
+        }
+    }
+}

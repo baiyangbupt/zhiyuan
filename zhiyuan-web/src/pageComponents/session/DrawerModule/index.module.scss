@@ -1,0 +1,13 @@
+.drawer {
+    :global(.ant-btn) {
+        border-radius: 4px;
+    }
+
+    .footer {
+        text-align: right;
+
+        .cancel {
+            margin-right: 8px;
+        }
+    }
+}

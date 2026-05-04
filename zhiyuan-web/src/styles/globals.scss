@@ -1,0 +1,108 @@
+@import '~antd/dist/reset.css';
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow-y: hidden;
+
+  ::-webkit-scrollbar {
+    width: 1px;
+    background-color: #f0f0f0; /* 背景颜色 */
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background-color: #f0f0f0; /* 滚动条颜色 */
+    border-radius: 10px;
+  }
+}
+
+p {
+  margin: 0;
+  padding: 0;
+}
+
+a {
+  text-decoration: none;
+}
+
+button {
+  outline: none;
+}
+
+#__next {
+  height: 100%;
+  width: 100%;
+  overflow: auto;
+
+  &::-webkit-scrollbar {
+    display: none;
+  }
+
+  iframe {
+    border-width: 0;
+  }
+}
+// 刷新按钮
+.vRefreshButton {
+  position: fixed;
+  left: 0;
+  bottom: 120px;
+  width: 32px;
+  height: 32px;
+  box-shadow: 0 0 0.61538462em rgb(0 0 0 / 40%);
+  border-radius: 5px;
+  background: #07c160;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 10000;
+}
+
+body {
+  .ant-dropdown-menu-title-content,
+  .ant-select-item-option-content {
+    font-size: 12px;
+  }
+
+  .ant-message {
+    z-index: 1111;
+  }
+}
+
+.custom-browser-warning {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 9999;
+  width: 100%;
+  height: 100%;
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.custom-browser-warning img {
+  width: 240px;
+  height: 220px;
+}
+
+.custom-browser-warning p {
+  color: #8a8b95;
+  font-size: 24px;
+  line-height: 24px;
+  margin-top: 24px;
+  white-space: nowrap;
+}
+
+.userModalPopup {
+  .ant-select-item-option-selected:not(.ant-select-item-option-disabled) {
+    color: #ff443d;
+    font-weight: 600;
+    background-color: transparent;
+  }
+}

@@ -1,0 +1,146 @@
+[
+  {
+    "name": "tier-top-660-tsinghua-aim",
+    "sessionId": "6601",
+    "flow": ["explore", "intent", "plan"],
+    "coverage": ["top_score", "tsinghua_peking", "school_intent", "plan_status"],
+    "assertPlanStyle": true,
+    "prompts": [
+      "我650分能冲清华不",
+      "那把清华和北大都加进意向看看",
+      "现在方案里这俩有戏吗"
+    ]
+  },
+  {
+    "name": "tier-top-660-fear-slip",
+    "sessionId": "6602",
+    "flow": ["explore", "plan"],
+    "coverage": ["top_score", "risk_review", "fear_slipping"],
+    "assertPlanStyle": true,
+    "prompts": [
+      "660分万一被退档咋整",
+      "那帮我看看现在方案有啥风险",
+      "稳的不够能不能再补两个保底"
+    ]
+  },
+  {
+    "name": "tier-high-620-bupt-beijing",
+    "sessionId": "6201",
+    "flow": ["intent", "plan"],
+    "coverage": ["high_score", "city_intent_beijing", "school_bupt"],
+    "assertPlanStyle": true,
+    "prompts": [
+      "620够北邮不",
+      "我就想去北京读",
+      "现在方案里北京的学校多不多"
+    ]
+  },
+  {
+    "name": "tier-high-615-strong-base-confused",
+    "sessionId": "6202",
+    "flow": ["explore", "plan"],
+    "coverage": ["high_score", "strong_base_program", "decision_help"],
+    "assertPlanStyle": true,
+    "prompts": [
+      "615这个分强基要不要报",
+      "我有点纠结报了万一掉下来咋办",
+      "那现在这版方案先不动它行吗"
+    ]
+  },
+  {
+    "name": "tier-mid-high-580-edge-stable",
+    "sessionId": "5801001",
+    "flow": ["explore", "plan"],
+    "coverage": ["mid_high_score", "first_tier_edge", "play_safe"],
+    "assertPlanStyle": true,
+    "prompts": [
+      "我刚过一本线580咋稳上",
+      "那帮我看看现在方案稳不稳",
+      "保底的能不能再加俩稳点的"
+    ]
+  },
+  {
+    "name": "tier-mid-high-575-only-cs",
+    "sessionId": "5751001",
+    "flow": ["intent", "plan"],
+    "coverage": ["mid_high_score", "interest_driven", "cs_only"],
+    "assertPlanStyle": true,
+    "prompts": [
+      "我就想搞计算机别的不想学",
+      "那把计算机类作为唯一方向",
+      "现在方案是不是计算机太少了"
+    ]
+  },
+  {
+    "name": "tier-mid-520-just-want-bachelor",
+    "sessionId": "5201001",
+    "flow": ["explore", "plan"],
+    "coverage": ["mid_score", "stable_bachelor", "low_pressure"],
+    "assertPlanStyle": true,
+    "prompts": [
+      "我520咋稳上个本科就行",
+      "那帮我直接弄一版稳的方案",
+      "刚那个方案民办能少点不"
+    ]
+  },
+  {
+    "name": "tier-mid-510-mom-pushes-medical",
+    "sessionId": "5101001",
+    "flow": ["explore", "intent"],
+    "coverage": ["mid_score", "parent_pressure", "negative_intent"],
+    "assertPlanStyle": true,
+    "prompts": [
+      "我妈让我学医我不想学咋办",
+      "那把临床医学和护理都排除掉",
+      "那我能学啥还有戏的"
+    ]
+  },
+  {
+    "name": "tier-mid-low-460-failed-exam",
+    "sessionId": "4601001",
+    "flow": ["explore", "plan"],
+    "coverage": ["mid_low_score", "underperformed", "second_tier_edge"],
+    "assertPlanStyle": true,
+    "prompts": [
+      "考砸了就460还能上啥",
+      "二本还有机会不",
+      "那直接帮我出一版方案看看"
+    ]
+  },
+  {
+    "name": "tier-mid-low-440-private-vs-public",
+    "sessionId": "4401001",
+    "flow": ["explore", "intent"],
+    "coverage": ["mid_low_score", "private_school", "value_judgment"],
+    "assertPlanStyle": true,
+    "prompts": [
+      "440民办值不值得上",
+      "那我不想上民办给我排除掉",
+      "那剩下还有啥能选的"
+    ]
+  },
+  {
+    "name": "tier-vocational-380-upgrade-path",
+    "sessionId": "3801001",
+    "flow": ["explore"],
+    "coverage": ["vocational_score", "upgrade_pathway"],
+    "assertPlanStyle": true,
+    "prompts": [
+      "我380专科以后能升本不",
+      "那哪种专科专业升本好升点",
+      "选个学校这分能去哪"
+    ]
+  },
+  {
+    "name": "tier-vocational-350-job-oriented",
+    "sessionId": "3501001",
+    "flow": ["explore", "intent"],
+    "coverage": ["vocational_score", "employment_oriented"],
+    "assertPlanStyle": true,
+    "prompts": [
+      "我350学个啥专业好找工作",
+      "想学护理或者计算机这种实在的",
+      "那把护理作为意向先看看"
+    ]
+  }
+]

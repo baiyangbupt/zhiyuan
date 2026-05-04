@@ -1,0 +1,38 @@
+[
+  {
+    "name": "plan-status-generated",
+    "sessionId": "35",
+    "assertPlanStyle": true,
+    "prompts": ["方案有了么"]
+  },
+  {
+    "name": "plan-review-generated",
+    "sessionId": "35",
+    "assertPlanStyle": true,
+    "prompts": ["帮我审查一下"]
+  },
+  {
+    "name": "plan-adjustment-suggestion",
+    "sessionId": "35",
+    "assertPlanStyle": true,
+    "prompts": ["这版怎么调更稳一点"]
+  },
+  {
+    "name": "plan-reorder-confirmation",
+    "sessionId": "35",
+    "assertPlanStyle": true,
+    "prompts": ["帮我把顺序重新理一下"]
+  },
+  {
+    "name": "plan-fill-gap-suggestion",
+    "sessionId": "35",
+    "assertPlanStyle": true,
+    "prompts": ["还差的几个怎么补"]
+  },
+  {
+    "name": "plan-status-reviewed",
+    "sessionId": "26",
+    "assertPlanStyle": true,
+    "prompts": ["现在方案怎么样"]
+  }
+]

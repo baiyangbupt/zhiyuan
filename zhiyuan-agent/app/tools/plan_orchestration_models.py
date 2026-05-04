@@ -1,0 +1,196 @@
+from __future__ import annotations
+
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field, field_validator
+
+
+_INTENT_RELATION_ALIASES = {
+    "support": "support",
+    "supported": "support",
+    "match": "support",
+    "matches": "support",
+    "matching": "support",
+    "aligned": "support",
+    "conflict": "conflict",
+    "conflicted": "conflict",
+    "mismatch": "conflict",
+    "mismatched": "conflict",
+    "mixed": "mixed",
+    "partial": "mixed",
+    "partially_supported": "mixed",
+    "unknown": "unknown",
+    "unclear": "unknown",
+}
+
+
+class PlanContextInputs(BaseModel):
+    phase: str = ""
+    target_count: int = 0
+    draft_count: int = 0
+    ordered_count: int = 0
+    risk_count: int = 0
+    warn_count: int = 0
+    positive_majors: list[str] = Field(default_factory=list)
+    negative_majors: list[str] = Field(default_factory=list)
+    positive_schools: list[str] = Field(default_factory=list)
+    negative_schools: list[str] = Field(default_factory=list)
+    positive_regions: list[str] = Field(default_factory=list)
+    negative_regions: list[str] = Field(default_factory=list)
+    career_types: list[str] = Field(default_factory=list)
+    relation_lines: list[str] = Field(default_factory=list)
+    review_issues: list[dict[str, Any]] = Field(default_factory=list)
+    review_issue_summary_lines: list[str] = Field(default_factory=list)
+    summary: str = ""
+
+
+class PlanReviewIssueTarget(BaseModel):
+    code: str
+    scope_mode: Literal["full_issue", "narrowed_issue", "explicit_items"] = "full_issue"
+    scope_fingerprint: str = ""
+    label: str = ""
+    scope_kind: str = ""
+    default_action_family: str = ""
+    narrowed_refs: list[str] = Field(default_factory=list)
+    narrowed_filters: dict[str, Any] = Field(default_factory=dict)
+
+
+class PlanAtomicAction(BaseModel):
+    action_type: str
+    volunteer_ids: list[str] = Field(default_factory=list)
+    target_position: int | None = None
+    filters: dict[str, Any] = Field(default_factory=dict)
+    reason: str = ""
+    review_issue_target: PlanReviewIssueTarget | None = None
+
+    @field_validator("review_issue_target", mode="before")
+    @classmethod
+    def _normalize_review_issue_target(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            normalized = str(value or "").strip()
+            return {"code": normalized} if normalized else None
+        return value
+
+
+_TOP_LEVEL_ATOMIC_ACTION_FAMILIES = {
+    "add_units",
+    "remove_units",
+    "move_unit",
+    "pin_unit",
+    "unpin_unit",
+    "replace_units",
+}
+
+
+def normalize_plan_action_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
+    normalized = dict(payload or {})
+    if normalized.get("atomic_actions"):
+        return normalized
+
+    action_family = str(normalized.get("action_family") or "").strip()
+    if action_family not in _TOP_LEVEL_ATOMIC_ACTION_FAMILIES:
+        return normalized
+
+    raw_ids = normalized.get("volunteer_ids")
+    if isinstance(raw_ids, list):
+        volunteer_ids = [str(item or "").strip() for item in raw_ids if str(item or "").strip()]
+    else:
+        single_id = str(raw_ids or "").strip()
+        volunteer_ids = [single_id] if single_id else []
+
+    raw_filters = normalized.get("filters")
+    filters = raw_filters if isinstance(raw_filters, dict) else {}
+    reason = str(normalized.get("reason") or normalized.get("user_goal") or "").strip()
+    target_position = normalized.get("target_position")
+    review_issue_target = normalized.get("review_issue_target")
+    has_atomic_shape = (
+        bool(volunteer_ids)
+        or bool(filters)
+        or target_position is not None
+        or isinstance(review_issue_target, dict)
+    )
+    if not has_atomic_shape:
+        return normalized
+
+    normalized["atomic_actions"] = [
+        {
+            "action_type": action_family,
+            "volunteer_ids": volunteer_ids,
+            "target_position": target_position,
+            "filters": filters,
+            "reason": reason,
+            "review_issue_target": review_issue_target,
+        }
+    ]
+    return normalized
+
+
+class PlanActionPlan(BaseModel):
+    stage: Literal["analyze", "preview", "apply", "review"]
+    action_family: Literal[
+        "query_state",
+        "query_draft",
+        "query_ordered",
+        "query_candidates",
+        "generate_plan",
+        "analyze_adjustment",
+        "preview_compensation",
+        "add_units",
+        "remove_units",
+        "move_unit",
+        "pin_unit",
+        "unpin_unit",
+        "replace_units",
+        "regenerate_order",
+        "apply_compensation",
+        "review_plan",
+    ]
+    user_goal: str = ""
+    requires_confirmation: bool = True
+    should_rerun_review: bool = False
+    should_refresh_workspace: bool = False
+    context_summary: str = ""
+    intent_relation: Literal["support", "conflict", "mixed", "unknown"] = "unknown"
+    missing_inputs: list[str] = Field(default_factory=list)
+    rationale: list[str] = Field(default_factory=list)
+    atomic_actions: list[PlanAtomicAction] = Field(default_factory=list)
+    preview_summary: str = ""
+
+    @field_validator("intent_relation", mode="before")
+    @classmethod
+    def _normalize_intent_relation(cls, value: Any) -> Any:
+        text = str(value or "").strip().lower()
+        if not text:
+            return "unknown"
+        return _INTENT_RELATION_ALIASES.get(text, value)
+
+
+class PlanExecutionResult(BaseModel):
+    applied: bool
+    action_family: str
+    stage: str
+    result_kind: Literal[
+        "status_overview",
+        "draft_snapshot",
+        "ordered_snapshot",
+        "candidate_snapshot",
+        "generation_result",
+        "adjustment_analysis",
+        "compensation_preview",
+        "mutation_result",
+        "review_result",
+        "preview_only",
+        "error",
+    ] = "status_overview"
+    executed_actions: list[dict[str, Any]] = Field(default_factory=list)
+    affected_volunteer_ids: list[str] = Field(default_factory=list)
+    workspace_refresh_targets: list[str] = Field(default_factory=list)
+    review_rerun: bool = False
+    intent_effect: Literal["strengthened", "weakened", "conflicted", "unchanged"] = "unchanged"
+    context_summary: str = ""
+    review_summary: str = ""
+    state_summary: str = ""
+    summary: str = ""
+    reply_focus: list[str] = Field(default_factory=list)
+    next_step_hints: list[str] = Field(default_factory=list)
+    facts: dict[str, Any] = Field(default_factory=dict)

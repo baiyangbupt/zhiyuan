@@ -1,0 +1,174 @@
+.searchForm {
+  width: 100%;
+  background: #fff;
+  padding: 16px 20px;
+  margin-bottom: 0;
+  border-radius: 6px;
+
+  .searchContainer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+    min-height: 56px;
+    padding: 0 4px;
+  }
+
+  .searchFields {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    flex: 1;
+    margin-left: 10px;
+    margin-right: 20px;
+  }
+
+  .searchFieldItem {
+    min-width: 200px;
+    flex-shrink: 0;
+    :global(.ant-row) {
+      width: 100%;
+    }
+  }
+
+  .searchActions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-shrink: 0;
+    margin-left: auto;
+    margin-right: 10px;
+  }
+
+  .firstBtn,
+  .seconBtn {
+    height: 32px;
+    border-radius: 4px;
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 20px;
+    transition: all 0.3s ease;
+  }
+
+  .firstBtn {
+    background: #ff443d;
+    border-color: #ff443d;
+    color: #fff;
+
+    &:hover {
+      background: #ff443d;
+      border-color: #ff443d;
+    }
+  }
+
+  .seconBtn {
+    background: #fff;
+    border-color: #d9d9d9;
+    color: #595959;
+
+    &:hover {
+      border-color: #40a9ff;
+      color: #40a9ff;
+    }
+  }
+
+  :global(.ant-btn) {
+    border-radius: 4px !important;
+  }
+
+  :global(.ant-form-item) {
+    margin-bottom: 0;
+    border: 1px solid #d9d9d9;
+    padding: 0 12px;
+    border-radius: 4px;
+    transition: border-color 0.3s ease;
+    display: flex;
+    align-items: center;
+    height: 40px;
+    width: 100%;
+
+    &:hover {
+      border-color: #40a9ff;
+    }
+
+    &:focus-within {
+      border-color: #1890ff;
+      box-shadow: 0 0 0 2px rgba(24, 144, 255, 0.2);
+    }
+  }
+
+  :global(.ant-select-selector) {
+    border: none !important;
+    box-shadow: none !important;
+    height: 32px !important;
+    line-height: 30px !important;
+    display: flex !important;
+    align-items: center !important;
+  }
+
+  :global(.ant-input-outlined) {
+    border: none;
+    box-shadow: none;
+    height: 32px;
+    line-height: 32px;
+  }
+
+  :global(.ant-form-item-label) {
+    flex-shrink: 0;
+    padding: 0;
+    margin-right: 12px;
+
+    label {
+      color: #000000a6;
+      font-size: 14px;
+      line-height: 18px;
+      height: auto;
+      margin-bottom: 0;
+
+      &::after {
+        display: none;
+      }
+    }
+  }
+
+  :global(.ant-form-item-control) {
+    flex: 1;
+    line-height: 1;
+  }
+
+  :global(.ant-form-item-control-input) {
+    min-height: auto;
+  }
+
+  :global(.ant-picker-outlined) {
+    border: none;
+    box-shadow: none;
+    height: 32px;
+    line-height: 32px;
+    display: flex;
+    align-items: center;
+  }
+
+  :global(.ant-input-outlined:focus-within) {
+    box-shadow: none !important;
+  }
+
+  :global(.ant-select-selection-item) {
+    line-height: 30px !important;
+    display: flex !important;
+    align-items: center !important;
+  }
+
+  :global(.ant-select-selection-placeholder) {
+    line-height: 30px !important;
+    display: flex !important;
+    align-items: center !important;
+  }
+
+  :global(.ant-picker-input) {
+    input {
+      height: 30px !important;
+      line-height: 30px !important;
+    }
+  }
+}

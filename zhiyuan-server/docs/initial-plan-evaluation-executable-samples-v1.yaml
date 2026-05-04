@@ -1,0 +1,334 @@
+version: v1
+description: >
+  First executable sample set for initial plan evaluation. It covers
+  P0 real-session regressions plus P1 high-score supplements and P2
+  negative-region or constraint supplements.
+
+fields:
+  - sample_id
+  - priority
+  - source_type
+  - session_id
+  - province
+  - volunteer_model
+  - score_band
+  - total_score
+  - total_score_rank
+  - batch_name
+  - score_gap_to_batch
+  - gender
+  - strategy_type
+  - subject_type
+  - subject_list
+  - preferred_majors
+  - unacceptable_majors
+  - preferred_regions
+  - negative_regions
+  - notes
+
+samples:
+  - sample_id: HN-01A
+    priority: P0
+    source_type: real_session
+    session_id: 14
+    province: 河南
+    volunteer_model: majorGroup
+    score_band: L2
+    notes: 真实低分保守基线，优先用于 majorGroup 低分回归
+
+  - sample_id: HN-02A
+    priority: P0
+    source_type: real_session
+    session_id: 11
+    province: 河南
+    volunteer_model: majorGroup
+    score_band: M1
+    notes: 真实中低分保守样本，已有地域偏好和理工意向
+
+  - sample_id: HN-03A
+    priority: P0
+    source_type: real_session
+    session_id: 15
+    province: 河南
+    volunteer_model: majorGroup
+    score_band: M2
+    notes: 真实中高分稳妥样本，适合观察 cautious 下的冲稳保目标
+
+  - sample_id: HN-04A
+    priority: P0
+    source_type: real_session
+    session_id: 16
+    province: 河南
+    volunteer_model: majorGroup
+    score_band: M1
+    notes: 当前核心真实回归样本，已用于 majorGroup 新旧对照
+
+  - sample_id: SD-01A
+    priority: P0
+    source_type: real_session
+    session_id: 17
+    province: 山东
+    volunteer_model: major
+    score_band: L1
+    notes: 当前核心真实回归样本，已用于 major 新旧对照
+
+  - sample_id: SD-02A
+    priority: P0
+    source_type: real_session
+    session_id: 7
+    province: 山东
+    volunteer_model: major
+    score_band: M1
+    notes: 真实中低分保守样本，偏财经商科意向
+
+  - sample_id: HN-07A
+    priority: P1
+    source_type: synthetic_profile
+    session_id: null
+    province: 河南
+    volunteer_model: majorGroup
+    score_band: H2
+    total_score: 615
+    total_score_rank: 18500
+    batch_name: 本科批
+    score_gap_to_batch: 188
+    gender: 男
+    strategy_type: cautious
+    subject_type: WL
+    subject_list: [物理, 化学, 生物]
+    preferred_majors: [计算机类, 电气类, 自动化类, 电子信息类]
+    unacceptable_majors: [护理学类]
+    preferred_regions: [上海, 江苏, 广东]
+    negative_regions: []
+    notes: 河南头部段男生理工稳妥样本，补 H2 缺口
+
+  - sample_id: HN-07B
+    priority: P1
+    source_type: synthetic_profile
+    session_id: null
+    province: 河南
+    volunteer_model: majorGroup
+    score_band: H2
+    total_score: 608
+    total_score_rank: 26000
+    batch_name: 本科批
+    score_gap_to_batch: 181
+    gender: 女
+    strategy_type: aggressive
+    subject_type: WL
+    subject_list: [物理, 化学, 生物]
+    preferred_majors: [临床医学类, 口腔医学类, 电子信息类]
+    unacceptable_majors: [纺织类]
+    preferred_regions: [北京, 上海, 广东]
+    negative_regions: []
+    notes: 河南头部段女生激进样本，验证高分强意向下的结构稳定性
+
+  - sample_id: SD-05A
+    priority: P1
+    source_type: synthetic_profile
+    session_id: null
+    province: 山东
+    volunteer_model: major
+    score_band: H2
+    total_score: 635
+    total_score_rank: 8200
+    batch_name: 第一段
+    score_gap_to_batch: 194
+    gender: 女
+    strategy_type: cautious
+    subject_type: N
+    subject_list: [物理, 化学, 生物]
+    preferred_majors: [计算机类, 软件工程, 电子信息类, 临床医学类]
+    unacceptable_majors: [土木类]
+    preferred_regions: [上海, 江苏, 浙江]
+    negative_regions: []
+    notes: 山东头部段女生稳妥样本，验证 major 模式高分供给质量
+
+  - sample_id: SD-05B
+    priority: P1
+    source_type: synthetic_profile
+    session_id: null
+    province: 山东
+    volunteer_model: major
+    score_band: H2
+    total_score: 628
+    total_score_rank: 12000
+    batch_name: 第一段
+    score_gap_to_batch: 187
+    gender: 男
+    strategy_type: cautious
+    subject_type: N
+    subject_list: [历史, 政治, 地理]
+    preferred_majors: [金融学类, 经济学类, 法学类]
+    unacceptable_majors: [兵器类]
+    preferred_regions: [上海, 北京]
+    negative_regions: []
+    notes: 山东头部段男生文商样本，验证高分非理工分支
+
+  - sample_id: GD-06A
+    priority: P1
+    source_type: synthetic_profile
+    session_id: null
+    province: 广东
+    volunteer_model: major
+    score_band: H2
+    total_score: 640
+    total_score_rank: 9500
+    batch_name: 本科批
+    score_gap_to_batch: 205
+    gender: 男
+    strategy_type: cautious
+    subject_type: WL
+    subject_list: [物理, 化学, 生物]
+    preferred_majors: [计算机类, 自动化类, 电气类]
+    unacceptable_majors: [农林类]
+    preferred_regions: [广东, 上海]
+    negative_regions: []
+    notes: 广东头部段稳妥样本，补发达地区高分供给
+
+  - sample_id: GD-06B
+    priority: P1
+    source_type: synthetic_profile
+    session_id: null
+    province: 广东
+    volunteer_model: major
+    score_band: H2
+    total_score: 633
+    total_score_rank: 11800
+    batch_name: 本科批
+    score_gap_to_batch: 198
+    gender: 女
+    strategy_type: aggressive
+    subject_type: WL
+    subject_list: [物理, 化学, 生物]
+    preferred_majors: [电子信息类, 计算机类, 金融学类]
+    unacceptable_majors: [纺织类]
+    preferred_regions: [广东, 北京, 上海]
+    negative_regions: []
+    notes: 广东头部段激进女生样本，验证高分高意向下的冲区选择
+
+  - sample_id: HE-06A
+    priority: P1
+    source_type: synthetic_profile
+    session_id: null
+    province: 河北
+    volunteer_model: majorGroup
+    score_band: H2
+    total_score: 610
+    total_score_rank: 21000
+    batch_name: 本科批
+    score_gap_to_batch: 175
+    gender: 男
+    strategy_type: cautious
+    subject_type: WL
+    subject_list: [物理, 化学, 生物]
+    preferred_majors: [自动化类, 计算机类, 电子信息类]
+    unacceptable_majors: [学前教育]
+    preferred_regions: [河北, 北京, 天津]
+    negative_regions: []
+    notes: 河北头部段 majorGroup 稳妥样本
+
+  - sample_id: HE-06B
+    priority: P1
+    source_type: synthetic_profile
+    session_id: null
+    province: 河北
+    volunteer_model: majorGroup
+    score_band: H2
+    total_score: 602
+    total_score_rank: 27500
+    batch_name: 本科批
+    score_gap_to_batch: 167
+    gender: 女
+    strategy_type: aggressive
+    subject_type: WL
+    subject_list: [物理, 化学, 生物]
+    preferred_majors: [临床医学类, 电子信息类, 计算机类]
+    unacceptable_majors: [土木类]
+    preferred_regions: [北京, 天津]
+    negative_regions: []
+    notes: 河北头部段 majorGroup 激进女生样本
+
+  - sample_id: HN-02B
+    priority: P2
+    source_type: synthetic_profile
+    session_id: null
+    province: 河南
+    volunteer_model: majorGroup
+    score_band: M1
+    total_score: 472
+    total_score_rank: 255000
+    batch_name: 本科批
+    score_gap_to_batch: 45
+    gender: 女
+    strategy_type: cautious
+    subject_type: WL
+    subject_list: [物理, 化学, 生物]
+    preferred_majors: [法学类, 经济学类]
+    unacceptable_majors: [水利类, 材料类]
+    preferred_regions: [广东, 江苏]
+    negative_regions: [北京]
+    notes: 河南中低分负向地域样本，验证“排除北京”后的新旧差异
+
+  - sample_id: SD-06B
+    priority: P2
+    source_type: synthetic_profile
+    session_id: null
+    province: 山东
+    volunteer_model: major
+    score_band: L2
+    total_score: 462
+    total_score_rank: 280000
+    batch_name: 第一段
+    score_gap_to_batch: 21
+    gender: 男
+    strategy_type: cautious
+    subject_type: N
+    subject_list: [历史, 政治, 地理]
+    preferred_majors: [经济学类, 财政学类]
+    unacceptable_majors: [兵器类]
+    preferred_regions: [山东, 江苏]
+    negative_regions: [北京]
+    notes: 山东低分负向地域样本
+
+  - sample_id: GD-07A
+    priority: P2
+    source_type: synthetic_profile
+    session_id: null
+    province: 广东
+    volunteer_model: major
+    score_band: M1
+    total_score: 545
+    total_score_rank: 78000
+    batch_name: 本科批
+    score_gap_to_batch: 110
+    gender: 男
+    strategy_type: traditional
+    subject_type: WL
+    subject_list: [物理, 化学, 生物]
+    preferred_majors: [电子信息类, 机械类]
+    unacceptable_majors: [中外合作办学]
+    preferred_regions: [广东]
+    negative_regions: [北京, 上海]
+    notes: 广东中低分负向地域+约束样本
+
+  - sample_id: HE-07B
+    priority: P2
+    source_type: synthetic_profile
+    session_id: null
+    province: 河北
+    volunteer_model: majorGroup
+    score_band: M1
+    total_score: 505
+    total_score_rank: 126000
+    batch_name: 本科批
+    score_gap_to_batch: 70
+    gender: 女
+    strategy_type: cautious
+    subject_type: LS
+    subject_list: [历史, 政治, 地理]
+    preferred_majors: [法学类, 外国语言文学类]
+    unacceptable_majors: [工学试验班]
+    preferred_regions: [河北, 山东]
+    negative_regions: [北京, 天津]
+    notes: 河北中低分文向负向地域样本

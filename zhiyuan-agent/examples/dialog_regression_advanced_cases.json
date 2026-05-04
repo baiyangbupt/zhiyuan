@@ -1,0 +1,130 @@
+[
+  {
+    "name": "advanced-undo-chain-600",
+    "sessionId": "60001101",
+    "flow": ["explore", "intent", "plan", "adjust", "adjust", "review"],
+    "coverage": ["pin_then_unpin", "intent_revert", "multi_step_undo", "plan_state_audit"],
+    "assertPlanStyle": true,
+    "prompts": [
+      "我600分湖南物化生想看看",
+      "先把中南大学锁定到方案里",
+      "算了中南大学不要锁定了换成湖南大学",
+      "其实湖南大学也别锁了我先看看再说",
+      "刚才说的那些锁定都撤掉重新来",
+      "现在方案里到底锁了哪些学校",
+      "那把所有中外合作的也都排除掉"
+    ]
+  },
+  {
+    "name": "advanced-contradiction-585",
+    "sessionId": "58501102",
+    "flow": ["explore", "intent", "intent", "intent", "plan", "review"],
+    "coverage": ["self_contradiction", "preference_flip", "agent_clarification"],
+    "assertPlanStyle": true,
+    "prompts": [
+      "我585四川物化生想学医",
+      "把临床医学加到意向里",
+      "等等我又不想学医了把刚才的去掉",
+      "其实还是想学医只是怕辛苦你帮我分析下",
+      "那再加上临床医学和口腔医学",
+      "现在方案里医学相关的够不够",
+      "保底里有没有非医学的兜底选项"
+    ]
+  },
+  {
+    "name": "advanced-dual-mode-575",
+    "sessionId": "57501103",
+    "flow": ["explore", "intent", "plan", "review", "adjust"],
+    "coverage": ["volunteer_mode_query", "major_vs_majorGroup", "mode_comparison"],
+    "assertPlanStyle": true,
+    "prompts": [
+      "我浙江575物化生想搞计算机",
+      "浙江是按专业组报还是按专业报来着",
+      "那把计算机类作为唯一方向",
+      "现在方案里专业组的设置合理吗",
+      "保底专业组里有没有调剂到冷门专业的风险",
+      "那把可能调剂到农林冷门的专业组都去掉",
+      "再确认下最终方案的冲稳保比例"
+    ]
+  },
+  {
+    "name": "advanced-multi-confirm-565",
+    "sessionId": "56501104",
+    "flow": ["intent", "intent", "intent", "intent", "intent", "plan"],
+    "coverage": ["consecutive_confirms", "pending_chain_stability", "preview_apply_loop"],
+    "assertPlanStyle": true,
+    "prompts": [
+      "565广东物化地",
+      "加上计算机类",
+      "确认",
+      "再加上电子信息类",
+      "确认",
+      "再加广州深圳两个城市确认",
+      "现在意向都生效了吗帮我列一下"
+    ]
+  },
+  {
+    "name": "advanced-border-line-545",
+    "sessionId": "54501105",
+    "flow": ["explore", "plan", "review", "adjust", "review"],
+    "coverage": ["first_tier_edge", "narrow_safety_margin", "tight_safety"],
+    "assertPlanStyle": true,
+    "prompts": [
+      "我河南545刚过一本三分能稳上一本不",
+      "那帮我出一版以稳为主的方案",
+      "保底有几个二本档的兜底",
+      "二本兜底再加两个最好是公办",
+      "保底学校学费别太贵",
+      "现在的保底真的安全吗会不会还是滑档",
+      "那再补一个绝对稳的最低档"
+    ]
+  },
+  {
+    "name": "advanced-cooperation-625",
+    "sessionId": "62501106",
+    "flow": ["explore", "intent", "plan", "review", "adjust"],
+    "coverage": ["sino_foreign", "high_tuition", "value_concern"],
+    "assertPlanStyle": true,
+    "prompts": [
+      "我625江苏物化生家里条件一般",
+      "中外合作那种贵的别给我推",
+      "把学费六万以上的全排除掉",
+      "我想去211的计算机但不要花太多钱",
+      "现在方案里还有没有高收费的项目",
+      "保底那几个有没有特别贵的",
+      "确认下没问题就这样吧"
+    ]
+  },
+  {
+    "name": "advanced-girl-engineering-605",
+    "sessionId": "60501107",
+    "flow": ["explore", "intent", "plan", "review", "adjust"],
+    "coverage": ["female_engineering", "non_traditional_major", "gender_consideration"],
+    "assertPlanStyle": true,
+    "prompts": [
+      "我女生605湖北物化生喜欢机械",
+      "家里说女生学机械不好就业是不是真的",
+      "那把机械类和车辆工程都加到意向",
+      "再加自动化和机器人工程",
+      "现在方案里这几个方向能不能都覆盖到",
+      "有没有特别适合女生的工科细分方向",
+      "保底里这些专业够不够"
+    ]
+  },
+  {
+    "name": "advanced-replan-loop-555",
+    "sessionId": "55501108",
+    "flow": ["explore", "plan", "plan", "plan", "review"],
+    "coverage": ["repeated_replan", "iterative_refinement", "draft_overwrite"],
+    "assertPlanStyle": true,
+    "prompts": [
+      "555陕西物化生先随便给我出一版",
+      "这版冲的太多了重新来一版稳一点的",
+      "稳过头了再来一版冲稳保平衡的",
+      "还是不太满意把保底再降一档",
+      "好那就这版了帮我过下风险",
+      "里面有没有潜在的退档风险",
+      "确认这就是最终版了"
+    ]
+  }
+]

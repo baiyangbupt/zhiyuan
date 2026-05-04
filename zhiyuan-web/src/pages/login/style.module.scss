@@ -1,0 +1,359 @@
+// 抖动动画
+@keyframes shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  10%,
+  30%,
+  50%,
+  70%,
+  90% {
+    transform: translateX(-5px);
+  }
+  20%,
+  40%,
+  60%,
+  80% {
+    transform: translateX(5px);
+  }
+}
+.loginWrapper {
+  width: 100vw;
+  height: 100vh;
+  // overflow: hidden;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background: #ffffff;
+}
+.loginContainer {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  width: 100%;
+  height: 100%;
+  max-width: 1920px;
+  max-height: 1080px;
+  .loginItem {
+    // flex: 1 1 50%;
+    height: 100%;
+  }
+  .loginLeft {
+    position: relative;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #f7f9fc;
+
+    .illustration {
+      width: 100%;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+
+      .illustrationImage {
+        width: 100%;
+        height: 100%;
+      }
+
+      .vectorImage {
+        position: absolute;
+        top: 40%;
+        right: -25px;
+        width: 160px;
+      }
+    }
+  }
+  .loginRight {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: auto;
+
+    .loginFormContainer {
+      width: 100%;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+
+    .loginFormWrapper {
+      width: 70%;
+      height: 70%;
+      min-width: 440px;
+      background: white;
+
+      :global {
+        .ant-tabs {
+          width: 100%;
+        }
+
+        .ant-tabs-top > .ant-tabs-nav::before,
+        .ant-tabs-bottom > .ant-tabs-nav::before,
+        .ant-tabs-top > div > .ant-tabs-nav::before,
+        .ant-tabs-bottom > div > .ant-tabs-nav::before {
+          border-bottom: none;
+        }
+
+        .ant-tabs .ant-tabs-tab-btn {
+          font-size: 20px;
+          color: #9698a1;
+        }
+
+        .ant-tabs .ant-tabs-tab.ant-tabs-tab-active .ant-tabs-tab-btn {
+          color: #23252d;
+          text-shadow: 0 0 0.25px #23252d;
+        }
+
+        .ant-tabs .ant-tabs-ink-bar {
+          background: #ff3121;
+        }
+      }
+
+      .loginForm {
+        :global(.ant-form-item-label) {
+          padding-bottom: 8px;
+
+          > label {
+            color: #333;
+            font-weight: 600;
+            font-size: 15px;
+          }
+        }
+
+        :global(.inputPrefix) {
+          color: #9698a1;
+          padding-right: 10px;
+          border-right: 1px solid #dcdcdc;
+        }
+
+        :global(.smsCode) {
+          color: #9698a1;
+        }
+
+        :global(.smsCode:hover) {
+          color: #4f5157;
+        }
+
+        :global(.ant-input-affix-wrapper),
+        :global(.ant-input) {
+          height: 52px;
+          border-radius: 12px;
+          border: 1px solid #d7d7db;
+          font-size: 15px;
+          transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+          padding: 0 16px;
+
+          &::placeholder {
+            color: #9698a1;
+            font-size: 14px;
+          }
+
+          &:hover {
+            border-color: #7d7f85;
+            background-color: #ffffff;
+            box-shadow: 0 2px 8px rgba(139, 69, 255, 0.08);
+
+            :global(.inputPrefix) {
+              color: #4f5157;
+            }
+          }
+
+          &:focus,
+          :global(&.ant-input-affix-wrapper-focused) {
+            border-color: #4f5157;
+            background-color: #ffffff;
+            outline: none;
+          }
+
+          :global(.ant-input) {
+            height: 48px;
+            background: transparent;
+            border: none;
+            padding: 0;
+            font-size: 15px;
+
+            &:focus {
+              box-shadow: none;
+            }
+          }
+
+          .anticon {
+            color: #4f5157;
+            font-size: 16px;
+            margin-right: 12px;
+          }
+        }
+      }
+
+      :global(.ant-input-affix-wrapper) {
+        padding-left: 16px;
+        padding-right: 16px;
+
+        :global(.ant-input-prefix) {
+          margin-right: 12px;
+        }
+      }
+      :global(.ant-input-outlined:focus),
+      :global(.ant-input-outlined:focus-within) {
+        border-color: #4f5157;
+        box-shadow: 0;
+        outline: 0;
+        background-color: #ffffff;
+      }
+
+      :global(.ant-form-item) {
+        margin-bottom: 24px;
+
+        &:last-child {
+          margin-bottom: 0;
+        }
+      }
+
+      .tips {
+        color: #9698a1;
+        font-size: 14px;
+        margin-bottom: 16px;
+      }
+
+      .remember {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 16px;
+
+        .forgetPwd {
+          cursor: pointer;
+          color: #9698a1;
+
+          &:hover {
+            color: #4f5157;
+          }
+        }
+      }
+
+      .loginButton {
+        height: 52px;
+        margin: 40px 0 10px;
+        border: none;
+        border-radius: 50px;
+        font-size: 16px;
+        font-weight: 600;
+      }
+      :global {
+        .ant-btn-variant-solid:disabled,
+        .ant-btn-variant-solid.ant-btn-disabled {
+          background-color: #ffbab0;
+          color: #fff;
+        }
+      }
+      .shake {
+        animation: shake 0.5s cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
+        border: 1px solid #ff4d4f;
+        border-radius: 6px;
+        padding: 8px;
+        background-color: #fff2f0;
+
+        // 为协议链接添加特殊样式
+        .redStyle {
+          color: #ff4d4f;
+          font-weight: bold;
+        }
+      }
+      .agree {
+        transition: all 0.3s ease;
+        margin-top: 16px;
+
+        // 未同意时的视觉提示
+        &:not(.shake) {
+          .redStyle {
+            color: #ff443d;
+          }
+        }
+        :global {
+          .ant-checkbox-wrapper {
+            font-size: 14px;
+
+            .redStyle {
+              color: #ff443d;
+              cursor: pointer;
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+// 响应式调整
+@media (max-width: 1400px) {
+  .loginContainer {
+    grid-template-columns: 45% 55%;
+  }
+}
+
+@media (max-width: 1200px) {
+  .loginContainer {
+    grid-template-columns: 40% 60%;
+
+    .loginLeft {
+      .illustration {
+        .illustrationImage {
+          width: 90%;
+        }
+
+        .vectorImage {
+          width: 120px;
+          right: 5%;
+        }
+      }
+    }
+  }
+}
+
+@media (max-width: 992px) {
+  .loginContainer {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+
+    .loginLeft {
+      display: none;
+    }
+
+    .loginRight {
+      .loginFormContainer {
+        padding: 40px 20px;
+      }
+
+      .loginFormWrapper {
+        max-width: 400px;
+        padding: 40px 30px;
+      }
+    }
+  }
+}
+
+@media (max-width: 576px) {
+  .loginRight {
+    .loginFormWrapper {
+      padding: 30px 20px !important;
+      box-shadow: none !important;
+    }
+  }
+}
+
+// 防止Antd Spin全屏时被缩放影响
+// :global {
+//   .ant-spin-nested-loading > div > .ant-spin {
+//     max-height: none;
+//   }
+
+//   .ant-spin-container {
+//     height: 100%;
+//   }
+// }

@@ -1,0 +1,196 @@
+.confirmGkInfoContainer {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
+  .confirmSubSteps {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    .confirmWrapper {
+      width: 90%;
+      & > img {
+        width: 80%;
+      }
+    }
+    .link {
+      display: flex;
+      align-items: center;
+      cursor: pointer;
+      .answerBtn {
+        height: 40px;
+        padding: 0 20px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        border-radius: 8px;
+        color: #4984fa;
+        background-color: #fff;
+      }
+    }
+  }
+  .confirmForm {
+    width: 90%;
+    background: linear-gradient(#fff2f1 2%, #ffffff 10%);
+    padding: 16px 16px 0;
+    border-radius: 16px;
+    .title {
+      padding: 0 0 16px;
+      font-size: 16px;
+      font-weight: 500;
+      color: #2c2e40;
+      border-bottom: 1px solid #ebebef;
+    }
+    :global {
+      .ant-form {
+        padding: 16px 0 0;
+        .ant-form-item-extra {
+          min-height: 0;
+        }
+      }
+      .ant-form-item .ant-form-item-label > label {
+        height: 40px;
+      }
+      .ant-btn {
+        width: 240px;
+        height: 38px;
+        border-radius: 24px;
+        background-color: #ff443d;
+      }
+      .ant-btn-variant-solid:not(:disabled):not(.ant-btn-disabled):hover {
+        background-color: #ff443d;
+      }
+      .ant-select {
+        height: 40px;
+      }
+      .ant-select-outlined.ant-select-disabled:not(.ant-select-customize-input)
+        .ant-select-selector {
+        background: #f6f7fa;
+        color: rgba(0, 0, 0, 0.25);
+        border: none;
+        height: 40px;
+      }
+
+      .ant-radio-group {
+        display: flex;
+        gap: 10px;
+      }
+      .ant-radio-button-wrapper,
+      .ant-checkbox-wrapper {
+        height: 40px;
+        padding: 0;
+        border: 1px solid #f6f7fa;
+        background-color: #f6f7fa;
+        border-radius: 12px;
+        width: 70px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 14px;
+      }
+      .ant-radio-button-wrapper-disabled.ant-radio-button-wrapper-checked,
+      .ant-radio-button-wrapper-checked:not(.ant-radio-button-wrapper-disabled) {
+        border-color: #ffe0e0;
+        background-color: #fff4f4;
+        color: #ff5750;
+      }
+      .ant-radio-button-wrapper:hover {
+        // color: #ff5750;
+      }
+      .ant-radio-button-wrapper:not(:first-child)::before {
+        display: none;
+      }
+      .ant-checkbox-group {
+        gap: 10px;
+      }
+      .ant-checkbox-wrapper-checked {
+        background-color: #fff4f4;
+        color: #ff5750;
+        border-color: #ffe0e0;
+      }
+      .ant-checkbox {
+        display: none;
+      }
+      .scoreSubject {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        .ant-input {
+          width: 70px;
+          height: 40px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+      }
+      .visionMutiStyle {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        .ant-input {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+      }
+      .ant-input {
+        height: 40px;
+        border: 1px solid #f6f7fa;
+        background-color: #f6f7fa;
+      }
+      .ant-input-outlined:hover,
+      .ant-input-outlined:focus,
+      .ant-input-outlined:focus-within {
+        // border-color: #ffe0e0;
+        // background-color: #fff4f4;
+      }
+      .ant-input-affix-wrapper {
+        padding: 0 11px;
+        border: none;
+        border-radius: 8px;
+        background: #f6f7fa;
+      }
+    }
+  }
+  .buttons {
+    .nextBtn {
+      width: 220px;
+      height: 40px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      border-radius: 8px;
+      color: #ff443d;
+      background-color: #fff2f1;
+      cursor: pointer;
+      & > img {
+        width: 24px;
+        height: 24px;
+      }
+    }
+  }
+  .rightAnswer {
+    display: flex;
+    justify-content: flex-end;
+    .answerBtn {
+      padding: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      background-color: #ff443d;
+      border-radius: 16px;
+      color: #fff;
+    }
+  }
+}
+
+@media (max-width: 768px) {
+  .confirmGkInfoContainer {
+    .confirmSubSteps {
+      .confirmWrapper,
+      .confirmForm {
+        width: 100%;
+      }
+    }
+  }
+}

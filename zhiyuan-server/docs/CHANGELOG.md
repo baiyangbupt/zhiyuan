@@ -1,0 +1,135 @@
+# Changelog
+
+## Unreleased
+
+### Added
+
+- 建会话写入聊天历史的欢迎语已替换为更轻的起手说明：不再堆砌专家资历与固定推销式文案，改为说明“对话框 + 工作台”的最小使用方式，并提供不带具体偏好预设的通用起手问法；首屏采集流语音欢迎页仍继续走独立 `flow_config` 文案，不与聊天首条欢迎语混用。
+- `planningState` 的 `draftPlanState.summary` 补齐 `targetUnitCount/targetCount`，与 `candidatePoolState.requiredCount`、`orderedPlanState.summary.targetUnitCount/targetCount` 打通同一目标数量口径，便于 agent / frontend 统一理解“当前数量 vs 目标数量”。
+- backend 新增 `catalog` 第一阶段代码骨架：
+  - `CatalogController`
+  - `CatalogService`
+  - `model/dto/catalog/*`
+  当前已落地 `lookup/school|major|major-category|major-discipline|province|city`、`search/school|major`、`tree/major|region` 这 10 个接口入口。
+- 新增“院校专业主数据与编码治理”文档，统一记录 backend / agent / rank / frontend 当前各自加载的主数据来源、`schoolId / majorId / categoryId / subCategoryId / schoolUnitCode / majorUnitCode` 的主语义边界，以及 `majorId=0` 的历史兼容规则。
+- 新增 `scripts/check_catalog_alignment.py`，用标准库校验 backend、agent、rank 三边静态主数据的一致性；当前已固定：专业层级与省市字典在 backend/agent 间一致，学校字典存在 22 条 agent 侧额外项，rank 样本数据仍存在 `categoryId/subCategoryId=0` 与 `subCategoryId=172` 的兼容残留。
+- 主数据治理文档补充系统工程层面的统一方向说明，明确当前先不改各模块文件加载点，后续应通过接口层、共享生成物或统一发布链路来收敛 `agent/rank/frontend` 的主数据口径。
+- 主数据治理文档继续补充“统一生成链路 / 接口层 / 发布链路 / 校验链路”四段系统设计，明确 backend 作为统一语义主源，而 agent/rank/frontend 暂保持各自本地加载方式不变。
+- 主数据治理文档继续细化到可执行层：补充生成物 schema、`catalogVersion` 元数据、现有可复用接口、缺口接口清单，以及 agent/rank/frontend 三侧的接入优先级。
+- 新增 `catalog-api-contract.md`，单独定义 `catalog lookup/search/tree` 三类内网接口的请求参数、返回结构、`resultType/matchType` 语义和 `catalogVersion` 透传规则。
+- 新增 `catalog-build-contract.md`，单独定义共享生成物的目录结构、文件命名、`meta` 元数据、agent/rank/frontend 最小 schema 以及版本同步与 CI 校验规则。
+- 新增 `catalog-implementation-design.md`，把 backend 侧 `CatalogController / CatalogService / catalog DTO` 的拆分、现有 manager 复用关系、缺口能力和第一阶段实现顺序细化到可开发粒度。
+- 新增 `CatalogServiceTest`，覆盖 lookup/search/tree 三类能力的 11 个核心用例，固定 `resultType` 语义、专业层级映射和地域树返回结构。
+- `catalog` 第二阶段补充 `GET /inner/catalog/tree/filter-tags`，由 backend 统一输出院校标签枚举、招生/限制标签枚举，以及按专业门类聚合的专业大类树；同时新增 `CatalogControllerTest` 与 `CatalogServiceTest` 回归覆盖接口与服务层行为。
+- `catalog` 测试继续补厚：新增空参数、空结果、学历层级过滤、默认本科树、`filter-tags` 全层级树与枚举排序等边界场景，当前 `CatalogServiceTest + CatalogControllerTest` 共覆盖 27 个用例。
+- `candidate-pool/filter-options` 顶层补回 `majorKeywords` 显式返回，口径与 `groups.major.category -> majorKeywords` 保持一致，避免 frontend 继续依赖候选项回退推导 `专业大类`，并补充 service 回归测试固定“顶层 `majorKeywords` 与 `groups.major.category` 同步返回”。
+- `futureDevelopment.careerTypes` 的最小推荐生效链路已接入 backend：当前若推导出“体制内/考公导向”，会为候选计算 `futureDevelopmentScore`，并进入初始方案选取、专业组组内专业优先序和默认排序 comparator；同时补充 service 回归测试，确认这类软意向先作用于推荐层与方案层，而不是直接改候选基础池。
+- 回收 `majorGroup` 模式下 `requiredMajorCount` 的错误“补齐/完整性校验”语义，重新与老版本保持一致：它只表示“每个已选专业组最多保留多少个主选专业”，不再作为初始方案优劣比较条件，也不再触发 `review / planAdjustment / compensation` 的数量风险、建议或补偿动作；对应补充 service 回归测试，覆盖初始方案、审查、调整建议三条链路。
+- 新增“初始方案评估矩阵”文档，统一定义省份、总分、选科、成绩相对位置、性别、专业意向、地域意向、填报策略 8 个维度下的组合抽样规则、样本模板和新旧版本对照判定标准。
+- 新增“初始方案评估样本池 V1”文档，按河南、山东、广东、河北 4 省拆出第一批 64 个样本格子，明确真实样本占位与人工补样缺口，并给出首轮执行优先级。
+- 新增“可执行样本定义 V1”文件，先落地 P0/P1/P2 首批样本的结构化输入定义，覆盖真实回归、高分补样和负向地域/约束补样三类场景，便于后续批量跑老版优选和新版初始方案。
+- 新增“初始方案评估报告模板”文档，统一单样本报告、新旧差异分析、合理性判定和省份/模式/分数段聚合输出结构，便于后续批量评估结果落盘。
+- 新增 `session/create` 性能优化设计文档，记录慢点定位、原始志愿文件供给链路与异步 OSS 上传的设计约束。
+- 新增跨 rank / backend / agent / frontend 的标签统一治理约定文档，明确标签主源、筛选字段口径与切页前置条件。
+- 新增“方案编排引擎”设计文档，统一描述系统初始自动方案、草稿后二次编排、梯度前置修复以及 `majorGroup` 双层编排的目标能力边界。
+- “方案编排引擎”设计文档补充 V2 阶段的两类状态拆分：`initialRecommendationState` 与 `planAdjustmentState`，以及对应的 backend 接口、打脏规则和“先建议后应用”的交互边界。
+- “方案编排引擎”设计文档补充 `planAdjustmentState.analysis` 第一批最小规则集，明确 `insufficient_count / tier_imbalance / probability_gap / constraint_conflict / preference_deviation` 的命中条件、建议动作与实现优先级。
+- “方案编排引擎”设计文档补充 `planAdjustmentState.suggestions` 的统一对象结构，明确 `add / reorder / replace / remove` 四类建议的字段、`applyMode` 第一批约定以及前端/agent 的消费边界。
+- “方案编排引擎”设计文档补充 `tier_imbalance` 与 `probability_gap` 的第一版判定公式，明确统计对象、主轴选择、阈值口径、严重程度与 `major / majorGroup` 的统一适配策略。
+- “方案编排引擎”设计文档回收 `planAdjustmentState.analysis` 的规则口径，明确应先兼容现有 `risk_management / 数量校验` 规则，再叠加生成增强规则；其中数量校验正式拆分为 `count_validation` 与 `unit_major_count_validation`，区间配比与梯度断层分别回收为 `ratio_distribution` 与旧版 `probability_gap` 口径。
+- “方案编排引擎”设计文档补充 `initialRecommendationState` 的组建算法设计，明确当前 `preferred` 仅是粗选信号，后续初始推荐需经过“按 tier 目标粗组装 + count/safety/gap/unit-major 结构修复”两层处理，才能形成满足核心审查规则的系统初始推荐集合。
+- `planningState` 新增 `candidateViewState` 结构与读写接口，用于持久化 `sessionDetailV2` 的候选筛选/排序视图状态。
+- backend 新增 `initialRecommendationState / planAdjustmentState` 状态 DTO、请求 DTO 与 controller/service 接口骨架，并补充 `initialRecommendation / planAdjustment` 两个新 stale flag；当前 `planAdjustment/analyze` 第一版已桥接旧审查规则，接入 `count_validation / unit_major_count_validation / ratio_distribution / probability_gap / safety_guard` 的分析结果，并将可补偿动作映射为结构化建议对象。
+- `initialRecommendationState` 的 `probability_gap` 修复新增“按整体 gap 指标择优替换且不恶化 tier 配额”的第一版策略，并补充“可完全修复 / 只能部分修复”两类 service 单测，确保断层修复不会被后续 tier rebalance 直接打回。
+- `initialRecommendationState` 新增 `probability_inversion` 前置修复：当前采用“同 tier 内局部替换”策略优先消减倒挂，并补充倒挂修复与 tier 配额稳定性的 service 单测。
+- `planAdjustment/analyze` 的 `probability_inversion` 建议映射已从仅 `reorderSuggestions` 扩展为 `reorder + replace` 双通道：默认给出局部顺序调整建议；若同 tier 内存在可替补候选，还会补充“替换倒挂边界项”的第一版结构化建议，并新增对应 service 单测。
+- `planAdjustment/analyze` 的 `probability_gap` 建议映射现已从单纯 `addSuggestions` 扩展为 `add + replace` 双通道：除补充中间梯度候选外，还会给出“替换当前断层边界项”的第一版结构化建议。
+- `planAdjustment/analyze` 的 `ratio_distribution` 建议映射现已补入“冲区占比过高”场景的 `replaceSuggestions`，支持把部分冲区条目替换为保区候选；纯区间缺口场景仍保持 `addSuggestions`。
+- “方案编排引擎”设计文档补充 `reviewState` 与 `planAdjustment/analyze` 的规则覆盖边界，明确当前只将 `count_validation / unit_major_count_validation / ratio_distribution / probability_inversion / probability_gap / safety_guard` 视为可直接编排规则；`high_tuition / admission_limit / special_enrollment / edge_score / cooperative_program` 仍保留在审查提示层。
+- `planning candidate-pool` 新增结构化展示字段，补齐 `planSchoolDataId`、院校基础属性、院校标签、院校历史分数、专业代码/层级/学制/计划数、专业标签、专业历史分数等信息，支撑前端 V2 候选区按旧版颗粒度展示。
+- 初始化 changelog 机制，后续每次提交前记录当次新增与修改内容。
+- 新增 Flyway 数据库迁移框架，支持 schema 增量管理与新环境自动建表。
+- 新增 `db/migration` 迁移目录，补充初始建表迁移和本地历史 schema 对齐迁移。
+- 新增补偿层 DTO、预览接口与应用接口，用于把审查结果转成可执行补齐动作。
+- `planningState.pendingActions` 改为结构化补偿建议列表，支撑前端与 agent 读取下一步建议。
+- 新增 `operationLogs`，记录系统实际应用的补偿动作，便于前端和 agent 做解释与回放。
+- 新增梯度断层补偿动作 `fill_probability_gap`，用于在录取概率断层区间内推荐中间梯度候选。
+- `reviewState` 新增整体 `compensationPreview`，用于在一次审查结果中直接返回补偿建议。
+- `review.checks` 新增 `suggestedCompensations`，用于把单条风险与对应补偿动作直接关联起来。
+- `planning candidate-pool` 新增 `candidate-pool/filter-options` 接口，统一向 frontend / agent 返回可用的地域、院校标签、专业标签筛选枚举。
+- `planning state` 新增 `planGenerationState`、`initial-plan/generate`、`draft/reorder` 第一阶段接口骨架，用于区分“系统初始自动方案”和“草稿后二次编排”两类方案生成入口。
+
+### Changed
+
+- `planningState` 的 summary 口径补充显式 `entry/unit/rule` 语义：`candidatePoolState.summary` 新增 `entryTotal/unitTotal/entryTierCounts/unitTierCounts`，`draft/ordered` summary 新增 `unitTotal/unitTierCounts`，`ordered` 额外补充 `targetUnitCount/sequenceOk`，`reviewSummary` 新增 `totalRuleCount/passedRuleCount/riskRuleCount/warnRuleCount`；同时 `candidate-pool/query` 返回补齐 `totalUnitCount/loadedEntryCount/loadedUnitCount`，供前端直接区分专业条目、填报单元和审查规则三类统计口径。
+- 新增 `P0` 真实样本初始方案评估报告与只读评测测试：`InitialPlanEvaluationP0ReportTest` 改为直接读取现有 `planningState` 后在内存中仿真 `initialRecommendation + orderedPlan`，不再把大体积评测结果回写数据库；首轮 `P0` 报告已覆盖 `session 14/11/15/16/17/7` 六个真实样本，并确认当前 `majorGroup` 主链路基本稳定、`major` 模式在“保区供给不足”场景仍需专项优化。
+- 新增 `P1` 高分样本执行方案文档，明确当前先采用“mock 型高分评测 -> 再补 live synthetic 链路”的双阶段策略；首轮高分样本优先聚焦 `HN-07A / SD-05A / GD-06A / HE-06A` 四个稳态样本，并把候选池供给计数列为必打指标。
+- `PlanningStateServiceTest` 新增 4 个 `P1` 高分 mock 结构回归用例，覆盖 `major / majorGroup` 两种模式下“高分供给充足 + 稳态/激进目标”场景；当前已验证 `majorGroup` 可稳定贴齐目标组数，`major` 模式在高分充足场景下初排可贴近目标，但排序态仍存在极轻微冲区收缩，因此测试断言按“不明显塌冲/塌保”收口。
+- `PlanningStateServiceTest` 继续补入“高推荐系数优先命中”回归断言：`major` 模式按 tier 校验初始方案来自 `finalScore` 头部区间，`majorGroup` 模式按组代表项校验命中的专业组来自各 tier 高分组集合；同时 `InitialPlanEvaluationP0ReportTest` 新增 `v2.score_rank` 输出，用于只读检查真实样本中已选条目的 tier 内推荐系数排名分布。
+- `PlanningStateServiceTest` 新增 `shouldExcludeForbiddenProvinceInHighScoreCandidateView`，补齐 `P1` 高分场景下的负向地域回归，验证候选视图在 `negativeProvinceNames=["北京"]` 时会完整剔除禁入省份，并同步校验筛选后的 `tierCounts` 从 `30/30/30` 稳定收口到 `0/30/30`。
+- `PlanningStateServiceTest` 新增 `shouldPreferHighScoreBusinessAndLawCandidatesWhenSupplyIsSufficient`，补齐 `P1` 高分文商画像回归；当前验证口径为“目标画像候选在各 tier 内保持头部主导”，并明确记录现阶段结构修复仍可能混入少量次级理工候选，因此断言按占比收口而非 100% 纯净。
+- “初始方案评估矩阵”文档补充更细的分数/位次分段口径，扩展为 `L1/L2/M1/M2/H1/H2` 六档，并新增真实样本不足时的人工补样规则，明确优先补高分段、省份缺口和选科缺口。
+- `generateInitialPlan(forceRegenerate=true)` 现会同时强制重建 `candidatePoolState` 与 `initialRecommendationState`，不再出现候选已刷新但仍复用旧初排结果的情况；配合初始推荐修正后的 tier 借位策略，真实会话 `major` 模式下“无保区供给时”的初排结果已从错误的“继续补冲”收口为优先补稳。
+- `recalculateDraftSummary()` 与 `recalculateOrderedSummary()` 在 `majorGroup` 模式下改为按专业组单位统计 `total/tierCounts`，修复组内专业摊平后导致排序方案数量和分层统计被放大的问题。
+- `candidateViewState` 的消费链路收口为“backend 持久化 + frontend 回灌筛选栏 + query 显式查询”，不再要求工作台筛选只保留在前端本地态。
+- `planningState` 路线文档补充 `candidateViewState` 边界说明，明确当前 `sessionDetailV2` 下硬约束确认后先更新筛选视图和推荐状态，不自动重建基础候选池。
+- `planning-state-roadmap.md` 补充对话主流程、方案动作语义与实现收口顺序，明确候选查询继续归 `Explore`，`PlanQuery` 仅承接方案层现状读取；后续改造按“先收入口、再收 Plan 动作、最后统一 stale”推进。
+- “方案编排引擎”设计文档补充前端采集入口下的初始方案策略：会话完成基础信息采集后，首次进入 `sessionDetailV2` 可直接触发 `generateInitialPlan`，结果进入 `draftPlanState + orderedPlanState` 供用户立刻查看和手动微调；不再局限于候选层的隐式优选展示。
+- `generateInitialPlan()` 改为复用 `initialRecommendationState` 的组建与结构修复结果，再映射为 `draftPlanState + orderedPlanState`；前端采集入口下看到的初始化方案，与“专家优选组合”的底层选取口径正式对齐。
+- `createChatSession()` 新增分段耗时日志，覆盖建会话、全量数据查询、清洗、本地写文件、欢迎语与总耗时，便于直接定位创建慢点。
+- 原始志愿文件上传 OSS 从 `createSession` 同步主链路改为异步派发，避免 10MB+ 文件上传长时间阻塞建会话接口返回。
+- 创建会话次数校验与 `limit-settings` 返回值临时按 `max(原配置, 100)` 放宽，避免联调期间因历史超时重试会话占满默认 5 次额度。
+- `candidate-pool/query` 新增结构化负向筛选字段，支持按 `negativeProvinceNames / negativeSchoolKeywords / negativeMajorKeywords / negativeSchoolTags / negativeMajorTags` 直接排除候选，并把院校属性、专业属性拆开建模，保证“不同属性做且、同属性内部做或”的筛选语义稳定可控。
+- `candidate-pool/filter-options` 的院校标签枚举现在会过滤省市区、宏观区域和明显数值型标签，避免“地域”和“院校属性”在筛选面板重复出现。
+- `candidate-pool/filter-options` 首轮补充 `cityNames` 返回，统一把院校所在市纳入标签治理主链路，便于后续与 `region.school_city` 标准标签对齐；当前前端仍可按灰度策略决定是否开放显式筛选入口。
+- `candidate-pool/query` 现已正式支持 `cityNames / negativeCityNames`，并在 `candidate-pool/filter-options` 中新增结构化 `groups` 分组枚举，先把院校省份/城市、院校分类/性质/特色/层次、招生类型、限报要求等语义分组收拢到 backend 单一供给口径。
+- `planning candidate` 现会基于推荐结果里的 `categoryId / subCategoryId` 结合 `MajorExtraDataManager` 派生 `专业门类 / 专业大类`；其中 `categoryId` 对应 `major.discipline`，`subCategoryId` 对应 `major.category`；`专业门类` 归入 `majorTags`，`专业大类` 在 `filter-options.groups` 中正式映射到 `majorKeywords`，与前端默认意向、显式筛选和查询入参保持一致；同时修正 `majorKeywords` 兼容语义，使其不再只匹配专业名称，而是可命中专业大类与专业门类。
+- 草稿锁定与排序固定语义正式拆分：`draft.locked` 仅控制是否允许删除，`ordered.pinned` 才表示绝对位置固定；排序移动命中固定志愿时会自动跳过该位置并与后续可移动项换位。
+- `planningState` 的推荐覆盖层已从“仅候选查询展示”扩展到“排序生成 / 审查 / 补偿”链路；相关接口会在 `recommendationOverlay` 失效时优先刷新 overlay，再以“基础候选池 + 推荐覆盖层”合并结果继续编排，保持“软意向改推荐、不重建 base pool”的语义一致。
+- `generateInitialPlan()` 在 `majorGroup` 模式下补齐“组选质量替换”修复：当首轮入选的专业组无法补满 `requiredMajorCount`、或组内缺少安全垫专业时，系统会优先尝试用同 tier 的更优专业组替换，并在替换后重新执行组层 `probability_inversion / probability_gap / ratio_distribution` 回刷，避免 fresh initial plan 一进入 `planAdjustment/analyze` 就立刻暴露 `unit_major_count_validation / group_inner_safety_guard / probability_inversion / probability_gap`。
+- `PlanningStateServiceTest` 新增回归用例 `shouldRepairInitialPlanMajorGroupIssuesBeforePlanAdjustmentAnalysis`，覆盖“初始方案生成后立即分析”场景，验证上述 4 条规则不会在可修复场景下被立刻打出。
+- `PlanningStateController` 的排序生成、审查执行、补偿预览与补偿应用接口统一透传 `tenantId` 给 `PlanningStateService`，用于在这些后续环节按需刷新 recommendation overlay。
+- `PlanningStateServiceTest` 新增 overlay 驱动默认排序变化的用例，验证软意向导致 overlay 打脏后，重新生成排序会使用新的推荐分和专家优选顺序，而不是继续沿用旧的 base pool 分数。
+- `planning candidate-pool` 新增 `majorTier`，显式保留专业层冲稳保等级；前端候选卡片仍使用学校/专业组层 `tier + schoolEnrollRatio`，专业表格可独立使用专业层 `majorTier + admissionRatio`，修复新工作台中院校层与专业层口径混用的问题。
+- `candidatePoolState` 新增 `requiredTierCounts`，把老版本 `three_target_count_map` 中的冲/稳/保目标数量同步沉淀到 planning 状态，供新工作台在不同 tier 视图下展示对应建议数量。
+- `planning state` 的冲/稳/保建议数量改为优先按 `need_count + strategyType` 复用老版本比例算法实时计算，口径对齐“激进 4:3:3 / 稳妥 3:3:4 / 保守 2:4:4”；同时 `orderedPlanState.summary` 新增 `targetCount`，供工作台展示排序目标数量。
+- `buildRequiredTierCounts()` 现在会优先读取会话内持久化的 `USER_SCORE_KEY.strategyType`；当外部推荐接口未返回 `strategyType` 时，不再直接回退到旧 `three_target_count_map`，修复专业+大学初始化方案在部分省份出现冲稳保目标数明显失衡的问题。
+- `initialRecommendationState` 现已从“直接透传 `preferred=true`”升级为最小组建器：先按 `requiredTierCounts` 做粗组装，再执行 `count_validation / safety_guard / unit_major_count_validation / probability_gap` 的第一批结构修复，并在 summary 中沉淀本省保底、gap 修复与未解决规则等信息。
+- `planningState.profileState` 现在会在前端问卷建会话时同步初始化，并在读取老会话时按 `userScoreDetail + userprofile` 自动回填显式画像与身体约束，补齐优势学科、专业/地域意向和基础限制信息进入新规划状态。
+- `saveUserIntentEmotion()` 在保存对话侧意向到老 `userprofile` 后，会同步刷新 `planningState.profileState` 并打脏 `candidatePool/orderedPlan/review`，避免对话改意向后工作台画像与候选状态脱节。
+- `/inner/chat/{tenantId}/session/add-extra-data` 在写入 `userprofile` 时也会同步刷新 `planningState.profileState` 并打脏规划状态，补齐 agent 直接落老画像时新规划态未跟随更新的问题；其他 extra-data key 仍保持普通存储，不触发联动。
+- `generateOrderedPlan()` 的默认 regroup 逻辑增强为“先按冲稳保分区，再在区间内按录取率、区间位次和推荐系数形成初始梯度”，不再只是保留草稿原顺序。
+- `generateOrderedPlan()` 在保区内部新增“本省保底优先”规则，使默认排序与当前本省保底审查口径保持一致。
+- `generateInitialPlan()` 第一阶段已可从当前候选工作集按冲稳保目标数自动选取草稿，再复用现有梯度排序逻辑生成默认方案；`reorderDraftPlan()` 作为显式入口承接草稿后二次编排，并回写生成模式与保留用户操作的元数据。
+- 草稿与排序方案的基础联动补齐：当用户首次把志愿加入草稿且当前尚无排序结果时，backend 现在会即时补出一份可编辑的 `orderedPlanState`；后续新增草稿项继续默认追加到排序尾部，草稿移除则同步删除排序项，但不会主动重排既有顺序。
+- 草稿变化后如当前已存在排序结果，backend 会保留用户当前排序，仅同步删除已移除项并把新增草稿追加到末尾，不再自动重调既有顺序。
+- `PlanningStateServiceTest` 新增区间内初始排序断言，验证同一区间草稿乱序进入时会生成稳定的默认排序结果。
+- `PlanningStateService.flattenCandidates()` 现在会把 `VolunteerRecommendListResponse` 中的院校与专业展示字段完整映射进 `CandidateItemDTO`，不再只保留轻量平铺字段。
+- `PlanningStateService` 补充 `hotIndex`、`salaryAvg`、`schoolRank`、`tuitionPerYear` 排序支持，前端可直接透出真实排序能力。
+- `planning candidate-pool` 的“录取率排序”统一改为按院校/专业组层 `schoolEnrollRatio` 排序，避免分页查询仍按专业层 `admissionRatio` 排导致新旧工作台候选顺序不一致。
+- 纠正 `VolunteerModel` 及相关 DTO 注释中的模式中文描述，统一为 `major=专业+院校`、`majorGroup=专业组`，避免把运行时枚举语义看反。
+- “方案编排引擎”设计文档补充 `majorGroup` 模式修复约定：`requiredCount` 在专业组模式下按“组数”生效，`requiredMajorCount` 按“每组主选专业数”生效；后续 `generateInitialPlan / review / planAdjustment` 应统一先按组生成，再补组内专业。
+- “方案编排引擎”设计文档补充 `majorGroup` 组内选专业安全垫约束：每个已选专业组的主选专业中，至少应有 1 个专业满足 `admissionRatio > schoolEnrollRatio`；若组内不存在此类专业，后续以 `group_inner_safety_guard` 进入审查/调整分析。
+- “方案编排引擎”设计文档补充 `majorGroup` 模式下的调整式方案生成约定：`planAdjustment` 也必须拆成“组层调整 + 组内调整”两层，避免初始化方案按组生成后，一进入调整又退化成按扁平专业条目直接 add/replace/reorder。
+- `generateInitialPlan()` 在 `majorGroup` 模式下新增最小组层实现：初始推荐改为先按 `planSchoolDataId` 聚合专业组并做组层选取，再为每个已选组补入前 `requiredMajorCount` 个主选专业；同时优先保留至少 1 个 `admissionRatio > schoolEnrollRatio` 的组内安全垫专业。
+- `runReview()` 与 `planAdjustment/analyze` 现已补齐 `majorGroup` 组层语义：`count_validation / ratio_distribution / probability_inversion / probability_gap / safety_guard` 在专业组模式下改为按“组层快照”执行，不再把组内专业条目数误判为志愿数。
+- `planAdjustment/analyze` 新增 `group_inner_safety_guard`，用于在专业组模式下提示“当前组内缺少录取率高于组整体录取率的安全垫专业”；当前先产出分析结论和 `addSuggestion`，不自动应用。
+- `buildCompensationPreview()` 在 `majorGroup` 模式下改为优先按未入选专业组输出补充候选，避免数量补偿和区间补偿继续按扁平专业重复给建议。
+- `previewCompensation()` 现已与 `runReview / planAdjustment` 对齐，在 `majorGroup` 模式下先转成组层快照再生成补偿预览，修复专业组模式下补偿预览仍按扁平专业数计算的问题。
+- `PlanningStateServiceTest` 新增 `shouldAnalyzePlanAdjustmentByUnitInMajorGroupMode`，验证专业组模式下 `planAdjustment` 不会把“2 个专业组 x 每组 2 专业”误判成“4 条志愿超额”，并同时覆盖 `group_inner_safety_guard` 未命中的正常路径。
+- `PlanningStateServiceTest` 继续补充 `majorGroup` 回归测试，新增覆盖 `runReview` 组层数量口径、`group_inner_safety_guard` 命中场景以及 `previewCompensation` 按专业组补候选的 3 个用例。
+- `PlanningStateServiceTest` 补充候选池字段映射断言，验证结构化字段与排序扩展字段生成正确。
+- 新增 backend 侧 rank 请求映射测试，直接校验 `queryWeight` 与区间排序调用 rank 时会透传合并后的 `profileinfo`，并保留 `level1/level2/地域/tag_info` 的兼容字段语义。
+- `sessionDetailV2` 新增 `ordered-plan/export` 导出链路：当前方案导出不再重跑老推荐链路，而是直接读取 `planningState.orderedPlanState`，再通过 `PlanningExcelExportBuilder` 结合 `candidatePoolState.items` 回填院校代码、计划数、学制、选科和历史数据，继续复用老版 `ExcelUtil` 模板输出两种模式的 Excel。
+- `planning candidate item` 补回 `schoolUnitCode` 字段并在 flatten / clone 流程里同步透传，保证新导出链路的“院校代码”列与老版 Excel 口径一致。
+- `check-rights` 新增临时手机号白名单豁免，当前 `15101142787 / 15600931041` 会跳过“权益过期/次数上限”校验，便于联调测试过期账号。
+- `script/db/ddl.sql` 同步为当前可直接建库的完整 schema，避免与 Flyway 迁移定义漂移。
+- `application.yml` 新增 Flyway 配置，默认复用主数据源连接并对已有环境启用 baseline。
+- `PlanningStateService` 新增最小补偿闭环，当前优先覆盖总数量不足、本省保底不足和保区占比失衡三类场景。
+- `PlanningStateServiceTest` 扩展补偿预览与应用测试，验证补偿后草稿与排序状态更新。
+- 补偿候选筛选逻辑增强，自动补偿会尽量避开高收费、中外合作、特殊招生和明显限报候选。
+- `PlanningStateServiceTest` 补充高风险候选过滤与梯度断层补偿测试。
+- `runReview()` 与 `previewCompensation()` 现在会同步产出并回写补偿建议，确保 review 和 compensation 两套结果一致。
+- `PlanningStateServiceTest` 补充 review 与 compensation 联动断言，验证风险项可直接挂出对应补偿建议。
+- 修复 `generateInitialPlan()` 在 `majorGroup` 模式下的重复选组问题：`replaceInitialRecommendationCandidate()` 在做 gap/inversion/tier rebalance 替换时，现会同步把换入候选从 `remaining` 移除并清掉旧重复项，避免同一个 `planSchoolDataId` 被重复补入，最终把北京等专业组省份的 30 个目标组错误压缩成 13 个唯一专业组。
+- `PlanningStateServiceTest` 新增替换回归用例，校验初始推荐替换后 `remaining` 不再残留已入选候选，防止后续修复步骤重复选中同一专业组。

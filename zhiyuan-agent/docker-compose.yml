@@ -1,0 +1,18 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: zhiyuan-agent:latest
+    container_name: zhiyuan-agent
+    ports:
+      - "8009:8009"
+    env_file:
+      - .env  # 从宿主机加载 .env 文件
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8009/docs')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s

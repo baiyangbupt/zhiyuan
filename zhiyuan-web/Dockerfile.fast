@@ -1,0 +1,40 @@
+# 快速打包 Dockerfile - 适用于本地已构建的项目
+# 基于原有 Dockerfile 的配置，但跳过构建步骤
+
+FROM --platform=linux/amd64 crpi-zmigon88wuzuzy3k.cn-hangzhou.personal.cr.aliyuncs.com/gt_test_123/node:22.14.0
+
+# 设置工作目录
+WORKDIR /app
+
+# 设置构建参数 - 保持与原有脚本一致
+ARG APP_ENV=dev
+ARG NODE_ENV=production
+
+# 设置环境变量
+ENV APP_ENV=${APP_ENV}
+ENV NODE_ENV=${NODE_ENV}
+
+# 配置 npm 使用 npmmirror 镜像源 - 保持与原有配置一致
+RUN npm config set registry https://registry.npmmirror.com/
+RUN npm config set cache /root/.npm-cache --global
+
+# 复制 package.json 和 package-lock.json
+COPY package*.json ./
+
+# 只安装生产依赖，使用与原有脚本相同的优化参数
+RUN --mount=type=cache,target=/root/.npm-cache \
+    npm ci --only=production --prefer-offline --no-audit --no-fund
+
+# 复制已经构建好的产物和必要文件
+COPY .next/ ./.next/
+COPY public/ ./public/
+COPY .env* ./
+COPY next.config.mjs ./
+COPY next-env.d.ts ./
+COPY source-map.js ./
+
+# 暴露端口 - 保持与原有配置一致
+EXPOSE 28688
+
+# 启动命令 - 保持与原有配置一致，根据环境变量启动
+CMD npm run server:${APP_ENV} 

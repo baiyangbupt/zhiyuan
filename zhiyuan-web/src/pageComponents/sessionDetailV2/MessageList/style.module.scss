@@ -1,0 +1,523 @@
+.messagePanel {
+  background-color: #f6f7fa;
+  height: 100%;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  position: relative;
+
+  .notReadContainer {
+    position: absolute;
+    bottom: 20px;
+    right: 0;
+    z-index: 9;
+    border-top-left-radius: 15px;
+    border-bottom-left-radius: 15px;
+    color: #1e88e5;
+    box-shadow: -3px 2px 8px 0 #0802020f;
+    font-size: 12px;
+    height: 30px;
+    line-height: 30px;
+    padding: 0 10px;
+    background: #fff;
+    cursor: pointer;
+  }
+
+  .chatHeader {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid #eee;
+    margin-bottom: 0;
+    padding: 15px;
+    background-color: #fff;
+    .currentUser {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      .userName {
+        font-weight: bold;
+      }
+      .status {
+        font-size: 12px;
+        color: green;
+      }
+    }
+  }
+
+  .messageContainer {
+    flex: 1;
+    overflow: auto;
+
+    :global(.ant-spin-nested-loading) {
+      height: 100%;
+    }
+
+    :global(.ant-spin-container) {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .loadMore {
+      font-size: 12px;
+      text-align: center;
+      color: #cecece;
+    }
+
+    /* 隐藏滚动条（仅 Webkit 浏览器） */
+    &::-webkit-scrollbar {
+      display: none;
+    }
+
+    /* Firefox 隐藏滚动条 */
+    scrollbar-width: none;
+    // :global {
+    //   .ant-btn-variant-outlined:not(:disabled):not(.ant-btn-disabled):hover,
+    //   .ant-btn-variant-dashed:not(:disabled):not(.ant-btn-disabled):hover {
+    //     border-color: transparent;
+    //   }
+    // }
+  }
+  .quickReplyBar {
+    display: flex;
+    gap: 10px;
+    padding: 8px 16px 6px;
+    background: #fff;
+    border-top: 1px solid #f0f0f0;
+    flex-wrap: wrap;
+  }
+
+  .quickReplyItem {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 14px;
+    background: #fafafa;
+    border: 1px solid #f0f0f0;
+    border-radius: 20px;
+    font-size: 13px;
+    color: #666;
+    cursor: pointer;
+    transition: all 0.2s;
+
+    &:active {
+      background: #f5f5f5;
+    }
+  }
+
+  .quickReplyIcon {
+    font-size: 14px;
+    color: #ff443d;
+  }
+
+  .quickReplyLabel {
+    white-space: nowrap;
+  }
+
+  .sendMessage {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 12px 40px 16px;
+    background: #fff;
+    border-top: 1px solid #f0f0f0;
+    :global {
+      .ant-input-affix-wrapper {
+        height: 62px;
+        border: 1px solid #ff443d;
+        border-radius: 100px;
+        position: relative;
+        padding: 16px;
+        .ant-input-suffix {
+          position: absolute;
+          right: 16px;
+          top: 50%;
+          transform: translateY(-50%);
+        }
+      }
+
+      .ant-btn-variant-solid:disabled,
+      .ant-btn-variant-solid.ant-btn-disabled {
+        background-color: #ffbab0;
+      }
+      .ant-btn-variant-solid,
+      .ant-btn-variant-solid:not(:disabled):not(.ant-btn-disabled):hover {
+        background-color: #ff443d;
+        border-color: transparent;
+      }
+      .ant-btn.ant-btn-round.ant-btn {
+        height: 30px;
+        border-radius: 20px;
+        border-color: transparent;
+        color: #fff;
+        img {
+          width: 18px;
+          height: 18px;
+        }
+      }
+    }
+  }
+
+  .messageBubble {
+    padding: 10px 40px;
+    border-radius: 18px;
+    font-size: 14px;
+    line-height: 1.4;
+    .contentStyle {
+      display: inline;
+      .contentItem {
+        display: inline;
+      }
+    }
+    .keywordStyle {
+      // color: #005EFF;
+      // font-weight: 600;
+      // text-decoration: underline;
+      cursor: pointer;
+    }
+
+    &.aiMessage {
+      background-color: #f5f5f5;
+      align-self: flex-start;
+      border-bottom-left-radius: 4px;
+      width: 100%;
+      :global {
+        .ant-card-body {
+          padding: 12px;
+        }
+        .markdownBody {
+          color: #2c2e40;
+          line-height: 1.75;
+        }
+        .markdownBody p {
+          margin: 0 0 10px;
+        }
+        .markdownBody p:last-child {
+          margin-bottom: 0;
+        }
+        .markdownBody ul,
+        .markdownBody ol {
+          margin: 6px 0 10px;
+          padding-left: 20px;
+        }
+        .markdownBody li {
+          margin: 4px 0;
+        }
+        .markdownBody strong {
+          display: inline-block;
+          margin: 2px 0 4px;
+          color: #202331;
+          font-weight: 700;
+        }
+      }
+      .feekback {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-top: 8px;
+        :global {
+          .anticon {
+            cursor: pointer;
+          }
+        }
+      }
+    }
+
+    &.userMessage {
+      background-color: #1e88e5;
+      color: #fff;
+      align-self: flex-end;
+      border-bottom-right-radius: 4px;
+    }
+  }
+
+  .backBottom {
+    position: absolute;
+    top: 120px;
+    right: 10px;
+    cursor: pointer;
+  }
+  .generateButton {
+    width: fit-content;
+    background: #ff443d;
+    color: #fff;
+    margin-top: 8px;
+    border-color: #ff443d;
+  }
+  .generateButton:disabled,
+  .generateButton.ant-btn-disabled {
+    background-color: #ffbab0;
+    border-color: #ffbab0;
+  }
+
+  .analysisTextBlock {
+    margin: 8px 0;
+  }
+
+  .analysisTextTitle {
+    margin-bottom: 6px;
+    font-size: 13px;
+    line-height: 1.6;
+    font-weight: 600;
+    color: #2c2e40;
+    white-space: break-spaces;
+  }
+
+  .analysisTextSummary {
+    margin-bottom: 6px;
+    font-size: 13px;
+    line-height: 1.7;
+    color: #4d556a;
+    white-space: break-spaces;
+  }
+
+  .analysisTextBody {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .analysisTextLine {
+    font-size: 13px;
+    line-height: 1.7;
+    color: #4d556a;
+    white-space: break-spaces;
+  }
+
+  .analysisTextSection {
+    margin-top: 10px;
+  }
+
+  .analysisTextSectionTitle {
+    margin-bottom: 4px;
+    font-size: 13px;
+    line-height: 1.6;
+    font-weight: 600;
+    color: #2c2e40;
+    white-space: break-spaces;
+  }
+
+  .analysisTextList {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .analysisTextListItem {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    font-size: 13px;
+    line-height: 1.7;
+    color: #4d556a;
+  }
+
+  .analysisTextBullet {
+    flex: 0 0 auto;
+    color: #8b93a7;
+  }
+
+  .analysisTextListItemContent {
+    flex: 1;
+    white-space: break-spaces;
+  }
+
+  .impactPanel {
+    margin: 12px 0 8px;
+    padding: 14px 16px;
+    border-radius: 14px;
+    background: linear-gradient(180deg, #fffdf7 0%, #fff8ec 100%);
+    border: 1px solid #f4dfb7;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.75);
+  }
+
+  .impactTitle {
+    margin-bottom: 8px;
+    font-size: 11px;
+    font-weight: 600;
+    color: #8b6b2f;
+    letter-spacing: 0.02em;
+  }
+
+  .impactContent {
+    font-size: 12px;
+    line-height: 1.7;
+    color: #5f4b22;
+    white-space: pre-wrap;
+  }
+
+  .analysisPanel {
+    margin: 12px 0 8px;
+    padding: 14px 16px;
+    border-radius: 14px;
+    background: linear-gradient(180deg, #fcfcfe 0%, #f5f6fb 100%);
+    border: 1px solid #e5e8f1;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.78);
+  }
+
+  .analysisEyebrow {
+    font-size: 11px;
+    line-height: 1.4;
+    font-weight: 600;
+    color: #697086;
+    letter-spacing: 0.02em;
+  }
+
+  .analysisSummaryTitle {
+    margin-top: 4px;
+    font-size: 15px;
+    line-height: 1.5;
+    font-weight: 600;
+    color: #2c2e40;
+  }
+
+  .analysisSection {
+    margin-top: 12px;
+  }
+
+  .analysisSectionTitle {
+    margin-bottom: 6px;
+    font-size: 12px;
+    line-height: 1.5;
+    font-weight: 600;
+    color: #51576b;
+  }
+
+  .analysisItemList {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .analysisItem {
+    position: relative;
+    padding: 8px 10px 8px 14px;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.82);
+    border: 1px solid #e7eaf2;
+    font-size: 12px;
+    line-height: 1.7;
+    color: #4b5264;
+    white-space: pre-wrap;
+  }
+
+  .analysisItem::before {
+    content: '';
+    position: absolute;
+    left: 6px;
+    top: 14px;
+    width: 5px;
+    height: 5px;
+    border-radius: 999px;
+    background: #8a94b2;
+  }
+
+  .interestActionRow {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 10px;
+  }
+
+  .interestActionButton {
+    border-radius: 999px;
+    border-color: #d7dceb;
+    background: #fff;
+    color: #4d556a;
+  }
+
+  .interestActionButton:hover,
+  .interestActionButton:focus {
+    border-color: #ff443d;
+    color: #ff443d;
+    background: #fff;
+  }
+
+  .workspaceActionCard {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .workspaceActionTitle {
+    font-size: 14px;
+    font-weight: 600;
+    color: #2c2e40;
+    white-space: break-spaces;
+  }
+
+  .workspaceActionContent {
+    font-size: 13px;
+    line-height: 1.7;
+    color: #525461;
+    white-space: pre-wrap;
+  }
+
+  .thinkingContainer {
+    padding: 10px 40px;
+    position: relative;
+  }
+
+  .thinkingContent {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .thinkingHintList {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .thinkingHintTag {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: #fff0ee;
+    color: #ff443d;
+    font-size: 12px;
+    line-height: 1.2;
+    border: 1px solid #ffd1cb;
+  }
+}
+
+@media (max-width: 768px) {
+  .messagePanel {
+    .quickReplyBar {
+      padding: 8px 12px 4px;
+      gap: 8px;
+    }
+    .quickReplyItem {
+      padding: 6px 12px;
+      font-size: 12px;
+    }
+    .quickReplyIcon {
+      font-size: 13px;
+    }
+    .sendMessage {
+      padding: 10px 16px 12px;
+      gap: 12px;
+
+      :global {
+        .ant-input-affix-wrapper {
+          height: 48px;
+          padding: 12px 50px 12px 16px;
+        }
+        .ant-input-suffix {
+          right: 8px;
+          top: 50%;
+          transform: translateY(-50%);
+        }
+        .ant-btn.ant-btn-round.ant-btn {
+          height: 32px;
+          padding: 0 14px;
+        }
+      }
+    }
+  }
+}

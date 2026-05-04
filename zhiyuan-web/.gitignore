@@ -1,0 +1,22 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+/node_modules
+
+# next.js
+/.next/
+
+# production
+/build
+
+# local env files
+# .env*.local
+
+*.log
+
+/.vscode/
+
+.DS_Store
+
+cache/
+
+.docker/
