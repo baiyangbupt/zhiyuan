@@ -1,0 +1,2312 @@
+{
+    "code": 0,
+    "data": [
+        {
+            "id": "340000",
+            "label": "安徽",
+            "prefix": "A",
+            "isUse": true,
+            "isDirect": false,
+            "children": [
+                {
+                    "id": "340100000000",
+                    "label": "合肥",
+                    "parentId": "340000",
+                    "isUse": true
+                },
+                {
+                    "id": "340200000000",
+                    "label": "芜湖",
+                    "parentId": "340000",
+                    "isUse": true
+                },
+                {
+                    "id": "340300000000",
+                    "label": "蚌埠",
+                    "parentId": "340000",
+                    "isUse": true
+                },
+                {
+                    "id": "340400000000",
+                    "label": "淮南",
+                    "parentId": "340000",
+                    "isUse": true
+                },
+                {
+                    "id": "340500000000",
+                    "label": "马鞍山",
+                    "parentId": "340000",
+                    "isUse": true
+                },
+                {
+                    "id": "340600000000",
+                    "label": "淮北",
+                    "parentId": "340000",
+                    "isUse": true
+                },
+                {
+                    "id": "340700000000",
+                    "label": "铜陵",
+                    "parentId": "340000",
+                    "isUse": true
+                },
+                {
+                    "id": "340800000000",
+                    "label": "安庆",
+                    "parentId": "340000",
+                    "isUse": true
+                },
+                {
+                    "id": "341000000000",
+                    "label": "黄山",
+                    "parentId": "340000",
+                    "isUse": true
+                },
+                {
+                    "id": "341100000000",
+                    "label": "滁州",
+                    "parentId": "340000",
+                    "isUse": true
+                },
+                {
+                    "id": "341200000000",
+                    "label": "阜阳",
+                    "parentId": "340000",
+                    "isUse": true
+                },
+                {
+                    "id": "341300000000",
+                    "label": "宿州",
+                    "parentId": "340000",
+                    "isUse": true
+                },
+                {
+                    "id": "341500000000",
+                    "label": "六安",
+                    "parentId": "340000",
+                    "isUse": true
+                },
+                {
+                    "id": "341600000000",
+                    "label": "亳州",
+                    "parentId": "340000",
+                    "isUse": true
+                },
+                {
+                    "id": "341700000000",
+                    "label": "池州",
+                    "parentId": "340000",
+                    "isUse": true
+                },
+                {
+                    "id": "341800000000",
+                    "label": "宣城",
+                    "parentId": "340000",
+                    "isUse": true
+                }
+            ]
+        },
+        {
+            "id": "110000",
+            "label": "北京",
+            "prefix": "B",
+            "isUse": true,
+            "isDirect": true,
+            "children": []
+        },
+        {
+            "id": "500000",
+            "label": "重庆",
+            "prefix": "C",
+            "isUse": true,
+            "isDirect": true,
+            "children": []
+        },
+        {
+            "id": "350000",
+            "label": "福建",
+            "prefix": "F",
+            "isUse": true,
+            "isDirect": false,
+            "children": [
+                {
+                    "id": "350100000000",
+                    "label": "福州",
+                    "parentId": "350000",
+                    "isUse": true
+                },
+                {
+                    "id": "350200000000",
+                    "label": "厦门",
+                    "parentId": "350000",
+                    "isUse": true
+                },
+                {
+                    "id": "350300000000",
+                    "label": "莆田",
+                    "parentId": "350000",
+                    "isUse": true
+                },
+                {
+                    "id": "350400000000",
+                    "label": "三明",
+                    "parentId": "350000",
+                    "isUse": true
+                },
+                {
+                    "id": "350500000000",
+                    "label": "泉州",
+                    "parentId": "350000",
+                    "isUse": true
+                },
+                {
+                    "id": "350600000000",
+                    "label": "漳州",
+                    "parentId": "350000",
+                    "isUse": true
+                },
+                {
+                    "id": "350700000000",
+                    "label": "南平",
+                    "parentId": "350000",
+                    "isUse": true
+                },
+                {
+                    "id": "350800000000",
+                    "label": "龙岩",
+                    "parentId": "350000",
+                    "isUse": true
+                },
+                {
+                    "id": "350900000000",
+                    "label": "宁德",
+                    "parentId": "350000",
+                    "isUse": true
+                }
+            ]
+        },
+        {
+            "id": "620000",
+            "label": "甘肃",
+            "prefix": "G",
+            "isUse": true,
+            "isDirect": false,
+            "children": [
+                {
+                    "id": "620100000000",
+                    "label": "兰州",
+                    "parentId": "620000",
+                    "isUse": true
+                },
+                {
+                    "id": "620200000000",
+                    "label": "嘉峪关",
+                    "parentId": "620000",
+                    "isUse": true
+                },
+                {
+                    "id": "620300000000",
+                    "label": "金昌",
+                    "parentId": "620000",
+                    "isUse": true
+                },
+                {
+                    "id": "620400000000",
+                    "label": "白银",
+                    "parentId": "620000",
+                    "isUse": true
+                },
+                {
+                    "id": "620500000000",
+                    "label": "天水",
+                    "parentId": "620000",
+                    "isUse": true
+                },
+                {
+                    "id": "620600000000",
+                    "label": "武威",
+                    "parentId": "620000",
+                    "isUse": true
+                },
+                {
+                    "id": "620700000000",
+                    "label": "张掖",
+                    "parentId": "620000",
+                    "isUse": true
+                },
+                {
+                    "id": "620800000000",
+                    "label": "平凉",
+                    "parentId": "620000",
+                    "isUse": true
+                },
+                {
+                    "id": "620900000000",
+                    "label": "酒泉",
+                    "parentId": "620000",
+                    "isUse": true
+                },
+                {
+                    "id": "621000000000",
+                    "label": "庆阳",
+                    "parentId": "620000",
+                    "isUse": true
+                },
+                {
+                    "id": "621100000000",
+                    "label": "定西",
+                    "parentId": "620000",
+                    "isUse": true
+                },
+                {
+                    "id": "621200000000",
+                    "label": "陇南",
+                    "parentId": "620000",
+                    "isUse": true
+                },
+                {
+                    "id": "622900000000",
+                    "label": "临夏",
+                    "parentId": "620000",
+                    "isUse": true
+                },
+                {
+                    "id": "623000000000",
+                    "label": "甘南",
+                    "parentId": "620000",
+                    "isUse": true
+                }
+            ]
+        },
+        {
+            "id": "440000",
+            "label": "广东",
+            "prefix": "G",
+            "isUse": true,
+            "isDirect": false,
+            "children": [
+                {
+                    "id": "440100000000",
+                    "label": "广州",
+                    "parentId": "440000",
+                    "isUse": true
+                },
+                {
+                    "id": "440200000000",
+                    "label": "韶关",
+                    "parentId": "440000",
+                    "isUse": true
+                },
+                {
+                    "id": "440300000000",
+                    "label": "深圳",
+                    "parentId": "440000",
+                    "isUse": true
+                },
+                {
+                    "id": "440400000000",
+                    "label": "珠海",
+                    "parentId": "440000",
+                    "isUse": true
+                },
+                {
+                    "id": "440500000000",
+                    "label": "汕头",
+                    "parentId": "440000",
+                    "isUse": true
+                },
+                {
+                    "id": "440600000000",
+                    "label": "佛山",
+                    "parentId": "440000",
+                    "isUse": true
+                },
+                {
+                    "id": "440700000000",
+                    "label": "江门",
+                    "parentId": "440000",
+                    "isUse": true
+                },
+                {
+                    "id": "440800000000",
+                    "label": "湛江",
+                    "parentId": "440000",
+                    "isUse": true
+                },
+                {
+                    "id": "440900000000",
+                    "label": "茂名",
+                    "parentId": "440000",
+                    "isUse": true
+                },
+                {
+                    "id": "441200000000",
+                    "label": "肇庆",
+                    "parentId": "440000",
+                    "isUse": true
+                },
+                {
+                    "id": "441300000000",
+                    "label": "惠州",
+                    "parentId": "440000",
+                    "isUse": true
+                },
+                {
+                    "id": "441400000000",
+                    "label": "梅州",
+                    "parentId": "440000",
+                    "isUse": true
+                },
+                {
+                    "id": "441500000000",
+                    "label": "汕尾",
+                    "parentId": "440000",
+                    "isUse": true
+                },
+                {
+                    "id": "441600000000",
+                    "label": "河源",
+                    "parentId": "440000",
+                    "isUse": true
+                },
+                {
+                    "id": "441700000000",
+                    "label": "阳江",
+                    "parentId": "440000",
+                    "isUse": true
+                },
+                {
+                    "id": "441800000000",
+                    "label": "清远",
+                    "parentId": "440000",
+                    "isUse": true
+                },
+                {
+                    "id": "441900000000",
+                    "label": "东莞",
+                    "parentId": "440000",
+                    "isUse": true
+                },
+                {
+                    "id": "442000000000",
+                    "label": "中山",
+                    "parentId": "440000",
+                    "isUse": true
+                },
+                {
+                    "id": "445100000000",
+                    "label": "潮州",
+                    "parentId": "440000",
+                    "isUse": true
+                },
+                {
+                    "id": "445200000000",
+                    "label": "揭阳",
+                    "parentId": "440000",
+                    "isUse": true
+                },
+                {
+                    "id": "445300000000",
+                    "label": "云浮",
+                    "parentId": "440000",
+                    "isUse": true
+                }
+            ]
+        },
+        {
+            "id": "450000",
+            "label": "广西",
+            "prefix": "G",
+            "isUse": true,
+            "isDirect": false,
+            "children": [
+                {
+                    "id": "450100000000",
+                    "label": "南宁",
+                    "parentId": "450000",
+                    "isUse": true
+                },
+                {
+                    "id": "450200000000",
+                    "label": "柳州",
+                    "parentId": "450000",
+                    "isUse": true
+                },
+                {
+                    "id": "450300000000",
+                    "label": "桂林",
+                    "parentId": "450000",
+                    "isUse": true
+                },
+                {
+                    "id": "450400000000",
+                    "label": "梧州",
+                    "parentId": "450000",
+                    "isUse": true
+                },
+                {
+                    "id": "450500000000",
+                    "label": "北海",
+                    "parentId": "450000",
+                    "isUse": true
+                },
+                {
+                    "id": "450600000000",
+                    "label": "防城港",
+                    "parentId": "450000",
+                    "isUse": true
+                },
+                {
+                    "id": "450700000000",
+                    "label": "钦州",
+                    "parentId": "450000",
+                    "isUse": true
+                },
+                {
+                    "id": "450800000000",
+                    "label": "贵港",
+                    "parentId": "450000",
+                    "isUse": true
+                },
+                {
+                    "id": "450900000000",
+                    "label": "玉林",
+                    "parentId": "450000",
+                    "isUse": true
+                },
+                {
+                    "id": "451000000000",
+                    "label": "百色",
+                    "parentId": "450000",
+                    "isUse": true
+                },
+                {
+                    "id": "451100000000",
+                    "label": "贺州",
+                    "parentId": "450000",
+                    "isUse": true
+                },
+                {
+                    "id": "451200000000",
+                    "label": "河池",
+                    "parentId": "450000",
+                    "isUse": true
+                },
+                {
+                    "id": "451300000000",
+                    "label": "来宾",
+                    "parentId": "450000",
+                    "isUse": true
+                },
+                {
+                    "id": "451400000000",
+                    "label": "崇左",
+                    "parentId": "450000",
+                    "isUse": true
+                }
+            ]
+        },
+        {
+            "id": "520000",
+            "label": "贵州",
+            "prefix": "G",
+            "isUse": true,
+            "isDirect": false,
+            "children": [
+                {
+                    "id": "520100000000",
+                    "label": "贵阳",
+                    "parentId": "520000",
+                    "isUse": true
+                },
+                {
+                    "id": "520200000000",
+                    "label": "六盘水",
+                    "parentId": "520000",
+                    "isUse": true
+                },
+                {
+                    "id": "520300000000",
+                    "label": "遵义",
+                    "parentId": "520000",
+                    "isUse": true
+                },
+                {
+                    "id": "520400000000",
+                    "label": "安顺",
+                    "parentId": "520000",
+                    "isUse": true
+                },
+                {
+                    "id": "520500000000",
+                    "label": "毕节",
+                    "parentId": "520000",
+                    "isUse": true
+                },
+                {
+                    "id": "520600000000",
+                    "label": "铜仁",
+                    "parentId": "520000",
+                    "isUse": true
+                },
+                {
+                    "id": "522300000000",
+                    "label": "黔西南",
+                    "parentId": "520000",
+                    "isUse": true
+                },
+                {
+                    "id": "522600000000",
+                    "label": "黔东南",
+                    "parentId": "520000",
+                    "isUse": true
+                },
+                {
+                    "id": "522700000000",
+                    "label": "黔南",
+                    "parentId": "520000",
+                    "isUse": true
+                }
+            ]
+        },
+        {
+            "id": "460000",
+            "label": "海南",
+            "prefix": "H",
+            "isUse": true,
+            "isDirect": false,
+            "children": [
+                {
+                    "id": "460100000000",
+                    "label": "海口",
+                    "parentId": "460000",
+                    "isUse": true
+                },
+                {
+                    "id": "460200000000",
+                    "label": "三亚",
+                    "parentId": "460000",
+                    "isUse": true
+                },
+                {
+                    "id": "460300000000",
+                    "label": "三沙",
+                    "parentId": "460000",
+                    "isUse": true
+                },
+                {
+                    "id": "460400000000",
+                    "label": "儋州",
+                    "parentId": "460000",
+                    "isUse": true
+                },
+                {
+                    "id": "469000000000",
+                    "label": "省直辖",
+                    "parentId": "460000",
+                    "isUse": true
+                }
+            ]
+        },
+        {
+            "id": "130000",
+            "label": "河北",
+            "prefix": "H",
+            "isUse": true,
+            "isDirect": false,
+            "children": [
+                {
+                    "id": "130100000000",
+                    "label": "石家庄",
+                    "parentId": "130000",
+                    "isUse": true
+                },
+                {
+                    "id": "130200000000",
+                    "label": "唐山",
+                    "parentId": "130000",
+                    "isUse": true
+                },
+                {
+                    "id": "130300000000",
+                    "label": "秦皇岛",
+                    "parentId": "130000",
+                    "isUse": true
+                },
+                {
+                    "id": "130400000000",
+                    "label": "邯郸",
+                    "parentId": "130000",
+                    "isUse": true
+                },
+                {
+                    "id": "130500000000",
+                    "label": "邢台",
+                    "parentId": "130000",
+                    "isUse": true
+                },
+                {
+                    "id": "130600000000",
+                    "label": "保定",
+                    "parentId": "130000",
+                    "isUse": true
+                },
+                {
+                    "id": "130700000000",
+                    "label": "张家口",
+                    "parentId": "130000",
+                    "isUse": true
+                },
+                {
+                    "id": "130800000000",
+                    "label": "承德",
+                    "parentId": "130000",
+                    "isUse": true
+                },
+                {
+                    "id": "130900000000",
+                    "label": "沧州",
+                    "parentId": "130000",
+                    "isUse": true
+                },
+                {
+                    "id": "131000000000",
+                    "label": "廊坊",
+                    "parentId": "130000",
+                    "isUse": true
+                },
+                {
+                    "id": "131100000000",
+                    "label": "衡水",
+                    "parentId": "130000",
+                    "isUse": true
+                },
+                {
+                    "id": "133100000000",
+                    "label": "雄安新区",
+                    "parentId": "130000",
+                    "isUse": true
+                }
+            ]
+        },
+        {
+            "id": "410000",
+            "label": "河南",
+            "prefix": "H",
+            "isUse": true,
+            "isDirect": false,
+            "children": [
+                {
+                    "id": "410100000000",
+                    "label": "郑州",
+                    "parentId": "410000",
+                    "isUse": true
+                },
+                {
+                    "id": "410200000000",
+                    "label": "开封",
+                    "parentId": "410000",
+                    "isUse": true
+                },
+                {
+                    "id": "410300000000",
+                    "label": "洛阳",
+                    "parentId": "410000",
+                    "isUse": true
+                },
+                {
+                    "id": "410400000000",
+                    "label": "平顶山",
+                    "parentId": "410000",
+                    "isUse": true
+                },
+                {
+                    "id": "410500000000",
+                    "label": "安阳",
+                    "parentId": "410000",
+                    "isUse": true
+                },
+                {
+                    "id": "410600000000",
+                    "label": "鹤壁",
+                    "parentId": "410000",
+                    "isUse": true
+                },
+                {
+                    "id": "410700000000",
+                    "label": "新乡",
+                    "parentId": "410000",
+                    "isUse": true
+                },
+                {
+                    "id": "410800000000",
+                    "label": "焦作",
+                    "parentId": "410000",
+                    "isUse": true
+                },
+                {
+                    "id": "410900000000",
+                    "label": "濮阳",
+                    "parentId": "410000",
+                    "isUse": true
+                },
+                {
+                    "id": "411000000000",
+                    "label": "许昌",
+                    "parentId": "410000",
+                    "isUse": true
+                },
+                {
+                    "id": "411100000000",
+                    "label": "漯河",
+                    "parentId": "410000",
+                    "isUse": true
+                },
+                {
+                    "id": "411200000000",
+                    "label": "三门峡",
+                    "parentId": "410000",
+                    "isUse": true
+                },
+                {
+                    "id": "411300000000",
+                    "label": "南阳",
+                    "parentId": "410000",
+                    "isUse": true
+                },
+                {
+                    "id": "411400000000",
+                    "label": "商丘",
+                    "parentId": "410000",
+                    "isUse": true
+                },
+                {
+                    "id": "411500000000",
+                    "label": "信阳",
+                    "parentId": "410000",
+                    "isUse": true
+                },
+                {
+                    "id": "411600000000",
+                    "label": "周口",
+                    "parentId": "410000",
+                    "isUse": true
+                },
+                {
+                    "id": "411700000000",
+                    "label": "驻马店",
+                    "parentId": "410000",
+                    "isUse": true
+                },
+                {
+                    "id": "419000000000",
+                    "label": "省直辖",
+                    "parentId": "410000",
+                    "isUse": true
+                }
+            ]
+        },
+        {
+            "id": "230000",
+            "label": "黑龙江",
+            "prefix": "H",
+            "isUse": true,
+            "isDirect": false,
+            "children": [
+                {
+                    "id": "230100000000",
+                    "label": "哈尔滨",
+                    "parentId": "230000",
+                    "isUse": true
+                },
+                {
+                    "id": "230200000000",
+                    "label": "齐齐哈尔",
+                    "parentId": "230000",
+                    "isUse": true
+                },
+                {
+                    "id": "230300000000",
+                    "label": "鸡西",
+                    "parentId": "230000",
+                    "isUse": true
+                },
+                {
+                    "id": "230400000000",
+                    "label": "鹤岗",
+                    "parentId": "230000",
+                    "isUse": true
+                },
+                {
+                    "id": "230500000000",
+                    "label": "双鸭山",
+                    "parentId": "230000",
+                    "isUse": true
+                },
+                {
+                    "id": "230600000000",
+                    "label": "大庆",
+                    "parentId": "230000",
+                    "isUse": true
+                },
+                {
+                    "id": "230700000000",
+                    "label": "伊春",
+                    "parentId": "230000",
+                    "isUse": true
+                },
+                {
+                    "id": "230800000000",
+                    "label": "佳木斯",
+                    "parentId": "230000",
+                    "isUse": true
+                },
+                {
+                    "id": "230900000000",
+                    "label": "七台河",
+                    "parentId": "230000",
+                    "isUse": true
+                },
+                {
+                    "id": "231000000000",
+                    "label": "牡丹江",
+                    "parentId": "230000",
+                    "isUse": true
+                },
+                {
+                    "id": "231100000000",
+                    "label": "黑河",
+                    "parentId": "230000",
+                    "isUse": true
+                },
+                {
+                    "id": "231200000000",
+                    "label": "绥化",
+                    "parentId": "230000",
+                    "isUse": true
+                },
+                {
+                    "id": "232700000000",
+                    "label": "大兴安岭",
+                    "parentId": "230000",
+                    "isUse": true
+                }
+            ]
+        },
+        {
+            "id": "420000",
+            "label": "湖北",
+            "prefix": "H",
+            "isUse": true,
+            "isDirect": false,
+            "children": [
+                {
+                    "id": "420100000000",
+                    "label": "武汉",
+                    "parentId": "420000",
+                    "isUse": true
+                },
+                {
+                    "id": "420200000000",
+                    "label": "黄石",
+                    "parentId": "420000",
+                    "isUse": true
+                },
+                {
+                    "id": "420300000000",
+                    "label": "十堰",
+                    "parentId": "420000",
+                    "isUse": true
+                },
+                {
+                    "id": "420500000000",
+                    "label": "宜昌",
+                    "parentId": "420000",
+                    "isUse": true
+                },
+                {
+                    "id": "420600000000",
+                    "label": "襄阳",
+                    "parentId": "420000",
+                    "isUse": true
+                },
+                {
+                    "id": "420700000000",
+                    "label": "鄂州",
+                    "parentId": "420000",
+                    "isUse": true
+                },
+                {
+                    "id": "420800000000",
+                    "label": "荆门",
+                    "parentId": "420000",
+                    "isUse": true
+                },
+                {
+                    "id": "420900000000",
+                    "label": "孝感",
+                    "parentId": "420000",
+                    "isUse": true
+                },
+                {
+                    "id": "421000000000",
+                    "label": "荆州",
+                    "parentId": "420000",
+                    "isUse": true
+                },
+                {
+                    "id": "421100000000",
+                    "label": "黄冈",
+                    "parentId": "420000",
+                    "isUse": true
+                },
+                {
+                    "id": "421200000000",
+                    "label": "咸宁",
+                    "parentId": "420000",
+                    "isUse": true
+                },
+                {
+                    "id": "421300000000",
+                    "label": "随州",
+                    "parentId": "420000",
+                    "isUse": true
+                },
+                {
+                    "id": "422800000000",
+                    "label": "恩施",
+                    "parentId": "420000",
+                    "isUse": true
+                },
+                {
+                    "id": "429000000000",
+                    "label": "省直辖",
+                    "parentId": "420000",
+                    "isUse": true
+                }
+            ]
+        },
+        {
+            "id": "430000",
+            "label": "湖南",
+            "prefix": "H",
+            "isUse": true,
+            "isDirect": false,
+            "children": [
+                {
+                    "id": "430100000000",
+                    "label": "长沙",
+                    "parentId": "430000",
+                    "isUse": true
+                },
+                {
+                    "id": "430200000000",
+                    "label": "株洲",
+                    "parentId": "430000",
+                    "isUse": true
+                },
+                {
+                    "id": "430300000000",
+                    "label": "湘潭",
+                    "parentId": "430000",
+                    "isUse": true
+                },
+                {
+                    "id": "430400000000",
+                    "label": "衡阳",
+                    "parentId": "430000",
+                    "isUse": true
+                },
+                {
+                    "id": "430500000000",
+                    "label": "邵阳",
+                    "parentId": "430000",
+                    "isUse": true
+                },
+                {
+                    "id": "430600000000",
+                    "label": "岳阳",
+                    "parentId": "430000",
+                    "isUse": true
+                },
+                {
+                    "id": "430700000000",
+                    "label": "常德",
+                    "parentId": "430000",
+                    "isUse": true
+                },
+                {
+                    "id": "430800000000",
+                    "label": "张家界",
+                    "parentId": "430000",
+                    "isUse": true
+                },
+                {
+                    "id": "430900000000",
+                    "label": "益阳",
+                    "parentId": "430000",
+                    "isUse": true
+                },
+                {
+                    "id": "431000000000",
+                    "label": "郴州",
+                    "parentId": "430000",
+                    "isUse": true
+                },
+                {
+                    "id": "431100000000",
+                    "label": "永州",
+                    "parentId": "430000",
+                    "isUse": true
+                },
+                {
+                    "id": "431200000000",
+                    "label": "怀化",
+                    "parentId": "430000",
+                    "isUse": true
+                },
+                {
+                    "id": "431300000000",
+                    "label": "娄底",
+                    "parentId": "430000",
+                    "isUse": true
+                },
+                {
+                    "id": "433100000000",
+                    "label": "湘西",
+                    "parentId": "430000",
+                    "isUse": true
+                }
+            ]
+        },
+        {
+            "id": "220000",
+            "label": "吉林",
+            "prefix": "J",
+            "isUse": true,
+            "isDirect": false,
+            "children": [
+                {
+                    "id": "220100000000",
+                    "label": "长春",
+                    "parentId": "220000",
+                    "isUse": true
+                },
+                {
+                    "id": "220200000000",
+                    "label": "吉林",
+                    "parentId": "220000",
+                    "isUse": true
+                },
+                {
+                    "id": "220300000000",
+                    "label": "四平",
+                    "parentId": "220000",
+                    "isUse": true
+                },
+                {
+                    "id": "220400000000",
+                    "label": "辽源",
+                    "parentId": "220000",
+                    "isUse": true
+                },
+                {
+                    "id": "220500000000",
+                    "label": "通化",
+                    "parentId": "220000",
+                    "isUse": true
+                },
+                {
+                    "id": "220600000000",
+                    "label": "白山",
+                    "parentId": "220000",
+                    "isUse": true
+                },
+                {
+                    "id": "220700000000",
+                    "label": "松原",
+                    "parentId": "220000",
+                    "isUse": true
+                },
+                {
+                    "id": "220800000000",
+                    "label": "白城",
+                    "parentId": "220000",
+                    "isUse": true
+                },
+                {
+                    "id": "222400000000",
+                    "label": "延边",
+                    "parentId": "220000",
+                    "isUse": true
+                }
+            ]
+        },
+        {
+            "id": "320000",
+            "label": "江苏",
+            "prefix": "J",
+            "isUse": true,
+            "isDirect": false,
+            "children": [
+                {
+                    "id": "320100000000",
+                    "label": "南京",
+                    "parentId": "320000",
+                    "isUse": true
+                },
+                {
+                    "id": "320200000000",
+                    "label": "无锡",
+                    "parentId": "320000",
+                    "isUse": true
+                },
+                {
+                    "id": "320300000000",
+                    "label": "徐州",
+                    "parentId": "320000",
+                    "isUse": true
+                },
+                {
+                    "id": "320400000000",
+                    "label": "常州",
+                    "parentId": "320000",
+                    "isUse": true
+                },
+                {
+                    "id": "320500000000",
+                    "label": "苏州",
+                    "parentId": "320000",
+                    "isUse": true
+                },
+                {
+                    "id": "320600000000",
+                    "label": "南通",
+                    "parentId": "320000",
+                    "isUse": true
+                },
+                {
+                    "id": "320700000000",
+                    "label": "连云港",
+                    "parentId": "320000",
+                    "isUse": true
+                },
+                {
+                    "id": "320800000000",
+                    "label": "淮安",
+                    "parentId": "320000",
+                    "isUse": true
+                },
+                {
+                    "id": "320900000000",
+                    "label": "盐城",
+                    "parentId": "320000",
+                    "isUse": true
+                },
+                {
+                    "id": "321000000000",
+                    "label": "扬州",
+                    "parentId": "320000",
+                    "isUse": true
+                },
+                {
+                    "id": "321100000000",
+                    "label": "镇江",
+                    "parentId": "320000",
+                    "isUse": true
+                },
+                {
+                    "id": "321200000000",
+                    "label": "泰州",
+                    "parentId": "320000",
+                    "isUse": true
+                },
+                {
+                    "id": "321300000000",
+                    "label": "宿迁",
+                    "parentId": "320000",
+                    "isUse": true
+                }
+            ]
+        },
+        {
+            "id": "360000",
+            "label": "江西",
+            "prefix": "J",
+            "isUse": true,
+            "isDirect": false,
+            "children": [
+                {
+                    "id": "360100000000",
+                    "label": "南昌",
+                    "parentId": "360000",
+                    "isUse": true
+                },
+                {
+                    "id": "360200000000",
+                    "label": "景德镇",
+                    "parentId": "360000",
+                    "isUse": true
+                },
+                {
+                    "id": "360300000000",
+                    "label": "萍乡",
+                    "parentId": "360000",
+                    "isUse": true
+                },
+                {
+                    "id": "360400000000",
+                    "label": "九江",
+                    "parentId": "360000",
+                    "isUse": true
+                },
+                {
+                    "id": "360500000000",
+                    "label": "新余",
+                    "parentId": "360000",
+                    "isUse": true
+                },
+                {
+                    "id": "360600000000",
+                    "label": "鹰潭",
+                    "parentId": "360000",
+                    "isUse": true
+                },
+                {
+                    "id": "360700000000",
+                    "label": "赣州",
+                    "parentId": "360000",
+                    "isUse": true
+                },
+                {
+                    "id": "360800000000",
+                    "label": "吉安",
+                    "parentId": "360000",
+                    "isUse": true
+                },
+                {
+                    "id": "360900000000",
+                    "label": "宜春",
+                    "parentId": "360000",
+                    "isUse": true
+                },
+                {
+                    "id": "361000000000",
+                    "label": "抚州",
+                    "parentId": "360000",
+                    "isUse": true
+                },
+                {
+                    "id": "361100000000",
+                    "label": "上饶",
+                    "parentId": "360000",
+                    "isUse": true
+                }
+            ]
+        },
+        {
+            "id": "210000",
+            "label": "辽宁",
+            "prefix": "L",
+            "isUse": true,
+            "isDirect": false,
+            "children": [
+                {
+                    "id": "210100000000",
+                    "label": "沈阳",
+                    "parentId": "210000",
+                    "isUse": true
+                },
+                {
+                    "id": "210200000000",
+                    "label": "大连",
+                    "parentId": "210000",
+                    "isUse": true
+                },
+                {
+                    "id": "210300000000",
+                    "label": "鞍山",
+                    "parentId": "210000",
+                    "isUse": true
+                },
+                {
+                    "id": "210400000000",
+                    "label": "抚顺",
+                    "parentId": "210000",
+                    "isUse": true
+                },
+                {
+                    "id": "210500000000",
+                    "label": "本溪",
+                    "parentId": "210000",
+                    "isUse": true
+                },
+                {
+                    "id": "210600000000",
+                    "label": "丹东",
+                    "parentId": "210000",
+                    "isUse": true
+                },
+                {
+                    "id": "210700000000",
+                    "label": "锦州",
+                    "parentId": "210000",
+                    "isUse": true
+                },
+                {
+                    "id": "210800000000",
+                    "label": "营口",
+                    "parentId": "210000",
+                    "isUse": true
+                },
+                {
+                    "id": "210900000000",
+                    "label": "阜新",
+                    "parentId": "210000",
+                    "isUse": true
+                },
+                {
+                    "id": "211000000000",
+                    "label": "辽阳",
+                    "parentId": "210000",
+                    "isUse": true
+                },
+                {
+                    "id": "211100000000",
+                    "label": "盘锦",
+                    "parentId": "210000",
+                    "isUse": true
+                },
+                {
+                    "id": "211200000000",
+                    "label": "铁岭",
+                    "parentId": "210000",
+                    "isUse": true
+                },
+                {
+                    "id": "211300000000",
+                    "label": "朝阳",
+                    "parentId": "210000",
+                    "isUse": true
+                },
+                {
+                    "id": "211400000000",
+                    "label": "葫芦岛",
+                    "parentId": "210000",
+                    "isUse": true
+                }
+            ]
+        },
+        {
+            "id": "150000",
+            "label": "内蒙古",
+            "prefix": "N",
+            "isUse": true,
+            "isDirect": false,
+            "children": [
+                {
+                    "id": "150100000000",
+                    "label": "呼和浩特",
+                    "parentId": "150000",
+                    "isUse": true
+                },
+                {
+                    "id": "150200000000",
+                    "label": "包头",
+                    "parentId": "150000",
+                    "isUse": true
+                },
+                {
+                    "id": "150300000000",
+                    "label": "乌海",
+                    "parentId": "150000",
+                    "isUse": true
+                },
+                {
+                    "id": "150400000000",
+                    "label": "赤峰",
+                    "parentId": "150000",
+                    "isUse": true
+                },
+                {
+                    "id": "150500000000",
+                    "label": "通辽",
+                    "parentId": "150000",
+                    "isUse": true
+                },
+                {
+                    "id": "150600000000",
+                    "label": "鄂尔多斯",
+                    "parentId": "150000",
+                    "isUse": true
+                },
+                {
+                    "id": "150700000000",
+                    "label": "呼伦贝尔",
+                    "parentId": "150000",
+                    "isUse": true
+                },
+                {
+                    "id": "150800000000",
+                    "label": "巴彦淖尔",
+                    "parentId": "150000",
+                    "isUse": true
+                },
+                {
+                    "id": "150900000000",
+                    "label": "乌兰察布",
+                    "parentId": "150000",
+                    "isUse": true
+                },
+                {
+                    "id": "152200000000",
+                    "label": "兴安盟",
+                    "parentId": "150000",
+                    "isUse": true
+                },
+                {
+                    "id": "152500000000",
+                    "label": "锡林郭勒盟",
+                    "parentId": "150000",
+                    "isUse": true
+                },
+                {
+                    "id": "152900000000",
+                    "label": "阿拉善盟",
+                    "parentId": "150000",
+                    "isUse": true
+                }
+            ]
+        },
+        {
+            "id": "640000",
+            "label": "宁夏",
+            "prefix": "N",
+            "isUse": true,
+            "isDirect": false,
+            "children": [
+                {
+                    "id": "640100000000",
+                    "label": "银川",
+                    "parentId": "640000",
+                    "isUse": true
+                },
+                {
+                    "id": "640200000000",
+                    "label": "石嘴山",
+                    "parentId": "640000",
+                    "isUse": true
+                },
+                {
+                    "id": "640300000000",
+                    "label": "吴忠",
+                    "parentId": "640000",
+                    "isUse": true
+                },
+                {
+                    "id": "640400000000",
+                    "label": "固原",
+                    "parentId": "640000",
+                    "isUse": true
+                },
+                {
+                    "id": "640500000000",
+                    "label": "中卫",
+                    "parentId": "640000",
+                    "isUse": true
+                }
+            ]
+        },
+        {
+            "id": "630000",
+            "label": "青海",
+            "prefix": "Q",
+            "isUse": true,
+            "isDirect": false,
+            "children": [
+                {
+                    "id": "630100000000",
+                    "label": "西宁",
+                    "parentId": "630000",
+                    "isUse": true
+                },
+                {
+                    "id": "630200000000",
+                    "label": "海东",
+                    "parentId": "630000",
+                    "isUse": true
+                },
+                {
+                    "id": "632200000000",
+                    "label": "海北",
+                    "parentId": "630000",
+                    "isUse": true
+                },
+                {
+                    "id": "632300000000",
+                    "label": "黄南",
+                    "parentId": "630000",
+                    "isUse": true
+                },
+                {
+                    "id": "632500000000",
+                    "label": "海南",
+                    "parentId": "630000",
+                    "isUse": true
+                },
+                {
+                    "id": "632600000000",
+                    "label": "果洛",
+                    "parentId": "630000",
+                    "isUse": true
+                },
+                {
+                    "id": "632700000000",
+                    "label": "玉树",
+                    "parentId": "630000",
+                    "isUse": true
+                },
+                {
+                    "id": "632800000000",
+                    "label": "海西",
+                    "parentId": "630000",
+                    "isUse": true
+                }
+            ]
+        },
+        {
+            "id": "370000",
+            "label": "山东",
+            "prefix": "S",
+            "isUse": true,
+            "isDirect": false,
+            "children": [
+                {
+                    "id": "370100000000",
+                    "label": "济南",
+                    "parentId": "370000",
+                    "isUse": true
+                },
+                {
+                    "id": "370200000000",
+                    "label": "青岛",
+                    "parentId": "370000",
+                    "isUse": true
+                },
+                {
+                    "id": "370300000000",
+                    "label": "淄博",
+                    "parentId": "370000",
+                    "isUse": true
+                },
+                {
+                    "id": "370400000000",
+                    "label": "枣庄",
+                    "parentId": "370000",
+                    "isUse": true
+                },
+                {
+                    "id": "370500000000",
+                    "label": "东营",
+                    "parentId": "370000",
+                    "isUse": true
+                },
+                {
+                    "id": "370600000000",
+                    "label": "烟台",
+                    "parentId": "370000",
+                    "isUse": true
+                },
+                {
+                    "id": "370700000000",
+                    "label": "潍坊",
+                    "parentId": "370000",
+                    "isUse": true
+                },
+                {
+                    "id": "370800000000",
+                    "label": "济宁",
+                    "parentId": "370000",
+                    "isUse": true
+                },
+                {
+                    "id": "370900000000",
+                    "label": "泰安",
+                    "parentId": "370000",
+                    "isUse": true
+                },
+                {
+                    "id": "371000000000",
+                    "label": "威海",
+                    "parentId": "370000",
+                    "isUse": true
+                },
+                {
+                    "id": "371100000000",
+                    "label": "日照",
+                    "parentId": "370000",
+                    "isUse": true
+                },
+                {
+                    "id": "371300000000",
+                    "label": "临沂",
+                    "parentId": "370000",
+                    "isUse": true
+                },
+                {
+                    "id": "371400000000",
+                    "label": "德州",
+                    "parentId": "370000",
+                    "isUse": true
+                },
+                {
+                    "id": "371500000000",
+                    "label": "聊城",
+                    "parentId": "370000",
+                    "isUse": true
+                },
+                {
+                    "id": "371600000000",
+                    "label": "滨州",
+                    "parentId": "370000",
+                    "isUse": true
+                },
+                {
+                    "id": "371700000000",
+                    "label": "菏泽",
+                    "parentId": "370000",
+                    "isUse": true
+                }
+            ]
+        },
+        {
+            "id": "140000",
+            "label": "山西",
+            "prefix": "S",
+            "isUse": true,
+            "isDirect": false,
+            "children": [
+                {
+                    "id": "140100000000",
+                    "label": "太原",
+                    "parentId": "140000",
+                    "isUse": true
+                },
+                {
+                    "id": "140200000000",
+                    "label": "大同",
+                    "parentId": "140000",
+                    "isUse": true
+                },
+                {
+                    "id": "140300000000",
+                    "label": "阳泉",
+                    "parentId": "140000",
+                    "isUse": true
+                },
+                {
+                    "id": "140400000000",
+                    "label": "长治",
+                    "parentId": "140000",
+                    "isUse": true
+                },
+                {
+                    "id": "140500000000",
+                    "label": "晋城",
+                    "parentId": "140000",
+                    "isUse": true
+                },
+                {
+                    "id": "140600000000",
+                    "label": "朔州",
+                    "parentId": "140000",
+                    "isUse": true
+                },
+                {
+                    "id": "140700000000",
+                    "label": "晋中",
+                    "parentId": "140000",
+                    "isUse": true
+                },
+                {
+                    "id": "140800000000",
+                    "label": "运城",
+                    "parentId": "140000",
+                    "isUse": true
+                },
+                {
+                    "id": "140900000000",
+                    "label": "忻州",
+                    "parentId": "140000",
+                    "isUse": true
+                },
+                {
+                    "id": "141000000000",
+                    "label": "临汾",
+                    "parentId": "140000",
+                    "isUse": true
+                },
+                {
+                    "id": "141100000000",
+                    "label": "吕梁",
+                    "parentId": "140000",
+                    "isUse": true
+                }
+            ]
+        },
+        {
+            "id": "610000",
+            "label": "陕西",
+            "prefix": "S",
+            "isUse": true,
+            "isDirect": false,
+            "children": [
+                {
+                    "id": "610100000000",
+                    "label": "西安",
+                    "parentId": "610000",
+                    "isUse": true
+                },
+                {
+                    "id": "610200000000",
+                    "label": "铜川",
+                    "parentId": "610000",
+                    "isUse": true
+                },
+                {
+                    "id": "610300000000",
+                    "label": "宝鸡",
+                    "parentId": "610000",
+                    "isUse": true
+                },
+                {
+                    "id": "610400000000",
+                    "label": "咸阳",
+                    "parentId": "610000",
+                    "isUse": true
+                },
+                {
+                    "id": "610500000000",
+                    "label": "渭南",
+                    "parentId": "610000",
+                    "isUse": true
+                },
+                {
+                    "id": "610600000000",
+                    "label": "延安",
+                    "parentId": "610000",
+                    "isUse": true
+                },
+                {
+                    "id": "610700000000",
+                    "label": "汉中",
+                    "parentId": "610000",
+                    "isUse": true
+                },
+                {
+                    "id": "610800000000",
+                    "label": "榆林",
+                    "parentId": "610000",
+                    "isUse": true
+                },
+                {
+                    "id": "610900000000",
+                    "label": "安康",
+                    "parentId": "610000",
+                    "isUse": true
+                },
+                {
+                    "id": "611000000000",
+                    "label": "商洛",
+                    "parentId": "610000",
+                    "isUse": true
+                }
+            ]
+        },
+        {
+            "id": "310000",
+            "label": "上海",
+            "prefix": "S",
+            "isUse": true,
+            "isDirect": true,
+            "children": []
+        },
+        {
+            "id": "510000",
+            "label": "四川",
+            "prefix": "S",
+            "isUse": true,
+            "isDirect": false,
+            "children": [
+                {
+                    "id": "510100000000",
+                    "label": "成都",
+                    "parentId": "510000",
+                    "isUse": true
+                },
+                {
+                    "id": "510300000000",
+                    "label": "自贡",
+                    "parentId": "510000",
+                    "isUse": true
+                },
+                {
+                    "id": "510400000000",
+                    "label": "攀枝花",
+                    "parentId": "510000",
+                    "isUse": true
+                },
+                {
+                    "id": "510500000000",
+                    "label": "泸州",
+                    "parentId": "510000",
+                    "isUse": true
+                },
+                {
+                    "id": "510600000000",
+                    "label": "德阳",
+                    "parentId": "510000",
+                    "isUse": true
+                },
+                {
+                    "id": "510700000000",
+                    "label": "绵阳",
+                    "parentId": "510000",
+                    "isUse": true
+                },
+                {
+                    "id": "510800000000",
+                    "label": "广元",
+                    "parentId": "510000",
+                    "isUse": true
+                },
+                {
+                    "id": "510900000000",
+                    "label": "遂宁",
+                    "parentId": "510000",
+                    "isUse": true
+                },
+                {
+                    "id": "511000000000",
+                    "label": "内江",
+                    "parentId": "510000",
+                    "isUse": true
+                },
+                {
+                    "id": "511100000000",
+                    "label": "乐山",
+                    "parentId": "510000",
+                    "isUse": true
+                },
+                {
+                    "id": "511300000000",
+                    "label": "南充",
+                    "parentId": "510000",
+                    "isUse": true
+                },
+                {
+                    "id": "511400000000",
+                    "label": "眉山",
+                    "parentId": "510000",
+                    "isUse": true
+                },
+                {
+                    "id": "511500000000",
+                    "label": "宜宾",
+                    "parentId": "510000",
+                    "isUse": true
+                },
+                {
+                    "id": "511600000000",
+                    "label": "广安",
+                    "parentId": "510000",
+                    "isUse": true
+                },
+                {
+                    "id": "511700000000",
+                    "label": "达州",
+                    "parentId": "510000",
+                    "isUse": true
+                },
+                {
+                    "id": "511800000000",
+                    "label": "雅安",
+                    "parentId": "510000",
+                    "isUse": true
+                },
+                {
+                    "id": "511900000000",
+                    "label": "巴中",
+                    "parentId": "510000",
+                    "isUse": true
+                },
+                {
+                    "id": "512000000000",
+                    "label": "资阳",
+                    "parentId": "510000",
+                    "isUse": true
+                },
+                {
+                    "id": "513200000000",
+                    "label": "阿坝",
+                    "parentId": "510000",
+                    "isUse": true
+                },
+                {
+                    "id": "513300000000",
+                    "label": "甘孜",
+                    "parentId": "510000",
+                    "isUse": true
+                },
+                {
+                    "id": "513400000000",
+                    "label": "凉山",
+                    "parentId": "510000",
+                    "isUse": true
+                }
+            ]
+        },
+        {
+            "id": "120000",
+            "label": "天津",
+            "prefix": "T",
+            "isUse": true,
+            "isDirect": true,
+            "children": []
+        },
+        {
+            "id": "540000",
+            "label": "西藏",
+            "prefix": "X",
+            "isUse": true,
+            "isDirect": false,
+            "children": [
+                {
+                    "id": "540100000000",
+                    "label": "拉萨",
+                    "parentId": "540000",
+                    "isUse": true
+                },
+                {
+                    "id": "540200000000",
+                    "label": "日喀则",
+                    "parentId": "540000",
+                    "isUse": true
+                },
+                {
+                    "id": "540300000000",
+                    "label": "昌都",
+                    "parentId": "540000",
+                    "isUse": true
+                },
+                {
+                    "id": "540400000000",
+                    "label": "林芝市",
+                    "parentId": "540000",
+                    "isUse": true
+                },
+                {
+                    "id": "540500000000",
+                    "label": "山南市",
+                    "parentId": "540000",
+                    "isUse": true
+                },
+                {
+                    "id": "540600000000",
+                    "label": "那曲市",
+                    "parentId": "540000",
+                    "isUse": true
+                },
+                {
+                    "id": "542500000000",
+                    "label": "阿里",
+                    "parentId": "540000",
+                    "isUse": true
+                }
+            ]
+        },
+        {
+            "id": "650000",
+            "label": "新疆",
+            "prefix": "X",
+            "isUse": true,
+            "isDirect": false,
+            "children": [
+                {
+                    "id": "650100000000",
+                    "label": "乌鲁木齐",
+                    "parentId": "650000",
+                    "isUse": true
+                },
+                {
+                    "id": "650200000000",
+                    "label": "克拉玛依",
+                    "parentId": "650000",
+                    "isUse": true
+                },
+                {
+                    "id": "650400000000",
+                    "label": "吐鲁番",
+                    "parentId": "650000",
+                    "isUse": true
+                },
+                {
+                    "id": "650500000000",
+                    "label": "哈密",
+                    "parentId": "650000",
+                    "isUse": true
+                },
+                {
+                    "id": "652300000000",
+                    "label": "昌吉",
+                    "parentId": "650000",
+                    "isUse": true
+                },
+                {
+                    "id": "652700000000",
+                    "label": "博尔塔拉",
+                    "parentId": "650000",
+                    "isUse": true
+                },
+                {
+                    "id": "652800000000",
+                    "label": "巴音郭楞",
+                    "parentId": "650000",
+                    "isUse": true
+                },
+                {
+                    "id": "652900000000",
+                    "label": "阿克苏",
+                    "parentId": "650000",
+                    "isUse": true
+                },
+                {
+                    "id": "653000000000",
+                    "label": "克孜勒苏",
+                    "parentId": "650000",
+                    "isUse": true
+                },
+                {
+                    "id": "653100000000",
+                    "label": "喀什",
+                    "parentId": "650000",
+                    "isUse": true
+                },
+                {
+                    "id": "653200000000",
+                    "label": "和田",
+                    "parentId": "650000",
+                    "isUse": true
+                },
+                {
+                    "id": "654000000000",
+                    "label": "伊犁",
+                    "parentId": "650000",
+                    "isUse": true
+                },
+                {
+                    "id": "654200000000",
+                    "label": "塔城",
+                    "parentId": "650000",
+                    "isUse": true
+                },
+                {
+                    "id": "654300000000",
+                    "label": "阿勒泰",
+                    "parentId": "650000",
+                    "isUse": true
+                },
+                {
+                    "id": "659000000000",
+                    "label": "省直辖",
+                    "parentId": "650000",
+                    "isUse": true
+                }
+            ]
+        },
+        {
+            "id": "530000",
+            "label": "云南",
+            "prefix": "Y",
+            "isUse": true,
+            "isDirect": false,
+            "children": [
+                {
+                    "id": "530100000000",
+                    "label": "昆明",
+                    "parentId": "530000",
+                    "isUse": true
+                },
+                {
+                    "id": "530300000000",
+                    "label": "曲靖",
+                    "parentId": "530000",
+                    "isUse": true
+                },
+                {
+                    "id": "530400000000",
+                    "label": "玉溪",
+                    "parentId": "530000",
+                    "isUse": true
+                },
+                {
+                    "id": "530500000000",
+                    "label": "保山",
+                    "parentId": "530000",
+                    "isUse": true
+                },
+                {
+                    "id": "530600000000",
+                    "label": "昭通",
+                    "parentId": "530000",
+                    "isUse": true
+                },
+                {
+                    "id": "530700000000",
+                    "label": "丽江",
+                    "parentId": "530000",
+                    "isUse": true
+                },
+                {
+                    "id": "530800000000",
+                    "label": "普洱",
+                    "parentId": "530000",
+                    "isUse": true
+                },
+                {
+                    "id": "530900000000",
+                    "label": "临沧",
+                    "parentId": "530000",
+                    "isUse": true
+                },
+                {
+                    "id": "532300000000",
+                    "label": "楚雄",
+                    "parentId": "530000",
+                    "isUse": true
+                },
+                {
+                    "id": "532500000000",
+                    "label": "红河",
+                    "parentId": "530000",
+                    "isUse": true
+                },
+                {
+                    "id": "532600000000",
+                    "label": "文山",
+                    "parentId": "530000",
+                    "isUse": true
+                },
+                {
+                    "id": "532800000000",
+                    "label": "西双版纳",
+                    "parentId": "530000",
+                    "isUse": true
+                },
+                {
+                    "id": "532900000000",
+                    "label": "大理",
+                    "parentId": "530000",
+                    "isUse": true
+                },
+                {
+                    "id": "533100000000",
+                    "label": "德宏",
+                    "parentId": "530000",
+                    "isUse": true
+                },
+                {
+                    "id": "533300000000",
+                    "label": "怒江",
+                    "parentId": "530000",
+                    "isUse": true
+                },
+                {
+                    "id": "533400000000",
+                    "label": "迪庆",
+                    "parentId": "530000",
+                    "isUse": true
+                }
+            ]
+        },
+        {
+            "id": "330000",
+            "label": "浙江",
+            "prefix": "Z",
+            "isUse": true,
+            "isDirect": false,
+            "children": [
+                {
+                    "id": "330100000000",
+                    "label": "杭州",
+                    "parentId": "330000",
+                    "isUse": true
+                },
+                {
+                    "id": "330200000000",
+                    "label": "宁波",
+                    "parentId": "330000",
+                    "isUse": true
+                },
+                {
+                    "id": "330300000000",
+                    "label": "温州",
+                    "parentId": "330000",
+                    "isUse": true
+                },
+                {
+                    "id": "330400000000",
+                    "label": "嘉兴",
+                    "parentId": "330000",
+                    "isUse": true
+                },
+                {
+                    "id": "330500000000",
+                    "label": "湖州",
+                    "parentId": "330000",
+                    "isUse": true
+                },
+                {
+                    "id": "330600000000",
+                    "label": "绍兴",
+                    "parentId": "330000",
+                    "isUse": true
+                },
+                {
+                    "id": "330700000000",
+                    "label": "金华",
+                    "parentId": "330000",
+                    "isUse": true
+                },
+                {
+                    "id": "330800000000",
+                    "label": "衢州",
+                    "parentId": "330000",
+                    "isUse": true
+                },
+                {
+                    "id": "330900000000",
+                    "label": "舟山",
+                    "parentId": "330000",
+                    "isUse": true
+                },
+                {
+                    "id": "331000000000",
+                    "label": "台州",
+                    "parentId": "330000",
+                    "isUse": true
+                },
+                {
+                    "id": "331100000000",
+                    "label": "丽水",
+                    "parentId": "330000",
+                    "isUse": true
+                }
+            ]
+        }
+    ],
+    "msg": "ok",
+    "timestamp": 1740992552665,
+    "errorMsg": "",
+    "isSuccess": true
+}

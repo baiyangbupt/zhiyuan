@@ -59,4 +59,5 @@ htmlcov/
 .tox/
 .nox/
 .db
-/data/
+/data/chat_history*.db
+/data/plan_cache/
