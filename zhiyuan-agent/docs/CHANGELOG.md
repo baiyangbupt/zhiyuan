@@ -5,6 +5,7 @@
 ### Fixed (Issue: 方案现状回复单薄与无联动卡片)
 
 - 新增 issue 修复设计文档 `docs/issue_plan_status_reply_and_card_linkage_fix_design.md`，明确“看看现在的方案”回复质量和无增量工作台卡片的修复边界、验收标准、测试计划。
+- `thinking` 进度提示改为用户能理解的表达，例如“正在读取你的方案、偏好和审查结果”“正在判断该先查看、分析还是调整方案”，避免暴露 action/payload/stage 等内部概念。
 - `query_state` 的 `status_overview` 摘要从工具拼接口径调整为用户可扫读结构，覆盖完整度、冲稳保、审查、偏好承接、前排示例和下一步建议，并清理 `@1`、`unknown` 等内部展示格式。
 - `status_overview` 超时/近期结果兜底改为基于 `facts` 生成结构化用户文案，不再直接拼接原始 `summary`。
 - 只读方案现状查询不再追加无增量 `planningWorkspaceAction` 卡片；方案生成、调整、复审等真实更新仍保留工作台 followup。
