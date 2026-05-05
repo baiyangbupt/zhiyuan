@@ -30,6 +30,7 @@ import {
   PlanningCompensationPreview,
   OrderedPlanActionRes,
   PlanningStateRes,
+  PlanningWorkspaceStateRes,
 } from '@/interface/api/volunteer';
 import request from '@/service/index';
 import {
@@ -287,6 +288,12 @@ export const getSessionDetailApi = (tenantId: string, chatSessionId: string) =>
 export const getPlanningStateApi = (tenantId: string, chatSessionId: string) =>
   request<{}, PlanningStateRes>({
     url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/state?chatSessionId=${chatSessionId}`,
+    method: 'get',
+  });
+
+export const getPlanningWorkspaceStateApi = (tenantId: string, chatSessionId: string) =>
+  request<{}, PlanningWorkspaceStateRes>({
+    url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/workspace-state?chatSessionId=${chatSessionId}`,
     method: 'get',
   });
 

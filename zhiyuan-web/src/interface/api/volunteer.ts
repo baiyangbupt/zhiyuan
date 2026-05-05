@@ -458,3 +458,19 @@ export type OrderedPlanActionRes = Pick<
   PlanningStateRes,
   'sessionId' | 'version' | 'phase' | 'staleFlags' | 'orderedPlanState'
 >;
+
+export type PlanningWorkspaceStateRes = Pick<
+  PlanningStateRes,
+  | 'sessionId'
+  | 'version'
+  | 'phase'
+  | 'staleFlags'
+  | 'planGenerationState'
+  | 'candidatePoolState'
+  | 'candidateViewState'
+  | 'draftPlanState'
+  | 'orderedPlanState'
+  | 'reviewState'
+  | 'pendingActions'
+  | 'operationLogs'
+>;

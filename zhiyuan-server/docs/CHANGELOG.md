@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- 新增 `/session/workspace-state` 工作台轻量状态接口，返回摘要、候选池 summary、草稿、方案、审查和操作记录等工作台所需字段，并裁掉 `candidatePoolState.items` 等大体积候选明细，避免刷新场景继续传输完整 `PlanningStateDTO`。
 - 排序方案 `move / pin / unpin` 接口新增轻量动作响应 `OrderedPlanActionRes`，只返回排序态、审查摘要、操作日志等前端合并所需字段，避免方案微调接口继续返回 20MB+ 全量规划状态造成明显等待。
 
 ### Added

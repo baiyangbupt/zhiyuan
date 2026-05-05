@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- `sessionDetailV2` 工作台刷新改为调用轻量 `workspace-state`，不再通过完整 `/session/state` 拉取 20MB+ 规划状态；候选列表继续通过分页 `candidate-pool/query` 获取当前页，降低公网刷新等待和浏览器 JSON 解析成本。
 - `sessionDetailV2` 对话工作台卡片收口为当前实际支持的 `candidate / ordered` 两类视图；历史或异常返回的 `review / draft` 卡片不再渲染，避免出现“审查结果”等无对应工作区入口的误导卡片。
 - `sessionDetailV2` 方案区上移、下移、固定、取消固定操作改为消费后端轻量响应并合并本地排序态，同时补充操作 loading，避免每次调整后重新拉取 20MB+ 全量 `planningState` 导致长时间无提示等待。
 

@@ -157,6 +157,46 @@ public class PlanningStateService {
         return summary;
     }
 
+    public PlanningWorkspaceStateRes getPlanningWorkspaceState(Long chatSessionId) {
+        PlanningStateDTO state = getPlanningState(chatSessionId);
+        return buildPlanningWorkspaceStateRes(state);
+    }
+
+    public PlanningWorkspaceStateRes buildPlanningWorkspaceStateRes(PlanningStateDTO state) {
+        PlanningWorkspaceStateRes res = new PlanningWorkspaceStateRes();
+        res.setSessionId(state.getSessionId());
+        res.setVersion(state.getVersion());
+        res.setPhase(state.getPhase());
+        res.setStaleFlags(state.getStaleFlags());
+        res.setPlanGenerationState(state.getPlanGenerationState());
+        res.setCandidatePoolState(buildWorkspaceCandidatePoolState(state.getCandidatePoolState()));
+        res.setCandidateViewState(state.getCandidateViewState());
+        res.setDraftPlanState(state.getDraftPlanState());
+        res.setOrderedPlanState(state.getOrderedPlanState());
+        res.setReviewState(state.getReviewState());
+        res.setPendingActions(state.getPendingActions());
+        res.setOperationLogs(state.getOperationLogs());
+        return res;
+    }
+
+    private CandidatePoolStateDTO buildWorkspaceCandidatePoolState(CandidatePoolStateDTO source) {
+        CandidatePoolStateDTO target = new CandidatePoolStateDTO();
+        if (source == null) {
+            return target;
+        }
+        target.setGeneratedAt(source.getGeneratedAt());
+        target.setSourceVersion(source.getSourceVersion());
+        target.setRequiredCount(source.getRequiredCount());
+        target.setRequiredTierCounts(source.getRequiredTierCounts());
+        target.setRequiredMajorCount(source.getRequiredMajorCount());
+        target.setUserScore(source.getUserScore());
+        target.setBatchScore(source.getBatchScore());
+        target.setSourceProvinceName(source.getSourceProvinceName());
+        target.setVolunteerModel(source.getVolunteerModel());
+        target.setSummary(source.getSummary());
+        return target;
+    }
+
     public ProfileStateDTO getProfileState(Long chatSessionId) {
         return getPlanningState(chatSessionId).getProfileState();
     }

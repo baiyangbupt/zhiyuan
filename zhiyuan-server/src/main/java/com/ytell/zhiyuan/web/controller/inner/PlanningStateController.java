@@ -32,6 +32,14 @@ public class PlanningStateController {
         return BaseResponse.success(planningStateService.getPlanningState(chatSessionId));
     }
 
+    @GetMapping("/session/workspace-state")
+    @ApiOperation("获取工作台轻量规划状态")
+    public BaseResponse<PlanningWorkspaceStateRes> getWorkspaceState(@PathVariable("tenantId") Long tenantId,
+                                                                     @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId) {
+        log.info("getPlanningWorkspaceState: tenantId={}, chatSessionId={}", tenantId, chatSessionId);
+        return BaseResponse.success(planningStateService.getPlanningWorkspaceState(chatSessionId));
+    }
+
     @GetMapping("/session/summary")
     @ApiOperation("获取规划状态摘要")
     public BaseResponse<PlanningStateSummaryDTO> getSummary(@PathVariable("tenantId") Long tenantId,

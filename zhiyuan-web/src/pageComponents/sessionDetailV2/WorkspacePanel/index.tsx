@@ -21,7 +21,7 @@ import {
   getPlanningCandidateFilterOptionsApi,
   generatePlanningCandidatePoolApi,
   generatePlanningInitialPlanApi,
-  getPlanningStateApi,
+  getPlanningWorkspaceStateApi,
   lockPlanningDraftItemsApi,
   movePlanningOrderedItemApi,
   pinPlanningOrderedItemApi,
@@ -465,6 +465,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const workspaceBodyRef = useRef<HTMLDivElement | null>(null);
   const candidateSummaryRef = useRef<HTMLDivElement | null>(null);
   const reviewSummaryRef = useRef<HTMLDivElement | null>(null);
+  const candidateItemCacheRef = useRef<Record<string, PlanningCandidateItem>>({});
   const initialFiltersAppliedRef = useRef(false);
   const candidateViewStateHydratedRef = useRef(false);
   const lastSavedCandidateViewStateRef = useRef('');
@@ -492,15 +493,19 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const candidateItemMap = useMemo(
     () =>
       new Map(
-        (planningState?.candidatePoolState?.items || [])
+        Object.values(candidateItemCacheRef.current)
           .filter(item => item.volunteerId)
           .map(item => [item.volunteerId as string, item])
       ),
-    [planningState?.candidatePoolState?.items]
+    [candidatePoolResult.items]
+  );
+  const cachedCandidateItems = useMemo(
+    () => Object.values(candidateItemCacheRef.current),
+    [candidatePoolResult.items]
   );
 
   const attributeFilterOptions = useMemo<FilterPanelGroup[]>(() => {
-    const candidateItems = planningState?.candidatePoolState?.items || [];
+    const candidateItems = cachedCandidateItems;
     const fallbackMajorDisciplineValues = uniqueStrings(
       candidateItems.map(item => (item as PlanningCandidateItem & { majorDiscipline?: string }).majorDiscipline)
     );
@@ -736,7 +741,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     }
 
     return mappedGroups.filter(hasFilterPanelOptions);
-  }, [candidateFilterOptions, planningState?.candidatePoolState?.items]);
+  }, [cachedCandidateItems, candidateFilterOptions]);
 
   const selectedAttributeFilterTokens = useMemo(() => {
     const tokens: string[] = [];
@@ -1135,18 +1140,30 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     }));
   };
 
-  const fetchPlanningState = async () => {
+  const mergeWorkspaceState = (data: PlanningStateRes) => {
+    setPlanningState(prev => ({
+      ...(prev || {}),
+      ...data,
+      candidatePoolState: {
+        ...(prev?.candidatePoolState || {}),
+        ...(data.candidatePoolState || {}),
+        items: [],
+      },
+    }));
+  };
+
+  const fetchWorkspaceState = async () => {
     if (planningLoading) {
       return;
     }
     setPlanningLoading(true);
     try {
-      const { data, code } = await getPlanningStateApi(
+      const { data, code } = await getPlanningWorkspaceStateApi(
         routerParams.tenantId,
         routerParams.chatSessionId
       );
       if (code === 0 && data) {
-        setPlanningState(data);
+        mergeWorkspaceState(data);
       } else {
         message.error('获取工作台状态失败');
       }
@@ -1275,6 +1292,12 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
               return candidateKey === key;
             }) === index;
           });
+          mergedItems.forEach(item => {
+            const key = item.volunteerId || `${item.planSchoolDataId || item.schoolId || item.schoolName}-${item.majorId || item.majorName}`;
+            if (key) {
+              candidateItemCacheRef.current[key] = item;
+            }
+          });
           const loadedUnitCount = !isMajorGroupMode
             ? mergedItems.length
             : new Set(
@@ -1327,7 +1350,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         if (data) {
           setPlanningState(data);
         } else {
-          await fetchPlanningState();
+          await fetchWorkspaceState();
         }
         if (volunteerId) {
           setFocusVolunteerIds([volunteerId]);
@@ -1363,7 +1386,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         if (data) {
           setPlanningState(data);
         } else {
-          await fetchPlanningState();
+          await fetchWorkspaceState();
         }
         queryCandidatePool(candidatePoolResult.page || 1);
       } else {
@@ -1399,7 +1422,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         if (data) {
           setPlanningState(data);
         } else {
-          await fetchPlanningState();
+          await fetchWorkspaceState();
         }
         queryCandidatePool(candidatePoolResult.page || 1);
       } else {
@@ -1428,7 +1451,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         if (data) {
           setPlanningState(data);
         } else {
-          await fetchPlanningState();
+          await fetchWorkspaceState();
         }
       } else {
         message.error('更新草稿锁定状态失败');
@@ -1562,7 +1585,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     if (!routerParams.tenantId || !routerParams.chatSessionId) {
       return;
     }
-    fetchPlanningState();
+    fetchWorkspaceState();
     fetchCandidateFilterOptions();
   }, [routerParams.tenantId, routerParams.chatSessionId, fetchFlag]);
 
@@ -1572,6 +1595,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     lastSavedCandidateViewStateRef.current = '';
     initialPlanRequestedRef.current = false;
     candidateQueryInFlightPagesRef.current.clear();
+    candidateItemCacheRef.current = {};
     setPlanningState(null);
     setCandidatePoolResult({
       items: [],
@@ -1634,7 +1658,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     const candidatePoolReady = Boolean(
       planningState?.candidatePoolState?.summary?.unitTotal ||
         planningState?.candidatePoolState?.summary?.total ||
-        planningState?.candidatePoolState?.items?.length
+        candidatePoolResult.items.length
     );
     if (!candidatePoolReady || hasLoadedFilterOptions) {
       return;
@@ -1645,7 +1669,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     routerParams.chatSessionId,
     planningState?.candidatePoolState?.summary?.unitTotal,
     planningState?.candidatePoolState?.summary?.total,
-    planningState?.candidatePoolState?.items?.length,
+    candidatePoolResult.items.length,
     hasLoadedFilterOptions,
   ]);
 
@@ -2275,21 +2299,21 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
 
   const candidatePoolUnitFallbackTotal = useMemo(() => {
     if (!isMajorGroupMode) {
-      return planningState?.candidatePoolState?.items?.length || 0;
+      return cachedCandidateItems.length || candidatePoolResult.items.length || 0;
     }
     return new Set(
-      (planningState?.candidatePoolState?.items || []).map(item =>
+      cachedCandidateItems.map(item =>
         item.planSchoolDataId || item.schoolId || item.schoolName || item.volunteerId || ''
       )
     ).size;
-  }, [isMajorGroupMode, planningState?.candidatePoolState?.items]);
+  }, [cachedCandidateItems, candidatePoolResult.items.length, isMajorGroupMode]);
 
   const candidateUnitTierFallbackCounts = useMemo(() => {
     if (!isMajorGroupMode) {
       return summary?.tierCounts ?? {};
     }
     const tierUnitMap = new Map<string, Set<string>>();
-    (planningState?.candidatePoolState?.items || []).forEach(item => {
+    cachedCandidateItems.forEach(item => {
       const tier = item.tier || '';
       const unitId = item.planSchoolDataId || item.schoolId || item.schoolName || item.volunteerId || '';
       if (!tier || !unitId) {
@@ -2305,7 +2329,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       稳: tierUnitMap.get('稳')?.size || 0,
       保: tierUnitMap.get('保')?.size || 0,
     };
-  }, [isMajorGroupMode, planningState?.candidatePoolState?.items, summary?.tierCounts]);
+  }, [cachedCandidateItems, isMajorGroupMode, summary?.tierCounts]);
 
   const candidateUnitTotal = summary?.unitTotal ?? candidatePoolUnitFallbackTotal ?? 0;
   const candidateUnitTierCounts = summary?.unitTierCounts ?? candidateUnitTierFallbackCounts;
