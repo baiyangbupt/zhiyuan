@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Awaitable, Callable
 
 if TYPE_CHECKING:
     from app.models.conversation_phase import ConversationPhase
@@ -128,3 +128,4 @@ class RequestContext:
     pending_plan_action: dict | None = None  # 上一轮待确认的 Plan 动作摘要与 apply payload (deprecated, 用 conversation_phase.pending)
     pending_intent_change: bool = False  # 当前轮开始前是否已有待确认的 Intent 变更 (deprecated, 用 conversation_phase.pending)
     conversation_phase: ConversationPhase | None = None  # Phase 3 新增：统一对话阶段状态
+    progress_callback: Callable[[str], Awaitable[None]] | None = None

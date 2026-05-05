@@ -33,7 +33,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 _NON_PERSISTENT_USER_MESSAGE_TYPES = {"planEditSelect", "intentSelect"}
-_CHAT_SERVICE_TIMEOUT_SECONDS = 105
+_CHAT_SERVICE_TIMEOUT_SECONDS = 180
 
 
 def _build_timeout_reply() -> str:

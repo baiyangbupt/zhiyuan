@@ -18,6 +18,7 @@ from app.schemas.tool_inputs import (
     SchoolIntentPreviewInput,
 )
 from app.tools.explore_direction_tool import (
+    likely_generic_direction_question as _likely_generic_direction_question,
     preview_generic_direction_analysis_from_request as _preview_generic_direction_analysis_from_request,
     preview_direction_analysis_from_request as _preview_direction_analysis_from_request,
     preview_direction_comparison_from_request as _preview_direction_comparison_from_request,
@@ -119,6 +120,18 @@ async def analyze_current_region_interest(
 async def analyze_current_career_direction(
     ctx: RunContext[RequestContext],
 ) -> str:
+    latest_user_text = ""
+    for message in reversed(ctx.deps.chat_history or []):
+        if message.get("role") == "user" and message.get("content"):
+            latest_user_text = str(message.get("content") or "")
+            break
+    if _likely_generic_direction_question(latest_user_text):
+        logger.info(
+            "analyze_current_career_direction: session_id=%s using_generic_direction_analysis=keyword",
+            _session_id(ctx.deps),
+        )
+        return await _preview_generic_direction_analysis_from_request(ctx.deps)
+
     direction_slots = await _resolve_career_direction_slots(ctx.deps)
     logger.info(
         "analyze_current_career_direction: session_id=%s direction_slots=%s",

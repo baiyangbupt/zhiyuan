@@ -38,7 +38,7 @@ from app.tools.intent_response_tool import (
 )
 from app.util.internal_client import (
     get_intent_change_cache,
-    get_planning_state,
+    get_planning_workspace_state,
     get_user_init_profile,
     get_user_score_detail,
 )
@@ -1256,7 +1256,7 @@ class ChatService:
         # 获取 planningState 轻量摘要
         parsed_planning_summary = None
         try:
-            planning_response = await get_planning_state(session_id)
+            planning_response = await get_planning_workspace_state(session_id)
             if planning_response.get("code") == 0:
                 planning_data = planning_response.get("data", {})
                 parsed_planning_summary = PlanningSummary.from_backend_state(planning_data)
@@ -1294,6 +1294,7 @@ class ChatService:
             pending_plan_action=pending_plan_action,
             pending_intent_change=pending_intent_change,
             conversation_phase=conversation_phase,
+            progress_callback=on_progress,
         )
 
         if pending_plan_action and _is_plan_action_confirmation(content):

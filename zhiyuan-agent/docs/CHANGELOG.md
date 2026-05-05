@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Fixed (Issue: 泛方向问题触发多轮模型调用后超时)
+
+- `analyze_current_career_direction` 对“我适合什么方向 / 适合哪些方向 / 往哪条路走”这类泛方向问题增加关键词直达，跳过额外的方向槽位识别和泛方向路由模型调用。
+- 泛方向分析改为消费 backend `workspace-state` 轻量状态，并只分页拉取候选样本，不再读取完整 20MB+ `planningState`。
+- 泛方向回复保留一次专门的大模型生成，但去掉前置多轮路由模型调用，并为生成阶段增加超时边界；正常情况下仍输出更丰富的自然分析，异常时才回退到确定性模板，避免 session 60 这类新会话在 105 秒 WebSocket 超时后只返回暂停兜底。
+- WebSocket 单轮等待上限从 105 秒放宽到 180 秒；泛方向生成阶段上限放宽到 90 秒，并在读取成绩偏好、对照方案候选、整理方向建议时推送更贴近用户理解的 thinking 文案。
+- `ChatService` 构建每轮上下文时改用 `workspace-state` 轻量状态生成 planning 摘要，避免对话开头为了摘要读取完整规划状态。
+
 ### Fixed (Issue: 对话工作台卡片与当前前端视图不一致)
 
 - `planningWorkspaceAction` 生成端收口为当前前端实际支持的 `candidate / ordered` 两类目标；复审、草稿查询或历史工具返回的 `review / draft` target 会被过滤，不再向对话流追加无对应工作区入口的卡片。

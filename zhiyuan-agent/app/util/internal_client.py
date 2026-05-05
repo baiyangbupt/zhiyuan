@@ -473,6 +473,15 @@ async def get_planning_state(thread_id: Union[str, int]) -> Dict[str, Any]:
     )
 
 
+async def get_planning_workspace_state(thread_id: Union[str, int]) -> Dict[str, Any]:
+    """获取工作台轻量 planningState。"""
+    return await http_client.get(
+        endpoint="/gaotu-assistant-bot/inner/planning/1/session/workspace-state",
+        params={"chatSessionId": thread_id},
+        error_msg="获取 planning workspaceState 失败",
+    )
+
+
 async def update_planning_latent_profile(
     thread_id: Union[str, int],
     future_development: Optional[Dict[str, Any]] = None,

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import asyncio
 from collections import Counter, defaultdict
 from typing import Any
 
@@ -29,7 +30,7 @@ from app.domain.career_slots import (
 from app.llm.client import LLMClient
 from app.schemas.career_intent import CareerIntentResult
 from app.tools.extraction_json import parse_extraction_json
-from app.util.internal_client import get_planning_state
+from app.util.internal_client import get_planning_state, get_planning_workspace_state, query_planning_candidate_pool
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +73,7 @@ _direction_analysis_llm_client: LLMClient | None = None
 _direction_analysis_agent: Agent[None, str] | None = None
 _career_direction_resolver_agent: Agent[None, str] | None = None
 _generic_direction_router_agent: Agent[None, str] | None = None
+_GENERIC_DIRECTION_LLM_TIMEOUT_SECONDS = 90
 
 
 class DirectionAnalysisDraft(BaseModel):
@@ -299,6 +301,24 @@ async def should_use_generic_direction_analysis(request_context: RequestContext)
     return bool(parsed.shouldAnalyze)
 
 
+def likely_generic_direction_question(text: str | None) -> bool:
+    normalized = str(text or "").strip()
+    if not normalized:
+        return False
+    generic_patterns = (
+        "适合什么方向",
+        "适合哪些方向",
+        "适合哪个方向",
+        "适合什么专业方向",
+        "适合哪些专业方向",
+        "往哪条路",
+        "走哪条路",
+        "什么方向适合我",
+        "哪些方向适合我",
+    )
+    return any(pattern in normalized for pattern in generic_patterns)
+
+
 def _contains_any_text(value: str | None, keywords: list[str]) -> bool:
     if not value:
         return False
@@ -426,6 +446,16 @@ def _latest_user_text(request_context: RequestContext) -> str:
         if message.get("role") == "user" and message.get("content"):
             return str(message.get("content"))
     return ""
+
+
+async def _emit_progress(request_context: RequestContext, hint: str) -> None:
+    callback = getattr(request_context, "progress_callback", None)
+    if not callback:
+        return
+    try:
+        await callback(hint)
+    except Exception:
+        logger.debug("generic direction progress callback failed", exc_info=True)
 
 
 def _build_request_context_summary(request_context: RequestContext) -> list[str]:
@@ -788,16 +818,26 @@ async def preview_generic_direction_analysis_from_request(
         session_id,
         _latest_user_text(request_context).strip(),
     )
+    await _emit_progress(request_context, "正在读取你的成绩、选科和已记录的偏好...")
     ordered_items: list[dict[str, Any]] = []
     candidate_items: list[dict[str, Any]] = []
     ordered_ids: set[str] = set()
     planning_state: dict[str, Any] = {}
     try:
-        planning_state_resp = await get_planning_state(session_id)
+        await _emit_progress(request_context, "正在对照你当前的方案和候选机会...")
+        planning_state_resp = await get_planning_workspace_state(session_id)
         planning_state = (planning_state_resp or {}).get("data") or {}
         ordered_items = ((planning_state.get("orderedPlanState") or {}).get("items")) or []
-        candidate_items = ((planning_state.get("candidatePoolState") or {}).get("items")) or []
         ordered_ids = {item.get("volunteerId") for item in ordered_items if item.get("volunteerId")}
+        candidate_resp = await query_planning_candidate_pool(
+            1,
+            session_id,
+            page=1,
+            page_size=80,
+            sort_field="finalScore",
+            sort_order="desc",
+        )
+        candidate_items = ((candidate_resp or {}).get("data") or {}).get("items") or []
     except Exception:
         logger.warning(
             "Preview generic direction analysis failed to inspect planning state: session_id=%s",
@@ -832,10 +872,14 @@ async def preview_generic_direction_analysis_from_request(
         if candidate_count > 0:
             analysis["candidateOpportunity"].append(f"候选里和“{label}”相关、还没进方案的机会大约还有 {candidate_count} 个。")
     try:
-        generated = await _generate_generic_direction_analysis_content(
-            request_context,
-            student_fit_fact,
-            direction_facts,
+        await _emit_progress(request_context, "正在把这些线索整理成适合你的方向建议...")
+        generated = await asyncio.wait_for(
+            _generate_generic_direction_analysis_content(
+                request_context,
+                student_fit_fact,
+                direction_facts[:3],
+            ),
+            timeout=_GENERIC_DIRECTION_LLM_TIMEOUT_SECONDS,
         )
         analysis.update(generated.model_dump())
     except Exception:
@@ -844,7 +888,6 @@ async def preview_generic_direction_analysis_from_request(
             session_id,
             exc_info=True,
         )
-
     return _format_text_sections(
         ("分析结论", ["你这句更像是在问自己现阶段更适合优先看哪类方向，我先按这个思路帮你做个初步判断。"]),
         ("当前判断", _build_impact_preview_from_analysis(analysis)),
