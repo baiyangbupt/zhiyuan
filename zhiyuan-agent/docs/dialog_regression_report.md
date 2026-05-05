@@ -6,6 +6,35 @@
 
 ---
 
+## 0. 追加修复记录：方案现状回复与无联动卡片
+
+> **Added:** 2026-05-05
+> **Issue doc:** `docs/issue_plan_status_reply_and_card_linkage_fix_design.md`
+> **Status:** 已补单元/回归断言和产品结构 WebSocket 验证，待前端手工验证
+
+本次针对“看看现在的方案”快捷回复和部分无联动 `planningWorkspaceAction` 卡片做定向修复：
+
+- `query_state` 的 `status_overview` 摘要改为结构化用户口径，避免“方案情况如下：已填满...；方案前几个志愿...”这类工具拼接文本。
+- `status_overview` fallback 改为基于 `facts` 生成结构化回复，覆盖完整度、冲稳保、审查、偏好承接和前排示例。
+- 只读方案状态查询不再附加无增量工作台卡片，保留生成、调整、复审等真实更新场景的 followup。
+- 测试断言新增/调整：`query_state` workspace targets 为空、回复不含 `@1`、fallback 不直接暴露原始 `summary`。
+- 产品结构验证新增：通过前端兼容 WebSocket `/gaotu-assistant-agent/plus/chat/{tenantId}/bot/{botId}/do` 发送 `{"content":"看看现在的方案","inputType":"text"}`，使用结构化 session/planning state 走真实 `ChatService` 与 `execute_plan_action(query_state)`，验证返回 `text` 且不发送/持久化 `planningWorkspaceAction`。
+
+待补充验证：
+
+- 前端点击快捷回复“看看现在的方案”后的实际聊天区展示。
+- 后续用户提供的两个无联动卡片样例，用于决定 `query_candidates` 等候选查询卡片是否继续收敛。
+
+本地验证命令：
+
+```bash
+.venv/bin/python -m pytest tests/unit/test_ws_compat.py -q
+```
+
+结果：`18 passed`。
+
+---
+
 ## 1. 执行摘要
 
 完成 6-phase 重构 + generate_plan 确认循环修复 + 候选池前置检查后，针对真实 LLM + WebSocket 端到端做了 **11 批共 172 场景的全量回归验证**：

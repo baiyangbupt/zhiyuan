@@ -1337,25 +1337,52 @@ def test_execute_plan_action_runs_query_state():
     }
 
     with patch(
-        "app.tools.plan_execution_tool._get_planning_state_with_latest_profile",
+        "app.handlers.query_handlers._get_planning_state_with_latest_profile",
         new=AsyncMock(
             return_value={
                 "phase": "reviewed",
                 "orderedPlanState": {"summary": {"unitTotal": 45, "targetUnitCount": 45}},
+                "profileState": {
+                    "explicitProfile": {
+                        "positiveMajors": ["财政学类", "经济学类"],
+                        "positiveRegions": ["北京"],
+                    }
+                },
                 "reviewState": {"summary": {"riskCount": 0, "warnCount": 2}},
             }
         ),
     ) as mock_state, patch(
-        "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
-        new=AsyncMock(return_value={"code": 0, "data": {"items": [], "summary": {"unitTotal": 45, "targetUnitCount": 45}}}),
+        "app.handlers.query_handlers._get_planning_ordered_plan_request",
+        new=AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "items": [
+                        {
+                            "position": 1,
+                            "schoolName": "北京财经学院第01组",
+                            "majorName": "财政学",
+                            "majorCategory": "财政学类",
+                            "provinceName": "北京",
+                            "tier": "冲",
+                        }
+                    ],
+                    "summary": {"unitTotal": 45, "targetUnitCount": 45},
+                },
+            }
+        ),
     ) as mock_ordered:
         result = asyncio.run(execute_plan_action(_ctx_with_pending("regenerate_order"), json.dumps(payload, ensure_ascii=False)))
 
     data = json.loads(result)
-    assert "当前方案阶段为 reviewed" in data["summary"]
-    assert "志愿数量 45/45" in data["summary"]
+    assert "方案已经有了" in data["summary"]
+    assert "45/45 个志愿" in data["summary"]
+    assert "审查提醒：风险 0 项，提醒 2 项" in data["summary"]
+    assert "前排示例" in data["summary"]
+    assert "北京财经学院第01组-财政学(冲)第1位" in data["summary"]
+    assert "@1" not in data["summary"]
     assert data["result_kind"] == "status_overview"
-    assert data["workspace_refresh_targets"] == ["ordered", "review"]
+    assert data["workspace_refresh_targets"] == []
     assert data["facts"]["phase"] == "reviewed"
     assert data["facts"]["current_total"] == 45
     assert "risk_warning" in data["reply_focus"]

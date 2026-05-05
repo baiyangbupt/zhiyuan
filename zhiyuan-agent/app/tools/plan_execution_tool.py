@@ -1213,7 +1213,7 @@ async def _execute_plan_action_model(
                     "请先明确当前方案里的具体志愿，或让我先重新定位后再给你确认。"
                 ),
                 reply_focus=["missing_inputs", "needs_volunteer_selection"],
-                next_step_hints=["先定位当前方案里的真实 volunteerId，再生成可确认的替换预览。"],
+                next_step_hints=["先定位当前方案里对应的志愿，再生成可确认的替换预览。"],
             )
         if atomic and effective_ids and review_issue_target is not None:
             filters = atomic.filters or {}
@@ -1325,9 +1325,9 @@ async def execute_plan_action(
             stage="apply",
             result_kind="error",
             context_summary="",
-            summary="当前方案动作 payload 不是合法 JSON。请先通过 plan_next_action 生成完整 payload，再执行 execute_plan_action。",
+            summary="方案操作数据格式有误，请重新生成操作计划后重试。",
             reply_focus=["missing_plan_payload"],
-            next_step_hints=["先调用 plan_next_action 生成完整的 PlanActionPlan payload，再执行当前方案动作。"],
+            next_step_hints=["[LLM_INTERNAL] 先生成完整的操作计划，再执行方案动作。"],
         )
         return json.dumps(fallback.model_dump(), ensure_ascii=False)
     try:
@@ -1339,12 +1339,16 @@ async def execute_plan_action(
             stage=str(data.get("stage") or "apply"),
             result_kind="error",
             context_summary=str(data.get("context_summary") or ""),
-            summary="当前方案动作 payload 不完整，缺少 stage 等必要字段。请先通过 plan_next_action 生成完整 payload，再执行 execute_plan_action。",
+            summary="方案操作信息不完整，请先确认操作目标后重试。",
             reply_focus=["missing_plan_payload"],
-            next_step_hints=["先调用 plan_next_action 生成完整的 PlanActionPlan payload，再执行当前方案动作。"],
+            next_step_hints=["[LLM_INTERNAL] 先生成完整的操作计划，再执行方案动作。"],
         )
         return json.dumps(fallback.model_dump(), ensure_ascii=False)
     result = await _execute_plan_action_model(ctx, plan_model)
     result_data = result.model_dump()
+    if result_data.get("next_step_hints"):
+        result_data["next_step_hints"] = [
+            f"[LLM_INTERNAL] {hint}" for hint in result_data["next_step_hints"]
+        ]
     _remember_recent_plan_execution_result(ctx, result_data)
     return json.dumps(result_data, ensure_ascii=False)

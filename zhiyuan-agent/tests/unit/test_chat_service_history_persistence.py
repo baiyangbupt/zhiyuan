@@ -15,6 +15,7 @@ from app.service import (
     ChatService,
     ChatServiceResponseEnvelope,
     _append_plan_preview_confirmation_boundary,
+    _build_plan_timeout_fallback_reply,
     _extract_pending_plan_action,
     _normalize_pending_intent_reply,
     _normalize_plan_reply_style,
@@ -2082,6 +2083,42 @@ def test_chat_service_does_not_append_workspace_refresh_after_execute_plan_actio
         reply = asyncio.run(service.handle_message("session-plan-state-new", "user-1", "方案有了么"))
 
     assert reply == "这是当前方案状态。"
+
+
+def test_plan_status_timeout_fallback_uses_structured_user_copy():
+    reply = _build_plan_timeout_fallback_reply(
+        {
+            "result_kind": "status_overview",
+            "summary": "已填满 45 个志愿；方案前几个志愿：北京财经学院第01组-财政学(冲)@1。",
+            "facts": {
+                "current_total": 45,
+                "target_total": 45,
+                "tier_counts": {"冲": 18, "稳": 13, "保": 14},
+                "risk_count": 0,
+                "warn_count": 0,
+                "top_items": [
+                    "北京财经学院第01组-财政学(冲)@1",
+                    "天津财经大学第02组-经济学(稳)@2",
+                    "河北经贸大学第03组-法学(保)@3",
+                    "第四个不应展示(保)@4",
+                ],
+                "intent_relation": {
+                    "coverage": "承接情况：当前方案里较贴近的有27个，明显冲突的有0个。",
+                    "aligned_examples": "贴近偏好：北京财经学院第01组-财政学(冲)@1（匹配偏好专业:财政学类）",
+                },
+            },
+        }
+    )
+
+    assert reply is not None
+    assert "我看了当前方案，核心情况如下" in reply
+    assert "- 完整度：45/45 个志愿。" in reply
+    assert "- 冲稳保：冲18 / 稳13 / 保14。" in reply
+    assert "- 审查：暂时没有明显风险。" in reply
+    assert "北京财经学院第01组-财政学(冲)第1位" in reply
+    assert "第四个不应展示" not in reply
+    assert "@1" not in reply
+    assert "方案前几个志愿" not in reply
 
 
 def test_chat_service_ignores_historical_intent_preview_for_query_state_workspace_refresh(tmp_path, mock_llm_client):

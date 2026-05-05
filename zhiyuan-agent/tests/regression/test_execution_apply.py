@@ -63,7 +63,7 @@ class TestQueryStateApply:
         result = await _execute_plan_action_model(ctx, plan)
         assert result.applied is True
         assert result.result_kind == "status_overview"
-        assert "ordered" in result.workspace_refresh_targets
+        assert result.workspace_refresh_targets == []
 
 
 # ---------------------------------------------------------------------------

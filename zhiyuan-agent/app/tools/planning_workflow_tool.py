@@ -1210,7 +1210,7 @@ def _format_state_result(
     if stale_flags.get("review"):
         stale_parts.append("审查结果待刷新")
 
-    lines = ["这是当前会话的最新规划状态摘要。"]
+    lines = ["当前规划状态概览："]
     lines.append(f"- 当前阶段：{summary.phase}")
     lines.append(f"- 状态版本：{summary.version}")
     lines.append(f"- 草稿志愿数：{_format_total_with_target(summary.draft_total, summary.draft_target_total)}")
@@ -1252,7 +1252,7 @@ def _format_draft_result(draft_state: dict[str, Any]) -> str:
     unit_total = summary.get("unitTotal") or summary.get("total") or 0
     target_total = summary.get("targetUnitCount") or summary.get("targetCount") or 0
     tier_counts = summary.get("unitTierCounts") or summary.get("tierCounts") or {}
-    lines = ["这是当前草稿方案摘要。"]
+    lines = ["备选志愿（草稿）概况："]
     lines.append(f"- 草稿总数：{_format_total_with_target(unit_total, target_total)}")
     lines.append(f"- 区间分布：{_format_tier_counts(tier_counts)}")
     count_gap_hint = _build_count_gap_hint(unit_total, target_total)
@@ -1283,7 +1283,7 @@ def _format_ordered_result(ordered_state: dict[str, Any], planning_state: dict[s
     tier_counts = summary.get("unitTierCounts") or summary.get("tierCounts") or {}
     failed_checks = _review_failed_summaries(review_checks)
     gradient_ok = bool(summary.get("gradientOk")) and not _has_probability_gradient_warning(failed_checks)
-    lines = ["这是当前排序方案摘要。"]
+    lines = ["方案志愿概况："]
     lines.append(f"- 排序总数：{_format_total_with_target(unit_total, target_total)}")
     lines.append(f"- 区间分布：{_format_tier_counts(tier_counts)}")
     lines.append(f"- 录取率梯度是否达标：{'是' if gradient_ok else '否'}")
@@ -1316,7 +1316,7 @@ def _format_plan_status_overview(
     if summary is None:
         return "当前还没有读取到明确的方案状态。"
 
-    lines = ["这是当前方案的完整状态概览。"]
+    lines = ["方案完整状态："]
     lines.append(f"- 当前阶段：{summary.phase}")
 
     if summary.ordered_total > 0:
@@ -1386,13 +1386,12 @@ def _format_candidate_pool_result(query_result: dict[str, Any]) -> str:
     page = query_result.get("page") or 1
     page_size = query_result.get("pageSize") or len(items)
 
-    lines = ["这是当前候选池查询结果。"]
+    lines = ["候选志愿查询结果："]
     lines.append(f"- 命中数量：{total}")
     lines.append(f"- 当前页：第{page}页，每页{page_size}条")
     item_text = _format_candidate_items(items)
     if item_text:
         lines.append(f"- 候选示例：{item_text}")
-        lines.append("- 如需加入草稿，请直接引用对应的 volunteerId。")
     else:
         lines.append("- 当前筛选条件下没有候选结果。")
     return "\n".join(lines)

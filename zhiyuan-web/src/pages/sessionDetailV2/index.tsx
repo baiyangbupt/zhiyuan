@@ -37,7 +37,7 @@ const SessionDetailV2 = () => {
   const [doChatRights, setDoChatRights] = useState<{ canOperate: boolean; reason?: string } | null>(
     null
   );
-  const [mobileTab, setMobileTab] = useState<MobileTab>('workspace');
+  const [mobileTab, setMobileTab] = useState<MobileTab>('chat');
   const [workspaceIntent, setWorkspaceIntent] = useState<PlanningWorkspaceIntent | null>(null);
   const [fetchFlag, setFetchFlag] = useState(1);
 
@@ -209,7 +209,7 @@ const SessionDetailV2 = () => {
                     sessionStatus === 'GOING' ? style.metaBadgeActive : ''
                   }`}
                 >
-                  {sessionStatus === 'GOING' ? '进行中' : sessionStatus}
+                  {({ GOING: '进行中', FINISHED: '已完成', WAIT: '等待中', CLOSE: '已关闭' } as Record<string, string>)[sessionStatus] || sessionStatus}
                 </span>
               )}
             </div>

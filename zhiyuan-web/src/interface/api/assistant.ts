@@ -56,6 +56,7 @@ export enum ESessionStatus {
   WAIT = 'WAIT',
   GOING = 'GOING',
   FINISHED = 'FINISHED',
+  CLOSE = 'CLOSE',
 }
 
 export interface IPrepareType {

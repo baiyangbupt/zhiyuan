@@ -22,6 +22,7 @@ const statusMap: Record<string, { label: string; color: string }> = {
   [ESessionStatus.WAIT]: { label: '初始化', color: 'blue' },
   [ESessionStatus.GOING]: { label: '服务中', color: 'green' },
   [ESessionStatus.FINISHED]: { label: '已提交', color: 'red' },
+  [ESessionStatus.CLOSE]: { label: '已关闭', color: 'default' },
 };
 
 const formatTime = (record: string | number | null) => {

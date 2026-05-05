@@ -463,6 +463,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const draftBasketRef = useRef<HTMLDivElement | null>(null);
   const workspaceBodyRef = useRef<HTMLDivElement | null>(null);
   const candidateSummaryRef = useRef<HTMLDivElement | null>(null);
+  const reviewSummaryRef = useRef<HTMLDivElement | null>(null);
   const initialFiltersAppliedRef = useRef(false);
   const candidateViewStateHydratedRef = useRef(false);
   const lastSavedCandidateViewStateRef = useRef('');
@@ -1772,6 +1773,11 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         : 'candidate';
     if (nextView === 'ordered') {
       setActiveView('ordered');
+      if (workspaceIntent.targetView === 'review') {
+        window.requestAnimationFrame(() => {
+          reviewSummaryRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        });
+      }
     } else {
       setActiveView('candidate');
       if (workspaceIntent.candidateFilters) {
@@ -2042,7 +2048,9 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     );
   };
 
-  const orderedToolbarHint = '当前顺序是系统初排结果，你可以继续手动上移、下移、固定或删除。';
+  const orderedToolbarHint = orderedItems.some(item => item.orderedBy === 'user')
+    ? '你已手动调整过方案，继续上移、下移或固定志愿来优化。'
+    : '当前顺序是系统初排结果，你可以上移、下移、固定或删除来调整。';
 
   const renderMajorName = (majorName?: string) => {
     const trimmed = (majorName || '').trim();
@@ -2318,12 +2326,12 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       return '已固定';
     }
     if (item.orderReason === 'append_new_draft') {
-      return '草稿追加';
+      return '新增';
     }
     if (item.orderedBy === 'user') {
-      return '手动调整';
+      return '已调整';
     }
-    return '系统初排';
+    return '';
   };
 
   const toggleSchoolMeta = (groupKey: string) => {
@@ -2905,7 +2913,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
             <div className={style.orderedView}>
               {(orderedItems || []).length > 0 ? (
                 <>
-                  <div className={style.reviewSummaryBar}>
+                  <div className={style.reviewSummaryBar} ref={reviewSummaryRef}>
                     <div className={style.reviewSummaryMain}>
                       <span className={style.reviewSummaryHint}>{orderedToolbarHint}</span>
                     </div>

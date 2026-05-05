@@ -35,6 +35,10 @@ class PlanningSummary:
     risk_summaries: list[str] = field(default_factory=list)
     pending_action_count: int = 0
     pending_action_summaries: list[str] = field(default_factory=list)
+    tier_counts: dict[str, int] = field(default_factory=dict)
+    sample_schools: list[str] = field(default_factory=list)
+    positive_regions: list[str] = field(default_factory=list)
+    positive_majors: list[str] = field(default_factory=list)
 
     @classmethod
     def from_backend_state(cls, data: dict | None) -> "PlanningSummary | None":
@@ -62,6 +66,26 @@ class PlanningSummary:
             if summary:
                 pending_action_summaries.append(summary)
 
+        ordered_state = data.get("orderedPlanState") or {}
+        ordered_summary = ordered_state.get("summary") or {}
+        tier_counts = ordered_summary.get("unitTierCounts") or ordered_summary.get("tierCounts") or {}
+
+        ordered_items = ordered_state.get("items") or []
+        seen_schools: list[str] = []
+        for item in ordered_items:
+            school = item.get("schoolName") or ""
+            if school:
+                clean = school.rstrip("第01234567890组").strip()
+                if clean and clean not in seen_schools:
+                    seen_schools.append(clean)
+                    if len(seen_schools) >= 5:
+                        break
+
+        profile_state = data.get("profileState") or {}
+        explicit = profile_state.get("explicitProfile") or {}
+        positive_regions = explicit.get("positiveRegions") or []
+        positive_majors = explicit.get("positiveMajors") or []
+
         return cls(
             phase=data.get("phase") or "",
             version=data.get("version") or 0,
@@ -83,6 +107,10 @@ class PlanningSummary:
             risk_summaries=risk_summaries,
             pending_action_count=len(pending_actions),
             pending_action_summaries=pending_action_summaries,
+            tier_counts=tier_counts,
+            sample_schools=seen_schools,
+            positive_regions=positive_regions[:5],
+            positive_majors=positive_majors[:5],
         )
 
 

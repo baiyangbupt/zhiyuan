@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, ToolCallPart, ToolReturnPart, UserPromptPart
 
+from app.data.history_store import ChatHistoryStore
 from app.schemas.ws import WSResponse
-from app.service import ChatServiceResponseEnvelope
+from app.service import ChatService, ChatServiceResponseEnvelope, _build_plan_timeout_fallback_reply
+from app.tools.plan_execution_tool import execute_plan_action
 
 _patches = []
 
@@ -55,6 +59,126 @@ class _ClosedJsonWebSocket:
 class _UnexpectedJsonWebSocket:
     async def send_json(self, data):
         raise RuntimeError("unexpected websocket failure")
+
+
+class _PlanStatusToolAgent:
+    def __init__(self):
+        self.calls: list[dict] = []
+        self.tool_results: list[dict] = []
+
+    async def run_with_message_deltas(self, user_prompt, message_history=None, deps=None, on_progress=None):
+        self.calls.append({"user_prompt": user_prompt, "session_id": deps.sessionid if deps else None})
+        plan_payload = json.dumps(
+            {
+                "stage": "apply",
+                "action_family": "query_state",
+                "user_goal": user_prompt,
+                "requires_confirmation": False,
+                "context_summary": "用户通过快捷回复查看当前方案状态。",
+                "intent_relation": "mixed",
+            },
+            ensure_ascii=False,
+        )
+        tool_result_text = await execute_plan_action(SimpleNamespace(deps=deps), plan_payload)
+        tool_result = json.loads(tool_result_text)
+        self.tool_results.append(tool_result)
+
+        reply = _build_plan_timeout_fallback_reply(tool_result) or tool_result.get("summary") or ""
+        new_messages = [
+            ModelRequest(parts=[UserPromptPart(content=user_prompt)]),
+            ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="execute_plan_action",
+                        args={"plan_payload": plan_payload},
+                        tool_call_id="query-state-status-1",
+                    )
+                ],
+                model_name="test-model",
+            ),
+            ModelRequest(
+                parts=[
+                    ToolReturnPart(
+                        tool_name="execute_plan_action",
+                        content=tool_result_text,
+                        tool_call_id="query-state-status-1",
+                    )
+                ]
+            ),
+            ModelResponse(parts=[TextPart(content=reply)], model_name="test-model"),
+        ]
+        usage = MagicMock(input_tokens=1, output_tokens=1, total_tokens=2, requests=1, tool_calls=1)
+        return reply, new_messages, list(message_history or []) + new_messages, usage
+
+
+def _planning_state_for_status_overview() -> dict:
+    return {
+        "phase": "reviewed",
+        "version": 7,
+        "candidatePoolState": {"requiredCount": 45},
+        "draftPlanState": {"summary": {"total": 45, "targetCount": 45}},
+        "orderedPlanState": {
+            "summary": {
+                "total": 45,
+                "targetCount": 45,
+                "unitTierCounts": {"冲": 18, "稳": 13, "保": 14},
+            }
+        },
+        "reviewState": {
+            "status": "completed",
+            "summary": {"riskCount": 0, "warnCount": 0, "passedCount": 8},
+            "checks": [],
+        },
+        "profileState": {
+            "explicitProfile": {
+                "positiveMajors": ["财政学类", "经济学类", "法学类"],
+                "negativeMajors": ["中西医结合类", "护理学类"],
+                "positiveRegions": ["北京", "天津"],
+            },
+            "latentProfile": {
+                "futureDevelopment": {"careerTypes": []},
+            },
+        },
+    }
+
+
+def _ordered_plan_for_status_overview() -> dict:
+    return {
+        "summary": {
+            "total": 45,
+            "targetCount": 45,
+            "unitTierCounts": {"冲": 18, "稳": 13, "保": 14},
+        },
+        "items": [
+            {
+                "schoolName": "北京财经学院",
+                "majorName": "财政学",
+                "majorCategory": "财政学类",
+                "provinceName": "北京",
+                "tier": "冲",
+                "position": 1,
+                "volunteerId": "v1",
+            },
+            {
+                "schoolName": "天津财经大学",
+                "majorName": "经济学",
+                "majorCategory": "经济学类",
+                "provinceName": "天津",
+                "tier": "稳",
+                "position": 2,
+                "volunteerId": "v2",
+            },
+            {
+                "schoolName": "河北经贸大学",
+                "majorName": "法学",
+                "majorCategory": "法学类",
+                "provinceName": "河北",
+                "tier": "保",
+                "position": 3,
+                "volunteerId": "v3",
+            },
+        ],
+    }
 
 
 def test_safe_send_json_returns_false_when_connection_already_closed(client):
@@ -317,6 +441,60 @@ def test_ws_compat_sends_multiple_workspace_followups(client):
     assert second_followup["content"]["actionText"] == "打开审查结果"
 
 
+def test_ws_compat_structured_session_query_state_returns_rich_text_without_workspace_card(client, tmp_path):
+    llm_client = MagicMock()
+    llm_client.model = MagicMock()
+    llm_client.model_settings = {}
+    fake_agent = _PlanStatusToolAgent()
+    with patch("app.service.ChatAgent", return_value=fake_agent):
+        service = ChatService(llm_client, ChatHistoryStore(str(tmp_path / "history.db")))
+    client.app.state.chat_service = service
+
+    planning_state = _planning_state_for_status_overview()
+    ordered_plan = _ordered_plan_for_status_overview()
+
+    with client.websocket_connect(WS_PATH) as ws:
+        with patch("app.server.message_store") as mock_store, \
+                patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+                patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+                patch("app.service.get_planning_state", AsyncMock(return_value={"code": 0, "data": planning_state})), \
+                patch("app.service.get_intent_change_cache", AsyncMock(return_value={"code": 0, "data": {}})), \
+                patch(
+                    "app.handlers.query_handlers._get_planning_state_with_latest_profile",
+                    AsyncMock(return_value=planning_state),
+                ), \
+                patch(
+                    "app.handlers.query_handlers._get_planning_ordered_plan_request",
+                    AsyncMock(return_value={"code": 0, "data": ordered_plan}),
+                ):
+            mock_store.save_user_message = AsyncMock(return_value=1)
+            mock_store.save_agent_message = AsyncMock(return_value=2)
+
+            ws.send_json({
+                "sessionId": "sess-structured-query-state",
+                "userId": "user-structured-query-state",
+                "content": "看看现在的方案",
+                "inputType": "text",
+            })
+            resp = ws.receive_json()
+
+    assert resp["type"] == "text"
+    assert resp["end"] is True
+    content = resp["content"]
+    assert "我看了当前方案，核心情况如下" in content
+    assert "- 完整度：45/45 个志愿。" in content
+    assert "- 冲稳保：冲18 / 稳13 / 保14。" in content
+    assert "- 审查：暂时没有明显风险。" in content
+    assert "贴近偏好的例子" in content
+    assert "北京财经学院-财政学(冲)第1位" in content
+    assert "方案前几个志愿" not in content
+    assert "@1" not in content
+    assert "(unknown)" not in content
+    assert fake_agent.tool_results[0]["workspace_refresh_targets"] == []
+    saved_types = [call.kwargs.get("ws_type") for call in mock_store.save_agent_message.await_args_list]
+    assert "planningWorkspaceAction" not in saved_types
+
+
 def test_ws_compat_model_driven_intent_popup_roundtrip(client):
     mock_service = AsyncMock()
     mock_service.handle_intent_select = AsyncMock()
@@ -521,7 +699,7 @@ def test_handler_exception_returns_error(client):
             resp = ws.receive_json()
 
     assert resp["type"] == "error"
-    assert "RuntimeError" in resp["content"]
+    assert resp["content"] == "处理消息时出错，请稍后重试"
     mock_store.save_agent_message.assert_not_awaited()
 
 

@@ -9,31 +9,56 @@ if TYPE_CHECKING:
 
 
 def build_planning_context(deps: RequestContext) -> str:
-    """将 planning_summary 注入到指令中。"""
+    """将 planning_summary 注入到指令中，提供用户方案的核心信息。"""
     planning = deps.planning_summary
     if not planning or not planning.phase:
         return ""
 
-    lines = [
-        f"- 当前规划阶段：{planning.phase}",
-        f"- 当前草稿志愿数：{planning.draft_total}",
-        f"- 当前排序志愿数：{planning.ordered_total}",
-    ]
-    if planning.review_risk_count > 0 or planning.review_warn_count > 0:
-        lines.append(
-            f"- 当前风险摘要：风险{planning.review_risk_count}项，提醒{planning.review_warn_count}项"
-        )
-    if planning.risk_summaries:
-        lines.append(f"- 当前主要风险：{'；'.join(planning.risk_summaries)}")
-    if planning.pending_action_count > 0:
-        lines.append(
-            f"- 当前待处理建议：{planning.pending_action_count}项，主要为：{'；'.join(planning.pending_action_summaries)}"
-        )
+    lines: list[str] = []
 
-    return (
-        "当前会话已存在统一规划状态，请基于现有方案继续推进，不要把用户当作完全未开始填报：\n"
-        + "\n".join(lines)
-        + "\n如果用户是在追问风险、补偿或排序，请优先围绕当前规划状态回答。"
-        "\n当前 planning 状态的优先级高于历史对话。如果当前草稿志愿数和排序志愿数都是0，就说明还没有正式方案；"
-        "即使历史里提到过候选、推荐或50个志愿，也不能把它们当成当前方案来审查、补稳或调整。"
+    # 方案总况
+    if planning.ordered_total > 0:
+        lines.append(f"用户当前方案已有 {planning.ordered_total} 个志愿（目标 {planning.ordered_target_total} 个）。")
+    elif planning.draft_total > 0:
+        lines.append(f"用户当前有 {planning.draft_total} 个备选志愿（目标 {planning.draft_target_total} 个），尚未正式排序。")
+    else:
+        lines.append("用户尚未生成方案。")
+
+    # 冲稳保分布
+    tier = planning.tier_counts
+    if tier:
+        chong = tier.get("冲", 0)
+        wen = tier.get("稳", 0)
+        bao = tier.get("保", 0)
+        if chong or wen or bao:
+            lines.append(f"冲稳保分布：冲 {chong} 个、稳 {wen} 个、保 {bao} 个。")
+
+    # 代表院校
+    if planning.sample_schools:
+        lines.append(f"方案涉及院校举例：{'、'.join(planning.sample_schools[:5])}。")
+
+    # 偏好匹配
+    if planning.positive_regions:
+        lines.append(f"用户地区偏好：{'、'.join(planning.positive_regions[:5])}。")
+    if planning.positive_majors:
+        lines.append(f"用户专业偏好：{'、'.join(planning.positive_majors[:5])}。")
+
+    # 审查风险
+    if planning.review_risk_count > 0 or planning.review_warn_count > 0:
+        lines.append(f"审查情况：风险 {planning.review_risk_count} 项，提醒 {planning.review_warn_count} 项。")
+        if planning.risk_summaries:
+            lines.append(f"主要问题：{'；'.join(planning.risk_summaries[:3])}。")
+    elif planning.ordered_total > 0:
+        lines.append("审查情况：暂无明显风险。")
+
+    # 待处理建议
+    if planning.pending_action_count > 0 and planning.pending_action_summaries:
+        lines.append(f"待处理建议：{'；'.join(planning.pending_action_summaries[:2])}。")
+
+    header = "当前会话已存在统一规划状态，用户的方案概况如下：\n"
+    footer = (
+        "\n请基于以上方案现状回答用户。"
+        "如果用户问方案情况，应调用 handle_planning_request 获取完整数据后给出包含具体学校、专业、冲稳保分析的详细回复。"
+        "\n当前 planning 状态的优先级高于历史对话。如果当前方案志愿数为0，即使历史里提到过候选，也不能当成当前方案。"
     )
+    return header + "\n".join(lines) + footer

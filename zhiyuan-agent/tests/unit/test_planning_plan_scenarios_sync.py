@@ -624,19 +624,16 @@ def test_planning_scenario_query_state_runs_through_plan_orchestration_chain():
             )
         ),
     ), patch(
-        "app.tools.plan_execution_tool._get_planning_state_request",
+        "app.handlers.query_handlers._get_planning_state_with_latest_profile",
         new=AsyncMock(
             return_value={
-                "code": 0,
-                "data": {
-                    "phase": "reviewed",
-                    "orderedPlanState": {"summary": {"unitTotal": 45, "targetUnitCount": 45}},
-                    "reviewState": {"summary": {"riskCount": 0, "warnCount": 2}},
-                },
+                "phase": "reviewed",
+                "orderedPlanState": {"summary": {"unitTotal": 45, "targetUnitCount": 45}},
+                "reviewState": {"summary": {"riskCount": 0, "warnCount": 2}},
             }
         ),
     ) as mock_state, patch(
-        "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
+        "app.handlers.query_handlers._get_planning_ordered_plan_request",
         new=AsyncMock(return_value={"code": 0, "data": {"items": [], "summary": {"unitTotal": 45, "targetUnitCount": 45}}}),
     ) as mock_ordered:
         plan_payload = asyncio.run(
@@ -655,7 +652,9 @@ def test_planning_scenario_query_state_runs_through_plan_orchestration_chain():
     assert payload_data["action_family"] == "query_state"
     assert payload_data["stage"] == "apply"
     assert result_data["action_family"] == "query_state"
-    assert "当前方案阶段为 reviewed" in result_data["summary"]
+    assert "方案已经有了" in result_data["summary"]
+    assert "45/45 个志愿" in result_data["summary"]
+    assert result_data["workspace_refresh_targets"] == []
     assert result_data["facts"]["phase"] == "reviewed"
     assert result_data["facts"]["warn_count"] == 2
     mock_state.assert_awaited_once()

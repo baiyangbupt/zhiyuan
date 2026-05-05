@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Fixed (Issue: 方案现状回复单薄与无联动卡片)
+
+- 新增 issue 修复设计文档 `docs/issue_plan_status_reply_and_card_linkage_fix_design.md`，明确“看看现在的方案”回复质量和无增量工作台卡片的修复边界、验收标准、测试计划。
+- `query_state` 的 `status_overview` 摘要从工具拼接口径调整为用户可扫读结构，覆盖完整度、冲稳保、审查、偏好承接、前排示例和下一步建议，并清理 `@1`、`unknown` 等内部展示格式。
+- `status_overview` 超时/近期结果兜底改为基于 `facts` 生成结构化用户文案，不再直接拼接原始 `summary`。
+- 只读方案现状查询不再追加无增量 `planningWorkspaceAction` 卡片；方案生成、调整、复审等真实更新仍保留工作台 followup。
+- 方案上下文与工具摘要进一步收敛用户口径，减少 `volunteerId`、`payload`、`stage`、`draft/ordered` 等内部术语外露。
+- WebSocket 异常回复统一为用户友好的兜底文案，不再向前端暴露异常类型。
+- 补充/调整相关单测与回归断言，覆盖 `query_state` 无 workspace refresh、结构化摘要、fallback 内部格式清理。
+- 补充产品结构 WebSocket 验证：通过 plus 兼容入口发送“看看现在的方案”，走真实 `ChatService` 与 `execute_plan_action(query_state)`，断言返回结构化文本且不发送无联动工作台卡片。
+
 ### Verified (模糊/精确目标深化 enriched 回归 — 15 cases × 67 prompts)
 
 - 新增 `examples/dialog_regression_enriched_cases.json`：覆盖 15 个场景，聚焦**模糊目标→方案设计**和**精确目标→方案操作**两条主线。

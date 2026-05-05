@@ -95,33 +95,35 @@ async def _collect_plan_context_inputs_model(
         review_issue_summary_lines=review_issue_summary_lines,
     )
 
-    summary_parts = [
-        f"阶段={model.phase or 'unknown'}",
-        f"方案={model.ordered_count}/{model.target_count or model.ordered_count}",
-        f"草稿={model.draft_count}",
-        f"风险={model.risk_count}",
-        f"提醒={model.warn_count}",
-    ]
+    summary_parts = []
+    if model.ordered_count > 0:
+        summary_parts.append(f"已有 {model.ordered_count} 个志愿（目标 {model.target_count or model.ordered_count} 个）")
+    elif model.draft_count > 0:
+        summary_parts.append(f"有 {model.draft_count} 个备选志愿（目标 {model.target_count or model.draft_count} 个），尚未正式排序")
+    else:
+        summary_parts.append("尚未生成方案")
+    if model.risk_count > 0 or model.warn_count > 0:
+        summary_parts.append(f"审查发现风险 {model.risk_count} 项、提醒 {model.warn_count} 项")
     if model.positive_regions:
-        summary_parts.append(f"偏好地域={','.join(model.positive_regions[:3])}")
+        summary_parts.append(f"偏好地区：{'、'.join(model.positive_regions[:3])}")
     if model.negative_regions:
-        summary_parts.append(f"排除地域={','.join(model.negative_regions[:3])}")
+        summary_parts.append(f"排除地区：{'、'.join(model.negative_regions[:3])}")
     if model.positive_majors:
-        summary_parts.append(f"偏好专业={','.join(model.positive_majors[:3])}")
+        summary_parts.append(f"偏好专业：{'、'.join(model.positive_majors[:3])}")
     if model.negative_majors:
-        summary_parts.append(f"排除专业={','.join(model.negative_majors[:3])}")
+        summary_parts.append(f"排除专业：{'、'.join(model.negative_majors[:3])}")
     if model.positive_schools:
-        summary_parts.append(f"偏好院校={','.join(model.positive_schools[:3])}")
+        summary_parts.append(f"偏好院校：{'、'.join(model.positive_schools[:3])}")
     if model.negative_schools:
-        summary_parts.append(f"排除院校={','.join(model.negative_schools[:3])}")
+        summary_parts.append(f"排除院校：{'、'.join(model.negative_schools[:3])}")
     if model.career_types:
-        summary_parts.append(f"发展方向={','.join(model.career_types[:2])}")
+        summary_parts.append(f"发展方向：{'、'.join(model.career_types[:2])}")
     if relation_lines:
         summary_parts.append(relation_lines[0].removeprefix("- ").strip())
     if len(relation_lines) > 1:
         summary_parts.append(relation_lines[1].removeprefix("- ").strip())
     if review_issue_summary_lines:
-        summary_parts.append(f"审查问题={','.join(review_issue_summary_lines[:3])}")
+        summary_parts.append(f"审查问题：{'、'.join(review_issue_summary_lines[:3])}")
     model.summary = "；".join(summary_parts)
     return model
 

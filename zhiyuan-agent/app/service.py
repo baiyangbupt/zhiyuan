@@ -313,7 +313,16 @@ def _tool_calls_include_plan_workspace_refresh(messages: list[Any] | None) -> li
 def _tool_calls_include_plan_view_targets(messages: list[Any] | None) -> list[str]:
     """Extract view-only workspace targets from query actions (no data refresh needed)."""
     view_targets: list[str] = []
+    suppressed_families = {"query_state", "query_draft", "query_ordered"}
     for part in _iter_tool_return_parts(messages):
+        if part.tool_name != "execute_plan_action":
+            continue
+        data = _parse_tool_return_json(part.content)
+        if not data:
+            continue
+        action_family = str(data.get("action_family") or "").strip()
+        if action_family in suppressed_families:
+            continue
         view_targets.extend(_extract_execute_plan_action_view_targets(part))
     return _dedupe_workspace_targets(view_targets)
 
@@ -646,9 +655,19 @@ def _is_pending_intent_confirmation(content: str) -> bool:
     return normalized in _INTENT_CONFIRM_PHRASES
 
 
+def _sanitize_reply_for_user(reply: str) -> str:
+    """清理回复中不应暴露给用户的内部标记。"""
+    import re
+    # 移除 [LLM_INTERNAL] 开头的整行
+    reply = re.sub(r'\n?\[LLM_INTERNAL\][^\n]*', '', reply)
+    # 移除行内的 [LLM_INTERNAL] 标记
+    reply = re.sub(r'\[LLM_INTERNAL\]\s*', '', reply)
+    return reply.strip()
+
+
 def _is_basic_plan_status_question(content: str) -> bool:
     normalized = re.sub(r"\s+", "", (content or "").strip())
-    normalized = normalized.strip("。.!！?")
+    normalized = normalized.strip("。.!！?？")
     if not normalized:
         return False
     return normalized in {
@@ -660,6 +679,14 @@ def _is_basic_plan_status_question(content: str) -> bool:
         "当前方案有了吗",
         "现在有方案了吗",
         "现在方案有了吗",
+        "看看现在的方案",
+        "看看方案",
+        "看下方案",
+        "看一下方案",
+        "方案怎么样了",
+        "方案情况",
+        "当前方案怎么样",
+        "我的方案",
     }
 
 
@@ -671,24 +698,57 @@ def _build_basic_plan_status_reply(planning: PlanningSummary) -> str:
         or max(planning.ordered_total, planning.draft_total, total)
     )
     if total <= 0:
-        return "当前还没有正式方案。你可以直接说“生成一版方案”，我会先给你看生成预览，确认后再执行。"
+        return (
+            '当前还没有生成方案。'
+            '你可以直接说“帮我生成一版方案”，'
+            '我会根据你的成绩和偏好先生成一版初稿给你看，确认后再正式排序。'
+        )
 
-    phase_text = planning.phase or "已生成"
-    lines = [
-        "方案已经有了。",
-        "",
-        f"- 当前排序志愿数：{planning.ordered_total}/{target}",
-        f"- 当前草稿志愿数：{planning.draft_total}/{target}",
-        f"- 当前阶段：{phase_text}",
-        f"- 审查结果：风险{planning.review_risk_count}项，提醒{planning.review_warn_count}项",
-    ]
-    if planning.risk_summaries:
-        lines.append(f"- 主要提醒：{'；'.join(planning.risk_summaries[:2])}")
-    if planning.pending_action_count:
-        lines.append(f"- 待处理建议：{planning.pending_action_count}项")
-    lines.append("")
-    lines.append("如果要看具体冲突、梯度或怎么调整，可以继续让我审查当前方案。")
-    return "\n".join(lines)
+    if planning.ordered_total >= target:
+        count_text = f'你的方案已经填满了 {planning.ordered_total} 个志愿'
+    elif planning.ordered_total > 0:
+        count_text = f'你的方案目前有 {planning.ordered_total} 个志愿（目标 {target} 个）'
+    else:
+        count_text = f'当前有 {planning.draft_total} 个备选志愿（目标 {target} 个），还没有正式排序'
+
+    lines = [f'{count_text}。']
+
+    tier = planning.tier_counts
+    if tier:
+        chong = tier.get('冲', 0)
+        wen = tier.get('稳', 0)
+        bao = tier.get('保', 0)
+        if chong or wen or bao:
+            lines.append(f'其中冲 {chong} 个、稳 {wen} 个、保 {bao} 个。')
+
+    if planning.sample_schools:
+        school_text = '、'.join(planning.sample_schools[:4])
+        lines.append(f'涉及院校包括{school_text}等。')
+
+    pref_parts = []
+    if planning.positive_regions:
+        pref_parts.append(f'地区偏好{chr(0x3001).join(planning.positive_regions[:3])}')
+    if planning.positive_majors:
+        pref_parts.append(f'专业偏好{chr(0x3001).join(planning.positive_majors[:3])}')
+    if pref_parts:
+        lines.append(f'你的{chr(0x3001).join(pref_parts)}。')
+
+    risk_total = planning.review_risk_count + planning.review_warn_count
+    if risk_total > 0 and planning.risk_summaries:
+        risk_desc = '、'.join(planning.risk_summaries[:2])
+        if planning.review_risk_count > 0:
+            lines.append(f'\n需要留意的风险：{risk_desc}。')
+        else:
+            lines.append(f'\n有几点提醒：{risk_desc}。')
+    elif risk_total == 0 and planning.ordered_total > 0:
+        lines.append('\n审查结果良好，暂时没有明显风险。')
+
+    if planning.pending_action_count > 0 and planning.pending_action_summaries:
+        action_desc = '、'.join(planning.pending_action_summaries[:2])
+        lines.append(f'还有待处理的建议：{action_desc}。')
+
+    lines.append('\n你可以说“帮我审查一下”看详细情况，或者告诉我想怎么调整。')
+    return ''.join(lines)
 
 
 async def _has_pending_intent_change(session_id: str) -> bool:
@@ -946,14 +1006,14 @@ def _build_plan_timeout_fallback_reply(result: dict[str, Any]) -> str | None:
         return None
 
     lead_map = {
-        "review_result": "这轮审查已经执行完了，我先把核心结果直接给你：",
-        "adjustment_analysis": "这轮调整分析已经执行完了，我先把核心结果直接给你：",
-        "status_overview": "这轮方案状态查询已经执行完了，我先把核心结果直接给你：",
-        "generation_result": "这轮方案生成已经执行完了，我先把核心结果直接给你：",
-        "ordered_snapshot": "这轮排序方案查询已经执行完了，我先把核心结果直接给你：",
-        "draft_snapshot": "这轮草稿方案查询已经执行完了，我先把核心结果直接给你：",
-        "candidate_snapshot": "这轮候选查询已经执行完了，我先把核心结果直接给你：",
-        "mutation_result": "这轮方案调整已经执行完了，我先把核心结果直接给你：",
+        "review_result": "我已经帮你检查了方案，主要情况如下：",
+        "adjustment_analysis": "调整分析已完成，结果如下：",
+        "status_overview": "方案情况如下：",
+        "generation_result": "方案已经生成好了：",
+        "ordered_snapshot": "你的方案情况如下：",
+        "draft_snapshot": "备选志愿情况如下：",
+        "candidate_snapshot": "候选机会查询结果：",
+        "mutation_result": "方案调整已完成：",
     }
     facts = result.get("facts") if isinstance(result.get("facts"), dict) else {}
     relation = facts.get("intent_relation") if isinstance(facts.get("intent_relation"), dict) else {}
@@ -962,18 +1022,100 @@ def _build_plan_timeout_fallback_reply(result: dict[str, Any]) -> str | None:
     conflict_examples = str(relation.get("conflict_examples") or "").strip()
     next_step_hints = result.get("next_step_hints") if isinstance(result.get("next_step_hints"), list) else []
 
-    lines = [lead_map.get(result_kind, "这轮方案分析已经执行完了，我先把核心结果直接给你："), "", summary]
-    if coverage:
+    rendered_status_overview = result_kind == "status_overview" and bool(facts)
+    if rendered_status_overview:
+        lines = _build_status_overview_fallback_lines(facts)
+    else:
+        lines = [lead_map.get(result_kind, "这轮方案分析已经执行完了，我先把核心结果直接给你："), "", summary]
+    if coverage and not rendered_status_overview:
         lines.append(f"- {coverage}")
-    if aligned_examples:
+    if aligned_examples and not rendered_status_overview:
         lines.append(f"- {aligned_examples}")
-    if conflict_examples:
+    if conflict_examples and not rendered_status_overview:
         lines.append(f"- {conflict_examples}")
     if next_step_hints:
         first_hint = str(next_step_hints[0] or "").strip()
         if first_hint:
             lines.extend(["", first_hint])
     return _normalize_user_facing_terms("\n".join(lines))
+
+
+def _clean_status_item_for_user(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = text.replace("(unknown)", "")
+    text = re.sub(r"@(\d+)", r"第\1位", text)
+    return text
+
+
+def _format_status_tier_counts(tier_counts: Any) -> str:
+    if not isinstance(tier_counts, dict):
+        return ""
+    parts = []
+    for key in ("冲", "稳", "保"):
+        value = tier_counts.get(key)
+        if value is None:
+            continue
+        parts.append(f"{key}{value}")
+    return " / ".join(parts)
+
+
+def _build_status_overview_fallback_lines(facts: dict[str, Any]) -> list[str]:
+    current_total = int(facts.get("current_total") or 0)
+    target_total = int(facts.get("target_total") or 0)
+    risk_count = int(facts.get("risk_count") or 0)
+    warn_count = int(facts.get("warn_count") or 0)
+    tier_text = _format_status_tier_counts(facts.get("tier_counts"))
+    top_items = [_clean_status_item_for_user(item) for item in (facts.get("top_items") or [])]
+    top_items = [item for item in top_items if item]
+    relation = facts.get("intent_relation") if isinstance(facts.get("intent_relation"), dict) else {}
+
+    if current_total <= 0:
+        return [
+            "当前还没有生成正式方案。",
+            "",
+            "你可以直接说“帮我生成一版方案”，我会按你的成绩和偏好先生成初稿，再继续做审查和调整。",
+        ]
+
+    target = target_total or current_total
+    lines = [
+        "我看了当前方案，核心情况如下：",
+        "",
+        f"- 完整度：{current_total}/{target} 个志愿。"
+    ]
+    if tier_text:
+        lines.append(f"- 冲稳保：{tier_text}。")
+    if risk_count > 0 or warn_count > 0:
+        lines.append(f"- 审查：风险 {risk_count} 项，提醒 {warn_count} 项。")
+    else:
+        lines.append("- 审查：暂时没有明显风险。")
+
+    coverage = str(relation.get("coverage") or "").removeprefix("承接情况：").strip()
+    if coverage:
+        lines.append(f"- 偏好承接：{coverage}")
+    aligned_examples = _clean_status_item_for_user(
+        str(relation.get("aligned_examples") or "").removeprefix("贴近偏好：")
+    )
+    if aligned_examples:
+        lines.append(f"- 贴近偏好的例子：{aligned_examples}")
+    conflict_examples = _clean_status_item_for_user(
+        str(relation.get("conflict_examples") or "").removeprefix("需关注冲突：")
+    )
+    if conflict_examples:
+        lines.append(f"- 需要关注的冲突：{conflict_examples}")
+    if top_items:
+        lines.append(f"- 前排示例：{'；'.join(top_items[:3])}。")
+
+    reminders = [str(item or "").strip() for item in (facts.get("main_reminders") or []) if str(item or "").strip()]
+    if reminders:
+        lines.append(f"- 重点提醒：{'；'.join(reminders[:2])}。")
+
+    lines.extend([
+        "",
+        "下一步可以继续看审查明细，或直接告诉我想往更稳、某个地域、某类专业方向调整。",
+    ])
+    return lines
 
 
 def build_timeout_fallback_from_recent_plan_execution(
@@ -1246,20 +1388,6 @@ class ChatService:
                 logger.exception("Failed to save direct pending intent confirmation history: session_id=%s", session_id)
             return reply
 
-        if parsed_planning_summary and _is_basic_plan_status_question(content):
-            reply = _build_basic_plan_status_reply(parsed_planning_summary)
-            new_messages = [
-                ModelRequest(parts=[UserPromptPart(content=content)]),
-                ModelResponse(parts=[TextPart(content=reply)], model_name="direct-plan-status-summary"),
-            ]
-            try:
-                history_to_save = list(history or [])
-                history_to_save.extend(new_messages)
-                await self.history_store.save(session_id, history_to_save)
-            except Exception:
-                logger.exception("Failed to save basic plan status history: session_id=%s", session_id)
-            return reply
-
         if (
             not pending_plan_action
             and _is_plan_action_confirmation(content)
@@ -1389,6 +1517,8 @@ class ChatService:
                     followups.append(
                         _build_workspace_action_response(session_id, target, refresh=False)
                     )
+        if isinstance(reply, str):
+            reply = _sanitize_reply_for_user(reply)
         if followups and not isinstance(reply, WSResponse):
             return ChatServiceResponseEnvelope(primary=reply, followups=followups)
         return reply

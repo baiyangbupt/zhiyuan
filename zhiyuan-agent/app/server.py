@@ -203,7 +203,7 @@ async def _handle_ws_loop(ws: WebSocket, service: ChatService):
             resp = WSResponse(
                 type="error",
                 session_id=msg.session_id,
-                content=f"处理消息时出错: {type(e).__name__}",
+                content="处理消息时出错，请稍后重试",
             )
         if not await _safe_send_text(ws, resp.model_dump_json(), context="v3.reply"):
             return
@@ -446,7 +446,7 @@ async def ws_chat_compat(ws: WebSocket, tenant_id: str, bot_id: str):
                 already_saved = False
             except Exception as e:
                 logger.exception("handle_message failed (compat): %s", str(e))
-                resp_data = {"type": "error", "content": f"处理消息时出错: {type(e).__name__}"}
+                resp_data = {"type": "error", "content": "处理消息时出错，请稍后重试"}
                 already_saved = False
 
             if resp_data.get("type") != "error" and not already_saved:
