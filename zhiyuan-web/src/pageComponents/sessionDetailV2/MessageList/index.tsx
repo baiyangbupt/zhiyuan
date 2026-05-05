@@ -99,7 +99,7 @@ interface IIntentCardContent {
   clickable?: boolean;
   clicked?: boolean;
   actionText?: string;
-  targetView?: 'candidate' | 'draft' | 'ordered' | 'review';
+  targetView?: PlanningWorkspaceIntent['targetView'];
   volunteerIds?: string[];
   refresh?: boolean;
   candidateFilters?: PlanningWorkspaceIntent['candidateFilters'];
@@ -115,6 +115,17 @@ const isInterestAnalysisCard = (contentObj?: IIntentCardContent | null) =>
 
 const isIntentAnalysisCard = (contentObj?: IIntentCardContent | null) =>
   isIntentConfirmCard(contentObj) || isInterestAnalysisCard(contentObj);
+
+const supportedWorkspaceTargetViews = new Set(['candidate', 'ordered']);
+
+const normalizeWorkspaceTargetView = (
+  targetView: unknown
+): PlanningWorkspaceIntent['targetView'] | null => {
+  if (typeof targetView !== 'string' || !supportedWorkspaceTargetViews.has(targetView)) {
+    return null;
+  }
+  return targetView as PlanningWorkspaceIntent['targetView'];
+};
 
 const isStructuredIntentSelectEcho = (record: IMessage) => {
   if (record.messageFrom !== '1' || record.contentType !== 'TEXT') {
@@ -164,9 +175,13 @@ const parseWorkspaceIntentPayload = (
   if (contentObj?.type !== 'planningWorkspaceAction') {
     return null;
   }
+  const targetView = normalizeWorkspaceTargetView(contentObj.targetView);
+  if (!targetView) {
+    return null;
+  }
   return {
     targetTab: 'volunteer',
-    targetView: contentObj.targetView,
+    targetView,
     volunteerIds: Array.isArray(contentObj.volunteerIds) ? contentObj.volunteerIds : [],
     refresh: Boolean(contentObj.refresh),
     candidateFilters: contentObj.candidateFilters,
@@ -187,20 +202,6 @@ const workspaceActionFallbackCopy = (contentObj: Record<string, any>) => {
       title: '查看调整后的排序方案',
       content: '打开排序方案，查看本次调整后的志愿列表和位置变化。',
       actionText: '打开排序方案',
-    };
-  }
-  if (targetView === 'review') {
-    return {
-      title: '查看方案审查结果',
-      content: '打开审查结果，查看梯度、保底和风险项是否达标。',
-      actionText: '打开审查结果',
-    };
-  }
-  if (targetView === 'draft') {
-    return {
-      title: '查看草稿方案',
-      content: '打开草稿方案，查看本次生成或调整后的草稿内容。',
-      actionText: '打开草稿方案',
     };
   }
   return {
@@ -957,9 +958,13 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
   };
 
   const handleWorkspaceCardClick = (contentObj: IIntentCardContent) => {
+    const targetView = normalizeWorkspaceTargetView(contentObj.targetView);
+    if (!targetView) {
+      return;
+    }
     onWorkspaceIntent?.({
       targetTab: 'volunteer',
-      targetView: contentObj.targetView,
+      targetView,
       volunteerIds: contentObj.volunteerIds || [],
       refresh: contentObj.refresh,
       candidateFilters: contentObj.candidateFilters,
@@ -1084,6 +1089,9 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
                                   return <div style={{ whiteSpace: 'break-spaces' }}>{message.content}</div>;
                                 }
                                 if (contentObj.type === 'planningWorkspaceAction') {
+                                  if (!normalizeWorkspaceTargetView(contentObj.targetView)) {
+                                    return null;
+                                  }
                                   const fallbackCopy = workspaceActionFallbackCopy(contentObj);
                                   return (
                                     <div className={style.workspaceActionCard}>

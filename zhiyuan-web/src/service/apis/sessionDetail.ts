@@ -28,6 +28,7 @@ import {
   PlanningCandidatePoolQueryRes,
   PlanningCandidateViewState,
   PlanningCompensationPreview,
+  OrderedPlanActionRes,
   PlanningStateRes,
 } from '@/interface/api/volunteer';
 import request from '@/service/index';
@@ -463,7 +464,7 @@ export const pinPlanningOrderedItemApi = (
   volunteerId: string,
   targetPosition: number
 ) =>
-  request<{ volunteerId: string; targetPosition: number }, PlanningStateRes>({
+  request<{ volunteerId: string; targetPosition: number }, OrderedPlanActionRes>({
     url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/ordered-plan/pin?chatSessionId=${chatSessionId}`,
     method: 'post',
     data: {
@@ -478,7 +479,7 @@ export const movePlanningOrderedItemApi = (
   volunteerId: string,
   targetPosition: number
 ) =>
-  request<{ volunteerId: string; targetPosition: number }, PlanningStateRes>({
+  request<{ volunteerId: string; targetPosition: number }, OrderedPlanActionRes>({
     url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/ordered-plan/move?chatSessionId=${chatSessionId}`,
     method: 'post',
     data: {
@@ -493,7 +494,7 @@ export const unpinPlanningOrderedItemApi = (
   volunteerId: string,
   targetPosition: number = 1
 ) =>
-  request<{ volunteerId: string; targetPosition: number }, PlanningStateRes>({
+  request<{ volunteerId: string; targetPosition: number }, OrderedPlanActionRes>({
     url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/ordered-plan/unpin?chatSessionId=${chatSessionId}`,
     method: 'post',
     data: {

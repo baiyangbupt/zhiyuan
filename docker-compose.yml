@@ -1,13 +1,14 @@
 services:
   zhiyuan-web:
+    restart: unless-stopped
     build:
       context: ./zhiyuan-web
       args:
-        APP_ENV: dev
+        APP_ENV: deploy
     ports:
       - "3000:28688"
     environment:
-      - APP_ENV=dev
+      - APP_ENV=deploy
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -15,6 +16,7 @@ services:
       - zhiyuan-rank
 
   zhiyuan-agent:
+    restart: unless-stopped
     build:
       context: ./zhiyuan-agent
     ports:
@@ -25,10 +27,12 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./zhiyuan-agent/logs:/app/logs
+      - ./zhiyuan-agent/data:/app/data:ro
     depends_on:
       - zhiyuan-rank
 
   zhiyuan-rank:
+    restart: unless-stopped
     build:
       context: ./zhiyuan-rank
       dockerfile: Dockerfile.fast

@@ -434,6 +434,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const [actionLoading, setActionLoading] = useState<
     'candidate' | 'draft' | 'ordered' | 'review' | null
   >(null);
+  const [orderedActionVolunteerId, setOrderedActionVolunteerId] = useState<string | null>(null);
   const [exportLoading, setExportLoading] = useState(false);
   const [activeView, setActiveView] = useState<WorkspaceView>(initialActiveView);
   const [draftExpanded, setDraftExpanded] = useState(false);
@@ -1452,6 +1453,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       return;
     }
     setActionLoading('ordered');
+    setOrderedActionVolunteerId(item.volunteerId);
+    const hideLoading = message.loading(direction === 'up' ? '正在上移志愿...' : '正在下移志愿...', 0);
     try {
       const { data, code } = await movePlanningOrderedItemApi(
         routerParams.tenantId,
@@ -1461,16 +1464,21 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       );
       if (code === 0) {
         if (data) {
-          setPlanningState(data);
+          setPlanningState(prev => ({
+            ...(prev || {}),
+            ...data,
+            orderedPlanState: data.orderedPlanState || prev?.orderedPlanState,
+          }));
         }
-        await fetchPlanningState();
       } else {
         message.error('更新排序位置失败');
       }
     } catch (error) {
       message.error('更新排序位置异常，请稍后重试');
     }
+    hideLoading();
     setActionLoading(null);
+    setOrderedActionVolunteerId(null);
   };
 
   const handleTogglePin = async (item?: PlanningOrderedItem) => {
@@ -1478,6 +1486,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       return;
     }
     setActionLoading('ordered');
+    setOrderedActionVolunteerId(item.volunteerId);
+    const hideLoading = message.loading(item.pinned ? '正在取消固定...' : '正在固定志愿...', 0);
     try {
       const api = item.pinned ? unpinPlanningOrderedItemApi : pinPlanningOrderedItemApi;
       const { data, code } = await api(
@@ -1488,16 +1498,21 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       );
       if (code === 0) {
         if (data) {
-          setPlanningState(data);
+          setPlanningState(prev => ({
+            ...(prev || {}),
+            ...data,
+            orderedPlanState: data.orderedPlanState || prev?.orderedPlanState,
+          }));
         }
-        await fetchPlanningState();
       } else {
         message.error('更新固定状态失败');
       }
     } catch (error) {
       message.error('更新固定状态异常，请稍后重试');
     }
+    hideLoading();
     setActionLoading(null);
+    setOrderedActionVolunteerId(null);
   };
 
   const handleExportOrderedPlan = async () => {
@@ -1767,17 +1782,9 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     if (!workspaceIntent) {
       return;
     }
-    const nextView =
-      workspaceIntent.targetView === 'ordered' || workspaceIntent.targetView === 'review'
-        ? 'ordered'
-        : 'candidate';
+    const nextView = workspaceIntent.targetView === 'ordered' ? 'ordered' : 'candidate';
     if (nextView === 'ordered') {
       setActiveView('ordered');
-      if (workspaceIntent.targetView === 'review') {
-        window.requestAnimationFrame(() => {
-          reviewSummaryRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        });
-      }
     } else {
       setActiveView('candidate');
       if (workspaceIntent.candidateFilters) {
@@ -1797,9 +1804,6 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
           majorTags: workspaceIntent.candidateFilters?.majorTags || [],
           negativeMajorTags: workspaceIntent.candidateFilters?.negativeMajorTags || [],
         }));
-      }
-      if (workspaceIntent.targetView === 'draft') {
-        setDraftExpanded(true);
       }
       window.requestAnimationFrame(() => {
         candidateSummaryRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -3058,20 +3062,24 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                           <Button
                                             icon={<PushpinOutlined />}
                                             type={item.pinned ? 'primary' : 'default'}
+                                            loading={orderedActionVolunteerId === item.volunteerId && actionLoading === 'ordered'}
+                                            disabled={actionLoading === 'ordered' && orderedActionVolunteerId !== item.volunteerId}
                                             onClick={() => handleTogglePin(item)}
                                           />
                                         </Tooltip>
                                         <Tooltip title="上移">
                                           <Button
                                             icon={<VerticalAlignTopOutlined />}
-                                            disabled={absoluteIndex <= 0}
+                                            loading={orderedActionVolunteerId === item.volunteerId && actionLoading === 'ordered'}
+                                            disabled={absoluteIndex <= 0 || (actionLoading === 'ordered' && orderedActionVolunteerId !== item.volunteerId)}
                                             onClick={() => handleMoveOrderedItem(item, absoluteIndex, 'up')}
                                           />
                                         </Tooltip>
                                         <Tooltip title="下移">
                                           <Button
                                             icon={<VerticalAlignBottomOutlined />}
-                                            disabled={absoluteIndex === orderedItems.length - 1}
+                                            loading={orderedActionVolunteerId === item.volunteerId && actionLoading === 'ordered'}
+                                            disabled={absoluteIndex === orderedItems.length - 1 || (actionLoading === 'ordered' && orderedActionVolunteerId !== item.volunteerId)}
                                             onClick={() => handleMoveOrderedItem(item, absoluteIndex, 'down')}
                                           />
                                         </Tooltip>
@@ -3143,20 +3151,24 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                     <Button
                                       icon={<PushpinOutlined />}
                                       type={item.pinned ? 'primary' : 'default'}
+                                      loading={orderedActionVolunteerId === item.volunteerId && actionLoading === 'ordered'}
+                                      disabled={actionLoading === 'ordered' && orderedActionVolunteerId !== item.volunteerId}
                                       onClick={() => handleTogglePin(item)}
                                     />
                                   </Tooltip>
                                   <Tooltip title="上移">
                                     <Button
                                       icon={<VerticalAlignTopOutlined />}
-                                      disabled={index === 0}
+                                      loading={orderedActionVolunteerId === item.volunteerId && actionLoading === 'ordered'}
+                                      disabled={index === 0 || (actionLoading === 'ordered' && orderedActionVolunteerId !== item.volunteerId)}
                                       onClick={() => handleMoveOrderedItem(item, index, 'up')}
                                     />
                                   </Tooltip>
                                   <Tooltip title="下移">
                                     <Button
                                       icon={<VerticalAlignBottomOutlined />}
-                                      disabled={index === orderedItems.length - 1}
+                                      loading={orderedActionVolunteerId === item.volunteerId && actionLoading === 'ordered'}
+                                      disabled={index === orderedItems.length - 1 || (actionLoading === 'ordered' && orderedActionVolunteerId !== item.volunteerId)}
                                       onClick={() => handleMoveOrderedItem(item, index, 'down')}
                                     />
                                   </Tooltip>

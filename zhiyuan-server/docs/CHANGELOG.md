@@ -2,8 +2,13 @@
 
 ## Unreleased
 
+### Fixed
+
+- 排序方案 `move / pin / unpin` 接口新增轻量动作响应 `OrderedPlanActionRes`，只返回排序态、审查摘要、操作日志等前端合并所需字段，避免方案微调接口继续返回 20MB+ 全量规划状态造成明显等待。
+
 ### Added
 
+- 新增 `zhiyuan.ytell.cn` 服务器部署记录，沉淀 systemd backend、Docker web/agent/rank、Nginx SSL、DNS 与 MySQL `max_allowed_packet` 临时扩容等处理过程。
 - 建会话写入聊天历史的欢迎语已替换为更轻的起手说明：不再堆砌专家资历与固定推销式文案，改为说明“对话框 + 工作台”的最小使用方式，并提供不带具体偏好预设的通用起手问法；首屏采集流语音欢迎页仍继续走独立 `flow_config` 文案，不与聊天首条欢迎语混用。
 - `planningState` 的 `draftPlanState.summary` 补齐 `targetUnitCount/targetCount`，与 `candidatePoolState.requiredCount`、`orderedPlanState.summary.targetUnitCount/targetCount` 打通同一目标数量口径，便于 agent / frontend 统一理解“当前数量 vs 目标数量”。
 - backend 新增 `catalog` 第一阶段代码骨架：

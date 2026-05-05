@@ -1,4 +1,4 @@
-FROM crpi-zmigon88wuzuzy3k.cn-hangzhou.personal.cr.aliyuncs.com/gt_test_123/python:3.10-slim
+FROM docker.m.daocloud.io/library/python:3.10-slim
 
 WORKDIR /app
 

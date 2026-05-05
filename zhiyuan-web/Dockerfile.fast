@@ -1,7 +1,7 @@
 # 快速打包 Dockerfile - 适用于本地已构建的项目
 # 基于原有 Dockerfile 的配置，但跳过构建步骤
 
-FROM --platform=linux/amd64 crpi-zmigon88wuzuzy3k.cn-hangzhou.personal.cr.aliyuncs.com/gt_test_123/node:22.14.0
+FROM --platform=linux/amd64 docker.m.daocloud.io/library/node:22.14.0
 
 # 设置工作目录
 WORKDIR /app

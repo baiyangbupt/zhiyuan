@@ -15,7 +15,7 @@ export interface DialogueProps {
 export interface PlanningWorkspaceIntent {
   nonce: number;
   targetTab?: 'volunteer';
-  targetView?: 'candidate' | 'draft' | 'ordered' | 'review';
+  targetView?: 'candidate' | 'ordered';
   volunteerIds?: string[];
   refresh?: boolean;
   candidateFilters?: {
@@ -453,3 +453,8 @@ export interface PlanningStateRes {
   };
   pendingActions?: PlanningPendingAction[];
 }
+
+export type OrderedPlanActionRes = Pick<
+  PlanningStateRes,
+  'sessionId' | 'version' | 'phase' | 'staleFlags' | 'orderedPlanState'
+>;

@@ -13,11 +13,13 @@
     "build:dev": "env-cmd -f .env.dev next build && node source-map.js",
     "build:test": "env-cmd -f .env.test next build && node source-map.js",
     "build:beta": "env-cmd -f .env.beta next build && node source-map.js",
+    "build:deploy": "env-cmd -f .env.deploy next build && node source-map.js",
     "build:prod": "env-cmd -f .env.prod next build && node source-map.js",
     "build:analyzer": "env-cmd -f .env.prod next build",
     "server:dev": "npx env-cmd -f .env.dev next dev -p 28688",
     "server:test": "npx env-cmd -f .env.test next start -p 28688",
     "server:beta": "npx env-cmd -f .env.beta next start -p 28688",
+    "server:deploy": "npx env-cmd -f .env.deploy next start -p 28688",
     "server:prod": "npx env-cmd -f .env.prod next start -p 28688",
     "start": "next start -p 28688"
   },

@@ -1,5 +1,5 @@
 # 1. 基础镜像阶段
-FROM --platform=linux/amd64 crpi-zmigon88wuzuzy3k.cn-hangzhou.personal.cr.aliyuncs.com/gt_test_123/node:22.14.0 AS builder
+FROM --platform=linux/amd64 docker.m.daocloud.io/library/node:22.14.0 AS builder
 # 设置工作目录
 WORKDIR /app
 

@@ -168,6 +168,10 @@ cd zhiyuan-server && mvn package -DskipTests
 # 产出: target/zhiyuan-server.jar
 ```
 
+当前服务器 `zhiyuan.ytell.cn` 的实际部署记录、问题处理和运维命令见：
+
+- [zhiyuan.ytell.cn 部署记录与问题处理](docs/zhiyuan-yttell-deployment-notes.md)
+
 ## 目录结构
 
 ```

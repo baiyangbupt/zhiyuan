@@ -126,11 +126,14 @@ def _iter_tool_return_parts(messages: list[Any] | None) -> list[ToolReturnPart]:
     return parts
 
 
+_SUPPORTED_WORKSPACE_ACTION_TARGETS = {"candidate", "ordered"}
+
+
 def _dedupe_workspace_targets(targets: list[str]) -> list[str]:
     deduped: list[str] = []
     for target in targets:
         value = str(target or "").strip()
-        if not value or value in deduped:
+        if not value or value not in _SUPPORTED_WORKSPACE_ACTION_TARGETS or value in deduped:
             continue
         deduped.append(value)
     return deduped
@@ -147,21 +150,13 @@ _WORKSPACE_ACTION_COPY = {
         "content": "已刷新排序方案，可以查看本次调整后的志愿列表和位置变化。",
         "actionText": "打开排序方案",
     },
-    "review": {
-        "title": "查看方案审查结果",
-        "content": "已刷新方案审查，可以查看梯度、保底和风险项是否达标。",
-        "actionText": "打开审查结果",
-    },
-    "draft": {
-        "title": "查看草稿方案",
-        "content": "已刷新草稿方案，可以查看本次生成或调整后的草稿内容。",
-        "actionText": "打开草稿方案",
-    },
 }
 
 
 def _build_workspace_action_response(session_id: str, target: str, *, refresh: bool = True) -> WSResponse:
     target_value = str(target or "").strip()
+    if target_value not in _WORKSPACE_ACTION_COPY:
+        raise ValueError(f"Unsupported workspace action target: {target_value}")
     copy = _WORKSPACE_ACTION_COPY.get(
         target_value,
         {
@@ -288,7 +283,7 @@ def _tool_calls_include_plan_workspace_refresh(messages: list[Any] | None) -> li
         "apply_planning_compensation",
     }
     execute_plan_action_targets = {
-        "review_plan": ["review"],
+        "review_plan": [],
         "generate_plan": ["ordered"],
         "add_units": ["ordered"],
         "remove_units": ["ordered"],
@@ -301,7 +296,7 @@ def _tool_calls_include_plan_workspace_refresh(messages: list[Any] | None) -> li
     }
     for part in _iter_tool_call_parts(messages):
         if part.tool_name == "run_planning_review":
-            return ["review"]
+            return []
         execute_action_family = _extract_execute_plan_action_family(part)
         if execute_action_family:
             return execute_plan_action_targets.get(execute_action_family, [])

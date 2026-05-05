@@ -10,6 +10,7 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel -i https://pypi.tu
 COPY pyproject.toml ./
 COPY app ./app
 COPY skills ./skills
+COPY data ./data
 
 # 构建 wheel 包
 RUN pip wheel --no-cache-dir --no-deps --wheel-dir /build/wheels . -i https://pypi.tuna.tsinghua.edu.cn/simple
@@ -35,6 +36,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # 复制应用代码和技能目录
 COPY --chown=appuser:appuser app ./app
 COPY --chown=appuser:appuser skills ./skills
+COPY --chown=appuser:appuser data ./data
 
 # 切换到非 root 用户
 USER appuser

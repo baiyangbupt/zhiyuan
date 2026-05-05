@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Fixed (Issue: 对话工作台卡片与当前前端视图不一致)
+
+- `planningWorkspaceAction` 生成端收口为当前前端实际支持的 `candidate / ordered` 两类目标；复审、草稿查询或历史工具返回的 `review / draft` target 会被过滤，不再向对话流追加无对应工作区入口的卡片。
+- 服务器部署记录补充 agent 容器环境配置、模型兼容接口、重启验证与后续 TODO，避免 key/base_url/model_name 调整只停留在运行环境里。
+
 ### Fixed (Issue: 方案现状回复单薄与无联动卡片)
 
 - 新增 issue 修复设计文档 `docs/issue_plan_status_reply_and_card_linkage_fix_design.md`，明确“看看现在的方案”回复质量和无增量工作台卡片的修复边界、验收标准、测试计划。

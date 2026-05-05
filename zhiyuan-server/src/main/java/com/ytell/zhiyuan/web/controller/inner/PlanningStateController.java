@@ -274,29 +274,32 @@ public class PlanningStateController {
 
     @PostMapping("/session/ordered-plan/move")
     @ApiOperation("移动排序项")
-    public BaseResponse<PlanningStateDTO> moveOrderedPlan(@PathVariable("tenantId") Long tenantId,
-                                                          @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId,
-                                                          @RequestBody OrderedMoveReq req) {
+    public BaseResponse<OrderedPlanActionRes> moveOrderedPlan(@PathVariable("tenantId") Long tenantId,
+                                                              @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId,
+                                                              @RequestBody OrderedMoveReq req) {
         log.info("moveOrderedPlan: tenantId={}, chatSessionId={}", tenantId, chatSessionId);
-        return BaseResponse.success(planningStateService.moveOrderedItem(chatSessionId, req));
+        return BaseResponse.success(planningStateService.buildOrderedPlanActionRes(
+                planningStateService.moveOrderedItem(chatSessionId, req)));
     }
 
     @PostMapping("/session/ordered-plan/pin")
     @ApiOperation("固定排序位置")
-    public BaseResponse<PlanningStateDTO> pinOrderedPlan(@PathVariable("tenantId") Long tenantId,
-                                                         @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId,
-                                                         @RequestBody OrderedPinReq req) {
+    public BaseResponse<OrderedPlanActionRes> pinOrderedPlan(@PathVariable("tenantId") Long tenantId,
+                                                             @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId,
+                                                             @RequestBody OrderedPinReq req) {
         log.info("pinOrderedPlan: tenantId={}, chatSessionId={}", tenantId, chatSessionId);
-        return BaseResponse.success(planningStateService.pinOrderedItem(chatSessionId, req));
+        return BaseResponse.success(planningStateService.buildOrderedPlanActionRes(
+                planningStateService.pinOrderedItem(chatSessionId, req)));
     }
 
     @PostMapping("/session/ordered-plan/unpin")
     @ApiOperation("取消固定排序位置")
-    public BaseResponse<PlanningStateDTO> unpinOrderedPlan(@PathVariable("tenantId") Long tenantId,
-                                                           @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId,
-                                                           @RequestBody OrderedPinReq req) {
+    public BaseResponse<OrderedPlanActionRes> unpinOrderedPlan(@PathVariable("tenantId") Long tenantId,
+                                                               @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId,
+                                                               @RequestBody OrderedPinReq req) {
         log.info("unpinOrderedPlan: tenantId={}, chatSessionId={}", tenantId, chatSessionId);
-        return BaseResponse.success(planningStateService.unpinOrderedItem(chatSessionId, req));
+        return BaseResponse.success(planningStateService.buildOrderedPlanActionRes(
+                planningStateService.unpinOrderedItem(chatSessionId, req)));
     }
 
     @PostMapping("/session/ordered-plan/export")

@@ -982,6 +982,16 @@ public class PlanningStateService {
         return saveOrderedState(chatSessionId, state);
     }
 
+    public OrderedPlanActionRes buildOrderedPlanActionRes(PlanningStateDTO state) {
+        OrderedPlanActionRes res = new OrderedPlanActionRes();
+        res.setSessionId(state.getSessionId());
+        res.setVersion(state.getVersion());
+        res.setPhase(state.getPhase());
+        res.setStaleFlags(state.getStaleFlags());
+        res.setOrderedPlanState(state.getOrderedPlanState());
+        return res;
+    }
+
     public ReviewStateDTO runReview(Long tenantId, Long chatSessionId) {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
         normalizeCandidatePoolForPlanning(state);
