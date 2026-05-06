@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Added (Issue: 大模型效果与性能 Benchmark)
+
+- 新增 issue 修复设计文档 `docs/issue_model_provider_benchmark_design.md`，明确以真实端到端志愿规划场景为主、模型直连性能为辅助定位的 benchmark 方案。
+- 新增 `examples/model_provider_benchmark.py`，支持多 provider OpenAI-compatible 配置、直连 `/chat/completions` 延迟测试、兼容 WebSocket Agent 场景测试、thinking/followup/最终回复耗时采集和 JSON 结果输出。
+- 新增 `examples/model_provider_benchmark.providers.example.json`，通过 `api_key_env` 引用本地环境变量，避免真实 API Key 入库。
+- 新增 `examples/model_provider_benchmark_e2e_cases.json`，覆盖“看看现在的方案”、方案审查、候选查询、优化建议、无方案诚实回复等低副作用端到端场景，并断言无内部格式外露和只读查询不发送无联动卡片。
+- 补充 benchmark 单测，覆盖完整文本断言、followup 目标/刷新/数量断言和默认端到端用例配置。
+
 ### Fixed (Issue: 泛方向问题触发多轮模型调用后超时)
 
 - `analyze_current_career_direction` 对“我适合什么方向 / 适合哪些方向 / 往哪条路走”这类泛方向问题增加关键词直达，跳过额外的方向槽位识别和泛方向路由模型调用。
@@ -24,6 +32,7 @@
 - 只读方案现状查询不再追加无增量 `planningWorkspaceAction` 卡片；方案生成、调整、复审等真实更新仍保留工作台 followup。
 - 方案上下文与工具摘要进一步收敛用户口径，减少 `volunteerId`、`payload`、`stage`、`draft/ordered` 等内部术语外露。
 - WebSocket 异常回复统一为用户友好的兜底文案，不再向前端暴露异常类型。
+- 对话回归 runner 的强迫选择禁用语补齐“选哪个”“请明确回复”“回复 A 或 B”，保证既有风格保护单测通过。
 - 补充/调整相关单测与回归断言，覆盖 `query_state` 无 workspace refresh、结构化摘要、fallback 内部格式清理。
 - 补充产品结构 WebSocket 验证：通过 plus 兼容入口发送“看看现在的方案”，走真实 `ChatService` 与 `execute_plan_action(query_state)`，断言返回结构化文本且不发送无联动工作台卡片。
 

@@ -1,0 +1,32 @@
+{
+  "providers": [
+    {
+      "name": "siliconflow-kimi",
+      "provider": "openai_compatible",
+      "model": "Pro/moonshotai/Kimi-K2.6",
+      "base_url": "https://api.siliconflow.cn/v1",
+      "api_key_env": "SILICONFLOW_API_KEY",
+      "temperature": 0,
+      "max_tokens": 1024
+    },
+    {
+      "name": "cloud-candidate-a",
+      "provider": "openai_compatible",
+      "model": "replace-with-model-name",
+      "base_url": "https://replace-with-provider.example/v1",
+      "api_key_env": "CLOUD_CANDIDATE_A_API_KEY",
+      "temperature": 0,
+      "max_tokens": 1024
+    }
+  ],
+  "direct_prompts": [
+    {
+      "name": "short_explanation",
+      "prompt": "用两句话解释高考志愿填报里的冲稳保是什么意思。"
+    },
+    {
+      "name": "plan_status_style",
+      "prompt": "用户问“看看现在的方案”，请用适合高考志愿规划服务的口吻回复，包含完整度、冲稳保、审查和下一步建议。"
+    }
+  ]
+}

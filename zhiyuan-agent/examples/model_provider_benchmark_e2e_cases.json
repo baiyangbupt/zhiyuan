@@ -1,0 +1,74 @@
+[
+  {
+    "name": "e2e-plan-status-rich-reply",
+    "sessionId": "35",
+    "flow": ["query_state"],
+    "coverage": ["plan_status", "rich_structured_reply", "no_readonly_workspace_card"],
+    "prompts": [
+      {
+        "prompt": "看看现在的方案",
+        "assertContains": ["方案", "冲", "稳", "保"],
+        "assertContainsAny": ["建议", "下一步", "可以"],
+        "assertNotContains": ["@1", "unknown", "volunteerId", "payload", "targetView"],
+        "assertFollowupCount": 0
+      }
+    ]
+  },
+  {
+    "name": "e2e-plan-review-risk-summary",
+    "sessionId": "35",
+    "flow": ["review_plan"],
+    "coverage": ["plan_review", "risk_summary", "workspace_review_card"],
+    "prompts": [
+      {
+        "prompt": "帮我审查一下这个方案有什么问题",
+        "assertContains": ["审查", "方案"],
+        "assertContainsAny": ["风险", "提醒", "问题"],
+        "assertFollowupTarget": "review"
+      }
+    ]
+  },
+  {
+    "name": "e2e-candidate-query-computer",
+    "sessionId": "35",
+    "flow": ["query_candidates"],
+    "coverage": ["candidate_query", "keyword_filter"],
+    "prompts": [
+      {
+        "prompt": "候选里有没有计算机类的机会",
+        "assertContains": ["计算机"],
+        "assertNotContains": ["volunteerId", "payload"]
+      }
+    ]
+  },
+  {
+    "name": "e2e-adjustment-analysis",
+    "sessionId": "35",
+    "flow": ["analyze_adjustment"],
+    "coverage": ["adjustment_analysis", "actionable_suggestions"],
+    "prompts": [
+      {
+        "prompt": "这版方案怎么调更稳一点",
+        "assertContainsAny": ["稳", "保底", "风险", "建议", "可以", "优先"],
+        "assertNotContains": ["payload", "targetView"]
+      }
+    ]
+  },
+  {
+    "name": "e2e-no-plan-honesty",
+    "sessionId": "99901501",
+    "flow": ["no_plan_query"],
+    "coverage": ["no_plan_honesty", "refuse_fabricate"],
+    "prompts": [
+      {
+        "prompt": "我600湖南物化生",
+        "assertContainsAny": ["湖南", "600", "物化生", "信息"]
+      },
+      {
+        "prompt": "方案有了么 保底稳不稳",
+        "assertContainsAny": ["还没", "尚未生成", "没有正式方案", "0个志愿", "先生成"],
+        "assertNotContains": ["保底有3个", "方案已经生成好了", "保底够了"]
+      }
+    ]
+  }
+]
