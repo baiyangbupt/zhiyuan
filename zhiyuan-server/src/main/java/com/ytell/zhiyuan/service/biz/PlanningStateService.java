@@ -169,7 +169,7 @@ public class PlanningStateService {
         res.setPhase(state.getPhase());
         res.setStaleFlags(state.getStaleFlags());
         res.setPlanGenerationState(state.getPlanGenerationState());
-        res.setCandidatePoolState(buildWorkspaceCandidatePoolState(state.getCandidatePoolState()));
+        res.setCandidatePoolState(buildWorkspaceCandidatePoolState(state));
         res.setCandidateViewState(state.getCandidateViewState());
         res.setDraftPlanState(state.getDraftPlanState());
         res.setOrderedPlanState(state.getOrderedPlanState());
@@ -179,8 +179,9 @@ public class PlanningStateService {
         return res;
     }
 
-    private CandidatePoolStateDTO buildWorkspaceCandidatePoolState(CandidatePoolStateDTO source) {
+    private CandidatePoolStateDTO buildWorkspaceCandidatePoolState(PlanningStateDTO state) {
         CandidatePoolStateDTO target = new CandidatePoolStateDTO();
+        CandidatePoolStateDTO source = state == null ? null : state.getCandidatePoolState();
         if (source == null) {
             return target;
         }
@@ -194,7 +195,47 @@ public class PlanningStateService {
         target.setSourceProvinceName(source.getSourceProvinceName());
         target.setVolunteerModel(source.getVolunteerModel());
         target.setSummary(source.getSummary());
+        Set<String> workspaceVolunteerIds = collectWorkspaceCandidateVolunteerIds(state);
+        if (!workspaceVolunteerIds.isEmpty()) {
+            target.setItems(mergeOverlayIntoCandidates(source.getItems(), state.getRecommendationOverlayState()).stream()
+                    .filter(item -> workspaceVolunteerIds.contains(item.getVolunteerId()))
+                    .collect(Collectors.toList()));
+        }
         return target;
+    }
+
+    private Set<String> collectWorkspaceCandidateVolunteerIds(PlanningStateDTO state) {
+        Set<String> volunteerIds = new LinkedHashSet<String>();
+        if (state == null) {
+            return volunteerIds;
+        }
+        DraftPlanStateDTO draft = state.getDraftPlanState();
+        for (DraftItemDTO item : defaultDraftItems(draft == null ? null : draft.getItems())) {
+            if (!Strings.isNullOrEmpty(item.getVolunteerId())) {
+                volunteerIds.add(item.getVolunteerId());
+            }
+        }
+        for (DraftUnitDTO unit : defaultDraftUnits(draft == null ? null : draft.getUnits())) {
+            for (PlanningUnitMajorDTO major : defaultPlanningUnitMajors(unit.getMajorItems())) {
+                if (!Strings.isNullOrEmpty(major.getVolunteerId())) {
+                    volunteerIds.add(major.getVolunteerId());
+                }
+            }
+        }
+        OrderedPlanStateDTO ordered = state.getOrderedPlanState();
+        for (OrderedItemDTO item : defaultOrderedItems(ordered == null ? null : ordered.getItems())) {
+            if (!Strings.isNullOrEmpty(item.getVolunteerId())) {
+                volunteerIds.add(item.getVolunteerId());
+            }
+        }
+        for (OrderedUnitDTO unit : defaultOrderedUnits(ordered == null ? null : ordered.getUnits())) {
+            for (PlanningUnitMajorDTO major : defaultPlanningUnitMajors(unit.getMajorItems())) {
+                if (!Strings.isNullOrEmpty(major.getVolunteerId())) {
+                    volunteerIds.add(major.getVolunteerId());
+                }
+            }
+        }
+        return volunteerIds;
     }
 
     public ProfileStateDTO getProfileState(Long chatSessionId) {

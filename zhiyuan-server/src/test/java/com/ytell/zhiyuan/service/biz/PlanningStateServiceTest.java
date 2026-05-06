@@ -36,6 +36,7 @@ import com.ytell.zhiyuan.model.dto.planning.PlanningUnitDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningUnitMajorDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningStateVersionDTO;
+import com.ytell.zhiyuan.model.dto.planning.PlanningWorkspaceStateRes;
 import com.ytell.zhiyuan.model.dto.planning.ReorderSuggestionDTO;
 import com.ytell.zhiyuan.model.dto.planning.ReplaceSuggestionDTO;
 import com.ytell.zhiyuan.model.dto.planning.ReviewCheckDTO;
@@ -721,6 +722,38 @@ public class PlanningStateServiceTest {
         assertEquals("draft_reorder", reordered.getPlanGenerationState().getMode());
         assertEquals("draft_reorder", reordered.getOrderedPlanState().getGenerationMode());
         assertEquals(Integer.valueOf(3), reordered.getOrderedPlanState().getSummary().getTotal());
+    }
+
+    @Test
+    void shouldKeepWorkspaceCandidateDetailsForDraftAndOrderedItems() {
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+
+        CandidatePoolStateDTO candidatePoolState = new CandidatePoolStateDTO();
+        CandidateItemDTO orderedCandidate = buildCandidateItem("ps1_m1", "ps1", "s1", "学校A", "冲", "专业A", 82D, 61D, 70D, true);
+        orderedCandidate.setHotIndex(88D);
+        orderedCandidate.setSalaryAvg(45D);
+        CandidateItemDTO unusedCandidate = buildCandidateItem("ps2_m2", "ps2", "s2", "学校B", "稳", "专业B", 56D, 40D, 50D, false);
+        candidatePoolState.setItems(java.util.Arrays.asList(orderedCandidate, unusedCandidate));
+        state.setCandidatePoolState(candidatePoolState);
+
+        OrderedPlanStateDTO orderedPlanState = new OrderedPlanStateDTO();
+        OrderedItemDTO orderedItem = new OrderedItemDTO();
+        orderedItem.setVolunteerId("ps1_m1");
+        orderedItem.setSchoolName("学校A");
+        orderedItem.setMajorName("专业A");
+        orderedPlanState.setItems(java.util.Collections.singletonList(orderedItem));
+        state.setOrderedPlanState(orderedPlanState);
+
+        PlanningWorkspaceStateRes workspaceState = planningStateService.buildPlanningWorkspaceStateRes(state);
+
+        assertEquals(1, workspaceState.getCandidatePoolState().getItems().size());
+        CandidateItemDTO workspaceCandidate = workspaceState.getCandidatePoolState().getItems().get(0);
+        assertEquals("ps1_m1", workspaceCandidate.getVolunteerId());
+        assertEquals(Double.valueOf(82D), workspaceCandidate.getAdmissionRatio());
+        assertEquals(Double.valueOf(61D), workspaceCandidate.getFinalScore());
+        assertEquals(Double.valueOf(88D), workspaceCandidate.getHotIndex());
+        assertEquals(Double.valueOf(45D), workspaceCandidate.getSalaryAvg());
     }
 
     @Test
