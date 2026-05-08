@@ -6,6 +6,7 @@
 
 - `sessionDetailV2` 工作台刷新改为调用轻量 `workspace-state`，不再通过完整 `/session/state` 拉取 20MB+ 规划状态；候选列表继续通过分页 `candidate-pool/query` 获取当前页，降低公网刷新等待和浏览器 JSON 解析成本。
 - `sessionDetailV2` 方案区刷新后会把 `workspace-state` 返回的当前方案候选明细写入本地候选缓存，避免山西大同大学、燕京理工学院等未命中候选分页缓存的方案项丢失录取率、推荐系数、专业热度和就业表现。
+- `sessionDetailV2` 首次自动生成方案、刷新候选池、草稿增删锁定等返回规划状态的路径统一合并候选明细缓存，避免新建会话刚出方案时必须手动刷新后才显示录取率、推荐系数、专业热度等指标。
 - `sessionDetailV2` 对话工作台卡片收口为当前实际支持的 `candidate / ordered` 两类视图；历史或异常返回的 `review / draft` 卡片不再渲染，避免出现“审查结果”等无对应工作区入口的误导卡片。
 - `sessionDetailV2` 方案区上移、下移、固定、取消固定操作改为消费后端轻量响应并合并本地排序态，同时补充操作 loading，避免每次调整后重新拉取 20MB+ 全量 `planningState` 导致长时间无提示等待。
 

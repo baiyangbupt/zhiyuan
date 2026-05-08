@@ -1141,10 +1141,10 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     }));
   };
 
-  const mergeWorkspaceState = (data: PlanningStateRes) => {
-    const workspaceCandidateItems = data.candidatePoolState?.items || [];
-    if (workspaceCandidateItems.length > 0) {
-      workspaceCandidateItems.forEach(item => {
+  const mergeCandidateItemsToCache = (items?: PlanningCandidateItem[]) => {
+    const candidateItems = items || [];
+    if (candidateItems.length > 0) {
+      candidateItems.forEach(item => {
         const key =
           item.volunteerId ||
           `${item.planSchoolDataId || item.schoolId || item.schoolName}-${item.majorId || item.majorName}`;
@@ -1154,6 +1154,15 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       });
       setCandidateCacheVersion(version => version + 1);
     }
+  };
+
+  const applyPlanningState = (data: PlanningStateRes) => {
+    mergeCandidateItemsToCache(data.candidatePoolState?.items);
+    setPlanningState(data);
+  };
+
+  const mergeWorkspaceState = (data: PlanningStateRes) => {
+    mergeCandidateItemsToCache(data.candidatePoolState?.items);
     setPlanningState(prev => ({
       ...(prev || {}),
       ...data,
@@ -1210,7 +1219,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         false
       );
       if (code === 0 && data) {
-        setPlanningState(data);
+        applyPlanningState(data);
         setActiveView('ordered');
       } else {
         initialPlanRequestedRef.current = false;
@@ -1271,7 +1280,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         true
       );
       if (code === 0 && data) {
-        setPlanningState(data);
+        applyPlanningState(data);
         return true;
       }
       message.error('刷新候选池失败');
@@ -1361,7 +1370,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       if (code === 0) {
         message.success('已加入草稿');
         if (data) {
-          setPlanningState(data);
+          applyPlanningState(data);
         } else {
           await fetchWorkspaceState();
         }
@@ -1397,7 +1406,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       if (code === 0) {
         message.success('已移出草稿');
         if (data) {
-          setPlanningState(data);
+          applyPlanningState(data);
         } else {
           await fetchWorkspaceState();
         }
@@ -1433,7 +1442,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       if (code === 0) {
         message.success('已移出该专业组');
         if (data) {
-          setPlanningState(data);
+          applyPlanningState(data);
         } else {
           await fetchWorkspaceState();
         }
@@ -1462,7 +1471,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       if (code === 0) {
         message.success(item.locked ? '已解除锁定' : '已锁定草稿');
         if (data) {
-          setPlanningState(data);
+          applyPlanningState(data);
         } else {
           await fetchWorkspaceState();
         }
