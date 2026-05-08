@@ -4,7 +4,7 @@
 
 ## 1. 现状结论
 
-当前目录 `/root/dev/zhiyuan` 是新版本，父目录 `/root/dev/zhiyuan.old` 是线上运行的老版本代码。两套系统模块对应关系如下：
+当前目录 `/Users/baiyang/git/zhiyuan` 是新版本，父目录 `/Users/baiyang/git/zhiyuan.bak` 是线上运行的老版本代码。两套系统模块对应关系如下：
 
 | 能力 | 老版本目录 | 新版本目录 |
 | --- | --- | --- |
