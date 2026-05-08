@@ -448,6 +448,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     loadedUnitCount: 0,
   });
   const [candidatePoolLoading, setCandidatePoolLoading] = useState(false);
+  const [candidateCacheVersion, setCandidateCacheVersion] = useState(0);
   const candidateQueryInFlightPagesRef = useRef<Set<string>>(new Set());
   const [filterPanelOpen, setFilterPanelOpen] = useState(false);
   const [filterSearchKeyword, setFilterSearchKeyword] = useState('');
@@ -497,11 +498,11 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
           .filter(item => item.volunteerId)
           .map(item => [item.volunteerId as string, item])
       ),
-    [candidatePoolResult.items]
+    [candidatePoolResult.items, candidateCacheVersion]
   );
   const cachedCandidateItems = useMemo(
     () => Object.values(candidateItemCacheRef.current),
-    [candidatePoolResult.items]
+    [candidatePoolResult.items, candidateCacheVersion]
   );
 
   const attributeFilterOptions = useMemo<FilterPanelGroup[]>(() => {
@@ -1141,6 +1142,18 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   };
 
   const mergeWorkspaceState = (data: PlanningStateRes) => {
+    const workspaceCandidateItems = data.candidatePoolState?.items || [];
+    if (workspaceCandidateItems.length > 0) {
+      workspaceCandidateItems.forEach(item => {
+        const key =
+          item.volunteerId ||
+          `${item.planSchoolDataId || item.schoolId || item.schoolName}-${item.majorId || item.majorName}`;
+        if (key) {
+          candidateItemCacheRef.current[key] = item;
+        }
+      });
+      setCandidateCacheVersion(version => version + 1);
+    }
     setPlanningState(prev => ({
       ...(prev || {}),
       ...data,
@@ -1596,6 +1609,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     initialPlanRequestedRef.current = false;
     candidateQueryInFlightPagesRef.current.clear();
     candidateItemCacheRef.current = {};
+    setCandidateCacheVersion(version => version + 1);
     setPlanningState(null);
     setCandidatePoolResult({
       items: [],
