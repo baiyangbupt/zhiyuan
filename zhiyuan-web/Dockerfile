@@ -1,5 +1,5 @@
 # 1. 基础镜像阶段
-FROM --platform=linux/amd64 docker.m.daocloud.io/library/node:22.14.0 AS builder
+FROM --platform=linux/amd64 node:22.14.0 AS builder
 # 设置工作目录
 WORKDIR /app
 

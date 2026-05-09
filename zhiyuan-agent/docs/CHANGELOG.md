@@ -6,6 +6,10 @@
 
 - 新增 Agent HTTP 健康检查接口 `/health` 和 `/gaotu-assistant-agent/health`，用于 Docker Compose healthcheck 和发布后远端探活，不影响现有 WebSocket 对话链路。
 
+### Fixed
+
+- Agent Dockerfile 基础镜像切换为公开 `python:3.12-slim`，避免 release 构建时访问 `docker.m.daocloud.io` 返回 401 导致 amd64 镜像无法构建。
+
 ### Fixed (回归测试稳定性)
 
 - 补齐 handler 拆分后的 planning/generate 测试夹具 patch 覆盖，避免 agent regression 在本地误连真实 backend 或因同步 helper 被错误 AsyncMock 化而失真。
