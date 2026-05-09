@@ -604,8 +604,9 @@ public class VolunteerBizService {
             school.setSchool_category(detail.getType().getData());
         }
         school.setMajors(convertLegacyMajors(detail));
-        school.setIs_preferred(Boolean.TRUE.equals(detail.getSelectSchool())
-                || school.getMajors().stream().anyMatch(major -> Boolean.TRUE.equals(major.getAlgTagMap().get("legacy_select_zy"))));
+        // selectSchool/selectZy belongs to the upstream full-data selection model, not to
+        // assistant preferred-plan semantics. Keep original files as candidate sources only.
+        school.setIs_preferred(false);
         return school;
     }
 

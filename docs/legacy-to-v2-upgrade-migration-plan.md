@@ -75,14 +75,16 @@ docs/legacy-to-v2-upgrade-migration-status.md
 - `session_volunteer_{chatSessionId}_temp.json`
 - `session_volunteer_{chatSessionId}_temp_summary.json`
 - `session_volunteer_{chatSessionId}.json`
+- `session_volunteer_{chatSessionId}_final.json`
 
 其中：
 
-- `_temp.json` 通常是当前推荐/临时方案。
-- 无 `_temp` 的 JSON 通常是提交后的最终方案。
+- `_final.json` 是老后端在用户提交后保存的最终推荐结果，应作为已提交排序区的唯一文件来源。
+- `_temp.json` 通常是当前推荐/临时方案，可作为未提交历史方案的排序区来源。
+- 无后缀 `.json` 是建会话时从高途全量接口保存的原始数据，包含全量候选和高途 `selectSchool/selectZy` 选中标记，只能作为候选池/兜底来源，不能直接当作已提交排序区。
 - summary 文件可用于老 Agent 总结，但不能替代完整方案迁移。
 
-V2 迁移应优先读取最终方案，其次读取临时方案，最后才重新生成。
+V2 迁移应优先读取最终方案，其次读取临时方案；无后缀原始全量数据只在前两者缺失时用于构建候选池和按目标数量兜底，不应锁定或固定为历史已提交方案。
 
 ### 2.4 老推荐接口
 
@@ -158,9 +160,9 @@ private PlanningStateDTO loadPlanningState(Long chatSessionId) {
 
 `tryImportLegacyPlanningState` 建议按以下顺序查找方案：
 
-1. 如果 `assistant_chat_session.session_status = FINISHED`，优先读取最终提交方案。
-2. 读取 `session_volunteer_{chatSessionId}.json`。
-3. 读取 `session_volunteer_{chatSessionId}_temp.json`。
+1. 优先读取 `session_volunteer_{chatSessionId}_final.json`，命中后按已提交历史方案导入。
+2. 读取 `session_volunteer_{chatSessionId}_temp.json`，命中后按未提交临时推荐方案导入。
+3. 读取 `session_volunteer_{chatSessionId}.json`，仅作为原始全量候选兜底，不按已提交方案处理。
 4. 如本地文件没有，按现有 `VolunteerFilePathUtil` 查 OSS。
 5. 仍不存在时，调用 `volunteerBizService.recommendVolunteerList(tenantId, chatSessionId, false, false)` 生成当前候选，但要标记为“系统重新生成”，不要伪装为用户历史最终方案。
 
@@ -292,6 +294,8 @@ V2 结构主要是：
 
 - `school.is_preferred = true`
 - `school.rank_in_tier` 表示区间内排名
+
+高途原始全量数据中的 `selectSchool/selectZy` 是上游方案数据里的选中标记，不等同于 assistant 后端生成推荐结果时的 `is_preferred`。迁移时不能把 `selectSchool=true` 或任一专业 `selectZy=true` 直接映射为 V2 排序区优选，否则会把原始全量候选大量放入排序区。
 
 迁移规则：
 

@@ -3522,15 +3522,6 @@ public class PlanningStateService {
             log.info("legacyPlanImport final plan unavailable chatSessionId={} reason={}", chatSessionId, ex.getMessage());
         }
         try {
-            VolunteerRecommendListResponse response = volunteerBizService.loadOriginalVolunteerData(chatSessionId);
-            if (hasLegacyPlanItems(response)) {
-                return new LegacyPlanSource(response, "submitted_original", true);
-            }
-            log.info("legacyPlanImport original plan empty chatSessionId={}", chatSessionId);
-        } catch (Exception ex) {
-            log.info("legacyPlanImport original plan unavailable chatSessionId={} reason={}", chatSessionId, ex.getMessage());
-        }
-        try {
             VolunteerRecommendListResponse response = volunteerBizService.loadCachedRecommendData(chatSessionId);
             if (hasLegacyPlanItems(response)) {
                 return new LegacyPlanSource(response, "temp", false);
@@ -3538,6 +3529,15 @@ public class PlanningStateService {
             log.info("legacyPlanImport temp plan empty chatSessionId={}", chatSessionId);
         } catch (Exception ex) {
             log.info("legacyPlanImport temp plan unavailable chatSessionId={} reason={}", chatSessionId, ex.getMessage());
+        }
+        try {
+            VolunteerRecommendListResponse response = volunteerBizService.loadOriginalVolunteerData(chatSessionId);
+            if (hasLegacyPlanItems(response)) {
+                return new LegacyPlanSource(response, "original", false);
+            }
+            log.info("legacyPlanImport original plan empty chatSessionId={}", chatSessionId);
+        } catch (Exception ex) {
+            log.info("legacyPlanImport original plan unavailable chatSessionId={} reason={}", chatSessionId, ex.getMessage());
         }
         return null;
     }
@@ -3563,7 +3563,7 @@ public class PlanningStateService {
         state.setCandidatePoolState(candidatePoolState);
 
         List<CandidateItemDTO> candidates = defaultCandidates(candidatePoolState.getItems());
-        List<CandidateItemDTO> preferredCandidates = selectLegacyPreferredCandidates(candidates, candidatePoolState);
+        List<CandidateItemDTO> preferredCandidates = selectLegacyPreferredCandidates(candidates, candidatePoolState, legacyPlanSource);
         DraftPlanStateDTO draftPlanState = buildLegacyDraftPlanState(preferredCandidates, candidatePoolState, legacyPlanSource.submitted);
         OrderedPlanStateDTO orderedPlanState = buildLegacyOrderedPlanState(draftPlanState, candidatePoolState, candidates, legacyPlanSource);
 
@@ -3608,13 +3608,17 @@ public class PlanningStateService {
     }
 
     private List<CandidateItemDTO> selectLegacyPreferredCandidates(List<CandidateItemDTO> candidates,
-                                                                   CandidatePoolStateDTO candidatePoolState) {
+                                                                   CandidatePoolStateDTO candidatePoolState,
+                                                                   LegacyPlanSource legacyPlanSource) {
         List<CandidateItemDTO> preferred = defaultCandidates(candidates).stream()
                 .filter(item -> Boolean.TRUE.equals(item.getPreferred()))
                 .sorted(buildLegacyPreferredComparator())
                 .collect(Collectors.toList());
         if (!preferred.isEmpty()) {
             return preferred;
+        }
+        if (legacyPlanSource != null && "original".equals(legacyPlanSource.source)) {
+            return Lists.newArrayList();
         }
         Map<String, Integer> requiredTierCounts = candidatePoolState == null ? null : candidatePoolState.getRequiredTierCounts();
         if (requiredTierCounts == null || requiredTierCounts.isEmpty()) {

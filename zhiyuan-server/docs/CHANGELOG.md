@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- 修正老方案懒迁移排序区来源口径：`_final.json` 才作为已提交历史方案导入并锁定，`_temp.json` 作为提交前推荐方案导入，无后缀 `session_volunteer_{id}.json` 仅作为高途原始全量候选兜底；不再把 `selectSchool/selectZy` 映射为 V2 优选，避免把几百到几千条原始候选误塞入排序区。
+- 老方案懒迁移单测补充专业+大学和院校专业组两种模式覆盖，分别验证专业条目计数、专业组 unit 计数和组内专业聚合。
 - 新增 `/session/workspace-state` 工作台轻量状态接口，返回摘要、候选池 summary、草稿、方案、审查和操作记录等工作台所需字段，并裁掉 `candidatePoolState.items` 等大体积候选明细，避免刷新场景继续传输完整 `PlanningStateDTO`。
 - `/session/workspace-state` 在保持轻量的同时补回当前草稿/方案已引用候选的明细项，用于前端刷新后继续展示方案区录取率、推荐系数、专业热度、就业表现等字段，避免恢复全量候选池传输。
 - 排序方案 `move / pin / unpin` 接口新增轻量动作响应 `OrderedPlanActionRes`，只返回排序态、审查摘要、操作日志等前端合并所需字段，避免方案微调接口继续返回 20MB+ 全量规划状态造成明显等待。

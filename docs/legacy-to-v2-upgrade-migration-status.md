@@ -55,6 +55,7 @@ mvn -q -Dtest=PlanningStateServiceTest#shouldImportSubmittedLegacyPlanWhenPlanni
 - 缺少 `planningState` 时导入已提交老方案。
 - 已提交方案缺失时回退临时推荐方案。
 - 老数据缺少 `is_preferred` 时按冲稳保目标数量补选。
+- 无后缀原始全量数据不再按已提交方案导入；`selectSchool/selectZy` 不再映射为 V2 优选。
 - 存在 `planEditCache` 时只提示，不改写正式方案。
 - 已跟踪的 26、29、35 三份老完整数据样本可迁移。
 
@@ -148,7 +149,7 @@ INTERNAL_SERVICE_URL=https://zhiyuan.ytell.cn .venv/bin/python -m uvicorn app.se
 
    注意：当前线上尚未部署新版本，离线 JSON 对账不会影响线上；但一旦通过 V2 后端页面或 API 读取真实会话，缺少 `planningState` 的会话可能触发懒迁移写入。因此页面/API 对账必须在新版本服务部署后，按指定会话、小范围、低峰期执行，并保留单会话回滚脚本。
 
-   2026-05-09 已用生产旁路 `8093` 对 `chatSessionId=2045` 做一次验证，发现原发布包将该会话从 `_temp.json` 导入为 `legacy_import`。根因是生产目录存在无后缀 `session_volunteer_2045.json`，但原发布包最终方案读取只查 `_final.json`。2026-05-10 已修复为 `_final.json` -> 无后缀 `.json` -> `_temp.json` 的读取顺序，并用修复版 JAR 复验通过：`2045` 导入为 `legacy_submitted`，candidate 汇总 `冲=852 / 稳=441 / 保=1206`，ordered 汇总 `冲=749 / 稳=441 / 保=1001`，ordered 全部 locked/pinned。
+   2026-05-09 已用生产旁路 `8093` 对 `chatSessionId=2045` 做一次验证，发现原发布包将该会话从 `_temp.json` 导入为 `legacy_import`。2026-05-10 复盘后确认无后缀 `session_volunteer_{id}.json` 是建会话阶段保存的高途原始全量数据，不是 assistant 后端提交后的最终推荐结果；其中 `selectSchool/selectZy` 也不是 V2 优选口径。当前修正为 `_final.json` -> `_temp.json` -> 无后缀 `.json` 兜底的读取顺序；只有 `_final.json` 会导入为 `legacy_submitted` 并 locked/pinned，无后缀原始数据只用于候选池和目标数量兜底。
 
    必查口径：
 

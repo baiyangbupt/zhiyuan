@@ -173,6 +173,108 @@ public class PlanningStateServiceTest {
     }
 
     @Test
+    void shouldNotTreatOriginalLegacyFullDataAsSubmittedPlan() throws Exception {
+        bindPlanningStateStore();
+        VolunteerBizService parser = new VolunteerBizService();
+        VolunteerRecommendListResponse original = parser.parseVolunteerRecommendListResponse(
+                new String(Files.readAllBytes(Paths.get("data/tmp/session_volunteer_23.json")), StandardCharsets.UTF_8));
+
+        when(volunteerBizService.loadFinalSubmitVolunteerData(1L)).thenThrow(new RuntimeException("missing final"));
+        when(volunteerBizService.loadCachedRecommendData(1L)).thenThrow(new RuntimeException("missing temp"));
+        when(volunteerBizService.loadOriginalVolunteerData(1L)).thenReturn(original);
+
+        PlanningStateDTO state = planningStateService.getPlanningState(1L);
+
+        assertEquals("legacy_import", state.getOrderedPlanState().getGenerationMode());
+        assertEquals(441, state.getCandidatePoolState().getItems().size());
+        assertEquals(0, state.getOrderedPlanState().getItems().size());
+        assertTrue(state.getOrderedPlanState().getItems().stream().noneMatch(item -> Boolean.TRUE.equals(item.getLocked())));
+        assertTrue(state.getOrderedPlanState().getItems().stream().noneMatch(item -> Boolean.TRUE.equals(item.getPinned())));
+        verify(chatSessionExtraDataSharedService, times(1)).save(any(ChatSessionExtraData.class));
+    }
+
+    @Test
+    void shouldImportMajorModeTempPlanByMajorEntries() {
+        bindPlanningStateStore();
+        VolunteerRecommendListResponse legacy = new VolunteerRecommendListResponse();
+        legacy.setBaseData(buildBaseData(3, 2, 1, 0));
+        legacy.getBaseData().setVolunteerModel(VolunteerModel.major);
+
+        VolunteerRecommendListResponse.VolunteerSchool sprintA = buildSchool(
+                "ps1", "s1", "学校A", "北京", 1,
+                buildMajorWithRatio("m1", "专业A", "18"));
+        sprintA.setIs_preferred(true);
+        VolunteerRecommendListResponse.VolunteerSchool sprintB = buildSchool(
+                "ps2", "s2", "学校B", "北京", 2,
+                buildMajorWithRatio("m2", "专业B", "22"));
+        sprintB.setIs_preferred(true);
+        VolunteerRecommendListResponse.VolunteerSchool safe = buildSchool(
+                "ps3", "s3", "学校C", "天津", 1,
+                buildMajorWithRatio("m3", "专业C", "52"));
+        safe.setIs_preferred(true);
+        legacy.setSprints(java.util.Arrays.asList(sprintA, sprintB));
+        legacy.setSafes(java.util.Arrays.asList(safe));
+
+        when(volunteerBizService.loadFinalSubmitVolunteerData(1L)).thenThrow(new RuntimeException("missing final"));
+        when(volunteerBizService.loadCachedRecommendData(1L)).thenReturn(legacy);
+
+        PlanningStateDTO state = planningStateService.getPlanningState(1L);
+
+        assertEquals("major", state.getCandidatePoolState().getVolunteerModel());
+        assertEquals(3, state.getOrderedPlanState().getItems().size());
+        assertEquals(3, state.getOrderedPlanState().getSummary().getTotal());
+        assertEquals(2, state.getOrderedPlanState().getSummary().getTierCounts().get("冲"));
+        assertEquals(1, state.getOrderedPlanState().getSummary().getTierCounts().get("稳"));
+        assertEquals(3, state.getOrderedPlanState().getUnits().size());
+        assertEquals("legacy_import", state.getOrderedPlanState().getGenerationMode());
+    }
+
+    @Test
+    void shouldImportMajorGroupTempPlanBySchoolUnits() {
+        bindPlanningStateStore();
+        VolunteerRecommendListResponse legacy = new VolunteerRecommendListResponse();
+        legacy.setBaseData(buildBaseData(2, 1, 1, 0));
+        legacy.getBaseData().setVolunteerModel(VolunteerModel.majorGroup);
+        CreateSessionReq.VolunteerCount volunteerCount = new CreateSessionReq.VolunteerCount();
+        volunteerCount.setSchoolCount(2);
+        volunteerCount.setMajorCount(2);
+        legacy.getBaseData().setVolunteerCount(volunteerCount);
+
+        VolunteerRecommendListResponse.VolunteerSchool sprint = buildSchool(
+                "ps1", "s1", "学校A第01组", "北京", 1,
+                buildMajorWithRatio("m1", "专业A", "18"));
+        sprint.setMajors(java.util.Arrays.asList(
+                buildMajorWithRatio("m1", "专业A", "18"),
+                buildMajorWithRatio("m2", "专业B", "22"),
+                buildMajorWithRatio("m3", "专业C", "25")));
+        sprint.setIs_preferred(true);
+        VolunteerRecommendListResponse.VolunteerSchool safe = buildSchool(
+                "ps2", "s2", "学校B第01组", "天津", 1,
+                buildMajorWithRatio("m4", "专业D", "52"));
+        safe.setMajors(java.util.Arrays.asList(
+                buildMajorWithRatio("m4", "专业D", "52"),
+                buildMajorWithRatio("m5", "专业E", "58")));
+        safe.setIs_preferred(true);
+        legacy.setSprints(java.util.Arrays.asList(sprint));
+        legacy.setSafes(java.util.Arrays.asList(safe));
+
+        when(volunteerBizService.loadFinalSubmitVolunteerData(1L)).thenThrow(new RuntimeException("missing final"));
+        when(volunteerBizService.loadCachedRecommendData(1L)).thenReturn(legacy);
+
+        PlanningStateDTO state = planningStateService.getPlanningState(1L);
+
+        assertEquals("majorGroup", state.getCandidatePoolState().getVolunteerModel());
+        assertEquals(5, state.getOrderedPlanState().getItems().size());
+        assertEquals(2, state.getOrderedPlanState().getSummary().getTotal());
+        assertEquals(1, state.getOrderedPlanState().getSummary().getTierCounts().get("冲"));
+        assertEquals(1, state.getOrderedPlanState().getSummary().getTierCounts().get("稳"));
+        assertEquals(2, state.getOrderedPlanState().getUnits().size());
+        assertTrue(state.getOrderedPlanState().getUnits().stream()
+                .allMatch(unit -> unit.getMajorItems() != null && !unit.getMajorItems().isEmpty()));
+        assertEquals("legacy_import", state.getOrderedPlanState().getGenerationMode());
+    }
+
+    @Test
     void shouldSelectLegacyPlanByTierTargetsWhenPreferredFlagMissing() {
         bindPlanningStateStore();
         VolunteerRecommendListResponse legacy = new VolunteerRecommendListResponse();
@@ -250,7 +352,8 @@ public class PlanningStateServiceTest {
             Path path = Paths.get("data/tmp/session_volunteer_" + sessionId + ".json");
             VolunteerRecommendListResponse legacy = parser.parseVolunteerRecommendListResponse(
                     new String(Files.readAllBytes(path), StandardCharsets.UTF_8));
-            assertLegacySubmittedImportMatchesSource(sessionId, legacy, true);
+            assertEquals(0, countLegacyPreferredEntries(legacy));
+            assertLegacyImportMatchesSource(sessionId, legacy, true);
         }
     }
 
@@ -275,7 +378,8 @@ public class PlanningStateServiceTest {
             if (countLegacyRecommendEntries(legacy) == 0) {
                 continue;
             }
-            assertLegacySubmittedImportMatchesSource(sessionId, legacy, false);
+            boolean submitted = sampleFile.getFileName().toString().contains("_final");
+            assertLegacyImportMatchesSource(sessionId, legacy, submitted, false);
         }
     }
 
@@ -3493,6 +3597,19 @@ public class PlanningStateServiceTest {
     private void assertLegacySubmittedImportMatchesSource(Long sessionId,
                                                           VolunteerRecommendListResponse legacy,
                                                           boolean exactSelectedCount) {
+        assertLegacyImportMatchesSource(sessionId, legacy, true, exactSelectedCount);
+    }
+
+    private void assertLegacyImportMatchesSource(Long sessionId,
+                                                 VolunteerRecommendListResponse legacy,
+                                                 boolean exactSelectedCount) {
+        assertLegacyImportMatchesSource(sessionId, legacy, false, exactSelectedCount);
+    }
+
+    private void assertLegacyImportMatchesSource(Long sessionId,
+                                                 VolunteerRecommendListResponse legacy,
+                                                 boolean submitted,
+                                                 boolean exactSelectedCount) {
         setUp();
         bindPlanningStateStore(sessionId);
         int expectedCandidateCount = countLegacyRecommendEntries(legacy);
@@ -3501,7 +3618,12 @@ public class PlanningStateServiceTest {
             expectedSelectedCount = countLegacyTargetSelectedEntries(legacy);
         }
 
-        when(volunteerBizService.loadFinalSubmitVolunteerData(sessionId)).thenReturn(legacy);
+        if (submitted) {
+            when(volunteerBizService.loadFinalSubmitVolunteerData(sessionId)).thenReturn(legacy);
+        } else {
+            when(volunteerBizService.loadFinalSubmitVolunteerData(sessionId)).thenThrow(new RuntimeException("missing final"));
+            when(volunteerBizService.loadCachedRecommendData(sessionId)).thenReturn(legacy);
+        }
 
         PlanningStateDTO state = planningStateService.getPlanningState(sessionId);
 
@@ -3515,9 +3637,14 @@ public class PlanningStateServiceTest {
             assertEquals(state.getDraftPlanState().getItems().size(), state.getOrderedPlanState().getItems().size());
             assertTrue(state.getDraftPlanState().getItems().size() <= expectedCandidateCount);
         }
-        assertEquals("legacy_submitted", state.getOrderedPlanState().getGenerationMode());
-        assertTrue(state.getOrderedPlanState().getItems().stream().allMatch(item -> Boolean.TRUE.equals(item.getLocked())));
-        assertTrue(state.getOrderedPlanState().getItems().stream().allMatch(item -> Boolean.TRUE.equals(item.getPinned())));
+        assertEquals(submitted ? "legacy_submitted" : "legacy_import", state.getOrderedPlanState().getGenerationMode());
+        if (submitted) {
+            assertTrue(state.getOrderedPlanState().getItems().stream().allMatch(item -> Boolean.TRUE.equals(item.getLocked())));
+            assertTrue(state.getOrderedPlanState().getItems().stream().allMatch(item -> Boolean.TRUE.equals(item.getPinned())));
+        } else {
+            assertTrue(state.getOrderedPlanState().getItems().stream().noneMatch(item -> Boolean.TRUE.equals(item.getLocked())));
+            assertTrue(state.getOrderedPlanState().getItems().stream().noneMatch(item -> Boolean.TRUE.equals(item.getPinned())));
+        }
         assertTrue(state.getOperationLogs().stream().anyMatch(log -> "legacy_plan_import".equals(log.getType())));
         verify(chatSessionExtraDataSharedService, times(1)).save(any(ChatSessionExtraData.class));
     }
