@@ -387,6 +387,17 @@ npm run server:${APP_ENV}
 crpi-zmigon88wuzuzy3k.cn-hangzhou.personal.cr.aliyuncs.com/gt_test_123/gaotu-volunteer-assistant:prod-2.0.6
 ```
 
+前端旁路检查记录：
+
+- 当前生产老前端使用 `basePath=/assistant-pc`，`/assistant-pc/session` 返回 200；根路径 `/` 和 `/assistant-pc` 返回 404 属于当前线上行为。
+- 新前端镜像 `zhiyuan-web:3.0.0-amd64` 同样在非 `dev` 环境使用 `basePath=/assistant-pc`。
+- 已用临时容器 `127.0.0.1:18088 -> 28688` 验证：
+  - `/assistant-pc/session` 返回 200
+  - `/assistant-pc/sessionDetailV2` 返回 200
+  - `/assistant-pc/sessionDetailLegacy` 返回 200
+  - 页面 HTML 中静态资源路径为 `/assistant-pc/_next/static/...`
+- 当前镜像启动时会提示 `NEXT_PUBLIC_ASSISTANT_API_BASE_URL`、`NEXT_PUBLIC_OUTER_API_BASE_URL` 缺失；这两个变量只在 `next.config.mjs` 的 `env` 注入和 `APP_ENV=dev` rewrites 中使用，生产核心请求仍走 `NEXT_PUBLIC_API_BASE_URL=https://www.gaotuzhiyuan.com` 与生产 rewrites。后续可在重新制包时移除这两个未使用的生产 env 注入，或在生产启动时补为 `https://www.gaotuzhiyuan.com` 以消除 warning。
+
 ### G4. Agent 切换准备
 
 老 Agent 当前端口：
