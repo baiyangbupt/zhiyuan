@@ -220,46 +220,149 @@ python3 scripts/reset_planning_state.py --session-id 1002 --execute
 
 真实样本和对账通过后，再进入部署准备。
 
-后端：
+### G1. 构建边界
+
+生产环境不作为编译构建环境。生产机只接收已经验证过的 JAR、Docker 镜像或打包产物，并执行启动、切流、健康检查和回滚。
+
+构建应在本地、CI 或独立构建机完成：
+
+- 后端：运行单测并构建 Spring Boot JAR。
+- 前端：按目标访问路径选择正确环境构建。
+- Agent：仅在 agent 代码或模型运行配置变化时构建新镜像。
+- Rank：本次迁移不涉及 rank 算法或数据字段变化时不升级。
+
+不要直接打包当前工作区目录上传生产。若需要源码包，使用 `git archive HEAD` 或生产机 `git pull` 固定提交，避免把本地 `.env`、构建缓存、临时 JSON 等未提交文件带到生产。
+
+### G2. 固定版本
+
+发布前先确认本地提交已经进入远端分支：
 
 ```bash
-cd /root/dev/zhiyuan/zhiyuan-server
+git status --short --branch
+git log --oneline -5
+git push origin develop
+```
+
+生产或构建环境使用固定 commit：
+
+```bash
+cd /root/dev/zhiyuan
+git fetch origin develop
+git checkout develop
+git pull --ff-only origin develop
+git rev-parse --short HEAD
+```
+
+记录本次发布 commit，后续 JAR、镜像 tag、备份目录都使用同一个 release 标识。
+
+### G3. 后端构建与产物路径
+
+构建机执行：
+
+```bash
+cd zhiyuan-server
+mvn test
 mvn package -DskipTests
 ```
 
-前端：
+产物：
+
+```text
+zhiyuan-server/target/gaotu-assistant-server.jar
+```
+
+生产建议使用新目录承载 V2 后端，避免直接覆盖老服务：
+
+```text
+/root/work/zhiyuan-server/
+  gaotu-assistant-server.jar
+  application-online.yml
+  logs/
+  backup/
+```
+
+老后端保留在：
+
+```text
+/root/work/gaotu-assistant-server/gaotu-assistant-server.jar
+```
+
+建议新后端先启动到独立端口，例如 `8091`；验证通过后再由 Nginx 切接口流量。若必须复用 `8090`，发布前必须先准备好老 JAR、老配置和回滚启动命令。
+
+### G4. 前端构建方式
+
+前端必须先确认目标访问路径。
+
+正式生产老入口使用 `/assistant-pc` 时，不能使用 `build:dev` 或当前 `zhiyuan.ytell.cn` 根路径策略。`next.config.mjs` 当前规则为：
+
+```js
+const basePath = process.env.APP_ENV === 'dev' ? '' : '/assistant-pc';
+```
+
+因此正式生产 `/assistant-pc` 应使用非 `dev` 环境构建，例如：
 
 ```bash
-cd /root/dev/zhiyuan/zhiyuan-web
-npm run build:dev
+cd zhiyuan-web
+npm run build:prod
 ```
+
+或 Docker 镜像：
+
+```bash
+docker build --build-arg APP_ENV=production -t zhiyuan-web:<release> zhiyuan-web
+```
+
+如果部署目标是 `zhiyuan.ytell.cn` 根路径，才使用当前 `.env.deploy` 中的 `APP_ENV=dev` 策略，让 `basePath` 为空。
+
+两类前端包不能混用：
+
+| 目标环境 | 访问路径 | 构建方式 | 说明 |
+| --- | --- | --- | --- |
+| 正式生产老入口 | `/assistant-pc/...` | `npm run build:prod` 或 `APP_ENV=production` 镜像 | 需要 `basePath=/assistant-pc` |
+| `zhiyuan.ytell.cn` 新域名 | `/...` | 当前 `.env.deploy` / `APP_ENV=dev` 策略 | 根路径访问，不能直接用于 `/assistant-pc` |
+
+### G5. Agent 和 Rank
 
 Agent：
 
-```bash
-cd /root/dev/zhiyuan/zhiyuan-agent
-# 根据生产环境镜像策略构建或更新
-```
+- 若本次只发布 V2 迁移前后端能力，agent 可暂不升级。
+- 若调整大模型配置、对话编排或 WebSocket 事件，需要构建并发布新 agent 镜像。
+- 发布前确认 `LLM_BASE_URL`、`LLM_MODEL_NAME`、`LLM_API_KEY` 为有效配置，不使用占位值。
 
 Rank：
 
-- 如果本次没有算法或数据改造，可暂不升级。
-- 如果 V2 依赖新 rank 字段，需单独验证再升级。
+- 如果本次没有算法或数据改造，默认不升级 rank。
+- 如果 V2 依赖新 rank 字段，需先在构建/测试环境验证 rank 响应字段，再单独升级。
+
+### G6. 发布前确认清单
+
+发布前必须确认：
+
+- 本次 release commit。
+- 后端 JAR 路径、配置路径、启动端口。
+- 前端目标路径是 `/assistant-pc` 还是根路径。
+- 前端构建环境与目标路径一致。
+- 新 web 端口，例如 `3001`；老 web 端口保持不动。
+- 新 server 端口，例如 `8091`；老 server 端口保持不动。
+- Nginx 切换目标和回滚目标。
+- 老前端容器、老后端进程、老 agent、老 rank 均未删除。
+- 数据库、Redis、老方案 JSON 目录只读确认完成。
+- 真实样本迁移测试、真实会话对账、单会话回滚 dry-run 已完成。
 
 ## 10. 阶段 H：正式部署和灰度
 
 部署前必须明确：
 
-- 是替换现有 `/root/work/gaotu-assistant-server` 老后端，还是新建 `/root/work/zhiyuan-server`。
-- Nginx 路由是否切到新端口。
-- 新前端是否覆盖老前端容器。
+- 使用新目录 `/root/work/zhiyuan-server` 还是直接替换老目录。推荐新目录。
+- 新后端端口和 Nginx 接口代理目标。
+- 新前端端口和 Nginx `/assistant-pc` 代理目标。
 - Agent WebSocket 路由是否切到新 Agent。
-- 回滚命令是什么。
+- 每个模块的回滚命令。
 
 推荐灰度：
 
 1. 后端先上线兼容版本，旧接口保留。
-2. 内部账号访问 `/sessionDetailV2`。
+2. 新前端先启动在独立端口，正式生产通过 `/assistant-pc/sessionDetailV2` 做内部访问。
 3. 少量真实会话进入 V2。
 4. 观察迁移日志：
 
@@ -270,21 +373,146 @@ python3 scripts/analyze_legacy_migration_logs.py /path/to/server.log
 
 5. 无异常后扩大入口。
 
+### H1. 后端启动和验证
+
+示例：
+
+```bash
+mkdir -p /root/work/zhiyuan-server/logs /root/work/zhiyuan-server/backup
+cp /tmp/release/gaotu-assistant-server.jar /root/work/zhiyuan-server/
+cp /root/work/gaotu-assistant-server/application-online.yml /root/work/zhiyuan-server/application-online.yml
+```
+
+启动方式可以继续使用 systemd，但建议使用新的 unit，例如 `zhiyuan-server.service`，并让新服务监听独立端口。
+
+验证：
+
+```bash
+systemctl status zhiyuan-server.service
+journalctl -u zhiyuan-server.service -n 200 --no-pager
+NEW_SERVER_PORT=8091
+curl -I "http://127.0.0.1:${NEW_SERVER_PORT}/gaotu-assistant-bot/base-data/province-city"
+```
+
+### H2. 前端启动和验证
+
+如果使用 Docker 镜像：
+
+```bash
+RELEASE=<release>
+NEW_WEB_PORT=3001
+docker run -d --name "zhiyuan-web-${RELEASE}" \
+  -p "${NEW_WEB_PORT}:28688" \
+  --restart unless-stopped \
+  "zhiyuan-web:${RELEASE}"
+```
+
+正式生产 `/assistant-pc` 包验证：
+
+```bash
+NEW_WEB_PORT=3001
+curl -I "http://127.0.0.1:${NEW_WEB_PORT}/assistant-pc/customer"
+curl -I "http://127.0.0.1:${NEW_WEB_PORT}/assistant-pc/sessionDetailV2"
+```
+
+如果这里根路径 `/customer` 可访问但 `/assistant-pc/customer` 不可访问，说明误用了根路径包，不应切生产。
+
+### H3. Nginx 切换
+
+正式生产 `/assistant-pc` 示例：
+
+```nginx
+location /assistant-pc/ {
+    proxy_pass http://127.0.0.1:<new-web-port>;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+
+location /gaotu-assistant-bot/ {
+    proxy_pass http://127.0.0.1:<new-server-port>;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+切换前检查：
+
+```bash
+nginx -t
+```
+
+切换后：
+
+```bash
+nginx -s reload
+curl -I https://<prod-domain>/assistant-pc/customer
+curl -I https://<prod-domain>/gaotu-assistant-bot/base-data/province-city
+```
+
 ## 11. 回滚要点
 
 前端回滚：
 
-- 把入口切回老页面。
-- 保留 `/sessionDetailLegacy`。
+```bash
+# Nginx 切回老前端端口
+nginx -t
+nginx -s reload
+
+# 如果新前端使用独立容器，停止新容器
+RELEASE=<release>
+docker stop "zhiyuan-web-${RELEASE}"
+```
+
+如果是覆盖式发布，则启动老前端容器：
+
+```bash
+docker start gaotu-volunteer-assistant-prod
+```
+
+保留 `/sessionDetailLegacy`，不要在回滚时删除旧页面入口。
 
 后端回滚：
 
-- 切回老 JAR 或老容器。
-- 新增 `planningState` dataKey 对老版本无影响。
+```bash
+systemctl stop zhiyuan-server.service
+systemctl start gaotu-assistant-server.service
+nginx -t
+nginx -s reload
+```
+
+若复用了同一个 systemd unit，则恢复老 JAR：
+
+```bash
+cp /root/work/zhiyuan-server/backup/gaotu-assistant-server.jar.<old-release> \
+  /root/work/zhiyuan-server/gaotu-assistant-server.jar
+systemctl restart zhiyuan-server.service
+```
+
+新增 `planningState` dataKey 对老版本无影响，回滚时不需要批量删除。
+
+Agent 回滚：
+
+```bash
+docker stop <new-agent-container>
+docker start gaotu-zy-agent-plus-prod
+```
+
+Rank 回滚：
+
+```bash
+docker stop <new-rank-container>
+docker start gaokao-volunteer-rank-prod
+```
 
 单会话回滚：
 
 ```bash
+cd /root/dev/zhiyuan/zhiyuan-server
+python3 scripts/reset_planning_state.py --session-id <id>
 python3 scripts/reset_planning_state.py --session-id <id> --execute
 ```
 
@@ -293,4 +521,3 @@ python3 scripts/reset_planning_state.py --session-id <id> --execute
 - 不删除老 JSON。
 - 不删除旧 `/volunteer/*` 接口。
 - 不批量删除 `planningState`。
-

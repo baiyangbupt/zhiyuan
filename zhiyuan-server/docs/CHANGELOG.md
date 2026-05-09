@@ -10,6 +10,8 @@
 
 ### Added
 
+- 发布版本号统一定为 `3.0.0`，同步更新 backend `pom.xml`、frontend `package.json` 与 agent `pyproject.toml`，用于本次老版本到 V2 平滑升级 release tag。
+- 生产升级实施文档补齐部署准备细节，明确生产不做编译构建，并区分正式 `/assistant-pc` 路径与 `zhiyuan.ytell.cn` 根路径的前端构建方式、产物路径、Nginx 切换和回滚命令。
 - 老方案懒迁移外部生产样本验证已跑通：从生产机 `/tmp/zhiyuan-migration-samples` 下载 20 个 JSON 文件，覆盖 9 个会话及普通 / `_final` / `_temp` 文件形态，`shouldImportExternalLegacyCompleteDataSamples` 通过。
 - `planningState` 缺失时新增老方案懒迁移入口：优先从老版已提交方案文件导入，失败后回退临时推荐文件；导入成功后写入 `assistant_chat_session_extra_data(data_key=planningState)`，后续访问直接读 V2 状态。
 - 老方案导入复用现有候选平铺、草稿/排序 summary 和专业组聚合逻辑，把老版 `is_preferred=true` 的优报项导入 `draftPlanState + orderedPlanState`，未优报项保留在 `candidatePoolState`。
