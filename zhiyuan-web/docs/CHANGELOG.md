@@ -9,6 +9,7 @@
 - `sessionDetailV2` 首次自动生成方案、刷新候选池、草稿增删锁定等返回规划状态的路径统一合并候选明细缓存，避免新建会话刚出方案时必须手动刷新后才显示录取率、推荐系数、专业热度等指标。
 - `sessionDetailV2` 对话工作台卡片收口为当前实际支持的 `candidate / ordered` 两类视图；历史或异常返回的 `review / draft` 卡片不再渲染，避免出现“审查结果”等无对应工作区入口的误导卡片。
 - `sessionDetailV2` 方案区上移、下移、固定、取消固定操作改为消费后端轻量响应并合并本地排序态，同时补充操作 loading，避免每次调整后重新拉取 20MB+ 全量 `planningState` 导致长时间无提示等待。
+- `sessionDetailV2` 工作台移动端候选专业明细改为纵向信息卡展示，并收紧概览、筛选、方案卡片和草稿篮的小屏换行规则，避免横向表格和长文本撑破屏幕。
 
 ### Added
 
@@ -19,6 +20,7 @@
 - 新增建会话超时兜底文档，记录 `sessionDetailV2` 切主入口后创建失败的真实根因、超时止血策略与前端回查会话方案。
 - 新增切页前标签治理与协议统一文档引用，明确 `sessionDetail -> sessionDetailV2` 正式切换前必须完成 frontend / backend / agent 的候选筛选字段对齐。
 - 新增对话富内容输出与展示美化方案文档，统一规划 agent 输出约束、markdown 渲染层、结构化卡片协议与渐进式改造顺序，作为后续修复表格错位、列表缩进和风险/对比消息美化的设计基线。
+- 新增 `sessionDetailV2` 移动端展示修复设计文档，记录候选专业纵向卡片、小屏换行和验证方式。
 - `sessionDetailV2` 新增候选视图状态持久化接线，工作台筛选与排序方式可回写 `planningState.candidateViewState`。
 - `sessionDetailV2` 候选志愿卡片切换为消费 planning 候选池的真实结构化字段，补齐院校排名、保研率、硕博点、专业代码、学制、计划数、历史分数等展示所需的数据类型。
 - `sessionDetailV2` 候选筛选新增 `院校排名` 排序字段，排序能力与 backend comparator 对齐。

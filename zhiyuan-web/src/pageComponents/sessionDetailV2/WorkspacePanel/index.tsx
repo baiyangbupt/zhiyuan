@@ -2923,6 +2923,62 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                         </div>
                                       </div>
                                     </div>
+                                    <div className={style.mobileMajorCard}>
+                                      <div className={style.mobileMajorTop}>
+                                        <div className={style.mobileMajorTitle}>
+                                          {renderMajorName(item.majorName)}
+                                        </div>
+                                        <div className={`${style.majorRatioBadge} ${getTierClassName(getMajorTierLabel(item))}`}>
+                                          <span>{formatPercent(item.admissionRatio) || '--'}</span>
+                                          <span>{getMajorTierLabel(item)}</span>
+                                        </div>
+                                      </div>
+                                      <div className={style.reasonTags}>
+                                        {buildMajorTags(item)
+                                          .filter(Boolean)
+                                          .map(reason => (
+                                            <Tag key={`${item.volunteerId}-mobile-${reason}`}>{reason}</Tag>
+                                          ))}
+                                      </div>
+                                      <div className={style.mobileMajorInfoGrid}>
+                                        <div>
+                                          <span>计划数</span>
+                                          <strong>{formatNumber(item.planNum)}</strong>
+                                        </div>
+                                        <div>
+                                          <span>学制</span>
+                                          <strong>{item.duration || '-'}</strong>
+                                        </div>
+                                        <div>
+                                          <span>学费</span>
+                                          <strong>{formatMetricNumber(item.tuitionPerYear, '/年')}</strong>
+                                        </div>
+                                        <div>
+                                          <span>专业代码</span>
+                                          <strong>{item.majorCode || '-'}</strong>
+                                        </div>
+                                      </div>
+                                      {item.mustSubjects?.length ? (
+                                        <div className={style.mobileMajorSubject}>
+                                          选科：{item.mustSubjects.join(' / ')}
+                                        </div>
+                                      ) : null}
+                                      {historyYears.length > 0 ? (
+                                        <div className={style.mobileHistoryList}>
+                                          {historyYears.map((year, yearIndex) => (
+                                            <div
+                                              key={`${item.volunteerId}-mobile-history-${year || yearIndex}`}
+                                              className={style.mobileHistoryItem}
+                                            >
+                                              <div className={style.mobileHistoryYear}>{year || '-'}</div>
+                                              <div>人数 {year ? getHistoryValue(item.majorHistoryScores || [], year, 'enrollNum') : '-'}</div>
+                                              <div>分数 {year ? getHistoryValue(item.majorHistoryScores || [], year, 'score') : '-'}</div>
+                                              <div>位次 {year ? getHistoryValue(item.majorHistoryScores || [], year, 'pos') : '-'}</div>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      ) : null}
+                                    </div>
                                     <div className={style.majorActionBar}>
                                       <div className={style.cardMetrics}>
                                         <span>推荐系数 {formatNumber(item.finalScore)}</span>
