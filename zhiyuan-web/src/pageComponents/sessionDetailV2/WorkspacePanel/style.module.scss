@@ -51,6 +51,18 @@
   color: #9b8379;
 }
 
+.legacySubmittedNotice {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid #f2d5a2;
+  border-radius: 12px;
+  background: #fff8e8;
+  color: #8a5c12;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
 .stageToolbar {
   display: flex;
   align-items: center;
@@ -1395,6 +1407,12 @@
   .metricMeta {
     font-size: 11px;
     line-height: 1.35;
+  }
+
+  .legacySubmittedNotice {
+    margin-bottom: 10px;
+    padding: 9px 10px;
+    font-size: 12px;
   }
 
   .stageToolbar {

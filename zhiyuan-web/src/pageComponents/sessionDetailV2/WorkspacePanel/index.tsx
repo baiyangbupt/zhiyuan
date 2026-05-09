@@ -482,6 +482,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const draftSummary = planningState?.draftPlanState?.summary;
   const orderedSummary = planningState?.orderedPlanState?.summary;
   const reviewSummary = planningState?.reviewState?.summary;
+  const isLegacySubmittedPlan = planningState?.orderedPlanState?.generationMode === 'legacy_submitted';
   const draftIdSet = useMemo(
     () => new Set(draftItems.map(item => item.volunteerId).filter(Boolean)),
     [draftItems]
@@ -2553,6 +2554,12 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
             </div>
           </div>
         </div>
+
+        {isLegacySubmittedPlan && (
+          <div className={style.legacySubmittedNotice}>
+            历史已提交方案，建议只读查看；如需调整，请先复制或重新生成方案。
+          </div>
+        )}
 
         <div className={style.stageToolbar}>
           <div className={style.viewTabs}>

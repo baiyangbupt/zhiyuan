@@ -146,6 +146,33 @@ mvn -q -Dtest=PlanningStateServiceTest#shouldImportExternalLegacyCompleteDataSam
 
 目标：确认新老页面结果一致。
 
+对线上影响说明：
+
+- 只分析 `/tmp/zhiyuan-migration-samples` 中已复制出来的 JSON 样本，不访问接口、不连接数据库、不写 `planningState`，对线上无影响。
+- 使用 V2 页面或 V2 后端接口对真实 `chatSessionId` 做对账时，如果该会话缺少 `planningState`，会触发懒迁移并写入一条 V2 状态。因此这一步必须等新版本服务部署后，按指定会话小范围执行。
+- 执行页面/API 对账前，先确认系统负载、磁盘、内存、容器状态；低峰期操作；每批对账后看日志和接口耗时。
+
+### D1. 离线样本结构对账
+
+先对复制出来的老 JSON 样本做只读结构对账：
+
+```bash
+cd /root/dev/zhiyuan
+python3 zhiyuan-server/scripts/analyze_legacy_plan_samples.py /tmp/zhiyuan-migration-samples
+```
+
+当前已完成一次生产样本对账：
+
+- 样本文件：20 个。
+- 覆盖会话：`400 / 953 / 960 / 965 / 968 / 989 / 990 / 1378 / 1496`。
+- 解析结果：`files_ok=20`，`files_failed=0`。
+- 汇总规模：学校/专业组记录 `23309` 条，候选/专业记录 `58896` 条。
+- 字段完整性：学校 ID、学校名称、计划学校 ID、专业身份字段缺失均为 `0`。
+- 老格式差异：部分 `_final`、`_temp` 文件缺少显式优选标记，合计 `missing_pref_flag=9663`，后续仍按迁移逻辑中的冲/稳/保目标数量补选策略处理。
+- 空方案边界：`1378`、`1496` 的 `_final/_temp` 样本解析为空方案，无异常。
+
+### D2. 页面/API 人工对账
+
 建议先选至少 20 个真实 `chatSessionId`：
 
 - 10 个已提交方案。
@@ -293,4 +320,3 @@ python3 scripts/reset_planning_state.py --session-id <id> --execute
 - 不删除老 JSON。
 - 不删除旧 `/volunteer/*` 接口。
 - 不批量删除 `planningState`。
-

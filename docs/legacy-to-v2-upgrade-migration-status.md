@@ -39,6 +39,7 @@
 - `/sessionDetailV2` 移动端默认保留对话主视图，通过底部 `志愿方案 / 会话列表` 打开新工作区和会话列表抽屉。
 - `/sessionDetailLegacy` 移动端保留 `志愿方案 / 会话列表` 快捷入口，去掉老版 `用户信息` 入口。
 - V2 工作区移动端已完成候选专业卡片化、方案组头部错位修复和底部快捷入口收敛。
+- V2 工作区已识别 `orderedPlanState.generationMode=legacy_submitted` 并展示“历史已提交方案，建议只读查看”提示，降低用户误编辑历史提交方案的风险。
 
 ## 3. 已验证事项
 
@@ -82,6 +83,23 @@ mvn -q -Dtest=PlanningStateServiceTest#shouldImportExternalLegacyCompleteDataSam
 - 文件类型覆盖普通方案、`_final`、`_temp`。
 - 测试日志显示样本均可解析并导入为 V2 `planningState`；部分同一会话存在多个文件，按文件维度重复验证属于预期。
 
+生产外部样本离线对账已验证：
+
+```bash
+python3 zhiyuan-server/scripts/analyze_legacy_plan_samples.py /tmp/zhiyuan-migration-samples
+```
+
+验证结果：
+
+- 共扫描 20 个 JSON 文件，覆盖 9 个会话：`400 / 953 / 960 / 965 / 968 / 989 / 990 / 1378 / 1496`。
+- `files_ok=20`，`files_failed=0`。
+- 汇总识别学校/专业组记录 `23309` 条，候选/专业记录 `58896` 条。
+- 未发现学校 ID、学校名称、计划学校 ID、专业身份字段缺失。
+- 部分 `_final`、`_temp` 文件缺少显式优选标记，合计 `missing_pref_flag=9663`；这与老数据格式差异一致，需要继续依赖迁移逻辑中的冲/稳/保目标数量补选策略。
+- `1378`、`1496` 的 `_final/_temp` 样本为小体积空方案，解析结果为空且无异常，可作为空方案边界样本。
+
+说明：该离线对账只读取复制到 `/tmp/zhiyuan-migration-samples` 的 JSON 样本，不访问线上接口、不连接数据库、不写入 `planningState`，不会影响线上用户。
+
 ## 4. 剩余遗留事项
 
 ### P0：上线前必须完成
@@ -89,6 +107,8 @@ mvn -q -Dtest=PlanningStateServiceTest#shouldImportExternalLegacyCompleteDataSam
 1. 对真实会话做 V2 与老页面结果对比。
 
    外部 JSON 样本迁移测试已经通过，但仍需要用浏览器/接口对同一个 `chatSessionId` 做老页面与 V2 页面人工对照。
+
+   注意：当前线上尚未部署新版本，离线 JSON 对账不会影响线上；但一旦通过 V2 后端页面或 API 读取真实会话，缺少 `planningState` 的会话可能触发懒迁移写入。因此页面/API 对账必须在新版本服务部署后，按指定会话、小范围、低峰期执行，并保留单会话回滚脚本。
 
    必查口径：
 
@@ -117,10 +137,6 @@ mvn -q -Dtest=PlanningStateServiceTest#shouldImportExternalLegacyCompleteDataSam
    ```
 
    删除后重新进入 V2 应能重新触发懒迁移；回旧页仍能查看老方案。
-
-4. 补齐前端“历史已提交方案”明确展示。
-
-   后端已经提供 `legacy_submitted` 和锁定/固定状态，前端仍需要更清楚地提示“历史已提交方案，建议只读查看”，避免用户误以为可以随意编辑。
 
 ### P1：灰度阶段必须观察
 
