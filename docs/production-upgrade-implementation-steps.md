@@ -355,6 +355,9 @@ sha256=3a476d33384fb478e1a9739298afc2232214257c47622385f55589357e388c78
 - 已改用 systemd 托管恢复老后端，临时服务名为 `gaotu-assistant-server-rollback.service`，当前监听 `8090`，基础接口 `/gaotu-assistant-bot/base-data/province-city` 返回 200。
 - 后续正式切换后端时，必须先创建或复用 systemd service 启动新后端，不要在当前自动化会话里使用裸 `nohup ... &` 作为生产启动方式。
 - 当前前端、Agent、Rank 未变更，仍分别使用老容器 `gaotu-volunteer-assistant-prod`、`gaotu-zy-agent-plus-prod`、`gaokao-volunteer-rank-prod`。
+- `2026-05-10 05:04` 已创建并启动 `zhiyuan-server-3.0.0-prod.service`，新后端监听 `8090`。
+- 新后端切换后检查通过：`/gaotu-assistant-bot/base-data/province-city`、`/gaotu-assistant-bot/inner/planning/1/session/workspace-state?chatSessionId=2045` 均返回 200。
+- `gaotu-assistant-server-rollback.service` 已停止，保留 service 文件作为后端回滚入口。
 
 后端回滚核心路径：
 
@@ -405,6 +408,18 @@ crpi-zmigon88wuzuzy3k.cn-hangzhou.personal.cr.aliyuncs.com/gt_test_123/gaotu-vol
   - `/assistant-pc/sessionDetailLegacy` 返回 200
   - 页面 HTML 中静态资源路径为 `/assistant-pc/_next/static/...`
 - 当前镜像启动时会提示 `NEXT_PUBLIC_ASSISTANT_API_BASE_URL`、`NEXT_PUBLIC_OUTER_API_BASE_URL` 缺失；这两个变量只在 `next.config.mjs` 的 `env` 注入和 `APP_ENV=dev` rewrites 中使用，生产核心请求仍走 `NEXT_PUBLIC_API_BASE_URL=https://www.gaotuzhiyuan.com` 与生产 rewrites。后续可在重新制包时移除这两个未使用的生产 env 注入，或在生产启动时补为 `https://www.gaotuzhiyuan.com` 以消除 warning。
+
+前端正式切换记录：
+
+- `2026-05-10 05:08` 已停止老前端容器 `gaotu-volunteer-assistant-prod`，启动新前端容器 `zhiyuan-web-3.0.0-prod`。
+- 新前端镜像：`zhiyuan-web:3.0.0-amd64`。
+- 新前端端口：`88 -> 28688`。
+- 启动环境：`APP_ENV=prod`，`--restart unless-stopped`。
+- 切换后检查通过：
+  - `/assistant-pc/session` 返回 200
+  - `/assistant-pc/sessionDetailV2` 返回 200
+  - `/assistant-pc/sessionDetailLegacy` 返回 200
+- 老前端容器保留为 stopped 状态，用于快速回滚。
 
 ### G4. Agent 切换准备
 
@@ -797,11 +812,30 @@ cp /root/work/zhiyuan-server/backup/zhiyuan-server.jar.<old-release> \
 systemctl restart zhiyuan-server.service
 ```
 
-当前生产临时回滚状态：
+当前生产上线状态：
 
-- 老后端已由 `/etc/systemd/system/gaotu-assistant-server-rollback.service` 托管恢复。
-- 若继续发布后端，应先 `systemctl stop gaotu-assistant-server-rollback.service` 释放 `8090`，再启动新后端 systemd service。
-- 若保持老版本运行，不要删除该临时 service；它当前承载生产 `8090`。
+- 后端：`zhiyuan-server-3.0.0-prod.service` active，监听 `8090`。
+- 前端：`zhiyuan-web-3.0.0-prod` running，监听 `88 -> 28688`。
+- Agent：仍使用老容器 `gaotu-zy-agent-plus-prod`，监听 `8091 -> 8001`。
+- Rank：仍使用老容器 `gaokao-volunteer-rank-prod`，监听 `8092 -> 5001`。
+
+当前后端快速回滚：
+
+```bash
+systemctl stop zhiyuan-server-3.0.0-prod.service
+systemctl start gaotu-assistant-server-rollback.service
+curl -sS -o /dev/null -w '%{http_code} %{time_total}\n' \
+  http://127.0.0.1:8090/gaotu-assistant-bot/base-data/province-city
+```
+
+当前前端快速回滚：
+
+```bash
+docker stop zhiyuan-web-3.0.0-prod
+docker start gaotu-volunteer-assistant-prod
+curl -sS -o /dev/null -w '%{http_code} %{time_total}\n' \
+  http://127.0.0.1:88/assistant-pc/session
+```
 
 新增 `planningState` dataKey 对老版本无影响，回滚时不需要批量删除。
 
