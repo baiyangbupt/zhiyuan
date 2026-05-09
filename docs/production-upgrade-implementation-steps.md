@@ -820,9 +820,15 @@ systemctl restart zhiyuan-server.service
   - sha256：`d21c8ca57ef3bcf825f45cec96890f4d6fa2d135fe3721c973c74669233edb69`
   - 上一版新后端 JAR 备份：`/root/work/zhiyuan-server-3.0.0/zhiyuan-server.jar.before-2221541`
 - 前端：`zhiyuan-web-3.0.0-prod` running，监听 `88 -> 28688`。
-- Agent：仍使用老容器 `gaotu-zy-agent-plus-prod`，监听 `8091 -> 8001`。
+- Agent：`zhiyuan-agent-3.0.0-prod` running，监听 `8091 -> 8009`。
+  - 镜像：`zhiyuan-agent:3.0.0-amd64`
+  - LLM 配置：`LLM_PROVIDER=openai_compatible`，`LLM_MODEL_NAME=Pro/moonshotai/Kimi-K2.6`，`LLM_BASE_URL=https://api.siliconflow.cn/v1`
+  - `LLM_API_KEY` 仅作为容器环境变量传入，不写入仓库文档。
+  - `INTERNAL_SERVICE_URL=http://host.docker.internal:8090`
+  - `RANK_SERVICE_URL=http://host.docker.internal:8092`
 - Rank：仍使用老容器 `gaokao-volunteer-rank-prod`，监听 `8092 -> 5001`。
 - 老前端容器：`gaotu-volunteer-assistant-prod` stopped，保留为快速回滚入口。
+- 老 Agent 容器：`gaotu-zy-agent-plus-prod` stopped，保留为快速回滚入口。
 - 老后端服务：`gaotu-assistant-server-rollback.service` stopped，保留为快速回滚入口。
 
 `2026-05-10 05:47` 已重新构建并部署后端修复版，修复点：
@@ -836,6 +842,12 @@ systemctl restart zhiyuan-server.service
   - `http://127.0.0.1:88/assistant-pc/session` 返回 200。
   - `http://127.0.0.1:88/assistant-pc/sessionDetailV2` 返回 200。
   - `http://127.0.0.1:88/assistant-pc/sessionDetailLegacy` 返回 200。
+
+`2026-05-10 06:08` 已切换 Agent：
+
+- 切换前先用临时端口 `18091 -> 8009` 旁路启动新 Agent，验证 `/gaotu-assistant-agent/health` 返回 200。
+- 兼容 WebSocket 路径 `/gaotu-assistant-agent/plus/chat/1/bot/1/do` 握手返回 `101 Switching Protocols`，`ping` 消息返回 `{"type":"pong"}`。
+- 正式容器 `zhiyuan-agent-3.0.0-prod` 接管 `8091 -> 8009` 后，健康接口和兼容 WebSocket `ping/pong` 均验证通过。
 
 当前后端快速回滚：
 
