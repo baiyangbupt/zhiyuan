@@ -177,7 +177,7 @@ INTERNAL_SERVICE_URL=https://zhiyuan.ytell.cn .venv/bin/python -m uvicorn app.se
    python3 scripts/reset_planning_state.py --session-id 1002 --execute
    ```
 
-   删除后重新进入 V2 应能重新触发懒迁移；回旧页仍能查看老方案。
+   删除后重新进入 V2 应能重新触发懒迁移；回旧页仍能查看老方案。2026-05-10 已用生产旁路对 `chatSessionId=358` 完成演练：备份并删除 `planningState id=8565` 后，经 `8093` 重新访问生成 `id=8568`，结果仍为 `_final` 来源的 `legacy_submitted`，ordered `冲=19 / 稳=14 / 保=15` 且全部 locked/pinned。
 
 ### P1：灰度阶段必须观察
 

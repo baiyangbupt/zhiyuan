@@ -256,6 +256,17 @@ python3 scripts/reset_planning_state.py --session-id 1002 --execute
 - 回到 legacy 页面仍能查看老方案。
 - 老方案 JSON 未被修改。
 
+当前生产旁路回滚演练记录：
+
+- 会话：`358`
+- 备份：`/tmp/planningState-358-rollback-before.tsv`
+- 删除前：`id=8565`，`data_value` 长度 `287561`
+- 删除后：`planningState` 不存在
+- 通过 `8093` 重新访问后：HTTP 200，耗时约 `0.59s`
+- 重新落库：`id=8568`，`data_value` 长度 `287561`
+- 重新迁移结果：命中 `_final`，`legacy_submitted`，candidate entry `冲=50 / 稳=24 / 保=41`，ordered `冲=19 / 稳=14 / 保=15`，ordered 全部 locked/pinned
+- 结论：单会话删除 `planningState` 后可重新懒迁移，结果规模与删除前一致。
+
 ## 8. 阶段 F：补齐上线前 P0
 
 当前文档中明确的 P0 遗留：
