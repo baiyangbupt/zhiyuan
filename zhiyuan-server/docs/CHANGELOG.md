@@ -154,3 +154,5 @@
 - `PlanningStateServiceTest` 补充 review 与 compensation 联动断言，验证风险项可直接挂出对应补偿建议。
 - 修复 `generateInitialPlan()` 在 `majorGroup` 模式下的重复选组问题：`replaceInitialRecommendationCandidate()` 在做 gap/inversion/tier rebalance 替换时，现会同步把换入候选从 `remaining` 移除并清掉旧重复项，避免同一个 `planSchoolDataId` 被重复补入，最终把北京等专业组省份的 30 个目标组错误压缩成 13 个唯一专业组。
 - `PlanningStateServiceTest` 新增替换回归用例，校验初始推荐替换后 `remaining` 不再残留已入选候选，防止后续修复步骤重复选中同一专业组。
+- 修复 `PlanningStateService` 在 release 3 构建验证中暴露的规划补偿与调整建议回归：专业+院校模式不再按候选池容量错误裁剪冲稳保目标数；补偿预览按未满额/满额/超额分流，避免替换型建议被剩余名额裁掉或超额方案继续给补偿动作；梯度断层可在补偿动作被裁剪时仍生成结构化替换建议，并补齐专业组模式下的 `candidateUnitIds / replacementPairs.unitId` 映射。
+- `generateOrderedPlan()` 的保区排序规则收窄为普通专业模式优先本省兜底、专业组模式继续保持组层录取概率梯度优先，避免专业组初始方案排序被本省标签破坏风险梯度。
