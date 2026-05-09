@@ -1,0 +1,494 @@
+.volunteerPanel {
+  max-height: 100%;
+  :global {
+    .ant-table {
+      font-size: 12px;
+    }
+    .ant-table-cell {
+      font-size: 12px;
+    }
+  }
+  .volunteerTarget {
+    padding: 0px 20px;
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 10px;
+      .leftContent {
+        .title {
+          margin-bottom: 8px;
+          display: flex;
+          font-size: 22px;
+          color: #2c2e40;
+        }
+        .tips {
+          display: flex;
+          align-items: center;
+          .tipsItem {
+            font-size: 12px;
+          }
+        }
+        .subTitle {
+          color: #8b8fa1;
+        }
+        .tuitionBar {
+          margin-top: 8px;
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+          .tuitionLabel {
+            font-size: 12px;
+            color: #525461;
+            .tuitionValue {
+              margin-left: 4px;
+              font-weight: 500;
+              color: #ff443d;
+            }
+          }
+          .tuitionSlider {
+            max-width: 420px;
+          }
+        }
+      }
+      .rightContent {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        :global {
+          .ant-btn {
+            border-radius: 24px;
+          }
+          .ant-btn-color-primary {
+            background: #ff443d;
+          }
+          .ant-btn-variant-solid:disabled,
+          .ant-btn-variant-solid.ant-btn-disabled {
+            background-color: #f5f5f5;
+          }
+        }
+      }
+    }
+    .volunteerMain {
+      .tabs {
+        display: flex;
+        gap: 12px;
+        border-bottom: 4px solid #ff443d;
+        .tabsItem {
+          background-color: #f6f7fc;
+          border-radius: 8px 8px 0 0;
+          padding: 10px 12px;
+          font-size: 14px;
+          color: #525461;
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          .itemTitle {
+          }
+          .itemSubTitle {
+            padding: 4px 6px;
+            border-radius: 8px;
+            background-color: #fff;
+            color: #4f5157;
+            display: flex;
+            align-items: center;
+            & > span {
+              font-size: 12px;
+              font-weight: 400;
+            }
+            & > i {
+              padding: 0 10px;
+              font-size: 10px;
+              color: #919296;
+              font-style: normal;
+            }
+          }
+        }
+        .active {
+          background-color: #ff443d;
+          color: #fff;
+        }
+        .activeSprints {
+          background-color: #ff443d;
+          color: #fff;
+          .itemSubTitle {
+            color: #fff;
+            background-color: rgba(255, 255, 255, 0.24);
+            & > i {
+              color: #fff;
+            }
+          }
+        }
+        .activeSafes {
+          background-color: #ff8738;
+          color: #fff;
+          .itemSubTitle {
+            color: #fff;
+            background-color: rgba(255, 255, 255, 0.24);
+            & > i {
+              color: #fff;
+            }
+          }
+        }
+        .activeProtects {
+          background-color: #24c789;
+          color: #fff;
+          .itemSubTitle {
+            color: #fff;
+            background-color: rgba(255, 255, 255, 0.24);
+            & > i {
+              color: #fff;
+            }
+          }
+        }
+      }
+      .tabsSprints {
+        border-color: #ff443d;
+      }
+      .tabsSafes {
+        border-color: #ff8738;
+      }
+      .tabsProtects {
+        border-color: #24c789;
+      }
+    }
+  }
+  .volunteerCollopse {
+    padding: 0 20px;
+    .volunteerTitle {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 54px;
+      padding: 0 20px;
+      background-color: #f6f7fc;
+      border: 1px solid #ebebef;
+      color: #2c2e40;
+      border-top: 0;
+      border-bottom: 0;
+    }
+    .volunteerTitleCollapsed {
+      border-bottom: 1px solid #ebebef;
+    }
+    .volunteerToggle {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 12px;
+      color: #8b8fa1;
+      cursor: pointer;
+      user-select: none;
+      transition: color 0.2s ease;
+      &:hover {
+        color: #ff443d;
+      }
+    }
+    .toggleIcon {
+      font-size: 12px;
+      transition: transform 0.2s ease;
+    }
+    .toggleIconCollapsed {
+      transform: rotate(-180deg);
+    }
+    .collapseContent {
+      :global {
+        .ant-table-cell {
+          padding: 12px 12px;
+        }
+      }
+      .majorName {
+        display: inline-flex;
+        align-items: baseline;
+        gap: 4px;
+        flex-wrap: wrap;
+      }
+      .majorNameMain {
+        font-size: 16px;
+        font-weight: 600;
+        color: #2c2e40;
+      }
+      .majorNameExtra {
+        font-size: 12px;
+        color: #8b8fa1;
+      }
+    }
+    :global {
+      .ant-collapse {
+        border-radius: 0;
+        border: 0;
+        border-left: 1px solid #ebebef;
+        border-right: 1px solid #ebebef;
+      }
+      .ant-collapse > .ant-collapse-item {
+        border-bottom: 1px solid #ebebef;
+      }
+      .ant-collapse > .ant-collapse-item > .ant-collapse-header {
+        background-color: #fff;
+      }
+      .ant-collapse .ant-collapse-content {
+        border-top: 0;
+      }
+      .ant-collapse > .ant-collapse-item:last-child,
+      .ant-collapse > .ant-collapse-item:last-child > .ant-collapse-header {
+        border-radius: 0;
+      }
+    }
+    .collapseHeader {
+      display: flex;
+      justify-content: space-between;
+      .leftContent {
+        .title {
+          display: flex;
+          gap: 10px;
+          & > span {
+            font-weight: bold;
+            font-size: 18px;
+          }
+          .rankTagList {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+          }
+        }
+        .basicTag {
+          margin: 8px 0;
+          font-size: 12px;
+          color: #9698a1;
+        }
+        .historyScore {
+          font-size: 12px;
+          color: #ff443d;
+        }
+      }
+      .rightContent {
+        .countContainer {
+          width: 62px;
+          height: 80px;
+          padding: 1px;
+          border-radius: 8px;
+          background-color: #ff443d;
+          .ratio {
+            width: 60px;
+            height: 46px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            border-radius: 8px;
+            background-color: #fff;
+            color: #ff443d;
+          }
+          .major {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 4px 0;
+            font-weight: 600;
+            color: #fff;
+          }
+        }
+        .countSprints {
+          background-color: #ff443d;
+        }
+        .countSafes {
+          background-color: #ff8738;
+          .ratio {
+            color: #ff8738;
+          }
+        }
+        .countProtects {
+          background-color: #24c789;
+          .ratio {
+            color: #24c789;
+          }
+        }
+      }
+    }
+  }
+}
+
+// 移动端适配
+.mobile {
+  .volunteerTarget {
+    padding: 0 12px;
+
+    .header {
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 12px;
+      margin-bottom: 12px;
+
+      .leftContent {
+        width: 100%;
+
+        .title {
+          font-size: 16px;
+          flex-wrap: wrap;
+          gap: 8px;
+        }
+
+        .subTitle {
+          font-size: 12px;
+        }
+
+        .tuitionBar {
+          width: 100%;
+          .tuitionSlider {
+            max-width: 100%;
+          }
+        }
+      }
+
+      .rightContent {
+        width: 100%;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+
+        :global(.ant-btn) {
+          flex: 1;
+          min-width: 80px;
+          height: 40px;
+        }
+      }
+    }
+
+    .volunteerMain {
+      .tabs {
+        gap: 6px;
+        border-bottom-width: 3px;
+
+        .tabsItem {
+          flex: 1;
+          flex-direction: column;
+          align-items: center;
+          padding: 8px 6px;
+          gap: 4px;
+          min-width: 0;
+
+          .itemTitle {
+            font-size: 12px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 100%;
+            text-align: center;
+          }
+
+          .itemSubTitle {
+            padding: 2px 4px;
+            font-size: 10px;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 2px;
+
+            & > span {
+              font-size: 10px;
+            }
+
+            & > i {
+              display: none; // 移动端隐藏分隔符，节省空间
+            }
+          }
+        }
+      }
+    }
+  }
+
+  .volunteerCollopse {
+    padding: 0 12px;
+
+    .volunteerTitle {
+      padding: 0 12px;
+      height: 44px;
+      font-size: 14px;
+    }
+  }
+
+  .collapseHeader {
+    flex-wrap: wrap;
+    gap: 8px;
+
+    .leftContent {
+      flex: 1;
+      min-width: 0;
+
+      .title {
+        & > span {
+          font-size: 15px;
+        }
+        .rankTagList {
+          flex-wrap: wrap;
+        }
+      }
+      .basicTag {
+        font-size: 11px;
+      }
+    }
+
+    .rightContent {
+      flex-shrink: 0;
+
+      .countContainer {
+        width: 52px;
+        height: 64px;
+
+        .ratio {
+          width: 50px;
+          height: 36px;
+          font-size: 11px;
+        }
+        .major {
+          font-size: 11px;
+        }
+      }
+    }
+  }
+
+  .collapseContent {
+    :global {
+      .ant-table-wrapper {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+      }
+      .ant-table-cell {
+        padding: 8px;
+        font-size: 11px;
+        word-break: break-word;
+      }
+      .ant-table-thead > tr > th {
+        padding: 8px;
+        font-size: 11px;
+      }
+    }
+    .majorName {
+      word-break: break-word;
+      .majorNameMain {
+        font-size: 14px;
+      }
+      .majorNameExtra {
+        font-size: 11px;
+      }
+    }
+  }
+}
+
+.modalContent {
+  .title {
+    font-weight: bold;
+    font-size: 18px;
+  }
+  .basicTag {
+    margin: 8px 0;
+    font-size: 12px;
+    color: #9698a1;
+  }
+  .historyScore {
+    font-size: 12px;
+    color: #ff443d;
+  }
+  .rankList {
+    margin-bottom: 20px;
+  }
+}

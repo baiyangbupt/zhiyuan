@@ -41,6 +41,11 @@ export const navBarGroup: {
         needLogin: false,
         isProjectPath: true,
     },
+    '/sessionDetailLegacy': {
+        group: 'session',
+        needLogin: false,
+        isProjectPath: true,
+    },
 };
 
 export const showAllDataPro = [
@@ -49,6 +54,6 @@ export const showAllDataPro = [
 ];
 
 
-export const noLoginPath = ['/session', '/sessionDetailV2'];
+export const noLoginPath = ['/session', '/sessionDetailV2', '/sessionDetailLegacy'];
 
 export const EXPERT_DETAIL = '/expertDetail';
