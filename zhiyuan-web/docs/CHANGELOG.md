@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- 根目录 Docker Compose 为 `zhiyuan-web / zhiyuan-agent / zhiyuan-rank` 增加容器 healthcheck，发布后可通过 `docker compose ps` 直接观察健康状态；web 探活使用容器内 Next.js 端口 `28688`。
 - `sessionDetailV2` 工作台移动端隐藏顶部“候选 / 草稿 / 方案 / 审查”统计概览，首屏直接展示“方案 / 候选”切换和列表主体，减少小屏空间占用。
 - `sessionDetailV2` 候选区加入按钮文案从“加入草稿 / 已加入草稿”调整为“加入方案 / 已加入方案”，与用户实际看到的方案列表语义保持一致。
 - `sessionDetailV2` 工作区移动端学校/专业组标题栏去掉学校名前重复的冲稳保标识，学校名与优选、锁定、状态标签放在同一标题区，右侧录取概率列统一展示概率和梯度，避免长标题与标签错位。

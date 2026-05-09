@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import asyncio
+from importlib import metadata
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
@@ -95,6 +96,23 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="高考志愿填报 Agent", lifespan=lifespan)
+
+
+def _agent_version() -> str:
+    try:
+        return metadata.version("zhiyuan-agent")
+    except metadata.PackageNotFoundError:
+        return "unknown"
+
+
+@app.get("/health")
+@app.get("/gaotu-assistant-agent/health")
+async def health_check():
+    return {
+        "status": "UP",
+        "service": "zhiyuan-agent",
+        "version": _agent_version(),
+    }
 
 
 async def _handle_ws_loop(ws: WebSocket, service: ChatService):

@@ -387,6 +387,41 @@ Rank：
 - 数据库、Redis、老方案 JSON 目录只读确认完成。
 - 真实样本迁移测试、真实会话对账、单会话回滚 dry-run 已完成。
 
+### G7. Release 包形态
+
+3.0.0 release 包建议按固定 commit 生成，不从脏工作区直接打包。短期继续沿用当前混合部署形态：
+
+- `zhiyuan-server.jar`：后端 Spring Boot 产物，生产放到 `/root/work/zhiyuan-server/zhiyuan-server.jar`，由 systemd 托管。
+- `zhiyuan-web` Docker 镜像或镜像 tar：正式生产 `/assistant-pc` 使用 `APP_ENV=production` / `build:prod`；`zhiyuan.ytell.cn` 根路径环境才使用 `APP_ENV=deploy` 当前策略。
+- `zhiyuan-agent` Docker 镜像或镜像 tar：如果发布本次 agent 健康接口、对话编排或模型配置变更，需要同步发布。
+- `zhiyuan-rank` Docker 镜像或镜像 tar：本次没有 rank 代码变化时可不发布，只保留现有容器。
+- `docker-compose.yml`、`ops/healthcheck.sh`、`ops/migration-status.sh`：用于生产健康检查和迁移灰度观测。
+
+推荐在构建机准备 release staging 目录：
+
+```bash
+RELEASE=3.0.0
+COMMIT=$(git rev-parse --short HEAD)
+STAGING=/tmp/zhiyuan-release-${RELEASE}-${COMMIT}
+mkdir -p "${STAGING}"/{server,ops,compose}
+cp zhiyuan-server/target/zhiyuan-server.jar "${STAGING}/server/"
+cp docker-compose.yml "${STAGING}/compose/"
+cp ops/healthcheck.sh ops/migration-status.sh "${STAGING}/ops/"
+git rev-parse HEAD > "${STAGING}/COMMIT"
+```
+
+如果生产无法从镜像仓库拉取镜像，则在构建机导出镜像 tar：
+
+```bash
+RELEASE=3.0.0
+docker build --build-arg APP_ENV=production -t zhiyuan-web:${RELEASE} zhiyuan-web
+docker build -t zhiyuan-agent:${RELEASE} zhiyuan-agent
+docker save zhiyuan-web:${RELEASE} -o "${STAGING}/zhiyuan-web-${RELEASE}.tar"
+docker save zhiyuan-agent:${RELEASE} -o "${STAGING}/zhiyuan-agent-${RELEASE}.tar"
+```
+
+上传生产后先 `docker load`，再用固定 tag 更新 Compose；不要在生产执行 `docker compose build`。
+
 ## 10. 阶段 H：正式部署和灰度
 
 部署前必须明确：
@@ -454,6 +489,30 @@ curl -I "http://127.0.0.1:${NEW_WEB_PORT}/assistant-pc/sessionDetailV2"
 ```
 
 如果这里根路径 `/customer` 可访问但 `/assistant-pc/customer` 不可访问，说明误用了根路径包，不应切生产。
+
+### H2.1 Compose 健康检查和运维脚本
+
+本次已为 `zhiyuan-web / zhiyuan-agent / zhiyuan-rank` 增加 Compose healthcheck。生产更新 Compose 后检查：
+
+```bash
+docker compose ps
+bash ops/healthcheck.sh --local
+bash ops/healthcheck.sh --remote https://<prod-domain>
+```
+
+灰度期间观察 legacy 懒迁移：
+
+```bash
+bash ops/migration-status.sh /root/work/zhiyuan-server/logs/server.log
+```
+
+`ops/healthcheck.sh` 的远端检查包含：
+
+- `/assistant-pc/customer`
+- `/assistant-pc/sessionDetailV2`
+- `/gaotu-assistant-bot/base-data/province-city`
+- `/gaotu-assistant-agent/health`
+- `/gaokao-volunteer-rank/recommend` rank 现有 GET 接口
 
 ### H3. Nginx 切换
 
