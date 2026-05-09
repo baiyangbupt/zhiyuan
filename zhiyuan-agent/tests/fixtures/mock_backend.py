@@ -99,6 +99,7 @@ _COMPENSATION_HANDLER_ALIASES: dict[str, str] = {
 }
 
 _GENERATE_HANDLER_ALIASES: dict[str, str] = {
+    "generate_planning_candidate_pool": "_generate_planning_candidate_pool_request",
     "generate_planning_initial_plan": "_generate_planning_initial_plan_request",
     "run_planning_review": "_run_planning_review_request",
 }

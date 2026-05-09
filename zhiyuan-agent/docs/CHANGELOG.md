@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed (回归测试稳定性)
+
+- 补齐 handler 拆分后的 planning/generate 测试夹具 patch 覆盖，避免 agent regression 在本地误连真实 backend 或因同步 helper 被错误 AsyncMock 化而失真。
+
 ### Added (Issue: 大模型效果与性能 Benchmark)
 
 - 新增 issue 修复设计文档 `docs/issue_model_provider_benchmark_design.md`，明确以真实端到端志愿规划场景为主、模型直连性能为辅助定位的 benchmark 方案。
