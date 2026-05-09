@@ -1368,7 +1368,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         'manual_workspace_v2'
       );
       if (code === 0) {
-        message.success('已加入草稿');
+        message.success('已加入方案');
         if (data) {
           applyPlanningState(data);
         } else {
@@ -1379,10 +1379,10 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         }
         queryCandidatePool(candidatePoolResult.page || 1);
       } else {
-        message.error('加入草稿失败');
+        message.error('加入方案失败');
       }
     } catch (error) {
-      message.error('加入草稿异常，请稍后重试');
+      message.error('加入方案异常，请稍后重试');
     }
     setActionLoading(null);
   };
@@ -2994,7 +2994,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                         loading={actionLoading === 'draft' && !inDraft}
                                         onClick={() => handleAddCandidateToDraft(item.volunteerId)}
                                       >
-                                        {inDraft ? '已加入草稿' : '加入草稿'}
+                                        {inDraft ? '已加入方案' : '加入方案'}
                                       </Button>
                                     </div>
                                   </div>
