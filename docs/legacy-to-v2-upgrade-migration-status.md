@@ -102,6 +102,44 @@ python3 zhiyuan-server/scripts/analyze_legacy_plan_samples.py /tmp/zhiyuan-migra
 
 ## 4. 剩余遗留事项
 
+## 4.1 2026-05-09 回归补充记录
+
+本轮针对 planning 补偿/替换建议修复后的影响范围补充了后端、agent 和 examples 回归。
+
+后端：
+
+```bash
+cd zhiyuan-server
+mvn -q -Dtest='!InitialPlanEvaluationP0ReportTest' test
+```
+
+结果：通过。排除项 `InitialPlanEvaluationP0ReportTest` 依赖本地 MySQL `127.0.0.1:3306/sales_bot`，当前本地环境不可连接，属于环境型 P0 报告测试，不是业务断言失败。
+
+agent planning regression：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest tests/regression -q
+```
+
+结果：`706 passed`。覆盖 LLM 规划 `action_family`、`preview_compensation` 满额转 `analyze_adjustment`、预览/确认保护、query/apply 结果判定等核心路径。结论：本次后端修复没有改 planning 接口结构，不会破坏 agent 调用 planning 能力；影响集中在返回内容更合理，例如满额时不再继续给新增补齐动作，分析结果中可出现更完整的替换建议。
+
+examples websocket 回归：
+
+```bash
+cd zhiyuan-agent
+INTERNAL_SERVICE_URL=https://zhiyuan.ytell.cn .venv/bin/python -m uvicorn app.server:app --host 127.0.0.1 --port 8000
+.venv/bin/python examples/dialog_regression_runner.py --cases examples/dialog_regression_plan_cases.json --assert-plan-style --open-timeout 5 --response-timeout 90
+```
+
+结果：通过，未触发 plan style 违规。远端样本 `sessionId=35/26` 当前均为 `profile_ready` 且没有正式方案，因此本次 examples 覆盖的是“有用户信息但无方案”的降级回复与 thinking 文案可读性，尚未覆盖“已有方案 -> 审查/调整/补齐/替换”的真实端到端链路。
+
+补充观察：
+
+- `tests/unit/test_plan_execution_tool.py` 仍有一批旧单测直接 patch `plan_execution_tool`，但执行逻辑已拆到 `app.handlers.*`。这属于 agent 测试基线漂移，后续需要按 handler 拆分后的结构更新 patch 点和断言。
+- 远端 examples 中包含大量“确认 / 生成 / 替换 / 移动 / 锁定”等可能写生产数据的场景，本轮未直接全量执行。
+- 下一步真实端到端建议准备专用测试会话或预发环境，覆盖已有方案下的 `review_plan`、`analyze_adjustment`、`preview_compensation`、替换预览和确认执行。
+
 ### P0：上线前必须完成
 
 1. 对真实会话做 V2 与老页面结果对比。

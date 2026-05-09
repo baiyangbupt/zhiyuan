@@ -651,9 +651,10 @@ public class PlanningStateService {
                 || candidatePoolState.getRequiredTierCounts().isEmpty() || candidatePoolState.getSummary() == null) {
             return;
         }
-        Map<String, Integer> availableTierCounts = isMajorGroupMode(candidatePoolState)
-                ? candidatePoolState.getSummary().getUnitTierCounts()
-                : candidatePoolState.getSummary().getEntryTierCounts();
+        if (!isMajorGroupMode(candidatePoolState)) {
+            return;
+        }
+        Map<String, Integer> availableTierCounts = candidatePoolState.getSummary().getUnitTierCounts();
         if (availableTierCounts == null || availableTierCounts.isEmpty()) {
             return;
         }
@@ -3093,16 +3094,10 @@ public class PlanningStateService {
                                                                       String target,
                                                                       List<CompensationActionDTO> linkedActions,
                                                                       List<CandidateItemDTO> candidates) {
-        if (linkedActions == null || linkedActions.isEmpty()) {
-            return null;
-        }
-        CompensationActionDTO action = linkedActions.stream()
+        CompensationActionDTO action = (linkedActions == null ? Lists.<CompensationActionDTO>newArrayList() : linkedActions).stream()
                 .filter(item -> "probability_gap".equals(item.getSourceCheckCode()))
                 .findFirst()
                 .orElse(null);
-        if (action == null || defaultList(action.getVolunteerIds()).isEmpty()) {
-            return null;
-        }
         List<String> affectedVolunteerIds = defaultList(check.getAffectedVolunteerIds());
         if (affectedVolunteerIds.size() < 2) {
             return null;
@@ -3111,12 +3106,18 @@ public class PlanningStateService {
         if (Strings.isNullOrEmpty(removableVolunteerId)) {
             return null;
         }
+        List<String> replacementVolunteerIds = action == null
+                ? resolveProbabilityGapReplacementCandidates(affectedVolunteerIds, candidates)
+                : defaultList(action.getVolunteerIds());
+        if (replacementVolunteerIds.isEmpty()) {
+            return null;
+        }
 
         ReplaceSuggestionDTO suggestion = new ReplaceSuggestionDTO();
         suggestion.setId(check.getCode() + "_replace");
         suggestion.setRuleCode(check.getCode());
         suggestion.setTitle("替换断层边界志愿");
-        suggestion.setDescription(Strings.isNullOrEmpty(action.getDetail()) ? check.getSummary() : action.getDetail());
+        suggestion.setDescription(action == null || Strings.isNullOrEmpty(action.getDetail()) ? check.getSummary() : action.getDetail());
         suggestion.setSeverity(normalizePlanAdjustmentSeverity(check.getLevel()));
         suggestion.setTarget(target);
         if (!defaultList(check.getAffectedUnitIds()).isEmpty()) {
@@ -3124,15 +3125,17 @@ public class PlanningStateService {
         }
         suggestion.setAffectedVolunteerIds(affectedVolunteerIds);
         suggestion.setReasonCodes(Lists.newArrayList(check.getCode()));
-        if (!defaultList(check.getAffectedUnitIds()).isEmpty() || !defaultList(action.getUnitIds()).isEmpty()) {
+        if (!defaultList(check.getAffectedUnitIds()).isEmpty() || action != null && !defaultList(action.getUnitIds()).isEmpty()) {
             suggestion.setRemoveUnitIds(resolveUnitIdsFromVolunteerIds(Lists.newArrayList(removableVolunteerId), candidates));
         }
         suggestion.setRemoveVolunteerIds(Lists.newArrayList(removableVolunteerId));
-        if (!defaultList(action.getUnitIds()).isEmpty()) {
+        if (action != null && !defaultList(action.getUnitIds()).isEmpty()) {
             suggestion.setCandidateUnitIds(defaultList(action.getUnitIds()));
+        } else if (!defaultList(check.getAffectedUnitIds()).isEmpty()) {
+            suggestion.setCandidateUnitIds(resolveUnitIdsFromVolunteerIds(replacementVolunteerIds, candidates));
         }
-        suggestion.setCandidateVolunteerIds(defaultList(action.getVolunteerIds()));
-        for (String candidateVolunteerId : defaultList(action.getVolunteerIds())) {
+        suggestion.setCandidateVolunteerIds(replacementVolunteerIds);
+        for (String candidateVolunteerId : replacementVolunteerIds) {
             ReplacementPairDTO pair = new ReplacementPairDTO();
             pair.setFromUnitId(suggestion.getRemoveUnitIds().isEmpty() ? null : suggestion.getRemoveUnitIds().get(0));
             pair.setFromVolunteerId(removableVolunteerId);
@@ -3145,6 +3148,35 @@ public class PlanningStateService {
         }
         suggestion.setPreferredApplyMode("replace_and_reorder");
         return suggestion;
+    }
+
+    private List<String> resolveProbabilityGapReplacementCandidates(List<String> affectedVolunteerIds,
+                                                                     List<CandidateItemDTO> candidates) {
+        if (affectedVolunteerIds == null || affectedVolunteerIds.size() < 2) {
+            return Lists.newArrayList();
+        }
+        List<CandidateItemDTO> affectedCandidates = affectedVolunteerIds.stream()
+                .map(volunteerId -> findCandidate(candidates, volunteerId))
+                .filter(Objects::nonNull)
+                .filter(item -> item.getAdmissionRatio() != null)
+                .collect(Collectors.toList());
+        if (affectedCandidates.size() < 2) {
+            return Lists.newArrayList();
+        }
+        double min = affectedCandidates.stream().map(CandidateItemDTO::getAdmissionRatio).min(Double::compareTo).orElse(0D);
+        double max = affectedCandidates.stream().map(CandidateItemDTO::getAdmissionRatio).max(Double::compareTo).orElse(0D);
+        double midpoint = (min + max) / 2D;
+        Set<String> affectedSet = new LinkedHashSet<String>(affectedVolunteerIds);
+        return candidates.stream()
+                .filter(item -> item != null && !affectedSet.contains(item.getVolunteerId()))
+                .filter(item -> item.getAdmissionRatio() != null)
+                .filter(item -> item.getAdmissionRatio() > min && item.getAdmissionRatio() < max)
+                .sorted(Comparator
+                        .comparingDouble((CandidateItemDTO item) -> Math.abs(item.getAdmissionRatio() - midpoint))
+                        .thenComparing(buildInitialRecommendationCandidateComparator()))
+                .limit(2)
+                .map(CandidateItemDTO::getVolunteerId)
+                .collect(Collectors.toList());
     }
 
     private ReplaceSuggestionDTO buildProbabilityInversionReplaceSuggestion(ReviewCheckDTO check,
@@ -5606,9 +5638,11 @@ public class PlanningStateService {
                 ? currentOrderedOrDraftUnitCount(state)
                 : currentOrderedOrDraftItemCount(state);
         int remainingCapacity = Math.max(requiredCount - currentCount, 0);
+        if (currentCount > requiredCount) {
+            preview.getActions().clear();
+            return;
+        }
 
-        Set<String> consumedVolunteerIds = new LinkedHashSet<>();
-        Set<String> consumedUnitIds = new LinkedHashSet<>();
         Map<String, PlanningUnitDTO> unitById = majorGroupMode && availableUnits != null
                 ? availableUnits.stream()
                 .filter(unit -> unit != null && !Strings.isNullOrEmpty(unit.getUnitId()))
@@ -5619,11 +5653,27 @@ public class PlanningStateService {
             if (action == null) {
                 continue;
             }
+            boolean replacementAction = isReplacementCompensationAction(action);
+            if (remainingCapacity > 0 && replacementAction) {
+                action.setUnitIds(Lists.newArrayList());
+                action.setVolunteerIds(Lists.newArrayList());
+                continue;
+            }
+            if (remainingCapacity <= 1 && isLimitedCapacityOptionalAddAction(action)) {
+                action.setUnitIds(Lists.newArrayList());
+                action.setVolunteerIds(Lists.newArrayList());
+                continue;
+            }
+            if (remainingCapacity == 0 && !replacementAction) {
+                action.setUnitIds(Lists.newArrayList());
+                action.setVolunteerIds(Lists.newArrayList());
+                continue;
+            }
+            int actionLimit = replacementAction ? Integer.MAX_VALUE : Math.max(remainingCapacity, 0);
             if (majorGroupMode) {
                 List<String> keptUnitIds = defaultList(action.getUnitIds()).stream()
                         .filter(id -> !Strings.isNullOrEmpty(id))
-                        .filter(id -> !consumedUnitIds.contains(id))
-                        .limit(Math.max(remainingCapacity, 0))
+                        .limit(actionLimit)
                         .collect(Collectors.toList());
                 action.setUnitIds(keptUnitIds);
                 List<String> volunteerIds = keptUnitIds.stream()
@@ -5632,24 +5682,29 @@ public class PlanningStateService {
                         .flatMap(unit -> defaultPlanningUnitMajors(unit.getSelectedMajors()).stream())
                         .map(PlanningUnitMajorDTO::getVolunteerId)
                         .filter(id -> !Strings.isNullOrEmpty(id))
-                        .filter(id -> !consumedVolunteerIds.contains(id))
                         .collect(Collectors.toList());
                 action.setVolunteerIds(volunteerIds);
-                keptUnitIds.forEach(consumedUnitIds::add);
-                volunteerIds.forEach(consumedVolunteerIds::add);
-                remainingCapacity = Math.max(remainingCapacity - keptUnitIds.size(), 0);
                 continue;
             }
 
             List<String> keptVolunteerIds = defaultList(action.getVolunteerIds()).stream()
                     .filter(id -> !Strings.isNullOrEmpty(id))
-                    .filter(id -> !consumedVolunteerIds.contains(id))
-                    .limit(Math.max(remainingCapacity, 0))
+                    .limit(actionLimit)
                     .collect(Collectors.toList());
             action.setVolunteerIds(keptVolunteerIds);
-            keptVolunteerIds.forEach(consumedVolunteerIds::add);
-            remainingCapacity = Math.max(remainingCapacity - keptVolunteerIds.size(), 0);
         }
+    }
+
+    private boolean isReplacementCompensationAction(CompensationActionDTO action) {
+        if (action == null || Strings.isNullOrEmpty(action.getType())) {
+            return false;
+        }
+        return "rebalance_protect_ratio".equals(action.getType())
+                || "replace_probability_gap".equals(action.getType());
+    }
+
+    private boolean isLimitedCapacityOptionalAddAction(CompensationActionDTO action) {
+        return action != null && "fill_probability_gap".equals(action.getType());
     }
 
     private int currentOrderedOrDraftItemCount(PlanningStateDTO state) {
@@ -6441,11 +6496,25 @@ public class PlanningStateService {
     private Comparator<DraftItemDTO> buildDraftOrderedComparator(Map<String, CandidateItemDTO> candidateMap,
                                                                 String sourceProvinceName,
                                                                 boolean majorGroupMode) {
+        if (majorGroupMode) {
+            return Comparator
+                    .comparingInt((DraftItemDTO item) -> tierOrder(item.getTier()))
+                    .thenComparing((DraftItemDTO item) -> orderedAdmissionRatioOf(candidateMap.get(item.getVolunteerId()), true),
+                            Comparator.nullsLast(Double::compareTo))
+                    .thenComparingInt((DraftItemDTO item) -> localProtectPriority(item, candidateMap, sourceProvinceName))
+                    .thenComparing((DraftItemDTO item) -> futureDevelopmentScoreOf(candidateMap.get(item.getVolunteerId())),
+                            Comparator.nullsLast(Comparator.reverseOrder()))
+                    .thenComparing((DraftItemDTO item) -> rankInTierOf(candidateMap.get(item.getVolunteerId())),
+                            Comparator.nullsLast(Integer::compareTo))
+                    .thenComparing((DraftItemDTO item) -> finalScoreOf(candidateMap.get(item.getVolunteerId())),
+                            Comparator.nullsLast(Comparator.reverseOrder()))
+                    .thenComparing(DraftItemDTO::getVolunteerId, Comparator.nullsLast(String::compareTo));
+        }
         return Comparator
                 .comparingInt((DraftItemDTO item) -> tierOrder(item.getTier()))
-                .thenComparing((DraftItemDTO item) -> orderedAdmissionRatioOf(candidateMap.get(item.getVolunteerId()), majorGroupMode),
-                        Comparator.nullsLast(Double::compareTo))
                 .thenComparingInt((DraftItemDTO item) -> localProtectPriority(item, candidateMap, sourceProvinceName))
+                .thenComparing((DraftItemDTO item) -> orderedAdmissionRatioOf(candidateMap.get(item.getVolunteerId()), false),
+                        Comparator.nullsLast(Double::compareTo))
                 .thenComparing((DraftItemDTO item) -> futureDevelopmentScoreOf(candidateMap.get(item.getVolunteerId())),
                         Comparator.nullsLast(Comparator.reverseOrder()))
                 .thenComparing((DraftItemDTO item) -> rankInTierOf(candidateMap.get(item.getVolunteerId())),

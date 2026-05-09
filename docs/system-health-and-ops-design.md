@@ -335,10 +335,10 @@ GET /gaotu-assistant-bot/inner/ops/health
 
 ### P0
 
-- 新增 `ops/healthcheck.sh`，先聚合线上真实命令和 HTTP 检查。
-- 新增 `ops/migration-status.sh`，封装 legacy 迁移日志分析。
+- 新增 `ops/healthcheck.sh`，先聚合线上真实命令和 HTTP 检查。已落地，支持 `--local`、`--remote`、`--json`。
+- 新增 `ops/migration-status.sh`，封装 legacy 迁移日志分析。已落地，默认读取 `/root/work/zhiyuan-server/logs/server.log` 最近 10000 行。
 - 在部署记录中补充标准发布前/发布后检查清单。
-- 为 Docker Compose 的 web/agent/rank 增加 healthcheck。
+- 为 Docker Compose 的 web/agent/rank 增加 healthcheck。已落地，容器内分别检查 web `28688`、agent `8009`、rank `5001`。
 
 ### P1
 

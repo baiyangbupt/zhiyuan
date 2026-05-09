@@ -1,5 +1,5 @@
 # 多阶段构建 - 构建阶段
-FROM docker.m.daocloud.io/library/python:3.12-slim AS builder
+FROM python:3.12-slim AS builder
 
 WORKDIR /build
 
@@ -16,7 +16,7 @@ COPY data ./data
 RUN pip wheel --no-cache-dir --no-deps --wheel-dir /build/wheels . -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 # 运行阶段
-FROM docker.m.daocloud.io/library/python:3.12-slim
+FROM python:3.12-slim
 
 WORKDIR /app
 

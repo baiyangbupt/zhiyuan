@@ -10,6 +10,12 @@
 
 ### Added
 
+- 新增生产运维 P0 脚本：`ops/healthcheck.sh` 聚合本地/远端 HTTP、Docker Compose、systemd、Nginx 和磁盘检查；`ops/migration-status.sh` 封装 legacy 懒迁移日志分析，作为 3.0.0 灰度发布后的快速观测入口。
+- 新增外部授权初始化会话接口：`POST /gaotu-assistant-bot/chat/{tenantId}/integration/session/initialize`，复用现有 `login/by-token -> tk/pf -> LoginInterceptor` 用户授权链路，在授权用户上下文中创建会话、生成候选池/初始方案/排序方案，并返回会话定位与方案获取能力；同步新增幂等表、设计文档和 controller/service 单测。
+- 外部授权初始化会话接口文档补齐完整请求示例、`BaseResponse` 响应示例、幂等命中示例、常见错误、后续查询方案和导出方案示例，便于外部系统直接对接。
+- 外部授权初始化会话接口单测补齐参数校验、处理中幂等、生成开关、跳过工作台状态、根路径 URL 和失败落表场景，覆盖外部系统重试和不同部署路径下的主要边界。
+- 发布版本号统一定为 `3.0.0`，同步更新 backend `pom.xml`、frontend `package.json` 与 agent `pyproject.toml`，用于本次老版本到 V2 平滑升级 release tag。
+- 生产升级实施文档补齐部署准备细节，明确生产不做编译构建，并区分正式 `/assistant-pc` 路径与 `zhiyuan.ytell.cn` 根路径的前端构建方式、产物路径、Nginx 切换和回滚命令。
 - 老方案懒迁移外部生产样本验证已跑通：从生产机 `/tmp/zhiyuan-migration-samples` 下载 20 个 JSON 文件，覆盖 9 个会话及普通 / `_final` / `_temp` 文件形态，`shouldImportExternalLegacyCompleteDataSamples` 通过。
 - `planningState` 缺失时新增老方案懒迁移入口：优先从老版已提交方案文件导入，失败后回退临时推荐文件；导入成功后写入 `assistant_chat_session_extra_data(data_key=planningState)`，后续访问直接读 V2 状态。
 - 老方案导入复用现有候选平铺、草稿/排序 summary 和专业组聚合逻辑，把老版 `is_preferred=true` 的优报项导入 `draftPlanState + orderedPlanState`，未优报项保留在 `candidatePoolState`。
@@ -149,3 +155,5 @@
 - `PlanningStateServiceTest` 补充 review 与 compensation 联动断言，验证风险项可直接挂出对应补偿建议。
 - 修复 `generateInitialPlan()` 在 `majorGroup` 模式下的重复选组问题：`replaceInitialRecommendationCandidate()` 在做 gap/inversion/tier rebalance 替换时，现会同步把换入候选从 `remaining` 移除并清掉旧重复项，避免同一个 `planSchoolDataId` 被重复补入，最终把北京等专业组省份的 30 个目标组错误压缩成 13 个唯一专业组。
 - `PlanningStateServiceTest` 新增替换回归用例，校验初始推荐替换后 `remaining` 不再残留已入选候选，防止后续修复步骤重复选中同一专业组。
+- 修复 `PlanningStateService` 在 release 3 构建验证中暴露的规划补偿与调整建议回归：专业+院校模式不再按候选池容量错误裁剪冲稳保目标数；补偿预览按未满额/满额/超额分流，避免替换型建议被剩余名额裁掉或超额方案继续给补偿动作；梯度断层可在补偿动作被裁剪时仍生成结构化替换建议，并补齐专业组模式下的 `candidateUnitIds / replacementPairs.unitId` 映射。
+- `generateOrderedPlan()` 的保区排序规则收窄为普通专业模式优先本省兜底、专业组模式继续保持组层录取概率梯度优先，避免专业组初始方案排序被本省标签破坏风险梯度。
