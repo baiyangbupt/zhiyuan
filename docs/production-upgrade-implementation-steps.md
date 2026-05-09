@@ -222,6 +222,11 @@ python3 zhiyuan-server/scripts/analyze_legacy_plan_samples.py /tmp/zhiyuan-migra
 补充要求：
 
 - 后续正式部署必须使用包含 `_final -> _temp -> original` 文件选取修复的后端 JAR，当前修复版 JAR 哈希为 `3a476d33384fb478e1a9739298afc2232214257c47622385f55589357e388c78`。
+- 当前 `/tmp/zhiyuan-release-upload/zhiyuan-release-3.0.0-2c6172c-core.tar.gz` 内置后端 JAR 来自旧提交 `2c6172c`，不能直接作为最终后端部署产物。已在生产机生成已验证后端补丁包：
+  - 路径：`/tmp/zhiyuan-release-upload/zhiyuan-server-hotfix-3.0.0-9feeb3b.tar.gz`
+  - 压缩包 SHA256：`6dc8442694a1528f7748b01ad10594878d2953058ed0e39c8202369c9e628a06`
+  - 内含 JAR SHA256：`3a476d33384fb478e1a9739298afc22385f55589357e388c78`
+  - 正式切换后端时应使用该 JAR，或重新制作包含 `9feeb3b` 及后续提交的完整 release 包。
 - 生产旁路启动后端时必须显式设置 `--spring.flyway.enabled=false`，避免 Flyway 在生产库上执行权限探测或迁移。
 - 如果需要重新验证单个会话，先用 `reset_planning_state.py --session-id <id> --execute` 删除该会话已有 `planningState`。
 
