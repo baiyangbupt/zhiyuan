@@ -196,13 +196,34 @@ python3 zhiyuan-server/scripts/analyze_legacy_plan_samples.py /tmp/zhiyuan-migra
 
 | chatSessionId | 老状态 | 老方案文件 | V2 结果 | 结论 |
 | --- | --- | --- | --- | --- |
-| 2045 | 用户确认为 `SUPER_VIP` 会话 | `session_volunteer_2045.json`、`session_volunteer_2045_temp.json` | 修复前发布包误导入 `_temp.json`，得到 `generationMode=legacy_import`；修复后 JAR 从无后缀 `.json` 导入，得到 `generationMode=legacy_submitted`，candidate 汇总 `冲=852 / 稳=441 / 保=1206`，ordered 汇总 `冲=749 / 稳=441 / 保=1001`，ordered 全部 locked/pinned | 通过关键兼容验证。生产老版本已提交方案可能存在无后缀 `.json`；迁移读取顺序已修复为 `_final.json` -> 无后缀 `.json` -> `_temp.json`。注意：本次已给 `2045` 写入修复后的 `planningState`。 |
+| 2045 | 用户确认为 `SUPER_VIP` 会话 | `session_volunteer_2045.json`、`session_volunteer_2045_temp.json`；无 `_final` | 最新 JAR 按 `_final -> _temp -> original` 命中 `_temp`，得到 `generationMode=legacy_import`；candidate 汇总 `冲=815 / 稳=416 / 保=1139`，ordered 汇总 `冲=28 / 稳=28 / 保=40`，ordered 未 locked/pinned | 通过当前文件选取口径验证。无后缀 `.json` 是高途原始全量数据，仅作最后兜底参考；本次已给 `2045` 写入最新逻辑生成的 `planningState`。 |
+| 1747 | 生产真实会话 | 同时存在 `_final`、`_temp`、无后缀 `.json` | 最新 JAR 命中 `_final`，得到 `generationMode=legacy_submitted`；candidate 汇总 `冲=43 / 稳=43 / 保=55`，ordered 汇总 `冲=28 / 稳=28 / 保=40`，ordered 全部 locked/pinned | 通过已提交方案优先验证。排序区按现有 `rankInTier` 顺序保持，符合当前迁移口径。 |
+| 1576 | 大文件样本 | 同时存在 `_final`、`_temp`、无后缀 `.json` | 命中 `_final`，`legacy_submitted`；candidate entry `冲=96 / 稳=78 / 保=107`，ordered `冲=14 / 稳=14 / 保=20`，ordered 全部 locked/pinned | 通过大体积 original + final 优先验证；接口耗时约 `0.7s`。 |
+| 358 | 已提交边界样本 | 存在 `_final`、无后缀 `.json` | 命中 `_final`，`legacy_submitted`；candidate entry `冲=50 / 稳=24 / 保=41`，ordered `冲=19 / 稳=14 / 保=15`，ordered 全部 locked/pinned | 通过 final-only 组合验证；离线样本存在 `missing_major_identity=115`，V2 导入未异常。 |
+| 1332 | 临时方案大文件样本 | 存在 `_temp`、无后缀 `.json`；无 `_final` | 命中 `_temp`，`legacy_import`；candidate entry `冲=3473 / 稳=1294 / 保=3859`，ordered `冲=14 / 稳=14 / 保=20`，ordered 未 locked/pinned | 通过大体积 temp 优先验证；接口耗时约 `2.4s`，落库 JSON 约 `18.5MB`。 |
+| 400 | 原本本地仅见 original 的边界样本 | 本地初始只有无后缀 `.json`；请求时从 OSS 拉到 `_temp` | 最终命中 OSS `_temp`，`legacy_import`；candidate entry `冲=3763 / 稳=1057 / 保=5121`，ordered `冲=14 / 稳=14 / 保=20`，ordered 未 locked/pinned | 说明“本地 original only”不等于全链路 original-only；实际迁移还会按顺序查 OSS。接口耗时约 `2.4s`，落库 JSON 约 `18.9MB`。 |
+
+当前生产方案文件分布只读扫描结果：
+
+| 文件组合 | 会话数 | 迁移预期 |
+| --- | ---: | --- |
+| `_final + _temp + original` | 607 | 命中 `_final`，导入为 `legacy_submitted`，排序区 locked/pinned |
+| `_final + original` | 52 | 命中 `_final`，导入为 `legacy_submitted`，排序区 locked/pinned |
+| `_temp + original` | 1021 | 命中 `_temp`，导入为 `legacy_import`，排序区不 locked/pinned |
+| `original` only | 97 | 仅最后兜底参考，不应伪装为已提交历史方案 |
+
+下一批建议旁路验证候选：
+
+- `_final + _temp + original` 大文件：`1576 / 702 / 1720 / 1566 / 2005`
+- `_final + original`：`358 / 325 / 287 / 361 / 289`
+- `_temp + original` 大文件：`1332 / 1756 / 1414 / 1792 / 1281`
+- `original` only 边界：`400 / 360 / 297 / 399 / 233`
 
 补充要求：
 
-- 后续正式部署必须使用包含无后缀 `.json` 兼容修复的后端 JAR，当前修复版 JAR 哈希为 `cbbdb0e6f528c98c2a35c4c95e12b01b56f008c764a7df095922599ad494ab39`。
+- 后续正式部署必须使用包含 `_final -> _temp -> original` 文件选取修复的后端 JAR，当前修复版 JAR 哈希为 `3a476d33384fb478e1a9739298afc2232214257c47622385f55589357e388c78`。
 - 生产旁路启动后端时必须显式设置 `--spring.flyway.enabled=false`，避免 Flyway 在生产库上执行权限探测或迁移。
-- 如果需要重新验证 `2045`，先用 `reset_planning_state.py --session-id 2045 --execute` 删除该会话已有 `planningState`。
+- 如果需要重新验证单个会话，先用 `reset_planning_state.py --session-id <id> --execute` 删除该会话已有 `planningState`。
 
 ## 7. 阶段 E：单会话回滚演练
 

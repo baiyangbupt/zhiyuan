@@ -149,7 +149,7 @@ INTERNAL_SERVICE_URL=https://zhiyuan.ytell.cn .venv/bin/python -m uvicorn app.se
 
    注意：当前线上尚未部署新版本，离线 JSON 对账不会影响线上；但一旦通过 V2 后端页面或 API 读取真实会话，缺少 `planningState` 的会话可能触发懒迁移写入。因此页面/API 对账必须在新版本服务部署后，按指定会话、小范围、低峰期执行，并保留单会话回滚脚本。
 
-   2026-05-09 已用生产旁路 `8093` 对 `chatSessionId=2045` 做一次验证，发现原发布包将该会话从 `_temp.json` 导入为 `legacy_import`。2026-05-10 复盘后确认无后缀 `session_volunteer_{id}.json` 是建会话阶段保存的高途原始全量数据，不是 assistant 后端提交后的最终推荐结果；其中 `selectSchool/selectZy` 也不是 V2 优选口径。当前修正为 `_final.json` -> `_temp.json` -> 无后缀 `.json` 兜底的读取顺序；只有 `_final.json` 会导入为 `legacy_submitted` 并 locked/pinned，无后缀原始数据只用于候选池和目标数量兜底。
+   2026-05-10 已用生产旁路 `8093` 对 `chatSessionId=2045`、`1747` 做最新逻辑验证。当前确认无后缀 `session_volunteer_{id}.json` 是建会话阶段保存的高途原始全量数据，不是 assistant 后端提交后的最终推荐结果；其中 `selectSchool/selectZy` 也不是 V2 优选口径。当前读取顺序为 `_final.json` -> `_temp.json` -> 无后缀 `.json` 兜底；只有 `_final.json` 会导入为 `legacy_submitted` 并 locked/pinned，`_temp.json` 导入为 `legacy_import`，无后缀原始数据只用于最后兜底参考。`2045` 无 `_final`，命中 `_temp` 后生成 ordered `冲=28 / 稳=28 / 保=40`；`1747` 命中 `_final` 后生成 ordered `冲=28 / 稳=28 / 保=40` 且全部 locked/pinned。
 
    必查口径：
 
