@@ -3449,7 +3449,11 @@ public class PlanningStateService {
             state.setOperationLogs(Lists.newArrayList());
         }
         backfillLegacyProfileState(chatSessionId, state);
+        boolean planEditCacheNoticeAdded = appendPlanEditCacheNotice(chatSessionId, state);
         backfillLegacySummaryFields(state);
+        if (planEditCacheNoticeAdded) {
+            savePlanningState(chatSessionId, state);
+        }
         return state;
     }
 
@@ -3664,6 +3668,37 @@ public class PlanningStateService {
                 .filter(Objects::nonNull)
                 .collect(Collectors.toList()));
         state.getOperationLogs().add(logItem);
+    }
+
+    private boolean appendPlanEditCacheNotice(Long chatSessionId, PlanningStateDTO state) {
+        if (state == null || hasOperationLog(state, "legacy_plan_edit_cache_pending")) {
+            return false;
+        }
+        ChatSessionExtraData cacheData = chatSessionExtraDataSharedService
+                .getBySessionIdAndDataKey(chatSessionId, ChatSessionExtraDataConstants.PLAN_EDIT_CACHE_KEY);
+        if (cacheData == null || Strings.isNullOrEmpty(cacheData.getDataValue()) || isBlankJsonValue(cacheData.getDataValue())) {
+            return false;
+        }
+        OperationLogDTO logItem = new OperationLogDTO();
+        logItem.setType("legacy_plan_edit_cache_pending");
+        logItem.setOperator("system");
+        logItem.setCreatedAt(OffsetDateTime.now().toString());
+        logItem.setDetail("检测到老版本对话中存在待确认的方案调整意向，未自动应用到当前方案");
+        state.getOperationLogs().add(logItem);
+        return true;
+    }
+
+    private boolean hasOperationLog(PlanningStateDTO state, String type) {
+        return state.getOperationLogs() != null
+                && state.getOperationLogs().stream().anyMatch(logItem -> type.equals(logItem.getType()));
+    }
+
+    private boolean isBlankJsonValue(String value) {
+        String normalized = value == null ? "" : value.trim();
+        return normalized.isEmpty()
+                || "{}".equals(normalized)
+                || "[]".equals(normalized)
+                || "null".equalsIgnoreCase(normalized);
     }
 
     private static class LegacyPlanSource {

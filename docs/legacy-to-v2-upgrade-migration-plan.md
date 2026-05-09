@@ -350,8 +350,9 @@ V2 结构主要是：
 
 - 保留原 dataKey。
 - V2 初始化时检测是否存在非空 `planEditCache`。
-- 如果存在，在 `pendingActions` 或 `operationLogs` 中记录“存在待确认意向变更”。
+- 如果存在，在 `operationLogs` 中记录 `legacy_plan_edit_cache_pending`，提示“存在待确认意向变更”。
 - 由 Agent 后续继续引导用户确认。
+- 不直接改写 `draftPlanState` 或 `orderedPlanState`，避免把未确认对话缓存当作用户最终方案。
 
 ## 6. 数据库升级步骤
 

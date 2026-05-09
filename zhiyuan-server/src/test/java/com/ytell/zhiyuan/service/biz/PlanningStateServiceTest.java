@@ -217,6 +217,33 @@ public class PlanningStateServiceTest {
     }
 
     @Test
+    void shouldRecordPlanEditCacheNoticeWithoutApplyingItToLegacyPlan() {
+        bindPlanningStateStore();
+        VolunteerRecommendListResponse legacy = new VolunteerRecommendListResponse();
+        legacy.setBaseData(buildBaseData(1, 1, 0, 0));
+        VolunteerRecommendListResponse.VolunteerSchool sprint = buildSchool(
+                "ps1", "s1", "学校A", "北京", 1, buildMajorWithRatio("m1", "专业A", "18"));
+        sprint.setIs_preferred(true);
+        legacy.setSprints(java.util.Arrays.asList(sprint));
+
+        ChatSessionExtraData planEditCache = new ChatSessionExtraData();
+        planEditCache.setDataKey(ChatSessionExtraDataConstants.PLAN_EDIT_CACHE_KEY);
+        planEditCache.setDataValue("{\"preferredRegions\":[\"上海\"]}");
+        when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(1L, ChatSessionExtraDataConstants.PLAN_EDIT_CACHE_KEY))
+                .thenReturn(planEditCache);
+        when(volunteerBizService.loadFinalSubmitVolunteerData(1L)).thenReturn(legacy);
+
+        PlanningStateDTO state = planningStateService.getPlanningState(1L);
+
+        assertEquals(1, state.getOrderedPlanState().getItems().size());
+        assertEquals("ps1_m1", state.getOrderedPlanState().getItems().get(0).getVolunteerId());
+        assertTrue(state.getOperationLogs().stream()
+                .anyMatch(log -> "legacy_plan_edit_cache_pending".equals(log.getType())));
+        verify(chatSessionExtraDataSharedService, times(1)).save(any(ChatSessionExtraData.class));
+        verify(chatSessionExtraDataSharedService, times(1)).updateById(any(ChatSessionExtraData.class));
+    }
+
+    @Test
     void shouldImportTrackedLegacyCompleteDataFiles() throws Exception {
         VolunteerBizService parser = new VolunteerBizService();
         for (Long sessionId : java.util.Arrays.asList(26L, 29L, 35L)) {
