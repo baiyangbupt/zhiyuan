@@ -16,6 +16,7 @@
 - 已提交老方案导入后标记 `orderedPlanState.generationMode=legacy_submitted`，排序项同步 `locked/pinned`，避免 V2 工作台默认把已提交历史方案当作普通可改方案。
 - 补充老方案懒迁移单测，覆盖已提交方案导入、临时方案回退、已有 `planningState` 时不重复迁移，并使用已跟踪的 26/29/35 三份老完整数据验证真实文件可迁移。
 - 读取 V2 规划状态时如果检测到老会话存在 `planEditCache`，新增 `legacy_plan_edit_cache_pending` 操作日志提示，但不自动改写 `draftPlanState/orderedPlanState`，避免未确认的对话缓存污染当前方案。
+- 新增 `scripts/analyze_legacy_migration_logs.py`，用于灰度阶段汇总 `legacyPlanImport` 日志中的成功/失败/跳过数量、来源分布和导入规模。
 - 新增 `zhiyuan.ytell.cn` 服务器部署记录，沉淀 systemd backend、Docker web/agent/rank、Nginx SSL、DNS 与 MySQL `max_allowed_packet` 临时扩容等处理过程。
 - 建会话写入聊天历史的欢迎语已替换为更轻的起手说明：不再堆砌专家资历与固定推销式文案，改为说明“对话框 + 工作台”的最小使用方式，并提供不带具体偏好预设的通用起手问法；首屏采集流语音欢迎页仍继续走独立 `flow_config` 文案，不与聊天首条欢迎语混用。
 - `planningState` 的 `draftPlanState.summary` 补齐 `targetUnitCount/targetCount`，与 `candidatePoolState.requiredCount`、`orderedPlanState.summary.targetUnitCount/targetCount` 打通同一目标数量口径，便于 agent / frontend 统一理解“当前数量 vs 目标数量”。

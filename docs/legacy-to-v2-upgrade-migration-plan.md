@@ -475,6 +475,22 @@ unique (chat_session_id, data_key, data_version)
 - 是否保存成功
 - 异常原因
 
+灰度期间可用脚本汇总后端日志中的懒迁移情况：
+
+```bash
+cd zhiyuan-server
+python3 scripts/analyze_legacy_migration_logs.py /path/to/server.log
+tail -10000 /path/to/server.log | python3 scripts/analyze_legacy_migration_logs.py -
+```
+
+重点关注：
+
+- `failure_rate`
+- `success_sources`
+- `skipped_reasons`
+- `candidate_counts / preferred_counts / ordered_counts`
+- `top_unavailable_reasons`
+
 #### 阶段 2：内部白名单验证
 
 只让内部账号进入 `/sessionDetailV2`。
