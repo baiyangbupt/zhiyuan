@@ -296,6 +296,119 @@ python3 scripts/reset_planning_state.py --session-id 1002 --execute
 
 真实样本和对账通过后，再进入部署准备。
 
+### G1. 当前部署产物注意事项
+
+当前上传目录：
+
+```text
+/tmp/zhiyuan-release-upload
+```
+
+已加载镜像：
+
+- `zhiyuan-web:3.0.0-amd64`
+- `zhiyuan-agent:3.0.0-amd64`
+
+当前运行中的线上服务仍是老版本：
+
+- 前端容器：`gaotu-volunteer-assistant-prod`，端口 `88 -> 28688`
+- Agent 容器：`gaotu-zy-agent-plus-prod`，端口 `8091 -> 8001`
+- Rank 容器：`gaokao-volunteer-rank-prod`，端口 `8092 -> 5001`
+- 后端 Java 进程：`/root/work/gaotu-assistant-server/gaotu-assistant-server.jar`，端口 `8090`
+
+不要直接使用 release 包内的 `compose/docker-compose.yml` 启动生产服务。该 compose 会启动 MySQL、Redis、Rank，并使用 `3000/8000` 等非当前生产端口，不适合直接覆盖当前线上运行态。
+
+### G2. 后端切换准备
+
+已验证的新后端目录：
+
+```text
+/root/work/zhiyuan-server-3.0.0
+```
+
+已验证 JAR：
+
+```text
+/root/work/zhiyuan-server-3.0.0/zhiyuan-server.jar
+sha256=3a476d33384fb478e1a9739298afc2232214257c47622385f55589357e388c78
+```
+
+生产启动必须带：
+
+```text
+--spring.flyway.enabled=false
+```
+
+后端正式切换建议步骤：
+
+1. 确认低峰期和当前资源。
+2. 备份老后端目录内当前 JAR 和配置。
+3. 停止老后端 `gaotu-assistant-server`。
+4. 用新后端 JAR 和同一份生产配置在端口 `8090` 启动。
+5. 立刻检查 `/gaotu-assistant-bot/inner/planning/...`、老 `/volunteer/*` 兼容接口和前端依赖接口。
+6. 若失败，停止新后端，用老目录 `start.sh` 启回老后端。
+
+后端回滚核心路径：
+
+```bash
+cd /root/work/gaotu-assistant-server
+./start.sh
+```
+
+### G3. 前端容器切换准备
+
+老前端容器参数：
+
+```text
+container=gaotu-volunteer-assistant-prod
+image=.../gaotu-volunteer-assistant:prod-2.0.6
+env APP_ENV=prod
+port 88:28688
+cmd npm run server:${APP_ENV}
+```
+
+新前端镜像 `zhiyuan-web:3.0.0-amd64` 暴露端口也是 `28688`，启动命令同为：
+
+```text
+npm run server:${APP_ENV}
+```
+
+正式切换建议步骤：
+
+1. 先用临时端口启动新前端容器做本机健康检查，例如 `18088:28688`。
+2. 验证首页、登录态、`/sessionDetailV2`、`/sessionDetailLegacy` 和主要静态资源。
+3. 停止老前端容器。
+4. 用 `88:28688` 启动新前端容器。
+5. 如失败，停止新前端容器并重新启动老镜像 `prod-2.0.6`。
+
+前端回滚镜像：
+
+```text
+crpi-zmigon88wuzuzy3k.cn-hangzhou.personal.cr.aliyuncs.com/gt_test_123/gaotu-volunteer-assistant:prod-2.0.6
+```
+
+### G4. Agent 切换准备
+
+老 Agent 当前端口：
+
+```text
+8091 -> 8001
+```
+
+新 Agent 镜像 `zhiyuan-agent:3.0.0-amd64` 暴露端口：
+
+```text
+8009
+```
+
+如果本轮切 Agent，端口映射应为：
+
+```text
+8091 -> 8009
+```
+
+Rank 服务本轮不变，继续使用当前 `8092 -> 5001`。
+
 当前 3.0.0 发布候选信息：
 
 | 项目 | 值 |
