@@ -620,6 +620,25 @@ where chat_session_id = ?
   and data_version = 0;
 ```
 
+也可以使用后端脚本先 dry-run 确认 SQL：
+
+```bash
+python3 zhiyuan-server/scripts/reset_planning_state.py --session-id 1002
+```
+
+确认无误后再执行删除：
+
+```bash
+MYSQL_HOST=127.0.0.1 \
+MYSQL_PORT=3306 \
+MYSQL_USER=root \
+MYSQL_PASSWORD=xxx \
+MYSQL_DATABASE=sales_bot \
+python3 zhiyuan-server/scripts/reset_planning_state.py --session-id 1002 --execute
+```
+
+脚本只会处理 `data_key='planningState'` 且 `data_version=0` 的 V2 状态行，不会修改老方案 JSON、`planEditCache` 或聊天历史。多个会话可重复传入 `--session-id`，但灰度验证阶段建议一次只处理一个会话，便于对照导入前后的工作台表现。
+
 然后：
 
 - 用户可回旧页继续使用。
