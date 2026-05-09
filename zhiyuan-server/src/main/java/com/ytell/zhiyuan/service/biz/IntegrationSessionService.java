@@ -163,7 +163,10 @@ public class IntegrationSessionService {
             generateReq.setRegroupByTier(true);
             planningStateService.generateOrderedPlan(tenantId, chatSessionId, generateReq);
         }
-        return getWorkspaceStateIfAvailable(null, chatSessionId);
+        if (Boolean.FALSE.equals(safeOptions.getReturnWorkspaceState())) {
+            return null;
+        }
+        return planningStateService.getPlanningWorkspaceState(chatSessionId);
     }
 
     private PlanningWorkspaceStateRes getWorkspaceStateIfAvailable(ExternalSessionInitializeReq req, Long chatSessionId) {

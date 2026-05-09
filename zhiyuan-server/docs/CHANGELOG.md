@@ -11,6 +11,8 @@
 ### Added
 
 - 新增外部授权初始化会话接口：`POST /gaotu-assistant-bot/chat/{tenantId}/integration/session/initialize`，复用现有 `login/by-token -> tk/pf -> LoginInterceptor` 用户授权链路，在授权用户上下文中创建会话、生成候选池/初始方案/排序方案，并返回会话定位与方案获取能力；同步新增幂等表、设计文档和 controller/service 单测。
+- 外部授权初始化会话接口文档补齐完整请求示例、`BaseResponse` 响应示例、幂等命中示例、常见错误、后续查询方案和导出方案示例，便于外部系统直接对接。
+- 外部授权初始化会话接口单测补齐参数校验、处理中幂等、生成开关、跳过工作台状态、根路径 URL 和失败落表场景，覆盖外部系统重试和不同部署路径下的主要边界。
 - 发布版本号统一定为 `3.0.0`，同步更新 backend `pom.xml`、frontend `package.json` 与 agent `pyproject.toml`，用于本次老版本到 V2 平滑升级 release tag。
 - 生产升级实施文档补齐部署准备细节，明确生产不做编译构建，并区分正式 `/assistant-pc` 路径与 `zhiyuan.ytell.cn` 根路径的前端构建方式、产物路径、Nginx 切换和回滚命令。
 - 老方案懒迁移外部生产样本验证已跑通：从生产机 `/tmp/zhiyuan-migration-samples` 下载 20 个 JSON 文件，覆盖 9 个会话及普通 / `_final` / `_temp` 文件形态，`shouldImportExternalLegacyCompleteDataSamples` 通过。

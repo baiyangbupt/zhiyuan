@@ -3,7 +3,9 @@ package com.ytell.zhiyuan.service.biz;
 import com.ytell.zhiyuan.common.exception.BusinessException;
 import com.ytell.zhiyuan.mapper.IntegrationSessionRequestMapper;
 import com.ytell.zhiyuan.model.dto.CreateSessionReq;
+import com.ytell.zhiyuan.model.dto.integration.ExternalGenerationOptionsDTO;
 import com.ytell.zhiyuan.model.dto.integration.ExternalSessionInitializeReq;
+import com.ytell.zhiyuan.model.dto.integration.ExternalSessionInitializeRes;
 import com.ytell.zhiyuan.model.dto.planning.OrderedPlanStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningWorkspaceStateRes;
 import com.ytell.zhiyuan.model.entity.biz.IntegrationSessionRequest;
@@ -63,7 +65,12 @@ public class IntegrationSessionServiceTest {
 
         ExternalSessionInitializeReq req = buildReq("ext-1");
         req.getReturnOptions().setWebBaseUrl("https://www.gaotuzhiyuan.com");
-        assertEquals(1002L, service.initializeSession(1L, req).getChatSessionId());
+        ExternalSessionInitializeRes res = service.initializeSession(1L, req);
+        assertEquals(1002L, res.getChatSessionId());
+        assertTrue(res.getSessionUrl().contains("/assistant-pc/sessionDetailV2?chatSessionId=1002"));
+        assertEquals(Integer.valueOf(120), res.getPlanning().getCandidateTotal());
+        assertEquals(Integer.valueOf(45), res.getPlanning().getOrderedTotal());
+        assertEquals(Integer.valueOf(18), res.getPlanning().getTierCounts().get("sprint"));
 
         verify(chatSessionBizService).createChatSession(eq(1L), any(CreateSessionReq.class));
         verify(planningStateService).generateCandidatePool(eq(1L), eq(1002L), any());
@@ -88,6 +95,19 @@ public class IntegrationSessionServiceTest {
     }
 
     @Test
+    void shouldRejectProcessingIdempotentRequest() {
+        ExternalSessionInitializeReq req = buildReq("ext-1");
+        IntegrationSessionRequest existing = new IntegrationSessionRequest();
+        existing.setStatus("PROCESSING");
+        existing.setRequestHash(invokeHash(req));
+        when(mapper.selectOne(any())).thenReturn(existing);
+
+        BusinessException exception = assertThrows(BusinessException.class, () -> service.initializeSession(1L, req));
+        assertEquals("同一externalRequestId正在处理中", exception.getMessage());
+        verify(chatSessionBizService, never()).createChatSession(any(), any());
+    }
+
+    @Test
     void shouldRejectSameExternalRequestIdWithDifferentPayload() {
         ExternalSessionInitializeReq req = buildReq("ext-1");
         IntegrationSessionRequest existing = new IntegrationSessionRequest();
@@ -108,6 +128,23 @@ public class IntegrationSessionServiceTest {
     }
 
     @Test
+    void shouldValidateRequiredParameters() {
+        BusinessException nullReq = assertThrows(BusinessException.class, () -> service.initializeSession(1L, null));
+        assertEquals("请求不能为空", nullReq.getMessage());
+
+        ExternalSessionInitializeReq missingExternalId = buildReq(null);
+        BusinessException missingExternalIdError = assertThrows(BusinessException.class,
+                () -> service.initializeSession(1L, missingExternalId));
+        assertEquals("externalRequestId不能为空", missingExternalIdError.getMessage());
+
+        ExternalSessionInitializeReq missingCreateSession = buildReq("ext-1");
+        missingCreateSession.setCreateSession(null);
+        BusinessException missingCreateSessionError = assertThrows(BusinessException.class,
+                () -> service.initializeSession(1L, missingCreateSession));
+        assertEquals("createSession不能为空", missingCreateSessionError.getMessage());
+    }
+
+    @Test
     void shouldRecordAuthorizedUserInIdempotentRecord() {
         when(mapper.selectOne(any())).thenReturn(null);
         ChatSessionVo sessionVo = new ChatSessionVo();
@@ -121,6 +158,80 @@ public class IntegrationSessionServiceTest {
         verify(mapper).insert(captor.capture());
         assertEquals(7L, captor.getValue().getUserId());
         assertEquals("WEB", captor.getValue().getPlatform());
+    }
+
+    @Test
+    void shouldRespectGenerationOptions() {
+        when(mapper.selectOne(any())).thenReturn(null);
+        ChatSessionVo sessionVo = new ChatSessionVo();
+        sessionVo.setId(1002L);
+        when(chatSessionBizService.createChatSession(eq(1L), any(CreateSessionReq.class))).thenReturn(sessionVo);
+        when(planningStateService.getPlanningWorkspaceState(1002L)).thenReturn(buildWorkspaceState());
+
+        ExternalSessionInitializeReq req = buildReq("ext-1");
+        ExternalGenerationOptionsDTO options = new ExternalGenerationOptionsDTO();
+        options.setGenerateCandidatePool(false);
+        options.setGenerateInitialPlan(false);
+        options.setGenerateOrderedPlan(false);
+        req.setGenerationOptions(options);
+
+        service.initializeSession(1L, req);
+
+        verify(planningStateService, never()).generateCandidatePool(any(), any(), any());
+        verify(planningStateService, never()).generateInitialPlan(any(), any(), any());
+        verify(planningStateService, never()).generateOrderedPlan(any(), any(), any());
+        verify(planningStateService).getPlanningWorkspaceState(1002L);
+    }
+
+    @Test
+    void shouldSkipWorkspaceStateWhenReturnWorkspaceStateDisabled() {
+        when(mapper.selectOne(any())).thenReturn(null);
+        ChatSessionVo sessionVo = new ChatSessionVo();
+        sessionVo.setId(1002L);
+        when(chatSessionBizService.createChatSession(eq(1L), any(CreateSessionReq.class))).thenReturn(sessionVo);
+
+        ExternalSessionInitializeReq req = buildReq("ext-1");
+        req.getGenerationOptions().setReturnWorkspaceState(false);
+
+        ExternalSessionInitializeRes res = service.initializeSession(1L, req);
+
+        assertEquals(1002L, res.getChatSessionId());
+        assertNull(res.getPlanning().getPhase());
+        verify(planningStateService, never()).getPlanningWorkspaceState(any());
+    }
+
+    @Test
+    void shouldBuildRootPathUrlWhenRequested() {
+        when(mapper.selectOne(any())).thenReturn(null);
+        ChatSessionVo sessionVo = new ChatSessionVo();
+        sessionVo.setId(1002L);
+        when(chatSessionBizService.createChatSession(eq(1L), any(CreateSessionReq.class))).thenReturn(sessionVo);
+        when(planningStateService.getPlanningWorkspaceState(1002L)).thenReturn(buildWorkspaceState());
+
+        ExternalSessionInitializeReq req = buildReq("ext-1");
+        req.getReturnOptions().setWebBaseUrl("https://zhiyuan.ytell.cn/");
+        req.getReturnOptions().setPathMode("root");
+
+        ExternalSessionInitializeRes res = service.initializeSession(1L, req);
+
+        assertEquals("https://zhiyuan.ytell.cn/sessionDetailV2?chatSessionId=1002", res.getSessionUrl());
+        assertEquals("https://zhiyuan.ytell.cn/sessionDetailLegacy?chatSessionId=1002", res.getLegacySessionUrl());
+    }
+
+    @Test
+    void shouldMarkFailedWhenSessionCreationFails() {
+        when(mapper.selectOne(any())).thenReturn(null);
+        when(chatSessionBizService.createChatSession(eq(1L), any(CreateSessionReq.class)))
+                .thenThrow(new BusinessException(110, "创建失败"));
+
+        BusinessException exception = assertThrows(BusinessException.class, () -> service.initializeSession(1L, buildReq("ext-1")));
+        assertEquals("创建失败", exception.getMessage());
+
+        ArgumentCaptor<IntegrationSessionRequest> captor = ArgumentCaptor.forClass(IntegrationSessionRequest.class);
+        verify(mapper, atLeastOnce()).updateById(captor.capture());
+        IntegrationSessionRequest lastUpdate = captor.getAllValues().get(captor.getAllValues().size() - 1);
+        assertEquals("FAILED", lastUpdate.getStatus());
+        assertEquals("创建失败", lastUpdate.getErrorMessage());
     }
 
     private ExternalSessionInitializeReq buildReq(String externalRequestId) {

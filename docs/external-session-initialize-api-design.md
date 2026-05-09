@@ -42,6 +42,12 @@
 POST /gaotu-assistant-bot/chat/{tenantId}/integration/session/initialize
 ```
 
+示例：
+
+```http
+POST https://www.gaotuzhiyuan.com/gaotu-assistant-bot/chat/1/integration/session/initialize
+```
+
 ### 3.2 授权
 
 当前生产已有一条通过 token 自动完成用户授权的链路：
@@ -75,6 +81,12 @@ pf: <platform/channel>
 X-Zhiyuan-External-Request-Id: <external-request-id>
 ```
 
+说明：
+
+- `tk` 为 `login/by-token` 返回的本系统 `loginToken`。
+- `pf` 为登录时使用的渠道，例如 `web`、`gaotu`、`gaotu4b` 等，以线上实际渠道为准。
+- `X-Zhiyuan-External-Request-Id` 建议与 body 中 `externalRequestId` 保持一致，第一版实现以 body 字段为准。
+
 后端校验：
 
 - 复用 `LoginInterceptor` 校验 `tk/pf`。
@@ -91,6 +103,8 @@ X-Zhiyuan-Signature: hmac_sha256(secret, timestamp + "\n" + body)
 
 ## 4. 请求结构
 
+### 4.1 字段结构
+
 ```json
 {
   "externalRequestId": "partner-20260509-0001",
@@ -99,9 +113,9 @@ X-Zhiyuan-Signature: hmac_sha256(secret, timestamp + "\n" + body)
   },
   "generationOptions": {
     "generateCandidatePool": true,
-    "generateInitialRecommendation": true,
+    "generateInitialPlan": true,
     "generateOrderedPlan": true,
-    "runReview": true,
+    "forceRegenerate": false,
     "returnWorkspaceState": true
   },
   "returnOptions": {
@@ -117,42 +131,250 @@ X-Zhiyuan-Signature: hmac_sha256(secret, timestamp + "\n" + body)
 | --- | --- | --- |
 | `externalRequestId` | 是 | 外部请求幂等键。 |
 | `createSession` | 是 | 复用前端采集创建会话的 `CreateSessionReq`。 |
-| `generationOptions` | 否 | 控制是否同步生成候选池、初始推荐、排序和审查。默认全开。 |
+| `generationOptions` | 否 | 控制是否同步生成候选池、初始方案、排序方案，并返回工作台轻量状态。默认全开。 |
 | `returnOptions.pathMode` | 否 | `assistant-pc` 或 `root`，用于返回页面 URL。正式生产默认 `assistant-pc`。 |
 
 用户身份不放在 body 中，以 `tk/pf` 授权结果为准。`createSession.userName` 仅作为会话展示名称。
 
+### 4.2 完整请求示例
+
+```bash
+curl -X POST 'https://www.gaotuzhiyuan.com/gaotu-assistant-bot/chat/1/integration/session/initialize' \
+  -H 'Content-Type: application/json' \
+  -H 'tk: ${LOGIN_TOKEN}' \
+  -H 'pf: web' \
+  -H 'X-Zhiyuan-External-Request-Id: partner-20260509-0001' \
+  -d '{
+    "externalRequestId": "partner-20260509-0001",
+    "createSession": {
+      "botId": 1,
+      "userName": "张同学",
+      "province": {
+        "code": "130000",
+        "name": "河北"
+      },
+      "examYear": 2026,
+      "sex": {
+        "code": "female",
+        "name": "女"
+      },
+      "subjectType": {
+        "code": "WL",
+        "desc": "物理"
+      },
+      "subjectList": [
+        {
+          "isFirst": 1,
+          "subjectType": "first",
+          "value": "01",
+          "name": "物理"
+        },
+        {
+          "isFirst": 0,
+          "subjectType": "optional",
+          "value": "05",
+          "name": "化学"
+        },
+        {
+          "isFirst": 0,
+          "subjectType": "optional",
+          "value": "06",
+          "name": "生物"
+        }
+      ],
+      "subjectScoreList": [
+        {
+          "subject": "01",
+          "subjectName": "物理",
+          "score": 85
+        },
+        {
+          "subject": "05",
+          "subjectName": "化学",
+          "score": 82
+        },
+        {
+          "subject": "06",
+          "subjectName": "生物",
+          "score": 80
+        }
+      ],
+      "prepareType": {
+        "code": "PREDICT",
+        "desc": "模拟填报"
+      },
+      "batch": {
+        "code": "B1",
+        "name": "本科批",
+        "score": 448,
+        "level": "本科",
+        "pos": 120000
+      },
+      "totalScore": 560,
+      "totalScorePos": 58000,
+      "filterType": "2",
+      "specialPlan": false,
+      "minority": false,
+      "colorBlindness": false,
+      "bonusPolicy": false,
+      "bonusScore": 0,
+      "preferredMajors": [
+        {
+          "majorSubId": "0201",
+          "majorSubName": "经济学类"
+        },
+        {
+          "majorSubId": "0301",
+          "majorSubName": "法学类"
+        }
+      ],
+      "unacceptableMajors": [
+        {
+          "majorId": "101101",
+          "majorName": "护理学"
+        }
+      ],
+      "preferredRegions": [
+        {
+          "provinceId": "110000",
+          "provinceName": "北京"
+        },
+        {
+          "provinceId": "120000",
+          "provinceName": "天津"
+        }
+      ],
+      "strategyType": {
+        "code": "balanced",
+        "name": "稳妥型"
+      },
+      "tuitionRange": {
+        "min": 0,
+        "max": 30000
+      },
+      "acceptForeignSchool": false
+    },
+    "generationOptions": {
+      "generateCandidatePool": true,
+      "generateInitialPlan": true,
+      "generateOrderedPlan": true,
+      "returnWorkspaceState": true,
+      "forceRegenerate": false
+    },
+    "returnOptions": {
+      "webBaseUrl": "https://www.gaotuzhiyuan.com",
+      "pathMode": "assistant-pc"
+    }
+  }'
+```
+
+最小必需字段以现有 `session/create` 能成功创建会话为准。通常至少需要：
+
+- `botId`
+- `province.code/name`
+- `examYear`
+- `subjectType.code`
+- `subjectList`
+- `subjectScoreList`
+- `batch.code/name/level`
+- `totalScore`
+- `totalScorePos`
+
 ## 5. 响应结构
+
+### 5.1 成功响应示例
+
+实际接口外层仍使用统一 `BaseResponse`：
 
 ```json
 {
-  "chatSessionId": 1002,
-  "tenantId": 1,
-  "externalRequestId": "partner-20260509-0001",
-  "created": true,
-  "sessionUrl": "https://www.gaotuzhiyuan.com/assistant-pc/sessionDetailV2?chatSessionId=1002",
-  "legacySessionUrl": "https://www.gaotuzhiyuan.com/assistant-pc/sessionDetailLegacy?chatSessionId=1002",
-  "planning": {
-    "phase": "ordered",
-    "version": 3,
-    "candidateTotal": 200,
-    "draftTotal": 45,
-    "orderedTotal": 45,
-    "tierCounts": {
-      "sprint": 18,
-      "steady": 13,
-      "protect": 14
+  "code": 0,
+  "msg": "success",
+  "data": {
+    "chatSessionId": 1002,
+    "tenantId": 1,
+    "externalRequestId": "partner-20260509-0001",
+    "created": true,
+    "sessionUrl": "https://www.gaotuzhiyuan.com/assistant-pc/sessionDetailV2?chatSessionId=1002",
+    "legacySessionUrl": "https://www.gaotuzhiyuan.com/assistant-pc/sessionDetailLegacy?chatSessionId=1002",
+    "planning": {
+      "phase": "ordered",
+      "version": 3,
+      "candidateTotal": 200,
+      "draftTotal": 45,
+      "orderedTotal": 45,
+      "tierCounts": {
+        "冲": 18,
+        "稳": 13,
+        "保": 14
+      }
+    },
+    "apis": {
+      "workspaceState": "/gaotu-assistant-bot/inner/planning/1/session/workspace-state?chatSessionId=1002",
+      "orderedPlan": "/gaotu-assistant-bot/inner/planning/1/session/ordered-plan?chatSessionId=1002",
+      "export": "/gaotu-assistant-bot/inner/chat/1/volunteer/export?chatSessionId=1002"
     }
-  },
-  "apis": {
-    "workspaceState": "/gaotu-assistant-bot/inner/planning/1/session/workspace-state?chatSessionId=1002",
-    "orderedPlan": "/gaotu-assistant-bot/inner/planning/1/session/ordered-plan?chatSessionId=1002",
-    "export": "/gaotu-assistant-bot/inner/chat/1/volunteer/export?chatSessionId=1002"
   }
 }
 ```
 
 `created=false` 表示命中幂等记录，返回之前创建的会话定位信息。
+
+### 5.2 幂等命中示例
+
+同一个授权用户、同一个 `externalRequestId`、同一个请求体重复调用：
+
+```json
+{
+  "code": 0,
+  "msg": "success",
+  "data": {
+    "chatSessionId": 1002,
+    "tenantId": 1,
+    "externalRequestId": "partner-20260509-0001",
+    "created": false,
+    "sessionUrl": "https://www.gaotuzhiyuan.com/assistant-pc/sessionDetailV2?chatSessionId=1002"
+  }
+}
+```
+
+### 5.3 常见错误
+
+未带 `tk/pf` 或 token 无效：
+
+```json
+{
+  "code": 800,
+  "msg": "不合法请求"
+}
+```
+
+缺少 `externalRequestId`：
+
+```json
+{
+  "code": 110,
+  "msg": "externalRequestId不能为空"
+}
+```
+
+同一个 `externalRequestId` 使用了不同请求体：
+
+```json
+{
+  "code": 110,
+  "msg": "externalRequestId已被不同请求使用"
+}
+```
+
+同一个 `externalRequestId` 仍在处理中：
+
+```json
+{
+  "code": 110,
+  "msg": "同一externalRequestId正在处理中"
+}
+```
 
 ## 6. 执行流程
 
@@ -161,7 +383,7 @@ X-Zhiyuan-Signature: hmac_sha256(secret, timestamp + "\n" + body)
 3. 从 `UserInfoThreadLocal` 读取授权用户，禁止 body 覆盖用户身份。
 4. 调用 `createChatSession(tenantId, createSessionReq)`。
 5. 调用 `generateCandidatePool()`。
-6. 调用 `generateInitialRecommendation()`。
+6. 调用 `generateInitialPlan()`。
 7. 调用 `generateOrderedPlan()`。
 8. 可选调用审查或生成 workspace-state。
 9. 保存幂等记录和初始化日志。
@@ -207,11 +429,29 @@ GET /gaotu-assistant-bot/inner/planning/{tenantId}/session/ordered-plan?chatSess
 POST /gaotu-assistant-bot/inner/chat/{tenantId}/volunteer/export?chatSessionId={id}
 ```
 
+示例：
+
+```bash
+curl 'https://www.gaotuzhiyuan.com/gaotu-assistant-bot/inner/planning/1/session/workspace-state?chatSessionId=1002'
+
+curl 'https://www.gaotuzhiyuan.com/gaotu-assistant-bot/inner/planning/1/session/ordered-plan?chatSessionId=1002'
+
+curl -X POST 'https://www.gaotuzhiyuan.com/gaotu-assistant-bot/inner/chat/1/volunteer/export?chatSessionId=1002' \
+  --output volunteer-plan.xlsx
+```
+
 页面定位：
 
 ```text
 /assistant-pc/sessionDetailV2?chatSessionId={id}
 /assistant-pc/sessionDetailLegacy?chatSessionId={id}
+```
+
+如果部署在根路径环境，`returnOptions.pathMode` 可传 `root`，返回 URL 会变为：
+
+```text
+/sessionDetailV2?chatSessionId={id}
+/sessionDetailLegacy?chatSessionId={id}
 ```
 
 ## 9. 测试要求
@@ -223,6 +463,10 @@ POST /gaotu-assistant-bot/inner/chat/{tenantId}/volunteer/export?chatSessionId={
 - 首次调用创建会话并生成方案。
 - 同一 `externalRequestId` 重试返回同一 `chatSessionId`。
 - 同一 `externalRequestId` 但请求体不同返回冲突。
+- 同一 `externalRequestId` 仍在 `PROCESSING` 时返回处理中错误。
+- `generationOptions` 关闭候选池、初始方案、排序方案时不会调用对应生成步骤。
+- `returnWorkspaceState=false` 时不读取工作台轻量状态。
+- `pathMode=root` 时返回根路径页面 URL。
 - 生成失败时记录失败状态，不留下误判为成功的幂等记录。
 
 集成验证：
