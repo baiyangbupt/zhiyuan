@@ -6,6 +6,7 @@
 
 - 修正老方案懒迁移排序区来源口径：`_final.json` 才作为已提交历史方案导入并锁定，`_temp.json` 作为提交前推荐方案导入，无后缀 `session_volunteer_{id}.json` 仅作为高途原始全量候选兜底；不再把 `selectSchool/selectZy` 映射为 V2 优选，避免把几百到几千条原始候选误塞入排序区。
 - 老方案懒迁移单测补充专业+大学和院校专业组两种模式覆盖，分别验证专业条目计数、专业组 unit 计数和组内专业聚合。
+- 老方案懒迁移外部样本测试补充同一会话三件套校验：要求样本目录同时包含无后缀、`_temp.json`、`_final.json`，并覆盖专业+大学和院校专业组两种模式，断言 `_final.json` 优先于 `_temp.json` 和无后缀原始文件。
 - 新增 `/session/workspace-state` 工作台轻量状态接口，返回摘要、候选池 summary、草稿、方案、审查和操作记录等工作台所需字段，并裁掉 `candidatePoolState.items` 等大体积候选明细，避免刷新场景继续传输完整 `PlanningStateDTO`。
 - `/session/workspace-state` 在保持轻量的同时补回当前草稿/方案已引用候选的明细项，用于前端刷新后继续展示方案区录取率、推荐系数、专业热度、就业表现等字段，避免恢复全量候选池传输。
 - 排序方案 `move / pin / unpin` 接口新增轻量动作响应 `OrderedPlanActionRes`，只返回排序态、审查摘要、操作日志等前端合并所需字段，避免方案微调接口继续返回 20MB+ 全量规划状态造成明显等待。
@@ -18,7 +19,7 @@
 - 外部授权初始化会话接口单测补齐参数校验、处理中幂等、生成开关、跳过工作台状态、根路径 URL 和失败落表场景，覆盖外部系统重试和不同部署路径下的主要边界。
 - 发布版本号统一定为 `3.0.0`，同步更新 backend `pom.xml`、frontend `package.json` 与 agent `pyproject.toml`，用于本次老版本到 V2 平滑升级 release tag。
 - 生产升级实施文档补齐部署准备细节，明确生产不做编译构建，并区分正式 `/assistant-pc` 路径与 `zhiyuan.ytell.cn` 根路径的前端构建方式、产物路径、Nginx 切换和回滚命令。
-- 老方案懒迁移外部生产样本验证已跑通：从生产机 `/tmp/zhiyuan-migration-samples` 下载 20 个 JSON 文件，覆盖 9 个会话及普通 / `_final` / `_temp` 文件形态，`shouldImportExternalLegacyCompleteDataSamples` 通过。
+- 老方案懒迁移外部生产样本验证已跑通：从生产机下载同会话完整三件套样本，覆盖 `612/1012` 专业+大学模式和 `617/739` 院校专业组模式；`shouldImportExternalLegacyCompleteDataSamples` 与 `shouldPreferFinalOverTempAndOriginalForExternalLegacySessionSamples` 均通过。
 - `planningState` 缺失时新增老方案懒迁移入口：优先从老版已提交方案文件导入，失败后回退临时推荐文件；导入成功后写入 `assistant_chat_session_extra_data(data_key=planningState)`，后续访问直接读 V2 状态。
 - 老方案导入复用现有候选平铺、草稿/排序 summary 和专业组聚合逻辑，把老版 `is_preferred=true` 的优报项导入 `draftPlanState + orderedPlanState`，未优报项保留在 `candidatePoolState`。
 - 老方案文件解析补充兼容更早的完整数据格式 `detailList/majorVOList`，可将本地 `session_volunteer_{id}.json` 里的冲稳保、院校专业组、专业明细和 `selectZy` 选择状态转换为 V2 迁移可消费的推荐结构。

@@ -390,6 +390,60 @@ public class PlanningStateServiceTest {
     }
 
     @Test
+    void shouldPreferFinalOverTempAndOriginalForExternalLegacySessionSamples() throws Exception {
+        String sampleDir = System.getProperty("legacy.sample.dir", System.getenv("LEGACY_SAMPLE_DIR"));
+        Assumptions.assumeTrue(sampleDir != null && !sampleDir.trim().isEmpty(), "legacy sample dir not configured");
+        Path dir = Paths.get(sampleDir);
+        Assumptions.assumeTrue(Files.isDirectory(dir), "legacy sample dir not found: " + sampleDir);
+
+        VolunteerBizService parser = new VolunteerBizService();
+        List<Long> completeSessionIds = Files.list(dir)
+                .filter(path -> path.getFileName().toString().matches("session_volunteer_\\d+\\.json"))
+                .map(this::extractSessionId)
+                .filter(sessionId -> Files.exists(dir.resolve("session_volunteer_" + sessionId + "_temp.json"))
+                        && Files.exists(dir.resolve("session_volunteer_" + sessionId + "_final.json")))
+                .sorted()
+                .collect(Collectors.toList());
+        Assumptions.assumeFalse(completeSessionIds.isEmpty(), "legacy sample dir has no complete original/temp/final session groups");
+
+        boolean hasMajorMode = false;
+        boolean hasMajorGroupMode = false;
+        for (Long sessionId : completeSessionIds) {
+            VolunteerRecommendListResponse original = parser.parseVolunteerRecommendListResponse(
+                    new String(Files.readAllBytes(dir.resolve("session_volunteer_" + sessionId + ".json")), StandardCharsets.UTF_8));
+            VolunteerRecommendListResponse temp = parser.parseVolunteerRecommendListResponse(
+                    new String(Files.readAllBytes(dir.resolve("session_volunteer_" + sessionId + "_temp.json")), StandardCharsets.UTF_8));
+            VolunteerRecommendListResponse submitted = parser.parseVolunteerRecommendListResponse(
+                    new String(Files.readAllBytes(dir.resolve("session_volunteer_" + sessionId + "_final.json")), StandardCharsets.UTF_8));
+            if (countLegacyRecommendEntries(submitted) == 0) {
+                continue;
+            }
+
+            VolunteerModel model = submitted.getBaseData() == null ? null : submitted.getBaseData().getVolunteerModel();
+            hasMajorMode = hasMajorMode || VolunteerModel.major.equals(model);
+            hasMajorGroupMode = hasMajorGroupMode || VolunteerModel.majorGroup.equals(model);
+
+            setUp();
+            bindPlanningStateStore(sessionId);
+            when(volunteerBizService.loadFinalSubmitVolunteerData(sessionId)).thenReturn(submitted);
+            when(volunteerBizService.loadCachedRecommendData(sessionId)).thenReturn(temp);
+            when(volunteerBizService.loadOriginalVolunteerData(sessionId)).thenReturn(original);
+
+            PlanningStateDTO state = planningStateService.getPlanningState(sessionId);
+
+            assertEquals(countLegacyRecommendEntries(submitted), state.getCandidatePoolState().getItems().size());
+            assertEquals("legacy_submitted", state.getOrderedPlanState().getGenerationMode());
+            assertTrue(state.getOrderedPlanState().getItems().stream().allMatch(item -> Boolean.TRUE.equals(item.getLocked())));
+            assertTrue(state.getOrderedPlanState().getItems().stream().allMatch(item -> Boolean.TRUE.equals(item.getPinned())));
+            verify(volunteerBizService, never()).loadCachedRecommendData(sessionId);
+            verify(volunteerBizService, never()).loadOriginalVolunteerData(sessionId);
+        }
+
+        assertTrue(hasMajorMode, "complete session samples should include major mode");
+        assertTrue(hasMajorGroupMode, "complete session samples should include majorGroup mode");
+    }
+
+    @Test
     void shouldKeepDistinctCandidatesWhenMajorIdRepeatsWithinSamePlanSchool() {
         bindPlanningStateStore();
 
