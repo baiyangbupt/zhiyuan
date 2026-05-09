@@ -3522,6 +3522,15 @@ public class PlanningStateService {
             log.info("legacyPlanImport final plan unavailable chatSessionId={} reason={}", chatSessionId, ex.getMessage());
         }
         try {
+            VolunteerRecommendListResponse response = volunteerBizService.loadOriginalVolunteerData(chatSessionId);
+            if (hasLegacyPlanItems(response)) {
+                return new LegacyPlanSource(response, "submitted_original", true);
+            }
+            log.info("legacyPlanImport original plan empty chatSessionId={}", chatSessionId);
+        } catch (Exception ex) {
+            log.info("legacyPlanImport original plan unavailable chatSessionId={} reason={}", chatSessionId, ex.getMessage());
+        }
+        try {
             VolunteerRecommendListResponse response = volunteerBizService.loadCachedRecommendData(chatSessionId);
             if (hasLegacyPlanItems(response)) {
                 return new LegacyPlanSource(response, "temp", false);
@@ -3693,7 +3702,7 @@ public class PlanningStateService {
         OperationLogDTO logItem = new OperationLogDTO();
         logItem.setType("legacy_plan_import");
         logItem.setOperator("system");
-        logItem.setDetail("从老版本" + ("submitted".equals(legacyPlanSource.source) ? "已提交方案" : "临时方案") + "导入 V2 工作台");
+        logItem.setDetail("从老版本" + (legacyPlanSource.submitted ? "已提交方案" : "临时方案") + "导入 V2 工作台");
         logItem.setCreatedAt(OffsetDateTime.now().toString());
         logItem.setVolunteerIds(defaultCandidates(preferredCandidates).stream()
                 .map(CandidateItemDTO::getVolunteerId)

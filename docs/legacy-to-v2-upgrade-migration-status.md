@@ -148,6 +148,8 @@ INTERNAL_SERVICE_URL=https://zhiyuan.ytell.cn .venv/bin/python -m uvicorn app.se
 
    注意：当前线上尚未部署新版本，离线 JSON 对账不会影响线上；但一旦通过 V2 后端页面或 API 读取真实会话，缺少 `planningState` 的会话可能触发懒迁移写入。因此页面/API 对账必须在新版本服务部署后，按指定会话、小范围、低峰期执行，并保留单会话回滚脚本。
 
+   2026-05-09 已用生产旁路 `8093` 对 `chatSessionId=2045` 做一次验证，发现当前发布包将该会话从 `_temp.json` 导入为 `legacy_import`。根因是生产目录存在无后缀 `session_volunteer_2045.json`，但发布包最终方案读取只查 `_final.json`，未兼容无后缀已提交方案文件。该问题已在源码中修复为 `_final.json` -> 无后缀 `.json` -> `_temp.json` 的读取顺序；重新验证前需要重新构建后端 JAR，并删除 `2045` 已写入的错误 `planningState`。
+
    必查口径：
 
    - 老页面优报总数 = V2 ordered 总数。

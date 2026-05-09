@@ -492,6 +492,32 @@ public class VolunteerBizService {
         }
     }
 
+    public VolunteerRecommendListResponse loadOriginalVolunteerData(Long chatSessionId) {
+        String localFilePath = volunteerFilePathUtil.getLocalFilePath(chatSessionId, VolunteerFileType.ORIGINAL);
+        File localFile = new File(localFilePath);
+
+        if (!localFile.exists()) {
+            log.info("本地原始志愿文件不存在，尝试从OSS下载，会话ID: {}, 本地路径: {}", chatSessionId, localFilePath);
+            String ossFileName = volunteerFilePathUtil.getOssFilePath(chatSessionId, VolunteerFileType.ORIGINAL);
+            boolean downloadSuccess = aliOSSService.downloadFile(ossFileName, localFilePath);
+            if (!downloadSuccess) {
+                log.error("从OSS下载原始志愿文件失败，会话ID: {}, OSS文件名: {}", chatSessionId, ossFileName);
+                throw new BusinessException(110, "下载原始志愿数据文件失败");
+            }
+            log.info("从OSS下载原始志愿文件成功，会话ID: {}, 本地路径: {}", chatSessionId, localFilePath);
+        }
+
+        try {
+            String jsonContent = FileUtils.readFileToString(localFile, StandardCharsets.UTF_8);
+            VolunteerRecommendListResponse volunteerDataDTO = parseVolunteerRecommendListResponse(jsonContent);
+            log.info("成功加载原始志愿数据，会话ID: {}, 数据大小: {} bytes", chatSessionId, jsonContent.length());
+            return volunteerDataDTO;
+        } catch (Exception e) {
+            log.error("解析本地原始志愿JSON文件失败，会话ID: {}, 文件路径: {}", chatSessionId, localFilePath, e);
+            throw new BusinessException(110, "解析原始志愿数据文件失败");
+        }
+    }
+
     VolunteerRecommendListResponse parseVolunteerRecommendListResponse(String jsonContent) {
         VolunteerRecommendListResponse response = JSONObject.parseObject(jsonContent, VolunteerRecommendListResponse.class);
         if (hasRecommendListItems(response)) {

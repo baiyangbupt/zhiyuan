@@ -192,6 +192,19 @@ python3 zhiyuan-server/scripts/analyze_legacy_plan_samples.py /tmp/zhiyuan-migra
 | chatSessionId | 老状态 | 老优报数 | V2 ordered 数 | 冲/稳/保是否一致 | 顺序是否一致 | 导出是否一致 | 备注 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 
+当前生产旁路验证记录：
+
+| chatSessionId | 老状态 | 老方案文件 | V2 结果 | 结论 |
+| --- | --- | --- | --- | --- |
+| 2045 | 用户确认为 `SUPER_VIP` 会话 | `session_volunteer_2045.json`、`session_volunteer_2045_temp.json` | `generationMode=legacy_import`，candidate 汇总 `冲=815 / 稳=416 / 保=1139`，ordered 汇总 `冲=28 / 稳=28 / 保=40` | 暂不通过。生产老版本的已提交方案存在无后缀 `.json`，当前 3.0.0 发布包只优先找 `_final.json`，未找到后回退 `_temp.json`，导致已提交方案被按临时方案导入。 |
+
+修复要求：
+
+- 迁移读取顺序应为 `_final.json` -> 无后缀 `.json` -> `_temp.json`。
+- 无后缀 `.json` 命中且有有效方案时，应按 `submitted` 语义导入，即 `generationMode=legacy_submitted`，ordered 项锁定/固定。
+- 重新验证 `2045` 前，必须先删除该会话已经写入的错误 `planningState`。当前生产机未安装 `mysql` 客户端，暂不能直接执行 `reset_planning_state.py --execute`。
+- 3.0.0 后端发布包需要重新构建，不能继续用当前 JAR 做真实会话灰度。
+
 ## 7. 阶段 E：单会话回滚演练
 
 目标：确认某个会话的 V2 状态可以删除并重新懒迁移。
