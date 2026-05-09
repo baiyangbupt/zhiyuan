@@ -849,6 +849,43 @@ systemctl restart zhiyuan-server.service
 - 兼容 WebSocket 路径 `/gaotu-assistant-agent/plus/chat/1/bot/1/do` 握手返回 `101 Switching Protocols`，`ping` 消息返回 `{"type":"pong"}`。
 - 正式容器 `zhiyuan-agent-3.0.0-prod` 接管 `8091 -> 8009` 后，健康接口和兼容 WebSocket `ping/pong` 均验证通过。
 
+`2026-05-10 06:25` 处理前端调用 Agent 无返回问题：
+
+- 现象：用户在新版本前端会话 `2075` 发送消息后，对话区短暂显示“思考中”后无返回；Agent 健康接口和公网 WebSocket 握手正常，但 Agent 日志没有 `2075` 的真实消息处理记录。
+- 根因：生产前端构建产物中，`MessageList` 的 WebSocket 地址被写成 `ws://localhost:8000/gaotu-assistant-agent/plus/chat/...`。浏览器会把 `localhost` 解析为用户本机，不会连接生产 Agent。
+- 配置原因：`zhiyuan-web/.env.prod` 缺少 `NEXT_PUBLIC_AGENT_WS_BASE`。Next.js 的 `NEXT_PUBLIC_*` 变量会在构建期写入 bundle，运行容器时补环境变量不能修复已构建产物。
+- 修复：在 `zhiyuan-web/.env.prod` 增加 `NEXT_PUBLIC_AGENT_WS_BASE=wss://www.gaotuzhiyuan.com`，提交为 `25a984f fix: configure production agent websocket endpoint`。
+- 构建处理：生产机无法直接拉取 `node:22.14.0` 基础镜像，未使用标准 Dockerfile 在线重建；改为复用已有 `zhiyuan-web:3.0.0-amd64` 镜像中的源码和依赖，在临时容器 `zhiyuan-web-build-wsfix` 内执行 `npm run build:prod`。
+- 产物检查：
+  - `ws://localhost:8000` 出现次数为 0。
+  - 前端 chunk 中已写入 `wss://www.gaotuzhiyuan.com/gaotu-assistant-agent/plus/...`。
+- 新镜像：将临时构建容器提交为 `zhiyuan-web:3.0.0-amd64-wsfix`，并显式恢复启动命令 `npm run server:${APP_ENV}`，避免镜像继承临时容器的 `sleep 3600`。
+- 前端切换：
+
+```bash
+docker stop zhiyuan-web-3.0.0-prod
+docker rename zhiyuan-web-3.0.0-prod zhiyuan-web-3.0.0-prod-before-wsfix
+docker run -d --name zhiyuan-web-3.0.0-prod \
+  --restart unless-stopped \
+  -p 88:28688 \
+  -e APP_ENV=prod \
+  zhiyuan-web:3.0.0-amd64-wsfix
+```
+
+- 验证结果：
+  - `https://www.gaotuzhiyuan.com/assistant-pc/sessionDetailV2` 返回 200。
+  - 公网 Agent WebSocket 路径返回 `101 Switching Protocols`。
+  - 会话 `2075` 再次发送消息后，Agent 日志显示已进入 `ChatService handling message: session_id=2075`，成功调用模型网关并发送 `Sending compat reply`。
+  - 用户侧确认对话已有返回。
+- 当前回滚点：
+  - 修复后前端容器：`zhiyuan-web-3.0.0-prod`，镜像 `zhiyuan-web:3.0.0-amd64-wsfix`。
+  - 修复前前端容器：`zhiyuan-web-3.0.0-prod-before-wsfix`，已停止但保留。
+  - 老版本前端容器：`gaotu-volunteer-assistant-prod`，已停止但保留。
+- 后续构建注意事项：
+  - 生产构建必须使用包含 `NEXT_PUBLIC_AGENT_WS_BASE=wss://www.gaotuzhiyuan.com` 的 `.env.prod`。
+  - 不能只在 `docker run -e` 中传 `NEXT_PUBLIC_AGENT_WS_BASE`，因为 Next.js public env 是构建期生效。
+  - 后续如果重新从 `/tmp/zhiyuan-release-upload/` 或 CI 镜像发布前端，需要先检查构建产物中不能残留 `ws://localhost:8000`。
+
 当前后端快速回滚：
 
 ```bash
