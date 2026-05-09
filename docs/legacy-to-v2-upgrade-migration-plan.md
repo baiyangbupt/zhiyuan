@@ -392,6 +392,14 @@ unique (chat_session_id, data_key, data_version)
 
 当前 `sessionDetailV2` 页面已经有移动端“对话/工作台”切换，但 `WorkspacePanel` 内部仍有桌面化组件。
 
+前端 legacy 兜底入口的详细设计见：
+
+```text
+zhiyuan-web/docs/session-detail-legacy-fallback-design.md
+```
+
+迁移结论：不建议把老版会话详情页恢复为新版本主链路；可保留独立 `/sessionDetailLegacy` 作为灰度期只读兜底入口，用于懒迁移失败、移动端严重问题或用户需要回看历史老方案的场景。
+
 ### 7.1 已有基础
 
 页面层已有：

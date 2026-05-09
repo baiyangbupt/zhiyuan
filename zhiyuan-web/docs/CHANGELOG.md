@@ -21,6 +21,7 @@
 - 新增切页前标签治理与协议统一文档引用，明确 `sessionDetail -> sessionDetailV2` 正式切换前必须完成 frontend / backend / agent 的候选筛选字段对齐。
 - 新增对话富内容输出与展示美化方案文档，统一规划 agent 输出约束、markdown 渲染层、结构化卡片协议与渐进式改造顺序，作为后续修复表格错位、列表缩进和风险/对比消息美化的设计基线。
 - 新增 `sessionDetailV2` 移动端展示修复设计文档，记录候选专业纵向卡片、小屏换行和验证方式。
+- 新增 `sessionDetail` legacy 兜底入口设计文档，明确老版会话详情页不恢复为主链路，仅作为灰度期只读回看和迁移失败兜底。
 - `sessionDetailV2` 新增候选视图状态持久化接线，工作台筛选与排序方式可回写 `planningState.candidateViewState`。
 - `sessionDetailV2` 候选志愿卡片切换为消费 planning 候选池的真实结构化字段，补齐院校排名、保研率、硕博点、专业代码、学制、计划数、历史分数等展示所需的数据类型。
 - `sessionDetailV2` 候选筛选新增 `院校排名` 排序字段，排序能力与 backend comparator 对齐。
