@@ -814,7 +814,7 @@ systemctl restart zhiyuan-server.service
 
 当前生产上线状态：
 
-- 后端：`zhiyuan-server-3.0.0-prod.service` active，监听 `8090`。
+- 后端：`zhiyuan-server-3.0.0-prod.service` active/enabled，监听 `8090`。
 - 前端：`zhiyuan-web-3.0.0-prod` running，监听 `88 -> 28688`。
 - Agent：仍使用老容器 `gaotu-zy-agent-plus-prod`，监听 `8091 -> 8001`。
 - Rank：仍使用老容器 `gaokao-volunteer-rank-prod`，监听 `8092 -> 5001`。
