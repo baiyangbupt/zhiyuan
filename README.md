@@ -171,6 +171,7 @@ cd zhiyuan-server && mvn package -DskipTests
 当前服务器 `zhiyuan.ytell.cn` 的实际部署记录、问题处理和运维命令见：
 
 - [zhiyuan.ytell.cn 部署记录与问题处理](docs/zhiyuan-yttell-deployment-notes.md)
+- [系统健康检查与运维工具设计](docs/system-health-and-ops-design.md)
 
 ## 目录结构
 
