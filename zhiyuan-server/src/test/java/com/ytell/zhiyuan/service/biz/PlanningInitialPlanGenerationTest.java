@@ -112,6 +112,92 @@ public class PlanningInitialPlanGenerationTest {
     }
 
     @Test
+    void shouldUseMajorVolunteerCountWhenNeedCountAndTierTargetsAreMissing() {
+        bindPlanningStateStore();
+
+        VolunteerRecommendListResponse response = new VolunteerRecommendListResponse();
+        VolunteerRecommendListResponse.BaseData baseData = buildBaseData(0, 0, 0, 0);
+        baseData.setNeed_count(null);
+        baseData.setThree_target_count_map(new java.util.HashMap<String, Integer>());
+        CreateSessionReq.VolunteerCount volunteerCount = new CreateSessionReq.VolunteerCount();
+        volunteerCount.setMajorCount(3);
+        volunteerCount.setSchoolCount(0);
+        baseData.setVolunteerCount(volunteerCount);
+        baseData.setVolunteerModel(VolunteerModel.major);
+        response.setBaseData(baseData);
+        response.setUserScoreDetail(buildScoreDetail());
+        response.setSprints(java.util.Arrays.asList(
+                buildSchool("ps1", "s1", "冲A", "北京", 1, buildMajorWithRatio("m1", "专业A", "25")),
+                buildSchool("ps2", "s2", "冲B", "北京", 2, buildMajorWithRatio("m2", "专业B", "30"))));
+        response.setSafes(java.util.Arrays.asList(
+                buildSchool("ps3", "s3", "稳A", "北京", 1, buildMajorWithRatio("m3", "专业C", "50")),
+                buildSchool("ps4", "s4", "稳B", "北京", 2, buildMajorWithRatio("m4", "专业D", "55"))));
+        response.setProtects(java.util.Arrays.asList(
+                buildSchool("ps5", "s5", "保A", "河北", 1, buildMajorWithRatio("m5", "专业E", "80"))));
+        when(volunteerBizService.recommendVolunteerList(1L, 1L, false, false)).thenReturn(response);
+
+        PlanningStateDTO state = planningStateService.generateInitialPlan(1L, 1L, new InitialPlanGenerateReq());
+
+        assertEquals(5, state.getCandidatePoolState().getItems().size());
+        assertEquals(Integer.valueOf(3), state.getCandidatePoolState().getRequiredMajorCount());
+        assertEquals(Integer.valueOf(3), state.getInitialRecommendationState().getSummary().getTotal());
+        assertEquals(Integer.valueOf(3), state.getDraftPlanState().getSummary().getTotal());
+        assertEquals(Integer.valueOf(3), state.getOrderedPlanState().getSummary().getTotal());
+    }
+
+    @Test
+    void shouldUseUnitVolunteerCountInMajorGroupWhenNeedCountAndTierTargetsAreMissing() {
+        bindPlanningStateStore();
+
+        VolunteerRecommendListResponse response = new VolunteerRecommendListResponse();
+        VolunteerRecommendListResponse.BaseData baseData = buildBaseData(0, 0, 0, 0);
+        baseData.setNeed_count(null);
+        baseData.setThree_target_count_map(new java.util.HashMap<String, Integer>());
+        CreateSessionReq.VolunteerCount volunteerCount = new CreateSessionReq.VolunteerCount();
+        volunteerCount.setSchoolCount(2);
+        volunteerCount.setMajorCount(4);
+        baseData.setVolunteerCount(volunteerCount);
+        baseData.setVolunteerModel(VolunteerModel.majorGroup);
+        response.setBaseData(baseData);
+        response.setUserScoreDetail(buildScoreDetail());
+
+        VolunteerRecommendListResponse.VolunteerSchool sprintGroup = buildSchool("ps1", "s1", "专业组A", "北京", 1, buildMajorWithRatio("m1", "专业A1", "42"));
+        sprintGroup.setEnroll_ratio("40");
+        sprintGroup.setMajors(java.util.Arrays.asList(
+                buildMajorWithRatio("m1", "专业A1", "42"),
+                buildMajorWithRatio("m2", "专业A2", "45")));
+
+        VolunteerRecommendListResponse.VolunteerSchool safeGroup = buildSchool("ps2", "s2", "专业组B", "北京", 1, buildMajorWithRatio("m3", "专业B1", "62"));
+        safeGroup.setEnroll_ratio("60");
+        safeGroup.setMajors(java.util.Arrays.asList(
+                buildMajorWithRatio("m3", "专业B1", "62"),
+                buildMajorWithRatio("m4", "专业B2", "65")));
+
+        VolunteerRecommendListResponse.VolunteerSchool protectGroup = buildSchool("ps3", "s3", "专业组C", "河北", 1, buildMajorWithRatio("m5", "专业C1", "82"));
+        protectGroup.setEnroll_ratio("80");
+        protectGroup.setMajors(java.util.Arrays.asList(
+                buildMajorWithRatio("m5", "专业C1", "82"),
+                buildMajorWithRatio("m6", "专业C2", "86")));
+
+        response.setSprints(java.util.Arrays.asList(sprintGroup));
+        response.setSafes(java.util.Arrays.asList(safeGroup));
+        response.setProtects(java.util.Arrays.asList(protectGroup));
+        when(volunteerBizService.recommendVolunteerList(1L, 1L, false, false)).thenReturn(response);
+
+        PlanningStateDTO state = planningStateService.generateInitialPlan(1L, 1L, new InitialPlanGenerateReq());
+
+        assertEquals(6, state.getCandidatePoolState().getItems().size());
+        assertEquals(Integer.valueOf(2), state.getCandidatePoolState().getRequiredUnitCount());
+        assertEquals(Integer.valueOf(4), state.getCandidatePoolState().getRequiredMajorCount());
+        assertEquals(Integer.valueOf(2), state.getInitialRecommendationState().getSummary().getTotal());
+        assertEquals(2, state.getInitialRecommendationState().getUnits().size());
+        assertEquals(Integer.valueOf(2), state.getDraftPlanState().getSummary().getTotal());
+        assertEquals(2, state.getDraftPlanState().getUnits().size());
+        assertEquals(Integer.valueOf(2), state.getOrderedPlanState().getSummary().getTotal());
+        assertEquals(2, state.getOrderedPlanState().getUnits().size());
+    }
+
+    @Test
     void shouldKeepMajorInitialPlanStableBeforePlanAdjustmentAnalysis() {
         bindPlanningStateStore();
 

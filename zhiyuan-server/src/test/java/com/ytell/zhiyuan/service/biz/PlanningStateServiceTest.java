@@ -1061,6 +1061,53 @@ public class PlanningStateServiceTest {
     }
 
     @Test
+    void shouldInitializeNewSessionPlanWithoutImportingLegacyPlan() {
+        bindPlanningStateStore();
+
+        VolunteerRecommendListResponse legacy = new VolunteerRecommendListResponse();
+        legacy.setBaseData(buildBaseData(2, 1, 1, 0));
+        VolunteerRecommendListResponse.VolunteerSchool legacySprint = buildSchool(
+                "legacy_ps1", "legacy_s1", "历史学校A", "北京", 1, buildMajorWithRatio("legacy_m1", "历史专业A", "18"));
+        legacySprint.setIs_preferred(true);
+        VolunteerRecommendListResponse.VolunteerSchool legacySafe = buildSchool(
+                "legacy_ps2", "legacy_s2", "历史学校B", "天津", 1, buildMajorWithRatio("legacy_m2", "历史专业B", "52"));
+        legacySafe.setIs_preferred(true);
+        legacy.setSprints(java.util.Arrays.asList(legacySprint));
+        legacy.setSafes(java.util.Arrays.asList(legacySafe));
+        when(volunteerBizService.loadFinalSubmitVolunteerData(1L)).thenReturn(legacy);
+
+        planningStateService.initializeProfileState(1L, buildScoreDetail(), buildUserProfileData());
+
+        VolunteerRecommendListResponse response = new VolunteerRecommendListResponse();
+        response.setBaseData(buildBaseData(3, 1, 1, 1));
+        response.setUserScoreDetail(buildScoreDetail());
+        response.setSprints(java.util.Arrays.asList(
+                buildSchool("new_ps1", "new_s1", "新学校A", "北京", 1, buildMajorWithRatio("new_m1", "新专业A", "25"))));
+        response.setSafes(java.util.Arrays.asList(
+                buildSchool("new_ps2", "new_s2", "新学校B", "天津", 1, buildMajorWithRatio("new_m2", "新专业B", "55"))));
+        response.setProtects(java.util.Arrays.asList(
+                buildSchool("new_ps3", "new_s3", "新学校C", "河北", 1, buildMajorWithRatio("new_m3", "新专业C", "85"))));
+        when(volunteerBizService.recommendVolunteerList(1L, 1L, false, false)).thenReturn(response);
+
+        PlanningStateDTO state = planningStateService.generateInitialPlan(1L, 1L, new InitialPlanGenerateReq());
+
+        assertEquals(Integer.valueOf(3), state.getCandidatePoolState().getRequiredCount());
+        assertEquals(3, state.getCandidatePoolState().getItems().size());
+        assertEquals(Integer.valueOf(3), state.getInitialRecommendationState().getSummary().getTotal());
+        assertEquals(Integer.valueOf(3), state.getDraftPlanState().getSummary().getTotal());
+        assertEquals(Integer.valueOf(3), state.getOrderedPlanState().getSummary().getTotal());
+        assertEquals("initial_auto", state.getOrderedPlanState().getGenerationMode());
+        assertTrue(state.getDraftPlanState().getItems().stream()
+                .allMatch(item -> item.getVolunteerId().startsWith("new_ps")));
+        assertTrue(state.getOrderedPlanState().getItems().stream()
+                .allMatch(item -> item.getVolunteerId().startsWith("new_ps")));
+        assertTrue(state.getOperationLogs().stream().noneMatch(log -> "legacy_plan_import".equals(log.getType())));
+        verify(volunteerBizService, never()).loadFinalSubmitVolunteerData(1L);
+        verify(volunteerBizService, never()).loadCachedRecommendData(1L);
+        verify(volunteerBizService, never()).loadOriginalVolunteerData(1L);
+    }
+
+    @Test
     void shouldBackfillProfileStateFromLegacySessionData() {
         ChatSessionExtraData scoreData = new ChatSessionExtraData();
         scoreData.setDataKey(ChatSessionExtraDataConstants.USER_SCORE_KEY);

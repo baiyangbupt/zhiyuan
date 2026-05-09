@@ -189,6 +189,7 @@ public class PlanningStateService {
         target.setSourceVersion(source.getSourceVersion());
         target.setRequiredCount(source.getRequiredCount());
         target.setRequiredTierCounts(source.getRequiredTierCounts());
+        target.setRequiredUnitCount(source.getRequiredUnitCount());
         target.setRequiredMajorCount(source.getRequiredMajorCount());
         target.setUserScore(source.getUserScore());
         target.setBatchScore(source.getBatchScore());
@@ -250,7 +251,7 @@ public class PlanningStateService {
                                                               CreateSessionReq scoreDetail,
                                                               UserProfileData userProfileData,
                                                               boolean markStale) {
-        PlanningStateDTO state = loadPlanningState(chatSessionId);
+        PlanningStateDTO state = markStale ? loadPlanningState(chatSessionId) : loadPlanningState(chatSessionId, false);
         hydrateProfileState(state.getProfileState(), scoreDetail, userProfileData);
         if (state.getCandidateViewState() == null) {
             state.setCandidateViewState(buildDefaultCandidateViewState(state.getProfileState()));
@@ -527,6 +528,8 @@ public class PlanningStateService {
         candidatePoolState.setSourceVersion((state.getVersion() == null ? 0 : state.getVersion()) + 1);
         candidatePoolState.setRequiredCount(response.getBaseData() != null ? response.getBaseData().getNeed_count() : null);
         fillRequiredTierCounts(chatSessionId, candidatePoolState, response);
+        candidatePoolState.setRequiredUnitCount(response.getBaseData() != null && response.getBaseData().getVolunteerCount() != null
+                ? response.getBaseData().getVolunteerCount().getSchoolCount() : null);
         candidatePoolState.setRequiredMajorCount(response.getBaseData() != null && response.getBaseData().getVolunteerCount() != null
                 ? response.getBaseData().getVolunteerCount().getMajorCount() : null);
         candidatePoolState.setVolunteerModel(response.getBaseData() != null && response.getBaseData().getVolunteerModel() != null
@@ -1616,6 +1619,26 @@ public class PlanningStateService {
         if (state.getCandidatePoolState() != null && state.getCandidatePoolState().getRequiredCount() != null
                 && state.getCandidatePoolState().getRequiredCount() > 0) {
             return state.getCandidatePoolState().getRequiredCount();
+        }
+        if (state.getCandidatePoolState() != null && state.getCandidatePoolState().getRequiredTierCounts() != null
+                && !state.getCandidatePoolState().getRequiredTierCounts().isEmpty()) {
+            int tierSum = state.getCandidatePoolState().getRequiredTierCounts().values().stream()
+                    .filter(Objects::nonNull)
+                    .filter(count -> count > 0)
+                    .mapToInt(Integer::intValue)
+                    .sum();
+            if (tierSum > 0) {
+                return tierSum;
+            }
+        }
+        if (isMajorGroupMode(state.getCandidatePoolState())) {
+            if (state.getCandidatePoolState() != null && state.getCandidatePoolState().getRequiredUnitCount() != null
+                    && state.getCandidatePoolState().getRequiredUnitCount() > 0) {
+                return state.getCandidatePoolState().getRequiredUnitCount();
+            }
+        } else if (state.getCandidatePoolState() != null && state.getCandidatePoolState().getRequiredMajorCount() != null
+                && state.getCandidatePoolState().getRequiredMajorCount() > 0) {
+            return state.getCandidatePoolState().getRequiredMajorCount();
         }
         return state.getCandidatePoolState() == null || state.getCandidatePoolState().getItems() == null
                 ? 0 : state.getCandidatePoolState().getItems().size();
@@ -3430,11 +3453,15 @@ public class PlanningStateService {
     }
 
     private PlanningStateDTO loadPlanningState(Long chatSessionId) {
+        return loadPlanningState(chatSessionId, true);
+    }
+
+    private PlanningStateDTO loadPlanningState(Long chatSessionId, boolean allowLegacyImport) {
         ChatSessionExtraData extraData = chatSessionExtraDataSharedService.getBySessionIdAndDataKey(
                 chatSessionId, ChatSessionExtraDataConstants.PLANNING_STATE_KEY);
         PlanningStateDTO state;
         if (extraData == null || extraData.getDataValue() == null) {
-            state = tryImportLegacyPlanningState(chatSessionId);
+            state = allowLegacyImport ? tryImportLegacyPlanningState(chatSessionId) : null;
             if (state != null) {
                 savePlanningState(chatSessionId, state);
             } else {
@@ -3587,6 +3614,8 @@ public class PlanningStateService {
         candidatePoolState.setSourceVersion(0);
         candidatePoolState.setRequiredCount(response.getBaseData() != null ? response.getBaseData().getNeed_count() : null);
         fillRequiredTierCounts(chatSessionId, candidatePoolState, response);
+        candidatePoolState.setRequiredUnitCount(response.getBaseData() != null && response.getBaseData().getVolunteerCount() != null
+                ? response.getBaseData().getVolunteerCount().getSchoolCount() : null);
         candidatePoolState.setRequiredMajorCount(response.getBaseData() != null && response.getBaseData().getVolunteerCount() != null
                 ? response.getBaseData().getVolunteerCount().getMajorCount() : null);
         candidatePoolState.setVolunteerModel(response.getBaseData() != null && response.getBaseData().getVolunteerModel() != null

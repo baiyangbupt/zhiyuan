@@ -13,6 +13,7 @@ public class CandidatePoolStateDTO {
     private Integer sourceVersion;
     private Integer requiredCount;
     private Map<String, Integer> requiredTierCounts = new HashMap<String, Integer>();
+    private Integer requiredUnitCount;
     private Integer requiredMajorCount;
     private Integer userScore;
     private Integer batchScore;
