@@ -1,10 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import Head from 'next/head';
-import { Button, Spin, message } from 'antd';
+import { Button, Drawer, Spin, message } from 'antd';
 import {
   AuditOutlined,
   CompassOutlined,
-  MessageOutlined,
   OrderedListOutlined,
   QuestionCircleOutlined,
 } from '@ant-design/icons';
@@ -19,8 +18,6 @@ import { navigateTo } from '@/utils/router';
 import useAuthParams from '@/hooks/useAuthParams';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
 import style from './style.module.scss';
-
-type MobileTab = 'chat' | 'workspace';
 
 const SessionDetailV2 = () => {
   const isMobile = useMediaQuery(768);
@@ -37,7 +34,7 @@ const SessionDetailV2 = () => {
   const [doChatRights, setDoChatRights] = useState<{ canOperate: boolean; reason?: string } | null>(
     null
   );
-  const [mobileTab, setMobileTab] = useState<MobileTab>('chat');
+  const [workspaceDrawerVisible, setWorkspaceDrawerVisible] = useState(false);
   const [workspaceIntent, setWorkspaceIntent] = useState<PlanningWorkspaceIntent | null>(null);
   const [fetchFlag, setFetchFlag] = useState(1);
 
@@ -122,7 +119,7 @@ const SessionDetailV2 = () => {
 
   const handleWorkspaceIntent = (intent: Omit<PlanningWorkspaceIntent, 'nonce'>) => {
     if (isMobile) {
-      setMobileTab('workspace');
+      setWorkspaceDrawerVisible(true);
     }
     setWorkspaceIntent({
       ...intent,
@@ -156,7 +153,17 @@ const SessionDetailV2 = () => {
           {
             label: '看看现在的方案',
             icon: <OrderedListOutlined />,
-            messageText: '看看现在的方案',
+            onClick: isMobile
+              ? () => {
+                  setWorkspaceIntent({
+                    targetView: 'ordered',
+                    refresh: true,
+                    nonce: Date.now(),
+                  });
+                  setWorkspaceDrawerVisible(true);
+                }
+              : undefined,
+            messageText: isMobile ? undefined : '看看现在的方案',
           },
           {
             label: '我适合什么方向',
@@ -221,25 +228,7 @@ const SessionDetailV2 = () => {
 
         {isMobile ? (
           <main className={style.mobileMain}>
-            <div className={style.mobileTabs}>
-              <Button
-                type={mobileTab === 'chat' ? 'primary' : 'default'}
-                icon={<MessageOutlined />}
-                onClick={() => setMobileTab('chat')}
-              >
-                对话
-              </Button>
-              <Button
-                type={mobileTab === 'workspace' ? 'primary' : 'default'}
-                icon={<OrderedListOutlined />}
-                onClick={() => setMobileTab('workspace')}
-              >
-                工作台
-              </Button>
-            </div>
-            <div className={style.mobileContent}>
-              {mobileTab === 'chat' ? renderChatPanel() : renderWorkspacePanel()}
-            </div>
+            <div className={style.mobileContent}>{renderChatPanel()}</div>
           </main>
         ) : (
           <main className={style.desktopMain}>
@@ -247,6 +236,16 @@ const SessionDetailV2 = () => {
             {renderWorkspacePanel()}
           </main>
         )}
+        <Drawer
+          title="工作台"
+          placement="right"
+          width="100%"
+          open={workspaceDrawerVisible}
+          onClose={() => setWorkspaceDrawerVisible(false)}
+          styles={{ body: { padding: isMobile ? '0 12px' : 0, height: '100%' } }}
+        >
+          {renderWorkspacePanel(true)}
+        </Drawer>
       </Spin>
     </div>
   );

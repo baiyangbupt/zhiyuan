@@ -129,17 +129,10 @@
   flex-direction: column;
 }
 
-.mobileTabs {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-  padding: 10px 12px 0;
-}
-
 .mobileContent {
   flex: 1;
   min-height: 0;
-  padding: 10px 12px 12px;
+  padding: 10px;
   box-sizing: border-box;
 }
 

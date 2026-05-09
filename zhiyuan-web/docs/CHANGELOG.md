@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- `/sessionDetailLegacy` 和 `/sessionDetailV2` 的移动端外壳向老版 `gaotu-mobile-v2.0.6` 对齐：默认保留对话主视图，通过快捷入口或对话联动以全屏抽屉打开旧版志愿表 / V2 工作台，避免移动端继续按 PC 双区 tab 平铺。
 - `sessionDetailV2` 工作台刷新改为调用轻量 `workspace-state`，不再通过完整 `/session/state` 拉取 20MB+ 规划状态；候选列表继续通过分页 `candidate-pool/query` 获取当前页，降低公网刷新等待和浏览器 JSON 解析成本。
 - `sessionDetailV2` 方案区刷新后会把 `workspace-state` 返回的当前方案候选明细写入本地候选缓存，避免山西大同大学、燕京理工学院等未命中候选分页缓存的方案项丢失录取率、推荐系数、专业热度和就业表现。
 - `sessionDetailV2` 首次自动生成方案、刷新候选池、草稿增删锁定等返回规划状态的路径统一合并候选明细缓存，避免新建会话刚出方案时必须手动刷新后才显示录取率、推荐系数、专业热度等指标。

@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import Head from 'next/head';
-import { Button, Spin, message } from 'antd';
+import { Button, Drawer, Spin, message } from 'antd';
 import { MessageOutlined, OrderedListOutlined } from '@ant-design/icons';
 import MessageList from '@/pageComponents/sessionDetailV2/MessageList';
 import LegacyVolunteer from '@/pageComponents/sessionDetailLegacy';
@@ -12,8 +12,6 @@ import { navigateTo } from '@/utils/router';
 import useAuthParams from '@/hooks/useAuthParams';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
 import style from './style.module.scss';
-
-type MobileTab = 'chat' | 'plan';
 
 const SessionDetailLegacy = () => {
   const isMobile = useMediaQuery(768);
@@ -28,7 +26,7 @@ const SessionDetailLegacy = () => {
   const [infoSummary, setInfoSummary] = useState<string>('');
   const [prepareTypeDesc, setPrepareTypeDesc] = useState<string>('');
   const [fetchFlag, setFetchFlag] = useState(1);
-  const [mobileTab, setMobileTab] = useState<MobileTab>('plan');
+  const [planDrawerVisible, setPlanDrawerVisible] = useState(false);
   const [doChatRights, setDoChatRights] = useState<{ canOperate: boolean; reason?: string } | null>(
     null
   );
@@ -140,6 +138,27 @@ const SessionDetailLegacy = () => {
         setScrollEleIndex={setScrollEleIndex}
         setFetchFlag={setFetchFlag}
         doChatRights={doChatRights || undefined}
+        quickReplyActions={
+          isMobile
+            ? [
+                {
+                  label: '志愿方案',
+                  icon: <OrderedListOutlined />,
+                  onClick: () => setPlanDrawerVisible(true),
+                },
+                {
+                  label: 'V2工作台',
+                  icon: <OrderedListOutlined />,
+                  onClick: openV2,
+                },
+                {
+                  label: '会话列表',
+                  icon: <MessageOutlined />,
+                  onClick: openSessionList,
+                },
+              ]
+            : undefined
+        }
       />
     </div>
   );
@@ -192,25 +211,7 @@ const SessionDetailLegacy = () => {
 
         {isMobile ? (
           <main className={style.mobileMain}>
-            <div className={style.mobileTabs}>
-              <Button
-                type={mobileTab === 'plan' ? 'primary' : 'default'}
-                icon={<OrderedListOutlined />}
-                onClick={() => setMobileTab('plan')}
-              >
-                志愿表
-              </Button>
-              <Button
-                type={mobileTab === 'chat' ? 'primary' : 'default'}
-                icon={<MessageOutlined />}
-                onClick={() => setMobileTab('chat')}
-              >
-                对话
-              </Button>
-            </div>
-            <div className={style.mobileContent}>
-              {mobileTab === 'plan' ? renderPlan() : renderChat()}
-            </div>
+            <div className={style.mobileContent}>{renderChat()}</div>
           </main>
         ) : (
           <main className={style.desktopMain}>
@@ -218,6 +219,16 @@ const SessionDetailLegacy = () => {
             {renderPlan()}
           </main>
         )}
+        <Drawer
+          title="志愿方案"
+          placement="right"
+          width="100%"
+          open={planDrawerVisible}
+          onClose={() => setPlanDrawerVisible(false)}
+          styles={{ body: { padding: isMobile ? '0 12px' : 0, height: '100%' } }}
+        >
+          {renderPlan()}
+        </Drawer>
       </Spin>
     </div>
   );
