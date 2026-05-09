@@ -220,6 +220,17 @@ python3 scripts/reset_planning_state.py --session-id 1002 --execute
 
 真实样本和对账通过后，再进入部署准备。
 
+当前 3.0.0 发布候选信息：
+
+| 项目 | 值 |
+| --- | --- |
+| Release 版本 | `3.0.0` |
+| 当前候选 commit | `3a005aa`，后续如继续提交部署文档修正，以最终 `git rev-parse --short HEAD` 为准 |
+| 目标生产入口 | `/assistant-pc` |
+| 后端构建产物 | `zhiyuan-server/target/zhiyuan-server.jar` |
+| 前端构建方式 | `npm run build:prod` |
+| Tag 策略 | 构建验证、真实样本验证和灰度前检查通过后再创建 `v3.0.0` |
+
 ### G1. 构建边界
 
 生产环境不作为编译构建环境。生产机只接收已经验证过的 JAR、Docker 镜像或打包产物，并执行启动、切流、健康检查和回滚。
@@ -255,6 +266,8 @@ git rev-parse --short HEAD
 
 记录本次发布 commit，后续 JAR、镜像 tag、备份目录都使用同一个 release 标识。
 
+注意：当前本地工作区允许存在 `.env`、`tsconfig.tsbuildinfo`、临时样本 JSON 等未提交文件用于本地调试，但发布包不能从脏工作区直接复制。生产应只基于固定 commit 构建产物，或从该 commit 的 `git archive` 获取源码快照。
+
 ### G3. 后端构建与产物路径
 
 构建机执行：
@@ -268,14 +281,14 @@ mvn package -DskipTests
 产物：
 
 ```text
-zhiyuan-server/target/gaotu-assistant-server.jar
+zhiyuan-server/target/zhiyuan-server.jar
 ```
 
 生产建议使用新目录承载 V2 后端，避免直接覆盖老服务：
 
 ```text
 /root/work/zhiyuan-server/
-  gaotu-assistant-server.jar
+  zhiyuan-server.jar
   application-online.yml
   logs/
   backup/
@@ -288,6 +301,16 @@ zhiyuan-server/target/gaotu-assistant-server.jar
 ```
 
 建议新后端先启动到独立端口，例如 `8091`；验证通过后再由 Nginx 切接口流量。若必须复用 `8090`，发布前必须先准备好老 JAR、老配置和回滚启动命令。
+
+当前本地 3.0.0 候选已执行：
+
+```bash
+cd zhiyuan-server
+mvn -q -DskipTests package
+ls -lh target/zhiyuan-server.jar
+```
+
+结果：通过，产物大小约 `110M`。该命令只验证可打包性；发布前仍以完整测试、真实样本验证和灰度前检查作为准入条件。
 
 ### G4. 前端构建方式
 
@@ -320,6 +343,21 @@ docker build --build-arg APP_ENV=production -t zhiyuan-web:<release> zhiyuan-web
 | --- | --- | --- | --- |
 | 正式生产老入口 | `/assistant-pc/...` | `npm run build:prod` 或 `APP_ENV=production` 镜像 | 需要 `basePath=/assistant-pc` |
 | `zhiyuan.ytell.cn` 新域名 | `/...` | 当前 `.env.deploy` / `APP_ENV=dev` 策略 | 根路径访问，不能直接用于 `/assistant-pc` |
+
+当前本地 3.0.0 候选已执行：
+
+```bash
+cd zhiyuan-web
+npm run build:prod
+rg -n '"basePath"|assistant-pc|sessionDetailV2|sessionDetailLegacy' \
+  .next/routes-manifest.json .next/build-manifest.json .next/server/pages-manifest.json
+```
+
+结果：通过，`.next/routes-manifest.json` 中 `basePath=/assistant-pc`，构建产物包含 `/sessionDetailV2` 和 `/sessionDetailLegacy`。当前存在 3 类非阻断提示：
+
+- `.env.prod` 未显式设置 `NEXT_PUBLIC_ASSISTANT_API_BASE_URL` 和 `NEXT_PUBLIC_OUTER_API_BASE_URL`，Next 配置校验提示缺少字符串；生产包当前仍使用 `next.config.mjs` 的线上 rewrite 指向 `https://www.gaotuzhiyuan.com`。
+- 未安装可选依赖 `sharp`，Next 提示生产图片优化建议；当前 `images.unoptimized=true`，不影响构建通过。
+- `customerDetail/style.module.scss` 存在既有 autoprefixer `end` 兼容提示，建议后续改为 `flex-end` 清理 warning。
 
 ### G5. Agent 和 Rank
 
@@ -379,7 +417,7 @@ python3 scripts/analyze_legacy_migration_logs.py /path/to/server.log
 
 ```bash
 mkdir -p /root/work/zhiyuan-server/logs /root/work/zhiyuan-server/backup
-cp /tmp/release/gaotu-assistant-server.jar /root/work/zhiyuan-server/
+cp /tmp/release/zhiyuan-server.jar /root/work/zhiyuan-server/
 cp /root/work/gaotu-assistant-server/application-online.yml /root/work/zhiyuan-server/application-online.yml
 ```
 
@@ -487,8 +525,8 @@ nginx -s reload
 若复用了同一个 systemd unit，则恢复老 JAR：
 
 ```bash
-cp /root/work/zhiyuan-server/backup/gaotu-assistant-server.jar.<old-release> \
-  /root/work/zhiyuan-server/gaotu-assistant-server.jar
+cp /root/work/zhiyuan-server/backup/zhiyuan-server.jar.<old-release> \
+  /root/work/zhiyuan-server/zhiyuan-server.jar
 systemctl restart zhiyuan-server.service
 ```
 
