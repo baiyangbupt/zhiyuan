@@ -814,10 +814,28 @@ systemctl restart zhiyuan-server.service
 
 当前生产上线状态：
 
-- 后端：`zhiyuan-server-3.0.0-prod.service` active/enabled，监听 `8090`。
+- 后端：`zhiyuan-server-3.0.0-prod.service` active，监听 `8090`。
+  - 当前 JAR：`/root/work/zhiyuan-server-3.0.0/zhiyuan-server.jar`
+  - commit：`2221541`
+  - sha256：`d21c8ca57ef3bcf825f45cec96890f4d6fa2d135fe3721c973c74669233edb69`
+  - 上一版新后端 JAR 备份：`/root/work/zhiyuan-server-3.0.0/zhiyuan-server.jar.before-2221541`
 - 前端：`zhiyuan-web-3.0.0-prod` running，监听 `88 -> 28688`。
 - Agent：仍使用老容器 `gaotu-zy-agent-plus-prod`，监听 `8091 -> 8001`。
 - Rank：仍使用老容器 `gaokao-volunteer-rank-prod`，监听 `8092 -> 5001`。
+- 老前端容器：`gaotu-volunteer-assistant-prod` stopped，保留为快速回滚入口。
+- 老后端服务：`gaotu-assistant-server-rollback.service` stopped，保留为快速回滚入口。
+
+`2026-05-10 05:47` 已重新构建并部署后端修复版，修复点：
+
+- 新建会话初始化不触发老版本历史方案懒导入，避免历史方案兼容逻辑污染新会话。
+- 初始方案目标数在 `need_count` 缺失时按填报模式回退：专业模式使用 `volunteerCount.majorCount`，专业组模式使用 `volunteerCount.schoolCount`，避免把候选池全量写入优选/草稿/排序区。
+- 验证通过：`mvn test -Dtest=PlanningStateServiceTest,PlanningInitialPlanGenerationTest`，结果 `Tests run: 91, Failures: 0, Errors: 0, Skipped: 1`。
+- 切换后本机检查通过：
+  - `http://127.0.0.1:8090/gaotu-assistant-bot/base-data/province-city` 返回 200。
+  - `http://127.0.0.1:8090/gaotu-assistant-bot/inner/planning/1/session/workspace-state?chatSessionId=2045` 返回 200。
+  - `http://127.0.0.1:88/assistant-pc/session` 返回 200。
+  - `http://127.0.0.1:88/assistant-pc/sessionDetailV2` 返回 200。
+  - `http://127.0.0.1:88/assistant-pc/sessionDetailLegacy` 返回 200。
 
 当前后端快速回滚：
 
