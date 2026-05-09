@@ -17,6 +17,7 @@ import com.ytell.zhiyuan.model.dto.inner.SimulateDiffResponse;
 import com.ytell.zhiyuan.model.dto.inner.UserIntentQueryReq;
 import com.ytell.zhiyuan.model.dto.inner.VolunteerDataDTO;
 import com.ytell.zhiyuan.model.dto.inner.VolunteerRecommendListResponse;
+import com.ytell.zhiyuan.model.dto.gaotu.ProgramPageDTO;
 import com.ytell.zhiyuan.model.dto.volunteer.VolunteerSchoolGroup;
 import com.ytell.zhiyuan.model.entity.biz.ChatSession;
 import com.ytell.zhiyuan.model.entity.biz.ChatSessionExtraData;
@@ -448,7 +449,7 @@ public class VolunteerBizService {
         // 3. 解析本地对应文件成DTO返回
         try {
             String jsonContent = FileUtils.readFileToString(localFile, StandardCharsets.UTF_8);
-            VolunteerRecommendListResponse volunteerDataDTO = JSONObject.parseObject(jsonContent, VolunteerRecommendListResponse.class);
+            VolunteerRecommendListResponse volunteerDataDTO = parseVolunteerRecommendListResponse(jsonContent);
             log.info("成功加载缓存推荐数据，会话ID: {}, 数据大小: {} bytes", chatSessionId, jsonContent.length());
             return volunteerDataDTO;
         } catch (Exception e) {
@@ -482,13 +483,172 @@ public class VolunteerBizService {
         // 3.解析本地对应文件成DTO返回
         try {
             String jsonContent = FileUtils.readFileToString(localFile, StandardCharsets.UTF_8);
-            VolunteerRecommendListResponse volunteerDataDTO = JSONObject.parseObject(jsonContent, VolunteerRecommendListResponse.class);
+            VolunteerRecommendListResponse volunteerDataDTO = parseVolunteerRecommendListResponse(jsonContent);
             log.info("成功加载最终志愿数据，会话ID: {}, 数据大小: {} bytes", chatSessionId, jsonContent.length());
             return volunteerDataDTO;
         } catch (Exception e) {
             log.error("解析本地最终志愿JSON文件失败，会话ID: {}, 文件路径: {}", chatSessionId, localFilePath, e);
             throw new BusinessException(110, "解析最终志愿数据文件失败");
         }
+    }
+
+    VolunteerRecommendListResponse parseVolunteerRecommendListResponse(String jsonContent) {
+        VolunteerRecommendListResponse response = JSONObject.parseObject(jsonContent, VolunteerRecommendListResponse.class);
+        if (hasRecommendListItems(response)) {
+            return response;
+        }
+        VolunteerDataDTO legacyData = JSONObject.parseObject(jsonContent, VolunteerDataDTO.class);
+        if (legacyData == null || legacyData.getDetailList() == null || legacyData.getDetailList().isEmpty()) {
+            return response;
+        }
+        return convertLegacyVolunteerData(legacyData);
+    }
+
+    private boolean hasRecommendListItems(VolunteerRecommendListResponse response) {
+        return response != null
+                && ((response.getSprints() != null && !response.getSprints().isEmpty())
+                || (response.getSafes() != null && !response.getSafes().isEmpty())
+                || (response.getProtects() != null && !response.getProtects().isEmpty()));
+    }
+
+    private VolunteerRecommendListResponse convertLegacyVolunteerData(VolunteerDataDTO legacyData) {
+        VolunteerRecommendListResponse response = new VolunteerRecommendListResponse();
+        response.setBaseData(convertLegacyBaseData(legacyData));
+        response.setSprints(new ArrayList<>());
+        response.setSafes(new ArrayList<>());
+        response.setProtects(new ArrayList<>());
+
+        Map<String, Integer> tierRanks = new HashMap<>();
+        for (ProgramPageDTO.SchoolDetail detail : legacyData.getDetailList()) {
+            if (detail == null) {
+                continue;
+            }
+            String tier = normalizeLegacyTier(detail.getVolunteerLevel());
+            VolunteerRecommendListResponse.VolunteerSchool school = convertLegacySchool(detail);
+            Integer rank = tierRanks.getOrDefault(tier, 0) + 1;
+            tierRanks.put(tier, rank);
+            school.setRank_in_tier(rank);
+            if ("冲".equals(tier)) {
+                response.getSprints().add(school);
+            } else if ("稳".equals(tier)) {
+                response.getSafes().add(school);
+            } else {
+                response.getProtects().add(school);
+            }
+        }
+        return response;
+    }
+
+    private VolunteerRecommendListResponse.BaseData convertLegacyBaseData(VolunteerDataDTO legacyData) {
+        VolunteerRecommendListResponse.BaseData baseData = new VolunteerRecommendListResponse.BaseData();
+        ProgramPageDTO.ProgramModel model = legacyData == null ? null : legacyData.getModel();
+        if (model == null) {
+            return baseData;
+        }
+        Integer total = firstNotNull(model.getMajorTotalNum(), model.getSchoolTotalNum());
+        baseData.setTotal_count(total);
+        baseData.setNeed_count(total);
+        Map<String, Integer> targetCounts = new HashMap<>();
+        targetCounts.put("sprints_count", firstNotNull(model.getMajorSprintNum(), model.getSchoolSprintNum(), 0));
+        targetCounts.put("safes_count", firstNotNull(model.getMajorSafeNum(), model.getSchoolSafeNum(), 0));
+        targetCounts.put("protects_count", firstNotNull(model.getMajorProtectNum(), model.getSchoolProtectNum(), 0));
+        baseData.setThree_target_count_map(targetCounts);
+        return baseData;
+    }
+
+    private VolunteerRecommendListResponse.VolunteerSchool convertLegacySchool(ProgramPageDTO.SchoolDetail detail) {
+        VolunteerRecommendListResponse.VolunteerSchool school = new VolunteerRecommendListResponse.VolunteerSchool();
+        school.setPlanSchoolDataId(detail.getPlanSchoolDataId());
+        school.setSchoolId(detail.getSchoolId());
+        school.setSchoolUnitCode(detail.getSchoolUnitCode());
+        school.setSchool_name(detail.getSchoolUnitName());
+        school.setEnroll_ratio(detail.getEnrollRatio());
+        school.setLevel(normalizeLegacyTier(detail.getVolunteerLevel()));
+        school.setSchool_rank(detail.getXyhRank());
+        if (detail.getArea() != null) {
+            school.setProvince_name(detail.getArea().getData());
+        }
+        if (detail.getCity() != null) {
+            school.setCity_name(detail.getCity().getData());
+        }
+        if (detail.getLevel() != null) {
+            school.setSchool_level(detail.getLevel().getDesc());
+        }
+        if (detail.getType() != null) {
+            school.setSchool_category(detail.getType().getData());
+        }
+        school.setMajors(convertLegacyMajors(detail));
+        school.setIs_preferred(Boolean.TRUE.equals(detail.getSelectSchool())
+                || school.getMajors().stream().anyMatch(major -> Boolean.TRUE.equals(major.getAlgTagMap().get("legacy_select_zy"))));
+        return school;
+    }
+
+    private List<VolunteerRecommendListResponse.VolunteerMajor> convertLegacyMajors(ProgramPageDTO.SchoolDetail detail) {
+        List<VolunteerRecommendListResponse.VolunteerMajor> majors = new ArrayList<>();
+        if (detail.getMajorVOList() != null && !detail.getMajorVOList().isEmpty()) {
+            for (ProgramPageDTO.MajorVO majorVO : detail.getMajorVOList()) {
+                if (majorVO == null) {
+                    continue;
+                }
+                VolunteerRecommendListResponse.VolunteerMajor major = new VolunteerRecommendListResponse.VolunteerMajor();
+                major.setPlanMajorDataId(majorVO.getPlanMajorDataId());
+                major.setMajorId(majorVO.getMajorId());
+                major.setMajor_name(majorVO.getMajorName());
+                major.setMajorUnitCode(majorVO.getUnitCode());
+                major.setCategoryId(majorVO.getCategoryId());
+                major.setSubCategoryId(majorVO.getSubCategoryId());
+                major.setEnroll_ratio(majorVO.getEnrollRatio());
+                major.setLevel(normalizeLegacyTier(majorVO.getVolunteerLevel()));
+                major.setPlanNum(majorVO.getPlanNum());
+                major.setPlanMoney(majorVO.getMoney());
+                major.setDuration(majorVO.getDuration());
+                major.setMust_subject(majorVO.getSelectInfo() == null ? Collections.emptyList() : Collections.singletonList(majorVO.getSelectInfo()));
+                major.getAlgTagMap().put("legacy_select_zy", Boolean.TRUE.equals(majorVO.getSelectZy()));
+                majors.add(major);
+            }
+            return majors;
+        }
+        VolunteerRecommendListResponse.VolunteerMajor major = new VolunteerRecommendListResponse.VolunteerMajor();
+        major.setPlanMajorDataId(detail.getPlanMajorDataId());
+        major.setMajorId(detail.getMajorId());
+        major.setMajor_name(detail.getMajorUnitName());
+        major.setMajorUnitCode(detail.getMajorUnitCode());
+        major.setCategoryId(detail.getCategoryId());
+        major.setSubCategoryId(detail.getSubCategoryId());
+        major.setEnroll_ratio(detail.getEnrollRatio());
+        major.setLevel(normalizeLegacyTier(detail.getVolunteerLevel()));
+        major.setPlanNum(detail.getPlanNum());
+        major.setPlanMoney(detail.getPlanMoney());
+        major.setDuration(detail.getPlanDuration());
+        major.setMust_subject(detail.getSelectInfo() == null ? Collections.emptyList() : Collections.singletonList(detail.getSelectInfo()));
+        majors.add(major);
+        return majors;
+    }
+
+    private String normalizeLegacyTier(ProgramPageDTO.Type type) {
+        if (type == null || type.getCode() == null) {
+            return "保";
+        }
+        if ("SPRINT".equalsIgnoreCase(type.getCode())) {
+            return "冲";
+        }
+        if ("SAFE".equalsIgnoreCase(type.getCode())) {
+            return "稳";
+        }
+        return "保";
+    }
+
+    @SafeVarargs
+    private final <T> T firstNotNull(T... values) {
+        if (values == null) {
+            return null;
+        }
+        for (T value : values) {
+            if (value != null) {
+                return value;
+            }
+        }
+        return null;
     }
 
     /**

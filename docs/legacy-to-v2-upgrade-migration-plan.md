@@ -158,6 +158,80 @@ private PlanningStateDTO loadPlanningState(Long chatSessionId) {
 4. 如本地文件没有，按现有 `VolunteerFilePathUtil` 查 OSS。
 5. 仍不存在时，调用 `volunteerBizService.recommendVolunteerList(tenantId, chatSessionId, false, false)` 生成当前候选，但要标记为“系统重新生成”，不要伪装为用户历史最终方案。
 
+### 5.2.1 生产样本导出与本地验证
+
+上线前应从生产环境导出一批脱敏老方案样本，用于验证懒迁移能覆盖真实文件结构和异常数据。样本只用于本地或预发验证，不提交到仓库。
+
+生产后端部署目录：
+
+```bash
+cd /root/work/zhiyuan-server
+```
+
+志愿文件目录由 `application-online.yml` 的 `gaotu.zhiyuan.temp-data-path` 控制，当前线上记录为：
+
+```text
+/root/work/zhiyuan-server/data/tmp
+```
+
+建议按以下口径准备 `chatSessionId` 清单：
+
+- 已提交方案：20-30 个，覆盖不同省份、不同方案规模和不同填报模式。
+- 临时方案：20-30 个，覆盖已生成推荐但未提交的老会话。
+- 边界样本：10 个左右，包括空方案、超大文件、仅有原始 `detailList/majorVOList`、无 `is_preferred/selectZy`、专业组为空或字段缺失的数据。
+
+生产机只打包必要 JSON 文件。假设已将待导出的会话 ID 放到 `/tmp/migration-session-ids.txt`，每行一个 `chatSessionId`：
+
+```bash
+cd /root/work/zhiyuan-server
+mkdir -p /tmp/zhiyuan-migration-samples
+while read -r sid; do
+  [ -z "$sid" ] && continue
+  for suffix in "" "_final" "_temp" "_final_summary" "_temp_summary"; do
+    file="data/tmp/session_volunteer_${sid}${suffix}.json"
+    [ -f "$file" ] && cp "$file" /tmp/zhiyuan-migration-samples/
+  done
+done < /tmp/migration-session-ids.txt
+tar -czf /tmp/zhiyuan-migration-samples.tgz -C /tmp zhiyuan-migration-samples
+```
+
+如果本地文件缺失但 OSS 有备份，可按 `VolunteerFilePathUtil` 规则从 OSS 取：
+
+```text
+session_volunteer/{chatSessionId}.json
+session_volunteer/{chatSessionId}_final.json
+session_volunteer/{chatSessionId}_temp.json
+```
+
+把压缩包拉到本地后解压到仓库外目录，例如：
+
+```bash
+mkdir -p /tmp/zhiyuan-migration-samples
+tar -xzf zhiyuan-migration-samples.tgz -C /tmp
+```
+
+本地运行可选生产样本验证：
+
+```bash
+cd zhiyuan-server
+mvn -q -Dtest=PlanningStateServiceTest#shouldImportExternalLegacyCompleteDataSamples \
+  -Dlegacy.sample.dir=/tmp/zhiyuan-migration-samples test
+```
+
+验证通过标准：
+
+- 每个样本都能解析出候选池，或者被明确识别为空/无方案样本。
+- 有选择标记的样本能进入 `draftPlanState + orderedPlanState`。
+- 无选择标记但有冲稳保目标数的样本能按目标数量导入。
+- 已提交样本导入后 `orderedPlanState.generationMode=legacy_submitted`，并且排序项 `locked/pinned=true`。
+- 二次访问同一个会话不重复导入。
+
+样本脱敏要求：
+
+- 不导出聊天记录、手机号、姓名、身份证号等个人身份信息。
+- 志愿 JSON 内如包含用户画像、偏好描述或备注，导出前应做脱敏或最小字段抽取。
+- 样本包只在本地或预发机器短期保存，验证完成后删除。
+
 ### 5.3 旧方案到 V2 DTO 映射
 
 老方案结构主要是 `VolunteerRecommendListResponse`：
@@ -618,4 +692,3 @@ where chat_session_id = ?
 - 移动端能查看方案，不出现横向撑破页面。
 - 一键删除 `planningState` 后可回旧页。
 - 后端日志能定位每次迁移来源和数量。
-

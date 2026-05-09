@@ -48,11 +48,16 @@ import com.ytell.zhiyuan.model.enums.VolunteerModel;
 import com.ytell.zhiyuan.service.shared.ChatSessionExtraDataSharedService;
 import com.ytell.zhiyuan.service.volunteer.VolunteerIntervalService;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
@@ -103,6 +108,148 @@ public class PlanningStateServiceTest {
         assertEquals(Long.valueOf(1L), state.getSessionId());
         assertEquals(Integer.valueOf(0), state.getVersion());
         assertEquals("profile_ready", state.getPhase());
+    }
+
+    @Test
+    void shouldImportSubmittedLegacyPlanWhenPlanningStateMissing() {
+        bindPlanningStateStore();
+        VolunteerRecommendListResponse legacy = new VolunteerRecommendListResponse();
+        legacy.setBaseData(buildBaseData(3, 1, 1, 1));
+        legacy.setUserScoreDetail(buildScoreDetail());
+        VolunteerRecommendListResponse.VolunteerSchool sprint = buildSchool(
+                "ps1", "s1", "学校A", "北京", 1, buildMajorWithRatio("m1", "专业A", "18"));
+        sprint.setIs_preferred(true);
+        VolunteerRecommendListResponse.VolunteerSchool safe = buildSchool(
+                "ps2", "s2", "学校B", "天津", 1, buildMajorWithRatio("m2", "专业B", "52"));
+        safe.setIs_preferred(false);
+        VolunteerRecommendListResponse.VolunteerSchool protect = buildSchool(
+                "ps3", "s3", "学校C", "河北", 1, buildMajorWithRatio("m3", "专业C", "82"));
+        protect.setIs_preferred(true);
+        legacy.setSprints(java.util.Arrays.asList(sprint));
+        legacy.setSafes(java.util.Arrays.asList(safe));
+        legacy.setProtects(java.util.Arrays.asList(protect));
+        when(volunteerBizService.loadFinalSubmitVolunteerData(1L)).thenReturn(legacy);
+
+        PlanningStateDTO state = planningStateService.getPlanningState(1L);
+
+        assertEquals("ordered", state.getPhase());
+        assertEquals(3, state.getCandidatePoolState().getItems().size());
+        assertEquals(2, state.getDraftPlanState().getItems().size());
+        assertEquals(2, state.getOrderedPlanState().getItems().size());
+        assertEquals("legacy_submitted", state.getOrderedPlanState().getGenerationMode());
+        assertTrue(state.getOrderedPlanState().getItems().stream().allMatch(item -> Boolean.TRUE.equals(item.getLocked())));
+        assertTrue(state.getOrderedPlanState().getItems().stream().allMatch(item -> Boolean.TRUE.equals(item.getPinned())));
+        assertEquals(Integer.valueOf(1), state.getOrderedPlanState().getSummary().getTierCounts().get("冲"));
+        assertEquals(Integer.valueOf(1), state.getOrderedPlanState().getSummary().getTierCounts().get("保"));
+        assertTrue(state.getOperationLogs().stream().anyMatch(log -> "legacy_plan_import".equals(log.getType())));
+        verify(volunteerBizService, never()).loadCachedRecommendData(1L);
+        verify(chatSessionExtraDataSharedService, times(1)).save(any(ChatSessionExtraData.class));
+    }
+
+    @Test
+    void shouldFallbackToTempLegacyPlanWhenSubmittedPlanUnavailable() {
+        bindPlanningStateStore();
+        VolunteerRecommendListResponse legacy = new VolunteerRecommendListResponse();
+        legacy.setBaseData(buildBaseData(2, 1, 1, 0));
+        VolunteerRecommendListResponse.VolunteerSchool sprint = buildSchool(
+                "ps1", "s1", "学校A", "北京", 1, buildMajorWithRatio("m1", "专业A", "18"));
+        sprint.setIs_preferred(true);
+        VolunteerRecommendListResponse.VolunteerSchool safe = buildSchool(
+                "ps2", "s2", "学校B", "天津", 1, buildMajorWithRatio("m2", "专业B", "52"));
+        safe.setIs_preferred(true);
+        legacy.setSprints(java.util.Arrays.asList(sprint));
+        legacy.setSafes(java.util.Arrays.asList(safe));
+        when(volunteerBizService.loadFinalSubmitVolunteerData(1L)).thenThrow(new RuntimeException("missing final"));
+        when(volunteerBizService.loadCachedRecommendData(1L)).thenReturn(legacy);
+
+        PlanningStateDTO state = planningStateService.getPlanningState(1L);
+
+        assertEquals("ordered", state.getPhase());
+        assertEquals("legacy_import", state.getOrderedPlanState().getGenerationMode());
+        assertEquals(2, state.getOrderedPlanState().getItems().size());
+        assertTrue(state.getOrderedPlanState().getItems().stream().noneMatch(item -> Boolean.TRUE.equals(item.getLocked())));
+        assertTrue(state.getOrderedPlanState().getItems().stream().noneMatch(item -> Boolean.TRUE.equals(item.getPinned())));
+        verify(chatSessionExtraDataSharedService, times(1)).save(any(ChatSessionExtraData.class));
+    }
+
+    @Test
+    void shouldSelectLegacyPlanByTierTargetsWhenPreferredFlagMissing() {
+        bindPlanningStateStore();
+        VolunteerRecommendListResponse legacy = new VolunteerRecommendListResponse();
+        legacy.setBaseData(buildBaseData(3, 1, 1, 1));
+        legacy.setSprints(java.util.Arrays.asList(
+                buildSchool("ps1", "s1", "冲A", "北京", 1, buildMajorWithRatio("m1", "专业A", "18")),
+                buildSchool("ps2", "s2", "冲B", "北京", 2, buildMajorWithRatio("m2", "专业B", "22"))));
+        legacy.setSafes(java.util.Arrays.asList(
+                buildSchool("ps3", "s3", "稳A", "天津", 1, buildMajorWithRatio("m3", "专业C", "52"))));
+        legacy.setProtects(java.util.Arrays.asList(
+                buildSchool("ps4", "s4", "保A", "河北", 1, buildMajorWithRatio("m4", "专业D", "82"))));
+        when(volunteerBizService.loadFinalSubmitVolunteerData(1L)).thenReturn(legacy);
+
+        PlanningStateDTO state = planningStateService.getPlanningState(1L);
+
+        assertEquals(4, state.getCandidatePoolState().getItems().size());
+        assertEquals(3, state.getDraftPlanState().getItems().size());
+        assertEquals(3, state.getOrderedPlanState().getItems().size());
+        assertEquals(java.util.Arrays.asList("ps1_m1", "ps3_m3", "ps4_m4"),
+                state.getOrderedPlanState().getItems().stream()
+                        .map(OrderedItemDTO::getVolunteerId)
+                        .collect(Collectors.toList()));
+    }
+
+    @Test
+    void shouldNotImportLegacyPlanWhenPlanningStateExists() {
+        PlanningStateDTO existing = new PlanningStateDTO();
+        existing.setSessionId(1L);
+        existing.setPhase("candidate_generated");
+        ChatSessionExtraData extraData = new ChatSessionExtraData();
+        extraData.setDataKey(ChatSessionExtraDataConstants.PLANNING_STATE_KEY);
+        extraData.setDataValue(com.alibaba.fastjson.JSONObject.toJSONString(existing));
+        when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(1L, ChatSessionExtraDataConstants.PLANNING_STATE_KEY))
+                .thenReturn(extraData);
+
+        PlanningStateDTO state = planningStateService.getPlanningState(1L);
+
+        assertEquals("candidate_generated", state.getPhase());
+        verify(volunteerBizService, never()).loadFinalSubmitVolunteerData(1L);
+        verify(volunteerBizService, never()).loadCachedRecommendData(1L);
+        verify(chatSessionExtraDataSharedService, never()).save(any(ChatSessionExtraData.class));
+    }
+
+    @Test
+    void shouldImportTrackedLegacyCompleteDataFiles() throws Exception {
+        VolunteerBizService parser = new VolunteerBizService();
+        for (Long sessionId : java.util.Arrays.asList(26L, 29L, 35L)) {
+            Path path = Paths.get("data/tmp/session_volunteer_" + sessionId + ".json");
+            VolunteerRecommendListResponse legacy = parser.parseVolunteerRecommendListResponse(
+                    new String(Files.readAllBytes(path), StandardCharsets.UTF_8));
+            assertLegacySubmittedImportMatchesSource(sessionId, legacy, true);
+        }
+    }
+
+    @Test
+    void shouldImportExternalLegacyCompleteDataSamples() throws Exception {
+        String sampleDir = System.getProperty("legacy.sample.dir", System.getenv("LEGACY_SAMPLE_DIR"));
+        Assumptions.assumeTrue(sampleDir != null && !sampleDir.trim().isEmpty(), "legacy sample dir not configured");
+        Path dir = Paths.get(sampleDir);
+        Assumptions.assumeTrue(Files.isDirectory(dir), "legacy sample dir not found: " + sampleDir);
+
+        VolunteerBizService parser = new VolunteerBizService();
+        List<Path> sampleFiles = Files.list(dir)
+                .filter(path -> path.getFileName().toString().matches("session_volunteer_\\d+(_final|_temp)?\\.json"))
+                .sorted()
+                .collect(Collectors.toList());
+        Assumptions.assumeFalse(sampleFiles.isEmpty(), "legacy sample dir has no volunteer json files");
+
+        for (Path sampleFile : sampleFiles) {
+            Long sessionId = extractSessionId(sampleFile);
+            VolunteerRecommendListResponse legacy = parser.parseVolunteerRecommendListResponse(
+                    new String(Files.readAllBytes(sampleFile), StandardCharsets.UTF_8));
+            if (countLegacyRecommendEntries(legacy) == 0) {
+                continue;
+            }
+            assertLegacySubmittedImportMatchesSource(sessionId, legacy, false);
+        }
     }
 
     @Test
@@ -3248,12 +3395,17 @@ public class PlanningStateServiceTest {
     }
 
     private AtomicReference<ChatSessionExtraData> bindPlanningStateStore() {
+        return bindPlanningStateStore(1L);
+    }
+
+    private AtomicReference<ChatSessionExtraData> bindPlanningStateStore(Long chatSessionId) {
         AtomicReference<ChatSessionExtraData> planningStateRef = new AtomicReference<ChatSessionExtraData>();
-        when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
+        when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(chatSessionId), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
                 .thenAnswer(invocation -> planningStateRef.get());
         doAnswer(invocation -> {
             ChatSessionExtraData data = invocation.getArgument(0);
             ChatSessionExtraData stored = new ChatSessionExtraData();
+            stored.setChatSessionId(data.getChatSessionId());
             stored.setDataKey(ChatSessionExtraDataConstants.PLANNING_STATE_KEY);
             stored.setDataValue(data.getDataValue());
             planningStateRef.set(stored);
@@ -3262,6 +3414,7 @@ public class PlanningStateServiceTest {
         doAnswer(invocation -> {
             ChatSessionExtraData data = invocation.getArgument(0);
             ChatSessionExtraData stored = new ChatSessionExtraData();
+            stored.setChatSessionId(data.getChatSessionId());
             stored.setDataKey(ChatSessionExtraDataConstants.PLANNING_STATE_KEY);
             stored.setDataValue(data.getDataValue());
             planningStateRef.set(stored);
@@ -3308,5 +3461,103 @@ public class PlanningStateServiceTest {
         unit.setUnitId(unitId);
         unit.setTier(tier);
         return unit;
+    }
+
+    private void assertLegacySubmittedImportMatchesSource(Long sessionId,
+                                                          VolunteerRecommendListResponse legacy,
+                                                          boolean exactSelectedCount) {
+        setUp();
+        bindPlanningStateStore(sessionId);
+        int expectedCandidateCount = countLegacyRecommendEntries(legacy);
+        int expectedSelectedCount = countLegacyPreferredEntries(legacy);
+        if (expectedSelectedCount == 0) {
+            expectedSelectedCount = countLegacyTargetSelectedEntries(legacy);
+        }
+
+        when(volunteerBizService.loadFinalSubmitVolunteerData(sessionId)).thenReturn(legacy);
+
+        PlanningStateDTO state = planningStateService.getPlanningState(sessionId);
+
+        assertEquals(sessionId, state.getSessionId());
+        assertEquals(expectedCandidateCount, state.getCandidatePoolState().getItems().size());
+        if (exactSelectedCount) {
+            assertEquals(expectedSelectedCount, state.getDraftPlanState().getItems().size());
+            assertEquals(expectedSelectedCount, state.getOrderedPlanState().getItems().size());
+        } else {
+            assertTrue(state.getDraftPlanState().getItems().size() > 0);
+            assertEquals(state.getDraftPlanState().getItems().size(), state.getOrderedPlanState().getItems().size());
+            assertTrue(state.getDraftPlanState().getItems().size() <= expectedCandidateCount);
+        }
+        assertEquals("legacy_submitted", state.getOrderedPlanState().getGenerationMode());
+        assertTrue(state.getOrderedPlanState().getItems().stream().allMatch(item -> Boolean.TRUE.equals(item.getLocked())));
+        assertTrue(state.getOrderedPlanState().getItems().stream().allMatch(item -> Boolean.TRUE.equals(item.getPinned())));
+        assertTrue(state.getOperationLogs().stream().anyMatch(log -> "legacy_plan_import".equals(log.getType())));
+        verify(chatSessionExtraDataSharedService, times(1)).save(any(ChatSessionExtraData.class));
+    }
+
+    private Long extractSessionId(Path sampleFile) {
+        String fileName = sampleFile.getFileName().toString();
+        String id = fileName.replaceFirst("^session_volunteer_", "")
+                .replaceFirst("(_final|_temp)?\\.json$", "");
+        return Long.valueOf(id);
+    }
+
+    private int countLegacyRecommendEntries(VolunteerRecommendListResponse response) {
+        return countLegacyRecommendEntries(response.getSprints())
+                + countLegacyRecommendEntries(response.getSafes())
+                + countLegacyRecommendEntries(response.getProtects());
+    }
+
+    private int countLegacyRecommendEntries(List<VolunteerRecommendListResponse.VolunteerSchool> schools) {
+        if (schools == null) {
+            return 0;
+        }
+        int count = 0;
+        for (VolunteerRecommendListResponse.VolunteerSchool school : schools) {
+            if (school.getMajors() == null || school.getMajors().isEmpty()) {
+                count++;
+            } else {
+                count += school.getMajors().size();
+            }
+        }
+        return count;
+    }
+
+    private int countLegacyPreferredEntries(VolunteerRecommendListResponse response) {
+        return countLegacyPreferredEntries(response.getSprints())
+                + countLegacyPreferredEntries(response.getSafes())
+                + countLegacyPreferredEntries(response.getProtects());
+    }
+
+    private int countLegacyPreferredEntries(List<VolunteerRecommendListResponse.VolunteerSchool> schools) {
+        if (schools == null) {
+            return 0;
+        }
+        int count = 0;
+        for (VolunteerRecommendListResponse.VolunteerSchool school : schools) {
+            if (!Boolean.TRUE.equals(school.getIs_preferred())) {
+                continue;
+            }
+            if (school.getMajors() == null || school.getMajors().isEmpty()) {
+                count++;
+            } else {
+                count += school.getMajors().size();
+            }
+        }
+        return count;
+    }
+
+    private int countLegacyTargetSelectedEntries(VolunteerRecommendListResponse response) {
+        if (response == null || response.getBaseData() == null || response.getBaseData().getThree_target_count_map() == null) {
+            return 0;
+        }
+        Map<String, Integer> counts = response.getBaseData().getThree_target_count_map();
+        return Math.min(defaultInt(counts.get("sprints_count")), countLegacyRecommendEntries(response.getSprints()))
+                + Math.min(defaultInt(counts.get("safes_count")), countLegacyRecommendEntries(response.getSafes()))
+                + Math.min(defaultInt(counts.get("protects_count")), countLegacyRecommendEntries(response.getProtects()));
+    }
+
+    private int defaultInt(Integer value) {
+        return value == null ? 0 : value;
     }
 }

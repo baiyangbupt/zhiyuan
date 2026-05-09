@@ -3402,8 +3402,13 @@ public class PlanningStateService {
                 chatSessionId, ChatSessionExtraDataConstants.PLANNING_STATE_KEY);
         PlanningStateDTO state;
         if (extraData == null || extraData.getDataValue() == null) {
-            state = new PlanningStateDTO();
-            state.setSessionId(chatSessionId);
+            state = tryImportLegacyPlanningState(chatSessionId);
+            if (state != null) {
+                savePlanningState(chatSessionId, state);
+            } else {
+                state = new PlanningStateDTO();
+                state.setSessionId(chatSessionId);
+            }
         } else {
             state = JSONObject.parseObject(extraData.getDataValue(), PlanningStateDTO.class);
         }
@@ -3446,6 +3451,231 @@ public class PlanningStateService {
         backfillLegacyProfileState(chatSessionId, state);
         backfillLegacySummaryFields(state);
         return state;
+    }
+
+    private PlanningStateDTO tryImportLegacyPlanningState(Long chatSessionId) {
+        LegacyPlanSource legacyPlanSource = loadLegacyPlanSource(chatSessionId);
+        if (legacyPlanSource == null || legacyPlanSource.response == null) {
+            log.info("legacyPlanImport skipped chatSessionId={} reason=no_legacy_plan", chatSessionId);
+            return null;
+        }
+        try {
+            PlanningStateDTO state = buildPlanningStateFromLegacyPlan(chatSessionId, legacyPlanSource);
+            log.info("legacyPlanImport success chatSessionId={} source={} candidates={} preferred={} ordered={} tierCounts={}",
+                    chatSessionId,
+                    legacyPlanSource.source,
+                    state.getCandidatePoolState().getItems().size(),
+                    state.getDraftPlanState().getItems().size(),
+                    state.getOrderedPlanState().getItems().size(),
+                    state.getOrderedPlanState().getSummary().getTierCounts());
+            return state;
+        } catch (Exception ex) {
+            log.warn("legacyPlanImport failed chatSessionId={} source={}", chatSessionId, legacyPlanSource.source, ex);
+            return null;
+        }
+    }
+
+    private LegacyPlanSource loadLegacyPlanSource(Long chatSessionId) {
+        try {
+            VolunteerRecommendListResponse response = volunteerBizService.loadFinalSubmitVolunteerData(chatSessionId);
+            if (hasLegacyPlanItems(response)) {
+                return new LegacyPlanSource(response, "submitted", true);
+            }
+            log.info("legacyPlanImport final plan empty chatSessionId={}", chatSessionId);
+        } catch (Exception ex) {
+            log.info("legacyPlanImport final plan unavailable chatSessionId={} reason={}", chatSessionId, ex.getMessage());
+        }
+        try {
+            VolunteerRecommendListResponse response = volunteerBizService.loadCachedRecommendData(chatSessionId);
+            if (hasLegacyPlanItems(response)) {
+                return new LegacyPlanSource(response, "temp", false);
+            }
+            log.info("legacyPlanImport temp plan empty chatSessionId={}", chatSessionId);
+        } catch (Exception ex) {
+            log.info("legacyPlanImport temp plan unavailable chatSessionId={} reason={}", chatSessionId, ex.getMessage());
+        }
+        return null;
+    }
+
+    private boolean hasLegacyPlanItems(VolunteerRecommendListResponse response) {
+        return response != null
+                && (!defaultLegacySchools(response.getSprints()).isEmpty()
+                || !defaultLegacySchools(response.getSafes()).isEmpty()
+                || !defaultLegacySchools(response.getProtects()).isEmpty());
+    }
+
+    private List<VolunteerRecommendListResponse.VolunteerSchool> defaultLegacySchools(
+            List<VolunteerRecommendListResponse.VolunteerSchool> schools) {
+        return schools == null ? Lists.newArrayList() : schools;
+    }
+
+    private PlanningStateDTO buildPlanningStateFromLegacyPlan(Long chatSessionId, LegacyPlanSource legacyPlanSource) {
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(chatSessionId);
+        VolunteerRecommendListResponse response = legacyPlanSource.response;
+        hydrateProfileState(state.getProfileState(), response.getUserScoreDetail(), response.getUserFinalProfileData());
+        CandidatePoolStateDTO candidatePoolState = buildLegacyCandidatePoolState(chatSessionId, response);
+        state.setCandidatePoolState(candidatePoolState);
+
+        List<CandidateItemDTO> candidates = defaultCandidates(candidatePoolState.getItems());
+        List<CandidateItemDTO> preferredCandidates = selectLegacyPreferredCandidates(candidates, candidatePoolState);
+        DraftPlanStateDTO draftPlanState = buildLegacyDraftPlanState(preferredCandidates, candidatePoolState, legacyPlanSource.submitted);
+        OrderedPlanStateDTO orderedPlanState = buildLegacyOrderedPlanState(draftPlanState, candidatePoolState, candidates, legacyPlanSource);
+
+        state.setDraftPlanState(draftPlanState);
+        state.setOrderedPlanState(orderedPlanState);
+        state.setCandidateViewState(buildDefaultCandidateViewState(state.getProfileState()));
+        state.setPhase(preferredCandidates.isEmpty() ? "candidate_generated" : "ordered");
+        state.getStaleFlags().setCandidatePool(false);
+        state.getStaleFlags().setRecommendationOverlay(false);
+        state.getStaleFlags().setInitialRecommendation(false);
+        state.getStaleFlags().setOrderedPlan(false);
+        state.getStaleFlags().setPlanAdjustment(true);
+        state.getStaleFlags().setReview(true);
+        appendLegacyImportLog(state, legacyPlanSource, preferredCandidates);
+        return state;
+    }
+
+    private CandidatePoolStateDTO buildLegacyCandidatePoolState(Long chatSessionId, VolunteerRecommendListResponse response) {
+        CandidatePoolStateDTO candidatePoolState = new CandidatePoolStateDTO();
+        candidatePoolState.setGeneratedAt(OffsetDateTime.now().toString());
+        candidatePoolState.setSourceVersion(0);
+        candidatePoolState.setRequiredCount(response.getBaseData() != null ? response.getBaseData().getNeed_count() : null);
+        fillRequiredTierCounts(chatSessionId, candidatePoolState, response);
+        candidatePoolState.setRequiredMajorCount(response.getBaseData() != null && response.getBaseData().getVolunteerCount() != null
+                ? response.getBaseData().getVolunteerCount().getMajorCount() : null);
+        candidatePoolState.setVolunteerModel(response.getBaseData() != null && response.getBaseData().getVolunteerModel() != null
+                ? response.getBaseData().getVolunteerModel().getCode() : null);
+        candidatePoolState.setUserScore(response.getUserScoreDetail() != null ? response.getUserScoreDetail().getTotalScore() : null);
+        candidatePoolState.setBatchScore(response.getUserScoreDetail() != null && response.getUserScoreDetail().getBatch() != null
+                && response.getUserScoreDetail().getBatch().getScore() != null
+                ? Math.round(response.getUserScoreDetail().getBatch().getScore()) : null);
+        candidatePoolState.setSourceProvinceName(response.getUserScoreDetail() != null && response.getUserScoreDetail().getProvince() != null
+                ? response.getUserScoreDetail().getProvince().getName() : null);
+        List<CandidateItemDTO> items = Lists.newArrayList();
+        items.addAll(flattenCandidates(response.getSprints(), "冲"));
+        items.addAll(flattenCandidates(response.getSafes(), "稳"));
+        items.addAll(flattenCandidates(response.getProtects(), "保"));
+        candidatePoolState.setItems(items);
+        recalculateCandidatePoolSummary(candidatePoolState);
+        normalizeRequiredTierCountsByAvailableCapacity(candidatePoolState);
+        return candidatePoolState;
+    }
+
+    private List<CandidateItemDTO> selectLegacyPreferredCandidates(List<CandidateItemDTO> candidates,
+                                                                   CandidatePoolStateDTO candidatePoolState) {
+        List<CandidateItemDTO> preferred = defaultCandidates(candidates).stream()
+                .filter(item -> Boolean.TRUE.equals(item.getPreferred()))
+                .sorted(buildLegacyPreferredComparator())
+                .collect(Collectors.toList());
+        if (!preferred.isEmpty()) {
+            return preferred;
+        }
+        Map<String, Integer> requiredTierCounts = candidatePoolState == null ? null : candidatePoolState.getRequiredTierCounts();
+        if (requiredTierCounts == null || requiredTierCounts.isEmpty()) {
+            return Lists.newArrayList();
+        }
+        List<CandidateItemDTO> selected = Lists.newArrayList();
+        Set<String> selectedIds = new LinkedHashSet<String>();
+        for (String tier : Lists.newArrayList("冲", "稳", "保")) {
+            Integer required = requiredTierCounts.get(tier);
+            if (required == null || required <= 0) {
+                continue;
+            }
+            List<CandidateItemDTO> tierCandidates = defaultCandidates(candidates).stream()
+                    .filter(item -> tier.equals(item.getTier()))
+                    .sorted(buildLegacyPreferredComparator())
+                    .collect(Collectors.toList());
+            for (CandidateItemDTO candidate : tierCandidates) {
+                if ((int) selected.stream().filter(item -> tier.equals(item.getTier())).count() >= required) {
+                    break;
+                }
+                if (selectedIds.add(candidate.getVolunteerId())) {
+                    selected.add(candidate);
+                }
+            }
+        }
+        return selected;
+    }
+
+    private Comparator<CandidateItemDTO> buildLegacyPreferredComparator() {
+        return Comparator
+                .comparingInt((CandidateItemDTO item) -> tierOrder(item.getTier()))
+                .thenComparing((CandidateItemDTO item) -> rankInTierOf(item), Comparator.nullsLast(Integer::compareTo))
+                .thenComparing((CandidateItemDTO item) -> finalScoreOf(item), Comparator.nullsLast(Comparator.reverseOrder()))
+                .thenComparing(CandidateItemDTO::getVolunteerId, Comparator.nullsLast(String::compareTo));
+    }
+
+    private DraftPlanStateDTO buildLegacyDraftPlanState(List<CandidateItemDTO> preferredCandidates,
+                                                        CandidatePoolStateDTO candidatePoolState,
+                                                        boolean submitted) {
+        DraftPlanStateDTO draftPlanState = new DraftPlanStateDTO();
+        for (CandidateItemDTO candidate : defaultCandidates(preferredCandidates)) {
+            DraftItemDTO item = new DraftItemDTO();
+            item.setVolunteerId(candidate.getVolunteerId());
+            item.setTier(candidate.getTier());
+            item.setSchoolName(candidate.getSchoolName());
+            item.setMajorName(candidate.getMajorName());
+            item.setLocked(submitted);
+            item.setSource("legacy_preferred");
+            draftPlanState.getItems().add(item);
+        }
+        syncDraftUnitsWithItems(draftPlanState, preferredCandidates, candidatePoolState);
+        recalculateDraftSummary(draftPlanState, candidatePoolState);
+        return draftPlanState;
+    }
+
+    private OrderedPlanStateDTO buildLegacyOrderedPlanState(DraftPlanStateDTO draftPlanState,
+                                                            CandidatePoolStateDTO candidatePoolState,
+                                                            List<CandidateItemDTO> candidates,
+                                                            LegacyPlanSource legacyPlanSource) {
+        OrderedPlanStateDTO orderedPlanState = new OrderedPlanStateDTO();
+        List<OrderedItemDTO> orderedItems = buildOrderedItemsFromDraft(
+                draftPlanState,
+                candidatePoolState,
+                candidates,
+                new LinkedHashMap<String, OrderedItemDTO>(),
+                false);
+        for (OrderedItemDTO item : defaultOrderedItems(orderedItems)) {
+            item.setLocked(legacyPlanSource.submitted);
+            item.setPinned(legacyPlanSource.submitted);
+            item.setPinnedPosition(legacyPlanSource.submitted ? item.getPosition() : null);
+            item.setOrderedBy("legacy");
+            item.setOrderReason(legacyPlanSource.submitted ? "legacy_submitted_order" : "legacy_import_order");
+            item.setSource("legacy_preferred");
+        }
+        orderedPlanState.setItems(orderedItems);
+        orderedPlanState.setUnits(buildOrderedUnitsFromOrderedItems(orderedItems, draftPlanState, candidates));
+        orderedPlanState.setGenerationMode(legacyPlanSource.submitted ? "legacy_submitted" : "legacy_import");
+        recalculateOrderedSummary(orderedPlanState, candidatePoolState);
+        return orderedPlanState;
+    }
+
+    private void appendLegacyImportLog(PlanningStateDTO state,
+                                       LegacyPlanSource legacyPlanSource,
+                                       List<CandidateItemDTO> preferredCandidates) {
+        OperationLogDTO logItem = new OperationLogDTO();
+        logItem.setType("legacy_plan_import");
+        logItem.setOperator("system");
+        logItem.setDetail("从老版本" + ("submitted".equals(legacyPlanSource.source) ? "已提交方案" : "临时方案") + "导入 V2 工作台");
+        logItem.setCreatedAt(OffsetDateTime.now().toString());
+        logItem.setVolunteerIds(defaultCandidates(preferredCandidates).stream()
+                .map(CandidateItemDTO::getVolunteerId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toList()));
+        state.getOperationLogs().add(logItem);
+    }
+
+    private static class LegacyPlanSource {
+        private final VolunteerRecommendListResponse response;
+        private final String source;
+        private final boolean submitted;
+
+        private LegacyPlanSource(VolunteerRecommendListResponse response, String source, boolean submitted) {
+            this.response = response;
+            this.source = source;
+            this.submitted = submitted;
+        }
     }
 
     private void savePlanningState(Long chatSessionId, PlanningStateDTO state) {
