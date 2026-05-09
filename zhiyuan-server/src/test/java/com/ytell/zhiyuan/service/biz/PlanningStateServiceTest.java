@@ -353,7 +353,7 @@ public class PlanningStateServiceTest {
             VolunteerRecommendListResponse legacy = parser.parseVolunteerRecommendListResponse(
                     new String(Files.readAllBytes(path), StandardCharsets.UTF_8));
             assertEquals(0, countLegacyPreferredEntries(legacy));
-            assertLegacyImportMatchesSource(sessionId, legacy, true);
+            assertLegacyOriginalImportMatchesSource(sessionId, legacy);
         }
     }
 
@@ -378,8 +378,14 @@ public class PlanningStateServiceTest {
             if (countLegacyRecommendEntries(legacy) == 0) {
                 continue;
             }
-            boolean submitted = sampleFile.getFileName().toString().contains("_final");
-            assertLegacyImportMatchesSource(sessionId, legacy, submitted, false);
+            String fileName = sampleFile.getFileName().toString();
+            if (fileName.contains("_final")) {
+                assertLegacyImportMatchesSource(sessionId, legacy, true, false);
+            } else if (fileName.contains("_temp")) {
+                assertLegacyImportMatchesSource(sessionId, legacy, false, false);
+            } else {
+                assertLegacyOriginalImportMatchesSource(sessionId, legacy);
+            }
         }
     }
 
@@ -3692,6 +3698,28 @@ public class PlanningStateServiceTest {
             assertTrue(state.getOrderedPlanState().getItems().stream().noneMatch(item -> Boolean.TRUE.equals(item.getLocked())));
             assertTrue(state.getOrderedPlanState().getItems().stream().noneMatch(item -> Boolean.TRUE.equals(item.getPinned())));
         }
+        assertTrue(state.getOperationLogs().stream().anyMatch(log -> "legacy_plan_import".equals(log.getType())));
+        verify(chatSessionExtraDataSharedService, times(1)).save(any(ChatSessionExtraData.class));
+    }
+
+    private void assertLegacyOriginalImportMatchesSource(Long sessionId,
+                                                         VolunteerRecommendListResponse legacy) {
+        setUp();
+        bindPlanningStateStore(sessionId);
+        int expectedCandidateCount = countLegacyRecommendEntries(legacy);
+
+        when(volunteerBizService.loadFinalSubmitVolunteerData(sessionId)).thenThrow(new RuntimeException("missing final"));
+        when(volunteerBizService.loadCachedRecommendData(sessionId)).thenThrow(new RuntimeException("missing temp"));
+        when(volunteerBizService.loadOriginalVolunteerData(sessionId)).thenReturn(legacy);
+
+        PlanningStateDTO state = planningStateService.getPlanningState(sessionId);
+
+        assertEquals(sessionId, state.getSessionId());
+        assertEquals(expectedCandidateCount, state.getCandidatePoolState().getItems().size());
+        assertEquals(0, state.getDraftPlanState().getItems().size());
+        assertEquals(0, state.getOrderedPlanState().getItems().size());
+        assertEquals("candidate_generated", state.getPhase());
+        assertEquals("legacy_import", state.getOrderedPlanState().getGenerationMode());
         assertTrue(state.getOperationLogs().stream().anyMatch(log -> "legacy_plan_import".equals(log.getType())));
         verify(chatSessionExtraDataSharedService, times(1)).save(any(ChatSessionExtraData.class));
     }
