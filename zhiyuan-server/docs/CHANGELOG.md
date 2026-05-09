@@ -10,6 +10,7 @@
 
 ### Added
 
+- 老方案懒迁移外部生产样本验证已跑通：从生产机 `/tmp/zhiyuan-migration-samples` 下载 20 个 JSON 文件，覆盖 9 个会话及普通 / `_final` / `_temp` 文件形态，`shouldImportExternalLegacyCompleteDataSamples` 通过。
 - `planningState` 缺失时新增老方案懒迁移入口：优先从老版已提交方案文件导入，失败后回退临时推荐文件；导入成功后写入 `assistant_chat_session_extra_data(data_key=planningState)`，后续访问直接读 V2 状态。
 - 老方案导入复用现有候选平铺、草稿/排序 summary 和专业组聚合逻辑，把老版 `is_preferred=true` 的优报项导入 `draftPlanState + orderedPlanState`，未优报项保留在 `candidatePoolState`。
 - 老方案文件解析补充兼容更早的完整数据格式 `detailList/majorVOList`，可将本地 `session_volunteer_{id}.json` 里的冲稳保、院校专业组、专业明细和 `selectZy` 选择状态转换为 V2 迁移可消费的推荐结构。

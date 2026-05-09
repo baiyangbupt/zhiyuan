@@ -66,21 +66,29 @@ npm run build:dev
 
 构建通过。当前仅存在既有 `customerDetail/style.module.scss` autoprefixer warning。
 
+生产外部样本已验证：
+
+```bash
+cd zhiyuan-server
+mvn -q -Dtest=PlanningStateServiceTest#shouldImportExternalLegacyCompleteDataSamples \
+  -Dlegacy.sample.dir=/tmp/zhiyuan-migration-samples-run/zhiyuan-migration-samples test
+```
+
+验证结果：
+
+- `Tests run: 1, Failures: 0, Errors: 0, Skipped: 0`
+- 样本目录共 20 个 JSON 文件。
+- 覆盖 9 个会话：`400 / 953 / 960 / 965 / 968 / 989 / 990 / 1378 / 1496`。
+- 文件类型覆盖普通方案、`_final`、`_temp`。
+- 测试日志显示样本均可解析并导入为 V2 `planningState`；部分同一会话存在多个文件，按文件维度重复验证属于预期。
+
 ## 4. 剩余遗留事项
 
 ### P0：上线前必须完成
 
-1. 用生产导出的真实老方案样本运行外部样本迁移测试。
+1. 对真实会话做 V2 与老页面结果对比。
 
-   ```bash
-   cd zhiyuan-server
-   mvn -q -Dtest=PlanningStateServiceTest#shouldImportExternalLegacyCompleteDataSamples \
-     -Dlegacy.sample.dir=/tmp/zhiyuan-migration-samples test
-   ```
-
-   样本应覆盖已提交方案、临时方案、空方案、大文件、字段缺失、专业组为空、`selectZy/is_preferred` 缺失等情况。
-
-2. 对真实会话做 V2 与老页面结果对比。
+   外部 JSON 样本迁移测试已经通过，但仍需要用浏览器/接口对同一个 `chatSessionId` 做老页面与 V2 页面人工对照。
 
    必查口径：
 
@@ -89,6 +97,16 @@ npm run build:dev
    - 老页面候补项保留在 V2 candidate 中。
    - 已提交方案顺序保持一致。
    - 导出 Excel 主要字段一致。
+
+2. 持续补充生产样本覆盖。
+
+   ```bash
+   cd zhiyuan-server
+   mvn -q -Dtest=PlanningStateServiceTest#shouldImportExternalLegacyCompleteDataSamples \
+     -Dlegacy.sample.dir=/tmp/zhiyuan-migration-samples test
+   ```
+
+   当前已验证一批生产样本。后续建议继续补空方案、大文件、字段缺失、专业组为空、`selectZy/is_preferred` 缺失等边界样本。
 
 3. 在环境中验证单会话回滚。
 
@@ -146,12 +164,11 @@ npm run build:dev
 
 ## 5. 建议下一步执行顺序
 
-1. 从生产机 `/apps/volunnter-tmpdata` 导出一批真实老方案 JSON 到本地或预发目录。
-2. 运行 `shouldImportExternalLegacyCompleteDataSamples`。
-3. 选 20 个以上真实 `chatSessionId` 做老页面和 V2 页面人工对照。
-4. 修复外部样本中暴露的解析或展示问题。
-5. 在测试环境执行单会话重置和重新懒迁移验证。
-6. 小流量灰度，并使用日志脚本每日汇总迁移结果。
+1. 选 20 个以上真实 `chatSessionId` 做老页面和 V2 页面人工对照。
+2. 补充空方案、大文件、字段缺失、专业组为空等边界样本。
+3. 在测试环境执行单会话重置和重新懒迁移验证。
+4. 修复人工对照或边界样本中暴露的解析、展示问题。
+5. 小流量灰度，并使用日志脚本每日汇总迁移结果。
 
 ## 6. 当前不建议做的事
 
@@ -159,4 +176,4 @@ npm run build:dev
 - 不建议上线时删除老方案 JSON。
 - 不建议立即下线老 `/volunteer/*` 接口。
 - 不建议把 `planEditCache` 自动应用到当前最终方案。
-- 不建议未完成真实样本验证前把所有会话默认切到 V2。
+- 不建议未完成人工页面对照和灰度观察前把所有会话默认切到 V2。
