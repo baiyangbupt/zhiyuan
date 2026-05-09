@@ -196,14 +196,13 @@ python3 zhiyuan-server/scripts/analyze_legacy_plan_samples.py /tmp/zhiyuan-migra
 
 | chatSessionId | 老状态 | 老方案文件 | V2 结果 | 结论 |
 | --- | --- | --- | --- | --- |
-| 2045 | 用户确认为 `SUPER_VIP` 会话 | `session_volunteer_2045.json`、`session_volunteer_2045_temp.json` | `generationMode=legacy_import`，candidate 汇总 `冲=815 / 稳=416 / 保=1139`，ordered 汇总 `冲=28 / 稳=28 / 保=40` | 暂不通过。生产老版本的已提交方案存在无后缀 `.json`，当前 3.0.0 发布包只优先找 `_final.json`，未找到后回退 `_temp.json`，导致已提交方案被按临时方案导入。 |
+| 2045 | 用户确认为 `SUPER_VIP` 会话 | `session_volunteer_2045.json`、`session_volunteer_2045_temp.json` | 修复前发布包误导入 `_temp.json`，得到 `generationMode=legacy_import`；修复后 JAR 从无后缀 `.json` 导入，得到 `generationMode=legacy_submitted`，candidate 汇总 `冲=852 / 稳=441 / 保=1206`，ordered 汇总 `冲=749 / 稳=441 / 保=1001`，ordered 全部 locked/pinned | 通过关键兼容验证。生产老版本已提交方案可能存在无后缀 `.json`；迁移读取顺序已修复为 `_final.json` -> 无后缀 `.json` -> `_temp.json`。注意：本次已给 `2045` 写入修复后的 `planningState`。 |
 
-修复要求：
+补充要求：
 
-- 迁移读取顺序应为 `_final.json` -> 无后缀 `.json` -> `_temp.json`。
-- 无后缀 `.json` 命中且有有效方案时，应按 `submitted` 语义导入，即 `generationMode=legacy_submitted`，ordered 项锁定/固定。
-- 重新验证 `2045` 前，必须先删除该会话已经写入的错误 `planningState`。当前生产机未安装 `mysql` 客户端，暂不能直接执行 `reset_planning_state.py --execute`。
-- 3.0.0 后端发布包需要重新构建，不能继续用当前 JAR 做真实会话灰度。
+- 后续正式部署必须使用包含无后缀 `.json` 兼容修复的后端 JAR，当前修复版 JAR 哈希为 `cbbdb0e6f528c98c2a35c4c95e12b01b56f008c764a7df095922599ad494ab39`。
+- 生产旁路启动后端时必须显式设置 `--spring.flyway.enabled=false`，避免 Flyway 在生产库上执行权限探测或迁移。
+- 如果需要重新验证 `2045`，先用 `reset_planning_state.py --session-id 2045 --execute` 删除该会话已有 `planningState`。
 
 ## 7. 阶段 E：单会话回滚演练
 
