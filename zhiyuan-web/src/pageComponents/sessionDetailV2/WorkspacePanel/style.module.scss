@@ -807,6 +807,10 @@
   margin-bottom: 8px;
 }
 
+.groupTitleRow {
+  margin-bottom: 6px;
+}
+
 .cardTitle {
   font-size: 16px;
   font-weight: 700;
@@ -1409,6 +1413,7 @@
 
   .candidateGroupHeader {
     gap: 10px;
+    align-items: flex-start;
   }
 
   .candidateCollapse {
@@ -1422,7 +1427,9 @@
   }
 
   .candidateGroupScore {
-    width: 44px;
+    width: 48px;
+    position: sticky;
+    top: 0;
   }
 
   .candidateGroupScoreValue {
@@ -1435,20 +1442,28 @@
 
   .cardTitleRow {
     flex-wrap: wrap;
-    gap: 6px;
+    align-items: flex-start;
+    gap: 6px 8px;
     margin-bottom: 6px;
 
     :global(.ant-tag) {
       margin-inline-end: 0;
-      max-width: 100%;
-      white-space: normal;
+      flex: 0 0 auto;
+      max-width: 108px;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
       line-height: 18px;
     }
   }
 
+  .groupTitleRow {
+    display: flex;
+  }
+
   .cardTitle {
-    width: 100%;
-    min-width: 0;
+    flex: 1 1 100%;
+    min-width: 160px;
     font-size: 15px;
     line-height: 1.4;
     word-break: break-word;
@@ -1480,13 +1495,14 @@
   }
 
   .orderedMain {
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) 48px;
     align-items: flex-start;
     gap: 10px;
   }
 
   .orderedContent {
-    flex: 1 1 calc(100% - 54px);
+    min-width: 0;
   }
 
   .orderedMajorTitleRow {

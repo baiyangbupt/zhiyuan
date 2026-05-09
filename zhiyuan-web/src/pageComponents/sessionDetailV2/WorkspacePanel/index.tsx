@@ -2748,7 +2748,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                     ].filter(Boolean);
                                     return (
                                       <>
-                                  <div className={style.cardTitleRow}>
+                                  <div className={`${style.cardTitleRow} ${style.groupTitleRow}`}>
                                     <div className={style.cardTitle}>
                                       {groupIndex + 1}、{group.schoolName}
                                     </div>
@@ -3081,14 +3081,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                               <div className={style.orderedMain}>
                                 <div className={style.positionBadge}>{groupIndex + 1}</div>
                                 <div className={style.orderedContent}>
-                                  <div className={style.cardTitleRow}>
-                                    <Tag
-                                      color={
-                                        group.tier === '冲' ? 'red' : group.tier === '稳' ? 'gold' : 'green'
-                                      }
-                                    >
-                                      {group.tier}
-                                    </Tag>
+                                  <div className={`${style.cardTitleRow} ${style.groupTitleRow}`}>
                                     <div className={style.cardTitle}>{group.schoolName}</div>
                                     {hasLocked ? (
                                       <Tag bordered={false} className={style.orderedLockedTag}>
