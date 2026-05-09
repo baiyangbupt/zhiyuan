@@ -348,6 +348,14 @@ sha256=3a476d33384fb478e1a9739298afc2232214257c47622385f55589357e388c78
 5. 立刻检查 `/gaotu-assistant-bot/inner/planning/...`、老 `/volunteer/*` 兼容接口和前端依赖接口。
 6. 若失败，停止新后端，用老目录 `start.sh` 启回老后端。
 
+生产同端口切换记录：
+
+- `2026-05-10 04:54` 曾尝试停老后端并用新 JAR 直接启动 `8090`，命令追加了 `--spring.flyway.enabled=false`。
+- 在当前 Codex/SSH 自动化会话中使用 `nohup ... &` 方式启动 Java 后端时，后台进程会随命令会话结束而退出，`console.log` 无有效输出；同样方式回滚老后端也会瞬退。
+- 已改用 systemd 托管恢复老后端，临时服务名为 `gaotu-assistant-server-rollback.service`，当前监听 `8090`，基础接口 `/gaotu-assistant-bot/base-data/province-city` 返回 200。
+- 后续正式切换后端时，必须先创建或复用 systemd service 启动新后端，不要在当前自动化会话里使用裸 `nohup ... &` 作为生产启动方式。
+- 当前前端、Agent、Rank 未变更，仍分别使用老容器 `gaotu-volunteer-assistant-prod`、`gaotu-zy-agent-plus-prod`、`gaokao-volunteer-rank-prod`。
+
 后端回滚核心路径：
 
 ```bash
@@ -788,6 +796,12 @@ cp /root/work/zhiyuan-server/backup/zhiyuan-server.jar.<old-release> \
   /root/work/zhiyuan-server/zhiyuan-server.jar
 systemctl restart zhiyuan-server.service
 ```
+
+当前生产临时回滚状态：
+
+- 老后端已由 `/etc/systemd/system/gaotu-assistant-server-rollback.service` 托管恢复。
+- 若继续发布后端，应先 `systemctl stop gaotu-assistant-server-rollback.service` 释放 `8090`，再启动新后端 systemd service。
+- 若保持老版本运行，不要删除该临时 service；它当前承载生产 `8090`。
 
 新增 `planningState` dataKey 对老版本无影响，回滚时不需要批量删除。
 
