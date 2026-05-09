@@ -4,6 +4,8 @@ import { Button, Drawer, Spin, message } from 'antd';
 import { MessageOutlined, OrderedListOutlined } from '@ant-design/icons';
 import MessageList from '@/pageComponents/sessionDetailV2/MessageList';
 import LegacyVolunteer from '@/pageComponents/sessionDetailLegacy';
+import SessionListDrawer from '@/pageComponents/customer/SessionListDrawer';
+import CustomerDetailFlow from '@/pageComponents/customerDetail/CustomerDetailFlow';
 import { IDialogueResData, IUserInfoParams } from '@/interface/api/sessionDetail';
 import { getSessionDetailApi } from '@/service/apis/sessionDetail';
 import { checkUserRightsApi } from '@/service/apis/user';
@@ -27,6 +29,12 @@ const SessionDetailLegacy = () => {
   const [prepareTypeDesc, setPrepareTypeDesc] = useState<string>('');
   const [fetchFlag, setFetchFlag] = useState(1);
   const [planDrawerVisible, setPlanDrawerVisible] = useState(false);
+  const [sessionListDrawerVisible, setSessionListDrawerVisible] = useState(false);
+  const [customerDetailDrawerVisible, setCustomerDetailDrawerVisible] = useState(false);
+  const [flowStepIndicator, setFlowStepIndicator] = useState({
+    stepIndex: 0,
+    stepTitle: '高考信息',
+  });
   const [doChatRights, setDoChatRights] = useState<{ canOperate: boolean; reason?: string } | null>(
     null
   );
@@ -118,11 +126,7 @@ const SessionDetailLegacy = () => {
   };
 
   const openSessionList = () => {
-    navigateTo('/session', {
-      tenantId,
-      botId,
-      userId,
-    });
+    setSessionListDrawerVisible(true);
   };
 
   if (!isInitialized || !tenantId || !botId || !chatSessionId) {
@@ -138,6 +142,7 @@ const SessionDetailLegacy = () => {
         setScrollEleIndex={setScrollEleIndex}
         setFetchFlag={setFetchFlag}
         doChatRights={doChatRights || undefined}
+        alwaysShowQuickReplyActions={isMobile}
         quickReplyActions={
           isMobile
             ? [
@@ -145,11 +150,6 @@ const SessionDetailLegacy = () => {
                   label: '志愿方案',
                   icon: <OrderedListOutlined />,
                   onClick: () => setPlanDrawerVisible(true),
-                },
-                {
-                  label: 'V2工作台',
-                  icon: <OrderedListOutlined />,
-                  onClick: openV2,
                 },
                 {
                   label: '会话列表',
@@ -229,6 +229,64 @@ const SessionDetailLegacy = () => {
         >
           {renderPlan()}
         </Drawer>
+        <SessionListDrawer
+          visible={sessionListDrawerVisible}
+          onClose={() => setSessionListDrawerVisible(false)}
+          onSelectSession={record => {
+            navigateTo('/sessionDetailLegacy', {
+              chatSessionId: record.id,
+              userId: String(record.userId),
+              userName: String(record.userName || ''),
+              page: 1,
+              pageSize: 10,
+            });
+          }}
+          onOpenCreatePlan={() => {
+            setSessionListDrawerVisible(false);
+            setCustomerDetailDrawerVisible(true);
+          }}
+        />
+        {isMobile && (
+          <Drawer
+            title="志愿填报"
+            placement="right"
+            width="100%"
+            open={customerDetailDrawerVisible}
+            onClose={() => setCustomerDetailDrawerVisible(false)}
+            destroyOnClose
+            extra={
+              <div className={style.flowStepExtra}>
+                <span className={style.flowStepCount}>步骤 {flowStepIndicator.stepIndex + 1}/5</span>
+                <span className={style.flowStepTitle}>{flowStepIndicator.stepTitle}</span>
+              </div>
+            }
+            styles={{
+              body: { padding: 0, height: '100%', display: 'flex', flexDirection: 'column' },
+            }}
+          >
+            {tenantId && botId && (
+              <CustomerDetailFlow
+                tenantId={tenantId}
+                botId={botId}
+                embedded
+                onStepChange={(stepIndex, stepTitle) =>
+                  setFlowStepIndicator({ stepIndex, stepTitle })
+                }
+                onSuccess={params => {
+                  setCustomerDetailDrawerVisible(false);
+                  navigateTo('/sessionDetailLegacy', {
+                    chatSessionId: params.chatSessionId,
+                    userId: params.userId,
+                    userName: params.userName,
+                    page: 1,
+                    pageSize: 10,
+                  });
+                }}
+                onClose={() => setCustomerDetailDrawerVisible(false)}
+              />
+            )}
+          </Drawer>
+        )}
       </Spin>
     </div>
   );

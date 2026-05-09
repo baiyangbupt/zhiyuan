@@ -4,11 +4,14 @@ import { Button, Drawer, Spin, message } from 'antd';
 import {
   AuditOutlined,
   CompassOutlined,
+  MessageOutlined,
   OrderedListOutlined,
   QuestionCircleOutlined,
 } from '@ant-design/icons';
 import MessageList from '@/pageComponents/sessionDetailV2/MessageList';
 import WorkspacePanel from '@/pageComponents/sessionDetailV2/WorkspacePanel';
+import SessionListDrawer from '@/pageComponents/customer/SessionListDrawer';
+import CustomerDetailFlow from '@/pageComponents/customerDetail/CustomerDetailFlow';
 import { IDialogueResData, IUserInfoParams } from '@/interface/api/sessionDetail';
 import { PlanningWorkspaceIntent } from '@/interface/api/volunteer';
 import { getSessionDetailApi } from '@/service/apis/sessionDetail';
@@ -35,6 +38,12 @@ const SessionDetailV2 = () => {
     null
   );
   const [workspaceDrawerVisible, setWorkspaceDrawerVisible] = useState(false);
+  const [sessionListDrawerVisible, setSessionListDrawerVisible] = useState(false);
+  const [customerDetailDrawerVisible, setCustomerDetailDrawerVisible] = useState(false);
+  const [flowStepIndicator, setFlowStepIndicator] = useState({
+    stepIndex: 0,
+    stepTitle: '高考信息',
+  });
   const [workspaceIntent, setWorkspaceIntent] = useState<PlanningWorkspaceIntent | null>(null);
   const [fetchFlag, setFetchFlag] = useState(1);
 
@@ -128,6 +137,10 @@ const SessionDetailV2 = () => {
   };
 
   const handleOpenSessionList = () => {
+    if (isMobile) {
+      setSessionListDrawerVisible(true);
+      return;
+    }
     navigateTo('/session', {
       tenantId,
       botId,
@@ -149,38 +162,51 @@ const SessionDetailV2 = () => {
         setFetchFlag={setFetchFlag}
         doChatRights={doChatRights || undefined}
         onWorkspaceIntent={handleWorkspaceIntent}
-        quickReplyActions={[
-          {
-            label: '看看现在的方案',
-            icon: <OrderedListOutlined />,
-            onClick: isMobile
-              ? () => {
-                  setWorkspaceIntent({
-                    targetView: 'ordered',
-                    refresh: true,
-                    nonce: Date.now(),
-                  });
-                  setWorkspaceDrawerVisible(true);
-                }
-              : undefined,
-            messageText: isMobile ? undefined : '看看现在的方案',
-          },
-          {
-            label: '我适合什么方向',
-            icon: <CompassOutlined />,
-            messageText: '我适合什么方向',
-          },
-          {
-            label: '有哪些机会可看',
-            icon: <QuestionCircleOutlined />,
-            messageText: '有哪些机会可看',
-          },
-          {
-            label: '方案哪里要注意',
-            icon: <AuditOutlined />,
-            messageText: '方案哪里要注意',
-          },
-        ]}
+        alwaysShowQuickReplyActions={isMobile}
+        quickReplyActions={
+          isMobile
+            ? [
+                {
+                  label: '志愿方案',
+                  icon: <OrderedListOutlined />,
+                  onClick: () => {
+                    setWorkspaceIntent({
+                      targetView: 'ordered',
+                      refresh: true,
+                      nonce: Date.now(),
+                    });
+                    setWorkspaceDrawerVisible(true);
+                  },
+                },
+                {
+                  label: '会话列表',
+                  icon: <MessageOutlined />,
+                  onClick: handleOpenSessionList,
+                },
+              ]
+            : [
+                {
+                  label: '看看现在的方案',
+                  icon: <OrderedListOutlined />,
+                  messageText: '看看现在的方案',
+                },
+                {
+                  label: '我适合什么方向',
+                  icon: <CompassOutlined />,
+                  messageText: '我适合什么方向',
+                },
+                {
+                  label: '有哪些机会可看',
+                  icon: <QuestionCircleOutlined />,
+                  messageText: '有哪些机会可看',
+                },
+                {
+                  label: '方案哪里要注意',
+                  icon: <AuditOutlined />,
+                  messageText: '方案哪里要注意',
+                },
+              ]
+        }
       />
     </div>
   );
@@ -246,6 +272,55 @@ const SessionDetailV2 = () => {
         >
           {renderWorkspacePanel(true)}
         </Drawer>
+        <SessionListDrawer
+          visible={sessionListDrawerVisible}
+          onClose={() => setSessionListDrawerVisible(false)}
+          onOpenCreatePlan={() => {
+            setSessionListDrawerVisible(false);
+            setCustomerDetailDrawerVisible(true);
+          }}
+        />
+        {isMobile && (
+          <Drawer
+            title="志愿填报"
+            placement="right"
+            width="100%"
+            open={customerDetailDrawerVisible}
+            onClose={() => setCustomerDetailDrawerVisible(false)}
+            destroyOnClose
+            extra={
+              <div className={style.flowStepExtra}>
+                <span className={style.flowStepCount}>步骤 {flowStepIndicator.stepIndex + 1}/5</span>
+                <span className={style.flowStepTitle}>{flowStepIndicator.stepTitle}</span>
+              </div>
+            }
+            styles={{
+              body: { padding: 0, height: '100%', display: 'flex', flexDirection: 'column' },
+            }}
+          >
+            {tenantId && botId && (
+              <CustomerDetailFlow
+                tenantId={tenantId}
+                botId={botId}
+                embedded
+                onStepChange={(stepIndex, stepTitle) =>
+                  setFlowStepIndicator({ stepIndex, stepTitle })
+                }
+                onSuccess={params => {
+                  setCustomerDetailDrawerVisible(false);
+                  navigateTo('/sessionDetailV2', {
+                    chatSessionId: params.chatSessionId,
+                    userId: params.userId,
+                    userName: params.userName,
+                    page: 1,
+                    pageSize: 10,
+                  });
+                }}
+                onClose={() => setCustomerDetailDrawerVisible(false)}
+              />
+            )}
+          </Drawer>
+        )}
       </Spin>
     </div>
   );

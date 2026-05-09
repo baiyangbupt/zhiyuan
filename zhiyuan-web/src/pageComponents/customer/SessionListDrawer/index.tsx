@@ -99,6 +99,11 @@ const SessionListDrawer: React.FC<SessionListDrawerProps> = ({
 
   const handleSelect = (record: ISessionListResItem) => {
     setStorage([{ key: 'infoSummary', value: record.infoSummary }]);
+    if (onSelectSession) {
+      onSelectSession(record);
+      onClose();
+      return;
+    }
     navigateTo('/sessionDetailV2', {
       chatSessionId: record.id,
       userId: String(record.userId),
@@ -106,7 +111,6 @@ const SessionListDrawer: React.FC<SessionListDrawerProps> = ({
       page: 1,
       pageSize: 10,
     });
-    onSelectSession?.(record);
     onClose();
   };
 

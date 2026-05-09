@@ -50,6 +50,7 @@ interface IMessageListProps {
     reason?: string;
   };
   quickReplyActions?: IQuickReplyAction[];
+  alwaysShowQuickReplyActions?: boolean;
   onWorkspaceIntent?: (intent: Omit<PlanningWorkspaceIntent, 'nonce'>) => void;
 }
 export interface IMessageParams {
@@ -217,6 +218,7 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
     scrollEleIndex,
     setEntityCardList,
     quickReplyActions,
+    alwaysShowQuickReplyActions,
     onWorkspaceIntent,
     setScrollEleIndex,
     setFetchFlag,
@@ -1000,7 +1002,9 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
       !isStructuredIntentSelectEcho(record)
   );
   const shouldShowQuickReplies =
-    quickReplyList.length > 0 && !answerLoading && !hasUserStartedConversation;
+    quickReplyList.length > 0 &&
+    !answerLoading &&
+    (alwaysShowQuickReplyActions || !hasUserStartedConversation);
 
   return (
     <div className={style.messagePanel}>

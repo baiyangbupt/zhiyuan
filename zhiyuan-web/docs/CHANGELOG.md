@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- `/sessionDetailLegacy` 移动端快捷入口收敛为老版外壳中的 `志愿方案 / 会话列表`，历史会话中常驻展示；`会话列表` 改为抽屉并支持在抽屉内创建智能方案，避免跳转到旧列表页后新建报错。
+- `/sessionDetailV2` 移动端不再展示初始化提问式快捷回复，改为常驻 `志愿方案 / 会话列表` 两个导航型入口；`志愿方案` 由新工作区抽屉承载并定位到当前方案。
 - `/sessionDetailLegacy` 和 `/sessionDetailV2` 的移动端外壳向老版 `gaotu-mobile-v2.0.6` 对齐：默认保留对话主视图，通过快捷入口或对话联动以全屏抽屉打开旧版志愿表 / V2 工作台，避免移动端继续按 PC 双区 tab 平铺。
 - `sessionDetailV2` 工作台刷新改为调用轻量 `workspace-state`，不再通过完整 `/session/state` 拉取 20MB+ 规划状态；候选列表继续通过分页 `candidate-pool/query` 获取当前页，降低公网刷新等待和浏览器 JSON 解析成本。
 - `sessionDetailV2` 方案区刷新后会把 `workspace-state` 返回的当前方案候选明细写入本地候选缓存，避免山西大同大学、燕京理工学院等未命中候选分页缓存的方案项丢失录取率、推荐系数、专业热度和就业表现。
