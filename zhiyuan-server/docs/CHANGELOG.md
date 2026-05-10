@@ -13,6 +13,7 @@
 
 ### Added
 
+- 方案生成算法文档补充 2026-05-10 生产观察，明确 `probability_gap` 当前是 best-effort 修复而非硬约束，并记录 `2075/2076` 新建会话表现、`gradientOk` 与 review 语义不一致等遗留问题。
 - 新增生产运维 P0 脚本：`ops/healthcheck.sh` 聚合本地/远端 HTTP、Docker Compose、systemd、Nginx 和磁盘检查；`ops/migration-status.sh` 封装 legacy 懒迁移日志分析，作为 3.0.0 灰度发布后的快速观测入口。
 - 新增外部授权初始化会话接口：`POST /gaotu-assistant-bot/chat/{tenantId}/integration/session/initialize`，复用现有 `login/by-token -> tk/pf -> LoginInterceptor` 用户授权链路，在授权用户上下文中创建会话、生成候选池/初始方案/排序方案，并返回会话定位与方案获取能力；同步新增幂等表、设计文档和 controller/service 单测。
 - 外部授权初始化会话接口文档补齐完整请求示例、`BaseResponse` 响应示例、幂等命中示例、常见错误、后续查询方案和导出方案示例，便于外部系统直接对接。

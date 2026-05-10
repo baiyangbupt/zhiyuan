@@ -1493,6 +1493,36 @@ return selectionState
 
 这些字段表示的是“系统在初始推荐组建阶段实际做过什么修复，以及还有哪些规则没有彻底修平”。
 
+### 9.1.5.0.1 2026-05-10 生产观察与当前问题
+
+结合 3.0.0 上线过程中新建会话 `2075 / 2076` 的生产状态检查，当前算法的真实语义需要按下面口径理解：
+
+1. 初始推荐生成会主动尝试修复 `probability_gap`，但它不是硬性保证。
+2. 断层判断口径仍是旧规则：按最终方案集合的 `admissionRatio asc` 排序，相邻录取率差值 `> 8` 即命中 `probability_gap`。
+3. 修复时会从剩余候选中寻找落在断层区间内的候选，通过替换让整体 gap 指标变好。
+4. 替换动作必须同时满足 `tierDeviationAfter <= tierDeviationBefore`，也就是不能为了抹平断层明显破坏冲稳保配额。
+5. 若候选池里没有合适替换，系统会保留当前方案，同时在 `initialRecommendationState.summary` 中记录 `unresolvedGapCount`，并把 `probability_gap` 写入 `unresolvedRuleCodes`。
+
+本次生产观察结果：
+
+- 会话 `2075`：`major` 模式，排序区 `96` 个专业条目，冲/稳/保为 `28 / 28 / 40`，未发现相邻录取率差值 `> 8` 的断层；`initialRecommendationState.summary.unresolvedRuleCodes=[]`。
+- 会话 `2076`：`majorGroup` 模式，排序区 `30` 个专业组、`64` 个专业条目，冲/稳/保为 `9 / 9 / 12`；初始生成已执行 `gapFixCount=3`，但仍剩余 `unresolvedGapCount=2`，`unresolvedRuleCodes=['probability_gap']`。
+- 会话 `2076` 中仍存在两个断层：`10.0 -> 26.0`，差值 `16.0`；`38.0 -> 52.0`，差值 `14.0`。因此线上看到相邻志愿录取率差值超过 `8`，在当前实现下属于“已尽力修复但仍未完全解决”的状态，不代表新建会话又走回了老方案导入逻辑。
+
+当前存在的问题：
+
+- 产品理解上容易把 `probability_gap` 理解成硬约束，但当前实现是 best-effort 修复。只要候选池和冲稳保配额共同限制导致无法替换，系统仍会返回可用方案。
+- `orderedPlanState.summary.gradientOk` 的语义偏窄，目前更接近“顺序/倒挂检查结果”，没有完整覆盖 `probability_gap`。因此可能出现 `gradientOk=true`，但 `reviewState.checks.probability_gap.passed=false` 的不一致展示。
+- `majorGroup` 模式下 review 详情当前更偏向展示首个断层样例，summary 才记录剩余断层数量；如果前端只展示简短审查文案，用户会低估断层范围。
+- 如果前端只读取排序区 summary，不展示 `initialRecommendationState.summary.unresolvedRuleCodes` 或 `reviewState.checks.probability_gap`，就会让用户误以为方案梯度已经完全通过。
+
+后续建议按优先级处理：
+
+1. 重新定义 `gradientOk`：要么纳入 `probability_gap`，要么改名为更准确的 `sequenceOk`，避免与审查结论冲突。
+2. 前端方案页应优先展示 `reviewState.checks.probability_gap` 的结果；当 `unresolvedGapCount > 0` 时，用用户能理解的文案提示“部分相邻志愿录取率跨度较大，建议人工确认或继续调整”。
+3. 如果产品要求“初始方案必须无 `> 8` 断层”，生成阶段需要升级为硬约束：扩大候选替换窗口、允许跨 tier 小幅借位、或在无法满足时返回“需要人工确认”的结构化状态，而不是静默返回。
+4. 增加 `2076` 类似的 `majorGroup` 回归样本，覆盖“已执行 gap 修复但仍有 unresolved gap”的场景，防止后续把 best-effort 状态误判为通过。
+
 #### A. `count_validation`
 
 目标：
