@@ -649,17 +649,25 @@ docker save zhiyuan-agent:${RELEASE} -o "${STAGING}/zhiyuan-agent-${RELEASE}.tar
 
 由于前期 `3.0.0` 试运行包已经暴露过后端 legacy 懒迁移污染新会话、前端 WebSocket 地址被构建为 `localhost` 等问题，最终生产可用包必须重新基于最终 commit 产出，不能复用早期 `/tmp/zhiyuan-release-upload` 下的问题包。
 
+最终发布统一标签使用：
+
+```text
+prod-3.0.0
+```
+
+该标签同时用于 Git tag、Docker 镜像 tag、release 目录和 release 包名，避免继续混用早期 `3.0.0-amd64`、`3.0.0-amd64-wsfix`、`*-final` 等临时标识。
+
 最终包命名建议：
 
 ```text
-zhiyuan-release-3.0.0-<commit>-final.tar.gz
+zhiyuan-release-prod-3.0.0-<commit>.tar.gz
 ```
 
 最终包至少包含：
 
 - `server/zhiyuan-server.jar`
-- `images/zhiyuan-web-3.0.0-amd64-final.tar`
-- `images/zhiyuan-agent-3.0.0-amd64-final.tar`
+- `images/zhiyuan-web-prod-3.0.0.tar`
+- `images/zhiyuan-agent-prod-3.0.0.tar`
 - `ops/healthcheck.sh`
 - `ops/migration-status.sh`
 - `docs/production-upgrade-implementation-steps.md`
@@ -678,16 +686,16 @@ zhiyuan-release-3.0.0-<commit>-final.tar.gz
 最终包构建后必须做三类静态检查：
 
 ```bash
-tar -tzf zhiyuan-release-3.0.0-<commit>-final.tar.gz
-tar -xOf zhiyuan-release-3.0.0-<commit>-final.tar.gz zhiyuan-release-3.0.0-<commit>-final/COMMIT
-tar -xOf zhiyuan-release-3.0.0-<commit>-final.tar.gz zhiyuan-release-3.0.0-<commit>-final/MANIFEST.txt
+tar -tzf zhiyuan-release-prod-3.0.0-<commit>.tar.gz
+tar -xOf zhiyuan-release-prod-3.0.0-<commit>.tar.gz zhiyuan-release-prod-3.0.0-<commit>/COMMIT
+tar -xOf zhiyuan-release-prod-3.0.0-<commit>.tar.gz zhiyuan-release-prod-3.0.0-<commit>/MANIFEST.txt
 ```
 
 前端镜像还必须检查生产 WebSocket 地址：
 
 ```bash
-docker load -i images/zhiyuan-web-3.0.0-amd64-final.tar
-docker run --rm --entrypoint sh zhiyuan-web:3.0.0-amd64-final \
+docker load -i images/zhiyuan-web-prod-3.0.0.tar
+docker run --rm --entrypoint sh zhiyuan-web:prod-3.0.0 \
   -c "grep -R 'ws://localhost:8000' -n /app/.next >/tmp/wscheck || true; test ! -s /tmp/wscheck"
 ```
 
