@@ -2430,16 +2430,6 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const reviewTotalRuleCount = reviewSummary?.totalRuleCount ?? reviewSummary?.total ?? 0;
   const reviewRiskRuleCount = reviewSummary?.riskRuleCount ?? reviewSummary?.riskCount ?? 0;
   const reviewWarnRuleCount = reviewSummary?.warnRuleCount ?? reviewSummary?.warnCount ?? 0;
-  const candidateOverviewLabel =
-    workflowStatus?.candidateStatus === 'empty'
-      ? '无候选'
-      : workflowStatus?.candidateStatus === 'low_count'
-        ? '候选不足'
-        : workflowStatus?.candidateStatus === 'failed'
-          ? '生成失败'
-          : workflowStatus?.candidateStatus === 'ready'
-            ? '已生成'
-            : '未生成';
   const reviewOverviewLabel =
     workflowStatus?.reviewStatus === 'has_risk'
       ? '有风险，请查看方案'
@@ -2616,7 +2606,10 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
           <div className={style.metricCard}>
             <div className={style.metricValue}>{candidateUnitTotal}</div>
             <div className={style.metricLabel}>候选</div>
-            <div className={style.metricMeta}>{candidateOverviewLabel}</div>
+            <div className={style.metricMeta}>
+              冲{candidateUnitTierCounts?.['冲'] || 0} / 稳{candidateUnitTierCounts?.['稳'] || 0} / 保
+              {candidateUnitTierCounts?.['保'] || 0}
+            </div>
           </div>
           <div className={`${style.metricCard} ${style.metricCardAccent}`}>
             <div className={style.metricValue}>
