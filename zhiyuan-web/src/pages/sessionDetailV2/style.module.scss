@@ -94,6 +94,14 @@
   gap: 8px;
 }
 
+.sessionListButton {
+  min-width: 132px;
+  height: 36px;
+  border-radius: 18px;
+  font-weight: 700;
+  box-shadow: 0 8px 18px rgba(255, 84, 55, 0.18);
+}
+
 .flowStepExtra {
   display: flex;
   flex-direction: column;
@@ -177,6 +185,11 @@
 
   .summary {
     white-space: normal;
+  }
+
+  .sessionListButton {
+    min-width: 100px;
+    height: 34px;
   }
 
   .chatPanel,

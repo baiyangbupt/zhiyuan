@@ -3,6 +3,7 @@ import Head from 'next/head';
 import { Button, Drawer, Spin, message } from 'antd';
 import {
   AuditOutlined,
+  ArrowLeftOutlined,
   CompassOutlined,
   MessageOutlined,
   OrderedListOutlined,
@@ -248,7 +249,14 @@ const SessionDetailV2 = () => {
             </div>
           </div>
           <div className={style.headerActions}>
-            <Button onClick={handleOpenSessionList}>会话列表</Button>
+            <Button
+              className={style.sessionListButton}
+              type="primary"
+              icon={<ArrowLeftOutlined />}
+              onClick={handleOpenSessionList}
+            >
+              {isMobile ? '会话列表' : '返回会话列表'}
+            </Button>
           </div>
         </header>
 
