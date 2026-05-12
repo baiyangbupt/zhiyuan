@@ -49,9 +49,42 @@ public class PlanningExcelExportBuilderTest {
         assertEquals("080902", first.getMajorList().get(1).getMajorCode());
 
         ExcelUtil.VolunteerExcelData second = exportData.getMainList().get(1);
-        assertEquals(Integer.valueOf(3), second.getIndex());
+        assertEquals(Integer.valueOf(2), second.getIndex());
         assertEquals("1002", second.getSchoolCode());
         assertEquals(1, second.getMajorList().size());
+    }
+
+    @Test
+    void shouldRenumberMajorGroupExportRowsContinuously() {
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.getCandidatePoolState().setVolunteerModel("majorGroup");
+        CandidateItemDTO candidateA = buildCandidate("g1m1", "s1", "2001", "专业组A", "专业A1", "080901", 10, 8000, "4年", 61d);
+        CandidateItemDTO candidateB = buildCandidate("g2m1", "s2", "2002", "专业组B", "专业B1", "080701", 6, 7600, "4年", 79d);
+        state.getCandidatePoolState().setItems(Arrays.asList(candidateA, candidateB));
+
+        OrderedUnitDTO firstUnit = new OrderedUnitDTO();
+        firstUnit.setPosition(1);
+        firstUnit.setUnitId("ps1");
+        firstUnit.setTier("冲");
+        firstUnit.setSchoolName("专业组A");
+        firstUnit.setMajorItems(Arrays.asList(buildUnitMajor("g1m1", "080901", "专业A1")));
+
+        OrderedUnitDTO secondUnit = new OrderedUnitDTO();
+        secondUnit.setPosition(3);
+        secondUnit.setUnitId("ps2");
+        secondUnit.setTier("稳");
+        secondUnit.setSchoolName("专业组B");
+        secondUnit.setMajorItems(Arrays.asList(buildUnitMajor("g2m1", "080701", "专业B1")));
+        state.getOrderedPlanState().setUnits(Arrays.asList(firstUnit, secondUnit));
+        state.getOrderedPlanState().setItems(Arrays.asList(
+                buildOrderedItem(1, "g1m1", "冲", "专业组A", "专业A1"),
+                buildOrderedItem(3, "g2m1", "稳", "专业组B", "专业B1")
+        ));
+
+        PlanningExcelExportBuilder.PlanningExportData exportData = builder.build(state, new CreateSessionReq());
+
+        assertEquals(Integer.valueOf(1), exportData.getMainList().get(0).getIndex());
+        assertEquals(Integer.valueOf(2), exportData.getMainList().get(1).getIndex());
     }
 
     @Test

@@ -15,6 +15,7 @@ import {
   ShrinkOutlined,
   ExclamationCircleOutlined,
   DownloadOutlined,
+  SafetyCertificateOutlined,
 } from '@ant-design/icons';
 import {
   exportPlanningOrderedPlanApi,
@@ -27,6 +28,7 @@ import {
   pinPlanningOrderedItemApi,
   queryPlanningCandidatePoolApi,
   removePlanningDraftItemsApi,
+  runPlanningReviewApi,
   selectPlanningDraftItemsApi,
   unpinPlanningOrderedItemApi,
   updatePlanningCandidateViewStateApi,
@@ -202,11 +204,7 @@ const TIER_OPTIONS = [
 const SORT_FIELD_OPTIONS = [
   { label: '推荐系数', value: 'finalScore' },
   { label: '录取率', value: 'admissionRatio' },
-  { label: '区间位次', value: 'rankInTier' },
-  { label: '院校排名', value: 'schoolRank' },
-  { label: '专业热度', value: 'hotIndex' },
-  { label: '就业表现', value: 'salaryAvg' },
-  { label: '学费', value: 'tuitionPerYear' },
+  { label: '院校层次', value: 'schoolRank' },
 ];
 
 const REVIEW_LEVEL_COLOR: Record<string, string> = {
@@ -482,6 +480,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const draftSummary = planningState?.draftPlanState?.summary;
   const orderedSummary = planningState?.orderedPlanState?.summary;
   const reviewSummary = planningState?.reviewState?.summary;
+  const workflowStatus = planningState?.workflowStatus;
+  const candidateRiskHints = planningState?.candidatePoolState?.riskHints || [];
   const isLegacySubmittedPlan = planningState?.orderedPlanState?.generationMode === 'legacy_submitted';
   const draftIdSet = useMemo(
     () => new Set(draftItems.map(item => item.volunteerId).filter(Boolean)),
@@ -1394,7 +1394,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       return;
     }
     if (draftItem?.locked) {
-      message.warning('草稿已锁定，请先解除锁定再删除');
+      message.warning('方案项已锁定，请先解除锁定再删除');
       return;
     }
     setActionLoading('draft');
@@ -1405,7 +1405,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         [volunteerId]
       );
       if (code === 0) {
-        message.success('已移出草稿');
+        message.success('已移出方案');
         if (data) {
           applyPlanningState(data);
         } else {
@@ -1413,10 +1413,10 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         }
         queryCandidatePool(candidatePoolResult.page || 1);
       } else {
-        message.error('移出草稿失败');
+        message.error('移出方案失败');
       }
     } catch (error) {
-      message.error('移出草稿异常，请稍后重试');
+      message.error('移出方案异常，请稍后重试');
     }
     setActionLoading(null);
   };
@@ -1470,17 +1470,17 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         !item.locked
       );
       if (code === 0) {
-        message.success(item.locked ? '已解除锁定' : '已锁定草稿');
+        message.success(item.locked ? '已解除锁定' : '已锁定方案项');
         if (data) {
           applyPlanningState(data);
         } else {
           await fetchWorkspaceState();
         }
       } else {
-        message.error('更新草稿锁定状态失败');
+        message.error('更新方案项锁定状态失败');
       }
     } catch (error) {
-      message.error('更新草稿锁定状态异常，请稍后重试');
+      message.error('更新方案项锁定状态异常，请稍后重试');
     }
     setActionLoading(null);
   };
@@ -1596,12 +1596,32 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       link.click();
       document.body.removeChild(link);
       window.URL.revokeObjectURL(downloadUrl);
+      fetchWorkspaceState();
     } catch (error) {
       message.error('导出方案失败，请稍后重试');
       console.error('导出方案失败:', error);
     } finally {
       setExportLoading(false);
     }
+  };
+
+  const handleRunReview = async () => {
+    if (!routerParams?.tenantId || !routerParams?.chatSessionId || actionLoading || !orderedItems.length) {
+      return;
+    }
+    setActionLoading('review');
+    try {
+      const { code } = await runPlanningReviewApi(routerParams.tenantId, routerParams.chatSessionId);
+      if (code === 0) {
+        message.success('审查完成');
+        await fetchWorkspaceState();
+      } else {
+        message.error('审查失败');
+      }
+    } catch (error) {
+      message.error('审查异常，请稍后重试');
+    }
+    setActionLoading(null);
   };
 
   useEffect(() => {
@@ -1682,7 +1702,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     const candidatePoolReady = Boolean(
       planningState?.candidatePoolState?.summary?.unitTotal ||
         planningState?.candidatePoolState?.summary?.total ||
-        candidatePoolResult.items.length
+        (candidatePoolResult.items || []).length
     );
     if (!candidatePoolReady || hasLoadedFilterOptions) {
       return;
@@ -1693,7 +1713,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     routerParams.chatSessionId,
     planningState?.candidatePoolState?.summary?.unitTotal,
     planningState?.candidatePoolState?.summary?.total,
-    candidatePoolResult.items.length,
+    candidatePoolResult.items?.length,
     hasLoadedFilterOptions,
   ]);
 
@@ -2323,14 +2343,14 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
 
   const candidatePoolUnitFallbackTotal = useMemo(() => {
     if (!isMajorGroupMode) {
-      return cachedCandidateItems.length || candidatePoolResult.items.length || 0;
+      return cachedCandidateItems.length || (candidatePoolResult.items || []).length || 0;
     }
     return new Set(
       cachedCandidateItems.map(item =>
         item.planSchoolDataId || item.schoolId || item.schoolName || item.volunteerId || ''
       )
     ).size;
-  }, [cachedCandidateItems, candidatePoolResult.items.length, isMajorGroupMode]);
+  }, [cachedCandidateItems, candidatePoolResult.items?.length, isMajorGroupMode]);
 
   const candidateUnitTierFallbackCounts = useMemo(() => {
     if (!isMajorGroupMode) {
@@ -2355,14 +2375,52 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     };
   }, [cachedCandidateItems, isMajorGroupMode, summary?.tierCounts]);
 
-  const candidateUnitTotal = summary?.unitTotal ?? candidatePoolUnitFallbackTotal ?? 0;
-  const candidateUnitTierCounts = summary?.unitTierCounts ?? candidateUnitTierFallbackCounts;
+  const firstPositiveNumber = (...values: Array<number | undefined | null>) => {
+    const matched = values.find(value => typeof value === 'number' && value > 0);
+    return matched || 0;
+  };
+  const candidateUnitTotal = firstPositiveNumber(
+    isMajorGroupMode ? summary?.unitTotal : summary?.total,
+    summary?.unitTotal,
+    candidatePoolResult.totalUnitCount,
+    candidatePoolResult.total,
+    candidatePoolUnitFallbackTotal
+  );
+  const candidateUnitTierCounts =
+    Object.values(summary?.unitTierCounts || {}).some(value => value > 0)
+      ? summary?.unitTierCounts
+      : Object.values(summary?.tierCounts || {}).some(value => value > 0)
+        ? summary?.tierCounts
+        : candidateUnitTierFallbackCounts;
   const candidateGroupedDisplayTotal = isMajorGroupMode ? groupedCandidateList.length : candidatePoolResult.total || 0;
-  const orderedDisplayTotal = orderedSummary?.unitTotal ?? orderedSummary?.total ?? 0;
-  const orderedTargetTotal = orderedSummary?.targetUnitCount ?? orderedSummary?.targetCount ?? 0;
-  const orderedTierSequenceOk = orderedSummary?.sequenceOk ?? orderedSummary?.gradientOk ?? false;
-  const draftDisplayTotal = draftSummary?.unitTotal ?? draftSummary?.total ?? draftItems.length;
+  const orderedDisplayTotal = firstPositiveNumber(
+    isMajorGroupMode ? orderedSummary?.unitTotal : orderedSummary?.total,
+    orderedSummary?.unitTotal,
+    orderedSummary?.total,
+    isMajorGroupMode ? groupedOrderedList.length : orderedItems.length
+  );
+  const orderedTargetTotal = firstPositiveNumber(orderedSummary?.targetUnitCount, orderedSummary?.targetCount);
+  const draftDisplayTotal = firstPositiveNumber(
+    isMajorGroupMode ? draftSummary?.unitTotal : draftSummary?.total,
+    draftSummary?.unitTotal,
+    draftSummary?.total,
+    isMajorGroupMode ? groupedDraftList.length : draftItems.length
+  );
   const draftTierCounts = draftSummary?.unitTierCounts ?? draftSummary?.tierCounts ?? {};
+  const planDisplayTotal = orderedDisplayTotal || draftDisplayTotal;
+  const planTargetTotal =
+    orderedTargetTotal ||
+    draftSummary?.targetUnitCount ||
+    draftSummary?.targetCount ||
+    planningState?.candidatePoolState?.requiredUnitCount ||
+    planningState?.candidatePoolState?.requiredCount ||
+    0;
+  const planTierCounts =
+    Object.values(orderedSummary?.unitTierCounts || {}).some(value => value > 0)
+      ? orderedSummary?.unitTierCounts
+      : Object.values(orderedSummary?.tierCounts || {}).some(value => value > 0)
+        ? orderedSummary?.tierCounts
+        : draftTierCounts;
   const candidateFilteredUnitTotal = candidatePoolResult.totalUnitCount ?? candidateGroupedDisplayTotal ?? 0;
   const candidateLoadedDisplayTotal = isMajorGroupMode
     ? groupedCandidateList.length
@@ -2372,6 +2430,42 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const reviewTotalRuleCount = reviewSummary?.totalRuleCount ?? reviewSummary?.total ?? 0;
   const reviewRiskRuleCount = reviewSummary?.riskRuleCount ?? reviewSummary?.riskCount ?? 0;
   const reviewWarnRuleCount = reviewSummary?.warnRuleCount ?? reviewSummary?.warnCount ?? 0;
+  const candidateOverviewLabel =
+    workflowStatus?.candidateStatus === 'empty'
+      ? '无候选'
+      : workflowStatus?.candidateStatus === 'low_count'
+        ? '候选不足'
+        : workflowStatus?.candidateStatus === 'failed'
+          ? '生成失败'
+          : workflowStatus?.candidateStatus === 'ready'
+            ? '已生成'
+            : '未生成';
+  const reviewOverviewLabel =
+    workflowStatus?.reviewStatus === 'has_risk'
+      ? '有风险，请查看方案'
+      : workflowStatus?.reviewStatus === 'has_warning'
+        ? '有提醒，请查看方案'
+        : workflowStatus?.reviewStatus === 'stale'
+          ? '待重新审查'
+          : workflowStatus?.reviewStatus === 'passed'
+            ? '通过'
+            : workflowStatus?.reviewStatus === 'failed'
+              ? '失败'
+              : '未审查';
+  const candidateDetailMessages = [
+    planningState?.candidatePoolState?.statusMessage,
+    ...candidateRiskHints,
+  ].filter(Boolean);
+  const candidateLowCountTooltip =
+    workflowStatus?.candidateStatus === 'low_count' && candidateDetailMessages.length
+      ? candidateDetailMessages.join('；')
+      : '';
+  const candidateEmptyDescription =
+    workflowStatus?.candidateStatus === 'empty'
+      ? candidateDetailMessages.join('；') || '当前条件下没有可用志愿候选'
+      : activeFilterChips.length > 0 && candidateFilteredUnitTotal === 0
+        ? '当前筛选结果为空'
+      : '暂无候选志愿';
 
   const getOrderedItemStatusLabel = (item: PlanningOrderedItem) => {
     if (item.pinned) {
@@ -2522,26 +2616,16 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
           <div className={style.metricCard}>
             <div className={style.metricValue}>{candidateUnitTotal}</div>
             <div className={style.metricLabel}>候选</div>
-            <div className={style.metricMeta}>
-              冲{candidateUnitTierCounts?.['冲'] || 0} / 稳{candidateUnitTierCounts?.['稳'] || 0} / 保
-              {candidateUnitTierCounts?.['保'] || 0}
-            </div>
+            <div className={style.metricMeta}>{candidateOverviewLabel}</div>
           </div>
           <div className={`${style.metricCard} ${style.metricCardAccent}`}>
-            <div className={style.metricValue}>{draftDisplayTotal}</div>
-            <div className={style.metricLabel}>草稿</div>
-            <div className={style.metricMeta}>
-              冲{draftTierCounts?.['冲'] || 0} / 稳{draftTierCounts?.['稳'] || 0} / 保
-              {draftTierCounts?.['保'] || 0}
-            </div>
-          </div>
-          <div className={style.metricCard}>
             <div className={style.metricValue}>
-              {orderedTargetTotal ? `${orderedDisplayTotal}/${orderedTargetTotal}` : orderedDisplayTotal}
+              {planTargetTotal ? `${planDisplayTotal}/${planTargetTotal}` : planDisplayTotal}
             </div>
             <div className={style.metricLabel}>方案</div>
             <div className={style.metricMeta}>
-              {orderedTierSequenceOk ? '区间顺序正常' : '待调整'}
+              冲{planTierCounts?.['冲'] || 0} / 稳{planTierCounts?.['稳'] || 0} / 保
+              {planTierCounts?.['保'] || 0}
             </div>
           </div>
           <div className={style.metricCard}>
@@ -2549,9 +2633,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
               {reviewSummary ? `${reviewPassedRuleCount}/${reviewTotalRuleCount}` : '0/0'}
             </div>
             <div className={style.metricLabel}>审查</div>
-            <div className={style.metricMeta}>
-              风险 {reviewRiskRuleCount} / 提醒 {reviewWarnRuleCount}
-            </div>
+            <div className={style.metricMeta}>{reviewOverviewLabel}</div>
           </div>
         </div>
 
@@ -2578,11 +2660,6 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
               候选
             </button>
           </div>
-          {activeView === 'candidate' ? (
-            <div className={style.stageToolbarPlaceholder} />
-          ) : (
-            <div className={style.stageToolbarPlaceholder} />
-          )}
         </div>
       </div>
 
@@ -2714,6 +2791,11 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                     </span>
                     {!isMajorGroupMode ? <span>{`已加载条目 ${candidateLoadedEntryTotal}`}</span> : null}
                     {getCandidateTargetHint() ? <span>{getCandidateTargetHint()}</span> : null}
+                    {candidateLowCountTooltip ? (
+                      <Tooltip title={candidateLowCountTooltip}>
+                        <Tag color="warning">候选不足</Tag>
+                      </Tooltip>
+                    ) : null}
                   </div>
                   {groupedCandidateList.length > 0 ? (
                     groupedCandidateList.map((group, groupIndex) => (
@@ -3013,7 +3095,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                       </div>
                     ))
                   ) : (
-                    <Empty description="暂无候选志愿" />
+                    <Empty description={candidateEmptyDescription} />
                   )}
                   {(candidatePoolResult.page || 1) < candidateTotalPages ? (
                     <div className={style.candidatePaginationHint}>
@@ -3048,6 +3130,17 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                         </Tooltip>
                       ) : null}
                       <Button
+                        className={style.reviewActionButton}
+                        size="small"
+                        icon={<SafetyCertificateOutlined />}
+                        loading={actionLoading === 'review'}
+                        onClick={handleRunReview}
+                        disabled={!orderedItems.length}
+                      >
+                        审查
+                      </Button>
+                      <Button
+                        className={style.reviewActionButton}
                         size="small"
                         icon={<DownloadOutlined />}
                         loading={exportLoading}
@@ -3319,12 +3412,12 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
             type="button"
             onClick={() => setDraftExpanded(prev => !prev)}
           >
-            草稿 {draftDisplayTotal}
+            方案 {planDisplayTotal}
           </button>
           {draftExpanded && (
             <div className={style.draftPanel}>
               <div className={style.draftHeader}>
-                <span>已选草稿</span>
+                <span>当前方案</span>
                 <div className={style.draftHeaderActions}>
                   <Button
                     type="text"
@@ -3447,7 +3540,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                     ))
                   )
                 ) : (
-                  <Empty description="草稿为空" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+                  <Empty description="方案为空" image={Empty.PRESENTED_IMAGE_SIMPLE} />
                 )}
               </div>
             </div>

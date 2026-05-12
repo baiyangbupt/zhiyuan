@@ -32,6 +32,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.UUID;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -176,6 +177,8 @@ public class PlanningStateService {
         res.setReviewState(state.getReviewState());
         res.setPendingActions(state.getPendingActions());
         res.setOperationLogs(state.getOperationLogs());
+        res.setWorkflowStatus(buildWorkflowStatus(state));
+        res.setBehaviorEvents(defaultBehaviorEvents(state.getBehaviorEvents()));
         return res;
     }
 
@@ -187,6 +190,9 @@ public class PlanningStateService {
         }
         target.setGeneratedAt(source.getGeneratedAt());
         target.setSourceVersion(source.getSourceVersion());
+        target.setStatusCode(source.getStatusCode());
+        target.setStatusMessage(source.getStatusMessage());
+        target.setRiskHints(source.getRiskHints());
         target.setRequiredCount(source.getRequiredCount());
         target.setRequiredTierCounts(source.getRequiredTierCounts());
         target.setRequiredUnitCount(source.getRequiredUnitCount());
@@ -203,6 +209,138 @@ public class PlanningStateService {
                     .collect(Collectors.toList()));
         }
         return target;
+    }
+
+    private PlanningWorkflowStatusDTO buildWorkflowStatus(PlanningStateDTO state) {
+        PlanningWorkflowStatusDTO status = new PlanningWorkflowStatusDTO();
+        CandidatePoolStateDTO candidatePoolState = state == null ? null : state.getCandidatePoolState();
+        String candidateStatus = candidatePoolState == null ? null : candidatePoolState.getStatusCode();
+        if (Strings.isNullOrEmpty(candidateStatus) || "not_generated".equals(candidateStatus)) {
+            boolean hasGeneratedAt = candidatePoolState != null && !Strings.isNullOrEmpty(candidatePoolState.getGeneratedAt());
+            boolean hasSummary = candidatePoolState != null && candidatePoolState.getSummary() != null
+                    && valueOrZero(candidatePoolState.getSummary().getTotal()) > 0;
+            candidateStatus = hasGeneratedAt || hasSummary ? resolveCandidatePoolStatus(candidatePoolState) : "not_generated";
+        }
+        applyCandidateWorkflowStatus(status, candidateStatus, candidatePoolState);
+        applyPlanWorkflowStatus(status, state);
+        applyReviewWorkflowStatus(status, state);
+        applyExportWorkflowStatus(status, state);
+        return status;
+    }
+
+    private void applyCandidateWorkflowStatus(PlanningWorkflowStatusDTO status,
+                                              String candidateStatus,
+                                              CandidatePoolStateDTO candidatePoolState) {
+        status.setCandidateStatus(candidateStatus);
+        if ("empty".equals(candidateStatus)) {
+            status.setCandidateMessage("当前条件下没有可用志愿候选，请检查专项资格、批次、分数线或筛选条件");
+        } else if ("low_count".equals(candidateStatus)) {
+            status.setCandidateMessage("当前条件下可用候选偏少，方案选择空间有限");
+        } else if ("failed".equals(candidateStatus)) {
+            status.setCandidateMessage("候选生成失败，请稍后重试");
+        } else if ("ready".equals(candidateStatus)) {
+            status.setCandidateMessage("候选池已生成");
+        } else {
+            status.setCandidateStatus("not_generated");
+            status.setCandidateMessage("候选池尚未生成");
+        }
+        if (candidatePoolState != null && !Strings.isNullOrEmpty(candidatePoolState.getStatusMessage())
+                && !"not_generated".equals(candidatePoolState.getStatusCode())) {
+            status.setCandidateMessage(candidatePoolState.getStatusMessage());
+        }
+    }
+
+    private void applyPlanWorkflowStatus(PlanningWorkflowStatusDTO status, PlanningStateDTO state) {
+        DraftPlanStateDTO draft = state == null ? null : state.getDraftPlanState();
+        OrderedPlanStateDTO ordered = state == null ? null : state.getOrderedPlanState();
+        boolean hasDraft = draft != null && draft.getItems() != null && !draft.getItems().isEmpty();
+        boolean hasOrdered = ordered != null && ordered.getItems() != null && !ordered.getItems().isEmpty();
+        if (ordered != null && "legacy_submitted".equalsIgnoreCase(ordered.getGenerationMode())) {
+            status.setPlanStatus("legacy_readonly");
+            status.setPlanMessage("历史已确认方案，建议只读查看");
+            status.setLegacySubmitted(true);
+            status.setLegacyMessage("历史已确认方案，建议只读查看");
+            return;
+        }
+        if (!hasDraft && !hasOrdered) {
+            status.setPlanStatus("empty");
+            status.setPlanMessage("当前方案为空");
+            return;
+        }
+        if (state != null && state.getStaleFlags() != null && Boolean.TRUE.equals(state.getStaleFlags().getOrderedPlan())) {
+            status.setPlanStatus("dirty");
+            status.setPlanMessage("方案有待更新调整");
+            return;
+        }
+        if (!hasOrdered) {
+            status.setPlanStatus("selected");
+            status.setPlanMessage("已加入方案，待生成顺序");
+            return;
+        }
+        if (state != null && state.getStaleFlags() != null && Boolean.TRUE.equals(state.getStaleFlags().getReview())) {
+            status.setPlanStatus("pending_review");
+            status.setPlanMessage("方案已生成，待审查");
+            return;
+        }
+        ReviewStateDTO review = state == null ? null : state.getReviewState();
+        if (review == null || Strings.isNullOrEmpty(review.getReviewedAt())) {
+            status.setPlanStatus("pending_review");
+            status.setPlanMessage("方案已生成，待审查");
+            return;
+        }
+        status.setPlanStatus("ready");
+        status.setPlanMessage("方案已生成");
+    }
+
+    private void applyReviewWorkflowStatus(PlanningWorkflowStatusDTO status, PlanningStateDTO state) {
+        ReviewStateDTO review = state == null ? null : state.getReviewState();
+        if (state != null && state.getStaleFlags() != null && Boolean.TRUE.equals(state.getStaleFlags().getReview())
+                && review != null && !Strings.isNullOrEmpty(review.getReviewedAt())) {
+            status.setReviewStatus("stale");
+            status.setReviewMessage("方案已调整，建议重新审查");
+            return;
+        }
+        if (review == null || Strings.isNullOrEmpty(review.getReviewedAt())) {
+            status.setReviewStatus("not_reviewed");
+            status.setReviewMessage("方案尚未审查");
+            return;
+        }
+        if ("failed".equalsIgnoreCase(review.getStatus())) {
+            status.setReviewStatus("failed");
+            status.setReviewMessage("审查暂未完成，请稍后重试");
+            return;
+        }
+        int riskCount = review.getSummary() == null ? 0 : valueOrZero(review.getSummary().getRiskCount());
+        int warnCount = review.getSummary() == null ? 0 : valueOrZero(review.getSummary().getWarnCount());
+        if (riskCount > 0) {
+            status.setReviewStatus("has_risk");
+            status.setReviewMessage("审查发现风险，需要查看");
+        } else if (warnCount > 0) {
+            status.setReviewStatus("has_warning");
+            status.setReviewMessage("审查有提醒，建议查看");
+        } else {
+            status.setReviewStatus("passed");
+            status.setReviewMessage("审查通过，暂无明显风险");
+        }
+    }
+
+    private void applyExportWorkflowStatus(PlanningWorkflowStatusDTO status, PlanningStateDTO state) {
+        PlanningBehaviorEventDTO latestExport = findLatestBehaviorEvent(state == null ? null : state.getBehaviorEvents(), "plan_export");
+        if (latestExport == null) {
+            status.setExportStatus("not_exported");
+            status.setExportMessage("方案尚未导出");
+            return;
+        }
+        status.setLastExportedAt(latestExport.getCreatedAt());
+        Integer exportVersion = latestExport.getPlanVersion();
+        Integer currentVersion = state == null ? null : state.getVersion();
+        if (exportVersion != null && currentVersion != null && exportVersion < currentVersion) {
+            status.setExportStatus("stale");
+            status.setExportMessage("方案已调整，建议重新导出");
+        } else {
+            status.setExportStatus("exported");
+            status.setExportMessage("方案已导出");
+        }
     }
 
     private Set<String> collectWorkspaceCandidateVolunteerIds(PlanningStateDTO state) {
@@ -363,6 +501,8 @@ public class PlanningStateService {
                 exportData.getMainList(),
                 Lists.<ExcelUtil.VolunteerExcelData>newArrayList(),
                 exportData.isMajorGroupMode());
+        appendBehaviorEvent(state, tenantId, chatSessionId, "plan_export", collectOrderedVolunteerIds(state), true);
+        savePlanningState(chatSessionId, state);
         return new ExcelExportResult(excelBytes, generateExcelFileName(userScoreDetail));
     }
 
@@ -547,6 +687,7 @@ public class PlanningStateService {
         candidatePoolState.setItems(items);
         recalculateCandidatePoolSummary(candidatePoolState);
         normalizeRequiredTierCountsByAvailableCapacity(candidatePoolState);
+        applyCandidatePoolQualityStatus(state, candidatePoolState);
 
         state.setCandidatePoolState(candidatePoolState);
         state.setRecommendationOverlayState(buildRecommendationOverlayState(response, state.getVersion()));
@@ -561,6 +702,92 @@ public class PlanningStateService {
         savePlanningState(chatSessionId, state);
         state.setSessionId(chatSessionId);
         return state;
+    }
+
+    private void applyCandidatePoolQualityStatus(PlanningStateDTO state, CandidatePoolStateDTO candidatePoolState) {
+        if (candidatePoolState == null) {
+            return;
+        }
+        String statusCode = resolveCandidatePoolStatus(candidatePoolState);
+        candidatePoolState.setStatusCode(statusCode);
+        candidatePoolState.setRiskHints(Lists.newArrayList());
+        if ("empty".equals(statusCode)) {
+            candidatePoolState.setStatusMessage("当前条件下没有可用志愿候选，请检查专项资格、批次、分数线或筛选条件");
+            candidatePoolState.getRiskHints().addAll(buildCandidatePoolRiskHints(state, candidatePoolState, true));
+        } else if ("low_count".equals(statusCode)) {
+            candidatePoolState.setStatusMessage("当前条件下可用候选偏少，方案选择空间有限");
+            candidatePoolState.getRiskHints().addAll(buildCandidatePoolRiskHints(state, candidatePoolState, false));
+        } else {
+            candidatePoolState.setStatusCode("ready");
+            candidatePoolState.setStatusMessage("候选池已生成");
+        }
+    }
+
+    private List<String> buildCandidatePoolRiskHints(PlanningStateDTO state,
+                                                     CandidatePoolStateDTO candidatePoolState,
+                                                     boolean emptyPool) {
+        List<String> hints = Lists.newArrayList();
+        int required = resolveRequiredCandidateCount(candidatePoolState);
+        int available = isMajorGroupMode(candidatePoolState)
+                ? valueOrZero(candidatePoolState.getSummary() == null ? null : candidatePoolState.getSummary().getUnitTotal())
+                : valueOrZero(candidatePoolState.getSummary() == null ? null : candidatePoolState.getSummary().getTotal());
+        if (required > 0) {
+            hints.add(String.format("当前可用候选 %d 个，目标需要 %d 个", available, required));
+        }
+        appendTierShortageHints(hints, candidatePoolState);
+        appendScoreBoundaryHint(hints, candidatePoolState);
+        appendHardConstraintHints(hints, state);
+        if (hints.isEmpty()) {
+            hints.add(emptyPool
+                    ? "当前批次、分数线、选科、专项资格或身体限报等硬条件可能导致无可用候选"
+                    : "候选不足更可能来自批次、分数线、选科、专项资格或身体限报等硬条件");
+        }
+        return hints;
+    }
+
+    private void appendTierShortageHints(List<String> hints, CandidatePoolStateDTO candidatePoolState) {
+        if (candidatePoolState == null || candidatePoolState.getRequiredTierCounts() == null || candidatePoolState.getRequiredTierCounts().isEmpty()
+                || candidatePoolState.getSummary() == null) {
+            return;
+        }
+        Map<String, Integer> availableTierCounts = isMajorGroupMode(candidatePoolState)
+                ? candidatePoolState.getSummary().getUnitTierCounts()
+                : candidatePoolState.getSummary().getTierCounts();
+        for (String tier : Lists.newArrayList("冲", "稳", "保")) {
+            int required = valueOrZero(candidatePoolState.getRequiredTierCounts().get(tier));
+            int available = valueOrZero(availableTierCounts == null ? null : availableTierCounts.get(tier));
+            if (required > 0 && available < required) {
+                hints.add(String.format("%s区候选不足：当前 %d 个，目标 %d 个", tier, available, required));
+            }
+        }
+    }
+
+    private void appendScoreBoundaryHint(List<String> hints, CandidatePoolStateDTO candidatePoolState) {
+        if (candidatePoolState == null || candidatePoolState.getUserScore() == null || candidatePoolState.getBatchScore() == null) {
+            return;
+        }
+        int diff = candidatePoolState.getUserScore() - candidatePoolState.getBatchScore();
+        if (diff >= 0 && diff <= 30) {
+            hints.add(String.format("当前分数距离批次线 %d 分，可选空间可能偏窄", diff));
+        }
+    }
+
+    private void appendHardConstraintHints(List<String> hints, PlanningStateDTO state) {
+        PhysicalConstraintsDTO physicalConstraints = state == null || state.getProfileState() == null
+                ? null : state.getProfileState().getPhysicalConstraints();
+        if (physicalConstraints == null) {
+            return;
+        }
+        if (!defaultList(physicalConstraints.getColorVision()).isEmpty()
+                || !Strings.isNullOrEmpty(physicalConstraints.getHeight())
+                || physicalConstraints.getVision() != null
+                && (!Strings.isNullOrEmpty(physicalConstraints.getVision().getLeft())
+                || !Strings.isNullOrEmpty(physicalConstraints.getVision().getRight()))) {
+            hints.add("已按身体条件和限报要求过滤候选");
+        }
+        if (!defaultList(physicalConstraints.getSpecialLimits()).isEmpty()) {
+            hints.add("已按专项、民族、外方院校等资格条件过滤候选");
+        }
     }
 
     private void fillRequiredTierCounts(Long chatSessionId,
@@ -855,6 +1082,7 @@ public class PlanningStateService {
         }
         syncDraftUnitsWithItems(draft, candidates, state.getCandidatePoolState());
         recalculateDraftSummary(draft, state.getCandidatePoolState());
+        appendBehaviorEvent(state, null, chatSessionId, "plan_add", defaultList(req.getVolunteerIds()), false);
         return saveDraftState(chatSessionId, state);
     }
 
@@ -871,6 +1099,7 @@ public class PlanningStateService {
                 .collect(Collectors.toList()));
         syncDraftUnitsWithItems(draft, resolveEffectiveCandidates(null, chatSessionId, state, false), state.getCandidatePoolState());
         recalculateDraftSummary(draft, state.getCandidatePoolState());
+        appendBehaviorEvent(state, null, chatSessionId, "plan_remove", defaultList(req.getVolunteerIds()), false);
         return saveDraftState(chatSessionId, state);
     }
 
@@ -951,6 +1180,10 @@ public class PlanningStateService {
         } else if (shouldRefreshRecommendationOverlay(state)) {
             refreshRecommendationOverlay(tenantId, chatSessionId, state);
         }
+        if (state.getCandidatePoolState() != null && "empty".equals(state.getCandidatePoolState().getStatusCode())) {
+            state.setSessionId(chatSessionId);
+            return state;
+        }
 
         if (Boolean.TRUE.equals(safeReq.getForceRegenerate())
                 || Boolean.TRUE.equals(state.getStaleFlags().getInitialRecommendation())
@@ -1028,6 +1261,7 @@ public class PlanningStateService {
         orderedPlanState.setItems(rebuildOrderedItems(current));
         recalculateOrderedSummary(orderedPlanState, state.getCandidatePoolState());
         state.setOrderedPlanState(orderedPlanState);
+        appendBehaviorEvent(state, null, chatSessionId, "plan_move", Lists.newArrayList(req.getVolunteerId()), false);
         return saveOrderedState(chatSessionId, state);
     }
 
@@ -3507,6 +3741,9 @@ public class PlanningStateService {
         if (state.getOperationLogs() == null) {
             state.setOperationLogs(Lists.newArrayList());
         }
+        if (state.getBehaviorEvents() == null) {
+            state.setBehaviorEvents(Lists.newArrayList());
+        }
         backfillLegacyProfileState(chatSessionId, state);
         boolean planEditCacheNoticeAdded = appendPlanEditCacheNotice(chatSessionId, state);
         backfillLegacySummaryFields(state);
@@ -3808,6 +4045,102 @@ public class PlanningStateService {
 
     private List<String> defaultList(List<String> values) {
         return values == null ? Lists.newArrayList() : values;
+    }
+
+    private List<PlanningBehaviorEventDTO> defaultBehaviorEvents(List<PlanningBehaviorEventDTO> values) {
+        return values == null ? Lists.newArrayList() : values;
+    }
+
+    private int valueOrZero(Integer value) {
+        return value == null ? 0 : value;
+    }
+
+    private String resolveCandidatePoolStatus(CandidatePoolStateDTO candidatePoolState) {
+        if (candidatePoolState == null) {
+            return "not_generated";
+        }
+        int effectiveTotal = candidatePoolState.getSummary() == null ? 0 : valueOrZero(candidatePoolState.getSummary().getTotal());
+        int effectiveUnitTotal = candidatePoolState.getSummary() == null ? 0 : valueOrZero(candidatePoolState.getSummary().getUnitTotal());
+        int required = resolveRequiredCandidateCount(candidatePoolState);
+        if (effectiveTotal <= 0 && effectiveUnitTotal <= 0) {
+            return "empty";
+        }
+        if (required > 0) {
+            int effective = isMajorGroupMode(candidatePoolState) ? effectiveUnitTotal : effectiveTotal;
+            if (effective > 0 && effective < required) {
+                return "low_count";
+            }
+        }
+        return "ready";
+    }
+
+    private int resolveRequiredCandidateCount(CandidatePoolStateDTO candidatePoolState) {
+        if (candidatePoolState == null) {
+            return 0;
+        }
+        if (isMajorGroupMode(candidatePoolState) && candidatePoolState.getRequiredUnitCount() != null) {
+            return candidatePoolState.getRequiredUnitCount();
+        }
+        if (candidatePoolState.getRequiredCount() != null) {
+            return candidatePoolState.getRequiredCount();
+        }
+        if (candidatePoolState.getRequiredUnitCount() != null) {
+            return candidatePoolState.getRequiredUnitCount();
+        }
+        return 0;
+    }
+
+    private PlanningBehaviorEventDTO findLatestBehaviorEvent(List<PlanningBehaviorEventDTO> events, String eventType) {
+        PlanningBehaviorEventDTO latest = null;
+        for (PlanningBehaviorEventDTO event : defaultBehaviorEvents(events)) {
+            if (event == null || !Objects.equals(eventType, event.getEventType())) {
+                continue;
+            }
+            if (latest == null || safeString(event.getCreatedAt()).compareTo(safeString(latest.getCreatedAt())) > 0) {
+                latest = event;
+            }
+        }
+        return latest;
+    }
+
+    private List<String> collectOrderedVolunteerIds(PlanningStateDTO state) {
+        if (state == null || state.getOrderedPlanState() == null || state.getOrderedPlanState().getItems() == null) {
+            return Lists.newArrayList();
+        }
+        return state.getOrderedPlanState().getItems().stream()
+                .filter(Objects::nonNull)
+                .map(OrderedItemDTO::getVolunteerId)
+                .filter(value -> !Strings.isNullOrEmpty(value))
+                .collect(Collectors.toList());
+    }
+
+    private void appendBehaviorEvent(PlanningStateDTO state,
+                                     Long tenantId,
+                                     Long chatSessionId,
+                                     String eventType,
+                                     List<String> volunteerIds,
+                                     boolean positiveFeedback) {
+        if (state == null) {
+            return;
+        }
+        if (state.getBehaviorEvents() == null) {
+            state.setBehaviorEvents(Lists.newArrayList());
+        }
+        PlanningBehaviorEventDTO event = new PlanningBehaviorEventDTO();
+        event.setEventId(UUID.randomUUID().toString());
+        event.setTenantId(tenantId);
+        event.setChatSessionId(chatSessionId);
+        event.setEventType(eventType);
+        event.setPlanVersion(state.getVersion());
+        event.setGenerationMode(state.getOrderedPlanState() == null ? null : state.getOrderedPlanState().getGenerationMode());
+        event.setVolunteerIds(Lists.newArrayList(defaultList(volunteerIds)));
+        event.setPositiveFeedback(positiveFeedback);
+        event.setCreatedAt(OffsetDateTime.now().toString());
+        state.getBehaviorEvents().add(event);
+    }
+
+    private String safeString(String value) {
+        return value == null ? "" : value;
     }
 
     private void backfillLegacyProfileState(Long chatSessionId, PlanningStateDTO state) {

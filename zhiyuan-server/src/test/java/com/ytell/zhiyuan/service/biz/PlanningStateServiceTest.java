@@ -1095,6 +1095,56 @@ public class PlanningStateServiceTest {
     }
 
     @Test
+    void shouldExposeWorkflowStatusForEmptyCandidatePool() {
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+        CandidatePoolStateDTO candidatePoolState = new CandidatePoolStateDTO();
+        candidatePoolState.setGeneratedAt("2026-05-12T10:00:00+08:00");
+        candidatePoolState.setStatusCode("empty");
+        candidatePoolState.setStatusMessage("当前条件下没有可用志愿候选");
+        state.setCandidatePoolState(candidatePoolState);
+
+        PlanningWorkspaceStateRes workspaceState = planningStateService.buildPlanningWorkspaceStateRes(state);
+
+        assertEquals("empty", workspaceState.getWorkflowStatus().getCandidateStatus());
+        assertEquals("当前条件下没有可用志愿候选", workspaceState.getWorkflowStatus().getCandidateMessage());
+        assertEquals("empty", workspaceState.getWorkflowStatus().getPlanStatus());
+    }
+
+    @Test
+    void shouldExposeWorkflowStatusForPendingReviewPlan() {
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+        state.getCandidatePoolState().setStatusCode("ready");
+        state.getCandidatePoolState().setStatusMessage("候选池已生成");
+        OrderedItemDTO orderedItem = new OrderedItemDTO();
+        orderedItem.setVolunteerId("v1");
+        state.getOrderedPlanState().setItems(java.util.Collections.singletonList(orderedItem));
+        state.getStaleFlags().setReview(true);
+
+        PlanningWorkspaceStateRes workspaceState = planningStateService.buildPlanningWorkspaceStateRes(state);
+
+        assertEquals("ready", workspaceState.getWorkflowStatus().getCandidateStatus());
+        assertEquals("pending_review", workspaceState.getWorkflowStatus().getPlanStatus());
+        assertEquals("not_reviewed", workspaceState.getWorkflowStatus().getReviewStatus());
+    }
+
+    @Test
+    void shouldExposeWorkflowStatusForLegacySubmittedPlan() {
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+        OrderedItemDTO orderedItem = new OrderedItemDTO();
+        orderedItem.setVolunteerId("v1");
+        state.getOrderedPlanState().setItems(java.util.Collections.singletonList(orderedItem));
+        state.getOrderedPlanState().setGenerationMode("legacy_submitted");
+
+        PlanningWorkspaceStateRes workspaceState = planningStateService.buildPlanningWorkspaceStateRes(state);
+
+        assertEquals("legacy_readonly", workspaceState.getWorkflowStatus().getPlanStatus());
+        assertEquals(Boolean.TRUE, workspaceState.getWorkflowStatus().getLegacySubmitted());
+    }
+
+    @Test
     void shouldInitializeProfileStateFromSessionData() {
         when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
                 .thenReturn(null);

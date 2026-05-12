@@ -11,6 +11,9 @@ import java.util.Map;
 public class CandidatePoolStateDTO {
     private String generatedAt;
     private Integer sourceVersion;
+    private String statusCode = "not_generated";
+    private String statusMessage = "候选池尚未生成";
+    private List<String> riskHints = Lists.newArrayList();
     private Integer requiredCount;
     private Map<String, Integer> requiredTierCounts = new HashMap<String, Integer>();
     private Integer requiredUnitCount;

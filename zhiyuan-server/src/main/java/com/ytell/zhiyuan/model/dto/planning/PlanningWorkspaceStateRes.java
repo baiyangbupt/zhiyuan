@@ -14,9 +14,11 @@ public class PlanningWorkspaceStateRes {
     private PlanGenerationStateDTO planGenerationState = new PlanGenerationStateDTO();
     private CandidatePoolStateDTO candidatePoolState = new CandidatePoolStateDTO();
     private CandidateViewStateDTO candidateViewState;
+    private PlanningWorkflowStatusDTO workflowStatus = new PlanningWorkflowStatusDTO();
     private DraftPlanStateDTO draftPlanState = new DraftPlanStateDTO();
     private OrderedPlanStateDTO orderedPlanState = new OrderedPlanStateDTO();
     private ReviewStateDTO reviewState = new ReviewStateDTO();
     private List<CompensationActionDTO> pendingActions = Lists.newArrayList();
     private List<OperationLogDTO> operationLogs = Lists.newArrayList();
+    private List<PlanningBehaviorEventDTO> behaviorEvents = Lists.newArrayList();
 }

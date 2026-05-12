@@ -385,8 +385,12 @@ export interface PlanningStateRes {
   candidatePoolState?: {
     generatedAt?: string;
     sourceVersion?: number;
+    statusCode?: string;
+    statusMessage?: string;
+    riskHints?: string[];
     requiredCount?: number;
     requiredTierCounts?: Record<string, number>;
+    requiredUnitCount?: number;
     requiredMajorCount?: number;
     userScore?: number;
     batchScore?: number;
@@ -409,7 +413,9 @@ export interface PlanningStateRes {
     bannedVolunteerIds?: string[];
     summary?: {
       unitTotal?: number;
+      targetUnitCount?: number;
       total?: number;
+      targetCount?: number;
       unitTierCounts?: Record<string, number>;
       tierCounts?: Record<string, number>;
     };
@@ -452,6 +458,20 @@ export interface PlanningStateRes {
     compensationPreview?: PlanningCompensationPreview;
   };
   pendingActions?: PlanningPendingAction[];
+  workflowStatus?: {
+    candidateStatus?: string;
+    candidateMessage?: string;
+    planStatus?: string;
+    planMessage?: string;
+    legacySubmitted?: boolean;
+    legacyMessage?: string;
+    reviewStatus?: string;
+    reviewMessage?: string;
+    exportStatus?: string;
+    exportMessage?: string;
+    lastExportedAt?: string;
+  };
+  behaviorEvents?: Array<Record<string, unknown>>;
 }
 
 export type OrderedPlanActionRes = Pick<
@@ -473,4 +493,6 @@ export type PlanningWorkspaceStateRes = Pick<
   | 'reviewState'
   | 'pendingActions'
   | 'operationLogs'
+  | 'workflowStatus'
+  | 'behaviorEvents'
 >;

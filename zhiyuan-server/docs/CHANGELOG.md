@@ -4,6 +4,10 @@
 
 ### Fixed
 
+- `planning workspace` 新增统一 `workflowStatus`，后端按候选、方案、审查、导出四类状态派生用户侧状态值；内部 `draftPlanState` 继续保留兼容，但不再作为用户侧主状态暴露。
+- `candidatePoolState` 新增 `statusCode/statusMessage/riskHints`，候选为空时阻止继续生成空方案，候选偏少时允许继续生成但沉淀风险提示。
+- 新版方案导出成功后记录 `plan_export` 行为事件作为正反馈，导出状态可区分未导出、已导出和导出后又调整。
+- 新版方案导出按当前方案顺序重新连续编号，避免迁移方案或手动移动后导出文件序号跳号。
 - 修正老方案懒迁移排序区来源口径：`_final.json` 才作为已提交历史方案导入并锁定，`_temp.json` 作为提交前推荐方案导入，无后缀 `session_volunteer_{id}.json` 仅作为高途原始全量候选兜底；不再把 `selectSchool/selectZy` 映射为 V2 优选，避免把几百到几千条原始候选误塞入排序区。
 - 老方案懒迁移单测补充专业+大学和院校专业组两种模式覆盖，分别验证专业条目计数、专业组 unit 计数和组内专业聚合。
 - 老方案懒迁移外部样本测试补充同一会话三件套校验：要求样本目录同时包含无后缀、`_temp.json`、`_final.json`，并覆盖专业+大学和院校专业组两种模式，断言 `_final.json` 优先于 `_temp.json` 和无后缀原始文件。

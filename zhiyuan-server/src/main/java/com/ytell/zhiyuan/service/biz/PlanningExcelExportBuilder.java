@@ -43,7 +43,14 @@ public class PlanningExcelExportBuilder {
         if (mainList.isEmpty()) {
             throw new BusinessException(400, "当前方案缺少可导出的志愿明细");
         }
+        renumberMainRows(mainList);
         return new PlanningExportData(mainList, majorGroupMode);
+    }
+
+    private void renumberMainRows(List<ExcelUtil.VolunteerExcelData> mainList) {
+        for (int index = 0; index < mainList.size(); index++) {
+            mainList.get(index).setIndex(index + 1);
+        }
     }
 
     private Map<String, CandidateItemDTO> buildCandidateMap(PlanningStateDTO state) {
