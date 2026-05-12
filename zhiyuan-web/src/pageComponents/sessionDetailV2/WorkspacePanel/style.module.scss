@@ -99,6 +99,23 @@
   gap: 8px;
 }
 
+.backTopButton {
+  position: absolute;
+  right: 20px;
+  bottom: 20px;
+  z-index: 11;
+  width: 38px;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 10px 22px rgba(255, 84, 55, 0.24);
+}
+
+.backTopButtonWithBasket {
+  bottom: 86px;
+}
+
 .workspaceBody {
   flex: 1;
   min-height: 0;

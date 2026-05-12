@@ -447,6 +447,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   });
   const [candidatePoolLoading, setCandidatePoolLoading] = useState(false);
   const [candidateCacheVersion, setCandidateCacheVersion] = useState(0);
+  const [showBackTop, setShowBackTop] = useState(false);
   const candidateQueryInFlightPagesRef = useRef<Set<string>>(new Set());
   const [filterPanelOpen, setFilterPanelOpen] = useState(false);
   const [filterSearchKeyword, setFilterSearchKeyword] = useState('');
@@ -1693,6 +1694,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     if (activeView === 'candidate') {
       refreshCandidatePool(false);
     }
+    workspaceBodyRef.current?.scrollTo({ top: 0 });
+    setShowBackTop(false);
   }, [activeView]);
 
   useEffect(() => {
@@ -1818,6 +1821,20 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     filters.sortField,
     filters.sortOrder,
   ]);
+
+  useEffect(() => {
+    const container = workspaceBodyRef.current;
+    if (!container) {
+      return;
+    }
+    const handleScroll = () => {
+      const shouldShow = container.scrollTop > 240;
+      setShowBackTop(prev => (prev === shouldShow ? prev : shouldShow));
+    };
+    handleScroll();
+    container.addEventListener('scroll', handleScroll);
+    return () => container.removeEventListener('scroll', handleScroll);
+  }, [activeView]);
 
   useEffect(() => {
     if (activeView !== 'candidate') {
@@ -2541,6 +2558,13 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         {group.children?.map(child => renderFilterPanelGroup(child, depth + 1, groupKey))}
       </div>
     );
+  };
+
+  const handleBackToTop = () => {
+    workspaceBodyRef.current?.scrollTo({
+      top: 0,
+      behavior: 'smooth',
+    });
   };
 
   const renderSchoolHistoryModal = () => {
@@ -3394,6 +3418,19 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         </Spin>
       </div>
       {renderSchoolHistoryModal()}
+
+      {showBackTop ? (
+        <Button
+          className={`${style.backTopButton} ${
+            activeView === 'candidate' ? style.backTopButtonWithBasket : ''
+          }`}
+          type="primary"
+          shape="circle"
+          icon={<VerticalAlignTopOutlined />}
+          aria-label="回到顶部"
+          onClick={handleBackToTop}
+        />
+      ) : null}
 
       {activeView === 'candidate' ? (
         <div
