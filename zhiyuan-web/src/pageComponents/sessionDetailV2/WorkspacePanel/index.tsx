@@ -11,6 +11,7 @@ import {
   FilterOutlined,
   ArrowUpOutlined,
   ArrowDownOutlined,
+  SortAscendingOutlined,
   DownOutlined,
   ShrinkOutlined,
   ExclamationCircleOutlined,
@@ -30,6 +31,7 @@ import {
   removePlanningDraftItemsApi,
   runPlanningReviewApi,
   selectPlanningDraftItemsApi,
+  sortPlanningOrderedPlanApi,
   unpinPlanningOrderedItemApi,
   updatePlanningCandidateViewStateApi,
 } from '@/service/apis/sessionDetail';
@@ -42,6 +44,7 @@ import {
   PlanningDraftItem,
   PlanningDraftUnit,
   PlanningOrderedItem,
+  PlanningOrderedSortField,
   PlanningReviewCheck,
   PlanningStateRes,
   PlanningWorkspaceIntent,
@@ -205,6 +208,16 @@ const SORT_FIELD_OPTIONS = [
   { label: '推荐系数', value: 'finalScore' },
   { label: '录取率', value: 'admissionRatio' },
   { label: '院校层次', value: 'schoolRank' },
+];
+
+const ORDERED_SORT_OPTIONS: Array<{
+  label: string;
+  value: PlanningOrderedSortField;
+  description: string;
+}> = [
+  { label: '录取率', value: 'admissionRatio', description: '低录取率排在前面，优先处理风险较高的志愿' },
+  { label: '院校层次', value: 'schoolRank', description: '院校排名靠前的排在前面' },
+  { label: '推荐系数', value: 'finalScore', description: '推荐系数高的排在前面' },
 ];
 
 const REVIEW_LEVEL_COLOR: Record<string, string> = {
@@ -448,6 +461,9 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const [candidatePoolLoading, setCandidatePoolLoading] = useState(false);
   const [candidateCacheVersion, setCandidateCacheVersion] = useState(0);
   const [showBackTop, setShowBackTop] = useState(false);
+  const [sortModalOpen, setSortModalOpen] = useState(false);
+  const [selectedOrderedSortField, setSelectedOrderedSortField] =
+    useState<PlanningOrderedSortField>('admissionRatio');
   const candidateQueryInFlightPagesRef = useRef<Set<string>>(new Set());
   const [filterPanelOpen, setFilterPanelOpen] = useState(false);
   const [filterSearchKeyword, setFilterSearchKeyword] = useState('');
@@ -1621,6 +1637,38 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       }
     } catch (error) {
       message.error('审查异常，请稍后重试');
+    }
+    setActionLoading(null);
+  };
+
+  const handleSortOrderedPlan = async () => {
+    if (!routerParams?.tenantId || !routerParams?.chatSessionId || actionLoading || !orderedItems.length) {
+      return;
+    }
+    setActionLoading('ordered');
+    try {
+      const { code, data } = await sortPlanningOrderedPlanApi(
+        routerParams.tenantId,
+        routerParams.chatSessionId,
+        selectedOrderedSortField
+      );
+      if (code === 0) {
+        message.success('方案顺序已排序');
+        setSortModalOpen(false);
+        if (data) {
+          setPlanningState(prev => ({
+            ...(prev || {}),
+            ...data,
+            orderedPlanState: data.orderedPlanState || prev?.orderedPlanState,
+          }));
+        } else {
+          await fetchWorkspaceState();
+        }
+      } else {
+        message.error('方案排序失败');
+      }
+    } catch (error) {
+      message.error('方案排序异常，请稍后重试');
     }
     setActionLoading(null);
   };
@@ -3159,6 +3207,16 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                       <Button
                         className={style.reviewActionButton}
                         size="small"
+                        icon={<SortAscendingOutlined />}
+                        loading={actionLoading === 'ordered'}
+                        onClick={() => setSortModalOpen(true)}
+                        disabled={!orderedItems.length}
+                      >
+                        排序
+                      </Button>
+                      <Button
+                        className={style.reviewActionButton}
+                        size="small"
                         icon={<DownloadOutlined />}
                         loading={exportLoading}
                         onClick={handleExportOrderedPlan}
@@ -3431,6 +3489,37 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
           onClick={handleBackToTop}
         />
       ) : null}
+
+      <Modal
+        title="排序方案"
+        open={sortModalOpen}
+        okText="确认排序"
+        cancelText="取消"
+        confirmLoading={actionLoading === 'ordered'}
+        onOk={handleSortOrderedPlan}
+        onCancel={() => setSortModalOpen(false)}
+      >
+        <div className={style.sortModalBody}>
+          <div className={style.sortModalHint}>
+            排序会改变当前方案顺序，固定的志愿会保留在原位置，确认后仍可继续手动调整。
+          </div>
+          <div className={style.sortOptionList}>
+            {ORDERED_SORT_OPTIONS.map(option => (
+              <button
+                key={option.value}
+                type="button"
+                className={`${style.sortOption} ${
+                  selectedOrderedSortField === option.value ? style.sortOptionActive : ''
+                }`}
+                onClick={() => setSelectedOrderedSortField(option.value)}
+              >
+                <span className={style.sortOptionTitle}>{option.label}</span>
+                <span className={style.sortOptionDesc}>{option.description}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      </Modal>
 
       {activeView === 'candidate' ? (
         <div

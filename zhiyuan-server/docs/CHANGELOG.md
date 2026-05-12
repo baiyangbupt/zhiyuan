@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- `planning workspace` 新增当前方案排序接口 `ordered-plan/sort`，支持按录取率、院校层次、推荐系数一次性重排方案，固定项保留原位置并记录 `plan_sort_apply` 行为事件。
 - `planning workspace` 新增统一 `workflowStatus`，后端按候选、方案、审查、导出四类状态派生用户侧状态值；内部 `draftPlanState` 继续保留兼容，但不再作为用户侧主状态暴露。
 - `candidatePoolState` 新增 `statusCode/statusMessage/riskHints`，候选为空时阻止继续生成空方案，候选偏少时允许继续生成但沉淀风险提示。
 - 新版方案导出成功后记录 `plan_export` 行为事件作为正反馈，导出状态可区分未导出、已导出和导出后又调整。

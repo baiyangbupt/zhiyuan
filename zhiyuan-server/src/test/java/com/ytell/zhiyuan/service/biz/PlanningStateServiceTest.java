@@ -26,6 +26,7 @@ import com.ytell.zhiyuan.model.dto.planning.InitialPlanGenerateReq;
 import com.ytell.zhiyuan.model.dto.planning.OrderedMoveReq;
 import com.ytell.zhiyuan.model.dto.planning.OrderedPinReq;
 import com.ytell.zhiyuan.model.dto.planning.OrderedPlanGenerateReq;
+import com.ytell.zhiyuan.model.dto.planning.OrderedPlanSortReq;
 import com.ytell.zhiyuan.model.dto.planning.OrderedItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.OrderedPlanStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.OrderedUnitDTO;
@@ -2873,6 +2874,83 @@ public class PlanningStateServiceTest {
     }
 
     @Test
+    void shouldSortMajorPlanByAdmissionRatioAndKeepPinnedPosition() {
+        bindPlanningStateStore();
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+        state.setCandidatePoolState(new CandidatePoolStateDTO());
+        state.getCandidatePoolState().setVolunteerModel(VolunteerModel.major.name());
+        state.getCandidatePoolState().setRequiredCount(4);
+        state.getCandidatePoolState().getItems().add(buildCandidateItem("ps1_m1", "ps1", "s1", "学校A", "冲", "专业A", 65D, 80D, 65D, false));
+        state.getCandidatePoolState().getItems().add(buildCandidateItem("ps2_m2", "ps2", "s2", "学校B", "冲", "专业B", 20D, 60D, 20D, false));
+        state.getCandidatePoolState().getItems().add(buildCandidateItem("ps3_m3", "ps3", "s3", "学校C", "稳", "专业C", 42D, 95D, 42D, false));
+        state.getCandidatePoolState().getItems().add(buildCandidateItem("ps4_m4", "ps4", "s4", "学校D", "保", "专业D", 55D, 70D, 55D, false));
+        OrderedPlanStateDTO orderedPlanState = new OrderedPlanStateDTO();
+        orderedPlanState.getItems().add(buildOrderedItem("ps1_m1", "学校A", "专业A", "冲", 1));
+        OrderedItemDTO pinned = buildOrderedItem("ps4_m4", "学校D", "专业D", "保", 2);
+        pinned.setPinned(true);
+        pinned.setPinnedPosition(2);
+        orderedPlanState.getItems().add(pinned);
+        orderedPlanState.getItems().add(buildOrderedItem("ps3_m3", "学校C", "专业C", "稳", 3));
+        orderedPlanState.getItems().add(buildOrderedItem("ps2_m2", "学校B", "专业B", "冲", 4));
+        state.setOrderedPlanState(orderedPlanState);
+        ReflectionTestUtils.invokeMethod(planningStateService, "recalculateOrderedSummary", orderedPlanState, state.getCandidatePoolState());
+        saveStateToStore(1L, state);
+
+        OrderedPlanSortReq sortReq = new OrderedPlanSortReq();
+        sortReq.setSortField("admissionRatio");
+        PlanningStateDTO sorted = planningStateService.sortOrderedPlan(1L, sortReq);
+
+        assertEquals("ps2_m2", sorted.getOrderedPlanState().getItems().get(0).getVolunteerId());
+        assertEquals("ps4_m4", sorted.getOrderedPlanState().getItems().get(1).getVolunteerId());
+        assertTrue(Boolean.TRUE.equals(sorted.getOrderedPlanState().getItems().get(1).getPinned()));
+        assertEquals("ps3_m3", sorted.getOrderedPlanState().getItems().get(2).getVolunteerId());
+        assertEquals("ps1_m1", sorted.getOrderedPlanState().getItems().get(3).getVolunteerId());
+        assertTrue(sorted.getBehaviorEvents().stream().anyMatch(event ->
+                "plan_sort_apply".equals(event.getEventType()) && "admissionRatio".equals(event.getSortKey())));
+        assertTrue(sorted.getStaleFlags().getReview());
+    }
+
+    @Test
+    void shouldSortMajorGroupPlanByFinalScoreWithoutBreakingGroupMajors() {
+        bindPlanningStateStore();
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+        CandidatePoolStateDTO candidatePoolState = new CandidatePoolStateDTO();
+        candidatePoolState.setVolunteerModel(VolunteerModel.majorGroup.name());
+        candidatePoolState.setRequiredCount(2);
+        candidatePoolState.getItems().add(buildCandidateItem("ps1_m1", "ps1", "s1", "学校A", "冲", "专业A1", 35D, 60D, 35D, false));
+        candidatePoolState.getItems().add(buildCandidateItem("ps1_m2", "ps1", "s1", "学校A", "冲", "专业A2", 33D, 58D, 35D, false));
+        candidatePoolState.getItems().add(buildCandidateItem("ps2_m3", "ps2", "s2", "学校B", "稳", "专业B1", 45D, 90D, 45D, false));
+        candidatePoolState.getItems().add(buildCandidateItem("ps2_m4", "ps2", "s2", "学校B", "稳", "专业B2", 48D, 88D, 45D, false));
+        state.setCandidatePoolState(candidatePoolState);
+
+        OrderedPlanStateDTO orderedPlanState = new OrderedPlanStateDTO();
+        orderedPlanState.getItems().add(buildOrderedItem("ps1_m1", "学校A", "专业A1", "冲", 1));
+        orderedPlanState.getItems().add(buildOrderedItem("ps1_m2", "学校A", "专业A2", "冲", 2));
+        orderedPlanState.getItems().add(buildOrderedItem("ps2_m3", "学校B", "专业B1", "稳", 3));
+        orderedPlanState.getItems().add(buildOrderedItem("ps2_m4", "学校B", "专业B2", "稳", 4));
+        orderedPlanState.setUnits(ReflectionTestUtils.invokeMethod(planningStateService,
+                "buildOrderedUnitsFromOrderedItems", orderedPlanState.getItems(), state.getDraftPlanState(), candidatePoolState.getItems()));
+        state.setOrderedPlanState(orderedPlanState);
+        ReflectionTestUtils.invokeMethod(planningStateService, "recalculateOrderedSummary", orderedPlanState, candidatePoolState);
+        saveStateToStore(1L, state);
+
+        OrderedPlanSortReq sortReq = new OrderedPlanSortReq();
+        sortReq.setSortField("finalScore");
+        PlanningStateDTO sorted = planningStateService.sortOrderedPlan(1L, sortReq);
+
+        assertEquals("ps2_m3", sorted.getOrderedPlanState().getItems().get(0).getVolunteerId());
+        assertEquals("ps2_m4", sorted.getOrderedPlanState().getItems().get(1).getVolunteerId());
+        assertEquals("ps1_m1", sorted.getOrderedPlanState().getItems().get(2).getVolunteerId());
+        assertEquals("ps1_m2", sorted.getOrderedPlanState().getItems().get(3).getVolunteerId());
+        assertEquals("ps2", sorted.getOrderedPlanState().getUnits().get(0).getUnitId());
+        assertEquals("ps1", sorted.getOrderedPlanState().getUnits().get(1).getUnitId());
+        assertTrue(sorted.getBehaviorEvents().stream().anyMatch(event ->
+                "plan_sort_apply".equals(event.getEventType()) && "finalScore".equals(event.getSortKey())));
+    }
+
+    @Test
     void shouldSortWithinTierByAdmissionRatioWhenGenerateOrderedPlan() {
         when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
                 .thenReturn(null);
@@ -3711,11 +3789,34 @@ public class PlanningStateServiceTest {
         return planningStateRef;
     }
 
+    private void saveStateToStore(Long chatSessionId, PlanningStateDTO state) {
+        ChatSessionExtraData data = new ChatSessionExtraData();
+        data.setChatSessionId(chatSessionId);
+        data.setDataKey(ChatSessionExtraDataConstants.PLANNING_STATE_KEY);
+        data.setDataValue(com.alibaba.fastjson.JSONObject.toJSONString(state));
+        chatSessionExtraDataSharedService.save(data);
+    }
+
     private UserProfileData buildUserProfileData() {
         UserProfileData userProfileData = new UserProfileData();
         userProfileData.getCollege_info().setValues(java.util.Arrays.asList("清华大学"));
         userProfileData.getNegative_city_info().setProvince(java.util.Arrays.asList("河北"));
         return userProfileData;
+    }
+
+    private OrderedItemDTO buildOrderedItem(String volunteerId,
+                                            String schoolName,
+                                            String majorName,
+                                            String tier,
+                                            Integer position) {
+        OrderedItemDTO item = new OrderedItemDTO();
+        item.setVolunteerId(volunteerId);
+        item.setSchoolName(schoolName);
+        item.setMajorName(majorName);
+        item.setTier(tier);
+        item.setPosition(position);
+        item.setSource("test");
+        return item;
     }
 
     private CandidateItemDTO buildCandidateItem(String volunteerId,

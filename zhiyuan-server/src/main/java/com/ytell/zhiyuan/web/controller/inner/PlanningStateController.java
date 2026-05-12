@@ -290,6 +290,17 @@ public class PlanningStateController {
                 planningStateService.moveOrderedItem(chatSessionId, req)));
     }
 
+    @PostMapping("/session/ordered-plan/sort")
+    @ApiOperation("按指定维度重排当前方案")
+    public BaseResponse<OrderedPlanActionRes> sortOrderedPlan(@PathVariable("tenantId") Long tenantId,
+                                                              @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId,
+                                                              @RequestBody OrderedPlanSortReq req) {
+        log.info("sortOrderedPlan: tenantId={}, chatSessionId={}, sortField={}", tenantId, chatSessionId,
+                req == null ? null : req.getSortField());
+        return BaseResponse.success(planningStateService.buildOrderedPlanActionRes(
+                planningStateService.sortOrderedPlan(chatSessionId, req)));
+    }
+
     @PostMapping("/session/ordered-plan/pin")
     @ApiOperation("固定排序位置")
     public BaseResponse<OrderedPlanActionRes> pinOrderedPlan(@PathVariable("tenantId") Long tenantId,

@@ -353,6 +353,12 @@ export interface PlanningOrderedUnit {
   majorItems?: PlanningUnitMajorItem[];
 }
 
+export type PlanningOrderedSortField = 'admissionRatio' | 'schoolRank' | 'finalScore';
+
+export interface PlanningOrderedSortReq {
+  sortField: PlanningOrderedSortField;
+}
+
 export interface PlanningStateRes {
   sessionId?: number;
   version?: number;

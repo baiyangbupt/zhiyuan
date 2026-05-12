@@ -1265,6 +1265,29 @@ public class PlanningStateService {
         return saveOrderedState(chatSessionId, state);
     }
 
+    public PlanningStateDTO sortOrderedPlan(Long chatSessionId, OrderedPlanSortReq req) {
+        PlanningStateDTO state = loadPlanningState(chatSessionId);
+        OrderedPlanStateDTO orderedPlanState = ensureOrderedPlanState(state);
+        List<OrderedItemDTO> current = defaultOrderedItems(orderedPlanState.getItems());
+        if (current.isEmpty()) {
+            state.setSessionId(chatSessionId);
+            return state;
+        }
+        String sortField = normalizeOrderedSortField(req == null ? null : req.getSortField());
+        Map<String, Integer> beforePositions = buildOrderedPositionMap(current);
+        List<CandidateItemDTO> candidates = resolveEffectiveCandidates(null, chatSessionId, state, false);
+        List<OrderedItemDTO> sorted = isMajorGroupMode(state.getCandidatePoolState())
+                ? sortOrderedPlanByUnit(current, orderedPlanState, state.getDraftPlanState(), candidates, sortField)
+                : sortOrderedPlanItems(current, candidates, sortField);
+        orderedPlanState.setItems(rebuildOrderedItems(sorted));
+        orderedPlanState.setUnits(buildOrderedUnitsFromOrderedItems(orderedPlanState.getItems(), state.getDraftPlanState(), candidates));
+        recalculateOrderedSummary(orderedPlanState, state.getCandidatePoolState());
+        state.setOrderedPlanState(orderedPlanState);
+        markOrderedItemsSortedByUser(orderedPlanState, sortField);
+        appendPlanSortApplyEvent(state, chatSessionId, sortField, beforePositions, orderedPlanState);
+        return saveOrderedState(chatSessionId, state);
+    }
+
     public PlanningStateDTO pinOrderedItem(Long chatSessionId, OrderedPinReq req) {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
         OrderedPlanStateDTO orderedPlanState = ensureOrderedPlanState(state);
@@ -4139,6 +4162,36 @@ public class PlanningStateService {
         state.getBehaviorEvents().add(event);
     }
 
+    private void appendPlanSortApplyEvent(PlanningStateDTO state,
+                                          Long chatSessionId,
+                                          String sortField,
+                                          Map<String, Integer> beforePositions,
+                                          OrderedPlanStateDTO orderedPlanState) {
+        if (state == null || orderedPlanState == null) {
+            return;
+        }
+        if (state.getBehaviorEvents() == null) {
+            state.setBehaviorEvents(Lists.newArrayList());
+        }
+        PlanningBehaviorEventDTO event = new PlanningBehaviorEventDTO();
+        event.setEventId(UUID.randomUUID().toString());
+        event.setChatSessionId(chatSessionId);
+        event.setEventType("plan_sort_apply");
+        event.setPlanVersion(state.getVersion());
+        event.setGenerationMode(orderedPlanState.getGenerationMode());
+        event.setSortKey(sortField);
+        event.setVolunteerIds(collectOrderedVolunteerIds(state));
+        event.setUnitIds(defaultOrderedUnits(orderedPlanState.getUnits()).stream()
+                .map(OrderedUnitDTO::getUnitId)
+                .filter(value -> !Strings.isNullOrEmpty(value))
+                .collect(Collectors.toList()));
+        event.setFromPositions(new HashMap<String, Integer>(beforePositions));
+        event.setToPositions(buildOrderedPositionMap(orderedPlanState.getItems()));
+        event.setPositiveFeedback(false);
+        event.setCreatedAt(OffsetDateTime.now().toString());
+        state.getBehaviorEvents().add(event);
+    }
+
     private String safeString(String value) {
         return value == null ? "" : value;
     }
@@ -6974,6 +7027,167 @@ public class PlanningStateService {
         }
         for (int i = 0; i < result.size(); i++) {
             result.get(i).setPosition(i + 1);
+        }
+        return result;
+    }
+
+    private List<OrderedItemDTO> sortOrderedPlanItems(List<OrderedItemDTO> items,
+                                                      List<CandidateItemDTO> candidates,
+                                                      String sortField) {
+        Map<String, CandidateItemDTO> candidateMap = buildCandidateMap(candidates);
+        List<OrderedItemDTO> floatingItems = defaultOrderedItems(items).stream()
+                .filter(item -> !Boolean.TRUE.equals(item.getPinned()) || item.getPinnedPosition() == null)
+                .sorted(buildOrderedItemSortComparator(candidateMap, sortField))
+                .collect(Collectors.toList());
+        List<OrderedItemDTO> result = Lists.newArrayList();
+        int floatingIndex = 0;
+        for (OrderedItemDTO item : defaultOrderedItems(items)) {
+            if (Boolean.TRUE.equals(item.getPinned()) && item.getPinnedPosition() != null) {
+                result.add(item);
+            } else {
+                result.add(floatingItems.get(floatingIndex++));
+            }
+        }
+        return result;
+    }
+
+    private List<OrderedItemDTO> sortOrderedPlanByUnit(List<OrderedItemDTO> items,
+                                                       OrderedPlanStateDTO orderedPlanState,
+                                                       DraftPlanStateDTO draftPlanState,
+                                                       List<CandidateItemDTO> candidates,
+                                                       String sortField) {
+        List<OrderedUnitDTO> units = defaultOrderedUnits(orderedPlanState == null ? null : orderedPlanState.getUnits());
+        if (units.isEmpty()) {
+            units = buildOrderedUnitsFromOrderedItems(items, draftPlanState, candidates);
+        }
+        Map<String, List<OrderedItemDTO>> itemGroups = defaultOrderedItems(items).stream()
+                .collect(Collectors.groupingBy(this::resolveDraftOrOrderedUnitId, LinkedHashMap::new, Collectors.toList()));
+        Map<String, CandidateItemDTO> candidateMap = buildCandidateMap(candidates);
+        List<OrderedUnitDTO> floatingUnits = units.stream()
+                .filter(unit -> !Boolean.TRUE.equals(unit.getPinned()) || unit.getPinnedPosition() == null)
+                .sorted(buildOrderedUnitSortComparator(candidateMap, sortField))
+                .collect(Collectors.toList());
+        List<OrderedUnitDTO> sortedUnits = Lists.newArrayList();
+        int floatingIndex = 0;
+        for (OrderedUnitDTO unit : units) {
+            if (Boolean.TRUE.equals(unit.getPinned()) && unit.getPinnedPosition() != null) {
+                sortedUnits.add(unit);
+            } else {
+                sortedUnits.add(floatingUnits.get(floatingIndex++));
+            }
+        }
+        List<OrderedItemDTO> result = Lists.newArrayList();
+        for (OrderedUnitDTO unit : sortedUnits) {
+            result.addAll(itemGroups.getOrDefault(unit.getUnitId(), Lists.newArrayList()));
+        }
+        return result.isEmpty() ? items : result;
+    }
+
+    private Comparator<OrderedItemDTO> buildOrderedItemSortComparator(Map<String, CandidateItemDTO> candidateMap,
+                                                                      String sortField) {
+        return (left, right) -> compareOrderedSortValues(
+                resolveOrderedItemSortValue(left, candidateMap, sortField),
+                resolveOrderedItemSortValue(right, candidateMap, sortField),
+                sortField);
+    }
+
+    private Comparator<OrderedUnitDTO> buildOrderedUnitSortComparator(Map<String, CandidateItemDTO> candidateMap,
+                                                                      String sortField) {
+        return (left, right) -> compareOrderedSortValues(
+                resolveOrderedUnitSortValue(left, candidateMap, sortField),
+                resolveOrderedUnitSortValue(right, candidateMap, sortField),
+                sortField);
+    }
+
+    private int compareOrderedSortValues(Double left, Double right, String sortField) {
+        boolean leftMissing = left == null;
+        boolean rightMissing = right == null;
+        if (leftMissing && rightMissing) {
+            return 0;
+        }
+        if (leftMissing) {
+            return 1;
+        }
+        if (rightMissing) {
+            return -1;
+        }
+        int compared = Double.compare(left, right);
+        return "finalScore".equals(sortField) ? -compared : compared;
+    }
+
+    private Double resolveOrderedItemSortValue(OrderedItemDTO item,
+                                               Map<String, CandidateItemDTO> candidateMap,
+                                               String sortField) {
+        CandidateItemDTO candidate = item == null ? null : candidateMap.get(item.getVolunteerId());
+        if (candidate == null) {
+            return null;
+        }
+        if ("admissionRatio".equals(sortField)) {
+            return candidate.getAdmissionRatio();
+        }
+        if ("schoolRank".equals(sortField)) {
+            return candidate.getSchoolRank() == null ? null : candidate.getSchoolRank().doubleValue();
+        }
+        return candidate.getFinalScore();
+    }
+
+    private Double resolveOrderedUnitSortValue(OrderedUnitDTO unit,
+                                               Map<String, CandidateItemDTO> candidateMap,
+                                               String sortField) {
+        if (unit == null) {
+            return null;
+        }
+        if ("admissionRatio".equals(sortField)) {
+            return unit.getAdmissionRatio() == null ? unit.getSchoolEnrollRatio() : unit.getAdmissionRatio();
+        }
+        if ("finalScore".equals(sortField)) {
+            return unit.getFinalScore();
+        }
+        return defaultPlanningUnitMajors(unit.getMajorItems()).stream()
+                .map(PlanningUnitMajorDTO::getVolunteerId)
+                .map(candidateMap::get)
+                .filter(Objects::nonNull)
+                .map(CandidateItemDTO::getSchoolRank)
+                .filter(Objects::nonNull)
+                .min(Integer::compareTo)
+                .map(Integer::doubleValue)
+                .orElse(null);
+    }
+
+    private Map<String, CandidateItemDTO> buildCandidateMap(List<CandidateItemDTO> candidates) {
+        return defaultCandidates(candidates).stream()
+                .filter(candidate -> !Strings.isNullOrEmpty(candidate.getVolunteerId()))
+                .collect(Collectors.toMap(CandidateItemDTO::getVolunteerId, candidate -> candidate, (left, right) -> left, LinkedHashMap::new));
+    }
+
+    private String normalizeOrderedSortField(String sortField) {
+        if ("admissionRatio".equals(sortField) || "schoolRank".equals(sortField) || "finalScore".equals(sortField)) {
+            return sortField;
+        }
+        return "admissionRatio";
+    }
+
+    private void markOrderedItemsSortedByUser(OrderedPlanStateDTO orderedPlanState, String sortField) {
+        for (OrderedItemDTO item : defaultOrderedItems(orderedPlanState == null ? null : orderedPlanState.getItems())) {
+            if (!Boolean.TRUE.equals(item.getPinned())) {
+                item.setOrderedBy("user");
+                item.setOrderReason("user_sort_" + sortField);
+            }
+        }
+        for (OrderedUnitDTO unit : defaultOrderedUnits(orderedPlanState == null ? null : orderedPlanState.getUnits())) {
+            if (!Boolean.TRUE.equals(unit.getPinned())) {
+                unit.setOrderedBy("user");
+                unit.setOrderReason("user_sort_" + sortField);
+            }
+        }
+    }
+
+    private Map<String, Integer> buildOrderedPositionMap(List<OrderedItemDTO> items) {
+        Map<String, Integer> result = new LinkedHashMap<String, Integer>();
+        for (OrderedItemDTO item : defaultOrderedItems(items)) {
+            if (!Strings.isNullOrEmpty(item.getVolunteerId())) {
+                result.put(item.getVolunteerId(), item.getPosition());
+            }
         }
         return result;
     }

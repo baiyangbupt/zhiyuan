@@ -1057,6 +1057,59 @@
   }
 }
 
+.sortModalBody {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.sortModalHint {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #fff7f3;
+  color: #7b5d52;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.sortOptionList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sortOption {
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid #f0dfd8;
+  border-radius: 10px;
+  background: #fff;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+}
+
+.sortOptionActive {
+  border-color: #ff6b45;
+  background: #fff7f3;
+  box-shadow: 0 8px 18px rgba(255, 102, 74, 0.14);
+}
+
+.sortOptionTitle {
+  display: block;
+  color: #362621;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.sortOptionDesc {
+  display: block;
+  margin-top: 4px;
+  color: #8d746a;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .reviewTooltipOverlay {
   :global(.ant-tooltip-inner) {
     max-width: 360px;

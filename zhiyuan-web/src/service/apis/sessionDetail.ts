@@ -495,6 +495,19 @@ export const movePlanningOrderedItemApi = (
     },
   });
 
+export const sortPlanningOrderedPlanApi = (
+  tenantId: string,
+  chatSessionId: string,
+  sortField: 'admissionRatio' | 'schoolRank' | 'finalScore'
+) =>
+  request<{ sortField: string }, OrderedPlanActionRes>({
+    url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/ordered-plan/sort?chatSessionId=${chatSessionId}`,
+    method: 'post',
+    data: {
+      sortField,
+    },
+  });
+
 export const unpinPlanningOrderedItemApi = (
   tenantId: string,
   chatSessionId: string,
