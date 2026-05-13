@@ -27,6 +27,7 @@ import org.mockito.Mockito;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -447,6 +448,204 @@ public class PlanningStateSuggestionMappingTest {
     }
 
     @Test
+    void shouldSortOrderedPlanBySchoolRankThenAdmissionRatioAndFinalScore() {
+        bindPlanningStateStore();
+
+        VolunteerRecommendListResponse response = new VolunteerRecommendListResponse();
+        response.setBaseData(buildBaseData(4, 4, 0, 0));
+        response.setUserScoreDetail(buildScoreDetail());
+        VolunteerRecommendListResponse.VolunteerSchool schoolA = buildSchool("ps1", "s1", "学校A", "北京", 1, buildMajorWithRatio("m1", "专业A", "20"));
+        schoolA.setSchool_rank(10);
+        schoolA.getAlgTagMap().put("volunteer_score", 70D);
+        VolunteerRecommendListResponse.VolunteerSchool schoolB = buildSchool("ps2", "s2", "学校B", "北京", 2, buildMajorWithRatio("m2", "专业B", "10"));
+        schoolB.setSchool_rank(10);
+        schoolB.getAlgTagMap().put("volunteer_score", 60D);
+        VolunteerRecommendListResponse.VolunteerSchool schoolC = buildSchool("ps3", "s3", "学校C", "北京", 3, buildMajorWithRatio("m3", "专业C", "10"));
+        schoolC.setSchool_rank(10);
+        schoolC.getAlgTagMap().put("volunteer_score", 80D);
+        VolunteerRecommendListResponse.VolunteerSchool schoolD = buildSchool("ps4", "s4", "学校D", "北京", 4, buildMajorWithRatio("m4", "专业D", "90"));
+        schoolD.setSchool_rank(20);
+        schoolD.getAlgTagMap().put("volunteer_score", 95D);
+        response.setSprints(java.util.Arrays.asList(schoolD, schoolA, schoolB, schoolC));
+        when(volunteerBizService.recommendVolunteerList(1L, 1L, false, false)).thenReturn(response);
+
+        planningStateService.generateCandidatePool(1L, 1L, new CandidatePoolGenerateReq());
+        DraftSelectReq selectReq = new DraftSelectReq();
+        selectReq.setVolunteerIds(java.util.Arrays.asList("ps1_m1", "ps2_m2", "ps3_m3", "ps4_m4"));
+        planningStateService.selectDraftItems(1L, selectReq);
+        planningStateService.generateOrderedPlan(1L, 1L, new OrderedPlanGenerateReq());
+
+        com.ytell.zhiyuan.model.dto.planning.OrderedPlanSortReq sortReq = new com.ytell.zhiyuan.model.dto.planning.OrderedPlanSortReq();
+        sortReq.setSortField("schoolRank");
+        PlanningStateDTO state = planningStateService.sortOrderedPlan(1L, sortReq);
+
+        assertEquals(java.util.Arrays.asList("ps3_m3", "ps2_m2", "ps1_m1", "ps4_m4"), orderedVolunteerIds(state));
+    }
+
+    @Test
+    void shouldSortOrderedPlanByAdmissionRatioThenSchoolRankAndFinalScore() {
+        bindPlanningStateStore();
+
+        VolunteerRecommendListResponse response = new VolunteerRecommendListResponse();
+        response.setBaseData(buildBaseData(3, 3, 0, 0));
+        response.setUserScoreDetail(buildScoreDetail());
+        VolunteerRecommendListResponse.VolunteerSchool schoolA = buildSchool("ps1", "s1", "学校A", "北京", 1, buildMajorWithRatio("m1", "专业A", "20"));
+        schoolA.setSchool_rank(20);
+        schoolA.getAlgTagMap().put("volunteer_score", 95D);
+        VolunteerRecommendListResponse.VolunteerSchool schoolB = buildSchool("ps2", "s2", "学校B", "北京", 2, buildMajorWithRatio("m2", "专业B", "20"));
+        schoolB.setSchool_rank(10);
+        schoolB.getAlgTagMap().put("volunteer_score", 60D);
+        VolunteerRecommendListResponse.VolunteerSchool schoolC = buildSchool("ps3", "s3", "学校C", "北京", 3, buildMajorWithRatio("m3", "专业C", "30"));
+        schoolC.setSchool_rank(1);
+        schoolC.getAlgTagMap().put("volunteer_score", 99D);
+        response.setSprints(java.util.Arrays.asList(schoolA, schoolC, schoolB));
+        when(volunteerBizService.recommendVolunteerList(1L, 1L, false, false)).thenReturn(response);
+
+        planningStateService.generateCandidatePool(1L, 1L, new CandidatePoolGenerateReq());
+        DraftSelectReq selectReq = new DraftSelectReq();
+        selectReq.setVolunteerIds(java.util.Arrays.asList("ps1_m1", "ps2_m2", "ps3_m3"));
+        planningStateService.selectDraftItems(1L, selectReq);
+        planningStateService.generateOrderedPlan(1L, 1L, new OrderedPlanGenerateReq());
+
+        com.ytell.zhiyuan.model.dto.planning.OrderedPlanSortReq sortReq = new com.ytell.zhiyuan.model.dto.planning.OrderedPlanSortReq();
+        sortReq.setSortField("admissionRatio");
+        PlanningStateDTO state = planningStateService.sortOrderedPlan(1L, sortReq);
+
+        assertEquals(java.util.Arrays.asList("ps2_m2", "ps1_m1", "ps3_m3"), orderedVolunteerIds(state));
+    }
+
+    @Test
+    void shouldSortOrderedPlanByFinalScoreThenAdmissionRatioAndSchoolRank() {
+        bindPlanningStateStore();
+
+        VolunteerRecommendListResponse response = new VolunteerRecommendListResponse();
+        response.setBaseData(buildBaseData(3, 3, 0, 0));
+        response.setUserScoreDetail(buildScoreDetail());
+        VolunteerRecommendListResponse.VolunteerSchool schoolA = buildSchool("ps1", "s1", "学校A", "北京", 1, buildMajorWithRatio("m1", "专业A", "20"));
+        schoolA.setSchool_rank(20);
+        schoolA.getAlgTagMap().put("volunteer_score", 80D);
+        VolunteerRecommendListResponse.VolunteerSchool schoolB = buildSchool("ps2", "s2", "学校B", "北京", 2, buildMajorWithRatio("m2", "专业B", "10"));
+        schoolB.setSchool_rank(10);
+        schoolB.getAlgTagMap().put("volunteer_score", 80D);
+        VolunteerRecommendListResponse.VolunteerSchool schoolC = buildSchool("ps3", "s3", "学校C", "北京", 3, buildMajorWithRatio("m3", "专业C", "5"));
+        schoolC.setSchool_rank(1);
+        schoolC.getAlgTagMap().put("volunteer_score", 70D);
+        response.setSprints(java.util.Arrays.asList(schoolC, schoolA, schoolB));
+        when(volunteerBizService.recommendVolunteerList(1L, 1L, false, false)).thenReturn(response);
+
+        planningStateService.generateCandidatePool(1L, 1L, new CandidatePoolGenerateReq());
+        DraftSelectReq selectReq = new DraftSelectReq();
+        selectReq.setVolunteerIds(java.util.Arrays.asList("ps1_m1", "ps2_m2", "ps3_m3"));
+        planningStateService.selectDraftItems(1L, selectReq);
+        planningStateService.generateOrderedPlan(1L, 1L, new OrderedPlanGenerateReq());
+
+        com.ytell.zhiyuan.model.dto.planning.OrderedPlanSortReq sortReq = new com.ytell.zhiyuan.model.dto.planning.OrderedPlanSortReq();
+        sortReq.setSortField("finalScore");
+        PlanningStateDTO state = planningStateService.sortOrderedPlan(1L, sortReq);
+
+        assertEquals(java.util.Arrays.asList("ps2_m2", "ps1_m1", "ps3_m3"), orderedVolunteerIds(state));
+    }
+
+    @Test
+    void shouldSortLegacyOrderedPlanWithMismatchedVolunteerIds() {
+        bindPlanningStateStore();
+
+        VolunteerRecommendListResponse response = new VolunteerRecommendListResponse();
+        response.setBaseData(buildBaseData(3, 3, 0, 0));
+        response.setUserScoreDetail(buildScoreDetail());
+        VolunteerRecommendListResponse.VolunteerSchool schoolA = buildSchool("ps1", "s1", "学校A", "北京", 1, buildMajorWithPlanMajorDataId("101", "pm1", "专业A", "20"));
+        schoolA.setSchool_rank(20);
+        schoolA.getAlgTagMap().put("volunteer_score", 80D);
+        VolunteerRecommendListResponse.VolunteerSchool schoolB = buildSchool("ps2", "s2", "学校B", "北京", 2, buildMajorWithPlanMajorDataId("102", "pm2", "专业B", "20"));
+        schoolB.setSchool_rank(10);
+        schoolB.getAlgTagMap().put("volunteer_score", 70D);
+        VolunteerRecommendListResponse.VolunteerSchool schoolC = buildSchool("ps3", "s3", "学校C", "北京", 3, buildMajorWithPlanMajorDataId("103", "pm3", "专业C", "10"));
+        schoolC.setSchool_rank(30);
+        schoolC.getAlgTagMap().put("volunteer_score", 90D);
+        response.setSprints(java.util.Arrays.asList(schoolA, schoolB, schoolC));
+        when(volunteerBizService.recommendVolunteerList(1L, 1L, false, false)).thenReturn(response);
+
+        PlanningStateDTO state = planningStateService.generateCandidatePool(1L, 1L, new CandidatePoolGenerateReq());
+        OrderedPlanStateDTO orderedPlanState = state.getOrderedPlanState();
+        orderedPlanState.setItems(java.util.Arrays.asList(
+                buildOrderedItem("ps1_pm1_101", "学校A", "专业A"),
+                buildOrderedItem("ps2_pm2_102", "学校B", "专业B"),
+                buildOrderedItem("ps3_pm3_103", "学校C", "专业C")));
+        state.setOrderedPlanState(orderedPlanState);
+        savePlanningState(1L, state);
+
+        com.ytell.zhiyuan.model.dto.planning.OrderedPlanSortReq sortReq = new com.ytell.zhiyuan.model.dto.planning.OrderedPlanSortReq();
+        sortReq.setSortField("schoolRank");
+        PlanningStateDTO sorted = planningStateService.sortOrderedPlan(1L, sortReq);
+
+        assertEquals(java.util.Arrays.asList("ps2_pm2_102", "ps1_pm1_101", "ps3_pm3_103"), orderedVolunteerIds(sorted));
+    }
+
+    @Test
+    void shouldMarkReviewStaleAfterOrderedPlanSort() {
+        bindPlanningStateStore();
+
+        VolunteerRecommendListResponse response = new VolunteerRecommendListResponse();
+        response.setBaseData(buildBaseData(3, 3, 0, 0));
+        response.setUserScoreDetail(buildScoreDetail());
+        VolunteerRecommendListResponse.VolunteerSchool schoolA = buildSchool("ps1", "s1", "学校A", "北京", 1, buildMajorWithRatio("m1", "专业A", "20"));
+        schoolA.setSchool_rank(20);
+        VolunteerRecommendListResponse.VolunteerSchool schoolB = buildSchool("ps2", "s2", "学校B", "北京", 2, buildMajorWithRatio("m2", "专业B", "10"));
+        schoolB.setSchool_rank(10);
+        VolunteerRecommendListResponse.VolunteerSchool schoolC = buildSchool("ps3", "s3", "学校C", "北京", 3, buildMajorWithRatio("m3", "专业C", "30"));
+        schoolC.setSchool_rank(30);
+        response.setSprints(java.util.Arrays.asList(schoolA, schoolB, schoolC));
+        when(volunteerBizService.recommendVolunteerList(1L, 1L, false, false)).thenReturn(response);
+
+        planningStateService.generateCandidatePool(1L, 1L, new CandidatePoolGenerateReq());
+        DraftSelectReq selectReq = new DraftSelectReq();
+        selectReq.setVolunteerIds(java.util.Arrays.asList("ps1_m1", "ps2_m2", "ps3_m3"));
+        planningStateService.selectDraftItems(1L, selectReq);
+        planningStateService.generateOrderedPlan(1L, 1L, new OrderedPlanGenerateReq());
+        planningStateService.runReview(1L, 1L);
+
+        com.ytell.zhiyuan.model.dto.planning.OrderedPlanSortReq sortReq = new com.ytell.zhiyuan.model.dto.planning.OrderedPlanSortReq();
+        sortReq.setSortField("schoolRank");
+        PlanningStateDTO sorted = planningStateService.sortOrderedPlan(1L, sortReq);
+        com.ytell.zhiyuan.model.dto.planning.PlanningWorkspaceStateRes workspaceState =
+                planningStateService.buildPlanningWorkspaceStateRes(sorted);
+
+        assertTrue(sorted.getStaleFlags().getReview());
+        assertEquals("stale", workspaceState.getWorkflowStatus().getReviewStatus());
+        assertEquals("方案已调整，建议重新审查", workspaceState.getWorkflowStatus().getReviewMessage());
+    }
+
+    @Test
+    void shouldReturnWorkspaceCandidateDetailsForLegacyMismatchedVolunteerIds() {
+        bindPlanningStateStore();
+
+        VolunteerRecommendListResponse response = new VolunteerRecommendListResponse();
+        response.setBaseData(buildBaseData(2, 2, 0, 0));
+        response.setUserScoreDetail(buildScoreDetail());
+        VolunteerRecommendListResponse.VolunteerSchool schoolA = buildSchool("ps1", "s1", "学校A", "北京", 1, buildMajorWithPlanMajorDataId("101", "pm1", "专业A", "20"));
+        VolunteerRecommendListResponse.VolunteerSchool schoolB = buildSchool("ps2", "s2", "学校B", "北京", 2, buildMajorWithPlanMajorDataId("102", "pm2", "专业B", "40"));
+        response.setSprints(java.util.Arrays.asList(schoolA, schoolB));
+        when(volunteerBizService.recommendVolunteerList(1L, 1L, false, false)).thenReturn(response);
+
+        PlanningStateDTO state = planningStateService.generateCandidatePool(1L, 1L, new CandidatePoolGenerateReq());
+        OrderedPlanStateDTO orderedPlanState = state.getOrderedPlanState();
+        orderedPlanState.setItems(java.util.Arrays.asList(
+                buildOrderedItem("ps1_pm1_101", "学校A", "专业A"),
+                buildOrderedItem("ps2_pm2_102", "学校B", "专业B")));
+        state.setOrderedPlanState(orderedPlanState);
+        savePlanningState(1L, state);
+
+        com.ytell.zhiyuan.model.dto.planning.PlanningWorkspaceStateRes workspaceState =
+                planningStateService.getPlanningWorkspaceState(1L);
+
+        assertEquals(2, workspaceState.getCandidatePoolState().getItems().size());
+        assertEquals(java.util.Arrays.asList("ps1_pm1_101", "ps2_pm2_102"),
+                workspaceState.getCandidatePoolState().getItems().stream()
+                        .map(CandidateItemDTO::getVolunteerId)
+                        .collect(Collectors.toList()));
+    }
+
+    @Test
     void shouldAnalyzePlanAdjustmentRatioDistributionWithReplaceSuggestion() {
         bindPlanningStateStore();
 
@@ -508,6 +707,15 @@ public class PlanningStateSuggestionMappingTest {
         return major;
     }
 
+    private VolunteerRecommendListResponse.VolunteerMajor buildMajorWithPlanMajorDataId(String majorId,
+                                                                                        String planMajorDataId,
+                                                                                        String majorName,
+                                                                                        String enrollRatio) {
+        VolunteerRecommendListResponse.VolunteerMajor major = buildMajorWithRatio(majorId, majorName, enrollRatio);
+        major.setPlanMajorDataId(planMajorDataId);
+        return major;
+    }
+
     private CreateSessionReq buildScoreDetail() {
         CreateSessionReq scoreDetail = new CreateSessionReq();
         scoreDetail.setHeight("170");
@@ -542,6 +750,29 @@ public class PlanningStateSuggestionMappingTest {
         subject2.setSubjectName("化学");
         scoreDetail.setStrengthSubjectList(java.util.Arrays.asList(subject1, subject2));
         return scoreDetail;
+    }
+
+    private java.util.List<String> orderedVolunteerIds(PlanningStateDTO state) {
+        return state.getOrderedPlanState().getItems().stream()
+                .map(OrderedItemDTO::getVolunteerId)
+                .collect(Collectors.toList());
+    }
+
+    private OrderedItemDTO buildOrderedItem(String volunteerId, String schoolName, String majorName) {
+        OrderedItemDTO item = new OrderedItemDTO();
+        item.setVolunteerId(volunteerId);
+        item.setSchoolName(schoolName);
+        item.setMajorName(majorName);
+        item.setTier("冲");
+        return item;
+    }
+
+    private void savePlanningState(Long chatSessionId, PlanningStateDTO state) {
+        ChatSessionExtraData data = new ChatSessionExtraData();
+        data.setChatSessionId(chatSessionId);
+        data.setDataKey(ChatSessionExtraDataConstants.PLANNING_STATE_KEY);
+        data.setDataValue(com.alibaba.fastjson.JSON.toJSONString(state));
+        chatSessionExtraDataSharedService.save(data);
     }
 
     private VolunteerRecommendListResponse.BaseData buildBaseData(int needCount, int sprintCount, int safeCount, int protectCount) {

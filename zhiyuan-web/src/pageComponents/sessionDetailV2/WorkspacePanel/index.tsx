@@ -208,6 +208,10 @@ const SORT_FIELD_OPTIONS = [
   { label: '推荐系数', value: 'finalScore' },
   { label: '录取率', value: 'admissionRatio' },
   { label: '院校层次', value: 'schoolRank' },
+  { label: '区间位次', value: 'rankInTier' },
+  { label: '专业热度', value: 'hotIndex' },
+  { label: '薪酬指数', value: 'salaryAvg' },
+  { label: '学费', value: 'tuitionPerYear' },
 ];
 
 const ORDERED_SORT_OPTIONS: Array<{
@@ -219,6 +223,9 @@ const ORDERED_SORT_OPTIONS: Array<{
   { label: '院校层次', value: 'schoolRank', description: '院校排名靠前的排在前面' },
   { label: '推荐系数', value: 'finalScore', description: '推荐系数高的排在前面' },
 ];
+
+const SALARY_AVG_TOOLTIP =
+  '平均薪酬指数，反映该专业毕业生薪酬表现的相对水平，不等同于实际工资。';
 
 const REVIEW_LEVEL_COLOR: Record<string, string> = {
   risk: 'error',
@@ -3138,7 +3145,9 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                         <span>推荐系数 {formatNumber(item.finalScore)}</span>
                                         <span>区间位次 #{formatNumber(item.rankInTier)}</span>
                                         <span>专业热度 {formatNumber(item.hotIndex)}</span>
-                                        <span>就业表现 {formatNumber(item.salaryAvg)}</span>
+                                        <Tooltip title={SALARY_AVG_TOOLTIP}>
+                                          <span>薪酬指数 {formatNumber(item.salaryAvg)}</span>
+                                        </Tooltip>
                                         <span>专业代码 {item.majorCode || '-'}</span>
                                       </div>
                                       <Button
@@ -3268,6 +3277,11 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                         优选
                                       </Tag>
                                     ) : null}
+                                    {(group.schoolRankTags || []).map(tag => (
+                                      <Tag bordered={false} color="volcano" key={`${group.key}-${tag}`}>
+                                        {tag}
+                                      </Tag>
+                                    ))}
                                     {orderedStatusLabels.map(label => (
                                       <Tag key={`${group.key}-${label}`} bordered={false} className={style.orderedStatusTag}>
                                         {label}
@@ -3323,7 +3337,9 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                           <span>录取率 {formatPercent(candidateItem?.admissionRatio)}</span>
                                           <span>推荐系数 {formatNumber(candidateItem?.finalScore)}</span>
                                           <span>专业热度 {formatNumber(candidateItem?.hotIndex)}</span>
-                                          <span>就业表现 {formatNumber(candidateItem?.salaryAvg)}</span>
+                                          <Tooltip title={SALARY_AVG_TOOLTIP}>
+                                            <span>薪酬指数 {formatNumber(candidateItem?.salaryAvg)}</span>
+                                          </Tooltip>
                                           <span>学费 {formatMetricNumber(candidateItem?.tuitionPerYear, '/年')}</span>
                                           <span>专业代码 {candidateItem?.majorCode || '-'}</span>
                                         </div>
@@ -3403,6 +3419,11 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                         优选
                                       </Tag>
                                     ) : null}
+                                    {(candidateItem?.schoolRankTags || []).map(tag => (
+                                      <Tag bordered={false} color="volcano" key={`${item.volunteerId}-${tag}`}>
+                                        {tag}
+                                      </Tag>
+                                    ))}
                                     <Tag bordered={false} className={style.orderedStatusTag}>
                                       {getOrderedItemStatusLabel(item)}
                                     </Tag>
@@ -3412,7 +3433,9 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                     <span>录取率 {formatPercent(candidateItem?.admissionRatio)}</span>
                                     <span>推荐系数 {formatNumber(candidateItem?.finalScore)}</span>
                                     <span>专业热度 {formatNumber(candidateItem?.hotIndex)}</span>
-                                    <span>就业表现 {formatNumber(candidateItem?.salaryAvg)}</span>
+                                    <Tooltip title={SALARY_AVG_TOOLTIP}>
+                                      <span>薪酬指数 {formatNumber(candidateItem?.salaryAvg)}</span>
+                                    </Tooltip>
                                     <span>学费 {formatMetricNumber(candidateItem?.tuitionPerYear, '/年')}</span>
                                     <span>专业代码 {candidateItem?.majorCode || '-'}</span>
                                   </div>

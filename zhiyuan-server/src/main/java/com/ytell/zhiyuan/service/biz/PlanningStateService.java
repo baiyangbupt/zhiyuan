@@ -204,11 +204,24 @@ public class PlanningStateService {
         target.setSummary(source.getSummary());
         Set<String> workspaceVolunteerIds = collectWorkspaceCandidateVolunteerIds(state);
         if (!workspaceVolunteerIds.isEmpty()) {
-            target.setItems(mergeOverlayIntoCandidates(source.getItems(), state.getRecommendationOverlayState()).stream()
-                    .filter(item -> workspaceVolunteerIds.contains(item.getVolunteerId()))
-                    .collect(Collectors.toList()));
+            CandidateResolver resolver = new CandidateResolver(mergeOverlayIntoCandidates(source.getItems(), state.getRecommendationOverlayState()));
+            target.setItems(workspaceVolunteerIds.stream()
+                    .map(volunteerId -> copyCandidateForWorkspaceVolunteerId(resolver.resolve(volunteerId), volunteerId))
+                    .filter(Objects::nonNull)
+                    .collect(Collectors.collectingAndThen(
+                            Collectors.toMap(CandidateItemDTO::getVolunteerId, item -> item, (left, right) -> left, LinkedHashMap::new),
+                            map -> Lists.newArrayList(map.values()))));
         }
         return target;
+    }
+
+    private CandidateItemDTO copyCandidateForWorkspaceVolunteerId(CandidateItemDTO candidate, String volunteerId) {
+        if (candidate == null) {
+            return null;
+        }
+        CandidateItemDTO copy = JSONObject.parseObject(JSONObject.toJSONString(candidate), CandidateItemDTO.class);
+        copy.setVolunteerId(volunteerId);
+        return copy;
     }
 
     private PlanningWorkflowStatusDTO buildWorkflowStatus(PlanningStateDTO state) {
@@ -1284,6 +1297,8 @@ public class PlanningStateService {
         recalculateOrderedSummary(orderedPlanState, state.getCandidatePoolState());
         state.setOrderedPlanState(orderedPlanState);
         markOrderedItemsSortedByUser(orderedPlanState, sortField);
+        state.getStaleFlags().setReview(true);
+        state.getStaleFlags().setPlanAdjustment(true);
         appendPlanSortApplyEvent(state, chatSessionId, sortField, beforePositions, orderedPlanState);
         return saveOrderedState(chatSessionId, state);
     }
@@ -7034,10 +7049,10 @@ public class PlanningStateService {
     private List<OrderedItemDTO> sortOrderedPlanItems(List<OrderedItemDTO> items,
                                                       List<CandidateItemDTO> candidates,
                                                       String sortField) {
-        Map<String, CandidateItemDTO> candidateMap = buildCandidateMap(candidates);
+        CandidateResolver candidateResolver = new CandidateResolver(candidates);
         List<OrderedItemDTO> floatingItems = defaultOrderedItems(items).stream()
                 .filter(item -> !Boolean.TRUE.equals(item.getPinned()) || item.getPinnedPosition() == null)
-                .sorted(buildOrderedItemSortComparator(candidateMap, sortField))
+                .sorted(buildOrderedItemSortComparator(candidateResolver, sortField))
                 .collect(Collectors.toList());
         List<OrderedItemDTO> result = Lists.newArrayList();
         int floatingIndex = 0;
@@ -7062,10 +7077,10 @@ public class PlanningStateService {
         }
         Map<String, List<OrderedItemDTO>> itemGroups = defaultOrderedItems(items).stream()
                 .collect(Collectors.groupingBy(this::resolveDraftOrOrderedUnitId, LinkedHashMap::new, Collectors.toList()));
-        Map<String, CandidateItemDTO> candidateMap = buildCandidateMap(candidates);
+        CandidateResolver candidateResolver = new CandidateResolver(candidates);
         List<OrderedUnitDTO> floatingUnits = units.stream()
                 .filter(unit -> !Boolean.TRUE.equals(unit.getPinned()) || unit.getPinnedPosition() == null)
-                .sorted(buildOrderedUnitSortComparator(candidateMap, sortField))
+                .sorted(buildOrderedUnitSortComparator(candidateResolver, sortField))
                 .collect(Collectors.toList());
         List<OrderedUnitDTO> sortedUnits = Lists.newArrayList();
         int floatingIndex = 0;
@@ -7083,23 +7098,20 @@ public class PlanningStateService {
         return result.isEmpty() ? items : result;
     }
 
-    private Comparator<OrderedItemDTO> buildOrderedItemSortComparator(Map<String, CandidateItemDTO> candidateMap,
+    private Comparator<OrderedItemDTO> buildOrderedItemSortComparator(CandidateResolver candidateResolver,
                                                                       String sortField) {
-        return (left, right) -> compareOrderedSortValues(
-                resolveOrderedItemSortValue(left, candidateMap, sortField),
-                resolveOrderedItemSortValue(right, candidateMap, sortField),
+        return (left, right) -> compareOrderedCandidates(
+                left == null ? null : candidateResolver.resolve(left),
+                right == null ? null : candidateResolver.resolve(right),
                 sortField);
     }
 
-    private Comparator<OrderedUnitDTO> buildOrderedUnitSortComparator(Map<String, CandidateItemDTO> candidateMap,
+    private Comparator<OrderedUnitDTO> buildOrderedUnitSortComparator(CandidateResolver candidateResolver,
                                                                       String sortField) {
-        return (left, right) -> compareOrderedSortValues(
-                resolveOrderedUnitSortValue(left, candidateMap, sortField),
-                resolveOrderedUnitSortValue(right, candidateMap, sortField),
-                sortField);
+        return (left, right) -> compareOrderedUnits(left, right, candidateResolver, sortField);
     }
 
-    private int compareOrderedSortValues(Double left, Double right, String sortField) {
+    private int compareOrderedSortValues(Double left, Double right, boolean descending) {
         boolean leftMissing = left == null;
         boolean rightMissing = right == null;
         if (leftMissing && rightMissing) {
@@ -7112,13 +7124,33 @@ public class PlanningStateService {
             return -1;
         }
         int compared = Double.compare(left, right);
-        return "finalScore".equals(sortField) ? -compared : compared;
+        return descending ? -compared : compared;
     }
 
-    private Double resolveOrderedItemSortValue(OrderedItemDTO item,
-                                               Map<String, CandidateItemDTO> candidateMap,
-                                               String sortField) {
-        CandidateItemDTO candidate = item == null ? null : candidateMap.get(item.getVolunteerId());
+    private int compareOrderedCandidates(CandidateItemDTO left, CandidateItemDTO right, String sortField) {
+        for (OrderedSortKey key : resolveOrderedSortKeys(sortField)) {
+            int compared = compareOrderedSortValues(resolveCandidateSortValue(left, key.field), resolveCandidateSortValue(right, key.field), key.descending);
+            if (compared != 0) {
+                return compared;
+            }
+        }
+        return compareNullableText(resolveCandidateSchoolGroupKey(left), resolveCandidateSchoolGroupKey(right));
+    }
+
+    private int compareOrderedUnits(OrderedUnitDTO left,
+                                    OrderedUnitDTO right,
+                                    CandidateResolver candidateResolver,
+                                    String sortField) {
+        for (OrderedSortKey key : resolveOrderedSortKeys(sortField)) {
+            int compared = compareOrderedSortValues(resolveUnitSortValue(left, candidateResolver, key.field), resolveUnitSortValue(right, candidateResolver, key.field), key.descending);
+            if (compared != 0) {
+                return compared;
+            }
+        }
+        return compareNullableText(resolveUnitSchoolGroupKey(left), resolveUnitSchoolGroupKey(right));
+    }
+
+    private Double resolveCandidateSortValue(CandidateItemDTO candidate, String sortField) {
         if (candidate == null) {
             return null;
         }
@@ -7131,9 +7163,9 @@ public class PlanningStateService {
         return candidate.getFinalScore();
     }
 
-    private Double resolveOrderedUnitSortValue(OrderedUnitDTO unit,
-                                               Map<String, CandidateItemDTO> candidateMap,
-                                               String sortField) {
+    private Double resolveUnitSortValue(OrderedUnitDTO unit,
+                                        CandidateResolver candidateResolver,
+                                        String sortField) {
         if (unit == null) {
             return null;
         }
@@ -7144,8 +7176,7 @@ public class PlanningStateService {
             return unit.getFinalScore();
         }
         return defaultPlanningUnitMajors(unit.getMajorItems()).stream()
-                .map(PlanningUnitMajorDTO::getVolunteerId)
-                .map(candidateMap::get)
+                .map(major -> candidateResolver.resolve(major == null ? null : major.getVolunteerId()))
                 .filter(Objects::nonNull)
                 .map(CandidateItemDTO::getSchoolRank)
                 .filter(Objects::nonNull)
@@ -7154,10 +7185,156 @@ public class PlanningStateService {
                 .orElse(null);
     }
 
+    private List<OrderedSortKey> resolveOrderedSortKeys(String sortField) {
+        List<OrderedSortKey> keys = Lists.newArrayList();
+        if ("finalScore".equals(sortField)) {
+            keys.add(new OrderedSortKey("finalScore", true));
+            keys.add(new OrderedSortKey("admissionRatio", false));
+            keys.add(new OrderedSortKey("schoolRank", false));
+            return keys;
+        }
+        if ("schoolRank".equals(sortField)) {
+            keys.add(new OrderedSortKey("schoolRank", false));
+            keys.add(new OrderedSortKey("admissionRatio", false));
+            keys.add(new OrderedSortKey("finalScore", true));
+            return keys;
+        }
+        keys.add(new OrderedSortKey("admissionRatio", false));
+        keys.add(new OrderedSortKey("schoolRank", false));
+        keys.add(new OrderedSortKey("finalScore", true));
+        return keys;
+    }
+
+    private String resolveCandidateSchoolGroupKey(CandidateItemDTO candidate) {
+        if (candidate == null) {
+            return "";
+        }
+        return firstNonEmpty(candidate.getPlanSchoolDataId(), candidate.getSchoolId(), candidate.getSchoolName());
+    }
+
+    private String resolveUnitSchoolGroupKey(OrderedUnitDTO unit) {
+        if (unit == null) {
+            return "";
+        }
+        return firstNonEmpty(unit.getUnitId(), unit.getSchoolName());
+    }
+
+    private String firstNonEmpty(String... values) {
+        for (String value : values) {
+            if (!Strings.isNullOrEmpty(value)) {
+                return value;
+            }
+        }
+        return "";
+    }
+
+    private int compareNullableText(String left, String right) {
+        return String.valueOf(left).compareTo(String.valueOf(right));
+    }
+
+    private static class OrderedSortKey {
+        private final String field;
+        private final boolean descending;
+
+        private OrderedSortKey(String field, boolean descending) {
+            this.field = field;
+            this.descending = descending;
+        }
+    }
+
     private Map<String, CandidateItemDTO> buildCandidateMap(List<CandidateItemDTO> candidates) {
         return defaultCandidates(candidates).stream()
                 .filter(candidate -> !Strings.isNullOrEmpty(candidate.getVolunteerId()))
                 .collect(Collectors.toMap(CandidateItemDTO::getVolunteerId, candidate -> candidate, (left, right) -> left, LinkedHashMap::new));
+    }
+
+    private static class CandidateResolver {
+        private final Map<String, CandidateItemDTO> byVolunteerId = new LinkedHashMap<String, CandidateItemDTO>();
+        private final Map<String, CandidateItemDTO> byLegacyVolunteerPrefix = new LinkedHashMap<String, CandidateItemDTO>();
+        private final Set<String> duplicatedLegacyVolunteerPrefixes = new HashSet<String>();
+        private final Map<String, CandidateItemDTO> bySchoolAndMajor = new LinkedHashMap<String, CandidateItemDTO>();
+        private final Set<String> duplicatedSchoolAndMajors = new HashSet<String>();
+
+        private CandidateResolver(List<CandidateItemDTO> candidates) {
+            for (CandidateItemDTO candidate : candidates == null ? Lists.<CandidateItemDTO>newArrayList() : candidates) {
+                if (candidate == null) {
+                    continue;
+                }
+                putUnique(byVolunteerId, null, candidate.getVolunteerId(), candidate);
+                putUnique(byLegacyVolunteerPrefix, duplicatedLegacyVolunteerPrefixes,
+                        legacyVolunteerPrefix(candidate.getVolunteerId()), candidate);
+                putUnique(bySchoolAndMajor, duplicatedSchoolAndMajors,
+                        schoolAndMajorKey(candidate.getSchoolName(), candidate.getMajorName()), candidate);
+            }
+        }
+
+        private CandidateItemDTO resolve(OrderedItemDTO item) {
+            if (item == null) {
+                return null;
+            }
+            CandidateItemDTO candidate = resolve(item.getVolunteerId());
+            if (candidate != null) {
+                return candidate;
+            }
+            return resolveBySchoolAndMajor(item.getSchoolName(), item.getMajorName());
+        }
+
+        private CandidateItemDTO resolve(String volunteerId) {
+            if (Strings.isNullOrEmpty(volunteerId)) {
+                return null;
+            }
+            CandidateItemDTO candidate = byVolunteerId.get(volunteerId);
+            if (candidate != null) {
+                return candidate;
+            }
+            String legacyPrefix = legacyVolunteerPrefix(volunteerId);
+            if (!Strings.isNullOrEmpty(legacyPrefix) && !duplicatedLegacyVolunteerPrefixes.contains(legacyPrefix)) {
+                return byLegacyVolunteerPrefix.get(legacyPrefix);
+            }
+            return null;
+        }
+
+        private CandidateItemDTO resolveBySchoolAndMajor(String schoolName, String majorName) {
+            String key = schoolAndMajorKey(schoolName, majorName);
+            if (Strings.isNullOrEmpty(key) || duplicatedSchoolAndMajors.contains(key)) {
+                return null;
+            }
+            return bySchoolAndMajor.get(key);
+        }
+
+        private static void putUnique(Map<String, CandidateItemDTO> target,
+                                      Set<String> duplicates,
+                                      String key,
+                                      CandidateItemDTO candidate) {
+            if (Strings.isNullOrEmpty(key)) {
+                return;
+            }
+            if (target.containsKey(key)) {
+                if (duplicates != null) {
+                    duplicates.add(key);
+                }
+                return;
+            }
+            target.put(key, candidate);
+        }
+
+        private static String legacyVolunteerPrefix(String volunteerId) {
+            if (Strings.isNullOrEmpty(volunteerId)) {
+                return null;
+            }
+            String[] parts = volunteerId.split("_", -1);
+            if (parts.length < 2 || Strings.isNullOrEmpty(parts[0]) || Strings.isNullOrEmpty(parts[1])) {
+                return null;
+            }
+            return parts[0] + "_" + parts[1];
+        }
+
+        private static String schoolAndMajorKey(String schoolName, String majorName) {
+            if (Strings.isNullOrEmpty(schoolName) || Strings.isNullOrEmpty(majorName)) {
+                return null;
+            }
+            return schoolName.trim() + "\n" + majorName.trim();
+        }
     }
 
     private String normalizeOrderedSortField(String sortField) {
