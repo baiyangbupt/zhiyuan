@@ -24,9 +24,11 @@ import {
   generatePlanningInitialPlanApi,
   getPlanningWorkspaceStateApi,
   movePlanningOrderedItemApi,
+  movePlanningOrderedUnitApi,
   pinPlanningOrderedItemApi,
   queryPlanningCandidatePoolApi,
   removePlanningDraftItemsApi,
+  removePlanningOrderedUnitApi,
   runPlanningReviewApi,
   selectPlanningDraftItemsApi,
   sortPlanningOrderedPlanApi,
@@ -138,6 +140,11 @@ interface SchoolHistoryModalState {
 
 interface OrderedMoveModalState {
   item: PlanningOrderedItem;
+  currentPosition: number;
+}
+
+interface OrderedUnitMoveModalState {
+  group: OrderedGroup;
   currentPosition: number;
 }
 
@@ -475,6 +482,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     useState<PlanningOrderedSortField>('admissionRatio');
   const [orderedMoveModal, setOrderedMoveModal] = useState<OrderedMoveModalState | null>(null);
   const [orderedMoveTargetPosition, setOrderedMoveTargetPosition] = useState<number>(1);
+  const [orderedUnitMoveModal, setOrderedUnitMoveModal] = useState<OrderedUnitMoveModalState | null>(null);
+  const [orderedUnitMoveTargetPosition, setOrderedUnitMoveTargetPosition] = useState<number>(1);
   const candidateQueryInFlightPagesRef = useRef<Set<string>>(new Set());
   const [filterPanelOpen, setFilterPanelOpen] = useState(false);
   const [filterSearchKeyword, setFilterSearchKeyword] = useState('');
@@ -1571,6 +1580,135 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       '方案位置已更新'
     );
     setOrderedMoveModal(null);
+  };
+
+  const applyMoveOrderedUnit = async (
+    group: OrderedGroup,
+    targetPosition: number,
+    loadingText: string,
+    successText?: string
+  ) => {
+    if (!group?.key || actionLoading) {
+      return;
+    }
+    const normalizedTargetPosition = Math.max(1, Math.min(targetPosition, groupedOrderedList.length));
+    const currentPosition = groupedOrderedList.findIndex(item => item.key === group.key) + 1;
+    if (!currentPosition || normalizedTargetPosition === currentPosition) {
+      return;
+    }
+    setActionLoading('ordered');
+    setOrderedActionVolunteerId(group.key);
+    const hideLoading = message.loading(loadingText, 0);
+    try {
+      const { data, code } = await movePlanningOrderedUnitApi(
+        routerParams.tenantId,
+        routerParams.chatSessionId,
+        group.key,
+        normalizedTargetPosition
+      );
+      if (code === 0) {
+        if (successText) {
+          message.success(successText);
+        }
+        if (data) {
+          setPlanningState(prev => ({
+            ...(prev || {}),
+            ...data,
+            orderedPlanState: data.orderedPlanState || prev?.orderedPlanState,
+          }));
+        }
+      } else {
+        message.error('更新专业组位置失败');
+      }
+    } catch (error) {
+      message.error('更新专业组位置异常，请稍后重试');
+    }
+    hideLoading();
+    setActionLoading(null);
+    setOrderedActionVolunteerId(null);
+  };
+
+  const handleMoveOrderedUnit = async (
+    group: OrderedGroup,
+    currentIndex: number,
+    direction: 'up' | 'down'
+  ) => {
+    const currentPosition = currentIndex + 1;
+    const targetPosition = direction === 'up' ? currentPosition - 1 : currentPosition + 1;
+    if (targetPosition < 1 || targetPosition > groupedOrderedList.length) {
+      return;
+    }
+    await applyMoveOrderedUnit(
+      group,
+      targetPosition,
+      direction === 'up' ? '正在上移专业组...' : '正在下移专业组...'
+    );
+  };
+
+  const openOrderedUnitMoveModal = (group: OrderedGroup, currentIndex: number) => {
+    if (!group?.key || actionLoading) {
+      return;
+    }
+    const currentPosition = currentIndex + 1;
+    setOrderedUnitMoveModal({
+      group,
+      currentPosition,
+    });
+    setOrderedUnitMoveTargetPosition(currentPosition);
+  };
+
+  const closeOrderedUnitMoveModal = () => {
+    if (actionLoading === 'ordered') {
+      return;
+    }
+    setOrderedUnitMoveModal(null);
+  };
+
+  const handleMoveOrderedUnitToTarget = async () => {
+    if (!orderedUnitMoveModal?.group || actionLoading) {
+      return;
+    }
+    await applyMoveOrderedUnit(
+      orderedUnitMoveModal.group,
+      orderedUnitMoveTargetPosition,
+      '正在移动专业组...',
+      '专业组位置已更新'
+    );
+    setOrderedUnitMoveModal(null);
+  };
+
+  const handleRemoveOrderedUnit = async (group: OrderedGroup) => {
+    if (!group?.key || actionLoading) {
+      return;
+    }
+    setActionLoading('ordered');
+    setOrderedActionVolunteerId(group.key);
+    try {
+      const { data, code } = await removePlanningOrderedUnitApi(
+        routerParams.tenantId,
+        routerParams.chatSessionId,
+        [group.key]
+      );
+      if (code === 0) {
+        message.success('已移出该专业组');
+        if (data) {
+          setPlanningState(prev => ({
+            ...(prev || {}),
+            ...data,
+            orderedPlanState: data.orderedPlanState || prev?.orderedPlanState,
+          }));
+        } else {
+          await fetchWorkspaceState();
+        }
+        queryCandidatePool(candidatePoolResult.page || 1);
+      } else {
+        message.error('移出专业组失败');
+      }
+    } catch (error) {
+      message.error('移出专业组异常，请稍后重试');
+    }
+    setActionLoading(null);
+    setOrderedActionVolunteerId(null);
   };
 
   const handleTogglePin = async (item?: PlanningOrderedItem) => {
@@ -3347,6 +3485,41 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                     {getGroupCountLabel(group.orderedItems.length)}
                                   </div>
                                 </div>
+                                <div className={`${style.orderedActions} ${style.orderedGroupActions}`}>
+                                  <Tooltip title="整组上移">
+                                    <Button
+                                      icon={<VerticalAlignTopOutlined />}
+                                      loading={orderedActionVolunteerId === group.key && actionLoading === 'ordered'}
+                                      disabled={groupIndex === 0 || (actionLoading === 'ordered' && orderedActionVolunteerId !== group.key)}
+                                      onClick={() => handleMoveOrderedUnit(group, groupIndex, 'up')}
+                                    />
+                                  </Tooltip>
+                                  <Tooltip title="整组下移">
+                                    <Button
+                                      icon={<VerticalAlignBottomOutlined />}
+                                      loading={orderedActionVolunteerId === group.key && actionLoading === 'ordered'}
+                                      disabled={groupIndex === groupedOrderedList.length - 1 || (actionLoading === 'ordered' && orderedActionVolunteerId !== group.key)}
+                                      onClick={() => handleMoveOrderedUnit(group, groupIndex, 'down')}
+                                    />
+                                  </Tooltip>
+                                  <Tooltip title="整组移动到指定位置">
+                                    <Button
+                                      icon={<SwapOutlined />}
+                                      loading={orderedActionVolunteerId === group.key && actionLoading === 'ordered'}
+                                      disabled={groupedOrderedList.length <= 1 || (actionLoading === 'ordered' && orderedActionVolunteerId !== group.key)}
+                                      onClick={() => openOrderedUnitMoveModal(group, groupIndex)}
+                                    />
+                                  </Tooltip>
+                                  <Tooltip title="整组删除">
+                                    <Button
+                                      danger
+                                      icon={<DeleteOutlined />}
+                                      loading={orderedActionVolunteerId === group.key && actionLoading === 'ordered'}
+                                      disabled={actionLoading === 'ordered' && orderedActionVolunteerId !== group.key}
+                                      onClick={() => handleRemoveOrderedUnit(group)}
+                                    />
+                                  </Tooltip>
+                                </div>
                               </div>
                               <div className={style.orderedGroupMajorList}>
                                 {group.orderedItems.map((entry, itemIndex) => {
@@ -3629,6 +3802,49 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
               disabled={actionLoading === 'ordered' || orderedMoveModal?.currentPosition === orderedItems.length}
               type={orderedMoveTargetPosition === orderedItems.length ? 'primary' : 'default'}
               onClick={() => setOrderedMoveTargetPosition(orderedItems.length)}
+            >
+              移到底部
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        title="移动专业组"
+        open={Boolean(orderedUnitMoveModal)}
+        okText="确认移动"
+        cancelText="取消"
+        confirmLoading={actionLoading === 'ordered'}
+        onOk={() => handleMoveOrderedUnitToTarget()}
+        onCancel={closeOrderedUnitMoveModal}
+      >
+        <div className={style.moveModalBody}>
+          <div className={style.moveModalHint}>
+            当前第 {orderedUnitMoveModal?.currentPosition || '-'} 组，移动后会改变当前方案顺序，审查结果需要重新确认。
+          </div>
+          <div className={style.moveTargetRow}>
+            <span>目标位置</span>
+            <InputNumber
+              min={1}
+              max={Math.max(groupedOrderedList.length, 1)}
+              precision={0}
+              value={orderedUnitMoveTargetPosition}
+              onChange={value => setOrderedUnitMoveTargetPosition(Number(value || 1))}
+            />
+            <span>组</span>
+          </div>
+          <div className={style.moveQuickActions}>
+            <Button
+              disabled={actionLoading === 'ordered' || orderedUnitMoveModal?.currentPosition === 1}
+              type={orderedUnitMoveTargetPosition === 1 ? 'primary' : 'default'}
+              onClick={() => setOrderedUnitMoveTargetPosition(1)}
+            >
+              移到顶部
+            </Button>
+            <Button
+              disabled={actionLoading === 'ordered' || orderedUnitMoveModal?.currentPosition === groupedOrderedList.length}
+              type={orderedUnitMoveTargetPosition === groupedOrderedList.length ? 'primary' : 'default'}
+              onClick={() => setOrderedUnitMoveTargetPosition(groupedOrderedList.length)}
             >
               移到底部
             </Button>

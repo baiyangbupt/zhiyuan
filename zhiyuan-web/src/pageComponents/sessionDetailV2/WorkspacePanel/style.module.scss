@@ -99,6 +99,10 @@
   gap: 8px;
 }
 
+.orderedGroupActions {
+  flex-shrink: 0;
+}
+
 .backTopButton {
   position: absolute;
   right: 20px;

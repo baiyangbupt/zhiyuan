@@ -495,6 +495,34 @@ export const movePlanningOrderedItemApi = (
     },
   });
 
+export const movePlanningOrderedUnitApi = (
+  tenantId: string,
+  chatSessionId: string,
+  unitId: string,
+  targetPosition: number
+) =>
+  request<{ unitId: string; targetPosition: number }, OrderedPlanActionRes>({
+    url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/ordered-plan/unit/move?chatSessionId=${chatSessionId}`,
+    method: 'post',
+    data: {
+      unitId,
+      targetPosition,
+    },
+  });
+
+export const removePlanningOrderedUnitApi = (
+  tenantId: string,
+  chatSessionId: string,
+  unitIds: string[]
+) =>
+  request<{ unitIds: string[] }, OrderedPlanActionRes>({
+    url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/ordered-plan/unit/remove?chatSessionId=${chatSessionId}`,
+    method: 'post',
+    data: {
+      unitIds,
+    },
+  });
+
 export const sortPlanningOrderedPlanApi = (
   tenantId: string,
   chatSessionId: string,
