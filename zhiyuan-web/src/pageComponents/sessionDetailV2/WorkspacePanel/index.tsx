@@ -1602,14 +1602,13 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     setOrderedMoveModal(null);
   };
 
-  const handleMoveOrderedItemToTarget = async (targetPosition?: number) => {
+  const handleMoveOrderedItemToTarget = async () => {
     if (!orderedMoveModal?.item || actionLoading) {
       return;
     }
-    const nextTargetPosition = targetPosition || orderedMoveTargetPosition;
     await applyMoveOrderedItem(
       orderedMoveModal.item,
-      nextTargetPosition,
+      orderedMoveTargetPosition,
       '正在移动志愿...',
       '方案位置已更新'
     );
@@ -3652,13 +3651,15 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
           <div className={style.moveQuickActions}>
             <Button
               disabled={actionLoading === 'ordered' || orderedMoveModal?.currentPosition === 1}
-              onClick={() => handleMoveOrderedItemToTarget(1)}
+              type={orderedMoveTargetPosition === 1 ? 'primary' : 'default'}
+              onClick={() => setOrderedMoveTargetPosition(1)}
             >
               移到顶部
             </Button>
             <Button
               disabled={actionLoading === 'ordered' || orderedMoveModal?.currentPosition === orderedItems.length}
-              onClick={() => handleMoveOrderedItemToTarget(orderedItems.length)}
+              type={orderedMoveTargetPosition === orderedItems.length ? 'primary' : 'default'}
+              onClick={() => setOrderedMoveTargetPosition(orderedItems.length)}
             >
               移到底部
             </Button>
