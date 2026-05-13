@@ -30,6 +30,8 @@ import com.ytell.zhiyuan.model.dto.planning.OrderedPlanSortReq;
 import com.ytell.zhiyuan.model.dto.planning.OrderedItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.OrderedPlanStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.OrderedUnitDTO;
+import com.ytell.zhiyuan.model.dto.planning.OrderedUnitMoveReq;
+import com.ytell.zhiyuan.model.dto.planning.OrderedUnitRemoveReq;
 import com.ytell.zhiyuan.model.dto.planning.PlanAdjustmentAnalyzeReq;
 import com.ytell.zhiyuan.model.dto.planning.PlanAdjustmentStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.AddSuggestionDTO;
@@ -2940,6 +2942,68 @@ public class PlanningStateServiceTest {
     }
 
     @Test
+    void shouldMoveAndRemoveMajorGroupOrderedUnits() {
+        bindPlanningStateStore();
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+        CandidatePoolStateDTO candidatePoolState = new CandidatePoolStateDTO();
+        candidatePoolState.setVolunteerModel(VolunteerModel.majorGroup.name());
+        candidatePoolState.setRequiredCount(2);
+        candidatePoolState.getItems().add(buildCandidateItem("ps1_m1", "ps1", "s1", "学校A", "冲", "专业A1", 35D, 60D, 35D, false));
+        candidatePoolState.getItems().add(buildCandidateItem("ps1_m2", "ps1", "s1", "学校A", "冲", "专业A2", 33D, 58D, 35D, false));
+        candidatePoolState.getItems().add(buildCandidateItem("ps2_m3", "ps2", "s2", "学校B", "稳", "专业B1", 45D, 90D, 45D, false));
+        candidatePoolState.getItems().add(buildCandidateItem("ps2_m4", "ps2", "s2", "学校B", "稳", "专业B2", 48D, 88D, 45D, false));
+        state.setCandidatePoolState(candidatePoolState);
+
+        DraftPlanStateDTO draftPlanState = new DraftPlanStateDTO();
+        draftPlanState.getItems().add(buildDraftItem("ps1_m1", "学校A", "专业A1", "冲"));
+        draftPlanState.getItems().add(buildDraftItem("ps1_m2", "学校A", "专业A2", "冲"));
+        draftPlanState.getItems().add(buildDraftItem("ps2_m3", "学校B", "专业B1", "稳"));
+        draftPlanState.getItems().add(buildDraftItem("ps2_m4", "学校B", "专业B2", "稳"));
+        ReflectionTestUtils.invokeMethod(planningStateService, "syncDraftUnitsWithItems", draftPlanState, candidatePoolState.getItems(), candidatePoolState);
+        ReflectionTestUtils.invokeMethod(planningStateService, "recalculateDraftSummary", draftPlanState, candidatePoolState);
+        state.setDraftPlanState(draftPlanState);
+
+        OrderedPlanStateDTO orderedPlanState = new OrderedPlanStateDTO();
+        orderedPlanState.getItems().add(buildOrderedItem("ps1_m1", "学校A", "专业A1", "冲", 1));
+        orderedPlanState.getItems().add(buildOrderedItem("ps1_m2", "学校A", "专业A2", "冲", 2));
+        orderedPlanState.getItems().add(buildOrderedItem("ps2_m3", "学校B", "专业B1", "稳", 3));
+        orderedPlanState.getItems().add(buildOrderedItem("ps2_m4", "学校B", "专业B2", "稳", 4));
+        orderedPlanState.setUnits(ReflectionTestUtils.invokeMethod(planningStateService,
+                "buildOrderedUnitsFromOrderedItems", orderedPlanState.getItems(), draftPlanState, candidatePoolState.getItems()));
+        state.setOrderedPlanState(orderedPlanState);
+        ReflectionTestUtils.invokeMethod(planningStateService, "recalculateOrderedSummary", orderedPlanState, candidatePoolState);
+        saveStateToStore(1L, state);
+
+        OrderedUnitMoveReq moveReq = new OrderedUnitMoveReq();
+        moveReq.setUnitId("ps2");
+        moveReq.setTargetPosition(1);
+        PlanningStateDTO moved = planningStateService.moveOrderedUnit(1L, moveReq);
+        assertEquals("ps2_m3", moved.getOrderedPlanState().getItems().get(0).getVolunteerId());
+        assertEquals("ps2_m4", moved.getOrderedPlanState().getItems().get(1).getVolunteerId());
+        assertEquals("ps1_m1", moved.getOrderedPlanState().getItems().get(2).getVolunteerId());
+        assertEquals("ps1_m2", moved.getOrderedPlanState().getItems().get(3).getVolunteerId());
+        assertEquals("ps2", moved.getOrderedPlanState().getUnits().get(0).getUnitId());
+        assertTrue(moved.getBehaviorEvents().stream().anyMatch(event ->
+                "plan_unit_move".equals(event.getEventType()) && event.getUnitIds().contains("ps2")));
+        assertTrue(moved.getStaleFlags().getReview());
+
+        saveStateToStore(1L, moved);
+        OrderedUnitRemoveReq removeReq = new OrderedUnitRemoveReq();
+        removeReq.setUnitIds(java.util.Arrays.asList("ps1"));
+        PlanningStateDTO removed = planningStateService.removeOrderedUnits(1L, removeReq);
+        assertEquals(2, removed.getOrderedPlanState().getItems().size());
+        assertEquals("ps2_m3", removed.getOrderedPlanState().getItems().get(0).getVolunteerId());
+        assertEquals("ps2_m4", removed.getOrderedPlanState().getItems().get(1).getVolunteerId());
+        assertEquals(1, removed.getOrderedPlanState().getUnits().size());
+        assertEquals("ps2", removed.getOrderedPlanState().getUnits().get(0).getUnitId());
+        assertEquals(2, removed.getDraftPlanState().getItems().size());
+        assertEquals(1, removed.getDraftPlanState().getUnits().size());
+        assertTrue(removed.getBehaviorEvents().stream().anyMatch(event ->
+                "plan_unit_remove".equals(event.getEventType()) && event.getUnitIds().contains("ps1")));
+    }
+
+    @Test
     void shouldSortWithinTierByAdmissionRatioWhenGenerateOrderedPlan() {
         when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
                 .thenReturn(null);
@@ -3804,6 +3868,19 @@ public class PlanningStateServiceTest {
         item.setMajorName(majorName);
         item.setTier(tier);
         item.setPosition(position);
+        item.setSource("test");
+        return item;
+    }
+
+    private DraftItemDTO buildDraftItem(String volunteerId,
+                                        String schoolName,
+                                        String majorName,
+                                        String tier) {
+        DraftItemDTO item = new DraftItemDTO();
+        item.setVolunteerId(volunteerId);
+        item.setSchoolName(schoolName);
+        item.setMajorName(majorName);
+        item.setTier(tier);
         item.setSource("test");
         return item;
     }

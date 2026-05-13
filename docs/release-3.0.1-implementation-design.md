@@ -579,6 +579,12 @@ Content-Type: application/json
 
 返回沿用 `OrderedPlanActionRes`。
 
+落地状态：
+
+- 后端已新增接口，移动时按 `unitId` 整组搬迁，组内专业顺序保持不变。
+- 操作成功后重建 `orderedPlanState.items/units`，并将 `review` 与 `planAdjustment` 标记为过期。
+- 成功操作记录 `plan_unit_move` 行为事件，包含 `unitIds` 和组内 `volunteerIds`。
+
 ### 3.2 新增组级删除
 
 ```http
@@ -591,6 +597,12 @@ Content-Type: application/json
 ```
 
 返回沿用工作区轻量状态或 `OrderedPlanActionRes`，详细实现阶段二选一，优先减少前端刷新次数。
+
+落地状态：
+
+- 后端已新增接口，删除时同步移除 `draftPlanState.items/units` 与 `orderedPlanState.items/units` 中对应专业组，避免候选页方案篮和方案页不一致。
+- 操作成功后重算 draft / ordered summary，并将 `review` 与 `planAdjustment` 标记为过期。
+- 成功操作记录 `plan_unit_remove` 行为事件，包含 `unitIds` 和组内 `volunteerIds`。
 
 ### 3.3 行为事件查询
 

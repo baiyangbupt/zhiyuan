@@ -1275,6 +1275,98 @@ public class PlanningStateService {
         return saveOrderedState(chatSessionId, state);
     }
 
+    public PlanningStateDTO moveOrderedUnit(Long chatSessionId, OrderedUnitMoveReq req) {
+        PlanningStateDTO state = loadPlanningState(chatSessionId);
+        OrderedPlanStateDTO orderedPlanState = ensureOrderedPlanState(state);
+        List<OrderedItemDTO> current = defaultOrderedItems(orderedPlanState.getItems());
+        String unitId = req == null ? null : req.getUnitId();
+        if (Strings.isNullOrEmpty(unitId) || current.isEmpty()) {
+            state.setSessionId(chatSessionId);
+            return state;
+        }
+        List<OrderedItemDTO> unitItems = current.stream()
+                .filter(item -> unitId.equals(resolveDraftOrOrderedUnitId(item)))
+                .collect(Collectors.toList());
+        if (unitItems.isEmpty()) {
+            state.setSessionId(chatSessionId);
+            return state;
+        }
+        List<String> orderedUnitIds = buildOrderedUnitIds(current);
+        int currentUnitIndex = orderedUnitIds.indexOf(unitId);
+        int targetUnitIndex = normalizeIndex(req.getTargetPosition(), orderedUnitIds.size());
+        if (currentUnitIndex < 0 || targetUnitIndex == currentUnitIndex) {
+            state.setSessionId(chatSessionId);
+            return state;
+        }
+        List<String> nextUnitIds = new ArrayList<String>(orderedUnitIds);
+        nextUnitIds.remove(currentUnitIndex);
+        nextUnitIds.add(targetUnitIndex, unitId);
+        Map<String, List<OrderedItemDTO>> groupedItems = current.stream()
+                .collect(Collectors.groupingBy(this::resolveDraftOrOrderedUnitId, LinkedHashMap::new, Collectors.toList()));
+        List<OrderedItemDTO> moved = Lists.newArrayList();
+        for (String nextUnitId : nextUnitIds) {
+            List<OrderedItemDTO> nextItems = groupedItems.get(nextUnitId);
+            if (nextItems != null) {
+                moved.addAll(nextItems);
+            }
+        }
+        for (OrderedItemDTO item : unitItems) {
+            item.setOrderedBy("user");
+            item.setOrderReason("user_unit_move");
+        }
+        List<CandidateItemDTO> candidates = resolveEffectiveCandidates(null, chatSessionId, state, false);
+        orderedPlanState.setItems(rebuildOrderedItems(moved));
+        orderedPlanState.setUnits(buildOrderedUnitsFromOrderedItems(orderedPlanState.getItems(), state.getDraftPlanState(), candidates));
+        recalculateOrderedSummary(orderedPlanState, state.getCandidatePoolState());
+        state.setOrderedPlanState(orderedPlanState);
+        state.getStaleFlags().setReview(true);
+        state.getStaleFlags().setPlanAdjustment(true);
+        appendUnitBehaviorEvent(state, chatSessionId, "plan_unit_move", unitId, unitItems);
+        return saveOrderedState(chatSessionId, state);
+    }
+
+    public PlanningStateDTO removeOrderedUnits(Long chatSessionId, OrderedUnitRemoveReq req) {
+        PlanningStateDTO state = loadPlanningState(chatSessionId);
+        OrderedPlanStateDTO orderedPlanState = ensureOrderedPlanState(state);
+        Set<String> unitIds = new LinkedHashSet<String>(defaultList(req == null ? null : req.getUnitIds()));
+        if (unitIds.isEmpty()) {
+            state.setSessionId(chatSessionId);
+            return state;
+        }
+        List<OrderedItemDTO> removedItems = defaultOrderedItems(orderedPlanState.getItems()).stream()
+                .filter(item -> unitIds.contains(resolveDraftOrOrderedUnitId(item)))
+                .collect(Collectors.toList());
+        if (removedItems.isEmpty()) {
+            state.setSessionId(chatSessionId);
+            return state;
+        }
+        orderedPlanState.setItems(rebuildOrderedItems(defaultOrderedItems(orderedPlanState.getItems()).stream()
+                .filter(item -> !unitIds.contains(resolveDraftOrOrderedUnitId(item)))
+                .collect(Collectors.toList())));
+        DraftPlanStateDTO draft = state.getDraftPlanState();
+        draft.setItems(defaultDraftItems(draft.getItems()).stream()
+                .filter(item -> !unitIds.contains(resolveDraftOrOrderedUnitId(item)))
+                .collect(Collectors.toList()));
+        List<CandidateItemDTO> candidates = resolveEffectiveCandidates(null, chatSessionId, state, false);
+        syncDraftUnitsWithItems(draft, candidates, state.getCandidatePoolState());
+        recalculateDraftSummary(draft, state.getCandidatePoolState());
+        orderedPlanState.setUnits(buildOrderedUnitsFromOrderedItems(orderedPlanState.getItems(), draft, candidates));
+        recalculateOrderedSummary(orderedPlanState, state.getCandidatePoolState());
+        state.setDraftPlanState(draft);
+        state.setOrderedPlanState(orderedPlanState);
+        state.getStaleFlags().setReview(true);
+        state.getStaleFlags().setPlanAdjustment(true);
+        for (String unitId : unitIds) {
+            List<OrderedItemDTO> removedUnitItems = removedItems.stream()
+                    .filter(item -> unitId.equals(resolveDraftOrOrderedUnitId(item)))
+                    .collect(Collectors.toList());
+            if (!removedUnitItems.isEmpty()) {
+                appendUnitBehaviorEvent(state, chatSessionId, "plan_unit_remove", unitId, removedUnitItems);
+            }
+        }
+        return saveOrderedState(chatSessionId, state);
+    }
+
     public PlanningStateDTO sortOrderedPlan(Long chatSessionId, OrderedPlanSortReq req) {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
         OrderedPlanStateDTO orderedPlanState = ensureOrderedPlanState(state);
@@ -4170,6 +4262,33 @@ public class PlanningStateService {
         event.setGenerationMode(state.getOrderedPlanState() == null ? null : state.getOrderedPlanState().getGenerationMode());
         event.setVolunteerIds(Lists.newArrayList(defaultList(volunteerIds)));
         event.setPositiveFeedback(positiveFeedback);
+        event.setCreatedAt(OffsetDateTime.now().toString());
+        state.getBehaviorEvents().add(event);
+    }
+
+    private void appendUnitBehaviorEvent(PlanningStateDTO state,
+                                         Long chatSessionId,
+                                         String eventType,
+                                         String unitId,
+                                         List<OrderedItemDTO> items) {
+        if (state == null || Strings.isNullOrEmpty(unitId)) {
+            return;
+        }
+        if (state.getBehaviorEvents() == null) {
+            state.setBehaviorEvents(Lists.newArrayList());
+        }
+        PlanningBehaviorEventDTO event = new PlanningBehaviorEventDTO();
+        event.setEventId(UUID.randomUUID().toString());
+        event.setChatSessionId(chatSessionId);
+        event.setEventType(eventType);
+        event.setPlanVersion(state.getVersion());
+        event.setGenerationMode(state.getOrderedPlanState() == null ? null : state.getOrderedPlanState().getGenerationMode());
+        event.setUnitIds(Lists.newArrayList(unitId));
+        event.setVolunteerIds(defaultOrderedItems(items).stream()
+                .map(OrderedItemDTO::getVolunteerId)
+                .filter(value -> !Strings.isNullOrEmpty(value))
+                .collect(Collectors.toList()));
+        event.setPositiveFeedback(false);
         event.setCreatedAt(OffsetDateTime.now().toString());
         state.getBehaviorEvents().add(event);
     }
@@ -7364,6 +7483,17 @@ public class PlanningStateService {
             }
         }
         return result;
+    }
+
+    private List<String> buildOrderedUnitIds(List<OrderedItemDTO> items) {
+        List<String> unitIds = Lists.newArrayList();
+        for (OrderedItemDTO item : defaultOrderedItems(items)) {
+            String unitId = resolveDraftOrOrderedUnitId(item);
+            if (!Strings.isNullOrEmpty(unitId) && !unitIds.contains(unitId)) {
+                unitIds.add(unitId);
+            }
+        }
+        return unitIds;
     }
 
     private int resolveMovableTargetIndex(List<OrderedItemDTO> items, int currentIndex, Integer requestedPosition) {

@@ -9,6 +9,7 @@
 - `planning workspace` 方案排序成功后会将审查和调整建议标记为过期；若方案已有审查结果，工作区状态展示为待重新审查，避免继续沿用旧顺序下的审查结论。
 - `planning workspace` 单条移动到目标位置成功后同步将审查和调整建议标记为过期，避免沿用旧顺序下的审查结论。
 - `planning workspace` 移出方案项不再受旧 `draftItem.locked` 字段阻断，避免新版前端不展示锁定入口后历史锁字段仍导致删除无效。
+- `planning workspace` 新增专业组模式下的 `ordered-plan/unit/move` 与 `ordered-plan/unit/remove` 接口，支持按专业组整体移动和删除，保持组内专业顺序，并记录 `plan_unit_move / plan_unit_remove` 行为事件。
 - `planning workspace` 补充历史方案候选详情兼容解析：当迁移会话的方案 `volunteerId` 与候选 `volunteerId` 第三段不一致时，工作区轻量状态仍能返回当前方案引用候选，方案排序也能正确读取院校排名、录取率和推荐系数。
 - `planning workspace` 新增统一 `workflowStatus`，后端按候选、方案、审查、导出四类状态派生用户侧状态值；内部 `draftPlanState` 继续保留兼容，但不再作为用户侧主状态暴露。
 - `candidatePoolState` 新增 `statusCode/statusMessage/riskHints`，候选为空时阻止继续生成空方案，候选偏少时允许继续生成但沉淀风险提示。

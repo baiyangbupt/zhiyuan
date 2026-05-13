@@ -290,6 +290,28 @@ public class PlanningStateController {
                 planningStateService.moveOrderedItem(chatSessionId, req)));
     }
 
+    @PostMapping("/session/ordered-plan/unit/move")
+    @ApiOperation("移动排序专业组")
+    public BaseResponse<OrderedPlanActionRes> moveOrderedPlanUnit(@PathVariable("tenantId") Long tenantId,
+                                                                  @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId,
+                                                                  @RequestBody OrderedUnitMoveReq req) {
+        log.info("moveOrderedPlanUnit: tenantId={}, chatSessionId={}, unitId={}", tenantId, chatSessionId,
+                req == null ? null : req.getUnitId());
+        return BaseResponse.success(planningStateService.buildOrderedPlanActionRes(
+                planningStateService.moveOrderedUnit(chatSessionId, req)));
+    }
+
+    @PostMapping("/session/ordered-plan/unit/remove")
+    @ApiOperation("删除排序专业组")
+    public BaseResponse<OrderedPlanActionRes> removeOrderedPlanUnit(@PathVariable("tenantId") Long tenantId,
+                                                                    @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId,
+                                                                    @RequestBody OrderedUnitRemoveReq req) {
+        log.info("removeOrderedPlanUnit: tenantId={}, chatSessionId={}, unitIds={}", tenantId, chatSessionId,
+                req == null ? null : req.getUnitIds());
+        return BaseResponse.success(planningStateService.buildOrderedPlanActionRes(
+                planningStateService.removeOrderedUnits(chatSessionId, req)));
+    }
+
     @PostMapping("/session/ordered-plan/sort")
     @ApiOperation("按指定维度重排当前方案")
     public BaseResponse<OrderedPlanActionRes> sortOrderedPlan(@PathVariable("tenantId") Long tenantId,
