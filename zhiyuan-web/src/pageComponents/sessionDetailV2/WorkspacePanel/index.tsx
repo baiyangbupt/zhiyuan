@@ -2472,6 +2472,10 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     return isMajorGroupMode ? `组内${count}` : `专业${count}`;
   };
 
+  const getPlanSchoolRankTags = (tags?: string[]) => {
+    return (tags || []).filter(tag => tag.includes('院校排名'));
+  };
+
   const groupedOrderedList = useMemo<OrderedGroup[]>(() => {
     if (!isMajorGroupMode) {
       return [];
@@ -3434,12 +3438,6 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                 group.schoolCategory,
                                 group.schoolLevel,
                               ].filter(Boolean);
-                          const orderedStatusLabels = Array.from(
-                            new Set(group.orderedItems.map(entry => getOrderedItemStatusLabel(entry.orderedItem)))
-                          );
-                          const isPreferredGroup = group.orderedItems.some(
-                            entry => entry.orderedItem.source === 'initial_auto'
-                          );
                           return (
                             <div
                               key={group.key}
@@ -3450,21 +3448,16 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                 <div className={style.orderedContent}>
                                   <div className={`${style.cardTitleRow} ${style.groupTitleRow}`}>
                                     <div className={style.cardTitle}>{group.schoolName}</div>
-                                    {isPreferredGroup ? (
-                                      <Tag bordered={false} className={style.orderedPreferredTag}>
-                                        优选
-                                      </Tag>
-                                    ) : null}
-                                    {(group.schoolRankTags || []).map(tag => (
+                                    {getPlanSchoolRankTags(group.schoolRankTags).map(tag => (
                                       <Tag bordered={false} color="volcano" key={`${group.key}-${tag}`}>
                                         {tag}
                                       </Tag>
                                     ))}
-                                    {orderedStatusLabels.map(label => (
-                                      <Tag key={`${group.key}-${label}`} bordered={false} className={style.orderedStatusTag}>
-                                        {label}
+                                    {group.schoolEnrollRatio !== undefined && group.schoolEnrollRatio !== null ? (
+                                      <Tag bordered={false} color="orange" key={`${group.key}-school-enroll-ratio`}>
+                                        录取率 {formatPercent(group.schoolEnrollRatio)}
                                       </Tag>
-                                    ))}
+                                    ) : null}
                                   </div>
                                   <div className={style.orderedGroupMeta}>
                                     {metaItems.map(meta => (
@@ -3472,17 +3465,6 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                         {meta}
                                       </span>
                                     ))}
-                                  </div>
-                                </div>
-                                <div className={style.candidateGroupScore}>
-                                  <div className={style.candidateGroupScoreValue}>
-                                    {formatPercent(group.schoolEnrollRatio)}
-                                  </div>
-                                  <div className={style.candidateGroupScoreTier}>
-                                    {normalizeTierLabel(group.tier)}
-                                  </div>
-                                  <div className={style.candidateGroupScoreMeta}>
-                                    {getGroupCountLabel(group.orderedItems.length)}
                                   </div>
                                 </div>
                                 <div className={`${style.orderedActions} ${style.orderedGroupActions}`}>
@@ -3625,27 +3607,20 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                 <div className={style.positionBadge}>{index + 1}</div>
                                 <div className={style.orderedContent}>
                                   <div className={style.cardTitleRow}>
-                                    <Tag color={item.tier === '冲' ? 'red' : item.tier === '稳' ? 'gold' : 'green'}>
-                                      {item.tier}
-                                    </Tag>
                                     <div className={style.cardTitle}>{item.schoolName}</div>
-                                    {item.source === 'initial_auto' ? (
-                                      <Tag bordered={false} className={style.orderedPreferredTag}>
-                                        优选
-                                      </Tag>
-                                    ) : null}
-                                    {(candidateItem?.schoolRankTags || []).map(tag => (
+                                    {getPlanSchoolRankTags(candidateItem?.schoolRankTags).map(tag => (
                                       <Tag bordered={false} color="volcano" key={`${item.volunteerId}-${tag}`}>
                                         {tag}
                                       </Tag>
                                     ))}
-                                    <Tag bordered={false} className={style.orderedStatusTag}>
-                                      {getOrderedItemStatusLabel(item)}
-                                    </Tag>
+                                    {candidateItem?.admissionRatio !== undefined && candidateItem?.admissionRatio !== null ? (
+                                      <Tag bordered={false} color="orange" key={`${item.volunteerId}-admission-ratio`}>
+                                        录取率 {formatPercent(candidateItem.admissionRatio)}
+                                      </Tag>
+                                    ) : null}
                                   </div>
                                   <div className={style.cardSubtitle}>{renderMajorName(item.majorName)}</div>
                                   <div className={style.orderedMajorMeta}>
-                                    <span>录取率 {formatPercent(candidateItem?.admissionRatio)}</span>
                                     <span>推荐系数 {formatNumber(candidateItem?.finalScore)}</span>
                                     <span>专业热度 {formatNumber(candidateItem?.hotIndex)}</span>
                                     <Tooltip title={SALARY_AVG_TOOLTIP}>
