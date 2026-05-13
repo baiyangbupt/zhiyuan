@@ -2608,21 +2608,8 @@ public class PlanningStateServiceTest {
         DraftRemoveReq removeReq = new DraftRemoveReq();
         removeReq.setVolunteerIds(java.util.Arrays.asList("ps1_m1"));
         PlanningStateDTO removed = planningStateService.removeDraftItems(1L, removeReq);
-        assertEquals(Integer.valueOf(1), removed.getDraftPlanState().getSummary().getTotal());
-
-        stored = latestStoredStateFromUpdate();
-        when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
-                .thenReturn(stored);
-        lockReq.setLocked(false);
-        PlanningStateDTO unlocked = planningStateService.lockDraftItems(1L, lockReq);
-        assertFalse(Boolean.TRUE.equals(unlocked.getDraftPlanState().getItems().get(0).getLocked()));
-
-        stored = latestStoredStateFromUpdate();
-        when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
-                .thenReturn(stored);
-        PlanningStateDTO removedAfterUnlock = planningStateService.removeDraftItems(1L, removeReq);
-        assertEquals(Integer.valueOf(0), removedAfterUnlock.getDraftPlanState().getSummary().getTotal());
-        assertEquals(Integer.valueOf(0), removedAfterUnlock.getOrderedPlanState().getSummary().getTotal());
+        assertEquals(Integer.valueOf(0), removed.getDraftPlanState().getSummary().getTotal());
+        assertEquals(Integer.valueOf(0), removed.getOrderedPlanState().getSummary().getTotal());
     }
 
     @Test

@@ -1102,13 +1102,8 @@ public class PlanningStateService {
     public PlanningStateDTO removeDraftItems(Long chatSessionId, DraftRemoveReq req) {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
         DraftPlanStateDTO draft = state.getDraftPlanState();
-        Set<String> removableVolunteerIds = draft.getItems().stream()
-                .filter(item -> !Boolean.TRUE.equals(item.getLocked()))
-                .map(DraftItemDTO::getVolunteerId)
-                .collect(Collectors.toSet());
         draft.setItems(draft.getItems().stream()
-                .filter(item -> !defaultList(req.getVolunteerIds()).contains(item.getVolunteerId())
-                        || !removableVolunteerIds.contains(item.getVolunteerId()))
+                .filter(item -> !defaultList(req.getVolunteerIds()).contains(item.getVolunteerId()))
                 .collect(Collectors.toList()));
         syncDraftUnitsWithItems(draft, resolveEffectiveCandidates(null, chatSessionId, state, false), state.getCandidatePoolState());
         recalculateDraftSummary(draft, state.getCandidatePoolState());
