@@ -7,6 +7,7 @@
 - `planning workspace` 新增当前方案排序接口 `ordered-plan/sort`，支持按录取率、院校层次、推荐系数一次性重排方案，固定项保留原位置并记录 `plan_sort_apply` 行为事件。
 - `planning workspace` 方案排序补充稳定多级规则：录取率排序按院校排名、推荐系数兜底；院校层次排序按录取率、推荐系数兜底；推荐系数排序按录取率、院校排名兜底，避免一级值相同时顺序随机打散。
 - `planning workspace` 方案排序成功后会将审查和调整建议标记为过期；若方案已有审查结果，工作区状态展示为待重新审查，避免继续沿用旧顺序下的审查结论。
+- `planning workspace` 单条移动到目标位置成功后同步将审查和调整建议标记为过期，避免沿用旧顺序下的审查结论。
 - `planning workspace` 补充历史方案候选详情兼容解析：当迁移会话的方案 `volunteerId` 与候选 `volunteerId` 第三段不一致时，工作区轻量状态仍能返回当前方案引用候选，方案排序也能正确读取院校排名、录取率和推荐系数。
 - `planning workspace` 新增统一 `workflowStatus`，后端按候选、方案、审查、导出四类状态派生用户侧状态值；内部 `draftPlanState` 继续保留兼容，但不再作为用户侧主状态暴露。
 - `candidatePoolState` 新增 `statusCode/statusMessage/riskHints`，候选为空时阻止继续生成空方案，候选偏少时允许继续生成但沉淀风险提示。

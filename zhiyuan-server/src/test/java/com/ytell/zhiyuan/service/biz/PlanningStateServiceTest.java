@@ -2683,6 +2683,8 @@ public class PlanningStateServiceTest {
         assertEquals("ps2_m2", moved.getOrderedPlanState().getItems().get(1).getVolunteerId());
         assertEquals("ps1_m1", moved.getOrderedPlanState().getItems().get(2).getVolunteerId());
         assertEquals("user", moved.getOrderedPlanState().getItems().get(2).getOrderedBy());
+        assertTrue(moved.getStaleFlags().getReview());
+        assertTrue(moved.getStaleFlags().getPlanAdjustment());
 
         stored = latestStoredStateFromUpdate();
         when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))

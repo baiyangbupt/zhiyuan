@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Button, Collapse, Dropdown, Empty, Modal, Spin, Tag, Tooltip, message } from 'antd';
+import { Button, Collapse, Dropdown, Empty, InputNumber, Modal, Spin, Tag, Tooltip, message } from 'antd';
 import {
   PlusOutlined,
   PushpinOutlined,
@@ -11,6 +11,7 @@ import {
   FilterOutlined,
   ArrowUpOutlined,
   ArrowDownOutlined,
+  SwapOutlined,
   SortAscendingOutlined,
   DownOutlined,
   ShrinkOutlined,
@@ -137,6 +138,11 @@ interface SchoolHistoryModalState {
   rankTags: string[];
   popupTags: string[];
   scores: NonNullable<PlanningCandidateItem['schoolHistoryScores']>;
+}
+
+interface OrderedMoveModalState {
+  item: PlanningOrderedItem;
+  currentPosition: number;
 }
 
 interface ActiveFilterChip {
@@ -471,6 +477,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const [sortModalOpen, setSortModalOpen] = useState(false);
   const [selectedOrderedSortField, setSelectedOrderedSortField] =
     useState<PlanningOrderedSortField>('admissionRatio');
+  const [orderedMoveModal, setOrderedMoveModal] = useState<OrderedMoveModalState | null>(null);
+  const [orderedMoveTargetPosition, setOrderedMoveTargetPosition] = useState<number>(1);
   const candidateQueryInFlightPagesRef = useRef<Set<string>>(new Set());
   const [filterPanelOpen, setFilterPanelOpen] = useState(false);
   const [filterSearchKeyword, setFilterSearchKeyword] = useState('');
@@ -1509,30 +1517,34 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     setActionLoading(null);
   };
 
-  const handleMoveOrderedItem = async (
-    item?: PlanningOrderedItem,
-    currentIndex: number = 0,
-    direction: 'up' | 'down' = 'up'
+  const applyMoveOrderedItem = async (
+    item: PlanningOrderedItem,
+    targetPosition: number,
+    loadingText: string,
+    successText?: string
   ) => {
     if (!item?.volunteerId || actionLoading) {
       return;
     }
-    const currentPosition = currentIndex + 1;
-    const targetPosition = direction === 'up' ? currentPosition - 1 : currentPosition + 1;
-    if (targetPosition < 1 || targetPosition > orderedItems.length) {
+    const normalizedTargetPosition = Math.max(1, Math.min(targetPosition, orderedItems.length));
+    const currentPosition = orderedItems.findIndex(orderedItem => orderedItem.volunteerId === item.volunteerId) + 1;
+    if (!currentPosition || normalizedTargetPosition === currentPosition) {
       return;
     }
     setActionLoading('ordered');
     setOrderedActionVolunteerId(item.volunteerId);
-    const hideLoading = message.loading(direction === 'up' ? '正在上移志愿...' : '正在下移志愿...', 0);
+    const hideLoading = message.loading(loadingText, 0);
     try {
       const { data, code } = await movePlanningOrderedItemApi(
         routerParams.tenantId,
         routerParams.chatSessionId,
         item.volunteerId,
-        targetPosition
+        normalizedTargetPosition
       );
       if (code === 0) {
+        if (successText) {
+          message.success(successText);
+        }
         if (data) {
           setPlanningState(prev => ({
             ...(prev || {}),
@@ -1549,6 +1561,59 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     hideLoading();
     setActionLoading(null);
     setOrderedActionVolunteerId(null);
+  };
+
+  const handleMoveOrderedItem = async (
+    item?: PlanningOrderedItem,
+    currentIndex: number = 0,
+    direction: 'up' | 'down' = 'up'
+  ) => {
+    if (!item?.volunteerId || actionLoading) {
+      return;
+    }
+    const currentPosition = currentIndex + 1;
+    const targetPosition = direction === 'up' ? currentPosition - 1 : currentPosition + 1;
+    if (targetPosition < 1 || targetPosition > orderedItems.length) {
+      return;
+    }
+    await applyMoveOrderedItem(
+      item,
+      targetPosition,
+      direction === 'up' ? '正在上移志愿...' : '正在下移志愿...'
+    );
+  };
+
+  const openOrderedMoveModal = (item: PlanningOrderedItem, currentIndex: number) => {
+    if (!item?.volunteerId || actionLoading) {
+      return;
+    }
+    const currentPosition = currentIndex + 1;
+    setOrderedMoveModal({
+      item,
+      currentPosition,
+    });
+    setOrderedMoveTargetPosition(currentPosition);
+  };
+
+  const closeOrderedMoveModal = () => {
+    if (actionLoading === 'ordered') {
+      return;
+    }
+    setOrderedMoveModal(null);
+  };
+
+  const handleMoveOrderedItemToTarget = async (targetPosition?: number) => {
+    if (!orderedMoveModal?.item || actionLoading) {
+      return;
+    }
+    const nextTargetPosition = targetPosition || orderedMoveTargetPosition;
+    await applyMoveOrderedItem(
+      orderedMoveModal.item,
+      nextTargetPosition,
+      '正在移动志愿...',
+      '方案位置已更新'
+    );
+    setOrderedMoveModal(null);
   };
 
   const handleTogglePin = async (item?: PlanningOrderedItem) => {
@@ -3370,6 +3435,14 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                             onClick={() => handleMoveOrderedItem(item, absoluteIndex, 'down')}
                                           />
                                         </Tooltip>
+                                        <Tooltip title="移动到指定位置">
+                                          <Button
+                                            icon={<SwapOutlined />}
+                                            loading={orderedActionVolunteerId === item.volunteerId && actionLoading === 'ordered'}
+                                            disabled={orderedItems.length <= 1 || (actionLoading === 'ordered' && orderedActionVolunteerId !== item.volunteerId)}
+                                            onClick={() => openOrderedMoveModal(item, absoluteIndex)}
+                                          />
+                                        </Tooltip>
                                         <Tooltip title="删除">
                                           <Button
                                             danger
@@ -3466,6 +3539,14 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                       onClick={() => handleMoveOrderedItem(item, index, 'down')}
                                     />
                                   </Tooltip>
+                                  <Tooltip title="移动到指定位置">
+                                    <Button
+                                      icon={<SwapOutlined />}
+                                      loading={orderedActionVolunteerId === item.volunteerId && actionLoading === 'ordered'}
+                                      disabled={orderedItems.length <= 1 || (actionLoading === 'ordered' && orderedActionVolunteerId !== item.volunteerId)}
+                                      onClick={() => openOrderedMoveModal(item, index)}
+                                    />
+                                  </Tooltip>
                                   <Tooltip title="删除">
                                     <Button
                                       danger
@@ -3540,6 +3621,47 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                 <span className={style.sortOptionDesc}>{option.description}</span>
               </button>
             ))}
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        title="移动志愿"
+        open={Boolean(orderedMoveModal)}
+        okText="确认移动"
+        cancelText="取消"
+        confirmLoading={actionLoading === 'ordered'}
+        onOk={() => handleMoveOrderedItemToTarget()}
+        onCancel={closeOrderedMoveModal}
+      >
+        <div className={style.moveModalBody}>
+          <div className={style.moveModalHint}>
+            当前第 {orderedMoveModal?.currentPosition || '-'} 位，移动后会改变当前方案顺序，审查结果需要重新确认。
+          </div>
+          <div className={style.moveTargetRow}>
+            <span>目标位置</span>
+            <InputNumber
+              min={1}
+              max={Math.max(orderedItems.length, 1)}
+              precision={0}
+              value={orderedMoveTargetPosition}
+              onChange={value => setOrderedMoveTargetPosition(Number(value || 1))}
+            />
+            <span>位</span>
+          </div>
+          <div className={style.moveQuickActions}>
+            <Button
+              disabled={actionLoading === 'ordered' || orderedMoveModal?.currentPosition === 1}
+              onClick={() => handleMoveOrderedItemToTarget(1)}
+            >
+              移到顶部
+            </Button>
+            <Button
+              disabled={actionLoading === 'ordered' || orderedMoveModal?.currentPosition === orderedItems.length}
+              onClick={() => handleMoveOrderedItemToTarget(orderedItems.length)}
+            >
+              移到底部
+            </Button>
           </div>
         </div>
       </Modal>

@@ -1110,6 +1110,34 @@
   line-height: 1.45;
 }
 
+.moveModalBody {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.moveModalHint {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #fff7f3;
+  color: #7b5d52;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.moveTargetRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #4a332b;
+  font-size: 14px;
+}
+
+.moveQuickActions {
+  display: flex;
+  gap: 10px;
+}
+
 .reviewTooltipOverlay {
   :global(.ant-tooltip-inner) {
     max-width: 360px;

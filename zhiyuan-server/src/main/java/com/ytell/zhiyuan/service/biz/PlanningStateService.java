@@ -1274,6 +1274,8 @@ public class PlanningStateService {
         orderedPlanState.setItems(rebuildOrderedItems(current));
         recalculateOrderedSummary(orderedPlanState, state.getCandidatePoolState());
         state.setOrderedPlanState(orderedPlanState);
+        state.getStaleFlags().setReview(true);
+        state.getStaleFlags().setPlanAdjustment(true);
         appendBehaviorEvent(state, null, chatSessionId, "plan_move", Lists.newArrayList(req.getVolunteerId()), false);
         return saveOrderedState(chatSessionId, state);
     }
