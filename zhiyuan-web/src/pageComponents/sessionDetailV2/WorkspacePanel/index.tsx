@@ -6,8 +6,6 @@ import {
   VerticalAlignTopOutlined,
   VerticalAlignBottomOutlined,
   DeleteOutlined,
-  LockOutlined,
-  UnlockOutlined,
   FilterOutlined,
   ArrowUpOutlined,
   ArrowDownOutlined,
@@ -25,7 +23,6 @@ import {
   generatePlanningCandidatePoolApi,
   generatePlanningInitialPlanApi,
   getPlanningWorkspaceStateApi,
-  lockPlanningDraftItemsApi,
   movePlanningOrderedItemApi,
   pinPlanningOrderedItemApi,
   queryPlanningCandidatePoolApi,
@@ -125,7 +122,6 @@ interface DraftGroup {
   tier: string;
   schoolName: string;
   source?: string;
-  locked: boolean;
   items: Array<{
     draftItem: PlanningDraftItem;
     candidateItem: PlanningCandidateItem | null;
@@ -1421,12 +1417,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   };
 
   const handleRemoveDraftItem = async (volunteerId?: string) => {
-    const draftItem = draftItems.find(item => item.volunteerId === volunteerId);
     if (!volunteerId || actionLoading) {
-      return;
-    }
-    if (draftItem?.locked) {
-      message.warning('方案项已锁定，请先解除锁定再删除');
       return;
     }
     setActionLoading('draft');
@@ -1460,11 +1451,6 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     if (!volunteerIds.length || actionLoading) {
       return;
     }
-    const hasLocked = group.items.some(item => Boolean(item.draftItem.locked));
-    if (hasLocked) {
-      message.warning('该专业组里有已锁定专业，请先解除锁定再整组删除');
-      return;
-    }
     setActionLoading('draft');
     try {
       const { data, code } = await removePlanningDraftItemsApi(
@@ -1485,34 +1471,6 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       }
     } catch (error) {
       message.error('移出专业组异常，请稍后重试');
-    }
-    setActionLoading(null);
-  };
-
-  const handleToggleDraftLock = async (item?: PlanningDraftItem) => {
-    if (!item?.volunteerId || actionLoading) {
-      return;
-    }
-    setActionLoading('draft');
-    try {
-      const { data, code } = await lockPlanningDraftItemsApi(
-        routerParams.tenantId,
-        routerParams.chatSessionId,
-        [item.volunteerId],
-        !item.locked
-      );
-      if (code === 0) {
-        message.success(item.locked ? '已解除锁定' : '已锁定方案项');
-        if (data) {
-          applyPlanningState(data);
-        } else {
-          await fetchWorkspaceState();
-        }
-      } else {
-        message.error('更新方案项锁定状态失败');
-      }
-    } catch (error) {
-      message.error('更新方案项锁定状态异常，请稍后重试');
     }
     setActionLoading(null);
   };
@@ -2076,7 +2034,9 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       Boolean((action.summary || '').trim() || (action.detail || '').trim()) &&
       (!action.sourceCheckCode || !actionableReviewCheckCodes.has(action.sourceCheckCode))
   );
-  const hasActionableReviewChecks = actionableReviewChecks.length > 0 || actionablePendingActions.length > 0;
+  const isReviewStale = workflowStatus?.reviewStatus === 'stale' || planningState?.staleFlags?.review === true;
+  const hasActionableReviewChecks =
+    !isReviewStale && (actionableReviewChecks.length > 0 || actionablePendingActions.length > 0);
   const getReviewCheckDisplayLabel = (check: PlanningReviewCheck) => {
     switch (check.code) {
       case 'safety_guard':
@@ -2430,7 +2390,6 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         tier: unit.tier || '',
         schoolName: unit.schoolName || '未知院校',
         source: unit.source,
-        locked: Boolean(unit.locked),
         items: (unit.majorItems || []).map(major => {
           const volunteerId = major.volunteerId;
           const draftItem =
@@ -2439,7 +2398,6 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
               tier: major.tier || unit.tier,
               schoolName: unit.schoolName,
               majorName: major.majorName,
-              locked: unit.locked,
               source: unit.source,
             };
           return {
@@ -2462,7 +2420,6 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       const existing = grouped.get(key);
       if (existing) {
         existing.items.push({ draftItem: item, candidateItem });
-        existing.locked = existing.locked || Boolean(item.locked);
         return;
       }
       grouped.set(key, {
@@ -2470,12 +2427,37 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         tier: item.tier || candidateItem?.tier || '',
         schoolName: candidateItem?.schoolName || item.schoolName || '未知院校',
         source: item.source,
-        locked: Boolean(item.locked),
         items: [{ draftItem: item, candidateItem }],
       });
     });
     return Array.from(grouped.values());
   }, [candidateItemMap, draftItems, isMajorGroupMode, planningState?.draftPlanState?.units]);
+
+  const basketDraftGroups = useMemo<DraftGroup[]>(() => {
+    if (!isMajorGroupMode) {
+      return [];
+    }
+    if (orderedItems.length <= 0) {
+      return groupedDraftList;
+    }
+    return groupedOrderedList.map(group => ({
+      key: group.key,
+      tier: group.tier,
+      schoolName: group.schoolName,
+      source: group.orderedItems.find(entry => entry.orderedItem.source)?.orderedItem.source,
+      items: group.orderedItems.map(entry => ({
+        draftItem: {
+          volunteerId: entry.orderedItem.volunteerId,
+          tier: entry.orderedItem.tier,
+          schoolName: entry.orderedItem.schoolName,
+          majorName: entry.orderedItem.majorName,
+          source: entry.orderedItem.source,
+        },
+        candidateItem: entry.candidateItem,
+      })),
+    }));
+  }, [groupedDraftList, groupedOrderedList, isMajorGroupMode, orderedItems.length]);
+  const basketItems = orderedItems.length > 0 ? orderedItems : draftItems;
 
   const candidatePoolUnitFallbackTotal = useMemo(() => {
     if (!isMajorGroupMode) {
@@ -3317,7 +3299,6 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                           const orderedStatusLabels = Array.from(
                             new Set(group.orderedItems.map(entry => getOrderedItemStatusLabel(entry.orderedItem)))
                           );
-                          const hasLocked = group.orderedItems.some(entry => entry.orderedItem.locked);
                           const isPreferredGroup = group.orderedItems.some(
                             entry => entry.orderedItem.source === 'initial_auto'
                           );
@@ -3331,11 +3312,6 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                 <div className={style.orderedContent}>
                                   <div className={`${style.cardTitleRow} ${style.groupTitleRow}`}>
                                     <div className={style.cardTitle}>{group.schoolName}</div>
-                                    {hasLocked ? (
-                                      <Tag bordered={false} className={style.orderedLockedTag}>
-                                        已锁定
-                                      </Tag>
-                                    ) : null}
                                     {isPreferredGroup ? (
                                       <Tag bordered={false} className={style.orderedPreferredTag}>
                                         优选
@@ -3446,7 +3422,6 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                           <Button
                                             danger
                                             icon={<DeleteOutlined />}
-                                            disabled={Boolean(item.locked)}
                                             loading={actionLoading === 'draft' || actionLoading === 'ordered'}
                                             onClick={() => handleRemoveDraftItem(item.volunteerId)}
                                           />
@@ -3481,11 +3456,6 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                       {item.tier}
                                     </Tag>
                                     <div className={style.cardTitle}>{item.schoolName}</div>
-                                    {item.locked ? (
-                                      <Tag bordered={false} className={style.orderedLockedTag}>
-                                        已锁定
-                                      </Tag>
-                                    ) : null}
                                     {item.source === 'initial_auto' ? (
                                       <Tag bordered={false} className={style.orderedPreferredTag}>
                                         优选
@@ -3550,7 +3520,6 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                     <Button
                                       danger
                                       icon={<DeleteOutlined />}
-                                      disabled={Boolean(item.locked)}
                                       loading={actionLoading === 'draft' || actionLoading === 'ordered'}
                                       onClick={() => handleRemoveDraftItem(item.volunteerId)}
                                     />
@@ -3696,9 +3665,9 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                 </div>
               </div>
               <div className={style.draftList}>
-                {draftItems.length > 0 ? (
+                {basketItems.length > 0 ? (
                   isMajorGroupMode ? (
-                    groupedDraftList.map(group => (
+                    basketDraftGroups.map(group => (
                       <div key={group.key} className={style.draftGroup}>
                         <div className={style.draftGroupHeader}>
                           <div className={style.draftGroupHeaderMain}>
@@ -3715,7 +3684,6 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                               size="small"
                               danger
                               icon={<DeleteOutlined />}
-                              disabled={group.locked}
                               onClick={() => handleRemoveDraftGroup(group)}
                             />
                           </Tooltip>
@@ -3739,19 +3707,11 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                               </div>
                             </div>
                             <div className={style.draftItemActions}>
-                              <Tooltip title={draftItem.locked ? '解除锁定' : '锁定'}>
-                                <Button
-                                  size="small"
-                                  icon={draftItem.locked ? <UnlockOutlined /> : <LockOutlined />}
-                                  onClick={() => handleToggleDraftLock(draftItem)}
-                                />
-                              </Tooltip>
                               <Tooltip title="删除">
                                 <Button
                                   size="small"
                                   danger
                                   icon={<DeleteOutlined />}
-                                  disabled={Boolean(draftItem.locked)}
                                   onClick={() => handleRemoveDraftItem(draftItem.volunteerId)}
                                 />
                               </Tooltip>
@@ -3762,7 +3722,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                       </div>
                     ))
                   ) : (
-                    draftItems.map(item => (
+                    basketItems.map(item => (
                       <div
                         key={item.volunteerId}
                         ref={element => {
@@ -3784,19 +3744,11 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                           </div>
                         </div>
                         <div className={style.draftItemActions}>
-                          <Tooltip title={item.locked ? '解除锁定' : '锁定'}>
-                            <Button
-                              size="small"
-                              icon={item.locked ? <UnlockOutlined /> : <LockOutlined />}
-                              onClick={() => handleToggleDraftLock(item)}
-                            />
-                          </Tooltip>
                           <Tooltip title="删除">
                             <Button
                               size="small"
                               danger
                               icon={<DeleteOutlined />}
-                              disabled={Boolean(item.locked)}
                               onClick={() => handleRemoveDraftItem(item.volunteerId)}
                             />
                           </Tooltip>
