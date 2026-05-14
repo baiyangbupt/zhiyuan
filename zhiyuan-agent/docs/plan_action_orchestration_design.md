@@ -33,7 +33,7 @@
 
 ### 2.1 入口语义仍偏平铺
 
-当前 `planning_router_tool.handle_planning_request` 仍然以 `request_type` 为中心扩展。
+历史 `planning_router_tool.handle_planning_request` 以 `request_type` 为中心扩展；3.0.1 当前主链已收口到 `collect_plan_context_inputs -> plan_next_action -> execute_plan_action`。
 
 问题：
 
@@ -861,6 +861,7 @@ Plan skill 需要明确给模型以下约束：
 - 第一阶段继续作为兼容入口
 - 内部逐步把 `request_type` 映射到 `PlanActionPlan`
 - 最终退化为老协议兼容层
+- 新增能力不得继续接入 `handle_planning_request`
 
 ### 13.4 主 Agent 的改造方向
 

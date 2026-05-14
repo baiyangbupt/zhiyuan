@@ -1198,7 +1198,7 @@ async def select_planning_draft_items(
             f"?chatSessionId={chat_session_id}"
         ),
         json_data={"volunteerIds": volunteer_ids, "source": source},
-        error_msg="加入草稿失败",
+        error_msg="加入方案失败",
     )
 
 
@@ -1218,6 +1218,52 @@ async def generate_planning_ordered_plan(
             "regroupByTier": regroup_by_tier,
         },
         error_msg="重排排序失败",
+    )
+
+
+async def sort_planning_ordered_plan(
+    tenant_id: Union[str, int],
+    chat_session_id: Union[str, int],
+    sort_field: str,
+) -> Dict[str, Any]:
+    return await http_client.post(
+        endpoint=(
+            f"/gaotu-assistant-bot/inner/planning/{tenant_id}/session/ordered-plan/sort"
+            f"?chatSessionId={chat_session_id}"
+        ),
+        json_data={"sortField": sort_field},
+        error_msg="方案排序失败",
+    )
+
+
+async def move_planning_ordered_plan_unit(
+    tenant_id: Union[str, int],
+    chat_session_id: Union[str, int],
+    unit_id: str,
+    target_position: int,
+) -> Dict[str, Any]:
+    return await http_client.post(
+        endpoint=(
+            f"/gaotu-assistant-bot/inner/planning/{tenant_id}/session/ordered-plan/unit/move"
+            f"?chatSessionId={chat_session_id}"
+        ),
+        json_data={"unitId": unit_id, "targetPosition": target_position},
+        error_msg="专业组移动失败",
+    )
+
+
+async def remove_planning_ordered_plan_units(
+    tenant_id: Union[str, int],
+    chat_session_id: Union[str, int],
+    unit_ids: list[str],
+) -> Dict[str, Any]:
+    return await http_client.post(
+        endpoint=(
+            f"/gaotu-assistant-bot/inner/planning/{tenant_id}/session/ordered-plan/unit/remove"
+            f"?chatSessionId={chat_session_id}"
+        ),
+        json_data={"unitIds": unit_ids},
+        error_msg="专业组删除失败",
     )
 
 

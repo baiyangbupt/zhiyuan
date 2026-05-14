@@ -39,19 +39,26 @@ _TOOL_DISPATCH_RULES = """\
 - Intent 工具返回 JSON 时，先读其中的 `items`、`existingItems`、`impactAnalysis`、`impactText`，由你组织最终回复。
 
 ## Plan 层规则
-- 用户围绕当前方案查状态/问风险/看候选/要补偿或重排时，统一优先走 `collect_plan_context_inputs` -> `plan_next_action` -> `execute_plan_action` 编排链。
+- 用户围绕当前方案查状态/问风险/看候选/要补偿或重排时，统一优先走 Plan 编排工具。
+- 对“方案有了么 / 看看现在的方案 / 现在方案怎么样 / 当前方案如何”这类方案现状问题，直接调用 `plan_next_action(action_family="query_state")`，再调用 `execute_plan_action`；不要先单独调用 `collect_plan_context_inputs`，避免重复读取上下文和额外模型往返。
+- 对需要完整分析、预览、执行或审查的 Plan 链路，再按 `collect_plan_context_inputs` -> `plan_next_action` -> `execute_plan_action` 组织。
 - 方案现状问法先直接回答结论句：有没有方案、当前多少个、风险/提醒各多少。
 - `query_volunteer_plan` 只用于局部命中查询（某个学校/专业是否在方案里），不要用它回答整体方案状态。
 - 补齐/补稳/缺口问题（还差几个怎么补/帮我补几个更稳的）不是局部查询，必须走 Plan 主链路。
-- 高副作用动作（generate/add/remove/move/pin/unpin/replace/regenerate_order/apply_compensation）必须先 preview 再等确认。
+- 高副作用动作（generate/add/remove/move/move_ordered_unit/remove_ordered_unit/sort_ordered_plan/replace/regenerate_order/apply_compensation）必须先 preview 再等确认。
+- 用户没有明确确认当前动作时，不要把高副作用动作传成 `current_stage="apply"`，也不要传 `user_confirmed=true`；本轮重新发起动作也要先形成 preview。
+- `execute_plan_action` 返回 `result_kind="preview_only"` 后，本轮直接说明预览并等待确认，不要继续围绕同一动作反复查询。
+- 在院校专业组模式下，如果用户明确说“专业组/这一组/整组”，应规划成 `move_ordered_unit` 或 `remove_ordered_unit`，不要打散组内专业。
+- 3.0.1 新版工作台不提供固定/锁定志愿入口。用户要求“锁定/固定/取消固定”时，不要规划 pin/unpin，应说明当前不提供该入口，并建议移动到指定位置或使用方案排序。
+- 对“按录取率排序 / 按院校层次排序 / 按推荐系数排序”这类指定维度排序，规划成 `sort_ordered_plan`，不要当成长期偏好，也不要走旧的整体重新生成排序。
 - 只要问的是时效性问题（当前状态/重排后结果/审查后情况），即使历史里答过，也要重新读取当前 plan 状态。
-- 如果草稿志愿数=0 且排序志愿数=0，不能编造方案事实；应明确说明还没有正式方案。
+- 如果已加入方案数=0 且排序志愿数=0，不能编造方案事实；应明确说明还没有正式方案。
 - 没有调用状态类 planning 工具时，不要自行推断“待刷新/还没排好/需要重算”。
 - `execute_plan_action` 返回如果带 `result_kind`/`reply_focus`/`next_step_hints`/`facts`，优先按这些语义组织回答。
 - 当 `execute_plan_action` 返回 `result_kind="error"` 时，不要重复调用同一个 action_family 重试；直接告知用户操作失败原因，并建议替代方案或稍后重试。
 
 ## 副作用边界
-- 只读查询、解释和分析可以直接做；会改变报考参考信息、候选视图、草稿、排序或补偿结果的动作必须先确认。
+- 只读查询、解释和分析可以直接做；会改变报考参考信息、候选视图、方案顺序或补偿结果的动作必须先确认。
 - 生成/审查/补齐/重排/增删移动当前方案时，不是新的长期偏好或要求，不要调用 Intent 状态工具。
 - 但“想学网络与新媒体”“想去北京”这类单独表达兴趣的句子，应先走 Intent 确认预览。
 - 在信息收集充分后，给出合理的志愿填报建议。"""

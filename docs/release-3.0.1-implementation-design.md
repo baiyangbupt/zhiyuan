@@ -389,7 +389,7 @@ legacy_temp
 设计：
 
 - 保留现有接口，补齐边界测试。
-- 服务端继续负责位置归一化、固定项边界、position 重建。
+- 服务端继续负责位置归一化、历史锁定兼容边界、position 重建。
 - 前端增加确认式“移动到第 N 位”，并提供“移到顶部”“移到底部”快捷动作。
 - 操作成功后消费后端轻量动作响应合并排序态，不在前端本地猜测最终顺序。
 - 单条移动与方案排序一致，成功后将 `review` 和 `planAdjustment` 标记为过期，前端展示为“待重新审查”。
@@ -397,7 +397,7 @@ legacy_temp
 验收：
 
 - 移动后 position 连续。
-- 固定项不可被越过或破坏；旧草稿锁定仅作为历史兼容字段，不作为新版前端方案调整入口。
+- 历史锁定兼容字段不可在新版界面不可见时阻断正常移动；旧草稿锁定不作为新版前端方案调整入口。
 - 目标位置越界时服务端按合法边界处理或返回明确错误。
 - 移动后审查状态不再沿用旧方案顺序下的结论。
 
@@ -652,8 +652,8 @@ legacy_temp
 
 - 前端不再露出草稿概念，候选 tab 内的篮子直接命名为“方案”。
 - “加入方案”“已加入方案”“当前方案”作为主要文案，不使用“加入草稿”“已选草稿”。
-- 候选 tab 内方案篮子优先展示 `orderedPlanState.items`，确保方案页排序、移动和固定后的顺序能同步呈现；没有排序方案时才回退内部 `draftPlanState.items`。
-- 新版前端不再展示旧草稿 `lock/unlock` 操作，也不展示“已锁定”标签；用户侧位置固定统一使用方案区 `pin/unpin`。
+- 候选 tab 内方案篮子优先展示 `orderedPlanState.items`，确保方案页排序、移动后的顺序能同步呈现；没有排序方案时才回退内部 `draftPlanState.items`。
+- 新版前端不再展示旧草稿 `lock/unlock` 操作，也不展示“已锁定”标签；3.0.1 用户侧不再提供方案 `pin/unpin` 入口。
 - 后端删除方案项时不再使用旧 `draftItem.locked` 字段阻断删除，避免历史锁字段在新版界面不可见但仍影响用户操作。
 - 方案篮子使用独立色系，避免与候选志愿条目的红色风险/冲刺标签混在一起。
 - 方案篮子色系建议使用蓝色或中性色，含文字标识；不要只靠颜色区分。
@@ -770,6 +770,60 @@ legacy_temp
 - 城市不再因为候选分页缓存未加载而进入 `其他城市`；只有省市字典也无法识别时才允许出现兜底分组。
 - `意向专业/意向专业类/非意向专业/非意向专业类` 不再以普通专业筛选项展示，用户侧不再出现 `专业标签` 筛选分组。
 
+### 2.8 Agent 和对话驱动整合
+
+目标：
+
+- 3.0.1 用户侧不再暴露“草稿”。Agent 回复、确认预览、pending 动作、工作台事件和前端展示统一称为“方案”。
+- 底层 `draftPlanState` 继续作为 backend 兼容结构存在，但只在服务端和工具内部使用，不进入用户话术。
+- 对话触发的方案操作必须与新版工作台一致，避免出现“对话能做、前端看不到”或“前端有按钮、对话不能联动”的分裂。
+
+P0 工作项：
+
+1. 收口 Plan 工具入口。
+   - ChatAgent 面向模型只保留 `collect_plan_context_inputs -> plan_next_action -> execute_plan_action` 主链。
+   - `planning_router_tool.handle_planning_request` 仅作为兼容工具保留，不再出现在新指令和新设计中。
+   - 文案和测试不得再要求调用 `handle_planning_request`。
+   - `planning_workflow_tool` 不是模型入口，但当前仍被 handlers 和查询工具大量复用，不能直接删除；本期只做依赖梳理和拆分准备。
+
+2. 去草稿用户语义。
+   - Agent 方案查询、加入、删除、补入、生成、重排等回复统一使用“方案”。
+   - `draft_snapshot/query_draft` 仍可作为内部 fallback，但面向用户表达为“已加入方案，待生成顺序”或“当前方案”。
+   - 清理“加入草稿”“草稿志愿”“锁定草稿”等用户可见文案。
+
+3. 冻结 pin/lock 用户入口。
+   - 3.0.1 不让对话触发 `pin_unit/unpin_unit/lock_draft/unlock_draft`。
+   - 如果用户说“锁定/固定”，Agent 应解释当前新版工作台暂不提供固定入口，并建议使用移动到指定位置或排序后人工确认。
+   - service 层不再为 pin/unpin 生成工作台刷新 pending。
+
+4. 对话触发方案排序。
+   - 用户说“按录取率排序”“按院校层次排序”“按推荐系数排序”时，规划为 `sort_ordered_plan` 类动作，而不是旧 `regenerate_order`。
+   - 排序是实际改写方案顺序的高副作用动作：先 preview，用户确认后调用 backend `ordered-plan/sort`。
+   - 排序成功后刷新方案视图，并让审查状态进入待重新审查。
+   - 普通“帮我顺一下/重新排一下”仍可继续走整体重排/重新生成排序，但需要与指定字段排序分开。
+
+5. 工作台事件协议收口。
+   - 只读 `query_state/query_ordered` 默认不发无联动卡片。
+   - 会改变状态或需要用户关注工作台变化的动作才发送 `planningWorkspaceAction`。
+   - 候选筛选联动必须写入可见、可撤销的 `candidateViewState`，不允许隐藏筛选。
+
+6. Router / workflow 依赖整理。
+   - `planning_router_tool` 当前没有注册到 `ChatAgent.tools`，线上主链路不会由模型直接调用；直接依赖主要来自 `tests/unit/test_planning_router_tool*.py` 和部分历史 scenario 测试。
+   - 3.0.1 将 `planning_router_tool` 标记为 deprecated compatibility wrapper；新增能力不得继续接入这里。
+   - 迁移步骤：先把依赖 `handle_planning_request` 的测试改为覆盖 Plan 主链，再删除 router 测试，最后移除模块或保留极薄 shim。
+   - `planning_workflow_tool` 当前仍被 `handlers/query_handlers.py`、`handlers/mutation_handlers.py`、`handlers/generate_handler.py`、`handlers/analysis_handlers.py`、`handlers/compensation_handlers.py`、`plan_execution_tool.py`、`plan_context_tool.py`、`plan_query_tool.py`、`major_info_tool.py` 直接复用，不能裸删。
+   - 后续拆分目标：把 `planning_workflow_tool` 拆成内部 helper 模块，如 `planning_formatters.py`、`planning_state_readers.py`、`planning_mutations.py`、`planning_review_helpers.py`、`planning_compensation_helpers.py`。
+   - 测试夹具需要同步迁移到 handler 实际调用位置，避免 patch 旧 workflow wrapper 后仍误连真实 backend。
+
+验收：
+
+- Agent 和前端不再向用户展示“草稿”。
+- 对话排序和前端排序能力一致。
+- 对话不会触发前端不可见的 pin/lock 状态。
+- 高副作用动作均有 preview 和确认。
+- 专业+大学、院校专业组两种模式均有端到端 examples 覆盖。
+- 新指令中不再出现 `handle_planning_request`，router 仅作为兼容层存在。
+
 ## 3. 接口变更草案
 
 ### 3.1 新增组级移动
@@ -842,7 +896,7 @@ GET /gaotu-assistant-bot/inner/planning/{tenantId}/session/behavior-events?chatS
   - 移到顶部。
   - 移到底部。
   - 移到中间位置。
-  - 锁定项边界。
+  - 历史锁定兼容边界。
 - 专业组：
   - 组级移动。
   - 组级删除。
@@ -905,7 +959,7 @@ GET /gaotu-assistant-bot/inner/planning/{tenantId}/session/behavior-events?chatS
 1. 行为事件首期是否随 planning state JSON 保存，还是直接落独立表。
 2. 行为事件保留周期和脱敏要求。
 3. 专业组历史分数展示以组最低分、代表专业还是组内专业列表为主。
-4. 方案排序“应用到方案顺序”是否进入 3.0.1 首版，还是先只做临时查看排序。
+4. 已关闭：方案排序进入 3.0.1，按确认后实际改写当前方案顺序实现。
 5. 顶部数字概览 PC 端默认展开还是默认折叠。
 6. 长列表快速定位首版是只做顶部/底部，还是支持输入序号定位。
 7. 候选城市筛选首版优先做“更多折叠”，还是同步做关键词搜索和省份分组。

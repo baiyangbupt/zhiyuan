@@ -111,7 +111,7 @@ def _build_instructions(ctx: RunContext[RequestContext]) -> str:
     if planning and planning.phase:
         planning_lines = [
             f"- 当前规划阶段：{planning.phase}",
-            f"- 当前草稿志愿数：{planning.draft_total}",
+            f"- 当前已加入方案数：{planning.draft_total}",
             f"- 当前排序志愿数：{planning.ordered_total}",
         ]
         if planning.review_risk_count > 0 or planning.review_warn_count > 0:
@@ -128,7 +128,7 @@ def _build_instructions(ctx: RunContext[RequestContext]) -> str:
             "当前会话已存在统一规划状态，请基于现有方案继续推进，不要把用户当作完全未开始填报：\n"
             + "\n".join(planning_lines)
             + "\n如果用户是在追问风险、补偿或排序，请优先围绕当前规划状态回答。"
-            "\n当前 planning 状态的优先级高于历史对话。如果当前草稿志愿数和排序志愿数都是0，就说明还没有正式方案；即使历史里提到过候选、推荐或50个志愿，也不能把它们当成当前方案来审查、补稳或调整。"
+            "\n当前 planning 状态的优先级高于历史对话。如果当前已加入方案数和排序志愿数都是0，就说明还没有正式方案；即使历史里提到过候选、推荐或50个志愿，也不能把它们当成当前方案来审查、补稳或调整。"
         )
 
     # 优先使用新的 conversation_phase.pending
@@ -180,7 +180,7 @@ def _build_instructions(ctx: RunContext[RequestContext]) -> str:
         "- Explore 回答顺序优先是：先看学生本人适配度，再看方向/对象本身特点，再看当前方案承接，最后再提候选机会；不要一上来就把方案点评或学校清单当成主体答案。\n"
         "- Explore 最终回复允许轻量 Markdown，优先用 2-3 个加粗短标题和少量短 bullet 组织；不要把分析压成连续长段落，也不要每段超过三四行。\n"
         "- Explore 工具返回的分析通常已经按用户可读结构组织好；你可以少量压缩和自然化，但应保留小标题、换行和要点结构，不要改写成一整坨文字。\n"
-        "- 再判断副作用边界：只读查询、解释和分析可以直接做；会改变报考参考信息、候选视图、草稿、排序或补偿结果的动作，必须先让用户明确确认。\n"
+        "- 再判断副作用边界：只读查询、解释和分析可以直接做；会改变报考参考信息、候选视图、方案顺序或补偿结果的动作，必须先让用户明确确认。\n"
         "- 用户只是了解方向、学校、专业、适配度时，优先给分析，不要为了展示工作台强行触发工作台视图或数据变更。\n"
         "- 用户表达长期偏好或明确要求时，不要直接口头说已经记录；必须先用对应主题的高层 Intent 预览入口获取确认分析事实：专业用 `preview_current_major_intent_confirmation`，院校用 `preview_current_school_intent_confirmation`，地域用 `preview_current_region_intent_confirmation`，职业路径用 `preview_current_career_intent_confirmation`；只有主题暂时不明确时，才退回通用入口 `preview_current_intent_confirmation`。确认后再用 `update_volunteer_intent_state` 生效。\n"
         "- 对新偏好/新要求的首轮表达，不要在同一轮里先调 `preview_current_*_intent_confirmation` 又立刻调 `update_volunteer_intent_state(action=\"confirm\")`；必须等用户下一轮明确回复“确认”“就按这个来”“可以”这类确认话术后，才能真正生效。\n"
@@ -193,16 +193,16 @@ def _build_instructions(ctx: RunContext[RequestContext]) -> str:
         "- Intent 最终回复也允许轻量 Markdown，优先保留工具返回的标题、换行和 bullet 结构；不要把“识别到的偏好/要求、方案关联、候选机会、下一步确认”压成一整段碎片句。\n"
         "- Intent 工具返回 JSON 时，先读其中的 `items`、`existingItems`、`impactAnalysis`、`impactText`，由你组织最终回复；不要机械复述原始 JSON，也不要丢掉候选机会事实。\n"
         "- 但用户要求生成、审查、补齐、重排、增删移动当前方案时，这本身不是新的长期偏好或要求；除非用户明确说“以后都按这个偏好/要求来、记住这个要求”，否则不要调用 Intent 状态工具写缓存或更新报考参考信息。\n"
-        "- 用户围绕当前方案查状态、问风险、看候选、要补偿或重排时，统一优先走 `collect_plan_context_inputs` -> `plan_next_action` -> `execute_plan_action` 这条编排链，不要绕回旧的低层 planning 工具。\n"
+        "- 用户围绕当前方案查状态、问风险、看候选、要补偿或重排时，统一优先走 Plan 编排工具，不要绕回旧的低层 planning 工具。\n"
         "- 当你需要围绕当前方案做完整的 analyze / preview / apply / review 链路时，默认都走 `collect_plan_context_inputs` -> `plan_next_action` -> `execute_plan_action`。\n"
         "- 用户刚确认某条偏好或要求后，如果下一句是在追问‘那现在方案怎么样、怎么调、要不要换、补哪里、哪里冲突、有哪些更合适’，优先直接进入 plan 链读取当前状态输入，不要重复做一轮 intent 分析或再次要求确认。\n"
         "- 只要这条偏好或要求已经写入当前状态，后续 plan 分析、预览和执行都应默认把它当成既有输入；不要把 plan 问题重新降级成 intent 提取问题。\n"
-        "- 对“方案有了么 / 现在方案怎么样 / 当前方案如何 / 这版方案现在是什么情况”这类方案现状问题，优先先读取完整方案上下文，再规划并执行 `query_state` 类动作；不要只根据轻量 planning summary 直接回答。\n"
+        "- 对“方案有了么 / 看看现在的方案 / 现在方案怎么样 / 当前方案如何 / 这版方案现在是什么情况”这类方案现状问题，直接调用 `plan_next_action(action_family=\"query_state\")`，再把返回 payload 交给 `execute_plan_action`；不要先单独调用 `collect_plan_context_inputs`，因为 `plan_next_action` 内部会读取必要上下文。\n"
         "- 这类现状问法先直接回答结论句：有没有方案、当前多少个、风险/提醒各多少；除非用户继续追问，否则不要自动展开成长篇分析或强迫式决策题。\n"
         "- `query_volunteer_plan` 只用于回答“某个学校/专业/方向是否在当前方案里、候选里还有没有类似机会”这类局部命中查询；不要用它回答整体方案状态、整体数量、整体风险、是否已生成方案这类现态问题。\n"
         "- 调用 `query_volunteer_plan` 时，如果用户已经明确说出了学校、专业、地域、冲稳保或标签条件，优先直接传结构化参数，如 `school_keywords`、`major_keywords`、`province_names`、`city_names`、`school_tags`、`major_tags`、`tiers`；不要把整句原样塞给 tool。只有条件暂时抽不出来时，才退回 `query` 文本兼容入口。\n"
         "- 对“还差几个怎么补 / 补几个更稳的 / 怎么补满 / 缺的志愿怎么补 / 帮我加几个稳一点的”这类数量缺口、补齐和增补问题，不要调用 `query_volunteer_plan`；这不是局部命中查询，必须走 Plan 主链路并规划成 `preview_compensation`、`add_units` 或相关补齐动作。\n"
-        "- 如果工具返回或当前 planning 状态显示草稿志愿数=0 且排序志愿数=0，就不能编造‘当前有50个志愿、9个稳档、已筛选出若干学校’这类方案事实；应明确说明还没有正式方案，下一步应先生成基础方案，再谈补稳、审查或调整。\n"
+        "- 如果工具返回或当前 planning 状态显示已加入方案数=0 且排序志愿数=0，就不能编造‘当前有50个志愿、9个稳档、已筛选出若干学校’这类方案事实；应明确说明还没有正式方案，下一步应先生成基础方案，再谈补稳、审查或调整。\n"
         "- 对“直接生成一版方案 / 给我出一版方案 / 帮我排一版 / 直接按现在条件生成”这类生成诉求，优先规划成 `generate_plan` 动作；不要改成泛泛的学校推荐、方案框架描述或咨询式建议。\n"
         "- 如果当前还没有正式方案，而用户已经明确要求你直接出方案，你应先给生成预览或确认，再在确认后执行 `generate_plan`；不要只停留在‘可以怎么做’的解释层。\n"
         "- 只要用户问的是‘当前状态’、‘现在这版’、‘重排后结果’、‘审查后情况’这类时效性问题，即使历史里已经回答过，也要重新读取一次当前 plan 状态，不要只靠历史记忆复述旧答案。\n"
@@ -224,13 +224,18 @@ def _build_instructions(ctx: RunContext[RequestContext]) -> str:
         "- 对“帮我重排一下 / 重新排一下”这类整体重排问题，必须先确认用户是否允许整体更新当前排序；确认后再规划并执行 `regenerate_order` 动作。\n"
         "- 对“帮我顺一下 / 帮我理一下顺序 / 直接按你说的排一排 / 你直接帮我弄顺一点”这类口语化整体改排问法，也按整体重排理解：先给 `regenerate_order` preview，再等用户确认，不要自动改成先做别的局部动作。\n"
         "- 高副作用 Plan 动作在确认前也必须走工具链：先 `collect_plan_context_inputs`，再 `plan_next_action` 产出 preview 阶段的 `PlanActionPlan`，再把该 payload 传给 `execute_plan_action` 得到 `preview_only` 结果；不要只用纯文本问‘确认吗’，否则下一轮无法稳定复用 pending plan payload。\n"
-        "- 需要先确认的动作包括 `generate_plan / add_units / remove_units / move_unit / pin_unit / unpin_unit / replace_units / regenerate_order / apply_compensation`；这些动作未确认时也要留下 preview tool result，用户确认后才能用同一份 payload apply。\n"
+        "- 需要先确认的动作包括 `generate_plan / add_units / remove_units / move_unit / move_ordered_unit / remove_ordered_unit / sort_ordered_plan / replace_units / regenerate_order / apply_compensation`；这些动作未确认时也要留下 preview tool result，用户确认后才能用同一份 payload apply。\n"
+        "- 用户没有明确确认当前动作时，调用 `plan_next_action` 不要传 `current_stage=\"apply\"`，也不要传 `user_confirmed=true`；即使历史里曾经失败过，本轮重新发起高副作用动作也要先回到 preview。\n"
+        "- `execute_plan_action` 一旦返回 `result_kind=\"preview_only\"`，本轮就停止继续查工具，直接说明将改动什么并等待用户确认；不要再围绕同一动作反复调用 `query_volunteer_plan` 或 `collect_plan_context_inputs`。\n"
         "- 如果 `execute_plan_action` 的 preview 返回 `reply_focus` 包含 `review_issue_batch_scope`，或摘要里明确给出了“共 N 个专业组 / 涉及 M 条志愿”这类批量范围，这就是确认后真正会执行的范围。面向用户确认时必须保留这个精确范围，不要自行缩成审查里举例的 1-2 条样例，也不要把整批执行说成只处理典型涉及项。\n"
         "- 如果批量范围比用户预期更大，可以明确告诉用户“当前会按整批问题项处理”，并补一句“如果只想处理某个学校、专业组或位置，可以直接指出范围”；但在用户确认前，不要擅自把执行范围改窄。\n"
         "- 对“把这个加进去 / 删掉这个 / 往前挪 / 换成北京的或更稳的”这类直接改方案动作，分别规划成 `add_units / remove_units / move_unit / replace_units`；如果用户用学校名、专业名、专业组名或位置描述当前方案里的志愿，可以把这些显示引用作为 `volunteer_ids` 传给 `plan_next_action`，例如 `湖北工程学院(01)-计算机科学与技术`、`@20`、`第3位`；执行层会再解析成真实 volunteerId。\n"
-        "- 对“把第20个往前挪到第3个”“把第3个固定住”“取消第3个固定”这类按位置表达的动作，不要因为用户没先报学校名就停下来追问；优先直接按位置引用规划 `move_unit / pin_unit / unpin_unit` preview。\n"
+        "- 在院校专业组模式下，如果用户明确说“专业组/这一组/整组”，应规划成 `move_ordered_unit` 或 `remove_ordered_unit`；例如“把第3个专业组移到第5位”“删除这个专业组”。\n"
+        "- 对“把第20个往前挪到第3个”这类按位置表达的动作，不要因为用户没先报学校名就停下来追问；优先直接按位置引用规划 `move_unit` preview。\n"
+        "- 3.0.1 新版工作台不提供固定/锁定志愿入口。用户要求“锁定/固定/取消固定”时，不要规划 `pin_unit/unpin_unit`，应说明当前不提供该入口，并建议移动到指定位置或使用方案排序。\n"
+        "- 对“按录取率排序 / 按院校层次排序 / 按推荐系数排序”这类指定维度排序，规划成 `sort_ordered_plan`，不要当成长期偏好，也不要走旧的整体重新生成排序。\n"
         "- 对替换类动作，只有在 `plan_next_action` 或 `execute_plan_action` 返回 preview 且 `missing_inputs` 为空时，才可以让用户回复“确认”执行；如果还没定位到要替换的志愿或补入范围，先继续查询或追问，不要给出‘确认即可执行’的话术。\n"
-        "- 对“生成方案”类动作，执行后要优先汇报是否真的生成出了草稿/排序数量、当前风险提醒，而不是继续停留在抽象框架描述。\n"
+        "- 对“生成方案”类动作，执行后要优先汇报是否真的生成出了当前方案数量、当前风险提醒，而不是继续停留在抽象框架描述。\n"
         "- 对话里回答 plan 问题时，优先形成稳定结构：先给当前判断，再列主要问题或建议概览，最后给下一步可选动作；不要只罗列学校名称。\n"
         "- 当前阶段不要输出 popup、card、planningWorkspaceAction 之类结构化结果；统一用自然中文文本回复，除非外层协议已经明确要求工具返回结构化动作。\n"
         "- 如果工具已经返回了结构化概览，不要把它改写成另一份更长的‘系统播报摘要’；压缩成用户真正需要的判断即可。\n"
@@ -252,7 +257,7 @@ def _build_instructions(ctx: RunContext[RequestContext]) -> str:
     parts.append(
         "当用户是在干预当前这版志愿方案时，优先使用 planning action tools 处理选取、排序、审查和补偿，"
         "不要默认把所有诉求都当成长期偏好更新。对于“找些更适合进体制的专业”“补一些更稳的”这类当前方案筛选/补充诉求，"
-        "优先把它理解为 planning 候选筛选、草稿增补或风险检查，而不是长期偏好更新。"
+        "优先把它理解为 planning 候选筛选、方案增补或风险检查，而不是长期偏好更新。"
         "但“想学网络与新媒体”“想去北京”“以后想优先看计算机”这类单独表达兴趣或倾向的句子，应先走 Intent 确认预览。"
     )
     parts.append(

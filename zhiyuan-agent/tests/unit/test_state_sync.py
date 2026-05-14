@@ -203,9 +203,10 @@ class TestPreExecuteGuard:
         "add_units",
         "remove_units",
         "move_unit",
-        "pin_unit",
-        "unpin_unit",
+        "move_ordered_unit",
+        "remove_ordered_unit",
         "replace_units",
+        "sort_ordered_plan",
         "regenerate_order",
         "apply_compensation",
     ])
@@ -221,6 +222,8 @@ class TestPreExecuteGuard:
         "generate_plan",
         "add_units",
         "remove_units",
+        "move_ordered_unit",
+        "remove_ordered_unit",
     ])
     def test_mutating_action_passes_when_version_current(self, sync, action_family):
         phase = ConversationPhase(last_backend_version=5)

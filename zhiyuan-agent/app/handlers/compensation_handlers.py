@@ -144,7 +144,7 @@ async def _apply_compensation_to_plan(ctx: RunContext[RequestContext]) -> str:
         draft_total = summary_total(draft_summary)
         latest_state = await _refresh_review_and_state(session_id) or (result.get("data") or {})
         base_text = (
-            f"系统已完成当前可安全补偿的志愿补入，当前草稿共 {draft_total} 条，并已同步到方案和草稿。"
+            f"系统已完成当前可安全补偿的志愿补入，当前已加入方案共 {draft_total} 条，并已同步刷新当前方案。"
             "你可以继续看结果，再决定是否继续重排。"
         )
         return _append_intent_relation_summary(base_text, latest_state)

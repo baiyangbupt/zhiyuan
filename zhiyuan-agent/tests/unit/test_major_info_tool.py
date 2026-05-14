@@ -260,7 +260,7 @@ async def test_get_analysis_summary_falls_back_to_draft_when_ordered_plan_empty(
     ):
         result = await _get_analysis_summary("23", "801", 3, "生物工程")
 
-    assert "当前草稿方案中命中 1 个相关志愿" in result
+    assert "当前已加入方案中命中 1 个相关志愿" in result
     assert "北京农学院(03) - 生物工程（保档，录取率75.5%）" in result
     assert "当前候选里暂时没有筛到“生物工程”相关机会。" in result
 

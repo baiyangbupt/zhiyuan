@@ -1,0 +1,72 @@
+[
+  {
+    "name": "301-smoke-plan-status-major",
+    "sessionId": "17",
+    "flow": ["query_state"],
+    "coverage": ["plan_status", "query_state", "major_model", "no_extra_collect_expected"],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "看看现在的方案",
+        "assertContains": ["冲", "稳", "保"],
+        "assertNotContains": ["草稿", "payload", "stage", "action_family", "volunteerId"]
+      }
+    ]
+  },
+  {
+    "name": "301-smoke-review-plan-major",
+    "sessionId": "17",
+    "flow": ["review_plan"],
+    "coverage": ["review_plan", "risk_summary", "workspace_refresh"],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "帮我审查一下",
+        "assertContainsAny": ["审查", "风险", "方案"],
+        "assertNotContains": ["草稿", "payload", "stage", "action_family", "volunteerId"]
+      }
+    ]
+  },
+  {
+    "name": "301-smoke-sort-school-rank-major-group",
+    "sessionId": "16",
+    "flow": ["sort_ordered_plan", "confirm"],
+    "coverage": ["school_rank_sort", "majorGroup_model", "preview_confirm_apply", "review_stale"],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "按院校层次排序",
+        "assertContainsAny": ["院校层次", "排序", "确认", "会调整"],
+        "assertNotContains": ["草稿", "锁定", "payload", "stage", "action_family", "volunteerId"]
+      },
+      {
+        "prompt": "确认",
+        "assertContainsAny": ["已", "完成", "排序", "方案"],
+        "assertFollowupTarget": "ordered",
+        "assertFollowupRefresh": true,
+        "assertNotContains": ["草稿", "payload", "stage", "action_family", "volunteerId"]
+      }
+    ]
+  },
+  {
+    "name": "301-smoke-unit-move-major-group",
+    "sessionId": "16",
+    "flow": ["move_ordered_unit", "confirm"],
+    "coverage": ["unit_level_operation", "majorGroup_model", "preview_confirm_apply", "review_stale"],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "把第3个专业组移到第5位",
+        "assertContainsAny": ["专业组", "第3", "第5", "确认", "会调整"],
+        "assertNotContains": ["草稿", "锁定", "payload", "stage", "action_family", "volunteerId"]
+      },
+      {
+        "prompt": "确认",
+        "assertContainsAny": ["已", "移动", "专业组", "方案"],
+        "assertFollowupTarget": "ordered",
+        "assertFollowupRefresh": true,
+        "assertNotContains": ["草稿", "payload", "stage", "action_family", "volunteerId"]
+      }
+    ]
+  }
+]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Literal
 
 from pydantic_ai import RunContext
@@ -17,13 +18,31 @@ _PLAN_DEPENDENT_ACTIONS = {
     "add_units",
     "remove_units",
     "move_unit",
-    "pin_unit",
-    "unpin_unit",
+    "move_ordered_unit",
     "replace_units",
+    "remove_ordered_unit",
+    "sort_ordered_plan",
     "regenerate_order",
     "apply_compensation",
     "review_plan",
 }
+
+_MUTATING_ACTION_FAMILIES = {
+    "generate_plan",
+    "add_units",
+    "remove_units",
+    "move_unit",
+    "move_ordered_unit",
+    "pin_unit",
+    "unpin_unit",
+    "replace_units",
+    "remove_ordered_unit",
+    "sort_ordered_plan",
+    "regenerate_order",
+    "apply_compensation",
+}
+
+_UNIT_POSITION_REF_RE = re.compile(r"第\s*\d+\s*(?:个)?(?:专业组|志愿组|组)")
 
 
 # --- Deprecated: 以下关键词匹配函数将在 IntentFrame 完整接入后移除 (see ActionResolver) ---
@@ -106,6 +125,11 @@ def _goal_explicitly_requests_reorder(text: str) -> bool:
             "理一下顺序",
         )
     )
+
+
+def _goal_mentions_major_group_unit(text: str) -> bool:
+    compact = str(text or "").strip()
+    return any(token in compact for token in ("专业组", "这一组", "整组", "院校专业组"))
 
 
 def _goal_requests_adjustment_analysis(text: str) -> bool:
@@ -210,20 +234,28 @@ def _normalize_adjustment_action_family(
 def _build_missing_inputs(
     action_family: str,
     volunteer_ids: list[str] | None,
+    unit_ids: list[str] | None,
     target_position: int | None,
     filters: dict[str, str],
     review_issue_target: PlanReviewIssueTarget | None = None,
+    user_goal: str = "",
 ) -> list[str]:
     missing: list[str] = []
+    has_unit_position_ref = bool(_UNIT_POSITION_REF_RE.search(str(user_goal or "")))
     if action_family == "remove_units" and not volunteer_ids and review_issue_target is None:
         missing.append("volunteer_ids")
-    if action_family in {"move_unit", "pin_unit"}:
+    if action_family == "move_unit":
         if not volunteer_ids:
             missing.append("volunteer_id")
         if target_position is None:
             missing.append("target_position")
-    if action_family == "unpin_unit" and not volunteer_ids:
-        missing.append("volunteer_id")
+    if action_family == "move_ordered_unit":
+        if not unit_ids and not has_unit_position_ref:
+            missing.append("unit_ids")
+        if target_position is None:
+            missing.append("target_position")
+    if action_family == "remove_ordered_unit" and not unit_ids and not has_unit_position_ref:
+        missing.append("unit_ids")
     if action_family == "add_units" and not volunteer_ids and not _has_selection_scope(filters):
         missing.append("selection_scope")
     if action_family == "replace_units":
@@ -306,6 +338,8 @@ def _determine_stage(
     current_stage: str | None,
 ) -> str:
     if current_stage in {"analyze", "preview", "apply", "review"}:
+        if current_stage == "apply" and action_family in _MUTATING_ACTION_FAMILIES and not user_confirmed:
+            return "analyze" if missing_inputs else "preview"
         return current_stage
     if action_family == "query_state":
         return "apply"
@@ -335,15 +369,19 @@ async def _plan_next_action_model(
         "add_units",
         "remove_units",
         "move_unit",
+        "move_ordered_unit",
         "pin_unit",
         "unpin_unit",
         "replace_units",
+        "remove_ordered_unit",
+        "sort_ordered_plan",
         "regenerate_order",
         "apply_compensation",
         "review_plan",
     ] = "query_state",
     current_stage: str | None = None,
     volunteer_ids: list[str] | None = None,
+    unit_ids: list[str] | None = None,
     target_position: int | None = None,
     tier: str | None = None,
     province_keyword: str | None = None,
@@ -367,6 +405,11 @@ async def _plan_next_action_model(
     }
     filters = dict(base_filters)
     review_issue_target: PlanReviewIssueTarget | None = None
+    if _goal_mentions_major_group_unit(user_goal):
+        if action_family == "move_unit":
+            action_family = "move_ordered_unit"  # type: ignore[assignment]
+        elif action_family == "remove_units":
+            action_family = "remove_ordered_unit"  # type: ignore[assignment]
     matched_review_issue = _find_review_issue_by_code(
         review_issues,
         match_review_issue_code_from_goal(user_goal, review_issues),
@@ -410,9 +453,11 @@ async def _plan_next_action_model(
     missing_inputs = _build_missing_inputs(
         action_family,
         volunteer_ids,
+        unit_ids,
         target_position,
         filters,
         review_issue_target=review_issue_target,
+        user_goal=user_goal,
     )
     if action_family in _PLAN_DEPENDENT_ACTIONS and not _has_existing_plan(context_inputs):
         missing_inputs.append("existing_plan")
@@ -431,7 +476,7 @@ async def _plan_next_action_model(
         "preview_compensation",
         "review_plan",
     }
-    if action_family in {"generate_plan", "regenerate_order", "apply_compensation", "replace_units"}:
+    if action_family in {"generate_plan", "sort_ordered_plan", "regenerate_order", "apply_compensation", "replace_units"}:
         requires_confirmation = True
     if stage == "analyze":
         requires_confirmation = False
@@ -440,9 +485,12 @@ async def _plan_next_action_model(
         "add_units",
         "remove_units",
         "move_unit",
+        "move_ordered_unit",
         "pin_unit",
         "unpin_unit",
         "replace_units",
+        "remove_ordered_unit",
+        "sort_ordered_plan",
         "regenerate_order",
         "apply_compensation",
     }
@@ -453,14 +501,18 @@ async def _plan_next_action_model(
         "add_units",
         "remove_units",
         "move_unit",
+        "move_ordered_unit",
         "pin_unit",
         "unpin_unit",
         "replace_units",
+        "remove_ordered_unit",
+        "sort_ordered_plan",
     }:
         atomic_actions.append(
             PlanAtomicAction(
                 action_type=action_family,
                 volunteer_ids=volunteer_ids or [],
+                unit_ids=unit_ids or [],
                 target_position=target_position,
                 filters={k: v for k, v in filters.items() if v},
                 reason=user_goal,
@@ -472,9 +524,17 @@ async def _plan_next_action_model(
         if action_family == "generate_plan":
             preview_summary = "会基于当前报考参考信息、约束和候选范围生成一版方案，并在执行后自动复审。"
         elif action_family == "regenerate_order":
-            preview_summary = "会基于当前草稿与结构重新生成排序，并在执行后自动复审。"
+            preview_summary = "会基于当前方案重新生成整体顺序，并在执行后自动复审。"
+        elif action_family == "sort_ordered_plan":
+            field_label = "录取率"
+            goal_text = user_goal or ""
+            if "院校层次" in goal_text or "学校层次" in goal_text or "院校排名" in goal_text:
+                field_label = "院校层次"
+            elif "推荐系数" in goal_text:
+                field_label = "推荐系数"
+            preview_summary = f"会按{field_label}重新排序当前方案，排序会实际改变方案顺序和导出顺序，并让审查状态进入待重新审查。"
         elif action_family == "add_units":
-            preview_summary = "会补入指定志愿或按条件补入候选，并同步刷新草稿、排序和审查结果。"
+            preview_summary = "会补入指定志愿或按条件补入候选，并同步刷新当前方案和审查结果。"
         elif action_family == "query_candidates":
             preview_summary = "会按当前条件读取候选机会，用于继续挑选或比较，不会直接改方案。"
         elif action_family == "remove_units":
@@ -484,10 +544,14 @@ async def _plan_next_action_model(
                 preview_summary = "会从当前方案移出指定志愿，并在执行后重新审查整体结构。"
         elif action_family == "move_unit":
             preview_summary = "会调整指定志愿的位置，并在执行后重新审查整体结构。"
+        elif action_family == "move_ordered_unit":
+            preview_summary = "会整体移动指定专业组，组内专业顺序保持不变，并在执行后重新审查整体结构。"
+        elif action_family == "remove_ordered_unit":
+            preview_summary = "会从当前方案中删除指定专业组，组内专业会随专业组一并移出，并在执行后重新审查整体结构。"
         elif action_family == "pin_unit":
-            preview_summary = "会把指定志愿固定到目标位置，并在执行后重新审查整体结构。"
+            preview_summary = "新版工作台暂不提供固定/锁定志愿入口；如果要稳定位置，建议改用移动到指定位置或方案排序。"
         elif action_family == "unpin_unit":
-            preview_summary = "会取消指定志愿的固定位置，并在执行后重新审查整体结构。"
+            preview_summary = "新版工作台暂不提供固定/锁定志愿入口；当前无需取消固定。"
         elif action_family == "replace_units":
             if review_issue_target and review_issue_target.scope_mode == "full_issue" and review_issue_target.label:
                 preview_summary = f"会先移出当前审查命中的整批{review_issue_target.label}项，再按新的筛选条件补入候选，并在执行后重新审查整体结构。"
@@ -508,7 +572,7 @@ async def _plan_next_action_model(
     if missing_inputs:
         rationale.append(f"缺少必要输入：{','.join(missing_inputs)}")
         if "existing_plan" in missing_inputs:
-            rationale.append("当前还没有草稿或排序方案；不能审查、补齐、补稳、重排或局部调整。应先生成一版基础方案。")
+            rationale.append("当前还没有方案；不能审查、补齐、补稳、重排或局部调整。应先生成一版基础方案。")
     if preview_summary:
         rationale.append(preview_summary)
     if matched_review_issue and str(matched_review_issue.get("scope_kind") or "").strip() == "structural":
@@ -550,15 +614,19 @@ async def plan_next_action(
         "add_units",
         "remove_units",
         "move_unit",
+        "move_ordered_unit",
         "pin_unit",
         "unpin_unit",
         "replace_units",
+        "remove_ordered_unit",
+        "sort_ordered_plan",
         "regenerate_order",
         "apply_compensation",
         "review_plan",
     ] = "query_state",
     current_stage: str | None = None,
     volunteer_ids: list[str] | None = None,
+    unit_ids: list[str] | None = None,
     target_position: int | None = None,
     tier: str | None = None,
     province_keyword: str | None = None,
@@ -576,6 +644,7 @@ async def plan_next_action(
         action_family=action_family,
         current_stage=current_stage,
         volunteer_ids=volunteer_ids,
+        unit_ids=unit_ids,
         target_position=target_position,
         tier=tier,
         province_keyword=province_keyword,

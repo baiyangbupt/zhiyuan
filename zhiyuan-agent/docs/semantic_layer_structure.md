@@ -87,6 +87,12 @@
 
 skill 不直接执行状态，也不应该替代 tool 的安全边界。
 
+说明：
+
+- `skills/career_path_chat/SKILL.md` 是 `Explore + career` 的语义说明层。
+- 职业路径探索的运行时主入口是 `analyze_current_career_direction`。
+- 职业路径偏好写入必须先走 `preview_current_career_intent_confirmation`，再等用户确认后由 `update_volunteer_intent_state` 生效。
+
 ### 3.3 Tool 层
 
 #### Explore

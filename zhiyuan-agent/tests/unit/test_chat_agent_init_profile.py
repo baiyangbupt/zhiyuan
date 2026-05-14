@@ -51,7 +51,7 @@ def test_build_instructions_includes_planning_summary():
     instructions = _build_instructions(ctx)
 
     assert "当前规划阶段：reviewed" in instructions
-    assert "当前草稿志愿数：24" in instructions
+    assert "当前已加入方案数：24" in instructions
     assert "当前主要风险：保区占比过低" in instructions
     assert "当前待处理建议：1项" in instructions
 
@@ -113,14 +113,15 @@ def test_build_instructions_includes_plan_orchestration_boundaries():
 
     instructions = _build_instructions(ctx)
 
-    assert "统一优先走 `collect_plan_context_inputs` -> `plan_next_action` -> `execute_plan_action`" in instructions
-    assert "规划并执行 `query_state` 类动作" in instructions
+    assert "统一优先走 Plan 编排工具" in instructions
+    assert "直接调用 `plan_next_action(action_family=\"query_state\")`" in instructions
+    assert "不要先单独调用 `collect_plan_context_inputs`" in instructions
     assert "`query_volunteer_plan` 只用于回答" in instructions
     assert "还差几个怎么补" in instructions
     assert "不要调用 `query_volunteer_plan`" in instructions
     assert "优先直接传结构化参数，如 `school_keywords`、`major_keywords`、`province_names`" in instructions
     assert "规划成 `preview_compensation`、`add_units` 或相关补齐动作" in instructions
-    assert "草稿志愿数=0 且排序志愿数=0" in instructions
+    assert "已加入方案数=0 且排序志愿数=0" in instructions
     assert "不能编造" in instructions
     assert "当前 planning 状态的优先级高于历史对话" in instructions
     assert "即使历史里已经回答过，也要重新读取一次当前 plan 状态" in instructions
@@ -132,6 +133,8 @@ def test_build_instructions_includes_plan_orchestration_boundaries():
     assert "默认是在问当前方案的分析和建议" in instructions
     assert "也按整体重排理解" in instructions
     assert "`add_units / remove_units / move_unit / replace_units`" in instructions
+    assert "`move_ordered_unit` 或 `remove_ordered_unit`" in instructions
+    assert "不提供固定/锁定志愿入口" in instructions
     assert "execute_plan_action" in instructions
     assert "`result_kind`、`reply_focus`、`next_step_hints` 和 `facts`" in instructions
     assert "不要直接说内部词“补偿预览”" in instructions

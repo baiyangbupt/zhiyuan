@@ -14,6 +14,8 @@
 相关文档：
 
 - `docs/release-3.0.0-backlog.md`
+- `docs/release-3.0.1-current-state-and-optimization-roadmap.md`
+- `docs/release-3.0.1-agent-optimization-design.md`
 - `docs/release-3.0.1-implementation-design.md`
 - `docs/production-upgrade-implementation-steps.md`
 - `docs/planning-workspace-light-refresh-design.md`
@@ -142,18 +144,19 @@
 
 方案：
 
-- 方案列表支持按以下维度临时排序：
-  - 当前顺序
+- 方案列表支持按以下维度实际重排当前方案：
   - 录取率
   - 院校层次
   - 推荐系数
-- 默认是“查看排序”，不直接改写方案顺序。
-- 如需要应用排序结果，必须有明确确认动作。
+- 排序是高副作用动作，前端点击或对话触发时都必须经过明确确认。
+- 确认后改写当前方案顺序，导出顺序随当前方案顺序变化。
+- 排序成功后审查状态进入待重新审查，避免继续沿用旧顺序下的审查结论。
 
 验收：
 
-- 可恢复原方案顺序。
-- 临时排序不改变导出顺序，除非用户确认应用。
+- 用户确认后方案顺序真实变化。
+- 导出顺序与排序后页面顺序一致。
+- 录取率、院校层次、推荐系数三种排序均覆盖。
 
 #### P1-2 展示近三年录取分数/位次
 
@@ -186,9 +189,10 @@
 
 方案：
 
-- `majorGroup` 模式下提供组级移动、删除、固定能力。
+- `majorGroup` 模式下提供组级移动、删除能力。
 - 组内专业随组整体移动，组内顺序保持。
 - 前端区分“专业组操作”和“组内专业操作”。
+- 3.0.1 不再暴露旧草稿锁定或方案 pin/unpin 用户入口；底层历史字段仅作为兼容存在。
 
 验收：
 
@@ -284,13 +288,30 @@
 
 详细组件交互和前端验证见 `docs/release-3.0.1-implementation-design.md`。
 
-### 3.3 Agent 和模型
+### 3.3 Agent 和对话驱动
 
-Agent 和模型本期不是主改造对象：
+Agent 和对话驱动在 3.0.1 中进入稳定性收口范围，但不做模型策略大改。
 
-- 本版本不默认改模型策略。
-- 如涉及快捷回复或方案解读文案，需沿用现有 benchmark 场景验证延迟和效果。
-- 可补最小调用日志字段：model、provider、scene、latency、status、errorType。
+本期目标：
+
+- 用户侧彻底去掉“草稿”概念；Agent 回复、确认卡片、pending 动作和工作台联动统一使用“方案”语言。底层 `draftPlanState` 只作为 backend 兼容实现细节。
+- 对话触发方案排序时，对齐前端“排序”能力，支持录取率、院校层次、推荐系数三类排序；排序必须先 preview，再确认执行。
+- 3.0.1 不让对话触发旧 `pin/unpin/lock_draft` 用户动作，避免出现“对话能操作但前端不可见”的状态分裂。
+- 对话触发候选筛选时，只应用到可见、可撤销的 `candidateViewState`，不产生隐藏过滤条件。
+- 只读方案状态查询不发送无联动工作台卡片；只有刷新、聚焦、筛选或确认动作才发结构化工作台事件。
+- 继续沿用现有 LLM benchmark 和 websocket regression，补齐 3.0.1 对话场景样例。
+- 收口旧 `planning_router_tool`：它不再作为 Agent 主入口，只作为兼容层保留；本期开始迁移测试和文档指令到 Plan 主链。
+- 梳理 `planning_workflow_tool`：它当前仍是 handlers 的内部 helper 集合，不能直接删除；本期只做拆分设计和低风险去用户话术。
+
+不进入本期：
+
+- 大改模型 provider 策略。
+- 完整重写 ActionResolver。
+- 重新设计所有旧 `draft` backend 接口。
+- 一次性删除 `planning_workflow_tool`。
+- 基于行为反馈自动优化 Agent 规划策略。
+
+最小日志字段可继续补充：model、provider、scene、latency、status、errorType。
 
 ## 4. 验证计划
 

@@ -132,6 +132,9 @@ def test_generate_planning_initial_plan_calls_backend_and_formats_result():
     }
 
     with patch(
+        "app.tools.planning_workflow_tool._generate_planning_candidate_pool_request",
+        AsyncMock(return_value={"code": 0, "data": {}}),
+    ), patch(
         "app.tools.planning_workflow_tool._generate_planning_initial_plan_request",
         AsyncMock(return_value=response),
     ) as mock_request, patch(
@@ -204,7 +207,7 @@ def test_query_planning_state_uses_session_and_formats_result():
 
     mock_request.assert_awaited_once_with("state-session")
     mock_ordered.assert_awaited_once_with("state-session")
-    assert "这是当前会话的最新规划状态摘要。" in result
+    assert "当前规划状态概览：" in result
     assert "当前阶段：ordered" in result
     assert "状态版本：7" in result
     assert "当前偏好/要求：偏好地域=北京；排除地域=上海；发展方向=体制内/考公导向" in result
@@ -361,7 +364,7 @@ def test_query_planning_plan_overview_reads_state_and_ordered_plan():
 
     mock_state.assert_awaited_once_with("overview-session")
     mock_ordered.assert_awaited_once_with("overview-session")
-    assert "这是当前方案的完整状态概览。" in result
+    assert "方案完整状态：" in result
     assert "当前已有排序方案：96个志愿" in result
     assert "冲稳保分布：冲32 / 稳32 / 保32" in result
     assert "方案前列：重庆理工大学-计算机科学与技术(冲)@1" in result
@@ -696,8 +699,8 @@ def test_query_planning_draft_uses_session_and_formats_result():
         result = asyncio.run(query_planning_draft(ctx))
 
     mock_request.assert_awaited_once_with("draft-session")
-    assert "这是当前草稿方案摘要。" in result
-    assert "草稿总数：2" in result
+    assert "已加入方案概况：" in result
+    assert "已加入方案数：2" in result
     assert "区间分布：冲1 / 稳1 / 保0" in result
     assert "北京大学-经济学(sprint)[锁定]" in result
 
@@ -725,7 +728,7 @@ def test_query_planning_draft_prefers_unit_summary_in_major_group_mode():
         result = asyncio.run(query_planning_draft(ctx))
 
     mock_request.assert_awaited_once_with("draft-session")
-    assert "草稿总数：24" in result
+    assert "已加入方案数：24" in result
     assert "区间分布：冲8 / 稳8 / 保8" in result
 
 
@@ -790,10 +793,10 @@ def test_query_planning_candidate_pool_uses_filters_and_formats_result():
         page=1,
         page_size=10,
     )
-    assert "这是当前候选池查询结果。" in result
+    assert "候选志愿查询结果：" in result
     assert "命中数量：2" in result
     assert "id=v101" in result
-    assert "volunteerId" in result
+    assert "volunteerId" not in result
 
 
 def test_select_remove_lock_and_ban_planning_draft_items_use_session():
@@ -827,11 +830,11 @@ def test_select_remove_lock_and_ban_planning_draft_items_use_session():
 
     mock_select.assert_awaited_once_with(1, "draft-edit-session", ["v1", "v2"], source="user_agent")
     mock_remove.assert_awaited_once_with("draft-edit-session", ["v1"])
-    mock_lock.assert_awaited_once_with("draft-edit-session", ["v1"], locked=True)
+    mock_lock.assert_not_awaited()
     mock_ban.assert_awaited_once_with("draft-edit-session", ["v3"])
-    assert "已加入2个志愿到草稿。" in select_result
-    assert "已从草稿移出1个志愿。" in remove_result
-    assert "已锁定1个草稿志愿。" in lock_result
+    assert "已加入2个志愿到方案。" in select_result
+    assert "已从方案移出1个志愿。" in remove_result
+    assert "新版工作台暂不提供固定/锁定志愿入口" in lock_result
     assert "已禁用1个候选志愿，并同步更新草稿。" in ban_result
 
 
@@ -860,9 +863,9 @@ def test_query_planning_ordered_plan_uses_session_and_formats_result():
         result = asyncio.run(query_planning_ordered_plan(ctx))
 
     mock_request.assert_awaited_once_with("ordered-session")
-    assert "这是当前排序方案摘要。" in result
+    assert "方案志愿概况：" in result
     assert "排序总数：2" in result
-    assert "梯度是否达标：是" in result
+    assert "录取率梯度是否达标：是" in result
     assert "保底是否达标：否" in result
     assert "北京大学-法学(sprint)@1[固定]" in result
 
@@ -1282,7 +1285,7 @@ def test_move_pin_and_unpin_planning_ordered_item_use_session():
     mock_unpin.assert_awaited_once_with("move-session", "v1")
     assert "已将志愿移动到第3位。" in move_result
     assert "已将志愿固定在第3位。" in pin_result
-    assert "已取消该志愿的固定位置。" in unpin_result
+    assert "已取消该志愿的位置标记。" in unpin_result
 
 
 def test_apply_planning_compensation_requires_confirmation():
@@ -1345,5 +1348,5 @@ def test_apply_planning_compensation_uses_session_and_formats_state():
     )
     mock_ordered.assert_awaited_once_with("apply-session")
     assert "已应用补偿并刷新当前方案。" in result
-    assert "草稿志愿数：28" in result
+    assert "已加入方案数：28" in result
     assert "当前待处理建议：0项" in result

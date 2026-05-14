@@ -102,6 +102,9 @@ class TargetSpec(BaseModel):
     # 志愿引用：如 "@3", "北京工业大学-计算机"
     volunteer_refs: list[str] = Field(default_factory=list)
 
+    # 专业组引用：如 "第3个专业组", "unit-xxx"
+    unit_refs: list[str] = Field(default_factory=list)
+
     # 具体名称引用
     school_names: list[str] = Field(default_factory=list)
     major_names: list[str] = Field(default_factory=list)
@@ -121,6 +124,7 @@ class TargetSpec(BaseModel):
         """是否包含任何具体引用。"""
         return bool(
             self.volunteer_refs
+            or self.unit_refs
             or self.school_names
             or self.major_names
             or self.region_names

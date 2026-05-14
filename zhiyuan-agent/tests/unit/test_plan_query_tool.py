@@ -305,7 +305,7 @@ async def test_query_volunteer_plan_falls_back_to_draft_when_ordered_plan_is_emp
     ):
         result = await query_volunteer_plan(_ctx(), "当前方案里有没有生物工程")
 
-    assert "当前草稿方案里共命中了" in result
+    assert "当前已加入方案里共命中了" in result
     assert "75.5%" in result
     ordered_mock.assert_awaited_once_with("23")
     draft_mock.assert_awaited_once_with("23")

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
@@ -42,6 +43,7 @@ from app.util.internal_client import (
     get_user_init_profile,
     get_user_score_detail,
 )
+from app.util.structured_log import log_event
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +96,20 @@ _PLAN_STYLE_GUARD_PROMPT_KEYWORDS = (
     "换成",
 )
 _UNBACKED_CONFIRM_SENTENCE_RE = re.compile(r"确认要我.*执行")
+
+
+def _safe_result_field(result_text: str, field: str) -> Any:
+    try:
+        parsed = json.loads(result_text)
+        if isinstance(parsed, dict):
+            return parsed.get(field)
+    except Exception:
+        return None
+    return None
+
+
+def _log_conversation_turn_event(**fields: Any) -> None:
+    log_event("conversation_turn_event", **fields)
 
 
 @dataclass
@@ -186,9 +202,10 @@ _EXECUTE_PLAN_ACTION_REFRESH_FAMILIES = {
     "add_units",
     "remove_units",
     "move_unit",
-    "pin_unit",
-    "unpin_unit",
+    "move_ordered_unit",
+    "remove_ordered_unit",
     "replace_units",
+    "sort_ordered_plan",
     "regenerate_order",
     "apply_compensation",
 }
@@ -288,9 +305,10 @@ def _tool_calls_include_plan_workspace_refresh(messages: list[Any] | None) -> li
         "add_units": ["ordered"],
         "remove_units": ["ordered"],
         "move_unit": ["ordered"],
-        "pin_unit": ["ordered"],
-        "unpin_unit": ["ordered"],
+        "move_ordered_unit": ["ordered", "review"],
+        "remove_ordered_unit": ["ordered", "review"],
         "replace_units": ["ordered"],
+        "sort_ordered_plan": ["ordered", "review"],
         "regenerate_order": ["ordered"],
         "apply_compensation": ["ordered"],
     }
@@ -391,9 +409,10 @@ _PENDING_PLAN_ACTION_FAMILIES = {
     "add_units",
     "remove_units",
     "move_unit",
-    "pin_unit",
-    "unpin_unit",
+    "move_ordered_unit",
+    "remove_ordered_unit",
     "replace_units",
+    "sort_ordered_plan",
     "regenerate_order",
     "apply_compensation",
 }
@@ -558,7 +577,9 @@ def _extract_pending_plan_action(messages: list[Any] | None) -> dict[str, Any] |
                 continue
             is_preview_result = result_kind in {"preview_only", "compensation_preview"}
             if result.get("applied") is True and not is_preview_result:
-                latest_pending = None
+                effective_action_family = _PLAN_PREVIEW_TO_APPLY_ACTION_FAMILIES.get(action_family, action_family)
+                if effective_action_family in _PENDING_PLAN_ACTION_FAMILIES:
+                    latest_pending = None
                 continue
             if not is_preview_result:
                 continue
@@ -696,7 +717,7 @@ def _build_basic_plan_status_reply(planning: PlanningSummary) -> str:
         return (
             '当前还没有生成方案。'
             '你可以直接说“帮我生成一版方案”，'
-            '我会根据你的成绩和偏好先生成一版初稿给你看，确认后再正式排序。'
+            '我会根据你的成绩和偏好先生成一版方案给你看，确认后再生成正式顺序。'
         )
 
     if planning.ordered_total >= target:
@@ -704,7 +725,7 @@ def _build_basic_plan_status_reply(planning: PlanningSummary) -> str:
     elif planning.ordered_total > 0:
         count_text = f'你的方案目前有 {planning.ordered_total} 个志愿（目标 {target} 个）'
     else:
-        count_text = f'当前有 {planning.draft_total} 个备选志愿（目标 {target} 个），还没有正式排序'
+        count_text = f'当前已加入方案 {planning.draft_total} 个志愿（目标 {target} 个），还没有生成正式顺序'
 
     lines = [f'{count_text}。']
 
@@ -1006,7 +1027,7 @@ def _build_plan_timeout_fallback_reply(result: dict[str, Any]) -> str | None:
         "status_overview": "方案情况如下：",
         "generation_result": "方案已经生成好了：",
         "ordered_snapshot": "你的方案情况如下：",
-        "draft_snapshot": "备选志愿情况如下：",
+        "draft_snapshot": "已加入方案情况如下：",
         "candidate_snapshot": "候选机会查询结果：",
         "mutation_result": "方案调整已完成：",
     }
@@ -1070,7 +1091,7 @@ def _build_status_overview_fallback_lines(facts: dict[str, Any]) -> list[str]:
         return [
             "当前还没有生成正式方案。",
             "",
-            "你可以直接说“帮我生成一版方案”，我会按你的成绩和偏好先生成初稿，再继续做审查和调整。",
+            "你可以直接说“帮我生成一版方案”，我会按你的成绩和偏好先生成方案，再继续做审查和调整。",
         ]
 
     target = target_total or current_total
@@ -1296,12 +1317,15 @@ class ChatService:
             conversation_phase=conversation_phase,
             progress_callback=on_progress,
         )
+        turn_started_at = time.monotonic()
 
         if pending_plan_action and _is_plan_action_confirmation(content):
             action_family = str(pending_plan_action.get("action_family") or "").strip()
             plan_payload = str(pending_plan_action.get("plan_payload") or "")
             tool_call_id = f"direct-{action_family or 'pending-plan'}-confirmation"
+            tool_started_at = time.monotonic()
             result_text = await execute_plan_action(SimpleNamespace(deps=request_context), plan_payload)
+            tool_duration_ms = int((time.monotonic() - tool_started_at) * 1000)
             result = _parse_tool_return_json(result_text) or {}
             reply = _direct_pending_plan_action_reply(action_family, result)
             new_messages = [
@@ -1333,6 +1357,26 @@ class ChatService:
                 await self.history_store.save(session_id, history_to_save)
             except Exception:
                 logger.exception("Failed to save direct pending plan confirmation history: session_id=%s", session_id)
+            _log_conversation_turn_event(
+                sessionId=session_id,
+                userId=user_id,
+                scene="plan",
+                routingPath="direct_pending_plan_confirm",
+                pendingType="plan",
+                actionFamily=action_family or result.get("action_family"),
+                totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
+                toolDurationMs=tool_duration_ms,
+                toolCalls=[
+                    {
+                        "name": "execute_plan_action",
+                        "durationMs": tool_duration_ms,
+                        "success": bool(result) and result.get("result_kind") != "error",
+                        "actionFamily": action_family or result.get("action_family"),
+                    }
+                ],
+                status="success" if result.get("result_kind") != "error" else "error",
+                errorType=result.get("result_kind") if result.get("result_kind") == "error" else None,
+            )
             workspace_refresh_targets = _dedupe_workspace_targets(
                 [str(target) for target in (result.get("workspace_refresh_targets") or [])]
             )
@@ -1348,10 +1392,12 @@ class ChatService:
 
         if not pending_plan_action and pending_intent_change and _is_pending_intent_confirmation(content):
             tool_call_id = "direct-pending-intent-confirmation"
+            tool_started_at = time.monotonic()
             result_text = await update_volunteer_intent_state(
                 SimpleNamespace(deps=request_context),
                 action="confirm",
             )
+            tool_duration_ms = int((time.monotonic() - tool_started_at) * 1000)
             reply = _normalize_user_facing_terms(_direct_pending_intent_reply(result_text))
             new_messages = [
                 ModelRequest(parts=[UserPromptPart(content=content)]),
@@ -1382,6 +1428,28 @@ class ChatService:
                 await self.history_store.save(session_id, history_to_save)
             except Exception:
                 logger.exception("Failed to save direct pending intent confirmation history: session_id=%s", session_id)
+            message_code = _safe_result_field(result_text, "messageCode")
+            _log_conversation_turn_event(
+                sessionId=session_id,
+                userId=user_id,
+                scene="intent",
+                routingPath="direct_pending_intent_confirm",
+                pendingType="intent",
+                actionFamily=None,
+                totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
+                toolDurationMs=tool_duration_ms,
+                toolCalls=[
+                    {
+                        "name": "update_volunteer_intent_state",
+                        "durationMs": tool_duration_ms,
+                        "success": bool(_safe_result_field(result_text, "applied")),
+                        "action": "confirm",
+                        "messageCode": message_code,
+                    }
+                ],
+                status="success" if message_code not in {"apply_failed", "confirm_required", "no_pending"} else "error",
+                errorType=message_code if message_code in {"apply_failed", "confirm_required", "no_pending"} else None,
+            )
             return reply
 
         if (
@@ -1400,14 +1468,27 @@ class ChatService:
                 await self.history_store.save(session_id, history_to_save)
             except Exception:
                 logger.exception("Failed to save no-pending plan confirmation guard history: session_id=%s", session_id)
+            _log_conversation_turn_event(
+                sessionId=session_id,
+                userId=user_id,
+                scene="plan",
+                routingPath="plan_confirmation_guard_no_pending",
+                pendingType=None,
+                actionFamily=None,
+                totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
+                status="success",
+                errorType=None,
+            )
             return reply
 
+        llm_started_at = time.monotonic()
         reply, new_messages, all_messages, usage = await self.agent.run_with_message_deltas(
             user_prompt=content,
             message_history=history,
             deps=request_context,
             on_progress=on_progress,
         )
+        llm_duration_ms = int((time.monotonic() - llm_started_at) * 1000)
 
         # ── Token usage 追踪 ──────────────────────────────────────
         tracker = self._usage_trackers.get(session_id)
@@ -1489,6 +1570,44 @@ class ChatService:
 
         workspace_view_targets = _tool_calls_include_plan_view_targets(
             new_messages if new_messages else all_messages
+        )
+        tool_messages = new_messages if new_messages else all_messages
+        tool_calls = _iter_tool_call_parts(tool_messages)
+        tool_returns = _iter_tool_return_parts(tool_messages)
+        called_tool_names = [part.tool_name for part in tool_calls]
+        if any(name in {"collect_plan_context_inputs", "plan_next_action", "execute_plan_action", "query_volunteer_plan"} for name in called_tool_names):
+            scene = "plan"
+        elif any("intent" in name for name in called_tool_names):
+            scene = "intent"
+        elif any(name.startswith("analyze_current_") for name in called_tool_names):
+            scene = "explore"
+        else:
+            scene = "unknown"
+        action_family = None
+        for part in tool_returns:
+            try:
+                parsed = json.loads(str(part.content or ""))
+                if isinstance(parsed, dict) and parsed.get("action_family"):
+                    action_family = parsed.get("action_family")
+                    break
+            except Exception:
+                continue
+        _log_conversation_turn_event(
+            sessionId=session_id,
+            userId=user_id,
+            scene=scene,
+            routingPath="full_agent",
+            pendingType="plan" if pending_plan_action else "intent" if pending_intent_change else None,
+            actionFamily=action_family,
+            modelProvider=None,
+            modelName=None,
+            totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
+            llmDurationMs=llm_duration_ms,
+            toolDurationMs=None,
+            toolCalls=[{"name": name} for name in called_tool_names],
+            postProcessingApplied=[],
+            status="success",
+            errorType=None,
         )
 
         logger.info(

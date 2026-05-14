@@ -70,5 +70,72 @@
         "assertNotContains": ["保底有3个", "方案已经生成好了", "保底够了"]
       }
     ]
+  },
+  {
+    "name": "e2e-dialog-sort-school-rank",
+    "sessionId": "35",
+    "flow": ["sort_ordered_plan", "confirm"],
+    "coverage": ["dialog_sort", "school_rank_sort", "preview_confirm_apply", "no_draft_language"],
+    "prompts": [
+      {
+        "prompt": "按院校层次给当前方案排序",
+        "assertContainsAny": ["院校层次", "排序", "确认", "会调整"],
+        "assertNotContains": ["草稿", "payload", "volunteerId"]
+      },
+      {
+        "prompt": "确认",
+        "assertContainsAny": ["已", "排序", "方案"],
+        "assertFollowupTarget": "ordered",
+        "assertFollowupRefresh": true,
+        "assertNotContains": ["草稿", "payload", "volunteerId"]
+      }
+    ]
+  },
+  {
+    "name": "e2e-pin-disabled-in-301",
+    "sessionId": "35",
+    "flow": ["pin_disabled"],
+    "coverage": ["no_pin_user_entry", "no_legacy_lock", "no_draft_language"],
+    "prompts": [
+      {
+        "prompt": "把第一个志愿锁定在第一位",
+        "assertContainsAny": ["暂不", "不提供", "移动", "排序", "方案"],
+        "assertNotContains": ["已锁定", "确认锁定", "草稿", "payload", "volunteerId"],
+        "assertFollowupCount": 0
+      }
+    ]
+  },
+  {
+    "name": "e2e-career-generic-direction",
+    "sessionId": "35",
+    "flow": ["career_explore"],
+    "coverage": ["career_explore", "generic_direction", "readonly_no_pending_intent"],
+    "prompts": [
+      {
+        "prompt": "我适合什么方向",
+        "assertContainsAny": ["方向", "适合", "方案", "候选", "就业"],
+        "assertNotContains": ["已记录", "我记下", "确认后写入", "payload", "volunteerId"]
+      }
+    ]
+  },
+  {
+    "name": "e2e-major-group-unit-move",
+    "sessionId": "35",
+    "flow": ["move_ordered_unit", "confirm"],
+    "coverage": ["majorGroup_model", "unit_level_operation", "preview_confirm_apply"],
+    "prompts": [
+      {
+        "prompt": "把第3个专业组移到第5位",
+        "assertContainsAny": ["专业组", "第3", "第5", "确认", "会调整"],
+        "assertNotContains": ["草稿", "payload", "volunteerId"]
+      },
+      {
+        "prompt": "确认",
+        "assertContainsAny": ["已", "移动", "专业组", "方案"],
+        "assertFollowupTarget": "ordered",
+        "assertFollowupRefresh": true,
+        "assertNotContains": ["草稿", "payload", "volunteerId"]
+      }
+    ]
   }
 ]

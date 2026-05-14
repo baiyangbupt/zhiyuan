@@ -97,6 +97,64 @@ def test_execute_plan_action_returns_preview_without_mutation():
     assert data["reply_focus"] == ["preview_only"]
 
 
+def test_execute_plan_action_move_ordered_unit_preview_uses_unit_position_language():
+    payload = {
+        "stage": "preview",
+        "action_family": "move_ordered_unit",
+        "user_goal": "把第3个专业组移到第5位",
+        "context_summary": "阶段=ordered；方案=30/30",
+        "preview_summary": "会整体移动指定专业组。",
+        "missing_inputs": [],
+        "atomic_actions": [
+            {
+                "action_type": "move_ordered_unit",
+                "unit_ids": [],
+                "target_position": 5,
+                "filters": {},
+                "reason": "把第3个专业组移到第5位",
+            }
+        ],
+    }
+    state = {
+        "orderedPlanState": {
+            "units": [
+                {"unitId": "unit-1", "schoolName": "A大学第101组", "majorItems": [{"majorName": "英语"}]},
+                {"unitId": "unit-2", "schoolName": "B大学第102组", "majorItems": [{"majorName": "计算机"}]},
+                {
+                    "unitId": "unit-3",
+                    "schoolName": "桂林电子科技大学第102组",
+                    "majorItems": [{"majorName": "会计学"}, {"majorName": "知识产权"}],
+                },
+                {"unitId": "unit-4", "schoolName": "D大学第104组", "majorItems": [{"majorName": "电气"}]},
+                {"unitId": "unit-5", "schoolName": "E大学第105组", "majorItems": [{"majorName": "软件工程"}]},
+            ]
+        }
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_state_request",
+        new=AsyncMock(return_value={"code": 0, "data": state}),
+    ) as mock_state, patch(
+        "app.tools.plan_execution_tool._move_planning_ordered_plan_unit_request",
+        new=AsyncMock(),
+    ) as mock_move:
+        result = asyncio.run(execute_plan_action(_ctx(), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["applied"] is False
+    assert data["result_kind"] == "preview_only"
+    assert "第 3 个专业组" in data["summary"]
+    assert "桂林电子科技大学第102组" in data["summary"]
+    assert "组内共 2 个专业" in data["summary"]
+    assert "第 5 个专业组位置" in data["summary"]
+    assert "不是按单条志愿位置计算" in data["summary"]
+    assert "前5位" not in data["summary"]
+    assert data["facts"]["source_unit_id"] == "unit-3"
+    assert data["facts"]["target_unit_position"] == 5
+    mock_state.assert_awaited_once()
+    mock_move.assert_not_awaited()
+
+
 def test_execute_plan_action_blocks_regenerate_order_for_structural_rebalance_goal():
     payload = {
         "stage": "preview",
@@ -115,6 +173,125 @@ def test_execute_plan_action_blocks_regenerate_order_for_structural_rebalance_go
     assert data["stage"] == "analyze"
     assert "不是单纯重排" in data["summary"]
     assert "structural_rebalance_requires_scope" in data["reply_focus"]
+
+
+def test_execute_plan_action_sorts_ordered_plan_by_school_rank_and_marks_review_stale():
+    payload = {
+        "stage": "apply",
+        "action_family": "sort_ordered_plan",
+        "user_goal": "按院校层次给当前方案排序",
+        "context_summary": "阶段=ordered；方案=30/30",
+        "preview_summary": "",
+        "missing_inputs": [],
+        "should_rerun_review": False,
+        "intent_relation": "unknown",
+        "atomic_actions": [
+            {
+                "action_type": "sort_ordered_plan",
+                "volunteer_ids": [],
+                "target_position": None,
+                "filters": {"sort_field": "schoolRank"},
+                "reason": "按院校层次排序",
+            }
+        ],
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._sort_planning_ordered_plan_request",
+        new=AsyncMock(return_value={"code": 0, "data": {}}),
+    ) as mock_sort, patch(
+        "app.tools.plan_execution_tool._get_planning_state_request",
+        new=AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "orderedPlanState": {"summary": {"unitTotal": 30, "targetUnitCount": 30}},
+                    "reviewState": {"summary": {"riskCount": 0, "warnCount": 0}},
+                },
+            }
+        ),
+    ), patch(
+        "app.tools.plan_execution_tool._get_user_profile_request",
+        new=AsyncMock(return_value={"code": 0, "data": {"userprofile": {}}}),
+    ):
+        result = asyncio.run(execute_plan_action(_ctx_with_pending("sort_ordered_plan"), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["applied"] is True
+    assert data["action_family"] == "sort_ordered_plan"
+    assert data["workspace_refresh_targets"] == ["ordered", "review"]
+    assert data["executed_actions"] == [{"action": "sort_ordered_plan", "sortField": "schoolRank"}]
+    assert "已按院校层次重新排序当前方案" in data["summary"]
+    assert "草稿" not in data["summary"]
+    mock_sort.assert_awaited_once_with(1, "exec-1", "schoolRank")
+
+
+def test_execute_plan_action_sort_accepts_success_envelope():
+    payload = {
+        "stage": "apply",
+        "action_family": "sort_ordered_plan",
+        "user_goal": "按院校层次给当前方案排序",
+        "context_summary": "阶段=ordered；方案=30/30",
+        "atomic_actions": [
+            {
+                "action_type": "sort_ordered_plan",
+                "filters": {"sort_field": "schoolRank"},
+            }
+        ],
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._sort_planning_ordered_plan_request",
+        new=AsyncMock(return_value={"success": True, "data": {}}),
+    ), patch(
+        "app.tools.plan_execution_tool._get_planning_state_request",
+        new=AsyncMock(
+            return_value={
+                "success": True,
+                "data": {
+                    "orderedPlanState": {"summary": {"unitTotal": 30, "targetUnitCount": 30}},
+                },
+            }
+        ),
+    ), patch(
+        "app.tools.plan_execution_tool._get_user_profile_request",
+        new=AsyncMock(return_value={"success": True, "data": {"userprofile": {}}}),
+    ):
+        result = asyncio.run(execute_plan_action(_ctx_with_pending("sort_ordered_plan"), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["applied"] is True
+    assert data["result_kind"] == "mutation_result"
+    assert data["workspace_refresh_targets"] == ["ordered", "review"]
+    assert "已按院校层次重新排序当前方案" in data["summary"]
+
+
+def test_execute_plan_action_sort_failure_does_not_refresh_workspace():
+    payload = {
+        "stage": "apply",
+        "action_family": "sort_ordered_plan",
+        "user_goal": "按院校层次给当前方案排序",
+        "context_summary": "阶段=ordered；方案=30/30",
+        "atomic_actions": [
+            {
+                "action_type": "sort_ordered_plan",
+                "filters": {"sort_field": "schoolRank"},
+            }
+        ],
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._sort_planning_ordered_plan_request",
+        new=AsyncMock(return_value={"success": False, "message": "backend rejected"}),
+    ):
+        result = asyncio.run(execute_plan_action(_ctx_with_pending("sort_ordered_plan"), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["applied"] is False
+    assert data["result_kind"] == "error"
+    assert data["executed_actions"] == []
+    assert data["workspace_refresh_targets"] == []
+    assert "排序失败" in data["summary"]
 
 
 def test_execute_plan_action_remove_preview_expands_broad_high_tuition_issue_scope():
@@ -266,7 +443,7 @@ def test_execute_plan_action_returns_structured_error_when_payload_schema_is_inc
     assert data["result_kind"] == "error"
     assert data["action_family"] == "analyze_adjustment"
     assert data["reply_focus"] == ["missing_plan_payload"]
-    assert "plan_next_action" in data["summary"]
+    assert "方案操作信息不完整" in data["summary"]
 
 
 def test_execute_plan_action_runs_remove_and_review():
@@ -290,7 +467,7 @@ def test_execute_plan_action_runs_remove_and_review():
     }
 
     with patch(
-        "app.tools.plan_execution_tool.remove_planning_ordered_items",
+        "app.handlers.mutation_handlers.remove_planning_ordered_items",
         new=AsyncMock(return_value="remove ok"),
     ) as mock_remove, patch(
         "app.tools.plan_execution_tool.run_planning_review",
@@ -357,7 +534,7 @@ def test_execute_plan_action_remove_expands_broad_high_tuition_issue_scope_on_ap
         "app.tools.plan_execution_tool._get_planning_state_request",
         new=AsyncMock(return_value={"code": 0, "data": planning_state}),
     ), patch(
-        "app.tools.plan_execution_tool.remove_planning_ordered_items",
+        "app.handlers.mutation_handlers.remove_planning_ordered_items",
         new=AsyncMock(return_value="remove ok"),
     ) as mock_remove, patch(
         "app.tools.plan_execution_tool.run_planning_review",
@@ -412,7 +589,7 @@ def test_execute_plan_action_remove_apply_normalizes_flat_volunteer_ids_payload(
         "app.tools.plan_execution_tool._get_planning_state_request",
         new=AsyncMock(return_value={"code": 0, "data": planning_state}),
     ), patch(
-        "app.tools.plan_execution_tool.remove_planning_ordered_items",
+        "app.handlers.mutation_handlers.remove_planning_ordered_items",
         new=AsyncMock(return_value="remove ok"),
     ) as mock_remove, patch(
         "app.tools.plan_execution_tool.run_planning_review",
@@ -481,7 +658,7 @@ def test_execute_plan_action_replace_apply_coerces_broad_item_removal_issue_to_r
         "app.tools.plan_execution_tool._get_planning_state_request",
         new=AsyncMock(return_value={"code": 0, "data": planning_state}),
     ), patch(
-        "app.tools.plan_execution_tool.remove_planning_ordered_items",
+        "app.handlers.mutation_handlers.remove_planning_ordered_items",
         new=AsyncMock(return_value="remove ok"),
     ) as mock_remove, patch(
         "app.tools.plan_execution_tool.run_planning_review",
@@ -553,7 +730,7 @@ def test_execute_plan_action_replace_preview_blocks_when_replacement_candidates_
         "app.tools.plan_execution_tool._get_planning_state_request",
         new=AsyncMock(return_value={"code": 0, "data": planning_state}),
     ), patch(
-        "app.tools.plan_execution_tool._generate_planning_candidate_pool_request",
+        "app.handlers.generate_handler._generate_planning_candidate_pool_request",
         new=AsyncMock(return_value={"code": 0}),
     ), patch(
         "app.tools.plan_execution_tool._query_planning_candidate_pool_request",
@@ -626,13 +803,13 @@ def test_execute_plan_action_replace_apply_blocks_before_remove_when_candidates_
         "app.tools.plan_execution_tool._get_planning_state_request",
         new=AsyncMock(return_value={"code": 0, "data": planning_state}),
     ), patch(
-        "app.tools.plan_execution_tool._generate_planning_candidate_pool_request",
+        "app.handlers.generate_handler._generate_planning_candidate_pool_request",
         new=AsyncMock(return_value={"code": 0}),
     ), patch(
         "app.tools.plan_execution_tool._query_planning_candidate_pool_request",
         new=AsyncMock(return_value={"code": 0, "data": {"items": [{"volunteerId": "c1_a"}], "total": 1, "totalUnitCount": 1}}),
     ), patch(
-        "app.tools.plan_execution_tool.remove_planning_ordered_items",
+        "app.handlers.mutation_handlers.remove_planning_ordered_items",
         new=AsyncMock(return_value="remove ok"),
     ) as mock_remove:
         result = asyncio.run(execute_plan_action(_ctx_with_pending("replace_units"), json.dumps(payload, ensure_ascii=False)))
@@ -686,13 +863,13 @@ def test_execute_plan_action_replace_apply_blocks_manual_batch_replace_when_cand
         "app.tools.plan_execution_tool._get_planning_draft_request",
         new=AsyncMock(return_value={"code": 0, "data": {"items": []}}),
     ), patch(
-        "app.tools.plan_execution_tool._generate_planning_candidate_pool_request",
+        "app.handlers.generate_handler._generate_planning_candidate_pool_request",
         new=AsyncMock(return_value={"code": 0}),
     ), patch(
         "app.tools.plan_execution_tool._query_planning_candidate_pool_request",
         new=AsyncMock(return_value={"code": 0, "data": {"items": [{"volunteerId": "c1"}], "total": 1, "totalUnitCount": 1}}),
     ), patch(
-        "app.tools.plan_execution_tool.remove_planning_ordered_items",
+        "app.handlers.mutation_handlers.remove_planning_ordered_items",
         new=AsyncMock(return_value="remove should not run"),
     ) as mock_remove:
         result = asyncio.run(execute_plan_action(_ctx_with_pending("replace_units"), json.dumps(payload, ensure_ascii=False)))
@@ -790,7 +967,7 @@ def test_execute_plan_action_runs_query_candidates():
     }
 
     with patch(
-        "app.tools.plan_execution_tool.query_planning_candidate_pool",
+        "app.handlers.query_handlers.query_planning_candidate_pool",
         new=AsyncMock(return_value="candidate ok"),
     ) as mock_query:
         result = asyncio.run(execute_plan_action(_ctx_with_pending("add_units"), json.dumps(payload, ensure_ascii=False)))
@@ -837,7 +1014,7 @@ def test_execute_plan_action_runs_add_units_by_filters():
     }
 
     with patch(
-        "app.tools.plan_execution_tool._select_candidates_by_filters_into_plan",
+        "app.handlers.mutation_handlers._select_candidates_by_filters_into_plan",
         new=AsyncMock(return_value="add by filters ok"),
     ) as mock_select:
         result = asyncio.run(execute_plan_action(_ctx_with_pending("add_units"), json.dumps(payload, ensure_ascii=False)))
@@ -852,7 +1029,7 @@ def test_execute_plan_action_runs_add_units_by_filters():
 
 def test_select_candidates_by_filters_uses_major_tags_as_candidate_major_keywords_when_major_keyword_missing():
     with patch(
-        "app.tools.plan_execution_tool._get_planning_state_request",
+        "app.handlers.compensation_handlers._get_planning_state_request",
         new=AsyncMock(return_value={"code": 0, "data": {"orderedPlanState": {"summary": {}}, "draftPlanState": {"summary": {}}}}),
     ), patch(
         "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
@@ -861,7 +1038,7 @@ def test_select_candidates_by_filters_uses_major_tags_as_candidate_major_keyword
         "app.tools.plan_execution_tool._get_planning_draft_request",
         new=AsyncMock(return_value={"code": 0, "data": {"items": []}}),
     ), patch(
-        "app.tools.plan_execution_tool._generate_planning_candidate_pool_request",
+        "app.handlers.generate_handler._generate_planning_candidate_pool_request",
         new=AsyncMock(return_value={"code": 0}),
     ), patch(
         "app.tools.plan_execution_tool._query_planning_candidate_pool_request",
@@ -875,7 +1052,7 @@ def test_select_candidates_by_filters_uses_major_tags_as_candidate_major_keyword
             )
         )
 
-    assert "没有找到可加入方案草稿" in result
+    assert "没有找到可加入方案" in result
     assert mock_query.await_args.kwargs["major_keywords"] == ["跨境电子商务", "网络与新媒体"]
     assert mock_query.await_args.kwargs["major_tags"] == ["跨境电子商务", "网络与新媒体"]
 
@@ -897,7 +1074,7 @@ def test_select_candidates_by_filters_prefers_unique_candidate_units_in_major_gr
             ]
         ),
     ), patch(
-        "app.tools.plan_execution_tool._generate_planning_candidate_pool_request",
+        "app.handlers.generate_handler._generate_planning_candidate_pool_request",
         new=AsyncMock(return_value={"code": 0}),
     ), patch(
         "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
@@ -929,7 +1106,7 @@ def test_select_candidates_by_filters_prefers_unique_candidate_units_in_major_gr
         "app.tools.plan_execution_tool._generate_planning_ordered_plan_request",
         new=AsyncMock(return_value={"code": 0, "data": {"orderedPlanState": {"summary": {"unitTotal": 19, "targetUnitCount": 30}}}}),
     ), patch(
-        "app.tools.plan_execution_tool._run_planning_review_request",
+        "app.handlers.analysis_handlers._run_planning_review_request",
         new=AsyncMock(return_value={"code": 0, "data": {}}),
     ):
         result = asyncio.run(
@@ -962,7 +1139,7 @@ def test_select_candidates_by_filters_skips_high_tuition_candidates_for_high_tui
             ]
         ),
     ), patch(
-        "app.tools.plan_execution_tool._generate_planning_candidate_pool_request",
+        "app.handlers.generate_handler._generate_planning_candidate_pool_request",
         new=AsyncMock(return_value={"code": 0}),
     ), patch(
         "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
@@ -993,7 +1170,7 @@ def test_select_candidates_by_filters_skips_high_tuition_candidates_for_high_tui
         "app.tools.plan_execution_tool._generate_planning_ordered_plan_request",
         new=AsyncMock(return_value={"code": 0, "data": {"orderedPlanState": {"summary": {"unitTotal": 19, "targetUnitCount": 30}}}}),
     ), patch(
-        "app.tools.plan_execution_tool._run_planning_review_request",
+        "app.handlers.analysis_handlers._run_planning_review_request",
         new=AsyncMock(return_value={"code": 0, "data": {}}),
     ):
         result = asyncio.run(
@@ -1031,7 +1208,7 @@ def test_execute_plan_action_blocks_unconfirmed_mutating_apply_without_pending_c
     }
 
     with patch(
-        "app.tools.plan_execution_tool._select_candidates_by_filters_into_plan",
+        "app.handlers.mutation_handlers._select_candidates_by_filters_into_plan",
         new=AsyncMock(return_value="should not execute"),
     ) as mock_select:
         result = asyncio.run(
@@ -1063,7 +1240,7 @@ def test_execute_plan_action_blocks_confirmation_apply_without_pending_context()
     }
 
     with patch(
-        "app.tools.plan_execution_tool._generate_planning_initial_plan_request",
+        "app.handlers.generate_handler._generate_planning_initial_plan_request",
         new=AsyncMock(return_value={"code": 0, "data": {}}),
     ) as mock_generate:
         result = asyncio.run(
@@ -1101,7 +1278,7 @@ def test_execute_plan_action_allows_mutating_apply_with_pending_context():
     }
 
     with patch(
-        "app.tools.plan_execution_tool._select_candidates_by_filters_into_plan",
+        "app.handlers.mutation_handlers._select_candidates_by_filters_into_plan",
         new=AsyncMock(return_value="add ok"),
     ) as mock_select:
         result = asyncio.run(
@@ -1141,7 +1318,7 @@ def test_execute_plan_action_blocks_pending_apply_when_current_user_did_not_conf
     }
 
     with patch(
-        "app.tools.plan_execution_tool._select_candidates_by_filters_into_plan",
+        "app.handlers.mutation_handlers._select_candidates_by_filters_into_plan",
         new=AsyncMock(return_value="should not execute"),
     ) as mock_select:
         result = asyncio.run(
@@ -1181,7 +1358,7 @@ def test_select_candidates_summary_does_not_claim_added_when_ordered_count_uncha
         "app.tools.plan_execution_tool._get_planning_state_request",
         new=AsyncMock(side_effect=[before_state, after_state]),
     ), patch(
-        "app.tools.plan_execution_tool._generate_planning_candidate_pool_request",
+        "app.handlers.generate_handler._generate_planning_candidate_pool_request",
         new=AsyncMock(return_value={"code": 0, "data": {}}),
     ), patch(
         "app.tools.plan_execution_tool._query_planning_candidate_pool_request",
@@ -1198,7 +1375,7 @@ def test_select_candidates_summary_does_not_claim_added_when_ordered_count_uncha
         "app.tools.plan_execution_tool._generate_planning_ordered_plan_request",
         new=AsyncMock(return_value={"code": 0, "data": {}}),
     ), patch(
-        "app.tools.plan_execution_tool._run_planning_review_request",
+        "app.handlers.analysis_handlers._run_planning_review_request",
         new=AsyncMock(return_value={"code": 0, "data": {}}),
     ):
         result = asyncio.run(_select_candidates_by_filters_into_plan(_ctx(), tier="稳", limit=5))
@@ -1228,7 +1405,7 @@ def test_select_candidates_summary_reports_ordered_count_increase():
         "app.tools.plan_execution_tool._get_planning_state_request",
         new=AsyncMock(side_effect=[before_state, after_state]),
     ), patch(
-        "app.tools.plan_execution_tool._generate_planning_candidate_pool_request",
+        "app.handlers.generate_handler._generate_planning_candidate_pool_request",
         new=AsyncMock(return_value={"code": 0, "data": {}}),
     ), patch(
         "app.tools.plan_execution_tool._query_planning_candidate_pool_request",
@@ -1245,7 +1422,7 @@ def test_select_candidates_summary_reports_ordered_count_increase():
         "app.tools.plan_execution_tool._generate_planning_ordered_plan_request",
         new=AsyncMock(return_value={"code": 0, "data": {}}),
     ), patch(
-        "app.tools.plan_execution_tool._run_planning_review_request",
+        "app.handlers.analysis_handlers._run_planning_review_request",
         new=AsyncMock(return_value={"code": 0, "data": {}}),
     ):
         result = asyncio.run(_select_candidates_by_filters_into_plan(_ctx(), tier="稳", limit=5))
@@ -1267,7 +1444,7 @@ def test_execute_plan_action_runs_query_ordered():
     }
 
     with patch(
-        "app.tools.plan_execution_tool.query_planning_ordered_plan",
+        "app.handlers.query_handlers.query_planning_ordered_plan",
         new=AsyncMock(return_value="ordered query ok"),
     ) as mock_query:
         result = asyncio.run(execute_plan_action(_ctx_with_pending("regenerate_order"), json.dumps(payload, ensure_ascii=False)))
@@ -1292,13 +1469,16 @@ def test_execute_plan_action_runs_generate_plan_and_returns_structured_facts():
     }
 
     with patch(
-        "app.tools.plan_execution_tool._generate_planning_initial_plan_request",
+        "app.handlers.generate_handler._generate_planning_candidate_pool_request",
+        new=AsyncMock(return_value={"code": 0, "data": {}}),
+    ), patch(
+        "app.handlers.generate_handler._generate_planning_initial_plan_request",
         new=AsyncMock(return_value={"code": 0, "data": {}}),
     ) as mock_generate, patch(
-        "app.tools.plan_execution_tool._run_planning_review_request",
+        "app.handlers.generate_handler._run_planning_review_request",
         new=AsyncMock(return_value={"code": 0, "data": {}}),
     ) as mock_review, patch(
-        "app.tools.plan_execution_tool._get_planning_state_with_latest_profile",
+        "app.handlers.generate_handler._get_planning_state_with_latest_profile",
         new=AsyncMock(
             return_value={
                 "phase": "reviewed",
@@ -1403,7 +1583,7 @@ def test_execute_plan_action_runs_adjustment_analysis():
     }
 
     with patch(
-        "app.tools.plan_execution_tool._analyze_planning_plan_adjustment_request",
+        "app.handlers.analysis_handlers._analyze_planning_plan_adjustment_request",
         new=AsyncMock(
             return_value={
                 "code": 0,
@@ -1422,7 +1602,7 @@ def test_execute_plan_action_runs_adjustment_analysis():
             }
         ),
     ) as mock_adjust, patch(
-        "app.tools.plan_execution_tool._get_planning_state_with_latest_profile",
+        "app.handlers.analysis_handlers._get_planning_state_with_latest_profile",
         new=AsyncMock(
             return_value={
                 "orderedPlanState": {
@@ -1473,7 +1653,7 @@ def test_execute_plan_action_adjustment_analysis_uses_review_issue_examples_when
     }
 
     with patch(
-        "app.tools.plan_execution_tool._analyze_planning_plan_adjustment_request",
+        "app.handlers.analysis_handlers._analyze_planning_plan_adjustment_request",
         new=AsyncMock(
             return_value={
                 "code": 0,
@@ -1492,7 +1672,7 @@ def test_execute_plan_action_adjustment_analysis_uses_review_issue_examples_when
             }
         ),
     ) as mock_adjust, patch(
-        "app.tools.plan_execution_tool._get_planning_state_with_latest_profile",
+        "app.handlers.analysis_handlers._get_planning_state_with_latest_profile",
         new=AsyncMock(
             return_value={
                 "orderedPlanState": {
@@ -1574,7 +1754,7 @@ def test_execute_plan_action_runs_compensation_preview_with_structured_facts():
     }
 
     with patch(
-        "app.tools.plan_execution_tool._preview_planning_compensation_request",
+        "app.handlers.compensation_handlers._preview_planning_compensation_request",
         new=AsyncMock(
             return_value={
                 "code": 0,
@@ -1616,7 +1796,7 @@ def test_execute_plan_action_runs_compensation_preview_counts_major_group_units(
     }
 
     with patch(
-        "app.tools.plan_execution_tool._preview_planning_compensation_request",
+        "app.handlers.compensation_handlers._preview_planning_compensation_request",
         new=AsyncMock(
             return_value={
                 "code": 0,
@@ -1655,7 +1835,7 @@ def test_execute_plan_action_blocks_compensation_apply_when_plan_is_already_full
     }
 
     with patch(
-        "app.tools.plan_execution_tool._get_planning_state_request",
+        "app.handlers.compensation_handlers._get_planning_state_request",
         new=AsyncMock(
             return_value={
                 "code": 0,
@@ -1666,7 +1846,7 @@ def test_execute_plan_action_blocks_compensation_apply_when_plan_is_already_full
             }
         ),
     ), patch(
-        "app.tools.plan_execution_tool._preview_planning_compensation_request",
+        "app.handlers.compensation_handlers._preview_planning_compensation_request",
         new=AsyncMock(
             return_value={
                 "code": 0,
@@ -1674,7 +1854,7 @@ def test_execute_plan_action_blocks_compensation_apply_when_plan_is_already_full
             }
         ),
     ), patch(
-        "app.tools.plan_execution_tool._apply_planning_compensation_request",
+        "app.handlers.compensation_handlers._apply_planning_compensation_request",
         new=AsyncMock(return_value={"code": 0, "data": {}}),
     ) as mock_apply, patch(
         "app.tools.plan_execution_tool.run_planning_review",
@@ -1706,7 +1886,7 @@ def test_execute_plan_action_blocks_compensation_apply_when_estimated_fill_excee
     }
 
     with patch(
-        "app.tools.plan_execution_tool._get_planning_state_request",
+        "app.handlers.compensation_handlers._get_planning_state_request",
         new=AsyncMock(
             return_value={
                 "code": 0,
@@ -1717,7 +1897,7 @@ def test_execute_plan_action_blocks_compensation_apply_when_estimated_fill_excee
             }
         ),
     ), patch(
-        "app.tools.plan_execution_tool._preview_planning_compensation_request",
+        "app.handlers.compensation_handlers._preview_planning_compensation_request",
         new=AsyncMock(
             return_value={
                 "code": 0,
@@ -1728,7 +1908,7 @@ def test_execute_plan_action_blocks_compensation_apply_when_estimated_fill_excee
             }
         ),
     ), patch(
-        "app.tools.plan_execution_tool._apply_planning_compensation_request",
+        "app.handlers.compensation_handlers._apply_planning_compensation_request",
         new=AsyncMock(return_value={"code": 0, "data": {}}),
     ) as mock_apply:
         result = asyncio.run(execute_plan_action(_ctx_with_pending("apply_compensation"), json.dumps(payload, ensure_ascii=False)))
@@ -1755,7 +1935,7 @@ def test_execute_plan_action_allows_major_group_compensation_apply_when_unit_gap
     }
 
     with patch(
-        "app.tools.plan_execution_tool._get_planning_state_request",
+        "app.handlers.compensation_handlers._get_planning_state_request",
         new=AsyncMock(
             return_value={
                 "code": 0,
@@ -1766,7 +1946,7 @@ def test_execute_plan_action_allows_major_group_compensation_apply_when_unit_gap
             }
         ),
     ), patch(
-        "app.tools.plan_execution_tool._preview_planning_compensation_request",
+        "app.handlers.compensation_handlers._preview_planning_compensation_request",
         new=AsyncMock(
             return_value={
                 "code": 0,
@@ -1782,7 +1962,7 @@ def test_execute_plan_action_allows_major_group_compensation_apply_when_unit_gap
             }
         ),
     ), patch(
-        "app.tools.plan_execution_tool._apply_planning_compensation_request",
+        "app.handlers.compensation_handlers._apply_planning_compensation_request",
         new=AsyncMock(
             return_value={
                 "code": 0,
@@ -1869,7 +2049,7 @@ def test_execute_plan_action_blocks_compensation_apply_when_preview_has_no_actio
     }
 
     with patch(
-        "app.tools.plan_execution_tool._get_planning_state_request",
+        "app.handlers.compensation_handlers._get_planning_state_request",
         new=AsyncMock(
             return_value={
                 "code": 0,
@@ -1880,10 +2060,10 @@ def test_execute_plan_action_blocks_compensation_apply_when_preview_has_no_actio
             }
         ),
     ), patch(
-        "app.tools.plan_execution_tool._preview_planning_compensation_request",
+        "app.handlers.compensation_handlers._preview_planning_compensation_request",
         new=AsyncMock(return_value={"code": 0, "data": {"actions": []}}),
     ), patch(
-        "app.tools.plan_execution_tool._apply_planning_compensation_request",
+        "app.handlers.compensation_handlers._apply_planning_compensation_request",
         new=AsyncMock(return_value={"code": 0, "data": {}}),
     ) as mock_apply:
         result = asyncio.run(execute_plan_action(_ctx_with_pending("apply_compensation"), json.dumps(payload, ensure_ascii=False)))
@@ -1908,7 +2088,7 @@ def test_execute_plan_action_blocks_compensation_apply_when_plan_is_full_and_pre
     }
 
     with patch(
-        "app.tools.plan_execution_tool._get_planning_state_request",
+        "app.handlers.compensation_handlers._get_planning_state_request",
         new=AsyncMock(
             return_value={
                 "code": 0,
@@ -1919,10 +2099,10 @@ def test_execute_plan_action_blocks_compensation_apply_when_plan_is_full_and_pre
             }
         ),
     ), patch(
-        "app.tools.plan_execution_tool._preview_planning_compensation_request",
+        "app.handlers.compensation_handlers._preview_planning_compensation_request",
         new=AsyncMock(return_value={"code": 0, "data": {"actions": []}}),
     ), patch(
-        "app.tools.plan_execution_tool._apply_planning_compensation_request",
+        "app.handlers.compensation_handlers._apply_planning_compensation_request",
         new=AsyncMock(return_value={"code": 0, "data": {}}),
     ) as mock_apply:
         result = asyncio.run(execute_plan_action(_ctx_with_pending("apply_compensation"), json.dumps(payload, ensure_ascii=False)))
@@ -1948,7 +2128,7 @@ def test_execute_plan_action_runs_review_without_duplicate_rerun():
     }
 
     with patch(
-        "app.tools.plan_execution_tool._run_planning_review_request",
+        "app.handlers.analysis_handlers._run_planning_review_request",
         new=AsyncMock(
                 return_value={
                     "code": 0,
@@ -1965,7 +2145,7 @@ def test_execute_plan_action_runs_review_without_duplicate_rerun():
                 }
             ),
         ) as mock_review_request, patch(
-        "app.tools.plan_execution_tool._get_planning_state_with_latest_profile",
+        "app.handlers.analysis_handlers._get_planning_state_with_latest_profile",
         new=AsyncMock(
             return_value={
                 "orderedPlanState": {
@@ -2023,7 +2203,7 @@ def test_execute_plan_action_remembers_recent_result_for_timeout_fallback():
 
     clear_recent_plan_execution_result(session_id)
     with patch(
-        "app.tools.plan_execution_tool._run_planning_review_request",
+        "app.handlers.analysis_handlers._run_planning_review_request",
         new=AsyncMock(
             return_value={
                 "code": 0,
@@ -2034,7 +2214,7 @@ def test_execute_plan_action_remembers_recent_result_for_timeout_fallback():
             }
         ),
     ), patch(
-        "app.tools.plan_execution_tool._get_planning_state_with_latest_profile",
+        "app.handlers.analysis_handlers._get_planning_state_with_latest_profile",
         new=AsyncMock(
             return_value={
                 "orderedPlanState": {
@@ -2088,7 +2268,7 @@ def test_execute_plan_action_runs_regenerate_order_and_rerun_review():
     }
 
     with patch(
-        "app.tools.plan_execution_tool._regenerate_ordered_plan",
+        "app.handlers.mutation_handlers._regenerate_ordered_plan",
         new=AsyncMock(return_value="reorder ok"),
     ) as mock_reorder, patch(
         "app.tools.plan_execution_tool.run_planning_review",
@@ -2136,10 +2316,10 @@ def test_execute_plan_action_runs_replace_units_and_rerun_review():
     }
 
     with patch(
-        "app.tools.plan_execution_tool.remove_planning_ordered_items",
+        "app.handlers.mutation_handlers.remove_planning_ordered_items",
         new=AsyncMock(return_value="remove old ok"),
     ) as mock_remove, patch(
-        "app.tools.plan_execution_tool._select_candidates_by_filters_into_plan",
+        "app.handlers.mutation_handlers._select_candidates_by_filters_into_plan",
         new=AsyncMock(return_value="add replacement ok"),
     ) as mock_add, patch(
         "app.tools.plan_execution_tool.run_planning_review",
@@ -2224,7 +2404,7 @@ def test_execute_plan_action_replace_high_tuition_preview_counts_only_filtered_c
         "app.tools.plan_execution_tool._get_planning_state_request",
         new=AsyncMock(return_value={"code": 0, "data": planning_state}),
     ), patch(
-        "app.tools.plan_execution_tool._generate_planning_candidate_pool_request",
+        "app.handlers.generate_handler._generate_planning_candidate_pool_request",
         new=AsyncMock(return_value={"code": 0}),
     ), patch(
         "app.tools.plan_execution_tool._query_planning_candidate_pool_request",
@@ -2285,10 +2465,10 @@ def test_execute_plan_action_replace_expands_broad_major_targets_to_all_matching
         "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
         new=AsyncMock(return_value={"code": 0, "data": {"items": ordered_items}}),
     ), patch(
-        "app.tools.plan_execution_tool.remove_planning_ordered_items",
+        "app.handlers.mutation_handlers.remove_planning_ordered_items",
         new=AsyncMock(return_value="remove old ok"),
     ) as mock_remove, patch(
-        "app.tools.plan_execution_tool._select_candidates_by_filters_into_plan",
+        "app.handlers.mutation_handlers._select_candidates_by_filters_into_plan",
         new=AsyncMock(return_value="add replacement ok"),
     ):
         result = asyncio.run(
@@ -2329,17 +2509,17 @@ def test_execute_plan_action_replace_without_added_candidate_explains_unit_total
     }
 
     with patch(
-        "app.tools.plan_execution_tool.remove_planning_ordered_items",
+        "app.handlers.mutation_handlers.remove_planning_ordered_items",
         new=AsyncMock(return_value="已从当前方案移出1个志愿，并同步刷新排序方案。\n- 排序总数：45/45"),
     ), patch(
-        "app.tools.plan_execution_tool._select_candidates_by_filters_into_plan",
-        new=AsyncMock(return_value="当前条件下没有找到可加入方案草稿的候选志愿。"),
+        "app.handlers.mutation_handlers._select_candidates_by_filters_into_plan",
+        new=AsyncMock(return_value="当前条件下没有找到可加入方案的候选志愿。"),
     ):
         result = asyncio.run(execute_plan_action(_ctx_with_pending("replace_units"), json.dumps(payload, ensure_ascii=False)))
 
     data = json.loads(result)
     assert data["applied"] is True
-    assert "没有找到可加入方案草稿的候选志愿" in data["summary"]
+    assert "没有找到可加入方案的候选志愿" in data["summary"]
     assert "总数统计的是当前工作台里的方案项数量" in data["summary"]
     assert "该专业志愿本身已经移出" in data["summary"]
 
@@ -2368,10 +2548,10 @@ def test_execute_plan_action_normalizes_intent_relation_match_alias():
     }
 
     with patch(
-        "app.tools.plan_execution_tool.remove_planning_ordered_items",
+        "app.handlers.mutation_handlers.remove_planning_ordered_items",
         new=AsyncMock(return_value="已从当前方案移出1个志愿，并同步刷新排序方案。"),
     ), patch(
-        "app.tools.plan_execution_tool._select_candidates_by_filters_into_plan",
+        "app.handlers.mutation_handlers._select_candidates_by_filters_into_plan",
         new=AsyncMock(return_value="已把1个志愿加入当前方案，并同步刷新排序结果。"),
     ):
         result = asyncio.run(execute_plan_action(_ctx_with_pending("replace_units"), json.dumps(payload, ensure_ascii=False)))
@@ -2406,10 +2586,10 @@ def test_execute_plan_action_replace_with_matched_candidates_but_no_count_increa
     }
 
     with patch(
-        "app.tools.plan_execution_tool.remove_planning_ordered_items",
+        "app.handlers.mutation_handlers.remove_planning_ordered_items",
         new=AsyncMock(return_value="已从当前方案移出1个志愿，并同步刷新排序方案。\n- 排序总数：47/45"),
     ), patch(
-        "app.tools.plan_execution_tool._select_candidates_by_filters_into_plan",
+        "app.handlers.mutation_handlers._select_candidates_by_filters_into_plan",
         new=AsyncMock(
             return_value=(
                 "按条件匹配到 5 个候选志愿，但当前方案数量没有增加，"
@@ -2453,7 +2633,7 @@ def test_execute_plan_action_replace_missing_refs_does_not_refresh_workspace():
         "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
         new=AsyncMock(return_value={"code": 0, "data": {"items": []}}),
     ), patch(
-        "app.tools.plan_execution_tool.remove_planning_ordered_items",
+        "app.handlers.mutation_handlers.remove_planning_ordered_items",
         new=AsyncMock(return_value="should not remove"),
     ) as mock_remove, patch(
         "app.tools.plan_execution_tool.run_planning_review",
@@ -2498,7 +2678,7 @@ def test_execute_plan_action_replace_preview_requires_resolved_refs_before_confi
         "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
         new=AsyncMock(return_value={"code": 0, "data": {"items": []}}),
     ), patch(
-        "app.tools.plan_execution_tool.remove_planning_ordered_items",
+        "app.handlers.mutation_handlers.remove_planning_ordered_items",
         new=AsyncMock(return_value="should not remove"),
     ) as mock_remove:
         result = asyncio.run(execute_plan_action(_ctx_with_pending("replace_units"), json.dumps(payload, ensure_ascii=False)))
@@ -2557,10 +2737,10 @@ def test_execute_plan_action_replace_resolves_short_display_ref_by_unique_partia
             }
         ),
     ), patch(
-        "app.tools.plan_execution_tool.remove_planning_ordered_items",
+        "app.handlers.mutation_handlers.remove_planning_ordered_items",
         new=AsyncMock(return_value="remove bio ok"),
     ) as mock_remove, patch(
-        "app.tools.plan_execution_tool._select_candidates_by_filters_into_plan",
+        "app.handlers.mutation_handlers._select_candidates_by_filters_into_plan",
         new=AsyncMock(return_value="add info ok"),
     ) as mock_add, patch(
         "app.tools.plan_execution_tool.run_planning_review",
@@ -2616,7 +2796,7 @@ def test_execute_plan_action_remove_resolves_major_ref_without_trailing_fee_suff
             }
         ),
     ), patch(
-        "app.tools.plan_execution_tool.remove_planning_ordered_items",
+        "app.handlers.mutation_handlers.remove_planning_ordered_items",
         new=AsyncMock(return_value="remove ok"),
     ) as mock_remove, patch(
         "app.tools.plan_execution_tool.run_planning_review",
@@ -2673,10 +2853,10 @@ def test_execute_plan_action_replace_resolves_position_ref():
             }
         ),
     ), patch(
-        "app.tools.plan_execution_tool.remove_planning_ordered_items",
+        "app.handlers.mutation_handlers.remove_planning_ordered_items",
         new=AsyncMock(return_value="remove bio ok"),
     ) as mock_remove, patch(
-        "app.tools.plan_execution_tool._select_candidates_by_filters_into_plan",
+        "app.handlers.mutation_handlers._select_candidates_by_filters_into_plan",
         new=AsyncMock(return_value="add replacements ok"),
     ) as mock_add, patch(
         "app.tools.plan_execution_tool.run_planning_review",
@@ -2734,10 +2914,10 @@ def test_execute_plan_action_replace_resolves_verbose_ref_with_tier_and_position
             }
         ),
     ), patch(
-        "app.tools.plan_execution_tool.remove_planning_ordered_items",
+        "app.handlers.mutation_handlers.remove_planning_ordered_items",
         new=AsyncMock(return_value="remove bio ok"),
     ) as mock_remove, patch(
-        "app.tools.plan_execution_tool._select_candidates_by_filters_into_plan",
+        "app.handlers.mutation_handlers._select_candidates_by_filters_into_plan",
         new=AsyncMock(return_value="add replacements ok"),
     ) as mock_add, patch(
         "app.tools.plan_execution_tool.run_planning_review",
@@ -2753,7 +2933,7 @@ def test_execute_plan_action_replace_resolves_verbose_ref_with_tier_and_position
     mock_add.assert_awaited_once()
 
 
-def test_execute_plan_action_runs_pin_unit_and_rerun_review():
+def test_execute_plan_action_blocks_pin_unit_in_301_workspace():
     payload = {
         "stage": "apply",
         "action_family": "pin_unit",
@@ -2783,15 +2963,13 @@ def test_execute_plan_action_runs_pin_unit_and_rerun_review():
         result = asyncio.run(execute_plan_action(_ctx_with_pending("pin_unit"), json.dumps(payload, ensure_ascii=False)))
 
     data = json.loads(result)
-    assert data["result_kind"] == "mutation_result"
-    assert data["affected_volunteer_ids"] == ["v1"]
-    assert data["workspace_refresh_targets"] == ["ordered", "review"]
-    assert "pinned_unit" in data["reply_focus"]
-    assert "pin ok" in data["summary"]
-    assert "review after pin ok" in data["summary"]
-    mock_pin.assert_awaited_once()
-    assert mock_pin.await_args.args[1:] == ("v1", 3)
-    mock_review.assert_awaited_once()
+    assert data["applied"] is False
+    assert data["result_kind"] == "error"
+    assert data["workspace_refresh_targets"] == []
+    assert "pin_disabled" in data["reply_focus"]
+    assert "暂不提供固定/锁定志愿入口" in data["summary"]
+    mock_pin.assert_not_awaited()
+    mock_review.assert_not_awaited()
 
 
 def test_execute_plan_action_runs_move_unit_after_resolving_position_ref():
@@ -2832,7 +3010,7 @@ def test_execute_plan_action_runs_move_unit_after_resolving_position_ref():
             }
         ),
     ), patch(
-        "app.tools.plan_execution_tool.move_planning_ordered_item",
+        "app.handlers.mutation_handlers.move_planning_ordered_item",
         new=AsyncMock(return_value="move ok"),
     ) as mock_move, patch(
         "app.tools.plan_execution_tool.run_planning_review",
@@ -2851,7 +3029,7 @@ def test_execute_plan_action_runs_move_unit_after_resolving_position_ref():
     mock_review.assert_awaited_once()
 
 
-def test_execute_plan_action_runs_pin_unit_after_resolving_position_ref():
+def test_execute_plan_action_blocks_pin_unit_without_resolving_position_ref():
     payload = {
         "stage": "apply",
         "action_family": "pin_unit",
@@ -2873,22 +3051,8 @@ def test_execute_plan_action_runs_pin_unit_after_resolving_position_ref():
 
     with patch(
         "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
-        new=AsyncMock(
-            return_value={
-                "code": 0,
-                "data": {
-                    "items": [
-                        {
-                            "position": 3,
-                            "volunteerId": "v3",
-                            "schoolName": "湖北工程学院(01)",
-                            "majorName": "计算机科学与技术",
-                        }
-                    ]
-                },
-            }
-        ),
-    ), patch(
+        new=AsyncMock(),
+    ) as mock_get_ordered, patch(
         "app.tools.plan_execution_tool.pin_planning_ordered_item",
         new=AsyncMock(return_value="pin ok"),
     ) as mock_pin, patch(
@@ -2898,17 +3062,15 @@ def test_execute_plan_action_runs_pin_unit_after_resolving_position_ref():
         result = asyncio.run(execute_plan_action(_ctx_with_pending("pin_unit"), json.dumps(payload, ensure_ascii=False)))
 
     data = json.loads(result)
-    assert data["result_kind"] == "mutation_result"
-    assert data["affected_volunteer_ids"] == ["v3"]
-    assert data["workspace_refresh_targets"] == ["ordered", "review"]
-    assert "pin ok" in data["summary"]
-    assert "review after pin ok" in data["summary"]
-    mock_pin.assert_awaited_once()
-    assert mock_pin.await_args.args[1:] == ("v3", 3)
-    mock_review.assert_awaited_once()
+    assert data["applied"] is False
+    assert data["result_kind"] == "error"
+    assert "暂不提供固定/锁定志愿入口" in data["summary"]
+    mock_get_ordered.assert_not_awaited()
+    mock_pin.assert_not_awaited()
+    mock_review.assert_not_awaited()
 
 
-def test_execute_plan_action_runs_unpin_unit_and_rerun_review():
+def test_execute_plan_action_blocks_unpin_unit_in_301_workspace():
     payload = {
         "stage": "apply",
         "action_family": "unpin_unit",
@@ -2938,15 +3100,13 @@ def test_execute_plan_action_runs_unpin_unit_and_rerun_review():
         result = asyncio.run(execute_plan_action(_ctx_with_pending("unpin_unit"), json.dumps(payload, ensure_ascii=False)))
 
     data = json.loads(result)
-    assert data["result_kind"] == "mutation_result"
-    assert data["affected_volunteer_ids"] == ["v1"]
-    assert data["workspace_refresh_targets"] == ["ordered", "review"]
-    assert "unpinned_unit" in data["reply_focus"]
-    assert "unpin ok" in data["summary"]
-    assert "review after unpin ok" in data["summary"]
-    mock_unpin.assert_awaited_once()
-    assert mock_unpin.await_args.args[1:] == ("v1",)
-    mock_review.assert_awaited_once()
+    assert data["applied"] is False
+    assert data["result_kind"] == "error"
+    assert data["workspace_refresh_targets"] == []
+    assert "pin_disabled" in data["reply_focus"]
+    assert "暂不提供固定/锁定志愿入口" in data["summary"]
+    mock_unpin.assert_not_awaited()
+    mock_review.assert_not_awaited()
 
 
 def test_execute_plan_action_replace_missing_refs_message_stays_generic():
@@ -2980,3 +3140,82 @@ def test_execute_plan_action_replace_missing_refs_message_stays_generic():
     assert data["result_kind"] == "error"
     assert "会计/审计" not in data["summary"]
     assert "按当前方案重新定位" in data["summary"]
+
+
+def test_execute_plan_action_moves_major_group_unit_by_position_ref():
+    payload = {
+        "stage": "apply",
+        "action_family": "move_ordered_unit",
+        "user_goal": "把第3个专业组移到第5位",
+        "context_summary": "阶段=ordered；方案=30/30",
+        "missing_inputs": [],
+        "atomic_actions": [
+            {
+                "action_type": "move_ordered_unit",
+                "unit_ids": [],
+                "target_position": 5,
+                "filters": {},
+                "reason": "把第3个专业组移到第5位",
+            }
+        ],
+    }
+    state = {
+        "orderedPlanState": {
+            "units": [
+                {"unitId": "unit-1"},
+                {"unitId": "unit-2"},
+                {"unitId": "unit-3"},
+            ]
+        }
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_state_request",
+        new=AsyncMock(return_value={"code": 0, "data": state}),
+    ) as mock_state, patch(
+        "app.tools.plan_execution_tool._move_planning_ordered_plan_unit_request",
+        new=AsyncMock(return_value={"code": 0, "data": {"message": "move ok"}}),
+    ) as mock_move:
+        result = asyncio.run(execute_plan_action(_ctx_with_pending("move_ordered_unit"), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["applied"] is True
+    assert data["action_family"] == "move_ordered_unit"
+    assert data["workspace_refresh_targets"] == ["ordered", "review"]
+    assert data["executed_actions"] == [{"action": "move_ordered_unit", "unitIds": ["unit-3"]}]
+    assert data["summary"] == "move ok"
+    mock_state.assert_awaited()
+    mock_move.assert_awaited_once_with(1, "exec-1", "unit-3", 5)
+
+
+def test_execute_plan_action_removes_major_group_unit_by_explicit_unit_id():
+    payload = {
+        "stage": "apply",
+        "action_family": "remove_ordered_unit",
+        "user_goal": "删除这个专业组",
+        "context_summary": "阶段=ordered；方案=30/30",
+        "missing_inputs": [],
+        "atomic_actions": [
+            {
+                "action_type": "remove_ordered_unit",
+                "unit_ids": ["unit-9"],
+                "target_position": None,
+                "filters": {},
+                "reason": "删除这个专业组",
+            }
+        ],
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._remove_planning_ordered_plan_units_request",
+        new=AsyncMock(return_value={"code": 0, "data": {"message": "remove ok"}}),
+    ) as mock_remove:
+        result = asyncio.run(execute_plan_action(_ctx_with_pending("remove_ordered_unit"), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["applied"] is True
+    assert data["action_family"] == "remove_ordered_unit"
+    assert data["workspace_refresh_targets"] == ["ordered", "review"]
+    assert data["executed_actions"] == [{"action": "remove_ordered_unit", "unitIds": ["unit-9"]}]
+    assert data["summary"] == "remove ok"
+    mock_remove.assert_awaited_once_with(1, "exec-1", ["unit-9"])

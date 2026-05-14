@@ -20,7 +20,7 @@ def build_planning_context(deps: RequestContext) -> str:
     if planning.ordered_total > 0:
         lines.append(f"用户当前方案已有 {planning.ordered_total} 个志愿（目标 {planning.ordered_target_total} 个）。")
     elif planning.draft_total > 0:
-        lines.append(f"用户当前有 {planning.draft_total} 个备选志愿（目标 {planning.draft_target_total} 个），尚未正式排序。")
+        lines.append(f"用户当前已加入方案 {planning.draft_total} 个志愿（目标 {planning.draft_target_total} 个），尚未生成正式顺序。")
     else:
         lines.append("用户尚未生成方案。")
 
@@ -58,7 +58,9 @@ def build_planning_context(deps: RequestContext) -> str:
     header = "当前会话已存在统一规划状态，用户的方案概况如下：\n"
     footer = (
         "\n请基于以上方案现状回答用户。"
-        "如果用户问方案情况，应调用 handle_planning_request 获取完整数据后给出包含具体学校、专业、冲稳保分析的详细回复。"
+        "如果用户问方案情况，应直接走 plan_next_action(action_family=\"query_state\") -> execute_plan_action，"
+        "不要先单独调用 collect_plan_context_inputs；plan_next_action 内部会读取必要上下文。"
+        "\n3.0.1 用户侧不再使用“草稿”概念；即使底层字段叫 draft，也要表达为“方案/已加入方案”。"
         "\n当前 planning 状态的优先级高于历史对话。如果当前方案志愿数为0，即使历史里提到过候选，也不能当成当前方案。"
     )
     return header + "\n".join(lines) + footer

@@ -83,16 +83,15 @@ def _load_science_cases() -> list[dict]:
     return json.loads(SCIENCE_CASES_PATH.read_text(encoding="utf-8"))
 
 
-def test_mainline_dialog_case_catalog_has_31_explore_intent_plan_scenarios():
+def test_mainline_dialog_case_catalog_has_current_explore_intent_plan_scenarios():
     cases = _load_mainline_cases()
 
-    assert len(cases) == 31
-    assert len({case["name"] for case in cases}) == 31
+    assert len(cases) >= 36
+    assert len({case["name"] for case in cases}) == len(cases)
     for case in cases:
         assert case["assertPlanStyle"] is True
         assert case["prompts"]
         assert set(case["flow"]).issubset({"explore", "intent", "plan"})
-        assert "plan" in case["flow"]
         assert case["coverage"]
 
     complete_flow_cases = [case for case in cases if case["flow"] == ["explore", "intent", "plan"]]
@@ -133,8 +132,8 @@ def test_mainline_dialog_case_catalog_covers_session57_risks_and_plan_boundaries
         "remove_units",
         "compensation_apply",
         "move_unit",
-        "pin_unit",
-        "unpin_unit",
+            "no_pin_user_entry",
+            "no_legacy_lock",
         "group_mode",
         "school_major_query",
         "replace_units",
@@ -151,7 +150,6 @@ def test_mainline_dialog_case_catalog_covers_session57_risks_and_plan_boundaries
     assert "确认" in all_prompts
     assert "中外合作" in all_prompts
     assert "固定住" in all_prompts
-    assert "取消固定" in all_prompts
     assert "广西师范大学" in all_prompts
     assert "这版有啥问题" in all_prompts
     assert "贵的先去掉" in all_prompts
@@ -246,7 +244,7 @@ def test_mainline_dialog_intent_preview_then_plan_status_does_not_reopen_candida
     with (
         patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})),
         patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})),
-        patch("app.service.get_planning_state", AsyncMock(return_value={"code": 1})),
+        patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})),
     ):
         first = _run(service.handle_message("session-mainline-57", "user-57", "想学网络与新媒体"))
         second = _run(service.handle_message("session-mainline-57", "user-57", "现在方案怎么样"))
@@ -291,7 +289,7 @@ def test_mainline_dialog_cross_border_ecommerce_uses_full_major_name_and_candida
     with (
         patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})),
         patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})),
-        patch("app.service.get_planning_state", AsyncMock(return_value={"code": 1})),
+        patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})),
     ):
         reply = _run(service.handle_message("session-mainline-cross-border", "user-57", "想学跨境电商"))
 
@@ -371,7 +369,7 @@ def test_mainline_dialog_negative_accounting_then_confirm_plan_adjustment_uses_m
     with (
         patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})),
         patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})),
-        patch("app.service.get_planning_state", AsyncMock(return_value={"code": 1})),
+        patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})),
         patch("app.service.get_intent_change_cache", AsyncMock(return_value={"data": {"planEditCache": None}})),
         patch("app.service.execute_plan_action", AsyncMock(return_value=execution_result)),
     ):
@@ -386,7 +384,7 @@ def test_mainline_dialog_negative_accounting_then_confirm_plan_adjustment_uses_m
     assert isinstance(apply_reply, ChatServiceResponseEnvelope)
     assert apply_reply.primary.startswith("已移出不匹配志愿")
     assert "跨境电子商务" in apply_reply.primary
-    assert _workspace_targets(apply_reply) == ["ordered", "review"]
+    assert _workspace_targets(apply_reply) == ["ordered"]
     assert len(agent.calls) == 2
     assert agent.calls[1]["pending_plan_action"] is None
 
@@ -423,14 +421,13 @@ def test_mainline_dialog_review_result_keeps_informative_summary_and_review_work
     with (
         patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})),
         patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})),
-        patch("app.service.get_planning_state", AsyncMock(return_value={"code": 1})),
+        patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})),
     ):
         reply = _run(service.handle_message("session-mainline-review", "user-57", "帮我审查一下"))
 
-    assert isinstance(reply, ChatServiceResponseEnvelope)
-    assert "45/45" in reply.primary
-    assert "冲8 / 稳18 / 保19" in reply.primary
-    assert "风险0项" in reply.primary
-    assert "提醒" in reply.primary
-    assert len(reply.primary) > 60
-    assert _workspace_targets(reply) == ["review"]
+    assert isinstance(reply, str)
+    assert "45/45" in reply
+    assert "冲8 / 稳18 / 保19" in reply
+    assert "风险0项" in reply
+    assert "提醒" in reply
+    assert len(reply) > 60

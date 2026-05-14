@@ -193,6 +193,19 @@ class MoveUnitAction(_ActionBase):
     target_position: int | None = None
 
 
+class MoveOrderedUnitAction(_ActionBase):
+    """移动专业组位置。"""
+    action_type: Literal["move_ordered_unit"] = "move_ordered_unit"
+    unit_id: str = ""
+    target_position: int | None = None
+
+
+class RemoveOrderedUnitAction(_ActionBase):
+    """删除专业组。"""
+    action_type: Literal["remove_ordered_unit"] = "remove_ordered_unit"
+    unit_ids: list[str] = Field(default_factory=list)
+
+
 class PinUnitAction(_ActionBase):
     """锁定志愿。"""
     action_type: Literal["pin_unit"] = "pin_unit"
@@ -227,6 +240,12 @@ class RegenerateOrderAction(_ActionBase):
     structural_rebalance: bool = False
 
 
+class SortOrderedPlanAction(_ActionBase):
+    """按指定字段排序当前方案。"""
+    action_type: Literal["sort_ordered_plan"] = "sort_ordered_plan"
+    sort_field: Literal["admissionRatio", "schoolRank", "finalScore"] = "admissionRatio"
+
+
 # ---------------------------------------------------------------------------
 # 联合体
 # ---------------------------------------------------------------------------
@@ -245,9 +264,12 @@ PlanAction = Annotated[
         AddUnitsAction,
         RemoveUnitsAction,
         MoveUnitAction,
+        MoveOrderedUnitAction,
+        RemoveOrderedUnitAction,
         PinUnitAction,
         UnpinUnitAction,
         ReplaceUnitsAction,
+        SortOrderedPlanAction,
         RegenerateOrderAction,
     ],
     Field(discriminator="action_type"),
@@ -278,9 +300,12 @@ ACTION_TYPE_TO_FAMILY: dict[str, str] = {
     "add_units": "add_units",
     "remove_units": "remove_units",
     "move_unit": "move_unit",
+    "move_ordered_unit": "move_ordered_unit",
+    "remove_ordered_unit": "remove_ordered_unit",
     "pin_unit": "pin_unit",
     "unpin_unit": "unpin_unit",
     "replace_units": "replace_units",
+    "sort_ordered_plan": "sort_ordered_plan",
     "regenerate_order": "regenerate_order",
 }
 """action_type 到现有 action_family 的一一映射。

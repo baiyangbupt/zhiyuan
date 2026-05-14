@@ -58,6 +58,7 @@ class PlanReviewIssueTarget(BaseModel):
 class PlanAtomicAction(BaseModel):
     action_type: str
     volunteer_ids: list[str] = Field(default_factory=list)
+    unit_ids: list[str] = Field(default_factory=list)
     target_position: int | None = None
     filters: dict[str, Any] = Field(default_factory=dict)
     reason: str = ""
@@ -76,9 +77,12 @@ _TOP_LEVEL_ATOMIC_ACTION_FAMILIES = {
     "add_units",
     "remove_units",
     "move_unit",
+    "move_ordered_unit",
     "pin_unit",
     "unpin_unit",
     "replace_units",
+    "remove_ordered_unit",
+    "sort_ordered_plan",
 }
 
 
@@ -97,6 +101,12 @@ def normalize_plan_action_payload(payload: dict[str, Any] | None) -> dict[str, A
     else:
         single_id = str(raw_ids or "").strip()
         volunteer_ids = [single_id] if single_id else []
+    raw_unit_ids = normalized.get("unit_ids")
+    if isinstance(raw_unit_ids, list):
+        unit_ids = [str(item or "").strip() for item in raw_unit_ids if str(item or "").strip()]
+    else:
+        single_unit_id = str(raw_unit_ids or "").strip()
+        unit_ids = [single_unit_id] if single_unit_id else []
 
     raw_filters = normalized.get("filters")
     filters = raw_filters if isinstance(raw_filters, dict) else {}
@@ -105,6 +115,7 @@ def normalize_plan_action_payload(payload: dict[str, Any] | None) -> dict[str, A
     review_issue_target = normalized.get("review_issue_target")
     has_atomic_shape = (
         bool(volunteer_ids)
+        or bool(unit_ids)
         or bool(filters)
         or target_position is not None
         or isinstance(review_issue_target, dict)
@@ -116,6 +127,7 @@ def normalize_plan_action_payload(payload: dict[str, Any] | None) -> dict[str, A
         {
             "action_type": action_family,
             "volunteer_ids": volunteer_ids,
+            "unit_ids": unit_ids,
             "target_position": target_position,
             "filters": filters,
             "reason": reason,
@@ -138,9 +150,12 @@ class PlanActionPlan(BaseModel):
         "add_units",
         "remove_units",
         "move_unit",
+        "move_ordered_unit",
         "pin_unit",
         "unpin_unit",
         "replace_units",
+        "remove_ordered_unit",
+        "sort_ordered_plan",
         "regenerate_order",
         "apply_compensation",
         "review_plan",

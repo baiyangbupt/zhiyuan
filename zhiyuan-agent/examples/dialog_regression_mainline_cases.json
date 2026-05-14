@@ -56,6 +56,30 @@
     "prompts": ["我适合体制内方向吗", "可以，把体制内稳定就业作为参考", "当前方案对这个方向匹配吗"]
   },
   {
+    "name": "explore-career-generic-direction",
+    "sessionId": "5732",
+    "flow": ["explore"],
+    "coverage": ["career_explore", "generic_direction", "readonly_no_pending_intent"],
+    "assertPlanStyle": true,
+    "prompts": ["我适合什么方向"]
+  },
+  {
+    "name": "explore-career-compare-public-service-and-further-study",
+    "sessionId": "5733",
+    "flow": ["explore"],
+    "coverage": ["career_explore", "career_compare", "readonly_no_pending_intent"],
+    "assertPlanStyle": true,
+    "prompts": ["体制内和读研哪个更适合我"]
+  },
+  {
+    "name": "negative-career-intent-then-plan-impact",
+    "sessionId": "5734",
+    "flow": ["intent", "plan"],
+    "coverage": ["negative_career_intent", "career_intent", "plan_analysis"],
+    "assertPlanStyle": true,
+    "prompts": ["不想走体制内", "确认", "当前方案对这个要求有什么影响"]
+  },
+  {
     "name": "explore-school-to-school-intent-to-plan-query",
     "sessionId": "5708",
     "flow": ["explore", "intent", "plan"],
@@ -219,9 +243,25 @@
     "name": "pin-unpin-after-review",
     "sessionId": "5728",
     "flow": ["plan"],
-    "coverage": ["plan_review", "pin_unit", "unpin_unit", "plan_apply", "review_workspace"],
+    "coverage": ["plan_review", "no_pin_user_entry", "no_legacy_lock", "draft_removed_from_user_language"],
     "assertPlanStyle": true,
-    "prompts": ["帮我审查一下当前方案", "把第3个志愿固定住", "确认", "再把第3个志愿取消固定", "确认"]
+    "prompts": ["帮我审查一下当前方案", "把第3个志愿固定住"]
+  },
+  {
+    "name": "major-group-unit-move-preview-apply",
+    "sessionId": "35",
+    "flow": ["plan"],
+    "coverage": ["majorGroup_model", "move_ordered_unit", "plan_preview", "plan_apply", "ordered_workspace", "review_stale"],
+    "assertPlanStyle": true,
+    "prompts": ["把第3个专业组移到第5位", "确认"]
+  },
+  {
+    "name": "major-group-unit-remove-preview-apply",
+    "sessionId": "35",
+    "flow": ["plan"],
+    "coverage": ["majorGroup_model", "remove_ordered_unit", "plan_preview", "plan_apply", "ordered_workspace", "review_stale"],
+    "assertPlanStyle": true,
+    "prompts": ["删除第5个专业组", "确认"]
   },
   {
     "name": "school-major-group-query-then-replace",
