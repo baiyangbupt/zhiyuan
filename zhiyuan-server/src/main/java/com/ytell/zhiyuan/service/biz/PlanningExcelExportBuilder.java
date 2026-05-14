@@ -14,12 +14,13 @@ import com.ytell.zhiyuan.model.dto.planning.PlanningUnitMajorDTO;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Component
@@ -34,11 +35,11 @@ public class PlanningExcelExportBuilder {
             throw new BusinessException(400, "当前方案为空，无法导出，请先生成方案");
         }
 
-        Map<String, CandidateItemDTO> candidateMap = buildCandidateMap(state);
+        CandidateExportResolver candidateResolver = new CandidateExportResolver(state.getCandidatePoolState().getItems());
         boolean majorGroupMode = isMajorGroupMode(state);
         List<ExcelUtil.VolunteerExcelData> mainList = majorGroupMode
-                ? buildMajorGroupExcelRows(orderedPlanState, candidateMap)
-                : buildMajorSchoolExcelRows(orderedPlanState, candidateMap);
+                ? buildMajorGroupExcelRows(orderedPlanState, candidateResolver)
+                : buildMajorSchoolExcelRows(orderedPlanState, candidateResolver);
 
         if (mainList.isEmpty()) {
             throw new BusinessException(400, "当前方案缺少可导出的志愿明细");
@@ -53,16 +54,6 @@ public class PlanningExcelExportBuilder {
         }
     }
 
-    private Map<String, CandidateItemDTO> buildCandidateMap(PlanningStateDTO state) {
-        if (state == null || state.getCandidatePoolState() == null || state.getCandidatePoolState().getItems() == null) {
-            return Collections.emptyMap();
-        }
-        return state.getCandidatePoolState().getItems().stream()
-                .filter(Objects::nonNull)
-                .filter(item -> !Strings.isNullOrEmpty(item.getVolunteerId()))
-                .collect(Collectors.toMap(CandidateItemDTO::getVolunteerId, item -> item, (left, right) -> left, LinkedHashMap::new));
-    }
-
     private boolean isMajorGroupMode(PlanningStateDTO state) {
         return state != null
                 && state.getCandidatePoolState() != null
@@ -70,10 +61,10 @@ public class PlanningExcelExportBuilder {
     }
 
     private List<ExcelUtil.VolunteerExcelData> buildMajorSchoolExcelRows(OrderedPlanStateDTO orderedPlanState,
-                                                                         Map<String, CandidateItemDTO> candidateMap) {
+                                                                         CandidateExportResolver candidateResolver) {
         Map<String, MajorSchoolExportGroup> grouped = new LinkedHashMap<String, MajorSchoolExportGroup>();
         for (OrderedItemDTO orderedItem : defaultOrderedItems(orderedPlanState.getItems())) {
-            CandidateItemDTO candidate = candidateMap.get(orderedItem.getVolunteerId());
+            CandidateItemDTO candidate = candidateResolver.resolve(orderedItem);
             String groupKey = resolveMajorSchoolGroupKey(orderedItem, candidate);
             MajorSchoolExportGroup group = grouped.computeIfAbsent(groupKey, key -> new MajorSchoolExportGroup());
             if (group.representative == null) {
@@ -132,24 +123,24 @@ public class PlanningExcelExportBuilder {
     }
 
     private List<ExcelUtil.VolunteerExcelData> buildMajorGroupExcelRows(OrderedPlanStateDTO orderedPlanState,
-                                                                        Map<String, CandidateItemDTO> candidateMap) {
+                                                                        CandidateExportResolver candidateResolver) {
         List<OrderedUnitDTO> units = orderedPlanState.getUnits() == null ? Lists.newArrayList() : orderedPlanState.getUnits();
         if (units.isEmpty()) {
-            return buildMajorGroupExcelRowsFromItems(orderedPlanState, candidateMap);
+            return buildMajorGroupExcelRowsFromItems(orderedPlanState, candidateResolver);
         }
         return units.stream()
                 .filter(Objects::nonNull)
                 .sorted(Comparator.comparing(unit -> unit.getPosition() == null ? Integer.MAX_VALUE : unit.getPosition()))
-                .map(unit -> toMajorGroupExcelData(unit, candidateMap))
+                .map(unit -> toMajorGroupExcelData(unit, candidateResolver))
                 .filter(Objects::nonNull)
                 .collect(Collectors.toList());
     }
 
     private List<ExcelUtil.VolunteerExcelData> buildMajorGroupExcelRowsFromItems(OrderedPlanStateDTO orderedPlanState,
-                                                                                 Map<String, CandidateItemDTO> candidateMap) {
+                                                                                 CandidateExportResolver candidateResolver) {
         Map<String, OrderedUnitDTO> unitMap = new LinkedHashMap<String, OrderedUnitDTO>();
         for (OrderedItemDTO item : defaultOrderedItems(orderedPlanState.getItems())) {
-            CandidateItemDTO candidate = candidateMap.get(item.getVolunteerId());
+            CandidateItemDTO candidate = candidateResolver.resolve(item);
             String unitId = candidate != null && !Strings.isNullOrEmpty(candidate.getPlanSchoolDataId())
                     ? candidate.getPlanSchoolDataId()
                     : (Strings.isNullOrEmpty(item.getSchoolName()) ? item.getVolunteerId() : item.getSchoolName());
@@ -178,17 +169,17 @@ public class PlanningExcelExportBuilder {
         }
         return unitMap.values().stream()
                 .sorted(Comparator.comparing(unit -> unit.getPosition() == null ? Integer.MAX_VALUE : unit.getPosition()))
-                .map(unit -> toMajorGroupExcelData(unit, candidateMap))
+                .map(unit -> toMajorGroupExcelData(unit, candidateResolver))
                 .filter(Objects::nonNull)
                 .collect(Collectors.toList());
     }
 
     private ExcelUtil.VolunteerExcelData toMajorGroupExcelData(OrderedUnitDTO unit,
-                                                               Map<String, CandidateItemDTO> candidateMap) {
+                                                               CandidateExportResolver candidateResolver) {
         if (unit == null || unit.getMajorItems() == null || unit.getMajorItems().isEmpty()) {
             return null;
         }
-        CandidateItemDTO representative = findRepresentativeCandidate(unit, candidateMap);
+        CandidateItemDTO representative = findRepresentativeCandidate(unit, candidateResolver);
         ExcelUtil.VolunteerExcelData excelData = new ExcelUtil.VolunteerExcelData();
         excelData.setIndex(unit.getPosition());
         excelData.setEnrollRatio(formatRatio(unit.getSchoolEnrollRatio() == null ? unit.getAdmissionRatio() : unit.getSchoolEnrollRatio()));
@@ -202,19 +193,16 @@ public class PlanningExcelExportBuilder {
         excelData.setSchoolNature(representative == null ? "" : safeString(representative.getSchoolNature()));
         excelData.setSchoolRank(representative == null || representative.getSchoolRank() == null ? "" : String.valueOf(representative.getSchoolRank()));
         excelData.setMajorList(unit.getMajorItems().stream()
-                .map(major -> {
-                    CandidateItemDTO candidate = candidateMap.get(major.getVolunteerId());
-                    return toMajorExcelData(candidate, true);
-                })
+                .map(major -> toMajorExcelData(candidateResolver.resolve(unit, major), true))
                 .filter(Objects::nonNull)
                 .collect(Collectors.toList()));
         return excelData;
     }
 
     private CandidateItemDTO findRepresentativeCandidate(OrderedUnitDTO unit,
-                                                         Map<String, CandidateItemDTO> candidateMap) {
+                                                         CandidateExportResolver candidateResolver) {
         for (PlanningUnitMajorDTO major : defaultPlanningUnitMajors(unit.getMajorItems())) {
-            CandidateItemDTO candidate = candidateMap.get(major.getVolunteerId());
+            CandidateItemDTO candidate = candidateResolver.resolve(unit, major);
             if (candidate != null) {
                 return candidate;
             }
@@ -361,6 +349,126 @@ public class PlanningExcelExportBuilder {
         private MajorSchoolExportEntry(OrderedItemDTO orderedItem, CandidateItemDTO candidate) {
             this.orderedItem = orderedItem;
             this.candidate = candidate;
+        }
+    }
+
+    private static class CandidateExportResolver {
+        private final Map<String, CandidateItemDTO> byVolunteerId = new LinkedHashMap<String, CandidateItemDTO>();
+        private final Map<String, CandidateItemDTO> byLegacyVolunteerPrefix = new LinkedHashMap<String, CandidateItemDTO>();
+        private final Set<String> duplicatedLegacyVolunteerPrefixes = new HashSet<String>();
+        private final Map<String, CandidateItemDTO> bySchoolAndMajor = new LinkedHashMap<String, CandidateItemDTO>();
+        private final Set<String> duplicatedSchoolAndMajors = new HashSet<String>();
+
+        private CandidateExportResolver(List<CandidateItemDTO> candidates) {
+            for (CandidateItemDTO candidate : candidates == null ? Lists.<CandidateItemDTO>newArrayList() : candidates) {
+                if (candidate == null) {
+                    continue;
+                }
+                putUnique(byVolunteerId, null, candidate.getVolunteerId(), candidate);
+                putUnique(byLegacyVolunteerPrefix, duplicatedLegacyVolunteerPrefixes,
+                        legacyVolunteerPrefix(candidate.getVolunteerId()), candidate);
+                putUnique(bySchoolAndMajor, duplicatedSchoolAndMajors,
+                        schoolAndMajorKey(candidate.getSchoolName(), candidate.getMajorName()), candidate);
+            }
+        }
+
+        private CandidateItemDTO resolve(OrderedItemDTO item) {
+            if (item == null) {
+                return null;
+            }
+            CandidateItemDTO candidate = resolve(item.getVolunteerId());
+            if (candidate != null) {
+                return candidate;
+            }
+            return resolveBySchoolAndMajor(item.getSchoolName(), item.getMajorName());
+        }
+
+        private CandidateItemDTO resolve(OrderedUnitDTO unit, PlanningUnitMajorDTO major) {
+            if (major == null) {
+                return null;
+            }
+            CandidateItemDTO candidate = resolve(major.getVolunteerId());
+            if (candidate != null) {
+                return candidate;
+            }
+            return resolveBySchoolAndMajor(unit == null ? null : unit.getSchoolName(), major.getMajorName());
+        }
+
+        private CandidateItemDTO resolve(PlanningUnitMajorDTO major) {
+            if (major == null) {
+                return null;
+            }
+            CandidateItemDTO candidate = resolve(major.getVolunteerId());
+            if (candidate != null) {
+                return candidate;
+            }
+            return resolveBySchoolAndMajor(null, major.getMajorName());
+        }
+
+        private CandidateItemDTO resolve(String volunteerId) {
+            if (Strings.isNullOrEmpty(volunteerId)) {
+                return null;
+            }
+            CandidateItemDTO candidate = byVolunteerId.get(volunteerId);
+            if (candidate != null) {
+                return candidate;
+            }
+            String legacyPrefix = legacyVolunteerPrefix(volunteerId);
+            if (!Strings.isNullOrEmpty(legacyPrefix) && !duplicatedLegacyVolunteerPrefixes.contains(legacyPrefix)) {
+                return byLegacyVolunteerPrefix.get(legacyPrefix);
+            }
+            return null;
+        }
+
+        private CandidateItemDTO resolveBySchoolAndMajor(String schoolName, String majorName) {
+            if (Strings.isNullOrEmpty(majorName)) {
+                return null;
+            }
+            if (!Strings.isNullOrEmpty(schoolName)) {
+                String key = schoolAndMajorKey(schoolName, majorName);
+                if (!Strings.isNullOrEmpty(key) && !duplicatedSchoolAndMajors.contains(key)) {
+                    return bySchoolAndMajor.get(key);
+                }
+            }
+            List<CandidateItemDTO> matched = bySchoolAndMajor.entrySet().stream()
+                    .filter(entry -> entry.getKey().endsWith("\n" + majorName.trim()))
+                    .map(Map.Entry::getValue)
+                    .collect(Collectors.toList());
+            return matched.size() == 1 ? matched.get(0) : null;
+        }
+
+        private static void putUnique(Map<String, CandidateItemDTO> target,
+                                      Set<String> duplicates,
+                                      String key,
+                                      CandidateItemDTO candidate) {
+            if (Strings.isNullOrEmpty(key)) {
+                return;
+            }
+            if (target.containsKey(key)) {
+                if (duplicates != null) {
+                    duplicates.add(key);
+                }
+                return;
+            }
+            target.put(key, candidate);
+        }
+
+        private static String legacyVolunteerPrefix(String volunteerId) {
+            if (Strings.isNullOrEmpty(volunteerId)) {
+                return null;
+            }
+            String[] parts = volunteerId.split("_", -1);
+            if (parts.length < 2 || Strings.isNullOrEmpty(parts[0]) || Strings.isNullOrEmpty(parts[1])) {
+                return null;
+            }
+            return parts[0] + "_" + parts[1];
+        }
+
+        private static String schoolAndMajorKey(String schoolName, String majorName) {
+            if (Strings.isNullOrEmpty(schoolName) || Strings.isNullOrEmpty(majorName)) {
+                return null;
+            }
+            return schoolName.trim() + "\n" + majorName.trim();
         }
     }
 }

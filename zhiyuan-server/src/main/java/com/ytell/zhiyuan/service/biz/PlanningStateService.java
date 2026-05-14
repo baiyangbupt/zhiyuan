@@ -124,6 +124,13 @@ public class PlanningStateService {
         add("性别要求");
     }};
 
+    private static final Set<String> MAJOR_INTENT_EXPLANATION_TAGS = new HashSet<String>() {{
+        add("意向专业");
+        add("意向专业类");
+        add("非意向专业");
+        add("非意向专业类");
+    }};
+
     @Autowired
     private ChatSessionExtraDataSharedService chatSessionExtraDataSharedService;
 
@@ -202,15 +209,18 @@ public class PlanningStateService {
         target.setSourceProvinceName(source.getSourceProvinceName());
         target.setVolunteerModel(source.getVolunteerModel());
         target.setSummary(source.getSummary());
-        Set<String> workspaceVolunteerIds = collectWorkspaceCandidateVolunteerIds(state);
-        if (!workspaceVolunteerIds.isEmpty()) {
+        List<WorkspaceCandidateRef> workspaceRefs = collectWorkspaceCandidateRefs(state);
+        if (!workspaceRefs.isEmpty()) {
             CandidateResolver resolver = new CandidateResolver(mergeOverlayIntoCandidates(source.getItems(), state.getRecommendationOverlayState()));
-            target.setItems(workspaceVolunteerIds.stream()
-                    .map(volunteerId -> copyCandidateForWorkspaceVolunteerId(resolver.resolve(volunteerId), volunteerId))
-                    .filter(Objects::nonNull)
-                    .collect(Collectors.collectingAndThen(
-                            Collectors.toMap(CandidateItemDTO::getVolunteerId, item -> item, (left, right) -> left, LinkedHashMap::new),
-                            map -> Lists.newArrayList(map.values()))));
+            Map<String, CandidateItemDTO> workspaceCandidates = new LinkedHashMap<String, CandidateItemDTO>();
+            for (WorkspaceCandidateRef ref : workspaceRefs) {
+                CandidateItemDTO candidate = resolver.resolve(ref.toOrderedItem());
+                CandidateItemDTO copy = copyCandidateForWorkspaceVolunteerId(candidate, ref.getVolunteerId());
+                if (copy != null && !workspaceCandidates.containsKey(copy.getVolunteerId())) {
+                    workspaceCandidates.put(copy.getVolunteerId(), copy);
+                }
+            }
+            target.setItems(Lists.newArrayList(workspaceCandidates.values()));
         }
         return target;
     }
@@ -356,38 +366,40 @@ public class PlanningStateService {
         }
     }
 
-    private Set<String> collectWorkspaceCandidateVolunteerIds(PlanningStateDTO state) {
-        Set<String> volunteerIds = new LinkedHashSet<String>();
+    private List<WorkspaceCandidateRef> collectWorkspaceCandidateRefs(PlanningStateDTO state) {
+        Map<String, WorkspaceCandidateRef> refs = new LinkedHashMap<String, WorkspaceCandidateRef>();
         if (state == null) {
-            return volunteerIds;
+            return Lists.newArrayList();
         }
         DraftPlanStateDTO draft = state.getDraftPlanState();
         for (DraftItemDTO item : defaultDraftItems(draft == null ? null : draft.getItems())) {
-            if (!Strings.isNullOrEmpty(item.getVolunteerId())) {
-                volunteerIds.add(item.getVolunteerId());
-            }
+            addWorkspaceCandidateRef(refs, item.getVolunteerId(), item.getSchoolName(), item.getMajorName());
         }
         for (DraftUnitDTO unit : defaultDraftUnits(draft == null ? null : draft.getUnits())) {
             for (PlanningUnitMajorDTO major : defaultPlanningUnitMajors(unit.getMajorItems())) {
-                if (!Strings.isNullOrEmpty(major.getVolunteerId())) {
-                    volunteerIds.add(major.getVolunteerId());
-                }
+                addWorkspaceCandidateRef(refs, major.getVolunteerId(), unit.getSchoolName(), major.getMajorName());
             }
         }
         OrderedPlanStateDTO ordered = state.getOrderedPlanState();
         for (OrderedItemDTO item : defaultOrderedItems(ordered == null ? null : ordered.getItems())) {
-            if (!Strings.isNullOrEmpty(item.getVolunteerId())) {
-                volunteerIds.add(item.getVolunteerId());
-            }
+            addWorkspaceCandidateRef(refs, item.getVolunteerId(), item.getSchoolName(), item.getMajorName());
         }
         for (OrderedUnitDTO unit : defaultOrderedUnits(ordered == null ? null : ordered.getUnits())) {
             for (PlanningUnitMajorDTO major : defaultPlanningUnitMajors(unit.getMajorItems())) {
-                if (!Strings.isNullOrEmpty(major.getVolunteerId())) {
-                    volunteerIds.add(major.getVolunteerId());
-                }
+                addWorkspaceCandidateRef(refs, major.getVolunteerId(), unit.getSchoolName(), major.getMajorName());
             }
         }
-        return volunteerIds;
+        return Lists.newArrayList(refs.values());
+    }
+
+    private void addWorkspaceCandidateRef(Map<String, WorkspaceCandidateRef> refs,
+                                          String volunteerId,
+                                          String schoolName,
+                                          String majorName) {
+        if (Strings.isNullOrEmpty(volunteerId) || refs.containsKey(volunteerId)) {
+            return;
+        }
+        refs.put(volunteerId, new WorkspaceCandidateRef(volunteerId, schoolName, majorName));
     }
 
     public ProfileStateDTO getProfileState(Long chatSessionId) {
@@ -1060,6 +1072,7 @@ public class PlanningStateService {
                 .collect(Collectors.toList());
         List<String> majorTags = items.stream()
                 .flatMap(item -> collectMajorFilterTags(item).stream())
+                .filter(tag -> !MAJOR_INTENT_EXPLANATION_TAGS.contains(tag))
                 .filter(this::isEnumLikeFilterOption)
                 .distinct()
                 .sorted()
@@ -1070,6 +1083,7 @@ public class PlanningStateService {
         dto.setSchoolTags(schoolTags);
         dto.setMajorTags(majorTags);
         dto.setGroups(buildCandidateFilterGroups(provinceNames, cityNames, schoolTags, majorTags, majorDisciplines, majorCategories));
+        dto.setRegionTree(buildCandidateRegionTree(items, provinceNames, cityNames));
         return dto;
     }
 
@@ -5213,10 +5227,48 @@ public class PlanningStateService {
         addFilterGroup(groups, "constraint.limit", "限报要求", "majorTags", filterByWhitelist(majorTags, CONSTRAINT_LIMIT_TAGS));
         addFilterGroup(groups, "school.tag", "院校标签", "schoolTags",
                 excludeValues(schoolTags, SCHOOL_CATEGORY_TAGS, SCHOOL_NATURE_TAGS, SCHOOL_FEATURE_TAGS, SCHOOL_LEVEL_TAGS));
-        addFilterGroup(groups, "major.tag", "专业标签", "majorTags",
-                excludeValues(majorTags, ADMISSION_TYPE_TAGS, CONSTRAINT_LIMIT_TAGS,
-                        new HashSet<String>(majorDisciplines), new HashSet<String>(majorCategories)));
         return groups;
+    }
+
+    private List<CandidateFilterOptionsDTO.RegionNodeDTO> buildCandidateRegionTree(List<CandidateItemDTO> items,
+                                                                                   List<String> provinceNames,
+                                                                                   List<String> cityNames) {
+        Set<String> allowedProvinces = new HashSet<String>(defaultList(provinceNames));
+        Set<String> allowedCities = new HashSet<String>(defaultList(cityNames));
+        Map<String, Set<String>> provinceCities = new LinkedHashMap<String, Set<String>>();
+        defaultList(provinceNames).stream()
+                .filter(this::isEnumLikeFilterOption)
+                .sorted()
+                .forEach(province -> provinceCities.put(province, new LinkedHashSet<String>()));
+
+        for (CandidateItemDTO item : items == null ? Lists.<CandidateItemDTO>newArrayList() : items) {
+            String province = normalizeRegionOption(item.getProvinceName());
+            String city = normalizeRegionOption(item.getCityName());
+            if (Strings.isNullOrEmpty(province) || Strings.isNullOrEmpty(city)) {
+                continue;
+            }
+            if (!allowedProvinces.contains(province) || !allowedCities.contains(city)) {
+                continue;
+            }
+            provinceCities.computeIfAbsent(province, key -> new LinkedHashSet<String>()).add(city);
+        }
+
+        List<CandidateFilterOptionsDTO.RegionNodeDTO> result = Lists.newArrayList();
+        for (Map.Entry<String, Set<String>> entry : provinceCities.entrySet()) {
+            CandidateFilterOptionsDTO.RegionNodeDTO node = new CandidateFilterOptionsDTO.RegionNodeDTO();
+            node.setProvinceName(entry.getKey());
+            node.setCityNames(entry.getValue().stream().sorted().collect(Collectors.toList()));
+            result.add(node);
+        }
+        return result;
+    }
+
+    private String normalizeRegionOption(String value) {
+        if (Strings.isNullOrEmpty(value)) {
+            return null;
+        }
+        String normalized = value.trim();
+        return isEnumLikeFilterOption(normalized) ? normalized : null;
     }
 
     private void addFilterGroup(List<CandidateFilterOptionsDTO.FilterGroupDTO> groups,
@@ -7362,6 +7414,30 @@ public class PlanningStateService {
         return defaultCandidates(candidates).stream()
                 .filter(candidate -> !Strings.isNullOrEmpty(candidate.getVolunteerId()))
                 .collect(Collectors.toMap(CandidateItemDTO::getVolunteerId, candidate -> candidate, (left, right) -> left, LinkedHashMap::new));
+    }
+
+    private static class WorkspaceCandidateRef {
+        private final String volunteerId;
+        private final String schoolName;
+        private final String majorName;
+
+        private WorkspaceCandidateRef(String volunteerId, String schoolName, String majorName) {
+            this.volunteerId = volunteerId;
+            this.schoolName = schoolName;
+            this.majorName = majorName;
+        }
+
+        private String getVolunteerId() {
+            return volunteerId;
+        }
+
+        private OrderedItemDTO toOrderedItem() {
+            OrderedItemDTO item = new OrderedItemDTO();
+            item.setVolunteerId(volunteerId);
+            item.setSchoolName(schoolName);
+            item.setMajorName(majorName);
+            return item;
+        }
     }
 
     private static class CandidateResolver {

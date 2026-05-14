@@ -13,6 +13,7 @@ public class CandidateFilterOptionsDTO {
     private List<String> schoolTags = Lists.newArrayList();
     private List<String> majorTags = Lists.newArrayList();
     private List<FilterGroupDTO> groups = Lists.newArrayList();
+    private List<RegionNodeDTO> regionTree = Lists.newArrayList();
 
     @Data
     public static class FilterGroupDTO {
@@ -20,5 +21,11 @@ public class CandidateFilterOptionsDTO {
         private String groupName;
         private String filterField;
         private List<String> values = Lists.newArrayList();
+    }
+
+    @Data
+    public static class RegionNodeDTO {
+        private String provinceName;
+        private List<String> cityNames = Lists.newArrayList();
     }
 }

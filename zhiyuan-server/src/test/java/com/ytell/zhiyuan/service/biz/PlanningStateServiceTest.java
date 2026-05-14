@@ -1098,6 +1098,68 @@ public class PlanningStateServiceTest {
     }
 
     @Test
+    void shouldResolveLegacyWorkspaceCandidateDetailsBySchoolAndMajor() {
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+
+        CandidatePoolStateDTO candidatePoolState = new CandidatePoolStateDTO();
+        CandidateItemDTO orderedCandidate = buildCandidateItem("ps1_s1_pm1", "ps1", "s1", "学校A", "冲", "专业A", 82D, 61D, 70D, true);
+        CandidateItemDTO samePrefixCandidate = buildCandidateItem("ps1_s1_pm2", "ps1", "s1", "学校A", "冲", "专业B", 74D, 55D, 70D, false);
+        candidatePoolState.setItems(java.util.Arrays.asList(orderedCandidate, samePrefixCandidate));
+        state.setCandidatePoolState(candidatePoolState);
+
+        OrderedPlanStateDTO orderedPlanState = new OrderedPlanStateDTO();
+        OrderedItemDTO orderedItem = new OrderedItemDTO();
+        orderedItem.setVolunteerId("ps1_s1_legacy1");
+        orderedItem.setSchoolName("学校A");
+        orderedItem.setMajorName("专业A");
+        orderedPlanState.setItems(java.util.Collections.singletonList(orderedItem));
+        state.setOrderedPlanState(orderedPlanState);
+
+        PlanningWorkspaceStateRes workspaceState = planningStateService.buildPlanningWorkspaceStateRes(state);
+
+        assertEquals(1, workspaceState.getCandidatePoolState().getItems().size());
+        CandidateItemDTO workspaceCandidate = workspaceState.getCandidatePoolState().getItems().get(0);
+        assertEquals("ps1_s1_legacy1", workspaceCandidate.getVolunteerId());
+        assertEquals(Double.valueOf(82D), workspaceCandidate.getAdmissionRatio());
+        assertEquals(Double.valueOf(61D), workspaceCandidate.getFinalScore());
+        assertEquals("专业A", workspaceCandidate.getMajorName());
+    }
+
+    @Test
+    void shouldResolveLegacyMajorGroupWorkspaceCandidateDetailsByUnitMajorContext() {
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+
+        CandidatePoolStateDTO candidatePoolState = new CandidatePoolStateDTO();
+        candidatePoolState.setVolunteerModel(VolunteerModel.majorGroup.name());
+        CandidateItemDTO accounting = buildCandidateItem("ps1_s1_pm1", "ps1", "s1", "学校A第01组", "冲", "会计学", 82D, 61D, 70D, true);
+        CandidateItemDTO law = buildCandidateItem("ps1_s1_pm2", "ps1", "s1", "学校A第01组", "冲", "法学", 76D, 58D, 70D, false);
+        candidatePoolState.setItems(java.util.Arrays.asList(accounting, law));
+        state.setCandidatePoolState(candidatePoolState);
+
+        OrderedPlanStateDTO orderedPlanState = new OrderedPlanStateDTO();
+        OrderedUnitDTO unit = new OrderedUnitDTO();
+        unit.setUnitId("ps1");
+        unit.setSchoolName("学校A第01组");
+        PlanningUnitMajorDTO major = new PlanningUnitMajorDTO();
+        major.setVolunteerId("ps1_s1_legacy1");
+        major.setMajorName("会计学");
+        unit.setMajorItems(java.util.Collections.singletonList(major));
+        orderedPlanState.setUnits(java.util.Collections.singletonList(unit));
+        state.setOrderedPlanState(orderedPlanState);
+
+        PlanningWorkspaceStateRes workspaceState = planningStateService.buildPlanningWorkspaceStateRes(state);
+
+        assertEquals(1, workspaceState.getCandidatePoolState().getItems().size());
+        CandidateItemDTO workspaceCandidate = workspaceState.getCandidatePoolState().getItems().get(0);
+        assertEquals("ps1_s1_legacy1", workspaceCandidate.getVolunteerId());
+        assertEquals(Double.valueOf(82D), workspaceCandidate.getAdmissionRatio());
+        assertEquals(Double.valueOf(61D), workspaceCandidate.getFinalScore());
+        assertEquals("会计学", workspaceCandidate.getMajorName());
+    }
+
+    @Test
     void shouldExposeWorkflowStatusForEmptyCandidatePool() {
         PlanningStateDTO state = new PlanningStateDTO();
         state.setSessionId(1L);
@@ -2346,6 +2408,7 @@ public class PlanningStateServiceTest {
         major.setSubCategoryId("47");
         VolunteerRecommendListResponse response = new VolunteerRecommendListResponse();
         VolunteerRecommendListResponse.VolunteerSchool school = buildSchool("ps1", "s1", "北京邮电大学", "北京", 1, major);
+        school.setCity_name("海淀");
         school.setSchool_batch("本科");
         school.setSchool_level("211");
         school.setSchool_nature("公办");
@@ -2354,7 +2417,7 @@ public class PlanningStateServiceTest {
         school.setRankTagList(java.util.Arrays.asList("双一流", "保研率 18%"));
         school.setPopTagList(java.util.Arrays.asList("低学费", "院校排名 12", "北京市"));
         school.getMajors().get(0).setRankTagList(java.util.Arrays.asList("计算机", "就业率 91%"));
-        school.getMajors().get(0).setPlanTagList(java.util.Arrays.asList("选科要求", "计划数:6"));
+        school.getMajors().get(0).setPlanTagList(java.util.Arrays.asList("选科要求", "意向专业类", "非意向专业类", "计划数:6"));
         response.setSafes(java.util.Arrays.asList(school));
         response.setSprints(java.util.Collections.emptyList());
         response.setProtects(java.util.Collections.emptyList());
@@ -2368,6 +2431,7 @@ public class PlanningStateServiceTest {
         CandidateFilterOptionsDTO res = planningStateService.getCandidateFilterOptions(1L, 1L);
 
         assertTrue(res.getProvinceNames().contains("北京"));
+        assertTrue(res.getCityNames().contains("海淀"));
         assertTrue(res.getMajorKeywords().contains("计算机类"));
         assertTrue(res.getSchoolTags().contains("公办"));
         assertTrue(res.getSchoolTags().contains("理工"));
@@ -2380,10 +2444,17 @@ public class PlanningStateServiceTest {
         assertTrue(res.getMajorTags().contains("计算机"));
         assertTrue(res.getMajorTags().contains("选科要求"));
         assertTrue(res.getMajorTags().contains("工学类"));
+        assertFalse(res.getMajorTags().contains("意向专业"));
+        assertFalse(res.getMajorTags().contains("意向专业类"));
+        assertFalse(res.getMajorTags().contains("非意向专业"));
+        assertFalse(res.getMajorTags().contains("非意向专业类"));
+        assertTrue(res.getRegionTree().stream().anyMatch(region ->
+                "北京".equals(region.getProvinceName()) && region.getCityNames().contains("海淀")));
         assertTrue(res.getGroups().stream().anyMatch(group ->
                 "major.category".equals(group.getGroupCode())
                         && "majorKeywords".equals(group.getFilterField())
                         && group.getValues().contains("计算机类")));
+        assertFalse(res.getGroups().stream().anyMatch(group -> "major.tag".equals(group.getGroupCode())));
         assertFalse(res.getMajorTags().contains("就业率 91%"));
         assertFalse(res.getMajorTags().contains("计划数:6"));
     }

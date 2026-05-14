@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Collapse, Dropdown, Empty, InputNumber, Modal, Spin, Tag, Tooltip, message } from 'antd';
 import {
   PlusOutlined,
-  PushpinOutlined,
   VerticalAlignTopOutlined,
   VerticalAlignBottomOutlined,
   DeleteOutlined,
@@ -25,14 +24,12 @@ import {
   getPlanningWorkspaceStateApi,
   movePlanningOrderedItemApi,
   movePlanningOrderedUnitApi,
-  pinPlanningOrderedItemApi,
   queryPlanningCandidatePoolApi,
   removePlanningDraftItemsApi,
   removePlanningOrderedUnitApi,
   runPlanningReviewApi,
   selectPlanningDraftItemsApi,
   sortPlanningOrderedPlanApi,
-  unpinPlanningOrderedItemApi,
   updatePlanningCandidateViewStateApi,
 } from '@/service/apis/sessionDetail';
 import { IUserInfoParams } from '@/interface/api/sessionDetail';
@@ -165,6 +162,7 @@ interface FilterPanelOption {
 
 interface FilterPanelGroup {
   label: string;
+  option?: FilterPanelOption;
   options?: FilterPanelOption[];
   children?: FilterPanelGroup[];
 }
@@ -241,7 +239,6 @@ const REVIEW_LEVEL_COLOR: Record<string, string> = {
   warn: 'warning',
   info: 'processing',
 };
-
 const FILTER_TOKEN_SEPARATOR = '::';
 
 const FILTER_FIELD_META: Record<
@@ -324,7 +321,7 @@ const uniqueStrings = (values: Array<string | null | undefined>) =>
   Array.from(new Set(values.map(item => (item || '').trim()).filter(Boolean)));
 
 const hasFilterPanelOptions = (group: FilterPanelGroup): boolean =>
-  Boolean(group.options?.length || group.children?.some(hasFilterPanelOptions));
+  Boolean(group.option || group.options?.length || group.children?.some(hasFilterPanelOptions));
 
 const MAJOR_FILTER_GROUP_CODES = new Set([
   'major.discipline',
@@ -477,6 +474,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const [candidatePoolLoading, setCandidatePoolLoading] = useState(false);
   const [candidateCacheVersion, setCandidateCacheVersion] = useState(0);
   const [showBackTop, setShowBackTop] = useState(false);
+  const [overviewCollapsed, setOverviewCollapsed] = useState(false);
   const [sortModalOpen, setSortModalOpen] = useState(false);
   const [selectedOrderedSortField, setSelectedOrderedSortField] =
     useState<PlanningOrderedSortField>('admissionRatio');
@@ -487,6 +485,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const candidateQueryInFlightPagesRef = useRef<Set<string>>(new Set());
   const [filterPanelOpen, setFilterPanelOpen] = useState(false);
   const [filterSearchKeyword, setFilterSearchKeyword] = useState('');
+  const [expandedFilterGroupKeys, setExpandedFilterGroupKeys] = useState<string[]>([]);
+  const [collapsedOrderedGroupKeys, setCollapsedOrderedGroupKeys] = useState<string[]>([]);
   const [candidateFilterOptions, setCandidateFilterOptions] = useState<PlanningCandidateFilterOptionsRes>({
     ...EMPTY_CANDIDATE_FILTER_OPTIONS,
   });
@@ -501,6 +501,10 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const workspaceBodyRef = useRef<HTMLDivElement | null>(null);
   const candidateSummaryRef = useRef<HTMLDivElement | null>(null);
   const reviewSummaryRef = useRef<HTMLDivElement | null>(null);
+  const workspaceTouchStartYRef = useRef<number | null>(null);
+  const workspaceTouchStartAtTopRef = useRef(false);
+  const overviewRevealReadyRef = useRef(false);
+  const overviewRevealReadyTimerRef = useRef<number | null>(null);
   const candidateItemCacheRef = useRef<Record<string, PlanningCandidateItem>>({});
   const initialFiltersAppliedRef = useRef(false);
   const candidateViewStateHydratedRef = useRef(false);
@@ -584,7 +588,6 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
             },
             { groupCode: 'major.discipline', groupName: '专业门类', filterField: 'majorTags', values: fallbackMajorDisciplineValues },
             { groupCode: 'major.category', groupName: '专业大类', filterField: 'majorKeywords', values: fallbackMajorKeywordValues },
-            { groupName: '专业标签', filterField: 'majorTags', values: candidateFilterOptions.majorTags || [] },
           ];
 
     const hasMajorCategoryGroup = backendGroups.some(group => group.groupCode === 'major.category');
@@ -658,44 +661,43 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         .filter(group => group.filterField === 'cityNames')
         .flatMap(group => group.values || [])
     );
-    const usedCitySet = new Set<string>();
-    const provinceChildren: FilterPanelGroup[] = provinceValues.map(province => {
-      const cities = uniqueStrings(Array.from(provinceToCities.get(province) || []))
-        .filter(city => cityValues.includes(city));
-      cities.forEach(city => usedCitySet.add(city));
-      return {
+    const backendRegionTree = (candidateFilterOptions.regionTree || [])
+      .map(node => ({
+        provinceName: (node.provinceName || '').trim(),
+        cityNames: uniqueStrings(node.cityNames || []).filter(city => cityValues.includes(city)),
+      }))
+      .filter(node => node.provinceName && provinceValues.includes(node.provinceName));
+    const provinceChildren: FilterPanelGroup[] = (
+      backendRegionTree.length > 0
+        ? backendRegionTree.map(node => ({
+            province: node.provinceName,
+            cities: node.cityNames,
+          }))
+        : provinceValues.map(province => ({
+            province,
+            cities: uniqueStrings(Array.from(provinceToCities.get(province) || []))
+              .filter(city => cityValues.includes(city)),
+          }))
+    ).map(({ province, cities }) => ({
+      label: province,
+      option: {
         label: province,
-        options: [{
-          label: '全省/市',
-          title: `院校省份 · ${province}`,
-          field: 'provinceNames' as FilterTokenField,
-          value: province,
-        }],
-        children: cities.length > 0
-          ? [{
-              label: '城市',
-              options: cities.map(city => ({
-                label: city,
-                title: `院校城市 · ${province} · ${city}`,
-                field: 'cityNames' as FilterTokenField,
-                value: city,
-              })),
-            }]
-          : undefined,
-      };
-    });
-    const unmatchedCityValues = cityValues.filter(city => !usedCitySet.has(city));
-    if (unmatchedCityValues.length > 0) {
-      provinceChildren.push({
-        label: '其他城市',
-        options: unmatchedCityValues.map(city => ({
-          label: city,
-          title: `院校城市 · ${city}`,
-          field: 'cityNames' as FilterTokenField,
-          value: city,
-        })),
-      });
-    }
+        title: `院校省份 · ${province}`,
+        field: 'provinceNames' as FilterTokenField,
+        value: province,
+      },
+      children: cities.length > 0
+        ? cities.map(city => ({
+            label: city,
+            option: {
+              label: city,
+              title: `院校城市 · ${province} · ${city}`,
+              field: 'cityNames' as FilterTokenField,
+              value: city,
+            },
+          }))
+        : undefined,
+    }));
 
     const regularGroups = normalizedGroups
       .filter(group => !isMajorFilterGroup(group) && !['provinceNames', 'cityNames'].includes(group.filterField || ''))
@@ -720,37 +722,53 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       groupedCategories.set(discipline, [...(groupedCategories.get(discipline) || []), value]);
     });
 
-    const majorChildren: FilterPanelGroup[] = allMajorDisciplineValues.map(discipline => {
-      const options = (groupedCategories.get(discipline) || []).map(value => ({
-        label: value,
-        title: `专业大类 · ${discipline} · ${value}`,
-        field: 'majorKeywords' as FilterTokenField,
-        value,
-      }));
-      return {
+    const majorChildren: FilterPanelGroup[] = allMajorDisciplineValues.map(discipline => ({
+      label: discipline,
+      option: {
         label: discipline,
-        options,
-      };
-    });
+        title: `专业门类 · ${discipline}`,
+        field: 'majorTags' as FilterTokenField,
+        value: discipline,
+      },
+      children: (groupedCategories.get(discipline) || []).map(value => ({
+        label: value,
+        option: {
+          label: value,
+          title: `专业大类 · ${discipline} · ${value}`,
+          field: 'majorKeywords' as FilterTokenField,
+          value,
+        },
+      })),
+    }));
 
     if (unmatchedCategories.length > 0) {
       majorChildren.push({
         label: '其他专业大类',
-        options: unmatchedCategories.map(value => ({
+        children: unmatchedCategories.map(value => ({
           label: value,
-          title: `专业大类 · ${value}`,
-          field: 'majorKeywords' as FilterTokenField,
-          value,
+          option: {
+            label: value,
+            title: `专业大类 · ${value}`,
+            field: 'majorKeywords' as FilterTokenField,
+            value,
+          },
         })),
       });
     }
 
     normalizedGroups
-      .filter(group => ['admission.type', 'constraint.limit', 'major.tag'].includes(group.groupCode || ''))
+      .filter(group => ['admission.type', 'constraint.limit'].includes(group.groupCode || ''))
       .map(group => toPanelGroup(group))
       .filter(Boolean)
       .forEach(group => {
-        majorChildren.push(group as FilterPanelGroup);
+        const subGroup = group as FilterPanelGroup;
+        majorChildren.push({
+          label: subGroup.label,
+          children: (subGroup.options || []).map(option => ({
+            label: option.label,
+            option,
+          })),
+        });
       });
 
     const mappedGroups: FilterPanelGroup[] = [{
@@ -956,7 +974,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     filters.majorTags.forEach(tag => {
       chips.push({
         key: `major-tag-positive-${tag}`,
-        label: `专业标签 · ${tag}`,
+        label: `专业条件 · ${tag}`,
         field: 'majorTags',
         polarity: 'positive',
         value: tag,
@@ -965,7 +983,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     filters.negativeMajorTags.forEach(tag => {
       chips.push({
         key: `major-tag-negative-${tag}`,
-        label: `专业标签 · 不看${tag}`,
+        label: `专业条件 · 不看${tag}`,
         field: 'majorTags',
         polarity: 'negative',
         value: tag,
@@ -1282,6 +1300,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
           majorTags: data.majorTags || [],
           majorKeywords: data.majorKeywords || [],
           groups: data.groups || [],
+          regionTree: data.regionTree || [],
         });
       }
     } catch (error) {
@@ -1711,40 +1730,6 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     setOrderedActionVolunteerId(null);
   };
 
-  const handleTogglePin = async (item?: PlanningOrderedItem) => {
-    if (!item?.volunteerId || actionLoading) {
-      return;
-    }
-    setActionLoading('ordered');
-    setOrderedActionVolunteerId(item.volunteerId);
-    const hideLoading = message.loading(item.pinned ? '正在取消固定...' : '正在固定志愿...', 0);
-    try {
-      const api = item.pinned ? unpinPlanningOrderedItemApi : pinPlanningOrderedItemApi;
-      const { data, code } = await api(
-        routerParams.tenantId,
-        routerParams.chatSessionId,
-        item.volunteerId,
-        item.position || 1
-      );
-      if (code === 0) {
-        if (data) {
-          setPlanningState(prev => ({
-            ...(prev || {}),
-            ...data,
-            orderedPlanState: data.orderedPlanState || prev?.orderedPlanState,
-          }));
-        }
-      } else {
-        message.error('更新固定状态失败');
-      }
-    } catch (error) {
-      message.error('更新固定状态异常，请稍后重试');
-    }
-    hideLoading();
-    setActionLoading(null);
-    setOrderedActionVolunteerId(null);
-  };
-
   const handleExportOrderedPlan = async () => {
     if (!routerParams?.tenantId || !routerParams?.chatSessionId || exportLoading) {
       return;
@@ -1872,6 +1857,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     setFilters(createDefaultFilters());
     setFilterSearchKeyword('');
     setFilterPanelOpen(false);
+    setCollapsedOrderedGroupKeys([]);
     setFocusVolunteerIds([]);
     setExpandedSchoolMetaKeys([]);
     setDraftExpanded(false);
@@ -2045,11 +2031,59 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     const handleScroll = () => {
       const shouldShow = container.scrollTop > 240;
       setShowBackTop(prev => (prev === shouldShow ? prev : shouldShow));
+      if (container.scrollTop > 48) {
+        overviewRevealReadyRef.current = false;
+        if (overviewRevealReadyTimerRef.current) {
+          window.clearTimeout(overviewRevealReadyTimerRef.current);
+          overviewRevealReadyTimerRef.current = null;
+        }
+        setOverviewCollapsed(prev => (prev ? prev : true));
+        return;
+      }
+      if (container.scrollTop <= 0 && overviewCollapsed && !overviewRevealReadyTimerRef.current) {
+        overviewRevealReadyTimerRef.current = window.setTimeout(() => {
+          overviewRevealReadyRef.current = true;
+          overviewRevealReadyTimerRef.current = null;
+        }, 220);
+      }
+    };
+    const handleWheel = (event: WheelEvent) => {
+      if (container.scrollTop <= 0 && event.deltaY < -8 && overviewRevealReadyRef.current) {
+        setOverviewCollapsed(false);
+        overviewRevealReadyRef.current = false;
+      }
+    };
+    const handleTouchStart = (event: TouchEvent) => {
+      workspaceTouchStartYRef.current = event.touches[0]?.clientY ?? null;
+      workspaceTouchStartAtTopRef.current = container.scrollTop <= 0 && overviewCollapsed;
+    };
+    const handleTouchMove = (event: TouchEvent) => {
+      const startY = workspaceTouchStartYRef.current;
+      const currentY = event.touches[0]?.clientY;
+      if (startY === null || currentY === undefined) {
+        return;
+      }
+      if (workspaceTouchStartAtTopRef.current && container.scrollTop <= 0 && currentY - startY > 48) {
+        setOverviewCollapsed(false);
+        workspaceTouchStartAtTopRef.current = false;
+      }
     };
     handleScroll();
     container.addEventListener('scroll', handleScroll);
-    return () => container.removeEventListener('scroll', handleScroll);
-  }, [activeView]);
+    container.addEventListener('wheel', handleWheel, { passive: true });
+    container.addEventListener('touchstart', handleTouchStart, { passive: true });
+    container.addEventListener('touchmove', handleTouchMove, { passive: true });
+    return () => {
+      container.removeEventListener('scroll', handleScroll);
+      container.removeEventListener('wheel', handleWheel);
+      container.removeEventListener('touchstart', handleTouchStart);
+      container.removeEventListener('touchmove', handleTouchMove);
+      if (overviewRevealReadyTimerRef.current) {
+        window.clearTimeout(overviewRevealReadyTimerRef.current);
+        overviewRevealReadyTimerRef.current = null;
+      }
+    };
+  }, [activeView, overviewCollapsed]);
 
   useEffect(() => {
     if (activeView !== 'candidate') {
@@ -2417,6 +2451,129 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       ));
   };
 
+  const renderOrderedMajorTable = (
+    majorName: React.ReactNode,
+    candidateItem: PlanningCandidateItem | null | undefined,
+    rowKey: string,
+    actions: React.ReactNode
+  ) => {
+    const historyYears = getFixedHistoryYears(candidateItem?.majorHistoryScores || [], 3);
+    const hasHistory = historyYears.some(Boolean);
+    return (
+      <div className={style.orderedMajorTableCard}>
+        <div className={style.majorTable}>
+          <div className={style.orderedMajorTableHeader}>
+            <div className={style.majorNameColumn}>专业</div>
+            <div className={style.majorPlanColumn}>2025招生计划</div>
+            <div className={style.majorDataTypeColumn}>数据类型</div>
+            {historyYears.map((year, yearIndex) => (
+              <div key={`${rowKey}-ordered-year-${year || yearIndex}`} className={style.majorYearColumn}>
+                {year || '-'}
+              </div>
+            ))}
+            <div className={style.majorRatioColumn}>操作</div>
+          </div>
+          <div className={style.orderedMajorTableBody}>
+            <div className={style.majorInfoCell} style={{ gridColumn: '1', gridRow: '1 / span 3' }}>
+              <div className={style.majorLine}>{majorName}</div>
+              <div className={style.orderedMajorPrimaryTags}>
+                <Tag bordered={false} color="orange">
+                  专业录取率 {formatPercent(candidateItem?.admissionRatio)}
+                </Tag>
+              </div>
+            </div>
+            <div className={style.majorPlanCell} style={{ gridColumn: '2', gridRow: '1 / span 3' }}>
+              <div>计划数：{formatNumber(candidateItem?.planNum)}</div>
+              <div>学制：{candidateItem?.duration || '-'}</div>
+              <div>学费：{formatMetricNumber(candidateItem?.tuitionPerYear, '/年')}</div>
+              {candidateItem?.mustSubjects?.length ? (
+                <div>选科：{candidateItem.mustSubjects.join(' / ')}</div>
+              ) : null}
+            </div>
+            {[
+              { label: '录取人数', field: 'enrollNum' as const, row: 1 },
+              { label: '最低分数', field: 'score' as const, row: 2 },
+              { label: '最低位次', field: 'pos' as const, row: 3 },
+            ].map(row => (
+              <React.Fragment key={`${rowKey}-ordered-${row.label}`}>
+                <div className={style.majorHistoryTypeCell} style={{ gridColumn: '3', gridRow: `${row.row}` }}>
+                  {row.label}
+                </div>
+                {historyYears.map((year, yearIndex) => (
+                  <div
+                    key={`${rowKey}-ordered-${row.label}-${year || yearIndex}`}
+                    className={style.majorHistoryValueCell}
+                    style={{ gridColumn: `${4 + yearIndex}`, gridRow: `${row.row}` }}
+                  >
+                    {hasHistory && year ? getHistoryValue(candidateItem?.majorHistoryScores || [], year, row.field) : '-'}
+                  </div>
+                ))}
+              </React.Fragment>
+            ))}
+            <div className={style.orderedMajorActionCell} style={{ gridColumn: '7', gridRow: '1 / span 3' }}>
+              {actions}
+            </div>
+          </div>
+        </div>
+        <div className={style.majorActionBar}>
+          <div className={style.cardMetrics}>
+            <span>推荐系数 {formatNumber(candidateItem?.finalScore)}</span>
+            <span>区间位次 #{formatNumber(candidateItem?.rankInTier)}</span>
+            <span>专业热度 {formatNumber(candidateItem?.hotIndex)}</span>
+            <Tooltip title={SALARY_AVG_TOOLTIP}>
+              <span>薪酬指数 {formatNumber(candidateItem?.salaryAvg)}</span>
+            </Tooltip>
+            <span>专业代码 {candidateItem?.majorCode || '-'}</span>
+          </div>
+        </div>
+        <div className={style.mobileMajorCard}>
+          <div className={style.mobileMajorTop}>
+            <div className={style.mobileMajorTitle}>{majorName}</div>
+            <div className={style.orderedMobileActions}>{actions}</div>
+          </div>
+          <div className={style.mobileMajorInfoGrid}>
+            <div>
+              <span>计划数</span>
+              <strong>{formatNumber(candidateItem?.planNum)}</strong>
+            </div>
+            <div>
+              <span>学制</span>
+              <strong>{candidateItem?.duration || '-'}</strong>
+            </div>
+            <div>
+              <span>学费</span>
+              <strong>{formatMetricNumber(candidateItem?.tuitionPerYear, '/年')}</strong>
+            </div>
+            <div>
+              <span>专业代码</span>
+              <strong>{candidateItem?.majorCode || '-'}</strong>
+            </div>
+          </div>
+          {candidateItem?.mustSubjects?.length ? (
+            <div className={style.mobileMajorSubject}>
+              选科：{candidateItem.mustSubjects.join(' / ')}
+            </div>
+          ) : null}
+          {historyYears.length > 0 ? (
+            <div className={style.mobileHistoryList}>
+              {historyYears.map((year, yearIndex) => (
+                <div
+                  key={`${rowKey}-ordered-mobile-history-${year || yearIndex}`}
+                  className={style.mobileHistoryItem}
+                >
+                  <div className={style.mobileHistoryYear}>{year || '-'}</div>
+                  <div>人数 {year ? getHistoryValue(candidateItem?.majorHistoryScores || [], year, 'enrollNum') : '-'}</div>
+                  <div>分数 {year ? getHistoryValue(candidateItem?.majorHistoryScores || [], year, 'score') : '-'}</div>
+                  <div>位次 {year ? getHistoryValue(candidateItem?.majorHistoryScores || [], year, 'pos') : '-'}</div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      </div>
+    );
+  };
+
   const getHistoryYears = (scores?: Array<{ year?: number }>) => {
     return Array.from(
       new Set((scores || []).map(item => item?.year).filter(Boolean) as number[])
@@ -2476,6 +2633,21 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     return (tags || []).filter(tag => tag.includes('院校排名'));
   };
 
+  const getSchoolMetaItems = (item?: PlanningCandidateItem | null) => {
+    if (!item) {
+      return [];
+    }
+    return (item.schoolBasicTags || []).length
+      ? item.schoolBasicTags || []
+      : [
+          [item.provinceName, item.cityName].filter(Boolean).join('/'),
+          item.schoolBatch,
+          item.schoolNature,
+          item.schoolCategory,
+          item.schoolLevel,
+        ].filter(Boolean);
+  };
+
   const groupedOrderedList = useMemo<OrderedGroup[]>(() => {
     if (!isMajorGroupMode) {
       return [];
@@ -2519,6 +2691,23 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     });
     return Array.from(grouped.values());
   }, [candidateItemMap, isMajorGroupMode, orderedItems]);
+
+  const orderedCollapseKeys = useMemo(() => {
+    if (isMajorGroupMode) {
+      return groupedOrderedList.map(group => group.key);
+    }
+    return orderedItems.map((item, index) => item.volunteerId || `${item.schoolName || 'ordered'}-${index}`);
+  }, [groupedOrderedList, isMajorGroupMode, orderedItems]);
+
+  const orderedCollapseSignature = orderedCollapseKeys.join('|');
+
+  useEffect(() => {
+    if (!orderedCollapseSignature) {
+      setCollapsedOrderedGroupKeys([]);
+      return;
+    }
+    setCollapsedOrderedGroupKeys(orderedCollapseSignature.split('|').slice(1));
+  }, [orderedCollapseSignature]);
 
   const groupedDraftList = useMemo<DraftGroup[]>(() => {
     if (!isMajorGroupMode) {
@@ -2736,6 +2925,12 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     );
   };
 
+  const toggleOrderedGroupCollapsed = (groupKey: string) => {
+    setCollapsedOrderedGroupKeys(prev =>
+      prev.includes(groupKey) ? prev.filter(item => item !== groupKey) : [...prev, groupKey]
+    );
+  };
+
   const openSchoolHistoryModal = (group: CandidateGroup) => {
     setSchoolHistoryModal({
       schoolName: group.schoolName,
@@ -2770,7 +2965,6 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
               >
                 筛选
               </button>
-              <span className={style.filterPanelActionDivider}>|</span>
               <button
                 type="button"
                 className={`${style.filterPanelAction} ${
@@ -2787,18 +2981,88 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     </div>
   );
 
+  const renderFilterPanelTitleActions = (option?: FilterPanelOption) => {
+    if (!option) {
+      return null;
+    }
+    const positiveActive = isAttributeFilterActive(option.field, 'positive', option.value);
+    const negativeActive = isAttributeFilterActive(option.field, 'negative', option.value);
+    return (
+      <div className={style.filterPanelTitleActions}>
+        <button
+          type="button"
+          className={`${style.filterPanelAction} ${positiveActive ? style.filterPanelActionActive : ''}`}
+          onClick={() => toggleAttributeFilterOption(option.field, 'positive', option.value)}
+        >
+          筛选
+        </button>
+        <button
+          type="button"
+          className={`${style.filterPanelAction} ${negativeActive ? style.filterPanelActionExclude : ''}`}
+          onClick={() => toggleAttributeFilterOption(option.field, 'negative', option.value)}
+        >
+          排除
+        </button>
+      </div>
+    );
+  };
+
   const renderFilterPanelGroup = (group: FilterPanelGroup, depth = 0, parentKey = ''): React.ReactNode => {
     const groupKey = `${parentKey}-${group.label}`;
+    const hasChildren = Boolean(group.children?.length);
+    const hasOptions = Boolean(group.options?.length);
+    const hasExpandableContent = hasChildren || hasOptions;
+    const hasSelectedOption = Boolean(group.option && (
+      isAttributeFilterActive(group.option.field, 'positive', group.option.value) ||
+      isAttributeFilterActive(group.option.field, 'negative', group.option.value)
+    )) || (group.options || []).some(option =>
+      isAttributeFilterActive(option.field, 'positive', option.value) ||
+      isAttributeFilterActive(option.field, 'negative', option.value)
+    );
+    const childHasSelection = (children: FilterPanelGroup[] = []): boolean =>
+      children.some(child =>
+        Boolean(child.option && (
+          isAttributeFilterActive(child.option.field, 'positive', child.option.value) ||
+          isAttributeFilterActive(child.option.field, 'negative', child.option.value)
+        )) || (child.options || []).some(option =>
+          isAttributeFilterActive(option.field, 'positive', option.value) ||
+          isAttributeFilterActive(option.field, 'negative', option.value)
+        ) || childHasSelection(child.children || [])
+      );
+    const autoExpanded = Boolean(filterSearchKeyword.trim()) || hasSelectedOption || childHasSelection(group.children || []);
+    const expanded = autoExpanded || expandedFilterGroupKeys.includes(groupKey);
+    const titleClassName = `${depth === 0 ? style.filterPanelGroupTitle : style.filterPanelSubGroupTitle} ${
+      hasExpandableContent ? style.filterPanelGroupToggle : ''
+    } ${group.option ? style.filterPanelActionableTitle : ''}`;
     return (
       <div
         key={groupKey}
-        className={depth === 0 ? style.filterPanelGroup : style.filterPanelSubGroup}
+        className={`${depth === 0 ? style.filterPanelGroup : style.filterPanelSubGroup} ${
+          depth > 1 ? style.filterPanelNestedGroup : ''
+        }`}
       >
-        <div className={depth === 0 ? style.filterPanelGroupTitle : style.filterPanelSubGroupTitle}>
-          {group.label}
+        <div className={titleClassName}>
+          <button
+            type="button"
+            className={style.filterPanelTitleButton}
+            onClick={() => {
+              if (!hasExpandableContent || autoExpanded) {
+                return;
+              }
+              setExpandedFilterGroupKeys(prev =>
+                prev.includes(groupKey) ? prev.filter(key => key !== groupKey) : [...prev, groupKey]
+              );
+            }}
+          >
+            {group.label}
+            {hasExpandableContent && !autoExpanded && (
+              <DownOutlined className={`${style.filterPanelGroupToggleIcon} ${expanded ? style.filterPanelGroupToggleIconOpen : ''}`} />
+            )}
+          </button>
+          {renderFilterPanelTitleActions(group.option)}
         </div>
-        {group.options && group.options.length > 0 && renderFilterPanelOptionRows(groupKey, group.options)}
-        {group.children?.map(child => renderFilterPanelGroup(child, depth + 1, groupKey))}
+        {group.options && group.options.length > 0 && expanded && renderFilterPanelOptionRows(groupKey, group.options)}
+        {expanded && group.children?.map(child => renderFilterPanelGroup(child, depth + 1, groupKey))}
       </div>
     );
   };
@@ -2868,8 +3132,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
 
   return (
     <div className={style.workspacePanel}>
-      <div className={style.stageHeader}>
-        <div className={style.metricsGrid}>
+      <div className={`${style.stageHeader} ${overviewCollapsed ? style.stageHeaderCollapsed : ''}`}>
+        <div className={`${style.metricsGrid} ${overviewCollapsed ? style.metricsGridCollapsed : ''}`}>
           <div className={style.metricCard}>
             <div className={style.metricValue}>{candidateUnitTotal}</div>
             <div className={style.metricLabel}>候选</div>
@@ -2897,7 +3161,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
           </div>
         </div>
 
-        {isLegacySubmittedPlan && (
+        {isLegacySubmittedPlan && !overviewCollapsed && (
           <div className={style.legacySubmittedNotice}>
             历史已提交方案，建议只读查看；如需调整，请先复制或重新生成方案。
           </div>
@@ -3162,7 +3426,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                     );
                                   })()}
                                 </div>
-                                <div className={style.candidateGroupScore}>
+                                <div className={`${style.candidateGroupScore} ${getTierClassName(group.tier)}`}>
                                   <div className={style.candidateGroupScoreValue}>
                                     {formatPercent(group.schoolEnrollRatio)}
                                   </div>
@@ -3429,25 +3693,32 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                           const groupFocused = group.orderedItems.some(entry =>
                             focusVolunteerIds.includes(entry.orderedItem.volunteerId || '')
                           );
-                          const metaItems = (group.schoolBasicTags || []).length
-                            ? group.schoolBasicTags
-                            : [
-                                [group.provinceName, group.cityName].filter(Boolean).join('/'),
-                                group.schoolBatch,
-                                group.schoolNature,
-                                group.schoolCategory,
-                                group.schoolLevel,
-                              ].filter(Boolean);
+                          const groupCollapsed = collapsedOrderedGroupKeys.includes(group.key);
+                          const metaItems = getSchoolMetaItems(group.topItem);
                           return (
                             <div
                               key={group.key}
                               className={`${style.orderedCard} ${groupFocused ? style.focusedCard : ''}`}
                             >
-                              <div className={style.orderedMain}>
+                              <div
+                                className={`${style.orderedMain} ${style.orderedGroupHeaderClickable}`}
+                                onClick={() => toggleOrderedGroupCollapsed(group.key)}
+                                role="button"
+                                tabIndex={0}
+                                onKeyDown={event => {
+                                  if (event.key === 'Enter' || event.key === ' ') {
+                                    event.preventDefault();
+                                    toggleOrderedGroupCollapsed(group.key);
+                                  }
+                                }}
+                                aria-expanded={!groupCollapsed}
+                              >
                                 <div className={style.positionBadge}>{groupIndex + 1}</div>
                                 <div className={style.orderedContent}>
-                                  <div className={`${style.cardTitleRow} ${style.groupTitleRow}`}>
-                                    <div className={style.cardTitle}>{group.schoolName}</div>
+                                  <div className={`${style.cardTitleRow} ${style.groupTitleRow} ${style.orderedTitleRow}`}>
+                                    <div className={style.cardTitle}>
+                                      {groupIndex + 1}、{group.schoolName}
+                                    </div>
                                     {getPlanSchoolRankTags(group.schoolRankTags).map(tag => (
                                       <Tag bordered={false} color="volcano" key={`${group.key}-${tag}`}>
                                         {tag}
@@ -3459,13 +3730,17 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                       </Tag>
                                     ) : null}
                                   </div>
-                                  <div className={style.orderedGroupMeta}>
-                                    {metaItems.map(meta => (
-                                      <span key={`${group.key}-${meta}`} className={style.inlineMetaItem}>
-                                        {meta}
-                                      </span>
-                                    ))}
-                                  </div>
+                                  {metaItems.length > 0 ? (
+                                    <div className={style.cardSubtitle}>
+                                      <div className={style.inlineMetaRow}>
+                                        {metaItems.map(meta => (
+                                          <span key={`${group.key}-${meta}`} className={style.inlineMetaItem}>
+                                            {meta}
+                                          </span>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  ) : null}
                                 </div>
                                 <div className={`${style.orderedActions} ${style.orderedGroupActions}`}>
                                   <Tooltip title="整组上移">
@@ -3473,7 +3748,10 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                       icon={<VerticalAlignTopOutlined />}
                                       loading={orderedActionVolunteerId === group.key && actionLoading === 'ordered'}
                                       disabled={groupIndex === 0 || (actionLoading === 'ordered' && orderedActionVolunteerId !== group.key)}
-                                      onClick={() => handleMoveOrderedUnit(group, groupIndex, 'up')}
+                                      onClick={event => {
+                                        event.stopPropagation();
+                                        handleMoveOrderedUnit(group, groupIndex, 'up');
+                                      }}
                                     />
                                   </Tooltip>
                                   <Tooltip title="整组下移">
@@ -3481,7 +3759,10 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                       icon={<VerticalAlignBottomOutlined />}
                                       loading={orderedActionVolunteerId === group.key && actionLoading === 'ordered'}
                                       disabled={groupIndex === groupedOrderedList.length - 1 || (actionLoading === 'ordered' && orderedActionVolunteerId !== group.key)}
-                                      onClick={() => handleMoveOrderedUnit(group, groupIndex, 'down')}
+                                      onClick={event => {
+                                        event.stopPropagation();
+                                        handleMoveOrderedUnit(group, groupIndex, 'down');
+                                      }}
                                     />
                                   </Tooltip>
                                   <Tooltip title="整组移动到指定位置">
@@ -3489,7 +3770,10 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                       icon={<SwapOutlined />}
                                       loading={orderedActionVolunteerId === group.key && actionLoading === 'ordered'}
                                       disabled={groupedOrderedList.length <= 1 || (actionLoading === 'ordered' && orderedActionVolunteerId !== group.key)}
-                                      onClick={() => openOrderedUnitMoveModal(group, groupIndex)}
+                                      onClick={event => {
+                                        event.stopPropagation();
+                                        openOrderedUnitMoveModal(group, groupIndex);
+                                      }}
                                     />
                                   </Tooltip>
                                   <Tooltip title="整组删除">
@@ -3498,18 +3782,58 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                       icon={<DeleteOutlined />}
                                       loading={orderedActionVolunteerId === group.key && actionLoading === 'ordered'}
                                       disabled={actionLoading === 'ordered' && orderedActionVolunteerId !== group.key}
-                                      onClick={() => handleRemoveOrderedUnit(group)}
+                                      onClick={event => {
+                                        event.stopPropagation();
+                                        handleRemoveOrderedUnit(group);
+                                      }}
                                     />
                                   </Tooltip>
                                 </div>
                               </div>
-                              <div className={style.orderedGroupMajorList}>
-                                {group.orderedItems.map((entry, itemIndex) => {
+                              {!groupCollapsed ? (
+                                <div className={style.orderedGroupMajorList}>
+                                  {group.orderedItems.map((entry, itemIndex) => {
                                   const item = entry.orderedItem;
                                   const candidateItem = entry.candidateItem;
                                   const itemFocused = focusVolunteerIds.includes(item.volunteerId || '');
                                   const absoluteIndex = orderedItems.findIndex(
                                     orderedEntry => orderedEntry.volunteerId === item.volunteerId
+                                  );
+                                  const itemActions = (
+                                    <div className={style.orderedActions}>
+                                      <Tooltip title="上移">
+                                        <Button
+                                          icon={<VerticalAlignTopOutlined />}
+                                          loading={orderedActionVolunteerId === item.volunteerId && actionLoading === 'ordered'}
+                                          disabled={absoluteIndex <= 0 || (actionLoading === 'ordered' && orderedActionVolunteerId !== item.volunteerId)}
+                                          onClick={() => handleMoveOrderedItem(item, absoluteIndex, 'up')}
+                                        />
+                                      </Tooltip>
+                                      <Tooltip title="下移">
+                                        <Button
+                                          icon={<VerticalAlignBottomOutlined />}
+                                          loading={orderedActionVolunteerId === item.volunteerId && actionLoading === 'ordered'}
+                                          disabled={absoluteIndex === orderedItems.length - 1 || (actionLoading === 'ordered' && orderedActionVolunteerId !== item.volunteerId)}
+                                          onClick={() => handleMoveOrderedItem(item, absoluteIndex, 'down')}
+                                        />
+                                      </Tooltip>
+                                      <Tooltip title="移动到指定位置">
+                                        <Button
+                                          icon={<SwapOutlined />}
+                                          loading={orderedActionVolunteerId === item.volunteerId && actionLoading === 'ordered'}
+                                          disabled={orderedItems.length <= 1 || (actionLoading === 'ordered' && orderedActionVolunteerId !== item.volunteerId)}
+                                          onClick={() => openOrderedMoveModal(item, absoluteIndex)}
+                                        />
+                                      </Tooltip>
+                                      <Tooltip title="删除">
+                                        <Button
+                                          danger
+                                          icon={<DeleteOutlined />}
+                                          loading={actionLoading === 'draft' || actionLoading === 'ordered'}
+                                          onClick={() => handleRemoveDraftItem(item.volunteerId)}
+                                        />
+                                      </Tooltip>
+                                    </div>
                                   );
                                   return (
                                     <div
@@ -3523,77 +3847,69 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                         itemFocused ? style.orderedMajorRowFocused : ''
                                       }`}
                                     >
-                                      <div className={style.orderedMajorInfo}>
-                                        <div className={style.orderedMajorTitleRow}>
-                                          <span className={style.orderedMajorIndex}>#{itemIndex + 1}</span>
-                                          <div className={style.orderedMajorName}>{renderMajorName(item.majorName)}</div>
-                                        </div>
-                                        <div className={style.orderedMajorMeta}>
-                                          <span>录取率 {formatPercent(candidateItem?.admissionRatio)}</span>
-                                          <span>推荐系数 {formatNumber(candidateItem?.finalScore)}</span>
-                                          <span>专业热度 {formatNumber(candidateItem?.hotIndex)}</span>
-                                          <Tooltip title={SALARY_AVG_TOOLTIP}>
-                                            <span>薪酬指数 {formatNumber(candidateItem?.salaryAvg)}</span>
-                                          </Tooltip>
-                                          <span>学费 {formatMetricNumber(candidateItem?.tuitionPerYear, '/年')}</span>
-                                          <span>专业代码 {candidateItem?.majorCode || '-'}</span>
-                                        </div>
-                                      </div>
-                                      <div className={style.orderedActions}>
-                                        <Tooltip title={item.pinned ? '取消固定' : '固定位置'}>
-                                          <Button
-                                            icon={<PushpinOutlined />}
-                                            type={item.pinned ? 'primary' : 'default'}
-                                            loading={orderedActionVolunteerId === item.volunteerId && actionLoading === 'ordered'}
-                                            disabled={actionLoading === 'ordered' && orderedActionVolunteerId !== item.volunteerId}
-                                            onClick={() => handleTogglePin(item)}
-                                          />
-                                        </Tooltip>
-                                        <Tooltip title="上移">
-                                          <Button
-                                            icon={<VerticalAlignTopOutlined />}
-                                            loading={orderedActionVolunteerId === item.volunteerId && actionLoading === 'ordered'}
-                                            disabled={absoluteIndex <= 0 || (actionLoading === 'ordered' && orderedActionVolunteerId !== item.volunteerId)}
-                                            onClick={() => handleMoveOrderedItem(item, absoluteIndex, 'up')}
-                                          />
-                                        </Tooltip>
-                                        <Tooltip title="下移">
-                                          <Button
-                                            icon={<VerticalAlignBottomOutlined />}
-                                            loading={orderedActionVolunteerId === item.volunteerId && actionLoading === 'ordered'}
-                                            disabled={absoluteIndex === orderedItems.length - 1 || (actionLoading === 'ordered' && orderedActionVolunteerId !== item.volunteerId)}
-                                            onClick={() => handleMoveOrderedItem(item, absoluteIndex, 'down')}
-                                          />
-                                        </Tooltip>
-                                        <Tooltip title="移动到指定位置">
-                                          <Button
-                                            icon={<SwapOutlined />}
-                                            loading={orderedActionVolunteerId === item.volunteerId && actionLoading === 'ordered'}
-                                            disabled={orderedItems.length <= 1 || (actionLoading === 'ordered' && orderedActionVolunteerId !== item.volunteerId)}
-                                            onClick={() => openOrderedMoveModal(item, absoluteIndex)}
-                                          />
-                                        </Tooltip>
-                                        <Tooltip title="删除">
-                                          <Button
-                                            danger
-                                            icon={<DeleteOutlined />}
-                                            loading={actionLoading === 'draft' || actionLoading === 'ordered'}
-                                            onClick={() => handleRemoveDraftItem(item.volunteerId)}
-                                          />
-                                        </Tooltip>
-                                      </div>
+                                      {renderOrderedMajorTable(
+                                        (
+                                          <>
+                                            <span className={style.orderedMajorIndex}>#{itemIndex + 1}</span>
+                                            {renderMajorName(item.majorName)}
+                                          </>
+                                        ),
+                                        candidateItem,
+                                        item.volunteerId || `${group.key}-${itemIndex}`,
+                                        itemActions
+                                      )}
                                     </div>
                                   );
-                                })}
-                              </div>
+                                  })}
+                                </div>
+                              ) : null}
                             </div>
                           );
                         })
                       : orderedItems.map((item, index) => {
                           const candidateItem = item.volunteerId ? candidateItemMap.get(item.volunteerId) || null : null;
+                          const itemKey = item.volunteerId || `${item.schoolName || 'ordered'}-${index}`;
+                          const itemCollapsed = collapsedOrderedGroupKeys.includes(itemKey);
+                          const metaItems = getSchoolMetaItems(candidateItem);
+                          const itemActions = (
+                            <div className={style.orderedActions}>
+                              <Tooltip title="上移">
+                                <Button
+                                  icon={<VerticalAlignTopOutlined />}
+                                  loading={orderedActionVolunteerId === item.volunteerId && actionLoading === 'ordered'}
+                                  disabled={index === 0 || (actionLoading === 'ordered' && orderedActionVolunteerId !== item.volunteerId)}
+                                  onClick={() => handleMoveOrderedItem(item, index, 'up')}
+                                />
+                              </Tooltip>
+                              <Tooltip title="下移">
+                                <Button
+                                  icon={<VerticalAlignBottomOutlined />}
+                                  loading={orderedActionVolunteerId === item.volunteerId && actionLoading === 'ordered'}
+                                  disabled={index === orderedItems.length - 1 || (actionLoading === 'ordered' && orderedActionVolunteerId !== item.volunteerId)}
+                                  onClick={() => handleMoveOrderedItem(item, index, 'down')}
+                                />
+                              </Tooltip>
+                              <Tooltip title="移动到指定位置">
+                                <Button
+                                  icon={<SwapOutlined />}
+                                  loading={orderedActionVolunteerId === item.volunteerId && actionLoading === 'ordered'}
+                                  disabled={orderedItems.length <= 1 || (actionLoading === 'ordered' && orderedActionVolunteerId !== item.volunteerId)}
+                                  onClick={() => openOrderedMoveModal(item, index)}
+                                />
+                              </Tooltip>
+                              <Tooltip title="删除">
+                                <Button
+                                  danger
+                                  icon={<DeleteOutlined />}
+                                  loading={actionLoading === 'draft' || actionLoading === 'ordered'}
+                                  onClick={() => handleRemoveDraftItem(item.volunteerId)}
+                                />
+                              </Tooltip>
+                            </div>
+                          );
                           return (
                             <div
-                              key={item.volunteerId}
+                              key={itemKey}
                               ref={element => {
                                 if (item.volunteerId) {
                                   orderedItemRefs.current[item.volunteerId] = element;
@@ -3603,11 +3919,25 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                 focusVolunteerIds.includes(item.volunteerId || '') ? style.focusedCard : ''
                               }`}
                             >
-                              <div className={style.orderedMain}>
+                              <div
+                                className={`${style.orderedMain} ${style.orderedGroupHeaderClickable}`}
+                                onClick={() => toggleOrderedGroupCollapsed(itemKey)}
+                                role="button"
+                                tabIndex={0}
+                                onKeyDown={event => {
+                                  if (event.key === 'Enter' || event.key === ' ') {
+                                    event.preventDefault();
+                                    toggleOrderedGroupCollapsed(itemKey);
+                                  }
+                                }}
+                                aria-expanded={!itemCollapsed}
+                              >
                                 <div className={style.positionBadge}>{index + 1}</div>
                                 <div className={style.orderedContent}>
-                                  <div className={style.cardTitleRow}>
-                                    <div className={style.cardTitle}>{item.schoolName}</div>
+                                  <div className={`${style.cardTitleRow} ${style.groupTitleRow} ${style.orderedTitleRow}`}>
+                                    <div className={style.cardTitle}>
+                                      {index + 1}、{item.schoolName}
+                                    </div>
                                     {getPlanSchoolRankTags(candidateItem?.schoolRankTags).map(tag => (
                                       <Tag bordered={false} color="volcano" key={`${item.volunteerId}-${tag}`}>
                                         {tag}
@@ -3619,61 +3949,34 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                       </Tag>
                                     ) : null}
                                   </div>
-                                  <div className={style.cardSubtitle}>{renderMajorName(item.majorName)}</div>
-                                  <div className={style.orderedMajorMeta}>
-                                    <span>推荐系数 {formatNumber(candidateItem?.finalScore)}</span>
-                                    <span>专业热度 {formatNumber(candidateItem?.hotIndex)}</span>
-                                    <Tooltip title={SALARY_AVG_TOOLTIP}>
-                                      <span>薪酬指数 {formatNumber(candidateItem?.salaryAvg)}</span>
-                                    </Tooltip>
-                                    <span>学费 {formatMetricNumber(candidateItem?.tuitionPerYear, '/年')}</span>
-                                    <span>专业代码 {candidateItem?.majorCode || '-'}</span>
+                                  {metaItems.length > 0 ? (
+                                    <div className={style.cardSubtitle}>
+                                      <div className={style.inlineMetaRow}>
+                                        {metaItems.map(meta => (
+                                          <span key={`${itemKey}-${meta}`} className={style.inlineMetaItem}>
+                                            {meta}
+                                          </span>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  ) : null}
+                                </div>
+                                {itemCollapsed ? (
+                                  <div className={style.orderedHeaderActions} onClick={event => event.stopPropagation()}>
+                                    {itemActions}
                                   </div>
-                                </div>
-                                <div className={style.orderedActions}>
-                                  <Tooltip title={item.pinned ? '取消固定' : '固定位置'}>
-                                    <Button
-                                      icon={<PushpinOutlined />}
-                                      type={item.pinned ? 'primary' : 'default'}
-                                      loading={orderedActionVolunteerId === item.volunteerId && actionLoading === 'ordered'}
-                                      disabled={actionLoading === 'ordered' && orderedActionVolunteerId !== item.volunteerId}
-                                      onClick={() => handleTogglePin(item)}
-                                    />
-                                  </Tooltip>
-                                  <Tooltip title="上移">
-                                    <Button
-                                      icon={<VerticalAlignTopOutlined />}
-                                      loading={orderedActionVolunteerId === item.volunteerId && actionLoading === 'ordered'}
-                                      disabled={index === 0 || (actionLoading === 'ordered' && orderedActionVolunteerId !== item.volunteerId)}
-                                      onClick={() => handleMoveOrderedItem(item, index, 'up')}
-                                    />
-                                  </Tooltip>
-                                  <Tooltip title="下移">
-                                    <Button
-                                      icon={<VerticalAlignBottomOutlined />}
-                                      loading={orderedActionVolunteerId === item.volunteerId && actionLoading === 'ordered'}
-                                      disabled={index === orderedItems.length - 1 || (actionLoading === 'ordered' && orderedActionVolunteerId !== item.volunteerId)}
-                                      onClick={() => handleMoveOrderedItem(item, index, 'down')}
-                                    />
-                                  </Tooltip>
-                                  <Tooltip title="移动到指定位置">
-                                    <Button
-                                      icon={<SwapOutlined />}
-                                      loading={orderedActionVolunteerId === item.volunteerId && actionLoading === 'ordered'}
-                                      disabled={orderedItems.length <= 1 || (actionLoading === 'ordered' && orderedActionVolunteerId !== item.volunteerId)}
-                                      onClick={() => openOrderedMoveModal(item, index)}
-                                    />
-                                  </Tooltip>
-                                  <Tooltip title="删除">
-                                    <Button
-                                      danger
-                                      icon={<DeleteOutlined />}
-                                      loading={actionLoading === 'draft' || actionLoading === 'ordered'}
-                                      onClick={() => handleRemoveDraftItem(item.volunteerId)}
-                                    />
-                                  </Tooltip>
-                                </div>
+                                ) : null}
                               </div>
+                              {!itemCollapsed ? (
+                                <div className={style.orderedSingleMajorDetail}>
+                                  {renderOrderedMajorTable(
+                                    renderMajorName(item.majorName),
+                                    candidateItem,
+                                    itemKey,
+                                    itemActions
+                                  )}
+                                </div>
+                              ) : null}
                             </div>
                           );
                         })}

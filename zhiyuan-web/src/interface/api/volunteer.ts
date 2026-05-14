@@ -268,6 +268,10 @@ export interface PlanningCandidateFilterOptionsRes {
     filterField?: string;
     values?: string[];
   }>;
+  regionTree?: Array<{
+    provinceName?: string;
+    cityNames?: string[];
+  }>;
 }
 
 export interface PlanningCandidateViewState {
