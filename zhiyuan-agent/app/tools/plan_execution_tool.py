@@ -281,6 +281,59 @@ async def _build_move_ordered_unit_preview_summary(
         return None, {}
 
 
+async def _build_remove_ordered_unit_preview_summary(
+    ctx: RunContext[RequestContext],
+    plan_model: PlanActionPlan,
+) -> tuple[str | None, dict[str, Any]]:
+    try:
+        state_resp = await _get_planning_state_request(ctx.deps.sessionid)
+        state = (state_resp or {}).get("data") or {}
+        ordered_state = state.get("orderedPlanState") or {}
+        raw_units = ordered_state.get("units") or []
+        units = raw_units if isinstance(raw_units, list) else []
+        unit_ids = _extract_unit_ids(plan_model)
+        position_refs = _extract_unit_position_refs(plan_model)
+        source_position = position_refs[0] if position_refs else None
+        source_unit: dict[str, Any] | None = None
+        source_unit_id = ""
+
+        if unit_ids:
+            source_unit_id = unit_ids[0]
+            for idx, unit in enumerate(units, start=1):
+                candidate_id = str((unit or {}).get("unitId") or (unit or {}).get("id") or "").strip()
+                if candidate_id == source_unit_id:
+                    source_unit = unit
+                    source_position = source_position or idx
+                    break
+        elif source_position is not None and 0 < source_position <= len(units):
+            source_unit = units[source_position - 1] or {}
+            source_unit_id = str(source_unit.get("unitId") or source_unit.get("id") or "").strip()
+
+        if source_unit is None:
+            return None, {}
+
+        unit_name = _unit_display_name(source_unit)
+        major_count = _unit_major_count(source_unit)
+        count_text = f"，组内共 {major_count} 个专业" if major_count > 0 else ""
+        source_text = f"第 {source_position} 个专业组" if source_position else "当前定位到的专业组"
+        removed_count_text = f"{major_count} 个专业 / 1 个专业组" if major_count > 0 else "1 个专业组"
+        summary = (
+            f"会整体删除{source_text}：{unit_name}{count_text}。"
+            "这里的“第几个”按专业组顺序计算，不是按单条志愿位置计算；"
+            f"执行后该组内专业会一并移出，后续专业组前移，方案数量将减少 {removed_count_text}。"
+        )
+        return summary, {
+            "source_unit_id": source_unit_id,
+            "source_unit_name": unit_name,
+            "source_unit_position": source_position,
+            "source_unit_major_count": major_count,
+            "position_semantics": "unit_position_not_item_position",
+        }
+    except Exception:
+        logger.exception("_build_remove_ordered_unit_preview_summary failed: session_id=%s", ctx.deps.sessionid)
+        return None, {}
+
+
 def _is_short_plan_confirmation(text: str) -> bool:
     normalized = "".join(str(text or "").split()).strip("。.!！?")
     if not normalized:
@@ -1450,6 +1503,11 @@ async def _execute_plan_action_model(
             if resolved_summary:
                 preview_summary = resolved_summary
                 preview_facts = resolved_facts
+        elif plan_model.action_family == "remove_ordered_unit":
+            resolved_summary, resolved_facts = await _build_remove_ordered_unit_preview_summary(ctx, plan_model)
+            if resolved_summary:
+                preview_summary = resolved_summary
+                preview_facts = resolved_facts
         return PlanExecutionResult(
             applied=False,
             action_family=plan_model.action_family,
@@ -1586,6 +1644,11 @@ async def _execute_plan_action_model(
         preview_facts: dict[str, Any] = {}
         if plan_model.stage == "preview" and plan_model.action_family == "move_ordered_unit":
             resolved_summary, resolved_facts = await _build_move_ordered_unit_preview_summary(ctx, plan_model)
+            if resolved_summary:
+                preview_summary = resolved_summary
+                preview_facts = resolved_facts
+        elif plan_model.stage == "preview" and plan_model.action_family == "remove_ordered_unit":
+            resolved_summary, resolved_facts = await _build_remove_ordered_unit_preview_summary(ctx, plan_model)
             if resolved_summary:
                 preview_summary = resolved_summary
                 preview_facts = resolved_facts

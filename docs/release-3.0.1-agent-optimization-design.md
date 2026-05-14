@@ -238,7 +238,7 @@ Agent：
 
 `execute_plan_action` 执行：
 
-- preview 阶段展示受影响专业组名称、当前位置、目标位置、组内专业数，并明确“第 N 个专业组”按专业组顺序计算，不等同于“第 N 条志愿”。
+- preview 阶段展示受影响专业组名称、当前位置、目标位置（移动场景）、组内专业数，并明确“第 N 个专业组”按专业组顺序计算，不等同于“第 N 条志愿”。
 - apply 阶段调用后端 unit 接口。
 - 成功后刷新 `ordered` 和 `review`，并提示“方案已调整，建议重新审查”。
 
@@ -249,7 +249,7 @@ Agent：
 - `majorGroup`：按 unitId 移动到目标位置。
 - `majorGroup`：按位置引用移动专业组。
 - `majorGroup`：删除专业组后组内专业不残留。
-- `majorGroup`：移动预览不得用“前 N 条志愿”解释专业组位置，避免把第 N 条志愿所在专业组误认为第 N 个专业组。
+- `majorGroup`：移动/删除预览不得用“前 N 条志愿”解释专业组位置，避免把第 N 条志愿所在专业组误认为第 N 个专业组。
 - `major`：不误走 unit action，仍使用 item 级移动/删除。
 - preview -> confirm -> apply。
 - 操作后 review stale。

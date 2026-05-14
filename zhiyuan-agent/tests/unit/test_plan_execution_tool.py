@@ -155,6 +155,64 @@ def test_execute_plan_action_move_ordered_unit_preview_uses_unit_position_langua
     mock_move.assert_not_awaited()
 
 
+def test_execute_plan_action_remove_ordered_unit_preview_uses_unit_position_language():
+    payload = {
+        "stage": "preview",
+        "action_family": "remove_ordered_unit",
+        "user_goal": "删除第3个专业组",
+        "context_summary": "阶段=ordered；方案=30/30",
+        "preview_summary": "会整体删除指定专业组。",
+        "missing_inputs": [],
+        "atomic_actions": [
+            {
+                "action_type": "remove_ordered_unit",
+                "unit_ids": [],
+                "target_position": None,
+                "filters": {},
+                "reason": "删除第3个专业组",
+            }
+        ],
+    }
+    state = {
+        "orderedPlanState": {
+            "units": [
+                {"unitId": "unit-1", "schoolName": "A大学第101组", "majorItems": [{"majorName": "英语"}]},
+                {"unitId": "unit-2", "schoolName": "B大学第102组", "majorItems": [{"majorName": "计算机"}]},
+                {
+                    "unitId": "unit-3",
+                    "schoolName": "桂林电子科技大学第102组",
+                    "majorItems": [{"majorName": "会计学"}, {"majorName": "知识产权"}],
+                },
+                {"unitId": "unit-4", "schoolName": "D大学第104组", "majorItems": [{"majorName": "电气"}]},
+            ]
+        }
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_state_request",
+        new=AsyncMock(return_value={"code": 0, "data": state}),
+    ) as mock_state, patch(
+        "app.tools.plan_execution_tool._remove_planning_ordered_plan_units_request",
+        new=AsyncMock(),
+    ) as mock_remove:
+        result = asyncio.run(execute_plan_action(_ctx(), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["applied"] is False
+    assert data["result_kind"] == "preview_only"
+    assert "第 3 个专业组" in data["summary"]
+    assert "桂林电子科技大学第102组" in data["summary"]
+    assert "组内共 2 个专业" in data["summary"]
+    assert "不是按单条志愿位置计算" in data["summary"]
+    assert "方案数量将减少 2 个专业 / 1 个专业组" in data["summary"]
+    assert data["facts"]["source_unit_id"] == "unit-3"
+    assert data["facts"]["source_unit_position"] == 3
+    assert data["facts"]["source_unit_major_count"] == 2
+    assert data["facts"]["position_semantics"] == "unit_position_not_item_position"
+    mock_state.assert_awaited_once()
+    mock_remove.assert_not_awaited()
+
+
 def test_execute_plan_action_blocks_regenerate_order_for_structural_rebalance_goal():
     payload = {
         "stage": "preview",

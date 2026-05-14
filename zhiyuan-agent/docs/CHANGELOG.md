@@ -30,7 +30,7 @@
 - 文档修正 Career Explore、Plan Router 和 Workflow Helper 的当前入口描述：career skill 只作为语义说明层，运行时走 `analyze_current_career_direction`；新增 Plan 能力不得继续接入 `handle_planning_request`。
 - 高副作用 preview pending 提取收口：同一轮中 `plan_next_action(preview)` 已形成待确认动作后，后续只读 `query_state` 成功不会再清掉 pending；只有实际变更动作 apply 成功才清 pending，修复“专业组移动预览后确认找不到上一轮动作”的问题。
 - 本地排序失败定位为后端旧 class 未重启导致的 `PlanningStateService$OrderedSortKey` `NoSuchMethodError`；重新编译/重启 8080 后 `ordered-plan/sort` 正常返回，agent 侧 payload 无需调整。
-- 专业组移动预览改为执行层结构化生成：明确源专业组名称、源专业组序号、目标专业组位置和组内专业数，并提示“第几个”按专业组顺序而非单条志愿位置计算，避免确认前文案把“前 N 条志愿”误当成“前 N 个专业组”。
+- 专业组移动/删除预览改为执行层结构化生成：明确源专业组名称、源专业组序号、目标专业组位置（移动场景）和组内专业数，并提示“第几个”按专业组顺序而非单条志愿位置计算，避免确认前文案把“前 N 条志愿”误当成“前 N 个专业组”。
 
 ### Fixed (回归测试稳定性)
 
