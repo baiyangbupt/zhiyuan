@@ -462,6 +462,14 @@ PYTHONPATH=. ./.venv/bin/python examples/dialog_regression_runner.py \
 - 当前诊断耗时约 `14.6s`，`3` 次 LLM 请求，约 `28331` input tokens，`execute_plan_action(query_state)` 约 `305ms`。
 - 结论：不绕过大模型的前提下，提示词收敛已经能减少一次模型往返和约 1.18 万 input tokens；后续若还需进一步降延迟，再考虑模型结构化分类、轻量事实摘要或超时兜底设计。
 
+### 7.5 Release 3.0.0 Review 跟进
+
+`docs/release-3.0.0-review-claude.md` 已纳入 3.0.1 后续优化参考。当前先处理低风险、可验证事项：
+
+- 已清理 `ChatAgent` 中不再生效的旧 `_build_instructions` 死代码，当前唯一生效入口为 `app.agent.instructions.assembler.build_instructions`。
+- 暂不直接移除 service 层确认检测、pending 历史扫描或文本后处理；这些路径仍承担线上兼容和确认态兜底，需要先完成结构化 classifier / shared pending store / tool response envelope 的设计与回归覆盖。
+- `_RECENT_PLAN_EXECUTION_RESULTS` 仍是内存级短 TTL 缓存，多 worker 下需要 sticky session 或共享存储。该项记录为发布部署风险，不在本轮用临时规则修补。
+
 ## 8. 风险控制
 
 - 所有高副作用动作继续 preview -> confirm -> apply。

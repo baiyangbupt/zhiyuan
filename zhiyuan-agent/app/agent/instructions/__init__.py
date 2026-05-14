@@ -1,7 +1,7 @@
 """模块化指令构建。
 
-将 chat_agent._build_instructions (~175行) 拆分为职责独立的模块，
-每个模块输出一段 instruction 文本，由 assembler 组装成最终指令。
+ChatAgent 直接消费 assembler.build_instructions；每个模块输出一段
+instruction 文本，由 assembler 组装成最终指令。
 
 模块分工：
 - identity: 角色设定 + 学生信息

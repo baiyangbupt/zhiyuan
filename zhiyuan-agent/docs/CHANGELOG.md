@@ -31,6 +31,7 @@
 - 高副作用 preview pending 提取收口：同一轮中 `plan_next_action(preview)` 已形成待确认动作后，后续只读 `query_state` 成功不会再清掉 pending；只有实际变更动作 apply 成功才清 pending，修复“专业组移动预览后确认找不到上一轮动作”的问题。
 - 本地排序失败定位为后端旧 class 未重启导致的 `PlanningStateService$OrderedSortKey` `NoSuchMethodError`；重新编译/重启 8080 后 `ordered-plan/sort` 正常返回，agent 侧 payload 无需调整。
 - 专业组移动/删除预览改为执行层结构化生成：明确源专业组名称、源专业组序号、目标专业组位置（移动场景）和组内专业数，并提示“第几个”按专业组顺序而非单条志愿位置计算，避免确认前文案把“前 N 条志愿”误当成“前 N 个专业组”。
+- 清理 `ChatAgent` 中已不再生效的旧 `_build_instructions` 死代码，避免与当前 `app.agent.instructions.assembler.build_instructions` 模块化指令入口产生维护歧义。
 
 ### Fixed (回归测试稳定性)
 
@@ -50,6 +51,7 @@
 - Plan orchestration/execution/service 聚焦单测通过：`171 passed`。
 - 真实 WebSocket smoke 通过：`examples/dialog_regression_301_agent_smoke_cases.json` 覆盖 `session=17` 方案现状/审查、`session=16` 院校层次排序确认和专业组移动确认；排序确认约 `5.6s`、专业组移动确认约 `4.9s`，均返回 `ordered` 工作区刷新。
 - 专业组移动预览文案修正后真实复测通过：`session=16 / 把第3个专业组移到第5位 -> 确认` 的预览明确按专业组序号解释当前位置和目标位置，确认后该组移动到第 `5` 个专业组位置且组内志愿连续。
+- 指令入口清理后，当前真实模块化指令测试和 ChatAgent 工具调用测试通过：`tests/unit/test_instructions.py`、`tests/unit/test_chat_agent_init_profile.py`、`tests/unit/test_chat_agent_tools.py` 共 `42 passed`。
 - Agent 扩展回归集合通过：action resolver、typed actions、plan orchestration/execution、state sync、chat service history、mainline dialog、router/workflow compatibility、ws compatibility 共 `498 passed`。
 - `git diff --check` 通过。
 
@@ -315,7 +317,7 @@
 - `_build_instructions` 从 ~175 行单体函数重构为 `app/agent/instructions/` 模块化组装，拆分为 `identity`（角色+学生信息）、`planning_context`（方案状态注入）、`pending_context`（待确认操作注入）、`tool_dispatch_rules`（Explore/Intent/Plan 三层分工）、`style_rules`（回复风格约束）和 `assembler`（组装入口）6 个模块。
 - `pending_context` 同时兼容旧 `pending_plan_action: dict` 和新 `ConversationPhase.pending`，新字段优先。
 - `RequestContext` 新增 `conversation_phase: ConversationPhase | None` 字段，`pending_plan_action` 和 `pending_intent_change` 标记为 deprecated。
-- `ChatAgent` 的 `instructions=` 参数从内联 `_build_instructions` 切换为 `build_instructions`（模块化版本），旧函数保留供回归对比。
+- `ChatAgent` 的 `instructions=` 参数从内联 `_build_instructions` 切换为 `build_instructions`（模块化版本）；旧内联函数已在后续 3.0.1 收口中删除，避免双入口误导。
 - 15 条指令组装单元测试，覆盖各模块独立输出和完整组装、首轮引导、指令长度约束。
 
 ### Added (Phase 2 — ActionResolver 确定性动作映射)

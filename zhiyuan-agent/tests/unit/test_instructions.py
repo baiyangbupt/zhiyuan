@@ -104,9 +104,9 @@ class TestPlanningContext:
     def test_with_planning_state(self):
         deps = _make_deps(planning=True)
         result = build_planning_context(deps)
-        assert "ordered" in result
+        assert "用户当前方案已有 50 个志愿" in result
         assert "50" in result
-        assert "风险2项" in result
+        assert "风险 2 项" in result
         assert "高收费" in result
         assert "待处理建议" in result
 
