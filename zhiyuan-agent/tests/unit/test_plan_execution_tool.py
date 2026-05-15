@@ -1186,6 +1186,70 @@ def test_execute_plan_action_add_units_resolves_candidate_school_major_alias_ref
     mock_query.assert_not_awaited()
 
 
+def test_execute_plan_action_add_units_does_not_readd_existing_school_major_alias_ref():
+    payload = {
+        "stage": "apply",
+        "action_family": "add_units",
+        "context_summary": "阶段=ordered；方案=96/96",
+        "preview_summary": "",
+        "missing_inputs": [],
+        "should_rerun_review": True,
+        "intent_relation": "support",
+        "atomic_actions": [
+            {
+                "action_type": "add_units",
+                "volunteer_ids": ["广西师大统计"],
+                "target_position": None,
+                "filters": {},
+                "reason": "把广西师大统计加进来",
+            }
+        ],
+    }
+    ordered_items = [
+        {
+            "position": 88,
+            "volunteerId": "gxsd-stat-88",
+            "schoolName": "广西师范大学",
+            "majorName": "统计学",
+        }
+    ]
+    candidate_items = [
+        {
+            "volunteerId": "gxsd-stat-88",
+            "schoolName": "广西师范大学",
+            "majorName": "统计学",
+        }
+    ]
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
+        new=AsyncMock(return_value={"code": 0, "data": {"items": ordered_items}}),
+    ), patch(
+        "app.tools.plan_execution_tool._get_planning_state_request",
+        new=AsyncMock(return_value={"code": 0, "data": {"candidatePoolState": {"items": candidate_items}}}),
+    ), patch(
+        "app.tools.plan_execution_tool._query_planning_candidate_pool_request",
+        new=AsyncMock(),
+    ), patch(
+        "app.handlers.mutation_handlers.select_planning_ordered_items",
+        new=AsyncMock(return_value="add ok"),
+    ) as mock_select, patch(
+        "app.tools.plan_execution_tool.run_planning_review",
+        new=AsyncMock(return_value="review should not run"),
+    ) as mock_review:
+        result = asyncio.run(execute_plan_action(_ctx_with_pending("add_units"), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["applied"] is False
+    assert data["result_kind"] == "error"
+    assert "已经在当前方案中" in data["summary"]
+    assert "already_in_plan" in data["reply_focus"]
+    assert data["affected_volunteer_ids"] == []
+    assert data["workspace_refresh_targets"] == []
+    mock_select.assert_not_awaited()
+    mock_review.assert_not_awaited()
+
+
 def test_execute_plan_action_add_units_keeps_explicit_candidate_id_without_lookup():
     payload = {
         "stage": "apply",

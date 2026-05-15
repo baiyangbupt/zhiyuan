@@ -174,6 +174,13 @@ class TestToolDispatchRules:
         assert "Intent" in result
         assert "Plan" in result
 
+    def test_candidate_add_refs_are_plan_mutations(self):
+        result = build_tool_dispatch_rules()
+        assert "add_units" in result
+        assert "用户原始引用" in result
+        assert "广西师大统计" in result
+        assert "不要改走学校/分数线 Explore 分析" in result
+
 
 # ---------------------------------------------------------------------------
 # assembler — full integration
