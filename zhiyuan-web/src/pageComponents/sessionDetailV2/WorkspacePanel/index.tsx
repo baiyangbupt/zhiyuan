@@ -1436,7 +1436,6 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         if (volunteerId) {
           setFocusVolunteerIds([volunteerId]);
         }
-        queryCandidatePool(candidatePoolResult.page || 1);
       } else {
         message.error('加入方案失败');
       }
@@ -1464,7 +1463,6 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         } else {
           await fetchWorkspaceState();
         }
-        queryCandidatePool(candidatePoolResult.page || 1);
       } else {
         message.error('移出方案失败');
       }
@@ -1495,7 +1493,6 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         } else {
           await fetchWorkspaceState();
         }
-        queryCandidatePool(candidatePoolResult.page || 1);
       } else {
         message.error('移出专业组失败');
       }
@@ -1721,7 +1718,6 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         } else {
           await fetchWorkspaceState();
         }
-        queryCandidatePool(candidatePoolResult.page || 1);
       } else {
         message.error('移出专业组失败');
       }
