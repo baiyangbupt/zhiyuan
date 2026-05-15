@@ -638,6 +638,96 @@ def test_extract_pending_plan_action_ignores_compensation_preview_without_action
     assert _extract_pending_plan_action(messages) is None
 
 
+def test_extract_pending_plan_action_empty_compensation_clears_earlier_add_preview_in_same_turn():
+    add_payload = {
+        "stage": "preview",
+        "action_family": "add_units",
+        "user_goal": "现在还差几个怎么补",
+        "requires_confirmation": True,
+        "missing_inputs": [],
+        "atomic_actions": [
+            {
+                "action_type": "add_units",
+                "volunteer_ids": [],
+                "filters": {"tier": "保", "province_keyword": "北京", "limit": "5"},
+                "reason": "按保底方向补入",
+            }
+        ],
+        "preview_summary": "会按北京保底方向补入 5 个候选。",
+    }
+    compensation_payload = {
+        "stage": "apply",
+        "action_family": "preview_compensation",
+        "user_goal": "现在还差几个怎么补",
+        "requires_confirmation": False,
+        "missing_inputs": [],
+        "atomic_actions": [],
+    }
+    messages = [
+        ModelRequest(parts=[UserPromptPart(content="现在还差几个怎么补")]),
+        ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="execute_plan_action",
+                    args={"plan_payload": json.dumps(add_payload, ensure_ascii=False)},
+                    tool_call_id="add-preview-before-empty-compensation",
+                )
+            ],
+            model_name="test-model",
+        ),
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="execute_plan_action",
+                    content=json.dumps(
+                        {
+                            "applied": False,
+                            "action_family": "add_units",
+                            "stage": "preview",
+                            "result_kind": "preview_only",
+                            "summary": "会按北京保底方向补入 5 个候选。需要你确认后才会执行。",
+                        },
+                        ensure_ascii=False,
+                    ),
+                    tool_call_id="add-preview-before-empty-compensation",
+                )
+            ]
+        ),
+        ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="execute_plan_action",
+                    args={"plan_payload": json.dumps(compensation_payload, ensure_ascii=False)},
+                    tool_call_id="empty-compensation-after-add-preview",
+                )
+            ],
+            model_name="test-model",
+        ),
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="execute_plan_action",
+                    content=json.dumps(
+                        {
+                            "applied": False,
+                            "action_family": "preview_compensation",
+                            "stage": "apply",
+                            "result_kind": "compensation_preview",
+                            "summary": "当前可先看的补齐建议共有 0 项动作，预计补入 0 个志愿。",
+                            "facts": {"action_count": 0, "estimated_fill_count": 0},
+                        },
+                        ensure_ascii=False,
+                    ),
+                    tool_call_id="empty-compensation-after-add-preview",
+                )
+            ]
+        ),
+        ModelResponse(parts=[TextPart(content="当前更适合先选 A/B/C 的调整方向。")], model_name="test-model"),
+    ]
+
+    assert _extract_pending_plan_action(messages) is None
+
+
 def test_extract_pending_plan_action_ignores_adjustment_analysis_without_actionable_suggestions():
     payload = {
         "stage": "apply",

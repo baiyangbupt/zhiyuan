@@ -46,8 +46,10 @@
 - 补充 Plan 工具说明：`query_volunteer_plan` 不应用作移动/删除前定位 ID；`plan_next_action` 的 `volunteer_ids` 可直接接收用户原始学校+专业引用，由执行层解析真实 ID，减少学校+专业移动/删除前的无效查询倾向。
 - 真实 WebSocket 复测确认学校+专业移动链路收敛：`把哈尔滨理工大学的人力资源管理改到第4位 -> 确认` 直接走 `plan_next_action -> execute_plan_action(move_unit)`，不再先调用 `query_volunteer_plan`，确认后刷新 `ordered`。
 - 真实 WebSocket 复测确认学校+专业删除链路收敛：`去掉山东英才学院的国际商务 -> 确认` 直接走 `plan_next_action -> execute_plan_action(remove_units)`，不再先调用 `query_volunteer_plan`，确认后刷新 `ordered`。
+- 真实 WebSocket 复测确认补齐建议不误执行：`现在还差几个怎么补 -> 确认` 在没有具体可执行补入清单时，不再复用旧 `add_units` pending；确认轮返回没有待确认方案动作，且不发送工作台刷新卡片。
 - 清理 `ChatAgent` 中已不再生效的旧 `_build_instructions` 死代码，避免与当前 `app.agent.instructions.assembler.build_instructions` 模块化指令入口产生维护歧义。
 - 修正 `conversation_turn_event.actionFamily` 归因：同一轮如果先查询状态、后形成删除/移动/排序等非 query action，结构化日志优先记录最后一个非 query action，避免效果和性能分析误把实际操作预览统计为 `query_state`。
+- 修正补齐确认链路：同一轮空补齐预览会清掉较早未展示的 `add_units` pending，避免用户回复“确认”误执行旧补入动作；按筛选补入没有命中候选时返回 `no_change / applied=false`，不再触发复审、工作台刷新或“已新增”话术。
 
 ### Fixed (回归测试稳定性)
 

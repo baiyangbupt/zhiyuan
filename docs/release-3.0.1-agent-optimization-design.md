@@ -539,6 +539,25 @@ PYTHONPATH=. ./.venv/bin/python examples/dialog_regression_runner.py \
 - 对“北邮通信”“南师汉语言”等高频简称补充回归 examples。
 - 对大模型输出的 `volunteer_ids` 字段增加结构化约束说明：可以填用户原始引用，但执行层会解析为真实 ID；无法唯一定位时必须停在澄清。
 
+### 7.7 补齐确认链路收口
+
+真实 WebSocket 验证 `session=17 / 现在还差几个怎么补 -> 确认` 暴露两个问题：
+
+- 首轮模型给了 A/B/C 方向建议，没有给用户展示具体可执行补入清单；但历史扫描仍保留了同轮较早的 `add_units` pending，导致用户回复“确认”时会执行一段用户没有明确确认的补入动作。
+- 确认执行后，如果按筛选条件没有找到可加入候选，`add_units` 仍返回 `applied=true / mutation_result`，并发送 `ordered` 刷新卡片。用户看到的是“没有找到候选”，但系统状态却像已经成功变更。
+
+当前设计调整：
+
+- 同一轮中，如果后续 `preview_compensation` 明确没有可执行补齐建议，应该清掉本轮较早形成的补入 pending。这样“确认”不会误用一段没有在最终回复里呈现的动作。
+- `add_units` 的筛选补入在没有命中候选时返回 `result_kind=no_change / applied=false`，不触发复审，不返回工作台刷新目标，不生成“已新增”的用户话术。
+- 不改变 `replace_units` 的既有语义：如果替换动作已经先删除了原志愿，即使后续没有找到补入候选，也仍属于已变更，需要保留 `applied=true` 并提示“原志愿已移出、补入未完成”。
+
+验证结果：
+
+- 单测覆盖：直接筛选补入无候选返回 `no_change`、同轮旧 `add_units` pending 被空补齐预览清掉；既有替换后补入无候选仍保持已变更的用例继续通过。
+- 聚焦回归：`tests/unit/test_plan_execution_tool.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_instructions.py -q`，结果 `180 passed`。
+- 真实 WebSocket 复测：`session=17 / 现在还差几个怎么补 -> 确认` 已通过。首轮只给补齐方向建议且 `followupMessages=0`；第二轮“确认”返回没有上一轮待确认方案动作，未误执行旧补入，未返回工作台刷新卡片。
+
 ## 8. 风险控制
 
 - 所有高副作用动作继续 preview -> confirm -> apply。

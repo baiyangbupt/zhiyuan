@@ -598,6 +598,8 @@ def _extract_pending_plan_action(messages: list[Any] | None) -> dict[str, Any] |
                 if result.get("stage") == "preview":
                     candidate_pending = _build_pending_plan_action_from_payload(result)
                     if candidate_pending is None:
+                        if str(result.get("action_family") or "").strip() == "preview_compensation":
+                            latest_pending = None
                         continue
                     if (
                         last_non_actionable_adjustment_goal
@@ -641,6 +643,8 @@ def _extract_pending_plan_action(messages: list[Any] | None) -> dict[str, Any] |
                 summary=result.get("summary") or call_payload.get("preview_summary") or "",
             )
             if candidate_pending is None:
+                if action_family == "preview_compensation":
+                    latest_pending = None
                 continue
             if (
                 last_non_actionable_adjustment_goal

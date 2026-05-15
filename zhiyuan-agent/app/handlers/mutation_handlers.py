@@ -41,6 +41,8 @@ from app.tools.plan_execution_tool import (
 
 logger = logging.getLogger(__name__)
 
+_NO_ADD_CANDIDATES_MESSAGE = "当前条件下没有找到可加入方案的候选志愿。"
+
 
 # ---------------------------------------------------------------------------
 # Handler 实现
@@ -115,6 +117,21 @@ async def handle_add_units(
             major_tags=_parse_filter_list(filters.get("major_tags")),
             limit=int(filters.get("limit") or 3),
         )
+        if _NO_ADD_CANDIDATES_MESSAGE in state_summary:
+            return PlanExecutionResult(
+                applied=False,
+                action_family="add_units",
+                stage=plan.stage,
+                result_kind="no_change",
+                executed_actions=[{"action": "add_units", "volunteerIds": [], "requestedVolunteerRefs": ids}],
+                affected_volunteer_ids=[],
+                workspace_refresh_targets=[],
+                context_summary=plan.context_summary,
+                state_summary=state_summary,
+                summary=state_summary,
+                reply_focus=["no_candidates", "needs_candidate_selection"],
+                next_step_hints=["告诉用户当前条件下没有找到可加入方案的候选，不要说已新增；可以建议先放宽补入条件或明确候选。"],
+            )
 
     return PlanExecutionResult(
         applied=True,

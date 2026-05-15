@@ -1085,6 +1085,50 @@ def test_execute_plan_action_runs_add_units_by_filters():
     mock_select.assert_awaited_once()
 
 
+def test_execute_plan_action_add_units_by_filters_no_candidates_is_no_change():
+    payload = {
+        "stage": "apply",
+        "action_family": "add_units",
+        "context_summary": "阶段=ordered；方案=20/30",
+        "preview_summary": "",
+        "missing_inputs": [],
+        "should_rerun_review": True,
+        "intent_relation": "support",
+        "atomic_actions": [
+            {
+                "action_type": "add_units",
+                "volunteer_ids": [],
+                "target_position": None,
+                "filters": {
+                    "tier": "保",
+                    "province_keyword": "北京",
+                    "school_keyword": "",
+                    "major_keyword": "",
+                    "school_tags": "[]",
+                    "major_tags": "[]",
+                    "limit": "5",
+                },
+                "reason": "补几个保底",
+            }
+        ],
+    }
+
+    with patch(
+        "app.handlers.mutation_handlers._select_candidates_by_filters_into_plan",
+        new=AsyncMock(return_value="当前条件下没有找到可加入方案的候选志愿。"),
+    ), patch("app.tools.plan_execution_tool.run_planning_review", new=AsyncMock(return_value="不应复审")) as review_mock:
+        result = asyncio.run(execute_plan_action(_ctx_with_pending("add_units"), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["applied"] is False
+    assert data["result_kind"] == "no_change"
+    assert data["workspace_refresh_targets"] == []
+    assert data["review_rerun"] is False
+    assert "没有找到可加入方案的候选志愿" in data["summary"]
+    assert "no_candidates" in data["reply_focus"]
+    review_mock.assert_not_awaited()
+
+
 def test_execute_plan_action_add_units_resolves_candidate_school_major_ref():
     payload = {
         "stage": "apply",
