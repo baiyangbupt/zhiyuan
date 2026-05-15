@@ -57,6 +57,7 @@ _TOOL_DISPATCH_RULES = """\
 - 如果已加入方案数=0 且排序志愿数=0，不能编造方案事实；应明确说明还没有正式方案。
 - 没有调用状态类 planning 工具时，不要自行推断“待刷新/还没排好/需要重算”。
 - `execute_plan_action` 返回如果带 `result_kind`/`reply_focus`/`next_step_hints`/`facts`，优先按这些语义组织回答。
+- 当 `execute_plan_action` 返回 `result_kind="no_change"` 时，这是已识别但无需变更的正常结果；直接说明原因，不要当成失败重试，也不要提示已新增/已删除/已移动。
 - 当 `execute_plan_action` 返回 `result_kind="error"` 时，不要重复调用同一个 action_family 重试；直接告知用户操作失败原因，并建议替代方案或稍后重试。
 
 ## 副作用边界

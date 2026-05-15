@@ -119,6 +119,8 @@ def test_build_instructions_includes_plan_orchestration_boundaries():
     assert "execute_plan_action" in instructions
     assert "`result_kind`/`reply_focus`/`next_step_hints`/`facts`" in instructions
     assert "result_kind=\"preview_only\"" in instructions
+    assert "result_kind=\"no_change\"" in instructions
+    assert "不要当成失败重试" in instructions
     assert "不是新的长期偏好或要求" in instructions
     assert "不要调用 Intent 状态工具" in instructions
     assert "不要调用 Intent 状态工具" in instructions

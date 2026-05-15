@@ -523,7 +523,7 @@ PYTHONPATH=. ./.venv/bin/python examples/dialog_regression_runner.py \
 - Plan 调度指令明确：用户要求把某个候选、学校+专业或简称加入当前方案时，应规划为 `add_units` preview；`volunteer_ids` 可以保留用户原始引用，执行层负责解析真实候选 ID，无法唯一定位时返回澄清。
 - 指令补充后使用干净会话 `session=5727 / 把广西师大统计加进来` 复测，链路为 `plan_next_action -> execute_plan_action(add_units)`，`conversation_turn_event.actionFamily=add_units`。该会话当前没有正式方案，因此执行层返回不能直接加入，并引导先生成基础方案；没有误走 Explore 分析，也没有直接改方案。
 - 使用外部初始化接口新建干净会话 `session=97`，生成结果为 `candidateTotal=5510 / orderedTotal=96 / 冲28 稳38 保30`。在该会话中复测 `把广西师大统计加进来 -> 确认`，链路已进入 `add_units preview -> apply`，但发现目标本来已在方案第 88 位，确认回复仍说“已加入 1 个”。该问题属于 add 前缺少“已在方案”预检查。
-- 当前修复：`add_units` apply 阶段先用当前方案引用解析检查目标是否已存在；如果目标已在方案里，返回 `result_kind=no_change` 和“已经在当前方案中，无需重复加入”，不调用后端加入接口，不触发复审，不说“已新增”，也不发送工作台刷新卡片。`no_change` 用于表达“已识别且无需变更”，不再把这类正常无变化结果归入 `error`。
+- 当前修复：`add_units` apply 阶段先用当前方案引用解析检查目标是否已存在；如果目标已在方案里，返回 `result_kind=no_change` 和“已经在当前方案中，无需重复加入”，不调用后端加入接口，不触发复审，不说“已新增”，也不发送工作台刷新卡片。`no_change` 用于表达“已识别且无需变更”，不再把这类正常无变化结果归入 `error`；Agent 指令同步要求模型直接说明无需变更原因，不当作失败重试。
 - 修复后复测 `session=98 / 把广西师大统计加进来`：首轮直接回复目标已在当前方案中，`followupMessages=0`；继续回复“确认”时返回没有待确认动作，仍无工作台卡片。
 
 后续待补：

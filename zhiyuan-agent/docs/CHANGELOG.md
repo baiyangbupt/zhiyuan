@@ -37,6 +37,7 @@
 - 学校/专业简称引用解析增强：对“广西师大统计”“湖工计科”等学校简称 + 专业简称表达，执行层基于当前方案/候选真实条目做受控 alias 匹配；只有唯一命中时才移动、删除或加入，歧义时要求用户补充信息。
 - Plan 调度指令补充“学校/专业简称加入方案”边界：用户要求把某个候选、学校+专业或简称加入当前方案时，优先走 `add_units` preview，由执行层解析真实候选 ID，避免被模型改走只读分数线/选科 Explore 分析。
 - `add_units` 执行前增加当前方案已存在预检查：如果用户要求加入的学校+专业或简称已经在当前方案中，返回 `result_kind=no_change` 和“已经在当前方案中，无需重复加入”，不再调用后端加入接口、触发复审、误说“已新增”或发送无变化工作台卡片，也不再把正常无变化场景记为执行错误。
+- Agent 调度指令补充 `result_kind=no_change` 语义：模型应直接说明“无需变更”的原因，不把它当失败重试，也不误说已新增、已删除或已移动。
 - 清理 `ChatAgent` 中已不再生效的旧 `_build_instructions` 死代码，避免与当前 `app.agent.instructions.assembler.build_instructions` 模块化指令入口产生维护歧义。
 - 修正 `conversation_turn_event.actionFamily` 归因：同一轮如果先查询状态、后形成删除/移动/排序等非 query action，结构化日志优先记录最后一个非 query action，避免效果和性能分析误把实际操作预览统计为 `query_state`。
 
