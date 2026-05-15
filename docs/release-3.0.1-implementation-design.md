@@ -637,6 +637,31 @@ legacy_temp
 - 前端不应在加入/移出方案成功后重新查询候选分页。此前重查 `candidatePoolResult.page` 会在用户已下滑加载多页时把候选列表替换为最后页，造成“候选列表变化/跳页”的非预期体验。
 - 加入/移出后的正确交互是：候选列表保持当前位置和已加载内容，方案篮/方案列表更新，相关候选按钮态随 `draftPlanState / orderedPlanState` 更新。
 
+#### 2.4.3 专业组自动选专业与手动加入口径
+
+自动生成方案：
+
+- `majorGroup` 模式先按 `planSchoolDataId / schoolId / schoolName` 聚合候选，形成专业组 unit。
+- 每个专业组最终保留的专业数量来自基础采集数据里的 `volunteerCount.majorCount`，后端作为 `requiredMajorCount` 传入 `buildPlanningUnit`。
+- 如果 `requiredMajorCount` 缺失或小于等于 0，则默认保留该专业组下全部候选专业；正常有采集值时，按该数量截取。
+- 组内专业选择先找一个 `admissionRatio >= schoolEnrollRatio` 的专业作为安全垫专业；如果存在，优先放入已选专业列表。
+- 随后按组内推荐排序补齐到 `requiredMajorCount`，排序主要沿用专业推荐分、录取率、专业 ID 等稳定字段。
+- `replaceDraftWithInitialRecommendation` 会把初始推荐 unit 的 `selectedMajors` 原样写入 `draftPlanState.items/units`，再由 `buildOrderedItemsFromDraft` 写入 `orderedPlanState.items/units`。
+
+用户从候选加入方案：
+
+- 当前前端只暴露专业级“加入方案”按钮。用户点哪个专业，就向 `draft/select` 传该专业的 `volunteerId`。
+- 后端 `selectDraftItems` 只加入请求里的专业，不会自动补入该专业组下其他专业，也不会自动补入组内安全垫专业。
+- 专业组模式下 `syncDraftUnitsWithItems` 会把已加入的专业按 unit 重新聚合，因此用户后续继续加入同一专业组的其他专业，会进入同一个方案专业组的 `majorItems`。
+- 如果当前已经有排序方案，`syncOrderedPlanWithDraft` 会保留原有排序项顺序，并把新加入专业追加到排序方案末尾，`orderReason=append_new_draft`；不会自动打乱已有顺序。
+- 这个行为符合“手动加入尊重用户精确选择”的原则，但意味着用户只加入单个专业时，专业组内可能缺少安全垫专业。
+
+后续待办：
+
+- `reviewGroupInnerSafetyGuard` 已能识别“专业组缺少组内安全垫专业”，但当前 `runReview` 主审查列表尚未接入该检查。
+- 3.0.1 后续应把 `group_inner_safety_guard` 接入审查结果，让手动加入或历史方案缺少安全垫专业时能在方案审查中可见。
+- 自动补偿目前只补未选专业组，不会对已选专业组追加一个安全垫专业；如要形成闭环，需要新增“组内补托底专业/替换组内专业”的补偿动作，并覆盖专业+大学和院校专业组模式回归。
+
 ### 2.5 移动和组级操作
 
 设计：
