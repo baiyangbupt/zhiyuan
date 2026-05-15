@@ -33,6 +33,8 @@
 - 本地排序失败定位为后端旧 class 未重启导致的 `PlanningStateService$OrderedSortKey` `NoSuchMethodError`；重新编译/重启 8080 后 `ordered-plan/sort` 正常返回，agent 侧 payload 无需调整。
 - 专业组移动/删除预览改为执行层结构化生成：明确源专业组名称、源专业组序号、目标专业组位置（移动场景）和组内专业数，并提示“第几个”按专业组顺序而非单条志愿位置计算，避免确认前文案把“前 N 条志愿”误当成“前 N 个专业组”。
 - 方案内志愿引用解析增强：`move_unit / remove_units` 支持“XX大学的XX专业”“XX大学.XX专业”等学校+专业自然表达，并兼容学校名带专业组号、专业名带括号说明的场景；如果同校同专业存在多条候选，不会静默选择，改为提示需要进一步明确。
+- 候选加入引用解析增强：`add_units` 支持“XX大学的XX专业加进来”等候选池自然表达，执行层会查询候选并解析真实 `volunteerId`；如果候选里同校同专业存在多个条目，不会静默误加，改为提示需要进一步明确。
+- 学校/专业简称引用解析增强：对“广西师大统计”“湖工计科”等学校简称 + 专业简称表达，执行层基于当前方案/候选真实条目做受控 alias 匹配；只有唯一命中时才移动、删除或加入，歧义时要求用户补充信息。
 - 清理 `ChatAgent` 中已不再生效的旧 `_build_instructions` 死代码，避免与当前 `app.agent.instructions.assembler.build_instructions` 模块化指令入口产生维护歧义。
 - 修正 `conversation_turn_event.actionFamily` 归因：同一轮如果先查询状态、后形成删除/移动/排序等非 query action，结构化日志优先记录最后一个非 query action，避免效果和性能分析误把实际操作预览统计为 `query_state`。
 
@@ -58,6 +60,8 @@
 - Agent 扩展回归集合通过：action resolver、typed actions、plan orchestration/execution、state sync、chat service history、mainline dialog、router/workflow compatibility、ws compatibility 共 `498 passed`。
 - 显式删除专业组预览复测通过：`session=16 / 删除第3个专业组` 链路收敛为 `plan_next_action -> execute_plan_action(remove_ordered_unit preview)`，不再先执行 `query_state`；runner 约 `24.1s`，LLM 请求 `2` 次，结构化日志 `actionFamily=remove_ordered_unit`。
 - 学校+专业自然引用单测通过：覆盖“湖北工程学院的计算机科学与技术改到第3位”“湖北工程学院.计算机科学与技术去掉”，以及同校同专业多专业组歧义时不执行误移动。
+- 候选加入自然引用单测通过：覆盖“湖北工程学院的计算机科学与技术加进来”、显式候选 id 直通，以及候选池同校同专业歧义时不执行误加入。
+- 学校/专业简称引用单测通过：覆盖“广西师大统计”移动和加入，以及“湖工计科”在多校可匹配时不执行误移动或误加入。
 - `git diff --check` 通过。
 
 ### Added (Issue: 大模型效果与性能 Benchmark)

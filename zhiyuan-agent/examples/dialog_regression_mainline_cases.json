@@ -256,6 +256,22 @@
     "prompts": ["去掉湖北工程学院.计算机科学与技术", "确认"]
   },
   {
+    "name": "candidate-add-by-school-major-preview-apply",
+    "sessionId": "5727",
+    "flow": ["plan"],
+    "coverage": ["add_units", "candidate_school_major_ref", "plan_preview", "plan_apply", "ordered_workspace"],
+    "assertPlanStyle": true,
+    "prompts": ["把湖北工程学院的计算机科学与技术加进来", "确认"]
+  },
+  {
+    "name": "candidate-add-by-school-major-alias-preview-apply",
+    "sessionId": "5727",
+    "flow": ["plan"],
+    "coverage": ["add_units", "candidate_school_major_alias_ref", "plan_preview", "plan_apply", "ordered_workspace"],
+    "assertPlanStyle": true,
+    "prompts": ["把广西师大统计加进来", "确认"]
+  },
+  {
     "name": "pin-unpin-after-review",
     "sessionId": "5728",
     "flow": ["plan"],

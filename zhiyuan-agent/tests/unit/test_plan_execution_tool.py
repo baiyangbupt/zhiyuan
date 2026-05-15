@@ -1085,6 +1085,251 @@ def test_execute_plan_action_runs_add_units_by_filters():
     mock_select.assert_awaited_once()
 
 
+def test_execute_plan_action_add_units_resolves_candidate_school_major_ref():
+    payload = {
+        "stage": "apply",
+        "action_family": "add_units",
+        "context_summary": "阶段=ordered；方案=20/30",
+        "preview_summary": "",
+        "missing_inputs": [],
+        "should_rerun_review": False,
+        "intent_relation": "support",
+        "atomic_actions": [
+            {
+                "action_type": "add_units",
+                "volunteer_ids": ["湖北工程学院的计算机科学与技术"],
+                "target_position": None,
+                "filters": {},
+                "reason": "把湖北工程学院的计算机科学与技术加进来",
+            }
+        ],
+    }
+    candidate_items = [
+        {
+            "volunteerId": "cand-hbgc-cs",
+            "schoolName": "湖北工程学院(01)",
+            "majorName": "计算机科学与技术(办学地点:校本部)",
+        }
+    ]
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_state_request",
+        new=AsyncMock(return_value={"code": 0, "data": {"candidatePoolState": {"items": []}}}),
+    ), patch(
+        "app.tools.plan_execution_tool._query_planning_candidate_pool_request",
+        new=AsyncMock(return_value={"code": 0, "data": {"items": candidate_items}}),
+    ), patch(
+        "app.handlers.mutation_handlers.select_planning_ordered_items",
+        new=AsyncMock(return_value="add ok"),
+    ) as mock_select:
+        result = asyncio.run(execute_plan_action(_ctx_with_pending("add_units"), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["applied"] is True
+    assert data["result_kind"] == "mutation_result"
+    assert data["affected_volunteer_ids"] == ["cand-hbgc-cs"]
+    assert data["executed_actions"] == [
+        {
+            "action": "add_units",
+            "volunteerIds": ["cand-hbgc-cs"],
+            "requestedVolunteerRefs": ["湖北工程学院的计算机科学与技术"],
+        }
+    ]
+    mock_select.assert_awaited_once()
+    assert mock_select.await_args.args[1] == ["cand-hbgc-cs"]
+
+
+def test_execute_plan_action_add_units_resolves_candidate_school_major_alias_ref():
+    payload = {
+        "stage": "apply",
+        "action_family": "add_units",
+        "context_summary": "阶段=ordered；方案=20/30",
+        "preview_summary": "",
+        "missing_inputs": [],
+        "should_rerun_review": False,
+        "intent_relation": "support",
+        "atomic_actions": [
+            {
+                "action_type": "add_units",
+                "volunteer_ids": ["广西师大统计"],
+                "target_position": None,
+                "filters": {},
+                "reason": "把广西师大统计加进来",
+            }
+        ],
+    }
+    candidate_items = [
+        {
+            "volunteerId": "cand-gxsd-stat",
+            "schoolName": "广西师范大学006专业组",
+            "majorName": "统计学",
+        }
+    ]
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_state_request",
+        new=AsyncMock(return_value={"code": 0, "data": {"candidatePoolState": {"items": candidate_items}}}),
+    ), patch(
+        "app.tools.plan_execution_tool._query_planning_candidate_pool_request",
+        new=AsyncMock(),
+    ) as mock_query, patch(
+        "app.handlers.mutation_handlers.select_planning_ordered_items",
+        new=AsyncMock(return_value="add ok"),
+    ) as mock_select:
+        result = asyncio.run(execute_plan_action(_ctx_with_pending("add_units"), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["applied"] is True
+    assert data["affected_volunteer_ids"] == ["cand-gxsd-stat"]
+    mock_select.assert_awaited_once()
+    assert mock_select.await_args.args[1] == ["cand-gxsd-stat"]
+    mock_query.assert_not_awaited()
+
+
+def test_execute_plan_action_add_units_keeps_explicit_candidate_id_without_lookup():
+    payload = {
+        "stage": "apply",
+        "action_family": "add_units",
+        "context_summary": "阶段=ordered；方案=20/30",
+        "preview_summary": "",
+        "missing_inputs": [],
+        "should_rerun_review": False,
+        "intent_relation": "support",
+        "atomic_actions": [
+            {
+                "action_type": "add_units",
+                "volunteer_ids": ["candidate-123"],
+                "target_position": None,
+                "filters": {},
+                "reason": "把这个加进来",
+            }
+        ],
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_state_request",
+        new=AsyncMock(),
+    ) as mock_state, patch(
+        "app.tools.plan_execution_tool._query_planning_candidate_pool_request",
+        new=AsyncMock(),
+    ) as mock_query, patch(
+        "app.handlers.mutation_handlers.select_planning_ordered_items",
+        new=AsyncMock(return_value="add ok"),
+    ) as mock_select:
+        result = asyncio.run(execute_plan_action(_ctx_with_pending("add_units"), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["applied"] is True
+    assert data["affected_volunteer_ids"] == ["candidate-123"]
+    mock_select.assert_awaited_once()
+    assert mock_select.await_args.args[1] == ["candidate-123"]
+    mock_state.assert_not_awaited()
+    mock_query.assert_not_awaited()
+
+
+def test_execute_plan_action_add_units_does_not_guess_ambiguous_candidate_ref():
+    payload = {
+        "stage": "apply",
+        "action_family": "add_units",
+        "context_summary": "阶段=ordered；方案=20/30",
+        "preview_summary": "",
+        "missing_inputs": [],
+        "should_rerun_review": False,
+        "intent_relation": "support",
+        "atomic_actions": [
+            {
+                "action_type": "add_units",
+                "volunteer_ids": ["湖北工程学院的计算机科学与技术"],
+                "target_position": None,
+                "filters": {},
+                "reason": "把湖北工程学院的计算机科学与技术加进来",
+            }
+        ],
+    }
+    candidate_items = [
+        {
+            "volunteerId": "cand-hbgc01-cs",
+            "schoolName": "湖北工程学院(01)",
+            "majorName": "计算机科学与技术",
+        },
+        {
+            "volunteerId": "cand-hbgc02-cs",
+            "schoolName": "湖北工程学院(02)",
+            "majorName": "计算机科学与技术",
+        },
+    ]
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_state_request",
+        new=AsyncMock(return_value={"code": 0, "data": {"candidatePoolState": {"items": []}}}),
+    ), patch(
+        "app.tools.plan_execution_tool._query_planning_candidate_pool_request",
+        new=AsyncMock(return_value={"code": 0, "data": {"items": candidate_items}}),
+    ), patch(
+        "app.handlers.mutation_handlers.select_planning_ordered_items",
+        new=AsyncMock(return_value="add ok"),
+    ) as mock_select:
+        result = asyncio.run(execute_plan_action(_ctx_with_pending("add_units"), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["applied"] is False
+    assert data["result_kind"] == "error"
+    assert "湖北工程学院的计算机科学与技术" in data["summary"]
+    assert "needs_candidate_selection" in data["reply_focus"]
+    mock_select.assert_not_awaited()
+
+
+def test_execute_plan_action_add_units_does_not_guess_ambiguous_candidate_alias_ref():
+    payload = {
+        "stage": "apply",
+        "action_family": "add_units",
+        "context_summary": "阶段=ordered；方案=20/30",
+        "preview_summary": "",
+        "missing_inputs": [],
+        "should_rerun_review": False,
+        "intent_relation": "support",
+        "atomic_actions": [
+            {
+                "action_type": "add_units",
+                "volunteer_ids": ["湖工计科"],
+                "target_position": None,
+                "filters": {},
+                "reason": "把湖工计科加进来",
+            }
+        ],
+    }
+    candidate_items = [
+        {
+            "volunteerId": "cand-hbgc-cs",
+            "schoolName": "湖北工程学院(01)",
+            "majorName": "计算机科学与技术",
+        },
+        {
+            "volunteerId": "cand-hbgy-cs",
+            "schoolName": "湖北工业大学(01)",
+            "majorName": "计算机科学与技术",
+        },
+    ]
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_state_request",
+        new=AsyncMock(return_value={"code": 0, "data": {"candidatePoolState": {"items": candidate_items}}}),
+    ), patch(
+        "app.tools.plan_execution_tool._query_planning_candidate_pool_request",
+        new=AsyncMock(),
+    ), patch(
+        "app.handlers.mutation_handlers.select_planning_ordered_items",
+        new=AsyncMock(return_value="add ok"),
+    ) as mock_select:
+        result = asyncio.run(execute_plan_action(_ctx_with_pending("add_units"), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["applied"] is False
+    assert data["result_kind"] == "error"
+    assert "湖工计科" in data["summary"]
+    mock_select.assert_not_awaited()
+
+
 def test_select_candidates_by_filters_uses_major_tags_as_candidate_major_keywords_when_major_keyword_missing():
     with patch(
         "app.handlers.compensation_handlers._get_planning_state_request",
@@ -3140,6 +3385,59 @@ def test_execute_plan_action_runs_move_unit_after_resolving_school_major_ref():
     assert mock_move.await_args.args[1:] == ("hbgc-cs-20", 3)
 
 
+def test_execute_plan_action_runs_move_unit_after_resolving_school_major_alias_ref():
+    payload = {
+        "stage": "apply",
+        "action_family": "move_unit",
+        "context_summary": "阶段=ordered；方案=30/30",
+        "preview_summary": "",
+        "missing_inputs": [],
+        "should_rerun_review": True,
+        "intent_relation": "unknown",
+        "atomic_actions": [
+            {
+                "action_type": "move_unit",
+                "volunteer_ids": ["广西师大统计"],
+                "target_position": 3,
+                "filters": {},
+                "reason": "把广西师大统计改到第3位",
+            }
+        ],
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
+        new=AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "items": [
+                        {
+                            "position": 20,
+                            "volunteerId": "gxsd-stat-20",
+                            "schoolName": "广西师范大学006专业组",
+                            "majorName": "统计学",
+                        }
+                    ]
+                },
+            }
+        ),
+    ), patch(
+        "app.handlers.mutation_handlers.move_planning_ordered_item",
+        new=AsyncMock(return_value="move ok"),
+    ) as mock_move, patch(
+        "app.tools.plan_execution_tool.run_planning_review",
+        new=AsyncMock(return_value="review after move ok"),
+    ):
+        result = asyncio.run(execute_plan_action(_ctx_with_pending("move_unit"), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["result_kind"] == "mutation_result"
+    assert data["affected_volunteer_ids"] == ["gxsd-stat-20"]
+    mock_move.assert_awaited_once()
+    assert mock_move.await_args.args[1:] == ("gxsd-stat-20", 3)
+
+
 def test_execute_plan_action_runs_remove_unit_after_resolving_school_major_dot_ref():
     payload = {
         "stage": "apply",
@@ -3249,6 +3547,66 @@ def test_execute_plan_action_does_not_guess_ambiguous_school_major_ref():
     assert data["applied"] is False
     assert data["result_kind"] == "error"
     assert "湖北工程学院的计算机科学与技术" in data["summary"]
+    assert "needs_volunteer_selection" in data["reply_focus"]
+    mock_move.assert_not_awaited()
+
+
+def test_execute_plan_action_does_not_guess_ambiguous_school_major_alias_ref():
+    payload = {
+        "stage": "apply",
+        "action_family": "move_unit",
+        "context_summary": "阶段=ordered；方案=30/30",
+        "preview_summary": "",
+        "missing_inputs": [],
+        "should_rerun_review": True,
+        "intent_relation": "unknown",
+        "atomic_actions": [
+            {
+                "action_type": "move_unit",
+                "volunteer_ids": ["湖工计科"],
+                "target_position": 3,
+                "filters": {},
+                "reason": "把湖工计科改到第3位",
+            }
+        ],
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
+        new=AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "items": [
+                        {
+                            "position": 20,
+                            "volunteerId": "hbgc-cs-20",
+                            "schoolName": "湖北工程学院(01)",
+                            "majorName": "计算机科学与技术",
+                        },
+                        {
+                            "position": 21,
+                            "volunteerId": "hbgy-cs-21",
+                            "schoolName": "湖北工业大学(01)",
+                            "majorName": "计算机科学与技术",
+                        },
+                    ]
+                },
+            }
+        ),
+    ), patch(
+        "app.handlers.mutation_handlers.move_planning_ordered_item",
+        new=AsyncMock(return_value="move ok"),
+    ) as mock_move, patch(
+        "app.tools.plan_execution_tool.run_planning_review",
+        new=AsyncMock(return_value="review after move ok"),
+    ):
+        result = asyncio.run(execute_plan_action(_ctx_with_pending("move_unit"), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["applied"] is False
+    assert data["result_kind"] == "error"
+    assert "湖工计科" in data["summary"]
     assert "needs_volunteer_selection" in data["reply_focus"]
     mock_move.assert_not_awaited()
 

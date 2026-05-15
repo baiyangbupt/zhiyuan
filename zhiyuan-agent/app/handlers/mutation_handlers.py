@@ -24,6 +24,7 @@ from app.tools.planning_workflow_tool import (
 )
 from app.tools.plan_execution_tool import (
     _count_ordered_units_for_ids,
+    _candidate_ref_resolution_message,
     _goal_requests_replacement,
     _ordered_ref_resolution_message,
     _parse_filter_list,
@@ -31,6 +32,7 @@ from app.tools.plan_execution_tool import (
     _regenerate_ordered_plan,
     _replace_no_add_clarification,
     _resolve_ordered_volunteer_refs,
+    _resolve_candidate_volunteer_refs,
     _resolve_review_issue_action_scope,
     _select_candidates_by_filters_into_plan,
     _should_preflight_replace_capacity,
@@ -56,8 +58,25 @@ async def handle_add_units(
     affected_volunteer_ids: list[str] = []
 
     if ids:
-        state_summary = await select_planning_ordered_items(ctx, ids, source="plan_execution")
-        affected_volunteer_ids.extend(ids)
+        resolved_ids, missing_refs = await _resolve_candidate_volunteer_refs(ctx, ids)
+        if missing_refs or not resolved_ids:
+            missing_text = "、".join(missing_refs[:5]) if missing_refs else "要加入的候选志愿"
+            return PlanExecutionResult(
+                applied=False,
+                action_family="add_units",
+                stage=plan.stage,
+                result_kind="error",
+                executed_actions=[],
+                affected_volunteer_ids=[],
+                workspace_refresh_targets=["candidate"],
+                context_summary=plan.context_summary,
+                state_summary=_candidate_ref_resolution_message(missing_text),
+                summary=_candidate_ref_resolution_message(missing_text),
+                reply_focus=["missing_inputs", "needs_candidate_selection"],
+                next_step_hints=["先定位候选池里的真实 volunteerId，再执行加入方案。"],
+            )
+        state_summary = await select_planning_ordered_items(ctx, resolved_ids, source="plan_execution")
+        affected_volunteer_ids.extend(resolved_ids)
     else:
         filters = atomic.filters if atomic else {}
         state_summary = await _select_candidates_by_filters_into_plan(
@@ -76,7 +95,7 @@ async def handle_add_units(
         action_family="add_units",
         stage=plan.stage,
         result_kind="mutation_result",
-        executed_actions=[{"action": "add_units", "volunteerIds": ids}],
+        executed_actions=[{"action": "add_units", "volunteerIds": affected_volunteer_ids, "requestedVolunteerRefs": ids}],
         affected_volunteer_ids=affected_volunteer_ids,
         workspace_refresh_targets=["draft", "ordered"],
         context_summary=plan.context_summary,

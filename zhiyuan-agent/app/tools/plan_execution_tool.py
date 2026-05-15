@@ -61,7 +61,7 @@ from app.util.structured_log import log_event
 
 logger = logging.getLogger(__name__)
 _DEFAULT_TENANT_ID = 1
-_VOLUNTEER_ID_LIKE_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")
+_VOLUNTEER_ID_LIKE_RE = re.compile(r"^[A-Za-z0-9_.:\-]+$")
 _TUITION_PER_YEAR_RE = re.compile(r"(?:学费[:：]?\s*)?(\d{4,6})\s*(?:元|/年)")
 _MUTATING_ACTION_FAMILIES = {
     "generate_plan",
@@ -490,6 +490,113 @@ def _major_base_name(value: Any) -> str:
     return re.split(r"[（(]", text, maxsplit=1)[0].strip()
 
 
+_MAJOR_ALIAS_BY_BASE_NAME = {
+    "计算机科学与技术": ["计科", "计算机"],
+    "软件工程": ["软件"],
+    "通信工程": ["通信"],
+    "统计学": ["统计"],
+    "汉语言文学": ["汉语言", "中文"],
+    "会计学": ["会计"],
+    "财务管理": ["财管"],
+    "工商管理": ["工商"],
+    "临床医学": ["临床"],
+    "口腔医学": ["口腔"],
+    "中医学": ["中医"],
+    "针灸推拿学": ["针推", "针灸推拿"],
+    "土木工程": ["土木"],
+    "电气工程及其自动化": ["电气"],
+    "数据科学与大数据技术": ["大数据"],
+    "电子信息工程": ["电子信息"],
+    "机械设计制造及其自动化": ["机械"],
+}
+
+
+_SCHOOL_SUFFIX_ALIAS_RULES = [
+    ("师范大学", "师大"),
+    ("工业大学", "工大"),
+    ("农业大学", "农大"),
+    ("医科大学", "医大"),
+    ("财经大学", "财大"),
+    ("外国语大学", "外大"),
+    ("科技大学", "科大"),
+    ("交通大学", "交大"),
+    ("邮电大学", "邮电"),
+    ("理工大学", "理工"),
+    ("工程学院", "工程"),
+]
+
+
+_SCHOOL_PREFIX_SHORT_NAMES = {
+    "北京": "北",
+    "上海": "上",
+    "南京": "南",
+    "武汉": "武",
+    "湖北": "湖",
+    "湖南": "湖",
+    "广西": "桂",
+    "广东": "粤",
+    "山东": "鲁",
+    "山西": "晋",
+    "河北": "冀",
+    "河南": "豫",
+    "四川": "川",
+    "重庆": "渝",
+    "天津": "津",
+    "浙江": "浙",
+    "江苏": "苏",
+    "安徽": "皖",
+    "福建": "闽",
+    "江西": "赣",
+    "陕西": "陕",
+    "辽宁": "辽",
+    "吉林": "吉",
+    "黑龙江": "黑",
+    "云南": "云",
+    "贵州": "贵",
+    "甘肃": "甘",
+    "青海": "青",
+    "宁夏": "宁",
+    "新疆": "新",
+    "内蒙古": "蒙",
+    "西藏": "藏",
+    "海南": "琼",
+}
+
+
+def _major_alias_variants(value: Any) -> list[str]:
+    base_name = _major_base_name(value)
+    if not base_name:
+        return []
+    variants = list(_MAJOR_ALIAS_BY_BASE_NAME.get(base_name, []))
+    target_token = _major_target_token(base_name)
+    if target_token and target_token != base_name:
+        variants.append(target_token)
+    return list(dict.fromkeys(variant for variant in variants if variant))
+
+
+def _school_alias_variants(value: Any) -> list[str]:
+    text = str(value or "").strip()
+    if not text:
+        return []
+    base_name = re.sub(r"\s*[（(][^()（）]*[)）]\s*$", "", text).strip()
+    base_name = re.sub(r"\s*(?:第?\d+组|[A-Za-z0-9]+专业组|第?\d+专业组|专业组)\s*$", "", base_name).strip()
+    if not base_name:
+        return []
+
+    aliases: list[str] = []
+    for suffix, suffix_alias in _SCHOOL_SUFFIX_ALIAS_RULES:
+        if not base_name.endswith(suffix):
+            continue
+        prefix = base_name[: -len(suffix)].strip()
+        if not prefix:
+            continue
+        aliases.append(f"{prefix}{suffix_alias}")
+        short_prefix = _SCHOOL_PREFIX_SHORT_NAMES.get(prefix)
+        if short_prefix:
+            aliases.append(f"{short_prefix}{suffix_alias[:1]}")
+    return list(dict.fromkeys(alias for alias in aliases if alias and alias != base_name))
+
+
 def _major_name_variants(value: Any) -> list[str]:
     text = str(value or "").strip()
     if not text:
@@ -505,6 +612,7 @@ def _major_name_variants(value: Any) -> list[str]:
     base_name = _major_base_name(text)
     if base_name and base_name not in variants:
         variants.append(base_name)
+    variants.extend(_major_alias_variants(text))
     return list(dict.fromkeys(variant for variant in variants if variant))
 
 
@@ -516,6 +624,7 @@ def _school_name_variants(value: Any) -> list[str]:
     trimmed = re.sub(r"\s*[（(][^()（）]*[)）]\s*$", "", text).strip()
     if trimmed and trimmed != text:
         variants.append(trimmed)
+    variants.extend(_school_alias_variants(text))
     return list(dict.fromkeys(variant for variant in variants if variant))
 
 
@@ -715,6 +824,139 @@ def _ordered_ref_resolution_message(missing_text: str, action_label: str) -> str
         f"为避免误删或误重排，请先在方案里点选要{action_label}的志愿，"
         "或让我先按当前方案重新定位后再给你确认。"
     )
+
+
+def _candidate_ref_resolution_message(missing_text: str) -> str:
+    return (
+        f"我还没有在候选里唯一定位到这些志愿：{missing_text}。"
+        "为避免误加，请先在候选列表里点选要加入方案的志愿，"
+        "或补充专业组、城市、学校全称等信息后我再给你确认。"
+    )
+
+
+def _split_school_major_ref(value: Any) -> tuple[str, str]:
+    text = str(value or "").strip()
+    if not text:
+        return "", ""
+    for separator in ("的", ".", "。", "-", "－", "—", "、", ",", "，", ": ", "："):
+        if separator not in text:
+            continue
+        left, right = text.split(separator, 1)
+        left = left.strip()
+        right = right.strip()
+        if left and right and any(token in left for token in ("大学", "学院", "学校")):
+            return left, _major_base_name(right)
+    match = re.match(r"(.+?(?:大学|学院|学校)(?:[（(][^()（）]*[)）])?)(.+)", text)
+    if match:
+        return match.group(1).strip(), _major_base_name(match.group(2).strip())
+    return "", ""
+
+
+async def _candidate_items_for_ref(ctx: RunContext[RequestContext], ref: str) -> list[dict[str, Any]]:
+    session_id = ctx.deps.sessionid
+    state_items: list[dict[str, Any]] = []
+    try:
+        state_result = await _get_planning_state_request(session_id)
+        state = state_result.get("data") or {} if state_result.get("code") == 0 else {}
+        raw_items = ((state.get("candidatePoolState") or {}).get("items") or [])
+        state_items = [item for item in raw_items if isinstance(item, dict)]
+    except Exception:
+        logger.warning("load candidate state for ref resolution failed: session_id=%s", session_id, exc_info=True)
+
+    school_keyword, major_keyword = _split_school_major_ref(ref)
+    if not school_keyword and not major_keyword:
+        return state_items
+
+    queried_items: list[dict[str, Any]] = []
+    try:
+        query_result = await _query_planning_candidate_pool_request(
+            _DEFAULT_TENANT_ID,
+            session_id,
+            school_keywords=[school_keyword] if school_keyword else [],
+            major_keywords=[major_keyword] if major_keyword else [],
+            page=1,
+            page_size=100,
+        )
+        if query_result.get("code") == 0:
+            queried_items = [
+                item
+                for item in ((query_result.get("data") or {}).get("items") or [])
+                if isinstance(item, dict)
+            ]
+    except Exception:
+        logger.warning("query candidate pool for ref resolution failed: session_id=%s ref=%s", session_id, ref, exc_info=True)
+
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in [*queried_items, *state_items]:
+        volunteer_id = str(item.get("volunteerId") or "").strip()
+        key = volunteer_id or f"{item.get('schoolName')}::{item.get('majorName')}::{item.get('position')}"
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(item)
+    return merged
+
+
+async def _resolve_candidate_volunteer_refs(
+    ctx: RunContext[RequestContext],
+    refs: list[str],
+) -> tuple[list[str], list[str]]:
+    if not refs:
+        return [], []
+    resolved: list[str] = []
+    missing: list[str] = []
+    for ref in refs:
+        text = str(ref or "").strip()
+        if not text:
+            continue
+        if _VOLUNTEER_ID_LIKE_RE.match(text) and not any(token in text for token in ("大学", "学院", "学校", "专业")):
+            if text not in resolved:
+                resolved.append(text)
+            continue
+
+        items = await _candidate_items_for_ref(ctx, text)
+        exact_candidates: dict[str, list[str]] = {}
+        compact_candidates: dict[str, list[str]] = {}
+        compact_labels: list[tuple[str, str]] = []
+        for item in items:
+            volunteer_id = str(item.get("volunteerId") or "").strip()
+            if not volunteer_id:
+                continue
+            for label in _ordered_item_labels(item):
+                exact_candidates.setdefault(label, [])
+                if volunteer_id not in exact_candidates[label]:
+                    exact_candidates[label].append(volunteer_id)
+                compact_label = _compact_ref_text(label)
+                compact_candidates.setdefault(compact_label, [])
+                if volunteer_id not in compact_candidates[compact_label]:
+                    compact_candidates[compact_label].append(volunteer_id)
+                compact_labels.append((compact_label, volunteer_id))
+
+        volunteer_id = None
+        exact_matches = exact_candidates.get(text) or []
+        if len(exact_matches) == 1:
+            volunteer_id = exact_matches[0]
+        compact_ref = _compact_ref_text(text)
+        if not volunteer_id:
+            compact_matches = compact_candidates.get(compact_ref) or []
+            if len(compact_matches) == 1:
+                volunteer_id = compact_matches[0]
+        if not volunteer_id and compact_ref:
+            partial_matches = [
+                candidate_id
+                for label, candidate_id in compact_labels
+                if compact_ref in label or label in compact_ref
+            ]
+            unique_matches = list(dict.fromkeys(partial_matches))
+            if len(unique_matches) == 1:
+                volunteer_id = unique_matches[0]
+        if volunteer_id:
+            if volunteer_id not in resolved:
+                resolved.append(volunteer_id)
+        else:
+            missing.append(text)
+    return resolved, missing
 
 
 def _find_review_issue_by_code(review_issues: list[dict[str, Any]], code: str | None) -> dict[str, Any] | None:

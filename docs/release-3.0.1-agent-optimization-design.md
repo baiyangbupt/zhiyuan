@@ -129,6 +129,8 @@ planning_workflow_tool 暂时保留为内部 helper 集合。
 | 专业组删除 | 删除这个专业组 | 新增 unit action | 删除 unit，不残留孤立专业 |
 | 学校+专业移动 | 把 XX 大学的 XX 专业改到第 3 位 | `move_unit` | 通过学校名+专业名定位，不要求用户提供数字索引 |
 | 学校+专业删除 | 去掉 XX 大学.XX 专业 | `remove_units` | 支持“的”、`.`、`-` 等自然分隔符；歧义时不误删 |
+| 学校+专业加入 | 把 XX 大学的 XX 专业加进来 | `add_units` | 从候选池定位真实 volunteerId；歧义时不误加 |
+| 学校/专业简称操作 | 把广西师大统计改到第 3 位 / 把广西师大统计加进来 | `move_unit` / `remove_units` / `add_units` | 支持受控简称映射；只有唯一命中时执行，简称歧义时要求用户补充专业组、城市或全称 |
 
 ## 4. 最小结构化日志设计
 
@@ -389,6 +391,7 @@ PYTHONPATH=. ./.venv/bin/python examples/dialog_regression_runner.py \
 - `plan_next_action` 增加高副作用动作状态约束：当 `user_confirmed=false` 时，即使模型传入 `current_stage="apply"`，也强制回到 `preview` 或 `analyze`，避免出现“未确认但 apply”的结构矛盾。
 - `move_ordered_unit / remove_ordered_unit` 支持“第 N 个专业组/志愿组”作为位置引用；preview 阶段不再要求模型必须提前提供真实 `unit_ids`，执行层继续负责按当前 ordered units 解析真实 unitId。
 - `move_unit / remove_units / replace_units` 支持学校名+专业名引用（如“XX大学的XX专业”“XX大学.XX专业”）；执行层会按当前方案重新解析真实 volunteerId。如果同校同专业在多个专业组中同时出现，不能静默选择其中一个，必须返回需要进一步明确的提示。
+- `add_units` 支持候选池里的学校名+专业名引用（如“XX大学的XX专业加进来”）；执行层会查询候选池并解析真实 volunteerId。如果候选里同校同专业存在多个专业组或多个条目，不能静默选择其中一个，必须返回需要进一步明确的提示。
 - Agent 指令补充：未确认动作不得传 `current_stage="apply"` 或 `user_confirmed=true`；`execute_plan_action` 返回 `preview_only` 后本轮停止继续查工具，直接等待用户确认。
 - service 层 pending 提取规则收口：同一轮中如果已经形成高副作用 preview，后续只读 `query_state` 成功不会再清掉 pending；只有真正的变更动作 apply 成功才清掉上一轮待确认计划。该修复解决了“专业组移动预览后模型又查状态，导致用户确认时无 pending”的问题。
 - 本地排序接口失败定位为运行进程 class 版本不一致：8080 后端旧 class 抛 `PlanningStateService$OrderedSortKey` `NoSuchMethodError`。重新编译/重启后端后，`ordered-plan/sort` 能正常返回成功结果；源码层未发现 agent payload 问题。
@@ -486,6 +489,34 @@ PYTHONPATH=. ./.venv/bin/python examples/dialog_regression_runner.py \
 - 已清理 `ChatAgent` 中不再生效的旧 `_build_instructions` 死代码，当前唯一生效入口为 `app.agent.instructions.assembler.build_instructions`。
 - 暂不直接移除 service 层确认检测、pending 历史扫描或文本后处理；这些路径仍承担线上兼容和确认态兜底，需要先完成结构化 classifier / shared pending store / tool response envelope 的设计与回归覆盖。
 - `_RECENT_PLAN_EXECUTION_RESULTS` 仍是内存级短 TTL 缓存，多 worker 下需要 sticky session 或共享存储。该项记录为发布部署风险，不在本轮用临时规则修补。
+
+### 7.6 学校/专业自然引用深化
+
+当前问题：
+
+- 用户在对话里不一定按前端序号表达，也不一定使用学校和专业全称。
+- 常见表达包括“XX大学XX专业”“XX大学的XX专业”“XX大学.XX专业”，以及“广西师大统计”“湖工计科”这类学校简称 + 专业简称。
+- 如果直接把模型产出的自然文本当作 `volunteerId` 传给后端，会出现无效加入、误移动或误删除风险。
+
+当前设计：
+
+- `move_unit / remove_units` 对当前方案内志愿做引用解析，`add_units` 对候选池志愿做引用解析。
+- 引用解析基于真实方案/候选条目生成 label，不做脱离数据的自由猜测。
+- 学校简称只支持受控派生：如“师范大学 -> 师大”“工业大学 -> 工大”“湖北工程学院 -> 湖工”等；专业简称只支持受控常见映射：如“计算机科学与技术 -> 计科”“统计学 -> 统计”“通信工程 -> 通信”等。
+- 所有简称最终仍走唯一性校验：唯一命中才执行；多条命中或没有命中时返回“需要补充信息”，不调用后端变更接口。
+
+已覆盖：
+
+- 方案内学校+专业全称/自然分隔符移动、删除。
+- 候选池学校+专业全称加入。
+- 学校简称 + 专业简称移动和加入。
+- 简称歧义时不误移动、不误加入。
+
+后续待补：
+
+- 结合真实候选池样本扩充更多地区学校简称和专业简称映射。
+- 对“北邮通信”“南师汉语言”等高频简称补充回归 examples。
+- 对大模型输出的 `volunteer_ids` 字段增加结构化约束说明：可以填用户原始引用，但执行层会解析为真实 ID；无法唯一定位时必须停在澄清。
 
 ## 8. 风险控制
 
