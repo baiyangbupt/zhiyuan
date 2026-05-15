@@ -529,6 +529,8 @@ PYTHONPATH=. ./.venv/bin/python examples/dialog_regression_runner.py \
 - TODO：当前“变更类用户请求”识别使用 `_PLAN_MUTATION_PROMPT_KEYWORDS`，只作为超时兜底止血保护，不参与正常路由、不直接执行动作、不绕过大模型。后续应替换为结构化标记，例如在 plan action/recent result 中记录本轮是否已识别 mutation intent 或是否已形成 mutation preview，再由超时兜底基于结构化字段决定是否跳过 `query_state/status_overview`。
 - 真实专业模式回归暴露问题：`session=17 / 把青岛电影学院的新闻学改到第3位` 曾先调用 `query_volunteer_plan`，随后反复 `collect_plan_context_inputs` 并 180 秒超时，没有形成 `move_unit` preview。当前调度指令补充：学校+专业移动到指定位置必须直接规划 `move_unit` preview，`volunteer_ids` 保留用户原始学校+专业引用，`target_position` 填目标位置；学校+专业删除必须直接规划 `remove_units` preview。执行层继续负责真实 ID 解析和歧义澄清。
 - 复测结果：`session=16 / 删除第5个专业组 -> 确认` 已通过，链路为 `remove_ordered_unit preview -> direct_pending_plan_confirm apply`，确认后返回 `ordered` 工作台刷新；预览耗时约 48.9s，仍需后续性能优化。`session=17 / 把青岛电影学院的新闻学改到第3位 -> 确认` 已通过，链路最终形成 `move_unit preview -> apply`，确认后返回 `ordered` 工作台刷新；本轮仍先调用了 `query_volunteer_plan` 和一次 `collect_plan_context_inputs`，耗时约 25.4s，后续应继续优化为直接 `plan_next_action -> execute_plan_action`。
+- 当前优化：补充 `query_volunteer_plan` 与 `plan_next_action` 工具说明，明确 `query_volunteer_plan` 不应用作移动/删除前的“定位 ID”步骤；`move_unit/remove_units/add_units` 的 `volunteer_ids` 可以直接携带用户原始学校+专业引用，由执行层解析真实 ID 和处理歧义。该调整属于工具 schema/说明约束，不新增 service 层关键词短路。
+- 优化后复测：`session=17 / 把哈尔滨理工大学的人力资源管理改到第4位 -> 确认` 已通过，预览链路收敛为 `plan_next_action -> execute_plan_action(move_unit preview)`，不再调用 `query_volunteer_plan`；预览端 LLM 请求从前一轮约 4 次降为 2 次，input tokens 从约 119k 降为约 64k，runner 端预览耗时约 16.9s，确认 apply 约 3.5s 并返回 `ordered` 工作台刷新。
 
 后续待补：
 

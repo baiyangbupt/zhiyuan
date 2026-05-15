@@ -13,6 +13,8 @@ from app.agent.instructions.planning_context import build_planning_context
 from app.agent.instructions.pending_context import build_pending_context
 from app.agent.instructions.style_rules import build_style_rules
 from app.agent.instructions.tool_dispatch_rules import build_tool_dispatch_rules
+from app.tools.plan_orchestration_tool import plan_next_action
+from app.tools.plan_query_tool import query_volunteer_plan
 from app.agent.instructions.assembler import build_instructions
 
 
@@ -189,6 +191,10 @@ class TestToolDispatchRules:
         assert "query_volunteer_plan" in result
         assert "remove_units" in result
         assert "唯一性校验" in result
+
+    def test_plan_tool_docs_say_refs_do_not_need_pre_query(self):
+        assert "不适合在移动/删除前作为“定位 ID”的前置步骤" in (query_volunteer_plan.__doc__ or "")
+        assert "不应为了定位而先调用 query_volunteer_plan" in (plan_next_action.__doc__ or "")
 
 
 # ---------------------------------------------------------------------------

@@ -620,6 +620,8 @@ async def query_volunteer_plan(
     只适合回答“当前方案里有没有某学校/专业/地域”“候选里还有没有某方向机会”。
     不适合回答“还差几个怎么补、补几个更稳的、怎么补满、加入方案”这类会改变方案或规划补齐动作的问题；
     这类问题应走 Plan 主链路规划 preview_compensation/add_units，并在用户确认后执行。
+    也不适合在移动/删除前作为“定位 ID”的前置步骤；`move_unit/remove_units/add_units`
+    的 `volunteer_ids` 可以直接填写用户原始学校+专业引用，执行层会解析真实 ID 并处理歧义。
 
     当 `scope=auto` 时，兼容旧行为，仍会根据 query 做启发式判断。
     更推荐由模型显式传入：

@@ -637,7 +637,13 @@ async def plan_next_action(
     limit: int = 5,
     user_confirmed: bool = False,
 ) -> str:
-    """根据用户目标和现有状态输入生成 Plan 动作计划。"""
+    """根据用户目标和现有状态输入生成 Plan 动作计划。
+
+    对移动/删除/加入学校+专业这类变更请求，不需要先查询真实 volunteerId。
+    `volunteer_ids` 可以直接填写用户原始引用（如“青岛电影学院的新闻学”、
+    “湖北工程学院.计算机科学与技术”、“广西师大统计”），后续执行层会解析真实 ID；
+    若无法唯一定位，执行层会返回澄清，不应为了定位而先调用 query_volunteer_plan。
+    """
     model = await _plan_next_action_model(
         ctx,
         user_goal=user_goal,
