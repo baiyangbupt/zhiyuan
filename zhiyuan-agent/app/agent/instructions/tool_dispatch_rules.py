@@ -45,6 +45,7 @@ _TOOL_DISPATCH_RULES = """\
 - 方案现状问法先直接回答结论句：有没有方案、当前多少个、风险/提醒各多少。
 - `query_volunteer_plan` 只用于局部命中查询（某个学校/专业是否在方案里），不要用它回答整体方案状态。
 - 补齐/补稳/缺口问题（还差几个怎么补/帮我补几个更稳的）不是局部查询，必须走 Plan 主链路。
+- 用户已经明确要求改变当前方案顺序或内容时（如按某维度排序、移动第 N 个志愿/专业组、删除第 N 个志愿/专业组），不要先用 `query_state` 做状态播报；直接规划对应 action 的 preview，再把 preview payload 交给 `execute_plan_action`，等待用户确认。
 - 高副作用动作（generate/add/remove/move/move_ordered_unit/remove_ordered_unit/sort_ordered_plan/replace/regenerate_order/apply_compensation）必须先 preview 再等确认。
 - 用户没有明确确认当前动作时，不要把高副作用动作传成 `current_stage="apply"`，也不要传 `user_confirmed=true`；本轮重新发起动作也要先形成 preview。
 - `execute_plan_action` 返回 `result_kind="preview_only"` 后，本轮直接说明预览并等待确认，不要继续围绕同一动作反复查询。

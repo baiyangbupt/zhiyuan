@@ -15,6 +15,7 @@
 - Agent Dockerfile 基础镜像切换为公开 `python:3.12-slim`，避免 release 构建时访问 `docker.m.daocloud.io` 返回 401 导致 amd64 镜像无法构建。
 - 3.0.1 用户侧去除“草稿”概念：Agent 回复、规划状态注入、方案查询、专业分析、候选加入和补偿结果统一表达为“方案/已加入方案”，底层 `draftPlanState` 仅保留为兼容实现细节。
 - 方案现状类问法的 Plan 提示词收敛：对“方案有了么 / 看看现在的方案 / 当前方案怎么样”直接引导模型调用 `plan_next_action(action_family="query_state") -> execute_plan_action`，不再先单独调用 `collect_plan_context_inputs`，减少重复上下文读取和额外模型往返；不新增字符串匹配短路或确定性模板回复。
+- 显式方案改动类问法的 Plan 提示词补充：对排序、移动、删除当前方案的请求，引导模型直接形成对应 action 的 preview 并等待确认；不新增 service 层字符串匹配或确定性短路。
 - 3.0.1 不再允许对话触发旧 `pin_unit/unpin_unit/lock_draft` 用户动作；如果用户要求固定或锁定志愿，Agent 会提示当前新版工作台暂不提供该入口，并引导使用移动到指定位置或方案排序。
 - `ActionResolver` 同步阻断 `pin/unpin` 结构化意图，避免 structured planner 旁路重新产出前端不可见的固定/锁定动作。
 - 工作台事件归类同步收口：`sort_ordered_plan` 会生成方案和审查刷新；旧 pin/unpin 不再生成 pending 或工作台刷新卡片，避免出现前端不可见状态。
@@ -31,7 +32,9 @@
 - 高副作用 preview pending 提取收口：同一轮中 `plan_next_action(preview)` 已形成待确认动作后，后续只读 `query_state` 成功不会再清掉 pending；只有实际变更动作 apply 成功才清 pending，修复“专业组移动预览后确认找不到上一轮动作”的问题。
 - 本地排序失败定位为后端旧 class 未重启导致的 `PlanningStateService$OrderedSortKey` `NoSuchMethodError`；重新编译/重启 8080 后 `ordered-plan/sort` 正常返回，agent 侧 payload 无需调整。
 - 专业组移动/删除预览改为执行层结构化生成：明确源专业组名称、源专业组序号、目标专业组位置（移动场景）和组内专业数，并提示“第几个”按专业组顺序而非单条志愿位置计算，避免确认前文案把“前 N 条志愿”误当成“前 N 个专业组”。
+- 方案内志愿引用解析增强：`move_unit / remove_units` 支持“XX大学的XX专业”“XX大学.XX专业”等学校+专业自然表达，并兼容学校名带专业组号、专业名带括号说明的场景；如果同校同专业存在多条候选，不会静默选择，改为提示需要进一步明确。
 - 清理 `ChatAgent` 中已不再生效的旧 `_build_instructions` 死代码，避免与当前 `app.agent.instructions.assembler.build_instructions` 模块化指令入口产生维护歧义。
+- 修正 `conversation_turn_event.actionFamily` 归因：同一轮如果先查询状态、后形成删除/移动/排序等非 query action，结构化日志优先记录最后一个非 query action，避免效果和性能分析误把实际操作预览统计为 `query_state`。
 
 ### Fixed (回归测试稳定性)
 
@@ -53,6 +56,8 @@
 - 专业组移动预览文案修正后真实复测通过：`session=16 / 把第3个专业组移到第5位 -> 确认` 的预览明确按专业组序号解释当前位置和目标位置，确认后该组移动到第 `5` 个专业组位置且组内志愿连续。
 - 指令入口清理后，当前真实模块化指令测试和 ChatAgent 工具调用测试通过：`tests/unit/test_instructions.py`、`tests/unit/test_chat_agent_init_profile.py`、`tests/unit/test_chat_agent_tools.py` 共 `42 passed`。
 - Agent 扩展回归集合通过：action resolver、typed actions、plan orchestration/execution、state sync、chat service history、mainline dialog、router/workflow compatibility、ws compatibility 共 `498 passed`。
+- 显式删除专业组预览复测通过：`session=16 / 删除第3个专业组` 链路收敛为 `plan_next_action -> execute_plan_action(remove_ordered_unit preview)`，不再先执行 `query_state`；runner 约 `24.1s`，LLM 请求 `2` 次，结构化日志 `actionFamily=remove_ordered_unit`。
+- 学校+专业自然引用单测通过：覆盖“湖北工程学院的计算机科学与技术改到第3位”“湖北工程学院.计算机科学与技术去掉”，以及同校同专业多专业组歧义时不执行误移动。
 - `git diff --check` 通过。
 
 ### Added (Issue: 大模型效果与性能 Benchmark)

@@ -474,7 +474,8 @@ def _derive_candidate_major_keywords(
 
 
 def _compact_ref_text(value: Any) -> str:
-    return "".join(str(value or "").split()).lower()
+    text = "".join(str(value or "").split()).lower()
+    return re.sub(r"[\-_/·.。,:：，、的]+", "", text)
 
 
 def _goal_requests_replacement(text: str | None) -> bool:
@@ -507,9 +508,21 @@ def _major_name_variants(value: Any) -> list[str]:
     return list(dict.fromkeys(variant for variant in variants if variant))
 
 
+def _school_name_variants(value: Any) -> list[str]:
+    text = str(value or "").strip()
+    if not text:
+        return []
+    variants: list[str] = [text]
+    trimmed = re.sub(r"\s*[（(][^()（）]*[)）]\s*$", "", text).strip()
+    if trimmed and trimmed != text:
+        variants.append(trimmed)
+    return list(dict.fromkeys(variant for variant in variants if variant))
+
+
 def _ordered_item_labels(item: dict[str, Any]) -> list[str]:
     school_name = str(item.get("schoolName") or "").strip()
     major_name = str(item.get("majorName") or "").strip()
+    school_variants = _school_name_variants(school_name)
     major_variants = _major_name_variants(major_name)
     volunteer_id = str(item.get("volunteerId") or "").strip()
     tier = str(item.get("tier") or item.get("bucket") or "").strip()
@@ -518,22 +531,33 @@ def _ordered_item_labels(item: dict[str, Any]) -> list[str]:
     if position is not None and str(position).strip():
         position_text = str(position).strip()
         labels.extend([position_text, f"@{position_text}", f"第{position_text}位"])
-    if school_name:
+    for school_variant in school_variants:
         for major_variant in major_variants:
-            labels.extend([f"{school_name}-{major_variant}", f"{school_name}{major_variant}"])
+            labels.extend(
+                [
+                    f"{school_variant}-{major_variant}",
+                    f"{school_variant}{major_variant}",
+                    f"{school_variant}的{major_variant}",
+                    f"{school_variant}.{major_variant}",
+                ]
+            )
             if position is not None and str(position).strip():
                 position_text = str(position).strip()
                 labels.extend(
                     [
-                        f"{school_name}-{major_variant}@{position_text}",
-                        f"{school_name}{major_variant}@{position_text}",
+                        f"{school_variant}-{major_variant}@{position_text}",
+                        f"{school_variant}{major_variant}@{position_text}",
+                        f"{school_variant}的{major_variant}@{position_text}",
+                        f"{school_variant}.{major_variant}@{position_text}",
                     ]
                 )
                 if tier:
                     labels.extend(
                         [
-                            f"{school_name}-{major_variant}({tier})@{position_text}",
-                            f"{school_name}{major_variant}({tier})@{position_text}",
+                            f"{school_variant}-{major_variant}({tier})@{position_text}",
+                            f"{school_variant}{major_variant}({tier})@{position_text}",
+                            f"{school_variant}的{major_variant}({tier})@{position_text}",
+                            f"{school_variant}.{major_variant}({tier})@{position_text}",
                         ]
                     )
     labels.extend(str(item.get(key) or "").strip() for key in ("displayName", "name", "title"))
@@ -621,8 +645,8 @@ async def _resolve_ordered_volunteer_refs(
         return [], refs
     items = (result.get("data") or {}).get("items") or []
     item_by_id: dict[str, dict[str, Any]] = {}
-    exact: dict[str, str] = {}
-    compact: dict[str, str] = {}
+    exact_candidates: dict[str, list[str]] = {}
+    compact_candidates: dict[str, list[str]] = {}
     compact_labels: list[tuple[str, str]] = []
     for item in items:
         if not isinstance(item, dict):
@@ -632,9 +656,13 @@ async def _resolve_ordered_volunteer_refs(
             continue
         item_by_id[volunteer_id] = item
         for label in _ordered_item_labels(item):
-            exact[label] = volunteer_id
+            exact_candidates.setdefault(label, [])
+            if volunteer_id not in exact_candidates[label]:
+                exact_candidates[label].append(volunteer_id)
             compact_label = _compact_ref_text(label)
-            compact[compact_label] = volunteer_id
+            compact_candidates.setdefault(compact_label, [])
+            if volunteer_id not in compact_candidates[compact_label]:
+                compact_candidates[compact_label].append(volunteer_id)
             compact_labels.append((compact_label, volunteer_id))
 
     resolved: list[str] = []
@@ -642,7 +670,14 @@ async def _resolve_ordered_volunteer_refs(
     for ref in refs:
         text = str(ref or "").strip()
         compact_ref = _compact_ref_text(text)
-        volunteer_id = exact.get(text) or compact.get(compact_ref)
+        volunteer_id = None
+        exact_matches = exact_candidates.get(text) or []
+        if len(exact_matches) == 1:
+            volunteer_id = exact_matches[0]
+        if not volunteer_id:
+            compact_matches = compact_candidates.get(compact_ref) or []
+            if len(compact_matches) == 1:
+                volunteer_id = compact_matches[0]
         if not volunteer_id and compact_ref:
             partial_matches = [
                 candidate_id

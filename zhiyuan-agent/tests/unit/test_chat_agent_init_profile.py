@@ -107,6 +107,8 @@ def test_build_instructions_includes_plan_orchestration_boundaries():
     assert "`query_volunteer_plan` 只用于局部命中查询" in instructions
     assert "还差几个怎么补" in instructions
     assert "必须走 Plan 主链路" in instructions
+    assert "不要先用 `query_state` 做状态播报" in instructions
+    assert "直接规划对应 action 的 preview" in instructions
     assert "当前方案志愿数为0" in instructions
     assert "不能编造" in instructions
     assert "当前 planning 状态的优先级高于历史对话" in instructions

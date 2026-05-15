@@ -216,6 +216,12 @@ _EXECUTE_PLAN_ACTION_VIEW_FAMILIES = {
     "query_ordered",
     "query_candidates",
 }
+_LOW_PRIORITY_LOG_ACTION_FAMILIES = {
+    "query_state",
+    "query_draft",
+    "query_ordered",
+    "query_candidates",
+}
 
 
 def _extract_execute_plan_action_family(part: ToolCallPart) -> str | None:
@@ -275,6 +281,29 @@ def _extract_execute_plan_action_view_targets(part: ToolReturnPart) -> list[str]
     if not isinstance(targets, list):
         return []
     return _dedupe_workspace_targets([str(target) for target in targets])
+
+
+def _select_conversation_action_family(tool_returns: list[ToolReturnPart]) -> str | None:
+    """Choose the action family that best describes the completed turn.
+
+    A plan turn may briefly read state before producing a mutation preview. For
+    observability, report the last non-query plan action instead of the first
+    low-signal query action.
+    """
+    families: list[str] = []
+    for part in tool_returns:
+        data = _parse_tool_return_json(part.content)
+        if not data:
+            continue
+        action_family = str(data.get("action_family") or "").strip()
+        if action_family:
+            families.append(action_family)
+    if not families:
+        return None
+    for action_family in reversed(families):
+        if action_family not in _LOW_PRIORITY_LOG_ACTION_FAMILIES:
+            return action_family
+    return families[-1]
 
 
 def _tool_calls_include_plan_workspace_refresh(messages: list[Any] | None) -> list[str]:
@@ -1583,15 +1612,7 @@ class ChatService:
             scene = "explore"
         else:
             scene = "unknown"
-        action_family = None
-        for part in tool_returns:
-            try:
-                parsed = json.loads(str(part.content or ""))
-                if isinstance(parsed, dict) and parsed.get("action_family"):
-                    action_family = parsed.get("action_family")
-                    break
-            except Exception:
-                continue
+        action_family = _select_conversation_action_family(tool_returns)
         _log_conversation_turn_event(
             sessionId=session_id,
             userId=user_id,

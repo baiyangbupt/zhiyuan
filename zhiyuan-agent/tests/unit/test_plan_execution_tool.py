@@ -3087,6 +3087,172 @@ def test_execute_plan_action_runs_move_unit_after_resolving_position_ref():
     mock_review.assert_awaited_once()
 
 
+def test_execute_plan_action_runs_move_unit_after_resolving_school_major_ref():
+    payload = {
+        "stage": "apply",
+        "action_family": "move_unit",
+        "context_summary": "阶段=ordered；方案=30/30",
+        "preview_summary": "",
+        "missing_inputs": [],
+        "should_rerun_review": True,
+        "intent_relation": "unknown",
+        "atomic_actions": [
+            {
+                "action_type": "move_unit",
+                "volunteer_ids": ["湖北工程学院的计算机科学与技术"],
+                "target_position": 3,
+                "filters": {},
+                "reason": "把湖北工程学院的计算机科学与技术改到第3位",
+            }
+        ],
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
+        new=AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "items": [
+                        {
+                            "position": 20,
+                            "volunteerId": "hbgc-cs-20",
+                            "schoolName": "湖北工程学院(01)",
+                            "majorName": "计算机科学与技术(办学地点:校本部)",
+                        }
+                    ]
+                },
+            }
+        ),
+    ), patch(
+        "app.handlers.mutation_handlers.move_planning_ordered_item",
+        new=AsyncMock(return_value="move ok"),
+    ) as mock_move, patch(
+        "app.tools.plan_execution_tool.run_planning_review",
+        new=AsyncMock(return_value="review after move ok"),
+    ):
+        result = asyncio.run(execute_plan_action(_ctx_with_pending("move_unit"), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["result_kind"] == "mutation_result"
+    assert data["affected_volunteer_ids"] == ["hbgc-cs-20"]
+    mock_move.assert_awaited_once()
+    assert mock_move.await_args.args[1:] == ("hbgc-cs-20", 3)
+
+
+def test_execute_plan_action_runs_remove_unit_after_resolving_school_major_dot_ref():
+    payload = {
+        "stage": "apply",
+        "action_family": "remove_units",
+        "context_summary": "阶段=ordered；方案=30/30",
+        "preview_summary": "",
+        "missing_inputs": [],
+        "should_rerun_review": True,
+        "intent_relation": "unknown",
+        "atomic_actions": [
+            {
+                "action_type": "remove_units",
+                "volunteer_ids": ["湖北工程学院.计算机科学与技术"],
+                "target_position": None,
+                "filters": {},
+                "reason": "去掉湖北工程学院.计算机科学与技术",
+            }
+        ],
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
+        new=AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "items": [
+                        {
+                            "position": 20,
+                            "volunteerId": "hbgc-cs-20",
+                            "schoolName": "湖北工程学院(01)",
+                            "majorName": "计算机科学与技术",
+                        }
+                    ]
+                },
+            }
+        ),
+    ), patch(
+        "app.handlers.mutation_handlers.remove_planning_ordered_items",
+        new=AsyncMock(return_value="remove ok"),
+    ) as mock_remove, patch(
+        "app.tools.plan_execution_tool.run_planning_review",
+        new=AsyncMock(return_value="review after remove ok"),
+    ):
+        result = asyncio.run(execute_plan_action(_ctx_with_pending("remove_units"), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["result_kind"] == "mutation_result"
+    assert data["affected_volunteer_ids"] == ["hbgc-cs-20"]
+    mock_remove.assert_awaited_once()
+    assert mock_remove.await_args.args[1] == ["hbgc-cs-20"]
+
+
+def test_execute_plan_action_does_not_guess_ambiguous_school_major_ref():
+    payload = {
+        "stage": "apply",
+        "action_family": "move_unit",
+        "context_summary": "阶段=ordered；方案=30/30",
+        "preview_summary": "",
+        "missing_inputs": [],
+        "should_rerun_review": True,
+        "intent_relation": "unknown",
+        "atomic_actions": [
+            {
+                "action_type": "move_unit",
+                "volunteer_ids": ["湖北工程学院的计算机科学与技术"],
+                "target_position": 3,
+                "filters": {},
+                "reason": "把湖北工程学院的计算机科学与技术改到第3位",
+            }
+        ],
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
+        new=AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "items": [
+                        {
+                            "position": 20,
+                            "volunteerId": "hbgc01-cs-20",
+                            "schoolName": "湖北工程学院(01)",
+                            "majorName": "计算机科学与技术",
+                        },
+                        {
+                            "position": 21,
+                            "volunteerId": "hbgc02-cs-21",
+                            "schoolName": "湖北工程学院(02)",
+                            "majorName": "计算机科学与技术",
+                        },
+                    ]
+                },
+            }
+        ),
+    ), patch(
+        "app.handlers.mutation_handlers.move_planning_ordered_item",
+        new=AsyncMock(return_value="move ok"),
+    ) as mock_move, patch(
+        "app.tools.plan_execution_tool.run_planning_review",
+        new=AsyncMock(return_value="review after move ok"),
+    ):
+        result = asyncio.run(execute_plan_action(_ctx_with_pending("move_unit"), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["applied"] is False
+    assert data["result_kind"] == "error"
+    assert "湖北工程学院的计算机科学与技术" in data["summary"]
+    assert "needs_volunteer_selection" in data["reply_focus"]
+    mock_move.assert_not_awaited()
+
+
 def test_execute_plan_action_blocks_pin_unit_without_resolving_position_ref():
     payload = {
         "stage": "apply",

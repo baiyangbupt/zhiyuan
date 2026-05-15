@@ -20,7 +20,38 @@ from app.service import (
     _normalize_pending_intent_reply,
     _normalize_plan_reply_style,
     _normalize_user_facing_terms,
+    _select_conversation_action_family,
 )
+
+
+def _tool_return(action_family: str) -> ToolReturnPart:
+    return ToolReturnPart(
+        tool_name="execute_plan_action",
+        content=json.dumps({"action_family": action_family}, ensure_ascii=False),
+        tool_call_id=f"tool-{action_family}",
+    )
+
+
+def test_select_conversation_action_family_prefers_last_non_query_action():
+    action_family = _select_conversation_action_family(
+        [
+            _tool_return("query_state"),
+            _tool_return("remove_ordered_unit"),
+        ]
+    )
+
+    assert action_family == "remove_ordered_unit"
+
+
+def test_select_conversation_action_family_keeps_query_when_only_query_actions():
+    action_family = _select_conversation_action_family(
+        [
+            _tool_return("query_state"),
+            _tool_return("query_ordered"),
+        ]
+    )
+
+    assert action_family == "query_ordered"
 
 
 class _FakeAgent:

@@ -127,6 +127,8 @@ planning_workflow_tool 暂时保留为内部 helper 集合。
 | 去草稿文案 | 把这个加入方案 | `add_units` | 回复不出现“草稿” |
 | 专业组移动 | 把这个专业组移到第 5 位 | 新增 unit action | 整组移动，组内专业不打散 |
 | 专业组删除 | 删除这个专业组 | 新增 unit action | 删除 unit，不残留孤立专业 |
+| 学校+专业移动 | 把 XX 大学的 XX 专业改到第 3 位 | `move_unit` | 通过学校名+专业名定位，不要求用户提供数字索引 |
+| 学校+专业删除 | 去掉 XX 大学.XX 专业 | `remove_units` | 支持“的”、`.`、`-` 等自然分隔符；歧义时不误删 |
 
 ## 4. 最小结构化日志设计
 
@@ -386,6 +388,7 @@ PYTHONPATH=. ./.venv/bin/python examples/dialog_regression_runner.py \
 
 - `plan_next_action` 增加高副作用动作状态约束：当 `user_confirmed=false` 时，即使模型传入 `current_stage="apply"`，也强制回到 `preview` 或 `analyze`，避免出现“未确认但 apply”的结构矛盾。
 - `move_ordered_unit / remove_ordered_unit` 支持“第 N 个专业组/志愿组”作为位置引用；preview 阶段不再要求模型必须提前提供真实 `unit_ids`，执行层继续负责按当前 ordered units 解析真实 unitId。
+- `move_unit / remove_units / replace_units` 支持学校名+专业名引用（如“XX大学的XX专业”“XX大学.XX专业”）；执行层会按当前方案重新解析真实 volunteerId。如果同校同专业在多个专业组中同时出现，不能静默选择其中一个，必须返回需要进一步明确的提示。
 - Agent 指令补充：未确认动作不得传 `current_stage="apply"` 或 `user_confirmed=true`；`execute_plan_action` 返回 `preview_only` 后本轮停止继续查工具，直接等待用户确认。
 - service 层 pending 提取规则收口：同一轮中如果已经形成高副作用 preview，后续只读 `query_state` 成功不会再清掉 pending；只有真正的变更动作 apply 成功才清掉上一轮待确认计划。该修复解决了“专业组移动预览后模型又查状态，导致用户确认时无 pending”的问题。
 - 本地排序接口失败定位为运行进程 class 版本不一致：8080 后端旧 class 抛 `PlanningStateService$OrderedSortKey` `NoSuchMethodError`。重新编译/重启后端后，`ordered-plan/sort` 能正常返回成功结果；源码层未发现 agent payload 问题。
@@ -461,6 +464,20 @@ PYTHONPATH=. ./.venv/bin/python examples/dialog_regression_runner.py \
 - 当前代码直接跑 `ChatService.handle_message(session=17, content="看看现在的方案")`，链路为 `plan_next_action -> execute_plan_action(query_state) -> final`，没有单独工具调用 `collect_plan_context_inputs`。
 - 当前诊断耗时约 `14.6s`，`3` 次 LLM 请求，约 `28331` input tokens，`execute_plan_action(query_state)` 约 `305ms`。
 - 结论：不绕过大模型的前提下，提示词收敛已经能减少一次模型往返和约 1.18 万 input tokens；后续若还需进一步降延迟，再考虑模型结构化分类、轻量事实摘要或超时兜底设计。
+
+#### 显式方案改动类请求
+
+真实 WebSocket 删除专业组验证中，`session=16 / 删除第3个专业组` 曾出现先 `query_state` 再 `remove_ordered_unit(preview)` 的绕路，导致一次无必要的状态播报和额外 LLM 往返。当前提示词进一步收敛：
+
+- 显式排序、移动、删除当前方案的请求，不先做 `query_state` 状态播报。
+- 直接规划对应 action 的 preview，并交给 `execute_plan_action` 形成可确认 pending。
+- 仍不增加新的 service 层字符串匹配或确定性短路，最终回复继续由大模型基于工具事实组织。
+
+验证结果：
+
+- 首次验证中，`session=16 / 删除第3个专业组` 曾先执行一次 `query_state`，说明该性能问题需要通过提示词和可观测性一起收口。
+- 补充显式改动类请求约束并重启 agent 后，复测 `session=16 / 删除第3个专业组` 不再先做 `query_state`，链路为 `plan_next_action -> execute_plan_action(remove_ordered_unit preview) -> final`；runner 耗时约 `24.1s`，LLM 请求 `2` 次，tool call `2` 次。
+- 同轮最终结果是 `remove_ordered_unit(preview)`，但旧 `conversation_turn_event.actionFamily` 会记录成第一次工具结果 `query_state`。当前已修正日志归因：如果同一轮包含多个 plan action，优先记录最后一个非 query action，避免 benchmark 和线上分析把实际删除/移动预览统计成状态查询。
 
 ### 7.5 Release 3.0.0 Review 跟进
 

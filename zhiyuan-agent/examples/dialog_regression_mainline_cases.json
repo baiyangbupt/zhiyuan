@@ -240,6 +240,22 @@
     "prompts": ["把第39个志愿往前挪到第3个", "确认"]
   },
   {
+    "name": "ordered-move-by-school-major-preview-apply",
+    "sessionId": "5727",
+    "flow": ["plan"],
+    "coverage": ["move_unit", "school_major_ref", "plan_preview", "plan_apply", "ordered_workspace"],
+    "assertPlanStyle": true,
+    "prompts": ["把湖北工程学院的计算机科学与技术改到第3位", "确认"]
+  },
+  {
+    "name": "ordered-remove-by-school-major-preview-apply",
+    "sessionId": "5727",
+    "flow": ["plan"],
+    "coverage": ["remove_units", "school_major_ref", "plan_preview", "plan_apply", "ordered_workspace"],
+    "assertPlanStyle": true,
+    "prompts": ["去掉湖北工程学院.计算机科学与技术", "确认"]
+  },
+  {
     "name": "pin-unpin-after-review",
     "sessionId": "5728",
     "flow": ["plan"],
