@@ -510,6 +510,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const candidateViewStateHydratedRef = useRef(false);
   const lastSavedCandidateViewStateRef = useRef('');
   const initialPlanRequestedRef = useRef(false);
+  const orderedCollapseInitializedRef = useRef(false);
+  const previousOrderedCollapseKeysRef = useRef<string[]>([]);
 
   const draftItems = planningState?.draftPlanState?.items || [];
   const orderedItems = planningState?.orderedPlanState?.items || [];
@@ -1838,6 +1840,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     candidateViewStateHydratedRef.current = false;
     lastSavedCandidateViewStateRef.current = '';
     initialPlanRequestedRef.current = false;
+    orderedCollapseInitializedRef.current = false;
+    previousOrderedCollapseKeysRef.current = [];
     candidateQueryInFlightPagesRef.current.clear();
     candidateItemCacheRef.current = {};
     setCandidateCacheVersion(version => version + 1);
@@ -2704,9 +2708,24 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   useEffect(() => {
     if (!orderedCollapseSignature) {
       setCollapsedOrderedGroupKeys([]);
+      orderedCollapseInitializedRef.current = false;
+      previousOrderedCollapseKeysRef.current = [];
       return;
     }
-    setCollapsedOrderedGroupKeys(orderedCollapseSignature.split('|').slice(1));
+    const nextKeys = orderedCollapseSignature.split('|');
+    const previousKeySet = new Set(previousOrderedCollapseKeysRef.current);
+    const isFirstCollapseInit = !orderedCollapseInitializedRef.current;
+    setCollapsedOrderedGroupKeys(prev => {
+      if (isFirstCollapseInit) {
+        return nextKeys.slice(1);
+      }
+      const nextKeySet = new Set(nextKeys);
+      const preservedCollapsedKeys = prev.filter(key => nextKeySet.has(key));
+      const newCollapsedKeys = nextKeys.filter(key => !previousKeySet.has(key));
+      return Array.from(new Set([...preservedCollapsedKeys, ...newCollapsedKeys]));
+    });
+    orderedCollapseInitializedRef.current = true;
+    previousOrderedCollapseKeysRef.current = nextKeys;
   }, [orderedCollapseSignature]);
 
   const groupedDraftList = useMemo<DraftGroup[]>(() => {
