@@ -45,6 +45,7 @@
 - 真实 WebSocket 复测记录：`删除第5个专业组 -> 确认` 已通过 `remove_ordered_unit preview/apply`；`把青岛电影学院的新闻学改到第3位 -> 确认` 已通过 `move_unit preview/apply`。后者仍有一次局部查询和一次上下文读取，作为后续性能优化项保留。
 - 补充 Plan 工具说明：`query_volunteer_plan` 不应用作移动/删除前定位 ID；`plan_next_action` 的 `volunteer_ids` 可直接接收用户原始学校+专业引用，由执行层解析真实 ID，减少学校+专业移动/删除前的无效查询倾向。
 - 真实 WebSocket 复测确认学校+专业移动链路收敛：`把哈尔滨理工大学的人力资源管理改到第4位 -> 确认` 直接走 `plan_next_action -> execute_plan_action(move_unit)`，不再先调用 `query_volunteer_plan`，确认后刷新 `ordered`。
+- 真实 WebSocket 复测确认学校+专业删除链路收敛：`去掉山东英才学院的国际商务 -> 确认` 直接走 `plan_next_action -> execute_plan_action(remove_units)`，不再先调用 `query_volunteer_plan`，确认后刷新 `ordered`。
 - 清理 `ChatAgent` 中已不再生效的旧 `_build_instructions` 死代码，避免与当前 `app.agent.instructions.assembler.build_instructions` 模块化指令入口产生维护歧义。
 - 修正 `conversation_turn_event.actionFamily` 归因：同一轮如果先查询状态、后形成删除/移动/排序等非 query action，结构化日志优先记录最后一个非 query action，避免效果和性能分析误把实际操作预览统计为 `query_state`。
 
