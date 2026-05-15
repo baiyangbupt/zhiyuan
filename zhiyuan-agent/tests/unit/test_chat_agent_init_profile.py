@@ -115,6 +115,10 @@ def test_build_instructions_includes_plan_orchestration_boundaries():
     assert "即使历史里答过，也要重新读取当前 plan 状态" in instructions
     assert "高副作用动作" in instructions
     assert "`move_ordered_unit` 或 `remove_ordered_unit`" in instructions
+    assert "删除第 N 个专业组" in instructions
+    assert "target_position=M" in instructions
+    assert "青岛电影学院的新闻学" in instructions
+    assert "query_volunteer_plan" in instructions
     assert "不提供固定/锁定志愿入口" in instructions
     assert "execute_plan_action" in instructions
     assert "`result_kind`/`reply_focus`/`next_step_hints`/`facts`" in instructions

@@ -525,6 +525,10 @@ PYTHONPATH=. ./.venv/bin/python examples/dialog_regression_runner.py \
 - 使用外部初始化接口新建干净会话 `session=97`，生成结果为 `candidateTotal=5510 / orderedTotal=96 / 冲28 稳38 保30`。在该会话中复测 `把广西师大统计加进来 -> 确认`，链路已进入 `add_units preview -> apply`，但发现目标本来已在方案第 88 位，确认回复仍说“已加入 1 个”。该问题属于 add 前缺少“已在方案”预检查。
 - 当前修复：`add_units` apply 阶段先用当前方案引用解析检查目标是否已存在；如果目标已在方案里，返回 `result_kind=no_change` 和“已经在当前方案中，无需重复加入”，不调用后端加入接口，不触发复审，不说“已新增”，也不发送工作台刷新卡片。`no_change` 用于表达“已识别且无需变更”，不再把这类正常无变化结果归入 `error`；Agent 指令同步要求模型直接说明无需变更原因，不当作失败重试。
 - 修复后复测 `session=98 / 把广西师大统计加进来`：首轮直接回复目标已在当前方案中，`followupMessages=0`；继续回复“确认”时返回没有待确认动作，仍无工作台卡片。
+- 真实删除专业组回归暴露问题：`session=16 / 删除第5个专业组` 曾先执行 `query_state`，随后模型长时间等待并触发超时兜底，用户看到的是方案概览而不是删除预览，且兜底文本泄露了 `[LLM_INTERNAL]`。当前收口为：变更类用户请求不使用中途 `query_state/status_overview` 作为超时兜底；兜底回复过滤内部 hints；调度指令明确“删除第 N 个专业组”必须走 `remove_ordered_unit` preview，并把源位置交给执行层解析。
+- TODO：当前“变更类用户请求”识别使用 `_PLAN_MUTATION_PROMPT_KEYWORDS`，只作为超时兜底止血保护，不参与正常路由、不直接执行动作、不绕过大模型。后续应替换为结构化标记，例如在 plan action/recent result 中记录本轮是否已识别 mutation intent 或是否已形成 mutation preview，再由超时兜底基于结构化字段决定是否跳过 `query_state/status_overview`。
+- 真实专业模式回归暴露问题：`session=17 / 把青岛电影学院的新闻学改到第3位` 曾先调用 `query_volunteer_plan`，随后反复 `collect_plan_context_inputs` 并 180 秒超时，没有形成 `move_unit` preview。当前调度指令补充：学校+专业移动到指定位置必须直接规划 `move_unit` preview，`volunteer_ids` 保留用户原始学校+专业引用，`target_position` 填目标位置；学校+专业删除必须直接规划 `remove_units` preview。执行层继续负责真实 ID 解析和歧义澄清。
+- 复测结果：`session=16 / 删除第5个专业组 -> 确认` 已通过，链路为 `remove_ordered_unit preview -> direct_pending_plan_confirm apply`，确认后返回 `ordered` 工作台刷新；预览耗时约 48.9s，仍需后续性能优化。`session=17 / 把青岛电影学院的新闻学改到第3位 -> 确认` 已通过，链路最终形成 `move_unit preview -> apply`，确认后返回 `ordered` 工作台刷新；本轮仍先调用了 `query_volunteer_plan` 和一次 `collect_plan_context_inputs`，耗时约 25.4s，后续应继续优化为直接 `plan_next_action -> execute_plan_action`。
 
 后续待补：
 

@@ -181,6 +181,15 @@ class TestToolDispatchRules:
         assert "广西师大统计" in result
         assert "不要改走学校/分数线 Explore 分析" in result
 
+    def test_school_major_move_and_remove_refs_are_plan_mutations(self):
+        result = build_tool_dispatch_rules()
+        assert "青岛电影学院的新闻学" in result
+        assert "move_unit" in result
+        assert "target_position" in result
+        assert "query_volunteer_plan" in result
+        assert "remove_units" in result
+        assert "唯一性校验" in result
+
 
 # ---------------------------------------------------------------------------
 # assembler — full integration

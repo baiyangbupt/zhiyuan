@@ -95,6 +95,24 @@ _PLAN_STYLE_GUARD_PROMPT_KEYWORDS = (
     "往后挪",
     "换成",
 )
+_PLAN_MUTATION_PROMPT_KEYWORDS = (
+    "删除",
+    "删掉",
+    "去掉",
+    "移到",
+    "移动",
+    "往前挪",
+    "往后挪",
+    "排序",
+    "重排",
+    "加入",
+    "加进来",
+    "加进去",
+    "换成",
+    "替换",
+    "补齐",
+    "补几个",
+)
 _UNBACKED_CONFIRM_SENTENCE_RE = re.compile(r"确认要我.*执行")
 
 
@@ -735,6 +753,13 @@ def _is_basic_plan_status_question(content: str) -> bool:
     }
 
 
+def _is_plan_mutation_request(content: str) -> bool:
+    normalized = re.sub(r"\s+", "", (content or "").strip())
+    if not normalized:
+        return False
+    return any(keyword in normalized for keyword in _PLAN_MUTATION_PROMPT_KEYWORDS)
+
+
 def _build_basic_plan_status_reply(planning: PlanningSummary) -> str:
     total = planning.ordered_total or planning.draft_total
     target = (
@@ -1081,9 +1106,9 @@ def _build_plan_timeout_fallback_reply(result: dict[str, Any]) -> str | None:
         lines.append(f"- {conflict_examples}")
     if next_step_hints:
         first_hint = str(next_step_hints[0] or "").strip()
-        if first_hint:
+        if first_hint and not first_hint.startswith("[LLM_INTERNAL]"):
             lines.extend(["", first_hint])
-    return _normalize_user_facing_terms("\n".join(lines))
+    return _sanitize_reply_for_user(_normalize_user_facing_terms("\n".join(lines)))
 
 
 def _clean_status_item_for_user(value: Any) -> str:
@@ -1170,6 +1195,17 @@ def build_timeout_fallback_from_recent_plan_execution(
 ) -> ChatServiceResponseEnvelope | None:
     result = consume_recent_plan_execution_result(session_id, user_prompt)
     if not result:
+        return None
+    if (
+        _is_plan_mutation_request(user_prompt)
+        and str(result.get("action_family") or "").strip() == "query_state"
+        and str(result.get("result_kind") or "").strip() == "status_overview"
+    ):
+        logger.info(
+            "Skip query_state timeout fallback for mutating prompt: session_id=%s prompt=%s",
+            session_id,
+            user_prompt,
+        )
         return None
     reply = _build_plan_timeout_fallback_reply(result)
     if not reply:

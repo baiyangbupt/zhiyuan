@@ -16,6 +16,7 @@ from app.service import (
     ChatServiceResponseEnvelope,
     _append_plan_preview_confirmation_boundary,
     _build_plan_timeout_fallback_reply,
+    build_timeout_fallback_from_recent_plan_execution,
     _extract_pending_plan_action,
     _normalize_pending_intent_reply,
     _normalize_plan_reply_style,
@@ -2193,6 +2194,35 @@ def test_plan_status_timeout_fallback_uses_structured_user_copy():
     assert "第四个不应展示" not in reply
     assert "@1" not in reply
     assert "方案前几个志愿" not in reply
+
+
+def test_plan_timeout_fallback_does_not_expose_internal_hints():
+    reply = _build_plan_timeout_fallback_reply(
+        {
+            "result_kind": "status_overview",
+            "action_family": "query_state",
+            "summary": "当前方案 45/45。",
+            "next_step_hints": ["[LLM_INTERNAL] 如果用户关心数量是否够用，先解释缺口。"],
+        }
+    )
+
+    assert reply is not None
+    assert "[LLM_INTERNAL]" not in reply
+    assert "如果用户关心" not in reply
+
+
+def test_timeout_fallback_skips_query_state_for_mutation_prompt():
+    with patch(
+        "app.service.consume_recent_plan_execution_result",
+        return_value={
+            "result_kind": "status_overview",
+            "action_family": "query_state",
+            "summary": "当前方案 45/45。",
+        },
+    ):
+        fallback = build_timeout_fallback_from_recent_plan_execution("s1", "删除第5个专业组")
+
+    assert fallback is None
 
 
 def test_chat_service_ignores_historical_intent_preview_for_query_state_workspace_refresh(tmp_path, mock_llm_client):

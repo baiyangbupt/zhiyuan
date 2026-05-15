@@ -38,6 +38,11 @@
 - Plan 调度指令补充“学校/专业简称加入方案”边界：用户要求把某个候选、学校+专业或简称加入当前方案时，优先走 `add_units` preview，由执行层解析真实候选 ID，避免被模型改走只读分数线/选科 Explore 分析。
 - `add_units` 执行前增加当前方案已存在预检查：如果用户要求加入的学校+专业或简称已经在当前方案中，返回 `result_kind=no_change` 和“已经在当前方案中，无需重复加入”，不再调用后端加入接口、触发复审、误说“已新增”或发送无变化工作台卡片，也不再把正常无变化场景记为执行错误。
 - Agent 调度指令补充 `result_kind=no_change` 语义：模型应直接说明“无需变更”的原因，不把它当失败重试，也不误说已新增、已删除或已移动。
+- 修正 Plan 超时兜底：当用户请求删除、移动、排序等方案变更时，不再用同轮中途 `query_state/status_overview` 结果回复方案概览；兜底回复同步过滤 `[LLM_INTERNAL]` hints，避免内部调度提示泄露给用户。
+- Agent 调度指令强化专业组位置操作：`删除第 N 个专业组` 直接规划 `remove_ordered_unit` preview，`把第 N 个专业组移到第 M 位` 直接规划 `move_ordered_unit` preview，由执行层按当前专业组顺序解析位置。
+- 记录超时兜底 TODO：当前 `_PLAN_MUTATION_PROMPT_KEYWORDS` 仅作为变更请求超时止血保护，不参与正常路由；后续应替换为 plan action/recent result 的结构化 mutation intent 或 mutation preview 标记。
+- Agent 调度指令强化专业模式学校+专业操作：`把 XX大学的XX专业改到第 N 位` 直接规划 `move_unit` preview，`去掉/删除 XX大学的XX专业` 直接规划 `remove_units` preview，引用解析和歧义澄清仍由执行层处理，避免模型先局部查询后循环读上下文。
+- 真实 WebSocket 复测记录：`删除第5个专业组 -> 确认` 已通过 `remove_ordered_unit preview/apply`；`把青岛电影学院的新闻学改到第3位 -> 确认` 已通过 `move_unit preview/apply`。后者仍有一次局部查询和一次上下文读取，作为后续性能优化项保留。
 - 清理 `ChatAgent` 中已不再生效的旧 `_build_instructions` 死代码，避免与当前 `app.agent.instructions.assembler.build_instructions` 模块化指令入口产生维护歧义。
 - 修正 `conversation_turn_event.actionFamily` 归因：同一轮如果先查询状态、后形成删除/移动/排序等非 query action，结构化日志优先记录最后一个非 query action，避免效果和性能分析误把实际操作预览统计为 `query_state`。
 
