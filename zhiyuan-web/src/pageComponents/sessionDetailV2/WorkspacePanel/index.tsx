@@ -1,20 +1,20 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Button, Collapse, Dropdown, Empty, Modal, Spin, Tag, Tooltip, message } from 'antd';
+import { Button, Collapse, Dropdown, Empty, InputNumber, Modal, Spin, Tag, Tooltip, message } from 'antd';
 import {
   PlusOutlined,
-  PushpinOutlined,
   VerticalAlignTopOutlined,
   VerticalAlignBottomOutlined,
   DeleteOutlined,
-  LockOutlined,
-  UnlockOutlined,
   FilterOutlined,
   ArrowUpOutlined,
   ArrowDownOutlined,
+  SwapOutlined,
+  SortAscendingOutlined,
   DownOutlined,
   ShrinkOutlined,
   ExclamationCircleOutlined,
   DownloadOutlined,
+  SafetyCertificateOutlined,
 } from '@ant-design/icons';
 import {
   exportPlanningOrderedPlanApi,
@@ -22,13 +22,14 @@ import {
   generatePlanningCandidatePoolApi,
   generatePlanningInitialPlanApi,
   getPlanningWorkspaceStateApi,
-  lockPlanningDraftItemsApi,
   movePlanningOrderedItemApi,
-  pinPlanningOrderedItemApi,
+  movePlanningOrderedUnitApi,
   queryPlanningCandidatePoolApi,
   removePlanningDraftItemsApi,
+  removePlanningOrderedUnitApi,
+  runPlanningReviewApi,
   selectPlanningDraftItemsApi,
-  unpinPlanningOrderedItemApi,
+  sortPlanningOrderedPlanApi,
   updatePlanningCandidateViewStateApi,
 } from '@/service/apis/sessionDetail';
 import { IUserInfoParams } from '@/interface/api/sessionDetail';
@@ -40,6 +41,7 @@ import {
   PlanningDraftItem,
   PlanningDraftUnit,
   PlanningOrderedItem,
+  PlanningOrderedSortField,
   PlanningReviewCheck,
   PlanningStateRes,
   PlanningWorkspaceIntent,
@@ -119,7 +121,6 @@ interface DraftGroup {
   tier: string;
   schoolName: string;
   source?: string;
-  locked: boolean;
   items: Array<{
     draftItem: PlanningDraftItem;
     candidateItem: PlanningCandidateItem | null;
@@ -132,6 +133,16 @@ interface SchoolHistoryModalState {
   rankTags: string[];
   popupTags: string[];
   scores: NonNullable<PlanningCandidateItem['schoolHistoryScores']>;
+}
+
+interface OrderedMoveModalState {
+  item: PlanningOrderedItem;
+  currentPosition: number;
+}
+
+interface OrderedUnitMoveModalState {
+  group: OrderedGroup;
+  currentPosition: number;
 }
 
 interface ActiveFilterChip {
@@ -151,6 +162,7 @@ interface FilterPanelOption {
 
 interface FilterPanelGroup {
   label: string;
+  option?: FilterPanelOption;
   options?: FilterPanelOption[];
   children?: FilterPanelGroup[];
 }
@@ -202,19 +214,31 @@ const TIER_OPTIONS = [
 const SORT_FIELD_OPTIONS = [
   { label: '推荐系数', value: 'finalScore' },
   { label: '录取率', value: 'admissionRatio' },
+  { label: '院校层次', value: 'schoolRank' },
   { label: '区间位次', value: 'rankInTier' },
-  { label: '院校排名', value: 'schoolRank' },
   { label: '专业热度', value: 'hotIndex' },
-  { label: '就业表现', value: 'salaryAvg' },
+  { label: '薪酬指数', value: 'salaryAvg' },
   { label: '学费', value: 'tuitionPerYear' },
 ];
+
+const ORDERED_SORT_OPTIONS: Array<{
+  label: string;
+  value: PlanningOrderedSortField;
+  description: string;
+}> = [
+  { label: '录取率', value: 'admissionRatio', description: '低录取率排在前面，优先处理风险较高的志愿' },
+  { label: '院校层次', value: 'schoolRank', description: '院校排名靠前的排在前面' },
+  { label: '推荐系数', value: 'finalScore', description: '推荐系数高的排在前面' },
+];
+
+const SALARY_AVG_TOOLTIP =
+  '平均薪酬指数，反映该专业毕业生薪酬表现的相对水平，不等同于实际工资。';
 
 const REVIEW_LEVEL_COLOR: Record<string, string> = {
   risk: 'error',
   warn: 'warning',
   info: 'processing',
 };
-
 const FILTER_TOKEN_SEPARATOR = '::';
 
 const FILTER_FIELD_META: Record<
@@ -297,7 +321,7 @@ const uniqueStrings = (values: Array<string | null | undefined>) =>
   Array.from(new Set(values.map(item => (item || '').trim()).filter(Boolean)));
 
 const hasFilterPanelOptions = (group: FilterPanelGroup): boolean =>
-  Boolean(group.options?.length || group.children?.some(hasFilterPanelOptions));
+  Boolean(group.option || group.options?.length || group.children?.some(hasFilterPanelOptions));
 
 const MAJOR_FILTER_GROUP_CODES = new Set([
   'major.discipline',
@@ -449,9 +473,20 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   });
   const [candidatePoolLoading, setCandidatePoolLoading] = useState(false);
   const [candidateCacheVersion, setCandidateCacheVersion] = useState(0);
+  const [showBackTop, setShowBackTop] = useState(false);
+  const [overviewCollapsed, setOverviewCollapsed] = useState(false);
+  const [sortModalOpen, setSortModalOpen] = useState(false);
+  const [selectedOrderedSortField, setSelectedOrderedSortField] =
+    useState<PlanningOrderedSortField>('admissionRatio');
+  const [orderedMoveModal, setOrderedMoveModal] = useState<OrderedMoveModalState | null>(null);
+  const [orderedMoveTargetPosition, setOrderedMoveTargetPosition] = useState<number>(1);
+  const [orderedUnitMoveModal, setOrderedUnitMoveModal] = useState<OrderedUnitMoveModalState | null>(null);
+  const [orderedUnitMoveTargetPosition, setOrderedUnitMoveTargetPosition] = useState<number>(1);
   const candidateQueryInFlightPagesRef = useRef<Set<string>>(new Set());
   const [filterPanelOpen, setFilterPanelOpen] = useState(false);
   const [filterSearchKeyword, setFilterSearchKeyword] = useState('');
+  const [expandedFilterGroupKeys, setExpandedFilterGroupKeys] = useState<string[]>([]);
+  const [collapsedOrderedGroupKeys, setCollapsedOrderedGroupKeys] = useState<string[]>([]);
   const [candidateFilterOptions, setCandidateFilterOptions] = useState<PlanningCandidateFilterOptionsRes>({
     ...EMPTY_CANDIDATE_FILTER_OPTIONS,
   });
@@ -466,6 +501,10 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const workspaceBodyRef = useRef<HTMLDivElement | null>(null);
   const candidateSummaryRef = useRef<HTMLDivElement | null>(null);
   const reviewSummaryRef = useRef<HTMLDivElement | null>(null);
+  const workspaceTouchStartYRef = useRef<number | null>(null);
+  const workspaceTouchStartAtTopRef = useRef(false);
+  const overviewRevealReadyRef = useRef(false);
+  const overviewRevealReadyTimerRef = useRef<number | null>(null);
   const candidateItemCacheRef = useRef<Record<string, PlanningCandidateItem>>({});
   const initialFiltersAppliedRef = useRef(false);
   const candidateViewStateHydratedRef = useRef(false);
@@ -482,6 +521,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const draftSummary = planningState?.draftPlanState?.summary;
   const orderedSummary = planningState?.orderedPlanState?.summary;
   const reviewSummary = planningState?.reviewState?.summary;
+  const workflowStatus = planningState?.workflowStatus;
+  const candidateRiskHints = planningState?.candidatePoolState?.riskHints || [];
   const isLegacySubmittedPlan = planningState?.orderedPlanState?.generationMode === 'legacy_submitted';
   const draftIdSet = useMemo(
     () => new Set(draftItems.map(item => item.volunteerId).filter(Boolean)),
@@ -547,7 +588,6 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
             },
             { groupCode: 'major.discipline', groupName: '专业门类', filterField: 'majorTags', values: fallbackMajorDisciplineValues },
             { groupCode: 'major.category', groupName: '专业大类', filterField: 'majorKeywords', values: fallbackMajorKeywordValues },
-            { groupName: '专业标签', filterField: 'majorTags', values: candidateFilterOptions.majorTags || [] },
           ];
 
     const hasMajorCategoryGroup = backendGroups.some(group => group.groupCode === 'major.category');
@@ -621,44 +661,43 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         .filter(group => group.filterField === 'cityNames')
         .flatMap(group => group.values || [])
     );
-    const usedCitySet = new Set<string>();
-    const provinceChildren: FilterPanelGroup[] = provinceValues.map(province => {
-      const cities = uniqueStrings(Array.from(provinceToCities.get(province) || []))
-        .filter(city => cityValues.includes(city));
-      cities.forEach(city => usedCitySet.add(city));
-      return {
+    const backendRegionTree = (candidateFilterOptions.regionTree || [])
+      .map(node => ({
+        provinceName: (node.provinceName || '').trim(),
+        cityNames: uniqueStrings(node.cityNames || []).filter(city => cityValues.includes(city)),
+      }))
+      .filter(node => node.provinceName && provinceValues.includes(node.provinceName));
+    const provinceChildren: FilterPanelGroup[] = (
+      backendRegionTree.length > 0
+        ? backendRegionTree.map(node => ({
+            province: node.provinceName,
+            cities: node.cityNames,
+          }))
+        : provinceValues.map(province => ({
+            province,
+            cities: uniqueStrings(Array.from(provinceToCities.get(province) || []))
+              .filter(city => cityValues.includes(city)),
+          }))
+    ).map(({ province, cities }) => ({
+      label: province,
+      option: {
         label: province,
-        options: [{
-          label: '全省/市',
-          title: `院校省份 · ${province}`,
-          field: 'provinceNames' as FilterTokenField,
-          value: province,
-        }],
-        children: cities.length > 0
-          ? [{
-              label: '城市',
-              options: cities.map(city => ({
-                label: city,
-                title: `院校城市 · ${province} · ${city}`,
-                field: 'cityNames' as FilterTokenField,
-                value: city,
-              })),
-            }]
-          : undefined,
-      };
-    });
-    const unmatchedCityValues = cityValues.filter(city => !usedCitySet.has(city));
-    if (unmatchedCityValues.length > 0) {
-      provinceChildren.push({
-        label: '其他城市',
-        options: unmatchedCityValues.map(city => ({
-          label: city,
-          title: `院校城市 · ${city}`,
-          field: 'cityNames' as FilterTokenField,
-          value: city,
-        })),
-      });
-    }
+        title: `院校省份 · ${province}`,
+        field: 'provinceNames' as FilterTokenField,
+        value: province,
+      },
+      children: cities.length > 0
+        ? cities.map(city => ({
+            label: city,
+            option: {
+              label: city,
+              title: `院校城市 · ${province} · ${city}`,
+              field: 'cityNames' as FilterTokenField,
+              value: city,
+            },
+          }))
+        : undefined,
+    }));
 
     const regularGroups = normalizedGroups
       .filter(group => !isMajorFilterGroup(group) && !['provinceNames', 'cityNames'].includes(group.filterField || ''))
@@ -683,37 +722,53 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       groupedCategories.set(discipline, [...(groupedCategories.get(discipline) || []), value]);
     });
 
-    const majorChildren: FilterPanelGroup[] = allMajorDisciplineValues.map(discipline => {
-      const options = (groupedCategories.get(discipline) || []).map(value => ({
-        label: value,
-        title: `专业大类 · ${discipline} · ${value}`,
-        field: 'majorKeywords' as FilterTokenField,
-        value,
-      }));
-      return {
+    const majorChildren: FilterPanelGroup[] = allMajorDisciplineValues.map(discipline => ({
+      label: discipline,
+      option: {
         label: discipline,
-        options,
-      };
-    });
+        title: `专业门类 · ${discipline}`,
+        field: 'majorTags' as FilterTokenField,
+        value: discipline,
+      },
+      children: (groupedCategories.get(discipline) || []).map(value => ({
+        label: value,
+        option: {
+          label: value,
+          title: `专业大类 · ${discipline} · ${value}`,
+          field: 'majorKeywords' as FilterTokenField,
+          value,
+        },
+      })),
+    }));
 
     if (unmatchedCategories.length > 0) {
       majorChildren.push({
         label: '其他专业大类',
-        options: unmatchedCategories.map(value => ({
+        children: unmatchedCategories.map(value => ({
           label: value,
-          title: `专业大类 · ${value}`,
-          field: 'majorKeywords' as FilterTokenField,
-          value,
+          option: {
+            label: value,
+            title: `专业大类 · ${value}`,
+            field: 'majorKeywords' as FilterTokenField,
+            value,
+          },
         })),
       });
     }
 
     normalizedGroups
-      .filter(group => ['admission.type', 'constraint.limit', 'major.tag'].includes(group.groupCode || ''))
+      .filter(group => ['admission.type', 'constraint.limit'].includes(group.groupCode || ''))
       .map(group => toPanelGroup(group))
       .filter(Boolean)
       .forEach(group => {
-        majorChildren.push(group as FilterPanelGroup);
+        const subGroup = group as FilterPanelGroup;
+        majorChildren.push({
+          label: subGroup.label,
+          children: (subGroup.options || []).map(option => ({
+            label: option.label,
+            option,
+          })),
+        });
       });
 
     const mappedGroups: FilterPanelGroup[] = [{
@@ -919,7 +974,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     filters.majorTags.forEach(tag => {
       chips.push({
         key: `major-tag-positive-${tag}`,
-        label: `专业标签 · ${tag}`,
+        label: `专业条件 · ${tag}`,
         field: 'majorTags',
         polarity: 'positive',
         value: tag,
@@ -928,7 +983,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     filters.negativeMajorTags.forEach(tag => {
       chips.push({
         key: `major-tag-negative-${tag}`,
-        label: `专业标签 · 不看${tag}`,
+        label: `专业条件 · 不看${tag}`,
         field: 'majorTags',
         polarity: 'negative',
         value: tag,
@@ -1245,6 +1300,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
           majorTags: data.majorTags || [],
           majorKeywords: data.majorKeywords || [],
           groups: data.groups || [],
+          regionTree: data.regionTree || [],
         });
       }
     } catch (error) {
@@ -1389,12 +1445,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   };
 
   const handleRemoveDraftItem = async (volunteerId?: string) => {
-    const draftItem = draftItems.find(item => item.volunteerId === volunteerId);
     if (!volunteerId || actionLoading) {
-      return;
-    }
-    if (draftItem?.locked) {
-      message.warning('草稿已锁定，请先解除锁定再删除');
       return;
     }
     setActionLoading('draft');
@@ -1405,7 +1456,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         [volunteerId]
       );
       if (code === 0) {
-        message.success('已移出草稿');
+        message.success('已移出方案');
         if (data) {
           applyPlanningState(data);
         } else {
@@ -1413,10 +1464,10 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         }
         queryCandidatePool(candidatePoolResult.page || 1);
       } else {
-        message.error('移出草稿失败');
+        message.error('移出方案失败');
       }
     } catch (error) {
-      message.error('移出草稿异常，请稍后重试');
+      message.error('移出方案异常，请稍后重试');
     }
     setActionLoading(null);
   };
@@ -1426,11 +1477,6 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       .map(item => item.draftItem.volunteerId || '')
       .filter(Boolean);
     if (!volunteerIds.length || actionLoading) {
-      return;
-    }
-    const hasLocked = group.items.some(item => Boolean(item.draftItem.locked));
-    if (hasLocked) {
-      message.warning('该专业组里有已锁定专业，请先解除锁定再整组删除');
       return;
     }
     setActionLoading('draft');
@@ -1457,58 +1503,34 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     setActionLoading(null);
   };
 
-  const handleToggleDraftLock = async (item?: PlanningDraftItem) => {
-    if (!item?.volunteerId || actionLoading) {
-      return;
-    }
-    setActionLoading('draft');
-    try {
-      const { data, code } = await lockPlanningDraftItemsApi(
-        routerParams.tenantId,
-        routerParams.chatSessionId,
-        [item.volunteerId],
-        !item.locked
-      );
-      if (code === 0) {
-        message.success(item.locked ? '已解除锁定' : '已锁定草稿');
-        if (data) {
-          applyPlanningState(data);
-        } else {
-          await fetchWorkspaceState();
-        }
-      } else {
-        message.error('更新草稿锁定状态失败');
-      }
-    } catch (error) {
-      message.error('更新草稿锁定状态异常，请稍后重试');
-    }
-    setActionLoading(null);
-  };
-
-  const handleMoveOrderedItem = async (
-    item?: PlanningOrderedItem,
-    currentIndex: number = 0,
-    direction: 'up' | 'down' = 'up'
+  const applyMoveOrderedItem = async (
+    item: PlanningOrderedItem,
+    targetPosition: number,
+    loadingText: string,
+    successText?: string
   ) => {
     if (!item?.volunteerId || actionLoading) {
       return;
     }
-    const currentPosition = currentIndex + 1;
-    const targetPosition = direction === 'up' ? currentPosition - 1 : currentPosition + 1;
-    if (targetPosition < 1 || targetPosition > orderedItems.length) {
+    const normalizedTargetPosition = Math.max(1, Math.min(targetPosition, orderedItems.length));
+    const currentPosition = orderedItems.findIndex(orderedItem => orderedItem.volunteerId === item.volunteerId) + 1;
+    if (!currentPosition || normalizedTargetPosition === currentPosition) {
       return;
     }
     setActionLoading('ordered');
     setOrderedActionVolunteerId(item.volunteerId);
-    const hideLoading = message.loading(direction === 'up' ? '正在上移志愿...' : '正在下移志愿...', 0);
+    const hideLoading = message.loading(loadingText, 0);
     try {
       const { data, code } = await movePlanningOrderedItemApi(
         routerParams.tenantId,
         routerParams.chatSessionId,
         item.volunteerId,
-        targetPosition
+        normalizedTargetPosition
       );
       if (code === 0) {
+        if (successText) {
+          message.success(successText);
+        }
         if (data) {
           setPlanningState(prev => ({
             ...(prev || {}),
@@ -1527,22 +1549,86 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     setOrderedActionVolunteerId(null);
   };
 
-  const handleTogglePin = async (item?: PlanningOrderedItem) => {
+  const handleMoveOrderedItem = async (
+    item?: PlanningOrderedItem,
+    currentIndex: number = 0,
+    direction: 'up' | 'down' = 'up'
+  ) => {
     if (!item?.volunteerId || actionLoading) {
       return;
     }
+    const currentPosition = currentIndex + 1;
+    const targetPosition = direction === 'up' ? currentPosition - 1 : currentPosition + 1;
+    if (targetPosition < 1 || targetPosition > orderedItems.length) {
+      return;
+    }
+    await applyMoveOrderedItem(
+      item,
+      targetPosition,
+      direction === 'up' ? '正在上移志愿...' : '正在下移志愿...'
+    );
+  };
+
+  const openOrderedMoveModal = (item: PlanningOrderedItem, currentIndex: number) => {
+    if (!item?.volunteerId || actionLoading) {
+      return;
+    }
+    const currentPosition = currentIndex + 1;
+    setOrderedMoveModal({
+      item,
+      currentPosition,
+    });
+    setOrderedMoveTargetPosition(currentPosition);
+  };
+
+  const closeOrderedMoveModal = () => {
+    if (actionLoading === 'ordered') {
+      return;
+    }
+    setOrderedMoveModal(null);
+  };
+
+  const handleMoveOrderedItemToTarget = async () => {
+    if (!orderedMoveModal?.item || actionLoading) {
+      return;
+    }
+    await applyMoveOrderedItem(
+      orderedMoveModal.item,
+      orderedMoveTargetPosition,
+      '正在移动志愿...',
+      '方案位置已更新'
+    );
+    setOrderedMoveModal(null);
+  };
+
+  const applyMoveOrderedUnit = async (
+    group: OrderedGroup,
+    targetPosition: number,
+    loadingText: string,
+    successText?: string
+  ) => {
+    if (!group?.key || actionLoading) {
+      return;
+    }
+    const normalizedTargetPosition = Math.max(1, Math.min(targetPosition, groupedOrderedList.length));
+    const currentPosition = groupedOrderedList.findIndex(item => item.key === group.key) + 1;
+    if (!currentPosition || normalizedTargetPosition === currentPosition) {
+      return;
+    }
     setActionLoading('ordered');
-    setOrderedActionVolunteerId(item.volunteerId);
-    const hideLoading = message.loading(item.pinned ? '正在取消固定...' : '正在固定志愿...', 0);
+    setOrderedActionVolunteerId(group.key);
+    const hideLoading = message.loading(loadingText, 0);
     try {
-      const api = item.pinned ? unpinPlanningOrderedItemApi : pinPlanningOrderedItemApi;
-      const { data, code } = await api(
+      const { data, code } = await movePlanningOrderedUnitApi(
         routerParams.tenantId,
         routerParams.chatSessionId,
-        item.volunteerId,
-        item.position || 1
+        group.key,
+        normalizedTargetPosition
       );
       if (code === 0) {
+        if (successText) {
+          message.success(successText);
+        }
         if (data) {
           setPlanningState(prev => ({
             ...(prev || {}),
@@ -1551,12 +1637,95 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
           }));
         }
       } else {
-        message.error('更新固定状态失败');
+        message.error('更新专业组位置失败');
       }
     } catch (error) {
-      message.error('更新固定状态异常，请稍后重试');
+      message.error('更新专业组位置异常，请稍后重试');
     }
     hideLoading();
+    setActionLoading(null);
+    setOrderedActionVolunteerId(null);
+  };
+
+  const handleMoveOrderedUnit = async (
+    group: OrderedGroup,
+    currentIndex: number,
+    direction: 'up' | 'down'
+  ) => {
+    const currentPosition = currentIndex + 1;
+    const targetPosition = direction === 'up' ? currentPosition - 1 : currentPosition + 1;
+    if (targetPosition < 1 || targetPosition > groupedOrderedList.length) {
+      return;
+    }
+    await applyMoveOrderedUnit(
+      group,
+      targetPosition,
+      direction === 'up' ? '正在上移专业组...' : '正在下移专业组...'
+    );
+  };
+
+  const openOrderedUnitMoveModal = (group: OrderedGroup, currentIndex: number) => {
+    if (!group?.key || actionLoading) {
+      return;
+    }
+    const currentPosition = currentIndex + 1;
+    setOrderedUnitMoveModal({
+      group,
+      currentPosition,
+    });
+    setOrderedUnitMoveTargetPosition(currentPosition);
+  };
+
+  const closeOrderedUnitMoveModal = () => {
+    if (actionLoading === 'ordered') {
+      return;
+    }
+    setOrderedUnitMoveModal(null);
+  };
+
+  const handleMoveOrderedUnitToTarget = async () => {
+    if (!orderedUnitMoveModal?.group || actionLoading) {
+      return;
+    }
+    await applyMoveOrderedUnit(
+      orderedUnitMoveModal.group,
+      orderedUnitMoveTargetPosition,
+      '正在移动专业组...',
+      '专业组位置已更新'
+    );
+    setOrderedUnitMoveModal(null);
+  };
+
+  const handleRemoveOrderedUnit = async (group: OrderedGroup) => {
+    if (!group?.key || actionLoading) {
+      return;
+    }
+    setActionLoading('ordered');
+    setOrderedActionVolunteerId(group.key);
+    try {
+      const { data, code } = await removePlanningOrderedUnitApi(
+        routerParams.tenantId,
+        routerParams.chatSessionId,
+        [group.key]
+      );
+      if (code === 0) {
+        message.success('已移出该专业组');
+        if (data) {
+          setPlanningState(prev => ({
+            ...(prev || {}),
+            ...data,
+            orderedPlanState: data.orderedPlanState || prev?.orderedPlanState,
+          }));
+        } else {
+          await fetchWorkspaceState();
+        }
+        queryCandidatePool(candidatePoolResult.page || 1);
+      } else {
+        message.error('移出专业组失败');
+      }
+    } catch (error) {
+      message.error('移出专业组异常，请稍后重试');
+    }
     setActionLoading(null);
     setOrderedActionVolunteerId(null);
   };
@@ -1596,12 +1765,64 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       link.click();
       document.body.removeChild(link);
       window.URL.revokeObjectURL(downloadUrl);
+      fetchWorkspaceState();
     } catch (error) {
       message.error('导出方案失败，请稍后重试');
       console.error('导出方案失败:', error);
     } finally {
       setExportLoading(false);
     }
+  };
+
+  const handleRunReview = async () => {
+    if (!routerParams?.tenantId || !routerParams?.chatSessionId || actionLoading || !orderedItems.length) {
+      return;
+    }
+    setActionLoading('review');
+    try {
+      const { code } = await runPlanningReviewApi(routerParams.tenantId, routerParams.chatSessionId);
+      if (code === 0) {
+        message.success('审查完成');
+        await fetchWorkspaceState();
+      } else {
+        message.error('审查失败');
+      }
+    } catch (error) {
+      message.error('审查异常，请稍后重试');
+    }
+    setActionLoading(null);
+  };
+
+  const handleSortOrderedPlan = async () => {
+    if (!routerParams?.tenantId || !routerParams?.chatSessionId || actionLoading || !orderedItems.length) {
+      return;
+    }
+    setActionLoading('ordered');
+    try {
+      const { code, data } = await sortPlanningOrderedPlanApi(
+        routerParams.tenantId,
+        routerParams.chatSessionId,
+        selectedOrderedSortField
+      );
+      if (code === 0) {
+        message.success('方案顺序已排序');
+        setSortModalOpen(false);
+        if (data) {
+          setPlanningState(prev => ({
+            ...(prev || {}),
+            ...data,
+            orderedPlanState: data.orderedPlanState || prev?.orderedPlanState,
+          }));
+        } else {
+          await fetchWorkspaceState();
+        }
+      } else {
+        message.error('方案排序失败');
+      }
+    } catch (error) {
+      message.error('方案排序异常，请稍后重试');
+    }
+    setActionLoading(null);
   };
 
   useEffect(() => {
@@ -1636,6 +1857,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     setFilters(createDefaultFilters());
     setFilterSearchKeyword('');
     setFilterPanelOpen(false);
+    setCollapsedOrderedGroupKeys([]);
     setFocusVolunteerIds([]);
     setExpandedSchoolMetaKeys([]);
     setDraftExpanded(false);
@@ -1673,6 +1895,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     if (activeView === 'candidate') {
       refreshCandidatePool(false);
     }
+    workspaceBodyRef.current?.scrollTo({ top: 0 });
+    setShowBackTop(false);
   }, [activeView]);
 
   useEffect(() => {
@@ -1682,7 +1906,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     const candidatePoolReady = Boolean(
       planningState?.candidatePoolState?.summary?.unitTotal ||
         planningState?.candidatePoolState?.summary?.total ||
-        candidatePoolResult.items.length
+        (candidatePoolResult.items || []).length
     );
     if (!candidatePoolReady || hasLoadedFilterOptions) {
       return;
@@ -1693,7 +1917,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     routerParams.chatSessionId,
     planningState?.candidatePoolState?.summary?.unitTotal,
     planningState?.candidatePoolState?.summary?.total,
-    candidatePoolResult.items.length,
+    candidatePoolResult.items?.length,
     hasLoadedFilterOptions,
   ]);
 
@@ -1798,6 +2022,68 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     filters.sortField,
     filters.sortOrder,
   ]);
+
+  useEffect(() => {
+    const container = workspaceBodyRef.current;
+    if (!container) {
+      return;
+    }
+    const handleScroll = () => {
+      const shouldShow = container.scrollTop > 240;
+      setShowBackTop(prev => (prev === shouldShow ? prev : shouldShow));
+      if (container.scrollTop > 48) {
+        overviewRevealReadyRef.current = false;
+        if (overviewRevealReadyTimerRef.current) {
+          window.clearTimeout(overviewRevealReadyTimerRef.current);
+          overviewRevealReadyTimerRef.current = null;
+        }
+        setOverviewCollapsed(prev => (prev ? prev : true));
+        return;
+      }
+      if (container.scrollTop <= 0 && overviewCollapsed && !overviewRevealReadyTimerRef.current) {
+        overviewRevealReadyTimerRef.current = window.setTimeout(() => {
+          overviewRevealReadyRef.current = true;
+          overviewRevealReadyTimerRef.current = null;
+        }, 220);
+      }
+    };
+    const handleWheel = (event: WheelEvent) => {
+      if (container.scrollTop <= 0 && event.deltaY < -8 && overviewRevealReadyRef.current) {
+        setOverviewCollapsed(false);
+        overviewRevealReadyRef.current = false;
+      }
+    };
+    const handleTouchStart = (event: TouchEvent) => {
+      workspaceTouchStartYRef.current = event.touches[0]?.clientY ?? null;
+      workspaceTouchStartAtTopRef.current = container.scrollTop <= 0 && overviewCollapsed;
+    };
+    const handleTouchMove = (event: TouchEvent) => {
+      const startY = workspaceTouchStartYRef.current;
+      const currentY = event.touches[0]?.clientY;
+      if (startY === null || currentY === undefined) {
+        return;
+      }
+      if (workspaceTouchStartAtTopRef.current && container.scrollTop <= 0 && currentY - startY > 48) {
+        setOverviewCollapsed(false);
+        workspaceTouchStartAtTopRef.current = false;
+      }
+    };
+    handleScroll();
+    container.addEventListener('scroll', handleScroll);
+    container.addEventListener('wheel', handleWheel, { passive: true });
+    container.addEventListener('touchstart', handleTouchStart, { passive: true });
+    container.addEventListener('touchmove', handleTouchMove, { passive: true });
+    return () => {
+      container.removeEventListener('scroll', handleScroll);
+      container.removeEventListener('wheel', handleWheel);
+      container.removeEventListener('touchstart', handleTouchStart);
+      container.removeEventListener('touchmove', handleTouchMove);
+      if (overviewRevealReadyTimerRef.current) {
+        window.clearTimeout(overviewRevealReadyTimerRef.current);
+        overviewRevealReadyTimerRef.current = null;
+      }
+    };
+  }, [activeView, overviewCollapsed]);
 
   useEffect(() => {
     if (activeView !== 'candidate') {
@@ -1920,7 +2206,9 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       Boolean((action.summary || '').trim() || (action.detail || '').trim()) &&
       (!action.sourceCheckCode || !actionableReviewCheckCodes.has(action.sourceCheckCode))
   );
-  const hasActionableReviewChecks = actionableReviewChecks.length > 0 || actionablePendingActions.length > 0;
+  const isReviewStale = workflowStatus?.reviewStatus === 'stale' || planningState?.staleFlags?.review === true;
+  const hasActionableReviewChecks =
+    !isReviewStale && (actionableReviewChecks.length > 0 || actionablePendingActions.length > 0);
   const getReviewCheckDisplayLabel = (check: PlanningReviewCheck) => {
     switch (check.code) {
       case 'safety_guard':
@@ -2163,6 +2451,129 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       ));
   };
 
+  const renderOrderedMajorTable = (
+    majorName: React.ReactNode,
+    candidateItem: PlanningCandidateItem | null | undefined,
+    rowKey: string,
+    actions: React.ReactNode
+  ) => {
+    const historyYears = getFixedHistoryYears(candidateItem?.majorHistoryScores || [], 3);
+    const hasHistory = historyYears.some(Boolean);
+    return (
+      <div className={style.orderedMajorTableCard}>
+        <div className={style.majorTable}>
+          <div className={style.orderedMajorTableHeader}>
+            <div className={style.majorNameColumn}>专业</div>
+            <div className={style.majorPlanColumn}>2025招生计划</div>
+            <div className={style.majorDataTypeColumn}>数据类型</div>
+            {historyYears.map((year, yearIndex) => (
+              <div key={`${rowKey}-ordered-year-${year || yearIndex}`} className={style.majorYearColumn}>
+                {year || '-'}
+              </div>
+            ))}
+            <div className={style.majorRatioColumn}>操作</div>
+          </div>
+          <div className={style.orderedMajorTableBody}>
+            <div className={style.majorInfoCell} style={{ gridColumn: '1', gridRow: '1 / span 3' }}>
+              <div className={style.majorLine}>{majorName}</div>
+              <div className={style.orderedMajorPrimaryTags}>
+                <Tag bordered={false} color="orange">
+                  专业录取率 {formatPercent(candidateItem?.admissionRatio)}
+                </Tag>
+              </div>
+            </div>
+            <div className={style.majorPlanCell} style={{ gridColumn: '2', gridRow: '1 / span 3' }}>
+              <div>计划数：{formatNumber(candidateItem?.planNum)}</div>
+              <div>学制：{candidateItem?.duration || '-'}</div>
+              <div>学费：{formatMetricNumber(candidateItem?.tuitionPerYear, '/年')}</div>
+              {candidateItem?.mustSubjects?.length ? (
+                <div>选科：{candidateItem.mustSubjects.join(' / ')}</div>
+              ) : null}
+            </div>
+            {[
+              { label: '录取人数', field: 'enrollNum' as const, row: 1 },
+              { label: '最低分数', field: 'score' as const, row: 2 },
+              { label: '最低位次', field: 'pos' as const, row: 3 },
+            ].map(row => (
+              <React.Fragment key={`${rowKey}-ordered-${row.label}`}>
+                <div className={style.majorHistoryTypeCell} style={{ gridColumn: '3', gridRow: `${row.row}` }}>
+                  {row.label}
+                </div>
+                {historyYears.map((year, yearIndex) => (
+                  <div
+                    key={`${rowKey}-ordered-${row.label}-${year || yearIndex}`}
+                    className={style.majorHistoryValueCell}
+                    style={{ gridColumn: `${4 + yearIndex}`, gridRow: `${row.row}` }}
+                  >
+                    {hasHistory && year ? getHistoryValue(candidateItem?.majorHistoryScores || [], year, row.field) : '-'}
+                  </div>
+                ))}
+              </React.Fragment>
+            ))}
+            <div className={style.orderedMajorActionCell} style={{ gridColumn: '7', gridRow: '1 / span 3' }}>
+              {actions}
+            </div>
+          </div>
+        </div>
+        <div className={style.majorActionBar}>
+          <div className={style.cardMetrics}>
+            <span>推荐系数 {formatNumber(candidateItem?.finalScore)}</span>
+            <span>区间位次 #{formatNumber(candidateItem?.rankInTier)}</span>
+            <span>专业热度 {formatNumber(candidateItem?.hotIndex)}</span>
+            <Tooltip title={SALARY_AVG_TOOLTIP}>
+              <span>薪酬指数 {formatNumber(candidateItem?.salaryAvg)}</span>
+            </Tooltip>
+            <span>专业代码 {candidateItem?.majorCode || '-'}</span>
+          </div>
+        </div>
+        <div className={style.mobileMajorCard}>
+          <div className={style.mobileMajorTop}>
+            <div className={style.mobileMajorTitle}>{majorName}</div>
+            <div className={style.orderedMobileActions}>{actions}</div>
+          </div>
+          <div className={style.mobileMajorInfoGrid}>
+            <div>
+              <span>计划数</span>
+              <strong>{formatNumber(candidateItem?.planNum)}</strong>
+            </div>
+            <div>
+              <span>学制</span>
+              <strong>{candidateItem?.duration || '-'}</strong>
+            </div>
+            <div>
+              <span>学费</span>
+              <strong>{formatMetricNumber(candidateItem?.tuitionPerYear, '/年')}</strong>
+            </div>
+            <div>
+              <span>专业代码</span>
+              <strong>{candidateItem?.majorCode || '-'}</strong>
+            </div>
+          </div>
+          {candidateItem?.mustSubjects?.length ? (
+            <div className={style.mobileMajorSubject}>
+              选科：{candidateItem.mustSubjects.join(' / ')}
+            </div>
+          ) : null}
+          {historyYears.length > 0 ? (
+            <div className={style.mobileHistoryList}>
+              {historyYears.map((year, yearIndex) => (
+                <div
+                  key={`${rowKey}-ordered-mobile-history-${year || yearIndex}`}
+                  className={style.mobileHistoryItem}
+                >
+                  <div className={style.mobileHistoryYear}>{year || '-'}</div>
+                  <div>人数 {year ? getHistoryValue(candidateItem?.majorHistoryScores || [], year, 'enrollNum') : '-'}</div>
+                  <div>分数 {year ? getHistoryValue(candidateItem?.majorHistoryScores || [], year, 'score') : '-'}</div>
+                  <div>位次 {year ? getHistoryValue(candidateItem?.majorHistoryScores || [], year, 'pos') : '-'}</div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      </div>
+    );
+  };
+
   const getHistoryYears = (scores?: Array<{ year?: number }>) => {
     return Array.from(
       new Set((scores || []).map(item => item?.year).filter(Boolean) as number[])
@@ -2218,6 +2629,25 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     return isMajorGroupMode ? `组内${count}` : `专业${count}`;
   };
 
+  const getPlanSchoolRankTags = (tags?: string[]) => {
+    return (tags || []).filter(tag => tag.includes('院校排名'));
+  };
+
+  const getSchoolMetaItems = (item?: PlanningCandidateItem | null) => {
+    if (!item) {
+      return [];
+    }
+    return (item.schoolBasicTags || []).length
+      ? item.schoolBasicTags || []
+      : [
+          [item.provinceName, item.cityName].filter(Boolean).join('/'),
+          item.schoolBatch,
+          item.schoolNature,
+          item.schoolCategory,
+          item.schoolLevel,
+        ].filter(Boolean);
+  };
+
   const groupedOrderedList = useMemo<OrderedGroup[]>(() => {
     if (!isMajorGroupMode) {
       return [];
@@ -2262,6 +2692,23 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     return Array.from(grouped.values());
   }, [candidateItemMap, isMajorGroupMode, orderedItems]);
 
+  const orderedCollapseKeys = useMemo(() => {
+    if (isMajorGroupMode) {
+      return groupedOrderedList.map(group => group.key);
+    }
+    return orderedItems.map((item, index) => item.volunteerId || `${item.schoolName || 'ordered'}-${index}`);
+  }, [groupedOrderedList, isMajorGroupMode, orderedItems]);
+
+  const orderedCollapseSignature = orderedCollapseKeys.join('|');
+
+  useEffect(() => {
+    if (!orderedCollapseSignature) {
+      setCollapsedOrderedGroupKeys([]);
+      return;
+    }
+    setCollapsedOrderedGroupKeys(orderedCollapseSignature.split('|').slice(1));
+  }, [orderedCollapseSignature]);
+
   const groupedDraftList = useMemo<DraftGroup[]>(() => {
     if (!isMajorGroupMode) {
       return [];
@@ -2274,7 +2721,6 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         tier: unit.tier || '',
         schoolName: unit.schoolName || '未知院校',
         source: unit.source,
-        locked: Boolean(unit.locked),
         items: (unit.majorItems || []).map(major => {
           const volunteerId = major.volunteerId;
           const draftItem =
@@ -2283,7 +2729,6 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
               tier: major.tier || unit.tier,
               schoolName: unit.schoolName,
               majorName: major.majorName,
-              locked: unit.locked,
               source: unit.source,
             };
           return {
@@ -2306,7 +2751,6 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       const existing = grouped.get(key);
       if (existing) {
         existing.items.push({ draftItem: item, candidateItem });
-        existing.locked = existing.locked || Boolean(item.locked);
         return;
       }
       grouped.set(key, {
@@ -2314,23 +2758,48 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         tier: item.tier || candidateItem?.tier || '',
         schoolName: candidateItem?.schoolName || item.schoolName || '未知院校',
         source: item.source,
-        locked: Boolean(item.locked),
         items: [{ draftItem: item, candidateItem }],
       });
     });
     return Array.from(grouped.values());
   }, [candidateItemMap, draftItems, isMajorGroupMode, planningState?.draftPlanState?.units]);
 
+  const basketDraftGroups = useMemo<DraftGroup[]>(() => {
+    if (!isMajorGroupMode) {
+      return [];
+    }
+    if (orderedItems.length <= 0) {
+      return groupedDraftList;
+    }
+    return groupedOrderedList.map(group => ({
+      key: group.key,
+      tier: group.tier,
+      schoolName: group.schoolName,
+      source: group.orderedItems.find(entry => entry.orderedItem.source)?.orderedItem.source,
+      items: group.orderedItems.map(entry => ({
+        draftItem: {
+          volunteerId: entry.orderedItem.volunteerId,
+          tier: entry.orderedItem.tier,
+          schoolName: entry.orderedItem.schoolName,
+          majorName: entry.orderedItem.majorName,
+          source: entry.orderedItem.source,
+        },
+        candidateItem: entry.candidateItem,
+      })),
+    }));
+  }, [groupedDraftList, groupedOrderedList, isMajorGroupMode, orderedItems.length]);
+  const basketItems = orderedItems.length > 0 ? orderedItems : draftItems;
+
   const candidatePoolUnitFallbackTotal = useMemo(() => {
     if (!isMajorGroupMode) {
-      return cachedCandidateItems.length || candidatePoolResult.items.length || 0;
+      return cachedCandidateItems.length || (candidatePoolResult.items || []).length || 0;
     }
     return new Set(
       cachedCandidateItems.map(item =>
         item.planSchoolDataId || item.schoolId || item.schoolName || item.volunteerId || ''
       )
     ).size;
-  }, [cachedCandidateItems, candidatePoolResult.items.length, isMajorGroupMode]);
+  }, [cachedCandidateItems, candidatePoolResult.items?.length, isMajorGroupMode]);
 
   const candidateUnitTierFallbackCounts = useMemo(() => {
     if (!isMajorGroupMode) {
@@ -2355,14 +2824,52 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     };
   }, [cachedCandidateItems, isMajorGroupMode, summary?.tierCounts]);
 
-  const candidateUnitTotal = summary?.unitTotal ?? candidatePoolUnitFallbackTotal ?? 0;
-  const candidateUnitTierCounts = summary?.unitTierCounts ?? candidateUnitTierFallbackCounts;
+  const firstPositiveNumber = (...values: Array<number | undefined | null>) => {
+    const matched = values.find(value => typeof value === 'number' && value > 0);
+    return matched || 0;
+  };
+  const candidateUnitTotal = firstPositiveNumber(
+    isMajorGroupMode ? summary?.unitTotal : summary?.total,
+    summary?.unitTotal,
+    candidatePoolResult.totalUnitCount,
+    candidatePoolResult.total,
+    candidatePoolUnitFallbackTotal
+  );
+  const candidateUnitTierCounts =
+    Object.values(summary?.unitTierCounts || {}).some(value => value > 0)
+      ? summary?.unitTierCounts
+      : Object.values(summary?.tierCounts || {}).some(value => value > 0)
+        ? summary?.tierCounts
+        : candidateUnitTierFallbackCounts;
   const candidateGroupedDisplayTotal = isMajorGroupMode ? groupedCandidateList.length : candidatePoolResult.total || 0;
-  const orderedDisplayTotal = orderedSummary?.unitTotal ?? orderedSummary?.total ?? 0;
-  const orderedTargetTotal = orderedSummary?.targetUnitCount ?? orderedSummary?.targetCount ?? 0;
-  const orderedTierSequenceOk = orderedSummary?.sequenceOk ?? orderedSummary?.gradientOk ?? false;
-  const draftDisplayTotal = draftSummary?.unitTotal ?? draftSummary?.total ?? draftItems.length;
+  const orderedDisplayTotal = firstPositiveNumber(
+    isMajorGroupMode ? orderedSummary?.unitTotal : orderedSummary?.total,
+    orderedSummary?.unitTotal,
+    orderedSummary?.total,
+    isMajorGroupMode ? groupedOrderedList.length : orderedItems.length
+  );
+  const orderedTargetTotal = firstPositiveNumber(orderedSummary?.targetUnitCount, orderedSummary?.targetCount);
+  const draftDisplayTotal = firstPositiveNumber(
+    isMajorGroupMode ? draftSummary?.unitTotal : draftSummary?.total,
+    draftSummary?.unitTotal,
+    draftSummary?.total,
+    isMajorGroupMode ? groupedDraftList.length : draftItems.length
+  );
   const draftTierCounts = draftSummary?.unitTierCounts ?? draftSummary?.tierCounts ?? {};
+  const planDisplayTotal = orderedDisplayTotal || draftDisplayTotal;
+  const planTargetTotal =
+    orderedTargetTotal ||
+    draftSummary?.targetUnitCount ||
+    draftSummary?.targetCount ||
+    planningState?.candidatePoolState?.requiredUnitCount ||
+    planningState?.candidatePoolState?.requiredCount ||
+    0;
+  const planTierCounts =
+    Object.values(orderedSummary?.unitTierCounts || {}).some(value => value > 0)
+      ? orderedSummary?.unitTierCounts
+      : Object.values(orderedSummary?.tierCounts || {}).some(value => value > 0)
+        ? orderedSummary?.tierCounts
+        : draftTierCounts;
   const candidateFilteredUnitTotal = candidatePoolResult.totalUnitCount ?? candidateGroupedDisplayTotal ?? 0;
   const candidateLoadedDisplayTotal = isMajorGroupMode
     ? groupedCandidateList.length
@@ -2372,6 +2879,32 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const reviewTotalRuleCount = reviewSummary?.totalRuleCount ?? reviewSummary?.total ?? 0;
   const reviewRiskRuleCount = reviewSummary?.riskRuleCount ?? reviewSummary?.riskCount ?? 0;
   const reviewWarnRuleCount = reviewSummary?.warnRuleCount ?? reviewSummary?.warnCount ?? 0;
+  const reviewOverviewLabel =
+    workflowStatus?.reviewStatus === 'has_risk'
+      ? '有风险，请查看方案'
+      : workflowStatus?.reviewStatus === 'has_warning'
+        ? '有提醒，请查看方案'
+        : workflowStatus?.reviewStatus === 'stale'
+          ? '待重新审查'
+          : workflowStatus?.reviewStatus === 'passed'
+            ? '通过'
+            : workflowStatus?.reviewStatus === 'failed'
+              ? '失败'
+              : '未审查';
+  const candidateDetailMessages = [
+    planningState?.candidatePoolState?.statusMessage,
+    ...candidateRiskHints,
+  ].filter(Boolean);
+  const candidateLowCountTooltip =
+    workflowStatus?.candidateStatus === 'low_count' && candidateDetailMessages.length
+      ? candidateDetailMessages.join('；')
+      : '';
+  const candidateEmptyDescription =
+    workflowStatus?.candidateStatus === 'empty'
+      ? candidateDetailMessages.join('；') || '当前条件下没有可用志愿候选'
+      : activeFilterChips.length > 0 && candidateFilteredUnitTotal === 0
+        ? '当前筛选结果为空'
+      : '暂无候选志愿';
 
   const getOrderedItemStatusLabel = (item: PlanningOrderedItem) => {
     if (item.pinned) {
@@ -2388,6 +2921,12 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
 
   const toggleSchoolMeta = (groupKey: string) => {
     setExpandedSchoolMetaKeys(prev =>
+      prev.includes(groupKey) ? prev.filter(item => item !== groupKey) : [...prev, groupKey]
+    );
+  };
+
+  const toggleOrderedGroupCollapsed = (groupKey: string) => {
+    setCollapsedOrderedGroupKeys(prev =>
       prev.includes(groupKey) ? prev.filter(item => item !== groupKey) : [...prev, groupKey]
     );
   };
@@ -2426,7 +2965,6 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
               >
                 筛选
               </button>
-              <span className={style.filterPanelActionDivider}>|</span>
               <button
                 type="button"
                 className={`${style.filterPanelAction} ${
@@ -2443,20 +2981,97 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     </div>
   );
 
+  const renderFilterPanelTitleActions = (option?: FilterPanelOption) => {
+    if (!option) {
+      return null;
+    }
+    const positiveActive = isAttributeFilterActive(option.field, 'positive', option.value);
+    const negativeActive = isAttributeFilterActive(option.field, 'negative', option.value);
+    return (
+      <div className={style.filterPanelTitleActions}>
+        <button
+          type="button"
+          className={`${style.filterPanelAction} ${positiveActive ? style.filterPanelActionActive : ''}`}
+          onClick={() => toggleAttributeFilterOption(option.field, 'positive', option.value)}
+        >
+          筛选
+        </button>
+        <button
+          type="button"
+          className={`${style.filterPanelAction} ${negativeActive ? style.filterPanelActionExclude : ''}`}
+          onClick={() => toggleAttributeFilterOption(option.field, 'negative', option.value)}
+        >
+          排除
+        </button>
+      </div>
+    );
+  };
+
   const renderFilterPanelGroup = (group: FilterPanelGroup, depth = 0, parentKey = ''): React.ReactNode => {
     const groupKey = `${parentKey}-${group.label}`;
+    const hasChildren = Boolean(group.children?.length);
+    const hasOptions = Boolean(group.options?.length);
+    const hasExpandableContent = hasChildren || hasOptions;
+    const hasSelectedOption = Boolean(group.option && (
+      isAttributeFilterActive(group.option.field, 'positive', group.option.value) ||
+      isAttributeFilterActive(group.option.field, 'negative', group.option.value)
+    )) || (group.options || []).some(option =>
+      isAttributeFilterActive(option.field, 'positive', option.value) ||
+      isAttributeFilterActive(option.field, 'negative', option.value)
+    );
+    const childHasSelection = (children: FilterPanelGroup[] = []): boolean =>
+      children.some(child =>
+        Boolean(child.option && (
+          isAttributeFilterActive(child.option.field, 'positive', child.option.value) ||
+          isAttributeFilterActive(child.option.field, 'negative', child.option.value)
+        )) || (child.options || []).some(option =>
+          isAttributeFilterActive(option.field, 'positive', option.value) ||
+          isAttributeFilterActive(option.field, 'negative', option.value)
+        ) || childHasSelection(child.children || [])
+      );
+    const autoExpanded = Boolean(filterSearchKeyword.trim()) || hasSelectedOption || childHasSelection(group.children || []);
+    const expanded = autoExpanded || expandedFilterGroupKeys.includes(groupKey);
+    const titleClassName = `${depth === 0 ? style.filterPanelGroupTitle : style.filterPanelSubGroupTitle} ${
+      hasExpandableContent ? style.filterPanelGroupToggle : ''
+    } ${group.option ? style.filterPanelActionableTitle : ''}`;
     return (
       <div
         key={groupKey}
-        className={depth === 0 ? style.filterPanelGroup : style.filterPanelSubGroup}
+        className={`${depth === 0 ? style.filterPanelGroup : style.filterPanelSubGroup} ${
+          depth > 1 ? style.filterPanelNestedGroup : ''
+        }`}
       >
-        <div className={depth === 0 ? style.filterPanelGroupTitle : style.filterPanelSubGroupTitle}>
-          {group.label}
+        <div className={titleClassName}>
+          <button
+            type="button"
+            className={style.filterPanelTitleButton}
+            onClick={() => {
+              if (!hasExpandableContent || autoExpanded) {
+                return;
+              }
+              setExpandedFilterGroupKeys(prev =>
+                prev.includes(groupKey) ? prev.filter(key => key !== groupKey) : [...prev, groupKey]
+              );
+            }}
+          >
+            {group.label}
+            {hasExpandableContent && !autoExpanded && (
+              <DownOutlined className={`${style.filterPanelGroupToggleIcon} ${expanded ? style.filterPanelGroupToggleIconOpen : ''}`} />
+            )}
+          </button>
+          {renderFilterPanelTitleActions(group.option)}
         </div>
-        {group.options && group.options.length > 0 && renderFilterPanelOptionRows(groupKey, group.options)}
-        {group.children?.map(child => renderFilterPanelGroup(child, depth + 1, groupKey))}
+        {group.options && group.options.length > 0 && expanded && renderFilterPanelOptionRows(groupKey, group.options)}
+        {expanded && group.children?.map(child => renderFilterPanelGroup(child, depth + 1, groupKey))}
       </div>
     );
+  };
+
+  const handleBackToTop = () => {
+    workspaceBodyRef.current?.scrollTo({
+      top: 0,
+      behavior: 'smooth',
+    });
   };
 
   const renderSchoolHistoryModal = () => {
@@ -2517,8 +3132,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
 
   return (
     <div className={style.workspacePanel}>
-      <div className={style.stageHeader}>
-        <div className={style.metricsGrid}>
+      <div className={`${style.stageHeader} ${overviewCollapsed ? style.stageHeaderCollapsed : ''}`}>
+        <div className={`${style.metricsGrid} ${overviewCollapsed ? style.metricsGridCollapsed : ''}`}>
           <div className={style.metricCard}>
             <div className={style.metricValue}>{candidateUnitTotal}</div>
             <div className={style.metricLabel}>候选</div>
@@ -2528,20 +3143,13 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
             </div>
           </div>
           <div className={`${style.metricCard} ${style.metricCardAccent}`}>
-            <div className={style.metricValue}>{draftDisplayTotal}</div>
-            <div className={style.metricLabel}>草稿</div>
-            <div className={style.metricMeta}>
-              冲{draftTierCounts?.['冲'] || 0} / 稳{draftTierCounts?.['稳'] || 0} / 保
-              {draftTierCounts?.['保'] || 0}
-            </div>
-          </div>
-          <div className={style.metricCard}>
             <div className={style.metricValue}>
-              {orderedTargetTotal ? `${orderedDisplayTotal}/${orderedTargetTotal}` : orderedDisplayTotal}
+              {planTargetTotal ? `${planDisplayTotal}/${planTargetTotal}` : planDisplayTotal}
             </div>
             <div className={style.metricLabel}>方案</div>
             <div className={style.metricMeta}>
-              {orderedTierSequenceOk ? '区间顺序正常' : '待调整'}
+              冲{planTierCounts?.['冲'] || 0} / 稳{planTierCounts?.['稳'] || 0} / 保
+              {planTierCounts?.['保'] || 0}
             </div>
           </div>
           <div className={style.metricCard}>
@@ -2549,13 +3157,11 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
               {reviewSummary ? `${reviewPassedRuleCount}/${reviewTotalRuleCount}` : '0/0'}
             </div>
             <div className={style.metricLabel}>审查</div>
-            <div className={style.metricMeta}>
-              风险 {reviewRiskRuleCount} / 提醒 {reviewWarnRuleCount}
-            </div>
+            <div className={style.metricMeta}>{reviewOverviewLabel}</div>
           </div>
         </div>
 
-        {isLegacySubmittedPlan && (
+        {isLegacySubmittedPlan && !overviewCollapsed && (
           <div className={style.legacySubmittedNotice}>
             历史已提交方案，建议只读查看；如需调整，请先复制或重新生成方案。
           </div>
@@ -2578,11 +3184,6 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
               候选
             </button>
           </div>
-          {activeView === 'candidate' ? (
-            <div className={style.stageToolbarPlaceholder} />
-          ) : (
-            <div className={style.stageToolbarPlaceholder} />
-          )}
         </div>
       </div>
 
@@ -2714,6 +3315,11 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                     </span>
                     {!isMajorGroupMode ? <span>{`已加载条目 ${candidateLoadedEntryTotal}`}</span> : null}
                     {getCandidateTargetHint() ? <span>{getCandidateTargetHint()}</span> : null}
+                    {candidateLowCountTooltip ? (
+                      <Tooltip title={candidateLowCountTooltip}>
+                        <Tag color="warning">候选不足</Tag>
+                      </Tooltip>
+                    ) : null}
                   </div>
                   {groupedCandidateList.length > 0 ? (
                     groupedCandidateList.map((group, groupIndex) => (
@@ -2820,7 +3426,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                     );
                                   })()}
                                 </div>
-                                <div className={style.candidateGroupScore}>
+                                <div className={`${style.candidateGroupScore} ${getTierClassName(group.tier)}`}>
                                   <div className={style.candidateGroupScoreValue}>
                                     {formatPercent(group.schoolEnrollRatio)}
                                   </div>
@@ -2991,7 +3597,9 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                         <span>推荐系数 {formatNumber(item.finalScore)}</span>
                                         <span>区间位次 #{formatNumber(item.rankInTier)}</span>
                                         <span>专业热度 {formatNumber(item.hotIndex)}</span>
-                                        <span>就业表现 {formatNumber(item.salaryAvg)}</span>
+                                        <Tooltip title={SALARY_AVG_TOOLTIP}>
+                                          <span>薪酬指数 {formatNumber(item.salaryAvg)}</span>
+                                        </Tooltip>
                                         <span>专业代码 {item.majorCode || '-'}</span>
                                       </div>
                                       <Button
@@ -3013,7 +3621,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                       </div>
                     ))
                   ) : (
-                    <Empty description="暂无候选志愿" />
+                    <Empty description={candidateEmptyDescription} />
                   )}
                   {(candidatePoolResult.page || 1) < candidateTotalPages ? (
                     <div className={style.candidatePaginationHint}>
@@ -3048,6 +3656,27 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                         </Tooltip>
                       ) : null}
                       <Button
+                        className={style.reviewActionButton}
+                        size="small"
+                        icon={<SafetyCertificateOutlined />}
+                        loading={actionLoading === 'review'}
+                        onClick={handleRunReview}
+                        disabled={!orderedItems.length}
+                      >
+                        审查
+                      </Button>
+                      <Button
+                        className={style.reviewActionButton}
+                        size="small"
+                        icon={<SortAscendingOutlined />}
+                        loading={actionLoading === 'ordered'}
+                        onClick={() => setSortModalOpen(true)}
+                        disabled={!orderedItems.length}
+                      >
+                        排序
+                      </Button>
+                      <Button
+                        className={style.reviewActionButton}
                         size="small"
                         icon={<DownloadOutlined />}
                         loading={exportLoading}
@@ -3064,75 +3693,147 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                           const groupFocused = group.orderedItems.some(entry =>
                             focusVolunteerIds.includes(entry.orderedItem.volunteerId || '')
                           );
-                          const metaItems = (group.schoolBasicTags || []).length
-                            ? group.schoolBasicTags
-                            : [
-                                [group.provinceName, group.cityName].filter(Boolean).join('/'),
-                                group.schoolBatch,
-                                group.schoolNature,
-                                group.schoolCategory,
-                                group.schoolLevel,
-                              ].filter(Boolean);
-                          const orderedStatusLabels = Array.from(
-                            new Set(group.orderedItems.map(entry => getOrderedItemStatusLabel(entry.orderedItem)))
-                          );
-                          const hasLocked = group.orderedItems.some(entry => entry.orderedItem.locked);
-                          const isPreferredGroup = group.orderedItems.some(
-                            entry => entry.orderedItem.source === 'initial_auto'
-                          );
+                          const groupCollapsed = collapsedOrderedGroupKeys.includes(group.key);
+                          const metaItems = getSchoolMetaItems(group.topItem);
                           return (
                             <div
                               key={group.key}
                               className={`${style.orderedCard} ${groupFocused ? style.focusedCard : ''}`}
                             >
-                              <div className={style.orderedMain}>
+                              <div
+                                className={`${style.orderedMain} ${style.orderedGroupHeaderClickable}`}
+                                onClick={() => toggleOrderedGroupCollapsed(group.key)}
+                                role="button"
+                                tabIndex={0}
+                                onKeyDown={event => {
+                                  if (event.key === 'Enter' || event.key === ' ') {
+                                    event.preventDefault();
+                                    toggleOrderedGroupCollapsed(group.key);
+                                  }
+                                }}
+                                aria-expanded={!groupCollapsed}
+                              >
                                 <div className={style.positionBadge}>{groupIndex + 1}</div>
                                 <div className={style.orderedContent}>
-                                  <div className={`${style.cardTitleRow} ${style.groupTitleRow}`}>
-                                    <div className={style.cardTitle}>{group.schoolName}</div>
-                                    {hasLocked ? (
-                                      <Tag bordered={false} className={style.orderedLockedTag}>
-                                        已锁定
-                                      </Tag>
-                                    ) : null}
-                                    {isPreferredGroup ? (
-                                      <Tag bordered={false} className={style.orderedPreferredTag}>
-                                        优选
-                                      </Tag>
-                                    ) : null}
-                                    {orderedStatusLabels.map(label => (
-                                      <Tag key={`${group.key}-${label}`} bordered={false} className={style.orderedStatusTag}>
-                                        {label}
+                                  <div className={`${style.cardTitleRow} ${style.groupTitleRow} ${style.orderedTitleRow}`}>
+                                    <div className={style.cardTitle}>
+                                      {groupIndex + 1}、{group.schoolName}
+                                    </div>
+                                    {getPlanSchoolRankTags(group.schoolRankTags).map(tag => (
+                                      <Tag bordered={false} color="volcano" key={`${group.key}-${tag}`}>
+                                        {tag}
                                       </Tag>
                                     ))}
+                                    {group.schoolEnrollRatio !== undefined && group.schoolEnrollRatio !== null ? (
+                                      <Tag bordered={false} color="orange" key={`${group.key}-school-enroll-ratio`}>
+                                        录取率 {formatPercent(group.schoolEnrollRatio)}
+                                      </Tag>
+                                    ) : null}
                                   </div>
-                                  <div className={style.orderedGroupMeta}>
-                                    {metaItems.map(meta => (
-                                      <span key={`${group.key}-${meta}`} className={style.inlineMetaItem}>
-                                        {meta}
-                                      </span>
-                                    ))}
-                                  </div>
+                                  {metaItems.length > 0 ? (
+                                    <div className={style.cardSubtitle}>
+                                      <div className={style.inlineMetaRow}>
+                                        {metaItems.map(meta => (
+                                          <span key={`${group.key}-${meta}`} className={style.inlineMetaItem}>
+                                            {meta}
+                                          </span>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  ) : null}
                                 </div>
-                                <div className={style.candidateGroupScore}>
-                                  <div className={style.candidateGroupScoreValue}>
-                                    {formatPercent(group.schoolEnrollRatio)}
-                                  </div>
-                                  <div className={style.candidateGroupScoreTier}>
-                                    {normalizeTierLabel(group.tier)}
-                                  </div>
-                                  <div className={style.candidateGroupScoreMeta}>
-                                    {getGroupCountLabel(group.orderedItems.length)}
-                                  </div>
+                                <div className={`${style.orderedActions} ${style.orderedGroupActions}`}>
+                                  <Tooltip title="整组上移">
+                                    <Button
+                                      icon={<VerticalAlignTopOutlined />}
+                                      loading={orderedActionVolunteerId === group.key && actionLoading === 'ordered'}
+                                      disabled={groupIndex === 0 || (actionLoading === 'ordered' && orderedActionVolunteerId !== group.key)}
+                                      onClick={event => {
+                                        event.stopPropagation();
+                                        handleMoveOrderedUnit(group, groupIndex, 'up');
+                                      }}
+                                    />
+                                  </Tooltip>
+                                  <Tooltip title="整组下移">
+                                    <Button
+                                      icon={<VerticalAlignBottomOutlined />}
+                                      loading={orderedActionVolunteerId === group.key && actionLoading === 'ordered'}
+                                      disabled={groupIndex === groupedOrderedList.length - 1 || (actionLoading === 'ordered' && orderedActionVolunteerId !== group.key)}
+                                      onClick={event => {
+                                        event.stopPropagation();
+                                        handleMoveOrderedUnit(group, groupIndex, 'down');
+                                      }}
+                                    />
+                                  </Tooltip>
+                                  <Tooltip title="整组移动到指定位置">
+                                    <Button
+                                      icon={<SwapOutlined />}
+                                      loading={orderedActionVolunteerId === group.key && actionLoading === 'ordered'}
+                                      disabled={groupedOrderedList.length <= 1 || (actionLoading === 'ordered' && orderedActionVolunteerId !== group.key)}
+                                      onClick={event => {
+                                        event.stopPropagation();
+                                        openOrderedUnitMoveModal(group, groupIndex);
+                                      }}
+                                    />
+                                  </Tooltip>
+                                  <Tooltip title="整组删除">
+                                    <Button
+                                      danger
+                                      icon={<DeleteOutlined />}
+                                      loading={orderedActionVolunteerId === group.key && actionLoading === 'ordered'}
+                                      disabled={actionLoading === 'ordered' && orderedActionVolunteerId !== group.key}
+                                      onClick={event => {
+                                        event.stopPropagation();
+                                        handleRemoveOrderedUnit(group);
+                                      }}
+                                    />
+                                  </Tooltip>
                                 </div>
                               </div>
-                              <div className={style.orderedGroupMajorList}>
-                                {group.orderedItems.map((entry, itemIndex) => {
+                              {!groupCollapsed ? (
+                                <div className={style.orderedGroupMajorList}>
+                                  {group.orderedItems.map((entry, itemIndex) => {
                                   const item = entry.orderedItem;
                                   const candidateItem = entry.candidateItem;
                                   const itemFocused = focusVolunteerIds.includes(item.volunteerId || '');
                                   const absoluteIndex = orderedItems.findIndex(
                                     orderedEntry => orderedEntry.volunteerId === item.volunteerId
+                                  );
+                                  const itemActions = (
+                                    <div className={style.orderedActions}>
+                                      <Tooltip title="上移">
+                                        <Button
+                                          icon={<VerticalAlignTopOutlined />}
+                                          loading={orderedActionVolunteerId === item.volunteerId && actionLoading === 'ordered'}
+                                          disabled={absoluteIndex <= 0 || (actionLoading === 'ordered' && orderedActionVolunteerId !== item.volunteerId)}
+                                          onClick={() => handleMoveOrderedItem(item, absoluteIndex, 'up')}
+                                        />
+                                      </Tooltip>
+                                      <Tooltip title="下移">
+                                        <Button
+                                          icon={<VerticalAlignBottomOutlined />}
+                                          loading={orderedActionVolunteerId === item.volunteerId && actionLoading === 'ordered'}
+                                          disabled={absoluteIndex === orderedItems.length - 1 || (actionLoading === 'ordered' && orderedActionVolunteerId !== item.volunteerId)}
+                                          onClick={() => handleMoveOrderedItem(item, absoluteIndex, 'down')}
+                                        />
+                                      </Tooltip>
+                                      <Tooltip title="移动到指定位置">
+                                        <Button
+                                          icon={<SwapOutlined />}
+                                          loading={orderedActionVolunteerId === item.volunteerId && actionLoading === 'ordered'}
+                                          disabled={orderedItems.length <= 1 || (actionLoading === 'ordered' && orderedActionVolunteerId !== item.volunteerId)}
+                                          onClick={() => openOrderedMoveModal(item, absoluteIndex)}
+                                        />
+                                      </Tooltip>
+                                      <Tooltip title="删除">
+                                        <Button
+                                          danger
+                                          icon={<DeleteOutlined />}
+                                          loading={actionLoading === 'draft' || actionLoading === 'ordered'}
+                                          onClick={() => handleRemoveDraftItem(item.volunteerId)}
+                                        />
+                                      </Tooltip>
+                                    </div>
                                   );
                                   return (
                                     <div
@@ -3146,68 +3847,69 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                         itemFocused ? style.orderedMajorRowFocused : ''
                                       }`}
                                     >
-                                      <div className={style.orderedMajorInfo}>
-                                        <div className={style.orderedMajorTitleRow}>
-                                          <span className={style.orderedMajorIndex}>#{itemIndex + 1}</span>
-                                          <div className={style.orderedMajorName}>{renderMajorName(item.majorName)}</div>
-                                        </div>
-                                        <div className={style.orderedMajorMeta}>
-                                          <span>录取率 {formatPercent(candidateItem?.admissionRatio)}</span>
-                                          <span>推荐系数 {formatNumber(candidateItem?.finalScore)}</span>
-                                          <span>专业热度 {formatNumber(candidateItem?.hotIndex)}</span>
-                                          <span>就业表现 {formatNumber(candidateItem?.salaryAvg)}</span>
-                                          <span>学费 {formatMetricNumber(candidateItem?.tuitionPerYear, '/年')}</span>
-                                          <span>专业代码 {candidateItem?.majorCode || '-'}</span>
-                                        </div>
-                                      </div>
-                                      <div className={style.orderedActions}>
-                                        <Tooltip title={item.pinned ? '取消固定' : '固定位置'}>
-                                          <Button
-                                            icon={<PushpinOutlined />}
-                                            type={item.pinned ? 'primary' : 'default'}
-                                            loading={orderedActionVolunteerId === item.volunteerId && actionLoading === 'ordered'}
-                                            disabled={actionLoading === 'ordered' && orderedActionVolunteerId !== item.volunteerId}
-                                            onClick={() => handleTogglePin(item)}
-                                          />
-                                        </Tooltip>
-                                        <Tooltip title="上移">
-                                          <Button
-                                            icon={<VerticalAlignTopOutlined />}
-                                            loading={orderedActionVolunteerId === item.volunteerId && actionLoading === 'ordered'}
-                                            disabled={absoluteIndex <= 0 || (actionLoading === 'ordered' && orderedActionVolunteerId !== item.volunteerId)}
-                                            onClick={() => handleMoveOrderedItem(item, absoluteIndex, 'up')}
-                                          />
-                                        </Tooltip>
-                                        <Tooltip title="下移">
-                                          <Button
-                                            icon={<VerticalAlignBottomOutlined />}
-                                            loading={orderedActionVolunteerId === item.volunteerId && actionLoading === 'ordered'}
-                                            disabled={absoluteIndex === orderedItems.length - 1 || (actionLoading === 'ordered' && orderedActionVolunteerId !== item.volunteerId)}
-                                            onClick={() => handleMoveOrderedItem(item, absoluteIndex, 'down')}
-                                          />
-                                        </Tooltip>
-                                        <Tooltip title="删除">
-                                          <Button
-                                            danger
-                                            icon={<DeleteOutlined />}
-                                            disabled={Boolean(item.locked)}
-                                            loading={actionLoading === 'draft' || actionLoading === 'ordered'}
-                                            onClick={() => handleRemoveDraftItem(item.volunteerId)}
-                                          />
-                                        </Tooltip>
-                                      </div>
+                                      {renderOrderedMajorTable(
+                                        (
+                                          <>
+                                            <span className={style.orderedMajorIndex}>#{itemIndex + 1}</span>
+                                            {renderMajorName(item.majorName)}
+                                          </>
+                                        ),
+                                        candidateItem,
+                                        item.volunteerId || `${group.key}-${itemIndex}`,
+                                        itemActions
+                                      )}
                                     </div>
                                   );
-                                })}
-                              </div>
+                                  })}
+                                </div>
+                              ) : null}
                             </div>
                           );
                         })
                       : orderedItems.map((item, index) => {
                           const candidateItem = item.volunteerId ? candidateItemMap.get(item.volunteerId) || null : null;
+                          const itemKey = item.volunteerId || `${item.schoolName || 'ordered'}-${index}`;
+                          const itemCollapsed = collapsedOrderedGroupKeys.includes(itemKey);
+                          const metaItems = getSchoolMetaItems(candidateItem);
+                          const itemActions = (
+                            <div className={style.orderedActions}>
+                              <Tooltip title="上移">
+                                <Button
+                                  icon={<VerticalAlignTopOutlined />}
+                                  loading={orderedActionVolunteerId === item.volunteerId && actionLoading === 'ordered'}
+                                  disabled={index === 0 || (actionLoading === 'ordered' && orderedActionVolunteerId !== item.volunteerId)}
+                                  onClick={() => handleMoveOrderedItem(item, index, 'up')}
+                                />
+                              </Tooltip>
+                              <Tooltip title="下移">
+                                <Button
+                                  icon={<VerticalAlignBottomOutlined />}
+                                  loading={orderedActionVolunteerId === item.volunteerId && actionLoading === 'ordered'}
+                                  disabled={index === orderedItems.length - 1 || (actionLoading === 'ordered' && orderedActionVolunteerId !== item.volunteerId)}
+                                  onClick={() => handleMoveOrderedItem(item, index, 'down')}
+                                />
+                              </Tooltip>
+                              <Tooltip title="移动到指定位置">
+                                <Button
+                                  icon={<SwapOutlined />}
+                                  loading={orderedActionVolunteerId === item.volunteerId && actionLoading === 'ordered'}
+                                  disabled={orderedItems.length <= 1 || (actionLoading === 'ordered' && orderedActionVolunteerId !== item.volunteerId)}
+                                  onClick={() => openOrderedMoveModal(item, index)}
+                                />
+                              </Tooltip>
+                              <Tooltip title="删除">
+                                <Button
+                                  danger
+                                  icon={<DeleteOutlined />}
+                                  loading={actionLoading === 'draft' || actionLoading === 'ordered'}
+                                  onClick={() => handleRemoveDraftItem(item.volunteerId)}
+                                />
+                              </Tooltip>
+                            </div>
+                          );
                           return (
                             <div
-                              key={item.volunteerId}
+                              key={itemKey}
                               ref={element => {
                                 if (item.volunteerId) {
                                   orderedItemRefs.current[item.volunteerId] = element;
@@ -3217,75 +3919,64 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                 focusVolunteerIds.includes(item.volunteerId || '') ? style.focusedCard : ''
                               }`}
                             >
-                              <div className={style.orderedMain}>
+                              <div
+                                className={`${style.orderedMain} ${style.orderedGroupHeaderClickable}`}
+                                onClick={() => toggleOrderedGroupCollapsed(itemKey)}
+                                role="button"
+                                tabIndex={0}
+                                onKeyDown={event => {
+                                  if (event.key === 'Enter' || event.key === ' ') {
+                                    event.preventDefault();
+                                    toggleOrderedGroupCollapsed(itemKey);
+                                  }
+                                }}
+                                aria-expanded={!itemCollapsed}
+                              >
                                 <div className={style.positionBadge}>{index + 1}</div>
                                 <div className={style.orderedContent}>
-                                  <div className={style.cardTitleRow}>
-                                    <Tag color={item.tier === '冲' ? 'red' : item.tier === '稳' ? 'gold' : 'green'}>
-                                      {item.tier}
-                                    </Tag>
-                                    <div className={style.cardTitle}>{item.schoolName}</div>
-                                    {item.locked ? (
-                                      <Tag bordered={false} className={style.orderedLockedTag}>
-                                        已锁定
+                                  <div className={`${style.cardTitleRow} ${style.groupTitleRow} ${style.orderedTitleRow}`}>
+                                    <div className={style.cardTitle}>
+                                      {index + 1}、{item.schoolName}
+                                    </div>
+                                    {getPlanSchoolRankTags(candidateItem?.schoolRankTags).map(tag => (
+                                      <Tag bordered={false} color="volcano" key={`${item.volunteerId}-${tag}`}>
+                                        {tag}
+                                      </Tag>
+                                    ))}
+                                    {candidateItem?.admissionRatio !== undefined && candidateItem?.admissionRatio !== null ? (
+                                      <Tag bordered={false} color="orange" key={`${item.volunteerId}-admission-ratio`}>
+                                        录取率 {formatPercent(candidateItem.admissionRatio)}
                                       </Tag>
                                     ) : null}
-                                    {item.source === 'initial_auto' ? (
-                                      <Tag bordered={false} className={style.orderedPreferredTag}>
-                                        优选
-                                      </Tag>
-                                    ) : null}
-                                    <Tag bordered={false} className={style.orderedStatusTag}>
-                                      {getOrderedItemStatusLabel(item)}
-                                    </Tag>
                                   </div>
-                                  <div className={style.cardSubtitle}>{renderMajorName(item.majorName)}</div>
-                                  <div className={style.orderedMajorMeta}>
-                                    <span>录取率 {formatPercent(candidateItem?.admissionRatio)}</span>
-                                    <span>推荐系数 {formatNumber(candidateItem?.finalScore)}</span>
-                                    <span>专业热度 {formatNumber(candidateItem?.hotIndex)}</span>
-                                    <span>就业表现 {formatNumber(candidateItem?.salaryAvg)}</span>
-                                    <span>学费 {formatMetricNumber(candidateItem?.tuitionPerYear, '/年')}</span>
-                                    <span>专业代码 {candidateItem?.majorCode || '-'}</span>
+                                  {metaItems.length > 0 ? (
+                                    <div className={style.cardSubtitle}>
+                                      <div className={style.inlineMetaRow}>
+                                        {metaItems.map(meta => (
+                                          <span key={`${itemKey}-${meta}`} className={style.inlineMetaItem}>
+                                            {meta}
+                                          </span>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  ) : null}
+                                </div>
+                                {itemCollapsed ? (
+                                  <div className={style.orderedHeaderActions} onClick={event => event.stopPropagation()}>
+                                    {itemActions}
                                   </div>
-                                </div>
-                                <div className={style.orderedActions}>
-                                  <Tooltip title={item.pinned ? '取消固定' : '固定位置'}>
-                                    <Button
-                                      icon={<PushpinOutlined />}
-                                      type={item.pinned ? 'primary' : 'default'}
-                                      loading={orderedActionVolunteerId === item.volunteerId && actionLoading === 'ordered'}
-                                      disabled={actionLoading === 'ordered' && orderedActionVolunteerId !== item.volunteerId}
-                                      onClick={() => handleTogglePin(item)}
-                                    />
-                                  </Tooltip>
-                                  <Tooltip title="上移">
-                                    <Button
-                                      icon={<VerticalAlignTopOutlined />}
-                                      loading={orderedActionVolunteerId === item.volunteerId && actionLoading === 'ordered'}
-                                      disabled={index === 0 || (actionLoading === 'ordered' && orderedActionVolunteerId !== item.volunteerId)}
-                                      onClick={() => handleMoveOrderedItem(item, index, 'up')}
-                                    />
-                                  </Tooltip>
-                                  <Tooltip title="下移">
-                                    <Button
-                                      icon={<VerticalAlignBottomOutlined />}
-                                      loading={orderedActionVolunteerId === item.volunteerId && actionLoading === 'ordered'}
-                                      disabled={index === orderedItems.length - 1 || (actionLoading === 'ordered' && orderedActionVolunteerId !== item.volunteerId)}
-                                      onClick={() => handleMoveOrderedItem(item, index, 'down')}
-                                    />
-                                  </Tooltip>
-                                  <Tooltip title="删除">
-                                    <Button
-                                      danger
-                                      icon={<DeleteOutlined />}
-                                      disabled={Boolean(item.locked)}
-                                      loading={actionLoading === 'draft' || actionLoading === 'ordered'}
-                                      onClick={() => handleRemoveDraftItem(item.volunteerId)}
-                                    />
-                                  </Tooltip>
-                                </div>
+                                ) : null}
                               </div>
+                              {!itemCollapsed ? (
+                                <div className={style.orderedSingleMajorDetail}>
+                                  {renderOrderedMajorTable(
+                                    renderMajorName(item.majorName),
+                                    candidateItem,
+                                    itemKey,
+                                    itemActions
+                                  )}
+                                </div>
+                              ) : null}
                             </div>
                           );
                         })}
@@ -3309,6 +4000,136 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       </div>
       {renderSchoolHistoryModal()}
 
+      {showBackTop ? (
+        <Button
+          className={`${style.backTopButton} ${
+            activeView === 'candidate' ? style.backTopButtonWithBasket : ''
+          }`}
+          type="primary"
+          shape="circle"
+          icon={<VerticalAlignTopOutlined />}
+          aria-label="回到顶部"
+          onClick={handleBackToTop}
+        />
+      ) : null}
+
+      <Modal
+        title="排序方案"
+        open={sortModalOpen}
+        okText="确认排序"
+        cancelText="取消"
+        confirmLoading={actionLoading === 'ordered'}
+        onOk={handleSortOrderedPlan}
+        onCancel={() => setSortModalOpen(false)}
+      >
+        <div className={style.sortModalBody}>
+          <div className={style.sortModalHint}>
+            排序会改变当前方案顺序，固定的志愿会保留在原位置，确认后仍可继续手动调整。
+          </div>
+          <div className={style.sortOptionList}>
+            {ORDERED_SORT_OPTIONS.map(option => (
+              <button
+                key={option.value}
+                type="button"
+                className={`${style.sortOption} ${
+                  selectedOrderedSortField === option.value ? style.sortOptionActive : ''
+                }`}
+                onClick={() => setSelectedOrderedSortField(option.value)}
+              >
+                <span className={style.sortOptionTitle}>{option.label}</span>
+                <span className={style.sortOptionDesc}>{option.description}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        title="移动志愿"
+        open={Boolean(orderedMoveModal)}
+        okText="确认移动"
+        cancelText="取消"
+        confirmLoading={actionLoading === 'ordered'}
+        onOk={() => handleMoveOrderedItemToTarget()}
+        onCancel={closeOrderedMoveModal}
+      >
+        <div className={style.moveModalBody}>
+          <div className={style.moveModalHint}>
+            当前第 {orderedMoveModal?.currentPosition || '-'} 位，移动后会改变当前方案顺序，审查结果需要重新确认。
+          </div>
+          <div className={style.moveTargetRow}>
+            <span>目标位置</span>
+            <InputNumber
+              min={1}
+              max={Math.max(orderedItems.length, 1)}
+              precision={0}
+              value={orderedMoveTargetPosition}
+              onChange={value => setOrderedMoveTargetPosition(Number(value || 1))}
+            />
+            <span>位</span>
+          </div>
+          <div className={style.moveQuickActions}>
+            <Button
+              disabled={actionLoading === 'ordered' || orderedMoveModal?.currentPosition === 1}
+              type={orderedMoveTargetPosition === 1 ? 'primary' : 'default'}
+              onClick={() => setOrderedMoveTargetPosition(1)}
+            >
+              移到顶部
+            </Button>
+            <Button
+              disabled={actionLoading === 'ordered' || orderedMoveModal?.currentPosition === orderedItems.length}
+              type={orderedMoveTargetPosition === orderedItems.length ? 'primary' : 'default'}
+              onClick={() => setOrderedMoveTargetPosition(orderedItems.length)}
+            >
+              移到底部
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        title="移动专业组"
+        open={Boolean(orderedUnitMoveModal)}
+        okText="确认移动"
+        cancelText="取消"
+        confirmLoading={actionLoading === 'ordered'}
+        onOk={() => handleMoveOrderedUnitToTarget()}
+        onCancel={closeOrderedUnitMoveModal}
+      >
+        <div className={style.moveModalBody}>
+          <div className={style.moveModalHint}>
+            当前第 {orderedUnitMoveModal?.currentPosition || '-'} 组，移动后会改变当前方案顺序，审查结果需要重新确认。
+          </div>
+          <div className={style.moveTargetRow}>
+            <span>目标位置</span>
+            <InputNumber
+              min={1}
+              max={Math.max(groupedOrderedList.length, 1)}
+              precision={0}
+              value={orderedUnitMoveTargetPosition}
+              onChange={value => setOrderedUnitMoveTargetPosition(Number(value || 1))}
+            />
+            <span>组</span>
+          </div>
+          <div className={style.moveQuickActions}>
+            <Button
+              disabled={actionLoading === 'ordered' || orderedUnitMoveModal?.currentPosition === 1}
+              type={orderedUnitMoveTargetPosition === 1 ? 'primary' : 'default'}
+              onClick={() => setOrderedUnitMoveTargetPosition(1)}
+            >
+              移到顶部
+            </Button>
+            <Button
+              disabled={actionLoading === 'ordered' || orderedUnitMoveModal?.currentPosition === groupedOrderedList.length}
+              type={orderedUnitMoveTargetPosition === groupedOrderedList.length ? 'primary' : 'default'}
+              onClick={() => setOrderedUnitMoveTargetPosition(groupedOrderedList.length)}
+            >
+              移到底部
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
       {activeView === 'candidate' ? (
         <div
           ref={draftBasketRef}
@@ -3319,12 +4140,12 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
             type="button"
             onClick={() => setDraftExpanded(prev => !prev)}
           >
-            草稿 {draftDisplayTotal}
+            方案 {planDisplayTotal}
           </button>
           {draftExpanded && (
             <div className={style.draftPanel}>
               <div className={style.draftHeader}>
-                <span>已选草稿</span>
+                <span>当前方案</span>
                 <div className={style.draftHeaderActions}>
                   <Button
                     type="text"
@@ -3338,9 +4159,9 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                 </div>
               </div>
               <div className={style.draftList}>
-                {draftItems.length > 0 ? (
+                {basketItems.length > 0 ? (
                   isMajorGroupMode ? (
-                    groupedDraftList.map(group => (
+                    basketDraftGroups.map(group => (
                       <div key={group.key} className={style.draftGroup}>
                         <div className={style.draftGroupHeader}>
                           <div className={style.draftGroupHeaderMain}>
@@ -3357,7 +4178,6 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                               size="small"
                               danger
                               icon={<DeleteOutlined />}
-                              disabled={group.locked}
                               onClick={() => handleRemoveDraftGroup(group)}
                             />
                           </Tooltip>
@@ -3381,19 +4201,11 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                               </div>
                             </div>
                             <div className={style.draftItemActions}>
-                              <Tooltip title={draftItem.locked ? '解除锁定' : '锁定'}>
-                                <Button
-                                  size="small"
-                                  icon={draftItem.locked ? <UnlockOutlined /> : <LockOutlined />}
-                                  onClick={() => handleToggleDraftLock(draftItem)}
-                                />
-                              </Tooltip>
                               <Tooltip title="删除">
                                 <Button
                                   size="small"
                                   danger
                                   icon={<DeleteOutlined />}
-                                  disabled={Boolean(draftItem.locked)}
                                   onClick={() => handleRemoveDraftItem(draftItem.volunteerId)}
                                 />
                               </Tooltip>
@@ -3404,7 +4216,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                       </div>
                     ))
                   ) : (
-                    draftItems.map(item => (
+                    basketItems.map(item => (
                       <div
                         key={item.volunteerId}
                         ref={element => {
@@ -3426,19 +4238,11 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                           </div>
                         </div>
                         <div className={style.draftItemActions}>
-                          <Tooltip title={item.locked ? '解除锁定' : '锁定'}>
-                            <Button
-                              size="small"
-                              icon={item.locked ? <UnlockOutlined /> : <LockOutlined />}
-                              onClick={() => handleToggleDraftLock(item)}
-                            />
-                          </Tooltip>
                           <Tooltip title="删除">
                             <Button
                               size="small"
                               danger
                               icon={<DeleteOutlined />}
-                              disabled={Boolean(item.locked)}
                               onClick={() => handleRemoveDraftItem(item.volunteerId)}
                             />
                           </Tooltip>
@@ -3447,7 +4251,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                     ))
                   )
                 ) : (
-                  <Empty description="草稿为空" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+                  <Empty description="方案为空" image={Empty.PRESENTED_IMAGE_SIMPLE} />
                 )}
               </div>
             </div>

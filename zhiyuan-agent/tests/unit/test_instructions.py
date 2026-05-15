@@ -104,9 +104,9 @@ class TestPlanningContext:
     def test_with_planning_state(self):
         deps = _make_deps(planning=True)
         result = build_planning_context(deps)
-        assert "ordered" in result
+        assert "用户当前方案已有 50 个志愿" in result
         assert "50" in result
-        assert "风险2项" in result
+        assert "风险 2 项" in result
         assert "高收费" in result
         assert "待处理建议" in result
 
@@ -173,6 +173,13 @@ class TestToolDispatchRules:
         assert "Explore" in result
         assert "Intent" in result
         assert "Plan" in result
+
+    def test_candidate_add_refs_are_plan_mutations(self):
+        result = build_tool_dispatch_rules()
+        assert "add_units" in result
+        assert "用户原始引用" in result
+        assert "广西师大统计" in result
+        assert "不要改走学校/分数线 Explore 分析" in result
 
 
 # ---------------------------------------------------------------------------

@@ -163,9 +163,11 @@ INTERNAL_SERVICE_URL=https://zhiyuan.ytell.cn .venv/bin/python -m uvicorn app.se
 
    ```bash
    cd zhiyuan-server
-   mvn -q -Dtest=PlanningStateServiceTest#shouldImportExternalLegacyCompleteDataSamples \
+   mvn -q -Dtest=PlanningStateServiceTest#shouldImportExternalLegacyCompleteDataSamples,PlanningStateServiceTest#shouldPreferFinalOverTempAndOriginalForExternalLegacySessionSamples \
      -Dlegacy.sample.dir=/tmp/zhiyuan-migration-samples test
    ```
+
+   2026-05-10 追加按同一会话三件套验证：从生产机 `/apps/volunnter-tmpdata` 下载 `612/1012/617/739` 四组样本，每组均包含无后缀、`_temp.json`、`_final.json`。其中 `612/1012` 覆盖专业+大学模式，`617/739` 覆盖院校专业组模式；测试确认存在三类文件时优先采用 `_final.json` 导入为 `legacy_submitted`，不会继续读取 `_temp.json` 或无后缀原始文件。
 
    当前已验证一批生产样本。后续建议继续补空方案、大文件、字段缺失、专业组为空、`selectZy/is_preferred` 缺失等边界样本。
 

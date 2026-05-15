@@ -20,7 +20,38 @@ from app.service import (
     _normalize_pending_intent_reply,
     _normalize_plan_reply_style,
     _normalize_user_facing_terms,
+    _select_conversation_action_family,
 )
+
+
+def _tool_return(action_family: str) -> ToolReturnPart:
+    return ToolReturnPart(
+        tool_name="execute_plan_action",
+        content=json.dumps({"action_family": action_family}, ensure_ascii=False),
+        tool_call_id=f"tool-{action_family}",
+    )
+
+
+def test_select_conversation_action_family_prefers_last_non_query_action():
+    action_family = _select_conversation_action_family(
+        [
+            _tool_return("query_state"),
+            _tool_return("remove_ordered_unit"),
+        ]
+    )
+
+    assert action_family == "remove_ordered_unit"
+
+
+def test_select_conversation_action_family_keeps_query_when_only_query_actions():
+    action_family = _select_conversation_action_family(
+        [
+            _tool_return("query_state"),
+            _tool_return("query_ordered"),
+        ]
+    )
+
+    assert action_family == "query_ordered"
 
 
 class _FakeAgent:
@@ -71,7 +102,7 @@ def test_chat_service_persists_and_recovers_history(tmp_path, mock_llm_client):
     with patch("app.service.ChatAgent", return_value=fake_agent), \
             patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
-            patch("app.service.get_planning_state", AsyncMock(return_value={
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={
                 "code": 0,
                 "data": {
                     "phase": "reviewed",
@@ -120,7 +151,7 @@ def test_chat_service_uses_main_agent_as_single_dialog_entry(tmp_path, mock_llm_
     with patch("app.service.ChatAgent", return_value=fake_agent), \
             patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
-            patch("app.service.get_planning_state", AsyncMock(return_value={"code": 1})):
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})):
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-2", "user-2", "不想去浙江"))
 
@@ -199,17 +230,11 @@ def test_chat_service_appends_workspace_refresh_after_review_tool_call(tmp_path,
     with patch("app.service.ChatAgent", return_value=fake_agent), \
             patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
-            patch("app.service.get_planning_state", AsyncMock(return_value={"code": 1})):
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})):
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-review-1", "user-review-1", "帮我审查一下"))
 
-    assert isinstance(reply, ChatServiceResponseEnvelope)
-    assert reply.primary == "已完成当前方案审查。"
-    assert len(reply.followups) == 1
-    assert reply.followups[0].type == "planningWorkspaceAction"
-    payload = json.loads(reply.followups[0].content)
-    assert payload["targetView"] == "review"
-    assert payload["refresh"] is True
+    assert reply == "已完成当前方案审查。"
 
 
 def test_chat_service_does_not_append_workspace_refresh_for_non_review_planning_query(tmp_path, mock_llm_client):
@@ -223,7 +248,7 @@ def test_chat_service_does_not_append_workspace_refresh_for_non_review_planning_
     with patch("app.service.ChatAgent", return_value=fake_agent), \
             patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
-            patch("app.service.get_planning_state", AsyncMock(return_value={"code": 1})):
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})):
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-review-2", "user-review-2", "方案有了么"))
 
@@ -934,7 +959,7 @@ def test_chat_service_directly_applies_pending_compensation_on_confirm(tmp_path,
             "stage": "apply",
             "result_kind": "mutation_result",
             "summary": "系统已完成当前可安全补偿的志愿补入。",
-            "workspace_refresh_targets": ["draft", "ordered", "review"],
+            "workspace_refresh_targets": ["ordered"],
         },
         ensure_ascii=False,
     )
@@ -942,7 +967,7 @@ def test_chat_service_directly_applies_pending_compensation_on_confirm(tmp_path,
     with patch("app.service.ChatAgent", return_value=fake_agent), \
             patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
-            patch("app.service.get_planning_state", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_intent_change_cache", AsyncMock(return_value={"data": {"planEditCache": None}})), \
             patch("app.service.execute_plan_action", AsyncMock(return_value=execution_result)) as execute_mock:
         service = ChatService(mock_llm_client, store)
@@ -950,7 +975,7 @@ def test_chat_service_directly_applies_pending_compensation_on_confirm(tmp_path,
 
     assert isinstance(reply, ChatServiceResponseEnvelope)
     assert reply.primary == "系统已完成当前可安全补齐的志愿补入。"
-    assert [json.loads(item.content)["targetView"] for item in reply.followups] == ["draft", "ordered", "review"]
+    assert [json.loads(item.content)["targetView"] for item in reply.followups] == ["ordered"]
     execute_mock.assert_awaited_once()
     applied_payload = json.loads(execute_mock.await_args.args[1])
     assert applied_payload["action_family"] == "apply_compensation"
@@ -1012,7 +1037,7 @@ def test_chat_service_does_not_directly_apply_empty_compensation_preview_on_conf
     with patch("app.service.ChatAgent", return_value=fake_agent), \
             patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
-            patch("app.service.get_planning_state", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_intent_change_cache", AsyncMock(return_value={"data": {"planEditCache": None}})), \
             patch("app.service.execute_plan_action", AsyncMock()) as execute_mock:
         service = ChatService(mock_llm_client, store)
@@ -1118,7 +1143,7 @@ def test_chat_service_directly_applies_pending_replace_on_confirm(tmp_path, mock
             "stage": "apply",
             "result_kind": "mutation_result",
             "summary": "已替换广西师范大学006专业组-生物科学，并补入新的保底志愿。",
-            "workspace_refresh_targets": ["ordered", "review"],
+            "workspace_refresh_targets": ["ordered"],
         },
         ensure_ascii=False,
     )
@@ -1126,7 +1151,7 @@ def test_chat_service_directly_applies_pending_replace_on_confirm(tmp_path, mock
     with patch("app.service.ChatAgent", return_value=fake_agent), \
             patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
-            patch("app.service.get_planning_state", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_intent_change_cache", AsyncMock(return_value={"data": {"planEditCache": None}})), \
             patch("app.service.execute_plan_action", AsyncMock(return_value=execution_result)) as execute_mock:
         service = ChatService(mock_llm_client, store)
@@ -1134,7 +1159,7 @@ def test_chat_service_directly_applies_pending_replace_on_confirm(tmp_path, mock
 
     assert isinstance(reply, ChatServiceResponseEnvelope)
     assert reply.primary == "已替换广西师范大学006专业组-生物科学，并补入新的保底志愿。"
-    assert [json.loads(item.content)["targetView"] for item in reply.followups] == ["ordered", "review"]
+    assert [json.loads(item.content)["targetView"] for item in reply.followups] == ["ordered"]
     execute_mock.assert_awaited_once()
     applied_payload = json.loads(execute_mock.await_args.args[1])
     assert applied_payload["action_family"] == "replace_units"
@@ -1186,7 +1211,7 @@ def test_chat_service_directly_applies_pending_replace_on_confirm_even_with_stal
             "stage": "apply",
             "result_kind": "mutation_result",
             "summary": "已替换广西师范大学006专业组-生物科学，并补入新的保底志愿。",
-            "workspace_refresh_targets": ["ordered", "review"],
+            "workspace_refresh_targets": ["ordered"],
         },
         ensure_ascii=False,
     )
@@ -1194,7 +1219,7 @@ def test_chat_service_directly_applies_pending_replace_on_confirm_even_with_stal
     with patch("app.service.ChatAgent", return_value=fake_agent), \
             patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
-            patch("app.service.get_planning_state", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
             patch(
                 "app.service.get_intent_change_cache",
                 AsyncMock(return_value={"data": {"planEditCache": {"major_intents": {"level3": ["网络与新媒体"]}}}}),
@@ -1205,7 +1230,7 @@ def test_chat_service_directly_applies_pending_replace_on_confirm_even_with_stal
 
     assert isinstance(reply, ChatServiceResponseEnvelope)
     assert reply.primary == "已替换广西师范大学006专业组-生物科学，并补入新的保底志愿。"
-    assert [json.loads(item.content)["targetView"] for item in reply.followups] == ["ordered", "review"]
+    assert [json.loads(item.content)["targetView"] for item in reply.followups] == ["ordered"]
     execute_mock.assert_awaited_once()
     assert fake_agent.calls == []
 
@@ -1230,7 +1255,7 @@ def test_chat_service_directly_applies_pending_intent_on_short_confirm(tmp_path,
     with patch("app.service.ChatAgent", return_value=fake_agent), \
             patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
-            patch("app.service.get_planning_state", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
             patch(
                 "app.service.get_intent_change_cache",
                 AsyncMock(return_value={"data": {"planEditCache": {"city_intents": {"province": ["江苏", "浙江"]}}}}),
@@ -1276,7 +1301,7 @@ def test_chat_service_does_not_append_plan_preview_boundary_for_intent_turn_with
     with patch("app.service.ChatAgent", return_value=fake_agent), \
             patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
-            patch("app.service.get_planning_state", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_intent_change_cache", AsyncMock(return_value={"data": {"planEditCache": None}})):
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-stale-plan-history", "user-1", "想学跨境电商"))
@@ -1294,7 +1319,7 @@ def test_chat_service_does_not_apply_pending_intent_directly_for_plan_specific_c
     with patch("app.service.ChatAgent", return_value=fake_agent), \
             patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
-            patch("app.service.get_planning_state", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
             patch(
                 "app.service.get_intent_change_cache",
                 AsyncMock(return_value={"data": {"planEditCache": {"city_intents": {"province": ["江苏", "浙江"]}}}}),
@@ -1410,6 +1435,58 @@ def test_extract_pending_plan_action_clears_after_apply_result():
     ]
 
     assert _extract_pending_plan_action(messages) is None
+
+
+def test_extract_pending_plan_action_keeps_preview_after_readonly_query_result():
+    preview_payload = {
+        "stage": "preview",
+        "action_family": "move_ordered_unit",
+        "user_goal": "把第3个专业组移到第5位",
+        "missing_inputs": [],
+        "atomic_actions": [
+            {
+                "action_type": "move_ordered_unit",
+                "target_position": 5,
+                "filters": {},
+            }
+        ],
+        "preview_summary": "会整体移动指定专业组，组内专业顺序保持不变。",
+    }
+    messages = [
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="plan_next_action",
+                    content=json.dumps(preview_payload, ensure_ascii=False),
+                    tool_call_id="move-unit-plan-next",
+                )
+            ]
+        ),
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="execute_plan_action",
+                    content=json.dumps(
+                        {
+                            "applied": True,
+                            "action_family": "query_state",
+                            "result_kind": "status_overview",
+                        },
+                        ensure_ascii=False,
+                    ),
+                    tool_call_id="query-state-after-preview",
+                )
+            ]
+        ),
+    ]
+
+    pending = _extract_pending_plan_action(messages)
+
+    assert pending is not None
+    assert pending["action_family"] == "move_ordered_unit"
+    payload = json.loads(pending["plan_payload"])
+    assert payload["stage"] == "apply"
+    assert payload["atomic_actions"][0]["target_position"] == 5
 
 
 def test_plan_preview_confirmation_boundary_corrects_confirm_copy_without_pending_payload():
@@ -1688,7 +1765,7 @@ def test_chat_service_injects_pending_plan_action_from_history_for_non_confirm_t
     with patch("app.service.ChatAgent", return_value=fake_agent), \
             patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
-            patch("app.service.get_planning_state", AsyncMock(return_value={"code": 1})):
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})):
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-pending-plan", "user-1", "先再解释一下"))
 
@@ -1746,7 +1823,7 @@ def test_chat_service_directly_applies_pending_regenerate_order_on_confirm(tmp_p
             "stage": "apply",
             "result_kind": "mutation_result",
             "summary": "已完成重排并复审。",
-            "workspace_refresh_targets": ["ordered", "review"],
+            "workspace_refresh_targets": ["ordered"],
         },
         ensure_ascii=False,
     )
@@ -1755,7 +1832,7 @@ def test_chat_service_directly_applies_pending_regenerate_order_on_confirm(tmp_p
     with patch("app.service.ChatAgent", return_value=fake_agent), \
             patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
-            patch("app.service.get_planning_state", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_intent_change_cache", AsyncMock(return_value={"data": {"planEditCache": None}})), \
             patch("app.service.execute_plan_action", AsyncMock(return_value=execution_result)) as execute_mock:
         service = ChatService(mock_llm_client, store)
@@ -1764,7 +1841,7 @@ def test_chat_service_directly_applies_pending_regenerate_order_on_confirm(tmp_p
     assert isinstance(reply, ChatServiceResponseEnvelope)
     assert reply.primary == "已完成重排并复审。"
     targets = [json.loads(item.content)["targetView"] for item in reply.followups]
-    assert targets == ["ordered", "review"]
+    assert targets == ["ordered"]
     execute_mock.assert_awaited_once()
     assert fake_agent.calls == []
     saved_history = asyncio.run(store.load("session-pending-plan-direct"))
@@ -1785,7 +1862,7 @@ def test_chat_service_blocks_plan_confirmation_without_pending_action(tmp_path, 
             patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_intent_change_cache", AsyncMock(return_value={"code": 1})), \
-            patch("app.service.get_planning_state", AsyncMock(return_value={"code": 1})):
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})):
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-no-pending-confirm", "user-1", "确认"))
 
@@ -1819,7 +1896,7 @@ def test_chat_service_does_not_block_intent_confirmation_when_intent_cache_exist
                 "app.service.get_intent_change_cache",
                 AsyncMock(return_value={"code": 0, "data": {"planEditCache": {"career_intents": {"positive": ["stable_employment"]}}}}),
             ) as intent_cache_mock, \
-            patch("app.service.get_planning_state", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
             patch("app.service.update_volunteer_intent_state", AsyncMock(return_value=intent_result)) as update_mock:
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-intent-pending-confirm", "user-1", "确认"))
@@ -1862,7 +1939,7 @@ def test_chat_service_directly_applies_plan_next_action_pending_confirmation(tmp
             "stage": "apply",
             "result_kind": "mutation_result",
             "summary": "已完成重排并复审。",
-            "workspace_refresh_targets": ["ordered", "review"],
+            "workspace_refresh_targets": ["ordered"],
         },
         ensure_ascii=False,
     )
@@ -1871,7 +1948,7 @@ def test_chat_service_directly_applies_plan_next_action_pending_confirmation(tmp
     with patch("app.service.ChatAgent", return_value=fake_agent), \
             patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
-            patch("app.service.get_planning_state", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_intent_change_cache", AsyncMock(return_value={"data": {"planEditCache": None}})), \
             patch("app.service.execute_plan_action", AsyncMock(return_value=execution_result)) as execute_mock:
         service = ChatService(mock_llm_client, store)
@@ -1899,14 +1976,11 @@ def test_chat_service_appends_workspace_refresh_after_execute_plan_action_review
     with patch("app.service.ChatAgent", return_value=fake_agent), \
             patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
-            patch("app.service.get_planning_state", AsyncMock(return_value={"code": 1})):
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})):
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-plan-review-new", "user-1", "帮我审查一下"))
 
-    assert isinstance(reply, ChatServiceResponseEnvelope)
-    assert reply.primary == "已完成当前方案审查。"
-    payload = json.loads(reply.followups[0].content)
-    assert payload["targetView"] == "review"
+    assert reply == "已完成当前方案审查。"
 
 
 def test_chat_service_appends_workspace_refresh_after_execute_plan_action_mutation(tmp_path, mock_llm_client):
@@ -1925,7 +1999,7 @@ def test_chat_service_appends_workspace_refresh_after_execute_plan_action_mutati
     with patch("app.service.ChatAgent", return_value=fake_agent), \
             patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
-            patch("app.service.get_planning_state", AsyncMock(return_value={"code": 1})):
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})):
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-plan-add-new", "user-1", "把这两个加进去"))
 
@@ -1951,7 +2025,7 @@ def test_chat_service_appends_workspace_refresh_after_execute_plan_action_genera
     with patch("app.service.ChatAgent", return_value=fake_agent), \
             patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
-            patch("app.service.get_planning_state", AsyncMock(return_value={"code": 1})):
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})):
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-plan-generate-new", "user-1", "直接生成一版方案"))
 
@@ -1980,7 +2054,7 @@ def test_chat_service_uses_execute_plan_result_workspace_refresh_targets(tmp_pat
                     {
                         "applied": True,
                         "action_family": "regenerate_order",
-                        "workspace_refresh_targets": ["ordered", "review"],
+                        "workspace_refresh_targets": ["ordered"],
                     },
                     ensure_ascii=False,
                 ),
@@ -1992,13 +2066,13 @@ def test_chat_service_uses_execute_plan_result_workspace_refresh_targets(tmp_pat
     with patch("app.service.ChatAgent", return_value=fake_agent), \
             patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
-            patch("app.service.get_planning_state", AsyncMock(return_value={"code": 1})):
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})):
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-plan-regenerate-refresh", "user-1", "帮我重排一下"))
 
     assert isinstance(reply, ChatServiceResponseEnvelope)
     targets = [json.loads(item.content)["targetView"] for item in reply.followups]
-    assert targets == ["ordered", "review"]
+    assert targets == ["ordered"]
 
 
 def test_chat_service_ignores_read_only_execute_plan_result_workspace_targets(tmp_path, mock_llm_client):
@@ -2020,7 +2094,7 @@ def test_chat_service_ignores_read_only_execute_plan_result_workspace_targets(tm
                     {
                         "applied": True,
                         "action_family": "query_state",
-                        "workspace_refresh_targets": ["ordered", "review"],
+                        "workspace_refresh_targets": ["ordered"],
                     },
                     ensure_ascii=False,
                 ),
@@ -2032,7 +2106,7 @@ def test_chat_service_ignores_read_only_execute_plan_result_workspace_targets(tm
     with patch("app.service.ChatAgent", return_value=fake_agent), \
             patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
-            patch("app.service.get_planning_state", AsyncMock(return_value={"code": 1})):
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})):
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-plan-query-refresh", "user-1", "方案有了么"))
 
@@ -2055,7 +2129,7 @@ def test_chat_service_does_not_append_workspace_refresh_after_execute_plan_actio
     with patch("app.service.ChatAgent", return_value=fake_agent), \
             patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
-            patch("app.service.get_planning_state", AsyncMock(return_value={"code": 1})):
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})):
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-plan-analysis-new", "user-1", "看看现在方案怎么优化"))
 
@@ -2078,7 +2152,7 @@ def test_chat_service_does_not_append_workspace_refresh_after_execute_plan_actio
     with patch("app.service.ChatAgent", return_value=fake_agent), \
             patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
-            patch("app.service.get_planning_state", AsyncMock(return_value={"code": 1})):
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})):
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-plan-state-new", "user-1", "方案有了么"))
 
@@ -2161,7 +2235,7 @@ def test_chat_service_ignores_historical_intent_preview_for_query_state_workspac
     with patch("app.service.ChatAgent", return_value=fake_agent), \
             patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
-            patch("app.service.get_planning_state", AsyncMock(return_value={"code": 1})):
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})):
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-plan-state-old-intent", "user-1", "现在方案怎么样"))
 
@@ -2184,7 +2258,7 @@ def test_chat_service_keeps_natural_markdown_but_removes_forced_choice(tmp_path,
     with patch("app.service.ChatAgent", return_value=fake_agent), \
             patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
-            patch("app.service.get_planning_state", AsyncMock(return_value={"code": 1})):
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})):
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-plan-style-1", "user-1", "方案有了么"))
 
@@ -2217,7 +2291,7 @@ def test_chat_service_allows_plan_next_action_markdown_sections(tmp_path, mock_l
     with patch("app.service.ChatAgent", return_value=fake_agent), \
             patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
-            patch("app.service.get_planning_state", AsyncMock(return_value={"code": 1})):
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})):
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-plan-style-next-action", "user-1", "帮我补几个更稳的"))
 
@@ -2264,7 +2338,7 @@ def test_chat_service_appends_confirmation_boundary_for_plan_next_action_preview
     with patch("app.service.ChatAgent", return_value=fake_agent), \
             patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
-            patch("app.service.get_planning_state", AsyncMock(return_value={"code": 1})):
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})):
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-plan-next-preview-boundary", "user-1", "帮我补几个更稳的"))
 
@@ -2273,6 +2347,73 @@ def test_chat_service_appends_confirmation_boundary_for_plan_next_action_preview
     assert saved_history is not None
     saved_text = next(part.content for part in saved_history[-1].parts if isinstance(part, TextPart))
     assert saved_text == reply
+
+
+def test_chat_service_confirms_plan_next_action_preview_without_execute(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    preview_plan = {
+        "stage": "preview",
+        "action_family": "sort_ordered_plan",
+        "user_goal": "按院校层次排序",
+        "requires_confirmation": True,
+        "missing_inputs": [],
+        "atomic_actions": [
+            {
+                "action_type": "sort_ordered_plan",
+                "filters": {"sort_field": "schoolRank"},
+            }
+        ],
+        "preview_summary": "会按院校层次重新排序当前方案。",
+    }
+    fake_agent = _FakeAgentWithToolCalls(
+        "会按院校层次重新排序当前方案。",
+        [
+            ToolCallPart(
+                tool_name="plan_next_action",
+                args={"user_goal": "按院校层次排序", "action_family": "sort_ordered_plan"},
+                tool_call_id="sort-preview-plan-next-only",
+            )
+        ],
+        [
+            ToolReturnPart(
+                tool_name="plan_next_action",
+                content=json.dumps(preview_plan, ensure_ascii=False),
+                tool_call_id="sort-preview-plan-next-only",
+            )
+        ],
+    )
+    execution_result = json.dumps(
+        {
+            "applied": True,
+            "action_family": "sort_ordered_plan",
+            "stage": "apply",
+            "result_kind": "mutation_result",
+            "summary": "已按院校层次重新排序当前方案。",
+            "workspace_refresh_targets": ["ordered"],
+        },
+        ensure_ascii=False,
+    )
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_intent_change_cache", AsyncMock(return_value={"data": {"planEditCache": None}})), \
+            patch("app.service.execute_plan_action", AsyncMock(return_value=execution_result)) as execute_mock:
+        service = ChatService(mock_llm_client, store)
+        preview_reply = asyncio.run(service.handle_message("session-plan-next-sort-preview", "user-1", "按院校层次排序"))
+        confirm_reply = asyncio.run(service.handle_message("session-plan-next-sort-preview", "user-1", "确认"))
+
+    assert preview_reply == "会按院校层次重新排序当前方案。\n\n如果你确认要这样做，我再执行；现在还不会改动方案。"
+    assert isinstance(confirm_reply, ChatServiceResponseEnvelope)
+    assert confirm_reply.primary == "已按院校层次重新排序当前方案。"
+    assert len(fake_agent.calls) == 1
+    execute_mock.assert_awaited_once()
+    payload = json.loads(execute_mock.await_args.args[1])
+    assert payload["stage"] == "apply"
+    assert payload["action_family"] == "sort_ordered_plan"
+    assert payload["should_rerun_review"] is True
 
 
 def test_chat_service_allows_query_volunteer_plan_natural_headings(tmp_path, mock_llm_client):
@@ -2291,7 +2432,7 @@ def test_chat_service_allows_query_volunteer_plan_natural_headings(tmp_path, moc
     with patch("app.service.ChatAgent", return_value=fake_agent), \
             patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
-            patch("app.service.get_planning_state", AsyncMock(return_value={"code": 1})):
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})):
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-plan-query-style", "user-1", "候选里看看计算机"))
 
@@ -2309,7 +2450,7 @@ def test_chat_service_basic_plan_status_uses_current_planning_summary(tmp_path, 
             patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
             patch(
-                "app.service.get_planning_state",
+                "app.service.get_planning_workspace_state",
                 AsyncMock(
                     return_value={
                         "code": 0,
@@ -2332,11 +2473,11 @@ def test_chat_service_basic_plan_status_uses_current_planning_summary(tmp_path, 
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-basic-plan-status", "user-1", "方案有了么"))
 
-    assert "方案已经有了" in reply
-    assert "当前排序志愿数：45/45" in reply
-    assert "风险0项，提醒4项" in reply
-    assert "广西师范大学生物科学" not in reply
-    assert fake_agent.calls == []
+    assert reply == "历史里旧冲突：广西师范大学生物科学还在。"
+    assert len(fake_agent.calls) == 1
+    assert fake_agent.calls[0]["planning_summary"] is not None
+    assert fake_agent.calls[0]["planning_summary"].ordered_total == 45
+    assert fake_agent.calls[0]["planning_summary"].review_warn_count == 4
 
 
 def test_chat_service_normalizes_plan_gap_question_even_without_tool_call(tmp_path, mock_llm_client):
@@ -2347,7 +2488,7 @@ def test_chat_service_normalizes_plan_gap_question_even_without_tool_call(tmp_pa
     with patch("app.service.ChatAgent", return_value=fake_agent), \
             patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
-            patch("app.service.get_planning_state", AsyncMock(return_value={"code": 1})):
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})):
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-plan-gap-style", "user-1", "还差的几个怎么补"))
 
@@ -2363,7 +2504,7 @@ def test_chat_service_preserves_plan_choice_menu_even_without_tool_call(tmp_path
     with patch("app.service.ChatAgent", return_value=fake_agent), \
             patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
-            patch("app.service.get_planning_state", AsyncMock(return_value={"code": 1})):
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})):
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-plan-style-2", "user-1", "方案有了么"))
 
@@ -2432,7 +2573,7 @@ def test_chat_service_propagates_wsresponse_from_main_agent(tmp_path, mock_llm_c
     with patch("app.service.ChatAgent", return_value=fake_agent), \
             patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
-            patch("app.service.get_planning_state", AsyncMock(return_value={"code": 1})):
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})):
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-3", "user-3", "我更想去北京"))
 
@@ -2449,7 +2590,7 @@ def test_chat_service_plan_status_message_keeps_main_agent_entry_and_planning_su
     with patch("app.service.ChatAgent", return_value=fake_agent), \
             patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
-            patch("app.service.get_planning_state", AsyncMock(return_value={
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={
                 "code": 0,
                 "data": {
                     "phase": "reviewed",
@@ -2485,7 +2626,7 @@ def test_chat_service_plan_adjustment_message_preserves_history_context(tmp_path
     with patch("app.service.ChatAgent", return_value=fake_agent), \
             patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
-            patch("app.service.get_planning_state", AsyncMock(return_value={
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={
                 "code": 0,
                 "data": {
                     "phase": "reviewed",
@@ -2521,7 +2662,7 @@ def test_chat_service_plan_regenerate_message_still_uses_main_agent_single_entry
     with patch("app.service.ChatAgent", return_value=fake_agent), \
             patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
-            patch("app.service.get_planning_state", AsyncMock(return_value={
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={
                 "code": 0,
                 "data": {
                     "phase": "ordered",
@@ -2550,7 +2691,7 @@ def test_chat_service_plan_status_then_review_preserves_dialog_history(tmp_path,
     with patch("app.service.ChatAgent", return_value=fake_agent), \
             patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
-            patch("app.service.get_planning_state", AsyncMock(return_value={
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={
                 "code": 0,
                 "data": {
                     "phase": "reviewed",
@@ -2583,7 +2724,7 @@ def test_chat_service_plan_status_then_review_preserves_dialog_history(tmp_path,
 def test_chat_service_basic_plan_status_then_followup_reload_latest_planning_summary(tmp_path, mock_llm_client):
     db_path = tmp_path / "history.db"
     store = ChatHistoryStore(str(db_path))
-    fake_agent = _FakeAgent(["第二次状态"])
+    fake_agent = _FakeAgent(["第一次状态", "第二次状态"])
     planning_responses = [
         {
             "code": 0,
@@ -2612,23 +2753,24 @@ def test_chat_service_basic_plan_status_then_followup_reload_latest_planning_sum
     with patch("app.service.ChatAgent", return_value=fake_agent), \
             patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
-            patch("app.service.get_planning_state", AsyncMock(side_effect=planning_responses)) as planning_mock:
+            patch("app.service.get_planning_workspace_state", AsyncMock(side_effect=planning_responses)) as planning_mock:
         service = ChatService(mock_llm_client, store)
         first_reply = asyncio.run(service.handle_message("session-plan-repeat-1", "user-1", "方案有了么"))
         second_reply = asyncio.run(service.handle_message("session-plan-repeat-1", "user-1", "现在方案怎么样"))
 
-    assert "方案已经有了" in first_reply
-    assert "当前排序志愿数：28/30" in first_reply
-    assert "当前草稿志愿数：30/30" in first_reply
+    assert first_reply == "第一次状态"
     assert second_reply == "第二次状态"
     assert planning_mock.await_count == 2
-    assert len(fake_agent.calls) == 1
+    assert len(fake_agent.calls) == 2
     assert fake_agent.calls[0]["planning_summary"] is not None
-    assert fake_agent.calls[0]["planning_summary"].version == 22
-    assert fake_agent.calls[0]["planning_summary"].ordered_total == 30
-    assert fake_agent.calls[0]["planning_summary"].review_warn_count == 2
-    assert fake_agent.calls[0]["planning_summary"].review_risk_count == 1
-    assert fake_agent.calls[0]["chat_history"] == [
+    assert fake_agent.calls[0]["planning_summary"].version == 21
+    assert fake_agent.calls[0]["planning_summary"].ordered_total == 28
+    assert fake_agent.calls[1]["planning_summary"] is not None
+    assert fake_agent.calls[1]["planning_summary"].version == 22
+    assert fake_agent.calls[1]["planning_summary"].ordered_total == 30
+    assert fake_agent.calls[1]["planning_summary"].review_warn_count == 2
+    assert fake_agent.calls[1]["planning_summary"].review_risk_count == 1
+    assert fake_agent.calls[1]["chat_history"] == [
         {"role": "user", "content": "方案有了么"},
         {"role": "assistant", "content": first_reply},
         {"role": "user", "content": "现在方案怎么样"},
@@ -2643,7 +2785,7 @@ def test_chat_service_compensation_preview_then_apply_confirm_keeps_single_entry
     with patch("app.service.ChatAgent", return_value=fake_agent), \
             patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
-            patch("app.service.get_planning_state", AsyncMock(return_value={
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={
                 "code": 0,
                 "data": {
                     "phase": "reviewed",
@@ -2677,7 +2819,7 @@ def test_chat_service_reorder_request_then_user_confirmation_preserves_turn_hist
     with patch("app.service.ChatAgent", return_value=fake_agent), \
             patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
-            patch("app.service.get_planning_state", AsyncMock(return_value={
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={
                 "code": 0,
                 "data": {
                     "phase": "ordered",
@@ -2727,7 +2869,7 @@ def test_chat_service_normalizes_toolless_intent_reply_profile_jargon_in_history
     with patch("app.service.ChatAgent", return_value=fake_agent), \
             patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
-            patch("app.service.get_planning_state", AsyncMock(return_value={
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={
                 "code": 0,
                 "data": {
                     "phase": "ordered",
@@ -2774,7 +2916,7 @@ def test_chat_service_normalizes_premature_recorded_wording_after_intent_preview
     with patch("app.service.ChatAgent", return_value=fake_agent), \
             patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
-            patch("app.service.get_planning_state", AsyncMock(return_value={"code": 1})):
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})):
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-intent-preview-style", "user-57", "想学跨境电商"))
 
@@ -2813,7 +2955,7 @@ def test_chat_service_appends_candidate_workspace_refresh_after_intent_preview_t
     with patch("app.service.ChatAgent", return_value=fake_agent), \
             patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
-            patch("app.service.get_planning_state", AsyncMock(return_value={"code": 1})):
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})):
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-intent-preview-refresh", "user-57", "不想学审计"))
 
@@ -2881,7 +3023,7 @@ def test_chat_service_direct_confirm_workspace_actions_have_clear_copy(tmp_path,
                 "- 录取率梯度是否达标：否\n"
                 "- 主要提醒：当前排序存在录取概率倒挂；当前录取概率梯度存在断层"
             ),
-            "workspace_refresh_targets": ["ordered", "review"],
+            "workspace_refresh_targets": ["ordered"],
         },
         ensure_ascii=False,
     )
@@ -2890,7 +3032,7 @@ def test_chat_service_direct_confirm_workspace_actions_have_clear_copy(tmp_path,
     with patch("app.service.ChatAgent", return_value=fake_agent), \
             patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
-            patch("app.service.get_planning_state", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_intent_change_cache", AsyncMock(return_value={"data": {"planEditCache": None}})), \
             patch("app.service.execute_plan_action", AsyncMock(return_value=execution_result)) as execute_mock:
         service = ChatService(mock_llm_client, store)
@@ -2902,8 +3044,8 @@ def test_chat_service_direct_confirm_workspace_actions_have_clear_copy(tmp_path,
     execute_mock.assert_awaited_once()
     assert fake_agent.calls == []
     payloads = [json.loads(item.content) for item in reply.followups]
-    assert [payload["title"] for payload in payloads] == ["查看调整后的排序方案", "查看方案审查结果"]
-    assert [payload["actionText"] for payload in payloads] == ["打开排序方案", "打开审查结果"]
+    assert [payload["title"] for payload in payloads] == ["查看调整后的排序方案"]
+    assert [payload["actionText"] for payload in payloads] == ["打开排序方案"]
 
 
 def test_chat_service_dialog_replace_preview_confirm_resolves_display_refs_before_apply(tmp_path, mock_llm_client):
@@ -2990,7 +3132,7 @@ def test_chat_service_dialog_replace_preview_confirm_resolves_display_refs_befor
                                         "stage": "apply",
                                         "result_kind": "mutation_result",
                                         "summary": "已按你的确认完成替换，并刷新排序和审查结果。",
-                                        "workspace_refresh_targets": ["ordered", "review"],
+                                        "workspace_refresh_targets": ["ordered"],
                                     },
                                     ensure_ascii=False,
                                 ),
@@ -3006,7 +3148,7 @@ def test_chat_service_dialog_replace_preview_confirm_resolves_display_refs_befor
     with patch("app.service.ChatAgent", return_value=fake_agent), \
             patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
-            patch("app.service.get_planning_state", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
             patch(
                 "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
                 AsyncMock(
@@ -3029,8 +3171,8 @@ def test_chat_service_dialog_replace_preview_confirm_resolves_display_refs_befor
                     }
                 ),
             ), \
-            patch("app.tools.plan_execution_tool.remove_planning_ordered_items", AsyncMock(return_value="已移出旧志愿")) as remove_mock, \
-            patch("app.tools.plan_execution_tool._select_candidates_by_filters_into_plan", AsyncMock(return_value="已补入新候选")) as add_mock, \
+            patch("app.handlers.mutation_handlers.remove_planning_ordered_items", AsyncMock(return_value="已移出旧志愿")) as remove_mock, \
+            patch("app.handlers.mutation_handlers._select_candidates_by_filters_into_plan", AsyncMock(return_value="已补入新候选")) as add_mock, \
             patch("app.tools.plan_execution_tool.run_planning_review", AsyncMock(return_value="复审完成")):
         service = ChatService(mock_llm_client, store)
         preview_reply = asyncio.run(service.handle_message("session-dialog-57-replay", "user-57", "调整下"))
@@ -3041,7 +3183,7 @@ def test_chat_service_dialog_replace_preview_confirm_resolves_display_refs_befor
     assert "已移出旧志愿" in confirm_reply.primary
     assert "已补入新候选" in confirm_reply.primary
     assert "复审完成" in confirm_reply.primary
-    assert [json.loads(item.content)["targetView"] for item in confirm_reply.followups] == ["ordered", "review"]
+    assert [json.loads(item.content)["targetView"] for item in confirm_reply.followups] == ["ordered"]
     remove_mock.assert_awaited_once()
     add_mock.assert_awaited_once()
     assert fake_agent.calls[0] == {"user_prompt": "调整下", "pending_plan_action": None}

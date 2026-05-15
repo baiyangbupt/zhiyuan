@@ -66,6 +66,51 @@ def test_plan_next_action_builds_preview_for_add_units_without_confirmation():
     assert "补入" in data["preview_summary"]
 
 
+def test_plan_next_action_ignores_apply_stage_for_mutation_without_confirmation():
+    with patch(
+        "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
+        new=AsyncMock(return_value=_context_inputs(summary="阶段=ordered；方案=48/48")),
+    ):
+        result = asyncio.run(
+            plan_next_action(
+                _ctx(),
+                user_goal="按院校层次排序",
+                action_family="sort_ordered_plan",
+                current_stage="apply",
+                user_confirmed=False,
+            )
+        )
+
+    data = json.loads(result)
+    assert data["stage"] == "preview"
+    assert data["action_family"] == "sort_ordered_plan"
+    assert data["requires_confirmation"] is True
+    assert data["should_rerun_review"] is False
+    assert "院校层次" in data["preview_summary"]
+
+
+def test_plan_next_action_allows_apply_stage_for_mutation_after_confirmation():
+    with patch(
+        "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
+        new=AsyncMock(return_value=_context_inputs(summary="阶段=ordered；方案=48/48")),
+    ):
+        result = asyncio.run(
+            plan_next_action(
+                _ctx(),
+                user_goal="按院校层次排序",
+                action_family="sort_ordered_plan",
+                current_stage="apply",
+                user_confirmed=True,
+            )
+        )
+
+    data = json.loads(result)
+    assert data["stage"] == "apply"
+    assert data["action_family"] == "sort_ordered_plan"
+    assert data["requires_confirmation"] is True
+    assert data["should_rerun_review"] is True
+
+
 def test_plan_next_action_requires_add_units_selection_scope_when_no_ids():
     with patch(
         "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
@@ -111,7 +156,129 @@ def test_plan_next_action_requires_missing_inputs_for_move():
     assert set(data["missing_inputs"]) == {"volunteer_id", "target_position"}
 
 
-def test_plan_next_action_requires_missing_inputs_for_unpin():
+def test_plan_next_action_builds_preview_for_move_ordered_unit():
+    with patch(
+        "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
+        new=AsyncMock(
+            return_value=_context_inputs(
+                summary="阶段=ordered；方案=20/30",
+            )
+        ),
+    ):
+        result = asyncio.run(
+            plan_next_action(
+                _ctx(),
+                user_goal="把第3个专业组移动到第5位",
+                action_family="move_ordered_unit",
+                unit_ids=["unit-3"],
+                target_position=5,
+            )
+        )
+
+    data = json.loads(result)
+    assert data["stage"] == "preview"
+    assert data["action_family"] == "move_ordered_unit"
+    assert data["missing_inputs"] == []
+    assert data["atomic_actions"][0]["unit_ids"] == ["unit-3"]
+    assert data["atomic_actions"][0]["target_position"] == 5
+    assert "整体移动指定专业组" in data["preview_summary"]
+
+
+def test_plan_next_action_builds_preview_for_move_ordered_unit_position_ref():
+    with patch(
+        "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
+        new=AsyncMock(return_value=_context_inputs(summary="阶段=ordered；方案=20/30")),
+    ):
+        result = asyncio.run(
+            plan_next_action(
+                _ctx(),
+                user_goal="把第3个专业组移动到第5位",
+                action_family="move_ordered_unit",
+                target_position=5,
+            )
+        )
+
+    data = json.loads(result)
+    assert data["stage"] == "preview"
+    assert data["action_family"] == "move_ordered_unit"
+    assert data["missing_inputs"] == []
+    assert data["atomic_actions"][0]["unit_ids"] == []
+    assert data["atomic_actions"][0]["target_position"] == 5
+
+
+def test_plan_next_action_requires_missing_inputs_for_move_ordered_unit():
+    with patch(
+        "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
+        new=AsyncMock(
+            return_value=_context_inputs(
+                summary="阶段=ordered；方案=20/30",
+            )
+        ),
+    ):
+        result = asyncio.run(
+            plan_next_action(
+                _ctx(),
+                user_goal="把这个专业组往前提",
+                action_family="move_ordered_unit",
+            )
+        )
+
+    data = json.loads(result)
+    assert data["stage"] == "analyze"
+    assert set(data["missing_inputs"]) == {"unit_ids", "target_position"}
+
+
+def test_plan_next_action_coerces_major_group_move_to_ordered_unit_action():
+    with patch(
+        "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
+        new=AsyncMock(
+            return_value=_context_inputs(
+                summary="阶段=ordered；方案=20/30",
+            )
+        ),
+    ):
+        result = asyncio.run(
+            plan_next_action(
+                _ctx(),
+                user_goal="把这个专业组移动到第5位",
+                action_family="move_unit",
+                unit_ids=["unit-3"],
+                target_position=5,
+            )
+        )
+
+    data = json.loads(result)
+    assert data["stage"] == "preview"
+    assert data["action_family"] == "move_ordered_unit"
+    assert data["atomic_actions"][0]["unit_ids"] == ["unit-3"]
+
+
+def test_plan_next_action_coerces_major_group_remove_to_ordered_unit_action():
+    with patch(
+        "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
+        new=AsyncMock(
+            return_value=_context_inputs(
+                summary="阶段=ordered；方案=20/30",
+            )
+        ),
+    ):
+        result = asyncio.run(
+            plan_next_action(
+                _ctx(),
+                user_goal="删除这个院校专业组",
+                action_family="remove_units",
+                unit_ids=["unit-3"],
+            )
+        )
+
+    data = json.loads(result)
+    assert data["stage"] == "preview"
+    assert data["action_family"] == "remove_ordered_unit"
+    assert data["atomic_actions"][0]["unit_ids"] == ["unit-3"]
+    assert "删除指定专业组" in data["preview_summary"]
+
+
+def test_plan_next_action_guides_when_unpin_is_disabled():
     with patch(
         "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
         new=AsyncMock(
@@ -129,8 +296,10 @@ def test_plan_next_action_requires_missing_inputs_for_unpin():
         )
 
     data = json.loads(result)
-    assert data["stage"] == "analyze"
-    assert data["missing_inputs"] == ["volunteer_id"]
+    assert data["stage"] == "preview"
+    assert data["missing_inputs"] == []
+    assert data["action_family"] == "unpin_unit"
+    assert "不提供固定/锁定志愿入口" in data["preview_summary"]
 
 
 def test_plan_next_action_query_candidates_executes_as_read_only_apply():

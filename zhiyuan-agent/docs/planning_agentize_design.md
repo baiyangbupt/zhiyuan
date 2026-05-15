@@ -488,15 +488,15 @@ tool 不应承担：
 
 当前情况：
 
-- 模型既可以直接调用细粒度 planning tools
-- 也可以调用 `handle_planning_request`
-- 两者的存在都合理，但容易让语义边界不稳定
+- 历史上模型既可以直接调用细粒度 planning tools，也可以调用 `handle_planning_request`
+- 当前 3.0.1 运行时已经收口为 `collect_plan_context_inputs -> plan_next_action -> execute_plan_action` 主链
+- `handle_planning_request` 保留为 deprecated compatibility wrapper，不再作为新增能力入口
 
 期望方向：
 
-- `handle_planning_request` 逐步收敛为高频单步执行器
-- 细粒度 planning tools 保留给复杂组合动作
-- 但不再让 tool 自己负责“猜用户语义”
+- 新增方案能力必须接入 Plan 主链
+- 细粒度 planning helper 只在执行层内部复用
+- 不再让旧 router 负责“猜用户语义”
 
 ### C. 部分 tool 仍在内部做旧式字符串分流
 
@@ -1423,22 +1423,11 @@ agent 需要考虑以下异常状态：
 
 当前最小动作链工具包括：
 
-- `handle_planning_request`
-- `query_planning_state`
-- `query_planning_candidate_pool`
-- `query_planning_draft`
-- `query_planning_ordered_plan`
-- `select_planning_draft_items`
-- `remove_planning_draft_items`
-- `lock_planning_draft_items`
-- `ban_planning_draft_items`
-- `generate_planning_ordered_plan`
-- `move_planning_ordered_item`
-- `pin_planning_ordered_item`
-- `unpin_planning_ordered_item`
-- `run_planning_review`
-- `preview_planning_compensation`
-- `apply_planning_compensation`
+- `collect_plan_context_inputs`
+- `plan_next_action`
+- `execute_plan_action`
+
+历史低层 planning tools、`handle_planning_request` 和 `planning_workflow_tool` 仍保留为兼容或内部 helper，但不再作为主 agent 新增能力的设计入口。
 
 执行约束如下：
 
@@ -1448,21 +1437,12 @@ agent 需要考虑以下异常状态：
   - `确认后执行改方案`：会直接改动草稿、排序或补偿结果
 - 对于“体制内更适合哪些专业”“北京有哪些学校”“这个专业就业怎么样”这类单向查询，优先在对话框直接回答；只有结果较多、用户明确要求查看完整列表、或需要继续操作时，再引导工作台
 - 对于“看看其他好就业的专业有没有机会”“如果加了 XX 现在方案怎么办”“不想去 XX 了”“再补一些更稳的”这类会影响当前方案的请求，优先进入 planning 编排链路
-- `handle_planning_request` 作为主 agent 的高频单步编排入口，优先承接“当前方案干预”类诉求，内部再路由到状态查询、候选筛选、草稿编辑、排序调整、审查或补偿预览，减少模型在多组底层工具之间漂移
-- 对于“找些更适合进体制的专业”“想去北京”“补一些更稳的”“把这个移到第3位”这类一句话只对应一个 planning 动作的请求，优先使用 `handle_planning_request`
-- `handle_planning_request` 只负责单步动作，不负责自主多步链式推进；涉及整体重排或直接补偿时，仍必须要求 `user_confirmed=true`
-- 对于“查看候选”“查看草稿”“看看排序”“执行审查后让我看结果”“先看看补偿建议”这类查看/定位型请求，`handle_planning_request` 应优先返回 `planningWorkspaceAction`，把前端工作台切到正确视图并同步刷新
-- 对于“看看方案有什么建议”“怎么调方案更合理”“帮我优化一下当前方案”这类分析型请求，`handle_planning_request` 应优先调用 `plan_adjustment_analyze` 并直接在对话里回答，不默认要求前端工作台展示建议
-- `query_planning_state` 用于回答当前阶段、数量、待处理项和 stale 状态，避免把完整状态常驻注入 prompt
-- `query_planning_candidate_pool` 用于把候选池筛选结果转成可继续操作的 `volunteerId` 列表
-- `query_planning_draft` 用于回答当前已选草稿、区间分布和锁定情况
-- `query_planning_ordered_plan` 用于回答当前排序结果、梯度与保底状态
-- `select_planning_draft_items`、`remove_planning_draft_items`、`lock_planning_draft_items`、`ban_planning_draft_items` 用于承接明确的草稿编辑动作
-- `generate_planning_ordered_plan` 用于在用户确认后做整体重排
-- `move_planning_ordered_item`、`pin_planning_ordered_item`、`unpin_planning_ordered_item` 用于承接明确的局部排序操作
-- `run_planning_review` 用于获取最新风险与提醒，避免仅依赖初始化摘要
-- `preview_planning_compensation` 用于先解释系统准备怎么补，再决定是否执行
-- `apply_planning_compensation` 只在用户明确确认后调用，避免 agent 直接越权改方案
+- 对于“找些更适合进体制的专业”“想去北京”“补一些更稳的”“把这个移到第3位”这类一句话只对应一个 planning 动作的请求，主 agent 也应先走 `collect_plan_context_inputs -> plan_next_action -> execute_plan_action`
+- `plan_next_action` 负责生成结构化 `PlanActionPlan`，表达 analyze / preview / apply 阶段和 action family
+- `execute_plan_action` 负责受控执行，并在需要时内部复用 planning helper 和 internal client
+- 对于“查看候选”“查看方案”“执行审查后让我看结果”“先看看补齐建议”这类查看/定位型请求，只有需要刷新、聚焦或筛选工作台时才返回 `planningWorkspaceAction`
+- 对于“看看方案有什么建议”“怎么调方案更合理”“帮我优化一下当前方案”这类分析型请求，优先在对话里回答；只有用户确认执行改动时才进入 mutation
+- 旧 `query_planning_*`、`select_planning_*`、`move_planning_*`、`pin_planning_*` 等低层接口不再作为模型直连入口新增能力
 
 这种方式的优点是：
 
@@ -1476,7 +1456,9 @@ agent 需要考虑以下异常状态：
 当前线上语义已经收口为两条主链路：
 
 - `analyze_volunteer_intent_change` / `update_volunteer_intent_state`：处理软意向 / 硬要求的识别、预览、确认与落库
-- `handle_planning_request`：处理围绕“当前方案”的单步动作，包括查看、分析、审查、重排与补偿预览
+- `collect_plan_context_inputs -> plan_next_action -> execute_plan_action`：处理围绕“当前方案”的查看、分析、审查、排序、增删移动、重排与补齐动作
+
+`handle_planning_request` 已退为 deprecated compatibility wrapper，只用于历史协议和测试迁移期兼容，不作为当前主 agent 的新增能力入口。
 
 ### 8.1 当前已落地的显式短路路由
 
@@ -1487,7 +1469,7 @@ agent 需要考虑以下异常状态：
 - 明确方案审查表达优先进入 `handle_planning_request.review`
 - 明确整体重排表达优先进入 `handle_planning_request.ordered_regenerate`
 
-当前已覆盖的典型表达包括：
+历史短路曾覆盖的典型表达包括：
 
 - “看看方案有什么建议”
 - “怎么调方案”

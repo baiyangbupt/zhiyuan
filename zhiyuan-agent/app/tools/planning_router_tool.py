@@ -1,7 +1,8 @@
-"""Single-step planning orchestration tool.
+"""Deprecated compatibility wrapper for single-step planning requests.
 
-为主 agent 提供一个更稳定的高频 planning 请求入口，优先承接
-“当前方案干预”类诉求，减少模型在多组细粒度工具之间漂移。
+3.0.1 起，ChatAgent 不再注册本模块给模型直连。正式 Plan 入口是
+collect_plan_context_inputs -> plan_next_action -> execute_plan_action。
+本模块只保留给历史测试和兼容调用，新增能力不要继续接入这里。
 """
 
 from __future__ import annotations
@@ -186,7 +187,7 @@ async def handle_planning_request(
     if normalized_type == "draft_query":
         return await _run_planned_request(
             ctx,
-            user_goal="查看当前草稿方案",
+            user_goal="查看当前已加入方案",
             action_family="query_draft",
             user_confirmed=True,
         )
@@ -285,16 +286,10 @@ async def handle_planning_request(
         )
 
     if normalized_type == "ordered_pin":
-        ensured_ids = _ensure_volunteer_ids(volunteer_ids, normalized_type)
-        if not ensured_ids or target_position is None:
-            return "固定志愿位置需要确认要固定哪一条、固定到第几位，请先查看当前方案。"
-        return await pin_planning_ordered_item(ctx, ensured_ids[0], target_position)
+        return "新版工作台暂不提供固定/锁定志愿入口。可以改用移动到指定位置或方案排序。"
 
     if normalized_type == "ordered_unpin":
-        ensured_ids = _ensure_volunteer_ids(volunteer_ids, normalized_type)
-        if not ensured_ids:
-            return "取消固定需要确认要取消哪一条，请先查看当前方案。"
-        return await unpin_planning_ordered_item(ctx, ensured_ids[0])
+        return "新版工作台暂不提供固定/锁定志愿入口。当前无需取消固定，可以改用移动到指定位置或方案排序。"
 
     if normalized_type == "review":
         return await _run_planned_request(

@@ -49,9 +49,42 @@ public class PlanningExcelExportBuilderTest {
         assertEquals("080902", first.getMajorList().get(1).getMajorCode());
 
         ExcelUtil.VolunteerExcelData second = exportData.getMainList().get(1);
-        assertEquals(Integer.valueOf(3), second.getIndex());
+        assertEquals(Integer.valueOf(2), second.getIndex());
         assertEquals("1002", second.getSchoolCode());
         assertEquals(1, second.getMajorList().size());
+    }
+
+    @Test
+    void shouldRenumberMajorGroupExportRowsContinuously() {
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.getCandidatePoolState().setVolunteerModel("majorGroup");
+        CandidateItemDTO candidateA = buildCandidate("g1m1", "s1", "2001", "专业组A", "专业A1", "080901", 10, 8000, "4年", 61d);
+        CandidateItemDTO candidateB = buildCandidate("g2m1", "s2", "2002", "专业组B", "专业B1", "080701", 6, 7600, "4年", 79d);
+        state.getCandidatePoolState().setItems(Arrays.asList(candidateA, candidateB));
+
+        OrderedUnitDTO firstUnit = new OrderedUnitDTO();
+        firstUnit.setPosition(1);
+        firstUnit.setUnitId("ps1");
+        firstUnit.setTier("冲");
+        firstUnit.setSchoolName("专业组A");
+        firstUnit.setMajorItems(Arrays.asList(buildUnitMajor("g1m1", "080901", "专业A1")));
+
+        OrderedUnitDTO secondUnit = new OrderedUnitDTO();
+        secondUnit.setPosition(3);
+        secondUnit.setUnitId("ps2");
+        secondUnit.setTier("稳");
+        secondUnit.setSchoolName("专业组B");
+        secondUnit.setMajorItems(Arrays.asList(buildUnitMajor("g2m1", "080701", "专业B1")));
+        state.getOrderedPlanState().setUnits(Arrays.asList(firstUnit, secondUnit));
+        state.getOrderedPlanState().setItems(Arrays.asList(
+                buildOrderedItem(1, "g1m1", "冲", "专业组A", "专业A1"),
+                buildOrderedItem(3, "g2m1", "稳", "专业组B", "专业B1")
+        ));
+
+        PlanningExcelExportBuilder.PlanningExportData exportData = builder.build(state, new CreateSessionReq());
+
+        assertEquals(Integer.valueOf(1), exportData.getMainList().get(0).getIndex());
+        assertEquals(Integer.valueOf(2), exportData.getMainList().get(1).getIndex());
     }
 
     @Test
@@ -101,6 +134,79 @@ public class PlanningExcelExportBuilderTest {
         assertEquals(2, first.getMajorList().size());
         assertEquals("61%", first.getMajorList().get(0).getMajorEnrollRatio());
         assertEquals("54%", first.getMajorList().get(1).getMajorEnrollRatio());
+    }
+
+    @Test
+    void shouldResolveLegacyMajorSchoolVolunteerIdWhenExporting() {
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.getCandidatePoolState().setVolunteerModel("major");
+        CandidateItemDTO candidate = buildCandidate(
+                "ps1_school1_planMajor1",
+                "school1",
+                "3001",
+                "学校A",
+                "会计学",
+                "120203",
+                12,
+                6800,
+                "4年",
+                52d);
+        state.getCandidatePoolState().setItems(Arrays.asList(candidate));
+        state.getOrderedPlanState().setItems(Arrays.asList(
+                buildOrderedItem(1, "ps1_school1_legacyMajor1", "稳", "学校A", "会计学")
+        ));
+
+        PlanningExcelExportBuilder.PlanningExportData exportData = builder.build(state, new CreateSessionReq());
+
+        assertEquals(1, exportData.getMainList().size());
+        ExcelUtil.VolunteerExcelData row = exportData.getMainList().get(0);
+        assertEquals("3001", row.getSchoolCode());
+        assertEquals("学校A", row.getSchoolName());
+        assertEquals(1, row.getMajorList().size());
+        assertEquals("120203", row.getMajorList().get(0).getMajorCode());
+        assertEquals("会计学", row.getMajorList().get(0).getMajorName());
+    }
+
+    @Test
+    void shouldResolveLegacyMajorGroupVolunteerIdWhenExportingUnits() {
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.getCandidatePoolState().setVolunteerModel("majorGroup");
+        CandidateItemDTO candidate = buildCandidate(
+                "ps1_school1_planMajor1",
+                "school1",
+                "3001",
+                "学校A第01组",
+                "会计学",
+                "120203",
+                12,
+                6800,
+                "4年",
+                52d);
+        state.getCandidatePoolState().setItems(Arrays.asList(candidate));
+
+        OrderedUnitDTO unit = new OrderedUnitDTO();
+        unit.setPosition(1);
+        unit.setUnitId("ps1");
+        unit.setTier("稳");
+        unit.setSchoolName("学校A第01组");
+        unit.setSchoolEnrollRatio(60d);
+        unit.setMajorItems(Arrays.asList(buildUnitMajor("ps1_school1_legacyMajor1", "120203", "会计学")));
+        state.getOrderedPlanState().setUnits(Arrays.asList(unit));
+        state.getOrderedPlanState().setItems(Arrays.asList(
+                buildOrderedItem(1, "ps1_school1_legacyMajor1", "稳", "学校A第01组", "会计学")
+        ));
+
+        PlanningExcelExportBuilder.PlanningExportData exportData = builder.build(state, new CreateSessionReq());
+
+        assertTrue(exportData.isMajorGroupMode());
+        assertEquals(1, exportData.getMainList().size());
+        ExcelUtil.VolunteerExcelData row = exportData.getMainList().get(0);
+        assertEquals("3001", row.getSchoolCode());
+        assertEquals("学校A第01组", row.getSchoolName());
+        assertEquals("60", row.getEnrollRatio());
+        assertEquals(1, row.getMajorList().size());
+        assertEquals("120203", row.getMajorList().get(0).getMajorCode());
+        assertEquals("52%", row.getMajorList().get(0).getMajorEnrollRatio());
     }
 
     private CandidateItemDTO buildCandidate(String volunteerId,

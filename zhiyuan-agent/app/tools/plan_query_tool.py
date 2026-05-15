@@ -538,7 +538,7 @@ async def _load_current_plan(session_id: str) -> tuple[str, list[dict[str, Any]]
     draft_result = await get_planning_draft(session_id)
     draft_items = _extract_plan_items(draft_result)
     if draft_result.get("code") == 0 and draft_items:
-        return "当前草稿方案", draft_items
+        return "当前已加入方案", draft_items
 
     return "当前方案", []
 

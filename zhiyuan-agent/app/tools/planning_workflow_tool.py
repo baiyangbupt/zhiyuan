@@ -1160,8 +1160,8 @@ def _format_apply_result(
 
     lines = ["已应用补偿并刷新当前方案。"]
     lines.append(f"- 当前阶段：{summary.phase}")
-    lines.append(f"- 草稿志愿数：{_format_total_with_target(summary.draft_total, summary.draft_target_total)}")
-    lines.append(f"- 排序志愿数：{_format_total_with_target(summary.ordered_total, summary.ordered_target_total)}")
+    lines.append(f"- 已加入方案数：{_format_total_with_target(summary.draft_total, summary.draft_target_total)}")
+    lines.append(f"- 当前方案数：{_format_total_with_target(summary.ordered_total, summary.ordered_target_total)}")
     count_gap_hint = _build_count_gap_hint(summary.ordered_total, summary.ordered_target_total)
     if count_gap_hint:
         lines.append(f"- 数量检查：{count_gap_hint}")
@@ -1213,8 +1213,8 @@ def _format_state_result(
     lines = ["当前规划状态概览："]
     lines.append(f"- 当前阶段：{summary.phase}")
     lines.append(f"- 状态版本：{summary.version}")
-    lines.append(f"- 草稿志愿数：{_format_total_with_target(summary.draft_total, summary.draft_target_total)}")
-    lines.append(f"- 排序志愿数：{_format_total_with_target(summary.ordered_total, summary.ordered_target_total)}")
+    lines.append(f"- 已加入方案数：{_format_total_with_target(summary.draft_total, summary.draft_target_total)}")
+    lines.append(f"- 当前方案数：{_format_total_with_target(summary.ordered_total, summary.ordered_target_total)}")
     count_gap_hint = _build_count_gap_hint(summary.ordered_total, summary.ordered_target_total)
     if count_gap_hint:
         lines.append(f"- 数量检查：{count_gap_hint}")
@@ -1252,8 +1252,8 @@ def _format_draft_result(draft_state: dict[str, Any]) -> str:
     unit_total = summary.get("unitTotal") or summary.get("total") or 0
     target_total = summary.get("targetUnitCount") or summary.get("targetCount") or 0
     tier_counts = summary.get("unitTierCounts") or summary.get("tierCounts") or {}
-    lines = ["备选志愿（草稿）概况："]
-    lines.append(f"- 草稿总数：{_format_total_with_target(unit_total, target_total)}")
+    lines = ["已加入方案概况："]
+    lines.append(f"- 已加入方案数：{_format_total_with_target(unit_total, target_total)}")
     lines.append(f"- 区间分布：{_format_tier_counts(tier_counts)}")
     count_gap_hint = _build_count_gap_hint(unit_total, target_total)
     if count_gap_hint:
@@ -1261,7 +1261,7 @@ def _format_draft_result(draft_state: dict[str, Any]) -> str:
     lines.append(f"- 已禁用志愿数：{len(draft_state.get('bannedVolunteerIds') or [])}")
     item_text = _format_plan_items(items, include_position=False)
     if item_text:
-        lines.append(f"- 草稿示例：{item_text}")
+        lines.append(f"- 方案示例：{item_text}")
     return "\n".join(lines)
 
 
@@ -1479,7 +1479,7 @@ async def query_planning_candidate_pool(
     page: int = 1,
     page_size: int = 10,
 ) -> str:
-    """按条件查询当前候选池，返回可继续加入草稿的 volunteerId 列表摘要。"""
+    """按条件查询当前候选池，返回可继续加入方案的 volunteerId 列表摘要。"""
     session_id = ctx.deps.sessionid
     logger.info(
         "query_planning_candidate_pool called: session_id=%s tiers=%s provinces=%s cities=%s school_keywords=%s major_keywords=%s school_tags=%s major_tags=%s sort=%s/%s page=%s page_size=%s",
@@ -1522,7 +1522,7 @@ async def select_planning_draft_items(
     volunteer_ids: list[str],
     source: str = "user_agent",
 ) -> str:
-    """将候选项加入当前草稿方案。"""
+    """将候选项加入当前方案选择。"""
     session_id = ctx.deps.sessionid
     logger.info(
         "select_planning_draft_items called: session_id=%s volunteer_ids=%s source=%s",
@@ -1538,9 +1538,9 @@ async def select_planning_draft_items(
         source=source,
     )
     if result.get("code") != 0:
-        return "加入草稿方案失败，请稍后重试。"
+        return "加入方案失败，请稍后重试。"
     return _format_draft_state_with_prefix(
-        f"已加入{len(volunteer_ids)}个志愿到草稿。",
+        f"已加入{len(volunteer_ids)}个志愿到方案。",
         result.get("data") or {},
     )
 
@@ -1577,7 +1577,7 @@ async def select_planning_ordered_items(
         regroup_by_tier=regroup_by_tier,
     )
     if ordered_result.get("code") != 0:
-        return "已加入草稿，但刷新当前方案排序失败，请稍后重试。"
+        return "已加入方案，但刷新当前方案排序失败，请稍后重试。"
 
     refreshed_state = await _rerun_review_and_fetch_state(session_id)
     ordered_state = ((refreshed_state or {}).get("orderedPlanState") or {}) or ((ordered_result.get("data") or {}).get("orderedPlanState") or {})
@@ -1591,7 +1591,7 @@ async def remove_planning_draft_items(
     ctx: RunContext[RequestContext],
     volunteer_ids: list[str],
 ) -> str:
-    """将指定志愿移出当前草稿方案。"""
+    """将指定志愿移出当前方案选择。"""
     session_id = ctx.deps.sessionid
     logger.info(
         "remove_planning_draft_items called: session_id=%s volunteer_ids=%s",
@@ -1601,9 +1601,9 @@ async def remove_planning_draft_items(
 
     result = await _remove_planning_draft_items_request(session_id, volunteer_ids)
     if result.get("code") != 0:
-        return "移出草稿方案失败，请稍后重试。"
+        return "移出方案失败，请稍后重试。"
     return _format_draft_state_with_prefix(
-        f"已从草稿移出{len(volunteer_ids)}个志愿。",
+        f"已从方案移出{len(volunteer_ids)}个志愿。",
         result.get("data") or {},
     )
 
@@ -1721,7 +1721,7 @@ async def lock_planning_draft_items(
     volunteer_ids: list[str],
     locked: bool = True,
 ) -> str:
-    """锁定或解锁当前草稿中的志愿。"""
+    """兼容旧接口：新版工作台不再提供用户侧锁定入口。"""
     session_id = ctx.deps.sessionid
     logger.info(
         "lock_planning_draft_items called: session_id=%s volunteer_ids=%s locked=%s",
@@ -1730,14 +1730,7 @@ async def lock_planning_draft_items(
         locked,
     )
 
-    result = await _lock_planning_draft_items_request(session_id, volunteer_ids, locked=locked)
-    if result.get("code") != 0:
-        return "更新草稿锁定状态失败，请稍后重试。"
-    action_text = "已锁定" if locked else "已解除锁定"
-    return _format_draft_state_with_prefix(
-        f"{action_text}{len(volunteer_ids)}个草稿志愿。",
-        result.get("data") or {},
-    )
+    return "新版工作台暂不提供固定/锁定志愿入口。可以改用移动到指定位置或方案排序。"
 
 
 async def ban_planning_draft_items(
@@ -1829,7 +1822,7 @@ async def generate_planning_initial_plan(
     )
 
     if has_existing_plan and not user_confirmed:
-        return "当前已经有草稿或排序方案。若要按当前条件重新出一版方案并覆盖现有内容，请先在对话中明确确认。"
+        return "当前已经有方案。若要按当前条件重新出一版方案并覆盖现有内容，请先在对话中明确确认。"
 
     pool_result = await _generate_planning_candidate_pool_request(
         _DEFAULT_TENANT_ID, session_id, True,
@@ -1922,7 +1915,7 @@ async def unpin_planning_ordered_item(
         return "取消固定排序项失败，请稍后重试。"
     refreshed_state = await _rerun_review_and_fetch_state(session_id)
     ordered_state = ((refreshed_state or {}).get("orderedPlanState") or {}) or ((result.get("data") or {}).get("orderedPlanState") or {})
-    return "已取消该志愿的固定位置。\n" + _format_ordered_result(ordered_state)
+    return "已取消该志愿的位置标记。\n" + _format_ordered_result(ordered_state)
 
 
 async def run_planning_review(ctx: RunContext[RequestContext]) -> str:

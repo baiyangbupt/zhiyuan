@@ -24,8 +24,8 @@ from app.models.typed_actions import (
     AnalyzeAdjustmentAction,
     ApplyCompensationAction,
     GeneratePlanAction,
+    MoveOrderedUnitAction,
     MoveUnitAction,
-    PinUnitAction,
     PlanAction,
     PreviewCompensationAction,
     QueryCandidatesAction,
@@ -34,11 +34,12 @@ from app.models.typed_actions import (
     QueryStateAction,
     RegenerateOrderAction,
     RemoveUnitsAction,
+    RemoveOrderedUnitAction,
     ReplaceUnitsAction,
     ReviewIssueRef,
     ReviewPlanAction,
     SelectionFilters,
-    UnpinUnitAction,
+    SortOrderedPlanAction,
 )
 from app.tools.plan_orchestration_models import PlanContextInputs
 from app.tools.review_issue_registry import (
@@ -80,6 +81,15 @@ class ActionResolution(BaseModel):
     should_refresh_workspace: bool = False
 
 
+def _infer_sort_field(text: str) -> Literal["admissionRatio", "schoolRank", "finalScore"]:
+    compact = str(text or "")
+    if "院校层次" in compact or "学校层次" in compact or "院校排名" in compact:
+        return "schoolRank"
+    if "推荐系数" in compact or "推荐分" in compact:
+        return "finalScore"
+    return "admissionRatio"
+
+
 # ---------------------------------------------------------------------------
 # 不需要现有方案就能执行的动作
 # ---------------------------------------------------------------------------
@@ -98,9 +108,10 @@ _PLAN_DEPENDENT_ACTIONS = {
     "add_units",
     "remove_units",
     "move_unit",
-    "pin_unit",
-    "unpin_unit",
+    "move_ordered_unit",
     "replace_units",
+    "remove_ordered_unit",
+    "sort_ordered_plan",
     "regenerate_order",
     "apply_compensation",
     "review_plan",
@@ -120,9 +131,12 @@ _NO_CONFIRMATION_ACTIONS = {
 # 永远需要确认的高副作用动作
 _ALWAYS_CONFIRM_ACTIONS = {
     "generate_plan",
+    "sort_ordered_plan",
     "regenerate_order",
     "apply_compensation",
     "replace_units",
+    "move_ordered_unit",
+    "remove_ordered_unit",
 }
 
 
@@ -160,6 +174,23 @@ class ActionResolver:
                 stage="blocked",
                 requires_confirmation=False,
                 blocked_reason=f"task_layer={frame.task_layer}, 应由对应的 {frame.task_layer} 工具处理",
+            )
+
+        if action_family in {"pin_unit", "unpin_unit"}:
+            return ActionResolution(
+                action_family=action_family,
+                stage="blocked",
+                requires_confirmation=False,
+                blocked_reason=(
+                    "3.0.1 新版工作台不提供固定/锁定志愿入口；"
+                    "建议改用移动到指定位置或方案排序。"
+                ),
+                reply_guidance={
+                    "user_message": (
+                        "当前新版工作台暂不提供固定/锁定志愿入口，"
+                        "可以改为移动到指定位置，或使用方案排序后再人工微调。"
+                    )
+                },
             )
 
         # Step 2: review issue override
@@ -204,9 +235,10 @@ class ActionResolver:
             "add_units",
             "remove_units",
             "move_unit",
-            "pin_unit",
-            "unpin_unit",
+            "move_ordered_unit",
             "replace_units",
+            "remove_ordered_unit",
+            "sort_ordered_plan",
             "regenerate_order",
             "apply_compensation",
         }
@@ -303,7 +335,8 @@ class ActionResolver:
         elif scope_kind == "structural":
             mutation_actions = {
                 "add_units", "remove_units", "move_unit",
-                "pin_unit", "unpin_unit", "replace_units",
+                "replace_units",
+                "sort_ordered_plan",
             }
             if action_family in mutation_actions and default_action:
                 return default_action
@@ -427,26 +460,27 @@ class ActionResolver:
                 target_position=frame.target.position,
                 reason=frame.raw_utterance,
             ),
-            "pin_unit": lambda: PinUnitAction(
-                volunteer_id=(
-                    frame.target.volunteer_refs[0]
-                    if frame.target.volunteer_refs
+            "move_ordered_unit": lambda: MoveOrderedUnitAction(
+                unit_id=(
+                    frame.target.unit_refs[0]
+                    if frame.target.unit_refs
                     else ""
                 ),
+                target_position=frame.target.position,
                 reason=frame.raw_utterance,
             ),
-            "unpin_unit": lambda: UnpinUnitAction(
-                volunteer_id=(
-                    frame.target.volunteer_refs[0]
-                    if frame.target.volunteer_refs
-                    else ""
-                ),
+            "remove_ordered_unit": lambda: RemoveOrderedUnitAction(
+                unit_ids=frame.target.unit_refs,
                 reason=frame.raw_utterance,
             ),
             "replace_units": lambda: ReplaceUnitsAction(
                 remove_ids=frame.target.volunteer_refs,
                 replacement_filters=filters,
                 review_issue=review_issue,
+                reason=frame.raw_utterance,
+            ),
+            "sort_ordered_plan": lambda: SortOrderedPlanAction(
+                sort_field=_infer_sort_field(frame.raw_utterance),
                 reason=frame.raw_utterance,
             ),
             "regenerate_order": lambda: RegenerateOrderAction(
@@ -474,15 +508,21 @@ class ActionResolver:
             if not frame.target.volunteer_refs and not frame.target.review_issue_code:
                 missing.append("volunteer_ids")
 
-        if action_family in {"move_unit", "pin_unit"}:
+        if action_family == "move_unit":
             if not frame.target.volunteer_refs:
                 missing.append("volunteer_id")
             if frame.target.position is None:
                 missing.append("target_position")
 
-        if action_family == "unpin_unit":
-            if not frame.target.volunteer_refs:
-                missing.append("volunteer_id")
+        if action_family == "move_ordered_unit":
+            if not frame.target.unit_refs:
+                missing.append("unit_ids")
+            if frame.target.position is None:
+                missing.append("target_position")
+
+        if action_family == "remove_ordered_unit":
+            if not frame.target.unit_refs:
+                missing.append("unit_ids")
 
         if action_family == "add_units":
             if not frame.target.volunteer_refs and not frame.scope.has_filters:

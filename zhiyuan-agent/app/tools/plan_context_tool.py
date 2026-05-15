@@ -99,7 +99,7 @@ async def _collect_plan_context_inputs_model(
     if model.ordered_count > 0:
         summary_parts.append(f"已有 {model.ordered_count} 个志愿（目标 {model.target_count or model.ordered_count} 个）")
     elif model.draft_count > 0:
-        summary_parts.append(f"有 {model.draft_count} 个备选志愿（目标 {model.target_count or model.draft_count} 个），尚未正式排序")
+        summary_parts.append(f"已加入方案 {model.draft_count} 个志愿（目标 {model.target_count or model.draft_count} 个），尚未生成正式顺序")
     else:
         summary_parts.append("尚未生成方案")
     if model.risk_count > 0 or model.warn_count > 0:

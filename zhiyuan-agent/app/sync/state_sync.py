@@ -195,9 +195,10 @@ class PlanningStateSync:
             "add_units",
             "remove_units",
             "move_unit",
-            "pin_unit",
-            "unpin_unit",
+            "move_ordered_unit",
+            "remove_ordered_unit",
             "replace_units",
+            "sort_ordered_plan",
             "regenerate_order",
             "apply_compensation",
         }

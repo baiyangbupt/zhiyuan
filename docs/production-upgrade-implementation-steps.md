@@ -645,6 +645,62 @@ docker save zhiyuan-agent:${RELEASE} -o "${STAGING}/zhiyuan-agent-${RELEASE}.tar
 
 上传生产后先 `docker load`，再用固定 tag 更新 Compose；不要在生产执行 `docker compose build`。
 
+### G8. 最终生产可用包产出规则
+
+由于前期 `3.0.0` 试运行包已经暴露过后端 legacy 懒迁移污染新会话、前端 WebSocket 地址被构建为 `localhost` 等问题，最终生产可用包必须重新基于最终 commit 产出，不能复用早期 `/tmp/zhiyuan-release-upload` 下的问题包。
+
+最终发布统一标签使用：
+
+```text
+prod-3.0.0
+```
+
+该标签同时用于 Git tag、Docker 镜像 tag、release 目录和 release 包名，避免继续混用早期 `3.0.0-amd64`、`3.0.0-amd64-wsfix`、`*-final` 等临时标识。
+
+最终包命名建议：
+
+```text
+zhiyuan-release-prod-3.0.0-<commit>.tar.gz
+```
+
+最终包至少包含：
+
+- `server/zhiyuan-server.jar`
+- `images/zhiyuan-web-prod-3.0.0.tar`
+- `images/zhiyuan-agent-prod-3.0.0.tar`
+- `ops/healthcheck.sh`
+- `ops/migration-status.sh`
+- `docs/production-upgrade-implementation-steps.md`
+- `docs/release-3.0.0-backlog.md`
+- `COMMIT`
+- `MANIFEST.txt`
+- `SHA256SUMS`
+
+最终包不包含：
+
+- 本地 `.env.dev`、真实密钥、个人调试脚本。
+- `.next`、`tsconfig.tsbuildinfo`、`node_modules` 等本地构建缓存。
+- `zhiyuan-server/data/tmp/session_volunteer_*.json` 等临时样本。
+- 早期有问题的旧 JAR 或旧前端镜像。
+
+最终包构建后必须做三类静态检查：
+
+```bash
+tar -tzf zhiyuan-release-prod-3.0.0-<commit>.tar.gz
+tar -xOf zhiyuan-release-prod-3.0.0-<commit>.tar.gz zhiyuan-release-prod-3.0.0-<commit>/COMMIT
+tar -xOf zhiyuan-release-prod-3.0.0-<commit>.tar.gz zhiyuan-release-prod-3.0.0-<commit>/MANIFEST.txt
+```
+
+前端镜像还必须检查生产 WebSocket 地址：
+
+```bash
+docker load -i images/zhiyuan-web-prod-3.0.0.tar
+docker run --rm --entrypoint sh zhiyuan-web:prod-3.0.0 \
+  -c "grep -R 'ws://localhost:8000' -n /app/.next >/tmp/wscheck || true; test ! -s /tmp/wscheck"
+```
+
+后端 JAR 必须来自同一个最终 commit；如果生产需要单独替换 JAR，仍以最终包里的 `server/zhiyuan-server.jar` 为准。
+
 ## 10. 阶段 H：正式部署和灰度
 
 部署前必须明确：

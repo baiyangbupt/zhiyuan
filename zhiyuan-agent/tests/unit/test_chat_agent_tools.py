@@ -133,7 +133,7 @@ class TestChatAgentToolRegistration:
         with patch("app.agent.base_agent.SkillsToolset", None):
             from app.agent.base_agent import BaseAgent
             from app.agent.context import RequestContext
-            from app.agent.chat_agent import _build_instructions
+            from app.agent.instructions.assembler import build_instructions as _build_instructions
             from app.llm.client import LLMClient
 
             client = LLMClient.__new__(LLMClient)
@@ -288,7 +288,7 @@ class TestChatAgentToolRegistration:
         with patch("app.agent.base_agent.SkillsToolset", None):
             from app.agent.base_agent import BaseAgent
             from app.agent.context import RequestContext
-            from app.agent.chat_agent import _build_instructions
+            from app.agent.instructions.assembler import build_instructions as _build_instructions
             from app.llm.client import LLMClient
 
             client = LLMClient.__new__(LLMClient)
@@ -397,7 +397,7 @@ class TestChatAgentToolRegistration:
         with patch("app.agent.base_agent.SkillsToolset", None):
             from app.agent.base_agent import BaseAgent
             from app.agent.context import RequestContext
-            from app.agent.chat_agent import _build_instructions
+            from app.agent.instructions.assembler import build_instructions as _build_instructions
             from app.llm.client import LLMClient
 
             client = LLMClient.__new__(LLMClient)
@@ -499,7 +499,7 @@ class TestChatAgentToolRegistration:
         with patch("app.agent.base_agent.SkillsToolset", None):
             from app.agent.base_agent import BaseAgent
             from app.agent.context import RequestContext
-            from app.agent.chat_agent import _build_instructions
+            from app.agent.instructions.assembler import build_instructions as _build_instructions
             from app.llm.client import LLMClient
 
             client = LLMClient.__new__(LLMClient)
@@ -579,7 +579,7 @@ class TestChatAgentToolRegistration:
         with patch("app.agent.base_agent.SkillsToolset", None):
             from app.agent.base_agent import BaseAgent
             from app.agent.context import RequestContext
-            from app.agent.chat_agent import _build_instructions
+            from app.agent.instructions.assembler import build_instructions as _build_instructions
             from app.llm.client import LLMClient
 
             client = LLMClient.__new__(LLMClient)
@@ -641,7 +641,7 @@ class TestChatAgentToolRegistration:
         with patch("app.agent.base_agent.SkillsToolset", None):
             from app.agent.base_agent import BaseAgent
             from app.agent.context import PlanningSummary, RequestContext
-            from app.agent.chat_agent import _build_instructions
+            from app.agent.instructions.assembler import build_instructions as _build_instructions
             from app.llm.client import LLMClient
 
             client = LLMClient.__new__(LLMClient)
@@ -718,7 +718,7 @@ class TestChatAgentToolRegistration:
         with patch("app.agent.base_agent.SkillsToolset", None):
             from app.agent.base_agent import BaseAgent
             from app.agent.context import PlanningSummary, RequestContext
-            from app.agent.chat_agent import _build_instructions
+            from app.agent.instructions.assembler import build_instructions as _build_instructions
             from app.llm.client import LLMClient
 
             client = LLMClient.__new__(LLMClient)
@@ -793,7 +793,7 @@ class TestChatAgentToolRegistration:
         with patch("app.agent.base_agent.SkillsToolset", None):
             from app.agent.base_agent import BaseAgent
             from app.agent.context import PlanningSummary, RequestContext
-            from app.agent.chat_agent import _build_instructions
+            from app.agent.instructions.assembler import build_instructions as _build_instructions
             from app.llm.client import LLMClient
 
             client = LLMClient.__new__(LLMClient)
@@ -868,7 +868,7 @@ class TestChatAgentToolRegistration:
         with patch("app.agent.base_agent.SkillsToolset", None):
             from app.agent.base_agent import BaseAgent
             from app.agent.context import PlanningSummary, RequestContext
-            from app.agent.chat_agent import _build_instructions
+            from app.agent.instructions.assembler import build_instructions as _build_instructions
             from app.llm.client import LLMClient
 
             client = LLMClient.__new__(LLMClient)
@@ -941,7 +941,7 @@ class TestChatAgentToolRegistration:
         with patch("app.agent.base_agent.SkillsToolset", None):
             from app.agent.base_agent import BaseAgent
             from app.agent.context import RequestContext
-            from app.agent.chat_agent import _build_instructions
+            from app.agent.instructions.assembler import build_instructions as _build_instructions
             from app.llm.client import LLMClient
 
             client = LLMClient.__new__(LLMClient)
@@ -1011,7 +1011,7 @@ class TestChatAgentToolRegistration:
         with patch("app.agent.base_agent.SkillsToolset", None):
             from app.agent.base_agent import BaseAgent
             from app.agent.context import RequestContext
-            from app.agent.chat_agent import _build_instructions
+            from app.agent.instructions.assembler import build_instructions as _build_instructions
             from app.llm.client import LLMClient
 
             client = LLMClient.__new__(LLMClient)
@@ -1099,7 +1099,7 @@ class TestChatAgentToolRegistration:
         with patch("app.agent.base_agent.SkillsToolset", None):
             from app.agent.base_agent import BaseAgent
             from app.agent.context import RequestContext
-            from app.agent.chat_agent import _build_instructions
+            from app.agent.instructions.assembler import build_instructions as _build_instructions
             from app.llm.client import LLMClient
 
             client = LLMClient.__new__(LLMClient)
@@ -1160,7 +1160,7 @@ class TestChatAgentToolRegistration:
         with patch("app.agent.base_agent.SkillsToolset", None):
             from app.agent.base_agent import BaseAgent
             from app.agent.context import RequestContext
-            from app.agent.chat_agent import _build_instructions
+            from app.agent.instructions.assembler import build_instructions as _build_instructions
             from app.llm.client import LLMClient
 
             client = LLMClient.__new__(LLMClient)
@@ -1220,7 +1220,7 @@ class TestChatAgentToolRegistration:
         with patch("app.agent.base_agent.SkillsToolset", None):
             from app.agent.base_agent import BaseAgent
             from app.agent.context import RequestContext
-            from app.agent.chat_agent import _build_instructions
+            from app.agent.instructions.assembler import build_instructions as _build_instructions
             from app.llm.client import LLMClient
 
             client = LLMClient.__new__(LLMClient)

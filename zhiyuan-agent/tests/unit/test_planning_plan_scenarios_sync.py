@@ -72,7 +72,7 @@ def test_planning_scenario_existing_plan_blocks_initial_generate_without_confirm
 
     result = asyncio.run(generate_planning_initial_plan(ctx))
 
-    assert "已经有草稿或排序方案" in result
+    assert "已经有方案" in result
     assert "明确确认" in result
 
 
@@ -98,6 +98,9 @@ def test_planning_scenario_initial_generate_formats_major_group_unit_totals():
     }
 
     with patch(
+        "app.tools.planning_workflow_tool._generate_planning_candidate_pool_request",
+        AsyncMock(return_value={"code": 0, "data": {}}),
+    ), patch(
         "app.tools.planning_workflow_tool._generate_planning_initial_plan_request",
         AsyncMock(return_value=response),
     ):
@@ -129,6 +132,9 @@ def test_planning_scenario_initial_generate_major_university_falls_back_to_total
     }
 
     with patch(
+        "app.tools.planning_workflow_tool._generate_planning_candidate_pool_request",
+        AsyncMock(return_value={"code": 0, "data": {}}),
+    ), patch(
         "app.tools.planning_workflow_tool._generate_planning_initial_plan_request",
         AsyncMock(return_value=response),
     ):
@@ -174,8 +180,8 @@ def test_planning_scenario_query_state_surfaces_risks_pending_and_stale_flags():
         result = asyncio.run(query_planning_state(ctx))
 
     assert "当前阶段：reviewed" in result
-    assert "草稿志愿数：30" in result
-    assert "排序志愿数：28" in result
+    assert "已加入方案数：30" in result
+    assert "当前方案数：28" in result
     assert "当前主要风险：梯度有断层；个别专业组缺少安全垫" in result
     assert "当前待处理建议：2项，主要为补 2 个保底专业组；微调 1 处相邻顺序" in result
     assert "待刷新状态：排序待刷新；审查结果待刷新" in result
@@ -273,7 +279,7 @@ def test_planning_scenario_ordered_remove_routes_to_plan_pipeline():
 
 def test_planning_scenario_ordered_remove_requires_volunteer_id():
     result = asyncio.run(handle_planning_request(_ctx("904b"), request_type="ordered_remove"))
-    assert "需要明确的 volunteerId" in result
+    assert "删除志愿需要先确认要删除哪一条" in result
 
 
 def test_planning_scenario_review_returns_workspace_action():
@@ -354,7 +360,7 @@ def test_planning_scenario_candidate_query_returns_candidate_workspace_action():
     assert "北京" in result
 
 
-def test_planning_scenario_add_units_by_filters_updates_plan_and_draft_wording():
+def test_planning_scenario_add_units_by_filters_updates_plan_wording():
     payload = _payload(
         "add_units",
         atomic_actions=[
@@ -416,7 +422,8 @@ def test_planning_scenario_add_units_by_filters_updates_plan_and_draft_wording()
 
     summary = json.loads(result)["summary"]
     assert "加入 2 个候选志愿" in summary
-    assert "同步更新到当前方案和草稿" in summary
+    assert "同步更新当前方案" in summary
+    assert "草稿" not in summary
 
 
 def test_planning_scenario_candidate_select_by_filters_previews_before_apply():
@@ -496,10 +503,10 @@ def test_planning_scenario_replace_units_combines_remove_add_and_review():
         ],
     )
     with patch(
-        "app.tools.plan_execution_tool.remove_planning_ordered_items",
+        "app.handlers.mutation_handlers.remove_planning_ordered_items",
         AsyncMock(return_value="已移出旧志愿"),
     ), patch(
-        "app.tools.plan_execution_tool._select_candidates_by_filters_into_plan",
+        "app.handlers.mutation_handlers._select_candidates_by_filters_into_plan",
         AsyncMock(return_value="已补入北京候选"),
     ), patch(
         "app.tools.plan_execution_tool.run_planning_review",
@@ -563,24 +570,28 @@ def test_planning_scenario_remove_units_reply_includes_removed_added_and_review_
     assert "复审结果：风险0项，提醒1项" in result
 
 
-def test_planning_scenario_apply_compensation_prefers_unit_total_and_mentions_plan_and_draft():
+def test_planning_scenario_apply_compensation_prefers_unit_total_and_mentions_plan():
     payload = _payload("apply_compensation")
     with patch(
-        "app.tools.plan_execution_tool._apply_planning_compensation_request",
+        "app.handlers.compensation_handlers._apply_planning_compensation_request",
         AsyncMock(return_value={"code": 0, "data": {"draftPlanState": {"summary": {"unitTotal": 30, "total": 60}}}}),
     ), patch(
-        "app.tools.plan_execution_tool._run_planning_review_request",
+        "app.handlers.compensation_handlers._run_planning_review_request",
         AsyncMock(return_value={"code": 0, "data": {}}),
     ), patch(
-        "app.tools.plan_execution_tool._get_planning_state_request",
+        "app.handlers.compensation_handlers._get_planning_state_request",
         AsyncMock(return_value={"code": 0, "data": {}}),
+    ), patch(
+        "app.handlers.compensation_handlers._get_planning_state_with_latest_profile",
+        AsyncMock(return_value={"draftPlanState": {"summary": {"unitTotal": 30, "total": 60}}}),
     ):
         result = asyncio.run(execute_plan_action(_ctx_with_pending("apply_compensation", "910"), payload))
 
     summary = json.loads(result)["summary"]
     assert "30" in summary
     assert "60" not in summary
-    assert "方案和草稿" in summary
+    assert "当前方案" in summary
+    assert "草稿" not in summary
 
 
 def test_planning_scenario_apply_compensation_requires_confirmation_in_workflow():
@@ -673,7 +684,7 @@ def test_planning_scenario_review_plan_runs_through_plan_orchestration_chain():
                 )
             ),
     ), patch(
-        "app.tools.plan_execution_tool._run_planning_review_request",
+        "app.handlers.analysis_handlers._run_planning_review_request",
         new=AsyncMock(
             return_value={
                 "code": 0,
@@ -684,8 +695,8 @@ def test_planning_scenario_review_plan_runs_through_plan_orchestration_chain():
             }
         ),
     ) as mock_review_request, patch(
-        "app.tools.plan_execution_tool._get_planning_state_request",
-        new=AsyncMock(return_value={"code": 0, "data": {"orderedPlanState": {"items": []}, "draftPlanState": {"items": []}}}),
+        "app.handlers.analysis_handlers._get_planning_state_with_latest_profile",
+        new=AsyncMock(return_value={"orderedPlanState": {"items": []}, "draftPlanState": {"items": []}}),
     ) as mock_state:
         plan_payload = asyncio.run(
             plan_next_action(

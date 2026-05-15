@@ -5,14 +5,70 @@
 ### Added
 
 - 新增 Agent HTTP 健康检查接口 `/health` 和 `/gaotu-assistant-agent/health`，用于 Docker Compose healthcheck 和发布后远端探活，不影响现有 WebSocket 对话链路。
+- 3.0.1 对话规划链路新增 `sort_ordered_plan` 动作，支持用户通过对话按录取率、院校层次或推荐系数排序当前方案；排序作为高副作用动作进入 preview -> 确认 -> apply 流程，并刷新方案与审查状态。
+- 补充 3.0.1 对话回归和模型 benchmark 场景，覆盖方案排序、禁用旧锁定入口、候选筛选可见联动等端到端行为。
+- 新增最小结构化日志 `conversation_turn_event / plan_action_event / intent_state_event`，记录路由路径、action family、耗时、执行状态和错误类型，用于后续评估关键词兜底、模型效果和工具稳定性。
+- 对话规划链路新增专业组级动作设计与基础执行接入：`move_ordered_unit / remove_ordered_unit` 支持按 `unit_ids` 或“第 N 个专业组”定位专业组，确认后调用后端组级移动/删除接口并刷新方案与审查状态。
 
 ### Fixed
 
 - Agent Dockerfile 基础镜像切换为公开 `python:3.12-slim`，避免 release 构建时访问 `docker.m.daocloud.io` 返回 401 导致 amd64 镜像无法构建。
+- 3.0.1 用户侧去除“草稿”概念：Agent 回复、规划状态注入、方案查询、专业分析、候选加入和补偿结果统一表达为“方案/已加入方案”，底层 `draftPlanState` 仅保留为兼容实现细节。
+- 方案现状类问法的 Plan 提示词收敛：对“方案有了么 / 看看现在的方案 / 当前方案怎么样”直接引导模型调用 `plan_next_action(action_family="query_state") -> execute_plan_action`，不再先单独调用 `collect_plan_context_inputs`，减少重复上下文读取和额外模型往返；不新增字符串匹配短路或确定性模板回复。
+- 显式方案改动类问法的 Plan 提示词补充：对排序、移动、删除当前方案的请求，引导模型直接形成对应 action 的 preview 并等待确认；不新增 service 层字符串匹配或确定性短路。
+- 3.0.1 不再允许对话触发旧 `pin_unit/unpin_unit/lock_draft` 用户动作；如果用户要求固定或锁定志愿，Agent 会提示当前新版工作台暂不提供该入口，并引导使用移动到指定位置或方案排序。
+- `ActionResolver` 同步阻断 `pin/unpin` 结构化意图，避免 structured planner 旁路重新产出前端不可见的固定/锁定动作。
+- 工作台事件归类同步收口：`sort_ordered_plan` 会生成方案和审查刷新；旧 pin/unpin 不再生成 pending 或工作台刷新卡片，避免出现前端不可见状态。
+- 新增 3.0.1 真实 WebSocket smoke 用例 `examples/dialog_regression_301_agent_smoke_cases.json`，覆盖方案现状、审查、院校层次排序确认和专业组移动确认；`dialog_regression_runner.py` 现在输出每轮 `elapsedMs / primaryMessages / followupMessages`，便于同步验证效果和性能。
+- 清理 `dialog_regression_plan_correctness_cases.json` 中旧 `pin -> verify` 正向用例，保留 `pin_disabled` 作为新版固定/锁定入口关闭后的唯一回归口径。
+- 方案排序执行结果兼容 `{success: true}` 后端响应；当排序、专业组移动或专业组删除执行失败时，`execute_plan_action` 不再错误标记 `applied=true` 或返回工作台刷新目标，避免出现“文本失败但右侧刷新”的状态不一致。
+- 真实 smoke fixture 调整：专业组排序和移动用例改用 `session=16`，避开 `session=35` 的历史 pending intent 干扰。
+- 真实 WebSocket smoke 复跑记录：`session=17` 方案现状和审查通过；`session=16` 排序和专业组移动仍未通过 preview -> confirm -> apply，前者缺少 `execute_plan_action(preview)` 形成 pending，后者出现多次 query/preview 循环并触发 websocket 180 秒超时兜底，已记录到 3.0.1 Agent 优化设计文档作为下一步收口项。
+- 高副作用 Plan 动作状态收口：`plan_next_action` 在 `user_confirmed=false` 时不再接受模型传入的 `current_stage="apply"`，会强制回到 preview/analyze；专业组位置引用（如“第3个专业组”）可直接进入 `move_ordered_unit` preview，由执行层在 apply 时解析真实 unitId。
+- 清理 service 测试债务：旧 `get_planning_state` mock 入口改为当前 `get_planning_workspace_state`；废弃的独立 `review` workspace 卡片断言同步为当前 `candidate / ordered` 工作台目标策略；相关聚焦测试 `170 passed`。
+- `planning_context` 指令移除旧 `handle_planning_request` 入口提示，统一引导模型走 `collect_plan_context_inputs -> plan_next_action -> execute_plan_action` 主链。
+- `planning_router_tool` 标记为 deprecated compatibility wrapper，明确不再作为 ChatAgent 模型入口；`planning_workflow_tool` 保留为内部 helper 集合，后续按 formatter/state/mutation/review/compensation 拆分。
+- 文档修正 Career Explore、Plan Router 和 Workflow Helper 的当前入口描述：career skill 只作为语义说明层，运行时走 `analyze_current_career_direction`；新增 Plan 能力不得继续接入 `handle_planning_request`。
+- 高副作用 preview pending 提取收口：同一轮中 `plan_next_action(preview)` 已形成待确认动作后，后续只读 `query_state` 成功不会再清掉 pending；只有实际变更动作 apply 成功才清 pending，修复“专业组移动预览后确认找不到上一轮动作”的问题。
+- 本地排序失败定位为后端旧 class 未重启导致的 `PlanningStateService$OrderedSortKey` `NoSuchMethodError`；重新编译/重启 8080 后 `ordered-plan/sort` 正常返回，agent 侧 payload 无需调整。
+- 专业组移动/删除预览改为执行层结构化生成：明确源专业组名称、源专业组序号、目标专业组位置（移动场景）和组内专业数，并提示“第几个”按专业组顺序而非单条志愿位置计算，避免确认前文案把“前 N 条志愿”误当成“前 N 个专业组”。
+- 方案内志愿引用解析增强：`move_unit / remove_units` 支持“XX大学的XX专业”“XX大学.XX专业”等学校+专业自然表达，并兼容学校名带专业组号、专业名带括号说明的场景；如果同校同专业存在多条候选，不会静默选择，改为提示需要进一步明确。
+- 候选加入引用解析增强：`add_units` 支持“XX大学的XX专业加进来”等候选池自然表达，执行层会查询候选并解析真实 `volunteerId`；如果候选里同校同专业存在多个条目，不会静默误加，改为提示需要进一步明确。
+- 学校/专业简称引用解析增强：对“广西师大统计”“湖工计科”等学校简称 + 专业简称表达，执行层基于当前方案/候选真实条目做受控 alias 匹配；只有唯一命中时才移动、删除或加入，歧义时要求用户补充信息。
+- Plan 调度指令补充“学校/专业简称加入方案”边界：用户要求把某个候选、学校+专业或简称加入当前方案时，优先走 `add_units` preview，由执行层解析真实候选 ID，避免被模型改走只读分数线/选科 Explore 分析。
+- `add_units` 执行前增加当前方案已存在预检查：如果用户要求加入的学校+专业或简称已经在当前方案中，返回 `result_kind=no_change` 和“已经在当前方案中，无需重复加入”，不再调用后端加入接口、触发复审、误说“已新增”或发送无变化工作台卡片，也不再把正常无变化场景记为执行错误。
+- Agent 调度指令补充 `result_kind=no_change` 语义：模型应直接说明“无需变更”的原因，不把它当失败重试，也不误说已新增、已删除或已移动。
+- 清理 `ChatAgent` 中已不再生效的旧 `_build_instructions` 死代码，避免与当前 `app.agent.instructions.assembler.build_instructions` 模块化指令入口产生维护歧义。
+- 修正 `conversation_turn_event.actionFamily` 归因：同一轮如果先查询状态、后形成删除/移动/排序等非 query action，结构化日志优先记录最后一个非 query action，避免效果和性能分析误把实际操作预览统计为 `query_state`。
 
 ### Fixed (回归测试稳定性)
 
 - 补齐 handler 拆分后的 planning/generate 测试夹具 patch 覆盖，避免 agent regression 在本地误连真实 backend 或因同步 helper 被错误 AsyncMock 化而失真。
+- 补齐 3.0.1 Agent unit action 的类型、编排、状态同步和提示词单测，覆盖 `move_ordered_unit / remove_ordered_unit` 的 preview、缺参、语义归一和 `unit_ids` 传递；旧 `pin/unpin` 测试改为验证新版固定/锁定入口关闭后的用户引导。
+- 清理 `test_plan_execution_tool.py` 历史 fixture 债务：旧用例不再 patch 已绕过的 `plan_execution_tool` workflow wrapper，而是 patch 当前 handler registry 实际消费的 handler/internal-client alias，避免单测误连本地 backend。
+- 清理 router/workflow 兼容测试债务：初始生成方案测试补齐候选池前置 mock；旧 router 用例保留为 deprecated compatibility wrapper 验证；workflow 文案断言同步为 3.0.1 的“方案/已加入方案”用户语言；替换、补偿、审查执行链测试改为 patch 当前 handler/internal-client alias。
+
+### Verified (3.0.1 Agent 对话驱动首轮收口)
+
+- JSON examples 格式校验通过：`dialog_regression_mainline_cases.json`、`dialog_regression_plan_correctness_cases.json`、`model_provider_benchmark_e2e_cases.json`。
+- Python 编译校验通过：`typed_actions.py`、`plan_orchestration_tool.py`、`plan_execution_tool.py`、`state_sync.py`、`service.py`、`structured_log.py`。
+- Targeted 单测通过：`tests/unit/test_action_resolver.py`、`tests/unit/models/test_typed_actions.py`、`tests/unit/test_plan_orchestration_tool.py`、`tests/unit/test_state_sync.py`、`tests/unit/test_chat_agent_init_profile.py` 和 `tests/unit/test_plan_execution_tool.py` 全量，共 `315 passed`。
+- Router/workflow 兼容单测通过：`tests/unit/test_planning_router_tool.py`、`tests/unit/test_planning_router_tool_sync.py`、`tests/unit/test_planning_plan_scenarios_sync.py`、`tests/unit/test_planning_workflow_tool.py`，共 `72 passed`。
+- Agent 主链路 + router/workflow 兼容集合通过，共 `387 passed`。
+- SiliconFlow 下 `session=17 / 看看现在的方案` 诊断链路从 `collect -> plan_next -> execute -> final` 收敛为 `plan_next -> execute(query_state) -> final`；耗时从约 `38.3s` 降到约 `14.6s`，LLM 请求数从 `4` 次降到 `3` 次，input tokens 从约 `40109` 降到约 `28331`。
+- Plan orchestration/execution/service 聚焦单测通过：`171 passed`。
+- 真实 WebSocket smoke 通过：`examples/dialog_regression_301_agent_smoke_cases.json` 覆盖 `session=17` 方案现状/审查、`session=16` 院校层次排序确认和专业组移动确认；排序确认约 `5.6s`、专业组移动确认约 `4.9s`，均返回 `ordered` 工作区刷新。
+- 专业组移动预览文案修正后真实复测通过：`session=16 / 把第3个专业组移到第5位 -> 确认` 的预览明确按专业组序号解释当前位置和目标位置，确认后该组移动到第 `5` 个专业组位置且组内志愿连续。
+- 指令入口清理后，当前真实模块化指令测试和 ChatAgent 工具调用测试通过：`tests/unit/test_instructions.py`、`tests/unit/test_chat_agent_init_profile.py`、`tests/unit/test_chat_agent_tools.py` 共 `42 passed`。
+- Agent 扩展回归集合通过：action resolver、typed actions、plan orchestration/execution、state sync、chat service history、mainline dialog、router/workflow compatibility、ws compatibility 共 `498 passed`。
+- 显式删除专业组预览复测通过：`session=16 / 删除第3个专业组` 链路收敛为 `plan_next_action -> execute_plan_action(remove_ordered_unit preview)`，不再先执行 `query_state`；runner 约 `24.1s`，LLM 请求 `2` 次，结构化日志 `actionFamily=remove_ordered_unit`。
+- 学校+专业自然引用单测通过：覆盖“湖北工程学院的计算机科学与技术改到第3位”“湖北工程学院.计算机科学与技术去掉”，以及同校同专业多专业组歧义时不执行误移动。
+- 候选加入自然引用单测通过：覆盖“湖北工程学院的计算机科学与技术加进来”、显式候选 id 直通，以及候选池同校同专业歧义时不执行误加入。
+- 学校/专业简称引用单测通过：覆盖“广西师大统计”移动和加入，以及“湖工计科”在多校可匹配时不执行误移动或误加入。
+- 真实 WebSocket smoke 补充：`session=17 / 看看现在的方案` 约 `13.8s` 通过；`把广西师大统计改到第3位` 未误改方案；`把广西师大统计加进来` 暴露模型曾改走 Explore 分析，已补充 Plan 调度指令约束。
+- 外部初始化接口新建干净会话验证：`session=97` 生成 `candidateTotal=5510 / orderedTotal=96`；`把广西师大统计加进来` 已走 `add_units preview`，确认阶段暴露“目标已在方案中仍提示已加入”的问题，已补单测并修复执行层预检查。
+- 防重修复后复测：`session=98 / 把广西师大统计加进来` 直接提示目标已在当前方案中，`followupMessages=0`；继续回复“确认”返回没有待确认动作，仍不发送工作台卡片。
+- `git diff --check` 通过。
 
 ### Added (Issue: 大模型效果与性能 Benchmark)
 
@@ -276,7 +332,7 @@
 - `_build_instructions` 从 ~175 行单体函数重构为 `app/agent/instructions/` 模块化组装，拆分为 `identity`（角色+学生信息）、`planning_context`（方案状态注入）、`pending_context`（待确认操作注入）、`tool_dispatch_rules`（Explore/Intent/Plan 三层分工）、`style_rules`（回复风格约束）和 `assembler`（组装入口）6 个模块。
 - `pending_context` 同时兼容旧 `pending_plan_action: dict` 和新 `ConversationPhase.pending`，新字段优先。
 - `RequestContext` 新增 `conversation_phase: ConversationPhase | None` 字段，`pending_plan_action` 和 `pending_intent_change` 标记为 deprecated。
-- `ChatAgent` 的 `instructions=` 参数从内联 `_build_instructions` 切换为 `build_instructions`（模块化版本），旧函数保留供回归对比。
+- `ChatAgent` 的 `instructions=` 参数从内联 `_build_instructions` 切换为 `build_instructions`（模块化版本）；旧内联函数已在后续 3.0.1 收口中删除，避免双入口误导。
 - 15 条指令组装单元测试，覆盖各模块独立输出和完整组装、首轮引导、指令长度约束。
 
 ### Added (Phase 2 — ActionResolver 确定性动作映射)

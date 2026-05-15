@@ -26,9 +26,12 @@ import com.ytell.zhiyuan.model.dto.planning.InitialPlanGenerateReq;
 import com.ytell.zhiyuan.model.dto.planning.OrderedMoveReq;
 import com.ytell.zhiyuan.model.dto.planning.OrderedPinReq;
 import com.ytell.zhiyuan.model.dto.planning.OrderedPlanGenerateReq;
+import com.ytell.zhiyuan.model.dto.planning.OrderedPlanSortReq;
 import com.ytell.zhiyuan.model.dto.planning.OrderedItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.OrderedPlanStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.OrderedUnitDTO;
+import com.ytell.zhiyuan.model.dto.planning.OrderedUnitMoveReq;
+import com.ytell.zhiyuan.model.dto.planning.OrderedUnitRemoveReq;
 import com.ytell.zhiyuan.model.dto.planning.PlanAdjustmentAnalyzeReq;
 import com.ytell.zhiyuan.model.dto.planning.PlanAdjustmentStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.AddSuggestionDTO;
@@ -353,7 +356,7 @@ public class PlanningStateServiceTest {
             VolunteerRecommendListResponse legacy = parser.parseVolunteerRecommendListResponse(
                     new String(Files.readAllBytes(path), StandardCharsets.UTF_8));
             assertEquals(0, countLegacyPreferredEntries(legacy));
-            assertLegacyImportMatchesSource(sessionId, legacy, true);
+            assertLegacyOriginalImportMatchesSource(sessionId, legacy);
         }
     }
 
@@ -378,9 +381,69 @@ public class PlanningStateServiceTest {
             if (countLegacyRecommendEntries(legacy) == 0) {
                 continue;
             }
-            boolean submitted = sampleFile.getFileName().toString().contains("_final");
-            assertLegacyImportMatchesSource(sessionId, legacy, submitted, false);
+            String fileName = sampleFile.getFileName().toString();
+            if (fileName.contains("_final")) {
+                assertLegacyImportMatchesSource(sessionId, legacy, true, false);
+            } else if (fileName.contains("_temp")) {
+                assertLegacyImportMatchesSource(sessionId, legacy, false, false);
+            } else {
+                assertLegacyOriginalImportMatchesSource(sessionId, legacy);
+            }
         }
+    }
+
+    @Test
+    void shouldPreferFinalOverTempAndOriginalForExternalLegacySessionSamples() throws Exception {
+        String sampleDir = System.getProperty("legacy.sample.dir", System.getenv("LEGACY_SAMPLE_DIR"));
+        Assumptions.assumeTrue(sampleDir != null && !sampleDir.trim().isEmpty(), "legacy sample dir not configured");
+        Path dir = Paths.get(sampleDir);
+        Assumptions.assumeTrue(Files.isDirectory(dir), "legacy sample dir not found: " + sampleDir);
+
+        VolunteerBizService parser = new VolunteerBizService();
+        List<Long> completeSessionIds = Files.list(dir)
+                .filter(path -> path.getFileName().toString().matches("session_volunteer_\\d+\\.json"))
+                .map(this::extractSessionId)
+                .filter(sessionId -> Files.exists(dir.resolve("session_volunteer_" + sessionId + "_temp.json"))
+                        && Files.exists(dir.resolve("session_volunteer_" + sessionId + "_final.json")))
+                .sorted()
+                .collect(Collectors.toList());
+        Assumptions.assumeFalse(completeSessionIds.isEmpty(), "legacy sample dir has no complete original/temp/final session groups");
+
+        boolean hasMajorMode = false;
+        boolean hasMajorGroupMode = false;
+        for (Long sessionId : completeSessionIds) {
+            VolunteerRecommendListResponse original = parser.parseVolunteerRecommendListResponse(
+                    new String(Files.readAllBytes(dir.resolve("session_volunteer_" + sessionId + ".json")), StandardCharsets.UTF_8));
+            VolunteerRecommendListResponse temp = parser.parseVolunteerRecommendListResponse(
+                    new String(Files.readAllBytes(dir.resolve("session_volunteer_" + sessionId + "_temp.json")), StandardCharsets.UTF_8));
+            VolunteerRecommendListResponse submitted = parser.parseVolunteerRecommendListResponse(
+                    new String(Files.readAllBytes(dir.resolve("session_volunteer_" + sessionId + "_final.json")), StandardCharsets.UTF_8));
+            if (countLegacyRecommendEntries(submitted) == 0) {
+                continue;
+            }
+
+            VolunteerModel model = submitted.getBaseData() == null ? null : submitted.getBaseData().getVolunteerModel();
+            hasMajorMode = hasMajorMode || VolunteerModel.major.equals(model);
+            hasMajorGroupMode = hasMajorGroupMode || VolunteerModel.majorGroup.equals(model);
+
+            setUp();
+            bindPlanningStateStore(sessionId);
+            when(volunteerBizService.loadFinalSubmitVolunteerData(sessionId)).thenReturn(submitted);
+            when(volunteerBizService.loadCachedRecommendData(sessionId)).thenReturn(temp);
+            when(volunteerBizService.loadOriginalVolunteerData(sessionId)).thenReturn(original);
+
+            PlanningStateDTO state = planningStateService.getPlanningState(sessionId);
+
+            assertEquals(countLegacyRecommendEntries(submitted), state.getCandidatePoolState().getItems().size());
+            assertEquals("legacy_submitted", state.getOrderedPlanState().getGenerationMode());
+            assertTrue(state.getOrderedPlanState().getItems().stream().allMatch(item -> Boolean.TRUE.equals(item.getLocked())));
+            assertTrue(state.getOrderedPlanState().getItems().stream().allMatch(item -> Boolean.TRUE.equals(item.getPinned())));
+            verify(volunteerBizService, never()).loadCachedRecommendData(sessionId);
+            verify(volunteerBizService, never()).loadOriginalVolunteerData(sessionId);
+        }
+
+        assertTrue(hasMajorMode, "complete session samples should include major mode");
+        assertTrue(hasMajorGroupMode, "complete session samples should include majorGroup mode");
     }
 
     @Test
@@ -1032,6 +1095,118 @@ public class PlanningStateServiceTest {
         assertEquals(Double.valueOf(61D), workspaceCandidate.getFinalScore());
         assertEquals(Double.valueOf(88D), workspaceCandidate.getHotIndex());
         assertEquals(Double.valueOf(45D), workspaceCandidate.getSalaryAvg());
+    }
+
+    @Test
+    void shouldResolveLegacyWorkspaceCandidateDetailsBySchoolAndMajor() {
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+
+        CandidatePoolStateDTO candidatePoolState = new CandidatePoolStateDTO();
+        CandidateItemDTO orderedCandidate = buildCandidateItem("ps1_s1_pm1", "ps1", "s1", "学校A", "冲", "专业A", 82D, 61D, 70D, true);
+        CandidateItemDTO samePrefixCandidate = buildCandidateItem("ps1_s1_pm2", "ps1", "s1", "学校A", "冲", "专业B", 74D, 55D, 70D, false);
+        candidatePoolState.setItems(java.util.Arrays.asList(orderedCandidate, samePrefixCandidate));
+        state.setCandidatePoolState(candidatePoolState);
+
+        OrderedPlanStateDTO orderedPlanState = new OrderedPlanStateDTO();
+        OrderedItemDTO orderedItem = new OrderedItemDTO();
+        orderedItem.setVolunteerId("ps1_s1_legacy1");
+        orderedItem.setSchoolName("学校A");
+        orderedItem.setMajorName("专业A");
+        orderedPlanState.setItems(java.util.Collections.singletonList(orderedItem));
+        state.setOrderedPlanState(orderedPlanState);
+
+        PlanningWorkspaceStateRes workspaceState = planningStateService.buildPlanningWorkspaceStateRes(state);
+
+        assertEquals(1, workspaceState.getCandidatePoolState().getItems().size());
+        CandidateItemDTO workspaceCandidate = workspaceState.getCandidatePoolState().getItems().get(0);
+        assertEquals("ps1_s1_legacy1", workspaceCandidate.getVolunteerId());
+        assertEquals(Double.valueOf(82D), workspaceCandidate.getAdmissionRatio());
+        assertEquals(Double.valueOf(61D), workspaceCandidate.getFinalScore());
+        assertEquals("专业A", workspaceCandidate.getMajorName());
+    }
+
+    @Test
+    void shouldResolveLegacyMajorGroupWorkspaceCandidateDetailsByUnitMajorContext() {
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+
+        CandidatePoolStateDTO candidatePoolState = new CandidatePoolStateDTO();
+        candidatePoolState.setVolunteerModel(VolunteerModel.majorGroup.name());
+        CandidateItemDTO accounting = buildCandidateItem("ps1_s1_pm1", "ps1", "s1", "学校A第01组", "冲", "会计学", 82D, 61D, 70D, true);
+        CandidateItemDTO law = buildCandidateItem("ps1_s1_pm2", "ps1", "s1", "学校A第01组", "冲", "法学", 76D, 58D, 70D, false);
+        candidatePoolState.setItems(java.util.Arrays.asList(accounting, law));
+        state.setCandidatePoolState(candidatePoolState);
+
+        OrderedPlanStateDTO orderedPlanState = new OrderedPlanStateDTO();
+        OrderedUnitDTO unit = new OrderedUnitDTO();
+        unit.setUnitId("ps1");
+        unit.setSchoolName("学校A第01组");
+        PlanningUnitMajorDTO major = new PlanningUnitMajorDTO();
+        major.setVolunteerId("ps1_s1_legacy1");
+        major.setMajorName("会计学");
+        unit.setMajorItems(java.util.Collections.singletonList(major));
+        orderedPlanState.setUnits(java.util.Collections.singletonList(unit));
+        state.setOrderedPlanState(orderedPlanState);
+
+        PlanningWorkspaceStateRes workspaceState = planningStateService.buildPlanningWorkspaceStateRes(state);
+
+        assertEquals(1, workspaceState.getCandidatePoolState().getItems().size());
+        CandidateItemDTO workspaceCandidate = workspaceState.getCandidatePoolState().getItems().get(0);
+        assertEquals("ps1_s1_legacy1", workspaceCandidate.getVolunteerId());
+        assertEquals(Double.valueOf(82D), workspaceCandidate.getAdmissionRatio());
+        assertEquals(Double.valueOf(61D), workspaceCandidate.getFinalScore());
+        assertEquals("会计学", workspaceCandidate.getMajorName());
+    }
+
+    @Test
+    void shouldExposeWorkflowStatusForEmptyCandidatePool() {
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+        CandidatePoolStateDTO candidatePoolState = new CandidatePoolStateDTO();
+        candidatePoolState.setGeneratedAt("2026-05-12T10:00:00+08:00");
+        candidatePoolState.setStatusCode("empty");
+        candidatePoolState.setStatusMessage("当前条件下没有可用志愿候选");
+        state.setCandidatePoolState(candidatePoolState);
+
+        PlanningWorkspaceStateRes workspaceState = planningStateService.buildPlanningWorkspaceStateRes(state);
+
+        assertEquals("empty", workspaceState.getWorkflowStatus().getCandidateStatus());
+        assertEquals("当前条件下没有可用志愿候选", workspaceState.getWorkflowStatus().getCandidateMessage());
+        assertEquals("empty", workspaceState.getWorkflowStatus().getPlanStatus());
+    }
+
+    @Test
+    void shouldExposeWorkflowStatusForPendingReviewPlan() {
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+        state.getCandidatePoolState().setStatusCode("ready");
+        state.getCandidatePoolState().setStatusMessage("候选池已生成");
+        OrderedItemDTO orderedItem = new OrderedItemDTO();
+        orderedItem.setVolunteerId("v1");
+        state.getOrderedPlanState().setItems(java.util.Collections.singletonList(orderedItem));
+        state.getStaleFlags().setReview(true);
+
+        PlanningWorkspaceStateRes workspaceState = planningStateService.buildPlanningWorkspaceStateRes(state);
+
+        assertEquals("ready", workspaceState.getWorkflowStatus().getCandidateStatus());
+        assertEquals("pending_review", workspaceState.getWorkflowStatus().getPlanStatus());
+        assertEquals("not_reviewed", workspaceState.getWorkflowStatus().getReviewStatus());
+    }
+
+    @Test
+    void shouldExposeWorkflowStatusForLegacySubmittedPlan() {
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+        OrderedItemDTO orderedItem = new OrderedItemDTO();
+        orderedItem.setVolunteerId("v1");
+        state.getOrderedPlanState().setItems(java.util.Collections.singletonList(orderedItem));
+        state.getOrderedPlanState().setGenerationMode("legacy_submitted");
+
+        PlanningWorkspaceStateRes workspaceState = planningStateService.buildPlanningWorkspaceStateRes(state);
+
+        assertEquals("legacy_readonly", workspaceState.getWorkflowStatus().getPlanStatus());
+        assertEquals(Boolean.TRUE, workspaceState.getWorkflowStatus().getLegacySubmitted());
     }
 
     @Test
@@ -2233,6 +2408,7 @@ public class PlanningStateServiceTest {
         major.setSubCategoryId("47");
         VolunteerRecommendListResponse response = new VolunteerRecommendListResponse();
         VolunteerRecommendListResponse.VolunteerSchool school = buildSchool("ps1", "s1", "北京邮电大学", "北京", 1, major);
+        school.setCity_name("海淀");
         school.setSchool_batch("本科");
         school.setSchool_level("211");
         school.setSchool_nature("公办");
@@ -2241,7 +2417,7 @@ public class PlanningStateServiceTest {
         school.setRankTagList(java.util.Arrays.asList("双一流", "保研率 18%"));
         school.setPopTagList(java.util.Arrays.asList("低学费", "院校排名 12", "北京市"));
         school.getMajors().get(0).setRankTagList(java.util.Arrays.asList("计算机", "就业率 91%"));
-        school.getMajors().get(0).setPlanTagList(java.util.Arrays.asList("选科要求", "计划数:6"));
+        school.getMajors().get(0).setPlanTagList(java.util.Arrays.asList("选科要求", "意向专业类", "非意向专业类", "计划数:6"));
         response.setSafes(java.util.Arrays.asList(school));
         response.setSprints(java.util.Collections.emptyList());
         response.setProtects(java.util.Collections.emptyList());
@@ -2255,6 +2431,7 @@ public class PlanningStateServiceTest {
         CandidateFilterOptionsDTO res = planningStateService.getCandidateFilterOptions(1L, 1L);
 
         assertTrue(res.getProvinceNames().contains("北京"));
+        assertTrue(res.getCityNames().contains("海淀"));
         assertTrue(res.getMajorKeywords().contains("计算机类"));
         assertTrue(res.getSchoolTags().contains("公办"));
         assertTrue(res.getSchoolTags().contains("理工"));
@@ -2267,10 +2444,17 @@ public class PlanningStateServiceTest {
         assertTrue(res.getMajorTags().contains("计算机"));
         assertTrue(res.getMajorTags().contains("选科要求"));
         assertTrue(res.getMajorTags().contains("工学类"));
+        assertFalse(res.getMajorTags().contains("意向专业"));
+        assertFalse(res.getMajorTags().contains("意向专业类"));
+        assertFalse(res.getMajorTags().contains("非意向专业"));
+        assertFalse(res.getMajorTags().contains("非意向专业类"));
+        assertTrue(res.getRegionTree().stream().anyMatch(region ->
+                "北京".equals(region.getProvinceName()) && region.getCityNames().contains("海淀")));
         assertTrue(res.getGroups().stream().anyMatch(group ->
                 "major.category".equals(group.getGroupCode())
                         && "majorKeywords".equals(group.getFilterField())
                         && group.getValues().contains("计算机类")));
+        assertFalse(res.getGroups().stream().anyMatch(group -> "major.tag".equals(group.getGroupCode())));
         assertFalse(res.getMajorTags().contains("就业率 91%"));
         assertFalse(res.getMajorTags().contains("计划数:6"));
     }
@@ -2497,21 +2681,8 @@ public class PlanningStateServiceTest {
         DraftRemoveReq removeReq = new DraftRemoveReq();
         removeReq.setVolunteerIds(java.util.Arrays.asList("ps1_m1"));
         PlanningStateDTO removed = planningStateService.removeDraftItems(1L, removeReq);
-        assertEquals(Integer.valueOf(1), removed.getDraftPlanState().getSummary().getTotal());
-
-        stored = latestStoredStateFromUpdate();
-        when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
-                .thenReturn(stored);
-        lockReq.setLocked(false);
-        PlanningStateDTO unlocked = planningStateService.lockDraftItems(1L, lockReq);
-        assertFalse(Boolean.TRUE.equals(unlocked.getDraftPlanState().getItems().get(0).getLocked()));
-
-        stored = latestStoredStateFromUpdate();
-        when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
-                .thenReturn(stored);
-        PlanningStateDTO removedAfterUnlock = planningStateService.removeDraftItems(1L, removeReq);
-        assertEquals(Integer.valueOf(0), removedAfterUnlock.getDraftPlanState().getSummary().getTotal());
-        assertEquals(Integer.valueOf(0), removedAfterUnlock.getOrderedPlanState().getSummary().getTotal());
+        assertEquals(Integer.valueOf(0), removed.getDraftPlanState().getSummary().getTotal());
+        assertEquals(Integer.valueOf(0), removed.getOrderedPlanState().getSummary().getTotal());
     }
 
     @Test
@@ -2572,6 +2743,8 @@ public class PlanningStateServiceTest {
         assertEquals("ps2_m2", moved.getOrderedPlanState().getItems().get(1).getVolunteerId());
         assertEquals("ps1_m1", moved.getOrderedPlanState().getItems().get(2).getVolunteerId());
         assertEquals("user", moved.getOrderedPlanState().getItems().get(2).getOrderedBy());
+        assertTrue(moved.getStaleFlags().getReview());
+        assertTrue(moved.getStaleFlags().getPlanAdjustment());
 
         stored = latestStoredStateFromUpdate();
         when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
@@ -2760,6 +2933,145 @@ public class PlanningStateServiceTest {
         assertEquals("ps2_m2", moved.getOrderedPlanState().getItems().get(1).getVolunteerId());
         assertEquals("ps1_m1", moved.getOrderedPlanState().getItems().get(2).getVolunteerId());
         assertTrue(Boolean.TRUE.equals(moved.getOrderedPlanState().getItems().get(1).getPinned()));
+    }
+
+    @Test
+    void shouldSortMajorPlanByAdmissionRatioAndKeepPinnedPosition() {
+        bindPlanningStateStore();
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+        state.setCandidatePoolState(new CandidatePoolStateDTO());
+        state.getCandidatePoolState().setVolunteerModel(VolunteerModel.major.name());
+        state.getCandidatePoolState().setRequiredCount(4);
+        state.getCandidatePoolState().getItems().add(buildCandidateItem("ps1_m1", "ps1", "s1", "学校A", "冲", "专业A", 65D, 80D, 65D, false));
+        state.getCandidatePoolState().getItems().add(buildCandidateItem("ps2_m2", "ps2", "s2", "学校B", "冲", "专业B", 20D, 60D, 20D, false));
+        state.getCandidatePoolState().getItems().add(buildCandidateItem("ps3_m3", "ps3", "s3", "学校C", "稳", "专业C", 42D, 95D, 42D, false));
+        state.getCandidatePoolState().getItems().add(buildCandidateItem("ps4_m4", "ps4", "s4", "学校D", "保", "专业D", 55D, 70D, 55D, false));
+        OrderedPlanStateDTO orderedPlanState = new OrderedPlanStateDTO();
+        orderedPlanState.getItems().add(buildOrderedItem("ps1_m1", "学校A", "专业A", "冲", 1));
+        OrderedItemDTO pinned = buildOrderedItem("ps4_m4", "学校D", "专业D", "保", 2);
+        pinned.setPinned(true);
+        pinned.setPinnedPosition(2);
+        orderedPlanState.getItems().add(pinned);
+        orderedPlanState.getItems().add(buildOrderedItem("ps3_m3", "学校C", "专业C", "稳", 3));
+        orderedPlanState.getItems().add(buildOrderedItem("ps2_m2", "学校B", "专业B", "冲", 4));
+        state.setOrderedPlanState(orderedPlanState);
+        ReflectionTestUtils.invokeMethod(planningStateService, "recalculateOrderedSummary", orderedPlanState, state.getCandidatePoolState());
+        saveStateToStore(1L, state);
+
+        OrderedPlanSortReq sortReq = new OrderedPlanSortReq();
+        sortReq.setSortField("admissionRatio");
+        PlanningStateDTO sorted = planningStateService.sortOrderedPlan(1L, sortReq);
+
+        assertEquals("ps2_m2", sorted.getOrderedPlanState().getItems().get(0).getVolunteerId());
+        assertEquals("ps4_m4", sorted.getOrderedPlanState().getItems().get(1).getVolunteerId());
+        assertTrue(Boolean.TRUE.equals(sorted.getOrderedPlanState().getItems().get(1).getPinned()));
+        assertEquals("ps3_m3", sorted.getOrderedPlanState().getItems().get(2).getVolunteerId());
+        assertEquals("ps1_m1", sorted.getOrderedPlanState().getItems().get(3).getVolunteerId());
+        assertTrue(sorted.getBehaviorEvents().stream().anyMatch(event ->
+                "plan_sort_apply".equals(event.getEventType()) && "admissionRatio".equals(event.getSortKey())));
+        assertTrue(sorted.getStaleFlags().getReview());
+    }
+
+    @Test
+    void shouldSortMajorGroupPlanByFinalScoreWithoutBreakingGroupMajors() {
+        bindPlanningStateStore();
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+        CandidatePoolStateDTO candidatePoolState = new CandidatePoolStateDTO();
+        candidatePoolState.setVolunteerModel(VolunteerModel.majorGroup.name());
+        candidatePoolState.setRequiredCount(2);
+        candidatePoolState.getItems().add(buildCandidateItem("ps1_m1", "ps1", "s1", "学校A", "冲", "专业A1", 35D, 60D, 35D, false));
+        candidatePoolState.getItems().add(buildCandidateItem("ps1_m2", "ps1", "s1", "学校A", "冲", "专业A2", 33D, 58D, 35D, false));
+        candidatePoolState.getItems().add(buildCandidateItem("ps2_m3", "ps2", "s2", "学校B", "稳", "专业B1", 45D, 90D, 45D, false));
+        candidatePoolState.getItems().add(buildCandidateItem("ps2_m4", "ps2", "s2", "学校B", "稳", "专业B2", 48D, 88D, 45D, false));
+        state.setCandidatePoolState(candidatePoolState);
+
+        OrderedPlanStateDTO orderedPlanState = new OrderedPlanStateDTO();
+        orderedPlanState.getItems().add(buildOrderedItem("ps1_m1", "学校A", "专业A1", "冲", 1));
+        orderedPlanState.getItems().add(buildOrderedItem("ps1_m2", "学校A", "专业A2", "冲", 2));
+        orderedPlanState.getItems().add(buildOrderedItem("ps2_m3", "学校B", "专业B1", "稳", 3));
+        orderedPlanState.getItems().add(buildOrderedItem("ps2_m4", "学校B", "专业B2", "稳", 4));
+        orderedPlanState.setUnits(ReflectionTestUtils.invokeMethod(planningStateService,
+                "buildOrderedUnitsFromOrderedItems", orderedPlanState.getItems(), state.getDraftPlanState(), candidatePoolState.getItems()));
+        state.setOrderedPlanState(orderedPlanState);
+        ReflectionTestUtils.invokeMethod(planningStateService, "recalculateOrderedSummary", orderedPlanState, candidatePoolState);
+        saveStateToStore(1L, state);
+
+        OrderedPlanSortReq sortReq = new OrderedPlanSortReq();
+        sortReq.setSortField("finalScore");
+        PlanningStateDTO sorted = planningStateService.sortOrderedPlan(1L, sortReq);
+
+        assertEquals("ps2_m3", sorted.getOrderedPlanState().getItems().get(0).getVolunteerId());
+        assertEquals("ps2_m4", sorted.getOrderedPlanState().getItems().get(1).getVolunteerId());
+        assertEquals("ps1_m1", sorted.getOrderedPlanState().getItems().get(2).getVolunteerId());
+        assertEquals("ps1_m2", sorted.getOrderedPlanState().getItems().get(3).getVolunteerId());
+        assertEquals("ps2", sorted.getOrderedPlanState().getUnits().get(0).getUnitId());
+        assertEquals("ps1", sorted.getOrderedPlanState().getUnits().get(1).getUnitId());
+        assertTrue(sorted.getBehaviorEvents().stream().anyMatch(event ->
+                "plan_sort_apply".equals(event.getEventType()) && "finalScore".equals(event.getSortKey())));
+    }
+
+    @Test
+    void shouldMoveAndRemoveMajorGroupOrderedUnits() {
+        bindPlanningStateStore();
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+        CandidatePoolStateDTO candidatePoolState = new CandidatePoolStateDTO();
+        candidatePoolState.setVolunteerModel(VolunteerModel.majorGroup.name());
+        candidatePoolState.setRequiredCount(2);
+        candidatePoolState.getItems().add(buildCandidateItem("ps1_m1", "ps1", "s1", "学校A", "冲", "专业A1", 35D, 60D, 35D, false));
+        candidatePoolState.getItems().add(buildCandidateItem("ps1_m2", "ps1", "s1", "学校A", "冲", "专业A2", 33D, 58D, 35D, false));
+        candidatePoolState.getItems().add(buildCandidateItem("ps2_m3", "ps2", "s2", "学校B", "稳", "专业B1", 45D, 90D, 45D, false));
+        candidatePoolState.getItems().add(buildCandidateItem("ps2_m4", "ps2", "s2", "学校B", "稳", "专业B2", 48D, 88D, 45D, false));
+        state.setCandidatePoolState(candidatePoolState);
+
+        DraftPlanStateDTO draftPlanState = new DraftPlanStateDTO();
+        draftPlanState.getItems().add(buildDraftItem("ps1_m1", "学校A", "专业A1", "冲"));
+        draftPlanState.getItems().add(buildDraftItem("ps1_m2", "学校A", "专业A2", "冲"));
+        draftPlanState.getItems().add(buildDraftItem("ps2_m3", "学校B", "专业B1", "稳"));
+        draftPlanState.getItems().add(buildDraftItem("ps2_m4", "学校B", "专业B2", "稳"));
+        ReflectionTestUtils.invokeMethod(planningStateService, "syncDraftUnitsWithItems", draftPlanState, candidatePoolState.getItems(), candidatePoolState);
+        ReflectionTestUtils.invokeMethod(planningStateService, "recalculateDraftSummary", draftPlanState, candidatePoolState);
+        state.setDraftPlanState(draftPlanState);
+
+        OrderedPlanStateDTO orderedPlanState = new OrderedPlanStateDTO();
+        orderedPlanState.getItems().add(buildOrderedItem("ps1_m1", "学校A", "专业A1", "冲", 1));
+        orderedPlanState.getItems().add(buildOrderedItem("ps1_m2", "学校A", "专业A2", "冲", 2));
+        orderedPlanState.getItems().add(buildOrderedItem("ps2_m3", "学校B", "专业B1", "稳", 3));
+        orderedPlanState.getItems().add(buildOrderedItem("ps2_m4", "学校B", "专业B2", "稳", 4));
+        orderedPlanState.setUnits(ReflectionTestUtils.invokeMethod(planningStateService,
+                "buildOrderedUnitsFromOrderedItems", orderedPlanState.getItems(), draftPlanState, candidatePoolState.getItems()));
+        state.setOrderedPlanState(orderedPlanState);
+        ReflectionTestUtils.invokeMethod(planningStateService, "recalculateOrderedSummary", orderedPlanState, candidatePoolState);
+        saveStateToStore(1L, state);
+
+        OrderedUnitMoveReq moveReq = new OrderedUnitMoveReq();
+        moveReq.setUnitId("ps2");
+        moveReq.setTargetPosition(1);
+        PlanningStateDTO moved = planningStateService.moveOrderedUnit(1L, moveReq);
+        assertEquals("ps2_m3", moved.getOrderedPlanState().getItems().get(0).getVolunteerId());
+        assertEquals("ps2_m4", moved.getOrderedPlanState().getItems().get(1).getVolunteerId());
+        assertEquals("ps1_m1", moved.getOrderedPlanState().getItems().get(2).getVolunteerId());
+        assertEquals("ps1_m2", moved.getOrderedPlanState().getItems().get(3).getVolunteerId());
+        assertEquals("ps2", moved.getOrderedPlanState().getUnits().get(0).getUnitId());
+        assertTrue(moved.getBehaviorEvents().stream().anyMatch(event ->
+                "plan_unit_move".equals(event.getEventType()) && event.getUnitIds().contains("ps2")));
+        assertTrue(moved.getStaleFlags().getReview());
+
+        saveStateToStore(1L, moved);
+        OrderedUnitRemoveReq removeReq = new OrderedUnitRemoveReq();
+        removeReq.setUnitIds(java.util.Arrays.asList("ps1"));
+        PlanningStateDTO removed = planningStateService.removeOrderedUnits(1L, removeReq);
+        assertEquals(2, removed.getOrderedPlanState().getItems().size());
+        assertEquals("ps2_m3", removed.getOrderedPlanState().getItems().get(0).getVolunteerId());
+        assertEquals("ps2_m4", removed.getOrderedPlanState().getItems().get(1).getVolunteerId());
+        assertEquals(1, removed.getOrderedPlanState().getUnits().size());
+        assertEquals("ps2", removed.getOrderedPlanState().getUnits().get(0).getUnitId());
+        assertEquals(2, removed.getDraftPlanState().getItems().size());
+        assertEquals(1, removed.getDraftPlanState().getUnits().size());
+        assertTrue(removed.getBehaviorEvents().stream().anyMatch(event ->
+                "plan_unit_remove".equals(event.getEventType()) && event.getUnitIds().contains("ps1")));
     }
 
     @Test
@@ -3601,11 +3913,47 @@ public class PlanningStateServiceTest {
         return planningStateRef;
     }
 
+    private void saveStateToStore(Long chatSessionId, PlanningStateDTO state) {
+        ChatSessionExtraData data = new ChatSessionExtraData();
+        data.setChatSessionId(chatSessionId);
+        data.setDataKey(ChatSessionExtraDataConstants.PLANNING_STATE_KEY);
+        data.setDataValue(com.alibaba.fastjson.JSONObject.toJSONString(state));
+        chatSessionExtraDataSharedService.save(data);
+    }
+
     private UserProfileData buildUserProfileData() {
         UserProfileData userProfileData = new UserProfileData();
         userProfileData.getCollege_info().setValues(java.util.Arrays.asList("清华大学"));
         userProfileData.getNegative_city_info().setProvince(java.util.Arrays.asList("河北"));
         return userProfileData;
+    }
+
+    private OrderedItemDTO buildOrderedItem(String volunteerId,
+                                            String schoolName,
+                                            String majorName,
+                                            String tier,
+                                            Integer position) {
+        OrderedItemDTO item = new OrderedItemDTO();
+        item.setVolunteerId(volunteerId);
+        item.setSchoolName(schoolName);
+        item.setMajorName(majorName);
+        item.setTier(tier);
+        item.setPosition(position);
+        item.setSource("test");
+        return item;
+    }
+
+    private DraftItemDTO buildDraftItem(String volunteerId,
+                                        String schoolName,
+                                        String majorName,
+                                        String tier) {
+        DraftItemDTO item = new DraftItemDTO();
+        item.setVolunteerId(volunteerId);
+        item.setSchoolName(schoolName);
+        item.setMajorName(majorName);
+        item.setTier(tier);
+        item.setSource("test");
+        return item;
     }
 
     private CandidateItemDTO buildCandidateItem(String volunteerId,
@@ -3692,6 +4040,28 @@ public class PlanningStateServiceTest {
             assertTrue(state.getOrderedPlanState().getItems().stream().noneMatch(item -> Boolean.TRUE.equals(item.getLocked())));
             assertTrue(state.getOrderedPlanState().getItems().stream().noneMatch(item -> Boolean.TRUE.equals(item.getPinned())));
         }
+        assertTrue(state.getOperationLogs().stream().anyMatch(log -> "legacy_plan_import".equals(log.getType())));
+        verify(chatSessionExtraDataSharedService, times(1)).save(any(ChatSessionExtraData.class));
+    }
+
+    private void assertLegacyOriginalImportMatchesSource(Long sessionId,
+                                                         VolunteerRecommendListResponse legacy) {
+        setUp();
+        bindPlanningStateStore(sessionId);
+        int expectedCandidateCount = countLegacyRecommendEntries(legacy);
+
+        when(volunteerBizService.loadFinalSubmitVolunteerData(sessionId)).thenThrow(new RuntimeException("missing final"));
+        when(volunteerBizService.loadCachedRecommendData(sessionId)).thenThrow(new RuntimeException("missing temp"));
+        when(volunteerBizService.loadOriginalVolunteerData(sessionId)).thenReturn(legacy);
+
+        PlanningStateDTO state = planningStateService.getPlanningState(sessionId);
+
+        assertEquals(sessionId, state.getSessionId());
+        assertEquals(expectedCandidateCount, state.getCandidatePoolState().getItems().size());
+        assertEquals(0, state.getDraftPlanState().getItems().size());
+        assertEquals(0, state.getOrderedPlanState().getItems().size());
+        assertEquals("candidate_generated", state.getPhase());
+        assertEquals("legacy_import", state.getOrderedPlanState().getGenerationMode());
         assertTrue(state.getOperationLogs().stream().anyMatch(log -> "legacy_plan_import".equals(log.getType())));
         verify(chatSessionExtraDataSharedService, times(1)).save(any(ChatSessionExtraData.class));
     }

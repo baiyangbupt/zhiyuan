@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -223,6 +224,7 @@ async def _run_cases(
         for step in steps:
             prompt = str(step.get("prompt") or step.get("text") or "")
             print(f">>> {prompt}")
+            started_at = time.perf_counter()
             try:
                 primary, followups = await _ask_once(
                     url,
@@ -233,9 +235,22 @@ async def _run_cases(
                     response_timeout=response_timeout,
                 )
             except Exception as exc:
+                elapsed_ms = int((time.perf_counter() - started_at) * 1000)
                 failures.append(f"{name} session={session_id} prompt={prompt}: request failed: {type(exc).__name__}: {exc}")
-                print(f"error={type(exc).__name__}: {exc}")
+                print(f"error={type(exc).__name__}: {exc} elapsedMs={elapsed_ms}")
                 continue
+            elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+            print(
+                "metrics="
+                + json.dumps(
+                    {
+                        "elapsedMs": elapsed_ms,
+                        "primaryMessages": len(primary),
+                        "followupMessages": len(followups),
+                    },
+                    ensure_ascii=False,
+                )
+            )
             print(_summarize_primary(primary))
             text = _extract_text(primary)
             if case_assert_style:

@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from types import SimpleNamespace
 from typing import Any
 
@@ -55,6 +56,7 @@ from app.util.internal_client import (
     update_planning_latent_profile,
     update_message,
 )
+from app.util.structured_log import log_event
 
 logger = logging.getLogger(__name__)
 
@@ -1644,19 +1646,28 @@ async def update_volunteer_intent_state(
     session_id = ctx.deps.sessionid
     batch = getattr(ctx.deps, "batch", None) or "01"
     normalized_action = (action or "confirm").strip().lower()
+    started_at = time.monotonic()
     logger.info("update_volunteer_intent_state: session_id=%s action=%s", session_id, normalized_action)
 
     try:
         if normalized_action == "reject":
             await save_intent_change_cache(int(session_id), {})
-            return serialize_intent_state_update_result(
-                IntentStateUpdateResult(
-                    action="reject",
-                    sessionId=session_id,
-                    applied=False,
-                    messageCode="reject_success",
-                )
+            result = IntentStateUpdateResult(
+                action="reject",
+                sessionId=session_id,
+                applied=False,
+                messageCode="reject_success",
             )
+            log_event(
+                "intent_state_event",
+                sessionId=session_id,
+                action="reject",
+                applied=False,
+                messageCode="reject_success",
+                durationMs=int((time.monotonic() - started_at) * 1000),
+                status="success",
+            )
+            return serialize_intent_state_update_result(result)
 
         resolved_merged = merged
         resolved_mode = intent_mode or INTENT_MODE_PREFERENCE
@@ -1667,26 +1678,42 @@ async def update_volunteer_intent_state(
                 not had_pending_before_turn
                 and not _is_intent_confirmation_utterance(latest_utterance)
             ):
-                return serialize_intent_state_update_result(
-                    IntentStateUpdateResult(
-                        action="confirm",
-                        sessionId=session_id,
-                        intentMode=resolved_mode,
-                        applied=False,
-                        messageCode="confirm_required",
-                    )
+                result = IntentStateUpdateResult(
+                    action="confirm",
+                    sessionId=session_id,
+                    intentMode=resolved_mode,
+                    applied=False,
+                    messageCode="confirm_required",
                 )
+                log_event(
+                    "intent_state_event",
+                    sessionId=session_id,
+                    action="confirm",
+                    applied=False,
+                    messageCode="confirm_required",
+                    durationMs=int((time.monotonic() - started_at) * 1000),
+                    status="error",
+                )
+                return serialize_intent_state_update_result(result)
             cache_result = await get_intent_change_cache(session_id)
             cache_data = (cache_result or {}).get("data", {}).get("planEditCache")
             if not cache_data:
-                return serialize_intent_state_update_result(
-                    IntentStateUpdateResult(
-                        action="confirm",
-                        sessionId=session_id,
-                        applied=False,
-                        messageCode="no_pending",
-                    )
+                result = IntentStateUpdateResult(
+                    action="confirm",
+                    sessionId=session_id,
+                    applied=False,
+                    messageCode="no_pending",
                 )
+                log_event(
+                    "intent_state_event",
+                    sessionId=session_id,
+                    action="confirm",
+                    applied=False,
+                    messageCode="no_pending",
+                    durationMs=int((time.monotonic() - started_at) * 1000),
+                    status="error",
+                )
+                return serialize_intent_state_update_result(result)
             resolved_mode = cache_data.get("intent_mode") or INTENT_MODE_PREFERENCE
             resolved_merged = {
                 "major_intents": cache_data.get("major_intents") or {},
@@ -1696,15 +1723,23 @@ async def update_volunteer_intent_state(
             }
 
         if not resolved_merged:
-            return serialize_intent_state_update_result(
-                IntentStateUpdateResult(
-                    action=normalized_action,
-                    sessionId=session_id,
-                    intentMode=resolved_mode,
-                    applied=False,
-                    messageCode="empty_update",
-                )
+            result = IntentStateUpdateResult(
+                action=normalized_action,
+                sessionId=session_id,
+                intentMode=resolved_mode,
+                applied=False,
+                messageCode="empty_update",
             )
+            log_event(
+                "intent_state_event",
+                sessionId=session_id,
+                action=normalized_action,
+                applied=False,
+                messageCode="empty_update",
+                durationMs=int((time.monotonic() - started_at) * 1000),
+                status="error",
+            )
+            return serialize_intent_state_update_result(result)
 
         result = await _apply_intents(
             session_id=session_id,
@@ -1713,15 +1748,36 @@ async def update_volunteer_intent_state(
             intent_mode=resolved_mode,
         )
         result.action = normalized_action
+        log_event(
+            "intent_state_event",
+            sessionId=session_id,
+            action=normalized_action,
+            applied=bool(result.applied),
+            messageCode=result.messageCode,
+            intentMode=result.intentMode,
+            durationMs=int((time.monotonic() - started_at) * 1000),
+            status="success" if result.applied else "error",
+        )
         return serialize_intent_state_update_result(result)
     except Exception:
         logger.exception("update_volunteer_intent_state failed: session_id=%s action=%s", session_id, normalized_action)
+        message_code = "apply_failed" if normalized_action != "reject" else "reject_failed"
+        log_event(
+            "intent_state_event",
+            sessionId=session_id,
+            action=normalized_action,
+            applied=False,
+            messageCode=message_code,
+            durationMs=int((time.monotonic() - started_at) * 1000),
+            status="error",
+            errorType=message_code,
+        )
         return serialize_intent_state_update_result(
             IntentStateUpdateResult(
                 action=normalized_action,
                 sessionId=session_id,
                 intentMode=intent_mode or INTENT_MODE_PREFERENCE,
                 applied=False,
-                messageCode="apply_failed" if normalized_action != "reject" else "reject_failed",
+                messageCode=message_code,
             )
         )

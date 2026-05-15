@@ -9,6 +9,7 @@ from app.models.typed_actions import (
     AnalyzeAdjustmentAction,
     ApplyCompensationAction,
     GeneratePlanAction,
+    MoveOrderedUnitAction,
     MoveUnitAction,
     PinUnitAction,
     PlanAction,
@@ -18,6 +19,7 @@ from app.models.typed_actions import (
     QueryOrderedAction,
     QueryStateAction,
     RegenerateOrderAction,
+    RemoveOrderedUnitAction,
     RemoveUnitsAction,
     ReplaceUnitsAction,
     ReviewIssueRef,
@@ -221,6 +223,17 @@ class TestMutationActions:
         assert a.volunteer_id == "v5"
         assert a.target_position == 3
 
+    def test_move_ordered_unit(self):
+        a = MoveOrderedUnitAction(unit_id="unit-5", target_position=3)
+        assert a.action_type == "move_ordered_unit"
+        assert a.unit_id == "unit-5"
+        assert a.target_position == 3
+
+    def test_remove_ordered_unit(self):
+        a = RemoveOrderedUnitAction(unit_ids=["unit-1", "unit-2"])
+        assert a.action_type == "remove_ordered_unit"
+        assert a.unit_ids == ["unit-1", "unit-2"]
+
     def test_pin_unit(self):
         a = PinUnitAction(volunteer_id="v1")
         assert a.action_type == "pin_unit"
@@ -272,6 +285,8 @@ class TestPlanActionUnion:
         ("add_units", AddUnitsAction),
         ("remove_units", RemoveUnitsAction),
         ("move_unit", MoveUnitAction),
+        ("move_ordered_unit", MoveOrderedUnitAction),
+        ("remove_ordered_unit", RemoveOrderedUnitAction),
         ("pin_unit", PinUnitAction),
         ("unpin_unit", UnpinUnitAction),
         ("replace_units", ReplaceUnitsAction),
@@ -324,8 +339,8 @@ class TestPlanActionUnion:
 class TestActionTypeToFamily:
     """ACTION_TYPE_TO_FAMILY 映射表。"""
 
-    def test_all_16_families_present(self):
-        assert len(ACTION_TYPE_TO_FAMILY) == 16
+    def test_all_19_families_present(self):
+        assert len(ACTION_TYPE_TO_FAMILY) == 19
 
     def test_current_1to1_mapping(self):
         """当前 action_type 与 action_family 一一对应。"""
@@ -339,8 +354,9 @@ class TestActionTypeToFamily:
         "generate_plan", "analyze_adjustment", "review_plan",
         "preview_compensation", "apply_compensation",
         "add_units", "remove_units", "move_unit",
+        "move_ordered_unit", "remove_ordered_unit",
         "pin_unit", "unpin_unit", "replace_units",
-        "regenerate_order",
+        "sort_ordered_plan", "regenerate_order",
     ])
     def test_all_expected_types(self, action_type):
         assert action_type in ACTION_TYPE_TO_FAMILY

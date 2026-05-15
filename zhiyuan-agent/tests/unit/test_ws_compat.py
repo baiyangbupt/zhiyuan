@@ -457,7 +457,7 @@ def test_ws_compat_structured_session_query_state_returns_rich_text_without_work
         with patch("app.server.message_store") as mock_store, \
                 patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
                 patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
-                patch("app.service.get_planning_state", AsyncMock(return_value={"code": 0, "data": planning_state})), \
+                patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 0, "data": planning_state})), \
                 patch("app.service.get_intent_change_cache", AsyncMock(return_value={"code": 0, "data": {}})), \
                 patch(
                     "app.handlers.query_handlers._get_planning_state_with_latest_profile",
