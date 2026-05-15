@@ -1038,6 +1038,7 @@ def _build_plan_timeout_fallback_reply(result: dict[str, Any]) -> str | None:
         "draft_snapshot",
         "candidate_snapshot",
         "mutation_result",
+        "no_change",
     }:
         return None
 

@@ -1681,6 +1681,7 @@ async def _post_process_handler_result(
 
     if (
         result.result_kind != "error"
+        and result.applied
         and plan_model.should_rerun_review
         and plan_model.action_family not in {"review_plan", "preview_compensation"}
     ):

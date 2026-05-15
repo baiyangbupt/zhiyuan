@@ -195,6 +195,7 @@ class PlanExecutionResult(BaseModel):
         "mutation_result",
         "review_result",
         "preview_only",
+        "no_change",
         "error",
     ] = "status_overview"
     executed_actions: list[dict[str, Any]] = Field(default_factory=list)

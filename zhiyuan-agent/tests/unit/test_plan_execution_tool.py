@@ -1241,7 +1241,7 @@ def test_execute_plan_action_add_units_does_not_readd_existing_school_major_alia
 
     data = json.loads(result)
     assert data["applied"] is False
-    assert data["result_kind"] == "error"
+    assert data["result_kind"] == "no_change"
     assert "已经在当前方案中" in data["summary"]
     assert "already_in_plan" in data["reply_focus"]
     assert data["affected_volunteer_ids"] == []

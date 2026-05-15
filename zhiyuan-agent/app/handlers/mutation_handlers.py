@@ -75,7 +75,7 @@ async def handle_add_units(
                 applied=False,
                 action_family="add_units",
                 stage=plan.stage,
-                result_kind="error",
+                result_kind="no_change",
                 executed_actions=[{"action": "add_units", "volunteerIds": [], "requestedVolunteerRefs": ids, "alreadyInPlanIds": existing_ids}],
                 affected_volunteer_ids=[],
                 workspace_refresh_targets=[],
