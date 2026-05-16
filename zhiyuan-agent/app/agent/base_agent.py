@@ -5,6 +5,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any, Generic, TypeVar
 
 from pydantic_ai import Agent, CallToolsNode, RunContext, RunUsage, ToolCallPart
+from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 from pydantic_ai.toolsets import AbstractToolset
 from pydantic_graph import End
 
@@ -108,8 +109,10 @@ class BaseAgent(Generic[T]):
         logger.info("Agent starting: prompt_len=%d history_len=%d",
                    len(user_prompt), len(message_history) if message_history else 0)
 
+        normalized_history = self._normalize_message_history(message_history)
+
         async with self.agent.iter(
-            user_prompt, message_history=message_history, deps=deps
+            user_prompt, message_history=normalized_history, deps=deps
         ) as agent_run:
             node = agent_run.next_node
             node_count = 0
@@ -134,6 +137,8 @@ class BaseAgent(Generic[T]):
 
             output = agent_run.result.output
             usage = agent_run.usage()
+            if hasattr(usage, "__await__"):
+                usage = await usage
 
             logger.info(
                 "Agent usage: requests=%d input_tokens=%d output_tokens=%d "
@@ -160,3 +165,29 @@ class BaseAgent(Generic[T]):
         if hasattr(messages_result, "__await__"):
             return await messages_result
         return messages_result
+
+    def _normalize_message_history(self, message_history: list[Any] | None) -> list[Any] | None:
+        """Accept legacy {role, content} history and pass ModelMessage objects to pydantic-ai."""
+        if not message_history:
+            return message_history
+
+        normalized: list[Any] = []
+        changed = False
+        for message in message_history:
+            if not isinstance(message, dict):
+                normalized.append(message)
+                continue
+
+            role = str(message.get("role") or "").strip().lower()
+            content = message.get("content")
+            if not isinstance(content, str):
+                normalized.append(message)
+                continue
+
+            changed = True
+            if role == "assistant":
+                normalized.append(ModelResponse(parts=[TextPart(content=content)]))
+            else:
+                normalized.append(ModelRequest(parts=[UserPromptPart(content=content)]))
+
+        return normalized if changed else message_history

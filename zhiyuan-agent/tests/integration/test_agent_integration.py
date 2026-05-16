@@ -6,6 +6,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from pydantic_ai import RunUsage
 from pydantic_graph import End
 
 from app.config import LLMConfig
@@ -32,7 +33,8 @@ def _make_agent_run(nodes: list, final_output: Any = "test output"):
     agent_run.next = _next
     agent_run.result = MagicMock()
     agent_run.result.output = final_output
-    agent_run.usage = MagicMock(return_value="mock_usage")
+    agent_run.usage = MagicMock(return_value=RunUsage())
+    agent_run.all_messages = MagicMock(return_value=[])
 
     ctx_mgr = AsyncMock()
     ctx_mgr.__aenter__ = AsyncMock(return_value=agent_run)
@@ -114,7 +116,9 @@ async def test_multi_turn_conversation(mocker):
 
     result = await agent.run("推荐大学", message_history=history)
     assert result == "推荐清华"
-    agent.agent.iter.assert_called_once_with("推荐大学", message_history=history, deps=None)
+    passed_history = agent.agent.iter.call_args.kwargs["message_history"]
+    assert len(passed_history) == 1
+    assert passed_history[0].parts[0].content == "我考了650分"
 
 
 # ---- 5. 多 provider 切换 ----

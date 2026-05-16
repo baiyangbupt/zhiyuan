@@ -188,8 +188,6 @@ class TestGenericPreviewAnalyzeFallback:
         "add_units",
         "remove_units",
         "move_unit",
-        "pin_unit",
-        "unpin_unit",
         "generate_plan",
         "regenerate_order",
         "apply_compensation",
@@ -207,6 +205,21 @@ class TestGenericPreviewAnalyzeFallback:
         assert result.applied is False
         assert result.result_kind == "preview_only"
         assert "preview_only" in result.reply_focus
+
+    @pytest.mark.parametrize("action_family", ["pin_unit", "unpin_unit"])
+    @pytest.mark.parametrize("stage", ["preview", "analyze"])
+    @pytest.mark.parametrize("volunteer_model", ["major", "majorGroup"])
+    async def test_pin_unpin_disabled(self, action_family: str, stage: str, volunteer_model: str):
+        ctx = _run_ctx(volunteer_model=volunteer_model)
+        plan = make_plan_action_plan(
+            action_family=action_family,
+            stage=stage,
+            preview_summary="测试预览摘要。",
+        )
+        result = await _execute_plan_action_model(ctx, plan)
+        assert result.applied is False
+        assert result.result_kind == "error"
+        assert "pin_disabled" in result.reply_focus
 
     @pytest.mark.parametrize("volunteer_model", ["major", "majorGroup"])
     async def test_preview_mutating_gets_confirmation_hint(self, volunteer_model: str):

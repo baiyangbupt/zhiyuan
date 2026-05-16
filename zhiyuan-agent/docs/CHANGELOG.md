@@ -50,6 +50,9 @@
 - 清理 `ChatAgent` 中已不再生效的旧 `_build_instructions` 死代码，避免与当前 `app.agent.instructions.assembler.build_instructions` 模块化指令入口产生维护歧义。
 - 修正 `conversation_turn_event.actionFamily` 归因：同一轮如果先查询状态、后形成删除/移动/排序等非 query action，结构化日志优先记录最后一个非 query action，避免效果和性能分析误把实际操作预览统计为 `query_state`。
 - 修正补齐确认链路：同一轮空补齐预览会清掉较早未展示的 `add_units` pending，避免用户回复“确认”误执行旧补入动作；按筛选补入没有命中候选时返回 `no_change / applied=false`，不再触发复审、工作台刷新或“已新增”话术。
+- `BaseAgent` 兼容旧 `{role, content}` 格式的 `message_history`，进入 pydantic-ai 前转换为 `ModelRequest/ModelResponse`，修复 pydantic-ai 升级后历史消息集成测试失败。
+- `ProfileManager.get_current_profile` 兼容历史后端 payload `data.dataValue`，避免旧画像结构下增量更新专业、院校、城市意向时丢失已有数据。
+- 真实 internal client e2e 和真实 LLM e2e 改为显式开关执行，默认全量 pytest 不再受本地网络、内部服务可达性或模型费用影响。
 
 ### Fixed (回归测试稳定性)
 
@@ -57,6 +60,7 @@
 - 补齐 3.0.1 Agent unit action 的类型、编排、状态同步和提示词单测，覆盖 `move_ordered_unit / remove_ordered_unit` 的 preview、缺参、语义归一和 `unit_ids` 传递；旧 `pin/unpin` 测试改为验证新版固定/锁定入口关闭后的用户引导。
 - 清理 `test_plan_execution_tool.py` 历史 fixture 债务：旧用例不再 patch 已绕过的 `plan_execution_tool` workflow wrapper，而是 patch 当前 handler registry 实际消费的 handler/internal-client alias，避免单测误连本地 backend。
 - 清理 router/workflow 兼容测试债务：初始生成方案测试补齐候选池前置 mock；旧 router 用例保留为 deprecated compatibility wrapper 验证；workflow 文案断言同步为 3.0.1 的“方案/已加入方案”用户语言；替换、补偿、审查执行链测试改为 patch 当前 handler/internal-client alias。
+- Agent 默认全量 pytest 收口通过：`2121 passed / 7 skipped`；skip 项仅包含显式开关控制的真实 internal client e2e 和真实 LLM e2e。
 
 ### Verified (3.0.1 Agent 对话驱动首轮收口)
 

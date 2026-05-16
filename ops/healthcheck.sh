@@ -8,6 +8,7 @@ COMPOSE_FILE="${ZHIYUAN_COMPOSE_FILE:-docker-compose.yml}"
 SERVER_SERVICE="${ZHIYUAN_SERVER_SERVICE:-zhiyuan-server.service}"
 SERVER_PORT="${ZHIYUAN_SERVER_PORT:-8090}"
 WEB_PORT="${ZHIYUAN_WEB_PORT:-3000}"
+WEB_HEALTH_PATH="${ZHIYUAN_WEB_HEALTH_PATH:-/}"
 AGENT_PORT="${ZHIYUAN_AGENT_PORT:-8000}"
 RANK_PORT="${ZHIYUAN_RANK_PORT:-5001}"
 
@@ -33,7 +34,8 @@ Usage:
 
 Environment overrides:
   ZHIYUAN_COMPOSE_FILE, ZHIYUAN_SERVER_SERVICE, ZHIYUAN_SERVER_PORT,
-  ZHIYUAN_WEB_PORT, ZHIYUAN_AGENT_PORT, ZHIYUAN_RANK_PORT
+  ZHIYUAN_WEB_PORT, ZHIYUAN_WEB_HEALTH_PATH,
+  ZHIYUAN_AGENT_PORT, ZHIYUAN_RANK_PORT
 USAGE
       exit 0
       ;;
@@ -102,7 +104,12 @@ compose_cmd() {
 
 check_local_processes() {
   if have docker; then
-    run_check "compose ps" compose_cmd ps zhiyuan-web zhiyuan-agent zhiyuan-rank
+    local output
+    if output="$(compose_cmd ps zhiyuan-web zhiyuan-agent zhiyuan-rank 2>&1)"; then
+      record "compose ps" "PASS" "$(printf '%s' "$output" | tail -1)"
+    else
+      record "compose ps" "WARN" "$(printf '%s' "$output" | tail -1)"
+    fi
   else
     record "compose ps" "SKIP" "docker not found"
   fi
@@ -121,7 +128,7 @@ check_local_processes() {
 }
 
 check_local_http() {
-  http_check "web local" "http://127.0.0.1:${WEB_PORT}/"
+  http_check "web local" "http://127.0.0.1:${WEB_PORT}${WEB_HEALTH_PATH}"
   http_check "server local" "http://127.0.0.1:${SERVER_PORT}/gaotu-assistant-bot/base-data/province-city"
   http_check "agent local" "http://127.0.0.1:${AGENT_PORT}/health"
   http_check "rank local" "http://127.0.0.1:${RANK_PORT}/health"

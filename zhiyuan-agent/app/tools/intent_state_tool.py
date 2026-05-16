@@ -679,27 +679,7 @@ def _classify_intent_mode(
     if not _has_negative_intents(major_intents, school_intents, city_intents, career_intents):
         return INTENT_MODE_PREFERENCE
 
-    normalized_flags = {
-        part.strip().lower()
-        for part in (edit_flag or "").split("|")
-        if part.strip()
-    }
-    if normalized_flags & {"delete", "replace"}:
-        return INTENT_MODE_CONSTRAINT
-
-    def _has_positive_values(payload: dict | None) -> bool:
-        return bool(
-            payload
-            and any(not key.startswith("negative_") and values for key, values in payload.items())
-        )
-
-    if any(_has_positive_values(payload) for payload in (major_intents, school_intents, city_intents)):
-        return INTENT_MODE_CONSTRAINT
-
-    if career_intents and career_intents.get("positive"):
-        return INTENT_MODE_CONSTRAINT
-
-    return INTENT_MODE_PREFERENCE
+    return INTENT_MODE_CONSTRAINT
 
 
 def _impact_title(intent_mode: str) -> str:

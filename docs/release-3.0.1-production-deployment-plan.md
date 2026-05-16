@@ -119,7 +119,7 @@ npm run build:prod
 
 ```bash
 cd /root/dev/zhiyuan/zhiyuan-agent
-pytest
+PYTHONPATH=$(pwd) .venv/bin/pytest
 ```
 
 重点覆盖：
@@ -129,6 +129,15 @@ pytest
 - 专业组移动和删除。
 - 去“草稿”用户话术。
 - 旧 router/workflow 兼容路径不误用。
+
+本地发布前复核记录：
+
+- `pytest` 直接使用系统入口时可能因为 `tests` 命名空间或 Python 环境不一致失败；本地应优先使用项目 `.venv/bin/pytest`。
+- 2026-05-16 已完成 Agent 测试基线收口：`PYTHONPATH=/Users/baiyang/git/zhiyuan/zhiyuan-agent .venv/bin/pytest -q` 结果为 `2121 passed / 7 skipped`。
+- 真实内部服务 e2e 和真实 LLM e2e 默认跳过，避免发布门禁被网络、模型费用或外部服务状态干扰。需要单独执行时设置：
+  - `RUN_AGENT_INTERNAL_E2E=1`：执行真实 internal client e2e。
+  - `RUN_REAL_LLM_E2E=1`：执行真实 LLM e2e。
+- Agent 测试修复边界：兼容 pydantic-ai 新版 `message_history` 对象格式；画像读取兼容历史 `dataValue` payload；catalog 归一化测试隔离缓存；旧 pin/unpin 只验证新版固定/锁定入口关闭后的提示。
 
 如具备真实测试会话和模型配置，可补充 websocket smoke：
 
@@ -184,6 +193,17 @@ zhiyuan-server-3.0.1-prod.service
 zhiyuan-web:3.0.1-amd64
 ```
 
+本仓库 Dockerfile 的 `APP_ENV` 是 npm script 后缀，不是 Next.js 运行环境名。生产 `/assistant-pc` 镜像构建必须使用 `APP_ENV=prod`，由 `npm run build:prod` 读取 `.env.prod` 后再把 Next.js 的 `APP_ENV` 设置为 `production`：
+
+```bash
+docker build --platform linux/amd64 \
+  --build-arg APP_ENV=prod \
+  -t zhiyuan-web:3.0.1-amd64 \
+  zhiyuan-web
+```
+
+不要使用 `--build-arg APP_ENV=production`，否则 Dockerfile 会执行不存在的 `npm run build:production`。
+
 建议容器：
 
 ```text
@@ -203,6 +223,16 @@ zhiyuan-web-3.0.1-prod
 ```text
 zhiyuan-agent:3.0.1-amd64
 ```
+
+构建命令：
+
+```bash
+docker build --platform linux/amd64 \
+  -t zhiyuan-agent:3.0.1-amd64 \
+  zhiyuan-agent
+```
+
+当前 Agent Dockerfile 基于未锁定的 Python 依赖范围构建，会拉取当前最新兼容依赖。后续部署优化建议补充锁文件或约束关键依赖版本，避免同一代码在不同时间构建出不同依赖组合。
 
 建议容器：
 
@@ -432,12 +462,129 @@ zhiyuan-web:3.0.0-amd64-wsfix
 5. 导出修复是核心验收项，必须用历史迁移会话和新建会话都验证。
 6. 移动端不是本版本完整适配范围；如果共享样式影响移动端，需要至少做冒烟。
 
-## 11. 发布准入清单
+## 11. 本地生产式升级演练记录
+
+执行时间：2026-05-16。
+
+本机环境：
+
+- macOS + Docker Desktop。
+- Docker daemon 架构为 `aarch64`，生产目标为 `amd64`，因此镜像构建显式使用 `--platform linux/amd64`。
+- 本地演练端口：后端 `8090`，Web `18088 -> 28688`，Agent `18091 -> 8009`，Rank `18092 -> 5001`。
+- Rank 沿用 `zhiyuan-rank:prod-3.0.0`，符合本次 3.0.1 不升级 Rank 的发布范围。
+
+构建和测试结果：
+
+- 后端重点测试通过：`mvn -Dtest=PlanningExcelExportBuilderTest,PlanningStateServiceTest,PlanningStateSuggestionMappingTest test`，结果 `104 run / 0 failures / 0 errors / 2 skipped`。
+- 后端 3.0.1 JAR 构建通过：`mvn -DskipTests package`。
+- 前端生产构建通过：`npm run build:prod`；产物 `basePath=/assistant-pc`，包含 `/session`、`/sessionDetailV2`、`/sessionDetailLegacy`。
+- 前端 3.0.1 amd64 镜像构建通过：`docker build --platform linux/amd64 --build-arg APP_ENV=prod -t zhiyuan-web:prod-3.0.1 -t zhiyuan-web:3.0.1-amd64 zhiyuan-web`。
+- Agent 3.0.1 amd64 镜像构建通过：`docker build --platform linux/amd64 -t zhiyuan-agent:prod-3.0.1 -t zhiyuan-agent:3.0.1-amd64 zhiyuan-agent`。
+- Agent 全量 pytest 已收口，详见 4.3；真实 internal/LLM e2e 改为显式开关执行，不进入默认离线发布门禁。
+
+升级流程验证：
+
+1. 使用 `prod-3.0.0` git tag 在临时 worktree 构建 3.0.0 后端 JAR。
+2. 启动 3.0.0 基线：后端 `8090`、Web `zhiyuan-web:prod-3.0.0`、Agent `zhiyuan-agent:prod-3.0.0`、Rank `zhiyuan-rank:prod-3.0.0`。
+3. 基线健康检查通过：
+   - 后端 `GET /gaotu-assistant-bot/base-data/province-city` 返回 `200`，约 `0.86s`。
+   - Rank `GET /health` 返回 `200`，约 `0.05s`。
+   - Agent `GET /health` 返回 `200`，约 `0.04s`。
+   - Web `GET /assistant-pc/session` 返回 `200`。
+4. 停止 3.0.0 后端、Web、Agent，保留 Rank。
+5. 启动 3.0.1 后端、Web、Agent。
+6. 3.0.1 健康检查通过：
+   - 后端 `GET /gaotu-assistant-bot/base-data/province-city` 返回 `200`，约 `0.44s`。
+   - Rank `GET /health` 返回 `200`，约 `0.04s`。
+   - Agent `GET /health` 返回 `200`，约 `0.05s`。
+   - Web `GET /assistant-pc/session`、`/assistant-pc/sessionDetailV2`、`/assistant-pc/sessionDetailLegacy` 均返回 `200`。
+   - 3.0.1 Web 镜像内未检出 `ws://localhost:8000`，`.next/routes-manifest.json` 中 `basePath=/assistant-pc`。
+7. 回滚演练通过：停止 3.0.1 后端、Web、Agent 后，恢复 3.0.0 后端、Web、Agent，后端/Agent/Web 健康检查均返回 `200`。
+
+演练发现的问题：
+
+- `ops/healthcheck.sh --local` 默认检查 Web 根路径 `/`，对正式生产 `/assistant-pc` 包会误报 `404`。本次已为脚本补充 `ZHIYUAN_WEB_HEALTH_PATH` 覆盖项，生产式本地演练应设置为 `/assistant-pc/session`。
+- 发布文档中如果写 `--build-arg APP_ENV=production` 会导致 Docker 构建失败，已更正为 `APP_ENV=prod`。
+- Agent 默认全量 pytest 已通过；真实 internal/LLM e2e 已拆为显式开关，发布前按依赖条件单独补跑。
+- 本地 macOS 不能复刻 systemd，后端用前台 Java 进程模拟；生产仍按 systemd service 执行。
+
+## 12. 本地开发 e2e 验证记录
+
+执行时间：2026-05-16。
+
+本地开发服务端口：
+
+- Web：`3001`
+- Backend：`8080`
+- Agent：`8000`
+- Rank：`5001`
+
+正确启动方式：
+
+```bash
+bash scripts/start-all.sh
+```
+
+或单独启动 Web：
+
+```bash
+cd zhiyuan-web
+npm run dev
+```
+
+注意：Web 必须通过 `npm run dev` 读取 `.env.dev`，确保 `APP_ENV=dev`。如果直接执行 `next dev -p 3001`，会沿用 `.next` 中的生产 `basePath=/assistant-pc` 和线上 rewrites，本地访问 `/session`、`/sessionDetailV2` 会出现 `404` 或错误代理。
+
+本地健康检查命令：
+
+```bash
+ZHIYUAN_WEB_PORT=3001 \
+ZHIYUAN_WEB_HEALTH_PATH=/session \
+ZHIYUAN_SERVER_PORT=8080 \
+ZHIYUAN_AGENT_PORT=8000 \
+ZHIYUAN_RANK_PORT=5001 \
+bash ops/healthcheck.sh --local
+```
+
+验证结果：
+
+- `web local`、`server local`、`agent local`、`rank local` 均通过。
+- macOS 本地 Docker daemon 不可达时，`compose ps` 记录为 `WARN`，不阻断纯本地服务 e2e；生产式 Docker 演练仍应单独确认 compose 状态。
+- Web 路由验证通过：`GET /session` 返回 `200`，`GET /sessionDetailV2` 返回 `200`。
+- Internal client e2e 通过：`RUN_AGENT_INTERNAL_E2E=1 PYTHONPATH=/Users/baiyang/git/zhiyuan/zhiyuan-agent .venv/bin/pytest tests/e2e/test_internal_client.py -q -s`，结果 `2 passed`。
+- 真实 LLM e2e 通过：`RUN_REAL_LLM_E2E=1 PYTHONPATH=/Users/baiyang/git/zhiyuan/zhiyuan-agent .venv/bin/pytest tests/e2e/test_real_llm.py -q -s`，结果 `4 passed / 1 skipped`。
+- 真实 WebSocket smoke 通过：`PYTHONPATH=/Users/baiyang/git/zhiyuan/zhiyuan-agent .venv/bin/python examples/dialog_regression_runner.py --cases examples/dialog_regression_301_agent_smoke_cases.json --response-timeout 180`。
+
+WebSocket smoke 覆盖：
+
+- `session=17 / 看看现在的方案`：约 `16.2s`，返回结构化方案概况，无无效工作台卡片。
+- `session=17 / 帮我审查一下`：约 `16.0s`，返回审查风险和下一步建议。
+- `session=16 / 按院校层次排序 -> 确认`：预览约 `23.3s`，确认约 `5.5s`，返回 `ordered` 刷新卡片。
+- `session=16 / 把第3个专业组移到第5位 -> 确认`：预览约 `32.1s`，确认约 `6.3s`，返回 `ordered` 刷新卡片。
+
+补充接口 smoke：
+
+- 工作区轻量状态：
+  - `GET /gaotu-assistant-bot/inner/planning/1/session/workspace-state?chatSessionId=16` 返回 `200`，专业组模式，`orderedItems=176`，`orderedUnits=45`，引用候选评分字段无缺失。
+  - `GET /gaotu-assistant-bot/inner/planning/1/session/workspace-state?chatSessionId=17` 返回 `200`，专业模式，`orderedItems=94`，位置连续，引用候选评分字段无缺失。
+- 导出：
+  - `POST /gaotu-assistant-bot/inner/planning/1/session/ordered-plan/export?chatSessionId=16` 返回 `200`，生成 xlsx `26058` bytes。
+  - `POST /gaotu-assistant-bot/inner/planning/1/session/ordered-plan/export?chatSessionId=17` 返回 `200`，生成 xlsx `17757` bytes。
+- 审查：
+  - `POST /gaotu-assistant-bot/inner/planning/1/session/review/run?chatSessionId=17` 返回 `200`，`status=completed`，审查结果 `9 passed / 1 warn / 3 risk`。
+- 候选查询：
+  - `POST /gaotu-assistant-bot/inner/planning/1/session/candidate-pool/query?chatSessionId=16` 返回 `200`，首页 `10` 条，`total=6421`。
+  - `POST /gaotu-assistant-bot/inner/planning/1/session/candidate-pool/query?chatSessionId=17` 返回 `200`，首页 `10` 条，`total=402`。
+
+未完成项：
+
+- 外部系统初始化新建会话接口 `POST /gaotu-assistant-bot/chat/1/integration/session/initialize` 需要 `tk/pf` 登录态。当前本地没有可用授权 token，未执行真实新建；拿到可用 `loginToken` 后需补跑：初始化创建、幂等重试、返回 URL、workspace-state、导出。
+
+## 13. 发布准入清单
 
 发布前必须满足：
 
 - 后端重点测试通过。
-- Agent 单测通过。
+- Agent 离线单元/回归发布子集通过；真实 e2e/LLM smoke 在依赖齐备时单独执行并记录。
 - 前端生产构建通过。
 - 3.0.1 产物已放到独立目录或独立镜像标签。
 - 后端生产配置已复核，未误改数据库、Redis、OSS、Rank、Gaotu 上游地址。
@@ -446,7 +593,7 @@ zhiyuan-web:3.0.0-amd64-wsfix
 - 3.0.0 回滚 service、容器和镜像仍保留。
 - 已准备至少一个新建会话样本、一个历史 `_final` 样本、一个历史 `_temp` 样本、一个空候选/少候选样本做发布后验证。
 
-## 12. 相关文档
+## 14. 相关文档
 
 - `docs/release-3.0.1-stability-plan.md`
 - `docs/release-3.0.1-implementation-design.md`

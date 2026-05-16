@@ -137,10 +137,10 @@ class ProfileManager:
             response = await get_user_profile(self.chat_session_id)
             logger.info(f"获取用户画像响应: {response}")
 
-            if response and response.get("code") == 0:
+            if response and response.get("code", 0) == 0:
                 data = response.get("data", {})
-                # 后端返回格式: {"data": {"userprofile": {...}}}
-                profile_data = data.get("userprofile")
+                # 新版返回 userprofile，历史接口/测试样本可能返回 dataValue。
+                profile_data = data.get("userprofile") or data.get("dataValue")
 
                 if not profile_data:
                     logger.warning("用户画像数据为空，返回默认空画像")

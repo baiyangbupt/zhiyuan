@@ -74,11 +74,11 @@ def trim_last_n_messages(messages: list[dict], n: int) -> list[dict]:
     Returns:
         Trimmed message list
     """
-    # Remove first two welcome messages
-    # if len(messages) > 2:
-    #     messages = messages[2:]
-    # else:
-    #     return messages
+    # Remove first two welcome messages when real conversation messages exist.
+    if len(messages) > 2:
+        messages = messages[2:]
+    else:
+        return messages
 
     # Return last n messages
     if len(messages) <= n:

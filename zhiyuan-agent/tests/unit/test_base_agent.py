@@ -6,6 +6,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from pydantic_ai import RunUsage
 from pydantic_graph import End
 
 from app.agent.base_agent import BaseAgent
@@ -38,7 +39,7 @@ def _make_agent_run(nodes: list, final_output: Any = "test output"):
     agent_run.next = _next
     agent_run.result = MagicMock()
     agent_run.result.output = final_output
-    agent_run.usage = MagicMock(return_value="mock_usage")
+    agent_run.usage = MagicMock(return_value=RunUsage())
     agent_run.all_messages = MagicMock(return_value=[])
 
     ctx_mgr = AsyncMock()
@@ -184,7 +185,9 @@ async def test_message_history_passed(client, mocker):
     agent.agent.iter = MagicMock(return_value=ctx_mgr)
 
     await agent.run("继续", message_history=history)
-    agent.agent.iter.assert_called_once_with("继续", message_history=history, deps=None)
+    passed_history = agent.agent.iter.call_args.kwargs["message_history"]
+    assert len(passed_history) == 1
+    assert passed_history[0].parts[0].content == "之前的对话"
 
 
 # ---- 11. output_type 传递 ----

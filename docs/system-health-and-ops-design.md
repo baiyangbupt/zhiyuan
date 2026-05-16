@@ -152,6 +152,24 @@ bash ops/healthcheck.sh --json
 - 最近错误日志摘要
 - 迁移日志最近成功/失败数量
 
+本地开发联调和生产式演练需要区分：
+
+- 开发联调可以只启动 `scripts/start-all.sh` 管理的本地进程：Web `3001`、Backend `8080`、Agent `8000`、Rank `5001`。
+- 生产式演练使用 Docker/systemd 端口映射：Web `18088 -> 28688`、Backend `8090`、Agent `18091 -> 8009`、Rank `18092 -> 5001`。
+- `ops/healthcheck.sh --local` 支持用环境变量覆盖端口和 Web 健康路径，例如：
+
+```bash
+ZHIYUAN_WEB_PORT=3001 \
+ZHIYUAN_WEB_HEALTH_PATH=/session \
+ZHIYUAN_SERVER_PORT=8080 \
+ZHIYUAN_AGENT_PORT=8000 \
+ZHIYUAN_RANK_PORT=5001 \
+bash ops/healthcheck.sh --local
+```
+
+- 在开发联调场景，如果 Docker daemon 不可达，`compose ps` 记录为 `WARN`，不阻断本地 HTTP/e2e 判断；生产式演练仍应单独确认 Docker Compose 状态为正常。
+- Web 本地开发必须通过 `npm run dev` 启动，让 `.env.dev` 设置 `APP_ENV=dev`。不要直接执行 `next dev -p 3001`，否则可能沿用 `.next` 中的生产 `basePath=/assistant-pc` 和线上 rewrites，导致 `/session`、`/sessionDetailV2` 本地访问异常。
+
 ### 3.2 `ops/deploy.sh`
 
 目标：标准化发布步骤。

@@ -66,8 +66,8 @@ def test_collect_plan_context_inputs_reads_existing_planning_state():
     assert data["review_issues"][0]["code"] == "high_tuition"
     assert data["review_issues"][0]["default_action_family"] == "remove_units"
     assert data["review_issue_summary_lines"] == ["高收费(1u/1v)"]
-    assert "方案=20/30" in data["summary"]
-    assert "审查问题=高收费(1u/1v)" in data["summary"]
+    assert "已有 20 个志愿（目标 30 个）" in data["summary"]
+    assert "审查问题：高收费(1u/1v)" in data["summary"]
 
 
 def test_collect_plan_context_inputs_includes_negative_preferences_and_conflict_lines():

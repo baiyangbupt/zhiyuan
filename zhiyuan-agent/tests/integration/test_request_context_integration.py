@@ -127,7 +127,6 @@ async def test_request_context_with_message_history(test_llm_client):
     # 模拟历史消息
     history = [
         {"role": "user", "content": "Hello"},
-        {"role": "assistant", "content": "Hi there!"},
     ]
 
     # 配置 TestModel 响应

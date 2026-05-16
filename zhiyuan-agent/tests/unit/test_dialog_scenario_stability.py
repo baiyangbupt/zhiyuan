@@ -421,6 +421,7 @@ def test_dialog_scenario_confirmed_career_preference_updates_latent_profile_only
         deps=SimpleNamespace(
             sessionid="306",
             batch="01",
+            pending_intent_change=True,
         )
     )
 
@@ -727,6 +728,7 @@ def test_dialog_scenario_after_plan_discussion_user_adds_constraint_updates_cand
         deps=SimpleNamespace(
             sessionid="311",
             batch="01",
+            pending_intent_change=True,
         )
     )
 
@@ -929,6 +931,7 @@ def test_dialog_scenario_reject_then_confirm_does_not_apply_anything():
         deps=SimpleNamespace(
             sessionid="317",
             batch="01",
+            chat_history=[{"role": "user", "content": "确认"}],
         )
     )
 
@@ -1074,6 +1077,7 @@ def test_dialog_scenario_confirm_reads_latest_cache_not_previous_preview_state()
         deps=SimpleNamespace(
             sessionid="321",
             batch="01",
+            pending_intent_change=True,
         )
     )
 
@@ -1343,6 +1347,7 @@ def test_dialog_scenario_confirm_major_constraint_outputs_negative_major_filters
         deps=SimpleNamespace(
             sessionid="328",
             batch="01",
+            pending_intent_change=True,
         )
     )
 

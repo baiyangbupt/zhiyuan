@@ -87,7 +87,7 @@ if [ -f .pids/web.pid ] && kill -0 "$(cat .pids/web.pid)" 2>/dev/null; then
     echo "  ⏭ 已在运行 (PID $(cat .pids/web.pid))"
 else
     cd "$ROOT_DIR/zhiyuan-web"
-    nohup npx env-cmd -f .env.dev next dev -p 3001 > "$ROOT_DIR/logs/web.log" 2>&1 &
+    nohup ./node_modules/.bin/env-cmd -f .env.dev ./node_modules/.bin/next dev -p 3001 > "$ROOT_DIR/logs/web.log" 2>&1 &
     echo $! > "$ROOT_DIR/.pids/web.pid"
     echo "  ✓ 已启动 (PID $(cat $ROOT_DIR/.pids/web.pid)) → http://localhost:3001"
 fi

@@ -10,7 +10,7 @@
 7. add_units → 添加（by id / by filter）
 8. remove_units → 移除（含 review issue 分支）
 9. move_unit → 移动
-10. pin_unit / unpin_unit → 固定/取消
+10. pin_unit / unpin_unit → 3.0.1 禁用入口
 11. replace_units → 替换（含 review issue 分支）
 12. regenerate_order → 重排
 """
@@ -372,8 +372,7 @@ class TestMoveUnitApply:
 
 class TestPinUnpinApply:
     @pytest.mark.parametrize("volunteer_model", ["major", "majorGroup"])
-    async def test_pin_unit_success(self, volunteer_model: str, patch_backend, patch_planning):
-        patch_planning.pin_planning_ordered_item.return_value = "已固定。"
+    async def test_pin_unit_disabled(self, volunteer_model: str, patch_backend, patch_planning):
         patch_backend.get_planning_ordered_plan.return_value = {
             "code": 0,
             "data": {
@@ -391,11 +390,13 @@ class TestPinUnpinApply:
             }],
         )
         result = await _execute_plan_action_model(ctx, plan)
-        assert result.applied is True
+        assert result.applied is False
+        assert result.result_kind == "error"
+        assert "pin_disabled" in result.reply_focus
+        patch_planning.pin_planning_ordered_item.assert_not_awaited()
 
     @pytest.mark.parametrize("volunteer_model", ["major", "majorGroup"])
-    async def test_unpin_unit_success(self, volunteer_model: str, patch_backend, patch_planning):
-        patch_planning.unpin_planning_ordered_item.return_value = "已取消固定。"
+    async def test_unpin_unit_disabled(self, volunteer_model: str, patch_backend, patch_planning):
         patch_backend.get_planning_ordered_plan.return_value = {
             "code": 0,
             "data": {
@@ -412,7 +413,10 @@ class TestPinUnpinApply:
             }],
         )
         result = await _execute_plan_action_model(ctx, plan)
-        assert result.applied is True
+        assert result.applied is False
+        assert result.result_kind == "error"
+        assert "pin_disabled" in result.reply_focus
+        patch_planning.unpin_planning_ordered_item.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

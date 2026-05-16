@@ -373,7 +373,7 @@ def test_intent_scenario_handle_select_on_already_clicked_message_short_circuits
 
 
 def test_intent_scenario_confirm_intent_change_with_career_preference_updates_latent_profile_only_after_confirm():
-    ctx = SimpleNamespace(deps=SimpleNamespace(sessionid="1008", batch="01"))
+    ctx = SimpleNamespace(deps=SimpleNamespace(sessionid="1008", batch="01", pending_intent_change=True))
 
     with (
         patch(

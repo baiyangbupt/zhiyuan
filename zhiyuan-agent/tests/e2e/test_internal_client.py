@@ -2,12 +2,22 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from app.util.internal_client import get_user_profile, get_user_score_detail
 
 
-@pytest.mark.e2e
+pytestmark = [
+    pytest.mark.e2e,
+    pytest.mark.skipif(
+        os.getenv("RUN_AGENT_INTERNAL_E2E") != "1",
+        reason="需要真实内部服务，设置 RUN_AGENT_INTERNAL_E2E=1 后运行",
+    ),
+]
+
+
 class TestInternalClient:
     """使用真实服务验证 internal_client 功能。"""
 

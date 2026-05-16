@@ -28,7 +28,7 @@ fi
 case $SERVICE in
     web)
         cd "$ROOT_DIR/zhiyuan-web"
-        nohup npx env-cmd -f .env.dev next dev -p 3001 > "$ROOT_DIR/logs/web.log" 2>&1 &
+        nohup ./node_modules/.bin/env-cmd -f .env.dev ./node_modules/.bin/next dev -p 3001 > "$ROOT_DIR/logs/web.log" 2>&1 &
         echo $! > "$ROOT_DIR/.pids/web.pid"
         echo "✓ zhiyuan-web 已启动 → http://localhost:3001"
         ;;

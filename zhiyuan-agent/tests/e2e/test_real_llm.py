@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from app.config import LLMConfig
@@ -16,8 +18,14 @@ from app.llm.client import LLMClient
 from app.agent.base_agent import BaseAgent
 
 
-# 标记为 e2e 测试，默认跳过
-pytestmark = pytest.mark.e2e
+# 标记为 e2e 测试，默认跳过；真实 LLM 会产生费用和网络依赖。
+pytestmark = [
+    pytest.mark.e2e,
+    pytest.mark.skipif(
+        os.getenv("RUN_REAL_LLM_E2E") != "1",
+        reason="需要真实 LLM 调用，设置 RUN_REAL_LLM_E2E=1 后运行",
+    ),
+]
 
 
 @pytest.fixture

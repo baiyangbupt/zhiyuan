@@ -1253,7 +1253,7 @@ async def test_preview_current_career_intent_confirmation_negative_request_prese
     save_mock.assert_awaited_once()
     saved_args = save_mock.await_args.args
     assert saved_args[0] == 1011
-    assert saved_args[1]["intent_mode"] == INTENT_MODE_PREFERENCE
+    assert saved_args[1]["intent_mode"] == INTENT_MODE_CONSTRAINT
     assert saved_args[1]["career_intents"] == {"negative": ["system_public_service"]}
 
 

@@ -418,6 +418,8 @@ PYTHONPATH=. ./.venv/bin/python examples/dialog_regression_runner.py \
 - `tests/unit/test_plan_execution_tool.py` 的历史 fixture 债务已完成首轮清理：旧用例从 patch `plan_execution_tool` 里的旧 workflow wrapper，迁移到当前实际消费方 handler 或 internal-client alias，避免本地单测误连真实 backend。
 - router/workflow 旧入口测试已按兼容定位收口，但仍不代表新增能力可以继续接入 router；新增能力仍必须走 `collect_plan_context_inputs -> plan_next_action -> execute_plan_action`。
 - 真实 websocket regression 已完成首轮 smoke：方案现状、审查、院校层次排序确认、专业组移动确认通过。后续仍需扩充删除专业组、专业模式移动/删除、补齐建议 apply 等用例。
+- Agent 默认全量 pytest 已收口为 `2121 passed / 7 skipped`。其中真实 internal client 和真实 LLM e2e 依赖外部服务与模型费用，默认 skip；需要验证时分别设置 `RUN_AGENT_INTERNAL_E2E=1` 和 `RUN_REAL_LLM_E2E=1`。
+- pydantic-ai 新版要求 `message_history` 使用 `ModelRequest/ModelResponse` 对象。`BaseAgent` 当前兼容旧 `{role, content}` 历史消息输入，并在进入 `agent.iter` 前转换，避免业务调用方和历史测试同时升级。
 
 ### 7.4 WebSocket Smoke 发现的问题
 

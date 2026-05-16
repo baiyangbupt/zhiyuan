@@ -5,7 +5,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from pydantic_ai import RunContext
+from pydantic_ai import RunContext, RunUsage
 from pydantic_graph import End
 
 from app.agent.base_agent import BaseAgent
@@ -65,6 +65,7 @@ def _make_agent_run_with_deps(nodes: list, final_output: str = "test output"):
     agent_run.next = _next
     agent_run.result = MagicMock()
     agent_run.result.output = final_output
+    agent_run.usage = MagicMock(return_value=RunUsage())
 
     ctx_mgr = AsyncMock()
     ctx_mgr.__aenter__ = AsyncMock(return_value=agent_run)
@@ -130,10 +131,12 @@ async def test_run_with_history_passes_deps(mock_client, request_context, mocker
 
     await agent.run_with_history("test prompt", message_history=history, deps=request_context)
 
-    # 验证 agent.iter 被调用时传入了 deps 和 message_history
-    agent.agent.iter.assert_called_once_with(
-        "test prompt", message_history=history, deps=request_context
-    )
+    # 验证 agent.iter 被调用时传入了 deps，并将旧 dict history 转成 pydantic-ai 消息对象
+    assert agent.agent.iter.call_args.args[0] == "test prompt"
+    assert agent.agent.iter.call_args.kwargs["deps"] is request_context
+    passed_history = agent.agent.iter.call_args.kwargs["message_history"]
+    assert len(passed_history) == 1
+    assert passed_history[0].parts[0].content == "previous message"
 
 
 async def test_tool_can_access_request_context(mock_client, request_context, mocker):

@@ -401,6 +401,10 @@ async def test_normalize_candidate_filters_async_uses_catalog_for_unknown_values
     from app.util import code_enrichment as module
 
     module._catalog_filter_tag_tree_cache = None
+    module._catalog_province_item_cache.clear()
+    module._catalog_city_item_cache.clear()
+    module._catalog_school_item_cache.clear()
+    module._catalog_major_item_cache.clear()
     filters = {
         "provinceNames": ["北京市"],
         "negativeProvinceNames": [],
