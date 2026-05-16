@@ -4,6 +4,9 @@
 
 ### Fixed
 
+- 高途渠道普通 `VIP` 用户默认建会话上限从 20 调整为 500；高途 `userType=1` 仍映射为 `VIP`，登录/权益同步/后台调整时会写入新的 `limitSettings.createSessionLimit`。
+- 后台管理接口新增按高途 `memberId` 查询和调整用户权限的能力，并补齐 `fix-gaotu-user-level` 找不到本地用户时的明确业务错误；同步新增高途用户权限管理文档，记录 `memberId -> credential.user_id -> assistant_user_base.id` 的定位方式。
+- 记录后续 TODO：高考出分后智能填报场景需进一步调整为每天最多创建 2 个会话，当前版本不改变现有总量限制模型。
 - `planning workspace` 候选筛选项不再把 rank 推荐解释标签 `意向专业/意向专业类/非意向专业/非意向专业类` 暴露为普通专业标签，并移除用户侧 `major.tag / 专业标签` 分组，避免用户误以为这是主动筛选条件或真实专业大类。
 - `planning workspace` 候选筛选项新增兼容字段 `regionTree`，后端基于当前候选池的 `provinceName/cityName` 聚合省市映射，避免前端只靠分页缓存推断城市归属。
 - `planning workspace` 新增当前方案排序接口 `ordered-plan/sort`，支持按录取率、院校层次、推荐系数一次性重排方案，固定项保留原位置并记录 `plan_sort_apply` 行为事件。

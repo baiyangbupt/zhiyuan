@@ -80,6 +80,77 @@ NEXT_PUBLIC_AGENT_WS_BASE=wss://www.gaotuzhiyuan.com
 
 ## 4. 构建和验证
 
+### 4.0 高途权限后端热发布准备
+
+如果本次只发布“高途渠道用户权限管理”能力，发布范围可以收敛为后端 `zhiyuan-server`：
+
+- 不升级 `zhiyuan-web`。
+- 不升级 `zhiyuan-agent`。
+- 不升级 `zhiyuan-rank`。
+- 不执行数据库 schema 变更。
+- 生产启动参数继续保留 `--spring.flyway.enabled=false`。
+
+当前后端热发布包：
+
+```text
+/tmp/zhiyuan-release-3.0.1-gaotu-permission-59a9fce.tar.gz
+```
+
+包内关键文件：
+
+```text
+MANIFEST.txt
+server/zhiyuan-server.jar
+docs/gaotu-user-permission-management.md
+docs/release-3.0.1-production-deployment-plan.md
+docs/release-3.0.1-implementation-design.md
+```
+
+构建来源：
+
+```text
+branch=develop
+commit=59a9fce
+jar_sha256=9a6f87ec2b12f560d55eaef7ddad998567815f8d44e2eacc3f8e4ef602d8d3bb
+```
+
+发布前本地验证：
+
+```bash
+cd zhiyuan-server
+mvn -Dtest=UserBizServiceTest,UserAdminControllerTest test
+mvn -DskipTests package
+```
+
+已覆盖：
+
+- 高途 `userType=1` 映射为 `VIP`。
+- `VIP` 默认 `createSessionLimit=500`。
+- `checkRights(CreateSession)` 在已建 499 次时允许、500 次时拒绝。
+- 后台按 `memberId` 查询、调整、同步高途权益。
+- 找不到本地高途用户时返回业务错误，不再空指针。
+
+生产上线后 smoke：
+
+```bash
+# 基础接口
+curl -I "http://127.0.0.1:8090/gaotu-assistant-bot/base-data/province-city"
+
+# 按高途 memberId 查询本系统用户
+curl -X GET \
+  "http://127.0.0.1:8090/gaotu-assistant-bot/admin/user/gaotu-user?memberId={memberId}&channel=gaotu"
+
+# 按高途权益同步用户等级和限制
+curl -X POST \
+  "http://127.0.0.1:8090/gaotu-assistant-bot/admin/user/fix-gaotu-user-level?memberId={memberId}&channel=gaotu"
+```
+
+生产注意事项：
+
+- `/admin/**` 当前不经过普通登录拦截器，必须确认只能从内网、Nginx allowlist 或运维入口访问。
+- 已有 VIP 用户需要重新 token 登录、调用 `fix-gaotu-user-level`，或调用 `update-gaotu-user-level` 后才会刷新到 500。
+- 本次仍是建会话总量限制，不是按天限制；智能填报每天 2 个会话的规则仅作为 TODO 记录。
+
 ### 4.1 后端验证
 
 在发布包构建前执行后端重点测试：

@@ -7,7 +7,7 @@ import lombok.Getter;
 @AllArgsConstructor
 public enum UserLevel {
     SUPER_VIP(365,500,200),
-    VIP(365,20,10),
+    VIP(365,500,10),
     ORIGIN(7,5,2);
 
     private final int expiredDays;

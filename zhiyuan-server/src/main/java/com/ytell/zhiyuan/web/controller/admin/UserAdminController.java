@@ -2,6 +2,7 @@ package com.ytell.zhiyuan.web.controller.admin;
 
 import cn.hutool.core.date.DateUtil;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.ytell.zhiyuan.common.exception.BusinessException;
 import com.ytell.zhiyuan.mapper.UserCredentialMapper;
 import com.ytell.zhiyuan.mapper.UserMapper;
 import com.ytell.zhiyuan.model.dto.gaotu.res.UserRightsByUserIdRes;
@@ -10,6 +11,7 @@ import com.ytell.zhiyuan.model.entity.biz.UserCredential;
 import com.ytell.zhiyuan.model.enums.LoginType;
 import com.ytell.zhiyuan.model.enums.UserLevel;
 import com.ytell.zhiyuan.model.req.AddUserRequest;
+import com.ytell.zhiyuan.model.vo.UserVO;
 import com.ytell.zhiyuan.service.GaotuService;
 import com.ytell.zhiyuan.service.biz.UserBizService;
 import io.swagger.annotations.Api;
@@ -69,21 +71,55 @@ public class UserAdminController {
         return Boolean.TRUE;
     }
 
+    @GetMapping("/gaotu-user")
+    public UserVO getGaotuUser(@RequestParam("memberId") String memberId,
+                               @RequestParam(value = "channel", defaultValue = "gaotu") String channel) {
+        UserCredential userCredential = getGaotuUserCredential(memberId, channel);
+        UserVO userVO = userBizService.getUserVoById(userCredential.getUserId());
+        if (userVO == null) {
+            throw new BusinessException(110, "未找到高途用户对应的本地用户，memberId=" + memberId + ", channel=" + channel);
+        }
+        return userVO;
+    }
+
+    @PostMapping("/update-gaotu-user-level")
+    public Boolean updateGaotuUserLevel(@RequestParam("memberId") String memberId,
+                                        @RequestParam(value = "channel", defaultValue = "gaotu") String channel,
+                                        @RequestParam("userLevel") UserLevel userLevel,
+                                        @RequestParam(value = "expiredDate", required = false) String expiredDate) {
+        UserCredential userCredential = getGaotuUserCredential(memberId, channel);
+        userBizService.updateUserLevel(
+                userCredential.getUserId(),
+                channel,
+                userLevel,
+                expiredDate != null ? DateUtil.parseDate(expiredDate) : null
+        );
+        return Boolean.TRUE;
+    }
+
     @PostMapping("/fix-gaotu-user-level")
-    public Boolean fixUserLevel(@RequestParam("memberId") String memberId) {
+    public Boolean fixUserLevel(@RequestParam("memberId") String memberId,
+                                @RequestParam(value = "channel", defaultValue = "gaotu") String channel) {
 
         UserRightsByUserIdRes userRightsByUserIdRes= gaotuService.getUserRights(memberId);
         Integer userType = userRightsByUserIdRes.getUserType();
         Date expiredDate = userRightsByUserIdRes.getExpirationTime();
         UserLevel userLevel = UserLevel.convertGaotuLevel(userType);
-        //判断用户情况
+        UserCredential userCredential = getGaotuUserCredential(memberId, channel);
+        userBizService.updateUserLevel(userCredential.getUserId(), channel, userLevel, expiredDate);
+        return Boolean.TRUE;
+    }
+
+    private UserCredential getGaotuUserCredential(String memberId, String channel) {
         QueryWrapper<UserCredential> queryWrapper = new QueryWrapper<>();
         queryWrapper.lambda().eq(UserCredential::getIdentifier, memberId);
         queryWrapper.lambda().eq(UserCredential::getLoginType, LoginType.TOKEN);
-        queryWrapper.lambda().eq(UserCredential::getChannel, "gaotu");
+        queryWrapper.lambda().eq(UserCredential::getChannel, channel);
         UserCredential userCredential = userCredentialMapper.selectOne(queryWrapper);
-        userBizService.updateUserLevel(userCredential.getUserId(),"gaotu",userLevel,expiredDate);
-        return Boolean.TRUE;
+        if (userCredential == null) {
+            throw new BusinessException(110, "未找到高途用户，memberId=" + memberId + ", channel=" + channel);
+        }
+        return userCredential;
     }
 
 }

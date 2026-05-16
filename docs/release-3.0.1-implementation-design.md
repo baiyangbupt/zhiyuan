@@ -10,6 +10,35 @@
 
 ## 1. 后端设计
 
+### 1.0 高途渠道用户权限管理
+
+目标：
+
+- 高途渠道进来的用户可按 `memberId` 定位本系统用户 ID。
+- 运营/运维可直接按 `memberId` 查询和调整用户等级，减少查库成本。
+- 普通 `VIP` 用户的建会话总量上限从 20 调整为 500。
+
+设计：
+
+- 高途 token 登录继续以高途 `memberId` 作为本地凭据标识，写入 `assistant_user_credential.identifier`。
+- 用户定位条件为 `identifier = memberId + loginType = TOKEN + channel = gaotu`，凭据表的 `user_id` 即本系统用户 ID。
+- 新增后台查询接口 `GET /gaotu-assistant-bot/admin/user/gaotu-user`，返回 `UserVO`，包含用户 ID、等级、过期时间和限制配置。
+- 新增后台调整接口 `POST /gaotu-assistant-bot/admin/user/update-gaotu-user-level`，支持按 `memberId + channel` 直接调整 `userLevel/expiredDate`。
+- 既有 `fix-gaotu-user-level` 补充 `channel` 参数和未找到用户时的业务错误，避免空指针。
+- `UserLevel.VIP.createSessionLimit` 调整为 500；高途 `userType=1` 仍映射为 `VIP`。
+
+边界：
+
+- 本次不调整 `SUPER_VIP`、`ORIGIN` 的默认配置。
+- 本次不改现有总量限制模型，也不新增按天、按 `prepareType` 的限制。
+- `/admin/**` 当前仍依赖外层网络/网关控制访问，生产必须限制来源。
+
+详细运维说明见 `docs/gaotu-user-permission-management.md`。
+
+TODO：
+
+- 高考出分后，智能填报场景需要进一步调整为每天最多创建 2 个会话；模拟填报普通用户每天 10 个会话。本版本只记录，不实现。
+
 ### 1.1 导出序号连续
 
 现状：
