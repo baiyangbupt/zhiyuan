@@ -14,6 +14,7 @@ from app.service import ChatService, ChatServiceResponseEnvelope
 
 MAINLINE_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_mainline_cases.json"
 SCIENCE_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_science_cases.json"
+FULL_JOURNEY_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_full_journey_cases.json"
 
 
 def _run(coro):
@@ -81,6 +82,10 @@ def _load_mainline_cases() -> list[dict]:
 
 def _load_science_cases() -> list[dict]:
     return json.loads(SCIENCE_CASES_PATH.read_text(encoding="utf-8"))
+
+
+def _load_full_journey_cases() -> list[dict]:
+    return json.loads(FULL_JOURNEY_CASES_PATH.read_text(encoding="utf-8"))
 
 
 def test_mainline_dialog_case_catalog_has_current_explore_intent_plan_scenarios():
@@ -198,6 +203,108 @@ def test_science_dialog_case_catalog_covers_main_engineering_branches_and_plan_b
     assert "电子信息" in all_prompts
     assert "不想学土木" in all_prompts
     assert "确认" in all_prompts
+
+
+def test_full_journey_dialog_case_catalog_covers_start_explore_intent_plan_adjustment():
+    cases = _load_full_journey_cases()
+
+    assert len(cases) >= 9
+    assert len({case["name"] for case in cases}) == len(cases)
+
+    allowed_flow = {"start", "explore", "intent", "plan", "review"}
+    coverage = {tag for case in cases for tag in case["coverage"]}
+    all_prompts = "\n".join(
+        step["prompt"] if isinstance(step, dict) else str(step)
+        for case in cases
+        for step in case["prompts"]
+    )
+
+    for case in cases:
+        assert case["assertPlanStyle"] is True
+        assert set(case["flow"]).issubset(allowed_flow)
+        assert {"start", "explore", "intent", "plan"}.issubset(set(case["flow"]))
+        assert case["coverage"]
+        assert case["prompts"]
+
+    required_tags = {
+        "full_journey",
+        "opening_context",
+        "major_explore",
+        "career_explore",
+        "school_explore",
+        "soft_major_intent",
+        "soft_career_intent",
+        "soft_region_intent",
+        "soft_school_intent",
+        "hard_major_constraint",
+        "hard_region_constraint",
+        "plan_query",
+        "candidate_explore",
+        "candidate_refresh",
+        "candidate_results",
+        "candidate_view_state",
+        "candidate_school_major_ref",
+        "candidate_search_add",
+        "compensation_apply",
+        "replace_units",
+        "compensation_preview",
+        "move_ordered_unit",
+        "remove_ordered_unit",
+        "remove_then_add",
+        "majorGroup_mutation",
+        "majorGroup_operations",
+        "soft_hard_intent_mix",
+        "soft_intent_stability",
+        "review_accuracy",
+        "review_then_adjust",
+        "review_then_fix",
+        "move_operation",
+        "preview_confirm_apply",
+        "confirmation_boundary",
+        "no_premature_plan_apply",
+        "review_workspace",
+    }
+    assert required_tags.issubset(coverage)
+
+    assert "网络与新媒体" in all_prompts
+    assert "跨境电商" in all_prompts
+    assert "会计审计不要" in all_prompts
+    assert "体制内" in all_prompts
+    assert "江苏浙江上海" in all_prompts
+    assert "东北西北不要" in all_prompts
+    assert "第3个专业组移到第5位" in all_prompts
+    assert "删除第5个专业组" in all_prompts
+    assert "先不确认" in all_prompts
+    assert "确认刚才" in all_prompts
+    assert "候选列表按计算机方向刷新一下" in all_prompts
+    assert "湖北工程学院的计算机科学与技术" in all_prompts
+    assert "概率倒挂和高收费风险" in all_prompts
+    assert "风险最大的两个" in all_prompts
+    assert "电气自动化" in all_prompts
+    assert "第4个专业组" in all_prompts
+
+
+def test_full_journey_dialog_case_catalog_has_content_assertions_and_no_internal_terms():
+    cases = _load_full_journey_cases()
+    banned_terms = {"payload", "stage", "action_family", "volunteerId", "草稿"}
+    mutation_prompts = []
+
+    for case in cases:
+        for step in case["prompts"]:
+            assert isinstance(step, dict)
+            assert step.get("prompt")
+            assert step.get("assertContainsAny") or step.get("assertContains")
+            assert banned_terms.intersection(set(step.get("assertNotContains") or [])) == banned_terms
+            prompt = step["prompt"]
+            if any(token in prompt for token in ("替换", "补", "移到", "删除")):
+                mutation_prompts.append(step)
+
+    assert mutation_prompts
+    preview_steps = [step for step in mutation_prompts if "确认" not in step["prompt"]]
+    direct_mutation_phrases = {"已直接调整", "已直接替换", "已直接加入", "已直接移动", "已直接删除"}
+    assert any(direct_mutation_phrases.intersection(set(step.get("assertNotContains") or [])) for step in preview_steps)
+    all_steps = [step for case in cases for step in case["prompts"]]
+    assert any(step.get("assertFollowupTarget") == "ordered" for step in all_steps)
 
 
 def test_mainline_dialog_intent_preview_then_plan_status_does_not_reopen_candidate_workspace(tmp_path):

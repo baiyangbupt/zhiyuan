@@ -408,6 +408,9 @@ PYTHONPATH=. ./.venv/bin/python examples/dialog_regression_runner.py \
   - `session=17 / 帮我审查一下`：约 `8.9s`，无 follow-up。
   - `session=16 / 按院校层次排序 -> 确认`：预览约 `19.4s`，确认约 `5.6s`，返回 `ordered` 刷新卡片。
   - `session=16 / 把第3个专业组移到第5位 -> 确认`：预览约 `22.1s`，确认约 `4.9s`，返回 `ordered` 刷新卡片。
+- 新增 `examples/dialog_regression_full_journey_cases.json`，作为 3.0.1 后续效果验证的全流程回归资产，集中覆盖开场上下文、Explore、软意向、硬约束、方案查询、方案调整确认和审查闭环；区别于 `mainline_cases` 的单点链路和 `lifecycle_cases` 的宽泛生命周期。
+- 该全流程资产已扩到 9 个 case，覆盖职业、地域、学校、专业组、候选查看/刷新、候选别名加入、审查后修复、软硬意向混合和确认边界；配套目录级单测会统计 coverage 标签，持续补齐低频薄弱路径。
+- 新增 full journey 场景补齐以下低频链路：候选视图刷新和结果查看、学校+专业候选加入、补齐建议确认执行、审查发现风险后的删除/补齐/移动、专业组删除后从候选补入，以及“软专业偏好 + 硬地域排除”混合意向稳定性。
 - 专业组位置文案修正后复测：
   - `session=16 / 把第3个专业组移到第5位 -> 确认`：预览约 `36.4s`，确认约 `4.9s`。
   - 预览明确展示“当前第3个专业组”“组内共 2 个专业”“移动到第5个专业组的位置”，不再使用“前5位志愿概况”解释专业组位置。
@@ -534,6 +537,50 @@ PYTHONPATH=. ./.venv/bin/python examples/dialog_regression_runner.py \
 - 当前优化：补充 `query_volunteer_plan` 与 `plan_next_action` 工具说明，明确 `query_volunteer_plan` 不应用作移动/删除前的“定位 ID”步骤；`move_unit/remove_units/add_units` 的 `volunteer_ids` 可以直接携带用户原始学校+专业引用，由执行层解析真实 ID 和处理歧义。该调整属于工具 schema/说明约束，不新增 service 层关键词短路。
 - 优化后复测：`session=17 / 把哈尔滨理工大学的人力资源管理改到第4位 -> 确认` 已通过，预览链路收敛为 `plan_next_action -> execute_plan_action(move_unit preview)`，不再调用 `query_volunteer_plan`；预览端 LLM 请求从前一轮约 4 次降为 2 次，input tokens 从约 119k 降为约 64k，runner 端预览耗时约 16.9s，确认 apply 约 3.5s 并返回 `ordered` 工作台刷新。
 - 专业模式删除复测：`session=17 / 去掉山东英才学院的国际商务 -> 确认` 已通过，预览链路收敛为 `plan_next_action -> execute_plan_action(remove_units preview)`，不再调用 `query_volunteer_plan`；预览端 LLM 请求 3 次，input tokens 约 103k，runner 端预览耗时约 13.4s，确认 apply 约 4.0s 并返回 `ordered` 工作台刷新。
+
+### 7.8 2026-05-17 本地真实 Smoke 记录
+
+本轮在本地前台启动三端服务完成真实 websocket smoke：
+
+- rank：使用 `zhiyuan-rank/start.sh` 的 gunicorn 方式启动，监听 `5001`。
+- backend：`mvn spring-boot:run -Dspring-boot.run.profiles=local -q`，监听 `8080`。
+- agent：`uvicorn app.server:app --host 0.0.0.0 --port 8000`，监听 `8000`。
+
+注意：
+
+- `zhiyuan-rank/app.py` 里的 Flask development server 在当前 Mac/Codex 执行环境会报 `Operation not permitted`，真实 smoke 应使用 gunicorn 启动方式。
+- 普通沙箱下 `curl/lsof` 可能看不到本机监听，需要用提权检查本地健康接口。
+
+执行命令：
+
+```bash
+cd zhiyuan-agent
+PYTHONPATH=. .venv/bin/python examples/dialog_regression_runner.py \
+  --cases examples/dialog_regression_301_agent_smoke_cases.json \
+  --response-timeout 180
+```
+
+结果：4 个 case 全部通过。
+
+| 场景 | 输入 | 结果 | 耗时 |
+| --- | --- | --- | --- |
+| 方案现状 | `session=17 / 看看现在的方案` | 返回 `94/96`、冲稳保、风险摘要，无 follow-up | `12.3s` |
+| 方案审查 | `session=17 / 帮我审查一下` | 返回审查风险和提醒，无 follow-up | `12.3s` |
+| 院校层次排序 | `session=16 / 按院校层次排序 -> 确认` | 预览后确认成功，返回 `ordered` 刷新卡片 | 预览 `21.0s`，确认 `5.8s` |
+| 专业组移动 | `session=16 / 把第3个专业组移到第5位 -> 确认` | 预览后确认成功，返回 `ordered` 刷新卡片 | 预览 `35.5s`，确认 `5.8s` |
+
+本轮观察：
+
+- 现状查询和审查链路已稳定为 `plan_next_action -> execute_plan_action`，无额外 follow-up，用户侧未出现内部字段。
+- 确认态走 `direct_pending_plan_confirm`，确认 apply 明显快于预览阶段。
+- 排序和移动确认后均返回 `planningWorkspaceAction targetView=ordered refresh=true`。
+- 专业组移动预览仍存在一次多余状态查询：日志显示先执行 `query_state`，随后才执行 `move_ordered_unit preview`，导致 5 次 LLM 请求、4 次 tool call、input tokens 约 `388k`，预览耗时达到 `35.5s`。
+
+后续优化项：
+
+- 对“把第 N 个专业组移到第 M 位”这类显式变更请求，继续收敛 prompt/schema，避免先走 `query_state`。
+- 将专业组移动预览目标控制在 `plan_next_action -> execute_plan_action(move_ordered_unit preview) -> final`，预期可减少一次工具往返和 2 次 LLM 请求。
+- 当前不新增 service 层字符串短路；优先通过工具说明、examples 和结构化 action 约束解决。
 
 后续待补：
 

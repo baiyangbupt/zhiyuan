@@ -4,6 +4,7 @@
 
 ### Added
 
+- 新增 `examples/dialog_regression_full_journey_cases.json` 并扩展到 9 个 case，专门覆盖“开场上下文 -> Explore -> 软意向 -> 硬约束 -> 候选查看/刷新 -> 方案查询/调整/确认/审查”的完整链路；包含专业、职业、地域、学校、专业组操作、候选别名加入、审查后修复、软硬意向混合和确认边界，并补充目录级单测按 coverage 标签校验薄弱场景。
 - 新增 Agent HTTP 健康检查接口 `/health` 和 `/gaotu-assistant-agent/health`，用于 Docker Compose healthcheck 和发布后远端探活，不影响现有 WebSocket 对话链路。
 - 3.0.1 对话规划链路新增 `sort_ordered_plan` 动作，支持用户通过对话按录取率、院校层次或推荐系数排序当前方案；排序作为高副作用动作进入 preview -> 确认 -> apply 流程，并刷新方案与审查状态。
 - 补充 3.0.1 对话回归和模型 benchmark 场景，覆盖方案排序、禁用旧锁定入口、候选筛选可见联动等端到端行为。

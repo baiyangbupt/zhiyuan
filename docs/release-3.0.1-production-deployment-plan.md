@@ -221,6 +221,23 @@ python examples/dialog_regression_runner.py examples/dialog_regression_301_agent
 
 建议不要覆盖 `3.0.0` 产物，保留明确回滚点。
 
+### 5.0 发布资产清单
+
+本节用于记录当前 `3.0.1` 发布资产的来源和 hash。后续如果重新打包或重新构建镜像，只需要更新这一节，避免部署时混淆版本。
+
+| 资产 | 标签/路径 | 架构 | Hash |
+| --- | --- | --- | --- |
+| 后端热发布包 | `/tmp/zhiyuan-release-3.0.1-gaotu-permission-7a3528f.tar.gz` | - | `sha256:c87e62e1a039d1f94511f1effc91abf45f9d98df54f0aae9a163eba9ca96a49b` |
+| 后端 JAR | `server/zhiyuan-server.jar` | `linux/amd64` | `sha256:9a6f87ec2b12f560d55eaef7ddad998567815f8d44e2eacc3f8e4ef602d8d3bb` |
+| 前端镜像 | `zhiyuan-web:prod-3.0.1` / `zhiyuan-web:3.0.1-amd64` | `linux/amd64` | `sha256:ec98a96a97c2466a2dc3c3fb11d8776b2d21439f2d30f9564b9dc965dd78ccb3` |
+| Agent 镜像 | `zhiyuan-agent:prod-3.0.1` / `zhiyuan-agent:3.0.1-amd64` | `linux/amd64` | `sha256:70c27437ab71b2fb0e06115c84e9a116f6cb6780ed8d37c8b5ebc7f47e8ea9df` |
+
+更新规则：
+
+- 只要重新打包 JAR、重新构建镜像或重新导出 release 包，就必须同步更新本表。
+- 生产切换前先核对 `tag -> hash -> 架构`，再复制到远端服务器。
+- 若 hash 和标签不一致，以 hash 为准，不以文件名或 tag 名称为准。
+
 ### 5.1 后端
 
 建议目录：
