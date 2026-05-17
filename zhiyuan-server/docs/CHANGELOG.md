@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- `planning workspace` 统一专业+院校模式候选身份口径：候选池查询、新建候选池、推荐覆盖层和旧会话读取均按 `planSchoolDataId + majorId` 生成/解析 `volunteerId`，并在加入方案、禁用、补偿等链路按旧 ID 前缀兼容判断同一志愿，避免历史/迁移会话中“已在方案里的志愿还能再次加入”。
 - 高途渠道普通 `VIP` 用户默认建会话上限从 20 调整为 500；高途 `userType=1` 仍映射为 `VIP`，登录/权益同步/后台调整时会写入新的 `limitSettings.createSessionLimit`。
 - 后台管理接口新增按高途 `memberId` 查询和调整用户权限的能力，并补齐 `fix-gaotu-user-level` 找不到本地用户时的明确业务错误；同步新增高途用户权限管理文档，记录 `memberId -> credential.user_id -> assistant_user_base.id` 的定位方式。
 - 记录后续 TODO：高考出分后智能填报场景需进一步调整为每天最多创建 2 个会话，当前版本不改变现有总量限制模型。

@@ -2686,6 +2686,54 @@ public class PlanningStateServiceTest {
     }
 
     @Test
+    void shouldNormalizeMajorCandidateIdentityAndPreventDuplicateSelection() {
+        bindPlanningStateStore();
+
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+        state.getCandidatePoolState().setVolunteerModel(VolunteerModel.major.getCode());
+        CandidateItemDTO candidate = buildCandidateItem(
+                "ps1_pm1_pm1", "ps1_pm1", "s1", "学校A", "稳", "专业A", 45D, 80D, 45D, false);
+        candidate.setMajorId("m1");
+        state.getCandidatePoolState().setItems(java.util.Arrays.asList(candidate));
+        state.getDraftPlanState().getItems().add(buildDraftItem("ps1_pm1_m1", "学校A", "专业A", "稳"));
+        saveStateToStore(1L, state);
+
+        CandidatePoolQueryReq queryReq = new CandidatePoolQueryReq();
+        CandidatePoolQueryRes queryRes = planningStateService.queryCandidatePool(1L, 1L, queryReq);
+
+        assertEquals(Integer.valueOf(1), queryRes.getTotal());
+        assertEquals("ps1_pm1_m1", queryRes.getItems().get(0).getVolunteerId());
+
+        DraftSelectReq selectReq = new DraftSelectReq();
+        selectReq.setVolunteerIds(java.util.Arrays.asList("ps1_pm1_pm1"));
+        PlanningStateDTO selected = planningStateService.selectDraftItems(1L, selectReq);
+
+        assertEquals(Integer.valueOf(1), selected.getDraftPlanState().getSummary().getTotal());
+        assertEquals("ps1_pm1_m1", selected.getDraftPlanState().getItems().get(0).getVolunteerId());
+    }
+
+    @Test
+    void shouldKeepMajorGroupCandidateIdentityWhenQueryCandidatePool() {
+        bindPlanningStateStore();
+
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+        state.getCandidatePoolState().setVolunteerModel(VolunteerModel.majorGroup.getCode());
+        CandidateItemDTO candidate = buildCandidateItem(
+                "group1_pm1", "group1", "s1", "学校A第101组", "稳", "专业A", 45D, 80D, 45D, false);
+        candidate.setMajorId("m1");
+        state.getCandidatePoolState().setItems(java.util.Arrays.asList(candidate));
+        saveStateToStore(1L, state);
+
+        CandidatePoolQueryReq queryReq = new CandidatePoolQueryReq();
+        CandidatePoolQueryRes queryRes = planningStateService.queryCandidatePool(1L, 1L, queryReq);
+
+        assertEquals(Integer.valueOf(1), queryRes.getTotal());
+        assertEquals("group1_pm1", queryRes.getItems().get(0).getVolunteerId());
+    }
+
+    @Test
     void shouldGenerateMoveAndPinOrderedPlan() {
         when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
                 .thenReturn(null);

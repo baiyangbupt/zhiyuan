@@ -709,13 +709,13 @@ public class PlanningStateService {
         items.addAll(flattenCandidates(response.getSprints(), "冲"));
         items.addAll(flattenCandidates(response.getSafes(), "稳"));
         items.addAll(flattenCandidates(response.getProtects(), "保"));
-        candidatePoolState.setItems(items);
+        candidatePoolState.setItems(normalizeCandidateIdentities(candidatePoolState, items));
         recalculateCandidatePoolSummary(candidatePoolState);
         normalizeRequiredTierCountsByAvailableCapacity(candidatePoolState);
         applyCandidatePoolQualityStatus(state, candidatePoolState);
 
         state.setCandidatePoolState(candidatePoolState);
-        state.setRecommendationOverlayState(buildRecommendationOverlayState(response, state.getVersion()));
+        state.setRecommendationOverlayState(buildRecommendationOverlayState(candidatePoolState, state.getVersion()));
         state.setPhase("candidate_generated");
         state.setVersion((state.getVersion() == null ? 0 : state.getVersion()) + 1);
         state.getStaleFlags().setCandidatePool(false);
@@ -994,9 +994,11 @@ public class PlanningStateService {
         if (shouldRefreshRecommendationOverlay(state)) {
             refreshRecommendationOverlay(tenantId, chatSessionId, state);
         }
-        List<CandidateItemDTO> items = mergeOverlayIntoCandidates(
-                state.getCandidatePoolState().getItems(),
-                state.getRecommendationOverlayState());
+        List<CandidateItemDTO> items = normalizeCandidateIdentities(
+                state.getCandidatePoolState(),
+                mergeOverlayIntoCandidates(
+                        state.getCandidatePoolState().getItems(),
+                        state.getRecommendationOverlayState()));
         List<CandidateItemDTO> filtered = items.stream()
                 .filter(item -> matchesTier(item, req))
                 .filter(item -> matchesProvince(item, req))
@@ -1092,7 +1094,7 @@ public class PlanningStateService {
         DraftPlanStateDTO draft = state.getDraftPlanState();
         List<CandidateItemDTO> candidates = resolveEffectiveCandidates(null, chatSessionId, state, false);
         for (String volunteerId : defaultList(req.getVolunteerIds())) {
-            if (containsDraftItem(draft, volunteerId) || draft.getBannedVolunteerIds().contains(volunteerId)) {
+            if (containsDraftItem(draft, volunteerId) || containsVolunteerId(draft.getBannedVolunteerIds(), volunteerId)) {
                 continue;
             }
             CandidateItemDTO candidate = findCandidate(candidates, volunteerId);
@@ -1142,12 +1144,12 @@ public class PlanningStateService {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
         DraftPlanStateDTO draft = state.getDraftPlanState();
         for (String volunteerId : defaultList(req.getVolunteerIds())) {
-            if (!draft.getBannedVolunteerIds().contains(volunteerId)) {
+            if (!containsVolunteerId(draft.getBannedVolunteerIds(), volunteerId)) {
                 draft.getBannedVolunteerIds().add(volunteerId);
             }
         }
         draft.setItems(draft.getItems().stream()
-                .filter(item -> !draft.getBannedVolunteerIds().contains(item.getVolunteerId()))
+                .filter(item -> !containsVolunteerId(draft.getBannedVolunteerIds(), item.getVolunteerId()))
                 .collect(Collectors.toList()));
         syncDraftUnitsWithItems(draft, resolveEffectiveCandidates(null, chatSessionId, state, false), state.getCandidatePoolState());
         recalculateDraftSummary(draft, state.getCandidatePoolState());
@@ -1519,7 +1521,7 @@ public class PlanningStateService {
         for (CompensationActionDTO action : preview.getActions()) {
             boolean applied = false;
             for (String volunteerId : defaultList(action.getVolunteerIds())) {
-                if (containsDraftItem(draft, volunteerId) || draft.getBannedVolunteerIds().contains(volunteerId)) {
+                if (containsDraftItem(draft, volunteerId) || containsVolunteerId(draft.getBannedVolunteerIds(), volunteerId)) {
                     continue;
                 }
                 CandidateItemDTO candidate = findCandidate(candidates, volunteerId);
@@ -1629,13 +1631,16 @@ public class PlanningStateService {
     private RecommendationOverlayStateDTO buildRecommendationOverlayState(VolunteerRecommendListResponse response,
                                                                           Integer currentVersion) {
         CandidatePoolStateDTO candidatePoolState = new CandidatePoolStateDTO();
+        candidatePoolState.setVolunteerModel(response != null && response.getBaseData() != null
+                && response.getBaseData().getVolunteerModel() != null
+                ? response.getBaseData().getVolunteerModel().getCode() : null);
         List<CandidateItemDTO> items = Lists.newArrayList();
         if (response != null) {
             items.addAll(flattenCandidates(response.getSprints(), "冲"));
             items.addAll(flattenCandidates(response.getSafes(), "稳"));
             items.addAll(flattenCandidates(response.getProtects(), "保"));
         }
-        candidatePoolState.setItems(items);
+        candidatePoolState.setItems(normalizeCandidateIdentities(candidatePoolState, items));
         return buildRecommendationOverlayState(candidatePoolState, currentVersion);
     }
 
@@ -2781,6 +2786,11 @@ public class PlanningStateService {
     private boolean isMajorGroupMode(CandidatePoolStateDTO candidatePoolState) {
         return candidatePoolState != null
                 && "majorGroup".equalsIgnoreCase(candidatePoolState.getVolunteerModel());
+    }
+
+    private boolean isMajorMode(CandidatePoolStateDTO candidatePoolState) {
+        return candidatePoolState != null
+                && "major".equalsIgnoreCase(candidatePoolState.getVolunteerModel());
     }
 
     private Map<String, List<CandidateItemDTO>> groupCandidatesByUnit(List<CandidateItemDTO> candidates) {
@@ -4008,7 +4018,7 @@ public class PlanningStateService {
         items.addAll(flattenCandidates(response.getSprints(), "冲"));
         items.addAll(flattenCandidates(response.getSafes(), "稳"));
         items.addAll(flattenCandidates(response.getProtects(), "保"));
-        candidatePoolState.setItems(items);
+        candidatePoolState.setItems(normalizeCandidateIdentities(candidatePoolState, items));
         recalculateCandidatePoolSummary(candidatePoolState);
         normalizeRequiredTierCountsByAvailableCapacity(candidatePoolState);
         return candidatePoolState;
@@ -4726,7 +4736,19 @@ public class PlanningStateService {
 
     private void refreshRecommendationOverlay(Long tenantId, Long chatSessionId, PlanningStateDTO state) {
         VolunteerRecommendListResponse response = volunteerBizService.recommendVolunteerList(tenantId, chatSessionId, false, false);
-        state.setRecommendationOverlayState(buildRecommendationOverlayState(response, state.getVersion()));
+        CandidatePoolStateDTO overlayCandidatePoolState = new CandidatePoolStateDTO();
+        overlayCandidatePoolState.setVolunteerModel(response != null && response.getBaseData() != null
+                && response.getBaseData().getVolunteerModel() != null
+                ? response.getBaseData().getVolunteerModel().getCode()
+                : state.getCandidatePoolState().getVolunteerModel());
+        List<CandidateItemDTO> items = Lists.newArrayList();
+        if (response != null) {
+            items.addAll(flattenCandidates(response.getSprints(), "冲"));
+            items.addAll(flattenCandidates(response.getSafes(), "稳"));
+            items.addAll(flattenCandidates(response.getProtects(), "保"));
+        }
+        overlayCandidatePoolState.setItems(normalizeCandidateIdentities(overlayCandidatePoolState, items));
+        state.setRecommendationOverlayState(buildRecommendationOverlayState(overlayCandidatePoolState, state.getVersion()));
         state.getStaleFlags().setRecommendationOverlay(false);
         savePlanningState(chatSessionId, state);
     }
@@ -4738,10 +4760,12 @@ public class PlanningStateService {
         if (refreshOverlayIfNeeded && tenantId != null && shouldRefreshRecommendationOverlay(state)) {
             refreshRecommendationOverlay(tenantId, chatSessionId, state);
         }
-        return mergeOverlayIntoCandidates(
-                state.getCandidatePoolState().getItems(),
-                state.getRecommendationOverlayState(),
-                state);
+        return normalizeCandidateIdentities(
+                state.getCandidatePoolState(),
+                mergeOverlayIntoCandidates(
+                        state.getCandidatePoolState().getItems(),
+                        state.getRecommendationOverlayState(),
+                        state));
     }
 
     private List<CandidateItemDTO> mergeOverlayIntoCandidates(List<CandidateItemDTO> candidates,
@@ -4970,6 +4994,35 @@ public class PlanningStateService {
         target.setSchoolHistoryScores(source.getSchoolHistoryScores() == null ? Lists.newArrayList() : Lists.newArrayList(source.getSchoolHistoryScores()));
         target.setMajorHistoryScores(source.getMajorHistoryScores() == null ? Lists.newArrayList() : Lists.newArrayList(source.getMajorHistoryScores()));
         return target;
+    }
+
+    private List<CandidateItemDTO> normalizeCandidateIdentities(CandidatePoolStateDTO candidatePoolState,
+                                                                List<CandidateItemDTO> candidates) {
+        if (!isMajorMode(candidatePoolState)) {
+            return candidates;
+        }
+        List<CandidateItemDTO> normalized = Lists.newArrayListWithCapacity(candidates == null ? 0 : candidates.size());
+        for (CandidateItemDTO candidate : defaultCandidates(candidates)) {
+            String canonicalVolunteerId = canonicalMajorVolunteerId(candidate);
+            if (Strings.isNullOrEmpty(canonicalVolunteerId)
+                    || canonicalVolunteerId.equals(candidate.getVolunteerId())) {
+                normalized.add(candidate);
+                continue;
+            }
+            CandidateItemDTO copy = cloneCandidateItem(candidate);
+            copy.setVolunteerId(canonicalVolunteerId);
+            normalized.add(copy);
+        }
+        return normalized;
+    }
+
+    private String canonicalMajorVolunteerId(CandidateItemDTO candidate) {
+        if (candidate == null
+                || Strings.isNullOrEmpty(candidate.getPlanSchoolDataId())
+                || Strings.isNullOrEmpty(candidate.getMajorId())) {
+            return candidate == null ? null : candidate.getVolunteerId();
+        }
+        return candidate.getPlanSchoolDataId() + "_" + candidate.getMajorId();
     }
 
     private void fillSchoolFields(CandidateItemDTO item, VolunteerRecommendListResponse.VolunteerSchool school) {
@@ -5521,7 +5574,26 @@ public class PlanningStateService {
     }
 
     private boolean containsDraftItem(DraftPlanStateDTO draft, String volunteerId) {
-        return draft.getItems().stream().anyMatch(item -> volunteerId.equals(item.getVolunteerId()));
+        return defaultDraftItems(draft == null ? null : draft.getItems()).stream()
+                .anyMatch(item -> sameVolunteerIdentity(volunteerId, item.getVolunteerId()));
+    }
+
+    private boolean containsVolunteerId(List<String> volunteerIds, String volunteerId) {
+        return defaultList(volunteerIds).stream()
+                .anyMatch(item -> sameVolunteerIdentity(volunteerId, item));
+    }
+
+    private boolean sameVolunteerIdentity(String left, String right) {
+        if (Strings.isNullOrEmpty(left) || Strings.isNullOrEmpty(right)) {
+            return false;
+        }
+        if (left.equals(right)) {
+            return true;
+        }
+        String leftLegacyPrefix = CandidateResolver.legacyVolunteerPrefix(left);
+        String rightLegacyPrefix = CandidateResolver.legacyVolunteerPrefix(right);
+        return !Strings.isNullOrEmpty(leftLegacyPrefix)
+                && leftLegacyPrefix.equals(rightLegacyPrefix);
     }
 
     private OrderedPlanStateDTO ensureOrderedPlanState(PlanningStateDTO state) {
@@ -6356,7 +6428,7 @@ public class PlanningStateService {
         if (!isMajorGroupMode(state.getCandidatePoolState())) {
             return candidates.stream()
                     .filter(item -> !containsDraftItem(state.getDraftPlanState(), item.getVolunteerId()))
-                    .filter(item -> !state.getDraftPlanState().getBannedVolunteerIds().contains(item.getVolunteerId()))
+                    .filter(item -> !containsVolunteerId(state.getDraftPlanState().getBannedVolunteerIds(), item.getVolunteerId()))
                     .filter(this::isCompensationSafeCandidate)
                     .collect(Collectors.toList());
         }
@@ -7682,7 +7754,7 @@ public class PlanningStateService {
     }
 
     private CandidateItemDTO findCandidate(List<CandidateItemDTO> items, String volunteerId) {
-        return items.stream().filter(item -> volunteerId.equals(item.getVolunteerId())).findFirst().orElse(null);
+        return new CandidateResolver(items).resolve(volunteerId);
     }
 
     private void recalculateDraftSummary(DraftPlanStateDTO draft, CandidatePoolStateDTO candidatePoolState) {

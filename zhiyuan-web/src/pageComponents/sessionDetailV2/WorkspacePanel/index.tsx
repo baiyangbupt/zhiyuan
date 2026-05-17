@@ -320,6 +320,26 @@ const parseFilterTokenValue = (
 const uniqueStrings = (values: Array<string | null | undefined>) =>
   Array.from(new Set(values.map(item => (item || '').trim()).filter(Boolean)));
 
+const getVolunteerLegacyPrefix = (volunteerId?: string) => {
+  const parts = (volunteerId || '').trim().split('_').filter(Boolean);
+  return parts.length >= 3 ? `${parts[0]}_${parts[1]}` : '';
+};
+
+const buildCandidateIdentityKeys = (
+  item?: Pick<PlanningCandidateItem, 'volunteerId' | 'schoolName' | 'majorName'>
+    | Pick<PlanningDraftItem, 'volunteerId' | 'schoolName' | 'majorName'>
+    | Pick<PlanningOrderedItem, 'volunteerId' | 'schoolName' | 'majorName'>
+) => {
+  if (!item) {
+    return [];
+  }
+  return uniqueStrings([
+    item.volunteerId,
+    getVolunteerLegacyPrefix(item.volunteerId),
+    item.schoolName && item.majorName ? `${item.schoolName.trim()}\n${item.majorName.trim()}` : '',
+  ]);
+};
+
 const hasFilterPanelOptions = (group: FilterPanelGroup): boolean =>
   Boolean(group.option || group.options?.length || group.children?.some(hasFilterPanelOptions));
 
@@ -526,10 +546,15 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const workflowStatus = planningState?.workflowStatus;
   const candidateRiskHints = planningState?.candidatePoolState?.riskHints || [];
   const isLegacySubmittedPlan = planningState?.orderedPlanState?.generationMode === 'legacy_submitted';
-  const draftIdSet = useMemo(
-    () => new Set(draftItems.map(item => item.volunteerId).filter(Boolean)),
-    [draftItems]
+  const selectedCandidateIdentitySet = useMemo(
+    () =>
+      new Set(
+        [...draftItems, ...orderedItems].flatMap(item => buildCandidateIdentityKeys(item))
+      ),
+    [draftItems, orderedItems]
   );
+  const isCandidateSelected = (candidate?: PlanningCandidateItem) =>
+    buildCandidateIdentityKeys(candidate).some(key => selectedCandidateIdentitySet.has(key));
   const volunteerModel = planningState?.candidatePoolState?.volunteerModel || '';
   const candidateTotalPages = Math.max(
     1,
@@ -3337,7 +3362,9 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                     ) : null}
                   </div>
                   {groupedCandidateList.length > 0 ? (
-                    groupedCandidateList.map((group, groupIndex) => (
+                    groupedCandidateList.map((group, groupIndex) => {
+                      const groupSelected = group.items.some(item => isCandidateSelected(item));
+                      return (
                       <div key={group.key} className={style.candidateTierSection}>
                         <Collapse
                           ghost
@@ -3380,6 +3407,11 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                     <div className={style.cardTitle}>
                                       {groupIndex + 1}、{group.schoolName}
                                     </div>
+                                    {groupSelected ? (
+                                      <Tag bordered={false} color="processing">
+                                        已选择
+                                      </Tag>
+                                    ) : null}
                                     {(group.topItem.schoolRankTags || []).map(tag => (
                                       <Tag bordered={false} color="volcano" key={`${group.key}-${tag}`}>
                                         {tag}
@@ -3458,7 +3490,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                           >
                             <div className={style.groupMajorList}>
                               {group.items.map(item => {
-                                const inDraft = item.volunteerId ? draftIdSet.has(item.volunteerId) : false;
+                                const isSelected = isCandidateSelected(item);
                                 const isFocused = item.volunteerId
                                   ? focusVolunteerIds.includes(item.volunteerId)
                                   : false;
@@ -3497,6 +3529,11 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                             {renderMajorName(item.majorName)}
                                           </div>
                                           <div className={style.reasonTags}>
+                                            {isSelected ? (
+                                              <Tag bordered={false} color="processing">
+                                                已选择
+                                              </Tag>
+                                            ) : null}
                                             {buildMajorTags(item)
                                               .filter(Boolean)
                                               .map(reason => (
@@ -3562,6 +3599,11 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                         </div>
                                       </div>
                                       <div className={style.reasonTags}>
+                                        {isSelected ? (
+                                          <Tag bordered={false} color="processing">
+                                            已选择
+                                          </Tag>
+                                        ) : null}
                                         {buildMajorTags(item)
                                           .filter(Boolean)
                                           .map(reason => (
@@ -3618,13 +3660,13 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                         <span>专业代码 {item.majorCode || '-'}</span>
                                       </div>
                                       <Button
-                                        type={inDraft ? 'default' : 'primary'}
+                                        type={isSelected ? 'default' : 'primary'}
                                         icon={<PlusOutlined />}
-                                        disabled={inDraft || !item.volunteerId}
-                                        loading={actionLoading === 'draft' && !inDraft}
+                                        disabled={isSelected || !item.volunteerId}
+                                        loading={actionLoading === 'draft' && !isSelected}
                                         onClick={() => handleAddCandidateToDraft(item.volunteerId)}
                                       >
-                                        {inDraft ? '已加入方案' : '加入方案'}
+                                        {isSelected ? '已加入方案' : '加入方案'}
                                       </Button>
                                     </div>
                                   </div>
@@ -3634,7 +3676,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                           </Panel>
                         </Collapse>
                       </div>
-                    ))
+                      );
+                    })
                   ) : (
                     <Empty description={candidateEmptyDescription} />
                   )}
