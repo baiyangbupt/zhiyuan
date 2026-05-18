@@ -11,6 +11,9 @@ import ModalImage from '../../Components/ModalImage';
 interface ICollectflowProps {
   stepsData: ICollectflowRes;
   onNextStep: (btn: IActions, formValues?: any) => void;
+  onDraftChange?: (formValues?: any) => void;
+  onBackStep?: () => void;
+  savedValues?: any;
 }
 
 interface RegionSub {
@@ -19,7 +22,7 @@ interface RegionSub {
 }
 
 const CityPreference = (props: ICollectflowProps) => {
-  const { stepsData, onNextStep } = props;
+  const { stepsData, onNextStep, onDraftChange, onBackStep, savedValues } = props;
   const [isNextConfirmBtn, setIsNextConfirmBtn] = useState(false);
   const [showSummary, setShowSummary] = useState(false); // 控制总结信息的显示
 
@@ -41,6 +44,11 @@ const CityPreference = (props: ICollectflowProps) => {
   };
 
   const [preferredRegions, setPreferredRegions] = useState<RegionSub[]>([]);
+
+  useEffect(() => {
+    if (!Array.isArray(savedValues?.preferredRegions)) return;
+    setPreferredRegions(savedValues.preferredRegions);
+  }, [savedValues]);
 
   const handleToggleRegion = (provinces: { code: string; name: string }[]) => {
     if (!provinces?.length) return;
@@ -82,6 +90,7 @@ const CityPreference = (props: ICollectflowProps) => {
       messageApi.error('请选择意向区域');
       return;
     }
+    onDraftChange?.({ preferredRegions });
     setShowSummary(true);
     // setTimeout(() => {
     //   scrollRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -181,7 +190,16 @@ const CityPreference = (props: ICollectflowProps) => {
                 });
               })}
               <Row justify="center" style={{ marginTop: 12 }}>
-                <Button onClick={handleConfirm}>确认提交</Button>
+                <div className={style.formActions}>
+                  {onBackStep && (
+                    <Button className={style.backActionButton} onClick={onBackStep}>
+                      上一步
+                    </Button>
+                  )}
+                  <Button className={style.submitActionButton} onClick={handleConfirm}>
+                    确认提交
+                  </Button>
+                </div>
               </Row>
             </div>
           )}

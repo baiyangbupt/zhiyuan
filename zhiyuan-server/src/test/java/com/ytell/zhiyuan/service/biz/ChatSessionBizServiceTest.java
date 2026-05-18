@@ -1,6 +1,7 @@
 package com.ytell.zhiyuan.service.biz;
 
 import com.ytell.zhiyuan.common.constants.ChatSessionExtraDataConstants;
+import com.ytell.zhiyuan.common.exception.BusinessException;
 import com.ytell.zhiyuan.model.dto.CreateSessionReq;
 import com.ytell.zhiyuan.model.dto.UserProfileData;
 import com.ytell.zhiyuan.model.dto.inner.ChatSessionExtraDataReq;
@@ -14,6 +15,8 @@ import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -73,5 +76,15 @@ public class ChatSessionBizServiceTest {
 
         verify(chatSessionExtraDataSharedService).save(any(ChatSessionExtraData.class));
         verify(planningStateService, never()).syncProfileStateFromLegacy(any(Long.class), any(CreateSessionReq.class), any(UserProfileData.class), eq(true));
+    }
+
+    @Test
+    void shouldRejectCreateSessionWhenBatchMissing() {
+        CreateSessionReq req = new CreateSessionReq();
+
+        BusinessException exception = assertThrows(BusinessException.class,
+                () -> chatSessionBizService.createChatSession(1L, req));
+
+        assertEquals("请选择批次后再创建会话", exception.getMessage());
     }
 }

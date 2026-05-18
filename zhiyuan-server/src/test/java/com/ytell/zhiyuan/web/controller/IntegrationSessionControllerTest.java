@@ -42,6 +42,7 @@ public class IntegrationSessionControllerTest {
         res.setTenantId(1L);
         res.setChatSessionId(1002L);
         res.setExternalRequestId("ext-1");
+        res.setStudentName("高翔");
         res.setCreated(true);
         res.setSessionUrl("https://example.com/assistant-pc/sessionDetailV2?chatSessionId=1002");
         res.getPlanning().setPhase("ordered");
@@ -58,8 +59,31 @@ public class IntegrationSessionControllerTest {
                 .andExpect(jsonPath("$.code").value(0))
                 .andExpect(jsonPath("$.data.chatSessionId").value(1002))
                 .andExpect(jsonPath("$.data.externalRequestId").value("ext-1"))
+                .andExpect(jsonPath("$.data.studentName").value("高翔"))
                 .andExpect(jsonPath("$.data.created").value(true))
                 .andExpect(jsonPath("$.data.planning.phase").value("ordered"))
                 .andExpect(jsonPath("$.data.planning.orderedTotal").value(45));
+    }
+
+    @Test
+    void shouldInitializeExternalSessionWithV1Path() throws Exception {
+        ExternalSessionInitializeRes res = new ExternalSessionInitializeRes();
+        res.setTenantId(1L);
+        res.setChatSessionId(1002L);
+        res.setExternalRequestId("ext-1");
+        res.setStudentName("高翔");
+        res.setCreated(true);
+        doReturn(res).when(integrationSessionService).initializeSession(eq(1L), any(ExternalSessionInitializeReq.class));
+
+        ExternalSessionInitializeReq req = new ExternalSessionInitializeReq();
+        req.setExternalRequestId("ext-1");
+
+        mockMvc.perform(post("/gaotu-assistant-bot/chat/1/integration/v1/session/initialize")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0))
+                .andExpect(jsonPath("$.data.chatSessionId").value(1002))
+                .andExpect(jsonPath("$.data.studentName").value("高翔"));
     }
 }

@@ -24,6 +24,16 @@ import { CheckboxChangeEvent } from 'antd/lib/checkbox/Checkbox';
 
 const { Title, Text } = Typography;
 
+const navigateAfterLogin = (isCustomer: boolean, replace: boolean = false) => {
+  const targetPath = isCustomer ? '/customer' : '/session';
+  const query = isCustomer ? { openSessionList: 1 } : undefined;
+  if (replace) {
+    replaceTo(targetPath, query);
+    return;
+  }
+  navigateTo(targetPath, query);
+};
+
 const Index: React.FC = () => {
   const [form] = Form.useForm();
   const [smsForm] = Form.useForm();
@@ -106,7 +116,7 @@ const Index: React.FC = () => {
         setStorage(storageItems);
         message.success('登录成功！');
         await getUserInfo();
-        replaceTo(data.isCustomer ? '/customer' : '/session');
+        navigateAfterLogin(data.isCustomer, true);
       } else {
         handleLoginFail(channel, msg);
       }
@@ -201,7 +211,7 @@ const Index: React.FC = () => {
         message.success('登录成功！');
         setTimeout(() => {
           getUserInfo().then(() => {
-            navigateTo(data.isCustomer ? '/customer' : '/session');
+            navigateAfterLogin(data.isCustomer);
           });
         }, 100);
       } else {
@@ -250,7 +260,7 @@ const Index: React.FC = () => {
         message.success('登录成功！');
         setTimeout(() => {
           getUserInfo().then(() => {
-            navigateTo(data.isCustomer ? '/customer' : '/session');
+            navigateAfterLogin(data.isCustomer);
           });
         }, 100);
       } else {

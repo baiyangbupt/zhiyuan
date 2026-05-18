@@ -201,6 +201,7 @@ public class IntegrationSessionService {
         res.setTenantId(tenantId);
         res.setChatSessionId(chatSessionId);
         res.setExternalRequestId(req.getExternalRequestId());
+        res.setStudentName(normalizeStudentName(req));
         res.setCreated(created);
         res.setSessionUrl(buildSessionUrl(req.getReturnOptions(), "/sessionDetailV2", chatSessionId));
         res.setLegacySessionUrl(buildSessionUrl(req.getReturnOptions(), "/sessionDetailLegacy", chatSessionId));
@@ -212,6 +213,15 @@ public class IntegrationSessionService {
                 + "/volunteer/export?chatSessionId=" + chatSessionId);
         fillPlanningSummary(res, workspaceState);
         return res;
+    }
+
+    private String normalizeStudentName(ExternalSessionInitializeReq req) {
+        if (req == null || req.getCreateSession() == null
+                || Strings.isNullOrEmpty(req.getCreateSession().getUserName())) {
+            return null;
+        }
+        String studentName = req.getCreateSession().getUserName().trim();
+        return Strings.isNullOrEmpty(studentName) ? null : studentName;
     }
 
     private String buildSessionUrl(ExternalReturnOptionsDTO options, String path, Long chatSessionId) {

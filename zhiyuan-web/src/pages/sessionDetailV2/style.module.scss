@@ -83,6 +83,12 @@
   font-weight: 600;
 }
 
+.studentNameBadge {
+  @extend .metaBadge;
+  background: #fff3e8;
+  color: #a94d16;
+}
+
 .metaBadgeActive {
   background: #ecfbf2;
   color: #1f8d52;

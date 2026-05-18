@@ -39,6 +39,8 @@ import java.util.stream.Collectors;
 @Service
 public class PlanningStateService {
 
+    private static final String OTHER_MAJOR_FILTER_LABEL = "其他专业";
+
     private static final Set<String> MACRO_REGION_TAGS = new HashSet<String>() {{
         add("华东");
         add("华北");
@@ -256,7 +258,7 @@ public class PlanningStateService {
                                               CandidatePoolStateDTO candidatePoolState) {
         status.setCandidateStatus(candidateStatus);
         if ("empty".equals(candidateStatus)) {
-            status.setCandidateMessage("当前条件下没有可用志愿候选，请检查专项资格、批次、分数线或筛选条件");
+            status.setCandidateMessage("当前条件下没有可用志愿候选，请检查专项资格、批次、分数线或硬性限制");
         } else if ("low_count".equals(candidateStatus)) {
             status.setCandidateMessage("当前条件下可用候选偏少，方案选择空间有限");
         } else if ("failed".equals(candidateStatus)) {
@@ -737,7 +739,7 @@ public class PlanningStateService {
         candidatePoolState.setStatusCode(statusCode);
         candidatePoolState.setRiskHints(Lists.newArrayList());
         if ("empty".equals(statusCode)) {
-            candidatePoolState.setStatusMessage("当前条件下没有可用志愿候选，请检查专项资格、批次、分数线或筛选条件");
+            candidatePoolState.setStatusMessage("当前条件下没有可用志愿候选，请检查专项资格、批次、分数线或硬性限制");
             candidatePoolState.getRiskHints().addAll(buildCandidatePoolRiskHints(state, candidatePoolState, true));
         } else if ("low_count".equals(statusCode)) {
             candidatePoolState.setStatusMessage("当前条件下可用候选偏少，方案选择空间有限");
@@ -1054,6 +1056,13 @@ public class PlanningStateService {
                 .distinct()
                 .sorted()
                 .collect(Collectors.toList());
+        List<String> schoolKeywords = items.stream()
+                .map(CandidateItemDTO::getSchoolName)
+                .map(this::normalizeKeywordFilterOption)
+                .filter(Objects::nonNull)
+                .distinct()
+                .sorted()
+                .collect(Collectors.toList());
         List<String> majorDisciplines = items.stream()
                 .map(this::resolveMajorDiscipline)
                 .filter(this::isEnumLikeFilterOption)
@@ -1063,6 +1072,13 @@ public class PlanningStateService {
         List<String> majorCategories = items.stream()
                 .map(this::resolveMajorCategory)
                 .filter(this::isEnumLikeFilterOption)
+                .distinct()
+                .sorted()
+                .collect(Collectors.toList());
+        List<String> majorNameKeywords = items.stream()
+                .map(CandidateItemDTO::getMajorName)
+                .map(this::normalizeMajorNameFilterOption)
+                .filter(Objects::nonNull)
                 .distinct()
                 .sorted()
                 .collect(Collectors.toList());
@@ -1081,11 +1097,14 @@ public class PlanningStateService {
                 .collect(Collectors.toList());
         dto.setProvinceNames(provinceNames);
         dto.setCityNames(cityNames);
+        dto.setSchoolKeywords(schoolKeywords);
         dto.setMajorKeywords(majorCategories);
         dto.setSchoolTags(schoolTags);
         dto.setMajorTags(majorTags);
-        dto.setGroups(buildCandidateFilterGroups(provinceNames, cityNames, schoolTags, majorTags, majorDisciplines, majorCategories));
+        dto.setGroups(buildCandidateFilterGroups(provinceNames, cityNames, schoolKeywords,
+                schoolTags, majorTags, majorDisciplines, majorCategories, majorNameKeywords));
         dto.setRegionTree(buildCandidateRegionTree(items, provinceNames, cityNames));
+        dto.setMajorTree(buildCandidateMajorTree(items));
         return dto;
     }
 
@@ -5263,19 +5282,23 @@ public class PlanningStateService {
 
     private List<CandidateFilterOptionsDTO.FilterGroupDTO> buildCandidateFilterGroups(List<String> provinceNames,
                                                                                       List<String> cityNames,
+                                                                                      List<String> schoolKeywords,
                                                                                       List<String> schoolTags,
                                                                                       List<String> majorTags,
                                                                                       List<String> majorDisciplines,
-                                                                                      List<String> majorCategories) {
+                                                                                      List<String> majorCategories,
+                                                                                      List<String> majorNameKeywords) {
         List<CandidateFilterOptionsDTO.FilterGroupDTO> groups = Lists.newArrayList();
         addFilterGroup(groups, "region.school_province", "院校省份", "provinceNames", provinceNames);
         addFilterGroup(groups, "region.school_city", "院校城市", "cityNames", cityNames);
+        addKeywordFilterGroup(groups, "school.name", "院校名称", "schoolKeywords", schoolKeywords);
         addFilterGroup(groups, "school.category", "院校分类", "schoolTags", filterByWhitelist(schoolTags, SCHOOL_CATEGORY_TAGS));
         addFilterGroup(groups, "school.nature", "院校性质", "schoolTags", filterByWhitelist(schoolTags, SCHOOL_NATURE_TAGS));
         addFilterGroup(groups, "school.feature", "院校特色", "schoolTags", filterByWhitelist(schoolTags, SCHOOL_FEATURE_TAGS));
         addFilterGroup(groups, "school.level", "院校层次", "schoolTags", filterByWhitelist(schoolTags, SCHOOL_LEVEL_TAGS));
         addFilterGroup(groups, "major.discipline", "专业门类", "majorTags", majorDisciplines);
         addFilterGroup(groups, "major.category", "专业大类", "majorKeywords", majorCategories);
+        addKeywordFilterGroup(groups, "major.name", "专业名称", "majorKeywords", majorNameKeywords);
         addFilterGroup(groups, "admission.type", "招生类型", "majorTags", filterByWhitelist(majorTags, ADMISSION_TYPE_TAGS));
         addFilterGroup(groups, "constraint.limit", "限报要求", "majorTags", filterByWhitelist(majorTags, CONSTRAINT_LIMIT_TAGS));
         addFilterGroup(groups, "school.tag", "院校标签", "schoolTags",
@@ -5316,6 +5339,62 @@ public class PlanningStateService {
         return result;
     }
 
+    private List<CandidateFilterOptionsDTO.MajorDisciplineNodeDTO> buildCandidateMajorTree(List<CandidateItemDTO> items) {
+        Map<String, Map<String, Set<String>>> disciplineCategories = new LinkedHashMap<String, Map<String, Set<String>>>();
+        for (CandidateItemDTO item : items == null ? Lists.<CandidateItemDTO>newArrayList() : items) {
+            String discipline = normalizeKeywordFilterOption(resolveMajorDiscipline(item));
+            String category = normalizeKeywordFilterOption(resolveMajorCategory(item));
+            String majorName = normalizeMajorNameFilterOption(item.getMajorName());
+            if (Strings.isNullOrEmpty(majorName)) {
+                continue;
+            }
+            if (Strings.isNullOrEmpty(discipline)) {
+                discipline = OTHER_MAJOR_FILTER_LABEL;
+            }
+            if (Strings.isNullOrEmpty(category)) {
+                category = OTHER_MAJOR_FILTER_LABEL;
+            }
+            disciplineCategories
+                    .computeIfAbsent(discipline, key -> new LinkedHashMap<String, Set<String>>())
+                    .computeIfAbsent(category, key -> new LinkedHashSet<String>())
+                    .add(majorName);
+        }
+
+        List<CandidateFilterOptionsDTO.MajorDisciplineNodeDTO> result = Lists.newArrayList();
+        disciplineCategories.entrySet().stream()
+                .sorted((left, right) -> compareFilterOptionWithOtherLast(left.getKey(), right.getKey()))
+                .forEach(disciplineEntry -> {
+                    CandidateFilterOptionsDTO.MajorDisciplineNodeDTO disciplineNode =
+                            new CandidateFilterOptionsDTO.MajorDisciplineNodeDTO();
+                    disciplineNode.setDisciplineName(disciplineEntry.getKey());
+                    List<CandidateFilterOptionsDTO.MajorCategoryNodeDTO> categories = disciplineEntry.getValue().entrySet().stream()
+                            .sorted((left, right) -> compareFilterOptionWithOtherLast(left.getKey(), right.getKey()))
+                            .map(categoryEntry -> {
+                                CandidateFilterOptionsDTO.MajorCategoryNodeDTO categoryNode =
+                                        new CandidateFilterOptionsDTO.MajorCategoryNodeDTO();
+                                categoryNode.setCategoryName(categoryEntry.getKey());
+                                categoryNode.setMajorNames(categoryEntry.getValue().stream().sorted().collect(Collectors.toList()));
+                                return categoryNode;
+                            })
+                            .collect(Collectors.toList());
+                    disciplineNode.setCategories(categories);
+                    result.add(disciplineNode);
+                });
+        return result;
+    }
+
+    private int compareFilterOptionWithOtherLast(String left, String right) {
+        boolean leftOther = OTHER_MAJOR_FILTER_LABEL.equals(left);
+        boolean rightOther = OTHER_MAJOR_FILTER_LABEL.equals(right);
+        if (leftOther && !rightOther) {
+            return 1;
+        }
+        if (!leftOther && rightOther) {
+            return -1;
+        }
+        return String.valueOf(left).compareTo(String.valueOf(right));
+    }
+
     private String normalizeRegionOption(String value) {
         if (Strings.isNullOrEmpty(value)) {
             return null;
@@ -5343,6 +5422,60 @@ public class PlanningStateService {
         group.setFilterField(filterField);
         group.setValues(normalizedValues);
         groups.add(group);
+    }
+
+    private void addKeywordFilterGroup(List<CandidateFilterOptionsDTO.FilterGroupDTO> groups,
+                                       String groupCode,
+                                       String groupName,
+                                       String filterField,
+                                       List<String> values) {
+        List<String> normalizedValues = defaultList(values).stream()
+                .map(this::normalizeKeywordFilterOption)
+                .filter(Objects::nonNull)
+                .distinct()
+                .sorted()
+                .collect(Collectors.toList());
+        if (normalizedValues.isEmpty()) {
+            return;
+        }
+        CandidateFilterOptionsDTO.FilterGroupDTO group = new CandidateFilterOptionsDTO.FilterGroupDTO();
+        group.setGroupCode(groupCode);
+        group.setGroupName(groupName);
+        group.setFilterField(filterField);
+        group.setValues(normalizedValues);
+        groups.add(group);
+    }
+
+    private String normalizeMajorNameFilterOption(String value) {
+        if (Strings.isNullOrEmpty(value)) {
+            return null;
+        }
+        String normalized = value.trim();
+        int halfParenIndex = normalized.indexOf('(');
+        int fullParenIndex = normalized.indexOf('（');
+        int parenIndex = -1;
+        if (halfParenIndex >= 0 && fullParenIndex >= 0) {
+            parenIndex = Math.min(halfParenIndex, fullParenIndex);
+        } else if (halfParenIndex >= 0) {
+            parenIndex = halfParenIndex;
+        } else if (fullParenIndex >= 0) {
+            parenIndex = fullParenIndex;
+        }
+        if (parenIndex > 0) {
+            normalized = normalized.substring(0, parenIndex).trim();
+        }
+        return normalizeKeywordFilterOption(normalized);
+    }
+
+    private String normalizeKeywordFilterOption(String value) {
+        if (Strings.isNullOrEmpty(value)) {
+            return null;
+        }
+        String normalized = value.trim();
+        if (normalized.isEmpty() || normalized.length() > 80) {
+            return null;
+        }
+        return normalized;
     }
 
     private List<String> filterByWhitelist(List<String> source, Set<String> whitelist) {

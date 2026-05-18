@@ -16,6 +16,9 @@ interface ICollectflowProps {
   stepsData: ICollectflowRes;
   onNextStep: (btn: IActions, formValues?: any) => void;
   paramsValues: IMajorParams;
+  onDraftChange?: (formValues?: any) => void;
+  onBackStep?: () => void;
+  savedValues?: any;
 }
 
 interface IMajorParams {
@@ -93,7 +96,7 @@ interface SelectedMajorsMap {
 }
 
 const ClarifyMajorIntention = (props: ICollectflowProps) => {
-  const { stepsData, onNextStep, paramsValues } = props;
+  const { stepsData, onNextStep, paramsValues, onDraftChange, onBackStep, savedValues } = props;
   const [isNextConfirmBtn, setIsNextConfirmBtn] = useState(false);
   const [formValues, setFormValues] = useState<any>(null); // 存储表单提交的值
   const [showSummary, setShowSummary] = useState(false); // 控制总结信息的显示
@@ -121,8 +124,8 @@ const ClarifyMajorIntention = (props: ICollectflowProps) => {
     const result: SelectedMajorsMap = {};
 
     selectedData.forEach(item => {
-      for (const parent of rawData) {
-        const matchChild = parent.children.find(child => child.value === item.major_id);
+      for (const parent of rawData || []) {
+        const matchChild = parent.children?.find(child => child.value === item.major_id);
         if (matchChild) {
           if (!result[parent.value]) {
             result[parent.value] = [];
@@ -139,15 +142,54 @@ const ClarifyMajorIntention = (props: ICollectflowProps) => {
     return result;
   };
 
+  const normalizePreferredMajors = () => {
+    const preferredMajors = Array.isArray(savedValues?.preferredMajors)
+      ? savedValues.preferredMajors
+      : [];
+    return preferredMajors.map((item: any) => ({
+      major_id: item?.major_id || item?.majorId || item?.majorSubId || item?.value || '',
+      major: item?.major || item?.majorName || item?.majorSubName || item?.label || '',
+    }));
+  };
+
+  const hasSavedPreferredMajors = normalizePreferredMajors().length > 0;
+
+  const getBatchLevel = () => {
+    const level: any = paramsValues?.batch?.level;
+    if (level && typeof level === 'object') {
+      return String(level.key || level.code || level.value || '');
+    }
+    return level ? String(level) : undefined;
+  };
+
   // 根据 batch.level 获取正确的 majors 数据源
   const getMajorsByBatchLevel = (field: any) => {
-    const batchLevel = paramsValues?.batch?.level;
+    const batchLevel = getBatchLevel();
     if (batchLevel === '01') {
       return field?.bachelorMajors || field?.majors;
     } else if (batchLevel === '02') {
       return field?.associateMajors || field?.majors;
     }
     return field?.majors;
+  };
+
+  const getUnacceptableOptionsByBatchLevel = (field: any) => {
+    const batchLevel = getBatchLevel();
+    const bachelorMajors = Array.isArray(field?.bachelorMajors) ? field.bachelorMajors : [];
+    const associateMajors = Array.isArray(field?.associateMajors) ? field.associateMajors : [];
+
+    if (batchLevel === '01') {
+      return bachelorMajors.length ? bachelorMajors : associateMajors;
+    }
+    if (batchLevel === '02') {
+      return associateMajors.length ? associateMajors : bachelorMajors;
+    }
+
+    if (bachelorMajors.length || associateMajors.length) {
+      return bachelorMajors.length ? bachelorMajors : associateMajors;
+    }
+
+    return [];
   };
 
   // 获取默认意向专业
@@ -168,25 +210,27 @@ const ClarifyMajorIntention = (props: ICollectflowProps) => {
       const field = stepsData?.subSteps
         .find(item => item.subStepId === 'major_preference_step1')
         ?.formConfig.fields.find(item => item.fieldId === 'preferredMajors');
-      const rawData = getMajorsByBatchLevel(field);
+      const rawData = getMajorsByBatchLevel(field) || [];
       const initialSelected = mapSelectedMajors(rawData, res.data);
       
       // 保存系统推荐的快照（深拷贝）
       const snapshot = JSON.parse(JSON.stringify(initialSelected));
       setRecommendedMajorsSnapshot(snapshot);
-      
-      setSelectedMajors(initialSelected);
-      setIsRecommendationApplied(true);
 
-      // ✅ 同步禁用非意向专业选项
-      const allSelected = Object.values(initialSelected).flat();
-      setDisabledUnacceptableMajors(allSelected.map(m => m.majorSubId));
+      if (!hasSavedPreferredMajors) {
+        setSelectedMajors(initialSelected);
+        setIsRecommendationApplied(true);
+
+        // ✅ 同步禁用非意向专业选项
+        const allSelected = Object.values(initialSelected).flat();
+        setDisabledUnacceptableMajors(allSelected.map(m => m.majorSubId));
+      }
     }
   };
 
   useEffect(() => {
     getMajorRecommend();
-  }, [stepsData, paramsValues?.batch?.level]);
+  }, [stepsData, paramsValues?.batch?.level, savedValues]);
 
   // 点击查看图片
   const handleShowModal = (rich: any) => {
@@ -196,16 +240,23 @@ const ClarifyMajorIntention = (props: ICollectflowProps) => {
   // 下一步
   const handleClickNextStep = (btn: IActions) => {
     setIsNextConfirmBtn(true);
+    const payload = buildDraftPayload();
+    onNextStep(btn, payload);
+  };
+
+  const buildDraftPayload = () => {
     const allSelectedMajors = Object.values(selectedMajors).flat();
-    onNextStep(btn, {
+    return {
       preferredMajors: allSelectedMajors,
       unacceptableMajors: unacceptableMajors,
       acceptForeignSchool: acceptForeignSchool,
-      tuitionRange: tuitionRange ? {
-        min: tuitionRange[0],
-        max: tuitionRange[1],
-      } : undefined,
-    });
+      tuitionRange: tuitionRange
+        ? {
+            min: tuitionRange[0],
+            max: tuitionRange[1],
+          }
+        : undefined,
+    };
   };
 
   // 生成确认信息文本
@@ -384,8 +435,46 @@ const ClarifyMajorIntention = (props: ICollectflowProps) => {
 
   const [messageApi, contextHolder] = message.useMessage();
 
+  useEffect(() => {
+    const field = stepsData?.subSteps
+      .find(item => item.subStepId === 'major_preference_step1')
+      ?.formConfig?.fields?.find(f => f.fieldId === 'preferredMajors');
+    const rawData = getMajorsByBatchLevel(field) || [];
+    const savedPreferredMajors = normalizePreferredMajors();
+
+    if (savedPreferredMajors.length) {
+      const restoredSelected = mapSelectedMajors(rawData, savedPreferredMajors as SelectedMajor[]);
+      setSelectedMajors(restoredSelected);
+      setIsRecommendationApplied(false);
+      const allSelected = Object.values(restoredSelected).flat();
+      setDisabledUnacceptableMajors(allSelected.map(m => m.majorSubId));
+      const firstActiveMajor = Object.keys(restoredSelected)[0];
+      if (firstActiveMajor) {
+        setActiveMajor(firstActiveMajor);
+      }
+    }
+
+    if (Array.isArray(savedValues?.unacceptableMajors)) {
+      setUnacceptableMajors(savedValues.unacceptableMajors);
+      setDisabledPreferredMajors(savedValues.unacceptableMajors.map((m: Major) => m.majorId));
+    }
+
+    if (savedValues?.acceptForeignSchool !== undefined) {
+      setAcceptForeignSchool(Boolean(savedValues.acceptForeignSchool));
+    }
+
+    if (savedValues?.tuitionRange) {
+      const min = Number(savedValues.tuitionRange.min ?? savedValues.tuitionRange[0]);
+      const max = Number(savedValues.tuitionRange.max ?? savedValues.tuitionRange[1]);
+      if (!Number.isNaN(min) && !Number.isNaN(max)) {
+        setTuitionRange([min, max]);
+      }
+    }
+  }, [stepsData, savedValues, paramsValues?.batch?.level]);
+
   // 初始化学费区间值（从配置中读取）
   useEffect(() => {
+    if (savedValues?.tuitionRange) return;
     const tuitionField = stepsData?.subSteps
       .find(item => item.subStepId === 'major_preference_step1')
       ?.formConfig?.fields?.find(f => f.fieldId === 'tuitionRange') as any;
@@ -443,6 +532,7 @@ const ClarifyMajorIntention = (props: ICollectflowProps) => {
         }
       }
     }
+    onDraftChange?.(buildDraftPayload());
     setShowSummary(true);
   };
 
@@ -624,17 +714,7 @@ const ClarifyMajorIntention = (props: ICollectflowProps) => {
                 }
 
                 if (field.fieldId === 'unacceptableMajors') {
-                  // 根据 batch.level 获取正确的选项列表
-                  const batchLevel = paramsValues?.batch?.level;
-                  const fieldAny = field as any;
-                  let unacceptableOptions: any[] = [];
-                  if (batchLevel === '01') {
-                    unacceptableOptions = fieldAny?.bachelorMajors || fieldAny?.options || [];
-                  } else if (batchLevel === '02') {
-                    unacceptableOptions = fieldAny?.associateMajors || fieldAny?.options || [];
-                  } else {
-                    unacceptableOptions = fieldAny?.options || [];
-                  }
+                  const unacceptableOptions = getUnacceptableOptionsByBatchLevel(field);
                   
                   // 计算可选项（排除被禁用的）
                   const availableOptions = unacceptableOptions.filter(
@@ -881,7 +961,19 @@ const ClarifyMajorIntention = (props: ICollectflowProps) => {
                 }
               })}
               <Row justify="center" style={{ marginTop: 12 }}>
-                <Button onClick={() => handleConfirm(item.formConfig?.fields)}>确认提交</Button>
+                <div className={style.formActions}>
+                  {onBackStep && (
+                    <Button className={style.backActionButton} onClick={onBackStep}>
+                      上一步
+                    </Button>
+                  )}
+                  <Button
+                    className={style.submitActionButton}
+                    onClick={() => handleConfirm(item.formConfig?.fields)}
+                  >
+                    确认提交
+                  </Button>
+                </div>
               </Row>
             </div>
           )}

@@ -113,6 +113,12 @@
     }
   }
   .buttons {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    width: 100%;
+
     .nextBtn {
       width: 220px;
       height: 40px;
@@ -142,6 +148,56 @@
       border-radius: 16px;
       color: #fff;
     }
+  }
+
+  .formActions {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    width: 100%;
+
+    .backActionButton,
+    .submitActionButton {
+      width: 112px;
+      min-width: 112px;
+      height: 40px;
+      padding: 0 14px;
+      border-radius: 10px;
+    }
+
+    .backActionButton {
+      color: #5f6472;
+      border-color: #d9dce3;
+      background: #fff;
+    }
+
+    .submitActionButton {
+      color: #fff;
+      background-color: #ff443d;
+      border-color: #ff443d;
+    }
+  }
+
+  .backActionButton,
+  .submitActionButton {
+    width: 112px;
+    min-width: 112px;
+    height: 40px;
+    padding: 0 14px;
+    border-radius: 10px;
+  }
+
+  .backActionButton {
+    color: #5f6472;
+    border-color: #d9dce3;
+    background: #fff;
+  }
+
+  .submitActionButton {
+    color: #fff;
+    background-color: #ff443d;
+    border-color: #ff443d;
   }
 }
 

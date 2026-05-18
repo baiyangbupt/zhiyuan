@@ -189,6 +189,8 @@ public class ChatSessionBizService {
     public ChatSessionVo createChatSession(Long tenantId, CreateSessionReq createSessionReq) {
         long requestStart = System.currentTimeMillis();
 
+        validateCreateSessionReq(createSessionReq);
+
         UserBaseData userBaseData = UserInfoThreadLocalUtil.get();
         //校验权益
         CheckRightsResVo checkRightsResVo = userBizService.checkRights(userBaseData.getUserId(), OperateCheckPoint.CreateSession);
@@ -334,6 +336,27 @@ public class ChatSessionBizService {
         log.info("createChatSession step=finish tenantId={} chatSessionId={} totalCostMs={}",
                 tenantId, chatSession.getId(), System.currentTimeMillis() - requestStart);
         return ChatSessionVo.fromEntity(chatSession, botVo, getSessionExtraSummaryData(chatSession), prepareType);
+    }
+
+    private void validateCreateSessionReq(CreateSessionReq createSessionReq) {
+        if (createSessionReq == null) {
+            throw new BusinessException(110, "创建会话参数不能为空");
+        }
+        if (createSessionReq.getBatch() == null || Strings.isNullOrEmpty(createSessionReq.getBatch().getCode())) {
+            throw new BusinessException(110, "请选择批次后再创建会话");
+        }
+        if (createSessionReq.getProvince() == null || Strings.isNullOrEmpty(createSessionReq.getProvince().getCode())) {
+            throw new BusinessException(110, "请选择高考省份后再创建会话");
+        }
+        if (createSessionReq.getSubjectType() == null || Strings.isNullOrEmpty(createSessionReq.getSubjectType().getCode())) {
+            throw new BusinessException(110, "请选择选科类型后再创建会话");
+        }
+        if (CollectionUtil.isEmpty(createSessionReq.getSubjectScoreList())) {
+            throw new BusinessException(110, "请填写各科成绩后再创建会话");
+        }
+        if (createSessionReq.getTotalScore() == null) {
+            throw new BusinessException(110, "请填写成绩后再创建会话");
+        }
     }
 
 

@@ -48,6 +48,21 @@ POST /gaotu-assistant-bot/chat/{tenantId}/integration/session/initialize
 POST https://www.gaotuzhiyuan.com/gaotu-assistant-bot/chat/1/integration/session/initialize
 ```
 
+### 3.1.1 稳定版本入口
+
+从 `3.0.2` 开始，对外部系统建议使用版本化稳定入口：
+
+```http
+POST /gaotu-assistant-bot/chat/{tenantId}/integration/v1/session/initialize
+```
+
+兼容策略：
+
+- `v1` 的请求和响应结构与当前 `session/initialize` 保持兼容。
+- 既有无版本路径 `POST /integration/session/initialize` 作为兼容别名保留至少一个发布周期。
+- 新增可选字段必须保持向后兼容；字段缺失时按默认行为处理。
+- 后续破坏性变更必须新开 `v2`，不能直接改变 `v1` 语义。
+
 ### 3.2 授权
 
 当前生产已有一条通过 token 自动完成用户授权的链路：
@@ -134,7 +149,29 @@ X-Zhiyuan-Signature: hmac_sha256(secret, timestamp + "\n" + body)
 | `generationOptions` | 否 | 控制是否同步生成候选池、初始方案、排序方案，并返回工作台轻量状态。默认全开。 |
 | `returnOptions.pathMode` | 否 | `assistant-pc` 或 `root`，用于返回页面 URL。正式生产默认 `assistant-pc`。 |
 
-用户身份不放在 body 中，以 `tk/pf` 授权结果为准。`createSession.userName` 仅作为会话展示名称。
+用户身份不放在 body 中，以 `tk/pf` 授权结果为准。`createSession.userName` 仅作为当前被服务学员的展示姓名，不参与授权身份判断。
+
+### 4.1.1 学员展示姓名
+
+外部系统如果希望详情页展示所服务学员姓名，可在 `createSession.userName` 中传入姓名：
+
+```json
+{
+  "externalRequestId": "partner-20260509-0001",
+  "createSession": {
+    "botId": 1,
+    "userName": "高翔",
+    "...": "其他采集字段"
+  }
+}
+```
+
+展示规则：
+
+- 后端将 `createSession.userName` 写入会话 `userName`。
+- 前端详情页读取会话详情中的 `userName`，在填报类型标签前展示，例如：`高翔` `模拟填报`。
+- `userName` 缺失、为空字符串或仅空白时，前端不展示姓名标签。
+- 该字段表达“当前方案服务的学员”，不表示当前授权调用方身份；授权身份仍以 `tk/pf` 登录态为准。
 
 ### 4.2 完整请求示例
 
@@ -295,6 +332,7 @@ curl -X POST 'https://www.gaotuzhiyuan.com/gaotu-assistant-bot/chat/1/integratio
     "tenantId": 1,
     "externalRequestId": "partner-20260509-0001",
     "created": true,
+    "studentName": "高翔",
     "sessionUrl": "https://www.gaotuzhiyuan.com/assistant-pc/sessionDetailV2?chatSessionId=1002",
     "legacySessionUrl": "https://www.gaotuzhiyuan.com/assistant-pc/sessionDetailLegacy?chatSessionId=1002",
     "planning": {
@@ -318,7 +356,7 @@ curl -X POST 'https://www.gaotuzhiyuan.com/gaotu-assistant-bot/chat/1/integratio
 }
 ```
 
-`created=false` 表示命中幂等记录，返回之前创建的会话定位信息。
+`created=false` 表示命中幂等记录，返回之前创建的会话定位信息。`studentName` 为展示字段，取首次成功创建会话时保存的 `userName`；如果创建时未提供姓名，则该字段可为空或省略。
 
 ### 5.2 幂等命中示例
 
@@ -468,10 +506,14 @@ curl -X POST 'https://www.gaotuzhiyuan.com/gaotu-assistant-bot/inner/chat/1/volu
 - `returnWorkspaceState=false` 时不读取工作台轻量状态。
 - `pathMode=root` 时返回根路径页面 URL。
 - 生成失败时记录失败状态，不留下误判为成功的幂等记录。
+- `createSession.userName` 传入时，会话详情和初始化响应可返回对应学员展示姓名。
+- 未传 `createSession.userName` 时，详情页不展示空姓名标签。
+- 版本化路径 `/integration/v1/session/initialize` 与无版本兼容路径行为一致。
 
 集成验证：
 
 - 使用一份真实 `CreateSessionReq` 初始化会话。
+- 传入 `createSession.userName="高翔"`，打开 `sessionUrl` 后详情页在“模拟填报”前展示“高翔”。
 - 检查消息列表有欢迎语。
 - 检查 `workspace-state` 有方案摘要。
 - 检查 `/assistant-pc/sessionDetailV2` 能定位会话。

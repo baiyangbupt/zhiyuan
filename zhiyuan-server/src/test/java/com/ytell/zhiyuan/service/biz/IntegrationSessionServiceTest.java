@@ -64,9 +64,11 @@ public class IntegrationSessionServiceTest {
         when(planningStateService.getPlanningWorkspaceState(1002L)).thenReturn(buildWorkspaceState());
 
         ExternalSessionInitializeReq req = buildReq("ext-1");
+        req.getCreateSession().setUserName(" 高翔 ");
         req.getReturnOptions().setWebBaseUrl("https://www.gaotuzhiyuan.com");
         ExternalSessionInitializeRes res = service.initializeSession(1L, req);
         assertEquals(1002L, res.getChatSessionId());
+        assertEquals("高翔", res.getStudentName());
         assertTrue(res.getSessionUrl().contains("/assistant-pc/sessionDetailV2?chatSessionId=1002"));
         assertEquals(Integer.valueOf(120), res.getPlanning().getCandidateTotal());
         assertEquals(Integer.valueOf(45), res.getPlanning().getOrderedTotal());
@@ -78,6 +80,22 @@ public class IntegrationSessionServiceTest {
         verify(planningStateService).generateOrderedPlan(eq(1L), eq(1002L), any());
         verify(mapper).insert(any(IntegrationSessionRequest.class));
         verify(mapper, atLeastOnce()).updateById(any(IntegrationSessionRequest.class));
+    }
+
+    @Test
+    void shouldNotReturnBlankStudentName() {
+        when(mapper.selectOne(any())).thenReturn(null);
+        ChatSessionVo sessionVo = new ChatSessionVo();
+        sessionVo.setId(1002L);
+        when(chatSessionBizService.createChatSession(eq(1L), any(CreateSessionReq.class))).thenReturn(sessionVo);
+        when(planningStateService.getPlanningWorkspaceState(1002L)).thenReturn(buildWorkspaceState());
+
+        ExternalSessionInitializeReq req = buildReq("ext-1");
+        req.getCreateSession().setUserName("   ");
+
+        ExternalSessionInitializeRes res = service.initializeSession(1L, req);
+
+        assertNull(res.getStudentName());
     }
 
     @Test

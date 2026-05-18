@@ -24,18 +24,24 @@ import StepCurrentIcon from '@/images/icons/step-current.png';
 import Header from '@/pageComponents/customerDetail/Header';
 import { useRouter } from 'next/router';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
+import {
+  clearCustomerDetailDraft,
+  loadCustomerDetailDraft,
+  saveCustomerDetailDraft,
+} from '@/utils/customerDetailDraft';
+import { hydrateCreateSessionBatch } from '@/utils/customerDetailSession';
 
 const MOBILE_BREAKPOINT = 768;
 const STEP_SHORT_TITLES = ['高考信息', '个人信息', '专业意向', '区域意向', '志愿方案'];
 
 const CustomerDetail: React.FC = () => {
   const isMobile = useMediaQuery(MOBILE_BREAKPOINT);
-  const [currentStep, setCurrentStep] = useState<number>(-1);
-  const [stepsData, setStepsData] = useState<any>([]);
   const { botId, tenantId } = useAuthParams();
   const storedIsCustomer = getStorage(EStorageKey.ISCUSTOMER) as boolean;
   const storedUserInfo: any = getStorage('userInfo') || '{}';
-  const userInfo = JSON.parse(storedUserInfo);
+  const userInfo = useMemo(() => JSON.parse(storedUserInfo), [storedUserInfo]);
+  const [currentStep, setCurrentStep] = useState<number>(-1);
+  const [stepsData, setStepsData] = useState<any>([]);
   const [userSubjectList, setUserSubjectList] = useState<any>([]);
   const [createSessionValues, setCreateSessionValues] = useState<any>({});
   const [createLoading, setCreateLoading] = useState<boolean>(false);
@@ -64,7 +70,7 @@ const CustomerDetail: React.FC = () => {
 
       Modal.confirm({
         title: '提示',
-        content: '您的步骤尚未完成，离开后将不保存已填写信息，确定要离开吗？',
+        content: '您的步骤尚未完成，已确认的信息会临时保留，确定要离开吗？',
         okText: '确认离开',
         cancelText: '继续填写',
         okButtonProps: {
@@ -167,6 +173,13 @@ const CustomerDetail: React.FC = () => {
   }, [currentStep, stepsData]);
 
   useEffect(() => {
+    const draft = loadCustomerDetailDraft(tenantId, botId, userInfo);
+    if (!draft) return;
+    setCurrentStep(draft.currentStep);
+    setCreateSessionValues(draft.values || {});
+  }, [tenantId, botId, userInfo]);
+
+  useEffect(() => {
     getCollectFlow();
   }, []);
 
@@ -189,19 +202,32 @@ const CustomerDetail: React.FC = () => {
     setCreateSessionValues(values);
     if (currentStep === -1) {
       // 如果当前是 -1，表示第一次点击“下一步”，将 currentStep 设置为 0
-      setCurrentStep(0);
+      const nextStep = 0;
+      setCurrentStep(nextStep);
+      saveCustomerDetailDraft({ tenantId, botId, userInfo, currentStep: nextStep, values });
     } else if (btnProps.actionType === 'next') {
-      setCurrentStep(prev => prev + 1);
+      const nextStep = currentStep + 1;
+      setCurrentStep(nextStep);
+      saveCustomerDetailDraft({ tenantId, botId, userInfo, currentStep: nextStep, values });
     } else if (btnProps.actionType === 'autoNext') {
       // setCurrentStep(prev => prev + 1);
     } else if (btnProps.actionType === 'finalSubmit') {
+      saveCustomerDetailDraft({ tenantId, botId, userInfo, currentStep, values });
       try {
         setCreateLoading(true);
         setFinalSubmitLoading(true); // 打开 loading
 
-        const { code, data, msg } = await createSession(tenantId, { botId, ...values });
-        setCreateLoading(false);
-        setFinalSubmitLoading(false); // 关闭 loading
+        const submitValues = await hydrateCreateSessionBatch(values, userInfo);
+        if (!submitValues?.batch?.code) {
+          message.error('请选择批次后再创建会话');
+          return;
+        }
+        if (submitValues !== values) {
+          setCreateSessionValues(submitValues);
+          saveCustomerDetailDraft({ tenantId, botId, userInfo, currentStep, values: submitValues });
+        }
+
+        const { code, data, msg } = await createSession(tenantId, { botId, ...submitValues });
 
         if (code === 0) {
           const createdSession = await resolveCreatedSession(tenantId, botId, data);
@@ -210,6 +236,7 @@ const CustomerDetail: React.FC = () => {
             return;
           }
           message.success('创建会话成功');
+          clearCustomerDetailDraft(tenantId, botId, userInfo);
           navigateTo('/sessionDetailV2', {
             chatSessionId: createdSession.id,
             userId: createdSession.userId,
@@ -221,11 +248,36 @@ const CustomerDetail: React.FC = () => {
           message.error(msg || '创建会话失败，请稍后重试');
         }
       } catch (error) {
+        message.error('请求失败，请稍后重试');
+      } finally {
         setCreateLoading(false);
         setFinalSubmitLoading(false); // 关闭 loading
-        message.error('请求失败，请稍后重试');
       }
     }
+  };
+
+  const handleDraftChange = (formValues: any = {}) => {
+    const values = { ...createSessionValues, ...formValues };
+    setCreateSessionValues(values);
+    saveCustomerDetailDraft({
+      tenantId,
+      botId,
+      userInfo,
+      currentStep,
+      values,
+    });
+  };
+
+  const handleBackStep = () => {
+    const nextStep = Math.max(currentStep - 1, -1);
+    setCurrentStep(nextStep);
+    saveCustomerDetailDraft({
+      tenantId,
+      botId,
+      userInfo,
+      currentStep: nextStep,
+      values: createSessionValues,
+    });
   };
 
   const mainRef = useRef<HTMLDivElement>(null);
@@ -298,29 +350,50 @@ const CustomerDetail: React.FC = () => {
                 <WelcomeIntro stepsData={currentData} onNextStep={handleNextStep} />
               )}
               {currentStep == 0 && (
-                <ConfirmGkInfo stepsData={currentData} onNextStep={handleNextStep} />
+                <ConfirmGkInfo
+                  stepsData={currentData}
+                  savedValues={createSessionValues}
+                  onNextStep={handleNextStep}
+                  onDraftChange={handleDraftChange}
+                  onBackStep={handleBackStep}
+                />
               )}
               {currentStep == 1 && (
                 <PersonalInfoCollect
                   userSubjectList={userSubjectList}
                   stepsData={currentData}
+                  savedValues={createSessionValues}
                   onNextStep={handleNextStep}
+                  onDraftChange={handleDraftChange}
+                  onBackStep={handleBackStep}
                 />
               )}
               {currentStep == 2 && (
                 <ClarifyMajorIntention
                   stepsData={currentData}
                   paramsValues={createSessionValues}
+                  savedValues={createSessionValues}
                   onNextStep={handleNextStep}
+                  onDraftChange={handleDraftChange}
+                  onBackStep={handleBackStep}
                 />
               )}
               {currentStep === 3 && (
-                <CityPreference stepsData={currentData} onNextStep={handleNextStep} />
+                <CityPreference
+                  stepsData={currentData}
+                  savedValues={createSessionValues}
+                  onNextStep={handleNextStep}
+                  onDraftChange={handleDraftChange}
+                  onBackStep={handleBackStep}
+                />
               )}
               {currentStep == 4 && (
                 <VolunteerStrategy
                   stepsData={currentData}
+                  savedValues={createSessionValues}
                   onNextStep={handleNextStep}
+                  onDraftChange={handleDraftChange}
+                  onBackStep={handleBackStep}
                   loading={createLoading}
                   finalSubmitLoading={finalSubmitLoading}
                   setFinalSubmitLoading={setFinalSubmitLoading}
@@ -347,29 +420,50 @@ const CustomerDetail: React.FC = () => {
                 <WelcomeIntro stepsData={currentData} onNextStep={handleNextStep} />
               )}
               {currentStep == 0 && (
-                <ConfirmGkInfo stepsData={currentData} onNextStep={handleNextStep} />
+                <ConfirmGkInfo
+                  stepsData={currentData}
+                  savedValues={createSessionValues}
+                  onNextStep={handleNextStep}
+                  onDraftChange={handleDraftChange}
+                  onBackStep={handleBackStep}
+                />
               )}
               {currentStep == 1 && (
                 <PersonalInfoCollect
                   userSubjectList={userSubjectList}
                   stepsData={currentData}
+                  savedValues={createSessionValues}
                   onNextStep={handleNextStep}
+                  onDraftChange={handleDraftChange}
+                  onBackStep={handleBackStep}
                 />
               )}
               {currentStep == 2 && (
                 <ClarifyMajorIntention
                   stepsData={currentData}
                   paramsValues={createSessionValues}
+                  savedValues={createSessionValues}
                   onNextStep={handleNextStep}
+                  onDraftChange={handleDraftChange}
+                  onBackStep={handleBackStep}
                 />
               )}
               {currentStep === 3 && (
-                <CityPreference stepsData={currentData} onNextStep={handleNextStep} />
+                <CityPreference
+                  stepsData={currentData}
+                  savedValues={createSessionValues}
+                  onNextStep={handleNextStep}
+                  onDraftChange={handleDraftChange}
+                  onBackStep={handleBackStep}
+                />
               )}
               {currentStep == 4 && (
                 <VolunteerStrategy
                   stepsData={currentData}
+                  savedValues={createSessionValues}
                   onNextStep={handleNextStep}
+                  onDraftChange={handleDraftChange}
+                  onBackStep={handleBackStep}
                   loading={createLoading}
                   finalSubmitLoading={finalSubmitLoading}
                   setFinalSubmitLoading={setFinalSubmitLoading}

@@ -292,6 +292,10 @@ Agent：
   - `plan_next_action` 支持显式 `unit_ids`，并在用户说“专业组/这一组/整组/院校专业组”时将 item 级移动/删除归一为 unit 级动作。
   - `execute_plan_action` 支持按 `unit_ids` 执行，也支持从 `orderedPlanState.units` 解析“第 N 个专业组”。
   - `internal_client` 接入后端组级移动/删除接口，成功后刷新 `ordered` 和 `review`。
+- 专业组预览文案收口：
+  - `move_ordered_unit/remove_ordered_unit` 的 preview 只展示源专业组、目标专业组位置、组内专业数和确认提示。
+  - 指令层禁止模型额外补“当前前 N 位概况”或“前 N 条志愿列表”，避免专业组序号和单条志愿序号混淆。
+  - service 层保留兜底清理，只处理已出现的严重文案问题，不参与正常路由。
 - 3.0.1 用户侧约束：
   - Agent 文案继续去“草稿”，统一使用“方案/当前方案/已加入方案”。
   - `pin_unit/unpin_unit/lock_draft` 不作为用户可触发入口；用户要求固定/锁定时，回复当前新版工作台暂不提供该入口，并建议移动到指定位置或使用排序。
@@ -318,6 +322,11 @@ Agent：
   - `tests/unit/test_chat_agent_init_profile.py`
   - `tests/unit/test_plan_execution_tool.py`
   - 结果：`315 passed`
+- 2026-05-17 本地补充验证：
+  - `tests/unit/test_chat_service_history_persistence.py`
+  - `tests/unit/test_plan_execution_tool.py`
+  - 结果：`164 passed`
+  - 覆盖专业组预览兜底清理、强迫式选择话术清理、方案执行工具主链路。
 - Router/workflow 兼容测试已完成同步清理：
   - `tests/unit/test_planning_router_tool.py`
   - `tests/unit/test_planning_router_tool_sync.py`

@@ -66,6 +66,7 @@ type CandidateFilterOptionGroup = NonNullable<PlanningCandidateFilterOptionsRes[
 type FilterTokenField =
   | 'provinceNames'
   | 'cityNames'
+  | 'schoolKeywords'
   | 'schoolTags'
   | 'majorTags'
   | 'majorKeywords'
@@ -180,6 +181,7 @@ const getWorkspaceViewStorageKey = (chatSessionId?: string) =>
 const EMPTY_CANDIDATE_FILTER_OPTIONS: PlanningCandidateFilterOptionsRes = {
   provinceNames: [],
   cityNames: [],
+  schoolKeywords: [],
   schoolTags: [],
   majorTags: [],
   groups: [],
@@ -259,6 +261,13 @@ const FILTER_FIELD_META: Record<
     positiveColor: 'geekblue',
     negativeColor: 'red',
   },
+  schoolKeywords: {
+    label: '院校名称',
+    positivePrefix: '',
+    negativePrefix: '不看',
+    positiveColor: 'blue',
+    negativeColor: 'red',
+  },
   schoolTags: {
     label: '院校属性',
     positivePrefix: '',
@@ -304,7 +313,7 @@ const parseFilterTokenValue = (
   if (!rest.length) {
     return null;
   }
-  if (!['provinceNames', 'cityNames', 'schoolTags', 'majorTags', 'majorKeywords', 'expertPreferredOnly'].includes(normalizedField)) {
+  if (!['provinceNames', 'cityNames', 'schoolKeywords', 'schoolTags', 'majorTags', 'majorKeywords', 'expertPreferredOnly'].includes(normalizedField)) {
     return null;
   }
   if (!['positive', 'negative'].includes(normalizedPolarity)) {
@@ -606,6 +615,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         : [
             { groupName: '院校省份', filterField: 'provinceNames', values: candidateFilterOptions.provinceNames || [] },
             { groupName: '院校城市', filterField: 'cityNames', values: candidateFilterOptions.cityNames || [] },
+            { groupCode: 'school.name', groupName: '院校名称', filterField: 'schoolKeywords', values: candidateFilterOptions.schoolKeywords || [] },
             {
               groupName: '院校标签',
               filterField: 'schoolTags',
@@ -619,7 +629,16 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
 
     const hasMajorCategoryGroup = backendGroups.some(group => group.groupCode === 'major.category');
     const hasMajorDisciplineGroup = backendGroups.some(group => group.groupCode === 'major.discipline');
+    const hasSchoolNameGroup = backendGroups.some(group => group.groupCode === 'school.name');
     const normalizedGroups = [...backendGroups];
+    if (!hasSchoolNameGroup && (candidateFilterOptions.schoolKeywords || []).length > 0) {
+      normalizedGroups.push({
+        groupCode: 'school.name',
+        groupName: '院校名称',
+        filterField: 'schoolKeywords',
+        values: candidateFilterOptions.schoolKeywords,
+      });
+    }
     if (!hasMajorCategoryGroup && fallbackMajorKeywordValues.length > 0) {
       normalizedGroups.push({
         groupCode: 'major.category',
@@ -656,7 +675,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
 
     const toPanelGroup = (group: CandidateFilterOptionGroup): FilterPanelGroup | null => {
       const field = (group.filterField || '') as FilterTokenField;
-      if (!['provinceNames', 'cityNames', 'schoolTags', 'majorTags', 'majorKeywords'].includes(field)) {
+      if (!['provinceNames', 'cityNames', 'schoolKeywords', 'schoolTags', 'majorTags', 'majorKeywords'].includes(field)) {
         return null;
       }
       const groupLabel = group.groupName || FILTER_FIELD_META[field].label;
@@ -749,26 +768,83 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       groupedCategories.set(discipline, [...(groupedCategories.get(discipline) || []), value]);
     });
 
-    const majorChildren: FilterPanelGroup[] = allMajorDisciplineValues.map(discipline => ({
-      label: discipline,
-      option: {
-        label: discipline,
-        title: `专业门类 · ${discipline}`,
-        field: 'majorTags' as FilterTokenField,
-        value: discipline,
-      },
-      children: (groupedCategories.get(discipline) || []).map(value => ({
-        label: value,
-        option: {
-          label: value,
-          title: `专业大类 · ${discipline} · ${value}`,
-          field: 'majorKeywords' as FilterTokenField,
-          value,
-        },
-      })),
-    }));
+    const backendMajorTree = (candidateFilterOptions.majorTree || [])
+      .map(disciplineNode => {
+        const disciplineName = (disciplineNode.disciplineName || '').trim();
+        const categories = (disciplineNode.categories || [])
+          .map(categoryNode => {
+            const categoryName = (categoryNode.categoryName || '').trim();
+            const majorNames = uniqueStrings(categoryNode.majorNames || []);
+            if (!categoryName || majorNames.length === 0) {
+              return null;
+            }
+            return {
+              categoryName,
+              majorNames,
+            };
+          })
+          .filter(Boolean) as Array<{ categoryName: string; majorNames: string[] }>;
+        if (!disciplineName || categories.length === 0) {
+          return null;
+        }
+        return {
+          disciplineName,
+          categories,
+        };
+      })
+      .filter(Boolean) as Array<{
+        disciplineName: string;
+        categories: Array<{ categoryName: string; majorNames: string[] }>;
+      }>;
 
-    if (unmatchedCategories.length > 0) {
+    const majorChildren: FilterPanelGroup[] = backendMajorTree.length > 0
+      ? backendMajorTree.map(disciplineNode => ({
+          label: disciplineNode.disciplineName,
+          option: {
+            label: disciplineNode.disciplineName,
+            title: `专业门类 · ${disciplineNode.disciplineName}`,
+            field: 'majorTags' as FilterTokenField,
+            value: disciplineNode.disciplineName,
+          },
+          children: disciplineNode.categories.map(categoryNode => ({
+            label: categoryNode.categoryName,
+            option: {
+              label: categoryNode.categoryName,
+              title: `专业大类 · ${disciplineNode.disciplineName} · ${categoryNode.categoryName}`,
+              field: 'majorKeywords' as FilterTokenField,
+              value: categoryNode.categoryName,
+            },
+            children: categoryNode.majorNames.map(majorName => ({
+              label: majorName,
+              option: {
+                label: majorName,
+                title: `专业名称 · ${disciplineNode.disciplineName} · ${categoryNode.categoryName} · ${majorName}`,
+                field: 'majorKeywords' as FilterTokenField,
+                value: majorName,
+              },
+            })),
+          })),
+        }))
+      : allMajorDisciplineValues.map(discipline => ({
+          label: discipline,
+          option: {
+            label: discipline,
+            title: `专业门类 · ${discipline}`,
+            field: 'majorTags' as FilterTokenField,
+            value: discipline,
+          },
+          children: (groupedCategories.get(discipline) || []).map(value => ({
+            label: value,
+            option: {
+              label: value,
+              title: `专业大类 · ${discipline} · ${value}`,
+              field: 'majorKeywords' as FilterTokenField,
+              value,
+            },
+          })),
+        }));
+
+    if (backendMajorTree.length === 0 && unmatchedCategories.length > 0) {
       majorChildren.push({
         label: '其他专业大类',
         children: unmatchedCategories.map(value => ({
@@ -841,6 +917,12 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     filters.negativeCityNames.forEach(name => {
       tokens.push(buildFilterTokenValue('cityNames', 'negative', name));
     });
+    filters.schoolKeywords.forEach(name => {
+      tokens.push(buildFilterTokenValue('schoolKeywords', 'positive', name));
+    });
+    filters.negativeSchoolKeywords.forEach(name => {
+      tokens.push(buildFilterTokenValue('schoolKeywords', 'negative', name));
+    });
     filters.schoolTags.forEach(tag => {
       tokens.push(buildFilterTokenValue('schoolTags', 'positive', tag));
     });
@@ -868,6 +950,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     filters.negativeProvinceNames,
     filters.cityNames,
     filters.negativeCityNames,
+    filters.schoolKeywords,
+    filters.negativeSchoolKeywords,
     filters.schoolTags,
     filters.negativeSchoolTags,
     filters.majorTags,
@@ -965,7 +1049,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     filters.majorKeywords.forEach(name => {
       chips.push({
         key: `major-keyword-positive-${name}`,
-        label: `专业大类 · ${name}`,
+        label: `专业 · ${name}`,
         field: 'majorKeyword',
         polarity: 'positive',
         value: name,
@@ -974,7 +1058,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     filters.negativeMajorKeywords.forEach(name => {
       chips.push({
         key: `major-keyword-negative-${name}`,
-        label: `专业大类 · 不看${name}`,
+        label: `专业 · 不看${name}`,
         field: 'majorKeyword',
         polarity: 'negative',
         value: name,
@@ -1323,11 +1407,13 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         setCandidateFilterOptions({
           provinceNames: data.provinceNames || [],
           cityNames: data.cityNames || [],
+          schoolKeywords: data.schoolKeywords || [],
           schoolTags: data.schoolTags || [],
           majorTags: data.majorTags || [],
           majorKeywords: data.majorKeywords || [],
           groups: data.groups || [],
           regionTree: data.regionTree || [],
+          majorTree: data.majorTree || [],
         });
       }
     } catch (error) {
@@ -1338,6 +1424,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const hasLoadedFilterOptions = useMemo(() => {
     return Boolean(
       (candidateFilterOptions.groups && candidateFilterOptions.groups.length > 0) ||
+        (candidateFilterOptions.schoolKeywords && candidateFilterOptions.schoolKeywords.length > 0) ||
+        (candidateFilterOptions.majorTree && candidateFilterOptions.majorTree.length > 0) ||
         (candidateFilterOptions.provinceNames && candidateFilterOptions.provinceNames.length > 0) ||
         (candidateFilterOptions.cityNames && candidateFilterOptions.cityNames.length > 0) ||
         (candidateFilterOptions.schoolTags && candidateFilterOptions.schoolTags.length > 0) ||
@@ -2284,6 +2372,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     const nextNegativeProvinceNames: string[] = [];
     const nextCityNames: string[] = [];
     const nextNegativeCityNames: string[] = [];
+    const nextSchoolKeywords: string[] = [];
+    const nextNegativeSchoolKeywords: string[] = [];
     const nextSchoolTags: string[] = [];
     const nextNegativeSchoolTags: string[] = [];
     const nextMajorKeywords: string[] = [];
@@ -2310,6 +2400,14 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
           nextNegativeCityNames.push(parsed.value);
         } else {
           nextCityNames.push(parsed.value);
+        }
+        return;
+      }
+      if (parsed.field === 'schoolKeywords') {
+        if (parsed.polarity === 'negative') {
+          nextNegativeSchoolKeywords.push(parsed.value);
+        } else {
+          nextSchoolKeywords.push(parsed.value);
         }
         return;
       }
@@ -2348,6 +2446,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       negativeProvinceNames: uniqueStrings(nextNegativeProvinceNames),
       cityNames: uniqueStrings(nextCityNames),
       negativeCityNames: uniqueStrings(nextNegativeCityNames),
+      schoolKeywords: uniqueStrings(nextSchoolKeywords),
+      negativeSchoolKeywords: uniqueStrings(nextNegativeSchoolKeywords),
       schoolTags: uniqueStrings(nextSchoolTags),
       negativeSchoolTags: uniqueStrings(nextNegativeSchoolTags),
       majorKeywords: uniqueStrings(nextMajorKeywords),
@@ -2382,6 +2482,81 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       nextValues.push(currentToken);
     }
     handleAttributeFilterChange(nextValues);
+  };
+
+  const removeActiveFilterChip = (chip: ActiveFilterChip) => {
+    setFilters(prev => {
+      const removeValue = (values: string[]) => values.filter(value => value !== chip.value);
+      if (chip.field === 'expertPreferredOnly') {
+        return {
+          ...prev,
+          expertPreferredOnly: false,
+        };
+      }
+      if (chip.field === 'provinceNames') {
+        return {
+          ...prev,
+          provinceNames:
+            chip.polarity === 'positive' ? removeValue(prev.provinceNames) : prev.provinceNames,
+          negativeProvinceNames:
+            chip.polarity === 'negative'
+              ? removeValue(prev.negativeProvinceNames)
+              : prev.negativeProvinceNames,
+        };
+      }
+      if (chip.field === 'cityNames') {
+        return {
+          ...prev,
+          cityNames: chip.polarity === 'positive' ? removeValue(prev.cityNames) : prev.cityNames,
+          negativeCityNames:
+            chip.polarity === 'negative'
+              ? removeValue(prev.negativeCityNames)
+              : prev.negativeCityNames,
+        };
+      }
+      if (chip.field === 'schoolKeyword') {
+        return {
+          ...prev,
+          schoolKeywords:
+            chip.polarity === 'positive' ? removeValue(prev.schoolKeywords) : prev.schoolKeywords,
+          negativeSchoolKeywords:
+            chip.polarity === 'negative'
+              ? removeValue(prev.negativeSchoolKeywords)
+              : prev.negativeSchoolKeywords,
+        };
+      }
+      if (chip.field === 'majorKeyword') {
+        return {
+          ...prev,
+          majorKeywords: chip.polarity === 'positive' ? removeValue(prev.majorKeywords) : prev.majorKeywords,
+          negativeMajorKeywords:
+            chip.polarity === 'negative'
+              ? removeValue(prev.negativeMajorKeywords)
+              : prev.negativeMajorKeywords,
+        };
+      }
+      if (chip.field === 'schoolTags') {
+        return {
+          ...prev,
+          schoolTags: chip.polarity === 'positive' ? removeValue(prev.schoolTags) : prev.schoolTags,
+          negativeSchoolTags:
+            chip.polarity === 'negative'
+              ? removeValue(prev.negativeSchoolTags)
+              : prev.negativeSchoolTags,
+        };
+      }
+      if (chip.field === 'majorTags') {
+        return {
+          ...prev,
+          majorTags: chip.polarity === 'positive' ? removeValue(prev.majorTags) : prev.majorTags,
+          negativeMajorTags:
+            chip.polarity === 'negative'
+              ? removeValue(prev.negativeMajorTags)
+              : prev.negativeMajorTags,
+        };
+      }
+      return prev;
+    });
   };
 
   const renderReviewAlertTooltip = (
@@ -3052,24 +3227,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     const hasChildren = Boolean(group.children?.length);
     const hasOptions = Boolean(group.options?.length);
     const hasExpandableContent = hasChildren || hasOptions;
-    const hasSelectedOption = Boolean(group.option && (
-      isAttributeFilterActive(group.option.field, 'positive', group.option.value) ||
-      isAttributeFilterActive(group.option.field, 'negative', group.option.value)
-    )) || (group.options || []).some(option =>
-      isAttributeFilterActive(option.field, 'positive', option.value) ||
-      isAttributeFilterActive(option.field, 'negative', option.value)
-    );
-    const childHasSelection = (children: FilterPanelGroup[] = []): boolean =>
-      children.some(child =>
-        Boolean(child.option && (
-          isAttributeFilterActive(child.option.field, 'positive', child.option.value) ||
-          isAttributeFilterActive(child.option.field, 'negative', child.option.value)
-        )) || (child.options || []).some(option =>
-          isAttributeFilterActive(option.field, 'positive', option.value) ||
-          isAttributeFilterActive(option.field, 'negative', option.value)
-        ) || childHasSelection(child.children || [])
-      );
-    const autoExpanded = Boolean(filterSearchKeyword.trim()) || hasSelectedOption || childHasSelection(group.children || []);
+    const autoExpanded = Boolean(filterSearchKeyword.trim());
     const expanded = autoExpanded || expandedFilterGroupKeys.includes(groupKey);
     const titleClassName = `${depth === 0 ? style.filterPanelGroupTitle : style.filterPanelSubGroupTitle} ${
       hasExpandableContent ? style.filterPanelGroupToggle : ''
@@ -3336,6 +3494,29 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                   </span>
                 </button>
               </div>
+
+              {activeFilterChips.length > 0 ? (
+                <div className={style.activeFilterChips}>
+                  {activeFilterChips.map(chip => (
+                    <span
+                      key={chip.key}
+                      className={`${style.activeFilterChip} ${
+                        chip.polarity === 'negative' ? style.activeFilterChipNegative : ''
+                      }`}
+                    >
+                      <span className={style.activeFilterChipText}>{chip.label}</span>
+                      <button
+                        type="button"
+                        className={style.activeFilterChipRemove}
+                        onClick={() => removeActiveFilterChip(chip)}
+                        aria-label={`移除${chip.label}`}
+                      >
+                        x
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              ) : null}
 
               <div className={style.candidateList}>
                 <Spin spinning={candidatePoolLoading}>

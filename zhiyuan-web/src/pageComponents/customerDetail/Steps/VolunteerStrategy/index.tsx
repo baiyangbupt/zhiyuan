@@ -8,7 +8,7 @@ import {
   ISegments,
   ISubSteps,
 } from '@/interface/api/customerDetail';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import ReturnPng from '@/images/icons/return.png';
 import { LinkOutlined } from '@ant-design/icons';
 import ModalImage from '../../Components/ModalImage';
@@ -200,9 +200,12 @@ const StrategySelector: React.FC<StrategySelectorProps> = ({ value, onChange, op
 interface ICollectflowProps {
   stepsData: ICollectflowRes;
   onNextStep: (btn: IActions, formValues?: any) => void;
+  onDraftChange?: (formValues?: any) => void;
   loading?: boolean;
   finalSubmitLoading?: boolean;
   setFinalSubmitLoading?: (flag: boolean) => void;
+  onBackStep?: () => void;
+  savedValues?: any;
 }
 
 interface IFormState {
@@ -212,9 +215,17 @@ interface IFormState {
 }
 
 const VolunteerStrategy = (props: ICollectflowProps) => {
-  const { stepsData, onNextStep, loading, finalSubmitLoading, setFinalSubmitLoading } = props;
+  const {
+    stepsData,
+    onNextStep,
+    onDraftChange,
+    loading,
+    finalSubmitLoading,
+    setFinalSubmitLoading,
+    onBackStep,
+    savedValues,
+  } = props;
   const formsRef = useRef<FormInstance[]>([]);
-  const [isNextConfirmBtn] = useState(false);
   const [batchOptions] = useState<any>([]);
   const [formStates, setFormStates] = useState<IFormState[]>([]);
   const [totalScore] = useState(0);
@@ -233,10 +244,52 @@ const VolunteerStrategy = (props: ICollectflowProps) => {
         initialValues[field.fieldId] = field.defaultValue;
       });
     }
+    if (savedValues?.strategyType?.code) {
+      initialValues.strategyType = savedValues.strategyType.code;
+    }
     return initialValues;
   };
 
   const [strategyType, setStrategyType] = useState<any>(); // 志愿策略
+
+  useEffect(() => {
+    if (!savedValues?.strategyType?.code) return;
+    stepsData?.subSteps?.forEach((item, index) => {
+      const field = item.formConfig?.fields?.find((f: any) => f.fieldId === 'strategyType');
+      const option = field?.options?.find((opt: any) => opt.code === savedValues.strategyType.code);
+      if (option) {
+        setStrategyType(option);
+        setAllFormValues(prev => ({
+          ...prev,
+          [index]: { strategyType: option.code, subStepId: item.subStepId },
+        }));
+        formsRef.current[index]?.setFieldsValue({ strategyType: option.code });
+      }
+    });
+  }, [stepsData, savedValues]);
+
+  const buildStrategyPayload = (item: ISubSteps, index: number, overrideValues?: any) => {
+    const formValues =
+      overrideValues ||
+      formsRef.current[index]?.getFieldsValue?.() ||
+      allFormValues[index] ||
+      {};
+    const strategyTypeValue = formValues.strategyType ?? strategyType;
+    const strategyTypeOption =
+      typeof strategyTypeValue === 'object'
+        ? strategyTypeValue
+        : item?.formConfig?.fields
+            ?.find((field: any) => field.fieldId === 'strategyType')
+            ?.options?.find((opt: any) => opt.code === strategyTypeValue);
+    const strategyTypePayload = strategyTypeOption
+      ? {
+          code: strategyTypeOption.code,
+          name: strategyTypeOption.name,
+        }
+      : null;
+    return { strategyType: strategyTypePayload };
+  };
+
   // 表单提交处理
   const handleFormFinish = (values: any, index: number, subStepId: string) => {
     console.log('表单提交处理', values, index, subStepId);
@@ -264,6 +317,10 @@ const VolunteerStrategy = (props: ICollectflowProps) => {
       ...prev,
       [index]: { ...values, subStepId },
     }));
+    const item = stepsData?.subSteps?.find(subStep => subStep.subStepId === subStepId);
+    if (item) {
+      onDraftChange?.(buildStrategyPayload(item, index, values));
+    }
 
     const updatedStates = [...newFormStates];
     updatedStates[index] = {
@@ -279,22 +336,9 @@ const VolunteerStrategy = (props: ICollectflowProps) => {
 
   // 下一步处理
   const handleClickNextStep = (btn: IActions, item: ISubSteps, index: number) => {
-    const formValues = allFormValues[index] || {};
-    const strategyTypeValue = formValues.strategyType ?? strategyType;
-    const strategyTypeOption =
-      typeof strategyTypeValue === 'object'
-        ? strategyTypeValue
-        : item?.formConfig?.fields
-            ?.find((field: any) => field.fieldId === 'strategyType')
-            ?.options?.find((opt: any) => opt.code === strategyTypeValue);
-    const strategyTypePayload = strategyTypeOption
-      ? {
-          code: strategyTypeOption.code,
-          name: strategyTypeOption.name,
-        }
-      : null;
+    const payload = buildStrategyPayload(item, index, formStates[index]?.values);
     setFinalSubmitLoading?.(true);
-    onNextStep(btn, { strategyType: strategyTypePayload });
+    onNextStep(btn, payload);
   };
   // 点击查看图片
   const handleShowModal = (rich: any) => {
@@ -552,38 +596,34 @@ const VolunteerStrategy = (props: ICollectflowProps) => {
                 </div>
               ) : null
             )}
-
-            <div className={style.buttons}>
-              {item.actions?.map(
-                (btn: IActions) =>
-                  btn.actionType === 'finalSubmit' && (
-                    <Spin
-                      spinning={loading || finalSubmitLoading}
-                      key={btn.actionType}
-                      tip="正在提交，请稍候..."
-                    >
-                      <div
-                        className={`${style.nextBtn} ${btn.actionType} ${loading || finalSubmitLoading ? style.nextBtnDisabled : ''}`}
-                        onClick={
-                          loading || finalSubmitLoading
-                            ? undefined
-                            : () => handleClickNextStep(btn, item, index)
-                        }
-                      >
-                        <span>了解完成，确认填报策略</span>
-                        <img src={ReturnPng.src} alt="右箭头" />
-                      </div>
-                    </Spin>
-                  )
-              )}
-
-              {isNextConfirmBtn && (
-                <div className={style.rightAnswer}>
-                  <div className={style.answerBtn}>了解完成，继续下一步</div>
-                </div>
-              )}
-            </div>
           </>
+        )}
+
+        {formState.showSummary && (
+          <div className={style.buttons}>
+            {item.actions?.map(
+              (btn: IActions) =>
+                btn.actionType === 'finalSubmit' && (
+                  <Spin
+                    spinning={loading || finalSubmitLoading}
+                    key={btn.actionType}
+                    tip="正在提交，请稍候..."
+                  >
+                    <div
+                      className={`${style.nextBtn} ${btn.actionType} ${loading || finalSubmitLoading ? style.nextBtnDisabled : ''}`}
+                      onClick={
+                        loading || finalSubmitLoading
+                          ? undefined
+                          : () => handleClickNextStep(btn, item, index)
+                      }
+                    >
+                      <span>了解完成，继续下一步</span>
+                      <img src={ReturnPng.src} alt="右箭头" />
+                    </div>
+                  </Spin>
+                )
+            )}
+          </div>
         )}
       </div>
     );

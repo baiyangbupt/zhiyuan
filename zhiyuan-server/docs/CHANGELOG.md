@@ -4,12 +4,16 @@
 
 ### Fixed
 
+- 创建会话入口在保存 session 前校验批次、省份、选科、成绩等核心字段，缺批次等采集异常会返回明确业务提示，不再以空指针形式变成“系统错误”。
 - `planning workspace` 统一专业+院校模式候选身份口径：候选池查询、新建候选池、推荐覆盖层和旧会话读取均按 `planSchoolDataId + majorId` 生成/解析 `volunteerId`，并在加入方案、禁用、补偿等链路按旧 ID 前缀兼容判断同一志愿，避免历史/迁移会话中“已在方案里的志愿还能再次加入”。
 - 高途渠道普通 `VIP` 用户默认建会话上限从 20 调整为 500；高途 `userType=1` 仍映射为 `VIP`，登录/权益同步/后台调整时会写入新的 `limitSettings.createSessionLimit`。
 - 后台管理接口新增按高途 `memberId` 查询和调整用户权限的能力，并补齐 `fix-gaotu-user-level` 找不到本地用户时的明确业务错误；同步新增高途用户权限管理文档，记录 `memberId -> credential.user_id -> assistant_user_base.id` 的定位方式。
 - 记录后续 TODO：高考出分后智能填报场景需进一步调整为每天最多创建 2 个会话，当前版本不改变现有总量限制模型。
 - `planning workspace` 候选筛选项不再把 rank 推荐解释标签 `意向专业/意向专业类/非意向专业/非意向专业类` 暴露为普通专业标签，并移除用户侧 `major.tag / 专业标签` 分组，避免用户误以为这是主动筛选条件或真实专业大类。
 - `planning workspace` 候选筛选项新增兼容字段 `regionTree`，后端基于当前候选池的 `provinceName/cityName` 聚合省市映射，避免前端只靠分页缓存推断城市归属。
+- `planning workspace` 候选筛选项新增 `schoolKeywords` 与 `majorTree`，并在 `groups` 中补充 `school.name / major.name`，支持前端按具体院校名和“专业门类 -> 专业大类 -> 专业名”三级结构筛选候选。
+- `planning workspace` 候选专业筛选树将无法归类的专业统一放到“其他专业”尾部展示，避免 `majorId/categoryId/subCategoryId=0` 的职业本科专业挤在正常门类前面。
+- `planning workspace` 系统候选池为空的状态文案去掉“筛选条件”，明确归因为专项资格、批次、分数线或硬性限制，避免和用户主动筛选导致的空结果混淆。
 - `planning workspace` 新增当前方案排序接口 `ordered-plan/sort`，支持按录取率、院校层次、推荐系数一次性重排方案，固定项保留原位置并记录 `plan_sort_apply` 行为事件。
 - `planning workspace` 方案排序补充稳定多级规则：录取率排序按院校排名、推荐系数兜底；院校层次排序按录取率、推荐系数兜底；推荐系数排序按录取率、院校排名兜底，避免一级值相同时顺序随机打散。
 - `planning workspace` 方案排序成功后会将审查和调整建议标记为过期；若方案已有审查结果，工作区状态展示为待重新审查，避免继续沿用旧顺序下的审查结论。
@@ -41,6 +45,7 @@
 
 ### Added
 
+- 外部授权初始化会话接口新增稳定版本路径 `/integration/v1/session/initialize`，与既有无版本路径共用同一实现；响应补充 `studentName` 展示字段，语义来自 `createSession.userName`，用于外部系统标识当前被服务学员。
 - 方案生成算法文档补充 2026-05-10 生产观察，明确 `probability_gap` 当前是 best-effort 修复而非硬约束，并记录 `2075/2076` 新建会话表现、`gradientOk` 与 review 语义不一致等遗留问题。
 - 新增生产运维 P0 脚本：`ops/healthcheck.sh` 聚合本地/远端 HTTP、Docker Compose、systemd、Nginx 和磁盘检查；`ops/migration-status.sh` 封装 legacy 懒迁移日志分析，作为 3.0.0 灰度发布后的快速观测入口。
 - 新增外部授权初始化会话接口：`POST /gaotu-assistant-bot/chat/{tenantId}/integration/session/initialize`，复用现有 `login/by-token -> tk/pf -> LoginInterceptor` 用户授权链路，在授权用户上下文中创建会话、生成候选池/初始方案/排序方案，并返回会话定位与方案获取能力；同步新增幂等表、设计文档和 controller/service 单测。

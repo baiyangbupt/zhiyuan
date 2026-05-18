@@ -1,6 +1,6 @@
 import AudioContent from '@/pageComponents/customerDetail/Components/AudioContent';
 import style from './style.module.scss';
-import { Button, Checkbox, Form, Input, List, Radio, Select } from 'antd';
+import { Button, Checkbox, Form, FormInstance, Input, List, Radio, Select } from 'antd';
 import {
   IActions,
   ICollectflowRes,
@@ -16,13 +16,18 @@ import { LinkOutlined } from '@ant-design/icons';
 import { getBatchList, getSubjectPolicy } from '@/service/apis/sessionDetail';
 import { getPositionRangeApi, getEthnicityListApi } from '@/service/apis/customerDetail';
 import ModalImage from '../../Components/ModalImage';
+import { flushSync } from 'react-dom';
+import { buildCreateSessionBatchPayload } from '@/utils/customerDetailSession';
 const { Option } = Select;
 const CheckboxGroup = Checkbox.Group;
 
 interface ICollectflowProps {
   stepsData: ICollectflowRes;
   onNextStep: (btn: IActions, formValues?: any) => void;
+  onDraftChange?: (formValues?: any) => void;
   userSubjectList: any;
+  onBackStep?: () => void;
+  savedValues?: any;
 }
 
 interface IFormState {
@@ -37,14 +42,15 @@ const sexOptions = [
 ];
 
 const PersonalInfoCollect = (props: ICollectflowProps) => {
-  const [form] = Form.useForm();
-  const formStrengthSubjectList = Form.useWatch('strengthSubjectList', form);
-  const formColorSistuation = Form.useWatch('colorSistuation', form);
-  const { stepsData, onNextStep, userSubjectList } = props;
+  const [scoreForm] = Form.useForm();
+  const [detailForm] = Form.useForm();
+  const formStrengthSubjectList = Form.useWatch('strengthSubjectList', scoreForm);
+  const formColorSistuation = Form.useWatch('colorSistuation', detailForm);
+  const { stepsData, onNextStep, onDraftChange, userSubjectList, onBackStep, savedValues } = props;
   const stepsRef = useRef<ICollectflowRes>();
   stepsRef.current = stepsData;
   const formsRef = useRef<FormInstance[]>([]);
-  const [isNextConfirmBtn, setIsNextConfirmBtn] = useState(false);
+  const summaryRefs = useRef<Record<number, HTMLDivElement | null>>({});
   const [batchOptions, setBatchOptions] = useState<any>([]);
   const [subjectType, setSubjectType] = useState<any>(null); // 学科类型-首选科目
   const [subjectSecondList, setSubjectSecondList] = useState<any>(); // 学科类型-次选科目
@@ -219,6 +225,137 @@ const PersonalInfoCollect = (props: ICollectflowProps) => {
   }, []);
 
   // 构建初始值
+  const getBatchFieldValue = (options = batchOptions) => {
+    const savedBatch = savedValues?.batch;
+    if (!savedBatch || !Array.isArray(options) || !options.length) return undefined;
+    const matched =
+      options.find(
+        (item: any) =>
+          String(item.batch) === String(savedBatch.code) &&
+          (!savedBatch.level || String(item.level?.key) === String(savedBatch.level))
+      ) ||
+      options.find((item: any) => String(item.batch) === String(savedBatch.code)) ||
+      options.find(
+        (item: any) =>
+          String(item.batchTitle || '') === String(savedBatch.name || '').split('(')[0] ||
+          String(item.label) === String(savedBatch.name)
+      );
+    return matched?.id;
+  };
+
+  const resolveBatchOption = (batchValue: any) => {
+    const options = Array.isArray(batchOptions) ? batchOptions : [];
+    if (!options.length) return null;
+    const normalizedBatchValue =
+      batchValue === undefined || batchValue === null ? '' : String(batchValue);
+    const savedBatch = savedValues?.batch;
+
+    return (
+      (normalizedBatchValue
+        ? options.find((item: any) => String(item.id) === normalizedBatchValue)
+        : null) ||
+      (normalizedBatchValue
+        ? options.find((item: any) => String(item.batch) === normalizedBatchValue)
+        : null) ||
+      (savedBatch
+        ? options.find(
+            (item: any) =>
+              String(item.batch) === String(savedBatch.code) &&
+              (!savedBatch.level || String(item.level?.key) === String(savedBatch.level))
+          )
+        : null) ||
+      (savedBatch
+        ? options.find((item: any) => String(item.batch) === String(savedBatch.code))
+        : null) ||
+      options[0] ||
+      null
+    );
+  };
+
+  const buildBatchPayload = (batchOption: any) => {
+    return buildCreateSessionBatchPayload(batchOption) || savedValues?.batch;
+  };
+
+  const getSubjectCodes = (filter?: 'first' | 'second') => {
+    const subjectList = Array.isArray(savedValues?.subjectList) ? savedValues.subjectList : [];
+    return subjectList
+      .filter((item: any) => {
+        if (filter === 'first') return item?.isFirst === 1;
+        if (filter === 'second') return item?.isFirst !== 1;
+        return true;
+      })
+      .map((item: any) => item?.value || item?.subject || item?.code)
+      .filter(Boolean);
+  };
+
+  const getSavedValuesForSubStep = (subStep: any) => {
+    const values: any = {};
+    if (!savedValues || !subStep?.formConfig?.fields) return values;
+
+    if (subStep.subStepId === 'personal_info_step1') {
+      subStep.formConfig.fields.forEach((field: any) => {
+        if (field.fieldId === 'subjectList_first') {
+          values.subjectList_first = getSubjectCodes('first');
+        } else if (field.fieldId === 'subjectList_second') {
+          values.subjectList_second = getSubjectCodes('second');
+        } else if (field.fieldId === 'subjectList') {
+          values.subjectList =
+            field.fieldType === 'radio'
+              ? savedValues?.subjectType?.code || getSubjectCodes()[0]
+              : getSubjectCodes();
+        }
+      });
+
+      if (Array.isArray(savedValues?.subjectScoreList)) {
+        savedValues.subjectScoreList.forEach((item: any) => {
+          if (item?.subject && item?.subjectName) {
+            values[`subjectScoreList-${item.subjectName}-${item.subject}`] = item.score;
+          }
+        });
+      }
+      if (Array.isArray(savedValues?.strengthSubjectList)) {
+        values.strengthSubjectList = savedValues.strengthSubjectList
+          .map((item: any) => item?.subject || item?.value || item?.code)
+          .filter(Boolean);
+      }
+      if (Object.prototype.hasOwnProperty.call(savedValues, 'bonusPolicy')) {
+        values.bonusPolicy = savedValues.bonusPolicy;
+      }
+      if (Object.prototype.hasOwnProperty.call(savedValues, 'bonusScore')) {
+        values.bonusScore = savedValues.bonusScore;
+      }
+      if (Object.prototype.hasOwnProperty.call(savedValues, 'totalScore')) {
+        values.totalScore = savedValues.totalScore;
+      }
+      if (Object.prototype.hasOwnProperty.call(savedValues, 'totalScorePos')) {
+        values.totalScorePos = savedValues.totalScorePos;
+      }
+      const savedBatchId = getBatchFieldValue();
+      if (savedBatchId !== undefined) values.batch = savedBatchId;
+    }
+
+    if (subStep.subStepId === 'personal_info_step2') {
+      if (savedValues?.sex?.code) values.sex = savedValues.sex.code;
+      if (Object.prototype.hasOwnProperty.call(savedValues, 'height')) {
+        values.height = savedValues.height;
+      }
+      if (Array.isArray(savedValues?.colorSistuation)) {
+        values.colorSistuation = savedValues.colorSistuation;
+      }
+      if (savedValues?.visionAbility) {
+        values['visionMutiInput-left'] = savedValues.visionAbility.left;
+        values['visionMutiInput-right'] = savedValues.visionAbility.right;
+      }
+      if (savedValues?.ethnicity?.code) values.ethnicity = savedValues.ethnicity.code;
+      if (savedValues?.politicalStatus?.code) values.politicalStatus = savedValues.politicalStatus.code;
+      if (Object.prototype.hasOwnProperty.call(savedValues, 'specialPlan')) {
+        values.specialPlan = savedValues.specialPlan;
+      }
+    }
+
+    return values;
+  };
+
   const getInitialValues = (subStep: any) => {
     const initialValues: any = {};
     if (subStep.formConfig?.fields) {
@@ -226,80 +363,161 @@ const PersonalInfoCollect = (props: ICollectflowProps) => {
         initialValues[field.fieldId] = field.defaultValue;
       });
     }
-    return initialValues;
+    return {
+      ...initialValues,
+      ...getSavedValuesForSubStep(subStep),
+    };
   };
 
   // 初始化表单状态和表单实例
   useEffect(() => {
     if (processedStepsData?.subSteps) {
-      const initialStates = processedStepsData.subSteps.map(() => ({
-        values: null,
-        showSummary: false,
-        processFlag: false,
-      }));
+      const restoredValues: Record<number, any> = {};
+      const initialStates = processedStepsData.subSteps.map((subStep, index) => {
+        const savedSubStepValues = getSavedValuesForSubStep(subStep);
+        const hasSavedValues = Object.keys(savedSubStepValues).length > 0;
+        const initialValues = getInitialValues(subStep);
+        if (hasSavedValues) {
+          restoredValues[index] = { ...initialValues, subStepId: subStep.subStepId };
+        }
+        return {
+          values: hasSavedValues ? initialValues : null,
+          showSummary: hasSavedValues,
+          processFlag: hasSavedValues,
+        };
+      });
       setFormStates(initialStates);
+      if (Object.keys(restoredValues).length) {
+        setAllFormValues(prev => ({ ...prev, ...restoredValues }));
+      }
 
       processedStepsData.subSteps.forEach((subStep, index) => {
         const initValues = getInitialValues(subStep);
-        if (formsRef.current[index]) {
-          formsRef.current[index].setFieldsValue(initValues);
-        }
+        const stepForm = getStepForm(index);
+        formsRef.current[index] = stepForm;
+        stepForm.setFieldsValue(initValues);
       });
-
-      // 初始化表单实例数组
-      formsRef.current = new Array(processedStepsData.subSteps.length).fill(null);
 
       // 这里可以调用 provinceChange，因为现在有表单实例了
       if (userInfo) provinceChange();
     }
   }, [processedStepsData, userInfo]);
 
-  const scrollRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!processedStepsData?.subSteps) return;
+    const restoredValues: Record<number, any> = {};
+    setFormStates(prev => {
+      const nextStates = processedStepsData.subSteps.map((subStep, index) => {
+        const savedSubStepValues = getSavedValuesForSubStep(subStep);
+        const hasSavedValues = Object.keys(savedSubStepValues).length > 0;
+        const initialValues = getInitialValues(subStep);
+        const prevState = prev[index];
+        const currentValues = prevState?.values ?? (hasSavedValues ? initialValues : null);
+        if (currentValues) {
+          restoredValues[index] = { ...currentValues, subStepId: subStep.subStepId };
+        }
+        return {
+          values: currentValues,
+          showSummary: Boolean(prevState?.showSummary || hasSavedValues),
+          processFlag: prevState?.processFlag ?? hasSavedValues,
+        };
+      });
+      return nextStates;
+    });
+
+    processedStepsData.subSteps.forEach((subStep, index) => {
+      const initValues = getInitialValues(subStep);
+      const stepForm = getStepForm(index);
+      formsRef.current[index] = stepForm;
+      stepForm.setFieldsValue(initValues);
+    });
+
+    if (Object.keys(restoredValues).length) {
+      setAllFormValues(prev => ({ ...prev, ...restoredValues }));
+    }
+    if (Object.prototype.hasOwnProperty.call(savedValues || {}, 'totalScore')) {
+      setTotalScore(Number(savedValues.totalScore) || 0);
+    }
+    if (Object.prototype.hasOwnProperty.call(savedValues || {}, 'bonusPolicy')) {
+      setBonusPolicy(Boolean(savedValues.bonusPolicy));
+    }
+  }, [processedStepsData, batchOptions, savedValues]);
+
+  const getStepForm = (index: number) => (index === 0 ? scoreForm : detailForm);
+
+  const getScrollParent = (node: HTMLElement): HTMLElement | null => {
+    let parent = node.parentElement;
+    while (parent) {
+      const style = window.getComputedStyle(parent);
+      const overflowY = style.overflowY;
+      if (
+        (overflowY === 'auto' || overflowY === 'scroll') &&
+        parent.scrollHeight > parent.clientHeight
+      ) {
+        return parent;
+      }
+      parent = parent.parentElement;
+    }
+    return null;
+  };
+
+  const scrollSummaryDownIfNeeded = (index: number) => {
+    const target = summaryRefs.current[index];
+    if (!target || typeof window === 'undefined') return;
+
+    const gap = 24;
+    const targetRect = target.getBoundingClientRect();
+    const scrollParent = getScrollParent(target);
+
+    if (scrollParent) {
+      const parentRect = scrollParent.getBoundingClientRect();
+      const overflowDistance = targetRect.bottom - parentRect.bottom + gap;
+      if (overflowDistance > 0) {
+        scrollParent.scrollBy({ top: overflowDistance, behavior: 'smooth' });
+      }
+      return;
+    }
+
+    const overflowDistance = targetRect.bottom - window.innerHeight + gap;
+    if (overflowDistance > 0) {
+      window.scrollBy({ top: overflowDistance, behavior: 'smooth' });
+    }
+  };
 
   // 表单提交处理
   const handleFormFinish = (values: any, index: number, subStepId: string) => {
-    const newFormStates = [...formStates];
-    newFormStates[index] = {
-      ...newFormStates[index],
-      values,
-      processFlag: true,
-    };
-    setFormStates(newFormStates);
-    // 保存当前步骤的表单值
     const allValue = { ...allFormValues, [index]: { ...values, subStepId } };
-    setAllFormValues(allValue);
+    flushSync(() => {
+      setFormStates(prev => {
+        const next = [...prev];
+        next[index] = {
+          ...next[index],
+          values,
+          processFlag: true,
+          showSummary: true,
+        };
+        return next;
+      });
+      setAllFormValues(allValue);
+    });
+    handleConfirmedDraftChange(allValue);
 
-    setTimeout(() => {
-      const updatedStates = [...newFormStates];
-      updatedStates[index] = {
-        ...updatedStates[index],
-        showSummary: false,
-      };
-      setFormStates(updatedStates);
-      scrollRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-      // 👉 判断是否是最后一个表单，如果是就直接下一步
-      const isLastStep = index === (stepsRef.current?.subSteps.length ?? 0) - 1;
-      if (isLastStep) {
-        const btn = stepsRef.current?.subSteps[index].actions?.find(a => a.actionType === 'next');
-        if (btn) {
-          handleClickNextStep(stepsRef.current!.subSteps[index], allValue);
-        }
-      }
-    }, 100);
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => scrollSummaryDownIfNeeded(index));
+    });
   };
 
   const scrollToFirstErrorField = (errorInfo: any, index: number) => {
     const firstError = errorInfo?.errorFields?.[0];
     if (!firstError) return;
-    const currentForm = formsRef.current[index] || form;
+    const currentForm = formsRef.current[index] || getStepForm(index);
     currentForm?.scrollToField(firstError.name, {
       behavior: 'smooth',
       block: 'center',
     });
   };
 
-  // 下一步处理
-  const handleClickNextStep = (item: ISubSteps, values: Record<number, any>) => {
+  const transformFormValues = (values: Record<number, any>) => {
     // 合并所有已提交的表单值
 
     let transformedFormValues = Object.values(values).map(value => {
@@ -308,6 +526,7 @@ const PersonalInfoCollect = (props: ICollectflowProps) => {
       );
       const fields = stepData?.formConfig?.fields || [];
       if (value.subStepId === 'personal_info_step1') {
+        const selectedBatch = resolveBatchOption(value.batch);
         const subListKeys = Object.keys(value)
           .filter(key => key.includes('subjectList'))
           .reduce((result, key) => {
@@ -358,23 +577,11 @@ const PersonalInfoCollect = (props: ICollectflowProps) => {
                 score: Number(value),
               };
             }),
-          batch: batchOptions
-            ?.filter(batch => batch.id === value.batch)
-            .map(bat => {
-              return {
-                code: bat.batch,
-                level: bat.level.key,
-                pos: bat.pos ? Number(bat.pos) : undefined,
-                score: bat.score ? parseFloat(bat.score) : undefined,
-                name: `${bat.batchTitle}(批次线${+bat.score.slice(0, 5)}分)`,
-              };
-            })?.[0],
-          prepareType: batchOptions
-            ?.filter(batch => batch.id === value.batch)
-            .map(bat => bat.prepareType)?.[0],
+          batch: buildBatchPayload(selectedBatch),
+          prepareType: selectedBatch?.prepareType || savedValues?.prepareType,
         };
       }
-      if (item.subStepId === 'personal_info_step2') {
+      if (value.subStepId === 'personal_info_step2') {
         return {
           height: value?.height,
           colorSistuation: value?.colorSistuation,
@@ -391,13 +598,37 @@ const PersonalInfoCollect = (props: ICollectflowProps) => {
           politicalStatus: fields
             .find(item => item.fieldId === 'politicalStatus')
             ?.options.find(politicalStatus => politicalStatus.code === value.politicalStatus),
-          specialPlan: value?.specialPlan === 'true' ? true : false,
+          specialPlan:
+            value?.specialPlan === true ||
+            value?.specialPlan === 'true' ||
+            value?.specialPlan === '1',
         };
       }
     });
     const mergedValues = Object.assign({}, ...transformedFormValues);
     console.log('mergedValues', mergedValues);
-    setIsNextConfirmBtn(true);
+    return mergedValues;
+  };
+
+  const handleConfirmedDraftChange = (values: Record<number, any>) => {
+    const mergedValues = transformFormValues(values);
+    onDraftChange?.(mergedValues);
+    return mergedValues;
+  };
+
+  // 下一步处理
+  const handleClickNextStep = (item: ISubSteps, values: Record<number, any>) => {
+    const latestValues = { ...values };
+    processedStepsData?.subSteps?.forEach((subStep, index) => {
+      if (!formStates[index]?.processFlag) return;
+      const currentFormValues = formsRef.current[index]?.getFieldsValue?.() || {};
+      latestValues[index] = {
+        ...latestValues[index],
+        ...currentFormValues,
+        subStepId: subStep.subStepId,
+      };
+    });
+    const mergedValues = handleConfirmedDraftChange(latestValues);
 
     // 传递合并后的表单值
     const btn = {
@@ -454,6 +685,8 @@ const PersonalInfoCollect = (props: ICollectflowProps) => {
     if (values.bonusPolicy !== undefined) {
       setBonusPolicy(values.bonusPolicy);
     }
+
+    if (index !== 0) return;
 
     const scoreMutiInputData = Object.entries(allValues).reduce((acc, [key, value]) => {
       if (key.includes('subjectScoreList')) {
@@ -522,11 +755,16 @@ const PersonalInfoCollect = (props: ICollectflowProps) => {
     if (code === 0 && data) {
       const list = data.batchList?.map(item => ({
         ...item,
-        // label: item.batchTitle,
-        label: `${item.batchTitle}(批次线${+item.score.slice(0, 5)}分)`,
+        label: buildCreateSessionBatchPayload(item)?.name || item.batchTitle,
         value: item.id,
       }));
-      form.setFieldValue('batch', list?.[0].id);
+      const currentBatchId = scoreForm.getFieldValue('batch');
+      const validCurrentBatchId = list?.some(item => String(item.id) === String(currentBatchId))
+        ? currentBatchId
+        : undefined;
+      scoreForm.setFieldsValue({
+        batch: getBatchFieldValue(list) || validCurrentBatchId || list?.[0]?.id,
+      });
       setBatchOptions(list);
     }
   };
@@ -549,7 +787,7 @@ const PersonalInfoCollect = (props: ICollectflowProps) => {
   ];
 
   // 渲染表单字段
-  const renderFormField = (field: any) => {
+  const renderFormField = (field: any, currentForm: FormInstance) => {
     switch (field.fieldType) {
       case 'mutiSelect':
         return field.mutiSelectType === 'subjectList' || field.fieldId === 'strengthSubjectList' ? (
@@ -649,7 +887,7 @@ const PersonalInfoCollect = (props: ICollectflowProps) => {
         );
 
       default:
-        if (form.getFieldValue('bonusPolicy') && field.fieldId === 'bonusScore') {
+        if (currentForm.getFieldValue('bonusPolicy') && field.fieldId === 'bonusScore') {
           return <Input placeholder="请输入加分" disabled={!bonusPolicy} />;
         } else if (field.fieldId === 'totalScore') {
           return <Input placeholder="总分" disabled value={totalScore} readOnly />;
@@ -666,9 +904,15 @@ const PersonalInfoCollect = (props: ICollectflowProps) => {
     }
   };
 
+  const shouldValidateOuterField = (field: any) => {
+    return !['scoreMutiInput', 'visionMutiInput'].includes(field.fieldType);
+  };
+
   // 渲染单个步骤
   const renderStep = (item: any, index: number) => {
     const formState = formStates[index] || { values: null, showSummary: false, processFlag: false };
+    const currentForm = getStepForm(index);
+    formsRef.current[index] = currentForm;
 
     // 控制步骤显示逻辑
     if (index > 0 && !formStates[index - 1]?.processFlag) {
@@ -695,10 +939,7 @@ const PersonalInfoCollect = (props: ICollectflowProps) => {
           <div className={style.confirmForm}>
             <div className={style.title}>{item.formConfig.title}</div>
             <Form
-              form={form}
-              ref={formInstance => {
-                formsRef.current[index] = formInstance;
-              }}
+              form={currentForm}
               name={`confirmForm-${index}`}
               onFinish={values => handleFormFinish(values, index, item.subStepId)}
               onFinishFailed={errorInfo => scrollToFirstErrorField(errorInfo, index)}
@@ -709,22 +950,26 @@ const PersonalInfoCollect = (props: ICollectflowProps) => {
               labelWrap
             >
               {item.formConfig.fields?.map((field: any) => {
-                if (field.fieldId === 'bonusScore' && !form.getFieldValue('bonusPolicy')) {
+                if (field.fieldId === 'bonusScore' && !currentForm.getFieldValue('bonusPolicy')) {
                   return null;
                 }
+                const isOuterValidatedField = shouldValidateOuterField(field);
                 return (
                   <Form.Item
                     key={field.fieldId}
                     label={field.fieldName}
-                    name={field.fieldId}
-                    initialValue={field.defaultValue}
-                    rules={[
-                      {
-                        required: field.required,
-                        message:
-                          field.fieldId === 'subjectScoreList' ? '' : field.validation?.required,
-                      },
-                    ]}
+                    name={isOuterValidatedField ? field.fieldId : undefined}
+                    initialValue={isOuterValidatedField ? field.defaultValue : undefined}
+                    rules={
+                      isOuterValidatedField
+                        ? [
+                            {
+                              required: field.required,
+                              message: field.validation?.required,
+                            },
+                          ]
+                        : undefined
+                    }
                     extra={
                       field.helpConfig ? (
                         <>
@@ -750,15 +995,22 @@ const PersonalInfoCollect = (props: ICollectflowProps) => {
                       ) : null
                     }
                   >
-                    {renderFormField(field)}
+                    {renderFormField(field, currentForm)}
                   </Form.Item>
                 );
               })}
 
-              <Form.Item wrapperCol={{ offset: 7 }} style={{ marginBottom: 16 }}>
-                <Button type="primary" htmlType="submit" block>
-                  确认提交
-                </Button>
+              <Form.Item style={{ marginBottom: 16 }}>
+                <div className={style.formActions}>
+                  {onBackStep && (
+                    <Button className={style.backActionButton} onClick={onBackStep}>
+                      上一步
+                    </Button>
+                  )}
+                  <Button className={style.submitActionButton} type="primary" htmlType="submit">
+                    确认提交
+                  </Button>
+                </div>
               </Form.Item>
             </Form>
           </div>
@@ -807,16 +1059,14 @@ const PersonalInfoCollect = (props: ICollectflowProps) => {
                     </div>
                   )
               )}
-
-              {isNextConfirmBtn && (
-                <div className={style.rightAnswer}>
-                  <div className={style.answerBtn}>了解完成，继续下一步</div>
-                </div>
-              )}
             </div>
           </>
         )}
-        <div ref={scrollRef}></div>
+        <div
+          ref={node => {
+            summaryRefs.current[index] = node;
+          }}
+        ></div>
       </div>
     );
   };

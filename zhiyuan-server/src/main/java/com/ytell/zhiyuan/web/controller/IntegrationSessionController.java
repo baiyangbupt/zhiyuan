@@ -20,7 +20,7 @@ public class IntegrationSessionController {
     @Autowired
     private IntegrationSessionService integrationSessionService;
 
-    @PostMapping("/session/initialize")
+    @PostMapping({"/session/initialize", "/v1/session/initialize"})
     @ApiOperation("外部授权初始化会话并生成方案")
     public BaseResponse<ExternalSessionInitializeRes> initializeSession(@PathVariable("tenantId") Long tenantId,
                                                                         @RequestBody ExternalSessionInitializeReq req) {

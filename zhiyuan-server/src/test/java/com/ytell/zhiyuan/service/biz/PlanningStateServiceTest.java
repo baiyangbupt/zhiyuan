@@ -1177,6 +1177,31 @@ public class PlanningStateServiceTest {
     }
 
     @Test
+    void shouldMarkGeneratedEmptyCandidatePoolAsSystemSupplyIssue() {
+        when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
+                .thenReturn(null);
+        VolunteerRecommendListResponse response = new VolunteerRecommendListResponse();
+        response.setBaseData(buildBaseData(3, 1, 1, 1));
+        response.setUserScoreDetail(buildScoreDetail());
+        response.setSprints(java.util.Collections.emptyList());
+        response.setSafes(java.util.Collections.emptyList());
+        response.setProtects(java.util.Collections.emptyList());
+        when(volunteerBizService.recommendVolunteerList(1L, 1L, false, false)).thenReturn(response);
+
+        PlanningStateDTO state = planningStateService.generateCandidatePool(1L, 1L, new CandidatePoolGenerateReq());
+
+        assertEquals("empty", state.getCandidatePoolState().getStatusCode());
+        assertEquals("当前条件下没有可用志愿候选，请检查专项资格、批次、分数线或硬性限制",
+                state.getCandidatePoolState().getStatusMessage());
+        assertFalse(state.getCandidatePoolState().getStatusMessage().contains("筛选"));
+        assertFalse(state.getCandidatePoolState().getRiskHints().isEmpty());
+
+        PlanningWorkspaceStateRes workspaceState = planningStateService.buildPlanningWorkspaceStateRes(state);
+        assertEquals("empty", workspaceState.getWorkflowStatus().getCandidateStatus());
+        assertFalse(workspaceState.getWorkflowStatus().getCandidateMessage().contains("筛选"));
+    }
+
+    @Test
     void shouldExposeWorkflowStatusForPendingReviewPlan() {
         PlanningStateDTO state = new PlanningStateDTO();
         state.setSessionId(1L);
@@ -2406,6 +2431,9 @@ public class PlanningStateServiceTest {
         VolunteerRecommendListResponse.VolunteerMajor major = buildMajor("m1", "计算机科学与技术");
         major.setCategoryId("38");
         major.setSubCategoryId("47");
+        VolunteerRecommendListResponse.VolunteerMajor unknownMajor = buildMajor("0", "软件工程技术");
+        unknownMajor.setCategoryId("0");
+        unknownMajor.setSubCategoryId("0");
         VolunteerRecommendListResponse response = new VolunteerRecommendListResponse();
         VolunteerRecommendListResponse.VolunteerSchool school = buildSchool("ps1", "s1", "北京邮电大学", "北京", 1, major);
         school.setCity_name("海淀");
@@ -2418,7 +2446,9 @@ public class PlanningStateServiceTest {
         school.setPopTagList(java.util.Arrays.asList("低学费", "院校排名 12", "北京市"));
         school.getMajors().get(0).setRankTagList(java.util.Arrays.asList("计算机", "就业率 91%"));
         school.getMajors().get(0).setPlanTagList(java.util.Arrays.asList("选科要求", "意向专业类", "非意向专业类", "计划数:6"));
-        response.setSafes(java.util.Arrays.asList(school));
+        VolunteerRecommendListResponse.VolunteerSchool unknownSchool =
+                buildSchool("ps2", "s2", "职业技术大学", "山东", 2, unknownMajor);
+        response.setSafes(java.util.Arrays.asList(school, unknownSchool));
         response.setSprints(java.util.Collections.emptyList());
         response.setProtects(java.util.Collections.emptyList());
         when(volunteerBizService.recommendVolunteerList(1L, 1L, false, false)).thenReturn(response);
@@ -2432,6 +2462,7 @@ public class PlanningStateServiceTest {
 
         assertTrue(res.getProvinceNames().contains("北京"));
         assertTrue(res.getCityNames().contains("海淀"));
+        assertTrue(res.getSchoolKeywords().contains("北京邮电大学"));
         assertTrue(res.getMajorKeywords().contains("计算机类"));
         assertTrue(res.getSchoolTags().contains("公办"));
         assertTrue(res.getSchoolTags().contains("理工"));
@@ -2454,9 +2485,79 @@ public class PlanningStateServiceTest {
                 "major.category".equals(group.getGroupCode())
                         && "majorKeywords".equals(group.getFilterField())
                         && group.getValues().contains("计算机类")));
+        assertTrue(res.getGroups().stream().anyMatch(group ->
+                "school.name".equals(group.getGroupCode())
+                        && "schoolKeywords".equals(group.getFilterField())
+                        && group.getValues().contains("北京邮电大学")));
+        assertTrue(res.getGroups().stream().anyMatch(group ->
+                "major.name".equals(group.getGroupCode())
+                        && "majorKeywords".equals(group.getFilterField())
+                        && group.getValues().contains("计算机科学与技术")));
+        assertTrue(res.getMajorTree().stream().anyMatch(discipline ->
+                "工学类".equals(discipline.getDisciplineName())
+                        && discipline.getCategories().stream().anyMatch(category ->
+                        "计算机类".equals(category.getCategoryName())
+                                && category.getMajorNames().contains("计算机科学与技术"))));
+        assertFalse(res.getMajorTree().isEmpty());
+        CandidateFilterOptionsDTO.MajorDisciplineNodeDTO lastMajorNode =
+                res.getMajorTree().get(res.getMajorTree().size() - 1);
+        assertEquals("其他专业", lastMajorNode.getDisciplineName());
+        assertTrue(lastMajorNode.getCategories().stream().anyMatch(category ->
+                "其他专业".equals(category.getCategoryName())
+                        && category.getMajorNames().contains("软件工程技术")));
         assertFalse(res.getGroups().stream().anyMatch(group -> "major.tag".equals(group.getGroupCode())));
         assertFalse(res.getMajorTags().contains("就业率 91%"));
         assertFalse(res.getMajorTags().contains("计划数:6"));
+    }
+
+    @Test
+    void shouldFilterCandidatePoolBySchoolAndMajorKeywords() {
+        when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
+                .thenReturn(null);
+
+        VolunteerRecommendListResponse response = new VolunteerRecommendListResponse();
+        VolunteerRecommendListResponse.VolunteerMajor software = buildMajor("m1", "软件工程(中外合作)");
+        software.setCategoryId("38");
+        software.setSubCategoryId("47");
+        VolunteerRecommendListResponse.VolunteerMajor accounting = buildMajor("m2", "会计学");
+        accounting.setCategoryId("22");
+        accounting.setSubCategoryId("26");
+        VolunteerRecommendListResponse.VolunteerSchool schoolA = buildSchool(
+                "ps1", "s1", "北京邮电大学", "北京", 1, software);
+        VolunteerRecommendListResponse.VolunteerSchool schoolB = buildSchool(
+                "ps2", "s2", "上海财经大学", "上海", 2, accounting);
+        response.setSafes(java.util.Arrays.asList(schoolA, schoolB));
+        response.setSprints(java.util.Collections.emptyList());
+        response.setProtects(java.util.Collections.emptyList());
+        when(volunteerBizService.recommendVolunteerList(1L, 1L, false, false)).thenReturn(response);
+
+        planningStateService.generateCandidatePool(1L, 1L, new CandidatePoolGenerateReq());
+        ChatSessionExtraData stored = latestStoredStateFromSave();
+        when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
+                .thenReturn(stored);
+
+        CandidateFilterOptionsDTO options = planningStateService.getCandidateFilterOptions(1L, 1L);
+        assertTrue(options.getSchoolKeywords().contains("北京邮电大学"));
+        assertTrue(options.getGroups().stream().anyMatch(group ->
+                "major.name".equals(group.getGroupCode()) && group.getValues().contains("软件工程")));
+
+        CandidatePoolQueryReq schoolReq = new CandidatePoolQueryReq();
+        schoolReq.getFilters().setSchoolKeywords(java.util.Arrays.asList("北京邮电"));
+        CandidatePoolQueryRes schoolRes = planningStateService.queryCandidatePool(1L, 1L, schoolReq);
+        assertEquals(Integer.valueOf(1), schoolRes.getTotal());
+        assertEquals("北京邮电大学", schoolRes.getItems().get(0).getSchoolName());
+
+        CandidatePoolQueryReq majorReq = new CandidatePoolQueryReq();
+        majorReq.getFilters().setMajorKeywords(java.util.Arrays.asList("软件工程"));
+        CandidatePoolQueryRes majorRes = planningStateService.queryCandidatePool(1L, 1L, majorReq);
+        assertEquals(Integer.valueOf(1), majorRes.getTotal());
+        assertEquals("软件工程(中外合作)", majorRes.getItems().get(0).getMajorName());
+
+        CandidatePoolQueryReq excludeReq = new CandidatePoolQueryReq();
+        excludeReq.getFilters().setNegativeSchoolKeywords(java.util.Arrays.asList("北京邮电"));
+        CandidatePoolQueryRes excludeRes = planningStateService.queryCandidatePool(1L, 1L, excludeReq);
+        assertEquals(Integer.valueOf(1), excludeRes.getTotal());
+        assertEquals("上海财经大学", excludeRes.getItems().get(0).getSchoolName());
     }
 
     @Test

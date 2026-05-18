@@ -159,6 +159,7 @@
     touch-action: manipulation;
     overscroll-behavior-y: contain;
   }
+
 }
 
 @media (max-width: 768px) {
@@ -244,6 +245,7 @@
   background: #fff;
   width: 100%;
   overflow-x: hidden;
+  position: relative;
 }
 
 .mobileStepIndicator {
@@ -262,4 +264,15 @@
   font-size: 16px;
   font-weight: 600;
   color: #ff443d;
+}
+
+.restartButton {
+  padding: 0;
+  color: #666;
+}
+
+.mobileStepBar .restartButton {
+  position: absolute;
+  right: 16px;
+  top: 14px;
 }

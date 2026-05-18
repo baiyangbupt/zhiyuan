@@ -10,6 +10,7 @@ public class ExternalSessionInitializeRes {
     private Long tenantId;
     private Long chatSessionId;
     private String externalRequestId;
+    private String studentName;
     private Boolean created = true;
     private String sessionUrl;
     private String legacySessionUrl;

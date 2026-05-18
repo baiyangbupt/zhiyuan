@@ -2649,7 +2649,7 @@ def test_normalize_plan_reply_style_keeps_markdown_and_removes_severe_pressure()
     assert "**审查结论**" in normalized
     assert "- 30个志愿已填满" in normalized
     assert "你现在必须决定" not in normalized
-    assert "选哪个" in normalized
+    assert "选哪个" not in normalized
     assert "A. 就用这版" in normalized
 
 
@@ -2678,6 +2678,43 @@ def test_normalize_plan_reply_style_removes_reason_heading_and_dangling_please()
 
     assert "请。" not in normalized
     assert "原因说明" in normalized
+
+
+def test_normalize_plan_reply_style_removes_pressure_action_prompt():
+    reply = (
+        "最新审查结果：风险 3 项。\n\n"
+        "不要再反复查看和审查了，直接选下一步行动：\n\n"
+        "**A. 我推荐 2 个志愿，你确认加入**\n"
+        "**B. 你说 2 个学校+专业，我校验后加**\n"
+        "选 A、B 或 C，我立即执行。"
+    )
+
+    normalized = _normalize_plan_reply_style(reply)
+
+    assert "最新审查结果" in normalized
+    assert "不要再反复查看" not in normalized
+    assert "选 A、B 或 C" not in normalized
+
+
+def test_normalize_plan_reply_style_removes_major_group_front_position_expansion():
+    reply = (
+        "把第3个专业组移到第5位的预览如下：\n\n"
+        "**当前第3个专业组：**\n"
+        "- 安阳工学院第201组\n"
+        "- 组内共 6 个专业\n\n"
+        "**当前前5位概况：**\n"
+        "1. 河北师范大学第201组 — 翻译（稳）\n"
+        "2. 山东交通学院第201组 — 计算机科学与技术（稳）\n\n"
+        "如果你确认要执行，回复“确认”。"
+    )
+
+    normalized = _normalize_plan_reply_style(reply)
+
+    assert "当前第3个专业组" in normalized
+    assert "组内共 6 个专业" in normalized
+    assert "当前前5位概况" not in normalized
+    assert "河北师范大学" not in normalized
+    assert "如果你确认要执行" in normalized
 
 
 def test_chat_service_propagates_wsresponse_from_main_agent(tmp_path, mock_llm_client):

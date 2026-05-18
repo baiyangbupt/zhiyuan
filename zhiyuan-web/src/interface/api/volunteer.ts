@@ -259,6 +259,7 @@ export interface PlanningCandidatePoolQueryRes {
 export interface PlanningCandidateFilterOptionsRes {
   provinceNames?: string[];
   cityNames?: string[];
+  schoolKeywords?: string[];
   schoolTags?: string[];
   majorTags?: string[];
   majorKeywords?: string[];
@@ -271,6 +272,13 @@ export interface PlanningCandidateFilterOptionsRes {
   regionTree?: Array<{
     provinceName?: string;
     cityNames?: string[];
+  }>;
+  majorTree?: Array<{
+    disciplineName?: string;
+    categories?: Array<{
+      categoryName?: string;
+      majorNames?: string[];
+    }>;
   }>;
 }
 

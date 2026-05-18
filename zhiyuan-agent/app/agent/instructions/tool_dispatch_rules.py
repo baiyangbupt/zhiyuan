@@ -55,6 +55,7 @@ _TOOL_DISPATCH_RULES = """\
 - 在院校专业组模式下，如果用户明确说“专业组/这一组/整组”，应规划成 `move_ordered_unit` 或 `remove_ordered_unit`，不要打散组内专业。
 - “删除第 N 个专业组/去掉第 N 个专业组”必须规划成 `remove_ordered_unit` preview，并把“第 N 个专业组”保留在 `user_goal` 或 atomic action `reason` 中，交给执行层按当前专业组顺序解析；不要先返回 `query_state` 概览。
 - “把第 N 个专业组移到第 M 位”必须规划成 `move_ordered_unit` preview，`target_position=M`，并把源位置“第 N 个专业组”保留在 `user_goal` 或 atomic action `reason` 中；不要改成单条志愿移动。
+- 对 `move_ordered_unit/remove_ordered_unit` 的 preview，最终回复只展示工具返回的源专业组、目标专业组位置、组内专业数和确认提示；不要自行补充“当前前 N 位概况”“前 N 条志愿列表”等内容，避免把专业组位置和单条志愿位置混淆。
 - 3.0.1 新版工作台不提供固定/锁定志愿入口。用户要求“锁定/固定/取消固定”时，不要规划 pin/unpin，应说明当前不提供该入口，并建议移动到指定位置或使用方案排序。
 - 对“按录取率排序 / 按院校层次排序 / 按推荐系数排序”这类指定维度排序，规划成 `sort_ordered_plan`，不要当成长期偏好，也不要走旧的整体重新生成排序。
 - 只要问的是时效性问题（当前状态/重排后结果/审查后情况），即使历史里答过，也要重新读取当前 plan 状态。

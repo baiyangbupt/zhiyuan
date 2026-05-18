@@ -65,6 +65,11 @@ _PLAN_STYLE_SEVERE_MARKERS = (
     "当前这版财会类方案保留",
     "我现在直接帮你重新生成",
     "补偿预览",
+    "不要再反复查看",
+    "选哪个",
+    "选 A/B/C",
+    "选 A、B 或 C",
+    "选 A、B、C",
 )
 _PLAN_STYLE_DANGLING_EXACT_LINES = {"你。", "只有。", "请。"}
 _PLAN_STYLE_GUARD_PROMPT_KEYWORDS = (
@@ -876,6 +881,8 @@ def _plan_reply_needs_normalization(reply: str) -> bool:
     """Only guard severe user-experience failures, not natural model formatting."""
     if any(marker in reply for marker in _PLAN_STYLE_SEVERE_MARKERS):
         return True
+    if "专业组" in reply and re.search(r"前\s*\d+\s*位概况", reply):
+        return True
     return any(line.strip() in _PLAN_STYLE_DANGLING_EXACT_LINES for line in reply.splitlines())
 
 
@@ -885,12 +892,27 @@ def _normalize_plan_reply_style(reply: str) -> str:
         return reply
 
     normalized_lines: list[str] = []
+    skip_unit_position_list = False
     for raw_line in reply.splitlines():
         stripped = raw_line.strip()
         if not stripped:
+            skip_unit_position_list = False
             if normalized_lines and normalized_lines[-1] != "":
                 normalized_lines.append("")
             continue
+        if (
+            "专业组" in reply
+            and re.search(r"前\s*\d+\s*位概况", stripped)
+        ):
+            skip_unit_position_list = True
+            continue
+        if skip_unit_position_list and re.match(r"^\d+[.、]\s*", stripped):
+            continue
+        if skip_unit_position_list and (
+            "—" in stripped or "-" in stripped or "专业组" in stripped or "第" in stripped
+        ):
+            continue
+        skip_unit_position_list = False
         if stripped in _PLAN_STYLE_DANGLING_EXACT_LINES:
             continue
         line = raw_line.replace("补偿预览", "补齐建议")

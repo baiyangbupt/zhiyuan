@@ -13,9 +13,12 @@ const { Option } = Select;
 interface ICollectflowProps {
   stepsData: ICollectflowRes;
   onNextStep: (btn: IActions, formValues?: any) => void;
+  onDraftChange?: (formValues?: any) => void;
+  onBackStep?: () => void;
+  savedValues?: any;
 }
 const ConfirmGkInfo = (props: ICollectflowProps) => {
-  const { stepsData, onNextStep } = props;
+  const { stepsData, onNextStep, onDraftChange, onBackStep, savedValues } = props;
   const [form] = Form.useForm();
   const [isNextConfirmBtn, setIsNextConfirmBtn] = useState(false);
   const [formValues, setFormValues] = useState<any>(null); // 存储表单提交的值
@@ -40,7 +43,31 @@ const ConfirmGkInfo = (props: ICollectflowProps) => {
 
     return initialValues;
   };
+
+  const getSavedFormValues = () => {
+    const values: any = {};
+    if (savedValues?.examYear !== undefined) values.examYear = String(savedValues.examYear);
+    if (savedValues?.province?.code) values.examProvince = savedValues.province.code;
+    return values;
+  };
+
+  const getMergedInitialValues = () => ({
+    ...getInitialValues(),
+    ...getSavedFormValues(),
+  });
+
   const [province, setProvince] = useState<any>(null);
+
+  useEffect(() => {
+    const savedFormValues = getSavedFormValues();
+    if (Object.keys(savedFormValues).length) {
+      form.setFieldsValue(savedFormValues);
+    }
+    if (savedValues?.province) {
+      setProvince(savedValues.province);
+    }
+  }, [stepsData, savedValues]);
+
   const onFinish = (values: any) => {
     // 保存表单值
     setFormValues(values);
@@ -52,7 +79,13 @@ const ConfirmGkInfo = (props: ICollectflowProps) => {
         if (field?.options) {
           const option = field.options.find(opt => opt.code === values.examProvince);
           console.log('option', option);
-          if (option) setProvince(option);
+          if (option) {
+            setProvince(option);
+            onDraftChange?.({
+              examYear: values.examYear,
+              province: option,
+            });
+          }
         }
       }
     });
@@ -82,9 +115,10 @@ const ConfirmGkInfo = (props: ICollectflowProps) => {
   // 下一步
   const handleClickNextStep = (btn: IActions, item: ISubSteps) => {
     setIsNextConfirmBtn(true);
-    console.log('下一步', formValues, province);
+    const currentFormValues = formValues || form.getFieldsValue();
+    console.log('下一步', currentFormValues, province);
     onNextStep(btn, {
-      examYear: formValues.examYear,
+      examYear: currentFormValues.examYear,
       province,
     });
   };
@@ -161,7 +195,7 @@ const ConfirmGkInfo = (props: ICollectflowProps) => {
                 name="confirmForm"
                 onFinish={onFinish}
                 onFinishFailed={onFinishFailed}
-                initialValues={getInitialValues()}
+                initialValues={getMergedInitialValues()}
                 labelCol={{ flex: '110px' }}
                 labelAlign="right"
                 labelWrap
@@ -208,10 +242,17 @@ const ConfirmGkInfo = (props: ICollectflowProps) => {
                     </Form.Item>
                   );
                 })}
-                <Form.Item wrapperCol={{ offset: 7 }} style={{ marginBottom: 16 }}>
-                  <Button type="primary" htmlType="submit" block>
-                    确认提交
-                  </Button>
+                <Form.Item style={{ marginBottom: 16 }}>
+                  <div className={style.formActions}>
+                    {onBackStep && (
+                      <Button className={style.backActionButton} onClick={onBackStep}>
+                        上一步
+                      </Button>
+                    )}
+                    <Button className={style.submitActionButton} type="primary" htmlType="submit">
+                      确认提交
+                    </Button>
+                  </div>
                 </Form.Item>
               </Form>
             </div>

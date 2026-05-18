@@ -1793,8 +1793,19 @@ async def _execute_plan_action_model(
             result_kind="preview_only",
             context_summary=plan_model.context_summary,
             summary=_with_confirmation_hint(preview_summary),
-            reply_focus=["preview_only", "confirmation_required"],
-            next_step_hints=["先向用户说明将要改动什么；用户确认后，再执行当前方案动作。"],
+            reply_focus=(
+                ["preview_only", "confirmation_required", "unit_position_preview"]
+                if plan_model.action_family in {"move_ordered_unit", "remove_ordered_unit"}
+                else ["preview_only", "confirmation_required"]
+            ),
+            next_step_hints=(
+                [
+                    "只复述专业组级预览事实：源专业组、目标位置、组内专业数和确认提示；"
+                    "不要补充当前前 N 位概况或前 N 条志愿列表。"
+                ]
+                if plan_model.action_family in {"move_ordered_unit", "remove_ordered_unit"}
+                else ["先向用户说明将要改动什么；用户确认后，再执行当前方案动作。"]
+            ),
             facts=preview_facts,
         )
 

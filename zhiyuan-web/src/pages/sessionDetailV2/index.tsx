@@ -34,6 +34,7 @@ const SessionDetailV2 = () => {
   const [entityCardList, setEntityCardList] = useState<IDialogueResData>({});
   const [sessionStatus, setSessionStatus] = useState<string>('');
   const [infoSummary, setInfoSummary] = useState<string>('');
+  const [studentName, setStudentName] = useState<string>('');
   const [prepareTypeDesc, setPrepareTypeDesc] = useState<string>('');
   const [doChatRights, setDoChatRights] = useState<{ canOperate: boolean; reason?: string } | null>(
     null
@@ -83,6 +84,7 @@ const SessionDetailV2 = () => {
       if (code === 0 && data) {
         setSessionStatus(data.sessionStatus || '');
         setInfoSummary(data.infoSummary || '');
+        setStudentName(String(data.userName || '').trim());
         setPrepareTypeDesc(data.prepareType?.desc || '');
       } else {
         message.error(msg || '获取会话详情失败');
@@ -236,6 +238,7 @@ const SessionDetailV2 = () => {
               <div className={style.summary}>{infoSummary || '正在读取会话信息'}</div>
             </div>
             <div className={style.headerMeta}>
+              {studentName && <span className={style.studentNameBadge}>{studentName}</span>}
               {prepareTypeDesc && <span className={style.metaBadge}>{prepareTypeDesc}</span>}
               {sessionStatus && (
                 <span

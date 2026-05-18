@@ -5,6 +5,12 @@ import { createSession, getSubjectPolicy } from '@/service/apis/sessionDetail';
 import { navigateTo } from '@/utils/router';
 import { getStorage } from '@/utils/tool';
 import { resolveCreatedSession } from '@/utils/session';
+import {
+  clearCustomerDetailDraft,
+  loadCustomerDetailDraft,
+  saveCustomerDetailDraft,
+} from '@/utils/customerDetailDraft';
+import { hydrateCreateSessionBatch } from '@/utils/customerDetailSession';
 import type { ICollectflowRes } from '@/interface/api/customerDetail';
 import type { IActions } from '@/interface/api/customerDetail';
 import ConfirmGkInfo from '@/pageComponents/customerDetail/Steps/ConfirmGkInfo';
@@ -39,7 +45,7 @@ const CustomerDetailFlow: React.FC<CustomerDetailFlowProps> = ({
   onStepChange,
 }) => {
   const storedUserInfo: any = getStorage('userInfo') || '{}';
-  const userInfo = JSON.parse(storedUserInfo);
+  const userInfo = useMemo(() => JSON.parse(storedUserInfo), [storedUserInfo]);
 
   const [currentStep, setCurrentStep] = useState(-1);
   const [stepsData, setStepsData] = useState<any[]>([]);
@@ -64,6 +70,13 @@ const CustomerDetailFlow: React.FC<CustomerDetailFlowProps> = ({
   };
 
   useEffect(() => {
+    const draft = loadCustomerDetailDraft(tenantId, botId, userInfo);
+    if (!draft) return;
+    setCurrentStep(draft.currentStep);
+    setCreateSessionValues(draft.values || {});
+  }, [tenantId, botId, userInfo]);
+
+  useEffect(() => {
     getCollectFlow();
   }, [tenantId]);
 
@@ -83,16 +96,31 @@ const CustomerDetailFlow: React.FC<CustomerDetailFlowProps> = ({
     const values = { ...createSessionValues, ...formValues };
     setCreateSessionValues(values);
     if (currentStep === -1) {
-      setCurrentStep(0);
+      const nextStep = 0;
+      setCurrentStep(nextStep);
+      saveCustomerDetailDraft({ tenantId, botId, userInfo, currentStep: nextStep, values });
     } else if (btnProps.actionType === 'next') {
-      setCurrentStep(prev => prev + 1);
+      const nextStep = currentStep + 1;
+      setCurrentStep(nextStep);
+      saveCustomerDetailDraft({ tenantId, botId, userInfo, currentStep: nextStep, values });
     } else if (btnProps.actionType === 'finalSubmit') {
+      saveCustomerDetailDraft({ tenantId, botId, userInfo, currentStep, values });
       try {
         setCreateLoading(true);
         setFinalSubmitLoading(true);
-        const { code, data: sessionData, msg } = await createSession(tenantId, { botId, ...values });
-        setCreateLoading(false);
-        setFinalSubmitLoading(false);
+        const submitValues = await hydrateCreateSessionBatch(values, userInfo);
+        if (!submitValues?.batch?.code) {
+          message.error('请选择批次后再创建会话');
+          return;
+        }
+        if (submitValues !== values) {
+          setCreateSessionValues(submitValues);
+          saveCustomerDetailDraft({ tenantId, botId, userInfo, currentStep, values: submitValues });
+        }
+        const { code, data: sessionData, msg } = await createSession(tenantId, {
+          botId,
+          ...submitValues,
+        });
         if (code === 0) {
           const createdSession = await resolveCreatedSession(tenantId, botId, sessionData);
           if (!createdSession) {
@@ -100,6 +128,7 @@ const CustomerDetailFlow: React.FC<CustomerDetailFlowProps> = ({
             return;
           }
           message.success('创建会话成功');
+          clearCustomerDetailDraft(tenantId, botId, userInfo);
           if (onSuccess) {
             onSuccess({
               chatSessionId: String(createdSession.id),
@@ -115,13 +144,40 @@ const CustomerDetailFlow: React.FC<CustomerDetailFlowProps> = ({
               pageSize: 10,
             });
           }
+        } else {
+          message.error(msg || '创建会话失败，请稍后重试');
         }
       } catch (error) {
+        message.error('请求失败，请稍后重试');
+      } finally {
         setCreateLoading(false);
         setFinalSubmitLoading(false);
-        message.error('请求失败，请稍后重试');
       }
     }
+  };
+
+  const handleDraftChange = (formValues: any = {}) => {
+    const values = { ...createSessionValues, ...formValues };
+    setCreateSessionValues(values);
+    saveCustomerDetailDraft({
+      tenantId,
+      botId,
+      userInfo,
+      currentStep,
+      values,
+    });
+  };
+
+  const handleBackStep = () => {
+    const nextStep = Math.max(currentStep - 1, -1);
+    setCurrentStep(nextStep);
+    saveCustomerDetailDraft({
+      tenantId,
+      botId,
+      userInfo,
+      currentStep: nextStep,
+      values: createSessionValues,
+    });
   };
 
   useEffect(() => {
@@ -152,29 +208,50 @@ const CustomerDetailFlow: React.FC<CustomerDetailFlowProps> = ({
           <WelcomeIntro stepsData={currentData} onNextStep={handleNextStep} />
         )}
         {currentStep === 0 && (
-          <ConfirmGkInfo stepsData={currentData} onNextStep={handleNextStep} />
+          <ConfirmGkInfo
+            stepsData={currentData}
+            savedValues={createSessionValues}
+            onNextStep={handleNextStep}
+            onDraftChange={handleDraftChange}
+            onBackStep={handleBackStep}
+          />
         )}
         {currentStep === 1 && (
           <PersonalInfoCollect
             userSubjectList={userSubjectList}
             stepsData={currentData}
+            savedValues={createSessionValues}
             onNextStep={handleNextStep}
+            onDraftChange={handleDraftChange}
+            onBackStep={handleBackStep}
           />
         )}
         {currentStep === 2 && (
           <ClarifyMajorIntention
             stepsData={currentData}
             paramsValues={createSessionValues}
+            savedValues={createSessionValues}
             onNextStep={handleNextStep}
+            onDraftChange={handleDraftChange}
+            onBackStep={handleBackStep}
           />
         )}
         {currentStep === 3 && (
-          <CityPreference stepsData={currentData} onNextStep={handleNextStep} />
+          <CityPreference
+            stepsData={currentData}
+            savedValues={createSessionValues}
+            onNextStep={handleNextStep}
+            onDraftChange={handleDraftChange}
+            onBackStep={handleBackStep}
+          />
         )}
         {currentStep === 4 && (
           <VolunteerStrategy
             stepsData={currentData}
+            savedValues={createSessionValues}
             onNextStep={handleNextStep}
+            onDraftChange={handleDraftChange}
+            onBackStep={handleBackStep}
             loading={createLoading}
             finalSubmitLoading={finalSubmitLoading}
             setFinalSubmitLoading={setFinalSubmitLoading}

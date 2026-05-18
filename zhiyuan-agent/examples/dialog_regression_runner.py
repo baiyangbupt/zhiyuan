@@ -61,6 +61,14 @@ PLAN_STYLE_BANNED_SUBSTRINGS = [
     "回复 A 或 B",
     "没有第三个选项",
     "补偿预览",
+    "不要再反复查看",
+    "选 A/B/C",
+    "选 A、B 或 C",
+    "选 A、B、C",
+    "当前前5位概况",
+    "当前前 5 位概况",
+    "前5位概况",
+    "前 5 位概况",
 ]
 
 PLAN_STYLE_BANNED_EXACT_LINES = {"你。", "只有。", "请。"}

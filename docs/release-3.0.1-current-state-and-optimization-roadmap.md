@@ -51,14 +51,18 @@
 - 旧 router/workflow 兼容测试已同步到 3.0.1 语言和当前 handler patch 点，避免本地单测误连 backend；`test_planning_router_tool* / test_planning_plan_scenarios_sync / test_planning_workflow_tool` 共 72 条通过。
 - Agent 主链路 + router/workflow 兼容集合当前共 387 条通过；后续重点转向真实 websocket regression。
 - 本地真实 websocket smoke 首轮发现 `session=17` 输入“看看现在的方案”在百家平台 `kimi-k2.6` 下 180 秒内未收到结束消息。切到 SiliconFlow 后可返回，但完整链路约 38.3 秒，其中后端状态读取和 `query_state` 工具均在 1 秒以内，主要耗时来自 4 次 LLM 往返和约 4 万 input tokens。
-- 当前低风险优化方向：不直接绕过大模型，也暂不增加新的字符串匹配 guard；先通过提示词、工具 schema 和 examples 引导方案现状查询稳定收敛为 `query_state`，并避免重复 `collect_plan_context_inputs`，减少 LLM 往返次数。
-- 提示词收敛后，`看看现在的方案` 诊断链路已从 `collect -> plan_next -> execute -> final` 收敛为 `plan_next -> execute(query_state) -> final`；SiliconFlow 下单轮耗时约 `14.6s`，`3` 次 LLM 请求，约 `2.8万` input tokens。后端和工具仍在 1 秒以内。
+- 当前低风险优化方向：不直接绕过大模型，也不新增正常路由字符串短路；先通过提示词、工具 schema 和 examples 引导方案现状查询稳定收敛为 `query_state`，并避免重复 `collect_plan_context_inputs`，减少 LLM 往返次数。
+- 提示词收敛后，`看看现在的方案` 诊断链路已从 `collect -> plan_next -> execute -> final` 收敛为 `plan_next -> execute(query_state) -> final`；SiliconFlow 下单轮耗时约 `14s` 量级，LLM 请求数减少到 `3` 次左右。后端和工具仍在 1 秒以内。
 - 已新增真实 websocket smoke 用例 `zhiyuan-agent/examples/dialog_regression_301_agent_smoke_cases.json`，覆盖方案现状、审查、排序确认、专业组移动确认，并通过 runner 输出 `elapsedMs / primaryMessages / followupMessages`，用于同步验证效果和性能。
 - 已移除 plan correctness examples 中旧 `pin -> verify` 正向用例，保留 `pin_disabled` 作为 3.0.1 唯一锁定验证口径，避免回归用例和产品策略冲突。
 - 真实 smoke 首轮把专业组 fixture 从 `session=35` 调整为 `session=16`：`35` 存在历史 pending intent 干扰，排序/专业组操作不适合作为稳定样本。
 - 真实 smoke 暴露排序确认状态不一致问题：执行层只认 `{code: 0}`，未兼容 `{success: true}`，导致后端执行成功但回复“排序失败”，同时仍发送 ordered 刷新。当前已修正为统一成功判定；失败时不标记 `applied`，也不发送 workspace refresh。
-- 执行层修复后复跑真实 smoke：方案现状和审查已通过；排序预览仍因模型只调用 `plan_next_action`、未调用 `execute_plan_action(preview)` 导致无法形成 pending plan；专业组移动仍存在模型多次查询和 preview 循环，最终触发 websocket 180 秒超时兜底。
+- 执行层修复后复跑真实 smoke：方案现状、审查、排序确认和专业组移动确认已通过，排序/移动确认后均返回 `ordered` 工作区刷新。
 - 已完成首轮结构收口：未确认高副作用动作不能被模型单独推入 `apply`；专业组位置引用允许在 preview 阶段先保留为自然位置，由执行层解析真实 unitId；测试中废弃的 service `get_planning_state` patch 和独立 `review` workspace card 断言已清理。
+- 专业组删除已通过真实 websocket 复测：`删除第5个专业组 -> 确认` 走 `remove_ordered_unit preview/apply`，不会把组内专业打散。
+- 专业模式学校+专业自然引用已通过真实 websocket 复测：`把哈尔滨理工大学的人力资源管理改到第4位 -> 确认` 走 `move_unit preview/apply`；`去掉山东英才学院的国际商务 -> 确认` 走 `remove_units preview/apply`，不再先调用 `query_volunteer_plan`。
+- 候选加入自然引用已补执行层防重：如果目标学校+专业或简称已经在当前方案中，返回 `no_change` 并提示无需重复加入，不调用后端加入接口、不触发复审、不发送无变化工作台卡片。
+- 专业组移动/删除预览文案继续收口：工具提示和 style guard 会避免输出“当前前 N 位概况”等单条志愿列表，防止用户把专业组位置和单条志愿位置混淆。
 
 ### 1.3 Explore / Intent / Career
 
@@ -233,11 +237,11 @@
 2. 用真实 websocket regression 验证 plan sort、unit move/remove、review/apply_compensation 的 preview -> confirm -> apply。
 3. 先把“方案现状查询”收敛为 `query_state`：提示词不再要求单独先调 `collect_plan_context_inputs`；如果只是多一次调用，暂不通过字符串规则强行纠偏。
 4. 高副作用 preview pending 形成机制已完成首轮收口：`plan_next_action(preview)` 可直接形成 pending，`query_state` 等只读动作不会清掉待确认变更；后续继续扩充更多 action 的真实回归。
-5. 专业组 unit action 已通过真实 websocket smoke 验证 `move_ordered_unit -> 确认 -> ordered 刷新`；后续补 `remove_ordered_unit` 和专业模式 `move_unit/remove_units`。
+5. 专业组 unit action 和专业模式自然引用已完成首轮真实验证；下一步继续补 `review_plan / apply_compensation` 的真实 websocket preview -> confirm -> apply 覆盖。
 6. 继续补 websocket 对话链路分段耗时和结果日志，稳定观测 LLM 请求次数、token 数、工具耗时和最终发送耗时。
 7. 再评估是否引入轻量分类器替代 service 层确认短语匹配。
 8. 继续拆分 `planning_workflow_tool`，把 formatter/state/mutation/review/compensation helper 从 monolith 中拆出来。
-9. 继续检查用户可见文案，避免“草稿/排序区/画像/action”等内部词从老工具 fallback 泄露。
+9. 继续检查用户可见文案，避免“草稿/排序区/画像/action”等内部词从老工具 fallback 泄露，特别关注专业组预览和补齐建议类回复。
 
 下一批 Agent 优化的详细实施设计见 `docs/release-3.0.1-agent-optimization-design.md`。该文档确认后再进入代码实现。
 
