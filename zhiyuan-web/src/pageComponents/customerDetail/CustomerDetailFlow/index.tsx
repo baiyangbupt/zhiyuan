@@ -71,7 +71,11 @@ const CustomerDetailFlow: React.FC<CustomerDetailFlowProps> = ({
 
   useEffect(() => {
     const draft = loadCustomerDetailDraft(tenantId, botId, userInfo);
-    if (!draft) return;
+    if (!draft) {
+      setCurrentStep(-1);
+      setCreateSessionValues({});
+      return;
+    }
     setCurrentStep(draft.currentStep);
     setCreateSessionValues(draft.values || {});
   }, [tenantId, botId, userInfo]);
@@ -82,7 +86,10 @@ const CustomerDetailFlow: React.FC<CustomerDetailFlowProps> = ({
 
   useEffect(() => {
     const provinceCode = userInfo?.userScoreOb?.province?.code;
-    if (!provinceCode) return;
+    if (!provinceCode) {
+      setUserSubjectList([]);
+      return;
+    }
     const fetchList = async () => {
       const { code, data } = await getSubjectPolicy(provinceCode);
       if (code === 0 && data) {
@@ -90,7 +97,7 @@ const CustomerDetailFlow: React.FC<CustomerDetailFlowProps> = ({
       }
     };
     fetchList();
-  }, []);
+  }, [userInfo?.userScoreOb?.province?.code]);
 
   const handleNextStep = async (btnProps: IActions, formValues: any) => {
     const values = { ...createSessionValues, ...formValues };

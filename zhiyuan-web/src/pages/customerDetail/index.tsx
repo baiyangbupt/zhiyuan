@@ -174,26 +174,33 @@ const CustomerDetail: React.FC = () => {
 
   useEffect(() => {
     const draft = loadCustomerDetailDraft(tenantId, botId, userInfo);
-    if (!draft) return;
+    if (!draft) {
+      setCurrentStep(-1);
+      setCreateSessionValues({});
+      return;
+    }
     setCurrentStep(draft.currentStep);
     setCreateSessionValues(draft.values || {});
   }, [tenantId, botId, userInfo]);
 
   useEffect(() => {
     getCollectFlow();
-  }, []);
+  }, [tenantId]);
 
   useEffect(() => {
     const provinceCode = userInfo?.userScoreOb?.province?.code;
-    if (!provinceCode) return;
+    if (!provinceCode) {
+      setUserSubjectList([]);
+      return;
+    }
     const fetchList = async () => {
       const { code, data } = await getSubjectPolicy(provinceCode);
       if (code === 0 && data) {
-        setUserSubjectList(data.subjectTypeList);
+        setUserSubjectList(data.subjectTypeList || []);
       }
     };
     fetchList();
-  }, []);
+  }, [userInfo?.userScoreOb?.province?.code]);
 
   // 点击继续下一步
   const handleNextStep = async (btnProps: IActions, formValues: any) => {

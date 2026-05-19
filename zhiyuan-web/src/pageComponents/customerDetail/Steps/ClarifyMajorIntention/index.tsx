@@ -153,6 +153,21 @@ const ClarifyMajorIntention = (props: ICollectflowProps) => {
   };
 
   const hasSavedPreferredMajors = normalizePreferredMajors().length > 0;
+  const hasSavedUnacceptableMajors = Array.isArray(savedValues?.unacceptableMajors) && savedValues.unacceptableMajors.length > 0;
+  const hasSavedAcceptForeignSchool =
+    savedValues?.acceptForeignSchool !== undefined && savedValues?.acceptForeignSchool !== null;
+  const hasSavedTuitionRange = Boolean(savedValues?.tuitionRange);
+  const buildRestoredDraftPayload = () => ({
+    preferredMajors: Array.isArray(savedValues?.preferredMajors) ? savedValues.preferredMajors : [],
+    unacceptableMajors: Array.isArray(savedValues?.unacceptableMajors) ? savedValues.unacceptableMajors : [],
+    acceptForeignSchool: savedValues?.acceptForeignSchool,
+    tuitionRange: savedValues?.tuitionRange
+      ? {
+          min: Number(savedValues.tuitionRange.min ?? savedValues.tuitionRange[0]),
+          max: Number(savedValues.tuitionRange.max ?? savedValues.tuitionRange[1]),
+        }
+      : undefined,
+  });
 
   const getBatchLevel = () => {
     const level: any = paramsValues?.batch?.level;
@@ -209,8 +224,8 @@ const ClarifyMajorIntention = (props: ICollectflowProps) => {
     if (res.code === 0 && res.data?.length) {
       const field = stepsData?.subSteps
         .find(item => item.subStepId === 'major_preference_step1')
-        ?.formConfig.fields.find(item => item.fieldId === 'preferredMajors');
-      const rawData = getMajorsByBatchLevel(field) || [];
+        ?.formConfig?.fields?.find(item => item.fieldId === 'preferredMajors');
+      const rawData = (getMajorsByBatchLevel(field) || []) as any[];
       const initialSelected = mapSelectedMajors(rawData, res.data);
       
       // 保存系统推荐的快照（深拷贝）
@@ -295,9 +310,9 @@ const ClarifyMajorIntention = (props: ICollectflowProps) => {
     const field = stepsData?.subSteps
       .find(item => item.subStepId === 'major_preference_step1')
       ?.formConfig?.fields?.find(f => f.fieldId === 'preferredMajors');
-    const majors = getMajorsByBatchLevel(field);
-    return majors?.find(major => major.value === activeMajor)?.children;
-  }, [activeMajor, paramsValues?.batch?.level]);
+    const majors = getMajorsByBatchLevel(field) || [];
+    return majors.find((major: any) => major.value === activeMajor)?.children;
+  }, [activeMajor, paramsValues?.batch?.level, stepsData]);
 
   const [selectedMajors, setSelectedMajors] = useState<{
     [major: string]: MajorSub[];
@@ -341,14 +356,14 @@ const ClarifyMajorIntention = (props: ICollectflowProps) => {
   const handleSelectAll = () => {
 
     const allSelected = selectedMajors[activeMajor] || [];
-    const allIds = majorList?.map(item => item.value);
-    const isAllSelected = allIds?.every(id => allSelected.some(m => m.majorSubId === id));
+    const allIds = (majorList || []).map((item: any) => item.value);
+    const isAllSelected = allIds.length > 0 && allIds.every((id: string) => allSelected.some(m => m.majorSubId === id));
 
     let newSelected;
     if (isAllSelected) {
       newSelected = [];
     } else {
-      newSelected = (majorList || [])?.map(item => ({
+      newSelected = (majorList || []).map((item: any) => ({
         majorSubId: item.value,
         majorSubName: item.label,
       }));
@@ -439,8 +454,37 @@ const ClarifyMajorIntention = (props: ICollectflowProps) => {
     const field = stepsData?.subSteps
       .find(item => item.subStepId === 'major_preference_step1')
       ?.formConfig?.fields?.find(f => f.fieldId === 'preferredMajors');
-    const rawData = getMajorsByBatchLevel(field) || [];
+    const rawData = (getMajorsByBatchLevel(field) || []) as any[];
     const savedPreferredMajors = normalizePreferredMajors();
+    const hasSavedDraftValues =
+      savedPreferredMajors.length > 0 ||
+      hasSavedUnacceptableMajors ||
+      hasSavedAcceptForeignSchool ||
+      hasSavedTuitionRange;
+
+    if (!hasSavedDraftValues) {
+      setSelectedMajors({});
+      setUnacceptableMajors([]);
+      setDisabledUnacceptableMajors([]);
+      setDisabledPreferredMajors([]);
+      setRecommendedMajorsSnapshot({});
+      setIsRecommendationApplied(false);
+      setActiveMajor('1');
+      setAcceptForeignSchool(undefined);
+      const tuitionField = stepsData?.subSteps
+        .find(item => item.subStepId === 'major_preference_step1')
+        ?.formConfig?.fields?.find(f => f.fieldId === 'tuitionRange') as any;
+      const min = tuitionField?.min ?? 0;
+      const max = tuitionField?.max ?? 1000000;
+      setTuitionRange([
+        tuitionField?.defaultValue?.minValue ?? min,
+        tuitionField?.defaultValue?.maxValue ?? max,
+      ]);
+      setFormValues(null);
+      setShowSummary(false);
+      setIsNextConfirmBtn(false);
+      return;
+    }
 
     if (savedPreferredMajors.length) {
       const restoredSelected = mapSelectedMajors(rawData, savedPreferredMajors as SelectedMajor[]);
@@ -461,6 +505,8 @@ const ClarifyMajorIntention = (props: ICollectflowProps) => {
 
     if (savedValues?.acceptForeignSchool !== undefined) {
       setAcceptForeignSchool(Boolean(savedValues.acceptForeignSchool));
+    } else {
+      setAcceptForeignSchool(undefined);
     }
 
     if (savedValues?.tuitionRange) {
@@ -469,32 +515,22 @@ const ClarifyMajorIntention = (props: ICollectflowProps) => {
       if (!Number.isNaN(min) && !Number.isNaN(max)) {
         setTuitionRange([min, max]);
       }
+    } else {
+      const tuitionField = stepsData?.subSteps
+        .find(item => item.subStepId === 'major_preference_step1')
+        ?.formConfig?.fields?.find(f => f.fieldId === 'tuitionRange') as any;
+      const min = tuitionField?.min ?? 0;
+      const max = tuitionField?.max ?? 1000000;
+      setTuitionRange([
+        tuitionField?.defaultValue?.minValue ?? min,
+        tuitionField?.defaultValue?.maxValue ?? max,
+      ]);
     }
-  }, [stepsData, savedValues, paramsValues?.batch?.level]);
 
-  // 初始化学费区间值（从配置中读取）
-  useEffect(() => {
-    if (savedValues?.tuitionRange) return;
-    const tuitionField = stepsData?.subSteps
-      .find(item => item.subStepId === 'major_preference_step1')
-      ?.formConfig?.fields?.find(f => f.fieldId === 'tuitionRange') as any;
-    
-    if (tuitionField) {
-      const min = tuitionField.min ?? 0;
-      const max = tuitionField.max ?? 1000000;
-      
-      if (tuitionField.defaultValue && typeof tuitionField.defaultValue === 'object') {
-        const defaultValue = tuitionField.defaultValue as { minValue?: number; maxValue?: number };
-        setTuitionRange([
-          defaultValue.minValue ?? min,
-          defaultValue.maxValue ?? max
-        ]);
-      } else {
-        // 如果字段存在但没有默认值，使用配置的 min 和 max
-        setTuitionRange([min, max]);
-      }
-    }
-  }, [stepsData]);
+    setFormValues(buildRestoredDraftPayload());
+    setShowSummary(true);
+    setIsNextConfirmBtn(false);
+  }, [stepsData, savedValues, paramsValues?.batch?.level]);
 
   const handleConfirm = (fields: any[]) => {
     console.log('fields', fields);
@@ -613,14 +649,14 @@ const ClarifyMajorIntention = (props: ICollectflowProps) => {
                           </Flex>
                         )}
                       </Flex>
-                      {field.helpConfig && field.helpConfig?.position === 'top' && (
-                        <div className="subTitle" style={{ color: '#414455', fontSize: 12 }}>
-                          {field.helpConfig?.helpText}
-                        </div>
-                      )}
+                          {field.helpConfig && field.helpConfig?.position === 'top' && (
+                            <div className="subTitle" style={{ color: '#414455', fontSize: 12 }}>
+                              {field.helpConfig?.helpText}
+                            </div>
+                          )}
                       <Row className="major-row">
                         <Col className="major-col-left">
-                          {majors?.map(major => (
+                          {majors?.map((major: any) => (
                             <div
                               key={major.value}
                               className={[
@@ -655,7 +691,7 @@ const ClarifyMajorIntention = (props: ICollectflowProps) => {
                               checked={selectedMajors[activeMajor]?.length === majorList?.length}
                             />
                           </div>
-                          {majorList?.map(major => {
+                          {majorList?.map((major: any) => {
                             const isSelected = selectedMajors[activeMajor]?.some(
                               m => m.majorSubId === major.value
                             );
@@ -687,8 +723,8 @@ const ClarifyMajorIntention = (props: ICollectflowProps) => {
                         </Col>
                       </Row>
 
-                      {field.helpConfig && !field.helpConfig?.position && (
-                        <div style={{ margin: '8px 0' }}>
+                        {field.helpConfig && !field.helpConfig?.position && (
+                          <div style={{ margin: '8px 0' }}>
                           {field.helpConfig?.showFieldHelp ? (
                             <span style={{ color: '#919296', fontSize: 12 }}>
                               {field.helpConfig.helpText}
@@ -702,7 +738,7 @@ const ClarifyMajorIntention = (props: ICollectflowProps) => {
                                 marginLeft: 8,
                                 cursor: 'pointer',
                               }}
-                              onClick={() => handleShowModal(field.helpConfig.rich)}
+                              onClick={() => handleShowModal(field.helpConfig!.rich)}
                             >
                               {field.helpConfig.rich.title}
                             </span>
@@ -718,11 +754,11 @@ const ClarifyMajorIntention = (props: ICollectflowProps) => {
                   
                   // 计算可选项（排除被禁用的）
                   const availableOptions = unacceptableOptions.filter(
-                    item => !disabledUnacceptableMajors.includes(item.value)
+                    (item: any) => !disabledUnacceptableMajors.includes(item.value)
                   );
-                  const availableIds = availableOptions.map(item => item.value);
+                  const availableIds = availableOptions.map((item: any) => item.value);
                   const isAllSelected = availableIds.length > 0 && 
-                    availableIds.every(id => unacceptableMajors.some(m => m.majorId === id));
+                    availableIds.every((id: string) => unacceptableMajors.some(m => m.majorId === id));
 
                   return (
                     <div
@@ -733,11 +769,11 @@ const ClarifyMajorIntention = (props: ICollectflowProps) => {
                       }}
                     >
                       <div className="title">{field.fieldName}</div>
-                      {field.helpConfig && field.helpConfig?.position === 'top' && (
-                        <div className="subTitle" style={{ color: '#414455', fontSize: 12 }}>
-                          {field.helpConfig?.helpText}
-                        </div>
-                      )}
+                        {field.helpConfig && field.helpConfig?.position === 'top' && (
+                          <div className="subTitle" style={{ color: '#414455', fontSize: 12 }}>
+                            {field.helpConfig?.helpText}
+                          </div>
+                        )}
                       <Flex wrap gap={8} className="unacceptable-flex">
                         <Col
                           className={[
@@ -797,7 +833,7 @@ const ClarifyMajorIntention = (props: ICollectflowProps) => {
                                 marginLeft: 8,
                                 cursor: 'pointer',
                               }}
-                              onClick={() => handleShowModal(field.helpConfig.rich)}
+                              onClick={() => handleShowModal(field.helpConfig!.rich)}
                             >
                               {field.helpConfig.rich.title}
                             </span>
@@ -817,11 +853,11 @@ const ClarifyMajorIntention = (props: ICollectflowProps) => {
                       }}
                     >
                       <div className="title">{field.fieldName}</div>
-                      {field.helpConfig && field.helpConfig?.position === 'top' && (
-                        <div className="subTitle" style={{ color: '#414455', fontSize: 12 }}>
-                          {field.helpConfig?.helpText}
-                        </div>
-                      )}
+                {field.helpConfig && field.helpConfig?.position === 'top' && (
+                  <div className="subTitle" style={{ color: '#414455', fontSize: 12 }}>
+                    {field.helpConfig?.helpText}
+                  </div>
+                )}
                       <Flex justify="space-between">
                         <Col
                           span={12}
@@ -862,7 +898,7 @@ const ClarifyMajorIntention = (props: ICollectflowProps) => {
                                 marginLeft: 8,
                                 cursor: 'pointer',
                               }}
-                              onClick={() => handleShowModal(field.helpConfig.rich)}
+                              onClick={() => handleShowModal(field.helpConfig!.rich)}
                             >
                               {field.helpConfig.rich.title}
                             </span>
@@ -949,7 +985,7 @@ const ClarifyMajorIntention = (props: ICollectflowProps) => {
                                 marginLeft: 8,
                                 cursor: 'pointer',
                               }}
-                              onClick={() => handleShowModal(field.helpConfig.rich)}
+                              onClick={() => handleShowModal(field.helpConfig!.rich)}
                             >
                               {field.helpConfig.rich.title}
                             </span>

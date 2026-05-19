@@ -2,8 +2,7 @@ import AudioContent from '@/pageComponents/customerDetail/Components/AudioConten
 import style from './style.module.scss';
 import { Badge, Button, Checkbox, Col, Flex, Form, message, Radio, Row, Select } from 'antd';
 import { IActions, ICollectflowRes, ISegments, ISubSteps } from '@/interface/api/customerDetail';
-import { getStorage } from '@/utils/tool';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import ReturnPng from '@/images/icons/return.png';
 import { LinkOutlined } from '@ant-design/icons';
 import ModalImage from '../../Components/ModalImage';
@@ -44,11 +43,20 @@ const CityPreference = (props: ICollectflowProps) => {
   };
 
   const [preferredRegions, setPreferredRegions] = useState<RegionSub[]>([]);
+  const hasSavedPreferredRegions = Array.isArray(savedValues?.preferredRegions) && savedValues.preferredRegions.length > 0;
 
   useEffect(() => {
-    if (!Array.isArray(savedValues?.preferredRegions)) return;
-    setPreferredRegions(savedValues.preferredRegions);
+    if (Array.isArray(savedValues?.preferredRegions)) {
+      setPreferredRegions(savedValues.preferredRegions);
+    } else {
+      setPreferredRegions([]);
+    }
   }, [savedValues]);
+
+  useEffect(() => {
+    setShowSummary(hasSavedPreferredRegions);
+    setIsNextConfirmBtn(false);
+  }, [hasSavedPreferredRegions]);
 
   const handleToggleRegion = (provinces: { code: string; name: string }[]) => {
     if (!provinces?.length) return;

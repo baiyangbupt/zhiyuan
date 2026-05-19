@@ -11,7 +11,7 @@ export const getCollectFlowApi = (data: ICollectflowParams) =>
   });
 // 根据用户成绩+填报批次获取位次
 export const getPositionRangeApi = (data: IPosRangeParams) =>
-  request<ICollectflowParams, any>({
+  request<IPosRangeParams, any>({
     url: `/gaotu-assistant-bot/base-data/score/position-range`,
     method: 'post',
     data,
@@ -42,7 +42,7 @@ export const getRegionProvinceApi = () =>
     method: 'get',
   });
 // 根据选科成绩信息获取用户推荐专业
-export const getMajorRecommendApi = (tenantId: number, data: any) =>
+export const getMajorRecommendApi = (tenantId: string | number, data: any) =>
   request<ICollectflowParams, any>({
     url: `/gaotu-assistant-bot/chat/${tenantId}/major-recommend`,
     method: 'post',

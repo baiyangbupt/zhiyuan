@@ -18,7 +18,6 @@ import { getPositionRangeApi, getEthnicityListApi } from '@/service/apis/custome
 import ModalImage from '../../Components/ModalImage';
 import { flushSync } from 'react-dom';
 import { buildCreateSessionBatchPayload } from '@/utils/customerDetailSession';
-const { Option } = Select;
 const CheckboxGroup = Checkbox.Group;
 
 interface ICollectflowProps {
@@ -243,8 +242,8 @@ const PersonalInfoCollect = (props: ICollectflowProps) => {
     return matched?.id;
   };
 
-  const resolveBatchOption = (batchValue: any) => {
-    const options = Array.isArray(batchOptions) ? batchOptions : [];
+  const resolveBatchOption = (batchValue: any, optionList = batchOptions) => {
+    const options = Array.isArray(optionList) ? optionList : [];
     if (!options.length) return null;
     const normalizedBatchValue =
       batchValue === undefined || batchValue === null ? '' : String(batchValue);
@@ -276,8 +275,69 @@ const PersonalInfoCollect = (props: ICollectflowProps) => {
     return buildCreateSessionBatchPayload(batchOption) || savedValues?.batch;
   };
 
+  const getDefaultBatchFieldValue = (options = batchOptions) => {
+    if (!Array.isArray(options) || !options.length) return undefined;
+    const currentBatchId = scoreForm.getFieldValue('batch');
+    const validCurrentBatchId = options.some((item: any) => String(item.id) === String(currentBatchId))
+        ? currentBatchId
+        : undefined;
+    return getBatchFieldValue(options) || validCurrentBatchId || options[0]?.id;
+  };
+
+  const normalizeSavedSubjectItem = (item: any, isFirst?: number) => {
+    if (typeof item === 'string') {
+      return item.trim()
+        ? {
+            value: item.trim(),
+            isFirst,
+          }
+        : null;
+    }
+    if (!item || typeof item !== 'object') return null;
+
+    const value = item.value || item.subject || item.code;
+    if (!value) return null;
+
+    return {
+      ...item,
+      value,
+      subject: item.subject || value,
+      code: item.code || value,
+      isFirst: item.isFirst ?? isFirst,
+    };
+  };
+
+  const isMeaningfulSavedValue = (value: any): boolean => {
+    if (value === undefined || value === null) return false;
+    if (typeof value === 'string') return value.trim() !== '';
+    if (typeof value === 'number') return Number.isFinite(value);
+    if (typeof value === 'boolean') return true;
+    if (Array.isArray(value)) return value.some(item => isMeaningfulSavedValue(item));
+    if (typeof value === 'object') return Object.values(value).some(item => isMeaningfulSavedValue(item));
+    return Boolean(value);
+  };
+
+  const getSavedSubjectList = () => {
+    if (Array.isArray(savedValues?.subjectList) && savedValues.subjectList.length > 0) {
+      return savedValues.subjectList
+        .map((item: any) => normalizeSavedSubjectItem(item))
+        .filter(Boolean);
+    }
+    const firstSubjectList = Array.isArray(savedValues?.subjectList_first)
+      ? savedValues.subjectList_first
+          .map((value: any) => normalizeSavedSubjectItem(value, 1))
+          .filter(Boolean)
+      : [];
+    const secondSubjectList = Array.isArray(savedValues?.subjectList_second)
+      ? savedValues.subjectList_second
+          .map((value: any) => normalizeSavedSubjectItem(value, 0))
+          .filter(Boolean)
+      : [];
+    return [...firstSubjectList, ...secondSubjectList];
+  };
+
   const getSubjectCodes = (filter?: 'first' | 'second') => {
-    const subjectList = Array.isArray(savedValues?.subjectList) ? savedValues.subjectList : [];
+    const subjectList = getSavedSubjectList();
     return subjectList
       .filter((item: any) => {
         if (filter === 'first') return item?.isFirst === 1;
@@ -288,46 +348,124 @@ const PersonalInfoCollect = (props: ICollectflowProps) => {
       .filter(Boolean);
   };
 
+  const hasSavedScalarValue = (key: string) => {
+    if (!Object.prototype.hasOwnProperty.call(savedValues || {}, key)) return false;
+    return isMeaningfulSavedValue(savedValues?.[key]);
+  };
+
+  const hasSavedArrayValue = (key: string) => {
+    return Array.isArray(savedValues?.[key]) && savedValues[key].some((item: any) => isMeaningfulSavedValue(item));
+  };
+
+  const hasSavedBatchValue = () => {
+    const batch = savedValues?.batch;
+    return Boolean(batch?.code || batch?.name || batch?.id);
+  };
+
+  const hasSavedVisionValue = () => {
+    const visionAbility = savedValues?.visionAbility;
+    if (!visionAbility || typeof visionAbility !== 'object') return false;
+    return [visionAbility.left, visionAbility.right].some(
+      value => value !== undefined && value !== null && value !== ''
+    );
+  };
+
+  const hasMeaningfulSavedValuesForSubStep = (subStep: any) => {
+    if (!savedValues || !subStep?.subStepId) return false;
+
+    if (subStep.subStepId === 'personal_info_step1') {
+      return (
+        hasSavedArrayValue('subjectList') ||
+        hasSavedArrayValue('subjectList_first') ||
+        hasSavedArrayValue('subjectList_second') ||
+        hasSavedArrayValue('subjectScoreList') ||
+        hasSavedArrayValue('strengthSubjectList') ||
+        hasSavedScalarValue('bonusPolicy') ||
+        hasSavedScalarValue('bonusScore') ||
+        hasSavedScalarValue('totalScore') ||
+        hasSavedScalarValue('totalScorePos') ||
+        hasSavedBatchValue()
+      );
+    }
+
+    if (subStep.subStepId === 'personal_info_step2') {
+      return (
+        Boolean(savedValues?.sex?.code) ||
+        hasSavedScalarValue('height') ||
+        hasSavedArrayValue('colorSistuation') ||
+        hasSavedVisionValue() ||
+        Boolean(savedValues?.ethnicity?.code) ||
+        Boolean(savedValues?.politicalStatus?.code) ||
+        hasSavedScalarValue('specialPlan')
+      );
+    }
+
+    return false;
+  };
+
+  const getInitialSubStepState = (subStep: any) => {
+    const hasSavedValues = hasMeaningfulSavedValuesForSubStep(subStep);
+    const initialValues = getInitialValues(subStep);
+    return {
+      hasSavedValues,
+      initialValues,
+      currentValues: hasSavedValues ? initialValues : null,
+    };
+  };
+
   const getSavedValuesForSubStep = (subStep: any) => {
     const values: any = {};
     if (!savedValues || !subStep?.formConfig?.fields) return values;
 
     if (subStep.subStepId === 'personal_info_step1') {
+      const savedSubjectCodes = getSubjectCodes();
+      const savedFirstSubjectCodes = getSubjectCodes('first');
+      const savedSecondSubjectCodes = getSubjectCodes('second');
       subStep.formConfig.fields.forEach((field: any) => {
         if (field.fieldId === 'subjectList_first') {
-          values.subjectList_first = getSubjectCodes('first');
+          if (savedFirstSubjectCodes.length) {
+            values.subjectList_first = savedFirstSubjectCodes;
+          }
         } else if (field.fieldId === 'subjectList_second') {
-          values.subjectList_second = getSubjectCodes('second');
+          if (savedSecondSubjectCodes.length) {
+            values.subjectList_second = savedSecondSubjectCodes;
+          }
         } else if (field.fieldId === 'subjectList') {
-          values.subjectList =
-            field.fieldType === 'radio'
-              ? savedValues?.subjectType?.code || getSubjectCodes()[0]
-              : getSubjectCodes();
+          if (savedSubjectCodes.length) {
+            values.subjectList =
+              field.fieldType === 'radio'
+                ? savedValues?.subjectType?.code || savedSubjectCodes[0]
+                : savedSubjectCodes;
+          }
         }
       });
 
-      if (Array.isArray(savedValues?.subjectScoreList)) {
+      if (Array.isArray(savedValues?.subjectScoreList) && savedValues.subjectScoreList.length) {
         savedValues.subjectScoreList.forEach((item: any) => {
           if (item?.subject && item?.subjectName) {
             values[`subjectScoreList-${item.subjectName}-${item.subject}`] = item.score;
           }
         });
       }
-      if (Array.isArray(savedValues?.strengthSubjectList)) {
-        values.strengthSubjectList = savedValues.strengthSubjectList
+      if (
+        Array.isArray(savedValues?.strengthSubjectList) &&
+        savedValues.strengthSubjectList.length
+      ) {
+        const strengthSubjectList = savedValues.strengthSubjectList
           .map((item: any) => item?.subject || item?.value || item?.code)
           .filter(Boolean);
+        if (strengthSubjectList.length) values.strengthSubjectList = strengthSubjectList;
       }
-      if (Object.prototype.hasOwnProperty.call(savedValues, 'bonusPolicy')) {
+      if (hasSavedScalarValue('bonusPolicy')) {
         values.bonusPolicy = savedValues.bonusPolicy;
       }
-      if (Object.prototype.hasOwnProperty.call(savedValues, 'bonusScore')) {
+      if (hasSavedScalarValue('bonusScore')) {
         values.bonusScore = savedValues.bonusScore;
       }
-      if (Object.prototype.hasOwnProperty.call(savedValues, 'totalScore')) {
+      if (hasSavedScalarValue('totalScore')) {
         values.totalScore = savedValues.totalScore;
       }
-      if (Object.prototype.hasOwnProperty.call(savedValues, 'totalScorePos')) {
+      if (hasSavedScalarValue('totalScorePos')) {
         values.totalScorePos = savedValues.totalScorePos;
       }
       const savedBatchId = getBatchFieldValue();
@@ -336,19 +474,19 @@ const PersonalInfoCollect = (props: ICollectflowProps) => {
 
     if (subStep.subStepId === 'personal_info_step2') {
       if (savedValues?.sex?.code) values.sex = savedValues.sex.code;
-      if (Object.prototype.hasOwnProperty.call(savedValues, 'height')) {
+      if (hasSavedScalarValue('height')) {
         values.height = savedValues.height;
       }
-      if (Array.isArray(savedValues?.colorSistuation)) {
+      if (Array.isArray(savedValues?.colorSistuation) && savedValues.colorSistuation.length) {
         values.colorSistuation = savedValues.colorSistuation;
       }
-      if (savedValues?.visionAbility) {
+      if (hasSavedVisionValue()) {
         values['visionMutiInput-left'] = savedValues.visionAbility.left;
         values['visionMutiInput-right'] = savedValues.visionAbility.right;
       }
       if (savedValues?.ethnicity?.code) values.ethnicity = savedValues.ethnicity.code;
       if (savedValues?.politicalStatus?.code) values.politicalStatus = savedValues.politicalStatus.code;
-      if (Object.prototype.hasOwnProperty.call(savedValues, 'specialPlan')) {
+      if (hasSavedScalarValue('specialPlan')) {
         values.specialPlan = savedValues.specialPlan;
       }
     }
@@ -360,7 +498,19 @@ const PersonalInfoCollect = (props: ICollectflowProps) => {
     const initialValues: any = {};
     if (subStep.formConfig?.fields) {
       subStep.formConfig.fields.forEach((field: any) => {
-        initialValues[field.fieldId] = field.defaultValue;
+        if (field.fieldId === 'batch') {
+          initialValues[field.fieldId] = getDefaultBatchFieldValue() || field.defaultValue;
+        } else if (field.fieldType === 'scoreMutiInput' && Array.isArray(field.inputList)) {
+          field.inputList.forEach((input: IScoreSubject) => {
+            const key = `subjectScoreList-${input.subjectName}-${input.subject}`;
+            const score = (input as any).score;
+            if (score !== undefined && score !== null && score !== '' && Number(score) > 0) {
+              initialValues[key] = score;
+            }
+          });
+        } else {
+          initialValues[field.fieldId] = field.defaultValue;
+        }
       });
     }
     return {
@@ -371,77 +521,39 @@ const PersonalInfoCollect = (props: ICollectflowProps) => {
 
   // 初始化表单状态和表单实例
   useEffect(() => {
-    if (processedStepsData?.subSteps) {
-      const restoredValues: Record<number, any> = {};
-      const initialStates = processedStepsData.subSteps.map((subStep, index) => {
-        const savedSubStepValues = getSavedValuesForSubStep(subStep);
-        const hasSavedValues = Object.keys(savedSubStepValues).length > 0;
-        const initialValues = getInitialValues(subStep);
-        if (hasSavedValues) {
-          restoredValues[index] = { ...initialValues, subStepId: subStep.subStepId };
-        }
-        return {
-          values: hasSavedValues ? initialValues : null,
-          showSummary: hasSavedValues,
-          processFlag: hasSavedValues,
-        };
-      });
-      setFormStates(initialStates);
-      if (Object.keys(restoredValues).length) {
-        setAllFormValues(prev => ({ ...prev, ...restoredValues }));
-      }
-
-      processedStepsData.subSteps.forEach((subStep, index) => {
-        const initValues = getInitialValues(subStep);
-        const stepForm = getStepForm(index);
-        formsRef.current[index] = stepForm;
-        stepForm.setFieldsValue(initValues);
-      });
-
-      // 这里可以调用 provinceChange，因为现在有表单实例了
-      if (userInfo) provinceChange();
-    }
-  }, [processedStepsData, userInfo]);
-
-  useEffect(() => {
     if (!processedStepsData?.subSteps) return;
     const restoredValues: Record<number, any> = {};
-    setFormStates(prev => {
-      const nextStates = processedStepsData.subSteps.map((subStep, index) => {
-        const savedSubStepValues = getSavedValuesForSubStep(subStep);
-        const hasSavedValues = Object.keys(savedSubStepValues).length > 0;
-        const initialValues = getInitialValues(subStep);
-        const prevState = prev[index];
-        const currentValues = prevState?.values ?? (hasSavedValues ? initialValues : null);
-        if (currentValues) {
-          restoredValues[index] = { ...currentValues, subStepId: subStep.subStepId };
-        }
-        return {
-          values: currentValues,
-          showSummary: Boolean(prevState?.showSummary || hasSavedValues),
-          processFlag: prevState?.processFlag ?? hasSavedValues,
-        };
-      });
-      return nextStates;
+    const nextStates = processedStepsData.subSteps.map((subStep: ISubSteps, index: number) => {
+      const { hasSavedValues, initialValues, currentValues } = getInitialSubStepState(subStep);
+      if (currentValues) {
+        restoredValues[index] = { ...currentValues, subStepId: subStep.subStepId };
+      }
+      return {
+        values: currentValues,
+        showSummary: hasSavedValues,
+        processFlag: hasSavedValues,
+      };
     });
+    setFormStates(nextStates);
 
-    processedStepsData.subSteps.forEach((subStep, index) => {
+    processedStepsData.subSteps.forEach((subStep: ISubSteps, index: number) => {
       const initValues = getInitialValues(subStep);
       const stepForm = getStepForm(index);
       formsRef.current[index] = stepForm;
       stepForm.setFieldsValue(initValues);
     });
 
-    if (Object.keys(restoredValues).length) {
-      setAllFormValues(prev => ({ ...prev, ...restoredValues }));
-    }
-    if (Object.prototype.hasOwnProperty.call(savedValues || {}, 'totalScore')) {
-      setTotalScore(Number(savedValues.totalScore) || 0);
-    }
-    if (Object.prototype.hasOwnProperty.call(savedValues || {}, 'bonusPolicy')) {
-      setBonusPolicy(Boolean(savedValues.bonusPolicy));
-    }
-  }, [processedStepsData, batchOptions, savedValues]);
+    setAllFormValues(restoredValues);
+    setTotalScore(
+      Object.prototype.hasOwnProperty.call(savedValues || {}, 'totalScore')
+        ? Number(savedValues.totalScore) || 0
+        : 0
+    );
+    setBonusPolicy(Boolean(savedValues?.bonusPolicy));
+
+    // 这里可以调用 provinceChange，因为现在有表单实例了
+    if (userInfo) provinceChange();
+  }, [processedStepsData, userInfo, savedValues]);
 
   const getStepForm = (index: number) => (index === 0 ? scoreForm : detailForm);
 
@@ -521,31 +633,45 @@ const PersonalInfoCollect = (props: ICollectflowProps) => {
     // 合并所有已提交的表单值
 
     let transformedFormValues = Object.values(values).map(value => {
-      const stepData = stepsRef.current?.subSteps.find(
-        subStep => subStep.subStepId === value.subStepId
+      const stepData = processedStepsData?.subSteps?.find(
+        (subStep: ISubSteps) => subStep.subStepId === value.subStepId
       );
       const fields = stepData?.formConfig?.fields || [];
       if (value.subStepId === 'personal_info_step1') {
         const selectedBatch = resolveBatchOption(value.batch);
         const subListKeys = Object.keys(value)
           .filter(key => key.includes('subjectList'))
-          .reduce((result, key) => {
+          .reduce<string[]>((result, key) => {
             if (Array.isArray(value[key])) {
               result.push(...value[key]);
             }
             return result;
           }, []);
-        const subjectList = fields
-          ?.find(field => field.fieldId === 'subjectList')
-          ?.options.filter(option => subListKeys.includes(option.subject));
-        const subjectTypeItem = subjectList.find(subject =>
-          Object.hasOwnProperty.call(subject, 'subjectType')
+        const subjectOptions = fields?.reduce((result: any[], field: any) => {
+          if (
+            field.fieldId === 'subjectList' ||
+            field.fieldId === 'subjectList_first' ||
+            field.fieldId === 'subjectList_second' ||
+            field.mutiSelectType === 'subjectList'
+          ) {
+            return result.concat(field.options || []);
+          }
+          return result;
+        }, []);
+        const subjectList = (subjectOptions || []).filter((option: any) =>
+          subListKeys.includes(option.subject)
         );
+        const subjectTypeItem = subjectList?.find((subject: any) =>
+          Object.prototype.hasOwnProperty.call(subject, 'subjectType')
+        );
+        const strengthSubjectValue = Array.isArray(value?.strengthSubjectList)
+          ? value.strengthSubjectList
+          : [];
         // 擅长学科
         const strengthSubjectList = fields
-          ?.find(field => field.fieldId === 'strengthSubjectList')
-          ?.options.filter(option => value?.strengthSubjectList.includes(option.subject))
-          ?.map(item => ({ subject: item.subject, subjectName: item.subjectName }));
+          ?.find((field: any) => field.fieldId === 'strengthSubjectList')
+          ?.options?.filter((option: any) => strengthSubjectValue.includes(option.subject))
+          ?.map((item: any) => ({ subject: item.subject, subjectName: item.subjectName }));
 
         return {
           bonusPolicy: value?.bonusPolicy,
@@ -553,7 +679,7 @@ const PersonalInfoCollect = (props: ICollectflowProps) => {
           totalScore: value?.totalScore,
           totalScorePos: value?.totalScorePos,
           strengthSubjectList,
-          subjectList: subjectList?.map(item => {
+          subjectList: subjectList?.map((item: any) => {
             const data = { name: item.subjectName, value: item.subject, isFirst: item.isFirst };
             if (item.subjectType) {
               return {
@@ -562,7 +688,7 @@ const PersonalInfoCollect = (props: ICollectflowProps) => {
             }
             return item.subjectType ? { ...data, subjectType: item.subjectType } : { ...data };
           }),
-          subjectType: userInfo.userScoreOb?.subjectType,
+          subjectType: userInfo?.userScoreOb?.subjectType,
           // subjectType: {
           //   code: subjectTypeItem.subjectType,
           //   desc: subjectTypeItem.subjectName,
@@ -582,22 +708,19 @@ const PersonalInfoCollect = (props: ICollectflowProps) => {
         };
       }
       if (value.subStepId === 'personal_info_step2') {
+        const sexField = fields.find((field: any) => field.fieldId === 'sex');
+        const ethnicityField = fields.find((item: any) => item.fieldId === 'ethnicity');
+        const politicalStatusField = fields.find((item: any) => item.fieldId === 'politicalStatus');
         return {
           height: value?.height,
           colorSistuation: value?.colorSistuation,
-          sex: fields
-            .find(field => field.fieldId === 'sex')
-            ?.options.find(sex => sex.code === value.sex),
+          sex: sexField?.options?.find((sex: any) => sex.code === value.sex),
           visionAbility: {
             left: value?.['visionMutiInput-left'],
             right: value?.['visionMutiInput-right'],
           },
-          ethnicity: fields
-            .find(item => item.fieldId === 'ethnicity')
-            ?.options.find(ethnicity => ethnicity.code === value.ethnicity),
-          politicalStatus: fields
-            .find(item => item.fieldId === 'politicalStatus')
-            ?.options.find(politicalStatus => politicalStatus.code === value.politicalStatus),
+          ethnicity: ethnicityField?.options?.find((ethnicity: any) => ethnicity.code === value.ethnicity),
+          politicalStatus: politicalStatusField?.options?.find((politicalStatus: any) => politicalStatus.code === value.politicalStatus),
           specialPlan:
             value?.specialPlan === true ||
             value?.specialPlan === 'true' ||
@@ -619,7 +742,7 @@ const PersonalInfoCollect = (props: ICollectflowProps) => {
   // 下一步处理
   const handleClickNextStep = (item: ISubSteps, values: Record<number, any>) => {
     const latestValues = { ...values };
-    processedStepsData?.subSteps?.forEach((subStep, index) => {
+    processedStepsData?.subSteps?.forEach((subStep: ISubSteps, index: number) => {
       if (!formStates[index]?.processFlag) return;
       const currentFormValues = formsRef.current[index]?.getFieldsValue?.() || {};
       latestValues[index] = {
@@ -641,13 +764,20 @@ const PersonalInfoCollect = (props: ICollectflowProps) => {
   };
 
   // 计算总分
-  const calculateTotalScore = (values: any, allValues: any, index?: number) => {
+  const calculateTotalScore = (
+    values: any,
+    allValues: any,
+    index?: number,
+    optionList = batchOptions
+  ) => {
     let sum = 0;
     
     // 获取省份code和batch level
     const provinceCode = userInfo?.userScoreOb?.province?.code;
     const batchId = allValues.batch || (index !== undefined ? formsRef.current[index]?.getFieldValue('batch') : null);
-    const batchLevel = batchId ? batchOptions?.find(item => item.id === batchId)?.level?.key : null;
+    const batchLevel = batchId
+      ? optionList?.find((item: any) => String(item.id) === String(batchId))?.level?.key
+      : null;
     
     // 判断是否是北京/天津/上海 + 专科批（level = '02'）
     const isSpecialProvinceJuniorCollege = 
@@ -688,40 +818,22 @@ const PersonalInfoCollect = (props: ICollectflowProps) => {
 
     if (index !== 0) return;
 
-    const scoreMutiInputData = Object.entries(allValues).reduce((acc, [key, value]) => {
-      if (key.includes('subjectScoreList')) {
-        acc[key] = value;
-      }
-      return acc;
-    }, {});
-
-    // 传递 index 以便获取 batch 值
-    const newTotalScore = calculateTotalScore(scoreMutiInputData, allValues, index);
-    setTotalScore(newTotalScore);
-
-    // 使用 ref 中的表单实例
-    if (formsRef.current[index]) {
-      formsRef.current[index].setFieldsValue({
-        totalScore: newTotalScore,
-      });
-    }
-
-    // 使用新计算的总分来判断和更新排名
-    // 从表单实例中获取 batch 值，因为 allValues 可能不包含 batch
-    const batchValue = formsRef.current[index]?.getFieldValue('batch');
-    if (newTotalScore && batchValue) {
-      getPositionRange({ ...allValues, batch: batchValue }, newTotalScore);
-    }
+    refreshScoreDerived(allValues);
   };
 
   // 获取成绩位次
-  const getPositionRange = async (allValues: any, totalScoreValue?: number) => {
+  const getPositionRange = async (
+    allValues: any,
+    totalScoreValue?: number,
+    optionList = batchOptions
+  ) => {
     // 生成新的请求 ID，用于防止竞态条件
     const currentRequestId = ++positionRangeRequestIdRef.current;
     
-    const dataLevel = batchOptions?.find(item => item.id === allValues.batch)?.level.key;
+    const dataLevel = optionList?.find((item: any) => String(item.id) === String(allValues.batch))?.level?.key;
     // 优先使用传入的总分值，如果没有则使用 allValues 中的值
     const score = totalScoreValue !== undefined ? totalScoreValue : allValues.totalScore;
+    if (!dataLevel || !score) return;
     const params: IPosRangeParams = {
       areaId: userInfo?.userScoreOb?.province?.code,
       subject: userInfo?.userScoreOb?.subjectType.code,
@@ -735,6 +847,30 @@ const PersonalInfoCollect = (props: ICollectflowProps) => {
       formsRef.current.forEach(form => {
         form?.setFieldValue('totalScorePos', data.lowestRank || 0);
       });
+    }
+  };
+
+  const refreshScoreDerived = (formValues?: any, optionList = batchOptions) => {
+    const currentValues = {
+      ...(formsRef.current[0]?.getFieldsValue?.() || scoreForm.getFieldsValue()),
+      ...(formValues || {}),
+    };
+    const scoreMutiInputData = Object.entries(currentValues).reduce((acc: any, [key, value]) => {
+      if (key.includes('subjectScoreList')) {
+        acc[key] = value;
+      }
+      return acc;
+    }, {});
+
+    const newTotalScore = calculateTotalScore(scoreMutiInputData, currentValues, 0, optionList);
+    setTotalScore(newTotalScore);
+    scoreForm.setFieldsValue({
+      totalScore: newTotalScore,
+    });
+
+    const batchValue = currentValues.batch || scoreForm.getFieldValue('batch');
+    if (newTotalScore && batchValue) {
+      getPositionRange({ ...currentValues, batch: batchValue }, newTotalScore, optionList);
     }
   };
 
@@ -762,10 +898,10 @@ const PersonalInfoCollect = (props: ICollectflowProps) => {
       const validCurrentBatchId = list?.some(item => String(item.id) === String(currentBatchId))
         ? currentBatchId
         : undefined;
-      scoreForm.setFieldsValue({
-        batch: getBatchFieldValue(list) || validCurrentBatchId || list?.[0]?.id,
-      });
+      const batchValue = getBatchFieldValue(list) || validCurrentBatchId || list?.[0]?.id;
+      scoreForm.setFieldsValue({ batch: batchValue });
       setBatchOptions(list);
+      refreshScoreDerived({ ...scoreForm.getFieldsValue(), batch: batchValue }, list);
     }
   };
 
@@ -830,7 +966,7 @@ const PersonalInfoCollect = (props: ICollectflowProps) => {
       case 'radio':
         return field.fieldId === 'ethnicity' ? (
           <Select
-            options={field.options.map(item => ({ label: item.name, value: item.code }))}
+            options={(field.options || []).map((item: any) => ({ label: item.name, value: item.code }))}
             disabled={!field.editable}
           />
         ) : (
@@ -1072,7 +1208,7 @@ const PersonalInfoCollect = (props: ICollectflowProps) => {
   };
   return (
     <div className={style.confirmGkInfoContainer}>
-      {processedStepsData?.subSteps?.map((item, index) => renderStep(item, index))}
+      {processedStepsData?.subSteps?.map((item: ISubSteps, index: number) => renderStep(item, index))}
       <ModalImage
         imageUrl={currentImageUrl}
         isModalOpen={isModalOpen}

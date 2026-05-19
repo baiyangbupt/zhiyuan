@@ -2,13 +2,10 @@ import AudioContent from '@/pageComponents/customerDetail/Components/AudioConten
 import style from './style.module.scss';
 import { Button, Form, Select } from 'antd';
 import { IActions, ICollectflowRes, ISegments, ISubSteps } from '@/interface/api/customerDetail';
-import { getStorage } from '@/utils/tool';
 import { useEffect, useRef, useState } from 'react';
 import ReturnPng from '@/images/icons/return.png';
 import { LinkOutlined } from '@ant-design/icons';
 import ModalImage from '../../Components/ModalImage';
-
-const { Option } = Select;
 
 interface ICollectflowProps {
   stepsData: ICollectflowRes;
@@ -60,11 +57,18 @@ const ConfirmGkInfo = (props: ICollectflowProps) => {
 
   useEffect(() => {
     const savedFormValues = getSavedFormValues();
-    if (Object.keys(savedFormValues).length) {
-      form.setFieldsValue(savedFormValues);
-    }
+    const hasSavedFormValues = Boolean(savedFormValues.examYear && savedFormValues.examProvince);
+    const mergedInitialValues = getMergedInitialValues();
+
+    form.resetFields();
+    form.setFieldsValue(mergedInitialValues);
+    setFormValues(hasSavedFormValues ? savedFormValues : null);
+    setShowSummary(hasSavedFormValues);
+    setIsNextConfirmBtn(false);
     if (savedValues?.province) {
       setProvince(savedValues.province);
+    } else {
+      setProvince(null);
     }
   }, [stepsData, savedValues]);
 
@@ -201,21 +205,23 @@ const ConfirmGkInfo = (props: ICollectflowProps) => {
                 labelWrap
               >
                 {item.formConfig.fields?.map(field => {
+                  const fieldOptions = field.options || [];
+                  const fieldHelpConfig = field.helpConfig;
                   return (
                     <Form.Item
                       key={field.fieldId}
                       label={field.fieldName}
                       name={field.fieldId}
-                      rules={[{ required: field.required, message: field.validation.required }]}
+                      rules={[{ required: field.required, message: field.validation?.required }]}
                       extra={
-                        field.helpConfig ? (
+                        fieldHelpConfig ? (
                           <>
-                            {field.helpConfig?.showFieldHelp ? (
+                            {fieldHelpConfig?.showFieldHelp ? (
                               <span style={{ color: '#919296', fontSize: 12 }}>
-                                {field.helpConfig.helpText}
+                                {fieldHelpConfig.helpText}
                               </span>
                             ) : null}
-                            {field.helpConfig?.rich ? (
+                            {fieldHelpConfig?.rich ? (
                               <span
                                 style={{
                                   color: '#FF5750',
@@ -223,9 +229,9 @@ const ConfirmGkInfo = (props: ICollectflowProps) => {
                                   marginLeft: 8,
                                   cursor: 'pointer',
                                 }}
-                                onClick={() => handleShowModal(field.helpConfig.rich)}
+                                onClick={() => handleShowModal(fieldHelpConfig.rich)}
                               >
-                                {field.helpConfig.rich.title}
+                                {fieldHelpConfig.rich.title}
                               </span>
                             ) : null}
                           </>
@@ -233,7 +239,7 @@ const ConfirmGkInfo = (props: ICollectflowProps) => {
                       }
                     >
                       <Select
-                        options={field.options.map(item => ({
+                        options={fieldOptions.map(item => ({
                           label: item.name,
                           value: item.code,
                         }))}

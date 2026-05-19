@@ -42,15 +42,15 @@ export interface IRegionItem {
   provinces: IOptions[];
 }
 export interface IFields {
-  helpConfig: IHelpConfig;
+  helpConfig?: IHelpConfig;
   fieldName: string;
   fieldType: string;
-  placeholder: string;
-  defaultValue: string;
-  options: IOptions;
-  required: boolean;
+  placeholder?: string;
+  defaultValue: any;
+  options?: IOptions[];
+  required?: boolean;
   fieldId: string;
-  validation: IValidation;
+  validation?: IValidation;
   editable?: boolean;
   majors?: IOptions[];
   regions?: IRegionItem[];
@@ -65,6 +65,13 @@ export interface IHelpConfig {
 export interface IOptions {
   name: string;
   code: string;
+  label?: string;
+  value?: string;
+  subject?: string;
+  subjectName?: string;
+  isFirst?: number;
+  subjectType?: string;
+  score?: number;
   children?: IOptions[];
 }
 export interface IValidation {

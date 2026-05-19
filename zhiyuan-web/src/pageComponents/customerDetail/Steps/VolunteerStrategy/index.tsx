@@ -235,6 +235,7 @@ const VolunteerStrategy = (props: ICollectflowProps) => {
   const [currentImageUrl, setCurrentImageUrl] = useState<string>('');
   const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const hasSavedStrategyType = Boolean(savedValues?.strategyType?.code);
 
   // 构建初始值
   const getInitialValues = (subStep: any) => {
@@ -253,20 +254,42 @@ const VolunteerStrategy = (props: ICollectflowProps) => {
   const [strategyType, setStrategyType] = useState<any>(); // 志愿策略
 
   useEffect(() => {
-    if (!savedValues?.strategyType?.code) return;
     stepsData?.subSteps?.forEach((item, index) => {
-      const field = item.formConfig?.fields?.find((f: any) => f.fieldId === 'strategyType');
-      const option = field?.options?.find((opt: any) => opt.code === savedValues.strategyType.code);
-      if (option) {
-        setStrategyType(option);
-        setAllFormValues(prev => ({
-          ...prev,
-          [index]: { strategyType: option.code, subStepId: item.subStepId },
-        }));
-        formsRef.current[index]?.setFieldsValue({ strategyType: option.code });
-      }
+      const initialValues = getInitialValues(item);
+      formsRef.current[index]?.resetFields();
+      formsRef.current[index]?.setFieldsValue(initialValues);
     });
-  }, [stepsData, savedValues]);
+
+    if (!hasSavedStrategyType) {
+      setAllFormValues({});
+      setFormStates([]);
+      setStrategyType(undefined);
+      return;
+    }
+
+    const strategyCode = savedValues?.strategyType?.code;
+    stepsData?.subSteps?.forEach((item, index) => {
+      if (!strategyCode) return;
+      const field = item.formConfig?.fields?.find((f: any) => f.fieldId === 'strategyType');
+      const option = field?.options?.find((opt: any) => opt.code === strategyCode);
+      if (!option) return;
+
+      setAllFormValues(prev => ({
+        ...prev,
+        [index]: { strategyType: option.code, subStepId: item.subStepId },
+      }));
+      setFormStates(prev => {
+        const next = [...prev];
+        next[index] = {
+          values: { strategyType: option.code },
+          showSummary: true,
+          processFlag: true,
+        };
+        return next;
+      });
+      formsRef.current[index]?.setFieldsValue({ strategyType: option.code });
+    });
+  }, [stepsData, savedValues, hasSavedStrategyType]);
 
   const buildStrategyPayload = (item: ISubSteps, index: number, overrideValues?: any) => {
     const formValues =
