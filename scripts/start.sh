@@ -7,6 +7,7 @@
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 mkdir -p .pids logs
+source "$ROOT_DIR/scripts/service-common.sh"
 
 SERVICE=$1
 
@@ -20,15 +21,28 @@ if [ -z "$SERVICE" ]; then
     exit 1
 fi
 
-if [ -f ".pids/${SERVICE}.pid" ] && kill -0 "$(cat .pids/${SERVICE}.pid)" 2>/dev/null; then
-    echo "⏭ ${SERVICE} 已在运行 (PID $(cat .pids/${SERVICE}.pid))"
-    exit 0
+PIDFILE=$(service_pidfile "$SERVICE")
+PORT_PIDS=$(service_listen_pids "$SERVICE")
+
+if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+    PIDFILE_PID=$(cat "$PIDFILE")
+    if [ -n "$PORT_PIDS" ] && echo "$PORT_PIDS" | grep -qx "$PIDFILE_PID"; then
+        echo "⏭ ${SERVICE} 已在运行 (PID $PIDFILE_PID)"
+        exit 0
+    fi
+fi
+
+if [ -n "$PORT_PIDS" ]; then
+    echo "❌ ${SERVICE} 端口已被占用: $(service_port "$SERVICE")"
+    echo "   监听 PID: $(echo "$PORT_PIDS" | tr '\n' ' ' | sed 's/ $//')"
+    echo "   请先执行: bash scripts/stop.sh ${SERVICE}"
+    exit 1
 fi
 
 case $SERVICE in
     web)
         cd "$ROOT_DIR/zhiyuan-web"
-        nohup ./node_modules/.bin/env-cmd -f .env.dev ./node_modules/.bin/next dev -p 3001 > "$ROOT_DIR/logs/web.log" 2>&1 &
+        nohup ./node_modules/.bin/env-cmd -f .env.dev ./node_modules/.bin/next dev -H 127.0.0.1 -p 3001 > "$ROOT_DIR/logs/web.log" 2>&1 &
         echo $! > "$ROOT_DIR/.pids/web.pid"
         echo "✓ zhiyuan-web 已启动 → http://localhost:3001"
         ;;
@@ -42,7 +56,7 @@ case $SERVICE in
     agent)
         cd "$ROOT_DIR/zhiyuan-agent"
         source .venv/bin/activate
-        nohup uvicorn app.server:app --host 0.0.0.0 --port 8000 > "$ROOT_DIR/logs/agent.log" 2>&1 &
+        nohup uvicorn app.server:app --host 127.0.0.1 --port 8000 > "$ROOT_DIR/logs/agent.log" 2>&1 &
         echo $! > "$ROOT_DIR/.pids/agent.pid"
         deactivate
         echo "✓ zhiyuan-agent 已启动 → http://localhost:8000"

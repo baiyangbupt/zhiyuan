@@ -19,29 +19,7 @@ echo ""
 
 stop_service() {
     local name=$1
-    local pidfile=".pids/${name}.pid"
-
-    if [ -f "$pidfile" ]; then
-        local pid=$(cat "$pidfile")
-        if kill -0 "$pid" 2>/dev/null; then
-            # 先尝试优雅停止，3 秒后强制
-            kill "$pid" 2>/dev/null
-            local wait=0
-            while kill -0 "$pid" 2>/dev/null && [ $wait -lt 3 ]; do
-                sleep 1
-                wait=$((wait + 1))
-            done
-            if kill -0 "$pid" 2>/dev/null; then
-                kill -9 "$pid" 2>/dev/null
-            fi
-            echo "  ✓ $name 已停止 (PID $pid)"
-        else
-            echo "  ⏭ $name 未在运行"
-        fi
-        rm -f "$pidfile"
-    else
-        echo "  ⏭ $name 无 PID 文件"
-    fi
+    bash "$ROOT_DIR/scripts/stop.sh" "$name"
 }
 
 echo "▸ 停止应用服务..."

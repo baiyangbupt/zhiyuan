@@ -6,6 +6,7 @@
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
+source "$ROOT_DIR/scripts/service-common.sh"
 
 echo "================================================"
 echo "  智愿 AI 志愿填报系统 — 服务状态"
@@ -15,16 +16,27 @@ echo ""
 check_service() {
     local name=$1
     local port=$2
-    local pidfile=".pids/${name}.pid"
+    local pidfile
+    pidfile=$(service_pidfile "$name")
     local status="⬡ 停止"
     local pid="-"
     local health=""
+    local pidfile_pid=""
+    local port_pids=""
 
     if [ -f "$pidfile" ]; then
-        pid=$(cat "$pidfile")
-        if kill -0 "$pid" 2>/dev/null; then
+        pidfile_pid=$(cat "$pidfile")
+    fi
+
+    port_pids=$(service_listen_pids "$name")
+
+    if [ -n "$pidfile_pid" ] && kill -0 "$pidfile_pid" 2>/dev/null; then
+        pid="$pidfile_pid"
+        if [ -n "$port_pids" ] && ! echo "$port_pids" | grep -qx "$pidfile_pid"; then
             status="⬢ 运行中"
-            # 检查端口是否可达
+            health="(端口监听 PID: $(echo "$port_pids" | tr '\n' ',' | sed 's/,$//'))"
+        else
+            status="⬢ 运行中"
             if curl -sf "http://localhost:$port" > /dev/null 2>&1 || \
                curl -sf "http://localhost:$port/health" > /dev/null 2>&1 || \
                curl -sf "http://localhost:$port/docs" > /dev/null 2>&1; then
@@ -32,10 +44,14 @@ check_service() {
             else
                 health="(启动中...)"
             fi
-        else
-            status="⬡ 已退出"
-            pid="$pid (dead)"
         fi
+    elif [ -n "$port_pids" ]; then
+        status="⬢ 运行中(孤儿)"
+        pid=$(echo "$port_pids" | tr '\n' ',' | sed 's/,$//')
+        health="(端口占用但 PID 文件无效)"
+    elif [ -n "$pidfile_pid" ]; then
+        status="⬡ 已退出"
+        pid="$pidfile_pid (dead)"
     fi
 
     printf "  %-14s %-10s PID: %-12s Port: %-6s %s\n" "$name" "$status" "$pid" "$port" "$health"

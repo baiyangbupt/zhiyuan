@@ -5,6 +5,8 @@
 Flask Web应用主文件
 """
 
+import os
+
 from flask import Flask, jsonify, request
 from datetime import datetime
 import logging
@@ -250,8 +252,10 @@ def query_weight():
 
 if __name__ == '__main__':
     logger.info("启动高考志愿排序服务...")
+    bind_host = os.getenv('RANK_BIND_HOST', '127.0.0.1')
+    bind_port = int(os.getenv('RANK_BIND_PORT', '5001'))
     app.run(
-        host='0.0.0.0',
-        port=5001,
+        host=bind_host,
+        port=bind_port,
         debug=True
     )

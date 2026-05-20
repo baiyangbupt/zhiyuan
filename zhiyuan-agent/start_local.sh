@@ -9,7 +9,7 @@ echo ""
 source .venv/bin/activate
 
 # 启动服务器
-uvicorn app.server:app --host 0.0.0.0 --port 8000 --reload
+uvicorn app.server:app --host 127.0.0.1 --port 8000 --reload
 
 echo ""
 echo "✅ 服务器已启动在 http://localhost:8000"

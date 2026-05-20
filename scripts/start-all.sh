@@ -74,7 +74,7 @@ if [ -f .pids/agent.pid ] && kill -0 "$(cat .pids/agent.pid)" 2>/dev/null; then
 else
     cd "$ROOT_DIR/zhiyuan-agent"
     source .venv/bin/activate
-    nohup uvicorn app.server:app --host 0.0.0.0 --port 8000 > "$ROOT_DIR/logs/agent.log" 2>&1 &
+    nohup uvicorn app.server:app --host 127.0.0.1 --port 8000 > "$ROOT_DIR/logs/agent.log" 2>&1 &
     echo $! > "$ROOT_DIR/.pids/agent.pid"
     deactivate
     echo "  ✓ 已启动 (PID $(cat $ROOT_DIR/.pids/agent.pid)) → http://localhost:8000"
@@ -87,7 +87,7 @@ if [ -f .pids/web.pid ] && kill -0 "$(cat .pids/web.pid)" 2>/dev/null; then
     echo "  ⏭ 已在运行 (PID $(cat .pids/web.pid))"
 else
     cd "$ROOT_DIR/zhiyuan-web"
-    nohup ./node_modules/.bin/env-cmd -f .env.dev ./node_modules/.bin/next dev -p 3001 > "$ROOT_DIR/logs/web.log" 2>&1 &
+    nohup ./node_modules/.bin/env-cmd -f .env.dev ./node_modules/.bin/next dev -H 127.0.0.1 -p 3001 > "$ROOT_DIR/logs/web.log" 2>&1 &
     echo $! > "$ROOT_DIR/.pids/web.pid"
     echo "  ✓ 已启动 (PID $(cat $ROOT_DIR/.pids/web.pid)) → http://localhost:3001"
 fi
