@@ -16,6 +16,7 @@ from app.service import (
     ChatServiceResponseEnvelope,
     _append_plan_preview_confirmation_boundary,
     _build_plan_timeout_fallback_reply,
+    build_runtime_history,
     build_timeout_fallback_from_recent_plan_execution,
     _extract_pending_plan_action,
     _normalize_pending_intent_reply,
@@ -142,6 +143,197 @@ def test_chat_service_persists_and_recovers_history(tmp_path, mock_llm_client):
             {"role": "assistant", "content": "第一轮回复"},
             {"role": "user", "content": "继续"},
         ]
+
+
+def test_build_runtime_history_trims_long_history_and_compacts_tool_returns():
+    long_tool_content = json.dumps(
+        {
+            "result_kind": "preview_only",
+            "action_family": "remove_units",
+            "summary": "预览删除 2 条志愿",
+            "items": ["x" * 5000],
+        },
+        ensure_ascii=False,
+    )
+    history = []
+    for index in range(20):
+        history.extend(
+            [
+                ModelRequest(parts=[UserPromptPart(content=f"旧问题 {index}")]),
+                ModelResponse(parts=[TextPart(content=f"旧回答 {index}")], model_name="test"),
+            ]
+        )
+    history.extend(
+        [
+            ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="execute_plan_action",
+                        args={"plan_payload": "{}"},
+                        tool_call_id="tool-long",
+                    )
+                ],
+                model_name="test",
+            ),
+            ModelRequest(
+                parts=[
+                    ToolReturnPart(
+                        tool_name="execute_plan_action",
+                        content=long_tool_content,
+                        tool_call_id="tool-long",
+                    )
+                ]
+            ),
+            ModelResponse(parts=[TextPart(content="最近回答")], model_name="test"),
+        ]
+    )
+    config = MagicMock(runtime_max_messages=6, runtime_drop_tool_returns_over_chars=200)
+
+    runtime = build_runtime_history(
+        history,
+        latest_user_content="现在方案怎么样",
+        pending_plan_action=None,
+        config=config,
+    )
+
+    assert runtime.full_len == len(history)
+    assert runtime.runtime_len == 6
+    assert runtime.model_history is not None
+    assert len(runtime.model_history) == 6
+    assert runtime.dropped_tool_return_count == 1
+    assert runtime.runtime_text_chars < runtime.full_text_chars
+    assert runtime.chat_history[-1] == {"role": "user", "content": "现在方案怎么样"}
+    assert any(item["content"] == "最近回答" for item in runtime.chat_history)
+    tool_returns = [
+        part
+        for message in runtime.model_history
+        for part in getattr(message, "parts", [])
+        if isinstance(part, ToolReturnPart)
+    ]
+    assert tool_returns
+    assert "items" not in tool_returns[0].content
+    assert "预览删除 2 条志愿" in tool_returns[0].content
+
+
+def test_build_runtime_history_keeps_pending_turn_outside_recent_window():
+    history = []
+    for index in range(12):
+        history.extend(
+            [
+                ModelRequest(parts=[UserPromptPart(content=f"旧问题 {index}")]),
+                ModelResponse(parts=[TextPart(content=f"旧回答 {index}")], model_name="test"),
+            ]
+        )
+
+    history.extend(
+        [
+            ModelRequest(parts=[UserPromptPart(content="按院校层次排序")]),
+            ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="execute_plan_action",
+                        args={
+                            "plan_payload": json.dumps(
+                                {
+                                    "stage": "preview",
+                                    "action_family": "sort_ordered_plan",
+                                    "user_goal": "按院校层次排序",
+                                    "missing_inputs": [],
+                                    "atomic_actions": [],
+                                },
+                                ensure_ascii=False,
+                            )
+                        },
+                        tool_call_id="pending-sort-call",
+                    )
+                ],
+                model_name="test",
+            ),
+            ModelRequest(
+                parts=[
+                    ToolReturnPart(
+                        tool_name="execute_plan_action",
+                        content=json.dumps(
+                            {
+                                "applied": False,
+                                "action_family": "sort_ordered_plan",
+                                "result_kind": "preview_only",
+                                "summary": "将按院校层次重新排序。",
+                            },
+                            ensure_ascii=False,
+                        ),
+                        tool_call_id="pending-sort-call",
+                    )
+                ]
+            ),
+            ModelResponse(parts=[TextPart(content="确认后我再执行排序。")], model_name="test"),
+        ]
+    )
+    for index in range(6):
+        history.append(ModelResponse(parts=[TextPart(content=f"本轮补充说明 {index}")], model_name="test"))
+
+    config = MagicMock(runtime_max_messages=3, runtime_keep_pending=True, runtime_drop_tool_returns_over_chars=3000)
+    runtime = build_runtime_history(
+        history,
+        latest_user_content="这个排序会怎么影响冲稳保？",
+        pending_plan_action={"action_family": "sort_ordered_plan"},
+        config=config,
+    )
+
+    assert runtime.has_pending is True
+    assert runtime.runtime_len > config.runtime_max_messages
+    assert any(
+        isinstance(part, ToolCallPart)
+        and part.tool_name == "execute_plan_action"
+        and part.tool_call_id == "pending-sort-call"
+        for message in runtime.model_history or []
+        for part in getattr(message, "parts", [])
+    )
+    assert any(
+        isinstance(part, ToolReturnPart)
+        and part.tool_name == "execute_plan_action"
+        and part.tool_call_id == "pending-sort-call"
+        for message in runtime.model_history or []
+        for part in getattr(message, "parts", [])
+    )
+    assert runtime.chat_history[-1] == {"role": "user", "content": "这个排序会怎么影响冲稳保？"}
+
+
+def test_chat_service_passes_runtime_history_but_persists_full_history(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    initial_history = []
+    for index in range(18):
+        initial_history.extend(
+            [
+                ModelRequest(parts=[UserPromptPart(content=f"历史问题 {index}")]),
+                ModelResponse(parts=[TextPart(content=f"历史回答 {index}")], model_name="test"),
+            ]
+        )
+    asyncio.run(store.save("session-runtime-history", initial_history))
+    fake_agent = _FakeAgent(["短上下文回复"])
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})):
+        service = ChatService(mock_llm_client, store)
+        service.history_config.runtime_max_messages = 5
+        reply = asyncio.run(service.handle_message("session-runtime-history", "user-1", "看看方案"))
+
+    assert reply == "短上下文回复"
+    assert len(fake_agent.calls) == 1
+    assert fake_agent.calls[0]["message_history"] is not None
+    assert len(fake_agent.calls[0]["message_history"]) == 5
+    assert len(fake_agent.calls[0]["chat_history"]) <= 6
+    stored = asyncio.run(store.load("session-runtime-history"))
+    assert stored is not None
+    assert len(stored) == len(initial_history) + 2
+    assert any(
+        isinstance(part, UserPromptPart) and part.content == "历史问题 0"
+        for message in stored
+        for part in getattr(message, "parts", [])
+    )
 
 
 def test_chat_service_uses_main_agent_as_single_dialog_entry(tmp_path, mock_llm_client):

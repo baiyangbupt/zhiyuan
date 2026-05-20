@@ -700,6 +700,7 @@ def test_handler_exception_returns_error(client):
 
     assert resp["type"] == "error"
     assert resp["content"] == "处理消息时出错，请稍后重试"
+    assert resp["end"] is True
     mock_store.save_agent_message.assert_not_awaited()
 
 

@@ -49,6 +49,7 @@ const PersonalInfoCollect = (props: ICollectflowProps) => {
   const stepsRef = useRef<ICollectflowRes>();
   stepsRef.current = stepsData;
   const formsRef = useRef<FormInstance[]>([]);
+  const stepRefs = useRef<Record<number, HTMLDivElement | null>>({});
   const summaryRefs = useRef<Record<number, HTMLDivElement | null>>({});
   const [batchOptions, setBatchOptions] = useState<any>([]);
   const [subjectType, setSubjectType] = useState<any>(null); // 学科类型-首选科目
@@ -596,6 +597,16 @@ const PersonalInfoCollect = (props: ICollectflowProps) => {
     }
   };
 
+  const scrollStepIntoView = (index: number) => {
+    const target = stepRefs.current[index];
+    if (!target || typeof window === 'undefined') return;
+    target.scrollIntoView({
+      behavior: 'smooth',
+      block: 'start',
+      inline: 'nearest',
+    });
+  };
+
   // 表单提交处理
   const handleFormFinish = (values: any, index: number, subStepId: string) => {
     const allValue = { ...allFormValues, [index]: { ...values, subStepId } };
@@ -616,6 +627,7 @@ const PersonalInfoCollect = (props: ICollectflowProps) => {
 
     window.requestAnimationFrame(() => {
       window.requestAnimationFrame(() => scrollSummaryDownIfNeeded(index));
+      window.requestAnimationFrame(() => scrollStepIntoView(index + 1));
     });
   };
 
@@ -1056,7 +1068,13 @@ const PersonalInfoCollect = (props: ICollectflowProps) => {
     }
 
     return (
-      <div className={style.confirmSubSteps} key={item.subStepId}>
+      <div
+        className={style.confirmSubSteps}
+        key={item.subStepId}
+        ref={node => {
+          stepRefs.current[index] = node;
+        }}
+      >
         {/* 内容片段 */}
         {item.contentSegments?.map((cs: ISegments) =>
           cs.type === 'audio' ? (

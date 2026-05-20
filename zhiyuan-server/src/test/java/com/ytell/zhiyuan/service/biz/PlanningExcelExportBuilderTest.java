@@ -20,7 +20,7 @@ public class PlanningExcelExportBuilderTest {
     private final PlanningExcelExportBuilder builder = new PlanningExcelExportBuilder();
 
     @Test
-    void shouldBuildMajorSchoolExportRowsGroupedBySchool() {
+    void shouldBuildMajorSchoolExportRowsPerOrderedMajor() {
         PlanningStateDTO state = new PlanningStateDTO();
         state.getCandidatePoolState().setVolunteerModel("major");
 
@@ -38,20 +38,26 @@ public class PlanningExcelExportBuilderTest {
         PlanningExcelExportBuilder.PlanningExportData exportData = builder.build(state, new CreateSessionReq());
 
         assertFalse(exportData.isMajorGroupMode());
-        assertEquals(2, exportData.getMainList().size());
+        assertEquals(3, exportData.getMainList().size());
 
         ExcelUtil.VolunteerExcelData first = exportData.getMainList().get(0);
         assertEquals(Integer.valueOf(1), first.getIndex());
         assertEquals("1001", first.getSchoolCode());
         assertEquals("学校A", first.getSchoolName());
-        assertEquals(2, first.getMajorList().size());
+        assertEquals(1, first.getMajorList().size());
         assertEquals("080901", first.getMajorList().get(0).getMajorCode());
-        assertEquals("080902", first.getMajorList().get(1).getMajorCode());
 
         ExcelUtil.VolunteerExcelData second = exportData.getMainList().get(1);
         assertEquals(Integer.valueOf(2), second.getIndex());
-        assertEquals("1002", second.getSchoolCode());
+        assertEquals("1001", second.getSchoolCode());
         assertEquals(1, second.getMajorList().size());
+        assertEquals("080902", second.getMajorList().get(0).getMajorCode());
+
+        ExcelUtil.VolunteerExcelData third = exportData.getMainList().get(2);
+        assertEquals(Integer.valueOf(3), third.getIndex());
+        assertEquals("1002", third.getSchoolCode());
+        assertEquals(1, third.getMajorList().size());
+        assertEquals("080701", third.getMajorList().get(0).getMajorCode());
     }
 
     @Test
@@ -104,8 +110,8 @@ public class PlanningExcelExportBuilderTest {
         firstUnit.setSchoolName("专业组A");
         firstUnit.setSchoolEnrollRatio(45d);
         firstUnit.setMajorItems(Arrays.asList(
-                buildUnitMajor("g1m1", "080901", "专业A1"),
-                buildUnitMajor("g1m2", "080902", "专业A2")
+                buildUnitMajor("g1m2", "080902", "专业A2"),
+                buildUnitMajor("g1m1", "080901", "专业A1")
         ));
 
         OrderedUnitDTO secondUnit = new OrderedUnitDTO();
@@ -132,8 +138,10 @@ public class PlanningExcelExportBuilderTest {
         assertEquals("2001", first.getSchoolCode());
         assertEquals("专业组A", first.getSchoolName());
         assertEquals(2, first.getMajorList().size());
-        assertEquals("61%", first.getMajorList().get(0).getMajorEnrollRatio());
-        assertEquals("54%", first.getMajorList().get(1).getMajorEnrollRatio());
+        assertEquals("54%", first.getMajorList().get(0).getMajorEnrollRatio());
+        assertEquals("61%", first.getMajorList().get(1).getMajorEnrollRatio());
+        assertEquals("080902", first.getMajorList().get(0).getMajorCode());
+        assertEquals("080901", first.getMajorList().get(1).getMajorCode());
     }
 
     @Test

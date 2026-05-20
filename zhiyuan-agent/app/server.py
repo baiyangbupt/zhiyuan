@@ -335,7 +335,7 @@ async def ws_chat_compat(ws: WebSocket, tenant_id: str, bot_id: str):
                 msg = WSMessage.model_validate(v3_data)
             except ValidationError as e:
                 logger.warning("Compat message validation failed: %s", e)
-                if not await _safe_send_json(ws, {"type": "error", "content": "消息格式错误"}, context="compat.validation_error"):
+                if not await _safe_send_json(ws, {"type": "error", "content": "消息格式错误", "end": True}, context="compat.validation_error"):
                     return
                 continue
 
@@ -464,7 +464,7 @@ async def ws_chat_compat(ws: WebSocket, tenant_id: str, bot_id: str):
                 already_saved = False
             except Exception as e:
                 logger.exception("handle_message failed (compat): %s", str(e))
-                resp_data = {"type": "error", "content": "处理消息时出错，请稍后重试"}
+                resp_data = {"type": "error", "content": "处理消息时出错，请稍后重试", "end": True}
                 already_saved = False
 
             if resp_data.get("type") != "error" and not already_saved:

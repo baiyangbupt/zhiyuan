@@ -26,7 +26,7 @@ const STEP_SHORT_TITLES = ['高考信息', '个人信息', '专业意向', '区�
 export interface CustomerDetailFlowProps {
   tenantId: string;
   botId: string;
-  /** 创建成功后的回调（弹窗场景下可先关弹窗再跳转） */
+  /** 创建成功后的回调（弹窗场景下可先关闭弹窗，再进入新会话详情） */
   onSuccess?: (params: { chatSessionId: string; userId: string; userName: string }) => void;
   /** 可选：关闭入口（弹窗时传，用于关闭弹窗） */
   onClose?: () => void;
@@ -146,7 +146,7 @@ const CustomerDetailFlow: React.FC<CustomerDetailFlowProps> = ({
             navigateTo('/sessionDetailV2', {
               chatSessionId: createdSession.id,
               userId: createdSession.userId,
-              userName: createdSession.userName,
+              userName: createdSession.userName || '',
               page: 1,
               pageSize: 10,
             });

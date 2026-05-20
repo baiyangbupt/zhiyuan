@@ -2875,6 +2875,7 @@ public class PlanningStateService {
         unit.setSelectedMajors(defaultCandidates(majorsResult.selectedMajors).stream()
                 .map(candidate -> toPlanningUnitMajor(candidate, true,
                         isSafetyMajorRatio(candidate.getAdmissionRatio(), representative.getSchoolEnrollRatio())))
+                .sorted(buildSelectedMajorDisplayComparator())
                 .collect(Collectors.toList()));
         unit.setSelectedMajorCount(unit.getSelectedMajors().size());
         unit.setComplete(requiredMajorCount == null
@@ -2977,6 +2978,21 @@ public class PlanningStateService {
                 .thenComparing((CandidateItemDTO item) -> item.getAdmissionRatio(), Comparator.nullsLast(Comparator.reverseOrder()))
                 .thenComparing((CandidateItemDTO item) -> item.getFinalScore(), Comparator.nullsLast(Comparator.reverseOrder()))
                 .thenComparing(CandidateItemDTO::getVolunteerId, Comparator.nullsLast(String::compareTo));
+    }
+
+    private Comparator<PlanningUnitMajorDTO> buildSelectedMajorDisplayComparator() {
+        return Comparator
+                .comparing((PlanningUnitMajorDTO item) -> item.getAdmissionRatio(), Comparator.nullsLast(Double::compareTo))
+                .thenComparing((PlanningUnitMajorDTO item) -> item.getIntentScore(), Comparator.nullsLast(Comparator.reverseOrder()))
+                .thenComparing((PlanningUnitMajorDTO item) -> item.getFinalScore(), Comparator.nullsLast(Comparator.reverseOrder()))
+                .thenComparing(PlanningUnitMajorDTO::getVolunteerId, Comparator.nullsLast(String::compareTo));
+    }
+
+    private List<PlanningUnitMajorDTO> sortSelectedMajorsForDisplay(List<PlanningUnitMajorDTO> majors) {
+        return defaultPlanningUnitMajors(majors).stream()
+                .filter(Objects::nonNull)
+                .sorted(buildSelectedMajorDisplayComparator())
+                .collect(Collectors.toList());
     }
 
     private MajorGroupSelectedMajorsResult selectMajorGroupPreferredMajors(List<CandidateItemDTO> unitCandidates,
@@ -7163,7 +7179,7 @@ public class PlanningStateService {
             draftUnit.setSchoolName(unit.getSchoolName());
             draftUnit.setSource(source);
             draftUnit.setLocked(false);
-            draftUnit.setMajorItems(Lists.newArrayList(defaultPlanningUnitMajors(unit.getSelectedMajors())));
+            draftUnit.setMajorItems(sortSelectedMajorsForDisplay(unit.getSelectedMajors()));
             result.add(draftUnit);
         }
         return result;
@@ -7219,6 +7235,9 @@ public class PlanningStateService {
             }
             unit.getMajorItems().add(major);
             unit.setLocked(Boolean.TRUE.equals(unit.getLocked()) || Boolean.TRUE.equals(item.getLocked()));
+        }
+        for (DraftUnitDTO unit : unitMap.values()) {
+            unit.setMajorItems(sortSelectedMajorsForDisplay(unit.getMajorItems()));
         }
         draft.setUnits(Lists.newArrayList(unitMap.values()));
     }
@@ -7298,6 +7317,9 @@ public class PlanningStateService {
                     unit.setPinnedPosition(item.getPinnedPosition());
                 }
             }
+        }
+        for (OrderedUnitDTO unit : unitMap.values()) {
+            unit.setMajorItems(sortSelectedMajorsForDisplay(unit.getMajorItems()));
         }
         return Lists.newArrayList(unitMap.values());
     }

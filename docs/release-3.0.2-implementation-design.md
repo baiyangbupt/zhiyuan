@@ -85,8 +85,8 @@
   - `isCustomer=false` 跳转 `/session`
 - token 静默登录：
   - 同样按 `isCustomer` 跳转。
-- `/customer` 页面默认会自动查询最新会话并跳转 `/sessionDetailV2`。
-- `/customer?openSessionList=1` 已有逻辑：打开会话列表抽屉，并跳过自动进入最新会话。
+- `/customer` 页面默认打开会话列表抽屉，不再自动跳转最新会话详情。
+- `/customer?openSessionList=1` 作为显式打开会话列表的兼容入口保留。
 
 ### 2.3 实施方案
 
@@ -95,6 +95,7 @@
 - 登录后如果 `isCustomer=true`，跳转 `/customer?openSessionList=1`。
 - 登录后如果 `isCustomer=false`，继续跳转 `/session`。
 - `source=minip` 仍由 router 工具自动透传。
+- 采集页创建成功后也必须回到会话列表，而不是进入新建会话详情；C 端回到 `/customer?openSessionList=1`，B 端回到 `/session`。
 
 ### 2.4 验收
 
@@ -187,6 +188,7 @@ customer_detail_draft:{tenantId}:{botId}:{userKey}
 补充实现约束：
 
 - 个人信息采集页内部的分数填写和身体情况填写使用各自独立的表单实例与总结锚点，避免一个子表单的确认操作把页面滚动或表单状态带回到另一段。
+- 分数子步骤点击确认后，页面应自动滚到下一子步骤的起始位置，让用户能直接看到身体信息区域出现，而不是只停留在当前总结锚点附近。
 - 分数计算、位次查询与批次联动只绑定分数子表单；身体情况确认只更新当前子表单的缓存和总结态，不会重新触发分数段的计算逻辑。
 - 视力情况、分数列表这类组合字段的必填校验要落在内部真实输入项上，外层容器只负责展示和布局，避免明明填了 4.3 / 4.3 却仍被当成未填。
 - 个人信息任一子步骤如果已经从缓存恢复为“已确认”，必须同时恢复总结区和“了解完成，继续下一步”入口；不能出现只展示“确认提交”气泡、但仍要求用户再次提交一次才可继续的中间态。
@@ -199,6 +201,7 @@ customer_detail_draft:{tenantId}:{botId}:{userKey}
 - 采集页在没有任何有效缓存时必须显式重置上一个会话残留的确认态、总结态和本地表单值，避免用户切换到新会话后沿用旧会话的恢复结果。
 - `/customerDetail` 页面入口和弹窗/复用入口 `CustomerDetailFlow` 必须保持同一套缓存恢复契约。修复时不能只改复用组件；实际页面入口也要在无有效缓存时重置步骤和累计值，并在用户省份变化时重新拉取或清空选科策略。
 - 专业意向页中“以下专业类，哪些是明确排斥不想选的？”必须展示后端按选科和批次动态注入的 `bachelorMajors / associateMajors` 冷门/排斥专业类；批次暂时未恢复或动态字段缺失时，不能回退到静态 `options` 里的具体专业列表，避免把“建筑学、计算机科学与技术”等普通专业误展示为排斥专业类。
+- 专业意向页中的负意向专业类不再只靠 `collect-flow` 的初始注入结果；应以当前表单里的选科和批次调用 `base-data/unacceptable-majors` 重新取一次动态列表，确保不同选科和不同批次看到的排斥专业类保持一致。
 - 志愿填报策略是最后一步，但交互仍沿用旧流程：策略表单内部只有单个“确认提交”用于确认选择；确认后底部展示浅红底“了解完成，继续下一步”按钮，由该按钮触发 `finalSubmit` 创建会话。不能把底部动作改成小号“上一步 / 确认提交”按钮组，避免用户误以为还只是普通表单提交。
 - 志愿填报策略的最终按钮只触发创建会话，不再追加一条同文案的用户气泡；否则用户会看到重复的“了解完成，继续下一步”。
 - 个人信息里的批次字段属于创建会话必填结构化字段。批次控件值需要从当前分数表单实例和异步批次列表中解析为 `CreateSessionReq.batch`，缓存恢复或 id 类型变化时要用已缓存批次兜底，不能让最终 payload 中 `batch` 丢失。最终创建前如果遇到历史缓存已进入最后一步但仍缺少批次，需要按当前用户省份、选科和默认批次列表再做一次异步补齐；仍无法补齐时，前端展示“请选择批次后再创建会话”并停止提交。
@@ -401,3 +404,393 @@ customer_detail_draft:{tenantId}:{botId}:{userKey}
 - 候选池本身为空时，状态为 `empty`，文案不包含“筛选”。
 - 用户选择筛选/排除条件后结果为空时，候选列表只显示“当前筛选结果为空”。
 - 候选偏少时，候选概览展示“候选不足”标签，详情在 tooltip 中展示。
+
+## 7. 专业组内专业顺序和专业模式导出结构
+
+### 7.1 背景和目标
+
+生产会话 `2268` 暴露两个方案可信度问题：
+
+- 院校专业组模式下，生成方案里的专业组内专业没有默认按专业录取率正排。
+- 专业+大学模式下，导出文件会呈现类似专业组的“学校下嵌套多个专业”结构。
+
+这两个问题都发生在新版 PlanningState 接管旧版推荐结果之后，属于新状态模型和导出模型的语义偏移。`3.0.2` 需要把专业组、专业+大学两种模式的用户心智重新固定：
+
+- `majorGroup`：一个专业组是一个排序单元，组内专业明细按专业录取率从低到高展示和导出，对齐老版本口径。
+- `major`：一个“学校 + 专业”组合就是一条排序志愿，导出时一条志愿一行，不按学校合并。
+- 专业组模式下，前端工作区优先直接消费 `orderedPlanState.units`；只有单位结构缺失时才回退到扁平 `orderedPlanState.items` 重新分组，避免把后端已归一好的组内顺序和院校录取率再次打散。
+
+### 7.2 问题 1：专业组内专业没有按录取率正排
+
+当前链路：
+
+1. rank 返回专业组候选，每个专业组内有 `majorList`。
+2. `PlanningStateService.flattenCandidates()` 将专业组候选拆平成多个 `CandidateItemDTO`，每个专业携带 `admissionRatio`，组层录取率在 `schoolEnrollRatio`。
+3. `groupCandidatesToPlanningUnits()` 按专业组重新聚合。
+4. `buildPlanningUnit()` 调用 `selectMajorGroupPreferredMajors()` 选择组内专业。
+5. `replaceDraftWithInitialRecommendation()` 将 `PlanningUnitDTO.selectedMajors` 写入 `draft.units` 和 `draft.items`。
+6. `generateOrderedPlan()` 通过 `buildOrderedUnitsFromOrderedItems()` 生成 `orderedPlanState.units`。
+7. 前端工作区和导出都读取 `orderedPlanState.units.majorItems`。
+
+根因：
+
+- `buildMajorGroupInnerCandidateComparator()` 的排序优先级是 `preferred -> futureDevelopmentScore -> intentScore -> admissionRatio -> finalScore -> volunteerId`，录取率不是第一排序维度。
+- `selectMajorGroupPreferredMajors()` 会把满足 `admissionRatio >= schoolEnrollRatio` 的托底专业提前加入 `selectedMajors`，之后没有做展示顺序归一。
+- `buildDraftUnitsFromPlanningUnits()` 和 `buildOrderedUnitsFromOrderedItems()` 都保留上游顺序，导致该顺序进入页面和导出。
+
+修复原则：
+
+- 选择专业和展示专业分开处理：
+  - 选择阶段继续保留偏好、就业/发展、意向、托底等策略，避免影响专业组能否覆盖用户要求。
+  - 展示/导出阶段对已选专业统一按 `admissionRatio asc` 排序，录取率为空排最后。
+- 托底专业不丢失，但托底不再强制置顶。托底能力用 `safetyMajor` 标记和审查信息表达。
+- `allMajors` 如果用于候选明细，可继续保留策略排序；`selectedMajors / draftUnit.majorItems / orderedUnit.majorItems` 是当前方案明细，应使用录取率正排。
+
+建议落点：
+
+- 在 `PlanningStateService` 增加一个私有 comparator，例如 `buildSelectedMajorDisplayComparator()`：
+  - `admissionRatio asc`
+  - `intentScore desc` 或 `finalScore desc` 作为稳定兜底
+  - `volunteerId asc` 作为最终稳定键
+- 在以下位置统一调用，避免只修一个入口：
+  - `buildPlanningUnit()` 设置 `selectedMajors` 前或后。
+  - `buildDraftUnitsFromPlanningUnits()` 拷贝 `selectedMajors` 时。
+  - `buildOrderedUnitsFromOrderedItems()` 返回 `OrderedUnitDTO` 前，对每个 `unit.majorItems` 归一排序。
+  - `buildMajorGroupExcelRowsFromItems()` fallback 路径中，对聚合出来的 `majorItems` 排序。
+
+实现记录：
+
+- 已在 `PlanningStateService` 增加 `buildSelectedMajorDisplayComparator()` 与 `sortSelectedMajorsForDisplay()`，排序规则为 `admissionRatio asc -> intentScore desc -> finalScore desc -> volunteerId asc`，录取率缺失排后。
+- `buildPlanningUnit()` 只在 `selectedMajors` 输出阶段排序，不改变 `selectMajorGroupPreferredMajors()` 的选专业策略，因此偏好、发展/就业、意向和托底选择仍按原逻辑生效。
+- `buildDraftUnitsFromPlanningUnits()`、`syncDraftUnitsWithItems()`、`buildOrderedUnitsFromOrderedItems()` 均在写出 unit 前统一归一 `majorItems` 顺序，覆盖初始方案、手动加入方案、草稿同步、专业组移动/排序区重建等入口。
+- `PlanningExcelExportBuilder` 在专业组导出时对 `unit.majorItems` 做候选池兜底排序：如果历史 unit 内专业缺少录取率，会通过 `CandidateExportResolver` 根据 `volunteerId`、旧 ID 前缀或专业组名 + 专业名反查候选后排序。
+
+不做项：
+
+- 不改变专业组本身在排序区的顺序。
+- 不改变 `rank` 服务的推荐得分计算。
+- 不把托底专业从方案中移除。
+
+### 7.3 问题 2：专业+大学模式导出出现专业组式嵌套结构
+
+当前链路：
+
+- `PlanningExcelExportBuilder.build()` 根据 `candidatePoolState.volunteerModel` 判断模式。
+- `majorGroup` 调 `buildMajorGroupExcelRows()`，按 `OrderedUnitDTO` 导出。
+- `major` 调 `buildMajorSchoolExcelRows()`。
+- `buildMajorSchoolExcelRows()` 当前会按 `schoolId / planSchoolDataId / schoolName` 聚合同校志愿，并把多个专业写入同一个 `VolunteerExcelData.majorList`。
+- `ExcelUtil.createDataRows()` 会按 `majorList` 生成多行并合并学校列，因此专业模式也呈现“学校下多个专业”的结构。
+
+根因：
+
+- 新版导出构建器把专业+大学模式理解为“学校聚合 + 专业明细”，而产品心智应是“每条专业志愿独立排序”。
+- 单测 `shouldBuildMajorSchoolExportRowsGroupedBySchool()` 固定了该行为，因此需要同步调整测试语义，而不是只改实现。
+
+修复原则：
+
+- `major` 模式导出一条 `OrderedItemDTO` 对应一个 `VolunteerExcelData`。
+- 每个 `VolunteerExcelData.majorList` 只包含当前志愿对应的一个专业。
+- `index` 来自当前排序顺序重新连续编号，继续复用已有 `renumberMainRows()`。
+- 同校不同专业不合并、不共享一个序号。
+- `majorGroup` 模式逻辑不变，继续按 `OrderedUnitDTO` 聚合。
+
+建议落点：
+
+- 将 `buildMajorSchoolExcelRows()` 从“按学校聚合”改为“按 ordered item 映射”：
+  - 遍历 `orderedPlanState.items`。
+  - 使用 `CandidateExportResolver.resolve(orderedItem)` 找候选明细。
+  - 每个 item 构建一个 `VolunteerExcelData`，`majorList` 放一个 `toMajorExcelData(candidate, false)`。
+  - 如果 candidate 解析失败，应尽量用 `orderedItem.schoolName / majorName` 构建最小可导出行，避免整条志愿静默丢失；是否允许缺失候选需要在实现时结合现有导出异常策略确认。
+- 删除或改写 `MajorSchoolExportGroup / MajorSchoolExportEntry` 的专业模式使用路径；如只剩 fallback，可移除未使用内部类。
+- 更新 `PlanningExcelExportBuilderTest.shouldBuildMajorSchoolExportRowsGroupedBySchool()` 为“同校多专业也按志愿独立导出”。
+
+实现记录：
+
+- `buildMajorSchoolExcelRows()` 已改为按 `OrderedItemDTO.position` 遍历映射，每条排序志愿生成一条 `VolunteerExcelData`。
+- 每条专业+大学导出行的 `majorList` 只包含当前候选对应的一个专业，最终序号继续通过 `renumberMainRows()` 连续重排。
+- 已移除专业模式按学校聚合的 `MajorSchoolExportGroup / MajorSchoolExportEntry` 使用路径，避免后续再次把专业模式导出误建模成专业组结构。
+- `majorGroup` 导出仍走 `OrderedUnitDTO`，一个专业组一条主志愿，组内专业明细保留。
+
+不做项：
+
+- 不改 `ExcelUtil` 的通用写表能力；它仍需要支持专业组模式多专业明细。
+- 不改旧版 legacy 导出接口。
+- 不在前端对下载文件做二次处理。
+
+### 7.4 测试设计
+
+后端单测：
+
+- `PlanningStateServiceTest`
+  - `majorGroup` 初始方案中，同一专业组被选专业按 `admissionRatio asc`。
+  - 含托底专业时，托底专业仍存在，但顺序按录取率。
+  - 录取率为空的专业排在最后。
+  - `buildOrderedUnitsFromOrderedItems()` 兼容历史 draft/unit 顺序，最终输出仍归一。
+- `PlanningExcelExportBuilderTest`
+  - `major` 模式同校两个专业导出为两条主志愿行，每条 `majorList.size()==1`。
+  - `major` 模式导出序号连续，和 `orderedPlanState.items` 顺序一致。
+  - `majorGroup` 模式仍从 `orderedPlanState.units` 导出，一个专业组一条主志愿，组内专业明细保留。
+  - 旧 ID 兼容解析仍能导出专业明细。
+
+人工验收：
+
+- 新建 `majorGroup` 会话，检查页面方案区每个专业组内专业录取率从低到高。
+- 对同一 `majorGroup` 会话导出 Excel，检查组内专业顺序与页面一致。
+- 新建 `major` 会话，手动让同一学校多个专业同时在方案中，导出 Excel 后确认每个专业是独立志愿行。
+- 对手动移动/排序后的 `major` 会话导出，确认导出顺序等于页面排序区顺序。
+
+### 7.5 风险
+
+- 如果当前产品仍希望专业组内优先展示“更符合偏好/就业更好”的专业，录取率正排会改变用户看到的首位专业。本期按老版本专业组内专业展示口径处理：低录取率在前、高录取率在后。
+- 如果某些候选缺少 `admissionRatio`，排序会把它放到后面；需要通过测试确保不会导致专业丢失。
+- 专业模式导出改为独立行后，文件行数可能比之前增加，但这符合专业+大学模式“一条志愿一个专业”的用户心智。
+
+## 8. Agent 长历史污染和上下文成本治理
+
+### 8.1 背景和目标
+
+`3.0.2` P0 要求至少完成长历史污染和 token 过重的设计方案，并完成验证或首轮低风险实现。当前目标不是重写整个 agent planner，而是先把“主 agent 每轮带完整历史”的风险收敛：
+
+- 降低长会话下每轮请求的输入 token 和接口延迟。
+- 降低旧回复、旧 tool return、旧 pending preview 对本轮意图判断的污染。
+- 保留最近上下文、当前待确认动作和必要规划摘要，避免影响“确认执行”“按刚才那个处理”等多轮承接。
+- 不改变高副作用动作必须 preview -> confirm -> apply 的协议。
+
+### 8.2 当前链路
+
+当前 `ChatService.handle_message()` 的主流程如下：
+
+1. `ChatHistoryStore.load(session_id)` 从 SQLite 读取完整 pydantic-ai 历史。
+2. `pydantic_ai_messages_to_dicts(history)` 抽取文本历史给 `RequestContext.chat_history`，并追加当前用户输入。
+3. `_extract_pending_plan_action(history)` 从完整历史中查找待确认方案动作。
+4. `ConversationPhase.from_legacy_context()` 用 pending 信息和 `PlanningSummary` 构建当前阶段。
+5. 普通路径调用 `self.agent.run_with_message_deltas(user_prompt=content, message_history=history, deps=request_context)`，主模型会看到完整 `message_history`。
+6. 返回后把 `new_messages` 追加到原 `history` 并整体保存。
+
+已存在的局部保护：
+
+- 专业、院校、地域、职业意向抽取工具内部大多使用 `trim_last_n_messages()`，默认只取最近 `EXTRACT_LAST_N_MESSAGES=10`。
+- `intent_state_tool` 的确认落库链路已经避免从完整历史重复抽取旧偏好。
+- direct pending plan / intent confirmation 可以绕过主模型，直接执行上一轮 pending。
+- `UsageTracker` 已记录每轮 token，可以作为优化前后观测口径。
+
+主要缺口：
+
+- 主 agent 调用仍传完整 pydantic-ai 历史，长会话里旧 tool call / tool return / assistant 解释会持续进入模型上下文。
+- `RequestContext.chat_history` 当前也是完整文本历史加当前输入，虽然部分工具会裁剪，但其他工具或指令层仍可能读取完整历史。
+- SQLite 只保存完整历史，没有“发送给模型的短上下文”和“长期审计历史”的分层。
+- 缺少针对长历史会话的固定回归样本，无法量化输入 token、延迟和误路由改善。
+
+### 8.3 方案原则
+
+本期采用“传给模型裁剪，持久化仍完整”的低风险方案：
+
+- 历史库继续保存完整 pydantic-ai 历史，便于审计、排查和恢复。
+- 每轮调用主 agent 前构造 `runtime_history`，只传给模型使用，不覆盖原始历史。
+- direct pending 确认仍使用完整历史查找 pending payload，避免裁剪后丢失确认动作。
+- `RequestContext.chat_history` 也使用同一份可控短文本历史，外加当前用户输入；需要找 pending 的代码继续读完整 pydantic 历史。
+- 首版只做规则裁剪，不做 LLM 摘要，避免引入新的模型调用和摘要误差。
+
+### 8.4 Runtime History 裁剪规则
+
+新增 agent history 配置，建议环境变量前缀仍放在 `HISTORY_`：
+
+| 配置 | 默认值 | 说明 |
+| --- | --- | --- |
+| `HISTORY_RUNTIME_MAX_MESSAGES` | `24` | 主 agent 每轮最多携带的历史 message 数，不含当前用户输入 |
+| `HISTORY_RUNTIME_KEEP_RECENT_TURNS` | `8` | 至少保留最近若干轮用户/助手文本消息 |
+| `HISTORY_RUNTIME_KEEP_PENDING` | `true` | 若完整历史中存在 pending plan / intent，保留相关 tool call / tool return |
+| `HISTORY_RUNTIME_DROP_TOOL_RETURNS_OVER_CHARS` | `3000` | 超长 tool return 不直接带入模型，可替换为摘要占位 |
+| `HISTORY_RUNTIME_SUMMARY_ENABLED` | `false` | LLM 摘要后续再打开，本期默认关闭 |
+
+裁剪输入：
+
+- `full_history`：SQLite 中完整 pydantic-ai 消息。
+- `latest_user_content`：当前用户输入。
+- `pending_plan_action`、`pending_intent_change`、`planning_summary`：当前已解析出的结构化状态。
+
+裁剪输出：
+
+- `runtime_model_history`：传给 `BaseAgent.run_with_message_deltas()` 的 pydantic-ai 消息列表。
+- `runtime_chat_history`：传给 `RequestContext.chat_history` 的文本历史，最后追加当前用户输入。
+- `history_metrics`：记录 `full_len / runtime_len / full_text_chars / runtime_text_chars / dropped_tool_return_count / has_pending`。
+
+保留优先级：
+
+1. 最近用户输入之前的最近 N 条真实文本消息。
+2. 上一轮 pending action 相关的 tool call / tool return / assistant preview，确保“确认”承接。
+3. 最近一次方案编辑、审查、排序、筛选相关工具调用的简短结果摘要。
+4. 旧欢迎语、旧长篇方案播报、旧候选大列表、旧导出/审查 tool return 默认不保留原文。
+
+超长工具结果处理：
+
+- 对超过阈值的 tool return，只保留：
+  - `tool_name`
+  - `result_kind / action_family / message_code`
+  - `workspace_refresh_targets`
+  - `summary / userFacingSummary`
+  - pending payload 的引用信息
+- 不把候选池大列表、完整方案大 JSON、完整 review checks 原样带入主模型。
+
+实现记录：
+
+- `HistoryConfig` 新增 `runtime_max_messages / runtime_keep_pending / runtime_drop_tool_returns_over_chars / runtime_summary_enabled` 配置，其中首版默认 `runtime_max_messages=24`、`runtime_drop_tool_returns_over_chars=3000`、摘要关闭。
+- `ChatService.handle_message()` 在解析完整历史中的 pending 之后，调用 `build_runtime_history()` 构造只用于本轮模型调用的 `runtime_model_history` 和 `runtime_chat_history`。
+- 主 agent 调用改为传入 `runtime_model_history`；`RequestContext.chat_history` 改为短文本历史加当前用户输入。
+- SQLite 保存仍以完整历史为基底追加本轮 `new_messages`，不会把完整历史缩短成 runtime history。
+- `runtime_keep_pending=true` 时，如果完整历史中存在有效待确认方案动作，runtime history 会额外保留产生该 pending 的最近一轮用户请求、工具调用、工具返回和 assistant 预览回复；因此 pending 场景下 runtime 消息数可能略高于 `runtime_max_messages`，但可以避免“刚预览完，用户追问这个调整影响什么”时模型看不到预览上下文。
+- 超长 `ToolReturnPart.content` 会压缩为包含 `result_kind / action_family / message / summary / workspace_refresh_targets / applied` 等关键字段的短 JSON，占位标记 `_truncated=true`。
+- 日志新增 `Runtime history prepared`，记录 `full_len / runtime_len / full_chars / runtime_chars / dropped_tool_returns / has_pending`，用于后续对比 token 和长历史污染。
+
+### 8.5 与 Pending 协议的关系
+
+高副作用动作仍按现有规则执行：
+
+- 未确认：`execute_plan_action` 返回 `preview_only`，写入 pending payload。
+- 用户确认：优先走 direct pending confirmation，不进入主 agent。
+- 没有 pending 却说“确认”：继续返回“没有上一轮待确认动作”的保护提示。
+
+因此 runtime 裁剪不得影响：
+
+- `_extract_pending_plan_action(full_history)` 仍读完整历史。
+- `_has_pending_intent_change(session_id)` 仍读后端 pending 状态。
+- `ConversationPhase` 仍以结构化 pending 和 `PlanningSummary` 为准，不依赖被裁剪的自然语言历史。
+
+### 8.6 测试设计
+
+Agent 单测：
+
+- 构造 60+ 条历史，其中包含旧方案 preview、大 tool return 和当前最新问题，断言传给主 agent 的 `message_history` 不超过配置上限。
+- 构造含 pending plan action 且 pending 轮不在最近窗口内的长历史，断言 runtime history 仍保留对应 tool call / tool return 和预览回复。
+- 构造含 pending plan action 的长历史，断言 direct confirmation 仍能执行，不因 runtime 裁剪丢失 payload。
+- 构造无 pending 但用户说“确认”的长历史，断言仍返回 no-pending guard。
+- 构造旧历史中有“我想去北京”，最新输入“不要去北京”，断言 intent preview 只围绕最新输入，不被旧偏好反向污染。
+
+场景回归：
+
+- 干净会话和长历史会话分别跑：
+  - “看看方案”
+  - “按院校层次排序”
+  - “确认”
+  - “去掉 XX 大学的 XX 专业”
+  - “加一个 XX 大学 XX 专业”
+- 记录每轮：
+  - input_tokens
+  - total duration
+  - tool_calls
+  - action_family
+  - result_kind
+  - workspace_refresh_targets
+
+验收口径：
+
+- 长历史会话下，主 agent 输入 token 明显下降。
+- 当前轮动作语义与干净会话一致。
+- 高副作用动作仍先 preview，确认后才 apply。
+- 方案编辑后工作区刷新目标不丢失。
+
+新增固定场景样例：
+
+- `zhiyuan-agent/examples/dialog_regression_302_agent_cases.json`
+- 覆盖方案现状、按院校层次排序、专业组整体移动、按学校/专业简称删除、调整后查询等 3.0.2 关键入口。
+- `zhiyuan-agent/examples/dialog_regression_302_explore_intent_cases.json`
+- 覆盖 Explore/Intent 前置层：专业/职业/地域/院校探索，软偏好、硬约束、软硬混合、意向修订、未确认意向下查询方案、候选风险解释和专项资格解释。
+- 运行方式：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python examples/dialog_regression_runner.py \
+  --cases examples/dialog_regression_302_agent_cases.json \
+  --assert-plan-style
+
+.venv/bin/python examples/dialog_regression_runner.py \
+  --cases examples/dialog_regression_302_explore_intent_cases.json \
+  --assert-plan-style
+```
+
+这些样例需要本地 agent/server/web 数据链路和模型配置可用；自动单测只负责验证 pending 协议、runtime history 和场景目录结构不破坏内部结构。
+
+### 8.7 WebSocket 异常收口
+
+真实场景验证依赖外部大模型服务。若模型接口返回 `503`、超时或其他异常，plus 兼容 WebSocket 必须返回一个完整结束包：
+
+- `type="error"`
+- 面向用户的错误文案
+- `end=true`
+
+这样前端和 `dialog_regression_runner.py` 都能明确结束当前轮，不会把模型服务异常误判为本地 WebSocket 180 秒超时。该处理只负责协议收口，不在异常分支执行方案动作，也不生成工作台刷新卡片。
+
+验证口径：
+
+- service 抛异常时，compat endpoint 返回 `error + end=true`。
+- timeout fallback 原有 `text + end=true` 行为保持不变。
+- 真实模型服务不可用时，验收结论记录为模型服务不可用，不能据此判定方案编辑链路失败。
+
+### 8.8 Explore/Intent 场景增强
+
+本轮先增强场景覆盖，不直接改主 agent 路由或工具选择逻辑。目标是给后续串联调优提供稳定样本：
+
+- Explore 只读类问题：
+  - 专业比较：法学 vs 财经。
+  - 职业比较：体制内 vs 读研。
+  - 地域/院校机会：天津、河北、具体院校。
+  - 候选解释：计算机方向机会、压线时可选少的原因、专项资格限制。
+- Intent 状态类问题：
+  - 软偏好：专业、职业、地域、院校关注。
+  - 硬约束：排除护理、中西医结合、北京等。
+  - 软硬混合：财经优先但排除指定专业。
+  - 意向修订：旧地域偏好被新表达覆盖或调整。
+  - 未确认意向：用户说“先不确认，看看方案”时，不应直接落库或重复触发确认。
+
+验收口径：
+
+- Explore 回复不触发方案变更、不出现确认执行文案。
+- Intent 变更先 preview，用户确认后再生效。
+- 未确认 Intent 下的 Plan 查询仍能回答当前方案，不自动确认上一条意向。
+- 方案相关后续问题只读时不发送无意义工作台刷新；真正进入 Plan 调整时仍走 preview -> confirm -> apply。
+
+本期不做：
+
+- 不新增确定性字符串路由短路。
+- 不在 `ChatService` 增加 Explore/Intent 的硬编码匹配。
+- 不改写意向状态模型；后续根据真实 WebSocket 结果再判断是否需要调整 prompt、tool dispatch rules 或 intent_state_tool。
+
+### 8.9 本期不做项
+
+- 不删除 SQLite 完整历史。
+- 不把历史摘要写入正式用户画像或 planningState。
+- 不引入 LLM 摘要作为默认链路。
+- 不重写 `planning_workflow_tool` 或删除旧 router。
+- 不为了个别脏历史会话增加关键词短路规则。
+
+### 8.10 创建成功跳转与采集确认文案回归
+
+问题：
+
+- 创建会话成功后的跳转被过度收口到会话列表/抽屉，导致用户新建完成后没有进入刚创建的详情页。
+- “个人信息补全完成后回会话列表”和“创建会话完成后进详情页”属于两个不同入口，不能共用同一跳转策略。
+- 专业意向采集确认气泡直接字符串化结构化值，出现 `[object Object]`、`false` 这类用户不可理解内容。
+
+设计：
+
+- 独立 `/customerDetail` 创建入口成功后跳转 `/sessionDetailV2`，携带 `chatSessionId / userId / userName / page / pageSize`。
+- 移动端或详情页内嵌创建抽屉只负责承载采集流程；创建成功后关闭抽屉并进入新会话详情，不再打开会话列表抽屉。
+- 登录后的基础个人信息补全仍保留“回会话列表”的产品语义，不复用创建会话成功跳转。
+- 专业意向确认气泡按字段格式化：
+  - 意向专业：展示专业大类/子类名称，过长时截断为“等 N 个”。
+  - 排除专业：展示用户排除的专业名称。
+  - 中外合作：展示“接受/不接受”。
+  - 学费区间：展示“不限 / X 万以上 / X - Y”。
+
+### 8.11 专业组内专业排序复核
+
+`sessionId=121` 本地接口复核结果：
+
+- `orderedPlanState.units` 已返回 30 个专业组、94 个专业。
+- 专业组内部 `majorItems` 应按专业录取率正排，例如修正后防灾科技学院应为 `10 / 10 / 14 / 18`，华北科技学院应为 `18 / 22 / 22 / 22 / 22`。
+- 专业组之间按组录取率 `18 / 22 / 26...` 升序，是方案层录取率排序口径，不等同于组内专业排序。
+
+处理口径：
+
+- 后端组内排序链路已收口到 `orderedPlanState.units.majorItems`，前端继续以该字段作为专业组展示和导出的顺序来源。
+- 若页面仍看到组内倒排，优先确认后端已重启到最新代码，并检查前端是否走了 `orderedPlanState.units`。

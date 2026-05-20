@@ -62,61 +62,29 @@ public class PlanningExcelExportBuilder {
 
     private List<ExcelUtil.VolunteerExcelData> buildMajorSchoolExcelRows(OrderedPlanStateDTO orderedPlanState,
                                                                          CandidateExportResolver candidateResolver) {
-        Map<String, MajorSchoolExportGroup> grouped = new LinkedHashMap<String, MajorSchoolExportGroup>();
-        for (OrderedItemDTO orderedItem : defaultOrderedItems(orderedPlanState.getItems())) {
-            CandidateItemDTO candidate = candidateResolver.resolve(orderedItem);
-            String groupKey = resolveMajorSchoolGroupKey(orderedItem, candidate);
-            MajorSchoolExportGroup group = grouped.computeIfAbsent(groupKey, key -> new MajorSchoolExportGroup());
-            if (group.representative == null) {
-                group.representative = candidate;
-                group.fallbackOrderedItem = orderedItem;
-                group.position = orderedItem.getPosition();
-            }
-            if (orderedItem.getPosition() != null && (group.position == null || orderedItem.getPosition() < group.position)) {
-                group.position = orderedItem.getPosition();
-            }
-            group.entries.add(new MajorSchoolExportEntry(orderedItem, candidate));
-        }
-        return grouped.values().stream()
-                .sorted(Comparator.comparing(group -> group.position == null ? Integer.MAX_VALUE : group.position))
-                .map(this::toMajorSchoolExcelData)
+        return defaultOrderedItems(orderedPlanState.getItems()).stream()
+                .sorted(Comparator.comparing(item -> item.getPosition() == null ? Integer.MAX_VALUE : item.getPosition()))
+                .map(orderedItem -> toMajorSchoolExcelData(orderedItem, candidateResolver.resolve(orderedItem)))
                 .filter(Objects::nonNull)
                 .collect(Collectors.toList());
     }
 
-    private String resolveMajorSchoolGroupKey(OrderedItemDTO orderedItem, CandidateItemDTO candidate) {
-        if (candidate != null) {
-            if (!Strings.isNullOrEmpty(candidate.getSchoolId())) {
-                return candidate.getSchoolId();
-            }
-            if (!Strings.isNullOrEmpty(candidate.getPlanSchoolDataId())) {
-                return candidate.getPlanSchoolDataId();
-            }
-            if (!Strings.isNullOrEmpty(candidate.getSchoolName())) {
-                return candidate.getSchoolName();
-            }
-        }
-        return Strings.isNullOrEmpty(orderedItem.getSchoolName()) ? String.valueOf(System.identityHashCode(orderedItem)) : orderedItem.getSchoolName();
-    }
-
-    private ExcelUtil.VolunteerExcelData toMajorSchoolExcelData(MajorSchoolExportGroup group) {
-        if (group == null || group.entries.isEmpty()) {
+    private ExcelUtil.VolunteerExcelData toMajorSchoolExcelData(OrderedItemDTO orderedItem, CandidateItemDTO candidate) {
+        if (orderedItem == null || candidate == null) {
             return null;
         }
-        CandidateItemDTO representative = group.representative;
         ExcelUtil.VolunteerExcelData excelData = new ExcelUtil.VolunteerExcelData();
-        excelData.setIndex(group.position);
-        excelData.setEnrollRatio(formatRatio(representative == null ? null : representative.getAdmissionRatio()));
-        excelData.setSchoolCode(representative == null ? "" : safeString(representative.getSchoolUnitCode()));
-        excelData.setSchoolName(resolveSchoolName(group.fallbackOrderedItem, representative));
-        excelData.setSchoolLevel(representative == null ? "" : safeString(representative.getSchoolLevel()));
-        excelData.setSchoolPosition(joinArea(representative == null ? null : representative.getProvinceName(),
-                representative == null ? null : representative.getCityName()));
-        excelData.setSchoolType(representative == null ? "" : safeString(representative.getSchoolCategory()));
-        excelData.setSchoolNature(representative == null ? "" : safeString(representative.getSchoolNature()));
-        excelData.setSchoolRank(representative == null || representative.getSchoolRank() == null ? "" : String.valueOf(representative.getSchoolRank()));
-        excelData.setMajorList(group.entries.stream()
-                .map(entry -> toMajorExcelData(entry.candidate, false))
+        excelData.setIndex(orderedItem.getPosition());
+        excelData.setEnrollRatio(formatRatio(candidate.getAdmissionRatio()));
+        excelData.setSchoolCode(safeString(candidate.getSchoolUnitCode()));
+        excelData.setSchoolName(resolveSchoolName(orderedItem, candidate));
+        excelData.setSchoolLevel(safeString(candidate.getSchoolLevel()));
+        excelData.setSchoolPosition(joinArea(candidate.getProvinceName(), candidate.getCityName()));
+        excelData.setSchoolType(safeString(candidate.getSchoolCategory()));
+        excelData.setSchoolNature(safeString(candidate.getSchoolNature()));
+        excelData.setSchoolRank(candidate.getSchoolRank() == null ? "" : String.valueOf(candidate.getSchoolRank()));
+        excelData.setMajorList(Lists.newArrayList(candidate).stream()
+                .map(item -> toMajorExcelData(item, false))
                 .filter(Objects::nonNull)
                 .collect(Collectors.toList()));
         return excelData;
@@ -192,7 +160,7 @@ public class PlanningExcelExportBuilder {
         excelData.setSchoolType(representative == null ? "" : safeString(representative.getSchoolCategory()));
         excelData.setSchoolNature(representative == null ? "" : safeString(representative.getSchoolNature()));
         excelData.setSchoolRank(representative == null || representative.getSchoolRank() == null ? "" : String.valueOf(representative.getSchoolRank()));
-        excelData.setMajorList(unit.getMajorItems().stream()
+        excelData.setMajorList(sortMajorItemsForExport(unit, candidateResolver).stream()
                 .map(major -> toMajorExcelData(candidateResolver.resolve(unit, major), true))
                 .filter(Objects::nonNull)
                 .collect(Collectors.toList()));
@@ -270,6 +238,60 @@ public class PlanningExcelExportBuilder {
         return items == null ? Lists.newArrayList() : items;
     }
 
+    private List<PlanningUnitMajorDTO> sortMajorItemsForExport(OrderedUnitDTO unit,
+                                                               CandidateExportResolver candidateResolver) {
+        return defaultPlanningUnitMajors(unit == null ? null : unit.getMajorItems()).stream()
+                .filter(Objects::nonNull)
+                .sorted(Comparator
+                        .comparing((PlanningUnitMajorDTO major) -> resolveMajorAdmissionRatio(unit, major, candidateResolver),
+                                Comparator.nullsLast(Double::compareTo))
+                        .thenComparing((PlanningUnitMajorDTO major) -> resolveMajorIntentScore(unit, major, candidateResolver),
+                                Comparator.nullsLast(Comparator.reverseOrder()))
+                        .thenComparing((PlanningUnitMajorDTO major) -> resolveMajorFinalScore(unit, major, candidateResolver),
+                                Comparator.nullsLast(Comparator.reverseOrder()))
+                        .thenComparing(PlanningUnitMajorDTO::getVolunteerId, Comparator.nullsLast(String::compareTo)))
+                .collect(Collectors.toList());
+    }
+
+    private Double resolveMajorAdmissionRatio(OrderedUnitDTO unit,
+                                              PlanningUnitMajorDTO major,
+                                              CandidateExportResolver candidateResolver) {
+        if (major == null) {
+            return null;
+        }
+        if (major.getAdmissionRatio() != null) {
+            return major.getAdmissionRatio();
+        }
+        CandidateItemDTO candidate = candidateResolver.resolve(unit, major);
+        return candidate == null ? null : candidate.getAdmissionRatio();
+    }
+
+    private Double resolveMajorIntentScore(OrderedUnitDTO unit,
+                                           PlanningUnitMajorDTO major,
+                                           CandidateExportResolver candidateResolver) {
+        if (major == null) {
+            return null;
+        }
+        if (major.getIntentScore() != null) {
+            return major.getIntentScore();
+        }
+        CandidateItemDTO candidate = candidateResolver.resolve(unit, major);
+        return candidate == null ? null : candidate.getIntentScore();
+    }
+
+    private Double resolveMajorFinalScore(OrderedUnitDTO unit,
+                                          PlanningUnitMajorDTO major,
+                                          CandidateExportResolver candidateResolver) {
+        if (major == null) {
+            return null;
+        }
+        if (major.getFinalScore() != null) {
+            return major.getFinalScore();
+        }
+        CandidateItemDTO candidate = candidateResolver.resolve(unit, major);
+        return candidate == null ? null : candidate.getFinalScore();
+    }
+
     private String formatRatio(Double ratio) {
         if (ratio == null) {
             return "";
@@ -332,23 +354,6 @@ public class PlanningExcelExportBuilder {
 
         public boolean isMajorGroupMode() {
             return majorGroupMode;
-        }
-    }
-
-    private static class MajorSchoolExportGroup {
-        private Integer position;
-        private CandidateItemDTO representative;
-        private OrderedItemDTO fallbackOrderedItem;
-        private final List<MajorSchoolExportEntry> entries = new ArrayList<MajorSchoolExportEntry>();
-    }
-
-    private static class MajorSchoolExportEntry {
-        private final OrderedItemDTO orderedItem;
-        private final CandidateItemDTO candidate;
-
-        private MajorSchoolExportEntry(OrderedItemDTO orderedItem, CandidateItemDTO candidate) {
-            this.orderedItem = orderedItem;
-            this.candidate = candidate;
         }
     }
 

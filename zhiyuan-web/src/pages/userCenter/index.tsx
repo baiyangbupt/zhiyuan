@@ -591,7 +591,7 @@ const UserCenter: React.FC = () => {
           message.success('完善信息成功');
           setStorage([{ key: 'userInfo', value: JSON.stringify(data) }]);
           setUserInfo(data);
-          navigateTo(data.isCustomer ? '/customer' : '/session');
+          navigateTo('/session');
         } else message.error('完善信息失败');
       } catch {
         message.error('请求失败，请稍后重试');

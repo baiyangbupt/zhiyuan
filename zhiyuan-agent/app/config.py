@@ -101,3 +101,7 @@ class HistoryConfig(BaseSettings):
     }
 
     db_path: str = "./data/chat_history.db"
+    runtime_max_messages: int = 24
+    runtime_keep_pending: bool = True
+    runtime_drop_tool_returns_over_chars: int = 3000
+    runtime_summary_enabled: bool = False

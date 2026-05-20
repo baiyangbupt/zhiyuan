@@ -41,6 +41,7 @@ import {
   PlanningDraftItem,
   PlanningDraftUnit,
   PlanningOrderedItem,
+  PlanningOrderedUnit,
   PlanningOrderedSortField,
   PlanningReviewCheck,
   PlanningStateRes,
@@ -582,6 +583,47 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     () => Object.values(candidateItemCacheRef.current),
     [candidatePoolResult.items, candidateCacheVersion]
   );
+  const candidateLegacyPrefixMap = useMemo(() => {
+    const result = new Map<string, PlanningCandidateItem>();
+    cachedCandidateItems.forEach(item => {
+      const prefix = getVolunteerLegacyPrefix(item.volunteerId);
+      if (prefix && !result.has(prefix)) {
+        result.set(prefix, item);
+      }
+    });
+    return result;
+  }, [cachedCandidateItems]);
+  const candidateSchoolMajorMap = useMemo(() => {
+    const result = new Map<string, PlanningCandidateItem>();
+    cachedCandidateItems.forEach(item => {
+      if (!item.schoolName || !item.majorName) {
+        return;
+      }
+      const key = `${item.schoolName.trim()}\n${item.majorName.trim()}`;
+      if (!result.has(key)) {
+        result.set(key, item);
+      }
+    });
+    return result;
+  }, [cachedCandidateItems]);
+  const resolveCandidateItemForPlan = (
+    volunteerId?: string,
+    schoolName?: string,
+    majorName?: string
+  ) => {
+    const exact = volunteerId ? candidateItemMap.get(volunteerId) : null;
+    if (exact) {
+      return exact;
+    }
+    const legacyPrefix = getVolunteerLegacyPrefix(volunteerId);
+    const legacyMatched = legacyPrefix ? candidateLegacyPrefixMap.get(legacyPrefix) : null;
+    if (legacyMatched) {
+      return legacyMatched;
+    }
+    const schoolMajorKey =
+      schoolName && majorName ? `${schoolName.trim()}\n${majorName.trim()}` : '';
+    return schoolMajorKey ? candidateSchoolMajorMap.get(schoolMajorKey) || null : null;
+  };
 
   const attributeFilterOptions = useMemo<FilterPanelGroup[]>(() => {
     const candidateItems = cachedCandidateItems;
@@ -2852,11 +2894,99 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     if (!isMajorGroupMode) {
       return [];
     }
+    const orderedUnits = planningState?.orderedPlanState?.units || [];
+    if (orderedUnits.length > 0) {
+      const orderedItemByVolunteerId = new Map(
+        orderedItems
+          .filter(item => item.volunteerId)
+          .map(item => [item.volunteerId as string, item])
+      );
+      const orderedItemByLegacyPrefix = new Map<string, PlanningOrderedItem>();
+      orderedItems.forEach(item => {
+        const prefix = getVolunteerLegacyPrefix(item.volunteerId);
+        if (prefix && !orderedItemByLegacyPrefix.has(prefix)) {
+          orderedItemByLegacyPrefix.set(prefix, item);
+        }
+      });
+
+      return (orderedUnits as PlanningOrderedUnit[]).map((unit, unitIndex) => {
+        const unitMajorItems = unit.majorItems || [];
+        const groupKey = unit.unitId || unit.schoolName || `ordered-unit-${unitIndex}`;
+        const entries = unitMajorItems.map((major, majorIndex) => {
+          const candidateItem = resolveCandidateItemForPlan(
+            major.volunteerId,
+            unit.schoolName,
+            major.majorName
+          );
+          const legacyPrefix = getVolunteerLegacyPrefix(major.volunteerId);
+          const orderedItem =
+            (major.volunteerId ? orderedItemByVolunteerId.get(major.volunteerId) : null) ||
+            (legacyPrefix ? orderedItemByLegacyPrefix.get(legacyPrefix) : null) ||
+            ({
+              volunteerId: major.volunteerId || `${groupKey}-${majorIndex}`,
+              tier: major.tier || unit.tier,
+              schoolName: unit.schoolName || candidateItem?.schoolName,
+              majorName: major.majorName || candidateItem?.majorName,
+              source: unit.source,
+            } as PlanningOrderedItem);
+          const displayCandidate: PlanningCandidateItem = candidateItem || {
+            volunteerId: major.volunteerId || orderedItem.volunteerId,
+            tier: major.tier || orderedItem.tier || unit.tier,
+            schoolName: unit.schoolName || orderedItem.schoolName,
+            provinceName: unit.provinceName,
+            cityName: unit.cityName,
+            schoolEnrollRatio: unit.schoolEnrollRatio ?? unit.admissionRatio,
+            majorId: major.majorId,
+            majorName: major.majorName || orderedItem.majorName,
+            majorCode: major.majorCode,
+            admissionRatio: major.admissionRatio,
+            finalScore: major.finalScore,
+            intentScore: major.intentScore,
+            preferred: major.preferred,
+            tuitionPerYear: major.tuitionPerYear,
+            rankInTier: major.rankInTier,
+          };
+          return {
+            orderedItem,
+            candidateItem: displayCandidate,
+          };
+        });
+        const topCandidate = entries.find(entry => entry.candidateItem)?.candidateItem || null;
+        const schoolEnrollRatio =
+          unit.schoolEnrollRatio ??
+          unit.admissionRatio ??
+          topCandidate?.schoolEnrollRatio ??
+          topCandidate?.admissionRatio;
+        return {
+          key: groupKey,
+          tier: unit.tier || topCandidate?.tier || '',
+          schoolName: unit.schoolName || topCandidate?.schoolName || '未知院校',
+          provinceName: unit.provinceName || topCandidate?.provinceName,
+          cityName: unit.cityName || topCandidate?.cityName,
+          schoolBatch: topCandidate?.schoolBatch,
+          schoolNature: topCandidate?.schoolNature,
+          schoolCategory: topCandidate?.schoolCategory,
+          schoolLevel: topCandidate?.schoolLevel,
+          schoolEnrollRatio,
+          schoolBasicTags: topCandidate?.schoolBasicTags || [],
+          schoolRankTags: topCandidate?.schoolRankTags || [],
+          schoolPopupTags: topCandidate?.schoolPopupTags || [],
+          topScore: topCandidate?.finalScore ?? unit.finalScore,
+          topItem: topCandidate,
+          orderedItems: entries,
+        };
+      });
+    }
+
     const grouped = new Map<string, OrderedGroup>();
     orderedItems.forEach(item => {
-      const candidateItem = item.volunteerId ? candidateItemMap.get(item.volunteerId) || null : null;
+      const candidateItem = resolveCandidateItemForPlan(item.volunteerId, item.schoolName, item.majorName);
       const schoolName = candidateItem?.schoolName || item.schoolName || '未知院校';
-      const key = candidateItem?.planSchoolDataId || candidateItem?.schoolId || schoolName;
+      const key =
+        candidateItem?.planSchoolDataId ||
+        candidateItem?.schoolId ||
+        getVolunteerLegacyPrefix(item.volunteerId) ||
+        schoolName;
       const existing = grouped.get(key);
       if (existing) {
         existing.orderedItems.push({
@@ -2890,7 +3020,14 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       });
     });
     return Array.from(grouped.values());
-  }, [candidateItemMap, isMajorGroupMode, orderedItems]);
+  }, [
+    candidateItemMap,
+    candidateLegacyPrefixMap,
+    candidateSchoolMajorMap,
+    isMajorGroupMode,
+    orderedItems,
+    planningState?.orderedPlanState?.units,
+  ]);
 
   const orderedCollapseKeys = useMemo(() => {
     if (isMajorGroupMode) {
@@ -2948,7 +3085,11 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
             };
           return {
             draftItem,
-            candidateItem: volunteerId ? candidateItemMap.get(volunteerId) || null : null,
+            candidateItem: resolveCandidateItemForPlan(
+              volunteerId,
+              unit.schoolName,
+              major.majorName
+            ),
           };
         }),
       }));
@@ -2956,7 +3097,11 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
 
     const grouped = new Map<string, DraftGroup>();
     draftItems.forEach((item, index) => {
-      const candidateItem = item.volunteerId ? candidateItemMap.get(item.volunteerId) || null : null;
+      const candidateItem = resolveCandidateItemForPlan(
+        item.volunteerId,
+        item.schoolName,
+        item.majorName
+      );
       const key =
         candidateItem?.planSchoolDataId ||
         candidateItem?.schoolId ||
@@ -2977,7 +3122,14 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       });
     });
     return Array.from(grouped.values());
-  }, [candidateItemMap, draftItems, isMajorGroupMode, planningState?.draftPlanState?.units]);
+  }, [
+    candidateItemMap,
+    candidateLegacyPrefixMap,
+    candidateSchoolMajorMap,
+    draftItems,
+    isMajorGroupMode,
+    planningState?.draftPlanState?.units,
+  ]);
 
   const basketDraftGroups = useMemo<DraftGroup[]>(() => {
     if (!isMajorGroupMode) {
@@ -4106,7 +4258,11 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                           );
                         })
                       : orderedItems.map((item, index) => {
-                          const candidateItem = item.volunteerId ? candidateItemMap.get(item.volunteerId) || null : null;
+                          const candidateItem = resolveCandidateItemForPlan(
+                            item.volunteerId,
+                            item.schoolName,
+                            item.majorName
+                          );
                           const itemKey = item.volunteerId || `${item.schoolName || 'ordered'}-${index}`;
                           const itemCollapsed = collapsedOrderedGroupKeys.includes(itemKey);
                           const metaItems = getSchoolMetaItems(candidateItem);

@@ -19,6 +19,7 @@ import com.ytell.zhiyuan.model.dto.planning.CandidateItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.DraftPlanReorderReq;
 import com.ytell.zhiyuan.model.dto.planning.DraftItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.DraftPlanStateDTO;
+import com.ytell.zhiyuan.model.dto.planning.DraftUnitDTO;
 import com.ytell.zhiyuan.model.dto.planning.DraftLockReq;
 import com.ytell.zhiyuan.model.dto.planning.DraftRemoveReq;
 import com.ytell.zhiyuan.model.dto.planning.DraftSelectReq;
@@ -576,7 +577,39 @@ public class PlanningStateServiceTest {
         assertTrue(Boolean.TRUE.equals(unit.getHasSafetyMajor()));
         assertEquals(2, unit.getSelectedMajors().size());
         assertTrue(unit.getSelectedMajors().stream().anyMatch(PlanningUnitMajorDTO::getSafetyMajor));
+        assertEquals("专业A2", unit.getSelectedMajors().get(0).getMajorName());
+        assertEquals("专业A1", unit.getSelectedMajors().get(1).getMajorName());
+    }
+
+    @Test
+    void shouldDisplaySelectedMajorGroupMajorsByAdmissionRatioAsc() {
+        java.util.List<CandidateItemDTO> unitCandidates = java.util.Arrays.asList(
+                buildCandidateItem("ps1_m1", "ps1", "s1", "学校A", "冲", "专业A1", 42D, 95D, 70D, true),
+                buildCandidateItem("ps1_m2", "ps1", "s1", "学校A", "冲", "专业A2", 88D, 60D, 70D, false),
+                buildCandidateItem("ps1_m3", "ps1", "s1", "学校A", "冲", "专业A3", 76D, 58D, 70D, false)
+        );
+
+        PlanningUnitDTO unit = (PlanningUnitDTO) ReflectionTestUtils.invokeMethod(
+                planningStateService,
+                "buildPlanningUnit",
+                unitCandidates,
+                3);
+
+        assertNotNull(unit);
+        assertEquals(3, unit.getSelectedMajors().size());
         assertEquals("专业A1", unit.getSelectedMajors().get(0).getMajorName());
+        assertEquals("专业A3", unit.getSelectedMajors().get(1).getMajorName());
+        assertEquals("专业A2", unit.getSelectedMajors().get(2).getMajorName());
+
+        java.util.List<DraftUnitDTO> draftUnits = ReflectionTestUtils.invokeMethod(
+                planningStateService,
+                "buildDraftUnitsFromPlanningUnits",
+                java.util.Arrays.asList(unit),
+                "initial_auto");
+        assertNotNull(draftUnits);
+        assertEquals("专业A1", draftUnits.get(0).getMajorItems().get(0).getMajorName());
+        assertEquals("专业A3", draftUnits.get(0).getMajorItems().get(1).getMajorName());
+        assertEquals("专业A2", draftUnits.get(0).getMajorItems().get(2).getMajorName());
     }
 
     @Test
@@ -3147,6 +3180,11 @@ public class PlanningStateServiceTest {
         ReflectionTestUtils.invokeMethod(planningStateService, "recalculateOrderedSummary", orderedPlanState, candidatePoolState);
         saveStateToStore(1L, state);
 
+        assertEquals("ps1_m2", orderedPlanState.getUnits().get(0).getMajorItems().get(0).getVolunteerId());
+        assertEquals("ps1_m1", orderedPlanState.getUnits().get(0).getMajorItems().get(1).getVolunteerId());
+        assertEquals("ps2_m3", orderedPlanState.getUnits().get(1).getMajorItems().get(0).getVolunteerId());
+        assertEquals("ps2_m4", orderedPlanState.getUnits().get(1).getMajorItems().get(1).getVolunteerId());
+
         OrderedPlanSortReq sortReq = new OrderedPlanSortReq();
         sortReq.setSortField("finalScore");
         PlanningStateDTO sorted = planningStateService.sortOrderedPlan(1L, sortReq);
@@ -3156,6 +3194,8 @@ public class PlanningStateServiceTest {
         assertEquals("ps1_m1", sorted.getOrderedPlanState().getItems().get(2).getVolunteerId());
         assertEquals("ps1_m2", sorted.getOrderedPlanState().getItems().get(3).getVolunteerId());
         assertEquals("ps2", sorted.getOrderedPlanState().getUnits().get(0).getUnitId());
+        assertEquals("ps2_m3", sorted.getOrderedPlanState().getUnits().get(0).getMajorItems().get(0).getVolunteerId());
+        assertEquals("ps2_m4", sorted.getOrderedPlanState().getUnits().get(0).getMajorItems().get(1).getVolunteerId());
         assertEquals("ps1", sorted.getOrderedPlanState().getUnits().get(1).getUnitId());
         assertTrue(sorted.getBehaviorEvents().stream().anyMatch(event ->
                 "plan_sort_apply".equals(event.getEventType()) && "finalScore".equals(event.getSortKey())));

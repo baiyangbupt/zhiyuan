@@ -3599,6 +3599,112 @@ def test_execute_plan_action_runs_remove_unit_after_resolving_school_major_dot_r
     assert mock_remove.await_args.args[1] == ["hbgc-cs-20"]
 
 
+def test_execute_plan_action_runs_remove_unit_after_resolving_school_major_alias_ref():
+    payload = {
+        "stage": "apply",
+        "action_family": "remove_units",
+        "context_summary": "阶段=ordered；方案=30/30",
+        "preview_summary": "",
+        "missing_inputs": [],
+        "should_rerun_review": True,
+        "intent_relation": "unknown",
+        "atomic_actions": [
+            {
+                "action_type": "remove_units",
+                "volunteer_ids": ["广西师大统计"],
+                "target_position": None,
+                "filters": {},
+                "reason": "把广西师大统计去掉",
+            }
+        ],
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
+        new=AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "items": [
+                        {
+                            "position": 20,
+                            "volunteerId": "gxsd-stat-20",
+                            "schoolName": "广西师范大学006专业组",
+                            "majorName": "统计学",
+                        }
+                    ]
+                },
+            }
+        ),
+    ), patch(
+        "app.handlers.mutation_handlers.remove_planning_ordered_items",
+        new=AsyncMock(return_value="remove ok"),
+    ) as mock_remove, patch(
+        "app.tools.plan_execution_tool.run_planning_review",
+        new=AsyncMock(return_value="review after remove ok"),
+    ):
+        result = asyncio.run(execute_plan_action(_ctx_with_pending("remove_units"), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["result_kind"] == "mutation_result"
+    assert data["affected_volunteer_ids"] == ["gxsd-stat-20"]
+    mock_remove.assert_awaited_once()
+    assert mock_remove.await_args.args[1] == ["gxsd-stat-20"]
+
+
+def test_execute_plan_action_runs_remove_unit_after_resolving_current_release_302_alias_ref():
+    payload = {
+        "stage": "apply",
+        "action_family": "remove_units",
+        "context_summary": "阶段=ordered；方案=96/96",
+        "preview_summary": "",
+        "missing_inputs": [],
+        "should_rerun_review": True,
+        "intent_relation": "unknown",
+        "atomic_actions": [
+            {
+                "action_type": "remove_units",
+                "volunteer_ids": ["河南农大建筑"],
+                "target_position": None,
+                "filters": {},
+                "reason": "把河南农大建筑去掉",
+            }
+        ],
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
+        new=AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "items": [
+                        {
+                            "position": 4,
+                            "volunteerId": "hnny-arch-4",
+                            "schoolName": "河南农业大学",
+                            "majorName": "建筑类(城乡规划、风景园林)",
+                        }
+                    ]
+                },
+            }
+        ),
+    ), patch(
+        "app.handlers.mutation_handlers.remove_planning_ordered_items",
+        new=AsyncMock(return_value="remove ok"),
+    ) as mock_remove, patch(
+        "app.tools.plan_execution_tool.run_planning_review",
+        new=AsyncMock(return_value="review after remove ok"),
+    ):
+        result = asyncio.run(execute_plan_action(_ctx_with_pending("remove_units"), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["result_kind"] == "mutation_result"
+    assert data["affected_volunteer_ids"] == ["hnny-arch-4"]
+    mock_remove.assert_awaited_once()
+    assert mock_remove.await_args.args[1] == ["hnny-arch-4"]
+
+
 def test_execute_plan_action_does_not_guess_ambiguous_school_major_ref():
     payload = {
         "stage": "apply",

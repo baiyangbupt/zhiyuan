@@ -13,6 +13,11 @@
 
 ### Fixed
 
+- Agent 主对话链路新增 runtime history 裁剪：SQLite 继续保存完整 pydantic-ai 历史用于审计和 pending 解析，但每轮传给主模型的 `message_history` 与 `RequestContext.chat_history` 只保留可控短上下文，并压缩超长 tool return，降低长历史 token 成本和旧 preview/tool result 污染；存在有效方案 pending 时会额外保留产生该预览的工具调用/工具返回/assistant 回复，避免非确认追问丢上下文。
+- 新增 `examples/dialog_regression_302_agent_cases.json`，用于 3.0.2 本地/准生产 WebSocket 场景验证，覆盖方案查询、院校层次排序、专业组移动、按学校/专业简称删除和调整后查询。
+- 新增 `examples/dialog_regression_302_explore_intent_cases.json`，先增强 Explore/Intent 前置层效果验证，覆盖专业/职业/地域/院校探索、软硬意向、意向修订、未确认意向下查询方案、候选风险解释和专项资格解释；后续根据真实 WebSocket 结果再做串联调优。
+- 方案编辑执行层补充学校简称 + 专业简称删除回归，例如“广西师大统计去掉”可唯一解析到当前方案志愿后再执行；歧义简称仍不会静默误删。
+- 修复 Agent plus 兼容 WebSocket 异常响应未带 `end=true` 的问题；当模型接口返回 503 等异常时，前端和回归 runner 能明确收到结束包，不再一直等到客户端超时。
 - Agent Dockerfile 基础镜像切换为公开 `python:3.12-slim`，避免 release 构建时访问 `docker.m.daocloud.io` 返回 401 导致 amd64 镜像无法构建。
 - 3.0.1 用户侧去除“草稿”概念：Agent 回复、规划状态注入、方案查询、专业分析、候选加入和补偿结果统一表达为“方案/已加入方案”，底层 `draftPlanState` 仅保留为兼容实现细节。
 - 方案现状类问法的 Plan 提示词收敛：对“方案有了么 / 看看现在的方案 / 当前方案怎么样”直接引导模型调用 `plan_next_action(action_family="query_state") -> execute_plan_action`，不再先单独调用 `collect_plan_context_inputs`，减少重复上下文读取和额外模型往返；不新增字符串匹配短路或确定性模板回复。

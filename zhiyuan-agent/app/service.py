@@ -15,6 +15,7 @@ from app.agent.chat_agent import ChatAgent
 from app.agent.context import PlanningSummary, RequestContext, ScoreDetail
 from app.models.conversation_phase import ConversationPhase, PendingConfirmation
 from app.agent.usage_tracker import UsageTracker
+from app.config import HistoryConfig
 from app.data.history_store import ChatHistoryStore
 from app.data.message_utils import pydantic_ai_messages_to_dicts
 from app.llm.client import LLMClient
@@ -143,6 +144,20 @@ class ChatServiceResponseEnvelope:
     followups: list[WSResponse] = field(default_factory=list)
 
 
+@dataclass(slots=True)
+class RuntimeHistoryResult:
+    """Short-lived history passed to the model; full history remains persisted."""
+
+    model_history: list[Any] | None
+    chat_history: list[dict]
+    full_len: int = 0
+    runtime_len: int = 0
+    full_text_chars: int = 0
+    runtime_text_chars: int = 0
+    dropped_tool_return_count: int = 0
+    has_pending: bool = False
+
+
 def _iter_tool_call_parts(messages: list[Any] | None) -> list[ToolCallPart]:
     parts: list[ToolCallPart] = []
     for message in messages or []:
@@ -163,6 +178,158 @@ def _iter_tool_return_parts(messages: list[Any] | None) -> list[ToolReturnPart]:
             if isinstance(part, ToolReturnPart):
                 parts.append(part)
     return parts
+
+
+def _message_text_chars(messages: list[Any] | None) -> int:
+    total = 0
+    for message in messages or []:
+        for part in getattr(message, "parts", []) or []:
+            content = getattr(part, "content", None)
+            if isinstance(content, str):
+                total += len(content)
+                continue
+            args = getattr(part, "args", None)
+            if isinstance(args, str):
+                total += len(args)
+            elif isinstance(args, dict):
+                try:
+                    total += len(json.dumps(args, ensure_ascii=False))
+                except Exception:
+                    pass
+    return total
+
+
+def _message_has_user_prompt(message: Any) -> bool:
+    if not isinstance(message, ModelRequest):
+        return False
+    return any(isinstance(part, UserPromptPart) for part in getattr(message, "parts", []) or [])
+
+
+def _latest_user_prompt_index(messages: list[Any]) -> int | None:
+    for index in range(len(messages) - 1, -1, -1):
+        if _message_has_user_prompt(messages[index]):
+            return index
+    return None
+
+
+def _compact_tool_return_content(content: Any) -> str:
+    if not isinstance(content, str):
+        return "[工具结果已裁剪：非文本结果]"
+    try:
+        parsed = json.loads(content)
+    except Exception:
+        return "[工具结果已裁剪：原结果过长]"
+    if not isinstance(parsed, dict):
+        return "[工具结果已裁剪：原结果过长]"
+
+    keys = (
+        "result_kind",
+        "action_family",
+        "messageCode",
+        "message",
+        "summary",
+        "preview_summary",
+        "userFacingSummary",
+        "workspace_refresh_targets",
+        "targetView",
+        "applied",
+        "success",
+    )
+    compacted = {key: parsed.get(key) for key in keys if parsed.get(key) is not None}
+    if not compacted:
+        return "[工具结果已裁剪：原结果过长]"
+    compacted["_truncated"] = True
+    return json.dumps(compacted, ensure_ascii=False)
+
+
+def _compact_runtime_message(message: Any, max_tool_return_chars: int) -> tuple[Any, int]:
+    if not isinstance(message, ModelRequest) or max_tool_return_chars <= 0:
+        return message, 0
+
+    changed = False
+    dropped = 0
+    compacted_parts: list[Any] = []
+    for part in getattr(message, "parts", []) or []:
+        if isinstance(part, ToolReturnPart) and isinstance(part.content, str) and len(part.content) > max_tool_return_chars:
+            compacted_parts.append(
+                ToolReturnPart(
+                    tool_name=part.tool_name,
+                    content=_compact_tool_return_content(part.content),
+                    tool_call_id=part.tool_call_id,
+                )
+            )
+            changed = True
+            dropped += 1
+            continue
+        compacted_parts.append(part)
+
+    if not changed:
+        return message, 0
+    return ModelRequest(parts=compacted_parts), dropped
+
+
+def build_runtime_history(
+    full_history: list[Any] | None,
+    *,
+    latest_user_content: str,
+    pending_plan_action: dict[str, Any] | None = None,
+    config: HistoryConfig | None = None,
+) -> RuntimeHistoryResult:
+    """Build the short history used by the live model call.
+
+    The persisted session history stays complete. This function only limits what
+    is sent to the model and to text-history consumers in RequestContext.
+    """
+    history = list(full_history or [])
+    cfg = config or HistoryConfig()
+    max_messages = max(0, int(getattr(cfg, "runtime_max_messages", 24) or 0))
+    has_pending = bool(pending_plan_action)
+
+    if not history:
+        return RuntimeHistoryResult(
+            model_history=None,
+            chat_history=[{"role": "user", "content": latest_user_content}],
+            full_len=0,
+            runtime_len=0,
+            full_text_chars=0,
+            runtime_text_chars=0,
+            dropped_tool_return_count=0,
+            has_pending=has_pending,
+        )
+
+    if max_messages == 0 or len(history) <= max_messages:
+        selected = history
+    else:
+        selected_indices = set(range(len(history) - max_messages, len(history)))
+        keep_pending = bool(getattr(cfg, "runtime_keep_pending", True))
+        if has_pending and keep_pending:
+            current_turn_start = _latest_user_prompt_index(history)
+            if current_turn_start is None:
+                current_turn_start = 0
+            selected_indices.update(range(current_turn_start, len(history)))
+        selected = [history[index] for index in sorted(selected_indices)]
+
+    dropped_tool_returns = 0
+    compacted_history: list[Any] = []
+    max_tool_return_chars = int(getattr(cfg, "runtime_drop_tool_returns_over_chars", 3000) or 0)
+    for message in selected:
+        compacted, dropped = _compact_runtime_message(message, max_tool_return_chars)
+        compacted_history.append(compacted)
+        dropped_tool_returns += dropped
+
+    chat_history = pydantic_ai_messages_to_dicts(compacted_history)
+    chat_history.append({"role": "user", "content": latest_user_content})
+
+    return RuntimeHistoryResult(
+        model_history=compacted_history,
+        chat_history=chat_history,
+        full_len=len(history),
+        runtime_len=len(compacted_history),
+        full_text_chars=_message_text_chars(history),
+        runtime_text_chars=_message_text_chars(compacted_history),
+        dropped_tool_return_count=dropped_tool_returns,
+        has_pending=has_pending,
+    )
 
 
 _SUPPORTED_WORKSPACE_ACTION_TARGETS = {"candidate", "ordered"}
@@ -1271,6 +1438,7 @@ class ChatService:
         self.llm_client = llm_client
         self.agent = ChatAgent(llm_client)
         self.history_store = history_store
+        self.history_config = HistoryConfig()
         self._usage_trackers: dict[str, UsageTracker] = {}
 
     # ── 公开接口：session 级 usage 查询 ───────────────────────────
@@ -1312,11 +1480,24 @@ class ChatService:
         #         logger.info("history[%d] type=%s", i, type(msg).__name__)
         #         #logger.info("history[%d] type=%s content=%s", i, type(msg).__name__, msg)
 
-        # 从 session 历史中构建 chat_history（转为简单 dict 列表）
-        chat_history = pydantic_ai_messages_to_dicts(history) if history else []
         pending_plan_action = _extract_pending_plan_action(history)
-        # 加上当前用户最新输入
-        chat_history.append({"role": "user", "content": content})
+        runtime_history = build_runtime_history(
+            history,
+            latest_user_content=content,
+            pending_plan_action=pending_plan_action,
+            config=self.history_config,
+        )
+        chat_history = runtime_history.chat_history
+        logger.info(
+            "Runtime history prepared: session_id=%s full_len=%d runtime_len=%d full_chars=%d runtime_chars=%d dropped_tool_returns=%d has_pending=%s",
+            session_id,
+            runtime_history.full_len,
+            runtime_history.runtime_len,
+            runtime_history.full_text_chars,
+            runtime_history.runtime_text_chars,
+            runtime_history.dropped_tool_return_count,
+            runtime_history.has_pending,
+        )
 
         # 获取用户成绩详情
         parsed_score_detail = None
@@ -1576,7 +1757,7 @@ class ChatService:
         llm_started_at = time.monotonic()
         reply, new_messages, all_messages, usage = await self.agent.run_with_message_deltas(
             user_prompt=content,
-            message_history=history,
+            message_history=runtime_history.model_history,
             deps=request_context,
             on_progress=on_progress,
         )
@@ -1644,11 +1825,14 @@ class ChatService:
             elif new_messages:
                 history_to_save = list(new_messages)
             else:
-                history_to_save = list(all_messages)
-
-            # Guard against unexpected adapter behavior returning the full history as "new".
-            if history and len(history_to_save) < len(all_messages):
-                history_to_save = list(all_messages)
+                runtime_len = len(runtime_history.model_history or [])
+                inferred_new_messages = list(all_messages[runtime_len:]) if len(all_messages) >= runtime_len else []
+                if history_to_save and inferred_new_messages:
+                    history_to_save.extend(inferred_new_messages)
+                elif inferred_new_messages:
+                    history_to_save = inferred_new_messages
+                elif not history_to_save:
+                    history_to_save = list(all_messages)
 
             await self.history_store.save(session_id, history_to_save)
         except Exception:

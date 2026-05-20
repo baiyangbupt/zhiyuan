@@ -15,6 +15,8 @@ from app.service import ChatService, ChatServiceResponseEnvelope
 MAINLINE_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_mainline_cases.json"
 SCIENCE_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_science_cases.json"
 FULL_JOURNEY_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_full_journey_cases.json"
+RELEASE_302_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_302_agent_cases.json"
+RELEASE_302_EXPLORE_INTENT_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_302_explore_intent_cases.json"
 
 
 def _run(coro):
@@ -86,6 +88,14 @@ def _load_science_cases() -> list[dict]:
 
 def _load_full_journey_cases() -> list[dict]:
     return json.loads(FULL_JOURNEY_CASES_PATH.read_text(encoding="utf-8"))
+
+
+def _load_release_302_cases() -> list[dict]:
+    return json.loads(RELEASE_302_CASES_PATH.read_text(encoding="utf-8"))
+
+
+def _load_release_302_explore_intent_cases() -> list[dict]:
+    return json.loads(RELEASE_302_EXPLORE_INTENT_CASES_PATH.read_text(encoding="utf-8"))
 
 
 def test_mainline_dialog_case_catalog_has_current_explore_intent_plan_scenarios():
@@ -305,6 +315,102 @@ def test_full_journey_dialog_case_catalog_has_content_assertions_and_no_internal
     assert any(direct_mutation_phrases.intersection(set(step.get("assertNotContains") or [])) for step in preview_steps)
     all_steps = [step for case in cases for step in case["prompts"]]
     assert any(step.get("assertFollowupTarget") == "ordered" for step in all_steps)
+
+
+def test_release_302_agent_case_catalog_covers_plan_operations_and_runtime_history():
+    cases = _load_release_302_cases()
+
+    assert len(cases) >= 5
+    assert len({case["name"] for case in cases}) == len(cases)
+    coverage = {tag for case in cases for tag in case["coverage"]}
+    required_tags = {
+        "release_3_0_2",
+        "runtime_history",
+        "major_model",
+        "majorGroup_model",
+        "school_rank_sort",
+        "unit_level_operation",
+        "name_match",
+        "abbrev_tolerant",
+        "preview_confirm_apply",
+    }
+    assert required_tags.issubset(coverage)
+
+    banned_terms = {"payload", "stage", "action_family", "volunteerId", "草稿"}
+    all_steps = [step for case in cases for step in case["prompts"]]
+    for case in cases:
+        assert case["assertPlanStyle"] is True
+        assert case["prompts"]
+        assert case["coverage"]
+        assert case["flow"]
+        for step in case["prompts"]:
+            assert isinstance(step, dict)
+            assert step.get("prompt")
+            assert step.get("assertContains") or step.get("assertContainsAny")
+            assert banned_terms.intersection(set(step.get("assertNotContains") or [])) == banned_terms
+
+    assert any(step.get("assertFollowupTarget") == "ordered" for step in all_steps)
+    assert any("按院校层次排序" in step["prompt"] for step in all_steps)
+    assert any("第3个专业组移到第5位" in step["prompt"] for step in all_steps)
+    assert any("河南农大建筑" in step["prompt"] for step in all_steps)
+
+
+def test_release_302_explore_intent_case_catalog_covers_front_layers_before_plan_tuning():
+    cases = _load_release_302_explore_intent_cases()
+
+    assert len(cases) >= 8
+    assert len({case["name"] for case in cases}) == len(cases)
+    coverage = {tag for case in cases for tag in case["coverage"]}
+    required_tags = {
+        "release_3_0_2",
+        "major_explore",
+        "career_explore",
+        "career_compare",
+        "school_explore",
+        "region_explore",
+        "soft_major_intent",
+        "soft_career_intent",
+        "soft_region_intent",
+        "soft_school_intent",
+        "hard_major_constraint",
+        "hard_region_constraint",
+        "soft_hard_intent_mix",
+        "intent_revision",
+        "historical_intent",
+        "pending_intent",
+        "no_duplicate_intent",
+        "candidate_explore",
+        "candidate_risk_explanation",
+        "eligibility_explanation",
+        "readonly_no_pending_intent",
+        "no_premature_plan_apply",
+        "plan_status",
+        "plan_analysis",
+    }
+    assert required_tags.issubset(coverage)
+
+    banned_terms = {"payload", "stage", "action_family", "volunteerId", "草稿"}
+    all_steps = [step for case in cases for step in case["prompts"]]
+    for case in cases:
+        assert case["assertPlanStyle"] is True
+        assert case["prompts"]
+        assert case["coverage"]
+        assert set(case["flow"]).issubset({"explore", "intent", "plan"})
+        for step in case["prompts"]:
+            assert isinstance(step, dict)
+            assert step.get("prompt")
+            assert step.get("assertContains") or step.get("assertContainsAny")
+            assert banned_terms.intersection(set(step.get("assertNotContains") or [])) == banned_terms
+
+    prompts = "\n".join(step["prompt"] for step in all_steps)
+    assert "法学和财经" in prompts
+    assert "体制内和读研" in prompts
+    assert "护理和中西医结合不要" in prompts
+    assert "北京先不要了" in prompts
+    assert "天津商业大学和河北经贸大学" in prompts
+    assert "先不确认" in prompts
+    assert "分数刚好压线" in prompts
+    assert "没有专项资格" in prompts
 
 
 def test_mainline_dialog_intent_preview_then_plan_status_does_not_reopen_candidate_workspace(tmp_path):

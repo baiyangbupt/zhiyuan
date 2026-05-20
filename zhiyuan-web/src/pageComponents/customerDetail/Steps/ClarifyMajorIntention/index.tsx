@@ -7,7 +7,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import ReturnPng from '@/images/icons/return.png';
 import { LinkOutlined } from '@ant-design/icons';
 import ModalImage from '../../Components/ModalImage';
-import { getMajorRecommendApi } from '@/service/apis/customerDetail';
+import { getMajorRecommendApi, getUnacceptableMajorsListApi } from '@/service/apis/customerDetail';
 import useAuthParams from '@/hooks/useAuthParams';
 
 const { Option } = Select;
@@ -103,9 +103,11 @@ const ClarifyMajorIntention = (props: ICollectflowProps) => {
 
   const [currentImageUrl, setCurrentImageUrl] = useState<string>('');
   const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
+  const [dynamicUnacceptableOptions, setDynamicUnacceptableOptions] = useState<Array<{ label: string; value: string }> | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const requiredFieldRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const unacceptableRequestIdRef = useRef(0);
   const { botId, tenantId } = useAuthParams();
 
   const scrollToRequiredField = (fieldId: string) => {
@@ -170,11 +172,37 @@ const ClarifyMajorIntention = (props: ICollectflowProps) => {
   });
 
   const getBatchLevel = () => {
-    const level: any = paramsValues?.batch?.level;
+    const level: any = paramsValues?.batch?.level ?? savedValues?.batch?.level;
     if (level && typeof level === 'object') {
       return String(level.key || level.code || level.value || '');
     }
     return level ? String(level) : undefined;
+  };
+
+  const getSubjectTypeCode = () => {
+    const subjectType: any = paramsValues?.subjectType || savedValues?.subjectType;
+    if (!subjectType) {
+      return undefined;
+    }
+    if (typeof subjectType === 'object') {
+      return String(subjectType.code || subjectType.key || subjectType.value || '');
+    }
+    return String(subjectType);
+  };
+
+  const normalizeSubjectListForUnacceptable = () => {
+    const sourceList = Array.isArray(paramsValues?.subjectList) && paramsValues.subjectList.length > 0
+      ? paramsValues.subjectList
+      : Array.isArray(savedValues?.subjectList) && savedValues.subjectList.length > 0
+        ? savedValues.subjectList
+        : [];
+    return sourceList
+      .map((item: any) => ({
+        isFirst: item?.isFirst ?? 0,
+        subject: item?.value || item?.subject || item?.code || '',
+        subjectName: item?.name || item?.subjectName || item?.label || '',
+      }))
+      .filter((item: any) => item.subject);
   };
 
   // 根据 batch.level 获取正确的 majors 数据源
@@ -189,6 +217,9 @@ const ClarifyMajorIntention = (props: ICollectflowProps) => {
   };
 
   const getUnacceptableOptionsByBatchLevel = (field: any) => {
+    if (dynamicUnacceptableOptions) {
+      return dynamicUnacceptableOptions;
+    }
     const batchLevel = getBatchLevel();
     const bachelorMajors = Array.isArray(field?.bachelorMajors) ? field.bachelorMajors : [];
     const associateMajors = Array.isArray(field?.associateMajors) ? field.associateMajors : [];
@@ -206,6 +237,46 @@ const ClarifyMajorIntention = (props: ICollectflowProps) => {
 
     return [];
   };
+
+  useEffect(() => {
+    const batchLevel = getBatchLevel();
+    const subjectTypeCode = getSubjectTypeCode();
+    const subjectList = normalizeSubjectListForUnacceptable();
+    if (!batchLevel || !subjectTypeCode || !subjectList.length) {
+      setDynamicUnacceptableOptions(null);
+      return;
+    }
+
+    const requestId = ++unacceptableRequestIdRef.current;
+    const fetchOptions = async () => {
+      try {
+        const { code, data } = await getUnacceptableMajorsListApi({
+          subjectType: subjectTypeCode,
+          educationLevel: batchLevel,
+          subjectList,
+        });
+        if (requestId !== unacceptableRequestIdRef.current) {
+          return;
+        }
+        if (code === 0 && Array.isArray(data)) {
+          setDynamicUnacceptableOptions(
+            data.map((item: any) => ({
+              label: item.majorName,
+              value: item.majorId,
+            }))
+          );
+        } else {
+          setDynamicUnacceptableOptions(null);
+        }
+      } catch (error) {
+        if (requestId === unacceptableRequestIdRef.current) {
+          setDynamicUnacceptableOptions(null);
+        }
+      }
+    };
+
+    fetchOptions();
+  }, [paramsValues?.batch?.level, paramsValues?.subjectType, paramsValues?.subjectList, savedValues?.batch?.level, savedValues?.subjectType, savedValues?.subjectList]);
 
   // 获取默认意向专业
   const getMajorRecommend = async () => {
@@ -274,32 +345,78 @@ const ClarifyMajorIntention = (props: ICollectflowProps) => {
     };
   };
 
-  // 生成确认信息文本
+  const formatSelectedNames = (items: any[], keys: string[]) => {
+    if (!Array.isArray(items)) return '';
+    const names = items
+      .map(item => {
+        if (typeof item === 'string') return item;
+        if (!item || typeof item !== 'object') return '';
+        const matchedKey = keys.find(key => item[key]);
+        return matchedKey ? String(item[matchedKey]) : '';
+      })
+      .map(name => name.trim())
+      .filter(Boolean);
+    if (!names.length) return '';
+    const visibleNames = names.slice(0, 6);
+    return `${visibleNames.join('、')}${names.length > visibleNames.length ? `等${names.length}个` : ''}`;
+  };
+
+  const formatTuitionValue = (value?: number | string) => {
+    const numberValue = Number(value);
+    if (!Number.isFinite(numberValue)) return '';
+    if (numberValue >= 1000000) return '不限';
+    if (numberValue >= 10000) {
+      const wan = numberValue / 10000;
+      return `${Number.isInteger(wan) ? wan.toFixed(0) : wan.toFixed(1)}万/年`;
+    }
+    return `${numberValue.toLocaleString()}元/年`;
+  };
+
+  const formatTuitionRangeText = (value: any) => {
+    if (!value) return '';
+    const min = Array.isArray(value) ? value[0] : value.min;
+    const max = Array.isArray(value) ? value[1] : value.max;
+    if (min === undefined || max === undefined) return '';
+    const minText = formatTuitionValue(min);
+    const maxText = formatTuitionValue(max);
+    if (!minText || !maxText) return '';
+    if (Number(min) <= 0 && Number(max) >= 1000000) return '不限';
+    if (Number(max) >= 1000000) return `${minText}以上`;
+    return `${minText} - ${maxText}`;
+  };
+
+  // 生成确认信息文本。这里的值是结构化对象，不能直接模板字符串化。
   const generateConfirmationText = () => {
     if (!formValues) return '';
 
+    const preferredText = formatSelectedNames(formValues.preferredMajors, [
+      'majorSubName',
+      'majorName',
+      'major',
+      'label',
+    ]);
+    const unacceptableText = formatSelectedNames(formValues.unacceptableMajors, [
+      'majorName',
+      'majorSubName',
+      'major',
+      'label',
+    ]);
     const texts: string[] = [];
-    Object.keys(formValues).forEach(fieldId => {
-      const value = formValues[fieldId];
+    if (preferredText) {
+      texts.push(`意向专业：${preferredText}`);
+    }
+    if (unacceptableText) {
+      texts.push(`排除专业：${unacceptableText}`);
+    }
+    if (formValues.acceptForeignSchool === true || formValues.acceptForeignSchool === false) {
+      texts.push(`中外合作：${formValues.acceptForeignSchool ? '接受' : '不接受'}`);
+    }
+    const tuitionText = formatTuitionRangeText(formValues.tuitionRange);
+    if (tuitionText) {
+      texts.push(`学费区间：${tuitionText}`);
+    }
 
-      // 查找字段的选项标签
-      stepsData?.subSteps?.forEach(item => {
-        if (item.formConfig?.fields) {
-          const field = item.formConfig.fields.find(f => f.fieldId === fieldId);
-          if (field?.options) {
-            const option = field.options.find(opt => opt.value === value);
-            console.log('option', option);
-            if (option) {
-              texts.push(`${option.label}${fieldId === 'examYear' ? '高考' : ''}`);
-            } else {
-              texts.push(`${value}`);
-            }
-          }
-        }
-      });
-    });
-
-    return texts.join('，');
+    return texts.join('；') || '确认提交';
   };
   const [activeMajor, setActiveMajor] = useState<string>('1');
   const handleMajorClick = (majorId: string) => {
@@ -568,7 +685,9 @@ const ClarifyMajorIntention = (props: ICollectflowProps) => {
         }
       }
     }
-    onDraftChange?.(buildDraftPayload());
+    const payload = buildDraftPayload();
+    setFormValues(payload);
+    onDraftChange?.(payload);
     setShowSummary(true);
   };
 

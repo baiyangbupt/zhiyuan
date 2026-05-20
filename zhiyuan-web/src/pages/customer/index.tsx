@@ -31,7 +31,6 @@ import CaseImg7 from '@/images/icons/caseStu-7.png';
 import UserInfoModal from '@/pageComponents/customer/UserInfoModal';
 import { navigateTo } from '@/utils/router';
 import { checkUserRightsApi } from '@/service/apis/user';
-import { getSessionList } from '@/service/apis/sessionDetail';
 
 const preloadImages = (urls: string[]) => {
   return Promise.all(
@@ -75,53 +74,15 @@ const Customer: React.FC = () => {
   useEffect(() => {
     const openSessionList = getValueFromUrlBykey('openSessionList') === '1';
 
-    if (!tenantId || !botId || openSessionList) {
+    if (!tenantId || !botId) {
       setIsCheckingLatestSession(false);
       return;
     }
 
-    let cancelled = false;
-
-    const redirectToLatestSession = async () => {
-      try {
-        const { code, data } = await getSessionList(tenantId, {
-          botId,
-          statusList: [],
-          orderBy: [{ isAsc: false, orderBy: 'id' }],
-          searchWord: '',
-          page: 1,
-          pageSize: 1,
-        });
-
-        if (cancelled) {
-          return;
-        }
-
-        const latestSession = data?.records?.[0];
-        if (code === 0 && latestSession) {
-          navigateTo('/sessionDetailV2', {
-            chatSessionId: latestSession.id,
-            userId: String(latestSession.userId),
-            userName: String(latestSession.userName || ''),
-            page: 1,
-            pageSize: 10,
-          });
-          return;
-        }
-      } catch (error) {
-        console.error('获取最新会话失败', error);
-      } finally {
-        if (!cancelled) {
-          setIsCheckingLatestSession(false);
-        }
-      }
-    };
-
-    redirectToLatestSession();
-
-    return () => {
-      cancelled = true;
-    };
+    if (!openSessionList) {
+      setSessionListDrawerVisible(true);
+    }
+    setIsCheckingLatestSession(false);
   }, [tenantId, botId]);
 
   useEffect(() => {
@@ -339,12 +300,12 @@ const Customer: React.FC = () => {
                   botId={botId}
                   embedded
                   onStepChange={(stepIndex, stepTitle) => setFlowStepIndicator({ stepIndex, stepTitle })}
-                  onSuccess={params => {
+                  onSuccess={createdSession => {
                     setCustomerDetailDrawerVisible(false);
                     navigateTo('/sessionDetailV2', {
-                      chatSessionId: params.chatSessionId,
-                      userId: params.userId,
-                      userName: params.userName,
+                      chatSessionId: createdSession.chatSessionId,
+                      userId: createdSession.userId,
+                      userName: createdSession.userName || '',
                       page: 1,
                       pageSize: 10,
                     });

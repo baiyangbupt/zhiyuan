@@ -247,7 +247,7 @@ const CustomerDetail: React.FC = () => {
           navigateTo('/sessionDetailV2', {
             chatSessionId: createdSession.id,
             userId: createdSession.userId,
-            userName: createdSession.userName,
+            userName: createdSession.userName || '',
             page: 1,
             pageSize: 10,
           });

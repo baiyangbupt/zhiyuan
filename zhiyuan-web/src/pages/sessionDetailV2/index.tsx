@@ -317,12 +317,12 @@ const SessionDetailV2 = () => {
                 onStepChange={(stepIndex, stepTitle) =>
                   setFlowStepIndicator({ stepIndex, stepTitle })
                 }
-                onSuccess={params => {
+                onSuccess={createdSession => {
                   setCustomerDetailDrawerVisible(false);
                   navigateTo('/sessionDetailV2', {
-                    chatSessionId: params.chatSessionId,
-                    userId: params.userId,
-                    userName: params.userName,
+                    chatSessionId: createdSession.chatSessionId,
+                    userId: createdSession.userId,
+                    userName: createdSession.userName || '',
                     page: 1,
                     pageSize: 10,
                   });

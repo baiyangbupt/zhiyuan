@@ -272,12 +272,12 @@ const SessionDetailLegacy = () => {
                 onStepChange={(stepIndex, stepTitle) =>
                   setFlowStepIndicator({ stepIndex, stepTitle })
                 }
-                onSuccess={params => {
+                onSuccess={createdSession => {
                   setCustomerDetailDrawerVisible(false);
-                  navigateTo('/sessionDetailLegacy', {
-                    chatSessionId: params.chatSessionId,
-                    userId: params.userId,
-                    userName: params.userName,
+                  navigateTo('/sessionDetailV2', {
+                    chatSessionId: createdSession.chatSessionId,
+                    userId: createdSession.userId,
+                    userName: createdSession.userName || '',
                     page: 1,
                     pageSize: 10,
                   });
