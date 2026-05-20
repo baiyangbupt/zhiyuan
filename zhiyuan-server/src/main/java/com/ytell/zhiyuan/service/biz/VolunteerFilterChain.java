@@ -30,8 +30,8 @@ public class VolunteerFilterChain {
         filterReq.setHasZhuanXiangSpecial(memberScoreDetail.getSpecialPlan());
 
         // 色盲色弱过滤
-        if (memberScoreDetail.getColorSistuation() != null
-                && !memberScoreDetail.getColorSistuation().contains("normal")) {
+        if (memberScoreDetail.getColorSituation() != null
+                && !memberScoreDetail.getColorSituation().contains("normal")) {
             filterReq.setNeedCheckSemangSpecial(true);
         }
         // 少数民族

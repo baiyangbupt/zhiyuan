@@ -132,8 +132,8 @@ public class UserProfileService {
         if (createSessionReq.getColorBlindness() != null) {
             userBasic.add(new ProfileKVDto("色盲色弱", Lists.newArrayList(createSessionReq.getColorBlindness() ? "是" : "否")));
         } else {
-            if (createSessionReq.getColorSistuation() != null) {
-                userBasic.add(new ProfileKVDto("色盲色弱", Lists.newArrayList(createSessionReq.getColorSistuation().contains("normal") ? "否" : "是")));
+            if (createSessionReq.getColorSituation() != null) {
+                userBasic.add(new ProfileKVDto("色盲色弱", Lists.newArrayList(createSessionReq.getColorSituation().contains("normal") ? "否" : "是")));
             }
         }
         if (createSessionReq.getMinority() != null) {

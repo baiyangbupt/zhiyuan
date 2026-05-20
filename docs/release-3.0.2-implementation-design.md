@@ -178,7 +178,7 @@ customer_detail_draft:{tenantId}:{botId}:{userKey}
 缓存内保存的是创建会话接口使用的结构化业务字段，而不是每个表单组件内部的临时控件字段。因此恢复时需要做反向映射：
 
 - 高考信息：`examYear`、`province.code` 回填到考试年份和考试省份。
-- 个人信息：`subjectList / subjectScoreList / strengthSubjectList / batch / sex / height / visionAbility / ethnicity / colorSistuation / specialPlan / politicalStatus` 回填到两段个人信息表单。
+- 个人信息：`subjectList / subjectScoreList / strengthSubjectList / batch / sex / height / visionAbility / ethnicity / colorSituation / specialPlan / politicalStatus` 回填到两段个人信息表单，兼容旧字段 `colorSistuation`。
 - 专业意向：`preferredMajors / unacceptableMajors / acceptForeignSchool / tuitionRange` 回填到专业选择、排除专业、是否接受中外合作和学费区间。
 - 区域意向：`preferredRegions` 回填到区域选择。
 - 志愿策略：`strategyType.code` 回填到策略卡片。

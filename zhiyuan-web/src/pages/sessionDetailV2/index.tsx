@@ -234,11 +234,13 @@ const SessionDetailV2 = () => {
         <header className={style.header}>
           <div className={style.headerMain}>
             <div className={style.titleBlock}>
-              <div className={style.title}>志愿规划工作台</div>
+              <div className={style.titleLine}>
+                {studentName ? <span className={style.studentNameInline}>{studentName}的</span> : null}
+                <span className={style.title}>志愿规划工作台</span>
+              </div>
               <div className={style.summary}>{infoSummary || '正在读取会话信息'}</div>
             </div>
             <div className={style.headerMeta}>
-              {studentName && <span className={style.studentNameBadge}>{studentName}</span>}
               {prepareTypeDesc && <span className={style.metaBadge}>{prepareTypeDesc}</span>}
               {sessionStatus && (
                 <span

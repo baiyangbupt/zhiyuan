@@ -4564,8 +4564,8 @@ public class PlanningStateService {
         if (scoreDetail == null) {
             return values;
         }
-        if (scoreDetail.getColorSistuation() != null) {
-            for (String colorVision : scoreDetail.getColorSistuation()) {
+        if (scoreDetail.getColorSituation() != null) {
+            for (String colorVision : scoreDetail.getColorSituation()) {
                 if (!Strings.isNullOrEmpty(colorVision)) {
                     values.add(colorVision);
                 }

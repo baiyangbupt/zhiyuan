@@ -1,5 +1,7 @@
 package com.ytell.zhiyuan.model.dto;
 
+import com.alibaba.fastjson.annotation.JSONField;
+import com.fasterxml.jackson.annotation.JsonAlias;
 import com.ytell.zhiyuan.model.enums.TargetType;
 import com.ytell.zhiyuan.model.enums.VolunteerModel;
 import lombok.AllArgsConstructor;
@@ -53,7 +55,8 @@ public class CreateSessionReq {
     private String height;
 
     // 🔧 色觉情况
-    private List<String> colorSistuation;
+    @JsonAlias("colorSistuation")
+    private List<String> colorSituation;
 
     // 🔧 视力情况
     private VisionAbility visionAbility;
@@ -81,6 +84,18 @@ public class CreateSessionReq {
 
     // 🔧 学费范围
     private TuitionRange tuitionRange;
+
+    @Deprecated
+    @JSONField(serialize = false)
+    public List<String> getColorSistuation() {
+        return colorSituation;
+    }
+
+    @Deprecated
+    @JSONField(name = "colorSistuation")
+    public void setColorSistuation(List<String> colorSistuation) {
+        this.colorSituation = colorSistuation;
+    }
 
     @Data
     public static class Province {

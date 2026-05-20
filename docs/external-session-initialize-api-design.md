@@ -92,14 +92,14 @@ POST /gaotu-assistant-bot/chat/{tenantId}/integration/v1/session/initialize
 
 ```http
 tk: <loginToken>
-pf: <platform/channel>
+pf: WEB
 X-Zhiyuan-External-Request-Id: <external-request-id>
 ```
 
 说明：
 
 - `tk` 为 `login/by-token` 返回的本系统 `loginToken`。
-- `pf` 为登录时使用的渠道，例如 `web`、`gaotu`、`gaotu4b` 等，以线上实际渠道为准。
+- `pf` 为登录后业务请求头，当前联调请固定传 `WEB`。后端按 `AuthTypeEnum` 枚举名校验，不能传小写 `web`。
 - `X-Zhiyuan-External-Request-Id` 建议与 body 中 `externalRequestId` 保持一致，第一版实现以 body 字段为准。
 
 后端校验：
@@ -179,7 +179,7 @@ X-Zhiyuan-Signature: hmac_sha256(secret, timestamp + "\n" + body)
 curl -X POST 'https://www.gaotuzhiyuan.com/gaotu-assistant-bot/chat/1/integration/session/initialize' \
   -H 'Content-Type: application/json' \
   -H 'tk: ${LOGIN_TOKEN}' \
-  -H 'pf: web' \
+  -H 'pf: WEB' \
   -H 'X-Zhiyuan-External-Request-Id: partner-20260509-0001' \
   -d '{
     "externalRequestId": "partner-20260509-0001",
