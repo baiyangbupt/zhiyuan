@@ -13,7 +13,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import sqlite3
 import time
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +23,7 @@ import websockets
 
 DEFAULT_URL = "ws://127.0.0.1:8000/gaotu-assistant-agent/plus/chat/1/bot/test/do"
 DEFAULT_USER_ID = "dialog-regression-user"
+DEFAULT_HISTORY_DB = Path(__file__).resolve().parents[1] / "data" / "chat_history.db"
 
 DEFAULT_CASES: list[dict[str, Any]] = [
     {
@@ -119,6 +122,60 @@ def _load_cases(path: str | None) -> list[dict[str, Any]]:
     return data
 
 
+def _offset_session_id(session_id: Any, session_offset: int) -> str:
+    """Return the session id after applying a numeric offset.
+
+    Backend chatSessionId is numeric in the current system, so offset mode only
+    supports numeric case session ids.
+    """
+    value = str(session_id)
+    if session_offset == 0:
+        return value
+    if not value.isdigit():
+        raise ValueError(f"--session-offset requires numeric sessionId, got {value!r}")
+    shifted = int(value) + session_offset
+    if shifted <= 0:
+        raise ValueError(f"--session-offset produced non-positive sessionId: {value} + {session_offset}")
+    return str(shifted)
+
+
+def _apply_session_offset(cases: list[dict[str, Any]], session_offset: int) -> list[dict[str, Any]]:
+    if session_offset == 0:
+        return cases
+    adjusted = deepcopy(cases)
+    for case in adjusted:
+        if "sessionId" not in case:
+            raise ValueError("--session-offset requires every case to define sessionId")
+        original_session_id = case["sessionId"]
+        case["sessionId"] = _offset_session_id(original_session_id, session_offset)
+        case["baseSessionId"] = str(original_session_id)
+    return adjusted
+
+
+def _case_session_ids(cases: list[dict[str, Any]]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for case in cases:
+        session_id = str(case["sessionId"])
+        if session_id in seen:
+            continue
+        seen.add(session_id)
+        result.append(session_id)
+    return result
+
+
+def _clear_history(db_path: Path, session_ids: list[str]) -> int:
+    if not session_ids or not db_path.exists():
+        return 0
+    with sqlite3.connect(db_path) as conn:
+        cursor = conn.executemany(
+            "DELETE FROM chat_session_history WHERE session_id = ?",
+            [(session_id,) for session_id in session_ids],
+        )
+        conn.commit()
+    return cursor.rowcount if cursor.rowcount is not None else 0
+
+
 def _summarize_primary(messages: list[dict[str, Any]]) -> str:
     text_parts = [m.get("content", "") for m in messages if m.get("type") == "text"]
     thinking_parts = [m.get("content", "") for m in messages if m.get("type") == "thinking"]
@@ -161,6 +218,7 @@ def _check_content_assertions(
     assert_not_contains = step.get("assertNotContains") or []
     assert_followup_target = step.get("assertFollowupTarget")
     assert_followup_refresh = step.get("assertFollowupRefresh")
+    assert_no_followups = bool(step.get("assertNoFollowups"))
 
     combined_text = text.lower()
     for expected in assert_contains:
@@ -200,6 +258,11 @@ def _check_content_assertions(
                 f"{case_name} session={session_id} prompt={prompt_label}: "
                 f"assertFollowupRefresh FAILED — expected refresh={assert_followup_refresh} not in followups"
             )
+    if assert_no_followups and followups:
+        violations.append(
+            f"{case_name} session={session_id} prompt={prompt_label}: "
+            f"assertNoFollowups FAILED — expected no followups but got {len(followups)}"
+        )
     return violations
 
 
@@ -217,7 +280,9 @@ async def _run_cases(
         name = str(case.get("name") or f"session-{case.get('sessionId')}")
         session_id = str(case["sessionId"])
         case_assert_style = bool(case.get("assertPlanStyle", assert_plan_style))
-        print(f"=== CASE {name} session={session_id} ===")
+        base_session_id = str(case.get("baseSessionId") or "")
+        session_label = f"{session_id} base={base_session_id}" if base_session_id else session_id
+        print(f"=== CASE {name} session={session_label} ===")
 
         raw_prompts = list(case.get("prompts") or [])
         steps: list[dict[str, Any]] = []
@@ -290,6 +355,22 @@ def main() -> None:
     parser.add_argument("--assert-plan-style", action="store_true", help="fail when plan replies contain severe forced-choice or internal wording")
     parser.add_argument("--open-timeout", type=float, default=30, help="websocket opening handshake timeout in seconds")
     parser.add_argument("--response-timeout", type=float, default=120, help="timeout in seconds while waiting for each prompt response")
+    parser.add_argument(
+        "--session-offset",
+        type=int,
+        default=0,
+        help="add this numeric offset to every case sessionId so fixed case files can run against clean sessions",
+    )
+    parser.add_argument(
+        "--clear-history",
+        action="store_true",
+        help="delete local Agent SQLite chat history rows for the case session ids before running",
+    )
+    parser.add_argument(
+        "--history-db",
+        default=str(DEFAULT_HISTORY_DB),
+        help="Agent SQLite history db used by --clear-history",
+    )
     args = parser.parse_args()
 
     if args.session:
@@ -297,6 +378,21 @@ def main() -> None:
         cases = [{"name": "ad-hoc", "sessionId": args.session, "prompts": prompts}]
     else:
         cases = _load_cases(args.cases)
+    cases = _apply_session_offset(cases, args.session_offset)
+    if args.clear_history:
+        session_ids = _case_session_ids(cases)
+        deleted = _clear_history(Path(args.history_db), session_ids)
+        print(
+            "clearedHistory="
+            + json.dumps(
+                {
+                    "db": str(Path(args.history_db)),
+                    "sessions": session_ids,
+                    "deletedRows": deleted,
+                },
+                ensure_ascii=False,
+            )
+        )
 
     asyncio.run(
         _run_cases(

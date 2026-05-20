@@ -26,3 +26,12 @@ service_listen_pids() {
     lsof -nP -t -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | sort -u
 }
 
+service_pid_in_list() {
+    local expected=$1
+    shift
+    local pid
+    for pid in "$@"; do
+        [ "$pid" = "$expected" ] && return 0
+    done
+    return 1
+}

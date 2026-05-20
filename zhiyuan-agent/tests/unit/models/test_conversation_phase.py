@@ -320,6 +320,22 @@ class TestConversationPhaseFromLegacy:
         assert phase.pending.kind == "intent_change"
         assert phase.pending.created_turn == 2
 
+    def test_with_pending_intent_confirmation(self):
+        legacy_cache = {
+            "summary": "设置地域偏好",
+            "city_intents": {"province": ["北京"]},
+            "intent_mode": "preference",
+        }
+        phase = ConversationPhase.from_legacy_context(
+            pending_intent_confirmation=PendingConfirmation.from_legacy_intent_change(legacy_cache),
+            turn_count=4,
+        )
+        assert phase.state == PhaseState.INTENT_PREVIEWING
+        assert phase.pending is not None
+        assert phase.pending.kind == "intent_change"
+        assert phase.pending.execution_payload == legacy_cache
+        assert phase.pending.created_turn == 4
+
     def test_with_planning_summary(self):
         phase = ConversationPhase.from_legacy_context(
             planning_summary={"phase": "ordered", "count": 30},

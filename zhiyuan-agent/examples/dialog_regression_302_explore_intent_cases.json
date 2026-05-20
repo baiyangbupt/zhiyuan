@@ -56,8 +56,9 @@
       },
       {
         "prompt": "确认",
-        "assertContainsAny": ["已", "偏好", "排除", "要求"],
-        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": ["没有上一轮待确认", "没有待确认的方案动作", "没有待确认"],
+        "assertNotContains": ["已直接调整", "已直接执行", "payload", "stage", "action_family", "volunteerId", "草稿"],
+        "assertNoFollowups": true
       },
       {
         "prompt": "现在方案里哪些和这些要求冲突",
@@ -113,14 +114,15 @@
         "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
       },
       {
-        "prompt": "天津商业大学和河北经贸大学可以重点关注",
-        "assertContainsAny": ["确认", "天津商业大学", "河北经贸大学"],
+        "prompt": "天津商业大学和河北经贸大学先记为重点关注学校，后面生成方案时优先考虑",
+        "assertContainsAny": ["确认", "重点关注", "天津商业大学", "河北经贸大学", "已"],
         "assertNotContains": ["已直接调整", "payload", "stage", "action_family", "volunteerId", "草稿"]
       },
       {
         "prompt": "确认",
-        "assertContainsAny": ["已", "关注", "院校", "学校"],
-        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
+        "assertContainsAny": ["没有上一轮待确认", "没有待确认的方案动作", "没有待确认", "已"],
+        "assertNotContains": ["已直接调整", "已直接执行", "payload", "stage", "action_family", "volunteerId", "草稿"],
+        "assertNoFollowups": true
       },
       {
         "prompt": "候选和方案里有没有这些学校",

@@ -1322,6 +1322,50 @@ async def test_update_volunteer_intent_state_confirm_returns_structured_result()
 
 
 @pytest.mark.asyncio
+async def test_update_volunteer_intent_state_confirm_prefers_phase_pending():
+    from app.models.conversation_phase import ConversationPhase, PendingConfirmation, PhaseState
+
+    ctx = SimpleNamespace(
+        deps=SimpleNamespace(
+            sessionid="5004",
+            batch="01",
+            conversation_phase=ConversationPhase(
+                state=PhaseState.INTENT_PREVIEWING,
+                pending=PendingConfirmation(
+                    kind="intent_change",
+                    action_family="set_preference",
+                    preview_summary="设置地域偏好",
+                    execution_payload={
+                        "city_intents": {"province": ["北京"]},
+                        "intent_mode": INTENT_MODE_PREFERENCE,
+                    },
+                ),
+            ),
+        )
+    )
+
+    with (
+        patch("app.tools.intent_state_tool.get_intent_change_cache", new=AsyncMock(return_value={"data": {"planEditCache": {"city_intents": {"province": ["上海"]}, "intent_mode": INTENT_MODE_PREFERENCE}}})),
+        patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
+        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()) as save_mock,
+        patch("app.tools.intent_state_tool.get_planning_state", new=AsyncMock()) as state_mock,
+        patch("app.tools.intent_state_tool.update_planning_latent_profile", new=AsyncMock()) as latent_mock,
+    ):
+        mock_pm = mock_pm_cls.return_value
+        mock_pm.update_city_intent = AsyncMock()
+        mock_pm.update_major_intent = AsyncMock()
+        mock_pm.update_school_intent = AsyncMock()
+        result = json.loads(await update_volunteer_intent_state(ctx, action="confirm"))
+
+    assert result["applied"] is True
+    assert result["intentMode"] == INTENT_MODE_PREFERENCE
+    mock_pm.update_city_intent.assert_awaited_once()
+    save_mock.assert_awaited_once()
+    state_mock.assert_not_awaited()
+    latent_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_update_volunteer_intent_state_confirm_requires_explicit_confirmation_utterance():
     ctx = SimpleNamespace(
         deps=SimpleNamespace(

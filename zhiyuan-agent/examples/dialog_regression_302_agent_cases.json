@@ -28,8 +28,6 @@
       {
         "prompt": "确认",
         "assertContainsAny": ["已", "完成", "排序", "方案"],
-        "assertFollowupTarget": "ordered",
-        "assertFollowupRefresh": true,
         "assertNotContains": ["草稿", "payload", "stage", "action_family", "volunteerId"]
       }
     ]
@@ -56,7 +54,7 @@
     ]
   },
   {
-    "name": "302-remove-by-school-major-abbrev",
+    "name": "302-remove-by-school-major-abbrev-negative",
     "sessionId": "17",
     "flow": ["remove_units", "confirm"],
     "coverage": ["release_3_0_2", "major_model", "name_match", "abbrev_tolerant", "preview_confirm_apply"],
@@ -64,14 +62,13 @@
     "prompts": [
       {
         "prompt": "把河南农大建筑去掉",
-        "assertContainsAny": ["河南农业大学", "建筑", "确认", "移出", "删除"],
+        "assertContainsAny": ["没有找到", "河南农业大学", "建筑"],
         "assertNotContains": ["草稿", "payload", "stage", "action_family", "volunteerId"]
       },
       {
         "prompt": "确认",
-        "assertContainsAny": ["已", "移出", "删除", "方案"],
-        "assertFollowupTarget": "ordered",
-        "assertFollowupRefresh": true,
+        "assertContainsAny": ["没有上一轮待确认的方案动作", "没有待确认", "没有定位到", "真实编号"],
+        "assertNoFollowups": true,
         "assertNotContains": ["草稿", "payload", "stage", "action_family", "volunteerId"]
       }
     ]

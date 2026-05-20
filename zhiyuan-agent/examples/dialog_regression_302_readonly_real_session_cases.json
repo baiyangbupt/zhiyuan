@@ -1,0 +1,32 @@
+[
+  {
+    "name": "302-real-session-career-fit-readonly",
+    "sessionId": "17",
+    "flow": ["explore", "plan"],
+    "coverage": ["release_3_0_2", "real_session", "career_explore", "plan_analysis", "readonly_no_workspace_card"],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "当前方案对体制内稳定就业方向承接得怎么样",
+        "assertContainsAny": ["体制内", "稳定就业", "方案", "承接"],
+        "assertNoFollowups": true,
+        "assertNotContains": ["已直接调整", "确认后执行", "payload", "stage", "action_family", "volunteerId", "草稿"]
+      }
+    ]
+  },
+  {
+    "name": "302-real-session-borderline-risk-readonly",
+    "sessionId": "17",
+    "flow": ["explore", "plan"],
+    "coverage": ["release_3_0_2", "real_session", "candidate_risk_explanation", "plan_analysis", "readonly_no_workspace_card"],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "如果分数刚好压线，可选机会少是什么原因",
+        "assertContainsAny": ["分数", "压线", "可选", "原因"],
+        "assertNoFollowups": true,
+        "assertNotContains": ["已直接调整", "确认后执行", "payload", "stage", "action_family", "volunteerId", "草稿"]
+      }
+    ]
+  }
+]

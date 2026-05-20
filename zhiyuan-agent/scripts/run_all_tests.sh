@@ -3,6 +3,9 @@
 
 set -e
 
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT_DIR"
+
 echo "=========================================="
 echo "运行所有测试"
 echo "=========================================="
@@ -31,7 +34,7 @@ fi
 
 # 运行单元测试
 echo "📦 1/2 运行单元测试..."
-pytest tests/unit/ tests/integration/ -v --tb=short
+python -m pytest tests/unit/ tests/integration/ -v --tb=short
 echo ""
 
 # 运行端到端测试
@@ -46,7 +49,7 @@ if [ "$SKIP_E2E" = false ]; then
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         echo ""
         echo "🚀 2/2 运行端到端测试..."
-        pytest tests/e2e/ -v -s -m e2e --tb=short
+        python -m pytest tests/e2e/ -v -s -m e2e --tb=short
     else
         echo "⏭️  跳过端到端测试"
     fi

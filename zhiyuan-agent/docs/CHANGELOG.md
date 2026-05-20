@@ -5,6 +5,8 @@
 ### Added
 
 - 新增 `examples/dialog_regression_full_journey_cases.json` 并扩展到 9 个 case，专门覆盖“开场上下文 -> Explore -> 软意向 -> 硬约束 -> 候选查看/刷新 -> 方案查询/调整/确认/审查”的完整链路；包含专业、职业、地域、学校、专业组操作、候选别名加入、审查后修复、软硬意向混合和确认边界，并补充目录级单测按 coverage 标签校验薄弱场景。
+- `dialog_regression_runner.py` 新增 `--session-offset`，支持把固定 case session 映射到一批干净数字会话，并在输出里保留原始 `baseSessionId`，用于排除历史聊天记录和旧 pending 状态对真实 WebSocket 回归的污染。
+- `dialog_regression_runner.py` 新增 `--clear-history` 和 `--history-db`，支持在真实 `16/17` 等后端数据完整会话上只清理 Agent 本地 SQLite 对话历史后复跑，避免 `--session-offset` 丢失原 session 成绩、候选池和排序方案导致假失败。
 - 新增 Agent HTTP 健康检查接口 `/health` 和 `/gaotu-assistant-agent/health`，用于 Docker Compose healthcheck 和发布后远端探活，不影响现有 WebSocket 对话链路。
 - 3.0.1 对话规划链路新增 `sort_ordered_plan` 动作，支持用户通过对话按录取率、院校层次或推荐系数排序当前方案；排序作为高副作用动作进入 preview -> 确认 -> apply 流程，并刷新方案与审查状态。
 - 补充 3.0.1 对话回归和模型 benchmark 场景，覆盖方案排序、禁用旧锁定入口、候选筛选可见联动等端到端行为。
@@ -13,9 +15,16 @@
 
 ### Fixed
 
+- 统一待确认状态边界：当 `RequestContext.conversation_phase` 已注入时，运行时只认 `conversation_phase.pending` 作为当前待确认源；旧 `pending_plan_action` / `pending_intent_change` 仅在没有 phase 对象的兼容入口里回退，避免新旧状态不同步引发确认错位。
+- 意向确认缓存收口：`planEditCache` 先转换为 `PendingConfirmation` 注入 `conversation_phase.pending`，后续确认流程优先读 phase 内的 payload；只有旧桥接入口才直接回读 backend cache。
+- 意向确认回复更明确：`preference_applied` 现在会直接说明“已经按你的确认记下来了”，减少 302 场景里确认语义过于含糊的问题。
 - Agent 主对话链路新增 runtime history 裁剪：SQLite 继续保存完整 pydantic-ai 历史用于审计和 pending 解析，但每轮传给主模型的 `message_history` 与 `RequestContext.chat_history` 只保留可控短上下文，并压缩超长 tool return，降低长历史 token 成本和旧 preview/tool result 污染；存在有效方案 pending 时会额外保留产生该预览的工具调用/工具返回/assistant 回复，避免非确认追问丢上下文。
 - 新增 `examples/dialog_regression_302_agent_cases.json`，用于 3.0.2 本地/准生产 WebSocket 场景验证，覆盖方案查询、院校层次排序、专业组移动、按学校/专业简称删除和调整后查询。
+- 302 真实回归复跑确认：`session=17` 的“河南农大建筑去掉”并不存在可唯一定位的真实志愿，当前 ordered-plan 只有若干“建筑”相关条目，后端不会静默误删；该 case 已从“成功删除”改为负例，确认轮应返回“没有上一轮待确认的方案动作”而不是刷新方案。
+- Plan 工作区刷新收口：`execute_plan_action` 返回 `applied=false` 或 `result_kind=error` 时不再触发 `planningWorkspaceAction` 刷新；`remove_units / move_unit` 的志愿定位失败分支也不再返回 `ordered` 刷新目标，避免“没有定位到真实志愿但前端刷新方案”的错位。
+- 302 Plan 操作真实 WebSocket 按新口径复跑通过：使用 `--clear-history` 清理本地 Agent 历史并保留真实 `session=16/17` 后端方案数据后，方案现状、院校层次排序 preview/apply、专业组整体移动 preview/apply、简称删除负例和调整后查询均通过；负例确认返回“没有定位到真实编号”且 `followupMessages=0`。
 - 新增 `examples/dialog_regression_302_explore_intent_cases.json`，先增强 Explore/Intent 前置层效果验证，覆盖专业/职业/地域/院校探索、软硬意向、意向修订、未确认意向下查询方案、候选风险解释和专项资格解释；后续根据真实 WebSocket 结果再做串联调优。
+- 新增 `examples/dialog_regression_302_readonly_real_session_cases.json`，使用真实 `session=17` 方案数据验证只读 Explore/Intent smoke：方向承接分析和压线风险解释不得发送工作台联动卡片。
 - 方案编辑执行层补充学校简称 + 专业简称删除回归，例如“广西师大统计去掉”可唯一解析到当前方案志愿后再执行；歧义简称仍不会静默误删。
 - 修复 Agent plus 兼容 WebSocket 异常响应未带 `end=true` 的问题；当模型接口返回 503 等异常时，前端和回归 runner 能明确收到结束包，不再一直等到客户端超时。
 - Agent Dockerfile 基础镜像切换为公开 `python:3.12-slim`，避免 release 构建时访问 `docker.m.daocloud.io` 返回 401 导致 amd64 镜像无法构建。
@@ -294,7 +303,6 @@
   - **主线场景 (31/31)**：全部通过，无 STYLE FAILURE。Explore → Intent → Plan 全链路贯通。
   - **理科场景 (39/40)**：39 通过，1 个首轮 LLM 调用超时（`science-robotics-explore-to-plan` 首句 "机器人工程未来发展怎么样" 因下游 LLM 提供方在 180s 内未返回；与重构无关，重试时仍受 LLM 服务时延影响）。
 - ConversationPhase + PendingConfirmation 注入 RequestContext 后，plan / intent 编排链行为符合预期：`plan_next_action` → `execute_plan_action`、`preview_current_*_intent_confirmation` → `update_volunteer_intent_state`、`collect_plan_context_inputs` → 主链路均稳定触发。
-- 已知遗留：`_has_pending_intent_change` 在 internal service 返回 `None` 时调用 `.get` 报错（pre-existing bug，与本次重构无关），后续单独 patch。
 
 ### Added (Phase 5 — 状态同步 + 集成测试)
 

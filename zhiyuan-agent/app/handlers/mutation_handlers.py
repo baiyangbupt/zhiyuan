@@ -180,7 +180,7 @@ async def handle_remove_units(
             missing_text = "、".join(missing_refs[:5]) if missing_refs else "要移除的志愿"
             result_kind = "error"
             state_summary = _ordered_ref_resolution_message(missing_text, "移除")
-            workspace_targets = ["ordered"]
+            workspace_targets = []
             reply_focus = ["missing_inputs", "needs_volunteer_selection"]
             next_step_hints = ["先定位当前方案里的真实 volunteerId，再执行移除。"]
         else:
@@ -227,7 +227,7 @@ async def handle_move_unit(
         missing_text = "、".join(missing_refs[:5]) if missing_refs else "要移动的志愿"
         result_kind = "error"
         state_summary = _ordered_ref_resolution_message(missing_text, "移动")
-        workspace_targets = ["ordered"]
+        workspace_targets = []
         reply_focus = ["missing_inputs", "needs_volunteer_selection"]
         next_step_hints = ["先定位当前方案里的真实 volunteerId，再执行位置调整。"]
     else:

@@ -3,11 +3,19 @@
 验证 app/agent/instructions/ 各模块的输出正确性。
 """
 
+import json
 import pytest
 from unittest.mock import MagicMock, patch
 from dataclasses import dataclass, field
 
-from app.agent.context import RequestContext, ScoreDetail, PlanningSummary
+from app.agent.context import (
+    PlanningSummary,
+    RequestContext,
+    ScoreDetail,
+    has_pending_intent_confirmation,
+    resolve_pending_confirmation,
+    resolve_pending_plan_payload_text,
+)
 from app.agent.instructions.identity import build_identity
 from app.agent.instructions.planning_context import build_planning_context
 from app.agent.instructions.pending_context import build_pending_context
@@ -151,6 +159,48 @@ class TestPendingContext:
         assert "add_units" in result
         assert "将补入3个志愿" in result
         assert "old" not in result  # 旧格式被覆盖
+
+    def test_conversation_phase_without_pending_blocks_legacy_fallback(self):
+        """一旦 phase 已注入，就只认 phase.pending，不再回退旧字段。"""
+        from app.models.conversation_phase import ConversationPhase, PhaseState
+
+        deps = _make_deps(pending={
+            "action_family": "generate_plan",
+            "summary": "旧格式待确认",
+            "plan_payload": {"stage": "apply"},
+        })
+        deps.pending_intent_change = True
+        deps.conversation_phase = ConversationPhase(state=PhaseState.PLAN_IDLE)
+
+        assert resolve_pending_confirmation(deps) is None
+        assert resolve_pending_plan_payload_text(deps) == ""
+        assert not has_pending_intent_confirmation(deps)
+
+    def test_resolve_pending_confirmation_prefers_phase(self):
+        from app.models.conversation_phase import ConversationPhase, PendingConfirmation, PhaseState
+
+        deps = _make_deps(pending={"action_family": "old"})
+        deps.conversation_phase = ConversationPhase(
+            state=PhaseState.PLAN_PREVIEWING,
+            pending=PendingConfirmation(
+                kind="plan_mutation",
+                action_family="remove_units",
+                preview_summary="删除2个志愿",
+                execution_payload={"stage": "apply", "action_family": "remove_units"},
+            ),
+        )
+
+        pending = resolve_pending_confirmation(deps)
+
+        assert pending is not None
+        assert pending.action_family == "remove_units"
+        assert json.loads(resolve_pending_plan_payload_text(deps))["action_family"] == "remove_units"
+
+    def test_has_pending_intent_confirmation_reads_legacy_flag(self):
+        deps = _make_deps()
+        deps.pending_intent_change = True
+
+        assert has_pending_intent_confirmation(deps)
 
 
 # ---------------------------------------------------------------------------

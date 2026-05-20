@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 if TYPE_CHECKING:
-    from app.models.conversation_phase import ConversationPhase
+    from app.models.conversation_phase import ConversationPhase, PendingConfirmation
     from app.schemas.user_profile import UserProfile
 
 
@@ -129,3 +130,79 @@ class RequestContext:
     pending_intent_change: bool = False  # 当前轮开始前是否已有待确认的 Intent 变更 (deprecated, 用 conversation_phase.pending)
     conversation_phase: ConversationPhase | None = None  # Phase 3 新增：统一对话阶段状态
     progress_callback: Callable[[str], Awaitable[None]] | None = None
+
+
+def resolve_pending_confirmation(deps: Any) -> "PendingConfirmation | None":
+    """Resolve the active pending confirmation from unified state first.
+
+    When ``conversation_phase`` is present, its ``pending`` field is the
+    authoritative source. Legacy ``pending_plan_action`` / ``pending_intent_change``
+    only serve as compatibility fallbacks for older call sites that have not
+    injected a phase object yet.
+    """
+    phase = getattr(deps, "conversation_phase", None)
+    if phase is not None:
+        return getattr(phase, "pending", None)
+
+    pending_plan_action = getattr(deps, "pending_plan_action", None)
+    if isinstance(pending_plan_action, dict) and pending_plan_action:
+        from app.models.conversation_phase import PendingConfirmation
+
+        legacy_pending = PendingConfirmation.from_legacy_plan_action(pending_plan_action)
+        if legacy_pending is not None:
+            return legacy_pending
+
+    if bool(getattr(deps, "pending_intent_change", False)):
+        from app.models.conversation_phase import PendingConfirmation
+
+        return PendingConfirmation(
+            kind="intent_change",
+            action_family="set_preference",
+            preview_summary="（从旧格式恢复的意向变更）",
+        )
+
+    return None
+
+
+def resolve_pending_plan_payload_text(deps: Any) -> str:
+    """Return the confirmable plan payload as JSON text, if any."""
+    phase = getattr(deps, "conversation_phase", None)
+    if phase is not None:
+        pending = getattr(phase, "pending", None)
+        if pending is not None and pending.kind == "plan_mutation":
+            payload = pending.execution_payload
+            if isinstance(payload, str):
+                return payload
+            if isinstance(payload, dict):
+                return json.dumps(payload, ensure_ascii=False)
+        return ""
+
+    pending = resolve_pending_confirmation(deps)
+    if pending is not None and pending.kind == "plan_mutation":
+        payload = pending.execution_payload
+        if isinstance(payload, str):
+            return payload
+        if isinstance(payload, dict):
+            return json.dumps(payload, ensure_ascii=False)
+
+    pending_plan_action = getattr(deps, "pending_plan_action", None)
+    if isinstance(pending_plan_action, dict):
+        raw_payload = pending_plan_action.get("plan_payload")
+        if isinstance(raw_payload, str):
+            return raw_payload
+        if isinstance(raw_payload, dict):
+            return json.dumps(raw_payload, ensure_ascii=False)
+    return ""
+
+
+def has_pending_intent_confirmation(deps: Any) -> bool:
+    """Whether the current session is waiting for intent confirmation."""
+    phase = getattr(deps, "conversation_phase", None)
+    if phase is not None:
+        pending = getattr(phase, "pending", None)
+        return bool(pending is not None and pending.kind == "intent_change")
+
+    pending = resolve_pending_confirmation(deps)
+    if pending is not None:
+        return pending.kind == "intent_change"
+    return bool(getattr(deps, "pending_intent_change", False))

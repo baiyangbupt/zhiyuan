@@ -15,7 +15,7 @@ from typing import Any
 
 from pydantic_ai import RunContext
 
-from app.agent.context import RequestContext
+from app.agent.context import RequestContext, has_pending_intent_confirmation, resolve_pending_confirmation
 from app.domain.career_slots import (
     CAREER_FURTHER_STUDY,
     CAREER_LABEL_MAP,
@@ -1653,7 +1653,7 @@ async def update_volunteer_intent_state(
         resolved_mode = intent_mode or INTENT_MODE_PREFERENCE
         if normalized_action == "confirm":
             latest_utterance = _latest_user_utterance(ctx)
-            had_pending_before_turn = bool(getattr(ctx.deps, "pending_intent_change", False))
+            had_pending_before_turn = has_pending_intent_confirmation(ctx.deps)
             if (
                 not had_pending_before_turn
                 and not _is_intent_confirmation_utterance(latest_utterance)
@@ -1675,8 +1675,13 @@ async def update_volunteer_intent_state(
                     status="error",
                 )
                 return serialize_intent_state_update_result(result)
-            cache_result = await get_intent_change_cache(session_id)
-            cache_data = (cache_result or {}).get("data", {}).get("planEditCache")
+            pending_confirmation = resolve_pending_confirmation(ctx.deps)
+            cache_data = None
+            if pending_confirmation is not None and pending_confirmation.kind == "intent_change":
+                cache_data = pending_confirmation.execution_payload
+            if not isinstance(cache_data, dict) or not cache_data:
+                cache_result = await get_intent_change_cache(session_id)
+                cache_data = (cache_result or {}).get("data", {}).get("planEditCache")
             if not cache_data:
                 result = IntentStateUpdateResult(
                     action="confirm",

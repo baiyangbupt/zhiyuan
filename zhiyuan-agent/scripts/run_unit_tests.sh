@@ -3,6 +3,9 @@
 
 set -e
 
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT_DIR"
+
 echo "=========================================="
 echo "运行单元测试（不需要 API key）"
 echo "=========================================="
@@ -18,7 +21,7 @@ fi
 
 # 运行单元测试和集成测试（不包括 e2e）
 echo "📦 运行单元测试..."
-pytest tests/unit/ tests/integration/ -v --tb=short
+python -m pytest tests/unit/ tests/integration/ -v --tb=short
 
 echo ""
 echo "=========================================="

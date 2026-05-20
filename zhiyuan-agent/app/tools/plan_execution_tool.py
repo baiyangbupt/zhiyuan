@@ -10,7 +10,7 @@ from typing import Any
 
 from pydantic_ai import RunContext
 
-from app.agent.context import RequestContext
+from app.agent.context import RequestContext, resolve_pending_confirmation
 from app.tools.plan_orchestration_models import (
     PlanActionPlan,
     PlanExecutionResult,
@@ -369,12 +369,12 @@ def _is_short_plan_confirmation(text: str) -> bool:
 def _allows_mutating_apply(ctx: RunContext[RequestContext], plan_model: PlanActionPlan) -> bool:
     if plan_model.stage != "apply" or plan_model.action_family not in _MUTATING_ACTION_FAMILIES:
         return True
-    phase = getattr(ctx.deps, "conversation_phase", None)
-    if phase and phase.pending:
-        pending_action_family = phase.pending.action_family
-    else:
-        pending = ctx.deps.pending_plan_action or {}
-        pending_action_family = str(pending.get("action_family") or "")
+    pending = resolve_pending_confirmation(ctx.deps)
+    pending_action_family = (
+        pending.action_family
+        if pending is not None and pending.kind == "plan_mutation"
+        else ""
+    )
     latest_user_text = _latest_user_text(ctx)
     if pending_action_family == plan_model.action_family and _is_short_plan_confirmation(latest_user_text):
         return True
@@ -824,6 +824,27 @@ def _ordered_ref_resolution_message(missing_text: str, action_label: str) -> str
         f"为避免误删或误重排，请先在方案里点选要{action_label}的志愿，"
         "或让我先按当前方案重新定位后再给你确认。"
     )
+
+
+def _build_resolved_apply_payload(
+    plan_model: PlanActionPlan,
+    *,
+    volunteer_ids: list[str] | None = None,
+    unit_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    """Keep preview-resolved execution targets stable for the confirm turn."""
+    if not plan_model.atomic_actions:
+        return {}
+    resolved_actions: list[dict[str, Any]] = []
+    for index, action in enumerate(plan_model.atomic_actions):
+        action_data = action.model_dump()
+        if index == 0:
+            if volunteer_ids is not None:
+                action_data["volunteer_ids"] = [str(item) for item in volunteer_ids if str(item or "").strip()]
+            if unit_ids is not None:
+                action_data["unit_ids"] = [str(item) for item in unit_ids if str(item or "").strip()]
+        resolved_actions.append(action_data)
+    return {"atomic_actions": resolved_actions} if resolved_actions else {}
 
 
 def _candidate_ref_resolution_message(missing_text: str) -> str:
@@ -1786,6 +1807,15 @@ async def _execute_plan_action_model(
             if resolved_summary:
                 preview_summary = resolved_summary
                 preview_facts = resolved_facts
+        elif plan_model.action_family in {"remove_units", "move_unit", "replace_units"}:
+            atomic = plan_model.atomic_actions[0] if plan_model.atomic_actions else None
+            refs = list(atomic.volunteer_ids or []) if atomic else []
+            resolved_ids, _ = await _resolve_ordered_volunteer_refs(ctx, refs)
+            if resolved_ids:
+                preview_facts["resolved_apply_payload"] = _build_resolved_apply_payload(
+                    plan_model,
+                    volunteer_ids=resolved_ids,
+                )
         return PlanExecutionResult(
             applied=False,
             action_family=plan_model.action_family,
@@ -1889,7 +1919,8 @@ async def _execute_plan_action_model(
     if plan_model.stage == "preview" and plan_model.action_family == "remove_units":
         atomic = plan_model.atomic_actions[0] if plan_model.atomic_actions else None
         refs = list(atomic.volunteer_ids or []) if atomic else []
-        resolved_ids, _ = await _resolve_ordered_volunteer_refs(ctx, refs)
+        resolved_ids, missing_refs = await _resolve_ordered_volunteer_refs(ctx, refs)
+        resolved_apply_payload = _build_resolved_apply_payload(plan_model, volunteer_ids=resolved_ids) if resolved_ids else {}
         expanded_ids, ordered_items, _, review_issue = await _resolve_review_issue_action_scope(
             ctx,
             plan_model,
@@ -1926,6 +1957,36 @@ async def _execute_plan_action_model(
                 summary=_with_confirmation_hint(preview_summary),
                 reply_focus=["preview_only", "review_issue_batch_scope"],
                 next_step_hints=["如果用户确认执行，再按当前审查命中的整批问题项做移除。"],
+                facts={"resolved_apply_payload": resolved_apply_payload} if resolved_apply_payload else {},
+            )
+        if missing_refs or not resolved_ids:
+            missing_text = "、".join(missing_refs[:5]) if missing_refs else "要移除的志愿"
+            return PlanExecutionResult(
+                applied=False,
+                action_family=plan_model.action_family,
+                stage=plan_model.stage,
+                result_kind="error",
+                context_summary=plan_model.context_summary,
+                summary=_ordered_ref_resolution_message(missing_text, "移除"),
+                reply_focus=["missing_inputs", "needs_volunteer_selection"],
+                next_step_hints=["先定位当前方案里的真实 volunteerId，再生成可确认的移除预览。"],
+            )
+
+    if plan_model.stage == "preview" and plan_model.action_family == "move_unit":
+        atomic = plan_model.atomic_actions[0] if plan_model.atomic_actions else None
+        refs = list(atomic.volunteer_ids or []) if atomic else []
+        resolved_ids, missing_refs = await _resolve_ordered_volunteer_refs(ctx, refs)
+        if missing_refs or not resolved_ids:
+            missing_text = "、".join(missing_refs[:5]) if missing_refs else "要移动的志愿"
+            return PlanExecutionResult(
+                applied=False,
+                action_family=plan_model.action_family,
+                stage=plan_model.stage,
+                result_kind="error",
+                context_summary=plan_model.context_summary,
+                summary=_ordered_ref_resolution_message(missing_text, "移动"),
+                reply_focus=["missing_inputs", "needs_volunteer_selection"],
+                next_step_hints=["先定位当前方案里的真实 volunteerId，再生成可确认的位置调整预览。"],
             )
 
     if plan_model.stage in {"analyze", "preview"}:
@@ -1941,6 +2002,15 @@ async def _execute_plan_action_model(
             if resolved_summary:
                 preview_summary = resolved_summary
                 preview_facts = resolved_facts
+        elif plan_model.stage == "preview" and plan_model.action_family in {"remove_units", "move_unit", "replace_units"}:
+            atomic = plan_model.atomic_actions[0] if plan_model.atomic_actions else None
+            refs = list(atomic.volunteer_ids or []) if atomic else []
+            resolved_ids, _ = await _resolve_ordered_volunteer_refs(ctx, refs)
+            if resolved_ids:
+                preview_facts["resolved_apply_payload"] = _build_resolved_apply_payload(
+                    plan_model,
+                    volunteer_ids=resolved_ids,
+                )
         if plan_model.stage == "preview" and plan_model.action_family in _MUTATING_ACTION_FAMILIES:
             preview_summary = _with_confirmation_hint(preview_summary)
         return PlanExecutionResult(

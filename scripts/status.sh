@@ -30,9 +30,9 @@ check_service() {
 
     port_pids=$(service_listen_pids "$name")
 
-    if [ -n "$pidfile_pid" ] && kill -0 "$pidfile_pid" 2>/dev/null; then
+    if [ -n "$pidfile_pid" ] && { service_pid_in_list "$pidfile_pid" $port_pids || kill -0 "$pidfile_pid" 2>/dev/null; }; then
         pid="$pidfile_pid"
-        if [ -n "$port_pids" ] && ! echo "$port_pids" | grep -qx "$pidfile_pid"; then
+        if [ -n "$port_pids" ] && ! service_pid_in_list "$pidfile_pid" $port_pids; then
             status="⬢ 运行中"
             health="(端口监听 PID: $(echo "$port_pids" | tr '\n' ',' | sed 's/,$//'))"
         else

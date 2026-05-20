@@ -12,7 +12,13 @@ from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, ToolCall
 
 from app.agent.base_agent import ProgressCallback
 from app.agent.chat_agent import ChatAgent
-from app.agent.context import PlanningSummary, RequestContext, ScoreDetail
+from app.agent.context import (
+    PlanningSummary,
+    RequestContext,
+    ScoreDetail,
+    resolve_pending_confirmation,
+    resolve_pending_plan_payload_text,
+)
 from app.models.conversation_phase import ConversationPhase, PendingConfirmation
 from app.agent.usage_tracker import UsageTracker
 from app.config import HistoryConfig
@@ -450,6 +456,10 @@ def _extract_execute_plan_action_refresh_targets(part: ToolReturnPart) -> list[s
     action_family = str(data.get("action_family") or "").strip()
     if action_family not in _EXECUTE_PLAN_ACTION_REFRESH_FAMILIES:
         return []
+    if data.get("applied") is not True:
+        return []
+    if str(data.get("result_kind") or "").strip() == "error":
+        return []
     targets = data.get("workspace_refresh_targets")
     if not isinstance(targets, list):
         return []
@@ -703,6 +713,10 @@ def _build_pending_plan_action_from_payload(payload: dict[str, Any], summary: st
     if action_family == "replace_units" and not payload.get("atomic_actions"):
         return None
     apply_payload = dict(payload)
+    facts = apply_payload.get("facts") if isinstance(apply_payload.get("facts"), dict) else {}
+    resolved_payload = facts.get("resolved_apply_payload") if isinstance(facts, dict) else None
+    if isinstance(resolved_payload, dict):
+        apply_payload.update(resolved_payload)
     apply_payload["action_family"] = action_family
     apply_payload["stage"] = "apply"
     apply_payload["requires_confirmation"] = False
@@ -733,6 +747,7 @@ def _extract_pending_plan_action(messages: list[Any] | None) -> dict[str, Any] |
     pending_calls: dict[str, dict[str, Any]] = {}
     latest_pending: dict[str, Any] | None = None
     last_non_actionable_adjustment_goal: str | None = None
+    user_turns_since_pending = 0
 
     for message in messages or []:
         if isinstance(message, ModelResponse):
@@ -755,10 +770,18 @@ def _extract_pending_plan_action(messages: list[Any] | None) -> dict[str, Any] |
 
         if not isinstance(message, ModelRequest):
             continue
-        if any(isinstance(part, UserPromptPart) for part in getattr(message, "parts", []) or []):
-            latest_pending = None
+        user_prompt_parts = [
+            part for part in getattr(message, "parts", []) or []
+            if isinstance(part, UserPromptPart)
+        ]
+        if user_prompt_parts:
             pending_calls.clear()
             last_non_actionable_adjustment_goal = None
+            if latest_pending is not None:
+                user_turns_since_pending += 1
+                if user_turns_since_pending > 3:
+                    latest_pending = None
+                    user_turns_since_pending = 0
             continue
         for part in getattr(message, "parts", []) or []:
             if not isinstance(part, ToolReturnPart):
@@ -781,6 +804,7 @@ def _extract_pending_plan_action(messages: list[Any] | None) -> dict[str, Any] |
                     ):
                         continue
                     latest_pending = candidate_pending
+                    user_turns_since_pending = 0
                 continue
             if part.tool_name != "execute_plan_action":
                 continue
@@ -801,6 +825,7 @@ def _extract_pending_plan_action(messages: list[Any] | None) -> dict[str, Any] |
                 effective_action_family = _PLAN_PREVIEW_TO_APPLY_ACTION_FAMILIES.get(action_family, action_family)
                 if effective_action_family in _PENDING_PLAN_ACTION_FAMILIES:
                     latest_pending = None
+                    user_turns_since_pending = 0
                 continue
             if not is_preview_result:
                 continue
@@ -810,8 +835,12 @@ def _extract_pending_plan_action(messages: list[Any] | None) -> dict[str, Any] |
             call_payload = pending_calls.get(str(part.tool_call_id or ""))
             if not call_payload:
                 continue
+            pending_payload = dict(call_payload)
+            result_facts = result.get("facts")
+            if isinstance(result_facts, dict) and result_facts:
+                pending_payload["facts"] = result_facts
             candidate_pending = _build_pending_plan_action_from_payload(
-                call_payload,
+                pending_payload,
                 summary=result.get("summary") or call_payload.get("preview_summary") or "",
             )
             if candidate_pending is None:
@@ -826,6 +855,7 @@ def _extract_pending_plan_action(messages: list[Any] | None) -> dict[str, Any] |
             ):
                 continue
             latest_pending = candidate_pending
+            user_turns_since_pending = 0
 
     return latest_pending
 
@@ -997,14 +1027,17 @@ def _build_basic_plan_status_reply(planning: PlanningSummary) -> str:
     return ''.join(lines)
 
 
-async def _has_pending_intent_change(session_id: str) -> bool:
+async def _load_pending_intent_confirmation(session_id: str) -> PendingConfirmation | None:
     try:
         cache_result = await get_intent_change_cache(session_id)
     except Exception:
-        logger.warning("Failed to fetch intent change cache for confirmation guard: session_id=%s", session_id, exc_info=True)
-        return False
-    cache_data = (cache_result or {}).get("data", {}).get("planEditCache")
-    return bool(cache_data)
+        logger.warning("Failed to load intent change cache for phase bootstrap: session_id=%s", session_id, exc_info=True)
+        return None
+    raw_data = (cache_result or {}).get("data")
+    cache_data = raw_data.get("planEditCache") if isinstance(raw_data, dict) else None
+    if not cache_data:
+        return None
+    return PendingConfirmation.from_legacy_intent_change(cache_data)
 
 
 def _direct_pending_intent_reply(result_text: str) -> str:
@@ -1567,11 +1600,13 @@ class ChatService:
         except Exception as e:
             logger.warning("Failed to fetch planning state: %s", e)
 
-        pending_intent_change = await _has_pending_intent_change(session_id)
+        pending_intent_confirmation = await _load_pending_intent_confirmation(session_id)
+        pending_intent_change = bool(pending_intent_confirmation)
 
         # 构建统一的 ConversationPhase
         conversation_phase = ConversationPhase.from_legacy_context(
             pending_plan_action=pending_plan_action,
+            pending_intent_confirmation=pending_intent_confirmation,
             pending_intent_change=pending_intent_change,
             planning_summary=parsed_planning_summary,
         )
@@ -1590,11 +1625,14 @@ class ChatService:
             conversation_phase=conversation_phase,
             progress_callback=on_progress,
         )
+        active_pending = resolve_pending_confirmation(request_context)
+        active_pending_kind = str(getattr(active_pending, "kind", "") or "").strip()
+        active_plan_payload_text = resolve_pending_plan_payload_text(request_context)
         turn_started_at = time.monotonic()
 
-        if pending_plan_action and _is_plan_action_confirmation(content):
-            action_family = str(pending_plan_action.get("action_family") or "").strip()
-            plan_payload = str(pending_plan_action.get("plan_payload") or "")
+        if active_pending_kind == "plan_mutation" and _is_plan_action_confirmation(content):
+            action_family = str(getattr(active_pending, "action_family", "") or "").strip()
+            plan_payload = active_plan_payload_text
             tool_call_id = f"direct-{action_family or 'pending-plan'}-confirmation"
             tool_started_at = time.monotonic()
             result_text = await execute_plan_action(SimpleNamespace(deps=request_context), plan_payload)
@@ -1663,7 +1701,7 @@ class ChatService:
                 )
             return reply
 
-        if not pending_plan_action and pending_intent_change and _is_pending_intent_confirmation(content):
+        if active_pending_kind == "intent_change" and _is_pending_intent_confirmation(content):
             tool_call_id = "direct-pending-intent-confirmation"
             tool_started_at = time.monotonic()
             result_text = await update_volunteer_intent_state(
@@ -1725,11 +1763,7 @@ class ChatService:
             )
             return reply
 
-        if (
-            not pending_plan_action
-            and _is_plan_action_confirmation(content)
-            and not pending_intent_change
-        ):
+        if active_pending is None and _is_plan_action_confirmation(content):
             reply = "我这边没有上一轮待确认的方案动作。你可以直接说想生成方案、审查方案或怎么调整，我会先说明影响，确认后再执行。"
             new_messages = [
                 ModelRequest(parts=[UserPromptPart(content=content)]),
@@ -1860,12 +1894,13 @@ class ChatService:
         else:
             scene = "unknown"
         action_family = _select_conversation_action_family(tool_returns)
+        pending_type = "plan" if active_pending_kind == "plan_mutation" else "intent" if active_pending_kind == "intent_change" else None
         _log_conversation_turn_event(
             sessionId=session_id,
             userId=user_id,
             scene=scene,
             routingPath="full_agent",
-            pendingType="plan" if pending_plan_action else "intent" if pending_intent_change else None,
+            pendingType=pending_type,
             actionFamily=action_family,
             modelProvider=None,
             modelName=None,

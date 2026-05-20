@@ -3705,6 +3705,277 @@ def test_execute_plan_action_runs_remove_unit_after_resolving_current_release_30
     assert mock_remove.await_args.args[1] == ["hnny-arch-4"]
 
 
+def test_execute_plan_action_remove_preview_returns_resolved_apply_payload_for_alias_ref():
+    payload = {
+        "stage": "preview",
+        "action_family": "remove_units",
+        "context_summary": "阶段=ordered；方案=96/96",
+        "preview_summary": "确认要从当前方案中删除河南农业大学-建筑学吗？",
+        "missing_inputs": [],
+        "should_rerun_review": True,
+        "intent_relation": "unknown",
+        "atomic_actions": [
+            {
+                "action_type": "remove_units",
+                "volunteer_ids": ["河南农大建筑"],
+                "target_position": None,
+                "filters": {},
+                "reason": "把河南农大建筑去掉",
+            }
+        ],
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
+        new=AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "items": [
+                        {
+                            "position": 4,
+                            "volunteerId": "hnny-arch-4",
+                            "schoolName": "河南农业大学",
+                            "majorName": "建筑类(城乡规划、风景园林)",
+                        }
+                    ]
+                },
+            }
+        ),
+    ):
+        result = asyncio.run(execute_plan_action(_ctx("exec-302"), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["result_kind"] == "preview_only"
+    assert data["facts"]["resolved_apply_payload"]["atomic_actions"][0]["volunteer_ids"] == ["hnny-arch-4"]
+
+
+def test_execute_plan_action_remove_preview_rejects_non_unique_short_ref_before_confirmation():
+    payload = {
+        "stage": "preview",
+        "action_family": "remove_units",
+        "context_summary": "阶段=ordered；方案=94/96",
+        "preview_summary": "确认要从当前方案中删除河南农业大学-建筑学吗？",
+        "missing_inputs": [],
+        "should_rerun_review": True,
+        "intent_relation": "mixed",
+        "atomic_actions": [
+            {
+                "action_type": "remove_units",
+                "volunteer_ids": ["河南农大建筑"],
+                "target_position": None,
+                "filters": {},
+                "reason": "把河南农大建筑去掉",
+            }
+        ],
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
+        new=AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "items": [
+                        {
+                            "position": 1,
+                            "volunteerId": "37020261001095_37020262020504_709",
+                            "schoolName": "青岛理工大学",
+                            "majorName": "建筑学(中外合作办学)(与韩国光云大学合作)",
+                        },
+                        {
+                            "position": 5,
+                            "volunteerId": "37020261000326_37020262006075_709",
+                            "schoolName": "喀什大学",
+                            "majorName": "建筑学(东城校区)",
+                        },
+                    ]
+                },
+            }
+        ),
+    ), patch(
+        "app.handlers.mutation_handlers.remove_planning_ordered_items",
+        new=AsyncMock(return_value="should not remove"),
+    ) as mock_remove:
+        result = asyncio.run(execute_plan_action(_ctx_with_pending("remove_units"), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["applied"] is False
+    assert data["stage"] == "preview"
+    assert data["result_kind"] == "error"
+    assert "河南农大建筑" in data["summary"]
+    assert "needs_volunteer_selection" in data["reply_focus"]
+    mock_remove.assert_not_awaited()
+
+
+def test_execute_plan_action_remove_preview_error_does_not_attach_refresh_targets():
+    payload = {
+        "stage": "preview",
+        "action_family": "remove_units",
+        "context_summary": "阶段=ordered；方案=94/96",
+        "preview_summary": "确认要从当前方案中删除河南农业大学-建筑学吗？",
+        "missing_inputs": [],
+        "should_rerun_review": True,
+        "intent_relation": "mixed",
+        "atomic_actions": [
+            {
+                "action_type": "remove_units",
+                "volunteer_ids": ["河南农大建筑"],
+                "target_position": None,
+                "filters": {},
+                "reason": "把河南农大建筑去掉",
+            }
+        ],
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
+        new=AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "items": [
+                        {
+                            "position": 1,
+                            "volunteerId": "37020261001095_37020262020504_709",
+                            "schoolName": "青岛理工大学",
+                            "majorName": "建筑学(中外合作办学)(与韩国光云大学合作)",
+                        },
+                        {
+                            "position": 5,
+                            "volunteerId": "37020261000326_37020262006075_709",
+                            "schoolName": "喀什大学",
+                            "majorName": "建筑学(东城校区)",
+                        },
+                    ]
+                },
+            }
+        ),
+    ):
+        result = asyncio.run(execute_plan_action(_ctx_with_pending("remove_units"), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["applied"] is False
+    assert data["result_kind"] == "error"
+    assert data["workspace_refresh_targets"] == []
+    assert data["facts"] == {}
+
+
+def test_execute_plan_action_remove_apply_error_does_not_attach_refresh_targets():
+    payload = {
+        "stage": "apply",
+        "action_family": "remove_units",
+        "context_summary": "阶段=ordered；方案=94/96",
+        "preview_summary": "",
+        "missing_inputs": [],
+        "should_rerun_review": True,
+        "intent_relation": "mixed",
+        "atomic_actions": [
+            {
+                "action_type": "remove_units",
+                "volunteer_ids": ["河南农大建筑"],
+                "target_position": None,
+                "filters": {},
+                "reason": "把河南农大建筑去掉",
+            }
+        ],
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
+        new=AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "items": [
+                        {
+                            "position": 1,
+                            "volunteerId": "37020261001095_37020262020504_709",
+                            "schoolName": "青岛理工大学",
+                            "majorName": "建筑学(中外合作办学)(与韩国光云大学合作)",
+                        },
+                        {
+                            "position": 5,
+                            "volunteerId": "37020261000326_37020262006075_709",
+                            "schoolName": "喀什大学",
+                            "majorName": "建筑学(东城校区)",
+                        },
+                    ]
+                },
+            }
+        ),
+    ), patch(
+        "app.handlers.mutation_handlers.remove_planning_ordered_items",
+        new=AsyncMock(return_value="should not remove"),
+    ) as mock_remove:
+        result = asyncio.run(execute_plan_action(_ctx_with_pending("remove_units"), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["applied"] is False
+    assert data["result_kind"] == "error"
+    assert data["workspace_refresh_targets"] == []
+    assert "needs_volunteer_selection" in data["reply_focus"]
+    mock_remove.assert_not_awaited()
+
+
+def test_execute_plan_action_move_preview_rejects_non_unique_short_ref_before_confirmation():
+    payload = {
+        "stage": "preview",
+        "action_family": "move_unit",
+        "context_summary": "阶段=ordered；方案=94/96",
+        "preview_summary": "会把该志愿移到第3位。",
+        "missing_inputs": [],
+        "should_rerun_review": True,
+        "intent_relation": "unknown",
+        "atomic_actions": [
+            {
+                "action_type": "move_unit",
+                "volunteer_ids": ["河南农大建筑"],
+                "target_position": 3,
+                "filters": {},
+                "reason": "把河南农大建筑改到第3位",
+            }
+        ],
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
+        new=AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "items": [
+                        {
+                            "position": 1,
+                            "volunteerId": "37020261001095_37020262020504_709",
+                            "schoolName": "青岛理工大学",
+                            "majorName": "建筑学(中外合作办学)(与韩国光云大学合作)",
+                        },
+                        {
+                            "position": 5,
+                            "volunteerId": "37020261000326_37020262006075_709",
+                            "schoolName": "喀什大学",
+                            "majorName": "建筑学(东城校区)",
+                        },
+                    ]
+                },
+            }
+        ),
+    ), patch(
+        "app.handlers.mutation_handlers.move_planning_ordered_item",
+        new=AsyncMock(return_value="should not move"),
+    ) as mock_move:
+        result = asyncio.run(execute_plan_action(_ctx_with_pending("move_unit"), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["applied"] is False
+    assert data["stage"] == "preview"
+    assert data["result_kind"] == "error"
+    assert "河南农大建筑" in data["summary"]
+    assert "needs_volunteer_selection" in data["reply_focus"]
+    mock_move.assert_not_awaited()
+
+
 def test_execute_plan_action_does_not_guess_ambiguous_school_major_ref():
     payload = {
         "stage": "apply",

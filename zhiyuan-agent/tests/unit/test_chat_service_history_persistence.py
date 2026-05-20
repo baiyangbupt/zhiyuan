@@ -23,6 +23,7 @@ from app.service import (
     _normalize_plan_reply_style,
     _normalize_user_facing_terms,
     _select_conversation_action_family,
+    _tool_calls_include_plan_workspace_refresh,
 )
 
 
@@ -554,6 +555,76 @@ def test_extract_pending_plan_action_normalizes_flat_execute_preview_payload():
     assert pending["summary"].startswith("已定位到当前方案里当前审查命中的高收费项")
 
 
+def test_extract_pending_plan_action_preserves_preview_resolved_apply_payload():
+    preview_payload = {
+        "stage": "preview",
+        "action_family": "remove_units",
+        "user_goal": "把河南农大建筑去掉",
+        "requires_confirmation": True,
+        "should_rerun_review": False,
+        "should_refresh_workspace": False,
+        "missing_inputs": [],
+        "atomic_actions": [
+            {
+                "action_type": "remove_units",
+                "volunteer_ids": ["河南农大建筑"],
+                "filters": {},
+                "reason": "把河南农大建筑去掉",
+            }
+        ],
+        "preview_summary": "确认要从当前方案中删除河南农业大学-建筑学吗？",
+    }
+    messages = [
+        ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="execute_plan_action",
+                    args={"plan_payload": json.dumps(preview_payload, ensure_ascii=False)},
+                    tool_call_id="preview-call-resolved-remove",
+                )
+            ],
+            model_name="test-model",
+        ),
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="execute_plan_action",
+                    content=json.dumps(
+                        {
+                            "applied": False,
+                            "action_family": "remove_units",
+                            "stage": "preview",
+                            "result_kind": "preview_only",
+                            "summary": "确认要从当前方案中删除河南农业大学-建筑学吗？",
+                            "facts": {
+                                "resolved_apply_payload": {
+                                    "atomic_actions": [
+                                        {
+                                            "action_type": "remove_units",
+                                            "volunteer_ids": ["hnny-arch-4"],
+                                            "filters": {},
+                                            "reason": "把河南农大建筑去掉",
+                                        }
+                                    ]
+                                }
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                    tool_call_id="preview-call-resolved-remove",
+                )
+            ]
+        ),
+    ]
+
+    pending = _extract_pending_plan_action(messages)
+
+    assert pending is not None
+    apply_payload = json.loads(pending["plan_payload"])
+    assert apply_payload["stage"] == "apply"
+    assert apply_payload["atomic_actions"][0]["volunteer_ids"] == ["hnny-arch-4"]
+
+
 def test_extract_pending_plan_action_from_plan_next_action_preview_result():
     preview_plan = {
         "stage": "preview",
@@ -732,6 +803,32 @@ def test_extract_pending_plan_action_ignores_replace_preview_error_result():
     ]
 
     assert _extract_pending_plan_action(messages) is None
+
+
+def test_execute_plan_action_error_return_does_not_infer_workspace_refresh():
+    messages = [
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="execute_plan_action",
+                    content=json.dumps(
+                        {
+                            "applied": False,
+                            "action_family": "remove_units",
+                            "stage": "apply",
+                            "result_kind": "error",
+                            "summary": "我还没有定位到这些志愿在当前方案里的真实编号：河南农大建筑。",
+                            "workspace_refresh_targets": ["ordered"],
+                        },
+                        ensure_ascii=False,
+                    ),
+                    tool_call_id="remove-error-refresh",
+                )
+            ]
+        )
+    ]
+
+    assert _tool_calls_include_plan_workspace_refresh(messages) == []
 
 
 def test_extract_pending_plan_action_maps_compensation_preview_to_apply_payload():
@@ -1639,7 +1736,7 @@ def test_extract_pending_plan_action_ignores_plan_next_action_with_missing_input
     assert _extract_pending_plan_action(messages) is None
 
 
-def test_extract_pending_plan_action_clears_after_intervening_user_turn():
+def test_extract_pending_plan_action_expires_after_multiple_intervening_user_turns():
     preview_plan = {
         "stage": "preview",
         "action_family": "generate_plan",
@@ -1658,11 +1755,66 @@ def test_extract_pending_plan_action_clears_after_intervening_user_turn():
             ]
         ),
         ModelResponse(parts=[TextPart(content="如果确认，我再执行。")], model_name="test-model"),
-        ModelRequest(parts=[UserPromptPart(content="先不用，帮我看看哪里不合理")]),
+        ModelRequest(parts=[UserPromptPart(content="帮我看看哪里不合理")]),
         ModelResponse(parts=[TextPart(content="当前还没有正式方案。")], model_name="test-model"),
+        ModelRequest(parts=[UserPromptPart(content="再看看候选")]),
+        ModelResponse(parts=[TextPart(content="候选里有一些稳妥选择。")], model_name="test-model"),
+        ModelRequest(parts=[UserPromptPart(content="还有别的吗")]),
+        ModelResponse(parts=[TextPart(content="可以继续补保底。")], model_name="test-model"),
+        ModelRequest(parts=[UserPromptPart(content="先说原因")]),
+        ModelResponse(parts=[TextPart(content="主要是保底不足。")], model_name="test-model"),
     ]
 
     assert _extract_pending_plan_action(messages) is None
+
+
+def test_extract_pending_plan_action_preserves_after_explanatory_user_turn():
+    preview_payload = {
+        "stage": "preview",
+        "action_family": "move_ordered_unit",
+        "user_goal": "把第3个专业组移到第5位",
+        "missing_inputs": [],
+        "atomic_actions": [],
+        "preview_summary": "会把第3个专业组整体移到第5位。",
+    }
+    messages = [
+        ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="execute_plan_action",
+                    args={"plan_payload": json.dumps(preview_payload, ensure_ascii=False)},
+                    tool_call_id="move-unit-preview-keep-1",
+                )
+            ],
+            model_name="test-model",
+        ),
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="execute_plan_action",
+                    content=json.dumps(
+                        {
+                            "applied": False,
+                            "action_family": "move_ordered_unit",
+                            "result_kind": "preview_only",
+                            "summary": "会把第3个专业组整体移到第5位。",
+                        },
+                        ensure_ascii=False,
+                    ),
+                    tool_call_id="move-unit-preview-keep-1",
+                )
+            ]
+        ),
+        ModelResponse(parts=[TextPart(content="如果确认，我再执行。")], model_name="test-model"),
+        ModelRequest(parts=[UserPromptPart(content="先再解释一下影响")]),
+        ModelResponse(parts=[TextPart(content="这只会移动专业组顺序，组内专业不变。")], model_name="test-model"),
+    ]
+
+    pending = _extract_pending_plan_action(messages)
+
+    assert pending is not None
+    assert pending["action_family"] == "move_ordered_unit"
+    assert json.loads(pending["plan_payload"])["stage"] == "apply"
 
 
 def test_extract_pending_plan_action_clears_after_apply_result():
@@ -2134,6 +2286,80 @@ def test_chat_service_directly_applies_pending_regenerate_order_on_confirm(tmp_p
         for message in saved_history
         for part in getattr(message, "parts", [])
     )
+
+
+def test_chat_service_directly_applies_pending_after_explanatory_turn(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    preview_payload = {
+        "stage": "preview",
+        "action_family": "move_ordered_unit",
+        "user_goal": "把第3个专业组移到第5位",
+        "missing_inputs": [],
+        "atomic_actions": [],
+        "preview_summary": "会把第3个专业组整体移到第5位。",
+    }
+    history = [
+        ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="execute_plan_action",
+                    args={"plan_payload": json.dumps(preview_payload, ensure_ascii=False)},
+                    tool_call_id="preview-call-direct-keep-1",
+                )
+            ],
+            model_name="test-model",
+        ),
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="execute_plan_action",
+                    content=json.dumps(
+                        {
+                            "applied": False,
+                            "action_family": "move_ordered_unit",
+                            "result_kind": "preview_only",
+                            "summary": "会把第3个专业组整体移到第5位。",
+                        },
+                        ensure_ascii=False,
+                    ),
+                    tool_call_id="preview-call-direct-keep-1",
+                )
+            ]
+        ),
+        ModelResponse(parts=[TextPart(content="如果确认，我再执行。")], model_name="test-model"),
+        ModelRequest(parts=[UserPromptPart(content="先再解释一下影响")]),
+        ModelResponse(parts=[TextPart(content="这只会移动专业组顺序，组内专业不变。")], model_name="test-model"),
+    ]
+    asyncio.run(store.save("session-pending-plan-direct-keep", history))
+    execution_result = json.dumps(
+        {
+            "applied": True,
+            "action_family": "move_ordered_unit",
+            "stage": "apply",
+            "result_kind": "mutation_result",
+            "summary": "已移动专业组并复审。",
+            "workspace_refresh_targets": ["ordered"],
+        },
+        ensure_ascii=False,
+    )
+    fake_agent = _FakeAgent(["不应该调用模型"])
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_intent_change_cache", AsyncMock(return_value={"data": {"planEditCache": None}})), \
+            patch("app.service.execute_plan_action", AsyncMock(return_value=execution_result)) as execute_mock:
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(service.handle_message("session-pending-plan-direct-keep", "user-1", "确认"))
+
+    assert isinstance(reply, ChatServiceResponseEnvelope)
+    assert reply.primary == "已移动专业组并复审。"
+    targets = [json.loads(item.content)["targetView"] for item in reply.followups]
+    assert targets == ["ordered"]
+    execute_mock.assert_awaited_once()
+    assert fake_agent.calls == []
 
 
 def test_chat_service_blocks_plan_confirmation_without_pending_action(tmp_path, mock_llm_client):

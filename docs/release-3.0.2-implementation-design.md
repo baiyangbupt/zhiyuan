@@ -695,6 +695,8 @@ Agent 单测：
 - 覆盖方案现状、按院校层次排序、专业组整体移动、按学校/专业简称删除、调整后查询等 3.0.2 关键入口。
 - `zhiyuan-agent/examples/dialog_regression_302_explore_intent_cases.json`
 - 覆盖 Explore/Intent 前置层：专业/职业/地域/院校探索，软偏好、硬约束、软硬混合、意向修订、未确认意向下查询方案、候选风险解释和专项资格解释。
+- `zhiyuan-agent/examples/dialog_regression_302_readonly_real_session_cases.json`
+- 覆盖真实 `session=17` 后端方案数据下的只读 Explore/Intent smoke，要求不发送无意义工作台联动卡片。
 - 运行方式：
 
 ```bash
@@ -705,10 +707,23 @@ cd zhiyuan-agent
 
 .venv/bin/python examples/dialog_regression_runner.py \
   --cases examples/dialog_regression_302_explore_intent_cases.json \
-  --assert-plan-style
+  --assert-plan-style \
+  --session-offset 200000
+
+.venv/bin/python examples/dialog_regression_runner.py \
+  --cases examples/dialog_regression_302_readonly_real_session_cases.json \
+  --assert-plan-style \
+  --response-timeout 180 \
+  --clear-history
 ```
 
 这些样例需要本地 agent/server/web 数据链路和模型配置可用；自动单测只负责验证 pending 协议、runtime history 和场景目录结构不破坏内部结构。
+`--session-offset` 会把样例里的固定数字 session 映射到一批新的数字会话，并在输出里保留 `base=<原始 sessionId>`，用于规避历史聊天记录、旧 `planEditCache` 和已消费 pending 对真实回归结果的污染。因为后端 `chatSessionId` 当前按数字处理，该参数只支持数字 session。
+需要注意，`--session-offset` 只隔离 Agent 本地聊天历史和后端按 session 写入的 extra-data，不会复制原 session 的成绩、候选池、排序方案或历史迁移文件。因此：
+
+- 方案编辑、方案查询、候选承接这类依赖真实后端会话数据的回归，优先使用已有数据完整的 session（例如本地 `16/17`），并在执行前清理 Agent 本地 SQLite 对话历史。
+- Explore/Intent 纯对话历史隔离、确认边界和模型回复风格观察，可以使用 `--session-offset` 跑干净数字 session。
+- 如果 offset 后样例提示“缺少成绩信息”“方案为空”“候选为空”，不能直接判定为业务链路失败，应先确认该映射 session 是否具备后端基础数据。
 
 ### 8.7 WebSocket 异常收口
 
@@ -755,6 +770,14 @@ cd zhiyuan-agent
 - 不在 `ChatService` 增加 Explore/Intent 的硬编码匹配。
 - 不改写意向状态模型；后续根据真实 WebSocket 结果再判断是否需要调整 prompt、tool dispatch rules 或 intent_state_tool。
 
+真实回归复盘：
+
+- 意向确认缓存收口后，`conversation_phase.pending` 是运行时确认主源；真实 WebSocket 复测中已验证 `planEditCache` 可被 `confirm` 消费并清空。
+- 302 Explore/Intent 场景的固定 session 已出现历史状态污染：部分首轮回复显示“已经记录”，后续确认又找不到 pending，不能直接判定为新链路失败。
+- 302 Explore/Intent offset 场景又暴露另一个边界：干净映射 session 没有原 session 的成绩/方案/候选数据，适合验证对话确认边界，不适合作为“当前方案承接/候选里有没有”的业务正确性准入。
+- 模型接口偶发 `503` 或连接错误时，compat WebSocket 应返回 `error + end=true`，该场景记录为模型服务不可用，不作为业务链路失败。
+- 后续全量 302 WebSocket 回归分两类执行：依赖真实方案数据的用例使用原 session 并清理 Agent 本地历史；纯对话隔离用例使用 `--session-offset` 跑干净映射 session。如果 offset 后仍失败，先确认是否缺少后端基础数据，再按具体 case 定位 Explore -> Intent preview -> confirm -> Plan query 链路。
+
 ### 8.9 本期不做项
 
 - 不删除 SQLite 完整历史。
@@ -794,3 +817,97 @@ cd zhiyuan-agent
 
 - 后端组内排序链路已收口到 `orderedPlanState.units.majorItems`，前端继续以该字段作为专业组展示和导出的顺序来源。
 - 若页面仍看到组内倒排，优先确认后端已重启到最新代码，并检查前端是否走了 `orderedPlanState.units`。
+
+### 8.12 方案 pending 确认链路复盘
+
+#### 8.12.1 完整调用链
+
+方案动作从对话到实际改方案的链路是：
+
+1. WebSocket / HTTP 对话入口把用户文本交给 `ChatService.handle_message()`。
+2. `ChatService` 先读取完整 SQLite 历史。完整历史只用于恢复结构化状态、审计和 pending 解析，不会因为 runtime 裁剪而丢弃。
+3. `_extract_pending_plan_action(full_history)` 从完整历史中的 `plan_next_action` / `execute_plan_action` 工具返回里提取上一轮仍待确认的方案动作，并把 preview payload 改写成 `stage="apply"` 的确认后执行 payload。
+4. `build_runtime_history()` 构造短上下文，只发送给主 agent；完整历史继续保留。若存在 pending，会额外保留产生 pending 的工具调用、工具返回和预览回复。
+5. `ConversationPhase.from_legacy_context()` 把旧的 `pending_plan_action`、`pending_intent_change` 和当前 `PlanningSummary` 转为统一阶段对象，注入 `RequestContext`；从这里开始，运行时只认 `conversation_phase.pending` 作为待确认主源。
+6. 如果本轮是短确认词且存在 `conversation_phase.pending`，`ChatService` 直接调用 `execute_plan_action(..., stage="apply")`，不再进入主模型。
+7. 如果不存在 pending 或本轮不是确认，才进入主 agent。主 agent 根据工具协议走只读查询、preview，或继续产生新的 pending。
+8. 本轮产生的 tool call / tool return / assistant 回复追加写回完整历史，供下一轮继续恢复 pending。
+
+#### 8.12.2 当前实现边界
+
+现在不是把“按院校层次排序、移动、删除、加入方案”等业务动作重新改成字符串模板匹配。业务动作仍由模型和结构化工具链决定：
+
+- `plan_next_action` 负责规划动作类型和参数。
+- `execute_plan_action` 负责 preview / apply。
+- `_allows_mutating_apply()` 负责高副作用动作的 apply guard，只有 action_family 与 pending 匹配且用户是短确认时才允许执行。
+- 工作区刷新由 `execute_plan_action` 返回的 `workspace_refresh_targets` 决定。
+- 工作区刷新只允许真实成功的变更动作触发。`execute_plan_action` 返回 `applied=false` 或 `result_kind=error` 时，即使某个旧 handler 误带了 `workspace_refresh_targets`，`ChatService` 也必须过滤掉，避免出现“文本说没有定位到/没有执行，右侧却刷新方案”的错位。
+
+代码里仍存在少量字符串判断，但它们不是核心业务路由：
+
+- `_is_plan_action_confirmation()` / `_is_short_plan_confirmation()`：只识别“确认、执行、好的、就按这个来”等短确认，用于承接上一轮 pending。
+- `_PLAN_MUTATION_PROMPT_KEYWORDS`：只在 timeout fallback 里避免把“排序/移动/删除”这类变更请求误降级成 `query_state` 播报，不用于规划具体动作。
+- `_PLAN_STYLE_GUARD_PROMPT_KEYWORDS`：只用于回复风格兜底，避免严重用户体验问题，不决定方案如何变更。
+
+因此当前收口原则是：允许有限的确认词和保护性 guard，但不再增加“用户说某关键词就固定走某动作”的字符串路由。
+
+补充说明：
+
+- `pending_plan_action` / `pending_intent_change` 仍然保留在旧会话和测试桥接里，但只作为 phase 尚未注入时的兼容来源。
+- 一旦 `conversation_phase` 已经存在，旧字段就不再参与运行时 pending 判定，避免出现 phase 与 legacy 两套状态各说各话。
+- `planEditCache` 这类旧意向缓存先在服务层转换为 `PendingConfirmation` 再注入 phase；确认动作优先消费 phase 内的 payload，不再直接把 backend cache 当成运行时状态源。
+
+#### 8.12.3 当前问题
+
+当前暴露的问题集中在 pending 状态仍然依赖聊天历史恢复，而不是独立持久化状态：
+
+- 若上一轮已经 preview，用户中间追问“解释一下影响”这类说明型内容，主 agent 可能只自然语言解释，不再产生新的 tool call。
+- 旧实现曾在 `_extract_pending_plan_action()` 遇到新的 `UserPromptPart` 时直接清空 pending，导致下一轮“确认”读不到 pending，退化成 no-pending guard。
+- runtime 裁剪解决了长历史污染和 token 膨胀，但如果 pending 只存在于很早的工具返回里，必须额外保留对应 preview 轮，否则模型解释时会缺上下文。
+- 真实 WebSocket 验证仍未闭环：`session=16 / 把第3个专业组移到第5位` 曾出现 180s 超时或模型服务 `503`，目前自动单测已覆盖协议，但真实 agent 链路还需要在服务可用时复跑。
+- 302 负例复跑暴露过一次刷新错位：`session=17 / 把河南农大建筑去掉` 的 preview 文案被模型说成“删除预览”，但确认 apply 重新解析时仍无法定位真实编号；旧 `remove_units` error 分支仍返回 `ordered` 刷新目标，导致前端收到无效刷新卡片。当前已按“错误不刷新”收口。
+
+这不是后端方案执行能力本身坏了，而是“pending 状态来源、历史裁剪、模型解释轮次”之间的边界不够清晰。
+
+#### 8.12.4 为什么之前没有暴露
+
+之前没有及时暴露，主要是覆盖路径不够贴近真实对话：
+
+- 旧回归主要覆盖“preview 后立即确认”的最短路径。
+- 覆盖了“没有 pending 却说确认”的保护分支，但没有覆盖“preview -> 追问解释 -> 再确认”。
+- 单测里曾保留“有新用户轮次就清掉 pending”的旧假设，所以错误行为被当成期望行为。
+- 很多方案调整是从前端按钮直接触发，绕过了 agent 对话确认链路，不会暴露这类问题。
+- 本地验证曾出现旧 agent 进程悬挂、端口命中旧代码的问题，导致“代码已修但验证仍像旧行为”的假象。
+
+#### 8.12.5 3.0.2 收口口径
+
+3.0.2 的收口口径：
+
+- pending 解析继续读完整历史，不受 runtime history 裁剪影响。
+- 允许说明型追问后继续保留 pending；超过多轮未确认再过期，避免长期挂起。
+- 只有真实变更动作 apply 成功才清 pending；只读 query_state 不能清掉 pending。
+- 只有真实变更动作 apply 成功才刷新工作区；普通定位失败、候选/志愿未唯一命中、缺少 volunteerId 等 error 分支只返回用户可理解的澄清，不发送 `planningWorkspaceAction`。
+- `plan_next_action(stage="preview")` 和 `execute_plan_action(result_kind="preview_only")` 都能形成 pending，降低模型漏调用 `execute_plan_action` 的影响。
+- 没有 pending 时的“确认”仍返回 no-pending guard，不能猜测执行。
+- 后续若继续优化，优先把 plan pending 下沉为后端/agent 的结构化持久状态，避免继续从自然语言历史中反推。
+
+### 8.13 大模型路由、触发和确认链路统一说明
+
+当前运行时已经统一到一条主链路：
+
+1. **路由入口统一**：`ChatAgent` 只注册语义工具和 Plan / Intent / Explore 相关工具，主路由依赖工具调用和指令约束，不再依赖固定关键词分流。
+2. **Explore / Intent / Plan 分层统一**：
+   - Explore 只负责方向适配度、学校/专业/地域/职业的只读分析。
+   - Intent 只负责把新偏好/新要求整理成待确认预览。
+   - Plan 只负责当前方案的查询、预览、确认和执行。
+3. **确认入口统一**：本轮若存在 `conversation_phase.pending`，`ChatService` 直接消费短确认词并执行 `apply`，不再让主模型自己猜是不是在确认上一轮。
+4. **状态主源统一**：运行时只认 `conversation_phase.pending`；`pending_plan_action` / `pending_intent_change` / `planEditCache` 只保留为旧会话兼容和数据桥接。
+5. **字符串判断只留兜底**：`_is_plan_action_confirmation`、`_is_pending_intent_confirmation`、`_PLAN_MUTATION_PROMPT_KEYWORDS` 只用于短确认、错误兜底和超时保护，不参与正常动作规划。
+
+尚未完全删除的兼容层：
+
+- `planning_router_tool.py` 仍是旧单步规划兼容壳，不再作为 `ChatAgent` 的正式入口。
+- `ActionResolver` 仍保留在仓库里作为结构化动作映射的实验/测试入口，主运行时未接入它。
+- `handlers/registry.py` 仍是旧 handler 注册壳，当前仍处于迁移兼容状态。
+
+因此当前结论不是“所有旧链路都物理删除了”，而是“主运行链路已经统一，旧链路只作为兼容和测试存在”。后续如果继续收口，应优先做的是把这些兼容壳逐步从主文档和主入口中剥离，而不是再增加新的关键词路由。

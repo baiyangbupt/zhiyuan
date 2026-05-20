@@ -1,7 +1,7 @@
 """对话阶段状态机 + 统一待确认协议。
 
 替代现有的双轨 pending 机制：
-- Intent 层的 pending_intent_change: bool + planEditCache
+- Intent 层的 pending_intent_change: bool + planEditCache（先转换为 PendingConfirmation）
 - Plan 层的 pending_plan_action: dict + _is_short_plan_confirmation
 
 统一为 PendingConfirmation 模型，一个字段覆盖两种待确认场景。
@@ -163,6 +163,7 @@ class ConversationPhase(BaseModel):
     - Phase 3 之前，该模型不会被注入到 RequestContext
     - 从旧字段推断初始值：
       - pending_plan_action 非空 → PLAN_PREVIEWING
+      - pending_intent_confirmation 非空 → INTENT_PREVIEWING
       - planning_summary 非空 → PLAN_IDLE
       - 否则 → EXPLORE
     """
@@ -213,6 +214,7 @@ class ConversationPhase(BaseModel):
     def from_legacy_context(
         cls,
         pending_plan_action: dict | None = None,
+        pending_intent_confirmation: PendingConfirmation | None = None,
         pending_intent_change: bool = False,
         planning_summary: Any = None,
         turn_count: int = 0,
@@ -227,6 +229,11 @@ class ConversationPhase(BaseModel):
         if pending_plan_action and isinstance(pending_plan_action, dict):
             pending = PendingConfirmation.from_legacy_plan_action(pending_plan_action)
             state = PhaseState.PLAN_PREVIEWING
+        elif pending_intent_confirmation is not None:
+            pending = pending_intent_confirmation
+            if pending.created_turn == 0 and turn_count > 0:
+                pending = pending.model_copy(update={"created_turn": turn_count})
+            state = PhaseState.INTENT_PREVIEWING
         elif pending_intent_change:
             pending = PendingConfirmation(
                 kind="intent_change",
