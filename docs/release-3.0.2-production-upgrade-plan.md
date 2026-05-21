@@ -217,7 +217,127 @@ pytest tests/unit/models/test_conversation_phase.py \
   - 新建院校专业组模式会话
   - 外部初始化接口创建会话后详情页展示学员姓名
 
-## 8. 发布顺序
+## 8. 本地部署验证走查
+
+上线前需要在本机先完成一次 `3.0.1 -> 3.0.2` 的本地部署验证。验证分两层：
+
+- 本地开发进程 smoke：用于快速确认当前代码在开发环境可运行，便于前端人工验证。
+- 本地类生产演练：用于确认生产构建方式、`/assistant-pc` basePath、镜像端口、后端 JAR、数据库迁移和回滚口径没有问题。
+
+### 8.1 本地开发进程 smoke
+
+适用场景：日常修复后快速验证，不代表生产构建产物。
+
+启动：
+
+```bash
+bash scripts/start-all.sh
+```
+
+如果只验证应用服务且本机 MySQL/Redis 已经运行：
+
+```bash
+bash scripts/start-all.sh --skip-infra
+```
+
+端口：
+
+| 模块 | 地址 |
+| --- | --- |
+| Web | `http://127.0.0.1:3001` |
+| Backend | `http://127.0.0.1:8080` |
+| Agent | `http://127.0.0.1:8000` |
+| Rank | `http://127.0.0.1:5001` |
+
+健康检查：
+
+```bash
+ZHIYUAN_WEB_PORT=3001 \
+ZHIYUAN_WEB_HEALTH_PATH=/session \
+ZHIYUAN_SERVER_PORT=8080 \
+ZHIYUAN_AGENT_PORT=8000 \
+ZHIYUAN_RANK_PORT=5001 \
+bash ops/healthcheck.sh --local
+```
+
+前端开发态注意：
+
+- Web 必须通过 `scripts/start-all.sh` 或 `npm run dev` 读取 `.env.dev`。
+- 不要直接执行 `next dev -p 3001`，否则可能沿用 `.next` 里的生产 `basePath=/assistant-pc`，导致 `/session` 或静态资源 `404`。
+- 如发现页面效果与代码不一致，先执行 `bash scripts/status.sh`，确认没有旧 Node / Uvicorn / Java 进程占用端口。
+
+开发 smoke 通过标准：
+
+- `/session`、`/customer`、`/customerDetail`、`/sessionDetailV2?chatSessionId=<known-session-id>` 可访问。
+- 新建专业+大学、院校专业组两种模式会话可生成方案。
+- 工作台方案数、候选数、筛选、排序、导出、行为事件写入可用。
+- Agent 方案查询、预览、确认、执行至少完成一条 smoke。
+
+### 8.2 本地类生产演练
+
+适用场景：正式上线前，验证生产部署方式和回滚方式。生产机不做编译构建，本地或构建机必须先产出可追溯产物。
+
+本地建议端口：
+
+| 模块 | 本地类生产端口 |
+| --- | --- |
+| Backend | `8090` |
+| Web | `18088 -> 28688` |
+| Agent | `18091 -> 8009` |
+| Rank | `18092 -> 5001` 或沿用本地已启动 Rank |
+
+演练步骤：
+
+1. 基于当前代码构建 3.0.2 后端 JAR、Web amd64 镜像、Agent amd64 镜像。
+2. 应用 V4/V5 数据库迁移到本地演练库，确认 `assistant_planning_behavior_event` 表存在。
+3. 启动 3.0.1 基线对象，确认后端、Web、Agent、Rank 均健康。
+4. 停止 3.0.1 后端、Web、Agent，保留 Rank。
+5. 启动 3.0.2 后端、Web、Agent，端口模拟生产保持不变。
+6. 执行健康检查和业务 smoke。
+7. 停止 3.0.2 后端、Web、Agent，恢复 3.0.1 对象，确认回滚健康。
+
+类生产健康检查：
+
+```bash
+ZHIYUAN_WEB_PORT=18088 \
+ZHIYUAN_WEB_HEALTH_PATH=/assistant-pc/session \
+ZHIYUAN_SERVER_PORT=8090 \
+ZHIYUAN_AGENT_PORT=18091 \
+ZHIYUAN_RANK_PORT=18092 \
+bash ops/healthcheck.sh --local
+```
+
+类生产 Web 构建检查：
+
+```bash
+docker run --rm --entrypoint sh zhiyuan-web:prod-3.0.2 -lc \
+  'grep -R "ws://localhost:8000" -n .next public 2>/dev/null; test $? -ne 0'
+
+docker run --rm --entrypoint sh zhiyuan-web:prod-3.0.2 -lc \
+  'grep -R "\"basePath\":\"/assistant-pc\"" -n .next/routes-manifest.json'
+```
+
+类生产 Agent 检查：
+
+```bash
+docker run --rm --entrypoint sh zhiyuan-agent:prod-3.0.2 -lc \
+  'python -c "import app.server; print(\"agent_import_ok\")"'
+```
+
+类生产业务 smoke 至少覆盖：
+
+- `/assistant-pc/session` 可打开。
+- `/assistant-pc/sessionDetailV2?chatSessionId=<known-session-id>` 可打开。
+- `GET /gaotu-assistant-bot/base-data/province-city` 返回 `200`。
+- `GET /health` 或 Agent 健康接口返回 `200`。
+- 专业+大学模式导出为一条志愿一行，不按学校聚合。
+- 院校专业组模式组内专业按录取率正排，导出与页面一致。
+- 外部初始化旧路径 `/integration/session/initialize` 和 `v1` 路径均可用；缺 `sex / strategyType` 可兜底。
+- 导出后新表存在 `plan_export` 事件；导出后再移动方案时导出态变为需重新导出。
+
+本地类生产演练通过后，把实际执行时间、commit、JAR SHA-256、镜像 digest、release 包路径和 smoke 结果补充到第 6 节资产表和 `docs/release-3.0.2-acceptance-checklist.md`。
+
+## 9. 发布顺序
 
 建议低峰期执行：
 
@@ -232,7 +352,7 @@ pytest tests/unit/models/test_conversation_phase.py \
 9. 页面、创建会话、外部初始化、方案导出、行为事件写入 smoke。
 10. 观察日志 10-30 分钟，再确认切换完成。
 
-## 9. 发布后 smoke
+## 10. 发布后 smoke
 
 至少覆盖：
 
@@ -246,7 +366,7 @@ pytest tests/unit/models/test_conversation_phase.py \
 - 导出后再移动方案，导出状态显示为需重新导出。
 - Agent 预览 -> 确认 -> 执行动作可用，版本过期时不误执行。
 
-## 10. 回滚
+## 11. 回滚
 
 回滚原则：
 
