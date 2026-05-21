@@ -10,8 +10,10 @@
 | 项目 | 状态 | 说明 |
 | --- | --- | --- |
 | 版本目标 | P0 人工验收通过，系统验证中 | 前端人工可验部分已完成，继续进行自动化、接口和 Agent 场景验证 |
+| 代码复核 | 已完成 | 前置信息缓存、专业组内专业排序、专业+大学导出结构已按主链路确认 |
 | 最新提交 | `b624345` | 当前基线为 rebase 后本地 `develop`，验收记录提交后再更新最终发布 commit / tag |
-| 后端关键测试 | 已通过 | 2026-05-19 本地补跑 `PlanningStateServiceTest,PlanningExcelExportBuilderTest`，94 tests，0 failures，2 skipped |
+| 后端关键测试 | 已通过 | 2026-05-22 本地补跑 `PlanningStateServiceTest,PlanningBehaviorEventSharedServiceTest`，97 tests，0 failures，2 skipped；外部初始化 clean 定向测试 23 tests，0 failures |
+| 后端全量测试 | 已通过 | 2026-05-21 沙箱外执行 `mvn test`，216 tests，0 failures，0 errors，2 skipped；移除旧 `behaviorEvents` DTO 字段后已复跑通过；沙箱内会因本机 MySQL 连接被拦截失败 |
 | 前端类型检查 | 有既有阻塞 | `tsc --noEmit` 仍受历史类型问题阻塞，不作为本次新增改动失败信号 |
 | 本地生成物 | 不提交 | `tsconfig.tsbuildinfo`、`data/tmp/session_volunteer_*.json` 保留本地 |
 
@@ -89,6 +91,13 @@
 | 调 `v1` 路径初始化并传 `createSession.userName` | 响应返回 `studentName`，行为与旧路径一致 | 后端测试已覆盖；页面人工通过 | 2026-05-20 人工验收 |
 | 不传学员姓名 | 详情页不展示空姓名标签 | 前端人工通过 | 2026-05-20 人工验收 |
 | 打开 `sessionUrl` | 详情页顶部展示“高翔的志愿规划工作台” | 前端人工通过 | 2026-05-20 人工验收 |
+| 线上兼容无版本路径 | `/integration/session/initialize` 继续可用，不要求 3.0.1 调用方改为 `v1` | 后端测试已覆盖 | `IntegrationSessionControllerTest#shouldInitializeExternalSession` |
+| 稳定版本路径 | `/integration/v1/session/initialize` 与无版本路径共用同一实现 | 后端测试已覆盖 | `IntegrationSessionControllerTest#shouldInitializeExternalSessionWithV1Path` |
+| `strategy_type` 兼容 | 外部 snake_case 字段可映射到 `createSession.strategyType` | 后端测试已覆盖 | `IntegrationSessionControllerTest#shouldBindSnakeCaseStrategyTypeOnExternalSessionRequest` |
+| 缺 `sex` | 创建前默认补 `female/女`，接口不因缺性别失败 | 后端测试已覆盖 | `ChatSessionBizServiceTest#shouldFillDefaultSexAndStrategyTypeWhenMissing` |
+| 缺 `strategyType` | 创建前默认补 `cautious/稳妥型`，后续方案目标数仍按目标志愿数计算 | 后端测试已覆盖 | `ChatSessionBizServiceTest#shouldFillDefaultSexAndStrategyTypeWhenMissing` |
+| 缺 `strategyType` 的 `requiredTierCounts` | 可信旧 targetMap 继续沿用；明显候选规模 map 不再回退，按 `need_count + cautious` 计算冲稳保 | 后端测试已覆盖 | `PlanningStateServiceTest#shouldFallbackToCautiousStrategyWhenStrategyTypeMissing` |
+| 缺 `need_count` 的 `requiredTierCounts` | 不使用候选规模兜底，最终默认目标数为 45 | 后端测试已覆盖 | `PlanningStateServiceTest#shouldFallbackToDefaultPlanCountWhenNeedCountMissing` |
 
 ### 3.4 候选筛选已选条件快捷移除
 
@@ -126,8 +135,8 @@
 
 | 用例 | 预期 | 状态 | 记录 |
 | --- | --- | --- | --- |
-| 新建院校专业组模式会话 | 生成方案后，每个专业组内已选专业按专业录取率从低到高展示 | 自动测试已覆盖；前端人工通过 | `PlanningStateServiceTest#shouldDisplaySelectedMajorGroupMajorsByAdmissionRatioAsc`；2026-05-20 人工验收 |
-| 院校专业组模式方案页 | 专业组标题展示组级录取率；页面优先读取 `orderedPlanState.units`，刷新后不丢失组级录取率和组内专业顺序 | 前端人工通过 | 2026-05-20 人工验收 |
+| 新建院校专业组模式会话 | 生成方案后，每个专业组内已选专业按专业录取率从低到高展示 | 自动测试已覆盖；前端人工通过；代码复核通过 | `PlanningStateServiceTest#shouldDisplaySelectedMajorGroupMajorsByAdmissionRatioAsc`；2026-05-20 人工验收 |
+| 院校专业组模式方案页 | 专业组标题展示组级录取率；页面优先读取 `orderedPlanState.units`，刷新后不丢失组级录取率和组内专业顺序 | 前端人工通过；代码复核通过 | 2026-05-20 人工验收 |
 | 包含托底专业的专业组 | 托底专业仍保留，但不会强制排在录取率更低的专业前面 | 自动测试已覆盖；前端人工通过 | `shouldPreferSafetyMajorWhenBuildingPlanningUnit` 仍通过；2026-05-20 人工验收 |
 | 组内存在录取率缺失专业 | 缺失录取率的专业排在有录取率专业之后，不丢失 | 自动测试覆盖；前端人工通过 | 2026-05-20 人工验收 |
 | 手动移动专业组整体顺序 | 只改变专业组位置，不打散组内专业顺序 | 自动测试已覆盖；前端人工通过 | `shouldSortMajorGroupPlanByFinalScoreWithoutBreakingGroupMajors`；2026-05-20 人工验收 |
@@ -137,10 +146,10 @@
 
 | 用例 | 预期 | 状态 | 记录 |
 | --- | --- | --- | --- |
-| 专业+大学模式同校多个专业 | 导出文件中每个“学校 + 专业”是独立志愿行，不按学校合并成一个嵌套单元 | 自动测试已覆盖；文件人工通过 | `PlanningExcelExportBuilderTest#shouldBuildMajorSchoolExportRowsPerOrderedMajor`；2026-05-20 人工验收 |
+| 专业+大学模式同校多个专业 | 导出文件中每个“学校 + 专业”是独立志愿行，不按学校合并成一个嵌套单元 | 自动测试已覆盖；文件人工通过；代码复核通过 | `PlanningExcelExportBuilderTest#shouldBuildMajorSchoolExportRowsPerOrderedMajor`；2026-05-20 人工验收 |
 | 专业+大学模式导出序号 | 序号从 1 连续递增，顺序与页面排序区一致 | 自动测试已覆盖；文件人工通过 | 同上；2026-05-20 人工验收 |
 | 手动移动或排序后导出 | 导出顺序跟随调整后的当前方案顺序 | 后端排序映射已覆盖；前端人工通过 | 导出按 `orderedPlanState.items.position` 映射；2026-05-20 人工验收 |
-| 院校专业组模式导出回归 | 仍按一个专业组一个导出单元，组内专业明细保留 | 自动测试已覆盖；文件人工通过 | `shouldBuildMajorGroupExportRowsFromOrderedUnits`、旧 ID 兼容测试仍通过；2026-05-20 人工验收 |
+| 院校专业组模式导出回归 | 仍按一个专业组一个导出单元，组内专业明细保留 | 自动测试已覆盖；文件人工通过；代码复核通过 | `shouldBuildMajorGroupExportRowsFromOrderedUnits`、旧 ID 兼容测试仍通过；2026-05-20 人工验收 |
 
 ### 3.9 Agent 长历史污染和上下文成本
 
@@ -151,6 +160,25 @@
 | 长历史会话确认动作 | 存在 pending 时可直接执行；不存在 pending 时返回 no-pending guard | 自动回归已通过 | `tests/regression/test_pending_protocol.py`、`test_chat_service_history_persistence.py` |
 | Token 成本 | 主 agent 输入 token 相比完整历史显著下降，完整历史仍保留用于审计 | 单测已验证 runtime chars 下降；真实日志待观测 |  |
 
+### 3.10 行为事件新表与导出态迁移
+
+| 用例 | 预期 | 状态 | 记录 |
+| --- | --- | --- | --- |
+| 新表写入添加/删除/移动/排序/导出事件 | 成功动作都能在新表查到对应事件 | 已实现 | 已补单测 |
+| 无效方案动作不落事件 | 重复加入、删除不存在志愿等没有实际改变方案的请求不写行为事件，也不递增方案版本 | 已实现 | 已补单测 |
+| 行为事件载荷 | 方案动作事件包含动作对象、前后位置和必要志愿展示字段；专业组整体动作和方案排序也能补齐候选池里的录取率、院校排名、推荐分等字段；候选筛选事件不记录 | 已实现 | `eventPayloadJson` 承载详情，`snapshotDigest` 仅短摘要；已补单测 |
+| 专业+大学模式行为事件 | `plan_add / plan_remove / plan_item_move / plan_sort_apply / plan_export` 均写入 `mode=major`，主要对象为 `volunteerIds`，`eventPayloadJson.items` 包含学校、专业、录取率、院校排名和排序位置 | 已实现 | `PlanningStateServiceTest#shouldGenerateMoveAndPinOrderedPlan`、`shouldSortMajorPlanByAdmissionRatioAndKeepPinnedPosition`、`shouldPersistExportBehaviorEventAndKeepExportStatusReady` |
+| 院校专业组模式行为事件 | `plan_add / plan_remove / plan_unit_move / plan_unit_remove / plan_sort_apply / plan_export` 均写入 `mode=majorGroup`；组级动作同时记录 `unitIds` 和组内 `volunteerIds`，payload 保留组内专业明细 | 已实现 | `PlanningStateServiceTest#shouldMoveAndRemoveMajorGroupOrderedUnits`、`shouldSortMajorGroupPlanByFinalScoreWithoutBreakingGroupMajors` |
+| 旧 JSON 事件退出主链路 | `planningState.behaviorEvents` 不再作为业务读写来源，新动作不再写入旧 JSON，工作台响应不再返回事件列表 | 已实现 | 已补单测；`PlanningStateDTO` 已移除旧字段，老 JSON 残留字段会被忽略 |
+| `exportStatus` 从新表读取 | 导出、已导出后调整、未导出三种状态与旧口径一致 | 已实现 | 已补单测 |
+| 新表未命中 | 不再读取旧 `planningState.behaviorEvents`，导出态按未导出处理 | 已实现 | 已补单测 |
+| 删除旧 JSON DTO 字段 | 服务端状态 DTO 不再保留旧事件列表字段 | 已实现 | 已补单测 |
+
+验证记录：
+
+- 2026-05-21：`mvn -Dtest=PlanningStateServiceTest,PlanningBehaviorEventSharedServiceTest test` 通过，95 tests，0 failures，2 skipped。
+- 2026-05-21：`mvn test` 在沙箱外通过，216 tests，0 failures，0 errors，2 skipped；移除旧 `PlanningStateDTO.behaviorEvents` 字段后再次复跑通过；沙箱内同命令仅因本机 MySQL 连接被 sandbox 拦截失败。
+
 ## 4. P1 验收清单
 
 P1 不阻塞 3.0.2 P0 准入，但需要确认是否纳入本版本最终发布范围。
@@ -160,7 +188,7 @@ P1 不阻塞 3.0.2 P0 准入，但需要确认是否纳入本版本最终发布�
 | Agent 对话触发筛选 | 对话写入的筛选状态在前端可见、可撤销 | 待排期 |  |
 | Agent 对话触发方案编辑 | 移动、删除、加入方案覆盖专业+大学和专业组模式 | 自动场景目录已补，真实 WebSocket 待验证 | 见 5.1.2、5.1.3 |
 | 学校/专业简称匹配 | 简称能匹配到合理候选，不误操作相似项 | 待排期 |  |
-| 筛选行为事件 | 添加/排除/移除/清空筛选记录行为事件 | 待排期 |  |
+| 筛选行为事件 | 本期不记录，保留为后续可选优化项 | 不纳入本版 |  |
 | 长历史治理 | 长历史不污染当前方案编辑和筛选意图 | 首轮实现已完成，待真实场景验证 | P0 先完成低风险 runtime 裁剪和 pending 轮保留 |
 | Explore/Intent 前置层场景 | 专业/职业/地域/院校探索、软硬意向、意向修订和未确认意向查询方案 | 自动场景目录已补，真实 WebSocket 待验证 | 先增强样例，后续根据真实结果串联调优 |
 
@@ -342,6 +370,12 @@ npm exec tsc -- --noEmit
 | Agent 长历史治理 | 降低主 agent 完整历史输入，避免旧 preview/tool return 污染当前轮 | 首轮实现已完成，需继续场景验证 | 见 5.1.2 |
 | 文档与 changelog | 3.0.2 文档和前后端 changelog 已更新 | 已完成 |  |
 | tag / 构建包 | P0 验收通过后再打 `prod-3.0.2` | 未开始 |  |
+
+补充验证：
+
+- 2026-05-22：`mvn clean -Dtest=ChatSessionBizServiceTest,IntegrationSessionServiceTest,IntegrationSessionControllerTest,PlanningStateServiceTest#shouldFallbackToCautiousStrategyWhenStrategyTypeMissing,PlanningStateServiceTest#shouldFallbackToDefaultPlanCountWhenNeedCountMissing,PlanningStateServiceTest#shouldPreferStoredStrategyTypeWhenBuildingRequiredTierCounts test` 通过，23 tests，0 failures。
+- 2026-05-22：`mvn -Dtest=PlanningStateServiceTest,PlanningBehaviorEventSharedServiceTest test` 通过，97 tests，0 failures，2 skipped。
+- 2026-05-22：`./.venv/bin/python -m pytest tests/unit/models/test_conversation_phase.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_plan_execution_tool.py -q` 通过，227 passed。
 
 ## 7. 问题记录
 

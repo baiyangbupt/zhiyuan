@@ -6,6 +6,7 @@ import com.ytell.zhiyuan.model.dto.integration.ExternalSessionInitializeRes;
 import com.ytell.zhiyuan.service.biz.IntegrationSessionService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 import org.springframework.http.MediaType;
 import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
@@ -13,6 +14,8 @@ import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doReturn;
@@ -85,5 +88,36 @@ public class IntegrationSessionControllerTest {
                 .andExpect(jsonPath("$.code").value(0))
                 .andExpect(jsonPath("$.data.chatSessionId").value(1002))
                 .andExpect(jsonPath("$.data.studentName").value("高翔"));
+    }
+
+    @Test
+    void shouldBindSnakeCaseStrategyTypeOnExternalSessionRequest() throws Exception {
+        ExternalSessionInitializeRes res = new ExternalSessionInitializeRes();
+        res.setTenantId(1L);
+        res.setChatSessionId(1002L);
+        res.setExternalRequestId("ext-1");
+        res.setCreated(true);
+        doReturn(res).when(integrationSessionService).initializeSession(eq(1L), any(ExternalSessionInitializeReq.class));
+
+        String body = "{"
+                + "\"externalRequestId\":\"ext-1\","
+                + "\"createSession\":{"
+                + "\"strategy_type\":{\"code\":\"cautious\",\"name\":\"稳妥型\"}"
+                + "}"
+                + "}";
+
+        mockMvc.perform(post("/gaotu-assistant-bot/chat/1/integration/session/initialize")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0))
+                .andExpect(jsonPath("$.data.chatSessionId").value(1002));
+
+        ArgumentCaptor<ExternalSessionInitializeReq> reqCaptor = ArgumentCaptor.forClass(ExternalSessionInitializeReq.class);
+        Mockito.verify(integrationSessionService).initializeSession(eq(1L), reqCaptor.capture());
+        assertNotNull(reqCaptor.getValue().getCreateSession());
+        assertNotNull(reqCaptor.getValue().getCreateSession().getStrategyType());
+        assertEquals("cautious", reqCaptor.getValue().getCreateSession().getStrategyType().getCode());
+        assertEquals("稳妥型", reqCaptor.getValue().getCreateSession().getStrategyType().getName());
     }
 }

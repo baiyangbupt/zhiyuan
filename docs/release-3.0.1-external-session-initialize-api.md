@@ -55,7 +55,19 @@ POST /gaotu-assistant-bot/chat/user/login/by-token
 POST /gaotu-assistant-bot/chat/{tenantId}/integration/v1/session/initialize
 ```
 
+兼容路径：
+
+```http
+POST /gaotu-assistant-bot/chat/{tenantId}/integration/session/initialize
+```
+
 当前 `tenantId` 线上通常为 `1`，以实际租户为准。
+
+说明：
+
+- 当前线上 `3.0.1` 已有外部系统对接无版本路径，后续发布会继续保留该路径。
+- `v1` 是推荐的稳定版本路径；无版本路径作为兼容入口保留，便于已接入系统继续联调和上线。
+- 两个路径的请求体、响应体、授权方式和幂等逻辑一致。
 
 请求头：
 
@@ -109,6 +121,10 @@ pf: WEB
 
 - `colorSituation` 是“色觉情况”的推荐字段名，后端兼容旧字段 `colorSistuation`。
 - 常见值里会出现 `normal`，表示正常；如果不传，后端就不会记录这层色觉细项。
+- `sex` 可以不传；缺失或 `code` 为空时，系统按 `{ "code": "female", "name": "女" }` 兜底。
+- `strategyType` 可以不传；缺失或 `code` 为空时，系统按 `{ "code": "cautious", "name": "稳妥型" }` 兜底。
+- `strategyType` 推荐使用 camelCase；如果外部系统已按 `strategy_type` 传参，后端也会兼容映射。
+- 即使 `strategyType` 缺失，系统也会按目标志愿数计算冲稳保数量，不会把候选池总量当作排序方案目标数量。
 
 ### 4.4 `createSession` 完整字段说明
 
@@ -158,7 +174,7 @@ pf: WEB
 | `unacceptableMajors` | `List<UnacceptableMajor>` | 负向专业类。 |
 | `preferredRegions` | `List<PreferredRegion>` | 正向意向省份。 |
 | `strengthSubjectList` | `List<SubjectScore>` | 优势学科。 |
-| `strategyType` | `StrategyType` | 志愿策略，例如激进型、稳妥型、保守型。 |
+| `strategyType` | `StrategyType` | 志愿策略，例如激进型、稳妥型、保守型。可不传，默认稳妥型；兼容字段名 `strategy_type`。 |
 
 #### 4.4.4 对象结构
 
@@ -242,7 +258,8 @@ curl -X POST 'https://www.gaotuzhiyuan.com/gaotu-assistant-bot/chat/1/integratio
       ],
       "preferredRegions": [
         { "provinceId": "110000", "provinceName": "北京" }
-      ]
+      ],
+      "strategyType": { "code": "cautious", "name": "稳妥型" }
     },
     "generationOptions": {
       "generateCandidatePool": true,
@@ -257,6 +274,14 @@ curl -X POST 'https://www.gaotuzhiyuan.com/gaotu-assistant-bot/chat/1/integratio
     }
   }'
 ```
+
+如果外部系统已使用 snake_case，也可以把上面的 `strategyType` 写成：
+
+```json
+"strategy_type": { "code": "cautious", "name": "稳妥型" }
+```
+
+`sex` 和 `strategyType/strategy_type` 都可以省略。省略后系统分别按 `女`、`稳妥型` 兜底。
 
 ### 5.2 本地验证完整请求体
 

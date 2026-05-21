@@ -190,6 +190,7 @@ public class ChatSessionBizService {
         long requestStart = System.currentTimeMillis();
 
         validateCreateSessionReq(createSessionReq);
+        normalizeCreateSessionDefaults(createSessionReq);
 
         UserBaseData userBaseData = UserInfoThreadLocalUtil.get();
         //校验权益
@@ -356,6 +357,24 @@ public class ChatSessionBizService {
         }
         if (createSessionReq.getTotalScore() == null) {
             throw new BusinessException(110, "请填写成绩后再创建会话");
+        }
+    }
+
+    public void normalizeCreateSessionDefaults(CreateSessionReq createSessionReq) {
+        if (createSessionReq == null) {
+            return;
+        }
+        if (createSessionReq.getSex() == null || Strings.isNullOrEmpty(createSessionReq.getSex().getCode())) {
+            CreateSessionReq.Sex sex = new CreateSessionReq.Sex();
+            sex.setCode("female");
+            sex.setName("女");
+            createSessionReq.setSex(sex);
+        }
+        if (createSessionReq.getStrategyType() == null || Strings.isNullOrEmpty(createSessionReq.getStrategyType().getCode())) {
+            CreateSessionReq.StrategyType strategyType = new CreateSessionReq.StrategyType();
+            strategyType.setCode("cautious");
+            strategyType.setName("稳妥型");
+            createSessionReq.setStrategyType(strategyType);
         }
     }
 

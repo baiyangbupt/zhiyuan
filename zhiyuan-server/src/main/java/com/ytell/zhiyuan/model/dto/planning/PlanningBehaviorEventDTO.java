@@ -27,5 +27,6 @@ public class PlanningBehaviorEventDTO {
     private String sortKey;
     private Boolean positiveFeedback = false;
     private String snapshotDigest;
+    private String eventPayloadJson;
     private String createdAt;
 }

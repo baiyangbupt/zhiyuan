@@ -11,6 +11,7 @@ from typing import Any
 from pydantic_ai import RunContext
 
 from app.agent.context import RequestContext, resolve_pending_confirmation
+from app.sync.state_sync import PlanningStateSync
 from app.tools.plan_orchestration_models import (
     PlanActionPlan,
     PlanExecutionResult,
@@ -79,6 +80,25 @@ _MUTATING_ACTION_FAMILIES = {
 }
 _RECENT_PLAN_EXECUTION_TTL_SECONDS = 180.0
 _RECENT_PLAN_EXECUTION_RESULTS: dict[tuple[str, str], dict[str, Any]] = {}
+
+
+def _planning_version_from_context(ctx: RunContext[RequestContext]) -> int:
+    planning_summary = getattr(ctx.deps, "planning_summary", None)
+    try:
+        return int(getattr(planning_summary, "version", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _facts_with_planning_version(
+    facts: dict[str, Any] | None,
+    ctx: RunContext[RequestContext],
+) -> dict[str, Any]:
+    result = dict(facts or {})
+    planning_version = _planning_version_from_context(ctx)
+    if planning_version > 0:
+        result.setdefault("planning_version", planning_version)
+    return result
 
 
 def _latest_user_text(ctx: RunContext[RequestContext]) -> str:
@@ -1760,6 +1780,7 @@ async def _execute_plan_action_model(
             ),
             reply_focus=["preview_only", "structural_rebalance_requires_scope"],
             next_step_hints=["先明确要替换的冲区范围，再生成可确认的结构调整预览。"],
+            facts=_facts_with_planning_version({}, ctx),
         )
     _hydrate_replace_filters_from_profile(ctx, plan_model)
 
@@ -1836,7 +1857,7 @@ async def _execute_plan_action_model(
                 if plan_model.action_family in {"move_ordered_unit", "remove_ordered_unit"}
                 else ["先向用户说明将要改动什么；用户确认后，再执行当前方案动作。"]
             ),
-            facts=preview_facts,
+            facts=_facts_with_planning_version(preview_facts, ctx),
         )
 
     if plan_model.stage == "preview" and plan_model.action_family == "replace_units":
@@ -1859,6 +1880,7 @@ async def _execute_plan_action_model(
                 summary=summary,
                 reply_focus=["preview_only", "review_issue_structural"],
                 next_step_hints=hints,
+                facts=_facts_with_planning_version({}, ctx),
             )
         if (
             review_issue
@@ -1884,6 +1906,7 @@ async def _execute_plan_action_model(
                 summary=_with_confirmation_hint(preview_summary),
                 reply_focus=["preview_only", "review_issue_batch_scope"],
                 next_step_hints=["如果用户确认执行，再按当前审查命中的整批问题项做移除。"],
+                facts=_facts_with_planning_version({}, ctx),
             )
         if (missing_refs or not resolved_ids) and review_issue_target is None:
             missing_text = "、".join(missing_refs[:5]) if missing_refs else "要替换的志愿"
@@ -1919,75 +1942,82 @@ async def _execute_plan_action_model(
     if plan_model.stage == "preview" and plan_model.action_family == "remove_units":
         atomic = plan_model.atomic_actions[0] if plan_model.atomic_actions else None
         refs = list(atomic.volunteer_ids or []) if atomic else []
-        resolved_ids, missing_refs = await _resolve_ordered_volunteer_refs(ctx, refs)
-        resolved_apply_payload = _build_resolved_apply_payload(plan_model, volunteer_ids=resolved_ids) if resolved_ids else {}
-        expanded_ids, ordered_items, _, review_issue = await _resolve_review_issue_action_scope(
-            ctx,
-            plan_model,
-            resolved_ids,
-        )
-        if review_issue and str(review_issue.get("scope_kind") or "").strip() == "structural":
-            summary, hints = _structural_review_issue_guidance(review_issue)
-            return PlanExecutionResult(
-                applied=False,
-                action_family=plan_model.action_family,
-                stage=plan_model.stage,
-                result_kind="preview_only",
-                context_summary=plan_model.context_summary,
-                summary=summary,
-                reply_focus=["preview_only", "review_issue_structural"],
-                next_step_hints=hints,
+        review_issue_target = getattr(atomic, "review_issue_target", None) if atomic else None
+        if refs or review_issue_target is not None:
+            resolved_ids, missing_refs = await _resolve_ordered_volunteer_refs(ctx, refs)
+            resolved_apply_payload = _build_resolved_apply_payload(plan_model, volunteer_ids=resolved_ids) if resolved_ids else {}
+            expanded_ids, ordered_items, _, review_issue = await _resolve_review_issue_action_scope(
+                ctx,
+                plan_model,
+                resolved_ids,
             )
-        if review_issue and expanded_ids:
-            unit_count = _count_ordered_units_for_ids(ordered_items, expanded_ids)
-            issue_label = str(review_issue.get("label") or review_issue.get("code") or "问题项").strip()
-            preview_summary = (
-                f"已定位到当前方案里当前审查命中的{issue_label}："
-                f"共 {unit_count} 个专业组，涉及 {len(expanded_ids)} 条志愿。"
-                "这次确认会按整批问题项处理，不只是示例里的个别志愿。"
-                "如果你只想处理某个学校、专业组或位置，请直接告诉我。"
-                "确认后我会先移出这些项，并在执行后重新审查。"
-            )
-            return PlanExecutionResult(
-                applied=False,
-                action_family=plan_model.action_family,
-                stage=plan_model.stage,
-                result_kind="preview_only",
-                context_summary=plan_model.context_summary,
-                summary=_with_confirmation_hint(preview_summary),
-                reply_focus=["preview_only", "review_issue_batch_scope"],
-                next_step_hints=["如果用户确认执行，再按当前审查命中的整批问题项做移除。"],
-                facts={"resolved_apply_payload": resolved_apply_payload} if resolved_apply_payload else {},
-            )
-        if missing_refs or not resolved_ids:
-            missing_text = "、".join(missing_refs[:5]) if missing_refs else "要移除的志愿"
-            return PlanExecutionResult(
-                applied=False,
-                action_family=plan_model.action_family,
-                stage=plan_model.stage,
-                result_kind="error",
-                context_summary=plan_model.context_summary,
-                summary=_ordered_ref_resolution_message(missing_text, "移除"),
-                reply_focus=["missing_inputs", "needs_volunteer_selection"],
-                next_step_hints=["先定位当前方案里的真实 volunteerId，再生成可确认的移除预览。"],
-            )
+            if review_issue and str(review_issue.get("scope_kind") or "").strip() == "structural":
+                summary, hints = _structural_review_issue_guidance(review_issue)
+                return PlanExecutionResult(
+                    applied=False,
+                    action_family=plan_model.action_family,
+                    stage=plan_model.stage,
+                    result_kind="preview_only",
+                    context_summary=plan_model.context_summary,
+                    summary=summary,
+                    reply_focus=["preview_only", "review_issue_structural"],
+                    next_step_hints=hints,
+                    facts=_facts_with_planning_version({}, ctx),
+                )
+            if review_issue and expanded_ids:
+                unit_count = _count_ordered_units_for_ids(ordered_items, expanded_ids)
+                issue_label = str(review_issue.get("label") or review_issue.get("code") or "问题项").strip()
+                preview_summary = (
+                    f"已定位到当前方案里当前审查命中的{issue_label}："
+                    f"共 {unit_count} 个专业组，涉及 {len(expanded_ids)} 条志愿。"
+                    "这次确认会按整批问题项处理，不只是示例里的个别志愿。"
+                    "如果你只想处理某个学校、专业组或位置，请直接告诉我。"
+                    "确认后我会先移出这些项，并在执行后重新审查。"
+                )
+                return PlanExecutionResult(
+                    applied=False,
+                    action_family=plan_model.action_family,
+                    stage=plan_model.stage,
+                    result_kind="preview_only",
+                    context_summary=plan_model.context_summary,
+                    summary=_with_confirmation_hint(preview_summary),
+                    reply_focus=["preview_only", "review_issue_batch_scope"],
+                    next_step_hints=["如果用户确认执行，再按当前审查命中的整批问题项做移除。"],
+                    facts=_facts_with_planning_version(
+                        {"resolved_apply_payload": resolved_apply_payload} if resolved_apply_payload else {},
+                        ctx,
+                    ),
+                )
+            if missing_refs or not resolved_ids:
+                missing_text = "、".join(missing_refs[:5]) if missing_refs else "要移除的志愿"
+                return PlanExecutionResult(
+                    applied=False,
+                    action_family=plan_model.action_family,
+                    stage=plan_model.stage,
+                    result_kind="error",
+                    context_summary=plan_model.context_summary,
+                    summary=_ordered_ref_resolution_message(missing_text, "移除"),
+                    reply_focus=["missing_inputs", "needs_volunteer_selection"],
+                    next_step_hints=["先定位当前方案里的真实 volunteerId，再生成可确认的移除预览。"],
+                )
 
     if plan_model.stage == "preview" and plan_model.action_family == "move_unit":
         atomic = plan_model.atomic_actions[0] if plan_model.atomic_actions else None
         refs = list(atomic.volunteer_ids or []) if atomic else []
-        resolved_ids, missing_refs = await _resolve_ordered_volunteer_refs(ctx, refs)
-        if missing_refs or not resolved_ids:
-            missing_text = "、".join(missing_refs[:5]) if missing_refs else "要移动的志愿"
-            return PlanExecutionResult(
-                applied=False,
-                action_family=plan_model.action_family,
-                stage=plan_model.stage,
-                result_kind="error",
-                context_summary=plan_model.context_summary,
-                summary=_ordered_ref_resolution_message(missing_text, "移动"),
-                reply_focus=["missing_inputs", "needs_volunteer_selection"],
-                next_step_hints=["先定位当前方案里的真实 volunteerId，再生成可确认的位置调整预览。"],
-            )
+        if refs:
+            resolved_ids, missing_refs = await _resolve_ordered_volunteer_refs(ctx, refs)
+            if missing_refs or not resolved_ids:
+                missing_text = "、".join(missing_refs[:5]) if missing_refs else "要移动的志愿"
+                return PlanExecutionResult(
+                    applied=False,
+                    action_family=plan_model.action_family,
+                    stage=plan_model.stage,
+                    result_kind="error",
+                    context_summary=plan_model.context_summary,
+                    summary=_ordered_ref_resolution_message(missing_text, "移动"),
+                    reply_focus=["missing_inputs", "needs_volunteer_selection"],
+                    next_step_hints=["先定位当前方案里的真实 volunteerId，再生成可确认的位置调整预览。"],
+                )
 
     if plan_model.stage in {"analyze", "preview"}:
         preview_summary = plan_model.preview_summary or "当前阶段仅分析或预览，不执行实际改动。"
@@ -2022,7 +2052,7 @@ async def _execute_plan_action_model(
             summary=preview_summary,
             reply_focus=["preview_only"],
             next_step_hints=["如果用户确认执行，再进入实际方案动作。"] if plan_model.stage == "preview" else [],
-            facts=preview_facts,
+            facts=_facts_with_planning_version(preview_facts, ctx),
         )
 
     if plan_model.action_family == "sort_ordered_plan":
@@ -2155,7 +2185,55 @@ async def execute_plan_action(
             errorType="invalid_plan_model",
         )
         return json.dumps(result_data, ensure_ascii=False)
-    result = await _execute_plan_action_model(ctx, plan_model)
+    guard_result: PlanExecutionResult | None = None
+    if plan_model.stage == "apply" and plan_model.action_family in _MUTATING_ACTION_FAMILIES:
+        phase = getattr(ctx.deps, "conversation_phase", None)
+        planning_summary = getattr(ctx.deps, "planning_summary", None)
+        plan_version = getattr(plan_model, "planning_version", 0)
+        if phase is not None:
+            try:
+                if int(getattr(phase, "last_backend_version", 0) or 0) <= 0 and int(plan_version or 0) > 0:
+                    phase.last_backend_version = int(plan_version)
+            except (TypeError, ValueError):
+                pass
+
+        sync = PlanningStateSync()
+        try:
+            current_turn = int(getattr(phase, "turn_count", 0) or 0) if phase is not None else 0
+        except (TypeError, ValueError):
+            current_turn = 0
+        stale_event = sync.invalidate_if_stale(
+            phase,
+            current_turn=current_turn,
+            planning_summary=planning_summary,
+        )
+        guard_event = stale_event if stale_event.is_stale else sync.pre_execute_guard(
+            phase,
+            planning_summary,
+            plan_model.action_family,
+        )
+        if guard_event.is_stale:
+            if guard_event.should_clear_pending and phase is not None:
+                phase.clear_pending()
+            summary = guard_event.message or "上一轮方案预览已失效，请重新查看当前方案后再确认。"
+            guard_result = PlanExecutionResult(
+                applied=False,
+                action_family=plan_model.action_family,
+                stage=plan_model.stage,
+                result_kind="error",
+                context_summary=plan_model.context_summary,
+                state_summary=summary,
+                summary=summary,
+                reply_focus=["stale_pending", "confirmation_invalid"],
+                next_step_hints=["请重新读取当前方案状态，再生成新的可确认预览。"],
+                facts={
+                    "stale_cause": getattr(guard_event.cause, "value", None),
+                    "old_version": guard_event.old_version,
+                    "new_version": guard_event.new_version,
+                },
+            )
+
+    result = guard_result or await _execute_plan_action_model(ctx, plan_model)
     result_data = result.model_dump()
     if result_data.get("next_step_hints"):
         result_data["next_step_hints"] = [

@@ -49,6 +49,14 @@ def _build_compensation_summary(facts: dict[str, Any]) -> tuple[str, list[str], 
     return "；".join(parts) + "。", reply_focus, next_step_hints
 
 
+def _planning_version_from_context(ctx: RunContext[RequestContext]) -> int:
+    planning_summary = getattr(ctx.deps, "planning_summary", None)
+    try:
+        return int(getattr(planning_summary, "version", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 async def _refresh_review_and_state(session_id: str) -> dict[str, Any] | None:
     try:
         await _run_planning_review_request(_DEFAULT_TENANT_ID, session_id)
@@ -166,6 +174,9 @@ async def handle_preview_compensation(
     preview_result = await _preview_planning_compensation_request(session_id)
     preview_state = preview_result.get("data") or {} if preview_result.get("code") == 0 else {}
     facts = _build_compensation_preview_facts(preview_state)
+    planning_version = _planning_version_from_context(ctx)
+    if planning_version > 0:
+        facts["planning_version"] = planning_version
     state_summary, reply_focus, next_step_hints = _build_compensation_summary(facts)
 
     return PlanExecutionResult(

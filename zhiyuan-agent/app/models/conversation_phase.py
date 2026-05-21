@@ -20,6 +20,21 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
+def _as_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _planning_summary_version(planning_summary: Any) -> int:
+    if planning_summary is None:
+        return 0
+    if isinstance(planning_summary, dict):
+        return _as_int(planning_summary.get("version"))
+    return _as_int(getattr(planning_summary, "version", 0))
+
+
 class PhaseState(str, Enum):
     """对话阶段状态。
 
@@ -97,6 +112,9 @@ class PendingConfirmation(BaseModel):
     # 创建时的轮次号，用于过期判断
     created_turn: int = 0
 
+    # 生成 preview 时的后端 planningState 版本，用于确认前版本漂移校验
+    source_backend_version: int = 0
+
     @classmethod
     def from_legacy_plan_action(cls, legacy: dict) -> PendingConfirmation | None:
         """从旧格式 pending_plan_action dict 转换。
@@ -115,12 +133,21 @@ class PendingConfirmation(BaseModel):
                 raw_payload = json.loads(raw_payload) if raw_payload.strip() else {}
             except Exception:
                 raw_payload = {}
+        payload_version = raw_payload.get("planning_version") if isinstance(raw_payload, dict) else 0
+        created_turn = _as_int(legacy.get("created_turn"))
+        source_backend_version = _as_int(
+            legacy.get("source_backend_version")
+            or legacy.get("planning_version")
+            or payload_version
+        )
         return cls(
             kind="plan_mutation",
             action_family=action_family,
             preview_summary=legacy.get("summary", ""),
             execution_payload=raw_payload if isinstance(raw_payload, dict) else {},
             affected_scope=legacy.get("affected_scope", ""),
+            created_turn=created_turn,
+            source_backend_version=source_backend_version,
         )
 
     @classmethod
@@ -146,6 +173,8 @@ class PendingConfirmation(BaseModel):
             "summary": self.preview_summary,
             "plan_payload": self.execution_payload,
             "affected_scope": self.affected_scope,
+            "created_turn": self.created_turn,
+            "source_backend_version": self.source_backend_version,
         }
 
 
@@ -228,6 +257,8 @@ class ConversationPhase(BaseModel):
 
         if pending_plan_action and isinstance(pending_plan_action, dict):
             pending = PendingConfirmation.from_legacy_plan_action(pending_plan_action)
+            if pending is not None and pending.created_turn == 0 and turn_count > 0:
+                pending = pending.model_copy(update={"created_turn": turn_count})
             state = PhaseState.PLAN_PREVIEWING
         elif pending_intent_confirmation is not None:
             pending = pending_intent_confirmation
@@ -245,9 +276,14 @@ class ConversationPhase(BaseModel):
         elif planning_summary is not None:
             state = PhaseState.PLAN_IDLE
 
+        if pending is not None and pending.source_backend_version > 0:
+            last_backend_version = pending.source_backend_version
+        else:
+            last_backend_version = _planning_summary_version(planning_summary)
+
         return cls(
             state=state,
             pending=pending,
             turn_count=turn_count,
-            last_backend_version=0,
+            last_backend_version=last_backend_version,
         )

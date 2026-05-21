@@ -310,6 +310,30 @@ class TestConversationPhaseFromLegacy:
         assert phase.pending.action_family == "generate_plan"
         assert phase.turn_count == 3
 
+    def test_with_pending_plan_action_source_version(self):
+        legacy = {
+            "action_family": "generate_plan",
+            "summary": "生成方案",
+            "plan_payload": {
+                "stage": "preview",
+                "planning_version": 7,
+            },
+        }
+        phase = ConversationPhase.from_legacy_context(
+            pending_plan_action=legacy,
+            planning_summary={"version": 3},
+            turn_count=3,
+        )
+
+        assert phase.state == PhaseState.PLAN_PREVIEWING
+        assert phase.pending is not None
+        assert phase.pending.source_backend_version == 7
+        assert phase.pending.created_turn == 3
+        assert phase.last_backend_version == 7
+        legacy_roundtrip = phase.pending.to_legacy_plan_action()
+        assert legacy_roundtrip["source_backend_version"] == 7
+        assert legacy_roundtrip["created_turn"] == 3
+
     def test_with_pending_intent_change(self):
         phase = ConversationPhase.from_legacy_context(
             pending_intent_change=True,
@@ -342,6 +366,14 @@ class TestConversationPhaseFromLegacy:
         )
         assert phase.state == PhaseState.PLAN_IDLE
         assert phase.pending is None
+
+    def test_with_planning_summary_version(self):
+        phase = ConversationPhase.from_legacy_context(
+            planning_summary={"phase": "ordered", "count": 30, "version": 9},
+        )
+        assert phase.state == PhaseState.PLAN_IDLE
+        assert phase.pending is None
+        assert phase.last_backend_version == 9
 
     def test_priority_plan_over_intent(self):
         """pending_plan_action 优先于 pending_intent_change。"""

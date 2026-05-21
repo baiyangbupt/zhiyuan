@@ -70,6 +70,7 @@ public class IntegrationSessionService {
                 ? createRecord(tenantId, userBaseData, req.getExternalRequestId(), requestHash)
                 : resetFailedRecord(existing, requestHash);
         try {
+            chatSessionBizService.normalizeCreateSessionDefaults(req.getCreateSession());
             ChatSessionVo session = chatSessionBizService.createChatSession(tenantId, req.getCreateSession());
             Long chatSessionId = session.getId();
             PlanningWorkspaceStateRes workspaceState = generatePlanningState(tenantId, chatSessionId, req.getGenerationOptions());

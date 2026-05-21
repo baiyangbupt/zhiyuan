@@ -502,6 +502,62 @@ def test_extract_pending_plan_action_from_preview_tool_result():
     assert apply_payload["should_rerun_review"] is True
 
 
+def test_extract_pending_plan_action_keeps_source_version_and_turn():
+    preview_payload = {
+        "stage": "preview",
+        "action_family": "regenerate_order",
+        "user_goal": "整体重排当前方案",
+        "requires_confirmation": True,
+        "should_rerun_review": False,
+        "missing_inputs": [],
+        "atomic_actions": [],
+        "preview_summary": "会整体重排当前方案。",
+    }
+    messages = [
+        ModelRequest(parts=[UserPromptPart(content="把方案重排一下")]),
+        ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="execute_plan_action",
+                    args={"plan_payload": json.dumps(preview_payload, ensure_ascii=False)},
+                    tool_call_id="preview-call-version",
+                )
+            ],
+            model_name="test-model",
+        ),
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="execute_plan_action",
+                    content=json.dumps(
+                        {
+                            "applied": False,
+                            "action_family": "regenerate_order",
+                            "stage": "preview",
+                            "result_kind": "preview_only",
+                            "summary": "会整体重排当前方案。",
+                            "facts": {
+                                "planning_version": 7,
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                    tool_call_id="preview-call-version",
+                )
+            ]
+        ),
+    ]
+
+    pending = _extract_pending_plan_action(messages)
+
+    assert pending is not None
+    assert pending["created_turn"] == 1
+    assert pending["source_backend_version"] == 7
+    assert pending["planning_version"] == 7
+    apply_payload = json.loads(pending["plan_payload"])
+    assert apply_payload["planning_version"] == 7
+
+
 def test_extract_pending_plan_action_normalizes_flat_execute_preview_payload():
     preview_payload = {
         "stage": "preview",

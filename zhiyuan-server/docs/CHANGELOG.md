@@ -4,6 +4,10 @@
 
 ### Fixed
 
+- 外部初始化会话接口保持无版本路径 `/integration/session/initialize` 与稳定路径 `/integration/v1/session/initialize` 同时可用；`createSession.strategyType` 兼容外部 snake_case 字段 `strategy_type`。
+- 创建会话和外部初始化入口对缺失的 `sex`、`strategyType` 做默认归一化，分别兜底为 `female/女`、`cautious/稳妥型`，避免外部调用方少传字段导致创建或后续推荐链路不稳定。
+- `candidatePoolState.requiredTierCounts` 在缺失 `strategyType` 或 `need_count` 时不再信任明显放大的候选池规模；若旧版 `three_target_count_map` 三项之和等于目标志愿数则继续沿用，否则按目标志愿数和默认稳妥策略计算，最终兜底目标数为 45，避免排序方案被异常放大到候选数量级。
+- 行为事件迁移到独立新表 `assistant_planning_behavior_event`，添加、删除、移动、排序、导出都会落表；加入/删除只记录实际改变方案的志愿，重复加入或无效删除不写事件且不递增方案版本；事件详情写入新表 `eventPayloadJson`，`snapshotDigest` 只保留短摘要，专业组整体移动/删除和方案排序事件会补齐候选池里的录取率、院校排名、推荐分等字段；旧 `planningState.behaviorEvents` 不再作为业务读写来源且工作台响应不再返回事件列表；`exportStatus / lastExportedAt` 改为读取新表，新表未命中按未导出处理。
 - 创建会话入口在保存 session 前校验批次、省份、选科、成绩等核心字段，缺批次等采集异常会返回明确业务提示，不再以空指针形式变成“系统错误”。
 - `planning workspace` 院校专业组模式下已选专业的展示顺序统一按专业录取率正排，对齐老版本口径，并覆盖初始推荐、草稿同步、排序区重建和导出兜底链路；托底专业仍保留但不再强制置顶。
 - 新版方案导出修正专业+大学模式的行模型：同校多个专业不再按学校合并成嵌套明细，而是按当前排序区每个“学校 + 专业”独立导出一行；院校专业组模式仍保持一个专业组一行、组内专业明细保留。

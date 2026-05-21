@@ -24,5 +24,4 @@ public class PlanningStateDTO {
     private ReviewStateDTO reviewState = new ReviewStateDTO();
     private List<CompensationActionDTO> pendingActions = Lists.newArrayList();
     private List<OperationLogDTO> operationLogs = Lists.newArrayList();
-    private List<PlanningBehaviorEventDTO> behaviorEvents = Lists.newArrayList();
 }

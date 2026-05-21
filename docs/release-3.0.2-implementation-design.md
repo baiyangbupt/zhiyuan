@@ -72,6 +72,39 @@
 - 未传姓名时不展示姓名标签。
 - `v1` 路径和旧路径行为一致。
 
+### 1.6 生产反馈兼容修复
+
+线上 `3.0.1` 已有外部系统按无版本路径完成对接，因此 `3.0.2` 不要求调用方切换路径。后端需要同时保留：
+
+- `POST /gaotu-assistant-bot/chat/{tenantId}/integration/session/initialize`
+- `POST /gaotu-assistant-bot/chat/{tenantId}/integration/v1/session/initialize`
+
+两个路径仍共用同一个 controller 和 service，不引入分叉实现。
+
+本次反馈还暴露了外部请求字段缺省后的稳定性问题：
+
+- `sex` 不再作为外部初始化的强必填字段。缺失或 `code` 为空时，后端归一化为 `{code:"female", name:"女"}`，口径对齐前端采集流默认值。
+- `strategyType` 不再作为外部初始化的强必填字段。缺失或 `code` 为空时，后端归一化为 `{code:"cautious", name:"稳妥型"}`，口径对齐前端采集流默认策略。
+- 外部如果按 snake_case 传 `strategy_type`，后端同样映射到 `strategyType`；推荐字段名仍为 `strategyType`。
+- 幂等 hash 仍在默认值归一化前按原始请求体计算，保持外部重试语义不变。
+
+`strategyType` 缺失时的更大风险在方案目标数量计算：旧逻辑拿不到策略后可能回退到 `three_target_count_map / sprints_count / safes_count / protects_count`，而这些字段在部分推荐响应里更接近候选池规模，可能把排序方案放大到候选数量级。修复口径：
+
+1. 优先使用 `baseData.need_count` 作为目标方案数量。
+2. 若 `need_count` 缺失，再按 `volunteerCount` 和 `volunteerModel` 取当前模式的目标数量。
+3. 若仍缺失，兜底为 `45`。
+4. 如果用户成绩信息里有显式 `strategyType`，按该策略重新计算 `requiredTierCounts`。
+5. 如果没有显式策略，但 `three_target_count_map` 三项之和等于目标方案数量，认为它是可信的旧版目标分布，继续沿用。
+6. 如果没有显式策略，且 `three_target_count_map` 三项之和明显大于目标方案数量，认为它更像候选池规模，忽略该 map，按默认稳妥型 `3:3:4` 计算。
+7. 只有上述计算完全失败时，才回退旧的散字段 `sprints_count / safes_count / protects_count`。
+
+测试覆盖：
+
+- controller 覆盖无版本路径和 `v1` 路径。
+- controller 覆盖 `strategy_type` 入参别名。
+- service 覆盖外部初始化创建前会执行默认值归一化。
+- planning 覆盖缺 `strategyType`、缺 `need_count` 时不会把候选规模当作排序目标数量。
+
 ## 2. 登录后默认进入会话列表
 
 ### 2.1 目标
@@ -891,6 +924,16 @@ cd zhiyuan-agent
 - 没有 pending 时的“确认”仍返回 no-pending guard，不能猜测执行。
 - 后续若继续优化，优先把 plan pending 下沉为后端/agent 的结构化持久状态，避免继续从自然语言历史中反推。
 
+#### 8.12.6 本次实现落地
+
+本次修复把 pending 的来源、版本和过期边界进一步收紧：
+
+- `plan_next_action` preview 和 `execute_plan_action` preview 都会把 `planning_version` 透传到 pending，并记录 `created_turn`。
+- `ConversationPhase.from_legacy_context()` 恢复旧会话时，会优先使用 pending 自带版本号回填 `last_backend_version`，避免确认时拿错基线。
+- `ChatService.handle_message()` 在进入主模型前会先做一次 `PlanningStateSync` 过期检查；但 mutating apply 仍会在 `execute_plan_action` 内再做一次守卫，保证确认态和执行态一致。
+- 如果用户确认的是旧预览，而当前 `planningState.version` 已变化，系统会直接返回“预览已失效/请重新查看当前方案后再确认”一类的用户可理解提示，不会再调用后端变更接口，也不会发方案刷新卡片。
+- 运行时的状态主源仍然只有 `conversation_phase.pending`；legacy 的 `pending_plan_action`、`pending_intent_change` 只做兼容桥接，不再参与新链路的状态判定。
+
 ### 8.13 大模型路由、触发和确认链路统一说明
 
 当前运行时已经统一到一条主链路：
@@ -911,3 +954,203 @@ cd zhiyuan-agent
 - `handlers/registry.py` 仍是旧 handler 注册壳，当前仍处于迁移兼容状态。
 
 因此当前结论不是“所有旧链路都物理删除了”，而是“主运行链路已经统一，旧链路只作为兼容和测试存在”。后续如果继续收口，应优先做的是把这些兼容壳逐步从主文档和主入口中剥离，而不是再增加新的关键词路由。
+
+### 8.14 行为事件新表与导出态迁移
+
+#### 8.14.1 目标
+
+行为反馈数据后续以独立新表为主，不再把 `behaviorEvents` 作为长期主存储挂在 `planningState` JSON 里。当前规划是：
+
+- 新表作为行为事件主存储，承接添加、删除、移动、排序、导出等成功动作。
+- `planningState.behaviorEvents` 不再作为导出态或行为分析来源，新动作不再写入旧 JSON，服务端工作台响应也不再返回事件列表。
+- `exportStatus / lastExportedAt` 改为读取新表；新表未命中时按未导出处理。
+- `PlanningStateDTO` 已移除 `behaviorEvents` 字段；老 JSON 里即使仍存在该字段，也会在解析时被忽略。
+
+#### 8.14.2 读写口径
+
+新表需要承接的最小能力：
+
+- 记录单条结构化行为事件，至少包含：
+  - `chatSessionId`
+  - `tenantId`
+  - `eventType`
+  - `planVersion`
+  - `generationMode`
+  - `volunteerIds / unitIds`
+  - `fromPositions / toPositions`
+  - `sortKey`
+  - `positiveFeedback`
+  - `snapshotDigest`：短摘要，只用于快速识别载荷是否变化，不承载大 JSON。
+  - `eventPayloadJson`：事件详细载荷，记录动作涉及的志愿/专业组、前后位置和必要展示字段。
+  - `createdAt`
+- 事件范围只覆盖方案层面的成功动作，包括加入方案、从方案删除、单条移动、专业组移动/删除、应用排序和导出。
+- 加入/删除只记录实际改变方案状态的志愿；重复加入、删除不存在志愿等无效请求不写行为事件，也不递增方案版本，避免反馈数据被无效点击污染，并避免导出态误判为已过期。
+- 候选筛选的添加/排除/移除/清空不纳入本期行为事件闭环，仍只作为前端可见、可撤销的视图状态处理。
+- 方案层动作的 `eventPayloadJson.items` 优先通过候选池补齐志愿字段，包含 `schoolId / schoolRank / majorId / admissionRatio / schoolEnrollRatio / finalScore` 等后续分析所需信息；找不到候选时再回退到排序区轻量字段。条目里的 `position` 表示动作后的排序位置，移动前后位置由 `beforePositions / afterPositions` 单独表达。
+- 导出成功写 `plan_export`，并保留当前方案版本。
+- `exportStatus` 计算优先看新表最新导出事件：
+  - 没有导出事件：`not_exported`
+  - 最新导出版本小于当前方案版本：`stale`
+  - 最新导出版本与当前一致：`exported`
+
+兼容策略：
+
+- 读路径只查新表。
+- 新表未命中时，不再读取旧 `planningState.behaviorEvents`，避免旧 JSON 中不完整或过期的事件影响当前导出态。
+- 旧 `planningState.behaviorEvents` 不再保留 DTO 字段；新动作不再写入旧 JSON，避免规划状态 JSON 继续膨胀。
+- 老会话 JSON 中残留的 `behaviorEvents` 会被忽略，不参与导出态和行为分析。
+
+#### 8.14.3 双模式覆盖
+
+行为事件写入跟随当前会话的 `candidatePoolState.volunteerModel`，最终落库到 `mode` 字段：
+
+- `mode=major`：专业+大学模式，一条排序志愿就是一个学校 + 专业。
+- `mode=majorGroup`：院校专业组模式，一个专业组是一个排序单元，组内包含多个已选专业。
+
+两种模式都支持方案层行为事件，差异主要在是否存在专业组单元 `unitIds`：
+
+| 事件类型 | 触发入口 | 专业+大学模式 | 院校专业组模式 | 主要分析语义 |
+| --- | --- | --- | --- | --- |
+| `plan_add` | 从候选加入方案 | 记录实际新增的 `volunteerIds` | 记录实际新增的专业 `volunteerIds`，专业组 unit 会由方案状态重建 | 用户主动选择某个志愿 |
+| `plan_remove` | 从方案移除志愿 | 记录实际移除的 `volunteerIds` | 记录实际移除的专业 `volunteerIds`，如果是整组删除则走 `plan_unit_remove` | 用户否定或暂不需要某个志愿 |
+| `plan_item_move` | 单条志愿移动 | 记录单条 `volunteerId` 的前后位置 | 保留兼容能力，但产品主入口优先使用专业组整体移动 | 用户调整单条志愿顺序 |
+| `plan_unit_move` | 专业组整体移动 | 不作为主入口 | 记录 `unitIds` 以及组内全部 `volunteerIds`，位置以专业组为单位 | 用户调整专业组顺序 |
+| `plan_unit_remove` | 专业组整体删除 | 不作为主入口 | 记录 `unitIds` 以及组内全部 `volunteerIds` | 用户删除整个专业组 |
+| `plan_sort_apply` | 应用方案排序 | 记录排序后的全部 `volunteerIds`，行为分析主键仍是单条志愿 | 记录排序后的全部 `volunteerIds` 和专业组 `unitIds`，排序保持组内专业结构 | 用户认可某种排序规则 |
+| `plan_export` | 导出方案 | 记录导出时的全部 `volunteerIds`，`positiveFeedback=true` | 记录导出时的全部 `volunteerIds` 和 `unitIds`，`positiveFeedback=true` | 强正反馈样本 |
+
+专业组模式下，`unitIds` 只在组级操作、排序和导出中有稳定业务意义；加入/删除单个专业仍以 `volunteerIds` 为准。专业模式的行为分析主键统一使用 `volunteerIds`，即使某些兼容路径存在可派生的单位结构，也不把它解释成专业组。
+
+#### 8.14.4 存储格式
+
+最终存储表为 `assistant_planning_behavior_event`。结构化字段用于快速筛选，详细上下文进入 `event_payload_json`：
+
+| 字段 | 含义 |
+| --- | --- |
+| `event_id` | 事件唯一 ID |
+| `chat_session_id` | 会话 ID |
+| `tenant_id` | 租户 ID，可为空 |
+| `event_type` | `plan_add / plan_remove / plan_item_move / plan_unit_move / plan_unit_remove / plan_sort_apply / plan_export` |
+| `mode` | `major` 或 `majorGroup` |
+| `plan_version` | 事件对应的方案版本；导出事件为导出时版本，调整事件为即将保存后的版本 |
+| `generation_mode` | 当前方案生成模式，如 `initial_auto / draft_reorder` 等 |
+| `volunteer_ids_json` | 动作涉及的志愿 ID 列表 JSON |
+| `unit_ids_json` | 动作涉及的专业组 ID 列表 JSON；只有 `mode=majorGroup` 的组级动作、排序和导出具备稳定组级语义 |
+| `from_positions_json` | 移动或排序前的位置映射 JSON |
+| `to_positions_json` | 移动或排序后的位置映射 JSON |
+| `tier` | 事件代表志愿的冲稳保层级，用于轻量查询 |
+| `admission_ratio` | 事件代表志愿的录取率，用于轻量查询 |
+| `school_name / major_name` | 事件代表志愿的学校和专业名，用于轻量查询 |
+| `sort_key` | 排序字段，如 `admissionRatio / schoolRank / finalScore` |
+| `positive_feedback` | 是否正反馈；当前导出为 `true`，其他方案操作为 `false` |
+| `snapshot_digest` | `event_payload_json` 的 SHA-256 短摘要 |
+| `event_payload_json` | 事件详细载荷 JSON |
+| `create_time / update_time` | 事件创建和更新时间 |
+
+`event_payload_json` 按事件类型存详细上下文，不要求每类事件都有完全相同字段。专业+大学模式单条移动示例如下：
+
+```json
+{
+  "source": "plan_item",
+  "mode": "major",
+  "planVersion": 8,
+  "requiredCount": 45,
+  "requiredUnitCount": null,
+  "volunteerIds": ["ps1_m1"],
+  "beforePositions": {"ps1_m1": 1},
+  "afterPositions": {"ps1_m1": 3},
+  "items": [
+    {
+      "volunteerId": "ps1_m1",
+      "planSchoolDataId": "ps1",
+      "schoolId": "s1",
+      "schoolName": "北京邮电大学",
+      "schoolRank": 42,
+      "provinceName": "北京",
+      "cityName": "北京",
+      "majorId": "m1",
+      "majorName": "计算机科学与技术",
+      "majorCode": "080901",
+      "tier": "稳",
+      "admissionRatio": 58.0,
+      "schoolEnrollRatio": 58.0,
+      "finalScore": 91.5,
+      "preferred": true,
+      "position": 3,
+      "orderedBy": "user",
+      "orderReason": "user_move"
+    }
+  ]
+}
+```
+
+专业组整体移动示例：
+
+```json
+{
+  "source": "plan_unit",
+  "mode": "majorGroup",
+  "planVersion": 12,
+  "requiredCount": 30,
+  "requiredUnitCount": 30,
+  "unitId": "ps2",
+  "volunteerIds": ["ps2_m3", "ps2_m4"],
+  "beforePositions": {"ps2": 5},
+  "afterPositions": {"ps2": 2},
+  "items": [
+    {
+      "volunteerId": "ps2_m3",
+      "planSchoolDataId": "ps2",
+      "schoolId": "s2",
+      "schoolName": "天津财经大学珠江学院第01组",
+      "schoolRank": 870,
+      "majorId": "m3",
+      "majorName": "会计学",
+      "tier": "稳",
+      "admissionRatio": 24.0,
+      "schoolEnrollRatio": 18.0,
+      "finalScore": 83.2,
+      "position": 2,
+      "orderedBy": "user",
+      "orderReason": "user_unit_move"
+    }
+  ]
+}
+```
+
+说明：
+
+- `items` 是后续行为分析的主数据，优先从候选池补全；如果候选池缺失，才使用排序区已有轻量字段兜底。
+- 专业组模式中，组级录取率在 `schoolEnrollRatio`，专业录取率在 `admissionRatio`；组级移动/删除的 payload 使用 `unitId` 表示当前组，结构化列 `unit_ids_json` 保留动作涉及的专业组列表，组内专业仍保留各自 `volunteerId`。
+- `plan_sort_apply` 的排序字段同时写入结构化列 `sort_key` 和 payload 的 `sortField`；专业组排序涉及的专业组列表写入结构化列 `unit_ids_json`。
+- `plan_export` 的 payload 会携带 `volunteerIds / unitIds / items`，用于把导出正反馈关联到当时完整方案。
+- `position` 表示动作完成后的排序位置；移动前后位置统一读取 `beforePositions / afterPositions`。
+- `snapshotDigest` 不再存大 JSON，只存摘要，完整事件上下文只在 `event_payload_json`。
+
+#### 8.14.5 迁移边界
+
+- 老会话不会强制回填历史事件到新表。
+- 新表上线前后可以保留双写或兼容读，但主口径必须是新表。
+- 不把行为事件直接用于算法训练或推荐调参，仍只作为反馈和状态派生数据。
+
+#### 8.14.6 验收
+
+- 添加、删除、移动、排序、导出后，新表能查到对应事件。
+- `exportStatus` 在前端展示和旧口径一致。
+- 新表未命中时，导出态明确回到未导出，不再从旧 JSON 推导。
+- 移除旧字段消费后，导出态仍可从新表稳定恢复。
+- 专业+大学模式写入 `mode=major`，以 `volunteerIds` 作为主要对象；院校专业组模式写入 `mode=majorGroup`，组级动作同时带 `unitIds` 和组内 `volunteerIds`。
+
+当前实现已经完成：
+
+- 行为事件写入已接入独立新表，旧 `planningState.behaviorEvents` 不再作为业务读源。
+- `exportStatus / lastExportedAt` 已改为读取新表；新表未命中按未导出处理。
+- `selectDraftItems / removeDraftItems / moveOrderedItem / moveOrderedUnit / removeOrderedUnits / sortOrderedPlan / exportOrderedPlan` 已改为同事务内双写行为事件。
+- 专业+大学模式覆盖 `plan_add / plan_remove / plan_item_move / plan_sort_apply / plan_export`；院校专业组模式覆盖 `plan_add / plan_remove / plan_unit_move / plan_unit_remove / plan_sort_apply / plan_export`。
+- 事件载荷已从 `snapshotDigest` 拆出为 `eventPayloadJson`，避免短摘要字段存大 JSON；`snapshotDigest` 只保留 SHA-256 短摘要。
+- `plan_unit_move / plan_unit_remove / plan_sort_apply` 的事件载荷已通过候选池补齐组内专业或排序后志愿的录取率、院校层次、推荐分等字段，避免后续行为分析只能看到 `OrderedItemDTO` 的轻量字段。
+- `planningState.behaviorEvents` 已停止新写入，详细 `eventPayloadJson` 仅进入新表，工作台响应也不再返回行为事件列表。
+- `PlanningStateDTO` 已移除旧 `behaviorEvents` 字段；老 JSON 残留字段不会影响当前业务判断。
+- 加入/删除方案事件已收紧为只记录实际新增/实际移除的志愿，重复加入、删除不存在志愿不会落行为事件，也不会触发版本递增。
+- 本期不记录候选筛选事件，筛选状态仍只作为工作台视图状态和后续对话筛选入口管理。
+- 对应单测已覆盖新表读取、新表未命中按未导出、成功动作写入和无效动作不写入。

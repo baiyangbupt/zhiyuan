@@ -16,6 +16,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -86,5 +87,19 @@ public class ChatSessionBizServiceTest {
                 () -> chatSessionBizService.createChatSession(1L, req));
 
         assertEquals("请选择批次后再创建会话", exception.getMessage());
+    }
+
+    @Test
+    void shouldFillDefaultSexAndStrategyTypeWhenMissing() {
+        CreateSessionReq req = new CreateSessionReq();
+
+        chatSessionBizService.normalizeCreateSessionDefaults(req);
+
+        assertNotNull(req.getSex());
+        assertEquals("female", req.getSex().getCode());
+        assertEquals("女", req.getSex().getName());
+        assertNotNull(req.getStrategyType());
+        assertEquals("cautious", req.getStrategyType().getCode());
+        assertEquals("稳妥型", req.getStrategyType().getName());
     }
 }

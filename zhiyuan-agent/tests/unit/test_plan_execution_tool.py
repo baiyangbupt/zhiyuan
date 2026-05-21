@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from app.agent.context import RequestContext
+from app.models.conversation_phase import ConversationPhase, PendingConfirmation, PhaseState
 from app.tools.plan_execution_tool import (
     _select_candidates_by_filters_into_plan,
     _append_intent_relation_summary,
@@ -25,6 +26,8 @@ def _ctx_with_history(
     *,
     chat_history: list[dict] | None = None,
     pending_plan_action: dict | None = None,
+    conversation_phase: ConversationPhase | None = None,
+    planning_summary: object | None = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         deps=RequestContext(
@@ -32,6 +35,8 @@ def _ctx_with_history(
             sessionid=session_id,
             chat_history=chat_history or [],
             pending_plan_action=pending_plan_action,
+            conversation_phase=conversation_phase,
+            planning_summary=planning_summary,
         )
     )
 
@@ -1746,6 +1751,69 @@ def test_execute_plan_action_blocks_pending_apply_when_current_user_did_not_conf
     assert data["applied"] is False
     assert data["result_kind"] == "preview_only"
     assert "确认" in data["summary"]
+    mock_select.assert_not_awaited()
+
+
+def test_execute_plan_action_blocks_stale_pending_apply_when_planning_version_has_drifted():
+    payload = {
+        "stage": "apply",
+        "action_family": "add_units",
+        "context_summary": "阶段=ordered；方案=93/96",
+        "preview_summary": "会先补几个更稳的志愿，确认后再执行。",
+        "missing_inputs": [],
+        "should_rerun_review": False,
+        "intent_relation": "support",
+        "planning_version": 3,
+        "atomic_actions": [
+            {
+                "action_type": "add_units",
+                "volunteer_ids": [],
+                "target_position": None,
+                "filters": {"tier": "稳", "limit": "3"},
+                "reason": "帮我补几个更稳的",
+            }
+        ],
+    }
+    phase = ConversationPhase(
+        state=PhaseState.PLAN_PREVIEWING,
+        pending=PendingConfirmation(
+            kind="plan_mutation",
+            action_family="add_units",
+            preview_summary="会先补几个更稳的志愿，确认后再执行。",
+            execution_payload={
+                "stage": "apply",
+                "action_family": "add_units",
+                "planning_version": 3,
+                "atomic_actions": payload["atomic_actions"],
+            },
+            created_turn=5,
+            source_backend_version=3,
+        ),
+        turn_count=6,
+        last_backend_version=3,
+    )
+
+    with patch(
+        "app.handlers.mutation_handlers._select_candidates_by_filters_into_plan",
+        new=AsyncMock(return_value="should not execute"),
+    ) as mock_select:
+        result = asyncio.run(
+            execute_plan_action(
+                _ctx_with_history(
+                    chat_history=[{"role": "user", "content": "确认"}],
+                    conversation_phase=phase,
+                    planning_summary=SimpleNamespace(version=5),
+                ),
+                json.dumps(payload, ensure_ascii=False),
+            )
+        )
+
+    data = json.loads(result)
+    assert data["applied"] is False
+    assert data["result_kind"] == "error"
+    assert data["reply_focus"] == ["stale_pending", "confirmation_invalid"]
+    assert "已变更" in data["summary"] or "已失效" in data["summary"]
+    assert phase.pending is None
     mock_select.assert_not_awaited()
 
 

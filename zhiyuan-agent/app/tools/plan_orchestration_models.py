@@ -165,6 +165,7 @@ class PlanActionPlan(BaseModel):
     should_rerun_review: bool = False
     should_refresh_workspace: bool = False
     context_summary: str = ""
+    planning_version: int = 0
     intent_relation: Literal["support", "conflict", "mixed", "unknown"] = "unknown"
     missing_inputs: list[str] = Field(default_factory=list)
     rationale: list[str] = Field(default_factory=list)

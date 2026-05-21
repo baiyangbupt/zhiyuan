@@ -393,6 +393,11 @@ async def _plan_next_action_model(
     user_confirmed: bool = False,
 ) -> PlanActionPlan:
     context_inputs = await _collect_plan_context_inputs_model(ctx)
+    planning_summary = getattr(ctx.deps, "planning_summary", None)
+    try:
+        planning_version = int(getattr(planning_summary, "version", 0) or 0)
+    except (TypeError, ValueError):
+        planning_version = 0
     review_issues = _context_review_issues(context_inputs)
     base_filters = {
         "tier": tier or "",
@@ -592,6 +597,7 @@ async def _plan_next_action_model(
         should_rerun_review=should_rerun_review,
         should_refresh_workspace=should_refresh_workspace,
         context_summary=context_inputs.summary,
+        planning_version=planning_version,
         intent_relation=_infer_intent_relation(" ".join(context_inputs.relation_lines) + context_inputs.summary),
         missing_inputs=missing_inputs,
         rationale=rationale,

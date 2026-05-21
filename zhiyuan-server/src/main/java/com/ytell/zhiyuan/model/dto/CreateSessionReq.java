@@ -80,6 +80,7 @@ public class CreateSessionReq {
     private List<PreferredRegion> preferredRegions;
 
     // 🔧 志愿填报策略
+    @JsonAlias("strategy_type")
     private StrategyType strategyType;
 
     // 🔧 学费范围

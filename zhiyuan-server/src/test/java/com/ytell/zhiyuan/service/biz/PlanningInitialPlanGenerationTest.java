@@ -15,6 +15,7 @@ import com.ytell.zhiyuan.model.dto.planning.UpdateLatentProfileReq;
 import com.ytell.zhiyuan.model.entity.biz.ChatSessionExtraData;
 import com.ytell.zhiyuan.model.enums.VolunteerModel;
 import com.ytell.zhiyuan.service.shared.ChatSessionExtraDataSharedService;
+import com.ytell.zhiyuan.service.shared.PlanningBehaviorEventSharedService;
 import com.ytell.zhiyuan.service.volunteer.VolunteerIntervalService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -36,14 +37,17 @@ public class PlanningInitialPlanGenerationTest {
 
     private PlanningStateService planningStateService;
     private ChatSessionExtraDataSharedService chatSessionExtraDataSharedService;
+    private PlanningBehaviorEventSharedService planningBehaviorEventSharedService;
     private VolunteerBizService volunteerBizService;
 
     @BeforeEach
     void setUp() {
         planningStateService = new PlanningStateService();
         chatSessionExtraDataSharedService = Mockito.mock(ChatSessionExtraDataSharedService.class);
+        planningBehaviorEventSharedService = Mockito.mock(PlanningBehaviorEventSharedService.class);
         volunteerBizService = Mockito.mock(VolunteerBizService.class);
         ReflectionTestUtils.setField(planningStateService, "chatSessionExtraDataSharedService", chatSessionExtraDataSharedService);
+        ReflectionTestUtils.setField(planningStateService, "planningBehaviorEventSharedService", planningBehaviorEventSharedService);
         ReflectionTestUtils.setField(planningStateService, "volunteerBizService", volunteerBizService);
         ReflectionTestUtils.setField(planningStateService, "volunteerIntervalService", new VolunteerIntervalService());
     }

@@ -14,13 +14,17 @@ import com.ytell.zhiyuan.model.dto.planning.*;
 import com.ytell.zhiyuan.model.entity.biz.ChatSessionExtraData;
 import com.ytell.zhiyuan.model.enums.DataType;
 import com.ytell.zhiyuan.model.vo.MajorExtraDataVO;
+import com.ytell.zhiyuan.service.shared.PlanningBehaviorEventSharedService;
 import com.ytell.zhiyuan.service.shared.ChatSessionExtraDataSharedService;
 import com.ytell.zhiyuan.service.volunteer.VolunteerIntervalService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.OffsetDateTime;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -40,6 +44,7 @@ import java.util.stream.Collectors;
 public class PlanningStateService {
 
     private static final String OTHER_MAJOR_FILTER_LABEL = "其他专业";
+    private static final int DEFAULT_INITIAL_PLAN_TARGET_COUNT = 45;
 
     private static final Set<String> MACRO_REGION_TAGS = new HashSet<String>() {{
         add("华东");
@@ -137,6 +142,9 @@ public class PlanningStateService {
     private ChatSessionExtraDataSharedService chatSessionExtraDataSharedService;
 
     @Autowired
+    private PlanningBehaviorEventSharedService planningBehaviorEventSharedService;
+
+    @Autowired
     private VolunteerBizService volunteerBizService;
 
     @Autowired
@@ -187,7 +195,6 @@ public class PlanningStateService {
         res.setPendingActions(state.getPendingActions());
         res.setOperationLogs(state.getOperationLogs());
         res.setWorkflowStatus(buildWorkflowStatus(state));
-        res.setBehaviorEvents(defaultBehaviorEvents(state.getBehaviorEvents()));
         return res;
     }
 
@@ -350,7 +357,7 @@ public class PlanningStateService {
     }
 
     private void applyExportWorkflowStatus(PlanningWorkflowStatusDTO status, PlanningStateDTO state) {
-        PlanningBehaviorEventDTO latestExport = findLatestBehaviorEvent(state == null ? null : state.getBehaviorEvents(), "plan_export");
+        PlanningBehaviorEventDTO latestExport = findLatestExportBehaviorEvent(state);
         if (latestExport == null) {
             status.setExportStatus("not_exported");
             status.setExportMessage("方案尚未导出");
@@ -515,6 +522,7 @@ public class PlanningStateService {
         return getPlanningState(chatSessionId).getOrderedPlanState();
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public ExcelExportResult exportOrderedPlan(Long tenantId, Long chatSessionId) {
         PlanningStateDTO state = getPlanningState(chatSessionId);
         if (state.getOrderedPlanState() == null || state.getOrderedPlanState().getItems() == null
@@ -528,7 +536,14 @@ public class PlanningStateService {
                 exportData.getMainList(),
                 Lists.<ExcelUtil.VolunteerExcelData>newArrayList(),
                 exportData.isMajorGroupMode());
-        appendBehaviorEvent(state, tenantId, chatSessionId, "plan_export", collectOrderedVolunteerIds(state), true);
+        PlanningBehaviorEventDTO exportEvent = buildBehaviorEvent(
+                state,
+                tenantId,
+                chatSessionId,
+                "plan_export",
+                collectOrderedVolunteerIds(state),
+                true);
+        recordBehaviorEvent(state, exportEvent);
         savePlanningState(chatSessionId, state);
         return new ExcelExportResult(excelBytes, generateExcelFileName(userScoreDetail));
     }
@@ -877,13 +892,32 @@ public class PlanningStateService {
         if (response == null || response.getBaseData() == null) {
             return requiredTierCounts;
         }
-        Integer requiredCount = response.getBaseData().getNeed_count();
+        Integer requiredCount = resolveRequiredPlanCount(response);
         CreateSessionReq userScoreDetail = resolveTierTargetScoreDetail(chatSessionId, response);
-        if (requiredCount != null && requiredCount > 0 && userScoreDetail != null && userScoreDetail.getStrategyType() != null) {
+        CreateSessionReq.StrategyType strategyType = resolveExplicitRequiredTierStrategy(userScoreDetail);
+        if (requiredCount != null && requiredCount > 0 && strategyType != null) {
             Map<String, Integer> calculated = volunteerIntervalService.calculateTargetCounts(
                     requiredCount,
                     false,
-                    userScoreDetail.getStrategyType());
+                    strategyType);
+            putPositive(requiredTierCounts, "冲", calculated.get("冲"));
+            putPositive(requiredTierCounts, "稳", calculated.get("稳"));
+            putPositive(requiredTierCounts, "保", calculated.get("保"));
+            if (!requiredTierCounts.isEmpty()) {
+                return requiredTierCounts;
+            }
+        }
+        Map<String, Integer> trustedTargetMap = buildTrustedRequiredTierCounts(
+                response.getBaseData().getThree_target_count_map(),
+                requiredCount);
+        if (!trustedTargetMap.isEmpty()) {
+            return trustedTargetMap;
+        }
+        if (requiredCount != null && requiredCount > 0) {
+            Map<String, Integer> calculated = volunteerIntervalService.calculateTargetCounts(
+                    requiredCount,
+                    false,
+                    buildDefaultRequiredTierStrategy());
             putPositive(requiredTierCounts, "冲", calculated.get("冲"));
             putPositive(requiredTierCounts, "稳", calculated.get("稳"));
             putPositive(requiredTierCounts, "保", calculated.get("保"));
@@ -901,6 +935,65 @@ public class PlanningStateService {
         putPositive(requiredTierCounts, "稳", response.getBaseData().getSafes_count());
         putPositive(requiredTierCounts, "保", response.getBaseData().getProtects_count());
         return requiredTierCounts;
+    }
+
+    private Integer resolveRequiredPlanCount(VolunteerRecommendListResponse response) {
+        if (response == null || response.getBaseData() == null) {
+            return null;
+        }
+        Integer requiredCount = response.getBaseData().getNeed_count();
+        if (requiredCount != null && requiredCount > 0) {
+            return requiredCount;
+        }
+        if (response.getBaseData().getVolunteerCount() != null) {
+            Integer modelCount = isMajorGroupVolunteerModel(response)
+                    ? response.getBaseData().getVolunteerCount().getSchoolCount()
+                    : response.getBaseData().getVolunteerCount().getMajorCount();
+            if (modelCount != null && modelCount > 0) {
+                return modelCount;
+            }
+        }
+        return DEFAULT_INITIAL_PLAN_TARGET_COUNT;
+    }
+
+    private boolean isMajorGroupVolunteerModel(VolunteerRecommendListResponse response) {
+        return response != null
+                && response.getBaseData() != null
+                && response.getBaseData().getVolunteerModel() != null
+                && "majorGroup".equalsIgnoreCase(response.getBaseData().getVolunteerModel().getCode());
+    }
+
+    private Map<String, Integer> buildTrustedRequiredTierCounts(Map<String, Integer> targetMap, Integer requiredCount) {
+        Map<String, Integer> requiredTierCounts = new HashMap<String, Integer>();
+        if (targetMap == null || targetMap.isEmpty() || requiredCount == null || requiredCount <= 0) {
+            return requiredTierCounts;
+        }
+        Integer sprintCount = targetMap.get("sprints_count");
+        Integer safeCount = targetMap.get("safes_count");
+        Integer protectCount = targetMap.get("protects_count");
+        int total = valueOrZero(sprintCount) + valueOrZero(safeCount) + valueOrZero(protectCount);
+        if (total != requiredCount) {
+            return requiredTierCounts;
+        }
+        putPositive(requiredTierCounts, "冲", sprintCount);
+        putPositive(requiredTierCounts, "稳", safeCount);
+        putPositive(requiredTierCounts, "保", protectCount);
+        return requiredTierCounts;
+    }
+
+    private CreateSessionReq.StrategyType resolveExplicitRequiredTierStrategy(CreateSessionReq userScoreDetail) {
+        if (userScoreDetail != null && userScoreDetail.getStrategyType() != null
+                && !Strings.isNullOrEmpty(userScoreDetail.getStrategyType().getCode())) {
+            return userScoreDetail.getStrategyType();
+        }
+        return null;
+    }
+
+    private CreateSessionReq.StrategyType buildDefaultRequiredTierStrategy() {
+        CreateSessionReq.StrategyType fallback = new CreateSessionReq.StrategyType();
+        fallback.setCode("cautious");
+        fallback.setName("稳妥型");
+        return fallback;
     }
 
     private void normalizeRequiredTierCountsByAvailableCapacity(CandidatePoolStateDTO candidatePoolState) {
@@ -1108,11 +1201,13 @@ public class PlanningStateService {
         return dto;
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public PlanningStateDTO selectDraftItems(Long chatSessionId, DraftSelectReq req) {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
         DraftPlanStateDTO draft = state.getDraftPlanState();
         List<CandidateItemDTO> candidates = resolveEffectiveCandidates(null, chatSessionId, state, false);
-        for (String volunteerId : defaultList(req.getVolunteerIds())) {
+        List<String> selectedVolunteerIds = Lists.newArrayList();
+        for (String volunteerId : defaultList(req == null ? null : req.getVolunteerIds())) {
             if (containsDraftItem(draft, volunteerId) || containsVolunteerId(draft.getBannedVolunteerIds(), volunteerId)) {
                 continue;
             }
@@ -1125,24 +1220,41 @@ public class PlanningStateService {
             item.setTier(candidate.getTier());
             item.setSchoolName(candidate.getSchoolName());
             item.setMajorName(candidate.getMajorName());
-            item.setSource(req.getSource());
+            item.setSource(req == null ? null : req.getSource());
             draft.getItems().add(item);
+            selectedVolunteerIds.add(candidate.getVolunteerId());
+        }
+        if (selectedVolunteerIds.isEmpty()) {
+            state.setSessionId(chatSessionId);
+            return state;
         }
         syncDraftUnitsWithItems(draft, candidates, state.getCandidatePoolState());
         recalculateDraftSummary(draft, state.getCandidatePoolState());
-        appendBehaviorEvent(state, null, chatSessionId, "plan_add", defaultList(req.getVolunteerIds()), false);
+        appendPlanItemsBehaviorEvent(state, null, chatSessionId, "plan_add", selectedVolunteerIds, false, candidates);
         return saveDraftState(chatSessionId, state);
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public PlanningStateDTO removeDraftItems(Long chatSessionId, DraftRemoveReq req) {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
         DraftPlanStateDTO draft = state.getDraftPlanState();
+        List<CandidateItemDTO> candidates = resolveEffectiveCandidates(null, chatSessionId, state, false);
+        List<String> requestedVolunteerIds = defaultList(req == null ? null : req.getVolunteerIds());
+        List<String> removedVolunteerIds = defaultDraftItems(draft.getItems()).stream()
+                .filter(item -> containsVolunteerId(requestedVolunteerIds, item.getVolunteerId()))
+                .map(DraftItemDTO::getVolunteerId)
+                .filter(value -> !Strings.isNullOrEmpty(value))
+                .collect(Collectors.toList());
+        if (removedVolunteerIds.isEmpty()) {
+            state.setSessionId(chatSessionId);
+            return state;
+        }
         draft.setItems(draft.getItems().stream()
-                .filter(item -> !defaultList(req.getVolunteerIds()).contains(item.getVolunteerId()))
+                .filter(item -> !containsVolunteerId(requestedVolunteerIds, item.getVolunteerId()))
                 .collect(Collectors.toList()));
-        syncDraftUnitsWithItems(draft, resolveEffectiveCandidates(null, chatSessionId, state, false), state.getCandidatePoolState());
+        syncDraftUnitsWithItems(draft, candidates, state.getCandidatePoolState());
         recalculateDraftSummary(draft, state.getCandidatePoolState());
-        appendBehaviorEvent(state, null, chatSessionId, "plan_remove", defaultList(req.getVolunteerIds()), false);
+        appendPlanItemsBehaviorEvent(state, null, chatSessionId, "plan_remove", removedVolunteerIds, false, candidates);
         return saveDraftState(chatSessionId, state);
     }
 
@@ -1278,6 +1390,7 @@ public class PlanningStateService {
         return state;
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public PlanningStateDTO moveOrderedItem(Long chatSessionId, OrderedMoveReq req) {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
         OrderedPlanStateDTO orderedPlanState = ensureOrderedPlanState(state);
@@ -1306,10 +1419,17 @@ public class PlanningStateService {
         state.setOrderedPlanState(orderedPlanState);
         state.getStaleFlags().setReview(true);
         state.getStaleFlags().setPlanAdjustment(true);
-        appendBehaviorEvent(state, null, chatSessionId, "plan_move", Lists.newArrayList(req.getVolunteerId()), false);
+        Map<String, Integer> beforePositions = new HashMap<String, Integer>();
+        beforePositions.put(req.getVolunteerId(), currentIndex + 1);
+        Map<String, Integer> afterPositions = new HashMap<String, Integer>();
+        afterPositions.put(req.getVolunteerId(), targetIndex + 1);
+        appendPlanItemsBehaviorEvent(state, null, chatSessionId, "plan_item_move",
+                Lists.newArrayList(req.getVolunteerId()), false, resolveEffectiveCandidates(null, chatSessionId, state, false),
+                beforePositions, afterPositions);
         return saveOrderedState(chatSessionId, state);
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public PlanningStateDTO moveOrderedUnit(Long chatSessionId, OrderedUnitMoveReq req) {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
         OrderedPlanStateDTO orderedPlanState = ensureOrderedPlanState(state);
@@ -1356,10 +1476,15 @@ public class PlanningStateService {
         state.setOrderedPlanState(orderedPlanState);
         state.getStaleFlags().setReview(true);
         state.getStaleFlags().setPlanAdjustment(true);
-        appendUnitBehaviorEvent(state, chatSessionId, "plan_unit_move", unitId, unitItems);
+        Map<String, Integer> beforePositions = new HashMap<String, Integer>();
+        beforePositions.put(unitId, currentUnitIndex + 1);
+        Map<String, Integer> afterPositions = new HashMap<String, Integer>();
+        afterPositions.put(unitId, targetUnitIndex + 1);
+        appendUnitBehaviorEvent(state, chatSessionId, "plan_unit_move", unitId, unitItems, candidates, beforePositions, afterPositions);
         return saveOrderedState(chatSessionId, state);
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public PlanningStateDTO removeOrderedUnits(Long chatSessionId, OrderedUnitRemoveReq req) {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
         OrderedPlanStateDTO orderedPlanState = ensureOrderedPlanState(state);
@@ -1396,12 +1521,13 @@ public class PlanningStateService {
                     .filter(item -> unitId.equals(resolveDraftOrOrderedUnitId(item)))
                     .collect(Collectors.toList());
             if (!removedUnitItems.isEmpty()) {
-                appendUnitBehaviorEvent(state, chatSessionId, "plan_unit_remove", unitId, removedUnitItems);
+                appendUnitBehaviorEvent(state, chatSessionId, "plan_unit_remove", unitId, removedUnitItems, candidates, null, null);
             }
         }
         return saveOrderedState(chatSessionId, state);
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public PlanningStateDTO sortOrderedPlan(Long chatSessionId, OrderedPlanSortReq req) {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
         OrderedPlanStateDTO orderedPlanState = ensureOrderedPlanState(state);
@@ -1423,7 +1549,7 @@ public class PlanningStateService {
         markOrderedItemsSortedByUser(orderedPlanState, sortField);
         state.getStaleFlags().setReview(true);
         state.getStaleFlags().setPlanAdjustment(true);
-        appendPlanSortApplyEvent(state, chatSessionId, sortField, beforePositions, orderedPlanState);
+        appendPlanSortApplyEvent(state, chatSessionId, sortField, beforePositions, orderedPlanState, candidates);
         return saveOrderedState(chatSessionId, state);
     }
 
@@ -3927,9 +4053,6 @@ public class PlanningStateService {
         if (state.getOperationLogs() == null) {
             state.setOperationLogs(Lists.newArrayList());
         }
-        if (state.getBehaviorEvents() == null) {
-            state.setBehaviorEvents(Lists.newArrayList());
-        }
         backfillLegacyProfileState(chatSessionId, state);
         boolean planEditCacheNoticeAdded = appendPlanEditCacheNotice(chatSessionId, state);
         backfillLegacySummaryFields(state);
@@ -4233,10 +4356,6 @@ public class PlanningStateService {
         return values == null ? Lists.newArrayList() : values;
     }
 
-    private List<PlanningBehaviorEventDTO> defaultBehaviorEvents(List<PlanningBehaviorEventDTO> values) {
-        return values == null ? Lists.newArrayList() : values;
-    }
-
     private int valueOrZero(Integer value) {
         return value == null ? 0 : value;
     }
@@ -4276,19 +4395,6 @@ public class PlanningStateService {
         return 0;
     }
 
-    private PlanningBehaviorEventDTO findLatestBehaviorEvent(List<PlanningBehaviorEventDTO> events, String eventType) {
-        PlanningBehaviorEventDTO latest = null;
-        for (PlanningBehaviorEventDTO event : defaultBehaviorEvents(events)) {
-            if (event == null || !Objects.equals(eventType, event.getEventType())) {
-                continue;
-            }
-            if (latest == null || safeString(event.getCreatedAt()).compareTo(safeString(latest.getCreatedAt())) > 0) {
-                latest = event;
-            }
-        }
-        return latest;
-    }
-
     private List<String> collectOrderedVolunteerIds(PlanningStateDTO state) {
         if (state == null || state.getOrderedPlanState() == null || state.getOrderedPlanState().getItems() == null) {
             return Lists.newArrayList();
@@ -4300,74 +4406,93 @@ public class PlanningStateService {
                 .collect(Collectors.toList());
     }
 
-    private void appendBehaviorEvent(PlanningStateDTO state,
-                                     Long tenantId,
-                                     Long chatSessionId,
-                                     String eventType,
-                                     List<String> volunteerIds,
-                                     boolean positiveFeedback) {
-        if (state == null) {
+    private void appendPlanItemsBehaviorEvent(PlanningStateDTO state,
+                                               Long tenantId,
+                                               Long chatSessionId,
+                                               String eventType,
+                                               List<String> volunteerIds,
+                                               boolean positiveFeedback,
+                                               List<CandidateItemDTO> candidates) {
+        appendPlanItemsBehaviorEvent(state, tenantId, chatSessionId, eventType, volunteerIds, positiveFeedback, candidates, null, null);
+    }
+
+    private void appendPlanItemsBehaviorEvent(PlanningStateDTO state,
+                                               Long tenantId,
+                                               Long chatSessionId,
+                                               String eventType,
+                                               List<String> volunteerIds,
+                                               boolean positiveFeedback,
+                                               List<CandidateItemDTO> candidates,
+                                               Map<String, Integer> beforePositions,
+                                               Map<String, Integer> afterPositions) {
+        if (state == null || defaultList(volunteerIds).isEmpty()) {
             return;
-        }
-        if (state.getBehaviorEvents() == null) {
-            state.setBehaviorEvents(Lists.newArrayList());
         }
         PlanningBehaviorEventDTO event = new PlanningBehaviorEventDTO();
         event.setEventId(UUID.randomUUID().toString());
         event.setTenantId(tenantId);
         event.setChatSessionId(chatSessionId);
         event.setEventType(eventType);
-        event.setPlanVersion(state.getVersion());
+        event.setMode(resolveBehaviorMode(state));
+        event.setPlanVersion(resolveNextSavedPlanVersion(state));
         event.setGenerationMode(state.getOrderedPlanState() == null ? null : state.getOrderedPlanState().getGenerationMode());
         event.setVolunteerIds(Lists.newArrayList(defaultList(volunteerIds)));
+        event.setFromPositions(new HashMap<String, Integer>(defaultIntegerMap(beforePositions)));
+        event.setToPositions(new HashMap<String, Integer>(defaultIntegerMap(afterPositions)));
+        fillPlanItemBehaviorContext(event, candidates, volunteerIds);
         event.setPositiveFeedback(positiveFeedback);
+        setBehaviorEventPayload(event, buildPlanItemsPayload(state, event.getPlanVersion(), candidates, volunteerIds, beforePositions, afterPositions));
         event.setCreatedAt(OffsetDateTime.now().toString());
-        state.getBehaviorEvents().add(event);
+        recordBehaviorEvent(state, event);
     }
 
     private void appendUnitBehaviorEvent(PlanningStateDTO state,
                                          Long chatSessionId,
                                          String eventType,
                                          String unitId,
-                                         List<OrderedItemDTO> items) {
+                                         List<OrderedItemDTO> items,
+                                         List<CandidateItemDTO> candidates,
+                                         Map<String, Integer> beforePositions,
+                                         Map<String, Integer> afterPositions) {
         if (state == null || Strings.isNullOrEmpty(unitId)) {
             return;
-        }
-        if (state.getBehaviorEvents() == null) {
-            state.setBehaviorEvents(Lists.newArrayList());
         }
         PlanningBehaviorEventDTO event = new PlanningBehaviorEventDTO();
         event.setEventId(UUID.randomUUID().toString());
         event.setChatSessionId(chatSessionId);
         event.setEventType(eventType);
-        event.setPlanVersion(state.getVersion());
+        event.setMode(resolveBehaviorMode(state));
+        event.setPlanVersion(resolveNextSavedPlanVersion(state));
         event.setGenerationMode(state.getOrderedPlanState() == null ? null : state.getOrderedPlanState().getGenerationMode());
         event.setUnitIds(Lists.newArrayList(unitId));
         event.setVolunteerIds(defaultOrderedItems(items).stream()
                 .map(OrderedItemDTO::getVolunteerId)
                 .filter(value -> !Strings.isNullOrEmpty(value))
                 .collect(Collectors.toList()));
+        event.setFromPositions(new HashMap<String, Integer>(defaultIntegerMap(beforePositions)));
+        event.setToPositions(new HashMap<String, Integer>(defaultIntegerMap(afterPositions)));
+        fillPlanItemBehaviorContext(event, candidates, event.getVolunteerIds());
         event.setPositiveFeedback(false);
+        setBehaviorEventPayload(event, buildUnitBehaviorPayload(state, event.getPlanVersion(), unitId, items, candidates, beforePositions, afterPositions));
         event.setCreatedAt(OffsetDateTime.now().toString());
-        state.getBehaviorEvents().add(event);
+        recordBehaviorEvent(state, event);
     }
 
     private void appendPlanSortApplyEvent(PlanningStateDTO state,
                                           Long chatSessionId,
                                           String sortField,
                                           Map<String, Integer> beforePositions,
-                                          OrderedPlanStateDTO orderedPlanState) {
+                                          OrderedPlanStateDTO orderedPlanState,
+                                          List<CandidateItemDTO> candidates) {
         if (state == null || orderedPlanState == null) {
             return;
-        }
-        if (state.getBehaviorEvents() == null) {
-            state.setBehaviorEvents(Lists.newArrayList());
         }
         PlanningBehaviorEventDTO event = new PlanningBehaviorEventDTO();
         event.setEventId(UUID.randomUUID().toString());
         event.setChatSessionId(chatSessionId);
         event.setEventType("plan_sort_apply");
-        event.setPlanVersion(state.getVersion());
+        event.setMode(resolveBehaviorMode(state));
+        event.setPlanVersion(resolveNextSavedPlanVersion(state));
         event.setGenerationMode(orderedPlanState.getGenerationMode());
         event.setSortKey(sortField);
         event.setVolunteerIds(collectOrderedVolunteerIds(state));
@@ -4378,12 +4503,293 @@ public class PlanningStateService {
         event.setFromPositions(new HashMap<String, Integer>(beforePositions));
         event.setToPositions(buildOrderedPositionMap(orderedPlanState.getItems()));
         event.setPositiveFeedback(false);
+        setBehaviorEventPayload(event, buildSortBehaviorPayload(state, event.getPlanVersion(), sortField, beforePositions, orderedPlanState, candidates));
         event.setCreatedAt(OffsetDateTime.now().toString());
-        state.getBehaviorEvents().add(event);
+        recordBehaviorEvent(state, event);
     }
 
-    private String safeString(String value) {
-        return value == null ? "" : value;
+    private PlanningBehaviorEventDTO findLatestExportBehaviorEvent(PlanningStateDTO state) {
+        PlanningBehaviorEventDTO latest = null;
+        if (planningBehaviorEventSharedService != null && state != null && state.getSessionId() != null) {
+            latest = planningBehaviorEventSharedService.getLatestBySessionIdAndEventType(state.getSessionId(), "plan_export");
+        }
+        return latest;
+    }
+
+    private PlanningBehaviorEventDTO buildBehaviorEvent(PlanningStateDTO state,
+                                                        Long tenantId,
+                                                        Long chatSessionId,
+                                                        String eventType,
+                                                        List<String> volunteerIds,
+                                                        boolean positiveFeedback) {
+        if (state == null) {
+            return null;
+        }
+        PlanningBehaviorEventDTO event = new PlanningBehaviorEventDTO();
+        event.setEventId(UUID.randomUUID().toString());
+        event.setTenantId(tenantId);
+        event.setChatSessionId(chatSessionId);
+        event.setEventType(eventType);
+        event.setMode(resolveBehaviorMode(state));
+        event.setPlanVersion(state.getVersion());
+        event.setGenerationMode(state.getOrderedPlanState() == null ? null : state.getOrderedPlanState().getGenerationMode());
+        event.setVolunteerIds(Lists.newArrayList(defaultList(volunteerIds)));
+        event.setPositiveFeedback(positiveFeedback);
+        setBehaviorEventPayload(event, buildExportBehaviorPayload(state, event.getPlanVersion(), volunteerIds));
+        event.setCreatedAt(OffsetDateTime.now().toString());
+        return event;
+    }
+
+    private String resolveBehaviorMode(PlanningStateDTO state) {
+        if (state == null || state.getCandidatePoolState() == null || Strings.isNullOrEmpty(state.getCandidatePoolState().getVolunteerModel())) {
+            return null;
+        }
+        return state.getCandidatePoolState().getVolunteerModel();
+    }
+
+    private void fillPlanItemBehaviorContext(PlanningBehaviorEventDTO event,
+                                             List<CandidateItemDTO> candidates,
+                                             List<String> volunteerIds) {
+        if (event == null) {
+            return;
+        }
+        CandidateItemDTO candidate = findFirstCandidate(candidates, volunteerIds);
+        if (candidate == null) {
+            return;
+        }
+        event.setTier(candidate.getTier());
+        event.setAdmissionRatio(candidate.getAdmissionRatio());
+        event.setSchoolName(candidate.getSchoolName());
+        event.setMajorName(candidate.getMajorName());
+    }
+
+    private CandidateItemDTO findFirstCandidate(List<CandidateItemDTO> candidates, List<String> volunteerIds) {
+        for (String volunteerId : defaultList(volunteerIds)) {
+            CandidateItemDTO candidate = findCandidate(candidates, volunteerId);
+            if (candidate != null) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    private Map<String, Object> buildPlanItemsPayload(PlanningStateDTO state,
+                                                      Integer planVersion,
+                                                      List<CandidateItemDTO> candidates,
+                                                      List<String> volunteerIds,
+                                                      Map<String, Integer> beforePositions,
+                                                      Map<String, Integer> afterPositions) {
+        Map<String, Object> payload = buildBaseBehaviorPayload(state, "plan_item", planVersion);
+        payload.put("volunteerIds", defaultList(volunteerIds));
+        payload.put("beforePositions", defaultIntegerMap(beforePositions));
+        payload.put("afterPositions", defaultIntegerMap(afterPositions));
+        payload.put("items", summarizeCandidatesForPayload(candidates, volunteerIds));
+        return payload;
+    }
+
+    private Map<String, Object> buildUnitBehaviorPayload(PlanningStateDTO state,
+                                                         Integer planVersion,
+                                                         String unitId,
+                                                         List<OrderedItemDTO> items,
+                                                         List<CandidateItemDTO> candidates,
+                                                         Map<String, Integer> beforePositions,
+                                                         Map<String, Integer> afterPositions) {
+        Map<String, Object> payload = buildBaseBehaviorPayload(state, "plan_unit", planVersion);
+        payload.put("unitId", unitId);
+        payload.put("volunteerIds", defaultOrderedItems(items).stream()
+                .map(OrderedItemDTO::getVolunteerId)
+                .filter(value -> !Strings.isNullOrEmpty(value))
+                .collect(Collectors.toList()));
+        payload.put("beforePositions", defaultIntegerMap(beforePositions));
+        payload.put("afterPositions", defaultIntegerMap(afterPositions));
+        payload.put("items", summarizeOrderedItemsForPayload(state, items, candidates));
+        return payload;
+    }
+
+    private Map<String, Object> buildSortBehaviorPayload(PlanningStateDTO state,
+                                                         Integer planVersion,
+                                                         String sortField,
+                                                         Map<String, Integer> beforePositions,
+                                                         OrderedPlanStateDTO orderedPlanState,
+                                                         List<CandidateItemDTO> candidates) {
+        Map<String, Object> payload = buildBaseBehaviorPayload(state, "plan_sort", planVersion);
+        payload.put("sortField", sortField);
+        payload.put("beforePositions", beforePositions);
+        payload.put("afterPositions", buildOrderedPositionMap(orderedPlanState == null ? null : orderedPlanState.getItems()));
+        payload.put("items", summarizeOrderedItemsForPayload(state, orderedPlanState == null ? null : orderedPlanState.getItems(), candidates));
+        return payload;
+    }
+
+    private Map<String, Object> buildExportBehaviorPayload(PlanningStateDTO state, Integer planVersion, List<String> volunteerIds) {
+        Map<String, Object> payload = buildBaseBehaviorPayload(state, "plan_export", planVersion);
+        payload.put("volunteerIds", defaultList(volunteerIds));
+        payload.put("unitIds", defaultOrderedUnits(state == null || state.getOrderedPlanState() == null ? null : state.getOrderedPlanState().getUnits()).stream()
+                .map(OrderedUnitDTO::getUnitId)
+                .filter(value -> !Strings.isNullOrEmpty(value))
+                .collect(Collectors.toList()));
+        payload.put("items", summarizePlanItemsForPayload(state));
+        return payload;
+    }
+
+    private Map<String, Object> buildBaseBehaviorPayload(PlanningStateDTO state, String source, Integer planVersion) {
+        Map<String, Object> payload = new LinkedHashMap<String, Object>();
+        payload.put("source", source);
+        payload.put("mode", resolveBehaviorMode(state));
+        payload.put("planVersion", planVersion);
+        payload.put("requiredCount", state == null || state.getCandidatePoolState() == null
+                ? null
+                : state.getCandidatePoolState().getRequiredCount());
+        payload.put("requiredUnitCount", state == null || state.getCandidatePoolState() == null
+                ? null
+                : state.getCandidatePoolState().getRequiredUnitCount());
+        return payload;
+    }
+
+    private List<Map<String, Object>> summarizeCandidatesForPayload(List<CandidateItemDTO> candidates,
+                                                                    List<String> volunteerIds) {
+        List<Map<String, Object>> summary = Lists.newArrayList();
+        for (String volunteerId : defaultList(volunteerIds)) {
+            CandidateItemDTO candidate = findCandidate(candidates, volunteerId);
+            if (candidate == null) {
+                continue;
+            }
+            summary.add(summarizeCandidateForPayload(candidate));
+        }
+        return summary;
+    }
+
+    private List<Map<String, Object>> summarizePlanItemsForPayload(PlanningStateDTO state) {
+        if (state == null || state.getOrderedPlanState() == null) {
+            return Lists.newArrayList();
+        }
+        List<CandidateItemDTO> candidates = resolveEffectiveCandidates(null, state.getSessionId(), state, false);
+        List<Map<String, Object>> summary = Lists.newArrayList();
+        for (OrderedItemDTO item : defaultOrderedItems(state.getOrderedPlanState().getItems())) {
+            CandidateItemDTO candidate = findCandidate(candidates, item.getVolunteerId());
+            Map<String, Object> value = candidate == null
+                    ? summarizeOrderedItemForPayload(item)
+                    : summarizeCandidateForPayload(candidate);
+            value.put("position", item.getPosition());
+            value.put("orderedBy", item.getOrderedBy());
+            value.put("orderReason", item.getOrderReason());
+            summary.add(value);
+        }
+        return summary;
+    }
+
+    private List<Map<String, Object>> summarizeOrderedItemsForPayload(PlanningStateDTO state,
+                                                                      List<OrderedItemDTO> items,
+                                                                      List<CandidateItemDTO> candidates) {
+        List<Map<String, Object>> summary = Lists.newArrayList();
+        List<CandidateItemDTO> effectiveCandidates = candidates;
+        if (effectiveCandidates == null && state != null) {
+            effectiveCandidates = resolveEffectiveCandidates(null, state.getSessionId(), state, false);
+        }
+        CandidateResolver resolver = new CandidateResolver(effectiveCandidates);
+        for (OrderedItemDTO item : defaultOrderedItems(items)) {
+            summary.add(summarizeOrderedItemForPayload(item, resolver.resolve(item)));
+        }
+        return summary;
+    }
+
+    private Map<String, Object> summarizeOrderedItemForPayload(OrderedItemDTO item, CandidateItemDTO candidate) {
+        Map<String, Object> value = candidate == null
+                ? summarizeOrderedItemForPayload(item)
+                : summarizeCandidateForPayload(candidate);
+        if (item == null) {
+            return value;
+        }
+        value.put("position", item.getPosition());
+        value.put("orderedBy", item.getOrderedBy());
+        value.put("orderReason", item.getOrderReason());
+        return value;
+    }
+
+    private Map<String, Object> summarizeOrderedItemForPayload(OrderedItemDTO item) {
+        Map<String, Object> value = new LinkedHashMap<String, Object>();
+        if (item == null) {
+            return value;
+        }
+        value.put("volunteerId", item.getVolunteerId());
+        value.put("position", item.getPosition());
+        value.put("tier", item.getTier());
+        value.put("schoolName", item.getSchoolName());
+        value.put("majorName", item.getMajorName());
+        value.put("orderedBy", item.getOrderedBy());
+        value.put("orderReason", item.getOrderReason());
+        return value;
+    }
+
+    private Map<String, Object> summarizeCandidateForPayload(CandidateItemDTO candidate) {
+        Map<String, Object> item = new LinkedHashMap<String, Object>();
+        item.put("volunteerId", candidate.getVolunteerId());
+        item.put("planSchoolDataId", candidate.getPlanSchoolDataId());
+        item.put("schoolId", candidate.getSchoolId());
+        item.put("schoolName", candidate.getSchoolName());
+        item.put("schoolRank", candidate.getSchoolRank());
+        item.put("provinceName", candidate.getProvinceName());
+        item.put("cityName", candidate.getCityName());
+        item.put("majorId", candidate.getMajorId());
+        item.put("majorName", candidate.getMajorName());
+        item.put("majorCode", candidate.getMajorCode());
+        item.put("tier", candidate.getTier());
+        item.put("admissionRatio", candidate.getAdmissionRatio());
+        item.put("schoolEnrollRatio", candidate.getSchoolEnrollRatio());
+        item.put("finalScore", candidate.getFinalScore());
+        item.put("preferred", candidate.getPreferred());
+        return item;
+    }
+
+    private void setBehaviorEventPayload(PlanningBehaviorEventDTO event, Map<String, Object> payload) {
+        String payloadJson = JSONObject.toJSONString(payload == null ? new LinkedHashMap<String, Object>() : payload);
+        event.setEventPayloadJson(payloadJson);
+        event.setSnapshotDigest(buildPayloadDigest(payloadJson));
+    }
+
+    private Map<String, Integer> defaultIntegerMap(Map<String, Integer> values) {
+        return values == null ? new HashMap<String, Integer>() : values;
+    }
+
+    private String buildPayloadDigest(String payloadJson) {
+        if (payloadJson == null) {
+            return null;
+        }
+        try {
+            MessageDigest messageDigest = MessageDigest.getInstance("SHA-256");
+            byte[] digest = messageDigest.digest(payloadJson.getBytes(StandardCharsets.UTF_8));
+            StringBuilder builder = new StringBuilder();
+            for (int i = 0; i < digest.length && i < 16; i++) {
+                builder.append(String.format("%02x", digest[i]));
+            }
+            return builder.toString();
+        } catch (Exception ex) {
+            log.warn("build behavior payload digest failed", ex);
+            return String.valueOf(payloadJson.hashCode());
+        }
+    }
+
+    private Integer resolveNextSavedPlanVersion(PlanningStateDTO state) {
+        int currentVersion = state == null || state.getVersion() == null ? 0 : state.getVersion();
+        return currentVersion + 1;
+    }
+
+    private void recordBehaviorEvent(PlanningStateDTO state, PlanningBehaviorEventDTO event) {
+        if (state == null || event == null) {
+            return;
+        }
+        persistBehaviorEvent(event);
+    }
+
+    private void persistBehaviorEvent(PlanningBehaviorEventDTO event) {
+        if (event == null || planningBehaviorEventSharedService == null) {
+            return;
+        }
+        try {
+            planningBehaviorEventSharedService.saveBehaviorEvent(event);
+        } catch (Exception ex) {
+            log.warn("persistBehaviorEvent failed eventType={} chatSessionId={} eventId={}",
+                    event.getEventType(), event.getChatSessionId(), event.getEventId(), ex);
+        }
     }
 
     private void backfillLegacyProfileState(Long chatSessionId, PlanningStateDTO state) {

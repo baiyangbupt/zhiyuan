@@ -99,6 +99,22 @@ public class IntegrationSessionServiceTest {
     }
 
     @Test
+    void shouldNormalizeCreateSessionDefaultsBeforeCreatingSession() {
+        when(mapper.selectOne(any())).thenReturn(null);
+        ChatSessionVo sessionVo = new ChatSessionVo();
+        sessionVo.setId(1002L);
+        when(chatSessionBizService.createChatSession(eq(1L), any(CreateSessionReq.class))).thenReturn(sessionVo);
+        when(planningStateService.getPlanningWorkspaceState(1002L)).thenReturn(buildWorkspaceState());
+
+        ExternalSessionInitializeReq req = buildReq("ext-1");
+
+        service.initializeSession(1L, req);
+
+        verify(chatSessionBizService).normalizeCreateSessionDefaults(req.getCreateSession());
+        verify(chatSessionBizService).createChatSession(eq(1L), eq(req.getCreateSession()));
+    }
+
+    @Test
     void shouldReturnExistingSessionWhenIdempotentRequestSucceeded() {
         ExternalSessionInitializeReq req = buildReq("ext-1");
         IntegrationSessionRequest existing = new IntegrationSessionRequest();

@@ -27,6 +27,7 @@ from app.data.message_utils import pydantic_ai_messages_to_dicts
 from app.llm.client import LLMClient
 from app.schemas.user_profile import UserProfile
 from app.schemas.ws import WSResponse
+from app.sync.state_sync import PlanningStateSync
 from app.tools.explore_followup_tool import handle_interest_analysis_action_result
 from app.tools.plan_execution_tool import (
     clear_recent_plan_execution_result,
@@ -138,6 +139,13 @@ def _safe_result_field(result_text: str, field: str) -> Any:
     return None
 
 
+def _as_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _log_conversation_turn_event(**fields: Any) -> None:
     log_event("conversation_turn_event", **fields)
 
@@ -209,6 +217,10 @@ def _message_has_user_prompt(message: Any) -> bool:
     if not isinstance(message, ModelRequest):
         return False
     return any(isinstance(part, UserPromptPart) for part in getattr(message, "parts", []) or [])
+
+
+def _count_user_turns(messages: list[Any] | None) -> int:
+    return sum(1 for message in messages or [] if _message_has_user_prompt(message))
 
 
 def _latest_user_prompt_index(messages: list[Any]) -> int | None:
@@ -714,6 +726,12 @@ def _build_pending_plan_action_from_payload(payload: dict[str, Any], summary: st
         return None
     apply_payload = dict(payload)
     facts = apply_payload.get("facts") if isinstance(apply_payload.get("facts"), dict) else {}
+    source_backend_version = _as_int(
+        payload.get("source_backend_version")
+        or payload.get("planning_version")
+        or facts.get("source_backend_version")
+        or facts.get("planning_version")
+    )
     resolved_payload = facts.get("resolved_apply_payload") if isinstance(facts, dict) else None
     if isinstance(resolved_payload, dict):
         apply_payload.update(resolved_payload)
@@ -722,12 +740,21 @@ def _build_pending_plan_action_from_payload(payload: dict[str, Any], summary: st
     apply_payload["requires_confirmation"] = False
     apply_payload["should_refresh_workspace"] = True
     apply_payload["should_rerun_review"] = True
-    return {
+    if source_backend_version > 0:
+        apply_payload["planning_version"] = source_backend_version
+    pending = {
         "action_family": action_family,
         "user_goal": payload.get("user_goal") or "",
         "summary": summary or payload.get("preview_summary") or "",
         "plan_payload": json.dumps(apply_payload, ensure_ascii=False),
     }
+    if source_backend_version > 0:
+        pending["source_backend_version"] = source_backend_version
+        pending["planning_version"] = source_backend_version
+    created_turn = _as_int(payload.get("created_turn"))
+    if created_turn > 0:
+        pending["created_turn"] = created_turn
+    return pending
 
 
 def _parse_tool_call_args(args: Any) -> dict[str, Any]:
@@ -748,6 +775,7 @@ def _extract_pending_plan_action(messages: list[Any] | None) -> dict[str, Any] |
     latest_pending: dict[str, Any] | None = None
     last_non_actionable_adjustment_goal: str | None = None
     user_turns_since_pending = 0
+    current_user_turn = 0
 
     for message in messages or []:
         if isinstance(message, ModelResponse):
@@ -775,6 +803,7 @@ def _extract_pending_plan_action(messages: list[Any] | None) -> dict[str, Any] |
             if isinstance(part, UserPromptPart)
         ]
         if user_prompt_parts:
+            current_user_turn += 1
             pending_calls.clear()
             last_non_actionable_adjustment_goal = None
             if latest_pending is not None:
@@ -803,6 +832,8 @@ def _extract_pending_plan_action(messages: list[Any] | None) -> dict[str, Any] |
                         and str(candidate_pending.get("action_family") or "").strip() in {"generate_plan", "apply_compensation"}
                     ):
                         continue
+                    if current_user_turn > 0:
+                        candidate_pending["created_turn"] = current_user_turn
                     latest_pending = candidate_pending
                     user_turns_since_pending = 0
                 continue
@@ -821,24 +852,42 @@ def _extract_pending_plan_action(messages: list[Any] | None) -> dict[str, Any] |
                 )
                 continue
             is_preview_result = result_kind in {"preview_only", "compensation_preview"}
-            if result.get("applied") is True and not is_preview_result:
-                effective_action_family = _PLAN_PREVIEW_TO_APPLY_ACTION_FAMILIES.get(action_family, action_family)
+            call_id = str(part.tool_call_id or "")
+            call_payload = pending_calls.get(call_id) or {}
+            call_action_family = str(call_payload.get("action_family") or "").strip()
+            effective_action_family = _PLAN_PREVIEW_TO_APPLY_ACTION_FAMILIES.get(
+                action_family or call_action_family,
+                action_family or call_action_family,
+            )
+            call_stage = str(call_payload.get("stage") or "").strip()
+            if not is_preview_result and (
+                result.get("applied") is True
+                or call_stage == "apply"
+            ):
                 if effective_action_family in _PENDING_PLAN_ACTION_FAMILIES:
                     latest_pending = None
                     user_turns_since_pending = 0
+                    pending_calls.clear()
                 continue
             if not is_preview_result:
                 continue
-            effective_action_family = _PLAN_PREVIEW_TO_APPLY_ACTION_FAMILIES.get(action_family, action_family)
             if effective_action_family not in _PENDING_PLAN_ACTION_FAMILIES:
                 continue
-            call_payload = pending_calls.get(str(part.tool_call_id or ""))
             if not call_payload:
                 continue
             pending_payload = dict(call_payload)
             result_facts = result.get("facts")
             if isinstance(result_facts, dict) and result_facts:
                 pending_payload["facts"] = result_facts
+                result_version = _as_int(
+                    result_facts.get("source_backend_version")
+                    or result_facts.get("planning_version")
+                )
+                if result_version > 0:
+                    pending_payload["planning_version"] = result_version
+            top_level_version = _as_int(result.get("source_backend_version") or result.get("planning_version"))
+            if top_level_version > 0:
+                pending_payload["planning_version"] = top_level_version
             candidate_pending = _build_pending_plan_action_from_payload(
                 pending_payload,
                 summary=result.get("summary") or call_payload.get("preview_summary") or "",
@@ -851,9 +900,11 @@ def _extract_pending_plan_action(messages: list[Any] | None) -> dict[str, Any] |
                 last_non_actionable_adjustment_goal
                 and _text_looks_like_adjustment_request(last_non_actionable_adjustment_goal)
                 and _text_looks_like_adjustment_request(str(candidate_pending.get("user_goal") or "").strip())
-                and str(candidate_pending.get("action_family") or "").strip() in {"generate_plan", "apply_compensation"}
+                        and str(candidate_pending.get("action_family") or "").strip() in {"generate_plan", "apply_compensation"}
             ):
                 continue
+            if current_user_turn > 0:
+                candidate_pending["created_turn"] = current_user_turn
             latest_pending = candidate_pending
             user_turns_since_pending = 0
 
@@ -1506,6 +1557,8 @@ class ChatService:
             len(history) if history else 0,
         )
         clear_recent_plan_execution_result(session_id, content)
+        past_turn_count = _count_user_turns(history)
+        current_turn = past_turn_count + 1
 
         # 打印原始 history 内容，便于调试格式
         # if history:
@@ -1609,7 +1662,33 @@ class ChatService:
             pending_intent_confirmation=pending_intent_confirmation,
             pending_intent_change=pending_intent_change,
             planning_summary=parsed_planning_summary,
+            turn_count=past_turn_count,
         )
+        conversation_phase.turn_count = current_turn
+        state_sync = PlanningStateSync()
+        version_result = state_sync.check_version(conversation_phase, parsed_planning_summary)
+        if not version_result.is_current:
+            logger.info(
+                "Planning version drift at turn start: session_id=%s local=%s remote=%s drift=%s",
+                session_id,
+                version_result.local_version,
+                version_result.remote_version,
+                version_result.drift,
+            )
+        if conversation_phase.pending is not None and conversation_phase.pending.kind == "plan_mutation":
+            stale_event = state_sync.invalidate_if_stale(
+                conversation_phase,
+                current_turn=current_turn,
+                planning_summary=parsed_planning_summary,
+            )
+            if stale_event.should_clear_pending and not _is_plan_action_confirmation(content):
+                logger.info(
+                    "Clearing stale plan pending before model run: session_id=%s cause=%s message=%s",
+                    session_id,
+                    getattr(stale_event.cause, "value", None),
+                    stale_event.message,
+                )
+                conversation_phase.clear_pending()
 
         # 创建 RequestContext
         request_context = RequestContext(

@@ -16,6 +16,7 @@
 ### Fixed
 
 - 统一待确认状态边界：当 `RequestContext.conversation_phase` 已注入时，运行时只认 `conversation_phase.pending` 作为当前待确认源；旧 `pending_plan_action` / `pending_intent_change` 仅在没有 phase 对象的兼容入口里回退，避免新旧状态不同步引发确认错位。
+- pending 确认链路补齐版本和轮次守护：preview 结果会记录 `planning_version` 和 `created_turn`，确认时若当前 `planningState.version` 已变化或 pending 已过期，会直接拦截并提示重新查看当前方案，避免把旧预览误执行成当前方案修改。
 - 意向确认缓存收口：`planEditCache` 先转换为 `PendingConfirmation` 注入 `conversation_phase.pending`，后续确认流程优先读 phase 内的 payload；只有旧桥接入口才直接回读 backend cache。
 - 意向确认回复更明确：`preference_applied` 现在会直接说明“已经按你的确认记下来了”，减少 302 场景里确认语义过于含糊的问题。
 - Agent 主对话链路新增 runtime history 裁剪：SQLite 继续保存完整 pydantic-ai 历史用于审计和 pending 解析，但每轮传给主模型的 `message_history` 与 `RequestContext.chat_history` 只保留可控短上下文，并压缩超长 tool return，降低长历史 token 成本和旧 preview/tool result 污染；存在有效方案 pending 时会额外保留产生该预览的工具调用/工具返回/assistant 回复，避免非确认追问丢上下文。

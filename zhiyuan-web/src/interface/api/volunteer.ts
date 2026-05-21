@@ -489,7 +489,6 @@ export interface PlanningStateRes {
     exportMessage?: string;
     lastExportedAt?: string;
   };
-  behaviorEvents?: Array<Record<string, unknown>>;
 }
 
 export type OrderedPlanActionRes = Pick<
@@ -512,5 +511,4 @@ export type PlanningWorkspaceStateRes = Pick<
   | 'pendingActions'
   | 'operationLogs'
   | 'workflowStatus'
-  | 'behaviorEvents'
 >;
