@@ -11,7 +11,7 @@
 | --- | --- | --- |
 | 版本目标 | P0 人工验收通过，系统验证中 | 前端人工可验部分已完成，继续进行自动化、接口和 Agent 场景验证 |
 | 代码复核 | 已完成 | 前置信息缓存、专业组内专业排序、专业+大学导出结构已按主链路确认 |
-| 最新提交 | `f302045` | 当前基线为本地 `develop` 的 3.0.2 发布准备提交，最终发布 tag 后再更新 |
+| 最新提交 | `5bf204e` | 当前基线已包含 3.0.2 本地部署验证走查文档，最终发布 tag 后再更新 |
 | 后端关键测试 | 已通过 | 2026-05-22 本地补跑 `PlanningStateServiceTest,PlanningBehaviorEventSharedServiceTest`，97 tests，0 failures，2 skipped；外部初始化 clean 定向测试 23 tests，0 failures |
 | 后端全量测试 | 已通过 | 2026-05-21 沙箱外执行 `mvn test`，216 tests，0 failures，0 errors，2 skipped；移除旧 `behaviorEvents` DTO 字段后已复跑通过；沙箱内会因本机 MySQL 连接被拦截失败 |
 | 前端类型检查 | 有既有阻塞 | `tsc --noEmit` 仍受历史类型问题阻塞，不作为本次新增改动失败信号 |
@@ -23,7 +23,7 @@
 | --- | --- |
 | 验收时间 | 2026-05-18 22:15 CST 起，2026-05-20 继续 |
 | 分支 | `develop` |
-| 代码提交 | `f302045` |
+| 代码提交 | `5bf204e` |
 | 前端地址 | `http://127.0.0.1:3001` |
 | 后端地址 | `http://127.0.0.1:8080` |
 | Agent 地址 | `http://127.0.0.1:8000` |
@@ -369,7 +369,7 @@ npm exec tsc -- --noEmit
 | 专业意向确认气泡 | 不出现 `[object Object]`、`false`，展示意向/排除/中外合作/学费可读摘要 | 前端人工通过 | 2026-05-20 人工验收 |
 | Agent 长历史治理 | 降低主 agent 完整历史输入，避免旧 preview/tool return 污染当前轮 | 首轮实现已完成，需继续场景验证 | 见 5.1.2 |
 | 文档与 changelog | 3.0.2 文档和前后端 changelog 已更新 | 已完成 |  |
-| 本地类生产部署演练 | 按 `release-3.0.2-production-upgrade-plan` 第 8 节完成 3.0.1 -> 3.0.2 启动、smoke 和回滚走查 | 未开始 | 需要在正式打包/上线前补记录 |
+| 本地类生产部署演练 | 按 `release-3.0.2-production-upgrade-plan` 第 8 节完成 3.0.1 -> 3.0.2 启动、smoke 和回滚走查 | 已完成 | 2026-05-22 已完成 3.0.2 JAR / Web 镜像 / Agent 镜像构建、启动 smoke、业务接口 smoke、3.0.1 Web/Agent 回滚镜像 smoke；本机未保留 3.0.1 后端 JAR，生产回滚以线上保留 service/JAR 为准 |
 | tag / 构建包 | P0 验收和本地类生产演练通过后再打 `prod-3.0.2` | 未开始 |  |
 
 补充验证：
@@ -377,6 +377,11 @@ npm exec tsc -- --noEmit
 - 2026-05-22：`mvn clean -Dtest=ChatSessionBizServiceTest,IntegrationSessionServiceTest,IntegrationSessionControllerTest,PlanningStateServiceTest#shouldFallbackToCautiousStrategyWhenStrategyTypeMissing,PlanningStateServiceTest#shouldFallbackToDefaultPlanCountWhenNeedCountMissing,PlanningStateServiceTest#shouldPreferStoredStrategyTypeWhenBuildingRequiredTierCounts test` 通过，23 tests，0 failures。
 - 2026-05-22：`mvn -Dtest=PlanningStateServiceTest,PlanningBehaviorEventSharedServiceTest test` 通过，97 tests，0 failures，2 skipped。
 - 2026-05-22：`./.venv/bin/python -m pytest tests/unit/models/test_conversation_phase.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_plan_execution_tool.py -q` 通过，227 passed。
+- 2026-05-22：后端发布 JAR 构建通过，`zhiyuan-server/target/zhiyuan-server.jar`，`sha256:88d845145aa581b6a9bc5845fb9434c17a68e51429f6127bfaac900559181914`。
+- 2026-05-22：Web 发布镜像构建通过，`zhiyuan-web:prod-3.0.2` / `zhiyuan-web:3.0.2-amd64`，`sha256:6687262d562fee6ddf7507c298b9da1c2a99c3789695e593a663fc1f5279530f`；校验 `basePath=/assistant-pc`，未检出 `ws://localhost:8000`。
+- 2026-05-22：Agent 发布镜像构建通过，`zhiyuan-agent:prod-3.0.2` / `zhiyuan-agent:3.0.2-amd64`，`sha256:01b8a9e877740102b068a4f8fb1b63923096224de24dffa515c28dfad3e61f99`；`import app.server` 通过。
+- 2026-05-22：本地类生产 3.0.2 smoke 通过：Web `/assistant-pc/session`、`/assistant-pc/sessionDetailV2`，Agent `/health`，Rank `/health`，Backend `province-city` 均返回 `200`；`workspace-state` 覆盖 session `16/17`；`candidate-pool/query` 覆盖 session `17`；`ordered-plan/export` 覆盖 session `16/17`；新表写入 `plan_export` 正反馈事件。
+- 2026-05-22：本地 3.0.1 回滚镜像 smoke 通过：`zhiyuan-web:prod-3.0.1`、`zhiyuan-agent:prod-3.0.1` 和 `zhiyuan-rank:prod-3.0.0` 可在类生产端口启动并返回健康；本机未保留 3.0.1 后端 JAR，未重建旧 JAR 做后端本地回滚，生产仍依赖已保留的 3.0.1 service/JAR。
 
 ## 7. 问题记录
 

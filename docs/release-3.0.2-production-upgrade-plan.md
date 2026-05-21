@@ -171,10 +171,11 @@ LLM_API_KEY=<只在环境变量中配置，不写入文档>
 
 | 资产 | 标签/路径 | 架构 | Hash / Digest |
 | --- | --- | --- | --- |
-| Git tag | `prod-3.0.2` | - | 待补 |
-| 后端 JAR | `server/zhiyuan-server.jar` | `linux/amd64` | 待补 |
-| Web 镜像 | `zhiyuan-web:prod-3.0.2` / `zhiyuan-web:3.0.2-amd64` | `linux/amd64` | 待补 |
-| Agent 镜像 | `zhiyuan-agent:prod-3.0.2` / `zhiyuan-agent:3.0.2-amd64` | `linux/amd64` | 待补 |
+| Git commit | `5bf204e1eaec79b0c2f2a6df0d0ec952a4f1e2ec` | - | 已构建 |
+| Git tag | `prod-3.0.2` | - | 待打 tag |
+| 后端 JAR | `zhiyuan-server/target/zhiyuan-server.jar` | `linux/amd64` | `sha256:88d845145aa581b6a9bc5845fb9434c17a68e51429f6127bfaac900559181914` |
+| Web 镜像 | `zhiyuan-web:prod-3.0.2` / `zhiyuan-web:3.0.2-amd64` | `linux/amd64` | `sha256:6687262d562fee6ddf7507c298b9da1c2a99c3789695e593a663fc1f5279530f` |
+| Agent 镜像 | `zhiyuan-agent:prod-3.0.2` / `zhiyuan-agent:3.0.2-amd64` | `linux/amd64` | `sha256:01b8a9e877740102b068a4f8fb1b63923096224de24dffa515c28dfad3e61f99` |
 | Release 包 | 待补 | - | 待补 |
 
 更新规则：
@@ -336,6 +337,75 @@ docker run --rm --entrypoint sh zhiyuan-agent:prod-3.0.2 -lc \
 - 导出后新表存在 `plan_export` 事件；导出后再移动方案时导出态变为需重新导出。
 
 本地类生产演练通过后，把实际执行时间、commit、JAR SHA-256、镜像 digest、release 包路径和 smoke 结果补充到第 6 节资产表和 `docs/release-3.0.2-acceptance-checklist.md`。
+
+### 8.3 本地构建记录
+
+执行时间：2026-05-22。
+
+本机环境：
+
+- macOS + Docker Desktop 4.40.0。
+- Docker Client `darwin/arm64`，Docker Server `linux/arm64`。
+- 生产目标为 `linux/amd64`，Web / Agent 镜像均显式使用 `--platform linux/amd64` 构建。
+- 本机根分区剩余约 `24Gi`；Docker 构建完成后镜像占用约 `5.0GB`，Build Cache 约 `1.6GB`。
+
+构建结果：
+
+- 后端 JAR 构建通过：`mvn clean package -DskipTests`，产物 `110M`，SHA-256 见第 6 节。
+- Web 镜像构建通过：`zhiyuan-web:prod-3.0.2` / `zhiyuan-web:3.0.2-amd64`。
+- Agent 镜像构建通过：`zhiyuan-agent:prod-3.0.2` / `zhiyuan-agent:3.0.2-amd64`。
+
+构建校验：
+
+- Web 镜像架构为 `amd64/linux`。
+- Web 镜像 `.next/routes-manifest.json` 包含 `basePath=/assistant-pc`。
+- Web 镜像未检出 `ws://localhost:8000`。
+- Agent 镜像架构为 `amd64/linux`。
+- Agent 镜像 import 检查通过：`agent_import_ok`。
+
+本地类生产启动 smoke：
+
+- 启动口径：Web / Agent 使用 `prod-3.0.2` amd64 镜像；Rank 沿用 `zhiyuan-rank:prod-3.0.0`；后端使用 3.0.2 JAR + `local` profile + `server.port=8090`，同时覆盖 Rank/Agent 地址到本地类生产端口。
+- 不直接使用仓库内 `application-online.yml` 做本地演练，避免误连生产 MySQL / Redis / OSS / 上游服务。
+- 后端启动时 Flyway 校验本地 `sales_bot` schema 当前版本为 `5`，V4/V5 行为事件表迁移已在本地库生效。
+
+基础健康检查：
+
+| 检查项 | 结果 |
+| --- | --- |
+| Web `/assistant-pc/session` | `200`，约 `0.108s` |
+| Web `/assistant-pc/sessionDetailV2?chatSessionId=17` | `200`，约 `0.021s` |
+| Agent `/health` | `200`，约 `0.048s` |
+| Rank `/health` | `200`，约 `0.025s` |
+| Backend `/gaotu-assistant-bot/base-data/province-city` | `200`，约 `0.451s` |
+
+业务 smoke：
+
+| 检查项 | 结果 |
+| --- | --- |
+| `workspace-state?chatSessionId=16` | `200`，约 `2.087s`，`orderedItems=176`，`orderedUnits=45`，`phase=ordered` |
+| `workspace-state?chatSessionId=17` | `200`，约 `1.193s`，`orderedItems=94`，`orderedUnits=45`，`phase=ordered` |
+| `candidate-pool/query?chatSessionId=17` | `200`，约 `1.237s`，`total=402` |
+| `ordered-plan/export?chatSessionId=16` | `200`，约 `9.139s`，`26064` bytes |
+| `ordered-plan/export?chatSessionId=17` | `200`，约 `3.323s`，`17305` bytes |
+| `assistant_planning_behavior_event` | 写入 `plan_export`：`session=16 mode=majorGroup positive_feedback=1`，`session=17 mode=major positive_feedback=1` |
+
+本地回滚 smoke：
+
+- Web 回滚镜像 `zhiyuan-web:prod-3.0.1` 启动到 `18088 -> 28688`，`/assistant-pc/session` 返回 `200`，约 `0.079s`。
+- Agent 回滚镜像 `zhiyuan-agent:prod-3.0.1` 启动到 `18091 -> 8009`，`/health` 返回 `200`，约 `0.031s`。
+- Rank 回滚容器继续使用 `zhiyuan-rank:prod-3.0.0`，`/health` 返回 `200`，约 `0.040s`。
+- 本机未保留 3.0.1 后端 JAR，只保留 `prod-3.0.1` git tag 和生产执行记录；本地未重建旧 JAR 做后端回滚 smoke。生产回滚仍以已保留的 `zhiyuan-server-3.0.1-prod.service` 和 `/root/work/zhiyuan-server-3.0.1` 为准。
+
+清理记录：
+
+- 本地演练容器均已停止并删除。
+- `8090` 类生产后端进程已停止，端口已释放。
+
+待补：
+
+- release 包导出路径和包 hash。
+- 正式 `prod-3.0.2` git tag。
 
 ## 9. 发布顺序
 
