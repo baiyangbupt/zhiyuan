@@ -382,6 +382,9 @@ npm exec tsc -- --noEmit
 - 2026-05-22：Agent 发布镜像构建通过，`zhiyuan-agent:prod-3.0.2` / `zhiyuan-agent:3.0.2-amd64`，`sha256:01b8a9e877740102b068a4f8fb1b63923096224de24dffa515c28dfad3e61f99`；`import app.server` 通过。
 - 2026-05-22：本地类生产 3.0.2 smoke 通过：Web `/assistant-pc/session`、`/assistant-pc/sessionDetailV2`，Agent `/health`，Rank `/health`，Backend `province-city` 均返回 `200`；`workspace-state` 覆盖 session `16/17`；`candidate-pool/query` 覆盖 session `17`；`ordered-plan/export` 覆盖 session `16/17`；新表写入 `plan_export` 正反馈事件。
 - 2026-05-22：本地 3.0.1 回滚镜像 smoke 通过：`zhiyuan-web:prod-3.0.1`、`zhiyuan-agent:prod-3.0.1` 和 `zhiyuan-rank:prod-3.0.0` 可在类生产端口启动并返回健康；本机未保留 3.0.1 后端 JAR，未重建旧 JAR 做后端本地回滚，生产仍依赖已保留的 3.0.1 service/JAR。
+- 2026-05-22：本地 3.0.1 -> 3.0.2 人工走查环境已搭建。先从 `prod-3.0.1` tag 临时构建旧后端 JAR，启动 3.0.1 Web/Backend/Agent/Rank 基线并完成健康检查；随后切换到 3.0.2 Web/Backend/Agent，升级后健康检查和 `workspace-state`、导出 smoke 通过。当前 3.0.2 环境保留在 `http://127.0.0.1:18088/assistant-pc/session` 供人工走查。
+- 2026-05-22：确认 `18088` 的 `prod-3.0.2` 正式 Web 镜像默认 production rewrite 会代理到 `https://www.gaotuzhiyuan.com`，不能直接作为本地 Backend 功能验收入口；已补充本地验证镜像构建口径，需用 `NEXT_PUBLIC_ASSISTANT_API_BASE_URL=http://host.docker.internal:8090` 等 build arg 构建 `prod-3.0.2-local-api` 后再验本地筛选、导出和排序。
+- 2026-05-22：已构建并切换本地验证 Web 镜像 `zhiyuan-web:prod-3.0.2-local-api`，`sha256:4a5b158c507fe2dfcb2820c97415eb2edd91fcd81ee188b198c739e3261a1a7b`；`18088` 代理 `candidate-pool/filter-options?chatSessionId=17` 可见 `schoolKeywords / 院校名称 / 专业名称 / majorTree`；`ordered-plan/export` 覆盖 session `16/17` 均返回 `200`。
 
 ## 7. 问题记录
 

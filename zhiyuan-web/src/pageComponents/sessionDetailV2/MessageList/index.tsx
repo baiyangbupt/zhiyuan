@@ -380,7 +380,8 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
   const [isTimeout, setIsTimeout] = useState<boolean>(false); // 是否已超时
   const [thinkingHints, setThinkingHints] = useState<string[]>([]);
   // const websocketUrl = `/gaotu-assistant-agent/plus/chat/${tenantId}/bot/${botId}/do`;
-  const wsBase = process.env.NEXT_PUBLIC_AGENT_WS_BASE || '';
+  const wsBase =
+    process.env.NEXT_PUBLIC_AGENT_WS_BASE_OVERRIDE || process.env.NEXT_PUBLIC_AGENT_WS_BASE || '';
   const websocketUrl = `${wsBase}/gaotu-assistant-agent/plus/chat/${tenantId}/bot/${botId}/do`;
 
   // 心跳相关配置

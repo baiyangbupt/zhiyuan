@@ -409,6 +409,32 @@ crpi-zmigon88wuzuzy3k.cn-hangzhou.personal.cr.aliyuncs.com/gt_test_123/gaotu-vol
   - 页面 HTML 中静态资源路径为 `/assistant-pc/_next/static/...`
 - 当前镜像启动时会提示 `NEXT_PUBLIC_ASSISTANT_API_BASE_URL`、`NEXT_PUBLIC_OUTER_API_BASE_URL` 缺失；这两个变量只在 `next.config.mjs` 的 `env` 注入和 `APP_ENV=dev` rewrites 中使用，生产核心请求仍走 `NEXT_PUBLIC_API_BASE_URL=https://www.gaotuzhiyuan.com` 与生产 rewrites。后续可在重新制包时移除这两个未使用的生产 env 注入，或在生产启动时补为 `https://www.gaotuzhiyuan.com` 以消除 warning。
 
+3.0.2 起需要额外注意 Web 镜像的接口代理落点：
+
+- `next.config.mjs` 的 `rewrites` 会在 `next build` 阶段固化。正式生产镜像默认把 `/gaotu-assistant-bot`、`/gaotu-assistant-agent` 等代理到线上域名，适合做生产切换和静态资源检查。
+- 如果在本机用正式生产镜像启动 `18088 -> 28688`，页面代码可能是当前版本，但接口会命中线上环境。此时不能用页面里筛选项、导出、排序等接口行为判断本地 Backend 是否回归。
+- 本地类生产验证 Backend / Agent 时，应单独构建本地 API 验证镜像，并且不要覆盖正式发布 tag。示例：
+
+```bash
+docker build --platform linux/amd64 \
+  --build-arg APP_ENV=prod \
+  --build-arg NEXT_PUBLIC_ASSISTANT_API_BASE_URL=http://host.docker.internal:8090 \
+  --build-arg NEXT_PUBLIC_AGENT_API_BASE_URL=http://host.docker.internal:18091 \
+  --build-arg NEXT_PUBLIC_OUTER_API_BASE_URL=https://www.gaotuzhiyuan.com \
+  --build-arg NEXT_PUBLIC_AGENT_WS_BASE_OVERRIDE=ws://host.docker.internal:18091 \
+  -t zhiyuan-web:prod-3.0.2-local-api \
+  zhiyuan-web
+```
+
+验证本地 API 镜像时，应先检查代理落点，再做业务走查：
+
+```bash
+curl 'http://127.0.0.1:18088/gaotu-assistant-bot/inner/planning/1/session/candidate-pool/filter-options?chatSessionId=17' \
+  | grep -E 'schoolKeywords|majorTree|院校名称|专业名称'
+```
+
+如果结果仍像旧版本或线上数据，优先检查是否确实使用了本地 API 验证镜像。只在 `docker run -e` 阶段补环境变量不能改变已经构建好的 Next rewrite。
+
 前端正式切换记录：
 
 - `2026-05-10 05:08` 已停止老前端容器 `gaotu-volunteer-assistant-prod`，启动新前端容器 `zhiyuan-web-3.0.0-prod`。

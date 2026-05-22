@@ -5,6 +5,12 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const basePath = process.env.APP_ENV === 'dev' ? '' : '/assistant-pc';
+const defaultProductionOrigin = 'https://www.gaotuzhiyuan.com';
+
+const normalizeOrigin = (value, fallback = defaultProductionOrigin) => {
+  const normalized = (value || '').trim().replace(/\/+$/, '');
+  return normalized || fallback;
+};
 
 const configObj = {
   transpilePackages: ['antd', '@sentry/nextjs'],
@@ -51,6 +57,8 @@ const configObj = {
     NEXT_GTZY_C_MWEB_ORIGIN: process.env.NEXT_GTZY_C_MWEB_ORIGIN,
     NEXT_GTCAS_C_MWEB_ORIGIN: process.env.NEXT_GTCAS_C_MWEB_ORIGIN,
     NEXT_PUBLIC_ASSISTANT_API_BASE_URL: process.env.NEXT_PUBLIC_ASSISTANT_API_BASE_URL,
+    NEXT_PUBLIC_AGENT_API_BASE_URL: process.env.NEXT_PUBLIC_AGENT_API_BASE_URL,
+    NEXT_PUBLIC_AGENT_WS_BASE_OVERRIDE: process.env.NEXT_PUBLIC_AGENT_WS_BASE_OVERRIDE,
     NEXT_PUBLIC_OUTER_API_BASE_URL: process.env.NEXT_PUBLIC_OUTER_API_BASE_URL,
   },
 
@@ -171,31 +179,42 @@ const configObj = {
         ];
       }
     if (process.env.APP_ENV === 'production') {
+      const assistantApiBase = normalizeOrigin(
+        process.env.NEXT_PUBLIC_ASSISTANT_API_BASE_URL || process.env.NEXT_PUBLIC_API_BASE_URL
+      );
+      const agentApiBase = normalizeOrigin(
+        process.env.NEXT_PUBLIC_AGENT_API_BASE_URL ||
+          process.env.NEXT_PUBLIC_ASSISTANT_API_BASE_URL ||
+          process.env.NEXT_PUBLIC_API_BASE_URL
+      );
+      const outerApiBase = normalizeOrigin(
+        process.env.NEXT_PUBLIC_OUTER_API_BASE_URL || process.env.NEXT_PUBLIC_API_BASE_URL
+      );
       console.log('🔧 线上环境启用API代理');
       return [
         {
           source: '/gaotu-assistant-bot/:path*',
-          destination: 'https://www.gaotuzhiyuan.com/gaotu-assistant-bot/:path*',
+          destination: `${assistantApiBase}/gaotu-assistant-bot/:path*`,
           basePath: false,
         },
         {
           source: '/gaotu-assistant-agent/:path*',
-          destination: 'https://www.gaotuzhiyuan.com/gaotu-assistant-agent/:path*',
+          destination: `${agentApiBase}/gaotu-assistant-agent/:path*`,
           basePath: false,
         },
         {
           source: '/hl-wish/:path*',
-          destination: 'https://www.gaotuzhiyuan.com/hl-wish/:path*',
+          destination: `${outerApiBase}/hl-wish/:path*`,
           basePath: false,
         },
         {
           source: '/v1/:path*',
-          destination: 'https://www.gaotuzhiyuan.com/v1/:path*',
+          destination: `${outerApiBase}/v1/:path*`,
           basePath: false,
         },
         {
           source: '/hl-saas/:path*',
-          destination: 'https://www.gaotuzhiyuan.com/hl-saas/:path*',
+          destination: `${outerApiBase}/hl-saas/:path*`,
           basePath: false,
         },
       ];

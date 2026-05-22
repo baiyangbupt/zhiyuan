@@ -201,3 +201,4 @@
 - 路由配置补充 `sessionDetailV2`，与现有未登录态会话页保持一致的访问策略。
 - `sessionDetailV2` 方案区新增“导出方案”按钮，直接调用 planning workspace 的 `ordered-plan/export` 接口下载当前方案，不再走老版 `volunteer/export` 链路。
 - 新版方案导出继续复用老版 blob 下载与文件名解析逻辑，支持从 `Content-Disposition` 中读取中文文件名。
+- 生产构建的 Next rewrite 支持通过构建参数覆盖 Backend / Agent / 外部 API 地址，正式生产默认仍指向 `https://www.gaotuzhiyuan.com`；本地类生产验证可单独构建 `local-api` 镜像连到 `host.docker.internal:8090/18091`，避免 3.0.2 前端误连线上接口导致功能回归误判。

@@ -137,6 +137,7 @@ docker build --platform linux/amd64 \
 - `.next/routes-manifest.json` 中 `basePath=/assistant-pc`。
 - 构建产物不包含 `ws://localhost:8000`。
 - WebSocket 地址走 `wss://www.gaotuzhiyuan.com`。
+- 正式生产镜像不要传 `NEXT_PUBLIC_ASSISTANT_API_BASE_URL`、`NEXT_PUBLIC_AGENT_API_BASE_URL`、`NEXT_PUBLIC_OUTER_API_BASE_URL`、`NEXT_PUBLIC_AGENT_WS_BASE_OVERRIDE` 覆盖参数；默认值会继续指向 `https://www.gaotuzhiyuan.com`。
 
 ### 5.3 Agent
 
@@ -318,6 +319,39 @@ docker run --rm --entrypoint sh zhiyuan-web:prod-3.0.2 -lc \
   'grep -R "\"basePath\":\"/assistant-pc\"" -n .next/routes-manifest.json'
 ```
 
+注意：`next.config.mjs` 的 `rewrites` 在 `next build` 阶段固化。正式 `prod-3.0.2` 镜像默认会把 `/gaotu-assistant-bot` 和 `/gaotu-assistant-agent` 代理到 `https://www.gaotuzhiyuan.com`；如果直接用该镜像在本机 `18088` 做功能验证，页面代码是 3.0.2，但接口可能命中线上环境，容易误判为本地功能回退。
+
+需要验证本地 3.0.2 Backend / Agent 时，单独构建本地验证镜像，不覆盖正式发布 tag：
+
+```bash
+docker build --platform linux/amd64 \
+  --build-arg APP_ENV=prod \
+  --build-arg NEXT_PUBLIC_ASSISTANT_API_BASE_URL=http://host.docker.internal:8090 \
+  --build-arg NEXT_PUBLIC_AGENT_API_BASE_URL=http://host.docker.internal:18091 \
+  --build-arg NEXT_PUBLIC_OUTER_API_BASE_URL=https://www.gaotuzhiyuan.com \
+  --build-arg NEXT_PUBLIC_AGENT_WS_BASE_OVERRIDE=ws://host.docker.internal:18091 \
+  -t zhiyuan-web:prod-3.0.2-local-api \
+  zhiyuan-web
+```
+
+启动本地验证镜像后，应至少直接校验代理落点：
+
+```bash
+curl 'http://127.0.0.1:18088/gaotu-assistant-bot/inner/planning/1/session/candidate-pool/filter-options?chatSessionId=17' \
+  | grep -E 'schoolKeywords|majorTree|院校名称|专业名称'
+```
+
+如该接口仍返回线上数据或旧结构，先检查 Web 镜像是否用上述 build arg 重新构建，不能只在 `docker run -e` 阶段补环境变量。
+
+2026-05-22 已完成一次本地 API 验证镜像构建：
+
+- 镜像：`zhiyuan-web:prod-3.0.2-local-api`
+- 镜像 ID：`sha256:4a5b158c507fe2dfcb2820c97415eb2edd91fcd81ee188b198c739e3261a1a7b`
+- `routes-manifest.json` 确认 `/gaotu-assistant-bot` 指向 `http://host.docker.internal:8090`，`/gaotu-assistant-agent` 指向 `http://host.docker.internal:18091`。
+- 当前本机 `zhiyuan-web-3.0.2-walkthrough` 已临时切到该镜像，`http://127.0.0.1:18088/assistant-pc/session` 可用于本地 Backend 功能走查。
+- 通过 `18088` 代理验证 `candidate-pool/filter-options?chatSessionId=17` 已返回 `schoolKeywords / 院校名称 / 专业名称 / majorTree`。
+- 通过 `18088` 代理验证 `ordered-plan/export`：session `17` 返回 `200 / 17308 bytes / 1.298s`，session `16` 返回 `200 / 26064 bytes / 8.495s`。
+
 类生产 Agent 检查：
 
 ```bash
@@ -406,6 +440,92 @@ docker run --rm --entrypoint sh zhiyuan-agent:prod-3.0.2 -lc \
 
 - release 包导出路径和包 hash。
 - 正式 `prod-3.0.2` git tag。
+
+### 8.4 本地 3.0.1 -> 3.0.2 人工走查环境
+
+执行时间：2026-05-22。
+
+目标：
+
+- 在本机按同一组类生产端口先启动 `3.0.1` 基线，再切换到 `3.0.2`。
+- 切换后保留 `3.0.2` 环境，供浏览器人工走查。
+
+端口：
+
+| 模块 | 端口 |
+| --- | --- |
+| Web | `18088 -> 28688` |
+| Backend | `8090` |
+| Agent | `18091 -> 8009` |
+| Rank | `18092 -> 5001` |
+
+3.0.1 基线准备：
+
+- 本机已有 `zhiyuan-web:prod-3.0.1` 和 `zhiyuan-agent:prod-3.0.1` 镜像。
+- 本机未保留 3.0.1 后端 JAR，因此从 `prod-3.0.1` tag 创建临时 worktree `/private/tmp/zhiyuan-prod-3.0.1` 并执行 `mvn clean package -DskipTests` 构建旧 JAR。
+- 3.0.1 后端使用 `local` profile 启动到 `8090`，并关闭 Flyway：`--spring.flyway.enabled=false`。这样可以模拟旧版本后端运行，同时避免旧版本迁移定义和当前本地 schema version 5 冲突。
+
+3.0.1 基线健康检查：
+
+| 检查项 | 结果 |
+| --- | --- |
+| Backend `/gaotu-assistant-bot/base-data/province-city` | `200`，约 `0.498s` |
+| Web `/assistant-pc/session` | `200`，约 `0.055s` |
+| Agent `/health` | `200`，约 `0.018s` |
+| Rank `/health` | `200`，约 `0.034s` |
+
+升级切换：
+
+1. 停止并删除 `zhiyuan-web-3.0.1-walkthrough`、`zhiyuan-agent-3.0.1-walkthrough`、`zhiyuan-rank-3.0.1-walkthrough`。
+2. 停止 3.0.1 后端 Java 进程。
+3. 启动 `zhiyuan-web:prod-3.0.2`、`zhiyuan-agent:prod-3.0.2`、`zhiyuan-rank:prod-3.0.0`。
+4. 启动当前 3.0.2 JAR 到 `8090`，使用 `local` profile；Flyway 校验本地 schema version 5，无需新增迁移。
+
+3.0.2 升级后健康检查：
+
+| 检查项 | 结果 |
+| --- | --- |
+| Backend `/gaotu-assistant-bot/base-data/province-city` | `200`，约 `0.434s` |
+| Web `/assistant-pc/session` | `200`，约 `0.087s` |
+| Agent `/health` | `200`，约 `0.041s` |
+| Rank `/health` | `200`，约 `0.045s` |
+
+3.0.2 升级后业务 smoke：
+
+| 检查项 | 结果 |
+| --- | --- |
+| `workspace-state?chatSessionId=16` | `200`，约 `2.788s`，`688528` bytes |
+| `workspace-state?chatSessionId=17` | `200`，约 `2.111s`，`335640` bytes |
+| `ordered-plan/export?chatSessionId=17` | `200`，约 `3.737s`，`17305` bytes |
+
+走查注意：
+
+- 当前保留的 `zhiyuan-web:prod-3.0.2` 是正式生产口径镜像，production rewrite 默认指向 `https://www.gaotuzhiyuan.com`。
+- 因此 `http://127.0.0.1:18088/assistant-pc/session` 只能用于验证“生产构建前端可打开”；不能直接作为本地 Backend 功能验收依据。
+- 如果要验证本地 Backend 的筛选项、导出、排序等接口行为，必须使用第 8.2 节的 `zhiyuan-web:prod-3.0.2-local-api` 验证镜像，或改用本地开发前端连接 `8090`。
+- 已定位到一次误判：正式镜像的页面代码包含 3.0.2 的“院校名称 / 专业名称 / majorTree”筛选逻辑，但 `18088` 通过 rewrite 请求接口时可能命中线上，导致页面看起来像回退到旧筛选/旧导出行为。
+
+当前保留给人工走查的地址：
+
+```text
+http://127.0.0.1:18088/assistant-pc/session
+```
+
+当前保留运行的对象：
+
+- `zhiyuan-web-3.0.2-walkthrough`
+- `zhiyuan-agent-3.0.2-walkthrough`
+- `zhiyuan-rank-3.0.2-walkthrough`
+- 3.0.2 后端 Java 进程，监听 `8090`
+
+人工走查建议覆盖：
+
+- 登录后会话列表入口。
+- session `16` 院校专业组模式工作台：方案、候选、组内专业、导出。
+- session `17` 专业+大学模式工作台：筛选、排序、已选状态、导出。
+- 新建专业+大学、院校专业组两种模式会话。
+- 外部初始化接口创建会话后详情页学员姓名展示。
+- Agent 对话的方案查询、预览、确认、执行。
 
 ## 9. 发布顺序
 
