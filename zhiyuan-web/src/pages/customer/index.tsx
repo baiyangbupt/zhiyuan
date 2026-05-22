@@ -66,10 +66,10 @@ const Customer: React.FC = () => {
   }, [storedHasAddInfo]);
 
   useEffect(() => {
-    if (getValueFromUrlBykey('openSessionList') === '1') {
+    if (isMinip && getValueFromUrlBykey('openSessionList') === '1') {
       setSessionListDrawerVisible(true);
     }
-  }, []);
+  }, [isMinip]);
 
   useEffect(() => {
     const openSessionList = getValueFromUrlBykey('openSessionList') === '1';
@@ -79,11 +79,11 @@ const Customer: React.FC = () => {
       return;
     }
 
-    if (!openSessionList) {
+    if (isMinip && !openSessionList) {
       setSessionListDrawerVisible(true);
     }
     setIsCheckingLatestSession(false);
-  }, [tenantId, botId]);
+  }, [isMinip, tenantId, botId]);
 
   useEffect(() => {
     const urls = [

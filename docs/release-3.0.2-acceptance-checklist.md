@@ -366,6 +366,7 @@ npm exec tsc -- --noEmit
 | 专业组内专业顺序 | 已选专业按录取率正排，页面和导出一致 | 自动测试已通过；前端人工通过 | 见 5.1.1；2026-05-20 人工验收 |
 | 专业+大学导出结构 | 一条志愿一行，不按学校聚合 | 自动测试已通过；文件人工通过 | 见 5.1.1；2026-05-20 人工验收 |
 | 创建成功跳转 | 新建会话完成后进入 `/sessionDetailV2`，不打开会话列表/抽屉 | 前端人工通过 | `/customerDetail` 与嵌入式抽屉均已人工验收 |
+| PC 登录入口 | 非小程序用户登录后进入 PC 会话列表 `/session`，不进入 `/customer` 抽屉页；高途渠道 logo 外跳官网逻辑保持 | 生产构建本地验证通过 | 小程序 `source=minip` 仍进入 `/customer?source=minip&openSessionList=1` |
 | 专业意向确认气泡 | 不出现 `[object Object]`、`false`，展示意向/排除/中外合作/学费可读摘要 | 前端人工通过 | 2026-05-20 人工验收 |
 | Agent 长历史治理 | 降低主 agent 完整历史输入，避免旧 preview/tool return 污染当前轮 | 首轮实现已完成，需继续场景验证 | 见 5.1.2 |
 | 文档与 changelog | 3.0.2 文档和前后端 changelog 已更新 | 已完成 |  |
@@ -385,6 +386,7 @@ npm exec tsc -- --noEmit
 - 2026-05-22：本地 3.0.1 -> 3.0.2 人工走查环境已搭建。先从 `prod-3.0.1` tag 临时构建旧后端 JAR，启动 3.0.1 Web/Backend/Agent/Rank 基线并完成健康检查；随后切换到 3.0.2 Web/Backend/Agent，升级后健康检查和 `workspace-state`、导出 smoke 通过。当前 3.0.2 环境保留在 `http://127.0.0.1:18088/assistant-pc/session` 供人工走查。
 - 2026-05-22：确认 `18088` 的 `prod-3.0.2` 正式 Web 镜像默认 production rewrite 会代理到 `https://www.gaotuzhiyuan.com`，不能直接作为本地 Backend 功能验收入口；已补充本地验证镜像构建口径，需用 `NEXT_PUBLIC_ASSISTANT_API_BASE_URL=http://host.docker.internal:8090` 等 build arg 构建 `prod-3.0.2-local-api` 后再验本地筛选、导出和排序。
 - 2026-05-22：已构建并切换本地验证 Web 镜像 `zhiyuan-web:prod-3.0.2-local-api`，`sha256:4a5b158c507fe2dfcb2820c97415eb2edd91fcd81ee188b198c739e3261a1a7b`；`18088` 代理 `candidate-pool/filter-options?chatSessionId=17` 可见 `schoolKeywords / 院校名称 / 专业名称 / majorTree`；`ordered-plan/export` 覆盖 session `16/17` 均返回 `200`。
+- 2026-05-22：修复 PC 登录后落到 `/customer` 抽屉页的问题，并按生产构建口径重建本地验证镜像 `zhiyuan-web:prod-3.0.2-local-api`，`sha256:01503dab9bc5507115060cb807ef9c8cbb470018162bc6a9ef2ecf2c22cc6e52`；`/assistant-pc/session`、`/assistant-pc/customer?openSessionList=1`、Backend `province-city` 均返回 `200`；构建产物确认 `/customer` 抽屉自动打开只在 `source=minip` 下触发，登录默认落点为 `/session`。
 
 ## 7. 问题记录
 

@@ -57,12 +57,17 @@ const Header: React.FC<IHeaderProps> = ({ userInfo }) => {
 
   // logo跳转
   const handleClickTarget = () => {
+    if (isMinip) {
+      navigateTo('/customer', { source: 'minip', openSessionList: 1 });
+      return;
+    }
+
     if (storedIsCustomer && storedChannel === 'gaotu') {
       window.location.href = 'https://www.gaotuzhiyuan.com';
       return;
     }
 
-    navigateTo(storedIsCustomer ? '/customer' : '/session');
+    navigateTo('/session');
   };
 
   const handleLogout = () => {

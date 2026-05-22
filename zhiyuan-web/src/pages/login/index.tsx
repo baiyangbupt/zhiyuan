@@ -18,15 +18,21 @@ import {
   loginMobileApi,
   sendCodeApi,
 } from '@/service/apis/user';
-import { setStorage, EStorageKey, clearStorage } from '@/utils/tool';
+import { setStorage, EStorageKey, clearStorage, getStorage, getValueFromUrlBykey } from '@/utils/tool';
 import { navigateTo, replaceTo } from '@/utils/router';
 import { CheckboxChangeEvent } from 'antd/lib/checkbox/Checkbox';
 
 const { Title, Text } = Typography;
 
-const navigateAfterLogin = (isCustomer: boolean, replace: boolean = false) => {
-  const targetPath = isCustomer ? '/customer' : '/session';
-  const query = isCustomer ? { openSessionList: 1 } : undefined;
+const isMinipSource = (source?: string | null) =>
+  source === 'minip' ||
+  getValueFromUrlBykey('source') === 'minip' ||
+  getStorage(EStorageKey.SOURCE) === 'minip';
+
+const navigateAfterLogin = (replace: boolean = false, source?: string | null) => {
+  const isMinip = isMinipSource(source);
+  const targetPath = isMinip ? '/customer' : '/session';
+  const query = isMinip ? { source: 'minip', openSessionList: 1 } : undefined;
   if (replace) {
     replaceTo(targetPath, query);
     return;
@@ -116,7 +122,7 @@ const Index: React.FC = () => {
         setStorage(storageItems);
         message.success('登录成功！');
         await getUserInfo();
-        navigateAfterLogin(data.isCustomer, true);
+        navigateAfterLogin(true, source);
       } else {
         handleLoginFail(channel, msg);
       }
@@ -211,7 +217,7 @@ const Index: React.FC = () => {
         message.success('登录成功！');
         setTimeout(() => {
           getUserInfo().then(() => {
-            navigateAfterLogin(data.isCustomer);
+            navigateAfterLogin();
           });
         }, 100);
       } else {
@@ -260,7 +266,7 @@ const Index: React.FC = () => {
         message.success('登录成功！');
         setTimeout(() => {
           getUserInfo().then(() => {
-            navigateAfterLogin(data.isCustomer);
+            navigateAfterLogin();
           });
         }, 100);
       } else {

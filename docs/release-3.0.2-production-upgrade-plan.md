@@ -346,11 +346,12 @@ curl 'http://127.0.0.1:18088/gaotu-assistant-bot/inner/planning/1/session/candid
 2026-05-22 已完成一次本地 API 验证镜像构建：
 
 - 镜像：`zhiyuan-web:prod-3.0.2-local-api`
-- 镜像 ID：`sha256:4a5b158c507fe2dfcb2820c97415eb2edd91fcd81ee188b198c739e3261a1a7b`
+- 镜像 ID：`sha256:01503dab9bc5507115060cb807ef9c8cbb470018162bc6a9ef2ecf2c22cc6e52`
 - `routes-manifest.json` 确认 `/gaotu-assistant-bot` 指向 `http://host.docker.internal:8090`，`/gaotu-assistant-agent` 指向 `http://host.docker.internal:18091`。
 - 当前本机 `zhiyuan-web-3.0.2-walkthrough` 已临时切到该镜像，`http://127.0.0.1:18088/assistant-pc/session` 可用于本地 Backend 功能走查。
 - 通过 `18088` 代理验证 `candidate-pool/filter-options?chatSessionId=17` 已返回 `schoolKeywords / 院校名称 / 专业名称 / majorTree`。
 - 通过 `18088` 代理验证 `ordered-plan/export`：session `17` 返回 `200 / 17308 bytes / 1.298s`，session `16` 返回 `200 / 26064 bytes / 8.495s`。
+- 2026-05-22 追加验证 PC 登录入口修复后重新构建同名本地 API 验证镜像：`/assistant-pc/session`、`/assistant-pc/customer?openSessionList=1`、Backend `province-city` 均返回 `200`；构建产物确认登录默认落点为 `/session`，`/customer` 会话列表抽屉自动打开只在小程序 `source=minip` 下触发。
 
 类生产 Agent 检查：
 
@@ -504,6 +505,7 @@ docker run --rm --entrypoint sh zhiyuan-agent:prod-3.0.2 -lc \
 - 因此 `http://127.0.0.1:18088/assistant-pc/session` 只能用于验证“生产构建前端可打开”；不能直接作为本地 Backend 功能验收依据。
 - 如果要验证本地 Backend 的筛选项、导出、排序等接口行为，必须使用第 8.2 节的 `zhiyuan-web:prod-3.0.2-local-api` 验证镜像，或改用本地开发前端连接 `8090`。
 - 已定位到一次误判：正式镜像的页面代码包含 3.0.2 的“院校名称 / 专业名称 / majorTree”筛选逻辑，但 `18088` 通过 rewrite 请求接口时可能命中线上，导致页面看起来像回退到旧筛选/旧导出行为。
+- PC 登录入口验证需要区分 PC 和小程序：PC 登录后应进入 `/assistant-pc/session`；小程序 `source=minip` 才进入 `/assistant-pc/customer?source=minip&openSessionList=1` 并打开会话列表抽屉。高途渠道 logo 外跳官网逻辑保持不变。
 
 当前保留给人工走查的地址：
 
