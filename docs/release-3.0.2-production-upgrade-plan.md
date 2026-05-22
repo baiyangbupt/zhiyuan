@@ -172,10 +172,10 @@ LLM_API_KEY=<只在环境变量中配置，不写入文档>
 
 | 资产 | 标签/路径 | 架构 | Hash / Digest |
 | --- | --- | --- | --- |
-| Git commit | `5bf204e1eaec79b0c2f2a6df0d0ec952a4f1e2ec` | - | 已构建 |
+| Git commit | `374dd12149116729bae78a392c20732cf3c66e90` | - | 已构建 |
 | Git tag | `prod-3.0.2` | - | 待打 tag |
 | 后端 JAR | `zhiyuan-server/target/zhiyuan-server.jar` | `linux/amd64` | `sha256:88d845145aa581b6a9bc5845fb9434c17a68e51429f6127bfaac900559181914` |
-| Web 镜像 | `zhiyuan-web:prod-3.0.2` / `zhiyuan-web:3.0.2-amd64` | `linux/amd64` | `sha256:6687262d562fee6ddf7507c298b9da1c2a99c3789695e593a663fc1f5279530f` |
+| Web 镜像 | `zhiyuan-web:prod-3.0.2` / `zhiyuan-web:3.0.2-amd64` | `linux/amd64` | `sha256:ac644433c50c23d2c1de45638a5c5c5356a929d61f19c103f4563e6cc1462964` |
 | Agent 镜像 | `zhiyuan-agent:prod-3.0.2` / `zhiyuan-agent:3.0.2-amd64` | `linux/amd64` | `sha256:01b8a9e877740102b068a4f8fb1b63923096224de24dffa515c28dfad3e61f99` |
 | Release 包 | 待补 | - | 待补 |
 
@@ -389,11 +389,13 @@ docker run --rm --entrypoint sh zhiyuan-agent:prod-3.0.2 -lc \
 - 后端 JAR 构建通过：`mvn clean package -DskipTests`，产物 `110M`，SHA-256 见第 6 节。
 - Web 镜像构建通过：`zhiyuan-web:prod-3.0.2` / `zhiyuan-web:3.0.2-amd64`。
 - Agent 镜像构建通过：`zhiyuan-agent:prod-3.0.2` / `zhiyuan-agent:3.0.2-amd64`。
+- 2026-05-22 重新构建正式 Web 镜像，纳入 PC 登录入口修复；新镜像 ID 为 `sha256:ac644433c50c23d2c1de45638a5c5c5356a929d61f19c103f4563e6cc1462964`。
 
 构建校验：
 
 - Web 镜像架构为 `amd64/linux`。
 - Web 镜像 `.next/routes-manifest.json` 包含 `basePath=/assistant-pc`。
+- Web 镜像正式 production rewrite 指向 `https://www.gaotuzhiyuan.com`，未包含 `host.docker.internal` 本地联调地址。
 - Web 镜像未检出 `ws://localhost:8000`。
 - Agent 镜像架构为 `amd64/linux`。
 - Agent 镜像 import 检查通过：`agent_import_ok`。

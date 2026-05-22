@@ -371,7 +371,7 @@ npm exec tsc -- --noEmit
 | Agent 长历史治理 | 降低主 agent 完整历史输入，避免旧 preview/tool return 污染当前轮 | 首轮实现已完成，需继续场景验证 | 见 5.1.2 |
 | 文档与 changelog | 3.0.2 文档和前后端 changelog 已更新 | 已完成 |  |
 | 本地类生产部署演练 | 按 `release-3.0.2-production-upgrade-plan` 第 8 节完成 3.0.1 -> 3.0.2 启动、smoke 和回滚走查 | 已完成 | 2026-05-22 已完成 3.0.2 JAR / Web 镜像 / Agent 镜像构建、启动 smoke、业务接口 smoke、3.0.1 Web/Agent 回滚镜像 smoke；本机未保留 3.0.1 后端 JAR，生产回滚以线上保留 service/JAR 为准 |
-| tag / 构建包 | P0 验收和本地类生产演练通过后再打 `prod-3.0.2` | 未开始 |  |
+| tag / 构建包 | P0 验收和本地类生产演练通过后再打 `prod-3.0.2` | 进行中 | 正式 Web 镜像已按 `374dd12` 重建，待打 git tag / release 包 |
 
 补充验证：
 
@@ -379,7 +379,7 @@ npm exec tsc -- --noEmit
 - 2026-05-22：`mvn -Dtest=PlanningStateServiceTest,PlanningBehaviorEventSharedServiceTest test` 通过，97 tests，0 failures，2 skipped。
 - 2026-05-22：`./.venv/bin/python -m pytest tests/unit/models/test_conversation_phase.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_plan_execution_tool.py -q` 通过，227 passed。
 - 2026-05-22：后端发布 JAR 构建通过，`zhiyuan-server/target/zhiyuan-server.jar`，`sha256:88d845145aa581b6a9bc5845fb9434c17a68e51429f6127bfaac900559181914`。
-- 2026-05-22：Web 发布镜像构建通过，`zhiyuan-web:prod-3.0.2` / `zhiyuan-web:3.0.2-amd64`，`sha256:6687262d562fee6ddf7507c298b9da1c2a99c3789695e593a663fc1f5279530f`；校验 `basePath=/assistant-pc`，未检出 `ws://localhost:8000`。
+- 2026-05-22：Web 发布镜像构建通过，`zhiyuan-web:prod-3.0.2` / `zhiyuan-web:3.0.2-amd64`，`sha256:ac644433c50c23d2c1de45638a5c5c5356a929d61f19c103f4563e6cc1462964`；校验 `basePath=/assistant-pc`，正式 rewrite 指向 `https://www.gaotuzhiyuan.com`，未包含 `host.docker.internal`，未检出 `ws://localhost:8000`。
 - 2026-05-22：Agent 发布镜像构建通过，`zhiyuan-agent:prod-3.0.2` / `zhiyuan-agent:3.0.2-amd64`，`sha256:01b8a9e877740102b068a4f8fb1b63923096224de24dffa515c28dfad3e61f99`；`import app.server` 通过。
 - 2026-05-22：本地类生产 3.0.2 smoke 通过：Web `/assistant-pc/session`、`/assistant-pc/sessionDetailV2`，Agent `/health`，Rank `/health`，Backend `province-city` 均返回 `200`；`workspace-state` 覆盖 session `16/17`；`candidate-pool/query` 覆盖 session `17`；`ordered-plan/export` 覆盖 session `16/17`；新表写入 `plan_export` 正反馈事件。
 - 2026-05-22：本地 3.0.1 回滚镜像 smoke 通过：`zhiyuan-web:prod-3.0.1`、`zhiyuan-agent:prod-3.0.1` 和 `zhiyuan-rank:prod-3.0.0` 可在类生产端口启动并返回健康；本机未保留 3.0.1 后端 JAR，未重建旧 JAR 做后端本地回滚，生产仍依赖已保留的 3.0.1 service/JAR。
