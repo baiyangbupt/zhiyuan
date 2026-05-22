@@ -371,7 +371,7 @@ npm exec tsc -- --noEmit
 | Agent 长历史治理 | 降低主 agent 完整历史输入，避免旧 preview/tool return 污染当前轮 | 首轮实现已完成，需继续场景验证 | 见 5.1.2 |
 | 文档与 changelog | 3.0.2 文档和前后端 changelog 已更新 | 已完成 |  |
 | 本地类生产部署演练 | 按 `release-3.0.2-production-upgrade-plan` 第 8 节完成 3.0.1 -> 3.0.2 启动、smoke 和回滚走查 | 已完成 | 2026-05-22 已完成 3.0.2 JAR / Web 镜像 / Agent 镜像构建、启动 smoke、业务接口 smoke、3.0.1 Web/Agent 回滚镜像 smoke；本机未保留 3.0.1 后端 JAR，生产回滚以线上保留 service/JAR 为准 |
-| tag / 构建包 | P0 验收和本地类生产演练通过后再打 `prod-3.0.2` | 进行中 | 正式 Web 镜像已按 `374dd12` 重建，待打 git tag / release 包 |
+| tag / 构建包 | P0 验收和本地类生产演练通过后再打 `prod-3.0.2` | 已完成 | 正式 Web 镜像已按 `374dd12` 重建，git tag `prod-3.0.2` 已打；release 包待导出 |
 
 补充验证：
 

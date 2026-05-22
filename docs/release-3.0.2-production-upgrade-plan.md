@@ -173,7 +173,7 @@ LLM_API_KEY=<只在环境变量中配置，不写入文档>
 | 资产 | 标签/路径 | 架构 | Hash / Digest |
 | --- | --- | --- | --- |
 | Git commit | `374dd12149116729bae78a392c20732cf3c66e90` | - | 已构建 |
-| Git tag | `prod-3.0.2` | - | 待打 tag |
+| Git tag | `prod-3.0.2` | - | 已打 tag |
 | 后端 JAR | `zhiyuan-server/target/zhiyuan-server.jar` | `linux/amd64` | `sha256:88d845145aa581b6a9bc5845fb9434c17a68e51429f6127bfaac900559181914` |
 | Web 镜像 | `zhiyuan-web:prod-3.0.2` / `zhiyuan-web:3.0.2-amd64` | `linux/amd64` | `sha256:ac644433c50c23d2c1de45638a5c5c5356a929d61f19c103f4563e6cc1462964` |
 | Agent 镜像 | `zhiyuan-agent:prod-3.0.2` / `zhiyuan-agent:3.0.2-amd64` | `linux/amd64` | `sha256:01b8a9e877740102b068a4f8fb1b63923096224de24dffa515c28dfad3e61f99` |
