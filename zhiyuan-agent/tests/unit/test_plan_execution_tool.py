@@ -4310,7 +4310,7 @@ def test_execute_plan_action_moves_major_group_unit_by_position_ref():
     ) as mock_state, patch(
         "app.tools.plan_execution_tool._move_planning_ordered_plan_unit_request",
         new=AsyncMock(return_value={"code": 0, "data": {"message": "move ok"}}),
-    ) as mock_move:
+    ) as mock_move, patch("app.tools.plan_execution_tool.log_event") as mock_log_event:
         result = asyncio.run(execute_plan_action(_ctx_with_pending("move_ordered_unit"), json.dumps(payload, ensure_ascii=False)))
 
     data = json.loads(result)
@@ -4321,6 +4321,23 @@ def test_execute_plan_action_moves_major_group_unit_by_position_ref():
     assert data["summary"] == "move ok"
     mock_state.assert_awaited()
     mock_move.assert_awaited_once_with(1, "exec-1", "unit-3", 5)
+    timing_event = next(
+        call for call in mock_log_event.call_args_list
+        if call.args[0] == "plan_ordered_unit_mutation_timing"
+    )
+    assert timing_event.kwargs["status"] == "success"
+    assert timing_event.kwargs["actionFamily"] == "move_ordered_unit"
+    assert timing_event.kwargs["unitIds"] == ["unit-3"]
+    assert timing_event.kwargs["targetPosition"] == 5
+    assert isinstance(timing_event.kwargs["resolveUnitDurationMs"], int)
+    assert isinstance(timing_event.kwargs["mutationRequestDurationMs"], int)
+    post_apply_event = next(
+        call for call in mock_log_event.call_args_list
+        if call.args[0] == "plan_ordered_unit_post_apply_timing"
+    )
+    assert post_apply_event.kwargs["actionFamily"] == "move_ordered_unit"
+    assert post_apply_event.kwargs["unitIds"] == ["unit-3"]
+    assert isinstance(post_apply_event.kwargs["postResolveDurationMs"], int)
 
 
 def test_execute_plan_action_removes_major_group_unit_by_explicit_unit_id():
@@ -4344,7 +4361,7 @@ def test_execute_plan_action_removes_major_group_unit_by_explicit_unit_id():
     with patch(
         "app.tools.plan_execution_tool._remove_planning_ordered_plan_units_request",
         new=AsyncMock(return_value={"code": 0, "data": {"message": "remove ok"}}),
-    ) as mock_remove:
+    ) as mock_remove, patch("app.tools.plan_execution_tool.log_event") as mock_log_event:
         result = asyncio.run(execute_plan_action(_ctx_with_pending("remove_ordered_unit"), json.dumps(payload, ensure_ascii=False)))
 
     data = json.loads(result)
@@ -4354,3 +4371,19 @@ def test_execute_plan_action_removes_major_group_unit_by_explicit_unit_id():
     assert data["executed_actions"] == [{"action": "remove_ordered_unit", "unitIds": ["unit-9"]}]
     assert data["summary"] == "remove ok"
     mock_remove.assert_awaited_once_with(1, "exec-1", ["unit-9"])
+    timing_event = next(
+        call for call in mock_log_event.call_args_list
+        if call.args[0] == "plan_ordered_unit_mutation_timing"
+    )
+    assert timing_event.kwargs["status"] == "success"
+    assert timing_event.kwargs["actionFamily"] == "remove_ordered_unit"
+    assert timing_event.kwargs["unitIds"] == ["unit-9"]
+    assert isinstance(timing_event.kwargs["resolveUnitDurationMs"], int)
+    assert isinstance(timing_event.kwargs["mutationRequestDurationMs"], int)
+    post_apply_event = next(
+        call for call in mock_log_event.call_args_list
+        if call.args[0] == "plan_ordered_unit_post_apply_timing"
+    )
+    assert post_apply_event.kwargs["actionFamily"] == "remove_ordered_unit"
+    assert post_apply_event.kwargs["unitIds"] == ["unit-9"]
+    assert isinstance(post_apply_event.kwargs["postResolveDurationMs"], int)

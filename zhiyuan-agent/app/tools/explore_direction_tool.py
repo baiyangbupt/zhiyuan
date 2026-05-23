@@ -73,7 +73,39 @@ _direction_analysis_llm_client: LLMClient | None = None
 _direction_analysis_agent: Agent[None, str] | None = None
 _career_direction_resolver_agent: Agent[None, str] | None = None
 _generic_direction_router_agent: Agent[None, str] | None = None
-_GENERIC_DIRECTION_LLM_TIMEOUT_SECONDS = 90
+_DIRECTION_ANALYSIS_LLM_TIMEOUT_SECONDS = 10
+_GENERIC_DIRECTION_LLM_TIMEOUT_SECONDS = 10
+
+_LOCAL_CAREER_SLOT_KEYWORDS: dict[str, tuple[str, ...]] = {
+    CAREER_SYSTEM_PUBLIC_SERVICE: (
+        "体制内",
+        "考公",
+        "考编",
+        "公务员",
+        "事业单位",
+        "进编制",
+        "有编制",
+        "进体制",
+        "选调",
+    ),
+    CAREER_STABLE_EMPLOYMENT: (
+        "稳定就业",
+        "就业稳定",
+        "工作稳定",
+        "稳定工作",
+        "求稳",
+        "抗风险",
+        "稳妥就业",
+    ),
+    CAREER_FURTHER_STUDY: (
+        "读研",
+        "考研",
+        "保研",
+        "深造",
+        "继续升学",
+        "升学",
+    ),
+}
 
 
 class DirectionAnalysisDraft(BaseModel):
@@ -276,12 +308,31 @@ async def resolve_career_direction_slots(request_context: RequestContext) -> lis
     )
     if not latest_user_text:
         return []
+    local_slots = _resolve_career_direction_slots_locally(latest_user_text)
+    if local_slots:
+        logger.info(
+            "resolve_career_direction_slots resolved locally: session_id=%s slots=%s",
+            request_context.sessionid,
+            local_slots,
+        )
+        return local_slots
     result = await _get_career_direction_resolver_agent().run(
         f"用户最后一句话：{latest_user_text}",
         model_settings={"temperature": 0},
     )
     parsed = parse_extraction_json(result.output, CareerIntentResult)
     return normalize_career_slots(parsed.positive)
+
+
+def _resolve_career_direction_slots_locally(text: str | None) -> list[str]:
+    normalized = str(text or "").strip()
+    if not normalized:
+        return []
+    slots: list[str] = []
+    for slot, keywords in _LOCAL_CAREER_SLOT_KEYWORDS.items():
+        if any(keyword in normalized for keyword in keywords):
+            slots.append(slot)
+    return normalize_career_slots(slots)
 
 
 async def should_use_generic_direction_analysis(request_context: RequestContext) -> bool:
@@ -788,12 +839,22 @@ async def preview_direction_analysis_from_request(
         candidate_match_count=candidate_match_count,
     )
     try:
-        generated = await _generate_direction_analysis_content(
-            request_context,
-            [student_fit_fact],
-            [_build_direction_slot_fact(direction_slot, ordered_items, candidate_items, ordered_ids)],
+        generated = await asyncio.wait_for(
+            _generate_direction_analysis_content(
+                request_context,
+                [student_fit_fact],
+                [_build_direction_slot_fact(direction_slot, ordered_items, candidate_items, ordered_ids)],
+            ),
+            timeout=_DIRECTION_ANALYSIS_LLM_TIMEOUT_SECONDS,
         )
         analysis.update(generated.model_dump())
+    except asyncio.TimeoutError:
+        logger.info(
+            "Generate direction analysis content timed out, falling back to template: session_id=%s direction_slot=%s timeout=%ss",
+            session_id,
+            direction_slot,
+            _DIRECTION_ANALYSIS_LLM_TIMEOUT_SECONDS,
+        )
     except Exception:
         logger.warning(
             "Generate direction analysis content failed, falling back to template: session_id=%s direction_slot=%s",
@@ -950,15 +1011,25 @@ async def preview_direction_comparison_from_request(
         analysis["currentPlanFit"].extend((fit_fact.get("positiveSignals") or [])[:1])
         analysis["currentPlanConflict"].extend((fit_fact.get("cautionSignals") or [])[:1])
     try:
-        generated = await _generate_direction_analysis_content(
-            request_context,
-            student_fit_facts,
-            [
-                _build_direction_slot_fact(slot, ordered_items, candidate_items, ordered_ids)
-                for slot in normalized_slots
-            ],
+        generated = await asyncio.wait_for(
+            _generate_direction_analysis_content(
+                request_context,
+                student_fit_facts,
+                [
+                    _build_direction_slot_fact(slot, ordered_items, candidate_items, ordered_ids)
+                    for slot in normalized_slots
+                ],
+            ),
+            timeout=_DIRECTION_ANALYSIS_LLM_TIMEOUT_SECONDS,
         )
         analysis.update(generated.model_dump())
+    except asyncio.TimeoutError:
+        logger.info(
+            "Generate direction comparison content timed out, falling back to template: session_id=%s direction_slots=%s timeout=%ss",
+            session_id,
+            normalized_slots,
+            _DIRECTION_ANALYSIS_LLM_TIMEOUT_SECONDS,
+        )
     except Exception:
         logger.warning(
             "Generate direction comparison content failed, falling back to template: session_id=%s direction_slots=%s",

@@ -1431,12 +1431,19 @@ public class PlanningStateService {
 
     @Transactional(rollbackFor = Exception.class)
     public PlanningStateDTO moveOrderedUnit(Long chatSessionId, OrderedUnitMoveReq req) {
+        long totalStart = System.currentTimeMillis();
+        long loadStart = totalStart;
         PlanningStateDTO state = loadPlanningState(chatSessionId);
+        long loadMs = System.currentTimeMillis() - loadStart;
+        long resolveStart = System.currentTimeMillis();
         OrderedPlanStateDTO orderedPlanState = ensureOrderedPlanState(state);
         List<OrderedItemDTO> current = defaultOrderedItems(orderedPlanState.getItems());
         String unitId = req == null ? null : req.getUnitId();
         if (Strings.isNullOrEmpty(unitId) || current.isEmpty()) {
             state.setSessionId(chatSessionId);
+            log.info("planning_ordered_unit_move_timing: chatSessionId={}, unitId={}, targetPosition={}, status={}, loadMs={}, resolveMs={}, reorderMs={}, resolveCandidatesMs={}, buildUnitsMs={}, recalculateMs={}, behaviorEventMs={}, saveMs={}, totalMs={}",
+                    chatSessionId, unitId, req == null ? null : req.getTargetPosition(), "blocked_empty_input_or_plan",
+                    loadMs, System.currentTimeMillis() - resolveStart, 0, 0, 0, 0, 0, 0, System.currentTimeMillis() - totalStart);
             return state;
         }
         List<OrderedItemDTO> unitItems = current.stream()
@@ -1444,6 +1451,9 @@ public class PlanningStateService {
                 .collect(Collectors.toList());
         if (unitItems.isEmpty()) {
             state.setSessionId(chatSessionId);
+            log.info("planning_ordered_unit_move_timing: chatSessionId={}, unitId={}, targetPosition={}, status={}, loadMs={}, resolveMs={}, reorderMs={}, resolveCandidatesMs={}, buildUnitsMs={}, recalculateMs={}, behaviorEventMs={}, saveMs={}, totalMs={}",
+                    chatSessionId, unitId, req.getTargetPosition(), "blocked_unit_not_found",
+                    loadMs, System.currentTimeMillis() - resolveStart, 0, 0, 0, 0, 0, 0, System.currentTimeMillis() - totalStart);
             return state;
         }
         List<String> orderedUnitIds = buildOrderedUnitIds(current);
@@ -1451,8 +1461,13 @@ public class PlanningStateService {
         int targetUnitIndex = normalizeIndex(req.getTargetPosition(), orderedUnitIds.size());
         if (currentUnitIndex < 0 || targetUnitIndex == currentUnitIndex) {
             state.setSessionId(chatSessionId);
+            log.info("planning_ordered_unit_move_timing: chatSessionId={}, unitId={}, targetPosition={}, currentUnitIndex={}, targetUnitIndex={}, status={}, loadMs={}, resolveMs={}, reorderMs={}, resolveCandidatesMs={}, buildUnitsMs={}, recalculateMs={}, behaviorEventMs={}, saveMs={}, totalMs={}",
+                    chatSessionId, unitId, req.getTargetPosition(), currentUnitIndex, targetUnitIndex, "blocked_noop",
+                    loadMs, System.currentTimeMillis() - resolveStart, 0, 0, 0, 0, 0, 0, System.currentTimeMillis() - totalStart);
             return state;
         }
+        long resolveMs = System.currentTimeMillis() - resolveStart;
+        long reorderStart = System.currentTimeMillis();
         List<String> nextUnitIds = new ArrayList<String>(orderedUnitIds);
         nextUnitIds.remove(currentUnitIndex);
         nextUnitIds.add(targetUnitIndex, unitId);
@@ -1469,10 +1484,17 @@ public class PlanningStateService {
             item.setOrderedBy("user");
             item.setOrderReason("user_unit_move");
         }
+        long reorderMs = System.currentTimeMillis() - reorderStart;
+        long resolveCandidatesStart = System.currentTimeMillis();
         List<CandidateItemDTO> candidates = resolveEffectiveCandidates(null, chatSessionId, state, false);
+        long resolveCandidatesMs = System.currentTimeMillis() - resolveCandidatesStart;
+        long buildUnitsStart = System.currentTimeMillis();
         orderedPlanState.setItems(rebuildOrderedItems(moved));
         orderedPlanState.setUnits(buildOrderedUnitsFromOrderedItems(orderedPlanState.getItems(), state.getDraftPlanState(), candidates));
+        long buildUnitsMs = System.currentTimeMillis() - buildUnitsStart;
+        long recalculateStart = System.currentTimeMillis();
         recalculateOrderedSummary(orderedPlanState, state.getCandidatePoolState());
+        long recalculateMs = System.currentTimeMillis() - recalculateStart;
         state.setOrderedPlanState(orderedPlanState);
         state.getStaleFlags().setReview(true);
         state.getStaleFlags().setPlanAdjustment(true);
@@ -1480,17 +1502,33 @@ public class PlanningStateService {
         beforePositions.put(unitId, currentUnitIndex + 1);
         Map<String, Integer> afterPositions = new HashMap<String, Integer>();
         afterPositions.put(unitId, targetUnitIndex + 1);
+        long behaviorEventStart = System.currentTimeMillis();
         appendUnitBehaviorEvent(state, chatSessionId, "plan_unit_move", unitId, unitItems, candidates, beforePositions, afterPositions);
-        return saveOrderedState(chatSessionId, state);
+        long behaviorEventMs = System.currentTimeMillis() - behaviorEventStart;
+        long saveStart = System.currentTimeMillis();
+        PlanningStateDTO saved = saveOrderedState(chatSessionId, state);
+        long saveMs = System.currentTimeMillis() - saveStart;
+        log.info("planning_ordered_unit_move_timing: chatSessionId={}, unitId={}, targetPosition={}, currentUnitIndex={}, targetUnitIndex={}, itemCount={}, unitCount={}, status={}, loadMs={}, resolveMs={}, reorderMs={}, resolveCandidatesMs={}, buildUnitsMs={}, recalculateMs={}, behaviorEventMs={}, saveMs={}, totalMs={}",
+                chatSessionId, unitId, req.getTargetPosition(), currentUnitIndex, targetUnitIndex, current.size(), orderedUnitIds.size(), "success",
+                loadMs, resolveMs, reorderMs, resolveCandidatesMs, buildUnitsMs, recalculateMs, behaviorEventMs, saveMs,
+                System.currentTimeMillis() - totalStart);
+        return saved;
     }
 
     @Transactional(rollbackFor = Exception.class)
     public PlanningStateDTO removeOrderedUnits(Long chatSessionId, OrderedUnitRemoveReq req) {
+        long totalStart = System.currentTimeMillis();
+        long loadStart = totalStart;
         PlanningStateDTO state = loadPlanningState(chatSessionId);
+        long loadMs = System.currentTimeMillis() - loadStart;
+        long resolveStart = System.currentTimeMillis();
         OrderedPlanStateDTO orderedPlanState = ensureOrderedPlanState(state);
         Set<String> unitIds = new LinkedHashSet<String>(defaultList(req == null ? null : req.getUnitIds()));
         if (unitIds.isEmpty()) {
             state.setSessionId(chatSessionId);
+            log.info("planning_ordered_unit_remove_timing: chatSessionId={}, unitIds={}, status={}, loadMs={}, resolveMs={}, rebuildItemsMs={}, resolveCandidatesMs={}, syncDraftMs={}, buildUnitsMs={}, recalculateMs={}, behaviorEventMs={}, saveMs={}, totalMs={}",
+                    chatSessionId, unitIds, "blocked_empty_input", loadMs, System.currentTimeMillis() - resolveStart,
+                    0, 0, 0, 0, 0, 0, 0, System.currentTimeMillis() - totalStart);
             return state;
         }
         List<OrderedItemDTO> removedItems = defaultOrderedItems(orderedPlanState.getItems()).stream()
@@ -1498,8 +1536,13 @@ public class PlanningStateService {
                 .collect(Collectors.toList());
         if (removedItems.isEmpty()) {
             state.setSessionId(chatSessionId);
+            log.info("planning_ordered_unit_remove_timing: chatSessionId={}, unitIds={}, status={}, loadMs={}, resolveMs={}, rebuildItemsMs={}, resolveCandidatesMs={}, syncDraftMs={}, buildUnitsMs={}, recalculateMs={}, behaviorEventMs={}, saveMs={}, totalMs={}",
+                    chatSessionId, unitIds, "blocked_unit_not_found", loadMs, System.currentTimeMillis() - resolveStart,
+                    0, 0, 0, 0, 0, 0, 0, System.currentTimeMillis() - totalStart);
             return state;
         }
+        long resolveMs = System.currentTimeMillis() - resolveStart;
+        long rebuildItemsStart = System.currentTimeMillis();
         orderedPlanState.setItems(rebuildOrderedItems(defaultOrderedItems(orderedPlanState.getItems()).stream()
                 .filter(item -> !unitIds.contains(resolveDraftOrOrderedUnitId(item)))
                 .collect(Collectors.toList())));
@@ -1507,15 +1550,25 @@ public class PlanningStateService {
         draft.setItems(defaultDraftItems(draft.getItems()).stream()
                 .filter(item -> !unitIds.contains(resolveDraftOrOrderedUnitId(item)))
                 .collect(Collectors.toList()));
+        long rebuildItemsMs = System.currentTimeMillis() - rebuildItemsStart;
+        long resolveCandidatesStart = System.currentTimeMillis();
         List<CandidateItemDTO> candidates = resolveEffectiveCandidates(null, chatSessionId, state, false);
+        long resolveCandidatesMs = System.currentTimeMillis() - resolveCandidatesStart;
+        long syncDraftStart = System.currentTimeMillis();
         syncDraftUnitsWithItems(draft, candidates, state.getCandidatePoolState());
+        long syncDraftMs = System.currentTimeMillis() - syncDraftStart;
+        long buildUnitsStart = System.currentTimeMillis();
         recalculateDraftSummary(draft, state.getCandidatePoolState());
         orderedPlanState.setUnits(buildOrderedUnitsFromOrderedItems(orderedPlanState.getItems(), draft, candidates));
+        long buildUnitsMs = System.currentTimeMillis() - buildUnitsStart;
+        long recalculateStart = System.currentTimeMillis();
         recalculateOrderedSummary(orderedPlanState, state.getCandidatePoolState());
+        long recalculateMs = System.currentTimeMillis() - recalculateStart;
         state.setDraftPlanState(draft);
         state.setOrderedPlanState(orderedPlanState);
         state.getStaleFlags().setReview(true);
         state.getStaleFlags().setPlanAdjustment(true);
+        long behaviorEventStart = System.currentTimeMillis();
         for (String unitId : unitIds) {
             List<OrderedItemDTO> removedUnitItems = removedItems.stream()
                     .filter(item -> unitId.equals(resolveDraftOrOrderedUnitId(item)))
@@ -1524,7 +1577,15 @@ public class PlanningStateService {
                 appendUnitBehaviorEvent(state, chatSessionId, "plan_unit_remove", unitId, removedUnitItems, candidates, null, null);
             }
         }
-        return saveOrderedState(chatSessionId, state);
+        long behaviorEventMs = System.currentTimeMillis() - behaviorEventStart;
+        long saveStart = System.currentTimeMillis();
+        PlanningStateDTO saved = saveOrderedState(chatSessionId, state);
+        long saveMs = System.currentTimeMillis() - saveStart;
+        log.info("planning_ordered_unit_remove_timing: chatSessionId={}, unitIds={}, removedItemCount={}, status={}, loadMs={}, resolveMs={}, rebuildItemsMs={}, resolveCandidatesMs={}, syncDraftMs={}, buildUnitsMs={}, recalculateMs={}, behaviorEventMs={}, saveMs={}, totalMs={}",
+                chatSessionId, unitIds, removedItems.size(), "success", loadMs, resolveMs, rebuildItemsMs,
+                resolveCandidatesMs, syncDraftMs, buildUnitsMs, recalculateMs, behaviorEventMs, saveMs,
+                System.currentTimeMillis() - totalStart);
+        return saved;
     }
 
     @Transactional(rollbackFor = Exception.class)

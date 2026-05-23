@@ -25,6 +25,7 @@ from app.config import HistoryConfig
 from app.data.history_store import ChatHistoryStore
 from app.data.message_utils import pydantic_ai_messages_to_dicts
 from app.llm.client import LLMClient
+from app.resolver.plan_fast_router import resolve_plan_fast_route
 from app.schemas.user_profile import UserProfile
 from app.schemas.ws import WSResponse
 from app.sync.state_sync import PlanningStateSync
@@ -35,6 +36,7 @@ from app.tools.plan_execution_tool import (
     execute_plan_action,
 )
 from app.tools.plan_orchestration_models import normalize_plan_action_payload
+from app.tools.plan_orchestration_tool import _plan_next_action_model
 from app.tools.intent_state_tool import (
     apply_selected_intents as _apply_selected_intents,
     update_volunteer_intent_state,
@@ -148,6 +150,15 @@ def _as_int(value: Any, default: int = 0) -> int:
 
 def _log_conversation_turn_event(**fields: Any) -> None:
     log_event("conversation_turn_event", **fields)
+
+
+def _llm_config_value(llm_client: LLMClient, field_name: str) -> str | None:
+    config = getattr(llm_client, "config", None)
+    value = getattr(config, field_name, None)
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 @dataclass
@@ -516,6 +527,67 @@ def _select_conversation_action_family(tool_returns: list[ToolReturnPart]) -> st
         if action_family not in _LOW_PRIORITY_LOG_ACTION_FAMILIES:
             return action_family
     return families[-1]
+
+
+def _summarize_tool_calls_for_observability(
+    tool_calls: list[ToolCallPart],
+    tool_returns: list[ToolReturnPart],
+) -> list[dict[str, Any]]:
+    """Build compact tool-call metadata for structured logs.
+
+    The persisted chat history already contains full tool args/results. This
+    summary keeps only route/action/result fields needed by effect/perf
+    benchmark analysis and deliberately avoids user payload expansion.
+    """
+    returns_by_call_id: dict[str, dict[str, Any]] = {}
+    for part in tool_returns:
+        call_id = str(part.tool_call_id or "")
+        if not call_id:
+            continue
+        data = _parse_tool_return_json(part.content)
+        if data:
+            returns_by_call_id[call_id] = data
+
+    summarized: list[dict[str, Any]] = []
+    for part in tool_calls:
+        call_id = str(part.tool_call_id or "")
+        args = _parse_tool_call_args(part.args)
+        returned = returns_by_call_id.get(call_id) or {}
+        item: dict[str, Any] = {"name": part.tool_name}
+        if call_id:
+            item["toolCallId"] = call_id
+
+        action_family = str(args.get("action_family") or returned.get("action_family") or "").strip()
+        stage = str(args.get("current_stage") or returned.get("stage") or "").strip()
+        if part.tool_name == "execute_plan_action":
+            raw_payload = args.get("plan_payload")
+            if isinstance(raw_payload, str) and raw_payload.strip():
+                try:
+                    plan_payload = json.loads(raw_payload)
+                except Exception:
+                    plan_payload = {}
+                if isinstance(plan_payload, dict):
+                    action_family = action_family or str(plan_payload.get("action_family") or "").strip()
+                    stage = stage or str(plan_payload.get("stage") or "").strip()
+
+        if action_family:
+            item["actionFamily"] = action_family
+        if stage:
+            item["stage"] = stage
+
+        result_kind = str(returned.get("result_kind") or "").strip()
+        if result_kind:
+            item["resultKind"] = result_kind
+        if "applied" in returned:
+            item["applied"] = bool(returned.get("applied"))
+        message_code = str(returned.get("messageCode") or "").strip()
+        if message_code:
+            item["messageCode"] = message_code
+        if returned:
+            item["success"] = result_kind != "error"
+
+        summarized.append(item)
+    return summarized
 
 
 def _tool_calls_include_plan_workspace_refresh(messages: list[Any] | None) -> list[str]:
@@ -1329,6 +1401,18 @@ def _direct_pending_plan_action_reply(action_family: str, result: dict[str, Any]
     return reply
 
 
+def _direct_plan_fast_route_reply(result: dict[str, Any]) -> str:
+    reply = str(
+        result.get("summary")
+        or result.get("state_summary")
+        or result.get("review_summary")
+        or ""
+    ).strip()
+    if not reply:
+        return "我已经完成这一步处理。"
+    return reply.replace("补偿", "补齐")
+
+
 def _build_plan_timeout_fallback_reply(result: dict[str, Any]) -> str | None:
     result_kind = str(result.get("result_kind") or "").strip()
     if result_kind not in {
@@ -1752,8 +1836,20 @@ class ChatService:
                 userId=user_id,
                 scene="plan",
                 routingPath="direct_pending_plan_confirm",
+                routeDecision={
+                    "source": "direct_pending",
+                    "matched": True,
+                    "confidence": "high",
+                    "route": "plan",
+                    "reason": "plan_pending_confirmation",
+                },
                 pendingType="plan",
                 actionFamily=action_family or result.get("action_family"),
+                resultKind=result.get("result_kind"),
+                llmRequests=0,
+                inputTokens=0,
+                outputTokens=0,
+                totalTokens=0,
                 totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
                 toolDurationMs=tool_duration_ms,
                 toolCalls=[
@@ -1824,8 +1920,20 @@ class ChatService:
                 userId=user_id,
                 scene="intent",
                 routingPath="direct_pending_intent_confirm",
+                routeDecision={
+                    "source": "direct_pending",
+                    "matched": True,
+                    "confidence": "high",
+                    "route": "intent",
+                    "reason": "intent_pending_confirmation",
+                },
                 pendingType="intent",
                 actionFamily=None,
+                resultKind=None,
+                llmRequests=0,
+                inputTokens=0,
+                outputTokens=0,
+                totalTokens=0,
                 totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
                 toolDurationMs=tool_duration_ms,
                 toolCalls=[
@@ -1859,13 +1967,170 @@ class ChatService:
                 userId=user_id,
                 scene="plan",
                 routingPath="plan_confirmation_guard_no_pending",
+                routeDecision={
+                    "source": "direct_guard",
+                    "matched": True,
+                    "confidence": "high",
+                    "route": "plan",
+                    "reason": "no_pending_confirmation_guard",
+                },
                 pendingType=None,
                 actionFamily=None,
+                resultKind=None,
+                llmRequests=0,
+                inputTokens=0,
+                outputTokens=0,
+                totalTokens=0,
                 totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
                 status="success",
                 errorType=None,
             )
             return reply
+
+        fast_decision = (
+            resolve_plan_fast_route(content)
+            if request_context.planning_summary is not None
+            else None
+        )
+        if fast_decision is not None and fast_decision.matched:
+            route_decision = fast_decision.route_decision()
+            plan_next_call_id = f"fast-plan-next-{fast_decision.action_family}"
+            execute_call_id = f"fast-execute-{fast_decision.action_family}"
+            try:
+                plan_next_started_at = time.monotonic()
+                plan_model = await _plan_next_action_model(
+                    SimpleNamespace(deps=request_context),
+                    user_goal=fast_decision.user_goal or content,
+                    action_family=fast_decision.action_family,  # type: ignore[arg-type]
+                    volunteer_ids=fast_decision.volunteer_ids,
+                    unit_ids=fast_decision.unit_ids,
+                    target_position=fast_decision.target_position,
+                    user_confirmed=False,
+                )
+                plan_next_duration_ms = int((time.monotonic() - plan_next_started_at) * 1000)
+                plan_payload = json.dumps(plan_model.model_dump(), ensure_ascii=False)
+                execute_started_at = time.monotonic()
+                result_text = await execute_plan_action(SimpleNamespace(deps=request_context), plan_payload)
+                execute_duration_ms = int((time.monotonic() - execute_started_at) * 1000)
+                result = _parse_tool_return_json(result_text) or {}
+                reply = _direct_plan_fast_route_reply(result)
+                if isinstance(reply, str):
+                    reply = _sanitize_reply_for_user(_normalize_user_facing_terms(reply))
+
+                new_messages = [
+                    ModelRequest(parts=[UserPromptPart(content=content)]),
+                    ModelResponse(
+                        parts=[
+                            ToolCallPart(
+                                tool_name="plan_next_action",
+                                args={
+                                    "user_goal": fast_decision.user_goal or content,
+                                    "action_family": fast_decision.action_family,
+                                    "volunteer_ids": fast_decision.volunteer_ids,
+                                    "unit_ids": fast_decision.unit_ids,
+                                    "target_position": fast_decision.target_position,
+                                    "user_confirmed": False,
+                                },
+                                tool_call_id=plan_next_call_id,
+                            )
+                        ],
+                        model_name="plan-fast-route",
+                    ),
+                    ModelRequest(
+                        parts=[
+                            ToolReturnPart(
+                                tool_name="plan_next_action",
+                                content=plan_payload,
+                                tool_call_id=plan_next_call_id,
+                            )
+                        ]
+                    ),
+                    ModelResponse(
+                        parts=[
+                            ToolCallPart(
+                                tool_name="execute_plan_action",
+                                args={"plan_payload": plan_payload},
+                                tool_call_id=execute_call_id,
+                            )
+                        ],
+                        model_name="plan-fast-route",
+                    ),
+                    ModelRequest(
+                        parts=[
+                            ToolReturnPart(
+                                tool_name="execute_plan_action",
+                                content=result_text,
+                                tool_call_id=execute_call_id,
+                            )
+                        ]
+                    ),
+                    ModelResponse(parts=[TextPart(content=reply)], model_name="plan-fast-route"),
+                ]
+                try:
+                    history_to_save = list(history or [])
+                    history_to_save.extend(new_messages)
+                    await self.history_store.save(session_id, history_to_save)
+                except Exception:
+                    logger.exception("Failed to save plan fast route history: session_id=%s", session_id)
+                _log_conversation_turn_event(
+                    sessionId=session_id,
+                    userId=user_id,
+                    scene="plan",
+                    routingPath="plan_fast_route",
+                    routeDecision=route_decision,
+                    pendingType=None,
+                    actionFamily=result.get("action_family") or fast_decision.action_family,
+                    resultKind=result.get("result_kind"),
+                    modelProvider=_llm_config_value(self.llm_client, "provider"),
+                    modelName=_llm_config_value(self.llm_client, "model_name"),
+                    llmRequests=0,
+                    inputTokens=0,
+                    outputTokens=0,
+                    totalTokens=0,
+                    toolCallCount=2,
+                    totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
+                    llmDurationMs=0,
+                    toolDurationMs=plan_next_duration_ms + execute_duration_ms,
+                    toolCalls=[
+                        {
+                            "name": "plan_next_action",
+                            "durationMs": plan_next_duration_ms,
+                            "success": True,
+                            "actionFamily": fast_decision.action_family,
+                            "stage": plan_model.stage,
+                        },
+                        {
+                            "name": "execute_plan_action",
+                            "durationMs": execute_duration_ms,
+                            "success": bool(result) and result.get("result_kind") != "error",
+                            "actionFamily": result.get("action_family") or fast_decision.action_family,
+                            "stage": result.get("stage"),
+                            "resultKind": result.get("result_kind"),
+                            "applied": bool(result.get("applied")),
+                        },
+                    ],
+                    postProcessingApplied=[],
+                    status="success" if result.get("result_kind") != "error" else "error",
+                    errorType=result.get("result_kind") if result.get("result_kind") == "error" else None,
+                )
+                workspace_refresh_targets = _dedupe_workspace_targets(
+                    [str(target) for target in (result.get("workspace_refresh_targets") or [])]
+                )
+                if workspace_refresh_targets:
+                    return ChatServiceResponseEnvelope(
+                        primary=reply,
+                        followups=[
+                            _build_workspace_action_response(session_id, target)
+                            for target in workspace_refresh_targets
+                        ],
+                    )
+                return reply
+            except Exception:
+                logger.exception(
+                    "Plan fast route failed; falling back to full agent: session_id=%s action_family=%s",
+                    session_id,
+                    fast_decision.action_family,
+                )
 
         llm_started_at = time.monotonic()
         reply, new_messages, all_messages, usage = await self.agent.run_with_message_deltas(
@@ -1964,6 +2229,7 @@ class ChatService:
         tool_calls = _iter_tool_call_parts(tool_messages)
         tool_returns = _iter_tool_return_parts(tool_messages)
         called_tool_names = [part.tool_name for part in tool_calls]
+        observed_tool_calls = _summarize_tool_calls_for_observability(tool_calls, tool_returns)
         if any(name in {"collect_plan_context_inputs", "plan_next_action", "execute_plan_action", "query_volunteer_plan"} for name in called_tool_names):
             scene = "plan"
         elif any("intent" in name for name in called_tool_names):
@@ -1979,14 +2245,26 @@ class ChatService:
             userId=user_id,
             scene=scene,
             routingPath="full_agent",
+            routeDecision={
+                "source": "full_agent",
+                "matched": True,
+                "confidence": "model",
+                "route": scene,
+                "fallbackReason": "no_direct_route",
+            },
             pendingType=pending_type,
             actionFamily=action_family,
-            modelProvider=None,
-            modelName=None,
+            modelProvider=_llm_config_value(self.llm_client, "provider"),
+            modelName=_llm_config_value(self.llm_client, "model_name"),
+            llmRequests=getattr(usage, "requests", None),
+            inputTokens=getattr(usage, "input_tokens", None),
+            outputTokens=getattr(usage, "output_tokens", None),
+            totalTokens=getattr(usage, "total_tokens", None),
+            toolCallCount=getattr(usage, "tool_calls", None),
             totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
             llmDurationMs=llm_duration_ms,
             toolDurationMs=None,
-            toolCalls=[{"name": name} for name in called_tool_names],
+            toolCalls=observed_tool_calls,
             postProcessingApplied=[],
             status="success",
             errorType=None,

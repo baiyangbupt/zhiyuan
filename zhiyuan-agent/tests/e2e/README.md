@@ -33,6 +33,28 @@ pytest tests/e2e/ -v -s -m e2e
 pytest -v -s
 ```
 
+## Agent 对话效果与性能 smoke
+
+该测试会通过兼容 WebSocket 访问本地 Agent，并可能触发真实大模型调用。默认跳过，需要显式打开：
+
+```bash
+RUN_AGENT_DIALOG_E2E=1 \
+AGENT_DIALOG_E2E_URL=ws://127.0.0.1:8000/gaotu-assistant-agent/plus/chat/1/bot/test/do \
+AGENT_DIALOG_E2E_METRICS_OUTPUT=examples/dialog_regression_302_effect_perf_output.json \
+pytest tests/e2e/test_agent_dialog_effect_perf.py -v -s
+```
+
+默认使用 `examples/dialog_regression_302_effect_perf_cases.json`，覆盖：
+
+- 方案只读查询的结构化回复和无工作台误联动。
+- 专业+大学与院校专业组两种模式的移动 preview -> confirm -> apply。
+- 学校/专业简称或模糊目标的安全解释。
+- 新会话下 Explore、Intent preview 和无 pending 确认的快速保护。
+
+`--metrics-output` / `AGENT_DIALOG_E2E_METRICS_OUTPUT` 会输出每步耗时、消息数，以及从本地 SQLite 历史解析出的 `turnObservability`：包含本轮 tool call、`actionFamily`、`resultKind`、`stage`、`applied` 等字段，便于定位慢点是模型路由、工具执行还是动作预览。默认读取 `data/chat_history.db`，可用 `AGENT_DIALOG_E2E_HISTORY_DB` 指定其他历史库。
+
+如果怀疑历史会话污染，保持默认 `AGENT_DIALOG_E2E_CLEAR_HISTORY=1`；它只清理 Agent 本地 SQLite 对话历史，不会复制或修改后端方案数据。方案编辑类样例仍需要使用真实存在且有方案数据的 `sessionId`。
+
 ## 测试用例
 
 - `test_real_llm_simple_query` — 简单问答（1+1=?）

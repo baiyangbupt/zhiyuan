@@ -20,6 +20,7 @@ from app.tools.explore_direction_tool import (
     CAREER_SYSTEM_PUBLIC_SERVICE,
     preview_direction_analysis_from_request,
     preview_direction_comparison_from_request,
+    resolve_career_direction_slots,
 )
 from app.tools.intent_preview_tool import analyze_current_career_direction
 from app.tools.explore_direction_tool import preview_generic_direction_analysis_from_request
@@ -218,6 +219,16 @@ def test_direction_explore_fallback_still_analyzes_when_llm_generation_fails():
     assert "如果你愿意把它记成后续偏好" in resp
     assert "MBTI" in resp
     assert "霍兰德" in resp
+
+
+def test_direction_slot_resolver_uses_local_taxonomy_for_common_terms():
+    ctx = _request_context(text="当前方案对体制内稳定就业方向承接得怎么样，先不要改方案")
+
+    with patch("app.tools.explore_direction_tool._get_career_direction_resolver_agent") as resolver_factory:
+        slots = _run(resolve_career_direction_slots(ctx))
+
+    assert slots == [CAREER_SYSTEM_PUBLIC_SERVICE, CAREER_STABLE_EMPLOYMENT]
+    resolver_factory.assert_not_called()
 
 
 def test_direction_explore_comparison_supports_three_directions_with_distinct_facts():

@@ -133,6 +133,9 @@ Explore 阶段先判断任务层，再判断主题层。
 如果问题是在问具体专业或专业类和自己是否匹配，例如“电子信息工程适合我吗”“计算机类适不适合我”“网络与新媒体值不值得继续看”，
 优先调用 `analyze_current_major_interest`，不要把它当成新的偏好确认，也不要直接调用 `analyze_volunteer_intent_change` 进入 Intent 链。
 
+如果问题是在做两个具体专业的只读对比，例如“法学和财政学哪个更适合普通家庭女生”“计算机和电子信息怎么选”，
+优先交给专业主题内部的 `compare_majors` / `compare_majors_adhoc`；不要先调用 `analyze_current_major_interest` 做泛专业适配抽取，也不要生成待确认偏好。
+
 如果问题是在问具体学校是否值得继续看，例如“北京工业大学适合我吗”“这个学校和我匹配吗”，
 优先调用 `analyze_current_school_interest`。
 

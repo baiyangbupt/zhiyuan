@@ -4,13 +4,25 @@
 
 ### Added
 
+- 3.0.3 Agent 效果/性能优化启动：新增 deep dive 设计文档，梳理当前 ChatService -> ChatAgent -> Plan/Explore/Intent 工具链路、真实 e2e 慢点、根因和分阶段优化方案。
+- `conversation_turn_event` 补充 3.0.3 观测字段：`routeDecision`、LLM request/token、toolCallCount 和结构化 toolCalls 摘要；full-agent 工具调用会记录 actionFamily、stage、resultKind、applied/messageCode，direct pending/guard 路径明确记录 `llmRequests=0`。
+- `dialog_regression_runner.py` 的 metrics 输出新增 `turnObservability`，从本地 SQLite 历史解析每轮 tool call、actionFamily、stage、resultKind 和 applied 状态，便于在 WebSocket e2e 中定位慢点和误路由。
+- 新增 Plan 高置信快路径 `plan_fast_route`：在已有 planning summary 时，方案状态、数字志愿/专业组移动、数字删除、指定维度排序和显式审查会跳过主模型自由试工具，直接进入 `_plan_next_action_model -> execute_plan_action`；高副作用动作仍只生成 preview，确认后再 apply。
+- Explore 职业方向分析首轮减重：体制内/稳定就业/读研等有限 taxonomy 支持本地归一化，避免常见表达额外调用 slot 识别 LLM；方向分析内部润色 LLM 增加 10s 短超时，超时后使用结构化事实 fallback 交给主模型组织。
+- 收紧专业对比调度边界：两个具体专业的只读对比优先 `compare_majors / compare_majors_adhoc`，避免先进入 `analyze_current_major_interest` 或 Intent 确认链。
+- Explore 调度规则补充“同轮不重复查状态”：调用方向/专业/学校/地域适配分析工具后，不再补调 `plan_next_action(query_state)` 或 `query_volunteer_plan` 做重复状态查询。
+- `compare_majors / compare_majors_adhoc` 补充缺失权重数据兜底：会话缺少分数画像或权重接口返回空数据时，不再用空指标生成“综合得分相同”等误导结论。
+- 专业组移动/删除确认链路增加分段耗时观测：Agent 输出 `plan_ordered_unit_mutation_timing / plan_ordered_unit_post_apply_timing`，Server 输出 `planning_ordered_unit_move_timing / planning_ordered_unit_remove_timing`，用于定位确认慢点是在专业组定位、后端状态重建、行为事件、保存、响应体返回还是执行后重复定位。
 - 新增 `examples/dialog_regression_full_journey_cases.json` 并扩展到 9 个 case，专门覆盖“开场上下文 -> Explore -> 软意向 -> 硬约束 -> 候选查看/刷新 -> 方案查询/调整/确认/审查”的完整链路；包含专业、职业、地域、学校、专业组操作、候选别名加入、审查后修复、软硬意向混合和确认边界，并补充目录级单测按 coverage 标签校验薄弱场景。
 - `dialog_regression_runner.py` 新增 `--session-offset`，支持把固定 case session 映射到一批干净数字会话，并在输出里保留原始 `baseSessionId`，用于排除历史聊天记录和旧 pending 状态对真实 WebSocket 回归的污染。
 - `dialog_regression_runner.py` 新增 `--clear-history` 和 `--history-db`，支持在真实 `16/17` 等后端数据完整会话上只清理 Agent 本地 SQLite 对话历史后复跑，避免 `--session-offset` 丢失原 session 成绩、候选池和排序方案导致假失败。
+- `dialog_regression_runner.py` 新增 `warnElapsedSeconds / maxElapsedSeconds` 场景级耗时预算、整体 metrics summary 和 `--metrics-output` JSON 归档，支持把对话效果断言与 provider 延迟观察放在同一轮 WebSocket 回归里。
+- 新增 `examples/dialog_regression_302_effect_perf_cases.json` 和 `tests/e2e/test_agent_dialog_effect_perf.py`，覆盖 3.0.2 对话效果/性能 smoke：结构化方案查询、只读职业方向承接、专业+大学移动、专业组整体移动、歧义目标安全解释、新会话 Explore/Intent preview 和无 pending 确认快速保护。
 - 新增 Agent HTTP 健康检查接口 `/health` 和 `/gaotu-assistant-agent/health`，用于 Docker Compose healthcheck 和发布后远端探活，不影响现有 WebSocket 对话链路。
 - 3.0.1 对话规划链路新增 `sort_ordered_plan` 动作，支持用户通过对话按录取率、院校层次或推荐系数排序当前方案；排序作为高副作用动作进入 preview -> 确认 -> apply 流程，并刷新方案与审查状态。
 - 补充 3.0.1 对话回归和模型 benchmark 场景，覆盖方案排序、禁用旧锁定入口、候选筛选可见联动等端到端行为。
 - 新增最小结构化日志 `conversation_turn_event / plan_action_event / intent_state_event`，记录路由路径、action family、耗时、执行状态和错误类型，用于后续评估关键词兜底、模型效果和工具稳定性。
+- `conversation_turn_event` 的 full-agent 路径补充 `modelProvider / modelName`，便于按模型配置对比对话效果和耗时；日志不记录 API Key。
 - 对话规划链路新增专业组级动作设计与基础执行接入：`move_ordered_unit / remove_ordered_unit` 支持按 `unit_ids` 或“第 N 个专业组”定位专业组，确认后调用后端组级移动/删除接口并刷新方案与审查状态。
 
 ### Fixed

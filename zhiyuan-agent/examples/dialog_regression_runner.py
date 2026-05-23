@@ -14,6 +14,7 @@ import argparse
 import asyncio
 import json
 import sqlite3
+import statistics
 import time
 from copy import deepcopy
 from pathlib import Path
@@ -176,6 +177,146 @@ def _clear_history(db_path: Path, session_ids: list[str]) -> int:
     return cursor.rowcount if cursor.rowcount is not None else 0
 
 
+def _load_history_json(db_path: Path, session_id: str) -> list[dict[str, Any]]:
+    if not db_path.exists():
+        return []
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT history_json FROM chat_session_history WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+    if row is None:
+        return []
+    try:
+        data = json.loads(str(row[0] or "[]"))
+    except Exception:
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _parse_json_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except Exception:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _latest_turn_messages(history: list[dict[str, Any]], prompt: str) -> list[dict[str, Any]]:
+    """Return messages for the latest persisted turn matching prompt."""
+    prompt_text = str(prompt or "")
+    start_index: int | None = None
+    for index in range(len(history) - 1, -1, -1):
+        message = history[index] if isinstance(history[index], dict) else {}
+        for part in message.get("parts") or []:
+            if not isinstance(part, dict):
+                continue
+            if part.get("part_kind") == "user-prompt" and str(part.get("content") or "") == prompt_text:
+                start_index = index
+                break
+        if start_index is not None:
+            break
+    if start_index is None:
+        return []
+    return history[start_index:]
+
+
+def _plan_payload_fields_from_call_args(args: dict[str, Any]) -> dict[str, Any]:
+    raw_payload = args.get("plan_payload")
+    if not isinstance(raw_payload, str) or not raw_payload.strip():
+        return {}
+    payload = _parse_json_object(raw_payload)
+    if not payload:
+        return {}
+    result: dict[str, Any] = {}
+    action_family = str(payload.get("action_family") or "").strip()
+    stage = str(payload.get("stage") or "").strip()
+    if action_family:
+        result["actionFamily"] = action_family
+    if stage:
+        result["stage"] = stage
+    return result
+
+
+def _summarize_turn_observability(turn_messages: list[dict[str, Any]]) -> dict[str, Any]:
+    """Extract tool/action metadata from persisted pydantic-ai JSON history."""
+    tool_calls: list[dict[str, Any]] = []
+    returns_by_call_id: dict[str, dict[str, Any]] = {}
+    action_families: list[str] = []
+    result_kinds: list[str] = []
+
+    def add_unique(target: list[str], value: Any) -> None:
+        text = str(value or "").strip()
+        if text and text not in target:
+            target.append(text)
+
+    for message in turn_messages:
+        if not isinstance(message, dict):
+            continue
+        for part in message.get("parts") or []:
+            if not isinstance(part, dict):
+                continue
+            kind = part.get("part_kind")
+            tool_name = str(part.get("tool_name") or "").strip()
+            call_id = str(part.get("tool_call_id") or "").strip()
+            if kind == "tool-call" and tool_name:
+                args = _parse_json_object(part.get("args"))
+                item: dict[str, Any] = {"name": tool_name}
+                if call_id:
+                    item["toolCallId"] = call_id
+                action_family = str(args.get("action_family") or "").strip()
+                if tool_name == "execute_plan_action":
+                    item.update(_plan_payload_fields_from_call_args(args))
+                    action_family = action_family or str(item.get("actionFamily") or "").strip()
+                elif action_family:
+                    item["actionFamily"] = action_family
+                stage = str(args.get("current_stage") or "").strip()
+                if stage:
+                    item["stage"] = stage
+                add_unique(action_families, item.get("actionFamily"))
+                tool_calls.append(item)
+                continue
+            if kind == "tool-return" and tool_name:
+                data = _parse_json_object(part.get("content"))
+                if call_id and data:
+                    returns_by_call_id[call_id] = data
+
+    for item in tool_calls:
+        call_id = str(item.get("toolCallId") or "")
+        returned = returns_by_call_id.get(call_id) or {}
+        action_family = str(returned.get("action_family") or item.get("actionFamily") or "").strip()
+        stage = str(returned.get("stage") or item.get("stage") or "").strip()
+        result_kind = str(returned.get("result_kind") or "").strip()
+        if action_family:
+            item["actionFamily"] = action_family
+            add_unique(action_families, action_family)
+        if stage:
+            item["stage"] = stage
+        if result_kind:
+            item["resultKind"] = result_kind
+            add_unique(result_kinds, result_kind)
+        if "applied" in returned:
+            item["applied"] = bool(returned.get("applied"))
+        message_code = str(returned.get("messageCode") or "").strip()
+        if message_code:
+            item["messageCode"] = message_code
+        if returned:
+            item["success"] = result_kind != "error"
+
+    return {
+        "historyMessages": len(turn_messages),
+        "toolCallCount": len(tool_calls),
+        "toolReturnCount": len(returns_by_call_id),
+        "toolCalls": tool_calls,
+        "actionFamilies": action_families,
+        "resultKinds": result_kinds,
+    }
+
+
 def _summarize_primary(messages: list[dict[str, Any]]) -> str:
     text_parts = [m.get("content", "") for m in messages if m.get("type") == "text"]
     thinking_parts = [m.get("content", "") for m in messages if m.get("type") == "thinking"]
@@ -266,6 +407,98 @@ def _check_content_assertions(
     return violations
 
 
+def _as_optional_float(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _milliseconds_from_step(step: dict[str, Any], *keys: str) -> int | None:
+    for key in keys:
+        value = _as_optional_float(step.get(key))
+        if value is None:
+            continue
+        if key.lower().endswith("seconds"):
+            return int(value * 1000)
+        return int(value)
+    return None
+
+
+def _check_performance_assertions(
+    elapsed_ms: int,
+    step: dict[str, Any],
+    case_name: str,
+    session_id: str,
+) -> tuple[list[str], list[str]]:
+    """Return hard failures and soft warnings for per-step latency budgets."""
+    failures: list[str] = []
+    warnings: list[str] = []
+    prompt_label = step.get("prompt") or step.get("text") or ""
+    max_elapsed_ms = _milliseconds_from_step(step, "maxElapsedMs", "maxElapsedSeconds")
+    warn_elapsed_ms = _milliseconds_from_step(step, "warnElapsedMs", "warnElapsedSeconds")
+
+    if max_elapsed_ms is not None and elapsed_ms > max_elapsed_ms:
+        failures.append(
+            f"{case_name} session={session_id} prompt={prompt_label}: "
+            f"maxElapsed FAILED — elapsedMs={elapsed_ms} > maxElapsedMs={max_elapsed_ms}"
+        )
+    if warn_elapsed_ms is not None and elapsed_ms > warn_elapsed_ms:
+        warnings.append(
+            f"{case_name} session={session_id} prompt={prompt_label}: "
+            f"latency warning — elapsedMs={elapsed_ms} > warnElapsedMs={warn_elapsed_ms}"
+        )
+    return failures, warnings
+
+
+def _duration_summary(values: list[int]) -> dict[str, int | None]:
+    if not values:
+        return {"count": 0, "minMs": None, "medianMs": None, "p95Ms": None, "maxMs": None}
+    ordered = sorted(values)
+    p95_index = min(len(ordered) - 1, int(round((len(ordered) - 1) * 0.95)))
+    return {
+        "count": len(values),
+        "minMs": min(values),
+        "medianMs": int(statistics.median(values)),
+        "p95Ms": ordered[p95_index],
+        "maxMs": max(values),
+    }
+
+
+def _build_metrics_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
+    elapsed_values = [
+        int(record["elapsedMs"])
+        for record in records
+        if isinstance(record.get("elapsedMs"), int) and not record.get("error")
+    ]
+    slowest = sorted(
+        (
+            record
+            for record in records
+            if isinstance(record.get("elapsedMs"), int)
+        ),
+        key=lambda item: int(item["elapsedMs"]),
+        reverse=True,
+    )[:5]
+    return {
+        "steps": len(records),
+        "successfulSteps": len(elapsed_values),
+        "failedSteps": sum(1 for record in records if record.get("error")),
+        "elapsed": _duration_summary(elapsed_values),
+        "slowest": [
+            {
+                "case": record.get("case"),
+                "sessionId": record.get("sessionId"),
+                "prompt": record.get("prompt"),
+                "elapsedMs": record.get("elapsedMs"),
+            }
+            for record in slowest
+        ],
+    }
+
+
 async def _run_cases(
     url: str,
     user_id: str,
@@ -274,8 +507,12 @@ async def _run_cases(
     assert_plan_style: bool = False,
     open_timeout: float = 30,
     response_timeout: float = 120,
+    metrics_output: str | None = None,
+    history_db: str | None = str(DEFAULT_HISTORY_DB),
 ) -> None:
     failures: list[str] = []
+    warnings: list[str] = []
+    metrics_records: list[dict[str, Any]] = []
     for case in cases:
         name = str(case.get("name") or f"session-{case.get('sessionId')}")
         session_id = str(case["sessionId"])
@@ -310,17 +547,38 @@ async def _run_cases(
             except Exception as exc:
                 elapsed_ms = int((time.perf_counter() - started_at) * 1000)
                 failures.append(f"{name} session={session_id} prompt={prompt}: request failed: {type(exc).__name__}: {exc}")
+                metrics_records.append(
+                    {
+                        "case": name,
+                        "sessionId": session_id,
+                        "prompt": prompt,
+                        "elapsedMs": elapsed_ms,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                )
                 print(f"error={type(exc).__name__}: {exc} elapsedMs={elapsed_ms}")
                 continue
             elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+            record = {
+                "case": name,
+                "sessionId": session_id,
+                "prompt": prompt,
+                "elapsedMs": elapsed_ms,
+                "primaryMessages": len(primary),
+                "followupMessages": len(followups),
+            }
+            if history_db:
+                history = _load_history_json(Path(history_db), session_id)
+                turn_observability = _summarize_turn_observability(
+                    _latest_turn_messages(history, prompt)
+                )
+                if turn_observability.get("historyMessages"):
+                    record["turnObservability"] = turn_observability
+            metrics_records.append(record)
             print(
                 "metrics="
                 + json.dumps(
-                    {
-                        "elapsedMs": elapsed_ms,
-                        "primaryMessages": len(primary),
-                        "followupMessages": len(followups),
-                    },
+                    record,
                     ensure_ascii=False,
                 )
             )
@@ -335,9 +593,36 @@ async def _run_cases(
                 for v in content_violations:
                     print(f"  CONTENT_ASSERT_FAIL: {v}")
                 failures.extend(content_violations)
+            perf_failures, perf_warnings = _check_performance_assertions(elapsed_ms, step, name, session_id)
+            for warning in perf_warnings:
+                print(f"  LATENCY_WARN: {warning}")
+            failures.extend(perf_failures)
+            warnings.extend(perf_warnings)
             if followups:
                 print("followups=" + json.dumps(followups, ensure_ascii=False))
         print()
+    summary = _build_metrics_summary(metrics_records)
+    print("=== METRICS SUMMARY ===")
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    if warnings:
+        print("=== WARNINGS ===")
+        for warning in warnings:
+            print(warning)
+    if metrics_output:
+        Path(metrics_output).write_text(
+            json.dumps(
+                {
+                    "records": metrics_records,
+                    "summary": summary,
+                    "warnings": warnings,
+                    "failures": failures,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
     if failures:
         print("=== FAILURES ===")
         for failure in failures:
@@ -355,6 +640,7 @@ def main() -> None:
     parser.add_argument("--assert-plan-style", action="store_true", help="fail when plan replies contain severe forced-choice or internal wording")
     parser.add_argument("--open-timeout", type=float, default=30, help="websocket opening handshake timeout in seconds")
     parser.add_argument("--response-timeout", type=float, default=120, help="timeout in seconds while waiting for each prompt response")
+    parser.add_argument("--metrics-output", help="write per-step latency and assertion summary to JSON")
     parser.add_argument(
         "--session-offset",
         type=int,
@@ -402,6 +688,8 @@ def main() -> None:
             assert_plan_style=args.assert_plan_style,
             open_timeout=args.open_timeout,
             response_timeout=args.response_timeout,
+            metrics_output=args.metrics_output,
+            history_db=args.history_db,
         )
     )
 

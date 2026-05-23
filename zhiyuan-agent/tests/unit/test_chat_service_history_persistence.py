@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -19,12 +20,15 @@ from app.service import (
     build_runtime_history,
     build_timeout_fallback_from_recent_plan_execution,
     _extract_pending_plan_action,
+    _llm_config_value,
     _normalize_pending_intent_reply,
     _normalize_plan_reply_style,
     _normalize_user_facing_terms,
     _select_conversation_action_family,
+    _summarize_tool_calls_for_observability,
     _tool_calls_include_plan_workspace_refresh,
 )
+from app.tools.plan_orchestration_models import PlanActionPlan, PlanAtomicAction
 
 
 def _tool_return(action_family: str) -> ToolReturnPart:
@@ -55,6 +59,59 @@ def test_select_conversation_action_family_keeps_query_when_only_query_actions()
     )
 
     assert action_family == "query_ordered"
+
+
+def test_llm_config_value_reads_provider_and_model_without_sensitive_fields():
+    client = MagicMock()
+    client.config = SimpleNamespace(provider="openai_compatible", model_name="kimi-k2.6", api_key="sk-secret")
+
+    assert _llm_config_value(client, "provider") == "openai_compatible"
+    assert _llm_config_value(client, "model_name") == "kimi-k2.6"
+    assert _llm_config_value(client, "missing") is None
+
+
+def test_summarize_tool_calls_for_observability_extracts_plan_action_result():
+    plan_payload = {
+        "stage": "preview",
+        "action_family": "move_unit",
+        "user_goal": "把第2个志愿移到第4位",
+    }
+    tool_calls = [
+        ToolCallPart(
+            tool_name="execute_plan_action",
+            args={"plan_payload": json.dumps(plan_payload, ensure_ascii=False)},
+            tool_call_id="call-move-preview",
+        )
+    ]
+    tool_returns = [
+        ToolReturnPart(
+            tool_name="execute_plan_action",
+            content=json.dumps(
+                {
+                    "applied": False,
+                    "action_family": "move_unit",
+                    "stage": "preview",
+                    "result_kind": "preview_only",
+                },
+                ensure_ascii=False,
+            ),
+            tool_call_id="call-move-preview",
+        )
+    ]
+
+    observed = _summarize_tool_calls_for_observability(tool_calls, tool_returns)
+
+    assert observed == [
+        {
+            "name": "execute_plan_action",
+            "toolCallId": "call-move-preview",
+            "actionFamily": "move_unit",
+            "stage": "preview",
+            "resultKind": "preview_only",
+            "applied": False,
+            "success": True,
+        }
+    ]
 
 
 class _FakeAgent:
@@ -352,6 +409,70 @@ def test_chat_service_uses_main_agent_as_single_dialog_entry(tmp_path, mock_llm_
     assert reply == "intent popup by agent"
     assert len(fake_agent.calls) == 1
     assert fake_agent.calls[0]["user_prompt"] == "不想去浙江"
+
+
+def test_chat_service_plan_fast_route_bypasses_main_agent_and_persists_preview(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    fake_agent = _FakeAgent(["should not be used"])
+    plan_model = PlanActionPlan(
+        stage="preview",
+        action_family="move_unit",
+        user_goal="把第2个志愿移到第4位",
+        requires_confirmation=True,
+        should_rerun_review=False,
+        context_summary="阶段=ordered；方案=45/45",
+        missing_inputs=[],
+        atomic_actions=[
+            PlanAtomicAction(
+                action_type="move_unit",
+                volunteer_ids=["@2"],
+                target_position=4,
+                reason="把第2个志愿移到第4位",
+            )
+        ],
+        preview_summary="会调整指定志愿的位置。",
+    )
+    execution_result = {
+        "applied": False,
+        "action_family": "move_unit",
+        "stage": "preview",
+        "result_kind": "preview_only",
+        "summary": "会把第2个志愿移动到第4位。需要你确认后才会执行。",
+        "workspace_refresh_targets": [],
+    }
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch(
+                "app.service.get_planning_workspace_state",
+                AsyncMock(
+                    return_value={
+                        "code": 0,
+                        "data": {
+                            "phase": "ordered",
+                            "orderedPlanState": {"summary": {"total": 45, "targetCount": 45}},
+                            "reviewState": {"summary": {"warnCount": 0, "riskCount": 0}},
+                        },
+                    }
+                ),
+            ), \
+            patch("app.service._plan_next_action_model", AsyncMock(return_value=plan_model)) as mock_plan_next, \
+            patch(
+                "app.service.execute_plan_action",
+                AsyncMock(return_value=json.dumps(execution_result, ensure_ascii=False)),
+            ) as mock_execute:
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(service.handle_message("session-fast-plan", "user-1", "把第2个志愿移到第4位"))
+
+    assert reply == "会把第2个志愿移动到第4位。需要你确认后才会执行。"
+    assert fake_agent.calls == []
+    mock_plan_next.assert_awaited_once()
+    mock_execute.assert_awaited_once()
+    stored = asyncio.run(store.load("session-fast-plan"))
+    assert stored is not None
+    assert _extract_pending_plan_action(stored)["action_family"] == "move_unit"
 
 
 class _FakeAgentWithToolCalls:
@@ -3063,7 +3184,8 @@ def test_chat_service_basic_plan_status_uses_current_planning_summary(tmp_path, 
                         },
                     }
                 ),
-            ):
+            ), \
+            patch("app.service.resolve_plan_fast_route", return_value=SimpleNamespace(matched=False)):
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-basic-plan-status", "user-1", "方案有了么"))
 
@@ -3234,7 +3356,8 @@ def test_chat_service_plan_status_message_keeps_main_agent_entry_and_planning_su
                     },
                     "pendingActions": [{"summary": "补 2 个保底专业组"}],
                 },
-            })):
+            })), \
+            patch("app.service.resolve_plan_fast_route", return_value=SimpleNamespace(matched=False)):
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-plan-1", "user-1", "现在方案怎么样"))
 
@@ -3267,7 +3390,8 @@ def test_chat_service_plan_adjustment_message_preserves_history_context(tmp_path
                     "reviewState": {"summary": {"warnCount": 1, "riskCount": 0}, "checks": []},
                     "pendingActions": [{"summary": "微调 1 处相邻顺序"}],
                 },
-            })):
+            })), \
+            patch("app.service.resolve_plan_fast_route", return_value=SimpleNamespace(matched=False)):
         service = ChatService(mock_llm_client, store)
         first_reply = asyncio.run(service.handle_message("session-plan-2", "user-2", "现在方案怎么样"))
         second_reply = asyncio.run(service.handle_message("session-plan-2", "user-2", "怎么优化"))
@@ -3335,7 +3459,8 @@ def test_chat_service_plan_status_then_review_preserves_dialog_history(tmp_path,
                     },
                     "pendingActions": [{"summary": "补充保区志愿"}],
                 },
-            })):
+            })), \
+            patch("app.service.resolve_plan_fast_route", return_value=SimpleNamespace(matched=False)):
         service = ChatService(mock_llm_client, store)
         first_reply = asyncio.run(service.handle_message("session-plan-4", "user-4", "现在方案怎么样"))
         second_reply = asyncio.run(service.handle_message("session-plan-4", "user-4", "哪里还不合理"))
@@ -3384,7 +3509,8 @@ def test_chat_service_basic_plan_status_then_followup_reload_latest_planning_sum
     with patch("app.service.ChatAgent", return_value=fake_agent), \
             patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
-            patch("app.service.get_planning_workspace_state", AsyncMock(side_effect=planning_responses)) as planning_mock:
+            patch("app.service.get_planning_workspace_state", AsyncMock(side_effect=planning_responses)) as planning_mock, \
+            patch("app.service.resolve_plan_fast_route", return_value=SimpleNamespace(matched=False)):
         service = ChatService(mock_llm_client, store)
         first_reply = asyncio.run(service.handle_message("session-plan-repeat-1", "user-1", "方案有了么"))
         second_reply = asyncio.run(service.handle_message("session-plan-repeat-1", "user-1", "现在方案怎么样"))

@@ -105,6 +105,9 @@ async def compare_majors(
         logger.info("专业1权重数据: %s", weights1)
         logger.info("专业2权重数据: %s", weights2)
 
+        if not _has_major_weight_data(weights1) or not _has_major_weight_data(weights2):
+            return _build_missing_weight_data_comparison(major_name1, major_name2)
+
         # Generate comparison summary
         return await _summarize_comparison(
             major_name1, major_name2, weights1, weights2
@@ -113,6 +116,34 @@ async def compare_majors(
     except Exception:
         logger.exception("专业对比失败: %s vs %s", major_name1, major_name2)
         return f"抱歉，对比{major_name1}和{major_name2}时发生错误，请稍后重试。"
+
+
+def _has_major_weight_data(weights: dict) -> bool:
+    querylist = weights.get("querylist")
+    if not isinstance(querylist, list) or not querylist:
+        return False
+    first = querylist[0]
+    if not isinstance(first, dict):
+        return False
+    return any(
+        key in first
+        for key in (
+            "gender_index",
+            "satisfy_index",
+            "salary_avg",
+            "hot_index",
+            "major_score",
+            "major_score_new",
+        )
+    )
+
+
+def _build_missing_weight_data_comparison(major_name1: str, major_name2: str) -> str:
+    return (
+        f"暂时没有拿到当前会话可用的个性化量化权重数据，所以不能按系统评分判断{major_name1}和{major_name2}谁更高。"
+        "这轮请只做通用维度比较：就业路径、考公/国企岗位覆盖、证书或升学门槛、起薪稳定性、长期上限和试错成本；"
+        "如果用户补充分数、选科、地域和性别信息，可以再做个性化对比。"
+    )
 
 
 async def _resolve_major_name(
@@ -294,6 +325,9 @@ async def compare_majors_adhoc(
 
         logger.info("adhoc 专业1权重数据: %s", weights1)
         logger.info("adhoc 专业2权重数据: %s", weights2)
+
+        if not _has_major_weight_data(weights1) or not _has_major_weight_data(weights2):
+            return _build_missing_weight_data_comparison(major_name1, major_name2)
 
         return await _summarize_comparison(
             major_name1, major_name2, weights1, weights2

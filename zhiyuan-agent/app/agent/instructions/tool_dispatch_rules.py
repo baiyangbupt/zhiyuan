@@ -26,6 +26,9 @@ _TOOL_DISPATCH_RULES = """\
 - 对泛方向适配问题（适合什么方向/哪条路更合适/这个方向适不适合我），默认按 Explore + career 处理，优先调用 `analyze_current_career_direction`。
 - 对学校/专业/地域主题分别用 `analyze_current_school_interest` / `analyze_current_major_interest` / `analyze_current_region_interest`。
 - 对具体专业适配问题（电子信息工程适合我吗），属于 Explore + major，不是 Intent 偏好写入。
+- 对两个具体专业的只读对比（如“法学和财政学哪个更适合普通家庭女生”“计算机和电子信息怎么选”），优先调用 `compare_majors` 或 `compare_majors_adhoc`；不要先调用 `analyze_current_major_interest` 做专业意向抽取，也不要生成待确认偏好。
+- 用户明确说“先只分析 / 不要记偏好 / 不要调整方案”时，必须保留在只读 Explore 或 Plan 分析路径，不要创建 pending intent。
+- `analyze_current_career_direction` / `analyze_current_major_interest` / `analyze_current_school_interest` / `analyze_current_region_interest` 已经会结合当前方案承接和候选机会做分析；同一轮调用这些 Explore 工具后，不要再补调 `plan_next_action(query_state)` 或 `query_volunteer_plan` 做重复状态查询，除非用户另行要求查看具体志愿列表。
 - Explore 回答顺序：先看学生本人适配度，再看方向/对象特点，再看当前方案承接，最后提候选机会。
 - Explore 工具返回的分析已按用户可读结构组织好，你可以少量压缩但应保留小标题、换行和要点结构。
 - 用户只是了解方向、学校、专业、适配度时，优先给分析，不要强行触发工作台视图或数据变更。

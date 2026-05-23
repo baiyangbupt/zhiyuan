@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import sqlite3
 from pathlib import Path
 
@@ -120,6 +121,73 @@ def test_clear_history_missing_db_is_noop(tmp_path):
     assert runner._clear_history(tmp_path / "missing.db", ["17"]) == 0
 
 
+def test_latest_turn_messages_returns_latest_matching_prompt():
+    history = [
+        {"parts": [{"part_kind": "user-prompt", "content": "看看方案"}]},
+        {"parts": [{"part_kind": "text", "content": "旧回复"}]},
+        {"parts": [{"part_kind": "user-prompt", "content": "看看方案"}]},
+        {"parts": [{"part_kind": "text", "content": "新回复"}]},
+    ]
+
+    turn = runner._latest_turn_messages(history, "看看方案")
+
+    assert len(turn) == 2
+    assert turn[0]["parts"][0]["content"] == "看看方案"
+    assert turn[1]["parts"][0]["content"] == "新回复"
+
+
+def test_summarize_turn_observability_extracts_tool_action_and_result():
+    plan_payload = {
+        "stage": "preview",
+        "action_family": "move_ordered_unit",
+        "user_goal": "把第4个专业组移到第2位",
+    }
+    turn_messages = [
+        {"parts": [{"part_kind": "user-prompt", "content": "把第4个专业组移到第2位"}]},
+        {
+            "parts": [
+                {
+                    "part_kind": "tool-call",
+                    "tool_name": "execute_plan_action",
+                    "tool_call_id": "functions.execute_plan_action:1",
+                    "args": {"plan_payload": json.dumps(plan_payload, ensure_ascii=False)},
+                }
+            ]
+        },
+        {
+            "parts": [
+                {
+                    "part_kind": "tool-return",
+                    "tool_name": "execute_plan_action",
+                    "tool_call_id": "functions.execute_plan_action:1",
+                    "content": json.dumps(
+                        {
+                            "applied": False,
+                            "action_family": "move_ordered_unit",
+                            "stage": "preview",
+                            "result_kind": "preview_only",
+                        },
+                        ensure_ascii=False,
+                    ),
+                }
+            ]
+        },
+    ]
+
+    observed = runner._summarize_turn_observability(turn_messages)
+
+    assert observed["historyMessages"] == 3
+    assert observed["toolCallCount"] == 1
+    assert observed["toolReturnCount"] == 1
+    assert observed["actionFamilies"] == ["move_ordered_unit"]
+    assert observed["resultKinds"] == ["preview_only"]
+    assert observed["toolCalls"][0]["name"] == "execute_plan_action"
+    assert observed["toolCalls"][0]["actionFamily"] == "move_ordered_unit"
+    assert observed["toolCalls"][0]["stage"] == "preview"
+    assert observed["toolCalls"][0]["resultKind"] == "preview_only"
+    assert observed["toolCalls"][0]["applied"] is False
+
+
 def test_content_assertions_reject_followups_when_disallowed():
     violations = runner._check_content_assertions(
         "当前没有上一轮待确认的方案动作。",
@@ -130,3 +198,32 @@ def test_content_assertions_reject_followups_when_disallowed():
     )
 
     assert any("assertNoFollowups FAILED" in item for item in violations)
+
+
+def test_performance_assertions_support_warning_and_hard_budget():
+    failures, warnings = runner._check_performance_assertions(
+        45000,
+        {"prompt": "看看方案", "warnElapsedMs": 30000, "maxElapsedSeconds": 40},
+        "case-a",
+        "17",
+    )
+
+    assert any("latency warning" in item for item in warnings)
+    assert any("maxElapsed FAILED" in item for item in failures)
+
+
+def test_metrics_summary_reports_latency_distribution_and_slowest_steps():
+    summary = runner._build_metrics_summary(
+        [
+            {"case": "a", "sessionId": "17", "prompt": "p1", "elapsedMs": 1000},
+            {"case": "b", "sessionId": "17", "prompt": "p2", "elapsedMs": 3000},
+            {"case": "c", "sessionId": "16", "prompt": "p3", "elapsedMs": 2000},
+            {"case": "d", "sessionId": "16", "prompt": "p4", "elapsedMs": 500, "error": "Timeout"},
+        ]
+    )
+
+    assert summary["steps"] == 4
+    assert summary["successfulSteps"] == 3
+    assert summary["failedSteps"] == 1
+    assert summary["elapsed"]["medianMs"] == 2000
+    assert summary["slowest"][0]["case"] == "b"
