@@ -53,7 +53,7 @@ def _frame(
     scope_fields = {}
     frame_fields = {}
 
-    target_keys = {"volunteer_refs", "school_names", "major_names", "region_names",
+    target_keys = {"volunteer_refs", "unit_refs", "school_names", "major_names", "region_names",
                    "career_types", "review_issue_code", "position"}
     scope_keys = {"tier", "province", "school_tags", "major_tags",
                   "school_keyword", "major_keyword", "limit", "is_review_issue_batch"}
@@ -90,6 +90,7 @@ class TestVerbToActionFamily:
         ("add", "add_units"),
         ("remove", "remove_units"),
         ("move", "move_unit"),
+        ("sort", "sort_ordered_plan"),
         ("replace", "replace_units"),
         ("reorder", "regenerate_order"),
         ("compensate", "preview_compensation"),
@@ -124,6 +125,24 @@ class TestVerbToActionFamily:
         ctx = _ctx(ordered_count=30)
         result = resolver.resolve(frame, ctx)
         assert result.action_family == "query_state"
+
+    def test_move_with_unit_refs_maps_to_ordered_unit_move(self, resolver):
+        frame = _frame(verb="move", unit_refs=["第4个专业组"], position=2)
+
+        result = resolver.resolve(frame, _ctx(ordered_count=30))
+
+        assert result.action_family == "move_ordered_unit"
+        assert result.stage == "preview"
+        assert result.missing_inputs == []
+
+    def test_remove_with_unit_refs_maps_to_ordered_unit_remove(self, resolver):
+        frame = _frame(verb="remove", unit_refs=["第4个专业组"])
+
+        result = resolver.resolve(frame, _ctx(ordered_count=30))
+
+        assert result.action_family == "remove_ordered_unit"
+        assert result.stage == "preview"
+        assert result.missing_inputs == []
 
 
 # ---------------------------------------------------------------------------

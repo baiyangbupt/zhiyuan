@@ -13,6 +13,7 @@
 - Explore 调度规则补充“同轮不重复查状态”：调用方向/专业/学校/地域适配分析工具后，不再补调 `plan_next_action(query_state)` 或 `query_volunteer_plan` 做重复状态查询。
 - `compare_majors / compare_majors_adhoc` 补充缺失权重数据兜底：会话缺少分数画像或权重接口返回空数据时，不再用空指标生成“综合得分相同”等误导结论。
 - 专业组移动/删除确认链路增加分段耗时观测：Agent 输出 `plan_ordered_unit_mutation_timing / plan_ordered_unit_post_apply_timing`，Server 输出 `planning_ordered_unit_move_timing / planning_ordered_unit_remove_timing`，用于定位确认慢点是在专业组定位、后端状态重建、行为事件、保存、响应体返回还是执行后重复定位。
+- ActionResolver 进入影子对比首轮：补齐 `unit_refs` 到专业组移动/删除、结构化 `sort` 到方案排序的映射；`plan_fast_route` 命中时输出 `action_resolver_shadow_event`，用于对比当前路由 action family 与 typed resolver 输出，不改变实际执行。
 - 新增 `examples/dialog_regression_full_journey_cases.json` 并扩展到 9 个 case，专门覆盖“开场上下文 -> Explore -> 软意向 -> 硬约束 -> 候选查看/刷新 -> 方案查询/调整/确认/审查”的完整链路；包含专业、职业、地域、学校、专业组操作、候选别名加入、审查后修复、软硬意向混合和确认边界，并补充目录级单测按 coverage 标签校验薄弱场景。
 - `dialog_regression_runner.py` 新增 `--session-offset`，支持把固定 case session 映射到一批干净数字会话，并在输出里保留原始 `baseSessionId`，用于排除历史聊天记录和旧 pending 状态对真实 WebSocket 回归的污染。
 - `dialog_regression_runner.py` 新增 `--clear-history` 和 `--history-db`，支持在真实 `16/17` 等后端数据完整会话上只清理 Agent 本地 SQLite 对话历史后复跑，避免 `--session-offset` 丢失原 session 成绩、候选池和排序方案导致假失败。

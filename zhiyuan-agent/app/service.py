@@ -25,6 +25,7 @@ from app.config import HistoryConfig
 from app.data.history_store import ChatHistoryStore
 from app.data.message_utils import pydantic_ai_messages_to_dicts
 from app.llm.client import LLMClient
+from app.resolver.action_resolver_shadow import action_resolver_shadow_from_plan_fast_decision
 from app.resolver.plan_fast_router import resolve_plan_fast_route
 from app.schemas.user_profile import UserProfile
 from app.schemas.ws import WSResponse
@@ -1994,6 +1995,35 @@ class ChatService:
         )
         if fast_decision is not None and fast_decision.matched:
             route_decision = fast_decision.route_decision()
+            try:
+                shadow = action_resolver_shadow_from_plan_fast_decision(
+                    text=content,
+                    decision=fast_decision,
+                    planning_summary=request_context.planning_summary,
+                    phase=request_context.conversation_phase,
+                )
+                if shadow is not None:
+                    log_event(
+                        "action_resolver_shadow_event",
+                        sessionId=session_id,
+                        userId=user_id,
+                        source="plan_fast_route",
+                        routeDecision=route_decision,
+                        actualActionFamily=shadow.get("actualActionFamily"),
+                        shadowActionFamily=shadow.get("shadowActionFamily"),
+                        shadowStage=shadow.get("shadowStage"),
+                        actionFamilyMatch=shadow.get("actionFamilyMatch"),
+                        missingInputs=shadow.get("missingInputs"),
+                        normalizationApplied=shadow.get("normalizationApplied"),
+                        totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
+                    )
+            except Exception:
+                logger.warning(
+                    "ActionResolver shadow failed for plan fast route: session_id=%s action_family=%s",
+                    session_id,
+                    fast_decision.action_family,
+                    exc_info=True,
+                )
             plan_next_call_id = f"fast-plan-next-{fast_decision.action_family}"
             execute_call_id = f"fast-execute-{fast_decision.action_family}"
             try:

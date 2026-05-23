@@ -267,6 +267,7 @@ class ActionResolver:
         "add": "add_units",
         "remove": "remove_units",
         "move": "move_unit",
+        "sort": "sort_ordered_plan",
         "pin": "pin_unit",
         "unpin": "unpin_unit",
         "replace": "replace_units",
@@ -284,6 +285,12 @@ class ActionResolver:
         """
         if frame.verb == "query":
             return self._resolve_query_family(frame)
+
+        if frame.verb == "move" and frame.target.unit_refs:
+            return "move_ordered_unit"
+
+        if frame.verb == "remove" and frame.target.unit_refs and not frame.target.volunteer_refs:
+            return "remove_ordered_unit"
 
         if frame.verb == "confirm" and frame.is_confirmation_of_previous:
             return "apply_compensation"

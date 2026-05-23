@@ -687,6 +687,13 @@ Phase 2 首轮复测记录：
 - 低风险接管场景通过所有 regression。
 - 不增加字符串模板回复。
 
+实施记录（首轮）：
+
+- `ActionResolver` 补齐结构化映射缺口：`verb=move + target.unit_refs` 映射为 `move_ordered_unit`，`verb=remove + target.unit_refs` 映射为 `remove_ordered_unit`；新增结构化 `verb=sort` 映射为 `sort_ordered_plan`。
+- 新增 `action_resolver_shadow_from_plan_fast_decision`，只在 `plan_fast_route` 命中的高置信 Plan 场景生成影子解析结果，并输出 `action_resolver_shadow_event`。
+- 影子日志记录 `actualActionFamily`、`shadowActionFamily`、`shadowStage`、`actionFamilyMatch`、`missingInputs` 和 `normalizationApplied`；该日志不改变真实执行路径、不影响 preview/confirm/apply。
+- 首轮影子对比只覆盖 fast route 已明确的结构化动作：方案状态、数字志愿移动/删除、数字专业组移动/删除、排序、审查。名称/简称类动作仍由完整 Agent 和执行层唯一性解析处理。
+
 ### Phase 4：清理技术债
 
 目标：

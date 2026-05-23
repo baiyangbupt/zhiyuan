@@ -53,6 +53,7 @@ class PlanFastRouteDecision:
     confidence: str = ""
     volunteer_ids: list[str] = field(default_factory=list)
     unit_ids: list[str] = field(default_factory=list)
+    source_position: int | None = None
     target_position: int | None = None
 
     def route_decision(self) -> dict[str, Any]:
@@ -116,6 +117,7 @@ def resolve_plan_fast_route(text: str | None) -> PlanFastRouteDecision:
             user_goal=original,
             reason="numeric_ordered_unit_move",
             confidence="high",
+            source_position=source_position,
             target_position=target_position,
         )
 
@@ -129,16 +131,19 @@ def resolve_plan_fast_route(text: str | None) -> PlanFastRouteDecision:
             reason="numeric_volunteer_move",
             confidence="high",
             volunteer_ids=[f"@{source_position}"],
+            source_position=source_position,
             target_position=target_position,
         )
 
     if match := _REMOVE_ORDERED_UNIT_RE.search(compact_text):
+        source_position = int(match.group(1))
         return PlanFastRouteDecision(
             matched=True,
             action_family="remove_ordered_unit",
             user_goal=original,
             reason="numeric_ordered_unit_remove",
             confidence="high",
+            source_position=source_position,
         )
 
     if match := _REMOVE_UNIT_RE.search(compact_text):
@@ -150,6 +155,7 @@ def resolve_plan_fast_route(text: str | None) -> PlanFastRouteDecision:
             reason="numeric_volunteer_remove",
             confidence="high",
             volunteer_ids=[f"@{source_position}"],
+            source_position=source_position,
         )
 
     if _looks_like_sort_request(compact_text):
