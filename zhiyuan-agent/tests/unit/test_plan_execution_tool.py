@@ -4319,7 +4319,7 @@ def test_execute_plan_action_moves_major_group_unit_by_position_ref():
     assert data["workspace_refresh_targets"] == ["ordered", "review"]
     assert data["executed_actions"] == [{"action": "move_ordered_unit", "unitIds": ["unit-3"]}]
     assert data["summary"] == "move ok"
-    mock_state.assert_awaited()
+    mock_state.assert_awaited_once()
     mock_move.assert_awaited_once_with(1, "exec-1", "unit-3", 5)
     timing_event = next(
         call for call in mock_log_event.call_args_list
@@ -4337,7 +4337,8 @@ def test_execute_plan_action_moves_major_group_unit_by_position_ref():
     )
     assert post_apply_event.kwargs["actionFamily"] == "move_ordered_unit"
     assert post_apply_event.kwargs["unitIds"] == ["unit-3"]
-    assert isinstance(post_apply_event.kwargs["postResolveDurationMs"], int)
+    assert post_apply_event.kwargs["postResolveDurationMs"] == 0
+    assert post_apply_event.kwargs["reusedPreMutationUnitIds"] is True
 
 
 def test_execute_plan_action_removes_major_group_unit_by_explicit_unit_id():
@@ -4386,4 +4387,5 @@ def test_execute_plan_action_removes_major_group_unit_by_explicit_unit_id():
     )
     assert post_apply_event.kwargs["actionFamily"] == "remove_ordered_unit"
     assert post_apply_event.kwargs["unitIds"] == ["unit-9"]
-    assert isinstance(post_apply_event.kwargs["postResolveDurationMs"], int)
+    assert post_apply_event.kwargs["postResolveDurationMs"] == 0
+    assert post_apply_event.kwargs["reusedPreMutationUnitIds"] is True

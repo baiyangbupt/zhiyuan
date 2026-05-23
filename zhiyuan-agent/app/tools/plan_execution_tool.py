@@ -1659,7 +1659,7 @@ async def _sort_ordered_plan(ctx: RunContext[RequestContext], plan_model: PlanAc
         return False, f"按{sort_label}排序时发生错误，请稍后重试。"
 
 
-async def _move_ordered_unit(ctx: RunContext[RequestContext], plan_model: PlanActionPlan) -> tuple[bool, str]:
+async def _move_ordered_unit(ctx: RunContext[RequestContext], plan_model: PlanActionPlan) -> tuple[bool, str, list[str]]:
     session_id = ctx.deps.sessionid
     started_at = time.monotonic()
     resolve_started_at = time.monotonic()
@@ -1678,7 +1678,7 @@ async def _move_ordered_unit(ctx: RunContext[RequestContext], plan_model: PlanAc
             mutationRequestDurationMs=0,
             totalDurationMs=int((time.monotonic() - started_at) * 1000),
         )
-        return False, "还没有定位到要移动的专业组。请说明专业组名称或第几个专业组。"
+        return False, "还没有定位到要移动的专业组。请说明专业组名称或第几个专业组。", unit_ids
     if target_position is None:
         log_event(
             "plan_ordered_unit_mutation_timing",
@@ -1691,7 +1691,7 @@ async def _move_ordered_unit(ctx: RunContext[RequestContext], plan_model: PlanAc
             mutationRequestDurationMs=0,
             totalDurationMs=int((time.monotonic() - started_at) * 1000),
         )
-        return False, "还没有定位到目标位置。请说明要移动到第几位。"
+        return False, "还没有定位到目标位置。请说明要移动到第几位。", unit_ids
     try:
         mutation_started_at = time.monotonic()
         result = await _move_planning_ordered_plan_unit_request(
@@ -1714,7 +1714,7 @@ async def _move_ordered_unit(ctx: RunContext[RequestContext], plan_model: PlanAc
                 mutationRequestDurationMs=mutation_duration_ms,
                 totalDurationMs=int((time.monotonic() - started_at) * 1000),
             )
-            return False, "专业组移动失败，请稍后重试或改用页面操作。"
+            return False, "专业组移动失败，请稍后重试或改用页面操作。", unit_ids
         data = (result or {}).get("data") or {}
         log_event(
             "plan_ordered_unit_mutation_timing",
@@ -1728,7 +1728,7 @@ async def _move_ordered_unit(ctx: RunContext[RequestContext], plan_model: PlanAc
             mutationRequestDurationMs=mutation_duration_ms,
             totalDurationMs=int((time.monotonic() - started_at) * 1000),
         )
-        return True, str(data.get("message") or result.get("message") or f"已将该专业组移动到第 {target_position} 位，方案顺序已更新。")
+        return True, str(data.get("message") or result.get("message") or f"已将该专业组移动到第 {target_position} 位，方案顺序已更新。"), unit_ids
     except Exception:
         log_event(
             "plan_ordered_unit_mutation_timing",
@@ -1743,10 +1743,10 @@ async def _move_ordered_unit(ctx: RunContext[RequestContext], plan_model: PlanAc
             totalDurationMs=int((time.monotonic() - started_at) * 1000),
         )
         logger.exception("_move_ordered_unit failed: session_id=%s unit_ids=%s target=%s", session_id, unit_ids, target_position)
-        return False, "专业组移动失败，请稍后重试或改用页面操作。"
+        return False, "专业组移动失败，请稍后重试或改用页面操作。", unit_ids
 
 
-async def _remove_ordered_units(ctx: RunContext[RequestContext], plan_model: PlanActionPlan) -> tuple[bool, str]:
+async def _remove_ordered_units(ctx: RunContext[RequestContext], plan_model: PlanActionPlan) -> tuple[bool, str, list[str]]:
     session_id = ctx.deps.sessionid
     started_at = time.monotonic()
     resolve_started_at = time.monotonic()
@@ -1763,7 +1763,7 @@ async def _remove_ordered_units(ctx: RunContext[RequestContext], plan_model: Pla
             mutationRequestDurationMs=0,
             totalDurationMs=int((time.monotonic() - started_at) * 1000),
         )
-        return False, "还没有定位到要删除的专业组。请说明专业组名称或第几个专业组。"
+        return False, "还没有定位到要删除的专业组。请说明专业组名称或第几个专业组。", unit_ids
     try:
         mutation_started_at = time.monotonic()
         result = await _remove_planning_ordered_plan_units_request(
@@ -1784,7 +1784,7 @@ async def _remove_ordered_units(ctx: RunContext[RequestContext], plan_model: Pla
                 mutationRequestDurationMs=mutation_duration_ms,
                 totalDurationMs=int((time.monotonic() - started_at) * 1000),
             )
-            return False, "专业组删除失败，请稍后重试或改用页面操作。"
+            return False, "专业组删除失败，请稍后重试或改用页面操作。", unit_ids
         data = (result or {}).get("data") or {}
         log_event(
             "plan_ordered_unit_mutation_timing",
@@ -1797,7 +1797,7 @@ async def _remove_ordered_units(ctx: RunContext[RequestContext], plan_model: Pla
             mutationRequestDurationMs=mutation_duration_ms,
             totalDurationMs=int((time.monotonic() - started_at) * 1000),
         )
-        return True, str(data.get("message") or result.get("message") or f"已从方案中删除 {len(unit_ids)} 个专业组，方案顺序已更新。")
+        return True, str(data.get("message") or result.get("message") or f"已从方案中删除 {len(unit_ids)} 个专业组，方案顺序已更新。"), unit_ids
     except Exception:
         log_event(
             "plan_ordered_unit_mutation_timing",
@@ -1811,7 +1811,7 @@ async def _remove_ordered_units(ctx: RunContext[RequestContext], plan_model: Pla
             totalDurationMs=int((time.monotonic() - started_at) * 1000),
         )
         logger.exception("_remove_ordered_units failed: session_id=%s unit_ids=%s", session_id, unit_ids)
-        return False, "专业组删除失败，请稍后重试或改用页面操作。"
+        return False, "专业组删除失败，请稍后重试或改用页面操作。", unit_ids
 
 
 
@@ -2183,16 +2183,15 @@ async def _execute_plan_action_model(
         )
 
     if plan_model.action_family == "move_ordered_unit":
-        success, state_summary = await _move_ordered_unit(ctx, plan_model)
-        post_resolve_started_at = time.monotonic()
-        unit_ids = await _resolve_ordered_unit_ids(ctx, plan_model)
+        success, state_summary, unit_ids = await _move_ordered_unit(ctx, plan_model)
         log_event(
             "plan_ordered_unit_post_apply_timing",
             sessionId=ctx.deps.sessionid,
             actionFamily=plan_model.action_family,
             status="success" if success else "error",
             unitIds=unit_ids,
-            postResolveDurationMs=int((time.monotonic() - post_resolve_started_at) * 1000),
+            postResolveDurationMs=0,
+            reusedPreMutationUnitIds=True,
         )
         return PlanExecutionResult(
             applied=success,
@@ -2209,16 +2208,15 @@ async def _execute_plan_action_model(
         )
 
     if plan_model.action_family == "remove_ordered_unit":
-        success, state_summary = await _remove_ordered_units(ctx, plan_model)
-        post_resolve_started_at = time.monotonic()
-        unit_ids = await _resolve_ordered_unit_ids(ctx, plan_model)
+        success, state_summary, unit_ids = await _remove_ordered_units(ctx, plan_model)
         log_event(
             "plan_ordered_unit_post_apply_timing",
             sessionId=ctx.deps.sessionid,
             actionFamily=plan_model.action_family,
             status="success" if success else "error",
             unitIds=unit_ids,
-            postResolveDurationMs=int((time.monotonic() - post_resolve_started_at) * 1000),
+            postResolveDurationMs=0,
+            reusedPreMutationUnitIds=True,
         )
         return PlanExecutionResult(
             applied=success,

@@ -485,6 +485,22 @@ PlanFastRouter -> execute_plan_action -> service reply renderer
 | 职业明确 slot | <= 2 次 LLM |
 | 专业明确对比 | <= 2 次 LLM |
 
+### 6.4 效果质量验收目标
+
+性能优化不能以牺牲对话效果为代价。`3.0.3` 的 benchmark 需要同时检查“快”和“答得好”：
+
+| 维度 | 验收口径 |
+| --- | --- |
+| 用户可理解 | 回复使用用户侧语言，不暴露 `payload / stage / action_family / volunteerId` 等内部字段，不再出现“草稿”等已废弃概念。 |
+| 信息充足 | 方案概览至少包含方案数量、冲稳保结构、审查风险/提醒、当前偏好承接或可操作下一步，避免只给一句薄回复。 |
+| 结构清楚 | 复杂回复要有分行和要点，避免长串学校/专业堆叠；专业组操作要明确“按专业组顺序，不是单条志愿位置”。 |
+| 边界明确 | 高副作用动作必须先 preview，说明“确认后才会执行”；确认前不得刷新方案，确认后才刷新 `ordered/review`。 |
+| 只读不误联动 | “先只分析 / 不要改方案 / 不要记偏好”不得生成无意义工作台卡片或 pending intent。 |
+| 歧义不误操作 | 学校/专业简称无法唯一定位时要澄清，不为了快而猜测并执行。 |
+| 事实一致 | 执行类回复、`executed_actions`、工作台刷新对象和日志中的目标对象必须一致，尤其是专业组移动后不能按变化后的顺序重新解析目标。 |
+
+当前 runner 用 `assertContains / assertContainsAny / assertNotContains / assertNoFollowups / assertFollowupTarget` 做自动质量门禁；真实效果仍需要抽样人工看完整文本，重点检查是否丰富、是否自然、是否能直接指导用户下一步。
+
 ## 7. 落地顺序
 
 ### Phase 0：补齐观测
@@ -654,8 +670,16 @@ Phase 2 首轮复测记录：
 
 - Agent `_move_ordered_unit / _remove_ordered_units` 增加 `plan_ordered_unit_mutation_timing` 结构化事件，记录 `resolveUnitDurationMs`、`mutationRequestDurationMs`、`totalDurationMs`、`unitIds`、`targetPosition` 和成功/失败原因；apply 后为 `executed_actions` 再解析 unitIds 的步骤单独记录 `plan_ordered_unit_post_apply_timing.postResolveDurationMs`。
 - Server `PlanningStateService.moveOrderedUnit / removeOrderedUnits` 增加 `planning_ordered_unit_move_timing / planning_ordered_unit_remove_timing` 分段日志，覆盖 load、单位定位、顺序重建、候选合成、units 重建、summary 重算、行为事件记录、保存和 total。
-- 当前只补观测，不改变接口返回结构、不改变 `staleFlags.review=true` 语义、不新增同步审查。
+- 真实确认回归发现：专业组移动执行后如果再次按“第 N 个专业组”解析，会因为方案顺序已变而拿到另一个专业组，导致 `executed_actions` 和日志记录错误。已改为复用执行前解析出的 unitIds，`plan_ordered_unit_post_apply_timing` 记录 `reusedPreMutationUnitIds=true` 和 `postResolveDurationMs=0`。
+- 当前不改变接口返回结构、不改变 `staleFlags.review=true` 语义、不新增同步审查。
 - 下一步根据生产或本地复跑日志决定是否做 `responseMode=summary` 轻量响应；没有分段数据前不直接改后端执行路径。
+
+真实复测记录：
+
+| 场景 | 结果 |
+| --- | --- |
+| 专业组移动 preview | 通过，端到端约 4.6s；回复明确专业组名称、组内专业数、目标专业组位置和确认边界，没有内部字段。 |
+| 专业组移动 confirm | 通过，端到端约 4.7s；`llmRequests=0`，`mutationRequestDurationMs≈1.5s`，`postResolveDurationMs=0`，`unitIds` 与执行前一致，发送 `ordered refresh=true`。 |
 
 验证口径：
 
