@@ -50,6 +50,7 @@ pytest tests/e2e/test_agent_dialog_effect_perf.py -v -s
 - 院校专业组移动 preview -> confirm -> apply，要求解释专业组顺序语义和确认边界。
 - 排序 preview 说明会实际改变方案/导出顺序，并进入待重新审查。
 - Explore 只读职业方向承接、专业对比，不写 pending、不发工作台卡片。
+- 排序 preview 后用户明确“先不要改方案”的只读分析会清掉旧 pending，后续“确认”不能误执行旧排序。
 - 无 pending 确认的快速保护。
 
 `--metrics-output` / `AGENT_DIALOG_E2E_METRICS_OUTPUT` 会输出每步耗时、消息数，以及从本地 SQLite 历史解析出的 `turnObservability`：包含本轮 tool call、`actionFamily`、`resultKind`、`stage`、`applied` 等字段，便于定位慢点是模型路由、工具执行还是动作预览。默认读取 `data/chat_history.db`，可用 `AGENT_DIALOG_E2E_HISTORY_DB` 指定其他历史库。

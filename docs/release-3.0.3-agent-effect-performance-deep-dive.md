@@ -510,6 +510,7 @@ PlanFastRouter -> execute_plan_action -> service reply renderer
 - 排序预览必须说明会实际改变方案和导出顺序，并进入待重新审查。
 - Explore 只读分析不能写 pending、不能发工作台卡片。
 - 无 pending 时“确认”必须快速返回保护性提示。
+- pending 之后如果用户明确“先不要改方案 / 只分析 / 不执行”，必须清掉旧方案 pending；后续“确认”不能误执行旧排序/移动。
 
 本地最新复跑结果：
 
@@ -517,9 +518,10 @@ PlanFastRouter -> execute_plan_action -> service reply renderer
 | --- | ---: | --- |
 | 方案结构化现状 | 2.6s | 通过；包含数量、冲稳保、审查、缺口、前排示例和偏好承接。偏好摘要已在截断时显示“等 N 项”，避免示例命中未展开偏好时造成误解。 |
 | 专业组移动 preview | 4.3s | 通过；明确专业组名称、组内专业数、目标专业组位置和确认边界。 |
-| 专业组移动 confirm | 4.6s | 通过；`llmRequests=0`，确认后刷新 `ordered`。 |
+| 专业组移动 confirm | 4.6s - 31.7s | 功能通过；`llmRequests=0`，确认后刷新 `ordered`。本地复跑存在波动，慢例中 Agent `mutationRequestDurationMs≈28.1s`，慢点仍在后端移动接口/本地状态处理，不是模型。 |
 | 院校层次排序 preview | 2.2s | 通过；说明会改变方案/导出顺序并触发待重新审查。 |
 | 体制内稳定就业承接分析 | 26.3s | 通过；只走 `analyze_current_career_direction`，未再先 `load_skill`，未写 pending，未发工作台卡片；回复保留学生适配、方案承接、候选机会和下一步。 |
+| 只读分析后确认保护 | 约 2s | 通过；排序 preview 后用户说“先不要改方案”会清掉旧 pending，下一句“确认”返回没有待确认动作，不误执行旧排序。 |
 | 法学 vs 财政学对比 | 16.3s | 通过；只走 `compare_majors`，未写 pending，回复有结构化对比。 |
 | 无 pending 确认保护 | 2.1s | 通过；不进工具、不发工作台卡片。 |
 
@@ -527,6 +529,7 @@ PlanFastRouter -> execute_plan_action -> service reply renderer
 
 - Plan 快路径已达到可接受体验，主要慢点不在方案查询/排序/专业组操作。
 - Explore 只读分析在去掉不必要 `load_skill` 后已明显下降；后续重点转为减少工具内部生成和主模型最终组织的重复总结。
+- 确认边界要和效果一起验收：只读分析不能保留会让下一句“确认”误执行的旧方案 pending。
 - 性能 benchmark 必须保留人工抽样看全文；本次即发现“偏好摘要只展示前三项，但示例命中隐藏偏好”的效果问题，已通过截断提示修复。
 
 ## 7. 落地顺序

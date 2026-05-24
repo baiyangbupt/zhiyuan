@@ -1994,6 +1994,51 @@ def test_extract_pending_plan_action_preserves_after_explanatory_user_turn():
     assert json.loads(pending["plan_payload"])["stage"] == "apply"
 
 
+def test_extract_pending_plan_action_clears_after_explicit_readonly_no_change_turn():
+    preview_payload = {
+        "stage": "preview",
+        "action_family": "sort_ordered_plan",
+        "user_goal": "按院校层次排序",
+        "missing_inputs": [],
+        "atomic_actions": [],
+        "preview_summary": "会按院校层次重新排序当前方案。",
+    }
+    messages = [
+        ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="execute_plan_action",
+                    args={"plan_payload": json.dumps(preview_payload, ensure_ascii=False)},
+                    tool_call_id="sort-preview-clear-1",
+                )
+            ],
+            model_name="test-model",
+        ),
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="execute_plan_action",
+                    content=json.dumps(
+                        {
+                            "applied": False,
+                            "action_family": "sort_ordered_plan",
+                            "result_kind": "preview_only",
+                            "summary": "会按院校层次重新排序当前方案。",
+                        },
+                        ensure_ascii=False,
+                    ),
+                    tool_call_id="sort-preview-clear-1",
+                )
+            ]
+        ),
+        ModelResponse(parts=[TextPart(content="需要你确认后才会执行。")], model_name="test-model"),
+        ModelRequest(parts=[UserPromptPart(content="当前方案对体制内稳定就业方向承接得怎么样，先不要改方案")]),
+        ModelResponse(parts=[TextPart(content="我先只做分析，不改方案。")], model_name="test-model"),
+    ]
+
+    assert _extract_pending_plan_action(messages) is None
+
+
 def test_extract_pending_plan_action_clears_after_apply_result():
     preview_payload = {
         "stage": "preview",

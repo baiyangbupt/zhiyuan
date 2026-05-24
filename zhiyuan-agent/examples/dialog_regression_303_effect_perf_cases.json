@@ -71,6 +71,13 @@
         "assertNotContains": ["已直接调整", "确认后执行", "已记录", "payload", "stage", "action_family", "volunteerId", "草稿"],
         "assertNoFollowups": true,
         "warnElapsedSeconds": 60
+      },
+      {
+        "prompt": "确认",
+        "assertContainsAny": ["没有上一轮待确认", "没有待确认"],
+        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"],
+        "assertNoFollowups": true,
+        "maxElapsedSeconds": 5
       }
     ]
   },

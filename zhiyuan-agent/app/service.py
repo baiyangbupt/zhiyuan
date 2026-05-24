@@ -785,6 +785,33 @@ def _text_looks_like_adjustment_request(text: str | None) -> bool:
     )
 
 
+def _text_clears_pending_plan_action(text: str | None) -> bool:
+    compact = re.sub(r"\s+", "", str(text or "").strip())
+    if not compact:
+        return False
+    return any(
+        token in compact
+        for token in (
+            "先不要改方案",
+            "不要改方案",
+            "别改方案",
+            "不改方案",
+            "先不改",
+            "先不要调整",
+            "不要调整",
+            "不调整",
+            "先不执行",
+            "不要执行",
+            "不执行",
+            "只分析",
+            "先只分析",
+            "只看分析",
+            "只看看",
+            "只看一下",
+        )
+    )
+
+
 def _build_pending_plan_action_from_payload(payload: dict[str, Any], summary: str | None = None) -> dict[str, Any] | None:
     payload = normalize_plan_action_payload(payload)
     preview_action_family = str(payload.get("action_family") or "").strip()
@@ -877,9 +904,13 @@ def _extract_pending_plan_action(messages: list[Any] | None) -> dict[str, Any] |
         ]
         if user_prompt_parts:
             current_user_turn += 1
+            user_text = "\n".join(str(part.content or "") for part in user_prompt_parts)
             pending_calls.clear()
             last_non_actionable_adjustment_goal = None
-            if latest_pending is not None:
+            if latest_pending is not None and _text_clears_pending_plan_action(user_text):
+                latest_pending = None
+                user_turns_since_pending = 0
+            elif latest_pending is not None:
                 user_turns_since_pending += 1
                 if user_turns_since_pending > 3:
                     latest_pending = None
