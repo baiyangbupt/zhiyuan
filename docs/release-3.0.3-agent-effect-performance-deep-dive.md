@@ -713,6 +713,111 @@ Phase 2 首轮复测记录：
 | 专业组移动 preview | 通过，端到端约 4.6s；回复明确专业组名称、组内专业数、目标专业组位置和确认边界，没有内部字段。 |
 | 专业组移动 confirm | 通过，端到端约 4.7s；`llmRequests=0`，`mutationRequestDurationMs≈1.5s`，`postResolveDurationMs=0`，`unitIds` 与执行前一致，发送 `ordered refresh=true`。 |
 
+补充定位记录（2026-05-24）：
+
+- 慢例不是模型耗时：Agent 记录 `routingPath=direct_pending_plan_confirm`、`llmRequests=0`，耗时集中在 `mutationRequestDurationMs`。
+- 同一慢例在 Server controller 日志中对应 `POST /inner/planning/1/session/ordered-plan/unit/move?chatSessionId=16`，接口从 `08:50:21.438` 到 `08:50:49.550`，总耗时 `28112ms`，与 Agent `mutationRequestDurationMs≈28127ms` 基本一致。
+- 当时运行中的 8080 后端没有输出 `planning_ordered_unit_move_timing` service 分段日志，说明本机运行实例不是最新已编译代码，或者分段日志所在 class 未生效；因此该慢例只能定位到 controller 总耗时，无法拆出旧实例内部子步骤。
+- 重新以当前源码启动后复现同一会话：
+  - no-op 移动：controller `1294ms`，service `totalMs=1053`，主要是 `loadMs=1053`。
+  - 真实移动 2 -> 3：controller `2626ms`，service `totalMs=2344`，其中 `loadMs=644`、`resolveCandidatesMs=25`、`buildUnitsMs=16`、`behaviorEventMs=111`、`saveMs=1541`。
+  - 回移 3 -> 2：controller `2101ms`，service `totalMs=1827`，其中 `loadMs=501`、`resolveCandidatesMs=10`、`buildUnitsMs=3`、`behaviorEventMs=182`、`saveMs=1130`。
+- `sessionId=16` 的完整 planning state 响应体约 `19.1MB`，包含 `candidateItems=6421`、`overlayItems=6421`、`orderedItems=176`、`orderedUnits=45`；当前 mutation 会保存完整 `PlanningStateDTO` JSON，常态下 `saveMs` 已是最大头。
+- 历史日志里 `unit/move` 大多在 `1.3s - 2.3s`，但 `2026-05-24 01:36` 和 `08:50` 各出现一次约 `28s` outlier；因此当前判断是“大状态保存/DB 写入/旧运行实例状态”导致的偶发慢请求，不是稳定的算法计算慢，也不是 LLM 慢。
+
+后续优化设计结论：
+
+- `responseMode=summary` 只能减少返回体和 Agent 反序列化成本，无法解决 `savePlanningState` 保存完整 19MB 状态的根因；仍可作为轻量响应优化，但优先级低于状态持久化拆分。
+- 真正的性能优化方向是把高频 mutation 的写入粒度从完整 `PlanningStateDTO` 缩小到方案相关状态，例如独立持久化 `orderedPlanState`、`staleFlags`、`version/phase` 和行为事件，候选池与 overlay 不随每次移动/删除/排序反复重写。
+- 在拆分持久化前，必须保留当前分段日志，并把 `saveMs/loadMs/controllerMs` 纳入 e2e 性能回归；如果再出现 20s+ 慢例，优先看 service `saveMs` 是否同步放大。
+
+### Phase 2.6：方案高频操作轻量持久化设计
+
+问题：
+
+- 当前 `PlanningStateDTO` 是聚合状态，`candidatePoolState.items` 和 `recommendationOverlayState.items` 都在同一个 `planningState` JSON 内。
+- `moveOrderedItem / moveOrderedUnit / removeOrderedUnits / sortOrderedPlan` 这类高频方案操作只改变排序方案、少量 draft 兼容字段、`staleFlags` 和 `version/phase`，但仍通过 `saveOrderedState -> savePlanningState` 重写完整状态。
+- 在 `sessionId=16` 这类候选池较大的专业组会话中，完整状态约 19MB；常态 `saveMs` 已是最大头，偶发情况下会放大到 20s+。
+
+设计选择：
+
+1. 不在首轮直接拆历史 `planningState` 主数据，也不迁移老会话。
+2. 新增一个小的 `ChatSessionExtraData` dataKey，例如 `planningMutableState`，保存高频可变部分：
+   - `version`
+   - `phase`
+   - `staleFlags`
+   - `draftPlanState`（仅保留当前仍需要同步的兼容字段）
+   - `orderedPlanState`
+   - `updatedAt`
+3. `loadPlanningState` 仍先读取原 `planningState`，完成历史兼容和字段补齐后，再读取 `planningMutableState` 并按版本覆盖：
+   - `mutable.version >= base.version` 时应用 mutable。
+   - `mutable.version < base.version` 时忽略，避免老 overlay 覆盖后续完整保存的新状态。
+4. 高频方案操作使用新的 `saveOrderedMutableState`：
+   - 只更新 `planningMutableState`，不再重写 19MB 的完整 `planningState`。
+   - 仍递增 `version`，仍设置 `phase=ordered`，仍设置 `staleFlags.review=true / planAdjustment=true`。
+   - 行为事件继续写 `planning_behavior_event`，不退回到 DTO 内嵌事件。
+5. 方案生成、候选池生成、审查、补偿、历史迁移导入和其他会改变大状态的流程，首轮继续使用完整 `savePlanningState`，避免扩大影响面。
+
+首轮覆盖范围：
+
+| 操作 | 是否纳入轻量持久化 | 原因 |
+| --- | --- | --- |
+| 单志愿移动 `moveOrderedItem` | 是 | 高频、只改方案顺序和行为事件 |
+| 专业组移动 `moveOrderedUnit` | 是 | 本次慢例对应路径 |
+| 专业组删除 `removeOrderedUnits` | 是 | 高频、会同步 draft 兼容字段，需要一并写入 mutable |
+| 方案排序 `sortOrderedPlan` | 是 | 高频、可由前端和对话触发 |
+| pin/unpin 接口 | 暂不动 | 新版用户侧已关闭，降低改动面 |
+| `generateOrderedPlan / generateInitialPlan / reorderDraftPlan` | 暂不动 | 涉及生成元数据、候选池和自动补全语义，继续完整保存 |
+| `runReview / compensation` | 暂不动 | 审查和补偿会写 review/adjustment 等状态，后续单独拆 |
+
+实现要点：
+
+- 新增 DTO：`PlanningMutableStateDTO`，不要复用完整 `PlanningStateDTO`，避免误把候选池继续带进去。
+- 新增常量：`ChatSessionExtraDataConstants.PLANNING_MUTABLE_STATE_KEY`。
+- 新增方法：
+  - `applyPlanningMutableState(chatSessionId, state)`
+  - `savePlanningMutableState(chatSessionId, state)`
+  - `saveOrderedMutableState(chatSessionId, state)`
+- `saveOrderedMutableState` 需要和现有 `saveOrderedState` 保持同样的状态语义，只替换持久化目标。
+- `buildOrderedPlanActionRes` 不变，调用方拿到的是已叠加 mutable 后的 `state`。
+
+风险与边界：
+
+- 如果某个完整状态保存流程没有先 `loadPlanningState`，可能会覆盖 mutable；当前主要流程都从 `loadPlanningState` 进入，首轮测试要覆盖。
+- 如果 mutable 版本比较规则处理不好，可能出现旧 overlay 覆盖新完整状态；必须用版本守护。
+- 该方案先减少写入体积，但仍会读取并解析完整 `planningState`，因此只能解决 `saveMs` 和大 JSON 写入 outlier，不能完全解决 `loadMs`。后续如果 load 仍慢，再拆 `candidatePoolState / recommendationOverlayState`。
+
+测试计划：
+
+- Unit：
+  - `moveOrderedUnit` 后只更新 `planningMutableState`，不更新 `planningState`。
+  - 再次 `getPlanningState` 能看到移动后的 `orderedPlanState`。
+  - `removeOrderedUnits` 后 ordered 和 draft 都能从 mutable 恢复。
+  - `sortOrderedPlan` 后排序结果、`staleFlags.review`、行为事件不变。
+  - `mutable.version < base.version` 时不覆盖 base。
+  - 老会话没有 `planningMutableState` 时行为不变。
+- Backend focused test：
+  - `PlanningStateServiceTest` 覆盖专业+大学和院校专业组两种模式。
+  - 行为事件 `plan_item_move / plan_unit_move / plan_unit_remove / plan_sort_apply` 仍写入新表。
+- E2E：
+  - 对话触发专业组移动 preview -> confirm。
+  - 前端手动排序/移动后方案刷新和审查待重新审查状态不回退。
+  - 导出仍读取最新排序方案。
+- 性能：
+  - 保留 `planning_ordered_unit_move_timing`，新增或复用 `saveMs` 观察。
+  - 目标：专业组移动常态 `saveMs < 300ms`，controller p95 先压到 `5s` 内；如果仍超时，再看 load 和 DB 连接。
+
+实现记录（2026-05-24）：
+
+- 已新增 `planningMutableState` 轻量 overlay，字段包含 `version / phase / staleFlags / draftPlanState / orderedPlanState / updatedAt`。
+- `loadPlanningState` 在读取并补齐完整 `planningState` 后叠加 mutable；当 `mutable.version < base.version` 时忽略旧 overlay，避免旧可变状态覆盖新的完整保存结果。
+- 首轮已将 `moveOrderedItem / moveOrderedUnit / removeOrderedUnits / sortOrderedPlan` 切到 `saveOrderedMutableState`，这些高频方案调整不再重写候选池和推荐 overlay。
+- `generateOrderedPlan / pinOrderedItem / unpinOrderedItem / review / compensation` 仍保持完整保存，避免一次性扩大审查、补偿和生成链路影响面。
+- Unit 覆盖了专业+大学模式单志愿移动、院校专业组模式组删除、旧 mutable 版本忽略，以及既有移动/pin/导出/行为事件回归。
+- 已验证：
+  - `mvn -Dtest=PlanningStateServiceTest test`：99 tests，0 failure / 0 error，2 skipped。
+  - `mvn -Dtest=PlanningStateServiceTest,PlanningBehaviorEventSharedServiceTest test`：100 tests，0 failure / 0 error，2 skipped。
+
 验证口径：
 
 - Agent 日志中同一轮应同时看到：

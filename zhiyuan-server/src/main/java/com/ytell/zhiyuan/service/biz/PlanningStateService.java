@@ -1426,7 +1426,7 @@ public class PlanningStateService {
         appendPlanItemsBehaviorEvent(state, null, chatSessionId, "plan_item_move",
                 Lists.newArrayList(req.getVolunteerId()), false, resolveEffectiveCandidates(null, chatSessionId, state, false),
                 beforePositions, afterPositions);
-        return saveOrderedState(chatSessionId, state);
+        return saveOrderedMutableState(chatSessionId, state);
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -1506,7 +1506,7 @@ public class PlanningStateService {
         appendUnitBehaviorEvent(state, chatSessionId, "plan_unit_move", unitId, unitItems, candidates, beforePositions, afterPositions);
         long behaviorEventMs = System.currentTimeMillis() - behaviorEventStart;
         long saveStart = System.currentTimeMillis();
-        PlanningStateDTO saved = saveOrderedState(chatSessionId, state);
+        PlanningStateDTO saved = saveOrderedMutableState(chatSessionId, state);
         long saveMs = System.currentTimeMillis() - saveStart;
         log.info("planning_ordered_unit_move_timing: chatSessionId={}, unitId={}, targetPosition={}, currentUnitIndex={}, targetUnitIndex={}, itemCount={}, unitCount={}, status={}, loadMs={}, resolveMs={}, reorderMs={}, resolveCandidatesMs={}, buildUnitsMs={}, recalculateMs={}, behaviorEventMs={}, saveMs={}, totalMs={}",
                 chatSessionId, unitId, req.getTargetPosition(), currentUnitIndex, targetUnitIndex, current.size(), orderedUnitIds.size(), "success",
@@ -1579,7 +1579,7 @@ public class PlanningStateService {
         }
         long behaviorEventMs = System.currentTimeMillis() - behaviorEventStart;
         long saveStart = System.currentTimeMillis();
-        PlanningStateDTO saved = saveOrderedState(chatSessionId, state);
+        PlanningStateDTO saved = saveOrderedMutableState(chatSessionId, state);
         long saveMs = System.currentTimeMillis() - saveStart;
         log.info("planning_ordered_unit_remove_timing: chatSessionId={}, unitIds={}, removedItemCount={}, status={}, loadMs={}, resolveMs={}, rebuildItemsMs={}, resolveCandidatesMs={}, syncDraftMs={}, buildUnitsMs={}, recalculateMs={}, behaviorEventMs={}, saveMs={}, totalMs={}",
                 chatSessionId, unitIds, removedItems.size(), "success", loadMs, resolveMs, rebuildItemsMs,
@@ -1611,7 +1611,7 @@ public class PlanningStateService {
         state.getStaleFlags().setReview(true);
         state.getStaleFlags().setPlanAdjustment(true);
         appendPlanSortApplyEvent(state, chatSessionId, sortField, beforePositions, orderedPlanState, candidates);
-        return saveOrderedState(chatSessionId, state);
+        return saveOrderedMutableState(chatSessionId, state);
     }
 
     public PlanningStateDTO pinOrderedItem(Long chatSessionId, OrderedPinReq req) {
@@ -4120,6 +4120,7 @@ public class PlanningStateService {
         if (planEditCacheNoticeAdded) {
             savePlanningState(chatSessionId, state);
         }
+        applyPlanningMutableState(chatSessionId, state);
         return state;
     }
 
@@ -4402,6 +4403,70 @@ public class PlanningStateService {
             extraData = new ChatSessionExtraData();
             extraData.setChatSessionId(chatSessionId);
             extraData.setDataKey(ChatSessionExtraDataConstants.PLANNING_STATE_KEY);
+            extraData.setDataType(DataType.JSON_OBJECT);
+            extraData.setDataVersion(0);
+            extraData.setDataValue(dataValue);
+            chatSessionExtraDataSharedService.save(extraData);
+            return;
+        }
+        extraData.setDataType(DataType.JSON_OBJECT);
+        extraData.setDataValue(dataValue);
+        chatSessionExtraDataSharedService.updateById(extraData);
+    }
+
+    private void applyPlanningMutableState(Long chatSessionId, PlanningStateDTO state) {
+        if (state == null) {
+            return;
+        }
+        ChatSessionExtraData extraData = chatSessionExtraDataSharedService.getBySessionIdAndDataKey(
+                chatSessionId, ChatSessionExtraDataConstants.PLANNING_MUTABLE_STATE_KEY);
+        if (extraData == null || isBlankJsonValue(extraData.getDataValue())) {
+            return;
+        }
+        PlanningMutableStateDTO mutableState;
+        try {
+            mutableState = JSONObject.parseObject(extraData.getDataValue(), PlanningMutableStateDTO.class);
+        } catch (Exception ex) {
+            log.warn("applyPlanningMutableState parse failed chatSessionId={}", chatSessionId, ex);
+            return;
+        }
+        if (mutableState == null || mutableState.getVersion() == null) {
+            return;
+        }
+        Integer baseVersion = state.getVersion();
+        if (baseVersion != null && mutableState.getVersion() < baseVersion) {
+            return;
+        }
+        state.setVersion(mutableState.getVersion());
+        if (!Strings.isNullOrEmpty(mutableState.getPhase())) {
+            state.setPhase(mutableState.getPhase());
+        }
+        if (mutableState.getStaleFlags() != null) {
+            state.setStaleFlags(mutableState.getStaleFlags());
+        }
+        if (mutableState.getDraftPlanState() != null) {
+            state.setDraftPlanState(mutableState.getDraftPlanState());
+        }
+        if (mutableState.getOrderedPlanState() != null) {
+            state.setOrderedPlanState(mutableState.getOrderedPlanState());
+        }
+    }
+
+    private void savePlanningMutableState(Long chatSessionId, PlanningStateDTO state) {
+        PlanningMutableStateDTO mutableState = new PlanningMutableStateDTO();
+        mutableState.setVersion(state.getVersion());
+        mutableState.setPhase(state.getPhase());
+        mutableState.setStaleFlags(state.getStaleFlags());
+        mutableState.setDraftPlanState(state.getDraftPlanState());
+        mutableState.setOrderedPlanState(state.getOrderedPlanState());
+        mutableState.setUpdatedAt(OffsetDateTime.now().toString());
+        String dataValue = JSONObject.toJSONString(mutableState);
+        ChatSessionExtraData extraData = chatSessionExtraDataSharedService.getBySessionIdAndDataKey(
+                chatSessionId, ChatSessionExtraDataConstants.PLANNING_MUTABLE_STATE_KEY);
+        if (extraData == null) {
+            extraData = new ChatSessionExtraData();
+            extraData.setChatSessionId(chatSessionId);
+            extraData.setDataKey(ChatSessionExtraDataConstants.PLANNING_MUTABLE_STATE_KEY);
             extraData.setDataType(DataType.JSON_OBJECT);
             extraData.setDataVersion(0);
             extraData.setDataValue(dataValue);
@@ -8529,6 +8594,20 @@ public class PlanningStateService {
         state.getStaleFlags().setPlanAdjustment(true);
         state.getStaleFlags().setReview(true);
         savePlanningState(chatSessionId, state);
+        return state;
+    }
+
+    private PlanningStateDTO saveOrderedMutableState(Long chatSessionId, PlanningStateDTO state) {
+        state.setSessionId(chatSessionId);
+        state.setVersion((state.getVersion() == null ? 0 : state.getVersion()) + 1);
+        state.setPhase("ordered");
+        if (state.getStaleFlags() == null) {
+            state.setStaleFlags(new StaleFlagsDTO());
+        }
+        state.getStaleFlags().setOrderedPlan(false);
+        state.getStaleFlags().setPlanAdjustment(true);
+        state.getStaleFlags().setReview(true);
+        savePlanningMutableState(chatSessionId, state);
         return state;
     }
 
