@@ -25,6 +25,7 @@ from app.domain.career_slots import (
     CAREER_SYSTEM_PUBLIC_SERVICE,
     is_career_slot,
     normalize_career_slots,
+    resolve_career_slots_locally,
     to_career_label,
 )
 from app.llm.client import LLMClient
@@ -75,38 +76,6 @@ _career_direction_resolver_agent: Agent[None, str] | None = None
 _generic_direction_router_agent: Agent[None, str] | None = None
 _DIRECTION_ANALYSIS_LLM_TIMEOUT_SECONDS = 10
 _GENERIC_DIRECTION_LLM_TIMEOUT_SECONDS = 10
-
-_LOCAL_CAREER_SLOT_KEYWORDS: dict[str, tuple[str, ...]] = {
-    CAREER_SYSTEM_PUBLIC_SERVICE: (
-        "体制内",
-        "考公",
-        "考编",
-        "公务员",
-        "事业单位",
-        "进编制",
-        "有编制",
-        "进体制",
-        "选调",
-    ),
-    CAREER_STABLE_EMPLOYMENT: (
-        "稳定就业",
-        "就业稳定",
-        "工作稳定",
-        "稳定工作",
-        "求稳",
-        "抗风险",
-        "稳妥就业",
-    ),
-    CAREER_FURTHER_STUDY: (
-        "读研",
-        "考研",
-        "保研",
-        "深造",
-        "继续升学",
-        "升学",
-    ),
-}
-
 
 class DirectionAnalysisDraft(BaseModel):
     summaryTitle: str = ""
@@ -234,6 +203,18 @@ def _format_text_sections(*sections: tuple[str, list[str] | None] | tuple[str, s
     return "\n\n".join(blocks)
 
 
+def _dedupe_texts(values: list[Any] | None) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values or []:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return result
+
+
 def _get_direction_analysis_llm_client() -> LLMClient:
     global _direction_analysis_llm_client
     if _direction_analysis_llm_client is None:
@@ -325,14 +306,7 @@ async def resolve_career_direction_slots(request_context: RequestContext) -> lis
 
 
 def _resolve_career_direction_slots_locally(text: str | None) -> list[str]:
-    normalized = str(text or "").strip()
-    if not normalized:
-        return []
-    slots: list[str] = []
-    for slot, keywords in _LOCAL_CAREER_SLOT_KEYWORDS.items():
-        if any(keyword in normalized for keyword in keywords):
-            slots.append(slot)
-    return normalize_career_slots(slots)
+    return resolve_career_slots_locally(text)
 
 
 async def should_use_generic_direction_analysis(request_context: RequestContext) -> bool:
@@ -757,7 +731,7 @@ def _build_impact_preview_from_analysis(analysis: dict[str, Any]) -> str:
         ("nextActionHints", "如果继续了解"),
     )
     for key, title in section_map:
-        items = analysis.get(key) or []
+        items = _dedupe_texts(analysis.get(key) or [])
         if not items:
             continue
         lines.append(f"  {title}：")

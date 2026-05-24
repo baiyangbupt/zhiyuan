@@ -26,6 +26,7 @@ from app.data.history_store import ChatHistoryStore
 from app.data.message_utils import pydantic_ai_messages_to_dicts
 from app.llm.client import LLMClient
 from app.resolver.action_resolver_shadow import action_resolver_shadow_from_plan_fast_decision
+from app.resolver.career_direction_fast_router import resolve_career_direction_fast_route
 from app.resolver.major_compare_fast_router import resolve_major_compare_fast_route
 from app.resolver.major_compare_reply_renderer import (
     is_missing_weight_major_compare_result,
@@ -47,6 +48,7 @@ from app.tools.intent_state_tool import (
     apply_selected_intents as _apply_selected_intents,
     update_volunteer_intent_state,
 )
+from app.tools.intent_preview_tool import analyze_current_career_direction
 from app.tools.major_compare_tool import compare_majors
 from app.tools.intent_response_tool import (
     parse_explore_followup_result,
@@ -2299,6 +2301,88 @@ class ChatService:
                     session_id,
                     major_compare_decision.major_name1,
                     major_compare_decision.major_name2,
+                )
+
+        career_direction_decision = resolve_career_direction_fast_route(content)
+        if career_direction_decision.matched:
+            route_decision = career_direction_decision.route_decision()
+            tool_call_id = "fast-analyze-current-career-direction"
+            tool_started_at = time.monotonic()
+            try:
+                if on_progress:
+                    await on_progress("正在看这条方向和当前方案的承接情况...")
+                tool_result_text = await analyze_current_career_direction(SimpleNamespace(deps=request_context))
+                tool_duration_ms = int((time.monotonic() - tool_started_at) * 1000)
+                reply = _sanitize_reply_for_user(_normalize_user_facing_terms(str(tool_result_text or "").strip()))
+
+                new_messages = [
+                    ModelRequest(parts=[UserPromptPart(content=content)]),
+                    ModelResponse(
+                        parts=[
+                            ToolCallPart(
+                                tool_name="analyze_current_career_direction",
+                                args={
+                                    "direction_slots": list(career_direction_decision.direction_slots),
+                                },
+                                tool_call_id=tool_call_id,
+                            )
+                        ],
+                        model_name="career-direction-fast-route",
+                    ),
+                    ModelRequest(
+                        parts=[
+                            ToolReturnPart(
+                                tool_name="analyze_current_career_direction",
+                                content=tool_result_text,
+                                tool_call_id=tool_call_id,
+                            )
+                        ]
+                    ),
+                    ModelResponse(parts=[TextPart(content=reply)], model_name="career-direction-fast-route"),
+                ]
+                try:
+                    history_to_save = list(history or [])
+                    history_to_save.extend(new_messages)
+                    await self.history_store.save(session_id, history_to_save)
+                except Exception:
+                    logger.exception("Failed to save career direction fast route history: session_id=%s", session_id)
+                _log_conversation_turn_event(
+                    sessionId=session_id,
+                    userId=user_id,
+                    scene="explore",
+                    routingPath="career_direction_fast_route",
+                    routeDecision=route_decision,
+                    pendingType=None,
+                    actionFamily="analyze_current_career_direction",
+                    resultKind="career_direction_analysis",
+                    modelProvider=_llm_config_value(self.llm_client, "provider"),
+                    modelName=_llm_config_value(self.llm_client, "model_name"),
+                    llmRequests=0,
+                    inputTokens=None,
+                    outputTokens=None,
+                    totalTokens=None,
+                    toolCallCount=1,
+                    totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
+                    llmDurationMs=0,
+                    toolDurationMs=tool_duration_ms,
+                    toolCalls=[
+                        {
+                            "name": "analyze_current_career_direction",
+                            "durationMs": tool_duration_ms,
+                            "success": True,
+                            "directionSlots": list(career_direction_decision.direction_slots),
+                        }
+                    ],
+                    postProcessingApplied=[],
+                    status="success",
+                    errorType=None,
+                )
+                return reply
+            except Exception:
+                logger.exception(
+                    "Career direction fast route failed; falling back to full agent: session_id=%s direction_slots=%s",
+                    session_id,
+                    career_direction_decision.direction_slots,
                 )
 
         llm_started_at = time.monotonic()

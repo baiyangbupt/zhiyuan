@@ -915,6 +915,69 @@ Phase 2 首轮复测记录：
   - `法学和财政学对比`：端到端 `2316ms`，`followupMessages=0`，`toolCallCount=1`，`toolReturnCount=1`，历史工具为 `compare_majors`；Agent 日志确认 `routingPath=major_compare_fast_route`、`llmRequests=0`、`toolDurationMs=10ms`、`postProcessingApplied=["missing_weight_major_compare_renderer"]`。回复已按专业类画像输出 `法学（法学类）` 和 `财政学（财政学类）`，不是具体 pair 专属分支。
   - 当前最慢项仍是 `体制内稳定就业承接分析`：端到端 `18367ms`，走 full Agent + `analyze_current_career_direction`，属于后续 Explore 只读回复继续压缩范围，不混入本次专业对比快路由。
 
+### Phase 2.9：职业方向只读分析快路由设计
+
+现状链路：
+
+```text
+用户问“当前方案对体制内稳定就业方向承接得怎么样，先不要改方案”
+  -> ChatService 构造完整 RequestContext
+  -> 完整 ChatAgent 第一次 LLM 判断应该调用 analyze_current_career_direction
+  -> analyze_current_career_direction 读取最后一句用户话术
+  -> resolve_career_direction_slots 本地命中 system_public_service + stable_employment
+  -> preview_direction_comparison_from_request 读取 planning state，统计当前方案和候选承接数量
+  -> 工具返回“分析结论 / 当前判断 / 下一步”的分段文本
+  -> 完整 ChatAgent 第二次 LLM 读取工具结果并组织最终回复
+```
+
+问题：
+
+- Phase 2.7 已关闭真实聊天主链路里的 Explore 内层草稿生成，职业方向 slot 也能本地命中，工具内部不再额外调用方向分析 LLM。
+- 真实 e2e 中该场景仍约 `18s`，日志显示 `routingPath=full_agent`、`llmRequests=2`、工具为 `analyze_current_career_direction`。当前慢点主要是完整 Agent 两次远端模型调用和大上下文，而不是职业方向事实计算。
+- `preview_direction_analysis_from_request / preview_direction_comparison_from_request` 已经返回用户可读分段文本，不是内部 JSON 或“请生成”的中间提示；对明确只读问题，可以复用这份工具结果，减少一次“选工具”和一次“复述工具结果”的模型调用。
+
+路由边界：
+
+- 只处理显式只读的职业方向承接/适配分析问题，且职业方向必须能被本地 taxonomy 解析，例如：体制内、考公考编、公务员/事业单位、稳定就业、求稳、读研/考研/深造等。
+- 必须排除意向写入或方案变更语义，例如：`记下来`、`作为偏好`、`以后优先`、`按这个改方案`、`加入方案`、`删除`、`移动`、`排序`、`确认`。这些继续走完整 Agent 和现有 pending/确认链路。
+- 不处理开放式职业探索问题，例如“我适合什么方向”“以后走哪条路”。这类问题仍可能需要完整模型结合上下文做探索式组织。
+- 不新增入口级字符串模板回复。快路由只做高置信路由判断，最终事实仍来自现有 `analyze_current_career_direction` / `preview_direction_*` 工具链。
+
+实现方案：
+
+- 新增职业方向只读 fast router，职责仅判断“是否为高置信只读职业方向分析”，并返回本地解析出的 direction slots 与 routeDecision。
+- ChatService 在 plan fast route、major compare fast route 之后、完整 ChatAgent 之前检查该路由；命中后直接调用 `analyze_current_career_direction(SimpleNamespace(deps=request_context))`。
+- 返回文本继续走现有用户态清理：`_normalize_user_facing_terms` 和 `_sanitize_reply_for_user`，避免暴露内部词，但不再调用 LLM 复述。
+- 历史记录写入 `ModelRequest -> ToolCallPart(analyze_current_career_direction) -> ToolReturnPart -> ModelResponse`，保持工具调用可追溯；不创建 pending，不发送 workspace card，不修改偏好或方案。
+- 日志记录 `routingPath=career_direction_fast_route`、`scene=explore`、`llmRequests=0`、`toolCallCount=1`、`toolDurationMs`、`directionSlots`，便于和 full Agent 路径对比。
+
+验证计划：
+
+- 单测：
+  - 命中：`当前方案对体制内稳定就业方向承接得怎么样，先不要改方案`。
+  - 不命中：`以后优先按体制内看`、`帮我记成偏好`、`按体制内方向调整方案`、`我适合什么方向`。
+  - ChatService 命中后不调用主 ChatAgent，不产生 pending/followup workspace card，并保存工具 trace。
+- 真实 e2e：
+  - 复跑 `303-quality-career-fit-readonly-no-workspace`，预期仍保留学生情况、当前方案承接、候选机会、下一步等内容。
+  - 观测 `routingPath=career_direction_fast_route`、`llmRequests=0`、无 pending、无 workspace card。
+  - 与 Phase 2.8 专业对比快路由一起回归，确认 plan mutation、intent confirm、major compare 不受影响。
+
+首轮实现：
+
+- `app.domain.career_slots` 抽出公共本地 taxonomy：体制内/考公考编、公务员/事业单位、稳定就业/求稳、读研/考研/深造等关键词统一由 `resolve_career_slots_locally` 解析。Explore 原工具继续复用同一套解析逻辑，避免 fast router 和工具各维护一份词表。
+- 新增 `career_direction_fast_router`，仅做高置信只读路由判断。它不生成回复、不写偏好、不改方案；如果命中意向写入、方案变更、确认或泛方向问题，直接不匹配。
+- `ChatService` 在专业对比 fast route 之后、完整 ChatAgent 之前接入 `career_direction_fast_route`。命中后直接调用 `analyze_current_career_direction`，保留 `ToolCallPart / ToolReturnPart / ModelResponse` 历史 trace，并记录 `conversation_turn_event routingPath=career_direction_fast_route llmRequests=0`。
+
+验证记录：
+
+- 编译检查：`app/domain/career_slots.py app/tools/explore_direction_tool.py app/resolver/career_direction_fast_router.py app/service.py` 通过 `py_compile`。
+- 聚焦单测：`test_career_direction_fast_router.py`、`test_major_compare_fast_router.py`、`test_plan_fast_router.py`、`test_career_slots.py`、`test_explore_direction_scenarios_sync.py` 及 ChatService 三条 fast route 用例：`31 passed`。
+- ChatService 主链路回归：`tests/unit/test_chat_service_history_persistence.py`：`103 passed`，覆盖 pending、确认保护、runtime history 和 fast route 历史 trace。
+- `git diff --check` 通过。
+- 真实 WebSocket e2e：
+  - 全量 3.0.3 effect/perf：`tests/e2e/test_agent_dialog_effect_perf.py` 8 steps 通过，总耗时 `25.79s`；职业方向轮 `elapsedMs=2275`，无 followup card，确认轮进入 no-pending guard。
+  - 职业方向去重后单场景复跑：2 steps 通过；职业方向轮 `elapsedMs=5572`，Agent 结构化日志为 `routingPath=career_direction_fast_route`、`llmRequests=0`、`toolDurationMs=55ms`、`directionSlots=["system_public_service","stable_employment"]`；回复不再重复输出相同选科/分数段判断。
+
 验证口径：
 
 - Agent 日志中同一轮应同时看到：

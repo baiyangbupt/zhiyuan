@@ -219,6 +219,7 @@ def test_direction_explore_fallback_still_analyzes_when_llm_generation_fails():
     assert "如果你愿意把它记成后续偏好" in resp
     assert "MBTI" in resp
     assert "霍兰德" in resp
+    assert resp.count("你的当前选科是物理、化学、生物") == 1
 
 
 def test_direction_slot_resolver_uses_local_taxonomy_for_common_terms():
@@ -294,6 +295,7 @@ def test_direction_explore_comparison_fallback_includes_professional_assessment_
 
     assert "MBTI" in resp
     assert "霍兰德" in resp
+    assert resp.count("你的当前选科是物理、化学、生物") == 1
 
 
 def test_direction_explore_public_service_fallback_explains_student_fit_before_plan_examples():

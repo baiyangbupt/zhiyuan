@@ -602,6 +602,53 @@ def test_chat_service_major_compare_fast_route_missing_weight_uses_renderer_with
     assert log_kwargs["postProcessingApplied"] == ["missing_weight_major_compare_renderer"]
 
 
+def test_chat_service_career_direction_fast_route_bypasses_main_agent_and_persists_tool_trace(
+    tmp_path,
+    mock_llm_client,
+):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    fake_agent = _FakeAgent(["should not be used"])
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
+            patch(
+                "app.service.analyze_current_career_direction",
+                AsyncMock(return_value="**分析结论**\n我先看了体制内和稳定就业对当前方案的承接。"),
+            ) as mock_analyze, \
+            patch("app.service._log_conversation_turn_event") as mock_log_event:
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(
+            service.handle_message(
+                "session-fast-career-direction",
+                "user-1",
+                "当前方案对体制内稳定就业方向承接得怎么样，先不要改方案",
+            )
+        )
+
+    assert "体制内" in reply
+    assert "稳定就业" in reply
+    assert fake_agent.calls == []
+    mock_analyze.assert_awaited_once()
+    stored = asyncio.run(store.load("session-fast-career-direction"))
+    assert stored is not None
+    assert any(
+        isinstance(part, ToolCallPart)
+        and part.tool_name == "analyze_current_career_direction"
+        and part.args["direction_slots"] == ["system_public_service", "stable_employment"]
+        for message in stored
+        for part in getattr(message, "parts", [])
+    )
+    log_kwargs = mock_log_event.call_args.kwargs
+    assert log_kwargs["routingPath"] == "career_direction_fast_route"
+    assert log_kwargs["llmRequests"] == 0
+    assert log_kwargs["llmDurationMs"] == 0
+    assert log_kwargs["toolCallCount"] == 1
+    assert log_kwargs["routeDecision"]["directionSlots"] == ["system_public_service", "stable_employment"]
+
+
 class _FakeAgentWithToolCalls:
     def __init__(
         self,
