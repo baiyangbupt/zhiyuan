@@ -869,6 +869,52 @@ Phase 2 首轮复测记录：
   - `体制内稳定就业承接分析`：端到端 `28578ms`，`llmRequests=2`，工具调用仍为 `analyze_current_career_direction`；日志确认 `Skip direction comparison inner LLM generation`，没有再触发 Explore 工具内部 10s 生成超时，回复仍包含基础条件、方案承接、候选机会和下一步。
   - `法学和财政学对比`：端到端 `36715ms`，`llmRequests=2`，慢点主要来自主 Agent 两次模型调用；当前工具因 session 缺少分数画像走通用兜底，后续要优化应设计专业对比只读 renderer 或快路径，不应混入本次职业方向开关。
 
+### Phase 2.8：专业对比只读快路由设计
+
+问题：
+
+- `法学和财政学哪个更适合普通家庭女生，先只分析不要记偏好` 已经能正确命中 `compare_majors`，但仍走完整 ChatAgent：第一次主模型选择工具，第二次主模型读取工具结果并组织回复。
+- 真实 e2e 中该轮 `inputTokens≈19533`、`llmRequests=2`、端到端约 `36.7s`。慢点不是专业权重接口，主要是完整工具清单/系统指令下的两次主模型请求。
+- 当前 session `880101` 没有分数画像，`compare_majors` 走缺失权重兜底；如果直接返回工具兜底文本，会变成“请做通用维度比较”的内部提示，不适合作为最终用户回复。
+
+路由边界：
+
+- 只处理明确的两个标准三级专业名同时出现，且句子包含比较/选择语义的只读问题，例如 `法学和财政学哪个更适合...`。
+- 不处理专业类、简称和歧义表达，例如 `计算机和电子信息怎么选`、`计科和软工`、三个及以上专业对比；这些继续走 ChatAgent，由模型和专业规范化工具处理。若某个名称同时是一级门类和三级专业（如“法学”），只有在它也是三级专业目录精确项、且仅用于只读对比时才可命中，不能写入意向或改方案。
+- 如果用户表达包含“记偏好/加入偏好/按这个改方案/加进方案/删除/移动/排序”等意向写入或方案变更语义，不能进入只读快路由。
+
+实现方案：
+
+- 新增 `major_compare_fast_router`，基于本地本科/专科三级专业目录做精确识别；命中时返回 `major_name1 / major_name2` 和 routeDecision。
+- ChatService 在 Plan fast route 之前、完整 ChatAgent 之前检查该路由；命中后直接调用 `compare_majors(SimpleNamespace(deps=request_context), major1, major2)`。
+- 如果工具返回的是可直接面向用户的个性化对比，直接做轻量清理后返回。
+- 如果工具返回缺失权重兜底，不再调用无工具小 Agent；改用受控的用户态领域 renderer，把“缺少个性化量化评分”的事实、当前学生基础信息和两个专业所属专业类画像组织成可读回复。原因是首轮实现虽命中快路由，但该小 Agent 真实 e2e 耗时约 `96.7s`，仍然会放大远端模型延迟。
+- renderer 不能按具体 pair 写死，例如不能只单独实现 `法学 vs 财政学`。实现上应先由三级专业映射到专业类，再复用专业类画像；未覆盖专业类走统一通用比较框架，避免把 e2e 样例变成不可维护的特殊规则。
+- 当前不是手写覆盖全部 90+ 专业类画像，而是“精选专业类画像 + 全量通用 fallback”：本科 `93` 个专业类、专科 `97` 个专业类均应能生成非空用户回复；只有已沉淀画像的专业类会输出更具体的路径/门槛/稳定性/试错成本。
+- 历史记录仍写入 `ModelRequest -> ToolCallPart(compare_majors) -> ToolReturnPart -> ModelResponse`，保持可追溯；不会产生 pending，也不会发送工作台卡片。
+
+验收：
+
+- 单测覆盖：标准专业名命中、专业类/简称不命中、意向写入或方案变更不命中、ChatService 命中快路由时不调用主 ChatAgent，缺权重兜底时也不调用额外 LLM。
+- 单测覆盖所有本科/专科专业类代表专业，验证差异化画像未覆盖时仍走通用 fallback，且不泄漏“请只做”等工具内部提示。
+- e2e 复跑：`303-quality-major-compare-readonly-no-intent` 仍无 followup、无 pending 文案，内容包含两个专业、适合/就业/方向等结构化判断；目标从 `36s+` 降到一次工具调用加本地 renderer。
+
+首轮实现复盘：
+
+- `major_compare_fast_route` 已命中，`compare_majors` 工具耗时约 `40ms`，但缺权重分支的无工具小 Agent 生成耗时约 `96683ms`，导致该轮总耗时约 `99530ms`。
+- 结论：对“工具已经明确返回缺个性化量化权重”的已知业务态，不适合再依赖模型生成最终文案；该分支应使用稳定 renderer。它不是入口字符串模板兜底，不负责识别用户意图，也不会绕过专业名目录校验和 `compare_majors` 工具，只负责把工具结果中的缺权重状态转换成用户能理解的对比建议。renderer 已从单个专业组合修正为专业类画像驱动，避免只覆盖 `法学/财政学` 一个样例。
+
+验证记录：
+
+- 单测：
+  - `tests/unit/test_major_compare_fast_router.py tests/unit/test_major_compare_tool.py tests/unit/test_compare_resolution.py`：8 passed。
+  - `tests/unit/test_major_compare_reply_renderer.py tests/unit/test_dialog_regression_runner.py` 及 ChatService 专业对比/Plan fast route 聚焦用例：31 passed；其中 renderer 覆盖本科 `93` 个、专科 `97` 个专业类代表专业的通用 fallback。
+- 真实 e2e：
+  - 命令：`RUN_AGENT_DIALOG_E2E=1 AGENT_DIALOG_E2E_METRICS_OUTPUT=/private/tmp/zhiyuan_agent_303_major_compare_category_renderer_e2e.json .venv/bin/python -m pytest tests/e2e/test_agent_dialog_effect_perf.py -v -s`
+  - 结果：8 steps 全部通过，pytest 总耗时 `38.26s`。
+  - `法学和财政学对比`：端到端 `2316ms`，`followupMessages=0`，`toolCallCount=1`，`toolReturnCount=1`，历史工具为 `compare_majors`；Agent 日志确认 `routingPath=major_compare_fast_route`、`llmRequests=0`、`toolDurationMs=10ms`、`postProcessingApplied=["missing_weight_major_compare_renderer"]`。回复已按专业类画像输出 `法学（法学类）` 和 `财政学（财政学类）`，不是具体 pair 专属分支。
+  - 当前最慢项仍是 `体制内稳定就业承接分析`：端到端 `18367ms`，走 full Agent + `analyze_current_career_direction`，属于后续 Explore 只读回复继续压缩范围，不混入本次专业对比快路由。
+
 验证口径：
 
 - Agent 日志中同一轮应同时看到：

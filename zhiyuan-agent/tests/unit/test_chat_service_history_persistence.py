@@ -28,6 +28,8 @@ from app.service import (
     _summarize_tool_calls_for_observability,
     _tool_calls_include_plan_workspace_refresh,
 )
+from app.agent.context import RequestContext, ScoreDetail
+from app.resolver.major_compare_reply_renderer import render_missing_weight_major_compare_reply
 from app.tools.plan_orchestration_models import PlanActionPlan, PlanAtomicAction
 
 
@@ -473,6 +475,131 @@ def test_chat_service_plan_fast_route_bypasses_main_agent_and_persists_preview(t
     stored = asyncio.run(store.load("session-fast-plan"))
     assert stored is not None
     assert _extract_pending_plan_action(stored)["action_family"] == "move_unit"
+
+
+def test_chat_service_major_compare_fast_route_bypasses_main_agent_and_persists_tool_trace(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    fake_agent = _FakeAgent(["should not be used"])
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
+            patch(
+                "app.service.compare_majors",
+                AsyncMock(return_value="法学和财政学的对比结果：财政学更稳，法学更适合明确考公或法律兴趣。"),
+            ) as mock_compare:
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(
+            service.handle_message(
+                "session-fast-major-compare",
+                "user-1",
+                "法学和财政学哪个更适合普通家庭女生，先只分析不要记偏好",
+            )
+        )
+
+    assert "财政学更稳" in reply
+    assert fake_agent.calls == []
+    mock_compare.assert_awaited_once()
+    stored = asyncio.run(store.load("session-fast-major-compare"))
+    assert stored is not None
+    assert any(
+        isinstance(part, ToolCallPart)
+        and part.tool_name == "compare_majors"
+        and part.args["major_name1"] == "法学"
+        and part.args["major_name2"] == "财政学"
+        for message in stored
+        for part in getattr(message, "parts", [])
+    )
+
+
+def test_missing_weight_major_compare_renderer_is_user_facing_and_structured():
+    context = RequestContext(
+        userid="user-1",
+        sessionid="session-1",
+        batch="01",
+        score_detail=ScoreDetail(
+            province="北京",
+            total_score=580,
+            subject_list=["物理", "化学", "生物"],
+            sex="女",
+            volunteer_model="majorGroup",
+        ),
+    )
+
+    reply = render_missing_weight_major_compare_reply(
+        major_name1="法学",
+        major_name2="财政学",
+        request_context=context,
+    )
+
+    assert "法学" in reply
+    assert "财政学" in reply
+    assert "法学类" in reply
+    assert "财政学类" in reply
+    assert "普通家庭" in reply
+    assert "就业" in reply
+    assert "不要" not in reply
+    assert "请只做" not in reply
+    assert "内部提示" not in reply
+    assert "当前没有拿到可用的个性化量化评分" in reply
+
+
+def test_missing_weight_major_compare_renderer_handles_other_major_pairs():
+    context = RequestContext(userid="user-1", sessionid="session-1", batch="01")
+
+    reply = render_missing_weight_major_compare_reply(
+        major_name1="临床医学",
+        major_name2="口腔医学",
+        request_context=context,
+    )
+
+    assert "临床医学" in reply
+    assert "口腔医学" in reply
+    assert "临床医学类" in reply
+    assert "口腔医学类" in reply
+    assert "选择建议" in reply
+    assert "当前没有拿到可用的个性化量化评分" in reply
+
+
+def test_chat_service_major_compare_fast_route_missing_weight_uses_renderer_without_llm(
+    tmp_path,
+    mock_llm_client,
+):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    fake_agent = _FakeAgent(["should not be used"])
+    missing_weight_text = (
+        "暂时没有拿到当前会话可用的个性化量化权重数据，所以不能按系统评分判断法学和财政学谁更高。"
+        "这轮请只做通用维度比较。"
+    )
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.compare_majors", AsyncMock(return_value=missing_weight_text)) as mock_compare, \
+            patch("app.service._log_conversation_turn_event") as mock_log_event:
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(
+            service.handle_message(
+                "session-fast-major-compare-missing-weight",
+                "user-1",
+                "法学和财政学哪个更适合普通家庭女生，先只分析不要记偏好",
+            )
+        )
+
+    assert "普通家庭" in reply
+    assert "财政学" in reply
+    assert "请只做" not in reply
+    assert fake_agent.calls == []
+    mock_compare.assert_awaited_once()
+    log_kwargs = mock_log_event.call_args.kwargs
+    assert log_kwargs["routingPath"] == "major_compare_fast_route"
+    assert log_kwargs["llmRequests"] == 0
+    assert log_kwargs["llmDurationMs"] == 0
+    assert log_kwargs["postProcessingApplied"] == ["missing_weight_major_compare_renderer"]
 
 
 class _FakeAgentWithToolCalls:

@@ -26,6 +26,11 @@ from app.data.history_store import ChatHistoryStore
 from app.data.message_utils import pydantic_ai_messages_to_dicts
 from app.llm.client import LLMClient
 from app.resolver.action_resolver_shadow import action_resolver_shadow_from_plan_fast_decision
+from app.resolver.major_compare_fast_router import resolve_major_compare_fast_route
+from app.resolver.major_compare_reply_renderer import (
+    is_missing_weight_major_compare_result,
+    render_missing_weight_major_compare_reply,
+)
 from app.resolver.plan_fast_router import resolve_plan_fast_route
 from app.schemas.user_profile import UserProfile
 from app.schemas.ws import WSResponse
@@ -42,6 +47,7 @@ from app.tools.intent_state_tool import (
     apply_selected_intents as _apply_selected_intents,
     update_volunteer_intent_state,
 )
+from app.tools.major_compare_tool import compare_majors
 from app.tools.intent_response_tool import (
     parse_explore_followup_result,
     parse_intent_state_update_result,
@@ -2192,6 +2198,107 @@ class ChatService:
                     "Plan fast route failed; falling back to full agent: session_id=%s action_family=%s",
                     session_id,
                     fast_decision.action_family,
+                )
+
+        major_compare_decision = resolve_major_compare_fast_route(content, batch=request_context.batch)
+        if major_compare_decision.matched:
+            route_decision = major_compare_decision.route_decision()
+            tool_call_id = "fast-compare-majors"
+            tool_started_at = time.monotonic()
+            try:
+                if on_progress:
+                    await on_progress("正在对比这几个专业的差异...")
+                tool_result_text = await compare_majors(
+                    SimpleNamespace(deps=request_context),
+                    major_compare_decision.major_name1,
+                    major_compare_decision.major_name2,
+                )
+                tool_duration_ms = int((time.monotonic() - tool_started_at) * 1000)
+                used_missing_weight_renderer = False
+                if is_missing_weight_major_compare_result(tool_result_text):
+                    reply = render_missing_weight_major_compare_reply(
+                        major_name1=major_compare_decision.major_name1,
+                        major_name2=major_compare_decision.major_name2,
+                        request_context=request_context,
+                    )
+                    used_missing_weight_renderer = True
+                else:
+                    reply = tool_result_text
+                reply = _sanitize_reply_for_user(_normalize_user_facing_terms(str(reply or "").strip()))
+
+                new_messages = [
+                    ModelRequest(parts=[UserPromptPart(content=content)]),
+                    ModelResponse(
+                        parts=[
+                            ToolCallPart(
+                                tool_name="compare_majors",
+                                args={
+                                    "major_name1": major_compare_decision.major_name1,
+                                    "major_name2": major_compare_decision.major_name2,
+                                },
+                                tool_call_id=tool_call_id,
+                            )
+                        ],
+                        model_name="major-compare-fast-route",
+                    ),
+                    ModelRequest(
+                        parts=[
+                            ToolReturnPart(
+                                tool_name="compare_majors",
+                                content=tool_result_text,
+                                tool_call_id=tool_call_id,
+                            )
+                        ]
+                    ),
+                    ModelResponse(parts=[TextPart(content=reply)], model_name="major-compare-fast-route"),
+                ]
+                try:
+                    history_to_save = list(history or [])
+                    history_to_save.extend(new_messages)
+                    await self.history_store.save(session_id, history_to_save)
+                except Exception:
+                    logger.exception("Failed to save major compare fast route history: session_id=%s", session_id)
+                _log_conversation_turn_event(
+                    sessionId=session_id,
+                    userId=user_id,
+                    scene="explore",
+                    routingPath="major_compare_fast_route",
+                    routeDecision=route_decision,
+                    pendingType=None,
+                    actionFamily="compare_majors",
+                    resultKind="missing_weight_fallback" if is_missing_weight_major_compare_result(tool_result_text) else "major_compare",
+                    modelProvider=_llm_config_value(self.llm_client, "provider"),
+                    modelName=_llm_config_value(self.llm_client, "model_name"),
+                    llmRequests=0,
+                    inputTokens=None,
+                    outputTokens=None,
+                    totalTokens=None,
+                    toolCallCount=1,
+                    totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
+                    llmDurationMs=0,
+                    toolDurationMs=tool_duration_ms,
+                    toolCalls=[
+                        {
+                            "name": "compare_majors",
+                            "durationMs": tool_duration_ms,
+                            "success": True,
+                            "majorNames": [
+                                major_compare_decision.major_name1,
+                                major_compare_decision.major_name2,
+                            ],
+                        }
+                    ],
+                    postProcessingApplied=["missing_weight_major_compare_renderer"] if used_missing_weight_renderer else [],
+                    status="success",
+                    errorType=None,
+                )
+                return reply
+            except Exception:
+                logger.exception(
+                    "Major compare fast route failed; falling back to full agent: session_id=%s majors=%s/%s",
+                    session_id,
+                    major_compare_decision.major_name1,
+                    major_compare_decision.major_name2,
                 )
 
         llm_started_at = time.monotonic()

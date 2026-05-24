@@ -188,6 +188,37 @@ def test_summarize_turn_observability_extracts_tool_action_and_result():
     assert observed["toolCalls"][0]["applied"] is False
 
 
+def test_summarize_turn_observability_counts_plain_text_tool_returns():
+    turn_messages = [
+        {
+            "parts": [
+                {
+                    "part_kind": "tool-call",
+                    "tool_name": "compare_majors",
+                    "tool_call_id": "fast-compare-majors",
+                    "args": {"major_name1": "法学", "major_name2": "财政学"},
+                }
+            ]
+        },
+        {
+            "parts": [
+                {
+                    "part_kind": "tool-return",
+                    "tool_name": "compare_majors",
+                    "tool_call_id": "fast-compare-majors",
+                    "content": "法学和财政学的对比文本",
+                }
+            ]
+        },
+    ]
+
+    observed = runner._summarize_turn_observability(turn_messages)
+
+    assert observed["toolCallCount"] == 1
+    assert observed["toolReturnCount"] == 1
+    assert observed["toolCalls"][0]["name"] == "compare_majors"
+
+
 def test_content_assertions_reject_followups_when_disallowed():
     violations = runner._check_content_assertions(
         "当前没有上一轮待确认的方案动作。",

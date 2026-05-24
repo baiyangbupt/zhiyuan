@@ -246,6 +246,7 @@ def _summarize_turn_observability(turn_messages: list[dict[str, Any]]) -> dict[s
     """Extract tool/action metadata from persisted pydantic-ai JSON history."""
     tool_calls: list[dict[str, Any]] = []
     returns_by_call_id: dict[str, dict[str, Any]] = {}
+    tool_return_count = 0
     action_families: list[str] = []
     result_kinds: list[str] = []
 
@@ -281,6 +282,7 @@ def _summarize_turn_observability(turn_messages: list[dict[str, Any]]) -> dict[s
                 tool_calls.append(item)
                 continue
             if kind == "tool-return" and tool_name:
+                tool_return_count += 1
                 data = _parse_json_object(part.get("content"))
                 if call_id and data:
                     returns_by_call_id[call_id] = data
@@ -310,7 +312,7 @@ def _summarize_turn_observability(turn_messages: list[dict[str, Any]]) -> dict[s
     return {
         "historyMessages": len(turn_messages),
         "toolCallCount": len(tool_calls),
-        "toolReturnCount": len(returns_by_call_id),
+        "toolReturnCount": tool_return_count,
         "toolCalls": tool_calls,
         "actionFamilies": action_families,
         "resultKinds": result_kinds,
