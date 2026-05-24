@@ -264,6 +264,48 @@ def test_query_planning_state_matches_level2_major_preferences_against_concrete_
     assert "湖北工程学院(01)-自动化(4000元)(冲)@2（匹配偏好专业:自动化类）" in result
 
 
+def test_query_planning_state_marks_truncated_preference_summary_when_example_matches_hidden_item():
+    ctx = _make_ctx("state-session-truncated-preference")
+    response = {
+        "code": 0,
+        "data": {
+            "phase": "ordered",
+            "version": 9,
+            "staleFlags": {"candidatePool": False, "orderedPlan": False, "review": False},
+            "draftPlanState": {"summary": {"total": 30}},
+            "orderedPlanState": {
+                "summary": {"total": 30},
+                "items": [
+                    {"position": 1, "schoolName": "青岛理工大学", "majorName": "建筑学", "majorCategory": "建筑类", "tier": "冲"},
+                ],
+            },
+            "profileState": {
+                "explicitProfile": {
+                    "positiveMajors": ["经济与贸易类", "金融学类", "外国语言文学类", "建筑类"],
+                }
+            },
+            "reviewState": {"summary": {"warnCount": 0, "riskCount": 0}, "checks": []},
+            "pendingActions": [],
+        },
+    }
+    ordered_response = {
+        "code": 0,
+        "data": {
+            "items": response["data"]["orderedPlanState"]["items"],
+            "summary": {"total": 30},
+        },
+    }
+
+    with (
+        patch("app.tools.planning_workflow_tool._get_planning_state_request", AsyncMock(return_value=response)),
+        patch("app.tools.planning_workflow_tool._get_planning_ordered_plan_request", AsyncMock(return_value=ordered_response)),
+    ):
+        result = asyncio.run(query_planning_state(ctx))
+
+    assert "当前偏好/要求：偏好专业=经济与贸易类,金融学类,外国语言文学类等4项" in result
+    assert "青岛理工大学-建筑学(冲)@1（匹配偏好专业:建筑类）" in result
+
+
 def test_run_planning_review_aggregates_major_group_relation_counts_by_unit():
     ctx = _make_ctx("review-session-major-group")
     response = {

@@ -19,6 +19,7 @@
 - `dialog_regression_runner.py` 新增 `--clear-history` 和 `--history-db`，支持在真实 `16/17` 等后端数据完整会话上只清理 Agent 本地 SQLite 对话历史后复跑，避免 `--session-offset` 丢失原 session 成绩、候选池和排序方案导致假失败。
 - `dialog_regression_runner.py` 新增 `warnElapsedSeconds / maxElapsedSeconds` 场景级耗时预算、整体 metrics summary 和 `--metrics-output` JSON 归档，支持把对话效果断言与 provider 延迟观察放在同一轮 WebSocket 回归里。
 - 新增 `examples/dialog_regression_302_effect_perf_cases.json` 和 `tests/e2e/test_agent_dialog_effect_perf.py`，覆盖 3.0.2 对话效果/性能 smoke：结构化方案查询、只读职业方向承接、专业+大学移动、专业组整体移动、歧义目标安全解释、新会话 Explore/Intent preview 和无 pending 确认快速保护。
+- 新增 `examples/dialog_regression_303_effect_perf_cases.json`，并将效果/性能 e2e 默认切到 3.0.3 用例集合；覆盖结构化方案现状、专业组 preview/confirm、排序预览、只读 Explore 不联动和无 pending 确认保护，把“回复质量”与延迟一起作为回归门槛。
 - 新增 Agent HTTP 健康检查接口 `/health` 和 `/gaotu-assistant-agent/health`，用于 Docker Compose healthcheck 和发布后远端探活，不影响现有 WebSocket 对话链路。
 - 3.0.1 对话规划链路新增 `sort_ordered_plan` 动作，支持用户通过对话按录取率、院校层次或推荐系数排序当前方案；排序作为高副作用动作进入 preview -> 确认 -> apply 流程，并刷新方案与审查状态。
 - 补充 3.0.1 对话回归和模型 benchmark 场景，覆盖方案排序、禁用旧锁定入口、候选筛选可见联动等端到端行为。
@@ -30,6 +31,7 @@
 
 - 修复专业组移动/删除 apply 后重复按“第 N 个专业组”解析目标的问题；移动后方案顺序已变化，重复解析可能记录成另一个专业组。现在 `executed_actions` 和后续日志复用执行前解析出的 unitIds。
 - 3.0.3 benchmark 文档补充效果质量门禁：性能评估需同时检查用户可理解、信息充足、结构清楚、确认边界、只读不误联动、歧义不误操作和事实一致。
+- 方案现状的偏好摘要在超过展示数量时显示“等 N 项”，避免“当前偏好”只列前三项而“贴近偏好示例”命中未展开偏好时让用户误以为前后矛盾。
 - 统一待确认状态边界：当 `RequestContext.conversation_phase` 已注入时，运行时只认 `conversation_phase.pending` 作为当前待确认源；旧 `pending_plan_action` / `pending_intent_change` 仅在没有 phase 对象的兼容入口里回退，避免新旧状态不同步引发确认错位。
 - pending 确认链路补齐版本和轮次守护：preview 结果会记录 `planning_version` 和 `created_turn`，确认时若当前 `planningState.version` 已变化或 pending 已过期，会直接拦截并提示重新查看当前方案，避免把旧预览误执行成当前方案修改。
 - 意向确认缓存收口：`planEditCache` 先转换为 `PendingConfirmation` 注入 `conversation_phase.pending`，后续确认流程优先读 phase 内的 payload；只有旧桥接入口才直接回读 backend cache。

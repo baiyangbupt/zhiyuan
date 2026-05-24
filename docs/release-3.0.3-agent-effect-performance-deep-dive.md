@@ -501,6 +501,34 @@ PlanFastRouter -> execute_plan_action -> service reply renderer
 
 当前 runner 用 `assertContains / assertContainsAny / assertNotContains / assertNoFollowups / assertFollowupTarget` 做自动质量门禁；真实效果仍需要抽样人工看完整文本，重点检查是否丰富、是否自然、是否能直接指导用户下一步。
 
+### 6.5 3.0.3 效果/性能复测记录
+
+新增 `zhiyuan-agent/examples/dialog_regression_303_effect_perf_cases.json`，默认作为 `tests/e2e/test_agent_dialog_effect_perf.py` 的真实 WebSocket 场景集合。该集合不只看延迟，也把回复质量作为门禁：
+
+- 方案现状必须结构化、信息充足，不能暴露内部字段或旧“草稿”概念。
+- 专业组移动必须解释“专业组顺序”语义，确认前不执行，确认后刷新排序方案。
+- 排序预览必须说明会实际改变方案和导出顺序，并进入待重新审查。
+- Explore 只读分析不能写 pending、不能发工作台卡片。
+- 无 pending 时“确认”必须快速返回保护性提示。
+
+本地最新复跑结果：
+
+| 场景 | 耗时 | 效果结论 |
+| --- | ---: | --- |
+| 方案结构化现状 | 2.6s | 通过；包含数量、冲稳保、审查、缺口、前排示例和偏好承接。偏好摘要已在截断时显示“等 N 项”，避免示例命中未展开偏好时造成误解。 |
+| 专业组移动 preview | 4.3s | 通过；明确专业组名称、组内专业数、目标专业组位置和确认边界。 |
+| 专业组移动 confirm | 4.6s | 通过；`llmRequests=0`，确认后刷新 `ordered`。 |
+| 院校层次排序 preview | 2.2s | 通过；说明会改变方案/导出顺序并触发待重新审查。 |
+| 体制内稳定就业承接分析 | 41.0s | 效果可读且结构较丰富，但性能仍偏慢；本轮出现 `load_skill -> analyze_current_career_direction`，需要继续减少只读 Explore 的额外工具/模型链路。 |
+| 法学 vs 财政学对比 | 17.5s | 通过；只走 `compare_majors`，未写 pending，回复有结构化对比。 |
+| 无 pending 确认保护 | 2.1s | 通过；不进工具、不发工作台卡片。 |
+
+结论：
+
+- Plan 快路径已达到可接受体验，主要慢点不在方案查询/排序/专业组操作。
+- Explore 只读分析仍是 3.0.3 后续优化重点，尤其是职业方向分析中的 skill 加载和内容生成链路。
+- 性能 benchmark 必须保留人工抽样看全文；本次即发现“偏好摘要只展示前三项，但示例命中隐藏偏好”的效果问题，已通过截断提示修复。
+
 ## 7. 落地顺序
 
 ### Phase 0：补齐观测

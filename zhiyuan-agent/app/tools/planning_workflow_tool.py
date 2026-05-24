@@ -902,6 +902,14 @@ async def _load_visible_plan_states(
     return ordered_state, draft_state
 
 
+def _format_intent_summary_values(values: list[str], *, limit: int = 3) -> str:
+    display_values = [str(value).strip() for value in values[:limit] if str(value).strip()]
+    text = ",".join(display_values)
+    if len(values) > limit:
+        text = f"{text}等{len(values)}项" if text else f"共{len(values)}项"
+    return text
+
+
 def _build_plan_intent_relation_lines(
     planning_state: dict[str, Any] | None,
     plan_items: list[dict[str, Any]] | None,
@@ -920,19 +928,19 @@ def _build_plan_intent_relation_lines(
 
     summary_parts: list[str] = []
     if positive_majors:
-        summary_parts.append(f"偏好专业={','.join(positive_majors[:3])}")
+        summary_parts.append(f"偏好专业={_format_intent_summary_values(positive_majors)}")
     if negative_majors:
-        summary_parts.append(f"排除专业={','.join(negative_majors[:3])}")
+        summary_parts.append(f"排除专业={_format_intent_summary_values(negative_majors)}")
     if positive_schools:
-        summary_parts.append(f"偏好院校={','.join(positive_schools[:3])}")
+        summary_parts.append(f"偏好院校={_format_intent_summary_values(positive_schools)}")
     if negative_schools:
-        summary_parts.append(f"排除院校={','.join(negative_schools[:3])}")
+        summary_parts.append(f"排除院校={_format_intent_summary_values(negative_schools)}")
     if positive_regions:
-        summary_parts.append(f"偏好地域={','.join(positive_regions[:3])}")
+        summary_parts.append(f"偏好地域={_format_intent_summary_values(positive_regions)}")
     if negative_regions:
-        summary_parts.append(f"排除地域={','.join(negative_regions[:3])}")
+        summary_parts.append(f"排除地域={_format_intent_summary_values(negative_regions)}")
     if career_types:
-        summary_parts.append(f"发展方向={','.join(career_types[:2])}")
+        summary_parts.append(f"发展方向={_format_intent_summary_values(career_types, limit=2)}")
 
     if not summary_parts:
         return []
