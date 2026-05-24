@@ -519,14 +519,14 @@ PlanFastRouter -> execute_plan_action -> service reply renderer
 | 专业组移动 preview | 4.3s | 通过；明确专业组名称、组内专业数、目标专业组位置和确认边界。 |
 | 专业组移动 confirm | 4.6s | 通过；`llmRequests=0`，确认后刷新 `ordered`。 |
 | 院校层次排序 preview | 2.2s | 通过；说明会改变方案/导出顺序并触发待重新审查。 |
-| 体制内稳定就业承接分析 | 41.0s | 效果可读且结构较丰富，但性能仍偏慢；本轮出现 `load_skill -> analyze_current_career_direction`，需要继续减少只读 Explore 的额外工具/模型链路。 |
-| 法学 vs 财政学对比 | 17.5s | 通过；只走 `compare_majors`，未写 pending，回复有结构化对比。 |
+| 体制内稳定就业承接分析 | 26.3s | 通过；只走 `analyze_current_career_direction`，未再先 `load_skill`，未写 pending，未发工作台卡片；回复保留学生适配、方案承接、候选机会和下一步。 |
+| 法学 vs 财政学对比 | 16.3s | 通过；只走 `compare_majors`，未写 pending，回复有结构化对比。 |
 | 无 pending 确认保护 | 2.1s | 通过；不进工具、不发工作台卡片。 |
 
 结论：
 
 - Plan 快路径已达到可接受体验，主要慢点不在方案查询/排序/专业组操作。
-- Explore 只读分析仍是 3.0.3 后续优化重点，尤其是职业方向分析中的 skill 加载和内容生成链路。
+- Explore 只读分析在去掉不必要 `load_skill` 后已明显下降；后续重点转为减少工具内部生成和主模型最终组织的重复总结。
 - 性能 benchmark 必须保留人工抽样看全文；本次即发现“偏好摘要只展示前三项，但示例命中隐藏偏好”的效果问题，已通过截断提示修复。
 
 ## 7. 落地顺序
@@ -627,6 +627,7 @@ Phase 2 首轮复测记录：
 - 职业方向分析内部生成 LLM 增加 10s 短超时；超时后使用已有结构化事实与 fallback 分析交给主模型组织，避免单个内部润色调用拖到 100s 以上。
 - `tool_dispatch_rules` 和 `major_chat / explore_chat` skill 收紧专业对比边界：两个具体专业的只读对比优先 `compare_majors / compare_majors_adhoc`，不要先走 `analyze_current_major_interest` 或 Intent 确认链。
 - `tool_dispatch_rules` 明确 Explore 工具已经承接当前方案/候选分析，同一轮调用后不再补调 `plan_next_action(query_state)` 或 `query_volunteer_plan` 做重复状态查询。
+- `tool_dispatch_rules` 明确专用 Explore 工具可承接时不要先调用 `load_skill`；`load_skill` 只在没有明显专用工具或需要补充领域解释框架时使用。真实复跑中职业承接场景从 `load_skill + analyze_current_career_direction` 收敛为单个专用工具，端到端约 26.3s。
 - `compare_majors / compare_majors_adhoc` 增加缺失量化权重兜底：当会话没有分数画像或权重接口返回空数据时，不再用 0 值生成“综合得分相同”这类误导性结论，而是退回通用维度比较提示。
 - 仍保留开放式 Explore 主模型组织能力，没有新增面向用户的模板回复，也没有绕过只读/确认边界。
 

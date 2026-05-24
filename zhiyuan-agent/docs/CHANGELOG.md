@@ -32,6 +32,7 @@
 - 修复专业组移动/删除 apply 后重复按“第 N 个专业组”解析目标的问题；移动后方案顺序已变化，重复解析可能记录成另一个专业组。现在 `executed_actions` 和后续日志复用执行前解析出的 unitIds。
 - 3.0.3 benchmark 文档补充效果质量门禁：性能评估需同时检查用户可理解、信息充足、结构清楚、确认边界、只读不误联动、歧义不误操作和事实一致。
 - 方案现状的偏好摘要在超过展示数量时显示“等 N 项”，避免“当前偏好”只列前三项而“贴近偏好示例”命中未展开偏好时让用户误以为前后矛盾。
+- Explore 调度指令收紧：明确职业/专业/院校/地域专用工具可承接时不先调用 `load_skill`，真实 3.0.3 e2e 中“体制内稳定就业承接分析”从 `load_skill + analyze_current_career_direction` 收敛为单个专用工具，端到端从约 41s 降到约 26s，回复质量保持结构化。
 - 统一待确认状态边界：当 `RequestContext.conversation_phase` 已注入时，运行时只认 `conversation_phase.pending` 作为当前待确认源；旧 `pending_plan_action` / `pending_intent_change` 仅在没有 phase 对象的兼容入口里回退，避免新旧状态不同步引发确认错位。
 - pending 确认链路补齐版本和轮次守护：preview 结果会记录 `planning_version` 和 `created_turn`，确认时若当前 `planningState.version` 已变化或 pending 已过期，会直接拦截并提示重新查看当前方案，避免把旧预览误执行成当前方案修改。
 - 意向确认缓存收口：`planEditCache` 先转换为 `PendingConfirmation` 注入 `conversation_phase.pending`，后续确认流程优先读 phase 内的 payload；只有旧桥接入口才直接回读 backend cache。

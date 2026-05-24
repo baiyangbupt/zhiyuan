@@ -168,6 +168,7 @@ def test_build_instructions_includes_explore_first_direction_fit_guidance():
     assert "`analyze_current_school_interest`" in instructions
     assert "`analyze_current_major_interest`" in instructions
     assert "`analyze_current_region_interest`" in instructions
+    assert "不要先调用 `load_skill`" in instructions
     assert "`preview_current_major_intent_confirmation`" in instructions
     assert "`preview_current_school_intent_confirmation`" in instructions
     assert "`preview_current_region_intent_confirmation`" in instructions
