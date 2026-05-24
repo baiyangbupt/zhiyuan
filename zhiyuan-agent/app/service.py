@@ -1819,6 +1819,7 @@ class ChatService:
             pending_intent_change=pending_intent_change,
             conversation_phase=conversation_phase,
             progress_callback=on_progress,
+            allow_explore_inner_llm=False,
         )
         active_pending = resolve_pending_confirmation(request_context)
         active_pending_kind = str(getattr(active_pending, "kind", "") or "").strip()

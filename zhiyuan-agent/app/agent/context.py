@@ -130,6 +130,7 @@ class RequestContext:
     pending_intent_change: bool = False  # 当前轮开始前是否已有待确认的 Intent 变更 (deprecated, 用 conversation_phase.pending)
     conversation_phase: ConversationPhase | None = None  # Phase 3 新增：统一对话阶段状态
     progress_callback: Callable[[str], Awaitable[None]] | None = None
+    allow_explore_inner_llm: bool = True  # 是否允许 Explore 工具内部再调用一次 LLM 生成草稿
 
 
 def resolve_pending_confirmation(deps: Any) -> "PendingConfirmation | None":

@@ -837,6 +837,38 @@ Phase 2 首轮复测记录：
   - `法学和财政学对比` 端到端 `30430ms`，走 full agent，`llmRequests=2`，内容结构完整；本地 session `880101` 无成绩画像，权重接口 404 后已走通用兜底。
   - 后续性能重点从 mutation 后端写入转向只读 Explore/专业对比的 LLM 调用次数、上下文长度和工具结果复用。
 
+### Phase 2.7：Explore 内层生成减重
+
+问题：
+
+- 职业方向 Explore 现在有两层生成：工具内部先用 `_generate_direction_analysis_content / _generate_generic_direction_analysis_content` 生成一版分析草稿，随后 ChatAgent 主模型还会基于工具结果再组织最终回复。
+- 真实 e2e 中 `体制内稳定就业承接分析` 已经收敛到单个专用工具，但工具内部生成仍会触发 10s timeout，再进入主模型最终组织，导致只读问题仍接近 30s。
+- 这类工具内部生成不是唯一事实来源，事实已经来自 `student_fit_fact / direction_facts / planningState / candidatePool`；保留主模型最终组织即可继续保证回复自然度。
+
+实现决策：
+
+- `RequestContext` 新增 `allow_explore_inner_llm`，默认 `True`，保证直接调用工具和既有单测仍按原行为运行。
+- `ChatService` 创建正式对话上下文时设置 `allow_explore_inner_llm=False`，只关闭真实聊天主链路中的 Explore 内层草稿生成。
+- `preview_direction_analysis_from_request / preview_generic_direction_analysis_from_request / preview_direction_comparison_from_request` 在该开关关闭时跳过内部 LLM，直接返回结构化事实 fallback，由 ChatAgent 主模型继续生成用户可读回复。
+
+影响边界：
+
+- 不新增字符串模板匹配，不绕过 ChatAgent 主模型，也不改变只读/确认/pending 边界。
+- 不影响 `resolve_career_direction_slots` 的本地 taxonomy 命中逻辑，也不影响专业对比 `compare_majors`。
+- 后续如果要进一步压低 `法学和财政学对比` 这类只读专业对比耗时，应单独设计只读 answer renderer 或专业对比快路径，不能把专业简称识别强行做成低置信短路。
+
+验证记录：
+
+- 语法检查：`zhiyuan-agent/.venv/bin/python -m py_compile zhiyuan-agent/app/tools/explore_direction_tool.py zhiyuan-agent/app/agent/context.py zhiyuan-agent/app/service.py` 通过。
+- 单测：
+  - `tests/unit/test_explore_direction_scenarios_sync.py tests/unit/test_dialog_scenario_stability.py tests/unit/test_intent_state_tool.py`：139 passed。
+  - `tests/unit/test_major_compare_tool.py`：1 passed。
+- 真实 e2e：
+  - 命令：`RUN_AGENT_DIALOG_E2E=1 AGENT_DIALOG_E2E_METRICS_OUTPUT=/private/tmp/zhiyuan_agent_303_explore_inner_llm_off_e2e.json .venv/bin/python -m pytest tests/e2e/test_agent_dialog_effect_perf.py -v -s`
+  - 结果：8 steps 全部通过，pytest 总耗时 `84.72s`。
+  - `体制内稳定就业承接分析`：端到端 `28578ms`，`llmRequests=2`，工具调用仍为 `analyze_current_career_direction`；日志确认 `Skip direction comparison inner LLM generation`，没有再触发 Explore 工具内部 10s 生成超时，回复仍包含基础条件、方案承接、候选机会和下一步。
+  - `法学和财政学对比`：端到端 `36715ms`，`llmRequests=2`，慢点主要来自主 Agent 两次模型调用；当前工具因 session 缺少分数画像走通用兜底，后续要优化应设计专业对比只读 renderer 或快路径，不应混入本次职业方向开关。
+
 验证口径：
 
 - Agent 日志中同一轮应同时看到：

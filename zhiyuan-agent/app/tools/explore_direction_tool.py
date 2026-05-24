@@ -370,6 +370,10 @@ def likely_generic_direction_question(text: str | None) -> bool:
     return any(pattern in normalized for pattern in generic_patterns)
 
 
+def _allow_inner_direction_generation(request_context: RequestContext) -> bool:
+    return bool(getattr(request_context, "allow_explore_inner_llm", True))
+
+
 def _contains_any_text(value: str | None, keywords: list[str]) -> bool:
     if not value:
         return False
@@ -838,30 +842,37 @@ async def preview_direction_analysis_from_request(
         ordered_total=ordered_total,
         candidate_match_count=candidate_match_count,
     )
-    try:
-        generated = await asyncio.wait_for(
-            _generate_direction_analysis_content(
-                request_context,
-                [student_fit_fact],
-                [_build_direction_slot_fact(direction_slot, ordered_items, candidate_items, ordered_ids)],
-            ),
-            timeout=_DIRECTION_ANALYSIS_LLM_TIMEOUT_SECONDS,
-        )
-        analysis.update(generated.model_dump())
-    except asyncio.TimeoutError:
+    if not _allow_inner_direction_generation(request_context):
         logger.info(
-            "Generate direction analysis content timed out, falling back to template: session_id=%s direction_slot=%s timeout=%ss",
+            "Skip direction analysis inner LLM generation: session_id=%s direction_slot=%s",
             session_id,
             direction_slot,
-            _DIRECTION_ANALYSIS_LLM_TIMEOUT_SECONDS,
         )
-    except Exception:
-        logger.warning(
-            "Generate direction analysis content failed, falling back to template: session_id=%s direction_slot=%s",
-            session_id,
-            direction_slot,
-            exc_info=True,
-        )
+    else:
+        try:
+            generated = await asyncio.wait_for(
+                _generate_direction_analysis_content(
+                    request_context,
+                    [student_fit_fact],
+                    [_build_direction_slot_fact(direction_slot, ordered_items, candidate_items, ordered_ids)],
+                ),
+                timeout=_DIRECTION_ANALYSIS_LLM_TIMEOUT_SECONDS,
+            )
+            analysis.update(generated.model_dump())
+        except asyncio.TimeoutError:
+            logger.info(
+                "Generate direction analysis content timed out, falling back to template: session_id=%s direction_slot=%s timeout=%ss",
+                session_id,
+                direction_slot,
+                _DIRECTION_ANALYSIS_LLM_TIMEOUT_SECONDS,
+            )
+        except Exception:
+            logger.warning(
+                "Generate direction analysis content failed, falling back to template: session_id=%s direction_slot=%s",
+                session_id,
+                direction_slot,
+                exc_info=True,
+            )
 
     return _format_text_sections(
         ("分析结论", [f"你提到的“{to_career_label(direction_slot)}”，我先帮你做了一个初步判断。"]),
@@ -932,23 +943,29 @@ async def preview_generic_direction_analysis_from_request(
             analysis["currentPlanFit"].append(f"从当前方案看，“{label}”已经有一定承接，大约有 {ordered_count} 个相关志愿。")
         if candidate_count > 0:
             analysis["candidateOpportunity"].append(f"候选里和“{label}”相关、还没进方案的机会大约还有 {candidate_count} 个。")
-    try:
-        await _emit_progress(request_context, "正在把这些线索整理成适合你的方向建议...")
-        generated = await asyncio.wait_for(
-            _generate_generic_direction_analysis_content(
-                request_context,
-                student_fit_fact,
-                direction_facts[:3],
-            ),
-            timeout=_GENERIC_DIRECTION_LLM_TIMEOUT_SECONDS,
-        )
-        analysis.update(generated.model_dump())
-    except Exception:
-        logger.warning(
-            "Generate generic direction analysis content failed, falling back to template: session_id=%s",
+    if not _allow_inner_direction_generation(request_context):
+        logger.info(
+            "Skip generic direction analysis inner LLM generation: session_id=%s",
             session_id,
-            exc_info=True,
         )
+    else:
+        try:
+            await _emit_progress(request_context, "正在把这些线索整理成适合你的方向建议...")
+            generated = await asyncio.wait_for(
+                _generate_generic_direction_analysis_content(
+                    request_context,
+                    student_fit_fact,
+                    direction_facts[:3],
+                ),
+                timeout=_GENERIC_DIRECTION_LLM_TIMEOUT_SECONDS,
+            )
+            analysis.update(generated.model_dump())
+        except Exception:
+            logger.warning(
+                "Generate generic direction analysis content failed, falling back to template: session_id=%s",
+                session_id,
+                exc_info=True,
+            )
     return _format_text_sections(
         ("分析结论", ["你这句更像是在问自己现阶段更适合优先看哪类方向，我先按这个思路帮你做个初步判断。"]),
         ("当前判断", _build_impact_preview_from_analysis(analysis)),
@@ -1010,33 +1027,40 @@ async def preview_direction_comparison_from_request(
     for fit_fact in student_fit_facts:
         analysis["currentPlanFit"].extend((fit_fact.get("positiveSignals") or [])[:1])
         analysis["currentPlanConflict"].extend((fit_fact.get("cautionSignals") or [])[:1])
-    try:
-        generated = await asyncio.wait_for(
-            _generate_direction_analysis_content(
-                request_context,
-                student_fit_facts,
-                [
-                    _build_direction_slot_fact(slot, ordered_items, candidate_items, ordered_ids)
-                    for slot in normalized_slots
-                ],
-            ),
-            timeout=_DIRECTION_ANALYSIS_LLM_TIMEOUT_SECONDS,
-        )
-        analysis.update(generated.model_dump())
-    except asyncio.TimeoutError:
+    if not _allow_inner_direction_generation(request_context):
         logger.info(
-            "Generate direction comparison content timed out, falling back to template: session_id=%s direction_slots=%s timeout=%ss",
+            "Skip direction comparison inner LLM generation: session_id=%s direction_slots=%s",
             session_id,
             normalized_slots,
-            _DIRECTION_ANALYSIS_LLM_TIMEOUT_SECONDS,
         )
-    except Exception:
-        logger.warning(
-            "Generate direction comparison content failed, falling back to template: session_id=%s direction_slots=%s",
-            session_id,
-            normalized_slots,
-            exc_info=True,
-        )
+    else:
+        try:
+            generated = await asyncio.wait_for(
+                _generate_direction_analysis_content(
+                    request_context,
+                    student_fit_facts,
+                    [
+                        _build_direction_slot_fact(slot, ordered_items, candidate_items, ordered_ids)
+                        for slot in normalized_slots
+                    ],
+                ),
+                timeout=_DIRECTION_ANALYSIS_LLM_TIMEOUT_SECONDS,
+            )
+            analysis.update(generated.model_dump())
+        except asyncio.TimeoutError:
+            logger.info(
+                "Generate direction comparison content timed out, falling back to template: session_id=%s direction_slots=%s timeout=%ss",
+                session_id,
+                normalized_slots,
+                _DIRECTION_ANALYSIS_LLM_TIMEOUT_SECONDS,
+            )
+        except Exception:
+            logger.warning(
+                "Generate direction comparison content failed, falling back to template: session_id=%s direction_slots=%s",
+                session_id,
+                normalized_slots,
+                exc_info=True,
+            )
 
     return _format_text_sections(
         ("分析结论", ["我先帮你做了一个方向对比分析。"]),

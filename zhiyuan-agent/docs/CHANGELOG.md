@@ -12,6 +12,8 @@
 - 收紧专业对比调度边界：两个具体专业的只读对比优先 `compare_majors / compare_majors_adhoc`，避免先进入 `analyze_current_major_interest` 或 Intent 确认链。
 - Explore 调度规则补充“同轮不重复查状态”：调用方向/专业/学校/地域适配分析工具后，不再补调 `plan_next_action(query_state)` 或 `query_volunteer_plan` 做重复状态查询。
 - `compare_majors / compare_majors_adhoc` 补充缺失权重数据兜底：会话缺少分数画像或权重接口返回空数据时，不再用空指标生成“综合得分相同”等误导结论。
+- Explore 职业方向工具新增 `allow_explore_inner_llm` 开关：正式 ChatService 主链路关闭工具内部二次润色 LLM，保留结构化事实交给主模型最终组织，减少只读职业方向分析中的 10s 内层生成超时；直接工具调用和既有测试默认行为不变。
+- 3.0.3 effect/perf e2e 再次复测通过 8 个步骤；职业方向承接分析日志确认跳过 Explore 内层生成 LLM，端到端约 `28.6s`，无工作台联动、无 pending 误确认，回复仍保持结构化。
 - 专业组移动/删除确认链路增加分段耗时观测：Agent 输出 `plan_ordered_unit_mutation_timing / plan_ordered_unit_post_apply_timing`，Server 输出 `planning_ordered_unit_move_timing / planning_ordered_unit_remove_timing`，用于定位确认慢点是在专业组定位、后端状态重建、行为事件、保存、响应体返回还是执行后重复定位。
 - ActionResolver 进入影子对比首轮：补齐 `unit_refs` 到专业组移动/删除、结构化 `sort` 到方案排序的映射；`plan_fast_route` 命中时输出 `action_resolver_shadow_event`，用于对比当前路由 action family 与 typed resolver 输出，不改变实际执行。
 - 3.0.3 完成方案高频操作轻量持久化首轮落地：新增 `planningMutableState` overlay，`moveOrderedItem / moveOrderedUnit / removeOrderedUnits / sortOrderedPlan` 只写入小状态，完整候选池与推荐 overlay 不随每次方案操作重写。
