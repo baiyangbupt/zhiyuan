@@ -818,6 +818,25 @@ Phase 2 首轮复测记录：
   - `mvn -Dtest=PlanningStateServiceTest test`：99 tests，0 failure / 0 error，2 skipped。
   - `mvn -Dtest=PlanningStateServiceTest,PlanningBehaviorEventSharedServiceTest test`：100 tests，0 failure / 0 error，2 skipped。
 
+真实 e2e 复测记录（2026-05-24）：
+
+- 命令：
+  - `RUN_AGENT_DIALOG_E2E=1 AGENT_DIALOG_E2E_METRICS_OUTPUT=/private/tmp/zhiyuan_agent_303_mutable_overlay_e2e.json .venv/bin/python -m pytest tests/e2e/test_agent_dialog_effect_perf.py -v -s`
+- 结果：8 steps 全部通过，pytest 总耗时 `82.50s`，效果断言与确认边界断言均通过。
+- 专业组移动确认链路：
+  - preview：端到端 `4816ms`，`routingPath=plan_fast_route`，`llmRequests=0`。
+  - confirm：端到端 `3789ms`，`routingPath=direct_pending_plan_confirm`，`llmRequests=0`，返回 `planningWorkspaceAction target=ordered refresh=true`。
+  - Agent 分段：`mutationRequestDurationMs=538ms`，`totalDurationMs=1215ms`，`postResolveDurationMs=0`。
+  - 对比前次失败样本：confirm 从约 `32703ms` 回落到 `3789ms`，慢点不再集中在后端 mutation request。
+- 本地 DB 验证：
+  - `sessionId=16 planningMutableState` 长度约 `119681` 字符。
+  - `sessionId=16 planningState` 长度约 `16015932` 字符。
+  - 说明本次移动已写入小状态，未重写完整候选池/推荐 overlay。
+- 仍需继续优化的性能点：
+  - `体制内稳定就业承接分析` 端到端 `32346ms`，走 full agent，`llmRequests=2`，其中方向分析内容生成有 10s timeout 后回退，但整体回复质量可接受。
+  - `法学和财政学对比` 端到端 `30430ms`，走 full agent，`llmRequests=2`，内容结构完整；本地 session `880101` 无成绩画像，权重接口 404 后已走通用兜底。
+  - 后续性能重点从 mutation 后端写入转向只读 Explore/专业对比的 LLM 调用次数、上下文长度和工具结果复用。
+
 验证口径：
 
 - Agent 日志中同一轮应同时看到：
