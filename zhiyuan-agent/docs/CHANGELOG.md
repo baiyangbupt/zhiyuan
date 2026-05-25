@@ -65,6 +65,7 @@
 - 3.0.3 待确认意向影响追问收口：已有 `planEditCache` 待确认内容时，“先不确认，看看这个偏好会影响当前方案吗”直接走 `pending_intent_impact_fast_route`，基于当前方案/候选事实做只读说明；不调用主 Agent、不确认、不刷新工作台、不改方案。
 - 3.0.3 Intent preview 文案继续用户化：去掉“候选结果收紧”“专家推荐”等表达；结构化影响文本不再重复套“当前判断”标题；已有真实方案/候选命中时去掉“我先帮你看看 / 顺手看看”等泛化句。
 - 3.0.3 职业方向只读回复结构收口：`analyze_current_career_direction` 返回内容从“当前判断”下再嵌“初步判断 / 需要补充留意 / 可以继续展开”改为“方案承接 / 需要留意 / 候选机会 / 下一步”；不改变方向识别、方案/候选事实计算和只读不联动边界。最新真实 WebSocket 开放式质量 `4/4` 通过，effect/perf `14/14` 通过。
+- 3.0.3 主对话技能注入收口：`BaseAgent` 默认只注入 skills 边界摘要，不再把 `list_skills / load_skill / read_skill_resource / run_skill_script` 暴露给 ChatAgent 运行时；保留 `expose_skill_tools=True` 给专门需要完整技能工具的 Agent。该调整用于消除开放式 Explore 中先调用 `load_skill` 的额外轮次，不改变业务工具、确认边界或用户侧回复结构；聚焦单测 `40 passed`，真实 WebSocket effect/perf `14/14` 通过，open quality `4/4` 通过，职业方向承接场景 tool trace 仅有 `analyze_current_career_direction`。
 - 修复专业组移动/删除 apply 后重复按“第 N 个专业组”解析目标的问题；移动后方案顺序已变化，重复解析可能记录成另一个专业组。现在 `executed_actions` 和后续日志复用执行前解析出的 unitIds。
 - 3.0.3 后端补充 mutable overlay 回归：专业+大学模式单志愿移动、院校专业组模式组删除、旧 mutable 版本忽略，以及行为事件存储回归均通过单测覆盖。
 - 3.0.3 专业组 mutation 慢请求完成补充定位：确认慢例 `llmRequests=0`，Agent `mutationRequestDurationMs≈28.1s` 与 Server controller `unit/move≈28.1s` 对齐；当前源码复跑 service 分段常态约 `1.8s - 2.3s`，最大头是完整 `PlanningStateDTO` 保存，后续优化重点调整为状态持久化拆分而不是继续压模型。

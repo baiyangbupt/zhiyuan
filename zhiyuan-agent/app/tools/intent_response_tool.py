@@ -161,6 +161,72 @@ def format_text_sections(*sections: tuple[str, list[str] | None] | tuple[str, st
     return "\n\n".join(blocks)
 
 
+_GENERIC_IMPACT_LINES = (
+    "我先帮你看看，现在这份方案里有没有贴近这个方向的内容，以及还有哪些值得继续关注的机会。",
+    "我先帮你看看，这个要求和你现在的方案是否有冲突，以及还有没有合适的可选机会。",
+    "我也会顺手看看，方案外还有没有更贴近这个方向的机会。",
+    "下一步更适合继续看看这份方案和你的想法有多匹配，或者直接让我给你调整建议。",
+    "下一步更适合先看看方案里还有没有不符合这条要求的地方，再决定怎么调。",
+)
+
+
+def _is_generic_impact_line(line: str) -> bool:
+    cleaned = str(line or "").strip().lstrip("-").strip()
+    return cleaned in _GENERIC_IMPACT_LINES
+
+
+def _clean_generic_impact_block(text: str) -> str:
+    """Remove placeholder intent impact sections with no concrete plan/candidate facts."""
+    lines = str(text or "").splitlines()
+    if not lines:
+        return ""
+
+    cleaned: list[str] = []
+    pending_root_heading: str | None = None
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        stripped = line.strip()
+        if stripped.startswith("**") and stripped.endswith("**"):
+            section: list[str] = []
+            next_index = index + 1
+            while next_index < len(lines):
+                next_line = lines[next_index]
+                next_stripped = next_line.strip()
+                if next_stripped.startswith("**") and next_stripped.endswith("**"):
+                    break
+                section.append(next_line)
+                next_index += 1
+
+            concrete = [
+                item
+                for item in section
+                if item.strip() and not _is_generic_impact_line(item)
+            ]
+            if concrete:
+                cleaned.append(line)
+                cleaned.extend(concrete)
+            elif index == 0:
+                pending_root_heading = line
+            index = next_index
+            continue
+
+        if stripped and not _is_generic_impact_line(line):
+            cleaned.append(line)
+        elif not stripped and cleaned and cleaned[-1].strip():
+            cleaned.append(line)
+        index += 1
+
+    while cleaned and not cleaned[0].strip():
+        cleaned.pop(0)
+    while cleaned and not cleaned[-1].strip():
+        cleaned.pop()
+    if pending_root_heading and cleaned:
+        cleaned.insert(0, "")
+        cleaned.insert(0, pending_root_heading)
+    return "\n".join(cleaned)
+
+
 def render_intent_analysis_text(
     *,
     title: str,
@@ -174,6 +240,7 @@ def render_intent_analysis_text(
         ("分析结论", [title]),
     ]
     impact_block = str(impact_text or "").strip()
+    impact_block = _clean_generic_impact_block(impact_block)
     leading_blocks: list[str] = []
     if impact_block:
         if impact_block.startswith("**"):

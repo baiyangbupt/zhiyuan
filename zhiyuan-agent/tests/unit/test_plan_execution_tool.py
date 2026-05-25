@@ -102,6 +102,25 @@ def test_execute_plan_action_returns_preview_without_mutation():
     assert data["reply_focus"] == ["preview_only"]
 
 
+def test_execute_plan_action_existing_plan_missing_uses_user_facing_message():
+    payload = {
+        "stage": "analyze",
+        "action_family": "review_plan",
+        "user_goal": "调整后再帮我审查一下",
+        "context_summary": "阶段=profile_ready；方案=0/96",
+        "missing_inputs": ["existing_plan"],
+        "atomic_actions": [],
+    }
+
+    result = asyncio.run(execute_plan_action(_ctx(), json.dumps(payload, ensure_ascii=False)))
+    data = json.loads(result)
+
+    assert data["result_kind"] == "error"
+    assert "当前还没有可审查或可调整的方案" in data["summary"]
+    assert "先生成一版基础方案" in data["summary"]
+    assert "existing_plan" not in data["summary"]
+
+
 def test_execute_plan_action_move_ordered_unit_preview_uses_unit_position_language():
     payload = {
         "stage": "preview",

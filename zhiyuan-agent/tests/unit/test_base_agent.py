@@ -81,13 +81,34 @@ def test_init_with_tools(client, mocker):
 
 def test_init_with_skill_dirs(client, mocker):
     mock_toolset = MagicMock()
-    mocker.patch("app.agent.base_agent.SkillsToolset", return_value=mock_toolset)
-    mocker.patch("app.agent.base_agent.Agent")
+    mock_skills_toolset = mocker.patch("app.agent.base_agent.SkillsToolset", return_value=mock_toolset)
+    mock_agent = mocker.patch("app.agent.base_agent.Agent")
 
     agent = BaseAgent(
         llm_client=client, instructions="test", skill_dirs=["./skills"]
     )
     assert agent.skills_toolset is mock_toolset
+    call_kwargs = mock_agent.call_args[1]
+    assert call_kwargs["toolsets"] == []
+    assert "运行时可调用工具" in mock_skills_toolset.call_args.kwargs["instruction_template"]
+
+
+def test_init_with_skill_dirs_can_expose_skill_tools(client, mocker):
+    mock_toolset = MagicMock()
+    mock_skills_toolset = mocker.patch("app.agent.base_agent.SkillsToolset", return_value=mock_toolset)
+    mock_agent = mocker.patch("app.agent.base_agent.Agent")
+
+    agent = BaseAgent(
+        llm_client=client,
+        instructions="test",
+        skill_dirs=["./skills"],
+        expose_skill_tools=True,
+    )
+
+    assert agent.skills_toolset is mock_toolset
+    call_kwargs = mock_agent.call_args[1]
+    assert call_kwargs["toolsets"] == [mock_toolset]
+    assert mock_skills_toolset.call_args.kwargs["instruction_template"] is None
 
 
 # ---- 4. SkillsToolset 不可用 ----

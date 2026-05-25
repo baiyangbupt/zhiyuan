@@ -44,3 +44,51 @@ def test_missing_weight_renderer_has_fallback_for_all_bachelor_major_categories(
 
 def test_missing_weight_renderer_has_fallback_for_all_associate_major_categories():
     _assert_renderer_covers_category_representatives(batch="02", mappings=associate_major_mappings)
+
+
+def test_missing_weight_renderer_uses_recent_user_score_context():
+    context = RequestContext(
+        userid="user-1",
+        sessionid="session-context",
+        batch="01",
+        chat_history=[
+            {"role": "user", "content": "我是山东450分，物理历史地理，想先看看适合什么方向"},
+            {"role": "assistant", "content": "可以先看几个方向。"},
+            {"role": "user", "content": "网络与新媒体和跨境电子商务哪个更适合我"},
+        ],
+    )
+
+    reply = render_missing_weight_major_compare_reply(
+        major_name1="网络与新媒体",
+        major_name2="跨境电子商务",
+        request_context=context,
+    )
+
+    assert "省份=山东" in reply
+    assert "分数=450" in reply
+    assert "选科=物理、历史、地理" in reply
+    assert "当前会话还缺分数" not in reply
+
+
+def test_missing_weight_renderer_uses_category_profiles_for_media_and_ecommerce():
+    context = RequestContext(
+        userid="user-1",
+        sessionid="session-media-ecommerce",
+        batch="01",
+        chat_history=[
+            {"role": "user", "content": "我是山东450分，物理历史地理，想先看看适合什么方向"},
+            {"role": "user", "content": "网络与新媒体和跨境电商哪个更适合我"},
+        ],
+    )
+
+    reply = render_missing_weight_major_compare_reply(
+        major_name1="网络与新媒体",
+        major_name2="跨境电子商务",
+        request_context=context,
+    )
+
+    assert "新闻传播学类" in reply
+    assert "电子商务类" in reply
+    assert "内容策划" in reply
+    assert "跨境平台运营" in reply
+    assert "当前没有沉淀专门画像" not in reply

@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.data.major_data import associate_level3_labels, bachelor_level3_labels
+from app.util.code_enrichment import _resolve_local_major_name_alias
 
 
 _SPACE_RE = re.compile(r"\s+")
@@ -113,24 +114,54 @@ def _has_intent_or_mutation_token(compact_text: str) -> bool:
     return any(token in remaining for token in _INTENT_OR_MUTATION_TOKENS)
 
 
+def _surface_map(labels: set[str]) -> dict[str, str]:
+    surface_to_standard: dict[str, list[str]] = {}
+    for label in labels:
+        if len(label) < 2:
+            continue
+        surfaces = {label}
+        if label.endswith("学") and len(label) > 2:
+            surfaces.add(label[:-1])
+        alias = label.replace("电子商务", "电商")
+        if alias != label:
+            surfaces.add(alias)
+        for surface in surfaces:
+            standard = _resolve_local_major_name_alias(surface, {item: item for item in labels}) or label
+            surface_to_standard.setdefault(surface, []).append(standard)
+    return {
+        surface: standards[0]
+        for surface, standards in surface_to_standard.items()
+        if len(set(standards)) == 1
+    }
+
+
 def _matched_level3_majors(compact_text: str, labels: set[str]) -> list[str]:
-    matches = [label for label in labels if len(label) >= 2 and label in compact_text]
-    matches.sort(key=lambda value: (-len(value), compact_text.find(value), value))
-    selected: list[str] = []
+    surfaces = _surface_map(labels)
+    matches = [
+        (surface, standard)
+        for surface, standard in surfaces.items()
+        if len(surface) >= 2 and surface in compact_text
+    ]
+    matches.sort(key=lambda item: (-len(item[0]), compact_text.find(item[0]), item[0]))
+    selected: list[tuple[str, int]] = []
     occupied_spans: list[tuple[int, int]] = []
-    for label in matches:
-        start = compact_text.find(label)
+    for surface, standard in matches:
+        start = compact_text.find(surface)
         if start < 0:
             continue
-        end = start + len(label)
+        end = start + len(surface)
         if end < len(compact_text) and compact_text[end] == "类":
             continue
         if any(not (end <= old_start or start >= old_end) for old_start, old_end in occupied_spans):
             continue
-        selected.append(label)
+        selected.append((standard, start))
         occupied_spans.append((start, end))
-    selected.sort(key=lambda value: compact_text.find(value))
-    return selected
+    selected.sort(key=lambda item: item[1])
+    result: list[str] = []
+    for standard, _ in selected:
+        if standard not in result:
+            result.append(standard)
+    return result
 
 
 def resolve_major_compare_fast_route(

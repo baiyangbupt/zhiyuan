@@ -154,6 +154,10 @@ def _build_surface_map(labels: set[str], *, level: str) -> dict[str, str]:
         surfaces.setdefault(label, []).append(label)
         if level == "level3" and label.endswith("学") and len(label) > 2:
             surfaces.setdefault(label[:-1], []).append(label)
+        if level == "level3":
+            alias = label.replace("电子商务", "电商")
+            if alias != label:
+                surfaces.setdefault(alias, []).append(label)
         if level == "level2" and label.endswith("学类") and len(label) > 3:
             surfaces.setdefault(f"{label[:-2]}类", []).append(label)
 

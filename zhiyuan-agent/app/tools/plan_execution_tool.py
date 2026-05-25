@@ -2037,15 +2037,24 @@ async def _execute_plan_action_model(
         if item not in missing_inputs:
             missing_inputs.append(item)
     if missing_inputs:
+        if "existing_plan" in missing_inputs:
+            missing_text = (
+                "当前还没有可审查或可调整的方案。你可以先生成一版基础方案，"
+                "等方案出来后我再帮你审查风险、替换冲突项或调整顺序。"
+            )
+            next_hints = ["先生成一版基础方案，再继续审查或调整。"]
+        else:
+            missing_text = f"这一步还缺少必要信息：{', '.join(missing_inputs)}。请先补充清楚后再继续。"
+            next_hints = ["先补齐缺失输入，再继续执行当前方案动作。"]
         return PlanExecutionResult(
             applied=False,
             action_family=plan_model.action_family,
             stage=plan_model.stage,
             result_kind="error",
             context_summary=plan_model.context_summary,
-            summary=f"缺少必要输入：{', '.join(missing_inputs)}",
+            summary=missing_text,
             reply_focus=["missing_inputs"],
-            next_step_hints=["先补齐缺失输入，再继续执行当前方案动作。"],
+            next_step_hints=next_hints,
         )
 
     if not _allows_mutating_apply(ctx, plan_model):

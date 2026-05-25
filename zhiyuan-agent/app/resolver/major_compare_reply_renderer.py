@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -23,6 +24,66 @@ def _latest_user_text(request_context: RequestContext) -> str:
     return ""
 
 
+_PROVINCE_NAMES = (
+    "北京", "天津", "河北", "山西", "内蒙古", "辽宁", "吉林", "黑龙江", "上海", "江苏",
+    "浙江", "安徽", "福建", "江西", "山东", "河南", "湖北", "湖南", "广东", "广西",
+    "海南", "重庆", "四川", "贵州", "云南", "西藏", "陕西", "甘肃", "青海", "宁夏",
+    "新疆",
+)
+_SUBJECT_NAMES = ("物理", "历史", "化学", "生物", "政治", "地理")
+_SUBJECT_ABBREVIATIONS = {
+    "物": "物理",
+    "史": "历史",
+    "化": "化学",
+    "生": "生物",
+    "政": "政治",
+    "地": "地理",
+}
+
+
+def _recent_user_text(request_context: RequestContext, *, max_turns: int = 4) -> str:
+    texts: list[str] = []
+    for item in reversed(request_context.chat_history or []):
+        if str(item.get("role") or "") != "user":
+            continue
+        text = str(item.get("content") or "").strip()
+        if text:
+            texts.append(text)
+        if len(texts) >= max_turns:
+            break
+    texts.reverse()
+    return " ".join(texts)
+
+
+def _extract_subjects_from_text(text: str) -> list[str]:
+    subjects: list[str] = []
+    for subject in _SUBJECT_NAMES:
+        if subject in text and subject not in subjects:
+            subjects.append(subject)
+    compact = re.sub(r"\s+", "", text)
+    for combo in re.findall(r"[物史化生政地]{2,6}", compact):
+        for char in combo:
+            subject = _SUBJECT_ABBREVIATIONS.get(char)
+            if subject and subject not in subjects:
+                subjects.append(subject)
+    return subjects
+
+
+def _format_recent_user_context(text: str) -> str:
+    parts: list[str] = []
+    for province in _PROVINCE_NAMES:
+        if province in text:
+            parts.append(f"省份={province}")
+            break
+    score_match = re.search(r"(\d{3})\s*分", text)
+    if score_match:
+        parts.append(f"分数={score_match.group(1)}")
+    subjects = _extract_subjects_from_text(text)
+    if subjects:
+        parts.append(f"选科={'、'.join(subjects[:3])}")
+    return "；".join(parts)
+
+
 def _prompt_context_parts(user_text: str) -> list[str]:
     parts: list[str] = []
     if "普通家庭" in user_text:
@@ -37,6 +98,12 @@ def _prompt_context_parts(user_text: str) -> list[str]:
 def _format_score_detail(score_detail: ScoreDetail | None, *, user_text: str = "") -> str:
     prompt_context = "、".join(_prompt_context_parts(user_text))
     if score_detail is None:
+        recent_context = _format_recent_user_context(user_text)
+        if recent_context:
+            prefix = f"已参考你在对话里提供的基础信息：{recent_context}"
+            if prompt_context:
+                return f"{prefix}；同时参考本轮提到的{prompt_context}约束；当前没有拿到系统量化权重，所以不做系统评分。"
+            return f"{prefix}；当前没有拿到系统量化权重，所以不做系统评分。"
         if prompt_context:
             return f"本轮先按你提到的{prompt_context}等约束做通用判断；当前会话还缺分数、选科和省份，所以不做系统量化评分。"
         return "当前会话还没有完整分数、选科和省份信息，所以不做系统量化评分。"
@@ -126,6 +193,14 @@ _MAJOR_CATEGORY_PROFILES: dict[str, _MajorCategoryProfile] = {
         stability_score=4,
         barrier_score=3,
     ),
+    "电子商务类": _MajorCategoryProfile(
+        path="电商运营、跨境平台运营、数字营销、供应链协同、用户增长和中小企业线上业务",
+        threshold="需要英语或外贸基础、平台规则理解、数据分析、营销投放和实操项目经验",
+        stability="岗位机会多但平台变化快，普通院校也能就业，关键看城市产业、实习和个人运营能力",
+        cost="路径上手较快、试错成本相对可控，但要避免只学泛管理不做项目",
+        stability_score=3,
+        barrier_score=3,
+    ),
     "计算机类": _MajorCategoryProfile(
         path="软件开发、数据、人工智能、信息安全、企事业信息化和数字化岗位",
         threshold="对数学、编程训练、项目实践和持续学习要求高",
@@ -140,6 +215,14 @@ _MAJOR_CATEGORY_PROFILES: dict[str, _MajorCategoryProfile] = {
         stability="考公、事业单位和教师方向承接较好，市场化岗位需要作品和实习",
         cost="对普通家庭偏稳，但要注意就业城市和教师资格等路径准备",
         stability_score=4,
+        barrier_score=3,
+    ),
+    "新闻传播学类": _MajorCategoryProfile(
+        path="内容策划、新媒体运营、品牌传播、广告、公关、短视频与融媒体编辑等方向",
+        threshold="重写作表达、选题判断、作品集、热点理解、实习经历和平台工具使用",
+        stability="岗位面较宽但行业波动明显，城市资源、作品积累和学校平台会显著影响就业质量",
+        cost="适合表达和内容兴趣强的学生，普通家庭要重点控制院校学费和就业城市试错成本",
+        stability_score=2,
         barrier_score=3,
     ),
     "教育学类": _MajorCategoryProfile(
@@ -251,7 +334,7 @@ def render_missing_weight_major_compare_reply(
     request_context: RequestContext,
 ) -> str:
     """Render a bounded user-facing answer for the known missing-weight tool state."""
-    user_text = _latest_user_text(request_context)
+    user_text = _recent_user_text(request_context) or _latest_user_text(request_context)
     score_context = _format_score_detail(request_context.score_detail, user_text=user_text)
     profile_context = _format_init_profile(request_context.init_profile)
     context_line = f"{score_context}{'；' + profile_context if profile_context else ''}"

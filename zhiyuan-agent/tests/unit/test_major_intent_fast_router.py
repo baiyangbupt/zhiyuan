@@ -22,6 +22,13 @@ def test_major_intent_fast_route_matches_level2_categories_and_alias_surface():
     assert decision.major_intents["negative_level2"] == ["护理学类"]
 
 
+def test_major_intent_fast_route_matches_unique_level3_alias():
+    decision = resolve_major_intent_fast_route("网络与新媒体优先，跨境电商也可以考虑")
+
+    assert decision.matched is True
+    assert decision.major_intents["level3"] == ["网络与新媒体", "跨境电子商务"]
+
+
 def test_major_intent_fast_route_does_not_match_readonly_compare_request():
     decision = resolve_major_intent_fast_route("法学和财政学哪个更适合普通家庭女生，先只分析不要记偏好")
 

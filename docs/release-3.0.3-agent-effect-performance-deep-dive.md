@@ -1444,7 +1444,36 @@ P1 修复后复跑结果：
 - 多模型结论边界：当前多模型对照主要证明结构化快路径稳定，不能代表开放式生成质量优劣。
 - 历史/脏数据：真实 session 里的方案、候选、专业组数据如果已被多轮测试改动，可能影响样例文本；关键验证应优先用干净会话或清理 Agent 历史后复跑。
 
-## 9. 待确认决策
+## 9. 本轮进展更新
+
+本轮继续聚焦 Explore / Intent / Plan 之间的路由边界、用户可理解回复和端到端延迟，已落地以下修复：
+
+1. `plan_query_fast_route` 排除“适合什么方向 / 适合什么专业 / 看适合什么”等探索问法，避免把“我是山东450分，物理历史地理，想先看看适合什么方向”误路由为当前方案局部查询。
+2. `execute_plan_action` 在缺少 `existing_plan` 时不再暴露 `缺少必要输入：existing_plan`，改为“当前还没有可审查或可调整的方案，先生成基础方案后再审查/调整”的用户语言。
+3. Intent preview 标题去掉“卡片里选择”的前端实现词，影响说明会清理无事实支撑的“我先帮你看看 / 顺手看看”等占位句；如果已经有真实方案或候选命中，则保留父级标题和事实内容。
+4. 专业对比和专业意向快路由补充本地唯一别名：`跨境电商` 可归一为 `跨境电子商务`，同时继续保持专业类、三专业比较、方案修改等低置信场景回落主链路。
+5. 专业对比缺少系统量化权重时，会从最近用户上下文承接省份、分数和选科；例如第二轮“网络与新媒体和跨境电商哪个更适合我”会承接上一轮“山东450分，物理历史地理”。
+6. 专业类画像补强 `新闻传播学类` 与 `电子商务类`，避免 `网络与新媒体 vs 跨境电子商务` 只输出“当前没有沉淀专门画像”的空泛比较。
+7. `BaseAgent` 的技能体系调整为默认只注入技能边界摘要，不再把 `list_skills / load_skill / read_skill_resource / run_skill_script` 暴露给主对话运行时；需要完整技能工具的专门 Agent 仍可显式开启 `expose_skill_tools=True`。这次修复的目标是去掉开放式 Explore 中“先加载技能说明”的额外工具轮次，不新增用户侧模板短路，也不改变 Explore / Intent / Plan 的业务工具。
+
+`load_skill` 根因复盘：
+
+- `load_skill` 来自 `pydantic_ai_skills.SkillsToolset` 的默认工具集，不是志愿规划业务工具。
+- 默认 skills system prompt 会要求“任务落在技能域内时先调用 `load_skill`”，这与本系统已经注册的 `analyze_current_career_direction / compare_majors / plan_next_action` 等专用业务工具存在冲突。
+- 仅在 `tool_dispatch_rules` 里写“不要先调用 `load_skill`”不足以稳定约束模型，因为工具本身仍可见，且技能工具的系统提示会给出相反倾向。
+- 当前改为保留技能摘要作为任务边界提示，但不注册技能管理工具，主对话模型只能选择真实业务工具；这样可以减少无意义工具轮次，同时保留领域分工语义。
+
+最新验证：
+
+- 相关宽单测：`PYTHONPATH=. pytest --noconftest tests/unit/test_plan_query_fast_router.py tests/unit/test_major_intent_fast_router.py tests/unit/test_major_compare_fast_router.py tests/unit/test_major_compare_reply_renderer.py tests/unit/test_plan_execution_tool.py tests/unit/test_intent_state_tool.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_dialog_regression_runner.py -q`，结果 `340 passed`。
+- 技能注入聚焦单测：`tests/unit/test_base_agent.py tests/unit/test_chat_agent_init_profile.py tests/unit/test_chat_agent_tools.py -q`，结果 `40 passed`；确认主对话默认不再注册技能管理工具，业务工具注册不受影响。
+- 最新真实 WebSocket effect/perf：`RUN_AGENT_DIALOG_E2E=1 AGENT_DIALOG_E2E_METRICS_OUTPUT=/private/tmp/zhiyuan_agent_303_effect_perf_after_profile_restart.json .venv/bin/python -m pytest tests/e2e/test_agent_dialog_effect_perf.py -v -s`，`14/14` steps 通过，中位耗时约 `2203ms`，最大耗时约 `4432ms`。
+- 技能工具收紧后真实 WebSocket effect/perf：`RUN_AGENT_DIALOG_E2E=1 AGENT_DIALOG_E2E_METRICS_OUTPUT=/private/tmp/zhiyuan_agent_303_effect_perf_after_skill_toolset_scope.json .venv/bin/python -m pytest tests/e2e/test_agent_dialog_effect_perf.py -v -s`，`14/14` steps 通过，中位耗时约 `2284ms`，最大耗时约 `4930ms`；职业方向承接场景约 `2204ms`，tool trace 仅有 `analyze_current_career_direction`，没有 `load_skill`，`llmRequests=0`。
+- 技能工具收紧后 open quality：`AGENT_DIALOG_E2E_CASES=examples/dialog_regression_303_open_quality_cases.json` 真实 WebSocket `4/4` steps 通过，中位耗时约 `3046ms`，最大耗时约 `3506ms`；覆盖待确认意向影响追问、多方向职业承接和专业对比上下文承接。
+- 补充新会话链路：session `880403`，覆盖“山东450分物理历史地理 -> 网络与新媒体和跨境电商对比 -> 记成偏好”。三步均通过；专业对比约 `2166ms`，能展示新闻传播学类和电子商务类的就业路径、门槛、稳定性和试错成本；Intent preview 约 `2319ms`，能把 `跨境电商` 归一成 `跨境电子商务`。
+- 同一补充链路的第一步开放式 Explore 曾慢到约 `46925ms`，当时观测到 `load_skill` 和 `analyze_current_career_direction` 同轮出现；技能工具收紧后的 effect/perf 与 open quality 已确认主回归路径不再出现 `load_skill`。如果后续仍有开放表达回落完整 Agent 且变慢，重点应继续看完整 Agent 两次远端模型调用和开放式方向分析组织，而不是回退到字符串模板。
+
+## 10. 待确认决策
 
 需要确认后再进入代码实现：
 

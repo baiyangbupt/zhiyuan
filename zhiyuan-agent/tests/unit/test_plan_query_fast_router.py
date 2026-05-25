@@ -43,6 +43,7 @@ def test_plan_query_fast_route_does_not_match_mutation_requests():
 def test_plan_query_fast_route_does_not_match_explore_or_score_requests():
     assert resolve_plan_query_fast_route("法学和财政学哪个更适合").matched is False
     assert resolve_plan_query_fast_route("体制内稳定就业适不适合我").matched is False
+    assert resolve_plan_query_fast_route("我是山东450分，物理历史地理，想先看看适合什么方向").matched is False
     assert resolve_plan_query_fast_route("北京农学院近三年录取分是多少").matched is False
 
 

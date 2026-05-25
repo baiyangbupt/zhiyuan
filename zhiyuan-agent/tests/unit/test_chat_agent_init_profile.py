@@ -168,7 +168,7 @@ def test_build_instructions_includes_explore_first_direction_fit_guidance():
     assert "`analyze_current_school_interest`" in instructions
     assert "`analyze_current_major_interest`" in instructions
     assert "`analyze_current_region_interest`" in instructions
-    assert "不要先调用 `load_skill`" in instructions
+    assert "不要为了读取领域说明而增加额外工具轮次" in instructions
     assert "`preview_current_major_intent_confirmation`" in instructions
     assert "`preview_current_school_intent_confirmation`" in instructions
     assert "`preview_current_region_intent_confirmation`" in instructions
@@ -196,6 +196,6 @@ def test_build_instructions_includes_first_turn_onboarding_guidance():
     instructions = _build_instructions(ctx)
 
     assert "这是用户进入当前会话后的起手阶段" in instructions
-    assert "结合当前会话状态、已有报考参考信息、planning 状态和你准备调用的 skill" in instructions
+    assert "结合当前会话状态、已有报考参考信息和 planning 状态" in instructions
     assert "对话框适合直接提问、工作台适合查看方案和候选" in instructions
     assert "不要固定成同一套例子" in instructions

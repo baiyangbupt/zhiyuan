@@ -16,6 +16,14 @@ def test_major_compare_fast_route_does_not_match_category_or_abbreviation():
     assert resolve_major_compare_fast_route("法学类和财政学类哪个更适合").matched is False
 
 
+def test_major_compare_fast_route_matches_unique_local_alias():
+    decision = resolve_major_compare_fast_route("网络与新媒体和跨境电商哪个更适合我")
+
+    assert decision.matched is True
+    assert decision.major_name1 == "网络与新媒体"
+    assert decision.major_name2 == "跨境电子商务"
+
+
 def test_major_compare_fast_route_does_not_match_intent_or_mutation_semantics():
     assert resolve_major_compare_fast_route("法学和财政学都帮我记成偏好").matched is False
     assert resolve_major_compare_fast_route("法学和财政学按这个改方案").matched is False

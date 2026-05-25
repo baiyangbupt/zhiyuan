@@ -16,7 +16,7 @@ from __future__ import annotations
 _TOOL_DISPATCH_RULES = """\
 关于规划动作的执行规则：
 - 对话理解与触发由你基于语义、上下文和当前规划状态判断，不要依赖固定关键词、硬编码短语或模板化分流。
-- 你可以主动选择 Explore、Intent、Plan 相关 skill 与工具组合；工具提供事实、查询结果或状态执行结果，最终面向用户的话术由你自然组织。
+- 你应根据 Explore、Intent、Plan 的任务边界选择当前已注册的业务工具；工具提供事实、查询结果或状态执行结果，最终面向用户的话术由你自然组织。
 
 ## 任务层判断
 - Explore 负责方向了解、适配度和机会分析；Intent 负责把用户明确的新想法整理成偏好或要求并等待确认；Plan 负责查看、分析、生成和调整当前方案。
@@ -31,7 +31,7 @@ _TOOL_DISPATCH_RULES = """\
 - `analyze_current_career_direction` / `analyze_current_major_interest` / `analyze_current_school_interest` / `analyze_current_region_interest` 已经会结合当前方案承接和候选机会做分析；同一轮调用这些 Explore 工具后，不要再补调 `plan_next_action(query_state)` 或 `query_volunteer_plan` 做重复状态查询，除非用户另行要求查看具体志愿列表。
 - Explore 回答顺序：先看学生本人适配度，再看方向/对象特点，再看当前方案承接，最后提候选机会。
 - Explore 工具返回的分析已按用户可读结构组织好，你可以少量压缩但应保留小标题、换行和要点结构。
-- 明确能由 `analyze_current_career_direction` / `analyze_current_major_interest` / `compare_majors` 等专用工具承接的问题，不要先调用 `load_skill`；skill 只在没有明显专用工具或需要补充领域解释框架时使用。
+- 明确能由 `analyze_current_career_direction` / `analyze_current_major_interest` / `compare_majors` 等专用工具承接的问题，直接调用专用工具；不要为了读取领域说明而增加额外工具轮次。
 - 用户只是了解方向、学校、专业、适配度时，优先给分析，不要强行触发工作台视图或数据变更。
 
 ## Intent 层规则

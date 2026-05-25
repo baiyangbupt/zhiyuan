@@ -1822,8 +1822,33 @@ def test_build_preview_title_uses_pending_boundary_without_candidate_tightening(
 
     assert "确认前不会正式生效" in title
     assert "不会直接改动当前方案" in title
+    assert "卡片" not in title
     assert "候选结果收紧" not in title
     assert "专家推荐" not in title
+
+
+def test_render_intent_analysis_text_drops_generic_impact_placeholders():
+    text = render_intent_analysis_text(
+        title="好的，我先把这次你提到的想法整理一下。确认后我会按这个思路继续帮你看方案和给建议。",
+        impact_text=(
+            "**结合当前方案给你的提醒**\n\n"
+            "**现在比较贴近的部分**\n"
+            "- 我先帮你看看，现在这份方案里有没有贴近这个方向的内容，以及还有哪些值得继续关注的机会。\n\n"
+            "**还可以再看看的机会**\n"
+            "- 我也会顺手看看，方案外还有没有更贴近这个方向的机会。\n\n"
+            "**下一步建议**\n"
+            "- 下一步更适合继续看看这份方案和你的想法有多匹配，或者直接让我给你调整建议。"
+        ),
+        analysis_stage=ANALYSIS_STAGE_CONFIRMED,
+        intent_mode=INTENT_MODE_PREFERENCE,
+        items=[{"content": "把网络与新媒体作为后续优先参考的专业方向。"}],
+    )
+
+    assert "结合当前方案给你的提醒" not in text
+    assert "我先帮你看看" not in text
+    assert "顺手看看" not in text
+    assert "这次识别到的可采纳内容" in text
+    assert "网络与新媒体" in text
 
 
 def test_public_service_alignment_does_not_match_generic_public_undergraduate():

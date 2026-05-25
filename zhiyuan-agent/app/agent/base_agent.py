@@ -25,6 +25,15 @@ ProgressCallback = Callable[[str], Awaitable[None]]
 
 DepsT = TypeVar("DepsT")
 
+_SKILL_SUMMARY_INSTRUCTION_TEMPLATE = """\
+以下是系统内置的业务技能边界摘要，仅用于帮助你理解任务分工；它们不是运行时可调用工具。
+真正可调用能力以当前已注册的业务工具为准。能由专用业务工具承接的问题，直接调用对应工具，不要尝试加载技能说明。
+
+<available_skill_boundaries>
+{skills_list}
+</available_skill_boundaries>
+"""
+
 
 class BaseAgent(Generic[T]):
     """While 循环 Agent 基类，支持 tools + skills。"""
@@ -36,6 +45,7 @@ class BaseAgent(Generic[T]):
         output_type: Any = str,
         tools: list[Any] | None = None,
         skill_dirs: list[str] | None = None,
+        expose_skill_tools: bool = False,
         deps_type: type[Any] | None = None,
     ):
         self.llm_client = llm_client
@@ -43,8 +53,12 @@ class BaseAgent(Generic[T]):
 
         toolsets: list[AbstractToolset] = []
         if skill_dirs and SkillsToolset is not None:
-            self.skills_toolset = SkillsToolset(directories=skill_dirs)
-            toolsets.append(self.skills_toolset)
+            self.skills_toolset = SkillsToolset(
+                directories=skill_dirs,
+                instruction_template=None if expose_skill_tools else _SKILL_SUMMARY_INSTRUCTION_TEMPLATE,
+            )
+            if expose_skill_tools:
+                toolsets.append(self.skills_toolset)
 
         self.agent = Agent(
             model=llm_client.model,
