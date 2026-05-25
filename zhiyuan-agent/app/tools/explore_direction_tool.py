@@ -753,6 +753,24 @@ def _build_impact_preview_from_analysis(analysis: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _direction_analysis_sections(
+    analysis: dict[str, Any],
+    *,
+    fit_title: str = "方向判断",
+) -> list[tuple[str, list[str] | None]]:
+    """Render direction analysis without nesting internal subsection labels."""
+    summary_title = str(analysis.get("summaryTitle") or "").strip()
+    fit_items = _dedupe_texts([
+        *([summary_title] if summary_title else []),
+        *((analysis.get("currentPlanFit") or [])),
+    ])
+    return [
+        (fit_title, fit_items),
+        ("需要留意", _dedupe_texts(analysis.get("currentPlanConflict") or [])),
+        ("候选机会", _dedupe_texts(analysis.get("candidateOpportunity") or [])),
+    ]
+
+
 async def _generate_direction_analysis_content(
     request_context: RequestContext,
     student_fit_facts: list[dict[str, Any]],
@@ -861,10 +879,14 @@ async def preview_direction_analysis_from_request(
                 exc_info=True,
             )
 
+    next_steps = _dedupe_texts([
+        "如果你愿意把它记成后续偏好，我可以再按这个方向继续帮你看方案。",
+        *((analysis.get("nextActionHints") or [])),
+    ])
     return _format_text_sections(
         ("分析结论", [f"你提到的“{to_career_label(direction_slot)}”，我先帮你做了一个初步判断。"]),
-        ("当前判断", _build_impact_preview_from_analysis(analysis)),
-        ("下一步", ["如果你愿意把它记成后续偏好，我可以再按这个方向继续帮你看方案。"]),
+        *_direction_analysis_sections(analysis, fit_title="方向判断"),
+        ("下一步", next_steps[:4]),
     )
 
 
@@ -955,7 +977,7 @@ async def preview_generic_direction_analysis_from_request(
             )
     return _format_text_sections(
         ("分析结论", ["你这句更像是在问自己现阶段更适合优先看哪类方向，我先按这个思路帮你做个初步判断。"]),
-        ("当前判断", _build_impact_preview_from_analysis(analysis)),
+        *_direction_analysis_sections(analysis, fit_title="方向判断"),
         ("下一步", list(analysis.get("nextActionHints") or [])),
     )
 
@@ -1079,6 +1101,6 @@ async def preview_direction_comparison_from_request(
 
     return _format_text_sections(
         ("分析结论", [conclusion]),
-        ("当前判断", _build_impact_preview_from_analysis(current_judgment)),
+        *_direction_analysis_sections(current_judgment, fit_title="方案承接"),
         ("下一步", next_steps[:3]),
     )

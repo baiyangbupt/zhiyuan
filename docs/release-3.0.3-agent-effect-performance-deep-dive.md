@@ -1360,8 +1360,10 @@ P1 修复后复跑结果：
 
 - 方案审查回复改为结构化要点，不再把风险、提醒、典型涉及压成一整段。
 - 职业方向多方向承接回复去掉重复的承接结论和重复下一步提示。
+- 职业方向只读回复进一步去掉“当前判断 -> 初步判断 / 需要补充留意 / 可以继续展开”的嵌套结构，改为“方案承接 / 需要留意 / 候选机会 / 下一步”的用户可读结构；该调整只影响展示层，不改变方向识别、候选/方案事实计算和只读边界。
 - 真实 WebSocket 输出 `/private/tmp/dialog-regression-303-after-review-and-career-polish.json`，`14/14` steps 通过；中位耗时约 `2240ms`，最大耗时约 `4140ms`。
 - 最新合并单测覆盖 ChatService、Explore、mainline、方案执行/查询和快路由，结果为 `336 passed`。
+- 职业方向结构收口后，最新真实 WebSocket 输出 `/private/tmp/zhiyuan_agent_303_effect_perf_after_career_format_restart.json`，`14/14` steps 通过；中位耗时约 `2317ms`，最大耗时约 `4704ms`。开放式质量集合输出 `/private/tmp/zhiyuan_agent_303_open_quality_after_career_format_restart.json`，`4/4` steps 通过；中位耗时约 `3140ms`，最大耗时约 `3794ms`。
 
 澄清：
 

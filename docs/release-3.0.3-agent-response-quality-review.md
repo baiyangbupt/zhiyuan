@@ -536,6 +536,7 @@
 - 待确认意向后追问“这个偏好会影响当前方案吗”时，直接基于待确认内容和当前方案/候选事实生成影响说明，不再进入完整 Agent；回复明确“尚未确认、确认前不生效、不改方案”。
 - Intent preview 卡片文案去掉“候选结果收紧”“专家推荐”等用户容易误解或不自然的表达。
 - Intent 影响分析去掉已有真实命中情况下的泛化开场句，避免回复显得像固定模板。
+- 职业方向只读回复结构收口：不再把“当前判断”里再嵌“初步判断 / 需要补充留意 / 可以继续展开”，改为“方案承接 / 需要留意 / 候选机会 / 下一步”的平铺结构；只改展示层，不改方向识别、候选/方案计算和只读边界。
 
 验证：
 
@@ -549,3 +550,5 @@
 - 最新合并单测回归覆盖 ChatService、Explore、mainline、方案执行/查询和快路由：`336 passed`
 - `dialog_regression_303_open_quality_cases.json --clear-history --keep-response-text` 真实 WebSocket 复跑：`4/4` steps 通过，输出 `/private/tmp/zhiyuan_agent_303_open_quality_after_backend_start.json`，中位耗时约 `3107ms`，最大耗时约 `4987ms`；待确认意向影响追问约 `2899ms`，无 followup 工作台卡片。
 - 聚焦单测覆盖 pending intent 影响追问、Intent preview 边界、结构化 impact 标题去重和泛化句清理。
+- 职业方向结构收口后复跑：`dialog_regression_303_open_quality_cases.json --clear-history --keep-response-text` 真实 WebSocket `4/4` steps 通过，输出 `/private/tmp/zhiyuan_agent_303_open_quality_after_career_format_restart.json`，中位耗时约 `3140ms`，最大耗时约 `3794ms`。
+- 最新 `dialog_regression_303_effect_perf_cases.json --clear-history --keep-response-text --assert-plan-style` 真实 WebSocket `14/14` steps 通过，输出 `/private/tmp/zhiyuan_agent_303_effect_perf_after_career_format_restart.json`，中位耗时约 `2317ms`，最大耗时约 `4704ms`。

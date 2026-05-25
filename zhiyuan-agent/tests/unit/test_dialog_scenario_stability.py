@@ -406,6 +406,10 @@ def test_career_direction_comparison_reply_answers_current_plan_fit_first():
     assert "候选里和" in resp
     assert resp.count("当前方案对") == 1
     assert "我先帮你做了一个方向对比分析" not in resp
+    assert "**方案承接**" in resp
+    assert "**候选机会**" in resp
+    assert "**当前判断**" not in resp
+    assert "  初步判断：" not in resp
 
 
 def test_dialog_scenario_career_explore_can_naturally_offer_professional_assessment_hint():
