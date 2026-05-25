@@ -1799,6 +1799,45 @@ def test_intent_candidate_messages_do_not_use_left_right_layout_wording():
     assert "下一步建议" in preview_text
 
 
+def test_render_intent_state_update_summarizes_confirmed_preference_items():
+    text = render_intent_state_update(
+        IntentStateUpdateResult(
+            action="confirm",
+            sessionId="style-3",
+            messageCode="preference_applied",
+            merged={
+                "major_intents": {"level3": ["法学", "财政学"], "negative_level3": ["护理学"]},
+                "city_intents": {"province": ["北京"], "negative_city": ["上海"]},
+                "career_intents": {"positive": ["system_public_service"]},
+            },
+        )
+    )
+
+    assert "本次确认内容" in text
+    assert "偏好方向：法学、财政学" in text
+    assert "排除方向：护理学" in text
+    assert "偏好地域：北京" in text
+    assert "排除地域：上海" in text
+    assert "发展方向：体制内/考公导向" in text
+
+
+def test_render_intent_state_update_summarizes_confirmed_constraint_items():
+    text = render_intent_state_update(
+        IntentStateUpdateResult(
+            action="confirm",
+            sessionId="style-4",
+            messageCode="constraint_applied",
+            filteredTotal=128,
+            baseTotal=3200,
+            merged={"school_intents": {"negative_colleges": ["北京大学"]}},
+        )
+    )
+
+    assert "本次确认内容" in text
+    assert "排除院校：北京大学" in text
+    assert "候选展示会按这条要求更新" in text
+
+
 def test_build_impact_preview_uses_interest_stage_summary_when_requested():
     text = _build_impact_preview_from_analysis(
         _build_plan_relation_analysis(INTENT_MODE_PREFERENCE, "interest")

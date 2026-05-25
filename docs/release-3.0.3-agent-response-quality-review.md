@@ -546,6 +546,7 @@
 | Intent 影响说明泛化句太重 | `intent_relation_tool.enrich_plan_relation_analysis_from_state` | 已拿到真实当前方案或候选命中时，去掉“我先帮你看看 / 顺手看看”这类泛化句，优先呈现贴近、冲突和候选机会 |
 | 结构化影响文本被重复套标题 | `intent_response_tool.render_intent_analysis_text` | `impact_text` 已经是 Markdown 标题块时直接嵌入，不再额外包一层“当前判断” |
 | 只读分析后用户说“确认”文案生硬 | `ChatService._build_no_pending_confirmation_guard_reply` | 无 pending 时仍不执行任何动作；若上一轮是职业方向分析、专业对比或局部查询，则按上一轮只读上下文提示下一步，而不是统一回复“没有上一轮待确认的方案动作” |
+| Intent 确认后用户难以核对生效内容 | `intent_response_tool.render_intent_state_update` | 确认成功后从 `merged` 中提取专业、院校、地域和发展方向的正/负向条目，补充“本次确认内容”，让用户能核对刚刚生效的偏好/要求 |
 
 不在本轮做：
 
@@ -566,6 +567,7 @@
 - `add_units` 预览补充当前方案数量影响：能读取到当前排序方案总数时，会在确认前说明“当前方案已有 X/Y，确认后预计增加 N 个”，让用户知道这次加入对方案数量的实际影响。
 - `sort_ordered_plan` 预览补充排序方向说明：录取率默认“录取率低的排在前面”，院校层次默认“排名靠前的排在前面”，推荐系数默认“推荐系数高的排在前面”；仍然只生成预览，确认后才改顺序。
 - 无 pending 的“确认”保护补充上下文文案：职业方向只读后会提示可继续展开具体方向，专业对比只读后会提示可记成偏好或看对方案影响，局部查询后会提示可移动/删除/加入/排序；全部保持不执行、不联动。
+- Intent 确认回复补充“本次确认内容”：专业、院校、地域和发展方向的偏好/排除项会被复述给用户，避免只说“已记录为参考”但用户无法核对。
 - 新会话补充验证 `880403`：`山东450分、物理历史地理 -> 网络与新媒体 vs 跨境电商 -> 偏好确认` 三步通过；专业对比和 Intent 预览都能正确承接上下文并输出更具体的专业类画像。
 - `dialog_regression_303_effect_perf_cases.json` 补充方案审查 quality case，并收紧 Intent / Explore / 专业对比断言。
 - 方案审查执行结果改为结构化要点，避免“风险、提醒、典型涉及”被压成一整段长句。
@@ -589,6 +591,7 @@
 - 最新合并单测回归覆盖 ChatService、Explore、mainline、方案执行/查询和快路由：`336 passed`
 - 方案查询/加入预览/排序预览补强后聚焦回归：`tests/unit/test_plan_orchestration_tool.py tests/unit/test_plan_query_tool.py tests/unit/test_plan_execution_tool.py -q`：`142 passed`
 - 无 pending 确认上下文文案补强后，`tests/unit/test_chat_service_history_persistence.py -q`：`118 passed`；合并 agent 单测：`344 passed`；`dialog_regression_303_effect_perf_cases.json` JSON 校验通过。
+- Intent 确认内容复述补强后，Intent 聚焦回归：`224 passed`；合并 agent + Intent 单测：`450 passed`。
 - 技能注入聚焦单测：`tests/unit/test_base_agent.py tests/unit/test_chat_agent_init_profile.py tests/unit/test_chat_agent_tools.py -q`：`40 passed`
 - `dialog_regression_303_open_quality_cases.json --clear-history --keep-response-text` 真实 WebSocket 复跑：`4/4` steps 通过，输出 `/private/tmp/zhiyuan_agent_303_open_quality_after_backend_start.json`，中位耗时约 `3107ms`，最大耗时约 `4987ms`；待确认意向影响追问约 `2899ms`，无 followup 工作台卡片。
 - 聚焦单测覆盖 pending intent 影响追问、Intent preview 边界、结构化 impact 标题去重和泛化句清理。

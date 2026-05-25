@@ -6,6 +6,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from app.domain.career_slots import to_career_label
+
 
 class IntentPreviewItem(BaseModel):
     content: str
@@ -82,19 +84,89 @@ def parse_explore_followup_result(result_text: str) -> ExploreFollowupResult:
     return ExploreFollowupResult.model_validate_json(result_text)
 
 
+def _normalize_text_values(values: Any, *, career_label: bool = False) -> list[str]:
+    if values is None:
+        return []
+    raw_values = values if isinstance(values, list) else [values]
+    normalized: list[str] = []
+    for value in raw_values:
+        if isinstance(value, dict):
+            text = value.get("label") or value.get("name") or value.get("value") or value.get("text") or ""
+        else:
+            text = value
+        text = str(text or "").strip()
+        if not text:
+            continue
+        if career_label:
+            text = to_career_label(text)
+        if text not in normalized:
+            normalized.append(text)
+    return normalized
+
+
+def _extend_summary(summary: dict[str, list[str]], key: str, values: Any, *, career_label: bool = False) -> None:
+    for value in _normalize_text_values(values, career_label=career_label):
+        if value not in summary[key]:
+            summary[key].append(value)
+
+
+def _summarize_confirmed_intents(merged: dict[str, Any]) -> str:
+    if not isinstance(merged, dict) or not merged:
+        return ""
+    summary: dict[str, list[str]] = {
+        "偏好方向": [],
+        "排除方向": [],
+        "偏好院校": [],
+        "排除院校": [],
+        "偏好地域": [],
+        "排除地域": [],
+        "发展方向": [],
+        "排除发展方向": [],
+    }
+    major_intents = merged.get("major_intents") if isinstance(merged.get("major_intents"), dict) else {}
+    for key in ("level1", "level2", "level3"):
+        _extend_summary(summary, "偏好方向", major_intents.get(key))
+    for key in ("negative_level1", "negative_level2", "negative_level3"):
+        _extend_summary(summary, "排除方向", major_intents.get(key))
+
+    school_intents = merged.get("school_intents") if isinstance(merged.get("school_intents"), dict) else {}
+    _extend_summary(summary, "偏好院校", school_intents.get("colleges"))
+    _extend_summary(summary, "排除院校", school_intents.get("negative_colleges"))
+
+    city_intents = merged.get("city_intents") if isinstance(merged.get("city_intents"), dict) else {}
+    for key in ("province", "city", "area"):
+        _extend_summary(summary, "偏好地域", city_intents.get(key))
+    for key in ("negative_province", "negative_city", "negative_area"):
+        _extend_summary(summary, "排除地域", city_intents.get(key))
+
+    career_intents = merged.get("career_intents") if isinstance(merged.get("career_intents"), dict) else {}
+    _extend_summary(summary, "发展方向", career_intents.get("positive"), career_label=True)
+    _extend_summary(summary, "排除发展方向", career_intents.get("negative"), career_label=True)
+
+    parts = [
+        f"{label}：{'、'.join(values[:5])}{'等' + str(len(values)) + '项' if len(values) > 5 else ''}"
+        for label, values in summary.items()
+        if values
+    ]
+    return f"本次确认内容：{'；'.join(parts)}。" if parts else ""
+
+
 def render_intent_state_update(result: IntentStateUpdateResult) -> str:
     if result.message:
         return result.message
 
     code = result.messageCode
+    confirmed_summary = _summarize_confirmed_intents(result.merged)
     if code == "constraint_applied":
+        summary_text = f"{confirmed_summary}" if confirmed_summary else ""
         if result.baseTotal is not None and result.filteredTotal is not None:
-            return f"已按你的确认把这条要求记录为后续筛选和方案调整参考。候选展示会按这条要求更新，候选结果现在大约能看到 {result.filteredTotal} 个，整体候选大约是 {result.baseTotal} 个。要是你愿意，我也可以继续帮你看看这份方案里还有没有不符合这条要求的地方。"
+            return f"已按你的确认把这条要求记录为后续筛选和方案调整参考。{summary_text}候选展示会按这条要求更新，候选结果现在大约能看到 {result.filteredTotal} 个，整体候选大约是 {result.baseTotal} 个。要是你愿意，我也可以继续帮你看看这份方案里还有没有不符合这条要求的地方。"
         if result.filteredTotal is not None:
-            return f"已按你的确认把这条要求记录为后续筛选和方案调整参考。候选展示会按这条要求更新，候选结果现在大约还有 {result.filteredTotal} 个。要是你愿意，我也可以继续帮你看看这份方案里还有没有不符合这条要求的地方。"
-        return "已按你的确认把这条要求记录为后续筛选和方案调整参考。候选展示会按这条要求更新，你现在可以去看候选结果。要是你愿意，我也可以继续帮你看看这份方案里还有没有不符合这条要求的地方。"
+            return f"已按你的确认把这条要求记录为后续筛选和方案调整参考。{summary_text}候选展示会按这条要求更新，候选结果现在大约还有 {result.filteredTotal} 个。要是你愿意，我也可以继续帮你看看这份方案里还有没有不符合这条要求的地方。"
+        return f"已按你的确认把这条要求记录为后续筛选和方案调整参考。{summary_text}候选展示会按这条要求更新，你现在可以去看候选结果。要是你愿意，我也可以继续帮你看看这份方案里还有没有不符合这条要求的地方。"
     if code == "preference_applied":
-        return "好的，已经按你的确认记下来了，并作为后续筛选和方案调整参考。接下来如果你愿意，我可以继续帮你看看现在这份方案哪些地方比较贴近你的想法、哪些地方还可以再优化。"
+        summary_text = f"{confirmed_summary}" if confirmed_summary else ""
+        return f"好的，已经按你的确认记下来了，并作为后续筛选和方案调整参考。{summary_text}接下来如果你愿意，我可以继续帮你看看现在这份方案哪些地方比较贴近你的想法、哪些地方还可以再优化。"
     if code == "reject_success":
         return "已取消本次意向调整。你可以重新说明想保留、排除或更偏好的方向，或者继续其他咨询。"
     if code == "no_pending":
