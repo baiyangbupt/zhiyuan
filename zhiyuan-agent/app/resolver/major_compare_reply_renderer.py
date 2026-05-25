@@ -337,15 +337,32 @@ def render_missing_weight_major_compare_reply(
     user_text = _recent_user_text(request_context) or _latest_user_text(request_context)
     score_context = _format_score_detail(request_context.score_detail, user_text=user_text)
     profile_context = _format_init_profile(request_context.init_profile)
-    context_line = f"{score_context}{'；' + profile_context if profile_context else ''}"
-    return "\n".join(
+    context_line = f"{score_context}{'；' + profile_context if profile_context else ''}".strip("；")
+    sections = [
+        f"这轮先按通用维度看 {major_name1} vs {major_name2}。当前没有拿到可用的个性化量化评分，所以不直接说系统分数谁更高。",
+    ]
+    if context_line:
+        sections.extend(
+            [
+                "",
+                "**当前会话参考**",
+                f"- {context_line}",
+            ]
+        )
+    sections.extend(
         [
-            f"这轮先按通用维度看 {major_name1} vs {major_name2}。当前没有拿到可用的个性化量化评分，所以不直接说系统分数谁更高。",
             "",
-            f"- {context_line}",
+            f"**{major_name1}**",
             f"- {_render_major_profile_line(major_name1, request_context.batch)}",
+            "",
+            f"**{major_name2}**",
             f"- {_render_major_profile_line(major_name2, request_context.batch)}",
+            "",
+            "**选择建议**",
             f"- {_render_major_compare_decision_line(major_name1, major_name2, request_context.batch)}",
-            "- 下一步可以把目标地区和可接受学校层次加进来，再看它们在当前方案和候选里的实际院校质量、录取概率和城市机会。",
+            "",
+            "**下一步**",
+            "- 可以把目标地区和可接受学校层次加进来，再看它们在当前方案和候选里的实际院校质量、录取概率和城市机会。",
         ]
     )
+    return "\n".join(sections)

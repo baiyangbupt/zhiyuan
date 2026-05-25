@@ -92,3 +92,26 @@ def test_missing_weight_renderer_uses_category_profiles_for_media_and_ecommerce(
     assert "内容策划" in reply
     assert "跨境平台运营" in reply
     assert "当前没有沉淀专门画像" not in reply
+
+
+def test_missing_weight_renderer_uses_structured_sections():
+    context = RequestContext(
+        userid="user-1",
+        sessionid="session-structure",
+        batch="01",
+        chat_history=[
+            {"role": "user", "content": "法学和财政学哪个更适合普通家庭女生，先只分析不要记偏好"},
+        ],
+    )
+
+    reply = render_missing_weight_major_compare_reply(
+        major_name1="法学",
+        major_name2="财政学",
+        request_context=context,
+    )
+
+    assert "**当前会话参考**" in reply
+    assert "**法学**" in reply
+    assert "**财政学**" in reply
+    assert "**选择建议**" in reply
+    assert "**下一步**" in reply
