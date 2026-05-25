@@ -1385,6 +1385,7 @@ P1 修复后复跑结果：
 | `plan_fast_route` | 方案状态、数字/名称移动、删除、加入、排序、审查 | 规则过宽会把咨询误判成方案动作；规则过窄会回落主 Agent 变慢 | 只接高置信结构；mutation 永远先 preview；复合动作和低置信引用回落主 Agent |
 | `plan_query_fast_route` | 当前方案/候选的局部只读查询 | 可能抢走 Explore、近三年分数、方案修改类请求 | 显式排除 mutation、Explore、分数线语义；要求实体或明确 scope |
 | `major_intent_fast_route` | 明确专业偏好/排除的 preview | 可能把只读比较误当偏好写入，或把方案修改误当意向 | 显式排除“哪个更适合/只分析/不要记偏好”和“加入方案/调整方案”等语义 |
+| `pending_intent_impact_fast_route` | 已有待确认意向后，用户继续追问“这个偏好会影响当前方案吗” | 依赖后端 `planEditCache` 可读；cache 未写入或后端不可用时会回落完整 Agent，可能变慢 | 只在已有 pending intent 且问题是影响/匹配/冲突类只读追问时命中；不确认、不刷新工作台、不改方案 |
 | `major_compare_fast_route` | 两个三级专业的只读对比 | 简称、专业类、三专业比较暂时不接管，可能回落慢链路 | 只接精确两个三级专业；专业类和简称保守回落 |
 | `career_direction_fast_route` | 体制内、稳定就业、读研等有限方向只读分析 | 泛方向问题和候选查询不接管；开放表达仍可能走主 Agent | 只接有限 taxonomy + 只读语义；意向写入、方案修改、确认语义全部回落 |
 | `conversation_phase.pending` | Plan / Intent 统一待确认协议 | 新旧 pending 不同步可能确认错位 | 新字段优先；旧字段仅兼容；版本/轮次守护拦截过期 pending |
@@ -1394,20 +1395,23 @@ P1 修复后复跑结果：
 
 当前 `ChatService` 的快路径优先级为：
 
-1. 无 pending 的孤立确认保护。
-2. `plan_fast_route`。
-3. `plan_query_fast_route`。
-4. `major_intent_fast_route`。
-5. `major_compare_fast_route`。
-6. `career_direction_fast_route`。
-7. 完整 `ChatAgent`。
+1. 已有方案 pending 的确认 / 放弃 / 过期保护。
+2. 已有待确认意向下的影响追问：`pending_intent_impact_fast_route`。该检查放在用户画像、分数和 planning summary 通用拉取前，避免一个只读追问被通用上下文加载和完整 Agent 放慢。
+3. 无 pending 的孤立确认保护。
+4. `plan_fast_route`。
+5. `plan_query_fast_route`。
+6. `major_intent_fast_route`。
+7. `major_compare_fast_route`。
+8. `career_direction_fast_route`。
+9. 完整 `ChatAgent`。
 
-这个顺序的设计意图是：先保护确认安全，再承接明确方案动作和只读方案查询，再处理意向、专业对比和职业方向。潜在影响是，如果前面的 router 规则过宽，会抢走后面更合适的链路。因此 3.0.3 增加了 release 级路由矩阵单测，覆盖典型输入的预期接管层：
+这个顺序的设计意图是：先保护确认安全，再处理已有 pending 的低成本只读追问，再承接明确方案动作和只读方案查询，再处理意向、专业对比和职业方向。潜在影响是，如果前面的 router 规则过宽，会抢走后面更合适的链路。因此 3.0.3 增加了 release 级路由矩阵单测，覆盖典型输入的预期接管层：
 
 - 方案概览 -> `plan`
 - 当前方案里有没有某专业 -> `plan_query`
 - 学校相关专业只读查询 -> `plan_query`
 - 明确专业偏好/排除 -> `major_intent`
+- 待确认意向后追问当前方案影响 -> `pending_intent_impact`
 - 两个专业只读比较 -> `major_compare`
 - 体制内/稳定就业承接分析 -> `career_direction`
 - 复合删改补动作 -> `full_agent`
@@ -1418,6 +1422,13 @@ P1 修复后复跑结果：
 - 3.0.3 相关合并单测扩展覆盖 ChatService、Explore、mainline、方案执行/查询、Plan / Intent / Major / Career fast router：`346 passed`。
 - `git diff --check` 通过。
 
+开放式 Intent 追问补充验证：
+
+- 新增 `dialog_regression_303_open_quality_cases.json`，覆盖待确认意向后追问影响、职业方向多方向只读、专业对比上下文使用。
+- 真实 WebSocket 首轮验证曾失败，原因不是路由判断错误，而是 Backend 8080 未启动导致 `planEditCache` 保存失败；第二轮读不到 pending 时只能回完整 Agent。
+- 启动 Backend 后复跑通过：`4/4` steps 通过，中位耗时约 `3107ms`，最大耗时约 `4987ms`；pending intent 影响追问约 `2899ms`，`routingPath=pending_intent_impact_fast_route`，`llmRequests=0`，无 followup 工作台卡片。
+- 该路径会把待确认内容、当前方案贴近/冲突和候选机会组织成用户语言；确认前不正式生效，也不改动当前方案。
+
 ### 8.6 潜在功能退化清单
 
 当前未发现核心 Plan 执行链路退化，真实 WebSocket 3.0.3 quality 回归 `14/14` 通过，相关单测 `336 passed`。仍需持续关注：
@@ -1425,6 +1436,7 @@ P1 修复后复跑结果：
 - 复杂自然语言：多动作、多目标、口语缩写可能不命中快路径，表现为回落主 Agent 或要求澄清。
 - 简称/别名：名称类方案动作只做语法抽取，真正唯一性仍由执行层解析；如果候选/方案中没有稳定别名数据，会更保守。
 - 开放式回复：关闭主链路中的 Explore 内部二次 LLM 后，职业方向回复更快更稳，但可能少一些自由发挥和个性化表达。
+- Intent pending 依赖：待确认意向的影响追问依赖后端 `planEditCache`。如果预览阶段没有成功写入 cache，影响追问会回完整 Agent 或提示没有待确认内容；后续可评估是否从本地历史中恢复 pending，但本轮不新增不可靠兜底。
 - 前端联动：mutation apply 后可能同时刷新 `ordered + review`，前端需要支持多 followup；旧测试中只期望 `ordered` 的地方已经调整。
 - 历史上下文裁剪：降低 token 和污染风险，但长对话里用户依赖很早之前的细节时，仍可能需要重新说明。
 - 多模型结论边界：当前多模型对照主要证明结构化快路径稳定，不能代表开放式生成质量优劣。

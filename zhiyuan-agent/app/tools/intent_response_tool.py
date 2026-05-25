@@ -89,10 +89,10 @@ def render_intent_state_update(result: IntentStateUpdateResult) -> str:
     code = result.messageCode
     if code == "constraint_applied":
         if result.baseTotal is not None and result.filteredTotal is not None:
-            return f"已按你的确认把这条要求记录为后续筛选和方案调整参考。候选展示会按这条要求更新，现在大约能看到 {result.filteredTotal} 个结果，整体候选大约是 {result.baseTotal} 个。要是你愿意，我也可以继续帮你看看这份方案里还有没有不符合这条要求的地方。"
+            return f"已按你的确认把这条要求记录为后续筛选和方案调整参考。候选展示会按这条要求更新，候选结果现在大约能看到 {result.filteredTotal} 个，整体候选大约是 {result.baseTotal} 个。要是你愿意，我也可以继续帮你看看这份方案里还有没有不符合这条要求的地方。"
         if result.filteredTotal is not None:
-            return f"已按你的确认把这条要求记录为后续筛选和方案调整参考。候选展示会按这条要求更新，现在大约还有 {result.filteredTotal} 个结果。要是你愿意，我也可以继续帮你看看这份方案里还有没有不符合这条要求的地方。"
-        return "已按你的确认把这条要求记录为后续筛选和方案调整参考。候选展示会按这条要求更新，你现在可以去看筛选后的结果。要是你愿意，我也可以继续帮你看看这份方案里还有没有不符合这条要求的地方。"
+            return f"已按你的确认把这条要求记录为后续筛选和方案调整参考。候选展示会按这条要求更新，候选结果现在大约还有 {result.filteredTotal} 个。要是你愿意，我也可以继续帮你看看这份方案里还有没有不符合这条要求的地方。"
+        return "已按你的确认把这条要求记录为后续筛选和方案调整参考。候选展示会按这条要求更新，你现在可以去看候选结果。要是你愿意，我也可以继续帮你看看这份方案里还有没有不符合这条要求的地方。"
     if code == "preference_applied":
         return "好的，已经按你的确认记下来了，并作为后续筛选和方案调整参考。接下来如果你愿意，我可以继续帮你看看现在这份方案哪些地方比较贴近你的想法、哪些地方还可以再优化。"
     if code == "reject_success":
@@ -172,8 +172,14 @@ def render_intent_analysis_text(
 ) -> str:
     sections: list[tuple[str, list[str] | None] | tuple[str, str | None]] = [
         ("分析结论", [title]),
-        ("当前判断", impact_text),
     ]
+    impact_block = str(impact_text or "").strip()
+    leading_blocks: list[str] = []
+    if impact_block:
+        if impact_block.startswith("**"):
+            leading_blocks.append(impact_block)
+        else:
+            sections.append(("当前判断", impact_block))
     if items:
         sections.append(("这次识别到的可采纳内容", [item.get("content", "") for item in items]))
     if existing_items:
@@ -192,7 +198,11 @@ def render_intent_analysis_text(
             "如果你确认要把这些记成后续偏好，直接回复“确认这个偏好”或明确说保留哪些内容，我再正式生效。",
         ]
     sections.append(("下一步", next_steps))
-    return format_text_sections(*sections)
+    rendered = format_text_sections(*sections)
+    if not leading_blocks:
+        return rendered
+    blocks = rendered.split("\n\n")
+    return "\n\n".join([blocks[0], *leading_blocks, *blocks[1:]])
 
 
 def render_intent_analysis_payload(payload_text: str) -> str:

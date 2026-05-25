@@ -1757,11 +1757,12 @@ def test_render_intent_analysis_text_uses_light_markdown_sections():
         impact_text="**结合当前方案给你的提醒**\n\n**还可以再看看的机会**\n- 上海建桥学院(01)-网络与新媒体",
         analysis_stage=ANALYSIS_STAGE_CONFIRMED,
         intent_mode=INTENT_MODE_PREFERENCE,
-        items=[{"content": "将网络与新媒体更新为偏好方向。"}],
+        items=[{"content": "把网络与新媒体作为后续优先参考的专业方向。"}],
     )
 
     assert text.startswith("**分析结论**")
-    assert "\n\n**当前判断**\n" in text
+    assert "\n\n**当前判断**\n" not in text
+    assert "\n\n**结合当前方案给你的提醒**\n" in text
     assert "**还可以再看看的机会**" in text
     assert "\n\n**下一步**\n" in text
 
@@ -1816,6 +1817,15 @@ def test_build_preview_title_uses_explore_wording_for_interest_stage():
     assert "勾选" not in title
 
 
+def test_build_preview_title_uses_pending_boundary_without_candidate_tightening():
+    title = _build_preview_title(None, INTENT_MODE_CONSTRAINT, ANALYSIS_STAGE_CONFIRMED)
+
+    assert "确认前不会正式生效" in title
+    assert "不会直接改动当前方案" in title
+    assert "候选结果收紧" not in title
+    assert "专家推荐" not in title
+
+
 def test_public_service_alignment_does_not_match_generic_public_undergraduate():
     item = {
         "schoolNature": "公办",
@@ -1857,9 +1867,9 @@ async def test_enrich_plan_relation_analysis_uses_current_plan_and_candidate_opp
     base_analysis = {
         "stage": "confirmed",
         "summaryTitle": "方案关联分析",
-        "currentPlanFit": [],
+        "currentPlanFit": ["我先帮你看看，现在这份方案里有没有贴近这个方向的内容，以及还有哪些值得继续关注的机会。"],
         "currentPlanConflict": [],
-        "candidateOpportunity": [],
+        "candidateOpportunity": ["我也会顺手看看，方案外还有没有更贴近这个方向的机会。"],
         "nextActionHints": [],
     }
     planning_state = {
@@ -1916,6 +1926,8 @@ async def test_enrich_plan_relation_analysis_uses_current_plan_and_candidate_opp
     assert "上海大学" in analysis["currentPlanConflict"][0]
     assert "北京工业大学" in analysis["candidateOpportunity"][0]
     assert "1 个" in analysis["candidateOpportunity"][-1]
+    assert not any("我先帮你看看" in item for item in analysis["currentPlanFit"])
+    assert not any("顺手看看" in item for item in analysis["candidateOpportunity"])
 
 
 @pytest.mark.asyncio

@@ -663,6 +663,79 @@ def test_chat_service_major_intent_fast_route_bypasses_main_agent_and_persists_p
     assert log_kwargs["toolCallCount"] == 1
 
 
+def test_chat_service_pending_intent_impact_question_bypasses_main_agent(
+    tmp_path,
+    mock_llm_client,
+):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    fake_agent = _FakeAgent(["should not be used"])
+    cache_payload = {
+        "major_intents": {"level3": ["法学", "财政学"], "negative_level3": ["护理学"]},
+        "intent_mode": "constraint",
+    }
+    progress_hints: list[str] = []
+
+    async def collect_progress(hint: str) -> None:
+        progress_hints.append(hint)
+
+    enriched_analysis = {
+        "stage": "confirmed",
+        "summaryTitle": "结合当前方案给你的提醒",
+        "currentPlanFit": ["当前方案里已有 2 个方向比较接近。"],
+        "currentPlanConflict": ["当前方案里暂时没有护理学相关志愿。"],
+        "candidateOpportunity": ["候选里还有法学、财政学相关机会。"],
+        "nextActionHints": ["确认后再作为后续筛选和方案调整参考。"],
+    }
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
+            patch(
+                "app.service.get_intent_change_cache",
+                AsyncMock(return_value={"data": {"planEditCache": cache_payload}}),
+            ), \
+            patch(
+                "app.service._enrich_plan_relation_analysis_from_state",
+                AsyncMock(return_value=enriched_analysis),
+            ) as mock_enrich, \
+            patch("app.service._log_conversation_turn_event") as mock_log_event:
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(
+            service.handle_message(
+                "session-pending-intent-impact",
+                "user-1",
+                "先不确认，看看这个偏好会影响当前方案吗",
+                on_progress=collect_progress,
+            )
+        )
+
+    assert "尚未确认" in reply
+    assert "确认前不会正式生效" in reply
+    assert "当前方案里已有 2 个方向比较接近" in reply
+    assert "待确认内容" in reply
+    assert "法学" in reply
+    assert "财政学" in reply
+    assert "护理学" in reply
+    assert "候选结果收紧" not in reply
+    assert "专家推荐" not in reply
+    assert fake_agent.calls == []
+    assert progress_hints == ["正在结合这条待确认想法查看当前方案影响..."]
+    mock_enrich.assert_awaited_once()
+    stored = asyncio.run(store.load("session-pending-intent-impact"))
+    assert stored is not None
+    assert any(
+        isinstance(part, TextPart) and "尚未确认" in part.content
+        for message in stored
+        for part in getattr(message, "parts", [])
+    )
+    log_kwargs = mock_log_event.call_args.kwargs
+    assert log_kwargs["routingPath"] == "pending_intent_impact_fast_route"
+    assert log_kwargs["llmRequests"] == 0
+    assert log_kwargs["pendingType"] == "intent"
+
+
 def test_missing_weight_major_compare_renderer_is_user_facing_and_structured():
     context = RequestContext(
         userid="user-1",

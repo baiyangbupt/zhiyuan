@@ -12,6 +12,7 @@
 - `model_provider_benchmark.py` 支持临时 agent host 配置、启动日志落盘、保留完整回复文本、保留 followup、以及每个 provider 前清理本地对话历史，便于做公平的多模型场景对照。
 - 新增 `model_provider_303_quality_readonly_cases.json`，用于只读/预览类 3.0.3 场景的多模型质量/性能对照，避免确认执行修改方案状态造成 provider 间上下文污染。
 - 补充四模型对照结果记录：`Pro/moonshotai/Kimi-K2.6`、`Pro/MiniMaxAI/MiniMax-M2.5`、`deepseek-ai/DeepSeek-V4-Flash`、`Pro/zai-org/GLM-5.1` 在 10 个只读/预览 case 中均无断言失败；文档明确这批快路径 case 不能代表开放式生成质量，需要后续补 Explore / Intent 开放场景。
+- 新增 `dialog_regression_303_open_quality_cases.json`，覆盖待确认意向影响追问、职业方向多方向只读和专业对比上下文使用，用于补充 fast route 之外的开放式回复质量验证。
 - `conversation_turn_event` 补充 3.0.3 观测字段：`routeDecision`、LLM request/token、toolCallCount 和结构化 toolCalls 摘要；full-agent 工具调用会记录 actionFamily、stage、resultKind、applied/messageCode，direct pending/guard 路径明确记录 `llmRequests=0`。
 - `dialog_regression_runner.py` 的 metrics 输出新增 `turnObservability`，从本地 SQLite 历史解析每轮 tool call、actionFamily、stage、resultKind 和 applied 状态，便于在 WebSocket e2e 中定位慢点和误路由。
 - 新增 Plan 高置信快路径 `plan_fast_route`：在已有 planning summary 时，方案状态、数字志愿/专业组移动、数字删除、指定维度排序和显式审查会跳过主模型自由试工具，直接进入 `_plan_next_action_model -> execute_plan_action`；高副作用动作仍只生成 preview，确认后再 apply。
@@ -61,6 +62,8 @@
 
 - 3.0.3 回复质量 P1 修复：Intent preview 清理 `level1/level2/level3` 等内部专业层级词；Intent confirm 改为“后续筛选和方案调整参考”，避免“候选结果收紧”造成候选池永久变化的误解；职业方向承接分析补当前方案承接强弱、数量和示例，并去掉重复结论；专业对比缺量化评分时会使用本轮用户输入里的“普通家庭 / 女生”等约束。
 - 3.0.3 quality 主回归补齐方案审查：审查 case 返回 `review` 工作台刷新且不暴露内部位置标记；审查回复改为“审查结论 / 主要问题 / 典型涉及 / 下一步建议”的结构化要点。真实 WebSocket `dialog_regression_303_effect_perf_cases.json --clear-history --keep-response-text --assert-plan-style` 最新复跑 `14/14` steps 通过，中位耗时约 `2240ms`，最大耗时约 `4140ms`。
+- 3.0.3 待确认意向影响追问收口：已有 `planEditCache` 待确认内容时，“先不确认，看看这个偏好会影响当前方案吗”直接走 `pending_intent_impact_fast_route`，基于当前方案/候选事实做只读说明；不调用主 Agent、不确认、不刷新工作台、不改方案。
+- 3.0.3 Intent preview 文案继续用户化：去掉“候选结果收紧”“专家推荐”等表达；结构化影响文本不再重复套“当前判断”标题；已有真实方案/候选命中时去掉“我先帮你看看 / 顺手看看”等泛化句。
 - 修复专业组移动/删除 apply 后重复按“第 N 个专业组”解析目标的问题；移动后方案顺序已变化，重复解析可能记录成另一个专业组。现在 `executed_actions` 和后续日志复用执行前解析出的 unitIds。
 - 3.0.3 后端补充 mutable overlay 回归：专业+大学模式单志愿移动、院校专业组模式组删除、旧 mutable 版本忽略，以及行为事件存储回归均通过单测覆盖。
 - 3.0.3 专业组 mutation 慢请求完成补充定位：确认慢例 `llmRequests=0`，Agent `mutationRequestDurationMs≈28.1s` 与 Server controller `unit/move≈28.1s` 对齐；当前源码复跑 service 分段常态约 `1.8s - 2.3s`，最大头是完整 `PlanningStateDTO` 保存，后续优化重点调整为状态持久化拆分而不是继续压模型。

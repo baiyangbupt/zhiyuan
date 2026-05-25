@@ -1,0 +1,80 @@
+[
+  {
+    "name": "303-open-quality-intent-pending-impact-fast-route",
+    "sessionId": "16",
+    "flow": ["intent", "plan", "readonly"],
+    "coverage": [
+      "release_3_0_3",
+      "open_quality",
+      "pending_intent",
+      "impact_followup",
+      "majorGroup_model",
+      "readonly_no_workspace_card"
+    ],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "我倾向会计学和审计学，但土木工程不要",
+        "assertContainsAny": ["确认", "会计学", "审计学", "土木工程", "当前方案"],
+        "assertThinkingContains": ["正在整理这个专业想法的影响，等你确认后才会记入偏好"],
+        "assertNotContains": ["候选结果收紧", "专家推荐", "已直接调整", "已直接删除", "已直接记录", "我已经记下", "已经记下", "payload", "stage", "action_family", "volunteerId", "草稿"],
+        "assertNoFollowups": true,
+        "warnElapsedSeconds": 20
+      },
+      {
+        "prompt": "先不确认，看看这个偏好会影响当前方案吗",
+        "assertContains": ["尚未确认", "确认前不会正式生效", "待确认内容"],
+        "assertContainsAny": ["当前方案", "需要留意", "候选"],
+        "assertThinkingContains": ["正在结合这条待确认想法查看当前方案影响"],
+        "assertNotContains": ["候选结果收紧", "专家推荐", "已直接调整", "已直接删除", "已直接记录", "payload", "stage", "action_family", "volunteerId", "草稿"],
+        "assertNoFollowups": true,
+        "warnElapsedSeconds": 10
+      }
+    ]
+  },
+  {
+    "name": "303-open-quality-career-multi-direction-readonly",
+    "sessionId": "16",
+    "flow": ["explore", "plan"],
+    "coverage": [
+      "release_3_0_3",
+      "open_quality",
+      "career_explore",
+      "majorGroup_model",
+      "readonly_no_workspace_card"
+    ],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "当前方案对体制内和读研方向分别承接得怎么样，先不要改方案",
+        "assertContainsAny": ["体制内", "读研", "当前方案", "承接", "候选"],
+        "assertThinkingContains": ["正在看这条方向和当前方案的承接情况"],
+        "assertNotContains": ["已直接调整", "确认后执行", "已记录", "payload", "stage", "action_family", "volunteerId", "草稿"],
+        "assertNoFollowups": true,
+        "warnElapsedSeconds": 30
+      }
+    ]
+  },
+  {
+    "name": "303-open-quality-major-compare-with-context",
+    "sessionId": "880101",
+    "flow": ["explore"],
+    "coverage": [
+      "release_3_0_3",
+      "open_quality",
+      "major_compare",
+      "readonly_no_pending_intent"
+    ],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "法学和财政学哪个更适合普通家庭女生，先只分析不要记偏好",
+        "assertContainsAny": ["法学", "财政学", "普通家庭", "女生", "就业"],
+        "assertThinkingContains": ["正在对比这几个专业的差异"],
+        "assertNotContains": ["缺少性别信息", "没有完整分数、选科、省份和性别信息", "已记录", "我记下", "确认后写入", "payload", "stage", "action_family", "volunteerId", "草稿"],
+        "assertNoFollowups": true,
+        "warnElapsedSeconds": 20
+      }
+    ]
+  }
+]

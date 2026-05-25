@@ -443,6 +443,14 @@ def build_plan_relation_analysis(
     }
 
 
+def _remove_generic_points(points: list[str], *prefixes: str) -> list[str]:
+    return [
+        point
+        for point in points
+        if not any(str(point or "").startswith(prefix) for prefix in prefixes)
+    ]
+
+
 async def enrich_plan_relation_analysis_from_state(
     session_id: str,
     base_analysis: dict[str, Any],
@@ -485,6 +493,10 @@ async def enrich_plan_relation_analysis_from_state(
                 _format_candidate_brief(item, intent_labels["positive"] if _item_matches_any_intent(item, intent_labels["positive"]) else None)
                 for item in _sort_relation_examples(fit_items, display_preferences, positive=True)
             ]
+            base_analysis["currentPlanFit"] = _remove_generic_points(
+                base_analysis.get("currentPlanFit") or [],
+                "我先帮你看看",
+            )
             base_analysis["currentPlanFit"].insert(0, f"现在这份方案里，比较贴近你这个想法的有：{'、'.join(fit_examples[:5])}")
         if conflict_items:
             conflict_examples = [
@@ -507,7 +519,11 @@ async def enrich_plan_relation_analysis_from_state(
                 opportunity_items.append(item)
         if opportunity_items:
             sorted_opportunities = _sort_relation_examples(opportunity_items, display_preferences, positive=True)
-            base_analysis["candidateOpportunity"].insert(0, f"候选里还有一些可以顺手看看、但暂时没放进方案的机会：{'、'.join(_format_candidate_brief(item, intent_labels['positive']) for item in sorted_opportunities[:3])}")
+            base_analysis["candidateOpportunity"] = _remove_generic_points(
+                base_analysis.get("candidateOpportunity") or [],
+                "我也会顺手看看",
+            )
+            base_analysis["candidateOpportunity"].insert(0, f"候选里还有一些暂时没放进方案的机会：{'、'.join(_format_candidate_brief(item, intent_labels['positive']) for item in sorted_opportunities[:3])}")
             base_analysis["candidateOpportunity"].append(f"和这个方向比较相关、但还没放进方案里的机会，大约还有 {len(opportunity_items)} 个。")
         elif candidate_items:
             base_analysis["candidateOpportunity"].append("候选里暂时没看到特别明显更合适的补位机会，可以先围绕现在这份方案继续看。")

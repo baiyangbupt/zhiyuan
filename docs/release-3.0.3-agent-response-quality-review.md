@@ -511,12 +511,16 @@
 | 方案审查未进入 3.0.3 quality 主 case | `dialog_regression_303_effect_perf_cases.json` | 增加“帮我审查一下当前方案”审查 case，校验审查回复、review 工作台刷新和内部字段屏蔽 |
 | 方案审查回复一整段长句 | `analysis_handlers._build_review_summary` | 审查结果改为“审查结论 + 风险提醒 + 主要问题 + 典型涉及 + 下一步建议”的短要点，不改变审查执行和 review 刷新 |
 | 职业方向承接回复重复 | `explore_direction_tool.preview_direction_comparison_from_request` | 多方向比较的顶部结论只出现一次，“当前判断”展开分方向承接、示例和候选机会，“下一步”不重复塞在判断段内 |
+| 待确认意向后追问影响又回完整 Agent | `ChatService.pending_intent_impact_fast_route` / `intent_relation_tool` | 已有 `planEditCache` 待确认内容时，用户问“这个偏好会影响当前方案吗”直接做只读影响分析；不确认、不发工作台联动、不改方案 |
+| Intent 影响说明泛化句太重 | `intent_relation_tool.enrich_plan_relation_analysis_from_state` | 已拿到真实当前方案或候选命中时，去掉“我先帮你看看 / 顺手看看”这类泛化句，优先呈现贴近、冲突和候选机会 |
+| 结构化影响文本被重复套标题 | `intent_response_tool.render_intent_analysis_text` | `impact_text` 已经是 Markdown 标题块时直接嵌入，不再额外包一层“当前判断” |
 
 不在本轮做：
 
 - 不改变方案排序、移动、加入、删除的执行语义。
 - 不绕过 `preview -> confirm -> apply`。
 - 不为开放式 Explore 引入新的模板短路；只修已有 renderer 的事实组织和用户语言。
+- 不把用户尚未确认的 Intent preview 直接应用到筛选、候选或方案。
 
 ## 8. 实施记录
 
@@ -529,6 +533,9 @@
 - `dialog_regression_303_effect_perf_cases.json` 补充方案审查 quality case，并收紧 Intent / Explore / 专业对比断言。
 - 方案审查执行结果改为结构化要点，避免“风险、提醒、典型涉及”被压成一整段长句。
 - 职业方向多方向承接回复去掉重复结论和重复下一步提示，保留当前方案承接、分方向数量、方案示例、候选机会和测评建议。
+- 待确认意向后追问“这个偏好会影响当前方案吗”时，直接基于待确认内容和当前方案/候选事实生成影响说明，不再进入完整 Agent；回复明确“尚未确认、确认前不生效、不改方案”。
+- Intent preview 卡片文案去掉“候选结果收紧”“专家推荐”等用户容易误解或不自然的表达。
+- Intent 影响分析去掉已有真实命中情况下的泛化开场句，避免回复显得像固定模板。
 
 验证：
 
@@ -540,3 +547,5 @@
 - 合并单测回归：`PYTHONPATH=. pytest --noconftest tests/unit/test_chat_service_history_persistence.py tests/unit/test_dialog_scenario_stability.py tests/unit/test_dialog_regression_runner.py tests/unit/test_plan_fast_router.py tests/unit/test_plan_execution_tool.py tests/unit/test_plan_query_tool.py tests/unit/test_major_intent_fast_router.py tests/unit/test_plan_query_fast_router.py -q`：`310 passed`
 - 审查结构化与职业方向去重后复跑：`dialog_regression_303_effect_perf_cases.json --clear-history --keep-response-text --assert-plan-style` 真实 WebSocket `14/14` steps 通过，输出 `/private/tmp/dialog-regression-303-after-review-and-career-polish.json`，中位耗时约 `2240ms`，最大耗时约 `4140ms`
 - 最新合并单测回归覆盖 ChatService、Explore、mainline、方案执行/查询和快路由：`336 passed`
+- `dialog_regression_303_open_quality_cases.json --clear-history --keep-response-text` 真实 WebSocket 复跑：`4/4` steps 通过，输出 `/private/tmp/zhiyuan_agent_303_open_quality_after_backend_start.json`，中位耗时约 `3107ms`，最大耗时约 `4987ms`；待确认意向影响追问约 `2899ms`，无 followup 工作台卡片。
+- 聚焦单测覆盖 pending intent 影响追问、Intent preview 边界、结构化 impact 标题去重和泛化句清理。

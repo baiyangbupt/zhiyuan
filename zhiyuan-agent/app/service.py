@@ -54,6 +54,11 @@ from app.tools.intent_state_tool import (
 )
 from app.tools.intent_preview_tool import analyze_current_career_direction
 from app.tools.intent_preview_tool import preview_current_major_intent_confirmation
+from app.tools.intent_relation_tool import (
+    build_impact_preview_from_analysis as _build_impact_preview_from_analysis,
+    build_plan_relation_analysis as _build_plan_relation_analysis,
+    enrich_plan_relation_analysis_from_state as _enrich_plan_relation_analysis_from_state,
+)
 from app.tools.major_compare_tool import compare_majors
 from app.tools.plan_query_tool import query_volunteer_plan
 from app.tools.intent_response_tool import (
@@ -1154,6 +1159,66 @@ def _is_pending_intent_confirmation(content: str) -> bool:
     return normalized in _INTENT_CONFIRM_PHRASES
 
 
+_PENDING_INTENT_IMPACT_TOKENS = (
+    "影响",
+    "匹配",
+    "承接",
+    "冲突",
+    "符合",
+    "不符合",
+    "当前方案",
+    "现在方案",
+    "现有方案",
+    "候选",
+    "还剩",
+    "结果",
+)
+
+_PENDING_INTENT_REFERENCE_TOKENS = (
+    "这个",
+    "这条",
+    "这些",
+    "刚才",
+    "上面",
+    "偏好",
+    "要求",
+    "想法",
+)
+
+_PENDING_INTENT_MUTATION_TOKENS = (
+    "直接改",
+    "帮我改",
+    "调整方案",
+    "改方案",
+    "加入方案",
+    "加进方案",
+    "加入志愿",
+    "删除",
+    "删掉",
+    "去掉",
+    "移动",
+    "移到",
+    "排序",
+    "重排",
+    "生成",
+    "执行",
+    "审查",
+)
+
+
+def _is_pending_intent_impact_question(content: str) -> bool:
+    normalized = re.sub(r"\s+", "", (content or "").strip())
+    normalized = normalized.strip("。.!！?？")
+    if not normalized or _is_pending_intent_confirmation(normalized):
+        return False
+    if any(token in normalized for token in _PENDING_INTENT_MUTATION_TOKENS):
+        return False
+    return (
+        any(token in normalized for token in _PENDING_INTENT_IMPACT_TOKENS)
+        and any(token in normalized for token in _PENDING_INTENT_REFERENCE_TOKENS)
+    )
+
+
 def _sanitize_reply_for_user(reply: str) -> str:
     """清理回复中不应暴露给用户的内部标记。"""
     import re
@@ -1358,6 +1423,58 @@ def _build_pending_intent_timeout_reply(cache_data: dict[str, Any]) -> str | Non
         "**下一步**",
         f"如果确认要作为后续参考，直接回复“{confirm_phrase}”。确认前不会正式生效，也不会直接改动当前方案。",
     ])
+    return _sanitize_reply_for_user(_normalize_user_facing_terms("\n".join(lines)))
+
+
+async def _build_pending_intent_impact_reply(
+    session_id: str,
+    pending: PendingConfirmation,
+) -> str | None:
+    cache_data = pending.execution_payload if isinstance(pending.execution_payload, dict) else {}
+    if not cache_data:
+        return None
+    item_lines = _pending_intent_item_lines(cache_data)
+    if not item_lines:
+        return None
+
+    intent_mode = str(cache_data.get("intent_mode") or "preference").strip()
+    major_intents = cache_data.get("major_intents") if isinstance(cache_data.get("major_intents"), dict) else None
+    school_intents = cache_data.get("school_intents") if isinstance(cache_data.get("school_intents"), dict) else None
+    city_intents = cache_data.get("city_intents") if isinstance(cache_data.get("city_intents"), dict) else None
+    career_intents = cache_data.get("career_intents") if isinstance(cache_data.get("career_intents"), dict) else None
+
+    analysis = _build_plan_relation_analysis(
+        intent_mode,
+        career_intents=career_intents,
+    )
+    analysis = await _enrich_plan_relation_analysis_from_state(
+        session_id,
+        analysis,
+        intent_mode=intent_mode,
+        major_intents=major_intents,
+        school_intents=school_intents,
+        city_intents=city_intents,
+        career_intents=career_intents,
+    )
+    impact_text = _build_impact_preview_from_analysis(analysis)
+    confirm_phrase = "确认这个要求" if intent_mode == "constraint" else "确认这个偏好"
+    lines = [
+        "可以，我先按这条尚未确认的想法看影响；确认前不会正式生效，也不会改动当前方案。",
+        "",
+        impact_text,
+        "",
+        "**待确认内容**",
+    ]
+    lines.extend(f"- {line}" for line in item_lines[:8])
+    if len(item_lines) > 8:
+        lines.append(f"- 还有 {len(item_lines) - 8} 项相近内容")
+    lines.extend(
+        [
+            "",
+            "**下一步**",
+            f"如果要正式生效，直接回复“{confirm_phrase}”。如果只是继续了解，也可以继续问它和当前方案、候选机会的关系。",
+        ]
+    )
     return _sanitize_reply_for_user(_normalize_user_facing_terms("\n".join(lines)))
 
 
@@ -1872,6 +1989,7 @@ class ChatService:
         #         #logger.info("history[%d] type=%s content=%s", i, type(msg).__name__, msg)
 
         pending_plan_action = _extract_pending_plan_action(history)
+        pending_intent_confirmation: PendingConfirmation | None = None
         runtime_history = build_runtime_history(
             history,
             latest_user_content=content,
@@ -1889,6 +2007,58 @@ class ChatService:
             runtime_history.dropped_tool_return_count,
             runtime_history.has_pending,
         )
+
+        if not pending_plan_action:
+            pending_intent_confirmation = await _load_pending_intent_confirmation(session_id)
+            if pending_intent_confirmation and _is_pending_intent_impact_question(content):
+                turn_started_at = time.monotonic()
+                await _safe_emit_progress(on_progress, "正在结合这条待确认想法查看当前方案影响...")
+                tool_started_at = time.monotonic()
+                reply = await _build_pending_intent_impact_reply(session_id, pending_intent_confirmation)
+                tool_duration_ms = int((time.monotonic() - tool_started_at) * 1000)
+                if reply:
+                    new_messages = [
+                        ModelRequest(parts=[UserPromptPart(content=content)]),
+                        ModelResponse(parts=[TextPart(content=reply)], model_name="pending-intent-impact-fast-route"),
+                    ]
+                    try:
+                        history_to_save = list(history or [])
+                        history_to_save.extend(new_messages)
+                        await self.history_store.save(session_id, history_to_save)
+                    except Exception:
+                        logger.exception("Failed to save early pending intent impact history: session_id=%s", session_id)
+                    _log_conversation_turn_event(
+                        sessionId=session_id,
+                        userId=user_id,
+                        scene="intent",
+                        routingPath="pending_intent_impact_fast_route",
+                        routeDecision={
+                            "source": "direct_pending",
+                            "matched": True,
+                            "confidence": "high",
+                            "route": "intent",
+                            "reason": "pending_intent_impact_question",
+                        },
+                        pendingType="intent",
+                        actionFamily="preview_intent_impact",
+                        resultKind="intent_impact_preview",
+                        llmRequests=0,
+                        inputTokens=0,
+                        outputTokens=0,
+                        totalTokens=0,
+                        totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
+                        toolDurationMs=tool_duration_ms,
+                        toolCalls=[
+                            {
+                                "name": "enrich_plan_relation_analysis_from_state",
+                                "durationMs": tool_duration_ms,
+                                "success": True,
+                            }
+                        ],
+                        status="success",
+                        errorType=None,
+                    )
+                    return reply
 
         # 获取用户成绩详情
         parsed_score_detail = None
@@ -1958,7 +2128,8 @@ class ChatService:
         except Exception as e:
             logger.warning("Failed to fetch planning state: %s", e)
 
-        pending_intent_confirmation = await _load_pending_intent_confirmation(session_id)
+        if pending_intent_confirmation is None:
+            pending_intent_confirmation = await _load_pending_intent_confirmation(session_id)
         pending_intent_change = bool(pending_intent_confirmation)
 
         # 构建统一的 ConversationPhase
@@ -2173,6 +2344,55 @@ class ChatService:
                 errorType=message_code if message_code in {"apply_failed", "confirm_required", "no_pending"} else None,
             )
             return reply
+
+        if active_pending_kind == "intent_change" and _is_pending_intent_impact_question(content):
+            await _safe_emit_progress(on_progress, "正在结合这条待确认想法查看当前方案影响...")
+            tool_started_at = time.monotonic()
+            reply = await _build_pending_intent_impact_reply(session_id, active_pending)
+            tool_duration_ms = int((time.monotonic() - tool_started_at) * 1000)
+            if reply:
+                new_messages = [
+                    ModelRequest(parts=[UserPromptPart(content=content)]),
+                    ModelResponse(parts=[TextPart(content=reply)], model_name="pending-intent-impact-fast-route"),
+                ]
+                try:
+                    history_to_save = list(history or [])
+                    history_to_save.extend(new_messages)
+                    await self.history_store.save(session_id, history_to_save)
+                except Exception:
+                    logger.exception("Failed to save pending intent impact history: session_id=%s", session_id)
+                _log_conversation_turn_event(
+                    sessionId=session_id,
+                    userId=user_id,
+                    scene="intent",
+                    routingPath="pending_intent_impact_fast_route",
+                    routeDecision={
+                        "source": "direct_pending",
+                        "matched": True,
+                        "confidence": "high",
+                        "route": "intent",
+                        "reason": "pending_intent_impact_question",
+                    },
+                    pendingType="intent",
+                    actionFamily="preview_intent_impact",
+                    resultKind="intent_impact_preview",
+                    llmRequests=0,
+                    inputTokens=0,
+                    outputTokens=0,
+                    totalTokens=0,
+                    totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
+                    toolDurationMs=tool_duration_ms,
+                    toolCalls=[
+                        {
+                            "name": "enrich_plan_relation_analysis_from_state",
+                            "durationMs": tool_duration_ms,
+                            "success": True,
+                        }
+                    ],
+                    status="success",
+                    errorType=None,
+                )
+                return reply
 
         if active_pending is None and _is_plan_action_confirmation(content):
             reply = "我这边没有上一轮待确认的方案动作。你可以直接说想生成方案、审查方案或怎么调整，我会先说明影响，确认后再执行。"

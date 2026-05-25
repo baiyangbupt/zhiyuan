@@ -391,7 +391,7 @@ def _build_select_items(
                     })
                 else:
                     items.append({
-                        "content": f"将{name}更新为偏好方向，后续专家推荐会更优先考虑它。",
+                        "content": f"把{name}作为后续优先参考的专业方向。",
                         "value": {"major_intents": {level: [name]}},
                         "selected": True,
                     })
@@ -411,7 +411,7 @@ def _build_select_items(
                 else:
                     items.append({
                         "content": (
-                            f"将{name}设为排除方向，后续专家推荐会降低它的优先级。"
+                            f"把{name}作为后续尽量降低优先级的专业方向。"
                             if intent_mode == INTENT_MODE_PREFERENCE
                             else f"把{name}记成明确不考虑的内容，后面看候选和方案时都会按这个要求来。"
                         ),
@@ -435,7 +435,7 @@ def _build_select_items(
                     })
                 else:
                     items.append({
-                        "content": f"将{name}更新为偏好院校，后续专家推荐会更优先考虑它。",
+                        "content": f"把{name}作为后续优先参考的院校。",
                         "value": {"school_intents": {sub_key: [name]}},
                         "selected": True,
                     })
@@ -455,7 +455,7 @@ def _build_select_items(
                 else:
                     items.append({
                         "content": (
-                            f"将{name}设为排除院校，后续专家推荐会降低它的优先级。"
+                            f"把{name}作为后续尽量降低优先级的院校。"
                             if intent_mode == INTENT_MODE_PREFERENCE
                             else f"把{name}记成明确不考虑的院校，后面看候选和方案时都会按这个要求来。"
                         ),
@@ -479,7 +479,7 @@ def _build_select_items(
                     })
                 else:
                     items.append({
-                        "content": f"将{name}更新为偏好地域，后续专家推荐会更优先考虑它。",
+                        "content": f"把{name}作为后续优先参考的地域。",
                         "value": {"city_intents": {sub_key: [name]}},
                         "selected": True,
                     })
@@ -585,9 +585,9 @@ def _build_preview_title(
         return "你提到的这个方向，我先结合你现在的情况做个初步分析。"
 
     if intent_mode == INTENT_MODE_CONSTRAINT:
-        suffix = "你可以勾选想采纳的内容后点击【采纳】。采纳后，候选结果会按这个要求一起收紧，我也能继续帮你看现在的方案要不要调整。"
+        suffix = "你可以在卡片里选择要采纳的项；确认前不会正式生效，也不会直接改动当前方案。"
     else:
-        suffix = "你可以勾选想采纳的内容后点击【采纳】。采纳后，我会按这个思路继续帮你看方案和给建议。"
+        suffix = "你可以在卡片里选择要采纳的项；确认后我会按这个思路继续帮你看方案和给建议。"
     if edit_flag:
         # Strip null, translate to Chinese, join
         flags = [
