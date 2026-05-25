@@ -90,6 +90,23 @@ def _context_review_issues(context_inputs: object) -> list[dict[str, Any]]:
     return issues if isinstance(issues, list) else []
 
 
+def _infer_sort_preview_label_and_direction(user_goal: str, filters: dict[str, Any] | None = None) -> tuple[str, str]:
+    filters = filters or {}
+    raw_field = str(
+        filters.get("sort_field")
+        or filters.get("sortField")
+        or filters.get("field")
+        or ""
+    ).strip()
+    goal_text = user_goal or ""
+    joined = f"{raw_field} {goal_text}"
+    if any(token in joined for token in ("schoolRank", "school_rank", "schoolLevel", "school_level", "院校层次", "学校层次", "院校排名")):
+        return "院校层次", "排名靠前的排在前面"
+    if any(token in joined for token in ("finalScore", "final_score", "recommendationScore", "recommendation_score", "推荐系数")):
+        return "推荐系数", "推荐系数高的排在前面"
+    return "录取率", "录取率低的排在前面"
+
+
 def _find_review_issue_by_code(review_issues: list[dict[str, Any]], code: str | None) -> dict[str, Any] | None:
     normalized = str(code or "").strip()
     if not normalized:
@@ -531,13 +548,11 @@ async def _plan_next_action_model(
         elif action_family == "regenerate_order":
             preview_summary = "会基于当前方案重新生成整体顺序，并在执行后自动复审。"
         elif action_family == "sort_ordered_plan":
-            field_label = "录取率"
-            goal_text = user_goal or ""
-            if "院校层次" in goal_text or "学校层次" in goal_text or "院校排名" in goal_text:
-                field_label = "院校层次"
-            elif "推荐系数" in goal_text:
-                field_label = "推荐系数"
-            preview_summary = f"会按{field_label}重新排序当前方案，排序会实际改变方案顺序和导出顺序，并让审查状态进入待重新审查。"
+            field_label, direction_text = _infer_sort_preview_label_and_direction(user_goal, filters)
+            preview_summary = (
+                f"会按{field_label}重新排序当前方案，{direction_text}。"
+                "排序会实际改变方案顺序和导出顺序，并让审查状态进入待重新审查。"
+            )
         elif action_family == "add_units":
             preview_summary = "会补入指定志愿或按条件补入候选，并同步刷新当前方案和审查结果。"
         elif action_family == "query_candidates":

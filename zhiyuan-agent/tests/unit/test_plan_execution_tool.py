@@ -943,7 +943,7 @@ def test_execute_plan_action_replace_apply_blocks_manual_batch_replace_when_cand
         new=AsyncMock(return_value={"code": 0, "data": {"items": ordered_items}}),
     ), patch(
         "app.tools.plan_execution_tool._get_planning_draft_request",
-        new=AsyncMock(return_value={"code": 0, "data": {"items": []}}),
+        new=AsyncMock(return_value={"code": 0, "data": {"summary": {"unitTotal": 94, "targetUnitCount": 96}, "items": []}}),
     ), patch(
         "app.handlers.generate_handler._generate_planning_candidate_pool_request",
         new=AsyncMock(return_value={"code": 0}),
@@ -1006,7 +1006,7 @@ def test_execute_plan_action_remove_preview_returns_guidance_for_structural_issu
 
     with patch(
         "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
-        new=AsyncMock(return_value={"code": 0, "data": {"items": []}}),
+        new=AsyncMock(return_value={"code": 0, "data": {"summary": {"unitTotal": 94, "targetUnitCount": 96}, "items": []}}),
     ), patch(
         "app.tools.plan_execution_tool._get_planning_state_request",
         new=AsyncMock(return_value={"code": 0, "data": planning_state}),
@@ -1182,7 +1182,7 @@ def test_execute_plan_action_add_units_resolves_candidate_school_major_ref():
 
     with patch(
         "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
-        new=AsyncMock(return_value={"code": 0, "data": {"items": []}}),
+        new=AsyncMock(return_value={"code": 0, "data": {"summary": {"unitTotal": 94, "targetUnitCount": 96}, "items": []}}),
     ), patch(
         "app.tools.plan_execution_tool._get_planning_state_request",
         new=AsyncMock(return_value={"code": 0, "data": {"candidatePoolState": {"items": []}}}),
@@ -1497,7 +1497,7 @@ def test_execute_plan_action_add_units_preview_resolves_candidate_alias_without_
 
     with patch(
         "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
-        new=AsyncMock(return_value={"code": 0, "data": {"items": []}}),
+        new=AsyncMock(return_value={"code": 0, "data": {"summary": {"unitTotal": 94, "targetUnitCount": 96}, "items": []}}),
     ), patch(
         "app.tools.plan_execution_tool._get_planning_state_request",
         new=AsyncMock(return_value={"code": 0, "data": {"candidatePoolState": {"items": candidate_items}}}),
@@ -1517,8 +1517,14 @@ def test_execute_plan_action_add_units_preview_resolves_candidate_alias_without_
     assert "广西师范大学006专业组" in data["summary"]
     assert "统计学" in data["summary"]
     assert "加入当前方案" in data["summary"]
+    assert "当前方案已有 94/96 个志愿" in data["summary"]
+    assert "确认后预计增加 1 个" in data["summary"]
     assert "确认" in data["summary"]
     assert data["facts"]["resolved_apply_payload"]["atomic_actions"][0]["volunteer_ids"] == ["cand-gxsd-stat"]
+    assert data["facts"]["current_ordered_total"] == 94
+    assert data["facts"]["expected_ordered_total"] == 95
+    assert data["facts"]["target_total"] == 96
+    assert data["facts"]["add_count"] == 1
     mock_query.assert_not_awaited()
     mock_select.assert_not_awaited()
 

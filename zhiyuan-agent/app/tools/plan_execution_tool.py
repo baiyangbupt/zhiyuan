@@ -857,6 +857,29 @@ async def _load_ordered_items_by_id(ctx: RunContext[RequestContext]) -> dict[str
     return item_by_id
 
 
+async def _load_ordered_plan_count_context(ctx: RunContext[RequestContext]) -> dict[str, int]:
+    try:
+        result = await _get_planning_ordered_plan_request(ctx.deps.sessionid)
+    except Exception:
+        logger.warning("load ordered plan count context failed: session_id=%s", ctx.deps.sessionid, exc_info=True)
+        return {}
+    if result.get("code") != 0:
+        return {}
+    data = result.get("data") or {}
+    summary = data.get("summary") or {}
+    items = data.get("items") or []
+    current_total = _summary_total(summary)
+    if not current_total and not summary:
+        current_total = len(items)
+    target_total = summary.get("targetUnitCount") or summary.get("targetCount") or 0
+    context: dict[str, int] = {}
+    if summary or items or target_total:
+        context["current_total"] = int(current_total)
+    if target_total:
+        context["target_total"] = int(target_total)
+    return context
+
+
 def _item_display_name(item: dict[str, Any] | None, fallback: str = "这条志愿") -> str:
     item = item or {}
     school_name = str(item.get("schoolName") or "").strip()
@@ -940,6 +963,7 @@ async def _build_add_units_preview_summary(
     resolved_ids: list[str],
 ) -> tuple[str, dict[str, Any]]:
     item_by_id = await _load_candidate_items_by_id(ctx, refs)
+    count_context = await _load_ordered_plan_count_context(ctx)
     labels = [
         _item_display_name(item_by_id.get(volunteer_id), fallback="这条候选志愿")
         for volunteer_id in resolved_ids[:3]
@@ -952,12 +976,29 @@ async def _build_add_units_preview_summary(
     else:
         extra_text = f"等 {len(resolved_ids)} 条候选志愿" if len(resolved_ids) > len(labels) else f"{len(resolved_ids)} 条候选志愿"
         summary = f"已在候选里定位到 {'、'.join(labels)}，会加入当前方案，共 {extra_text}。"
+    has_current_total = "current_total" in count_context
+    current_total = count_context.get("current_total", 0)
+    target_total = count_context.get("target_total")
+    add_count = len(resolved_ids)
+    if has_current_total and add_count:
+        expected_total = current_total + add_count
+        if target_total:
+            summary += f" 当前方案已有 {current_total}/{target_total} 个志愿，确认后预计增加 {add_count} 个，约 {expected_total}/{target_total}。"
+        else:
+            summary += f" 当前方案已有 {current_total} 个志愿，确认后预计增加 {add_count} 个。"
     facts = {
         "resolved_apply_payload": _build_resolved_apply_payload(
             plan_model,
             volunteer_ids=resolved_ids,
         )
     }
+    if has_current_total:
+        facts["current_ordered_total"] = current_total
+        facts["expected_ordered_total"] = current_total + add_count
+    if target_total:
+        facts["target_total"] = target_total
+    if add_count:
+        facts["add_count"] = add_count
     return summary, facts
 
 

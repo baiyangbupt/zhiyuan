@@ -87,6 +87,38 @@ def test_plan_next_action_ignores_apply_stage_for_mutation_without_confirmation(
     assert data["requires_confirmation"] is True
     assert data["should_rerun_review"] is False
     assert "院校层次" in data["preview_summary"]
+    assert "排名靠前的排在前面" in data["preview_summary"]
+    assert "待重新审查" in data["preview_summary"]
+
+
+def test_plan_next_action_sort_preview_describes_default_direction_by_field():
+    with patch(
+        "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
+        new=AsyncMock(return_value=_context_inputs(summary="阶段=ordered；方案=48/48")),
+    ):
+        ratio_result = asyncio.run(
+            plan_next_action(
+                _ctx(),
+                user_goal="按录取率排序",
+                action_family="sort_ordered_plan",
+                current_stage="apply",
+                user_confirmed=False,
+            )
+        )
+        score_result = asyncio.run(
+            plan_next_action(
+                _ctx(),
+                user_goal="按推荐系数排序",
+                action_family="sort_ordered_plan",
+                current_stage="apply",
+                user_confirmed=False,
+            )
+        )
+
+    ratio_data = json.loads(ratio_result)
+    score_data = json.loads(score_result)
+    assert "录取率低的排在前面" in ratio_data["preview_summary"]
+    assert "推荐系数高的排在前面" in score_data["preview_summary"]
 
 
 def test_plan_next_action_allows_apply_stage_for_mutation_after_confirmation():

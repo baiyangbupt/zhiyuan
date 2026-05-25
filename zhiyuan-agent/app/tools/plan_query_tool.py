@@ -460,11 +460,12 @@ def _format_plan_result(title: str, items: list[dict[str, Any]], display_keyword
             snippets = "；".join(_build_plan_item_snippet(item) for item in examples)
             return (
                 f"{title}里共命中了 {len(matched)} 条和“{display_keyword}”相关的志愿。"
-                f"下面仅展示前 {len(examples)} 条示例：{snippets}"
+                f"下面仅展示前 {len(examples)} 条示例：{snippets}\n"
+                "下一步如果要处理这些志愿，可以告诉我保留哪几个、移动到哪里，或只看更稳/录取率更高的。"
             )
         return f"{title}里暂时没有命中“{display_keyword}”的志愿。"
     snippets = "；".join(_build_plan_item_snippet(item) for item in items[:5])
-    return f"{title}前几项是：{snippets}"
+    return f"{title}前几项是：{snippets}\n如果要继续调整，可以告诉我按录取率、院校层次排序，或移动/删除具体志愿。"
 
 
 async def _query_candidate_opportunities(
@@ -524,7 +525,8 @@ def _format_candidate_result(response: dict[str, Any], keyword: str) -> str:
     snippets = "；".join(_build_candidate_item_snippet(item) for item in examples)
     return (
         f"候选里共命中了 {total} 条和“{keyword}”相关的机会。"
-        f"下面仅展示前 {len(examples)} 条示例：{snippets}"
+        f"下面仅展示前 {len(examples)} 条示例：{snippets}\n"
+        "下一步可以继续缩小条件，比如只看更稳、录取率更高，或判断是否值得加入当前方案。"
     )
 
 
@@ -582,7 +584,8 @@ def _format_structured_plan_result(
         snippets = "；".join(_build_plan_item_snippet(item) for item in examples)
         return (
             f"{title}里共命中了 {len(matched)} 条符合“{description}”的志愿。"
-            f"下面仅展示前 {len(examples)} 条示例：{snippets}"
+            f"下面仅展示前 {len(examples)} 条示例：{snippets}\n"
+            "下一步如果要处理这些志愿，可以告诉我保留哪几个、移动到哪里，或只看更稳/录取率更高的。"
         )
     return f"{title}里暂时没有命中符合“{description}”的志愿。"
 
@@ -597,7 +600,8 @@ def _format_structured_candidate_result(response: dict[str, Any], description: s
     snippets = "；".join(_build_candidate_item_snippet(item) for item in examples)
     return (
         f"候选里共命中了 {total} 条符合“{description}”的机会。"
-        f"下面仅展示前 {len(examples)} 条示例：{snippets}"
+        f"下面仅展示前 {len(examples)} 条示例：{snippets}\n"
+        "下一步可以继续缩小条件，比如只看更稳、录取率更高，或判断是否值得加入当前方案。"
     )
 
 
