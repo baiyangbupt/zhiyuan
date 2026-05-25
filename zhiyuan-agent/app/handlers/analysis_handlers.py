@@ -122,13 +122,21 @@ def _build_review_summary(facts: dict[str, Any]) -> tuple[str, list[str], list[s
     compensation_count = int(facts.get("compensation_action_count") or 0)
     compensation_text = _compact_list_text(facts.get("compensation_summaries"))
 
-    parts = [f"已完成方案审查，风险 {risk_count} 项，提醒 {warn_count} 项"]
+    lines = [
+        "**审查结论**",
+        "",
+        f"- 已完成方案审查：风险 {risk_count} 项，提醒 {warn_count} 项。",
+    ]
     if problems_text:
-        parts.append(f"主要问题是 {problems_text}")
+        lines.append(f"- 主要问题：{problems_text}。")
+    elif risk_count == 0 and warn_count == 0:
+        lines.append("- 当前暂无明显风险或提醒。")
     if issue_examples_text:
-        parts.append(f"典型涉及 {issue_examples_text}")
+        lines.append(f"- 典型涉及：{issue_examples_text}。")
     if compensation_count > 0 and compensation_text:
-        parts.append(f"当前还有 {compensation_count} 项可补偿动作，主要是 {compensation_text}")
+        lines.append(f"- 可补齐动作：当前还有 {compensation_count} 项，主要是 {compensation_text}。")
+    if risk_count > 0 or warn_count > 0:
+        lines.append("- 建议先查看方案区里的审查详情，再决定是否补齐、替换或调整顺序。")
 
     reply_focus = ["review_result", "risk_warning"]
     if problems_text:
@@ -143,7 +151,7 @@ def _build_review_summary(facts: dict[str, Any]) -> tuple[str, list[str], list[s
         next_step_hints.append("如果用户想继续处理，可以先看看怎么补，再决定是否应用。")
     if risk_count == 0 and warn_count == 0:
         next_step_hints.append("如果用户只是确认当前是否稳定，可以明确说明目前没有明显风险或提醒。")
-    return "；".join(parts) + "。", reply_focus, next_step_hints
+    return "\n".join(lines), reply_focus, next_step_hints
 
 
 def _build_adjustment_summary(facts: dict[str, Any]) -> tuple[str, list[str], list[str]]:

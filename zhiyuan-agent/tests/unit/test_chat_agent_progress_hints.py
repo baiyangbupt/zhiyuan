@@ -6,9 +6,15 @@ from app.agent.chat_agent import _TOOL_PROGRESS_HINTS
 
 
 def test_plan_progress_hints_use_user_facing_language():
-    assert _TOOL_PROGRESS_HINTS["collect_plan_context_inputs"] == "正在读取你的方案、偏好和审查结果..."
-    assert _TOOL_PROGRESS_HINTS["plan_next_action"] == "正在判断该先查看、分析还是调整方案..."
-    assert _TOOL_PROGRESS_HINTS["execute_plan_action"] == "正在处理你的方案，请稍等..."
+    assert _TOOL_PROGRESS_HINTS["collect_plan_context_inputs"] == "正在读取当前方案、偏好和审查结果..."
+    assert _TOOL_PROGRESS_HINTS["plan_next_action"] == "正在读取当前方案并整理这次请求..."
+    assert _TOOL_PROGRESS_HINTS["execute_plan_action"] == "正在生成预览或整理方案结果，请稍等..."
+
+
+def test_intent_progress_hints_make_confirmation_boundary_clear():
+    assert "等你确认后才会记入偏好" in _TOOL_PROGRESS_HINTS["preview_current_major_intent_confirmation"]
+    assert "等你确认后才会记入偏好" in _TOOL_PROGRESS_HINTS["preview_current_school_intent_confirmation"]
+    assert "按你的确认更新" in _TOOL_PROGRESS_HINTS["update_volunteer_intent_state"]
 
 
 def test_progress_hints_do_not_expose_internal_terms():

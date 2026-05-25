@@ -7,6 +7,7 @@
 - `docs/release-3.0.2-routing-preview-action-review.md`
 - `docs/release-3.0.2-implementation-design.md`
 - `docs/release-3.0.1-agent-optimization-design.md`
+- `docs/release-3.0.3-agent-response-quality-review.md`
 
 ## 1. 本期目标
 
@@ -411,6 +412,46 @@ PlanFastRouter -> execute_plan_action -> service reply renderer
 
 ## 6. 可观测性与 benchmark
 
+### 6.0 Case 级评估框架与阶段性结果
+
+3.0.3 已补充 case 级评估框架，不再只看“快不快”，而是同时记录：
+
+- 完整回复文本
+- thinking / progress 提示
+- followup 工作台动作
+- tool/action observability
+- 首响与最终耗时
+- 内容断言和延迟门禁
+
+相关文件：
+
+- `docs/release-3.0.3-agent-case-evaluation-framework.md`
+- `docs/release-3.0.3-agent-case-evaluation-report-template.md`
+- `docs/release-3.0.3-agent-case-evaluation-first-pass.md`
+- `zhiyuan-agent/examples/dialog_case_evaluation_report.py`
+- `zhiyuan-agent/examples/model_provider_303_quality_readonly_cases.json`
+
+2026-05-25 当前实现质量补跑结果：
+
+| case 集 | steps | failed | median | max |
+| --- | ---: | ---: | ---: | ---: |
+| `dialog_regression_303_effect_perf_cases.json` | 13 | 0 | 2.319s | 4.922s |
+
+同一批只读/预览 case 的四模型对照：
+
+| provider | steps | assertion failures | median final | max final |
+| --- | ---: | ---: | ---: | ---: |
+| siliconflow-kimi-k26 | 10 | 0 | 0.214s | 2.164s |
+| siliconflow-minimax-m25 | 10 | 0 | 0.160s | 2.503s |
+| siliconflow-deepseek-v4-flash | 10 | 0 | 0.176s | 2.368s |
+| siliconflow-glm-51 | 10 | 0 | 0.155s | 2.339s |
+
+结论和限制：
+
+- Plan 快路径、只读查询、预览边界和 Intent preview 在四个模型配置下稳定。
+- 这批 case 大多不依赖模型自由生成，因此不能用来判断开放式回复质量谁最好。
+- 后续要补更开放的 Explore / Intent follow-up / 方案影响分析 case，才能真正比较模型表达质量。
+
 ### 6.1 日志需要补充的字段
 
 现有 `conversation_turn_event` 已记录总耗时、routingPath、actionFamily、模型配置等。`3.0.3` 需要继续补：
@@ -494,12 +535,13 @@ PlanFastRouter -> execute_plan_action -> service reply renderer
 | 用户可理解 | 回复使用用户侧语言，不暴露 `payload / stage / action_family / volunteerId` 等内部字段，不再出现“草稿”等已废弃概念。 |
 | 信息充足 | 方案概览至少包含方案数量、冲稳保结构、审查风险/提醒、当前偏好承接或可操作下一步，避免只给一句薄回复。 |
 | 结构清楚 | 复杂回复要有分行和要点，避免长串学校/专业堆叠；专业组操作要明确“按专业组顺序，不是单条志愿位置”。 |
+| 表达自然 | 允许 Markdown 标题、分点和编号列表；需要避免的是强迫选择、固定菜单、系统播报、空洞模板和内部字段外露，而不是避免结构化本身。 |
 | 边界明确 | 高副作用动作必须先 preview，说明“确认后才会执行”；确认前不得刷新方案，确认后才刷新 `ordered/review`。 |
 | 只读不误联动 | “先只分析 / 不要改方案 / 不要记偏好”不得生成无意义工作台卡片或 pending intent。 |
 | 歧义不误操作 | 学校/专业简称无法唯一定位时要澄清，不为了快而猜测并执行。 |
 | 事实一致 | 执行类回复、`executed_actions`、工作台刷新对象和日志中的目标对象必须一致，尤其是专业组移动后不能按变化后的顺序重新解析目标。 |
 
-当前 runner 用 `assertContains / assertContainsAny / assertNotContains / assertNoFollowups / assertFollowupTarget` 做自动质量门禁；真实效果仍需要抽样人工看完整文本，重点检查是否丰富、是否自然、是否能直接指导用户下一步。
+当前 runner 用 `assertContains / assertContainsAny / assertNotContains / assertNoFollowups / assertFollowupTarget` 做自动质量门禁；`assertPlanStyle` 只拦截严重体验问题，例如强迫用户选 A/B、泄漏内部词、出现残句或无意义系统词，不拦截正常标题、分点和编号。真实效果仍需要抽样人工看完整文本，重点检查是否丰富、是否自然、是否能直接指导用户下一步。
 
 ### 6.5 3.0.3 效果/性能复测记录
 
@@ -978,6 +1020,180 @@ Phase 2 首轮复测记录：
   - 全量 3.0.3 effect/perf：`tests/e2e/test_agent_dialog_effect_perf.py` 8 steps 通过，总耗时 `25.79s`；职业方向轮 `elapsedMs=2275`，无 followup card，确认轮进入 no-pending guard。
   - 职业方向去重后单场景复跑：2 steps 通过；职业方向轮 `elapsedMs=5572`，Agent 结构化日志为 `routingPath=career_direction_fast_route`、`llmRequests=0`、`toolDurationMs=55ms`、`directionSlots=["system_public_service","stable_employment"]`；回复不再重复输出相同选科/分数段判断。
 
+### Phase 2.10：Intent / Plan 多步提示与对话稳定感设计
+
+问题：
+
+- 3.0.3 已经把部分 Plan / Explore 场景压到 fast route，但 fast route 绕过完整 ChatAgent 后，也绕过了工具调用前的统一 progress hint。用户在“读取状态 -> 生成预览 -> 等确认”这类链路里，容易只看到短暂空白，不清楚系统正在平稳处理。
+- Intent 确认和 Plan 确认虽然已经是直达执行链路，但确认后如果后端耗时略长，用户没有明确提示“正在按你的确认更新”，容易误以为卡住。
+- 现有工具级 progress hint 里有一些抽象表述，例如“判断该先查看、分析还是调整方案”，用户能理解但不够贴近当前动作；需要改成更产品化的语言。
+
+边界：
+
+- 这次只优化用户可见进度提示和回复过程稳定感，不改变 Intent / Plan 路由判定，不新增入口级关键词短路。
+- progress hint 只能描述“正在读取、整理、生成预览、按确认更新”，不能提前承诺“已记录偏好 / 已移动方案 / 已排序”。
+- 对只读 Explore、Intent preview、Plan preview、Plan apply 继续保持副作用边界：只读不产生 pending，preview 等确认，apply 只能由明确确认触发。
+
+实现方案：
+
+- ChatService fast route 补充阶段性 progress：
+  - Plan fast route：先提示正在读取当前方案并整理要求；拿到 `PlanActionPlan` 后，按 action family/stage 提示“整理方案概览 / 生成调整预览 / 准备审查”等。
+  - Direct Plan confirm：提示正在按确认更新方案，完成后会刷新工作台。
+  - Direct Intent confirm：提示正在按确认更新后续参考偏好。
+  - Major compare / Career direction fast route 保留已有只读提示。
+- ChatAgent 工具 progress 文案调整：
+  - Intent preview：从“整理成待确认偏好”改成“先整理影响，等你确认后才会记入偏好”。
+  - Plan 编排：从“判断该先查看、分析还是调整方案”改成“正在读取当前方案并整理这次请求”。
+  - Plan 执行：从“正在处理你的方案”改成“正在生成预览或整理方案结果”。
+- 单测覆盖 progress hints 不暴露内部词；ChatService fast route 和直接确认链路应能捕获对应 progress 文案。
+
+实施记录：
+
+- `ChatAgent` 工具级 progress 文案已调整为用户语言，Intent preview 明确“等确认后才记入偏好”，Plan 工具提示改为读取、整理、生成预览或整理结果。
+- `ChatService` 对绕过完整 ChatAgent 的路径补充 `on_progress`：
+  - Plan fast route：进入 `_plan_next_action_model` 前提示正在读取方案并整理请求；进入 `execute_plan_action` 前按 `action_family/stage` 提示方案概览、调整预览、审查或生成结果。
+  - Direct Plan confirm：执行前提示正在按确认更新方案，完成后刷新工作台。
+  - Direct Intent confirm：执行前提示正在按确认更新后续参考偏好。
+- `dialog_regression_runner.py` 补充 thinking 断言能力：case step 可配置 `assertThinkingContains`、`assertThinkingContainsAny`、`assertThinkingNotContains`，metrics 增加 `thinkingMessages`，用于把“用户是否看到系统正在平稳处理”纳入场景回归。
+- `dialog_regression_303_effect_perf_cases.json` 补充 thinking 断言，覆盖方案状态、专业组移动预览、方案确认执行、排序预览、Intent preview/confirm、职业方向只读承接和专业对比只读快路径。
+- 这些提示不参与路由判断，不新增字符串模板回复，也不改变 preview -> confirm -> apply 的副作用边界。
+
+验证记录：
+
+- `cd zhiyuan-agent && .venv/bin/python -m py_compile app/service.py app/agent/chat_agent.py` 通过。
+- `cd zhiyuan-agent && .venv/bin/python -m pytest tests/unit/test_chat_agent_progress_hints.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_chat_agent_init_profile.py tests/unit/test_ws_compat.py -q` 通过：`131 passed`。
+- 覆盖点包括：progress hint 不暴露内部词、方案 fast route 捕获“读取当前方案”和“生成调整预览”两段提示、Intent preview 捕获“确认后才会记入偏好”、方案确认直达执行捕获“按确认更新方案”、意向确认直达执行捕获“按确认更新后续参考偏好”、WebSocket 兼容入口允许先发送 `thinking` 再发送最终正文且不误发工作台联动卡片。
+- `cd zhiyuan-agent && .venv/bin/python -m pytest tests/unit/test_dialog_regression_runner.py tests/unit/test_mainline_dialog_scenarios.py tests/unit/test_chat_agent_progress_hints.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_chat_agent_init_profile.py tests/unit/test_ws_compat.py -q` 通过：`164 passed`。
+- `cd zhiyuan-agent && .venv/bin/python -m json.tool examples/dialog_regression_303_effect_perf_cases.json` 通过。
+- `cd zhiyuan-agent && .venv/bin/python -m py_compile app/service.py app/agent/chat_agent.py examples/dialog_regression_runner.py` 通过。
+- 真实 WebSocket e2e 首轮补充验证中，`303-quality-intent-preview-confirm-progress` 暴露一个链路问题：首轮“我倾向法学和财政学，但护理不要”在 180s 超时，前端看到通用超时文案；下一轮“确认这个偏好”却能成功应用。说明 Intent preview 工具已经把 `planEditCache` 写入待确认缓存，但完整 ChatAgent 在工具后最终组织回复阶段超时，服务端原先只支持方案 recent result 超时兜底，缺少 Intent pending 兜底。
+- 针对该问题新增 Intent pending 超时兜底设计：正常链路仍由模型组织回复；只有 `handle_message` 超时且方案 recent result 兜底没有命中时，服务端才读取 `planEditCache`，基于结构化 intent cache 渲染“待确认内容 + 下一步确认语”的用户文案。该兜底不应用偏好、不发送工作台联动卡片，也不新增入口级字符串路由。
+- 兜底文案约束：必须说明“确认前不会正式生效，也不会直接改动当前方案”；必须包含本轮已识别的正向/负向专业、院校、地域或职业方向；不得暴露 `payload/stage/action_family/volunteerId` 等内部字段；不得说“已直接记录”。
+- 复跑后又暴露一个既有行为：Intent preview 首轮会因为 `intent_preview_used_current_turn` 自动追加 `candidate` 工作台刷新卡片。该行为容易让用户理解成“偏好已经生效并筛过候选”，与 preview -> confirm 边界不一致。3.0.3 收口为：未确认的 Intent preview 不发送候选联动卡片；用户确认或勾选采纳后，仍由 direct intent confirm / `handle_intent_select` 的结构化结果触发候选刷新或筛选联动。
+
+### Phase 2.11：专业意向预览快路由设计
+
+问题：
+
+- Phase 2.10 的 Intent pending 超时兜底只能处理“预览工具已执行并写入 `planEditCache`，但最终回复超时”的情况。
+- 真实 e2e 复跑中又出现另一种慢点：首轮“我倾向法学和财政学，但护理不要”在 180s 内没有触发 `preview_current_major_intent_confirmation`，也没有写入 pending cache。下一轮确认自然只能命中 no-pending guard。
+- 这说明部分明确专业偏好表达仍可能卡在完整 ChatAgent 的“选择工具”之前。仅靠超时兜底不够，因为兜底没有结构化 pending 可读。
+
+设计原则：
+
+- 不新增面向用户的字符串模板回复。
+- 不直接写入偏好，不直接刷新候选，不直接改方案。
+- 快路由只负责把高置信专业实体装配成 `MajorIntentPreviewInput`，最终仍调用现有 `preview_current_major_intent_confirmation`，由既有 Intent 预览链路生成影响分析、写入 pending cache，并等待用户确认。
+- 只有专业名称能被本地专业目录或既有专业名规范化能力确认时才命中；模糊表达和泛方向表达继续走完整 ChatAgent。
+
+路由边界：
+
+| 类型 | 示例 | 处理 |
+| --- | --- | --- |
+| 明确正向 + 负向专业 | 我倾向法学和财政学，但护理不要 | 命中快路由，传 `level3=["法学","财政学"]`、`negative_level3=["护理学"]` |
+| 明确专业类 | 以后优先看计算机类，不看护理类 | 命中快路由，传 `level2/negative_level2` |
+| 只读对比 | 法学和财政学哪个更适合，先只分析不要记偏好 | 不命中，继续专业对比只读快路由 |
+| 方案操作 | 把法学加入方案 / 按财政学调整方案 | 不命中，交给 Plan 链路 |
+| 泛方向 | 我喜欢偏文一点 / 我想找稳定工作 | 不命中，交给完整 ChatAgent / Explore |
+
+实现方案：
+
+1. 新增 `major_intent_fast_router`：
+   - 使用本科/专科 `level2/level3` 专业目录做精确匹配。
+   - 对“护理”这类常见省略，通过既有 `resolve_major_names_async` 规范化为 `护理学`，但仍要求规范化结果必须存在于本地目录。
+   - 同一句可以同时识别正向和负向意向；负向标记来自 `不要/不想/排除/避开/别选/不考虑` 等局部语义。
+   - 遇到“哪个更适合/比较/对比/怎么选/只分析/不要记偏好”等只读分析语义，或者“加入方案/删除/移动/排序/改方案”等方案操作语义时不命中。
+2. ChatService 接入：
+   - 位置在 Plan fast route 之后、专业对比 / 职业方向 / full Agent 之前。
+   - 命中后先发送“正在整理这个专业想法的影响，等你确认后才会记入偏好...”进度提示。
+   - 调用 `preview_current_major_intent_confirmation(SimpleNamespace(deps=request_context), major_intents=MajorIntentPreviewInput(...), intent_mode=...)`。
+   - 保存 `ModelRequest -> ToolCallPart(preview_current_major_intent_confirmation) -> ToolReturnPart -> ModelResponse` 历史 trace。
+   - 记录 `conversation_turn_event routingPath=major_intent_fast_route llmRequests=0 toolCallCount=1`。
+   - 返回用户态清理后的工具回复，不发送候选工作台联动卡片。
+3. 用户确认仍走既有 `direct_pending_intent_confirm -> update_volunteer_intent_state(action="confirm")`，不新增确认分支。
+
+验收：
+
+- 单测覆盖正向/负向混合、专业类、简称规范化、只读对比不命中、方案操作不命中、泛表达不命中。
+- ChatService 单测覆盖命中后不调用主 ChatAgent、会保存工具 trace、会发送进度提示、不会返回 workspace followup。
+- 真实 e2e 复跑 `303-quality-intent-preview-confirm-progress`，预期首轮不再 180s 卡死，首轮生成待确认预览，第二轮确认可正常写入偏好。
+
+实施记录：
+
+- 新增 `app.resolver.major_intent_fast_router`，基于本科/专科 `level2/level3` 专业目录识别明确专业偏好和排除要求。
+- 路由只输出结构化 `major_intents` 和 `intent_mode`，不生成最终回复、不写偏好、不刷新候选、不改方案。
+- `ChatService` 在 Plan fast route 后、只读 Explore fast route 前接入 `major_intent_fast_route`；命中后直接调用现有 `preview_current_major_intent_confirmation`，保存工具调用历史，并记录 `conversation_turn_event routingPath=major_intent_fast_route llmRequests=0 toolCallCount=1`。
+- `dialog_regression_303_effect_perf_cases.json` 的 Intent preview case 换用干净 session，并补充负向断言，禁止首轮 preview 出现“已经记下 / 已记录 / 当前已记录”等确认后语义。
+- `_normalize_pending_intent_reply` 补充 existing-only 分支的用户态收口：即使后端当前 profile 已有相同偏好，未确认 preview 也不能说成“已经记下”，而应表达为“待确认/后续确认后生效”。
+
+验证记录：
+
+- `cd zhiyuan-agent && .venv/bin/python -m pytest tests/unit/test_major_intent_fast_router.py tests/unit/test_chat_service_history_persistence.py -q`：`112 passed`。
+- `cd zhiyuan-agent && .venv/bin/python -m pytest tests/unit/test_major_intent_fast_router.py tests/unit/test_major_compare_fast_router.py tests/unit/test_career_direction_fast_router.py tests/unit/test_plan_fast_router.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_ws_compat.py tests/unit/test_mainline_dialog_scenarios.py -q`：`159 passed`。
+- `cd zhiyuan-agent && .venv/bin/python -m json.tool examples/dialog_regression_303_effect_perf_cases.json` 通过。
+- `cd zhiyuan-agent && .venv/bin/python -m py_compile app/service.py app/resolver/major_intent_fast_router.py` 通过。
+- 真实 WebSocket e2e：
+  - 命令：`RUN_AGENT_DIALOG_E2E=1 AGENT_DIALOG_E2E_METRICS_OUTPUT=/private/tmp/zhiyuan_agent_303_after_major_intent_preview_wording_fix.json .venv/bin/python -m pytest tests/e2e/test_agent_dialog_effect_perf.py -v -s`
+  - 结果：10 steps 全部通过，pytest 总耗时 `26.53s`。
+  - `303-quality-intent-preview-confirm-progress` 首轮 `elapsedMs=2296`，`toolCallCount=1`，工具为 `preview_current_major_intent_confirmation`，`followupMessages=0`；第二轮确认 `elapsedMs=2162`，工具为 `update_volunteer_intent_state`，确认后才应用。
+  - 全量 3.0.3 effect/perf 中位数约 `2280ms`，p95 / max 约 `4354ms`；最慢仍为专业组移动 preview，属于后端状态读取/预览链路，不是模型选择工具慢。
+
+### Phase 2.12：学校 / 专业局部只读查询快路由设计
+
+问题：
+
+- 真实 e2e 中“青岛城市学院相关专业是不是有多个，先帮我判断一下，不要直接改方案”这类局部查询能得到正确结果，但仍会进入完整 ChatAgent，由模型先选择 `query_volunteer_plan`，工具返回后再让主模型组织最终回复。
+- `query_volunteer_plan` 当前已经直接返回用户可读文本，并且只读取当前排序方案、已加入方案和候选机会，不写 pending、不刷新工作台、不改方案。对明确只读的局部查询，继续走完整 Agent 的主要收益不大，反而会增加模型延迟和工具选择误差。
+- 工具候选示例里仍带 `id=...`，虽然不是 `volunteerId`，但对用户没有解释价值，也容易回到早期“内部格式过多”的体验问题。
+
+边界：
+
+- 只接管高置信局部查询：`当前方案里有没有 X`、`候选里看看 X`、`XX大学相关专业是不是有多个`、`候选里有没有 XX大学的 XX专业`。
+- 不接管方案动作：加入、删除、移动、排序、补齐、替换、审查、生成、确认等继续走 Plan 主链路和 preview -> confirm -> apply。
+- 不接管 Explore 问题：职业方向、地域机会趋势、专业对比、分数线 / 近三年录取分等仍由对应 Explore / Score 工具或完整 Agent 承接。
+- 快路由不生成面向用户的模板回复，只把高置信只读查询装配成 `query_volunteer_plan` 参数；最终回答仍来自现有工具结果，并继续做用户态清理。
+
+实现方案：
+
+1. 新增 `plan_query_fast_router`：
+   - 根据只读查询语义、范围词和学校 / 专业引用判断是否命中。
+   - 明确候选范围传 `scope=candidate`，明确当前方案范围传 `scope=plan`，未明确但有学校 / 专业局部查询时传 `scope=plan_then_candidate`。
+   - 对 `XX大学的XX专业 / XX大学.XX专业` 这类表达，提取 `school_keywords / major_keywords`，复用 `query_volunteer_plan` 内部的 catalog 归一化。
+   - 遇到动作语义、职业方向、专业对比、分数线类查询时不命中，回落完整 Agent。
+2. ChatService 接入：
+   - 位置在 Plan fast route 之后、专业意向 / 专业对比 / 职业方向 fast route 之前。
+   - 命中后发送“正在查当前方案和候选里的相关结果...”进度提示。
+   - 调用 `query_volunteer_plan(SimpleNamespace(deps=request_context), ...)`，保存 `ModelRequest -> ToolCallPart(query_volunteer_plan) -> ToolReturnPart -> ModelResponse` 历史 trace。
+   - 记录 `conversation_turn_event routingPath=plan_query_fast_route llmRequests=0 toolCallCount=1`。
+   - 不生成 pending，不发送工作台卡片。
+3. 文案清理：
+   - `query_volunteer_plan` 候选示例去掉 `id=...`，仅保留学校、专业、冲稳保和录取率等用户能理解的信息。
+
+验收：
+
+- 单测覆盖：当前方案查询、候选查询、学校 + 专业结构化查询、只读“不要改方案”不误判为 mutation、加入 / 删除 / 排序 / 补齐不命中、职业方向 / 专业对比 / 分数线不命中。
+- ChatService 单测覆盖：命中后不调用主 ChatAgent，保存工具 trace，返回用户态文本，无工作台 followup。
+- 真实 e2e 补充局部查询场景，要求无内部字段、无工作台卡片，并观测 `routingPath=plan_query_fast_route`、`llmRequests=0`。
+
+首轮实现：
+
+- 新增 `app.resolver.plan_query_fast_router`，只负责高置信只读局部查询识别和 `query_volunteer_plan` 参数装配，不生成最终文案、不写 pending、不发送工作台卡片。
+- `ChatService` 在 Plan fast route 后接入 `plan_query_fast_route`；命中后直连 `query_volunteer_plan`，保存工具调用历史，记录 `conversation_turn_event routingPath=plan_query_fast_route llmRequests=0 toolCallCount=1`。
+- 路由会屏蔽已识别学校名后再识别专业，避免“北京农学院”里的“农学”被误当作专业筛选项。
+- `query_volunteer_plan` 候选示例去掉 `id=...`，保留学校、专业、冲稳保和录取率。
+- `dialog_regression_303_effect_perf_cases.json` 增加“青岛城市学院相关专业是不是有多个，先帮我判断一下，不要直接改方案”场景，校验 thinking、无内部字段、无工作台联动。
+
+验证记录：
+
+- 聚焦单测：`tests/unit/test_plan_query_fast_router.py`、`tests/unit/test_plan_query_tool.py` 局部查询相关用例、ChatService 快路由用例通过。
+- 3.0.3 相关回归：`tests/unit/test_plan_query_fast_router.py tests/unit/test_plan_query_tool.py tests/unit/test_major_intent_fast_router.py tests/unit/test_major_compare_fast_router.py tests/unit/test_career_direction_fast_router.py tests/unit/test_plan_fast_router.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_ws_compat.py tests/unit/test_mainline_dialog_scenarios.py tests/unit/test_dialog_regression_runner.py -q`：`210 passed`。
+- `py_compile` 与 `json.tool` 通过，`git diff --check` 通过。
+- 真实 WebSocket e2e：
+  - 命令：`RUN_AGENT_DIALOG_E2E=1 AGENT_DIALOG_E2E_METRICS_OUTPUT=/private/tmp/zhiyuan_agent_303_plan_query_fast_route_output.json .venv/bin/python -m pytest tests/e2e/test_agent_dialog_effect_perf.py -v -s`
+  - 结果：11 steps 全部通过，pytest 总耗时 `29.47s`；中位数约 `2443ms`，p95 / max 约 `4557ms`。
+  - 新增局部查询场景端到端 `2273ms`，thinking 为“正在查当前方案和候选里的相关结果...”，无 followup；历史 trace 为单个 `query_volunteer_plan`，服务端日志 `routingPath=plan_query_fast_route`、`llmRequests=0`、`toolDurationMs=103ms`。
+  - 该场景回复为“当前排序方案里共命中了 7 条符合‘院校:青岛城市学院’的志愿...”，没有 `id=`、`volunteerId`、`payload/stage/action_family` 等内部字段。
+
 验证口径：
 
 - Agent 日志中同一轮应同时看到：
@@ -1015,6 +1231,70 @@ Phase 2 首轮复测记录：
 - 影子日志记录 `actualActionFamily`、`shadowActionFamily`、`shadowStage`、`actionFamilyMatch`、`missingInputs` 和 `normalizationApplied`；该日志不改变真实执行路径、不影响 preview/confirm/apply。
 - 首轮影子对比只覆盖 fast route 已明确的结构化动作：方案状态、数字志愿移动/删除、数字专业组移动/删除、排序、审查。名称/简称类动作仍由完整 Agent 和执行层唯一性解析处理。
 
+### Phase 2.13：名称 / 简称方案操作快路由设计
+
+问题：
+
+- 用户不一定按数字位置表达方案调整，常见说法是“把湖北工程学院的计算机科学与技术改到第3位”“去掉湖北工程学院.计算机科学与技术”“把广西师大统计加进来”。
+- 执行层已经支持将这类原始引用解析成真实志愿 ID，并在不唯一时返回澄清；但当前入口多数要先走完整 Agent 判断动作，增加一次 LLM 延迟。
+- 这类请求有真实改动副作用，不能为了提速绕过预览、确认和唯一性校验。
+
+设计：
+
+1. 扩展 `plan_fast_route`，只接管高置信名称 / 简称 mutation：
+   - 移动：`把{引用}移到/改到/调整到/放到第N位`，输出 `action_family=move_unit`、`volunteer_ids=[原始引用]`、`target_position=N`。
+   - 删除：`去掉/删除/删掉/移除{引用}`，输出 `action_family=remove_units`、`volunteer_ids=[原始引用]`。
+   - 加入：`把{引用}加进来/加入方案/加到方案`，输出 `action_family=add_units`、`volunteer_ids=[原始引用]`。
+2. Router 只做语法抽取，不解析真实 ID、不生成最终回复：
+   - 原始引用继续交给 `execute_plan_action` 的 `_resolve_ordered_volunteer_refs` / `_resolve_candidate_volunteer_refs`。
+   - 唯一命中才进入预览；歧义或找不到时由执行层返回澄清。
+   - 仍走 `_plan_next_action_model -> execute_plan_action(preview)`，确认后走既有 pending apply。
+3. 安全边界：
+   - 排除只读查询、专业对比、职业探索、意向写入、审查/排序/补齐等场景。
+   - 引用过短、包含“第N个志愿/专业组”的数字引用仍交给原数字规则或回落。
+   - 不支持批量复合句，例如“删掉 A 再补 B”；这类继续走完整 Agent。
+4. 观测：
+   - 继续记录 `conversation_turn_event routingPath=plan_fast_route llmRequests=0 toolCallCount=2`。
+   - ActionResolver shadow 也覆盖名称引用，对比 `move/remove/add` 的 action family 和 stage。
+
+验收：
+
+- 单测覆盖名称移动、名称删除、名称加入、简称加入、只读查询不误判、专业意向不误判、复合动作不误判、过短引用不误判。
+- 执行层既有唯一解析和歧义澄清测试继续通过。
+- e2e 增加名称/简称操作场景，要求首轮是预览、无内部字段，确认后执行并刷新方案。
+
+实施记录：
+
+- `plan_fast_router` 已扩展名称 / 简称类高置信 mutation：
+  - `named_volunteer_move`：保留原始引用并传入 `move_unit`。
+  - `named_volunteer_remove`：保留原始引用并传入 `remove_units`。
+  - `named_candidate_add`：保留原始引用并传入 `add_units`。
+- `ActionResolver shadow` 补齐 `add_units` 映射，名称引用类动作也会产出影子解析结果，用于后续 typed resolver 接管前对比。
+- `execute_plan_action` 对 `add_units` 的 preview 阶段增加候选唯一定位：
+  - 唯一命中时只生成 `resolved_apply_payload`，不直接加入方案。
+  - 已在方案中时返回 `no_change`，不会留下可确认 pending。
+  - 无法唯一定位时返回澄清，并清理 pending，避免用户后续“确认”误执行。
+- `execute_plan_action` 对 `move_unit` 的 preview 阶段补齐可读摘要：唯一定位到当前方案志愿后，会返回学校、专业、当前位置和目标位置，例如“已定位到 青岛城市学院-国际经济与贸易，当前在第36位，会移动到第3位”，同时保留 `resolved_apply_payload` 供确认轮稳定执行。
+- 命名加入 / 删除的 preview 文案继续补齐：
+  - `add_units` 唯一定位到候选后，应说明“已在候选里定位到哪个学校 / 专业，会加入当前方案”，而不是泛化成“会补入指定志愿或按条件补入候选”。
+  - `remove_units` 唯一定位到当前方案后，应说明“已定位到当前方案里的哪个学校 / 专业，会从方案中移出”，而不是完全依赖模型传入的 `preview_summary`。
+  - 两者都只改变用户可读摘要，不改变唯一性解析、`resolved_apply_payload`、确认后执行和失败澄清逻辑。
+- `ChatService` pending 提取修正：当 preview 调用返回 `error/no_change` 等非 `preview_only` 结果时，会清理上一条 preview payload，不再保留无效待确认动作。
+- `dialog_regression_303_effect_perf_cases.json` 增加名称移动和简称加入两个场景，校验 thinking、预览确认边界和内部字段屏蔽。
+
+验证记录：
+
+- 聚焦单测：`test_plan_fast_router.py`、`test_action_resolver_shadow.py`、新增候选加入 preview、名称引用 ChatService 快路由、preview error 清 pending 用例：`20 passed`。
+- 命名移动预览聚焦回归：`test_execute_plan_action_move_preview_resolves_named_ref_with_readable_summary` 通过，确认 preview 阶段不会调用真实移动，且摘要包含学校、专业和目标位置。
+- 命名加入 / 删除预览聚焦回归：`test_execute_plan_action_add_units_preview_resolves_candidate_alias_without_applying` 和 `test_execute_plan_action_remove_preview_returns_resolved_apply_payload_for_alias_ref` 通过，确认 preview 阶段不会执行真实加入 / 删除，且摘要包含学校、专业、动作方向和确认提示。
+- 3.0.3 agent 相关宽回归：`tests/unit/test_plan_fast_router.py tests/unit/test_action_resolver_shadow.py tests/unit/test_plan_execution_tool.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_plan_query_fast_router.py tests/unit/test_plan_query_tool.py tests/unit/test_major_intent_fast_router.py tests/unit/test_major_compare_fast_router.py tests/unit/test_career_direction_fast_router.py tests/unit/test_ws_compat.py tests/unit/test_mainline_dialog_scenarios.py tests/unit/test_dialog_regression_runner.py -q`：`312 passed`。
+- `py_compile` 与 `json.tool` 通过。
+- 真实 WebSocket e2e：
+  - 命令：`RUN_AGENT_DIALOG_E2E=1 AGENT_DIALOG_E2E_URL=ws://127.0.0.1:8001/gaotu-assistant-agent/plus/chat/1/bot/test/do AGENT_DIALOG_E2E_METRICS_OUTPUT=/private/tmp/zhiyuan_agent_303_named_route_output.json .venv/bin/python -m pytest tests/e2e/test_agent_dialog_effect_perf.py -v -s`
+  - 结果：13 steps 全部通过，pytest 总耗时 `32.54s`；中位数 `2182ms`，p95 `3534ms`，max `4419ms`。
+  - 命名移动场景端到端 `2329ms`，历史 trace 为 `plan_next_action(move_unit, preview)` + `execute_plan_action(move_unit, preview_only)`，`applied=false`，回复包含“青岛城市学院-国际经济与贸易”“当前在第36位”“会移动到第3位”“需要你确认后才会执行”。
+  - 命名加入场景端到端 `2415ms`，历史 trace 为 `plan_next_action(add_units, preview)` + `execute_plan_action(add_units, preview_only)`，`applied=false`，回复包含“河南农业大学-建筑类”“会加入当前方案”“需要你确认后才会执行”。
+
 ### Phase 4：清理技术债
 
 目标：
@@ -1046,11 +1326,12 @@ Phase 2 首轮复测记录：
 - 把广西师大统计加进来。
 - 去掉某学校某专业。
 
-这些是 3.0.3 需要继续优化的方向，但第一阶段快路径不应为了覆盖简称而牺牲安全性。建议：
+这些是 3.0.3 继续优化的方向。当前已覆盖高置信单动作，仍需保留安全边界：
 
 - 数字引用先走快路径。
-- 名称/简称引用继续走执行层唯一性解析。
+- 名称/简称引用只做语法抽取，继续走执行层唯一性解析。
 - 简称歧义必须澄清。
+- 复合动作和低置信引用继续回完整 Agent。
 
 ### 8.3 大模型输出质量
 
@@ -1060,12 +1341,94 @@ Phase 2 首轮复测记录：
 - Renderer 做统一、自然、克制的表达。
 - 开放式咨询仍保留大模型组织能力。
 
+本轮回复质量评审后的 P1 修复范围：
+
+- Intent preview 不再向用户暴露 `level1/level2/level3` 等专业目录层级字段。
+- Intent confirm 不再笼统说“候选结果收紧”，改为“已记录为后续筛选和方案调整参考”。
+- 职业方向承接分析需要先回答当前方案承接强弱，再展开候选机会和下一步。
+- 专业对比缺少量化权重时，仍应使用本轮用户输入里的“普通家庭 / 女生”等事实，不能误报用户没有提供性别。
+- 3.0.3 quality 主 case 补充方案审查，避免审查只靠 full journey / correctness 旧集合间接覆盖。
+
+P1 修复后复跑结果：
+
+- 真实 WebSocket：`dialog_regression_303_effect_perf_cases.json --clear-history --keep-response-text --assert-plan-style` 共 `14/14` steps 通过，输出 `/private/tmp/dialog-regression-303-after-p1-quality-rerun.json`；中位耗时约 `2212ms`，最大耗时约 `4350ms`。
+- 新增方案审查 case 命中 `review_plan`，返回 `review` 工作台刷新；用户可见审查回复不再带 `@1/@2` 这类内部位置标记。
+- Intent preview 不再出现 `level1/level2/level3`；Intent confirm 不再使用“候选结果收紧”；专业对比能使用用户本轮给出的“普通家庭 / 女生”；职业方向承接先给当前方案承接强弱、数量和示例。
+- 相关单测合并回归覆盖 ChatService、场景稳定性、方案执行/查询和快路由，结果为 `310 passed`。
+
+补充文本质量收口后：
+
+- 方案审查回复改为结构化要点，不再把风险、提醒、典型涉及压成一整段。
+- 职业方向多方向承接回复去掉重复的承接结论和重复下一步提示。
+- 真实 WebSocket 输出 `/private/tmp/dialog-regression-303-after-review-and-career-polish.json`，`14/14` steps 通过；中位耗时约 `2240ms`，最大耗时约 `4140ms`。
+- 最新合并单测覆盖 ChatService、Explore、mainline、方案执行/查询和快路由，结果为 `336 passed`。
+
+澄清：
+
+- “结构化”不是问题，复杂问题可以用标题、分段、编号列表和要点输出。
+- 需要避免的是僵硬模板、固定菜单式选择、系统内部播报、信息过薄和无上下文的泛化句。
+- 当前自动化门禁能发现内部字段、确认边界、工作台误联动、强迫选择和关键事实缺失；对“自然度 / 丰富度 / 单调度”的评判仍主要依赖 e2e 样例内容断言加人工抽样 review，后续可补充更细的 rubric 或抽样评分。
+
 ### 8.4 Provider 性能差异
 
 切换更快 provider 可以改善单次请求耗时，但如果一轮仍有 5 到 6 次 LLM 请求，整体体验仍不稳定。因此：
 
 - provider benchmark 要继续跑。
 - 主优化仍是减少无意义请求数和 token。
+
+### 8.5 依赖与影响复盘
+
+3.0.3 没有新增必须部署的第三方运行时依赖，主要新增的是内部链路依赖：
+
+| 依赖点 | 影响范围 | 退化风险 | 当前控制方式 |
+| --- | --- | --- | --- |
+| `plan_fast_route` | 方案状态、数字/名称移动、删除、加入、排序、审查 | 规则过宽会把咨询误判成方案动作；规则过窄会回落主 Agent 变慢 | 只接高置信结构；mutation 永远先 preview；复合动作和低置信引用回落主 Agent |
+| `plan_query_fast_route` | 当前方案/候选的局部只读查询 | 可能抢走 Explore、近三年分数、方案修改类请求 | 显式排除 mutation、Explore、分数线语义；要求实体或明确 scope |
+| `major_intent_fast_route` | 明确专业偏好/排除的 preview | 可能把只读比较误当偏好写入，或把方案修改误当意向 | 显式排除“哪个更适合/只分析/不要记偏好”和“加入方案/调整方案”等语义 |
+| `major_compare_fast_route` | 两个三级专业的只读对比 | 简称、专业类、三专业比较暂时不接管，可能回落慢链路 | 只接精确两个三级专业；专业类和简称保守回落 |
+| `career_direction_fast_route` | 体制内、稳定就业、读研等有限方向只读分析 | 泛方向问题和候选查询不接管；开放表达仍可能走主 Agent | 只接有限 taxonomy + 只读语义；意向写入、方案修改、确认语义全部回落 |
+| `conversation_phase.pending` | Plan / Intent 统一待确认协议 | 新旧 pending 不同步可能确认错位 | 新字段优先；旧字段仅兼容；版本/轮次守护拦截过期 pending |
+| 后端 planning 接口 | 方案状态、排序方案、候选池、审查、移动/删除/排序 | 后端数据缺失或历史脏数据会影响回复准确性 | 快路径只读/预览不改数据；执行层做唯一性解析和失败返回 |
+| 专业目录 / career taxonomy | 专业意向、专业对比、职业方向识别 | 目录缺项会导致快路径漏判；taxonomy 覆盖有限 | 漏判回落主 Agent，不直接猜测；后续通过 case 扩展 |
+| `dialog_regression_runner` metrics | 效果、延迟、thinking、followup、tool trace | 测试过度偏结构化快路径，无法代表开放式生成质量 | 结果文档明确限制；后续继续补开放式 Explore / Intent follow-up case |
+
+当前 `ChatService` 的快路径优先级为：
+
+1. 无 pending 的孤立确认保护。
+2. `plan_fast_route`。
+3. `plan_query_fast_route`。
+4. `major_intent_fast_route`。
+5. `major_compare_fast_route`。
+6. `career_direction_fast_route`。
+7. 完整 `ChatAgent`。
+
+这个顺序的设计意图是：先保护确认安全，再承接明确方案动作和只读方案查询，再处理意向、专业对比和职业方向。潜在影响是，如果前面的 router 规则过宽，会抢走后面更合适的链路。因此 3.0.3 增加了 release 级路由矩阵单测，覆盖典型输入的预期接管层：
+
+- 方案概览 -> `plan`
+- 当前方案里有没有某专业 -> `plan_query`
+- 学校相关专业只读查询 -> `plan_query`
+- 明确专业偏好/排除 -> `major_intent`
+- 两个专业只读比较 -> `major_compare`
+- 体制内/稳定就业承接分析 -> `career_direction`
+- 复合删改补动作 -> `full_agent`
+
+验证记录：
+
+- 路由矩阵与五类 fast router 单测：`35 passed`。
+- 3.0.3 相关合并单测扩展覆盖 ChatService、Explore、mainline、方案执行/查询、Plan / Intent / Major / Career fast router：`346 passed`。
+- `git diff --check` 通过。
+
+### 8.6 潜在功能退化清单
+
+当前未发现核心 Plan 执行链路退化，真实 WebSocket 3.0.3 quality 回归 `14/14` 通过，相关单测 `336 passed`。仍需持续关注：
+
+- 复杂自然语言：多动作、多目标、口语缩写可能不命中快路径，表现为回落主 Agent 或要求澄清。
+- 简称/别名：名称类方案动作只做语法抽取，真正唯一性仍由执行层解析；如果候选/方案中没有稳定别名数据，会更保守。
+- 开放式回复：关闭主链路中的 Explore 内部二次 LLM 后，职业方向回复更快更稳，但可能少一些自由发挥和个性化表达。
+- 前端联动：mutation apply 后可能同时刷新 `ordered + review`，前端需要支持多 followup；旧测试中只期望 `ordered` 的地方已经调整。
+- 历史上下文裁剪：降低 token 和污染风险，但长对话里用户依赖很早之前的细节时，仍可能需要重新说明。
+- 多模型结论边界：当前多模型对照主要证明结构化快路径稳定，不能代表开放式生成质量优劣。
+- 历史/脏数据：真实 session 里的方案、候选、专业组数据如果已被多轮测试改动，可能影响样例文本；关键验证应优先用干净会话或清理 Agent 历史后复跑。
 
 ## 9. 待确认决策
 

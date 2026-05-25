@@ -89,12 +89,12 @@ def render_intent_state_update(result: IntentStateUpdateResult) -> str:
     code = result.messageCode
     if code == "constraint_applied":
         if result.baseTotal is not None and result.filteredTotal is not None:
-            return f"我已经按你的要求把候选结果收紧了，现在大约能看到 {result.filteredTotal} 个结果，整体候选大约是 {result.baseTotal} 个。要是你愿意，我也可以继续帮你看看这份方案里还有没有不符合这条要求的地方。"
+            return f"已按你的确认把这条要求记录为后续筛选和方案调整参考。候选展示会按这条要求更新，现在大约能看到 {result.filteredTotal} 个结果，整体候选大约是 {result.baseTotal} 个。要是你愿意，我也可以继续帮你看看这份方案里还有没有不符合这条要求的地方。"
         if result.filteredTotal is not None:
-            return f"我已经按你的要求把候选结果收紧了，现在大约还有 {result.filteredTotal} 个结果。要是你愿意，我也可以继续帮你看看这份方案里还有没有不符合这条要求的地方。"
-        return "我已经按你的要求把候选结果收紧了，你现在可以直接去看筛选后的结果。要是你愿意，我也可以继续帮你看看这份方案里还有没有不符合这条要求的地方。"
+            return f"已按你的确认把这条要求记录为后续筛选和方案调整参考。候选展示会按这条要求更新，现在大约还有 {result.filteredTotal} 个结果。要是你愿意，我也可以继续帮你看看这份方案里还有没有不符合这条要求的地方。"
+        return "已按你的确认把这条要求记录为后续筛选和方案调整参考。候选展示会按这条要求更新，你现在可以去看筛选后的结果。要是你愿意，我也可以继续帮你看看这份方案里还有没有不符合这条要求的地方。"
     if code == "preference_applied":
-        return "好的，我已经按你的确认记下来了，后续会按这个方向作为报考参考。接下来如果你愿意，我可以继续帮你看看现在这份方案哪些地方比较贴近你的想法、哪些地方还可以再优化。"
+        return "好的，已经按你的确认记下来了，并作为后续筛选和方案调整参考。接下来如果你愿意，我可以继续帮你看看现在这份方案哪些地方比较贴近你的想法、哪些地方还可以再优化。"
     if code == "reject_success":
         return "已取消本次意向调整。你可以重新说明想保留、排除或更偏好的方向，或者继续其他咨询。"
     if code == "no_pending":

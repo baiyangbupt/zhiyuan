@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from app.schemas.user_profile import UserProfile
+from app.tools.explore_direction_tool import preview_direction_comparison_from_request
 from app.tools import intent_preview_tool as intent_preview_tool_module
 from app.tools.intent_preview_tool import (
     analyze_current_career_direction,
@@ -330,6 +331,81 @@ def test_dialog_scenario_career_compare_explore_keeps_comparison_not_plan_listin
     assert "方向对比分析" in resp
     assert "先看你本人更适合哪条路径" in resp
     assert "下一步" in resp
+
+
+def test_career_direction_comparison_reply_answers_current_plan_fit_first():
+    request_context = SimpleNamespace(
+        sessionid="305b",
+        batch="01",
+        chat_history=[{"role": "user", "content": "当前方案对体制内稳定就业方向承接得怎么样，先不要改方案"}],
+        score_detail=None,
+        init_profile=None,
+        allow_explore_inner_llm=False,
+    )
+    planning_state = {
+        "orderedPlanState": {
+            "items": [
+                {
+                    "volunteerId": "v1",
+                    "schoolName": "北京政法学院",
+                    "majorName": "法学",
+                    "majorCategory": "法学类",
+                    "schoolCategory": "政法",
+                    "schoolNature": "公办",
+                    "tier": "稳",
+                    "provinceName": "北京",
+                },
+                {
+                    "volunteerId": "v2",
+                    "schoolName": "天津师范大学",
+                    "majorName": "汉语言文学",
+                    "majorCategory": "中国语言文学类",
+                    "schoolCategory": "师范",
+                    "schoolNature": "公办",
+                    "tier": "稳",
+                    "provinceName": "天津",
+                },
+                {
+                    "volunteerId": "v3",
+                    "schoolName": "某理工学院",
+                    "majorName": "机械设计制造及其自动化",
+                    "majorCategory": "机械类",
+                    "tier": "冲",
+                    "provinceName": "河北",
+                },
+            ]
+        },
+        "candidatePoolState": {
+            "items": [
+                {
+                    "volunteerId": "c1",
+                    "schoolName": "河北师范大学",
+                    "majorName": "教育学",
+                    "majorCategory": "教育学类",
+                    "schoolCategory": "师范",
+                    "schoolNature": "公办",
+                    "tier": "稳",
+                    "provinceName": "河北",
+                }
+            ]
+        },
+    }
+
+    with patch("app.tools.explore_direction_tool.get_planning_state", AsyncMock(return_value={"data": planning_state})):
+        resp = _run(
+            preview_direction_comparison_from_request(
+                request_context,
+                ["system_public_service", "stable_employment"],
+            )
+        )
+
+    assert "当前方案对" in resp
+    assert "整体承接" in resp
+    assert "方案内大约有" in resp
+    assert "北京政法学院-法学" in resp
+    assert "候选里和" in resp
+    assert resp.count("当前方案对") == 1
+    assert "我先帮你做了一个方向对比分析" not in resp
 
 
 def test_dialog_scenario_career_explore_can_naturally_offer_professional_assessment_hint():

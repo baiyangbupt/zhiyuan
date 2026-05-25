@@ -1,0 +1,118 @@
+[
+  {
+    "name": "303-quality-plan-status-rich-structured",
+    "sessionId": "17",
+    "prompts": [
+      {
+        "prompt": "看看现在的方案，给我一个结构化一点的结论",
+        "assertContains": ["方案", "审查"],
+        "assertContainsAny": ["冲", "稳", "保"],
+        "assertNotContains": ["草稿", "payload", "stage", "action_family", "volunteerId", "@1"]
+      }
+    ]
+  },
+  {
+    "name": "303-quality-plan-local-query-readonly-fast-route",
+    "sessionId": "17",
+    "prompts": [
+      {
+        "prompt": "青岛城市学院相关专业是不是有多个，先帮我判断一下，不要直接改方案",
+        "assertContainsAny": ["青岛城市", "方案", "候选", "命中", "相关"],
+        "assertNotContains": ["已直接调整", "确认后执行", "payload", "stage", "action_family", "volunteerId", "id=", "草稿"]
+      }
+    ]
+  },
+  {
+    "name": "303-quality-plan-named-move-preview-fast-route",
+    "sessionId": "17",
+    "prompts": [
+      {
+        "prompt": "把青岛城市学院的国际经济与贸易改到第3位",
+        "assertContains": ["确认"],
+        "assertContainsAny": ["移动", "第3位", "青岛城市学院", "国际经济与贸易"],
+        "assertNotContains": ["已直接移动", "payload", "stage", "action_family", "volunteerId", "草稿"]
+      }
+    ]
+  },
+  {
+    "name": "303-quality-plan-named-add-preview-fast-route",
+    "sessionId": "17",
+    "prompts": [
+      {
+        "prompt": "把河南农业大学的建筑类加进来",
+        "assertContains": ["确认", "河南农业大学", "建筑类"],
+        "assertContainsAny": ["加入", "加入当前方案", "候选"],
+        "assertNotContains": ["已直接加入", "payload", "stage", "action_family", "volunteerId", "草稿"]
+      }
+    ]
+  },
+  {
+    "name": "303-quality-major-group-preview-confirm-boundary",
+    "sessionId": "16",
+    "prompts": [
+      {
+        "prompt": "把第4个专业组移到第2位",
+        "assertContains": ["专业组", "组内", "确认"],
+        "assertContainsAny": ["不是按单条志愿位置", "专业组顺序"],
+        "assertNotContains": ["已直接移动", "草稿", "锁定", "payload", "stage", "action_family", "volunteerId"]
+      }
+    ]
+  },
+  {
+    "name": "303-quality-sort-preview-explains-side-effect",
+    "sessionId": "17",
+    "prompts": [
+      {
+        "prompt": "按院校层次排序",
+        "assertContains": ["排序", "确认"],
+        "assertContainsAny": ["实际改变", "导出顺序", "待重新审查"],
+        "assertNotContains": ["已直接排序", "草稿", "payload", "stage", "action_family", "volunteerId"]
+      }
+    ]
+  },
+  {
+    "name": "303-quality-career-fit-readonly-no-workspace",
+    "sessionId": "17",
+    "prompts": [
+      {
+        "prompt": "当前方案对体制内稳定就业方向承接得怎么样，先不要改方案",
+        "assertContainsAny": ["体制内", "稳定", "方案", "承接", "匹配"],
+        "assertNotContains": ["已直接调整", "确认后执行", "已记录", "payload", "stage", "action_family", "volunteerId", "草稿"]
+      }
+    ]
+  },
+  {
+    "name": "303-quality-major-compare-readonly-no-intent",
+    "sessionId": "880101",
+    "prompts": [
+      {
+        "prompt": "法学和财政学哪个更适合普通家庭女生，先只分析不要记偏好",
+        "assertContainsAny": ["法学", "财政", "适合", "方向", "就业"],
+        "assertNotContains": ["已记录", "我记下", "确认后写入", "payload", "stage", "action_family", "volunteerId", "草稿"]
+      }
+    ]
+  },
+  {
+    "name": "303-quality-intent-preview-confirm-progress",
+    "sessionId": "880203",
+    "prompts": [
+      {
+        "prompt": "我倾向法学和财政学，但护理不要",
+        "assertContainsAny": ["确认", "法学", "财政", "护理", "后续"],
+        "assertNotContains": ["已直接调整", "已直接删除", "已直接记录", "我已经记下", "已经记下", "已记录", "当前已记录", "记下并在参考", "payload", "stage", "action_family", "volunteerId", "草稿"]
+      }
+    ]
+  },
+  {
+    "name": "303-quality-no-pending-confirm-fast-guard",
+    "sessionId": "880102",
+    "prompts": [
+      {
+        "prompt": "确认",
+        "assertContainsAny": ["没有上一轮待确认", "没有待确认"],
+        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"],
+        "assertFollowupCount": 0
+      }
+    ]
+  }
+]

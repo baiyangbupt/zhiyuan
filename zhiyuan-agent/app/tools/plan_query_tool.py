@@ -401,8 +401,7 @@ def _build_candidate_item_snippet(item: dict[str, Any]) -> str:
     major_name = item.get("majorName") or "未知专业"
     tier = item.get("tier") or "未知"
     ratio = _format_ratio(item.get("admissionRatio"))
-    volunteer_id = item.get("volunteerId") or "unknown"
-    return f"{school_name}-{major_name}（{tier}，录取率{ratio}，id={volunteer_id}）"
+    return f"{school_name}-{major_name}（{tier}，录取率{ratio}）"
 
 
 def _extract_plan_items(response: dict[str, Any]) -> list[dict[str, Any]]:

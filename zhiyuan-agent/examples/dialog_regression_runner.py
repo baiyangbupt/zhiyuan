@@ -86,21 +86,28 @@ async def _ask_once(
     *,
     open_timeout: float = 30,
     response_timeout: float = 120,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, int | None]]:
     payload = {
         "sessionId": session_id,
         "userId": user_id,
         "content": prompt,
         "inputType": "text",
     }
+    started_at = time.perf_counter()
+    first_message_at: float | None = None
+    final_message_at: float | None = None
     async with websockets.connect(url, max_size=2**22, open_timeout=open_timeout) as ws:
         await ws.send(json.dumps(payload, ensure_ascii=False))
         primary: list[dict[str, Any]] = []
         while True:
             raw = await asyncio.wait_for(ws.recv(), timeout=response_timeout)
+            now = time.perf_counter()
+            if first_message_at is None:
+                first_message_at = now
             message = json.loads(raw)
             primary.append(message)
             if message.get("end") is True:
+                final_message_at = now
                 break
 
         followups: list[dict[str, Any]] = []
@@ -111,7 +118,11 @@ async def _ask_once(
                 break
             followups.append(json.loads(raw))
 
-    return primary, followups
+    timing = {
+        "firstMessageMs": int(((first_message_at or final_message_at or time.perf_counter()) - started_at) * 1000),
+        "finalMessageMs": int(((final_message_at or time.perf_counter()) - started_at) * 1000),
+    }
+    return primary, followups, timing
 
 
 def _load_cases(path: str | None) -> list[dict[str, Any]]:
@@ -319,6 +330,24 @@ def _summarize_turn_observability(turn_messages: list[dict[str, Any]]) -> dict[s
     }
 
 
+def _followup_summary(followups: list[dict[str, Any]]) -> tuple[list[str], list[bool]]:
+    targets: list[str] = []
+    refreshes: list[bool] = []
+    for item in followups:
+        content = item.get("content")
+        if not isinstance(content, dict):
+            continue
+        target = content.get("targetView")
+        if target is not None:
+            text = str(target).strip()
+            if text and text not in targets:
+                targets.append(text)
+        refresh = content.get("refresh")
+        if isinstance(refresh, bool):
+            refreshes.append(refresh)
+    return targets, refreshes
+
+
 def _summarize_primary(messages: list[dict[str, Any]]) -> str:
     text_parts = [m.get("content", "") for m in messages if m.get("type") == "text"]
     thinking_parts = [m.get("content", "") for m in messages if m.get("type") == "thinking"]
@@ -332,6 +361,10 @@ def _summarize_primary(messages: list[dict[str, Any]]) -> str:
 
 def _extract_text(messages: list[dict[str, Any]]) -> str:
     return "\n".join(str(m.get("content", "")) for m in messages if m.get("type") == "text").strip()
+
+
+def _extract_thinking(messages: list[dict[str, Any]]) -> str:
+    return "\n".join(str(m.get("content", "")) for m in messages if m.get("type") == "thinking").strip()
 
 
 def _check_plan_reply_style(text: str) -> list[str]:
@@ -352,6 +385,7 @@ def _check_content_assertions(
     step: dict[str, Any],
     case_name: str,
     session_id: str,
+    thinking_text: str = "",
 ) -> list[str]:
     """Check per-prompt content assertions from the case step definition."""
     violations: list[str] = []
@@ -359,11 +393,15 @@ def _check_content_assertions(
     assert_contains = step.get("assertContains") or []
     assert_contains_any = step.get("assertContainsAny") or []
     assert_not_contains = step.get("assertNotContains") or []
+    assert_thinking_contains = step.get("assertThinkingContains") or []
+    assert_thinking_contains_any = step.get("assertThinkingContainsAny") or []
+    assert_thinking_not_contains = step.get("assertThinkingNotContains") or []
     assert_followup_target = step.get("assertFollowupTarget")
     assert_followup_refresh = step.get("assertFollowupRefresh")
     assert_no_followups = bool(step.get("assertNoFollowups"))
 
     combined_text = text.lower()
+    combined_thinking = thinking_text.lower()
     for expected in assert_contains:
         if expected.lower() not in combined_text:
             violations.append(
@@ -380,6 +418,23 @@ def _check_content_assertions(
         violations.append(
             f"{case_name} session={session_id} prompt={prompt_label}: "
             f"assertContainsAny FAILED — none of {assert_contains_any} found in response"
+        )
+    for expected in assert_thinking_contains:
+        if expected.lower() not in combined_thinking:
+            violations.append(
+                f"{case_name} session={session_id} prompt={prompt_label}: "
+                f"assertThinkingContains FAILED — expected '{expected}' not found in thinking messages"
+            )
+    for forbidden in assert_thinking_not_contains:
+        if forbidden.lower() in combined_thinking:
+            violations.append(
+                f"{case_name} session={session_id} prompt={prompt_label}: "
+                f"assertThinkingNotContains FAILED — forbidden '{forbidden}' found in thinking messages"
+            )
+    if assert_thinking_contains_any and not any(kw.lower() in combined_thinking for kw in assert_thinking_contains_any):
+        violations.append(
+            f"{case_name} session={session_id} prompt={prompt_label}: "
+            f"assertThinkingContainsAny FAILED — none of {assert_thinking_contains_any} found in thinking messages"
         )
     if assert_followup_target:
         found_target = any(
@@ -511,6 +566,7 @@ async def _run_cases(
     response_timeout: float = 120,
     metrics_output: str | None = None,
     history_db: str | None = str(DEFAULT_HISTORY_DB),
+    keep_response_text: bool = False,
 ) -> None:
     failures: list[str] = []
     warnings: list[str] = []
@@ -533,12 +589,12 @@ async def _run_cases(
             else:
                 steps.append({"prompt": str(item)})
 
-        for step in steps:
+        for step_index, step in enumerate(steps, start=1):
             prompt = str(step.get("prompt") or step.get("text") or "")
             print(f">>> {prompt}")
             started_at = time.perf_counter()
             try:
-                primary, followups = await _ask_once(
+                primary, followups, timing = await _ask_once(
                     url,
                     session_id,
                     user_id,
@@ -563,12 +619,19 @@ async def _run_cases(
             elapsed_ms = int((time.perf_counter() - started_at) * 1000)
             record = {
                 "case": name,
+                "stepIndex": step_index,
                 "sessionId": session_id,
                 "prompt": prompt,
                 "elapsedMs": elapsed_ms,
+                "firstMessageMs": timing.get("firstMessageMs"),
+                "finalMessageMs": timing.get("finalMessageMs"),
                 "primaryMessages": len(primary),
+                "thinkingMessages": sum(1 for message in primary if message.get("type") == "thinking"),
                 "followupMessages": len(followups),
             }
+            if keep_response_text:
+                record["responseText"] = _extract_text(primary)
+                record["thinkingText"] = _extract_thinking(primary)
             if history_db:
                 history = _load_history_json(Path(history_db), session_id)
                 turn_observability = _summarize_turn_observability(
@@ -576,21 +639,24 @@ async def _run_cases(
                 )
                 if turn_observability.get("historyMessages"):
                     record["turnObservability"] = turn_observability
-            metrics_records.append(record)
-            print(
-                "metrics="
-                + json.dumps(
-                    record,
-                    ensure_ascii=False,
-                )
-            )
-            print(_summarize_primary(primary))
+            if followups:
+                followup_targets, followup_refreshes = _followup_summary(followups)
+                record["followupCount"] = len(followups)
+                record["followupTargets"] = followup_targets
+                record["followupRefreshes"] = followup_refreshes
             text = _extract_text(primary)
             if case_assert_style:
                 violations = _check_plan_reply_style(text)
                 if violations:
                     failures.append(f"{name} session={session_id} prompt={prompt}: {'; '.join(violations)}")
-            content_violations = _check_content_assertions(text, followups, step, name, session_id)
+            content_violations = _check_content_assertions(
+                text,
+                followups,
+                step,
+                name,
+                session_id,
+                thinking_text=_extract_thinking(primary),
+            )
             if content_violations:
                 for v in content_violations:
                     print(f"  CONTENT_ASSERT_FAIL: {v}")
@@ -600,6 +666,21 @@ async def _run_cases(
                 print(f"  LATENCY_WARN: {warning}")
             failures.extend(perf_failures)
             warnings.extend(perf_warnings)
+            if content_violations:
+                record["contentViolations"] = content_violations
+            if perf_failures:
+                record["performanceViolations"] = perf_failures
+            if perf_warnings:
+                record["performanceWarnings"] = perf_warnings
+            metrics_records.append(record)
+            print(
+                "metrics="
+                + json.dumps(
+                    record,
+                    ensure_ascii=False,
+                )
+            )
+            print(_summarize_primary(primary))
             if followups:
                 print("followups=" + json.dumps(followups, ensure_ascii=False))
         print()
@@ -659,6 +740,11 @@ def main() -> None:
         default=str(DEFAULT_HISTORY_DB),
         help="Agent SQLite history db used by --clear-history",
     )
+    parser.add_argument(
+        "--keep-response-text",
+        action="store_true",
+        help="store the full response text and thinking text in metrics-output for case-level evaluation",
+    )
     args = parser.parse_args()
 
     if args.session:
@@ -692,6 +778,7 @@ def main() -> None:
             response_timeout=args.response_timeout,
             metrics_output=args.metrics_output,
             history_db=args.history_db,
+            keep_response_text=args.keep_response_text,
         )
     )
 

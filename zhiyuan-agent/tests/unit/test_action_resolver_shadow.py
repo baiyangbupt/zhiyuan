@@ -44,3 +44,20 @@ def test_action_resolver_shadow_matches_sort_fast_route():
     assert shadow["shadowActionFamily"] == "sort_ordered_plan"
     assert shadow["shadowStage"] == "preview"
     assert shadow["actionFamilyMatch"] is True
+
+
+def test_action_resolver_shadow_matches_named_candidate_add():
+    decision = resolve_plan_fast_route("把广西师大统计加进来")
+
+    shadow = action_resolver_shadow_from_plan_fast_decision(
+        text="把广西师大统计加进来",
+        decision=decision,
+        planning_summary=_summary(),
+    )
+
+    assert shadow is not None
+    assert shadow["actualActionFamily"] == "add_units"
+    assert shadow["shadowActionFamily"] == "add_units"
+    assert shadow["shadowStage"] == "preview"
+    assert shadow["actionFamilyMatch"] is True
+    assert shadow["missingInputs"] == []

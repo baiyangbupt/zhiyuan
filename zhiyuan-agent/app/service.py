@@ -24,6 +24,7 @@ from app.agent.usage_tracker import UsageTracker
 from app.config import HistoryConfig
 from app.data.history_store import ChatHistoryStore
 from app.data.message_utils import pydantic_ai_messages_to_dicts
+from app.domain.career_slots import to_career_label
 from app.llm.client import LLMClient
 from app.resolver.action_resolver_shadow import action_resolver_shadow_from_plan_fast_decision
 from app.resolver.career_direction_fast_router import resolve_career_direction_fast_route
@@ -32,7 +33,10 @@ from app.resolver.major_compare_reply_renderer import (
     is_missing_weight_major_compare_result,
     render_missing_weight_major_compare_reply,
 )
+from app.resolver.major_intent_fast_router import resolve_major_intent_fast_route
 from app.resolver.plan_fast_router import resolve_plan_fast_route
+from app.resolver.plan_query_fast_router import resolve_plan_query_fast_route
+from app.schemas.tool_inputs import MajorIntentPreviewInput
 from app.schemas.user_profile import UserProfile
 from app.schemas.ws import WSResponse
 from app.sync.state_sync import PlanningStateSync
@@ -49,7 +53,9 @@ from app.tools.intent_state_tool import (
     update_volunteer_intent_state,
 )
 from app.tools.intent_preview_tool import analyze_current_career_direction
+from app.tools.intent_preview_tool import preview_current_major_intent_confirmation
 from app.tools.major_compare_tool import compare_majors
+from app.tools.plan_query_tool import query_volunteer_plan
 from app.tools.intent_response_tool import (
     parse_explore_followup_result,
     parse_intent_state_update_result,
@@ -159,6 +165,42 @@ def _as_int(value: Any, default: int = 0) -> int:
 
 def _log_conversation_turn_event(**fields: Any) -> None:
     log_event("conversation_turn_event", **fields)
+
+
+async def _safe_emit_progress(on_progress: ProgressCallback | None, hint: str) -> None:
+    if not on_progress or not hint:
+        return
+    try:
+        await on_progress(hint)
+    except Exception:
+        logger.debug("on_progress callback failed: hint=%s", hint, exc_info=True)
+
+
+def _plan_fast_route_execute_progress_hint(action_family: str | None, stage: str | None) -> str:
+    family = str(action_family or "").strip()
+    normalized_stage = str(stage or "").strip()
+    if family == "query_state":
+        return "正在整理当前方案的数量、梯度和风险..."
+    mutation_families = {
+        "sort_ordered_plan",
+        "move_unit",
+        "move_ordered_unit",
+        "remove_units",
+        "remove_ordered_unit",
+        "add_units",
+        "replace_units",
+    }
+    if family in mutation_families:
+        if normalized_stage == "preview":
+            return "正在生成这次调整的影响预览..."
+        return "正在按你的确认更新方案..."
+    if family in {"run_review", "review_plan"}:
+        return "正在检查当前方案的风险点..."
+    if family in {"generate_plan", "regenerate_order", "apply_compensation"}:
+        if normalized_stage == "preview":
+            return "正在整理这次方案调整的确认信息..."
+        return "正在生成并整理方案结果..."
+    return "正在整理方案结果..."
 
 
 def _llm_config_value(llm_client: LLMClient, field_name: str) -> str | None:
@@ -370,7 +412,7 @@ def build_runtime_history(
     )
 
 
-_SUPPORTED_WORKSPACE_ACTION_TARGETS = {"candidate", "ordered"}
+_SUPPORTED_WORKSPACE_ACTION_TARGETS = {"candidate", "ordered", "review"}
 
 
 def _dedupe_workspace_targets(targets: list[str]) -> list[str]:
@@ -393,6 +435,11 @@ _WORKSPACE_ACTION_COPY = {
         "title": "查看调整后的排序方案",
         "content": "已刷新排序方案，可以查看本次调整后的志愿列表和位置变化。",
         "actionText": "打开排序方案",
+    },
+    "review": {
+        "title": "查看方案审查结果",
+        "content": "已刷新方案审查，可以查看梯度、保底和风险项是否达标。",
+        "actionText": "打开审查结果",
     },
 }
 
@@ -710,6 +757,15 @@ def _normalize_pending_intent_reply(reply: str) -> str:
         return reply
     normalized = reply
     replacements = (
+        ("这个想法我这边已经记下并在参考了。", "这个想法我先整理成待确认内容。"),
+        ("当前已记录偏好", "待确认偏好"),
+        ("当前已记录排除", "待确认排除"),
+        ("当前已记录", "待确认"),
+        ("已记录偏好", "待确认偏好"),
+        ("已记录排除", "待确认排除"),
+        ("已记录", "待确认"),
+        ("已经记下并在参考", "先整理成待确认内容"),
+        ("已经记下", "先整理成待确认内容"),
         ("好的，我记下了你对", "我先把你对"),
         ("好的，我已经记下了你对", "我先把你对"),
         ("我记下了你对", "我先把你对"),
@@ -721,6 +777,11 @@ def _normalize_pending_intent_reply(reply: str) -> str:
     )
     for source, target in replacements:
         normalized = normalized.replace(source, target)
+    normalized = re.sub(r"[（(]\s*level[123]\s*[）)]", "", normalized)
+    normalized = normalized.replace("待确认偏好专业：", "待确认偏好方向：")
+    normalized = normalized.replace("待确认排除专业：", "待确认排除方向：")
+    normalized = normalized.replace("当前偏好专业：", "当前偏好方向：")
+    normalized = normalized.replace("当前排除专业：", "当前排除方向：")
     if normalized != reply and "确认" not in normalized:
         normalized = normalized.rstrip("。") + "。如果确认要按这个方向作为后续参考，你再回复确认。"
     return normalized
@@ -981,6 +1042,12 @@ def _extract_pending_plan_action(messages: list[Any] | None) -> dict[str, Any] |
                     user_turns_since_pending = 0
                     pending_calls.clear()
                 continue
+            if not is_preview_result and call_stage == "preview":
+                if effective_action_family in _PENDING_PLAN_ACTION_FAMILIES:
+                    latest_pending = None
+                    user_turns_since_pending = 0
+                    pending_calls.clear()
+                continue
             if not is_preview_result:
                 continue
             if effective_action_family not in _PENDING_PLAN_ACTION_FAMILIES:
@@ -1094,6 +1161,8 @@ def _sanitize_reply_for_user(reply: str) -> str:
     reply = re.sub(r'\n?\[LLM_INTERNAL\][^\n]*', '', reply)
     # 移除行内的 [LLM_INTERNAL] 标记
     reply = re.sub(r'\[LLM_INTERNAL\]\s*', '', reply)
+    # 移除旧方案引用里给模型/工具看的 @位置 标记，用户侧用自然序号和工作台定位。
+    reply = re.sub(r'@\d+\b', '', reply)
     return reply.strip()
 
 
@@ -1212,13 +1281,122 @@ def _direct_pending_intent_reply(result_text: str) -> str:
     return render_intent_state_update(result)
 
 
+def _append_unique_text(items: list[str], text: str) -> None:
+    value = str(text or "").strip()
+    if value and value not in items:
+        items.append(value)
+
+
+def _pending_intent_item_lines(cache_data: dict[str, Any]) -> list[str]:
+    if not isinstance(cache_data, dict):
+        return []
+
+    intent_mode = str(cache_data.get("intent_mode") or "preference").strip()
+    strict_constraint = intent_mode == "constraint"
+    lines: list[str] = []
+
+    major_intents = cache_data.get("major_intents") if isinstance(cache_data.get("major_intents"), dict) else {}
+    for key in ("level1", "level2", "level3"):
+        for name in major_intents.get(key) or []:
+            _append_unique_text(lines, f"把{name}作为后续优先参考的专业方向")
+    for key in ("negative_level1", "negative_level2", "negative_level3"):
+        for name in major_intents.get(key) or []:
+            _append_unique_text(
+                lines,
+                f"{'明确不考虑' if strict_constraint else '尽量降低优先级'}：{name}",
+            )
+
+    school_intents = cache_data.get("school_intents") if isinstance(cache_data.get("school_intents"), dict) else {}
+    for name in school_intents.get("colleges") or []:
+        _append_unique_text(lines, f"把{name}作为后续优先参考的院校")
+    for name in school_intents.get("negative_colleges") or []:
+        _append_unique_text(
+            lines,
+            f"{'明确不考虑' if strict_constraint else '尽量降低优先级'}：{name}",
+        )
+
+    city_intents = cache_data.get("city_intents") if isinstance(cache_data.get("city_intents"), dict) else {}
+    for key in ("province", "city"):
+        for name in city_intents.get(key) or []:
+            _append_unique_text(lines, f"把{name}作为后续优先参考的地域")
+    for key in ("negative_province", "negative_city"):
+        for name in city_intents.get(key) or []:
+            _append_unique_text(
+                lines,
+                f"{'明确不考虑' if strict_constraint else '尽量降低优先级'}：{name}",
+            )
+
+    career_intents = cache_data.get("career_intents") if isinstance(cache_data.get("career_intents"), dict) else {}
+    for value in career_intents.get("positive") or []:
+        _append_unique_text(lines, f"把{to_career_label(str(value))}作为后续优先参考的发展方向")
+    for value in career_intents.get("negative") or []:
+        _append_unique_text(
+            lines,
+            f"{'明确不考虑' if strict_constraint else '尽量降低优先级'}：{to_career_label(str(value))}",
+        )
+
+    return lines
+
+
+def _build_pending_intent_timeout_reply(cache_data: dict[str, Any]) -> str | None:
+    item_lines = _pending_intent_item_lines(cache_data)
+    if not item_lines:
+        return None
+
+    intent_mode = str(cache_data.get("intent_mode") or "preference").strip()
+    confirm_phrase = "确认这个要求" if intent_mode == "constraint" else "确认这个偏好"
+    lines = [
+        "我已经把这次提到的想法整理成待确认内容了，先把关键内容给你：",
+        "",
+        "**待确认内容**",
+    ]
+    lines.extend(f"- {line}" for line in item_lines[:8])
+    if len(item_lines) > 8:
+        lines.append(f"- 还有 {len(item_lines) - 8} 项相近内容")
+    lines.extend([
+        "",
+        "**下一步**",
+        f"如果确认要作为后续参考，直接回复“{confirm_phrase}”。确认前不会正式生效，也不会直接改动当前方案。",
+    ])
+    return _sanitize_reply_for_user(_normalize_user_facing_terms("\n".join(lines)))
+
+
+async def build_timeout_fallback_from_pending_intent_preview(
+    session_id: str,
+    user_prompt: str | None = None,
+) -> ChatServiceResponseEnvelope | None:
+    """Build a user-facing fallback when intent preview finished but final LLM timed out."""
+    try:
+        cache_result = await get_intent_change_cache(session_id)
+    except Exception:
+        logger.warning(
+            "Failed to load pending intent cache for timeout fallback: session_id=%s prompt=%s",
+            session_id,
+            user_prompt,
+            exc_info=True,
+        )
+        return None
+
+    raw_data = (cache_result or {}).get("data")
+    cache_data = raw_data.get("planEditCache") if isinstance(raw_data, dict) else None
+    if not isinstance(cache_data, dict) or not cache_data:
+        return None
+
+    reply = _build_pending_intent_timeout_reply(cache_data)
+    if not reply:
+        return None
+    return ChatServiceResponseEnvelope(primary=reply)
+
+
 def _should_guard_plan_reply(content: str) -> bool:
     return any(keyword in content for keyword in _PLAN_STYLE_GUARD_PROMPT_KEYWORDS)
 
 
 def _normalize_user_facing_terms(reply: str) -> str:
     """Remove internal product terms from user-facing replies."""
-    if not isinstance(reply, str) or "画像" not in reply:
+    if not isinstance(reply, str):
+        return reply
+    if "画像" not in reply and "level" not in reply:
         return reply
     replacements = (
         ("加入画像", "记成后续报考参考"),
@@ -1237,6 +1415,9 @@ def _normalize_user_facing_terms(reply: str) -> str:
     normalized = reply
     for source, target in replacements:
         normalized = normalized.replace(source, target)
+    normalized = re.sub(r"[（(]\s*level[123]\s*[）)]", "", normalized)
+    normalized = normalized.replace("待确认偏好专业：", "待确认偏好方向：")
+    normalized = normalized.replace("待确认排除专业：", "待确认排除方向：")
     return normalized
 
 
@@ -1838,6 +2019,7 @@ class ChatService:
             action_family = str(getattr(active_pending, "action_family", "") or "").strip()
             plan_payload = active_plan_payload_text
             tool_call_id = f"direct-{action_family or 'pending-plan'}-confirmation"
+            await _safe_emit_progress(on_progress, "正在按你的确认更新方案，完成后会刷新工作台...")
             tool_started_at = time.monotonic()
             result_text = await execute_plan_action(SimpleNamespace(deps=request_context), plan_payload)
             tool_duration_ms = int((time.monotonic() - tool_started_at) * 1000)
@@ -1919,6 +2101,7 @@ class ChatService:
 
         if active_pending_kind == "intent_change" and _is_pending_intent_confirmation(content):
             tool_call_id = "direct-pending-intent-confirmation"
+            await _safe_emit_progress(on_progress, "正在按你的确认更新后续参考偏好...")
             tool_started_at = time.monotonic()
             result_text = await update_volunteer_intent_state(
                 SimpleNamespace(deps=request_context),
@@ -2067,6 +2250,7 @@ class ChatService:
             plan_next_call_id = f"fast-plan-next-{fast_decision.action_family}"
             execute_call_id = f"fast-execute-{fast_decision.action_family}"
             try:
+                await _safe_emit_progress(on_progress, "正在读取当前方案并整理这次请求...")
                 plan_next_started_at = time.monotonic()
                 plan_model = await _plan_next_action_model(
                     SimpleNamespace(deps=request_context),
@@ -2079,6 +2263,10 @@ class ChatService:
                 )
                 plan_next_duration_ms = int((time.monotonic() - plan_next_started_at) * 1000)
                 plan_payload = json.dumps(plan_model.model_dump(), ensure_ascii=False)
+                await _safe_emit_progress(
+                    on_progress,
+                    _plan_fast_route_execute_progress_hint(fast_decision.action_family, plan_model.stage),
+                )
                 execute_started_at = time.monotonic()
                 result_text = await execute_plan_action(SimpleNamespace(deps=request_context), plan_payload)
                 execute_duration_ms = int((time.monotonic() - execute_started_at) * 1000)
@@ -2202,14 +2390,185 @@ class ChatService:
                     fast_decision.action_family,
                 )
 
+        plan_query_decision = resolve_plan_query_fast_route(content, batch=request_context.batch)
+        if plan_query_decision.matched:
+            route_decision = plan_query_decision.route_decision()
+            tool_call_id = "fast-query-volunteer-plan"
+            tool_started_at = time.monotonic()
+            tool_args = plan_query_decision.tool_args()
+            try:
+                await _safe_emit_progress(on_progress, "正在查当前方案和候选里的相关结果...")
+                tool_result_text = await query_volunteer_plan(
+                    SimpleNamespace(deps=request_context),
+                    **tool_args,
+                )
+                tool_duration_ms = int((time.monotonic() - tool_started_at) * 1000)
+                reply = _sanitize_reply_for_user(_normalize_user_facing_terms(str(tool_result_text or "").strip()))
+
+                new_messages = [
+                    ModelRequest(parts=[UserPromptPart(content=content)]),
+                    ModelResponse(
+                        parts=[
+                            ToolCallPart(
+                                tool_name="query_volunteer_plan",
+                                args=tool_args,
+                                tool_call_id=tool_call_id,
+                            )
+                        ],
+                        model_name="plan-query-fast-route",
+                    ),
+                    ModelRequest(
+                        parts=[
+                            ToolReturnPart(
+                                tool_name="query_volunteer_plan",
+                                content=tool_result_text,
+                                tool_call_id=tool_call_id,
+                            )
+                        ]
+                    ),
+                    ModelResponse(parts=[TextPart(content=reply)], model_name="plan-query-fast-route"),
+                ]
+                try:
+                    history_to_save = list(history or [])
+                    history_to_save.extend(new_messages)
+                    await self.history_store.save(session_id, history_to_save)
+                except Exception:
+                    logger.exception("Failed to save plan query fast route history: session_id=%s", session_id)
+                _log_conversation_turn_event(
+                    sessionId=session_id,
+                    userId=user_id,
+                    scene="plan",
+                    routingPath="plan_query_fast_route",
+                    routeDecision=route_decision,
+                    pendingType=None,
+                    actionFamily="query_volunteer_plan",
+                    resultKind="plan_local_query",
+                    modelProvider=_llm_config_value(self.llm_client, "provider"),
+                    modelName=_llm_config_value(self.llm_client, "model_name"),
+                    llmRequests=0,
+                    inputTokens=0,
+                    outputTokens=0,
+                    totalTokens=0,
+                    toolCallCount=1,
+                    totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
+                    llmDurationMs=0,
+                    toolDurationMs=tool_duration_ms,
+                    toolCalls=[
+                        {
+                            "name": "query_volunteer_plan",
+                            "durationMs": tool_duration_ms,
+                            "success": True,
+                            "scope": plan_query_decision.scope,
+                        }
+                    ],
+                    postProcessingApplied=[],
+                    status="success",
+                    errorType=None,
+                )
+                return reply
+            except Exception:
+                logger.exception(
+                    "Plan query fast route failed; falling back to full agent: session_id=%s args=%s",
+                    session_id,
+                    tool_args,
+                )
+
+        major_intent_decision = resolve_major_intent_fast_route(content, batch=request_context.batch)
+        if major_intent_decision.matched:
+            route_decision = major_intent_decision.route_decision()
+            tool_call_id = "fast-preview-major-intent"
+            tool_started_at = time.monotonic()
+            try:
+                await _safe_emit_progress(on_progress, "正在整理这个专业想法的影响，等你确认后才会记入偏好...")
+                major_intents = MajorIntentPreviewInput.model_validate(major_intent_decision.major_intents)
+                tool_result_text = await preview_current_major_intent_confirmation(
+                    SimpleNamespace(deps=request_context),
+                    major_intents=major_intents,
+                    intent_mode=major_intent_decision.intent_mode,  # type: ignore[arg-type]
+                )
+                tool_duration_ms = int((time.monotonic() - tool_started_at) * 1000)
+                reply = _normalize_pending_intent_reply(str(tool_result_text or "").strip())
+                reply = _sanitize_reply_for_user(_normalize_user_facing_terms(reply))
+
+                new_messages = [
+                    ModelRequest(parts=[UserPromptPart(content=content)]),
+                    ModelResponse(
+                        parts=[
+                            ToolCallPart(
+                                tool_name="preview_current_major_intent_confirmation",
+                                args={
+                                    "major_intents": major_intent_decision.major_intents,
+                                    "intent_mode": major_intent_decision.intent_mode,
+                                },
+                                tool_call_id=tool_call_id,
+                            )
+                        ],
+                        model_name="major-intent-fast-route",
+                    ),
+                    ModelRequest(
+                        parts=[
+                            ToolReturnPart(
+                                tool_name="preview_current_major_intent_confirmation",
+                                content=tool_result_text,
+                                tool_call_id=tool_call_id,
+                            )
+                        ]
+                    ),
+                    ModelResponse(parts=[TextPart(content=reply)], model_name="major-intent-fast-route"),
+                ]
+                try:
+                    history_to_save = list(history or [])
+                    history_to_save.extend(new_messages)
+                    await self.history_store.save(session_id, history_to_save)
+                except Exception:
+                    logger.exception("Failed to save major intent fast route history: session_id=%s", session_id)
+                _log_conversation_turn_event(
+                    sessionId=session_id,
+                    userId=user_id,
+                    scene="intent",
+                    routingPath="major_intent_fast_route",
+                    routeDecision=route_decision,
+                    pendingType=None,
+                    actionFamily="preview_major_intent",
+                    resultKind="intent_preview",
+                    modelProvider=_llm_config_value(self.llm_client, "provider"),
+                    modelName=_llm_config_value(self.llm_client, "model_name"),
+                    llmRequests=0,
+                    inputTokens=0,
+                    outputTokens=0,
+                    totalTokens=0,
+                    toolCallCount=1,
+                    totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
+                    llmDurationMs=0,
+                    toolDurationMs=tool_duration_ms,
+                    toolCalls=[
+                        {
+                            "name": "preview_current_major_intent_confirmation",
+                            "durationMs": tool_duration_ms,
+                            "success": True,
+                            "intentMode": major_intent_decision.intent_mode,
+                            "majorIntents": major_intent_decision.major_intents,
+                        }
+                    ],
+                    postProcessingApplied=[],
+                    status="success",
+                    errorType=None,
+                )
+                return reply
+            except Exception:
+                logger.exception(
+                    "Major intent fast route failed; falling back to full agent: session_id=%s major_intents=%s",
+                    session_id,
+                    major_intent_decision.major_intents,
+                )
+
         major_compare_decision = resolve_major_compare_fast_route(content, batch=request_context.batch)
         if major_compare_decision.matched:
             route_decision = major_compare_decision.route_decision()
             tool_call_id = "fast-compare-majors"
             tool_started_at = time.monotonic()
             try:
-                if on_progress:
-                    await on_progress("正在对比这几个专业的差异...")
+                await _safe_emit_progress(on_progress, "正在对比这几个专业的差异...")
                 tool_result_text = await compare_majors(
                     SimpleNamespace(deps=request_context),
                     major_compare_decision.major_name1,
@@ -2309,8 +2668,7 @@ class ChatService:
             tool_call_id = "fast-analyze-current-career-direction"
             tool_started_at = time.monotonic()
             try:
-                if on_progress:
-                    await on_progress("正在看这条方向和当前方案的承接情况...")
+                await _safe_emit_progress(on_progress, "正在看这条方向和当前方案的承接情况...")
                 tool_result_text = await analyze_current_career_direction(SimpleNamespace(deps=request_context))
                 tool_duration_ms = int((time.monotonic() - tool_started_at) * 1000)
                 reply = _sanitize_reply_for_user(_normalize_user_facing_terms(str(tool_result_text or "").strip()))
@@ -2472,8 +2830,6 @@ class ChatService:
         workspace_refresh_targets = _tool_calls_include_plan_workspace_refresh(new_messages)
         if not new_messages:
             workspace_refresh_targets = _tool_calls_include_plan_workspace_refresh(all_messages)
-        if not workspace_refresh_targets and intent_preview_used_current_turn:
-            workspace_refresh_targets = ["candidate"]
 
         workspace_view_targets = _tool_calls_include_plan_view_targets(
             new_messages if new_messages else all_messages

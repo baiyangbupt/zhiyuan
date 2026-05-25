@@ -838,6 +838,129 @@ async def _resolve_ordered_volunteer_refs(
     return resolved, missing
 
 
+async def _load_ordered_items_by_id(ctx: RunContext[RequestContext]) -> dict[str, dict[str, Any]]:
+    try:
+        result = await _get_planning_ordered_plan_request(ctx.deps.sessionid)
+    except Exception:
+        logger.warning("load ordered items for display failed: session_id=%s", ctx.deps.sessionid, exc_info=True)
+        return {}
+    if result.get("code") != 0:
+        return {}
+    items = (result.get("data") or {}).get("items") or []
+    item_by_id: dict[str, dict[str, Any]] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        volunteer_id = str(item.get("volunteerId") or "").strip()
+        if volunteer_id:
+            item_by_id[volunteer_id] = item
+    return item_by_id
+
+
+def _item_display_name(item: dict[str, Any] | None, fallback: str = "这条志愿") -> str:
+    item = item or {}
+    school_name = str(item.get("schoolName") or "").strip()
+    major_name = str(item.get("majorName") or "").strip()
+    source_parts = [part for part in (school_name, _major_base_name(major_name) or major_name) if part]
+    return "-".join(source_parts) if source_parts else fallback
+
+
+async def _build_move_unit_preview_summary(
+    ctx: RunContext[RequestContext],
+    plan_model: PlanActionPlan,
+    resolved_ids: list[str],
+) -> tuple[str, dict[str, Any]]:
+    atomic = _first_atomic_action(plan_model)
+    target_position = getattr(atomic, "target_position", None) if atomic is not None else None
+    target_text = f"第{int(target_position)}位" if target_position is not None else "指定位置"
+    item_by_id = await _load_ordered_items_by_id(ctx)
+    item = item_by_id.get(resolved_ids[0]) if resolved_ids else None
+    if item:
+        current_position = item.get("position")
+        source_text = _item_display_name(item)
+        position_text = f"当前在第{int(current_position)}位，" if current_position is not None else ""
+        summary = f"已定位到 {source_text}，{position_text}会移动到{target_text}。"
+    else:
+        summary = f"已定位到当前方案中的指定志愿，会移动到{target_text}。"
+    facts = {
+        "resolved_apply_payload": _build_resolved_apply_payload(
+            plan_model,
+            volunteer_ids=resolved_ids,
+        )
+    }
+    return summary, facts
+
+
+async def _build_remove_units_preview_summary(
+    ctx: RunContext[RequestContext],
+    plan_model: PlanActionPlan,
+    resolved_ids: list[str],
+) -> tuple[str, dict[str, Any]]:
+    item_by_id = await _load_ordered_items_by_id(ctx)
+    labels = [
+        _item_display_name(item_by_id.get(volunteer_id))
+        for volunteer_id in resolved_ids[:3]
+        if volunteer_id
+    ]
+    if not labels:
+        summary = "已定位到当前方案中的指定志愿，会从当前方案中移出。"
+    elif len(resolved_ids) == 1:
+        summary = f"已定位到当前方案里的 {labels[0]}，会从当前方案中移出。"
+    else:
+        extra_text = f"等 {len(resolved_ids)} 条志愿" if len(resolved_ids) > len(labels) else f"{len(resolved_ids)} 条志愿"
+        summary = f"已定位到当前方案里的 {'、'.join(labels)}，会从当前方案中移出，共 {extra_text}。"
+    facts = {
+        "resolved_apply_payload": _build_resolved_apply_payload(
+            plan_model,
+            volunteer_ids=resolved_ids,
+        )
+    }
+    return summary, facts
+
+
+async def _load_candidate_items_by_id(
+    ctx: RunContext[RequestContext],
+    refs: list[str],
+) -> dict[str, dict[str, Any]]:
+    items_by_id: dict[str, dict[str, Any]] = {}
+    for ref in refs:
+        for item in await _candidate_items_for_ref(ctx, ref):
+            if not isinstance(item, dict):
+                continue
+            volunteer_id = str(item.get("volunteerId") or "").strip()
+            if volunteer_id and volunteer_id not in items_by_id:
+                items_by_id[volunteer_id] = item
+    return items_by_id
+
+
+async def _build_add_units_preview_summary(
+    ctx: RunContext[RequestContext],
+    plan_model: PlanActionPlan,
+    refs: list[str],
+    resolved_ids: list[str],
+) -> tuple[str, dict[str, Any]]:
+    item_by_id = await _load_candidate_items_by_id(ctx, refs)
+    labels = [
+        _item_display_name(item_by_id.get(volunteer_id), fallback="这条候选志愿")
+        for volunteer_id in resolved_ids[:3]
+        if volunteer_id
+    ]
+    if not labels:
+        summary = "已在候选里定位到指定志愿，会加入当前方案。"
+    elif len(resolved_ids) == 1:
+        summary = f"已在候选里定位到 {labels[0]}，会加入当前方案。"
+    else:
+        extra_text = f"等 {len(resolved_ids)} 条候选志愿" if len(resolved_ids) > len(labels) else f"{len(resolved_ids)} 条候选志愿"
+        summary = f"已在候选里定位到 {'、'.join(labels)}，会加入当前方案，共 {extra_text}。"
+    facts = {
+        "resolved_apply_payload": _build_resolved_apply_payload(
+            plan_model,
+            volunteer_ids=resolved_ids,
+        )
+    }
+    return summary, facts
+
+
 def _ordered_ref_resolution_message(missing_text: str, action_label: str) -> str:
     return (
         f"我还没有定位到这些志愿在当前方案里的真实编号：{missing_text}。"
@@ -2110,6 +2233,18 @@ async def _execute_plan_action_model(
                     reply_focus=["missing_inputs", "needs_volunteer_selection"],
                     next_step_hints=["先定位当前方案里的真实 volunteerId，再生成可确认的移除预览。"],
                 )
+            preview_summary, preview_facts = await _build_remove_units_preview_summary(ctx, plan_model, resolved_ids)
+            return PlanExecutionResult(
+                applied=False,
+                action_family=plan_model.action_family,
+                stage=plan_model.stage,
+                result_kind="preview_only",
+                context_summary=plan_model.context_summary,
+                summary=_with_confirmation_hint(preview_summary),
+                reply_focus=["preview_only", "confirmation_required"],
+                next_step_hints=["先向用户说明已定位到哪条志愿；用户确认后，再执行移出方案动作。"],
+                facts=_facts_with_planning_version(preview_facts, ctx),
+            )
 
     if plan_model.stage == "preview" and plan_model.action_family == "move_unit":
         atomic = plan_model.atomic_actions[0] if plan_model.atomic_actions else None
@@ -2128,6 +2263,66 @@ async def _execute_plan_action_model(
                     reply_focus=["missing_inputs", "needs_volunteer_selection"],
                     next_step_hints=["先定位当前方案里的真实 volunteerId，再生成可确认的位置调整预览。"],
                 )
+            preview_summary, preview_facts = await _build_move_unit_preview_summary(ctx, plan_model, resolved_ids)
+            return PlanExecutionResult(
+                applied=False,
+                action_family=plan_model.action_family,
+                stage=plan_model.stage,
+                result_kind="preview_only",
+                context_summary=plan_model.context_summary,
+                summary=_with_confirmation_hint(preview_summary),
+                reply_focus=["preview_only", "confirmation_required"],
+                next_step_hints=["先向用户说明已定位到哪条志愿和目标位置；用户确认后，再执行移动方案动作。"],
+                facts=_facts_with_planning_version(preview_facts, ctx),
+            )
+
+    if plan_model.stage == "preview" and plan_model.action_family == "add_units":
+        atomic = plan_model.atomic_actions[0] if plan_model.atomic_actions else None
+        refs = list(atomic.volunteer_ids or []) if atomic else []
+        if refs:
+            existing_ids: list[str] = []
+            if any(any(ord(char) > 127 for char in str(ref or "")) for ref in refs):
+                existing_ids, _ = await _resolve_ordered_volunteer_refs(ctx, refs)
+            resolved_ids, missing_refs = await _resolve_candidate_volunteer_refs(ctx, refs)
+            resolved_ids = [volunteer_id for volunteer_id in resolved_ids if volunteer_id not in set(existing_ids)]
+            if existing_ids and not resolved_ids and not missing_refs:
+                refs_text = "、".join(refs[:5])
+                return PlanExecutionResult(
+                    applied=False,
+                    action_family=plan_model.action_family,
+                    stage=plan_model.stage,
+                    result_kind="no_change",
+                    context_summary=plan_model.context_summary,
+                    summary=f"{refs_text} 已经在当前方案中，无需重复加入。",
+                    reply_focus=["already_in_plan"],
+                    next_step_hints=["告诉用户目标已经在方案中，不要说已新增。可提示继续排序或调整。"],
+                    facts=_facts_with_planning_version({}, ctx),
+                )
+            if missing_refs or not resolved_ids:
+                missing_text = "、".join(missing_refs[:5]) if missing_refs else "要加入的候选志愿"
+                return PlanExecutionResult(
+                    applied=False,
+                    action_family=plan_model.action_family,
+                    stage=plan_model.stage,
+                    result_kind="error",
+                    context_summary=plan_model.context_summary,
+                    summary=_candidate_ref_resolution_message(missing_text),
+                    reply_focus=["missing_inputs", "needs_candidate_selection"],
+                    next_step_hints=["先定位候选池里的真实 volunteerId，再生成可确认的加入预览。"],
+                    facts=_facts_with_planning_version({}, ctx),
+                )
+            preview_summary, preview_facts = await _build_add_units_preview_summary(ctx, plan_model, refs, resolved_ids)
+            return PlanExecutionResult(
+                applied=False,
+                action_family=plan_model.action_family,
+                stage=plan_model.stage,
+                result_kind="preview_only",
+                context_summary=plan_model.context_summary,
+                summary=_with_confirmation_hint(preview_summary),
+                reply_focus=["preview_only", "confirmation_required"],
+                next_step_hints=["先向用户说明将要加入哪些候选；用户确认后，再执行加入方案动作。"],
+                facts=_facts_with_planning_version(preview_facts, ctx),
+            )
 
     if plan_model.stage in {"analyze", "preview"}:
         preview_summary = plan_model.preview_summary or "当前阶段仅分析或预览，不执行实际改动。"

@@ -10,6 +10,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, ToolCallPart, ToolReturnPart, UserPromptPart
 
 from app.data.history_store import ChatHistoryStore
+from app.resolver.career_direction_fast_router import resolve_career_direction_fast_route
+from app.resolver.major_compare_fast_router import resolve_major_compare_fast_route
+from app.resolver.major_intent_fast_router import resolve_major_intent_fast_route
+from app.resolver.plan_fast_router import resolve_plan_fast_route
+from app.resolver.plan_query_fast_router import resolve_plan_query_fast_route
 from app.service import ChatService, ChatServiceResponseEnvelope
 
 MAINLINE_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_mainline_cases.json"
@@ -79,6 +84,34 @@ def _build_service(tmp_path, agent: _ScenarioAgent) -> ChatService:
     client.model_settings = {}
     with patch("app.service.ChatAgent", return_value=agent):
         return ChatService(client, store)
+
+
+def test_release_303_fast_router_priority_matrix_prevents_cross_layer_intercepts():
+    def resolved_route(prompt: str) -> str:
+        if resolve_plan_fast_route(prompt).matched:
+            return "plan"
+        if resolve_plan_query_fast_route(prompt).matched:
+            return "plan_query"
+        if resolve_major_intent_fast_route(prompt).matched:
+            return "major_intent"
+        if resolve_major_compare_fast_route(prompt).matched:
+            return "major_compare"
+        if resolve_career_direction_fast_route(prompt).matched:
+            return "career_direction"
+        return "full_agent"
+
+    cases = {
+        "看看现在的方案，给我一个结构化一点的结论": "plan",
+        "当前方案里有没有生物工程": "plan_query",
+        "青岛城市学院相关专业是不是有多个，先帮我判断一下，不要直接改方案": "plan_query",
+        "我倾向法学和财政学，但护理不要": "major_intent",
+        "法学和财政学哪个更适合普通家庭女生，先只分析不要记偏好": "major_compare",
+        "当前方案对体制内稳定就业方向承接得怎么样，先不要改方案": "career_direction",
+        "删掉山东英才学院的国际商务，然后从候选里再补一个稳档": "full_agent",
+    }
+
+    for prompt, expected_route in cases.items():
+        assert resolved_route(prompt) == expected_route
 
 
 def _load_mainline_cases() -> list[dict]:
@@ -526,6 +559,7 @@ def test_release_303_effect_perf_cases_treat_quality_as_first_class_gate():
         "readonly_no_workspace_card",
         "readonly_no_pending_intent",
         "no_pending_guard",
+        "intent_progress",
     }
     assert required_tags.issubset(coverage)
 
@@ -540,6 +574,8 @@ def test_release_303_effect_perf_cases_treat_quality_as_first_class_gate():
             assert step.get("prompt")
             assert step.get("assertContains") or step.get("assertContainsAny")
             assert banned_terms.intersection(set(step.get("assertNotContains") or [])) == banned_terms
+            if "assertThinkingNotContains" in step:
+                assert banned_terms.intersection(set(step.get("assertThinkingNotContains") or [])) == banned_terms
             assert step.get("warnElapsedSeconds") or step.get("maxElapsedSeconds")
 
     prompts = "\n".join(step["prompt"] for step in all_steps)
@@ -548,6 +584,10 @@ def test_release_303_effect_perf_cases_treat_quality_as_first_class_gate():
     assert "按院校层次排序" in prompts
     assert "先不要改方案" in prompts
     assert "先只分析不要记偏好" in prompts
+    assert "确认这个偏好" in prompts
+    assert any(step.get("assertThinkingContains") for step in all_steps)
+    assert any("正在按你的确认更新方案" in (step.get("assertThinkingContains") or []) for step in all_steps)
+    assert any("正在按你的确认更新后续参考偏好" in (step.get("assertThinkingContains") or []) for step in all_steps)
 
 
 def test_mainline_dialog_intent_preview_then_plan_status_does_not_reopen_candidate_workspace(tmp_path):
@@ -595,13 +635,13 @@ def test_mainline_dialog_intent_preview_then_plan_status_does_not_reopen_candida
         patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})),
         patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})),
         patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})),
+        patch("app.service.resolve_major_intent_fast_route", return_value=MagicMock(matched=False)),
     ):
         first = _run(service.handle_message("session-mainline-57", "user-57", "想学网络与新媒体"))
         second = _run(service.handle_message("session-mainline-57", "user-57", "现在方案怎么样"))
 
-    assert isinstance(first, ChatServiceResponseEnvelope)
-    assert first.primary.startswith("我先把网络与新媒体整理成待确认偏好")
-    assert _workspace_targets(first) == ["candidate"]
+    assert not isinstance(first, ChatServiceResponseEnvelope)
+    assert first.startswith("我先把网络与新媒体整理成待确认偏好")
     assert not isinstance(second, ChatServiceResponseEnvelope)
     assert "45/45" in second
     assert "冲8 / 稳18 / 保19" in second
@@ -640,13 +680,13 @@ def test_mainline_dialog_cross_border_ecommerce_uses_full_major_name_and_candida
         patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})),
         patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})),
         patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})),
+        patch("app.service.resolve_major_intent_fast_route", return_value=MagicMock(matched=False)),
     ):
         reply = _run(service.handle_message("session-mainline-cross-border", "user-57", "想学跨境电商"))
 
-    assert isinstance(reply, ChatServiceResponseEnvelope)
-    assert "跨境电子商务" in reply.primary
-    assert "画像" not in reply.primary
-    assert _workspace_targets(reply) == ["candidate"]
+    assert not isinstance(reply, ChatServiceResponseEnvelope)
+    assert "跨境电子商务" in reply
+    assert "画像" not in reply
     assert agent.calls[0]["user_prompt"] == "想学跨境电商"
 
 
@@ -722,19 +762,20 @@ def test_mainline_dialog_negative_accounting_then_confirm_plan_adjustment_uses_m
         patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})),
         patch("app.service.get_intent_change_cache", AsyncMock(return_value={"data": {"planEditCache": None}})),
         patch("app.service.execute_plan_action", AsyncMock(return_value=execution_result)),
+        patch("app.service.resolve_major_intent_fast_route", return_value=MagicMock(matched=False)),
     ):
         intent_reply = _run(service.handle_message("session-mainline-adjust", "user-57", "不想学会计"))
         preview_reply = _run(service.handle_message("session-mainline-adjust", "user-57", "那帮我替换掉"))
         apply_reply = _run(service.handle_message("session-mainline-adjust", "user-57", "确认"))
 
-    assert isinstance(intent_reply, ChatServiceResponseEnvelope)
-    assert _workspace_targets(intent_reply) == ["candidate"]
+    assert not isinstance(intent_reply, ChatServiceResponseEnvelope)
+    assert "待确认排除要求" in intent_reply
     assert not isinstance(preview_reply, ChatServiceResponseEnvelope)
     assert "确认后才会改动当前方案" in preview_reply
     assert isinstance(apply_reply, ChatServiceResponseEnvelope)
     assert apply_reply.primary.startswith("已移出不匹配志愿")
     assert "跨境电子商务" in apply_reply.primary
-    assert _workspace_targets(apply_reply) == ["ordered"]
+    assert _workspace_targets(apply_reply) == ["ordered", "review"]
     assert len(agent.calls) == 2
     assert agent.calls[1]["pending_plan_action"] is None
 
@@ -775,9 +816,10 @@ def test_mainline_dialog_review_result_keeps_informative_summary_and_review_work
     ):
         reply = _run(service.handle_message("session-mainline-review", "user-57", "帮我审查一下"))
 
-    assert isinstance(reply, str)
-    assert "45/45" in reply
-    assert "冲8 / 稳18 / 保19" in reply
-    assert "风险0项" in reply
-    assert "提醒" in reply
-    assert len(reply) > 60
+    assert isinstance(reply, ChatServiceResponseEnvelope)
+    assert "45/45" in reply.primary
+    assert "冲8 / 稳18 / 保19" in reply.primary
+    assert "风险0项" in reply.primary
+    assert "提醒" in reply.primary
+    assert len(reply.primary) > 60
+    assert _workspace_targets(reply) == ["review"]

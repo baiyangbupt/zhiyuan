@@ -353,6 +353,8 @@ async def test_query_volunteer_plan_falls_back_to_candidate_opportunities_when_p
     assert "当前排序方案里暂时没有命中“生物工程”" in result
     assert "候选里共命中了 2 条和“生物工程”相关的机会" in result
     assert "北京农学院(03)-生物工程" in result
+    assert "id=" not in result
+    assert "volunteerId" not in result
 
 
 @pytest.mark.asyncio
@@ -381,6 +383,7 @@ async def test_query_volunteer_plan_uses_candidate_scope_when_explicit():
         result = await query_volunteer_plan(_ctx(), "候选里还有什么生物工程")
 
     assert "候选里共命中了 1 条和“生物工程”相关的机会" in result
+    assert "id=" not in result
     ordered_mock.assert_not_awaited()
     draft_mock.assert_not_awaited()
     candidate_mock.assert_awaited_once()

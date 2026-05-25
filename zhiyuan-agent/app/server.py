@@ -18,6 +18,7 @@ from app.schemas import WSMessage, WSResponse
 from app.service import (
     ChatService,
     ChatServiceResponseEnvelope,
+    build_timeout_fallback_from_pending_intent_preview,
     build_timeout_fallback_from_recent_plan_execution,
 )
 
@@ -199,6 +200,11 @@ async def _handle_ws_loop(ws: WebSocket, service: ChatService):
                 msg.session_id,
                 msg.content,
             )
+            if not fallback:
+                fallback = await build_timeout_fallback_from_pending_intent_preview(
+                    msg.session_id,
+                    msg.content,
+                )
             if fallback:
                 followup_responses = list(fallback.followups or [])
                 primary = fallback.primary
@@ -452,6 +458,11 @@ async def ws_chat_compat(ws: WebSocket, tenant_id: str, bot_id: str):
                     msg.session_id,
                     msg.content,
                 )
+                if not fallback:
+                    fallback = await build_timeout_fallback_from_pending_intent_preview(
+                        msg.session_id,
+                        msg.content,
+                    )
                 if fallback:
                     followup_responses = list(fallback.followups or [])
                     primary = fallback.primary

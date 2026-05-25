@@ -219,6 +219,19 @@ def test_summarize_turn_observability_counts_plain_text_tool_returns():
     assert observed["toolCalls"][0]["name"] == "compare_majors"
 
 
+def test_followup_summary_extracts_targets_and_refresh_flags():
+    followups = [
+        {"content": {"targetView": "ordered", "refresh": True}},
+        {"content": {"targetView": "review", "refresh": False}},
+        {"content": {"targetView": "ordered", "refresh": True}},
+    ]
+
+    targets, refreshes = runner._followup_summary(followups)
+
+    assert targets == ["ordered", "review"]
+    assert refreshes == [True, False, True]
+
+
 def test_content_assertions_reject_followups_when_disallowed():
     violations = runner._check_content_assertions(
         "当前没有上一轮待确认的方案动作。",
@@ -229,6 +242,53 @@ def test_content_assertions_reject_followups_when_disallowed():
     )
 
     assert any("assertNoFollowups FAILED" in item for item in violations)
+
+
+def test_content_assertions_support_thinking_messages():
+    violations = runner._check_content_assertions(
+        "会把第2个志愿移动到第4位。需要你确认后才会执行。",
+        [],
+        {
+            "prompt": "把第2个志愿移到第4位",
+            "assertThinkingContains": ["正在读取当前方案并整理这次请求", "正在生成这次调整的影响预览"],
+            "assertThinkingNotContains": ["payload"],
+        },
+        "case-progress",
+        "17",
+        thinking_text="正在读取当前方案并整理这次请求...\n正在生成这次调整的影响预览...",
+    )
+
+    assert violations == []
+
+
+def test_content_assertions_report_missing_thinking_message():
+    violations = runner._check_content_assertions(
+        "会把第2个志愿移动到第4位。需要你确认后才会执行。",
+        [],
+        {"prompt": "把第2个志愿移到第4位", "assertThinkingContains": ["正在生成这次调整的影响预览"]},
+        "case-progress",
+        "17",
+        thinking_text="正在读取当前方案并整理这次请求...",
+    )
+
+    assert any("assertThinkingContains FAILED" in item for item in violations)
+
+
+def test_case_metrics_can_store_response_text_when_enabled():
+    record = {
+        "case": "case-a",
+        "sessionId": "17",
+        "prompt": "看看现在的方案",
+        "elapsedMs": 1234,
+        "primaryMessages": 2,
+        "thinkingMessages": 1,
+        "followupMessages": 0,
+        "responseText": "方案已经有了。",
+        "thinkingText": "正在读取当前方案并整理这次请求...",
+    }
+
+    assert record["responseText"].startswith("方案已经有了")
+    assert record["thinkingText"].startswith("正在读取")
 
 
 def test_performance_assertions_support_warning_and_hard_budget():

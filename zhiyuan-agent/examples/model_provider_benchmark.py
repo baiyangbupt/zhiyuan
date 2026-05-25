@@ -11,6 +11,7 @@ import argparse
 import asyncio
 import json
 import os
+import sqlite3
 import statistics
 import subprocess
 import sys
@@ -29,6 +30,7 @@ DEFAULT_WS_PATH = "/gaotu-assistant-agent/plus/chat/1/bot/test/do"
 DEFAULT_USER_ID = "model-benchmark-user"
 DEFAULT_DIRECT_RUNS = 3
 DEFAULT_AGENT_RUNS = 1
+DEFAULT_HISTORY_DB = Path(__file__).resolve().parents[1] / "data" / "chat_history.db"
 
 
 @dataclass
@@ -260,6 +262,30 @@ def _case_steps(case: dict[str, Any]) -> list[dict[str, Any]]:
     return steps
 
 
+def _case_session_ids(cases: list[dict[str, Any]]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for case in cases:
+        session_id = str(case.get("sessionId") or "")
+        if not session_id or session_id in seen:
+            continue
+        seen.add(session_id)
+        result.append(session_id)
+    return result
+
+
+def _clear_history(db_path: Path, session_ids: list[str]) -> int:
+    if not session_ids or not db_path.exists():
+        return 0
+    with sqlite3.connect(db_path) as conn:
+        cursor = conn.executemany(
+            "DELETE FROM chat_session_history WHERE session_id = ?",
+            [(session_id,) for session_id in session_ids],
+        )
+        conn.commit()
+    return cursor.rowcount if cursor.rowcount is not None else 0
+
+
 def _check_step_assertions(text: str, followups: list[dict[str, Any]], step: dict[str, Any]) -> list[str]:
     violations: list[str] = []
     lower_text = text.lower()
@@ -379,7 +405,13 @@ async def _wait_for_agent_ready(url: str, timeout: float) -> None:
     raise TimeoutError(f"agent did not become ready within {timeout}s: {docs_url}")
 
 
-def _start_agent(provider: ProviderConfig, port: int) -> subprocess.Popen[str]:
+def _start_agent(
+    provider: ProviderConfig,
+    host: str,
+    port: int,
+    *,
+    log_dir: str | None = None,
+) -> tuple[subprocess.Popen[str], Path | None]:
     env = provider.agent_env()
     cmd = [
         sys.executable,
@@ -387,18 +419,27 @@ def _start_agent(provider: ProviderConfig, port: int) -> subprocess.Popen[str]:
         "uvicorn",
         "app.server:app",
         "--host",
-        "0.0.0.0",
+        host,
         "--port",
         str(port),
     ]
-    return subprocess.Popen(
+    log_handle = None
+    log_path: Path | None = None
+    if log_dir:
+        log_path = Path(log_dir) / f"model-provider-agent-{provider.name}-{port}.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_handle = log_path.open("w", encoding="utf-8")
+    process = subprocess.Popen(
         cmd,
         cwd=Path(__file__).resolve().parents[1],
         env=env,
         text=True,
-        stdout=subprocess.DEVNULL,
+        stdout=log_handle or subprocess.DEVNULL,
         stderr=subprocess.STDOUT,
     )
+    if log_handle is not None:
+        log_handle.close()
+    return process, log_path
 
 
 async def _run_agent_for_provider(
@@ -410,6 +451,8 @@ async def _run_agent_for_provider(
     runs: int,
     open_timeout: float,
     response_timeout: float,
+    keep_response_text: bool,
+    keep_followups: bool,
 ) -> dict[str, Any]:
     provider_result: dict[str, Any] = {
         "provider": provider.name,
@@ -440,9 +483,9 @@ async def _run_agent_for_provider(
                         list(measured.get("followups") or []),
                         step,
                     )
-                    if not step.get("keepFullText"):
+                    if not keep_response_text and not step.get("keepFullText"):
                         measured.pop("text", None)
-                    if not step.get("keepFollowups"):
+                    if not keep_followups and not step.get("keepFollowups"):
                         measured.pop("followups", None)
                     step_record.update(measured)
                 except Exception as exc:
@@ -464,23 +507,47 @@ async def run_agent_benchmark(
     cases_path: str,
     *,
     start_agent: bool,
+    agent_host: str,
     agent_port: int,
+    agent_log_dir: str | None,
     agent_url: str | None,
     user_id: str,
     runs: int,
     open_timeout: float,
     response_timeout: float,
     startup_timeout: float,
+    keep_response_text: bool,
+    keep_followups: bool,
+    clear_history: bool,
+    history_db: str,
 ) -> list[dict[str, Any]]:
     cases = _load_cases(cases_path)
+    session_ids = _case_session_ids(cases)
     results: list[dict[str, Any]] = []
     for provider in providers:
         process: subprocess.Popen[str] | None = None
+        log_path: Path | None = None
         provider_agent_url = agent_url or f"ws://127.0.0.1:{agent_port}{DEFAULT_WS_PATH}"
         try:
+            if clear_history:
+                deleted = _clear_history(Path(history_db), session_ids)
+                print(
+                    "[agent] cleared history provider={provider} db={db} sessions={sessions} deleted={deleted}".format(
+                        provider=provider.name,
+                        db=history_db,
+                        sessions=",".join(session_ids),
+                        deleted=deleted,
+                    )
+                )
             if start_agent:
-                process = _start_agent(provider, agent_port)
-                await _wait_for_agent_ready(provider_agent_url, startup_timeout)
+                process, log_path = _start_agent(provider, agent_host, agent_port, log_dir=agent_log_dir)
+                try:
+                    await _wait_for_agent_ready(provider_agent_url, startup_timeout)
+                except Exception:
+                    if log_path and log_path.exists():
+                        print(f"[agent-startup-log] provider={provider.name} log={log_path}")
+                        print(log_path.read_text(encoding="utf-8", errors="replace")[-4000:])
+                    raise
             result = await _run_agent_for_provider(
                 provider,
                 cases,
@@ -489,6 +556,8 @@ async def run_agent_benchmark(
                 runs=runs,
                 open_timeout=open_timeout,
                 response_timeout=response_timeout,
+                keep_response_text=keep_response_text,
+                keep_followups=keep_followups,
             )
             results.append(result)
         finally:
@@ -566,13 +635,19 @@ async def async_main(args: argparse.Namespace) -> None:
             providers,
             args.cases,
             start_agent=args.start_agent,
+            agent_host=args.agent_host,
             agent_port=args.agent_port,
+            agent_log_dir=args.agent_log_dir,
             agent_url=args.agent_url,
             user_id=args.user_id,
             runs=args.agent_runs,
             open_timeout=args.open_timeout,
             response_timeout=args.response_timeout,
             startup_timeout=args.startup_timeout,
+            keep_response_text=args.keep_response_text,
+            keep_followups=args.keep_followups,
+            clear_history=args.clear_history,
+            history_db=args.history_db,
         )
         output["agent"] = agent_results
         output["agent_summary"] = _summarize_agent(agent_results)
@@ -592,11 +667,17 @@ def main() -> None:
     parser.add_argument("--agent-runs", type=int, default=DEFAULT_AGENT_RUNS)
     parser.add_argument("--agent-url", help="existing compat websocket URL; ignored when --start-agent uses --agent-port")
     parser.add_argument("--start-agent", action="store_true", help="start one temporary agent process for each provider")
+    parser.add_argument("--agent-host", default="127.0.0.1", help="host used by --start-agent")
     parser.add_argument("--agent-port", type=int, default=8100)
+    parser.add_argument("--agent-log-dir", default="/private/tmp", help="write temporary agent startup logs here when --start-agent is used")
     parser.add_argument("--user-id", default=DEFAULT_USER_ID)
     parser.add_argument("--open-timeout", type=float, default=30)
     parser.add_argument("--response-timeout", type=float, default=120)
     parser.add_argument("--startup-timeout", type=float, default=45)
+    parser.add_argument("--keep-response-text", action="store_true", help="keep full agent replies in output JSON")
+    parser.add_argument("--keep-followups", action="store_true", help="keep full followup messages in output JSON")
+    parser.add_argument("--clear-history", action="store_true", help="clear local agent chat history for case sessions before each provider")
+    parser.add_argument("--history-db", default=str(DEFAULT_HISTORY_DB), help="local agent SQLite history DB")
     args = parser.parse_args()
     if args.direct_only and args.agent_only:
         raise SystemExit("--direct-only and --agent-only cannot be used together")

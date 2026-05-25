@@ -62,6 +62,9 @@ def intent_frame_from_plan_fast_decision(
     elif action_family == "remove_units":
         verb = "remove"
         target.volunteer_refs = list(decision.volunteer_ids or [])
+    elif action_family == "add_units":
+        verb = "add"
+        target.volunteer_refs = list(decision.volunteer_ids or [])
     elif action_family == "move_ordered_unit":
         verb = "move"
         target.unit_refs = _ordered_unit_refs(decision)

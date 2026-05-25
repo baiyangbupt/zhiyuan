@@ -16,11 +16,32 @@ def is_missing_weight_major_compare_result(result_text: str) -> bool:
     return "暂时没有拿到当前会话可用的个性化量化权重数据" in str(result_text or "")
 
 
-def _format_score_detail(score_detail: ScoreDetail | None) -> str:
+def _latest_user_text(request_context: RequestContext) -> str:
+    for item in reversed(request_context.chat_history or []):
+        if str(item.get("role") or "") == "user":
+            return str(item.get("content") or "").strip()
+    return ""
+
+
+def _prompt_context_parts(user_text: str) -> list[str]:
+    parts: list[str] = []
+    if "普通家庭" in user_text:
+        parts.append("普通家庭")
+    if "女生" in user_text or "女孩" in user_text or "女孩子" in user_text:
+        parts.append("女生")
+    elif "男生" in user_text or "男孩" in user_text or "男孩子" in user_text:
+        parts.append("男生")
+    return parts
+
+
+def _format_score_detail(score_detail: ScoreDetail | None, *, user_text: str = "") -> str:
+    prompt_context = "、".join(_prompt_context_parts(user_text))
     if score_detail is None:
-        return "当前会话还没有完整分数、选科、省份和性别信息。"
+        if prompt_context:
+            return f"本轮先按你提到的{prompt_context}等约束做通用判断；当前会话还缺分数、选科和省份，所以不做系统量化评分。"
+        return "当前会话还没有完整分数、选科和省份信息，所以不做系统量化评分。"
     subjects = "、".join(score_detail.subject_list or []) or "未知"
-    return (
+    base = (
         "已参考当前会话基础信息："
         f"省份={score_detail.province or '未知'}；"
         f"分数={score_detail.total_score or '未知'}；"
@@ -28,6 +49,9 @@ def _format_score_detail(score_detail: ScoreDetail | None) -> str:
         f"性别={score_detail.sex or '未知'}；"
         f"模式={score_detail.volunteer_model or '未知'}"
     )
+    if prompt_context:
+        return f"{base}；同时参考本轮提到的{prompt_context}约束"
+    return base
 
 
 def _format_init_profile(init_profile: UserProfile | None) -> str:
@@ -227,7 +251,8 @@ def render_missing_weight_major_compare_reply(
     request_context: RequestContext,
 ) -> str:
     """Render a bounded user-facing answer for the known missing-weight tool state."""
-    score_context = _format_score_detail(request_context.score_detail)
+    user_text = _latest_user_text(request_context)
+    score_context = _format_score_detail(request_context.score_detail, user_text=user_text)
     profile_context = _format_init_profile(request_context.init_profile)
     context_line = f"{score_context}{'；' + profile_context if profile_context else ''}"
     return "\n".join(

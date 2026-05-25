@@ -435,6 +435,19 @@ def _format_candidate_brief(item: dict[str, Any]) -> str:
     return f"{school_name}-{major_name}（{tier}{f'/{province_name}' if province_name else ''}）"
 
 
+def _direction_plan_fit_level(match_count: int, total: int) -> str:
+    if total <= 0:
+        return "还没法判断"
+    if match_count <= 0:
+        return "暂时不明显"
+    ratio = match_count / max(total, 1)
+    if match_count >= 10 or ratio >= 0.2:
+        return "较强"
+    if match_count >= 3:
+        return "中等"
+    return "偏弱"
+
+
 def _extract_direction_label_from_item(item: dict[str, Any]) -> str | None:
     for key in ("majorCategory", "majorDiscipline", "majorName"):
         value = item.get(key)
@@ -973,20 +986,44 @@ async def preview_direction_comparison_from_request(
     fit_points: list[str] = []
     opportunity_points: list[str] = []
     labels = [to_career_label(slot) for slot in normalized_slots]
+    ordered_match_ids: set[str] = set()
+    ordered_examples: list[str] = []
     for slot, label in zip(normalized_slots, labels):
-        ordered_match_count = sum(1 for item in ordered_items if _item_matches_direction_slot(item, slot))
-        candidate_match_count = sum(
-            1
+        ordered_matches = [item for item in ordered_items if _item_matches_direction_slot(item, slot)]
+        candidate_matches = [
+            item
             for item in candidate_items
             if item.get("volunteerId") not in ordered_ids and _item_matches_direction_slot(item, slot)
-        )
-        fit_points.append(f"如果只看当前方案承接，和“{label}”更贴近的大约有 {ordered_match_count} 个志愿。")
+        ]
+        ordered_match_count = len(ordered_matches)
+        candidate_match_count = len(candidate_matches)
+        for item in ordered_matches:
+            volunteer_id = str(item.get("volunteerId") or "")
+            ordered_match_ids.add(volunteer_id or _format_candidate_brief(item))
+        for item in ordered_matches[:2]:
+            brief = _format_candidate_brief(item)
+            if brief not in ordered_examples:
+                ordered_examples.append(brief)
+        fit_level = _direction_plan_fit_level(ordered_match_count, len(ordered_items))
+        fit_points.append(f"当前方案里和“{label}”更贴近的大约有 {ordered_match_count} 个志愿，承接程度{fit_level}。")
         opportunity_points.append(f"候选里和“{label}”更相关、但还没进方案的大约还有 {candidate_match_count} 个机会。")
+
+    combined_match_count = len(ordered_match_ids)
+    combined_fit_level = _direction_plan_fit_level(combined_match_count, len(ordered_items))
+    if ordered_items:
+        conclusion = (
+            f"方向对比分析：当前方案对“{' / '.join(labels)}”的整体承接{combined_fit_level}，"
+            f"方案内大约有 {combined_match_count} 个相关志愿。"
+        )
+    else:
+        conclusion = f"方向对比分析：当前还没有成型排序方案，暂时不能判断“{' / '.join(labels)}”在方案里的承接强弱。"
+    if ordered_examples:
+        fit_points.append(f"方案内相对贴近的例子：{'；'.join(ordered_examples[:3])}。")
 
     analysis = {
         "stage": ANALYSIS_STAGE_INTEREST,
-        "summaryTitle": f"我先帮你把“{'”和“'.join(labels)}”放在一起看一眼",
-        "currentPlanFit": ["这类问题更适合先看你本人更适合哪条路径，再看当前方案更偏向哪一边。"],
+        "summaryTitle": "我按当前方案承接、候选机会和你的基础信息做了判断",
+        "currentPlanFit": fit_points,
         "currentPlanConflict": [],
         "candidateOpportunity": opportunity_points,
         "nextActionHints": [
@@ -1036,8 +1073,12 @@ async def preview_direction_comparison_from_request(
                 exc_info=True,
             )
 
+    current_judgment = dict(analysis)
+    current_judgment["nextActionHints"] = []
+    next_steps = list(analysis.get("nextActionHints") or [])
+
     return _format_text_sections(
-        ("分析结论", ["我先帮你做了一个方向对比分析。"]),
-        ("当前判断", _build_impact_preview_from_analysis(analysis)),
-        ("下一步", ["如果你愿意，我可以接着单独展开其中一个方向，再看它和当前方案到底有多匹配。"]),
+        ("分析结论", [conclusion]),
+        ("当前判断", _build_impact_preview_from_analysis(current_judgment)),
+        ("下一步", next_steps[:3]),
     )

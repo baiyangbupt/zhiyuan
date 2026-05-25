@@ -5,6 +5,13 @@
 ### Added
 
 - 3.0.3 Agent 效果/性能优化启动：新增 deep dive 设计文档，梳理当前 ChatService -> ChatAgent -> Plan/Explore/Intent 工具链路、真实 e2e 慢点、根因和分阶段优化方案。
+- 3.0.3 Agent case 级评估框架：新增质量评分框架、报告模板和 first-pass 记录，要求同时评估回复正确性、完整度、自然度、决策支持度和延迟，避免只看性能或只把回复做薄。
+- 3.0.3 Agent 回复质量文本级评审：逐 case 记录用户输入、实际回复、人工质量评分和修复建议，明确 Plan 快路径已基本稳定，Explore/Intent 仍存在模板感、内部术语外露和确认语义偏强等待优化问题。
+- 3.0.3 回复质量 P1 修复设计：明确 Intent preview 用户语言、Intent confirm 语义收口、职业方向承接结论先行、专业对比使用本轮用户事实，以及方案审查进入 quality 主 case 的修复范围。
+- `dialog_case_evaluation_report.py` 支持合并修复前/当前版本输出和多 provider benchmark 输出，按 `case + stepIndex` 对齐回复文本、首响、总耗时和启发式质量分。
+- `model_provider_benchmark.py` 支持临时 agent host 配置、启动日志落盘、保留完整回复文本、保留 followup、以及每个 provider 前清理本地对话历史，便于做公平的多模型场景对照。
+- 新增 `model_provider_303_quality_readonly_cases.json`，用于只读/预览类 3.0.3 场景的多模型质量/性能对照，避免确认执行修改方案状态造成 provider 间上下文污染。
+- 补充四模型对照结果记录：`Pro/moonshotai/Kimi-K2.6`、`Pro/MiniMaxAI/MiniMax-M2.5`、`deepseek-ai/DeepSeek-V4-Flash`、`Pro/zai-org/GLM-5.1` 在 10 个只读/预览 case 中均无断言失败；文档明确这批快路径 case 不能代表开放式生成质量，需要后续补 Explore / Intent 开放场景。
 - `conversation_turn_event` 补充 3.0.3 观测字段：`routeDecision`、LLM request/token、toolCallCount 和结构化 toolCalls 摘要；full-agent 工具调用会记录 actionFamily、stage、resultKind、applied/messageCode，direct pending/guard 路径明确记录 `llmRequests=0`。
 - `dialog_regression_runner.py` 的 metrics 输出新增 `turnObservability`，从本地 SQLite 历史解析每轮 tool call、actionFamily、stage、resultKind 和 applied 状态，便于在 WebSocket e2e 中定位慢点和误路由。
 - 新增 Plan 高置信快路径 `plan_fast_route`：在已有 planning summary 时，方案状态、数字志愿/专业组移动、数字删除、指定维度排序和显式审查会跳过主模型自由试工具，直接进入 `_plan_next_action_model -> execute_plan_action`；高副作用动作仍只生成 preview，确认后再 apply。
@@ -18,6 +25,21 @@
 - 专业对比缺权重业务态新增用户态 renderer：当 `compare_majors` 已确认当前会话缺少可用个性化量化评分时，不再触发额外小模型生成，改为基于三级专业所属专业类画像输出结构化通用对比建议；真实复盘中移除了约 `96.7s` 的额外 LLM 耗时来源。
 - 职业方向只读快路由首轮落地：体制内/稳定就业/读研等本地 taxonomy 可解析的明确只读分析，会跳过完整 ChatAgent，直接复用 `analyze_current_career_direction` 的分段工具结果；意向写入、方案变更、确认和泛方向探索仍回落主链路。
 - 职业方向只读分析回复补充去重：快路由直接返回工具分段文本后，多方向比较中相同的学生选科或分数段判断只展示一次，避免用户看到重复结论。
+- Intent / Plan 多步回复补充用户可理解的进度提示：方案 fast route 会提示正在读取和生成预览，方案/意向确认直达执行会提示正在按确认更新；提示只描述处理阶段，不改变路由、pending 或实际方案操作语义。
+- `dialog_regression_runner.py` 支持 thinking/progress 断言和 `thinkingMessages` 指标；3.0.3 effect/perf 场景开始校验方案状态、方案预览、Intent preview/confirm、确认执行、职业方向承接和专业对比只读快路径的用户可见进度提示。
+- Intent preview 超时兜底：当偏好/要求预览工具已经写入待确认缓存、但完整 ChatAgent 在最终组织回复阶段超时时，WebSocket 端会读取结构化 `planEditCache` 返回“待确认内容 + 下一步确认语”的用户文案；确认前不会正式生效，也不会直接改动方案，不发送工作台联动卡片。
+- Intent preview 工作台联动收口：未确认的偏好/要求预览不再自动发送候选库刷新卡片，避免用户误解为偏好已生效；确认或勾选采纳后仍按结构化执行结果刷新候选。
+- 专业意向预览快路由首轮落地：明确专业偏好/排除表达会基于本科/专科专业目录装配 `MajorIntentPreviewInput`，跳过完整 ChatAgent 选工具，直接复用现有 `preview_current_major_intent_confirmation` 生成待确认预览；不直接写偏好、不刷新候选、不改方案。
+- 3.0.3 effect/perf e2e 补充 Intent preview 文案边界：首轮预览禁止出现“已经记下 / 已记录 / 当前已记录”等确认后语义，真实 WebSocket 复跑 10 steps 全部通过，Intent preview 首轮约 `2.3s`，确认后才调用 `update_volunteer_intent_state` 应用。
+- 学校 / 专业局部只读查询快路由首轮落地：明确“当前方案里有没有 X / 候选里看看 X / XX院校相关专业是否有多个”会跳过完整 ChatAgent，直接复用 `query_volunteer_plan` 返回当前方案和候选命中结果；加入、删除、移动、排序、补齐、审查、分数线、职业方向和专业对比仍回落既有链路。
+- 3.0.3 effect/perf 场景补充局部只读查询 case，校验无工作台联动、无内部字段、无 `id=` 展示，并校验用户可见 thinking 为“正在查当前方案和候选里的相关结果”；真实 WebSocket 复跑 11 steps 全部通过，中位数约 `2443ms`，新增局部查询场景约 `2.27s` 且 `llmRequests=0`。
+- 名称 / 简称方案操作快路由首轮落地：`把湖北工程学院的计算机科学与技术改到第3位`、`去掉湖北工程学院.计算机科学与技术`、`把广西师大统计加进来` 这类高置信单动作会跳过完整 ChatAgent，保留原始引用进入 `_plan_next_action_model -> execute_plan_action` 预览链路；唯一性解析、歧义澄清和确认后执行仍由既有执行层负责。
+- `add_units` 预览阶段补齐候选唯一定位：命中时只写入 `resolved_apply_payload` 等待用户确认，不会未确认直接加入方案；已在方案中或无法唯一定位时返回用户可理解提示并清理 pending，避免后续“确认”误执行。
+- `ActionResolver shadow` 补齐 `add_units` 映射，名称/简称类快路由也会记录 typed resolver 对比结果，便于后续统一路由实现。
+- `move_unit` 命名志愿预览补齐可读摘要：唯一定位后会展示学校、专业、当前位置和目标位置，同时保留 `resolved_apply_payload` 等待确认，避免只回复“会调整指定志愿的位置”这类泛化文案。
+- `add_units / remove_units` 命名志愿预览补齐可读摘要：唯一定位后会展示学校、专业和加入/移出动作方向，同时保留确认 payload；不会未确认直接改方案。
+- `dialog_regression_303_effect_perf_cases.json` 增加名称移动和简称加入预览场景，校验 thinking、确认边界、无工作台联动和内部字段屏蔽；本轮 3.0.3 agent 相关单测回归 `312 passed`，真实 WebSocket effect/perf 13 steps 全部通过，中位数约 `2182ms`。
+- 3.0.3 Agent 依赖与退化风险复盘：文档补充 fast route、pending、后端 planning API、专业目录、career taxonomy、runner metrics 等内部依赖点和潜在影响；新增 release 级快路由优先级矩阵单测，防止方案查询、意向、专业对比和职业方向场景被错误跨层接管；本轮相关合并单测 `346 passed`。
 - 专业组移动/删除确认链路增加分段耗时观测：Agent 输出 `plan_ordered_unit_mutation_timing / plan_ordered_unit_post_apply_timing`，Server 输出 `planning_ordered_unit_move_timing / planning_ordered_unit_remove_timing`，用于定位确认慢点是在专业组定位、后端状态重建、行为事件、保存、响应体返回还是执行后重复定位。
 - ActionResolver 进入影子对比首轮：补齐 `unit_refs` 到专业组移动/删除、结构化 `sort` 到方案排序的映射；`plan_fast_route` 命中时输出 `action_resolver_shadow_event`，用于对比当前路由 action family 与 typed resolver 输出，不改变实际执行。
 - 3.0.3 完成方案高频操作轻量持久化首轮落地：新增 `planningMutableState` overlay，`moveOrderedItem / moveOrderedUnit / removeOrderedUnits / sortOrderedPlan` 只写入小状态，完整候选池与推荐 overlay 不随每次方案操作重写。
@@ -37,10 +59,13 @@
 
 ### Fixed
 
+- 3.0.3 回复质量 P1 修复：Intent preview 清理 `level1/level2/level3` 等内部专业层级词；Intent confirm 改为“后续筛选和方案调整参考”，避免“候选结果收紧”造成候选池永久变化的误解；职业方向承接分析补当前方案承接强弱、数量和示例，并去掉重复结论；专业对比缺量化评分时会使用本轮用户输入里的“普通家庭 / 女生”等约束。
+- 3.0.3 quality 主回归补齐方案审查：审查 case 返回 `review` 工作台刷新且不暴露内部位置标记；审查回复改为“审查结论 / 主要问题 / 典型涉及 / 下一步建议”的结构化要点。真实 WebSocket `dialog_regression_303_effect_perf_cases.json --clear-history --keep-response-text --assert-plan-style` 最新复跑 `14/14` steps 通过，中位耗时约 `2240ms`，最大耗时约 `4140ms`。
 - 修复专业组移动/删除 apply 后重复按“第 N 个专业组”解析目标的问题；移动后方案顺序已变化，重复解析可能记录成另一个专业组。现在 `executed_actions` 和后续日志复用执行前解析出的 unitIds。
 - 3.0.3 后端补充 mutable overlay 回归：专业+大学模式单志愿移动、院校专业组模式组删除、旧 mutable 版本忽略，以及行为事件存储回归均通过单测覆盖。
 - 3.0.3 专业组 mutation 慢请求完成补充定位：确认慢例 `llmRequests=0`，Agent `mutationRequestDurationMs≈28.1s` 与 Server controller `unit/move≈28.1s` 对齐；当前源码复跑 service 分段常态约 `1.8s - 2.3s`，最大头是完整 `PlanningStateDTO` 保存，后续优化重点调整为状态持久化拆分而不是继续压模型。
 - 3.0.3 benchmark 文档补充效果质量门禁：性能评估需同时检查用户可理解、信息充足、结构清楚、确认边界、只读不误联动、歧义不误操作和事实一致。
+- `query_volunteer_plan` 候选示例不再展示 `id=...`，只保留学校、专业、冲稳保和录取率等用户可理解信息，避免局部查询回复继续暴露无意义内部编号。
 - 方案现状的偏好摘要在超过展示数量时显示“等 N 项”，避免“当前偏好”只列前三项而“贴近偏好示例”命中未展开偏好时让用户误以为前后矛盾。
 - Explore 调度指令收紧：明确职业/专业/院校/地域专用工具可承接时不先调用 `load_skill`，真实 3.0.3 e2e 中“体制内稳定就业承接分析”从 `load_skill + analyze_current_career_direction` 收敛为单个专用工具，端到端从约 41s 降到约 26s，回复质量保持结构化。
 - 方案 pending 确认边界补强：如果 pending 后用户明确“先不要改方案 / 只分析 / 不执行 / 不调整”，会清掉旧方案 pending；后续单独说“确认”不再误执行旧排序或移动。3.0.3 e2e 增加排序预览后只读分析再确认的保护场景。
