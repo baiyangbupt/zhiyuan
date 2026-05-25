@@ -161,7 +161,7 @@
       },
       {
         "prompt": "确认",
-        "assertContainsAny": ["没有上一轮待确认", "没有待确认"],
+        "assertContainsAny": ["上一轮只是职业方向", "没有待执行的方案动作", "展开体制内方向"],
         "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"],
         "assertNoFollowups": true,
         "maxElapsedSeconds": 5

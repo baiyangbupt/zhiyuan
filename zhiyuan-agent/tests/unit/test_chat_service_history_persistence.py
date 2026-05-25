@@ -3118,6 +3118,92 @@ def test_chat_service_blocks_plan_confirmation_without_pending_action(tmp_path, 
     assert len(saved_history) == 2
 
 
+def test_chat_service_no_pending_confirm_after_career_readonly_uses_contextual_guard(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    history = [
+        ModelRequest(parts=[UserPromptPart(content="当前方案对体制内方向承接得怎么样，先不要改方案")]),
+        ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="analyze_current_career_direction",
+                    args={"direction_slots": ["system_public_service"]},
+                    tool_call_id="career-readonly-call",
+                )
+            ],
+            model_name="career-direction-fast-route",
+        ),
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="analyze_current_career_direction",
+                    content="方案承接：当前方案有若干体制内相关方向。",
+                    tool_call_id="career-readonly-call",
+                )
+            ]
+        ),
+        ModelResponse(parts=[TextPart(content="当前方案对体制内方向有一定承接。")], model_name="career-direction-fast-route"),
+    ]
+    asyncio.run(store.save("session-career-readonly-confirm", history))
+    fake_agent = _FakeAgent(["不应该调用模型"])
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_intent_change_cache", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(service.handle_message("session-career-readonly-confirm", "user-1", "确认"))
+
+    assert "上一轮只是职业方向" in reply
+    assert "没有待执行的方案动作" in reply
+    assert "展开体制内方向" in reply
+    assert fake_agent.calls == []
+
+
+def test_chat_service_no_pending_confirm_after_major_compare_uses_contextual_guard(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    history = [
+        ModelRequest(parts=[UserPromptPart(content="法学和财政学哪个更适合普通家庭女生，先只分析不要记偏好")]),
+        ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="compare_majors",
+                    args={"major_name1": "法学", "major_name2": "财政学"},
+                    tool_call_id="major-compare-readonly-call",
+                )
+            ],
+            model_name="major-compare-fast-route",
+        ),
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="compare_majors",
+                    content="法学和财政学的对比结果。",
+                    tool_call_id="major-compare-readonly-call",
+                )
+            ]
+        ),
+        ModelResponse(parts=[TextPart(content="财政学更稳，法学更看长期兴趣。")], model_name="major-compare-fast-route"),
+    ]
+    asyncio.run(store.save("session-major-compare-readonly-confirm", history))
+    fake_agent = _FakeAgent(["不应该调用模型"])
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_intent_change_cache", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(service.handle_message("session-major-compare-readonly-confirm", "user-1", "确认"))
+
+    assert "上一轮只是专业对比分析" in reply
+    assert "没有待确认的偏好或方案动作" in reply
+    assert "把这个记成偏好" in reply
+    assert fake_agent.calls == []
+
+
 def test_chat_service_does_not_block_intent_confirmation_when_intent_cache_exists(tmp_path, mock_llm_client):
     db_path = tmp_path / "history.db"
     store = ChatHistoryStore(str(db_path))

@@ -1219,6 +1219,42 @@ def _is_pending_intent_impact_question(content: str) -> bool:
     )
 
 
+def _last_readonly_context_kind(messages: list[Any] | None) -> str | None:
+    for message in reversed(messages or []):
+        if not isinstance(message, ModelResponse):
+            continue
+        for part in getattr(message, "parts", []) or []:
+            if not isinstance(part, ToolCallPart):
+                continue
+            if part.tool_name == "analyze_current_career_direction":
+                return "career_direction"
+            if part.tool_name in {"compare_majors", "compare_majors_adhoc"}:
+                return "major_compare"
+            if part.tool_name == "query_volunteer_plan":
+                return "plan_query"
+    return None
+
+
+def _build_no_pending_confirmation_guard_reply(messages: list[Any] | None) -> str:
+    context_kind = _last_readonly_context_kind(messages)
+    if context_kind == "career_direction":
+        return (
+            "上一轮只是职业方向和当前方案承接分析，没有待执行的方案动作。"
+            "如果你想继续展开，可以直接说“展开体制内方向”“展开读研方向”，或者说“按这个方向看看方案怎么调”，我会先给预览再等你确认。"
+        )
+    if context_kind == "major_compare":
+        return (
+            "上一轮只是专业对比分析，没有待确认的偏好或方案动作。"
+            "如果你想把其中某个方向记成偏好，可以直接说“把这个记成偏好”；如果想看对当前方案的影响，也可以直接说明。"
+        )
+    if context_kind == "plan_query":
+        return (
+            "上一轮只是查询当前方案或候选结果，没有待执行的方案动作。"
+            "如果要继续处理这些志愿，可以直接说要移动、删除、加入或按哪个维度排序，我会先给你一版确认预览。"
+        )
+    return "我这边没有上一轮待确认的方案动作。你可以直接说想生成方案、审查方案或怎么调整，我会先说明影响，确认后再执行。"
+
+
 def _sanitize_reply_for_user(reply: str) -> str:
     """清理回复中不应暴露给用户的内部标记。"""
     import re
@@ -2395,7 +2431,7 @@ class ChatService:
                 return reply
 
         if active_pending is None and _is_plan_action_confirmation(content):
-            reply = "我这边没有上一轮待确认的方案动作。你可以直接说想生成方案、审查方案或怎么调整，我会先说明影响，确认后再执行。"
+            reply = _build_no_pending_confirmation_guard_reply(history)
             new_messages = [
                 ModelRequest(parts=[UserPromptPart(content=content)]),
                 ModelResponse(parts=[TextPart(content=reply)], model_name="direct-plan-confirmation-guard"),
