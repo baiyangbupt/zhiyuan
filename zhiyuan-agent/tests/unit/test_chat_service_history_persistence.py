@@ -566,6 +566,81 @@ def test_chat_service_plan_fast_route_preserves_named_ref_for_preview(tmp_path, 
     assert pending["action_family"] == "move_unit"
 
 
+def test_chat_service_plan_fast_route_handles_review_followup_adjustment_preview_without_main_agent(
+    tmp_path,
+    mock_llm_client,
+):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    fake_agent = _FakeAgent(["should not be used"])
+    user_prompt = "针对最严重的问题，先给我调整预览，不要直接执行"
+    plan_model = PlanActionPlan(
+        stage="apply",
+        action_family="analyze_adjustment",
+        user_goal=user_prompt,
+        requires_confirmation=False,
+        should_rerun_review=False,
+        context_summary="阶段=reviewed；方案=45/45；风险=2；提醒=3",
+        missing_inputs=[],
+        atomic_actions=[],
+        preview_summary="",
+    )
+    execution_result = {
+        "applied": True,
+        "action_family": "analyze_adjustment",
+        "stage": "apply",
+        "result_kind": "adjustment_analysis",
+        "summary": "调整分析已完成：当前先看梯度断层和保底不足，不会直接改方案。",
+        "workspace_refresh_targets": [],
+        "facts": {
+            "has_actionable_suggestions": False,
+            "actionable_suggestion_counts": {"add": 0, "reorder": 0, "replace": 0, "remove": 0},
+        },
+    }
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch(
+                "app.service.get_planning_workspace_state",
+                AsyncMock(
+                    return_value={
+                        "code": 0,
+                        "data": {
+                            "phase": "reviewed",
+                            "orderedPlanState": {"summary": {"total": 45, "targetCount": 45}},
+                            "reviewState": {"summary": {"warnCount": 3, "riskCount": 2}},
+                        },
+                    }
+                ),
+            ), \
+            patch("app.service._plan_next_action_model", AsyncMock(return_value=plan_model)) as mock_plan_next, \
+            patch(
+                "app.service.execute_plan_action",
+                AsyncMock(return_value=json.dumps(execution_result, ensure_ascii=False)),
+            ) as mock_execute, \
+            patch("app.service.query_volunteer_plan", AsyncMock()) as mock_query, \
+            patch("app.service._log_conversation_turn_event") as log_mock:
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(service.handle_message("session-review-followup-fast", "user-1", user_prompt))
+
+    assert reply == "调整分析已完成：当前先看梯度断层和保底不足，不会直接改方案。"
+    assert fake_agent.calls == []
+    mock_plan_next.assert_awaited_once()
+    assert mock_plan_next.await_args.kwargs["action_family"] == "analyze_adjustment"
+    mock_execute.assert_awaited_once()
+    mock_query.assert_not_awaited()
+    stored = asyncio.run(store.load("session-review-followup-fast"))
+    assert stored is not None
+    assert _extract_pending_plan_action(stored) is None
+    log_kwargs = log_mock.call_args.kwargs
+    assert log_kwargs["routingPath"] == "plan_fast_route"
+    assert log_kwargs["llmRequests"] == 0
+    assert log_kwargs["toolCallCount"] == 2
+    assert log_kwargs["actionFamily"] == "analyze_adjustment"
+    assert log_kwargs["resultKind"] == "adjustment_analysis"
+
+
 def test_chat_service_major_compare_fast_route_bypasses_main_agent_and_persists_tool_trace(tmp_path, mock_llm_client):
     db_path = tmp_path / "history.db"
     store = ChatHistoryStore(str(db_path))

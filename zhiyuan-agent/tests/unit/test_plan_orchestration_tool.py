@@ -524,6 +524,45 @@ def test_plan_next_action_coerces_structural_review_issue_to_default_action():
     assert data["atomic_actions"] == []
 
 
+def test_plan_next_action_review_followup_adjustment_analysis_stays_readonly():
+    with patch(
+        "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
+        new=AsyncMock(
+            return_value=_context_inputs(
+                summary="阶段=reviewed；方案=45/45；风险=2；提醒=3",
+                target_count=45,
+                draft_count=45,
+                ordered_count=45,
+                review_issues=[
+                    {
+                        "code": "probability_gap",
+                        "label": "梯度断层",
+                        "scope_kind": "structural",
+                        "default_action_family": "analyze_adjustment",
+                        "affected_unit_count": 3,
+                        "affected_volunteer_count": 8,
+                        "scope_fingerprint": "issue-gap-structural-1",
+                    }
+                ],
+            )
+        ),
+    ):
+        result = asyncio.run(
+            plan_next_action(
+                _ctx(),
+                user_goal="针对最严重的问题，先给我调整预览，不要直接执行",
+                action_family="analyze_adjustment",
+            )
+        )
+
+    data = json.loads(result)
+    assert data["action_family"] == "analyze_adjustment"
+    assert data["stage"] == "apply"
+    assert data["requires_confirmation"] is False
+    assert data["should_rerun_review"] is False
+    assert data["atomic_actions"] == []
+
+
 def test_plan_next_action_coerces_filled_safety_guard_compensation_request_to_adjustment_analysis():
     with patch(
         "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",

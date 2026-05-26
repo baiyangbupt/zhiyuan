@@ -41,6 +41,75 @@ _PLAN_STATUS_PATTERNS = (
     "方案有了吗",
 )
 
+_REVIEW_FOLLOWUP_STRONG_CONTEXT_TOKENS = (
+    "最严重",
+    "审查",
+    "风险",
+    "提醒",
+    "本省保底",
+    "保底不足",
+    "冲稳保",
+    "缺口",
+    "数量不足",
+    "数量缺口",
+    "断层",
+    "倒挂",
+    "限报",
+    "高收费",
+    "中外合作",
+    "专项",
+    "托底",
+    "安全垫",
+    "边缘分",
+)
+
+_REVIEW_FOLLOWUP_WEAK_CONTEXT_TOKENS = (
+    "问题",
+    "优先",
+    "保底",
+)
+
+_REVIEW_FOLLOWUP_ANCHOR_TOKENS = (
+    "针对",
+    "刚才",
+    "上面",
+    "上述",
+    "这个",
+    "当前",
+    "解决",
+    "处理",
+)
+
+_ADJUSTMENT_PREVIEW_TOKENS = (
+    "调整预览",
+    "调整建议",
+    "优化建议",
+    "处理建议",
+    "解决建议",
+    "先给预览",
+    "给我预览",
+    "先给我一版",
+    "给我一版",
+    "预览",
+    "怎么调",
+    "怎么调整",
+    "怎么优化",
+    "怎么处理",
+    "怎么解决",
+)
+
+_COMPENSATION_PREVIEW_TOKENS = (
+    "补齐",
+    "补满",
+    "补稳",
+    "差几个",
+    "数量缺口",
+    "数量不足",
+    "保底",
+    "本省保底",
+    "兜底",
+)
+
 _SORT_DIMENSIONS = {
     "录取率": "admissionRatio",
     "院校层次": "schoolRank",
@@ -153,6 +222,22 @@ def _looks_like_review_request(compact_text: str) -> bool:
     if "审查" not in compact_text and "检查" not in compact_text:
         return False
     return "方案" in compact_text or len(compact_text) <= 10
+
+
+def _review_followup_adjustment_action_family(compact_text: str) -> str | None:
+    has_adjustment_preview = any(token in compact_text for token in _ADJUSTMENT_PREVIEW_TOKENS)
+    if not has_adjustment_preview:
+        return None
+    has_strong_review_context = any(token in compact_text for token in _REVIEW_FOLLOWUP_STRONG_CONTEXT_TOKENS)
+    has_anchored_weak_context = (
+        any(token in compact_text for token in _REVIEW_FOLLOWUP_WEAK_CONTEXT_TOKENS)
+        and any(token in compact_text for token in _REVIEW_FOLLOWUP_ANCHOR_TOKENS)
+    )
+    if not has_strong_review_context and not has_anchored_weak_context:
+        return None
+    if any(token in compact_text for token in _COMPENSATION_PREVIEW_TOKENS):
+        return "preview_compensation"
+    return "analyze_adjustment"
 
 
 def _looks_like_status_request(compact_text: str) -> bool:
@@ -303,6 +388,19 @@ def resolve_plan_fast_route(text: str | None) -> PlanFastRouteDecision:
             action_family="sort_ordered_plan",
             user_goal=original,
             reason="explicit_sort_dimension",
+            confidence="high",
+        )
+
+    if adjustment_action_family := _review_followup_adjustment_action_family(compact_text):
+        return PlanFastRouteDecision(
+            matched=True,
+            action_family=adjustment_action_family,
+            user_goal=original,
+            reason=(
+                "review_followup_compensation_preview"
+                if adjustment_action_family == "preview_compensation"
+                else "review_followup_adjustment_preview"
+            ),
             confidence="high",
         )
 

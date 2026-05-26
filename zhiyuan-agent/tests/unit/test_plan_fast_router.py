@@ -39,6 +39,36 @@ def test_resolve_plan_fast_route_matches_sort_and_review():
     assert review_decision.action_family == "review_plan"
 
 
+def test_resolve_plan_fast_route_matches_review_followup_adjustment_preview():
+    decision = resolve_plan_fast_route("针对最严重的问题，先给我调整预览，不要直接执行")
+
+    assert decision.matched is True
+    assert decision.action_family == "analyze_adjustment"
+    assert decision.reason == "review_followup_adjustment_preview"
+
+
+def test_resolve_plan_fast_route_matches_review_followup_compensation_preview():
+    decision = resolve_plan_fast_route("针对本省保底不足，先给我补齐预览，不要直接执行")
+
+    assert decision.matched is True
+    assert decision.action_family == "preview_compensation"
+    assert decision.reason == "review_followup_compensation_preview"
+
+
+def test_resolve_plan_fast_route_does_not_match_review_followup_readonly_question():
+    decision = resolve_plan_fast_route("最严重的问题是什么，优先解决哪个")
+
+    assert decision.matched is False
+    assert decision.reason == "no_high_confidence_plan_pattern"
+
+
+def test_resolve_plan_fast_route_does_not_match_generic_preview_without_review_anchor():
+    decision = resolve_plan_fast_route("先给我一个预览，不要直接执行")
+
+    assert decision.matched is False
+    assert decision.reason == "no_high_confidence_plan_pattern"
+
+
 def test_resolve_plan_fast_route_does_not_match_ambiguous_name_operation():
     decision = resolve_plan_fast_route("把广西师大统计、会计学改到第3位")
 

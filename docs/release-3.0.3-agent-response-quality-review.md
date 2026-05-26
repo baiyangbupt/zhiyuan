@@ -556,6 +556,7 @@
 | 本地/降级场景 Intent 确认可能丢 pending | `ChatService._load_pending_intent_confirmation` / `_extract_pending_intent_confirmation_from_history` | 后端 `planEditCache` 仍为主路径；读不到时从 Agent 历史中的 Intent preview 工具调用恢复待确认 payload，避免下一句“确认这个偏好”误走无 pending guard |
 | Intent 确认回复过度承诺候选刷新 | `intent_response_tool.render_intent_state_update` | 无候选数量事实时不再说“候选展示会按这条要求更新、现在可以去看候选结果”，改成“后续查看候选和方案时会按这条要求作为参考” |
 | Intent preview item 文案像已生效 | `intent_state_tool._build_select_items` / `dialog_case_evaluation_report.py` | 待确认卡片条目统一使用“确认后，将把...”条件式表达；评估工具新增 `pending_intent_effective_wording` 门禁，防止待确认内容再用已生效语气 |
+| 审查后续调整预览耗时过长 | `plan_fast_router.resolve_plan_fast_route` / `ChatService.plan_fast_route` | 用户在审查后明确说“针对最严重的问题，先给调整预览，不要执行”时，不再进入完整 Agent 自由反复读方案；高置信识别为 `analyze_adjustment` 或补齐类 `preview_compensation`，直接走既有 `plan_next_action -> execute_plan_action`，只读分析不挂 pending，可执行补齐仍按原确认协议处理 |
 
 不在本轮做：
 
@@ -608,6 +609,7 @@
 - 真实 open-quality 扩展回归暴露三方向职业问法性能退化：`当前方案对考公、稳定就业和读研三个方向分别有什么支撑和短板` 因为缺少“支撑/短板”只读语义识别，回落完整 Agent，耗时约 `17.2s`。已把“支撑/短板”纳入 `career_direction_fast_route` 强只读分析触发词，仍保留“记偏好 / 改方案 / 确认”等高副作用拦截。
 - 待确认意向文案进一步收口：用户可见回复统一从“确认前不会正式生效 / 我再正式生效”改为“确认前不会写入后续参考 / 我再写入后续参考”。这次只调整待确认预览、待确认影响追问和旧回复清洗，不改变确认后写入、候选刷新或方案调整执行链路。
 - 无 pending 的查询确认保护继续补充边界提示：只读查询后用户回复“确认”时，回复会明确“不会执行移动、删除、加入或排序，也不会改动当前方案”，然后给出可继续的方案/候选处理入口，避免保护回复过短或让用户误以为确认会生效。
+- 审查后续调整预览慢链路收敛：真实探针中 `帮我审查一下当前方案 -> 最严重的问题是什么 -> 针对最严重的问题，先给我调整预览，不要直接执行` 第三步曾进入完整 Agent，约 `99.9s`、`11` 次工具调用，包含重复 `plan_next_action / execute_plan_action / query_volunteer_plan`。本轮只对明确带“审查/风险/最严重/问题 + 调整预览/怎么调/不要执行”的高置信请求启用 Plan fast route；普通“最严重的问题是什么，优先解决哪个”仍不被抢路由，交给原只读问答链路。
 
 验证：
 
@@ -661,3 +663,6 @@
 - 最新 open-quality 真实 WebSocket 复跑：`dialog_regression_303_open_quality_cases.json --clear-history --keep-response-text --assert-plan-style` `9/9` steps 通过，输出 `/private/tmp/zhiyuan_agent_303_open_quality_after_pending_wording_text.json`，中位耗时约 `2429ms`，最大耗时约 `3966ms`；离线质量评分输出 `/private/tmp/zhiyuan_agent_303_open_quality_after_pending_wording_text_quality.json`，`qualityViolations=0`，`strong=8 / needs_review=1`。唯一 `needs_review` 是 no-pending guard 的“确认”保护回复，功能正确但内容较短，后续继续优化。
 - no-pending 查询确认保护补强后，聚焦单测：`PYTHONPATH=. ./.venv/bin/python -m pytest tests/unit/test_chat_service_history_persistence.py::test_chat_service_no_pending_confirm_infers_context_from_text_only_history tests/unit/test_dialog_case_evaluation_report.py -q`：`14 passed`。
 - no-pending 查询确认保护补强后，最新 open-quality 真实 WebSocket 复跑：`dialog_regression_303_open_quality_cases.json --clear-history --keep-response-text --assert-plan-style` `9/9` steps 通过，输出 `/private/tmp/zhiyuan_agent_303_open_quality_after_no_pending_guard_text.json`，中位耗时约 `2477ms`，最大耗时约 `3981ms`；离线质量评分输出 `/private/tmp/zhiyuan_agent_303_open_quality_after_no_pending_guard_text_quality.json`，`qualityViolations=0`，`strong=9 / needs_review=0`。
+- 审查后续调整预览快路径聚焦回归：`PYTHONPATH=. ./.venv/bin/python -m pytest tests/unit/test_plan_fast_router.py tests/unit/test_plan_orchestration_tool.py tests/unit/test_chat_service_history_persistence.py::test_chat_service_plan_fast_route_bypasses_main_agent_and_persists_preview tests/unit/test_chat_service_history_persistence.py::test_chat_service_plan_fast_route_preserves_named_ref_for_preview tests/unit/test_chat_service_history_persistence.py::test_chat_service_plan_fast_route_handles_review_followup_adjustment_preview_without_main_agent -q`：`50 passed`。
+- 审查后续调整预览宽回归：`PYTHONPATH=. ./.venv/bin/python -m pytest tests/unit/test_plan_fast_router.py tests/unit/test_plan_orchestration_tool.py tests/unit/test_plan_execution_tool.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_dialog_case_evaluation_report.py -q`：`276 passed`；`PYTHONPYCACHEPREFIX=/private/tmp/zhiyuan_pycache ./.venv/bin/python -m py_compile app/resolver/plan_fast_router.py app/service.py` 通过。
+- 真实 WebSocket 探针已尝试复跑 `session=17` 三步慢例，但当前本地 `INTERNAL_SERVICE_URL=http://localhost:8080` 未启动，Agent 读取到的是空方案状态，不能作为有效方案链路性能判断；代码层面通过 ChatService 单测确认该请求会走 `plan_fast_route`，`llmRequests=0`、`toolCallCount=2`，且不会进入主 Agent 或重复 `query_volunteer_plan`。
