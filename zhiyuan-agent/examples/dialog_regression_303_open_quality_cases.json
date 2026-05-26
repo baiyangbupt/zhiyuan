@@ -18,6 +18,8 @@
         "assertContainsAny": ["确认", "会计学", "审计学", "土木工程", "当前方案"],
         "assertThinkingContains": ["正在整理这个专业想法的影响，等你确认后才会记入偏好"],
         "assertNotContains": ["候选结果收紧", "专家推荐", "已直接调整", "已直接删除", "已直接记录", "我已经记下", "已经记下", "payload", "stage", "action_family", "volunteerId", "草稿"],
+        "expectedKeyPoints": ["确认前不会写入后续参考", "当前方案", "贴近", "需要留意", "候选", "确认后"],
+        "forbiddenPatterns": ["候选结果收紧", "专家推荐", "已直接记录"],
         "assertNoFollowups": true,
         "warnElapsedSeconds": 20
       },
@@ -27,6 +29,8 @@
         "assertContainsAny": ["当前方案", "需要留意", "候选"],
         "assertThinkingContains": ["正在结合这条待确认想法查看当前方案影响"],
         "assertNotContains": ["候选结果收紧", "专家推荐", "已直接调整", "已直接删除", "已直接记录", "payload", "stage", "action_family", "volunteerId", "草稿"],
+        "expectedKeyPoints": ["尚未确认", "确认前不会写入后续参考", "当前方案", "需要留意", "候选", "待确认内容"],
+        "forbiddenPatterns": ["候选结果收紧", "专家推荐", "已直接记录"],
         "assertNoFollowups": true,
         "warnElapsedSeconds": 10
       }
@@ -50,6 +54,8 @@
         "assertContainsAny": ["体制内", "读研", "当前方案", "承接", "候选"],
         "assertThinkingContains": ["正在看这条方向和当前方案的承接情况"],
         "assertNotContains": ["已直接调整", "确认后执行", "已记录", "payload", "stage", "action_family", "volunteerId", "草稿"],
+        "expectedKeyPoints": ["分析结论", "方案承接", "体制内", "深造", "候选机会", "代表样本", "本次边界"],
+        "forbiddenPatterns": ["已直接调整", "已记录", "确认后执行"],
         "assertNoFollowups": true,
         "warnElapsedSeconds": 30
       }
@@ -72,6 +78,8 @@
         "assertContainsAny": ["法学", "财政学", "普通家庭", "女生", "就业"],
         "assertThinkingContains": ["正在对比这几个专业的差异"],
         "assertNotContains": ["缺少性别信息", "没有完整分数、选科、省份和性别信息", "已记录", "我记下", "确认后写入", "payload", "stage", "action_family", "volunteerId", "草稿"],
+        "expectedKeyPoints": ["当前会话参考", "本次边界", "法学", "财政学", "就业路径", "选择建议", "下一步"],
+        "forbiddenPatterns": ["缺少性别信息", "已记录", "确认后写入"],
         "assertNoFollowups": true,
         "warnElapsedSeconds": 20
       }
@@ -96,6 +104,8 @@
         "assertContainsAny": ["青岛城市", "当前方案", "方案", "候选", "命中", "相关"],
         "assertThinkingContains": ["正在查当前方案和候选里的相关结果"],
         "assertNotContains": ["已直接调整", "确认后执行", "已记录", "payload", "stage", "action_family", "volunteerId", "草稿"],
+        "expectedKeyPoints": ["共命中", "冲稳保", "学校层次", "专业热度", "示例", "下一步"],
+        "forbiddenPatterns": ["已直接调整", "确认后执行", "volunteerId"],
         "assertNoFollowups": true,
         "warnElapsedSeconds": 20
       },
@@ -103,6 +113,8 @@
         "prompt": "确认",
         "assertContainsAny": ["上一轮只是查询当前方案或候选结果", "没有待执行的方案动作", "没有上一轮待确认"],
         "assertNotContains": ["已直接调整", "已直接删除", "payload", "stage", "action_family", "volunteerId", "草稿"],
+        "expectedKeyPoints": ["上一轮只是查询", "没有待执行的方案动作", "不会执行移动", "下一步"],
+        "forbiddenPatterns": ["已直接调整", "已直接删除", "payload"],
         "assertNoFollowups": true,
         "maxElapsedSeconds": 5
       }
@@ -128,6 +140,8 @@
         "assertContainsAny": ["推荐系数高的排在前面", "推荐系数", "导出顺序", "待重新审查"],
         "assertThinkingContains": ["正在读取当前方案并整理这次请求", "正在生成这次调整的影响预览"],
         "assertNotContains": ["已直接排序", "已直接调整", "payload", "stage", "action_family", "volunteerId", "草稿"],
+        "expectedKeyPoints": ["推荐系数", "导出顺序", "待重新审查", "确认后"],
+        "forbiddenPatterns": ["已直接排序", "已直接调整", "payload"],
         "assertNoFollowups": true,
         "warnElapsedSeconds": 30
       }
@@ -151,6 +165,8 @@
         "assertContainsAny": ["网络与新媒体", "跨境电子商务", "表达", "数学", "就业", "建议"],
         "assertThinkingContains": ["正在对比这几个专业的差异"],
         "assertNotContains": ["当前没有沉淀专门画像", "已记录", "我记下", "确认后写入", "payload", "stage", "action_family", "volunteerId", "草稿"],
+        "expectedKeyPoints": ["当前会话参考", "本次边界", "网络与新媒体", "跨境电子商务", "就业路径", "选择建议", "下一步"],
+        "forbiddenPatterns": ["当前没有沉淀专门画像", "已记录", "确认后写入"],
         "assertNoFollowups": true,
         "warnElapsedSeconds": 25
       }
@@ -175,6 +191,8 @@
         "assertContainsAny": ["考公", "稳定就业", "读研", "支撑", "短板", "当前方案", "候选"],
         "assertThinkingContains": ["正在看这条方向和当前方案的承接情况"],
         "assertNotContains": ["已直接调整", "确认后执行", "已记录", "payload", "stage", "action_family", "volunteerId", "草稿"],
+        "expectedKeyPoints": ["分析结论", "方案承接", "考公", "稳定就业", "深造", "候选机会", "本次边界"],
+        "forbiddenPatterns": ["已直接调整", "已记录", "确认后执行"],
         "assertNoFollowups": true,
         "warnElapsedSeconds": 35
       }

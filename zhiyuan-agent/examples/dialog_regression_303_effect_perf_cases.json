@@ -13,6 +13,8 @@
         "assertThinkingContains": ["正在读取当前方案并整理这次请求", "正在整理当前方案的数量、梯度和风险"],
         "assertNotContains": ["草稿", "payload", "stage", "action_family", "volunteerId", "@1"],
         "assertThinkingNotContains": ["草稿", "payload", "stage", "action_family", "volunteerId"],
+        "expectedKeyPoints": ["数量", "冲稳保", "审查", "缺口", "当前偏好", "承接情况"],
+        "forbiddenPatterns": ["方案情况如下", "@1", "volunteerId"],
         "assertNoFollowups": true,
         "warnElapsedSeconds": 30
       }
@@ -34,6 +36,8 @@
         "assertFollowupRefresh": true,
         "assertNotContains": ["草稿", "payload", "stage", "action_family", "volunteerId", "@1"],
         "assertThinkingNotContains": ["草稿", "payload", "stage", "action_family", "volunteerId"],
+        "expectedKeyPoints": ["审查结论", "风险", "提醒", "主要问题", "典型涉及", "审查详情"],
+        "forbiddenPatterns": ["payload", "volunteerId", "@1"],
         "warnElapsedSeconds": 30
       }
     ]
@@ -51,6 +55,8 @@
         "assertThinkingContains": ["正在查当前方案和候选里的相关结果"],
         "assertNotContains": ["已直接调整", "确认后执行", "payload", "stage", "action_family", "volunteerId", "id=", "草稿"],
         "assertThinkingNotContains": ["草稿", "payload", "stage", "action_family", "volunteerId"],
+        "expectedKeyPoints": ["共命中", "冲稳保", "学校层次", "专业热度", "示例", "下一步"],
+        "forbiddenPatterns": ["确认后执行", "已直接调整", "volunteerId"],
         "assertNoFollowups": true,
         "warnElapsedSeconds": 20
       }
@@ -70,6 +76,8 @@
         "assertThinkingContains": ["正在读取当前方案并整理这次请求", "正在生成这次调整的影响预览"],
         "assertNotContains": ["已直接移动", "payload", "stage", "action_family", "volunteerId", "草稿"],
         "assertThinkingNotContains": ["草稿", "payload", "stage", "action_family", "volunteerId"],
+        "expectedKeyPoints": ["当前在", "第3位", "导出顺序", "待重新审查", "确认后"],
+        "forbiddenPatterns": ["已直接移动", "volunteerId", "payload"],
         "assertNoFollowups": true,
         "warnElapsedSeconds": 30
       }
@@ -89,6 +97,8 @@
         "assertThinkingContains": ["正在读取当前方案并整理这次请求", "正在生成这次调整的影响预览"],
         "assertNotContains": ["已直接加入", "payload", "stage", "action_family", "volunteerId", "草稿"],
         "assertThinkingNotContains": ["草稿", "payload", "stage", "action_family", "volunteerId"],
+        "expectedKeyPoints": ["候选", "加入当前方案", "数量", "导出内容", "待重新审查", "确认后"],
+        "forbiddenPatterns": ["已直接加入", "volunteerId", "payload"],
         "assertNoFollowups": true,
         "warnElapsedSeconds": 30
       }
@@ -108,6 +118,8 @@
         "assertThinkingContains": ["正在读取当前方案并整理这次请求", "正在生成这次调整的影响预览"],
         "assertNotContains": ["已直接移动", "草稿", "锁定", "payload", "stage", "action_family", "volunteerId"],
         "assertThinkingNotContains": ["草稿", "payload", "stage", "action_family", "volunteerId"],
+        "expectedKeyPoints": ["整体移动", "专业组", "组内", "不是按单条志愿位置", "组内专业顺序不变", "确认后"],
+        "forbiddenPatterns": ["已直接移动", "草稿", "锁定"],
         "assertNoFollowups": true,
         "warnElapsedSeconds": 30
       },
@@ -119,6 +131,8 @@
         "assertFollowupRefresh": true,
         "assertNotContains": ["草稿", "payload", "stage", "action_family", "volunteerId"],
         "assertThinkingNotContains": ["草稿", "payload", "stage", "action_family", "volunteerId"],
+        "expectedKeyPoints": ["专业组", "第 2 位", "导出顺序", "待重新审查", "下一步"],
+        "forbiddenPatterns": ["草稿", "payload", "volunteerId"],
         "warnElapsedSeconds": 20
       }
     ]
@@ -137,6 +151,8 @@
         "assertThinkingContains": ["正在读取当前方案并整理这次请求", "正在生成这次调整的影响预览"],
         "assertNotContains": ["已直接排序", "草稿", "payload", "stage", "action_family", "volunteerId"],
         "assertThinkingNotContains": ["草稿", "payload", "stage", "action_family", "volunteerId"],
+        "expectedKeyPoints": ["排序方式", "导出顺序", "待重新审查", "确认后"],
+        "forbiddenPatterns": ["已直接排序", "草稿", "payload"],
         "assertNoFollowups": true,
         "warnElapsedSeconds": 30
       }
@@ -156,6 +172,8 @@
         "assertThinkingContains": ["正在看这条方向和当前方案的承接情况"],
         "assertNotContains": ["我先帮你做了一个方向对比分析", "已直接调整", "确认后执行", "已记录", "payload", "stage", "action_family", "volunteerId", "草稿"],
         "assertThinkingNotContains": ["草稿", "payload", "stage", "action_family", "volunteerId"],
+        "expectedKeyPoints": ["分析结论", "方案承接", "当前方案", "候选机会", "代表样本", "本次边界", "下一步"],
+        "forbiddenPatterns": ["已直接调整", "已记录", "确认后执行"],
         "assertNoFollowups": true,
         "warnElapsedSeconds": 60
       },
@@ -163,6 +181,8 @@
         "prompt": "确认",
         "assertContainsAny": ["上一轮只是职业方向", "没有待执行的方案动作", "展开体制内方向"],
         "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"],
+        "expectedKeyPoints": ["上一轮只是职业方向", "没有待执行的方案动作", "下一步"],
+        "forbiddenPatterns": ["payload", "volunteerId", "已直接调整"],
         "assertNoFollowups": true,
         "maxElapsedSeconds": 5
       }
@@ -181,6 +201,8 @@
         "assertThinkingContains": ["正在对比这几个专业的差异"],
         "assertNotContains": ["没有完整分数、选科、省份和性别信息", "缺少性别信息", "已记录", "我记下", "确认后写入", "payload", "stage", "action_family", "volunteerId", "草稿"],
         "assertThinkingNotContains": ["草稿", "payload", "stage", "action_family", "volunteerId"],
+        "expectedKeyPoints": ["当前会话参考", "本次边界", "法学", "财政学", "就业路径", "选择建议", "下一步"],
+        "forbiddenPatterns": ["缺少性别信息", "已记录", "确认后写入"],
         "assertNoFollowups": true,
         "warnElapsedSeconds": 45
       }
@@ -199,6 +221,8 @@
         "assertThinkingContains": ["正在整理这个专业想法的影响，等你确认后才会记入偏好"],
         "assertNotContains": ["level1", "level2", "level3", "已直接调整", "已直接删除", "已直接记录", "我已经记下", "已经记下", "已记录", "当前已记录", "记下并在参考", "payload", "stage", "action_family", "volunteerId", "草稿"],
         "assertThinkingNotContains": ["草稿", "payload", "stage", "action_family", "volunteerId"],
+        "expectedKeyPoints": ["法学", "财政学", "护理", "后续参考", "本次边界", "下一步"],
+        "forbiddenPatterns": ["level1", "level2", "level3", "已记录"],
         "assertNoFollowups": true,
         "warnElapsedSeconds": 60
       },
@@ -208,6 +232,8 @@
         "assertThinkingContains": ["正在按你的确认更新后续参考偏好"],
         "assertNotContains": ["候选结果收紧", "payload", "stage", "action_family", "volunteerId", "草稿"],
         "assertThinkingNotContains": ["草稿", "payload", "stage", "action_family", "volunteerId"],
+        "expectedKeyPoints": ["本次确认内容", "偏好专业", "排除专业", "后续使用", "下一步"],
+        "forbiddenPatterns": ["候选结果收紧", "payload", "volunteerId"],
         "warnElapsedSeconds": 20
       }
     ]
@@ -223,6 +249,8 @@
         "prompt": "确认",
         "assertContainsAny": ["没有上一轮待确认", "没有待确认"],
         "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"],
+        "expectedKeyPoints": ["没有上一轮待确认", "生成或查看方案", "审查当前方案", "调整方案"],
+        "forbiddenPatterns": ["payload", "volunteerId", "已直接调整"],
         "assertNoFollowups": true,
         "maxElapsedSeconds": 5
       }

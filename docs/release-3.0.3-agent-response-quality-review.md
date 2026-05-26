@@ -679,6 +679,10 @@
   - `open_quality`：`/private/tmp/zhiyuan_agent_303_open_quality_latest_live_eval_strict.json`，结果仍为 `strong=9 / needs_review=0 / fail=0`，`qualityViolations=0`。
   - 新规则不会改变 Agent 回复逻辑，只让 case 评估更严格：case 专属禁用表达命中会失败；期望业务点缺失会进入 `needs_review`，避免“回复结构完整但漏掉关键业务说明”被直接放过。
 - runner 可观测性补强：后续真实 WebSocket 回归会从历史中的 fast-route `model_name` 或 `fast-/direct-` tool call id 推断 `turnObservability.routingPath`。这会降低 `missing_route_observability` warning，并避免完整 Agent 调用同名工具时被误标为快路径。
+- 主 case 集补齐 `expectedKeyPoints / forbiddenPatterns` 后，使用最新 live 输出复评：
+  - `effect_perf`：`/private/tmp/zhiyuan_agent_303_effect_perf_latest_live_eval_keypoints.json`，结果 `strong=14 / needs_review=0 / fail=0`，`qualityViolations=0`。
+  - `open_quality`：`/private/tmp/zhiyuan_agent_303_open_quality_latest_live_eval_keypoints.json`，结果 `strong=9 / needs_review=0 / fail=0`，`qualityViolations=0`。
+  - 这轮把“数量/冲稳保/审查/偏好承接”“导出顺序/待重新审查/确认边界”“当前方案承接/候选机会/代表样本”“专业对比边界/就业路径/选择建议”等场景级质量要求写入 case 定义，后续回复变薄或漏关键点会被自动标记。
 
 ## 11. 当前回复质量结论与后续关注点
 
