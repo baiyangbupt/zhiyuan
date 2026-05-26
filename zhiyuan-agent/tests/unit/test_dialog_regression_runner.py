@@ -188,6 +188,65 @@ def test_summarize_turn_observability_extracts_tool_action_and_result():
     assert observed["toolCalls"][0]["applied"] is False
 
 
+def test_summarize_turn_observability_infers_routing_path_from_fast_route_history():
+    turn_messages = [
+        {"parts": [{"part_kind": "user-prompt", "content": "按院校层次排序"}]},
+        {
+            "model_name": "plan-fast-route",
+            "parts": [
+                {
+                    "part_kind": "tool-call",
+                    "tool_name": "plan_next_action",
+                    "tool_call_id": "fast-plan-next-sort_ordered_plan",
+                    "args": {"action_family": "sort_ordered_plan"},
+                }
+            ],
+        },
+        {
+            "parts": [
+                {
+                    "part_kind": "tool-return",
+                    "tool_name": "plan_next_action",
+                    "tool_call_id": "fast-plan-next-sort_ordered_plan",
+                    "content": json.dumps(
+                        {
+                            "action_family": "sort_ordered_plan",
+                            "stage": "preview",
+                        },
+                        ensure_ascii=False,
+                    ),
+                }
+            ]
+        },
+    ]
+
+    observed = runner._summarize_turn_observability(turn_messages)
+
+    assert observed["routingPath"] == "plan_fast_route"
+    assert observed["actionFamilies"] == ["sort_ordered_plan"]
+
+
+def test_summarize_turn_observability_does_not_infer_route_from_plain_tool_name():
+    turn_messages = [
+        {
+            "model_name": "test-model",
+            "parts": [
+                {
+                    "part_kind": "tool-call",
+                    "tool_name": "query_volunteer_plan",
+                    "tool_call_id": "functions.query_volunteer_plan:1",
+                    "args": {"query": "看看方案"},
+                }
+            ],
+        }
+    ]
+
+    observed = runner._summarize_turn_observability(turn_messages)
+
+    assert "routingPath" not in observed
+    assert observed["toolCalls"][0]["name"] == "query_volunteer_plan"
+
+
 def test_summarize_turn_observability_counts_plain_text_tool_returns():
     turn_messages = [
         {

@@ -77,6 +77,28 @@ PLAN_STYLE_BANNED_SUBSTRINGS = [
 
 PLAN_STYLE_BANNED_EXACT_LINES = {"你。", "只有。", "请。"}
 
+ROUTING_PATH_BY_HISTORY_MODEL_NAME = {
+    "plan-fast-route": "plan_fast_route",
+    "plan-query-fast-route": "plan_query_fast_route",
+    "major-intent-fast-route": "major_intent_fast_route",
+    "major-compare-fast-route": "major_compare_fast_route",
+    "career-direction-fast-route": "career_direction_fast_route",
+    "pending-intent-impact-fast-route": "pending_intent_impact_fast_route",
+    "direct-pending-plan-confirmation": "direct_pending_plan_confirm",
+    "direct-pending-intent-confirmation": "direct_pending_intent_confirm",
+    "direct-plan-confirmation-guard": "plan_confirmation_guard_no_pending",
+}
+
+ROUTING_PATH_BY_TOOL_CALL_ID_PREFIX = (
+    ("fast-plan-next-", "plan_fast_route"),
+    ("fast-execute-", "plan_fast_route"),
+    ("fast-query-volunteer-plan", "plan_query_fast_route"),
+    ("fast-preview-major-intent", "major_intent_fast_route"),
+    ("fast-compare-majors", "major_compare_fast_route"),
+    ("fast-analyze-current-career-direction", "career_direction_fast_route"),
+    ("direct-pending-intent-confirmation", "direct_pending_intent_confirm"),
+)
+
 
 async def _ask_once(
     url: str,
@@ -253,6 +275,26 @@ def _plan_payload_fields_from_call_args(args: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _add_unique(target: list[str], value: Any) -> None:
+    text = str(value or "").strip()
+    if text and text not in target:
+        target.append(text)
+
+
+def _routing_path_from_model_name(model_name: Any) -> str:
+    return ROUTING_PATH_BY_HISTORY_MODEL_NAME.get(str(model_name or "").strip(), "")
+
+
+def _routing_path_from_tool_call_id(call_id: Any) -> str:
+    text = str(call_id or "").strip()
+    for prefix, routing_path in ROUTING_PATH_BY_TOOL_CALL_ID_PREFIX:
+        if text.startswith(prefix):
+            return routing_path
+    if text.startswith("direct-") and text.endswith("-confirmation"):
+        return "direct_pending_plan_confirm"
+    return ""
+
+
 def _summarize_turn_observability(turn_messages: list[dict[str, Any]]) -> dict[str, Any]:
     """Extract tool/action metadata from persisted pydantic-ai JSON history."""
     tool_calls: list[dict[str, Any]] = []
@@ -260,15 +302,12 @@ def _summarize_turn_observability(turn_messages: list[dict[str, Any]]) -> dict[s
     tool_return_count = 0
     action_families: list[str] = []
     result_kinds: list[str] = []
-
-    def add_unique(target: list[str], value: Any) -> None:
-        text = str(value or "").strip()
-        if text and text not in target:
-            target.append(text)
+    routing_paths: list[str] = []
 
     for message in turn_messages:
         if not isinstance(message, dict):
             continue
+        _add_unique(routing_paths, _routing_path_from_model_name(message.get("model_name")))
         for part in message.get("parts") or []:
             if not isinstance(part, dict):
                 continue
@@ -276,6 +315,7 @@ def _summarize_turn_observability(turn_messages: list[dict[str, Any]]) -> dict[s
             tool_name = str(part.get("tool_name") or "").strip()
             call_id = str(part.get("tool_call_id") or "").strip()
             if kind == "tool-call" and tool_name:
+                _add_unique(routing_paths, _routing_path_from_tool_call_id(call_id))
                 args = _parse_json_object(part.get("args"))
                 item: dict[str, Any] = {"name": tool_name}
                 if call_id:
@@ -289,7 +329,7 @@ def _summarize_turn_observability(turn_messages: list[dict[str, Any]]) -> dict[s
                 stage = str(args.get("current_stage") or "").strip()
                 if stage:
                     item["stage"] = stage
-                add_unique(action_families, item.get("actionFamily"))
+                _add_unique(action_families, item.get("actionFamily"))
                 tool_calls.append(item)
                 continue
             if kind == "tool-return" and tool_name:
@@ -306,12 +346,12 @@ def _summarize_turn_observability(turn_messages: list[dict[str, Any]]) -> dict[s
         result_kind = str(returned.get("result_kind") or "").strip()
         if action_family:
             item["actionFamily"] = action_family
-            add_unique(action_families, action_family)
+            _add_unique(action_families, action_family)
         if stage:
             item["stage"] = stage
         if result_kind:
             item["resultKind"] = result_kind
-            add_unique(result_kinds, result_kind)
+            _add_unique(result_kinds, result_kind)
         if "applied" in returned:
             item["applied"] = bool(returned.get("applied"))
         message_code = str(returned.get("messageCode") or "").strip()
@@ -320,7 +360,7 @@ def _summarize_turn_observability(turn_messages: list[dict[str, Any]]) -> dict[s
         if returned:
             item["success"] = result_kind != "error"
 
-    return {
+    summary = {
         "historyMessages": len(turn_messages),
         "toolCallCount": len(tool_calls),
         "toolReturnCount": tool_return_count,
@@ -328,6 +368,11 @@ def _summarize_turn_observability(turn_messages: list[dict[str, Any]]) -> dict[s
         "actionFamilies": action_families,
         "resultKinds": result_kinds,
     }
+    if routing_paths:
+        summary["routingPath"] = routing_paths[0]
+        if len(routing_paths) > 1:
+            summary["routingPathCandidates"] = routing_paths
+    return summary
 
 
 def _followup_summary(followups: list[dict[str, Any]]) -> tuple[list[str], list[bool]]:

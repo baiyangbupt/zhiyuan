@@ -69,6 +69,7 @@
 - `verdict`：按硬门禁和维度得分给出 `fail / needs_review / strong`，便于后续批量筛出薄回复。
 - 确认保护类回复不套用预览分布门禁：用户只回复“确认/确认这个偏好/确认这个要求”时，如果系统是在说明没有待确认动作或执行确认结果，不要求额外覆盖冲稳保、院校层次、专业热度等分布，避免把正确的确认边界保护误判为薄预览。
 - `expectedKeyPoints / forbiddenPatterns`：case 定义里的业务期望点进入自动评分。`expectedKeyPoints` 用来描述该回复必须覆盖的业务含义，工具会尽量按文本短语检查；`forbiddenPatterns` 用来补充该 case 特有的禁用表达。这样可以避免回复格式完整但漏掉“导出顺序影响”“审查待重新看”“确认前不生效”等业务要点时仍被评成 strong。
+- `routingPath`：`dialog_regression_runner.py` 会从历史中的 fast-route `model_name` 或 `fast-/direct-` tool call id 推断本轮路由，并写入 `turnObservability.routingPath`。完整 Agent 调用同名工具时不会仅凭工具名推断快路径，避免把真实路由误标。
 
 ## 3. 评分框架
 

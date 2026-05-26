@@ -678,6 +678,7 @@
   - `effect_perf`：`/private/tmp/zhiyuan_agent_303_effect_perf_latest_live_eval_strict.json`，结果仍为 `strong=14 / needs_review=0 / fail=0`，`qualityViolations=0`。
   - `open_quality`：`/private/tmp/zhiyuan_agent_303_open_quality_latest_live_eval_strict.json`，结果仍为 `strong=9 / needs_review=0 / fail=0`，`qualityViolations=0`。
   - 新规则不会改变 Agent 回复逻辑，只让 case 评估更严格：case 专属禁用表达命中会失败；期望业务点缺失会进入 `needs_review`，避免“回复结构完整但漏掉关键业务说明”被直接放过。
+- runner 可观测性补强：后续真实 WebSocket 回归会从历史中的 fast-route `model_name` 或 `fast-/direct-` tool call id 推断 `turnObservability.routingPath`。这会降低 `missing_route_observability` warning，并避免完整 Agent 调用同名工具时被误标为快路径。
 
 ## 11. 当前回复质量结论与后续关注点
 
