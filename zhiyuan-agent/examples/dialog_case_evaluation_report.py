@@ -70,6 +70,22 @@ _EXPECTED_ACTIONS_BY_COVERAGE: dict[str, str] = {
 
 _VERDICT_RANK = {"fail": 0, "needs_review": 1, "strong": 2}
 
+_ASSERTION_FIELDS = (
+    "assertContains",
+    "assertContainsAny",
+    "assertNotContains",
+    "assertNoFollowups",
+    "assertFollowupTarget",
+    "assertFollowupRefresh",
+)
+
+_QUALITY_EXPECTATION_FIELDS = (
+    "expectedKeyPoints",
+    "qualityFocus",
+    "manualReviewFocus",
+    "forbiddenPatterns",
+)
+
 
 def _load_json(path: str) -> Any:
     return json.loads(Path(path).read_text(encoding="utf-8"))
@@ -170,6 +186,20 @@ def _load_case_definitions(path: str) -> dict[str, dict[str, Any]]:
                 metadata["expectedRoutingPath"] = expected_route
             if expected_action:
                 metadata["expectedActionFamily"] = expected_action
+            assertions = {
+                field: prompt.get(field)
+                for field in _ASSERTION_FIELDS
+                if field in prompt
+            }
+            if assertions:
+                metadata["assertions"] = assertions
+            quality_expectations = {
+                field: prompt.get(field)
+                for field in _QUALITY_EXPECTATION_FIELDS
+                if field in prompt
+            }
+            if quality_expectations:
+                metadata["qualityExpectations"] = quality_expectations
             definitions[metadata["recordKey"]] = metadata
     return definitions
 
@@ -194,6 +224,8 @@ def _merge_record_metadata(record: dict[str, Any], metadata: dict[str, Any] | No
         "assertPlanStyle",
         "expectedRoutingPath",
         "expectedActionFamily",
+        "assertions",
+        "qualityExpectations",
     ):
         value = metadata.get(key)
         if value not in (None, "", []):
@@ -707,6 +739,8 @@ def _build_case_report(
         "expectedRoutingPath": metadata.get("expectedRoutingPath"),
         "expectedActionFamily": metadata.get("expectedActionFamily"),
         "latencyBudget": metadata.get("latencyBudget") or {},
+        "assertions": metadata.get("assertions") or {},
+        "qualityExpectations": metadata.get("qualityExpectations") or {},
         "baseline": {
             "reply": _extract_text(baseline_row or {}),
             "elapsedMs": (baseline_row or {}).get("elapsedMs"),
@@ -956,6 +990,179 @@ def _format_score_for_markdown(score: dict[str, Any] | None) -> str:
     return f"{verdict} {dimensions}{suffix}"
 
 
+def _markdown_escape_table(text: Any) -> str:
+    normalized = _normalize_text(text)
+    return normalized.replace("|", "\\|").replace("\n", "<br>")
+
+
+def _markdown_code_block(text: Any) -> list[str]:
+    normalized = _normalize_text(text)
+    if not normalized:
+        return ["_无_"]
+    return ["```text", normalized, "```"]
+
+
+def _format_list_for_markdown(values: Any) -> str:
+    if isinstance(values, dict):
+        if not values:
+            return "_无_"
+        return ", ".join(f"{key}={value}" for key, value in values.items())
+    if isinstance(values, list):
+        if not values:
+            return "_无_"
+        return ", ".join(_normalize_text(value) for value in values if _normalize_text(value)) or "_无_"
+    text = _normalize_text(values)
+    return text or "_无_"
+
+
+def _score_table_rows(score: dict[str, Any] | None) -> list[str]:
+    if not isinstance(score, dict):
+        return ["| 维度 | 分数 |", "|---|---:|", "| 无 | - |"]
+    rows = ["| 维度 | 分数 |", "|---|---:|"]
+    labels = {
+        "correctness": "正确性",
+        "completeness": "完整度",
+        "naturalness": "自然度",
+        "actionability": "决策支持度",
+        "structure": "结构清楚度",
+        "latency": "延迟",
+        "route": "路由",
+    }
+    for key, label in labels.items():
+        rows.append(f"| {label} | {score.get(key, '-')} |")
+    return rows
+
+
+def _manual_review_items(item: dict[str, Any]) -> list[str]:
+    score = item.get("current", {}).get("score") if isinstance(item.get("current"), dict) else {}
+    quality_expectations = item.get("qualityExpectations") if isinstance(item.get("qualityExpectations"), dict) else {}
+    items = [
+        "用户核心诉求是否被正面回答。",
+        "结论、依据、影响和下一步是否齐全。",
+        "是否为了变快而丢失用户需要的信息。",
+        "是否存在内部术语、确认边界或误执行风险。",
+        "回复结构是否清楚且不像生硬模板。",
+    ]
+    if _is_preview_or_example_case({"case": item.get("case"), "prompt": item.get("prompt")}, item.get("current", {}).get("reply", "")):
+        items.append("预览或举例是否覆盖学校层次、冲稳保、专业热度、数量空间和代表样本。")
+    if isinstance(score, dict) and score.get("verdict") == "needs_review":
+        items.append("该 case 被自动标为 needs_review，需要人工判断是否达到可上线质量。")
+    if quality_expectations:
+        items.append("对照 qualityExpectations 检查是否遗漏业务期望点。")
+    return items
+
+
+def _render_markdown_summary(summary: dict[str, Any]) -> list[str]:
+    current_summary = summary.get("current", {}) if isinstance(summary.get("current"), dict) else {}
+    candidate_summary = summary.get("candidateSummary", {}) if isinstance(summary.get("candidateSummary"), dict) else {}
+    lines = [
+        "# Dialog Case Evaluation Report",
+        "",
+        "## Summary",
+        "",
+        f"- totalCases: {summary.get('totalCases', 0)}",
+        f"- current verdicts: {current_summary.get('verdicts', {})}",
+        f"- quality violations: {current_summary.get('qualityViolationsByType', {})}",
+        f"- evaluation warnings: {current_summary.get('evaluationWarningsByType', {})}",
+        f"- latency: {current_summary.get('latency', {})}",
+        f"- acceptance: {summary.get('acceptance', {})}",
+        "",
+        "## Scenario Summary",
+        "",
+        "| flow | count | verdicts | violations | latency |",
+        "|---|---:|---|---|---|",
+    ]
+    for flow, value in (summary.get("scenarioSummary") or {}).items():
+        lines.append(
+            f"| {_markdown_escape_table(flow)} | {value.get('count', 0)} | {_markdown_escape_table(value.get('verdicts', {}))} | {_markdown_escape_table(value.get('qualityViolationsByType', {}))} | {_markdown_escape_table(value.get('latency', {}))} |"
+        )
+    if candidate_summary:
+        lines.extend(["", "## Candidate Summary", "", "| candidate | count | verdicts | latency |", "|---|---:|---|---|"])
+        for name, value in candidate_summary.items():
+            lines.append(
+                f"| {_markdown_escape_table(name)} | {value.get('count', 0)} | {_markdown_escape_table(value.get('verdicts', {}))} | {_markdown_escape_table(value.get('latency', {}))} |"
+            )
+    return lines
+
+
+def _render_markdown_table(reports: list[dict[str, Any]], summary: dict[str, Any]) -> str:
+    lines = _render_markdown_summary(summary)
+    lines.extend(["", "## Cases", "", "| case | flow | baseline | current | candidates |", "|---|---|---|---|---|"])
+    for item in reports:
+        baseline = item.get("baseline", {}).get("reply", "")
+        current = item.get("current", {}).get("reply", "")
+        candidate_text = "; ".join(
+            f"{candidate.get('name')}: {_format_score_for_markdown(candidate.get('score'))} {candidate.get('reply', '')}"
+            for candidate in item.get("candidates", [])
+        )
+        lines.append(
+            f"| {_markdown_escape_table(item.get('case', ''))} | {_markdown_escape_table(','.join(item.get('flow') or []))} | {_markdown_escape_table(_format_score_for_markdown(item.get('baseline', {}).get('score')) + ' ' + baseline[:80])} | {_markdown_escape_table(_format_score_for_markdown(item.get('current', {}).get('score')) + ' ' + current[:80])} | {_markdown_escape_table(candidate_text[:120])} |"
+        )
+    return "\n".join(lines)
+
+
+def _render_case_detail(item: dict[str, Any]) -> list[str]:
+    current = item.get("current", {}) if isinstance(item.get("current"), dict) else {}
+    baseline = item.get("baseline", {}) if isinstance(item.get("baseline"), dict) else {}
+    score = current.get("score") if isinstance(current.get("score"), dict) else {}
+    lines = [
+        f"### {item.get('case', '')}#{item.get('stepIndex', '')}",
+        "",
+        f"- flow: {_format_list_for_markdown(item.get('flow'))}",
+        f"- coverage: {_format_list_for_markdown(item.get('coverage'))}",
+        f"- sessionId: {_normalize_text(item.get('sessionId')) or '-'}",
+        f"- expected route/action: {_normalize_text(item.get('expectedRoutingPath')) or '-'} / {_normalize_text(item.get('expectedActionFamily')) or '-'}",
+        f"- latency budget: {_format_list_for_markdown(item.get('latencyBudget'))}",
+        f"- current latency: elapsed={current.get('elapsedMs')}ms, first={current.get('firstMessageMs')}ms, final={current.get('finalMessageMs')}ms",
+        f"- score: {_format_score_for_markdown(score)}",
+        f"- quality violations: {_format_list_for_markdown(score.get('qualityViolations') if isinstance(score, dict) else [])}",
+        f"- evaluation warnings: {_format_list_for_markdown(score.get('evaluationWarnings') if isinstance(score, dict) else [])}",
+        f"- distribution coverage: {_format_list_for_markdown(score.get('distributionCoverage') if isinstance(score, dict) else [])}",
+        f"- routing/action/tool: {_normalize_text(score.get('routingPath') if isinstance(score, dict) else None) or '-'} / {_format_list_for_markdown(score.get('actionFamilies') if isinstance(score, dict) else [])} / {_format_list_for_markdown(score.get('toolNames') if isinstance(score, dict) else [])}",
+        "",
+        "**用户输入**",
+        "",
+        *_markdown_code_block(item.get("prompt")),
+        "",
+        "**当前回复**",
+        "",
+        *_markdown_code_block(current.get("reply")),
+        "",
+        "**自动评分**",
+        "",
+        *_score_table_rows(score if isinstance(score, dict) else None),
+    ]
+    if _normalize_text(baseline.get("reply")):
+        lines.extend(["", "**基线回复**", "", *_markdown_code_block(baseline.get("reply"))])
+    candidates = item.get("candidates") if isinstance(item.get("candidates"), list) else []
+    if candidates:
+        lines.extend(["", "**候选回复**", ""])
+        for candidate in candidates:
+            lines.append(f"- {candidate.get('name')}: {_format_score_for_markdown(candidate.get('score'))}")
+            lines.extend(_markdown_code_block(candidate.get("reply")))
+    assertions = item.get("assertions") if isinstance(item.get("assertions"), dict) else {}
+    quality_expectations = item.get("qualityExpectations") if isinstance(item.get("qualityExpectations"), dict) else {}
+    if assertions or quality_expectations:
+        lines.extend(["", "**Case 期望**", ""])
+        if assertions:
+            lines.append(f"- assertions: {_format_list_for_markdown(assertions)}")
+        if quality_expectations:
+            lines.append(f"- qualityExpectations: {_format_list_for_markdown(quality_expectations)}")
+    lines.extend(["", "**人工复核清单**", ""])
+    for review_item in _manual_review_items(item):
+        lines.append(f"- {review_item}")
+    lines.append("")
+    return lines
+
+
+def _render_markdown_detail(reports: list[dict[str, Any]], summary: dict[str, Any]) -> str:
+    lines = _render_markdown_summary(summary)
+    lines.extend(["", "## Case Details", ""])
+    for item in reports:
+        lines.extend(_render_case_detail(item))
+    return "\n".join(lines)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build case-level evaluation reports.")
     parser.add_argument("--baseline", help="baseline dialog regression JSON")
@@ -964,6 +1171,7 @@ def main() -> None:
     parser.add_argument("--case-definitions", action="append", default=[], help="runner case definition JSON; can be repeated")
     parser.add_argument("--output", help="write report JSON to this path")
     parser.add_argument("--markdown", action="store_true", help="render a markdown table instead of JSON")
+    parser.add_argument("--markdown-detail", action="store_true", help="render a detailed markdown report with full replies and review checklist")
     args = parser.parse_args()
 
     baseline_payload = _load_payload(args.baseline) if args.baseline else {}
@@ -996,38 +1204,10 @@ def main() -> None:
         )
 
     payload = {"count": len(reports), "summary": _summarize_reports(reports), "cases": reports}
-    if args.markdown:
-        summary = payload["summary"]
-        current_summary = summary.get("current", {})
-        acceptance = summary.get("acceptance", {})
-        lines = [
-            "# Dialog Case Evaluation Report",
-            "",
-            "## Summary",
-            "",
-            f"- totalCases: {summary.get('totalCases', 0)}",
-            f"- current verdicts: {current_summary.get('verdicts', {})}",
-            f"- quality violations: {current_summary.get('qualityViolationsByType', {})}",
-            f"- evaluation warnings: {current_summary.get('evaluationWarningsByType', {})}",
-            f"- latency: {current_summary.get('latency', {})}",
-            f"- acceptance: {acceptance}",
-            "",
-            "## Cases",
-            "",
-            "| case | flow | baseline | current | candidates |",
-            "|---|---|---|---|---|",
-        ]
-        for item in reports:
-            baseline = item.get("baseline", {}).get("reply", "")
-            current = item.get("current", {}).get("reply", "")
-            candidate_text = "; ".join(
-                f"{candidate.get('name')}: {_format_score_for_markdown(candidate.get('score'))} {candidate.get('reply', '')}"
-                for candidate in item.get("candidates", [])
-            )
-            lines.append(
-                f"| {item.get('case', '')} | {','.join(item.get('flow') or [])} | {_format_score_for_markdown(item.get('baseline', {}).get('score'))} {baseline[:80]} | {_format_score_for_markdown(item.get('current', {}).get('score'))} {current[:80]} | {candidate_text[:120]} |"
-            )
-        text = "\n".join(lines)
+    if args.markdown_detail:
+        text = _render_markdown_detail(reports, payload["summary"])
+    elif args.markdown:
+        text = _render_markdown_table(reports, payload["summary"])
     else:
         text = json.dumps(payload, ensure_ascii=False, indent=2)
     if args.output:

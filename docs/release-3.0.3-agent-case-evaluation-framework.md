@@ -352,6 +352,13 @@ python3 examples/dialog_case_evaluation_report.py \
   --case-definitions examples/dialog_regression_303_effect_perf_cases.json \
   --candidates models=/private/tmp/model-provider-agent-benchmark.json \
   --output /private/tmp/dialog-case-evaluation-report.json
+
+# 4. 生成便于人工细评回复质量的完整 Markdown
+python3 examples/dialog_case_evaluation_report.py \
+  --current /private/tmp/dialog-regression-303-current-text.json \
+  --case-definitions examples/dialog_regression_303_effect_perf_cases.json \
+  --markdown-detail \
+  --output /private/tmp/dialog-case-evaluation-detail.md
 ```
 
 ## 7. 版本对照方式
@@ -373,8 +380,9 @@ python3 examples/dialog_case_evaluation_report.py \
 建议每轮评估输出三份文件：
 
 1. `case_results.json`：逐 case 原始结果。
-2. `case_summary.md`：逐 case 结论和问题摘要。
-3. `model_matrix.md`：模型横向对比总表。
+2. `case_summary.md`：逐 case 结论和问题摘要，适合快速扫结果。
+3. `case_detail.md`：逐 case 完整用户输入、完整回复、评分表、质量问题、链路证据和人工复核清单，适合评审回复质量。
+4. `model_matrix.md`：模型横向对比总表。
 
 ## 9. 后续执行顺序
 

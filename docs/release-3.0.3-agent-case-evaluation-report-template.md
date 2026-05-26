@@ -56,6 +56,30 @@
 | routingPath / actionFamilies / toolNames | 链路证据 |
 | manualReview | 人工复核结论和扣分原因 |
 
+### 2.1 详细 Markdown 报告
+
+人工评审回复质量时，优先生成详细 Markdown：
+
+```bash
+cd zhiyuan-agent
+
+python3 examples/dialog_case_evaluation_report.py \
+  --current /private/tmp/dialog-regression-303-current-text.json \
+  --case-definitions examples/dialog_regression_303_effect_perf_cases.json \
+  --markdown-detail \
+  --output /private/tmp/dialog-case-evaluation-detail.md
+```
+
+详细报告每个 case 应包含：
+
+- 用户输入原文。
+- 当前版本完整回复。
+- 基线回复和候选模型回复，如果本轮提供了对照数据。
+- 自动评分表。
+- 覆盖维度、质量问题、warning、路由和工具证据。
+- case 定义里的断言和质量期望。
+- 人工复核清单。
+
 ## 3. 回复质量评分
 
 自动评分和人工评分都按 1-5 分理解：

@@ -249,6 +249,9 @@ def test_case_definitions_attach_flow_coverage_and_latency_budget(tmp_path):
                             "prompt": "按院校层次排序",
                             "warnElapsedSeconds": 3,
                             "maxElapsedSeconds": 5,
+                            "assertContains": ["排序", "确认"],
+                            "expectedKeyPoints": ["说明导出顺序影响", "说明审查需要重新看"],
+                            "qualityFocus": ["preview_confirm_boundary"],
                         }
                     ],
                 }
@@ -282,6 +285,11 @@ def test_case_definitions_attach_flow_coverage_and_latency_budget(tmp_path):
     assert merged["expectedRoutingPath"] == "plan_fast_route"
     assert merged["expectedActionFamily"] == "sort_ordered_plan"
     assert merged["latencyBudget"] == {"warnElapsedMs": 3000, "maxElapsedMs": 5000}
+    assert merged["assertions"] == {"assertContains": ["排序", "确认"]}
+    assert merged["qualityExpectations"] == {
+        "expectedKeyPoints": ["说明导出顺序影响", "说明审查需要重新看"],
+        "qualityFocus": ["preview_confirm_boundary"],
+    }
     assert "latency_warn_exceeded" in ",".join(merged["current"]["score"]["evaluationWarnings"])
     assert "missing_route_observability" in ",".join(merged["current"]["score"]["evaluationWarnings"])
 
@@ -381,3 +389,57 @@ def test_summarize_reports_groups_quality_by_scenario_and_coverage():
     assert summary["candidateSummary"]["provider-a/model-a"]["verdicts"] == {"needs_review": 1}
     assert summary["baselineComparison"] == {"improved": 1, "same": 0, "regressed": 0, "incomparable": 0}
     assert summary["acceptance"]["passedHardGates"] is True
+
+
+def test_render_markdown_detail_includes_full_reply_and_review_checklist():
+    report_item = {
+        "case": "case-a",
+        "stepIndex": 1,
+        "flow": ["plan"],
+        "coverage": ["plan_fast_route", "preview_confirm_boundary"],
+        "prompt": "把A大学的法学改到第3位",
+        "sessionId": "17",
+        "expectedRoutingPath": "plan_fast_route",
+        "expectedActionFamily": "move_unit",
+        "latencyBudget": {"warnElapsedMs": 3000},
+        "assertions": {"assertContains": ["确认"]},
+        "qualityExpectations": {"expectedKeyPoints": ["说明位置变化"]},
+        "current": {
+            "reply": (
+                "已定位到 A大学-法学，当前在第8位，会移动到第3位。\n\n"
+                "执行后会改变方案顺序和导出顺序，并让审查状态进入待重新审查。\n"
+                "需要你确认后才会执行。"
+            ),
+            "elapsedMs": 1200,
+            "firstMessageMs": 100,
+            "finalMessageMs": 300,
+            "score": {
+                "verdict": "strong",
+                "correctness": 5,
+                "completeness": 5,
+                "naturalness": 4,
+                "actionability": 5,
+                "structure": 4,
+                "latency": 5,
+                "route": 5,
+                "distributionCoverage": ["quantity_space"],
+                "qualityViolations": [],
+                "evaluationWarnings": [],
+                "routingPath": "plan_fast_route",
+                "actionFamilies": ["move_unit"],
+                "toolNames": ["execute_plan_action"],
+            },
+        },
+        "baseline": {"reply": "会移动。", "score": {"verdict": "needs_review"}},
+        "candidates": [],
+    }
+    summary = report._summarize_reports([report_item])
+
+    markdown = report._render_markdown_detail([report_item], summary)
+
+    assert "## Case Details" in markdown
+    assert "把A大学的法学改到第3位" in markdown
+    assert "已定位到 A大学-法学" in markdown
+    assert "| 正确性 | 5 |" in markdown
+    assert "人工复核清单" in markdown
+    assert "expectedKeyPoints" in markdown

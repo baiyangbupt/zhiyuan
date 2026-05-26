@@ -20,6 +20,7 @@
 - 审查后续调整预览纳入 Plan 高置信快路径：明确“针对最严重/风险/审查问题，先给调整预览/怎么调，不要执行”时直接走既有 `plan_next_action -> execute_plan_action`，避免完整 Agent 重复 `query_volunteer_plan` 导致近百秒慢请求；普通“最严重的问题是什么”仍不抢路由。
 - 3.0.3 Agent case 级评估框架补强为完整质量闭环：文档明确回复质量、场景覆盖、多轮链路、路由工具链、延迟进度、安全边界和多模型对照七层评估；报告模板要求保留用户输入、完整回复原文、人工扣分原因和模型横向汇总。
 - `dialog_case_evaluation_report.py` 支持读取 `--case-definitions`，把 case 的 `flow / coverage / warnElapsedSeconds / maxElapsedSeconds / expectedRoutingPath / expectedActionFamily` 合并到评估结果，并输出 `summary.current / scenarioSummary / coverageSummary / candidateSummary / baselineComparison` 等批量汇总。
+- `dialog_case_evaluation_report.py` 新增 `--markdown-detail`，用于生成逐 case 详细回复质量评审报告，包含用户输入、完整回复、评分表、覆盖维度、链路证据、case 期望和人工复核清单。
 - `conversation_turn_event` 补充 3.0.3 观测字段：`routeDecision`、LLM request/token、toolCallCount 和结构化 toolCalls 摘要；full-agent 工具调用会记录 actionFamily、stage、resultKind、applied/messageCode，direct pending/guard 路径明确记录 `llmRequests=0`。
 - `dialog_regression_runner.py` 的 metrics 输出新增 `turnObservability`，从本地 SQLite 历史解析每轮 tool call、actionFamily、stage、resultKind 和 applied 状态，便于在 WebSocket e2e 中定位慢点和误路由。
 - 新增 Plan 高置信快路径 `plan_fast_route`：在已有 planning summary 时，方案状态、数字志愿/专业组移动、数字删除、指定维度排序和显式审查会跳过主模型自由试工具，直接进入 `_plan_next_action_model -> execute_plan_action`；高副作用动作仍只生成 preview，确认后再 apply。
