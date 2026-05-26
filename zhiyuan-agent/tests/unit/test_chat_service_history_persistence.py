@@ -3492,6 +3492,9 @@ def test_chat_service_no_pending_confirm_infers_context_from_text_only_history(
         reply = asyncio.run(service.handle_message(session_id, "user-1", "确认"))
 
     assert expected in reply
+    if expected == "上一轮只是查询当前方案或候选结果":
+        assert "不会执行移动、删除、加入或排序" in reply
+        assert "不会改动当前方案" in reply
     assert fake_agent.calls == []
 
 

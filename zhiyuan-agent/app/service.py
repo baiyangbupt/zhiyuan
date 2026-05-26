@@ -1365,6 +1365,7 @@ def _build_no_pending_confirmation_guard_reply(messages: list[Any] | None) -> st
     if context_kind == "plan_query":
         return (
             "上一轮只是查询当前方案或候选结果，没有待执行的方案动作。\n\n"
+            "边界提醒：这次不会执行移动、删除、加入或排序，也不会改动当前方案。\n\n"
             "下一步可以这样继续：\n"
             "- 处理当前方案：说要移动、删除或按哪个维度排序。\n"
             "- 处理候选志愿：说要加入哪所学校或哪个专业，我会先给确认预览。"

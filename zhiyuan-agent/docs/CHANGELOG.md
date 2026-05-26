@@ -16,6 +16,7 @@
 - 扩展 `dialog_regression_303_open_quality_cases.json` 到 7 个 case，补充局部查询后确认保护、推荐系数排序预览、非固定专业对比和三方向职业承接，并新增目录级单测约束这些开放式质量场景必须保留 no-followup、确认边界、内部术语屏蔽和耗时预算。
 - 职业方向快路由补强“支撑 / 短板”只读语义，修复三方向职业承接问法回落完整 Agent 的性能退化；高副作用表达仍由“记偏好 / 改方案 / 确认”等拦截，不改变确认边界。
 - 待确认意向用户文案统一为“确认前不会写入后续参考 / 我再写入后续参考”，覆盖待确认预览、影响追问和旧回复清洗，避免“正式生效”让用户误解为已记录；确认后应用逻辑不变。
+- 无 pending 的只读查询确认保护补充边界提示，明确不会执行移动、删除、加入或排序，也不会改动当前方案；open-quality 离线评分达到 `strong=9 / needs_review=0`。
 - `conversation_turn_event` 补充 3.0.3 观测字段：`routeDecision`、LLM request/token、toolCallCount 和结构化 toolCalls 摘要；full-agent 工具调用会记录 actionFamily、stage、resultKind、applied/messageCode，direct pending/guard 路径明确记录 `llmRequests=0`。
 - `dialog_regression_runner.py` 的 metrics 输出新增 `turnObservability`，从本地 SQLite 历史解析每轮 tool call、actionFamily、stage、resultKind 和 applied 状态，便于在 WebSocket e2e 中定位慢点和误路由。
 - 新增 Plan 高置信快路径 `plan_fast_route`：在已有 planning summary 时，方案状态、数字志愿/专业组移动、数字删除、指定维度排序和显式审查会跳过主模型自由试工具，直接进入 `_plan_next_action_model -> execute_plan_action`；高副作用动作仍只生成 preview，确认后再 apply。
