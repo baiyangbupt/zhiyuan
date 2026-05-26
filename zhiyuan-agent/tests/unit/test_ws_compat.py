@@ -772,7 +772,7 @@ def test_ws_compat_timeout_uses_pending_intent_fallback_after_plan_miss(client):
     client.app.state.chat_service = mock_service
 
     fallback = ChatServiceResponseEnvelope(
-        primary="我已经把这次提到的想法整理成待确认内容了。\n\n- 把法学类作为后续优先参考的专业方向\n- 明确不考虑：护理学类\n\n如果确认要作为后续参考，直接回复“确认这个要求”。确认前不会正式生效，也不会直接改动当前方案。",
+        primary="我已经把这次提到的想法整理成待确认内容了。\n\n- 确认后，将把法学类作为后续优先参考的专业方向\n- 确认后，将把护理学类作为明确不考虑的内容，后续查看候选和方案时会按这个要求作为参考\n\n如果确认要作为后续参考，直接回复“确认这个要求”。确认前不会正式生效，也不会直接改动当前方案。",
     )
 
     with client.websocket_connect(WS_PATH) as ws:

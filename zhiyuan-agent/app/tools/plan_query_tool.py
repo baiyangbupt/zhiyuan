@@ -388,6 +388,93 @@ def _format_ratio(value: Any) -> str:
     return f"{int(numeric)}%" if numeric.is_integer() else f"{numeric:.1f}%"
 
 
+def _append_unique(values: list[str], value: Any) -> None:
+    text = str(value or "").strip()
+    if text and text not in values:
+        values.append(text)
+
+
+def _as_positive_int(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = int(float(value))
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+def _format_school_profile_summary(items: list[dict[str, Any]]) -> str:
+    labels: list[str] = []
+    ranks: list[int] = []
+    useful_tag_keywords = ("985", "211", "双一流", "公办", "民办", "省重点", "国家重点", "本科")
+    for item in items:
+        school_level = str(item.get("schoolLevel") or "").strip()
+        if school_level:
+            _append_unique(labels, school_level)
+        rank = _as_positive_int(item.get("schoolRank"))
+        if rank is not None:
+            ranks.append(rank)
+        for tag in [*(item.get("schoolRankTags") or []), *(item.get("schoolBasicTags") or [])]:
+            tag_text = str(tag or "").strip()
+            if tag_text and any(keyword in tag_text for keyword in useful_tag_keywords):
+                _append_unique(labels, tag_text)
+
+    if ranks:
+        ordered = sorted(ranks)
+        if ordered[0] == ordered[-1]:
+            _append_unique(labels, f"院校排名约{ordered[0]}")
+        else:
+            _append_unique(labels, f"院校排名约{ordered[0]}-{ordered[-1]}")
+
+    return "、".join(labels[:4]) if labels else "暂无明显学校层次标签"
+
+
+def _format_major_heat_summary(items: list[dict[str, Any]]) -> str:
+    labels: list[str] = []
+    useful_tag_keywords = ("热度", "热门", "冷门", "计划数", "招生计划", "就业", "特色")
+    for item in items:
+        for tag in [*(item.get("majorRankTags") or []), *(item.get("majorPlanTags") or [])]:
+            tag_text = str(tag or "").strip()
+            if tag_text and any(keyword in tag_text for keyword in useful_tag_keywords):
+                if tag_text.startswith("专业热度"):
+                    tag_text = "热度" + tag_text.removeprefix("专业热度")
+                _append_unique(labels, tag_text)
+    return "、".join(labels[:4]) if labels else "暂无明显专业热度标签"
+
+
+def _format_tier_summary(items: list[dict[str, Any]]) -> str:
+    counts = {"冲": 0, "稳": 0, "保": 0, "其他": 0}
+    for item in items:
+        tier = str(item.get("tier") or "").strip()
+        if tier in counts:
+            counts[tier] += 1
+        else:
+            counts["其他"] += 1
+    tier_text = " / ".join(f"{key}{value}" for key, value in counts.items() if value)
+    if not tier_text:
+        tier_text = "暂无明显冲稳保分布"
+    school_text = _format_school_profile_summary(items)
+    heat_text = _format_major_heat_summary(items)
+    return f"冲稳保：{tier_text}；学校层次：{school_text}；专业热度：{heat_text}"
+
+
+def _format_example_reason(item: dict[str, Any]) -> str:
+    parts: list[str] = []
+    tier = str(item.get("tier") or "").strip()
+    if tier:
+        parts.append(f"{tier}区样本")
+    school_level = _format_school_profile_summary([item])
+    if school_level != "暂无明显学校层次标签":
+        parts.append(f"学校层次{school_level}")
+    major_heat = _format_major_heat_summary([item])
+    if major_heat != "暂无明显专业热度标签":
+        parts.append(f"专业信息：{major_heat}")
+    if not parts:
+        parts.append("代表样本")
+    return "，".join(parts)
+
+
 def _build_plan_item_snippet(item: dict[str, Any]) -> str:
     school_name = item.get("schoolName") or "未知院校"
     major_name = item.get("majorName") or "未知专业"
@@ -460,12 +547,19 @@ def _format_plan_result(title: str, items: list[dict[str, Any]], display_keyword
             snippets = "；".join(_build_plan_item_snippet(item) for item in examples)
             return (
                 f"{title}里共命中了 {len(matched)} 条和“{display_keyword}”相关的志愿。"
+                f"关键分布：{_format_tier_summary(matched)}。\n"
                 f"下面仅展示前 {len(examples)} 条示例：{snippets}\n"
+                f"这些例子分别对应：{'；'.join(_format_example_reason(item) for item in examples)}。\n"
                 "下一步如果要处理这些志愿，可以告诉我保留哪几个、移动到哪里，或只看更稳/录取率更高的。"
             )
         return f"{title}里暂时没有命中“{display_keyword}”的志愿。"
     snippets = "；".join(_build_plan_item_snippet(item) for item in items[:5])
-    return f"{title}前几项是：{snippets}\n如果要继续调整，可以告诉我按录取率、院校层次排序，或移动/删除具体志愿。"
+    return (
+        f"{title}前几项是：{snippets}\n"
+        f"关键分布：{_format_tier_summary(items)}。\n"
+        f"这些例子分别对应：{'；'.join(_format_example_reason(item) for item in items[:5])}。\n"
+        "如果要继续调整，可以告诉我按录取率、院校层次排序，或移动/删除具体志愿。"
+    )
 
 
 async def _query_candidate_opportunities(
@@ -525,7 +619,9 @@ def _format_candidate_result(response: dict[str, Any], keyword: str) -> str:
     snippets = "；".join(_build_candidate_item_snippet(item) for item in examples)
     return (
         f"候选里共命中了 {total} 条和“{keyword}”相关的机会。"
+        f"关键分布：{_format_tier_summary(items)}。\n"
         f"下面仅展示前 {len(examples)} 条示例：{snippets}\n"
+        f"这些例子分别对应：{'；'.join(_format_example_reason(item) for item in examples)}。\n"
         "下一步可以继续缩小条件，比如只看更稳、录取率更高，或判断是否值得加入当前方案。"
     )
 
@@ -584,7 +680,9 @@ def _format_structured_plan_result(
         snippets = "；".join(_build_plan_item_snippet(item) for item in examples)
         return (
             f"{title}里共命中了 {len(matched)} 条符合“{description}”的志愿。"
+            f"关键分布：{_format_tier_summary(matched)}。\n"
             f"下面仅展示前 {len(examples)} 条示例：{snippets}\n"
+            f"这些例子分别对应：{'；'.join(_format_example_reason(item) for item in examples)}。\n"
             "下一步如果要处理这些志愿，可以告诉我保留哪几个、移动到哪里，或只看更稳/录取率更高的。"
         )
     return f"{title}里暂时没有命中符合“{description}”的志愿。"
@@ -600,7 +698,9 @@ def _format_structured_candidate_result(response: dict[str, Any], description: s
     snippets = "；".join(_build_candidate_item_snippet(item) for item in examples)
     return (
         f"候选里共命中了 {total} 条符合“{description}”的机会。"
+        f"关键分布：{_format_tier_summary(items)}。\n"
         f"下面仅展示前 {len(examples)} 条示例：{snippets}\n"
+        f"这些例子分别对应：{'；'.join(_format_example_reason(item) for item in examples)}。\n"
         "下一步可以继续缩小条件，比如只看更稳、录取率更高，或判断是否值得加入当前方案。"
     )
 

@@ -771,6 +771,66 @@ def _direction_analysis_sections(
     ]
 
 
+def _direction_focus_snapshot(
+    analysis: dict[str, Any],
+    *,
+    limit: int = 2,
+) -> list[str]:
+    def _looks_like_concrete_sample(text: str) -> bool:
+        if not text:
+            return False
+        if any(marker in text for marker in ("例子", "示例", "样本")):
+            return True
+        return "大学" in text or "学院" in text
+
+    def _sample_text(text: str) -> str:
+        compact = text.strip()
+        for marker in ("例子：", "示例：", "样本："):
+            if marker in compact:
+                return compact.split(marker, 1)[1].strip()
+        return compact
+
+    focus_lines: list[str] = []
+    fit_items = [
+        item
+        for item in _dedupe_texts(analysis.get("currentPlanFit") or [])
+        if "你的当前选科是" not in item and _looks_like_concrete_sample(item)
+    ]
+    conflict_items = [
+        item
+        for item in _dedupe_texts(analysis.get("currentPlanConflict") or [])
+        if _looks_like_concrete_sample(item)
+    ]
+    candidate_items = [
+        item
+        for item in _dedupe_texts(analysis.get("candidateOpportunity") or [])
+        if _looks_like_concrete_sample(item)
+    ]
+    if fit_items:
+        focus_lines.append(f"方案承接代表：{'；'.join(_sample_text(item) for item in fit_items[:limit])}")
+    if conflict_items:
+        focus_lines.append(f"需要留意代表：{'；'.join(_sample_text(item) for item in conflict_items[:limit])}")
+    if candidate_items:
+        focus_lines.append(f"候选机会代表：{'；'.join(_sample_text(item) for item in candidate_items[:limit])}")
+    if not focus_lines:
+        return []
+    unique_lines: list[str] = []
+    seen: set[str] = set()
+    for line in focus_lines:
+        if line in seen:
+            continue
+        seen.add(line)
+        unique_lines.append(line)
+    return unique_lines
+
+
+def _readonly_direction_boundary() -> list[str]:
+    return [
+        "这次只是方向分析，不会自动修改你的偏好、当前方案或方案顺序。",
+        "如果后面需要按这个方向调整方案，我会先给出预览，等你确认后再执行。",
+    ]
+
+
 async def _generate_direction_analysis_content(
     request_context: RequestContext,
     student_fit_facts: list[dict[str, Any]],
@@ -886,6 +946,8 @@ async def preview_direction_analysis_from_request(
     return _format_text_sections(
         ("分析结论", [f"你提到的“{to_career_label(direction_slot)}”，我先帮你做了一个初步判断。"]),
         *_direction_analysis_sections(analysis, fit_title="方向判断"),
+        ("代表样本", _direction_focus_snapshot(analysis)),
+        ("本次边界", _readonly_direction_boundary()),
         ("下一步", next_steps[:4]),
     )
 
@@ -978,6 +1040,8 @@ async def preview_generic_direction_analysis_from_request(
     return _format_text_sections(
         ("分析结论", ["你这句更像是在问自己现阶段更适合优先看哪类方向，我先按这个思路帮你做个初步判断。"]),
         *_direction_analysis_sections(analysis, fit_title="方向判断"),
+        ("代表样本", _direction_focus_snapshot(analysis)),
+        ("本次边界", _readonly_direction_boundary()),
         ("下一步", list(analysis.get("nextActionHints") or [])),
     )
 
@@ -1102,5 +1166,7 @@ async def preview_direction_comparison_from_request(
     return _format_text_sections(
         ("分析结论", [conclusion]),
         *_direction_analysis_sections(current_judgment, fit_title="方案承接"),
+        ("代表样本", _direction_focus_snapshot(current_judgment)),
+        ("本次边界", _readonly_direction_boundary()),
         ("下一步", next_steps[:3]),
     )

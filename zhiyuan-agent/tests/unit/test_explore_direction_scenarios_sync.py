@@ -18,6 +18,7 @@ from app.tools.explore_direction_tool import (
     CAREER_FURTHER_STUDY,
     CAREER_STABLE_EMPLOYMENT,
     CAREER_SYSTEM_PUBLIC_SERVICE,
+    _direction_focus_snapshot,
     preview_direction_analysis_from_request,
     preview_direction_comparison_from_request,
     resolve_career_direction_slots,
@@ -180,6 +181,7 @@ def test_direction_explore_public_service_uses_student_plan_candidate_facts_and_
     assert "北京师范大学-法学" in resp
     assert "中国政法大学-行政管理" in resp
     assert "下一步" in resp
+    assert "代表样本" in resp
     assert "记成后续偏好" in resp
 
     prompt = agent.prompts[0]
@@ -276,6 +278,31 @@ def test_direction_explore_comparison_supports_three_directions_with_distinct_fa
     assert "体制内/考公导向" in prompt
     assert prompt.count('"slot"') >= 6
     assert "如果是多方向，允许比较多个方向，不要默认只有两个" in prompt
+
+
+def test_direction_focus_snapshot_keeps_only_concrete_samples():
+    snapshot = _direction_focus_snapshot(
+        {
+            "currentPlanFit": [
+                "当前方案里和“体制内/考公导向”更贴近的大约有 2 个志愿，承接程度偏弱。",
+                "方案内相对贴近的例子：青岛恒星科技学院-学前教育（冲）；海口经济学院-英语（冲）。",
+                "你的当前选科是物理、历史、地理。",
+            ],
+            "currentPlanConflict": [
+                "当前分数段更适合优先保证就业确定性。",
+            ],
+            "candidateOpportunity": [
+                "候选里和“体制内/考公导向”更相关、但还没进方案的大约还有 46 个机会。",
+                "候选示例：中国政法大学-行政管理；天津师范大学-思想政治教育。",
+            ],
+        }
+    )
+
+    assert snapshot == [
+        "方案承接代表：青岛恒星科技学院-学前教育（冲）；海口经济学院-英语（冲）。",
+        "候选机会代表：中国政法大学-行政管理；天津师范大学-思想政治教育。",
+    ]
+    assert all("大约有" not in item for item in snapshot)
 
 
 def test_direction_explore_comparison_fallback_includes_professional_assessment_hint():

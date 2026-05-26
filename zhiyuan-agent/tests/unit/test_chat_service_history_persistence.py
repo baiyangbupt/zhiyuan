@@ -21,6 +21,7 @@ from app.service import (
     build_runtime_history,
     build_timeout_fallback_from_recent_plan_execution,
     _extract_pending_plan_action,
+    _extract_pending_intent_confirmation_from_history,
     _llm_config_value,
     _normalize_pending_intent_reply,
     _normalize_plan_reply_style,
@@ -765,7 +766,9 @@ def test_missing_weight_major_compare_renderer_is_user_facing_and_structured():
     assert "不要" not in reply
     assert "请只做" not in reply
     assert "内部提示" not in reply
-    assert "当前没有拿到可用的个性化量化评分" in reply
+    assert "方向判断" in reply
+    assert "个性化量化评分" not in reply
+    assert "系统评分" not in reply
 
 
 def test_missing_weight_major_compare_renderer_handles_other_major_pairs():
@@ -782,7 +785,9 @@ def test_missing_weight_major_compare_renderer_handles_other_major_pairs():
     assert "临床医学类" in reply
     assert "口腔医学类" in reply
     assert "选择建议" in reply
-    assert "当前没有拿到可用的个性化量化评分" in reply
+    assert "方向判断" in reply
+    assert "个性化量化评分" not in reply
+    assert "系统评分" not in reply
 
 
 def test_missing_weight_major_compare_renderer_uses_prompt_context_when_profile_missing():
@@ -825,8 +830,10 @@ def test_render_intent_constraint_confirm_avoids_overstating_candidate_pool_chan
     )
 
     assert "记录为后续筛选和方案调整参考" in reply
-    assert "候选展示会按这条要求更新" in reply
+    assert "后续查看候选和方案时会按这条要求作为参考" in reply
+    assert "- 候选结果：按当前要求查看时约 12 个，整体候选约 100 个。" in reply
     assert "候选结果收紧" not in reply
+    assert "候选展示会按这条要求更新" not in reply
 
 
 def test_chat_service_major_compare_fast_route_missing_weight_uses_renderer_without_llm(
@@ -2040,7 +2047,9 @@ def test_chat_service_does_not_directly_apply_empty_compensation_preview_on_conf
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-compensation-empty-confirm", "user-1", "确认"))
 
-    assert reply == "我这边没有上一轮待确认的方案动作。你可以直接说想生成方案、审查方案或怎么调整，我会先说明影响，确认后再执行。"
+    assert "没有上一轮待确认的方案动作" in reply
+    assert "生成或查看方案" in reply
+    assert "确认后再执行" in reply
     execute_mock.assert_not_awaited()
     assert fake_agent.calls == []
 
@@ -2167,7 +2176,12 @@ def test_chat_service_directly_applies_pending_replace_on_confirm(tmp_path, mock
         )
 
     assert isinstance(reply, ChatServiceResponseEnvelope)
-    assert reply.primary == "已替换广西师范大学006专业组-生物科学，并补入新的保底志愿。"
+    assert reply.primary == (
+        "已替换广西师范大学006专业组-生物科学，并补入新的保底志愿。\n\n"
+        "方案内容和导出内容已同步更新。\n"
+        "- 审查状态：待重新审查。\n"
+        "- 下一步：可以到方案区查看替换结果，必要时再点“审查”。"
+    )
     assert progress_hints == ["正在按你的确认更新方案，完成后会刷新工作台..."]
     assert [json.loads(item.content)["targetView"] for item in reply.followups] == ["ordered"]
     execute_mock.assert_awaited_once()
@@ -2239,7 +2253,12 @@ def test_chat_service_directly_applies_pending_replace_on_confirm_even_with_stal
         reply = asyncio.run(service.handle_message("session-replace-direct-confirm-stale-intent", "user-1", "确认"))
 
     assert isinstance(reply, ChatServiceResponseEnvelope)
-    assert reply.primary == "已替换广西师范大学006专业组-生物科学，并补入新的保底志愿。"
+    assert reply.primary == (
+        "已替换广西师范大学006专业组-生物科学，并补入新的保底志愿。\n\n"
+        "方案内容和导出内容已同步更新。\n"
+        "- 审查状态：待重新审查。\n"
+        "- 下一步：可以到方案区查看替换结果，必要时再点“审查”。"
+    )
     assert [json.loads(item.content)["targetView"] for item in reply.followups] == ["ordered"]
     execute_mock.assert_awaited_once()
     assert fake_agent.calls == []
@@ -2288,6 +2307,224 @@ def test_chat_service_directly_applies_pending_intent_on_short_confirm(tmp_path,
 
     assert reply == "好的，我记下来了。接下来如果你愿意，我可以继续帮你看看现在这份方案哪些地方比较贴近你的想法、哪些地方还可以再优化。"
     assert progress_hints == ["正在按你的确认更新后续参考偏好..."]
+    update_mock.assert_awaited_once()
+    assert update_mock.await_args.kwargs["action"] == "confirm"
+    assert fake_agent.calls == []
+
+
+def test_extract_pending_intent_confirmation_falls_back_to_preview_tool_history():
+    history = [
+        ModelRequest(parts=[UserPromptPart(content="我倾向法学和财政学，但护理不要")]),
+        ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="preview_current_major_intent_confirmation",
+                    args={
+                        "major_intents": {
+                            "level3": ["法学", "财政学"],
+                            "negative_level3": ["护理学"],
+                        },
+                        "intent_mode": "constraint",
+                    },
+                    tool_call_id="fast-preview-major-intent",
+                )
+            ],
+            model_name="major-intent-fast-route",
+        ),
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="preview_current_major_intent_confirmation",
+                    content="待确认偏好。",
+                    tool_call_id="fast-preview-major-intent",
+                )
+            ]
+        ),
+        ModelResponse(parts=[TextPart(content="确认前不会正式生效。")], model_name="major-intent-fast-route"),
+    ]
+
+    pending = _extract_pending_intent_confirmation_from_history(history)
+
+    assert pending is not None
+    assert pending.kind == "intent_change"
+    assert pending.action_family == "set_preference"
+    assert pending.execution_payload == {
+        "major_intents": {"level3": ["法学", "财政学"], "negative_level3": ["护理学"]},
+        "intent_mode": "constraint",
+    }
+    assert pending.created_turn == 1
+
+
+def test_extract_pending_intent_confirmation_clears_after_confirm_result():
+    history = [
+        ModelRequest(parts=[UserPromptPart(content="我倾向法学")]),
+        ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="preview_current_major_intent_confirmation",
+                    args={
+                        "major_intents": {"level3": ["法学"]},
+                        "intent_mode": "preference",
+                    },
+                    tool_call_id="fast-preview-major-intent",
+                )
+            ],
+            model_name="major-intent-fast-route",
+        ),
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="preview_current_major_intent_confirmation",
+                    content="待确认偏好。",
+                    tool_call_id="fast-preview-major-intent",
+                )
+            ]
+        ),
+        ModelResponse(parts=[TextPart(content="确认前不会正式生效。")], model_name="major-intent-fast-route"),
+        ModelRequest(parts=[UserPromptPart(content="确认这个偏好")]),
+        ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="update_volunteer_intent_state",
+                    args={"action": "confirm"},
+                    tool_call_id="direct-pending-intent-confirmation",
+                )
+            ],
+            model_name="direct-pending-intent-confirmation",
+        ),
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="update_volunteer_intent_state",
+                    content=json.dumps({"applied": True, "messageCode": "preference_applied"}, ensure_ascii=False),
+                    tool_call_id="direct-pending-intent-confirmation",
+                )
+            ]
+        ),
+        ModelResponse(parts=[TextPart(content="已记录为参考。")], model_name="direct-pending-intent-confirmation"),
+    ]
+
+    assert _extract_pending_intent_confirmation_from_history(history) is None
+
+
+def test_extract_pending_intent_confirmation_keeps_preview_after_no_pending_failure():
+    history = [
+        ModelRequest(parts=[UserPromptPart(content="我倾向法学")]),
+        ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="preview_current_major_intent_confirmation",
+                    args={
+                        "major_intents": {"level3": ["法学"]},
+                        "intent_mode": "preference",
+                    },
+                    tool_call_id="fast-preview-major-intent",
+                )
+            ],
+            model_name="major-intent-fast-route",
+        ),
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="preview_current_major_intent_confirmation",
+                    content="待确认偏好。",
+                    tool_call_id="fast-preview-major-intent",
+                )
+            ]
+        ),
+        ModelResponse(parts=[TextPart(content="确认前不会正式生效。")], model_name="major-intent-fast-route"),
+        ModelRequest(parts=[UserPromptPart(content="确认这个偏好")]),
+        ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="update_volunteer_intent_state",
+                    args={"action": "confirm"},
+                    tool_call_id="direct-pending-intent-confirmation",
+                )
+            ],
+            model_name="direct-pending-intent-confirmation",
+        ),
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="update_volunteer_intent_state",
+                    content=json.dumps({"applied": False, "messageCode": "no_pending"}, ensure_ascii=False),
+                    tool_call_id="direct-pending-intent-confirmation",
+                )
+            ]
+        ),
+        ModelResponse(parts=[TextPart(content="当前没有待确认的意向调整。")], model_name="direct-pending-intent-confirmation"),
+    ]
+
+    pending = _extract_pending_intent_confirmation_from_history(history)
+
+    assert pending is not None
+    assert pending.execution_payload == {
+        "major_intents": {"level3": ["法学"]},
+        "intent_mode": "preference",
+    }
+
+
+def test_chat_service_directly_applies_pending_intent_from_history_when_backend_cache_missing(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    asyncio.run(
+        store.save(
+            "session-intent-history-fallback",
+            [
+                ModelRequest(parts=[UserPromptPart(content="我倾向法学和财政学，但护理不要")]),
+                ModelResponse(
+                    parts=[
+                        ToolCallPart(
+                            tool_name="preview_current_major_intent_confirmation",
+                            args={
+                                "major_intents": {
+                                    "level3": ["法学", "财政学"],
+                                    "negative_level3": ["护理学"],
+                                },
+                                "intent_mode": "constraint",
+                            },
+                            tool_call_id="fast-preview-major-intent",
+                        )
+                    ],
+                    model_name="major-intent-fast-route",
+                ),
+                ModelRequest(
+                    parts=[
+                        ToolReturnPart(
+                            tool_name="preview_current_major_intent_confirmation",
+                            content="待确认偏好。",
+                            tool_call_id="fast-preview-major-intent",
+                        )
+                    ]
+                ),
+                ModelResponse(parts=[TextPart(content="确认前不会正式生效。")], model_name="major-intent-fast-route"),
+            ],
+        )
+    )
+    fake_agent = _FakeAgent(["不应该调用模型"])
+    intent_result = json.dumps(
+        {
+            "action": "confirm",
+            "sessionId": "session-intent-history-fallback",
+            "intentMode": "constraint",
+            "applied": True,
+            "messageCode": "constraint_applied",
+            "message": "已按你的确认把这条要求记录为后续筛选和方案调整参考。",
+        },
+        ensure_ascii=False,
+    )
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_intent_change_cache", AsyncMock(return_value={"data": {"planEditCache": None}})), \
+            patch("app.service.update_volunteer_intent_state", AsyncMock(return_value=intent_result)) as update_mock:
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(service.handle_message("session-intent-history-fallback", "user-1", "确认这个偏好"))
+
+    assert reply == "已按你的确认把这条要求记录为后续筛选和方案调整参考。"
     update_mock.assert_awaited_once()
     assert update_mock.await_args.kwargs["action"] == "confirm"
     assert fake_agent.calls == []
@@ -3111,7 +3348,9 @@ def test_chat_service_blocks_plan_confirmation_without_pending_action(tmp_path, 
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-no-pending-confirm", "user-1", "确认"))
 
-    assert reply == "我这边没有上一轮待确认的方案动作。你可以直接说想生成方案、审查方案或怎么调整，我会先说明影响，确认后再执行。"
+    assert "没有上一轮待确认的方案动作" in reply
+    assert "生成或查看方案" in reply
+    assert "确认后再执行" in reply
     assert fake_agent.calls == []
     saved_history = asyncio.run(store.load("session-no-pending-confirm"))
     assert saved_history is not None
@@ -3201,6 +3440,58 @@ def test_chat_service_no_pending_confirm_after_major_compare_uses_contextual_gua
     assert "上一轮只是专业对比分析" in reply
     assert "没有待确认的偏好或方案动作" in reply
     assert "把这个记成偏好" in reply
+    assert fake_agent.calls == []
+
+
+@pytest.mark.parametrize(
+    ("session_id", "prompt", "assistant_reply", "expected"),
+    [
+        (
+            "session-career-readonly-text-confirm",
+            "当前方案对体制内方向承接得怎么样，先不要改方案",
+            "**方案承接**\n- 当前方案对体制内/考公导向承接偏弱，方案内大约有 2 个相关志愿。",
+            "上一轮只是职业方向",
+        ),
+        (
+            "session-major-compare-text-confirm",
+            "法学和财政学哪个更适合普通家庭女生，先只分析不要记偏好",
+            "这轮先按通用维度看 法学 vs 财政学。\n- 法学：就业路径主要看法律职业，门槛是法考。\n- 财政学：就业路径主要看财税审计。\n- 选择建议：稳就业优先时先看财政学。",
+            "上一轮只是专业对比分析",
+        ),
+        (
+            "session-plan-query-text-confirm",
+            "青岛城市学院相关专业是不是有多个，先帮我判断一下，不要直接改方案",
+            "当前排序方案里共命中了 7 条符合“院校:青岛城市学院”的志愿。下面仅展示前 5 条示例：青岛城市学院-法语（冲，录取率1%）",
+            "上一轮只是查询当前方案或候选结果",
+        ),
+    ],
+)
+def test_chat_service_no_pending_confirm_infers_context_from_text_only_history(
+    tmp_path,
+    mock_llm_client,
+    session_id,
+    prompt,
+    assistant_reply,
+    expected,
+):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    history = [
+        ModelRequest(parts=[UserPromptPart(content=prompt)]),
+        ModelResponse(parts=[TextPart(content=assistant_reply)], model_name="fast-route"),
+    ]
+    asyncio.run(store.save(session_id, history))
+    fake_agent = _FakeAgent(["不应该调用模型"])
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_intent_change_cache", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(service.handle_message(session_id, "user-1", "确认"))
+
+    assert expected in reply
     assert fake_agent.calls == []
 
 
@@ -3872,9 +4163,22 @@ def test_chat_service_confirms_plan_next_action_preview_without_execute(tmp_path
         preview_reply = asyncio.run(service.handle_message("session-plan-next-sort-preview", "user-1", "按院校层次排序"))
         confirm_reply = asyncio.run(service.handle_message("session-plan-next-sort-preview", "user-1", "确认"))
 
-    assert preview_reply == "会按院校层次重新排序当前方案。\n\n如果你确认要这样做，我再执行；现在还不会改动方案。"
+    assert preview_reply == (
+        "会按院校层次重新排序当前方案。\n\n"
+        "排序方式：\n"
+        "- 排名靠前的排在前面。\n\n"
+        "执行影响：\n"
+        "- 会实际改变方案顺序和导出顺序。\n"
+        "- 审查状态会进入待重新审查。\n\n"
+        "如果你确认要这样做，我再执行；现在还不会改动方案。"
+    )
     assert isinstance(confirm_reply, ChatServiceResponseEnvelope)
-    assert confirm_reply.primary == "已按院校层次重新排序当前方案。"
+    assert confirm_reply.primary == (
+        "已按院校层次重新排序当前方案。\n\n"
+        "方案顺序和导出顺序已同步更新。\n"
+        "- 审查状态：待重新审查。\n"
+        "- 下一步：可以到方案区查看排序结果，必要时再点“审查”。"
+    )
     assert len(fake_agent.calls) == 1
     execute_mock.assert_awaited_once()
     payload = json.loads(execute_mock.await_args.args[1])
@@ -4420,7 +4724,9 @@ def test_chat_service_reorder_request_then_user_confirmation_preserves_turn_hist
         second_reply = asyncio.run(service.handle_message("session-plan-6", "user-6", "确认"))
 
     assert first_reply == "这会整体更新当前排序结果，建议先确认。"
-    assert second_reply == "我这边没有上一轮待确认的方案动作。你可以直接说想生成方案、审查方案或怎么调整，我会先说明影响，确认后再执行。"
+    assert "没有上一轮待确认的方案动作" in second_reply
+    assert "生成或查看方案" in second_reply
+    assert "确认后再执行" in second_reply
 
 
 def test_normalize_user_facing_terms_removes_profile_jargon():
@@ -4458,8 +4764,8 @@ def test_normalize_pending_intent_reply_rewrites_existing_only_recorded_wording(
     assert "法学" in normalized
     assert "护理学" in normalized
     assert "level3" not in normalized
-    assert "待确认偏好方向：法学" in normalized
-    assert "待确认排除方向：护理学" in normalized
+    assert "待确认偏好专业：法学" in normalized
+    assert "待确认排除专业：护理学" in normalized
 
 
 def test_chat_service_normalizes_toolless_intent_reply_profile_jargon_in_history(tmp_path, mock_llm_client):

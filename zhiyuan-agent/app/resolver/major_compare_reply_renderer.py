@@ -102,11 +102,11 @@ def _format_score_detail(score_detail: ScoreDetail | None, *, user_text: str = "
         if recent_context:
             prefix = f"已参考你在对话里提供的基础信息：{recent_context}"
             if prompt_context:
-                return f"{prefix}；同时参考本轮提到的{prompt_context}约束；当前没有拿到系统量化权重，所以不做系统评分。"
-            return f"{prefix}；当前没有拿到系统量化权重，所以不做系统评分。"
+                return f"{prefix}；同时参考本轮提到的{prompt_context}约束；因为还没有完整结合分数、省份、选科和方案位置，这里先做方向判断，不直接给最终倾向。"
+            return f"{prefix}；因为还没有完整结合分数、省份、选科和方案位置，这里先做方向判断，不直接给最终倾向。"
         if prompt_context:
-            return f"本轮先按你提到的{prompt_context}等约束做通用判断；当前会话还缺分数、选科和省份，所以不做系统量化评分。"
-        return "当前会话还没有完整分数、选科和省份信息，所以不做系统量化评分。"
+            return f"本轮先按你提到的{prompt_context}等约束做通用判断；当前会话还缺分数、选科和省份，所以先不直接给最终倾向。"
+        return "当前会话还没有完整分数、选科和省份信息，所以先不直接给最终倾向。"
     subjects = "、".join(score_detail.subject_list or []) or "未知"
     base = (
         "已参考当前会话基础信息："
@@ -324,7 +324,7 @@ def _render_major_compare_decision_line(
         parts.append(f"强兴趣、长期壁垒和上限优先时，可以重点看{barrier_major}")
     if not parts:
         parts.append("两者稳定性和专业壁垒接近时，要把学校层次、城市机会、录取概率和本人兴趣放到同一张表里比较")
-    return f"选择建议：{'；'.join(parts)}。最终还要结合具体学校层次、城市、录取概率和是否愿意投入对应训练。"
+    return f"{'；'.join(parts)}。最终还要结合具体学校层次、城市、录取概率和是否愿意投入对应训练。"
 
 
 def render_missing_weight_major_compare_reply(
@@ -339,7 +339,7 @@ def render_missing_weight_major_compare_reply(
     profile_context = _format_init_profile(request_context.init_profile)
     context_line = f"{score_context}{'；' + profile_context if profile_context else ''}".strip("；")
     sections = [
-        f"这轮先按通用维度看 {major_name1} vs {major_name2}。当前没有拿到可用的个性化量化评分，所以不直接说系统分数谁更高。",
+        f"这轮先按通用维度看 {major_name1} vs {major_name2}。因为还没有完整结合分数、省份、选科和方案位置，我先给你一个可参考的方向判断。",
     ]
     if context_line:
         sections.extend(
@@ -349,6 +349,13 @@ def render_missing_weight_major_compare_reply(
                 f"- {context_line}",
             ]
         )
+    sections.extend(
+        [
+            "",
+            "**本次边界**",
+            "- 这次只做专业取舍分析，不会把任何专业记成偏好，也不会改方案。",
+        ]
+    )
     sections.extend(
         [
             "",

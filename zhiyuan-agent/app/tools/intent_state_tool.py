@@ -332,13 +332,13 @@ _CAREER_NEGATIVE_KEYS = ("negative",)
 
 _LABEL_MAP: dict[str, str] = {
     # major positive
-    "major_intents.level1": "专业（level1）",
-    "major_intents.level2": "专业（level2）",
-    "major_intents.level3": "专业（level3）",
+    "major_intents.level1": "专业门类",
+    "major_intents.level2": "专业类",
+    "major_intents.level3": "具体专业",
     # major negative
-    "major_intents.negative_level1": "排除专业（level1）",
-    "major_intents.negative_level2": "排除专业（level2）",
-    "major_intents.negative_level3": "排除专业（level3）",
+    "major_intents.negative_level1": "排除专业门类",
+    "major_intents.negative_level2": "排除专业类",
+    "major_intents.negative_level3": "排除具体专业",
     # school
     "school_intents.colleges": "学校",
     "school_intents.negative_colleges": "排除学校",
@@ -391,7 +391,7 @@ def _build_select_items(
                     })
                 else:
                     items.append({
-                        "content": f"把{name}作为后续优先参考的专业方向。",
+                        "content": f"确认后，将把{name}作为后续优先参考的专业方向。",
                         "value": {"major_intents": {level: [name]}},
                         "selected": True,
                     })
@@ -411,9 +411,9 @@ def _build_select_items(
                 else:
                     items.append({
                         "content": (
-                            f"把{name}作为后续尽量降低优先级的专业方向。"
+                            f"确认后，将把{name}作为后续尽量降低优先级的专业方向。"
                             if intent_mode == INTENT_MODE_PREFERENCE
-                            else f"把{name}记成明确不考虑的内容，后面看候选和方案时都会按这个要求来。"
+                            else f"确认后，将把{name}作为明确不考虑的内容，后续查看候选和方案时会按这个要求作为参考。"
                         ),
                         "value": {"major_intents": {level: [name]}},
                         "selected": True,
@@ -435,7 +435,7 @@ def _build_select_items(
                     })
                 else:
                     items.append({
-                        "content": f"把{name}作为后续优先参考的院校。",
+                        "content": f"确认后，将把{name}作为后续优先参考的院校。",
                         "value": {"school_intents": {sub_key: [name]}},
                         "selected": True,
                     })
@@ -455,9 +455,9 @@ def _build_select_items(
                 else:
                     items.append({
                         "content": (
-                            f"把{name}作为后续尽量降低优先级的院校。"
+                            f"确认后，将把{name}作为后续尽量降低优先级的院校。"
                             if intent_mode == INTENT_MODE_PREFERENCE
-                            else f"把{name}记成明确不考虑的院校，后面看候选和方案时都会按这个要求来。"
+                            else f"确认后，将把{name}作为明确不考虑的院校，后续查看候选和方案时会按这个要求作为参考。"
                         ),
                         "value": {"school_intents": {sub_key: [name]}},
                         "selected": True,
@@ -479,7 +479,7 @@ def _build_select_items(
                     })
                 else:
                     items.append({
-                        "content": f"把{name}作为后续优先参考的地域。",
+                        "content": f"确认后，将把{name}作为后续优先参考的地域。",
                         "value": {"city_intents": {sub_key: [name]}},
                         "selected": True,
                     })
@@ -499,9 +499,9 @@ def _build_select_items(
                 else:
                     items.append({
                         "content": (
-                            f"先把{name}记成你暂时不太想去的地区，后面给你看方案时会尽量往后放。"
+                            f"确认后，将把{name}作为你暂时不太想去的地区，后续查看方案时会尽量往后放。"
                             if intent_mode == INTENT_MODE_PREFERENCE
-                            else f"把{name}记成明确不考虑的地区，后面看候选和方案时都会按这个要求来。"
+                            else f"确认后，将把{name}作为明确不考虑的地区，后续查看候选和方案时会按这个要求作为参考。"
                         ),
                         "value": {"city_intents": {sub_key: [name]}},
                         "selected": True,
@@ -515,7 +515,7 @@ def _build_select_items(
             for value in values:
                 label = to_career_label(value)
                 items.append({
-                    "content": f"把“{label}”记成你更看重的方向，后面我会优先按这个思路帮你看方案。",
+                    "content": f"确认后，将把“{label}”作为你更看重的方向，后续我会优先按这个思路帮你看方案。",
                     "value": {"career_intents": {sub_key: [value]}},
                     "selected": True,
                 })
@@ -527,7 +527,7 @@ def _build_select_items(
             for value in values:
                 label = to_career_label(value)
                 items.append({
-                    "content": f"把“{label}”记成你暂时不考虑的方向，后面我会尽量避开这类建议。",
+                    "content": f"确认后，将把“{label}”作为你暂时不考虑的方向，后续我会尽量避开这类建议。",
                     "value": {"career_intents": {sub_key: [value]}},
                     "selected": True,
                 })

@@ -25,6 +25,8 @@
 | tool_trace | routingPath / toolCalls / resultKind |
 | content_score | 内容评分 |
 | latency_score | 延迟评分 |
+| distribution_coverage | 预览 / 举例类回复是否覆盖学校层次、冲稳保、专业热度、数量缺口等关键分布 |
+| quality_violations | 硬门禁或薄弱点，例如内部术语、确认边界冲突、预览缺少关键分布 |
 | verdict | 结论 |
 | notes | 人工补充说明 |
 
@@ -72,6 +74,7 @@
 - 哪类 case 最容易薄回复。
 - 哪类 case 最容易超时。
 - 哪类 case 最容易把预览说成生效。
+- 哪类预览 / 举例 case 最容易缺少关键分布，只给单个样本不够丰满。
 - 哪个模型在结构化和自然度之间更平衡。
 
 ### 5.1 多模型汇总

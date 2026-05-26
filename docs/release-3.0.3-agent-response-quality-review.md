@@ -502,6 +502,7 @@
 3. 排序预览缺少排序方向说明。
 4. 局部查询缺少下一步引导。
 5. 只读分析后用户说“确认”时，guard 文案可以更贴合上一轮上下文。
+6. 预览 / 举例类回复只给个例不够，要再补学校层次、冲稳保、专业热度、数量缺口等关键分布，给用户更完整的结构判断。
 
 ## 5. 对模型对照的解释
 
@@ -535,7 +536,7 @@
 
 | 问题 | 修复入口 | 设计 |
 | --- | --- | --- |
-| Intent preview 暴露 `level3` | `ChatService._normalize_pending_intent_reply` / `_normalize_user_facing_terms` | 在用户可见回复里清理目录层级字段，把“待确认偏好专业（level3）”改成“待确认偏好方向”，保留具体专业名和确认边界 |
+| Intent preview 暴露 `level3` | `ChatService._normalize_pending_intent_reply` / `_normalize_user_facing_terms` / `intent_state_tool._LABEL_MAP` | 在用户可见回复里清理目录层级字段，把“待确认偏好专业（level3）”改成“待确认偏好专业/专业类/具体专业”等用户语言，保留具体专业名和确认边界 |
 | Intent confirm “候选结果收紧”语义偏强 | `intent_response_tool.render_intent_state_update` | 确认后表达为“已记录为后续筛选和方案调整参考”，候选数量只作为展示更新说明，不暗示候选池被永久改变 |
 | 职业方向承接没有直接回答方案承接 | `explore_direction_tool.preview_direction_comparison_from_request` | 多方向比较先给“当前方案承接强弱”结论，再列方案内承接数量、示例和候选机会；只读场景仍不改方案、不写 pending |
 | 专业对比忽略本轮用户事实 | `major_compare_reply_renderer.render_missing_weight_major_compare_reply` | 会话画像缺失时仍读取本轮用户话术里的“普通家庭/女生”等约束，避免说“缺少性别信息” |
@@ -548,6 +549,13 @@
 | 只读分析后用户说“确认”文案生硬 | `ChatService._build_no_pending_confirmation_guard_reply` | 无 pending 时仍不执行任何动作；若上一轮是职业方向分析、专业对比或局部查询，则按上一轮只读上下文提示下一步，而不是统一回复“没有上一轮待确认的方案动作” |
 | Intent 确认后用户难以核对生效内容 | `intent_response_tool.render_intent_state_update` | 确认成功后从 `merged` 中提取专业、院校、地域和发展方向的正/负向条目，补充“本次确认内容”，让用户能核对刚刚生效的偏好/要求 |
 | 专业对比缺少结构化输出 | `major_compare_reply_renderer.render_missing_weight_major_compare_reply` | 无量化权重时保持通用比较，但改成“会话参考 / 专业A / 专业B / 选择建议 / 下一步”的分段结构，提升可扫读性，不改 compare 路由和判断逻辑 |
+| 专业对比仍有系统化术语 | `major_compare_reply_renderer.render_missing_weight_major_compare_reply` | 把“个性化量化评分 / 系统分数 / 系统评分”改成“还没有完整结合分数、省份、选科和方案位置，先做方向判断”，更接近用户语言 |
+| 预览 / 举例回复信息密度不够 | `plan_query_tool` / `planning_workflow_tool` / `explore_direction_tool` 相关预览 renderer | 预览类回复除了对象和代表样本，还要补学校层次、冲稳保、专业热度、数量缺口等关键分布，避免只给个例没有整体结构 |
+| 院校层次摘要仍可能像内部字段 | `plan_query_tool._format_tier_summary` | 分布摘要不再把 `schoolRank` 数字直接塞进“学校层次”，改为“院校排名约区间 + 公办/民办/双一流等标签 + 专业热度/计划数” |
+| 批量评估工具无法识别薄回复 | `dialog_case_evaluation_report.py` | case 级评分补充 `qualityViolations`、`distributionCoverage` 和 `verdict`，把内部术语外露、确认边界冲突、预览缺少关键分布纳入自动标记 |
+| 本地/降级场景 Intent 确认可能丢 pending | `ChatService._load_pending_intent_confirmation` / `_extract_pending_intent_confirmation_from_history` | 后端 `planEditCache` 仍为主路径；读不到时从 Agent 历史中的 Intent preview 工具调用恢复待确认 payload，避免下一句“确认这个偏好”误走无 pending guard |
+| Intent 确认回复过度承诺候选刷新 | `intent_response_tool.render_intent_state_update` | 无候选数量事实时不再说“候选展示会按这条要求更新、现在可以去看候选结果”，改成“后续查看候选和方案时会按这条要求作为参考” |
+| Intent preview item 文案像已生效 | `intent_state_tool._build_select_items` / `dialog_case_evaluation_report.py` | 待确认卡片条目统一使用“确认后，将把...”条件式表达；评估工具新增 `pending_intent_effective_wording` 门禁，防止待确认内容再用已生效语气 |
 
 不在本轮做：
 
@@ -560,16 +568,21 @@
 
 已完成：
 
-- Intent preview 回复清理 `level1/level2/level3`，用户侧统一展示为“待确认偏好方向 / 待确认排除方向”。
+- Intent preview 回复清理 `level1/level2/level3`，用户侧统一展示为“待确认偏好专业 / 待确认排除专业”等用户语言。
 - Intent confirm 回复保留“确认后已记下”的语义，但不再说“候选结果收紧”，改成“作为后续筛选和方案调整参考”。
 - 职业方向多方向承接分析补上结论先行：先说当前方案整体承接强弱、方案内相关志愿数量和示例，再说候选机会。
 - 专业对比缺少量化评分时，能使用本轮用户输入里的“普通家庭 / 女生”等约束，不再误报“缺少性别信息”。
 - 方案局部查询与候选查询补充轻量下一步引导：命中结果后会补一句“下一步如果要处理这些志愿/机会，可以怎么继续”，但不改变只读边界，也不自动进入待确认动作。
 - `add_units` 预览补充当前方案数量影响：能读取到当前排序方案总数时，会在确认前说明“当前方案已有 X/Y，确认后预计增加 N 个”，让用户知道这次加入对方案数量的实际影响。
 - `sort_ordered_plan` 预览补充排序方向说明：录取率默认“录取率低的排在前面”，院校层次默认“排名靠前的排在前面”，推荐系数默认“推荐系数高的排在前面”；仍然只生成预览，确认后才改顺序。
+- 方案操作预览继续补足影响面：普通志愿移动会说明方案顺序和导出顺序变化，候选加入会说明方案数量和导出内容变化，移出会说明数量减少；这些预览都会明确审查状态会进入待重新审查。
+- 只有 `plan_next_action` 形成排序 pending、还没有走 `execute_plan_action` 时，也会补齐排序方向和待重新审查说明，避免用户只看到“会按院校层次排序”但不知道具体怎么排。
 - 无 pending 的“确认”保护补充上下文文案：职业方向只读后会提示可继续展开具体方向，专业对比只读后会提示可记成偏好或看对方案影响，局部查询后会提示可移动/删除/加入/排序；全部保持不执行、不联动。
+- 无 pending 的“确认”保护继续补强：除工具调用记录外，也会从上一轮 assistant 文本识别职业方向分析、专业对比和局部查询，避免快路径或降级场景只保存文本时退回泛化提示。
 - Intent 确认回复补充“本次确认内容”：专业、院校、地域和发展方向的偏好/排除项会被复述给用户，避免只说“已记录为参考”但用户无法核对。
+- Intent 确认回复继续结构化：确认后改成“记录结果 / 本次确认内容 / 后续使用 / 候选结果 / 下一步”的短要点，保留用户可核对内容，同时避免“候选展示会按要求更新”这种过度确定表达。
 - 专业对比 fallback 改成结构化分段输出：保留通用比较逻辑，但把会话参考、两个专业画像、选择建议和下一步拆开，减少一整段平铺文字带来的“太薄”感。
+- 专业对比 fallback 文案去系统化：不再出现“个性化量化评分 / 系统分数 / 系统评分”，改成“还没有完整结合分数、省份、选科和方案位置，先给方向判断”。
 - 新会话补充验证 `880403`：`山东450分、物理历史地理 -> 网络与新媒体 vs 跨境电商 -> 偏好确认` 三步通过；专业对比和 Intent 预览都能正确承接上下文并输出更具体的专业类画像。
 - `dialog_regression_303_effect_perf_cases.json` 补充方案审查 quality case，并收紧 Intent / Explore / 专业对比断言。
 - 方案审查执行结果改为结构化要点，避免“风险、提醒、典型涉及”被压成一整段长句。
@@ -577,9 +590,20 @@
 - 待确认意向后追问“这个偏好会影响当前方案吗”时，直接基于待确认内容和当前方案/候选事实生成影响说明，不再进入完整 Agent；回复明确“尚未确认、确认前不生效、不改方案”。
 - Intent preview 卡片文案去掉“候选结果收紧”“专家推荐”等用户容易误解或不自然的表达。
 - Intent 影响分析去掉已有真实命中情况下的泛化开场句，避免回复显得像固定模板。
+- Intent 专业意向的源头标签也改成用户语言：内部仍保留 `level1/level2/level3` 结构用于存储、编码和候选过滤，但用户可见内容只展示“专业门类 / 专业类 / 具体专业 / 偏好专业 / 排除专业”，避免后续绕过 ChatService 清洗时再次露出层级字段。
+- Intent pending 增加 Agent 历史兜底：后端 `planEditCache` 写入/读取失败时，从历史中最近一次 `preview_current_*_intent_confirmation` 工具调用恢复待确认 payload，保证“确认这个偏好/要求”仍能承接上一轮。
+- Intent 历史兜底不会复活已处理 pending：历史中如果已经出现 `update_volunteer_intent_state` 确认/拒绝结果，会清掉更早的 preview pending，避免用户后续再次“确认”重复应用旧意向。
+- Intent 确认回复收紧：没有实际候选数量事实时，只说明“后续查看候选和方案时会按这条要求作为参考”，不再暗示候选已经刷新。
+- Intent preview 卡片条目继续收紧：专业、院校、地域和发展方向的待确认条目统一改成“确认后，将把...”条件式表达，避免在“确认前不会生效”的说明之外，单个条目仍让用户误以为已经记下。
+- case 级质量评分工具补强：`dialog_case_evaluation_report.py` 不再只按字数和延迟粗略打分，会输出 `qualityViolations`、`distributionCoverage` 和 `verdict`；预览类回复如果只给个例、没有覆盖至少两类关键分布，会标记为 `thin_preview_distribution`。
+- case 级质量评分工具新增待确认意向语气门禁：待确认上下文里如果出现没有“确认后”条件的“把 X 记成/作为/后续都会按要求”等已生效表达，会标记为 `pending_intent_effective_wording`。
+- 方案/候选查询的分布摘要继续用户化：院校部分优先展示双一流、公办/民办等标签和“院校排名约 X-Y”的范围，专业部分优先展示专业热度、计划数、招生计划等信息，避免把裸 `schoolRank` 数字说成“学校层次”。
 - 职业方向只读回复结构收口：不再把“当前判断”里再嵌“初步判断 / 需要补充留意 / 可以继续展开”，改为“方案承接 / 需要留意 / 候选机会 / 下一步”的平铺结构；只改展示层，不改方向识别、候选/方案计算和只读边界。
 - 专业对比画像补强后，`network vs ecommerce` 这类场景不再只返回“当前没有沉淀专门画像”，而是可以落到“内容策划 vs 电商运营”的具体比较。
 - 主对话运行时不再暴露 `load_skill` 等技能管理工具，只保留技能边界摘要；这是减少开放式 Explore 额外工具轮次的性能修复，不改变用户侧回复结构，也不新增模板化短路。
+- 职业方向只读回复补充“本次边界”：明确这轮只是方向分析，不会自动修改偏好、当前方案或方案顺序；如果后续要按方向调整方案，仍会先给预览、确认后再执行。
+- 方案调整确认后的完成回复补充下一步：移动、删除、加入、替换和排序在执行成功后，如果后端结果没有说明审查/导出影响，会补充“方案/导出已同步更新、审查状态已进入待重新审查、可到方案区查看并必要时审查”，减少用户只看到“已更新”但不知道后续如何处理的情况。
+- 剩余 `needs_review` 文案继续收口：排序预览改为“动作 / 排序方式 / 执行影响 / 确认”的要点结构；无 pending 的职业方向确认保护补充“继续分析 / 调整方案 / 查看方案 / 不确定下一步”四类出口；已有偏好提示合并同类项并明确不会重复写入或改方案；专业对比只读回复补充“本次边界”，避免用户误解为已经记成偏好。
 
 验证：
 
@@ -602,3 +626,28 @@
 - 最新 `dialog_regression_303_effect_perf_cases.json --clear-history --keep-response-text --assert-plan-style` 真实 WebSocket `14/14` steps 通过，输出 `/private/tmp/zhiyuan_agent_303_effect_perf_after_career_format_restart.json`，中位耗时约 `2317ms`，最大耗时约 `4704ms`。
 - 技能工具收紧后，`dialog_regression_303_effect_perf_cases.json` 真实 WebSocket `14/14` steps 通过，输出 `/private/tmp/zhiyuan_agent_303_effect_perf_after_skill_toolset_scope.json`，中位耗时约 `2284ms`，最大耗时约 `4930ms`；职业方向承接场景约 `2204ms`，tool trace 仅有 `analyze_current_career_direction`，没有 `load_skill`。
 - 技能工具收紧后，`dialog_regression_303_open_quality_cases.json` 真实 WebSocket `4/4` steps 通过，输出 `/private/tmp/zhiyuan_agent_303_open_quality_after_skill_toolset_scope.json`，中位耗时约 `3046ms`，最大耗时约 `3506ms`。
+- Intent 专业标签源头用户化并对齐 ChatService 清洗 guard 后，聚焦 + 合并回归：`PYTHONPATH=. ./.venv/bin/python -m pytest tests/unit/test_plan_query_tool.py tests/unit/test_plan_execution_tool.py tests/unit/test_explore_direction_scenarios_sync.py tests/unit/test_intent_state_tool.py tests/unit/test_chat_service_history_persistence.py -q`：`338 passed`。
+- case 级质量评分补强后，`PYTHONPATH=. ./.venv/bin/python -m pytest tests/unit/test_dialog_case_evaluation_report.py -q`：`8 passed`。
+- 使用历史带回复文本的 effect/perf 输出 `/private/tmp/zhiyuan_agent_303_effect_perf_after_career_format_restart.json` 生成离线质量报告：`14` 个 case，`qualityViolations` 为空，`strong=4 / needs_review=10`；同时修正评估规则，避免把 Intent 预览/确认误判为必须覆盖方案分布的预览类回复。
+- 方案/候选摘要用户化后，`PYTHONPATH=. ./.venv/bin/python -m pytest tests/unit/test_plan_query_tool.py -q`：`25 passed`。
+- 专业对比文案去系统化后，真实 WebSocket `session=990306`：`法学和财政学哪个更适合普通家庭女生，先只分析不要记偏好` 通过，耗时约 `2097ms`；回复包含会话约束、法学/财政学路径、选择建议和下一步，不再出现系统评分术语。
+- Intent pending 历史兜底后，真实 WebSocket `session=990309`：`我倾向法学和财政学，但护理不要 -> 确认这个偏好` 两步通过，中位耗时约 `2035ms`；第二步走 `update_volunteer_intent_state`，回复包含“本次确认内容：偏好专业：法学、财政学；排除专业：护理学”，不再误走无 pending guard。
+- Intent preview 条件式文案和评估门禁补强后，聚焦回归：`PYTHONPATH=. ./.venv/bin/python -m pytest tests/unit/test_intent_state_tool.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_ws_compat.py tests/unit/test_planning_intent_scenarios_sync.py -q`：`248 passed`；补充条目级条件语气和评估门禁聚焦回归：`107 passed`。
+- 方案操作预览影响面补强后，聚焦回归：`PYTHONPATH=. ./.venv/bin/python -m pytest tests/unit/test_plan_execution_tool.py tests/unit/test_chat_service_history_persistence.py -q`：`213 passed`。
+- 无 pending 确认文本兜底补强后，ChatService 聚焦回归：`PYTHONPATH=. ./.venv/bin/python -m pytest tests/unit/test_chat_service_history_persistence.py -q`：`125 passed`。
+- Intent 确认结构化回复补强后，聚焦回归：`PYTHONPATH=. ./.venv/bin/python -m pytest tests/unit/test_intent_state_tool.py tests/unit/test_chat_service_history_persistence.py -q`：`222 passed`。
+- 使用历史带回复文本的 effect/perf 输出 `/private/tmp/zhiyuan_agent_303_effect_perf_after_career_format_restart.json` 重新生成离线质量报告：`14` 个 case，`qualityViolations` 为空，`strong=4 / needs_review=10`；新增 `pending_intent_effective_wording` 门禁未误伤已有结果。
+- 上一轮宽回归：`PYTHONPATH=. ./.venv/bin/python -m pytest tests/unit/test_dialog_case_evaluation_report.py tests/unit/test_mainline_dialog_scenarios.py tests/integration/test_dialog_style_coverage.py tests/regression/test_pending_protocol.py tests/regression/test_execution_preview.py tests/unit/test_plan_orchestration_tool.py tests/unit/test_planning_workflow_tool.py tests/unit/test_plan_query_tool.py tests/unit/test_plan_execution_tool.py tests/unit/test_explore_direction_scenarios_sync.py tests/unit/test_major_compare_reply_renderer.py tests/unit/test_chat_agent_progress_hints.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_intent_state_tool.py -q`：`722 passed`。
+- 局部查询/职业方向样本展示继续补强：查询摘要去掉“专业热度专业热度”重复前缀，示例解释改为“专业信息：热度/计划数”；职业方向“代表样本”只保留真实院校/专业样本，不再重复数量判断和泛化提醒。
+- 评估工具修正确认保护误判：用户只回复“确认”且系统返回“上一轮只是只读分析、没有待执行动作”时，不再按预览类回复强制要求分布覆盖，避免把正确的 no-pending guard 标成 `thin_preview_distribution`。
+- 真实 WebSocket effect/perf 复跑：`dialog_regression_303_effect_perf_cases.json --clear-history --keep-response-text --assert-plan-style` `14/14` steps 通过，输出 `/private/tmp/zhiyuan_agent_303_effect_perf_after_query_career_polish.json`，中位耗时约 `2555ms`，最大耗时约 `4692ms`；离线质量评分 `qualityViolations=0`，`strong=6 / needs_review=8`。
+- Intent 确认边界在干净会话单独验证：`session=990411` 跑通“我倾向法学和财政学，但护理不要 -> 确认这个偏好”，预览条目使用“确认后，将把...”条件式表达，确认回复复述“偏好专业：法学、财政学；排除专业：护理学”。固定回归会话 `880203` 本地后端已有画像时会进入 existing-only 兼容分支，不能用来判断新会话的待确认文案。
+- Intent existing-only 文案修复：固定会话已存在相同偏好/要求时，首轮回复改为“当前已经在后续参考中，不需要重复确认”，并列出“已在参考的偏好/排除项”，不再说成新的“待确认”内容。
+- 最新真实 WebSocket effect/perf 复跑：`dialog_regression_303_effect_perf_cases.json --clear-history --keep-response-text --assert-plan-style` `14/14` steps 通过，输出 `/private/tmp/zhiyuan_agent_303_effect_perf_after_intent_existing_polish.json`，中位耗时约 `2320ms`，最大耗时约 `4247ms`；离线质量评分 `qualityViolations=0`，`strong=5 / needs_review=9`。
+- 最新宽回归：`PYTHONPATH=. ./.venv/bin/python -m pytest tests/unit/test_dialog_case_evaluation_report.py tests/unit/test_mainline_dialog_scenarios.py tests/integration/test_dialog_style_coverage.py tests/regression/test_pending_protocol.py tests/regression/test_execution_preview.py tests/unit/test_plan_orchestration_tool.py tests/unit/test_planning_workflow_tool.py tests/unit/test_plan_query_tool.py tests/unit/test_plan_execution_tool.py tests/unit/test_explore_direction_scenarios_sync.py tests/unit/test_major_compare_reply_renderer.py tests/unit/test_chat_agent_progress_hints.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_intent_state_tool.py -q`：`726 passed`。
+- 只读边界与确认完成提示补强后，聚焦回归：`PYTHONPATH=. ./.venv/bin/python -m pytest tests/unit/test_explore_direction_scenarios_sync.py tests/unit/test_plan_execution_tool.py tests/unit/test_chat_service_history_persistence.py -q`：`228 passed`。
+- 只读边界与确认完成提示补强后，宽回归：`PYTHONPATH=. ./.venv/bin/python -m pytest tests/unit/test_dialog_case_evaluation_report.py tests/unit/test_mainline_dialog_scenarios.py tests/integration/test_dialog_style_coverage.py tests/regression/test_pending_protocol.py tests/regression/test_execution_preview.py tests/unit/test_plan_orchestration_tool.py tests/unit/test_planning_workflow_tool.py tests/unit/test_plan_query_tool.py tests/unit/test_plan_execution_tool.py tests/unit/test_explore_direction_scenarios_sync.py tests/unit/test_major_compare_reply_renderer.py tests/unit/test_chat_agent_progress_hints.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_intent_state_tool.py -q`：`726 passed`。
+- 最新真实 WebSocket effect/perf 复跑：`dialog_regression_303_effect_perf_cases.json --clear-history --keep-response-text --assert-plan-style` `14/14` steps 通过，输出 `/private/tmp/zhiyuan_agent_303_effect_perf_after_readonly_apply_hint.json`，中位耗时约 `2263ms`，最大耗时约 `4576ms`；离线质量评分输出 `/private/tmp/zhiyuan_agent_303_effect_perf_after_readonly_apply_hint_quality.json`，`qualityViolations=0`，`strong=6 / needs_review=8`。
+- 回复结构和可行动性补强后，焦点回归：`PYTHONPATH=. ./.venv/bin/python -m pytest tests/unit/test_intent_state_tool.py tests/unit/test_major_compare_reply_renderer.py tests/unit/test_plan_execution_tool.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_dialog_regression_runner.py tests/unit/test_dialog_case_evaluation_report.py -q`：`350 passed`。
+- 排序预览结构化和只读边界补强后，宽回归：`PYTHONPATH=. ./.venv/bin/python -m pytest tests/unit/test_dialog_case_evaluation_report.py tests/unit/test_mainline_dialog_scenarios.py tests/integration/test_dialog_style_coverage.py tests/regression/test_pending_protocol.py tests/regression/test_execution_preview.py tests/unit/test_plan_orchestration_tool.py tests/unit/test_planning_workflow_tool.py tests/unit/test_plan_query_tool.py tests/unit/test_plan_execution_tool.py tests/unit/test_explore_direction_scenarios_sync.py tests/unit/test_major_compare_reply_renderer.py tests/unit/test_chat_agent_progress_hints.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_intent_state_tool.py -q`：`726 passed`。
+- 最新真实 WebSocket effect/perf 复跑：`dialog_regression_303_effect_perf_cases.json --clear-history --keep-response-text --assert-plan-style` `14/14` steps 通过，输出 `/private/tmp/zhiyuan_agent_303_effect_perf_after_final_reply_polish_v2.json`，中位耗时约 `2297ms`，最大耗时约 `4425ms`；离线质量评分输出 `/private/tmp/zhiyuan_agent_303_effect_perf_after_final_reply_polish_v2_quality.json`，`qualityViolations=0`，`strong=14 / needs_review=0`。

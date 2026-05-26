@@ -9,6 +9,8 @@ import pytest
 
 from app.tools.plan_query_tool import (
     _build_query_keywords,
+    _format_example_reason,
+    _format_tier_summary,
     _infer_query_focus,
     _looks_like_plan_action_query,
     _matches_query,
@@ -59,6 +61,47 @@ def test_infer_query_focus_routes_major_school_and_province_keywords():
     assert _infer_query_focus("候选里看看生物工程", "生物工程") == "major"
     assert _infer_query_focus("候选里看看北京农学院", "北京农学院") == "school"
     assert _infer_query_focus("候选里看看北京", "北京") == "province"
+
+
+def test_format_tier_summary_uses_user_friendly_school_and_major_profile():
+    summary = _format_tier_summary(
+        [
+            {
+                "tier": "冲",
+                "schoolRank": 870,
+                "schoolRankTags": ["民办"],
+                "majorRankTags": ["专业热度80"],
+                "majorPlanTags": ["计划数：2"],
+            },
+            {
+                "tier": "稳",
+                "schoolRank": 130,
+                "schoolLevel": "双一流",
+                "schoolBasicTags": ["公办", "财经"],
+                "majorPlanTags": ["招生计划偏少"],
+            },
+        ]
+    )
+
+    assert "冲稳保：冲1 / 稳1" in summary
+    assert "学校层次：民办、双一流、公办、院校排名约130-870" in summary
+    assert "专业热度：热度80、计划数：2、招生计划偏少" in summary
+    assert "schoolRank" not in summary
+
+
+def test_format_example_reason_does_not_repeat_major_heat_prefix():
+    reason = _format_example_reason(
+        {
+            "tier": "冲",
+            "schoolRank": 1138,
+            "schoolBasicTags": ["本科", "民办"],
+            "majorRankTags": ["专业热度34"],
+            "majorPlanTags": ["计划数：25"],
+        }
+    )
+
+    assert "专业热度专业热度" not in reason
+    assert "专业信息：热度34、计划数：25" in reason
 
 
 @pytest.mark.asyncio

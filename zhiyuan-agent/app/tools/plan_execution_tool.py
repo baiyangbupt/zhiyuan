@@ -456,7 +456,7 @@ def _with_confirmation_hint(summary: str) -> str:
     text = (summary or "").strip() or "这个动作会改动当前方案。"
     if "确认" in text and ("执行" in text or "后" in text):
         return text
-    return f"{text} 需要你确认后才会执行。"
+    return f"{text}\n\n需要你确认后才会执行。"
 
 
 def _normalize_keywords(value: str | None) -> list[str]:
@@ -888,6 +888,14 @@ def _item_display_name(item: dict[str, Any] | None, fallback: str = "这条志�
     return "-".join(source_parts) if source_parts else fallback
 
 
+def _append_preview_impact(summary: str, impact: str) -> str:
+    summary = (summary or "").strip()
+    impact = (impact or "").strip()
+    if not summary or not impact or impact in summary:
+        return summary
+    return f"{summary}\n\n{impact}"
+
+
 async def _build_move_unit_preview_summary(
     ctx: RunContext[RequestContext],
     plan_model: PlanActionPlan,
@@ -905,6 +913,10 @@ async def _build_move_unit_preview_summary(
         summary = f"已定位到 {source_text}，{position_text}会移动到{target_text}。"
     else:
         summary = f"已定位到当前方案中的指定志愿，会移动到{target_text}。"
+    summary = _append_preview_impact(
+        summary,
+        "执行后会改变方案顺序和导出顺序，并让审查状态进入待重新审查。",
+    )
     facts = {
         "resolved_apply_payload": _build_resolved_apply_payload(
             plan_model,
@@ -932,6 +944,10 @@ async def _build_remove_units_preview_summary(
     else:
         extra_text = f"等 {len(resolved_ids)} 条志愿" if len(resolved_ids) > len(labels) else f"{len(resolved_ids)} 条志愿"
         summary = f"已定位到当前方案里的 {'、'.join(labels)}，会从当前方案中移出，共 {extra_text}。"
+    summary = _append_preview_impact(
+        summary,
+        "执行后会减少方案数量、影响导出顺序，并让审查状态进入待重新审查。",
+    )
     facts = {
         "resolved_apply_payload": _build_resolved_apply_payload(
             plan_model,
@@ -983,9 +999,13 @@ async def _build_add_units_preview_summary(
     if has_current_total and add_count:
         expected_total = current_total + add_count
         if target_total:
-            summary += f" 当前方案已有 {current_total}/{target_total} 个志愿，确认后预计增加 {add_count} 个，约 {expected_total}/{target_total}。"
+            summary += f" 当前方案已有 {current_total}/{target_total} 个志愿，本次预计增加 {add_count} 个，约 {expected_total}/{target_total}。"
         else:
-            summary += f" 当前方案已有 {current_total} 个志愿，确认后预计增加 {add_count} 个。"
+            summary += f" 当前方案已有 {current_total} 个志愿，本次预计增加 {add_count} 个。"
+    summary = _append_preview_impact(
+        summary,
+        "执行后会更新方案数量和导出内容，并让审查状态进入待重新审查。",
+    )
     facts = {
         "resolved_apply_payload": _build_resolved_apply_payload(
             plan_model,
@@ -1781,6 +1801,12 @@ _SORT_FIELD_LABELS = {
     "finalScore": "推荐系数",
 }
 
+_SORT_FIELD_DIRECTIONS = {
+    "admissionRatio": "录取率低的排在前面",
+    "schoolRank": "排名靠前的排在前面",
+    "finalScore": "推荐系数高的排在前面",
+}
+
 
 def _infer_ordered_sort_field(plan_model: PlanActionPlan) -> str:
     atomic = plan_model.atomic_actions[0] if plan_model.atomic_actions else None
@@ -1798,6 +1824,22 @@ def _infer_ordered_sort_field(plan_model: PlanActionPlan) -> str:
         if alias and alias in joined:
             return field
     return "admissionRatio"
+
+
+def _enrich_sort_preview_summary(plan_model: PlanActionPlan, summary: str) -> str:
+    sort_field = _infer_ordered_sort_field(plan_model)
+    label = _SORT_FIELD_LABELS.get(sort_field, "录取率")
+    direction = _SORT_FIELD_DIRECTIONS.get(sort_field, "录取率低的排在前面")
+    summary = (summary or "").strip()
+    action_summary = f"会按{label}重新排序当前方案。"
+    if summary and "重新排序当前方案" not in summary:
+        action_summary = summary
+    sections = [
+        action_summary,
+        f"排序方式：\n- {direction}。",
+        "执行影响：\n- 会实际改变方案顺序和导出顺序。\n- 审查状态会进入待重新审查。",
+    ]
+    return "\n\n".join(section.strip() for section in sections if section.strip())
 
 
 async def _sort_ordered_plan(ctx: RunContext[RequestContext], plan_model: PlanActionPlan) -> tuple[bool, str]:
@@ -2396,6 +2438,8 @@ async def _execute_plan_action_model(
                     plan_model,
                     volunteer_ids=resolved_ids,
                 )
+        elif plan_model.stage == "preview" and plan_model.action_family == "sort_ordered_plan":
+            preview_summary = _enrich_sort_preview_summary(plan_model, preview_summary)
         if plan_model.stage == "preview" and plan_model.action_family in _MUTATING_ACTION_FAMILIES:
             preview_summary = _with_confirmation_hint(preview_summary)
         return PlanExecutionResult(

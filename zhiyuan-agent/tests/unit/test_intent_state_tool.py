@@ -336,6 +336,33 @@ class TestBuildSelectItems:
         assert {"city_intents": {"negative_city": ["合肥"]}} in values
 
 
+def test_render_existing_only_intent_reply_uses_existing_reference_wording():
+    text = render_intent_analysis_payload(
+        json.dumps(
+            {
+                "status": "existing_only",
+                "sessionId": "1",
+                "intentMode": "constraint",
+                "analysisStage": "confirmed",
+                "existingItems": [
+                    {"content": "当前已记录偏好具体专业：法学"},
+                    {"content": "当前已记录排除具体专业：护理学"},
+                ],
+            },
+            ensure_ascii=False,
+        )
+    )
+
+    assert "当前已经在后续参考中" in text
+    assert "不需要重复确认" in text
+    assert "**已在参考**" in text
+    assert "偏好具体专业：法学" in text
+    assert "排除具体专业：护理学" in text
+    assert "下一步" in text
+    assert "待确认" not in text
+    assert "当前已记录" not in text
+
+
 # ---------------------------------------------------------------------------
 # Tests for merge_selected_values
 # ---------------------------------------------------------------------------
@@ -1703,7 +1730,8 @@ async def test_analyze_intent_change_existing_constraint_still_returns_candidate
         )
 
     assert "安徽" in resp
-    assert "当前已记录排除省份" in resp
+    assert "排除省份：安徽" in resp
+    assert "不需要重复确认" in resp
 
 
 @pytest.mark.asyncio
@@ -1732,7 +1760,8 @@ async def test_analyze_intent_change_existing_preference_returns_helpful_text(ex
             None,
         )
 
-    assert "已经记下" in resp
+    assert "当前已经在后续参考中" in resp
+    assert "不需要重复确认" in resp
     assert "现在这份方案" in resp
     assert "专家优选组合" not in resp
     assert "暂时不用重复更新" not in resp
@@ -1757,7 +1786,7 @@ def test_render_intent_analysis_text_uses_light_markdown_sections():
         impact_text="**结合当前方案给你的提醒**\n\n**还可以再看看的机会**\n- 上海建桥学院(01)-网络与新媒体",
         analysis_stage=ANALYSIS_STAGE_CONFIRMED,
         intent_mode=INTENT_MODE_PREFERENCE,
-        items=[{"content": "把网络与新媒体作为后续优先参考的专业方向。"}],
+        items=[{"content": "确认后，将把网络与新媒体作为后续优先参考的专业方向。"}],
     )
 
     assert text.startswith("**分析结论**")
@@ -1814,11 +1843,45 @@ def test_render_intent_state_update_summarizes_confirmed_preference_items():
     )
 
     assert "本次确认内容" in text
-    assert "偏好方向：法学、财政学" in text
-    assert "排除方向：护理学" in text
+    assert "偏好专业：法学、财政学" in text
+    assert "排除专业：护理学" in text
     assert "偏好地域：北京" in text
     assert "排除地域：上海" in text
     assert "发展方向：体制内/考公导向" in text
+    assert "- 后续使用：" in text
+    assert "- 下一步：" in text
+    assert "不会直接改动当前方案顺序" in text
+
+
+def test_intent_preview_major_labels_do_not_expose_internal_levels(empty_profile):
+    items, existing_items = _build_select_items(
+        empty_profile,
+        major_intents={"level3": ["法学"], "negative_level3": ["护理学"]},
+        school_intents=None,
+        city_intents=None,
+    )
+
+    text = "\n".join(item["content"] for item in [*items, *existing_items])
+    assert "level3" not in text
+    assert "专业方向" in text
+
+
+def test_intent_preview_items_use_conditional_wording_before_confirmation(empty_profile):
+    items, _ = _build_select_items(
+        empty_profile,
+        major_intents={"level3": ["法学"], "negative_level3": ["护理学"]},
+        school_intents={"colleges": ["北京大学"], "negative_colleges": ["清华大学"]},
+        city_intents={"province": ["北京"], "negative_city": ["上海"]},
+        career_intents={"positive": ["system_public_service"], "negative": ["high_pressure_sales"]},
+        intent_mode=INTENT_MODE_CONSTRAINT,
+    )
+
+    text = "\n".join(item["content"] for item in items)
+    assert text.count("确认后") == len(items)
+    assert "确认后，将把法学作为后续优先参考的专业方向" in text
+    assert "确认后，将把护理学作为明确不考虑的内容" in text
+    assert "后面看候选和方案时都会按这个要求来" not in text
+    assert "记成明确不考虑" not in text
 
 
 def test_render_intent_state_update_summarizes_confirmed_constraint_items():
@@ -1835,7 +1898,9 @@ def test_render_intent_state_update_summarizes_confirmed_constraint_items():
 
     assert "本次确认内容" in text
     assert "排除院校：北京大学" in text
-    assert "候选展示会按这条要求更新" in text
+    assert "后续查看候选和方案时会按这条要求作为参考" in text
+    assert "- 候选结果：按当前要求查看时约 128 个，整体候选约 3200 个。" in text
+    assert "候选展示会按这条要求更新" not in text
 
 
 def test_build_impact_preview_uses_interest_stage_summary_when_requested():
@@ -1880,7 +1945,7 @@ def test_render_intent_analysis_text_drops_generic_impact_placeholders():
         ),
         analysis_stage=ANALYSIS_STAGE_CONFIRMED,
         intent_mode=INTENT_MODE_PREFERENCE,
-        items=[{"content": "把网络与新媒体作为后续优先参考的专业方向。"}],
+        items=[{"content": "确认后，将把网络与新媒体作为后续优先参考的专业方向。"}],
     )
 
     assert "结合当前方案给你的提醒" not in text

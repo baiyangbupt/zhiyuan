@@ -98,7 +98,7 @@ def test_execute_plan_action_returns_preview_without_mutation():
     data = json.loads(result)
     assert data["applied"] is False
     assert data["result_kind"] == "preview_only"
-    assert data["summary"] == "会整体重排当前方案。 需要你确认后才会执行。"
+    assert data["summary"] == "会整体重排当前方案。\n\n需要你确认后才会执行。"
     assert data["reply_focus"] == ["preview_only"]
 
 
@@ -1518,8 +1518,10 @@ def test_execute_plan_action_add_units_preview_resolves_candidate_alias_without_
     assert "统计学" in data["summary"]
     assert "加入当前方案" in data["summary"]
     assert "当前方案已有 94/96 个志愿" in data["summary"]
-    assert "确认后预计增加 1 个" in data["summary"]
-    assert "确认" in data["summary"]
+    assert "本次预计增加 1 个" in data["summary"]
+    assert "执行后会更新方案数量和导出内容" in data["summary"]
+    assert "待重新审查" in data["summary"]
+    assert "需要你确认后才会执行" in data["summary"]
     assert data["facts"]["resolved_apply_payload"]["atomic_actions"][0]["volunteer_ids"] == ["cand-gxsd-stat"]
     assert data["facts"]["current_ordered_total"] == 94
     assert data["facts"]["expected_ordered_total"] == 95
@@ -1527,6 +1529,89 @@ def test_execute_plan_action_add_units_preview_resolves_candidate_alias_without_
     assert data["facts"]["add_count"] == 1
     mock_query.assert_not_awaited()
     mock_select.assert_not_awaited()
+
+
+def test_execute_plan_action_move_unit_preview_includes_side_effects_without_applying():
+    payload = {
+        "stage": "preview",
+        "action_family": "move_unit",
+        "context_summary": "阶段=ordered；方案=20/30",
+        "preview_summary": "会调整指定志愿的位置，并在执行后重新审查整体结构。",
+        "missing_inputs": [],
+        "should_rerun_review": True,
+        "intent_relation": "unknown",
+        "atomic_actions": [
+            {
+                "action_type": "move_unit",
+                "volunteer_ids": ["湖北工程学院的计算机科学与技术"],
+                "target_position": 3,
+                "filters": {},
+                "reason": "把湖北工程学院的计算机科学与技术改到第3位",
+            }
+        ],
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
+        new=AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "items": [
+                        {
+                            "position": 20,
+                            "volunteerId": "hbgc-cs-20",
+                            "schoolName": "湖北工程学院(01)",
+                            "majorName": "计算机科学与技术",
+                        }
+                    ]
+                },
+            }
+        ),
+    ), patch(
+        "app.handlers.mutation_handlers.move_planning_ordered_item",
+        new=AsyncMock(return_value="should not apply"),
+    ) as mock_move:
+        result = asyncio.run(execute_plan_action(_ctx("exec-move-preview"), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["applied"] is False
+    assert data["result_kind"] == "preview_only"
+    assert "湖北工程学院(01)-计算机科学与技术" in data["summary"]
+    assert "当前在第20位" in data["summary"]
+    assert "会移动到第3位" in data["summary"]
+    assert "执行后会改变方案顺序和导出顺序" in data["summary"]
+    assert "待重新审查" in data["summary"]
+    assert "需要你确认后才会执行" in data["summary"]
+    assert data["facts"]["resolved_apply_payload"]["atomic_actions"][0]["volunteer_ids"] == ["hbgc-cs-20"]
+    mock_move.assert_not_awaited()
+
+
+def test_execute_plan_action_sort_preview_enriches_direction_when_summary_is_thin():
+    payload = {
+        "stage": "preview",
+        "action_family": "sort_ordered_plan",
+        "user_goal": "按院校层次排序",
+        "context_summary": "阶段=ordered；方案=30/30",
+        "preview_summary": "会按院校层次重新排序当前方案。",
+        "missing_inputs": [],
+        "atomic_actions": [
+            {
+                "action_type": "sort_ordered_plan",
+                "filters": {"sort_field": "schoolRank"},
+            }
+        ],
+    }
+
+    result = asyncio.run(execute_plan_action(_ctx("exec-sort-preview"), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["applied"] is False
+    assert data["result_kind"] == "preview_only"
+    assert "排名靠前的排在前面" in data["summary"]
+    assert "会实际改变方案顺序和导出顺序" in data["summary"]
+    assert "待重新审查" in data["summary"]
+    assert "需要你确认后才会执行" in data["summary"]
 
 
 def test_select_candidates_by_filters_uses_major_tags_as_candidate_major_keywords_when_major_keyword_missing():

@@ -8,8 +8,43 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 from typing import Any
+
+_INTERNAL_TERM_PATTERNS = (
+    "volunteerId",
+    "pending_plan_action",
+    "pending_intent_change",
+    "conversation_phase",
+    "action_family",
+    "toolCall",
+    "level1",
+    "level2",
+    "level3",
+    "id=",
+)
+
+_ACTION_TOKENS = ("建议", "下一步", "可以", "确认", "请查看", "如果你想", "告诉我", "继续")
+_DOMAIN_TOKENS = ("方案", "候选", "审查", "排序", "移动", "意向", "查询", "专业", "志愿", "院校", "学校")
+_STRUCTURE_TOKENS = ("\n-", "\n1.", "\n2.", "：\n", "###", "##")
+_BOUNDARY_TOKENS = ("待确认", "确认后", "不会改", "不改方案", "只读", "先预览")
+_RISK_TOKENS = ("风险", "提醒", "边界", "结论", "影响", "缺口")
+_PREVIEW_HINT_TOKENS = ("预览", "示例", "代表样本", "下面仅展示", "前列", "共命中", "概况", "典型涉及")
+_PENDING_CONTEXT_TOKENS = ("待确认", "确认前不会正式生效", "确认后才会", "需要你确认后")
+_PENDING_CONDITIONAL_TOKENS = ("确认后", "如果确认", "确认要", "确认才")
+_UNQUALIFIED_PENDING_EFFECTIVE_PATTERNS = (
+    re.compile(r"把.+?(作为|记成|设为|更新为)"),
+    re.compile(r"后(面|续).+?(都会按这个要求|会按这个要求|按这个要求来)"),
+)
+
+_DISTRIBUTION_SIGNALS: dict[str, tuple[str, ...]] = {
+    "tier_distribution": ("冲稳保", "冲区", "稳区", "保区", "区间分布", "区间："),
+    "school_level": ("学校层次", "院校层次", "学校排名", "院校排名", "985", "211", "双一流", "公办", "民办"),
+    "major_heat": ("专业热度", "热门", "冷门", "计划数", "招生计划"),
+    "quantity_space": ("数量", "缺口", "已有", "目标", "共命中", "排序总数", "方案数", "当前已有"),
+    "representative_samples": ("代表样本", "示例", "典型涉及", "排序前列", "方案前列", "下面仅展示"),
+}
 
 
 def _load_json(path: str) -> Any:
@@ -52,47 +87,166 @@ def _extract_thinking(record: dict[str, Any]) -> str:
     return _normalize_text(thinking)
 
 
+def _clamp_score(value: int) -> int:
+    return max(0, min(5, value))
+
+
+def _contains_any(text: str, tokens: tuple[str, ...]) -> bool:
+    return any(token in text for token in tokens)
+
+
+def _distribution_coverage(text: str) -> list[str]:
+    coverage: list[str] = []
+    for name, tokens in _DISTRIBUTION_SIGNALS.items():
+        if _contains_any(text, tokens):
+            coverage.append(name)
+    return coverage
+
+
+def _is_preview_or_example_case(record: dict[str, Any], text: str) -> bool:
+    case_name = _normalize_text(record.get("case")).lower()
+    if "intent" in case_name:
+        return False
+    prompt = _normalize_text(record.get("prompt"))
+    if prompt in {"确认", "确认执行", "确认这个偏好", "确认这个要求"}:
+        return False
+    combined = f"{prompt}\n{text}"
+    return _contains_any(combined, _PREVIEW_HINT_TOKENS)
+
+
+def _has_unqualified_pending_effective_wording(text: str) -> bool:
+    if not _contains_any(text, _PENDING_CONTEXT_TOKENS):
+        return False
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip(" -\t")
+        if not line:
+            continue
+        if _contains_any(line, _PENDING_CONDITIONAL_TOKENS):
+            continue
+        if any(pattern.search(line) for pattern in _UNQUALIFIED_PENDING_EFFECTIVE_PATTERNS):
+            return True
+    return False
+
+
+def _quality_violations(record: dict[str, Any], text: str) -> list[str]:
+    violations: list[str] = []
+    for field in ("assertionViolations", "contentViolations"):
+        values = record.get(field) or []
+        if isinstance(values, list):
+            violations.extend(_normalize_text(value) for value in values if _normalize_text(value))
+        elif _normalize_text(values):
+            violations.append(_normalize_text(values))
+
+    leaked_terms = [token for token in _INTERNAL_TERM_PATTERNS if token in text]
+    if leaked_terms:
+        violations.append("internal_terms:" + ",".join(leaked_terms[:5]))
+
+    if "已生效" in text and "待确认" in text:
+        violations.append("pending_boundary_conflict")
+
+    if _has_unqualified_pending_effective_wording(text):
+        violations.append("pending_intent_effective_wording")
+
+    if _is_preview_or_example_case(record, text):
+        coverage = _distribution_coverage(text)
+        if len(coverage) < 2:
+            violations.append("thin_preview_distribution")
+
+    return violations
+
+
 def _score_case(record: dict[str, Any]) -> dict[str, Any]:
     text = _extract_text(record)
     thinking = _extract_thinking(record)
+    coverage = _distribution_coverage(text)
+    violations = _quality_violations(record, text)
+
+    if not text:
+        return {
+            "correctness": 0,
+            "completeness": 0,
+            "naturalness": 0,
+            "actionability": 0,
+            "latency": 0,
+            "structure": 0,
+            "distributionCoverage": coverage,
+            "qualityViolations": violations or ["empty_response"],
+        }
+
     score = {
-        "correctness": 0,
-        "completeness": 0,
-        "naturalness": 0,
-        "actionability": 0,
-        "latency": 0,
+        "correctness": 2,
+        "completeness": 2,
+        "naturalness": 2,
+        "actionability": 1,
+        "latency": 1,
+        "structure": 1,
     }
-    if text:
-        score["naturalness"] += 1
-        if "\n" in text or "。" in text:
-            score["naturalness"] += 1
-        if len(text) > 40:
-            score["completeness"] += 1
-        if len(text) > 120:
-            score["completeness"] += 1
-        if any(token in text for token in ("建议", "下一步", "可以", "确认", "请查看")):
-            score["actionability"] += 1
-        if any(token in text for token in ("方案", "候选", "审查", "排序", "移动", "意向", "查询", "专业", "志愿")):
-            score["correctness"] += 1
+
+    if _contains_any(text, _DOMAIN_TOKENS):
+        score["correctness"] += 1
     if record.get("turnObservability") or record.get("followupCount") is not None:
         score["correctness"] += 1
-    if record.get("assertionViolations") or record.get("contentViolations"):
-        score["correctness"] = max(0, score["correctness"] - 1)
+    if not violations:
+        score["correctness"] += 1
+    else:
+        score["correctness"] -= min(3, len(violations))
+
+    if len(text) > 80:
+        score["completeness"] += 1
+    if len(text) > 180:
+        score["completeness"] += 1
     if thinking:
         score["completeness"] += 1
-    if any(token in text for token in ("风险", "提醒", "边界", "结论")):
+    if _contains_any(text, _RISK_TOKENS):
         score["completeness"] += 1
+    if _is_preview_or_example_case(record, text):
+        if len(coverage) >= 2:
+            score["completeness"] += 1
+        else:
+            score["completeness"] -= 2
+
+    if "\n" in text or "。" in text:
+        score["naturalness"] += 1
+    if len(text) <= 900:
+        score["naturalness"] += 1
+    if any(token in text for token in ("[object Object]", "undefined", "null", "false")):
+        score["naturalness"] -= 2
+
+    if _contains_any(text, _ACTION_TOKENS):
+        score["actionability"] += 2
+    if _contains_any(text, _BOUNDARY_TOKENS):
+        score["actionability"] += 1
+    if _contains_any(text, ("移动", "删除", "加入", "排序", "审查", "补偿", "记成偏好")):
+        score["actionability"] += 1
+
+    if _contains_any(text, _STRUCTURE_TOKENS):
+        score["structure"] += 2
+    if coverage:
+        score["structure"] += 1
+    if len(coverage) >= 3:
+        score["structure"] += 1
+
     elapsed_ms = record.get("elapsedMs")
     if isinstance(elapsed_ms, int):
         if elapsed_ms <= 3000:
-            score["latency"] += 2
+            score["latency"] = 5
+        elif elapsed_ms <= 6000:
+            score["latency"] = 4
         elif elapsed_ms <= 10000:
-            score["latency"] += 1
+            score["latency"] = 3
         elif elapsed_ms <= 30000:
-            score["latency"] += 1
+            score["latency"] = 2
         if elapsed_ms > 60000:
-            score["latency"] = max(0, score["latency"] - 1)
-    return score
+            score["latency"] = 0
+    elif record.get("firstMessageMs") is not None or record.get("finalMessageMs") is not None:
+        score["latency"] = 2
+
+    scored = {key: _clamp_score(value) for key, value in score.items()}
+    scored["distributionCoverage"] = coverage
+    scored["qualityViolations"] = violations
+    scored["verdict"] = "fail" if violations else ("strong" if min(scored["correctness"], scored["completeness"], scored["actionability"]) >= 4 else "needs_review")
+    return scored
 
 
 def _normalize_flat_record(record: dict[str, Any], *, step_index: int) -> dict[str, Any]:
@@ -283,6 +437,27 @@ def _build_case_report(
     return report
 
 
+def _format_score_for_markdown(score: dict[str, Any] | None) -> str:
+    if not isinstance(score, dict):
+        return ""
+    verdict = _normalize_text(score.get("verdict")) or "unknown"
+    coverage = ",".join(score.get("distributionCoverage") or [])
+    violations = ",".join(score.get("qualityViolations") or [])
+    dimensions = (
+        f"C{score.get('correctness', '-')}/"
+        f"F{score.get('completeness', '-')}/"
+        f"A{score.get('actionability', '-')}/"
+        f"L{score.get('latency', '-')}"
+    )
+    details = []
+    if coverage:
+        details.append(f"coverage={coverage}")
+    if violations:
+        details.append(f"violations={violations}")
+    suffix = f" ({'; '.join(details)})" if details else ""
+    return f"{verdict} {dimensions}{suffix}"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build case-level evaluation reports.")
     parser.add_argument("--baseline", help="baseline dialog regression JSON")
@@ -326,11 +501,11 @@ def main() -> None:
             baseline = item.get("baseline", {}).get("reply", "")
             current = item.get("current", {}).get("reply", "")
             candidate_text = "; ".join(
-                f"{candidate.get('name')}: {candidate.get('reply', '')}"
+                f"{candidate.get('name')}: {_format_score_for_markdown(candidate.get('score'))} {candidate.get('reply', '')}"
                 for candidate in item.get("candidates", [])
             )
             lines.append(
-                f"| {item.get('case', '')} | {baseline[:80]} | {current[:80]} | {candidate_text[:80]} |"
+                f"| {item.get('case', '')} | {_format_score_for_markdown(item.get('baseline', {}).get('score'))} {baseline[:80]} | {_format_score_for_markdown(item.get('current', {}).get('score'))} {current[:80]} | {candidate_text[:120]} |"
             )
         text = "\n".join(lines)
     else:

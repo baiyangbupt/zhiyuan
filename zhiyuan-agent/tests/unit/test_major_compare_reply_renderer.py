@@ -30,8 +30,10 @@ def _assert_renderer_covers_category_representatives(*, batch: str, mappings: di
 
         assert major_name in reply
         assert category in reply
-        assert "当前没有拿到可用的个性化量化评分" in reply
+        assert "方向判断" in reply
         assert "选择建议" in reply
+        assert "个性化量化评分" not in reply
+        assert "系统评分" not in reply
         assert "请只做" not in reply
         assert "内部提示" not in reply
         assert "payload" not in reply
@@ -115,3 +117,6 @@ def test_missing_weight_renderer_uses_structured_sections():
     assert "**财政学**" in reply
     assert "**选择建议**" in reply
     assert "**下一步**" in reply
+    assert "普通家庭、女生" in reply
+    assert "个性化量化评分" not in reply
+    assert "系统分数" not in reply

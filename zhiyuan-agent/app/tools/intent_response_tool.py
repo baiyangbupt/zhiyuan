@@ -114,8 +114,8 @@ def _summarize_confirmed_intents(merged: dict[str, Any]) -> str:
     if not isinstance(merged, dict) or not merged:
         return ""
     summary: dict[str, list[str]] = {
-        "偏好方向": [],
-        "排除方向": [],
+        "偏好专业": [],
+        "排除专业": [],
         "偏好院校": [],
         "排除院校": [],
         "偏好地域": [],
@@ -125,9 +125,9 @@ def _summarize_confirmed_intents(merged: dict[str, Any]) -> str:
     }
     major_intents = merged.get("major_intents") if isinstance(merged.get("major_intents"), dict) else {}
     for key in ("level1", "level2", "level3"):
-        _extend_summary(summary, "偏好方向", major_intents.get(key))
+        _extend_summary(summary, "偏好专业", major_intents.get(key))
     for key in ("negative_level1", "negative_level2", "negative_level3"):
-        _extend_summary(summary, "排除方向", major_intents.get(key))
+        _extend_summary(summary, "排除专业", major_intents.get(key))
 
     school_intents = merged.get("school_intents") if isinstance(merged.get("school_intents"), dict) else {}
     _extend_summary(summary, "偏好院校", school_intents.get("colleges"))
@@ -151,6 +151,32 @@ def _summarize_confirmed_intents(merged: dict[str, Any]) -> str:
     return f"本次确认内容：{'；'.join(parts)}。" if parts else ""
 
 
+def _candidate_scope_line(result: IntentStateUpdateResult) -> str:
+    if result.baseTotal is not None and result.filteredTotal is not None:
+        return f"候选结果：按当前要求查看时约 {result.filteredTotal} 个，整体候选约 {result.baseTotal} 个。"
+    if result.filteredTotal is not None:
+        return f"候选结果：按当前要求查看时约 {result.filteredTotal} 个。"
+    return ""
+
+
+def _render_confirmed_intent_reply(
+    lead: str,
+    confirmed_summary: str,
+    *,
+    usage_line: str,
+    next_step: str,
+    candidate_scope: str = "",
+) -> str:
+    lines = [lead]
+    if confirmed_summary:
+        lines.append(f"- {confirmed_summary}")
+    lines.append(f"- 后续使用：{usage_line}")
+    if candidate_scope:
+        lines.append(f"- {candidate_scope}")
+    lines.append(f"- 下一步：{next_step}")
+    return "\n".join(lines)
+
+
 def render_intent_state_update(result: IntentStateUpdateResult) -> str:
     if result.message:
         return result.message
@@ -158,15 +184,20 @@ def render_intent_state_update(result: IntentStateUpdateResult) -> str:
     code = result.messageCode
     confirmed_summary = _summarize_confirmed_intents(result.merged)
     if code == "constraint_applied":
-        summary_text = f"{confirmed_summary}" if confirmed_summary else ""
-        if result.baseTotal is not None and result.filteredTotal is not None:
-            return f"已按你的确认把这条要求记录为后续筛选和方案调整参考。{summary_text}候选展示会按这条要求更新，候选结果现在大约能看到 {result.filteredTotal} 个，整体候选大约是 {result.baseTotal} 个。要是你愿意，我也可以继续帮你看看这份方案里还有没有不符合这条要求的地方。"
-        if result.filteredTotal is not None:
-            return f"已按你的确认把这条要求记录为后续筛选和方案调整参考。{summary_text}候选展示会按这条要求更新，候选结果现在大约还有 {result.filteredTotal} 个。要是你愿意，我也可以继续帮你看看这份方案里还有没有不符合这条要求的地方。"
-        return f"已按你的确认把这条要求记录为后续筛选和方案调整参考。{summary_text}候选展示会按这条要求更新，你现在可以去看候选结果。要是你愿意，我也可以继续帮你看看这份方案里还有没有不符合这条要求的地方。"
+        return _render_confirmed_intent_reply(
+            "已按你的确认把这条要求记录为后续筛选和方案调整参考。",
+            confirmed_summary,
+            usage_line="后续查看候选和方案时会按这条要求作为参考，不会直接改动当前方案顺序。",
+            candidate_scope=_candidate_scope_line(result),
+            next_step="可以继续让我检查当前方案里是否还有不符合这条要求的地方；如果需要调整方案，我会先给预览，确认后再执行。",
+        )
     if code == "preference_applied":
-        summary_text = f"{confirmed_summary}" if confirmed_summary else ""
-        return f"好的，已经按你的确认记下来了，并作为后续筛选和方案调整参考。{summary_text}接下来如果你愿意，我可以继续帮你看看现在这份方案哪些地方比较贴近你的想法、哪些地方还可以再优化。"
+        return _render_confirmed_intent_reply(
+            "好的，已经按你的确认记下来了，并作为后续筛选和方案调整参考。",
+            confirmed_summary,
+            usage_line="后续查看候选和方案时会把这些偏好作为参考，不会直接改动当前方案顺序。",
+            next_step="可以继续让我看现在这份方案里哪些地方贴近你的想法、哪些地方还可以优化。",
+        )
     if code == "reject_success":
         return "已取消本次意向调整。你可以重新说明想保留、排除或更偏好的方向，或者继续其他咨询。"
     if code == "no_pending":
@@ -357,10 +388,34 @@ def render_intent_analysis_payload(payload_text: str) -> str:
                 intent_mode=payload.intentMode,
                 existing_items=[item.model_dump() for item in payload.existingItems],
             )
-        all_existing_text = "这个想法我这边已经记下并在参考了。如果你愿意，我可以继续帮你看看现在这份方案和它有多匹配。"
+        all_existing_text = "这些内容当前已经在后续参考中，不需要重复确认。如果你愿意，我可以继续帮你看看现在这份方案和它有多匹配。"
         if payload.existingItems:
-            details = "\n".join(f"- {item.content}" for item in payload.existingItems)
-            all_existing_text += "\n" + details
+            grouped: dict[str, list[str]] = {}
+            for item in payload.existingItems:
+                content = item.content.replace("当前已记录", "已在参考").strip()
+                if "：" not in content:
+                    grouped.setdefault("已有参考", []).append(content)
+                    continue
+                label, value = content.split("：", 1)
+                label = label.removeprefix("已在参考").strip("的 ")
+                value = value.strip()
+                if label and value:
+                    grouped.setdefault(label, []).append(value)
+            details = []
+            for label, values in grouped.items():
+                unique_values = []
+                for value in values:
+                    if value and value not in unique_values:
+                        unique_values.append(value)
+                details.append(f"- {label}：{'、'.join(unique_values)}")
+            if details:
+                all_existing_text += "\n\n**已在参考**\n" + "\n".join(details)
+        all_existing_text += (
+            "\n\n**本次边界**\n"
+            "- 这次不会重复写入偏好，也不会改方案。\n\n"
+            "**下一步**\n"
+            "- 可以继续让我看当前方案和这些偏好有多匹配。"
+        )
         return all_existing_text
     return render_intent_analysis_text(
         title=payload.title,
