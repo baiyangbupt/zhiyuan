@@ -687,6 +687,16 @@
   - 覆盖短句、懒输入、口语、省略、简称和弱指令，例如“这方案咋样”“保底够不够啊”“青城那个是不是放多了”“按好学校排下看看”“法和财哪个更适合女孩子，家里一般”“新媒体和跨电呢 数学不太行”“会计审计可以 土木别要”“嗯可以”。
   - 这组 case 的质量目标是：用户输入可以很短，但系统回复不能变薄；必须主动补结论、依据、代表性数据、风险边界和可继续交互的下一步。
   - 目录级单测已覆盖该 case 集必须包含 `realistic_user_input`、`lazy_short_prompt`、`school_abbreviation`、`major_abbreviation`、`career_short_prompt`、`short_intent`、`vague_confirm`、`preview_confirm_boundary` 和 `no_pending_guard` 等标签。
+- 真实用户口语化 case 首轮 live 复跑已执行，输出 `/private/tmp/zhiyuan_agent_303_realistic_user_live.json`，详细报告输出 `/private/tmp/zhiyuan_agent_303_realistic_user_live_eval.md`。
+  - 结果：`9` 个 step 中 `8` 个拿到回复，`1` 个超时失败；中位耗时约 `16832ms`，p95 约 `38698ms`。
+  - 质量可接受样例：`这方案咋样` 能覆盖数量、冲稳保、审查、偏好匹配、前排示例和下一步；`新媒体和跨电呢 数学不太行` 能识别专业简称并给出学习压力、就业路径和建议。
+  - 暴露问题：`法和财哪个更适合女孩子，家里一般` 未进入专业对比快路由，落到完整 Agent 后 `124469ms` 超时；`按好学校排下看看` 的排序预览尾部重复了“排序方式/执行影响”；`嗯可以` 没有进入无 pending 确认保护，回复没有明确“当前没有待确认/待执行事项”；`青城那个是不是放多了` 有院校简称歧义，实际误偏向青海民族大学而非预期的青岛城市学院。
+  - 修复设计：不新增普通业务字符串模板回复；只把高置信口语简称纳入既有快路由解析，把真实确认口语纳入既有无 pending 保护，把排序预览的结构化补充收敛为单一来源。院校简称仅补充已在 case 中明确验证的高置信映射，仍保持只读查询、不生成卡片、不执行方案动作。
+  - 修复后重启 Agent 复跑：`/private/tmp/zhiyuan_agent_303_realistic_user_live_after_restart.json`，`9/9` steps 通过；中位耗时约 `3453ms`，最大 `38766ms`。`青城` 命中青岛城市学院并走 `plan_query_fast_route`；`法和财` 命中 `major_compare_fast_route`，约 `2435ms`；`嗯可以` 命中 `plan_confirmation_guard_no_pending`，约 `2177ms`。
+  - 排序字段专项复验：`/private/tmp/zhiyuan_agent_303_good_school_sort_after_field_fix.json`，`按好学校排下看看` 约 `2445ms`，走 `plan_fast_route`，回复为“按院校层次重新排序”，不再误判为录取率排序，也不再重复“排序方式/执行影响”。
+  - 最终收口复跑：`/private/tmp/zhiyuan_agent_303_realistic_user_live_final4.json`，详细评分报告 `/private/tmp/zhiyuan_agent_303_realistic_user_live_final4_eval.md`。结果 `9/9` steps 通过，`failedSteps=0`，`qualityViolations=0`；评分 `strong=7 / needs_review=2 / fail=0`。延迟：runner 统计中位 `2257ms`、p95/max `28006ms`；详细评分器插值 p95 为 `18232ms`，max 仍为 `28006ms`。
+  - 最终收口的关键链路：`保底够不够啊` 走 `plan_fast_route -> query_state`，约 `2373ms`，不再误走补齐预览；`法和财哪个更适合女孩子，家里一般` 走 `major_compare_fast_route`，约 `2301ms`；`新媒体和跨电呢 数学不太行` 走 `major_compare_fast_route`，约 `2188ms`；`会计审计可以 土木别要` 走 `major_intent_fast_route`，约 `2079ms`；`青城那个是不是放多了` 能映射到青岛城市学院；`嗯可以` 走无 pending 确认保护。
+  - 剩余 `needs_review` 解释：`这方案咋样` 内容质量通过，覆盖数量、冲稳保、审查风险、前排样本和下一步，但本轮仍有 `28006ms` 慢请求，后续如果继续压性能，应优先看方案状态类回复是否能减少一次模型往返或引入结构化 facts 兜底；`保底够不够啊` 路由和内容正确，但 case 的 `expectedKeyPoints` 对“主要问题 / 建议 / 下一步”字面要求偏严格，当前回复用“需要关注 / 可以继续...”表达，没有构成质量硬失败。
 
 ## 11. 当前回复质量结论与后续关注点
 
@@ -697,7 +707,8 @@
 - 硬失败为 0：没有内部术语外露、待确认/已生效边界冲突、空回复或超时硬失败。
 - 主链路覆盖为 strong：方案状态、审查、局部查询、移动、加入、排序、专业组操作、意向预览/确认、无 pending 确认保护均通过。
 - 开放质量覆盖为 strong：职业方向、多方向承接、专业对比、待确认意向影响追问、只读查询后确认保护均通过。
-- 延迟可接受：最新本地服务 live 复跑中 effect/perf 中位约 `2340ms`，open-quality 中位约 `2379ms`，未出现本轮硬超时。
+- 真实口语化输入覆盖已补齐：短句、懒输入、简称、弱确认和混合软硬意向均有 live 结果；最终收口 `9/9` 通过，未出现质量硬失败。
+- 延迟整体可接受：最新本地服务 live 复跑中 effect/perf 中位约 `2340ms`，open-quality 中位约 `2379ms`，口语化 case 中位约 `2257ms`。仍需继续关注“方案概况自由组织回复”偶发慢请求。
 
 ### 11.2 后续仍建议关注
 

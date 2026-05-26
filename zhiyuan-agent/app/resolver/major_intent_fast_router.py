@@ -79,10 +79,12 @@ _POSITIVE_INTENT_TOKENS = (
     "加入偏好",
     "作为偏好",
     "考虑",
+    "可以",
 )
 
 _NEGATIVE_INTENT_TOKENS = (
     "不要",
+    "别要",
     "不想",
     "不考虑",
     "不看",
@@ -96,6 +98,12 @@ _NEGATIVE_INTENT_TOKENS = (
 )
 
 _CLAUSE_SEPARATORS = "，,。.!！?？；;、但"
+
+_QUESTION_TOKENS = ("可以吗", "可不可以", "能不能", "行不行", "好吗", "好不好")
+
+_HIGH_CONFIDENCE_MAJOR_ABBREVIATIONS: dict[str, str] = {
+    "土木": "土木工程",
+}
 
 
 @dataclass(slots=True)
@@ -161,11 +169,16 @@ def _build_surface_map(labels: set[str], *, level: str) -> dict[str, str]:
         if level == "level2" and label.endswith("学类") and len(label) > 3:
             surfaces.setdefault(f"{label[:-2]}类", []).append(label)
 
-    return {
+    surface_map = {
         surface: standards[0]
         for surface, standards in surfaces.items()
         if len(set(standards)) == 1
     }
+    if level == "level3":
+        for surface, standard in _HIGH_CONFIDENCE_MAJOR_ABBREVIATIONS.items():
+            if standard in labels:
+                surface_map.setdefault(surface, standard)
+    return surface_map
 
 
 def _find_mentions(compact_text: str, *, batch: str | None) -> list[_MajorMention]:
@@ -229,6 +242,22 @@ def _append_unique(bucket: list[str], value: str) -> None:
         bucket.append(value)
 
 
+def _nearest_token_distance(text: str, mention: _MajorMention, tokens: tuple[str, ...]) -> int | None:
+    distances: list[int] = []
+    for token in tokens:
+        search_from = 0
+        while True:
+            pos = text.find(token, search_from)
+            if pos < 0:
+                break
+            search_from = pos + 1
+            if pos >= mention.end:
+                distances.append(pos - mention.end)
+            else:
+                distances.append(mention.start - (pos + len(token)))
+    return min(distances) if distances else None
+
+
 def resolve_major_intent_fast_route(
     text: str | None,
     *,
@@ -240,6 +269,8 @@ def resolve_major_intent_fast_route(
         return MajorIntentFastRouteDecision(reason="empty_prompt")
     if _contains_any(compact_text, _COMPARE_OR_READONLY_TOKENS):
         return MajorIntentFastRouteDecision(reason="readonly_or_compare_semantics")
+    if _contains_any(compact_text, _QUESTION_TOKENS):
+        return MajorIntentFastRouteDecision(reason="readonly_question_semantics")
     if _contains_any(compact_text, _PLAN_MUTATION_TOKENS):
         return MajorIntentFastRouteDecision(reason="plan_mutation_semantics")
     if not _contains_any(compact_text, _POSITIVE_INTENT_TOKENS + _NEGATIVE_INTENT_TOKENS):
@@ -254,6 +285,12 @@ def resolve_major_intent_fast_route(
         clause = _clause_for_mention(compact_text, mention)
         is_negative = _contains_any(clause, _NEGATIVE_INTENT_TOKENS)
         is_positive = _contains_any(clause, _POSITIVE_INTENT_TOKENS)
+        if is_negative and is_positive:
+            negative_distance = _nearest_token_distance(compact_text, mention, _NEGATIVE_INTENT_TOKENS)
+            positive_distance = _nearest_token_distance(compact_text, mention, _POSITIVE_INTENT_TOKENS)
+            if negative_distance is not None and positive_distance is not None:
+                is_negative = negative_distance <= positive_distance
+                is_positive = positive_distance < negative_distance
         if not is_negative and not is_positive:
             continue
         key = f"negative_{mention.level}" if is_negative else mention.level

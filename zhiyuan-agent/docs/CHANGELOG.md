@@ -8,6 +8,7 @@
 - 3.0.3 Agent case 级评估框架：新增质量评分框架、报告模板和 first-pass 记录，要求同时评估回复正确性、完整度、自然度、决策支持度和延迟，避免只看性能或只把回复做薄。
 - 3.0.3 Agent 回复质量文本级评审：逐 case 记录用户输入、实际回复、人工质量评分和修复建议，明确 Plan 快路径已基本稳定，Explore/Intent 仍存在模板感、内部术语外露和确认语义偏强等待优化问题。
 - 3.0.3 回复质量 P1 修复设计：明确 Intent preview 用户语言、Intent confirm 语义收口、职业方向承接结论先行、专业对比使用本轮用户事实，以及方案审查进入 quality 主 case 的修复范围。
+- 新增 `dialog_regression_303_realistic_user_cases.json` 真实口语化输入回归集，覆盖短句、懒输入、学校/专业简称、弱确认和混合软硬意向；最终 live 收口 `9/9` steps 通过，`qualityViolations=0`，中位耗时约 `2257ms`。
 - `dialog_case_evaluation_report.py` 支持合并修复前/当前版本输出和多 provider benchmark 输出，按 `case + stepIndex` 对齐回复文本、首响、总耗时和启发式质量分。
 - `model_provider_benchmark.py` 支持临时 agent host 配置、启动日志落盘、保留完整回复文本、保留 followup、以及每个 provider 前清理本地对话历史，便于做公平的多模型场景对照。
 - 新增 `model_provider_303_quality_readonly_cases.json`，用于只读/预览类 3.0.3 场景的多模型质量/性能对照，避免确认执行修改方案状态造成 provider 间上下文污染。
@@ -88,6 +89,7 @@
 - 3.0.3 Intent 确认回复收紧：没有实际候选数量事实时，不再说“候选展示会按这条要求更新、现在可以去看候选结果”，改为“后续查看候选和方案时会按这条要求作为参考”。
 - 3.0.3 Intent preview 条目语气收紧：专业、院校、地域和发展方向的待确认条目统一使用“确认后，将把...”表达，避免单条内容看起来已经生效；对应条目级单测、WebSocket 兼容样例和评估门禁已补充。
 - 3.0.3 Intent existing-only 文案修复：当用户再次表达已经存在的偏好/排除项时，回复改为“当前已经在后续参考中，不需要重复确认”，并列出“已在参考的偏好/排除项”，避免把既有内容误说成新的待确认内容。固定会话 `880203` WebSocket 两步验证通过。
+- 3.0.3 真实口语化输入修复：`法/财`、`新媒体/跨电`、`青城`、`会计审计可以 土木别要`、`保底够不够啊`、`嗯可以` 等表达已纳入既有高置信快路由或确认保护；不新增普通业务模板短路，高副作用动作仍保持 preview -> confirm -> apply 边界。
 - 3.0.3 quality 主回归补齐方案审查：审查 case 返回 `review` 工作台刷新且不暴露内部位置标记；审查回复改为“审查结论 / 主要问题 / 典型涉及 / 下一步建议”的结构化要点。真实 WebSocket `dialog_regression_303_effect_perf_cases.json --clear-history --keep-response-text --assert-plan-style` 最新复跑 `14/14` steps 通过，中位耗时约 `2240ms`，最大耗时约 `4140ms`。
 - 3.0.3 待确认意向影响追问收口：已有 `planEditCache` 待确认内容时，“先不确认，看看这个偏好会影响当前方案吗”直接走 `pending_intent_impact_fast_route`，基于当前方案/候选事实做只读说明；不调用主 Agent、不确认、不刷新工作台、不改方案。
 - 3.0.3 Intent preview 文案继续用户化：去掉“候选结果收紧”“专家推荐”等表达；结构化影响文本不再重复套“当前判断”标题；已有真实方案/候选命中时去掉“我先帮你看看 / 顺手看看”等泛化句。

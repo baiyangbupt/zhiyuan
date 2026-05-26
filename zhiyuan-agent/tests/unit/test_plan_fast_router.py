@@ -11,6 +11,21 @@ def test_resolve_plan_fast_route_matches_plan_status_query():
     assert decision.reason == "plan_status_query"
 
 
+def test_resolve_plan_fast_route_matches_safety_status_question_as_readonly():
+    decision = resolve_plan_fast_route("保底够不够啊")
+
+    assert decision.matched is True
+    assert decision.action_family == "query_state"
+    assert decision.reason == "plan_safety_status_query"
+
+
+def test_resolve_plan_fast_route_keeps_explicit_compensation_as_preview():
+    decision = resolve_plan_fast_route("保底不够的话先给我补齐预览")
+
+    assert decision.matched is True
+    assert decision.action_family == "preview_compensation"
+
+
 def test_resolve_plan_fast_route_matches_numeric_volunteer_move():
     decision = resolve_plan_fast_route("把第2个志愿移到第4位")
 
@@ -37,6 +52,15 @@ def test_resolve_plan_fast_route_matches_sort_and_review():
     assert sort_decision.action_family == "sort_ordered_plan"
     assert review_decision.matched is True
     assert review_decision.action_family == "review_plan"
+
+
+def test_resolve_plan_fast_route_matches_lazy_good_school_sort():
+    decision = resolve_plan_fast_route("按好学校排下看看")
+
+    assert decision.matched is True
+    assert decision.action_family == "sort_ordered_plan"
+    assert decision.reason == "explicit_sort_dimension"
+    assert decision.filters == {"sort_field": "schoolRank"}
 
 
 def test_resolve_plan_fast_route_matches_review_followup_adjustment_preview():

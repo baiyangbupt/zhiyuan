@@ -24,6 +24,22 @@ def test_major_compare_fast_route_matches_unique_local_alias():
     assert decision.major_name2 == "跨境电子商务"
 
 
+def test_major_compare_fast_route_matches_colloquial_pair_with_context():
+    decision = resolve_major_compare_fast_route("新媒体和跨电呢 数学不太行")
+
+    assert decision.matched is True
+    assert decision.major_name1 == "网络与新媒体"
+    assert decision.major_name2 == "跨境电子商务"
+
+
+def test_major_compare_fast_route_matches_high_confidence_lazy_abbreviations():
+    decision = resolve_major_compare_fast_route("法和财哪个更适合女孩子，家里一般")
+
+    assert decision.matched is True
+    assert decision.major_name1 == "法学"
+    assert decision.major_name2 == "财政学"
+
+
 def test_major_compare_fast_route_does_not_match_intent_or_mutation_semantics():
     assert resolve_major_compare_fast_route("法学和财政学都帮我记成偏好").matched is False
     assert resolve_major_compare_fast_route("法学和财政学按这个改方案").matched is False

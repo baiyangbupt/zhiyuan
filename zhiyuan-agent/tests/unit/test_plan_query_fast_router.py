@@ -33,6 +33,14 @@ def test_plan_query_fast_route_matches_school_related_question_with_readonly_can
     assert decision.school_keywords == ["青岛城市学院"]
 
 
+def test_plan_query_fast_route_matches_high_confidence_school_abbreviation():
+    decision = resolve_plan_query_fast_route("青城那个是不是放多了")
+
+    assert decision.matched is True
+    assert decision.scope == "plan_then_candidate"
+    assert decision.school_keywords == ["青岛城市学院"]
+
+
 def test_plan_query_fast_route_does_not_match_mutation_requests():
     assert resolve_plan_query_fast_route("把北京农学院的生物工程加入方案").matched is False
     assert resolve_plan_query_fast_route("删除当前方案里的生物工程").matched is False

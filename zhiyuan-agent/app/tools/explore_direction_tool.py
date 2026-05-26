@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import asyncio
+import re
 from collections import Counter, defaultdict
 from typing import Any
 
@@ -771,25 +772,62 @@ def _direction_analysis_sections(
     ]
 
 
+def _looks_like_concrete_sample(text: str) -> bool:
+    if not text:
+        return False
+    if any(marker in text for marker in ("例子", "示例", "样本")):
+        return True
+    return "大学" in text or "学院" in text
+
+
+def _sample_text(text: str) -> str:
+    compact = text.strip()
+    for marker in ("例子：", "示例：", "样本："):
+        if marker in compact:
+            compact = compact.split(marker, 1)[1].strip()
+            break
+
+    def _brief_one(value: str) -> str:
+        value = value.strip(" ，,；;。")
+        value = re.split(r"[；;]", value, maxsplit=1)[0].strip()
+        value = re.split(r"[（(](?:冲|稳|保|办学地点|合作方|要求|只招|不招|学费|前三年|第一|第二|第三|第四)", value, maxsplit=1)[0].strip()
+        brief_parts = value.split("-", 1)
+        if len(brief_parts) == 2:
+            school, major = brief_parts[0].strip(), brief_parts[1].strip()
+            major = re.split(r"[（(]", major, maxsplit=1)[0].strip()
+            if school and major:
+                value = f"{school}-{major}"
+        if len(value) > 80:
+            value = value[:80].rstrip("，,；;。") + "..."
+        return value
+
+    parts = [
+        part
+        for part in re.split(r"[；;](?=.*(?:大学|学院).*-)", compact)
+        if part.strip()
+    ]
+    if len(parts) > 1:
+        return "；".join(_brief_one(part) for part in parts[:2] if _brief_one(part))
+    if len(compact) > 80:
+        compact = compact[:80].rstrip("，,；;。") + "..."
+    return _brief_one(compact)
+
+
+def _add_unique_sample(target: list[str], value: Any, *, limit: int) -> None:
+    if len(target) >= limit:
+        return
+    text = str(value or "").strip()
+    if not text or not _looks_like_concrete_sample(text) or text in target:
+        return
+    target.append(_sample_text(text))
+
+
 def _direction_focus_snapshot(
     analysis: dict[str, Any],
     *,
     limit: int = 2,
+    direction_facts: list[dict[str, Any]] | None = None,
 ) -> list[str]:
-    def _looks_like_concrete_sample(text: str) -> bool:
-        if not text:
-            return False
-        if any(marker in text for marker in ("例子", "示例", "样本")):
-            return True
-        return "大学" in text or "学院" in text
-
-    def _sample_text(text: str) -> str:
-        compact = text.strip()
-        for marker in ("例子：", "示例：", "样本："):
-            if marker in compact:
-                return compact.split(marker, 1)[1].strip()
-        return compact
-
     focus_lines: list[str] = []
     fit_items = [
         item
@@ -806,6 +844,13 @@ def _direction_focus_snapshot(
         for item in _dedupe_texts(analysis.get("candidateOpportunity") or [])
         if _looks_like_concrete_sample(item)
     ]
+    for fact in direction_facts or []:
+        if not isinstance(fact, dict):
+            continue
+        for item in fact.get("orderedExamples") or []:
+            _add_unique_sample(fit_items, item, limit=limit)
+        for item in fact.get("candidateExamples") or []:
+            _add_unique_sample(candidate_items, item, limit=limit)
     if fit_items:
         focus_lines.append(f"方案承接代表：{'；'.join(_sample_text(item) for item in fit_items[:limit])}")
     if conflict_items:
@@ -915,11 +960,12 @@ async def preview_direction_analysis_from_request(
         )
     else:
         try:
+            direction_fact = _build_direction_slot_fact(direction_slot, ordered_items, candidate_items, ordered_ids)
             generated = await asyncio.wait_for(
                 _generate_direction_analysis_content(
                     request_context,
                     [student_fit_fact],
-                    [_build_direction_slot_fact(direction_slot, ordered_items, candidate_items, ordered_ids)],
+                    [direction_fact],
                 ),
                 timeout=_DIRECTION_ANALYSIS_LLM_TIMEOUT_SECONDS,
             )
@@ -946,7 +992,15 @@ async def preview_direction_analysis_from_request(
     return _format_text_sections(
         ("分析结论", [f"你提到的“{to_career_label(direction_slot)}”，我先帮你做了一个初步判断。"]),
         *_direction_analysis_sections(analysis, fit_title="方向判断"),
-        ("代表样本", _direction_focus_snapshot(analysis)),
+        (
+            "代表样本",
+            _direction_focus_snapshot(
+                analysis,
+                direction_facts=[
+                    _build_direction_slot_fact(direction_slot, ordered_items, candidate_items, ordered_ids)
+                ],
+            ),
+        ),
         ("本次边界", _readonly_direction_boundary()),
         ("下一步", next_steps[:4]),
     )
@@ -1040,7 +1094,7 @@ async def preview_generic_direction_analysis_from_request(
     return _format_text_sections(
         ("分析结论", ["你这句更像是在问自己现阶段更适合优先看哪类方向，我先按这个思路帮你做个初步判断。"]),
         *_direction_analysis_sections(analysis, fit_title="方向判断"),
-        ("代表样本", _direction_focus_snapshot(analysis)),
+        ("代表样本", _direction_focus_snapshot(analysis, direction_facts=direction_facts[:3])),
         ("本次边界", _readonly_direction_boundary()),
         ("下一步", list(analysis.get("nextActionHints") or [])),
     )
@@ -1132,14 +1186,15 @@ async def preview_direction_comparison_from_request(
         )
     else:
         try:
+            direction_facts = [
+                _build_direction_slot_fact(slot, ordered_items, candidate_items, ordered_ids)
+                for slot in normalized_slots
+            ]
             generated = await asyncio.wait_for(
                 _generate_direction_analysis_content(
                     request_context,
                     student_fit_facts,
-                    [
-                        _build_direction_slot_fact(slot, ordered_items, candidate_items, ordered_ids)
-                        for slot in normalized_slots
-                    ],
+                    direction_facts,
                 ),
                 timeout=_DIRECTION_ANALYSIS_LLM_TIMEOUT_SECONDS,
             )
@@ -1166,7 +1221,16 @@ async def preview_direction_comparison_from_request(
     return _format_text_sections(
         ("分析结论", [conclusion]),
         *_direction_analysis_sections(current_judgment, fit_title="方案承接"),
-        ("代表样本", _direction_focus_snapshot(current_judgment)),
+        (
+            "代表样本",
+            _direction_focus_snapshot(
+                current_judgment,
+                direction_facts=[
+                    _build_direction_slot_fact(slot, ordered_items, candidate_items, ordered_ids)
+                    for slot in normalized_slots
+                ],
+            ),
+        ),
         ("本次边界", _readonly_direction_boundary()),
         ("下一步", next_steps[:3]),
     )

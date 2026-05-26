@@ -50,6 +50,8 @@ _READONLY_QUERY_TOKENS = (
     "是否有",
     "是不是有",
     "是不是还有",
+    "是不是",
+    "放多了",
     "几个",
     "多少",
     "相关",
@@ -226,6 +228,21 @@ def _find_label_mentions(compact_text: str, labels: set[str]) -> list[str]:
     return selected
 
 
+_HIGH_CONFIDENCE_SCHOOL_ABBREVIATIONS: dict[str, str] = {
+    "青城": "青岛城市学院",
+}
+
+
+def _find_school_mentions(compact_text: str, school_labels: set[str]) -> list[str]:
+    schools = _find_label_mentions(compact_text, school_labels)
+    if schools:
+        return schools
+    for alias, school in _HIGH_CONFIDENCE_SCHOOL_ABBREVIATIONS.items():
+        if alias in compact_text and school in school_labels:
+            return [school]
+    return []
+
+
 def _find_major_mentions(compact_text: str, level2_labels: set[str], level3_labels: set[str]) -> list[str]:
     labels = set(level2_labels) | set(level3_labels)
     labels.update(label[:-1] for label in level3_labels if label.endswith("学") and len(label) > 2)
@@ -261,7 +278,7 @@ def resolve_plan_query_fast_route(
     school_keywords: list[str] = []
     major_keywords: list[str] = []
 
-    for school in _find_label_mentions(compact_text, school_labels):
+    for school in _find_school_mentions(compact_text, school_labels):
         _append_unique(school_keywords, school)
 
     major_lookup_text = compact_text

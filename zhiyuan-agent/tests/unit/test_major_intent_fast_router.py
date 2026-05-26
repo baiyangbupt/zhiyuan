@@ -13,6 +13,17 @@ def test_major_intent_fast_route_matches_positive_and_negative_level3_majors():
     assert decision.route_decision()["actionFamily"] == "preview_major_intent"
 
 
+def test_major_intent_fast_route_matches_lazy_positive_with_negative_level3_majors():
+    decision = resolve_major_intent_fast_route("会计审计可以 土木别要")
+
+    assert decision.matched is True
+    assert decision.intent_mode == "constraint"
+    assert decision.major_intents == {
+        "level3": ["会计学", "审计学"],
+        "negative_level3": ["土木工程"],
+    }
+
+
 def test_major_intent_fast_route_matches_level2_categories_and_alias_surface():
     decision = resolve_major_intent_fast_route("以后优先看计算机类，不看护理类")
 
@@ -34,6 +45,13 @@ def test_major_intent_fast_route_does_not_match_readonly_compare_request():
 
     assert decision.matched is False
     assert decision.reason == "readonly_or_compare_semantics"
+
+
+def test_major_intent_fast_route_does_not_match_readonly_question_with_can():
+    decision = resolve_major_intent_fast_route("会计可以吗")
+
+    assert decision.matched is False
+    assert decision.reason == "readonly_question_semantics"
 
 
 def test_major_intent_fast_route_does_not_match_plan_mutation_request():

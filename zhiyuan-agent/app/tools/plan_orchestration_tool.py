@@ -100,7 +100,7 @@ def _infer_sort_preview_label_and_direction(user_goal: str, filters: dict[str, A
     ).strip()
     goal_text = user_goal or ""
     joined = f"{raw_field} {goal_text}"
-    if any(token in joined for token in ("schoolRank", "school_rank", "schoolLevel", "school_level", "院校层次", "学校层次", "院校排名")):
+    if any(token in joined for token in ("schoolRank", "school_rank", "schoolLevel", "school_level", "院校层次", "学校层次", "院校排名", "好学校")):
         return "院校层次", "排名靠前的排在前面"
     if any(token in joined for token in ("finalScore", "final_score", "recommendationScore", "recommendation_score", "推荐系数")):
         return "推荐系数", "推荐系数高的排在前面"
@@ -406,6 +406,7 @@ async def _plan_next_action_model(
     major_keyword: str | None = None,
     school_tags: list[str] | None = None,
     major_tags: list[str] | None = None,
+    sort_field: str | None = None,
     limit: int = 5,
     user_confirmed: bool = False,
 ) -> PlanActionPlan:
@@ -423,6 +424,7 @@ async def _plan_next_action_model(
         "major_keyword": major_keyword or "",
         "school_tags": json.dumps(school_tags or [], ensure_ascii=False),
         "major_tags": json.dumps(major_tags or [], ensure_ascii=False),
+        "sort_field": sort_field or "",
         "limit": str(limit),
     }
     filters = dict(base_filters)
@@ -655,6 +657,7 @@ async def plan_next_action(
     major_keyword: str | None = None,
     school_tags: list[str] | None = None,
     major_tags: list[str] | None = None,
+    sort_field: str | None = None,
     limit: int = 5,
     user_confirmed: bool = False,
 ) -> str:
@@ -679,6 +682,7 @@ async def plan_next_action(
         major_keyword=major_keyword,
         school_tags=school_tags,
         major_tags=major_tags,
+        sort_field=sort_field,
         limit=limit,
         user_confirmed=user_confirmed,
     )

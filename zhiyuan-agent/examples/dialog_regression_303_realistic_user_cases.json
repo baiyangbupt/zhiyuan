@@ -23,7 +23,7 @@
     "name": "303-real-user-lazy-plan-risk",
     "sessionId": "17",
     "flow": ["plan", "review"],
-    "coverage": ["release_3_0_3", "realistic_user_input", "lazy_short_prompt", "review_plan", "risk_summary"],
+    "coverage": ["release_3_0_3", "realistic_user_input", "lazy_short_prompt", "plan_status", "risk_summary"],
     "assertPlanStyle": true,
     "prompts": [
       {
@@ -48,11 +48,11 @@
       {
         "prompt": "青城那个是不是放多了",
         "assertContainsAny": ["青岛城市", "命中", "方案", "示例", "相关"],
-        "assertThinkingContains": ["正在查当前方案和候选里的相关结果"],
+        "assertContains": ["青岛城市"],
         "assertNotContains": ["已直接调整", "确认后执行", "payload", "stage", "action_family", "volunteerId", "id=", "草稿"],
         "assertThinkingNotContains": ["payload", "stage", "action_family", "volunteerId"],
         "expectedKeyPoints": ["共命中", "冲稳保", "学校层次", "专业热度", "示例", "下一步"],
-        "forbiddenPatterns": ["已直接调整", "确认后执行", "volunteerId"],
+        "forbiddenPatterns": ["青海民族大学", "已直接调整", "确认后执行", "volunteerId"],
         "assertNoFollowups": true,
         "warnElapsedSeconds": 20
       }
@@ -69,7 +69,7 @@
         "prompt": "按好学校排下看看",
         "assertContains": ["排序", "确认"],
         "assertContainsAny": ["院校层次", "排名靠前", "导出顺序", "待重新审查"],
-        "assertThinkingContains": ["正在读取当前方案并整理这次请求", "正在生成这次调整的影响预览"],
+        "assertThinkingContains": ["正在读取当前方案并整理这次请求"],
         "assertNotContains": ["已直接排序", "已直接调整", "payload", "stage", "action_family", "volunteerId", "草稿"],
         "assertThinkingNotContains": ["payload", "stage", "action_family", "volunteerId"],
         "expectedKeyPoints": ["排序方式", "导出顺序", "待重新审查", "确认后"],

@@ -32,7 +32,7 @@ _BOUNDARY_TOKENS = ("待确认", "确认后", "不会改", "不改方案", "只�
 _RISK_TOKENS = ("风险", "提醒", "边界", "结论", "影响", "缺口")
 _PREVIEW_HINT_TOKENS = ("预览", "示例", "代表样本", "下面仅展示", "前列", "共命中", "概况", "典型涉及")
 _PENDING_CONTEXT_TOKENS = ("待确认", "确认前不会正式生效", "确认后才会", "需要你确认后")
-_PENDING_CONDITIONAL_TOKENS = ("确认后", "如果确认", "确认要", "确认才")
+_PENDING_CONDITIONAL_TOKENS = ("确认后", "如果确认", "如果你确认", "确认要", "确认才")
 _UNQUALIFIED_PENDING_EFFECTIVE_PATTERNS = (
     re.compile(r"把.+?(作为|记成|设为|更新为)"),
     re.compile(r"后(面|续).+?(都会按这个要求|会按这个要求|按这个要求来)"),

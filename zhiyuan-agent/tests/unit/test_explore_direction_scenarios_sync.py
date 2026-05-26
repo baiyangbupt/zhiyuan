@@ -299,10 +299,34 @@ def test_direction_focus_snapshot_keeps_only_concrete_samples():
     )
 
     assert snapshot == [
-        "方案承接代表：青岛恒星科技学院-学前教育（冲）；海口经济学院-英语（冲）。",
-        "候选机会代表：中国政法大学-行政管理；天津师范大学-思想政治教育。",
+        "方案承接代表：青岛恒星科技学院-学前教育；海口经济学院-英语",
+        "候选机会代表：中国政法大学-行政管理；天津师范大学-思想政治教育",
     ]
     assert all("大约有" not in item for item in snapshot)
+
+
+def test_direction_focus_snapshot_uses_structured_examples_when_reply_is_only_counts():
+    snapshot = _direction_focus_snapshot(
+        {
+            "currentPlanFit": [
+                "当前方案里已经有一部分内容能承接这条方向，大约有 5 个志愿相对更贴近。"
+            ],
+            "candidateOpportunity": [
+                "候选里还有一些更贴近这条方向的机会，粗看大约有 46 个可以继续深挖。"
+            ],
+        },
+        direction_facts=[
+            {
+                "orderedExamples": ["北京师范大学-法学（稳/北京）"],
+                "candidateExamples": ["中国政法大学-行政管理（冲/北京）"],
+            }
+        ],
+    )
+
+    assert snapshot == [
+        "方案承接代表：北京师范大学-法学",
+        "候选机会代表：中国政法大学-行政管理",
+    ]
 
 
 def test_direction_explore_comparison_fallback_includes_professional_assessment_hint():

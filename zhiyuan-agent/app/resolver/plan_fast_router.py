@@ -48,6 +48,7 @@ _REVIEW_FOLLOWUP_STRONG_CONTEXT_TOKENS = (
     "提醒",
     "本省保底",
     "保底不足",
+    "保底不够",
     "冲稳保",
     "缺口",
     "数量不足",
@@ -86,6 +87,8 @@ _ADJUSTMENT_PREVIEW_TOKENS = (
     "优化建议",
     "处理建议",
     "解决建议",
+    "补齐预览",
+    "补满预览",
     "先给预览",
     "给我预览",
     "先给我一版",
@@ -116,6 +119,7 @@ _SORT_DIMENSIONS = {
     "学校层次": "schoolRank",
     "院校排名": "schoolRank",
     "学校排名": "schoolRank",
+    "好学校": "schoolRank",
     "推荐系数": "finalScore",
     "推荐分": "finalScore",
 }
@@ -188,6 +192,7 @@ class PlanFastRouteDecision:
     unit_ids: list[str] = field(default_factory=list)
     source_position: int | None = None
     target_position: int | None = None
+    filters: dict[str, Any] = field(default_factory=dict)
 
     def route_decision(self) -> dict[str, Any]:
         if not self.matched:
@@ -213,9 +218,21 @@ def _compact(text: str | None) -> str:
 
 
 def _looks_like_sort_request(compact_text: str) -> bool:
-    if not any(token in compact_text for token in ("排序", "重排", "排一下", "排一排")):
+    if not any(token in compact_text for token in ("排序", "重排", "排一下", "排一排", "排下")):
         return False
     return any(token in compact_text for token in _SORT_DIMENSIONS)
+
+
+def _infer_sort_field(compact_text: str) -> str | None:
+    matched: list[tuple[int, int, str]] = []
+    for token, field in _SORT_DIMENSIONS.items():
+        pos = compact_text.find(token)
+        if pos >= 0:
+            matched.append((pos, -len(token), field))
+    if not matched:
+        return None
+    matched.sort()
+    return matched[0][2]
 
 
 def _looks_like_review_request(compact_text: str) -> bool:
@@ -247,6 +264,28 @@ def _looks_like_status_request(compact_text: str) -> bool:
         "方案" in compact_text
         and any(token in compact_text for token in ("结构化", "结论", "情况", "状态", "概览"))
         and not any(token in compact_text for token in ("排序", "移动", "删除", "去掉", "加入", "加进", "审查", "检查"))
+    )
+
+
+def _looks_like_safety_status_question(compact_text: str) -> bool:
+    if not any(token in compact_text for token in ("保底", "保区", "兜底", "托底", "安全垫")):
+        return False
+    if not any(token in compact_text for token in ("够不够", "够吗", "足不足", "是否足够", "够了么", "够没", "够")):
+        return False
+    return not any(
+        token in compact_text
+        for token in (
+            "补齐",
+            "补满",
+            "补几个",
+            "加入",
+            "加进",
+            "调整",
+            "怎么调",
+            "预览",
+            "执行",
+            "确认",
+        )
     )
 
 
@@ -383,11 +422,22 @@ def resolve_plan_fast_route(text: str | None) -> PlanFastRouteDecision:
         return named_decision
 
     if _looks_like_sort_request(compact_text):
+        sort_field = _infer_sort_field(compact_text)
         return PlanFastRouteDecision(
             matched=True,
             action_family="sort_ordered_plan",
             user_goal=original,
             reason="explicit_sort_dimension",
+            confidence="high",
+            filters={"sort_field": sort_field} if sort_field else {},
+        )
+
+    if _looks_like_safety_status_question(compact_text):
+        return PlanFastRouteDecision(
+            matched=True,
+            action_family="query_state",
+            user_goal=original,
+            reason="plan_safety_status_query",
             confidence="high",
         )
 

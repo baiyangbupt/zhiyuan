@@ -136,6 +136,24 @@ def test_score_case_allows_conditional_pending_preview_wording():
     assert "pending_intent_effective_wording" not in score["qualityViolations"]
 
 
+def test_score_case_allows_if_you_confirm_pending_preview_wording():
+    score = report._score_case(
+        {
+            "prompt": "会计审计可以 土木别要",
+            "responseText": (
+                "我先把你这次的想法整理成待确认偏好。\n\n"
+                "- 如果你确认，会把会计学、审计学作为后续参考。\n"
+                "- 如果你确认，会把土木工程作为明确不考虑的内容。\n\n"
+                "确认前不会写入后续参考，也不会直接改动当前方案。\n\n"
+                "**下一步**\n- 如果确认要作为后续参考，直接回复“确认这个偏好”。"
+            ),
+            "elapsedMs": 900,
+        }
+    )
+
+    assert "pending_intent_effective_wording" not in score["qualityViolations"]
+
+
 def test_build_case_report_merges_baseline_current_and_candidates():
     baseline = {
         "case": "case-a",

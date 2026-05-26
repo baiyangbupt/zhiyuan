@@ -497,6 +497,73 @@ def test_chat_service_plan_fast_route_bypasses_main_agent_and_persists_preview(t
     assert _extract_pending_plan_action(stored)["action_family"] == "move_unit"
 
 
+def test_chat_service_plan_fast_route_passes_good_school_sort_field(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    fake_agent = _FakeAgent(["should not be used"])
+    plan_model = PlanActionPlan(
+        stage="preview",
+        action_family="sort_ordered_plan",
+        user_goal="按好学校排下看看",
+        requires_confirmation=True,
+        should_rerun_review=False,
+        context_summary="阶段=ordered；方案=94/96",
+        missing_inputs=[],
+        atomic_actions=[
+            PlanAtomicAction(
+                action_type="sort_ordered_plan",
+                filters={"sort_field": "schoolRank"},
+                reason="按好学校排下看看",
+            )
+        ],
+        preview_summary="会按院校层次重新排序当前方案。",
+    )
+    execution_result = {
+        "applied": False,
+        "action_family": "sort_ordered_plan",
+        "stage": "preview",
+        "result_kind": "preview_only",
+        "summary": (
+            "会按院校层次重新排序当前方案。\n\n"
+            "排序方式：\n- 排名靠前的排在前面。\n\n"
+            "执行影响：\n- 会实际改变方案顺序和导出顺序。\n- 审查状态会进入待重新审查。\n\n"
+            "需要你确认后才会执行。"
+        ),
+        "workspace_refresh_targets": [],
+    }
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch(
+                "app.service.get_planning_workspace_state",
+                AsyncMock(
+                    return_value={
+                        "code": 0,
+                        "data": {
+                            "phase": "ordered",
+                            "orderedPlanState": {"summary": {"total": 94, "targetCount": 96}},
+                            "reviewState": {"summary": {"warnCount": 0, "riskCount": 0}},
+                        },
+                    }
+                ),
+            ), \
+            patch("app.service._plan_next_action_model", AsyncMock(return_value=plan_model)) as mock_plan_next, \
+            patch(
+                "app.service.execute_plan_action",
+                AsyncMock(return_value=json.dumps(execution_result, ensure_ascii=False)),
+            ) as mock_execute:
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(service.handle_message("session-fast-good-school-sort", "user-1", "按好学校排下看看"))
+
+    assert "会按院校层次重新排序当前方案" in reply
+    assert "排名靠前的排在前面" in reply
+    assert fake_agent.calls == []
+    mock_plan_next.assert_awaited_once()
+    assert mock_plan_next.await_args.kwargs["sort_field"] == "schoolRank"
+    mock_execute.assert_awaited_once()
+
+
 def test_chat_service_plan_fast_route_preserves_named_ref_for_preview(tmp_path, mock_llm_client):
     db_path = tmp_path / "history.db"
     store = ChatHistoryStore(str(db_path))
@@ -678,6 +745,34 @@ def test_chat_service_major_compare_fast_route_bypasses_main_agent_and_persists_
     )
 
 
+def test_chat_service_major_compare_fast_route_handles_lazy_abbreviations(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    fake_agent = _FakeAgent(["should not be used"])
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
+            patch(
+                "app.service.compare_majors",
+                AsyncMock(return_value="法学和财政学对比：财政学对普通家庭更稳，法学更看兴趣和法考投入。"),
+            ) as mock_compare:
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(
+            service.handle_message(
+                "session-fast-major-compare-abbrev",
+                "user-1",
+                "法和财哪个更适合女孩子，家里一般",
+            )
+        )
+
+    assert "财政学对普通家庭更稳" in reply
+    assert fake_agent.calls == []
+    mock_compare.assert_awaited_once()
+    assert mock_compare.await_args.args[1:] == ("法学", "财政学")
+
+
 def test_chat_service_major_intent_fast_route_bypasses_main_agent_and_persists_preview(
     tmp_path,
     mock_llm_client,
@@ -709,7 +804,9 @@ def test_chat_service_major_intent_fast_route_bypasses_main_agent_and_persists_p
             )
         )
 
-    assert reply == "我先把这些专业想法整理成待确认内容。确认后会写入后续参考。"
+    assert "我先把这些专业想法整理成待确认内容。确认后会写入后续参考。" in reply
+    assert "确认前不会写入后续参考" in reply
+    assert "下一步" in reply
     assert progress_hints == ["正在整理这个专业想法的影响，等你确认后才会记入偏好..."]
     assert fake_agent.calls == []
     mock_preview.assert_awaited_once()
@@ -2641,7 +2738,9 @@ def test_chat_service_does_not_append_plan_preview_boundary_for_intent_turn_with
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-stale-plan-history", "user-1", "想学跨境电商"))
 
-    assert reply == "我先把这个偏好整理成待确认参考，你确认后我再写入后续参考。"
+    assert "我先把这个偏好整理成待确认参考，你确认后我再写入后续参考。" in reply
+    assert "确认前不会写入后续参考" in reply
+    assert "下一步" in reply
     assert "还没有拿到可执行的调整预览" not in reply
 
 
@@ -3430,6 +3529,25 @@ def test_chat_service_blocks_plan_confirmation_without_pending_action(tmp_path, 
     saved_history = asyncio.run(store.load("session-no-pending-confirm"))
     assert saved_history is not None
     assert len(saved_history) == 2
+
+
+def test_chat_service_blocks_colloquial_confirmation_without_pending_action(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    fake_agent = _FakeAgent(["不应该调用模型"])
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_intent_change_cache", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(service.handle_message("session-no-pending-colloquial-confirm", "user-1", "嗯可以"))
+
+    assert "没有上一轮待确认的方案动作" in reply
+    assert "生成或查看方案" in reply
+    assert "确认后再执行" in reply
+    assert fake_agent.calls == []
 
 
 def test_chat_service_no_pending_confirm_after_career_readonly_uses_contextual_guard(tmp_path, mock_llm_client):
@@ -4265,6 +4383,61 @@ def test_chat_service_confirms_plan_next_action_preview_without_execute(tmp_path
     assert payload["should_rerun_review"] is True
 
 
+def test_sort_preview_boundary_does_not_duplicate_existing_sort_sections(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    preview_plan = {
+        "stage": "preview",
+        "action_family": "sort_ordered_plan",
+        "user_goal": "按院校层次排序",
+        "requires_confirmation": True,
+        "missing_inputs": [],
+        "atomic_actions": [
+            {
+                "action_type": "sort_ordered_plan",
+                "filters": {"sort_field": "schoolRank"},
+            }
+        ],
+        "preview_summary": "按院校层次排序。",
+    }
+    fake_agent = _FakeAgentWithToolCalls(
+        (
+            "按院校层次（好学校优先）重新排序的预览如下：\n\n"
+            "排序方式：\n"
+            "- 排名靠前的排在前面。\n\n"
+            "执行影响：\n"
+            "- 会实际改变方案顺序和导出顺序。\n"
+            "- 审查状态会进入待重新审查。\n\n"
+            "确认要执行吗？"
+        ),
+        [
+            ToolCallPart(
+                tool_name="plan_next_action",
+                args={"user_goal": "按院校层次排序", "action_family": "sort_ordered_plan"},
+                tool_call_id="sort-preview-plan-next-only-existing-sections",
+            )
+        ],
+        [
+            ToolReturnPart(
+                tool_name="plan_next_action",
+                content=json.dumps(preview_plan, ensure_ascii=False),
+                tool_call_id="sort-preview-plan-next-only-existing-sections",
+            )
+        ],
+    )
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(service.handle_message("session-sort-preview-no-dup", "user-1", "按院校层次排序"))
+
+    assert reply.count("排序方式") == 1
+    assert reply.count("执行影响") == 1
+    assert "确认要执行吗" in reply
+
+
 def test_chat_service_allows_query_volunteer_plan_natural_headings(tmp_path, mock_llm_client):
     db_path = tmp_path / "history.db"
     store = ChatHistoryStore(str(db_path))
@@ -4947,7 +5120,9 @@ def test_chat_service_does_not_append_candidate_workspace_refresh_before_intent_
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-intent-preview-refresh", "user-57", "不想学审计"))
 
-    assert reply == "我先把你不想学审计这件事整理成待确认要求。"
+    assert "我先把你不想学审计这件事整理成待确认要求。" in reply
+    assert "确认前不会写入后续参考" in reply
+    assert "下一步" in reply
 
 
 def test_chat_service_direct_confirm_workspace_actions_have_clear_copy(tmp_path, mock_llm_client):

@@ -32,6 +32,18 @@ _COMPARE_TOKENS = (
     "差异",
 )
 
+_COLLOQUIAL_COMPARE_TOKENS = (
+    "呢",
+    "咋样",
+    "怎么样",
+    "如何",
+    "不太行",
+    "不行",
+    "一般",
+)
+
+_PAIR_CONNECTORS = ("和", "跟", "与", "同", "vs", "VS", "、")
+
 _INTENT_OR_MUTATION_TOKENS = (
     "记偏好",
     "记成偏好",
@@ -114,6 +126,14 @@ def _has_intent_or_mutation_token(compact_text: str) -> bool:
     return any(token in remaining for token in _INTENT_OR_MUTATION_TOKENS)
 
 
+def _has_compare_semantics(compact_text: str, majors: list[str]) -> bool:
+    if any(token in compact_text for token in _COMPARE_TOKENS):
+        return True
+    if len(majors) == 2 and any(token in compact_text for token in _COLLOQUIAL_COMPARE_TOKENS):
+        return any(connector in compact_text for connector in _PAIR_CONNECTORS)
+    return False
+
+
 def _surface_map(labels: set[str]) -> dict[str, str]:
     surface_to_standard: dict[str, list[str]] = {}
     for label in labels:
@@ -135,12 +155,29 @@ def _surface_map(labels: set[str]) -> dict[str, str]:
     }
 
 
-def _matched_level3_majors(compact_text: str, labels: set[str]) -> list[str]:
+_HIGH_CONFIDENCE_MAJOR_ABBREVIATIONS: dict[str, str] = {
+    "法": "法学",
+    "财": "财政学",
+    "新媒体": "网络与新媒体",
+    "跨电": "跨境电子商务",
+    "跨境电商": "跨境电子商务",
+}
+
+
+def _expanded_surface_map(labels: set[str]) -> dict[str, str]:
     surfaces = _surface_map(labels)
+    for surface, standard in _HIGH_CONFIDENCE_MAJOR_ABBREVIATIONS.items():
+        if standard in labels:
+            surfaces.setdefault(surface, standard)
+    return surfaces
+
+
+def _matched_level3_majors(compact_text: str, labels: set[str]) -> list[str]:
+    surfaces = _expanded_surface_map(labels)
     matches = [
         (surface, standard)
         for surface, standard in surfaces.items()
-        if len(surface) >= 2 and surface in compact_text
+        if (len(surface) >= 2 or surface in _HIGH_CONFIDENCE_MAJOR_ABBREVIATIONS) and surface in compact_text
     ]
     matches.sort(key=lambda item: (-len(item[0]), compact_text.find(item[0]), item[0]))
     selected: list[tuple[str, int]] = []
@@ -150,6 +187,8 @@ def _matched_level3_majors(compact_text: str, labels: set[str]) -> list[str]:
         if start < 0:
             continue
         end = start + len(surface)
+        if len(surface) == 1 and compact_text.startswith(standard, start):
+            continue
         if end < len(compact_text) and compact_text[end] == "类":
             continue
         if any(not (end <= old_start or start >= old_end) for old_start, old_end in occupied_spans):
@@ -173,12 +212,12 @@ def resolve_major_compare_fast_route(
     compact_text = _compact(text)
     if not compact_text:
         return MajorCompareFastRouteDecision(reason="empty_prompt")
-    if not any(token in compact_text for token in _COMPARE_TOKENS):
-        return MajorCompareFastRouteDecision(reason="missing_compare_semantics")
     if _has_intent_or_mutation_token(compact_text):
         return MajorCompareFastRouteDecision(reason="intent_or_mutation_semantics")
 
     majors = _matched_level3_majors(compact_text, _level3_labels_for_batch(batch))
+    if not _has_compare_semantics(compact_text, majors):
+        return MajorCompareFastRouteDecision(reason="missing_compare_semantics")
     if len(majors) != 2:
         return MajorCompareFastRouteDecision(reason=f"matched_major_count_{len(majors)}")
     return MajorCompareFastRouteDecision(

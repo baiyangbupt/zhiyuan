@@ -789,6 +789,20 @@ def _normalize_pending_intent_reply(reply: str) -> str:
     normalized = re.sub(r"[（(]\s*level[123]\s*[）)]", "", normalized)
     if normalized != reply and "确认" not in normalized:
         normalized = normalized.rstrip("。") + "。如果确认要按这个方向作为后续参考，你再回复确认。"
+    if "确认前不会写入后续参考" not in normalized and "待确认" in normalized and "确认" in normalized:
+        normalized = normalized.rstrip()
+        if normalized:
+            normalized = normalized.rstrip("。") + "。"
+        normalized += "确认前不会写入后续参考，也不会直接改动当前方案。"
+    if (
+        "下一步" not in normalized
+        and "待确认" in normalized
+        and ("后续参考" in normalized or "确认后" in normalized)
+    ):
+        normalized = normalized.rstrip()
+        if normalized:
+            normalized += "\n\n"
+        normalized += "**下一步**\n- 如果确认要作为后续参考，直接回复“确认这个偏好”或“确认这个要求”。"
     return normalized
 
 
@@ -1173,9 +1187,15 @@ _PLAN_ACTION_CONFIRM_PHRASES = {
     "确认执行",
     "确定",
     "可以",
+    "嗯可以",
+    "可以的",
     "好",
     "好的",
+    "嗯好",
+    "嗯好的",
+    "好呀",
     "行",
+    "嗯行",
     "没问题",
     "执行",
     "开始执行",
@@ -1199,9 +1219,15 @@ _INTENT_CONFIRM_PHRASES = {
     "确认",
     "确定",
     "可以",
+    "嗯可以",
+    "可以的",
     "好",
     "好的",
+    "嗯好",
+    "嗯好的",
+    "好呀",
     "行",
+    "嗯行",
     "没问题",
     "就按这个来",
     "按这个来",
@@ -1863,7 +1889,7 @@ def _pending_sort_label_and_direction(pending_action: dict[str, Any]) -> tuple[s
                     str(action.get("reason") or ""),
                 ])
     joined = " ".join(raw_values)
-    if any(token in joined for token in ("schoolRank", "school_rank", "schoolLevel", "school_level", "院校层次", "学校层次", "院校排名")):
+    if any(token in joined for token in ("schoolRank", "school_rank", "schoolLevel", "school_level", "院校层次", "学校层次", "院校排名", "好学校")):
         return "院校层次", "排名靠前的排在前面"
     if any(token in joined for token in ("finalScore", "final_score", "recommendationScore", "recommendation_score", "推荐系数")):
         return "推荐系数", "推荐系数高的排在前面"
@@ -1876,6 +1902,9 @@ def _enrich_pending_sort_preview_summary(pending_action: dict[str, Any], summary
     action_summary = f"会按{label}重新排序当前方案。"
     if summary and "重新排序当前方案" not in summary:
         action_summary = summary
+    compact_summary = _compact_plan_reply_text(summary)
+    if "排序方式" in compact_summary and "执行影响" in compact_summary:
+        return summary
     sections = [
         action_summary,
         f"排序方式：\n- {direction}。",
@@ -2715,6 +2744,7 @@ class ChatService:
                     volunteer_ids=fast_decision.volunteer_ids,
                     unit_ids=fast_decision.unit_ids,
                     target_position=fast_decision.target_position,
+                    sort_field=fast_decision.filters.get("sort_field"),
                     user_confirmed=False,
                 )
                 plan_next_duration_ms = int((time.monotonic() - plan_next_started_at) * 1000)
@@ -2743,6 +2773,7 @@ class ChatService:
                                     "volunteer_ids": fast_decision.volunteer_ids,
                                     "unit_ids": fast_decision.unit_ids,
                                     "target_position": fast_decision.target_position,
+                                    "sort_field": fast_decision.filters.get("sort_field"),
                                     "user_confirmed": False,
                                 },
                                 tool_call_id=plan_next_call_id,

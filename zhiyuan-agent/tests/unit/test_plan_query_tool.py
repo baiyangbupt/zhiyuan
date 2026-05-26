@@ -267,6 +267,42 @@ async def test_query_volunteer_plan_matches_major_query_with_related_major_suffi
 
 
 @pytest.mark.asyncio
+async def test_query_volunteer_plan_school_abbreviation_filter_matches_plan_items():
+    ordered_result = {
+        "code": 0,
+        "data": {
+            "items": [
+                {
+                    "schoolName": "青岛城市学院",
+                    "majorName": "国际经济与贸易",
+                    "tier": "冲",
+                    "admissionRatio": 1,
+                },
+                {
+                    "schoolName": "青海民族大学",
+                    "majorName": "土地资源管理",
+                    "tier": "冲",
+                    "admissionRatio": 2,
+                },
+            ]
+        },
+    }
+
+    with (
+        patch("app.tools.plan_query_tool.get_planning_ordered_plan", new=AsyncMock(return_value=ordered_result)),
+        patch("app.tools.plan_query_tool.get_planning_draft", new=AsyncMock(return_value={"code": 0, "data": {"items": []}})),
+        patch("app.tools.plan_query_tool.get_planning_state", new=AsyncMock(return_value={"code": 0, "data": {"candidatePoolState": {"items": []}}})),
+        patch("app.tools.plan_query_tool.query_planning_candidate_pool", new=AsyncMock()) as candidate_mock,
+    ):
+        result = await query_volunteer_plan(_ctx(), "青城那个是不是放多了", scope="plan", school_keywords=["青岛城市学院"])
+
+    assert "当前排序方案里共命中了 1 条符合“院校:青岛城市学院”" in result
+    assert "青岛城市学院-国际经济与贸易" in result
+    assert "青海民族大学" not in result
+    candidate_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_query_volunteer_plan_structured_region_and_major_filters_use_candidate_metadata_merge():
     ordered_result = {
         "code": 0,
