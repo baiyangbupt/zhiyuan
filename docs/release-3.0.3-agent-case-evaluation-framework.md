@@ -71,6 +71,18 @@
 
 ## 3. 评分框架
 
+3.0.3 的评估框架分为七层，不能只看单条回复是否通过断言：
+
+| 层级 | 评估目标 | 主要产物 |
+| --- | --- | --- |
+| Case 覆盖 | 是否覆盖 Plan / Explore / Intent / Confirm / 降级等核心场景 | `flow`、`coverage` 统计 |
+| 单轮回复质量 | 回复是否正确、完整、自然、有决策价值 | 维度评分、原文样例 |
+| 多轮链路正确性 | preview -> confirm -> apply、只读 -> confirm guard 是否连贯 | step 级结果、pending 边界 |
+| 路由和工具链 | 是否命中预期 fast route / full agent / action family | `routingPath`、`actionFamily`、tool trace |
+| 性能和进度 | 首响、总耗时、长任务提示是否达标 | p50 / p95 / max、thinking 覆盖 |
+| 安全和边界 | 是否外露内部术语、误执行高副作用动作、把待确认说成已生效 | hard gate |
+| 模型和版本对照 | 当前版本、基线版本、候选模型谁更适合 | provider/model summary |
+
 ### 3.1 硬门禁
 
 以下任一项命中，直接判失败：
@@ -83,6 +95,7 @@
 - 关键事实缺失到影响下一步操作。
 - 超时或长时间无进度提示。
 - 误触发无联动卡片或误执行旧 pending。
+- 路由与场景明显不符，例如只读查询误走变更 apply、确认保护误执行旧动作。
 
 对预览 / 举例类回复，若只给对象或个例、却没有覆盖关键分布，也视为不完整，至少应补到下面几类中的两类或以上：
 
@@ -92,7 +105,7 @@
 - 数量缺口或可操作空间。
 - 代表性样本和它们为何被举例。
 
-### 3.2 内容评分
+### 3.2 回复质量评分
 
 建议按 1-5 分评分：
 
@@ -105,13 +118,50 @@
 | 结构清楚度 | 是否层次清楚，但不过度模板化 |
 | 场景适配度 | Plan / Explore / Intent / 查询类是否用对口径 |
 
+回复可以结构化，且多数业务回复应结构化；问题不是“有没有标题”，而是结构是否服务用户理解。评估时重点看：
+
+- 是否先给结论，再给依据、影响和下一步。
+- 是否保留用户真正关心的信息，不为了变快把内容做薄。
+- 是否能解释“为什么这样建议”，而不是只列对象。
+- 是否把当前方案、候选机会、用户偏好、风险和操作边界讲清。
+- 是否避免系统内部概念，例如 `payload / stage / action_family / level1`。
+
 预览 / 举例类回复还要额外看：
 
 - 是否把关键分布讲清楚。
 - 是否只给了个例，没有告诉用户整体结构。
 - 是否能让用户据此判断要不要补稳保、换层次或调整专业热度。
 
-### 3.3 延迟评分
+### 3.3 场景特化质量要求
+
+| 场景 | 质量重点 |
+| --- | --- |
+| Plan 状态查询 | 至少覆盖方案数量、冲稳保、审查状态、代表样本和下一步建议 |
+| Plan 预览调整 | 说清目标对象、当前位置/目标位置、数量影响、导出顺序、审查状态和确认边界 |
+| Plan 审查 | 先给审查结论，再给主要风险、影响范围、建议动作和是否需要用户确认 |
+| Explore 职业/方向 | 给方向判断、方案承接、候选机会、短板和下一步，不直接写偏好 |
+| Explore 专业对比 | 对比适配人群、就业方向、学习压力、风险点和当前会话事实 |
+| Intent 预览 | 区分软偏好和硬要求，明确确认前不会写入后续参考 |
+| Intent 确认 | 复述本次确认内容，说明后续如何参考，不夸大为候选池永久变化 |
+| Confirm guard | 没有待确认动作时必须说明上一轮只是查询/分析/对比，并给可继续动作 |
+
+### 3.4 自动评估与人工评估边界
+
+自动评估负责第一道筛查：
+
+- hard gate：内部术语、待确认边界、空回复、超时硬阈值、路由错位。
+- 质量维度：正确性、完整度、自然度、决策支持度、结构清楚度、延迟、路由。
+- 预览覆盖：学校层次、冲稳保、专业热度、数量空间、代表样本。
+- 汇总统计：按 `flow / coverage / provider / model` 看 `strong / needs_review / fail`。
+
+人工评估负责最终判断：
+
+- 逐 case 保留用户输入和完整回复原文。
+- 对核心 case 给 1-5 分，并写明扣分原因。
+- 对 `needs_review` 和模型候选差异做人工复核。
+- 对“快但信息丢失”“长但有价值”的情况给业务判断，不能只按字数或耗时裁决。
+
+### 3.5 延迟评分
 
 延迟不能只看总耗时，要拆开看：
 
@@ -123,6 +173,13 @@
 | 波动性 | 同类 case 快慢是否稳定 |
 | 超时率 | 是否经常跑满超时阈值 |
 | 进度覆盖率 | 长任务是否有 thinking / progress hint |
+
+建议门槛：
+
+- 普通 fast route：总耗时尽量在 3-6 秒内。
+- 只读复杂分析：超过 10 秒必须有用户可理解的进度提示。
+- 单轮超过 case 的 `maxElapsedSeconds` 直接失败。
+- 单轮超过 `warnElapsedSeconds` 进入复核，结合回复质量判断是否接受。
 
 ## 4. Case 级评估流程
 
@@ -137,6 +194,14 @@ case 需要覆盖：
 - Explore 专业对比
 - Intent 预览 / 确认
 - 无 pending 的确认保护
+- 降级 / 无数据 / 脏历史保护
+
+每个 case 定义应尽量补齐：
+
+- `flow`：场景族，例如 `plan / explore / intent / confirm_guard`。
+- `coverage`：能力标签，例如 `plan_fast_route / preview_confirm_boundary / majorGroup_model`。
+- `warnElapsedSeconds / maxElapsedSeconds`：该步骤的耗时预算。
+- `expectedRoutingPath / expectedActionFamily`：必要时显式指定链路期望。
 
 ### 4.2 统一跑法
 
@@ -180,11 +245,30 @@ case 需要覆盖：
     "completeness": 4,
     "naturalness": 4,
     "actionability": 5,
-    "latency": 4
+    "latency": 4,
+    "route": 5
   },
   "verdict": "improved"
 }
 ```
+
+### 4.4 批量报告要求
+
+`dialog_case_evaluation_report.py` 的输出应至少包含：
+
+- `summary.current`：当前版本总览、质量问题、平均分、延迟分位数。
+- `summary.scenarioSummary`：按 `flow` 汇总。
+- `summary.coverageSummary`：按能力标签汇总。
+- `summary.candidateSummary`：按 provider/model 汇总。
+- `summary.baselineComparison`：与基线版本的强弱变化。
+- `cases[]`：逐 case 回复原文、分数、路由、耗时、候选模型对照。
+
+发布前建议门禁：
+
+- `fail = 0`。
+- 不允许出现内部术语和确认边界硬失败。
+- `needs_review` 必须有人工复核结论。
+- 核心 Plan / Explore / Intent 场景都要有覆盖，不允许只用 fast route smoke 代表整体质量。
 
 ## 5. 场景级重点
 
@@ -265,6 +349,7 @@ SILICONFLOW_API_KEY=*** python3 examples/model_provider_benchmark.py \
 python3 examples/dialog_case_evaluation_report.py \
   --baseline examples/dialog_regression_302_effect_perf_output.json \
   --current /private/tmp/dialog-regression-303-current-text.json \
+  --case-definitions examples/dialog_regression_303_effect_perf_cases.json \
   --candidates models=/private/tmp/model-provider-agent-benchmark.json \
   --output /private/tmp/dialog-case-evaluation-report.json
 ```

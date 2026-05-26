@@ -1,4 +1,5 @@
 import importlib.util
+import json
 from pathlib import Path
 
 
@@ -230,3 +231,153 @@ def test_candidate_rows_expand_multiple_providers_from_one_benchmark_file():
     assert set(rows) == {"provider-a", "provider-b"}
     assert rows["provider-a"]["responseText"] == "A reply"
     assert rows["provider-b"]["responseText"] == "B reply"
+
+
+def test_case_definitions_attach_flow_coverage_and_latency_budget(tmp_path):
+    case_file = tmp_path / "cases.json"
+    case_file.write_text(
+        json.dumps(
+            [
+                {
+                    "name": "case-a",
+                    "sessionId": "17",
+                    "flow": ["plan"],
+                    "coverage": ["plan_fast_route", "sort_ordered_plan"],
+                    "assertPlanStyle": True,
+                    "prompts": [
+                        {
+                            "prompt": "按院校层次排序",
+                            "warnElapsedSeconds": 3,
+                            "maxElapsedSeconds": 5,
+                        }
+                    ],
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    definitions = report._merge_case_definition_indexes([str(case_file)])
+    merged = report._build_case_report(
+        "case-a#1",
+        None,
+        {
+            "case": "case-a",
+            "stepIndex": 1,
+            "prompt": "按院校层次排序",
+            "responseText": "排序预览：确认后会实际改变导出顺序，审查会进入待重新审查。",
+            "elapsedMs": 4200,
+            "turnObservability": {
+                "actionFamilies": ["sort_ordered_plan"],
+                "toolCalls": [{"name": "execute_plan_action", "actionFamily": "sort_ordered_plan"}],
+            },
+        },
+        {},
+        definitions,
+    )
+
+    assert merged["flow"] == ["plan"]
+    assert merged["coverage"] == ["plan_fast_route", "sort_ordered_plan"]
+    assert merged["expectedRoutingPath"] == "plan_fast_route"
+    assert merged["expectedActionFamily"] == "sort_ordered_plan"
+    assert merged["latencyBudget"] == {"warnElapsedMs": 3000, "maxElapsedMs": 5000}
+    assert "latency_warn_exceeded" in ",".join(merged["current"]["score"]["evaluationWarnings"])
+    assert "missing_route_observability" in ",".join(merged["current"]["score"]["evaluationWarnings"])
+
+
+def test_score_case_flags_route_and_action_family_mismatch():
+    score = report._score_case(
+        {
+            "prompt": "按院校层次排序",
+            "responseText": "排序预览：确认后再执行。",
+            "elapsedMs": 900,
+            "expectedRoutingPath": "plan_fast_route",
+            "expectedActionFamily": "sort_ordered_plan",
+            "routingPath": "full_agent",
+            "turnObservability": {
+                "actionFamilies": ["query_state"],
+                "toolCalls": [{"name": "plan_next_action", "actionFamily": "query_state"}],
+            },
+        }
+    )
+
+    assert "route_mismatch:plan_fast_route!=full_agent" in score["qualityViolations"]
+    assert any(item.startswith("action_family_mismatch:") for item in score["qualityViolations"])
+    assert score["verdict"] == "fail"
+
+
+def test_score_case_flags_latency_budget_hard_failure():
+    score = report._score_case(
+        {
+            "prompt": "确认",
+            "responseText": "没有上一轮待确认动作。",
+            "elapsedMs": 6200,
+            "latencyBudget": {"maxElapsedMs": 5000},
+        }
+    )
+
+    assert "latency_max_exceeded:6200>5000" in score["qualityViolations"]
+    assert score["verdict"] == "fail"
+
+
+def test_summarize_reports_groups_quality_by_scenario_and_coverage():
+    reports = [
+        {
+            "case": "case-a",
+            "flow": ["plan"],
+            "coverage": ["plan_fast_route"],
+            "current": {
+                "reply": "方案概况：区间分布：冲3 / 稳4 / 保3。学校层次：公办。代表样本：A大学。下一步可以审查。",
+                "elapsedMs": 1200,
+                "score": {
+                    "verdict": "strong",
+                    "correctness": 5,
+                    "completeness": 5,
+                    "naturalness": 4,
+                    "actionability": 5,
+                    "latency": 5,
+                    "structure": 4,
+                    "route": 4,
+                    "distributionCoverage": ["tier_distribution", "school_level", "representative_samples"],
+                    "qualityViolations": [],
+                    "evaluationWarnings": [],
+                    "routingPath": "plan_fast_route",
+                    "actionFamilies": ["query_state"],
+                    "toolNames": ["execute_plan_action"],
+                },
+            },
+            "baseline": {"score": {"verdict": "needs_review"}},
+            "candidates": [
+                {
+                    "name": "candidate-a",
+                    "provider": "provider-a",
+                    "model": "model-a",
+                    "elapsedMs": 1500,
+                    "score": {
+                        "verdict": "needs_review",
+                        "correctness": 4,
+                        "completeness": 3,
+                        "naturalness": 4,
+                        "actionability": 4,
+                        "latency": 5,
+                        "structure": 3,
+                        "route": 4,
+                        "distributionCoverage": ["tier_distribution"],
+                        "qualityViolations": [],
+                        "evaluationWarnings": ["missing_case_metadata"],
+                    },
+                }
+            ],
+        }
+    ]
+
+    summary = report._summarize_reports(reports)
+
+    assert summary["totalCases"] == 1
+    assert summary["current"]["verdicts"] == {"strong": 1}
+    assert summary["scenarioSummary"]["plan"]["verdicts"] == {"strong": 1}
+    assert summary["coverageSummary"]["plan_fast_route"]["count"] == 1
+    assert summary["candidateSummary"]["provider-a/model-a"]["verdicts"] == {"needs_review": 1}
+    assert summary["baselineComparison"] == {"improved": 1, "same": 0, "regressed": 0, "incomparable": 0}
+    assert summary["acceptance"]["passedHardGates"] is True

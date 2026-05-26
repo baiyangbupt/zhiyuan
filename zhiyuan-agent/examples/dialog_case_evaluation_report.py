@@ -46,6 +46,30 @@ _DISTRIBUTION_SIGNALS: dict[str, tuple[str, ...]] = {
     "representative_samples": ("代表样本", "示例", "典型涉及", "排序前列", "方案前列", "下面仅展示"),
 }
 
+_EXPECTED_ROUTES_BY_COVERAGE: dict[str, str] = {
+    "plan_fast_route": "plan_fast_route",
+    "plan_query_fast_route": "plan_query_fast_route",
+    "career_explore": "career_direction_fast_route",
+    "major_compare": "major_compare_fast_route",
+    "soft_major_intent": "major_intent_fast_route",
+    "hard_major_constraint": "major_intent_fast_route",
+    "no_pending_guard": "plan_confirmation_guard_no_pending",
+}
+
+_EXPECTED_ACTIONS_BY_COVERAGE: dict[str, str] = {
+    "plan_status": "query_state",
+    "review_plan": "review_plan",
+    "review_workspace": "review_plan",
+    "school_major_lookup": "query_volunteer_plan",
+    "sort_ordered_plan": "sort_ordered_plan",
+    "career_explore": "analyze_current_career_direction",
+    "major_compare": "compare_majors",
+    "soft_major_intent": "preview_major_intent",
+    "hard_major_constraint": "preview_major_intent",
+}
+
+_VERDICT_RANK = {"fail": 0, "needs_review": 1, "strong": 2}
+
 
 def _load_json(path: str) -> Any:
     return json.loads(Path(path).read_text(encoding="utf-8"))
@@ -62,6 +86,12 @@ def _normalize_text(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _normalize_text_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [_normalize_text(item) for item in value if _normalize_text(item)]
+
+
 def _as_int_ms(value: Any, *, seconds: bool = False) -> int | None:
     if value is None or value == "":
         return None
@@ -74,6 +104,103 @@ def _as_int_ms(value: Any, *, seconds: bool = False) -> int | None:
     if seconds:
         return int(number * 1000)
     return int(number)
+
+
+def _latency_budget_from_prompt(prompt: dict[str, Any]) -> dict[str, int]:
+    budget: dict[str, int] = {}
+    warn_ms = _as_int_ms(prompt.get("warnElapsedSeconds"), seconds=True)
+    max_ms = _as_int_ms(prompt.get("maxElapsedSeconds"), seconds=True)
+    if warn_ms is not None:
+        budget["warnElapsedMs"] = warn_ms
+    if max_ms is not None:
+        budget["maxElapsedMs"] = max_ms
+    return budget
+
+
+def _first_tag_mapping(tags: list[str], mapping: dict[str, str]) -> str | None:
+    for tag in tags:
+        if tag in mapping:
+            return mapping[tag]
+    return None
+
+
+def _load_case_definitions(path: str) -> dict[str, dict[str, Any]]:
+    """Load runner case metadata keyed by case#stepIndex.
+
+    The report remains usable without case definitions, but these definitions
+    let it summarize scenario coverage and apply per-step latency budgets.
+    """
+    data = _load_json(path)
+    cases = data.get("cases") if isinstance(data, dict) else data
+    if not isinstance(cases, list):
+        raise ValueError(f"expected case definition list in {path}")
+
+    definitions: dict[str, dict[str, Any]] = {}
+    for case in cases:
+        if not isinstance(case, dict):
+            continue
+        case_name = _normalize_text(case.get("name"))
+        if not case_name:
+            continue
+        flow = _normalize_text_list(case.get("flow"))
+        coverage = _normalize_text_list(case.get("coverage"))
+        prompts = case.get("prompts") if isinstance(case.get("prompts"), list) else []
+        for step_index, prompt in enumerate(prompts, start=1):
+            if not isinstance(prompt, dict):
+                continue
+            step_coverage = coverage + [
+                tag for tag in _normalize_text_list(prompt.get("coverage")) if tag not in coverage
+            ]
+            metadata: dict[str, Any] = {
+                "case": case_name,
+                "stepIndex": step_index,
+                "recordKey": f"{case_name}#{step_index}",
+                "sessionId": case.get("sessionId"),
+                "flow": flow,
+                "coverage": step_coverage,
+                "prompt": _normalize_text(prompt.get("prompt")),
+                "assertPlanStyle": bool(case.get("assertPlanStyle") or prompt.get("assertPlanStyle")),
+            }
+            latency_budget = _latency_budget_from_prompt(prompt)
+            if latency_budget:
+                metadata["latencyBudget"] = latency_budget
+            expected_route = _normalize_text(prompt.get("expectedRoutingPath")) or _first_tag_mapping(step_coverage, _EXPECTED_ROUTES_BY_COVERAGE)
+            expected_action = _normalize_text(prompt.get("expectedActionFamily")) or _first_tag_mapping(step_coverage, _EXPECTED_ACTIONS_BY_COVERAGE)
+            if expected_route:
+                metadata["expectedRoutingPath"] = expected_route
+            if expected_action:
+                metadata["expectedActionFamily"] = expected_action
+            definitions[metadata["recordKey"]] = metadata
+    return definitions
+
+
+def _merge_case_definition_indexes(paths: list[str]) -> dict[str, dict[str, Any]]:
+    definitions: dict[str, dict[str, Any]] = {}
+    for path in paths:
+        definitions.update(_load_case_definitions(path))
+    return definitions
+
+
+def _merge_record_metadata(record: dict[str, Any], metadata: dict[str, Any] | None) -> dict[str, Any]:
+    if not metadata:
+        return dict(record)
+    merged = dict(record)
+    merged["caseMetadata"] = dict(metadata)
+    for key in (
+        "sessionId",
+        "flow",
+        "coverage",
+        "latencyBudget",
+        "assertPlanStyle",
+        "expectedRoutingPath",
+        "expectedActionFamily",
+    ):
+        value = metadata.get(key)
+        if value not in (None, "", []):
+            merged[key] = value
+    if not _normalize_text(merged.get("prompt")) and _normalize_text(metadata.get("prompt")):
+        merged["prompt"] = metadata["prompt"]
+    return merged
 
 
 def _extract_text(record: dict[str, Any]) -> str:
@@ -93,6 +220,62 @@ def _clamp_score(value: int) -> int:
 
 def _contains_any(text: str, tokens: tuple[str, ...]) -> bool:
     return any(token in text for token in tokens)
+
+
+def _turn_observability(record: dict[str, Any]) -> dict[str, Any]:
+    value = record.get("turnObservability")
+    return value if isinstance(value, dict) else {}
+
+
+def _extract_routing_path(record: dict[str, Any]) -> str | None:
+    direct = _normalize_text(record.get("routingPath"))
+    if direct:
+        return direct
+    observability = _turn_observability(record)
+    route = _normalize_text(observability.get("routingPath"))
+    if route:
+        return route
+    route_decision = record.get("routeDecision") or observability.get("routeDecision")
+    if isinstance(route_decision, dict):
+        route = _normalize_text(route_decision.get("routingPath") or route_decision.get("route") or route_decision.get("name"))
+        if route:
+            return route
+    return None
+
+
+def _extract_action_families(record: dict[str, Any]) -> list[str]:
+    values: list[str] = []
+
+    def add(value: Any) -> None:
+        text = _normalize_text(value)
+        if text and text not in values:
+            values.append(text)
+
+    add(record.get("actionFamily"))
+    observability = _turn_observability(record)
+    for value in observability.get("actionFamilies") or []:
+        add(value)
+    for item in record.get("toolCalls") or observability.get("toolCalls") or []:
+        if isinstance(item, dict):
+            add(item.get("actionFamily"))
+    return values
+
+
+def _extract_tool_names(record: dict[str, Any]) -> list[str]:
+    values: list[str] = []
+
+    def add(value: Any) -> None:
+        text = _normalize_text(value)
+        if text and text not in values:
+            values.append(text)
+
+    observability = _turn_observability(record)
+    for item in record.get("toolCalls") or observability.get("toolCalls") or []:
+        if isinstance(item, dict):
+            add(item.get("name"))
+        else:
+            add(item)
+    return values
 
 
 def _distribution_coverage(text: str) -> list[str]:
@@ -131,7 +314,7 @@ def _has_unqualified_pending_effective_wording(text: str) -> bool:
 
 def _quality_violations(record: dict[str, Any], text: str) -> list[str]:
     violations: list[str] = []
-    for field in ("assertionViolations", "contentViolations"):
+    for field in ("assertionViolations", "contentViolations", "performanceViolations"):
         values = record.get(field) or []
         if isinstance(values, list):
             violations.extend(_normalize_text(value) for value in values if _normalize_text(value))
@@ -153,7 +336,86 @@ def _quality_violations(record: dict[str, Any], text: str) -> list[str]:
         if len(coverage) < 2:
             violations.append("thin_preview_distribution")
 
+    elapsed_ms = record.get("elapsedMs")
+    latency_budget = record.get("latencyBudget") if isinstance(record.get("latencyBudget"), dict) else {}
+    max_elapsed_ms = latency_budget.get("maxElapsedMs")
+    if isinstance(elapsed_ms, int) and isinstance(max_elapsed_ms, int) and elapsed_ms > max_elapsed_ms:
+        violations.append(f"latency_max_exceeded:{elapsed_ms}>{max_elapsed_ms}")
+
+    expected_route = _normalize_text(record.get("expectedRoutingPath"))
+    actual_route = _extract_routing_path(record)
+    if expected_route and actual_route and actual_route != expected_route:
+        violations.append(f"route_mismatch:{expected_route}!={actual_route}")
+
+    expected_action = _normalize_text(record.get("expectedActionFamily"))
+    actual_actions = _extract_action_families(record)
+    if expected_action and actual_actions and expected_action not in actual_actions:
+        violations.append(f"action_family_mismatch:{expected_action}!={','.join(actual_actions[:4])}")
+
     return violations
+
+
+def _evaluation_warnings(record: dict[str, Any], text: str) -> list[str]:
+    warnings: list[str] = []
+    if not isinstance(record.get("caseMetadata"), dict):
+        warnings.append("missing_case_metadata")
+
+    for field in ("performanceWarnings",):
+        values = record.get(field) or []
+        if isinstance(values, list):
+            warnings.extend(_normalize_text(value) for value in values if _normalize_text(value))
+        elif _normalize_text(values):
+            warnings.append(_normalize_text(values))
+
+    elapsed_ms = record.get("elapsedMs")
+    latency_budget = record.get("latencyBudget") if isinstance(record.get("latencyBudget"), dict) else {}
+    warn_elapsed_ms = latency_budget.get("warnElapsedMs")
+    max_elapsed_ms = latency_budget.get("maxElapsedMs")
+    if isinstance(elapsed_ms, int) and isinstance(warn_elapsed_ms, int) and elapsed_ms > warn_elapsed_ms:
+        if not isinstance(max_elapsed_ms, int) or elapsed_ms <= max_elapsed_ms:
+            warnings.append(f"latency_warn_exceeded:{elapsed_ms}>{warn_elapsed_ms}")
+
+    expected_route = _normalize_text(record.get("expectedRoutingPath"))
+    expected_action = _normalize_text(record.get("expectedActionFamily"))
+    if expected_route and not _extract_routing_path(record):
+        warnings.append(f"missing_route_observability:{expected_route}")
+    if expected_action and not _extract_action_families(record):
+        warnings.append(f"missing_action_observability:{expected_action}")
+
+    thinking = _extract_thinking(record)
+    if isinstance(elapsed_ms, int) and elapsed_ms >= 10000 and not thinking:
+        warnings.append("missing_progress_for_long_task")
+    return warnings
+
+
+def _route_score(record: dict[str, Any]) -> int:
+    expected_route = _normalize_text(record.get("expectedRoutingPath"))
+    actual_route = _extract_routing_path(record)
+    expected_action = _normalize_text(record.get("expectedActionFamily"))
+    actual_actions = _extract_action_families(record)
+
+    score = 4
+    if expected_route:
+        if actual_route == expected_route:
+            score = 5
+        elif actual_route:
+            score = 1
+        else:
+            score = 4
+    elif actual_route:
+        score = 4
+
+    if expected_action:
+        if expected_action in actual_actions:
+            score += 1
+        elif actual_actions:
+            score -= 2
+        else:
+            score -= 1
+    elif actual_actions:
+        score += 1
+
+    return _clamp_score(score)
 
 
 def _score_case(record: dict[str, Any]) -> dict[str, Any]:
@@ -161,6 +423,7 @@ def _score_case(record: dict[str, Any]) -> dict[str, Any]:
     thinking = _extract_thinking(record)
     coverage = _distribution_coverage(text)
     violations = _quality_violations(record, text)
+    warnings = _evaluation_warnings(record, text)
 
     if not text:
         return {
@@ -170,8 +433,13 @@ def _score_case(record: dict[str, Any]) -> dict[str, Any]:
             "actionability": 0,
             "latency": 0,
             "structure": 0,
+            "route": _route_score(record),
             "distributionCoverage": coverage,
             "qualityViolations": violations or ["empty_response"],
+            "evaluationWarnings": warnings,
+            "routingPath": _extract_routing_path(record),
+            "actionFamilies": _extract_action_families(record),
+            "toolNames": _extract_tool_names(record),
         }
 
     score = {
@@ -181,6 +449,7 @@ def _score_case(record: dict[str, Any]) -> dict[str, Any]:
         "actionability": 1,
         "latency": 1,
         "structure": 1,
+        "route": _route_score(record),
     }
 
     if _contains_any(text, _DOMAIN_TOKENS):
@@ -245,7 +514,11 @@ def _score_case(record: dict[str, Any]) -> dict[str, Any]:
     scored = {key: _clamp_score(value) for key, value in score.items()}
     scored["distributionCoverage"] = coverage
     scored["qualityViolations"] = violations
-    scored["verdict"] = "fail" if violations else ("strong" if min(scored["correctness"], scored["completeness"], scored["actionability"]) >= 4 else "needs_review")
+    scored["evaluationWarnings"] = warnings
+    scored["routingPath"] = _extract_routing_path(record)
+    scored["actionFamilies"] = _extract_action_families(record)
+    scored["toolNames"] = _extract_tool_names(record)
+    scored["verdict"] = "fail" if violations else ("strong" if min(scored["correctness"], scored["completeness"], scored["actionability"], scored["route"]) >= 4 else "needs_review")
     return scored
 
 
@@ -388,53 +661,277 @@ def _candidate_rows_for_case(
     return rows_by_name
 
 
+def _metadata_for_case(
+    case_key: str,
+    baseline: dict[str, Any] | None,
+    current: dict[str, Any] | None,
+    definitions: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    metadata = dict((definitions or {}).get(case_key) or {})
+    for row in (current, baseline):
+        if not row:
+            continue
+        if not metadata.get("flow"):
+            metadata["flow"] = _normalize_text_list(row.get("flow"))
+        if not metadata.get("coverage"):
+            metadata["coverage"] = _normalize_text_list(row.get("coverage"))
+        if not metadata.get("sessionId") and row.get("sessionId") is not None:
+            metadata["sessionId"] = row.get("sessionId")
+        if not metadata.get("latencyBudget") and isinstance(row.get("latencyBudget"), dict):
+            metadata["latencyBudget"] = dict(row["latencyBudget"])
+        if not metadata.get("expectedRoutingPath") and _normalize_text(row.get("expectedRoutingPath")):
+            metadata["expectedRoutingPath"] = _normalize_text(row.get("expectedRoutingPath"))
+        if not metadata.get("expectedActionFamily") and _normalize_text(row.get("expectedActionFamily")):
+            metadata["expectedActionFamily"] = _normalize_text(row.get("expectedActionFamily"))
+    return metadata
+
+
 def _build_case_report(
     case_key: str,
     baseline: dict[str, Any] | None,
     current: dict[str, Any] | None,
     candidates: dict[str, dict[str, Any]],
+    case_definitions: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     case_name, _, step_suffix = case_key.partition("#")
+    metadata = _metadata_for_case(case_key, baseline, current, case_definitions)
+    baseline_row = _merge_record_metadata(baseline or {}, metadata) if baseline else None
+    current_row = _merge_record_metadata(current or {}, metadata) if current else None
     report: dict[str, Any] = {
         "case": case_name or case_key,
         "stepIndex": int(step_suffix) if step_suffix.isdigit() else None,
-        "prompt": _normalize_text((current or baseline or {}).get("prompt")),
+        "prompt": _normalize_text((current_row or baseline_row or metadata).get("prompt")),
+        "sessionId": metadata.get("sessionId"),
+        "flow": metadata.get("flow") or [],
+        "coverage": metadata.get("coverage") or [],
+        "expectedRoutingPath": metadata.get("expectedRoutingPath"),
+        "expectedActionFamily": metadata.get("expectedActionFamily"),
+        "latencyBudget": metadata.get("latencyBudget") or {},
         "baseline": {
-            "reply": _extract_text(baseline or {}),
-            "elapsedMs": (baseline or {}).get("elapsedMs"),
-            "firstMessageMs": (baseline or {}).get("firstMessageMs"),
-            "finalMessageMs": (baseline or {}).get("finalMessageMs"),
-            "provider": (baseline or {}).get("provider"),
-            "model": (baseline or {}).get("model"),
+            "reply": _extract_text(baseline_row or {}),
+            "elapsedMs": (baseline_row or {}).get("elapsedMs"),
+            "firstMessageMs": (baseline_row or {}).get("firstMessageMs"),
+            "finalMessageMs": (baseline_row or {}).get("finalMessageMs"),
+            "provider": (baseline_row or {}).get("provider"),
+            "model": (baseline_row or {}).get("model"),
         },
         "current": {
-            "reply": _extract_text(current or {}),
-            "elapsedMs": (current or {}).get("elapsedMs"),
-            "firstMessageMs": (current or {}).get("firstMessageMs"),
-            "finalMessageMs": (current or {}).get("finalMessageMs"),
-            "provider": (current or {}).get("provider"),
-            "model": (current or {}).get("model"),
+            "reply": _extract_text(current_row or {}),
+            "elapsedMs": (current_row or {}).get("elapsedMs"),
+            "firstMessageMs": (current_row or {}).get("firstMessageMs"),
+            "finalMessageMs": (current_row or {}).get("finalMessageMs"),
+            "provider": (current_row or {}).get("provider"),
+            "model": (current_row or {}).get("model"),
         },
         "candidates": [],
     }
-    if baseline:
-        report["baseline"]["score"] = _score_case(baseline)
-    if current:
-        report["current"]["score"] = _score_case(current)
+    if baseline_row:
+        report["baseline"]["score"] = _score_case(baseline_row)
+    if current_row:
+        report["current"]["score"] = _score_case(current_row)
     for name, candidate in candidates.items():
+        candidate_row = _merge_record_metadata(candidate, metadata)
         report["candidates"].append(
             {
                 "name": name,
-                "provider": candidate.get("provider"),
-                "model": candidate.get("model"),
-                "reply": _extract_text(candidate),
-                "elapsedMs": candidate.get("elapsedMs"),
-                "firstMessageMs": candidate.get("firstMessageMs"),
-                "finalMessageMs": candidate.get("finalMessageMs"),
-                "score": _score_case(candidate),
+                "provider": candidate_row.get("provider"),
+                "model": candidate_row.get("model"),
+                "reply": _extract_text(candidate_row),
+                "elapsedMs": candidate_row.get("elapsedMs"),
+                "firstMessageMs": candidate_row.get("firstMessageMs"),
+                "finalMessageMs": candidate_row.get("finalMessageMs"),
+                "score": _score_case(candidate_row),
             }
         )
     return report
+
+
+def _score_dimension_average(scores: list[dict[str, Any]], dimension: str) -> float | None:
+    values = [score.get(dimension) for score in scores if isinstance(score.get(dimension), int)]
+    if not values:
+        return None
+    return round(sum(values) / len(values), 2)
+
+
+def _percentile(values: list[int], percentile: float) -> int | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+    position = (len(ordered) - 1) * percentile
+    lower = int(position)
+    upper = min(lower + 1, len(ordered) - 1)
+    weight = position - lower
+    return int(round(ordered[lower] * (1 - weight) + ordered[upper] * weight))
+
+
+def _latency_summary(rows: list[dict[str, Any]]) -> dict[str, int | None]:
+    elapsed = [row.get("elapsedMs") for row in rows if isinstance(row.get("elapsedMs"), int)]
+    first = [row.get("firstMessageMs") for row in rows if isinstance(row.get("firstMessageMs"), int)]
+    final = [row.get("finalMessageMs") for row in rows if isinstance(row.get("finalMessageMs"), int)]
+    return {
+        "elapsedMedianMs": _percentile(elapsed, 0.5),
+        "elapsedP95Ms": _percentile(elapsed, 0.95),
+        "elapsedMaxMs": max(elapsed) if elapsed else None,
+        "firstMessageMedianMs": _percentile(first, 0.5),
+        "finalMessageMedianMs": _percentile(final, 0.5),
+    }
+
+
+def _increment(counter: dict[str, int], key: Any) -> None:
+    text = _normalize_text(key)
+    if text:
+        counter[text] = counter.get(text, 0) + 1
+
+
+def _rows_for_summary(reports: list[dict[str, Any]], bucket: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for report in reports:
+        if bucket == "current":
+            current = report.get("current")
+            if isinstance(current, dict) and current.get("score"):
+                rows.append(current)
+            continue
+        for candidate in report.get("candidates") or []:
+            if isinstance(candidate, dict) and candidate.get("score"):
+                rows.append(candidate)
+    return rows
+
+
+def _collect_scores(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [row["score"] for row in rows if isinstance(row.get("score"), dict)]
+
+
+def _provider_model_key(row: dict[str, Any]) -> str:
+    provider = _normalize_text(row.get("provider"))
+    model = _normalize_text(row.get("model"))
+    name = _normalize_text(row.get("name"))
+    if provider and model:
+        return f"{provider}/{model}"
+    return provider or model or name or "unknown"
+
+
+def _summarize_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    scores = _collect_scores(rows)
+    verdict_counts: dict[str, int] = {}
+    violation_counts: dict[str, int] = {}
+    warning_counts: dict[str, int] = {}
+    distribution_counts: dict[str, int] = {}
+    route_counts: dict[str, int] = {}
+    action_counts: dict[str, int] = {}
+    tool_counts: dict[str, int] = {}
+
+    for score in scores:
+        _increment(verdict_counts, score.get("verdict"))
+        for value in score.get("qualityViolations") or []:
+            _increment(violation_counts, str(value).split(":", 1)[0])
+        for value in score.get("evaluationWarnings") or []:
+            _increment(warning_counts, str(value).split(":", 1)[0])
+        for value in score.get("distributionCoverage") or []:
+            _increment(distribution_counts, value)
+        _increment(route_counts, score.get("routingPath"))
+        for value in score.get("actionFamilies") or []:
+            _increment(action_counts, value)
+        for value in score.get("toolNames") or []:
+            _increment(tool_counts, value)
+
+    dimensions = {
+        dimension: _score_dimension_average(scores, dimension)
+        for dimension in ("correctness", "completeness", "naturalness", "actionability", "latency", "structure", "route")
+    }
+    return {
+        "count": len(rows),
+        "verdicts": verdict_counts,
+        "qualityViolationsByType": violation_counts,
+        "evaluationWarningsByType": warning_counts,
+        "distributionCoverage": distribution_counts,
+        "routeSummary": route_counts,
+        "actionFamilySummary": action_counts,
+        "toolSummary": tool_counts,
+        "averageScores": dimensions,
+        "latency": _latency_summary(rows),
+    }
+
+
+def _summarize_by_scenario(reports: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for report in reports:
+        flow = report.get("flow") if isinstance(report.get("flow"), list) else []
+        keys = flow or ["unclassified"]
+        current = report.get("current")
+        if not isinstance(current, dict) or not current.get("score"):
+            continue
+        for key in keys:
+            grouped.setdefault(_normalize_text(key) or "unclassified", []).append(current)
+    return {key: _summarize_rows(rows) for key, rows in sorted(grouped.items())}
+
+
+def _summarize_by_coverage(reports: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for report in reports:
+        coverage = report.get("coverage") if isinstance(report.get("coverage"), list) else []
+        current = report.get("current")
+        if not isinstance(current, dict) or not current.get("score"):
+            continue
+        for key in coverage:
+            grouped.setdefault(_normalize_text(key), []).append(current)
+    return {key: _summarize_rows(rows) for key, rows in sorted(grouped.items()) if key}
+
+
+def _summarize_candidates(reports: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for report in reports:
+        for candidate in report.get("candidates") or []:
+            if not isinstance(candidate, dict) or not candidate.get("score"):
+                continue
+            grouped.setdefault(_provider_model_key(candidate), []).append(candidate)
+    return {key: _summarize_rows(rows) for key, rows in sorted(grouped.items())}
+
+
+def _comparison_summary(reports: list[dict[str, Any]]) -> dict[str, Any]:
+    improved = same = regressed = incomparable = 0
+    for report in reports:
+        baseline_score = (report.get("baseline") or {}).get("score")
+        current_score = (report.get("current") or {}).get("score")
+        if not isinstance(baseline_score, dict) or not isinstance(current_score, dict):
+            incomparable += 1
+            continue
+        base_rank = _VERDICT_RANK.get(_normalize_text(baseline_score.get("verdict")), -1)
+        current_rank = _VERDICT_RANK.get(_normalize_text(current_score.get("verdict")), -1)
+        if current_rank > base_rank:
+            improved += 1
+        elif current_rank < base_rank:
+            regressed += 1
+        else:
+            same += 1
+    return {
+        "improved": improved,
+        "same": same,
+        "regressed": regressed,
+        "incomparable": incomparable,
+    }
+
+
+def _summarize_reports(reports: list[dict[str, Any]]) -> dict[str, Any]:
+    current_rows = _rows_for_summary(reports, "current")
+    candidate_rows = _rows_for_summary(reports, "candidates")
+    current_summary = _summarize_rows(current_rows)
+    return {
+        "totalCases": len(reports),
+        "current": current_summary,
+        "scenarioSummary": _summarize_by_scenario(reports),
+        "coverageSummary": _summarize_by_coverage(reports),
+        "candidateSummary": _summarize_candidates(reports),
+        "candidateOverall": _summarize_rows(candidate_rows),
+        "baselineComparison": _comparison_summary(reports),
+        "acceptance": {
+            "passedHardGates": not current_summary["qualityViolationsByType"],
+            "failedCount": current_summary["verdicts"].get("fail", 0),
+            "needsReviewCount": current_summary["verdicts"].get("needs_review", 0),
+            "strongCount": current_summary["verdicts"].get("strong", 0),
+        },
+    }
 
 
 def _format_score_for_markdown(score: dict[str, Any] | None) -> str:
@@ -447,7 +944,8 @@ def _format_score_for_markdown(score: dict[str, Any] | None) -> str:
         f"C{score.get('correctness', '-')}/"
         f"F{score.get('completeness', '-')}/"
         f"A{score.get('actionability', '-')}/"
-        f"L{score.get('latency', '-')}"
+        f"L{score.get('latency', '-')}/"
+        f"R{score.get('route', '-')}"
     )
     details = []
     if coverage:
@@ -463,6 +961,7 @@ def main() -> None:
     parser.add_argument("--baseline", help="baseline dialog regression JSON")
     parser.add_argument("--current", help="current dialog regression JSON")
     parser.add_argument("--candidates", action="append", default=[], help="candidate JSON in name=path form")
+    parser.add_argument("--case-definitions", action="append", default=[], help="runner case definition JSON; can be repeated")
     parser.add_argument("--output", help="write report JSON to this path")
     parser.add_argument("--markdown", action="store_true", help="render a markdown table instead of JSON")
     args = parser.parse_args()
@@ -471,6 +970,7 @@ def main() -> None:
     current_payload = _load_payload(args.current) if args.current else {}
     baseline_index = _build_case_index(baseline_payload)
     current_index = _build_case_index(current_payload)
+    case_definitions = _merge_case_definition_indexes(args.case_definitions)
 
     candidate_indexes: dict[str, dict[str, list[dict[str, Any]]]] = {}
     for item in args.candidates:
@@ -491,12 +991,32 @@ def main() -> None:
                 baseline_rows[0] if baseline_rows else None,
                 current_rows[0] if current_rows else None,
                 candidate_rows,
+                case_definitions,
             )
         )
 
-    payload = {"count": len(reports), "cases": reports}
+    payload = {"count": len(reports), "summary": _summarize_reports(reports), "cases": reports}
     if args.markdown:
-        lines = ["| case | baseline | current | candidates |", "|---|---|---|---|"]
+        summary = payload["summary"]
+        current_summary = summary.get("current", {})
+        acceptance = summary.get("acceptance", {})
+        lines = [
+            "# Dialog Case Evaluation Report",
+            "",
+            "## Summary",
+            "",
+            f"- totalCases: {summary.get('totalCases', 0)}",
+            f"- current verdicts: {current_summary.get('verdicts', {})}",
+            f"- quality violations: {current_summary.get('qualityViolationsByType', {})}",
+            f"- evaluation warnings: {current_summary.get('evaluationWarningsByType', {})}",
+            f"- latency: {current_summary.get('latency', {})}",
+            f"- acceptance: {acceptance}",
+            "",
+            "## Cases",
+            "",
+            "| case | flow | baseline | current | candidates |",
+            "|---|---|---|---|---|",
+        ]
         for item in reports:
             baseline = item.get("baseline", {}).get("reply", "")
             current = item.get("current", {}).get("reply", "")
@@ -505,7 +1025,7 @@ def main() -> None:
                 for candidate in item.get("candidates", [])
             )
             lines.append(
-                f"| {item.get('case', '')} | {_format_score_for_markdown(item.get('baseline', {}).get('score'))} {baseline[:80]} | {_format_score_for_markdown(item.get('current', {}).get('score'))} {current[:80]} | {candidate_text[:120]} |"
+                f"| {item.get('case', '')} | {','.join(item.get('flow') or [])} | {_format_score_for_markdown(item.get('baseline', {}).get('score'))} {baseline[:80]} | {_format_score_for_markdown(item.get('current', {}).get('score'))} {current[:80]} | {candidate_text[:120]} |"
             )
         text = "\n".join(lines)
     else:
