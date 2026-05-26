@@ -294,6 +294,48 @@ def test_case_definitions_attach_flow_coverage_and_latency_budget(tmp_path):
     assert "missing_route_observability" in ",".join(merged["current"]["score"]["evaluationWarnings"])
 
 
+def test_case_definitions_infer_confirm_routes_from_prompt_and_coverage(tmp_path):
+    case_file = tmp_path / "cases.json"
+    case_file.write_text(
+        json.dumps(
+            [
+                {
+                    "name": "intent-confirm",
+                    "sessionId": "880203",
+                    "flow": ["intent", "confirm"],
+                    "coverage": ["soft_major_intent", "hard_major_constraint"],
+                    "prompts": [{"prompt": "确认这个偏好"}],
+                },
+                {
+                    "name": "no-pending",
+                    "sessionId": "880102",
+                    "flow": ["confirm_guard"],
+                    "coverage": ["no_pending_guard", "school_major_lookup"],
+                    "prompts": [{"prompt": "确认"}],
+                },
+                {
+                    "name": "readonly-confirm",
+                    "sessionId": "17",
+                    "flow": ["explore", "plan"],
+                    "coverage": ["career_explore", "readonly_no_workspace_card", "no_pending_intent"],
+                    "prompts": [{"prompt": "确认"}],
+                },
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    definitions = report._merge_case_definition_indexes([str(case_file)])
+
+    assert definitions["intent-confirm#1"]["expectedRoutingPath"] == "direct_pending_intent_confirm"
+    assert definitions["intent-confirm#1"]["expectedActionFamily"] == "update_volunteer_intent_state"
+    assert definitions["no-pending#1"]["expectedRoutingPath"] == "plan_confirmation_guard_no_pending"
+    assert "expectedActionFamily" not in definitions["no-pending#1"]
+    assert definitions["readonly-confirm#1"]["expectedRoutingPath"] == "plan_confirmation_guard_no_pending"
+    assert "expectedActionFamily" not in definitions["readonly-confirm#1"]
+
+
 def test_score_case_flags_route_and_action_family_mismatch():
     score = report._score_case(
         {
@@ -313,6 +355,24 @@ def test_score_case_flags_route_and_action_family_mismatch():
     assert "route_mismatch:plan_fast_route!=full_agent" in score["qualityViolations"]
     assert any(item.startswith("action_family_mismatch:") for item in score["qualityViolations"])
     assert score["verdict"] == "fail"
+
+
+def test_score_case_uses_tool_name_as_action_observability_alias():
+    score = report._score_case(
+        {
+            "prompt": "当前方案对体制内方向承接怎么样",
+            "responseText": "分析结论：当前方案承接偏弱，方案内约有2个相关志愿。下一步可以继续展开。",
+            "elapsedMs": 900,
+            "expectedActionFamily": "analyze_current_career_direction",
+            "turnObservability": {
+                "toolCalls": [{"name": "analyze_current_career_direction"}],
+            },
+        }
+    )
+
+    assert "missing_action_observability:analyze_current_career_direction" not in score["evaluationWarnings"]
+    assert not any(item.startswith("action_family_mismatch:") for item in score["qualityViolations"])
+    assert score["route"] >= 4
 
 
 def test_score_case_flags_latency_budget_hard_failure():

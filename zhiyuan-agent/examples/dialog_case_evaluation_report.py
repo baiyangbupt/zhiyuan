@@ -68,6 +68,14 @@ _EXPECTED_ACTIONS_BY_COVERAGE: dict[str, str] = {
     "hard_major_constraint": "preview_major_intent",
 }
 
+_ACTION_TOOL_ALIASES: dict[str, tuple[str, ...]] = {
+    "analyze_current_career_direction": ("analyze_current_career_direction",),
+    "compare_majors": ("compare_majors",),
+    "preview_major_intent": ("preview_current_major_intent_confirmation",),
+    "update_volunteer_intent_state": ("update_volunteer_intent_state",),
+    "query_volunteer_plan": ("query_volunteer_plan",),
+}
+
 _VERDICT_RANK = {"fail": 0, "needs_review": 1, "strong": 2}
 
 _ASSERTION_FIELDS = (
@@ -140,6 +148,39 @@ def _first_tag_mapping(tags: list[str], mapping: dict[str, str]) -> str | None:
     return None
 
 
+def _expected_route_from_metadata(step_coverage: list[str], prompt_text: str) -> str | None:
+    if prompt_text in {"确认", "确认执行", "确认这个偏好", "确认这个要求"}:
+        if (
+            "no_pending_guard" in step_coverage
+            or "no_pending_intent" in step_coverage
+            or "readonly_no_workspace_card" in step_coverage
+            or "readonly_no_pending_intent" in step_coverage
+        ):
+            return "plan_confirmation_guard_no_pending"
+        if "soft_major_intent" in step_coverage or "hard_major_constraint" in step_coverage:
+            return "direct_pending_intent_confirm"
+        if "preview_confirm_boundary" in step_coverage or "preview_confirm_apply" in step_coverage:
+            return "direct_pending_plan_confirm"
+    return _first_tag_mapping(step_coverage, _EXPECTED_ROUTES_BY_COVERAGE)
+
+
+def _expected_action_from_metadata(step_coverage: list[str], prompt_text: str) -> str | None:
+    if prompt_text in {"确认", "确认执行"} and (
+        "no_pending_guard" in step_coverage
+        or "no_pending_intent" in step_coverage
+        or "readonly_no_workspace_card" in step_coverage
+        or "readonly_no_pending_intent" in step_coverage
+    ):
+        return None
+    if prompt_text in {"确认这个偏好", "确认这个要求"} and (
+        "soft_major_intent" in step_coverage or "hard_major_constraint" in step_coverage
+    ):
+        return "update_volunteer_intent_state"
+    if prompt_text == "确认" and "no_pending_guard" in step_coverage:
+        return None
+    return _first_tag_mapping(step_coverage, _EXPECTED_ACTIONS_BY_COVERAGE)
+
+
 def _load_case_definitions(path: str) -> dict[str, dict[str, Any]]:
     """Load runner case metadata keyed by case#stepIndex.
 
@@ -180,8 +221,9 @@ def _load_case_definitions(path: str) -> dict[str, dict[str, Any]]:
             latency_budget = _latency_budget_from_prompt(prompt)
             if latency_budget:
                 metadata["latencyBudget"] = latency_budget
-            expected_route = _normalize_text(prompt.get("expectedRoutingPath")) or _first_tag_mapping(step_coverage, _EXPECTED_ROUTES_BY_COVERAGE)
-            expected_action = _normalize_text(prompt.get("expectedActionFamily")) or _first_tag_mapping(step_coverage, _EXPECTED_ACTIONS_BY_COVERAGE)
+            prompt_text = _normalize_text(prompt.get("prompt"))
+            expected_route = _normalize_text(prompt.get("expectedRoutingPath")) or _expected_route_from_metadata(step_coverage, prompt_text)
+            expected_action = _normalize_text(prompt.get("expectedActionFamily")) or _expected_action_from_metadata(step_coverage, prompt_text)
             if expected_route:
                 metadata["expectedRoutingPath"] = expected_route
             if expected_action:
@@ -310,6 +352,18 @@ def _extract_tool_names(record: dict[str, Any]) -> list[str]:
     return values
 
 
+def _action_observed(record: dict[str, Any], expected_action: str) -> bool:
+    if not expected_action:
+        return False
+    action_families = _extract_action_families(record)
+    if action_families:
+        return expected_action in action_families
+    if expected_action in action_families:
+        return True
+    tool_names = set(_extract_tool_names(record))
+    return any(tool_name in tool_names for tool_name in _ACTION_TOOL_ALIASES.get(expected_action, ()))
+
+
 def _distribution_coverage(text: str) -> list[str]:
     coverage: list[str] = []
     for name, tokens in _DISTRIBUTION_SIGNALS.items():
@@ -381,7 +435,7 @@ def _quality_violations(record: dict[str, Any], text: str) -> list[str]:
 
     expected_action = _normalize_text(record.get("expectedActionFamily"))
     actual_actions = _extract_action_families(record)
-    if expected_action and actual_actions and expected_action not in actual_actions:
+    if expected_action and actual_actions and not _action_observed(record, expected_action):
         violations.append(f"action_family_mismatch:{expected_action}!={','.join(actual_actions[:4])}")
 
     return violations
@@ -411,7 +465,7 @@ def _evaluation_warnings(record: dict[str, Any], text: str) -> list[str]:
     expected_action = _normalize_text(record.get("expectedActionFamily"))
     if expected_route and not _extract_routing_path(record):
         warnings.append(f"missing_route_observability:{expected_route}")
-    if expected_action and not _extract_action_families(record):
+    if expected_action and not _action_observed(record, expected_action):
         warnings.append(f"missing_action_observability:{expected_action}")
 
     thinking = _extract_thinking(record)
@@ -438,7 +492,7 @@ def _route_score(record: dict[str, Any]) -> int:
         score = 4
 
     if expected_action:
-        if expected_action in actual_actions:
+        if _action_observed(record, expected_action):
             score += 1
         elif actual_actions:
             score -= 2

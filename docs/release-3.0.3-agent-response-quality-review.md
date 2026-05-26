@@ -666,3 +666,27 @@
 - 审查后续调整预览快路径聚焦回归：`PYTHONPATH=. ./.venv/bin/python -m pytest tests/unit/test_plan_fast_router.py tests/unit/test_plan_orchestration_tool.py tests/unit/test_chat_service_history_persistence.py::test_chat_service_plan_fast_route_bypasses_main_agent_and_persists_preview tests/unit/test_chat_service_history_persistence.py::test_chat_service_plan_fast_route_preserves_named_ref_for_preview tests/unit/test_chat_service_history_persistence.py::test_chat_service_plan_fast_route_handles_review_followup_adjustment_preview_without_main_agent -q`：`50 passed`。
 - 审查后续调整预览宽回归：`PYTHONPATH=. ./.venv/bin/python -m pytest tests/unit/test_plan_fast_router.py tests/unit/test_plan_orchestration_tool.py tests/unit/test_plan_execution_tool.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_dialog_case_evaluation_report.py -q`：`276 passed`；`PYTHONPYCACHEPREFIX=/private/tmp/zhiyuan_pycache ./.venv/bin/python -m py_compile app/resolver/plan_fast_router.py app/service.py` 通过。
 - 真实 WebSocket 探针已尝试复跑 `session=17` 三步慢例，但当前本地 `INTERNAL_SERVICE_URL=http://localhost:8080` 未启动，Agent 读取到的是空方案状态，不能作为有效方案链路性能判断；代码层面通过 ChatService 单测确认该请求会走 `plan_fast_route`，`llmRequests=0`、`toolCallCount=2`，且不会进入主 Agent 或重复 `query_volunteer_plan`。
+- 评估框架完善后，使用 `--markdown-detail` 对最新历史真实输出重新生成详细回复质量报告：
+  - `effect_perf`：`/private/tmp/zhiyuan_agent_303_effect_perf_detail_eval.json`、`/private/tmp/zhiyuan_agent_303_effect_perf_detail_eval.md`，结果 `strong=14 / needs_review=0 / fail=0`，`qualityViolations=0`。
+  - `open_quality`：`/private/tmp/zhiyuan_agent_303_open_quality_detail_eval.json`、`/private/tmp/zhiyuan_agent_303_open_quality_detail_eval.md`，结果 `strong=9 / needs_review=0 / fail=0`，`qualityViolations=0`。
+  - 剩余 warning 主要是历史 runner 输出未记录 `routingPath`，不影响回复质量结论；评估工具已用 toolName/actionFamily 兜底识别真实业务动作，避免把正确只读确认保护误判为质量待复核。
+
+## 11. 当前回复质量结论与后续关注点
+
+### 11.1 已满足 3.0.3 发布质量门槛
+
+基于最新详细评估，3.0.3 当前主 case 集达到：
+
+- 硬失败为 0：没有内部术语外露、待确认/已生效边界冲突、空回复或超时硬失败。
+- 主链路覆盖为 strong：方案状态、审查、局部查询、移动、加入、排序、专业组操作、意向预览/确认、无 pending 确认保护均通过。
+- 开放质量覆盖为 strong：职业方向、多方向承接、专业对比、待确认意向影响追问、只读查询后确认保护均通过。
+- 延迟可接受：历史真实输出中 effect/perf 中位约 `2297ms`，open-quality 中位约 `2477ms`，未出现本轮硬超时。
+
+### 11.2 后续仍建议关注
+
+当前不是硬失败，但后续继续优化时应关注：
+
+- 职业方向多方向回复有时较长，专业组或专业名称带招生说明时会显得压迫；后续可考虑对代表样本做更短的显示摘要。
+- 局部查询的“专业热度/计划数”信息已经覆盖关键分布，但表达仍偏数据化；后续可进一步转成更像顾问的解释。
+- 多模型对照仍需要更开放的 case，否则结构化 renderer 会让不同模型回复高度一致，难以真实比较模型表达质量。
+- 新 runner 输出应尽量补齐 `routingPath`，减少详细报告里的 route warning。
