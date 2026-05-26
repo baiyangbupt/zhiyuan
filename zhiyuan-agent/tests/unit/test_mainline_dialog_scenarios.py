@@ -25,6 +25,7 @@ RELEASE_302_EXPLORE_INTENT_CASES_PATH = Path(__file__).resolve().parents[2] / "e
 RELEASE_302_READONLY_REAL_SESSION_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_302_readonly_real_session_cases.json"
 RELEASE_302_EFFECT_PERF_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_302_effect_perf_cases.json"
 RELEASE_303_EFFECT_PERF_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_303_effect_perf_cases.json"
+RELEASE_303_OPEN_QUALITY_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_303_open_quality_cases.json"
 
 
 def _run(coro):
@@ -144,6 +145,10 @@ def _load_release_302_effect_perf_cases() -> list[dict]:
 
 def _load_release_303_effect_perf_cases() -> list[dict]:
     return json.loads(RELEASE_303_EFFECT_PERF_CASES_PATH.read_text(encoding="utf-8"))
+
+
+def _load_release_303_open_quality_cases() -> list[dict]:
+    return json.loads(RELEASE_303_OPEN_QUALITY_CASES_PATH.read_text(encoding="utf-8"))
 
 
 def test_mainline_dialog_case_catalog_has_current_explore_intent_plan_scenarios():
@@ -588,6 +593,53 @@ def test_release_303_effect_perf_cases_treat_quality_as_first_class_gate():
     assert any(step.get("assertThinkingContains") for step in all_steps)
     assert any("正在按你的确认更新方案" in (step.get("assertThinkingContains") or []) for step in all_steps)
     assert any("正在按你的确认更新后续参考偏好" in (step.get("assertThinkingContains") or []) for step in all_steps)
+
+
+def test_release_303_open_quality_cases_cover_richer_real_user_shapes():
+    cases = _load_release_303_open_quality_cases()
+
+    assert len(cases) >= 7
+    assert len({case["name"] for case in cases}) == len(cases)
+    coverage = {tag for case in cases for tag in case["coverage"]}
+    required_tags = {
+        "release_3_0_3",
+        "open_quality",
+        "pending_intent",
+        "impact_followup",
+        "career_explore",
+        "major_compare",
+        "non_law_major_compare",
+        "plan_query_fast_route",
+        "sort_ordered_plan",
+        "preview_confirm_boundary",
+        "readonly_no_workspace_card",
+        "readonly_no_pending_intent",
+        "no_pending_guard",
+    }
+    assert required_tags.issubset(coverage)
+
+    banned_terms = {"payload", "stage", "action_family", "volunteerId", "草稿"}
+    all_steps = [step for case in cases for step in case["prompts"]]
+    for case in cases:
+        assert case["assertPlanStyle"] is True
+        assert case["prompts"]
+        assert case["coverage"]
+        assert set(case["flow"]).issubset({"explore", "intent", "plan", "readonly", "confirm_guard"})
+        for step in case["prompts"]:
+            assert isinstance(step, dict)
+            assert step.get("prompt")
+            assert step.get("assertContains") or step.get("assertContainsAny")
+            assert banned_terms.intersection(set(step.get("assertNotContains") or [])) == banned_terms
+            assert step.get("warnElapsedSeconds") or step.get("maxElapsedSeconds")
+
+    prompts = "\n".join(step["prompt"] for step in all_steps)
+    assert "先不确认" in prompts
+    assert "当前方案里青岛城市学院" in prompts
+    assert "按推荐系数重新排" in prompts
+    assert "网络与新媒体和跨境电子商务" in prompts
+    assert "考公、稳定就业和读研" in prompts
+    assert any(step.get("assertNoFollowups") is True for step in all_steps)
+    assert any(step.get("maxElapsedSeconds") for step in all_steps)
 
 
 def test_mainline_dialog_intent_preview_then_plan_status_does_not_reopen_candidate_workspace(tmp_path):

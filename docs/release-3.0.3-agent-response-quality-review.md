@@ -604,6 +604,7 @@
 - 职业方向只读回复补充“本次边界”：明确这轮只是方向分析，不会自动修改偏好、当前方案或方案顺序；如果后续要按方向调整方案，仍会先给预览、确认后再执行。
 - 方案调整确认后的完成回复补充下一步：移动、删除、加入、替换和排序在执行成功后，如果后端结果没有说明审查/导出影响，会补充“方案/导出已同步更新、审查状态已进入待重新审查、可到方案区查看并必要时审查”，减少用户只看到“已更新”但不知道后续如何处理的情况。
 - 剩余 `needs_review` 文案继续收口：排序预览改为“动作 / 排序方式 / 执行影响 / 确认”的要点结构；无 pending 的职业方向确认保护补充“继续分析 / 调整方案 / 查看方案 / 不确定下一步”四类出口；已有偏好提示合并同类项并明确不会重复写入或改方案；专业对比只读回复补充“本次边界”，避免用户误解为已经记成偏好。
+- 开放式质量 case 继续扩展：`dialog_regression_303_open_quality_cases.json` 从 3 个 case 扩到 7 个 case，新增局部查询后确认保护、推荐系数排序预览、非“法学/财政学”的专业对比、考公/稳定就业/读研三方向承接。目标是验证回复质量不是只对主 effect/perf 固定样例有效，同时继续要求只读不联动、预览不执行、不暴露内部术语。
 
 验证：
 
@@ -651,3 +652,4 @@
 - 回复结构和可行动性补强后，焦点回归：`PYTHONPATH=. ./.venv/bin/python -m pytest tests/unit/test_intent_state_tool.py tests/unit/test_major_compare_reply_renderer.py tests/unit/test_plan_execution_tool.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_dialog_regression_runner.py tests/unit/test_dialog_case_evaluation_report.py -q`：`350 passed`。
 - 排序预览结构化和只读边界补强后，宽回归：`PYTHONPATH=. ./.venv/bin/python -m pytest tests/unit/test_dialog_case_evaluation_report.py tests/unit/test_mainline_dialog_scenarios.py tests/integration/test_dialog_style_coverage.py tests/regression/test_pending_protocol.py tests/regression/test_execution_preview.py tests/unit/test_plan_orchestration_tool.py tests/unit/test_planning_workflow_tool.py tests/unit/test_plan_query_tool.py tests/unit/test_plan_execution_tool.py tests/unit/test_explore_direction_scenarios_sync.py tests/unit/test_major_compare_reply_renderer.py tests/unit/test_chat_agent_progress_hints.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_intent_state_tool.py -q`：`726 passed`。
 - 最新真实 WebSocket effect/perf 复跑：`dialog_regression_303_effect_perf_cases.json --clear-history --keep-response-text --assert-plan-style` `14/14` steps 通过，输出 `/private/tmp/zhiyuan_agent_303_effect_perf_after_final_reply_polish_v2.json`，中位耗时约 `2297ms`，最大耗时约 `4425ms`；离线质量评分输出 `/private/tmp/zhiyuan_agent_303_effect_perf_after_final_reply_polish_v2_quality.json`，`qualityViolations=0`，`strong=14 / needs_review=0`。
+- `dialog_regression_303_open_quality_cases.json` JSON 校验通过；新增目录级单测约束 open-quality case 必须覆盖 pending impact、局部查询、排序预览、非固定专业对比、多方向职业承接和 no-pending guard。

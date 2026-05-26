@@ -76,5 +76,108 @@
         "warnElapsedSeconds": 20
       }
     ]
+  },
+  {
+    "name": "303-open-quality-plan-query-then-confirm-guard",
+    "sessionId": "17",
+    "flow": ["plan", "confirm_guard"],
+    "coverage": [
+      "release_3_0_3",
+      "open_quality",
+      "plan_query_fast_route",
+      "readonly_no_workspace_card",
+      "no_pending_guard",
+      "school_major_lookup"
+    ],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "当前方案里青岛城市学院相关机会是不是很多，先查一下不要改",
+        "assertContainsAny": ["青岛城市", "当前方案", "方案", "候选", "命中", "相关"],
+        "assertThinkingContains": ["正在查当前方案和候选里的相关结果"],
+        "assertNotContains": ["已直接调整", "确认后执行", "已记录", "payload", "stage", "action_family", "volunteerId", "草稿"],
+        "assertNoFollowups": true,
+        "warnElapsedSeconds": 20
+      },
+      {
+        "prompt": "确认",
+        "assertContainsAny": ["上一轮只是查询当前方案或候选结果", "没有待执行的方案动作", "没有上一轮待确认"],
+        "assertNotContains": ["已直接调整", "已直接删除", "payload", "stage", "action_family", "volunteerId", "草稿"],
+        "assertNoFollowups": true,
+        "maxElapsedSeconds": 5
+      }
+    ]
+  },
+  {
+    "name": "303-open-quality-sort-score-preview-rich-boundary",
+    "sessionId": "17",
+    "flow": ["plan"],
+    "coverage": [
+      "release_3_0_3",
+      "open_quality",
+      "plan_fast_route",
+      "sort_ordered_plan",
+      "preview_confirm_boundary",
+      "side_effect_explained"
+    ],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "这版按推荐系数重新排一下，先给我看会怎么动",
+        "assertContains": ["排序", "确认"],
+        "assertContainsAny": ["推荐系数高的排在前面", "推荐系数", "导出顺序", "待重新审查"],
+        "assertThinkingContains": ["正在读取当前方案并整理这次请求", "正在生成这次调整的影响预览"],
+        "assertNotContains": ["已直接排序", "已直接调整", "payload", "stage", "action_family", "volunteerId", "草稿"],
+        "assertNoFollowups": true,
+        "warnElapsedSeconds": 30
+      }
+    ]
+  },
+  {
+    "name": "303-open-quality-major-compare-non-law-context",
+    "sessionId": "880405",
+    "flow": ["explore"],
+    "coverage": [
+      "release_3_0_3",
+      "open_quality",
+      "major_compare",
+      "non_law_major_compare",
+      "readonly_no_pending_intent"
+    ],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "网络与新媒体和跨境电子商务哪个更适合表达能力还可以但数学一般的学生，先只分析不要记偏好",
+        "assertContainsAny": ["网络与新媒体", "跨境电子商务", "表达", "数学", "就业", "建议"],
+        "assertThinkingContains": ["正在对比这几个专业的差异"],
+        "assertNotContains": ["当前没有沉淀专门画像", "已记录", "我记下", "确认后写入", "payload", "stage", "action_family", "volunteerId", "草稿"],
+        "assertNoFollowups": true,
+        "warnElapsedSeconds": 25
+      }
+    ]
+  },
+  {
+    "name": "303-open-quality-career-three-direction-readonly",
+    "sessionId": "16",
+    "flow": ["explore", "plan"],
+    "coverage": [
+      "release_3_0_3",
+      "open_quality",
+      "career_explore",
+      "multi_direction",
+      "majorGroup_model",
+      "readonly_no_workspace_card"
+    ],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "当前方案对考公、稳定就业和读研三个方向分别有什么支撑和短板，先不要改方案",
+        "assertContainsAny": ["考公", "稳定就业", "读研", "支撑", "短板", "当前方案", "候选"],
+        "assertThinkingContains": ["正在看这条方向和当前方案的承接情况"],
+        "assertNotContains": ["已直接调整", "确认后执行", "已记录", "payload", "stage", "action_family", "volunteerId", "草稿"],
+        "assertNoFollowups": true,
+        "warnElapsedSeconds": 35
+      }
+    ]
   }
 ]
