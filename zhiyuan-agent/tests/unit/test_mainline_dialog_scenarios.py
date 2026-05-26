@@ -26,6 +26,7 @@ RELEASE_302_READONLY_REAL_SESSION_CASES_PATH = Path(__file__).resolve().parents[
 RELEASE_302_EFFECT_PERF_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_302_effect_perf_cases.json"
 RELEASE_303_EFFECT_PERF_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_303_effect_perf_cases.json"
 RELEASE_303_OPEN_QUALITY_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_303_open_quality_cases.json"
+RELEASE_303_REALISTIC_USER_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_303_realistic_user_cases.json"
 
 
 def _run(coro):
@@ -149,6 +150,10 @@ def _load_release_303_effect_perf_cases() -> list[dict]:
 
 def _load_release_303_open_quality_cases() -> list[dict]:
     return json.loads(RELEASE_303_OPEN_QUALITY_CASES_PATH.read_text(encoding="utf-8"))
+
+
+def _load_release_303_realistic_user_cases() -> list[dict]:
+    return json.loads(RELEASE_303_REALISTIC_USER_CASES_PATH.read_text(encoding="utf-8"))
 
 
 def test_mainline_dialog_case_catalog_has_current_explore_intent_plan_scenarios():
@@ -640,6 +645,55 @@ def test_release_303_open_quality_cases_cover_richer_real_user_shapes():
     assert "考公、稳定就业和读研" in prompts
     assert any(step.get("assertNoFollowups") is True for step in all_steps)
     assert any(step.get("maxElapsedSeconds") for step in all_steps)
+
+
+def test_release_303_realistic_user_cases_cover_lazy_colloquial_and_abbrev_inputs():
+    cases = _load_release_303_realistic_user_cases()
+
+    assert len(cases) >= 9
+    assert len({case["name"] for case in cases}) == len(cases)
+    coverage = {tag for case in cases for tag in case["coverage"]}
+    required_tags = {
+        "release_3_0_3",
+        "realistic_user_input",
+        "lazy_short_prompt",
+        "school_abbreviation",
+        "major_abbreviation",
+        "career_short_prompt",
+        "short_intent",
+        "vague_confirm",
+        "preview_confirm_boundary",
+        "readonly_no_workspace_card",
+        "no_pending_guard",
+    }
+    assert required_tags.issubset(coverage)
+
+    banned_terms = {"payload", "stage", "action_family", "volunteerId", "草稿"}
+    all_steps = [step for case in cases for step in case["prompts"]]
+    for case in cases:
+        assert case["assertPlanStyle"] is True
+        assert case["prompts"]
+        assert case["coverage"]
+        assert "realistic_user_input" in case["coverage"]
+        assert set(case["flow"]).issubset({"explore", "intent", "plan", "review", "confirm_guard"})
+        for step in case["prompts"]:
+            assert isinstance(step, dict)
+            assert step.get("prompt")
+            assert step.get("assertContains") or step.get("assertContainsAny")
+            assert step.get("expectedKeyPoints")
+            assert step.get("forbiddenPatterns")
+            assert banned_terms.intersection(set(step.get("assertNotContains") or [])) == banned_terms
+            assert step.get("warnElapsedSeconds") or step.get("maxElapsedSeconds")
+
+    prompts = "\n".join(step["prompt"] for step in all_steps)
+    assert "这方案咋样" in prompts
+    assert "保底够不够啊" in prompts
+    assert "青城那个是不是放多了" in prompts
+    assert "按好学校排下看看" in prompts
+    assert "法和财哪个更适合女孩子" in prompts
+    assert "新媒体和跨电呢" in prompts
+    assert "会计审计可以 土木别要" in prompts
+    assert "嗯可以" in prompts
 
 
 def test_mainline_dialog_intent_preview_then_plan_status_does_not_reopen_candidate_workspace(tmp_path):

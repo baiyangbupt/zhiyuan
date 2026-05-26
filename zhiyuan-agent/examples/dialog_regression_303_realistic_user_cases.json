@@ -1,0 +1,176 @@
+[
+  {
+    "name": "303-real-user-lazy-plan-status",
+    "sessionId": "17",
+    "flow": ["plan"],
+    "coverage": ["release_3_0_3", "realistic_user_input", "lazy_short_prompt", "plan_status", "rich_reply"],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "这方案咋样",
+        "assertContainsAny": ["方案", "冲", "稳", "保", "审查", "风险"],
+        "assertThinkingContains": ["正在读取当前方案并整理这次请求"],
+        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "@1", "草稿"],
+        "assertThinkingNotContains": ["payload", "stage", "action_family", "volunteerId"],
+        "expectedKeyPoints": ["数量", "冲稳保", "审查", "需要关注", "示例", "下一步"],
+        "forbiddenPatterns": ["方案情况如下", "@1", "volunteerId"],
+        "assertNoFollowups": true,
+        "warnElapsedSeconds": 30
+      }
+    ]
+  },
+  {
+    "name": "303-real-user-lazy-plan-risk",
+    "sessionId": "17",
+    "flow": ["plan", "review"],
+    "coverage": ["release_3_0_3", "realistic_user_input", "lazy_short_prompt", "review_plan", "risk_summary"],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "保底够不够啊",
+        "assertContainsAny": ["保", "保底", "风险", "提醒", "审查"],
+        "assertThinkingContains": ["正在读取当前方案并整理这次请求"],
+        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "@1", "草稿"],
+        "assertThinkingNotContains": ["payload", "stage", "action_family", "volunteerId"],
+        "expectedKeyPoints": ["审查", "风险", "保", "主要问题", "建议", "下一步"],
+        "forbiddenPatterns": ["payload", "volunteerId", "@1"],
+        "warnElapsedSeconds": 30
+      }
+    ]
+  },
+  {
+    "name": "303-real-user-school-abbrev-query",
+    "sessionId": "17",
+    "flow": ["plan"],
+    "coverage": ["release_3_0_3", "realistic_user_input", "school_abbreviation", "plan_query_fast_route", "readonly_no_workspace_card"],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "青城那个是不是放多了",
+        "assertContainsAny": ["青岛城市", "命中", "方案", "示例", "相关"],
+        "assertThinkingContains": ["正在查当前方案和候选里的相关结果"],
+        "assertNotContains": ["已直接调整", "确认后执行", "payload", "stage", "action_family", "volunteerId", "id=", "草稿"],
+        "assertThinkingNotContains": ["payload", "stage", "action_family", "volunteerId"],
+        "expectedKeyPoints": ["共命中", "冲稳保", "学校层次", "专业热度", "示例", "下一步"],
+        "forbiddenPatterns": ["已直接调整", "确认后执行", "volunteerId"],
+        "assertNoFollowups": true,
+        "warnElapsedSeconds": 20
+      }
+    ]
+  },
+  {
+    "name": "303-real-user-sort-good-school-preview",
+    "sessionId": "17",
+    "flow": ["plan"],
+    "coverage": ["release_3_0_3", "realistic_user_input", "school_level_sort", "preview_confirm_boundary"],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "按好学校排下看看",
+        "assertContains": ["排序", "确认"],
+        "assertContainsAny": ["院校层次", "排名靠前", "导出顺序", "待重新审查"],
+        "assertThinkingContains": ["正在读取当前方案并整理这次请求", "正在生成这次调整的影响预览"],
+        "assertNotContains": ["已直接排序", "已直接调整", "payload", "stage", "action_family", "volunteerId", "草稿"],
+        "assertThinkingNotContains": ["payload", "stage", "action_family", "volunteerId"],
+        "expectedKeyPoints": ["排序方式", "导出顺序", "待重新审查", "确认后"],
+        "forbiddenPatterns": ["已直接排序", "已直接调整", "payload"],
+        "assertNoFollowups": true,
+        "warnElapsedSeconds": 30
+      }
+    ]
+  },
+  {
+    "name": "303-real-user-major-abbrev-compare",
+    "sessionId": "880101",
+    "flow": ["explore"],
+    "coverage": ["release_3_0_3", "realistic_user_input", "major_abbreviation", "major_compare", "readonly_no_pending_intent"],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "法和财哪个更适合女孩子，家里一般",
+        "assertContainsAny": ["法学", "财政学", "女生", "普通家庭", "就业", "建议"],
+        "assertThinkingContains": ["正在对比这几个专业的差异"],
+        "assertNotContains": ["缺少性别信息", "没有完整分数、选科、省份和性别信息", "已记录", "我记下", "确认后写入", "payload", "stage", "action_family", "volunteerId", "草稿"],
+        "expectedKeyPoints": ["当前会话参考", "本次边界", "法学", "财政学", "就业路径", "选择建议", "下一步"],
+        "forbiddenPatterns": ["缺少性别信息", "已记录", "确认后写入"],
+        "assertNoFollowups": true,
+        "warnElapsedSeconds": 25
+      }
+    ]
+  },
+  {
+    "name": "303-real-user-major-abbrev-non-law-compare",
+    "sessionId": "880405",
+    "flow": ["explore"],
+    "coverage": ["release_3_0_3", "realistic_user_input", "major_abbreviation", "non_law_major_compare", "readonly_no_pending_intent"],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "新媒体和跨电呢 数学不太行",
+        "assertContainsAny": ["网络与新媒体", "跨境电子商务", "数学", "就业", "建议"],
+        "assertThinkingContains": ["正在对比这几个专业的差异"],
+        "assertNotContains": ["当前没有沉淀专门画像", "已记录", "我记下", "确认后写入", "payload", "stage", "action_family", "volunteerId", "草稿"],
+        "expectedKeyPoints": ["当前会话参考", "本次边界", "网络与新媒体", "跨境电子商务", "就业路径", "选择建议", "下一步"],
+        "forbiddenPatterns": ["当前没有沉淀专门画像", "已记录", "确认后写入"],
+        "assertNoFollowups": true,
+        "warnElapsedSeconds": 25
+      }
+    ]
+  },
+  {
+    "name": "303-real-user-career-short-explore",
+    "sessionId": "16",
+    "flow": ["explore", "plan"],
+    "coverage": ["release_3_0_3", "realistic_user_input", "career_short_prompt", "career_explore", "readonly_no_workspace_card"],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "想稳点以后考公 这版支撑吗",
+        "assertContainsAny": ["考公", "稳定", "当前方案", "承接", "候选"],
+        "assertThinkingContains": ["正在看这条方向和当前方案的承接情况"],
+        "assertNotContains": ["已直接调整", "确认后执行", "已记录", "payload", "stage", "action_family", "volunteerId", "草稿"],
+        "expectedKeyPoints": ["分析结论", "方案承接", "考公", "稳定就业", "候选机会", "代表样本", "本次边界"],
+        "forbiddenPatterns": ["已直接调整", "已记录", "确认后执行"],
+        "assertNoFollowups": true,
+        "warnElapsedSeconds": 35
+      }
+    ]
+  },
+  {
+    "name": "303-real-user-intent-short-preview",
+    "sessionId": "880603",
+    "flow": ["intent"],
+    "coverage": ["release_3_0_3", "realistic_user_input", "short_intent", "soft_major_intent", "hard_major_constraint", "preview_confirm_boundary"],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "会计审计可以 土木别要",
+        "assertContainsAny": ["会计", "审计", "土木", "确认", "后续参考"],
+        "assertThinkingContains": ["正在整理这个专业想法的影响，等你确认后才会记入偏好"],
+        "assertNotContains": ["候选结果收紧", "专家推荐", "已直接调整", "已直接删除", "已直接记录", "我已经记下", "已经记下", "payload", "stage", "action_family", "volunteerId", "草稿"],
+        "expectedKeyPoints": ["确认前不会写入后续参考", "会计", "审计", "土木", "确认后", "下一步"],
+        "forbiddenPatterns": ["候选结果收紧", "专家推荐", "已直接记录"],
+        "assertNoFollowups": true,
+        "warnElapsedSeconds": 25
+      }
+    ]
+  },
+  {
+    "name": "303-real-user-vague-confirm-guard",
+    "sessionId": "880604",
+    "flow": ["confirm_guard"],
+    "coverage": ["release_3_0_3", "realistic_user_input", "vague_confirm", "no_pending_guard"],
+    "assertPlanStyle": true,
+    "prompts": [
+      {
+        "prompt": "嗯可以",
+        "assertContainsAny": ["没有上一轮待确认", "没有待执行", "直接说想做哪一步", "下一步"],
+        "assertNotContains": ["已直接调整", "已直接删除", "payload", "stage", "action_family", "volunteerId", "草稿"],
+        "expectedKeyPoints": ["没有上一轮待确认", "生成或查看方案", "审查当前方案", "调整方案"],
+        "forbiddenPatterns": ["已直接调整", "已直接删除", "payload"],
+        "assertNoFollowups": true,
+        "maxElapsedSeconds": 5
+      }
+    ]
+  }
+]

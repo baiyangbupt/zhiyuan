@@ -683,6 +683,10 @@
   - `effect_perf`：`/private/tmp/zhiyuan_agent_303_effect_perf_latest_live_eval_keypoints.json`，结果 `strong=14 / needs_review=0 / fail=0`，`qualityViolations=0`。
   - `open_quality`：`/private/tmp/zhiyuan_agent_303_open_quality_latest_live_eval_keypoints.json`，结果 `strong=9 / needs_review=0 / fail=0`，`qualityViolations=0`。
   - 这轮把“数量/冲稳保/审查/偏好承接”“导出顺序/待重新审查/确认边界”“当前方案承接/候选机会/代表样本”“专业对比边界/就业路径/选择建议”等场景级质量要求写入 case 定义，后续回复变薄或漏关键点会被自动标记。
+- 新增真实用户口语化输入 case 集：`zhiyuan-agent/examples/dialog_regression_303_realistic_user_cases.json`。
+  - 覆盖短句、懒输入、口语、省略、简称和弱指令，例如“这方案咋样”“保底够不够啊”“青城那个是不是放多了”“按好学校排下看看”“法和财哪个更适合女孩子，家里一般”“新媒体和跨电呢 数学不太行”“会计审计可以 土木别要”“嗯可以”。
+  - 这组 case 的质量目标是：用户输入可以很短，但系统回复不能变薄；必须主动补结论、依据、代表性数据、风险边界和可继续交互的下一步。
+  - 目录级单测已覆盖该 case 集必须包含 `realistic_user_input`、`lazy_short_prompt`、`school_abbreviation`、`major_abbreviation`、`career_short_prompt`、`short_intent`、`vague_confirm`、`preview_confirm_boundary` 和 `no_pending_guard` 等标签。
 
 ## 11. 当前回复质量结论与后续关注点
 
