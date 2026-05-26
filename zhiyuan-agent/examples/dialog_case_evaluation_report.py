@@ -37,6 +37,68 @@ _UNQUALIFIED_PENDING_EFFECTIVE_PATTERNS = (
     re.compile(r"把.+?(作为|记成|设为|更新为)"),
     re.compile(r"后(面|续).+?(都会按这个要求|会按这个要求|按这个要求来)"),
 )
+_EXPECTATION_META_PREFIXES = (
+    "说明",
+    "明确",
+    "包含",
+    "覆盖",
+    "提到",
+    "给出",
+    "列出",
+    "解释",
+    "展示",
+    "回复",
+    "表达",
+    "复述",
+)
+_FORBIDDEN_META_PREFIXES = (
+    "不应说",
+    "不应出现",
+    "不要说",
+    "不能说",
+    "禁止出现",
+    "避免出现",
+    "不要出现",
+    "不得出现",
+)
+_KEYPOINT_TERM_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("导出顺序", ("导出顺序", "导出内容")),
+    ("导出顺序影响", ("导出顺序", "导出内容")),
+    ("待重新审查", ("待重新审查", "重新审查", "审查状态")),
+    ("审查需要重新看", ("待重新审查", "重新审查", "审查状态")),
+    ("重新", ("重新", "待重新审查")),
+    ("审查", ("审查",)),
+    ("确认前", ("确认前", "尚未确认")),
+    ("确认后", ("确认后", "需要你确认后")),
+    ("后续参考", ("后续参考", "作为参考", "后续查看候选和方案时会按")),
+    ("不会写入", ("不会写入", "不会正式生效", "不会重复写入")),
+    ("不会改", ("不会改", "不会直接改", "不会自动修改")),
+    ("当前方案", ("当前方案", "现在这份方案", "这份方案")),
+    ("候选", ("候选",)),
+    ("数量", ("数量", "已有", "目标", "缺口", "当前方案已有")),
+    ("缺口", ("缺口", "还差", "不足")),
+    ("位置", ("位置", "当前在", "移动到", "目标", "第")),
+    ("位置变化", ("位置", "当前在", "移动到", "目标", "第")),
+    ("移动", ("移动", "移到", "改到")),
+    ("加入", ("加入", "加进")),
+    ("删除", ("删除", "移除", "去掉")),
+    ("排序", ("排序", "重新排")),
+    ("风险", ("风险", "提醒", "问题")),
+    ("冲稳保", ("冲稳保", "冲区", "稳区", "保区", "冲", "稳", "保")),
+    ("学校层次", ("学校层次", "院校层次", "学校排名", "院校排名", "公办", "民办")),
+    ("院校层次", ("院校层次", "学校层次", "学校排名", "院校排名", "公办", "民办")),
+    ("专业热度", ("专业热度", "热度", "计划数", "招生计划")),
+    ("代表样本", ("代表样本", "示例", "典型涉及", "下面仅展示")),
+    ("录取率", ("录取率", "录取概率")),
+    ("推荐系数", ("推荐系数",)),
+    ("体制内", ("体制内", "考公")),
+    ("考公", ("考公", "体制内")),
+    ("稳定就业", ("稳定就业", "就业确定性")),
+    ("读研", ("读研", "深造")),
+    ("偏好", ("偏好", "倾向")),
+    ("排除", ("排除", "不要", "不考虑")),
+    ("本次确认内容", ("本次确认内容", "确认内容")),
+)
 
 _DISTRIBUTION_SIGNALS: dict[str, tuple[str, ...]] = {
     "tier_distribution": ("冲稳保", "冲区", "稳区", "保区", "区间分布", "区间："),
@@ -114,6 +176,23 @@ def _normalize_text_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [_normalize_text(item) for item in value if _normalize_text(item)]
+
+
+def _compact_text(value: Any) -> str:
+    return re.sub(r"\s+", "", _normalize_text(value))
+
+
+def _strip_known_prefix(text: str, prefixes: tuple[str, ...]) -> str:
+    value = _normalize_text(text)
+    changed = True
+    while changed:
+        changed = False
+        for prefix in prefixes:
+            if value.startswith(prefix):
+                value = value[len(prefix) :].strip(" ：:，,。；;")
+                changed = True
+                break
+    return value
 
 
 def _as_int_ms(value: Any, *, seconds: bool = False) -> int | None:
@@ -398,6 +477,68 @@ def _has_unqualified_pending_effective_wording(text: str) -> bool:
     return False
 
 
+def _term_present(text: str, term: str) -> bool:
+    compact_text = _compact_text(text)
+    compact_term = _compact_text(term)
+    if not compact_term:
+        return True
+    if compact_term in compact_text:
+        return True
+    for canonical, aliases in _KEYPOINT_TERM_ALIASES:
+        if _compact_text(canonical) != compact_term:
+            continue
+        return any(_compact_text(alias) in compact_text for alias in aliases)
+    return False
+
+
+def _extract_key_terms(expectation: str) -> list[str]:
+    value = _strip_known_prefix(expectation, _EXPECTATION_META_PREFIXES)
+    if not value:
+        return []
+    parts = re.split(r"[、/,，,；;和及与或\s]+", value)
+    terms = [part.strip(" ：:。()（）[]【】") for part in parts if part.strip(" ：:。()（）[]【】")]
+    return terms or [value]
+
+
+def _keypoint_satisfied(text: str, expectation: str) -> bool:
+    value = _strip_known_prefix(expectation, _EXPECTATION_META_PREFIXES)
+    if not value:
+        return True
+    if _term_present(text, value):
+        return True
+    terms = _extract_key_terms(expectation)
+    if not terms:
+        return True
+    matched = sum(1 for term in terms if _term_present(text, term))
+    if len(terms) <= 2:
+        return matched == len(terms)
+    return matched >= 2
+
+
+def _expected_keypoint_warnings(record: dict[str, Any], text: str) -> list[str]:
+    quality_expectations = record.get("qualityExpectations")
+    if not isinstance(quality_expectations, dict):
+        return []
+    warnings: list[str] = []
+    for item in _normalize_text_list(quality_expectations.get("expectedKeyPoints")):
+        if not _keypoint_satisfied(text, item):
+            warnings.append(f"missing_expected_keypoint:{item}")
+    return warnings
+
+
+def _forbidden_pattern_violations(record: dict[str, Any], text: str) -> list[str]:
+    quality_expectations = record.get("qualityExpectations")
+    if not isinstance(quality_expectations, dict):
+        return []
+    compact_text = _compact_text(text)
+    violations: list[str] = []
+    for item in _normalize_text_list(quality_expectations.get("forbiddenPatterns")):
+        pattern = _strip_known_prefix(item, _FORBIDDEN_META_PREFIXES) or item
+        if _compact_text(pattern) and _compact_text(pattern) in compact_text:
+            violations.append(f"forbidden_pattern:{item}")
+    return violations
+
+
 def _quality_violations(record: dict[str, Any], text: str) -> list[str]:
     violations: list[str] = []
     for field in ("assertionViolations", "contentViolations", "performanceViolations"):
@@ -416,6 +557,8 @@ def _quality_violations(record: dict[str, Any], text: str) -> list[str]:
 
     if _has_unqualified_pending_effective_wording(text):
         violations.append("pending_intent_effective_wording")
+
+    violations.extend(_forbidden_pattern_violations(record, text))
 
     if _is_preview_or_example_case(record, text):
         coverage = _distribution_coverage(text)
@@ -471,6 +614,7 @@ def _evaluation_warnings(record: dict[str, Any], text: str) -> list[str]:
     thinking = _extract_thinking(record)
     if isinstance(elapsed_ms, int) and elapsed_ms >= 10000 and not thinking:
         warnings.append("missing_progress_for_long_task")
+    warnings.extend(_expected_keypoint_warnings(record, text))
     return warnings
 
 
@@ -604,7 +748,23 @@ def _score_case(record: dict[str, Any]) -> dict[str, Any]:
     scored["routingPath"] = _extract_routing_path(record)
     scored["actionFamilies"] = _extract_action_families(record)
     scored["toolNames"] = _extract_tool_names(record)
-    scored["verdict"] = "fail" if violations else ("strong" if min(scored["correctness"], scored["completeness"], scored["actionability"], scored["route"]) >= 4 else "needs_review")
+    has_expected_keypoint_warning = any(
+        _normalize_text(item).startswith("missing_expected_keypoint:")
+        for item in warnings
+    )
+    scored["verdict"] = (
+        "fail"
+        if violations
+        else (
+            "needs_review"
+            if has_expected_keypoint_warning
+            else (
+                "strong"
+                if min(scored["correctness"], scored["completeness"], scored["actionability"], scored["route"]) >= 4
+                else "needs_review"
+            )
+        )
+    )
     return scored
 
 

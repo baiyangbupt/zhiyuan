@@ -674,6 +674,10 @@
   - `effect_perf`：`dialog_regression_303_effect_perf_cases.json --clear-history --keep-response-text --assert-plan-style`，`14/14` steps 通过，输出 `/private/tmp/zhiyuan_agent_303_effect_perf_latest_live.json`；详细评分输出 `/private/tmp/zhiyuan_agent_303_effect_perf_latest_live_eval.json`、`/private/tmp/zhiyuan_agent_303_effect_perf_latest_live_eval.md`，结果 `strong=14 / needs_review=0 / fail=0`，`qualityViolations=0`。延迟：中位 `2340ms`，p95 `3975ms`，最大 `4547ms`，首响中位 `178ms`，终响中位 `338ms`。
   - `open_quality`：`dialog_regression_303_open_quality_cases.json --clear-history --keep-response-text --assert-plan-style`，`9/9` steps 通过，输出 `/private/tmp/zhiyuan_agent_303_open_quality_latest_live.json`；详细评分输出 `/private/tmp/zhiyuan_agent_303_open_quality_latest_live_eval.json`、`/private/tmp/zhiyuan_agent_303_open_quality_latest_live_eval.md`，结果 `strong=9 / needs_review=0 / fail=0`，`qualityViolations=0`。延迟：中位 `2379ms`，p95 `3661ms`，最大 `3745ms`，首响中位 `232ms`，终响中位 `376ms`。
   - 这次最新 live 输出中仍存在 `missing_route_observability` warning：`effect_perf=13`、`open_quality=7`。当前不影响用户侧质量结论，因为工具调用和 actionFamily 可以识别真实业务动作；后续建议让 runner/服务端统一输出 `routingPath`，减少评估报告的兜底推断。
+- 评估工具补强 `expectedKeyPoints / forbiddenPatterns` 自动检查后，使用严格版规则重新评估同一批最新 live 输出：
+  - `effect_perf`：`/private/tmp/zhiyuan_agent_303_effect_perf_latest_live_eval_strict.json`，结果仍为 `strong=14 / needs_review=0 / fail=0`，`qualityViolations=0`。
+  - `open_quality`：`/private/tmp/zhiyuan_agent_303_open_quality_latest_live_eval_strict.json`，结果仍为 `strong=9 / needs_review=0 / fail=0`，`qualityViolations=0`。
+  - 新规则不会改变 Agent 回复逻辑，只让 case 评估更严格：case 专属禁用表达命中会失败；期望业务点缺失会进入 `needs_review`，避免“回复结构完整但漏掉关键业务说明”被直接放过。
 
 ## 11. 当前回复质量结论与后续关注点
 

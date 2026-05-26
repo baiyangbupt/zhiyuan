@@ -389,6 +389,64 @@ def test_score_case_flags_latency_budget_hard_failure():
     assert score["verdict"] == "fail"
 
 
+def test_score_case_flags_case_specific_forbidden_patterns():
+    score = report._score_case(
+        {
+            "prompt": "我倾向会计学和审计学，但土木工程不要",
+            "responseText": "已整理你的要求，候选结果收紧后可以继续查看。",
+            "elapsedMs": 900,
+            "qualityExpectations": {
+                "forbiddenPatterns": ["候选结果收紧"],
+            },
+        }
+    )
+
+    assert "forbidden_pattern:候选结果收紧" in score["qualityViolations"]
+    assert score["verdict"] == "fail"
+
+
+def test_score_case_marks_missing_expected_keypoints_for_review():
+    score = report._score_case(
+        {
+            "prompt": "按院校层次排序",
+            "responseText": "会按院校层次重新排序当前方案。需要你确认后才会执行。",
+            "elapsedMs": 900,
+            "qualityExpectations": {
+                "expectedKeyPoints": ["导出顺序影响", "审查需要重新看"],
+            },
+        }
+    )
+
+    assert "missing_expected_keypoint:导出顺序影响" in score["evaluationWarnings"]
+    assert "missing_expected_keypoint:审查需要重新看" in score["evaluationWarnings"]
+    assert score["verdict"] == "needs_review"
+
+
+def test_score_case_accepts_expected_keypoint_aliases():
+    score = report._score_case(
+        {
+            "prompt": "按院校层次排序",
+            "responseText": (
+                "会按院校层次重新排序当前方案。\n\n"
+                "排序方式：排名靠前的排在前面。\n\n"
+                "执行影响：会改变导出内容，并让审查状态进入待重新审查。\n\n"
+                "需要你确认后才会执行。"
+            ),
+            "elapsedMs": 900,
+            "turnObservability": {
+                "actionFamilies": ["sort_ordered_plan"],
+                "toolCalls": [{"name": "execute_plan_action", "actionFamily": "sort_ordered_plan"}],
+            },
+            "qualityExpectations": {
+                "expectedKeyPoints": ["说明导出顺序影响", "说明审查需要重新看"],
+            },
+        }
+    )
+
+    assert not any(item.startswith("missing_expected_keypoint:") for item in score["evaluationWarnings"])
+    assert "forbidden_pattern" not in ",".join(score["qualityViolations"])
+
+
 def test_summarize_reports_groups_quality_by_scenario_and_coverage():
     reports = [
         {

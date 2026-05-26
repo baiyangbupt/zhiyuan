@@ -68,6 +68,7 @@
 - `distributionCoverage`：记录回复覆盖了哪些关键分布，例如冲稳保、学校层次、专业热度、数量空间和代表样本。
 - `verdict`：按硬门禁和维度得分给出 `fail / needs_review / strong`，便于后续批量筛出薄回复。
 - 确认保护类回复不套用预览分布门禁：用户只回复“确认/确认这个偏好/确认这个要求”时，如果系统是在说明没有待确认动作或执行确认结果，不要求额外覆盖冲稳保、院校层次、专业热度等分布，避免把正确的确认边界保护误判为薄预览。
+- `expectedKeyPoints / forbiddenPatterns`：case 定义里的业务期望点进入自动评分。`expectedKeyPoints` 用来描述该回复必须覆盖的业务含义，工具会尽量按文本短语检查；`forbiddenPatterns` 用来补充该 case 特有的禁用表达。这样可以避免回复格式完整但漏掉“导出顺序影响”“审查待重新看”“确认前不生效”等业务要点时仍被评成 strong。
 
 ## 3. 评分框架
 
@@ -202,6 +203,8 @@ case 需要覆盖：
 - `coverage`：能力标签，例如 `plan_fast_route / preview_confirm_boundary / majorGroup_model`。
 - `warnElapsedSeconds / maxElapsedSeconds`：该步骤的耗时预算。
 - `expectedRoutingPath / expectedActionFamily`：必要时显式指定链路期望。
+- `expectedKeyPoints`：该步骤回复必须覆盖的业务点。建议写成用户语言或可被回复直接命中的短语，例如“导出顺序”“待重新审查”“确认前不会写入后续参考”。
+- `forbiddenPatterns`：该步骤专属禁用表达。通用内部术语、pending 边界等已有全局门禁；这里只放 case 特有风险，例如“不应说候选结果收紧”“不应出现专家推荐”。
 
 ### 4.2 统一跑法
 
