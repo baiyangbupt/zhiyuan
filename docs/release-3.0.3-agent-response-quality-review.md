@@ -670,6 +670,10 @@
   - `effect_perf`：`/private/tmp/zhiyuan_agent_303_effect_perf_detail_eval.json`、`/private/tmp/zhiyuan_agent_303_effect_perf_detail_eval.md`，结果 `strong=14 / needs_review=0 / fail=0`，`qualityViolations=0`。
   - `open_quality`：`/private/tmp/zhiyuan_agent_303_open_quality_detail_eval.json`、`/private/tmp/zhiyuan_agent_303_open_quality_detail_eval.md`，结果 `strong=9 / needs_review=0 / fail=0`，`qualityViolations=0`。
   - 剩余 warning 主要是历史 runner 输出未记录 `routingPath`，不影响回复质量结论；评估工具已用 toolName/actionFamily 兜底识别真实业务动作，避免把正确只读确认保护误判为质量待复核。
+- 本地 `rank + server + agent + web` 服务链路恢复后，使用最新运行服务重新跑真实 WebSocket case：
+  - `effect_perf`：`dialog_regression_303_effect_perf_cases.json --clear-history --keep-response-text --assert-plan-style`，`14/14` steps 通过，输出 `/private/tmp/zhiyuan_agent_303_effect_perf_latest_live.json`；详细评分输出 `/private/tmp/zhiyuan_agent_303_effect_perf_latest_live_eval.json`、`/private/tmp/zhiyuan_agent_303_effect_perf_latest_live_eval.md`，结果 `strong=14 / needs_review=0 / fail=0`，`qualityViolations=0`。延迟：中位 `2340ms`，p95 `3975ms`，最大 `4547ms`，首响中位 `178ms`，终响中位 `338ms`。
+  - `open_quality`：`dialog_regression_303_open_quality_cases.json --clear-history --keep-response-text --assert-plan-style`，`9/9` steps 通过，输出 `/private/tmp/zhiyuan_agent_303_open_quality_latest_live.json`；详细评分输出 `/private/tmp/zhiyuan_agent_303_open_quality_latest_live_eval.json`、`/private/tmp/zhiyuan_agent_303_open_quality_latest_live_eval.md`，结果 `strong=9 / needs_review=0 / fail=0`，`qualityViolations=0`。延迟：中位 `2379ms`，p95 `3661ms`，最大 `3745ms`，首响中位 `232ms`，终响中位 `376ms`。
+  - 这次最新 live 输出中仍存在 `missing_route_observability` warning：`effect_perf=13`、`open_quality=7`。当前不影响用户侧质量结论，因为工具调用和 actionFamily 可以识别真实业务动作；后续建议让 runner/服务端统一输出 `routingPath`，减少评估报告的兜底推断。
 
 ## 11. 当前回复质量结论与后续关注点
 
@@ -680,7 +684,7 @@
 - 硬失败为 0：没有内部术语外露、待确认/已生效边界冲突、空回复或超时硬失败。
 - 主链路覆盖为 strong：方案状态、审查、局部查询、移动、加入、排序、专业组操作、意向预览/确认、无 pending 确认保护均通过。
 - 开放质量覆盖为 strong：职业方向、多方向承接、专业对比、待确认意向影响追问、只读查询后确认保护均通过。
-- 延迟可接受：历史真实输出中 effect/perf 中位约 `2297ms`，open-quality 中位约 `2477ms`，未出现本轮硬超时。
+- 延迟可接受：最新本地服务 live 复跑中 effect/perf 中位约 `2340ms`，open-quality 中位约 `2379ms`，未出现本轮硬超时。
 
 ### 11.2 后续仍建议关注
 
