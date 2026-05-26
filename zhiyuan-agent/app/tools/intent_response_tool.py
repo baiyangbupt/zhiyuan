@@ -203,7 +203,7 @@ def render_intent_state_update(result: IntentStateUpdateResult) -> str:
     if code == "no_pending":
         return "当前没有待确认的意向调整。"
     if code == "confirm_required":
-        return "这一步我先停在待确认状态。你明确回复“确认”或“就按这个来”后，我再正式生效。"
+        return "这一步我先停在待确认状态。你明确回复“确认”或“就按这个来”后，我再写入后续参考。"
     if code == "empty_update":
         return "没有可执行的意向更新内容。"
     if code == "apply_failed":
@@ -361,11 +361,11 @@ def render_intent_analysis_text(
         ]
     elif intent_mode == "constraint":
         next_steps = [
-            "如果你确认要按这个要求执行，直接回复“确认这个要求”或更明确地说要保留/排除哪些内容，我再正式生效。",
+            "如果你确认要按这个要求执行，直接回复“确认这个要求”或更明确地说要保留/排除哪些内容，我再写入后续参考。",
         ]
     else:
         next_steps = [
-            "如果你确认要把这些记成后续偏好，直接回复“确认这个偏好”或明确说保留哪些内容，我再正式生效。",
+            "如果你确认要把这些记成后续偏好，直接回复“确认这个偏好”或明确说保留哪些内容，我再写入后续参考。",
         ]
     sections.append(("下一步", next_steps))
     rendered = format_text_sections(*sections)

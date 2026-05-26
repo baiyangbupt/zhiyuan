@@ -18,6 +18,8 @@ _SPACE_RE = re.compile(r"\s+")
 
 _STRONG_READONLY_ANALYSIS_TOKENS = (
     "承接",
+    "支撑",
+    "短板",
     "适不适合",
     "适合",
     "合适",

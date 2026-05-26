@@ -1,4 +1,4 @@
-from app.domain.career_slots import CAREER_STABLE_EMPLOYMENT, CAREER_SYSTEM_PUBLIC_SERVICE
+from app.domain.career_slots import CAREER_FURTHER_STUDY, CAREER_STABLE_EMPLOYMENT, CAREER_SYSTEM_PUBLIC_SERVICE
 from app.resolver.career_direction_fast_router import resolve_career_direction_fast_route
 
 
@@ -17,6 +17,17 @@ def test_career_direction_fast_route_allows_readonly_cancel_wording():
 
     assert decision.matched is True
     assert decision.direction_slots == [CAREER_SYSTEM_PUBLIC_SERVICE]
+
+
+def test_career_direction_fast_route_matches_support_and_shortcoming_questions():
+    decision = resolve_career_direction_fast_route("当前方案对考公、稳定就业和读研三个方向分别有什么支撑和短板，先不要改方案")
+
+    assert decision.matched is True
+    assert decision.direction_slots == [
+        CAREER_SYSTEM_PUBLIC_SERVICE,
+        CAREER_STABLE_EMPLOYMENT,
+        CAREER_FURTHER_STUDY,
+    ]
 
 
 def test_career_direction_fast_route_does_not_match_intent_or_mutation_semantics():

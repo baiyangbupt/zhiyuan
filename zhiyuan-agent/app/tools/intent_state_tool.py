@@ -585,7 +585,7 @@ def _build_preview_title(
         return "你提到的这个方向，我先结合你现在的情况做个初步分析。"
 
     if intent_mode == INTENT_MODE_CONSTRAINT:
-        suffix = "确认前不会正式生效，也不会直接改动当前方案。"
+        suffix = "确认前不会写入后续参考，也不会直接改动当前方案。"
     else:
         suffix = "确认后我会按这个思路继续帮你看方案和给建议。"
     if edit_flag:

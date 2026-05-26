@@ -23,7 +23,7 @@
       },
       {
         "prompt": "先不确认，看看这个偏好会影响当前方案吗",
-        "assertContains": ["尚未确认", "确认前不会正式生效", "待确认内容"],
+        "assertContains": ["尚未确认", "确认前不会写入后续参考", "待确认内容"],
         "assertContainsAny": ["当前方案", "需要留意", "候选"],
         "assertThinkingContains": ["正在结合这条待确认想法查看当前方案影响"],
         "assertNotContains": ["候选结果收紧", "专家推荐", "已直接调整", "已直接删除", "已直接记录", "payload", "stage", "action_family", "volunteerId", "草稿"],

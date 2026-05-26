@@ -779,6 +779,10 @@ def _normalize_pending_intent_reply(reply: str) -> str:
         ("好的，我已经记下了", "我先整理一下"),
         ("我已经按你的偏好记录下来", "我先把这个偏好整理出来，等你确认后再作为后续参考"),
         ("我已经记录下来", "我先把这个偏好整理出来，等你确认后再作为后续参考"),
+        ("确认前不会正式生效", "确认前不会写入后续参考"),
+        ("确认后才会正式记入后续参考", "确认后会写入后续参考"),
+        ("你确认后我再正式生效", "你确认后我再写入后续参考"),
+        ("我再正式生效", "我再写入后续参考"),
     )
     for source, target in replacements:
         normalized = normalized.replace(source, target)
@@ -1522,42 +1526,43 @@ def _pending_intent_item_lines(cache_data: dict[str, Any]) -> list[str]:
     major_intents = cache_data.get("major_intents") if isinstance(cache_data.get("major_intents"), dict) else {}
     for key in ("level1", "level2", "level3"):
         for name in major_intents.get(key) or []:
-            _append_unique_text(lines, f"把{name}作为后续优先参考的专业方向")
+            _append_unique_text(lines, f"确认后，将把{name}作为后续优先参考的专业方向")
     for key in ("negative_level1", "negative_level2", "negative_level3"):
         for name in major_intents.get(key) or []:
-            _append_unique_text(
-                lines,
-                f"{'明确不考虑' if strict_constraint else '尽量降低优先级'}：{name}",
-            )
+            if strict_constraint:
+                _append_unique_text(lines, f"确认后，将把{name}作为明确不考虑的内容")
+            else:
+                _append_unique_text(lines, f"确认后，会尽量降低{name}的优先级")
 
     school_intents = cache_data.get("school_intents") if isinstance(cache_data.get("school_intents"), dict) else {}
     for name in school_intents.get("colleges") or []:
-        _append_unique_text(lines, f"把{name}作为后续优先参考的院校")
+        _append_unique_text(lines, f"确认后，将把{name}作为后续优先参考的院校")
     for name in school_intents.get("negative_colleges") or []:
-        _append_unique_text(
-            lines,
-            f"{'明确不考虑' if strict_constraint else '尽量降低优先级'}：{name}",
-        )
+        if strict_constraint:
+            _append_unique_text(lines, f"确认后，将把{name}作为明确不考虑的院校")
+        else:
+            _append_unique_text(lines, f"确认后，会尽量降低{name}的优先级")
 
     city_intents = cache_data.get("city_intents") if isinstance(cache_data.get("city_intents"), dict) else {}
     for key in ("province", "city"):
         for name in city_intents.get(key) or []:
-            _append_unique_text(lines, f"把{name}作为后续优先参考的地域")
+            _append_unique_text(lines, f"确认后，将把{name}作为后续优先参考的地域")
     for key in ("negative_province", "negative_city"):
         for name in city_intents.get(key) or []:
-            _append_unique_text(
-                lines,
-                f"{'明确不考虑' if strict_constraint else '尽量降低优先级'}：{name}",
-            )
+            if strict_constraint:
+                _append_unique_text(lines, f"确认后，将把{name}作为明确不考虑的地域")
+            else:
+                _append_unique_text(lines, f"确认后，会尽量降低{name}的优先级")
 
     career_intents = cache_data.get("career_intents") if isinstance(cache_data.get("career_intents"), dict) else {}
     for value in career_intents.get("positive") or []:
-        _append_unique_text(lines, f"把{to_career_label(str(value))}作为后续优先参考的发展方向")
+        _append_unique_text(lines, f"确认后，将把{to_career_label(str(value))}作为后续优先参考的发展方向")
     for value in career_intents.get("negative") or []:
-        _append_unique_text(
-            lines,
-            f"{'明确不考虑' if strict_constraint else '尽量降低优先级'}：{to_career_label(str(value))}",
-        )
+        label = to_career_label(str(value))
+        if strict_constraint:
+            _append_unique_text(lines, f"确认后，将把{label}作为明确不考虑的发展方向")
+        else:
+            _append_unique_text(lines, f"确认后，会尽量降低{label}的优先级")
 
     return lines
 
@@ -1580,7 +1585,7 @@ def _build_pending_intent_timeout_reply(cache_data: dict[str, Any]) -> str | Non
     lines.extend([
         "",
         "**下一步**",
-        f"如果确认要作为后续参考，直接回复“{confirm_phrase}”。确认前不会正式生效，也不会直接改动当前方案。",
+        f"如果确认要作为后续参考，直接回复“{confirm_phrase}”。确认前不会写入后续参考，也不会直接改动当前方案。",
     ])
     return _sanitize_reply_for_user(_normalize_user_facing_terms("\n".join(lines)))
 
@@ -1618,7 +1623,7 @@ async def _build_pending_intent_impact_reply(
     impact_text = _build_impact_preview_from_analysis(analysis)
     confirm_phrase = "确认这个要求" if intent_mode == "constraint" else "确认这个偏好"
     lines = [
-        "可以，我先按这条尚未确认的想法看影响；确认前不会正式生效，也不会改动当前方案。",
+        "可以，我先按这条尚未确认的想法看影响；确认前不会写入后续参考，也不会改动当前方案。",
         "",
         impact_text,
         "",
@@ -1631,7 +1636,7 @@ async def _build_pending_intent_impact_reply(
         [
             "",
             "**下一步**",
-            f"如果要正式生效，直接回复“{confirm_phrase}”。如果只是继续了解，也可以继续问它和当前方案、候选机会的关系。",
+            f"如果要写入后续参考，直接回复“{confirm_phrase}”。如果只是继续了解，也可以继续问它和当前方案、候选机会的关系。",
         ]
     )
     return _sanitize_reply_for_user(_normalize_user_facing_terms("\n".join(lines)))

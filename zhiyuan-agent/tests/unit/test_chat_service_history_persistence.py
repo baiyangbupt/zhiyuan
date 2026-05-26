@@ -634,7 +634,7 @@ def test_chat_service_major_intent_fast_route_bypasses_main_agent_and_persists_p
             )
         )
 
-    assert reply == "我先把这些专业想法整理成待确认内容。确认后才会正式记入后续参考。"
+    assert reply == "我先把这些专业想法整理成待确认内容。确认后会写入后续参考。"
     assert progress_hints == ["正在整理这个专业想法的影响，等你确认后才会记入偏好..."]
     assert fake_agent.calls == []
     mock_preview.assert_awaited_once()
@@ -713,7 +713,7 @@ def test_chat_service_pending_intent_impact_question_bypasses_main_agent(
         )
 
     assert "尚未确认" in reply
-    assert "确认前不会正式生效" in reply
+    assert "确认前不会写入后续参考" in reply
     assert "当前方案里已有 2 个方向比较接近" in reply
     assert "待确认内容" in reply
     assert "法学" in reply
@@ -2547,7 +2547,7 @@ def test_chat_service_does_not_append_plan_preview_boundary_for_intent_turn_with
         )
     )
     fake_agent = _FakeAgentWithToolCalls(
-        "我先把这个偏好整理成待确认参考，你确认后我再正式生效。",
+        "我先把这个偏好整理成待确认参考，你确认后我再写入后续参考。",
         [ToolCallPart(tool_name="preview_current_major_intent_confirmation", args={"intent_mode": "preference"})],
         [
             ToolReturnPart(
@@ -2566,7 +2566,7 @@ def test_chat_service_does_not_append_plan_preview_boundary_for_intent_turn_with
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-stale-plan-history", "user-1", "想学跨境电商"))
 
-    assert reply == "我先把这个偏好整理成待确认参考，你确认后我再正式生效。"
+    assert reply == "我先把这个偏好整理成待确认参考，你确认后我再写入后续参考。"
     assert "还没有拿到可执行的调整预览" not in reply
 
 
@@ -3930,7 +3930,7 @@ def test_intent_timeout_fallback_uses_pending_cache_without_applying():
     assert "财政学类" in reply
     assert "护理学类" in reply
     assert "确认这个要求" in reply
-    assert "确认前不会正式生效" in reply
+    assert "确认前不会写入后续参考" in reply
     assert "不会直接改动当前方案" in reply
     assert "已直接记录" not in reply
     assert "payload" not in reply

@@ -1924,7 +1924,7 @@ def test_build_preview_title_uses_explore_wording_for_interest_stage():
 def test_build_preview_title_uses_pending_boundary_without_candidate_tightening():
     title = _build_preview_title(None, INTENT_MODE_CONSTRAINT, ANALYSIS_STAGE_CONFIRMED)
 
-    assert "确认前不会正式生效" in title
+    assert "确认前不会写入后续参考" in title
     assert "不会直接改动当前方案" in title
     assert "卡片" not in title
     assert "候选结果收紧" not in title
