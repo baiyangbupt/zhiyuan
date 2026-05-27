@@ -39,6 +39,7 @@
 - `dialog_regression_runner.py` 与 3.0.3 open-quality case 补齐 `readonly_closure_ack` 观测口径：弱收口“嗯那就这样”按只读分析收口处理，明确不执行动作、不写偏好，避免误标为 no-pending guard 路由缺失。
 - 3.0.3 open-quality live 使用修正后 runner 复跑通过：`23/23` steps、`strong=23`、`qualityViolations={}`、`evaluationWarnings={}`，路由汇总中 `readonly_closure_ack=1` 与 `plan_confirmation_guard_no_pending=1` 已分开观测。
 - 3.0.3 effect/perf live 使用修正后 runner 复跑通过：`14/14` steps、`strong=14`、`qualityViolations={}`、`evaluationWarnings={}`；主链路动作、确认、审查、只读查询和意向确认均保持正确观测，方案状态类回复本轮最大耗时约 `8133ms`，作为后续性能观察点。
+- 3.0.3 回复质量人工复核补充“先质量后性能”结论：方案状态、审查、预算风险、专业对比、方案调整预览和只读收口可作为稳定基线；职业方向代表样本、意向影响无命中解释、边界提示去重和候选空结果替代建议列为后续质量优化候选。
 - `conversation_turn_event` 补充 3.0.3 观测字段：`routeDecision`、LLM request/token、toolCallCount 和结构化 toolCalls 摘要；full-agent 工具调用会记录 actionFamily、stage、resultKind、applied/messageCode，direct pending/guard 路径明确记录 `llmRequests=0`。
 - `dialog_regression_runner.py` 的 metrics 输出新增 `turnObservability`，从本地 SQLite 历史解析每轮 tool call、actionFamily、stage、resultKind 和 applied 状态，便于在 WebSocket e2e 中定位慢点和误路由。
 - 新增 Plan 高置信快路径 `plan_fast_route`：在已有 planning summary 时，方案状态、数字志愿/专业组移动、数字删除、指定维度排序和显式审查会跳过主模型自由试工具，直接进入 `_plan_next_action_model -> execute_plan_action`；高副作用动作仍只生成 preview，确认后再 apply。
