@@ -932,3 +932,44 @@
 - `PYTHONPATH=. ./.venv/bin/python -m pytest tests/unit/test_display_text.py tests/unit/test_intent_state_tool.py::test_enrich_plan_relation_analysis_trims_long_admission_notes_in_examples tests/unit/test_plan_execution_tool.py::test_execute_plan_action_query_state_trims_long_sample_notes tests/unit/test_explore_direction_scenarios_sync.py::test_candidate_brief_trims_long_admission_notes_for_inline_examples -q`：`5 passed`
 - `PYTHONPATH=. ./.venv/bin/python -m pytest tests/unit/test_display_text.py tests/unit/test_explore_direction_scenarios_sync.py tests/unit/test_intent_state_tool.py tests/unit/test_plan_execution_tool.py -q`：`211 passed`
 - `PYTHONPATH=. ./.venv/bin/python -m pytest tests/unit/test_major_compare_reply_renderer.py tests/unit/test_dialog_case_evaluation_report.py tests/unit/test_mainline_dialog_scenarios.py tests/unit/test_plan_query_tool.py tests/unit/test_fast_route_arbitrator.py -q`：`91 passed`
+
+### 13.3 调整分析预览不应刷新工作台
+
+最新 open-quality 复核中发现一个只读/执行边界问题：
+
+- 用户输入：`就按别太冒险的思路把这版调稳点，先给我看看会怎么动`
+- 路由结果：命中 `plan_fast_route -> analyze_adjustment`
+- 回复语义：文本明确说明“先分析怎么调稳，不会直接改方案”
+- 实际联动：仍发送了 `ordered + review` 两个 `planningWorkspaceAction` followup 卡片
+
+根因不是路由错判，而是执行结果语义不一致：
+
+- `handle_analyze_adjustment` 只是读取当前方案和审查结果，生成调整建议。
+- 但返回的 `PlanExecutionResult` 标记为 `applied=true`，并带 `workspace_refresh_targets=["ordered", "review"]`。
+- `ChatService` 按执行结果追加工作台刷新卡片，导致“先看看怎么动”的只读预览看起来像已经执行了方案调整。
+
+修复口径：
+
+- `analyze_adjustment` 明确改为只读分析：`applied=false`、`workspace_refresh_targets=[]`。
+- 回复仍保留“如果后续进入具体移动、删除、补入或排序，才会影响方案顺序和导出顺序，并让审查状态进入待重新审查”的边界说明。
+- `review_plan`、真实 `move/remove/add/sort` apply 等会产生新状态的动作不变，仍按结果刷新对应工作台视图。
+- 回归 case 将该场景从 `assertFollowupCount=2` 改为 `assertNoFollowups=true`，避免后续再把只读分析当成已执行动作。
+
+复验结果：
+
+- open-quality live：`/private/tmp/zhiyuan_agent_303_open_quality_after_adjustment_readonly_fix_restart.json`
+  - `23/23` steps 通过，失败 `0`
+  - 中位耗时 `2242ms`，p95 `3706ms`，最大 `3814ms`
+  - 关键 case `303-open-quality-plan-make-safer-preview`：`applied=false`，`followupMessages=0`
+- effect/perf live：`/private/tmp/zhiyuan_agent_303_effect_perf_after_adjustment_readonly_fix.json`
+  - `14/14` steps 通过，失败 `0`
+  - 中位耗时 `2236ms`，p95 `3533ms`，最大 `3850ms`
+  - 审查 case 仍返回 `review` followup；专业组确认移动仍返回 `ordered + review` followup
+- 相关单元/回归：`PYTHONPATH=. .venv/bin/python -m pytest tests/regression/test_execution_apply.py tests/unit/test_plan_execution_tool.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_fast_route_arbitrator.py tests/unit/test_region_safety_tradeoff_renderer.py tests/unit/test_display_text.py -q`
+  - `283 passed`
+
+当前结论：
+
+- “先看看 / 先分析 / 先给我预览”属于只读或待确认阶段，不应触发工作区刷新。
+- “确认后执行 / 显式审查 / 真实生成或调整方案”才可以触发工作区刷新。
+- 这个边界与 3.0.3 当前的 pending 确认模型一致，没有改变具体方案调整、审查和导出链路。

@@ -671,7 +671,7 @@
           {"label": "确认边界", "any": ["需要你确认", "确认后", "先给你看", "不会直接执行", "不会直接改方案", "先分析"]}
         ],
         "forbiddenPatterns": ["已直接调整", "已直接排序", "payload"],
-        "assertFollowupCount": 2,
+        "assertNoFollowups": true,
         "warnElapsedSeconds": 35,
         "minTextLengthWarn": 150
       }

@@ -300,11 +300,11 @@ async def handle_analyze_adjustment(
     state_summary, reply_focus, next_step_hints = _build_adjustment_summary(facts)
 
     return PlanExecutionResult(
-        applied=True,
+        applied=False,
         action_family="analyze_adjustment",
         stage=plan.stage,
         result_kind="adjustment_analysis",
-        workspace_refresh_targets=["ordered", "review"],
+        workspace_refresh_targets=[],
         context_summary=plan.context_summary,
         state_summary=state_summary,
         summary=state_summary,

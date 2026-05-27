@@ -1228,7 +1228,7 @@
           "已直接排序",
           "payload"
         ],
-        "assertFollowupCount": 2,
+        "assertNoFollowups": true,
         "warnElapsedSeconds": 35
       }
     ]

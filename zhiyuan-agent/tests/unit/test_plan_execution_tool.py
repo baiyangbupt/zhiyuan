@@ -2478,6 +2478,8 @@ def test_execute_plan_action_runs_adjustment_analysis():
     assert data["facts"]["suggestion_counts"]["add"] == 1
     assert data["facts"]["actionable_suggestion_counts"]["add"] == 0
     assert data["facts"]["has_actionable_suggestions"] is False
+    assert data["applied"] is False
+    assert data["workspace_refresh_targets"] == []
     assert "网络与新媒体" in " ".join(data["facts"]["intent_relation"]["lines"])
     assert "suggestion_counts" in data["reply_focus"]
     mock_adjust.assert_awaited_once()
@@ -2573,6 +2575,8 @@ def test_execute_plan_action_adjustment_analysis_uses_review_issue_examples_when
 
     data = json.loads(result)
     assert data["result_kind"] == "adjustment_analysis"
+    assert data["applied"] is False
+    assert data["workspace_refresh_targets"] == []
     assert data["facts"]["suggestion_counts"] == {"add": 0, "reorder": 0, "replace": 0, "remove": 0}
     assert data["facts"]["actionable_suggestion_counts"] == {"add": 0, "reorder": 0, "replace": 0, "remove": 0}
     assert data["facts"]["has_actionable_suggestions"] is False
