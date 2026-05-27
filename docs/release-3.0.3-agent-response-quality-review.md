@@ -1149,3 +1149,13 @@ P1 收口后，open-quality 的硬门禁已经全部通过，但 Intent 相关�
 - 聚焦回归：`PYTHONPATH=. ./.venv/bin/python -m pytest tests/unit/test_dialog_regression_runner.py tests/unit/test_dialog_case_evaluation_report.py tests/unit/test_chat_service_history_persistence.py::test_chat_service_readonly_closure_after_major_compare_acknowledges_without_llm tests/unit/test_chat_service_history_persistence.py::test_chat_service_no_pending_confirm_after_major_compare_uses_contextual_guard -q`，`56 passed`。
 - 宽回归：`PYTHONPATH=. ./.venv/bin/python -m pytest tests/unit/test_dialog_regression_runner.py tests/unit/test_dialog_case_evaluation_report.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_mainline_dialog_scenarios.py -q`，`212 passed`。
 - 说明：修复前生成的旧 live JSON 本身没有保存 `readonly_closure_ack` 路由字段，直接重评旧 JSON 仍会保留历史 warning；使用当前 runner 重新跑 WebSocket 或重新从本地历史解析时会带出该路由。
+
+最新 open-quality live 复跑：
+
+- runner 输出：`/private/tmp/zhiyuan_agent_303_open_quality_readonly_closure_live.json`
+- 详细评分：`/private/tmp/zhiyuan_agent_303_open_quality_readonly_closure_live_eval.json`
+- Markdown 复核报告：`/private/tmp/zhiyuan_agent_303_open_quality_readonly_closure_live_eval.md`
+- 结果：`23/23` steps 通过，`failedSteps=0`
+- 评分：`strong=23 / needs_review=0 / fail=0`，`qualityViolations={}`，`evaluationWarnings={}`
+- 延迟：中位 `2190ms`，p95 `3767ms`，最大 `3886ms`，首响中位 `124ms`，终响中位 `188ms`
+- 路由复核：`routeSummary` 中包含 `readonly_closure_ack=1`、`plan_confirmation_guard_no_pending=1`，弱收口和强确认保护已经分开观测。
