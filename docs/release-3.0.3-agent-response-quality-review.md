@@ -1159,3 +1159,14 @@ P1 收口后，open-quality 的硬门禁已经全部通过，但 Intent 相关�
 - 评分：`strong=23 / needs_review=0 / fail=0`，`qualityViolations={}`，`evaluationWarnings={}`
 - 延迟：中位 `2190ms`，p95 `3767ms`，最大 `3886ms`，首响中位 `124ms`，终响中位 `188ms`
 - 路由复核：`routeSummary` 中包含 `readonly_closure_ack=1`、`plan_confirmation_guard_no_pending=1`，弱收口和强确认保护已经分开观测。
+
+最新 effect/perf live 复跑：
+
+- runner 输出：`/private/tmp/zhiyuan_agent_303_effect_perf_readonly_closure_live.json`
+- 详细评分：`/private/tmp/zhiyuan_agent_303_effect_perf_readonly_closure_live_eval.json`
+- Markdown 复核报告：`/private/tmp/zhiyuan_agent_303_effect_perf_readonly_closure_live_eval.md`
+- 结果：`14/14` steps 通过，`failedSteps=0`
+- 评分：`strong=14 / needs_review=0 / fail=0`，`qualityViolations={}`，`evaluationWarnings={}`
+- 延迟：中位 `2222ms`，p95 `6340ms`，最大 `8133ms`，首响中位 `110ms`，终响中位 `220ms`
+- 路由复核：`plan_fast_route=6`、`direct_pending_plan_confirm=1`、`plan_query_fast_route=1`、`career_direction_fast_route=1`、`major_compare_fast_route=1`、`major_intent_fast_route=1`、`direct_pending_intent_confirm=1`、`plan_confirmation_guard_no_pending=2`。
+- 性能观察：`看看现在的方案，给我一个结构化一点的结论` 本轮耗时 `8133ms`，未触发 30s warning 门禁，但方案状态类回复仍是后续性能优化优先观察点。
