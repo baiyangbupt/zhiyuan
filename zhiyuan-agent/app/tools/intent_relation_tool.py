@@ -406,9 +406,9 @@ def build_plan_relation_analysis(
     next_action_hints: list[str] = []
 
     if intent_mode == INTENT_MODE_CONSTRAINT:
-        fit_points.append("这条要求需要重点看当前方案是否有冲突，以及候选里是否还有可替代机会。")
+        fit_points.append("这条要求确认后会作为后续查看方案和候选时的重要参考；当前还没有具体命中时，先不要把它理解为已经调整方案。")
     else:
-        fit_points.append("这条偏好适合先看当前方案里有多少承接内容，再看候选里还有哪些值得继续关注的机会。")
+        fit_points.append("这条偏好确认后会作为后续看方案和候选机会的参考；当前还没有具体命中时，先看它是否适合作为长期方向。")
 
     if career_intents:
         positive = to_career_labels(career_intents.get("positive"))
@@ -420,7 +420,7 @@ def build_plan_relation_analysis(
         if positive or negative:
             opportunity_points.insert(0, "这类想法不会立刻改动候选结果，但会影响我后面怎么帮你分析和给建议。")
     else:
-        opportunity_points.append("如果后面要继续展开，我会再结合候选机会看有没有更贴近这个方向的补充空间。")
+        opportunity_points.append("如果后面要继续展开，需要再结合当前方案和候选池里的具体志愿核对。")
 
     if analysis_stage == ANALYSIS_STAGE_INTEREST:
         if intent_mode == INTENT_MODE_CONSTRAINT:
@@ -500,6 +500,8 @@ async def enrich_plan_relation_analysis_from_state(
                 "我先帮你看看",
                 "这条要求需要重点看",
                 "这条偏好适合先看",
+                "这条要求确认后",
+                "这条偏好确认后",
             )
             base_analysis["currentPlanFit"].insert(0, f"现在这份方案里，比较贴近你这个想法的有：{'、'.join(fit_examples[:5])}")
         if conflict_items:

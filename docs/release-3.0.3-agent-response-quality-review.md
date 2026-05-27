@@ -1018,5 +1018,42 @@
 
 剩余未做：
 
-- Intent 待确认影响文本仍有“结合当前方案给你的提醒”下嵌小标题的重复感，但当前功能边界和评分已经通过；后续可单独做 Intent renderer 的展示收口。
 - 方案状态、预算风险、职业方向等长回复仍可以继续做更顾问化的表达优化，但不影响当前 3.0.3 P1 质量门禁。
+
+### 13.5 Intent 待确认回复结构收口
+
+P1 收口后，open-quality 的硬门禁已经全部通过，但 Intent 相关场景的结构均分仍低于方案/审查类回复，主要问题是：
+
+- 待确认预览把“确认前不生效/不改方案”混在分析结论一句里，用户不容易快速看到边界。
+- 影响追问回复出现“结合当前方案给你的提醒”下再嵌“现在比较贴近/需要留意/机会/下一步”的重复标题。
+- “先看看影响”场景里，待确认内容、影响分析和下一步都正确，但扫读顺序不如方案调整预览清楚。
+
+修复口径：
+
+- `render_intent_analysis_text` 将标题里的确认边界拆到独立“本次边界”小节。
+- Intent 影响 markdown 统一渲染为“影响分析”小节，内部保留“现在比较贴近的部分 / 现在需要留意的部分 / 还可以再看看的机会 / 下一步建议”等事实分组，但不再展示重复总标题。
+- `_build_pending_intent_impact_reply` 改为“本次边界 / 影响分析 / 待确认内容 / 下一步”结构。
+- 默认兜底说明在已有具体方案命中时会被清理，避免同时出现“列出具体样本”和“当前还没有具体命中”的矛盾。
+- 不改变 `planEditCache`、`PendingConfirmation`、确认写入、候选/方案联动或工作区刷新语义。
+
+典型变化：
+
+| 场景 | 调整前 | 调整后 |
+| --- | --- | --- |
+| 待确认预览 | `分析结论：...确认前不会写入...` 后接 `结合当前方案给你的提醒` | `分析结论 / 本次边界 / 影响分析 / 这次识别到的可采纳内容 / 下一步` |
+| 先不确认看影响 | 开头一句边界 + `结合当前方案给你的提醒` + 多个小标题 | `本次边界 / 影响分析 / 待确认内容 / 下一步` |
+
+最终验证：
+
+- `PYTHONPATH=. .venv/bin/python -m pytest tests/unit/test_intent_state_tool.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_dialog_case_evaluation_report.py tests/unit/test_mainline_dialog_scenarios.py -q`
+  - `287 passed`
+- open-quality live：`/private/tmp/zhiyuan_agent_303_open_quality_after_intent_structure_final.json`
+  - `23/23` steps 通过，失败 `0`
+  - 中位耗时 `2179ms`，p95 `3599ms`，最大 `3779ms`
+  - 评分：`strong=23 / needs_review=0 / fail=0`，`qualityViolations={}`
+  - `major_intent_fast_route`、`pending_intent_impact_fast_route` 均无 followup 联动，待确认边界正确保留。
+- effect/perf live：`/private/tmp/zhiyuan_agent_303_effect_perf_after_intent_structure_final.json`
+  - `14/14` steps 通过，失败 `0`
+  - 中位耗时 `2180ms`，p95 `3755ms`，最大 `4156ms`
+  - 评分：`strong=14 / needs_review=0 / fail=0`，`qualityViolations={}`
+  - 方案审查、专业组移动确认、排序预览、无 pending guard 均保持原联动/确认语义。

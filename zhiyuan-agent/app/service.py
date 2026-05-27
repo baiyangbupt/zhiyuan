@@ -65,6 +65,7 @@ from app.tools.intent_relation_tool import (
 from app.tools.major_compare_tool import compare_majors
 from app.tools.plan_query_tool import query_volunteer_plan
 from app.tools.intent_response_tool import (
+    format_intent_impact_markdown,
     parse_explore_followup_result,
     parse_intent_state_update_result,
     render_explore_followup_result,
@@ -1734,10 +1735,15 @@ async def _build_pending_intent_impact_reply(
         city_intents=city_intents,
         career_intents=career_intents,
     )
-    impact_text = _build_impact_preview_from_analysis(analysis)
+    impact_text = format_intent_impact_markdown(
+        _build_impact_preview_from_analysis(analysis),
+        section_title="影响分析",
+    )
     confirm_phrase = "确认这个要求" if intent_mode == "constraint" else "确认这个偏好"
     lines = [
-        "可以，我先按这条尚未确认的想法看影响；确认前不会写入后续参考，也不会改动当前方案。",
+        "**本次边界**",
+        "- 这条想法仍然尚未确认，只是待确认内容。",
+        "- 确认前不会写入后续参考，也不会改动当前方案。",
         "",
         impact_text,
         "",
@@ -1750,7 +1756,8 @@ async def _build_pending_intent_impact_reply(
         [
             "",
             "**下一步**",
-            f"如果要写入后续参考，直接回复“{confirm_phrase}”。如果只是继续了解，也可以继续问它和当前方案、候选机会的关系。",
+            f"- 如果要写入后续参考，直接回复“{confirm_phrase}”。",
+            "- 如果只是继续了解，也可以继续问它和当前方案、候选机会的关系。",
         ]
     )
     return _sanitize_reply_for_user(_normalize_user_facing_terms("\n".join(lines)))

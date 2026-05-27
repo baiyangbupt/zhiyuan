@@ -264,6 +264,77 @@ def format_text_sections(*sections: tuple[str, list[str] | None] | tuple[str, st
     return "\n\n".join(blocks)
 
 
+def _strip_markdown_heading(text: str) -> str:
+    stripped = str(text or "").strip()
+    if stripped.startswith("**") and stripped.endswith("**") and len(stripped) > 4:
+        return stripped[2:-2].strip()
+    return stripped
+
+
+def _intent_analysis_title_lines(title: str) -> tuple[list[str], list[str]]:
+    """Split preview title into user-visible conclusion and confirmation boundary."""
+    value = str(title or "").strip()
+    boundary_lines: list[str] = []
+    for marker, line in (
+        ("确认前不会写入后续参考，也不会直接改动当前方案。", "确认前不会写入后续参考，也不会直接改动当前方案。"),
+        ("确认前不会写入后续参考，也不会改动当前方案。", "确认前不会写入后续参考，也不会改动当前方案。"),
+        ("确认后我会按这个思路继续帮你看方案和给建议。", "确认后会作为后续看方案和给建议的参考。"),
+    ):
+        if marker in value:
+            value = value.replace(marker, "").strip()
+            boundary_lines.append(line)
+    value = value.rstrip("。")
+    conclusion_lines = [value + "。"] if value else []
+    return conclusion_lines, boundary_lines
+
+
+def _split_impact_markdown_sections(impact_text: str) -> tuple[str, list[tuple[str, list[str]]]]:
+    """Parse simple bold-heading impact markdown into a root title and leaf sections."""
+    root_title = ""
+    sections: list[tuple[str, list[str]]] = []
+    current_title = ""
+    current_lines: list[str] = []
+    for raw_line in str(impact_text or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("**") and line.endswith("**"):
+            title = _strip_markdown_heading(line)
+            if not root_title and not current_title and not current_lines:
+                root_title = title
+                continue
+            if current_title and current_lines:
+                sections.append((current_title, current_lines))
+            current_title = title
+            current_lines = []
+            continue
+        current_lines.append(line.lstrip("-").strip())
+    if current_title and current_lines:
+        sections.append((current_title, current_lines))
+    elif current_lines:
+        sections.append(("当前判断", current_lines))
+    return root_title, sections
+
+
+def format_intent_impact_markdown(impact_text: str, *, section_title: str) -> str:
+    impact_block = _clean_generic_impact_block(str(impact_text or "").strip())
+    if not impact_block:
+        return ""
+    root_title, impact_sections = _split_impact_markdown_sections(impact_block)
+    if not impact_sections:
+        return format_text_sections((section_title, impact_block))
+    lines: list[str] = [f"**{section_title}**"]
+    if root_title and root_title not in {section_title, "结合当前方案给你的提醒", "先帮你看一眼"}:
+        lines.append(f"- {root_title}")
+    for title, items in impact_sections:
+        cleaned_items = [item for item in items if item]
+        if not cleaned_items:
+            continue
+        lines.append(f"- {title}：")
+        lines.extend(f"  - {item}" for item in cleaned_items)
+    return "\n".join(lines)
+
+
 _GENERIC_IMPACT_LINES = (
     "我先帮你看看，现在这份方案里有没有贴近这个方向的内容，以及还有哪些值得继续关注的机会。",
     "我先帮你看看，这个要求和你现在的方案是否有冲突，以及还有没有合适的可选机会。",
@@ -339,17 +410,16 @@ def render_intent_analysis_text(
     items: list[dict[str, Any]] | None = None,
     existing_items: list[dict[str, Any]] | None = None,
 ) -> str:
-    sections: list[tuple[str, list[str] | None] | tuple[str, str | None]] = [
-        ("分析结论", [title]),
-    ]
+    conclusion_lines, boundary_lines = _intent_analysis_title_lines(title)
+    sections: list[tuple[str, list[str] | None] | tuple[str, str | None]] = []
+    if conclusion_lines:
+        sections.append(("分析结论", conclusion_lines))
+    if boundary_lines:
+        sections.append(("本次边界", boundary_lines))
     impact_block = str(impact_text or "").strip()
-    impact_block = _clean_generic_impact_block(impact_block)
-    leading_blocks: list[str] = []
+    impact_block = format_intent_impact_markdown(impact_block, section_title="影响分析")
     if impact_block:
-        if impact_block.startswith("**"):
-            leading_blocks.append(impact_block)
-        else:
-            sections.append(("当前判断", impact_block))
+        sections.append(("影响分析", impact_block.removeprefix("**影响分析**").strip()))
     if items:
         sections.append(("这次识别到的可采纳内容", [item.get("content", "") for item in items]))
     if existing_items:
@@ -368,11 +438,7 @@ def render_intent_analysis_text(
             "如果你确认要把这些记成后续偏好，直接回复“确认这个偏好”或明确说保留哪些内容，我再写入后续参考。",
         ]
     sections.append(("下一步", next_steps))
-    rendered = format_text_sections(*sections)
-    if not leading_blocks:
-        return rendered
-    blocks = rendered.split("\n\n")
-    return "\n\n".join([blocks[0], *leading_blocks, *blocks[1:]])
+    return format_text_sections(*sections)
 
 
 def render_intent_analysis_payload(payload_text: str) -> str:

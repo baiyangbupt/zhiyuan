@@ -492,7 +492,9 @@ async def test_analyze_intent_change_interest_stage_returns_structured_analysis(
             analysis_stage="interest",
         )
 
-    assert "先帮你看一眼" in resp
+    assert "**分析结论**" in resp
+    assert "**影响分析**" in resp
+    assert "初步判断" in resp
     assert "下一步" in resp
 
 
@@ -1791,9 +1793,25 @@ def test_render_intent_analysis_text_uses_light_markdown_sections():
 
     assert text.startswith("**分析结论**")
     assert "\n\n**当前判断**\n" not in text
-    assert "\n\n**结合当前方案给你的提醒**\n" in text
-    assert "**还可以再看看的机会**" in text
+    assert "结合当前方案给你的提醒" not in text
+    assert "\n\n**影响分析**\n" in text
+    assert "- 还可以再看看的机会：" in text
     assert "\n\n**下一步**\n" in text
+
+
+def test_render_intent_analysis_text_splits_confirmation_boundary():
+    text = render_intent_analysis_text(
+        title="好的，我先把这次你提到的要求整理一下。确认前不会写入后续参考，也不会直接改动当前方案。",
+        impact_text="**结合当前方案给你的提醒**\n\n**现在比较贴近的部分**\n- 当前方案里有会计学相关志愿",
+        analysis_stage=ANALYSIS_STAGE_CONFIRMED,
+        intent_mode=INTENT_MODE_CONSTRAINT,
+        items=[{"content": "确认后，将把护理学作为明确不考虑的内容。"}],
+    )
+
+    assert text.startswith("**分析结论**\n- 好的，我先把这次你提到的要求整理一下。")
+    assert "\n\n**本次边界**\n- 确认前不会写入后续参考，也不会直接改动当前方案。" in text
+    assert "\n\n**影响分析**\n- 现在比较贴近的部分：" in text
+    assert "结合当前方案给你的提醒" not in text
 
 
 def test_intent_candidate_messages_do_not_use_left_right_layout_wording():
@@ -1964,8 +1982,53 @@ def test_build_plan_relation_analysis_uses_neutral_fallback_copy():
     ])
     assert "我先帮你看看" not in joined
     assert "顺手看看" not in joined
-    assert "这条偏好适合先看" in joined
-    assert "如果后面要继续展开" in joined
+    assert "确认后会作为后续看方案和候选机会的参考" in joined
+    assert "需要再结合当前方案和候选池里的具体志愿核对" in joined
+
+
+@pytest.mark.asyncio
+async def test_enrich_plan_relation_analysis_removes_generic_fit_when_plan_has_match():
+    base = _build_plan_relation_analysis(INTENT_MODE_CONSTRAINT, ANALYSIS_STAGE_CONFIRMED)
+    state = {
+        "data": {
+            "orderedPlanState": {
+                "items": [
+                    {
+                        "volunteerId": "v1",
+                        "schoolName": "广州理工学院",
+                        "majorName": "会计学",
+                        "riskTier": "保",
+                    }
+                ]
+            },
+            "candidatePoolState": {
+                "items": [
+                    {
+                        "volunteerId": "v1",
+                        "schoolName": "广州理工学院",
+                        "majorName": "会计学",
+                        "riskTier": "保",
+                    }
+                ]
+            },
+        }
+    }
+
+    with patch("app.tools.intent_relation_tool.get_planning_state", new=AsyncMock(return_value=state)):
+        enriched = await _enrich_plan_relation_analysis_from_state(
+            "session-has-match",
+            base,
+            intent_mode=INTENT_MODE_CONSTRAINT,
+            major_intents={"level3": ["会计学"]},
+            school_intents=None,
+            city_intents=None,
+            career_intents=None,
+        )
+
+    joined = "\n".join(enriched["currentPlanFit"])
+    assert "广州理工学院" in joined
+    assert "会计学" in joined
+    assert "当前还没有具体命中" not in joined
 
 
 def test_public_service_alignment_does_not_match_generic_public_undergraduate():

@@ -1061,7 +1061,10 @@ def test_chat_service_pending_intent_impact_question_bypasses_main_agent(
 
     assert "尚未确认" in reply
     assert "确认前不会写入后续参考" in reply
+    assert "**本次边界**" in reply
+    assert "**影响分析**" in reply
     assert "当前方案里已有 2 个方向比较接近" in reply
+    assert "结合当前方案给你的提醒" not in reply
     assert "待确认内容" in reply
     assert "法学" in reply
     assert "财政学" in reply
