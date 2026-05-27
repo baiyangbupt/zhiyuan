@@ -809,13 +809,14 @@
 - 明确范围查询优先于意向写入：例如“孩子不想学医也不想护理，方案里有没有这种坑，先看看”同时命中方案查询和专业意向时，选择 `plan_query_fast_route`，因为用户问的是“方案里有没有”。
 - 无明确查询范围的意向影响继续走待确认意向预览：例如“医学护理这些别碰，财会还能接受，先看看影响”走 `major_intent_fast_route`。
 - 方案状态、明确排序/移动/删除/加入、显式审查等仍可走 `plan_fast_route`，但高副作用动作只生成预览和确认边界。
-- 地域偏好与录取安全取舍暂不降级成普通方案概览：例如“孩子就想去北京天津，但分数不算高，这样是不是太冒险，先别改”会被 `region_safety_tradeoff_needs_full_analysis` 挡住，进入完整 Agent，避免用薄概览回答复杂取舍。
+- 地域偏好与录取安全取舍不降级成普通方案概览：例如“孩子就想去北京天津，但分数不算高，这样是不是太冒险，先别改”会被 `region_safety_tradeoff_needs_full_analysis` 挡住普通概览薄回复，优先进入专项结构化分析；如果当前方案事实不足，再回落完整 Agent。
 
 新增回归：
 
 - `tests/unit/test_fast_route_arbitrator.py` 覆盖候选仲裁、质量门槛、地域安全取舍降级、方案状态和高副作用预览。
 - `test_release_303_fast_router_priority_matrix_prevents_cross_layer_intercepts` 改为验证统一仲裁结果，不再保护旧的顺序抢路由。
-- `test_chat_service_arbitration_quality_gate_falls_back_to_full_agent_for_region_safety_tradeoff` 验证质量门槛阻止薄快路径后会进入完整 Agent，且不会调用方案工具或局部查询工具。
+- `test_chat_service_arbitration_quality_gate_uses_structured_region_safety_tradeoff` 验证质量门槛阻止薄快路径后会进入专项结构化分析，且不会调用主 Agent、方案修改工具或局部查询工具。
+- `test_chat_service_region_safety_tradeoff_falls_back_when_plan_facts_missing` 验证当前方案事实不足时仍回落完整 Agent，不输出空事实拼出来的薄分析。
 
 这不是完全消除所有规则判断，底层各 fast router 仍有局部识别逻辑；但系统层面已经从“谁先匹配谁执行”收口到“全部候选统一评估”。后续继续优化的方向是把 candidate 的实体、范围、只读/修改边界和质量评分做得更结构化，逐步减少 router 内部的表达补丁。
 
@@ -880,6 +881,25 @@
 - 延迟：runner 中位 `2242ms`，p95 `3661ms`，最大 `3819ms`；详细评分器中位 `2242ms`，p95 `3654ms`，最大 `3819ms`。
 - 评分：`strong=23 / needs_review=0 / fail=0`，`quality violations={}`，`evaluation warnings={}`。
 - 本次复验确认重启后本地 `8107` Agent、`8080` Server、`5001` Rank 链路仍能读取真实方案/候选事实；未出现后端未启动时的空方案退化。
+
+### 13.1.1 地域偏好与录取安全取舍专项链路
+
+最新实跑发现，“地域偏好 vs 录取安全”这类开放问题虽然不能降级成普通方案概览，但完全回落到 full Agent 的延迟过高：
+
+- `北京天津想去但别最后没学上这个取舍咋看`：最终回复约 `72.300s`，首个进度约 `14.033s`。
+- `孩子就想去北京天津但分数不算高这样是不是太冒险先别改`：最终回复约 `115.594s`，首包约 `113.591s`。
+- 路由正确性：统一仲裁已把普通 `plan_fast_route` 质量门挡住，避免薄回复。
+- 回复质量：full Agent 输出能覆盖京津诉求、民办/公办取舍、保底风险、学费风险和下一步建议。
+- 问题本质：质量正确但链路过重。该场景需要结构化事实分析，不需要修改方案，也不需要生成确认卡。
+
+本期新增专项只读结构化分析路径：
+
+- 触发边界：仅在统一仲裁识别到普通方案概览会薄化该问题，并出现 `region_safety_tradeoff_needs_full_analysis` blocker 时接管。
+- 数据来源：复用当前 workspace planning state，包括 `orderedPlanState.summary/items`、`reviewState.summary/checks`、学生分数和当前偏好地域。
+- 输出要求：必须覆盖当前冲稳保分布、目标地域命中数量、目标地域代表志愿、公办/民办与学费风险、保底缺口或安全垫、非目标地域的稳妥样本，以及用户下一步可选动作。
+- 安全边界：只读分析，不写入偏好，不改方案，不刷新工作台，不生成 pending action。
+- 降级策略：若当前方案事实不足，仍回落 full Agent；不能用空事实生成“看似完整”的建议。
+- 质量目标：保持 full Agent 的信息覆盖，避免回到“方案概览式薄回复”；性能目标从分钟级降到低秒级以内。
 
 ### 13.2 代表样本展示清洗后的复核
 

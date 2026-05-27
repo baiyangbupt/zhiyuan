@@ -8,6 +8,7 @@ cross-domain user requests can fall back to the full agent.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any, Literal
 
 
@@ -17,6 +18,7 @@ FastRoutePath = Literal[
     "major_intent_fast_route",
     "major_compare_fast_route",
     "career_direction_fast_route",
+    "region_safety_tradeoff_route",
 ]
 
 
@@ -26,6 +28,7 @@ _PATH_PRIORITY: dict[FastRoutePath, int] = {
     "major_intent_fast_route": 82,
     "major_compare_fast_route": 80,
     "career_direction_fast_route": 76,
+    "region_safety_tradeoff_route": 74,
 }
 
 _PLAN_READONLY_ACTIONS = {"query_state", "review_plan"}
@@ -193,6 +196,8 @@ def _candidate(
         blockers.extend(_plan_quality_blockers(text, decision))
     if blockers:
         quality = "insufficient"
+    if path == "region_safety_tradeoff_route":
+        quality = "high"
     score = _PATH_PRIORITY[path]
     if confidence == "high":
         score += 10
@@ -226,16 +231,46 @@ def arbitrate_fast_route_candidates(
     """Select one fast-route candidate using quality-first arbitration."""
     prompt = str(text or "")
     candidates: list[FastRouteCandidate] = []
+    region_safety_candidate_added = False
 
     if _matched(plan_fast_decision):
         action_family = str(_decision_attr(plan_fast_decision, "action_family", "") or "")
+        plan_candidate = _candidate(
+            path="plan_fast_route",
+            decision=plan_fast_decision,
+            scene="plan",
+            action_family=action_family,
+            side_effect=_plan_side_effect(action_family),
+            text=prompt,
+        )
+        candidates.append(plan_candidate)
+        if "region_safety_tradeoff_needs_full_analysis" in plan_candidate.blockers:
+            candidates.append(
+                _candidate(
+                    path="region_safety_tradeoff_route",
+                    decision=plan_fast_decision,
+                    scene="explore",
+                    action_family="analyze_region_safety_tradeoff",
+                    side_effect="readonly",
+                    text=prompt,
+                )
+            )
+            region_safety_candidate_added = True
+
+    if not region_safety_candidate_added and _is_region_safety_tradeoff_without_plan_scope(prompt):
         candidates.append(
             _candidate(
-                path="plan_fast_route",
-                decision=plan_fast_decision,
-                scene="plan",
-                action_family=action_family,
-                side_effect=_plan_side_effect(action_family),
+                path="region_safety_tradeoff_route",
+                decision=SimpleNamespace(
+                    matched=True,
+                    reason="region_safety_tradeoff_structured_analysis",
+                    confidence="high",
+                    action_family="analyze_region_safety_tradeoff",
+                    user_goal=prompt,
+                ),
+                scene="explore",
+                action_family="analyze_region_safety_tradeoff",
+                side_effect="readonly",
                 text=prompt,
             )
         )

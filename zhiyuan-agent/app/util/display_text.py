@@ -78,12 +78,12 @@ def _clean_plan_sample_segment(value: str, *, max_length: int) -> str:
 def _compact_major_name(value: str) -> str:
     text = value.strip()
     text = re.split(
-        r"[，,](?=(?:要求|合作方|前三年|每年学费|报考前|只招|不招|按要求|办学地点|学费))",
+        r"[，,](?=(?:要求|合作方|前三年|每年学费|报考前|只招|不招|按要求|办学地点|学费|详细培养方式|收费标准))",
         text,
         maxsplit=1,
     )[0].strip()
     text = re.split(
-        r"[（(](?:冲|稳|保|中外合作|合作|办学地点|要求|只招|不招|学费|前三年|第一|第二|第三|第四)",
+        r"[（(](?:冲|稳|保|中外合作|合作|办学地点|要求|只招|不招|学费|前三年|第一|第二|第三|第四|详细培养方式|收费标准)",
         text,
         maxsplit=1,
     )[0].strip()

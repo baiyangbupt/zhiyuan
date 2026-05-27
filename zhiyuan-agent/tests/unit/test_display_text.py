@@ -19,3 +19,13 @@ def test_clean_plan_sample_text_preserves_position_and_tier_suffix():
 
     assert text == "青岛理工大学-建筑学(冲)第1位"
     assert "合作" not in text
+
+
+def test_brief_school_major_text_removes_admission_charter_notes():
+    text = brief_school_major_text(
+        "天津仁爱学院",
+        "金融工程(详细培养方式、收费标准等请查看院校招生章程或咨询院校)",
+    )
+
+    assert text == "天津仁爱学院-金融工程"
+    assert "招生章程" not in text

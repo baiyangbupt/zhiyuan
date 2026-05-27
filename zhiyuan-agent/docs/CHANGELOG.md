@@ -22,7 +22,7 @@
 - 专业意向口语归一化补强：`医学 / 学医 / 医药` 展开到临床医学类、口腔医学类、中医学类、护理学类、医学技术类，`财会` 展开到会计学、审计学，`别碰 / 还行 / 能接受` 纳入高置信软硬意向识别。
 - 口语化调稳问法快路径补强：`就按别太冒险的思路把这版调稳点，先给我看看会怎么动` 进入 `analyze_adjustment`，避免 full-agent 自由构造 `execute_plan_action` 参数导致模型间失败或超时；回复补充“先分析不改方案、后续具体动作才影响方案/导出顺序并需确认”的用户边界。
 - 四模型 25 case 首轮与修复小集结果已记录到 3.0.3 文档：首轮暴露意向抢路由和调稳预览超时/参数失败；修复后 `/private/tmp/model-provider-303-open-realistic-fix-probe-4model-v2.json` 中 3 个关键 case x 4 模型均 `quality_gate_pass_rate=1.0`，无 error、无断言失败、无 latency/quality warning。
-- 统一 fast route 仲裁层：新增 `fast_route_arbitrator`，ChatService 先收集 plan/query/intent/major-compare/career 五类候选，再按“质量可满足程度优先于延迟”选择最终路径；明确范围查询优先于意向写入，复杂地域安全取舍会被质量门槛挡住并回落完整 Agent，避免继续靠顺序和字符串补丁抢路由。
+- 统一 fast route 仲裁层：新增 `fast_route_arbitrator`，ChatService 先收集 plan/query/intent/major-compare/career 五类候选，再按“质量可满足程度优先于延迟”选择最终路径；明确范围查询优先于意向写入，复杂地域安全取舍会挡住普通方案概览薄回复，并由专项结构化分析链路接管或在事实不足时回落完整 Agent，避免继续靠顺序和字符串补丁抢路由。
 - 新增 `model_provider_303_quality_readonly_cases.json`，用于只读/预览类 3.0.3 场景的多模型质量/性能对照，避免确认执行修改方案状态造成 provider 间上下文污染。
 - 补充四模型对照结果记录：`Pro/moonshotai/Kimi-K2.6`、`Pro/MiniMaxAI/MiniMax-M2.5`、`deepseek-ai/DeepSeek-V4-Flash`、`Pro/zai-org/GLM-5.1` 在 10 个只读/预览 case 中均无断言失败；文档明确这批快路径 case 不能代表开放式生成质量，需要后续补 Explore / Intent 开放场景。
 - 补充开放真实 10 case 四模型对照结果：Kimi 质量通过但三专业开放对比出现约 `78.263s` 慢请求；MiniMax 使用同义关键点组重跑后 `10/10` 通过且无耗时 warning；DeepSeek 和 GLM 均 `10/10` 通过，开放 LLM 场景最大耗时分别约 `21.615s` 和 `25.354s`。
@@ -118,6 +118,7 @@
 - 3.0.3 open-quality 最终复核：本地独立 Agent `8107` 在 Agent/Server/Rank 依赖可用时复跑 `dialog_regression_303_open_quality_cases.json --clear-history --keep-response-text --assert-plan-style`，`23/23` steps 通过，失败 `0`；中位耗时约 `2283ms`，p95 约 `3794ms`，最大约 `3969ms`；离线评分 `strong=23 / needs_review=0 / fail=0`，无 `route_mismatch`、`unexpected_action` 或薄预览硬失败。当前没有触发 LLM Intent Router shadow 条件，继续使用本地候选 + 统一仲裁主路径。
 - 3.0.3 重启后 open-quality live 复验：本地 `8107/8080/5001` 链路复跑 `23/23` steps 通过，中位耗时约 `2242ms`，p95 约 `3661ms`，最大约 `3819ms`；详细评分仍为 `strong=23 / needs_review=0 / fail=0`，无质量 violation 或 warning。
 - 3.0.3 对话样例展示清洗：新增用户侧院校/专业样本文本清洗，方案前排、意向影响和职业方向代表样本不再展示 `办学地点`、合作方、前三年就读、外语成绩、学费说明等长招生备注，保留院校、专业、冲稳保和位置等核心信息；最新 open-quality live 复跑 `/private/tmp/zhiyuan_agent_303_open_quality_after_display_clean_live.json`，`23/23` steps 通过，中位耗时约 `2256ms`，p95 约 `3713ms`，评分 `strong=23 / needs_review=0 / fail=0`，长备注关键词抽检未命中。
+- 3.0.3 地域偏好与录取安全取舍专项链路：`北京天津想去但别最后没学上`、`孩子就想去北京天津但分数不算高这样是不是太冒险先别改` 这类只读问题不再回落分钟级 full Agent；统一仲裁先挡住普通方案概览薄回复，再基于当前方案、候选补充信息和审查结果生成结构化取舍分析。真实 WebSocket 聚焦复跑 `2/2` 通过，中位耗时约 `2401ms`，`llmRequests=0`，不会写偏好、改方案或生成确认卡。
 - 3.0.3 候选空结果回复收口：`候选里还有没有更稳一点的会计审计` 走 `plan_query_fast_route`，后端直查 `session=17` 中 `会计学+审计学`、单独 `会计学`、单独 `审计学` 均为 `total=0`；回复改为明确说明已按具体专业查过且当前候选池无结果，并引导放宽到专业类、查看当前方案相近志愿或做更稳调整建议。评估工具同步支持空结果等价验收，避免把真实无数据误判为薄预览或路由失败。
 - 3.0.3 case 级评估工具补充 `expectedNoAction` 和无动作确认保护评分：只读分析、候选空结果、无 pending 的“确认”不应触发方案或偏好动作，若出现动作会标记 `unexpected_action`；正确的确认保护会按边界说明和下一步出口评分。
 - 修复专业组移动/删除 apply 后重复按“第 N 个专业组”解析目标的问题；移动后方案顺序已变化，重复解析可能记录成另一个专业组。现在 `executed_actions` 和后续日志复用执行前解析出的 unitIds。

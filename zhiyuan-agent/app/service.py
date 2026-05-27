@@ -38,6 +38,7 @@ from app.resolver.major_compare_reply_renderer import (
 from app.resolver.major_intent_fast_router import resolve_major_intent_fast_route
 from app.resolver.plan_fast_router import resolve_plan_fast_route
 from app.resolver.plan_query_fast_router import resolve_plan_query_fast_route
+from app.resolver.region_safety_tradeoff_renderer import render_region_safety_tradeoff_reply
 from app.schemas.tool_inputs import MajorIntentPreviewInput
 from app.schemas.user_profile import UserProfile
 from app.schemas.ws import WSResponse
@@ -2525,11 +2526,13 @@ class ChatService:
 
         # 获取 planningState 轻量摘要
         parsed_planning_summary = None
+        planning_state_data: dict[str, Any] = {}
         try:
             planning_response = await get_planning_workspace_state(session_id)
             if planning_response.get("code") == 0:
                 planning_data = planning_response.get("data", {})
-                parsed_planning_summary = PlanningSummary.from_backend_state(planning_data)
+                planning_state_data = planning_data if isinstance(planning_data, dict) else {}
+                parsed_planning_summary = PlanningSummary.from_backend_state(planning_state_data)
                 if parsed_planning_summary:
                     logger.info(
                         "Fetched planning summary: phase=%s version=%s draft_total=%s ordered_total=%s review_risk=%s pending_actions=%s",
@@ -2907,7 +2910,93 @@ class ChatService:
                 userId=user_id,
                 routeDecision=fast_arbitration.route_decision(),
                 totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
-            )
+                )
+
+        region_safety_decision = fast_arbitration.decision_for("region_safety_tradeoff_route")
+        if region_safety_decision is not None:
+            route_decision = {
+                "source": "region_safety_tradeoff_route",
+                "matched": True,
+                "confidence": "high",
+                "route": "explore",
+                "reason": "region_safety_tradeoff_structured_analysis",
+                "arbitration": fast_arbitration.route_decision(),
+            }
+            tool_call_id = "fast-analyze-region-safety-tradeoff"
+            tool_started_at = time.monotonic()
+            try:
+                await _safe_emit_progress(on_progress, "正在结合地域偏好和录取安全做取舍分析...")
+                reply = render_region_safety_tradeoff_reply(
+                    content,
+                    planning_state_data,
+                    request_context,
+                )
+                tool_duration_ms = int((time.monotonic() - tool_started_at) * 1000)
+                if reply:
+                    reply = _sanitize_reply_for_user(_normalize_user_facing_terms(reply))
+                    reply = _append_readonly_boundary_if_requested(reply, content)
+                    new_messages = [
+                        ModelRequest(parts=[UserPromptPart(content=content)]),
+                        ModelResponse(
+                            parts=[
+                                ToolCallPart(
+                                    tool_name="analyze_region_safety_tradeoff",
+                                    args={"query": content},
+                                    tool_call_id=tool_call_id,
+                                )
+                            ],
+                            model_name="region-safety-tradeoff-route",
+                        ),
+                        ModelRequest(
+                            parts=[
+                                ToolReturnPart(
+                                    tool_name="analyze_region_safety_tradeoff",
+                                    content=reply,
+                                    tool_call_id=tool_call_id,
+                                )
+                            ]
+                        ),
+                        ModelResponse(parts=[TextPart(content=reply)], model_name="region-safety-tradeoff-route"),
+                    ]
+                    try:
+                        history_to_save = list(history or [])
+                        history_to_save.extend(new_messages)
+                        await self.history_store.save(session_id, history_to_save)
+                    except Exception:
+                        logger.exception("Failed to save region safety route history: session_id=%s", session_id)
+                    _log_conversation_turn_event(
+                        sessionId=session_id,
+                        userId=user_id,
+                        scene="explore",
+                        routingPath="region_safety_tradeoff_route",
+                        routeDecision=route_decision,
+                        pendingType=None,
+                        actionFamily="analyze_region_safety_tradeoff",
+                        resultKind="region_safety_tradeoff_analysis",
+                        modelProvider=_llm_config_value(self.llm_client, "provider"),
+                        modelName=_llm_config_value(self.llm_client, "model_name"),
+                        llmRequests=0,
+                        inputTokens=0,
+                        outputTokens=0,
+                        totalTokens=0,
+                        toolCallCount=1,
+                        totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
+                        llmDurationMs=0,
+                        toolDurationMs=tool_duration_ms,
+                        toolCalls=[
+                            {
+                                "name": "analyze_region_safety_tradeoff",
+                                "durationMs": tool_duration_ms,
+                                "success": True,
+                            }
+                        ],
+                        postProcessingApplied=["region_safety_tradeoff_renderer"],
+                        status="success",
+                        errorType=None,
+                    )
+                    return reply
+            except Exception:
+                logger.exception("Region safety tradeoff route failed; falling back to full agent: session_id=%s", session_id)
 
         fast_decision = fast_arbitration.decision_for("plan_fast_route")
         if fast_decision is not None and fast_decision.matched:

@@ -4682,20 +4682,71 @@ def test_chat_service_plan_query_fast_route_bypasses_main_agent_and_persists_tra
     assert log_kwargs["toolCallCount"] == 1
 
 
-def test_chat_service_arbitration_quality_gate_falls_back_to_full_agent_for_region_safety_tradeoff(
+def test_chat_service_arbitration_quality_gate_uses_structured_region_safety_tradeoff(
     tmp_path,
     mock_llm_client,
 ):
     db_path = tmp_path / "history.db"
     store = ChatHistoryStore(str(db_path))
-    fake_agent = _FakeAgent(["我会综合看京津地域诉求和录取安全，不直接把它当成普通方案概览。"])
+    fake_agent = _FakeAgent(["不应该调用主模型"])
     planning_state = {
         "code": 0,
         "data": {
             "phase": "reviewed",
             "orderedPlanState": {
-                "summary": {"unitTotal": 45, "targetUnitCount": 45},
-                "items": [],
+                "summary": {"unitTotal": 4, "targetUnitCount": 4, "unitTierCounts": {"冲": 2, "稳": 2, "保": 0}},
+                "items": [
+                    {
+                        "position": 1,
+                        "schoolName": "天津财经大学珠江学院",
+                        "majorName": "会计学",
+                        "provinceName": "天津",
+                        "cityName": "天津",
+                        "schoolNature": "民办",
+                        "tier": "稳",
+                        "admissionRatio": 58,
+                        "tuitionPerYear": 15000,
+                    },
+                    {
+                        "position": 2,
+                        "schoolName": "北京城市学院",
+                        "majorName": "金融学",
+                        "provinceName": "北京",
+                        "cityName": "北京",
+                        "schoolNature": "民办",
+                        "tier": "冲",
+                        "admissionRatio": 20,
+                        "tuitionPerYear": 32000,
+                    },
+                    {
+                        "position": 3,
+                        "schoolName": "新疆理工学院",
+                        "majorName": "金融学",
+                        "provinceName": "新疆",
+                        "cityName": "阿克苏",
+                        "schoolNature": "公办",
+                        "tier": "稳",
+                        "admissionRatio": 70,
+                        "tuitionPerYear": 3200,
+                    },
+                    {
+                        "position": 4,
+                        "schoolName": "喀什大学",
+                        "majorName": "城乡规划",
+                        "provinceName": "新疆",
+                        "cityName": "喀什",
+                        "schoolNature": "公办",
+                        "tier": "冲",
+                        "admissionRatio": 30,
+                        "tuitionPerYear": 3500,
+                    },
+                ],
+            },
+            "reviewState": {
+                "checks": [
+                    {"passed": False, "level": "risk", "summary": "保区占比过低"},
+                    {"passed": False, "level": "warn", "summary": "当前方案包含高收费专业"},
+                ]
             },
         },
     }
@@ -4717,16 +4768,56 @@ def test_chat_service_arbitration_quality_gate_falls_back_to_full_agent_for_regi
             )
         )
 
+    assert "想去北京、天津" in reply
+    assert "冲 2、稳 2、保 0" in reply
+    assert "天津财经大学珠江学院-会计学" in reply
+    assert "只是帮你分析取舍，没有修改方案" in reply
+    assert len(fake_agent.calls) == 0
+    plan_next_mock.assert_not_awaited()
+    query_mock.assert_not_awaited()
+    assert log_event_mock.call_args_list == []
+    assert log_turn_mock.call_args.kwargs["routingPath"] == "region_safety_tradeoff_route"
+    assert log_turn_mock.call_args.kwargs["llmRequests"] == 0
+
+
+def test_chat_service_region_safety_tradeoff_falls_back_when_plan_facts_missing(
+    tmp_path,
+    mock_llm_client,
+):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    fake_agent = _FakeAgent(["我会综合看京津地域诉求和录取安全。"])
+    planning_state = {
+        "code": 0,
+        "data": {
+            "phase": "reviewed",
+            "orderedPlanState": {
+                "summary": {"unitTotal": 4, "targetUnitCount": 4, "unitTierCounts": {"冲": 2, "稳": 2, "保": 0}},
+                "items": [],
+            },
+        },
+    }
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value=planning_state)), \
+            patch("app.service._plan_next_action_model", AsyncMock()) as plan_next_mock, \
+            patch("app.service.query_volunteer_plan", AsyncMock()) as query_mock, \
+            patch("app.service._log_conversation_turn_event") as log_turn_mock:
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(
+            service.handle_message(
+                "session-region-safety-missing-facts",
+                "user-1",
+                "孩子就想去北京天津，但分数不算高，这样是不是太冒险，先别改",
+            )
+        )
+
     assert "综合看京津地域诉求和录取安全" in reply
     assert len(fake_agent.calls) == 1
     plan_next_mock.assert_not_awaited()
     query_mock.assert_not_awaited()
-    assert any(
-        call.args
-        and call.args[0] == "fast_route_arbitration_fallback_event"
-        and call.kwargs["routeDecision"]["fallbackReason"] == "quality_gate_blocked_fast_route"
-        for call in log_event_mock.call_args_list
-    )
     assert log_turn_mock.call_args.kwargs["routingPath"] == "full_agent"
 
 

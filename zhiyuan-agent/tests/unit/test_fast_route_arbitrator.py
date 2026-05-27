@@ -40,10 +40,19 @@ def test_arbitrator_routes_unscoped_intent_impact_to_intent_preview():
 def test_arbitrator_blocks_thin_region_safety_plan_overview():
     result = _arbitrate("孩子就想去北京天津，但分数不算高，这样是不是太冒险，先别改")
 
-    assert result.selected is None
-    assert result.fallback_reason == "quality_gate_blocked_fast_route"
+    assert result.selected_path == "region_safety_tradeoff_route"
     assert result.candidates[0].path == "plan_fast_route"
     assert result.candidates[0].blockers == ["region_safety_tradeoff_needs_full_analysis"]
+    assert result.candidates[1].path == "region_safety_tradeoff_route"
+    assert result.candidates[1].action_family == "analyze_region_safety_tradeoff"
+
+
+def test_arbitrator_routes_region_safety_tradeoff_without_plan_fast_candidate():
+    result = _arbitrate("北京天津想去但别最后没学上这个取舍咋看")
+
+    assert result.selected_path == "region_safety_tradeoff_route"
+    assert result.selected.action_family == "analyze_region_safety_tradeoff"
+    assert len(result.candidates) == 1
 
 
 def test_arbitrator_allows_high_confidence_plan_status_and_mutation_preview():
