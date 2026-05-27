@@ -283,10 +283,10 @@ async def _build_move_ordered_unit_preview_summary(
         count_text = f"，组内共 {major_count} 个专业" if major_count > 0 else ""
         source_text = f"第 {source_position} 个专业组" if source_position else "当前定位到的专业组"
         target_text = f"第 {int(target_position)} 个专业组位置"
-        summary = (
-            f"会整体移动{source_text}：{unit_name}{count_text}，目标是移动到{target_text}。"
-            "这里的“第几个”按专业组顺序计算，不是按单条志愿位置计算；"
-            "执行后该组内专业会保持连续，组内专业顺序不变。"
+        summary = _format_preview_sections(
+            ("定位结果", [f"会整体移动{source_text}：{unit_name}{count_text}，目标是移动到{target_text}。"]),
+            ("位置口径", ["这里的“第几个”按专业组顺序计算，不是按单条志愿位置计算。"]),
+            ("执行影响", ["该组内专业会保持连续，组内专业顺序不变。"]),
         )
         return summary, {
             "source_unit_id": source_unit_id,
@@ -337,10 +337,10 @@ async def _build_remove_ordered_unit_preview_summary(
         count_text = f"，组内共 {major_count} 个专业" if major_count > 0 else ""
         source_text = f"第 {source_position} 个专业组" if source_position else "当前定位到的专业组"
         removed_count_text = f"{major_count} 个专业 / 1 个专业组" if major_count > 0 else "1 个专业组"
-        summary = (
-            f"会整体删除{source_text}：{unit_name}{count_text}。"
-            "这里的“第几个”按专业组顺序计算，不是按单条志愿位置计算；"
-            f"执行后该组内专业会一并移出，后续专业组前移，方案数量将减少 {removed_count_text}。"
+        summary = _format_preview_sections(
+            ("定位结果", [f"会整体删除{source_text}：{unit_name}{count_text}。"]),
+            ("位置口径", ["这里的“第几个”按专业组顺序计算，不是按单条志愿位置计算。"]),
+            ("执行影响", [f"该组内专业会一并移出，后续专业组前移，方案数量将减少 {removed_count_text}。"]),
         )
         return summary, {
             "source_unit_id": source_unit_id,
@@ -426,6 +426,25 @@ def _execution_missing_inputs(plan_model: PlanActionPlan) -> list[str]:
     if not _has_filter_selection_scope(atomic.filters):
         missing.append("replacement_scope")
     return missing
+
+
+def _format_preview_sections(*sections: tuple[str, list[str] | None] | tuple[str, str | None]) -> str:
+    blocks: list[str] = []
+    for title, content in sections:
+        if not content:
+            continue
+        display_title = f"**{title}**"
+        if isinstance(content, list):
+            lines = [str(line or "").strip() for line in content if str(line or "").strip()]
+            if not lines:
+                continue
+            blocks.append(f"{display_title}\n" + "\n".join(f"- {line}" for line in lines))
+        else:
+            text = str(content or "").strip()
+            if not text:
+                continue
+            blocks.append(f"{display_title}\n{text}")
+    return "\n\n".join(blocks)
 
 
 def _hydrate_replace_filters_from_profile(
@@ -896,6 +915,19 @@ def _append_preview_impact(summary: str, impact: str) -> str:
     return f"{summary}\n\n{impact}"
 
 
+def _format_action_preview(
+    *,
+    result_line: str,
+    impact_lines: list[str] | None = None,
+    extra_sections: list[tuple[str, list[str]]] | None = None,
+) -> str:
+    sections: list[tuple[str, list[str] | None]] = [("定位结果", [result_line])]
+    sections.extend(extra_sections or [])
+    if impact_lines:
+        sections.append(("执行影响", impact_lines))
+    return _format_preview_sections(*sections)
+
+
 async def _build_move_unit_preview_summary(
     ctx: RunContext[RequestContext],
     plan_model: PlanActionPlan,
@@ -910,12 +942,12 @@ async def _build_move_unit_preview_summary(
         current_position = item.get("position")
         source_text = _item_display_name(item)
         position_text = f"当前在第{int(current_position)}位，" if current_position is not None else ""
-        summary = f"已定位到 {source_text}，{position_text}会移动到{target_text}。"
+        result_line = f"已定位到 {source_text}，{position_text}会移动到{target_text}。"
     else:
-        summary = f"已定位到当前方案中的指定志愿，会移动到{target_text}。"
-    summary = _append_preview_impact(
-        summary,
-        "执行后会改变方案顺序和导出顺序，并让审查状态进入待重新审查。",
+        result_line = f"已定位到当前方案中的指定志愿，会移动到{target_text}。"
+    summary = _format_action_preview(
+        result_line=result_line,
+        impact_lines=["执行后会改变方案顺序和导出顺序。", "审查状态会进入待重新审查。"],
     )
     facts = {
         "resolved_apply_payload": _build_resolved_apply_payload(
@@ -938,15 +970,15 @@ async def _build_remove_units_preview_summary(
         if volunteer_id
     ]
     if not labels:
-        summary = "已定位到当前方案中的指定志愿，会从当前方案中移出。"
+        result_line = "已定位到当前方案中的指定志愿，会从当前方案中移出。"
     elif len(resolved_ids) == 1:
-        summary = f"已定位到当前方案里的 {labels[0]}，会从当前方案中移出。"
+        result_line = f"已定位到当前方案里的 {labels[0]}，会从当前方案中移出。"
     else:
         extra_text = f"等 {len(resolved_ids)} 条志愿" if len(resolved_ids) > len(labels) else f"{len(resolved_ids)} 条志愿"
-        summary = f"已定位到当前方案里的 {'、'.join(labels)}，会从当前方案中移出，共 {extra_text}。"
-    summary = _append_preview_impact(
-        summary,
-        "执行后会减少方案数量、影响导出顺序，并让审查状态进入待重新审查。",
+        result_line = f"已定位到当前方案里的 {'、'.join(labels)}，会从当前方案中移出，共 {extra_text}。"
+    summary = _format_action_preview(
+        result_line=result_line,
+        impact_lines=["执行后会减少方案数量。", "会影响导出顺序。", "审查状态会进入待重新审查。"],
     )
     facts = {
         "resolved_apply_payload": _build_resolved_apply_payload(
@@ -986,25 +1018,28 @@ async def _build_add_units_preview_summary(
         if volunteer_id
     ]
     if not labels:
-        summary = "已在候选里定位到指定志愿，会加入当前方案。"
+        result_line = "已在候选里定位到指定志愿，会加入当前方案。"
     elif len(resolved_ids) == 1:
-        summary = f"已在候选里定位到 {labels[0]}，会加入当前方案。"
+        result_line = f"已在候选里定位到 {labels[0]}，会加入当前方案。"
     else:
         extra_text = f"等 {len(resolved_ids)} 条候选志愿" if len(resolved_ids) > len(labels) else f"{len(resolved_ids)} 条候选志愿"
-        summary = f"已在候选里定位到 {'、'.join(labels)}，会加入当前方案，共 {extra_text}。"
+        result_line = f"已在候选里定位到 {'、'.join(labels)}，会加入当前方案，共 {extra_text}。"
     has_current_total = "current_total" in count_context
     current_total = count_context.get("current_total", 0)
     target_total = count_context.get("target_total")
     add_count = len(resolved_ids)
+    count_lines: list[str] = []
     if has_current_total and add_count:
         expected_total = current_total + add_count
         if target_total:
-            summary += f" 当前方案已有 {current_total}/{target_total} 个志愿，本次预计增加 {add_count} 个，约 {expected_total}/{target_total}。"
+            count_lines.append(f"当前方案已有 {current_total}/{target_total} 个志愿，本次预计增加 {add_count} 个，约 {expected_total}/{target_total}。")
         else:
-            summary += f" 当前方案已有 {current_total} 个志愿，本次预计增加 {add_count} 个。"
-    summary = _append_preview_impact(
-        summary,
-        "执行后会更新方案数量和导出内容，并让审查状态进入待重新审查。",
+            count_lines.append(f"当前方案已有 {current_total} 个志愿，本次预计增加 {add_count} 个。")
+    extra_sections = [("数量变化", count_lines)] if count_lines else []
+    summary = _format_action_preview(
+        result_line=result_line,
+        extra_sections=extra_sections,
+        impact_lines=["执行后会更新方案数量和导出内容。", "审查状态会进入待重新审查。"],
     )
     facts = {
         "resolved_apply_payload": _build_resolved_apply_payload(
@@ -1834,12 +1869,11 @@ def _enrich_sort_preview_summary(plan_model: PlanActionPlan, summary: str) -> st
     action_summary = f"会按{label}重新排序当前方案。"
     if summary and "重新排序当前方案" not in summary:
         action_summary = summary
-    sections = [
-        action_summary,
-        f"排序方式：\n- {direction}。",
-        "执行影响：\n- 会实际改变方案顺序和导出顺序。\n- 审查状态会进入待重新审查。",
-    ]
-    return "\n\n".join(section.strip() for section in sections if section.strip())
+    return _format_preview_sections(
+        ("排序动作", [action_summary]),
+        ("排序方式", [f"{direction}。"]),
+        ("执行影响", ["会实际改变方案顺序和导出顺序。", "审查状态会进入待重新审查。"]),
+    )
 
 
 async def _sort_ordered_plan(ctx: RunContext[RequestContext], plan_model: PlanActionPlan) -> tuple[bool, str]:

@@ -544,6 +544,63 @@ def test_chat_service_plan_fast_route_bypasses_main_agent_and_persists_preview(t
     assert _extract_pending_plan_action(stored)["action_family"] == "move_unit"
 
 
+def test_chat_service_plan_fast_route_analyze_stage_uses_non_mutating_progress(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    fake_agent = _FakeAgent(["should not be used"])
+    progress_hints: list[str] = []
+
+    async def collect_progress(hint: str) -> None:
+        progress_hints.append(hint)
+
+    plan_model = PlanActionPlan(
+        stage="analyze",
+        action_family="move_unit",
+        user_goal="把青岛城市学院的国际经济与贸易改到第3位",
+        requires_confirmation=True,
+        context_summary="阶段=profile_ready；方案=0/96",
+        missing_inputs=["existing_plan"],
+        atomic_actions=[
+            PlanAtomicAction(
+                action_type="move_unit",
+                volunteer_ids=["青岛城市学院的国际经济与贸易"],
+                target_position=3,
+            )
+        ],
+    )
+    execution_result = {
+        "applied": False,
+        "action_family": "move_unit",
+        "stage": "analyze",
+        "result_kind": "error",
+        "summary": "当前还没有可审查或可调整的方案。",
+        "workspace_refresh_targets": [],
+    }
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 0, "data": {"phase": "profile_ready"}})), \
+            patch("app.service._plan_next_action_model", AsyncMock(return_value=plan_model)), \
+            patch("app.service.execute_plan_action", AsyncMock(return_value=json.dumps(execution_result, ensure_ascii=False))):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(
+            service.handle_message(
+                "session-fast-plan-analyze",
+                "user-1",
+                "把青岛城市学院的国际经济与贸易改到第3位",
+                on_progress=collect_progress,
+            )
+        )
+
+    assert reply == "当前还没有可审查或可调整的方案。"
+    assert progress_hints == [
+        "正在读取当前方案并整理这次请求...",
+        "正在确认当前方案是否可以调整...",
+    ]
+    assert fake_agent.calls == []
+
+
 def test_chat_service_plan_fast_route_passes_good_school_sort_field(tmp_path, mock_llm_client):
     db_path = tmp_path / "history.db"
     store = ChatHistoryStore(str(db_path))

@@ -89,6 +89,25 @@ _GENERIC_QUERY_SUFFIXES = (
     "志愿",
     "机会",
 )
+
+
+def _format_query_sections(*sections: tuple[str, list[str] | None] | tuple[str, str | None]) -> str:
+    blocks: list[str] = []
+    for title, content in sections:
+        if not content:
+            continue
+        display_title = f"**{title}**"
+        if isinstance(content, list):
+            lines = [str(line or "").strip() for line in content if str(line or "").strip()]
+            if not lines:
+                continue
+            blocks.append(f"{display_title}\n" + "\n".join(f"- {line}" for line in lines))
+        else:
+            text = str(content or "").strip()
+            if not text:
+                continue
+            blocks.append(f"{display_title}\n{text}")
+    return "\n\n".join(blocks)
 _PROVINCES = (
     "北京", "天津", "河北", "山西", "内蒙古", "辽宁", "吉林", "黑龙江",
     "上海", "江苏", "浙江", "安徽", "福建", "江西", "山东", "河南",
@@ -706,20 +725,26 @@ def _format_candidate_result(response: dict[str, Any], keyword: str) -> str:
     items = data.get("items") or []
     total = data.get("total") or 0
     if not items:
-        return (
-            f"候选里暂时没有筛到和“{keyword}”相关的机会。"
-            "这次只是查询候选，不会直接加入方案。"
-            "可能是当前候选池里确实没有，也可能是专业名称口径比较窄。"
-            "下一步可以换成更宽的专业类、只看当前方案里的相近志愿，或让我继续按“更稳一点”的思路给调整预览。"
+        return _format_query_sections(
+            ("查询结论", [f"候选里暂时没有筛到和“{keyword}”相关的机会。"]),
+            ("本次边界", ["这次只是查询候选，不会直接加入方案。"]),
+            ("可能原因", ["当前候选池里确实没有这类机会，或专业名称口径比较窄。"]),
+            (
+                "下一步",
+                [
+                    "下一步可以换成更宽的专业类再查。",
+                    "也可以只看当前方案里的相近志愿，或让我继续按“更稳一点”的思路给调整预览。",
+                ],
+            ),
         )
     examples = items[:5]
     snippets = "；".join(_build_candidate_item_snippet(item) for item in examples)
-    return (
-        f"候选里共命中了 {total} 条和“{keyword}”相关的机会。"
-        f"关键分布：{_format_tier_summary(items)}。\n"
-        f"下面仅展示前 {len(examples)} 条示例：{snippets}\n"
-        f"这些例子分别对应：{'；'.join(_format_example_reason(item) for item in examples)}。\n"
-        "下一步可以继续缩小条件，比如只看更稳、录取率更高，或判断是否值得加入当前方案。"
+    return _format_query_sections(
+        ("查询结论", [f"候选里共命中了 {total} 条和“{keyword}”相关的机会。"]),
+        ("关键分布", [_format_tier_summary(items)]),
+        ("代表样本", [f"下面仅展示前 {len(examples)} 条示例：{snippets}"]),
+        ("样本说明", [reason for reason in (_format_example_reason(item) for item in examples) if reason]),
+        ("下一步", ["下一步可以继续缩小条件，比如只看更稳、录取率更高，或判断是否值得加入当前方案。"]),
     )
 
 
@@ -775,16 +800,17 @@ def _format_structured_plan_result(
     if matched:
         examples = matched[:5]
         snippets = "；".join(_build_plan_item_snippet(item) for item in examples)
-        return (
-            f"{title}里共命中了 {len(matched)} 条符合“{description}”的志愿。"
-            f"关键分布：{_format_tier_summary(matched)}。\n"
-            f"下面仅展示前 {len(examples)} 条示例：{snippets}\n"
-            f"这些例子分别对应：{'；'.join(_format_example_reason(item) for item in examples)}。\n"
-            "下一步如果要处理这些志愿，可以告诉我保留哪几个、移动到哪里，或只看更稳/录取率更高的。"
+        return _format_query_sections(
+            ("查询结论", [f"{title}里共命中了 {len(matched)} 条符合“{description}”的志愿。"]),
+            ("关键分布", [_format_tier_summary(matched)]),
+            ("代表样本", [f"下面仅展示前 {len(examples)} 条示例：{snippets}"]),
+            ("样本说明", [reason for reason in (_format_example_reason(item) for item in examples) if reason]),
+            ("下一步", ["下一步如果要处理这些志愿，可以告诉我保留哪几个、移动到哪里，或只看更稳/录取率更高的。"]),
         )
-    return (
-        f"{title}里暂时没有命中符合“{description}”的志愿。"
-        "如果这是明确不想要的方向，当前方案暂时没有看到直接冲突；后续也可以再让我按更具体的学校或专业名复查。"
+    return _format_query_sections(
+        ("查询结论", [f"{title}里暂时没有命中符合“{description}”的志愿。"]),
+        ("当前判断", ["如果这是明确不想要的方向，当前方案暂时没有看到直接冲突。"]),
+        ("下一步", ["后续也可以再让我按更具体的学校或专业名复查。"]),
     )
 
 
@@ -793,20 +819,32 @@ def _format_structured_candidate_result(response: dict[str, Any], description: s
     items = data.get("items") or []
     total = data.get("total") or 0
     if not items:
-        return (
-            f"候选里暂时没有筛到符合“{description}”的机会。"
-            "这次只是查询候选，不会直接加入方案。"
-            "我已按这几个具体专业分别查过，当前候选池没有返回可用结果；这通常说明该会话的可选范围里暂时没有这些具体专业，或专业名称口径需要放宽到专业类。"
-            "下一步可以换成更宽的专业类、只看当前方案里的相近志愿，或让我继续按“更稳一点”的思路做调整建议。"
+        return _format_query_sections(
+            ("查询结论", [f"候选里暂时没有筛到符合“{description}”的机会。"]),
+            ("本次边界", ["这次只是查询候选，不会直接加入方案。"]),
+            (
+                "可能原因",
+                [
+                    "我已按这几个具体专业分别查过，当前候选池没有返回可用结果。",
+                    "这通常说明该会话的可选范围里暂时没有这些具体专业，或专业名称口径需要放宽到专业类。",
+                ],
+            ),
+            (
+                "下一步",
+                [
+                    "下一步可以换成更宽的专业类再查。",
+                    "也可以只看当前方案里的相近志愿，或让我继续按“更稳一点”的思路做调整建议。",
+                ],
+            ),
         )
     examples = items[:5]
     snippets = "；".join(_build_candidate_item_snippet(item) for item in examples)
-    return (
-        f"候选里共命中了 {total} 条符合“{description}”的机会。"
-        f"关键分布：{_format_tier_summary(items)}。\n"
-        f"下面仅展示前 {len(examples)} 条示例：{snippets}\n"
-        f"这些例子分别对应：{'；'.join(_format_example_reason(item) for item in examples)}。\n"
-        "下一步可以继续缩小条件，比如只看更稳、录取率更高，或判断是否值得加入当前方案。"
+    return _format_query_sections(
+        ("查询结论", [f"候选里共命中了 {total} 条符合“{description}”的机会。"]),
+        ("关键分布", [_format_tier_summary(items)]),
+        ("代表样本", [f"下面仅展示前 {len(examples)} 条示例：{snippets}"]),
+        ("样本说明", [reason for reason in (_format_example_reason(item) for item in examples) if reason]),
+        ("下一步", ["下一步可以继续缩小条件，比如只看更稳、录取率更高，或判断是否值得加入当前方案。"]),
     )
 
 

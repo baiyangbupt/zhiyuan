@@ -202,7 +202,9 @@ def _plan_fast_route_execute_progress_hint(action_family: str | None, stage: str
     if family in mutation_families:
         if normalized_stage == "preview":
             return "正在生成这次调整的影响预览..."
-        return "正在按你的确认更新方案..."
+        if normalized_stage == "apply":
+            return "正在按你的确认更新方案..."
+        return "正在确认当前方案是否可以调整..."
     if family in {"run_review", "review_plan"}:
         return "正在检查当前方案的风险点..."
     if family in {"generate_plan", "regenerate_order", "apply_compensation"}:
