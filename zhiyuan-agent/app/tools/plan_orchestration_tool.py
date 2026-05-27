@@ -127,6 +127,47 @@ def _goal_requests_replacement(text: str) -> bool:
     return any(token in compact for token in ("换成", "替换成", "补回", "补上", "补入", "保持", "补齐", "凑满"))
 
 
+def _goal_requests_review_issue_mutation(text: str) -> bool:
+    compact = str(text or "").strip()
+    readonly_markers = (
+        "先别动",
+        "先别改",
+        "不要动",
+        "不要改",
+        "不改",
+        "只看",
+        "只分析",
+        "先分析",
+        "看下风险",
+        "看看风险",
+        "风险",
+        "预算",
+        "是不是",
+        "是否",
+        "有点多",
+        "多不多",
+        "大白话",
+    )
+    action_markers = (
+        "处理",
+        "解决",
+        "移出",
+        "删除",
+        "删掉",
+        "去掉",
+        "替换",
+        "换成",
+        "补回",
+        "补上",
+        "补入",
+        "执行",
+        "确认",
+    )
+    return any(token in compact for token in action_markers) and not any(
+        token in compact for token in readonly_markers
+    )
+
+
 def _goal_explicitly_requests_reorder(text: str) -> bool:
     compact = str(text or "").strip()
     return any(
@@ -457,10 +498,13 @@ async def _plan_next_action_model(
         scope_kind = str(matched_review_issue.get("scope_kind") or "").strip()
         default_action_family = str(matched_review_issue.get("default_action_family") or "").strip()
         replacement_requested = _goal_requests_replacement(user_goal) or _has_selection_scope(base_filters)
+        mutation_requested = _goal_requests_review_issue_mutation(user_goal)
         if scope_kind == "item_removal":
-            if action_family == "replace_units" and not replacement_requested:
+            if action_family in {"query_state", "review_plan", "analyze_adjustment", "preview_compensation"} and not mutation_requested:
+                review_issue_target = None
+            elif action_family == "replace_units" and not replacement_requested:
                 action_family = "remove_units"
-            elif action_family not in {"remove_units", "replace_units"} and default_action_family:
+            elif action_family not in {"remove_units", "replace_units"} and default_action_family and mutation_requested:
                 action_family = default_action_family  # type: ignore[assignment]
         elif scope_kind == "structural":
             if action_family in {"add_units", "remove_units", "move_unit", "pin_unit", "unpin_unit", "replace_units"} and default_action_family:

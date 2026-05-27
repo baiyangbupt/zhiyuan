@@ -1955,6 +1955,19 @@ def test_render_intent_analysis_text_drops_generic_impact_placeholders():
     assert "网络与新媒体" in text
 
 
+def test_build_plan_relation_analysis_uses_neutral_fallback_copy():
+    analysis = _build_plan_relation_analysis(INTENT_MODE_PREFERENCE, ANALYSIS_STAGE_CONFIRMED)
+
+    joined = "\n".join([
+        *(analysis["currentPlanFit"]),
+        *(analysis["candidateOpportunity"]),
+    ])
+    assert "我先帮你看看" not in joined
+    assert "顺手看看" not in joined
+    assert "这条偏好适合先看" in joined
+    assert "如果后面要继续展开" in joined
+
+
 def test_public_service_alignment_does_not_match_generic_public_undergraduate():
     item = {
         "schoolNature": "公办",
@@ -2120,8 +2133,8 @@ async def test_analyze_intent_change_normalizes_major_add_alias_and_matches_nest
     payload = json.loads(payload_text)
     assert payload["status"] == "ready"
     assert payload["items"][0]["value"] == {"major_intents": {"level3": ["网络与新媒体"]}}
-    assert "上海建桥学院(01)-网络与新媒体" in payload["impactText"]
-    assert "福州大学至诚学院(第001组)-网络与新媒体" in payload["impactText"]
+    assert "上海建桥学院-网络与新媒体" in payload["impactText"]
+    assert "福州大学至诚学院-网络与新媒体" in payload["impactText"]
     assert "暂时没看到" not in payload["impactText"]
     assert "2 个" in payload["impactText"]
 
@@ -2299,7 +2312,7 @@ async def test_analyze_intent_change_normalizes_cross_border_ecommerce_alias_and
     assert payload["items"][0]["value"] == {"major_intents": {"level3": ["跨境电子商务"]}}
     assert cached["major_intents"] == {"level3": ["跨境电子商务"]}
     assert "跨境电商" not in payload["impactText"]
-    assert "广州工商学院(201)-跨境电子商务" in payload["impactText"]
+    assert "广州工商学院-跨境电子商务" in payload["impactText"]
 
 
 @pytest.mark.asyncio
@@ -2416,6 +2429,60 @@ async def test_analyze_intent_change_normalizes_accounting_alias_from_user_dialo
     assert cached["major_intents"] == {"negative_level3": ["会计学"]}
     assert "南宁学院第01组-会计学" in payload["impactText"]
     assert "广州商学院第01组-会计学" in payload["impactText"]
+
+
+@pytest.mark.asyncio
+async def test_enrich_plan_relation_analysis_trims_long_admission_notes_in_examples():
+    base_analysis = _build_plan_relation_analysis(INTENT_MODE_PREFERENCE)
+    planning_state = {
+        "data": {
+            "orderedPlanState": {
+                "items": [
+                    {
+                        "volunteerId": "fit-1",
+                        "schoolName": "广州理工学院第102组(普通组)",
+                        "majorName": "会计学(办学地点：第一至二学年惠州校区，第三至四学年广州校区)",
+                        "provinceName": "广东",
+                        "tier": "保",
+                    }
+                ]
+            },
+            "candidatePoolState": {
+                "items": [
+                    {
+                        "volunteerId": "fit-1",
+                        "schoolName": "广州理工学院第102组(普通组)",
+                        "majorName": "会计学(办学地点：第一至二学年惠州校区，第三至四学年广州校区)",
+                        "provinceName": "广东",
+                        "tier": "保",
+                    },
+                    {
+                        "volunteerId": "opp-1",
+                        "schoolName": "内蒙古鸿德文理学院第101组(普通组)",
+                        "majorName": "会计学(办学地点：塔利校区)",
+                        "provinceName": "内蒙古",
+                        "tier": "保",
+                    },
+                ]
+            },
+        }
+    }
+
+    with patch("app.tools.intent_relation_tool.get_planning_state", new=AsyncMock(return_value=planning_state)):
+        analysis = await _enrich_plan_relation_analysis_from_state(
+            "57",
+            base_analysis,
+            intent_mode=INTENT_MODE_PREFERENCE,
+            major_intents={"level3": ["会计学"]},
+            school_intents=None,
+            city_intents=None,
+        )
+
+    impact_text = "\n".join(analysis["currentPlanFit"] + analysis["candidateOpportunity"])
+    assert "广州理工学院第102组-会计学" in impact_text
+    assert "内蒙古鸿德文理学院第101组-会计学" in impact_text
+    assert "办学地点" not in impact_text
+    assert "惠州校区" not in impact_text
 
 
 @pytest.mark.asyncio

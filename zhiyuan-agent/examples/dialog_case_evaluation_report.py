@@ -31,8 +31,17 @@ _STRUCTURE_TOKENS = ("\n-", "\n1.", "\n2.", "：\n", "###", "##")
 _BOUNDARY_TOKENS = ("待确认", "确认后", "不会改", "不改方案", "只读", "先预览")
 _RISK_TOKENS = ("风险", "提醒", "边界", "结论", "影响", "缺口")
 _PREVIEW_HINT_TOKENS = ("预览", "示例", "代表样本", "下面仅展示", "前列", "共命中", "概况", "典型涉及")
+_EMPTY_RESULT_TOKENS = ("暂时没有筛到", "暂时没有命中", "没有返回可用结果", "当前候选池没有返回")
 _PENDING_CONTEXT_TOKENS = ("待确认", "确认前不会正式生效", "确认后才会", "需要你确认后")
 _PENDING_CONDITIONAL_TOKENS = ("确认后", "如果确认", "如果你确认", "确认要", "确认才")
+_READONLY_REFERENCE_BOUNDARY_TOKENS = (
+    "没有待确认",
+    "不会改动方案",
+    "不会改动当前方案",
+    "只做专业取舍分析",
+    "只是查询",
+    "只是方向分析",
+)
 _UNQUALIFIED_PENDING_EFFECTIVE_PATTERNS = (
     re.compile(r"把.+?(作为|记成|设为|更新为)"),
     re.compile(r"后(面|续).+?(都会按这个要求|会按这个要求|按这个要求来)"),
@@ -151,6 +160,7 @@ _ASSERTION_FIELDS = (
 
 _QUALITY_EXPECTATION_FIELDS = (
     "expectedKeyPoints",
+    "expectedKeyPointGroups",
     "qualityFocus",
     "manualReviewFocus",
     "forbiddenPatterns",
@@ -302,7 +312,12 @@ def _load_case_definitions(path: str) -> dict[str, dict[str, Any]]:
                 metadata["latencyBudget"] = latency_budget
             prompt_text = _normalize_text(prompt.get("prompt"))
             expected_route = _normalize_text(prompt.get("expectedRoutingPath")) or _expected_route_from_metadata(step_coverage, prompt_text)
-            expected_action = _normalize_text(prompt.get("expectedActionFamily")) or _expected_action_from_metadata(step_coverage, prompt_text)
+            expected_no_action = bool(prompt.get("expectedNoAction"))
+            if expected_no_action:
+                metadata["expectedNoAction"] = True
+            expected_action = "" if expected_no_action else (
+                _normalize_text(prompt.get("expectedActionFamily")) or _expected_action_from_metadata(step_coverage, prompt_text)
+            )
             if expected_route:
                 metadata["expectedRoutingPath"] = expected_route
             if expected_action:
@@ -345,6 +360,7 @@ def _merge_record_metadata(record: dict[str, Any], metadata: dict[str, Any] | No
         "assertPlanStyle",
         "expectedRoutingPath",
         "expectedActionFamily",
+        "expectedNoAction",
         "assertions",
         "qualityExpectations",
     ):
@@ -455,8 +471,13 @@ def _is_preview_or_example_case(record: dict[str, Any], text: str) -> bool:
     case_name = _normalize_text(record.get("case")).lower()
     if "intent" in case_name:
         return False
+    coverage = record.get("coverage")
+    if isinstance(coverage, list) and "career_short_prompt" in {str(item) for item in coverage}:
+        return False
     prompt = _normalize_text(record.get("prompt"))
     if prompt in {"确认", "确认执行", "确认这个偏好", "确认这个要求"}:
+        return False
+    if _contains_any(text, _EMPTY_RESULT_TOKENS):
         return False
     combined = f"{prompt}\n{text}"
     return _contains_any(combined, _PREVIEW_HINT_TOKENS)
@@ -470,11 +491,22 @@ def _has_unqualified_pending_effective_wording(text: str) -> bool:
         line = raw_line.strip(" -\t")
         if not line:
             continue
+        if _contains_any(line, _READONLY_REFERENCE_BOUNDARY_TOKENS):
+            continue
         if _contains_any(line, _PENDING_CONDITIONAL_TOKENS):
             continue
         if any(pattern.search(line) for pattern in _UNQUALIFIED_PENDING_EFFECTIVE_PATTERNS):
             return True
     return False
+
+
+def _is_no_action_ack_case(record: dict[str, Any], text: str) -> bool:
+    if not record.get("expectedNoAction"):
+        return False
+    return (
+        _contains_any(text, ("没有待确认", "没有待执行", "没有上一轮待确认"))
+        and _contains_any(text, ("不会改动方案", "不会改动当前方案", "不会改动"))
+    )
 
 
 def _term_present(text: str, term: str) -> bool:
@@ -523,6 +555,13 @@ def _expected_keypoint_warnings(record: dict[str, Any], text: str) -> list[str]:
     for item in _normalize_text_list(quality_expectations.get("expectedKeyPoints")):
         if not _keypoint_satisfied(text, item):
             warnings.append(f"missing_expected_keypoint:{item}")
+    for group in quality_expectations.get("expectedKeyPointGroups") or []:
+        if not isinstance(group, dict):
+            continue
+        label = _normalize_text(group.get("label"))
+        alternatives = _normalize_text_list(group.get("any"))
+        if alternatives and not any(_keypoint_satisfied(text, item) for item in alternatives):
+            warnings.append(f"missing_expected_keypoint_group:{label or '/'.join(alternatives[:3])}")
     return warnings
 
 
@@ -580,6 +619,8 @@ def _quality_violations(record: dict[str, Any], text: str) -> list[str]:
     actual_actions = _extract_action_families(record)
     if expected_action and actual_actions and not _action_observed(record, expected_action):
         violations.append(f"action_family_mismatch:{expected_action}!={','.join(actual_actions[:4])}")
+    if record.get("expectedNoAction") and actual_actions:
+        violations.append(f"unexpected_action:{','.join(actual_actions[:4])}")
 
     return violations
 
@@ -623,6 +664,7 @@ def _route_score(record: dict[str, Any]) -> int:
     actual_route = _extract_routing_path(record)
     expected_action = _normalize_text(record.get("expectedActionFamily"))
     actual_actions = _extract_action_families(record)
+    expected_no_action = bool(record.get("expectedNoAction"))
 
     score = 4
     if expected_route:
@@ -642,6 +684,11 @@ def _route_score(record: dict[str, Any]) -> int:
             score -= 2
         else:
             score -= 1
+    elif expected_no_action:
+        if actual_actions:
+            score -= 2
+        else:
+            score += 1
     elif actual_actions:
         score += 1
 
@@ -698,6 +745,8 @@ def _score_case(record: dict[str, Any]) -> dict[str, Any]:
     if thinking:
         score["completeness"] += 1
     if _contains_any(text, _RISK_TOKENS):
+        score["completeness"] += 1
+    if _is_no_action_ack_case(record, text):
         score["completeness"] += 1
     if _is_preview_or_example_case(record, text):
         if len(coverage) >= 2:
@@ -952,6 +1001,7 @@ def _build_case_report(
         "coverage": metadata.get("coverage") or [],
         "expectedRoutingPath": metadata.get("expectedRoutingPath"),
         "expectedActionFamily": metadata.get("expectedActionFamily"),
+        "expectedNoAction": bool(metadata.get("expectedNoAction")),
         "latencyBudget": metadata.get("latencyBudget") or {},
         "assertions": metadata.get("assertions") or {},
         "qualityExpectations": metadata.get("qualityExpectations") or {},
@@ -1325,7 +1375,7 @@ def _render_case_detail(item: dict[str, Any]) -> list[str]:
         f"- flow: {_format_list_for_markdown(item.get('flow'))}",
         f"- coverage: {_format_list_for_markdown(item.get('coverage'))}",
         f"- sessionId: {_normalize_text(item.get('sessionId')) or '-'}",
-        f"- expected route/action: {_normalize_text(item.get('expectedRoutingPath')) or '-'} / {_normalize_text(item.get('expectedActionFamily')) or '-'}",
+        f"- expected route/action: {_normalize_text(item.get('expectedRoutingPath')) or '-'} / {_normalize_text(item.get('expectedActionFamily')) or ('无动作' if item.get('expectedNoAction') else '-')}",
         f"- latency budget: {_format_list_for_markdown(item.get('latencyBudget'))}",
         f"- current latency: elapsed={current.get('elapsedMs')}ms, first={current.get('firstMessageMs')}ms, final={current.get('finalMessageMs')}ms",
         f"- score: {_format_score_for_markdown(score)}",

@@ -8,7 +8,7 @@ to the main ChatAgent.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from app.data.major_data import associate_level3_labels, bachelor_level3_labels
@@ -24,12 +24,19 @@ _COMPARE_TOKENS = (
     "哪个好",
     "哪个更稳",
     "哪个更推荐",
+    "哪个更不容易",
+    "不容易踩坑",
+    "少踩坑",
+    "别踩坑",
+    "踩坑",
     "更适合",
     "更稳妥",
+    "更扛得住",
     "怎么选",
     "对比",
     "比较",
     "差异",
+    "比哪个",
 )
 
 _COLLOQUIAL_COMPARE_TOKENS = (
@@ -37,6 +44,9 @@ _COLLOQUIAL_COMPARE_TOKENS = (
     "咋样",
     "怎么样",
     "如何",
+    "太卷",
+    "卷",
+    "扛得住",
     "不太行",
     "不行",
     "一般",
@@ -70,9 +80,12 @@ _READONLY_CANCEL_TOKENS = (
     "先只分析",
     "只分析",
     "先分析",
+    "先说说",
     "不要记偏好",
     "不记偏好",
     "别记偏好",
+    "先别记",
+    "别记",
     "不要记下来",
     "不记下来",
     "别记下来",
@@ -88,6 +101,7 @@ class MajorCompareFastRouteDecision:
     matched: bool = False
     major_name1: str = ""
     major_name2: str = ""
+    major_names: list[str] = field(default_factory=list)
     reason: str = ""
     confidence: str = ""
 
@@ -107,7 +121,7 @@ class MajorCompareFastRouteDecision:
             "route": "explore",
             "actionFamily": "compare_majors",
             "reason": self.reason,
-            "majorNames": [self.major_name1, self.major_name2],
+            "majorNames": list(self.major_names or [self.major_name1, self.major_name2]),
         }
 
 
@@ -158,6 +172,13 @@ def _surface_map(labels: set[str]) -> dict[str, str]:
 _HIGH_CONFIDENCE_MAJOR_ABBREVIATIONS: dict[str, str] = {
     "法": "法学",
     "财": "财政学",
+    "财政": "财政学",
+    "财会": "会计学",
+    "会计": "会计学",
+    "审计": "审计学",
+    "计科": "计算机科学与技术",
+    "软工": "软件工程",
+    "软件": "软件工程",
     "新媒体": "网络与新媒体",
     "跨电": "跨境电子商务",
     "跨境电商": "跨境电子商务",
@@ -218,12 +239,13 @@ def resolve_major_compare_fast_route(
     majors = _matched_level3_majors(compact_text, _level3_labels_for_batch(batch))
     if not _has_compare_semantics(compact_text, majors):
         return MajorCompareFastRouteDecision(reason="missing_compare_semantics")
-    if len(majors) != 2:
+    if len(majors) not in {2, 3}:
         return MajorCompareFastRouteDecision(reason=f"matched_major_count_{len(majors)}")
     return MajorCompareFastRouteDecision(
         matched=True,
         major_name1=majors[0],
-        major_name2=majors[1],
-        reason="exact_two_level3_major_compare",
+        major_name2=majors[1] if len(majors) > 1 else "",
+        major_names=majors,
+        reason="exact_level3_major_compare" if len(majors) == 2 else "exact_three_level3_major_compare",
         confidence="high",
     )

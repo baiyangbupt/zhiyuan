@@ -69,6 +69,9 @@
 - `verdict`：按硬门禁和维度得分给出 `fail / needs_review / strong`，便于后续批量筛出薄回复。
 - 确认保护类回复不套用预览分布门禁：用户只回复“确认/确认这个偏好/确认这个要求”时，如果系统是在说明没有待确认动作或执行确认结果，不要求额外覆盖冲稳保、院校层次、专业热度等分布，避免把正确的确认边界保护误判为薄预览。
 - `expectedKeyPoints / forbiddenPatterns`：case 定义里的业务期望点进入自动评分。`expectedKeyPoints` 用来描述该回复必须覆盖的业务含义，工具会尽量按文本短语检查；`forbiddenPatterns` 用来补充该 case 特有的禁用表达。这样可以避免回复格式完整但漏掉“导出顺序影响”“审查待重新看”“确认前不生效”等业务要点时仍被评成 strong。
+- `expectedKeyPointGroups`：用于真实用户表达和多模型回复的语义等价检查。比如用户说“财会”，模型回复可能写“会计 / 审计”；用户说“别踩坑”，模型可能写“风险 / 坑点”。这类场景不适合用单个固定字符串卡死，应该用 `{"label": "...", "any": ["...", "..."]}` 表达任一命中即可。
+- `expectedNoAction`：用于无 pending 确认保护、只读追问、空结果查询等不应触发工作台动作的 case。评估器会把实际 tool/action 视为 `unexpected_action`，同时对“没有待确认动作、不会修改方案、可继续查看/调整/确认具体要求”等确认保护说明做完整度评分，不再把正确的短确认保护误判成薄预览。
+- `minTextLengthWarn`：只作为“回复可能过薄”的 warning，不作为硬失败。它用于多模型对比中发现“速度很快但信息量明显不足”的候选，不能替代业务关键点、禁用表达、确认边界和人工细评。
 - `routingPath`：`dialog_regression_runner.py` 会从历史中的 fast-route `model_name` 或 `fast-/direct-` tool call id 推断本轮路由，并写入 `turnObservability.routingPath`。完整 Agent 调用同名工具时不会仅凭工具名推断快路径，避免把真实路由误标。
 
 ## 3. 评分框架
@@ -165,6 +168,8 @@
 
 ### 3.5 延迟评分
 
+本版本明确采用“回复质量优先于延迟”的排序原则。延迟优化只能在不牺牲正确性、信息量、边界说明和决策支持的前提下做；如果快路径和完整语义链路之间存在不确定性，应优先选择能保证回复质量的路径，再通过进度提示、流式提示和后续缓存降低等待感。
+
 延迟不能只看总耗时，要拆开看：
 
 | 指标 | 说明 |
@@ -178,10 +183,39 @@
 
 建议门槛：
 
-- 普通 fast route：总耗时尽量在 3-6 秒内。
+- 普通 fast route：总耗时尽量在 3-6 秒内，但前提是回复必须达到该场景的质量门槛。
 - 只读复杂分析：超过 10 秒必须有用户可理解的进度提示。
 - 单轮超过 case 的 `maxElapsedSeconds` 直接失败。
-- 单轮超过 `warnElapsedSeconds` 进入复核，结合回复质量判断是否接受。
+- 单轮超过 `warnElapsedSeconds` 进入复核，结合回复质量判断是否接受；质量充分、信息完整的慢回复可以接受，快但漏掉关键判断的回复不能接受。
+
+### 3.6 质量优先的路由评分
+
+`fast route` 不能继续作为独立关键词抢路由。本轮已落地统一仲裁层：各 fast router 先产生候选，ChatService 再用 `fast_route_arbitrator` 选择最终路径或降级完整 Agent。后续路由评估按以下顺序判断：
+
+1. 先判断用户语义是否足够明确：场景范围、动作类型、对象实体、是否只读、是否会修改方案。
+2. 再判断当前路径是否能输出足够高质量的回复：能否覆盖关键事实、分布信息、影响边界和下一步建议。
+3. 最后才看延迟和成本：在质量相近时选择更快、更便宜的路径。
+
+因此，快路径只应处理两类场景：
+
+- 高置信、低歧义、结构化事实足够的场景，例如方案数量概览、明确排序预览、显式审查、无 pending 确认保护。
+- 高副作用但语义明确的场景，只生成预览和确认边界，不直接执行。
+
+以下场景不应被关键词快路径直接接管：
+
+- 用户表达混合了地域、风险、专业、家庭约束等多重取舍，需要综合判断。
+- 用户使用简称、口语、弱指令，且对象或动作不够明确。
+- 快路径只能给出薄回复，但完整 Agent 能给出更有价值的分析。
+- 路由之间存在冲突，例如同一句同时像“方案查询”和“意向调整影响”。
+
+这类情况应进入统一语义路由/完整 Agent，或先发起澄清；如果耗时变长，需要用 thinking/progress 提示告诉用户系统正在读取方案、比较候选、生成影响分析，而不是为了速度返回信息不足的结论。
+
+当前仲裁层的验收重点：
+
+- 所有 fast-route 候选必须记录 `scene / actionFamily / sideEffect / quality / blockers`，便于后续分析路由错位。
+- case 评估要看 `routeDecision.arbitration.candidates`，不能只看最终 `routingPath`。
+- 如果 `fallbackReason=quality_gate_blocked_fast_route`，说明系统主动放弃了更快但信息不足的路径；这类 case 不应判为性能失败，应继续复核完整 Agent 回复质量。
+- 新增路由混淆矩阵时，要同时覆盖“应该快”和“不应该快”两类样例。
 
 ## 4. Case 级评估流程
 
@@ -198,6 +232,9 @@ case 需要覆盖：
 - 无 pending 的确认保护
 - 降级 / 无数据 / 脏历史保护
 - 真实用户口语化输入：短句、省略、简称、错别字和低信息密度表达，例如“这方案咋样”“法和财哪个好”“青城那个多不多”“按好学校排下看看”。这类 case 单独维护，避免只用测试人员式标准问法代表真实效果。
+- 开放式真实问法：家长视角、风险焦虑、专业压力、候选机会和只读追问，例如“这版是不是太冲了，能不能给我说人话”“家里就想让孩子以后稳一点进体制”“法学会不会太卷”“候选里还有没有更稳一点的会计审计”。这类 case 不要求全部走快路径，目标是评估模型组织能力和真实顾问感。
+- 意向影响问法：用户可能不会说“记录偏好”，而是说“医学护理这些别碰，财会还能接受，先看看影响”。这类 case 要检查是否进入待确认意向预览，而不是被方案局部查询误抢路由。
+- 方案调整边界问法：用户可能说“就按别太冒险的思路把这版调稳点，先给我看看会怎么动”。这类 case 要检查是否说明影响、是否确认后才执行，以及是否允许必要的工作台刷新，而不是一律要求无 follow-up。
 
 每个 case 定义应尽量补齐：
 
@@ -206,6 +243,8 @@ case 需要覆盖：
 - `warnElapsedSeconds / maxElapsedSeconds`：该步骤的耗时预算。
 - `expectedRoutingPath / expectedActionFamily`：必要时显式指定链路期望。
 - `expectedKeyPoints`：该步骤回复必须覆盖的业务点。建议写成用户语言或可被回复直接命中的短语，例如“导出顺序”“待重新审查”“确认前不会写入后续参考”。
+- `expectedKeyPointGroups`：该步骤允许多个等价表达命中同一业务点时使用，例如“财会”可由“会计 / 审计”承接，“别踩坑”可由“风险 / 需要留意”承接。
+- `expectedNoAction`：该步骤明确不应触发方案调整、候选加入、刷新工作台或写入偏好的动作时使用。适合只读分析后的“确认”、查询空结果、影响追问等场景。
 - `forbiddenPatterns`：该步骤专属禁用表达。通用内部术语、pending 边界等已有全局门禁；这里只放 case 特有风险，例如“不应说候选结果收紧”“不应出现专家推荐”。
 
 ### 4.1.1 真实用户输入样例层
@@ -224,6 +263,50 @@ case 需要覆盖：
 - 不能只回“可以/建议/已为你整理”，必须补足结论、依据、风险和下一步。
 - 引用数据要有代表性或覆盖面，至少说明数量、冲稳保/层次/热度/候选空间中的关键维度。
 - 下一步要能交互：给用户可直接回复的自然动作，例如“继续看审查详情”“按稳妥程度调”“确认后排序”。
+
+### 4.1.2 多模型开放质量层
+
+结构化快路径 case 容易让不同模型输出高度一致，因此多模型对比需要单独维护一批更开放、但仍可自动验收边界的 case：
+
+- 文件：`zhiyuan-agent/examples/model_provider_303_open_quality_realistic_cases.json`
+- 用途：用于 `model_provider_benchmark.py --agent-only` 的 provider 横向对比。
+- 语言风格：保留真实用户口语和省略表达，不改写成“请结构化分析”。新增样例优先覆盖短句、简称、家长视角、低预算、地域执念、弱确认和“先看看”的只读表达。
+- 质量门禁：每个 step 都必须有 `expectedKeyPoints` 或 `expectedKeyPointGroups`、`forbiddenPatterns`、`assertNoFollowups` 和耗时预算，避免只比较耗时。
+- 质量 warning：开放 case 可以配置 `minTextLengthWarn`。该字段只用于发现回复信息量偏薄，不直接判失败；最终仍以关键点、边界、联动和人工复核为准。
+- 输出要求：使用 `--keep-response-text` 保存完整回复，后续再用 `dialog_case_evaluation_report.py --candidates` 合并到统一质量报告。
+
+推荐命令：
+
+```bash
+cd zhiyuan-agent
+
+SILICONFLOW_API_KEY=*** ./.venv/bin/python examples/model_provider_benchmark.py \
+  --config examples/model_provider_benchmark.providers.example.json \
+  --agent-only \
+  --cases examples/model_provider_303_open_quality_realistic_cases.json \
+  --start-agent \
+  --agent-port 8100 \
+  --clear-history \
+  --keep-response-text \
+  --output /private/tmp/model-provider-303-open-realistic-benchmark.json
+
+./.venv/bin/python examples/dialog_case_evaluation_report.py \
+  --candidates models=/private/tmp/model-provider-303-open-realistic-benchmark.json \
+  --case-definitions examples/model_provider_303_open_quality_realistic_cases.json \
+  --markdown-detail \
+  --output /private/tmp/model-provider-303-open-realistic-benchmark-eval.md
+```
+
+如果只需要先验证当前本地已生效模型，不启动多 provider 临时 agent，可改用：
+
+```bash
+./.venv/bin/python examples/dialog_regression_runner.py \
+  --cases examples/dialog_regression_303_open_quality_cases.json \
+  --clear-history \
+  --keep-response-text \
+  --assert-plan-style \
+  --metrics-output /private/tmp/zhiyuan_agent_303_open_quality_realistic_expanded.json
+```
 
 ### 4.2 统一跑法
 
@@ -322,7 +405,7 @@ case 需要覆盖：
 
 重点看：
 
-- 是否返回命中结果和必要示例。
+- 是否返回命中结果和必要示例；如果真实结果为空，要说明查询口径、空结果原因和可继续的替代路径，不能强行要求“共命中/示例”。
 - 是否避免内部 ID、payload、stage 这类字段外露。
 - 是否不会把局部查询误写成改方案。
 
@@ -382,6 +465,8 @@ python3 examples/dialog_case_evaluation_report.py \
   --markdown-detail \
   --output /private/tmp/dialog-case-evaluation-detail.md
 ```
+
+注意：如果是在评估当前版本自身，必须使用 `--current`。`--candidates current=...` 只适合把某个结果作为候选模型/候选实现展示，报告中的“当前回复”和当前延迟会为空，容易被误读为业务没有返回。
 
 ## 7. 版本对照方式
 

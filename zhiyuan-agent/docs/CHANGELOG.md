@@ -9,10 +9,23 @@
 - 3.0.3 Agent 回复质量文本级评审：逐 case 记录用户输入、实际回复、人工质量评分和修复建议，明确 Plan 快路径已基本稳定，Explore/Intent 仍存在模板感、内部术语外露和确认语义偏强等待优化问题。
 - 3.0.3 回复质量 P1 修复设计：明确 Intent preview 用户语言、Intent confirm 语义收口、职业方向承接结论先行、专业对比使用本轮用户事实，以及方案审查进入 quality 主 case 的修复范围。
 - 新增 `dialog_regression_303_realistic_user_cases.json` 真实口语化输入回归集，覆盖短句、懒输入、学校/专业简称、弱确认和混合软硬意向；最终 live 收口 `9/9` steps 通过，`qualityViolations=0`，中位耗时约 `2257ms`。
+- 扩展 `dialog_regression_303_open_quality_cases.json`，新增家长视角、风险焦虑、专业压力、候选机会和只读后确认保护等开放真实问法，避免开放质量评估只覆盖标准业务术语。
+- 新增 `model_provider_303_open_quality_realistic_cases.json`，用于多模型 Agent 横向对比真实口语开放场景；case 内带 `expectedKeyPoints / forbiddenPatterns / assertNoFollowups / warnElapsedSeconds`，用于同时比较回复质量和性能。
 - `dialog_case_evaluation_report.py` 支持合并修复前/当前版本输出和多 provider benchmark 输出，按 `case + stepIndex` 对齐回复文本、首响、总耗时和启发式质量分。
 - `model_provider_benchmark.py` 支持临时 agent host 配置、启动日志落盘、保留完整回复文本、保留 followup、以及每个 provider 前清理本地对话历史，便于做公平的多模型场景对照。
+- `model_provider_benchmark.py` 的 Agent 场景断言补充 thinking、no-followup、case 期望点、case 禁用表达和耗时预算检查，避免 provider benchmark 只统计延迟、不评估回复质量。
+- `model_provider_benchmark.py` 支持 `expectedKeyPointGroups` 同义关键点组、薄回复 `minTextLengthWarn`、质量 warning 汇总、质量门禁通过率和回复长度分布，便于识别“模型很快但回复信息量不足”的风险。
+- 扩展 `model_provider_303_open_quality_realistic_cases.json` 到 15 个开放真实场景，新增“这方案咋样，能不能说重点”“青城那个是不是放多了”“新媒体和跨电呢，数学不太行”“按好学校排下看看”“嗯可以”等短句、简称、弱确认和排序预览 case。
+- 扩展 `model_provider_303_open_quality_realistic_cases.json` 到 25 个开放真实场景，并扩展 `dialog_regression_303_open_quality_cases.json` 到 20 个本地回归 case；新增“会计和审计哪个更稳，考公也能用点的”“以后想考公但也怕太卷，这方案有支撑吗”“就按别太冒险的思路把这版调稳点”“北京天津想去，但别最后没学上”“医学护理这些别碰，财会还能接受”等更贴近真实用户的懒输入、简称、家长表达、取舍和意向影响 case。
+- 口语化方案概览快路径补强：`这方案咋样，能不能说重点` 这类问法进入 `query_state`，从四模型首轮 7-18s 大模型链路收敛到本地方案概览；fix-probe 中四模型 final 均在约 1s 内。
+- 意向影响问法路由修复：`医学护理这些别碰，财会还能接受，先看看影响` 不再被 `plan_query_fast_route` 抢成空方案查询；无明确方案/候选范围且包含“别碰 / 能接受 / 影响”等意向语义时，进入待确认意向预览。
+- 专业意向口语归一化补强：`医学 / 学医 / 医药` 展开到临床医学类、口腔医学类、中医学类、护理学类、医学技术类，`财会` 展开到会计学、审计学，`别碰 / 还行 / 能接受` 纳入高置信软硬意向识别。
+- 口语化调稳问法快路径补强：`就按别太冒险的思路把这版调稳点，先给我看看会怎么动` 进入 `analyze_adjustment`，避免 full-agent 自由构造 `execute_plan_action` 参数导致模型间失败或超时；回复补充“先分析不改方案、后续具体动作才影响方案/导出顺序并需确认”的用户边界。
+- 四模型 25 case 首轮与修复小集结果已记录到 3.0.3 文档：首轮暴露意向抢路由和调稳预览超时/参数失败；修复后 `/private/tmp/model-provider-303-open-realistic-fix-probe-4model-v2.json` 中 3 个关键 case x 4 模型均 `quality_gate_pass_rate=1.0`，无 error、无断言失败、无 latency/quality warning。
+- 统一 fast route 仲裁层：新增 `fast_route_arbitrator`，ChatService 先收集 plan/query/intent/major-compare/career 五类候选，再按“质量可满足程度优先于延迟”选择最终路径；明确范围查询优先于意向写入，复杂地域安全取舍会被质量门槛挡住并回落完整 Agent，避免继续靠顺序和字符串补丁抢路由。
 - 新增 `model_provider_303_quality_readonly_cases.json`，用于只读/预览类 3.0.3 场景的多模型质量/性能对照，避免确认执行修改方案状态造成 provider 间上下文污染。
 - 补充四模型对照结果记录：`Pro/moonshotai/Kimi-K2.6`、`Pro/MiniMaxAI/MiniMax-M2.5`、`deepseek-ai/DeepSeek-V4-Flash`、`Pro/zai-org/GLM-5.1` 在 10 个只读/预览 case 中均无断言失败；文档明确这批快路径 case 不能代表开放式生成质量，需要后续补 Explore / Intent 开放场景。
+- 补充开放真实 10 case 四模型对照结果：Kimi 质量通过但三专业开放对比出现约 `78.263s` 慢请求；MiniMax 使用同义关键点组重跑后 `10/10` 通过且无耗时 warning；DeepSeek 和 GLM 均 `10/10` 通过，开放 LLM 场景最大耗时分别约 `21.615s` 和 `25.354s`。
 - 新增 `dialog_regression_303_open_quality_cases.json`，覆盖待确认意向影响追问、职业方向多方向只读和专业对比上下文使用，用于补充 fast route 之外的开放式回复质量验证。
 - 扩展 `dialog_regression_303_open_quality_cases.json` 到 7 个 case，补充局部查询后确认保护、推荐系数排序预览、非固定专业对比和三方向职业承接，并新增目录级单测约束这些开放式质量场景必须保留 no-followup、确认边界、内部术语屏蔽和耗时预算。
 - 职业方向快路由补强“支撑 / 短板”只读语义，修复三方向职业承接问法回落完整 Agent 的性能退化；高副作用表达仍由“记偏好 / 改方案 / 确认”等拦截，不改变确认边界。
@@ -102,6 +115,11 @@
 - 3.0.3 回复结构继续补强：排序预览改为“动作 / 排序方式 / 执行影响 / 确认”的要点结构；无 pending 的职业方向确认保护给出继续分析、调整方案、查看方案和不确定下一步四类出口；已有偏好提示合并同类项并说明不会重复写入或改方案；专业对比只读回复补充“本次边界”。
 - 3.0.3 最终回复质量回归：焦点单测最高 `350 passed`，宽回归 `726 passed`；真实 WebSocket effect/perf `14/14` 通过，中位耗时约 `2297ms`，最大耗时约 `4425ms`，离线质量评分 `qualityViolations=0`、`strong=14 / needs_review=0`。
 - 3.0.3 主对话技能注入收口：`BaseAgent` 默认只注入 skills 边界摘要，不再把 `list_skills / load_skill / read_skill_resource / run_skill_script` 暴露给 ChatAgent 运行时；保留 `expose_skill_tools=True` 给专门需要完整技能工具的 Agent。该调整用于消除开放式 Explore 中先调用 `load_skill` 的额外轮次，不改变业务工具、确认边界或用户侧回复结构；聚焦单测 `40 passed`，真实 WebSocket effect/perf `14/14` 通过，open quality `4/4` 通过，职业方向承接场景 tool trace 仅有 `analyze_current_career_direction`。
+- 3.0.3 open-quality 最终复核：本地独立 Agent `8107` 在 Agent/Server/Rank 依赖可用时复跑 `dialog_regression_303_open_quality_cases.json --clear-history --keep-response-text --assert-plan-style`，`23/23` steps 通过，失败 `0`；中位耗时约 `2283ms`，p95 约 `3794ms`，最大约 `3969ms`；离线评分 `strong=23 / needs_review=0 / fail=0`，无 `route_mismatch`、`unexpected_action` 或薄预览硬失败。当前没有触发 LLM Intent Router shadow 条件，继续使用本地候选 + 统一仲裁主路径。
+- 3.0.3 重启后 open-quality live 复验：本地 `8107/8080/5001` 链路复跑 `23/23` steps 通过，中位耗时约 `2242ms`，p95 约 `3661ms`，最大约 `3819ms`；详细评分仍为 `strong=23 / needs_review=0 / fail=0`，无质量 violation 或 warning。
+- 3.0.3 对话样例展示清洗：新增用户侧院校/专业样本文本清洗，方案前排、意向影响和职业方向代表样本不再展示 `办学地点`、合作方、前三年就读、外语成绩、学费说明等长招生备注，保留院校、专业、冲稳保和位置等核心信息；最新 open-quality live 复跑 `/private/tmp/zhiyuan_agent_303_open_quality_after_display_clean_live.json`，`23/23` steps 通过，中位耗时约 `2256ms`，p95 约 `3713ms`，评分 `strong=23 / needs_review=0 / fail=0`，长备注关键词抽检未命中。
+- 3.0.3 候选空结果回复收口：`候选里还有没有更稳一点的会计审计` 走 `plan_query_fast_route`，后端直查 `session=17` 中 `会计学+审计学`、单独 `会计学`、单独 `审计学` 均为 `total=0`；回复改为明确说明已按具体专业查过且当前候选池无结果，并引导放宽到专业类、查看当前方案相近志愿或做更稳调整建议。评估工具同步支持空结果等价验收，避免把真实无数据误判为薄预览或路由失败。
+- 3.0.3 case 级评估工具补充 `expectedNoAction` 和无动作确认保护评分：只读分析、候选空结果、无 pending 的“确认”不应触发方案或偏好动作，若出现动作会标记 `unexpected_action`；正确的确认保护会按边界说明和下一步出口评分。
 - 修复专业组移动/删除 apply 后重复按“第 N 个专业组”解析目标的问题；移动后方案顺序已变化，重复解析可能记录成另一个专业组。现在 `executed_actions` 和后续日志复用执行前解析出的 unitIds。
 - 3.0.3 后端补充 mutable overlay 回归：专业+大学模式单志愿移动、院校专业组模式组删除、旧 mutable 版本忽略，以及行为事件存储回归均通过单测覆盖。
 - 3.0.3 专业组 mutation 慢请求完成补充定位：确认慢例 `llmRequests=0`，Agent `mutationRequestDurationMs≈28.1s` 与 Server controller `unit/move≈28.1s` 对齐；当前源码复跑 service 分段常态约 `1.8s - 2.3s`，最大头是完整 `PlanningStateDTO` 保存，后续优化重点调整为状态持久化拆分而不是继续压模型。

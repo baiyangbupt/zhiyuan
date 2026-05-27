@@ -2220,6 +2220,195 @@ def test_execute_plan_action_runs_query_state():
     mock_ordered.assert_awaited_once()
 
 
+def test_execute_plan_action_query_state_adds_budget_risk_for_budget_question():
+    payload = {
+        "stage": "apply",
+        "action_family": "query_state",
+        "user_goal": "方案里中外合作是不是有点多，家里预算一般，帮我用大白话看下风险，先别动",
+        "context_summary": "阶段=reviewed；方案=30/30",
+        "preview_summary": "",
+        "missing_inputs": [],
+        "should_rerun_review": False,
+        "intent_relation": "unknown",
+        "atomic_actions": [],
+    }
+
+    with patch(
+        "app.handlers.query_handlers._get_planning_state_with_latest_profile",
+        new=AsyncMock(
+            return_value={
+                "phase": "reviewed",
+                "orderedPlanState": {"summary": {"unitTotal": 30, "targetUnitCount": 30}},
+                "reviewState": {"summary": {"riskCount": 0, "warnCount": 1}},
+            }
+        ),
+    ), patch(
+        "app.handlers.query_handlers._get_planning_ordered_plan_request",
+        new=AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "items": [
+                        {
+                            "position": 1,
+                            "schoolName": "青岛理工大学第01组",
+                            "majorName": "建筑学(中外合作办学)",
+                            "tier": "冲",
+                            "tuitionPerYear": 28000,
+                        },
+                        {
+                            "position": 2,
+                            "schoolName": "南宁学院第01组",
+                            "majorName": "会计学",
+                            "tier": "稳",
+                            "majorPlanTags": ["学费：35000/年"],
+                        },
+                    ],
+                    "summary": {"unitTotal": 30, "targetUnitCount": 30},
+                },
+            }
+        ),
+    ):
+        result = asyncio.run(execute_plan_action(_ctx(), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["result_kind"] == "status_overview"
+    assert "预算风险" in data["summary"]
+    assert "疑似中外合作 1 个" in data["summary"]
+    assert "高收费 2 个" in data["summary"]
+    assert "本轮只是帮你看风险，不会改动方案" in data["summary"]
+    assert "青岛理工大学第01组-建筑学（冲）" in data["summary"]
+    assert "学费约28000元/年" in data["summary"]
+    assert "中外合作办学" not in data["summary"]
+    assert "budget_risk" in data["reply_focus"]
+    assert data["facts"]["budget_risk"]["cooperative_unit_count"] == 1
+    assert data["facts"]["budget_risk"]["high_tuition_unit_count"] == 2
+
+
+def test_execute_plan_action_query_state_trims_long_sample_notes():
+    payload = {
+        "stage": "apply",
+        "action_family": "query_state",
+        "user_goal": "方案里中外合作是不是有点多，家里预算一般，帮我用大白话看下风险，先别动",
+        "context_summary": "阶段=reviewed；方案=30/30",
+        "preview_summary": "",
+        "missing_inputs": [],
+        "should_rerun_review": False,
+        "intent_relation": "unknown",
+        "atomic_actions": [],
+    }
+
+    with patch(
+        "app.handlers.query_handlers._get_planning_state_with_latest_profile",
+        new=AsyncMock(
+            return_value={
+                "phase": "reviewed",
+                "orderedPlanState": {"summary": {"unitTotal": 30, "targetUnitCount": 30}},
+                "reviewState": {"summary": {"riskCount": 0, "warnCount": 1}},
+            }
+        ),
+    ), patch(
+        "app.handlers.query_handlers._get_planning_ordered_plan_request",
+        new=AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "items": [
+                        {
+                            "position": 1,
+                            "schoolName": "青岛理工大学",
+                            "majorName": "建筑学(中外合作办学)(与韩国光云大学合作)",
+                            "tier": "冲",
+                            "tuitionPerYear": 28000,
+                        },
+                        {
+                            "position": 2,
+                            "schoolName": "青海民族大学",
+                            "majorName": "土地资源管理(中外合作办学)(与波兰波兹南生命科学大学合作，文实校区)",
+                            "tier": "冲",
+                        },
+                    ],
+                    "summary": {
+                        "unitTotal": 30,
+                        "targetUnitCount": 30,
+                        "unitTierCounts": {"冲": 20, "稳": 8, "保": 2},
+                    },
+                },
+            }
+        ),
+    ):
+        result = asyncio.run(execute_plan_action(_ctx(), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert "青岛理工大学-建筑学（冲）" in data["summary"]
+    assert "青岛理工大学-建筑学(冲)第1位" in data["summary"]
+    assert "韩国光云大学" not in data["summary"]
+    assert "波兰波兹南" not in data["summary"]
+
+
+def test_execute_plan_action_query_state_explains_risky_plan_in_plain_language():
+    payload = {
+        "stage": "apply",
+        "action_family": "query_state",
+        "user_goal": "这版是不是太冲了，能不能给我说人话",
+        "context_summary": "阶段=reviewed；方案=94/96",
+        "preview_summary": "",
+        "missing_inputs": [],
+        "should_rerun_review": False,
+        "intent_relation": "unknown",
+        "atomic_actions": [],
+    }
+
+    with patch(
+        "app.handlers.query_handlers._get_planning_state_with_latest_profile",
+        new=AsyncMock(
+            return_value={
+                "phase": "reviewed",
+                "orderedPlanState": {
+                    "summary": {"unitTotal": 94, "targetUnitCount": 96},
+                },
+                "reviewState": {
+                    "summary": {"riskCount": 3, "warnCount": 5},
+                    "checks": [
+                        {"passed": False, "summary": "冲区占比过高且保区占比过低"},
+                        {"passed": False, "summary": "本省保底志愿数量不足"},
+                    ],
+                },
+            }
+        ),
+    ), patch(
+        "app.handlers.query_handlers._get_planning_ordered_plan_request",
+        new=AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "items": [
+                        {
+                            "position": 1,
+                            "schoolName": "青岛理工大学",
+                            "majorName": "建筑学",
+                            "tier": "冲",
+                            "admissionRatio": 1,
+                        }
+                    ],
+                    "summary": {
+                        "unitTotal": 94,
+                        "targetUnitCount": 96,
+                        "unitTierCounts": {"冲": 66, "稳": 28, "保": 0},
+                    },
+                },
+            }
+        ),
+    ):
+        result = asyncio.run(execute_plan_action(_ctx(), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["result_kind"] == "status_overview"
+    assert "先说结论：这版确实偏冲，保底明显不够" in data["summary"]
+    assert "大白话：前面冲得多，后面兜底少" in data["summary"]
+    assert "调稳预览" in data["summary"]
+
+
 def test_execute_plan_action_runs_adjustment_analysis():
     payload = {
         "stage": "apply",
@@ -2278,8 +2467,13 @@ def test_execute_plan_action_runs_adjustment_analysis():
 
     data = json.loads(result)
     assert data["result_kind"] == "adjustment_analysis"
-    assert "当前方案冲区略多，保区偏弱。" in data["summary"]
-    assert "当前先拿到的是分析结论，不是可直接执行的调整清单" in data["summary"]
+    assert "**调整分析**" in data["summary"]
+    assert "- 主要判断：当前方案冲区略多，保区偏弱。" in data["summary"]
+    assert "- 当前边界：现在拿到的是分析结论，还不是可直接执行的调整清单。" in data["summary"]
+    assert "- 建议数量：补充建议 1 条，调序建议 0 条，替换建议 0 条，移除建议 0 条。" in data["summary"]
+    assert "。；" not in data["summary"]
+    assert "。。" not in data["summary"]
+    assert "当前先拿到的是分析结论，不是可直接执行的调整清单：" not in data["summary"]
     assert data["facts"]["summary_text"] == "当前方案冲区略多，保区偏弱。"
     assert data["facts"]["suggestion_counts"]["add"] == 1
     assert data["facts"]["actionable_suggestion_counts"]["add"] == 0

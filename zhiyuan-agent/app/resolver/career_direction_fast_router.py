@@ -19,6 +19,8 @@ _SPACE_RE = re.compile(r"\s+")
 _STRONG_READONLY_ANALYSIS_TOKENS = (
     "承接",
     "支撑",
+    "撑住",
+    "撑得住",
     "短板",
     "适不适合",
     "适合",
@@ -26,6 +28,21 @@ _STRONG_READONLY_ANALYSIS_TOKENS = (
     "分析",
     "匹配",
     "对照",
+    "稳不稳",
+    "够不够稳",
+    "哪个更实际",
+    "更实际",
+    "实际点",
+    "更现实",
+    "现实点",
+    "往哪类方向",
+    "往哪些方向",
+    "往什么方向",
+    "哪类方向",
+    "哪些方向",
+    "什么方向",
+    "别太折腾",
+    "太折腾",
 )
 
 _PLAN_CONTEXT_TOKENS = (
@@ -90,6 +107,9 @@ _READONLY_CANCEL_TOKENS = (
     "只分析",
     "先分析",
     "先看看",
+    "先别动",
+    "别动",
+    "不动",
     "不要记偏好",
     "不记偏好",
     "别记偏好",
@@ -99,6 +119,10 @@ _READONLY_CANCEL_TOKENS = (
     "不要改方案",
     "不改方案",
     "别改方案",
+    "不要改偏好",
+    "不改偏好",
+    "别改偏好",
+    "先别改偏好",
     "先不要改方案",
     "不要调整方案",
     "不调整方案",
@@ -148,6 +172,11 @@ def _has_readonly_analysis_semantics(compact_text: str) -> bool:
 
 
 def _is_generic_direction_question(compact_text: str) -> bool:
+    if (
+        any(token in compact_text for token in ("稳一点", "求稳", "稳定", "别太折腾", "不折腾"))
+        and any(token in compact_text for token in ("往哪类方向", "哪类方向", "哪些方向", "什么方向", "方向看"))
+    ):
+        return False
     return any(pattern in compact_text for pattern in _GENERIC_DIRECTION_PATTERNS)
 
 

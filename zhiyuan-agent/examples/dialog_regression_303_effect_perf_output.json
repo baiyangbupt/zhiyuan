@@ -1,0 +1,354 @@
+{
+  "records": [
+    {
+      "case": "302-effect-clean-plan-status-major",
+      "sessionId": "17",
+      "prompt": "看看现在的方案，给我一个结构化一点的结论",
+      "elapsedMs": 10755,
+      "primaryMessages": 1,
+      "followupMessages": 0,
+      "turnObservability": {
+        "historyMessages": 6,
+        "toolCallCount": 2,
+        "toolReturnCount": 2,
+        "toolCalls": [
+          {
+            "name": "plan_next_action",
+            "toolCallId": "fast-plan-next-query_state",
+            "actionFamily": "query_state",
+            "stage": "apply",
+            "success": true
+          },
+          {
+            "name": "execute_plan_action",
+            "toolCallId": "fast-execute-query_state",
+            "actionFamily": "query_state",
+            "stage": "apply",
+            "resultKind": "status_overview",
+            "applied": true,
+            "success": true
+          }
+        ],
+        "actionFamilies": [
+          "query_state"
+        ],
+        "resultKinds": [
+          "status_overview"
+        ]
+      }
+    },
+    {
+      "case": "302-effect-readonly-career-fit-real-plan",
+      "sessionId": "17",
+      "prompt": "当前方案对体制内稳定就业方向承接得怎么样，先不要改方案",
+      "elapsedMs": 149775,
+      "primaryMessages": 2,
+      "followupMessages": 0,
+      "turnObservability": {
+        "historyMessages": 4,
+        "toolCallCount": 1,
+        "toolReturnCount": 0,
+        "toolCalls": [
+          {
+            "name": "analyze_current_career_direction",
+            "toolCallId": "functions.analyze_current_career_direction:2"
+          }
+        ],
+        "actionFamilies": [],
+        "resultKinds": []
+      }
+    },
+    {
+      "case": "302-effect-major-positional-move-preview-confirm",
+      "sessionId": "17",
+      "prompt": "把第2个志愿移到第4位",
+      "elapsedMs": 3507,
+      "primaryMessages": 1,
+      "followupMessages": 0,
+      "turnObservability": {
+        "historyMessages": 6,
+        "toolCallCount": 2,
+        "toolReturnCount": 2,
+        "toolCalls": [
+          {
+            "name": "plan_next_action",
+            "toolCallId": "fast-plan-next-move_unit",
+            "actionFamily": "move_unit",
+            "stage": "preview",
+            "success": true
+          },
+          {
+            "name": "execute_plan_action",
+            "toolCallId": "fast-execute-move_unit",
+            "actionFamily": "move_unit",
+            "stage": "preview",
+            "resultKind": "preview_only",
+            "applied": false,
+            "success": true
+          }
+        ],
+        "actionFamilies": [
+          "move_unit"
+        ],
+        "resultKinds": [
+          "preview_only"
+        ]
+      }
+    },
+    {
+      "case": "302-effect-major-positional-move-preview-confirm",
+      "sessionId": "17",
+      "prompt": "确认",
+      "elapsedMs": 12171,
+      "primaryMessages": 1,
+      "followupMessages": 1,
+      "turnObservability": {
+        "historyMessages": 4,
+        "toolCallCount": 1,
+        "toolReturnCount": 1,
+        "toolCalls": [
+          {
+            "name": "execute_plan_action",
+            "toolCallId": "direct-move_unit-confirmation",
+            "actionFamily": "move_unit",
+            "stage": "apply",
+            "resultKind": "mutation_result",
+            "applied": true,
+            "success": true
+          }
+        ],
+        "actionFamilies": [
+          "move_unit"
+        ],
+        "resultKinds": [
+          "mutation_result"
+        ]
+      }
+    },
+    {
+      "case": "302-effect-major-group-unit-move-preview-confirm",
+      "sessionId": "16",
+      "prompt": "把第4个专业组移到第2位",
+      "elapsedMs": 15289,
+      "primaryMessages": 1,
+      "followupMessages": 0,
+      "turnObservability": {
+        "historyMessages": 6,
+        "toolCallCount": 2,
+        "toolReturnCount": 2,
+        "toolCalls": [
+          {
+            "name": "plan_next_action",
+            "toolCallId": "fast-plan-next-move_ordered_unit",
+            "actionFamily": "move_ordered_unit",
+            "stage": "preview",
+            "success": true
+          },
+          {
+            "name": "execute_plan_action",
+            "toolCallId": "fast-execute-move_ordered_unit",
+            "actionFamily": "move_ordered_unit",
+            "stage": "preview",
+            "resultKind": "preview_only",
+            "applied": false,
+            "success": true
+          }
+        ],
+        "actionFamilies": [
+          "move_ordered_unit"
+        ],
+        "resultKinds": [
+          "preview_only"
+        ]
+      }
+    },
+    {
+      "case": "302-effect-major-group-unit-move-preview-confirm",
+      "sessionId": "16",
+      "prompt": "确认",
+      "elapsedMs": 32703,
+      "primaryMessages": 1,
+      "followupMessages": 1,
+      "turnObservability": {
+        "historyMessages": 4,
+        "toolCallCount": 1,
+        "toolReturnCount": 1,
+        "toolCalls": [
+          {
+            "name": "execute_plan_action",
+            "toolCallId": "direct-move_ordered_unit-confirmation",
+            "actionFamily": "move_ordered_unit",
+            "stage": "apply",
+            "resultKind": "mutation_result",
+            "applied": true,
+            "success": true
+          }
+        ],
+        "actionFamilies": [
+          "move_ordered_unit"
+        ],
+        "resultKinds": [
+          "mutation_result"
+        ]
+      }
+    },
+    {
+      "case": "302-effect-ambiguous-school-major-safe-readonly",
+      "sessionId": "17",
+      "prompt": "青岛城市学院相关专业是不是有多个，先帮我判断一下，不要直接改方案",
+      "elapsedMs": 58836,
+      "primaryMessages": 2,
+      "followupMessages": 0,
+      "turnObservability": {
+        "historyMessages": 4,
+        "toolCallCount": 1,
+        "toolReturnCount": 0,
+        "toolCalls": [
+          {
+            "name": "query_volunteer_plan",
+            "toolCallId": "functions.query_volunteer_plan:6"
+          }
+        ],
+        "actionFamilies": [],
+        "resultKinds": []
+      }
+    },
+    {
+      "case": "302-effect-new-dialog-major-compare-readonly",
+      "sessionId": "880001",
+      "prompt": "法学和财政学哪个更适合普通家庭女生，先只分析不要记偏好",
+      "elapsedMs": 56582,
+      "primaryMessages": 4,
+      "followupMessages": 0,
+      "turnObservability": {
+        "historyMessages": 6,
+        "toolCallCount": 3,
+        "toolReturnCount": 0,
+        "toolCalls": [
+          {
+            "name": "analyze_current_major_interest",
+            "toolCallId": "functions.analyze_current_major_interest:0"
+          },
+          {
+            "name": "get_major_introduction",
+            "toolCallId": "functions.get_major_introduction:1"
+          },
+          {
+            "name": "get_major_introduction",
+            "toolCallId": "functions.get_major_introduction:2"
+          }
+        ],
+        "actionFamilies": [],
+        "resultKinds": []
+      }
+    },
+    {
+      "case": "302-effect-new-dialog-soft-hard-intent-preview",
+      "sessionId": "880002",
+      "prompt": "我倾向法学和财政学，但护理不要",
+      "elapsedMs": 17740,
+      "primaryMessages": 1,
+      "followupMessages": 0,
+      "turnObservability": {
+        "historyMessages": 2,
+        "toolCallCount": 0,
+        "toolReturnCount": 0,
+        "toolCalls": [],
+        "actionFamilies": [],
+        "resultKinds": []
+      }
+    },
+    {
+      "case": "302-effect-new-dialog-soft-hard-intent-preview",
+      "sessionId": "880002",
+      "prompt": "先不确认，看看这个偏好会影响方案吗",
+      "elapsedMs": 60850,
+      "primaryMessages": 3,
+      "followupMessages": 0,
+      "turnObservability": {
+        "historyMessages": 6,
+        "toolCallCount": 2,
+        "toolReturnCount": 1,
+        "toolCalls": [
+          {
+            "name": "collect_plan_context_inputs",
+            "toolCallId": "functions.collect_plan_context_inputs:0",
+            "success": true
+          },
+          {
+            "name": "validate_major_subjects",
+            "toolCallId": "functions.validate_major_subjects:1"
+          }
+        ],
+        "actionFamilies": [],
+        "resultKinds": []
+      }
+    },
+    {
+      "case": "302-effect-new-dialog-no-pending-confirm-fast-guard",
+      "sessionId": "880003",
+      "prompt": "确认",
+      "elapsedMs": 2172,
+      "primaryMessages": 1,
+      "followupMessages": 0,
+      "turnObservability": {
+        "historyMessages": 2,
+        "toolCallCount": 0,
+        "toolReturnCount": 0,
+        "toolCalls": [],
+        "actionFamilies": [],
+        "resultKinds": []
+      }
+    }
+  ],
+  "summary": {
+    "steps": 11,
+    "successfulSteps": 11,
+    "failedSteps": 0,
+    "elapsed": {
+      "count": 11,
+      "minMs": 2172,
+      "medianMs": 17740,
+      "p95Ms": 149775,
+      "maxMs": 149775
+    },
+    "slowest": [
+      {
+        "case": "302-effect-readonly-career-fit-real-plan",
+        "sessionId": "17",
+        "prompt": "当前方案对体制内稳定就业方向承接得怎么样，先不要改方案",
+        "elapsedMs": 149775
+      },
+      {
+        "case": "302-effect-new-dialog-soft-hard-intent-preview",
+        "sessionId": "880002",
+        "prompt": "先不确认，看看这个偏好会影响方案吗",
+        "elapsedMs": 60850
+      },
+      {
+        "case": "302-effect-ambiguous-school-major-safe-readonly",
+        "sessionId": "17",
+        "prompt": "青岛城市学院相关专业是不是有多个，先帮我判断一下，不要直接改方案",
+        "elapsedMs": 58836
+      },
+      {
+        "case": "302-effect-new-dialog-major-compare-readonly",
+        "sessionId": "880001",
+        "prompt": "法学和财政学哪个更适合普通家庭女生，先只分析不要记偏好",
+        "elapsedMs": 56582
+      },
+      {
+        "case": "302-effect-major-group-unit-move-preview-confirm",
+        "sessionId": "16",
+        "prompt": "确认",
+        "elapsedMs": 32703
+      }
+    ]
+  },
+  "warnings": [
+    "302-effect-readonly-career-fit-real-plan session=17 prompt=当前方案对体制内稳定就业方向承接得怎么样，先不要改方案: latency warning — elapsedMs=149775 > warnElapsedMs=90000"
+  ],
+  "failures": [
+    "302-effect-major-group-unit-move-preview-confirm session=16 prompt=确认: maxElapsed FAILED — elapsedMs=32703 > maxElapsedMs=20000"
+  ]
+}

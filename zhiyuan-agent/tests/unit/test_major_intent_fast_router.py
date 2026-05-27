@@ -24,6 +24,17 @@ def test_major_intent_fast_route_matches_lazy_positive_with_negative_level3_majo
     }
 
 
+def test_major_intent_fast_route_matches_colloquial_soft_and_hard_terms():
+    decision = resolve_major_intent_fast_route("会计审计这类还行，土木建筑那种别碰")
+
+    assert decision.matched is True
+    assert decision.intent_mode == "constraint"
+    assert decision.major_intents == {
+        "level3": ["会计学", "审计学"],
+        "negative_level3": ["土木工程", "建筑学"],
+    }
+
+
 def test_major_intent_fast_route_matches_level2_categories_and_alias_surface():
     decision = resolve_major_intent_fast_route("以后优先看计算机类，不看护理类")
 
@@ -31,6 +42,22 @@ def test_major_intent_fast_route_matches_level2_categories_and_alias_surface():
     assert decision.intent_mode == "constraint"
     assert decision.major_intents["level2"] == ["计算机类"]
     assert decision.major_intents["negative_level2"] == ["护理学类"]
+
+
+def test_major_intent_fast_route_matches_broad_medical_and_accounting_aliases():
+    decision = resolve_major_intent_fast_route("医学护理这些别碰，财会还能接受，先看看影响")
+
+    assert decision.matched is True
+    assert decision.intent_mode == "constraint"
+    assert decision.major_intents["negative_level2"] == [
+        "临床医学类",
+        "口腔医学类",
+        "中医学类",
+        "护理学类",
+        "医学技术类",
+    ]
+    assert decision.major_intents["negative_level3"] == ["护理学"]
+    assert decision.major_intents["level3"] == ["会计学", "审计学"]
 
 
 def test_major_intent_fast_route_matches_unique_level3_alias():

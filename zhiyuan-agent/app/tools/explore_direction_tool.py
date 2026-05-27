@@ -32,6 +32,7 @@ from app.domain.career_slots import (
 from app.llm.client import LLMClient
 from app.schemas.career_intent import CareerIntentResult
 from app.tools.extraction_json import parse_extraction_json
+from app.util.display_text import compact_school_major_text
 from app.util.internal_client import get_planning_state, get_planning_workspace_state, query_planning_candidate_pool
 
 logger = logging.getLogger(__name__)
@@ -433,7 +434,8 @@ def _format_candidate_brief(item: dict[str, Any]) -> str:
     major_name = item.get("majorName") or "未知专业"
     tier = item.get("tier") or "未知"
     province_name = item.get("provinceName") or ""
-    return f"{school_name}-{major_name}（{tier}{f'/{province_name}' if province_name else ''}）"
+    brief_name = _sample_text(f"{school_name}-{major_name}")
+    return f"{brief_name}（{tier}{f'/{province_name}' if province_name else ''}）"
 
 
 def _direction_plan_fit_level(match_count: int, total: int) -> str:
@@ -695,16 +697,22 @@ def _build_direction_interest_analysis(
     candidate_match_count: int,
 ) -> dict[str, Any]:
     direction_label = to_career_label(direction_slot)
-    fit_points: list[str] = [
-        f"我先不急着替你下结论，而是结合你自己的情况，看看“{direction_label}”这条路值不值得重点看。"
-    ]
+    summary_title = f"先帮你判断一下，“{direction_label}”是不是值得重点看"
+    if direction_slot == CAREER_SYSTEM_PUBLIC_SERVICE:
+        summary_title = "体制内/考公方向可以看，但要同时看专业口径、院校属性和本人接受度"
+    elif direction_slot == CAREER_STABLE_EMPLOYMENT:
+        summary_title = "稳定就业导向可以重点看，但要落到专业出口、学校平台和录取梯度上判断"
+    elif direction_slot == CAREER_FURTHER_STUDY:
+        summary_title = "深造方向可以看，但要优先确认培养平台和长期学习投入"
+
+    fit_points: list[str] = []
     fit_points.extend(student_fit_fact.get("positiveSignals") or [])
     conflict_points: list[str] = list(student_fit_fact.get("cautionSignals") or [])
     opportunity_points: list[str] = []
     next_action_hints: list[str] = [
-        "如果你愿意，我可以继续按这条方向帮你看看现在这份方案承接得够不够。",
-        "你也可以先去看候选里还有没有更贴近这条方向的机会。",
-        "如果你想把“自己到底更适合哪类方向”看得更细一点，后面也可以结合 MBTI 和霍兰德职业兴趣测评再继续收一层。",
+        "可以继续按这条方向看当前方案里哪些志愿真正承接得住。",
+        "也可以只看候选里还有没有更贴近这条方向、录取梯度更合适的机会。",
+        "如果确认长期优先这条路，再把它记成后续偏好。"
     ]
 
     if ordered_total <= 0:
@@ -722,13 +730,13 @@ def _build_direction_interest_analysis(
     if direction_slot == CAREER_SYSTEM_PUBLIC_SERVICE:
         fit_points.append("这类方向通常更看重院校性质、专业方向和未来职业路径的稳定性，不是单看某一所学校或某一个专业名字。")
     elif direction_slot == CAREER_STABLE_EMPLOYMENT:
-        fit_points.append("这类方向更看重就业确定性、岗位稳定性和路径清晰度，不能只看一时热度。")
+        fit_points.append("落到志愿上，要优先看专业出口是否清楚、学校和城市能否提供稳定岗位机会。")
     elif direction_slot == CAREER_FURTHER_STUDY:
         fit_points.append("这类方向更看重院校培养环境、升学条件和后续深造通道，不只是看当前录取概率。")
 
     return {
         "stage": ANALYSIS_STAGE_INTEREST,
-        "summaryTitle": f"先帮你判断一下，“{direction_label}”是不是值得重点看",
+        "summaryTitle": summary_title,
         "currentPlanFit": fit_points,
         "currentPlanConflict": conflict_points,
         "candidateOpportunity": opportunity_points,
@@ -788,23 +796,12 @@ def _sample_text(text: str) -> str:
             break
 
     def _brief_one(value: str) -> str:
-        value = value.strip(" ，,；;。")
-        value = re.split(r"[；;]", value, maxsplit=1)[0].strip()
-        value = re.split(r"[（(](?:冲|稳|保|办学地点|合作方|要求|只招|不招|学费|前三年|第一|第二|第三|第四)", value, maxsplit=1)[0].strip()
-        brief_parts = value.split("-", 1)
-        if len(brief_parts) == 2:
-            school, major = brief_parts[0].strip(), brief_parts[1].strip()
-            major = re.split(r"[（(]", major, maxsplit=1)[0].strip()
-            if school and major:
-                value = f"{school}-{major}"
-        if len(value) > 80:
-            value = value[:80].rstrip("，,；;。") + "..."
-        return value
+        return compact_school_major_text(value)
 
     parts = [
         part
         for part in re.split(r"[；;](?=.*(?:大学|学院).*-)", compact)
-        if part.strip()
+        if part.strip() and re.search(r"(?:大学|学院).*-", part)
     ]
     if len(parts) > 1:
         return "；".join(_brief_one(part) for part in parts[:2] if _brief_one(part))
@@ -864,6 +861,17 @@ def _direction_focus_snapshot(
     for line in focus_lines:
         if line in seen:
             continue
+        if "；" in line:
+            prefix, rest = line.split("：", 1) if "：" in line else ("", line)
+            parts = [part.strip() for part in rest.split("；") if part.strip()]
+            deduped_parts = []
+            for part in parts:
+                if part not in deduped_parts:
+                    deduped_parts.append(part)
+            if prefix:
+                line = f"{prefix}：{'；'.join(deduped_parts[:limit])}"
+            else:
+                line = "；".join(deduped_parts[:limit])
         seen.add(line)
         unique_lines.append(line)
     return unique_lines
@@ -985,10 +993,7 @@ async def preview_direction_analysis_from_request(
                 exc_info=True,
             )
 
-    next_steps = _dedupe_texts([
-        "如果你愿意把它记成后续偏好，我可以再按这个方向继续帮你看方案。",
-        *((analysis.get("nextActionHints") or [])),
-    ])
+    next_steps = _dedupe_texts(list(analysis.get("nextActionHints") or []))
     return _format_text_sections(
         ("分析结论", [f"你提到的“{to_career_label(direction_slot)}”，我先帮你做了一个初步判断。"]),
         *_direction_analysis_sections(analysis, fit_title="方向判断"),
@@ -1002,7 +1007,7 @@ async def preview_direction_analysis_from_request(
             ),
         ),
         ("本次边界", _readonly_direction_boundary()),
-        ("下一步", next_steps[:4]),
+        ("下一步", next_steps[:3]),
     )
 
 

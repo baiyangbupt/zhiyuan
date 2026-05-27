@@ -27,6 +27,7 @@ _TOOL_DISPATCH_RULES = """\
 - 对学校/专业/地域主题分别用 `analyze_current_school_interest` / `analyze_current_major_interest` / `analyze_current_region_interest`。
 - 对具体专业适配问题（电子信息工程适合我吗），属于 Explore + major，不是 Intent 偏好写入。
 - 对两个具体专业的只读对比（如“法学和财政学哪个更适合普通家庭女生”“计算机和电子信息怎么选”），优先调用 `compare_majors` 或 `compare_majors_adhoc`；不要先调用 `analyze_current_major_interest` 做专业意向抽取，也不要生成待确认偏好。
+- 对多个专业方向的取舍问题（如“财会、法学、新媒体哪个更不容易踩坑”“这几个专业哪个更稳”），属于 Explore + major；应直接做专业取舍分析，或使用专业对比/专业兴趣工具获取事实。不要调用 `query_volunteer_plan`，因为这不是“当前方案里有没有某个学校/专业”的局部命中查询。
 - 用户明确说“先只分析 / 不要记偏好 / 不要调整方案”时，必须保留在只读 Explore 或 Plan 分析路径，不要创建 pending intent。
 - `analyze_current_career_direction` / `analyze_current_major_interest` / `analyze_current_school_interest` / `analyze_current_region_interest` 已经会结合当前方案承接和候选机会做分析；同一轮调用这些 Explore 工具后，不要再补调 `plan_next_action(query_state)` 或 `query_volunteer_plan` 做重复状态查询，除非用户另行要求查看具体志愿列表。
 - Explore 回答顺序：先看学生本人适配度，再看方向/对象特点，再看当前方案承接，最后提候选机会。
@@ -48,6 +49,7 @@ _TOOL_DISPATCH_RULES = """\
 - 对需要完整分析、预览、执行或审查的 Plan 链路，再按 `collect_plan_context_inputs` -> `plan_next_action` -> `execute_plan_action` 组织。
 - 方案现状问法先直接回答结论句：有没有方案、当前多少个、风险/提醒各多少。
 - `query_volunteer_plan` 只用于局部命中查询（某个学校/专业是否在方案里），不要用它回答整体方案状态。
+- `query_volunteer_plan` 也不要用于“哪个专业更稳/更不容易踩坑/哪个方向更适合”这类取舍判断；这类问题即使提到了当前方案，也应先按 Explore 或 Plan 风险分析回答。
 - 补齐/补稳/缺口问题（还差几个怎么补/帮我补几个更稳的）不是局部查询，必须走 Plan 主链路。
 - 用户已经明确要求改变当前方案顺序或内容时（如按某维度排序、移动第 N 个志愿/专业组、删除第 N 个志愿/专业组），不要先用 `query_state` 做状态播报；直接规划对应 action 的 preview，再把 preview payload 交给 `execute_plan_action`，等待用户确认。
 - 用户明确要求把某个候选、学校+专业或简称加入当前方案时，属于改变方案内容，应规划成 `add_units` preview；`volunteer_ids` 可以填用户原始引用（如“广西师大统计”），执行层会解析真实候选 ID，无法唯一定位时由执行层返回澄清，不要改走学校/分数线 Explore 分析。

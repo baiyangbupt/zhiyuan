@@ -114,6 +114,12 @@ _EXPLORE_OR_SCORE_TOKENS = (
     "稳定就业",
     "考公",
     "考编",
+    "踩坑",
+    "不容易踩坑",
+    "冒险",
+    "风险",
+    "预算",
+    "学费",
     "分数线",
     "录取分",
     "近三年",
@@ -126,6 +132,38 @@ _READONLY_CANCEL_TOKENS = (
     "别改方案",
     "先只分析",
     "只分析",
+)
+
+_INTENT_PREVIEW_TOKENS = (
+    "影响",
+    "偏好",
+    "要求",
+    "后续参考",
+    "后续",
+    "能接受",
+    "还行",
+    "可以考虑",
+    "别碰",
+    "不要",
+    "不想",
+    "排除",
+    "避开",
+)
+
+_EXPLICIT_LOOKUP_TOKENS = (
+    "有没有",
+    "有无",
+    "是否有",
+    "是不是有",
+    "是不是还有",
+    "几个",
+    "多少",
+    "放多了",
+    "相关",
+    "查一下",
+    "查下",
+    "判断一下",
+    "判断下",
 )
 
 
@@ -232,6 +270,14 @@ _HIGH_CONFIDENCE_SCHOOL_ABBREVIATIONS: dict[str, str] = {
     "青城": "青岛城市学院",
 }
 
+_HIGH_CONFIDENCE_MAJOR_ABBREVIATIONS: dict[str, tuple[str, ...]] = {
+    "学医": ("医学", "医学类"),
+    "医学": ("医学", "医学类"),
+    "医药": ("医学", "医学类"),
+    "护理": ("护理学类", "护理学"),
+    "护理类": ("护理学类", "护理学"),
+}
+
 
 def _find_school_mentions(compact_text: str, school_labels: set[str]) -> list[str]:
     schools = _find_label_mentions(compact_text, school_labels)
@@ -247,7 +293,14 @@ def _find_major_mentions(compact_text: str, level2_labels: set[str], level3_labe
     labels = set(level2_labels) | set(level3_labels)
     labels.update(label[:-1] for label in level3_labels if label.endswith("学") and len(label) > 2)
     labels.update(f"{label[:-2]}类" for label in level2_labels if label.endswith("学类") and len(label) > 3)
-    return _find_label_mentions(compact_text, labels)
+    mentions = _find_label_mentions(compact_text, labels)
+    for alias, standards in _HIGH_CONFIDENCE_MAJOR_ABBREVIATIONS.items():
+        if alias not in compact_text:
+            continue
+        for standard in standards:
+            if standard in level2_labels or standard in level3_labels or standard in {"医学", "医学类"}:
+                _append_unique(mentions, standard)
+    return mentions
 
 
 def _query_has_readonly_semantics(compact_text: str, *, has_entity: bool, scope: PlanQueryFastScope) -> bool:
@@ -256,6 +309,14 @@ def _query_has_readonly_semantics(compact_text: str, *, has_entity: bool, scope:
     if scope != "plan_then_candidate" and has_entity:
         return True
     return False
+
+
+def _looks_like_unscoped_intent_preview(compact_text: str, *, has_entity: bool, scope: PlanQueryFastScope) -> bool:
+    if scope != "plan_then_candidate" or not has_entity:
+        return False
+    if _contains_any(compact_text, _EXPLICIT_LOOKUP_TOKENS):
+        return False
+    return _contains_any(compact_text, _INTENT_PREVIEW_TOKENS)
 
 
 def resolve_plan_query_fast_route(
@@ -288,6 +349,8 @@ def resolve_plan_query_fast_route(
         _append_unique(major_keywords, major)
 
     has_entity = bool(school_keywords or major_keywords)
+    if _looks_like_unscoped_intent_preview(compact_text, has_entity=has_entity, scope=scope):
+        return PlanQueryFastRouteDecision(reason="unscoped_intent_preview_semantics")
     if not _query_has_readonly_semantics(compact_text, has_entity=has_entity, scope=scope):
         return PlanQueryFastRouteDecision(reason="missing_readonly_query_semantics")
     if scope == "plan_then_candidate" and not has_entity:

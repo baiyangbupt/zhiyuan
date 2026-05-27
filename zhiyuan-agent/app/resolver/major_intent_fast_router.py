@@ -80,6 +80,9 @@ _POSITIVE_INTENT_TOKENS = (
     "作为偏好",
     "考虑",
     "可以",
+    "还行",
+    "能接受",
+    "能考虑",
 )
 
 _NEGATIVE_INTENT_TOKENS = (
@@ -94,6 +97,7 @@ _NEGATIVE_INTENT_TOKENS = (
     "避开",
     "别选",
     "别报",
+    "别碰",
     "尽量避开",
 )
 
@@ -103,6 +107,17 @@ _QUESTION_TOKENS = ("可以吗", "可不可以", "能不能", "行不行", "好�
 
 _HIGH_CONFIDENCE_MAJOR_ABBREVIATIONS: dict[str, str] = {
     "土木": "土木工程",
+    "建筑": "建筑学",
+}
+
+_HIGH_CONFIDENCE_LEVEL2_ABBREVIATIONS: dict[str, tuple[str, ...]] = {
+    "医学": ("临床医学类", "口腔医学类", "中医学类", "护理学类", "医学技术类"),
+    "医药": ("临床医学类", "口腔医学类", "中医学类", "护理学类", "医学技术类"),
+    "学医": ("临床医学类", "口腔医学类", "中医学类", "护理学类", "医学技术类"),
+}
+
+_HIGH_CONFIDENCE_LEVEL3_ABBREVIATION_GROUPS: dict[str, tuple[str, ...]] = {
+    "财会": ("会计学", "审计学"),
 }
 
 
@@ -181,6 +196,49 @@ def _build_surface_map(labels: set[str], *, level: str) -> dict[str, str]:
     return surface_map
 
 
+def _expand_high_confidence_aliases(compact_text: str, *, level2_labels: set[str], level3_labels: set[str]) -> list[_MajorMention]:
+    mentions: list[_MajorMention] = []
+    for surface, standards in _HIGH_CONFIDENCE_LEVEL2_ABBREVIATIONS.items():
+        search_from = 0
+        while True:
+            start = compact_text.find(surface, search_from)
+            if start < 0:
+                break
+            search_from = start + 1
+            for standard in standards:
+                if standard not in level2_labels:
+                    continue
+                mentions.append(
+                    _MajorMention(
+                        level="level2",
+                        name=standard,
+                        surface=surface,
+                        start=start,
+                        end=start + len(surface),
+                    )
+                )
+    for surface, standards in _HIGH_CONFIDENCE_LEVEL3_ABBREVIATION_GROUPS.items():
+        search_from = 0
+        while True:
+            start = compact_text.find(surface, search_from)
+            if start < 0:
+                break
+            search_from = start + 1
+            for standard in standards:
+                if standard not in level3_labels:
+                    continue
+                mentions.append(
+                    _MajorMention(
+                        level="level3",
+                        name=standard,
+                        surface=surface,
+                        start=start,
+                        end=start + len(surface),
+                    )
+                )
+    return mentions
+
+
 def _find_mentions(compact_text: str, *, batch: str | None) -> list[_MajorMention]:
     level2_labels, level3_labels = _labels_for_batch(batch)
     surface_entries: list[tuple[str, str, str]] = []
@@ -220,6 +278,18 @@ def _find_mentions(compact_text: str, *, batch: str | None) -> list[_MajorMentio
             occupied_spans.append((start, end))
 
     mentions.sort(key=lambda item: (item.start, -(item.end - item.start), item.name))
+    alias_mentions = _expand_high_confidence_aliases(
+        compact_text,
+        level2_labels=level2_labels,
+        level3_labels=level3_labels,
+    )
+    seen = {(mention.level, mention.name, mention.start, mention.end) for mention in mentions}
+    for mention in alias_mentions:
+        key = (mention.level, mention.name, mention.start, mention.end)
+        if key not in seen:
+            mentions.append(mention)
+            seen.add(key)
+    mentions.sort(key=lambda item: (item.start, item.level))
     return mentions
 
 

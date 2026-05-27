@@ -152,6 +152,15 @@ class _MajorCategoryProfile:
     barrier_score: int
 
 
+@dataclass(frozen=True, slots=True)
+class _MajorSpecificProfile:
+    focus: str
+    fit: str
+    caution: str
+    stability_score: int | None = None
+    barrier_score: int | None = None
+
+
 _MAJOR_CATEGORY_PROFILES: dict[str, _MajorCategoryProfile] = {
     "法学类": _MajorCategoryProfile(
         path="法律职业、公检法、司法行政、纪检监察、合规风控、公共事务等方向",
@@ -276,6 +285,52 @@ _MAJOR_CATEGORY_PROFILES: dict[str, _MajorCategoryProfile] = {
 }
 
 
+_MAJOR_SPECIFIC_PROFILES: dict[str, _MajorSpecificProfile] = {
+    "会计学": _MajorSpecificProfile(
+        focus="更偏企业财务、会计核算、税务、成本管理和财务共享等岗位",
+        fit="岗位数量多、入门口径清楚，普通家庭看重就业确定性时更好理解也更容易铺开选择",
+        caution="需要接受证书、实操和重复性细节工作，学校层次一般时更要看实习和城市产业",
+        stability_score=4,
+        barrier_score=3,
+    ),
+    "审计学": _MajorSpecificProfile(
+        focus="更偏审计、内控、纪检审计、财政审计、事务所和企事业监督评价类岗位",
+        fit="和考公、审计系统、财政监督等方向关联更直观，路径比泛管理类更收敛",
+        caution="岗位面通常比会计窄一些，前期也有事务所强度和证书压力，抗压一般时要谨慎",
+        stability_score=4,
+        barrier_score=4,
+    ),
+    "计算机科学与技术": _MajorSpecificProfile(
+        focus="更偏计算机基础、算法、系统、网络、数据库和后续转 AI/数据/安全等宽口径方向",
+        fit="学校平台好、数学和自学能力不错时，上限和转向空间更大",
+        caution="课程更底层，训练强度和持续学习压力更明显；不想太累时要避开培养强度过高或城市机会弱的选择",
+        stability_score=4,
+        barrier_score=4,
+    ),
+    "软件工程": _MajorSpecificProfile(
+        focus="更偏工程开发、项目实践、软件测试、移动端/后端/企业应用和交付能力",
+        fit="就业口径更直接，普通院校也更容易围绕项目、实习和作品集形成求职抓手",
+        caution="同样需要编程投入，部分院校学费可能更高；如果只想轻松，两个计算机方向都不算轻松",
+        stability_score=4,
+        barrier_score=4,
+    ),
+    "网络与新媒体": _MajorSpecificProfile(
+        focus="更偏内容策划、品牌传播、新媒体运营、短视频与融媒体编辑",
+        fit="表达能力、选题判断和作品意识较好的学生更容易做出差异化",
+        caution="行业波动和城市平台影响大，数学压力较小但需要持续输出作品和实习经历",
+        stability_score=2,
+        barrier_score=3,
+    ),
+    "跨境电子商务": _MajorSpecificProfile(
+        focus="更偏跨境平台运营、数字营销、外贸转化、供应链协同和店铺数据分析",
+        fit="路径更偏实操，普通院校也能通过项目、平台规则和英语/外贸基础增强就业",
+        caution="会碰到数据分析和投放复盘，数学要求不一定深，但不能完全排斥数据和运营压力",
+        stability_score=3,
+        barrier_score=3,
+    ),
+}
+
+
 def _major_compare_profile(major_name: str, batch: str | None = None) -> tuple[str, _MajorCategoryProfile | None]:
     category = _major_category_name(major_name, batch)
     return category, _MAJOR_CATEGORY_PROFILES.get(category)
@@ -283,7 +338,13 @@ def _major_compare_profile(major_name: str, batch: str | None = None) -> tuple[s
 
 def _render_major_profile_line(major_name: str, batch: str | None = None) -> str:
     category, profile = _major_compare_profile(major_name, batch)
+    specific = _MAJOR_SPECIFIC_PROFILES.get(major_name)
     label = f"{major_name}（{category}）" if category else major_name
+    if specific is not None:
+        return (
+            f"{label}：就业路径主要看{specific.focus}；适合点是{specific.fit}；"
+            f"需要留意的是{specific.caution}。"
+        )
     if profile is None:
         focus = "课程适配、升学或证书要求、就业去向、目标地区岗位供给、学校层次和录取概率"
         if category:
@@ -302,6 +363,24 @@ def _render_major_compare_decision_line(
 ) -> str:
     _, profile1 = _major_compare_profile(major_name1, batch)
     _, profile2 = _major_compare_profile(major_name2, batch)
+    specific1 = _MAJOR_SPECIFIC_PROFILES.get(major_name1)
+    specific2 = _MAJOR_SPECIFIC_PROFILES.get(major_name2)
+    if specific1 is not None and specific2 is not None:
+        score1 = specific1.stability_score
+        score2 = specific2.stability_score
+        if score1 is not None and score2 is not None and score1 != score2:
+            stable_major = major_name1 if score1 > score2 else major_name2
+            other_major = major_name2 if stable_major == major_name1 else major_name1
+            return (
+                f"如果优先求稳和降低试错成本，先重点看{stable_major}，"
+                f"再把{other_major}作为兴趣或城市资源更匹配时的备选。"
+                "最终还要结合具体学校层次、城市、录取概率和本人能否接受对应训练强度。"
+            )
+        return (
+            f"{major_name1}和{major_name2}属于相近方向，不能只看专业名下结论。"
+            "更稳的判断要落到学校层次、城市机会、录取概率、学费和本人投入强度："
+            f"如果更想要岗位面宽，优先比较{major_name1}；如果更想要路径收敛或岗位口径更明确，优先比较{major_name2}。"
+        )
     if profile1 is None or profile2 is None:
         return (
             "选择建议：如果更看重普通家庭的稳就业和低试错成本，优先看岗位口径更清楚、"
@@ -325,6 +404,70 @@ def _render_major_compare_decision_line(
     if not parts:
         parts.append("两者稳定性和专业壁垒接近时，要把学校层次、城市机会、录取概率和本人兴趣放到同一张表里比较")
     return f"{'；'.join(parts)}。最终还要结合具体学校层次、城市、录取概率和是否愿意投入对应训练。"
+
+
+def _major_stability_score(major_name: str, batch: str | None = None) -> int:
+    specific = _MAJOR_SPECIFIC_PROFILES.get(major_name)
+    if specific is not None and specific.stability_score is not None:
+        return specific.stability_score
+    _, profile = _major_compare_profile(major_name, batch)
+    return profile.stability_score if profile else 0
+
+
+def _major_barrier_score(major_name: str, batch: str | None = None) -> int:
+    specific = _MAJOR_SPECIFIC_PROFILES.get(major_name)
+    if specific is not None and specific.barrier_score is not None:
+        return specific.barrier_score
+    _, profile = _major_compare_profile(major_name, batch)
+    return profile.barrier_score if profile else 0
+
+
+def render_multi_major_compare_reply(
+    *,
+    major_names: list[str],
+    request_context: RequestContext,
+) -> str:
+    user_text = _recent_user_text(request_context) or _latest_user_text(request_context)
+    names = [name for name in major_names if name]
+    display_names = "、".join(names)
+    score_context = _format_score_detail(request_context.score_detail, user_text=user_text)
+    profile_context = _format_init_profile(request_context.init_profile)
+    context_line = f"{score_context}{'；' + profile_context if profile_context else ''}".strip("；")
+    stable_order = sorted(
+        names,
+        key=lambda name: (_major_stability_score(name, request_context.batch), -_major_barrier_score(name, request_context.batch)),
+        reverse=True,
+    )
+    sections = [
+        f"这轮先按“少踩坑、路径稳、普通家庭试错成本低”的标准看 {display_names}。",
+    ]
+    if stable_order:
+        sections.append(f"先给结论：更求稳时可以优先按 {' > '.join(stable_order)} 的顺序看。")
+    if context_line:
+        sections.extend(["", "**当前会话参考**", f"- {context_line}"])
+    sections.extend(
+        [
+            "",
+            "**本次边界**",
+            "- 这次只做专业取舍分析，不会把任何专业记成偏好，也不会改方案。",
+            "",
+            "**逐项看**",
+        ]
+    )
+    for name in names:
+        sections.append(f"- {_render_major_profile_line(name, request_context.batch)}")
+    sections.extend(
+        [
+            "",
+            "**选择建议**",
+            "- 如果目标是稳就业、岗位清楚和降低试错成本，优先看岗位口径更明确、证书或能力路径更清晰的方向。",
+            "- 如果更看长期上限，再把学校层次、城市机会、录取概率和本人能否持续投入放到一起比较。",
+            "",
+            "**下一步**",
+            "- 可以继续告诉我目标城市或能接受的学校层次，我再帮你看这些方向在当前方案和候选里有没有代表性机会。",
+        ]
+    )
+    return "\n".join(sections)
 
 
 def render_missing_weight_major_compare_reply(

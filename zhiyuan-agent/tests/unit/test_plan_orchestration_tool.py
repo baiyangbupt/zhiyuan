@@ -487,6 +487,45 @@ def test_plan_next_action_coerces_broad_item_removal_issue_to_remove_units():
     assert "整批高收费项" in data["preview_summary"]
 
 
+def test_plan_next_action_keeps_item_removal_risk_question_readonly():
+    with patch(
+        "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
+        new=AsyncMock(
+            return_value=_context_inputs(
+                summary="阶段=reviewed；方案=30/30；风险=0；提醒=3",
+                draft_count=30,
+                ordered_count=30,
+                review_issues=[
+                    {
+                        "code": "cooperative_program",
+                        "label": "中外合作",
+                        "scope_kind": "item_removal",
+                        "default_action_family": "remove_units",
+                        "affected_unit_count": 4,
+                        "affected_volunteer_count": 4,
+                        "scope_fingerprint": "issue-coop-1",
+                    }
+                ],
+            )
+        ),
+    ):
+        result = asyncio.run(
+            plan_next_action(
+                _ctx(),
+                user_goal="方案里中外合作是不是有点多，家里预算一般，帮我用大白话看下风险，先别动",
+                action_family="query_state",
+                user_confirmed=False,
+            )
+        )
+
+    data = json.loads(result)
+    assert data["action_family"] == "query_state"
+    assert data["stage"] == "apply"
+    assert data["requires_confirmation"] is False
+    assert data["atomic_actions"] == []
+    assert "review_issue_target" not in json.dumps(data, ensure_ascii=False)
+
+
 def test_plan_next_action_coerces_structural_review_issue_to_default_action():
     with patch(
         "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",

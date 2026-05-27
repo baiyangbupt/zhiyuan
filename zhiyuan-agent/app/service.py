@@ -28,9 +28,11 @@ from app.domain.career_slots import to_career_label
 from app.llm.client import LLMClient
 from app.resolver.action_resolver_shadow import action_resolver_shadow_from_plan_fast_decision
 from app.resolver.career_direction_fast_router import resolve_career_direction_fast_route
+from app.resolver.fast_route_arbitrator import arbitrate_fast_route_candidates
 from app.resolver.major_compare_fast_router import resolve_major_compare_fast_route
 from app.resolver.major_compare_reply_renderer import (
     is_missing_weight_major_compare_result,
+    render_multi_major_compare_reply,
     render_missing_weight_major_compare_reply,
 )
 from app.resolver.major_intent_fast_router import resolve_major_intent_fast_route
@@ -67,6 +69,7 @@ from app.tools.intent_response_tool import (
     render_explore_followup_result,
     render_intent_state_update,
 )
+from app.util.display_text import clean_plan_sample_text
 from app.util.internal_client import (
     get_intent_change_cache,
     get_planning_workspace_state,
@@ -353,6 +356,47 @@ def _compact_runtime_message(message: Any, max_tool_return_chars: int) -> tuple[
     return ModelRequest(parts=compacted_parts), dropped
 
 
+def _sanitize_runtime_tool_pairs(messages: list[Any]) -> list[Any]:
+    """Remove tool-return messages whose matching tool call was trimmed away.
+
+    Some OpenAI-compatible providers reject history that contains a tool role
+    without a preceding assistant tool call. This only changes the short runtime
+    history sent to the model; persisted history remains complete.
+    """
+    if not messages:
+        return messages
+
+    seen_tool_calls: set[str] = set()
+    sanitized: list[Any] = []
+    for message in messages:
+        if isinstance(message, ModelResponse):
+            for part in getattr(message, "parts", []) or []:
+                if isinstance(part, ToolCallPart) and part.tool_call_id:
+                    seen_tool_calls.add(str(part.tool_call_id))
+            sanitized.append(message)
+            continue
+
+        if isinstance(message, ModelRequest):
+            parts = list(getattr(message, "parts", []) or [])
+            if any(isinstance(part, ToolReturnPart) for part in parts):
+                kept_parts = [
+                    part
+                    for part in parts
+                    if not isinstance(part, ToolReturnPart)
+                    or (part.tool_call_id and str(part.tool_call_id) in seen_tool_calls)
+                ]
+                if not kept_parts:
+                    continue
+                if len(kept_parts) != len(parts):
+                    message = ModelRequest(parts=kept_parts)
+            sanitized.append(message)
+            continue
+
+        sanitized.append(message)
+
+    return sanitized
+
+
 def build_runtime_history(
     full_history: list[Any] | None,
     *,
@@ -401,6 +445,7 @@ def build_runtime_history(
         compacted, dropped = _compact_runtime_message(message, max_tool_return_chars)
         compacted_history.append(compacted)
         dropped_tool_returns += dropped
+    compacted_history = _sanitize_runtime_tool_pairs(compacted_history)
 
     chat_history = pydantic_ai_messages_to_dicts(compacted_history)
     chat_history.append({"role": "user", "content": latest_user_content})
@@ -1250,6 +1295,22 @@ def _is_plan_action_confirmation(content: str) -> bool:
     return normalized.startswith(("确认", "执行")) and len(normalized) <= 8
 
 
+_READONLY_CLOSURE_ACK_PHRASES = {
+    "嗯那就这样",
+    "那就这样",
+    "先这样",
+    "先这样吧",
+    "就先这样",
+    "就先这样吧",
+}
+
+
+def _is_readonly_closure_ack(content: str) -> bool:
+    normalized = re.sub(r"\s+", "", (content or "").strip())
+    normalized = normalized.strip("。.!！?")
+    return normalized in _READONLY_CLOSURE_ACK_PHRASES
+
+
 def _is_pending_intent_confirmation(content: str) -> bool:
     normalized = re.sub(r"\s+", "", (content or "").strip())
     normalized = normalized.strip("。.!！?")
@@ -1403,6 +1464,29 @@ def _build_no_pending_confirmation_guard_reply(messages: list[Any] | None) -> st
         "- 审查当前方案。\n"
         "- 按专业、院校、地域或录取率调整方案。\n\n"
         "涉及改动时，我会先说明影响，确认后再执行。"
+    )
+
+
+def _build_readonly_closure_ack_reply(messages: list[Any] | None) -> str:
+    context_kind = _last_readonly_context_kind(messages)
+    if context_kind == "major_compare":
+        return (
+            "好的，先按刚才的专业对比结论作为参考。\n\n"
+            "这轮没有待确认的偏好或方案动作，我不会改动方案。后面如果想继续，可以直接说“把这个记成偏好”或“看看方案里怎么体现”。"
+        )
+    if context_kind == "career_direction":
+        return (
+            "好的，先按刚才的方向分析作为参考。\n\n"
+            "这轮没有待执行的方案动作，我不会改动方案。后面如果要落到方案里，可以再说“按这个方向看看怎么调”。"
+        )
+    if context_kind == "plan_query":
+        return (
+            "好的，先按刚才查到的方案结果作为参考。\n\n"
+            "这轮不执行移动、删除、加入或排序。后面要调整时，直接说具体学校、专业或位置即可。"
+        )
+    return (
+        "好的，先这样。\n\n"
+        "这轮没有待确认的方案动作，我不会改动当前方案。"
     )
 
 
@@ -1727,6 +1811,71 @@ def _normalize_user_facing_terms(reply: str) -> str:
     return normalized
 
 
+_READONLY_BOUNDARY_PROMPT_TOKENS = (
+    "先只分析",
+    "只分析",
+    "先分析",
+    "先说说",
+    "先聊聊",
+    "先看看",
+    "先看下",
+    "不要记偏好",
+    "不记偏好",
+    "别记偏好",
+    "先别记",
+    "别记",
+    "不要记下来",
+    "不记下来",
+    "别记下来",
+    "不要改方案",
+    "不改方案",
+    "别改方案",
+    "不要改",
+    "别改",
+    "先不要改方案",
+    "先别改",
+    "先别动",
+    "不动",
+)
+
+_READONLY_BOUNDARY_REPLY_TOKENS = (
+    "不会写入",
+    "不会记入",
+    "不会记录",
+    "不写入",
+    "不记入",
+    "不记录",
+    "不会改动",
+    "不会自动修改",
+    "不会改方案",
+    "不改动方案",
+    "不改方案",
+    "只分析",
+    "只是分析",
+    "本轮只",
+)
+
+
+def _prompt_requests_readonly_boundary(content: str | None) -> bool:
+    compact = re.sub(r"\s+", "", str(content or ""))
+    return any(token in compact for token in _READONLY_BOUNDARY_PROMPT_TOKENS)
+
+
+def _append_readonly_boundary_if_requested(reply: str, content: str | None) -> str:
+    if not isinstance(reply, str) or not reply.strip():
+        return reply
+    if not _prompt_requests_readonly_boundary(content):
+        return reply
+    compact_reply = re.sub(r"\s+", "", reply)
+    if any(token in compact_reply for token in _READONLY_BOUNDARY_REPLY_TOKENS):
+        return reply
+    return (
+        reply.rstrip()
+        + "\n\n**本轮边界**\n"
+        + "- 这次只做分析和参考，不会写入偏好，也不会改动当前方案。"
+    )
+
+
 def _plan_reply_needs_normalization(reply: str) -> bool:
     """Only guard severe user-experience failures, not natural model formatting."""
     if any(marker in reply for marker in _PLAN_STYLE_SEVERE_MARKERS):
@@ -2013,7 +2162,13 @@ def _direct_plan_fast_route_reply(result: dict[str, Any]) -> str:
     ).strip()
     if not reply:
         return "我已经完成这一步处理。"
-    return reply.replace("补偿", "补齐")
+    reply = reply.replace("补偿", "补齐")
+    if str(result.get("result_kind") or "").strip() == "adjustment_analysis":
+        if "方案顺序" not in reply and "导出顺序" not in reply:
+            reply = f"{reply}\n\n影响说明：这一步先分析怎么调稳，不会直接改方案；后续如果进入具体移动、删除、补入或排序，才会影响方案顺序和导出顺序，并让审查状态进入待重新审查。"
+        if "确认后" not in reply and "需要你确认" not in reply:
+            reply = f"{reply}\n下一步如果要执行具体调整，我会先给出明确动作，确认后才会执行。"
+    return reply
 
 
 def _build_plan_timeout_fallback_reply(result: dict[str, Any]) -> str | None:
@@ -2076,12 +2231,7 @@ def _build_plan_timeout_fallback_reply(result: dict[str, Any]) -> str | None:
 
 
 def _clean_status_item_for_user(value: Any) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    text = text.replace("(unknown)", "")
-    text = re.sub(r"@(\d+)", r"第\1位", text)
-    return text
+    return clean_plan_sample_text(value)
 
 
 def _format_status_tier_counts(tier_counts: Any) -> str:
@@ -2696,13 +2846,73 @@ class ChatService:
             )
             return reply
 
-        fast_decision = (
+        if active_pending is None and _is_readonly_closure_ack(content):
+            reply = _build_readonly_closure_ack_reply(history)
+            new_messages = [
+                ModelRequest(parts=[UserPromptPart(content=content)]),
+                ModelResponse(parts=[TextPart(content=reply)], model_name="direct-readonly-closure-ack"),
+            ]
+            try:
+                history_to_save = list(history or [])
+                history_to_save.extend(new_messages)
+                await self.history_store.save(session_id, history_to_save)
+            except Exception:
+                logger.exception("Failed to save readonly closure ack history: session_id=%s", session_id)
+            _log_conversation_turn_event(
+                sessionId=session_id,
+                userId=user_id,
+                scene="general",
+                routingPath="readonly_closure_ack",
+                routeDecision={
+                    "source": "direct_guard",
+                    "matched": True,
+                    "confidence": "high",
+                    "route": "general",
+                    "reason": "readonly_closure_ack",
+                },
+                pendingType=None,
+                actionFamily=None,
+                resultKind="ack",
+                llmRequests=0,
+                inputTokens=0,
+                outputTokens=0,
+                totalTokens=0,
+                totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
+                status="success",
+                errorType=None,
+            )
+            return reply
+
+        plan_fast_candidate = (
             resolve_plan_fast_route(content)
             if request_context.planning_summary is not None
             else None
         )
+        plan_query_candidate = resolve_plan_query_fast_route(content, batch=request_context.batch)
+        major_intent_candidate = resolve_major_intent_fast_route(content, batch=request_context.batch)
+        major_compare_candidate = resolve_major_compare_fast_route(content, batch=request_context.batch)
+        career_direction_candidate = resolve_career_direction_fast_route(content)
+        fast_arbitration = arbitrate_fast_route_candidates(
+            content,
+            plan_fast_decision=plan_fast_candidate,
+            plan_query_decision=plan_query_candidate,
+            major_intent_decision=major_intent_candidate,
+            major_compare_decision=major_compare_candidate,
+            career_direction_decision=career_direction_candidate,
+        )
+        if fast_arbitration.selected is None and fast_arbitration.candidates:
+            log_event(
+                "fast_route_arbitration_fallback_event",
+                sessionId=session_id,
+                userId=user_id,
+                routeDecision=fast_arbitration.route_decision(),
+                totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
+            )
+
+        fast_decision = fast_arbitration.decision_for("plan_fast_route")
         if fast_decision is not None and fast_decision.matched:
             route_decision = fast_decision.route_decision()
+            route_decision["arbitration"] = fast_arbitration.route_decision()
             try:
                 shadow = action_resolver_shadow_from_plan_fast_decision(
                     text=content,
@@ -2877,9 +3087,10 @@ class ChatService:
                     fast_decision.action_family,
                 )
 
-        plan_query_decision = resolve_plan_query_fast_route(content, batch=request_context.batch)
-        if plan_query_decision.matched:
+        plan_query_decision = fast_arbitration.decision_for("plan_query_fast_route")
+        if plan_query_decision is not None and plan_query_decision.matched:
             route_decision = plan_query_decision.route_decision()
+            route_decision["arbitration"] = fast_arbitration.route_decision()
             tool_call_id = "fast-query-volunteer-plan"
             tool_started_at = time.monotonic()
             tool_args = plan_query_decision.tool_args()
@@ -2891,6 +3102,7 @@ class ChatService:
                 )
                 tool_duration_ms = int((time.monotonic() - tool_started_at) * 1000)
                 reply = _sanitize_reply_for_user(_normalize_user_facing_terms(str(tool_result_text or "").strip()))
+                reply = _append_readonly_boundary_if_requested(reply, content)
 
                 new_messages = [
                     ModelRequest(parts=[UserPromptPart(content=content)]),
@@ -2960,9 +3172,10 @@ class ChatService:
                     tool_args,
                 )
 
-        major_intent_decision = resolve_major_intent_fast_route(content, batch=request_context.batch)
-        if major_intent_decision.matched:
+        major_intent_decision = fast_arbitration.decision_for("major_intent_fast_route")
+        if major_intent_decision is not None and major_intent_decision.matched:
             route_decision = major_intent_decision.route_decision()
+            route_decision["arbitration"] = fast_arbitration.route_decision()
             tool_call_id = "fast-preview-major-intent"
             tool_started_at = time.monotonic()
             try:
@@ -3049,30 +3262,50 @@ class ChatService:
                     major_intent_decision.major_intents,
                 )
 
-        major_compare_decision = resolve_major_compare_fast_route(content, batch=request_context.batch)
-        if major_compare_decision.matched:
+        major_compare_decision = fast_arbitration.decision_for("major_compare_fast_route")
+        if major_compare_decision is not None and major_compare_decision.matched:
             route_decision = major_compare_decision.route_decision()
+            route_decision["arbitration"] = fast_arbitration.route_decision()
             tool_call_id = "fast-compare-majors"
             tool_started_at = time.monotonic()
             try:
                 await _safe_emit_progress(on_progress, "正在对比这几个专业的差异...")
-                tool_result_text = await compare_majors(
-                    SimpleNamespace(deps=request_context),
+                major_names = list(major_compare_decision.major_names or [
                     major_compare_decision.major_name1,
                     major_compare_decision.major_name2,
-                )
-                tool_duration_ms = int((time.monotonic() - tool_started_at) * 1000)
+                ])
                 used_missing_weight_renderer = False
-                if is_missing_weight_major_compare_result(tool_result_text):
-                    reply = render_missing_weight_major_compare_reply(
-                        major_name1=major_compare_decision.major_name1,
-                        major_name2=major_compare_decision.major_name2,
+                used_multi_major_renderer = len(major_names) > 2
+                if used_multi_major_renderer:
+                    tool_result_text = json.dumps(
+                        {
+                            "result_kind": "multi_major_compare",
+                            "major_names": major_names,
+                        },
+                        ensure_ascii=False,
+                    )
+                    reply = render_multi_major_compare_reply(
+                        major_names=major_names,
                         request_context=request_context,
                     )
-                    used_missing_weight_renderer = True
                 else:
-                    reply = tool_result_text
+                    tool_result_text = await compare_majors(
+                        SimpleNamespace(deps=request_context),
+                        major_compare_decision.major_name1,
+                        major_compare_decision.major_name2,
+                    )
+                    if is_missing_weight_major_compare_result(tool_result_text):
+                        reply = render_missing_weight_major_compare_reply(
+                            major_name1=major_compare_decision.major_name1,
+                            major_name2=major_compare_decision.major_name2,
+                            request_context=request_context,
+                        )
+                        used_missing_weight_renderer = True
+                    else:
+                        reply = tool_result_text
+                tool_duration_ms = int((time.monotonic() - tool_started_at) * 1000)
                 reply = _sanitize_reply_for_user(_normalize_user_facing_terms(str(reply or "").strip()))
+                reply = _append_readonly_boundary_if_requested(reply, content)
 
                 new_messages = [
                     ModelRequest(parts=[UserPromptPart(content=content)]),
@@ -3083,6 +3316,7 @@ class ChatService:
                                 args={
                                     "major_name1": major_compare_decision.major_name1,
                                     "major_name2": major_compare_decision.major_name2,
+                                    "major_names": major_names,
                                 },
                                 tool_call_id=tool_call_id,
                             )
@@ -3114,7 +3348,13 @@ class ChatService:
                     routeDecision=route_decision,
                     pendingType=None,
                     actionFamily="compare_majors",
-                    resultKind="missing_weight_fallback" if is_missing_weight_major_compare_result(tool_result_text) else "major_compare",
+                    resultKind=(
+                        "multi_major_compare"
+                        if used_multi_major_renderer
+                        else "missing_weight_fallback"
+                        if is_missing_weight_major_compare_result(tool_result_text)
+                        else "major_compare"
+                    ),
                     modelProvider=_llm_config_value(self.llm_client, "provider"),
                     modelName=_llm_config_value(self.llm_client, "model_name"),
                     llmRequests=0,
@@ -3131,12 +3371,17 @@ class ChatService:
                             "durationMs": tool_duration_ms,
                             "success": True,
                             "majorNames": [
-                                major_compare_decision.major_name1,
-                                major_compare_decision.major_name2,
+                                *major_names,
                             ],
                         }
                     ],
-                    postProcessingApplied=["missing_weight_major_compare_renderer"] if used_missing_weight_renderer else [],
+                    postProcessingApplied=(
+                        ["multi_major_compare_renderer"]
+                        if used_multi_major_renderer
+                        else ["missing_weight_major_compare_renderer"]
+                        if used_missing_weight_renderer
+                        else []
+                    ),
                     status="success",
                     errorType=None,
                 )
@@ -3149,9 +3394,10 @@ class ChatService:
                     major_compare_decision.major_name2,
                 )
 
-        career_direction_decision = resolve_career_direction_fast_route(content)
-        if career_direction_decision.matched:
+        career_direction_decision = fast_arbitration.decision_for("career_direction_fast_route")
+        if career_direction_decision is not None and career_direction_decision.matched:
             route_decision = career_direction_decision.route_decision()
+            route_decision["arbitration"] = fast_arbitration.route_decision()
             tool_call_id = "fast-analyze-current-career-direction"
             tool_started_at = time.monotonic()
             try:
@@ -3159,6 +3405,7 @@ class ChatService:
                 tool_result_text = await analyze_current_career_direction(SimpleNamespace(deps=request_context))
                 tool_duration_ms = int((time.monotonic() - tool_started_at) * 1000)
                 reply = _sanitize_reply_for_user(_normalize_user_facing_terms(str(tool_result_text or "").strip()))
+                reply = _append_readonly_boundary_if_requested(reply, content)
 
                 new_messages = [
                     ModelRequest(parts=[UserPromptPart(content=content)]),
@@ -3292,6 +3539,13 @@ class ChatService:
                 _replace_text_reply(new_messages, reply, user_facing_reply)
                 _replace_text_reply(all_messages, reply, user_facing_reply)
                 reply = user_facing_reply
+
+        if isinstance(reply, str):
+            readonly_bounded_reply = _append_readonly_boundary_if_requested(reply, content)
+            if readonly_bounded_reply != reply:
+                _replace_text_reply(new_messages, reply, readonly_bounded_reply)
+                _replace_text_reply(all_messages, reply, readonly_bounded_reply)
+                reply = readonly_bounded_reply
 
         # ── 保存历史 ──────────────────────────────────────────────
         try:

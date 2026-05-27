@@ -12,8 +12,15 @@ def test_major_compare_fast_route_matches_exact_two_level3_majors():
 
 def test_major_compare_fast_route_does_not_match_category_or_abbreviation():
     assert resolve_major_compare_fast_route("计算机和电子信息怎么选").matched is False
-    assert resolve_major_compare_fast_route("计科和软工哪个更好").matched is False
     assert resolve_major_compare_fast_route("法学类和财政学类哪个更适合").matched is False
+
+
+def test_major_compare_fast_route_matches_common_computer_abbreviations():
+    decision = resolve_major_compare_fast_route("计科和软工哪个更稳一点，别说太虚")
+
+    assert decision.matched is True
+    assert decision.major_name1 == "计算机科学与技术"
+    assert decision.major_name2 == "软件工程"
 
 
 def test_major_compare_fast_route_matches_unique_local_alias():
@@ -38,6 +45,22 @@ def test_major_compare_fast_route_matches_high_confidence_lazy_abbreviations():
     assert decision.matched is True
     assert decision.major_name1 == "法学"
     assert decision.major_name2 == "财政学"
+
+
+def test_major_compare_fast_route_matches_colloquial_pressure_compare():
+    decision = resolve_major_compare_fast_route("法学会不会太卷啊，跟财政比哪个普通家庭更扛得住，先别记")
+
+    assert decision.matched is True
+    assert decision.major_name1 == "法学"
+    assert decision.major_name2 == "财政学"
+
+
+def test_major_compare_fast_route_matches_three_colloquial_majors():
+    decision = resolve_major_compare_fast_route("财会、法学、新媒体这几个，哪个更不容易踩坑，先说说别记偏好")
+
+    assert decision.matched is True
+    assert decision.major_names == ["会计学", "法学", "网络与新媒体"]
+    assert decision.route_decision()["majorNames"] == ["会计学", "法学", "网络与新媒体"]
 
 
 def test_major_compare_fast_route_does_not_match_intent_or_mutation_semantics():

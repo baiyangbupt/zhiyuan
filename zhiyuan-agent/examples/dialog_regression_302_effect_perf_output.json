@@ -1,0 +1,143 @@
+{
+  "records": [
+    {
+      "case": "302-effect-clean-plan-status-major",
+      "sessionId": "17",
+      "prompt": "看看现在的方案，给我一个结构化一点的结论",
+      "elapsedMs": 60651,
+      "primaryMessages": 3,
+      "followupMessages": 0
+    },
+    {
+      "case": "302-effect-readonly-career-fit-real-plan",
+      "sessionId": "17",
+      "prompt": "当前方案对体制内稳定就业方向承接得怎么样，先不要改方案",
+      "elapsedMs": 140709,
+      "primaryMessages": 2,
+      "followupMessages": 0
+    },
+    {
+      "case": "302-effect-major-positional-move-preview-confirm",
+      "sessionId": "17",
+      "prompt": "把第2个志愿移到第4位",
+      "elapsedMs": 69047,
+      "primaryMessages": 6,
+      "followupMessages": 0
+    },
+    {
+      "case": "302-effect-major-positional-move-preview-confirm",
+      "sessionId": "17",
+      "prompt": "确认",
+      "elapsedMs": 4461,
+      "primaryMessages": 1,
+      "followupMessages": 1
+    },
+    {
+      "case": "302-effect-major-group-unit-move-preview-confirm",
+      "sessionId": "16",
+      "prompt": "把第4个专业组移到第2位",
+      "elapsedMs": 62857,
+      "primaryMessages": 4,
+      "followupMessages": 0
+    },
+    {
+      "case": "302-effect-major-group-unit-move-preview-confirm",
+      "sessionId": "16",
+      "prompt": "确认",
+      "elapsedMs": 5406,
+      "primaryMessages": 1,
+      "followupMessages": 1
+    },
+    {
+      "case": "302-effect-ambiguous-school-major-safe-readonly",
+      "sessionId": "17",
+      "prompt": "青岛城市学院相关专业是不是有多个，先帮我判断一下，不要直接改方案",
+      "elapsedMs": 17496,
+      "primaryMessages": 2,
+      "followupMessages": 0
+    },
+    {
+      "case": "302-effect-new-dialog-major-compare-readonly",
+      "sessionId": "880001",
+      "prompt": "法学和财政学哪个更适合普通家庭女生，先只分析不要记偏好",
+      "elapsedMs": 111758,
+      "primaryMessages": 5,
+      "followupMessages": 0
+    },
+    {
+      "case": "302-effect-new-dialog-soft-hard-intent-preview",
+      "sessionId": "880002",
+      "prompt": "我倾向法学和财政学，但护理不要",
+      "elapsedMs": 21435,
+      "primaryMessages": 2,
+      "followupMessages": 1
+    },
+    {
+      "case": "302-effect-new-dialog-soft-hard-intent-preview",
+      "sessionId": "880002",
+      "prompt": "先不确认，看看这个偏好会影响方案吗",
+      "elapsedMs": 31994,
+      "primaryMessages": 3,
+      "followupMessages": 0
+    },
+    {
+      "case": "302-effect-new-dialog-no-pending-confirm-fast-guard",
+      "sessionId": "880003",
+      "prompt": "确认",
+      "elapsedMs": 2145,
+      "primaryMessages": 1,
+      "followupMessages": 0
+    }
+  ],
+  "summary": {
+    "steps": 11,
+    "successfulSteps": 11,
+    "failedSteps": 0,
+    "elapsed": {
+      "count": 11,
+      "minMs": 2145,
+      "medianMs": 31994,
+      "p95Ms": 140709,
+      "maxMs": 140709
+    },
+    "slowest": [
+      {
+        "case": "302-effect-readonly-career-fit-real-plan",
+        "sessionId": "17",
+        "prompt": "当前方案对体制内稳定就业方向承接得怎么样，先不要改方案",
+        "elapsedMs": 140709
+      },
+      {
+        "case": "302-effect-new-dialog-major-compare-readonly",
+        "sessionId": "880001",
+        "prompt": "法学和财政学哪个更适合普通家庭女生，先只分析不要记偏好",
+        "elapsedMs": 111758
+      },
+      {
+        "case": "302-effect-major-positional-move-preview-confirm",
+        "sessionId": "17",
+        "prompt": "把第2个志愿移到第4位",
+        "elapsedMs": 69047
+      },
+      {
+        "case": "302-effect-major-group-unit-move-preview-confirm",
+        "sessionId": "16",
+        "prompt": "把第4个专业组移到第2位",
+        "elapsedMs": 62857
+      },
+      {
+        "case": "302-effect-clean-plan-status-major",
+        "sessionId": "17",
+        "prompt": "看看现在的方案，给我一个结构化一点的结论",
+        "elapsedMs": 60651
+      }
+    ]
+  },
+  "warnings": [
+    "302-effect-clean-plan-status-major session=17 prompt=看看现在的方案，给我一个结构化一点的结论: latency warning — elapsedMs=60651 > warnElapsedMs=60000",
+    "302-effect-readonly-career-fit-real-plan session=17 prompt=当前方案对体制内稳定就业方向承接得怎么样，先不要改方案: latency warning — elapsedMs=140709 > warnElapsedMs=90000",
+    "302-effect-major-positional-move-preview-confirm session=17 prompt=把第2个志愿移到第4位: latency warning — elapsedMs=69047 > warnElapsedMs=60000",
+    "302-effect-new-dialog-major-compare-readonly session=880001 prompt=法学和财政学哪个更适合普通家庭女生，先只分析不要记偏好: latency warning — elapsedMs=111758 > warnElapsedMs=90000"
+  ],
+  "failures": []
+}

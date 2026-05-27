@@ -12,6 +12,7 @@ from app.domain.career_slots import (
     CAREER_SYSTEM_PUBLIC_SERVICE,
     to_career_labels,
 )
+from app.util.display_text import brief_school_major_text
 from app.util.internal_client import get_planning_state
 
 logger = logging.getLogger(__name__)
@@ -352,7 +353,8 @@ def _format_candidate_brief(item: dict[str, Any], intent_values: list[str] | Non
     major_name = "、".join(matched_major_names[:2]) or _first_major_name(item) or "未知专业"
     tier = _field_value(item, _TIER_KEYS) or "未知"
     province_name = _field_value(item, _PROVINCE_NAME_KEYS)
-    return f"{school_name}-{major_name}（{tier}{f'/{province_name}' if province_name else ''}）"
+    brief_name = brief_school_major_text(school_name, major_name)
+    return f"{brief_name}（{tier}{f'/{province_name}' if province_name else ''}）"
 
 
 def _collect_intent_labels(
@@ -404,9 +406,9 @@ def build_plan_relation_analysis(
     next_action_hints: list[str] = []
 
     if intent_mode == INTENT_MODE_CONSTRAINT:
-        fit_points.append("我先帮你看看，这个要求和你现在的方案是否有冲突，以及还有没有合适的可选机会。")
+        fit_points.append("这条要求需要重点看当前方案是否有冲突，以及候选里是否还有可替代机会。")
     else:
-        fit_points.append("我先帮你看看，现在这份方案里有没有贴近这个方向的内容，以及还有哪些值得继续关注的机会。")
+        fit_points.append("这条偏好适合先看当前方案里有多少承接内容，再看候选里还有哪些值得继续关注的机会。")
 
     if career_intents:
         positive = to_career_labels(career_intents.get("positive"))
@@ -418,7 +420,7 @@ def build_plan_relation_analysis(
         if positive or negative:
             opportunity_points.insert(0, "这类想法不会立刻改动候选结果，但会影响我后面怎么帮你分析和给建议。")
     else:
-        opportunity_points.append("我也会顺手看看，方案外还有没有更贴近这个方向的机会。")
+        opportunity_points.append("如果后面要继续展开，我会再结合候选机会看有没有更贴近这个方向的补充空间。")
 
     if analysis_stage == ANALYSIS_STAGE_INTEREST:
         if intent_mode == INTENT_MODE_CONSTRAINT:
@@ -496,6 +498,8 @@ async def enrich_plan_relation_analysis_from_state(
             base_analysis["currentPlanFit"] = _remove_generic_points(
                 base_analysis.get("currentPlanFit") or [],
                 "我先帮你看看",
+                "这条要求需要重点看",
+                "这条偏好适合先看",
             )
             base_analysis["currentPlanFit"].insert(0, f"现在这份方案里，比较贴近你这个想法的有：{'、'.join(fit_examples[:5])}")
         if conflict_items:
@@ -522,6 +526,7 @@ async def enrich_plan_relation_analysis_from_state(
             base_analysis["candidateOpportunity"] = _remove_generic_points(
                 base_analysis.get("candidateOpportunity") or [],
                 "我也会顺手看看",
+                "如果后面要继续展开",
             )
             base_analysis["candidateOpportunity"].insert(0, f"候选里还有一些暂时没放进方案的机会：{'、'.join(_format_candidate_brief(item, intent_labels['positive']) for item in sorted_opportunities[:3])}")
             base_analysis["candidateOpportunity"].append(f"和这个方向比较相关、但还没放进方案里的机会，大约还有 {len(opportunity_items)} 个。")

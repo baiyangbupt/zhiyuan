@@ -11,6 +11,7 @@ from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, ToolCall
 
 from app.data.history_store import ChatHistoryStore
 from app.resolver.career_direction_fast_router import resolve_career_direction_fast_route
+from app.resolver.fast_route_arbitrator import arbitrate_fast_route_candidates
 from app.resolver.major_compare_fast_router import resolve_major_compare_fast_route
 from app.resolver.major_intent_fast_router import resolve_major_intent_fast_route
 from app.resolver.plan_fast_router import resolve_plan_fast_route
@@ -27,6 +28,7 @@ RELEASE_302_EFFECT_PERF_CASES_PATH = Path(__file__).resolve().parents[2] / "exam
 RELEASE_303_EFFECT_PERF_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_303_effect_perf_cases.json"
 RELEASE_303_OPEN_QUALITY_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_303_open_quality_cases.json"
 RELEASE_303_REALISTIC_USER_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_303_realistic_user_cases.json"
+MODEL_PROVIDER_303_OPEN_REALISTIC_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "model_provider_303_open_quality_realistic_cases.json"
 
 
 def _run(coro):
@@ -90,17 +92,22 @@ def _build_service(tmp_path, agent: _ScenarioAgent) -> ChatService:
 
 def test_release_303_fast_router_priority_matrix_prevents_cross_layer_intercepts():
     def resolved_route(prompt: str) -> str:
-        if resolve_plan_fast_route(prompt).matched:
-            return "plan"
-        if resolve_plan_query_fast_route(prompt).matched:
-            return "plan_query"
-        if resolve_major_intent_fast_route(prompt).matched:
-            return "major_intent"
-        if resolve_major_compare_fast_route(prompt).matched:
-            return "major_compare"
-        if resolve_career_direction_fast_route(prompt).matched:
-            return "career_direction"
-        return "full_agent"
+        result = arbitrate_fast_route_candidates(
+            prompt,
+            plan_fast_decision=resolve_plan_fast_route(prompt),
+            plan_query_decision=resolve_plan_query_fast_route(prompt),
+            major_intent_decision=resolve_major_intent_fast_route(prompt),
+            major_compare_decision=resolve_major_compare_fast_route(prompt),
+            career_direction_decision=resolve_career_direction_fast_route(prompt),
+        )
+        route_map = {
+            "plan_fast_route": "plan",
+            "plan_query_fast_route": "plan_query",
+            "major_intent_fast_route": "major_intent",
+            "major_compare_fast_route": "major_compare",
+            "career_direction_fast_route": "career_direction",
+        }
+        return route_map.get(result.selected_path, "full_agent")
 
     cases = {
         "看看现在的方案，给我一个结构化一点的结论": "plan",
@@ -110,6 +117,9 @@ def test_release_303_fast_router_priority_matrix_prevents_cross_layer_intercepts
         "法学和财政学哪个更适合普通家庭女生，先只分析不要记偏好": "major_compare",
         "当前方案对体制内稳定就业方向承接得怎么样，先不要改方案": "career_direction",
         "删掉山东英才学院的国际商务，然后从候选里再补一个稳档": "full_agent",
+        "孩子不想学医也不想护理，方案里有没有这种坑，先看看": "plan_query",
+        "医学护理这些别碰，财会还能接受，先看看影响": "major_intent",
+        "孩子就想去北京天津，但分数不算高，这样是不是太冒险，先别改": "full_agent",
     }
 
     for prompt, expected_route in cases.items():
@@ -154,6 +164,10 @@ def _load_release_303_open_quality_cases() -> list[dict]:
 
 def _load_release_303_realistic_user_cases() -> list[dict]:
     return json.loads(RELEASE_303_REALISTIC_USER_CASES_PATH.read_text(encoding="utf-8"))
+
+
+def _load_model_provider_303_open_realistic_cases() -> list[dict]:
+    return json.loads(MODEL_PROVIDER_303_OPEN_REALISTIC_CASES_PATH.read_text(encoding="utf-8"))
 
 
 def test_mainline_dialog_case_catalog_has_current_explore_intent_plan_scenarios():
@@ -603,7 +617,7 @@ def test_release_303_effect_perf_cases_treat_quality_as_first_class_gate():
 def test_release_303_open_quality_cases_cover_richer_real_user_shapes():
     cases = _load_release_303_open_quality_cases()
 
-    assert len(cases) >= 7
+    assert len(cases) >= 14
     assert len({case["name"] for case in cases}) == len(cases)
     coverage = {tag for case in cases for tag in case["coverage"]}
     required_tags = {
@@ -620,6 +634,11 @@ def test_release_303_open_quality_cases_cover_richer_real_user_shapes():
         "readonly_no_workspace_card",
         "readonly_no_pending_intent",
         "no_pending_guard",
+        "realistic_user_input",
+        "parent_colloquial",
+        "colloquial_pressure",
+        "candidate_lookup",
+        "budget_risk",
     }
     assert required_tags.issubset(coverage)
 
@@ -629,7 +648,7 @@ def test_release_303_open_quality_cases_cover_richer_real_user_shapes():
         assert case["assertPlanStyle"] is True
         assert case["prompts"]
         assert case["coverage"]
-        assert set(case["flow"]).issubset({"explore", "intent", "plan", "readonly", "confirm_guard"})
+        assert set(case["flow"]).issubset({"explore", "intent", "plan", "review", "readonly", "confirm_guard"})
         for step in case["prompts"]:
             assert isinstance(step, dict)
             assert step.get("prompt")
@@ -643,8 +662,68 @@ def test_release_303_open_quality_cases_cover_richer_real_user_shapes():
     assert "按推荐系数重新排" in prompts
     assert "网络与新媒体和跨境电子商务" in prompts
     assert "考公、稳定就业和读研" in prompts
+    assert "这版是不是太冲了" in prompts
+    assert "家里就想让孩子以后稳一点进体制" in prompts
+    assert "法学会不会太卷" in prompts
+    assert "会计审计这类还行" in prompts
+    assert "候选里还有没有更稳一点的会计审计" in prompts
+    assert "方案里中外合作是不是有点多" in prompts
+    assert "嗯那就这样" in prompts
     assert any(step.get("assertNoFollowups") is True for step in all_steps)
     assert any(step.get("maxElapsedSeconds") for step in all_steps)
+
+
+def test_model_provider_303_open_realistic_cases_cover_quality_gate_fields():
+    cases = _load_model_provider_303_open_realistic_cases()
+
+    assert len(cases) >= 15
+    assert len({case["name"] for case in cases}) == len(cases)
+    coverage = {tag for case in cases for tag in case["coverage"]}
+    required_tags = {
+        "release_3_0_3",
+        "provider_benchmark",
+        "open_quality",
+        "realistic_user_input",
+        "readonly_no_workspace_card",
+        "preview_confirm_boundary",
+        "lazy_short_prompt",
+        "school_abbreviation",
+        "major_abbreviation",
+        "no_pending_guard",
+    }
+    assert required_tags.issubset(coverage)
+
+    banned_terms = {"payload", "stage", "action_family", "volunteerId", "草稿"}
+    all_steps = [step for case in cases for step in case["prompts"]]
+    for case in cases:
+        assert case["assertPlanStyle"] is True
+        assert case["prompts"]
+        assert case["coverage"]
+        assert "provider_benchmark" in case["coverage"]
+        assert "realistic_user_input" in case["coverage"]
+        for step in case["prompts"]:
+            assert isinstance(step, dict)
+            assert step.get("prompt")
+            assert step.get("assertContains") or step.get("assertContainsAny")
+            assert step.get("expectedKeyPoints") or step.get("expectedKeyPointGroups")
+            assert step.get("forbiddenPatterns")
+            assert banned_terms.intersection(set(step.get("assertNotContains") or [])) == banned_terms
+            assert step.get("warnElapsedSeconds") or step.get("maxElapsedSeconds")
+
+    prompts = "\n".join(step["prompt"] for step in all_steps)
+    assert "这版是不是太冲了" in prompts
+    assert "家里就想让孩子以后稳一点进体制" in prompts
+    assert "法学会不会太卷" in prompts
+    assert "会计审计这类还行" in prompts
+    assert "候选里还有没有更稳一点的会计审计" in prompts
+    assert "方案里中外合作是不是有点多" in prompts
+    assert "家里预算一年最多两万多" in prompts
+    assert "这方案咋样，能不能说重点" in prompts
+    assert "青城那个是不是放多了" in prompts
+    assert "新媒体和跨电呢" in prompts
+    assert "按好学校排下看看" in prompts
+    assert "嗯可以" in prompts
+    assert any(step.get("minTextLengthWarn") for step in all_steps)
 
 
 def test_release_303_realistic_user_cases_cover_lazy_colloquial_and_abbrev_inputs():

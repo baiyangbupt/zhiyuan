@@ -34,6 +34,9 @@ CAREER_SLOT_KEYWORDS: dict[str, tuple[str, ...]] = {
         "求稳",
         "抗风险",
         "稳妥就业",
+        "稳一点",
+        "别太折腾",
+        "不折腾",
     ),
     CAREER_FURTHER_STUDY: (
         "读研",

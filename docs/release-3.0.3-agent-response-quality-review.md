@@ -718,3 +718,197 @@
 - 局部查询的“专业热度/计划数”信息已经覆盖关键分布，但表达仍偏数据化；后续可进一步转成更像顾问的解释。
 - 多模型对照仍需要更开放的 case，否则结构化 renderer 会让不同模型回复高度一致，难以真实比较模型表达质量。
 - 新 runner 输出应尽量补齐 `routingPath`，减少详细报告里的 route warning。
+
+## 12. 开放真实场景与多模型对比扩展
+
+本轮继续扩展开放式质量评估，重点不是再增加标准问法，而是加入更接近真实用户的表达：
+
+- `dialog_regression_303_open_quality_cases.json` 已从标准开放问法继续扩展，新增家长视角、风险焦虑、专业压力、候选机会和只读后确认保护场景，例如“这版是不是太冲了，能不能给我说人话”“家里就想让孩子以后稳一点进体制”“法学会不会太卷”“会计审计这类还行，土木建筑那种别碰”“候选里还有没有更稳一点的会计审计”。
+- 新增 `model_provider_303_open_quality_realistic_cases.json`，用于多模型 Agent 横向对比。该文件只选取代表性开放口语 case，并要求保留完整回复、质量期望点、禁用表达、no-followup 和耗时预算。
+- `model_provider_benchmark.py` 的 Agent 场景断言已补充 `expectedKeyPoints / forbiddenPatterns / assertThinkingContains / assertNoFollowups / maxElapsedSeconds / warnElapsedSeconds`，避免多模型对比只看延迟而忽略回复质量。
+- 本轮继续把多模型开放 case 从 10 个扩展到 25 个，新增“这方案咋样，能不能说重点”“青城那个是不是放多了，先看看别改”“新媒体和跨电呢，数学不太行，哪个别踩坑”“按好学校排下看看，先给我看会怎么动”“嗯可以”“会计和审计哪个更稳，考公也能用点的”“以后想考公但也怕太卷，这方案有支撑吗，先看看”“就按别太冒险的思路把这版调稳点，先给我看看会怎么动”“北京天津想去，但别最后没学上，这个取舍咋看”“医学护理这些别碰，财会还能接受，先看看影响”等真实短句、简称、家长表达、弱确认和方案调整边界场景。
+- `model_provider_benchmark.py` 新增 `expectedKeyPointGroups` 和 `minTextLengthWarn` 评估口径。前者用于同义表达验收，后者只做薄回复 warning，不作为硬失败，避免把质量评估退化成固定模板或字数门槛。
+
+当前设计口径：
+
+- 多模型对比继续使用 SiliconFlow 示例配置中的 `Pro/moonshotai/Kimi-K2.6`、`Pro/MiniMaxAI/MiniMax-M2.5`、`deepseek-ai/DeepSeek-V4-Flash`、`Pro/zai-org/GLM-5.1`。
+- 质量优先于延迟：如果某个模型或链路虽然慢一些，但能更完整地解释取舍、覆盖关键分布、给出确认边界和可执行下一步，应优先进入人工复核，而不是被低延迟模型直接替代。
+- 多模型开放 case 不要求全部命中 fast route；如果某个模型在开放表达上更会组织理由、但耗时略高，需要结合完整回复人工复核。
+- 如果某个模型漏掉确认边界、误发工作台联动、外露内部字段或把待确认说成已生效，即使延迟更低也不能作为优选。
+- `fast route` 的目标是减少确定性链路的无效等待，不是绕过语义理解。对于地域安全取舍、专业风险权衡、软硬意向混合表达等开放问题，若本地结构化事实不足以支撑高质量回复，应保留完整 Agent 或澄清链路，并通过进度提示改善等待体验。
+
+推荐输出：
+
+- `/private/tmp/model-provider-303-open-realistic-benchmark.json`
+- `/private/tmp/model-provider-303-open-realistic-benchmark-eval.md`
+
+上一轮 10 case 四模型实测结果：
+
+| provider | model | steps | errors | assertion failures | latency warnings | final median | final p95/max | 结论 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| siliconflow-kimi-k26 | `Pro/moonshotai/Kimi-K2.6` | 10 | 0 | 0 | 1 | 0.482s | 78.263s | 质量门禁通过，但三专业开放对比慢请求明显 |
+| siliconflow-minimax-m25 | `Pro/MiniMaxAI/MiniMax-M2.5` | 10 | 0 | 0 | 0 | 0.248s | 20.038s | 重跑同义关键点组后通过，综合速度最好 |
+| siliconflow-deepseek-v4-flash | `deepseek-ai/DeepSeek-V4-Flash` | 10 | 0 | 0 | 0 | 0.257s | 21.615s | 质量门禁通过，开放 LLM 场景耗时中等 |
+| siliconflow-glm-51 | `Pro/zai-org/GLM-5.1` | 10 | 0 | 0 | 0 | 0.261s | 25.354s | 质量门禁通过，开放 LLM 场景耗时略高于 DeepSeek |
+
+输出文件：
+
+- `/private/tmp/model-provider-303-open-realistic-expanded-boundary-final.json`
+- `/private/tmp/model-provider-303-open-realistic-minimax-after-keypoint-groups.json`
+
+结果解读：
+
+- 预算 / 高收费 / 中外合作只读风险分析已经稳定走低延迟路径，四个模型均能覆盖预算风险和“不改方案”的边界。
+- 开放式专业对比仍是主要耗时来源。Kimi 在“三专业松散对比”里出现 `78.263s` 慢请求，质量通过但不适合作为默认性能优先模型。
+- MiniMax 首轮失败来自断言过硬：回复用了“踩坑点 / 求稳排序 / 总结”等自然表达，没有逐字出现旧期望词。改为 `expectedKeyPointGroups` 后通过，说明评估应检查语义覆盖而不是固定模板。
+- 25 case 首轮四模型矩阵已经执行，输出 `/private/tmp/model-provider-303-open-realistic-25case-4model.json`。这轮暴露了两个真实问题：
+  - `医学护理这些别碰，财会还能接受，先看看影响` 被 `plan_query_fast_route` 抢走，回复退化成“当前方案里还没有可查询的志愿”，没有进入待确认意向预览。
+  - `就按别太冒险的思路把这版调稳点，先给我看看会怎么动` 在部分模型下回落 full-agent，MiniMax 出现 `execute_plan_action` 参数校验失败，DeepSeek 出现超时，Kimi 虽有回复但耗时约 `66.385s`。
+
+修复措施：
+
+- `plan_query_fast_router` 增加无范围意向影响问法保护：没有明确“方案里 / 候选里 / 有没有 / 查一下”等查找范围，且包含“别碰 / 能接受 / 影响 / 排除”等意向语义时，不再抢路由，交给 `major_intent_fast_route`。
+- `major_intent_fast_router` 补充真实口语归一化：`医学 / 学医 / 医药` 展开为临床医学类、口腔医学类、中医学类、护理学类、医学技术类；`财会` 展开为会计学、审计学；`别碰 / 还行 / 能接受` 纳入高置信软硬意向识别。
+- `plan_fast_router` 补充“调稳 / 稳点 / 别太冒险 + 先看看会怎么动”高置信调整分析路径，直接进入 `analyze_adjustment`，避免完整 Agent 自由构造工具参数。
+- `ChatService` 对 `adjustment_analysis` 的快路径回复追加用户侧边界：当前只是分析怎么调稳，不直接改方案；后续具体移动、删除、补入或排序才会影响方案顺序和导出顺序，并让审查状态进入待重新审查，确认后才执行。
+
+修复后聚焦复验：
+
+- 输出：`/private/tmp/model-provider-303-open-realistic-fix-probe-4model-v2.json`
+- 覆盖：`这方案咋样，能不能说重点`、`就按别太冒险的思路把这版调稳点，先给我看看会怎么动`、`医学护理这些别碰，财会还能接受，先看看影响`
+- 四模型结果：`steps=3`，`errors=0`，`assertion_failures=0`，`latency_warnings=0`，`quality_warnings=0`，`quality_gate_pass_rate=1.0`
+- 修复后最慢 final：
+  - Kimi：`1.016s`
+  - MiniMax：`0.573s`
+  - DeepSeek：`0.484s`
+  - GLM：`0.423s`
+
+仍需后续优化：
+
+- `北京天津想去，但别最后没学上，这个取舍咋看` 回复质量可接受，能覆盖京津诉求、保底风险和取舍建议，但仍可能进入 full-agent 地域兴趣分析链路，首轮四模型里 Kimi 约 `45.046s`、DeepSeek 约 `27.352s`、GLM 约 `21.971s`。后续应单独设计“地域偏好 vs 录取安全”的本地结构化分析能力，而不是把它粗暴降级成普通方案概览。
+- 当前 `plan_fast_route / plan_query_fast_route / major_intent_fast_route / major_compare_fast_route / career_direction_fast_route` 仍是多个独立 fast router。它们可以解决一批高置信 case，但底层仍依赖局部表达特征和路由顺序，容易出现“字符串补丁越加越多、换一种说法又错”的问题。根本方案不是继续堆关键词，而是引入统一语义路由仲裁：
+  - 先把用户输入解析为统一的意图候选，包含场景范围、动作类型、对象实体、只读/修改边界、副作用等级和置信度。
+  - 现有 fast router 改为产生 `route candidate`，不再直接抢最终路由。
+  - 仲裁层按“质量可满足程度 > 语义置信度 > 副作用安全 > 延迟成本”排序；不确定时进入完整 Agent 或澄清。
+  - 建立 route confusion matrix，把“意向影响被方案查询抢走”“调稳预览回落自由工具调用”“地域安全取舍被普通概览薄化”等 case 固化为回归。
+
+### 12. 统一 fast route 仲裁落地
+
+本轮已把“逐个 fast router 顺序抢路由”改为“候选生成 + 统一仲裁”：
+
+- 新增 `app/resolver/fast_route_arbitrator.py`。
+- `plan_fast_route / plan_query_fast_route / major_intent_fast_route / major_compare_fast_route / career_direction_fast_route` 仍负责识别各自高置信候选，但不再由 ChatService 顺序命中后立即执行。
+- ChatService 先收集所有 fast-route candidate，再通过 `arbitrate_fast_route_candidates` 选择最终路径。
+- 选中路径后继续复用原来的执行链、历史保存、workspace followup 和 conversation_turn_event，不重写工具调用逻辑。
+- `routeDecision.arbitration` 会记录候选列表、分数、质量门槛和 blockers，方便排查“为什么走这条 / 为什么没有走快路径”。
+- 如果所有候选都被质量门槛挡住，会记录 `fast_route_arbitration_fallback_event`，然后进入完整 Agent。
+
+第一版仲裁规则：
+
+- 质量优先：快路径只有在能支撑该场景足够好的回复时才接管。
+- 明确范围查询优先于意向写入：例如“孩子不想学医也不想护理，方案里有没有这种坑，先看看”同时命中方案查询和专业意向时，选择 `plan_query_fast_route`，因为用户问的是“方案里有没有”。
+- 无明确查询范围的意向影响继续走待确认意向预览：例如“医学护理这些别碰，财会还能接受，先看看影响”走 `major_intent_fast_route`。
+- 方案状态、明确排序/移动/删除/加入、显式审查等仍可走 `plan_fast_route`，但高副作用动作只生成预览和确认边界。
+- 地域偏好与录取安全取舍暂不降级成普通方案概览：例如“孩子就想去北京天津，但分数不算高，这样是不是太冒险，先别改”会被 `region_safety_tradeoff_needs_full_analysis` 挡住，进入完整 Agent，避免用薄概览回答复杂取舍。
+
+新增回归：
+
+- `tests/unit/test_fast_route_arbitrator.py` 覆盖候选仲裁、质量门槛、地域安全取舍降级、方案状态和高副作用预览。
+- `test_release_303_fast_router_priority_matrix_prevents_cross_layer_intercepts` 改为验证统一仲裁结果，不再保护旧的顺序抢路由。
+- `test_chat_service_arbitration_quality_gate_falls_back_to_full_agent_for_region_safety_tradeoff` 验证质量门槛阻止薄快路径后会进入完整 Agent，且不会调用方案工具或局部查询工具。
+
+这不是完全消除所有规则判断，底层各 fast router 仍有局部识别逻辑；但系统层面已经从“谁先匹配谁执行”收口到“全部候选统一评估”。后续继续优化的方向是把 candidate 的实体、范围、只读/修改边界和质量评分做得更结构化，逐步减少 router 内部的表达补丁。
+
+### 13. LLM 意图路由是否启用的决策门槛
+
+当前不直接把 LLM Intent Router 放入主链路。原因是新增一次 LLM 意图判断会带来额外延迟、成本和模型漂移风险；只有当现有“本地候选 + 仲裁”在真实场景效果上不达标时，才进入 LLM Intent Router shadow。
+
+先按以下效果门槛判断：
+
+| 维度 | 观察项 | 进入 LLM Intent Router shadow 的触发条件 |
+| --- | --- | --- |
+| 路由正确性 | 高置信、冲突、开放取舍三类 case 的最终路由 | 真实口语 case 中出现 2 个以上错误路由，且不是单个业务工具 bug |
+| 回复质量 | `strong / needs_review / fail`、关键点覆盖、是否薄回复 | 出现 `fail`，或 `needs_review` 集中在语义理解不足导致的信息缺失 |
+| 安全边界 | 只读不联动、待确认不执行、高副作用预览 | 任一高副作用误执行或误刷新工作台 |
+| 延迟 | 首响、最终回复、超时率 | 完整 Agent 回落过多导致 p95 明显不可接受，且本地结构化能力无法覆盖 |
+| 可维护性 | 新增 case 是否只能继续堆字符串补丁 | 同类语义连续出现多种表达变体，需要跨多个 router 补规则 |
+
+如果不触发上述条件，本期继续保持本地候选仲裁，优先补 case、补质量评分和补结构化事实能力。
+
+如果触发，LLM Intent Router 也先只做 shadow：
+
+1. 输入当前用户文本、最近对话摘要、当前 pending 状态和方案概览。
+2. 输出结构化 `IntentFrame`，包含 `scene / action / entities / readonly / sideEffect / confidence / reason / missingInfo`。
+3. 不直接执行工具，只和本地仲裁结果一起写入观测日志。
+4. 连续跑真实口语和多模型 case，对比 LLM 候选是否真正减少误路由、是否带来新的误判。
+5. 只有 shadow 结果稳定优于本地仲裁，才考虑把低置信/冲突/质量门槛挡住的场景交给 LLM Intent Router。
+
+### 13.1 最新效果复核结论
+
+基于最新本地 `8107` Agent 复跑，本期暂不启用 LLM Intent Router 主链路，也暂不进入 shadow：
+
+- 复跑命令：`dialog_regression_303_open_quality_cases.json --clear-history --keep-response-text --assert-plan-style`
+- 输出：`/private/tmp/zhiyuan_agent_303_open_quality_after_keypoint_backend_8107.json`
+- 详细评分：`/private/tmp/zhiyuan_agent_303_open_quality_after_keypoint_backend_8107_eval_v2.md`
+- 结果：`23/23` steps 通过，`failedSteps=0`。
+- 延迟：中位 `2283ms`，p95 `3794ms`，最大 `3969ms`。
+- 评分：`strong=23 / needs_review=0 / fail=0`，没有 `route_mismatch`、`action_family_mismatch`、`unexpected_action` 或 `thin_preview_distribution` 硬失败。
+
+这轮验证必须以 Agent、Server、Rank 三个本地依赖同时可用为前提。此前在 `INTERNAL_SERVICE_URL=http://localhost:8080` 后端未启动时，方案状态、候选查询、审查和调整预览会退化为空方案事实，虽然路由链路仍可能返回响应，但不能作为 3.0.3 方案类效果/性能结论。
+
+这轮验证没有触发上面的 LLM Intent Router shadow 条件：
+
+- 路由正确性：主要链路均命中预期路径，包括 `plan_fast_route`、`plan_query_fast_route`、`major_intent_fast_route`、`major_compare_fast_route`、`career_direction_fast_route` 和 `pending_intent_impact_fast_route`。
+- 安全边界：只读查询不改方案，意向预览不写入，高副作用方案调整保持预览/确认边界。
+- 回复质量：没有 fail，也没有 `needs_review`；专业对比、职业方向、意向影响、方案查询、候选空结果和无 pending 确认保护均达到当前自动质量门槛。
+- 性能：p95 约 `3.7s`，当前没有因 full-agent 回落过多导致的不可接受延迟。
+
+`候选里还有没有更稳一点的会计审计` 这一 case 曾被评为 fail。复核后确认根因不是路由错判：
+
+- 该轮走 `plan_query_fast_route`，路径正确。
+- 后端直查 `session=17` 候选池时，组合查询 `会计学+审计学`、单独查询 `会计学`、单独查询 `审计学` 均返回 `total=0`。
+- 当前回复已改为明确说明“按这几个具体专业分别查过，当前候选池没有返回可用结果”，并给出“放宽到专业类 / 看当前方案相近志愿 / 按更稳思路做调整建议”的下一步。
+- 评估口径也改为支持“有命中则看分布、无命中则看空结果解释和替代路径”，避免把真实数据为空误判为路由或回复硬失败。
+
+因此，本期继续沿用“本地候选 + 统一仲裁”的主路径。LLM Intent Router 的下一步只保留为预案：当后续真实场景重新出现跨 router 误判、开放取舍被薄回复接管、或同类表达需要持续堆规则时，再按 shadow 方案接入观测。
+
+重启后复验：
+
+- 输出：`/private/tmp/zhiyuan_agent_303_open_quality_restart_live.json`
+- 详细评分：`/private/tmp/zhiyuan_agent_303_open_quality_restart_live_eval.md`
+- 结果：`23/23` steps 通过，`failedSteps=0`。
+- 延迟：runner 中位 `2242ms`，p95 `3661ms`，最大 `3819ms`；详细评分器中位 `2242ms`，p95 `3654ms`，最大 `3819ms`。
+- 评分：`strong=23 / needs_review=0 / fail=0`，`quality violations={}`，`evaluation warnings={}`。
+- 本次复验确认重启后本地 `8107` Agent、`8080` Server、`5001` Rank 链路仍能读取真实方案/候选事实；未出现后端未启动时的空方案退化。
+
+### 13.2 代表样本展示清洗后的复核
+
+针对用户侧回复里代表样本过长的问题，本轮新增了纯展示层清洗：
+
+- 方案、候选和职业方向代表样本只保留可识别的“院校/专业/冲稳保/位置”等核心信息。
+- 去掉 `办学地点`、合作方、前三年就读、外语成绩、学费说明等长招生备注。
+- 不改变后端方案、候选池、审查、排序、录取率和专业组结构，只影响对话文本中的样例展示。
+
+典型变化：
+
+| 场景 | 清洗前 | 清洗后 |
+| --- | --- | --- |
+| 方案前排示例 | `青岛理工大学-建筑学(中外合作办学)(与韩国光云大学合作)(冲)@1` | `青岛理工大学-建筑学(冲)第1位` |
+| 意向影响方案命中 | `广州理工学院第102组-会计学(办学地点:...)(保)` | `广州理工学院第102组-会计学（保）` |
+| 职业方向承接样本 | `河北师范大学第201组(中外合作办学组)-翻译(合作方:...前三年... )` | `河北师范大学第201组-翻译` |
+
+复验结果：
+
+- 真实 WebSocket 输出：`/private/tmp/zhiyuan_agent_303_open_quality_after_display_clean_live.json`
+- 详细评分：`/private/tmp/zhiyuan_agent_303_open_quality_after_display_clean_live_eval.md`
+- 结果：`23/23` steps 通过，`failedSteps=0`。
+- 延迟：中位 `2256ms`，p95 `3713ms`，最大 `3885ms`。
+- 评分：`strong=23 / needs_review=0 / fail=0`，`quality violations={}`。
+- 关键词抽检：`办学地点 / 合作方 / 韩国光云 / 波兰波兹南` 在最新输出和评分报告中未命中。
+- 剩余 `missing_route_observability=1` 属于观测字段缺失，不影响用户侧回复质量和动作正确性。
+
+对应验证：
+
+- `PYTHONPATH=. ./.venv/bin/python -m pytest tests/unit/test_display_text.py tests/unit/test_intent_state_tool.py::test_enrich_plan_relation_analysis_trims_long_admission_notes_in_examples tests/unit/test_plan_execution_tool.py::test_execute_plan_action_query_state_trims_long_sample_notes tests/unit/test_explore_direction_scenarios_sync.py::test_candidate_brief_trims_long_admission_notes_for_inline_examples -q`：`5 passed`
+- `PYTHONPATH=. ./.venv/bin/python -m pytest tests/unit/test_display_text.py tests/unit/test_explore_direction_scenarios_sync.py tests/unit/test_intent_state_tool.py tests/unit/test_plan_execution_tool.py -q`：`211 passed`
+- `PYTHONPATH=. ./.venv/bin/python -m pytest tests/unit/test_major_compare_reply_renderer.py tests/unit/test_dialog_case_evaluation_report.py tests/unit/test_mainline_dialog_scenarios.py tests/unit/test_plan_query_tool.py tests/unit/test_fast_route_arbitrator.py -q`：`91 passed`

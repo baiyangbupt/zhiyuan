@@ -19,6 +19,7 @@ from app.tools.explore_direction_tool import (
     CAREER_STABLE_EMPLOYMENT,
     CAREER_SYSTEM_PUBLIC_SERVICE,
     _direction_focus_snapshot,
+    _format_candidate_brief,
     preview_direction_analysis_from_request,
     preview_direction_comparison_from_request,
     resolve_career_direction_slots,
@@ -167,7 +168,7 @@ def test_direction_explore_public_service_uses_student_plan_candidate_facts_and_
                 "候选里中国政法大学-行政管理、天津师范大学-思想政治教育可以继续展开比较。"
             ],
             "nextActionHints": [
-                "下一步可以先看这些机会是否符合你的地域和录取梯度，再决定要不要记成偏好。"
+                "下一步可以先看这些机会是否符合你的地域和录取梯度，再决定要不要记成后续偏好。"
             ],
         }
     )
@@ -218,10 +219,12 @@ def test_direction_explore_fallback_still_analyzes_when_llm_generation_fails():
     assert "你的当前选科是物理、化学、生物" in resp
     assert "就业确定性、岗位稳定性和路径清晰度" in resp
     assert "候选里暂时没看到特别密集的新机会" in resp
-    assert "如果你愿意把它记成后续偏好" in resp
-    assert "MBTI" in resp
-    assert "霍兰德" in resp
+    assert "可以继续按这条方向看当前方案" in resp
+    assert "把它记成后续偏好" in resp
+    assert "我先不急着替你下结论" not in resp
+    assert "这类方向更看重就业确定性、岗位稳定性和路径清晰度" not in resp
     assert resp.count("你的当前选科是物理、化学、生物") == 1
+    assert resp.count("就业确定性、岗位稳定性和路径清晰度") == 1
 
 
 def test_direction_slot_resolver_uses_local_taxonomy_for_common_terms():
@@ -327,6 +330,36 @@ def test_direction_focus_snapshot_uses_structured_examples_when_reply_is_only_co
         "方案承接代表：北京师范大学-法学",
         "候选机会代表：中国政法大学-行政管理",
     ]
+
+
+def test_direction_focus_snapshot_trims_long_admission_notes_and_dedupes_samples():
+    snapshot = _direction_focus_snapshot(
+        {
+            "currentPlanFit": [
+                "方案内相对贴近的例子：河北师范大学第201组(中外合作办学组)-翻译(中外合作办学)(合作方：英国斯特灵大学；要求外语单科成绩不低于95分(含)，前三年就读于河北师范大学，每年学费为26000元)；河北师范大学第201组(中外合作办学组)-翻译(中外合作办学)(合作方：英国斯特灵大学)。",
+            ],
+            "candidateOpportunity": [],
+        }
+    )
+
+    assert snapshot == ["方案承接代表：河北师范大学第201组-翻译"]
+    assert "合作方" not in snapshot[0]
+    assert "前三年" not in snapshot[0]
+
+
+def test_candidate_brief_trims_long_admission_notes_for_inline_examples():
+    brief = _format_candidate_brief(
+        {
+            "schoolName": "河北师范大学第201组(中外合作办学组)",
+            "majorName": "翻译(中外合作办学)(合作方：英国斯特灵大学；要求外语单科成绩不低于95分(含)，前三年就读于河北师范大学，每年学费为26000元)",
+            "tier": "稳",
+            "provinceName": "河北",
+        }
+    )
+
+    assert brief == "河北师范大学第201组-翻译（稳/河北）"
+    assert "合作方" not in brief
+    assert "前三年" not in brief
 
 
 def test_direction_explore_comparison_fallback_includes_professional_assessment_hint():

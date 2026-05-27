@@ -30,6 +30,27 @@ def test_career_direction_fast_route_matches_support_and_shortcoming_questions()
     ]
 
 
+def test_career_direction_fast_route_matches_colloquial_parent_support_question():
+    decision = resolve_career_direction_fast_route("家里就想让孩子以后稳一点进体制，这个方案能撑住吗，先别动")
+
+    assert decision.matched is True
+    assert decision.direction_slots == [CAREER_SYSTEM_PUBLIC_SERVICE, CAREER_STABLE_EMPLOYMENT]
+
+
+def test_career_direction_fast_route_matches_low_info_stable_direction_question():
+    decision = resolve_career_direction_fast_route("我这个分数也不算高，家里就想稳一点，以后别太折腾，大概往哪类方向看")
+
+    assert decision.matched is True
+    assert decision.direction_slots == [CAREER_STABLE_EMPLOYMENT]
+
+
+def test_career_direction_fast_route_matches_practical_study_vs_employment_question():
+    decision = resolve_career_direction_fast_route("读研和稳定就业哪个更实际点，先别改偏好")
+
+    assert decision.matched is True
+    assert decision.direction_slots == [CAREER_STABLE_EMPLOYMENT, CAREER_FURTHER_STUDY]
+
+
 def test_career_direction_fast_route_does_not_match_intent_or_mutation_semantics():
     assert resolve_career_direction_fast_route("以后优先按体制内看").matched is False
     assert resolve_career_direction_fast_route("帮我把体制内记成偏好").matched is False

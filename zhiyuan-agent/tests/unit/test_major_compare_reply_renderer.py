@@ -120,3 +120,52 @@ def test_missing_weight_renderer_uses_structured_sections():
     assert "普通家庭、女生" in reply
     assert "个性化量化评分" not in reply
     assert "系统分数" not in reply
+
+
+def test_missing_weight_renderer_differentiates_accounting_and_audit():
+    context = RequestContext(
+        userid="user-1",
+        sessionid="session-accounting-audit",
+        batch="01",
+        chat_history=[
+            {"role": "user", "content": "会计和审计哪个更稳，考公也能用点的"},
+        ],
+    )
+
+    reply = render_missing_weight_major_compare_reply(
+        major_name1="会计学",
+        major_name2="审计学",
+        request_context=context,
+    )
+
+    assert "会计核算" in reply
+    assert "财政审计" in reply
+    assert "就业路径主要看更偏企业财务" in reply
+    assert "就业路径主要看更偏审计" in reply
+    assert "岗位面宽" in reply
+    assert "路径收敛" in reply
+    assert reply.count("就业路径主要看会计、审计、财务") == 0
+
+
+def test_missing_weight_renderer_differentiates_computer_science_and_software_engineering():
+    context = RequestContext(
+        userid="user-1",
+        sessionid="session-computer-software",
+        batch="01",
+        chat_history=[
+            {"role": "user", "content": "计科和软工哪个更稳一点，孩子数学还行但不想太累"},
+        ],
+    )
+
+    reply = render_missing_weight_major_compare_reply(
+        major_name1="计算机科学与技术",
+        major_name2="软件工程",
+        request_context=context,
+    )
+
+    assert "算法、系统" in reply
+    assert "项目实践" in reply
+    assert "就业路径主要看更偏计算机基础" in reply
+    assert "就业路径主要看更偏工程开发" in reply
+    assert "训练强度" in reply
+    assert "两个计算机方向都不算轻松" in reply

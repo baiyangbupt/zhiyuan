@@ -363,6 +363,53 @@ def test_build_runtime_history_keeps_pending_turn_outside_recent_window():
     assert runtime.chat_history[-1] == {"role": "user", "content": "这个排序会怎么影响冲稳保？"}
 
 
+def test_build_runtime_history_drops_orphan_tool_return_after_trimming():
+    history = [
+        ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="query_volunteer_plan",
+                    args={"query": "旧查询"},
+                    tool_call_id="trimmed-call",
+                )
+            ],
+            model_name="test",
+        ),
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="query_volunteer_plan",
+                    content="旧查询结果",
+                    tool_call_id="trimmed-call",
+                )
+            ]
+        ),
+        ModelResponse(parts=[TextPart(content="旧回复")], model_name="test"),
+        ModelRequest(parts=[UserPromptPart(content="最近问题")]),
+        ModelResponse(parts=[TextPart(content="最近回复")], model_name="test"),
+    ]
+    config = MagicMock(runtime_max_messages=4, runtime_keep_pending=True, runtime_drop_tool_returns_over_chars=3000)
+
+    runtime = build_runtime_history(
+        history,
+        latest_user_content="继续看看方案",
+        pending_plan_action=None,
+        config=config,
+    )
+
+    assert runtime.model_history is not None
+    assert all(
+        not isinstance(part, ToolReturnPart)
+        for message in runtime.model_history
+        for part in getattr(message, "parts", []) or []
+    )
+    assert any(
+        isinstance(part, UserPromptPart) and part.content == "最近问题"
+        for message in runtime.model_history
+        for part in getattr(message, "parts", []) or []
+    )
+
+
 def test_chat_service_passes_runtime_history_but_persists_full_history(tmp_path, mock_llm_client):
     db_path = tmp_path / "history.db"
     store = ChatHistoryStore(str(db_path))
@@ -691,7 +738,10 @@ def test_chat_service_plan_fast_route_handles_review_followup_adjustment_preview
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-review-followup-fast", "user-1", user_prompt))
 
-    assert reply == "调整分析已完成：当前先看梯度断层和保底不足，不会直接改方案。"
+    assert "调整分析已完成：当前先看梯度断层和保底不足，不会直接改方案。" in reply
+    assert "影响说明" in reply
+    assert "方案顺序和导出顺序" in reply
+    assert "确认后才会执行" in reply
     assert fake_agent.calls == []
     mock_plan_next.assert_awaited_once()
     assert mock_plan_next.await_args.kwargs["action_family"] == "analyze_adjustment"
@@ -731,6 +781,9 @@ def test_chat_service_major_compare_fast_route_bypasses_main_agent_and_persists_
         )
 
     assert "财政学更稳" in reply
+    assert "本轮边界" in reply
+    assert "不会写入偏好" in reply
+    assert "不会改动当前方案" in reply
     assert fake_agent.calls == []
     mock_compare.assert_awaited_once()
     stored = asyncio.run(store.load("session-fast-major-compare"))
@@ -771,6 +824,71 @@ def test_chat_service_major_compare_fast_route_handles_lazy_abbreviations(tmp_pa
     assert fake_agent.calls == []
     mock_compare.assert_awaited_once()
     assert mock_compare.await_args.args[1:] == ("法学", "财政学")
+
+
+def test_chat_service_full_agent_readonly_prompt_appends_boundary_when_model_omits_it(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    fake_agent = _FakeAgent(["财会更稳，法学要看法考，新媒体波动更大。"])
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.resolve_plan_query_fast_route", return_value=SimpleNamespace(matched=False)), \
+            patch("app.service.resolve_major_intent_fast_route", return_value=SimpleNamespace(matched=False)), \
+            patch("app.service.resolve_major_compare_fast_route", return_value=SimpleNamespace(matched=False)), \
+            patch("app.service.resolve_career_direction_fast_route", return_value=SimpleNamespace(matched=False)):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(
+            service.handle_message(
+                "session-full-agent-readonly-boundary",
+                "user-1",
+                "财会、法学、新媒体这几个，哪个更不容易踩坑，先说说别记偏好",
+            )
+        )
+
+    assert "财会更稳" in reply
+    assert "本轮边界" in reply
+    assert "不会写入偏好" in reply
+    assert "不会改动当前方案" in reply
+    saved_history = asyncio.run(store.load("session-full-agent-readonly-boundary"))
+    saved_text = next(part.content for part in saved_history[-1].parts if isinstance(part, TextPart))
+    assert saved_text == reply
+
+
+def test_chat_service_three_major_compare_fast_route_uses_local_renderer(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    fake_agent = _FakeAgent(["不应该调用主模型"])
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.compare_majors", AsyncMock()) as mock_compare, \
+            patch("app.service._log_conversation_turn_event") as log_mock:
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(
+            service.handle_message(
+                "session-three-major-fast-renderer",
+                "user-1",
+                "财会、法学、新媒体这几个，哪个更不容易踩坑，先说说别记偏好",
+            )
+        )
+
+    assert "会计学" in reply
+    assert "法学" in reply
+    assert "网络与新媒体" in reply
+    assert "本次边界" in reply
+    assert "不会把任何专业记成偏好" in reply
+    assert "选择建议" in reply
+    assert fake_agent.calls == []
+    mock_compare.assert_not_awaited()
+    log_kwargs = log_mock.call_args.kwargs
+    assert log_kwargs["routingPath"] == "major_compare_fast_route"
+    assert log_kwargs["resultKind"] == "multi_major_compare"
+    assert log_kwargs["postProcessingApplied"] == ["multi_major_compare_renderer"]
 
 
 def test_chat_service_major_intent_fast_route_bypasses_main_agent_and_persists_preview(
@@ -3636,6 +3754,49 @@ def test_chat_service_no_pending_confirm_after_major_compare_uses_contextual_gua
     assert fake_agent.calls == []
 
 
+def test_chat_service_readonly_closure_after_major_compare_acknowledges_without_llm(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    history = [
+        ModelRequest(parts=[UserPromptPart(content="新媒体和跨电哪个更适合数学不太好的，先说说")]),
+        ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="compare_majors",
+                    args={"major_name1": "网络与新媒体", "major_name2": "跨境电子商务"},
+                    tool_call_id="major-compare-readonly-call",
+                )
+            ],
+            model_name="major-compare-fast-route",
+        ),
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="compare_majors",
+                    content="网络与新媒体和跨境电子商务的对比结果。",
+                    tool_call_id="major-compare-readonly-call",
+                )
+            ]
+        ),
+        ModelResponse(parts=[TextPart(content="网络与新媒体更偏内容，跨境电子商务更偏交易。")], model_name="major-compare-fast-route"),
+    ]
+    asyncio.run(store.save("session-major-compare-readonly-closure", history))
+    fake_agent = _FakeAgent(["不应该调用模型"])
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_intent_change_cache", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(service.handle_message("session-major-compare-readonly-closure", "user-1", "嗯那就这样"))
+
+    assert "先按刚才的专业对比结论作为参考" in reply
+    assert "没有待确认的偏好或方案动作" in reply
+    assert "不会改动方案" in reply
+    assert fake_agent.calls == []
+
+
 @pytest.mark.parametrize(
     ("session_id", "prompt", "assistant_reply", "expected"),
     [
@@ -4519,6 +4680,100 @@ def test_chat_service_plan_query_fast_route_bypasses_main_agent_and_persists_tra
     assert log_kwargs["routingPath"] == "plan_query_fast_route"
     assert log_kwargs["llmRequests"] == 0
     assert log_kwargs["toolCallCount"] == 1
+
+
+def test_chat_service_arbitration_quality_gate_falls_back_to_full_agent_for_region_safety_tradeoff(
+    tmp_path,
+    mock_llm_client,
+):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    fake_agent = _FakeAgent(["我会综合看京津地域诉求和录取安全，不直接把它当成普通方案概览。"])
+    planning_state = {
+        "code": 0,
+        "data": {
+            "phase": "reviewed",
+            "orderedPlanState": {
+                "summary": {"unitTotal": 45, "targetUnitCount": 45},
+                "items": [],
+            },
+        },
+    }
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value=planning_state)), \
+            patch("app.service._plan_next_action_model", AsyncMock()) as plan_next_mock, \
+            patch("app.service.query_volunteer_plan", AsyncMock()) as query_mock, \
+            patch("app.service._log_conversation_turn_event") as log_turn_mock, \
+            patch("app.service.log_event") as log_event_mock:
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(
+            service.handle_message(
+                "session-region-safety-quality-gate",
+                "user-1",
+                "孩子就想去北京天津，但分数不算高，这样是不是太冒险，先别改",
+            )
+        )
+
+    assert "综合看京津地域诉求和录取安全" in reply
+    assert len(fake_agent.calls) == 1
+    plan_next_mock.assert_not_awaited()
+    query_mock.assert_not_awaited()
+    assert any(
+        call.args
+        and call.args[0] == "fast_route_arbitration_fallback_event"
+        and call.kwargs["routeDecision"]["fallbackReason"] == "quality_gate_blocked_fast_route"
+        for call in log_event_mock.call_args_list
+    )
+    assert log_turn_mock.call_args.kwargs["routingPath"] == "full_agent"
+
+
+def test_chat_service_plan_query_fast_route_appends_readonly_boundary_when_requested(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    fake_agent = _FakeAgent(["不应该调用主模型"])
+    planning_state = {
+        "code": 0,
+        "data": {
+            "phase": "reviewed",
+            "orderedPlanState": {
+                "summary": {"unitTotal": 45, "targetUnitCount": 45},
+                "items": [],
+            },
+        },
+    }
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value=planning_state)), \
+            patch(
+                "app.service.query_volunteer_plan",
+                AsyncMock(return_value="当前排序方案里共命中了 7 条符合“院校:青岛城市学院”的志愿。"),
+            ):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(
+            service.handle_message(
+                "session-plan-query-readonly-boundary",
+                "user-1",
+                "青城那个是不是放多了，先看看别改",
+            )
+        )
+
+    assert "当前排序方案里共命中了 7 条" in reply
+    assert "本轮边界" in reply
+    assert "不会写入偏好" in reply
+    assert "不会改动当前方案" in reply
+    assert fake_agent.calls == []
+    saved_history = asyncio.run(store.load("session-plan-query-readonly-boundary"))
+    assert saved_history is not None
+    assert any(
+        isinstance(part, TextPart) and "本轮边界" in part.content
+        for message in saved_history
+        for part in getattr(message, "parts", []) or []
+    )
 
 
 def test_chat_service_plan_query_fast_route_does_not_intercept_mutation(tmp_path, mock_llm_client):

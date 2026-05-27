@@ -36,9 +36,82 @@ _PLAN_STATUS_PATTERNS = (
     "当前方案怎么样",
     "现在方案怎么样",
     "方案怎么样",
+    "方案咋样",
+    "这方案咋样",
+    "这个方案咋样",
+    "这套方案咋样",
+    "这版咋样",
+    "这个方案好不好",
+    "这套方案好不好",
     "方案情况",
     "方案有了么",
     "方案有了吗",
+)
+
+_PLAN_RISK_STATUS_ANCHORS = (
+    "方案",
+    "志愿",
+    "排序",
+    "这版",
+    "这个方案",
+    "当前",
+    "现在",
+    "分数",
+    "北京",
+    "天津",
+)
+
+_PLAN_RISK_STATUS_TOKENS = (
+    "太冲",
+    "冲太多",
+    "冲得多",
+    "冲多了",
+    "风险大",
+    "风险高",
+    "风险",
+    "稳不稳",
+    "够不够稳",
+    "够稳",
+    "安全吗",
+    "安全不安全",
+    "说人话",
+    "看不懂",
+    "靠谱吗",
+    "靠不靠谱",
+    "冒险",
+    "太冒险",
+    "预算",
+    "学费",
+    "中外合作",
+)
+
+_PLAN_RISK_STATUS_MUTATION_TOKENS = (
+    "改",
+    "调整",
+    "优化",
+    "移动",
+    "删除",
+    "去掉",
+    "加入",
+    "加进",
+    "补齐",
+    "补满",
+    "执行",
+    "确认",
+    "按",
+    "排序",
+    "重排",
+)
+
+_PLAN_RISK_STATUS_READONLY_CANCEL_TOKENS = (
+    "先别改",
+    "别改",
+    "不要改",
+    "不改",
+    "先别动",
+    "别动",
+    "不要动",
+    "先不动",
 )
 
 _REVIEW_FOLLOWUP_STRONG_CONTEXT_TOKENS = (
@@ -99,6 +172,35 @@ _ADJUSTMENT_PREVIEW_TOKENS = (
     "怎么优化",
     "怎么处理",
     "怎么解决",
+)
+
+_COLLOQUIAL_ADJUSTMENT_ANCHORS = (
+    "方案",
+    "这版",
+    "当前",
+    "现在",
+)
+
+_COLLOQUIAL_ADJUSTMENT_TOKENS = (
+    "调稳",
+    "稳点",
+    "稳一点",
+    "更稳",
+    "别太冒险",
+    "降低风险",
+    "不冒险",
+)
+
+_ADJUSTMENT_PREVIEW_BOUNDARY_TOKENS = (
+    "先给我看看会怎么动",
+    "先看看会怎么动",
+    "看看会怎么动",
+    "看会怎么动",
+    "先给我看会怎么动",
+    "先给我看看",
+    "先看看",
+    "先看下",
+    "预览",
 )
 
 _COMPENSATION_PREVIEW_TOKENS = (
@@ -257,6 +359,14 @@ def _review_followup_adjustment_action_family(compact_text: str) -> str | None:
     return "analyze_adjustment"
 
 
+def _looks_like_colloquial_adjustment_analysis(compact_text: str) -> bool:
+    if not any(anchor in compact_text for anchor in _COLLOQUIAL_ADJUSTMENT_ANCHORS):
+        return False
+    if not any(token in compact_text for token in _COLLOQUIAL_ADJUSTMENT_TOKENS):
+        return False
+    return any(token in compact_text for token in _ADJUSTMENT_PREVIEW_BOUNDARY_TOKENS)
+
+
 def _looks_like_status_request(compact_text: str) -> bool:
     if any(pattern in compact_text for pattern in _PLAN_STATUS_PATTERNS):
         return True
@@ -265,6 +375,17 @@ def _looks_like_status_request(compact_text: str) -> bool:
         and any(token in compact_text for token in ("结构化", "结论", "情况", "状态", "概览"))
         and not any(token in compact_text for token in ("排序", "移动", "删除", "去掉", "加入", "加进", "审查", "检查"))
     )
+
+
+def _looks_like_colloquial_risk_status_request(compact_text: str) -> bool:
+    if not any(anchor in compact_text for anchor in _PLAN_RISK_STATUS_ANCHORS):
+        return False
+    if not any(token in compact_text for token in _PLAN_RISK_STATUS_TOKENS):
+        return False
+    remaining = compact_text
+    for token in _PLAN_RISK_STATUS_READONLY_CANCEL_TOKENS:
+        remaining = remaining.replace(token, "")
+    return not any(token in remaining for token in _PLAN_RISK_STATUS_MUTATION_TOKENS)
 
 
 def _looks_like_safety_status_question(compact_text: str) -> bool:
@@ -438,6 +559,24 @@ def resolve_plan_fast_route(text: str | None) -> PlanFastRouteDecision:
             action_family="query_state",
             user_goal=original,
             reason="plan_safety_status_query",
+            confidence="high",
+        )
+
+    if _looks_like_colloquial_risk_status_request(compact_text):
+        return PlanFastRouteDecision(
+            matched=True,
+            action_family="query_state",
+            user_goal=original,
+            reason="plan_risk_status_query",
+            confidence="high",
+        )
+
+    if _looks_like_colloquial_adjustment_analysis(compact_text):
+        return PlanFastRouteDecision(
+            matched=True,
+            action_family="analyze_adjustment",
+            user_goal=original,
+            reason="colloquial_adjustment_analysis",
             confidence="high",
         )
 

@@ -55,6 +55,24 @@ def test_score_case_flags_thin_preview_without_distribution_coverage():
     assert score["completeness"] < 4
 
 
+def test_score_case_does_not_apply_distribution_gate_to_empty_candidate_result():
+    score = report._score_case(
+        {
+            "prompt": "候选里还有没有更稳一点的会计审计，别直接加",
+            "responseText": (
+                "候选里暂时没有筛到符合“专业:会计学、审计学”的机会。"
+                "这次只是查询候选，不会直接加入方案。"
+                "我已按这几个具体专业分别查过，当前候选池没有返回可用结果；"
+                "下一步可以换成更宽的专业类、只看当前方案里的相近志愿。"
+            ),
+            "elapsedMs": 900,
+        }
+    )
+
+    assert "thin_preview_distribution" not in score["qualityViolations"]
+    assert score["verdict"] != "fail"
+
+
 def test_score_case_does_not_treat_confirm_guard_as_preview():
     score = report._score_case(
         {
@@ -152,6 +170,43 @@ def test_score_case_allows_if_you_confirm_pending_preview_wording():
     )
 
     assert "pending_intent_effective_wording" not in score["qualityViolations"]
+
+
+def test_score_case_allows_readonly_reference_boundary_wording():
+    score = report._score_case(
+        {
+            "prompt": "嗯那就这样",
+            "responseText": (
+                "好的，先按刚才的专业对比结论作为参考。\n\n"
+                "这轮没有待确认的偏好或方案动作，我不会改动方案。"
+            ),
+            "elapsedMs": 900,
+        }
+    )
+
+    assert "pending_intent_effective_wording" not in score["qualityViolations"]
+
+
+def test_score_case_does_not_apply_distribution_gate_to_career_short_prompt_without_plan():
+    score = report._score_case(
+        {
+            "case": "303-open-quality-career-study-vs-employment-lazy",
+            "coverage": ["career_short_prompt"],
+            "prompt": "读研和稳定就业哪个更实际点，先别改偏好",
+            "responseText": (
+                "**分析结论**\n"
+                "- 当前还没有成型排序方案，暂时不能判断稳定就业和读研在方案里的承接强弱。\n\n"
+                "**方案承接**\n"
+                "- 稳定就业更适合比较就业确定性、岗位稳定性和路径清晰度。\n"
+                "- 深造方向更适合重点比较培养平台、升学通道和长期学习投入。\n\n"
+                "**本次边界**\n"
+                "- 这次只是方向分析，不会自动修改偏好或方案。"
+            ),
+            "elapsedMs": 900,
+        }
+    )
+
+    assert "thin_preview_distribution" not in score["qualityViolations"]
 
 
 def test_build_case_report_merges_baseline_current_and_candidates():
@@ -328,8 +383,15 @@ def test_case_definitions_infer_confirm_routes_from_prompt_and_coverage(tmp_path
                     "name": "no-pending",
                     "sessionId": "880102",
                     "flow": ["confirm_guard"],
-                    "coverage": ["no_pending_guard", "school_major_lookup"],
-                    "prompts": [{"prompt": "确认"}],
+                    "coverage": ["major_compare", "school_major_lookup"],
+                    "prompts": [
+                        {
+                            "prompt": "嗯那就这样",
+                            "coverage": ["no_pending_guard"],
+                            "expectedRoutingPath": "plan_confirmation_guard_no_pending",
+                            "expectedNoAction": True,
+                        }
+                    ],
                 },
                 {
                     "name": "readonly-confirm",
@@ -350,6 +412,7 @@ def test_case_definitions_infer_confirm_routes_from_prompt_and_coverage(tmp_path
     assert definitions["intent-confirm#1"]["expectedActionFamily"] == "update_volunteer_intent_state"
     assert definitions["no-pending#1"]["expectedRoutingPath"] == "plan_confirmation_guard_no_pending"
     assert "expectedActionFamily" not in definitions["no-pending#1"]
+    assert definitions["no-pending#1"]["expectedNoAction"] is True
     assert definitions["readonly-confirm#1"]["expectedRoutingPath"] == "plan_confirmation_guard_no_pending"
     assert "expectedActionFamily" not in definitions["readonly-confirm#1"]
 
@@ -373,6 +436,46 @@ def test_score_case_flags_route_and_action_family_mismatch():
     assert "route_mismatch:plan_fast_route!=full_agent" in score["qualityViolations"]
     assert any(item.startswith("action_family_mismatch:") for item in score["qualityViolations"])
     assert score["verdict"] == "fail"
+
+
+def test_score_case_flags_unexpected_action_when_none_expected():
+    score = report._score_case(
+        {
+            "prompt": "嗯那就这样",
+            "responseText": "这轮没有待确认的偏好或方案动作，我不会改动方案。",
+            "elapsedMs": 900,
+            "expectedRoutingPath": "plan_confirmation_guard_no_pending",
+            "expectedNoAction": True,
+            "routingPath": "plan_confirmation_guard_no_pending",
+            "turnObservability": {
+                "actionFamilies": ["compare_majors"],
+                "toolCalls": [{"name": "compare_majors", "actionFamily": "compare_majors"}],
+            },
+        }
+    )
+
+    assert "unexpected_action:compare_majors" in score["qualityViolations"]
+    assert score["verdict"] == "fail"
+
+
+def test_score_case_treats_no_action_ack_as_complete_when_expected():
+    score = report._score_case(
+        {
+            "prompt": "嗯那就这样",
+            "responseText": (
+                "好的，先按刚才的专业对比结论作为参考。\n\n"
+                "这轮没有待确认的偏好或方案动作，我不会改动方案。"
+            ),
+            "elapsedMs": 900,
+            "expectedRoutingPath": "plan_confirmation_guard_no_pending",
+            "expectedNoAction": True,
+            "routingPath": "plan_confirmation_guard_no_pending",
+            "turnObservability": {"actionFamilies": [], "toolCalls": []},
+        }
+    )
+
+    assert score["completeness"] >= 4
+    assert score["verdict"] == "strong"
 
 
 def test_score_case_uses_tool_name_as_action_observability_alias():
@@ -463,6 +566,28 @@ def test_score_case_accepts_expected_keypoint_aliases():
 
     assert not any(item.startswith("missing_expected_keypoint:") for item in score["evaluationWarnings"])
     assert "forbidden_pattern" not in ",".join(score["qualityViolations"])
+
+
+def test_score_case_accepts_expected_keypoint_groups():
+    score = report._score_case(
+        {
+            "prompt": "候选里还有没有更稳一点的会计审计，别直接加",
+            "responseText": (
+                "候选里暂时没有筛到符合“专业:会计学、审计学”的机会。"
+                "我已按这几个具体专业分别查过，当前候选池没有返回可用结果；"
+                "下一步可以换成更宽的专业类，或只看当前方案里的相近志愿。"
+            ),
+            "elapsedMs": 900,
+            "qualityExpectations": {
+                "expectedKeyPointGroups": [
+                    {"label": "命中或空结果说明", "any": ["共命中", "暂时没有筛到", "没有返回可用结果"]},
+                    {"label": "示例或替代查看方式", "any": ["示例", "更宽的专业类", "当前方案里的相近志愿"]},
+                ]
+            },
+        }
+    )
+
+    assert not any(item.startswith("missing_expected_keypoint_group:") for item in score["evaluationWarnings"])
 
 
 def test_summarize_reports_groups_quality_by_scenario_and_coverage():

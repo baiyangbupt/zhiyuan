@@ -286,9 +286,26 @@ def _clear_history(db_path: Path, session_ids: list[str]) -> int:
     return cursor.rowcount if cursor.rowcount is not None else 0
 
 
-def _check_step_assertions(text: str, followups: list[dict[str, Any]], step: dict[str, Any]) -> list[str]:
+def _as_float(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _check_step_assertions(
+    text: str,
+    followups: list[dict[str, Any]],
+    step: dict[str, Any],
+    *,
+    thinking: list[str] | None = None,
+    final_seconds: float | None = None,
+) -> list[str]:
     violations: list[str] = []
     lower_text = text.lower()
+    lower_thinking = "\n".join(thinking or []).lower()
     for expected in step.get("assertContains") or []:
         if str(expected).lower() not in lower_text:
             violations.append(f"missing expected text: {expected}")
@@ -298,6 +315,39 @@ def _check_step_assertions(text: str, followups: list[dict[str, Any]], step: dic
     for forbidden in step.get("assertNotContains") or []:
         if str(forbidden).lower() in lower_text:
             violations.append(f"contains forbidden text: {forbidden}")
+    for expected in step.get("expectedKeyPoints") or []:
+        if str(expected).lower() not in lower_text:
+            violations.append(f"missing expected keypoint: {expected}")
+    for group in step.get("expectedKeyPointGroups") or []:
+        label = ""
+        values: list[Any] = []
+        if isinstance(group, dict):
+            label = str(group.get("label") or "").strip()
+            values = list(group.get("any") or group.get("values") or [])
+        elif isinstance(group, list):
+            values = group
+        else:
+            values = [group]
+        normalized_values = [str(item).strip() for item in values if str(item).strip()]
+        if not normalized_values:
+            continue
+        if not any(value.lower() in lower_text for value in normalized_values):
+            display = label or " / ".join(normalized_values)
+            violations.append(f"missing expected keypoint group: {display}")
+    for forbidden in step.get("forbiddenPatterns") or []:
+        if str(forbidden).lower() in lower_text:
+            violations.append(f"contains forbidden pattern: {forbidden}")
+    for expected in step.get("assertThinkingContains") or []:
+        if str(expected).lower() not in lower_thinking:
+            violations.append(f"missing expected thinking text: {expected}")
+    thinking_any = step.get("assertThinkingContainsAny") or []
+    if thinking_any and not any(str(item).lower() in lower_thinking for item in thinking_any):
+        violations.append(f"none of expected thinking alternatives found: {thinking_any}")
+    for forbidden in step.get("assertThinkingNotContains") or []:
+        if str(forbidden).lower() in lower_thinking:
+            violations.append(f"contains forbidden thinking text: {forbidden}")
+    if step.get("assertNoFollowups") is True and followups:
+        violations.append(f"expected no followups, got {len(followups)}")
     target = step.get("assertFollowupTarget")
     if target:
         found = any((item.get("content") or {}).get("targetView") == target for item in followups)
@@ -311,7 +361,25 @@ def _check_step_assertions(text: str, followups: list[dict[str, Any]], step: dic
     followup_count = step.get("assertFollowupCount")
     if followup_count is not None and len(followups) != int(followup_count):
         violations.append(f"expected {followup_count} followups, got {len(followups)}")
+    max_elapsed = _as_float(step.get("maxElapsedSeconds"))
+    if max_elapsed is not None and final_seconds is not None and final_seconds > max_elapsed:
+        violations.append(f"exceeded max elapsed seconds: {final_seconds:.3f}s > {max_elapsed:.3f}s")
     return violations
+
+
+def _check_step_warnings(final_seconds: float | None, step: dict[str, Any]) -> list[str]:
+    warn_elapsed = _as_float(step.get("warnElapsedSeconds"))
+    if warn_elapsed is not None and final_seconds is not None and final_seconds > warn_elapsed:
+        return [f"exceeded warn elapsed seconds: {final_seconds:.3f}s > {warn_elapsed:.3f}s"]
+    return []
+
+
+def _check_step_quality_warnings(text: str, step: dict[str, Any]) -> list[str]:
+    warnings: list[str] = []
+    min_text_length = _as_float(step.get("minTextLengthWarn"))
+    if min_text_length is not None and len(text.strip()) < int(min_text_length):
+        warnings.append(f"reply may be too thin: {len(text.strip())} chars < {int(min_text_length)} chars")
+    return warnings
 
 
 def _followup_targets(followups: list[dict[str, Any]]) -> list[str]:
@@ -372,6 +440,13 @@ async def _ask_agent_once(
             followups.append(json.loads(raw))
     text = "\n".join(str(item.get("content", "")) for item in primary if item.get("type") == "text").strip()
     thinking = [str(item.get("content", "")) for item in primary if item.get("type") == "thinking"]
+    error_messages = [
+        str(item.get("content", "") or item.get("message", "")).strip()
+        for item in primary
+        if item.get("type") == "error"
+    ]
+    error_messages = [message for message in error_messages if message]
+    error_text = "; ".join(error_messages)
     return {
         "first_message_seconds": round((first_message_at or final_at or time.perf_counter()) - started, 3),
         "final_seconds": round((final_at or time.perf_counter()) - started, 3),
@@ -385,6 +460,7 @@ async def _ask_agent_once(
         "followup_refreshes": _followup_refreshes(followups),
         "followups": followups,
         "assertion_violations": [],
+        **({"error": error_text or "agent returned error message"} if error_messages or any(item.get("type") == "error" for item in primary) else {}),
     }
 
 
@@ -482,6 +558,16 @@ async def _run_agent_for_provider(
                         str(measured.get("text") or ""),
                         list(measured.get("followups") or []),
                         step,
+                        thinking=list(measured.get("thinking") or []),
+                        final_seconds=float(measured.get("final_seconds") or 0),
+                    )
+                    measured["latency_warnings"] = _check_step_warnings(
+                        float(measured.get("final_seconds") or 0),
+                        step,
+                    )
+                    measured["quality_warnings"] = _check_step_quality_warnings(
+                        str(measured.get("text") or ""),
+                        step,
                     )
                     if not keep_response_text and not step.get("keepFullText"):
                         measured.pop("text", None)
@@ -576,8 +662,11 @@ def _summarize_agent(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for provider_result in results:
         first_times: list[float] = []
         final_times: list[float] = []
+        text_lengths: list[float] = []
         errors = 0
         assertion_failures = 0
+        latency_warnings = 0
+        quality_warnings = 0
         steps = 0
         for case in provider_result.get("cases", []):
             for step in case.get("steps", []):
@@ -589,8 +678,16 @@ def _summarize_agent(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     first_times.append(float(step["first_message_seconds"]))
                 if isinstance(step.get("final_seconds"), (int, float)):
                     final_times.append(float(step["final_seconds"]))
+                if isinstance(step.get("text_length"), (int, float)):
+                    text_lengths.append(float(step["text_length"]))
                 if step.get("assertion_violations"):
                     assertion_failures += 1
+                if step.get("latency_warnings"):
+                    latency_warnings += 1
+                if step.get("quality_warnings"):
+                    quality_warnings += 1
+        valid_steps = max(steps - errors, 0)
+        quality_gate_passed = max(valid_steps - assertion_failures, 0)
         summaries.append(
             {
                 "provider": provider_result.get("provider"),
@@ -598,8 +695,12 @@ def _summarize_agent(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "steps": steps,
                 "errors": errors,
                 "assertion_failures": assertion_failures,
+                "latency_warnings": latency_warnings,
+                "quality_warnings": quality_warnings,
+                "quality_gate_pass_rate": round(quality_gate_passed / valid_steps, 3) if valid_steps else None,
                 "first_message_seconds": _duration_stats(first_times),
                 "final_seconds": _duration_stats(final_times),
+                "text_length": _duration_stats(text_lengths),
             }
         )
     return summaries

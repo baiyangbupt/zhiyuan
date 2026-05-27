@@ -11,12 +11,46 @@ def test_resolve_plan_fast_route_matches_plan_status_query():
     assert decision.reason == "plan_status_query"
 
 
+def test_resolve_plan_fast_route_matches_colloquial_plan_status_query():
+    decision = resolve_plan_fast_route("这方案咋样，能不能说重点")
+
+    assert decision.matched is True
+    assert decision.action_family == "query_state"
+    assert decision.reason == "plan_status_query"
+
+
 def test_resolve_plan_fast_route_matches_safety_status_question_as_readonly():
     decision = resolve_plan_fast_route("保底够不够啊")
 
     assert decision.matched is True
     assert decision.action_family == "query_state"
     assert decision.reason == "plan_safety_status_query"
+
+
+def test_resolve_plan_fast_route_matches_colloquial_risk_status_as_readonly():
+    decision = resolve_plan_fast_route("这版是不是太冲了，能不能给我说人话")
+
+    assert decision.matched is True
+    assert decision.action_family == "query_state"
+    assert decision.reason == "plan_risk_status_query"
+
+
+def test_resolve_plan_fast_route_matches_budget_and_region_risk_readonly():
+    budget_decision = resolve_plan_fast_route("方案里中外合作是不是有点多，家里预算一般，帮我用大白话看下风险，先别动")
+    region_decision = resolve_plan_fast_route("孩子就想去北京天津，但分数不算高，这样是不是太冒险，先别改")
+
+    assert budget_decision.matched is True
+    assert budget_decision.action_family == "query_state"
+    assert region_decision.matched is True
+    assert region_decision.action_family == "query_state"
+
+
+def test_resolve_plan_fast_route_matches_colloquial_adjustment_analysis():
+    decision = resolve_plan_fast_route("就按别太冒险的思路把这版调稳点，先给我看看会怎么动")
+
+    assert decision.matched is True
+    assert decision.action_family == "analyze_adjustment"
+    assert decision.reason == "colloquial_adjustment_analysis"
 
 
 def test_resolve_plan_fast_route_keeps_explicit_compensation_as_preview():

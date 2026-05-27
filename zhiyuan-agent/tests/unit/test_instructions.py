@@ -242,6 +242,13 @@ class TestToolDispatchRules:
         assert "remove_units" in result
         assert "唯一性校验" in result
 
+    def test_major_choice_questions_should_not_use_plan_local_lookup(self):
+        result = build_tool_dispatch_rules()
+
+        assert "财会、法学、新媒体哪个更不容易踩坑" in result
+        assert "不要调用 `query_volunteer_plan`" in result
+        assert "取舍判断" in result
+
     def test_plan_tool_docs_say_refs_do_not_need_pre_query(self):
         assert "不适合在移动/删除前作为“定位 ID”的前置步骤" in (query_volunteer_plan.__doc__ or "")
         assert "不应为了定位而先调用 query_volunteer_plan" in (plan_next_action.__doc__ or "")
