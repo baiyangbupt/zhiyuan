@@ -87,6 +87,7 @@ ROUTING_PATH_BY_HISTORY_MODEL_NAME = {
     "direct-pending-plan-confirmation": "direct_pending_plan_confirm",
     "direct-pending-intent-confirmation": "direct_pending_intent_confirm",
     "direct-plan-confirmation-guard": "plan_confirmation_guard_no_pending",
+    "direct-readonly-closure-ack": "readonly_closure_ack",
 }
 
 ROUTING_PATH_BY_TOOL_CALL_ID_PREFIX = (

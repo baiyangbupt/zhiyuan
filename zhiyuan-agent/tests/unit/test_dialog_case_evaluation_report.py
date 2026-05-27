@@ -386,9 +386,22 @@ def test_case_definitions_infer_confirm_routes_from_prompt_and_coverage(tmp_path
                     "coverage": ["major_compare", "school_major_lookup"],
                     "prompts": [
                         {
-                            "prompt": "嗯那就这样",
+                            "prompt": "确认",
                             "coverage": ["no_pending_guard"],
                             "expectedRoutingPath": "plan_confirmation_guard_no_pending",
+                            "expectedNoAction": True,
+                        }
+                    ],
+                },
+                {
+                    "name": "readonly-closure",
+                    "sessionId": "880103",
+                    "flow": ["explore", "confirm_guard"],
+                    "coverage": ["major_compare"],
+                    "prompts": [
+                        {
+                            "prompt": "嗯那就这样",
+                            "coverage": ["readonly_closure_ack", "readonly_no_pending_intent"],
                             "expectedNoAction": True,
                         }
                     ],
@@ -413,6 +426,9 @@ def test_case_definitions_infer_confirm_routes_from_prompt_and_coverage(tmp_path
     assert definitions["no-pending#1"]["expectedRoutingPath"] == "plan_confirmation_guard_no_pending"
     assert "expectedActionFamily" not in definitions["no-pending#1"]
     assert definitions["no-pending#1"]["expectedNoAction"] is True
+    assert definitions["readonly-closure#1"]["expectedRoutingPath"] == "readonly_closure_ack"
+    assert "expectedActionFamily" not in definitions["readonly-closure#1"]
+    assert definitions["readonly-closure#1"]["expectedNoAction"] is True
     assert definitions["readonly-confirm#1"]["expectedRoutingPath"] == "plan_confirmation_guard_no_pending"
     assert "expectedActionFamily" not in definitions["readonly-confirm#1"]
 
@@ -467,9 +483,9 @@ def test_score_case_treats_no_action_ack_as_complete_when_expected():
                 "这轮没有待确认的偏好或方案动作，我不会改动方案。"
             ),
             "elapsedMs": 900,
-            "expectedRoutingPath": "plan_confirmation_guard_no_pending",
+            "expectedRoutingPath": "readonly_closure_ack",
             "expectedNoAction": True,
-            "routingPath": "plan_confirmation_guard_no_pending",
+            "routingPath": "readonly_closure_ack",
             "turnObservability": {"actionFamilies": [], "toolCalls": []},
         }
     )

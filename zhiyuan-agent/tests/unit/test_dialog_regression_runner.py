@@ -226,6 +226,26 @@ def test_summarize_turn_observability_infers_routing_path_from_fast_route_histor
     assert observed["actionFamilies"] == ["sort_ordered_plan"]
 
 
+def test_summarize_turn_observability_infers_readonly_closure_ack_route_from_model_name():
+    turn_messages = [
+        {"parts": [{"part_kind": "user-prompt", "content": "嗯那就这样"}]},
+        {
+            "model_name": "direct-readonly-closure-ack",
+            "parts": [
+                {
+                    "part_kind": "text",
+                    "content": "好的，先按刚才的专业对比结论作为参考。",
+                }
+            ],
+        },
+    ]
+
+    observed = runner._summarize_turn_observability(turn_messages)
+
+    assert observed["routingPath"] == "readonly_closure_ack"
+    assert observed["toolCallCount"] == 0
+
+
 def test_summarize_turn_observability_does_not_infer_route_from_plain_tool_name():
     turn_messages = [
         {

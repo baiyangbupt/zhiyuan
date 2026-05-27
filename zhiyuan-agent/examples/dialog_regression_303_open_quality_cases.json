@@ -1004,10 +1004,10 @@
       {
         "prompt": "嗯那就这样",
         "coverage": [
-          "no_pending_guard",
+          "readonly_closure_ack",
           "readonly_no_pending_intent"
         ],
-        "expectedRoutingPath": "plan_confirmation_guard_no_pending",
+        "expectedRoutingPath": "readonly_closure_ack",
         "expectedNoAction": true,
         "assertContainsAny": [
           "先按刚才的专业对比结论",

@@ -1121,3 +1121,31 @@ P1 收口后，open-quality 的硬门禁已经全部通过，但 Intent 相关�
 - 聚焦回归：`PYTHONPATH=. ./.venv/bin/python -m pytest tests/unit/test_dialog_case_evaluation_report.py tests/unit/test_chat_service_history_persistence.py::test_append_readonly_boundary_handles_direct_no_change_wording tests/unit/test_plan_execution_tool.py::test_execute_plan_action_runs_query_state -q`，`33 passed`。
 - 宽回归：`PYTHONPATH=. ./.venv/bin/python -m pytest tests/unit/test_dialog_case_evaluation_report.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_plan_execution_tool.py tests/unit/test_plan_query_tool.py tests/unit/test_mainline_dialog_scenarios.py -q`，`315 passed`。
 - 局部查询回复回归：`PYTHONPATH=. ./.venv/bin/python -m pytest tests/unit/test_plan_query_tool.py -q`，`32 passed`。
+
+### 13.7 只读收口确认的路由观测修正
+
+`open-quality` 最新 live 中仅剩一个 `missing_route_observability` warning，定位到 case 为：
+
+- 上一轮：`新媒体和跨电哪个更适合数学不太好的，先说说`
+- 本轮：`嗯那就这样`
+- 实际回复：先按刚才的专业对比结论作为参考，并明确没有待确认的偏好或方案动作、不会改动方案。
+
+这个场景不是“确认执行”，也不是“确认偏好”，而是用户对只读分析的弱收口。当前业务链路会走 `readonly_closure_ack`，历史中保存的 `model_name` 为 `direct-readonly-closure-ack`，不会调用工具，也不会写入偏好或改方案。因此 warning 的根因是评估 case 仍把它标成 `plan_confirmation_guard_no_pending`，且 runner 未把 `direct-readonly-closure-ack` 映射为可观测路由。
+
+本轮修正：
+
+- `dialog_regression_runner.py` 增加 `direct-readonly-closure-ack -> readonly_closure_ack` 历史观测映射。
+- `dialog_regression_303_open_quality_cases.json` 将该 step 的 `expectedRoutingPath` 调整为 `readonly_closure_ack`，并保留 `expectedNoAction=true`。
+- `dialog_case_evaluation_report.py` 支持 `readonly_closure_ack` 覆盖标签，避免后续同类弱确认被误归为 no-pending guard。
+
+影响边界：
+
+- 不改变 ChatService 路由、回复文案、pending、工具调用、工作台联动或方案/意向状态。
+- `确认` 这类强确认仍按 no-pending guard 处理；`嗯那就这样 / 那就这样 / 先这样` 这类只读收口继续按 `readonly_closure_ack` 处理。
+
+验证：
+
+- 当前 runner 直接解析本地 `session=880709 / 嗯那就这样` 历史，`turnObservability.routingPath=readonly_closure_ack`，`toolCallCount=0`。
+- 聚焦回归：`PYTHONPATH=. ./.venv/bin/python -m pytest tests/unit/test_dialog_regression_runner.py tests/unit/test_dialog_case_evaluation_report.py tests/unit/test_chat_service_history_persistence.py::test_chat_service_readonly_closure_after_major_compare_acknowledges_without_llm tests/unit/test_chat_service_history_persistence.py::test_chat_service_no_pending_confirm_after_major_compare_uses_contextual_guard -q`，`56 passed`。
+- 宽回归：`PYTHONPATH=. ./.venv/bin/python -m pytest tests/unit/test_dialog_regression_runner.py tests/unit/test_dialog_case_evaluation_report.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_mainline_dialog_scenarios.py -q`，`212 passed`。
+- 说明：修复前生成的旧 live JSON 本身没有保存 `readonly_closure_ack` 路由字段，直接重评旧 JSON 仍会保留历史 warning；使用当前 runner 重新跑 WebSocket 或重新从本地历史解析时会带出该路由。

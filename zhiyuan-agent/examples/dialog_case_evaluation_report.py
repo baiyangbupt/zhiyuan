@@ -183,6 +183,7 @@ _EXPECTED_ROUTES_BY_COVERAGE: dict[str, str] = {
     "soft_major_intent": "major_intent_fast_route",
     "hard_major_constraint": "major_intent_fast_route",
     "no_pending_guard": "plan_confirmation_guard_no_pending",
+    "readonly_closure_ack": "readonly_closure_ack",
 }
 
 _EXPECTED_ACTIONS_BY_COVERAGE: dict[str, str] = {
@@ -297,6 +298,8 @@ def _first_tag_mapping(tags: list[str], mapping: dict[str, str]) -> str | None:
 
 
 def _expected_route_from_metadata(step_coverage: list[str], prompt_text: str) -> str | None:
+    if "readonly_closure_ack" in step_coverage:
+        return "readonly_closure_ack"
     if prompt_text in {"确认", "确认执行", "确认这个偏好", "确认这个要求"}:
         if (
             "no_pending_guard" in step_coverage
@@ -313,6 +316,8 @@ def _expected_route_from_metadata(step_coverage: list[str], prompt_text: str) ->
 
 
 def _expected_action_from_metadata(step_coverage: list[str], prompt_text: str) -> str | None:
+    if "readonly_closure_ack" in step_coverage:
+        return None
     if prompt_text in {"确认", "确认执行"} and (
         "no_pending_guard" in step_coverage
         or "no_pending_intent" in step_coverage

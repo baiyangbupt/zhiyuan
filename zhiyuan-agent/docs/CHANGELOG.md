@@ -36,6 +36,7 @@
 - `dialog_case_evaluation_report.py` 支持读取 `--case-definitions`，把 case 的 `flow / coverage / warnElapsedSeconds / maxElapsedSeconds / expectedRoutingPath / expectedActionFamily` 合并到评估结果，并输出 `summary.current / scenarioSummary / coverageSummary / candidateSummary / baselineComparison` 等批量汇总。
 - `dialog_case_evaluation_report.py` 新增 `--markdown-detail`，用于生成逐 case 详细回复质量评审报告，包含用户输入、完整回复、评分表、覆盖维度、链路证据、case 期望和人工复核清单。
 - `dialog_case_evaluation_report.py` 补强确认类和只读类 case 的期望路由推断，并允许用业务 toolName 作为 action 观测兜底，避免把正确的职业方向、专业对比、意向确认和 no-pending guard 回复误判为质量待复核。
+- `dialog_regression_runner.py` 与 3.0.3 open-quality case 补齐 `readonly_closure_ack` 观测口径：弱收口“嗯那就这样”按只读分析收口处理，明确不执行动作、不写偏好，避免误标为 no-pending guard 路由缺失。
 - `conversation_turn_event` 补充 3.0.3 观测字段：`routeDecision`、LLM request/token、toolCallCount 和结构化 toolCalls 摘要；full-agent 工具调用会记录 actionFamily、stage、resultKind、applied/messageCode，direct pending/guard 路径明确记录 `llmRequests=0`。
 - `dialog_regression_runner.py` 的 metrics 输出新增 `turnObservability`，从本地 SQLite 历史解析每轮 tool call、actionFamily、stage、resultKind 和 applied 状态，便于在 WebSocket e2e 中定位慢点和误路由。
 - 新增 Plan 高置信快路径 `plan_fast_route`：在已有 planning summary 时，方案状态、数字志愿/专业组移动、数字删除、指定维度排序和显式审查会跳过主模型自由试工具，直接进入 `_plan_next_action_model -> execute_plan_action`；高副作用动作仍只生成 preview，确认后再 apply。
