@@ -123,6 +123,7 @@
 - 3.0.3 回复结构 P1 收口：候选空结果、局部查询、命名移动预览、候选加入预览、专业组移动预览和排序预览统一为用户可扫读的小节结构；不改变路由、pending、执行 payload 或工作台刷新语义。复跑 effect/perf `14/14` 通过，结构均分约 `3.21 -> 3.79`；open-quality `23/23` 通过，结构均分约 `3.57 -> 3.65`。
 - Plan fast route 进度提示修复：mutation 类请求如果仍处于 `analyze` 阶段，不再提示“正在按你的确认更新方案”，改为“正在确认当前方案是否可以调整”，避免无方案或缺少必要输入时 thinking 文案和最终回复冲突。
 - 3.0.3 Intent 待确认回复结构收口：待确认预览和“先不确认，看看影响”回复统一为“本次边界 / 影响分析 / 待确认内容 / 下一步”一类可扫读结构；去掉“结合当前方案给你的提醒”下嵌多级标题的重复感，并在已有具体方案命中时清理默认兜底说明。不改变 `planEditCache`、pending 确认、确认写入或工作台联动语义。相关单元/质量工具回归 `287 passed`；真实 open-quality `23/23` strong，effect/perf `14/14` strong。
+- 3.0.3 回复质量门禁可执行化：`dialog_case_evaluation_report.py` 支持 `qualityFocus` 和 `minTextLengthWarn`，把只读边界、确认边界、下一步、用户语言、决策依据覆盖和最低信息量纳入自动 `needs_review`；3.0.3 effect/perf、open-quality、realistic-user case 同步补充质量元数据。方案概览和局部查询统一补充“不会改动当前方案”的用户边界说明，不改变路由、pending、执行或工作台刷新语义；相关宽回归 `315 passed`，真实 WebSocket effect/perf `14/14` strong，open-quality `23/23` strong，realistic-user `9/9` strong。
 - 3.0.3 候选空结果回复收口：`候选里还有没有更稳一点的会计审计` 走 `plan_query_fast_route`，后端直查 `session=17` 中 `会计学+审计学`、单独 `会计学`、单独 `审计学` 均为 `total=0`；回复改为明确说明已按具体专业查过且当前候选池无结果，并引导放宽到专业类、查看当前方案相近志愿或做更稳调整建议。评估工具同步支持空结果等价验收，避免把真实无数据误判为薄预览或路由失败。
 - 3.0.3 case 级评估工具补充 `expectedNoAction` 和无动作确认保护评分：只读分析、候选空结果、无 pending 的“确认”不应触发方案或偏好动作，若出现动作会标记 `unexpected_action`；正确的确认保护会按边界说明和下一步出口评分。
 - 修复专业组移动/删除 apply 后重复按“第 N 个专业组”解析目标的问题；移动后方案顺序已变化，重复解析可能记录成另一个专业组。现在 `executed_actions` 和后续日志复用执行前解析出的 unitIds。

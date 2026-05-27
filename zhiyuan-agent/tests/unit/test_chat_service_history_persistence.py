@@ -16,6 +16,7 @@ from app.service import (
     ChatService,
     ChatServiceResponseEnvelope,
     _append_plan_preview_confirmation_boundary,
+    _append_readonly_boundary_if_requested,
     _build_plan_timeout_fallback_reply,
     build_timeout_fallback_from_pending_intent_preview,
     build_runtime_history,
@@ -5100,6 +5101,19 @@ def test_normalize_plan_reply_style_removes_major_group_front_position_expansion
     assert "当前前5位概况" not in normalized
     assert "河北师范大学" not in normalized
     assert "如果你确认要执行" in normalized
+
+
+def test_append_readonly_boundary_handles_direct_no_change_wording():
+    reply = "当前方案里共命中了 7 条相关志愿。下一步可以继续看更稳的。"
+
+    bounded = _append_readonly_boundary_if_requested(
+        reply,
+        "青岛城市学院相关专业是不是有多个，不要直接改方案",
+    )
+
+    assert "本轮边界" in bounded
+    assert "不会写入偏好" in bounded
+    assert "不会改动当前方案" in bounded
 
 
 def test_chat_service_propagates_wsresponse_from_main_agent(tmp_path, mock_llm_client):

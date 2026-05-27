@@ -117,6 +117,64 @@ _DISTRIBUTION_SIGNALS: dict[str, tuple[str, ...]] = {
     "representative_samples": ("代表样本", "示例", "典型涉及", "排序前列", "方案前列", "下面仅展示"),
 }
 
+_READONLY_BOUNDARY_TOKENS = (
+    "没有待确认",
+    "没有待执行",
+    "没有上一轮待确认",
+    "不会改动",
+    "不会自动改动",
+    "不会直接改",
+    "不会自动修改",
+    "不会写入",
+    "不会记录",
+    "不会加入",
+    "不会执行",
+    "不会改方案",
+    "不改方案",
+    "只是查询",
+    "只是方向分析",
+    "只做分析",
+    "只做参考",
+    "先不改",
+    "先不要改",
+    "先别动",
+)
+_PREVIEW_CONFIRM_BOUNDARY_TOKENS = (
+    "确认前",
+    "需要你确认后",
+    "确认后才会",
+    "确认后再",
+    "如果确认",
+    "确认执行",
+    "待确认",
+    "不需要重复确认",
+    "不会重复写入",
+    "已经在后续参考",
+    "已在参考",
+)
+_USER_LANGUAGE_RISK_TOKENS = (
+    "个性化量化评分",
+    "系统分数",
+    "系统评分",
+    "level1",
+    "level2",
+    "level3",
+    "payload",
+    "action_family",
+    "volunteerId",
+)
+_DECISION_BASIS_SIGNALS: dict[str, tuple[str, ...]] = {
+    "target_identity": ("已定位", "定位结果", "共命中", "符合", "命中", "专业组", "候选里定位"),
+    "plan_distribution": ("冲稳保", "冲区", "稳区", "保区", "数量", "缺口", "已有", "目标"),
+    "school_level": ("学校层次", "院校层次", "院校排名", "学校排名", "公办", "民办", "双一流"),
+    "major_heat": ("专业热度", "热门", "冷门", "计划数", "招生计划"),
+    "candidate_reason": ("当前候选池", "具体专业分别查过", "专业名称口径", "可选范围", "没有返回可用结果"),
+    "risk_or_gap": ("风险", "提醒", "短板", "缺口", "问题", "需要留意", "保底"),
+    "representative_samples": ("代表样本", "示例", "典型涉及", "方案内", "候选里"),
+    "career_path": ("就业路径", "考公", "体制内", "稳定就业", "读研", "深造", "门槛", "试错成本", "岗位"),
+    "side_effect": ("影响", "导出顺序", "导出内容", "待重新审查", "方案顺序", "当前位置", "目标位置", "当前在", "移动到"),
+}
+
 _EXPECTED_ROUTES_BY_COVERAGE: dict[str, str] = {
     "plan_fast_route": "plan_fast_route",
     "plan_query_fast_route": "plan_query_fast_route",
@@ -164,6 +222,7 @@ _QUALITY_EXPECTATION_FIELDS = (
     "qualityFocus",
     "manualReviewFocus",
     "forbiddenPatterns",
+    "minTextLengthWarn",
 )
 
 
@@ -578,6 +637,59 @@ def _forbidden_pattern_violations(record: dict[str, Any], text: str) -> list[str
     return violations
 
 
+def _quality_focuses(record: dict[str, Any]) -> set[str]:
+    quality_expectations = record.get("qualityExpectations")
+    if not isinstance(quality_expectations, dict):
+        return set()
+    return set(_normalize_text_list(quality_expectations.get("qualityFocus")))
+
+
+def _min_text_length_warn(record: dict[str, Any]) -> int | None:
+    quality_expectations = record.get("qualityExpectations")
+    if not isinstance(quality_expectations, dict):
+        return None
+    return _as_int_ms(quality_expectations.get("minTextLengthWarn"))
+
+
+def _decision_basis_coverage(text: str) -> list[str]:
+    coverage: list[str] = []
+    for name, tokens in _DECISION_BASIS_SIGNALS.items():
+        if _contains_any(text, tokens):
+            coverage.append(name)
+    return coverage
+
+
+def _quality_focus_warnings(record: dict[str, Any], text: str) -> list[str]:
+    focuses = _quality_focuses(record)
+    if not focuses:
+        return []
+
+    warnings: list[str] = []
+    if "readonly_boundary" in focuses and not _contains_any(text, _READONLY_BOUNDARY_TOKENS):
+        warnings.append("missing_quality_focus:readonly_boundary")
+    if "preview_confirm_boundary" in focuses and not _contains_any(text, _PREVIEW_CONFIRM_BOUNDARY_TOKENS):
+        warnings.append("missing_quality_focus:preview_confirm_boundary")
+    if "actionable_next_step" in focuses and not _contains_any(
+        text,
+        ("下一步", "可以继续", "如果", "直接说", "告诉我", "建议先", "需要你确认后", "确认后才会"),
+    ):
+        warnings.append("missing_quality_focus:actionable_next_step")
+    if "user_language" in focuses and any(token in text for token in _USER_LANGUAGE_RISK_TOKENS):
+        warnings.append("missing_quality_focus:user_language")
+    if "rich_decision_basis" in focuses:
+        basis = _decision_basis_coverage(text)
+        required = 2
+        if "multi_distribution" in focuses:
+            required = 3
+        if len(basis) < required:
+            warnings.append(f"missing_quality_focus:rich_decision_basis:{len(basis)}<{required}")
+
+    min_length = _min_text_length_warn(record)
+    if min_length is not None and len(text) < min_length:
+        warnings.append(f"text_too_short:{len(text)}<{min_length}")
+    return warnings
+
+
 def _quality_violations(record: dict[str, Any], text: str) -> list[str]:
     violations: list[str] = []
     for field in ("assertionViolations", "contentViolations", "performanceViolations"):
@@ -656,6 +768,7 @@ def _evaluation_warnings(record: dict[str, Any], text: str) -> list[str]:
     if isinstance(elapsed_ms, int) and elapsed_ms >= 10000 and not thinking:
         warnings.append("missing_progress_for_long_task")
     warnings.extend(_expected_keypoint_warnings(record, text))
+    warnings.extend(_quality_focus_warnings(record, text))
     return warnings
 
 
@@ -801,12 +914,16 @@ def _score_case(record: dict[str, Any]) -> dict[str, Any]:
         _normalize_text(item).startswith("missing_expected_keypoint:")
         for item in warnings
     )
+    has_quality_focus_warning = any(
+        _normalize_text(item).startswith(("missing_quality_focus:", "text_too_short:"))
+        for item in warnings
+    )
     scored["verdict"] = (
         "fail"
         if violations
         else (
             "needs_review"
-            if has_expected_keypoint_warning
+            if has_expected_keypoint_warning or has_quality_focus_warning
             else (
                 "strong"
                 if min(scored["correctness"], scored["completeness"], scored["actionability"], scored["route"]) >= 4

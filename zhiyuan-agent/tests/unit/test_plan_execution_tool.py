@@ -2208,6 +2208,7 @@ def test_execute_plan_action_runs_query_state():
     assert "方案已经有了" in data["summary"]
     assert "45/45 个志愿" in data["summary"]
     assert "审查提醒：风险 0 项，提醒 2 项" in data["summary"]
+    assert "本轮只是查看和分析，不会改动当前方案" in data["summary"]
     assert "前排示例" in data["summary"]
     assert "北京财经学院第01组-财政学(冲)第1位" in data["summary"]
     assert "@1" not in data["summary"]

@@ -158,7 +158,14 @@
           "确认后执行"
         ],
         "assertNoFollowups": true,
-        "warnElapsedSeconds": 30
+        "warnElapsedSeconds": 30,
+        "qualityFocus": [
+          "actionable_next_step",
+          "readonly_boundary",
+          "rich_decision_basis",
+          "user_language"
+        ],
+        "minTextLengthWarn": 180
       }
     ]
   },
@@ -215,7 +222,14 @@
           "确认后写入"
         ],
         "assertNoFollowups": true,
-        "warnElapsedSeconds": 20
+        "warnElapsedSeconds": 20,
+        "qualityFocus": [
+          "actionable_next_step",
+          "readonly_boundary",
+          "rich_decision_basis",
+          "user_language"
+        ],
+        "minTextLengthWarn": 180
       }
     ]
   },
@@ -273,7 +287,15 @@
           "volunteerId"
         ],
         "assertNoFollowups": true,
-        "warnElapsedSeconds": 20
+        "warnElapsedSeconds": 20,
+        "qualityFocus": [
+          "actionable_next_step",
+          "multi_distribution",
+          "readonly_boundary",
+          "rich_decision_basis",
+          "user_language"
+        ],
+        "minTextLengthWarn": 180
       },
       {
         "prompt": "确认",
@@ -303,7 +325,12 @@
           "payload"
         ],
         "assertNoFollowups": true,
-        "maxElapsedSeconds": 5
+        "maxElapsedSeconds": 5,
+        "qualityFocus": [
+          "actionable_next_step",
+          "readonly_boundary",
+          "user_language"
+        ]
       }
     ]
   },
@@ -360,7 +387,12 @@
           "payload"
         ],
         "assertNoFollowups": true,
-        "warnElapsedSeconds": 30
+        "warnElapsedSeconds": 30,
+        "qualityFocus": [
+          "actionable_next_step",
+          "preview_confirm_boundary",
+          "user_language"
+        ]
       }
     ]
   },
@@ -418,7 +450,14 @@
           "确认后写入"
         ],
         "assertNoFollowups": true,
-        "warnElapsedSeconds": 25
+        "warnElapsedSeconds": 25,
+        "qualityFocus": [
+          "actionable_next_step",
+          "readonly_boundary",
+          "rich_decision_basis",
+          "user_language"
+        ],
+        "minTextLengthWarn": 180
       }
     ]
   },
@@ -478,7 +517,14 @@
           "确认后执行"
         ],
         "assertNoFollowups": true,
-        "warnElapsedSeconds": 35
+        "warnElapsedSeconds": 35,
+        "qualityFocus": [
+          "actionable_next_step",
+          "readonly_boundary",
+          "rich_decision_basis",
+          "user_language"
+        ],
+        "minTextLengthWarn": 180
       }
     ]
   },
@@ -538,7 +584,14 @@
           "@1"
         ],
         "assertNoFollowups": true,
-        "warnElapsedSeconds": 35
+        "warnElapsedSeconds": 35,
+        "qualityFocus": [
+          "actionable_next_step",
+          "readonly_boundary",
+          "rich_decision_basis",
+          "user_language"
+        ],
+        "minTextLengthWarn": 160
       }
     ]
   },
@@ -597,7 +650,14 @@
           "确认后执行"
         ],
         "assertNoFollowups": true,
-        "warnElapsedSeconds": 35
+        "warnElapsedSeconds": 35,
+        "qualityFocus": [
+          "actionable_next_step",
+          "readonly_boundary",
+          "rich_decision_basis",
+          "user_language"
+        ],
+        "minTextLengthWarn": 180
       }
     ]
   },
@@ -655,7 +715,14 @@
           "确认后写入"
         ],
         "assertNoFollowups": true,
-        "warnElapsedSeconds": 25
+        "warnElapsedSeconds": 25,
+        "qualityFocus": [
+          "actionable_next_step",
+          "readonly_boundary",
+          "rich_decision_basis",
+          "user_language"
+        ],
+        "minTextLengthWarn": 180
       }
     ]
   },
@@ -718,7 +785,12 @@
           "已直接记录"
         ],
         "assertNoFollowups": true,
-        "warnElapsedSeconds": 25
+        "warnElapsedSeconds": 25,
+        "qualityFocus": [
+          "actionable_next_step",
+          "preview_confirm_boundary",
+          "user_language"
+        ]
       }
     ]
   },
@@ -800,7 +872,14 @@
           "volunteerId"
         ],
         "assertNoFollowups": true,
-        "warnElapsedSeconds": 20
+        "warnElapsedSeconds": 20,
+        "qualityFocus": [
+          "actionable_next_step",
+          "readonly_boundary",
+          "rich_decision_basis",
+          "user_language"
+        ],
+        "minTextLengthWarn": 140
       }
     ]
   },
@@ -913,43 +992,55 @@
           "确认后写入"
         ],
         "assertNoFollowups": true,
-        "warnElapsedSeconds": 25
+        "warnElapsedSeconds": 25,
+        "qualityFocus": [
+          "actionable_next_step",
+          "readonly_boundary",
+          "rich_decision_basis",
+          "user_language"
+        ],
+        "minTextLengthWarn": 180
       },
-    {
-      "prompt": "嗯那就这样",
-      "coverage": [
-        "no_pending_guard",
-        "readonly_no_pending_intent"
-      ],
-      "expectedRoutingPath": "plan_confirmation_guard_no_pending",
-      "expectedNoAction": true,
-      "assertContainsAny": [
-        "先按刚才的专业对比结论",
-        "没有待确认的偏好或方案动作",
-        "不会改动方案"
-      ],
-      "assertNotContains": [
-        "已直接调整",
-        "已直接删除",
+      {
+        "prompt": "嗯那就这样",
+        "coverage": [
+          "no_pending_guard",
+          "readonly_no_pending_intent"
+        ],
+        "expectedRoutingPath": "plan_confirmation_guard_no_pending",
+        "expectedNoAction": true,
+        "assertContainsAny": [
+          "先按刚才的专业对比结论",
+          "没有待确认的偏好或方案动作",
+          "不会改动方案"
+        ],
+        "assertNotContains": [
+          "已直接调整",
+          "已直接删除",
           "已记录",
           "payload",
           "stage",
           "action_family",
           "volunteerId",
           "草稿"
-      ],
-      "expectedKeyPoints": [
-        "专业对比结论",
-        "没有待确认",
-        "不会改动方案"
-      ],
-      "forbiddenPatterns": [
-        "已直接调整",
+        ],
+        "expectedKeyPoints": [
+          "专业对比结论",
+          "没有待确认",
+          "不会改动方案"
+        ],
+        "forbiddenPatterns": [
+          "已直接调整",
           "已记录",
           "payload"
         ],
         "assertNoFollowups": true,
-        "maxElapsedSeconds": 5
+        "maxElapsedSeconds": 5,
+        "qualityFocus": [
+          "actionable_next_step",
+          "readonly_boundary",
+          "user_language"
+        ]
       }
     ]
   },
@@ -1004,7 +1095,14 @@
           "确认后写入"
         ],
         "assertNoFollowups": true,
-        "warnElapsedSeconds": 25
+        "warnElapsedSeconds": 25,
+        "qualityFocus": [
+          "actionable_next_step",
+          "readonly_boundary",
+          "rich_decision_basis",
+          "user_language"
+        ],
+        "minTextLengthWarn": 180
       }
     ]
   },
@@ -1061,7 +1159,14 @@
           "已直接调整"
         ],
         "assertNoFollowups": true,
-        "warnElapsedSeconds": 35
+        "warnElapsedSeconds": 35,
+        "qualityFocus": [
+          "actionable_next_step",
+          "readonly_boundary",
+          "rich_decision_basis",
+          "user_language"
+        ],
+        "minTextLengthWarn": 180
       }
     ]
   },
@@ -1174,7 +1279,14 @@
           "已直接调整"
         ],
         "assertNoFollowups": true,
-        "warnElapsedSeconds": 35
+        "warnElapsedSeconds": 35,
+        "qualityFocus": [
+          "actionable_next_step",
+          "readonly_boundary",
+          "rich_decision_basis",
+          "user_language"
+        ],
+        "minTextLengthWarn": 180
       }
     ]
   },
@@ -1229,7 +1341,14 @@
           "payload"
         ],
         "assertNoFollowups": true,
-        "warnElapsedSeconds": 35
+        "warnElapsedSeconds": 35,
+        "qualityFocus": [
+          "actionable_next_step",
+          "preview_confirm_boundary",
+          "rich_decision_basis",
+          "user_language"
+        ],
+        "minTextLengthWarn": 160
       }
     ]
   },
@@ -1299,7 +1418,12 @@
           "已直接记录"
         ],
         "assertNoFollowups": true,
-        "warnElapsedSeconds": 25
+        "warnElapsedSeconds": 25,
+        "qualityFocus": [
+          "actionable_next_step",
+          "preview_confirm_boundary",
+          "user_language"
+        ]
       }
     ]
   }

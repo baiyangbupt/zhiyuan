@@ -1057,3 +1057,67 @@ P1 收口后，open-quality 的硬门禁已经全部通过，但 Intent 相关�
   - 中位耗时 `2180ms`，p95 `3755ms`，最大 `4156ms`
   - 评分：`strong=14 / needs_review=0 / fail=0`，`qualityViolations={}`
   - 方案审查、专业组移动确认、排序预览、无 pending guard 均保持原联动/确认语义。
+
+### 13.6 回复质量门禁可执行化
+
+前面几轮修复已经让主要场景达到 `strong`，但评估口径仍有一个风险：部分“看起来能用”的回复虽然没有硬失败，却可能缺少用户真正需要的边界或决策依据。例如只读查询没有明确“不会改方案”，方案预览没有明确“确认后才执行”，或回复过短导致用户无法判断下一步。
+
+本轮把这些用户侧质量要求下沉到 case 定义和评估器中，作为自动化 `needs_review` 门禁，而不是只靠人工读报告：
+
+- `qualityFocus=readonly_boundary`：只读查询、分析、影响追问必须明确不会写入偏好、不会改方案或不会执行动作。
+- `qualityFocus=preview_confirm_boundary`：方案调整、排序、加入、删除等预览必须明确需要确认后才执行。
+- `qualityFocus=actionable_next_step`：回复必须给出用户能继续操作的下一步，而不是停在结论。
+- `qualityFocus=user_language`：不得暴露 `level1/level2/level3`、`payload`、`action_family`、`volunteerId`、`系统评分` 等内部或生硬表达。
+- `qualityFocus=rich_decision_basis`：至少覆盖两个决策依据维度，例如目标定位、冲稳保分布、院校层次、专业热度、候选原因、风险缺口、代表样本或执行影响。
+- `qualityFocus=multi_distribution`：更复杂的方案分析或预览要求至少覆盖三个依据维度，避免回复只给一个样例。
+- `minTextLengthWarn`：对需要解释的场景设置最低信息量提醒，过短回复会进入 `needs_review`。
+
+实现边界：
+
+- 只修改评估工具、case 元数据和用户侧边界文案，不改变 fast route 仲裁、工具执行、pending、`applied` 或工作台刷新规则。
+- `query_state` 类方案概览补充“本轮只是查看和分析，不会改动当前方案”。
+- `query_volunteer_plan` 局部命中查询统一补充“本轮边界”，避免用户用“是不是放多了”这类口语问法时误解为系统会自动调整方案。
+- 当用户明确说“不要直接改方案 / 别直接改 / 先不改”等，只读边界追加逻辑会识别这些口语表达并补充边界说明。
+
+离线复核结果：
+
+- 基于旧 live 输出 `/private/tmp/zhiyuan_agent_303_open_quality_after_intent_structure_final.json` 重新评分：
+  - 输出：`/private/tmp/zhiyuan_agent_303_open_quality_quality_focus_eval_latest.json`
+  - 结果：`strong=22 / needs_review=1 / fail=0`
+  - 剩余 `needs_review` 为历史回复缺少 `readonly_boundary`，不是路由或动作错误。
+- 基于旧 live 输出 `/private/tmp/zhiyuan_agent_303_effect_perf_after_intent_structure_final.json` 重新评分：
+  - 输出：`/private/tmp/zhiyuan_agent_303_effect_perf_quality_focus_eval_latest.json`
+  - 结果：`strong=13 / needs_review=1 / fail=0`
+  - 剩余 `needs_review` 同样为历史回复缺少 `readonly_boundary`。
+
+这两个 `needs_review` 使用的是修复前历史输出。当前代码已补充对应边界文案，随后在本地 Agent / Backend / Rank 可用时完成真实 WebSocket 复跑，确认历史 warning 已消除。
+
+最新 live 复跑：
+
+- effect/perf live：
+  - 输出：`/private/tmp/zhiyuan_agent_303_effect_perf_quality_focus_live.json`
+  - 详细评分：`/private/tmp/zhiyuan_agent_303_effect_perf_quality_focus_live_eval.json`
+  - 结果：`14/14` steps 通过，`failedSteps=0`
+  - 评分：`strong=14 / needs_review=0 / fail=0`，`qualityViolations={}`，`evaluationWarnings={}`
+  - 延迟：中位 `2226ms`，p95 `3683ms`，最大 `4105ms`
+  - 关键复核：方案概览已明确“本轮只是查看和分析，不会改动当前方案”；局部查询已明确“这次只做分析和参考，不会写入偏好，也不会改动当前方案”。
+- open-quality live：
+  - 输出：`/private/tmp/zhiyuan_agent_303_open_quality_quality_focus_live.json`
+  - 详细评分：`/private/tmp/zhiyuan_agent_303_open_quality_quality_focus_live_eval.json`
+  - 结果：`23/23` steps 通过，`failedSteps=0`
+  - 评分：`strong=23 / needs_review=0 / fail=0`，`qualityViolations={}`；剩余 `missing_route_observability=1` 仅为无 pending 确认保护路径的观测字段缺失，不影响用户回复质量和动作正确性。
+  - 延迟：中位 `2183ms`，p95 `3543ms`，最大 `3649ms`
+- realistic-user live：
+  - 输出：`/private/tmp/zhiyuan_agent_303_realistic_user_quality_focus_live_after_query_boundary_restart.json`
+  - 详细评分：`/private/tmp/zhiyuan_agent_303_realistic_user_quality_focus_live_after_query_boundary_restart_eval.json`
+  - 结果：`9/9` steps 通过，`failedSteps=0`
+  - 评分：`strong=9 / needs_review=0 / fail=0`，`qualityViolations={}`，`evaluationWarnings={}`
+  - 延迟：中位 `2209ms`，p95 `2983ms`，最大 `3431ms`
+  - 关键复核：短句“这方案咋样 / 保底够不够啊”、简称“青城那个 / 法和财 / 新媒体和跨电”、弱确认“嗯可以”均未触发误动作或薄回复；其中“青城那个是不是放多了”已明确只做查询分析，不会自动改动方案。
+
+验证：
+
+- JSON 定义校验通过：`dialog_regression_303_effect_perf_cases.json`、`dialog_regression_303_open_quality_cases.json`、`dialog_regression_303_realistic_user_cases.json`。
+- 聚焦回归：`PYTHONPATH=. ./.venv/bin/python -m pytest tests/unit/test_dialog_case_evaluation_report.py tests/unit/test_chat_service_history_persistence.py::test_append_readonly_boundary_handles_direct_no_change_wording tests/unit/test_plan_execution_tool.py::test_execute_plan_action_runs_query_state -q`，`33 passed`。
+- 宽回归：`PYTHONPATH=. ./.venv/bin/python -m pytest tests/unit/test_dialog_case_evaluation_report.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_plan_execution_tool.py tests/unit/test_plan_query_tool.py tests/unit/test_mainline_dialog_scenarios.py -q`，`315 passed`。
+- 局部查询回复回归：`PYTHONPATH=. ./.venv/bin/python -m pytest tests/unit/test_plan_query_tool.py -q`，`32 passed`。

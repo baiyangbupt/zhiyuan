@@ -321,6 +321,7 @@ def _build_status_overview_summary(facts: dict[str, Any]) -> tuple[str, list[str
         next_step_hints.append("如果用户想继续优化，可先解释待处理建议，再决定是否补偿或重排。")
     if current_total > 0:
         lines.append("下一步建议：先看审查详情；如果要调稳，可以说“先给我一版调稳预览”，我会先给影响说明，确认后再执行。")
+        lines.append("本轮只是查看和分析，不会改动当前方案。")
     return "\n".join(line for line in lines if line), reply_focus, next_step_hints
 
 

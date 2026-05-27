@@ -2,207 +2,715 @@
   {
     "name": "303-quality-plan-status-rich-structured",
     "sessionId": "17",
-    "flow": ["plan"],
-    "coverage": ["release_3_0_3", "effect_quality", "performance_smoke", "plan_fast_route", "plan_status", "rich_reply", "readonly_no_workspace_card"],
+    "flow": [
+      "plan"
+    ],
+    "coverage": [
+      "release_3_0_3",
+      "effect_quality",
+      "performance_smoke",
+      "plan_fast_route",
+      "plan_status",
+      "rich_reply",
+      "readonly_no_workspace_card"
+    ],
     "assertPlanStyle": true,
     "prompts": [
       {
         "prompt": "看看现在的方案，给我一个结构化一点的结论",
-        "assertContains": ["方案", "审查"],
-        "assertContainsAny": ["冲", "稳", "保"],
-        "assertThinkingContains": ["正在读取当前方案并整理这次请求", "正在整理当前方案的数量、梯度和风险"],
-        "assertNotContains": ["草稿", "payload", "stage", "action_family", "volunteerId", "@1"],
-        "assertThinkingNotContains": ["草稿", "payload", "stage", "action_family", "volunteerId"],
-        "expectedKeyPoints": ["数量", "冲稳保", "审查", "缺口", "当前偏好", "承接情况"],
-        "forbiddenPatterns": ["方案情况如下", "@1", "volunteerId"],
+        "assertContains": [
+          "方案",
+          "审查"
+        ],
+        "assertContainsAny": [
+          "冲",
+          "稳",
+          "保"
+        ],
+        "assertThinkingContains": [
+          "正在读取当前方案并整理这次请求",
+          "正在整理当前方案的数量、梯度和风险"
+        ],
+        "assertNotContains": [
+          "草稿",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "@1"
+        ],
+        "assertThinkingNotContains": [
+          "草稿",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId"
+        ],
+        "expectedKeyPoints": [
+          "数量",
+          "冲稳保",
+          "审查",
+          "缺口",
+          "当前偏好",
+          "承接情况"
+        ],
+        "forbiddenPatterns": [
+          "方案情况如下",
+          "@1",
+          "volunteerId"
+        ],
         "assertNoFollowups": true,
-        "warnElapsedSeconds": 30
+        "warnElapsedSeconds": 30,
+        "qualityFocus": [
+          "actionable_next_step",
+          "multi_distribution",
+          "rich_decision_basis",
+          "user_language"
+        ],
+        "minTextLengthWarn": 180
       }
     ]
   },
   {
     "name": "303-quality-plan-review-rich-structured",
     "sessionId": "17",
-    "flow": ["plan", "review"],
-    "coverage": ["release_3_0_3", "effect_quality", "performance_smoke", "plan_fast_route", "review_plan", "review_workspace", "rich_reply"],
+    "flow": [
+      "plan",
+      "review"
+    ],
+    "coverage": [
+      "release_3_0_3",
+      "effect_quality",
+      "performance_smoke",
+      "plan_fast_route",
+      "review_plan",
+      "review_workspace",
+      "rich_reply"
+    ],
     "assertPlanStyle": true,
     "prompts": [
       {
         "prompt": "帮我审查一下当前方案",
-        "assertContains": ["审查结论", "审查", "方案"],
-        "assertContainsAny": ["风险", "提醒", "主要问题"],
-        "assertThinkingContains": ["正在读取当前方案并整理这次请求", "正在检查当前方案的风险点"],
+        "assertContains": [
+          "审查结论",
+          "审查",
+          "方案"
+        ],
+        "assertContainsAny": [
+          "风险",
+          "提醒",
+          "主要问题"
+        ],
+        "assertThinkingContains": [
+          "正在读取当前方案并整理这次请求",
+          "正在检查当前方案的风险点"
+        ],
         "assertFollowupTarget": "review",
         "assertFollowupRefresh": true,
-        "assertNotContains": ["草稿", "payload", "stage", "action_family", "volunteerId", "@1"],
-        "assertThinkingNotContains": ["草稿", "payload", "stage", "action_family", "volunteerId"],
-        "expectedKeyPoints": ["审查结论", "风险", "提醒", "主要问题", "典型涉及", "审查详情"],
-        "forbiddenPatterns": ["payload", "volunteerId", "@1"],
-        "warnElapsedSeconds": 30
+        "assertNotContains": [
+          "草稿",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "@1"
+        ],
+        "assertThinkingNotContains": [
+          "草稿",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId"
+        ],
+        "expectedKeyPoints": [
+          "审查结论",
+          "风险",
+          "提醒",
+          "主要问题",
+          "典型涉及",
+          "审查详情"
+        ],
+        "forbiddenPatterns": [
+          "payload",
+          "volunteerId",
+          "@1"
+        ],
+        "warnElapsedSeconds": 30,
+        "qualityFocus": [
+          "actionable_next_step",
+          "multi_distribution",
+          "rich_decision_basis",
+          "user_language"
+        ],
+        "minTextLengthWarn": 180
       }
     ]
   },
   {
     "name": "303-quality-plan-local-query-readonly-fast-route",
     "sessionId": "17",
-    "flow": ["plan"],
-    "coverage": ["release_3_0_3", "effect_quality", "performance_smoke", "plan_query_fast_route", "readonly_no_workspace_card", "school_major_lookup"],
+    "flow": [
+      "plan"
+    ],
+    "coverage": [
+      "release_3_0_3",
+      "effect_quality",
+      "performance_smoke",
+      "plan_query_fast_route",
+      "readonly_no_workspace_card",
+      "school_major_lookup"
+    ],
     "assertPlanStyle": true,
     "prompts": [
       {
         "prompt": "青岛城市学院相关专业是不是有多个，先帮我判断一下，不要直接改方案",
-        "assertContainsAny": ["青岛城市", "方案", "候选", "命中", "相关"],
-        "assertThinkingContains": ["正在查当前方案和候选里的相关结果"],
-        "assertNotContains": ["已直接调整", "确认后执行", "payload", "stage", "action_family", "volunteerId", "id=", "草稿"],
-        "assertThinkingNotContains": ["草稿", "payload", "stage", "action_family", "volunteerId"],
-        "expectedKeyPoints": ["共命中", "冲稳保", "学校层次", "专业热度", "示例", "下一步"],
-        "forbiddenPatterns": ["确认后执行", "已直接调整", "volunteerId"],
+        "assertContainsAny": [
+          "青岛城市",
+          "方案",
+          "候选",
+          "命中",
+          "相关"
+        ],
+        "assertThinkingContains": [
+          "正在查当前方案和候选里的相关结果"
+        ],
+        "assertNotContains": [
+          "已直接调整",
+          "确认后执行",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "id=",
+          "草稿"
+        ],
+        "assertThinkingNotContains": [
+          "草稿",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId"
+        ],
+        "expectedKeyPoints": [
+          "共命中",
+          "冲稳保",
+          "学校层次",
+          "专业热度",
+          "示例",
+          "下一步"
+        ],
+        "forbiddenPatterns": [
+          "确认后执行",
+          "已直接调整",
+          "volunteerId"
+        ],
         "assertNoFollowups": true,
-        "warnElapsedSeconds": 20
+        "warnElapsedSeconds": 20,
+        "qualityFocus": [
+          "actionable_next_step",
+          "multi_distribution",
+          "readonly_boundary",
+          "rich_decision_basis",
+          "user_language"
+        ],
+        "minTextLengthWarn": 180
       }
     ]
   },
   {
     "name": "303-quality-plan-named-move-preview-fast-route",
     "sessionId": "17",
-    "flow": ["plan"],
-    "coverage": ["release_3_0_3", "effect_quality", "performance_smoke", "plan_fast_route", "school_major_ref", "preview_confirm_boundary"],
+    "flow": [
+      "plan"
+    ],
+    "coverage": [
+      "release_3_0_3",
+      "effect_quality",
+      "performance_smoke",
+      "plan_fast_route",
+      "school_major_ref",
+      "preview_confirm_boundary"
+    ],
     "assertPlanStyle": true,
     "prompts": [
       {
         "prompt": "把青岛城市学院的国际经济与贸易改到第3位",
-        "assertContains": ["确认"],
-        "assertContainsAny": ["移动", "第3位", "青岛城市学院", "国际经济与贸易"],
-        "assertThinkingContains": ["正在读取当前方案并整理这次请求", "正在生成这次调整的影响预览"],
-        "assertNotContains": ["已直接移动", "payload", "stage", "action_family", "volunteerId", "草稿"],
-        "assertThinkingNotContains": ["草稿", "payload", "stage", "action_family", "volunteerId"],
-        "expectedKeyPoints": ["当前在", "第3位", "导出顺序", "待重新审查", "确认后"],
-        "forbiddenPatterns": ["已直接移动", "volunteerId", "payload"],
+        "assertContains": [
+          "确认"
+        ],
+        "assertContainsAny": [
+          "移动",
+          "第3位",
+          "青岛城市学院",
+          "国际经济与贸易"
+        ],
+        "assertThinkingContains": [
+          "正在读取当前方案并整理这次请求",
+          "正在生成这次调整的影响预览"
+        ],
+        "assertNotContains": [
+          "已直接移动",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ],
+        "assertThinkingNotContains": [
+          "草稿",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId"
+        ],
+        "expectedKeyPoints": [
+          "当前在",
+          "第3位",
+          "导出顺序",
+          "待重新审查",
+          "确认后"
+        ],
+        "forbiddenPatterns": [
+          "已直接移动",
+          "volunteerId",
+          "payload"
+        ],
         "assertNoFollowups": true,
-        "warnElapsedSeconds": 30
+        "warnElapsedSeconds": 30,
+        "qualityFocus": [
+          "actionable_next_step",
+          "preview_confirm_boundary",
+          "rich_decision_basis",
+          "user_language"
+        ]
       }
     ]
   },
   {
     "name": "303-quality-plan-named-add-preview-fast-route",
     "sessionId": "17",
-    "flow": ["plan"],
-    "coverage": ["release_3_0_3", "effect_quality", "performance_smoke", "plan_fast_route", "candidate_school_major_alias_ref", "preview_confirm_boundary"],
+    "flow": [
+      "plan"
+    ],
+    "coverage": [
+      "release_3_0_3",
+      "effect_quality",
+      "performance_smoke",
+      "plan_fast_route",
+      "candidate_school_major_alias_ref",
+      "preview_confirm_boundary"
+    ],
     "assertPlanStyle": true,
     "prompts": [
       {
         "prompt": "把河南农业大学的建筑类加进来",
-        "assertContains": ["确认", "河南农业大学", "建筑类"],
-        "assertContainsAny": ["加入", "加入当前方案", "候选"],
-        "assertThinkingContains": ["正在读取当前方案并整理这次请求", "正在生成这次调整的影响预览"],
-        "assertNotContains": ["已直接加入", "payload", "stage", "action_family", "volunteerId", "草稿"],
-        "assertThinkingNotContains": ["草稿", "payload", "stage", "action_family", "volunteerId"],
-        "expectedKeyPoints": ["候选", "加入当前方案", "数量", "导出内容", "待重新审查", "确认后"],
-        "forbiddenPatterns": ["已直接加入", "volunteerId", "payload"],
+        "assertContains": [
+          "确认",
+          "河南农业大学",
+          "建筑类"
+        ],
+        "assertContainsAny": [
+          "加入",
+          "加入当前方案",
+          "候选"
+        ],
+        "assertThinkingContains": [
+          "正在读取当前方案并整理这次请求",
+          "正在生成这次调整的影响预览"
+        ],
+        "assertNotContains": [
+          "已直接加入",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ],
+        "assertThinkingNotContains": [
+          "草稿",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId"
+        ],
+        "expectedKeyPoints": [
+          "候选",
+          "加入当前方案",
+          "数量",
+          "导出内容",
+          "待重新审查",
+          "确认后"
+        ],
+        "forbiddenPatterns": [
+          "已直接加入",
+          "volunteerId",
+          "payload"
+        ],
         "assertNoFollowups": true,
-        "warnElapsedSeconds": 30
+        "warnElapsedSeconds": 30,
+        "qualityFocus": [
+          "actionable_next_step",
+          "preview_confirm_boundary",
+          "rich_decision_basis",
+          "user_language"
+        ]
       }
     ]
   },
   {
     "name": "303-quality-major-group-preview-confirm-boundary",
     "sessionId": "16",
-    "flow": ["plan", "confirm"],
-    "coverage": ["release_3_0_3", "effect_quality", "performance_smoke", "plan_fast_route", "majorGroup_model", "unit_level_operation", "preview_confirm_apply", "reply_quality"],
+    "flow": [
+      "plan",
+      "confirm"
+    ],
+    "coverage": [
+      "release_3_0_3",
+      "effect_quality",
+      "performance_smoke",
+      "plan_fast_route",
+      "majorGroup_model",
+      "unit_level_operation",
+      "preview_confirm_apply",
+      "reply_quality"
+    ],
     "assertPlanStyle": true,
     "prompts": [
       {
         "prompt": "把第4个专业组移到第2位",
-        "assertContains": ["专业组", "组内", "确认"],
-        "assertContainsAny": ["不是按单条志愿位置", "专业组顺序"],
-        "assertThinkingContains": ["正在读取当前方案并整理这次请求", "正在生成这次调整的影响预览"],
-        "assertNotContains": ["已直接移动", "草稿", "锁定", "payload", "stage", "action_family", "volunteerId"],
-        "assertThinkingNotContains": ["草稿", "payload", "stage", "action_family", "volunteerId"],
-        "expectedKeyPoints": ["整体移动", "专业组", "组内", "不是按单条志愿位置", "组内专业顺序不变", "确认后"],
-        "forbiddenPatterns": ["已直接移动", "草稿", "锁定"],
+        "assertContains": [
+          "专业组",
+          "组内",
+          "确认"
+        ],
+        "assertContainsAny": [
+          "不是按单条志愿位置",
+          "专业组顺序"
+        ],
+        "assertThinkingContains": [
+          "正在读取当前方案并整理这次请求",
+          "正在生成这次调整的影响预览"
+        ],
+        "assertNotContains": [
+          "已直接移动",
+          "草稿",
+          "锁定",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId"
+        ],
+        "assertThinkingNotContains": [
+          "草稿",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId"
+        ],
+        "expectedKeyPoints": [
+          "整体移动",
+          "专业组",
+          "组内",
+          "不是按单条志愿位置",
+          "组内专业顺序不变",
+          "确认后"
+        ],
+        "forbiddenPatterns": [
+          "已直接移动",
+          "草稿",
+          "锁定"
+        ],
         "assertNoFollowups": true,
-        "warnElapsedSeconds": 30
+        "warnElapsedSeconds": 30,
+        "qualityFocus": [
+          "actionable_next_step",
+          "preview_confirm_boundary",
+          "rich_decision_basis",
+          "user_language"
+        ]
       },
       {
         "prompt": "确认",
-        "assertContainsAny": ["已", "移动", "专业组", "方案"],
-        "assertThinkingContains": ["正在按你的确认更新方案"],
+        "assertContainsAny": [
+          "已",
+          "移动",
+          "专业组",
+          "方案"
+        ],
+        "assertThinkingContains": [
+          "正在按你的确认更新方案"
+        ],
         "assertFollowupTarget": "ordered",
         "assertFollowupRefresh": true,
-        "assertNotContains": ["草稿", "payload", "stage", "action_family", "volunteerId"],
-        "assertThinkingNotContains": ["草稿", "payload", "stage", "action_family", "volunteerId"],
-        "expectedKeyPoints": ["专业组", "第 2 位", "导出顺序", "待重新审查", "下一步"],
-        "forbiddenPatterns": ["草稿", "payload", "volunteerId"],
-        "warnElapsedSeconds": 20
+        "assertNotContains": [
+          "草稿",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId"
+        ],
+        "assertThinkingNotContains": [
+          "草稿",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId"
+        ],
+        "expectedKeyPoints": [
+          "专业组",
+          "第 2 位",
+          "导出顺序",
+          "待重新审查",
+          "下一步"
+        ],
+        "forbiddenPatterns": [
+          "草稿",
+          "payload",
+          "volunteerId"
+        ],
+        "warnElapsedSeconds": 20,
+        "qualityFocus": [
+          "actionable_next_step",
+          "user_language"
+        ]
       }
     ]
   },
   {
     "name": "303-quality-sort-preview-explains-side-effect",
     "sessionId": "17",
-    "flow": ["plan"],
-    "coverage": ["release_3_0_3", "effect_quality", "performance_smoke", "plan_fast_route", "sort_ordered_plan", "confirmation_boundary"],
+    "flow": [
+      "plan"
+    ],
+    "coverage": [
+      "release_3_0_3",
+      "effect_quality",
+      "performance_smoke",
+      "plan_fast_route",
+      "sort_ordered_plan",
+      "confirmation_boundary"
+    ],
     "assertPlanStyle": true,
     "prompts": [
       {
         "prompt": "按院校层次排序",
-        "assertContains": ["排序", "确认"],
-        "assertContainsAny": ["实际改变", "导出顺序", "待重新审查"],
-        "assertThinkingContains": ["正在读取当前方案并整理这次请求", "正在生成这次调整的影响预览"],
-        "assertNotContains": ["已直接排序", "草稿", "payload", "stage", "action_family", "volunteerId"],
-        "assertThinkingNotContains": ["草稿", "payload", "stage", "action_family", "volunteerId"],
-        "expectedKeyPoints": ["排序方式", "导出顺序", "待重新审查", "确认后"],
-        "forbiddenPatterns": ["已直接排序", "草稿", "payload"],
+        "assertContains": [
+          "排序",
+          "确认"
+        ],
+        "assertContainsAny": [
+          "实际改变",
+          "导出顺序",
+          "待重新审查"
+        ],
+        "assertThinkingContains": [
+          "正在读取当前方案并整理这次请求",
+          "正在生成这次调整的影响预览"
+        ],
+        "assertNotContains": [
+          "已直接排序",
+          "草稿",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId"
+        ],
+        "assertThinkingNotContains": [
+          "草稿",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId"
+        ],
+        "expectedKeyPoints": [
+          "排序方式",
+          "导出顺序",
+          "待重新审查",
+          "确认后"
+        ],
+        "forbiddenPatterns": [
+          "已直接排序",
+          "草稿",
+          "payload"
+        ],
         "assertNoFollowups": true,
-        "warnElapsedSeconds": 30
+        "warnElapsedSeconds": 30,
+        "qualityFocus": [
+          "actionable_next_step",
+          "preview_confirm_boundary",
+          "user_language"
+        ]
       }
     ]
   },
   {
     "name": "303-quality-career-fit-readonly-no-workspace",
     "sessionId": "17",
-    "flow": ["explore", "plan"],
-    "coverage": ["release_3_0_3", "effect_quality", "performance_smoke", "career_explore", "readonly_no_workspace_card", "no_pending_intent"],
+    "flow": [
+      "explore",
+      "plan"
+    ],
+    "coverage": [
+      "release_3_0_3",
+      "effect_quality",
+      "performance_smoke",
+      "career_explore",
+      "readonly_no_workspace_card",
+      "no_pending_intent"
+    ],
     "assertPlanStyle": true,
     "prompts": [
       {
         "prompt": "当前方案对体制内稳定就业方向承接得怎么样，先不要改方案",
-        "assertContains": ["当前方案", "承接"],
-        "assertContainsAny": ["体制内", "稳定", "方案内", "候选"],
-        "assertThinkingContains": ["正在看这条方向和当前方案的承接情况"],
-        "assertNotContains": ["我先帮你做了一个方向对比分析", "已直接调整", "确认后执行", "已记录", "payload", "stage", "action_family", "volunteerId", "草稿"],
-        "assertThinkingNotContains": ["草稿", "payload", "stage", "action_family", "volunteerId"],
-        "expectedKeyPoints": ["分析结论", "方案承接", "当前方案", "候选机会", "代表样本", "本次边界", "下一步"],
-        "forbiddenPatterns": ["已直接调整", "已记录", "确认后执行"],
+        "assertContains": [
+          "当前方案",
+          "承接"
+        ],
+        "assertContainsAny": [
+          "体制内",
+          "稳定",
+          "方案内",
+          "候选"
+        ],
+        "assertThinkingContains": [
+          "正在看这条方向和当前方案的承接情况"
+        ],
+        "assertNotContains": [
+          "我先帮你做了一个方向对比分析",
+          "已直接调整",
+          "确认后执行",
+          "已记录",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ],
+        "assertThinkingNotContains": [
+          "草稿",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId"
+        ],
+        "expectedKeyPoints": [
+          "分析结论",
+          "方案承接",
+          "当前方案",
+          "候选机会",
+          "代表样本",
+          "本次边界",
+          "下一步"
+        ],
+        "forbiddenPatterns": [
+          "已直接调整",
+          "已记录",
+          "确认后执行"
+        ],
         "assertNoFollowups": true,
-        "warnElapsedSeconds": 60
+        "warnElapsedSeconds": 60,
+        "qualityFocus": [
+          "actionable_next_step",
+          "readonly_boundary",
+          "rich_decision_basis",
+          "user_language"
+        ],
+        "minTextLengthWarn": 180
       },
       {
         "prompt": "确认",
-        "assertContainsAny": ["上一轮只是职业方向", "没有待执行的方案动作", "展开体制内方向"],
-        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"],
-        "expectedKeyPoints": ["上一轮只是职业方向", "没有待执行的方案动作", "下一步"],
-        "forbiddenPatterns": ["payload", "volunteerId", "已直接调整"],
+        "assertContainsAny": [
+          "上一轮只是职业方向",
+          "没有待执行的方案动作",
+          "展开体制内方向"
+        ],
+        "assertNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ],
+        "expectedKeyPoints": [
+          "上一轮只是职业方向",
+          "没有待执行的方案动作",
+          "下一步"
+        ],
+        "forbiddenPatterns": [
+          "payload",
+          "volunteerId",
+          "已直接调整"
+        ],
         "assertNoFollowups": true,
-        "maxElapsedSeconds": 5
+        "maxElapsedSeconds": 5,
+        "qualityFocus": [
+          "actionable_next_step",
+          "user_language"
+        ]
       }
     ]
   },
   {
     "name": "303-quality-major-compare-readonly-no-intent",
     "sessionId": "880101",
-    "flow": ["explore"],
-    "coverage": ["release_3_0_3", "effect_quality", "performance_smoke", "clean_dialog", "major_explore", "readonly_no_pending_intent"],
+    "flow": [
+      "explore"
+    ],
+    "coverage": [
+      "release_3_0_3",
+      "effect_quality",
+      "performance_smoke",
+      "clean_dialog",
+      "major_explore",
+      "readonly_no_pending_intent"
+    ],
     "assertPlanStyle": true,
     "prompts": [
       {
         "prompt": "法学和财政学哪个更适合普通家庭女生，先只分析不要记偏好",
-        "assertContainsAny": ["法学", "财政", "适合", "方向", "就业"],
-        "assertThinkingContains": ["正在对比这几个专业的差异"],
-        "assertNotContains": ["没有完整分数、选科、省份和性别信息", "缺少性别信息", "已记录", "我记下", "确认后写入", "payload", "stage", "action_family", "volunteerId", "草稿"],
-        "assertThinkingNotContains": ["草稿", "payload", "stage", "action_family", "volunteerId"],
-        "expectedKeyPoints": ["当前会话参考", "本次边界", "法学", "财政学", "就业路径", "选择建议", "下一步"],
-        "forbiddenPatterns": ["缺少性别信息", "已记录", "确认后写入"],
+        "assertContainsAny": [
+          "法学",
+          "财政",
+          "适合",
+          "方向",
+          "就业"
+        ],
+        "assertThinkingContains": [
+          "正在对比这几个专业的差异"
+        ],
+        "assertNotContains": [
+          "没有完整分数、选科、省份和性别信息",
+          "缺少性别信息",
+          "已记录",
+          "我记下",
+          "确认后写入",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ],
+        "assertThinkingNotContains": [
+          "草稿",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId"
+        ],
+        "expectedKeyPoints": [
+          "当前会话参考",
+          "本次边界",
+          "法学",
+          "财政学",
+          "就业路径",
+          "选择建议",
+          "下一步"
+        ],
+        "forbiddenPatterns": [
+          "缺少性别信息",
+          "已记录",
+          "确认后写入"
+        ],
         "assertNoFollowups": true,
         "warnElapsedSeconds": 45
       }
@@ -211,48 +719,172 @@
   {
     "name": "303-quality-intent-preview-confirm-progress",
     "sessionId": "880203",
-    "flow": ["intent", "confirm"],
-    "coverage": ["release_3_0_3", "effect_quality", "performance_smoke", "clean_dialog", "soft_major_intent", "hard_major_constraint", "confirmation_boundary", "intent_progress"],
+    "flow": [
+      "intent",
+      "confirm"
+    ],
+    "coverage": [
+      "release_3_0_3",
+      "effect_quality",
+      "performance_smoke",
+      "clean_dialog",
+      "soft_major_intent",
+      "hard_major_constraint",
+      "confirmation_boundary",
+      "intent_progress"
+    ],
     "assertPlanStyle": true,
     "prompts": [
       {
         "prompt": "我倾向法学和财政学，但护理不要",
-        "assertContainsAny": ["确认", "法学", "财政", "护理", "后续"],
-        "assertThinkingContains": ["正在整理这个专业想法的影响，等你确认后才会记入偏好"],
-        "assertNotContains": ["level1", "level2", "level3", "已直接调整", "已直接删除", "已直接记录", "我已经记下", "已经记下", "已记录", "当前已记录", "记下并在参考", "payload", "stage", "action_family", "volunteerId", "草稿"],
-        "assertThinkingNotContains": ["草稿", "payload", "stage", "action_family", "volunteerId"],
-        "expectedKeyPoints": ["法学", "财政学", "护理", "后续参考", "本次边界", "下一步"],
-        "forbiddenPatterns": ["level1", "level2", "level3", "已记录"],
+        "assertContainsAny": [
+          "确认",
+          "法学",
+          "财政",
+          "护理",
+          "后续"
+        ],
+        "assertThinkingContains": [
+          "正在整理这个专业想法的影响，等你确认后才会记入偏好"
+        ],
+        "assertNotContains": [
+          "level1",
+          "level2",
+          "level3",
+          "已直接调整",
+          "已直接删除",
+          "已直接记录",
+          "我已经记下",
+          "已经记下",
+          "已记录",
+          "当前已记录",
+          "记下并在参考",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ],
+        "assertThinkingNotContains": [
+          "草稿",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId"
+        ],
+        "expectedKeyPoints": [
+          "法学",
+          "财政学",
+          "护理",
+          "后续参考",
+          "本次边界",
+          "下一步"
+        ],
+        "forbiddenPatterns": [
+          "level1",
+          "level2",
+          "level3",
+          "已记录"
+        ],
         "assertNoFollowups": true,
-        "warnElapsedSeconds": 60
+        "warnElapsedSeconds": 60,
+        "qualityFocus": [
+          "actionable_next_step",
+          "readonly_boundary",
+          "user_language"
+        ]
       },
       {
         "prompt": "确认这个偏好",
-        "assertContainsAny": ["确认", "偏好", "参考"],
-        "assertThinkingContains": ["正在按你的确认更新后续参考偏好"],
-        "assertNotContains": ["候选结果收紧", "payload", "stage", "action_family", "volunteerId", "草稿"],
-        "assertThinkingNotContains": ["草稿", "payload", "stage", "action_family", "volunteerId"],
-        "expectedKeyPoints": ["本次确认内容", "偏好专业", "排除专业", "后续使用", "下一步"],
-        "forbiddenPatterns": ["候选结果收紧", "payload", "volunteerId"],
-        "warnElapsedSeconds": 20
+        "assertContainsAny": [
+          "确认",
+          "偏好",
+          "参考"
+        ],
+        "assertThinkingContains": [
+          "正在按你的确认更新后续参考偏好"
+        ],
+        "assertNotContains": [
+          "候选结果收紧",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ],
+        "assertThinkingNotContains": [
+          "草稿",
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId"
+        ],
+        "expectedKeyPoints": [
+          "本次确认内容",
+          "偏好专业",
+          "排除专业",
+          "后续使用",
+          "下一步"
+        ],
+        "forbiddenPatterns": [
+          "候选结果收紧",
+          "payload",
+          "volunteerId"
+        ],
+        "warnElapsedSeconds": 20,
+        "qualityFocus": [
+          "actionable_next_step",
+          "user_language"
+        ]
       }
     ]
   },
   {
     "name": "303-quality-no-pending-confirm-fast-guard",
     "sessionId": "880102",
-    "flow": ["confirm_guard"],
-    "coverage": ["release_3_0_3", "performance_smoke", "clean_dialog", "confirmation_boundary", "no_pending_guard"],
+    "flow": [
+      "confirm_guard"
+    ],
+    "coverage": [
+      "release_3_0_3",
+      "performance_smoke",
+      "clean_dialog",
+      "confirmation_boundary",
+      "no_pending_guard"
+    ],
     "assertPlanStyle": true,
     "prompts": [
       {
         "prompt": "确认",
-        "assertContainsAny": ["没有上一轮待确认", "没有待确认"],
-        "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"],
-        "expectedKeyPoints": ["没有上一轮待确认", "生成或查看方案", "审查当前方案", "调整方案"],
-        "forbiddenPatterns": ["payload", "volunteerId", "已直接调整"],
+        "assertContainsAny": [
+          "没有上一轮待确认",
+          "没有待确认"
+        ],
+        "assertNotContains": [
+          "payload",
+          "stage",
+          "action_family",
+          "volunteerId",
+          "草稿"
+        ],
+        "expectedKeyPoints": [
+          "没有上一轮待确认",
+          "生成或查看方案",
+          "审查当前方案",
+          "调整方案"
+        ],
+        "forbiddenPatterns": [
+          "payload",
+          "volunteerId",
+          "已直接调整"
+        ],
         "assertNoFollowups": true,
-        "maxElapsedSeconds": 5
+        "maxElapsedSeconds": 5,
+        "qualityFocus": [
+          "actionable_next_step",
+          "readonly_boundary",
+          "user_language"
+        ]
       }
     ]
   }

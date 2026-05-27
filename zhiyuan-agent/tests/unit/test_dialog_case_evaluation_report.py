@@ -590,6 +590,81 @@ def test_score_case_accepts_expected_keypoint_groups():
     assert not any(item.startswith("missing_expected_keypoint_group:") for item in score["evaluationWarnings"])
 
 
+def test_score_case_applies_quality_focus_warnings():
+    score = report._score_case(
+        {
+            "prompt": "这方案咋样",
+            "responseText": "方案有风险，可以继续看。",
+            "elapsedMs": 900,
+            "qualityExpectations": {
+                "qualityFocus": [
+                    "readonly_boundary",
+                    "rich_decision_basis",
+                    "multi_distribution",
+                    "actionable_next_step",
+                ],
+                "minTextLengthWarn": 80,
+            },
+        }
+    )
+
+    assert "missing_quality_focus:readonly_boundary" in score["evaluationWarnings"]
+    assert any(item.startswith("missing_quality_focus:rich_decision_basis") for item in score["evaluationWarnings"])
+    assert "text_too_short:12<80" in score["evaluationWarnings"]
+    assert score["verdict"] == "needs_review"
+
+
+def test_score_case_passes_quality_focus_when_reply_is_rich_and_bounded():
+    score = report._score_case(
+        {
+            "prompt": "这版是不是太冲了，先别动",
+            "responseText": (
+                "**分析结论**\n"
+                "- 当前方案冲区偏多，保底数量有缺口。\n\n"
+                "**关键依据**\n"
+                "- 冲稳保：冲66 / 稳28 / 保0。\n"
+                "- 学校层次：公办和民办都有，前排以冲区为主。\n"
+                "- 代表样本：前排有青岛城市学院相关志愿。\n\n"
+                "**本次边界**\n"
+                "- 这次只是分析，不会改动当前方案。\n\n"
+                "**下一步**\n"
+                "- 可以继续看保底补齐，或让我先给调稳预览。"
+            ),
+            "elapsedMs": 900,
+            "qualityExpectations": {
+                "qualityFocus": [
+                    "readonly_boundary",
+                    "rich_decision_basis",
+                    "multi_distribution",
+                    "actionable_next_step",
+                    "user_language",
+                ],
+                "minTextLengthWarn": 120,
+            },
+        }
+    )
+
+    assert not any(item.startswith("missing_quality_focus:") for item in score["evaluationWarnings"])
+    assert not any(item.startswith("text_too_short:") for item in score["evaluationWarnings"])
+    assert score["verdict"] == "strong"
+
+
+def test_score_case_quality_focus_flags_system_language():
+    score = report._score_case(
+        {
+            "prompt": "法学和财政学哪个更适合",
+            "responseText": "当前没有个性化量化评分，先按系统分数之外的维度看。下一步可以继续。",
+            "elapsedMs": 900,
+            "qualityExpectations": {
+                "qualityFocus": ["user_language"],
+            },
+        }
+    )
+
+    assert "missing_quality_focus:user_language" in score["evaluationWarnings"]
+    assert score["verdict"] == "needs_review"
+
+
 def test_summarize_reports_groups_quality_by_scenario_and_coverage():
     reports = [
         {

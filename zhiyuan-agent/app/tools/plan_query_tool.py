@@ -587,23 +587,27 @@ def _format_plan_result(title: str, items: list[dict[str, Any]], display_keyword
         if matched:
             examples = matched[:5]
             snippets = "；".join(_build_plan_item_snippet(item) for item in examples)
-            return (
-                f"{title}里共命中了 {len(matched)} 条和“{display_keyword}”相关的志愿。"
-                f"关键分布：{_format_tier_summary(matched)}。\n"
-                f"下面仅展示前 {len(examples)} 条示例：{snippets}\n"
-                f"这些例子分别对应：{'；'.join(_format_example_reason(item) for item in examples)}。\n"
-                "下一步如果要处理这些志愿，可以告诉我保留哪几个、移动到哪里，或只看更稳/录取率更高的。"
+            return _format_query_sections(
+                ("查询结论", [f"{title}里共命中了 {len(matched)} 条和“{display_keyword}”相关的志愿。"]),
+                ("关键分布", [_format_tier_summary(matched)]),
+                ("代表样本", [f"下面仅展示前 {len(examples)} 条示例：{snippets}"]),
+                ("样本说明", [reason for reason in (_format_example_reason(item) for item in examples) if reason]),
+                ("下一步", ["下一步如果要处理这些志愿，可以告诉我保留哪几个、移动到哪里，或只看更稳/录取率更高的。"]),
+                ("本轮边界", ["这次只做查询和分析，不会自动改动当前方案。"]),
             )
-        return (
-            f"{title}里暂时没有命中“{display_keyword}”的志愿。"
-            "如果这是明确不想要的方向，当前方案暂时没有看到直接冲突；后续也可以再让我按更具体的学校或专业名复查。"
+        return _format_query_sections(
+            ("查询结论", [f"{title}里暂时没有命中“{display_keyword}”的志愿。"]),
+            ("本轮边界", ["这次只做查询和分析，不会自动改动当前方案。"]),
+            ("当前判断", ["如果这是明确不想要的方向，当前方案暂时没有看到直接冲突。"]),
+            ("下一步", ["后续也可以再让我按更具体的学校或专业名复查。"]),
         )
     snippets = "；".join(_build_plan_item_snippet(item) for item in items[:5])
-    return (
-        f"{title}前几项是：{snippets}\n"
-        f"关键分布：{_format_tier_summary(items)}。\n"
-        f"这些例子分别对应：{'；'.join(_format_example_reason(item) for item in items[:5])}。\n"
-        "如果要继续调整，可以告诉我按录取率、院校层次排序，或移动/删除具体志愿。"
+    return _format_query_sections(
+        ("查询结论", [f"{title}前几项是：{snippets}"]),
+        ("关键分布", [_format_tier_summary(items)]),
+        ("样本说明", [reason for reason in (_format_example_reason(item) for item in items[:5]) if reason]),
+        ("本轮边界", ["这次只做查询和分析，不会自动改动当前方案。"]),
+        ("下一步", ["如果要继续调整，可以告诉我按录取率、院校层次排序，或移动/删除具体志愿。"]),
     )
 
 
@@ -744,6 +748,7 @@ def _format_candidate_result(response: dict[str, Any], keyword: str) -> str:
         ("关键分布", [_format_tier_summary(items)]),
         ("代表样本", [f"下面仅展示前 {len(examples)} 条示例：{snippets}"]),
         ("样本说明", [reason for reason in (_format_example_reason(item) for item in examples) if reason]),
+        ("本次边界", ["这次只是查询候选，不会直接加入方案。"]),
         ("下一步", ["下一步可以继续缩小条件，比如只看更稳、录取率更高，或判断是否值得加入当前方案。"]),
     )
 
@@ -805,10 +810,12 @@ def _format_structured_plan_result(
             ("关键分布", [_format_tier_summary(matched)]),
             ("代表样本", [f"下面仅展示前 {len(examples)} 条示例：{snippets}"]),
             ("样本说明", [reason for reason in (_format_example_reason(item) for item in examples) if reason]),
+            ("本轮边界", ["这次只做查询和分析，不会自动改动当前方案。"]),
             ("下一步", ["下一步如果要处理这些志愿，可以告诉我保留哪几个、移动到哪里，或只看更稳/录取率更高的。"]),
         )
     return _format_query_sections(
         ("查询结论", [f"{title}里暂时没有命中符合“{description}”的志愿。"]),
+        ("本轮边界", ["这次只做查询和分析，不会自动改动当前方案。"]),
         ("当前判断", ["如果这是明确不想要的方向，当前方案暂时没有看到直接冲突。"]),
         ("下一步", ["后续也可以再让我按更具体的学校或专业名复查。"]),
     )
@@ -844,6 +851,7 @@ def _format_structured_candidate_result(response: dict[str, Any], description: s
         ("关键分布", [_format_tier_summary(items)]),
         ("代表样本", [f"下面仅展示前 {len(examples)} 条示例：{snippets}"]),
         ("样本说明", [reason for reason in (_format_example_reason(item) for item in examples) if reason]),
+        ("本次边界", ["这次只是查询候选，不会直接加入方案。"]),
         ("下一步", ["下一步可以继续缩小条件，比如只看更稳、录取率更高，或判断是否值得加入当前方案。"]),
     )
 

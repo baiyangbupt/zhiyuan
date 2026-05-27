@@ -188,6 +188,8 @@ async def test_query_volunteer_plan_returns_current_plan_hits_first():
     assert "下面仅展示前 1 条示例" in result
     assert "北京联合大学(17)-生物工程" in result
     assert "下一步如果要处理这些志愿" in result
+    assert "本轮边界" in result
+    assert "不会自动改动当前方案" in result
     candidate_mock.assert_not_awaited()
 
 
@@ -216,6 +218,7 @@ async def test_query_volunteer_plan_matches_school_and_major_across_group_name()
 
     assert "当前排序方案里共命中了 1 条和“广西师范大学工业设计”相关的志愿" in result
     assert "广西师范大学006专业组-工业设计" in result
+    assert "不会自动改动当前方案" in result
     candidate_mock.assert_not_awaited()
 
 
@@ -251,6 +254,7 @@ async def test_query_volunteer_plan_structured_school_and_major_filters_support_
 
     assert "当前排序方案里共命中了 1 条符合“院校:广西师范大学；专业:工业设计”" in result
     assert "广西师范大学006专业组-工业设计" in result
+    assert "不会自动改动当前方案" in result
     candidate_mock.assert_not_awaited()
 
 
@@ -279,6 +283,7 @@ async def test_query_volunteer_plan_matches_major_query_with_related_major_suffi
 
     assert "当前排序方案里共命中了 1 条和“网络与新媒体相关专业”相关的志愿" in result
     assert "上海建桥学院第01组-网络与新媒体" in result
+    assert "不会自动改动当前方案" in result
     candidate_mock.assert_not_awaited()
 
 
@@ -314,6 +319,8 @@ async def test_query_volunteer_plan_school_abbreviation_filter_matches_plan_item
 
     assert "当前排序方案里共命中了 1 条符合“院校:青岛城市学院”" in result
     assert "青岛城市学院-国际经济与贸易" in result
+    assert "本轮边界" in result
+    assert "不会自动改动当前方案" in result
     assert "青海民族大学" not in result
     candidate_mock.assert_not_awaited()
 
