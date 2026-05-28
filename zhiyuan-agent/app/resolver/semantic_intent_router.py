@@ -14,6 +14,7 @@ from typing import Any
 
 from pydantic_ai import Agent
 
+from app.config import LLMConfig
 from app.agent.context import RequestContext
 from app.config import SemanticRouterConfig
 from app.llm.client import LLMClient
@@ -93,18 +94,44 @@ class SemanticIntentRouter:
     def __init__(self, llm_client: LLMClient, config: SemanticRouterConfig | None = None):
         self.llm_client = llm_client
         self.config = config or SemanticRouterConfig()
+        self.router_llm_client = self._build_router_llm_client()
         self.agent: Agent | None = None
+
+    def _build_router_llm_client(self) -> LLMClient:
+        if not self.config.llm_model_name:
+            return self.llm_client
+
+        main_cfg = self.llm_client.config
+        router_cfg = LLMConfig(
+            provider=self.config.llm_provider or main_cfg.provider,
+            model_name=self.config.llm_model_name,
+            api_key=self.config.llm_api_key or main_cfg.api_key,
+            base_url=self.config.llm_base_url or main_cfg.base_url,
+            temperature=self.config.llm_temperature,
+            max_tokens=self.config.llm_max_tokens,
+        )
+        return LLMClient(router_cfg)
 
     def _agent(self) -> Agent:
         if self.agent is None:
             self.agent = Agent(
-                model=self.llm_client.model,
+                model=self.router_llm_client.model,
                 output_type=str,
                 instructions=_INSTRUCTIONS,
                 tools=[],
-                model_settings=self.llm_client.model_settings,
+                model_settings=self._router_model_settings(),
             )
         return self.agent
+
+    def _router_model_settings(self) -> dict[str, Any]:
+        settings = dict(self.router_llm_client.model_settings or {})
+        if self.config.llm_enable_thinking is not None:
+            extra_body = settings.get("extra_body")
+            if not isinstance(extra_body, dict):
+                extra_body = {}
+            extra_body = {**extra_body, "enable_thinking": self.config.llm_enable_thinking}
+            settings["extra_body"] = extra_body
+        return settings
 
     async def route_shadow(
         self,
@@ -124,7 +151,7 @@ class SemanticIntentRouter:
         )
         try:
             result = await asyncio.wait_for(
-                self._agent().run(prompt, model_settings={"temperature": 0}),
+                self._agent().run(prompt, model_settings=self._router_model_settings()),
                 timeout=max(0.1, float(self.config.timeout_seconds)),
             )
             frame = _parse_semantic_frame(result.output)

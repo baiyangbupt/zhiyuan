@@ -1473,7 +1473,57 @@ P1 修复后复跑结果：
 - 补充新会话链路：session `880403`，覆盖“山东450分物理历史地理 -> 网络与新媒体和跨境电商对比 -> 记成偏好”。三步均通过；专业对比约 `2166ms`，能展示新闻传播学类和电子商务类的就业路径、门槛、稳定性和试错成本；Intent preview 约 `2319ms`，能把 `跨境电商` 归一成 `跨境电子商务`。
 - 同一补充链路的第一步开放式 Explore 曾慢到约 `46925ms`，当时观测到 `load_skill` 和 `analyze_current_career_direction` 同轮出现；技能工具收紧后的 effect/perf 与 open quality 已确认主回归路径不再出现 `load_skill`。如果后续仍有开放表达回落完整 Agent 且变慢，重点应继续看完整 Agent 两次远端模型调用和开放式方向分析组织，而不是回退到字符串模板。
 
-## 10. 待确认决策
+## 10. Semantic Router 模型候选评估
+
+2026-05-28 对 `SemanticIntentRouter` 做了阻塞 shadow 小样本评估，重点验证“轻量模型是否可做全局前置语义路由”。本轮没有把 shadow 接入主路由，只在 `turnObservability.semanticRouterShadow` 和报告里记录结果。
+
+### 10.1 配置能力
+
+本轮新增专用路由模型配置：
+
+```env
+SEMANTIC_ROUTER_LLM_PROVIDER=openai_compatible
+SEMANTIC_ROUTER_LLM_BASE_URL=
+SEMANTIC_ROUTER_LLM_API_KEY=
+SEMANTIC_ROUTER_LLM_MODEL_NAME=deepseek-ai/DeepSeek-V4-Flash
+SEMANTIC_ROUTER_LLM_TEMPERATURE=0
+SEMANTIC_ROUTER_LLM_MAX_TOKENS=512
+SEMANTIC_ROUTER_LLM_ENABLE_THINKING=false
+```
+
+如果不配置 `SEMANTIC_ROUTER_LLM_MODEL_NAME`，router 继续复用主 Agent 的 `LLMClient`。`SEMANTIC_ROUTER_LLM_ENABLE_THINKING=false` 会进入 OpenAI-compatible `extra_body.enable_thinking=false`，用于测试 DeepSeek V4 Flash Non-think 模式。
+
+### 10.2 实测结果
+
+测试集：`examples/dialog_regression_303_effect_perf_cases.json`，14 个 step。为了看真实阻塞成本，测试时设置 `SEMANTIC_ROUTER_BLOCKING=true` 和 `SEMANTIC_ROUTER_TIMEOUT_SECONDS=8`。
+
+| 路由模型 | semantic success | semantic timeout/error | median | p95 | max | 备注 |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `Pro/moonshotai/Kimi-K2.6` | 4 | timeout 10 | `22.261s` | `22.782s` | `23.076s` | 主模型做阻塞路由不可用 |
+| `deepseek-ai/DeepSeek-V4-Flash` | 4 | timeout 10 | `10.428s` | `14.554s` | `17.725s` | 更快，但仍频繁超时 |
+| `deepseek-ai/DeepSeek-V4-Flash` Non-think，修复前 | 6 | timeout 6 / error 2 | `10.164s` | `12.196s` | `13.063s` | 实体类型输出不稳定，`positions` 可为数字/对象 |
+| `deepseek-ai/DeepSeek-V4-Flash` Non-think，实体规范化后 | 7 | timeout 7 | `10.168s` | `11.269s` | `12.267s` | 解析错误清零，但阻塞成本仍高 |
+
+业务结果方面，四轮均保持 `14/14` step 执行成功，原因是 shadow 不改变主路由。质量报告中仍有 `2` 个 fail，都是阻塞 shadow 拉长了“确认”类 guard 的耗时，超过 case 的 `5s` maxElapsed 门槛，不是回复内容或动作边界失败。
+
+### 10.3 结论
+
+当前不能把轻量 LLM 语义路由放到全量阻塞主路径：
+
+- 即使使用 DeepSeek V4 Flash Non-think，8 秒 timeout 仍占一半。
+- 对 `确认` / `apply` 的授权不能交给 LLM 判定，必须继续由 `conversation_phase.pending`、版本和轮次守护决定。
+- 现有 full-context router prompt 太重，路由模型需要读历史、pending、方案摘要、分数画像，单次调用成本还没有低到可全量前置。
+- semantic frame 对专业比较、局部查询、政策/要求类场景的映射还不够精细，直接替换会丢失当前 fast route 的业务边界。
+
+建议的下一步不是继续换一个模型硬接管，而是：
+
+1. 保持 `SEMANTIC_ROUTER_BLOCKING=false` 作为默认，继续 shadow 记录 route confusion matrix。
+2. 缩短 router prompt，只给用户输入、最近可见上下文、pending 摘要和必要方案 summary。
+3. 用 deterministic guard 与当前稳定 fast route 先行；只在候选冲突或低置信场景启用短超时 semantic arbitration。
+4. 对 `apply`、工作台联动和偏好写入保持确定性安全门禁，LLM 只能提供语义解释和候选建议。
+5. 后续用 80+ dialogue-derived 与历史 e2e 全量门禁评估 selective 接管，不以 14 step 小样本作为替换依据。
+
+## 11. 待确认决策
 
 需要确认后再进入代码实现：
 

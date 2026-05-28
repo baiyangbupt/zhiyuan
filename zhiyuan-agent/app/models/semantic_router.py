@@ -7,9 +7,12 @@ model-level semantic judgement before we move anything into the main path.
 
 from __future__ import annotations
 
+import json
+from typing import Any
+
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 TaskLayer = Literal["explore", "intent", "plan", "general"]
@@ -55,6 +58,39 @@ class SemanticRouterEntities(BaseModel):
     positions: list[str] = Field(default_factory=list)
     sortFields: list[str] = Field(default_factory=list)
     reviewIssues: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_entity_lists(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        normalized = dict(data)
+        for key in (
+            "schools",
+            "majors",
+            "regions",
+            "careerDirections",
+            "positions",
+            "sortFields",
+            "reviewIssues",
+        ):
+            if key not in normalized:
+                continue
+            value = normalized[key]
+            if value is None:
+                normalized[key] = []
+                continue
+            items = value if isinstance(value, list) else [value]
+            normalized[key] = [_stringify_entity_item(item) for item in items]
+        return normalized
+
+
+def _stringify_entity_item(item: Any) -> str:
+    if isinstance(item, str):
+        return item
+    if isinstance(item, (dict, list)):
+        return json.dumps(item, ensure_ascii=False, sort_keys=True)
+    return str(item)
 
 
 class SemanticResponseNeed(BaseModel):

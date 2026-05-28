@@ -64,6 +64,26 @@ def test_score_case_includes_semantic_router_shadow_from_observability():
 
     assert score["semanticRouterShadow"]["status"] == "success"
     assert score["semanticRouterShadow"]["frame"]["taskLayer"] == "explore"
+    assert score["semanticMappedRoute"] == "major_compare_fast_route"
+
+
+def test_semantic_mapped_route_distinguishes_plan_preview_and_policy_explore():
+    assert report._semantic_mapped_route_from_frame(
+        {
+            "taskLayer": "plan",
+            "verb": "sort",
+            "topic": "plan",
+            "sideEffect": "preview",
+        }
+    ) == "plan_fast_route"
+    assert report._semantic_mapped_route_from_frame(
+        {
+            "taskLayer": "explore",
+            "verb": "explain",
+            "topic": "policy",
+            "sideEffect": "readonly",
+        }
+    ) == "full_agent"
 
 
 def test_summarize_rows_counts_semantic_router_dimensions():
@@ -72,6 +92,8 @@ def test_summarize_rows_counts_semantic_router_dimensions():
             "score": {
                 "verdict": "strong",
                 "routingPath": "major_compare_fast_route",
+                "expectedRoutingPath": "major_compare_fast_route",
+                "semanticMappedRoute": "major_compare_fast_route",
                 "semanticRouterShadow": {
                     "status": "success",
                     "frame": {
@@ -91,6 +113,9 @@ def test_summarize_rows_counts_semantic_router_dimensions():
     assert summary["semanticRouterSummary"]["status"] == {"success": 1}
     assert summary["semanticRouterSummary"]["taskLayer"] == {"explore": 1}
     assert summary["semanticRouterSummary"]["verb"] == {"compare": 1}
+    assert summary["semanticRouterSummary"]["mappedRoute"] == {"major_compare_fast_route": 1}
+    assert summary["semanticRouterSummary"]["expectedRouteComparison"] == {"match": 1}
+    assert summary["semanticRouterSummary"]["currentRouteComparison"] == {"match": 1}
 
 
 def test_score_case_marks_empty_response_as_failed_verdict():

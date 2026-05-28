@@ -540,6 +540,69 @@ def _extract_semantic_router_shadow(record: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def _semantic_frame_from_shadow(shadow: dict[str, Any]) -> dict[str, Any]:
+    frame = shadow.get("frame")
+    return frame if isinstance(frame, dict) else {}
+
+
+def _semantic_mapped_route_from_frame(frame: dict[str, Any]) -> str | None:
+    """Map a SemanticIntentFrame to the nearest current routing path.
+
+    This is intentionally report-only.  It lets shadow evaluations build a
+    confusion matrix without changing ChatService routing behavior.
+    """
+    if not frame:
+        return None
+    layer = _normalize_text(frame.get("taskLayer"))
+    verb = _normalize_text(frame.get("verb"))
+    topic = _normalize_text(frame.get("topic"))
+    side_effect = _normalize_text(frame.get("sideEffect"))
+
+    if layer == "general":
+        if verb in {"confirm", "reject"}:
+            return "plan_confirmation_guard_no_pending"
+        return "full_agent"
+
+    if side_effect == "apply" or verb == "confirm":
+        if layer == "intent":
+            return "direct_pending_intent_confirm"
+        if layer == "plan":
+            return "direct_pending_plan_confirm"
+        return "plan_confirmation_guard_no_pending"
+
+    if layer == "intent":
+        if side_effect == "readonly":
+            return "pending_intent_impact_fast_route"
+        return "major_intent_fast_route"
+
+    if layer == "explore":
+        if topic == "career":
+            return "career_direction_fast_route"
+        if topic == "major" and verb in {"compare", "recommend"}:
+            return "major_compare_fast_route"
+        return "full_agent"
+
+    if layer == "plan":
+        if topic == "region" and verb in {"analyze", "explain"}:
+            return "region_safety_tradeoff_route"
+        if verb == "review":
+            return "plan_fast_route"
+        if verb in {"add", "remove", "move", "sort", "replace", "generate"}:
+            return "plan_fast_route"
+        if verb in {"query", "analyze", "explain", "recommend"}:
+            return "plan_query_fast_route" if topic in {"school", "major"} else "plan_fast_route"
+        return "plan_fast_route"
+
+    return None
+
+
+def _semantic_mapped_route(record: dict[str, Any]) -> str | None:
+    shadow = _extract_semantic_router_shadow(record)
+    if shadow.get("status") != "success":
+        return None
+    return _semantic_mapped_route_from_frame(_semantic_frame_from_shadow(shadow))
+
+
 def _extract_routing_path(record: dict[str, Any]) -> str | None:
     direct = _normalize_text(record.get("routingPath"))
     if direct:
@@ -918,6 +981,7 @@ def _score_case(record: dict[str, Any]) -> dict[str, Any]:
             "evaluationWarnings": warnings,
             "routingPath": _extract_routing_path(record),
             "semanticRouterShadow": _extract_semantic_router_shadow(record),
+            "semanticMappedRoute": _semantic_mapped_route(record),
             "actionFamilies": _extract_action_families(record),
             "toolNames": _extract_tool_names(record),
             "verdict": "fail",
@@ -1000,6 +1064,7 @@ def _score_case(record: dict[str, Any]) -> dict[str, Any]:
     scored["evaluationWarnings"] = warnings
     scored["routingPath"] = _extract_routing_path(record)
     scored["semanticRouterShadow"] = _extract_semantic_router_shadow(record)
+    scored["semanticMappedRoute"] = _semantic_mapped_route(record)
     scored["actionFamilies"] = _extract_action_families(record)
     scored["toolNames"] = _extract_tool_names(record)
     has_expected_keypoint_warning = any(
@@ -1331,6 +1396,9 @@ def _summarize_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
     semantic_topic_counts: dict[str, int] = {}
     semantic_verb_counts: dict[str, int] = {}
     semantic_side_effect_counts: dict[str, int] = {}
+    semantic_mapped_route_counts: dict[str, int] = {}
+    semantic_expected_counts: dict[str, int] = {}
+    semantic_current_counts: dict[str, int] = {}
     action_counts: dict[str, int] = {}
     tool_counts: dict[str, int] = {}
 
@@ -1352,6 +1420,21 @@ def _summarize_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 _increment(semantic_topic_counts, frame.get("topic"))
                 _increment(semantic_verb_counts, frame.get("verb"))
                 _increment(semantic_side_effect_counts, frame.get("sideEffect"))
+        semantic_route = score.get("semanticMappedRoute")
+        if semantic_route:
+            _increment(semantic_mapped_route_counts, semantic_route)
+            expected_route = _normalize_text(score.get("expectedRoutingPath"))
+            current_route = _normalize_text(score.get("routingPath"))
+            if expected_route:
+                _increment(
+                    semantic_expected_counts,
+                    "match" if semantic_route == expected_route else f"mismatch:{expected_route}!={semantic_route}",
+                )
+            if current_route:
+                _increment(
+                    semantic_current_counts,
+                    "match" if semantic_route == current_route else f"diff:{current_route}!={semantic_route}",
+                )
         for value in score.get("actionFamilies") or []:
             _increment(action_counts, value)
         for value in score.get("toolNames") or []:
@@ -1374,6 +1457,9 @@ def _summarize_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "topic": semantic_topic_counts,
             "verb": semantic_verb_counts,
             "sideEffect": semantic_side_effect_counts,
+            "mappedRoute": semantic_mapped_route_counts,
+            "expectedRouteComparison": semantic_expected_counts,
+            "currentRouteComparison": semantic_current_counts,
         },
         "actionFamilySummary": action_counts,
         "toolSummary": tool_counts,
@@ -1614,6 +1700,7 @@ def _render_case_detail(item: dict[str, Any]) -> list[str]:
         f"- evaluation warnings: {_format_list_for_markdown(score.get('evaluationWarnings') if isinstance(score, dict) else [])}",
         f"- distribution coverage: {_format_list_for_markdown(score.get('distributionCoverage') if isinstance(score, dict) else [])}",
         f"- routing/action/tool: {_normalize_text(score.get('routingPath') if isinstance(score, dict) else None) or '-'} / {_format_list_for_markdown(score.get('actionFamilies') if isinstance(score, dict) else [])} / {_format_list_for_markdown(score.get('toolNames') if isinstance(score, dict) else [])}",
+        f"- semantic mapped route: {_normalize_text(score.get('semanticMappedRoute') if isinstance(score, dict) else None) or '-'}",
         f"- semantic router: {_format_list_for_markdown(score.get('semanticRouterShadow') if isinstance(score, dict) else {})}",
         "",
         "**用户输入**",

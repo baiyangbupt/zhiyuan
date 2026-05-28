@@ -121,3 +121,10 @@ class SemanticRouterConfig(BaseSettings):
     timeout_seconds: float = 8.0
     max_history_messages: int = 6
     max_prompt_chars: int = 6000
+    llm_provider: Literal["openai", "anthropic", "openai_compatible"] | None = None
+    llm_model_name: str = ""
+    llm_api_key: str = ""
+    llm_base_url: str = ""
+    llm_temperature: float = 0.0
+    llm_max_tokens: int = 512
+    llm_enable_thinking: bool | None = None

@@ -219,3 +219,33 @@
 - `/private/tmp/zhiyuan_303_open_quality_after_route_boundary_fix.json`
 - `/private/tmp/zhiyuan_303_open_quality_after_route_boundary_fix_eval_summary.json`
 - `/private/tmp/zhiyuan_303_open_quality_after_route_boundary_fix_eval.md`
+
+## 11. Semantic Router Shadow 模型评估
+
+2026-05-28 补充 `SemanticIntentRouter` 阻塞 shadow 评估，验证轻量 LLM 做路由的效果与延迟。测试仍使用 `dialog_regression_303_effect_perf_cases.json`，运行时不改变真实主路由，只把 semantic frame 写入 metrics 后生成报告。
+
+本轮报告工具同步增强：
+
+- 每个 case 增加 `semanticMappedRoute`，把 semantic frame 映射成当前最接近的 routing path。
+- summary 增加 `semanticRouterSummary.mappedRoute / currentRouteComparison / expectedRouteComparison`，便于后续形成 confusion matrix。
+- semantic 实体解析兼容非字符串实体，避免模型输出 `positions: [3, {"from":4,"to":2}]` 时整条记录变成 error。
+
+结果：
+
+| 配置 | semantic status | 质量 verdict | latency | 结论 |
+| --- | --- | --- | --- | --- |
+| 主模型 `Pro/moonshotai/Kimi-K2.6` 阻塞 | success `4` / timeout `10` | strong `12` / fail `2` | median `22.261s`，p95 `22.782s` | 路由本身可解释，但阻塞成本过高 |
+| `deepseek-ai/DeepSeek-V4-Flash` 默认 | success `4` / timeout `10` | strong `12` / fail `2` | median `10.428s`，p95 `14.554s` | 延迟下降但 timeout 仍多，且有确认 apply 风险 |
+| `deepseek-ai/DeepSeek-V4-Flash` Non-think 修复前 | success `6` / timeout `6` / error `2` | strong `12` / fail `2` | median `10.164s`，p95 `12.196s` | Non-think 改善部分稳定性，但实体类型输出需兼容 |
+| `deepseek-ai/DeepSeek-V4-Flash` Non-think 实体规范化后 | success `7` / timeout `7` | strong `12` / fail `2` | median `10.168s`，p95 `11.269s` | 解析错误清零，但仍不适合全量阻塞 |
+
+最新 Non-think 报告：
+
+- `/private/tmp/semantic_router_303_effect_perf_deepseek_v4_flash_nonthink_normalized_shadow_report.json`
+- `/private/tmp/semantic_router_303_effect_perf_deepseek_v4_flash_nonthink_normalized_shadow_report.md`
+
+关键结论：
+
+- DeepSeek V4 Flash Non-think 适合作为 semantic router 候选继续 shadow，不适合直接替换主路由。
+- `confirm/apply` 必须继续由确定性 pending 状态机控制，LLM semantic frame 只能参与候选判断，不能授权执行。
+- 当前 prompt/context 偏重，后续要先缩小路由输入，再看是否能在低超时下用于候选冲突仲裁。

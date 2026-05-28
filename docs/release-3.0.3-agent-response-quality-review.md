@@ -1697,3 +1697,57 @@ SEMANTIC_ROUTER_MAX_PROMPT_CHARS=6000
 - 这轮只修复了高频误路由边界，不能替代 80+ dialogue-derived 全量质量提升。
 - 对完全开放的问题，如果没有命中现有稳定快路径，仍可能回落完整 Agent；质量通常更充分，但延迟风险仍需继续通过语义路由和工具链拆分解决。
 - 关键词 blocker 必须保持克制；后续新增类似规则前，应优先评估是否能纳入统一 `SemanticIntentRouter` 的结构化候选和质量门禁。
+
+#### 14.10 DeepSeek V4 Flash Non-think 路由模型评估
+
+2026-05-28 针对“是否可以使用更轻量模型做语义路由”补充小规模阻塞 shadow 测试。测试目标不是替换主链路，而是看轻量模型是否能稳定产出结构化 `SemanticIntentFrame`，以及是否可以作为后续 selective arbitration 的候选。
+
+本轮新增能力：
+
+- `SemanticIntentRouter` 支持独立路由模型配置，不再只能复用主 Agent 模型。
+- 支持 `SEMANTIC_ROUTER_LLM_ENABLE_THINKING=false`，通过 OpenAI-compatible 请求体 `extra_body.enable_thinking=false` 关闭支持模型的 thinking 模式。
+- 路由输出实体列表增加兼容解析：模型把 `positions` 输出成数字或对象时，会规范化成字符串，避免整轮 shadow 因 Pydantic 校验失败。
+- 评估报告增加 `semanticMappedRoute`，把 shadow frame 映射到当前近似路由，用于 route confusion matrix；该映射只用于报告，不改变运行时路由。
+
+测试配置：
+
+```env
+SEMANTIC_ROUTER_ENABLED=true
+SEMANTIC_ROUTER_BLOCKING=true
+SEMANTIC_ROUTER_TIMEOUT_SECONDS=8
+SEMANTIC_ROUTER_LLM_MODEL_NAME=deepseek-ai/DeepSeek-V4-Flash
+SEMANTIC_ROUTER_LLM_MAX_TOKENS=512
+SEMANTIC_ROUTER_LLM_TEMPERATURE=0
+SEMANTIC_ROUTER_LLM_ENABLE_THINKING=false
+```
+
+测试集：`examples/dialog_regression_303_effect_perf_cases.json`，共 14 个真实 WebSocket step，覆盖方案查看、审查、候选加入、志愿移动、专业组移动、排序、职业方向、专业对比、意向预览/确认和无 pending 确认保护。
+
+对比结果：
+
+| router 模型配置 | 业务步骤 | semantic status | median / p95 / max | 结论 |
+| --- | ---: | --- | ---: | --- |
+| 主模型 `Pro/moonshotai/Kimi-K2.6` 阻塞 | `14/14` 成功 | success `4` / timeout `10` | `22.261s / 22.782s / 23.076s` | 不能作为阻塞路由，超时过多且整体延迟不可接受 |
+| `deepseek-ai/DeepSeek-V4-Flash` 默认 | `14/14` 成功 | success `4` / timeout `10` | `10.428s / 14.554s / 17.725s` | 比 Kimi 快，但仍频繁超时；曾把无 pending 确认映射成 apply 类确认，不能授权执行 |
+| `deepseek-ai/DeepSeek-V4-Flash` Non-think，修复前 | `14/14` 成功 | success `6` / timeout `6` / error `2` | `10.164s / 12.196s / 13.063s` | Non-think 有帮助，但模型输出数字/对象实体会触发解析错误 |
+| `deepseek-ai/DeepSeek-V4-Flash` Non-think，实体规范化后 | `14/14` 成功 | success `7` / timeout `7` | `10.168s / 11.269s / 12.267s` | 解析错误清零，但 8s timeout 仍占一半，不能全量阻塞接管 |
+
+最新 Non-think 归档输出：
+
+- `/private/tmp/semantic_router_303_effect_perf_deepseek_v4_flash_nonthink_normalized_shadow.json`
+- `/private/tmp/semantic_router_303_effect_perf_deepseek_v4_flash_nonthink_normalized_shadow_report.json`
+- `/private/tmp/semantic_router_303_effect_perf_deepseek_v4_flash_nonthink_normalized_shadow_report.md`
+
+正确性观察：
+
+- 成功返回的 semantic frame 中，确认类、排序类、审查类和意向预览类大体能给出可用的 `taskLayer / verb / sideEffect`。
+- `确认` 类仍必须由确定性 pending 状态机兜底：即使语义模型能判断，也不能让 LLM 单独决定 `apply`。
+- 专业对比和局部查询在 semantic mapped route 中有 `full_agent` 与现有快路径差异，说明当前 frame schema 还不足以直接覆盖所有现有 resolver。
+- Non-think 后没有发现业务结果错误，原因是本轮仍是 shadow/报告评估；运行时主路由、pending、工具执行、工作台联动未被替换。
+
+结论：
+
+- DeepSeek V4 Flash Non-think 可以作为“轻量语义路由候选”继续 shadow 和小流量仲裁评估。
+- 当前 full-context router prompt + 阻塞模式仍太慢，不适合作为所有请求的前置主路由。
+- 后续更合理的落地方式是：确定性 guard 与稳定 fast route 先行；只在候选冲突、低置信、开放表达难判断时，用短超时轻量 LLM 做 semantic arbitration；任何 `apply` 仍必须由 `conversation_phase.pending` 和版本/轮次守护确认。
+- 下一步优先优化 router prompt 和输入上下文体积，再评估更短 timeout 下的 route confusion matrix；不要因为某个模型在少量 case 成功就替换当前主链路。
