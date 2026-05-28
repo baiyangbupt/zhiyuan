@@ -1206,3 +1206,152 @@ def test_render_markdown_detail_includes_full_reply_and_review_checklist():
     assert "| 正确性 | 5 |" in markdown
     assert "人工复核清单" in markdown
     assert "expectedKeyPoints" in markdown
+
+
+def test_full_agent_tool_trial_issue_detects_repeated_slow_tools():
+    item = report._build_case_report(
+        "slow-plan#1",
+        None,
+        {
+            "case": "slow-plan",
+            "stepIndex": 1,
+            "prompt": "帮我审查后顺便调稳一点，先看看怎么动",
+            "responseText": "还在整理方案审查和调整建议。",
+            "elapsedMs": 62_000,
+            "firstMessageMs": 15_000,
+            "coverage": ["plan_review", "move_ordered_unit"],
+            "expectedRoutingPath": "plan_fast_route",
+            "turnObservability": {
+                "routingPath": "full_agent",
+                "toolCallCount": 4,
+                "routeDecision": {
+                    "route": "plan",
+                    "toolTrial": {
+                        "toolNames": [
+                            "query_volunteer_plan",
+                            "plan_next_action",
+                            "query_volunteer_plan",
+                            "execute_plan_action",
+                        ],
+                        "toolNameCounts": {
+                            "query_volunteer_plan": 2,
+                            "plan_next_action": 1,
+                            "execute_plan_action": 1,
+                        },
+                        "repeatedToolNames": ["query_volunteer_plan"],
+                        "hasRepeatedToolCalls": True,
+                        "hasToolCalls": True,
+                    },
+                },
+            },
+        },
+        {},
+    )
+
+    issue = item["current"]["fullAgentToolTrialIssue"]
+    summary = report._summarize_reports([item])
+
+    assert issue["caseId"] == "slow-plan#1"
+    assert issue["actualRoutingPath"] == "full_agent"
+    assert issue["repeatedToolNames"] == ["query_volunteer_plan"]
+    assert "repeated_tool_calls" in issue["issueTypes"]
+    assert "very_slow_full_agent" in issue["issueTypes"]
+    assert "missing_progress_for_long_task" in issue["issueTypes"]
+    assert "expected_fast_route_fell_back_full_agent" in issue["issueTypes"]
+    assert summary["fullAgentToolTrialIssues"]["count"] == 1
+    assert summary["fullAgentToolTrialIssues"]["slowOrTimeoutCount"] == 1
+    assert summary["fullAgentToolTrialIssues"]["missingProgressCount"] == 1
+    assert summary["fullAgentToolTrialIssues"]["byRepeatedTool"] == {"query_volunteer_plan": 1}
+
+
+def test_full_agent_tool_trial_issue_synthesizes_tool_sequence_from_observability():
+    record = {
+        "case": "tool-sequence",
+        "stepIndex": 1,
+        "prompt": "当前方案对考公有什么支撑和短板",
+        "responseText": "当前方案对考公方向承接一般。",
+        "elapsedMs": 12_000,
+        "thinkingText": "正在读取方案并整理职业方向承接...",
+        "turnObservability": {
+            "routingPath": "full_agent",
+            "toolCalls": [
+                {"name": "analyze_current_career_direction"},
+                {"name": "query_volunteer_plan"},
+                {"name": "query_volunteer_plan"},
+            ],
+        },
+    }
+
+    issue = report._build_full_agent_tool_trial_issue(record)
+
+    assert issue is not None
+    assert issue["toolNames"] == [
+        "analyze_current_career_direction",
+        "query_volunteer_plan",
+        "query_volunteer_plan",
+    ]
+    assert issue["repeatedToolNames"] == ["query_volunteer_plan"]
+    assert "missing_progress_for_long_task" not in issue["issueTypes"]
+
+
+def test_string_patch_inventory_marks_fast_route_expression_risk():
+    item = report._build_case_report(
+        "major-short#1",
+        None,
+        {
+            "case": "major-short",
+            "stepIndex": 1,
+            "prompt": "法和财哪个更适合女孩子，家里一般",
+            "responseText": "法学和财政学可以从就业路径、学习门槛和家庭投入看。",
+            "elapsedMs": 900,
+            "coverage": ["major_compare"],
+            "turnObservability": {
+                "routingPath": "major_compare_fast_route",
+                "routeDecision": {
+                    "source": "major_compare_fast_route",
+                    "matched": True,
+                    "reason": "matched_major_count_2",
+                },
+            },
+        },
+        {},
+    )
+
+    inventory = item["current"]["stringPatchInventory"]
+    summary = report._summarize_reports([item])
+
+    assert inventory["existingStringPatch"] == "yes"
+    assert inventory["stringPatchRisk"] == "high_expression_fragility"
+    assert summary["stringPatchInventory"]["count"] == 1
+    assert summary["stringPatchInventory"]["byRoutingPath"] == {"major_compare_fast_route": 1}
+    assert summary["fullAgentToolTrialIssues"]["count"] == 0
+
+
+def test_markdown_summary_renders_full_agent_issue_table():
+    item = report._build_case_report(
+        "slow-plan#1",
+        None,
+        {
+            "case": "slow-plan",
+            "stepIndex": 1,
+            "prompt": "就按别太冒险的思路把这版调稳点",
+            "responseText": "我先看当前方案。",
+            "elapsedMs": 31_000,
+            "turnObservability": {
+                "routingPath": "full_agent",
+                "toolCalls": [
+                    {"name": "plan_next_action"},
+                    {"name": "execute_plan_action"},
+                    {"name": "execute_plan_action"},
+                ],
+            },
+        },
+        {},
+    )
+    summary = report._summarize_reports([item])
+
+    markdown = "\n".join(report._render_markdown_summary(summary))
+
+    assert "## Full Agent Tool Trial Issues" in markdown
+    assert "slow-plan#1" in markdown
+    assert "execute_plan_action" in markdown

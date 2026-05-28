@@ -207,6 +207,26 @@ _ACTION_TOOL_ALIASES: dict[str, tuple[str, ...]] = {
     "query_volunteer_plan": ("query_volunteer_plan",),
 }
 
+_STRING_PATCH_FAST_ROUTE_PATHS = {
+    "plan_fast_route",
+    "plan_query_fast_route",
+    "major_intent_fast_route",
+    "major_compare_fast_route",
+    "career_direction_fast_route",
+    "region_safety_tradeoff_route",
+}
+
+_STRING_PATCH_HIGH_RISK_ROUTES = {
+    "major_intent_fast_route",
+    "major_compare_fast_route",
+    "career_direction_fast_route",
+    "region_safety_tradeoff_route",
+}
+
+_FULL_AGENT_SLOW_MS = 10_000
+_FULL_AGENT_VERY_SLOW_MS = 30_000
+_FULL_AGENT_MANY_TOOLS = 3
+
 _VERDICT_RANK = {"fail": 0, "needs_review": 1, "strong": 2}
 
 _ASSERTION_FIELDS = (
@@ -946,6 +966,341 @@ def _extract_tool_names(record: dict[str, Any]) -> list[str]:
     return values
 
 
+def _extract_tool_names_sequence(record: dict[str, Any]) -> list[str]:
+    values: list[str] = []
+    for container in (
+        record.get("toolCalls"),
+        _turn_observability(record).get("toolCalls"),
+    ):
+        if not isinstance(container, list):
+            continue
+        for item in container:
+            text = _normalize_text(item.get("name") if isinstance(item, dict) else item)
+            if text:
+                values.append(text)
+        if values:
+            return values
+    return values
+
+
+def _route_decision(record: dict[str, Any]) -> dict[str, Any]:
+    direct = record.get("routeDecision")
+    if isinstance(direct, dict):
+        return direct
+    observability = _turn_observability(record)
+    value = observability.get("routeDecision")
+    return value if isinstance(value, dict) else {}
+
+
+def _extract_tool_trial(record: dict[str, Any]) -> dict[str, Any]:
+    for value in (
+        _route_decision(record).get("toolTrial"),
+        _turn_observability(record).get("toolTrial"),
+        record.get("toolTrial"),
+    ):
+        if isinstance(value, dict):
+            tool_names = _normalize_text_list(value.get("toolNames"))
+            tool_counts = {
+                _normalize_text(key): int(count)
+                for key, count in (value.get("toolNameCounts") or {}).items()
+                if _normalize_text(key) and isinstance(count, int)
+            } if isinstance(value.get("toolNameCounts"), dict) else {}
+            if not tool_counts and tool_names:
+                for name in tool_names:
+                    tool_counts[name] = tool_counts.get(name, 0) + 1
+            repeated = _normalize_text_list(value.get("repeatedToolNames"))
+            if not repeated and tool_counts:
+                repeated = [name for name, count in tool_counts.items() if count > 1]
+            return {
+                **value,
+                "toolNames": tool_names,
+                "toolNameCounts": tool_counts,
+                "repeatedToolNames": repeated,
+                "hasRepeatedToolCalls": bool(value.get("hasRepeatedToolCalls") or repeated),
+                "hasToolCalls": bool(value.get("hasToolCalls") or tool_names),
+            }
+
+    tool_names = _extract_tool_names_sequence(record)
+    counts: dict[str, int] = {}
+    for name in tool_names:
+        counts[name] = counts.get(name, 0) + 1
+    repeated = [name for name, count in counts.items() if count > 1]
+    return {
+        "toolNames": tool_names,
+        "toolNameCounts": counts,
+        "repeatedToolNames": repeated,
+        "hasRepeatedToolCalls": bool(repeated),
+        "hasToolCalls": bool(tool_names),
+        "source": "synthesized_from_toolCalls" if tool_names else "missing",
+    }
+
+
+def _record_case_id(record: dict[str, Any]) -> str:
+    key = _normalize_text(record.get("recordKey"))
+    if key:
+        return key
+    case = _normalize_text(record.get("case"))
+    step_index = record.get("stepIndex")
+    if case and step_index not in (None, ""):
+        return f"{case}#{step_index}"
+    return case or "-"
+
+
+def _record_coverage_tags(record: dict[str, Any]) -> list[str]:
+    return _normalize_text_list(record.get("coverage"))
+
+
+def _infer_problem_type(record: dict[str, Any]) -> str:
+    tags = set(_record_coverage_tags(record))
+    prompt = _normalize_text(record.get("prompt"))
+    if tags & {"major_compare", "major_preference"}:
+        return "专业简称/懒输入比较"
+    if tags & {"soft_major_intent", "hard_major_constraint", "soft_region_intent", "negative_region_intent"}:
+        return "意向影响预览"
+    if tags & {"career_explore", "career_direction"}:
+        return "职业方向承接"
+    if tags & {"sort_ordered_plan", "move_ordered_unit", "remove_units", "add_units", "majorGroup_operations"}:
+        return "方案调整预览"
+    if tags & {"plan_review", "review_plan", "risk_summary", "safe_plan", "avoid_risk"}:
+        return "方案审查/风险分析"
+    if tags & {"region_safety_tradeoff", "city_opportunity", "backup_region", "remote_area", "return_home"}:
+        return "地域安全取舍"
+    if tags & {"special_plan", "medical_check", "vision", "english_oral_test", "application_requirement", "extra_points"}:
+        return "政策/资格/要求咨询"
+    if "审查" in prompt:
+        return "方案审查/风险分析"
+    if any(token in prompt for token in ("排序", "移动", "去掉", "加进", "调稳", "别冒险")):
+        return "方案调整预览"
+    if any(token in prompt for token in ("考公", "就业", "读研", "体制内")):
+        return "职业方向承接"
+    return "未分类"
+
+
+def _infer_expected_scene(record: dict[str, Any]) -> str:
+    expected_route = _normalize_text(record.get("expectedRoutingPath"))
+    expected_action = _normalize_text(record.get("expectedActionFamily"))
+    tags = set(_record_coverage_tags(record))
+    if expected_route.startswith("plan_") or expected_action in {
+        "query_state",
+        "review_plan",
+        "sort_ordered_plan",
+        "move_unit",
+        "remove_units",
+        "add_units",
+    } or any(tag.startswith("plan") or tag in {"sort_ordered_plan", "move_ordered_unit", "remove_units", "add_units"} for tag in tags):
+        return "plan"
+    if "intent" in expected_route or expected_action == "preview_major_intent" or tags & {
+        "soft_major_intent",
+        "hard_major_constraint",
+        "soft_region_intent",
+        "negative_region_intent",
+    }:
+        return "intent"
+    if expected_action in {"compare_majors", "analyze_current_career_direction"} or tags & {
+        "career_explore",
+        "career_direction",
+        "major_compare",
+        "major_preference",
+        "region_safety_tradeoff",
+        "special_plan",
+    }:
+        return "explore"
+    return "unknown"
+
+
+def _record_result_label(record: dict[str, Any], issue_types: list[str]) -> str:
+    error = _extract_error_text(record)
+    if error:
+        return f"error:{error[:80]}"
+    elapsed_ms = _as_int_ms(record.get("elapsedMs"))
+    if "timeout_or_error" in issue_types:
+        return "timeout_or_error"
+    if isinstance(elapsed_ms, int) and elapsed_ms >= _FULL_AGENT_VERY_SLOW_MS:
+        return "very_slow"
+    if isinstance(elapsed_ms, int) and elapsed_ms >= _FULL_AGENT_SLOW_MS:
+        return "slow"
+    return "completed"
+
+
+def _tool_call_count(record: dict[str, Any], tool_trial: dict[str, Any]) -> int:
+    observability = _turn_observability(record)
+    for value in (
+        record.get("toolCallCount"),
+        observability.get("toolCallCount"),
+        _route_decision(record).get("toolCallCount"),
+    ):
+        number = _as_int_ms(value)
+        if number is not None:
+            return number
+    return len(tool_trial.get("toolNames") or [])
+
+
+def _llm_request_count(record: dict[str, Any]) -> int | None:
+    observability = _turn_observability(record)
+    route_decision = _route_decision(record)
+    for value in (
+        record.get("llmRequests"),
+        observability.get("llmRequests"),
+        route_decision.get("llmRequests"),
+    ):
+        number = _as_int_ms(value)
+        if number is not None:
+            return number
+    return None
+
+
+def _fast_route_arbitration(record: dict[str, Any]) -> dict[str, Any]:
+    observability = _turn_observability(record)
+    direct = observability.get("fastRouteArbitration")
+    if isinstance(direct, dict):
+        return direct
+    route_decision = _route_decision(record)
+    value = route_decision.get("arbitration")
+    if isinstance(value, dict):
+        return value
+    return route_decision if route_decision.get("source") == "fast_route_arbitrator" else {}
+
+
+def _fast_route_candidate_paths(record: dict[str, Any]) -> list[str]:
+    paths: list[str] = []
+
+    def add(value: Any) -> None:
+        text = _normalize_text(value)
+        if text and text not in paths:
+            paths.append(text)
+
+    arbitration = _fast_route_arbitration(record)
+    add(arbitration.get("selectedPath"))
+    for value in arbitration.get("semanticArbitrationCandidatePaths") or []:
+        add(value)
+    for candidate in arbitration.get("candidates") or []:
+        if isinstance(candidate, dict):
+            add(candidate.get("path"))
+    route_decision = _route_decision(record)
+    fixed_router = route_decision.get("fixedScenarioRouter")
+    if isinstance(fixed_router, dict):
+        for value in fixed_router.get("candidatePaths") or []:
+            add(value)
+    return paths
+
+
+def _string_patch_status_and_risk(record: dict[str, Any], actual_route: str | None = None) -> tuple[str, str]:
+    route = _normalize_text(actual_route or _extract_routing_path(record))
+    candidate_paths = _fast_route_candidate_paths(record)
+    route_decision = _route_decision(record)
+    fixed_fallback = _normalize_text(
+        route_decision.get("fixedScenarioFallbackReason")
+        or (_extract_tool_trial(record).get("fixedScenarioFallbackReason"))
+    )
+
+    if route in _STRING_PATCH_FAST_ROUTE_PATHS:
+        status = "yes"
+    elif any(path in _STRING_PATCH_FAST_ROUTE_PATHS for path in candidate_paths):
+        status = "candidate"
+    elif fixed_fallback:
+        status = "candidate"
+    else:
+        status = "no"
+
+    if status == "no":
+        return status, "none"
+    risk_paths = {route, *candidate_paths}
+    if fixed_fallback:
+        return status, f"router_fallback:{fixed_fallback}"
+    if risk_paths & _STRING_PATCH_HIGH_RISK_ROUTES:
+        return status, "high_expression_fragility"
+    if risk_paths & {"plan_fast_route", "plan_query_fast_route"}:
+        return status, "medium_plan_pattern_scope"
+    return status, "needs_review"
+
+
+def _classify_bad_tool_trial(record: dict[str, Any], tool_trial: dict[str, Any]) -> list[str]:
+    issue_types: list[str] = []
+    route = _normalize_text(_extract_routing_path(record))
+    elapsed_ms = _as_int_ms(record.get("elapsedMs"))
+    first_hint_ms = _as_int_ms(record.get("firstMessageMs"))
+    tool_call_count = _tool_call_count(record, tool_trial)
+
+    def add(value: str) -> None:
+        if value not in issue_types:
+            issue_types.append(value)
+
+    if _extract_error_text(record):
+        add("timeout_or_error")
+    if tool_trial.get("repeatedToolNames"):
+        add("repeated_tool_calls")
+    if route == "full_agent" and tool_call_count >= _FULL_AGENT_MANY_TOOLS:
+        add("full_agent_with_many_tools")
+    if route == "full_agent" and isinstance(elapsed_ms, int) and elapsed_ms >= _FULL_AGENT_SLOW_MS:
+        add("slow_full_agent")
+        if elapsed_ms >= _FULL_AGENT_VERY_SLOW_MS:
+            add("very_slow_full_agent")
+    if route == "full_agent" and isinstance(elapsed_ms, int) and elapsed_ms >= _FULL_AGENT_SLOW_MS and not _extract_thinking(record):
+        add("missing_progress_for_long_task")
+    if route == "full_agent" and isinstance(first_hint_ms, int) and first_hint_ms >= _FULL_AGENT_SLOW_MS:
+        add("late_first_hint")
+    if _normalize_text(tool_trial.get("fixedScenarioFallbackReason")):
+        add("fixed_router_fallback")
+    expected_route = _normalize_text(record.get("expectedRoutingPath"))
+    if route == "full_agent" and expected_route and expected_route != route:
+        add("expected_fast_route_fell_back_full_agent")
+    return issue_types
+
+
+def _build_full_agent_tool_trial_issue(record: dict[str, Any]) -> dict[str, Any] | None:
+    route = _normalize_text(_extract_routing_path(record))
+    tool_trial = _extract_tool_trial(record)
+    issue_types = _classify_bad_tool_trial(record, tool_trial)
+    if route != "full_agent" and not _extract_error_text(record):
+        return None
+    if not issue_types:
+        return None
+
+    existing_string_patch, string_patch_risk = _string_patch_status_and_risk(record, route)
+    return {
+        "caseId": _record_case_id(record),
+        "userPrompt": _normalize_text(record.get("prompt")),
+        "problemType": _infer_problem_type(record),
+        "expectedScene": _infer_expected_scene(record),
+        "expectedRoutingPath": _normalize_text(record.get("expectedRoutingPath")) or None,
+        "expectedActionFamily": _normalize_text(record.get("expectedActionFamily")) or None,
+        "actualRoutingPath": route or None,
+        "toolNames": tool_trial.get("toolNames") or [],
+        "repeatedToolNames": tool_trial.get("repeatedToolNames") or [],
+        "badToolTrial": True,
+        "issueTypes": issue_types,
+        "llmRequests": _llm_request_count(record),
+        "toolCallCount": _tool_call_count(record, tool_trial),
+        "elapsedMs": _as_int_ms(record.get("elapsedMs")),
+        "firstHintMs": _as_int_ms(record.get("firstMessageMs")),
+        "result": _record_result_label(record, issue_types),
+        "existingStringPatch": existing_string_patch,
+        "stringPatchRisk": string_patch_risk,
+        "fixedScenarioFallbackReason": _normalize_text(tool_trial.get("fixedScenarioFallbackReason")) or None,
+    }
+
+
+def _build_string_patch_inventory_row(record: dict[str, Any]) -> dict[str, Any] | None:
+    route = _normalize_text(_extract_routing_path(record))
+    existing_string_patch, string_patch_risk = _string_patch_status_and_risk(record, route)
+    if existing_string_patch == "no":
+        return None
+    arbitration = _fast_route_arbitration(record)
+    candidate_paths = _fast_route_candidate_paths(record)
+    return {
+        "caseId": _record_case_id(record),
+        "userPrompt": _normalize_text(record.get("prompt")),
+        "problemType": _infer_problem_type(record),
+        "actualRoutingPath": route or None,
+        "selectedPath": _normalize_text(arbitration.get("selectedPath")) or route or None,
+        "candidatePaths": candidate_paths,
+        "existingStringPatch": existing_string_patch,
+        "stringPatchRisk": string_patch_risk,
+        "elapsedMs": _as_int_ms(record.get("elapsedMs")),
+        "result": _record_result_label(record, []),
+    }
+
+
 def _action_observed(record: dict[str, Any], expected_action: str) -> bool:
     if not expected_action:
         return False
@@ -1616,20 +1971,31 @@ def _build_case_report(
         report["baseline"]["score"] = _score_case(baseline_row)
     if current_row:
         report["current"]["score"] = _score_case(current_row)
+        issue = _build_full_agent_tool_trial_issue(current_row)
+        if issue:
+            report["current"]["fullAgentToolTrialIssue"] = issue
+        string_patch = _build_string_patch_inventory_row(current_row)
+        if string_patch:
+            report["current"]["stringPatchInventory"] = string_patch
     for name, candidate in candidates.items():
         candidate_row = _merge_record_metadata(candidate, metadata)
-        report["candidates"].append(
-            {
-                "name": name,
-                "provider": candidate_row.get("provider"),
-                "model": candidate_row.get("model"),
-                "reply": _extract_text(candidate_row),
-                "elapsedMs": candidate_row.get("elapsedMs"),
-                "firstMessageMs": candidate_row.get("firstMessageMs"),
-                "finalMessageMs": candidate_row.get("finalMessageMs"),
-                "score": _score_case(candidate_row),
-            }
-        )
+        candidate_payload = {
+            "name": name,
+            "provider": candidate_row.get("provider"),
+            "model": candidate_row.get("model"),
+            "reply": _extract_text(candidate_row),
+            "elapsedMs": candidate_row.get("elapsedMs"),
+            "firstMessageMs": candidate_row.get("firstMessageMs"),
+            "finalMessageMs": candidate_row.get("finalMessageMs"),
+            "score": _score_case(candidate_row),
+        }
+        issue = _build_full_agent_tool_trial_issue(candidate_row)
+        if issue:
+            candidate_payload["fullAgentToolTrialIssue"] = issue
+        string_patch = _build_string_patch_inventory_row(candidate_row)
+        if string_patch:
+            candidate_payload["stringPatchInventory"] = string_patch
+        report["candidates"].append(candidate_payload)
     return report
 
 
@@ -1837,6 +2203,120 @@ def _summarize_candidates(reports: list[dict[str, Any]]) -> dict[str, dict[str, 
     return {key: _summarize_rows(rows) for key, rows in sorted(grouped.items())}
 
 
+def _issue_rows_for_reports(reports: list[dict[str, Any]], bucket: str = "current") -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for report in reports:
+        if bucket == "current":
+            current = report.get("current")
+            if isinstance(current, dict) and isinstance(current.get("fullAgentToolTrialIssue"), dict):
+                rows.append(current["fullAgentToolTrialIssue"])
+            continue
+        for candidate in report.get("candidates") or []:
+            if isinstance(candidate, dict) and isinstance(candidate.get("fullAgentToolTrialIssue"), dict):
+                row = dict(candidate["fullAgentToolTrialIssue"])
+                row["candidate"] = _provider_model_key(candidate)
+                rows.append(row)
+    return rows
+
+
+def _string_patch_rows_for_reports(reports: list[dict[str, Any]], bucket: str = "current") -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for report in reports:
+        if bucket == "current":
+            current = report.get("current")
+            if isinstance(current, dict) and isinstance(current.get("stringPatchInventory"), dict):
+                rows.append(current["stringPatchInventory"])
+            continue
+        for candidate in report.get("candidates") or []:
+            if isinstance(candidate, dict) and isinstance(candidate.get("stringPatchInventory"), dict):
+                row = dict(candidate["stringPatchInventory"])
+                row["candidate"] = _provider_model_key(candidate)
+                rows.append(row)
+    return rows
+
+
+def _summarize_full_agent_tool_trial_issues(reports: list[dict[str, Any]]) -> dict[str, Any]:
+    current_issues = _issue_rows_for_reports(reports, "current")
+    candidate_issues = _issue_rows_for_reports(reports, "candidates")
+    issue_type_counts: dict[str, int] = {}
+    problem_type_counts: dict[str, int] = {}
+    route_counts: dict[str, int] = {}
+    tool_counts: dict[str, int] = {}
+    repeated_tool_counts: dict[str, int] = {}
+    string_patch_counts: dict[str, int] = {}
+    string_patch_risk_counts: dict[str, int] = {}
+
+    for row in current_issues:
+        for issue_type in row.get("issueTypes") or []:
+            _increment(issue_type_counts, issue_type)
+        _increment(problem_type_counts, row.get("problemType"))
+        _increment(route_counts, row.get("actualRoutingPath"))
+        for value in row.get("toolNames") or []:
+            _increment(tool_counts, value)
+        for value in row.get("repeatedToolNames") or []:
+            _increment(repeated_tool_counts, value)
+        _increment(string_patch_counts, row.get("existingStringPatch"))
+        _increment(string_patch_risk_counts, row.get("stringPatchRisk"))
+
+    slow_or_timeout = [
+        row
+        for row in current_issues
+        if row.get("result") in {"slow", "very_slow", "timeout_or_error"}
+        or "timeout_or_error" in (row.get("issueTypes") or [])
+    ]
+    missing_progress = [
+        row
+        for row in current_issues
+        if "missing_progress_for_long_task" in (row.get("issueTypes") or [])
+        or "late_first_hint" in (row.get("issueTypes") or [])
+    ]
+    top_slow = sorted(
+        current_issues,
+        key=lambda item: item.get("elapsedMs") if isinstance(item.get("elapsedMs"), int) else -1,
+        reverse=True,
+    )[:10]
+    return {
+        "count": len(current_issues),
+        "candidateCount": len(candidate_issues),
+        "slowOrTimeoutCount": len(slow_or_timeout),
+        "missingProgressCount": len(missing_progress),
+        "byProblemType": problem_type_counts,
+        "byIssueType": issue_type_counts,
+        "byRoutingPath": route_counts,
+        "byTool": tool_counts,
+        "byRepeatedTool": repeated_tool_counts,
+        "existingStringPatch": string_patch_counts,
+        "stringPatchRisk": string_patch_risk_counts,
+        "topSlow": top_slow,
+        "issues": current_issues,
+        "candidateIssues": candidate_issues,
+    }
+
+
+def _summarize_string_patch_inventory(reports: list[dict[str, Any]]) -> dict[str, Any]:
+    current_rows = _string_patch_rows_for_reports(reports, "current")
+    candidate_rows = _string_patch_rows_for_reports(reports, "candidates")
+    route_counts: dict[str, int] = {}
+    problem_type_counts: dict[str, int] = {}
+    risk_counts: dict[str, int] = {}
+    status_counts: dict[str, int] = {}
+    for row in current_rows:
+        _increment(route_counts, row.get("actualRoutingPath"))
+        _increment(problem_type_counts, row.get("problemType"))
+        _increment(risk_counts, row.get("stringPatchRisk"))
+        _increment(status_counts, row.get("existingStringPatch"))
+    return {
+        "count": len(current_rows),
+        "candidateCount": len(candidate_rows),
+        "byRoutingPath": route_counts,
+        "byProblemType": problem_type_counts,
+        "byRisk": risk_counts,
+        "byStatus": status_counts,
+        "items": current_rows,
+        "candidateItems": candidate_rows,
+    }
+
+
 def _comparison_summary(reports: list[dict[str, Any]]) -> dict[str, Any]:
     improved = same = regressed = incomparable = 0
     for report in reports:
@@ -1872,6 +2352,8 @@ def _summarize_reports(reports: list[dict[str, Any]]) -> dict[str, Any]:
         "coverageSummary": _summarize_by_coverage(reports),
         "candidateSummary": _summarize_candidates(reports),
         "candidateOverall": _summarize_rows(candidate_rows),
+        "fullAgentToolTrialIssues": _summarize_full_agent_tool_trial_issues(reports),
+        "stringPatchInventory": _summarize_string_patch_inventory(reports),
         "baselineComparison": _comparison_summary(reports),
         "acceptance": {
             "passedHardGates": not current_summary["qualityViolationsByType"],
@@ -1969,6 +2451,16 @@ def _manual_review_items(item: dict[str, Any]) -> list[str]:
 def _render_markdown_summary(summary: dict[str, Any]) -> list[str]:
     current_summary = summary.get("current", {}) if isinstance(summary.get("current"), dict) else {}
     candidate_summary = summary.get("candidateSummary", {}) if isinstance(summary.get("candidateSummary"), dict) else {}
+    full_agent_issues = (
+        summary.get("fullAgentToolTrialIssues", {})
+        if isinstance(summary.get("fullAgentToolTrialIssues"), dict)
+        else {}
+    )
+    string_patch_inventory = (
+        summary.get("stringPatchInventory", {})
+        if isinstance(summary.get("stringPatchInventory"), dict)
+        else {}
+    )
     lines = [
         "# Dialog Case Evaluation Report",
         "",
@@ -1997,6 +2489,52 @@ def _render_markdown_summary(summary: dict[str, Any]) -> list[str]:
             lines.append(
                 f"| {_markdown_escape_table(name)} | {value.get('count', 0)} | {_markdown_escape_table(value.get('verdicts', {}))} | {_markdown_escape_table(value.get('latency', {}))} |"
             )
+    if full_agent_issues:
+        lines.extend(
+            [
+                "",
+                "## Full Agent Tool Trial Issues",
+                "",
+                f"- count: {full_agent_issues.get('count', 0)}",
+                f"- slowOrTimeoutCount: {full_agent_issues.get('slowOrTimeoutCount', 0)}",
+                f"- missingProgressCount: {full_agent_issues.get('missingProgressCount', 0)}",
+                f"- byProblemType: {full_agent_issues.get('byProblemType', {})}",
+                f"- byIssueType: {full_agent_issues.get('byIssueType', {})}",
+                f"- byRepeatedTool: {full_agent_issues.get('byRepeatedTool', {})}",
+                "",
+                "| case | prompt | problem | route | elapsed | tools | repeated | issueTypes | stringPatch |",
+                "|---|---|---|---|---:|---|---|---|---|",
+            ]
+        )
+        for issue in (full_agent_issues.get("issues") or [])[:20]:
+            lines.append(
+                "| "
+                + " | ".join(
+                    [
+                        _markdown_escape_table(issue.get("caseId")),
+                        _markdown_escape_table(_normalize_text(issue.get("userPrompt"))[:60]),
+                        _markdown_escape_table(issue.get("problemType")),
+                        _markdown_escape_table(issue.get("actualRoutingPath")),
+                        _markdown_escape_table(issue.get("elapsedMs")),
+                        _markdown_escape_table(_format_list_for_markdown(issue.get("toolNames"))),
+                        _markdown_escape_table(_format_list_for_markdown(issue.get("repeatedToolNames"))),
+                        _markdown_escape_table(_format_list_for_markdown(issue.get("issueTypes"))),
+                        _markdown_escape_table(f"{issue.get('existingStringPatch')}/{issue.get('stringPatchRisk')}"),
+                    ]
+                )
+                + " |"
+            )
+    if string_patch_inventory:
+        lines.extend(
+            [
+                "",
+                "## String Patch Inventory",
+                "",
+                f"- count: {string_patch_inventory.get('count', 0)}",
+                f"- byRoutingPath: {string_patch_inventory.get('byRoutingPath', {})}",
+                f"- byRisk: {string_patch_inventory.get('byRisk', {})}",
+            ]
+        )
     return lines
 
 
@@ -2020,6 +2558,16 @@ def _render_case_detail(item: dict[str, Any]) -> list[str]:
     current = item.get("current", {}) if isinstance(item.get("current"), dict) else {}
     baseline = item.get("baseline", {}) if isinstance(item.get("baseline"), dict) else {}
     score = current.get("score") if isinstance(current.get("score"), dict) else {}
+    full_agent_issue = (
+        current.get("fullAgentToolTrialIssue")
+        if isinstance(current.get("fullAgentToolTrialIssue"), dict)
+        else {}
+    )
+    string_patch_inventory = (
+        current.get("stringPatchInventory")
+        if isinstance(current.get("stringPatchInventory"), dict)
+        else {}
+    )
     lines = [
         f"### {item.get('case', '')}#{item.get('stepIndex', '')}",
         "",
@@ -2036,6 +2584,8 @@ def _render_case_detail(item: dict[str, Any]) -> list[str]:
         f"- routing/action/tool: {_normalize_text(score.get('routingPath') if isinstance(score, dict) else None) or '-'} / {_format_list_for_markdown(score.get('actionFamilies') if isinstance(score, dict) else [])} / {_format_list_for_markdown(score.get('toolNames') if isinstance(score, dict) else [])}",
         f"- semantic mapped route: {_normalize_text(score.get('semanticMappedRoute') if isinstance(score, dict) else None) or '-'}",
         f"- semantic router: {_format_list_for_markdown(score.get('semanticRouterShadow') if isinstance(score, dict) else {})}",
+        f"- full-agent tool trial issue: {_format_list_for_markdown(full_agent_issue)}",
+        f"- string patch inventory: {_format_list_for_markdown(string_patch_inventory)}",
         "",
         "**用户输入**",
         "",

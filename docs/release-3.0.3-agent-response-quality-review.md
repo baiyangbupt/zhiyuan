@@ -1789,57 +1789,142 @@ SEMANTIC_ROUTER_LLM_ENABLE_THINKING=false
 
 后续如果进入 selective 接管，再增加 `semanticSelectedPath / semanticDurationMs / semanticFallbackReason`。接管前必须先通过 effect/perf、open-quality、realistic-user、80+ dialogue-derived 和历史 regression/e2e，且不得破坏确认边界。
 
-#### 14.12 高置信固定场景小模型路由设计
+#### 14.12 问题清单优先的小模型路由与长耗时提示设计
 
-结合 80+ 真实对话派生评估和多模型 shadow 结果，3.0.3 不再继续把“专业对比 / 专业意向 / 职业方向”这类语义场景靠局部关键词补丁扩大覆盖。新的收口方式是：
+本节对前面的 fixed-scenario 方案做重新收口：3.0.3 后续不能先假设“哪些场景应该上小模型路由”，而要先把 full Agent 自由试工具导致的超时、错误重试和用户无反馈等待问题找全。设计顺序调整为：
 
 ```text
-用户输入
-  -> 确定性 guard：pending 确认、无 pending 确认保护、明确数字方案操作
-  -> FixedScenario LLM Router：只判断少量高置信固定场景并抽取实体
-  -> 本地 resolver 校验：目录专业、职业方向、sideEffect、置信度、歧义
-  -> Fast-route arbitration：只对校验通过的 fixed scenario 走受控工具
-  -> 未通过 / 低置信 / 开放表达：回 full Agent
+1. 问题识别
+   先从真实 e2e、80+ dialogue-derived、多模型 benchmark 和 conversation_turn_event 中找出：
+   - 哪些 case 回到 full Agent 后自由试工具；
+   - 哪些 case 因重复工具、错误工具、工具参数失败或多轮 LLM 调用导致超时；
+   - 哪些 case 之前用字符串/关键词 fast route 修过；
+   - 哪些 case 字符串修法脆弱，换一种说法就可能失效。
+
+2. 小模型路由解决高价值问题
+   只针对第一步确认的问题类型，引入轻量路由模型做固定场景分类和实体抽取。
+   小模型不回答用户、不执行工具、不授权 apply，只把高置信分类交给本地 resolver 校验。
+
+3. 长耗时体验兜底
+   对所有仍可能较慢的链路，包括暂时解决不了的开放 Explore / full Agent 场景，
+   优化对话 hint/progress，让用户看到系统正在做什么，减少“系统没动静”的迷惑感。
+   在提示足够清楚后，再评估是否可以适当放大最终响应超时阈值。
 ```
 
-小模型只负责“分类和实体抽取”，不回答用户、不调用工具、不生成待确认动作、不授权执行。当前第一批固定场景只覆盖：
+##### 14.12.1 先定位的问题类型
 
-| fixed scenario | 触发边界 | 执行链路 | 不接管的情况 |
+需要先形成一张 `full_agent_tool_trial` 问题表，而不是直接扩路由。字段至少包括：
+
+| 字段 | 含义 |
+| --- | --- |
+| `caseId / userPrompt` | 原始用户输入，保留口语化表达 |
+| `expectedScene` | 人工期望：方案、专业、意向、职业、政策、闲聊等 |
+| `actualRoutingPath` | 实际走 `full_agent`、fast route、direct guard 还是 pending confirm |
+| `toolNames` | full Agent 实际调用过哪些工具 |
+| `repeatedToolNames` | 是否重复调用同一个工具 |
+| `badToolTrial` | 是否出现明显无效工具试探，例如开放专业问题先查方案局部实体 |
+| `llmRequests / toolCallCount` | 模型请求次数和工具调用次数 |
+| `elapsedMs / firstHintMs` | 最终耗时和首个进度提示耗时 |
+| `result` | 成功、超时、空回复、参数失败、回复薄、误联动 |
+| `existingStringPatch` | 是否曾靠关键词/字符串 fast route 解决 |
+| `stringPatchRisk` | 该修法是否依赖固定表达，是否有换说法失效风险 |
+
+当前已知需要纳入的问题族：
+
+| 问题族 | 已见样例 | 历史处理方式 | 重新设计结论 |
 | --- | --- | --- | --- |
-| `major_compare.readonly` | 2-3 个具体专业之间的明确比较、取舍、优先级，只读 | `compare_majors` / 多专业 renderer | 泛泛问“某方向现实吗/适合吗”、政策要求、要求记偏好或改方案 |
-| `major_intent.preview` | 明确表达后续偏好/排除，例如“会计审计可以，土木别要” | `preview_current_major_intent_confirmation` | “要不要避开/是不是有限制/能不能报”等咨询问题 |
-| `career_direction.readonly` | 明确问体制内/稳定就业/读研等方向与当前方案承接 | `analyze_current_career_direction` | 泛方向闲聊、没有明确职业方向、要求记偏好或改方案 |
+| 专业简称/懒输入比较 | `法和财哪个更适合女孩子，家里一般`、`新媒体和跨电呢 数学不太行` | `major_compare_fast_route` 补简称和比较词 | 应纳入小模型路由候选，避免继续堆简称和比较关键词 |
+| 专业意向影响 | `医学护理这些别碰，财会还能接受，先看看影响` | `plan_query` blocker + `major_intent_fast_route` 关键词 | 应由小模型判断“意向预览”还是“方案局部查询”，本地 resolver 校验专业目录 |
+| 职业方向承接 | `当前方案对考公、稳定就业和读研有什么支撑和短板` | `career_direction_fast_route` 补“支撑/短板”等词 | 可纳入小模型路由候选，但必须保留职业 taxonomy 校验 |
+| 审查后续调整预览 | `针对最严重的问题，先给我调整预览，不要直接执行` | `plan_fast_route` 高置信规则，解决过 99s/11 工具调用 | 仍保留确定性 plan 路由，重点记录是否还有类似审查 followup 漏网 |
+| 调稳/别冒险类方案调整 | `就按别太冒险的思路把这版调稳点，先给我看看会怎么动` | `plan_fast_router` 关键词补强 | 先归入问题表，验证是否应改为 plan action 语义模型或更结构化 resolver |
+| 地域安全取舍 | `北京天津想去，但别最后没学上` | region safety structured renderer | 继续走专项结构化分析，不应回普通方案概览；若事实不足才回 full Agent |
+| 政策/资格/要求咨询 | 色弱、口试、专项、学费、压线等 | blocker 防止误入 intent | 不宜直接走意向 fast route；需要 Explore/Policy 能力与进度提示 |
 
-本地校验规则：
+##### 14.12.2 对字符串 fast route 的盘点原则
 
-- `confidence` 低于门槛、`ambiguity / missingInfo` 非空，直接回 full Agent。
-- `sideEffect=apply` 一律拒绝；高副作用仍只能通过 pending confirmation。
-- 专业实体必须能落到本地本科/专科专业目录；专业对比只接受 2-3 个 level3 具体专业。
-- 专业意向按本地目录归入 `level2 / level3 / negative_level2 / negative_level3`，不能把政策咨询误转成 pending。
-- 职业方向只能是 `system_public_service / stable_employment / further_study` 三类 taxonomy。
-- 小模型结果只形成候选；最终仍由 `fast_route_arbitrator` 做 fixedScenario 白名单和质量门禁。
+字符串/关键词逻辑需要被明确标注用途，避免它继续成为隐性的主路由：
 
-“字符串匹配”的边界同步收口：
+- 可保留：数字位置、明确“确认/取消”、明确“第 N 个志愿移动/删除”、固定按钮/菜单入口等强结构场景。
+- 可作为候选提示：专业简称、职业方向词、方案操作词、范围词，但不能单独决定最终路由。
+- 需要逐步替换：专业对比、专业意向、职业方向、开放方案取舍等依赖用户自然语言表达的场景。
+- 需要记录风险：每个新增关键词必须写明是临时止血、解决哪个 case、有什么换说法失效风险、后续由哪个模型路由或 resolver 替换。
 
-- 方案状态、数字移动/删除、明确排序、pending 确认这类强结构动作仍保留确定性解析，因为它们不是开放语义理解问题。
-- 专业对比、专业意向、职业方向不再依赖主路径中的局部关键词扩展；启用 `SEMANTIC_ROUTER_FIXED_ROUTE_ENABLED=true` 后，这三类候选来自小模型 fixed-scenario router。
-- 旧 deterministic major/career fast router 暂时保留为测试和回退实现，但不作为 fixed-scenario 小模型模式下的主判决来源。
+##### 14.12.3 小模型路由的定位
 
-自由试工具作为持续跟踪问题：
+小模型路由只解决“已经确认 full Agent 自由试工具代价高，且场景可结构化”的问题，不做全量前置路由。
 
-- full Agent 路径继续记录 `toolCalls`、`toolCallCount`、`llmRequests`、`actionFamily`、`resultKind` 和耗时。
-- 当高置信固定场景没有被小模型接住而回到 full Agent 时，需要在评估报告中观察是否出现重复读方案、错误试 `query_volunteer_plan`、意向工具误试或 plan 工具参数失败。
-- 后续优化不以逐 case 关键词补丁修复，而是把失败样例归入新的 fixed scenario、resolver 校验或 full Agent prompt/tool surface 设计。
+第一版候选输入：
 
-配置建议：
+- 用户本轮原文。
+- 最近 1-2 轮可见上下文。
+- 是否存在 pending，以及 pending 类型。
+- 轻量 planning summary：方案数量、审查状态、模式，不放完整候选/方案。
+- 可选的实体候选摘要：本地 resolver 已能识别的专业、职业方向、位置、排序字段。
 
-```env
-SEMANTIC_ROUTER_FIXED_ROUTE_ENABLED=true
-SEMANTIC_ROUTER_FIXED_ROUTE_TIMEOUT_SECONDS=10
-SEMANTIC_ROUTER_FIXED_ROUTE_MIN_CONFIDENCE=0.82
-SEMANTIC_ROUTER_LLM_MODEL_NAME=deepseek-ai/DeepSeek-V4-Flash
-SEMANTIC_ROUTER_LLM_TEMPERATURE=0
-SEMANTIC_ROUTER_LLM_ENABLE_THINKING=false
+第一版输出：
+
+```json
+{
+  "scenario": "none|major_compare_readonly|major_intent_preview|career_direction_readonly|plan_adjustment_preview|policy_explore_readonly",
+  "confidence": 0.0,
+  "entities": {
+    "majors": [],
+    "positiveMajors": [],
+    "negativeMajors": [],
+    "careerDirections": [],
+    "planActionHint": "",
+    "policyTopic": ""
+  },
+  "sideEffect": "readonly|preview|none",
+  "ambiguity": [],
+  "missingInfo": [],
+  "fallbackReason": ""
+}
 ```
 
-上线前必须复跑 effect/perf、open-quality、realistic-user、80+ dialogue-derived 和历史 regression/e2e。验收顺序仍是先看回复质量和动作边界，再看延迟。
+本地 resolver 仍是强制门禁：
+
+- `confidence` 不足、`ambiguity/missingInfo` 非空，回 full Agent。
+- `sideEffect=apply` 不允许由小模型产生。
+- 专业、职业方向、排序字段、位置引用必须本地校验。
+- 高副作用只允许生成 preview，执行仍等用户确认。
+- 如果小模型和确定性 guard 冲突，确定性 guard 优先。
+
+##### 14.12.4 超时与过程提示设计
+
+用户真正困惑的通常不是“最后多等几秒”，而是中间长时间没有任何反馈。因此后续需要把进度提示纳入质量标准，而不是只看最终回复：
+
+| 阶段 | 建议提示 | 触发时机 |
+| --- | --- | --- |
+| 路由/理解 | `我先判断一下这是方案调整、偏好记录，还是只读分析。` | 进入 full Agent 或小模型路由前，超过短等待阈值时 |
+| 方案事实读取 | `正在读取当前方案、审查结果和候选信息。` | 调用 planning/query 工具前 |
+| 工具执行/预览 | `正在生成调整预览，当前不会直接改动方案。` | 高副作用 preview 工具前 |
+| 开放分析 | `这个问题需要结合成绩、偏好和方案样本，我会先整理关键依据。` | Explore/Policy/Career 进入 full Agent 或结构化分析前 |
+| 长耗时兜底 | `还在处理，当前已经完成事实读取，正在组织结论。` | 超过 10-15s 仍未结束 |
+| 超长兜底 | `这轮分析耗时较长，我会继续等待结果；如果失败，会给出已完成部分和下一步建议。` | 接近响应超时阈值前 |
+
+后续可评估把部分场景的最终响应超时阈值调大，但前提是：
+
+- 首个 progress hint 足够早；
+- 每个长阶段有可理解提示；
+- 超时 fallback 不空白，能说明当前未完成什么、已完成什么、用户下一步怎么继续；
+- 评估报告记录 `firstHintMs / hintCount / lastHintBeforeTimeoutMs`。
+
+##### 14.12.5 调整后的落地顺序
+
+1. 补评估脚本/报告：从 live metrics 中汇总 `full_agent_tool_trial`、超时、重复工具、字符串 fast route 命中来源和长耗时无提示问题。
+2. 用现有 case 和历史输出先产出问题表，确认要解决的问题类型。
+3. 对问题表中高价值、可结构化、可本地校验的场景，再接小模型路由。
+4. 对仍需要 full Agent 的开放场景，优先补 progress hint 和 timeout fallback，不强行压成 fast route。
+5. 跑 effect/perf、open-quality、realistic-user、80+ dialogue-derived 和历史 regression/e2e，按“质量、边界、提示、延迟”的顺序验收。
+
+当前已提交的 fixed-scenario 小模型路由能力应视为技术基础，不应直接扩大启用范围。下一步代码工作应先补“问题识别和报告”，再决定小模型具体接管哪些场景。
+
+已落地：
+
+- `dialog_case_evaluation_report.py` 现在会从 runner 输出的 `turnObservability.routeDecision.toolTrial` 和 `toolCalls` 中提取工具调用序列，保留重复工具调用，不再只看去重后的工具名。
+- 报告 JSON 新增 `summary.fullAgentToolTrialIssues`，汇总 `slow_full_agent / very_slow_full_agent / repeated_tool_calls / full_agent_with_many_tools / missing_progress_for_long_task / late_first_hint / expected_fast_route_fell_back_full_agent / fixed_router_fallback` 等问题类型，并按问题族、路由、工具、重复工具和字符串修法风险聚合。
+- 报告 JSON 新增 `summary.stringPatchInventory`，把当前命中的 fast route 或 fast route 候选标记为 `existingStringPatch=yes/candidate`，并区分 `high_expression_fragility`、`medium_plan_pattern_scope` 等风险，用于后续判断哪些场景不能继续靠关键词扩展。
+- Markdown summary 新增 `Full Agent Tool Trial Issues` 和 `String Patch Inventory` 两段，便于直接从 e2e 报告里看慢 case、重复工具、缺进度提示和字符串补丁风险。
+- 当前实现只做评估和诊断，不改变 ChatService 主路径、不启用新的小模型接管，也不新增新的字符串模板回复。
