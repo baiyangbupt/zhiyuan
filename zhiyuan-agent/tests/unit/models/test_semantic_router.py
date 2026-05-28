@@ -125,6 +125,18 @@ def test_semantic_router_agent_uses_text_output_to_avoid_tool_choice_required():
     assert router._agent().output_type is str
 
 
+def test_semantic_router_instructions_define_score_profile_boundaries():
+    from app.resolver import semantic_intent_router
+
+    instructions = semantic_intent_router._INSTRUCTIONS
+
+    assert "topic=score" in instructions
+    assert "分数刚压本科线，别给我画大饼" in instructions
+    assert "孩子数学忽高忽低，理工还能不能碰" in instructions
+    assert "不是 intent" in instructions
+    assert "普通“成绩波动怎么填志愿”不是 policy" in instructions
+
+
 def test_semantic_router_reuses_main_llm_when_router_model_is_not_configured():
     class _Client:
         model = "main-model-instance"

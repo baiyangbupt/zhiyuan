@@ -245,7 +245,7 @@ _SEMANTIC_EXPECTATION_PRESETS: dict[str, dict[str, Any]] = {
     "eligibility_constraints": {
         "taskLayer": "explore",
         "topic": ["policy", "requirement"],
-        "verb": ["analyze", "explain", "recommend"],
+        "verb": ["query", "analyze", "explain", "recommend"],
         "sideEffect": "readonly",
         "minConfidence": 0.8,
     },
@@ -301,6 +301,36 @@ _SEMANTIC_EXPECTATION_PRESETS: dict[str, dict[str, Any]] = {
 }
 
 _SEMANTIC_EXPECTATION_OVERRIDES: tuple[tuple[set[str], dict[str, Any]], ...] = (
+    (
+        {"subject_combination", "liberal_arts_employment"},
+        {
+            "taskLayer": "explore",
+            "topic": ["score", "career", "major"],
+            "verb": ["analyze", "explain", "recommend"],
+            "sideEffect": "readonly",
+            "minConfidence": 0.8,
+        },
+    ),
+    (
+        {"score_profile"},
+        {
+            "taskLayer": "explore",
+            "topic": "score",
+            "verb": ["analyze", "explain", "recommend"],
+            "sideEffect": "readonly",
+            "minConfidence": 0.8,
+        },
+    ),
+    (
+        {"special_plan", "medical_check", "vision", "english_oral_test", "application_requirement", "extra_points"},
+        {
+            "taskLayer": "explore",
+            "topic": ["policy", "requirement"],
+            "verb": ["query", "analyze", "explain", "recommend"],
+            "sideEffect": "readonly",
+            "minConfidence": 0.8,
+        },
+    ),
     (
         {"soft_major_intent", "hard_major_constraint", "soft_region_intent", "negative_region_intent"},
         {

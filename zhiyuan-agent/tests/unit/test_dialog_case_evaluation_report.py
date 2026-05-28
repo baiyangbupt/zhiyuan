@@ -228,6 +228,99 @@ def test_build_case_report_infers_semantic_expectation_from_score_profile_covera
     assert item["current"]["score"]["semanticExpectation"]["matched"] is True
 
 
+def test_score_profile_semantic_expectation_takes_priority_over_risk_summary_coverage():
+    item = report._build_case_report(
+        "score-risk-case#1",
+        None,
+        {
+            "case": "score-risk-case",
+            "stepIndex": 1,
+            "prompt": "分数刚压本科线，别给我画大饼",
+            "responseText": "这类压线情况要先看位次、批次线和保底空间。",
+            "coverage": ["release_3_0_3", "dialogue_derived", "score_profile", "batch_line", "risk_summary"],
+            "semanticRouterShadow": {
+                "status": "success",
+                "frame": {
+                    "taskLayer": "explore",
+                    "topic": "score",
+                    "verb": "analyze",
+                    "sideEffect": "readonly",
+                    "confidence": 0.88,
+                },
+            },
+        },
+        {},
+    )
+
+    assert item["expectedSemanticFrame"]["taskLayer"] == "explore"
+    assert item["expectedSemanticFrame"]["topic"] == "score"
+    assert item["current"]["score"]["semanticExpectation"]["matched"] is True
+
+
+def test_special_plan_semantic_expectation_accepts_policy_query():
+    item = report._build_case_report(
+        "special-policy-case#1",
+        None,
+        {
+            "case": "special-policy-case",
+            "stepIndex": 1,
+            "prompt": "四川那种专项批，如果没资格是不是就不能放",
+            "responseText": "先按政策资格判断，没有资格就不应放进可报范围。",
+            "coverage": ["release_3_0_3", "dialogue_derived", "eligibility_constraints", "special_plan", "plan_review"],
+            "semanticRouterShadow": {
+                "status": "success",
+                "frame": {
+                    "taskLayer": "explore",
+                    "topic": "policy",
+                    "verb": "query",
+                    "sideEffect": "readonly",
+                    "confidence": 0.9,
+                },
+            },
+        },
+        {},
+    )
+
+    assert item["expectedSemanticFrame"]["taskLayer"] == "explore"
+    assert item["expectedSemanticFrame"]["topic"] == ["policy", "requirement"]
+    assert "query" in item["expectedSemanticFrame"]["verb"]
+    assert item["current"]["score"]["semanticExpectation"]["matched"] is True
+
+
+def test_subject_combination_employment_semantic_expectation_accepts_career_topic():
+    item = report._build_case_report(
+        "subject-career-case#1",
+        None,
+        {
+            "case": "subject-career-case",
+            "stepIndex": 1,
+            "prompt": "历史政治地理这个组合，就业别太窄咋选",
+            "responseText": "可以从就业面、专业方向和升学路径看。",
+            "coverage": [
+                "release_3_0_3",
+                "dialogue_derived",
+                "score_profile",
+                "subject_combination",
+                "liberal_arts_employment",
+            ],
+            "semanticRouterShadow": {
+                "status": "success",
+                "frame": {
+                    "taskLayer": "explore",
+                    "topic": "career",
+                    "verb": "recommend",
+                    "sideEffect": "readonly",
+                    "confidence": 0.85,
+                },
+            },
+        },
+        {},
+    )
+
+    assert item["expectedSemanticFrame"]["topic"] == ["score", "career", "major"]
+    assert item["current"]["score"]["semanticExpectation"]["matched"] is True
+
+
 def test_build_case_report_infers_intent_preview_semantic_expectation_from_coverage():
     item = report._build_case_report(
         "intent-case#1",

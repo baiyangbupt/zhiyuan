@@ -24,6 +24,7 @@ DEFAULT_METRICS_DIR = Path("/private/tmp/zhiyuan-agent-dialog-quality-gate")
 LOCAL_PYTEST_TARGETS = [
     "tests/unit/models/test_semantic_router.py",
     "tests/unit/test_semantic_frame_evaluator.py",
+    "tests/unit/test_semantic_frame_probe.py",
     "tests/unit/test_dialog_quality_gate.py",
     "tests/unit/test_dialog_regression_runner.py",
     "tests/unit/test_dialog_case_evaluation_report.py",

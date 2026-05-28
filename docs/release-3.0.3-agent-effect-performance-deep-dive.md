@@ -1685,6 +1685,21 @@ L3 full_agent fallback
 - 对 `dialog_regression_303_dialogue_derived_cases.json` 执行 expected-only 检查：`total=88 / expectedTotal=88 / comparableTotal=0`，说明 88 个真实对话派生样例都具备 L2 语义期望。
 - 当前期望分布：`taskLayer` 包含 `explore=49 / plan=36 / intent=15 / general=9`，`sideEffect` 包含 `readonly=70 / preview=18 / none=9`。部分 case 允许多个合理层级或动作，因此分布计数会大于 case 总数。
 
+2026-05-28 继续增加 `examples/semantic_frame_probe.py`，用于直接调用 `SemanticIntentRouter.route_shadow` 生成 runner 兼容 records。该 probe 只验证 L2 语义帧，不跑完整 Agent，也不触发 planning 工具。
+
+小样本结果：
+
+- 初版 score/profile 5 条 probe：4 条成功但全部 mismatch，1 条 timeout。主要错在 `score_profile` 被模型判成 `policy / major / intent`，以及评估期望把 `score_profile + risk_summary` 误推成 plan review。
+- 修正 semantic prompt 后，同一 score/profile 5 条复跑：4 条成功全部 match，1 条 timeout；成功耗时约 `3.3s-6.0s`。
+- 混合 20 条 dialogue-derived probe：初评 `comparableTotal=14 / match=10 / mismatch=4 / timeout=6`。其中 4 个 mismatch 复盘后主要是评估口径过窄：专项/体检/视力类允许 `policy/query`，文史政地就业面允许 `career`。
+- 修正 coverage 期望优先级后，用同一份 20 条 probe 输出重评估：`comparableTotal=14 / match=14 / mismatch=0 / timeout=6`，`matchRate=1.0`。
+
+当前结论：
+
+- score/profile 的语义边界已明显改善，但样本仍小，不能据此接管主链路。
+- DeepSeek V4 Flash Non-think 作为 semantic router 仍有较明显 timeout，20 条里 6 条超过 `10s`；后续要继续比较更轻/更稳的路由模型，或做 selective、短超时、失败 fallback。
+- 当前 L2 继续保持 shadow/evaluation；真正可接管前，至少需要覆盖 88 条 dialogue-derived、effect/perf、open-quality 和多模型场景，并同时满足分类准确率与超时率门槛。
+
 ## 11. 待确认决策
 
 需要确认后再进入代码实现：

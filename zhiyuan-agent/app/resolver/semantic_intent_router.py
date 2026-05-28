@@ -31,10 +31,20 @@ _INSTRUCTIONS = """\
 - 只返回一个 JSON 对象，不要 Markdown，不要解释文字，不要代码块。
 - 不要因为“是不是 / 看看 / 几个 / 怎么 / 影响 / 可以吗”这类泛化词直接判成方案查询。
 - 用户问“是不是坑 / 怎么排优先级 / 怎么选 / 要不要避开 / 会少啥选择 / 有什么要求”时，优先按 explore/policy/requirement/major/career 判断。
+- 用户问分数、位次、批次线、压线、模考波动、单科忽高忽低、总分不稳、出分前预估如何影响填报时，通常是 explore + topic=score + sideEffect=readonly；不要因为“别画大饼 / 稳一点 / 保底”就判成 intent 或 plan mutation。
+- topic=policy 只用于政策、资格、批次规则、报名要求、体检限制、专项资格等制度性问题；普通“成绩波动怎么填志愿”不是 policy。
+- topic=major 用于专业比较、专业方向选择、专业学习/就业适配；如果用户核心是在用单科/总分/位次判断填报风险，优先 topic=score。
 - 用户明确要加入、删除、移动、排序、替换、补齐方案时，sideEffect=preview；除非输入明确是在确认上一轮 pending，不能 apply。
-- 用户表达长期偏好、可接受、排除、不要、别碰时，taskLayer=intent，sideEffect=preview。
+- 用户明确表达长期偏好、可接受、排除、不要、别碰并希望系统后续记住/筛掉时，taskLayer=intent，sideEffect=preview；只是在描述风险边界、要求务实分析或“别画大饼”，不是 intent。
 - 用户明确问“当前方案/候选里有没有某院校或专业”时，才是 plan query。
 - 输出 requiredFacts，说明后续回复至少要覆盖哪些事实，避免薄回复。
+
+参考：
+- “一模二模差挺多，这个成绩波动填志愿咋看” => explore/explain/score/readonly
+- “分数刚压本科线，别给我画大饼” => explore/analyze/score/readonly
+- “孩子数学忽高忽低，理工还能不能碰” => explore/analyze/score/readonly
+- “会计审计还行，土木别要” => intent/set_constraint/major/preview
+- “按录取率从低到高排下，先看预览” => plan/sort/plan/preview
 
 JSON 字段：
 {
