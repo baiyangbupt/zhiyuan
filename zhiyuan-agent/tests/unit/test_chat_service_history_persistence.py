@@ -27,12 +27,14 @@ from app.service import (
     _normalize_pending_intent_reply,
     _normalize_plan_reply_style,
     _normalize_user_facing_terms,
+    _semantic_router_shadow_message,
     _select_conversation_action_family,
     _sanitize_reply_for_user,
     _summarize_tool_calls_for_observability,
     _tool_calls_include_plan_workspace_refresh,
 )
 from app.agent.context import RequestContext, ScoreDetail
+from app.models.semantic_router import SemanticIntentFrame, SemanticRouterShadowResult
 from app.resolver.major_compare_reply_renderer import render_missing_weight_major_compare_reply
 from app.tools.intent_response_tool import IntentStateUpdateResult, render_intent_state_update
 from app.tools.plan_orchestration_models import PlanActionPlan, PlanAtomicAction
@@ -75,6 +77,26 @@ def test_llm_config_value_reads_provider_and_model_without_sensitive_fields():
     assert _llm_config_value(client, "provider") == "openai_compatible"
     assert _llm_config_value(client, "model_name") == "kimi-k2.6"
     assert _llm_config_value(client, "missing") is None
+
+
+def test_semantic_router_shadow_message_is_internal_history_only():
+    shadow = SemanticRouterShadowResult(
+        status="success",
+        frame=SemanticIntentFrame(
+            taskLayer="plan",
+            verb="query",
+            topic="plan",
+            sideEffect="readonly",
+            confidence=0.9,
+        ),
+        durationMs=12,
+    )
+
+    message = _semantic_router_shadow_message(shadow)
+
+    assert message is not None
+    assert message.model_name == "semantic-router-shadow"
+    assert "semanticRouterShadow" in message.parts[0].content
 
 
 def test_summarize_tool_calls_for_observability_extracts_plan_action_result():
@@ -208,6 +230,56 @@ def test_chat_service_persists_and_recovers_history(tmp_path, mock_llm_client):
             {"role": "assistant", "content": "第一轮回复"},
             {"role": "user", "content": "继续"},
         ]
+
+
+def test_chat_service_semantic_router_shadow_is_disabled_by_default(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    fake_agent = _FakeAgent(["主链路回复"])
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(service.handle_message("session-shadow-disabled", "user-1", "看看方案"))
+
+    assert reply == "主链路回复"
+    assert service.semantic_router.agent is None
+    saved = asyncio.run(store.load("session-shadow-disabled"))
+    assert all(getattr(message, "model_name", "") != "semantic-router-shadow" for message in saved)
+
+
+def test_chat_service_semantic_router_shadow_persists_internal_observation(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    fake_agent = _FakeAgent(["主链路回复"])
+    shadow = SemanticRouterShadowResult(
+        status="success",
+        frame=SemanticIntentFrame(
+            taskLayer="explore",
+            verb="compare",
+            topic="major",
+            sideEffect="readonly",
+            confidence=0.91,
+        ),
+        durationMs=25,
+    )
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})):
+        service = ChatService(mock_llm_client, store)
+        service.semantic_router.route_shadow = AsyncMock(return_value=shadow)
+        reply = asyncio.run(service.handle_message("session-shadow-enabled", "user-1", "财管会计审计怎么排优先级"))
+
+    assert reply == "主链路回复"
+    saved = asyncio.run(store.load("session-shadow-enabled"))
+    shadow_messages = [message for message in saved if getattr(message, "model_name", "") == "semantic-router-shadow"]
+    assert len(shadow_messages) == 1
+    assert "SemanticIntentFrame" not in shadow_messages[0].parts[0].content
+    assert "semanticRouterShadow" in shadow_messages[0].parts[0].content
 
 
 def test_build_runtime_history_trims_long_history_and_compacts_tool_returns():

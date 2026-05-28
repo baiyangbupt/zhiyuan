@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import importlib.util
 import json
 import sqlite3
 import statistics
@@ -78,6 +79,7 @@ PLAN_STYLE_BANNED_SUBSTRINGS = [
 PLAN_STYLE_BANNED_EXACT_LINES = {"你。", "只有。", "请。"}
 
 ROUTING_PATH_BY_HISTORY_MODEL_NAME = {
+    "semantic-router-shadow": "",
     "plan-fast-route": "plan_fast_route",
     "plan-query-fast-route": "plan_query_fast_route",
     "major-intent-fast-route": "major_intent_fast_route",
@@ -152,9 +154,19 @@ def _load_cases(path: str | None) -> list[dict[str, Any]]:
     if not path:
         return DEFAULT_CASES
     data = json.loads(Path(path).read_text(encoding="utf-8"))
-    if not isinstance(data, list):
-        raise ValueError("cases file must be a JSON array")
-    return data
+    return _expand_case_payload(data)
+
+
+def _expand_case_payload(data: Any) -> list[dict[str, Any]]:
+    report_path = Path(__file__).with_name("dialog_case_evaluation_report.py")
+    spec = importlib.util.spec_from_file_location("dialog_case_evaluation_report_for_runner", report_path)
+    if spec is None or spec.loader is None:
+        raise ValueError(f"cannot load dialog_case_evaluation_report from {report_path}")
+    report = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(report)
+    expand_case_payload = report._expand_case_payload
+
+    return expand_case_payload(data)
 
 
 def _offset_session_id(session_id: Any, session_offset: int) -> str:
@@ -304,6 +316,7 @@ def _summarize_turn_observability(turn_messages: list[dict[str, Any]]) -> dict[s
     action_families: list[str] = []
     result_kinds: list[str] = []
     routing_paths: list[str] = []
+    semantic_router_shadow: dict[str, Any] | None = None
 
     for message in turn_messages:
         if not isinstance(message, dict):
@@ -338,6 +351,12 @@ def _summarize_turn_observability(turn_messages: list[dict[str, Any]]) -> dict[s
                 data = _parse_json_object(part.get("content"))
                 if call_id and data:
                     returns_by_call_id[call_id] = data
+                continue
+            if kind == "text" and message.get("model_name") == "semantic-router-shadow":
+                data = _parse_json_object(part.get("content"))
+                shadow = data.get("semanticRouterShadow") if isinstance(data, dict) else None
+                if isinstance(shadow, dict):
+                    semantic_router_shadow = shadow
 
     for item in tool_calls:
         call_id = str(item.get("toolCallId") or "")
@@ -373,6 +392,8 @@ def _summarize_turn_observability(turn_messages: list[dict[str, Any]]) -> dict[s
         summary["routingPath"] = routing_paths[0]
         if len(routing_paths) > 1:
             summary["routingPathCandidates"] = routing_paths
+    if semantic_router_shadow:
+        summary["semanticRouterShadow"] = semantic_router_shadow
     return summary
 
 
@@ -407,6 +428,10 @@ def _summarize_primary(messages: list[dict[str, Any]]) -> str:
 
 def _extract_text(messages: list[dict[str, Any]]) -> str:
     return "\n".join(str(m.get("content", "")) for m in messages if m.get("type") == "text").strip()
+
+
+def _extract_error_text(messages: list[dict[str, Any]]) -> str:
+    return "\n".join(str(m.get("content", "")) for m in messages if m.get("type") == "error").strip()
 
 
 def _extract_thinking(messages: list[dict[str, Any]]) -> str:
@@ -574,7 +599,7 @@ def _build_metrics_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
     elapsed_values = [
         int(record["elapsedMs"])
         for record in records
-        if isinstance(record.get("elapsedMs"), int) and not record.get("error")
+        if isinstance(record.get("elapsedMs"), int) and not record.get("error") and not record.get("wsError")
     ]
     slowest = sorted(
         (
@@ -588,7 +613,7 @@ def _build_metrics_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "steps": len(records),
         "successfulSteps": len(elapsed_values),
-        "failedSteps": sum(1 for record in records if record.get("error")),
+        "failedSteps": sum(1 for record in records if record.get("error") or record.get("wsError")),
         "elapsed": _duration_summary(elapsed_values),
         "slowest": [
             {
@@ -613,6 +638,7 @@ async def _run_cases(
     metrics_output: str | None = None,
     history_db: str | None = str(DEFAULT_HISTORY_DB),
     keep_response_text: bool = False,
+    clear_history_per_case: bool = False,
 ) -> None:
     failures: list[str] = []
     warnings: list[str] = []
@@ -620,6 +646,19 @@ async def _run_cases(
     for case in cases:
         name = str(case.get("name") or f"session-{case.get('sessionId')}")
         session_id = str(case["sessionId"])
+        if clear_history_per_case and history_db:
+            deleted = _clear_history(Path(history_db), [session_id])
+            print(
+                "clearedCaseHistory="
+                + json.dumps(
+                    {
+                        "db": str(Path(history_db)),
+                        "session": session_id,
+                        "deletedRows": deleted,
+                    },
+                    ensure_ascii=False,
+                )
+            )
         case_assert_style = bool(case.get("assertPlanStyle", assert_plan_style))
         base_session_id = str(case.get("baseSessionId") or "")
         session_label = f"{session_id} base={base_session_id}" if base_session_id else session_id
@@ -678,6 +717,9 @@ async def _run_cases(
             if keep_response_text:
                 record["responseText"] = _extract_text(primary)
                 record["thinkingText"] = _extract_thinking(primary)
+            error_text = _extract_error_text(primary)
+            if error_text:
+                record["wsError"] = error_text
             if history_db:
                 history = _load_history_json(Path(history_db), session_id)
                 turn_observability = _summarize_turn_observability(
@@ -791,6 +833,11 @@ def main() -> None:
         action="store_true",
         help="store the full response text and thinking text in metrics-output for case-level evaluation",
     )
+    parser.add_argument(
+        "--clear-history-per-case",
+        action="store_true",
+        help="delete the local Agent SQLite history row for a case session before each case; useful when many cases reuse real session ids",
+    )
     args = parser.parse_args()
 
     if args.session:
@@ -825,6 +872,7 @@ def main() -> None:
             metrics_output=args.metrics_output,
             history_db=args.history_db,
             keep_response_text=args.keep_response_text,
+            clear_history_per_case=args.clear_history_per_case,
         )
     )
 

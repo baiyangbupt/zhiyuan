@@ -41,6 +41,71 @@ def test_score_case_rewards_text_and_latency():
     assert score["latency"] >= 1
 
 
+def test_score_case_includes_semantic_router_shadow_from_observability():
+    score = report._score_case(
+        {
+            "prompt": "财管会计审计怎么排优先级",
+            "responseText": "这类专业可以从稳定性、考公适配和就业口径做优先级判断。",
+            "elapsedMs": 900,
+            "turnObservability": {
+                "routingPath": "major_compare_fast_route",
+                "semanticRouterShadow": {
+                    "status": "success",
+                    "frame": {
+                        "taskLayer": "explore",
+                        "verb": "compare",
+                        "topic": "major",
+                        "sideEffect": "readonly",
+                    },
+                },
+            },
+        }
+    )
+
+    assert score["semanticRouterShadow"]["status"] == "success"
+    assert score["semanticRouterShadow"]["frame"]["taskLayer"] == "explore"
+
+
+def test_summarize_rows_counts_semantic_router_dimensions():
+    rows = [
+        {
+            "score": {
+                "verdict": "strong",
+                "routingPath": "major_compare_fast_route",
+                "semanticRouterShadow": {
+                    "status": "success",
+                    "frame": {
+                        "taskLayer": "explore",
+                        "verb": "compare",
+                        "topic": "major",
+                        "sideEffect": "readonly",
+                    },
+                },
+            },
+            "elapsedMs": 900,
+        }
+    ]
+
+    summary = report._summarize_rows(rows)
+
+    assert summary["semanticRouterSummary"]["status"] == {"success": 1}
+    assert summary["semanticRouterSummary"]["taskLayer"] == {"explore": 1}
+    assert summary["semanticRouterSummary"]["verb"] == {"compare": 1}
+
+
+def test_score_case_marks_empty_response_as_failed_verdict():
+    score = report._score_case(
+        {
+            "prompt": "高考出分后是不是要重做一版",
+            "responseText": "",
+            "elapsedMs": 2100,
+        }
+    )
+
+    assert score["qualityViolations"] == ["empty_response"]
+    assert score["verdict"] == "fail"
+
+
 def test_score_case_flags_thin_preview_without_distribution_coverage():
     score = report._score_case(
         {
@@ -365,6 +430,60 @@ def test_case_definitions_attach_flow_coverage_and_latency_budget(tmp_path):
     }
     assert "latency_warn_exceeded" in ",".join(merged["current"]["score"]["evaluationWarnings"])
     assert "missing_route_observability" in ",".join(merged["current"]["score"]["evaluationWarnings"])
+
+
+def test_case_definitions_support_defaults_object_payload(tmp_path):
+    case_file = tmp_path / "cases.json"
+    case_file.write_text(
+        json.dumps(
+            {
+                "defaults": {
+                    "flow": ["explore"],
+                    "coverage": ["release_3_0_3", "dialogue_derived"],
+                    "assertPlanStyle": True,
+                    "promptDefaults": {
+                        "assertNotContains": ["payload"],
+                        "forbiddenPatterns": ["内部字段"],
+                        "qualityFocus": ["user_language"],
+                        "warnElapsedSeconds": 30,
+                    },
+                },
+                "cases": [
+                    {
+                        "name": "case-a",
+                        "sessionId": "17",
+                        "flow": ["plan"],
+                        "coverage": ["plan_status"],
+                        "prompts": [
+                            {
+                                "prompt": "这方案咋样",
+                                "assertContainsAny": ["方案"],
+                                "expectedKeyPoints": ["方案", "下一步"],
+                            }
+                        ],
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    definitions = report._merge_case_definition_indexes([str(case_file)])
+
+    assert definitions["case-a#1"]["flow"] == ["explore", "plan"]
+    assert definitions["case-a#1"]["coverage"] == ["release_3_0_3", "dialogue_derived", "plan_status"]
+    assert definitions["case-a#1"]["assertPlanStyle"] is True
+    assert definitions["case-a#1"]["latencyBudget"] == {"warnElapsedMs": 30000}
+    assert definitions["case-a#1"]["assertions"] == {
+        "assertContainsAny": ["方案"],
+        "assertNotContains": ["payload"],
+    }
+    assert definitions["case-a#1"]["qualityExpectations"] == {
+        "expectedKeyPoints": ["方案", "下一步"],
+        "qualityFocus": ["user_language"],
+        "forbiddenPatterns": ["内部字段"],
+    }
 
 
 def test_case_definitions_infer_confirm_routes_from_prompt_and_coverage(tmp_path):

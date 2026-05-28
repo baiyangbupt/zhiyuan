@@ -1202,3 +1202,388 @@ P1 收口后，open-quality 的硬门禁已经全部通过，但 Intent 相关�
 4. 候选空结果替代建议：结合专业目录给出更自然的放宽口径，例如“会计/审计没有，可以查工商管理类、财会方向或当前方案里的相近专业”。
 
 这些优化都属于“让回复更有价值”的展示层改进，暂不改变 fast route 仲裁、工具执行、pending、确认或工作台刷新语义。
+
+### 13.9 真实对话派生 80+ 场景扩展
+
+本轮针对“实际对话案例太少、长期围绕十几个测试”的问题，新增一组真实对话派生评估集。
+
+数据来源与脱敏边界：
+
+- 参考根目录 `dialogues/` 下新增的真实沟通转写与意图标注文件。
+- 不提交、不复制真实转写原文到测试 case。
+- case 只保留抽象后的用户表达和场景标签，不保留真实姓名、电话、精确分数、精确排名、家庭成员身份等可识别信息。
+- 所有用户输入改写为合成的真实口语表达，用于覆盖“家长/学生实际会怎么问”，不是复刻原始对话。
+
+新增文件：
+
+- `zhiyuan-agent/examples/dialog_regression_303_dialogue_derived_cases.json`
+
+规模与覆盖：
+
+| 模块 | case 数 | 典型覆盖 |
+| --- | ---: | --- |
+| 分数/画像采集 | 10 | 模考波动、批次线边界、排名/位次、选科短板、出分后调整 |
+| 资格/体检/专项 | 8 | 色弱/视力、英语口试、农村专项、专项资格、体检表缺失 |
+| 专业偏好/排除 | 12 | 财会审计、法学/财政、师范/医学/护理、计算机压力、冷门专业 |
+| 地域偏好 | 10 | 南方/北方、省外不偏远、京津安全取舍、发达城市机会、兜底城市 |
+| 职业方向 | 10 | 考公、银行资源、内向性格、读研、稳定就业、文科避坑 |
+| 预算/学费 | 8 | 中外合作、两三万预算、高收费、民办公办取舍、性价比 |
+| 方案审查/策略 | 10 | 太冲、保底、审查坑点、财会承接、公办占比、高收费风险 |
+| 方案操作 | 10 | 录取率/院校层次/推荐系数排序、移动、删除、加入、专业组处理 |
+| 后续沟通/弱确认 | 10 | 弱收口、只读边界、出分重做、学生未参与、缺失信息清单 |
+
+实现细节：
+
+- case 文件支持 `defaults + cases` 结构，把通用禁用词、质量门禁和耗时预算收口到 `defaults.promptDefaults`，避免 88 条 case 重复维护。
+- `dialog_regression_runner.py` 继续兼容旧 JSON 数组格式，同时支持新对象格式。
+- `dialog_case_evaluation_report.py` 支持读取新对象格式，报告仍能合并 `flow / coverage / latencyBudget / qualityExpectations`。
+- runner 增加 `--clear-history-per-case`，用于 80+ case 复用真实 session 时每个 case 前清理本地 agent 历史，避免上一条 pending、只读收口或历史意向污染下一条评估。
+- 评估报告补齐空正文判定：当 WebSocket turn 没有形成用户可见 `responseText` 时，直接记为 `fail`，避免把“看似 2 秒返回但用户看不到有效回答”的问题漏出汇总。
+
+本轮验证：
+
+```bash
+cd zhiyuan-agent
+
+PYTHONPATH=. ./.venv/bin/python -m pytest \
+  tests/unit/test_dialog_regression_runner.py \
+  tests/unit/test_dialog_case_evaluation_report.py \
+  tests/unit/test_mainline_dialog_scenarios.py \
+  -q
+```
+
+结果：`78 passed`。
+
+离线结构报告验证：
+
+- 生成 stub：`/private/tmp/zhiyuan_agent_303_dialogue_derived_offline_stub.json`
+- 生成评估报告：`/private/tmp/zhiyuan_agent_303_dialogue_derived_offline_eval.json`
+- 结果：`totalCases=88`，`dialogue_derived=88`，`real_dialogue_source=88`，flow 覆盖 `explore / intent / plan / review / readonly / confirm_guard`。
+
+真实 WebSocket 全量跑批：
+
+```bash
+cd zhiyuan-agent
+
+PYTHONPATH=. ./.venv/bin/python examples/dialog_regression_runner.py \
+  --cases examples/dialog_regression_303_dialogue_derived_cases.json \
+  --clear-history-per-case \
+  --keep-response-text \
+  --assert-plan-style \
+  --response-timeout 120 \
+  --metrics-output /private/tmp/zhiyuan_agent_303_dialogue_derived_live.json
+
+PYTHONPATH=. ./.venv/bin/python examples/dialog_case_evaluation_report.py \
+  --current /private/tmp/zhiyuan_agent_303_dialogue_derived_live.json \
+  --case-definitions examples/dialog_regression_303_dialogue_derived_cases.json \
+  --markdown-detail \
+  --output /private/tmp/zhiyuan_agent_303_dialogue_derived_live_eval.md
+```
+
+结果文件：
+
+- 原始 live 指标：`/private/tmp/zhiyuan_agent_303_dialogue_derived_live.json`
+- 逐 case 详细评估：`/private/tmp/zhiyuan_agent_303_dialogue_derived_live_eval.md`
+- JSON 汇总：`/private/tmp/zhiyuan_agent_303_dialogue_derived_live_eval.json`
+
+本轮 live 结果：
+
+| 指标 | 结果 |
+| --- | --- |
+| steps | 88 |
+| strong | 3 |
+| fail | 34 |
+| needs_review | 51 |
+| 中位耗时 | 2318ms |
+| p95 耗时 | 67404ms |
+| 最大耗时 | 182074ms |
+| 超过 45s | 12 |
+| 超过 100s | 1 |
+
+这轮不能作为上线通过结论，只能作为新的真实口语化质量基线。它证明 10 多个固定 case 已经不足以覆盖真实咨询问法；扩展到 88 条后，系统仍有明显质量缺口。
+
+根因归类：
+
+1. 空正文 / 无用户态回复：27 条。集中在预算、方案分析、方案操作、后续沟通和一部分职业方向，例如“文科就业面窄怎么避坑”“中外合作贵不贵”“当前方案对财会方向承接怎么样”“高考出分后是不是要重做一版”。这类通常 2 秒左右返回，但 `responseText` 为空，是最高优先级问题。
+2. 探索问题被方案查询抢路由：典型如“财管会计审计这几个怎么排优先级”“档案图书馆这种冷门是不是坑”，返回“当前方案里还没有可查询的志愿”。用户问的是专业/职业取舍，不是当前方案命中查询。
+3. 资格/要求问题被意向预览误接管：典型如“英语口试到底要不要报，不报会少啥选择”“色弱是不是医学化工都要避开”“建筑城乡规划要不要美术基础”。系统把它们当作“排除英语/医学/建筑/美术”的待确认意向，但用户需要的是规则、风险和填报建议。
+4. 旧 pending 或状态污染：`孩子不想当老师，师范是不是都别要` 耗时 182s，并返回上一条“会计/审计/土木”的待确认内容。`--clear-history-per-case` 只清理本地 agent SQLite，不足以清理 backend `planEditCache` 或其他会话态。
+5. 开放式 Explore 慢请求：12 条超过 45s，包括选科短板、文科就业、新闻新媒体、小语种、城市/学校取舍、银行资源等。部分回复质量不错，但首响和最终回复耗时不可接受，需要在不牺牲内容质量的前提下优化。
+6. 评估观测仍不完整：本轮 `turnObservability.routeDecision` 全为空，说明 fast-route 仲裁决策没有完整进入 runner 侧报告；后续排查误路由时证据链还不够直接。
+
+保留为正向基线的样例：
+
+- `会计审计还行，土木别要`：意向预览边界正确，确认前不写入、不改方案。
+- `这版是不是太冲了`：方案风险分析可用，能覆盖数量、冲稳保和下一步。
+- `候选里有稳一点的会计加进来吗，先别加`：候选加入保持预览和确认边界。
+
+后续修复优先级：
+
+1. P0：修复空正文分支，所有分支必须有用户可理解回复；如果下游异常，也要返回“当前未能完成分析 + 可继续怎么做”，不能空白。
+2. P0：把资格/政策/学习要求类问题从 major intent preview 前置排除，优先走规则解释或完整 Explore，而不是生成待确认排除项。
+3. P0：收紧 `plan_query_fast_route`，只有明确“当前方案/候选里有没有某学校或专业”的查询才接管；“是不是坑 / 怎么排优先级 / 怎么选”不能回空方案查询。
+4. P1：清理 pending/cache 隔离，`--clear-history-per-case` 需要覆盖 backend 待确认态，或全量评估使用一次性新会话和明确可控的后端状态。
+5. P1：补开放式 Explore 的结构化答复能力，优先覆盖体检、口试、冷门专业、预算学费、文科就业、专业压力和城市学校取舍。
+6. P1：补 route decision 观测写入，让 runner 能直接看到仲裁候选、最终路由和拒绝理由。
+
+后续验收重点：
+
+- 先看回复质量：是否答到用户核心诉求，是否覆盖结论、依据、风险和下一步。
+- 再看动作边界：只读问题不能误改方案；意向、排序、移动、删除、加入必须保留确认边界。
+- 再看联动：只有需要工作台变化的高副作用预览/确认才出现联动卡片。
+- 最后看延迟：超过 warning 的 case 进入人工复核，但质量完整的慢回复优先于快而薄的回复。
+
+### 14. SemanticIntentRouter 长期方案与全量防回退门禁
+
+#### 14.1 设计目标
+
+后续不再继续把关键词补丁作为根本方案。3.0.3 Agent 对话链路的长期目标是把当前“多个 fast router 各自识别 + 仲裁”的结构升级为“LLM 语义路由 + 确定性 resolver + 结构化事实准备 + 回复质量门禁”的主路径。
+
+核心目标：
+
+1. 回复质量优先：不能为了降低延迟把回复重新做薄。专业、方案、地域、职业、资格要求等问题必须覆盖结论、依据、风险和下一步。
+2. 延迟可控：减少完整 Agent 自由试工具、重复读方案、重复组织回复和无效 inner LLM 调用；允许多一次轻量语义路由调用，但不允许开放问题动辄分钟级。
+3. 动作边界稳定：只读不联动，预览不执行，高副作用动作必须等待确认，无 pending 时确认不能误消费旧动作。
+4. 可观测可回退：每轮记录语义路由、候选、最终 resolver、工具链、回复质量和延迟，任何新主路径必须能和当前 3.0.3 基线逐 case 对比。
+
+#### 14.2 目标链路
+
+```text
+用户输入
+  -> SemanticIntentRouter：输出结构化 IntentFrame / ExploreFrame / IntentMutationFrame
+  -> Resolver：ActionResolver / ExploreResolver / IntentResolver
+  -> FactCollector：读取方案、候选、审查、偏好、画像、pending
+  -> ResponsePlan：定义本场景必须覆盖的信息结构
+  -> ResponseComposer：生成用户可读回复
+  -> QualityGate：检查质量、边界、联动、异常和延迟
+  -> WebSocket 回复 / 工作台联动 / pending 确认
+```
+
+`SemanticIntentRouter` 只负责把用户表达变成结构化任务，不直接自由回复、不直接执行工具。输出必须包含：
+
+- `taskLayer`：`explore / intent / plan / general`
+- `verb`：`query / analyze / compare / recommend / review / add / remove / move / sort / confirm / reject`
+- `topic`：`plan / major / school / region / career / score / policy / requirement`
+- `entities`：院校、专业、地域、职业方向、位置、排序字段、审查问题等
+- `sideEffect`：`readonly / preview / apply`
+- `confidence` 与 `ambiguity`
+- `missingInfo`
+- `responseNeed.requiredFacts`
+- `safety.mustNotDo`
+
+当前 `ActionResolver` 已经具备 `IntentFrame -> ActionResolution` 的雏形，后续应从 shadow 对比推进到 Plan 主执行入口。Explore 与 Intent 侧也需要补对应 resolver，避免继续散落在多个 fast router 与工具 prompt 中。
+
+#### 14.3 关键词逻辑的降级边界
+
+关键词、简称和目录匹配后续只允许承担三个职责：
+
+1. 实体识别辅助：例如 `青城 -> 青岛城市学院`、`财管 -> 财务管理`。
+2. 低成本候选生成：例如提示“可能是专业对比 / 方案查询 / 意向变更”。
+3. 质量门禁中的硬安全规则：例如 `确认` 必须有 pending，高副作用不能直接 apply。
+
+关键词不再作为最终路由判决。尤其是 `是不是 / 看看 / 几个 / 怎么 / 影响 / 可以吗` 这类泛化表达，不能单独让某条 fast route 抢主路径。若语义路由低置信或候选冲突，应进入澄清或完整 Agent，而不是输出空查询、薄概览或错误意向预览。
+
+#### 14.4 回复质量与延迟的统一优化方式
+
+回复质量和延迟不能分开优化。后续每个场景都按“先结构化事实，再组织回复”的方式处理：
+
+| 场景 | 必备事实 | 回复最低结构 | 延迟优化点 |
+| --- | --- | --- | --- |
+| 方案现状 | 目标数、已有数、冲稳保、审查、代表样本、偏好承接 | 结论 + 分布 + 风险 + 样本 + 下一步 | 本地事实 composer，不走完整 Agent 自由读工具 |
+| 方案审查 | 风险类型、影响范围、代表志愿、修复方向 | 风险等级 + 具体问题 + 处理建议 + 是否需确认 | 复用审查结果，避免重复跑方案概览 |
+| 方案调整 | 目标志愿、当前位置、目标位置/规则、影响范围 | 定位结果 + 执行影响 + 确认边界 | Resolver 直接生成 preview，不让模型自由构造工具参数 |
+| 专业对比 | 专业画像、学习门槛、就业方向、热度、稳定性、用户画像 | 结论先行 + 对比维度 + 风险 + 推荐取舍 | 事实工具一次返回，必要时 LLM 只做最终组织 |
+| 地域取舍 | 目标地域命中、安全垫、非目标地域保底、学费/层次 | 取舍结论 + 安全风险 + 替代路径 + 下一步 | 专项结构化分析，避免 full Agent 分钟级 |
+| 意向影响 | 待确认内容、方案贴近/冲突、候选机会、确认前边界 | 待确认 + 影响说明 + 确认/取消出口 | pending payload 结构化复用，不重复调用候选刷新 |
+| 资格/政策/要求 | 规则解释、影响专业范围、当前方案/候选影响、查证建议 | 规则结论 + 影响范围 + 对当前方案建议 | 归入 policy/requirement，不误入 major intent |
+
+QualityGate 必须检查：
+
+- 是否空回复或只有模板句。
+- 是否缺少该场景 `requiredFacts`。
+- 是否出现内部字段、`id=`、`level3`、`draft/草稿` 等用户不友好表达。
+- 是否误发工作台联动。
+- 是否 preview 说成已执行。
+- 是否无 pending 却确认执行。
+- 是否下游模型/后端异常被隐藏成空白。
+- 是否超过 case 级延迟预算；超时也要有用户可理解解释。
+
+#### 14.5 分阶段落地
+
+第一阶段：Shadow 评估。
+
+- 新增 `SemanticIntentRouter`，只记录结构化路由，不改变现有回复。
+- 与当前 fast-route arbitration、实际 tool trace 和人工期望逐 case 对齐。
+- 输出 route confusion matrix：`expectedRoute / semanticRoute / currentRoute / finalTool / replyScore / latency`。
+- 若 LLM 路由错误，不允许接管主链路。
+
+第二阶段：Selective 接管。
+
+- 只接管高置信、低副作用、事实结构清晰的场景：方案现状、方案审查、专业对比、职业方向、地域安全取舍、意向预览、无 pending 确认保护。
+- 高副作用操作继续要求 preview + confirm。
+- 接管后仍保留旧路径 fallback，QualityGate 不通过则回退当前 3.0.3 主链路。
+
+第三阶段：Main Path。
+
+- `SemanticIntentRouter -> Resolver -> FactCollector -> ResponseComposer` 成为主路径。
+- 旧 fast router 降级为实体识别、候选生成和 fallback。
+- 删除或停用以泛化关键词为判决依据的旧逻辑。
+
+#### 14.6 全量防回退门禁
+
+SemanticIntentRouter 相关改动不能只跑新增 80+ case。上线前必须覆盖历史 regression、真实 e2e、质量评估和多模型对比。
+
+必须纳入的 case 文件：
+
+| 类别 | 文件 | 目的 |
+| --- | --- | --- |
+| 3.0.3 effect/perf | `examples/dialog_regression_303_effect_perf_cases.json` | 方案状态、审查、调整、确认、Intent、职业方向、专业对比主基线 |
+| 3.0.3 open quality | `examples/dialog_regression_303_open_quality_cases.json` | 开放问法、家长口语、风险焦虑、只读保护、候选空结果 |
+| 3.0.3 realistic user | `examples/dialog_regression_303_realistic_user_cases.json` | 懒输入、简称、弱确认、短句真实表达 |
+| 3.0.3 dialogue derived | `examples/dialog_regression_303_dialogue_derived_cases.json` | 80+ 真实对话派生口语场景 |
+| 3.0.2 agent | `examples/dialog_regression_302_agent_cases.json` | 3.0.2 方案操作与会话真实链路 |
+| 3.0.2 explore/intent | `examples/dialog_regression_302_explore_intent_cases.json` | Explore 和 Intent 前置能力 |
+| 3.0.2 readonly real session | `examples/dialog_regression_302_readonly_real_session_cases.json` | 真实方案只读链路不联动 |
+| 3.0.2 effect/perf | `examples/dialog_regression_302_effect_perf_cases.json` | 旧版本性能场景防退化 |
+| 3.0.1 smoke | `examples/dialog_regression_301_agent_smoke_cases.json` | 3.0.1 方案现状、审查、排序、专业组移动 |
+| mainline | `examples/dialog_regression_mainline_cases.json` | Explore/Intent/Plan 多轮主线 |
+| full journey | `examples/dialog_regression_full_journey_cases.json` | 从画像探索到意向与方案的完整链路 |
+| plan correctness | `examples/dialog_regression_plan_correctness_cases.json` | 方案操作正确性与禁用旧 pin/lock |
+| plan / robust / advanced / lifecycle / enriched / score-tier / science / special / comprehensive | 对应 `dialog_regression_*_cases.json` | 历史覆盖面与边缘问法防回退 |
+| model provider e2e | `examples/model_provider_benchmark_e2e_cases.json` | 多模型端到端基础链路 |
+| model provider 3.0.3 readonly | `examples/model_provider_303_quality_readonly_cases.json` | 只读/预览质量与性能横向对比 |
+| model provider 3.0.3 open realistic | `examples/model_provider_303_open_quality_realistic_cases.json` | 多模型真实口语开放场景 |
+
+必须纳入的 pytest 集合：
+
+```bash
+cd zhiyuan-agent
+
+PYTHONPATH=. ./.venv/bin/python -m pytest \
+  tests/unit/test_dialog_regression_runner.py \
+  tests/unit/test_dialog_case_evaluation_report.py \
+  tests/unit/test_mainline_dialog_scenarios.py \
+  tests/integration/test_dialog_style_coverage.py \
+  tests/regression/test_pending_protocol.py \
+  tests/regression/test_execution_preview.py \
+  tests/regression/test_normalize_action.py \
+  tests/regression/test_determine_stage.py \
+  tests/regression/test_execution_apply.py \
+  tests/unit/test_action_resolver.py \
+  tests/unit/test_plan_orchestration_tool.py \
+  tests/unit/test_plan_execution_tool.py \
+  tests/unit/test_plan_query_tool.py \
+  tests/unit/test_major_intent_fast_router.py \
+  tests/unit/test_plan_query_fast_router.py \
+  tests/unit/test_fast_route_arbitrator.py \
+  tests/unit/test_chat_service_history_persistence.py \
+  tests/unit/test_ws_compat.py \
+  -q
+```
+
+真实 WebSocket e2e 门禁：
+
+```bash
+cd zhiyuan-agent
+
+PYTHONPATH=. ./.venv/bin/python examples/dialog_regression_runner.py \
+  --cases examples/dialog_regression_303_effect_perf_cases.json \
+  --clear-history \
+  --keep-response-text \
+  --assert-plan-style \
+  --metrics-output /private/tmp/semantic_router_303_effect_perf_live.json
+
+PYTHONPATH=. ./.venv/bin/python examples/dialog_regression_runner.py \
+  --cases examples/dialog_regression_303_open_quality_cases.json \
+  --clear-history \
+  --keep-response-text \
+  --assert-plan-style \
+  --metrics-output /private/tmp/semantic_router_303_open_quality_live.json
+
+PYTHONPATH=. ./.venv/bin/python examples/dialog_regression_runner.py \
+  --cases examples/dialog_regression_303_realistic_user_cases.json \
+  --clear-history \
+  --keep-response-text \
+  --assert-plan-style \
+  --metrics-output /private/tmp/semantic_router_303_realistic_user_live.json
+
+PYTHONPATH=. ./.venv/bin/python examples/dialog_regression_runner.py \
+  --cases examples/dialog_regression_303_dialogue_derived_cases.json \
+  --clear-history-per-case \
+  --keep-response-text \
+  --assert-plan-style \
+  --response-timeout 120 \
+  --metrics-output /private/tmp/semantic_router_303_dialogue_derived_live.json
+```
+
+每个 live 输出都必须再跑 `dialog_case_evaluation_report.py --case-definitions ... --markdown-detail` 生成逐 case 质量报告。报告必须保留用户原文、完整回复、路由、工具链、followup、质量扣分点和耗时。
+
+多模型门禁：
+
+- 至少覆盖当前候选模型：`Pro/moonshotai/Kimi-K2.6`、`deepseek-ai/DeepSeek-V4-Flash`、`Pro/MiniMaxAI/MiniMax-M2.5`、`Pro/zai-org/GLM-5.1`。
+- 对 `model_provider_303_quality_readonly_cases.json` 和 `model_provider_303_open_quality_realistic_cases.json` 同时跑质量与延迟。
+- 多模型只用于评估效果和稳定性，不能把某个模型偶然通过当作系统路由正确的证据；系统必须记录 provider、model、首响、终响、tool trace 和 quality warnings。
+
+通过标准：
+
+| 门槛 | 标准 |
+| --- | --- |
+| 高副作用误执行 | 0 |
+| 只读误联动 | 0 |
+| 无 pending 误确认 | 0 |
+| 现有 strong case 退化为 fail | 0 |
+| 空回复 / ws error 未解释 | 0 |
+| 内部字段外露 | 0 |
+| effect/perf 与 open-quality | 不低于当前 3.0.3 `strong=all / fail=0` 基线 |
+| 80+ dialogue-derived | 必须显著优于当前 `strong=3 / fail=34 / needs_review=51` 污染基线；模型服务错误需单独归类，不计入回复质量缺陷 |
+| 延迟 | 先保证质量；稳定场景 p95 不应明显高于当前 3.0.3 基线，开放场景超过 warning 必须进入人工复核 |
+
+如果任一历史 regression 或 e2e 失败，不能进入主路径切换；只能继续 shadow 或 selective 接管。
+
+可执行门禁入口：
+
+```bash
+cd zhiyuan-agent
+
+# 默认 dry-run，输出 local/live/report/model 全量门禁清单，不调用模型。
+PYTHONPATH=. ./.venv/bin/python examples/dialog_quality_gate.py --markdown
+
+# 只执行本地防回退集合，不启动外部模型服务。
+PYTHONPATH=. ./.venv/bin/python examples/dialog_quality_gate.py --execute --mode local
+
+# Agent/Backend/LLM 服务可用后再执行真实 WebSocket 全量 e2e。
+PYTHONPATH=. ./.venv/bin/python examples/dialog_quality_gate.py --execute --mode live --mode report \
+  --agent-url ws://127.0.0.1:8000/gaotu-assistant-agent/plus/chat/1/bot/test/do \
+  --metrics-dir /private/tmp/zhiyuan-agent-dialog-quality-gate
+```
+
+`dialog_quality_gate.py` 当前固定覆盖：
+
+- 本地回归：semantic shadow、quality gate、runner/report、model provider benchmark、mainline case 目录、style、pending、preview/apply、ActionResolver、Plan 工具、fast route 仲裁、history 和 WS 兼容。
+- 历史 live case：3.0.1、3.0.2、3.0.3、mainline、full-journey、plan correctness、robust、advanced、lifecycle、enriched、score-tier、science、special、comprehensive 等所有 `dialog_regression_*_cases.json`。
+- 80+ 真实对话派生集：`dialog_regression_303_dialogue_derived_cases.json` 使用 `--clear-history-per-case`，避免旧 pending/历史上下文污染。
+- 多模型评估：`model_provider_benchmark_e2e_cases.json`、`model_provider_303_quality_readonly_cases.json`、`model_provider_303_open_quality_realistic_cases.json`。
+
+该脚本默认只生成计划；只有显式 `--execute` 才会运行。后续 SemanticIntentRouter 从 shadow 进入 selective 接管或主路径前，必须先通过这个门禁，并归档 live metrics 与逐 case markdown 质量报告。
+
+#### 14.7 Shadow 首轮实现状态
+
+已落地第一阶段 shadow 基础设施，当前默认关闭，不影响线上/本地默认对话链路：
+
+- 新增 `SemanticIntentFrame` / `SemanticRouterShadowResult`，结构化表达 `taskLayer / verb / topic / entities / sideEffect / confidence / requiredFacts / mustNotDo`。
+- 新增 `SemanticIntentRouter`，通过 `SEMANTIC_ROUTER_ENABLED=true` 开启；默认关闭时不会初始化 pydantic-ai router agent，也不会增加模型调用或延迟。
+- ChatService 在 request context 构建后、既有 direct guard / fast-route / full-agent 执行前运行 shadow；shadow 结果只写入 `semantic_router_shadow_event`、`routeDecision.semanticRouterShadow` 和本地历史中的内部观测消息。
+- 内部观测消息 `model_name=semantic-router-shadow` 不进入后续 runtime model history，避免污染主模型上下文；runner 只把它作为 `turnObservability.semanticRouterShadow` 读取。
+- `dialog_regression_runner.py` 已能在 metrics 中提取 shadow frame；`dialog_case_evaluation_report.py` 已能汇总 shadow 的 `status / taskLayer / topic / verb / sideEffect`。
+- 当前实现没有替换任何现有 fast-route、ActionResolver、pending、确认、工作台刷新或回复生成逻辑。
+
+配置：
+
+```env
+SEMANTIC_ROUTER_ENABLED=false
+SEMANTIC_ROUTER_TIMEOUT_SECONDS=8
+SEMANTIC_ROUTER_MAX_HISTORY_MESSAGES=6
+SEMANTIC_ROUTER_MAX_PROMPT_CHARS=6000
+```
+
+下一步必须在有效模型服务下开启 shadow 跑 3.0.3 open-quality、effect/perf、realistic-user 与 80+ dialogue-derived，生成 route confusion matrix。只有 shadow 路由在质量和安全边界上稳定优于当前主链路，才进入 selective 接管。

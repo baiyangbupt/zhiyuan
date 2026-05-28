@@ -1,4 +1,5 @@
 import importlib.util
+import asyncio
 import json
 import sqlite3
 from pathlib import Path
@@ -75,6 +76,50 @@ def test_apply_session_offset_rejects_non_numeric_session_id():
         runner._apply_session_offset(cases, 200000)
 
 
+def test_expand_case_payload_applies_defaults_without_losing_case_fields():
+    cases = runner._expand_case_payload(
+        {
+            "defaults": {
+                "flow": ["explore"],
+                "coverage": ["release_3_0_3", "dialogue_derived"],
+                "assertPlanStyle": True,
+                "promptDefaults": {
+                    "assertNotContains": ["payload"],
+                    "forbiddenPatterns": ["内部字段"],
+                    "qualityFocus": ["user_language"],
+                    "warnElapsedSeconds": 30,
+                },
+            },
+            "cases": [
+                {
+                    "name": "case-a",
+                    "sessionId": "17",
+                    "flow": ["plan"],
+                    "coverage": ["plan_status"],
+                    "prompts": [
+                        {
+                            "prompt": "这方案咋样",
+                            "assertContainsAny": ["方案"],
+                            "assertNotContains": ["草稿"],
+                            "qualityFocus": ["rich_decision_basis"],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    assert cases[0]["flow"] == ["explore", "plan"]
+    assert cases[0]["coverage"] == ["release_3_0_3", "dialogue_derived", "plan_status"]
+    assert cases[0]["assertPlanStyle"] is True
+    step = cases[0]["prompts"][0]
+    assert step["prompt"] == "这方案咋样"
+    assert step["assertNotContains"] == ["payload", "草稿"]
+    assert step["forbiddenPatterns"] == ["内部字段"]
+    assert step["qualityFocus"] == ["user_language", "rich_decision_basis"]
+    assert step["warnElapsedSeconds"] == 30
+
+
 def test_case_session_ids_deduplicates_in_order():
     cases = [
         {"name": "case-a", "sessionId": "17", "prompts": ["看看方案"]},
@@ -119,6 +164,46 @@ def test_clear_history_deletes_only_requested_sessions(tmp_path):
 
 def test_clear_history_missing_db_is_noop(tmp_path):
     assert runner._clear_history(tmp_path / "missing.db", ["17"]) == 0
+
+
+def test_run_cases_supports_per_case_history_clear(monkeypatch, tmp_path):
+    db_path = tmp_path / "history.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE chat_session_history (
+                session_id TEXT PRIMARY KEY,
+                history_json TEXT NOT NULL,
+                schema_version INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO chat_session_history(session_id, history_json, created_at, updated_at) VALUES (?, ?, ?, ?)",
+            ("17", "[]", "now", "now"),
+        )
+        conn.commit()
+
+    async def fake_ask_once(*args, **kwargs):
+        return ([{"type": "text", "content": "方案已经有了。"}], [], {"firstMessageMs": 1, "finalMessageMs": 1})
+
+    monkeypatch.setattr(runner, "_ask_once", fake_ask_once)
+
+    asyncio.run(
+        runner._run_cases(
+            "ws://test",
+            "user",
+            [{"name": "case-a", "sessionId": "17", "prompts": [{"prompt": "看看方案", "assertContains": ["方案"]}]}],
+            history_db=str(db_path),
+            clear_history_per_case=True,
+        )
+    )
+
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute("SELECT session_id FROM chat_session_history").fetchall()
+    assert rows == []
 
 
 def test_latest_turn_messages_returns_latest_matching_prompt():
@@ -244,6 +329,45 @@ def test_summarize_turn_observability_infers_readonly_closure_ack_route_from_mod
 
     assert observed["routingPath"] == "readonly_closure_ack"
     assert observed["toolCallCount"] == 0
+
+
+def test_summarize_turn_observability_extracts_semantic_router_shadow():
+    shadow = {
+        "status": "success",
+        "durationMs": 321,
+        "frame": {
+            "taskLayer": "explore",
+            "verb": "compare",
+            "topic": "major",
+            "sideEffect": "readonly",
+            "confidence": 0.91,
+        },
+    }
+    turn_messages = [
+        {"parts": [{"part_kind": "user-prompt", "content": "财管会计审计怎么排优先级"}]},
+        {
+            "model_name": "major-compare-fast-route",
+            "parts": [{"part_kind": "text", "content": "专业对比回复"}],
+        },
+        {
+            "model_name": "semantic-router-shadow",
+            "parts": [
+                {
+                    "part_kind": "text",
+                    "content": json.dumps(
+                        {"type": "semanticRouterShadow", "semanticRouterShadow": shadow},
+                        ensure_ascii=False,
+                    ),
+                }
+            ],
+        },
+    ]
+
+    observed = runner._summarize_turn_observability(turn_messages)
+
+    assert observed["routingPath"] == "major_compare_fast_route"
+    assert observed["semanticRouterShadow"]["status"] == "success"
+    assert observed["semanticRouterShadow"]["frame"]["taskLayer"] == "explore"
 
 
 def test_summarize_turn_observability_does_not_infer_route_from_plain_tool_name():

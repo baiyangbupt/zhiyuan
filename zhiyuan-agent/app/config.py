@@ -105,3 +105,18 @@ class HistoryConfig(BaseSettings):
     runtime_keep_pending: bool = True
     runtime_drop_tool_returns_over_chars: int = 3000
     runtime_summary_enabled: bool = False
+
+
+class SemanticRouterConfig(BaseSettings):
+    """Semantic intent router shadow configuration."""
+
+    model_config = {
+        "env_prefix": "SEMANTIC_ROUTER_",
+        "env_file": ".env",
+        "extra": "ignore",
+    }
+
+    enabled: bool = False
+    timeout_seconds: float = 8.0
+    max_history_messages: int = 6
+    max_prompt_chars: int = 6000

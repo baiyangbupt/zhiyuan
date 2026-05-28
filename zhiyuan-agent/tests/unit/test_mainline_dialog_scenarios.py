@@ -28,6 +28,7 @@ RELEASE_302_EFFECT_PERF_CASES_PATH = Path(__file__).resolve().parents[2] / "exam
 RELEASE_303_EFFECT_PERF_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_303_effect_perf_cases.json"
 RELEASE_303_OPEN_QUALITY_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_303_open_quality_cases.json"
 RELEASE_303_REALISTIC_USER_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_303_realistic_user_cases.json"
+RELEASE_303_DIALOGUE_DERIVED_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_303_dialogue_derived_cases.json"
 MODEL_PROVIDER_303_OPEN_REALISTIC_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "model_provider_303_open_quality_realistic_cases.json"
 
 
@@ -164,6 +165,12 @@ def _load_release_303_open_quality_cases() -> list[dict]:
 
 def _load_release_303_realistic_user_cases() -> list[dict]:
     return json.loads(RELEASE_303_REALISTIC_USER_CASES_PATH.read_text(encoding="utf-8"))
+
+
+def _load_release_303_dialogue_derived_cases() -> list[dict]:
+    from examples.dialog_regression_runner import _expand_case_payload
+
+    return _expand_case_payload(json.loads(RELEASE_303_DIALOGUE_DERIVED_CASES_PATH.read_text(encoding="utf-8")))
 
 
 def _load_model_provider_303_open_realistic_cases() -> list[dict]:
@@ -773,6 +780,70 @@ def test_release_303_realistic_user_cases_cover_lazy_colloquial_and_abbrev_input
     assert "新媒体和跨电呢" in prompts
     assert "会计审计可以 土木别要" in prompts
     assert "嗯可以" in prompts
+
+
+def test_release_303_dialogue_derived_cases_cover_80_plus_real_dialogue_shapes():
+    cases = _load_release_303_dialogue_derived_cases()
+
+    assert len(cases) >= 80
+    assert len({case["name"] for case in cases}) == len(cases)
+    coverage = {tag for case in cases for tag in case["coverage"]}
+    required_tags = {
+        "release_3_0_3",
+        "dialogue_derived",
+        "real_dialogue_source",
+        "realistic_user_input",
+        "score_profile",
+        "eligibility_constraints",
+        "major_preference",
+        "region_preference",
+        "career_direction",
+        "budget_tuition",
+        "plan_review_strategy",
+        "plan_operations",
+        "followup_guard",
+        "medical_check",
+        "special_plan",
+        "english_oral_test",
+        "major_compare",
+        "region_safety_tradeoff",
+        "civil_service",
+        "sino_foreign",
+        "plan_review",
+        "sort_ordered_plan",
+        "confirm_guard",
+    }
+    assert required_tags.issubset(coverage)
+
+    banned_terms = {"payload", "stage", "action_family", "volunteerId", "草稿"}
+    all_steps = [step for case in cases for step in case["prompts"]]
+    for case in cases:
+        assert case["assertPlanStyle"] is True
+        assert case["prompts"]
+        assert "dialogue_derived" in case["coverage"]
+        assert "real_dialogue_source" in case["coverage"]
+        assert set(case["flow"]).issubset({"explore", "intent", "plan", "review", "readonly", "confirm_guard"})
+        for step in case["prompts"]:
+            assert isinstance(step, dict)
+            assert step.get("prompt")
+            assert step.get("assertContains") or step.get("assertContainsAny")
+            assert step.get("expectedKeyPoints") or step.get("expectedKeyPointGroups")
+            assert step.get("forbiddenPatterns")
+            assert step.get("qualityFocus")
+            assert banned_terms.intersection(set(step.get("assertNotContains") or [])) == banned_terms
+            assert step.get("warnElapsedSeconds") or step.get("maxElapsedSeconds")
+
+    prompts = "\n".join(step["prompt"] for step in all_steps)
+    assert "一模二模差挺多" in prompts
+    assert "英语口试到底要不要报" in prompts
+    assert "色弱是不是医学化工都要避开" in prompts
+    assert "会计审计还行，土木别要" in prompts
+    assert "北京天津想去但别最后没学上" in prompts
+    assert "家里想让孩子以后考公" in prompts
+    assert "中外合作贵不贵" in prompts
+    assert "审查一下有没有明显坑" in prompts
+    assert "按录取率从低到高排下" in prompts
+    assert "嗯那就这样" in prompts
 
 
 def test_mainline_dialog_intent_preview_then_plan_status_does_not_reopen_candidate_workspace(tmp_path):

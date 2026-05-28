@@ -1,0 +1,167 @@
+"""LLM-backed semantic intent router.
+
+This module is intentionally shadow-only at this stage.  It should not mutate
+state, call planning tools, or generate user-facing replies.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import time
+from typing import Any
+
+from pydantic_ai import Agent
+
+from app.agent.context import RequestContext
+from app.config import SemanticRouterConfig
+from app.llm.client import LLMClient
+from app.models.conversation_phase import PendingConfirmation
+from app.models.semantic_router import SemanticIntentFrame, SemanticRouterShadowResult
+
+
+_INSTRUCTIONS = """\
+你是高考志愿规划系统的语义路由器，只输出结构化结果，不回答用户，不调用工具。
+
+目标：判断用户这一轮到底是在问信息探索、偏好/约束管理、方案查询/调整，还是普通收口。
+
+必须遵守：
+- 不要因为“是不是 / 看看 / 几个 / 怎么 / 影响 / 可以吗”这类泛化词直接判成方案查询。
+- 用户问“是不是坑 / 怎么排优先级 / 怎么选 / 要不要避开 / 会少啥选择 / 有什么要求”时，优先按 explore/policy/requirement/major/career 判断。
+- 用户明确要加入、删除、移动、排序、替换、补齐方案时，sideEffect=preview；除非输入明确是在确认上一轮 pending，不能 apply。
+- 用户表达长期偏好、可接受、排除、不要、别碰时，taskLayer=intent，sideEffect=preview。
+- 用户明确问“当前方案/候选里有没有某院校或专业”时，才是 plan query。
+- 输出 requiredFacts，说明后续回复至少要覆盖哪些事实，避免薄回复。
+"""
+
+
+class SemanticIntentRouter:
+    def __init__(self, llm_client: LLMClient, config: SemanticRouterConfig | None = None):
+        self.llm_client = llm_client
+        self.config = config or SemanticRouterConfig()
+        self.agent: Agent | None = None
+
+    def _agent(self) -> Agent:
+        if self.agent is None:
+            self.agent = Agent(
+                model=self.llm_client.model,
+                output_type=SemanticIntentFrame,
+                instructions=_INSTRUCTIONS,
+                tools=[],
+                model_settings=self.llm_client.model_settings,
+            )
+        return self.agent
+
+    async def route_shadow(
+        self,
+        user_prompt: str,
+        *,
+        request_context: RequestContext,
+        active_pending: PendingConfirmation | None = None,
+    ) -> SemanticRouterShadowResult:
+        if not self.config.enabled:
+            return SemanticRouterShadowResult(enabled=False, status="disabled")
+
+        started_at = time.monotonic()
+        prompt = self._build_prompt(
+            user_prompt,
+            request_context=request_context,
+            active_pending=active_pending,
+        )
+        try:
+            result = await asyncio.wait_for(
+                self._agent().run(prompt, model_settings={"temperature": 0}),
+                timeout=max(0.1, float(self.config.timeout_seconds)),
+            )
+            return SemanticRouterShadowResult(
+                enabled=True,
+                status="success",
+                frame=result.output,
+                durationMs=int((time.monotonic() - started_at) * 1000),
+            )
+        except asyncio.TimeoutError:
+            return SemanticRouterShadowResult(
+                enabled=True,
+                status="timeout",
+                durationMs=int((time.monotonic() - started_at) * 1000),
+                errorType="timeout",
+                errorMessage=f"semantic router timed out after {self.config.timeout_seconds}s",
+            )
+        except Exception as exc:
+            return SemanticRouterShadowResult(
+                enabled=True,
+                status="error",
+                durationMs=int((time.monotonic() - started_at) * 1000),
+                errorType=type(exc).__name__,
+                errorMessage=str(exc),
+            )
+
+    def _build_prompt(
+        self,
+        user_prompt: str,
+        *,
+        request_context: RequestContext,
+        active_pending: PendingConfirmation | None,
+    ) -> str:
+        payload = {
+            "userPrompt": str(user_prompt or ""),
+            "recentChat": self._recent_chat(request_context.chat_history),
+            "pending": self._pending_payload(active_pending),
+            "planningSummary": self._planning_summary_payload(request_context),
+            "scoreDetail": self._score_payload(request_context),
+        }
+        text = json.dumps(payload, ensure_ascii=False)
+        if len(text) > self.config.max_prompt_chars:
+            text = text[: self.config.max_prompt_chars] + "\n...（已截断）"
+        return "请根据以下上下文输出 SemanticIntentFrame：\n" + text
+
+    def _recent_chat(self, chat_history: list[dict] | None) -> list[dict[str, Any]]:
+        history = chat_history or []
+        recent = history[-max(0, int(self.config.max_history_messages)) :]
+        result: list[dict[str, Any]] = []
+        for item in recent:
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role") or "").strip()
+            content = str(item.get("content") or "").strip()
+            if role and content:
+                result.append({"role": role, "content": content[:800]})
+        return result
+
+    def _pending_payload(self, pending: PendingConfirmation | None) -> dict[str, Any] | None:
+        if pending is None:
+            return None
+        return {
+            "kind": pending.kind,
+            "actionFamily": pending.action_family,
+            "previewSummary": pending.preview_summary,
+        }
+
+    def _planning_summary_payload(self, request_context: RequestContext) -> dict[str, Any] | None:
+        summary = request_context.planning_summary
+        if summary is None:
+            return None
+        return {
+            "phase": summary.phase,
+            "version": summary.version,
+            "orderedTotal": summary.ordered_total,
+            "orderedTargetTotal": summary.ordered_target_total,
+            "tierCounts": summary.tier_counts,
+            "reviewWarnCount": summary.review_warn_count,
+            "reviewRiskCount": summary.review_risk_count,
+            "riskSummaries": summary.risk_summaries[:3],
+            "positiveRegions": summary.positive_regions[:5],
+            "positiveMajors": summary.positive_majors[:5],
+        }
+
+    def _score_payload(self, request_context: RequestContext) -> dict[str, Any] | None:
+        score = request_context.score_detail
+        if score is None:
+            return None
+        return {
+            "province": score.province,
+            "totalScore": score.total_score,
+            "subjects": score.subject_list,
+            "sex": score.sex,
+            "volunteerModel": score.volunteer_model,
+        }

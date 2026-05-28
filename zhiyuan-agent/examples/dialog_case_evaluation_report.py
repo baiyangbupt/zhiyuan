@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -227,6 +228,65 @@ _QUALITY_EXPECTATION_FIELDS = (
 )
 
 
+def _merge_unique_list(base: Any, override: Any) -> list[Any]:
+    result: list[Any] = []
+    for value in base or []:
+        if value not in result:
+            result.append(value)
+    for value in override or []:
+        if value not in result:
+            result.append(value)
+    return result
+
+
+def _merge_prompt_defaults(prompt_defaults: dict[str, Any], prompt: Any) -> dict[str, Any]:
+    if isinstance(prompt, str):
+        step = {"prompt": prompt}
+    elif isinstance(prompt, dict):
+        step = dict(prompt)
+    else:
+        step = {"prompt": str(prompt)}
+    merged = deepcopy(prompt_defaults)
+    merged.update(step)
+    for key in ("assertNotContains", "assertThinkingNotContains", "forbiddenPatterns", "qualityFocus"):
+        if key in prompt_defaults or key in step:
+            merged[key] = _merge_unique_list(prompt_defaults.get(key), step.get(key))
+    return merged
+
+
+def _expand_case_payload(data: Any) -> list[dict[str, Any]]:
+    if isinstance(data, list):
+        return data
+    if not isinstance(data, dict):
+        raise ValueError("cases file must be a JSON array or object with cases")
+    raw_cases = data.get("cases")
+    if not isinstance(raw_cases, list):
+        raise ValueError("cases file object must contain a cases array")
+    defaults = data.get("defaults") if isinstance(data.get("defaults"), dict) else {}
+    prompt_defaults = defaults.get("promptDefaults") if isinstance(defaults.get("promptDefaults"), dict) else {}
+    case_defaults = {key: deepcopy(value) for key, value in defaults.items() if key != "promptDefaults"}
+    cases: list[dict[str, Any]] = []
+    for raw_case in raw_cases:
+        if not isinstance(raw_case, dict):
+            raise ValueError("each case must be a JSON object")
+        merged = deepcopy(case_defaults)
+        merged.update(raw_case)
+        for key in ("flow", "coverage"):
+            if key in case_defaults or key in raw_case:
+                merged[key] = _merge_unique_list(case_defaults.get(key), raw_case.get(key))
+        raw_prompts = raw_case.get("prompts")
+        if raw_prompts is None and "prompt" in raw_case:
+            raw_prompts = [raw_case["prompt"]]
+        if raw_prompts is None:
+            raw_prompts = []
+        if not isinstance(raw_prompts, list):
+            raise ValueError(f"case {merged.get('name') or '<unnamed>'} prompts must be a JSON array")
+        merged.pop("prompt", None)
+        merged["prompts"] = [_merge_prompt_defaults(prompt_defaults, prompt) for prompt in raw_prompts]
+        cases.append(merged)
+    return cases
+
+
 def _load_json(path: str) -> Any:
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
@@ -341,7 +401,7 @@ def _load_case_definitions(path: str) -> dict[str, dict[str, Any]]:
     let it summarize scenario coverage and apply per-step latency budgets.
     """
     data = _load_json(path)
-    cases = data.get("cases") if isinstance(data, dict) else data
+    cases = _expand_case_payload(data) if isinstance(data, dict) and isinstance(data.get("defaults"), dict) else data.get("cases") if isinstance(data, dict) else data
     if not isinstance(cases, list):
         raise ValueError(f"expected case definition list in {path}")
 
@@ -440,6 +500,10 @@ def _extract_text(record: dict[str, Any]) -> str:
     return _normalize_text(record.get("responseText") or record.get("text") or record.get("reply") or "")
 
 
+def _extract_error_text(record: dict[str, Any]) -> str:
+    return _normalize_text(record.get("wsError") or record.get("error") or "")
+
+
 def _extract_thinking(record: dict[str, Any]) -> str:
     thinking = record.get("thinkingText") or record.get("thinking") or ""
     if isinstance(thinking, list):
@@ -458,6 +522,22 @@ def _contains_any(text: str, tokens: tuple[str, ...]) -> bool:
 def _turn_observability(record: dict[str, Any]) -> dict[str, Any]:
     value = record.get("turnObservability")
     return value if isinstance(value, dict) else {}
+
+
+def _extract_semantic_router_shadow(record: dict[str, Any]) -> dict[str, Any]:
+    direct = record.get("semanticRouterShadow")
+    if isinstance(direct, dict):
+        return direct
+    observability = _turn_observability(record)
+    value = observability.get("semanticRouterShadow")
+    if isinstance(value, dict):
+        return value
+    route_decision = record.get("routeDecision") or observability.get("routeDecision")
+    if isinstance(route_decision, dict):
+        value = route_decision.get("semanticRouterShadow")
+        if isinstance(value, dict):
+            return value
+    return {}
 
 
 def _extract_routing_path(record: dict[str, Any]) -> str | None:
@@ -697,6 +777,9 @@ def _quality_focus_warnings(record: dict[str, Any], text: str) -> list[str]:
 
 def _quality_violations(record: dict[str, Any], text: str) -> list[str]:
     violations: list[str] = []
+    error_text = _extract_error_text(record)
+    if error_text:
+        violations.append("ws_error:" + error_text)
     for field in ("assertionViolations", "contentViolations", "performanceViolations"):
         values = record.get(field) or []
         if isinstance(values, list):
@@ -816,6 +899,7 @@ def _route_score(record: dict[str, Any]) -> int:
 def _score_case(record: dict[str, Any]) -> dict[str, Any]:
     text = _extract_text(record)
     thinking = _extract_thinking(record)
+    error_text = _extract_error_text(record)
     coverage = _distribution_coverage(text)
     violations = _quality_violations(record, text)
     warnings = _evaluation_warnings(record, text)
@@ -830,11 +914,13 @@ def _score_case(record: dict[str, Any]) -> dict[str, Any]:
             "structure": 0,
             "route": _route_score(record),
             "distributionCoverage": coverage,
-            "qualityViolations": violations or ["empty_response"],
+            "qualityViolations": violations or (["ws_error:" + error_text] if error_text else ["empty_response"]),
             "evaluationWarnings": warnings,
             "routingPath": _extract_routing_path(record),
+            "semanticRouterShadow": _extract_semantic_router_shadow(record),
             "actionFamilies": _extract_action_families(record),
             "toolNames": _extract_tool_names(record),
+            "verdict": "fail",
         }
 
     score = {
@@ -913,6 +999,7 @@ def _score_case(record: dict[str, Any]) -> dict[str, Any]:
     scored["qualityViolations"] = violations
     scored["evaluationWarnings"] = warnings
     scored["routingPath"] = _extract_routing_path(record)
+    scored["semanticRouterShadow"] = _extract_semantic_router_shadow(record)
     scored["actionFamilies"] = _extract_action_families(record)
     scored["toolNames"] = _extract_tool_names(record)
     has_expected_keypoint_warning = any(
@@ -1239,6 +1326,11 @@ def _summarize_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
     warning_counts: dict[str, int] = {}
     distribution_counts: dict[str, int] = {}
     route_counts: dict[str, int] = {}
+    semantic_status_counts: dict[str, int] = {}
+    semantic_layer_counts: dict[str, int] = {}
+    semantic_topic_counts: dict[str, int] = {}
+    semantic_verb_counts: dict[str, int] = {}
+    semantic_side_effect_counts: dict[str, int] = {}
     action_counts: dict[str, int] = {}
     tool_counts: dict[str, int] = {}
 
@@ -1251,6 +1343,15 @@ def _summarize_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
         for value in score.get("distributionCoverage") or []:
             _increment(distribution_counts, value)
         _increment(route_counts, score.get("routingPath"))
+        shadow = score.get("semanticRouterShadow")
+        if isinstance(shadow, dict):
+            _increment(semantic_status_counts, shadow.get("status"))
+            frame = shadow.get("frame")
+            if isinstance(frame, dict):
+                _increment(semantic_layer_counts, frame.get("taskLayer"))
+                _increment(semantic_topic_counts, frame.get("topic"))
+                _increment(semantic_verb_counts, frame.get("verb"))
+                _increment(semantic_side_effect_counts, frame.get("sideEffect"))
         for value in score.get("actionFamilies") or []:
             _increment(action_counts, value)
         for value in score.get("toolNames") or []:
@@ -1267,6 +1368,13 @@ def _summarize_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "evaluationWarningsByType": warning_counts,
         "distributionCoverage": distribution_counts,
         "routeSummary": route_counts,
+        "semanticRouterSummary": {
+            "status": semantic_status_counts,
+            "taskLayer": semantic_layer_counts,
+            "topic": semantic_topic_counts,
+            "verb": semantic_verb_counts,
+            "sideEffect": semantic_side_effect_counts,
+        },
         "actionFamilySummary": action_counts,
         "toolSummary": tool_counts,
         "averageScores": dimensions,
@@ -1451,6 +1559,7 @@ def _render_markdown_summary(summary: dict[str, Any]) -> list[str]:
         f"- quality violations: {current_summary.get('qualityViolationsByType', {})}",
         f"- evaluation warnings: {current_summary.get('evaluationWarningsByType', {})}",
         f"- latency: {current_summary.get('latency', {})}",
+        f"- semantic router: {current_summary.get('semanticRouterSummary', {})}",
         f"- acceptance: {summary.get('acceptance', {})}",
         "",
         "## Scenario Summary",
@@ -1505,6 +1614,7 @@ def _render_case_detail(item: dict[str, Any]) -> list[str]:
         f"- evaluation warnings: {_format_list_for_markdown(score.get('evaluationWarnings') if isinstance(score, dict) else [])}",
         f"- distribution coverage: {_format_list_for_markdown(score.get('distributionCoverage') if isinstance(score, dict) else [])}",
         f"- routing/action/tool: {_normalize_text(score.get('routingPath') if isinstance(score, dict) else None) or '-'} / {_format_list_for_markdown(score.get('actionFamilies') if isinstance(score, dict) else [])} / {_format_list_for_markdown(score.get('toolNames') if isinstance(score, dict) else [])}",
+        f"- semantic router: {_format_list_for_markdown(score.get('semanticRouterShadow') if isinstance(score, dict) else {})}",
         "",
         "**用户输入**",
         "",

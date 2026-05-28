@@ -21,7 +21,7 @@ from app.agent.context import (
 )
 from app.models.conversation_phase import ConversationPhase, PendingConfirmation
 from app.agent.usage_tracker import UsageTracker
-from app.config import HistoryConfig
+from app.config import HistoryConfig, SemanticRouterConfig
 from app.data.history_store import ChatHistoryStore
 from app.data.message_utils import pydantic_ai_messages_to_dicts
 from app.domain.career_slots import to_career_label
@@ -39,6 +39,7 @@ from app.resolver.major_intent_fast_router import resolve_major_intent_fast_rout
 from app.resolver.plan_fast_router import resolve_plan_fast_route
 from app.resolver.plan_query_fast_router import resolve_plan_query_fast_route
 from app.resolver.region_safety_tradeoff_renderer import render_region_safety_tradeoff_reply
+from app.resolver.semantic_intent_router import SemanticIntentRouter
 from app.schemas.tool_inputs import MajorIntentPreviewInput
 from app.schemas.user_profile import UserProfile
 from app.schemas.ws import WSResponse
@@ -175,6 +176,56 @@ def _as_int(value: Any, default: int = 0) -> int:
 
 def _log_conversation_turn_event(**fields: Any) -> None:
     log_event("conversation_turn_event", **fields)
+
+
+def _attach_semantic_router_shadow(route_decision: dict[str, Any], shadow: Any | None) -> dict[str, Any]:
+    if shadow is None:
+        return route_decision
+    try:
+        payload = shadow.event_payload()
+    except Exception:
+        return route_decision
+    route_decision["semanticRouterShadow"] = payload
+    return route_decision
+
+
+def _semantic_router_shadow_message(shadow: Any | None) -> ModelResponse | None:
+    if shadow is None or getattr(shadow, "status", "") == "disabled":
+        return None
+    try:
+        content = json.dumps(
+            {
+                "type": "semanticRouterShadow",
+                "semanticRouterShadow": shadow.event_payload(),
+            },
+            ensure_ascii=False,
+        )
+    except Exception:
+        return None
+    return ModelResponse(parts=[TextPart(content=content)], model_name="semantic-router-shadow")
+
+
+def _append_semantic_router_shadow_message(messages: list[Any], shadow: Any | None) -> list[Any]:
+    shadow_message = _semantic_router_shadow_message(shadow)
+    if shadow_message is None:
+        return messages
+    return [*messages, shadow_message]
+
+
+def _is_semantic_router_shadow_message(message: Any) -> bool:
+    if not isinstance(message, ModelResponse):
+        return False
+    if str(getattr(message, "model_name", "") or "") == "semantic-router-shadow":
+        return True
+    for part in getattr(message, "parts", []) or []:
+        if isinstance(part, TextPart):
+            try:
+                data = json.loads(part.content)
+            except Exception:
+                continue
+            if isinstance(data, dict) and data.get("type") == "semanticRouterShadow":
+                return True
+    return False
 
 
 async def _safe_emit_progress(on_progress: ProgressCallback | None, hint: str) -> None:
@@ -413,7 +464,11 @@ def build_runtime_history(
     The persisted session history stays complete. This function only limits what
     is sent to the model and to text-history consumers in RequestContext.
     """
-    history = list(full_history or [])
+    history = [
+        message
+        for message in list(full_history or [])
+        if not _is_semantic_router_shadow_message(message)
+    ]
     cfg = config or HistoryConfig()
     max_messages = max(0, int(getattr(cfg, "runtime_max_messages", 24) or 0))
     has_pending = bool(pending_plan_action)
@@ -2375,6 +2430,8 @@ class ChatService:
         self.agent = ChatAgent(llm_client)
         self.history_store = history_store
         self.history_config = HistoryConfig()
+        self.semantic_router_config = SemanticRouterConfig()
+        self.semantic_router = SemanticIntentRouter(llm_client, self.semantic_router_config)
         self._usage_trackers: dict[str, UsageTracker] = {}
 
     # ── 公开接口：session 级 usage 查询 ───────────────────────────
@@ -2617,6 +2674,20 @@ class ChatService:
         active_pending_kind = str(getattr(active_pending, "kind", "") or "").strip()
         active_plan_payload_text = resolve_pending_plan_payload_text(request_context)
         turn_started_at = time.monotonic()
+        semantic_router_shadow = await self.semantic_router.route_shadow(
+            content,
+            request_context=request_context,
+            active_pending=active_pending,
+        )
+        if semantic_router_shadow.status != "disabled":
+            log_event(
+                "semantic_router_shadow_event",
+                sessionId=session_id,
+                userId=user_id,
+                prompt=content,
+                shadow=semantic_router_shadow.event_payload(),
+                totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
+            )
 
         if active_pending_kind == "plan_mutation" and _is_plan_action_confirmation(content):
             action_family = str(getattr(active_pending, "action_family", "") or "").strip()
@@ -2653,7 +2724,7 @@ class ChatService:
             ]
             try:
                 history_to_save = list(history or [])
-                history_to_save.extend(new_messages)
+                history_to_save.extend(_append_semantic_router_shadow_message(new_messages, semantic_router_shadow))
                 await self.history_store.save(session_id, history_to_save)
             except Exception:
                 logger.exception("Failed to save direct pending plan confirmation history: session_id=%s", session_id)
@@ -2662,13 +2733,13 @@ class ChatService:
                 userId=user_id,
                 scene="plan",
                 routingPath="direct_pending_plan_confirm",
-                routeDecision={
+                routeDecision=_attach_semantic_router_shadow({
                     "source": "direct_pending",
                     "matched": True,
                     "confidence": "high",
                     "route": "plan",
                     "reason": "plan_pending_confirmation",
-                },
+                }, semantic_router_shadow),
                 pendingType="plan",
                 actionFamily=action_family or result.get("action_family"),
                 resultKind=result.get("result_kind"),
@@ -2737,7 +2808,7 @@ class ChatService:
             ]
             try:
                 history_to_save = list(history or [])
-                history_to_save.extend(new_messages)
+                history_to_save.extend(_append_semantic_router_shadow_message(new_messages, semantic_router_shadow))
                 await self.history_store.save(session_id, history_to_save)
             except Exception:
                 logger.exception("Failed to save direct pending intent confirmation history: session_id=%s", session_id)
@@ -2747,13 +2818,13 @@ class ChatService:
                 userId=user_id,
                 scene="intent",
                 routingPath="direct_pending_intent_confirm",
-                routeDecision={
+                routeDecision=_attach_semantic_router_shadow({
                     "source": "direct_pending",
                     "matched": True,
                     "confidence": "high",
                     "route": "intent",
                     "reason": "intent_pending_confirmation",
-                },
+                }, semantic_router_shadow),
                 pendingType="intent",
                 actionFamily=None,
                 resultKind=None,
@@ -2789,7 +2860,7 @@ class ChatService:
                 ]
                 try:
                     history_to_save = list(history or [])
-                    history_to_save.extend(new_messages)
+                    history_to_save.extend(_append_semantic_router_shadow_message(new_messages, semantic_router_shadow))
                     await self.history_store.save(session_id, history_to_save)
                 except Exception:
                     logger.exception("Failed to save pending intent impact history: session_id=%s", session_id)
@@ -2798,13 +2869,13 @@ class ChatService:
                     userId=user_id,
                     scene="intent",
                     routingPath="pending_intent_impact_fast_route",
-                    routeDecision={
+                    routeDecision=_attach_semantic_router_shadow({
                         "source": "direct_pending",
                         "matched": True,
                         "confidence": "high",
                         "route": "intent",
                         "reason": "pending_intent_impact_question",
-                    },
+                    }, semantic_router_shadow),
                     pendingType="intent",
                     actionFamily="preview_intent_impact",
                     resultKind="intent_impact_preview",
@@ -2834,7 +2905,7 @@ class ChatService:
             ]
             try:
                 history_to_save = list(history or [])
-                history_to_save.extend(new_messages)
+                history_to_save.extend(_append_semantic_router_shadow_message(new_messages, semantic_router_shadow))
                 await self.history_store.save(session_id, history_to_save)
             except Exception:
                 logger.exception("Failed to save no-pending plan confirmation guard history: session_id=%s", session_id)
@@ -2843,13 +2914,13 @@ class ChatService:
                 userId=user_id,
                 scene="plan",
                 routingPath="plan_confirmation_guard_no_pending",
-                routeDecision={
+                routeDecision=_attach_semantic_router_shadow({
                     "source": "direct_guard",
                     "matched": True,
                     "confidence": "high",
                     "route": "plan",
                     "reason": "no_pending_confirmation_guard",
-                },
+                }, semantic_router_shadow),
                 pendingType=None,
                 actionFamily=None,
                 resultKind=None,
@@ -2871,7 +2942,7 @@ class ChatService:
             ]
             try:
                 history_to_save = list(history or [])
-                history_to_save.extend(new_messages)
+                history_to_save.extend(_append_semantic_router_shadow_message(new_messages, semantic_router_shadow))
                 await self.history_store.save(session_id, history_to_save)
             except Exception:
                 logger.exception("Failed to save readonly closure ack history: session_id=%s", session_id)
@@ -2880,13 +2951,13 @@ class ChatService:
                 userId=user_id,
                 scene="general",
                 routingPath="readonly_closure_ack",
-                routeDecision={
+                routeDecision=_attach_semantic_router_shadow({
                     "source": "direct_guard",
                     "matched": True,
                     "confidence": "high",
                     "route": "general",
                     "reason": "readonly_closure_ack",
-                },
+                }, semantic_router_shadow),
                 pendingType=None,
                 actionFamily=None,
                 resultKind="ack",
@@ -2922,7 +2993,10 @@ class ChatService:
                 "fast_route_arbitration_fallback_event",
                 sessionId=session_id,
                 userId=user_id,
-                routeDecision=fast_arbitration.route_decision(),
+                routeDecision=_attach_semantic_router_shadow(
+                    fast_arbitration.route_decision(),
+                    semantic_router_shadow,
+                ),
                 totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
                 )
 
@@ -2936,6 +3010,7 @@ class ChatService:
                 "reason": "region_safety_tradeoff_structured_analysis",
                 "arbitration": fast_arbitration.route_decision(),
             }
+            route_decision = _attach_semantic_router_shadow(route_decision, semantic_router_shadow)
             tool_call_id = "fast-analyze-region-safety-tradeoff"
             tool_started_at = time.monotonic()
             try:
@@ -2974,7 +3049,7 @@ class ChatService:
                     ]
                     try:
                         history_to_save = list(history or [])
-                        history_to_save.extend(new_messages)
+                        history_to_save.extend(_append_semantic_router_shadow_message(new_messages, semantic_router_shadow))
                         await self.history_store.save(session_id, history_to_save)
                     except Exception:
                         logger.exception("Failed to save region safety route history: session_id=%s", session_id)
@@ -3016,6 +3091,7 @@ class ChatService:
         if fast_decision is not None and fast_decision.matched:
             route_decision = fast_decision.route_decision()
             route_decision["arbitration"] = fast_arbitration.route_decision()
+            route_decision = _attach_semantic_router_shadow(route_decision, semantic_router_shadow)
             try:
                 shadow = action_resolver_shadow_from_plan_fast_decision(
                     text=content,
@@ -3126,7 +3202,7 @@ class ChatService:
                 ]
                 try:
                     history_to_save = list(history or [])
-                    history_to_save.extend(new_messages)
+                    history_to_save.extend(_append_semantic_router_shadow_message(new_messages, semantic_router_shadow))
                     await self.history_store.save(session_id, history_to_save)
                 except Exception:
                     logger.exception("Failed to save plan fast route history: session_id=%s", session_id)
@@ -3194,6 +3270,7 @@ class ChatService:
         if plan_query_decision is not None and plan_query_decision.matched:
             route_decision = plan_query_decision.route_decision()
             route_decision["arbitration"] = fast_arbitration.route_decision()
+            route_decision = _attach_semantic_router_shadow(route_decision, semantic_router_shadow)
             tool_call_id = "fast-query-volunteer-plan"
             tool_started_at = time.monotonic()
             tool_args = plan_query_decision.tool_args()
@@ -3232,7 +3309,7 @@ class ChatService:
                 ]
                 try:
                     history_to_save = list(history or [])
-                    history_to_save.extend(new_messages)
+                    history_to_save.extend(_append_semantic_router_shadow_message(new_messages, semantic_router_shadow))
                     await self.history_store.save(session_id, history_to_save)
                 except Exception:
                     logger.exception("Failed to save plan query fast route history: session_id=%s", session_id)
@@ -3279,6 +3356,7 @@ class ChatService:
         if major_intent_decision is not None and major_intent_decision.matched:
             route_decision = major_intent_decision.route_decision()
             route_decision["arbitration"] = fast_arbitration.route_decision()
+            route_decision = _attach_semantic_router_shadow(route_decision, semantic_router_shadow)
             tool_call_id = "fast-preview-major-intent"
             tool_started_at = time.monotonic()
             try:
@@ -3321,7 +3399,7 @@ class ChatService:
                 ]
                 try:
                     history_to_save = list(history or [])
-                    history_to_save.extend(new_messages)
+                    history_to_save.extend(_append_semantic_router_shadow_message(new_messages, semantic_router_shadow))
                     await self.history_store.save(session_id, history_to_save)
                 except Exception:
                     logger.exception("Failed to save major intent fast route history: session_id=%s", session_id)
@@ -3369,6 +3447,7 @@ class ChatService:
         if major_compare_decision is not None and major_compare_decision.matched:
             route_decision = major_compare_decision.route_decision()
             route_decision["arbitration"] = fast_arbitration.route_decision()
+            route_decision = _attach_semantic_router_shadow(route_decision, semantic_router_shadow)
             tool_call_id = "fast-compare-majors"
             tool_started_at = time.monotonic()
             try:
@@ -3439,7 +3518,7 @@ class ChatService:
                 ]
                 try:
                     history_to_save = list(history or [])
-                    history_to_save.extend(new_messages)
+                    history_to_save.extend(_append_semantic_router_shadow_message(new_messages, semantic_router_shadow))
                     await self.history_store.save(session_id, history_to_save)
                 except Exception:
                     logger.exception("Failed to save major compare fast route history: session_id=%s", session_id)
@@ -3501,6 +3580,7 @@ class ChatService:
         if career_direction_decision is not None and career_direction_decision.matched:
             route_decision = career_direction_decision.route_decision()
             route_decision["arbitration"] = fast_arbitration.route_decision()
+            route_decision = _attach_semantic_router_shadow(route_decision, semantic_router_shadow)
             tool_call_id = "fast-analyze-current-career-direction"
             tool_started_at = time.monotonic()
             try:
@@ -3537,7 +3617,7 @@ class ChatService:
                 ]
                 try:
                     history_to_save = list(history or [])
-                    history_to_save.extend(new_messages)
+                    history_to_save.extend(_append_semantic_router_shadow_message(new_messages, semantic_router_shadow))
                     await self.history_store.save(session_id, history_to_save)
                 except Exception:
                     logger.exception("Failed to save career direction fast route history: session_id=%s", session_id)
@@ -3654,9 +3734,9 @@ class ChatService:
         try:
             history_to_save = list(history or [])
             if history_to_save and new_messages:
-                history_to_save.extend(new_messages)
+                history_to_save.extend(_append_semantic_router_shadow_message(new_messages, semantic_router_shadow))
             elif new_messages:
-                history_to_save = list(new_messages)
+                history_to_save = _append_semantic_router_shadow_message(list(new_messages), semantic_router_shadow)
             else:
                 runtime_len = len(runtime_history.model_history or [])
                 inferred_new_messages = list(all_messages[runtime_len:]) if len(all_messages) >= runtime_len else []
@@ -3698,13 +3778,13 @@ class ChatService:
             userId=user_id,
             scene=scene,
             routingPath="full_agent",
-            routeDecision={
+            routeDecision=_attach_semantic_router_shadow({
                 "source": "full_agent",
                 "matched": True,
                 "confidence": "model",
                 "route": scene,
                 "fallbackReason": "no_direct_route",
-            },
+            }, semantic_router_shadow),
             pendingType=pending_type,
             actionFamily=action_family,
             modelProvider=_llm_config_value(self.llm_client, "provider"),

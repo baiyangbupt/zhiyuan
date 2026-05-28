@@ -40,6 +40,12 @@
 - 3.0.3 open-quality live 使用修正后 runner 复跑通过：`23/23` steps、`strong=23`、`qualityViolations={}`、`evaluationWarnings={}`，路由汇总中 `readonly_closure_ack=1` 与 `plan_confirmation_guard_no_pending=1` 已分开观测。
 - 3.0.3 effect/perf live 使用修正后 runner 复跑通过：`14/14` steps、`strong=14`、`qualityViolations={}`、`evaluationWarnings={}`；主链路动作、确认、审查、只读查询和意向确认均保持正确观测，方案状态类回复本轮最大耗时约 `8133ms`，作为后续性能观察点。
 - 3.0.3 回复质量人工复核补充“先质量后性能”结论：方案状态、审查、预算风险、专业对比、方案调整预览和只读收口可作为稳定基线；职业方向代表样本、意向影响无命中解释、边界提示去重和候选空结果替代建议列为后续质量优化候选。
+- 新增 `dialog_regression_303_dialogue_derived_cases.json` 真实对话派生评估集，基于 `dialogues/` 的真实沟通主题脱敏抽象为 88 个口语化场景，覆盖分数/画像、体检/专项、专业、地域、职业、预算、方案审查、方案操作和后续沟通；新增目录单测确保 80+ case 均带质量期望、禁用表达、耗时预算和覆盖标签。
+- `dialog_regression_runner.py` 和 `dialog_case_evaluation_report.py` 支持 `defaults + cases` case 文件结构，旧数组格式继续兼容；runner 新增 `--clear-history-per-case`，便于 80+ 场景复用真实 session 时逐 case 清理本地历史，避免 pending 或旧上下文污染评估。
+- 真实对话派生 88 case 已完成 WebSocket live 跑批并写入 3.0.3 文档：当前基线为 `strong=3 / fail=34 / needs_review=51`，中位耗时约 `2318ms`，p95 约 `67404ms`；暴露空正文、探索问题误入方案查询、资格/要求问题误入意向预览、旧 pending 污染和开放 Explore 慢请求等后续 P0/P1 优化项。
+- `dialog_case_evaluation_report.py` 修正空正文评分：无用户可见回复的 turn 直接计为 `fail`，避免 80+ 场景汇总漏算“快速返回但没有有效回答”的真实质量问题。
+- SemanticIntentRouter shadow 首轮落地：新增结构化 `SemanticIntentFrame` 与默认关闭的 `SEMANTIC_ROUTER_ENABLED` 开关；开启后仅记录 shadow 语义路由、耗时和结构化 frame，不改变用户回复、工具执行或工作台联动。runner/report 已能从本地历史提取 `semanticRouterShadow` 并汇总 taskLayer/topic/verb/sideEffect，供后续 route confusion matrix 和全量防回退门禁使用。
+- 新增 `examples/dialog_quality_gate.py` 作为 3.0.3 Agent 对话质量全量门禁入口：默认 dry-run 生成 local/live/report/model 清单，显式 `--execute` 才运行；固定覆盖 3.0.1/3.0.2/3.0.3、历史 `dialog_regression_*`、80+ dialogue-derived、逐 case markdown 报告和多模型 benchmark，避免后续语义路由接管前遗漏 regression/e2e。
 - `conversation_turn_event` 补充 3.0.3 观测字段：`routeDecision`、LLM request/token、toolCallCount 和结构化 toolCalls 摘要；full-agent 工具调用会记录 actionFamily、stage、resultKind、applied/messageCode，direct pending/guard 路径明确记录 `llmRequests=0`。
 - `dialog_regression_runner.py` 的 metrics 输出新增 `turnObservability`，从本地 SQLite 历史解析每轮 tool call、actionFamily、stage、resultKind 和 applied 状态，便于在 WebSocket e2e 中定位慢点和误路由。
 - 新增 Plan 高置信快路径 `plan_fast_route`：在已有 planning summary 时，方案状态、数字志愿/专业组移动、数字删除、指定维度排序和显式审查会跳过主模型自由试工具，直接进入 `_plan_next_action_model -> execute_plan_action`；高副作用动作仍只生成 preview，确认后再 apply。
