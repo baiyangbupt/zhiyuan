@@ -162,10 +162,14 @@ class SemanticIntentRouter:
             active_pending=active_pending,
         )
         try:
-            result = await asyncio.wait_for(
-                self._agent().run(prompt, model_settings=self._router_model_settings()),
-                timeout=max(0.1, float(self.config.timeout_seconds)),
-            )
+            task = self._agent().run(prompt, model_settings=self._router_model_settings())
+            if float(self.config.timeout_seconds) > 0:
+                result = await asyncio.wait_for(
+                    task,
+                    timeout=max(0.1, float(self.config.timeout_seconds)),
+                )
+            else:
+                result = await task
             frame = _parse_semantic_frame(result.output)
             return SemanticRouterShadowResult(
                 enabled=True,

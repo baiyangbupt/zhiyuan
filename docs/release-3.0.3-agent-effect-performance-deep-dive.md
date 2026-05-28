@@ -1658,8 +1658,11 @@ L3 full_agent fallback
   - 未命中稳定路径、开放 Explore、复杂混合语义继续回完整 Agent
 ```
 
-这次没有新增 score/profile 的关键词 fast route。原因是该类真实表达高度发散，靠“成绩波动/压线/数学忽高忽低”等词补丁只能解决个别句子，并会继续制造漏判和误判。当前改为：
+这次没有新增 score/profile 的关键词 fast route。原因是该类真实表达高度发散，靠“成绩波动/压线/数学忽高忽低”等词补丁只能解决个别句子，并会继续制造漏判和误判。当前 3.0.3 的范围收缩为：
 
+- 只把“高置信、固定类型、回复质量稳定且能明显节省延迟”的场景作为快捷入口，例如明确方案查询、明确方案排序/移动/删除/加入、明确专业对比、明确意向确认、明确职业方向只读分析。
+- 其他非高置信场景，包括开放 Explore、弱承接、闲聊、信息不足、跨领域混合表达，继续交给原 Agent 自行判断、调用工具和组织回复。
+- 三类场景边界作为后续设计理解保留：明确直连 tool/skill、领域内需要 skill 多级编排、与当前工具无关的闲聊承接。但本版本不把它实现成新的运行时 schema 或接管路由，避免扩大覆盖范围后引入误路由。
 - `dialog_case_evaluation_report.py` 支持 `expectedSemanticFrame`，并允许字段有多个合理取值，例如 `verb=analyze|explain|recommend`。
 - 若 semantic shadow 成功返回但 frame 与期望不符，报告计入 `semantic_frame_mismatch`，用于判断语义路由是否可靠。
 - 若 semantic shadow 未启用、排队、超时或报错，只记 `semantic_frame_unverified:*` warning，不把用户可见回复误判为失败。
@@ -1693,11 +1696,13 @@ L3 full_agent fallback
 - 修正 semantic prompt 后，同一 score/profile 5 条复跑：4 条成功全部 match，1 条 timeout；成功耗时约 `3.3s-6.0s`。
 - 混合 20 条 dialogue-derived probe：初评 `comparableTotal=14 / match=10 / mismatch=4 / timeout=6`。其中 4 个 mismatch 复盘后主要是评估口径过窄：专项/体检/视力类允许 `policy/query`，文史政地就业面允许 `career`。
 - 修正 coverage 期望优先级后，用同一份 20 条 probe 输出重评估：`comparableTotal=14 / match=14 / mismatch=0 / timeout=6`，`matchRate=1.0`。
+- 按“先不设置超时，只记录效果和返回延迟”的口径，将 `timeout_seconds=0` 作为无超时 probe 模式：同一 20 条混合样例完整返回后为 `comparableTotal=20 / match=20 / mismatch=0 / unverified=0`，`matchRate=1.0`；延迟 `median=9123ms / p95=32206ms / max=62839ms`。
+- 百家平台 `deepseek-v4-pro` 非思考模式无超时 20 条混合样例结果：`comparableTotal=19 / match=16 / mismatch=3 / unverified:error=1`，`matchRate=0.8421`；延迟 `median=9970ms / p95=13708ms / max=13912ms`。3 个 mismatch 主要暴露“单句可被多种领域承接”的评估边界，例如英语优势+总分不稳可被判为 `major` 或 `score`，涨分是否留冲空间可被判为 `plan` 或 `score`；因此 3.0.3 不扩大接管范围，只让高置信固定类型走快捷入口，其他继续回原 Agent。
 
 当前结论：
 
 - score/profile 的语义边界已明显改善，但样本仍小，不能据此接管主链路。
-- DeepSeek V4 Flash Non-think 作为 semantic router 仍有较明显 timeout，20 条里 6 条超过 `10s`；后续要继续比较更轻/更稳的路由模型，或做 selective、短超时、失败 fallback。
+- 不设超时后，DeepSeek V4 Flash Non-think 在 20 条混合样例上的分类效果可用，但真实延迟长尾严重，最长超过 `60s`；后续要继续比较更轻/更稳的路由模型，或做 selective、失败 fallback，不能全量阻塞接管。
 - 当前 L2 继续保持 shadow/evaluation；真正可接管前，至少需要覆盖 88 条 dialogue-derived、effect/perf、open-quality 和多模型场景，并同时满足分类准确率与超时率门槛。
 
 ## 11. 待确认决策

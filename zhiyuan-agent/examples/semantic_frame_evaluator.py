@@ -147,6 +147,54 @@ def _examples(rows: list[dict[str, Any]], *, status_prefix: str, limit: int) -> 
     return result
 
 
+def _percentile(values: list[int], percentile: float) -> int | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+    position = (len(ordered) - 1) * percentile
+    lower = int(position)
+    upper = min(lower + 1, len(ordered) - 1)
+    weight = position - lower
+    return int(round(ordered[lower] * (1 - weight) + ordered[upper] * weight))
+
+
+def _latency_summary(values: list[int]) -> dict[str, int | None]:
+    return {
+        "count": len(values),
+        "medianMs": _percentile(values, 0.5),
+        "p95Ms": _percentile(values, 0.95),
+        "maxMs": max(values) if values else None,
+    }
+
+
+def _duration_ms(row: dict[str, Any]) -> int | None:
+    shadow = row.get("semanticRouterShadow")
+    if not isinstance(shadow, dict):
+        return None
+    value = shadow.get("durationMs")
+    return value if isinstance(value, int) else None
+
+
+def _latency_breakdown(rows: list[dict[str, Any]]) -> dict[str, dict[str, int | None]]:
+    all_values: list[int] = []
+    by_status: dict[str, list[int]] = {}
+    for row in rows:
+        value = _duration_ms(row)
+        if value is None:
+            continue
+        all_values.append(value)
+        by_status.setdefault(_semantic_status(row), []).append(value)
+    return {
+        "all": _latency_summary(all_values),
+        "byStatus": {
+            status: _latency_summary(values)
+            for status, values in sorted(by_status.items())
+        },
+    }
+
+
 def build_report(
     *,
     case_definition_paths: list[str],
@@ -167,6 +215,7 @@ def build_report(
         "comparableTotal": comparable,
         "matchRate": round(matched / comparable, 4) if comparable else None,
         "status": status_counts,
+        "latency": _latency_breakdown(rows),
         "expectedFrameDistribution": _expected_frame_distribution(rows),
         "byFlow": _group_summary(rows, "flow"),
         "byCoverage": _group_summary(rows, "coverage"),

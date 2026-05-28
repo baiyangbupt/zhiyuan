@@ -143,6 +143,7 @@ async def run_probe(
             "limit": limit,
             "coverage": coverage or [],
             "timeoutSeconds": timeout_seconds,
+            "timeoutMode": "disabled" if timeout_seconds <= 0 else "bounded",
             "modelName": model_name or "main-llm",
         },
         "records": records,
@@ -165,7 +166,7 @@ def main() -> None:
     parser.add_argument("--cases", required=True, help="case definition JSON")
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--coverage", action="append", default=[], help="only include cases with this coverage tag; can repeat")
-    parser.add_argument("--timeout-seconds", type=float, default=10.0)
+    parser.add_argument("--timeout-seconds", type=float, default=10.0, help="set <= 0 to disable timeout and record actual latency")
     parser.add_argument("--model-name", default="")
     parser.add_argument("--base-url", default="")
     parser.add_argument("--api-key", default="")

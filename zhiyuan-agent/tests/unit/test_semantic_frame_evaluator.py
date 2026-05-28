@@ -88,6 +88,7 @@ def test_evaluator_counts_match_and_mismatch_from_runner_output(tmp_path):
                         "turnObservability": {
                             "semanticRouterShadow": {
                                 "status": "success",
+                                "durationMs": 1200,
                                 "frame": {
                                     "taskLayer": "explore",
                                     "topic": "score",
@@ -105,6 +106,7 @@ def test_evaluator_counts_match_and_mismatch_from_runner_output(tmp_path):
                         "turnObservability": {
                             "semanticRouterShadow": {
                                 "status": "success",
+                                "durationMs": 2400,
                                 "frame": {
                                     "taskLayer": "explore",
                                     "topic": "major",
@@ -130,6 +132,9 @@ def test_evaluator_counts_match_and_mismatch_from_runner_output(tmp_path):
     assert payload["status"] == {"mismatch": 1, "match": 1}
     assert payload["comparableTotal"] == 2
     assert payload["matchRate"] == 0.5
+    assert payload["latency"]["all"]["medianMs"] == 1800
+    assert payload["latency"]["byStatus"]["match"]["maxMs"] == 1200
+    assert payload["latency"]["byStatus"]["mismatch"]["maxMs"] == 2400
     assert payload["mismatchExamples"][0]["recordKey"] == "intent-case#1"
     assert "taskLayer" in ",".join(payload["mismatchExamples"][0]["mismatches"])
 

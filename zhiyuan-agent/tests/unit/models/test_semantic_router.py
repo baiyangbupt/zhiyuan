@@ -349,3 +349,50 @@ async def test_semantic_router_shadow_records_prompt_chars(mocker):
     assert result.status == "success"
     assert result.promptChars > 0
     assert result.event_payload()["promptChars"] == result.promptChars
+
+
+@pytest.mark.asyncio
+async def test_semantic_router_can_run_without_timeout(mocker):
+    class _Client:
+        model = "main-model-instance"
+        model_settings = {}
+        config = type(
+            "Config",
+            (),
+            {
+                "provider": "openai_compatible",
+                "model_name": "main-model",
+                "api_key": "sk-main",
+                "base_url": "https://llm.example.com/v1",
+            },
+        )()
+
+    router = SemanticIntentRouter(
+        _Client(),
+        SemanticRouterConfig(_env_file=None, enabled=True, timeout_seconds=0),
+    )
+
+    class _Agent:
+        async def run(self, prompt, model_settings=None):
+            return SimpleNamespace(
+                output=json.dumps(
+                    {
+                        "taskLayer": "explore",
+                        "verb": "explain",
+                        "topic": "score",
+                        "sideEffect": "readonly",
+                    }
+                )
+            )
+
+    wait_for = mocker.patch("app.resolver.semantic_intent_router.asyncio.wait_for")
+    mocker.patch.object(router, "_agent", return_value=_Agent())
+
+    result = await router.route_shadow(
+        "成绩波动咋看",
+        request_context=RequestContext(userid="u1", sessionid="s1"),
+        active_pending=None,
+    )
+
+    assert result.status == "success"
+    wait_for.assert_not_called()

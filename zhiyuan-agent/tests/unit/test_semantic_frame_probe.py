@@ -105,6 +105,31 @@ async def test_run_probe_outputs_runner_compatible_records(tmp_path, monkeypatch
     assert record["turnObservability"]["semanticRouterShadow"]["status"] == "success"
 
 
+@pytest.mark.asyncio
+async def test_run_probe_marks_disabled_timeout_mode(tmp_path, monkeypatch):
+    case_file = tmp_path / "cases.json"
+    _write_case_file(case_file)
+
+    class _Shadow:
+        def event_payload(self):
+            return {"status": "success", "durationMs": 123}
+
+    class _Router:
+        async def route_shadow(self, prompt, *, request_context, active_pending):
+            return _Shadow()
+
+    monkeypatch.setattr(probe, "_build_router", lambda **kwargs: _Router())
+
+    payload = await probe.run_probe(
+        cases_path=str(case_file),
+        limit=1,
+        timeout_seconds=0,
+    )
+
+    assert payload["probe"]["timeoutSeconds"] == 0
+    assert payload["probe"]["timeoutMode"] == "disabled"
+
+
 def test_parse_bool_accepts_explicit_values():
     assert probe._parse_bool("true") is True
     assert probe._parse_bool("0") is False
