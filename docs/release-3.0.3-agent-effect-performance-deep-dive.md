@@ -1663,6 +1663,15 @@ L3 full_agent fallback
 - 只把“高置信、固定类型、回复质量稳定且能明显节省延迟”的场景作为快捷入口，例如明确方案查询、明确方案排序/移动/删除/加入、明确专业对比、明确意向确认、明确职业方向只读分析。
 - 其他非高置信场景，包括开放 Explore、弱承接、闲聊、信息不足、跨领域混合表达，继续交给原 Agent 自行判断、调用工具和组织回复。
 - 三类场景边界作为后续设计理解保留：明确直连 tool/skill、领域内需要 skill 多级编排、与当前工具无关的闲聊承接。但本版本不把它实现成新的运行时 schema 或接管路由，避免扩大覆盖范围后引入误路由。
+- `fast_route_arbitrator` 增加 `fixedScenario` 白名单，只有以下细分场景可以作为快捷入口；matched 但不在白名单的候选会被挡回 full Agent：
+  - `plan.status_overview_readonly`、`plan.safety_status_readonly`、`plan.risk_status_readonly`、`plan.explicit_review_readonly`。
+  - `plan.explicit_sort_preview`、`plan.numeric_*_move/remove_preview`、`plan.named_*_move/remove/add_preview`。
+  - `plan.review_issue_adjustment_preview`、`plan.review_issue_compensation_preview`、`plan.colloquial_adjustment_preview`。
+  - `plan_query.plan/candidate/plan_then_candidate_local_lookup_readonly`。
+  - `major_compare.exact_two_level3_readonly`、`major_compare.exact_three_level3_readonly`。
+  - `intent.catalog_major_preference/constraint/mixed_preview`。
+  - `career_direction.local_taxonomy_readonly_analysis`、`region_safety.structured_tradeoff_readonly`。
+- 明确不作为固定入口的例子：`物理不太好但选了物化地，计算机还现实吗` 这类专业适配/分数画像混合问法不走专业对比；`英语还行但总分不稳，专业上能不能利用一下` 这类开放策略问法不按 topic=major 直接接管。
 - `dialog_case_evaluation_report.py` 支持 `expectedSemanticFrame`，并允许字段有多个合理取值，例如 `verb=analyze|explain|recommend`。
 - 若 semantic shadow 成功返回但 frame 与期望不符，报告计入 `semantic_frame_mismatch`，用于判断语义路由是否可靠。
 - 若 semantic shadow 未启用、排队、超时或报错，只记 `semantic_frame_unverified:*` warning，不把用户可见回复误判为失败。

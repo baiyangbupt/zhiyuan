@@ -61,8 +61,10 @@ def test_arbitrator_allows_high_confidence_plan_status_and_mutation_preview():
 
     assert status_result.selected_path == "plan_fast_route"
     assert status_result.selected.action_family == "query_state"
+    assert status_result.selected.fixed_scenario == "plan.status_overview_readonly"
     assert move_result.selected_path == "plan_fast_route"
     assert move_result.selected.action_family == "move_unit"
+    assert move_result.selected.fixed_scenario == "plan.numeric_volunteer_move_preview"
     assert move_result.selected.side_effect == "preview_confirmation"
 
 
@@ -79,8 +81,10 @@ def test_arbitrator_records_all_candidate_metadata_for_observability():
     decision = result.route_decision()
     assert decision["qualityFirst"] is True
     assert decision["selectedPath"] == "plan_query_fast_route"
+    assert decision["selectedFixedScenario"] == "plan_query.plan_then_candidate_local_lookup_readonly"
     assert decision["candidates"][0]["eligible"] is True
     assert decision["candidates"][0]["quality"] == "high"
+    assert decision["candidates"][0]["fixedScenario"] == "plan_query.plan_then_candidate_local_lookup_readonly"
     assert decision["semanticArbitrationNeeded"] is False
     assert decision["semanticArbitrationReason"] is None
 
@@ -112,7 +116,7 @@ def test_arbitrator_marks_low_confidence_candidate_for_semantic_arbitration_shad
         "这类问题先别直接按方案概览回答",
         plan_fast_decision=SimpleNamespace(
             matched=True,
-            reason="manual_low_quality_case",
+            reason="plan_status_query",
             confidence="medium",
             action_family="query_state",
         ),
@@ -138,3 +142,33 @@ def test_arbitrator_does_not_mark_structured_region_safety_fallback_for_shadow()
     decision = result.route_decision()
     assert decision["selectedPath"] == "region_safety_tradeoff_route"
     assert decision["semanticArbitrationNeeded"] is False
+
+
+def test_arbitrator_blocks_matched_candidate_outside_fixed_scenario_whitelist():
+    result = arbitrate_fast_route_candidates(
+        "开放问题不该直接进固定入口",
+        plan_fast_decision=SimpleNamespace(
+            matched=True,
+            reason="manual_experimental_case",
+            confidence="high",
+            action_family="query_state",
+        ),
+    )
+
+    assert result.selected_path is None
+    assert result.fallback_reason == "quality_gate_blocked_fast_route"
+    assert result.candidates[0].blockers == ["not_high_confidence_fixed_scenario"]
+
+
+def test_arbitrator_does_not_route_professional_fit_question_as_major_compare():
+    result = _arbitrate("物理不太好但选了物化地，计算机还现实吗")
+
+    assert result.selected_path is None
+    assert result.fallback_reason == "no_fast_route_candidate"
+
+
+def test_arbitrator_keeps_exact_major_compare_as_fixed_readonly_scenario():
+    result = _arbitrate("法学和财政学哪个更适合普通家庭女生，先只分析不要记偏好")
+
+    assert result.selected_path == "major_compare_fast_route"
+    assert result.selected.fixed_scenario == "major_compare.exact_two_level3_readonly"

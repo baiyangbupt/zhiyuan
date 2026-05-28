@@ -89,6 +89,7 @@ class FastRouteCandidate:
     decision: Any
     scene: str
     action_family: str
+    fixed_scenario: str = ""
     reason: str = ""
     confidence: str = ""
     side_effect: str = "readonly"
@@ -105,6 +106,7 @@ class FastRouteCandidate:
             "path": self.path,
             "scene": self.scene,
             "actionFamily": self.action_family,
+            "fixedScenario": self.fixed_scenario,
             "reason": self.reason,
             "confidence": self.confidence,
             "sideEffect": self.side_effect,
@@ -139,6 +141,7 @@ class FastRouteArbitrationResult:
         return {
             "source": "fast_route_arbitrator",
             "selectedPath": self.selected_path,
+            "selectedFixedScenario": self.selected.fixed_scenario if self.selected is not None else None,
             "fallbackReason": None if self.selected is not None else self.fallback_reason,
             "qualityFirst": True,
             "candidates": [candidate.as_dict() for candidate in self.candidates],
@@ -250,6 +253,82 @@ def _plan_quality_blockers(text: str, decision: Any) -> list[str]:
     return []
 
 
+def _plan_fixed_scenario(reason: str, action_family: str) -> str:
+    by_reason = {
+        "numeric_ordered_unit_move": "plan.numeric_ordered_unit_move_preview",
+        "numeric_volunteer_move": "plan.numeric_volunteer_move_preview",
+        "numeric_ordered_unit_remove": "plan.numeric_ordered_unit_remove_preview",
+        "numeric_volunteer_remove": "plan.numeric_volunteer_remove_preview",
+        "named_volunteer_move": "plan.named_volunteer_move_preview",
+        "named_volunteer_remove": "plan.named_volunteer_remove_preview",
+        "named_candidate_add": "plan.named_candidate_add_preview",
+        "explicit_sort_dimension": "plan.explicit_sort_preview",
+        "plan_safety_status_query": "plan.safety_status_readonly",
+        "plan_risk_status_query": "plan.risk_status_readonly",
+        "colloquial_adjustment_analysis": "plan.colloquial_adjustment_preview",
+        "review_followup_adjustment_preview": "plan.review_issue_adjustment_preview",
+        "review_followup_compensation_preview": "plan.review_issue_compensation_preview",
+        "explicit_plan_review": "plan.explicit_review_readonly",
+        "plan_status_query": "plan.status_overview_readonly",
+    }
+    if reason in by_reason:
+        return by_reason[reason]
+    if action_family in _PLAN_PREVIEW_ACTIONS:
+        return ""
+    if action_family in _PLAN_READONLY_ACTIONS:
+        return ""
+    return ""
+
+
+def _plan_query_fixed_scenario(decision: Any, reason: str) -> str:
+    if reason != "readonly_plan_candidate_local_query":
+        return ""
+    scope = str(_decision_attr(decision, "scope", "") or "plan_then_candidate")
+    if scope not in {"plan", "candidate", "plan_then_candidate"}:
+        scope = "plan_then_candidate"
+    return f"plan_query.{scope}_local_lookup_readonly"
+
+
+def _major_intent_fixed_scenario(decision: Any, reason: str) -> str:
+    if reason != "catalog_major_intent":
+        return ""
+    intents = _decision_attr(decision, "major_intents", {}) or {}
+    keys = set(intents.keys()) if isinstance(intents, dict) else set()
+    has_negative = any(str(key).startswith("negative_") for key in keys)
+    has_positive = any(not str(key).startswith("negative_") for key in keys)
+    if has_positive and has_negative:
+        return "intent.catalog_major_mixed_preview"
+    if has_negative:
+        return "intent.catalog_major_constraint_preview"
+    return "intent.catalog_major_preference_preview"
+
+
+def _fixed_scenario_for_candidate(
+    *,
+    path: FastRoutePath,
+    decision: Any,
+    action_family: str,
+    reason: str,
+) -> str:
+    if path == "plan_fast_route":
+        return _plan_fixed_scenario(reason, action_family)
+    if path == "plan_query_fast_route":
+        return _plan_query_fixed_scenario(decision, reason)
+    if path == "major_intent_fast_route":
+        return _major_intent_fixed_scenario(decision, reason)
+    if path == "major_compare_fast_route":
+        if reason == "exact_level3_major_compare":
+            return "major_compare.exact_two_level3_readonly"
+        if reason == "exact_three_level3_major_compare":
+            return "major_compare.exact_three_level3_readonly"
+        return ""
+    if path == "career_direction_fast_route":
+        return "career_direction.local_taxonomy_readonly_analysis" if reason == "local_career_direction_readonly_analysis" else ""
+    if path == "region_safety_tradeoff_route":
+        return "region_safety.structured_tradeoff_readonly" if reason == "region_safety_tradeoff_structured_analysis" else ""
+    return ""
+
+
 def _candidate(
     *,
     path: FastRoutePath,
@@ -261,10 +340,18 @@ def _candidate(
 ) -> FastRouteCandidate:
     reason = str(_decision_attr(decision, "reason", "") or "")
     confidence = str(_decision_attr(decision, "confidence", "") or "high")
+    fixed_scenario = _fixed_scenario_for_candidate(
+        path=path,
+        decision=decision,
+        action_family=action_family,
+        reason=reason,
+    )
     blockers: list[str] = []
     quality = "high"
     if path == "plan_fast_route":
         blockers.extend(_plan_quality_blockers(text, decision))
+    if not fixed_scenario:
+        blockers.append("not_high_confidence_fixed_scenario")
     if blockers:
         quality = "insufficient"
     if path == "region_safety_tradeoff_route":
@@ -281,6 +368,7 @@ def _candidate(
         decision=decision,
         scene=scene,
         action_family=action_family,
+        fixed_scenario=fixed_scenario,
         reason=reason,
         confidence=confidence,
         side_effect=side_effect,
@@ -319,7 +407,13 @@ def arbitrate_fast_route_candidates(
             candidates.append(
                 _candidate(
                     path="region_safety_tradeoff_route",
-                    decision=plan_fast_decision,
+                    decision=SimpleNamespace(
+                        matched=True,
+                        reason="region_safety_tradeoff_structured_analysis",
+                        confidence="high",
+                        action_family="analyze_region_safety_tradeoff",
+                        user_goal=prompt,
+                    ),
                     scene="explore",
                     action_family="analyze_region_safety_tradeoff",
                     side_effect="readonly",
