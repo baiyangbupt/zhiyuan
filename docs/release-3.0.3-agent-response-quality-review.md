@@ -1595,3 +1595,33 @@ SEMANTIC_ROUTER_MAX_PROMPT_CHARS=6000
 - 同一模型在 router prompt 下 `8s` 与 `20s` 均可能超时，因此 shadow 不应阻塞主回复；后续需要单独做 router 模型候选评估，优先找低延迟、稳定 JSON 输出的模型。
 
 下一步必须在有效模型服务下开启 shadow 跑 3.0.3 open-quality、effect/perf、realistic-user 与 80+ dialogue-derived，生成 route confusion matrix。只有 shadow 路由在质量和安全边界上稳定优于当前主链路，才进入 selective 接管。
+
+#### 14.8 只读分析后泛确认误消费旧意向缓存保护
+
+真实 WebSocket 复跑中发现一个边界问题：后端 `planEditCache` 中仍保留旧的待确认意向时，如果用户上一轮刚做完职业方向、专业对比或方案局部查询这类只读分析，下一句只说“确认”，系统可能把这句泛确认解释为确认旧意向，而不是承接上一轮只读分析。
+
+问题本质不是大模型回复质量，而是 pending 来源和对话上下文优先级冲突：
+
+- 后端 `planEditCache` 是 Intent pending 的主来源，用来支持“确认这个偏好 / 确认这个要求”。
+- 只读分析本身不会产生待执行动作，也不会产生待确认意向。
+- 用户只说“确认”时，语义默认应优先指向上一轮可见内容；如果上一轮是只读分析，就不应越过可见上下文去消费更早的旧意向缓存。
+
+本轮修复：
+
+- 新增泛确认识别：`确认 / 好 / 可以 / 执行` 等短确认，如果不包含“偏好 / 要求 / 意向 / 参考 / 记下 / 记录”等显式意向词，视为泛确认。
+- 当当前 active pending 是 `intent_change`、用户输入是泛确认、且最近一轮可见上下文是职业方向分析、专业对比或方案查询时，直接走 `plan_confirmation_guard_no_pending`。
+- guard 回复会说明上一轮只是只读分析，没有待执行的方案动作，并给出继续分析、沉淀偏好或进入方案预览的下一步入口。
+- 显式确认仍保留原行为：用户说“确认这个偏好 / 确认这个要求”时，继续调用 `update_volunteer_intent_state` 应用 `planEditCache`。
+
+影响范围：
+
+- 不改变 `planEditCache` 写入、读取和清理规则。
+- 不改变 `PendingConfirmation` 数据结构。
+- 不改变 `update_volunteer_intent_state`、候选刷新、方案调整、工作台联动或 SemanticIntentRouter shadow。
+- 只在“旧 intent pending + 上一轮只读上下文 + 本轮泛确认”这个窄边界上保护用户可见语义。
+
+验证：
+
+- 单测覆盖泛确认保护：旧 `planEditCache` 存在、上一轮是职业方向只读分析、用户输入“确认”时，不调用 `update_volunteer_intent_state`，返回只读上下文 guard。
+- 单测覆盖显式确认保留：同样上下文下，用户输入“确认这个偏好”时，仍调用 `update_volunteer_intent_state` 并返回确认生效回复。
+- live 复跑中原失败 case 已恢复为 `plan_confirmation_guard_no_pending`，回复为“上一轮只是职业方向和当前方案承接分析，没有待执行的方案动作...”。同轮 effect/perf 其他失败来自本地后端 `session=16/17` 排序方案数据为空，属于验证数据状态问题，不能归因于本修复。

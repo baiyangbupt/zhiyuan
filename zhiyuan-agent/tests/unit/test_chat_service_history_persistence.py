@@ -4050,6 +4050,92 @@ def test_chat_service_does_not_block_intent_confirmation_when_intent_cache_exist
     intent_cache_mock.assert_awaited_once()
 
 
+def test_chat_service_generic_confirm_after_readonly_does_not_apply_stale_intent_cache(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    history = [
+        ModelRequest(parts=[UserPromptPart(content="当前方案对体制内稳定就业方向承接得怎么样，先不要改方案")]),
+        ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="analyze_current_career_direction",
+                    args={"direction_slots": ["system_public_service", "stable_employment"]},
+                    tool_call_id="career-readonly-call",
+                )
+            ],
+            model_name="career-direction-fast-route",
+        ),
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="analyze_current_career_direction",
+                    content="方案承接：当前方案对体制内稳定就业方向承接偏弱。",
+                    tool_call_id="career-readonly-call",
+                )
+            ]
+        ),
+        ModelResponse(parts=[TextPart(content="当前方案对体制内稳定就业方向承接偏弱。")], model_name="career-direction-fast-route"),
+    ]
+    asyncio.run(store.save("session-readonly-over-stale-intent", history))
+    fake_agent = _FakeAgent(["不应该调用模型"])
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch(
+                "app.service.get_intent_change_cache",
+                AsyncMock(return_value={"code": 0, "data": {"planEditCache": {"city_intents": {"province": ["浙江"]}}}}),
+            ), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.update_volunteer_intent_state", AsyncMock(return_value="不应该调用")) as update_mock:
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(service.handle_message("session-readonly-over-stale-intent", "user-1", "确认"))
+
+    assert "上一轮只是职业方向" in reply
+    assert "没有待执行的方案动作" in reply
+    assert "展开体制内方向" in reply
+    update_mock.assert_not_awaited()
+    assert fake_agent.calls == []
+
+
+def test_chat_service_explicit_intent_confirm_after_readonly_can_apply_intent_cache(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    history = [
+        ModelRequest(parts=[UserPromptPart(content="当前方案对体制内稳定就业方向承接得怎么样，先不要改方案")]),
+        ModelResponse(parts=[TextPart(content="当前方案对体制内稳定就业方向承接偏弱。")], model_name="career-direction-fast-route"),
+    ]
+    asyncio.run(store.save("session-explicit-intent-confirm-after-readonly", history))
+    fake_agent = _FakeAgent(["不应该调用模型"])
+    intent_result = json.dumps(
+        {
+            "action": "confirm",
+            "sessionId": "session-explicit-intent-confirm-after-readonly",
+            "intentMode": "preference",
+            "applied": True,
+            "messageCode": "preference_applied",
+            "message": "已按你的确认更新偏好。",
+        },
+        ensure_ascii=False,
+    )
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch(
+                "app.service.get_intent_change_cache",
+                AsyncMock(return_value={"code": 0, "data": {"planEditCache": {"city_intents": {"province": ["浙江"]}}}}),
+            ), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.update_volunteer_intent_state", AsyncMock(return_value=intent_result)) as update_mock:
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(service.handle_message("session-explicit-intent-confirm-after-readonly", "user-1", "确认这个偏好"))
+
+    assert reply == "已按你的确认更新偏好。"
+    update_mock.assert_awaited_once()
+    assert fake_agent.calls == []
+
+
 def test_chat_service_directly_applies_plan_next_action_pending_confirmation(tmp_path, mock_llm_client):
     db_path = tmp_path / "history.db"
     store = ChatHistoryStore(str(db_path))

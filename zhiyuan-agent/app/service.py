@@ -1385,6 +1385,26 @@ def _is_pending_intent_confirmation(content: str) -> bool:
     return normalized in _INTENT_CONFIRM_PHRASES
 
 
+_EXPLICIT_INTENT_CONFIRM_TOKENS = (
+    "偏好",
+    "要求",
+    "意向",
+    "参考",
+    "记下",
+    "记录",
+)
+
+
+def _is_generic_confirmation(content: str) -> bool:
+    normalized = re.sub(r"\s+", "", (content or "").strip())
+    normalized = normalized.strip("。.!！?")
+    if not normalized:
+        return False
+    if any(token in normalized for token in _EXPLICIT_INTENT_CONFIRM_TOKENS):
+        return False
+    return normalized in (_PLAN_ACTION_CONFIRM_PHRASES | _INTENT_CONFIRM_PHRASES)
+
+
 _PENDING_INTENT_IMPACT_TOKENS = (
     "影响",
     "匹配",
@@ -2801,6 +2821,48 @@ class ChatService:
                         for target in workspace_refresh_targets
                     ],
                 )
+            return reply
+
+        if (
+            active_pending_kind == "intent_change"
+            and _is_pending_intent_confirmation(content)
+            and _is_generic_confirmation(content)
+            and _last_readonly_context_kind(history)
+        ):
+            reply = _build_no_pending_confirmation_guard_reply(history)
+            new_messages = [
+                ModelRequest(parts=[UserPromptPart(content=content)]),
+                ModelResponse(parts=[TextPart(content=reply)], model_name="direct-plan-confirmation-guard"),
+            ]
+            try:
+                history_to_save = list(history or [])
+                history_to_save.extend(_append_semantic_router_shadow_message(new_messages, semantic_router_shadow))
+                await self.history_store.save(session_id, history_to_save)
+            except Exception:
+                logger.exception("Failed to save readonly-over-pending confirmation guard history: session_id=%s", session_id)
+            _log_conversation_turn_event(
+                sessionId=session_id,
+                userId=user_id,
+                scene="general",
+                routingPath="plan_confirmation_guard_no_pending",
+                routeDecision=_attach_semantic_router_shadow({
+                    "source": "direct_guard",
+                    "matched": True,
+                    "confidence": "high",
+                    "route": "general",
+                    "reason": "generic_confirm_after_readonly_over_stale_intent_pending",
+                }, semantic_router_shadow),
+                pendingType="intent",
+                actionFamily=None,
+                resultKind="readonly_confirmation_guard",
+                llmRequests=0,
+                inputTokens=0,
+                outputTokens=0,
+                totalTokens=0,
+                totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
+                status="success",
+                errorType=None,
+            )
             return reply
 
         if active_pending_kind == "intent_change" and _is_pending_intent_confirmation(content):
