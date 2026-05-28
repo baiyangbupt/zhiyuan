@@ -282,6 +282,37 @@ def test_chat_service_semantic_router_shadow_persists_internal_observation(tmp_p
     assert "semanticRouterShadow" in shadow_messages[0].parts[0].content
 
 
+def test_chat_service_semantic_router_shadow_non_blocking_schedules_observation(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    fake_agent = _FakeAgent(["主链路回复"])
+
+    async def delayed_shadow(*args, **kwargs):
+        await asyncio.sleep(0.01)
+        return SemanticRouterShadowResult(
+            status="success",
+            frame=SemanticIntentFrame(taskLayer="explore", verb="compare", topic="major"),
+            durationMs=10,
+        )
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})):
+        service = ChatService(mock_llm_client, store)
+        service.semantic_router_config.enabled = True
+        service.semantic_router_config.blocking = False
+        service.semantic_router.route_shadow = AsyncMock(side_effect=delayed_shadow)
+        reply = asyncio.run(service.handle_message("session-shadow-non-blocking", "user-1", "财管会计审计怎么排优先级"))
+
+    assert reply == "主链路回复"
+    service.semantic_router.route_shadow.assert_called_once()
+    saved = asyncio.run(store.load("session-shadow-non-blocking"))
+    shadow_messages = [message for message in saved if getattr(message, "model_name", "") == "semantic-router-shadow"]
+    assert len(shadow_messages) == 1
+    assert '"status": "scheduled"' in shadow_messages[0].parts[0].content
+
+
 def test_build_runtime_history_trims_long_history_and_compacts_tool_returns():
     long_tool_content = json.dumps(
         {

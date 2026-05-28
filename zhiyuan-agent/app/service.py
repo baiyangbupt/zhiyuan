@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -226,6 +227,12 @@ def _is_semantic_router_shadow_message(message: Any) -> bool:
             if isinstance(data, dict) and data.get("type") == "semanticRouterShadow":
                 return True
     return False
+
+
+def _semantic_router_scheduled_result() -> Any:
+    from app.models.semantic_router import SemanticRouterShadowResult
+
+    return SemanticRouterShadowResult(enabled=True, status="scheduled")
 
 
 async def _safe_emit_progress(on_progress: ProgressCallback | None, hint: str) -> None:
@@ -2674,20 +2681,43 @@ class ChatService:
         active_pending_kind = str(getattr(active_pending, "kind", "") or "").strip()
         active_plan_payload_text = resolve_pending_plan_payload_text(request_context)
         turn_started_at = time.monotonic()
-        semantic_router_shadow = await self.semantic_router.route_shadow(
-            content,
-            request_context=request_context,
-            active_pending=active_pending,
-        )
-        if semantic_router_shadow.status != "disabled":
-            log_event(
-                "semantic_router_shadow_event",
-                sessionId=session_id,
-                userId=user_id,
-                prompt=content,
-                shadow=semantic_router_shadow.event_payload(),
-                totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
+        if self.semantic_router_config.enabled and not self.semantic_router_config.blocking:
+            async def _run_semantic_router_shadow_background() -> None:
+                shadow_started_at = time.monotonic()
+                shadow = await self.semantic_router.route_shadow(
+                    content,
+                    request_context=request_context,
+                    active_pending=active_pending,
+                )
+                if shadow.status != "disabled":
+                    log_event(
+                        "semantic_router_shadow_event",
+                        sessionId=session_id,
+                        userId=user_id,
+                        prompt=content,
+                        shadow=shadow.event_payload(),
+                        totalDurationMs=int((time.monotonic() - shadow_started_at) * 1000),
+                        nonBlocking=True,
+                    )
+
+            asyncio.create_task(_run_semantic_router_shadow_background())
+            semantic_router_shadow = _semantic_router_scheduled_result()
+        else:
+            semantic_router_shadow = await self.semantic_router.route_shadow(
+                content,
+                request_context=request_context,
+                active_pending=active_pending,
             )
+            if semantic_router_shadow.status != "disabled":
+                log_event(
+                    "semantic_router_shadow_event",
+                    sessionId=session_id,
+                    userId=user_id,
+                    prompt=content,
+                    shadow=semantic_router_shadow.event_payload(),
+                    totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
+                    nonBlocking=False,
+                )
 
         if active_pending_kind == "plan_mutation" and _is_plan_action_confirmation(content):
             action_family = str(getattr(active_pending, "action_family", "") or "").strip()

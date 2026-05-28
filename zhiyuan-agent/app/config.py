@@ -117,6 +117,7 @@ class SemanticRouterConfig(BaseSettings):
     }
 
     enabled: bool = False
+    blocking: bool = False
     timeout_seconds: float = 8.0
     max_history_messages: int = 6
     max_prompt_chars: int = 6000

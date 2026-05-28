@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from typing import Any
 
@@ -21,18 +22,71 @@ from app.models.semantic_router import SemanticIntentFrame, SemanticRouterShadow
 
 
 _INSTRUCTIONS = """\
-你是高考志愿规划系统的语义路由器，只输出结构化结果，不回答用户，不调用工具。
+你是高考志愿规划系统的语义路由器，只输出 JSON 对象，不回答用户，不调用工具。
 
 目标：判断用户这一轮到底是在问信息探索、偏好/约束管理、方案查询/调整，还是普通收口。
 
 必须遵守：
+- 只返回一个 JSON 对象，不要 Markdown，不要解释文字，不要代码块。
 - 不要因为“是不是 / 看看 / 几个 / 怎么 / 影响 / 可以吗”这类泛化词直接判成方案查询。
 - 用户问“是不是坑 / 怎么排优先级 / 怎么选 / 要不要避开 / 会少啥选择 / 有什么要求”时，优先按 explore/policy/requirement/major/career 判断。
 - 用户明确要加入、删除、移动、排序、替换、补齐方案时，sideEffect=preview；除非输入明确是在确认上一轮 pending，不能 apply。
 - 用户表达长期偏好、可接受、排除、不要、别碰时，taskLayer=intent，sideEffect=preview。
 - 用户明确问“当前方案/候选里有没有某院校或专业”时，才是 plan query。
 - 输出 requiredFacts，说明后续回复至少要覆盖哪些事实，避免薄回复。
+
+JSON 字段：
+{
+  "taskLayer": "explore|intent|plan|general",
+  "verb": "query|analyze|compare|recommend|explain|review|generate|add|remove|move|sort|replace|confirm|reject|set_preference|set_constraint|remove_preference|clarify",
+  "topic": "plan|major|school|region|career|score|policy|requirement|general",
+  "sideEffect": "readonly|preview|apply|none",
+  "confidence": 0.0,
+  "ambiguity": [],
+  "missingInfo": [],
+  "entities": {
+    "schools": [],
+    "majors": [],
+    "regions": [],
+    "careerDirections": [],
+    "positions": [],
+    "sortFields": [],
+    "reviewIssues": []
+  },
+  "responseNeed": {
+    "depth": "brief|normal|rich",
+    "requiredFacts": [],
+    "mustNotDo": []
+  },
+  "reason": ""
+}
 """
+
+
+def _extract_json_object(text: Any) -> dict[str, Any]:
+    if isinstance(text, dict):
+        return text
+    raw = str(text or "").strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
+        raw = re.sub(r"\s*```$", "", raw).strip()
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start < 0 or end <= start:
+            raise
+        value = json.loads(raw[start : end + 1])
+    if not isinstance(value, dict):
+        raise ValueError("semantic router output is not a JSON object")
+    return value
+
+
+def _parse_semantic_frame(text: Any) -> SemanticIntentFrame:
+    if isinstance(text, SemanticIntentFrame):
+        return text
+    return SemanticIntentFrame.model_validate(_extract_json_object(text))
 
 
 class SemanticIntentRouter:
@@ -45,7 +99,7 @@ class SemanticIntentRouter:
         if self.agent is None:
             self.agent = Agent(
                 model=self.llm_client.model,
-                output_type=SemanticIntentFrame,
+                output_type=str,
                 instructions=_INSTRUCTIONS,
                 tools=[],
                 model_settings=self.llm_client.model_settings,
@@ -73,10 +127,11 @@ class SemanticIntentRouter:
                 self._agent().run(prompt, model_settings={"temperature": 0}),
                 timeout=max(0.1, float(self.config.timeout_seconds)),
             )
+            frame = _parse_semantic_frame(result.output)
             return SemanticRouterShadowResult(
                 enabled=True,
                 status="success",
-                frame=result.output,
+                frame=frame,
                 durationMs=int((time.monotonic() - started_at) * 1000),
             )
         except asyncio.TimeoutError:
@@ -113,7 +168,7 @@ class SemanticIntentRouter:
         text = json.dumps(payload, ensure_ascii=False)
         if len(text) > self.config.max_prompt_chars:
             text = text[: self.config.max_prompt_chars] + "\n...（已截断）"
-        return "请根据以下上下文输出 SemanticIntentFrame：\n" + text
+        return "请根据以下上下文输出语义路由 JSON：\n" + text
 
     def _recent_chat(self, chat_history: list[dict] | None) -> list[dict[str, Any]]:
         history = chat_history or []

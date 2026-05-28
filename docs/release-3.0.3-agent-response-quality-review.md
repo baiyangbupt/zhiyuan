@@ -1572,6 +1572,8 @@ PYTHONPATH=. ./.venv/bin/python examples/dialog_quality_gate.py --execute --mode
 
 - 新增 `SemanticIntentFrame` / `SemanticRouterShadowResult`，结构化表达 `taskLayer / verb / topic / entities / sideEffect / confidence / requiredFacts / mustNotDo`。
 - 新增 `SemanticIntentRouter`，通过 `SEMANTIC_ROUTER_ENABLED=true` 开启；默认关闭时不会初始化 pydantic-ai router agent，也不会增加模型调用或延迟。
+- router shadow 使用“普通 JSON 文本输出 + 本地 Pydantic 校验”，避免 OpenAI-compatible provider 不支持 pydantic-ai 结构化输出时触发 `tool_choice=required` 兼容错误。
+- `SEMANTIC_ROUTER_BLOCKING=false` 为默认值：开启 shadow 后默认后台记录 `semantic_router_shadow_event`，当前用户回复不等待 shadow 完成；只有小规模 route confusion matrix 调试时才设置 `SEMANTIC_ROUTER_BLOCKING=true`，并把结果写入当前 turn metrics/history。
 - ChatService 在 request context 构建后、既有 direct guard / fast-route / full-agent 执行前运行 shadow；shadow 结果只写入 `semantic_router_shadow_event`、`routeDecision.semanticRouterShadow` 和本地历史中的内部观测消息。
 - 内部观测消息 `model_name=semantic-router-shadow` 不进入后续 runtime model history，避免污染主模型上下文；runner 只把它作为 `turnObservability.semanticRouterShadow` 读取。
 - `dialog_regression_runner.py` 已能在 metrics 中提取 shadow frame；`dialog_case_evaluation_report.py` 已能汇总 shadow 的 `status / taskLayer / topic / verb / sideEffect`。
@@ -1581,9 +1583,15 @@ PYTHONPATH=. ./.venv/bin/python examples/dialog_quality_gate.py --execute --mode
 
 ```env
 SEMANTIC_ROUTER_ENABLED=false
+SEMANTIC_ROUTER_BLOCKING=false
 SEMANTIC_ROUTER_TIMEOUT_SECONDS=8
 SEMANTIC_ROUTER_MAX_HISTORY_MESSAGES=6
 SEMANTIC_ROUTER_MAX_PROMPT_CHARS=6000
 ```
+
+本地 live 发现：
+
+- 使用 `Pro/moonshotai/Kimi-K2.6` 作为 router 模型时，结构化输出工具模式曾触发 provider 兼容错误；已改为 JSON 文本解析规避。
+- 同一模型在 router prompt 下 `8s` 与 `20s` 均可能超时，因此 shadow 不应阻塞主回复；后续需要单独做 router 模型候选评估，优先找低延迟、稳定 JSON 输出的模型。
 
 下一步必须在有效模型服务下开启 shadow 跑 3.0.3 open-quality、effect/perf、realistic-user 与 80+ dialogue-derived，生成 route confusion matrix。只有 shadow 路由在质量和安全边界上稳定优于当前主链路，才进入 selective 接管。

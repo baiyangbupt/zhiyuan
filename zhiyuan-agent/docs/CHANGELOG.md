@@ -45,6 +45,7 @@
 - 真实对话派生 88 case 已完成 WebSocket live 跑批并写入 3.0.3 文档：当前基线为 `strong=3 / fail=34 / needs_review=51`，中位耗时约 `2318ms`，p95 约 `67404ms`；暴露空正文、探索问题误入方案查询、资格/要求问题误入意向预览、旧 pending 污染和开放 Explore 慢请求等后续 P0/P1 优化项。
 - `dialog_case_evaluation_report.py` 修正空正文评分：无用户可见回复的 turn 直接计为 `fail`，避免 80+ 场景汇总漏算“快速返回但没有有效回答”的真实质量问题。
 - SemanticIntentRouter shadow 首轮落地：新增结构化 `SemanticIntentFrame` 与默认关闭的 `SEMANTIC_ROUTER_ENABLED` 开关；开启后仅记录 shadow 语义路由、耗时和结构化 frame，不改变用户回复、工具执行或工作台联动。runner/report 已能从本地历史提取 `semanticRouterShadow` 并汇总 taskLayer/topic/verb/sideEffect，供后续 route confusion matrix 和全量防回退门禁使用。
+- SemanticIntentRouter shadow 兼容性与延迟保护：router 改为普通 JSON 文本输出后本地 Pydantic 校验，规避 OpenAI-compatible provider 不支持 `tool_choice=required` 的问题；新增默认非阻塞 `SEMANTIC_ROUTER_BLOCKING=false`，避免开启 shadow 观测时拖慢用户首响，阻塞模式仅用于小规模混淆矩阵调试。
 - 新增 `examples/dialog_quality_gate.py` 作为 3.0.3 Agent 对话质量全量门禁入口：默认 dry-run 生成 local/live/report/model 清单，显式 `--execute` 才运行；固定覆盖 3.0.1/3.0.2/3.0.3、历史 `dialog_regression_*`、80+ dialogue-derived、逐 case markdown 报告和多模型 benchmark，避免后续语义路由接管前遗漏 regression/e2e。
 - `conversation_turn_event` 补充 3.0.3 观测字段：`routeDecision`、LLM request/token、toolCallCount 和结构化 toolCalls 摘要；full-agent 工具调用会记录 actionFamily、stage、resultKind、applied/messageCode，direct pending/guard 路径明确记录 `llmRequests=0`。
 - `dialog_regression_runner.py` 的 metrics 输出新增 `turnObservability`，从本地 SQLite 历史解析每轮 tool call、actionFamily、stage、resultKind 和 applied 状态，便于在 WebSocket e2e 中定位慢点和误路由。

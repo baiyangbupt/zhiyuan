@@ -78,7 +78,7 @@ class SemanticIntentFrame(BaseModel):
 
 class SemanticRouterShadowResult(BaseModel):
     enabled: bool = True
-    status: Literal["success", "disabled", "timeout", "error"] = "success"
+    status: Literal["success", "disabled", "scheduled", "timeout", "error"] = "success"
     frame: SemanticIntentFrame | None = None
     durationMs: int = 0
     errorType: str = ""
