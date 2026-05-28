@@ -1647,3 +1647,53 @@ SEMANTIC_ROUTER_MAX_PROMPT_CHARS=6000
 
 - 预算风险回复里“本轮只是查看/分析，不会改动方案”出现重复边界句，后续可以在 Plan 状态概览 renderer 里做边界提示去重。
 - `医学护理这些别碰，财会还能接受，先看看影响` 的待确认条目里同时出现 `护理学类` 和 `护理学`，语义正确但展示重复，后续可做专业类与具体专业的用户侧合并展示。
+
+#### 14.9 路由边界修复与有效服务复跑
+
+真实对话派生 88 case 暴露的 P0 问题里，有一类不是回复 renderer 本身薄，而是前置 fast route 抢错了路径：
+
+- `档案图书馆这种冷门是不是坑` 被方案局部查询接管，导致系统试图查当前方案里的实体，而不是回答专业冷热、风险和取舍。
+- `方案里面省外是不是太多了` 这类没有明确学校/专业实体的表达，曾被局部查询当作空实体查询，容易产出低价值回复。
+- `色弱是不是医学化工都要避开`、`英语口试到底要不要报，不报会少啥选择`、`建筑城乡规划要不要美术基础` 等资格/要求类问题曾被专业意向预览接管，容易生成待确认偏好。
+- `财管会计审计这几个怎么排优先级` 这类专业比较问法，应该进入专业对比，而不是被意向或方案查询抢走。
+
+本轮修复边界：
+
+- `plan_query_fast_route` 要求必须抽取到学校或专业实体；即使用户说了“方案里/候选里”，没有实体也不做局部查询。
+- `plan_query_fast_route` 增加开放探索 blocker：`怎么排 / 排优先级 / 坑不坑 / 冷门是不是坑` 这类问法不走局部查询。
+- `major_intent_fast_route` 增加政策/资格/要求 blocker：体检、色弱、色盲、视力、口试、专项、资格、限制、要求、美术基础、要不要、算不算等问题不生成意向 pending。
+- `major_compare_fast_route` 支持“怎么排 / 排优先级 / 优先级”，并补充 `财管 -> 财务管理` 常见简称。
+- 无 pending 确认保护文案补充“没有待确认的方案动作”，兼容质量门禁和用户理解。
+
+这次修复仍属于局部边界收紧，不是最终的语义路由替代方案。系统性方向仍是前面设计的 `SemanticIntentRouter + Resolver + QualityGate`：先统一候选和仲裁，再逐步减少各 fast router 内部的表达补丁。
+
+验证结果：
+
+| 验证集 | 结果 | 延迟 | 质量结论 |
+| --- | ---: | --- | --- |
+| `dialog_regression_303_effect_perf_cases.json` | `14/14` steps 通过 | median `2249ms`，p95 `3797ms`，max `4156ms` | `strong=14 / needs_review=0 / fail=0` |
+| `dialog_regression_303_open_quality_cases.json` | `23/23` steps 通过 | median `2188ms`，p95 `3501ms`，max `3800ms` | `strong=23 / needs_review=0 / fail=0` |
+| `dialog_regression_303_realistic_user_cases.json` 聚焦复查 | `9/9` steps 通过 | median 约 `2168ms`，max 约 `3571ms` | 无断言失败，真实口语输入仍稳定 |
+
+关键回归结论：
+
+- 专业组预览后确认的失败未复现。单独顺序复跑后确认链路正常，前一次失败是并发 runner 共用 `session=16` 导致历史/pending 互相覆盖。
+- `财管会计审计这几个怎么排优先级` 进入 `major_compare_fast_route`，回复以专业对比形式说明路径、稳定性、考公承接和下一步，不产生 pending。
+- 政策/资格类问题不再生成“确认后写入偏好”的待确认文案，避免把咨询问题误当成用户要求。
+- 局部查询仍保留在明确学校/专业实体场景，例如“青岛城市学院相关专业是不是有多个”，并且继续输出冲稳保、学校层次、专业热度、代表样本和只读边界。
+
+归档输出：
+
+- `/private/tmp/zhiyuan_303_effect_perf_after_route_boundary_fix_rerun.json`
+- `/private/tmp/zhiyuan_303_effect_perf_after_route_boundary_fix_rerun_eval_summary.json`
+- `/private/tmp/zhiyuan_303_effect_perf_after_route_boundary_fix_rerun_eval.md`
+- `/private/tmp/zhiyuan_303_open_quality_after_route_boundary_fix.json`
+- `/private/tmp/zhiyuan_303_open_quality_after_route_boundary_fix_eval_summary.json`
+- `/private/tmp/zhiyuan_303_open_quality_after_route_boundary_fix_eval.md`
+- `/private/tmp/zhiyuan_303_realistic_user_after_route_boundary_fix.json`
+
+剩余风险：
+
+- 这轮只修复了高频误路由边界，不能替代 80+ dialogue-derived 全量质量提升。
+- 对完全开放的问题，如果没有命中现有稳定快路径，仍可能回落完整 Agent；质量通常更充分，但延迟风险仍需继续通过语义路由和工具链拆分解决。
+- 关键词 blocker 必须保持克制；后续新增类似规则前，应优先评估是否能纳入统一 `SemanticIntentRouter` 的结构化候选和质量门禁。

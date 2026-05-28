@@ -63,6 +63,13 @@ def test_major_compare_fast_route_matches_three_colloquial_majors():
     assert decision.route_decision()["majorNames"] == ["会计学", "法学", "网络与新媒体"]
 
 
+def test_major_compare_fast_route_matches_priority_question_with_finance_management_alias():
+    decision = resolve_major_compare_fast_route("财管会计审计这几个怎么排优先级")
+
+    assert decision.matched is True
+    assert decision.major_names == ["财务管理", "会计学", "审计学"]
+
+
 def test_major_compare_fast_route_does_not_match_intent_or_mutation_semantics():
     assert resolve_major_compare_fast_route("法学和财政学都帮我记成偏好").matched is False
     assert resolve_major_compare_fast_route("法学和财政学按这个改方案").matched is False

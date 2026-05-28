@@ -1544,7 +1544,7 @@ def _build_no_pending_confirmation_guard_reply(messages: list[Any] | None) -> st
             "- 处理候选志愿：说要加入哪所学校或哪个专业，我会先给确认预览。"
         )
     return (
-        "我这边没有上一轮待确认的方案动作。\n\n"
+        "我这边没有待确认的方案动作，也没有上一轮待确认的方案动作可以执行。\n\n"
         "你可以直接说想做哪一步：\n"
         "- 生成或查看方案。\n"
         "- 审查当前方案。\n"

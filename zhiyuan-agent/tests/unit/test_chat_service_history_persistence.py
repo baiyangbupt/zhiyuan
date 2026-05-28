@@ -272,7 +272,7 @@ def test_chat_service_semantic_router_shadow_persists_internal_observation(tmp_p
             patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})):
         service = ChatService(mock_llm_client, store)
         service.semantic_router.route_shadow = AsyncMock(return_value=shadow)
-        reply = asyncio.run(service.handle_message("session-shadow-enabled", "user-1", "财管会计审计怎么排优先级"))
+        reply = asyncio.run(service.handle_message("session-shadow-enabled", "user-1", "我有点拿不定主意，先帮我理一下思路"))
 
     assert reply == "主链路回复"
     saved = asyncio.run(store.load("session-shadow-enabled"))
@@ -303,7 +303,7 @@ def test_chat_service_semantic_router_shadow_non_blocking_schedules_observation(
         service.semantic_router_config.enabled = True
         service.semantic_router_config.blocking = False
         service.semantic_router.route_shadow = AsyncMock(side_effect=delayed_shadow)
-        reply = asyncio.run(service.handle_message("session-shadow-non-blocking", "user-1", "财管会计审计怎么排优先级"))
+        reply = asyncio.run(service.handle_message("session-shadow-non-blocking", "user-1", "我有点拿不定主意，先帮我理一下思路"))
 
     assert reply == "主链路回复"
     service.semantic_router.route_shadow.assert_called_once()

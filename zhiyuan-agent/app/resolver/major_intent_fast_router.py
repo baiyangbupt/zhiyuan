@@ -31,6 +31,9 @@ _COMPARE_OR_READONLY_TOKENS = (
     "更适合",
     "更稳妥",
     "怎么选",
+    "怎么排",
+    "排优先级",
+    "优先级",
     "对比",
     "比较",
     "差异",
@@ -43,6 +46,33 @@ _COMPARE_OR_READONLY_TOKENS = (
     "不要记下来",
     "不记下来",
     "别记下来",
+)
+
+_POLICY_OR_REQUIREMENT_TOKENS = (
+    "体检",
+    "色弱",
+    "色盲",
+    "视力",
+    "近视",
+    "口试",
+    "英语口试",
+    "专项",
+    "农村专项",
+    "地方专项",
+    "国家专项",
+    "资格",
+    "限制",
+    "要求",
+    "基础",
+    "美术基础",
+    "会少啥选择",
+    "少啥选择",
+    "影响啥",
+    "到底要不要",
+    "要不要",
+    "是不是都",
+    "是不是要",
+    "算不算",
 )
 
 _PLAN_MUTATION_TOKENS = (
@@ -339,6 +369,8 @@ def resolve_major_intent_fast_route(
         return MajorIntentFastRouteDecision(reason="empty_prompt")
     if _contains_any(compact_text, _COMPARE_OR_READONLY_TOKENS):
         return MajorIntentFastRouteDecision(reason="readonly_or_compare_semantics")
+    if _contains_any(compact_text, _POLICY_OR_REQUIREMENT_TOKENS):
+        return MajorIntentFastRouteDecision(reason="policy_or_requirement_question")
     if _contains_any(compact_text, _QUESTION_TOKENS):
         return MajorIntentFastRouteDecision(reason="readonly_question_semantics")
     if _contains_any(compact_text, _PLAN_MUTATION_TOKENS):

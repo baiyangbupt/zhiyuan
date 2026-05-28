@@ -74,11 +74,32 @@ def test_major_intent_fast_route_does_not_match_readonly_compare_request():
     assert decision.reason == "readonly_or_compare_semantics"
 
 
+def test_major_intent_fast_route_does_not_match_priority_question():
+    decision = resolve_major_intent_fast_route("财管会计审计这几个怎么排优先级")
+
+    assert decision.matched is False
+    assert decision.reason == "readonly_or_compare_semantics"
+
+
 def test_major_intent_fast_route_does_not_match_readonly_question_with_can():
     decision = resolve_major_intent_fast_route("会计可以吗")
 
     assert decision.matched is False
     assert decision.reason == "readonly_question_semantics"
+
+
+def test_major_intent_fast_route_does_not_match_policy_or_requirement_questions():
+    prompts = [
+        "色弱是不是医学化工都要避开",
+        "英语口试到底要不要报，不报会少啥选择",
+        "建筑城乡规划要不要美术基础",
+        "中医到底算不算医学",
+    ]
+
+    for prompt in prompts:
+        decision = resolve_major_intent_fast_route(prompt)
+        assert decision.matched is False
+        assert decision.reason == "policy_or_requirement_question"
 
 
 def test_major_intent_fast_route_does_not_match_plan_mutation_request():

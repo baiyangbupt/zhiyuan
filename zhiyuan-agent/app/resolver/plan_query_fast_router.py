@@ -105,9 +105,15 @@ _EXPLORE_OR_SCORE_TOKENS = (
     "看看适合什么",
     "看适合什么",
     "怎么选",
+    "怎么排",
+    "排优先级",
+    "优先级",
     "对比",
     "比较",
     "差异",
+    "坑不坑",
+    "是不是坑",
+    "冷门是不是坑",
     "适不适合",
     "值不值得",
     "体制内",
@@ -349,12 +355,12 @@ def resolve_plan_query_fast_route(
         _append_unique(major_keywords, major)
 
     has_entity = bool(school_keywords or major_keywords)
+    if not has_entity:
+        return PlanQueryFastRouteDecision(reason="missing_local_query_entity")
     if _looks_like_unscoped_intent_preview(compact_text, has_entity=has_entity, scope=scope):
         return PlanQueryFastRouteDecision(reason="unscoped_intent_preview_semantics")
     if not _query_has_readonly_semantics(compact_text, has_entity=has_entity, scope=scope):
         return PlanQueryFastRouteDecision(reason="missing_readonly_query_semantics")
-    if scope == "plan_then_candidate" and not has_entity:
-        return PlanQueryFastRouteDecision(reason="missing_local_query_entity")
 
     return PlanQueryFastRouteDecision(
         matched=True,

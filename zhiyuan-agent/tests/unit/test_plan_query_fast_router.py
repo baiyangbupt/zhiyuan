@@ -71,10 +71,19 @@ def test_plan_query_fast_route_does_not_match_explore_or_score_requests():
     assert resolve_plan_query_fast_route("方案里中外合作是不是有点多，家里预算一般，帮我用大白话看下风险，先别动").matched is False
     assert resolve_plan_query_fast_route("财会、法学、新媒体这几个，哪个更不容易踩坑，先说说别记偏好").matched is False
     assert resolve_plan_query_fast_route("孩子就想去北京天津，但分数不算高，这样是不是太冒险，先别改").matched is False
+    assert resolve_plan_query_fast_route("档案图书馆这种冷门是不是坑").matched is False
+    assert resolve_plan_query_fast_route("财管会计审计这几个怎么排优先级").matched is False
 
 
 def test_plan_query_fast_route_requires_entity_without_explicit_scope():
     decision = resolve_plan_query_fast_route("帮我看看有没有相关机会")
+
+    assert decision.matched is False
+    assert decision.reason == "missing_local_query_entity"
+
+
+def test_plan_query_fast_route_requires_entity_even_with_explicit_scope():
+    decision = resolve_plan_query_fast_route("方案里面省外是不是太多了")
 
     assert decision.matched is False
     assert decision.reason == "missing_local_query_entity"

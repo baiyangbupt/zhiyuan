@@ -185,3 +185,37 @@
 - 职业方向多方向承接回复去掉重复结论和重复下一步提示，保留当前方案承接、分方向数量、方案示例和候选机会。
 
 最终复跑结果：`/private/tmp/dialog-regression-303-after-review-and-career-polish.json`，真实 WebSocket `14/14` steps 通过，中位耗时约 `2240ms`，最大耗时约 `4140ms`；合并单测 `336 passed`。
+
+## 10. 路由边界复核
+
+2026-05-28 针对真实对话派生集暴露的误路由问题补做边界复核。重点不是继续把回复做短，而是避免 fast route 把开放咨询、政策资格和专业比较误接成局部查询或意向确认。
+
+修复范围：
+
+- 方案局部查询必须有学校或专业实体；没有实体时不再用空查询接管。
+- “冷门是不是坑 / 怎么排优先级”这类开放探索或专业比较问法不走方案局部查询。
+- 体检、色弱、口试、专项、资格、限制、美术基础等政策/要求类问法不生成专业意向 pending。
+- 专业比较快路由补充“怎么排优先级”和 `财管 -> 财务管理` 简称。
+
+复跑结果：
+
+| 验证集 | steps | verdict | median | p95 | max |
+| --- | ---: | --- | ---: | ---: | ---: |
+| 3.0.3 effect/perf | 14/14 | `strong=14 / fail=0` | 2.249s | 3.797s | 4.156s |
+| 3.0.3 open-quality | 23/23 | `strong=23 / fail=0` | 2.188s | 3.501s | 3.800s |
+| 3.0.3 realistic-user 聚焦复查 | 9/9 | 无断言失败 | 约 2.168s | - | 约 3.571s |
+
+结论：
+
+- 前一次“专业组预览后确认失败”没有复现，单独顺序复跑确认正常，判断为并发 runner 共用同一 session 的 pending/history 干扰。
+- 本轮修复后，质量基线仍保持 effect/perf 与 open-quality 全 strong，没有出现只读误联动、pending 误确认或内部字段外露。
+- 80+ dialogue-derived 仍是后续主战场；这次只是先修掉 P0 误路由边界，不能把它视为整体质量完成。
+
+归档输出：
+
+- `/private/tmp/zhiyuan_303_effect_perf_after_route_boundary_fix_rerun.json`
+- `/private/tmp/zhiyuan_303_effect_perf_after_route_boundary_fix_rerun_eval_summary.json`
+- `/private/tmp/zhiyuan_303_effect_perf_after_route_boundary_fix_rerun_eval.md`
+- `/private/tmp/zhiyuan_303_open_quality_after_route_boundary_fix.json`
+- `/private/tmp/zhiyuan_303_open_quality_after_route_boundary_fix_eval_summary.json`
+- `/private/tmp/zhiyuan_303_open_quality_after_route_boundary_fix_eval.md`
