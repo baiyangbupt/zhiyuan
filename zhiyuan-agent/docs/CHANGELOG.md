@@ -139,6 +139,8 @@
 - 3.0.3 case 级评估工具补充 `expectedNoAction` 和无动作确认保护评分：只读分析、候选空结果、无 pending 的“确认”不应触发方案或偏好动作，若出现动作会标记 `unexpected_action`；正确的确认保护会按边界说明和下一步出口评分。
 - 修复专业组移动/删除 apply 后重复按“第 N 个专业组”解析目标的问题；移动后方案顺序已变化，重复解析可能记录成另一个专业组。现在 `executed_actions` 和后续日志复用执行前解析出的 unitIds。
 - 3.0.3 只读分析后泛确认保护：当后端仍有旧 `planEditCache`，但上一轮用户可见内容是职业方向、专业对比或方案局部查询这类只读分析时，用户只说“确认”不再消费旧意向 pending，而是返回无待执行动作的上下文提示；“确认这个偏好 / 确认这个要求”等显式确认仍按原逻辑写入后续参考。
+- 3.0.3 effect/perf 有效服务复核：本地 Rank/Backend 恢复后确认 `session=16` 专业组方案 `45/48`、`session=17` 专业+大学方案 `94/96`，此前 `ordered_total=0` 为服务未运行导致的假失败；真实 WebSocket 复跑 `14/14` 通过，质量评分 `strong=14 / needs_review=0 / fail=0`，中位耗时约 `2252ms`，p95 约 `3930ms`。
+- 3.0.3 open-quality 有效服务复核：真实 WebSocket 复跑 `23/23` 通过，质量评分 `strong=23 / needs_review=0 / fail=0`，中位耗时约 `2245ms`，p95 约 `3668ms`；记录两个后续非阻断质量优化点：预算风险边界句去重、医学/护理意向展示合并。
 - 3.0.3 后端补充 mutable overlay 回归：专业+大学模式单志愿移动、院校专业组模式组删除、旧 mutable 版本忽略，以及行为事件存储回归均通过单测覆盖。
 - 3.0.3 专业组 mutation 慢请求完成补充定位：确认慢例 `llmRequests=0`，Agent `mutationRequestDurationMs≈28.1s` 与 Server controller `unit/move≈28.1s` 对齐；当前源码复跑 service 分段常态约 `1.8s - 2.3s`，最大头是完整 `PlanningStateDTO` 保存，后续优化重点调整为状态持久化拆分而不是继续压模型。
 - 3.0.3 benchmark 文档补充效果质量门禁：性能评估需同时检查用户可理解、信息充足、结构清楚、确认边界、只读不误联动、歧义不误操作和事实一致。

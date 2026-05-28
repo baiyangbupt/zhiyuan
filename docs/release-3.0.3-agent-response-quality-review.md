@@ -1625,3 +1625,25 @@ SEMANTIC_ROUTER_MAX_PROMPT_CHARS=6000
 - 单测覆盖泛确认保护：旧 `planEditCache` 存在、上一轮是职业方向只读分析、用户输入“确认”时，不调用 `update_volunteer_intent_state`，返回只读上下文 guard。
 - 单测覆盖显式确认保留：同样上下文下，用户输入“确认这个偏好”时，仍调用 `update_volunteer_intent_state` 并返回确认生效回复。
 - live 复跑中原失败 case 已恢复为 `plan_confirmation_guard_no_pending`，回复为“上一轮只是职业方向和当前方案承接分析，没有待执行的方案动作...”。同轮 effect/perf 其他失败来自本地后端 `session=16/17` 排序方案数据为空，属于验证数据状态问题，不能归因于本修复。
+
+有效服务复核：
+
+- 本地前台启动 Rank `5001` 与 Backend `8080` 后重新检查数据状态，`session=16` 为专业组模式且 `orderedPlanState.summary.total=45 / target=48`，`session=17` 为专业+大学模式且 `orderedPlanState.summary.total=94 / target=96`。
+- 因此上一轮“无正式方案 / ordered_total=0”的 effect/perf 失败是本地后端或 Rank 未运行造成的假失败，不是 Agent 回复或确认保护回归。
+- 有效服务下重新运行 `examples/dialog_regression_303_effect_perf_cases.json`，结果 `14/14` steps 通过；质量报告 `strong=14 / needs_review=0 / fail=0`，`qualityViolations={}`，`evaluationWarnings={}`。
+- 延迟：median `2252ms`，p95 约 `3930ms`，max `4325ms`；最慢为专业组整体移动预览 `4325ms`，确认 `3718ms`。
+- 本轮关键观测：职业方向只读后“确认”走 `plan_confirmation_guard_no_pending`，不调用意向写入；“确认这个偏好”仍走 `direct_pending_intent_confirm`。
+- 归档输出：`/private/tmp/zhiyuan_303_effect_perf_live_after_stale_intent_fix_valid_services.json`；质量汇总：`/private/tmp/zhiyuan_303_effect_perf_live_after_stale_intent_fix_valid_services_eval_summary.json`；逐 case markdown 明细：`/private/tmp/zhiyuan_303_effect_perf_live_after_stale_intent_fix_valid_services_eval.json`。
+
+开放口语场景复核：
+
+- 有效服务下重新运行 `examples/dialog_regression_303_open_quality_cases.json`，结果 `23/23` steps 通过。
+- 质量报告：`strong=23 / needs_review=0 / fail=0`，`qualityViolations={}`，`evaluationWarnings={}`。
+- 延迟：median `2245ms`，p95 约 `3668ms`，max `3874ms`。
+- 路由覆盖：`major_compare_fast_route=6`、`career_direction_fast_route=5`、`plan_fast_route=4`、`plan_query_fast_route=2`、`major_intent_fast_route=2`、`pending_intent_impact_fast_route=2`、`readonly_closure_ack=1`、`plan_confirmation_guard_no_pending=1`。
+- 归档输出：`/private/tmp/zhiyuan_303_open_quality_after_stale_intent_fix_valid_services.json`；质量汇总：`/private/tmp/zhiyuan_303_open_quality_after_stale_intent_fix_valid_services_eval_summary.json`；逐 case markdown 明细：`/private/tmp/zhiyuan_303_open_quality_after_stale_intent_fix_valid_services_eval.md`。
+
+后续可优化但不阻断当前回归的质量细节：
+
+- 预算风险回复里“本轮只是查看/分析，不会改动方案”出现重复边界句，后续可以在 Plan 状态概览 renderer 里做边界提示去重。
+- `医学护理这些别碰，财会还能接受，先看看影响` 的待确认条目里同时出现 `护理学类` 和 `护理学`，语义正确但展示重复，后续可做专业类与具体专业的用户侧合并展示。
