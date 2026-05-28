@@ -1590,6 +1590,9 @@ fast routers 产出候选
 - `dialog_regression_runner.py` 已在 metrics summary 中新增 `fastRouteArbitration` 汇总，包括 observed、semanticArbitrationNeeded、selectedPaths、neededReasons、candidatePaths 和前 10 个需仲裁样例。
 - 复跑 `dialog_regression_303_effect_perf_cases.json`，输出 `/private/tmp/zhiyuan_303_effect_perf_arbitration_distribution.json`：`14/14` steps 通过，median `2237ms`，p95 `3623ms`，max `4142ms`；其中 10 个 fast-route 观测全部 `semanticArbitrationNeeded=0`，路径分布为 `plan_fast_route=6 / plan_query_fast_route=1 / career_direction_fast_route=1 / major_compare_fast_route=1 / major_intent_fast_route=1`。结论是当前稳定高置信路径不应接入阻塞 LLM 仲裁，下一步要在 dialogue-derived 和开放口语 case 中寻找真实混淆样本。
 - 本轮日志中观察到意向确认后候选 total 查询返回 `None` 的 warning，但业务回复和状态写入成功，暂列为独立观察点；它不属于 selective arbitration 主问题。
+- 复跑 `dialog_regression_303_open_quality_cases.json`，输出 `/private/tmp/zhiyuan_303_open_quality_arbitration_distribution.json`：`23/23` steps 通过，median `2203ms`，p95 `3773ms`，max `4229ms`；19 个 fast-route 观测全部 `semanticArbitrationNeeded=0`，路径分布为 `major_intent_fast_route=2 / career_direction_fast_route=5 / major_compare_fast_route=6 / plan_query_fast_route=2 / plan_fast_route=4`。结论同上：开放口语基线中的高置信路径不需要额外 LLM 仲裁。
+- 直接跑 80+ `dialog_regression_303_dialogue_derived_cases.json` 时，首批开放探索 case 进入 `full_agent`，服务端分别出现约 `163s` 与 `152s` 的完整 Agent 两次远端模型调用，runner 在 `120s` response timeout 后断开。示例：`一模二模差挺多，这个成绩波动填志愿咋看` 走 `full_agent`，`llmRequests=2`、`inputTokens≈16063`、`totalDurationMs≈163390`；`孩子数学忽高忽低，理工还能不能碰` 走 `full_agent`，`llmRequests=2`、`inputTokens≈16350`、`totalDurationMs≈152079`。
+- 这类问题不是 fast-route 多候选冲突，也不是 selective arbitration 能直接解决的问题；它暴露的是开放 Explore / score-profile 类问题缺少轻量结构化回复路径，导致完整 Agent 大上下文和两次远端模型调用。后续 80+ 评估应先按场景分层抽样运行，并把 `score_profile / eligibility_constraints / generic_explore` 这类 full-agent 慢路径列为专项优化，不应为了绕开慢请求而把所有请求前置给 LLM 路由。
 
 ## 11. 待确认决策
 
