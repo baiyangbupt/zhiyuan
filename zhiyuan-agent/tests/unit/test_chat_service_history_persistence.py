@@ -31,11 +31,12 @@ from app.service import (
     _semantic_router_shadow_message,
     _select_conversation_action_family,
     _sanitize_reply_for_user,
+    _summarize_full_agent_tool_trial,
     _summarize_tool_calls_for_observability,
     _tool_calls_include_plan_workspace_refresh,
 )
 from app.agent.context import RequestContext, ScoreDetail
-from app.models.semantic_router import SemanticIntentFrame, SemanticRouterShadowResult
+from app.models.semantic_router import FixedScenarioRouteFrame, FixedScenarioRouteResult, SemanticIntentFrame, SemanticRouterShadowResult
 from app.resolver.major_compare_reply_renderer import render_missing_weight_major_compare_reply
 from app.tools.intent_response_tool import IntentStateUpdateResult, render_intent_state_update
 from app.tools.plan_orchestration_models import PlanActionPlan, PlanAtomicAction
@@ -163,6 +164,18 @@ def test_summarize_tool_calls_for_observability_extracts_plan_action_result():
             "success": True,
         }
     ]
+
+
+def test_summarize_full_agent_tool_trial_records_repeated_tools_and_fixed_fallback():
+    summary = _summarize_full_agent_tool_trial(
+        ["query_volunteer_plan", "plan_next_action", "query_volunteer_plan"],
+        fixed_scenario_route_decision={"fallbackReason": "open_major_fit_question"},
+    )
+
+    assert summary["hasToolCalls"] is True
+    assert summary["hasRepeatedToolCalls"] is True
+    assert summary["repeatedToolNames"] == ["query_volunteer_plan"]
+    assert summary["fixedScenarioFallbackReason"] == "open_major_fit_question"
 
 
 class _FakeAgent:
@@ -1036,6 +1049,142 @@ def test_chat_service_major_compare_fast_route_handles_lazy_abbreviations(tmp_pa
     assert fake_agent.calls == []
     mock_compare.assert_awaited_once()
     assert mock_compare.await_args.args[1:] == ("法学", "财政学")
+
+
+def test_chat_service_fixed_scenario_router_replaces_string_major_compare_router(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    fake_agent = _FakeAgent(["should not be used"])
+    fixed_result = FixedScenarioRouteResult(
+        status="success",
+        frame=FixedScenarioRouteFrame(
+            fixedScenario="major_compare.readonly",
+            sideEffect="readonly",
+            confidence=0.93,
+            entities={"majorNames": ["法学", "财政学"]},
+        ),
+        durationMs=321,
+        promptChars=456,
+    )
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.resolve_major_intent_fast_route") as intent_router, \
+            patch("app.service.resolve_major_compare_fast_route") as compare_router, \
+            patch("app.service.resolve_career_direction_fast_route") as career_router, \
+            patch(
+                "app.service.compare_majors",
+                AsyncMock(return_value="法学和财政学对比：财政学更稳，法学更看投入。"),
+            ) as mock_compare, \
+            patch("app.service.log_event") as log_event_mock:
+        service = ChatService(mock_llm_client, store)
+        service.semantic_router_config.fixed_route_enabled = True
+        service.semantic_router_config.fixed_route_min_confidence = 0.82
+        service.semantic_router.route_fixed_scenario = AsyncMock(return_value=fixed_result)
+        reply = asyncio.run(
+            service.handle_message(
+                "session-fixed-scenario-major-compare",
+                "user-1",
+                "法和财哪个更适合女孩子，家里一般",
+            )
+        )
+
+    assert "财政学更稳" in reply
+    assert fake_agent.calls == []
+    mock_compare.assert_awaited_once()
+    intent_router.assert_not_called()
+    compare_router.assert_not_called()
+    career_router.assert_not_called()
+    fixed_events = [call for call in log_event_mock.call_args_list if call.args[0] == "fixed_scenario_router_event"]
+    assert fixed_events
+    assert fixed_events[-1].kwargs["routeDecision"]["selectedFixedScenario"] == "major_compare.readonly"
+
+
+def test_chat_service_fixed_scenario_router_falls_back_when_low_confidence(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    fake_agent = _FakeAgent(["这是开放问题，我会按完整上下文分析，不直接套专业对比。"])
+    fixed_result = FixedScenarioRouteResult(
+        status="success",
+        frame=FixedScenarioRouteFrame(
+            fixedScenario="none",
+            sideEffect="readonly",
+            confidence=0.6,
+            mustFallbackReason="open_major_fit_question",
+        ),
+        durationMs=210,
+        promptChars=300,
+    )
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.resolve_major_intent_fast_route") as intent_router, \
+            patch("app.service.resolve_major_compare_fast_route") as compare_router, \
+            patch("app.service.resolve_career_direction_fast_route") as career_router:
+        service = ChatService(mock_llm_client, store)
+        service.semantic_router_config.fixed_route_enabled = True
+        service.semantic_router.route_fixed_scenario = AsyncMock(return_value=fixed_result)
+        reply = asyncio.run(
+            service.handle_message(
+                "session-fixed-scenario-fallback",
+                "user-1",
+                "物理不太好但选了物化地，计算机还现实吗",
+            )
+        )
+
+    assert "开放问题" in reply
+    assert len(fake_agent.calls) == 1
+    intent_router.assert_not_called()
+    compare_router.assert_not_called()
+    career_router.assert_not_called()
+
+
+def test_chat_service_fixed_scenario_router_skips_when_plan_fast_route_matches(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    fake_agent = _FakeAgent(["should not be used"])
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={
+                "code": 0,
+                "data": {
+                    "phase": "ordered",
+                    "version": 1,
+                    "orderedPlanState": {"summary": {"total": 45, "targetTotal": 45}},
+                },
+            })), \
+            patch(
+                "app.service.execute_plan_action",
+                AsyncMock(return_value=json.dumps({
+                    "result_kind": "state_summary",
+                    "action_family": "query_state",
+                    "facts": {
+                        "ordered_total": 45,
+                        "target_total": 45,
+                        "tier_counts": {"冲": 15, "稳": 15, "保": 15},
+                    },
+                }, ensure_ascii=False)),
+            ):
+        service = ChatService(mock_llm_client, store)
+        service.semantic_router_config.fixed_route_enabled = True
+        service.semantic_router.route_fixed_scenario = AsyncMock()
+        reply = asyncio.run(
+            service.handle_message(
+                "session-fixed-router-skip-plan",
+                "user-1",
+                "这方案咋样，能不能说重点",
+            )
+        )
+
+    assert isinstance(reply, str)
+    assert fake_agent.calls == []
+    service.semantic_router.route_fixed_scenario.assert_not_awaited()
 
 
 def test_chat_service_full_agent_readonly_prompt_appends_boundary_when_model_omits_it(tmp_path, mock_llm_client):

@@ -126,3 +126,67 @@ class SemanticRouterShadowResult(BaseModel):
         if payload.get("errorMessage"):
             payload["errorMessage"] = str(payload["errorMessage"])[:200]
         return payload
+
+
+FixedScenario = Literal[
+    "none",
+    "major_compare.readonly",
+    "major_intent.preview",
+    "career_direction.readonly",
+]
+
+
+class FixedScenarioEntities(BaseModel):
+    majorNames: list[str] = Field(default_factory=list)
+    positiveMajorNames: list[str] = Field(default_factory=list)
+    negativeMajorNames: list[str] = Field(default_factory=list)
+    careerDirections: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_entity_lists(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        normalized = dict(data)
+        for key in (
+            "majorNames",
+            "positiveMajorNames",
+            "negativeMajorNames",
+            "careerDirections",
+        ):
+            if key not in normalized:
+                continue
+            value = normalized[key]
+            if value is None:
+                normalized[key] = []
+                continue
+            items = value if isinstance(value, list) else [value]
+            normalized[key] = [_stringify_entity_item(item) for item in items]
+        return normalized
+
+
+class FixedScenarioRouteFrame(BaseModel):
+    fixedScenario: FixedScenario = "none"
+    sideEffect: SideEffect = "readonly"
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    entities: FixedScenarioEntities = Field(default_factory=FixedScenarioEntities)
+    ambiguity: list[str] = Field(default_factory=list)
+    missingInfo: list[str] = Field(default_factory=list)
+    mustFallbackReason: str = ""
+    reason: str = ""
+
+
+class FixedScenarioRouteResult(BaseModel):
+    enabled: bool = True
+    status: Literal["success", "disabled", "timeout", "error"] = "success"
+    frame: FixedScenarioRouteFrame | None = None
+    durationMs: int = 0
+    promptChars: int = 0
+    errorType: str = ""
+    errorMessage: str = ""
+
+    def event_payload(self) -> dict:
+        payload = self.model_dump(exclude_none=True)
+        if payload.get("errorMessage"):
+            payload["errorMessage"] = str(payload["errorMessage"])[:200]
+        return payload

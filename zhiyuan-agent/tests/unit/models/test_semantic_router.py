@@ -6,7 +6,11 @@ import pytest
 from app.agent.context import PlanningSummary, RequestContext, ScoreDetail
 from app.models.conversation_phase import PendingConfirmation
 from app.models.semantic_router import SemanticIntentFrame, SemanticRouterShadowResult
-from app.resolver.semantic_intent_router import SemanticIntentRouter, _parse_semantic_frame
+from app.resolver.semantic_intent_router import (
+    SemanticIntentRouter,
+    _parse_fixed_scenario_frame,
+    _parse_semantic_frame,
+)
 from app.config import SemanticRouterConfig
 
 
@@ -103,6 +107,20 @@ def test_parse_semantic_frame_normalizes_non_string_entity_items():
     )
 
     assert frame.entities.positions == ["3", '{"from": 4, "to": 2}']
+
+
+def test_parse_fixed_scenario_frame_normalizes_entity_items():
+    frame = _parse_fixed_scenario_frame(
+        {
+            "fixedScenario": "major_compare.readonly",
+            "sideEffect": "readonly",
+            "confidence": 0.91,
+            "entities": {"majorNames": ["法学", {"name": "财政学"}]},
+        }
+    )
+
+    assert frame.fixedScenario == "major_compare.readonly"
+    assert frame.entities.majorNames == ["法学", '{"name": "财政学"}']
 
 
 def test_semantic_router_agent_uses_text_output_to_avoid_tool_choice_required():
@@ -396,3 +414,88 @@ async def test_semantic_router_can_run_without_timeout(mocker):
 
     assert result.status == "success"
     wait_for.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_semantic_router_fixed_scenario_uses_dedicated_prompt(mocker):
+    class _Client:
+        model = "main-model-instance"
+        model_settings = {}
+        config = type(
+            "Config",
+            (),
+            {
+                "provider": "openai_compatible",
+                "model_name": "main-model",
+                "api_key": "sk-main",
+                "base_url": "https://llm.example.com/v1",
+            },
+        )()
+
+    router = SemanticIntentRouter(
+        _Client(),
+        SemanticRouterConfig(
+            _env_file=None,
+            fixed_route_enabled=True,
+            fixed_route_timeout_seconds=3,
+            max_prompt_chars=1200,
+        ),
+    )
+    prompts: list[str] = []
+
+    class _Agent:
+        async def run(self, prompt, model_settings=None):
+            prompts.append(prompt)
+            return SimpleNamespace(
+                output=json.dumps(
+                    {
+                        "fixedScenario": "major_compare.readonly",
+                        "sideEffect": "readonly",
+                        "confidence": 0.93,
+                        "entities": {"majorNames": ["法学", "财政学"]},
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+    mocker.patch.object(router, "_fixed_route_agent", return_value=_Agent())
+
+    result = await router.route_fixed_scenario(
+        "法学和财政学哪个更适合普通家庭女生",
+        request_context=RequestContext(userid="u1", sessionid="s1"),
+        active_pending=None,
+    )
+
+    assert result.status == "success"
+    assert result.frame.fixedScenario == "major_compare.readonly"
+    assert result.frame.entities.majorNames == ["法学", "财政学"]
+    assert "固定场景路由 JSON" in prompts[0]
+    assert result.promptChars == len(prompts[0])
+
+
+@pytest.mark.asyncio
+async def test_semantic_router_fixed_scenario_disabled_by_default():
+    class _Client:
+        model = "main-model-instance"
+        model_settings = {}
+        config = type(
+            "Config",
+            (),
+            {
+                "provider": "openai_compatible",
+                "model_name": "main-model",
+                "api_key": "sk-main",
+                "base_url": "https://llm.example.com/v1",
+            },
+        )()
+
+    router = SemanticIntentRouter(_Client(), SemanticRouterConfig(_env_file=None))
+
+    result = await router.route_fixed_scenario(
+        "法学和财政学哪个更适合",
+        request_context=RequestContext(userid="u1", sessionid="s1"),
+        active_pending=None,
+    )
+
+    assert result.status == "disabled"
+    assert result.enabled is False

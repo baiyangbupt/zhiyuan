@@ -118,7 +118,10 @@ class SemanticRouterConfig(BaseSettings):
 
     enabled: bool = False
     blocking: bool = False
+    fixed_route_enabled: bool = False
     timeout_seconds: float = 8.0
+    fixed_route_timeout_seconds: float = 10.0
+    fixed_route_min_confidence: float = 0.82
     max_history_messages: int = 6
     max_prompt_chars: int = 6000
     llm_provider: Literal["openai", "anthropic", "openai_compatible"] | None = None

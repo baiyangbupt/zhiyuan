@@ -30,6 +30,7 @@ from app.llm.client import LLMClient
 from app.resolver.action_resolver_shadow import action_resolver_shadow_from_plan_fast_decision
 from app.resolver.career_direction_fast_router import resolve_career_direction_fast_route
 from app.resolver.fast_route_arbitrator import arbitrate_fast_route_candidates
+from app.resolver.fixed_scenario_route_resolver import resolve_fixed_scenario_routes
 from app.resolver.major_compare_fast_router import resolve_major_compare_fast_route
 from app.resolver.major_compare_reply_renderer import (
     is_missing_weight_major_compare_result,
@@ -796,6 +797,30 @@ def _summarize_tool_calls_for_observability(
 
         summarized.append(item)
     return summarized
+
+
+def _summarize_full_agent_tool_trial(
+    tool_names: list[str],
+    *,
+    fixed_scenario_route_decision: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    counts: dict[str, int] = {}
+    for name in tool_names:
+        if not name:
+            continue
+        counts[name] = counts.get(name, 0) + 1
+    repeated = [name for name, count in counts.items() if count > 1]
+    summary: dict[str, Any] = {
+        "toolNames": list(tool_names),
+        "toolNameCounts": counts,
+        "repeatedToolNames": repeated,
+        "hasRepeatedToolCalls": bool(repeated),
+        "hasToolCalls": bool(tool_names),
+    }
+    if fixed_scenario_route_decision is not None:
+        summary["fixedScenarioRouter"] = fixed_scenario_route_decision
+        summary["fixedScenarioFallbackReason"] = fixed_scenario_route_decision.get("fallbackReason")
+    return summary
 
 
 def _tool_calls_include_plan_workspace_refresh(messages: list[Any] | None) -> list[str]:
@@ -3105,9 +3130,40 @@ class ChatService:
             else None
         )
         plan_query_candidate = resolve_plan_query_fast_route(content, batch=request_context.batch)
-        major_intent_candidate = resolve_major_intent_fast_route(content, batch=request_context.batch)
-        major_compare_candidate = resolve_major_compare_fast_route(content, batch=request_context.batch)
-        career_direction_candidate = resolve_career_direction_fast_route(content)
+        fixed_scenario_route_decision: dict[str, Any] | None = None
+        should_try_fixed_scenario_router = (
+            self.semantic_router_config.fixed_route_enabled
+            and not bool(getattr(plan_fast_candidate, "matched", False))
+            and not bool(getattr(plan_query_candidate, "matched", False))
+        )
+        if should_try_fixed_scenario_router:
+            fixed_route_result = await self.semantic_router.route_fixed_scenario(
+                content,
+                request_context=request_context,
+                active_pending=active_pending,
+            )
+            fixed_resolved = resolve_fixed_scenario_routes(
+                fixed_route_result,
+                batch=request_context.batch,
+                min_confidence=self.semantic_router_config.fixed_route_min_confidence,
+            )
+            fixed_scenario_route_decision = fixed_resolved.route_decision
+            major_intent_candidate = fixed_resolved.major_intent_decision
+            major_compare_candidate = fixed_resolved.major_compare_decision
+            career_direction_candidate = fixed_resolved.career_direction_decision
+            if fixed_scenario_route_decision is not None:
+                log_event(
+                    "fixed_scenario_router_event",
+                    sessionId=session_id,
+                    userId=user_id,
+                    prompt=content,
+                    routeDecision=fixed_scenario_route_decision,
+                    totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
+                )
+        else:
+            major_intent_candidate = resolve_major_intent_fast_route(content, batch=request_context.batch)
+            major_compare_candidate = resolve_major_compare_fast_route(content, batch=request_context.batch)
+            career_direction_candidate = resolve_career_direction_fast_route(content)
         fast_arbitration = arbitrate_fast_route_candidates(
             content,
             plan_fast_decision=plan_fast_candidate,
@@ -3116,13 +3172,16 @@ class ChatService:
             major_compare_decision=major_compare_candidate,
             career_direction_decision=career_direction_candidate,
         )
+        fast_arbitration_route_decision = fast_arbitration.route_decision()
+        if fixed_scenario_route_decision is not None:
+            fast_arbitration_route_decision["fixedScenarioRouter"] = fixed_scenario_route_decision
         if fast_arbitration.selected is None and fast_arbitration.candidates:
             log_event(
                 "fast_route_arbitration_fallback_event",
                 sessionId=session_id,
                 userId=user_id,
                 routeDecision=_attach_semantic_router_shadow(
-                    fast_arbitration.route_decision(),
+                    fast_arbitration_route_decision,
                     semantic_router_shadow,
                 ),
                 totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
@@ -3136,7 +3195,7 @@ class ChatService:
                 "confidence": "high",
                 "route": "explore",
                 "reason": "region_safety_tradeoff_structured_analysis",
-                "arbitration": fast_arbitration.route_decision(),
+                "arbitration": fast_arbitration_route_decision,
             }
             route_decision = _attach_semantic_router_shadow(route_decision, semantic_router_shadow)
             tool_call_id = "fast-analyze-region-safety-tradeoff"
@@ -3226,7 +3285,7 @@ class ChatService:
         fast_decision = fast_arbitration.decision_for("plan_fast_route")
         if fast_decision is not None and fast_decision.matched:
             route_decision = fast_decision.route_decision()
-            route_decision["arbitration"] = fast_arbitration.route_decision()
+            route_decision["arbitration"] = fast_arbitration_route_decision
             route_decision = _attach_semantic_router_shadow(route_decision, semantic_router_shadow)
             try:
                 shadow = action_resolver_shadow_from_plan_fast_decision(
@@ -3413,7 +3472,7 @@ class ChatService:
         plan_query_decision = fast_arbitration.decision_for("plan_query_fast_route")
         if plan_query_decision is not None and plan_query_decision.matched:
             route_decision = plan_query_decision.route_decision()
-            route_decision["arbitration"] = fast_arbitration.route_decision()
+            route_decision["arbitration"] = fast_arbitration_route_decision
             route_decision = _attach_semantic_router_shadow(route_decision, semantic_router_shadow)
             tool_call_id = "fast-query-volunteer-plan"
             tool_started_at = time.monotonic()
@@ -3507,7 +3566,7 @@ class ChatService:
         major_intent_decision = fast_arbitration.decision_for("major_intent_fast_route")
         if major_intent_decision is not None and major_intent_decision.matched:
             route_decision = major_intent_decision.route_decision()
-            route_decision["arbitration"] = fast_arbitration.route_decision()
+            route_decision["arbitration"] = fast_arbitration_route_decision
             route_decision = _attach_semantic_router_shadow(route_decision, semantic_router_shadow)
             tool_call_id = "fast-preview-major-intent"
             tool_started_at = time.monotonic()
@@ -3606,7 +3665,7 @@ class ChatService:
         major_compare_decision = fast_arbitration.decision_for("major_compare_fast_route")
         if major_compare_decision is not None and major_compare_decision.matched:
             route_decision = major_compare_decision.route_decision()
-            route_decision["arbitration"] = fast_arbitration.route_decision()
+            route_decision["arbitration"] = fast_arbitration_route_decision
             route_decision = _attach_semantic_router_shadow(route_decision, semantic_router_shadow)
             tool_call_id = "fast-compare-majors"
             tool_started_at = time.monotonic()
@@ -3747,7 +3806,7 @@ class ChatService:
         career_direction_decision = fast_arbitration.decision_for("career_direction_fast_route")
         if career_direction_decision is not None and career_direction_decision.matched:
             route_decision = career_direction_decision.route_decision()
-            route_decision["arbitration"] = fast_arbitration.route_decision()
+            route_decision["arbitration"] = fast_arbitration_route_decision
             route_decision = _attach_semantic_router_shadow(route_decision, semantic_router_shadow)
             tool_call_id = "fast-analyze-current-career-direction"
             tool_started_at = time.monotonic()
@@ -3939,6 +3998,10 @@ class ChatService:
         tool_returns = _iter_tool_return_parts(tool_messages)
         called_tool_names = [part.tool_name for part in tool_calls]
         observed_tool_calls = _summarize_tool_calls_for_observability(tool_calls, tool_returns)
+        full_agent_tool_trial = _summarize_full_agent_tool_trial(
+            called_tool_names,
+            fixed_scenario_route_decision=fixed_scenario_route_decision,
+        )
         if any(name in {"collect_plan_context_inputs", "plan_next_action", "execute_plan_action", "query_volunteer_plan"} for name in called_tool_names):
             scene = "plan"
         elif any("intent" in name for name in called_tool_names):
@@ -3960,6 +4023,7 @@ class ChatService:
                 "confidence": "model",
                 "route": scene,
                 "fallbackReason": "no_direct_route",
+                "toolTrial": full_agent_tool_trial,
             }, semantic_router_shadow),
             pendingType=pending_type,
             actionFamily=action_family,

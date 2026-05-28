@@ -19,7 +19,12 @@ from app.agent.context import RequestContext
 from app.config import SemanticRouterConfig
 from app.llm.client import LLMClient
 from app.models.conversation_phase import PendingConfirmation
-from app.models.semantic_router import SemanticIntentFrame, SemanticRouterShadowResult
+from app.models.semantic_router import (
+    FixedScenarioRouteFrame,
+    FixedScenarioRouteResult,
+    SemanticIntentFrame,
+    SemanticRouterShadowResult,
+)
 
 
 _INSTRUCTIONS = """\
@@ -75,6 +80,59 @@ JSON 字段：
 
 _PROMPT_PREFIX = "请根据以下上下文输出语义路由 JSON：\n"
 
+_FIXED_ROUTE_INSTRUCTIONS = """\
+你是高考志愿规划系统的高置信固定场景路由器，只输出 JSON 对象，不回答用户，不调用工具。
+
+目标：只识别少量可以安全走快捷入口的固定场景。拿不准、信息不足、用户在闲聊或开放咨询时，必须输出 fixedScenario="none"。
+
+可选 fixedScenario：
+1. major_compare.readonly
+   - 用户明确在 2-3 个具体专业之间比较、取舍、排优先级。
+   - 只读分析，不记录偏好，不改方案。
+   - 示例：“法学和财政学哪个更适合普通家庭女生，先只分析不要记偏好”、“财管会计审计怎么排优先级”。
+2. major_intent.preview
+   - 用户明确表达后续要偏好/接受/优先，或明确排除/不要/别碰某些专业。
+   - 这是待确认预览，不是直接生效。
+   - 示例：“会计审计可以，土木别要”、“医学护理这些别碰，财会还能接受，先看看影响”。
+3. career_direction.readonly
+   - 用户明确问体制内/考公/稳定就业/读研等职业方向和当前方案或个人选择的承接、支撑、短板。
+   - 只读分析，不记录偏好，不改方案。
+   - 示例：“当前方案对考公和读研分别有什么支撑和短板”。
+
+必须回 none 的情况：
+- 泛泛问某个专业现实不现实、能不能碰、适不适合，但不是两个或三个具体专业比较。
+- 体检、色弱、色盲、视力、口试、专项、资格、政策、报考要求、学费、分数波动、压线等咨询。
+- 用户要求加入、删除、移动、排序、替换、补齐方案。
+- 用户只是闲聊、收口、追问“为啥/怎么说/真的假的”等开放表达。
+- 用户明确要求“确认/执行/按这个改”但当前输入本身不是完整 fixed scenario。
+
+输出要求：
+- 只返回一个 JSON 对象，不要 Markdown，不要解释文字。
+- sideEffect 只能是 readonly 或 preview；不能输出 apply。
+- confidence 低于 0.82、存在歧义或缺信息时，fixedScenario 必须是 none。
+- 专业名保留用户表达即可，后续会本地目录校验；不要编造专业。
+- careerDirections 只能使用：system_public_service、stable_employment、further_study。
+
+JSON 字段：
+{
+  "fixedScenario": "none|major_compare.readonly|major_intent.preview|career_direction.readonly",
+  "sideEffect": "readonly|preview",
+  "confidence": 0.0,
+  "entities": {
+    "majorNames": [],
+    "positiveMajorNames": [],
+    "negativeMajorNames": [],
+    "careerDirections": []
+  },
+  "ambiguity": [],
+  "missingInfo": [],
+  "mustFallbackReason": "",
+  "reason": ""
+}
+"""
+
+_FIXED_ROUTE_PROMPT_PREFIX = "请根据以下上下文输出固定场景路由 JSON：\n"
+
 
 def _extract_json_object(text: Any) -> dict[str, Any]:
     if isinstance(text, dict):
@@ -102,12 +160,19 @@ def _parse_semantic_frame(text: Any) -> SemanticIntentFrame:
     return SemanticIntentFrame.model_validate(_extract_json_object(text))
 
 
+def _parse_fixed_scenario_frame(text: Any) -> FixedScenarioRouteFrame:
+    if isinstance(text, FixedScenarioRouteFrame):
+        return text
+    return FixedScenarioRouteFrame.model_validate(_extract_json_object(text))
+
+
 class SemanticIntentRouter:
     def __init__(self, llm_client: LLMClient, config: SemanticRouterConfig | None = None):
         self.llm_client = llm_client
         self.config = config or SemanticRouterConfig()
         self.router_llm_client = self._build_router_llm_client()
         self.agent: Agent | None = None
+        self.fixed_route_agent: Agent | None = None
 
     def _build_router_llm_client(self) -> LLMClient:
         if not self.config.llm_model_name:
@@ -134,6 +199,17 @@ class SemanticIntentRouter:
                 model_settings=self._router_model_settings(),
             )
         return self.agent
+
+    def _fixed_route_agent(self) -> Agent:
+        if self.fixed_route_agent is None:
+            self.fixed_route_agent = Agent(
+                model=self.router_llm_client.model,
+                output_type=str,
+                instructions=_FIXED_ROUTE_INSTRUCTIONS,
+                tools=[],
+                model_settings=self._router_model_settings(),
+            )
+        return self.fixed_route_agent
 
     def _router_model_settings(self) -> dict[str, Any]:
         settings = dict(self.router_llm_client.model_settings or {})
@@ -197,6 +273,56 @@ class SemanticIntentRouter:
                 errorMessage=str(exc),
             )
 
+    async def route_fixed_scenario(
+        self,
+        user_prompt: str,
+        *,
+        request_context: RequestContext,
+        active_pending: PendingConfirmation | None = None,
+    ) -> FixedScenarioRouteResult:
+        if not self.config.fixed_route_enabled:
+            return FixedScenarioRouteResult(enabled=False, status="disabled")
+
+        started_at = time.monotonic()
+        prompt = self._build_fixed_route_prompt(
+            user_prompt,
+            request_context=request_context,
+            active_pending=active_pending,
+        )
+        try:
+            task = self._fixed_route_agent().run(prompt, model_settings=self._router_model_settings())
+            timeout_seconds = float(self.config.fixed_route_timeout_seconds)
+            if timeout_seconds > 0:
+                result = await asyncio.wait_for(task, timeout=max(0.1, timeout_seconds))
+            else:
+                result = await task
+            frame = _parse_fixed_scenario_frame(result.output)
+            return FixedScenarioRouteResult(
+                enabled=True,
+                status="success",
+                frame=frame,
+                durationMs=int((time.monotonic() - started_at) * 1000),
+                promptChars=len(prompt),
+            )
+        except asyncio.TimeoutError:
+            return FixedScenarioRouteResult(
+                enabled=True,
+                status="timeout",
+                durationMs=int((time.monotonic() - started_at) * 1000),
+                promptChars=len(prompt),
+                errorType="timeout",
+                errorMessage=f"fixed scenario router timed out after {self.config.fixed_route_timeout_seconds}s",
+            )
+        except Exception as exc:
+            return FixedScenarioRouteResult(
+                enabled=True,
+                status="error",
+                durationMs=int((time.monotonic() - started_at) * 1000),
+                promptChars=len(prompt),
+                errorType=type(exc).__name__,
+                errorMessage=str(exc),
+            )
+
     def _build_prompt(
         self,
         user_prompt: str,
@@ -210,6 +336,20 @@ class SemanticIntentRouter:
             active_pending=active_pending,
         )
         return _PROMPT_PREFIX + self._json_with_budget(payload)
+
+    def _build_fixed_route_prompt(
+        self,
+        user_prompt: str,
+        *,
+        request_context: RequestContext,
+        active_pending: PendingConfirmation | None,
+    ) -> str:
+        payload = self._prompt_payload(
+            user_prompt,
+            request_context=request_context,
+            active_pending=active_pending,
+        )
+        return _FIXED_ROUTE_PROMPT_PREFIX + self._json_with_budget(payload, prefix_len=len(_FIXED_ROUTE_PROMPT_PREFIX))
 
     def _prompt_payload(
         self,
@@ -226,14 +366,14 @@ class SemanticIntentRouter:
             "scoreDetail": self._score_payload(request_context),
         }
 
-    def _json_with_budget(self, payload: dict[str, Any]) -> str:
+    def _json_with_budget(self, payload: dict[str, Any], *, prefix_len: int = len(_PROMPT_PREFIX)) -> str:
         """Return a complete JSON payload within the configured prompt budget.
 
         The router model is sensitive to malformed context.  Keep the JSON
         valid while progressively dropping low-value context instead of cutting
         through a serialized object.
         """
-        budget = max(600, int(self.config.max_prompt_chars) - len(_PROMPT_PREFIX))
+        budget = max(600, int(self.config.max_prompt_chars) - prefix_len)
 
         def dump(value: dict[str, Any]) -> str:
             return json.dumps(value, ensure_ascii=False, separators=(",", ":"))

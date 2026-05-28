@@ -1788,3 +1788,58 @@ SEMANTIC_ROUTER_LLM_ENABLE_THINKING=false
 - `semanticArbitrationCandidatePaths`
 
 后续如果进入 selective 接管，再增加 `semanticSelectedPath / semanticDurationMs / semanticFallbackReason`。接管前必须先通过 effect/perf、open-quality、realistic-user、80+ dialogue-derived 和历史 regression/e2e，且不得破坏确认边界。
+
+#### 14.12 高置信固定场景小模型路由设计
+
+结合 80+ 真实对话派生评估和多模型 shadow 结果，3.0.3 不再继续把“专业对比 / 专业意向 / 职业方向”这类语义场景靠局部关键词补丁扩大覆盖。新的收口方式是：
+
+```text
+用户输入
+  -> 确定性 guard：pending 确认、无 pending 确认保护、明确数字方案操作
+  -> FixedScenario LLM Router：只判断少量高置信固定场景并抽取实体
+  -> 本地 resolver 校验：目录专业、职业方向、sideEffect、置信度、歧义
+  -> Fast-route arbitration：只对校验通过的 fixed scenario 走受控工具
+  -> 未通过 / 低置信 / 开放表达：回 full Agent
+```
+
+小模型只负责“分类和实体抽取”，不回答用户、不调用工具、不生成待确认动作、不授权执行。当前第一批固定场景只覆盖：
+
+| fixed scenario | 触发边界 | 执行链路 | 不接管的情况 |
+| --- | --- | --- | --- |
+| `major_compare.readonly` | 2-3 个具体专业之间的明确比较、取舍、优先级，只读 | `compare_majors` / 多专业 renderer | 泛泛问“某方向现实吗/适合吗”、政策要求、要求记偏好或改方案 |
+| `major_intent.preview` | 明确表达后续偏好/排除，例如“会计审计可以，土木别要” | `preview_current_major_intent_confirmation` | “要不要避开/是不是有限制/能不能报”等咨询问题 |
+| `career_direction.readonly` | 明确问体制内/稳定就业/读研等方向与当前方案承接 | `analyze_current_career_direction` | 泛方向闲聊、没有明确职业方向、要求记偏好或改方案 |
+
+本地校验规则：
+
+- `confidence` 低于门槛、`ambiguity / missingInfo` 非空，直接回 full Agent。
+- `sideEffect=apply` 一律拒绝；高副作用仍只能通过 pending confirmation。
+- 专业实体必须能落到本地本科/专科专业目录；专业对比只接受 2-3 个 level3 具体专业。
+- 专业意向按本地目录归入 `level2 / level3 / negative_level2 / negative_level3`，不能把政策咨询误转成 pending。
+- 职业方向只能是 `system_public_service / stable_employment / further_study` 三类 taxonomy。
+- 小模型结果只形成候选；最终仍由 `fast_route_arbitrator` 做 fixedScenario 白名单和质量门禁。
+
+“字符串匹配”的边界同步收口：
+
+- 方案状态、数字移动/删除、明确排序、pending 确认这类强结构动作仍保留确定性解析，因为它们不是开放语义理解问题。
+- 专业对比、专业意向、职业方向不再依赖主路径中的局部关键词扩展；启用 `SEMANTIC_ROUTER_FIXED_ROUTE_ENABLED=true` 后，这三类候选来自小模型 fixed-scenario router。
+- 旧 deterministic major/career fast router 暂时保留为测试和回退实现，但不作为 fixed-scenario 小模型模式下的主判决来源。
+
+自由试工具作为持续跟踪问题：
+
+- full Agent 路径继续记录 `toolCalls`、`toolCallCount`、`llmRequests`、`actionFamily`、`resultKind` 和耗时。
+- 当高置信固定场景没有被小模型接住而回到 full Agent 时，需要在评估报告中观察是否出现重复读方案、错误试 `query_volunteer_plan`、意向工具误试或 plan 工具参数失败。
+- 后续优化不以逐 case 关键词补丁修复，而是把失败样例归入新的 fixed scenario、resolver 校验或 full Agent prompt/tool surface 设计。
+
+配置建议：
+
+```env
+SEMANTIC_ROUTER_FIXED_ROUTE_ENABLED=true
+SEMANTIC_ROUTER_FIXED_ROUTE_TIMEOUT_SECONDS=10
+SEMANTIC_ROUTER_FIXED_ROUTE_MIN_CONFIDENCE=0.82
+SEMANTIC_ROUTER_LLM_MODEL_NAME=deepseek-ai/DeepSeek-V4-Flash
+SEMANTIC_ROUTER_LLM_TEMPERATURE=0
+SEMANTIC_ROUTER_LLM_ENABLE_THINKING=false
+```
+
+上线前必须复跑 effect/perf、open-quality、realistic-user、80+ dialogue-derived 和历史 regression/e2e。验收顺序仍是先看回复质量和动作边界，再看延迟。
