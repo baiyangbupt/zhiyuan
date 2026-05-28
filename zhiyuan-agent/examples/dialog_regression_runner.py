@@ -638,6 +638,59 @@ def _build_metrics_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
             }
             for record in slowest
         ],
+        "fastRouteArbitration": _build_fast_route_arbitration_summary(records),
+    }
+
+
+def _bump(counter: dict[str, int], key: Any) -> None:
+    text = str(key or "").strip()
+    if not text:
+        return
+    counter[text] = counter.get(text, 0) + 1
+
+
+def _build_fast_route_arbitration_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
+    observed = 0
+    needed = 0
+    selected_paths: dict[str, int] = {}
+    needed_reasons: dict[str, int] = {}
+    candidate_paths: dict[str, int] = {}
+    needed_examples: list[dict[str, Any]] = []
+
+    for record in records:
+        turn = record.get("turnObservability")
+        if not isinstance(turn, dict):
+            continue
+        arbitration = turn.get("fastRouteArbitration")
+        if not isinstance(arbitration, dict):
+            continue
+        observed += 1
+        _bump(selected_paths, arbitration.get("selectedPath"))
+        for path in arbitration.get("semanticArbitrationCandidatePaths") or []:
+            _bump(candidate_paths, path)
+        if arbitration.get("semanticArbitrationNeeded") is True:
+            needed += 1
+            _bump(needed_reasons, arbitration.get("semanticArbitrationReason"))
+            if len(needed_examples) < 10:
+                needed_examples.append(
+                    {
+                        "case": record.get("case"),
+                        "sessionId": record.get("sessionId"),
+                        "prompt": record.get("prompt"),
+                        "selectedPath": arbitration.get("selectedPath"),
+                        "reason": arbitration.get("semanticArbitrationReason"),
+                        "candidatePaths": arbitration.get("semanticArbitrationCandidatePaths") or [],
+                    }
+                )
+
+    return {
+        "observed": observed,
+        "semanticArbitrationNeeded": needed,
+        "semanticArbitrationNotNeeded": observed - needed,
+        "selectedPaths": selected_paths,
+        "neededReasons": needed_reasons,
+        "candidatePaths": candidate_paths,
+        "neededExamples": needed_examples,
     }
 
 

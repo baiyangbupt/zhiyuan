@@ -564,3 +564,51 @@ def test_metrics_summary_reports_latency_distribution_and_slowest_steps():
     assert summary["failedSteps"] == 1
     assert summary["elapsed"]["medianMs"] == 2000
     assert summary["slowest"][0]["case"] == "b"
+
+
+def test_metrics_summary_reports_fast_route_arbitration_distribution():
+    summary = runner._build_metrics_summary(
+        [
+            {
+                "case": "a",
+                "sessionId": "17",
+                "prompt": "当前方案里有没有法学",
+                "elapsedMs": 1000,
+                "turnObservability": {
+                    "fastRouteArbitration": {
+                        "selectedPath": "plan_query_fast_route",
+                        "semanticArbitrationNeeded": False,
+                        "semanticArbitrationCandidatePaths": ["plan_query_fast_route"],
+                    }
+                },
+            },
+            {
+                "case": "b",
+                "sessionId": "17",
+                "prompt": "医学别碰，先看看影响",
+                "elapsedMs": 2000,
+                "turnObservability": {
+                    "fastRouteArbitration": {
+                        "selectedPath": "major_intent_fast_route",
+                        "semanticArbitrationNeeded": True,
+                        "semanticArbitrationReason": "intent_plan_mixed_candidates",
+                        "semanticArbitrationCandidatePaths": [
+                            "plan_query_fast_route",
+                            "major_intent_fast_route",
+                        ],
+                    }
+                },
+            },
+        ]
+    )
+
+    arbitration = summary["fastRouteArbitration"]
+    assert arbitration["observed"] == 2
+    assert arbitration["semanticArbitrationNeeded"] == 1
+    assert arbitration["selectedPaths"] == {
+        "plan_query_fast_route": 1,
+        "major_intent_fast_route": 1,
+    }
+    assert arbitration["neededReasons"] == {"intent_plan_mixed_candidates": 1}
+    assert arbitration["candidatePaths"]["plan_query_fast_route"] == 2
+    assert arbitration["neededExamples"][0]["prompt"] == "医学别碰，先看看影响"

@@ -1587,6 +1587,9 @@ fast routers 产出候选
 - 已新增内部历史消息 `model_name=route-observability`，用于把 fast-route 成功路径的 `conversation_turn_event.routingPath` 与 `routeDecision.arbitration` 落入本地 SQLite 历史，`dialog_regression_runner.py` 可直接提取 `turnObservability.routeDecision / fastRouteArbitration`。
 - `build_runtime_history` 会过滤 `semantic-router-shadow` 与 `route-observability` 两类内部观测消息，确保它们不会进入后续主模型上下文，也不会影响用户可见回复。
 - 当前内部历史观测优先覆盖 `plan_fast_route / plan_query_fast_route / major_intent_fast_route / major_compare_fast_route / career_direction_fast_route / region_safety_tradeoff_route`。full-agent 路径的 token、toolCalls 和 routeDecision 仍以服务端结构化日志为准，后续如果需要统一离线报告，可继续把 full-agent turn event 也落为内部观测消息。
+- `dialog_regression_runner.py` 已在 metrics summary 中新增 `fastRouteArbitration` 汇总，包括 observed、semanticArbitrationNeeded、selectedPaths、neededReasons、candidatePaths 和前 10 个需仲裁样例。
+- 复跑 `dialog_regression_303_effect_perf_cases.json`，输出 `/private/tmp/zhiyuan_303_effect_perf_arbitration_distribution.json`：`14/14` steps 通过，median `2237ms`，p95 `3623ms`，max `4142ms`；其中 10 个 fast-route 观测全部 `semanticArbitrationNeeded=0`，路径分布为 `plan_fast_route=6 / plan_query_fast_route=1 / career_direction_fast_route=1 / major_compare_fast_route=1 / major_intent_fast_route=1`。结论是当前稳定高置信路径不应接入阻塞 LLM 仲裁，下一步要在 dialogue-derived 和开放口语 case 中寻找真实混淆样本。
+- 本轮日志中观察到意向确认后候选 total 查询返回 `None` 的 warning，但业务回复和状态写入成功，暂列为独立观察点；它不属于 selective arbitration 主问题。
 
 ## 11. 待确认决策
 
