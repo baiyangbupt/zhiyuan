@@ -249,3 +249,9 @@
 - DeepSeek V4 Flash Non-think 适合作为 semantic router 候选继续 shadow，不适合直接替换主路由。
 - `confirm/apply` 必须继续由确定性 pending 状态机控制，LLM semantic frame 只能参与候选判断，不能授权执行。
 - 当前 prompt/context 偏重，后续要先缩小路由输入，再看是否能在低超时下用于候选冲突仲裁。
+
+补充复核：
+
+- router prompt 已改为预算内完整 JSON 压缩，并在 shadow 结果中记录 `promptChars`。
+- 4 step Non-think 小样本中，`promptChars=368-1124`，但仍只有 `1/4` semantic success，其余 `3/4` 在 8 秒超时。
+- 因此后续评估报告要同时看 `promptChars` 和 `durationMs`；如果短 prompt 仍超时，应归类为模型/平台响应问题，而不是继续无效压缩上下文。

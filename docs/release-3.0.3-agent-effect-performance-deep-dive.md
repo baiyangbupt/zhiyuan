@@ -1523,6 +1523,32 @@ SEMANTIC_ROUTER_LLM_ENABLE_THINKING=false
 4. 对 `apply`、工作台联动和偏好写入保持确定性安全门禁，LLM 只能提供语义解释和候选建议。
 5. 后续用 80+ dialogue-derived 与历史 e2e 全量门禁评估 selective 接管，不以 14 step 小样本作为替换依据。
 
+### 10.4 输入压缩复核
+
+为了确认 timeout 是否主要由上下文过大导致，本轮将 router prompt 改成预算内完整 JSON 压缩：
+
+- 保留 `userPrompt / pending / planningSummary / scoreDetail` 核心字段。
+- 最近对话只保留近 2 条短文本，超预算时直接移除。
+- 风险、地域、专业等列表只保留少量短摘要。
+- 超预算时分级降级 planning summary，而不是截断序列化 JSON。
+- shadow 结果记录 `promptChars`，方便和耗时对照。
+
+小规模 Non-think probe：
+
+| 输入 | promptChars | semantic status | router 耗时 | 业务路由 |
+| --- | ---: | --- | ---: | --- |
+| 看看现在的方案，给我一个结构化一点的结论 | 368 | timeout | `8002ms` | `plan_fast_route` |
+| 按院校层次排序 | 453 | timeout | `8002ms` | `plan_fast_route` |
+| 法学和财政学哪个更适合普通家庭女生，先只分析不要记偏好 | 618 | success | `4865ms` | `major_compare_fast_route` |
+| 确认 | 1124 | timeout | `8001ms` | `plan_confirmation_guard_no_pending` |
+
+结论：prompt 压缩后输入已经足够小，但 DeepSeek V4 Flash Non-think 仍存在明显 timeout。后续性能优化不能寄希望于“把全局 LLM 路由放到每一轮最前面”，而应走 selective arbitration：
+
+- 高置信 plan/query/intent/compare/career 仍由本地 fast route 和确定性 resolver 先处理。
+- semantic router 默认非阻塞，仅用于记录和评估。
+- 只有多个候选冲突、当前规则信心不足且回复质量可能受影响时，才用短超时 semantic router 辅助仲裁。
+- 仲裁失败或超时时直接回当前稳定路径，不阻塞用户回复。
+
 ## 11. 待确认决策
 
 需要确认后再进入代码实现：

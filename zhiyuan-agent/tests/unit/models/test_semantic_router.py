@@ -1,3 +1,10 @@
+import json
+from types import SimpleNamespace
+
+import pytest
+
+from app.agent.context import PlanningSummary, RequestContext, ScoreDetail
+from app.models.conversation_phase import PendingConfirmation
 from app.models.semantic_router import SemanticIntentFrame, SemanticRouterShadowResult
 from app.resolver.semantic_intent_router import SemanticIntentRouter, _parse_semantic_frame
 from app.config import SemanticRouterConfig
@@ -215,3 +222,118 @@ def test_semantic_router_can_disable_provider_thinking_for_router_model(mocker):
     )
 
     assert router._router_model_settings()["extra_body"] == {"enable_thinking": False}
+
+
+def test_semantic_router_prompt_budget_keeps_valid_json():
+    class _Client:
+        model = "main-model-instance"
+        model_settings = {}
+        config = type(
+            "Config",
+            (),
+            {
+                "provider": "openai_compatible",
+                "model_name": "main-model",
+                "api_key": "sk-main",
+                "base_url": "https://llm.example.com/v1",
+            },
+        )()
+
+    router = SemanticIntentRouter(
+        _Client(),
+        SemanticRouterConfig(_env_file=None, max_prompt_chars=900),
+    )
+    context = RequestContext(
+        userid="u1",
+        sessionid="s1",
+        chat_history=[
+            {"role": "user", "content": "上一轮很长" * 300},
+            {"role": "assistant", "content": "回复也很长" * 300},
+            {"role": "user", "content": "继续补充" * 300},
+        ],
+        score_detail=ScoreDetail(
+            province="山东",
+            total_score=450,
+            subject_list=["物理", "历史", "地理"],
+            sex="女",
+            volunteer_model="majorGroup",
+        ),
+        planning_summary=PlanningSummary(
+            phase="ordered",
+            version=7,
+            ordered_total=45,
+            ordered_target_total=48,
+            review_warn_count=2,
+            review_risk_count=1,
+            tier_counts={"冲": 10, "稳": 20, "保": 15},
+            risk_summaries=["风险说明" * 50],
+            positive_regions=["北京" * 50, "天津" * 50, "上海" * 50],
+            positive_majors=["法学" * 50, "财政学" * 50, "会计学" * 50],
+        ),
+    )
+    pending = PendingConfirmation(
+        kind="plan_mutation",
+        action_family="sort_ordered_plan",
+        preview_summary="按院校层次排序会改变方案顺序" * 30,
+    )
+
+    prompt = router._build_prompt(
+        "按院校层次排一下，先看看",
+        request_context=context,
+        active_pending=pending,
+    )
+    payload = json.loads(prompt.split("\n", 1)[1])
+
+    assert len(prompt) <= 900
+    assert payload["userPrompt"] == "按院校层次排一下，先看看"
+    assert payload["pending"]["actionFamily"] == "sort_ordered_plan"
+    assert payload["planningSummary"]["orderedTotal"] == 45
+    assert payload["scoreDetail"]["volunteerModel"] == "majorGroup"
+
+
+@pytest.mark.asyncio
+async def test_semantic_router_shadow_records_prompt_chars(mocker):
+    class _Client:
+        model = "main-model-instance"
+        model_settings = {}
+        config = type(
+            "Config",
+            (),
+            {
+                "provider": "openai_compatible",
+                "model_name": "main-model",
+                "api_key": "sk-main",
+                "base_url": "https://llm.example.com/v1",
+            },
+        )()
+
+    router = SemanticIntentRouter(
+        _Client(),
+        SemanticRouterConfig(_env_file=None, enabled=True, max_prompt_chars=900),
+    )
+
+    class _Agent:
+        async def run(self, prompt, model_settings=None):
+            return SimpleNamespace(
+                output=json.dumps(
+                    {
+                        "taskLayer": "plan",
+                        "verb": "sort",
+                        "topic": "plan",
+                        "sideEffect": "preview",
+                    }
+                )
+            )
+
+    mocker.patch.object(router, "_agent", return_value=_Agent())
+    context = RequestContext(userid="u1", sessionid="s1")
+
+    result = await router.route_shadow(
+        "按院校层次排序",
+        request_context=context,
+        active_pending=None,
+    )
+
+    assert result.status == "success"
+    assert result.promptChars > 0
+    assert result.event_payload()["promptChars"] == result.promptChars

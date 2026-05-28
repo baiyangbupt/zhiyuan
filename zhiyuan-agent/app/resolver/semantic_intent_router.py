@@ -63,6 +63,8 @@ JSON 字段：
 }
 """
 
+_PROMPT_PREFIX = "请根据以下上下文输出语义路由 JSON：\n"
+
 
 def _extract_json_object(text: Any) -> dict[str, Any]:
     if isinstance(text, dict):
@@ -160,12 +162,14 @@ class SemanticIntentRouter:
                 status="success",
                 frame=frame,
                 durationMs=int((time.monotonic() - started_at) * 1000),
+                promptChars=len(prompt),
             )
         except asyncio.TimeoutError:
             return SemanticRouterShadowResult(
                 enabled=True,
                 status="timeout",
                 durationMs=int((time.monotonic() - started_at) * 1000),
+                promptChars=len(prompt),
                 errorType="timeout",
                 errorMessage=f"semantic router timed out after {self.config.timeout_seconds}s",
             )
@@ -174,6 +178,7 @@ class SemanticIntentRouter:
                 enabled=True,
                 status="error",
                 durationMs=int((time.monotonic() - started_at) * 1000),
+                promptChars=len(prompt),
                 errorType=type(exc).__name__,
                 errorMessage=str(exc),
             )
@@ -185,17 +190,130 @@ class SemanticIntentRouter:
         request_context: RequestContext,
         active_pending: PendingConfirmation | None,
     ) -> str:
-        payload = {
-            "userPrompt": str(user_prompt or ""),
+        payload = self._prompt_payload(
+            user_prompt,
+            request_context=request_context,
+            active_pending=active_pending,
+        )
+        return _PROMPT_PREFIX + self._json_with_budget(payload)
+
+    def _prompt_payload(
+        self,
+        user_prompt: str,
+        *,
+        request_context: RequestContext,
+        active_pending: PendingConfirmation | None,
+    ) -> dict[str, Any]:
+        return {
+            "userPrompt": str(user_prompt or "")[:600],
             "recentChat": self._recent_chat(request_context.chat_history),
             "pending": self._pending_payload(active_pending),
             "planningSummary": self._planning_summary_payload(request_context),
             "scoreDetail": self._score_payload(request_context),
         }
-        text = json.dumps(payload, ensure_ascii=False)
-        if len(text) > self.config.max_prompt_chars:
-            text = text[: self.config.max_prompt_chars] + "\n...（已截断）"
-        return "请根据以下上下文输出语义路由 JSON：\n" + text
+
+    def _json_with_budget(self, payload: dict[str, Any]) -> str:
+        """Return a complete JSON payload within the configured prompt budget.
+
+        The router model is sensitive to malformed context.  Keep the JSON
+        valid while progressively dropping low-value context instead of cutting
+        through a serialized object.
+        """
+        budget = max(600, int(self.config.max_prompt_chars) - len(_PROMPT_PREFIX))
+
+        def dump(value: dict[str, Any]) -> str:
+            return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+        text = dump(payload)
+        if len(text) <= budget:
+            return text
+
+        compact = dict(payload)
+        compact["recentChat"] = self._compact_recent_chat(compact.get("recentChat"))
+        compact["planningSummary"] = self._compact_planning_summary(compact.get("planningSummary"))
+        compact["pending"] = self._compact_pending(compact.get("pending"))
+        compact["scoreDetail"] = self._compact_score(compact.get("scoreDetail"))
+
+        text = dump(compact)
+        if len(text) <= budget:
+            return text
+
+        compact["recentChat"] = []
+        text = dump(compact)
+        if len(text) <= budget:
+            return text
+
+        compact["planningSummary"] = self._minimal_planning_summary(compact.get("planningSummary"))
+        text = dump(compact)
+        if len(text) <= budget:
+            return text
+
+        minimal = {
+            "userPrompt": str(payload.get("userPrompt") or "")[:300],
+            "pending": self._compact_pending(compact.get("pending")),
+            "planningSummary": compact.get("planningSummary"),
+            "scoreDetail": compact.get("scoreDetail"),
+        }
+        return dump(minimal)
+
+    def _compact_recent_chat(self, recent_chat: Any) -> list[dict[str, str]]:
+        if not isinstance(recent_chat, list):
+            return []
+        compact: list[dict[str, str]] = []
+        for item in recent_chat[-2:]:
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role") or "").strip()
+            content = str(item.get("content") or "").strip()
+            if role and content:
+                compact.append({"role": role[:20], "content": content[:180]})
+        return compact
+
+    def _compact_planning_summary(self, summary: Any) -> dict[str, Any] | None:
+        if not isinstance(summary, dict):
+            return None
+        compact = dict(summary)
+        for key in ("riskSummaries", "positiveRegions", "positiveMajors"):
+            values = compact.get(key)
+            if isinstance(values, list):
+                compact[key] = [str(value)[:40] for value in values[:2]]
+        return compact
+
+    def _minimal_planning_summary(self, summary: Any) -> dict[str, Any] | None:
+        if not isinstance(summary, dict):
+            return None
+        keys = (
+            "phase",
+            "version",
+            "orderedTotal",
+            "orderedTargetTotal",
+            "tierCounts",
+            "reviewWarnCount",
+            "reviewRiskCount",
+        )
+        return {key: summary.get(key) for key in keys if key in summary}
+
+    def _compact_pending(self, pending: Any) -> dict[str, Any] | None:
+        if not isinstance(pending, dict):
+            return None
+        preview = str(pending.get("previewSummary") or "").strip()
+        return {
+            "kind": pending.get("kind"),
+            "actionFamily": pending.get("actionFamily"),
+            "previewSummary": preview[:180],
+        }
+
+    def _compact_score(self, score: Any) -> dict[str, Any] | None:
+        if not isinstance(score, dict):
+            return None
+        subjects = score.get("subjects")
+        return {
+            "province": score.get("province"),
+            "totalScore": score.get("totalScore"),
+            "subjects": subjects[:3] if isinstance(subjects, list) else subjects,
+            "sex": score.get("sex"),
+            "volunteerModel": score.get("volunteerModel"),
+        }
 
     def _recent_chat(self, chat_history: list[dict] | None) -> list[dict[str, Any]]:
         history = chat_history or []
@@ -207,7 +325,7 @@ class SemanticIntentRouter:
             role = str(item.get("role") or "").strip()
             content = str(item.get("content") or "").strip()
             if role and content:
-                result.append({"role": role, "content": content[:800]})
+                result.append({"role": role[:20], "content": content[:500]})
         return result
 
     def _pending_payload(self, pending: PendingConfirmation | None) -> dict[str, Any] | None:

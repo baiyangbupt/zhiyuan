@@ -1751,3 +1751,10 @@ SEMANTIC_ROUTER_LLM_ENABLE_THINKING=false
 - 当前 full-context router prompt + 阻塞模式仍太慢，不适合作为所有请求的前置主路由。
 - 后续更合理的落地方式是：确定性 guard 与稳定 fast route 先行；只在候选冲突、低置信、开放表达难判断时，用短超时轻量 LLM 做 semantic arbitration；任何 `apply` 仍必须由 `conversation_phase.pending` 和版本/轮次守护确认。
 - 下一步优先优化 router prompt 和输入上下文体积，再评估更短 timeout 下的 route confusion matrix；不要因为某个模型在少量 case 成功就替换当前主链路。
+
+补充压缩输入验证：
+
+- `SemanticIntentRouter` 的 prompt 构建已改为“预算内压缩完整 JSON”，不再把序列化后的 JSON 从中间截断。
+- shadow 结果新增 `promptChars` 观测字段，用于后续判断慢点是输入过大还是模型/平台响应慢。
+- 小规模 4 step 阻塞验证中，`promptChars` 已压到 `368 / 453 / 618 / 1124`，但 DeepSeek V4 Flash Non-think 仍出现 `3/4` timeout；唯一成功的是专业对比场景，耗时约 `4.865s`。
+- 这说明当前全量阻塞不可用并不只是 prompt 太长导致，模型服务响应波动本身也会让主链路被拖慢。因此默认仍必须保持 non-blocking shadow，后续只考虑低置信冲突场景的短超时仲裁。
