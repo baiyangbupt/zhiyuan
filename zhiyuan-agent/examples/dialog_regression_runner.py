@@ -362,6 +362,7 @@ def _summarize_turn_observability(turn_messages: list[dict[str, Any]]) -> dict[s
             if kind == "text":
                 data = _parse_json_object(part.get("content"))
                 if data.get("event") == "conversation_turn_event":
+                    _add_unique(routing_paths, data.get("routingPath"))
                     raw_route_decision = data.get("routeDecision")
                     if isinstance(raw_route_decision, dict):
                         route_decision = raw_route_decision

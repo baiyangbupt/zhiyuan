@@ -1584,8 +1584,9 @@ fast routers 产出候选
 
 - `dialog_regression_303_effect_perf_cases.json` 在 semantic router 关闭、只保留本地 fast-route 仲裁时复跑 `14/14` 通过，median 约 `2281ms`，p95 约 `5771ms`，没有引入阻塞 LLM 等待。
 - 当前新增字段已经进入服务端 `conversation_turn_event.routeDecision.arbitration` 结构化日志。
-- 现有 `dialog_regression_runner.py` 主要从 SQLite 历史提取工具和路由观测，而 `conversation_turn_event` 只写结构化日志，不写入历史；因此 e2e metrics 暂时还不能直接展示 `semanticArbitrationNeeded` 分布。
-- TODO：后续需要在不污染主模型 runtime history 的前提下，把 routeDecision/arbitration 作为内部观测消息落到历史，或让 runner 支持读取结构化日志文件，方便自动生成 selective arbitration 分布报告。
+- 已新增内部历史消息 `model_name=route-observability`，用于把 fast-route 成功路径的 `conversation_turn_event.routingPath` 与 `routeDecision.arbitration` 落入本地 SQLite 历史，`dialog_regression_runner.py` 可直接提取 `turnObservability.routeDecision / fastRouteArbitration`。
+- `build_runtime_history` 会过滤 `semantic-router-shadow` 与 `route-observability` 两类内部观测消息，确保它们不会进入后续主模型上下文，也不会影响用户可见回复。
+- 当前内部历史观测优先覆盖 `plan_fast_route / plan_query_fast_route / major_intent_fast_route / major_compare_fast_route / career_direction_fast_route / region_safety_tradeoff_route`。full-agent 路径的 token、toolCalls 和 routeDecision 仍以服务端结构化日志为准，后续如果需要统一离线报告，可继续把 full-agent turn event 也落为内部观测消息。
 
 ## 11. 待确认决策
 

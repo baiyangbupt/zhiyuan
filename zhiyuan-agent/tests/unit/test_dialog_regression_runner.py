@@ -456,6 +456,7 @@ def test_summarize_turn_observability_extracts_fast_route_arbitration():
 
     observed = runner._summarize_turn_observability(turn_messages)
 
+    assert observed["routingPath"] == "plan_query_fast_route"
     assert observed["routeDecision"] == route_decision
     assert observed["fastRouteArbitration"]["semanticArbitrationNeeded"] is True
     assert observed["fastRouteArbitration"]["semanticArbitrationCandidatePaths"] == [

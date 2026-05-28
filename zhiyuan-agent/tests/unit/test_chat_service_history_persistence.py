@@ -27,6 +27,7 @@ from app.service import (
     _normalize_pending_intent_reply,
     _normalize_plan_reply_style,
     _normalize_user_facing_terms,
+    _route_observability_message,
     _semantic_router_shadow_message,
     _select_conversation_action_family,
     _sanitize_reply_for_user,
@@ -97,6 +98,27 @@ def test_semantic_router_shadow_message_is_internal_history_only():
     assert message is not None
     assert message.model_name == "semantic-router-shadow"
     assert "semanticRouterShadow" in message.parts[0].content
+
+
+def test_route_observability_message_is_internal_history_only():
+    message = _route_observability_message(
+        {
+            "routingPath": "plan_query_fast_route",
+            "routeDecision": {
+                "source": "plan_query_fast_route",
+                "matched": True,
+                "arbitration": {
+                    "selectedPath": "plan_query_fast_route",
+                    "semanticArbitrationNeeded": True,
+                },
+            },
+        }
+    )
+
+    assert message is not None
+    assert message.model_name == "route-observability"
+    assert '"event": "conversation_turn_event"' in message.parts[0].content
+    assert '"semanticArbitrationNeeded": true' in message.parts[0].content
 
 
 def test_summarize_tool_calls_for_observability_extracts_plan_action_result():
@@ -381,6 +403,35 @@ def test_build_runtime_history_trims_long_history_and_compacts_tool_returns():
     assert tool_returns
     assert "items" not in tool_returns[0].content
     assert "预览删除 2 条志愿" in tool_returns[0].content
+
+
+def test_build_runtime_history_drops_internal_route_observability_messages():
+    history = [
+        ModelRequest(parts=[UserPromptPart(content="当前方案里有没有法学")]),
+        ModelResponse(parts=[TextPart(content="有 2 个法学相关志愿。")], model_name="plan-query-fast-route"),
+        _route_observability_message(
+            {
+                "routingPath": "plan_query_fast_route",
+                "routeDecision": {
+                    "source": "plan_query_fast_route",
+                    "matched": True,
+                    "arbitration": {"semanticArbitrationNeeded": True},
+                },
+            }
+        ),
+    ]
+
+    runtime = build_runtime_history(
+        history,
+        latest_user_content="那审查一下",
+        pending_plan_action=None,
+        config=MagicMock(runtime_max_messages=20, runtime_drop_tool_returns_over_chars=200),
+    )
+
+    assert runtime.full_len == 2
+    assert runtime.model_history is not None
+    assert all(getattr(message, "model_name", "") != "route-observability" for message in runtime.model_history)
+    assert "routeObservability" not in json.dumps(runtime.chat_history, ensure_ascii=False)
 
 
 def test_build_runtime_history_keeps_pending_turn_outside_recent_window():
@@ -4926,6 +4977,15 @@ def test_chat_service_plan_query_fast_route_bypasses_main_agent_and_persists_tra
         for message in saved_history
         for part in getattr(message, "parts", [])
     )
+    route_messages = [
+        message for message in saved_history
+        if getattr(message, "model_name", "") == "route-observability"
+    ]
+    assert len(route_messages) == 1
+    route_payload = json.loads(route_messages[0].parts[0].content)
+    assert route_payload["event"] == "conversation_turn_event"
+    assert route_payload["routingPath"] == "plan_query_fast_route"
+    assert route_payload["routeDecision"]["arbitration"]["selectedPath"] == "plan_query_fast_route"
     log_kwargs = log_mock.call_args.kwargs
     assert log_kwargs["routingPath"] == "plan_query_fast_route"
     assert log_kwargs["llmRequests"] == 0

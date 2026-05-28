@@ -156,6 +156,8 @@ _PLAN_MUTATION_PROMPT_KEYWORDS = (
     "补几个",
 )
 _UNBACKED_CONFIRM_SENTENCE_RE = re.compile(r"确认要我.*执行")
+_SEMANTIC_ROUTER_SHADOW_MODEL_NAME = "semantic-router-shadow"
+_ROUTE_OBSERVABILITY_MODEL_NAME = "route-observability"
 
 
 def _safe_result_field(result_text: str, field: str) -> Any:
@@ -203,7 +205,24 @@ def _semantic_router_shadow_message(shadow: Any | None) -> ModelResponse | None:
         )
     except Exception:
         return None
-    return ModelResponse(parts=[TextPart(content=content)], model_name="semantic-router-shadow")
+    return ModelResponse(parts=[TextPart(content=content)], model_name=_SEMANTIC_ROUTER_SHADOW_MODEL_NAME)
+
+
+def _route_observability_message(turn_event: dict[str, Any] | None) -> ModelResponse | None:
+    if not turn_event:
+        return None
+    try:
+        content = json.dumps(
+            {
+                "type": "routeObservability",
+                "event": "conversation_turn_event",
+                **turn_event,
+            },
+            ensure_ascii=False,
+        )
+    except Exception:
+        return None
+    return ModelResponse(parts=[TextPart(content=content)], model_name=_ROUTE_OBSERVABILITY_MODEL_NAME)
 
 
 def _append_semantic_router_shadow_message(messages: list[Any], shadow: Any | None) -> list[Any]:
@@ -216,7 +235,7 @@ def _append_semantic_router_shadow_message(messages: list[Any], shadow: Any | No
 def _is_semantic_router_shadow_message(message: Any) -> bool:
     if not isinstance(message, ModelResponse):
         return False
-    if str(getattr(message, "model_name", "") or "") == "semantic-router-shadow":
+    if str(getattr(message, "model_name", "") or "") == _SEMANTIC_ROUTER_SHADOW_MODEL_NAME:
         return True
     for part in getattr(message, "parts", []) or []:
         if isinstance(part, TextPart):
@@ -225,6 +244,22 @@ def _is_semantic_router_shadow_message(message: Any) -> bool:
             except Exception:
                 continue
             if isinstance(data, dict) and data.get("type") == "semanticRouterShadow":
+                return True
+    return False
+
+
+def _is_route_observability_message(message: Any) -> bool:
+    if not isinstance(message, ModelResponse):
+        return False
+    if str(getattr(message, "model_name", "") or "") == _ROUTE_OBSERVABILITY_MODEL_NAME:
+        return True
+    for part in getattr(message, "parts", []) or []:
+        if isinstance(part, TextPart):
+            try:
+                data = json.loads(part.content)
+            except Exception:
+                continue
+            if isinstance(data, dict) and data.get("type") == "routeObservability":
                 return True
     return False
 
@@ -475,6 +510,7 @@ def build_runtime_history(
         message
         for message in list(full_history or [])
         if not _is_semantic_router_shadow_message(message)
+        and not _is_route_observability_message(message)
     ]
     cfg = config or HistoryConfig()
     max_messages = max(0, int(getattr(cfg, "runtime_max_messages", 24) or 0))
@@ -3139,6 +3175,14 @@ class ChatService:
                         ),
                         ModelResponse(parts=[TextPart(content=reply)], model_name="region-safety-tradeoff-route"),
                     ]
+                    route_message = _route_observability_message(
+                        {
+                            "routingPath": "region_safety_tradeoff_route",
+                            "routeDecision": route_decision,
+                        }
+                    )
+                    if route_message is not None:
+                        new_messages.append(route_message)
                     try:
                         history_to_save = list(history or [])
                         history_to_save.extend(_append_semantic_router_shadow_message(new_messages, semantic_router_shadow))
@@ -3292,6 +3336,14 @@ class ChatService:
                     ),
                     ModelResponse(parts=[TextPart(content=reply)], model_name="plan-fast-route"),
                 ]
+                route_message = _route_observability_message(
+                    {
+                        "routingPath": "plan_fast_route",
+                        "routeDecision": route_decision,
+                    }
+                )
+                if route_message is not None:
+                    new_messages.append(route_message)
                 try:
                     history_to_save = list(history or [])
                     history_to_save.extend(_append_semantic_router_shadow_message(new_messages, semantic_router_shadow))
@@ -3399,6 +3451,14 @@ class ChatService:
                     ),
                     ModelResponse(parts=[TextPart(content=reply)], model_name="plan-query-fast-route"),
                 ]
+                route_message = _route_observability_message(
+                    {
+                        "routingPath": "plan_query_fast_route",
+                        "routeDecision": route_decision,
+                    }
+                )
+                if route_message is not None:
+                    new_messages.append(route_message)
                 try:
                     history_to_save = list(history or [])
                     history_to_save.extend(_append_semantic_router_shadow_message(new_messages, semantic_router_shadow))
@@ -3489,6 +3549,14 @@ class ChatService:
                     ),
                     ModelResponse(parts=[TextPart(content=reply)], model_name="major-intent-fast-route"),
                 ]
+                route_message = _route_observability_message(
+                    {
+                        "routingPath": "major_intent_fast_route",
+                        "routeDecision": route_decision,
+                    }
+                )
+                if route_message is not None:
+                    new_messages.append(route_message)
                 try:
                     history_to_save = list(history or [])
                     history_to_save.extend(_append_semantic_router_shadow_message(new_messages, semantic_router_shadow))
@@ -3608,6 +3676,14 @@ class ChatService:
                     ),
                     ModelResponse(parts=[TextPart(content=reply)], model_name="major-compare-fast-route"),
                 ]
+                route_message = _route_observability_message(
+                    {
+                        "routingPath": "major_compare_fast_route",
+                        "routeDecision": route_decision,
+                    }
+                )
+                if route_message is not None:
+                    new_messages.append(route_message)
                 try:
                     history_to_save = list(history or [])
                     history_to_save.extend(_append_semantic_router_shadow_message(new_messages, semantic_router_shadow))
@@ -3707,6 +3783,14 @@ class ChatService:
                     ),
                     ModelResponse(parts=[TextPart(content=reply)], model_name="career-direction-fast-route"),
                 ]
+                route_message = _route_observability_message(
+                    {
+                        "routingPath": "career_direction_fast_route",
+                        "routeDecision": route_decision,
+                    }
+                )
+                if route_message is not None:
+                    new_messages.append(route_message)
                 try:
                     history_to_save = list(history or [])
                     history_to_save.extend(_append_semantic_router_shadow_message(new_messages, semantic_router_shadow))
