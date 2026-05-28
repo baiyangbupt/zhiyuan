@@ -23,6 +23,7 @@ DEFAULT_METRICS_DIR = Path("/private/tmp/zhiyuan-agent-dialog-quality-gate")
 
 LOCAL_PYTEST_TARGETS = [
     "tests/unit/models/test_semantic_router.py",
+    "tests/unit/test_semantic_frame_evaluator.py",
     "tests/unit/test_dialog_quality_gate.py",
     "tests/unit/test_dialog_regression_runner.py",
     "tests/unit/test_dialog_case_evaluation_report.py",
@@ -179,6 +180,26 @@ def build_gate_plan(
                 ],
                 description=f"Build case-level quality report for {case_path}.",
                 output=str(report_output),
+                depends_on=[f"live-{stem}"],
+            )
+        )
+        semantic_output = _metrics_path(metrics_dir, stem, "semantic-frame.json")
+        commands.append(
+            GateCommand(
+                name=f"semantic-frame-{stem}",
+                category="report",
+                command=[
+                    py,
+                    "examples/semantic_frame_evaluator.py",
+                    "--case-definitions",
+                    case_path,
+                    "--current",
+                    str(metrics_output),
+                    "--output",
+                    str(semantic_output),
+                ],
+                description=f"Evaluate SemanticIntentFrame shadow expectations for {case_path}.",
+                output=str(semantic_output),
                 depends_on=[f"live-{stem}"],
             )
         )

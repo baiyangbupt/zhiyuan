@@ -48,10 +48,33 @@ def test_dialogue_derived_gate_uses_per_case_history_clear(tmp_path):
 def test_gate_plan_adds_quality_report_for_each_live_case(tmp_path):
     commands = gate.build_gate_plan(metrics_dir=tmp_path)
     live_names = {command.name.replace("live-", "") for command in commands if command.category == "live"}
-    report_names = {command.name.replace("report-", "") for command in commands if command.category == "report"}
+    report_names = {
+        command.name.replace("report-", "")
+        for command in commands
+        if command.category == "report" and command.name.startswith("report-")
+    }
 
     assert live_names
     assert live_names == report_names
+
+
+def test_gate_plan_adds_semantic_frame_report_for_each_live_case(tmp_path):
+    commands = gate.build_gate_plan(metrics_dir=tmp_path)
+    live_names = {command.name.replace("live-", "") for command in commands if command.category == "live"}
+    semantic_names = {
+        command.name.replace("semantic-frame-", "")
+        for command in commands
+        if command.category == "report" and command.name.startswith("semantic-frame-")
+    }
+    sample = next(
+        command
+        for command in commands
+        if command.name == "semantic-frame-dialog_regression_303_dialogue_derived_cases"
+    )
+
+    assert live_names == semantic_names
+    assert "examples/semantic_frame_evaluator.py" in sample.command
+    assert sample.depends_on == ["live-dialog_regression_303_dialogue_derived_cases"]
 
 
 def test_gate_plan_covers_model_provider_quality_sets(tmp_path):

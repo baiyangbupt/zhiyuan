@@ -1671,6 +1671,20 @@ L3 full_agent fallback
 - 后续若要让 L2 接管某类只读回复，必须先在 dialogue-derived、历史 regression、effect/perf 和多模型评估中证明：语义帧准确、低置信 fallback 正确、回复质量不变薄、延迟可接受。
 - 确认执行、pending apply、方案变更写入仍由 L0/L1 的确定性状态机和后端执行层决定。
 
+下一步工具化：
+
+- 新增一个离线 semantic frame evaluator，不启动 WebSocket、不请求 LLM，只读取 case definitions 和可选 runner/report 输出。
+- 未传入运行输出时，只检查 case 是否都能推导出 `expectedSemanticFrame`，并汇总期望层级分布，用于防止新增 case 漏掉 L2 评估基准。
+- 传入 runner 输出时，对齐每个 `case#step` 的 `semanticRouterShadow.frame` 与 `expectedSemanticFrame`，输出 match / mismatch / unverified、按 coverage/flow 的分布和代表样例。
+- 该工具只作为 L2 接管前的准入评估，不改变主链路。只有在真实 shadow 结果持续稳定后，才考虑把某些 `readonly explore` 场景接入结构化只读回复路径。
+
+落地结果：
+
+- 新增 `examples/semantic_frame_evaluator.py`，复用报告工具的 case expansion、coverage 推导和语义帧匹配逻辑。
+- `dialog_quality_gate.py` 会为每个 live case 文件追加 `semantic-frame-*` 报告命令，依赖对应 live 输出。
+- 对 `dialog_regression_303_dialogue_derived_cases.json` 执行 expected-only 检查：`total=88 / expectedTotal=88 / comparableTotal=0`，说明 88 个真实对话派生样例都具备 L2 语义期望。
+- 当前期望分布：`taskLayer` 包含 `explore=49 / plan=36 / intent=15 / general=9`，`sideEffect` 包含 `readonly=70 / preview=18 / none=9`。部分 case 允许多个合理层级或动作，因此分布计数会大于 case 总数。
+
 ## 11. 待确认决策
 
 需要确认后再进入代码实现：
