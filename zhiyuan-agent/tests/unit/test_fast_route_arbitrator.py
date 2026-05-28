@@ -81,3 +81,61 @@ def test_arbitrator_records_all_candidate_metadata_for_observability():
     assert decision["selectedPath"] == "plan_query_fast_route"
     assert decision["candidates"][0]["eligible"] is True
     assert decision["candidates"][0]["quality"] == "high"
+    assert decision["semanticArbitrationNeeded"] is False
+    assert decision["semanticArbitrationReason"] is None
+
+
+def test_arbitrator_marks_close_mixed_candidates_for_semantic_arbitration_shadow():
+    result = _arbitrate("孩子不想学医也不想护理，方案里有没有这种坑，先看看")
+
+    decision = result.route_decision()
+    assert decision["selectedPath"] == "plan_query_fast_route"
+    assert decision["semanticArbitrationNeeded"] is True
+    assert decision["semanticArbitrationReason"] == "close_fast_route_candidates"
+    assert set(decision["semanticArbitrationCandidatePaths"]) == {
+        "plan_query_fast_route",
+        "major_intent_fast_route",
+    }
+
+
+def test_arbitrator_does_not_mark_single_high_confidence_plan_mutation():
+    result = _arbitrate("把第2个志愿移到第4位")
+
+    decision = result.route_decision()
+    assert decision["selectedPath"] == "plan_fast_route"
+    assert decision["semanticArbitrationNeeded"] is False
+    assert decision["semanticArbitrationCandidatePaths"] == ["plan_fast_route"]
+
+
+def test_arbitrator_marks_low_confidence_candidate_for_semantic_arbitration_shadow():
+    result = arbitrate_fast_route_candidates(
+        "这类问题先别直接按方案概览回答",
+        plan_fast_decision=SimpleNamespace(
+            matched=True,
+            reason="manual_low_quality_case",
+            confidence="medium",
+            action_family="query_state",
+        ),
+    )
+
+    decision = result.route_decision()
+    assert decision["selectedPath"] == "plan_fast_route"
+    assert decision["semanticArbitrationNeeded"] is True
+    assert decision["semanticArbitrationReason"] == "low_confidence_candidate"
+
+
+def test_arbitrator_does_not_mark_structured_region_safety_fallback_for_shadow():
+    result = arbitrate_fast_route_candidates(
+        "孩子就想去北京天津，但分数不算高，这样是不是太冒险，先别改",
+        plan_fast_decision=SimpleNamespace(
+            matched=True,
+            reason="plan_risk_status_query",
+            confidence="high",
+            action_family="query_state",
+        ),
+    )
+
+    decision = result.route_decision()
+    assert decision["selectedPath"] == "region_safety_tradeoff_route"
+    assert decision["semanticArbitrationNeeded"] is False
+    assert decision["semanticArbitrationReason"] is None

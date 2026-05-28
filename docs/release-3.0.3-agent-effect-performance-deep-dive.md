@@ -1549,6 +1549,37 @@ SEMANTIC_ROUTER_LLM_ENABLE_THINKING=false
 - 只有多个候选冲突、当前规则信心不足且回复质量可能受影响时，才用短超时 semantic router 辅助仲裁。
 - 仲裁失败或超时时直接回当前稳定路径，不阻塞用户回复。
 
+### 10.5 Selective Arbitration 实施口径
+
+第一阶段只做观测，不改变用户侧行为：
+
+```text
+fast routers 产出候选
+  -> fast_route_arbitrator 选择当前真实路径
+  -> 同时判断 semanticArbitrationNeeded
+  -> routeDecision.arbitration 记录触发原因和候选路径
+  -> 当前真实路径继续执行，不等待 LLM
+```
+
+触发原则：
+
+| 类型 | 是否触发 | 原因 |
+| --- | --- | --- |
+| 单一高置信候选 | 否 | 现有 fast route 已稳定，额外 LLM 只会增加延迟 |
+| 多候选但分差很大 | 否 | 本地仲裁已有明确赢家 |
+| 多候选且分数接近 | 是 | 存在真实语义冲突，适合作为 semantic arbitration 候选 |
+| 所有候选被 quality gate 拦住 | 是 | 本地规则知道“不能走薄路径”，但还需要更好分类或澄清 |
+| intent 与 plan/explore 混合 | 是 | 容易出现“看影响 / 别碰 / 能接受”这类软硬意向和只读分析混合 |
+| confirmation / apply | 否 | 必须由 pending 状态机决定，不让 LLM 仲裁执行权限 |
+
+当前版本只记录：
+
+- `semanticArbitrationNeeded`
+- `semanticArbitrationReason`
+- `semanticArbitrationCandidatePaths`
+
+后续若要真正接入 LLM 仲裁，需要额外增加短超时策略、失败 fallback、semantic route 到当前 resolver 的映射，以及 case 级 route confusion matrix 门禁。
+
 ## 11. 待确认决策
 
 需要确认后再进入代码实现：

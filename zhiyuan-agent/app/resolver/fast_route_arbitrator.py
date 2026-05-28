@@ -42,6 +42,7 @@ _PLAN_PREVIEW_ACTIONS = {
     "preview_compensation",
     "analyze_adjustment",
 }
+_ARBITRATION_SCORE_GAP_THRESHOLD = 8
 
 _REGION_TRADEOFF_TOKENS = (
     "北京",
@@ -130,12 +131,22 @@ class FastRouteArbitrationResult:
         return self.selected.decision
 
     def route_decision(self) -> dict[str, Any]:
+        semantic_needed, semantic_reason = _semantic_arbitration_need(
+            selected=self.selected,
+            candidates=self.candidates,
+            fallback_reason=self.fallback_reason,
+        )
         return {
             "source": "fast_route_arbitrator",
             "selectedPath": self.selected_path,
             "fallbackReason": None if self.selected is not None else self.fallback_reason,
             "qualityFirst": True,
             "candidates": [candidate.as_dict() for candidate in self.candidates],
+            "semanticArbitrationNeeded": semantic_needed,
+            "semanticArbitrationReason": semantic_reason,
+            "semanticArbitrationCandidatePaths": [
+                candidate.path for candidate in self.candidates if candidate.eligible
+            ],
         }
 
 
@@ -165,6 +176,66 @@ def _plan_side_effect(action_family: str) -> str:
     if action_family in _PLAN_PREVIEW_ACTIONS:
         return "preview_confirmation"
     return "unknown"
+
+
+def _semantic_arbitration_need(
+    *,
+    selected: FastRouteCandidate | None,
+    candidates: list[FastRouteCandidate],
+    fallback_reason: str,
+) -> tuple[bool, str | None]:
+    """Decide whether semantic arbitration would be useful.
+
+    This is observability-only.  It does not change the selected route.  The
+    actual semantic LLM call remains shadow/non-blocking until route confusion
+    data proves it is safer than the deterministic fast-route decision.
+    """
+    if not candidates:
+        return False, None
+
+    eligible = [candidate for candidate in candidates if candidate.eligible]
+    if not eligible:
+        if fallback_reason == "quality_gate_blocked_fast_route":
+            return True, "quality_gate_blocked_all_candidates"
+        return False, None
+
+    if selected is None:
+        return False, None
+
+    if selected.side_effect == "apply":
+        return False, None
+
+    low_confidence = [
+        candidate for candidate in eligible
+        if candidate.confidence and candidate.confidence != "high"
+    ]
+    if low_confidence:
+        return True, "low_confidence_candidate"
+
+    low_quality = [
+        candidate for candidate in eligible
+        if candidate.quality and candidate.quality != "high"
+    ]
+    if low_quality:
+        return True, "low_quality_candidate"
+
+    if len(eligible) <= 1:
+        return False, None
+
+    sorted_candidates = sorted(
+        eligible,
+        key=lambda candidate: (candidate.score, _PATH_PRIORITY[candidate.path]),
+        reverse=True,
+    )
+    top, runner_up = sorted_candidates[0], sorted_candidates[1]
+    if top.score - runner_up.score <= _ARBITRATION_SCORE_GAP_THRESHOLD:
+        return True, "close_fast_route_candidates"
+
+    scenes = {candidate.scene for candidate in eligible}
+    if "intent" in scenes and ({"plan", "explore"} & scenes):
+        return True, "mixed_intent_plan_or_explore_candidates"
+
+    return False, None
 
 
 def _plan_quality_blockers(text: str, decision: Any) -> list[str]:

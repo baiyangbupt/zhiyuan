@@ -1758,3 +1758,33 @@ SEMANTIC_ROUTER_LLM_ENABLE_THINKING=false
 - shadow 结果新增 `promptChars` 观测字段，用于后续判断慢点是输入过大还是模型/平台响应慢。
 - 小规模 4 step 阻塞验证中，`promptChars` 已压到 `368 / 453 / 618 / 1124`，但 DeepSeek V4 Flash Non-think 仍出现 `3/4` timeout；唯一成功的是专业对比场景，耗时约 `4.865s`。
 - 这说明当前全量阻塞不可用并不只是 prompt 太长导致，模型服务响应波动本身也会让主链路被拖慢。因此默认仍必须保持 non-blocking shadow，后续只考虑低置信冲突场景的短超时仲裁。
+
+#### 14.11 Selective Arbitration 设计边界
+
+`selective arbitration` 是下一步语义路由落地方式：只有当前本地候选拿不准时，才让轻量 LLM 做一次“分类裁判”。它不是让 LLM 接管对话，也不是把 LLM 放到每轮请求最前面。
+
+第一版只做 shadow-only 观测，不改变真实路由。现有 `fast_route_arbitrator` 仍选择最终路径，semantic arbitration 只记录“这轮将来是否值得让语义路由参与裁判”。
+
+不触发 semantic arbitration 的场景：
+
+- 已有 pending 的确认、拒绝、过期保护。
+- 无 pending 的孤立“确认”保护。
+- 高置信 `plan_fast_route`：方案现状、明确排序、明确移动、明确删除、明确审查。
+- 高置信 `plan_query_fast_route`：当前方案或候选里明确问某学校/专业。
+- 高置信 `major_compare_fast_route` / `career_direction_fast_route`：已稳定识别的只读分析。
+- 任何可能直接产生 `apply` 的链路。LLM 不能授权执行。
+
+触发 shadow 标记的场景：
+
+- 多个候选同时 eligible，且分数接近，说明本地规则可能存在真实语义冲突。
+- 所有候选被 quality gate 拦下，例如薄方案概览被挡住但还没有更稳定的专项结构化链路。
+- 本地候选包含 `intent` 与 `plan_query/explore` 混合，用户又用了“影响 / 看看 / 别碰 / 能接受”这类易混表达。
+- 当前候选置信度不是 high，或者候选质量不是 high。
+
+观测字段先落在 `routeDecision.arbitration` 中：
+
+- `semanticArbitrationNeeded`
+- `semanticArbitrationReason`
+- `semanticArbitrationCandidatePaths`
+
+后续如果进入 selective 接管，再增加 `semanticSelectedPath / semanticDurationMs / semanticFallbackReason`。接管前必须先通过 effect/perf、open-quality、realistic-user、80+ dialogue-derived 和历史 regression/e2e，且不得破坏确认边界。
