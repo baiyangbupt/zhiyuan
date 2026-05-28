@@ -227,6 +227,152 @@ _QUALITY_EXPECTATION_FIELDS = (
     "minTextLengthWarn",
 )
 
+_SEMANTIC_FRAME_FIELDS = (
+    "taskLayer",
+    "topic",
+    "verb",
+    "sideEffect",
+)
+
+_SEMANTIC_EXPECTATION_PRESETS: dict[str, dict[str, Any]] = {
+    "score_profile": {
+        "taskLayer": "explore",
+        "topic": "score",
+        "verb": ["analyze", "explain", "recommend"],
+        "sideEffect": "readonly",
+        "minConfidence": 0.8,
+    },
+    "eligibility_constraints": {
+        "taskLayer": "explore",
+        "topic": ["policy", "requirement"],
+        "verb": ["analyze", "explain", "recommend"],
+        "sideEffect": "readonly",
+        "minConfidence": 0.8,
+    },
+    "major_preference": {
+        "taskLayer": "explore",
+        "topic": "major",
+        "verb": ["analyze", "compare", "explain", "recommend"],
+        "sideEffect": "readonly",
+        "minConfidence": 0.8,
+    },
+    "region_preference": {
+        "taskLayer": "explore",
+        "topic": "region",
+        "verb": ["analyze", "explain", "recommend"],
+        "sideEffect": "readonly",
+        "minConfidence": 0.8,
+    },
+    "career_direction": {
+        "taskLayer": "explore",
+        "topic": "career",
+        "verb": ["analyze", "explain", "recommend"],
+        "sideEffect": "readonly",
+        "minConfidence": 0.8,
+    },
+    "budget_tuition": {
+        "taskLayer": "explore",
+        "topic": ["plan", "school", "major"],
+        "verb": ["analyze", "explain", "recommend"],
+        "sideEffect": "readonly",
+        "minConfidence": 0.8,
+    },
+    "plan_review_strategy": {
+        "taskLayer": "plan",
+        "topic": "plan",
+        "verb": ["analyze", "review", "explain", "recommend", "query"],
+        "sideEffect": "readonly",
+        "minConfidence": 0.8,
+    },
+    "plan_operations": {
+        "taskLayer": "plan",
+        "topic": "plan",
+        "verb": ["add", "remove", "move", "sort", "replace", "review", "analyze"],
+        "sideEffect": "preview",
+        "minConfidence": 0.8,
+    },
+    "followup_guard": {
+        "taskLayer": ["general", "explore", "intent", "plan"],
+        "topic": ["general", "plan", "major", "score", "requirement"],
+        "verb": ["confirm", "reject", "clarify", "explain", "analyze"],
+        "sideEffect": ["readonly", "none"],
+        "minConfidence": 0.75,
+    },
+}
+
+_SEMANTIC_EXPECTATION_OVERRIDES: tuple[tuple[set[str], dict[str, Any]], ...] = (
+    (
+        {"soft_major_intent", "hard_major_constraint", "soft_region_intent", "negative_region_intent"},
+        {
+            "taskLayer": "intent",
+            "topic": ["major", "region"],
+            "verb": ["set_preference", "set_constraint", "remove_preference", "analyze", "explain"],
+            "sideEffect": "preview",
+            "minConfidence": 0.8,
+        },
+    ),
+    (
+        {"hard_major_constraint"},
+        {
+            "taskLayer": "intent",
+            "topic": "major",
+            "verb": ["set_constraint", "remove_preference", "analyze", "explain"],
+            "sideEffect": "preview",
+            "minConfidence": 0.8,
+        },
+    ),
+    (
+        {"region_safety_tradeoff", "city_opportunity", "backup_region", "remote_area", "return_home"},
+        {
+            "taskLayer": "explore",
+            "topic": "region",
+            "verb": ["analyze", "explain", "recommend"],
+            "sideEffect": "readonly",
+            "minConfidence": 0.8,
+        },
+    ),
+    (
+        {"plan_query", "plan_analysis", "plan_status", "tuition_info", "school_level"},
+        {
+            "taskLayer": "plan",
+            "topic": "plan",
+            "verb": ["query", "analyze", "review", "explain"],
+            "sideEffect": "readonly",
+            "minConfidence": 0.8,
+        },
+    ),
+    (
+        {"plan_review", "risk_summary", "safe_plan", "avoid_risk"},
+        {
+            "taskLayer": "plan",
+            "topic": "plan",
+            "verb": ["review", "analyze", "explain"],
+            "sideEffect": "readonly",
+            "minConfidence": 0.8,
+        },
+    ),
+    (
+        {"sort_ordered_plan", "move_ordered_unit", "remove_units", "add_units", "majorGroup_model", "majorGroup_operations"},
+        {
+            "taskLayer": "plan",
+            "topic": "plan",
+            "verb": ["add", "remove", "move", "sort", "replace"],
+            "sideEffect": "preview",
+            "minConfidence": 0.8,
+        },
+    ),
+    (
+        {"no_pending_guard", "confirm_guard", "readonly_closure_ack", "vague_confirm", "readonly_no_workspace_card"},
+        {
+            "taskLayer": ["general", "plan"],
+            "topic": ["general", "plan"],
+            "verb": ["confirm", "reject", "clarify"],
+            "sideEffect": ["readonly", "none"],
+            "minConfidence": 0.75,
+        },
+    ),
+)
+
 
 def _merge_unique_list(base: Any, override: Any) -> list[Any]:
     result: list[Any] = []
@@ -306,6 +452,53 @@ def _normalize_text_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [_normalize_text(item) for item in value if _normalize_text(item)]
+
+
+def _normalize_expected_semantic_frame(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    expected: dict[str, Any] = {}
+    for field in _SEMANTIC_FRAME_FIELDS:
+        raw = value.get(field)
+        if isinstance(raw, list):
+            values = [_normalize_text(item) for item in raw]
+            values = [item for item in values if item]
+            if values:
+                expected[field] = list(dict.fromkeys(values))
+            continue
+        text = _normalize_text(raw)
+        if text:
+            expected[field] = text
+    min_confidence = value.get("minConfidence")
+    if min_confidence is not None and min_confidence != "":
+        try:
+            expected["minConfidence"] = float(min_confidence)
+        except (TypeError, ValueError):
+            pass
+    return expected
+
+
+def _semantic_expectation_from_coverage(coverage: Any) -> dict[str, Any]:
+    coverage_tags = set(_normalize_text_list(coverage))
+    if not coverage_tags:
+        return {}
+    for tags, expected in _SEMANTIC_EXPECTATION_OVERRIDES:
+        if coverage_tags & tags:
+            return _normalize_expected_semantic_frame(expected)
+    for tag in (
+        "score_profile",
+        "eligibility_constraints",
+        "major_preference",
+        "region_preference",
+        "career_direction",
+        "budget_tuition",
+        "plan_review_strategy",
+        "plan_operations",
+        "followup_guard",
+    ):
+        if tag in coverage_tags:
+            return _normalize_expected_semantic_frame(_SEMANTIC_EXPECTATION_PRESETS[tag])
+    return {}
 
 
 def _compact_text(value: Any) -> str:
@@ -446,6 +639,13 @@ def _load_case_definitions(path: str) -> dict[str, dict[str, Any]]:
                 metadata["expectedRoutingPath"] = expected_route
             if expected_action:
                 metadata["expectedActionFamily"] = expected_action
+            expected_semantic_frame = _normalize_expected_semantic_frame(prompt.get("expectedSemanticFrame"))
+            if expected_semantic_frame:
+                metadata["expectedSemanticFrame"] = expected_semantic_frame
+            else:
+                inferred_semantic_frame = _semantic_expectation_from_coverage(metadata.get("coverage"))
+                if inferred_semantic_frame:
+                    metadata["expectedSemanticFrame"] = inferred_semantic_frame
             assertions = {
                 field: prompt.get(field)
                 for field in _ASSERTION_FIELDS
@@ -485,6 +685,7 @@ def _merge_record_metadata(record: dict[str, Any], metadata: dict[str, Any] | No
         "expectedRoutingPath",
         "expectedActionFamily",
         "expectedNoAction",
+        "expectedSemanticFrame",
         "assertions",
         "qualityExpectations",
     ):
@@ -601,6 +802,67 @@ def _semantic_mapped_route(record: dict[str, Any]) -> str | None:
     if shadow.get("status") != "success":
         return None
     return _semantic_mapped_route_from_frame(_semantic_frame_from_shadow(shadow))
+
+
+def _expected_semantic_frame(record: dict[str, Any]) -> dict[str, Any]:
+    return _normalize_expected_semantic_frame(record.get("expectedSemanticFrame"))
+
+
+def _semantic_frame_matches_expected(frame: dict[str, Any], expected: dict[str, Any]) -> tuple[bool | None, list[str]]:
+    if not expected:
+        return None, []
+    if not frame:
+        return False, ["missing_frame"]
+
+    mismatches: list[str] = []
+    for field in _SEMANTIC_FRAME_FIELDS:
+        expected_raw = expected.get(field)
+        expected_values = (
+            [_normalize_text(item) for item in expected_raw]
+            if isinstance(expected_raw, list)
+            else [_normalize_text(expected_raw)]
+        )
+        expected_values = [item for item in expected_values if item]
+        if not expected_values:
+            continue
+        actual_value = _normalize_text(frame.get(field))
+        if actual_value not in expected_values:
+            expected_text = "|".join(expected_values)
+            mismatches.append(f"{field}:{expected_text}!={actual_value or '-'}")
+
+    min_confidence = expected.get("minConfidence")
+    if isinstance(min_confidence, (int, float)):
+        try:
+            actual_confidence = float(frame.get("confidence") or 0)
+        except (TypeError, ValueError):
+            actual_confidence = 0.0
+        if actual_confidence < float(min_confidence):
+            mismatches.append(f"confidence:{actual_confidence:.2f}<{float(min_confidence):.2f}")
+
+    return not mismatches, mismatches
+
+
+def _semantic_expectation_result(record: dict[str, Any]) -> dict[str, Any]:
+    expected = _expected_semantic_frame(record)
+    if not expected:
+        return {}
+    shadow = _extract_semantic_router_shadow(record)
+    status = _normalize_text(shadow.get("status"))
+    if status != "success":
+        return {
+            "expected": expected,
+            "status": status or "missing",
+            "matched": None,
+            "mismatches": [],
+        }
+    frame = _semantic_frame_from_shadow(shadow)
+    matched, mismatches = _semantic_frame_matches_expected(frame, expected)
+    return {
+        "expected": expected,
+        "status": status or "missing",
+        "matched": matched,
+        "mismatches": mismatches,
+    }
 
 
 def _extract_routing_path(record: dict[str, Any]) -> str | None:
@@ -878,6 +1140,15 @@ def _quality_violations(record: dict[str, Any], text: str) -> list[str]:
     if expected_route and actual_route and actual_route != expected_route:
         violations.append(f"route_mismatch:{expected_route}!={actual_route}")
 
+    semantic_expectation = _semantic_expectation_result(record)
+    if semantic_expectation and semantic_expectation.get("matched") is False:
+        status = _normalize_text(semantic_expectation.get("status")) or "missing"
+        mismatches = semantic_expectation.get("mismatches") or []
+        if mismatches:
+            violations.append("semantic_frame_mismatch:" + ",".join(mismatches[:4]))
+        else:
+            violations.append(f"semantic_frame_missing:{status}")
+
     expected_action = _normalize_text(record.get("expectedActionFamily"))
     actual_actions = _extract_action_families(record)
     if expected_action and actual_actions and not _action_observed(record, expected_action):
@@ -914,6 +1185,9 @@ def _evaluation_warnings(record: dict[str, Any], text: str) -> list[str]:
         warnings.append(f"missing_route_observability:{expected_route}")
     if expected_action and not _action_observed(record, expected_action):
         warnings.append(f"missing_action_observability:{expected_action}")
+    semantic_expectation = _semantic_expectation_result(record)
+    if semantic_expectation and semantic_expectation.get("status") in {"missing", "disabled", "scheduled", "timeout", "error"}:
+        warnings.append(f"semantic_frame_unverified:{semantic_expectation.get('status')}")
 
     thinking = _extract_thinking(record)
     if isinstance(elapsed_ms, int) and elapsed_ms >= 10000 and not thinking:
@@ -982,6 +1256,7 @@ def _score_case(record: dict[str, Any]) -> dict[str, Any]:
             "routingPath": _extract_routing_path(record),
             "semanticRouterShadow": _extract_semantic_router_shadow(record),
             "semanticMappedRoute": _semantic_mapped_route(record),
+            "semanticExpectation": _semantic_expectation_result(record),
             "actionFamilies": _extract_action_families(record),
             "toolNames": _extract_tool_names(record),
             "verdict": "fail",
@@ -1065,6 +1340,7 @@ def _score_case(record: dict[str, Any]) -> dict[str, Any]:
     scored["routingPath"] = _extract_routing_path(record)
     scored["semanticRouterShadow"] = _extract_semantic_router_shadow(record)
     scored["semanticMappedRoute"] = _semantic_mapped_route(record)
+    scored["semanticExpectation"] = _semantic_expectation_result(record)
     scored["actionFamilies"] = _extract_action_families(record)
     scored["toolNames"] = _extract_tool_names(record)
     has_expected_keypoint_warning = any(
@@ -1252,6 +1528,14 @@ def _metadata_for_case(
             metadata["expectedRoutingPath"] = _normalize_text(row.get("expectedRoutingPath"))
         if not metadata.get("expectedActionFamily") and _normalize_text(row.get("expectedActionFamily")):
             metadata["expectedActionFamily"] = _normalize_text(row.get("expectedActionFamily"))
+        if not metadata.get("expectedSemanticFrame"):
+            expected_frame = _normalize_expected_semantic_frame(row.get("expectedSemanticFrame"))
+            if expected_frame:
+                metadata["expectedSemanticFrame"] = expected_frame
+        if not metadata.get("expectedSemanticFrame"):
+            expected_frame = _semantic_expectation_from_coverage(metadata.get("coverage"))
+            if expected_frame:
+                metadata["expectedSemanticFrame"] = expected_frame
     return metadata
 
 
@@ -1276,6 +1560,7 @@ def _build_case_report(
         "expectedRoutingPath": metadata.get("expectedRoutingPath"),
         "expectedActionFamily": metadata.get("expectedActionFamily"),
         "expectedNoAction": bool(metadata.get("expectedNoAction")),
+        "expectedSemanticFrame": metadata.get("expectedSemanticFrame") or {},
         "latencyBudget": metadata.get("latencyBudget") or {},
         "assertions": metadata.get("assertions") or {},
         "qualityExpectations": metadata.get("qualityExpectations") or {},
@@ -1399,6 +1684,8 @@ def _summarize_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
     semantic_mapped_route_counts: dict[str, int] = {}
     semantic_expected_counts: dict[str, int] = {}
     semantic_current_counts: dict[str, int] = {}
+    semantic_expectation_counts: dict[str, int] = {}
+    semantic_expectation_mismatch_counts: dict[str, int] = {}
     action_counts: dict[str, int] = {}
     tool_counts: dict[str, int] = {}
 
@@ -1435,6 +1722,21 @@ def _summarize_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
                     semantic_current_counts,
                     "match" if semantic_route == current_route else f"diff:{current_route}!={semantic_route}",
                 )
+        semantic_expectation = score.get("semanticExpectation")
+        if isinstance(semantic_expectation, dict) and semantic_expectation:
+            matched = semantic_expectation.get("matched")
+            if matched is True:
+                _increment(semantic_expectation_counts, "match")
+            elif matched is False:
+                _increment(semantic_expectation_counts, "mismatch")
+                mismatches = semantic_expectation.get("mismatches") or []
+                if mismatches:
+                    for mismatch in mismatches:
+                        _increment(semantic_expectation_mismatch_counts, str(mismatch).split(":", 1)[0])
+                else:
+                    _increment(semantic_expectation_mismatch_counts, str(semantic_expectation.get("status") or "missing"))
+            else:
+                _increment(semantic_expectation_counts, "not_applicable")
         for value in score.get("actionFamilies") or []:
             _increment(action_counts, value)
         for value in score.get("toolNames") or []:
@@ -1460,6 +1762,8 @@ def _summarize_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "mappedRoute": semantic_mapped_route_counts,
             "expectedRouteComparison": semantic_expected_counts,
             "currentRouteComparison": semantic_current_counts,
+            "expectedFrameComparison": semantic_expectation_counts,
+            "expectedFrameMismatches": semantic_expectation_mismatch_counts,
         },
         "actionFamilySummary": action_counts,
         "toolSummary": tool_counts,

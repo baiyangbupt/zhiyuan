@@ -121,6 +121,10 @@ def test_release_303_fast_router_priority_matrix_prevents_cross_layer_intercepts
         "孩子不想学医也不想护理，方案里有没有这种坑，先看看": "plan_query",
         "医学护理这些别碰，财会还能接受，先看看影响": "major_intent",
         "孩子就想去北京天津，但分数不算高，这样是不是太冒险，先别改": "full_agent",
+        "一模二模差挺多，这个成绩波动填志愿咋看": "full_agent",
+        "孩子数学忽高忽低，理工还能不能碰": "full_agent",
+        "分数刚压本科线，别给我画大饼": "full_agent",
+        "按这个成绩波动帮我调整方案": "full_agent",
     }
 
     for prompt, expected_route in cases.items():
@@ -171,6 +175,12 @@ def _load_release_303_dialogue_derived_cases() -> list[dict]:
     from examples.dialog_regression_runner import _expand_case_payload
 
     return _expand_case_payload(json.loads(RELEASE_303_DIALOGUE_DERIVED_CASES_PATH.read_text(encoding="utf-8")))
+
+
+def _load_release_303_dialogue_derived_case_definitions() -> dict:
+    from examples.dialog_case_evaluation_report import _load_case_definitions
+
+    return _load_case_definitions(str(RELEASE_303_DIALOGUE_DERIVED_CASES_PATH))
 
 
 def _load_model_provider_303_open_realistic_cases() -> list[dict]:
@@ -844,6 +854,31 @@ def test_release_303_dialogue_derived_cases_cover_80_plus_real_dialogue_shapes()
     assert "审查一下有没有明显坑" in prompts
     assert "按录取率从低到高排下" in prompts
     assert "嗯那就这样" in prompts
+
+
+def test_release_303_dialogue_derived_cases_have_semantic_frame_expectations():
+    cases = _load_release_303_dialogue_derived_cases()
+    definitions = _load_release_303_dialogue_derived_case_definitions()
+
+    missing: list[str] = []
+    expected_layers: dict[str, int] = {}
+    for case in cases:
+        for step_index, step in enumerate(case["prompts"], start=1):
+            key = f"{case['name']}#{step_index}"
+            expected = definitions.get(key, {}).get("expectedSemanticFrame") or {}
+            if not expected:
+                missing.append(key)
+                continue
+            value = expected.get("taskLayer")
+            values = value if isinstance(value, list) else [value]
+            for item in values:
+                if item:
+                    expected_layers[str(item)] = expected_layers.get(str(item), 0) + 1
+
+    assert not missing
+    assert expected_layers.get("explore", 0) >= 45
+    assert expected_layers.get("plan", 0) >= 15
+    assert expected_layers.get("intent", 0) >= 5
 
 
 def test_mainline_dialog_intent_preview_then_plan_status_does_not_reopen_candidate_workspace(tmp_path):

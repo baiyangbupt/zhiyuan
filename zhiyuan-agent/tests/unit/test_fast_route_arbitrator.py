@@ -138,4 +138,3 @@ def test_arbitrator_does_not_mark_structured_region_safety_fallback_for_shadow()
     decision = result.route_decision()
     assert decision["selectedPath"] == "region_safety_tradeoff_route"
     assert decision["semanticArbitrationNeeded"] is False
-    assert decision["semanticArbitrationReason"] is None

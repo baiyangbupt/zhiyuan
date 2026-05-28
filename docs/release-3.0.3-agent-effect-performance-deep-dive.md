@@ -1594,6 +1594,83 @@ fast routers 产出候选
 - 直接跑 80+ `dialog_regression_303_dialogue_derived_cases.json` 时，首批开放探索 case 进入 `full_agent`，服务端分别出现约 `163s` 与 `152s` 的完整 Agent 两次远端模型调用，runner 在 `120s` response timeout 后断开。示例：`一模二模差挺多，这个成绩波动填志愿咋看` 走 `full_agent`，`llmRequests=2`、`inputTokens≈16063`、`totalDurationMs≈163390`；`孩子数学忽高忽低，理工还能不能碰` 走 `full_agent`，`llmRequests=2`、`inputTokens≈16350`、`totalDurationMs≈152079`。
 - 这类问题不是 fast-route 多候选冲突，也不是 selective arbitration 能直接解决的问题；它暴露的是开放 Explore / score-profile 类问题缺少轻量结构化回复路径，导致完整 Agent 大上下文和两次远端模型调用。后续 80+ 评估应先按场景分层抽样运行，并把 `score_profile / eligibility_constraints / generic_explore` 这类 full-agent 慢路径列为专项优化，不应为了绕开慢请求而把所有请求前置给 LLM 路由。
 
+### 10.6 Score/Profile 开放探索慢路径专项设计
+
+问题边界：
+
+- 真实对话派生样本里，`一模二模差挺多，这个成绩波动填志愿咋看`、`孩子数学忽高忽低，理工还能不能碰` 这类问题本质是只读策略解释，不需要改偏好、不需要移动方案、不需要候选联动。
+- 现有完整 Agent 会带入较大的方案上下文并发生两次远端模型调用，实测可到 `150s+`，用户侧表现为长时间无结果。
+- 这类问题不是“多 fast route 混淆”，也不是“需要 LLM 路由仲裁”的典型场景；它缺的是一个可靠的只读承接层。
+
+当前结论：
+
+- 不应把这类问题继续做成关键词 fast route。`成绩波动 / 压线 / 单科忽高忽低` 的真实表达非常发散，逐 case 补词会造成不可持续的规则债；用户换成“擦线、悬着、发挥飘、数学掉链子、分不稳”等说法时仍可能漏路由。
+- 在语义接管质量没有通过 80+ dialogue-derived、历史 regression 和 e2e 门禁前，开放 score/profile 问题继续回完整 Agent，宁可慢一些，也不要用脆弱规则误判或漏判。
+- 性能优化的正确方向是先建设 `SemanticIntentFrame` 的可评估分类能力，再做有置信度门槛的选择性接管。
+
+后续设计范围：
+
+- 稳定确定性路径继续保留：Plan 查询/调整、Intent preview/confirm、专业对比、职业方向有限 taxonomy 和 pending guard 不交给 LLM 执行权限判断。
+- 对未命中稳定 fast route 的开放探索输入，先由 semantic router 输出结构化语义帧：`taskLayer / topic / verb / sideEffect / confidence / requiredFacts`。
+- 只有语义帧满足 `taskLayer=explore`、`topic=score`、`verb=analyze|explain|recommend`、`sideEffect=readonly`、`confidence >= 0.85`，且没有 pending/apply/plan mutation 语义时，才允许进入结构化 score/profile 分析。
+- 低置信、语义冲突、包含方案动作、包含意向写入、具体院校录取查询或政策资格查询时，不接管，回完整 Agent 或先澄清。
+- 回复形态必须保持信息量，至少覆盖“结论 / 判断方法 / 填报影响 / 下一步”，避免为了性能把回复压成薄模板。
+
+路由边界：
+
+| 输入类型 | 处理 |
+| --- | --- |
+| `一模二模差挺多，这个成绩波动填志愿咋看` | 先由 semantic frame 判断为 score/readonly/analyze；通过质量门禁后再接管 |
+| `孩子数学忽高忽低，理工还能不能碰` | 先由 semantic frame 判断为 score/readonly/analyze；通过质量门禁后再接管 |
+| `分数刚压本科线，别给我画大饼` | 先由 semantic frame 判断为 score/readonly/analyze；通过质量门禁后再接管 |
+| `550 分能上北京大学吗` | 不接管，属于具体院校录取查询 |
+| `按这个成绩波动帮我调整方案` | 不接管，属于方案调整预览/执行 |
+| `数学不好，以后不要数学相关专业` | 不接管，属于意向/要求写入 |
+
+验证要求：
+
+- 先做 shadow/评估，不直接主路径接管：验证 semantic frame 对 score/profile、policy/requirement、career、major compare、plan query 和 intent 的混淆率。
+- case 必须覆盖真实口语、简称、省略、家长表达、负向要求和动作混合表达；不能只覆盖已经见过的 2-3 个句子。
+- 通过标准应同时看路由正确率、回复质量、确认边界、无误联动和延迟；如果 semantic 分类不稳，继续回完整 Agent。
+- 后续 80+ dialogue-derived 评估按场景分层运行，避免开放 Explore 慢 case 阻断全量报告，同时保留这些慢 case 作为 semantic 接管候选的重点评估样本。
+
+### 10.7 分级路由落地状态
+
+本期先把“分级路由”落为可评估框架，不直接改变主链路执行结果：
+
+```text
+L0 确认/安全守卫
+  - conversation_phase.pending、版本漂移、确认/取消等状态机判断
+  - 负责 apply 权限，不交给 LLM
+
+L1 稳定确定性 fast route
+  - plan_fast_route / plan_query_fast_route
+  - major_intent_fast_route / major_compare_fast_route
+  - career_direction_fast_route / region_safety_tradeoff_route
+  - 命中高置信路径时继续按现有链路执行
+
+L2 SemanticIntentFrame shadow/evaluation
+  - 对 taskLayer / topic / verb / sideEffect / confidence 做结构化观测
+  - 评估工具按 case coverage 推导 expectedSemanticFrame
+  - 只产出 mismatch / unverified 指标，不接管执行
+
+L3 full_agent fallback
+  - 未命中稳定路径、开放 Explore、复杂混合语义继续回完整 Agent
+```
+
+这次没有新增 score/profile 的关键词 fast route。原因是该类真实表达高度发散，靠“成绩波动/压线/数学忽高忽低”等词补丁只能解决个别句子，并会继续制造漏判和误判。当前改为：
+
+- `dialog_case_evaluation_report.py` 支持 `expectedSemanticFrame`，并允许字段有多个合理取值，例如 `verb=analyze|explain|recommend`。
+- 若 semantic shadow 成功返回但 frame 与期望不符，报告计入 `semantic_frame_mismatch`，用于判断语义路由是否可靠。
+- 若 semantic shadow 未启用、排队、超时或报错，只记 `semantic_frame_unverified:*` warning，不把用户可见回复误判为失败。
+- `dialog_regression_303_dialogue_derived_cases.json` 通过 coverage 自动获得语义期望，覆盖 score/profile、policy/requirement、major、region、career、budget、plan review、plan operation 和 followup guard 等 80+ 场景。
+
+当前边界：
+
+- L2 不是线上执行路由，不能据此直接更新偏好、移动方案、排序或触发工作台联动。
+- 后续若要让 L2 接管某类只读回复，必须先在 dialogue-derived、历史 regression、effect/perf 和多模型评估中证明：语义帧准确、低置信 fallback 正确、回复质量不变薄、延迟可接受。
+- 确认执行、pending apply、方案变更写入仍由 L0/L1 的确定性状态机和后端执行层决定。
+
 ## 11. 待确认决策
 
 需要确认后再进入代码实现：

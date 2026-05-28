@@ -94,6 +94,7 @@ def test_summarize_rows_counts_semantic_router_dimensions():
                 "routingPath": "major_compare_fast_route",
                 "expectedRoutingPath": "major_compare_fast_route",
                 "semanticMappedRoute": "major_compare_fast_route",
+                "semanticExpectation": {"matched": True},
                 "semanticRouterShadow": {
                     "status": "success",
                     "frame": {
@@ -116,6 +117,179 @@ def test_summarize_rows_counts_semantic_router_dimensions():
     assert summary["semanticRouterSummary"]["mappedRoute"] == {"major_compare_fast_route": 1}
     assert summary["semanticRouterSummary"]["expectedRouteComparison"] == {"match": 1}
     assert summary["semanticRouterSummary"]["currentRouteComparison"] == {"match": 1}
+    assert summary["semanticRouterSummary"]["expectedFrameComparison"] == {"match": 1}
+
+
+def test_score_case_marks_semantic_frame_mismatch():
+    score = report._score_case(
+        {
+            "prompt": "一模二模差挺多，这个成绩波动填志愿咋看",
+            "responseText": "先看成绩波动和志愿风险。",
+            "expectedSemanticFrame": {
+                "taskLayer": "explore",
+                "topic": "score",
+                "verb": "analyze",
+                "sideEffect": "readonly",
+                "minConfidence": 0.85,
+            },
+            "semanticRouterShadow": {
+                "status": "success",
+                "frame": {
+                    "taskLayer": "explore",
+                    "topic": "major",
+                    "verb": "compare",
+                    "sideEffect": "readonly",
+                    "confidence": 0.72,
+                },
+            },
+        }
+    )
+
+    assert score["semanticExpectation"]["matched"] is False
+    assert "semantic_frame_mismatch" in ",".join(score["qualityViolations"])
+
+
+def test_score_case_warns_without_failing_when_expected_semantic_frame_is_unverified():
+    score = report._score_case(
+        {
+            "prompt": "一模二模差挺多，这个成绩波动填志愿咋看",
+            "responseText": "先看成绩波动和志愿风险，确认位次后再决定冲稳保。",
+            "expectedSemanticFrame": {
+                "taskLayer": "explore",
+                "topic": "score",
+                "verb": "analyze",
+                "sideEffect": "readonly",
+                "minConfidence": 0.85,
+            },
+            "semanticRouterShadow": {"status": "disabled"},
+        }
+    )
+
+    assert score["semanticExpectation"]["matched"] is None
+    assert score["qualityViolations"] == []
+    assert "semantic_frame_unverified:disabled" in score["evaluationWarnings"]
+
+
+def test_score_case_accepts_expected_semantic_frame_value_sets():
+    score = report._score_case(
+        {
+            "prompt": "排名比分数靠谱吧，方案里要怎么看",
+            "responseText": "可以用位次作为主参考，再结合分数线和录取率看方案风险。",
+            "expectedSemanticFrame": {
+                "taskLayer": "explore",
+                "topic": "score",
+                "verb": ["analyze", "explain"],
+                "sideEffect": "readonly",
+                "minConfidence": 0.85,
+            },
+            "semanticRouterShadow": {
+                "status": "success",
+                "frame": {
+                    "taskLayer": "explore",
+                    "topic": "score",
+                    "verb": "explain",
+                    "sideEffect": "readonly",
+                    "confidence": 0.89,
+                },
+            },
+        }
+    )
+
+    assert score["semanticExpectation"]["matched"] is True
+    assert score["qualityViolations"] == []
+
+
+def test_build_case_report_infers_semantic_expectation_from_score_profile_coverage():
+    item = report._build_case_report(
+        "score-case#1",
+        None,
+        {
+            "case": "score-case",
+            "stepIndex": 1,
+            "prompt": "一模二模差挺多，这个成绩波动填志愿咋看",
+            "responseText": "先看成绩波动、位次稳定性和志愿风险。",
+            "coverage": ["release_3_0_3", "dialogue_derived", "score_profile"],
+            "semanticRouterShadow": {
+                "status": "success",
+                "frame": {
+                    "taskLayer": "explore",
+                    "topic": "score",
+                    "verb": "analyze",
+                    "sideEffect": "readonly",
+                    "confidence": 0.88,
+                },
+            },
+        },
+        {},
+    )
+
+    assert item["expectedSemanticFrame"]["taskLayer"] == "explore"
+    assert item["expectedSemanticFrame"]["topic"] == "score"
+    assert item["current"]["score"]["semanticExpectation"]["matched"] is True
+
+
+def test_build_case_report_infers_intent_preview_semantic_expectation_from_coverage():
+    item = report._build_case_report(
+        "intent-case#1",
+        None,
+        {
+            "case": "intent-case",
+            "stepIndex": 1,
+            "prompt": "会计审计还行，土木别要",
+            "responseText": "确认前不会写入后续参考，我先给你看影响。",
+            "coverage": [
+                "release_3_0_3",
+                "dialogue_derived",
+                "major_preference",
+                "soft_major_intent",
+                "hard_major_constraint",
+            ],
+            "semanticRouterShadow": {
+                "status": "success",
+                "frame": {
+                    "taskLayer": "intent",
+                    "topic": "major",
+                    "verb": "set_constraint",
+                    "sideEffect": "preview",
+                    "confidence": 0.86,
+                },
+            },
+        },
+        {},
+    )
+
+    assert item["expectedSemanticFrame"]["taskLayer"] == "intent"
+    assert item["expectedSemanticFrame"]["sideEffect"] == "preview"
+    assert item["current"]["score"]["semanticExpectation"]["matched"] is True
+
+
+def test_build_case_report_infers_plan_operation_semantic_expectation_from_coverage():
+    item = report._build_case_report(
+        "operation-case#1",
+        None,
+        {
+            "case": "operation-case",
+            "stepIndex": 1,
+            "prompt": "按录取率从低到高排下，先看预览",
+            "responseText": "这是排序预览，确认后才会更新导出顺序。",
+            "coverage": ["release_3_0_3", "dialogue_derived", "plan_operations", "sort_ordered_plan"],
+            "semanticRouterShadow": {
+                "status": "success",
+                "frame": {
+                    "taskLayer": "plan",
+                    "topic": "plan",
+                    "verb": "sort",
+                    "sideEffect": "preview",
+                    "confidence": 0.91,
+                },
+            },
+        },
+        {},
+    )
+
+    assert item["expectedSemanticFrame"]["taskLayer"] == "plan"
+    assert item["expectedSemanticFrame"]["sideEffect"] == "preview"
+    assert item["current"]["score"]["semanticExpectation"]["matched"] is True
 
 
 def test_score_case_marks_empty_response_as_failed_verdict():
