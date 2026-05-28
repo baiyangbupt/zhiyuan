@@ -1580,6 +1580,13 @@ fast routers 产出候选
 
 后续若要真正接入 LLM 仲裁，需要额外增加短超时策略、失败 fallback、semantic route 到当前 resolver 的映射，以及 case 级 route confusion matrix 门禁。
 
+实施复核：
+
+- `dialog_regression_303_effect_perf_cases.json` 在 semantic router 关闭、只保留本地 fast-route 仲裁时复跑 `14/14` 通过，median 约 `2281ms`，p95 约 `5771ms`，没有引入阻塞 LLM 等待。
+- 当前新增字段已经进入服务端 `conversation_turn_event.routeDecision.arbitration` 结构化日志。
+- 现有 `dialog_regression_runner.py` 主要从 SQLite 历史提取工具和路由观测，而 `conversation_turn_event` 只写结构化日志，不写入历史；因此 e2e metrics 暂时还不能直接展示 `semanticArbitrationNeeded` 分布。
+- TODO：后续需要在不污染主模型 runtime history 的前提下，把 routeDecision/arbitration 作为内部观测消息落到历史，或让 runner 支持读取结构化日志文件，方便自动生成 selective arbitration 分布报告。
+
 ## 11. 待确认决策
 
 需要确认后再进入代码实现：

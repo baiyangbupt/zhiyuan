@@ -422,6 +422,48 @@ def test_summarize_turn_observability_counts_plain_text_tool_returns():
     assert observed["toolCalls"][0]["name"] == "compare_majors"
 
 
+def test_summarize_turn_observability_extracts_fast_route_arbitration():
+    route_decision = {
+        "source": "plan_fast_route",
+        "arbitration": {
+            "source": "fast_route_arbitrator",
+            "selectedPath": "plan_query_fast_route",
+            "semanticArbitrationNeeded": True,
+            "semanticArbitrationReason": "close_fast_route_candidates",
+            "semanticArbitrationCandidatePaths": [
+                "plan_query_fast_route",
+                "major_intent_fast_route",
+            ],
+        },
+    }
+    turn_messages = [
+        {
+            "parts": [
+                {
+                    "part_kind": "text",
+                    "content": json.dumps(
+                        {
+                            "event": "conversation_turn_event",
+                            "routingPath": "plan_query_fast_route",
+                            "routeDecision": route_decision,
+                        },
+                        ensure_ascii=False,
+                    ),
+                }
+            ]
+        }
+    ]
+
+    observed = runner._summarize_turn_observability(turn_messages)
+
+    assert observed["routeDecision"] == route_decision
+    assert observed["fastRouteArbitration"]["semanticArbitrationNeeded"] is True
+    assert observed["fastRouteArbitration"]["semanticArbitrationCandidatePaths"] == [
+        "plan_query_fast_route",
+        "major_intent_fast_route",
+    ]
+
+
 def test_followup_summary_extracts_targets_and_refresh_flags():
     followups = [
         {"content": {"targetView": "ordered", "refresh": True}},

@@ -317,6 +317,7 @@ def _summarize_turn_observability(turn_messages: list[dict[str, Any]]) -> dict[s
     result_kinds: list[str] = []
     routing_paths: list[str] = []
     semantic_router_shadow: dict[str, Any] | None = None
+    route_decision: dict[str, Any] | None = None
 
     for message in turn_messages:
         if not isinstance(message, dict):
@@ -357,6 +358,13 @@ def _summarize_turn_observability(turn_messages: list[dict[str, Any]]) -> dict[s
                 shadow = data.get("semanticRouterShadow") if isinstance(data, dict) else None
                 if isinstance(shadow, dict):
                     semantic_router_shadow = shadow
+                continue
+            if kind == "text":
+                data = _parse_json_object(part.get("content"))
+                if data.get("event") == "conversation_turn_event":
+                    raw_route_decision = data.get("routeDecision")
+                    if isinstance(raw_route_decision, dict):
+                        route_decision = raw_route_decision
 
     for item in tool_calls:
         call_id = str(item.get("toolCallId") or "")
@@ -394,6 +402,11 @@ def _summarize_turn_observability(turn_messages: list[dict[str, Any]]) -> dict[s
             summary["routingPathCandidates"] = routing_paths
     if semantic_router_shadow:
         summary["semanticRouterShadow"] = semantic_router_shadow
+    if route_decision:
+        summary["routeDecision"] = route_decision
+        arbitration = route_decision.get("arbitration")
+        if isinstance(arbitration, dict):
+            summary["fastRouteArbitration"] = arbitration
     return summary
 
 
