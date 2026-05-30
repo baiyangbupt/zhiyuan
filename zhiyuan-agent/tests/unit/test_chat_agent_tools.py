@@ -14,6 +14,21 @@ from pydantic_ai.tools import Tool
 class TestChatAgentToolRegistration:
     """Tests for ChatAgent tool registration."""
 
+    def test_plan_query_progress_hint_covers_plan_and_candidate_scope(self):
+        agent_mock = MagicMock()
+        with patch("app.llm.client.OpenAIChatModel", return_value=MagicMock()), patch(
+            "app.llm.client.OpenAIProvider", return_value=MagicMock()
+        ), patch("app.agent.base_agent.Agent", return_value=agent_mock):
+            from app.config import LLMConfig
+            from app.llm.client import LLMClient
+            from app.agent.chat_agent import ChatAgent
+
+            config = LLMConfig(provider="openai", api_key="sk-test")
+            client = LLMClient(config)
+            agent = ChatAgent(client)
+
+        assert agent.get_progress_hint("query_volunteer_plan") == "正在查看当前方案和候选机会..."
+
     def test_intent_preview_tool_schema_exposes_closed_major_intent_keys(self):
         from app.tools.intent_preview_tool import preview_current_major_intent_confirmation
 

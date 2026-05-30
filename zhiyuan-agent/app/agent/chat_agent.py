@@ -51,7 +51,7 @@ _TOOL_PROGRESS_HINTS: dict[str, str] = {
     "get_major_introduction":           "正在查这个专业的学习内容和就业情况...",
     "get_major_introductions":          "正在对照这些专业的学习内容和就业情况...",
     "get_school_introduction":          "正在查这所院校的基础信息...",
-    "query_volunteer_plan":             "正在查看你当前方案里的志愿...",
+    "query_volunteer_plan":             "正在查看当前方案和候选机会...",
     "analyze_current_interest":         "正在结合你的问题做初步分析...",
     "analyze_current_school_interest":  "正在看这个院校方向是否适合你...",
     "analyze_current_major_interest":   "正在看这个专业方向是否适合你...",

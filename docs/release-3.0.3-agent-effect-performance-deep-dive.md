@@ -3265,3 +3265,6 @@ L3 full_agent fallback
 - 验证：
   - 指令与查询聚焦回归：`cd zhiyuan-agent && .venv/bin/python -m pytest tests/unit/test_instructions.py tests/unit/test_chat_agent_init_profile.py tests/unit/test_plan_query_tool.py tests/unit/test_tool_reply_policy.py -q`：`70 passed`。
   - 百家 Kimi smoke：`session=120 / 候选里还有没有更稳一点的会计审计，别直接加`，工具链由 `plan_next_action -> execute_plan_action -> query_volunteer_plan` 收敛为单次 `query_volunteer_plan`；模型请求从 4 次降到 2 次，端到端约 `27.3s`。最终回复仍覆盖 3 条稳档会计候选、录取率、学费、民办性质和下一步引导；无 follow-up 卡片、无确认预览，输出文件未命中 `id=`、`volunteerId`、`planningWorkspaceAction` 或“确认后”。
+- 用户可见提示补充：
+  - 上述 smoke 还发现 `query_volunteer_plan` 的 thinking 文案仍是“正在查看你当前方案里的志愿...”，候选查询时语义不准。现改为“正在查看当前方案和候选机会...”，同时覆盖方案局部查询和候选机会查询。
+  - 聚焦回归：`cd zhiyuan-agent && .venv/bin/python -m pytest tests/unit/test_chat_agent_tools.py tests/unit/test_instructions.py tests/unit/test_plan_query_tool.py tests/unit/test_tool_reply_policy.py -q`：`90 passed`。
