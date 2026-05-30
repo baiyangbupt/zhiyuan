@@ -128,8 +128,42 @@ _PLAN_MUTATION_PROMPT_KEYWORDS = (
     "补齐",
     "补几个",
 )
+_READONLY_USER_PROMPT_MARKERS = (
+    "先别动",
+    "先不要动",
+    "不要动方案",
+    "别动方案",
+    "先不要改方案",
+    "不要改方案",
+    "先查一下不要改",
+    "先看看不要改",
+    "只分析",
+    "先只分析",
+    "只看",
+    "只查",
+    "别直接加",
+    "不要直接加",
+    "先别加",
+    "先不要加",
+    "别加入",
+    "不要加入",
+    "别加进",
+    "不要加进",
+)
+_READONLY_MUTATION_GUARD_REPLY = (
+    "我按“先看、先查、不直接改”的方式处理了这轮请求，当前不会加入、删除、移动或重排方案。"
+    "如果你想把某个候选真正加入方案，可以再明确说“加入方案”或指定要调整的位置，我会先给出可确认的调整预览。"
+)
 _UNBACKED_CONFIRM_SENTENCE_RE = re.compile(r"确认要我.*执行")
 _ROUTE_OBSERVABILITY_MODEL_NAME = "route-observability"
+_INTENT_PREVIEW_TOOL_NAMES = {
+    "analyze_volunteer_intent_change",
+    "preview_current_intent_confirmation",
+    "preview_current_major_intent_confirmation",
+    "preview_current_school_intent_confirmation",
+    "preview_current_region_intent_confirmation",
+    "preview_current_career_intent_confirmation",
+}
 
 
 def _safe_result_field(result_text: str, field: str) -> Any:
@@ -553,6 +587,8 @@ def _extract_execute_plan_action_view_targets(part: ToolReturnPart) -> list[str]
     action_family = str(data.get("action_family") or "").strip()
     if action_family not in _EXECUTE_PLAN_ACTION_VIEW_FAMILIES:
         return []
+    if action_family == "query_candidates":
+        return []
     targets = data.get("workspace_refresh_targets")
     if not isinstance(targets, list):
         return []
@@ -721,6 +757,12 @@ def _tool_calls_include_plan_view_targets(messages: list[Any] | None) -> list[st
     return _dedupe_workspace_targets(view_targets)
 
 
+def _strip_workspace_targets_for_readonly_prompt(targets: list[str], content: str) -> list[str]:
+    if not _prompt_explicitly_readonly(content):
+        return targets
+    return []
+
+
 def _tool_calls_include_plan_execution(messages: list[Any] | None) -> bool:
     return any(part.tool_name == "execute_plan_action" for part in _iter_tool_call_parts(messages))
 
@@ -763,6 +805,10 @@ def _tool_returns_plan_mutation_context(messages: list[Any] | None) -> bool:
     return False
 
 
+def _tool_returns_mutating_plan_preview(messages: list[Any] | None) -> bool:
+    return _extract_pending_plan_action(messages) is not None
+
+
 def _tool_calls_include_plan_chain(messages: list[Any] | None) -> bool:
     plan_tool_names = {
         "collect_plan_context_inputs",
@@ -774,15 +820,7 @@ def _tool_calls_include_plan_chain(messages: list[Any] | None) -> bool:
 
 
 def _tool_calls_include_intent_preview(messages: list[Any] | None) -> bool:
-    intent_preview_tool_names = {
-        "analyze_volunteer_intent_change",
-        "preview_current_intent_confirmation",
-        "preview_current_major_intent_confirmation",
-        "preview_current_school_intent_confirmation",
-        "preview_current_region_intent_confirmation",
-        "preview_current_career_intent_confirmation",
-    }
-    return any(part.tool_name in intent_preview_tool_names for part in _iter_tool_call_parts(messages))
+    return any(part.tool_name in _INTENT_PREVIEW_TOOL_NAMES for part in _iter_tool_call_parts(messages))
 
 
 def _normalize_pending_intent_reply(reply: str) -> str:
@@ -902,6 +940,130 @@ def _is_pending_intent_followup_turn(content: str, reply: str) -> bool:
     return any(token in compact_content for token in _PENDING_INTENT_FOLLOWUP_USER_TOKENS) or any(
         token in compact_reply for token in _PENDING_INTENT_FOLLOWUP_REPLY_TOKENS
     )
+
+
+def _last_user_visible_text_response(messages: list[Any] | None) -> ModelResponse | None:
+    for message in reversed(messages or []):
+        if not isinstance(message, ModelResponse) or _is_route_observability_message(message):
+            continue
+        if any(isinstance(part, TextPart) and str(part.content or "").strip() for part in getattr(message, "parts", []) or []):
+            return message
+    return None
+
+
+def _message_text_content(message: Any) -> str:
+    parts: list[str] = []
+    for part in getattr(message, "parts", []) or []:
+        if isinstance(part, TextPart) and isinstance(part.content, str):
+            text = part.content.strip()
+            if text:
+                parts.append(text)
+    return "\n".join(parts)
+
+
+def _messages_after_index(messages: list[Any] | None, index: int | None) -> list[Any]:
+    if not messages:
+        return []
+    if index is None:
+        return list(messages)
+    return list(messages[index + 1:])
+
+
+def _latest_user_turn_boundary(messages: list[Any] | None) -> int | None:
+    if not messages:
+        return None
+    return _latest_user_prompt_index(list(messages))
+
+
+def _latest_turn_tool_names(messages: list[Any] | None) -> list[str]:
+    boundary = _latest_user_turn_boundary(messages)
+    return [part.tool_name for part in _iter_tool_call_parts(_messages_after_index(messages, boundary))]
+
+
+def _latest_turn_has_intent_preview(messages: list[Any] | None) -> bool:
+    boundary = _latest_user_turn_boundary(messages)
+    return _tool_calls_include_intent_preview(_messages_after_index(messages, boundary))
+
+
+def _latest_turn_has_plan_mutation_preview(messages: list[Any] | None) -> bool:
+    boundary = _latest_user_turn_boundary(messages)
+    turn_messages = _messages_after_index(messages, boundary)
+    for part in _iter_tool_return_parts(turn_messages):
+        if part.tool_name not in {"plan_next_action", "execute_plan_action"}:
+            continue
+        data = _parse_tool_return_json(part.content)
+        if not data:
+            continue
+        action_family = str(data.get("action_family") or "").strip()
+        effective_family = _PLAN_PREVIEW_TO_APPLY_ACTION_FAMILIES.get(action_family, action_family)
+        result_kind = str(data.get("result_kind") or "").strip()
+        if effective_family in _PENDING_PLAN_ACTION_FAMILIES and result_kind in {"preview_only", "compensation_preview"}:
+            return True
+    return False
+
+
+def _latest_turn_looks_readonly(messages: list[Any] | None) -> bool:
+    tool_names = _latest_turn_tool_names(messages)
+    if not tool_names:
+        return False
+    readonly_tool_names = {
+        "query_volunteer_plan",
+        "collect_plan_context_inputs",
+        "analyze_current_interest",
+        "analyze_current_school_interest",
+        "analyze_current_major_interest",
+        "analyze_current_region_interest",
+        "analyze_current_career_direction",
+        "compare_majors",
+        "compare_majors_adhoc",
+        "compare_major_options",
+        "compare_schools",
+        "compare_schools_adhoc",
+        "get_major_introduction",
+        "get_major_introductions",
+        "get_school_introduction",
+        "query_admission_score",
+        "query_score_line",
+        "validate_major_subjects",
+        "validate_plan_params",
+    }
+    if any(name in _INTENT_PREVIEW_TOOL_NAMES for name in tool_names):
+        return False
+    if _latest_turn_has_plan_mutation_preview(messages):
+        return False
+    for name in tool_names:
+        if name == "plan_next_action":
+            continue
+        if name == "execute_plan_action":
+            continue
+        if name not in readonly_tool_names:
+            return False
+    for part in _iter_tool_return_parts(_messages_after_index(messages, _latest_user_turn_boundary(messages))):
+        if part.tool_name != "execute_plan_action":
+            continue
+        data = _parse_tool_return_json(part.content)
+        action_family = str((data or {}).get("action_family") or "").strip()
+        if action_family not in _EXECUTE_PLAN_ACTION_VIEW_FAMILIES and action_family not in {"analyze_adjustment", "preview_compensation"}:
+            return False
+        if bool((data or {}).get("applied")) and action_family not in _EXECUTE_PLAN_ACTION_VIEW_FAMILIES:
+            return False
+    return True
+
+
+def _should_apply_pending_intent_directly(content: str, history: list[Any] | None) -> bool:
+    if not _is_pending_intent_confirmation(content):
+        return False
+    if not history:
+        return True
+    latest_response = _last_user_visible_text_response(history)
+    latest_reply = _message_text_content(latest_response)
+    if _latest_turn_has_intent_preview(history):
+        return True
+    if latest_reply and _is_pending_intent_followup_turn(content, latest_reply):
+        return True
+    if _latest_turn_looks_readonly(history):
+        return False
+    return False
 
 
 _PENDING_PLAN_ACTION_FAMILIES = {
@@ -1279,6 +1441,13 @@ def _is_basic_plan_status_question(content: str) -> bool:
     }
 
 
+def _prompt_explicitly_readonly(content: str | None) -> bool:
+    compact = re.sub(r"\s+", "", str(content or "").strip())
+    if not compact:
+        return False
+    return any(marker in compact for marker in _READONLY_USER_PROMPT_MARKERS)
+
+
 def _is_plan_mutation_request(content: str) -> bool:
     normalized = re.sub(r"\s+", "", (content or "").strip())
     if not normalized:
@@ -1544,6 +1713,40 @@ def _build_pending_plan_preview_reply(pending_action: dict[str, Any]) -> str:
         boundary = "如果你确认要这样做，我再执行；现在还不会改动方案。"
     body = f"\n\n{summary}" if summary else ""
     return f"{title}{body}\n\n{boundary}"
+
+
+def _remove_current_turn_mutating_plan_preview(messages: list[Any] | None) -> None:
+    """Rewrite mutating Plan preview returns so they cannot become stale pending state.
+
+    This is a side-effect safety boundary for explicit read-only prompts. It does
+    not route the request; it only prevents a model/tool detour from leaving a
+    confirmable add/remove/move/sort preview after the user said to only inspect.
+    """
+    for part in _iter_tool_return_parts(messages):
+        if part.tool_name not in {"plan_next_action", "execute_plan_action"}:
+            continue
+        data = _parse_tool_return_json(part.content)
+        if not data:
+            continue
+        action_family = str(data.get("action_family") or "").strip()
+        effective_family = _PLAN_PREVIEW_TO_APPLY_ACTION_FAMILIES.get(action_family, action_family)
+        result_kind = str(data.get("result_kind") or "").strip()
+        if effective_family not in _PENDING_PLAN_ACTION_FAMILIES:
+            continue
+        if result_kind not in {"preview_only", "compensation_preview"} and data.get("stage") != "preview":
+            continue
+        data["stage"] = "apply"
+        data["action_family"] = "query_candidates" if effective_family == "add_units" else "query_ordered"
+        data["result_kind"] = "candidate_snapshot" if effective_family == "add_units" else "ordered_snapshot"
+        data["applied"] = True
+        data["requires_confirmation"] = False
+        data["should_rerun_review"] = False
+        data["should_refresh_workspace"] = False
+        data["workspace_refresh_targets"] = []
+        data["reply_focus"] = [str(data["result_kind"])]
+        data["summary"] = _READONLY_MUTATION_GUARD_REPLY
+        data.pop("preview_summary", None)
+        part.content = json.dumps(data, ensure_ascii=False)
 
 
 def _remove_unbacked_plan_confirmation_copy(reply: str) -> str:
@@ -2094,7 +2297,7 @@ class ChatService:
                 )
             return reply
 
-        if active_pending_kind == "intent_change" and _is_pending_intent_confirmation(content):
+        if active_pending_kind == "intent_change" and _should_apply_pending_intent_directly(content, history):
             tool_call_id = "direct-pending-intent-confirmation"
             tool_started_at = time.monotonic()
             result_text = await update_volunteer_intent_state(
@@ -2153,6 +2356,31 @@ class ChatService:
                 ],
                 status="success" if message_code not in {"apply_failed", "confirm_required", "no_pending"} else "error",
                 errorType=message_code if message_code in {"apply_failed", "confirm_required", "no_pending"} else None,
+            )
+            return reply
+
+        if active_pending_kind == "intent_change" and _is_pending_intent_confirmation(content):
+            reply = "我这边没有找到上一轮仍在等待确认的偏好调整。你可以直接说想保留、排除或重点关注的方向，我会先整理成待确认内容。"
+            new_messages = [
+                ModelRequest(parts=[UserPromptPart(content=content)]),
+                ModelResponse(parts=[TextPart(content=reply)], model_name="direct-intent-confirmation-guard"),
+            ]
+            try:
+                history_to_save = list(history or [])
+                history_to_save.extend(new_messages)
+                await self.history_store.save(session_id, history_to_save)
+            except Exception:
+                logger.exception("Failed to save stale pending intent confirmation guard history: session_id=%s", session_id)
+            _log_conversation_turn_event(
+                sessionId=session_id,
+                userId=user_id,
+                scene="intent",
+                routingPath="intent_confirmation_guard_stale_pending",
+                pendingType="intent",
+                actionFamily=None,
+                totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
+                status="success",
+                errorType=None,
             )
             return reply
 
@@ -2320,6 +2548,19 @@ class ChatService:
         intent_preview_used = intent_preview_used_current_turn
         if not new_messages:
             intent_preview_used = _tool_calls_include_intent_preview(all_messages)
+        readonly_prompt = _prompt_explicitly_readonly(content)
+        readonly_mutation_preview_guarded = False
+        if readonly_prompt and _tool_returns_mutating_plan_preview(new_messages):
+            _remove_current_turn_mutating_plan_preview(new_messages)
+            _remove_current_turn_mutating_plan_preview(all_messages)
+            if isinstance(reply, str) and _reply_has_plan_confirmation_request(reply):
+                guarded_reply = _remove_unbacked_plan_confirmation_copy(reply).strip()
+                if not guarded_reply or _reply_has_plan_confirmation_request(guarded_reply):
+                    guarded_reply = _READONLY_MUTATION_GUARD_REPLY
+                _replace_text_reply(new_messages, reply, guarded_reply)
+                _replace_text_reply(all_messages, reply, guarded_reply)
+                reply = guarded_reply
+            readonly_mutation_preview_guarded = True
         if (
             (plan_chain_used or _should_guard_plan_reply(content))
             and isinstance(reply, str)
@@ -2330,7 +2571,7 @@ class ChatService:
             _replace_text_reply(all_messages, reply, normalized_reply)
             reply = normalized_reply
 
-        if plan_chain_used and isinstance(reply, str):
+        if plan_chain_used and isinstance(reply, str) and not readonly_mutation_preview_guarded:
             bounded_reply = _append_plan_preview_confirmation_boundary(reply, new_messages)
             if bounded_reply != reply:
                 _replace_text_reply(new_messages, reply, bounded_reply)
@@ -2377,6 +2618,7 @@ class ChatService:
         workspace_refresh_targets = _tool_calls_include_plan_workspace_refresh(new_messages)
         if not new_messages:
             workspace_refresh_targets = _tool_calls_include_plan_workspace_refresh(all_messages)
+        workspace_refresh_targets = _strip_workspace_targets_for_readonly_prompt(workspace_refresh_targets, content)
         # Intent preview only prepares a pending preference/constraint. Do not
         # refresh the workspace until the user confirms or explicitly selects
         # the intent card; otherwise the UI looks as if an unconfirmed intent
@@ -2385,6 +2627,7 @@ class ChatService:
         workspace_view_targets = _tool_calls_include_plan_view_targets(
             new_messages if new_messages else all_messages
         )
+        workspace_view_targets = _strip_workspace_targets_for_readonly_prompt(workspace_view_targets, content)
         tool_messages = new_messages if new_messages else all_messages
         tool_calls = _iter_tool_call_parts(tool_messages)
         tool_returns = _iter_tool_return_parts(tool_messages)

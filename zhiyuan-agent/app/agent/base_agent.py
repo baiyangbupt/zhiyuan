@@ -27,6 +27,10 @@ ProgressCallback = Callable[[str], Awaitable[None]]
 
 DepsT = TypeVar("DepsT")
 
+_TOOL_REPEAT_LIMITS = {
+    "query_volunteer_plan": 2,
+}
+
 _SKILL_SUMMARY_INSTRUCTION_TEMPLATE = """\
 以下是系统内置的业务技能边界摘要，仅用于帮助你理解任务分工；它们不是运行时可调用工具。
 真正可调用能力以当前已注册的业务工具为准。能由专用业务工具承接的问题，直接调用对应工具，不要尝试加载技能说明。
@@ -193,6 +197,38 @@ class BaseAgent(Generic[T]):
                     observability["firstToolCallAtMs"] = int((node_started_at - run_started_at) * 1000)
                     observability["firstToolNames"] = list(tool_names)
 
+                repeat_guard_output = self._guard_repeated_tool_calls(tool_names, observability)
+                if repeat_guard_output:
+                    output = repeat_guard_output
+                    usage = agent_run.usage()
+                    if hasattr(usage, "__await__"):
+                        usage = await usage
+                    observability["completed"] = True
+                    observability["toolLoopGuarded"] = True
+                    observability["totalDurationMs"] = int((time.monotonic() - run_started_at) * 1000)
+                    observability["requests"] = usage.requests
+                    observability["toolCalls"] = usage.tool_calls
+
+                    partial_messages = await self._resolve_messages(agent_run.all_messages())
+                    guard_response = ModelResponse(
+                        parts=[TextPart(content=repeat_guard_output)],
+                        model_name="tool-loop-guard",
+                    )
+                    all_messages = self._drop_trailing_tool_call_response(
+                        list(partial_messages),
+                        tool_names,
+                    )
+                    all_messages.append(guard_response)
+                    history_len = len(normalized_history or [])
+                    new_messages = list(all_messages[history_len:])
+                    logger.warning(
+                        "Agent stopped repeated tool loop: tool_names=%s nodes=%d output_len=%d",
+                        tool_names,
+                        node_count,
+                        len(repeat_guard_output),
+                    )
+                    return output, new_messages, all_messages, usage
+
                 try:
                     node = await agent_run.next(node)
                 except BaseException as exc:
@@ -340,6 +376,49 @@ class BaseAgent(Generic[T]):
         if tool_names:
             item["toolNames"] = list(tool_names)
         observability.setdefault("nodeTimings", []).append(item)
+
+    def _guard_repeated_tool_calls(self, tool_names: list[str], observability: dict[str, Any]) -> str | None:
+        if not tool_names:
+            return None
+        counts = observability.setdefault("toolNameCounts", {})
+        if not isinstance(counts, dict):
+            counts = {}
+            observability["toolNameCounts"] = counts
+        for tool_name in tool_names:
+            if not tool_name:
+                continue
+            current_count = int(counts.get(tool_name) or 0) + 1
+            counts[tool_name] = current_count
+            limit = _TOOL_REPEAT_LIMITS.get(tool_name)
+            if limit is not None and current_count > limit:
+                observability["toolLoopGuarded"] = True
+                observability["guardedToolName"] = tool_name
+                observability["guardedToolCount"] = current_count
+                return self.render_tool_loop_guard_output(tool_name, current_count)
+        return None
+
+    def render_tool_loop_guard_output(self, tool_name: str, count: int) -> str:
+        if tool_name == "query_volunteer_plan":
+            return (
+                "我已经查过当前方案和候选里的相关机会，但这轮查询没有稳定收敛，先不继续重复查询。"
+                "你可以换一个更具体的条件，比如学校、专业、城市、冲稳保层级，或者让我直接基于当前方案给你做一次整体分析。"
+            )
+        return "这轮工具调用没有稳定收敛，我先停止重复查询。你可以换一个更具体的问题继续。"
+
+    def _drop_trailing_tool_call_response(self, messages: list[Any], tool_names: list[str]) -> list[Any]:
+        if not messages:
+            return messages
+        last = messages[-1]
+        if not isinstance(last, ModelResponse):
+            return messages
+        parts = list(getattr(last, "parts", []) or [])
+        if not parts or not all(isinstance(part, ToolCallPart) for part in parts):
+            return messages
+        current_tool_names = {name for name in tool_names if name}
+        response_tool_names = {part.tool_name for part in parts if isinstance(part, ToolCallPart)}
+        if current_tool_names and response_tool_names and response_tool_names <= current_tool_names:
+            return messages[:-1]
+        return messages
 
     async def _resolve_messages(self, messages_result: Any) -> list[Any]:
         """Resolve a pydantic-ai message accessor that may return awaitables."""

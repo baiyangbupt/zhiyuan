@@ -18,6 +18,10 @@
 
 ### Fixed
 
+- 旧待确认意向确认护栏补强：当用户在待确认意向之后又进行了方案/候选只读查询，再回复“确认”时，不再误确认更早的 `planEditCache` 偏好；短确认必须贴近最近一轮意向预览或意向影响说明才会直接生效。
+- full-agent 工具循环断路：同一轮内 `query_volunteer_plan` 重复调用超过上限时，Agent 会停止重复查询并返回用户可理解的收敛提示，同时避免把未执行的孤立 tool call 写入历史。
+- 只读候选查询不再自动发送候选工作区联动卡片，也不会留下可确认的修改预览：`query_candidates` 这类查看候选的只读结果只由文本回复承接，不触发 `planningWorkspaceAction(candidate)`；当用户明确说“只查/只看/别直接加/不要改方案”时，误生成的 add/remove/move/sort 预览会被服务层改写为只读结果，真正采纳约束或修改方案的场景仍保留工作区刷新。
+- 候选只读查询入参解析与失败语义收口：新增共享候选筛选抽取层，`query_candidates` 和 `query_volunteer_plan(scope=candidate)` 都会先用结构化 LLM 抽取把本轮自然语言里的冲稳保、地域、院校、专业和标签转成候选池筛选条件，再做 catalog 归一化；`query_volunteer_plan` 会合并工具 query 与当前轮用户原句，避免模型压缩 query 后丢失“更稳 / 别加”等限定。这不是快路由，也不更新长期意向。候选池接口失败时会返回明确的查询失败阻断，不再包装成成功候选快照或让模型编造候选建议。
 - Agent 工具直返收口为通用 Tool Reply Policy：`ChatAgent` 不再按 `execute_plan_action` 做局部特判，而是统一依据工具显式 `reply_strategy` 和结构化 `result_kind/reply_focus` 判断是否直返；受控阻断、无变化和意向待确认可直接结束本轮，方案查询、审查、Explore、专业对比和正常预览仍交给模型组织回复，避免为降延迟牺牲信息量。
 - 方案调整安全边界补强：模型把移动/删除/替换等高副作用动作误传为 `stage=analyze` 时，执行层会改走真实 `preview` 解析链路，必须先唯一定位当前方案/候选目标；无法定位时直接给用户可理解的阻断提示，不再生成没有真实目标的“确认后执行”假预览。
 - 同轮 pending 清理修复：当 `plan_next_action(preview)` 先留下待确认动作、后续 `execute_plan_action(error)` 已经阻断时，服务层会清理该 pending，避免回复后面再追加“确认后执行”。

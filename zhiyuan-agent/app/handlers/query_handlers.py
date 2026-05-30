@@ -17,6 +17,10 @@ from pydantic_ai import RunContext
 from app.agent.context import RequestContext
 from app.handlers.registry import register_handler
 from app.tools.plan_orchestration_models import PlanActionPlan, PlanExecutionResult
+from app.tools.candidate_filter_extraction_tool import (
+    extract_candidate_query_filters_async,
+    normalize_candidate_query_filters_async,
+)
 from app.tools.planning_workflow_tool import (
     _build_plan_status_overview_facts,
     merge_planning_state_with_user_profile,
@@ -34,6 +38,8 @@ from app.util.internal_client import (
 from app.handlers.shared import summary_total
 
 logger = logging.getLogger(__name__)
+
+_CANDIDATE_QUERY_FAILED_TEXT = "查询候选池失败，请稍后重试。"
 
 
 # ---------------------------------------------------------------------------
@@ -80,6 +86,101 @@ def _clean_plan_item_for_user(value: Any) -> str:
         return ""
     text = text.replace("(unknown)", "")
     return re.sub(r"@(\d+)", r"第\1位", text).strip()
+
+
+def _parse_filter_list(value: Any) -> list[str]:
+    if not value:
+        return []
+    if isinstance(value, list):
+        return [str(item or "").strip() for item in value if str(item or "").strip()]
+    text = str(value or "").strip()
+    if not text:
+        return []
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        return [part.strip() for part in text.replace("，", ",").split(",") if part.strip()]
+    if isinstance(parsed, list):
+        return [str(item or "").strip() for item in parsed if str(item or "").strip()]
+    return [text]
+
+
+def _latest_user_message(ctx: RunContext[RequestContext]) -> str:
+    for item in reversed(getattr(ctx.deps, "chat_history", None) or []):
+        if item.get("role") == "user":
+            return str(item.get("content") or "").strip()
+    return ""
+
+
+def _candidate_query_source_text(
+    ctx: RunContext[RequestContext],
+    plan: PlanActionPlan,
+    atomic: Any | None,
+) -> str:
+    parts = [
+        getattr(plan, "user_goal", "") or "",
+        getattr(atomic, "reason", "") if atomic is not None else "",
+        _latest_user_message(ctx),
+    ]
+    return " ".join(str(part or "").strip() for part in parts if str(part or "").strip())
+
+
+def _merge_filter_lists(base: list[str], extra: list[str]) -> list[str]:
+    merged: list[str] = []
+    for value in [*base, *extra]:
+        text = str(value or "").strip()
+        if text and text not in merged:
+            merged.append(text)
+    return merged
+
+
+def _filter_payload_from_atomic_filters(filters: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "tiers": [filters.get("tier")] if filters.get("tier") else [],
+        "province_names": [filters.get("province_keyword")] if filters.get("province_keyword") else [],
+        "city_names": [filters.get("city_keyword")] if filters.get("city_keyword") else [],
+        "school_keywords": [filters.get("school_keyword")] if filters.get("school_keyword") else [],
+        "major_keywords": [filters.get("major_keyword")] if filters.get("major_keyword") else [],
+        "school_tags": _parse_filter_list(filters.get("school_tags")),
+        "major_tags": _parse_filter_list(filters.get("major_tags")),
+    }
+
+
+async def _build_candidate_query_filters(
+    ctx: RunContext[RequestContext],
+    plan: PlanActionPlan,
+    atomic: Any | None,
+) -> dict[str, list[str]]:
+    batch = getattr(ctx.deps, "batch", None) or "01"
+    atomic_filters = dict(atomic.filters if atomic else {})
+    normalized = await normalize_candidate_query_filters_async(
+        _filter_payload_from_atomic_filters(atomic_filters),
+        batch=batch,
+    )
+    source_text = _candidate_query_source_text(ctx, plan, atomic)
+    try:
+        extracted = await extract_candidate_query_filters_async(source_text, batch=batch)
+    except Exception:
+        logger.warning("candidate query filter extraction failed in query_candidates", exc_info=True)
+        extracted = {}
+    extracted_filters = (extracted or {}).get("filters") or {}
+    return {
+        key: _merge_filter_lists(normalized.get(key) or [], extracted_filters.get(key) or [])
+        for key in (
+            "tiers",
+            "province_names",
+            "city_names",
+            "school_keywords",
+            "major_keywords",
+            "school_tags",
+            "major_tags",
+        )
+    }
+
+
+def _candidate_query_failed(state_summary: str) -> bool:
+    text = str(state_summary or "").strip()
+    return text == _CANDIDATE_QUERY_FAILED_TEXT or text.startswith("查询候选池失败")
 
 
 def _build_status_overview_summary(facts: dict[str, Any]) -> tuple[str, list[str], list[str]]:
@@ -257,18 +358,40 @@ async def handle_query_candidates(
     ctx: RunContext[RequestContext], plan: PlanActionPlan
 ) -> PlanExecutionResult:
     atomic = plan.atomic_actions[0] if plan.atomic_actions else None
-    filters = atomic.filters if atomic else {}
+    filters = dict(atomic.filters if atomic else {})
+    query_filters = await _build_candidate_query_filters(ctx, plan, atomic)
+
     state_summary = await query_planning_candidate_pool(
         ctx,
-        tiers=[filters["tier"]] if filters.get("tier") else None,
-        province_names=[filters["province_keyword"]] if filters.get("province_keyword") else None,
-        school_keywords=[filters["school_keyword"]] if filters.get("school_keyword") else None,
-        major_keywords=[filters["major_keyword"]] if filters.get("major_keyword") else None,
-        school_tags=json.loads(filters["school_tags"]) if filters.get("school_tags") else None,
-        major_tags=json.loads(filters["major_tags"]) if filters.get("major_tags") else None,
+        tiers=query_filters.get("tiers") or None,
+        province_names=query_filters.get("province_names") or None,
+        city_names=query_filters.get("city_names") or None,
+        school_keywords=query_filters.get("school_keywords") or None,
+        major_keywords=query_filters.get("major_keywords") or None,
+        school_tags=query_filters.get("school_tags") or None,
+        major_tags=query_filters.get("major_tags") or None,
         page=1,
         page_size=int(filters.get("limit") or 5),
     )
+    if _candidate_query_failed(state_summary):
+        user_summary = "候选池这次没有查成功，暂时不能据此判断还有哪些可选机会。请稍后重试，或先在页面候选区查看当前筛选结果。"
+        return PlanExecutionResult(
+            applied=False,
+            action_family="query_candidates",
+            stage=plan.stage,
+            result_kind="error",
+            workspace_refresh_targets=[],
+            context_summary=plan.context_summary,
+            state_summary=user_summary,
+            summary=user_summary,
+            reply_focus=["candidate_query_failed"],
+            reply_strategy="direct_blocking",
+            next_step_hints=["候选查询失败时不要编造候选列表，也不要继续提示确认执行方案修改。"],
+            facts={
+                "raw_error": state_summary,
+                "query_filters": query_filters,
+            },
+        )
     return PlanExecutionResult(
         applied=True,
         action_family="query_candidates",

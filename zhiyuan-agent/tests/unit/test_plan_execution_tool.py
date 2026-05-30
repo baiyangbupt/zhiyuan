@@ -1207,6 +1207,9 @@ def test_execute_plan_action_runs_query_candidates():
     }
 
     with patch(
+        "app.handlers.query_handlers.extract_candidate_query_filters_async",
+        new=AsyncMock(return_value={"should_query_candidate": True, "filters": {}}),
+    ), patch(
         "app.handlers.query_handlers.query_planning_candidate_pool",
         new=AsyncMock(return_value="candidate ok"),
     ) as mock_query:
@@ -1221,8 +1224,187 @@ def test_execute_plan_action_runs_query_candidates():
     assert mock_query.await_args.kwargs["tiers"] == ["稳"]
     assert mock_query.await_args.kwargs["province_names"] == ["北京"]
     assert mock_query.await_args.kwargs["school_tags"] == ["公办"]
-    assert mock_query.await_args.kwargs["major_tags"] == []
+    assert mock_query.await_args.kwargs["major_tags"] is None
     assert mock_query.await_args.kwargs["page_size"] == 5
+
+
+def test_execute_plan_action_query_candidates_uses_shared_filter_extraction_from_goal():
+    payload = {
+        "stage": "apply",
+        "action_family": "query_candidates",
+        "user_goal": "候选里还有没有更稳一点的会计审计，别直接加",
+        "context_summary": "阶段=ordered；方案=20/30",
+        "preview_summary": "",
+        "missing_inputs": [],
+        "should_rerun_review": False,
+        "intent_relation": "unknown",
+        "atomic_actions": [
+            {
+                "action_type": "query_candidates",
+                "volunteer_ids": [],
+                "target_position": None,
+                "filters": {"limit": "5"},
+                "reason": "候选里还有没有更稳一点的会计审计，别直接加",
+            }
+        ],
+    }
+
+    extracted_filters = {
+        "filters": {
+            "tiers": ["稳"],
+            "province_names": [],
+            "city_names": [],
+            "school_keywords": [],
+            "major_keywords": ["会计学", "审计学"],
+            "school_tags": [],
+            "major_tags": [],
+        },
+        "should_query_candidate": True,
+        "confidence": 0.92,
+        "ambiguities": [],
+    }
+
+    with patch(
+        "app.handlers.query_handlers.extract_candidate_query_filters_async",
+        new=AsyncMock(return_value=extracted_filters),
+    ), patch(
+        "app.handlers.query_handlers.query_planning_candidate_pool",
+        new=AsyncMock(return_value="candidate ok"),
+    ) as mock_query:
+        result = asyncio.run(execute_plan_action(_ctx_with_pending("add_units"), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["applied"] is True
+    assert data["result_kind"] == "candidate_snapshot"
+    mock_query.assert_awaited_once()
+    assert mock_query.await_args.kwargs["tiers"] == ["稳"]
+    assert mock_query.await_args.kwargs["major_keywords"] == ["会计学", "审计学"]
+    assert mock_query.await_args.kwargs["major_tags"] is None
+    assert mock_query.await_args.kwargs["page_size"] == 5
+
+
+def test_execute_plan_action_query_candidates_merges_explicit_and_extracted_filters():
+    payload = {
+        "stage": "apply",
+        "action_family": "query_candidates",
+        "user_goal": "候选里还有没有更稳一点的会计审计，别直接加",
+        "context_summary": "阶段=ordered；方案=20/30",
+        "preview_summary": "",
+        "missing_inputs": [],
+        "should_rerun_review": False,
+        "intent_relation": "unknown",
+        "atomic_actions": [
+            {
+                "action_type": "query_candidates",
+                "volunteer_ids": [],
+                "target_position": None,
+                "filters": {"tier": "稳", "major_keyword": "会计", "major_tags": "[]", "limit": "5"},
+                "reason": "候选里还有没有更稳一点的会计审计，别直接加",
+            }
+        ],
+    }
+
+    extracted_filters = {
+        "filters": {
+            "tiers": ["稳"],
+            "province_names": [],
+            "city_names": [],
+            "school_keywords": [],
+            "major_keywords": ["审计学"],
+            "school_tags": [],
+            "major_tags": [],
+        },
+        "should_query_candidate": True,
+        "confidence": 0.9,
+        "ambiguities": [],
+    }
+
+    with patch(
+        "app.handlers.query_handlers.normalize_candidate_query_filters_async",
+        new=AsyncMock(
+            return_value={
+                "tiers": ["稳"],
+                "province_names": [],
+                "city_names": [],
+                "school_keywords": [],
+                "major_keywords": ["会计学"],
+                "school_tags": [],
+                "major_tags": [],
+            }
+        ),
+    ), patch(
+        "app.handlers.query_handlers.extract_candidate_query_filters_async",
+        new=AsyncMock(return_value=extracted_filters),
+    ), patch(
+        "app.handlers.query_handlers.query_planning_candidate_pool",
+        new=AsyncMock(return_value="candidate ok"),
+    ) as mock_query:
+        result = asyncio.run(execute_plan_action(_ctx_with_pending("add_units"), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["applied"] is True
+    assert data["result_kind"] == "candidate_snapshot"
+    mock_query.assert_awaited_once()
+    assert mock_query.await_args.kwargs["tiers"] == ["稳"]
+    assert mock_query.await_args.kwargs["major_keywords"] == ["会计学", "审计学"]
+    assert mock_query.await_args.kwargs["major_tags"] is None
+
+
+def test_execute_plan_action_query_candidates_returns_error_when_candidate_pool_fails():
+    payload = {
+        "stage": "apply",
+        "action_family": "query_candidates",
+        "user_goal": "候选里还有没有更稳一点的会计审计，别直接加",
+        "context_summary": "阶段=ordered；方案=20/30",
+        "preview_summary": "",
+        "missing_inputs": [],
+        "should_rerun_review": False,
+        "intent_relation": "unknown",
+        "atomic_actions": [
+            {
+                "action_type": "query_candidates",
+                "volunteer_ids": [],
+                "target_position": None,
+                "filters": {"limit": "5"},
+                "reason": "候选里还有没有更稳一点的会计审计，别直接加",
+            }
+        ],
+    }
+
+    extracted_filters = {
+        "filters": {
+            "tiers": ["稳"],
+            "province_names": [],
+            "city_names": [],
+            "school_keywords": [],
+            "major_keywords": ["会计学", "审计学"],
+            "school_tags": [],
+            "major_tags": [],
+        },
+        "should_query_candidate": True,
+        "confidence": 0.92,
+        "ambiguities": [],
+    }
+
+    with patch(
+        "app.handlers.query_handlers.extract_candidate_query_filters_async",
+        new=AsyncMock(return_value=extracted_filters),
+    ), patch(
+        "app.handlers.query_handlers.query_planning_candidate_pool",
+        new=AsyncMock(return_value="查询候选池失败，请稍后重试。"),
+    ) as mock_query:
+        result = asyncio.run(execute_plan_action(_ctx_with_pending("add_units"), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["applied"] is False
+    assert data["result_kind"] == "error"
+    assert data["reply_strategy"] == "direct_blocking"
+    assert data["reply_focus"] == ["candidate_query_failed"]
+    assert "不能据此判断" in data["summary"]
+    assert data["workspace_refresh_targets"] == []
+    assert data["facts"]["query_filters"]["tiers"] == ["稳"]
+    assert data["facts"]["query_filters"]["major_keywords"] == ["会计学", "审计学"]
+    mock_query.assert_awaited_once()
 
 
 def test_execute_plan_action_runs_add_units_by_filters():

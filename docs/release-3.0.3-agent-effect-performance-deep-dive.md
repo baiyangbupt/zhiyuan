@@ -3149,3 +3149,71 @@ L3 full_agent fallback
 - `cd zhiyuan-agent && .venv/bin/python -m pytest tests/unit/test_tool_reply_policy.py tests/unit/test_chat_agent_tools.py::TestChatAgentToolRegistration::test_chat_agent_uses_tool_reply_policy_for_direct_returns tests/unit/test_chat_agent_tools.py::TestChatAgentToolRegistration::test_chat_agent_direct_returns_plan_selection_blocking_error tests/unit/test_chat_agent_tools.py::TestChatAgentToolRegistration::test_chat_agent_direct_returns_incomplete_plan_payload_blocking_error tests/unit/test_chat_agent_tools.py::TestChatAgentToolRegistration::test_chat_agent_does_not_direct_return_normal_plan_preview tests/unit/test_plan_execution_tool.py::test_execute_plan_action_analyze_move_payload_runs_preview_resolution_before_confirmation tests/unit/test_plan_execution_tool.py::test_execute_plan_action_replace_missing_scope_uses_user_facing_blocking_message tests/unit/test_chat_service_history_persistence.py::test_extract_pending_plan_action_clears_plan_next_preview_after_execute_error tests/unit/test_chat_service_history_persistence.py::test_plan_preview_confirmation_boundary_does_not_append_after_execute_error_clears_pending -q`：`15 passed`。
 - 真实 WebSocket smoke：`session=17 / 青岛城市学院新媒体挪到第3位看看`，修复后链路为 `plan_next_action -> execute_plan_action`，`execute_plan_action` 返回 `result_kind=error / reply_strategy=direct_blocking`，最终回复为“我理解你想移动的是：青岛城市学院新媒体。但我在当前方案里还没有唯一匹配到这条志愿...”，没有重复 `query_volunteer_plan`，没有拼出“确认后执行”的假预览，端到端约 `18.3s`。
 - 非阻断 smoke：`会计审计还行，土木别要` 仍走 `preview_current_major_intent_confirmation` 待确认直返；`看看现在的方案` 仍走 `query_state` 后交给模型组织结构化概览，未被 Tool Reply Policy 截断。
+
+#### 12.4.12 只读查询后的确认错位与工具循环护栏
+
+本轮 open-quality 复测前先处理 3 个真实链路问题，仍沿用“通用护栏优先，不做单句关键词补丁”的原则。
+
+问题 1：只读方案查询后，短句“确认”误确认旧意向。
+
+- 复现场景：用户先问 `当前方案里青岛城市学院相关机会是不是很多，先查一下不要改`，下一轮回复 `确认`。
+- 根因：backend `planEditCache` 里仍有旧的 pending intent，服务层只看“当前是否有 pending intent + 用户是否短确认”，没有判断最近一轮是否仍然处在意向待确认语境。
+- 修复：`direct_pending_intent_confirm` 前增加最近历史语境判断。只有最近一轮包含 `preview_current_*_intent_confirmation`，或最近回复明确是待确认意向影响说明时，短确认才会直接应用；如果最近一轮是方案/候选/Explore 只读查询，则进入确认护栏，不执行旧 intent。
+- 影响边界：空历史仍兼容旧确认；最近一轮确实是意向预览时仍可 `确认` 生效。
+
+问题 2：`query_volunteer_plan` 在 full agent 内重复调用，直到使用上限或超时。
+
+- 复现场景：`候选里还有没有更稳一点的会计审计，别直接加` 曾出现同一轮几十次 `query_volunteer_plan`，最终 `UsageLimitExceeded` 且空回复。
+- 根因：模型在拿到局部查询结果后没有收敛，继续重复调用同一只读工具；这不是某个词的问题，而是工具循环缺少运行时断路。
+- 修复：`BaseAgent` 增加通用工具重复计数，当前先对 `query_volunteer_plan` 设置同轮上限 `2`；超过后直接返回用户可理解的“查询未稳定收敛”提示，并在 `agent_observability` 中记录 `toolLoopGuarded / guardedToolName / guardedToolCount`。断路时会丢弃最后一个未执行的 tool-call response，避免历史里留下未配对 tool call。
+- 影响边界：只限制重复只读查询工具；正常单次查询、方案 preview/apply、审查和 Explore 不受影响。
+
+问题 3：候选只读查询误发工作区卡片或误留下可确认修改预览。
+
+- 复现场景：用户说 `候选里还有没有更稳一点的会计审计，别直接加`，系统虽然文本是只读分析，但附带 `planningWorkspaceAction(candidate)`。
+- 根因：`execute_plan_action(query_candidates)` 的 read-only result 里带了 `workspace_refresh_targets=["candidate"]`，服务层把它转换成 view followup；另一种错误路径是模型先把“别直接加”的只读诉求误规划成 `add_units preview`，服务层会把它当作可确认 pending。
+- 修复：`query_candidates` 不再通过 `_extract_execute_plan_action_view_targets` 产生工作区联动卡片；同时增加显式只读副作用护栏：当用户明确表达“只查/只看/别直接加/不要改方案”时，如果当前轮工具误产生 add/remove/move/sort 等修改预览，服务层会把该结果改写为只读结果、清空 workspace targets，并移除确认文案，避免下一轮“确认”误执行。
+- 影响边界：这是副作用安全边界，不是业务快路由；真实修改请求仍必须走 `preview -> confirm -> apply`，确认/勾选后的约束采纳仍走 `candidateFilters`，方案修改仍走 ordered/review 刷新。
+
+验证：
+
+- 单测：`cd zhiyuan-agent && .venv/bin/python -m pytest tests/unit/test_base_agent.py tests/unit/test_tool_reply_policy.py tests/unit/test_chat_service_history_persistence.py -q`：`138 passed`。
+- 真实 WebSocket smoke：
+  - `session=17 / 当前方案里青岛城市学院相关机会是不是很多，先查一下不要改 -> 确认`：首轮只调用 `query_volunteer_plan` 1 次，无 followup；确认轮返回“没有上一轮待确认的方案动作”，没有误走 `direct_pending_intent_confirm`。输出：`/private/tmp/zhiyuan_303_pending_guard_fix_smoke.json`。
+  - `session=17 / 候选里还有没有更稳一点的会计审计，别直接加`：只调用 `query_volunteer_plan` 1 次，无重复工具、无候选工作区卡片，端到端约 `12.5s`。输出：`/private/tmp/zhiyuan_303_query_loop_guard_smoke.json`。
+- 百家 Kimi 验证：
+  - 本地服务用 `LLM_BASE_URL=https://llm.baijia.com/v1 / LLM_MODEL_NAME=kimi-k2.6` 启动在 `127.0.0.1:8013`；`curl` 最小请求已确认端点恢复连通。
+  - `session=17 / 当前方案里青岛城市学院相关机会是不是很多，先查一下不要改 -> 确认`：首轮 `12.7s`，工具链 `query_volunteer_plan` 1 次，无 followup；回复命中 7 条青岛城市学院相关志愿，并说明全为冲档、录取率约 1%；确认轮 `2.1s`，进入 no-pending guard，没有误执行。
+  - `session=17 / 候选里还有没有更稳一点的会计审计，别直接加`：`49.2s`，工具链 `plan_next_action(query_candidates) -> execute_plan_action(query_candidates) -> query_volunteer_plan`，无重复工具、无候选工作区卡片、无“确认后执行”修改预览；输出文件：`/private/tmp/zhiyuan_303_baijia_kimi_candidate_readonly_guard_smoke_after_network.json`。
+
+剩余问题：
+
+- 百家 Kimi 候选只读链路耗时仍高，主要耗在 4 次模型请求；虽然已经没有副作用问题，但性能仍需进入后续评估。
+- 百家 Kimi 候选只读链路没有拿到真实候选列表，最终回复转为概括性建议，包含“省内公办二本/财经类院校/稳的标准”等方向；这比空回复好，但候选查询质量和工具结果承接仍需后续定位。
+- 第一条只读方案查询回复质量可接受，但仍用了两次主模型请求；后续应继续在 full-agent 质量评估框架内看是否优化 Plan 查询类最终组织耗时。
+
+补充修复：候选查询共享筛选抽取层与失败语义。
+
+- 百家 Kimi 复测中定位到两层问题：
+  - 模型已经进入 `query_candidates`，但可能只把“会计审计”中的一部分传成 `major_keyword=会计`，导致候选查询条件偏窄。
+  - 本地 `session=17` 的候选池查询接口对该类条件返回系统错误；旧实现会把“查询候选池失败”继续包装成 `candidate_snapshot / applied=true`，模型容易误以为已经拿到候选事实，再输出概括性建议。
+- 修复方式：
+  - 新增 `candidate_filter_extraction_tool` 作为共享候选筛选抽取层。它只解析本轮候选池查询文本，输出 `tiers / province_names / city_names / school_keywords / major_keywords / school_tags / major_tags`，不更新长期意向，不生成用户回复，也不作为 fast route。
+  - `handle_query_candidates` 和 `query_volunteer_plan(scope=candidate / plan_then_candidate)` 统一接入该抽取层；模型只要判断到“需要查候选”，具体筛选条件可由共享层补齐并做 catalog 归一化，避免两个入口语义不一致。
+  - `query_volunteer_plan` 会把模型传入的 `query` 与当前轮用户原句合并后送入抽取层，避免主模型把“候选里有没有更稳一点的师范类机会，先查一下别加”压缩成“师范类”后丢失“更稳 / 只查不加”等关键限定。
+  - 显式传入的筛选条件优先保留，抽取层只做补充合并；例如模型只传了部分专业或没有传档位时，共享层可补齐专业、地域、冲稳保和院校/专业标签。
+  - 候选池接口失败时返回 `result_kind=error / reply_strategy=direct_blocking / reply_focus=candidate_query_failed`，并给用户明确说明“这次候选池没有查成功”，不再输出候选列表或留下确认动作。
+- 影响边界：
+  - 这不是关键词路由；用户没有被模型或既有工具链判成候选查询时不会被该逻辑接管。
+  - 抽取层是输入解析，不改变 `preview -> confirm -> apply`，也不向前端发送候选联动卡片。
+  - `majorKeywords` 继续承接候选池历史口径里的专业大类/具体专业，`majorTags` 承接专业门类、招生类型和限报要求，`schoolTags` 承接院校类型/性质/层次等标签。
+  - 正常候选查询成功时仍交给模型组织回复；失败直返只用于避免编造候选事实。
+- 验证：
+  - 单测新增覆盖：
+    - `query_candidates` 空 filters 但共享抽取层返回“更稳一点的会计审计”结构时，候选查询带 `tiers=["稳"]`、`major_keywords=["会计学", "审计学"]`。
+    - 模型显式传部分筛选条件时，共享抽取层可补齐另一部分条件，合并后再查候选池。
+    - `query_volunteer_plan(scope=candidate)` 对“更稳一点的师范类机会”会通过共享抽取层转成 `tiers=["稳"] / school_tags=["师范"]`，避免退化成单个宽泛关键词查询。
+    - 候选池失败时返回 `error/direct_blocking`，不带 workspace 刷新。
+  - 聚焦回归：`cd zhiyuan-agent && .venv/bin/python -m pytest tests/unit/test_candidate_filter_extraction_tool.py tests/unit/test_plan_query_tool.py tests/unit/test_plan_execution_tool.py tests/unit/test_tool_reply_policy.py tests/unit/test_base_agent.py tests/unit/test_chat_service_history_persistence.py -q`：`264 passed`。
+  - 百家 Kimi smoke：`session=120 / 候选里有没有更稳一点的师范类机会，先查一下别加`，工具链为单次 `query_volunteer_plan`，无 follow-up 卡片、无确认预览，端到端约 `13.7s`。抽取日志显示 `tiers=["稳"] / school_tags=["师范"]`，最终回复命中 `南宁师范大学(01)-地理科学（师范）`，录取率约 `60%`。输出文件：`/private/tmp/zhiyuan_303_candidate_filter_shared_extractor_smoke_with_logs.json`。
+  - `session=17` 本地候选接口异常不再作为召回质量判断依据。

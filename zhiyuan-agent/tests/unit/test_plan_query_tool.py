@@ -19,8 +19,8 @@ from app.tools.plan_query_tool import (
 )
 
 
-def _ctx(session_id: str = "23", batch: str = "01"):
-    return SimpleNamespace(deps=SimpleNamespace(sessionid=session_id, batch=batch))
+def _ctx(session_id: str = "23", batch: str = "01", chat_history: list[dict] | None = None):
+    return SimpleNamespace(deps=SimpleNamespace(sessionid=session_id, batch=batch, chat_history=chat_history or []))
 
 
 def test_normalize_query_text_strips_filler_words():
@@ -449,6 +449,9 @@ async def test_query_volunteer_plan_candidate_scope_passes_major_keyword_filter(
     candidate_result = {"code": 0, "data": {"total": 0, "items": []}}
 
     with patch(
+        "app.tools.plan_query_tool.extract_candidate_query_filters_async",
+        new=AsyncMock(return_value={"should_query_candidate": True, "filters": {}}),
+    ), patch(
         "app.tools.plan_query_tool.query_planning_candidate_pool",
         new=AsyncMock(return_value=candidate_result),
     ) as candidate_mock:
@@ -470,6 +473,9 @@ async def test_query_volunteer_plan_candidate_empty_result_is_business_empty_not
     candidate_result = {"code": 0, "data": {"total": 0, "items": []}}
 
     with patch(
+        "app.tools.plan_query_tool.extract_candidate_query_filters_async",
+        new=AsyncMock(return_value={"should_query_candidate": True, "filters": {}}),
+    ), patch(
         "app.tools.plan_query_tool.query_planning_candidate_pool",
         new=AsyncMock(return_value=candidate_result),
     ):
@@ -484,6 +490,9 @@ async def test_query_volunteer_plan_candidate_scope_passes_province_filter():
     candidate_result = {"code": 0, "data": {"total": 0, "items": []}}
 
     with patch(
+        "app.tools.plan_query_tool.extract_candidate_query_filters_async",
+        new=AsyncMock(return_value={"should_query_candidate": True, "filters": {}}),
+    ), patch(
         "app.tools.plan_query_tool.query_planning_candidate_pool",
         new=AsyncMock(return_value=candidate_result),
     ) as candidate_mock:
@@ -505,6 +514,9 @@ async def test_query_volunteer_plan_candidate_scope_passes_school_keyword_filter
     candidate_result = {"code": 0, "data": {"total": 0, "items": []}}
 
     with patch(
+        "app.tools.plan_query_tool.extract_candidate_query_filters_async",
+        new=AsyncMock(return_value={"should_query_candidate": True, "filters": {}}),
+    ), patch(
         "app.tools.plan_query_tool.query_planning_candidate_pool",
         new=AsyncMock(return_value=candidate_result),
     ) as candidate_mock:
@@ -519,6 +531,92 @@ async def test_query_volunteer_plan_candidate_scope_passes_school_keyword_filter
         sort_order="desc",
         school_keywords=["北京农学院"],
     )
+
+
+@pytest.mark.asyncio
+async def test_query_volunteer_plan_candidate_scope_supplements_filters_with_extractor():
+    candidate_result = {"code": 0, "data": {"total": 0, "items": []}}
+    extracted = {
+        "should_query_candidate": True,
+        "confidence": 0.9,
+        "ambiguities": [],
+        "filters": {
+            "tiers": ["稳"],
+            "province_names": [],
+            "city_names": [],
+            "school_keywords": [],
+            "major_keywords": [],
+            "school_tags": ["师范"],
+            "major_tags": [],
+        },
+    }
+
+    with patch(
+        "app.tools.plan_query_tool.extract_candidate_query_filters_async",
+        new=AsyncMock(return_value=extracted),
+    ), patch(
+        "app.tools.plan_query_tool.query_planning_candidate_pool",
+        new=AsyncMock(return_value=candidate_result),
+    ) as candidate_mock:
+        await query_volunteer_plan(_ctx("120"), "候选里有没有更稳一点的师范类机会，先查一下别加", scope="candidate")
+
+    candidate_mock.assert_awaited_once_with(
+        1,
+        "120",
+        tiers=["稳"],
+        province_names=[],
+        city_names=[],
+        school_keywords=[],
+        major_keywords=[],
+        school_tags=["师范"],
+        major_tags=[],
+        page=1,
+        page_size=20,
+        sort_field="finalScore",
+        sort_order="desc",
+    )
+
+
+@pytest.mark.asyncio
+async def test_query_volunteer_plan_candidate_scope_extracts_from_latest_user_when_tool_query_is_empty():
+    candidate_result = {"code": 0, "data": {"total": 0, "items": []}}
+    extracted = {
+        "should_query_candidate": True,
+        "confidence": 0.9,
+        "ambiguities": [],
+        "filters": {
+            "tiers": ["稳"],
+            "province_names": [],
+            "city_names": [],
+            "school_keywords": [],
+            "major_keywords": [],
+            "school_tags": ["师范"],
+            "major_tags": [],
+        },
+    }
+    ctx = _ctx(
+        "120",
+        chat_history=[
+            {"role": "user", "content": "候选里有没有更稳一点的师范类机会，先查一下别加"},
+        ],
+    )
+
+    with patch(
+        "app.tools.plan_query_tool.extract_candidate_query_filters_async",
+        new=AsyncMock(return_value=extracted),
+    ) as extract_mock, patch(
+        "app.tools.plan_query_tool.query_planning_candidate_pool",
+        new=AsyncMock(return_value=candidate_result),
+    ) as candidate_mock:
+        await query_volunteer_plan(ctx, "", scope="candidate")
+
+    extract_mock.assert_awaited_once_with(
+        "候选里有没有更稳一点的师范类机会，先查一下别加",
+        batch="01",
+    )
+    candidate_mock.assert_awaited_once()
+    assert candidate_mock.await_args.kwargs["tiers"] == ["稳"]
+    assert candidate_mock.await_args.kwargs["school_tags"] == ["师范"]
 
 
 @pytest.mark.asyncio

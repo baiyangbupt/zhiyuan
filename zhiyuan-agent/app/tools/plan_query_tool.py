@@ -15,12 +15,9 @@ from typing import Any, Literal
 from pydantic_ai import RunContext
 
 from app.agent.context import RequestContext
-from app.util.code_enrichment import (
-    _normalize_city_names_async,
-    _normalize_province_names_async,
-    _normalize_school_names_async,
-    _normalize_school_tags_async,
-    resolve_major_names_async,
+from app.tools.candidate_filter_extraction_tool import (
+    extract_candidate_query_filters_async,
+    normalize_candidate_query_filters_async,
 )
 from app.util.internal_client import (
     get_planning_state,
@@ -206,6 +203,22 @@ def _normalize_match_mode(match_mode: str | None) -> str:
     if normalized == _MATCH_MODE_OR:
         return _MATCH_MODE_OR
     return _MATCH_MODE_AND
+
+
+def _latest_user_message(ctx: RunContext[RequestContext]) -> str:
+    for item in reversed(getattr(ctx.deps, "chat_history", None) or []):
+        if item.get("role") == "user":
+            return str(item.get("content") or "").strip()
+    return ""
+
+
+def _candidate_filter_source_text(ctx: RunContext[RequestContext], query: str) -> str:
+    parts = [str(query or "").strip(), _latest_user_message(ctx)]
+    merged: list[str] = []
+    for part in parts:
+        if part and part not in merged:
+            merged.append(part)
+    return " ".join(merged)
 
 
 def _infer_query_focus(query: str, normalized_query: str) -> str:
@@ -409,26 +422,6 @@ def _extract_plan_items(response: dict[str, Any]) -> list[dict[str, Any]]:
     return (response.get("data") or {}).get("items") or []
 
 
-async def _normalize_major_keywords_async(major_keywords: list[str], batch: str) -> list[str]:
-    values = _normalize_text_list(major_keywords)
-    if not values:
-        return []
-    normalized: list[str] = []
-    for name in values:
-        level2_values = await resolve_major_names_async([name], "level2", batch)
-        level3_values = await resolve_major_names_async([name], "level3", batch)
-        level2_name = level2_values[0] if level2_values else name
-        level3_name = level3_values[0] if level3_values else name
-        if "类" in name:
-            resolved = level2_name if level2_name != name else level3_name
-        else:
-            resolved = level3_name if level3_name != name else level2_name
-        resolved = resolved or name
-        if resolved not in normalized:
-            normalized.append(resolved)
-    return normalized
-
-
 async def _normalize_local_query_filters_async(
     *,
     batch: str,
@@ -440,15 +433,59 @@ async def _normalize_local_query_filters_async(
     school_tags: list[str] | None = None,
     major_tags: list[str] | None = None,
 ) -> dict[str, list[str]]:
-    return {
-        "tiers": _normalize_text_list(tiers),
-        "province_names": await _normalize_province_names_async(province_names),
-        "city_names": await _normalize_city_names_async(city_names),
-        "school_keywords": await _normalize_school_names_async(school_keywords),
-        "major_keywords": await _normalize_major_keywords_async(major_keywords, batch),
-        "school_tags": await _normalize_school_tags_async(school_tags),
-        "major_tags": await _normalize_major_keywords_async(major_tags, batch),
-    }
+    return await normalize_candidate_query_filters_async(
+        {
+            "tiers": tiers,
+            "province_names": province_names,
+            "city_names": city_names,
+            "school_keywords": school_keywords,
+            "major_keywords": major_keywords,
+            "school_tags": school_tags,
+            "major_tags": major_tags,
+        },
+        batch=batch,
+    )
+
+
+def _merge_structured_filters(
+    primary: dict[str, list[str]],
+    supplemental: dict[str, list[str]],
+) -> dict[str, list[str]]:
+    merged: dict[str, list[str]] = {}
+    for key in (
+        "tiers",
+        "province_names",
+        "city_names",
+        "school_keywords",
+        "major_keywords",
+        "school_tags",
+        "major_tags",
+    ):
+        values: list[str] = []
+        for value in [*(primary.get(key) or []), *(supplemental.get(key) or [])]:
+            text = str(value or "").strip()
+            if text and text not in values:
+                values.append(text)
+        merged[key] = values
+    return merged
+
+
+async def _extract_query_filters_for_candidate_scope(
+    query: str,
+    *,
+    batch: str,
+) -> dict[str, list[str]]:
+    if not str(query or "").strip():
+        return {}
+    try:
+        extracted = await extract_candidate_query_filters_async(query, batch=batch)
+    except Exception:
+        logger.warning("candidate query filter extraction failed: query=%s", query, exc_info=True)
+        return {}
+    filters = extracted.get("filters") or {}
+    if not extracted.get("should_query_candidate") and not _has_structured_filters(filters):
+        return {}
+    return filters
 
 
 def _format_plan_result(title: str, items: list[dict[str, Any]], display_keyword: str, query_keywords: list[str]) -> str:
@@ -498,6 +535,7 @@ async def _query_candidate_opportunities_with_filters(
     session_id: str,
     filters: dict[str, list[str]],
 ) -> dict[str, Any]:
+    logger.info("query candidate opportunities with filters: session_id=%s filters=%s", session_id, filters)
     return await query_planning_candidate_pool(
         _DEFAULT_TENANT_ID,
         session_id,
@@ -654,7 +692,6 @@ async def query_volunteer_plan(
         major_tags=major_tags,
     )
     has_structured_filters = _has_structured_filters(structured_filters)
-    filter_description = _describe_structured_filters(structured_filters, (query or "").strip())
     normalized_match_mode = _normalize_match_mode(match_mode)
 
     query_keywords = _build_query_keywords(query)
@@ -663,6 +700,15 @@ async def query_volunteer_plan(
     normalized_scope = _normalize_scope(scope)
     if normalized_scope == _AUTO_SCOPE:
         normalized_scope = _resolve_query_scope(query)
+    if normalized_scope in {_CANDIDATE_SCOPE, _PLAN_THEN_CANDIDATE_SCOPE}:
+        extracted_filters = await _extract_query_filters_for_candidate_scope(
+            _candidate_filter_source_text(ctx, query),
+            batch=batch,
+        )
+        if extracted_filters:
+            structured_filters = _merge_structured_filters(structured_filters, extracted_filters)
+            has_structured_filters = _has_structured_filters(structured_filters)
+    filter_description = _describe_structured_filters(structured_filters, (query or "").strip())
 
     try:
         if has_structured_filters:

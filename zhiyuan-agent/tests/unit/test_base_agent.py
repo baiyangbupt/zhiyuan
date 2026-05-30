@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from pydantic_ai import CallToolsNode, RunUsage
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart, ToolReturnPart
+from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_graph import End
 
@@ -248,6 +249,43 @@ async def test_run_can_return_directly_after_user_facing_tool_result():
     assert getattr(all_messages[-1], "model_name", "") == "direct-tool-result"
     assert isinstance(all_messages[-1].parts[0], TextPart)
     assert all_messages[-1].parts[0].content == reply
+
+
+async def test_run_stops_repeated_query_tool_loop_generically():
+    async def query_volunteer_plan() -> str:
+        return "当前方案里命中了 1 条相关机会。"
+
+    async def looping_model(messages, agent_info):  # noqa: ARG001
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="query_volunteer_plan",
+                    args={},
+                    tool_call_id=f"query-call-{len(messages)}",
+                )
+            ]
+        )
+
+    class QueryLoopGuardAgent(BaseAgent[str]):
+        def __init__(self):
+            super().__init__(
+                llm_client=SimpleNamespace(model=FunctionModel(looping_model), model_settings={}),
+                instructions="test",
+                tools=[query_volunteer_plan],
+            )
+
+    deps = SimpleNamespace(agent_observability={})
+    agent = QueryLoopGuardAgent()
+
+    reply, new_messages, all_messages, usage = await agent.run_with_message_deltas("候选里还有没有更稳一点的会计审计", deps=deps)
+
+    assert "没有稳定收敛" in reply
+    assert deps.agent_observability["toolLoopGuarded"] is True
+    assert deps.agent_observability["guardedToolName"] == "query_volunteer_plan"
+    assert usage.tool_calls == 2
+    assert isinstance(all_messages[-1], ModelResponse)
+    assert getattr(all_messages[-1], "model_name", "") == "tool-loop-guard"
+    assert new_messages[-1].parts[0].content == reply
 
 
 # ---- 7. on_node 钩子默认不报错 ----
