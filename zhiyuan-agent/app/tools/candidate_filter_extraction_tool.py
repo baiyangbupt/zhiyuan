@@ -17,6 +17,8 @@ from app.llm.client import LLMClient
 from app.schemas.candidate_filter import CandidateFilterExtractionResult
 from app.tools.extraction_json import parse_extraction_json
 from app.util.code_enrichment import (
+    _extract_catalog_values,
+    _get_filter_tag_tree,
     _normalize_city_names_async,
     _normalize_province_names_async,
     _normalize_school_names_async,
@@ -28,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 _extraction_client: LLMClient | None = None
 _VALID_TIERS = {"冲", "稳", "保"}
+_TAG_VALUE_SUFFIXES = ("类院校", "类学校", "院校", "学校", "方向", "专业", "类")
 
 
 def _get_extraction_client() -> LLMClient:
@@ -58,6 +61,126 @@ def _merge_unique(base: list[str], extra: list[str]) -> list[str]:
         if text and text not in merged:
             merged.append(text)
     return merged
+
+
+def _candidate_tag_value_variants(value: str) -> list[str]:
+    """Build conservative variants for filter-tag values.
+
+    This is value normalization after LLM extraction, not a route keyword
+    shortcut. It only removes common category suffixes so values can match the
+    catalog tag vocabulary, for example 师范类 -> 师范.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return []
+    variants = [text]
+    changed = True
+    while changed:
+        changed = False
+        current = variants[-1]
+        for suffix in _TAG_VALUE_SUFFIXES:
+            if current.endswith(suffix) and len(current) > len(suffix):
+                stripped = current[: -len(suffix)].strip()
+                if stripped and stripped not in variants:
+                    variants.append(stripped)
+                changed = True
+                break
+    return variants
+
+
+def _filter_values_by_allowed_catalog(values: list[str], allowed_values: set[str]) -> list[str]:
+    normalized: list[str] = []
+    for value in _normalize_text_list(values):
+        for variant in _candidate_tag_value_variants(value):
+            if variant in allowed_values and variant not in normalized:
+                normalized.append(variant)
+                break
+    return normalized
+
+
+def _normalize_school_tag_values_by_catalog(values: list[str], allowed_values: set[str]) -> list[str]:
+    normalized: list[str] = []
+    for value in _normalize_text_list(values):
+        matched = None
+        for variant in _candidate_tag_value_variants(value):
+            if variant in allowed_values:
+                matched = variant
+                break
+        target = matched or value
+        if target and target not in normalized:
+            normalized.append(target)
+    return normalized
+
+
+def _extract_major_level2_category_names(tree: dict[str, Any]) -> list[str]:
+    data = tree.get("data") if isinstance(tree, dict) else None
+    major = data.get("major") if isinstance(data, dict) else None
+    categories = major.get("category") if isinstance(major, dict) else None
+    if not isinstance(categories, list):
+        return []
+    values: list[str] = []
+    for node in categories:
+        if not isinstance(node, dict):
+            continue
+        children = node.get("children")
+        if not isinstance(children, list):
+            continue
+        for child in children:
+            if not isinstance(child, dict):
+                continue
+            sub_category_name = child.get("subCategoryName")
+            if isinstance(sub_category_name, str) and sub_category_name.strip():
+                values.append(sub_category_name.strip())
+    return values
+
+
+async def _normalize_candidate_school_tags_async(school_tags: list[str]) -> list[str]:
+    raw_tags = _normalize_text_list(school_tags)
+    if not raw_tags:
+        return []
+    try:
+        tree = await _get_filter_tag_tree()
+        allowed_tags = set(
+            _extract_catalog_values(tree, "school", "category")
+            + _extract_catalog_values(tree, "school", "nature")
+            + _extract_catalog_values(tree, "school", "feature")
+            + _extract_catalog_values(tree, "school", "level")
+        )
+        if not allowed_tags:
+            return await _normalize_school_tags_async(raw_tags)
+        return _normalize_school_tag_values_by_catalog(raw_tags, allowed_tags)
+    except Exception:
+        logger.warning("Catalog candidate school tag normalization failed", exc_info=True)
+        return await _normalize_school_tags_async(raw_tags)
+
+
+async def _normalize_major_tags_async(major_tags: list[str], batch: str) -> list[str]:
+    raw_tags = _normalize_text_list(major_tags)
+    if not raw_tags:
+        return []
+
+    resolved_level1 = await resolve_major_names_async(raw_tags, "level1", batch)
+    try:
+        tree = await _get_filter_tag_tree()
+        allowed_tags = set(
+            _extract_catalog_values(tree, "major", "discipline")
+            + _extract_catalog_values(tree, "admission", "type")
+            + _extract_catalog_values(tree, "constraint", "limit")
+        )
+        if not allowed_tags:
+            return list(dict.fromkeys(resolved_level1))
+        allowed_major_keywords = set(_extract_major_level2_category_names(tree))
+        normalized = _filter_values_by_allowed_catalog([*resolved_level1, *raw_tags], allowed_tags)
+        # Values that are actually major categories should be carried by
+        # major_keywords, not major_tags. Dropping them here prevents an extra
+        # AND tag filter from hiding valid candidates.
+        normalized = [tag for tag in normalized if tag not in allowed_major_keywords]
+        if normalized:
+            return list(dict.fromkeys(normalized))
+        return []
+    except Exception:
+        logger.warning("Catalog major tag normalization failed", exc_info=True)
+        return list(dict.fromkeys(resolved_level1))
 
 
 def _major_values_from_result(result: CandidateFilterExtractionResult) -> tuple[list[str], list[str]]:
@@ -97,11 +220,8 @@ async def normalize_candidate_query_filters_async(
         "city_names": await _normalize_city_names_async(filters.get("city_names")),
         "school_keywords": await _normalize_school_names_async(filters.get("school_keywords")),
         "major_keywords": normalized_major_keywords,
-        "school_tags": await _normalize_school_tags_async(filters.get("school_tags")),
-        "major_tags": _merge_unique(
-            await resolve_major_names_async(major_tags, "level1", batch_value),
-            [tag for tag in major_tags if tag],
-        ),
+        "school_tags": await _normalize_candidate_school_tags_async(filters.get("school_tags")),
+        "major_tags": await _normalize_major_tags_async(major_tags, batch_value),
     }
 
 

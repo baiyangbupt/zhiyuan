@@ -3217,3 +3217,15 @@ L3 full_agent fallback
   - 聚焦回归：`cd zhiyuan-agent && .venv/bin/python -m pytest tests/unit/test_candidate_filter_extraction_tool.py tests/unit/test_plan_query_tool.py tests/unit/test_plan_execution_tool.py tests/unit/test_tool_reply_policy.py tests/unit/test_base_agent.py tests/unit/test_chat_service_history_persistence.py -q`：`264 passed`。
   - 百家 Kimi smoke：`session=120 / 候选里有没有更稳一点的师范类机会，先查一下别加`，工具链为单次 `query_volunteer_plan`，无 follow-up 卡片、无确认预览，端到端约 `13.7s`。抽取日志显示 `tiers=["稳"] / school_tags=["师范"]`，最终回复命中 `南宁师范大学(01)-地理科学（师范）`，录取率约 `60%`。输出文件：`/private/tmp/zhiyuan_303_candidate_filter_shared_extractor_smoke_with_logs.json`。
   - `session=17` 本地候选接口异常不再作为召回质量判断依据。
+
+补充修复：候选筛选标签值归一化。
+
+- 继续复测 `session=120 / 帮我查一下候选池里稳档师范类机会，不要加入方案` 时发现，模型会把用户口语里的“师范类”抽成 `schoolTags=["师范类"]`，候选池标准标签实际是 `师范`。旧链路会把 `师范类` 作为强过滤条件传下去，导致明明存在稳档师范机会却返回空结果。
+- 修复方式：
+  - 在共享候选筛选抽取层增加 catalog-backed 标签值归一化，不改变路由，不生成模板回复。
+  - 对 `schoolTags` 去掉常见类别后缀后匹配 catalog 标签，例如 `师范类 / 师范类院校 / 师范学校` 归一为 `师范`；无法归一的院校动态标签仍保留，避免破坏既有筛选能力。
+  - 对 `majorTags` 只保留专业门类、招生类型、限报要求等 catalog 可确认的枚举标签；像 `师范类` 这类实际更接近院校标签或二级专业类的值不会继续作为专业标签 AND 过滤，避免误伤候选召回。
+  - catalog 不可用时保留旧行为，不因为本地服务短暂不可达把原有筛选值清空。
+- 验证：
+  - 聚焦回归：`cd zhiyuan-agent && .venv/bin/python -m pytest tests/unit/test_candidate_filter_extraction_tool.py tests/unit/test_plan_query_tool.py tests/unit/test_plan_execution_tool.py tests/unit/test_tool_reply_policy.py tests/unit/test_base_agent.py tests/unit/test_chat_service_history_persistence.py -q`：`266 passed`。
+  - 百家 Kimi smoke：`session=120 / 帮我查一下候选池里稳档师范类机会，不要加入方案`，抽取日志显示 raw `school_tags=["师范类"]`，normalized `school_tags=["师范"] / major_tags=[]`；最终仍只调用一次 `query_volunteer_plan`，无 follow-up 卡片、无确认预览，回复命中 `南宁师范大学(01)-地理科学（师范）`，录取率约 `60%`。端到端约 `33.3s`，其中两次模型请求各约 `9-10s`，工具节点约 `11s`，说明质量链路恢复，但候选只读仍存在“主模型 + 抽取模型 + 后端查询 + 最终模型”叠加耗时。
