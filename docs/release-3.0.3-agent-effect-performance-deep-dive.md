@@ -3253,3 +3253,15 @@ L3 full_agent fallback
   - 百家 Kimi smoke：`session=120 / 候选里还有没有更稳一点的会计审计，别直接加`，最终回复以表格列出 3 条稳档会计学候选，包含学校、专业、层级、录取率、学费和地域；`rg` 检查输出文件未命中 `id=`、`volunteerId`、`planningWorkspaceAction` 或“确认后”。本轮无 follow-up 卡片、无确认预览，端到端约 `38.3s`。
 - 后续性能观察：
   - 该 smoke 仍走 `plan_next_action(query_state) -> execute_plan_action(query_state) -> query_volunteer_plan`，共 4 次模型请求。质量和安全边界可接受，但只读候选查询仍存在不必要状态查询和多次模型往返，后续应优先在 full-agent 工具选择层减少无效状态探查，而不是用字符串快路由替代。
+
+补充优化：只读候选查询不再先试探方案状态。
+
+- 根因定位：
+  - Plan 调度规则里明确了“方案现状”要走 `query_state`，但没有同等明确地约束“候选只读机会查询”应直接走候选局部查询。
+  - 模型因此会先用 `plan_next_action(query_state) -> execute_plan_action(query_state)` 探当前方案，再调用 `query_volunteer_plan(scope=candidate)`，形成质量可用但延迟偏高的 4 次模型请求链。
+- 修复方式：
+  - 在 `tool_dispatch_rules` 中明确：对“候选里 / 还能报 / 有没有更稳一点 / 先查一下 / 别直接加 / 不要改方案”这类只读候选机会查询，直接调用 `query_volunteer_plan(scope="candidate")` 并传入已理解的筛选条件；不要先调用 `query_state` 试探方案状态。
+  - 这仍是提示层工具选择约束，不是字符串快路由；模型仍负责理解用户问题和组织最终回复，修改方案仍必须走 preview。
+- 验证：
+  - 指令与查询聚焦回归：`cd zhiyuan-agent && .venv/bin/python -m pytest tests/unit/test_instructions.py tests/unit/test_chat_agent_init_profile.py tests/unit/test_plan_query_tool.py tests/unit/test_tool_reply_policy.py -q`：`70 passed`。
+  - 百家 Kimi smoke：`session=120 / 候选里还有没有更稳一点的会计审计，别直接加`，工具链由 `plan_next_action -> execute_plan_action -> query_volunteer_plan` 收敛为单次 `query_volunteer_plan`；模型请求从 4 次降到 2 次，端到端约 `27.3s`。最终回复仍覆盖 3 条稳档会计候选、录取率、学费、民办性质和下一步引导；无 follow-up 卡片、无确认预览，输出文件未命中 `id=`、`volunteerId`、`planningWorkspaceAction` 或“确认后”。

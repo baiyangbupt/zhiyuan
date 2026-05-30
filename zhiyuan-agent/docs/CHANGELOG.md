@@ -25,6 +25,7 @@
 - 候选筛选标签值归一化补强：`师范类 / 师范类院校` 等口语标签会在共享候选抽取层对齐到 catalog 标签 `师范`，避免作为无效强过滤导致候选空结果；专业标签只保留专业门类、招生类型和限报要求等可确认枚举，防止 `师范类` 这类值误进入 `majorTags` 形成额外 AND 过滤。
 - 候选筛选合并层增加院校标签与专业关键词冲突消解：当主模型把 `师范` 误放入 `majorKeywords`，而共享抽取层同时明确识别为 `schoolTags=["师范"]` 时，移除同值专业关键词，避免“师范类院校机会”被误缩窄成“师范院校且专业名也含师范”。
 - 候选只读查询摘要用户语言化：`query_volunteer_plan(scope=candidate)` 和兼容 `query_planning_candidate_pool` 的候选示例不再向最终回复暴露 `id=... / volunteerId`，改为保留学校、专业、冲稳保、录取率、地域、院校性质和学费等用户可理解字段；真实加入、移动、删除仍继续使用结构化 ID，不影响执行链路。
+- 候选只读查询调度收口：对“候选里/还能报/有没有更稳一点/别直接加”等只读候选机会查询，提示层明确直接调用 `query_volunteer_plan(scope=candidate)`，不再先走 `query_state` 试探方案状态；百家 Kimi smoke 中同一会计审计查询从 `plan_next_action -> execute_plan_action -> query_volunteer_plan` 收敛为单次 `query_volunteer_plan`，回复质量保持不变且无联动卡片/确认预览。
 - Agent 工具直返收口为通用 Tool Reply Policy：`ChatAgent` 不再按 `execute_plan_action` 做局部特判，而是统一依据工具显式 `reply_strategy` 和结构化 `result_kind/reply_focus` 判断是否直返；受控阻断、无变化和意向待确认可直接结束本轮，方案查询、审查、Explore、专业对比和正常预览仍交给模型组织回复，避免为降延迟牺牲信息量。
 - 方案调整安全边界补强：模型把移动/删除/替换等高副作用动作误传为 `stage=analyze` 时，执行层会改走真实 `preview` 解析链路，必须先唯一定位当前方案/候选目标；无法定位时直接给用户可理解的阻断提示，不再生成没有真实目标的“确认后执行”假预览。
 - 同轮 pending 清理修复：当 `plan_next_action(preview)` 先留下待确认动作、后续 `execute_plan_action(error)` 已经阻断时，服务层会清理该 pending，避免回复后面再追加“确认后执行”。

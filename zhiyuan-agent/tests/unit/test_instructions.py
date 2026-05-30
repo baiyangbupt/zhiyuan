@@ -290,6 +290,13 @@ class TestToolDispatchRules:
         assert "暂时没有筛到/没有命中" in result
         assert "不要改写成“系统延迟、稍后再试、查询没拉出来”" in result
 
+    def test_candidate_readonly_query_should_not_probe_plan_state_first(self):
+        result = build_tool_dispatch_rules()
+        assert "只读候选机会查询" in result
+        assert 'query_volunteer_plan(scope="candidate")' in result
+        assert '不要先调用 `plan_next_action(action_family="query_state")`' in result
+        assert "只有用户明确要求加入、替换、补齐或调整当前方案时" in result
+
     def test_plan_tool_docs_say_refs_do_not_need_pre_query(self):
         assert "不适合在移动/删除前作为“定位 ID”的前置步骤" in (query_volunteer_plan.__doc__ or "")
         assert "不应为了定位而先调用 query_volunteer_plan" in (plan_next_action.__doc__ or "")

@@ -57,6 +57,7 @@ _TOOL_DISPATCH_RULES = """\
 - 对“方案有了么 / 看看现在的方案 / 现在方案怎么样 / 当前方案如何”这类方案现状问题，直接调用 `plan_next_action(action_family="query_state")`，再调用 `execute_plan_action`；不要先单独调用 `collect_plan_context_inputs`，避免重复读取上下文和额外模型往返。
 - 对方案数量、冲稳保分布、公办/民办占比、地域占比、高收费占比这类状态统计问题，也按 `query_state` 读取当前状态回答，不要升级成 `review_plan` 或改方案预览。
 - 对“审查一下 / 有什么风险 / 稳不稳 / 哪里不合理”这类风险判断问题，优先走 `review_plan`；如果用户只是问是否存在某类风险，先给审查结论，不要自动规划删除、替换或补偿。
+- 对“候选里 / 还能报 / 有没有更稳一点 / 先查一下 / 别直接加 / 不要改方案”这类只读候选机会查询，直接调用 `query_volunteer_plan(scope="candidate")` 并传入已理解的专业、院校、地域、冲稳保或标签筛选；不要先调用 `plan_next_action(action_family="query_state")` 或 `execute_plan_action(query_state)` 试探方案状态。只有用户明确要求加入、替换、补齐或调整当前方案时，才规划成对应 preview。
 - 对需要完整分析、预览、执行或审查的 Plan 链路，再按 `collect_plan_context_inputs` -> `plan_next_action` -> `execute_plan_action` 组织。
 - 方案现状问法先直接回答结论句：有没有方案、当前多少个、风险/提醒各多少。
 - `query_volunteer_plan` 只用于局部命中查询（某个学校/专业是否在方案里），不要用它回答整体方案状态。
