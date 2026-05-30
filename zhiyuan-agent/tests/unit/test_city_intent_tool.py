@@ -9,11 +9,12 @@ import pytest
 from pydantic_ai import RunContext
 
 from app.agent.context import RequestContext
-from app.schemas.city_intent import CityIntentResult, NegativeCityIntentResult
+from app.schemas.city_intent import CityIntentPolarityResult, CityIntentResult, NegativeCityIntentResult
 from app.tools.city_intent_tool import (
     _build_negative_system_message,
     _build_positive_system_message,
     _format_student_info,
+    extract_city_intents_with_polarity,
     extract_city_intent,
     extract_negative_city_intent,
 )
@@ -855,6 +856,63 @@ class TestExtractNegativeCityIntent:
         instructions = call_kwargs["instructions"]
         assert "不想去东北" in instructions
         assert "第一条消息" not in instructions
+
+
+class TestExtractCityIntentsWithPolarity:
+    """Tests for combined positive/negative city intent extraction."""
+
+    def _make_run_context(self, **kwargs) -> MagicMock:
+        defaults = {
+            "userid": "test_user",
+            "sessionid": "test_session",
+            "chat_history": None,
+            "batch": None,
+            "score_detail": None,
+        }
+        defaults.update(kwargs)
+        ctx = MagicMock(spec=RunContext)
+        ctx.deps = RequestContext(**defaults)
+        return ctx
+
+    async def test_returns_empty_when_chat_history_is_empty(self):
+        ctx = self._make_run_context(chat_history=[])
+
+        result = await extract_city_intents_with_polarity(ctx)
+
+        parsed = json.loads(result)
+        assert parsed["positive"]["province"] == []
+        assert parsed["negative"]["province"] == []
+
+    @patch("app.tools.city_intent_tool._get_extraction_client")
+    @patch("app.tools.city_intent_tool._get_extract_config")
+    @patch("app.tools.city_intent_tool.Agent")
+    async def test_extracts_positive_and_negative_in_one_call(
+        self, mock_agent_cls, mock_config, mock_client
+    ):
+        mock_config.return_value.last_n_messages = 10
+        mock_result = MagicMock()
+        mock_result.output = CityIntentPolarityResult(
+            positive=CityIntentResult(province=["北京"], city=[], area=[]),
+            negative=NegativeCityIntentResult(province=["上海"], city=[]),
+        ).model_dump_json()
+        mock_agent_instance = MagicMock()
+        mock_agent_instance.run = AsyncMock(return_value=mock_result)
+        mock_agent_cls.return_value = mock_agent_instance
+        mock_client.return_value.model = MagicMock()
+
+        ctx = self._make_run_context(
+            chat_history=[{"role": "user", "content": "北京可以，上海别去了"}],
+            score_detail={"sex": {"name": "女"}, "province": {"name": "河北"}},
+        )
+
+        result = await extract_city_intents_with_polarity(ctx)
+
+        parsed = json.loads(result)
+        assert parsed["positive"]["province"] == ["北京"]
+        assert parsed["negative"]["province"] == ["上海"]
+        mock_agent_cls.assert_called_once()
+        mock_agent_instance.run.assert_awaited_once()
+        assert mock_agent_instance.run.await_args.kwargs["model_settings"]["temperature"] == 0
 
 
 # ---- ChatAgent integration ----

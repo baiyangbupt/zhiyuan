@@ -12,12 +12,12 @@ import asyncio
 import importlib.util
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from app.agent.context import RequestContext
-from app.config import LLMConfig, SemanticRouterConfig
-from app.llm.client import LLMClient
-from app.resolver.semantic_intent_router import SemanticIntentRouter
+
+if TYPE_CHECKING:
+    from app.resolver.semantic_intent_router import SemanticIntentRouter
 
 
 RUNNER_PATH = Path(__file__).with_name("dialog_regression_runner.py")
@@ -76,7 +76,18 @@ def _build_router(
     base_url: str = "",
     api_key: str = "",
     enable_thinking: bool | None = None,
-) -> SemanticIntentRouter:
+) -> "SemanticIntentRouter":
+    try:
+        from app.config import LLMConfig, SemanticRouterConfig
+        from app.llm.client import LLMClient
+        from app.resolver.semantic_intent_router import SemanticIntentRouter
+    except ImportError as exc:
+        raise RuntimeError(
+            "Semantic frame probe requires the 3.0.3 semantic router runtime. "
+            "The probe file is kept for evaluation, but the current runtime may "
+            "be the prod-3.0.2 full-agent baseline."
+        ) from exc
+
     llm_config = LLMConfig()
     router_config = SemanticRouterConfig(
         _env_file=None,
@@ -92,7 +103,7 @@ def _build_router(
     return SemanticIntentRouter(LLMClient(llm_config), router_config)
 
 
-async def _probe_row(router: SemanticIntentRouter, row: dict[str, Any]) -> dict[str, Any]:
+async def _probe_row(router: "SemanticIntentRouter", row: dict[str, Any]) -> dict[str, Any]:
     context = RequestContext(
         userid="semantic-frame-probe",
         sessionid=str(row.get("sessionId") or ""),

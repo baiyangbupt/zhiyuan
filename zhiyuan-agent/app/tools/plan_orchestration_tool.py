@@ -90,23 +90,6 @@ def _context_review_issues(context_inputs: object) -> list[dict[str, Any]]:
     return issues if isinstance(issues, list) else []
 
 
-def _infer_sort_preview_label_and_direction(user_goal: str, filters: dict[str, Any] | None = None) -> tuple[str, str]:
-    filters = filters or {}
-    raw_field = str(
-        filters.get("sort_field")
-        or filters.get("sortField")
-        or filters.get("field")
-        or ""
-    ).strip()
-    goal_text = user_goal or ""
-    joined = f"{raw_field} {goal_text}"
-    if any(token in joined for token in ("schoolRank", "school_rank", "schoolLevel", "school_level", "院校层次", "学校层次", "院校排名", "好学校")):
-        return "院校层次", "排名靠前的排在前面"
-    if any(token in joined for token in ("finalScore", "final_score", "recommendationScore", "recommendation_score", "推荐系数")):
-        return "推荐系数", "推荐系数高的排在前面"
-    return "录取率", "录取率低的排在前面"
-
-
 def _find_review_issue_by_code(review_issues: list[dict[str, Any]], code: str | None) -> dict[str, Any] | None:
     normalized = str(code or "").strip()
     if not normalized:
@@ -125,47 +108,6 @@ def _contains_narrowing_scope(text: str) -> bool:
 def _goal_requests_replacement(text: str) -> bool:
     compact = str(text or "").strip()
     return any(token in compact for token in ("换成", "替换成", "补回", "补上", "补入", "保持", "补齐", "凑满"))
-
-
-def _goal_requests_review_issue_mutation(text: str) -> bool:
-    compact = str(text or "").strip()
-    readonly_markers = (
-        "先别动",
-        "先别改",
-        "不要动",
-        "不要改",
-        "不改",
-        "只看",
-        "只分析",
-        "先分析",
-        "看下风险",
-        "看看风险",
-        "风险",
-        "预算",
-        "是不是",
-        "是否",
-        "有点多",
-        "多不多",
-        "大白话",
-    )
-    action_markers = (
-        "处理",
-        "解决",
-        "移出",
-        "删除",
-        "删掉",
-        "去掉",
-        "替换",
-        "换成",
-        "补回",
-        "补上",
-        "补入",
-        "执行",
-        "确认",
-    )
-    return any(token in compact for token in action_markers) and not any(
-        token in compact for token in readonly_markers
-    )
 
 
 def _goal_explicitly_requests_reorder(text: str) -> bool:
@@ -447,7 +389,6 @@ async def _plan_next_action_model(
     major_keyword: str | None = None,
     school_tags: list[str] | None = None,
     major_tags: list[str] | None = None,
-    sort_field: str | None = None,
     limit: int = 5,
     user_confirmed: bool = False,
 ) -> PlanActionPlan:
@@ -465,7 +406,6 @@ async def _plan_next_action_model(
         "major_keyword": major_keyword or "",
         "school_tags": json.dumps(school_tags or [], ensure_ascii=False),
         "major_tags": json.dumps(major_tags or [], ensure_ascii=False),
-        "sort_field": sort_field or "",
         "limit": str(limit),
     }
     filters = dict(base_filters)
@@ -498,13 +438,10 @@ async def _plan_next_action_model(
         scope_kind = str(matched_review_issue.get("scope_kind") or "").strip()
         default_action_family = str(matched_review_issue.get("default_action_family") or "").strip()
         replacement_requested = _goal_requests_replacement(user_goal) or _has_selection_scope(base_filters)
-        mutation_requested = _goal_requests_review_issue_mutation(user_goal)
         if scope_kind == "item_removal":
-            if action_family in {"query_state", "review_plan", "analyze_adjustment", "preview_compensation"} and not mutation_requested:
-                review_issue_target = None
-            elif action_family == "replace_units" and not replacement_requested:
+            if action_family == "replace_units" and not replacement_requested:
                 action_family = "remove_units"
-            elif action_family not in {"remove_units", "replace_units"} and default_action_family and mutation_requested:
+            elif action_family not in {"remove_units", "replace_units"} and default_action_family:
                 action_family = default_action_family  # type: ignore[assignment]
         elif scope_kind == "structural":
             if action_family in {"add_units", "remove_units", "move_unit", "pin_unit", "unpin_unit", "replace_units"} and default_action_family:
@@ -594,11 +531,13 @@ async def _plan_next_action_model(
         elif action_family == "regenerate_order":
             preview_summary = "会基于当前方案重新生成整体顺序，并在执行后自动复审。"
         elif action_family == "sort_ordered_plan":
-            field_label, direction_text = _infer_sort_preview_label_and_direction(user_goal, filters)
-            preview_summary = (
-                f"会按{field_label}重新排序当前方案，{direction_text}。"
-                "排序会实际改变方案顺序和导出顺序，并让审查状态进入待重新审查。"
-            )
+            field_label = "录取率"
+            goal_text = user_goal or ""
+            if "院校层次" in goal_text or "学校层次" in goal_text or "院校排名" in goal_text:
+                field_label = "院校层次"
+            elif "推荐系数" in goal_text:
+                field_label = "推荐系数"
+            preview_summary = f"会按{field_label}重新排序当前方案，排序会实际改变方案顺序和导出顺序，并让审查状态进入待重新审查。"
         elif action_family == "add_units":
             preview_summary = "会补入指定志愿或按条件补入候选，并同步刷新当前方案和审查结果。"
         elif action_family == "query_candidates":
@@ -701,7 +640,6 @@ async def plan_next_action(
     major_keyword: str | None = None,
     school_tags: list[str] | None = None,
     major_tags: list[str] | None = None,
-    sort_field: str | None = None,
     limit: int = 5,
     user_confirmed: bool = False,
 ) -> str:
@@ -726,7 +664,6 @@ async def plan_next_action(
         major_keyword=major_keyword,
         school_tags=school_tags,
         major_tags=major_tags,
-        sort_field=sort_field,
         limit=limit,
         user_confirmed=user_confirmed,
     )

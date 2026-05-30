@@ -16,3 +16,10 @@ class NegativeCityIntentResult(BaseModel):
 
     province: list[str] = Field(default_factory=list, description="负面意向省份")
     city: list[str] = Field(default_factory=list, description="负面意向城市")
+
+
+class CityIntentPolarityResult(BaseModel):
+    """Combined positive/negative city intent extraction result."""
+
+    positive: CityIntentResult = Field(default_factory=CityIntentResult, description="正面地域意向")
+    negative: NegativeCityIntentResult = Field(default_factory=NegativeCityIntentResult, description="负面地域意向")

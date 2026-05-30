@@ -549,6 +549,91 @@ def _check_content_assertions(
     return violations
 
 
+def _tool_names_from_observability(turn_observability: dict[str, Any] | None) -> list[str]:
+    if not isinstance(turn_observability, dict):
+        return []
+    names: list[str] = []
+    for item in turn_observability.get("toolCalls") or []:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if name:
+            names.append(name)
+    return names
+
+
+def _check_tool_assertions(
+    turn_observability: dict[str, Any] | None,
+    step: dict[str, Any],
+    case_name: str,
+    session_id: str,
+) -> list[str]:
+    """Check tool-chain assertions from the case step definition."""
+    violations: list[str] = []
+    prompt_label = step.get("prompt") or step.get("text") or ""
+    tool_names = _tool_names_from_observability(turn_observability)
+
+    expected_tool_names = [str(item) for item in step.get("expectedToolNames") or []]
+    if expected_tool_names and tool_names != expected_tool_names:
+        violations.append(
+            f"{case_name} session={session_id} prompt={prompt_label}: "
+            f"expectedToolNames FAILED — expected {expected_tool_names} got {tool_names}"
+        )
+
+    required_tool_names = [str(item) for item in step.get("assertToolNamesContain") or []]
+    missing_required = [name for name in required_tool_names if name not in tool_names]
+    if missing_required:
+        violations.append(
+            f"{case_name} session={session_id} prompt={prompt_label}: "
+            f"assertToolNamesContain FAILED — missing {missing_required} from {tool_names}"
+        )
+
+    forbidden_tool_names = [str(item) for item in step.get("assertToolNamesNotContain") or []]
+    forbidden_found = [name for name in forbidden_tool_names if name in tool_names]
+    if forbidden_found:
+        violations.append(
+            f"{case_name} session={session_id} prompt={prompt_label}: "
+            f"assertToolNamesNotContain FAILED — forbidden {forbidden_found} found in {tool_names}"
+        )
+
+    max_tool_call_count = step.get("maxToolCallCount")
+    if max_tool_call_count is not None:
+        try:
+            max_count = int(max_tool_call_count)
+        except (TypeError, ValueError):
+            max_count = None
+        if max_count is not None and len(tool_names) > max_count:
+            violations.append(
+                f"{case_name} session={session_id} prompt={prompt_label}: "
+                f"maxToolCallCount FAILED — toolCallCount={len(tool_names)} > {max_count}"
+            )
+
+    expected_tool_counts = step.get("expectedToolCounts") or {}
+    if isinstance(expected_tool_counts, dict):
+        actual_counts = {name: tool_names.count(name) for name in set(tool_names)}
+        for name, expected_count in expected_tool_counts.items():
+            try:
+                expected = int(expected_count)
+            except (TypeError, ValueError):
+                continue
+            actual = actual_counts.get(str(name), 0)
+            if actual != expected:
+                violations.append(
+                    f"{case_name} session={session_id} prompt={prompt_label}: "
+                    f"expectedToolCounts FAILED — expected {name}={expected} got {actual}"
+                )
+
+    if step.get("assertNoRepeatedToolNames"):
+        repeated = sorted({name for name in tool_names if tool_names.count(name) > 1})
+        if repeated:
+            violations.append(
+                f"{case_name} session={session_id} prompt={prompt_label}: "
+                f"assertNoRepeatedToolNames FAILED — repeated {repeated} in {tool_names}"
+            )
+
+    return violations
+
+
 def _as_optional_float(value: Any) -> float | None:
     if value is None or value == "":
         return None
@@ -757,15 +842,22 @@ async def _run_cases(
             except Exception as exc:
                 elapsed_ms = int((time.perf_counter() - started_at) * 1000)
                 failures.append(f"{name} session={session_id} prompt={prompt}: request failed: {type(exc).__name__}: {exc}")
-                metrics_records.append(
-                    {
-                        "case": name,
-                        "sessionId": session_id,
-                        "prompt": prompt,
-                        "elapsedMs": elapsed_ms,
-                        "error": f"{type(exc).__name__}: {exc}",
-                    }
-                )
+                error_record = {
+                    "case": name,
+                    "stepIndex": step_index,
+                    "sessionId": session_id,
+                    "prompt": prompt,
+                    "elapsedMs": elapsed_ms,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+                if history_db:
+                    history = _load_history_json(Path(history_db), session_id)
+                    turn_observability = _summarize_turn_observability(
+                        _latest_turn_messages(history, prompt)
+                    )
+                    if turn_observability.get("historyMessages"):
+                        error_record["turnObservability"] = turn_observability
+                metrics_records.append(error_record)
                 print(f"error={type(exc).__name__}: {exc} elapsedMs={elapsed_ms}")
                 continue
             elapsed_ms = int((time.perf_counter() - started_at) * 1000)
@@ -816,6 +908,16 @@ async def _run_cases(
                 for v in content_violations:
                     print(f"  CONTENT_ASSERT_FAIL: {v}")
                 failures.extend(content_violations)
+            tool_violations = _check_tool_assertions(
+                record.get("turnObservability"),
+                step,
+                name,
+                session_id,
+            )
+            if tool_violations:
+                for v in tool_violations:
+                    print(f"  TOOL_ASSERT_FAIL: {v}")
+                failures.extend(tool_violations)
             perf_failures, perf_warnings = _check_performance_assertions(elapsed_ms, step, name, session_id)
             for warning in perf_warnings:
                 print(f"  LATENCY_WARN: {warning}")
@@ -823,6 +925,8 @@ async def _run_cases(
             warnings.extend(perf_warnings)
             if content_violations:
                 record["contentViolations"] = content_violations
+            if tool_violations:
+                record["toolViolations"] = tool_violations
             if perf_failures:
                 record["performanceViolations"] = perf_failures
             if perf_warnings:

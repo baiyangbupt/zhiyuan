@@ -34,11 +34,6 @@ public class ChatSessionExtraDataConstants {
     public static final String PLANNING_STATE_KEY = "planningState";
 
     /**
-     * 规划高频可变状态数据key
-     */
-    public static final String PLANNING_MUTABLE_STATE_KEY = "planningMutableState";
-
-    /**
      * 对话中暂存的方案编辑意向key
      */
     public static final String PLAN_EDIT_CACHE_KEY = "planEditCache";

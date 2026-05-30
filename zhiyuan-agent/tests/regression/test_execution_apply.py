@@ -166,9 +166,8 @@ class TestAnalyzeAdjustmentApply:
         ctx = _confirmed_ctx(volunteer_model=volunteer_model, action_family="analyze_adjustment")
         plan = make_plan_action_plan(action_family="analyze_adjustment", stage="apply")
         result = await _execute_plan_action_model(ctx, plan)
-        assert result.applied is False
+        assert result.applied is True
         assert result.result_kind == "adjustment_analysis"
-        assert result.workspace_refresh_targets == []
 
 
 # ---------------------------------------------------------------------------

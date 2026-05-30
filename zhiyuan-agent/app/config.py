@@ -21,6 +21,7 @@ class LLMConfig(BaseSettings):
     base_url: str = ""
     temperature: float = 0.7
     max_tokens: int = 4096
+    timeout_seconds: float = 0.0  # 0 表示不设置模型请求层超时，仍使用外层服务超时兜底
 
     @model_validator(mode="after")
     def _validate(self) -> LLMConfig:
@@ -28,6 +29,8 @@ class LLMConfig(BaseSettings):
             raise ValueError(
                 "LLM_BASE_URL is required when provider is 'openai_compatible'"
             )
+        if self.timeout_seconds < 0:
+            raise ValueError("LLM_TIMEOUT_SECONDS must be greater than or equal to 0")
         return self
 
 
@@ -105,29 +108,3 @@ class HistoryConfig(BaseSettings):
     runtime_keep_pending: bool = True
     runtime_drop_tool_returns_over_chars: int = 3000
     runtime_summary_enabled: bool = False
-
-
-class SemanticRouterConfig(BaseSettings):
-    """Semantic intent router shadow configuration."""
-
-    model_config = {
-        "env_prefix": "SEMANTIC_ROUTER_",
-        "env_file": ".env",
-        "extra": "ignore",
-    }
-
-    enabled: bool = False
-    blocking: bool = False
-    fixed_route_enabled: bool = False
-    timeout_seconds: float = 8.0
-    fixed_route_timeout_seconds: float = 10.0
-    fixed_route_min_confidence: float = 0.82
-    max_history_messages: int = 6
-    max_prompt_chars: int = 6000
-    llm_provider: Literal["openai", "anthropic", "openai_compatible"] | None = None
-    llm_model_name: str = ""
-    llm_api_key: str = ""
-    llm_base_url: str = ""
-    llm_temperature: float = 0.0
-    llm_max_tokens: int = 512
-    llm_enable_thinking: bool | None = None

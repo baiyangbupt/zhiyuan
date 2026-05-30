@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 from loguru import logger
 
+from app.data.major_aliases import resolve_deterministic_major_alias
 from app.util.internal_client import (
     catalog_lookup_city,
     catalog_lookup_major,
@@ -141,9 +142,12 @@ def _compact_major_alias_text(value: str) -> str:
     return "".join(str(value or "").split()).replace("电子商务", "电商")
 
 
-def _resolve_local_major_name_alias(name: str, local_map: dict[str, str]) -> str | None:
+def _resolve_local_major_name_alias(name: str, level: str, local_map: dict[str, str]) -> str | None:
     if name in local_map:
         return name
+    deterministic_alias = resolve_deterministic_major_alias(name, level, local_map.keys())
+    if deterministic_alias:
+        return deterministic_alias
     if f"{name}学" in local_map:
         return f"{name}学"
     compact_name = _compact_major_alias_text(name)
@@ -394,7 +398,7 @@ async def _normalize_major_names_async(major_names: list[str], level: str, batch
     fallback_by_name = {
         name: standard_name
         for name in major_names
-        if (standard_name := _resolve_local_major_name_alias(name, local_map))
+        if (standard_name := _resolve_local_major_name_alias(name, level, local_map))
     }
 
     async def lookup_one(name: str) -> tuple[str, str | None]:

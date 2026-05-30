@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import logging
 import asyncio
-import re
 from collections import Counter, defaultdict
 from typing import Any
 
@@ -22,17 +21,16 @@ from app.domain.career_planning import resolve_career_planning_policy
 from app.domain.career_slots import (
     CAREER_FURTHER_STUDY,
     CAREER_LABEL_MAP,
+    CAREER_MARKET_EMPLOYMENT,
     CAREER_STABLE_EMPLOYMENT,
     CAREER_SYSTEM_PUBLIC_SERVICE,
     is_career_slot,
     normalize_career_slots,
-    resolve_career_slots_locally,
     to_career_label,
 )
 from app.llm.client import LLMClient
 from app.schemas.career_intent import CareerIntentResult
 from app.tools.extraction_json import parse_extraction_json
-from app.util.display_text import compact_school_major_text
 from app.util.internal_client import get_planning_state, get_planning_workspace_state, query_planning_candidate_pool
 
 logger = logging.getLogger(__name__)
@@ -53,6 +51,13 @@ _STABLE_EMPLOYMENT_EVIDENCE = {
     "majorCategory": ["教育", "医学", "法学", "管理"],
 }
 _FURTHER_STUDY_TAG_EVIDENCE = ["保研", "双一流", "985", "211", "国重点", "省重点", "博士点", "硕士点", "升学率"]
+_MARKET_EMPLOYMENT_EVIDENCE = {
+    "schoolCategory": ["理工", "财经", "综合"],
+    "majorName": ["计算机", "软件", "电子", "信息", "人工智能", "数据", "自动化", "通信", "金融", "会计", "审计", "市场营销", "电子商务", "数字媒体"],
+    "majorCategory": ["计算机", "电子信息", "自动化", "金融", "工商管理", "电子商务", "新闻传播"],
+    "majorDiscipline": ["工学", "经济学", "管理学"],
+}
+_MARKET_EMPLOYMENT_TAG_EVIDENCE = ["就业", "产业", "校企", "实习", "互联网", "金融", "人工智能", "大数据", "软件", "数字"]
 
 _INTEREST_ACTIONS_PREFERENCE = [
     {
@@ -75,9 +80,9 @@ _INTEREST_ACTIONS_PREFERENCE = [
 _direction_analysis_llm_client: LLMClient | None = None
 _direction_analysis_agent: Agent[None, str] | None = None
 _career_direction_resolver_agent: Agent[None, str] | None = None
-_generic_direction_router_agent: Agent[None, str] | None = None
-_DIRECTION_ANALYSIS_LLM_TIMEOUT_SECONDS = 10
-_GENERIC_DIRECTION_LLM_TIMEOUT_SECONDS = 10
+_CAREER_DIRECTION_ROUTE_CACHE_ATTR = "_career_direction_route_decision_cache"
+_GENERIC_DIRECTION_LLM_TIMEOUT_SECONDS = 90
+
 
 class DirectionAnalysisDraft(BaseModel):
     summaryTitle: str = ""
@@ -87,7 +92,7 @@ class DirectionAnalysisDraft(BaseModel):
     nextActionHints: list[str] = Field(default_factory=list)
 
 
-class GenericDirectionDecision(BaseModel):
+class CareerDirectionRouteDecision(CareerIntentResult):
     shouldAnalyze: bool = False
     reason: str = ""
 
@@ -158,6 +163,18 @@ def _build_student_fit_fact(
         positive_signals.append("深造方向更适合重点比较培养平台、升学通道和长期学习投入，而不只是看当前录取概率。")
         if career_policy.employment_first:
             caution_signals.append("以你当前这个分数段，现阶段不建议把“深造”当成优先目标；更合适的做法是先看毕业后的就业承接，再决定是否把升学作为后续增益。")
+    elif direction_slot == CAREER_MARKET_EMPLOYMENT:
+        market_aligned = _contains_preference_keywords(
+            preferred_majors,
+            ["计算机", "电子", "信息", "软件", "数据", "人工智能", "自动化", "通信", "金融", "会计", "审计", "电子商务", "数字媒体"],
+        )
+        if market_aligned:
+            positive_signals.append(f"你当前关注的{ '、'.join(market_aligned[:2]) }，和企业就业、产业岗位、大城市机会的连接比较直接。")
+        if preferred_provinces:
+            positive_signals.append("市场化就业更依赖城市产业和实习机会，你已有地域倾向，后面可以把城市机会一起纳入比较。")
+        positive_signals.append("市场化就业导向更适合比较行业机会、实习资源、岗位面和技能可迁移性，不只看学校层次。")
+        if negative_majors:
+            caution_signals.append(f"你已经明确排斥{ '、'.join(negative_majors[:2]) }这类方向，所以看企业就业时也要避开自己接受度低的专业线。")
 
     if preferred_provinces:
         positive_signals.append(f"你现在已有的地域倾向是{'、'.join(preferred_provinces)}，后面可以结合这些地域再看这条方向的真实机会。")
@@ -205,18 +222,6 @@ def _format_text_sections(*sections: tuple[str, list[str] | None] | tuple[str, s
     return "\n\n".join(blocks)
 
 
-def _dedupe_texts(values: list[Any] | None) -> list[str]:
-    result: list[str] = []
-    seen: set[str] = set()
-    for value in values or []:
-        text = str(value or "").strip()
-        if not text or text in seen:
-            continue
-        seen.add(text)
-        result.append(text)
-    return result
-
-
 def _get_direction_analysis_llm_client() -> LLMClient:
     global _direction_analysis_llm_client
     if _direction_analysis_llm_client is None:
@@ -252,80 +257,100 @@ def _get_career_direction_resolver_agent() -> Agent[None, str]:
             model=_get_direction_analysis_llm_client().model,
             output_type=str,
             instructions=(
-                "你是高考志愿对话里的发展方向识别器。"
-                "请根据用户最后一句话，识别它主要在询问或表达下面哪些方向："
+                "你是高考志愿对话里的职业方向语义判定器。"
+                "请根据用户最后一句话，同时判断两个信息。"
+                "第一，识别它主要在询问或表达下面哪些方向："
                 "system_public_service（体制内/考公/考编/公务员/事业单位/进编制/进体制）、"
                 "stable_employment（稳定就业/求稳/工作稳定/抗风险）、"
-                "further_study（读研/保研/深造/继续升学）。"
+                "further_study（读研/保研/深造/继续升学）、"
+                "market_employment（企业就业/市场化就业/大城市就业/互联网或产业岗位/去企业发展）。"
                 "这里允许识别探索性问题，不要求用户已经形成明确偏好。"
                 "如果用户是在比较多个方向，可返回多个；如果完全无法判断，则返回空数组。"
-                "只返回 JSON：{\"positive\": [...], \"negative\": []}。"
+                "第二，判断用户是否是在问‘我适合什么方向/更适合往哪条路走/先看哪类专业线’这类泛方向适配问题。"
+                "泛方向适配强调先分析学生本人，再看当前方案承接；不是直接抽取学校、城市、具体专业意向，也不是方案增删改。"
+                "如果用户已经明确提学校、城市、具体专业名称，或者明确要改方案、加志愿、删志愿、筛候选，就不要判成泛方向适配。"
+                "只返回 JSON：{\"positive\": [...], \"negative\": [], \"shouldAnalyze\": true/false, \"reason\": \"...\"}。"
             ),
         )
     return _career_direction_resolver_agent
 
 
-def _get_generic_direction_router_agent() -> Agent[None, str]:
-    global _generic_direction_router_agent
-    if _generic_direction_router_agent is None:
-        _generic_direction_router_agent = Agent(
-            model=_get_direction_analysis_llm_client().model,
-            output_type=str,
-            instructions=(
-                "你是高考志愿对话里的语义判定器。"
-                "判断用户最后一句话，是否是在问‘我适合什么方向/更适合往哪条路走/更适合优先看哪类专业线’这类泛方向适配问题。"
-                "这类问题强调的是先分析学生本人，再看方案承接，不是让系统去抽具体学校、城市、专业意向，也不是直接做方案增删改。"
-                "如果用户已经在明确提学校、城市、专业名称，或者明确要改方案、加志愿、删志愿、筛候选，就不要判成泛方向适配。"
-                "只返回 JSON：{\"shouldAnalyze\": true/false, \"reason\": \"...\"}。"
-            ),
-        )
-    return _generic_direction_router_agent
+def _normalize_career_direction_route_decision(
+    decision: CareerDirectionRouteDecision,
+) -> CareerDirectionRouteDecision:
+    return CareerDirectionRouteDecision(
+        positive=normalize_career_slots(decision.positive),
+        negative=normalize_career_slots(decision.negative),
+        shouldAnalyze=bool(decision.shouldAnalyze),
+        reason=decision.reason or "",
+    )
 
 
-async def resolve_career_direction_slots(request_context: RequestContext) -> list[str]:
+def _empty_career_direction_route_decision() -> CareerDirectionRouteDecision:
+    return CareerDirectionRouteDecision()
+
+
+def _allow_explore_inner_llm(request_context: RequestContext) -> bool:
+    return bool(getattr(request_context, "allow_explore_inner_llm", True))
+
+
+async def resolve_career_direction_route(request_context: RequestContext) -> CareerDirectionRouteDecision:
     latest_user_text = _latest_user_text(request_context).strip()
     logger.info(
-        "resolve_career_direction_slots called: session_id=%s latest_user_text=%s",
+        "resolve_career_direction_route called: session_id=%s latest_user_text=%s",
         request_context.sessionid,
         latest_user_text,
     )
     if not latest_user_text:
-        return []
-    local_slots = _resolve_career_direction_slots_locally(latest_user_text)
-    if local_slots:
-        logger.info(
-            "resolve_career_direction_slots resolved locally: session_id=%s slots=%s",
-            request_context.sessionid,
-            local_slots,
-        )
-        return local_slots
+        return _empty_career_direction_route_decision()
+
+    cached = getattr(request_context, _CAREER_DIRECTION_ROUTE_CACHE_ATTR, None)
+    if isinstance(cached, dict) and cached.get("latest_user_text") == latest_user_text:
+        decision = cached.get("decision")
+        if isinstance(decision, CareerDirectionRouteDecision):
+            logger.info(
+                "resolve_career_direction_route cache hit: session_id=%s should_analyze=%s slots=%s",
+                request_context.sessionid,
+                decision.shouldAnalyze,
+                decision.positive,
+            )
+            return decision
+
     result = await _get_career_direction_resolver_agent().run(
         f"用户最后一句话：{latest_user_text}",
         model_settings={"temperature": 0},
     )
-    parsed = parse_extraction_json(result.output, CareerIntentResult)
-    return normalize_career_slots(parsed.positive)
+    parsed = parse_extraction_json(result.output, CareerDirectionRouteDecision)
+    decision = _normalize_career_direction_route_decision(parsed)
+    setattr(
+        request_context,
+        _CAREER_DIRECTION_ROUTE_CACHE_ATTR,
+        {"latest_user_text": latest_user_text, "decision": decision},
+    )
+    return decision
 
 
-def _resolve_career_direction_slots_locally(text: str | None) -> list[str]:
-    return resolve_career_slots_locally(text)
+async def resolve_career_direction_slots(request_context: RequestContext) -> list[str]:
+    decision = await resolve_career_direction_route(request_context)
+    logger.info(
+        "resolve_career_direction_slots resolved: session_id=%s slots=%s should_analyze=%s",
+        request_context.sessionid,
+        decision.positive,
+        decision.shouldAnalyze,
+    )
+    return list(decision.positive)
 
 
 async def should_use_generic_direction_analysis(request_context: RequestContext) -> bool:
-    latest_user_text = _latest_user_text(request_context).strip()
+    decision = await resolve_career_direction_route(request_context)
     logger.info(
-        "should_use_generic_direction_analysis called: session_id=%s latest_user_text=%s",
+        "should_use_generic_direction_analysis resolved: session_id=%s should_analyze=%s slots=%s reason=%s",
         request_context.sessionid,
-        latest_user_text,
+        decision.shouldAnalyze,
+        decision.positive,
+        decision.reason,
     )
-    if not latest_user_text:
-        return False
-    result = await _get_generic_direction_router_agent().run(
-        f"用户最后一句话：{latest_user_text}",
-        model_settings={"temperature": 0},
-    )
-    parsed = parse_extraction_json(result.output, GenericDirectionDecision)
-    return bool(parsed.shouldAnalyze)
+    return bool(decision.shouldAnalyze)
 
 
 def likely_generic_direction_question(text: str | None) -> bool:
@@ -344,10 +369,6 @@ def likely_generic_direction_question(text: str | None) -> bool:
         "哪些方向适合我",
     )
     return any(pattern in normalized for pattern in generic_patterns)
-
-
-def _allow_inner_direction_generation(request_context: RequestContext) -> bool:
-    return bool(getattr(request_context, "allow_explore_inner_llm", True))
 
 
 def _contains_any_text(value: str | None, keywords: list[str]) -> bool:
@@ -404,6 +425,11 @@ def _direction_alignment_evidence(item: dict[str, Any], direction_slot: str) -> 
         )
     if direction_slot == CAREER_FURTHER_STUDY:
         return _collect_tag_evidence(item, _FURTHER_STUDY_TAG_EVIDENCE)
+    if direction_slot == CAREER_MARKET_EMPLOYMENT:
+        return (
+            _collect_text_evidence(item, _MARKET_EMPLOYMENT_EVIDENCE)
+            + _collect_tag_evidence(item, _MARKET_EMPLOYMENT_TAG_EVIDENCE)
+        )
     return []
 
 
@@ -419,6 +445,10 @@ def _is_further_study_aligned_item(item: dict[str, Any]) -> bool:
     return bool(_direction_alignment_evidence(item, CAREER_FURTHER_STUDY))
 
 
+def _is_market_employment_aligned_item(item: dict[str, Any]) -> bool:
+    return bool(_direction_alignment_evidence(item, CAREER_MARKET_EMPLOYMENT))
+
+
 def _item_matches_direction_slot(item: dict[str, Any], direction_slot: str) -> bool:
     if direction_slot == CAREER_SYSTEM_PUBLIC_SERVICE:
         return _is_public_service_aligned_item(item)
@@ -426,6 +456,8 @@ def _item_matches_direction_slot(item: dict[str, Any], direction_slot: str) -> b
         return _is_stable_employment_aligned_item(item)
     if direction_slot == CAREER_FURTHER_STUDY:
         return _is_further_study_aligned_item(item)
+    if direction_slot == CAREER_MARKET_EMPLOYMENT:
+        return _is_market_employment_aligned_item(item)
     return False
 
 
@@ -434,21 +466,7 @@ def _format_candidate_brief(item: dict[str, Any]) -> str:
     major_name = item.get("majorName") or "未知专业"
     tier = item.get("tier") or "未知"
     province_name = item.get("provinceName") or ""
-    brief_name = _sample_text(f"{school_name}-{major_name}")
-    return f"{brief_name}（{tier}{f'/{province_name}' if province_name else ''}）"
-
-
-def _direction_plan_fit_level(match_count: int, total: int) -> str:
-    if total <= 0:
-        return "还没法判断"
-    if match_count <= 0:
-        return "暂时不明显"
-    ratio = match_count / max(total, 1)
-    if match_count >= 10 or ratio >= 0.2:
-        return "较强"
-    if match_count >= 3:
-        return "中等"
-    return "偏弱"
+    return f"{school_name}-{major_name}（{tier}{f'/{province_name}' if province_name else ''}）"
 
 
 def _extract_direction_label_from_item(item: dict[str, Any]) -> str | None:
@@ -697,22 +715,16 @@ def _build_direction_interest_analysis(
     candidate_match_count: int,
 ) -> dict[str, Any]:
     direction_label = to_career_label(direction_slot)
-    summary_title = f"先帮你判断一下，“{direction_label}”是不是值得重点看"
-    if direction_slot == CAREER_SYSTEM_PUBLIC_SERVICE:
-        summary_title = "体制内/考公方向可以看，但要同时看专业口径、院校属性和本人接受度"
-    elif direction_slot == CAREER_STABLE_EMPLOYMENT:
-        summary_title = "稳定就业导向可以重点看，但要落到专业出口、学校平台和录取梯度上判断"
-    elif direction_slot == CAREER_FURTHER_STUDY:
-        summary_title = "深造方向可以看，但要优先确认培养平台和长期学习投入"
-
-    fit_points: list[str] = []
+    fit_points: list[str] = [
+        f"我先不急着替你下结论，而是结合你自己的情况，看看“{direction_label}”这条路值不值得重点看。"
+    ]
     fit_points.extend(student_fit_fact.get("positiveSignals") or [])
     conflict_points: list[str] = list(student_fit_fact.get("cautionSignals") or [])
     opportunity_points: list[str] = []
     next_action_hints: list[str] = [
-        "可以继续按这条方向看当前方案里哪些志愿真正承接得住。",
-        "也可以只看候选里还有没有更贴近这条方向、录取梯度更合适的机会。",
-        "如果确认长期优先这条路，再把它记成后续偏好。"
+        "如果你愿意，我可以继续按这条方向帮你看看现在这份方案承接得够不够。",
+        "你也可以先去看候选里还有没有更贴近这条方向的机会。",
+        "如果你想把“自己到底更适合哪类方向”看得更细一点，后面也可以结合 MBTI 和霍兰德职业兴趣测评再继续收一层。",
     ]
 
     if ordered_total <= 0:
@@ -730,13 +742,15 @@ def _build_direction_interest_analysis(
     if direction_slot == CAREER_SYSTEM_PUBLIC_SERVICE:
         fit_points.append("这类方向通常更看重院校性质、专业方向和未来职业路径的稳定性，不是单看某一所学校或某一个专业名字。")
     elif direction_slot == CAREER_STABLE_EMPLOYMENT:
-        fit_points.append("落到志愿上，要优先看专业出口是否清楚、学校和城市能否提供稳定岗位机会。")
+        fit_points.append("这类方向更看重就业确定性、岗位稳定性和路径清晰度，不能只看一时热度。")
     elif direction_slot == CAREER_FURTHER_STUDY:
         fit_points.append("这类方向更看重院校培养环境、升学条件和后续深造通道，不只是看当前录取概率。")
+    elif direction_slot == CAREER_MARKET_EMPLOYMENT:
+        fit_points.append("这类方向更看重城市产业、实习机会、岗位面和技能可迁移性，不只是看学校层次。")
 
     return {
         "stage": ANALYSIS_STAGE_INTEREST,
-        "summaryTitle": summary_title,
+        "summaryTitle": f"先帮你判断一下，“{direction_label}”是不是值得重点看",
         "currentPlanFit": fit_points,
         "currentPlanConflict": conflict_points,
         "candidateOpportunity": opportunity_points,
@@ -753,135 +767,13 @@ def _build_impact_preview_from_analysis(analysis: dict[str, Any]) -> str:
         ("nextActionHints", "如果继续了解"),
     )
     for key, title in section_map:
-        items = _dedupe_texts(analysis.get(key) or [])
+        items = analysis.get(key) or []
         if not items:
             continue
         lines.append(f"  {title}：")
         for item in items:
             lines.append(f"  - {item}")
     return "\n".join(lines)
-
-
-def _direction_analysis_sections(
-    analysis: dict[str, Any],
-    *,
-    fit_title: str = "方向判断",
-) -> list[tuple[str, list[str] | None]]:
-    """Render direction analysis without nesting internal subsection labels."""
-    summary_title = str(analysis.get("summaryTitle") or "").strip()
-    fit_items = _dedupe_texts([
-        *([summary_title] if summary_title else []),
-        *((analysis.get("currentPlanFit") or [])),
-    ])
-    return [
-        (fit_title, fit_items),
-        ("需要留意", _dedupe_texts(analysis.get("currentPlanConflict") or [])),
-        ("候选机会", _dedupe_texts(analysis.get("candidateOpportunity") or [])),
-    ]
-
-
-def _looks_like_concrete_sample(text: str) -> bool:
-    if not text:
-        return False
-    if any(marker in text for marker in ("例子", "示例", "样本")):
-        return True
-    return "大学" in text or "学院" in text
-
-
-def _sample_text(text: str) -> str:
-    compact = text.strip()
-    for marker in ("例子：", "示例：", "样本："):
-        if marker in compact:
-            compact = compact.split(marker, 1)[1].strip()
-            break
-
-    def _brief_one(value: str) -> str:
-        return compact_school_major_text(value)
-
-    parts = [
-        part
-        for part in re.split(r"[；;](?=.*(?:大学|学院).*-)", compact)
-        if part.strip() and re.search(r"(?:大学|学院).*-", part)
-    ]
-    if len(parts) > 1:
-        return "；".join(_brief_one(part) for part in parts[:2] if _brief_one(part))
-    if len(compact) > 80:
-        compact = compact[:80].rstrip("，,；;。") + "..."
-    return _brief_one(compact)
-
-
-def _add_unique_sample(target: list[str], value: Any, *, limit: int) -> None:
-    if len(target) >= limit:
-        return
-    text = str(value or "").strip()
-    if not text or not _looks_like_concrete_sample(text) or text in target:
-        return
-    target.append(_sample_text(text))
-
-
-def _direction_focus_snapshot(
-    analysis: dict[str, Any],
-    *,
-    limit: int = 2,
-    direction_facts: list[dict[str, Any]] | None = None,
-) -> list[str]:
-    focus_lines: list[str] = []
-    fit_items = [
-        item
-        for item in _dedupe_texts(analysis.get("currentPlanFit") or [])
-        if "你的当前选科是" not in item and _looks_like_concrete_sample(item)
-    ]
-    conflict_items = [
-        item
-        for item in _dedupe_texts(analysis.get("currentPlanConflict") or [])
-        if _looks_like_concrete_sample(item)
-    ]
-    candidate_items = [
-        item
-        for item in _dedupe_texts(analysis.get("candidateOpportunity") or [])
-        if _looks_like_concrete_sample(item)
-    ]
-    for fact in direction_facts or []:
-        if not isinstance(fact, dict):
-            continue
-        for item in fact.get("orderedExamples") or []:
-            _add_unique_sample(fit_items, item, limit=limit)
-        for item in fact.get("candidateExamples") or []:
-            _add_unique_sample(candidate_items, item, limit=limit)
-    if fit_items:
-        focus_lines.append(f"方案承接代表：{'；'.join(_sample_text(item) for item in fit_items[:limit])}")
-    if conflict_items:
-        focus_lines.append(f"需要留意代表：{'；'.join(_sample_text(item) for item in conflict_items[:limit])}")
-    if candidate_items:
-        focus_lines.append(f"候选机会代表：{'；'.join(_sample_text(item) for item in candidate_items[:limit])}")
-    if not focus_lines:
-        return []
-    unique_lines: list[str] = []
-    seen: set[str] = set()
-    for line in focus_lines:
-        if line in seen:
-            continue
-        if "；" in line:
-            prefix, rest = line.split("：", 1) if "：" in line else ("", line)
-            parts = [part.strip() for part in rest.split("；") if part.strip()]
-            deduped_parts = []
-            for part in parts:
-                if part not in deduped_parts:
-                    deduped_parts.append(part)
-            if prefix:
-                line = f"{prefix}：{'；'.join(deduped_parts[:limit])}"
-            else:
-                line = "；".join(deduped_parts[:limit])
-        seen.add(line)
-        unique_lines.append(line)
-    return unique_lines
-
-
-def _readonly_direction_boundary() -> list[str]:
-    return [
-        "这次只是方向分析，不会自动修改你的偏好、当前方案或方案顺序。",
-        "如果后面需要按这个方向调整方案，我会先给出预览，等你确认后再执行。",
-    ]
 
 
 async def _generate_direction_analysis_content(
@@ -960,31 +852,14 @@ async def preview_direction_analysis_from_request(
         ordered_total=ordered_total,
         candidate_match_count=candidate_match_count,
     )
-    if not _allow_inner_direction_generation(request_context):
-        logger.info(
-            "Skip direction analysis inner LLM generation: session_id=%s direction_slot=%s",
-            session_id,
-            direction_slot,
-        )
-    else:
+    if _allow_explore_inner_llm(request_context):
         try:
-            direction_fact = _build_direction_slot_fact(direction_slot, ordered_items, candidate_items, ordered_ids)
-            generated = await asyncio.wait_for(
-                _generate_direction_analysis_content(
-                    request_context,
-                    [student_fit_fact],
-                    [direction_fact],
-                ),
-                timeout=_DIRECTION_ANALYSIS_LLM_TIMEOUT_SECONDS,
+            generated = await _generate_direction_analysis_content(
+                request_context,
+                [student_fit_fact],
+                [_build_direction_slot_fact(direction_slot, ordered_items, candidate_items, ordered_ids)],
             )
             analysis.update(generated.model_dump())
-        except asyncio.TimeoutError:
-            logger.info(
-                "Generate direction analysis content timed out, falling back to template: session_id=%s direction_slot=%s timeout=%ss",
-                session_id,
-                direction_slot,
-                _DIRECTION_ANALYSIS_LLM_TIMEOUT_SECONDS,
-            )
         except Exception:
             logger.warning(
                 "Generate direction analysis content failed, falling back to template: session_id=%s direction_slot=%s",
@@ -992,22 +867,17 @@ async def preview_direction_analysis_from_request(
                 direction_slot,
                 exc_info=True,
             )
+    else:
+        logger.info(
+            "Skip direction analysis inner LLM generation: session_id=%s direction_slot=%s",
+            session_id,
+            direction_slot,
+        )
 
-    next_steps = _dedupe_texts(list(analysis.get("nextActionHints") or []))
     return _format_text_sections(
         ("分析结论", [f"你提到的“{to_career_label(direction_slot)}”，我先帮你做了一个初步判断。"]),
-        *_direction_analysis_sections(analysis, fit_title="方向判断"),
-        (
-            "代表样本",
-            _direction_focus_snapshot(
-                analysis,
-                direction_facts=[
-                    _build_direction_slot_fact(direction_slot, ordered_items, candidate_items, ordered_ids)
-                ],
-            ),
-        ),
-        ("本次边界", _readonly_direction_boundary()),
-        ("下一步", next_steps[:3]),
+        ("当前判断", _build_impact_preview_from_analysis(analysis)),
+        ("下一步", ["如果你愿意把它记成后续偏好，我可以再按这个方向继续帮你看方案。"]),
     )
 
 
@@ -1073,12 +943,7 @@ async def preview_generic_direction_analysis_from_request(
             analysis["currentPlanFit"].append(f"从当前方案看，“{label}”已经有一定承接，大约有 {ordered_count} 个相关志愿。")
         if candidate_count > 0:
             analysis["candidateOpportunity"].append(f"候选里和“{label}”相关、还没进方案的机会大约还有 {candidate_count} 个。")
-    if not _allow_inner_direction_generation(request_context):
-        logger.info(
-            "Skip generic direction analysis inner LLM generation: session_id=%s",
-            session_id,
-        )
-    else:
+    if _allow_explore_inner_llm(request_context):
         try:
             await _emit_progress(request_context, "正在把这些线索整理成适合你的方向建议...")
             generated = await asyncio.wait_for(
@@ -1096,11 +961,14 @@ async def preview_generic_direction_analysis_from_request(
                 session_id,
                 exc_info=True,
             )
+    else:
+        logger.info(
+            "Skip generic direction inner LLM generation: session_id=%s",
+            session_id,
+        )
     return _format_text_sections(
         ("分析结论", ["你这句更像是在问自己现阶段更适合优先看哪类方向，我先按这个思路帮你做个初步判断。"]),
-        *_direction_analysis_sections(analysis, fit_title="方向判断"),
-        ("代表样本", _direction_focus_snapshot(analysis, direction_facts=direction_facts[:3])),
-        ("本次边界", _readonly_direction_boundary()),
+        ("当前判断", _build_impact_preview_from_analysis(analysis)),
         ("下一步", list(analysis.get("nextActionHints") or [])),
     )
 
@@ -1131,44 +999,20 @@ async def preview_direction_comparison_from_request(
     fit_points: list[str] = []
     opportunity_points: list[str] = []
     labels = [to_career_label(slot) for slot in normalized_slots]
-    ordered_match_ids: set[str] = set()
-    ordered_examples: list[str] = []
     for slot, label in zip(normalized_slots, labels):
-        ordered_matches = [item for item in ordered_items if _item_matches_direction_slot(item, slot)]
-        candidate_matches = [
-            item
+        ordered_match_count = sum(1 for item in ordered_items if _item_matches_direction_slot(item, slot))
+        candidate_match_count = sum(
+            1
             for item in candidate_items
             if item.get("volunteerId") not in ordered_ids and _item_matches_direction_slot(item, slot)
-        ]
-        ordered_match_count = len(ordered_matches)
-        candidate_match_count = len(candidate_matches)
-        for item in ordered_matches:
-            volunteer_id = str(item.get("volunteerId") or "")
-            ordered_match_ids.add(volunteer_id or _format_candidate_brief(item))
-        for item in ordered_matches[:2]:
-            brief = _format_candidate_brief(item)
-            if brief not in ordered_examples:
-                ordered_examples.append(brief)
-        fit_level = _direction_plan_fit_level(ordered_match_count, len(ordered_items))
-        fit_points.append(f"当前方案里和“{label}”更贴近的大约有 {ordered_match_count} 个志愿，承接程度{fit_level}。")
-        opportunity_points.append(f"候选里和“{label}”更相关、但还没进方案的大约还有 {candidate_match_count} 个机会。")
-
-    combined_match_count = len(ordered_match_ids)
-    combined_fit_level = _direction_plan_fit_level(combined_match_count, len(ordered_items))
-    if ordered_items:
-        conclusion = (
-            f"方向对比分析：当前方案对“{' / '.join(labels)}”的整体承接{combined_fit_level}，"
-            f"方案内大约有 {combined_match_count} 个相关志愿。"
         )
-    else:
-        conclusion = f"方向对比分析：当前还没有成型排序方案，暂时不能判断“{' / '.join(labels)}”在方案里的承接强弱。"
-    if ordered_examples:
-        fit_points.append(f"方案内相对贴近的例子：{'；'.join(ordered_examples[:3])}。")
+        fit_points.append(f"如果只看当前方案承接，和“{label}”更贴近的大约有 {ordered_match_count} 个志愿。")
+        opportunity_points.append(f"候选里和“{label}”更相关、但还没进方案的大约还有 {candidate_match_count} 个机会。")
 
     analysis = {
         "stage": ANALYSIS_STAGE_INTEREST,
-        "summaryTitle": "我按当前方案承接、候选机会和你的基础信息做了判断",
-        "currentPlanFit": fit_points,
+        "summaryTitle": f"我先帮你把“{'”和“'.join(labels)}”放在一起看一眼",
+        "currentPlanFit": ["这类问题更适合先看你本人更适合哪条路径，再看当前方案更偏向哪一边。"],
         "currentPlanConflict": [],
         "candidateOpportunity": opportunity_points,
         "nextActionHints": [
@@ -1183,34 +1027,17 @@ async def preview_direction_comparison_from_request(
     for fit_fact in student_fit_facts:
         analysis["currentPlanFit"].extend((fit_fact.get("positiveSignals") or [])[:1])
         analysis["currentPlanConflict"].extend((fit_fact.get("cautionSignals") or [])[:1])
-    if not _allow_inner_direction_generation(request_context):
-        logger.info(
-            "Skip direction comparison inner LLM generation: session_id=%s direction_slots=%s",
-            session_id,
-            normalized_slots,
-        )
-    else:
+    if _allow_explore_inner_llm(request_context):
         try:
-            direction_facts = [
-                _build_direction_slot_fact(slot, ordered_items, candidate_items, ordered_ids)
-                for slot in normalized_slots
-            ]
-            generated = await asyncio.wait_for(
-                _generate_direction_analysis_content(
-                    request_context,
-                    student_fit_facts,
-                    direction_facts,
-                ),
-                timeout=_DIRECTION_ANALYSIS_LLM_TIMEOUT_SECONDS,
+            generated = await _generate_direction_analysis_content(
+                request_context,
+                student_fit_facts,
+                [
+                    _build_direction_slot_fact(slot, ordered_items, candidate_items, ordered_ids)
+                    for slot in normalized_slots
+                ],
             )
             analysis.update(generated.model_dump())
-        except asyncio.TimeoutError:
-            logger.info(
-                "Generate direction comparison content timed out, falling back to template: session_id=%s direction_slots=%s timeout=%ss",
-                session_id,
-                normalized_slots,
-                _DIRECTION_ANALYSIS_LLM_TIMEOUT_SECONDS,
-            )
         except Exception:
             logger.warning(
                 "Generate direction comparison content failed, falling back to template: session_id=%s direction_slots=%s",
@@ -1218,24 +1045,15 @@ async def preview_direction_comparison_from_request(
                 normalized_slots,
                 exc_info=True,
             )
-
-    current_judgment = dict(analysis)
-    current_judgment["nextActionHints"] = []
-    next_steps = list(analysis.get("nextActionHints") or [])
+    else:
+        logger.info(
+            "Skip direction comparison inner LLM generation: session_id=%s direction_slots=%s",
+            session_id,
+            normalized_slots,
+        )
 
     return _format_text_sections(
-        ("分析结论", [conclusion]),
-        *_direction_analysis_sections(current_judgment, fit_title="方案承接"),
-        (
-            "代表样本",
-            _direction_focus_snapshot(
-                current_judgment,
-                direction_facts=[
-                    _build_direction_slot_fact(slot, ordered_items, candidate_items, ordered_ids)
-                    for slot in normalized_slots
-                ],
-            ),
-        ),
-        ("本次边界", _readonly_direction_boundary()),
-        ("下一步", next_steps[:3]),
+        ("分析结论", ["我先帮你做了一个方向对比分析。"]),
+        ("当前判断", _build_impact_preview_from_analysis(analysis)),
+        ("下一步", ["如果你愿意，我可以接着单独展开其中一个方向，再看它和当前方案到底有多匹配。"]),
     )

@@ -10,7 +10,6 @@ from pydantic import BaseModel
 from pydantic_ai import RunContext
 
 from app.agent.context import RequestContext
-from app.domain.career_slots import CAREER_SYSTEM_PUBLIC_SERVICE
 from app.schemas.tool_inputs import (
     CareerIntentPreviewInput,
     CityIntentPreviewInput,
@@ -25,6 +24,7 @@ from app.tools.explore_direction_tool import (
     resolve_career_direction_slots as _resolve_career_direction_slots,
     should_use_generic_direction_analysis as _should_use_generic_direction_analysis,
 )
+from app.domain.career_slots import CAREER_SLOT_VALUES, normalize_career_slots
 from app.tools.intent_response_tool import render_intent_analysis_payload
 from app.tools.intent_state_tool import (
     ANALYSIS_STAGE_CONFIRMED,
@@ -119,20 +119,45 @@ async def analyze_current_region_interest(
 
 async def analyze_current_career_direction(
     ctx: RunContext[RequestContext],
+    career_directions: list[Literal[*CAREER_SLOT_VALUES]] | None = None,
+    generic_direction: bool = False,
 ) -> str:
+    """Read-only Explore analysis for career direction tradeoffs.
+
+    Args:
+        ctx: request context.
+        career_directions: Optional normalized direction slots. Pass these when
+            the current utterance already clearly names the direction(s), e.g.
+            system_public_service for 考公/考编/体制内, stable_employment for
+            求稳/稳定就业, further_study for 读研/深造, market_employment for
+            企业就业/大城市就业/市场化就业. If omitted, the tool falls back
+            to semantic slot resolution.
+        generic_direction: Set true when the utterance is clearly asking for a
+            broad direction framework, e.g. 先看大方向 / 出分前先定方向 /
+            我适合什么方向. This skips the tool's internal route resolver.
+    """
     latest_user_text = ""
     for message in reversed(ctx.deps.chat_history or []):
         if message.get("role") == "user" and message.get("content"):
             latest_user_text = str(message.get("content") or "")
             break
-    if _likely_generic_direction_question(latest_user_text):
+    if generic_direction or _likely_generic_direction_question(latest_user_text):
         logger.info(
-            "analyze_current_career_direction: session_id=%s using_generic_direction_analysis=keyword",
+            "analyze_current_career_direction: session_id=%s using_generic_direction_analysis=%s",
             _session_id(ctx.deps),
+            "explicit" if generic_direction else "local",
         )
         return await _preview_generic_direction_analysis_from_request(ctx.deps)
 
-    direction_slots = await _resolve_career_direction_slots(ctx.deps)
+    direction_slots = normalize_career_slots(list(career_directions or []))
+    if direction_slots:
+        logger.info(
+            "analyze_current_career_direction: session_id=%s using_explicit_direction_slots=%s",
+            _session_id(ctx.deps),
+            direction_slots,
+        )
+    else:
+        direction_slots = await _resolve_career_direction_slots(ctx.deps)
     logger.info(
         "analyze_current_career_direction: session_id=%s direction_slots=%s",
         _session_id(ctx.deps),
@@ -166,9 +191,21 @@ async def preview_interest_analysis_from_request(
         normalized_scope,
     )
     if normalized_scope == "career_preference":
+        try:
+            direction_slots = await _resolve_career_direction_slots(request_context)
+            if len(direction_slots) > 1:
+                return await _preview_direction_comparison_from_request(request_context, direction_slots)
+            if len(direction_slots) == 1:
+                return await _preview_direction_analysis_from_request(request_context, direction_slots[0])
+        except Exception:
+            logger.warning(
+                "preview_interest_analysis_from_request career slot resolve failed, falling back to system_public_service: session_id=%s",
+                _session_id(request_context),
+                exc_info=True,
+            )
         return await _preview_direction_analysis_from_request(
             request_context,
-            CAREER_SYSTEM_PUBLIC_SERVICE,
+            "system_public_service",
         )
     if normalized_scope == "generic":
         try:
@@ -234,6 +271,9 @@ async def preview_current_major_intent_confirmation(
     """Intent preview for explicit major / major-category preference or constraint.
 
     Examples: “想学网络与新媒体”, “不想学审计”, “以后优先看电子信息类”.
+    For mixed explicit input like “医学护理这些别碰，财会还能接受”, pass
+    `major_intents` directly with positive and negative fields instead of
+    calling this tool repeatedly without arguments.
     Do not use this for read-only fit questions like “电子信息工程适合我吗”.
     If the current turn already names the target major clearly, pass
     `major_intents` directly so the tool can reuse it instead of extracting again.

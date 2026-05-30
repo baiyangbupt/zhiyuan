@@ -30,8 +30,7 @@ from pydantic import BaseModel, Field
 # | generate    | generate_plan             |                     |
 # | add         | add_units                 |                     |
 # | remove      | remove_units              |                     |
-# | move        | move_unit / move_ordered_unit | 按 target 类型细分 |
-# | sort        | sort_ordered_plan         | 当前方案按指定维度排序 |
+# | move        | move_unit                 |                     |
 # | pin         | pin_unit                  |                     |
 # | unpin       | unpin_unit                |                     |
 # | replace     | replace_units             |                     |
@@ -56,7 +55,6 @@ Verb = Literal[
     "add",            # 添加志愿
     "remove",         # 删除志愿
     "move",           # 移动志愿位置
-    "sort",           # 按指定维度排序当前方案
     "pin",            # 锁定志愿
     "unpin",          # 解锁志愿
     "replace",        # 替换志愿

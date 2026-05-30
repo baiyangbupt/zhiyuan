@@ -87,38 +87,6 @@ def test_plan_next_action_ignores_apply_stage_for_mutation_without_confirmation(
     assert data["requires_confirmation"] is True
     assert data["should_rerun_review"] is False
     assert "院校层次" in data["preview_summary"]
-    assert "排名靠前的排在前面" in data["preview_summary"]
-    assert "待重新审查" in data["preview_summary"]
-
-
-def test_plan_next_action_sort_preview_describes_default_direction_by_field():
-    with patch(
-        "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
-        new=AsyncMock(return_value=_context_inputs(summary="阶段=ordered；方案=48/48")),
-    ):
-        ratio_result = asyncio.run(
-            plan_next_action(
-                _ctx(),
-                user_goal="按录取率排序",
-                action_family="sort_ordered_plan",
-                current_stage="apply",
-                user_confirmed=False,
-            )
-        )
-        score_result = asyncio.run(
-            plan_next_action(
-                _ctx(),
-                user_goal="按推荐系数排序",
-                action_family="sort_ordered_plan",
-                current_stage="apply",
-                user_confirmed=False,
-            )
-        )
-
-    ratio_data = json.loads(ratio_result)
-    score_data = json.loads(score_result)
-    assert "录取率低的排在前面" in ratio_data["preview_summary"]
-    assert "推荐系数高的排在前面" in score_data["preview_summary"]
 
 
 def test_plan_next_action_allows_apply_stage_for_mutation_after_confirmation():
@@ -487,45 +455,6 @@ def test_plan_next_action_coerces_broad_item_removal_issue_to_remove_units():
     assert "整批高收费项" in data["preview_summary"]
 
 
-def test_plan_next_action_keeps_item_removal_risk_question_readonly():
-    with patch(
-        "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
-        new=AsyncMock(
-            return_value=_context_inputs(
-                summary="阶段=reviewed；方案=30/30；风险=0；提醒=3",
-                draft_count=30,
-                ordered_count=30,
-                review_issues=[
-                    {
-                        "code": "cooperative_program",
-                        "label": "中外合作",
-                        "scope_kind": "item_removal",
-                        "default_action_family": "remove_units",
-                        "affected_unit_count": 4,
-                        "affected_volunteer_count": 4,
-                        "scope_fingerprint": "issue-coop-1",
-                    }
-                ],
-            )
-        ),
-    ):
-        result = asyncio.run(
-            plan_next_action(
-                _ctx(),
-                user_goal="方案里中外合作是不是有点多，家里预算一般，帮我用大白话看下风险，先别动",
-                action_family="query_state",
-                user_confirmed=False,
-            )
-        )
-
-    data = json.loads(result)
-    assert data["action_family"] == "query_state"
-    assert data["stage"] == "apply"
-    assert data["requires_confirmation"] is False
-    assert data["atomic_actions"] == []
-    assert "review_issue_target" not in json.dumps(data, ensure_ascii=False)
-
-
 def test_plan_next_action_coerces_structural_review_issue_to_default_action():
     with patch(
         "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
@@ -560,45 +489,6 @@ def test_plan_next_action_coerces_structural_review_issue_to_default_action():
     assert data["action_family"] == "preview_compensation"
     assert data["stage"] == "apply"
     assert data["requires_confirmation"] is False
-    assert data["atomic_actions"] == []
-
-
-def test_plan_next_action_review_followup_adjustment_analysis_stays_readonly():
-    with patch(
-        "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
-        new=AsyncMock(
-            return_value=_context_inputs(
-                summary="阶段=reviewed；方案=45/45；风险=2；提醒=3",
-                target_count=45,
-                draft_count=45,
-                ordered_count=45,
-                review_issues=[
-                    {
-                        "code": "probability_gap",
-                        "label": "梯度断层",
-                        "scope_kind": "structural",
-                        "default_action_family": "analyze_adjustment",
-                        "affected_unit_count": 3,
-                        "affected_volunteer_count": 8,
-                        "scope_fingerprint": "issue-gap-structural-1",
-                    }
-                ],
-            )
-        ),
-    ):
-        result = asyncio.run(
-            plan_next_action(
-                _ctx(),
-                user_goal="针对最严重的问题，先给我调整预览，不要直接执行",
-                action_family="analyze_adjustment",
-            )
-        )
-
-    data = json.loads(result)
-    assert data["action_family"] == "analyze_adjustment"
-    assert data["stage"] == "apply"
-    assert data["requires_confirmation"] is False
-    assert data["should_rerun_review"] is False
     assert data["atomic_actions"] == []
 
 

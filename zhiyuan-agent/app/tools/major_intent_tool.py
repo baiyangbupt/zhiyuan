@@ -24,7 +24,7 @@ from app.data.major_data import (
 from app.data.major_utils import filter_major_hierarchy_by_prefix
 from app.data.message_utils import format_messages, trim_last_n_messages
 from app.llm.client import LLMClient
-from app.schemas.major_intent import MajorIntentResult, NegativeMajorIntentResult
+from app.schemas.major_intent import MajorIntentPolarityResult, MajorIntentResult, NegativeMajorIntentResult
 from app.tools.extraction_json import parse_extraction_json
 
 logger = logging.getLogger(__name__)
@@ -232,6 +232,59 @@ def _build_negative_system_message_associate(chat_history: list[dict], major_dat
     return _build_negative_system_message_bachelor(chat_history, major_data_str)
 
 
+def _build_polarity_system_message(chat_history: list[dict], major_data_str: str) -> str:
+    """Build system message for one-pass positive/negative major extraction."""
+    chat_history_str = format_messages(chat_history)
+    return f"""
+# 【任务背景】
+你是一个专业的高考专业实体抽取工具，需要从学生的当前对话中同时识别正面意向专业和负面意向专业。
+
+# 【对话历史】
+{chat_history_str}
+
+# 【任务规则】
+1. 只抽取学生明确表达的专业、专业类或专业门类意向。开放咨询、犹豫、闲聊、泛泛比较不作为意向写入。
+2. positive 表示学生感兴趣、可以考虑、想学、喜欢、希望加入、排序靠前等正面态度。
+3. negative 表示学生不感兴趣、不考虑、不接受、不想学、不喜欢、希望删除、排序靠后等负面态度。
+4. 同一个专业不能同时出现在 positive 和 negative；如果前后态度变化，按最后一次明确态度处理。
+5. 匹配层级必须来自【专业层级结构】：
+- 一级专业门类放入 level1，例如“医学”“法学”“工学”。
+- 二级专业类放入 level2，例如“计算机类”“财政学类”。
+- 三级具体专业放入 level3，例如“软件工程”“财政学”。
+6. 如果用户说的是某个专业类或门类，不要自动展开到下级具体专业。
+7. 简称需要尽量匹配成完整名称，例如“新传类”匹配为“新闻传播学类”，“公管类”匹配为“公共管理类”，“财会/财务/会计/财管”优先匹配到“工商管理类”或其下“会计学/财务管理/审计学”。
+8. 不存在、无法匹配或态度不明确的内容不要返回。
+
+# 【专业层级结构】
+```
+{major_data_str}
+```
+
+# 【返回格式】
+只返回 JSON，不要解释：
+{{
+  "positive": {{
+    "allkeys": ["原始词1"],
+    "level1": [],
+    "level2": [],
+    "level3": []
+  }},
+  "negative": {{
+    "allkeys": ["原始词2"],
+    "level1": [],
+    "level2": [],
+    "level3": []
+  }}
+}}
+
+如果没有对应意向，返回空数组。
+"""
+
+
+def _empty_major_result() -> dict[str, list[str]]:
+    return {"allkeys": [], "level1": [], "level2": [], "level3": []}
+
+
 async def _extract_intent_common(
     ctx: RunContext[RequestContext],
     is_negative: bool,
@@ -369,3 +422,82 @@ async def extract_negative_major_intent(
         JSON string with extraction results containing allkeys, level2, and level3
     """
     return await _extract_intent_common(ctx, is_negative=True)
+
+
+async def extract_major_intents_with_polarity(
+    ctx: RunContext[RequestContext],
+    **kwargs,
+) -> str:
+    """Extract positive and negative major intents in one model call."""
+    chat_history = ctx.deps.chat_history
+    batch = ctx.deps.batch
+
+    logger.info(
+        "extract_major_intents_with_polarity called: chat_history_len=%d, batch=%s",
+        len(chat_history) if chat_history else 0,
+        batch,
+    )
+
+    if not chat_history:
+        logger.warning("extract_major_intents_with_polarity: chat_history is empty, returning empty result")
+        return json.dumps({"positive": _empty_major_result(), "negative": _empty_major_result()}, ensure_ascii=False)
+
+    is_bachelor = batch is None or batch == "" or batch == "01"
+    if is_bachelor:
+        major_lines = bachelor_major_lines
+        category_line_map = bachelor_category_line_map
+        subcategory_line_map = bachelor_subcategory_line_map
+        major_line_map = bachelor_major_line_map
+        prefix_index = prefix_to_bachelor_major
+        mappings = bachelor_major_mappings
+        logger.info("extract_major_intents_with_polarity: using bachelor majors")
+    else:
+        major_lines = associate_major_lines
+        category_line_map = associate_category_line_map
+        subcategory_line_map = associate_subcategory_line_map
+        major_line_map = associate_major_line_map
+        prefix_index = prefix_to_associate_major
+        mappings = associate_major_mappings
+        logger.info("extract_major_intents_with_polarity: using associate majors")
+
+    filtered_hierarchy = filter_major_hierarchy_by_prefix(
+        chat_history,
+        prefix_index,
+        major_lines,
+        category_line_map,
+        subcategory_line_map,
+        major_line_map,
+        mappings["level2_to_level1"],
+        mappings["level3_to_level2"],
+    )
+    logger.info("extract_major_intents_with_polarity: filtered hierarchy length=%d", len(filtered_hierarchy))
+
+    config = _get_extract_config()
+    trimmed_history = trim_last_n_messages(chat_history, config.last_n_messages)
+    logger.info(
+        "extract_major_intents_with_polarity: trimmed chat_history from %d to %d messages",
+        len(chat_history), len(trimmed_history),
+    )
+
+    system_message = _build_polarity_system_message(trimmed_history, filtered_hierarchy)
+    llm_client = _get_extraction_client()
+    logger.info("extract_major_intents_with_polarity: calling LLM for extraction...")
+
+    extraction_agent = Agent(
+        model=llm_client.model,
+        output_type=str,
+        instructions=system_message,
+    )
+
+    try:
+        result = await extraction_agent.run("请同时提取正面和负面专业意向", model_settings={"temperature": 0})
+        result_data = parse_extraction_json(result.output, MajorIntentPolarityResult).model_dump()
+        logger.info(
+            "extract_major_intents_with_polarity: LLM extraction complete - positive=%s negative=%s",
+            result_data["positive"],
+            result_data["negative"],
+        )
+        return json.dumps(result_data, ensure_ascii=False)
+    except Exception:
+        logger.exception("extract_major_intents_with_polarity: LLM extraction failed")
+        raise

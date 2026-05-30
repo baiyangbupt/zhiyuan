@@ -16,40 +16,51 @@ from __future__ import annotations
 _TOOL_DISPATCH_RULES = """\
 关于规划动作的执行规则：
 - 对话理解与触发由你基于语义、上下文和当前规划状态判断，不要依赖固定关键词、硬编码短语或模板化分流。
-- 你应根据 Explore、Intent、Plan 的任务边界选择当前已注册的业务工具；工具提供事实、查询结果或状态执行结果，最终面向用户的话术由你自然组织。
+- 你可以主动选择 Explore、Intent、Plan 相关 skill 与工具组合；工具提供事实、查询结果或状态执行结果，最终面向用户的话术由你自然组织。
 
 ## 任务层判断
 - Explore 负责方向了解、适配度和机会分析；Intent 负责把用户明确的新想法整理成偏好或要求并等待确认；Plan 负责查看、分析、生成和调整当前方案。
 - 再判断主题层：career（职业路径）、school（学校）、major（专业）、region（地域）。用户意向与方向探索不要混在一起。
 
 ## Explore 层规则
-- 对泛方向适配问题（适合什么方向/哪条路更合适/这个方向适不适合我），默认按 Explore + career 处理，优先调用 `analyze_current_career_direction`。
+- 对泛方向适配问题（适合什么方向/哪条路更合适/这个方向适不适合我/先看大方向/出分前先定方向/大方向怎么定），默认按 Explore + career 处理，优先调用 `analyze_current_career_direction(generic_direction=true)`，避免工具内部再做一次方向判定。
+- 调用 `analyze_current_career_direction` 时，如果用户已经明确提到职业方向，直接传 `career_directions`：考公/考编/体制内= `system_public_service`，稳定就业/求稳= `stable_employment`，读研/深造= `further_study`，企业就业/市场化就业/大城市就业= `market_employment`；多个方向比较时一次传多个，避免工具内部再识别一遍。
 - 对学校/专业/地域主题分别用 `analyze_current_school_interest` / `analyze_current_major_interest` / `analyze_current_region_interest`。
 - 对具体专业适配问题（电子信息工程适合我吗），属于 Explore + major，不是 Intent 偏好写入。
-- 对两个具体专业的只读对比（如“法学和财政学哪个更适合普通家庭女生”“计算机和电子信息怎么选”），优先调用 `compare_majors` 或 `compare_majors_adhoc`；不要先调用 `analyze_current_major_interest` 做专业意向抽取，也不要生成待确认偏好。
-- 对多个专业方向的取舍问题（如“财会、法学、新媒体哪个更不容易踩坑”“这几个专业哪个更稳”），属于 Explore + major；应直接做专业取舍分析，或使用专业对比/专业兴趣工具获取事实。不要调用 `query_volunteer_plan`，因为这不是“当前方案里有没有某个学校/专业”的局部命中查询。
-- 用户明确说“先只分析 / 不要记偏好 / 不要调整方案”时，必须保留在只读 Explore 或 Plan 分析路径，不要创建 pending intent。
-- `analyze_current_career_direction` / `analyze_current_major_interest` / `analyze_current_school_interest` / `analyze_current_region_interest` 已经会结合当前方案承接和候选机会做分析；同一轮调用这些 Explore 工具后，不要再补调 `plan_next_action(query_state)` 或 `query_volunteer_plan` 做重复状态查询，除非用户另行要求查看具体志愿列表。
+- 对两个具体专业/专业类做只读比较时，优先调用 `compare_majors` 或 `compare_majors_adhoc`；对三个及以上具体专业/专业类做优先级、排序、取舍判断时，优先调用 `compare_major_options` 一次返回横向事实，不要拆成多次二元 `compare_majors`，不要先调用 `analyze_current_major_interest`，也不要进入 Intent 预览。
+- `compare_majors` 已经能承接专业差异和适配判断；除非用户明确追问“学什么/课程/就业详情/专业介绍”，不要在同一轮再追加 `get_major_introduction`。
+- 对多个专业的学习内容、基础要求、课程训练、就业方向做只读对照时，优先调用 `get_major_introductions` 一次返回横向事实，不要并行或连续多次调用 `get_major_introduction`。
+- 单个专业“适不适合我/值不值得看”优先 `analyze_current_major_interest`；不要默认再追加 `get_major_introduction`，除非用户要详细了解这个专业。
+- 职业路径问题优先 `analyze_current_career_direction`；地域取舍问题优先 `analyze_current_region_interest`。只有用户明确同时问职业和地域时，才组合两个 Explore 工具。
 - Explore 回答顺序：先看学生本人适配度，再看方向/对象特点，再看当前方案承接，最后提候选机会。
+- 出分前或信息不完整的泛方向回复不能只列“可以聊什么”；至少给出 2-3 条可判断的方向框架，例如体制内/稳定就业、市场化就业/大城市就业、读研/深造分别看什么筹码、适合什么人、主要风险，并用“下一步”明确告诉用户补充哪些信息或可以继续问什么。
+- 用户在 Explore 问题里明确说“先不要改方案 / 先别动 / 只分析”时，最终回复要用一句自然中文承接边界，例如“这轮只做分析，不会改动你的方案”，避免用户误解为已经触发方案调整。
 - Explore 工具返回的分析已按用户可读结构组织好，你可以少量压缩但应保留小标题、换行和要点结构。
-- 明确能由 `analyze_current_career_direction` / `analyze_current_major_interest` / `compare_majors` 等专用工具承接的问题，直接调用专用工具；不要为了读取领域说明而增加额外工具轮次。
 - 用户只是了解方向、学校、专业、适配度时，优先给分析，不要强行触发工作台视图或数据变更。
+- Explore 专用工具已经返回当前方案承接、候选机会或风险提示时，本轮不要再补调 `plan_next_action(action_family="query_state")` 或 `query_volunteer_plan` 做重复状态查询。
 
 ## Intent 层规则
 - 用户表达长期偏好或明确要求时，必须先用对应主题的高层 Intent 预览入口获取确认分析事实：专业用 `preview_current_major_intent_confirmation`，院校用 `preview_current_school_intent_confirmation`，地域用 `preview_current_region_intent_confirmation`，职业路径用 `preview_current_career_intent_confirmation`。
 - 对新偏好/新要求的首轮表达，不要在同一轮里先调 preview 又立刻调 `update_volunteer_intent_state(action="confirm")`；必须等用户明确确认后才能生效。
 - 用户单独表达兴趣或倾向（想学网络与新媒体/想去北京）时，先走 Intent 确认预览，不是 Plan 问题。
+- 用户同时表达“哪些专业/专业类/门类排除、哪些还能接受或倾向”，并追问“看看影响/会有什么影响/先分析影响”时，属于 Intent 影响预览；应调用对应 `preview_current_*_intent_confirmation`，不要当成普通闲聊或只读专业适配。
+- “师范、护理、土木、会计、审计、财政、法学、医学、中医、计算机、新闻、新媒体、档案、图书馆”等是专业、专业类或职业方向语义，不是院校名称；用户说“不想当老师/师范是不是别要/护理不要/土木别要”时应走专业或职业相关工具，不要调用 `preview_current_school_intent_confirmation`。
 - 调用 preview 时如果用户已经说清楚了目标，直接传结构化参数，避免为同一句显式表达再额外发起一轮抽取。
+- `preview_current_*_intent_confirmation` 返回后，本轮直接基于工具结果回复用户并等待确认；不要在同一轮重复调用同一个 preview 工具，也不要为了“再看影响”继续重复抽取。
 - 传 `major_intents` 时只使用 canonical key：`level1`、`level2`、`level3`、`negative_level1`、`negative_level2`、`negative_level3`。
+- 传专业意向时不要把一级门类自动展开成所有下级专业；例如用户说“医学别碰”应传 `negative_level1=["医学"]`，只有用户明确点名“护理/会计/审计”等具体专业或专业类时才传对应 level2/level3。
 - Intent 工具返回 JSON 时，先读其中的 `items`、`existingItems`、`impactAnalysis`、`impactText`，由你组织最终回复。
+- Intent 最终回复只复述工具 JSON 中已经出现的专业门类、专业类或专业；不要自行补充未出现的相邻专业范围，避免把“财会”等表达扩展成工具未确认的专业类。
 
 ## Plan 层规则
 - 用户围绕当前方案查状态/问风险/看候选/要补偿或重排时，统一优先走 Plan 编排工具。
 - 对“方案有了么 / 看看现在的方案 / 现在方案怎么样 / 当前方案如何”这类方案现状问题，直接调用 `plan_next_action(action_family="query_state")`，再调用 `execute_plan_action`；不要先单独调用 `collect_plan_context_inputs`，避免重复读取上下文和额外模型往返。
+- 对方案数量、冲稳保分布、公办/民办占比、地域占比、高收费占比这类状态统计问题，也按 `query_state` 读取当前状态回答，不要升级成 `review_plan` 或改方案预览。
+- 对“审查一下 / 有什么风险 / 稳不稳 / 哪里不合理”这类风险判断问题，优先走 `review_plan`；如果用户只是问是否存在某类风险，先给审查结论，不要自动规划删除、替换或补偿。
 - 对需要完整分析、预览、执行或审查的 Plan 链路，再按 `collect_plan_context_inputs` -> `plan_next_action` -> `execute_plan_action` 组织。
 - 方案现状问法先直接回答结论句：有没有方案、当前多少个、风险/提醒各多少。
 - `query_volunteer_plan` 只用于局部命中查询（某个学校/专业是否在方案里），不要用它回答整体方案状态。
-- `query_volunteer_plan` 也不要用于“哪个专业更稳/更不容易踩坑/哪个方向更适合”这类取舍判断；这类问题即使提到了当前方案，也应先按 Explore 或 Plan 风险分析回答。
+- `query_volunteer_plan` 返回“暂时没有筛到/没有命中”时，这是当前方案或候选池按条件为空的业务结果；不要改写成“系统延迟、稍后再试、查询没拉出来”，除非工具明确返回查询失败。
 - 补齐/补稳/缺口问题（还差几个怎么补/帮我补几个更稳的）不是局部查询，必须走 Plan 主链路。
 - 用户已经明确要求改变当前方案顺序或内容时（如按某维度排序、移动第 N 个志愿/专业组、删除第 N 个志愿/专业组），不要先用 `query_state` 做状态播报；直接规划对应 action 的 preview，再把 preview payload 交给 `execute_plan_action`，等待用户确认。
 - 用户明确要求把某个候选、学校+专业或简称加入当前方案时，属于改变方案内容，应规划成 `add_units` preview；`volunteer_ids` 可以填用户原始引用（如“广西师大统计”），执行层会解析真实候选 ID，无法唯一定位时由执行层返回澄清，不要改走学校/分数线 Explore 分析。

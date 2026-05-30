@@ -18,7 +18,6 @@ from app.schemas import WSMessage, WSResponse
 from app.service import (
     ChatService,
     ChatServiceResponseEnvelope,
-    build_timeout_fallback_from_pending_intent_preview,
     build_timeout_fallback_from_recent_plan_execution,
 )
 
@@ -38,11 +37,13 @@ _NON_PERSISTENT_USER_MESSAGE_TYPES = {"planEditSelect", "intentSelect"}
 _CHAT_SERVICE_TIMEOUT_SECONDS = 180
 
 
-def _build_timeout_reply() -> str:
+def _build_timeout_reply(user_prompt: str | None = None) -> str:
+    prompt = str(user_prompt or "").strip()
+    subject = f"你刚才问的是“{prompt[:60]}”。" if prompt else "你刚才的问题还没有处理完。"
     return (
         "这次分析耗时有点长，我先暂停在这里，避免你一直等不到回复。\n\n"
-        "你可以换个更具体的问题继续，比如直接问“当前方案里计算机方向有哪些机会”，"
-        "或者让我先生成/刷新方案后再看承接情况。"
+        f"{subject}这轮还没有拿到完整分析结果，也不会自动写入偏好或改动方案。"
+        "你可以直接回复“继续分析这个问题”，或者把要求拆成更明确的一句，我会接着处理。"
     )
 
 
@@ -200,11 +201,6 @@ async def _handle_ws_loop(ws: WebSocket, service: ChatService):
                 msg.session_id,
                 msg.content,
             )
-            if not fallback:
-                fallback = await build_timeout_fallback_from_pending_intent_preview(
-                    msg.session_id,
-                    msg.content,
-                )
             if fallback:
                 followup_responses = list(fallback.followups or [])
                 primary = fallback.primary
@@ -220,7 +216,7 @@ async def _handle_ws_loop(ws: WebSocket, service: ChatService):
                 resp = WSResponse(
                     type="reply",
                     session_id=msg.session_id,
-                    content=_build_timeout_reply(),
+                    content=_build_timeout_reply(msg.content),
                 )
         except Exception as e:
             logger.exception("handle_message failed: %s", str(e))
@@ -458,11 +454,6 @@ async def ws_chat_compat(ws: WebSocket, tenant_id: str, bot_id: str):
                     msg.session_id,
                     msg.content,
                 )
-                if not fallback:
-                    fallback = await build_timeout_fallback_from_pending_intent_preview(
-                        msg.session_id,
-                        msg.content,
-                    )
                 if fallback:
                     followup_responses = list(fallback.followups or [])
                     primary = fallback.primary
@@ -471,7 +462,7 @@ async def ws_chat_compat(ws: WebSocket, tenant_id: str, bot_id: str):
                     else:
                         resp_data = {"type": "text", "content": str(primary), "end": True}
                 else:
-                    resp_data = {"type": "text", "content": _build_timeout_reply(), "end": True}
+                    resp_data = {"type": "text", "content": _build_timeout_reply(msg.content), "end": True}
                 already_saved = False
             except Exception as e:
                 logger.exception("handle_message failed (compat): %s", str(e))

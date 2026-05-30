@@ -1,0 +1,47 @@
+{
+  "records": [
+    {
+      "case": "ad-hoc",
+      "sessionId": "880101",
+      "prompt": "法学和财政学哪个更适合普通家庭女生，先只分析不要记偏好",
+      "elapsedMs": 24543,
+      "primaryMessages": 2,
+      "followupMessages": 0,
+      "turnObservability": {
+        "historyMessages": 4,
+        "toolCallCount": 1,
+        "toolReturnCount": 0,
+        "toolCalls": [
+          {
+            "name": "compare_majors",
+            "toolCallId": "functions.compare_majors:0"
+          }
+        ],
+        "actionFamilies": [],
+        "resultKinds": []
+      }
+    }
+  ],
+  "summary": {
+    "steps": 1,
+    "successfulSteps": 1,
+    "failedSteps": 0,
+    "elapsed": {
+      "count": 1,
+      "minMs": 24543,
+      "medianMs": 24543,
+      "p95Ms": 24543,
+      "maxMs": 24543
+    },
+    "slowest": [
+      {
+        "case": "ad-hoc",
+        "sessionId": "880101",
+        "prompt": "法学和财政学哪个更适合普通家庭女生，先只分析不要记偏好",
+        "elapsedMs": 24543
+      }
+    ]
+  },
+  "warnings": [],
+  "failures": []
+}

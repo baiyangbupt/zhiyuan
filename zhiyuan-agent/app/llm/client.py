@@ -26,10 +26,13 @@ class LLMClient:
     def __init__(self, config: LLMConfig | None = None):
         self.config = config or LLMConfig()
         self.model: Model = self._create_model()
-        self.model_settings = ModelSettings(
-            temperature=self.config.temperature,
-            max_tokens=self.config.max_tokens,
-        )
+        settings = {
+            "temperature": self.config.temperature,
+            "max_tokens": self.config.max_tokens,
+        }
+        if self.config.timeout_seconds > 0:
+            settings["timeout"] = self.config.timeout_seconds
+        self.model_settings = ModelSettings(**settings)
 
     def _create_model(self) -> Model:
         cfg = self.config

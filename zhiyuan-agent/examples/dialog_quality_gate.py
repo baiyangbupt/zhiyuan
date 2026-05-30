@@ -117,6 +117,11 @@ def _metrics_path(metrics_dir: Path, stem: str, suffix: str) -> Path:
     return metrics_dir / f"{stem}_{suffix}"
 
 
+def _existing_local_pytest_targets() -> list[str]:
+    """Return local pytest targets that exist in this checkout."""
+    return [target for target in LOCAL_PYTEST_TARGETS if (ROOT / target).exists()]
+
+
 def build_gate_plan(
     *,
     metrics_dir: Path = DEFAULT_METRICS_DIR,
@@ -130,7 +135,7 @@ def build_gate_plan(
         GateCommand(
             name="local-pytest-regression",
             category="local",
-            command=[py, "-m", "pytest", *LOCAL_PYTEST_TARGETS, "-q"],
+            command=[py, "-m", "pytest", *_existing_local_pytest_targets(), "-q"],
             description="Run local unit/integration/regression tests for routing, pending protocol, preview/apply, style and semantic shadow.",
         )
     )

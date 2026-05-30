@@ -24,6 +24,7 @@ def test_full_params():
     assert cfg.api_key == "sk-ant-test"
     assert cfg.temperature == 0.5
     assert cfg.max_tokens == 2048
+    assert cfg.timeout_seconds == 0.0
 
 
 # ---- 2. 默认值 ----
@@ -93,12 +94,19 @@ def test_load_from_env(monkeypatch):
     monkeypatch.setenv("LLM_API_KEY", "sk-env-test")
     monkeypatch.setenv("LLM_TEMPERATURE", "0.3")
     monkeypatch.setenv("LLM_MAX_TOKENS", "1024")
+    monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "45")
     cfg = LLMConfig()
     assert cfg.provider == "anthropic"
     assert cfg.model_name == "claude-sonnet-4-5"
     assert cfg.api_key == "sk-env-test"
     assert cfg.temperature == 0.3
     assert cfg.max_tokens == 1024
+    assert cfg.timeout_seconds == 45
+
+
+def test_negative_timeout_rejected():
+    with pytest.raises(ValidationError, match="LLM_TIMEOUT_SECONDS"):
+        LLMConfig(api_key="sk-test", timeout_seconds=-1)
 
 
 # ---- 10. extra 字段忽略 ----

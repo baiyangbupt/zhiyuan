@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from pydantic_ai import RunUsage
+from pydantic_ai import CallToolsNode, RunUsage
+from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart, ToolReturnPart
+from pydantic_ai.models.test import TestModel
 from pydantic_graph import End
 
 from app.agent.base_agent import BaseAgent
@@ -88,9 +91,26 @@ def test_init_with_skill_dirs(client, mocker):
         llm_client=client, instructions="test", skill_dirs=["./skills"]
     )
     assert agent.skills_toolset is mock_toolset
-    call_kwargs = mock_agent.call_args[1]
-    assert call_kwargs["toolsets"] == []
-    assert "运行时可调用工具" in mock_skills_toolset.call_args.kwargs["instruction_template"]
+    assert mock_agent.call_args.kwargs["toolsets"] == []
+    instruction_template = mock_skills_toolset.call_args.kwargs["instruction_template"]
+    assert "运行时可调用工具" in instruction_template
+    assert "load_skill" not in instruction_template
+
+
+def test_init_with_skill_dirs_can_hide_skill_tools(client, mocker):
+    mock_toolset = MagicMock()
+    mocker.patch("app.agent.base_agent.SkillsToolset", return_value=mock_toolset)
+    mock_agent = mocker.patch("app.agent.base_agent.Agent")
+
+    agent = BaseAgent(
+        llm_client=client,
+        instructions="test",
+        skill_dirs=["./skills"],
+        expose_skill_tools=False,
+    )
+
+    assert agent.skills_toolset is mock_toolset
+    assert mock_agent.call_args.kwargs["toolsets"] == []
 
 
 def test_init_with_skill_dirs_can_expose_skill_tools(client, mocker):
@@ -106,8 +126,7 @@ def test_init_with_skill_dirs_can_expose_skill_tools(client, mocker):
     )
 
     assert agent.skills_toolset is mock_toolset
-    call_kwargs = mock_agent.call_args[1]
-    assert call_kwargs["toolsets"] == [mock_toolset]
+    assert mock_agent.call_args.kwargs["toolsets"] == [mock_toolset]
     assert mock_skills_toolset.call_args.kwargs["instruction_template"] is None
 
 
@@ -152,6 +171,83 @@ async def test_run_multi_nodes(client, mocker):
 
     assert result == "done"
     assert on_node_spy.call_count == 3
+
+
+async def test_run_records_agent_node_observability(client, mocker):
+    mocker.patch("app.agent.base_agent.Agent")
+    agent = BaseAgent(llm_client=client, instructions="test")
+
+    nodes = [MagicMock(), MagicMock()]
+    ctx_mgr, _ = _make_agent_run(nodes, final_output="done")
+    agent.agent.iter = MagicMock(return_value=ctx_mgr)
+    deps = SimpleNamespace(agent_observability={})
+
+    await agent.run("hi", deps=deps)
+
+    observability = deps.agent_observability
+    assert observability["completed"] is True
+    assert observability["promptLength"] == 2
+    assert observability["historyLength"] == 0
+    assert observability["requests"] == 0
+    assert observability["toolCalls"] == 0
+    assert len(observability["nodeTimings"]) == 2
+    assert observability["nodeTimings"][0]["status"] == "success"
+    assert "durationMs" in observability["nodeTimings"][0]
+
+
+async def test_run_deduplicates_identical_progress_hints_in_same_tool_node(client, mocker):
+    mocker.patch("app.agent.base_agent.Agent")
+
+    class HintAgent(BaseAgent[str]):
+        def get_progress_hint(self, tool_name: str) -> str | None:
+            return "正在查这个专业的学习内容和就业情况..." if tool_name == "get_major_introduction" else None
+
+    agent = HintAgent(llm_client=client, instructions="test")
+    node = CallToolsNode(
+        model_response=ModelResponse(
+            parts=[
+                ToolCallPart(tool_name="get_major_introduction", args={"major_name": "建筑学"}, tool_call_id="call-1"),
+                ToolCallPart(tool_name="get_major_introduction", args={"major_name": "城乡规划"}, tool_call_id="call-2"),
+            ]
+        )
+    )
+    ctx_mgr, _ = _make_agent_run([node], final_output="done")
+    agent.agent.iter = MagicMock(return_value=ctx_mgr)
+    progress: list[str] = []
+
+    async def on_progress(message: str) -> None:
+        progress.append(message)
+
+    await agent.run_with_message_deltas("建筑城乡规划要不要美术基础", on_progress=on_progress)
+
+    assert progress == ["正在查这个专业的学习内容和就业情况..."]
+
+
+async def test_run_can_return_directly_after_user_facing_tool_result():
+    async def direct_preview_tool() -> str:
+        return "我先整理成待确认内容，确认前不会生效。"
+
+    class DirectPreviewAgent(BaseAgent[str]):
+        def should_return_directly_from_tool(self, tool_names, tool_returns, deps=None) -> bool:
+            return tool_names == ["direct_preview_tool"]
+
+    client = SimpleNamespace(model=TestModel(call_tools=["direct_preview_tool"]), model_settings={})
+    agent = DirectPreviewAgent(llm_client=client, instructions="test", tools=[direct_preview_tool])
+
+    reply, new_messages, all_messages, usage = await agent.run_with_message_deltas("先看看影响")
+
+    assert reply == "我先整理成待确认内容，确认前不会生效。"
+    assert usage.requests == 1
+    assert usage.tool_calls == 1
+    assert any(
+        isinstance(part, ToolReturnPart) and part.content == "我先整理成待确认内容，确认前不会生效。"
+        for message in new_messages
+        for part in getattr(message, "parts", [])
+    )
+    assert isinstance(all_messages[-1], ModelResponse)
+    assert getattr(all_messages[-1], "model_name", "") == "direct-tool-result"
+    assert isinstance(all_messages[-1].parts[0], TextPart)
+    assert all_messages[-1].parts[0].content == reply
 
 
 # ---- 7. on_node 钩子默认不报错 ----

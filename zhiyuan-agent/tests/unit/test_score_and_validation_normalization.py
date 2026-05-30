@@ -6,6 +6,7 @@ import pytest
 from app.agent.context import RequestContext, ScoreDetail
 from app.tools.plan_validation_tool import validate_major_subjects, validate_plan_params
 from app.tools.score_query_tool import query_admission_score, query_score_line
+from app.util.code_enrichment import resolve_major_names_async
 
 
 def _ctx() -> SimpleNamespace:
@@ -63,6 +64,41 @@ async def test_query_score_line_normalizes_school_and_major_names_before_lookup(
     school_code_mock.assert_awaited_once_with(["北京大学"])
     major_code_mock.assert_awaited_once_with(["计算机科学与技术"], "level3", "01")
     assert "北京大学 - 计算机科学与技术" in result
+
+
+@pytest.mark.asyncio
+async def test_resolve_major_names_uses_common_alias_table_before_catalog_lookup():
+    with patch(
+        "app.util.code_enrichment.catalog_lookup_major",
+        new=AsyncMock(return_value={"resultType": "empty", "data": []}),
+    ) as catalog_lookup_mock:
+        result = await resolve_major_names_async(["计科"], "level3", "01")
+
+    assert result == ["计算机科学与技术"]
+    catalog_lookup_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_resolve_major_names_supports_more_common_deterministic_aliases():
+    with patch(
+        "app.util.code_enrichment.catalog_lookup_major",
+        new=AsyncMock(return_value={"resultType": "empty", "data": []}),
+    ) as catalog_lookup_mock:
+        result = await resolve_major_names_async(["国贸", "AI", "口腔"], "level3", "01")
+
+    assert result == ["国际经济与贸易", "人工智能", "口腔医学"]
+    catalog_lookup_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_resolve_major_names_does_not_force_ambiguous_alias_to_single_major():
+    with patch(
+        "app.util.code_enrichment.catalog_lookup_major",
+        new=AsyncMock(return_value={"resultType": "empty", "data": []}),
+    ):
+        result = await resolve_major_names_async(["财会", "大数据"], "level3", "01")
+
+    assert result == ["财会", "大数据"]
 
 
 @pytest.mark.asyncio

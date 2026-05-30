@@ -4,167 +4,43 @@
 
 ### Added
 
-- 3.0.3 Agent 效果/性能优化启动：新增 deep dive 设计文档，梳理当前 ChatService -> ChatAgent -> Plan/Explore/Intent 工具链路、真实 e2e 慢点、根因和分阶段优化方案。
-- 3.0.3 Agent case 级评估框架：新增质量评分框架、报告模板和 first-pass 记录，要求同时评估回复正确性、完整度、自然度、决策支持度和延迟，避免只看性能或只把回复做薄。
-- 3.0.3 Agent 回复质量文本级评审：逐 case 记录用户输入、实际回复、人工质量评分和修复建议，明确 Plan 快路径已基本稳定，Explore/Intent 仍存在模板感、内部术语外露和确认语义偏强等待优化问题。
-- 3.0.3 回复质量 P1 修复设计：明确 Intent preview 用户语言、Intent confirm 语义收口、职业方向承接结论先行、专业对比使用本轮用户事实，以及方案审查进入 quality 主 case 的修复范围。
-- 新增 `dialog_regression_303_realistic_user_cases.json` 真实口语化输入回归集，覆盖短句、懒输入、学校/专业简称、弱确认和混合软硬意向；最终 live 收口 `9/9` steps 通过，`qualityViolations=0`，中位耗时约 `2257ms`。
-- 扩展 `dialog_regression_303_open_quality_cases.json`，新增家长视角、风险焦虑、专业压力、候选机会和只读后确认保护等开放真实问法，避免开放质量评估只覆盖标准业务术语。
-- 新增 `model_provider_303_open_quality_realistic_cases.json`，用于多模型 Agent 横向对比真实口语开放场景；case 内带 `expectedKeyPoints / forbiddenPatterns / assertNoFollowups / warnElapsedSeconds`，用于同时比较回复质量和性能。
-- `dialog_case_evaluation_report.py` 支持合并修复前/当前版本输出和多 provider benchmark 输出，按 `case + stepIndex` 对齐回复文本、首响、总耗时和启发式质量分。
-- `model_provider_benchmark.py` 支持临时 agent host 配置、启动日志落盘、保留完整回复文本、保留 followup、以及每个 provider 前清理本地对话历史，便于做公平的多模型场景对照。
-- `model_provider_benchmark.py` 的 Agent 场景断言补充 thinking、no-followup、case 期望点、case 禁用表达和耗时预算检查，避免 provider benchmark 只统计延迟、不评估回复质量。
-- `model_provider_benchmark.py` 支持 `expectedKeyPointGroups` 同义关键点组、薄回复 `minTextLengthWarn`、质量 warning 汇总、质量门禁通过率和回复长度分布，便于识别“模型很快但回复信息量不足”的风险。
-- 扩展 `model_provider_303_open_quality_realistic_cases.json` 到 15 个开放真实场景，新增“这方案咋样，能不能说重点”“青城那个是不是放多了”“新媒体和跨电呢，数学不太行”“按好学校排下看看”“嗯可以”等短句、简称、弱确认和排序预览 case。
-- 扩展 `model_provider_303_open_quality_realistic_cases.json` 到 25 个开放真实场景，并扩展 `dialog_regression_303_open_quality_cases.json` 到 20 个本地回归 case；新增“会计和审计哪个更稳，考公也能用点的”“以后想考公但也怕太卷，这方案有支撑吗”“就按别太冒险的思路把这版调稳点”“北京天津想去，但别最后没学上”“医学护理这些别碰，财会还能接受”等更贴近真实用户的懒输入、简称、家长表达、取舍和意向影响 case。
-- 口语化方案概览快路径补强：`这方案咋样，能不能说重点` 这类问法进入 `query_state`，从四模型首轮 7-18s 大模型链路收敛到本地方案概览；fix-probe 中四模型 final 均在约 1s 内。
-- 意向影响问法路由修复：`医学护理这些别碰，财会还能接受，先看看影响` 不再被 `plan_query_fast_route` 抢成空方案查询；无明确方案/候选范围且包含“别碰 / 能接受 / 影响”等意向语义时，进入待确认意向预览。
-- 专业意向口语归一化补强：`医学 / 学医 / 医药` 展开到临床医学类、口腔医学类、中医学类、护理学类、医学技术类，`财会` 展开到会计学、审计学，`别碰 / 还行 / 能接受` 纳入高置信软硬意向识别。
-- 口语化调稳问法快路径补强：`就按别太冒险的思路把这版调稳点，先给我看看会怎么动` 进入 `analyze_adjustment`，避免 full-agent 自由构造 `execute_plan_action` 参数导致模型间失败或超时；回复补充“先分析不改方案、后续具体动作才影响方案/导出顺序并需确认”的用户边界。
-- 四模型 25 case 首轮与修复小集结果已记录到 3.0.3 文档：首轮暴露意向抢路由和调稳预览超时/参数失败；修复后 `/private/tmp/model-provider-303-open-realistic-fix-probe-4model-v2.json` 中 3 个关键 case x 4 模型均 `quality_gate_pass_rate=1.0`，无 error、无断言失败、无 latency/quality warning。
-- 统一 fast route 仲裁层：新增 `fast_route_arbitrator`，ChatService 先收集 plan/query/intent/major-compare/career 五类候选，再按“质量可满足程度优先于延迟”选择最终路径；明确范围查询优先于意向写入，复杂地域安全取舍会挡住普通方案概览薄回复，并由专项结构化分析链路接管或在事实不足时回落完整 Agent，避免继续靠顺序和字符串补丁抢路由。
-- 新增 `model_provider_303_quality_readonly_cases.json`，用于只读/预览类 3.0.3 场景的多模型质量/性能对照，避免确认执行修改方案状态造成 provider 间上下文污染。
-- 补充四模型对照结果记录：`Pro/moonshotai/Kimi-K2.6`、`Pro/MiniMaxAI/MiniMax-M2.5`、`deepseek-ai/DeepSeek-V4-Flash`、`Pro/zai-org/GLM-5.1` 在 10 个只读/预览 case 中均无断言失败；文档明确这批快路径 case 不能代表开放式生成质量，需要后续补 Explore / Intent 开放场景。
-- 补充开放真实 10 case 四模型对照结果：Kimi 质量通过但三专业开放对比出现约 `78.263s` 慢请求；MiniMax 使用同义关键点组重跑后 `10/10` 通过且无耗时 warning；DeepSeek 和 GLM 均 `10/10` 通过，开放 LLM 场景最大耗时分别约 `21.615s` 和 `25.354s`。
-- 新增 `dialog_regression_303_open_quality_cases.json`，覆盖待确认意向影响追问、职业方向多方向只读和专业对比上下文使用，用于补充 fast route 之外的开放式回复质量验证。
-- 扩展 `dialog_regression_303_open_quality_cases.json` 到 7 个 case，补充局部查询后确认保护、推荐系数排序预览、非固定专业对比和三方向职业承接，并新增目录级单测约束这些开放式质量场景必须保留 no-followup、确认边界、内部术语屏蔽和耗时预算。
-- 职业方向快路由补强“支撑 / 短板”只读语义，修复三方向职业承接问法回落完整 Agent 的性能退化；高副作用表达仍由“记偏好 / 改方案 / 确认”等拦截，不改变确认边界。
-- 待确认意向用户文案统一为“确认前不会写入后续参考 / 我再写入后续参考”，覆盖待确认预览、影响追问和旧回复清洗，避免“正式生效”让用户误解为已记录；确认后应用逻辑不变。
-- 无 pending 的只读查询确认保护补充边界提示，明确不会执行移动、删除、加入或排序，也不会改动当前方案；open-quality 离线评分达到 `strong=9 / needs_review=0`。
-- 审查后续调整预览纳入 Plan 高置信快路径：明确“针对最严重/风险/审查问题，先给调整预览/怎么调，不要执行”时直接走既有 `plan_next_action -> execute_plan_action`，避免完整 Agent 重复 `query_volunteer_plan` 导致近百秒慢请求；普通“最严重的问题是什么”仍不抢路由。
-- 3.0.3 Agent case 级评估框架补强为完整质量闭环：文档明确回复质量、场景覆盖、多轮链路、路由工具链、延迟进度、安全边界和多模型对照七层评估；报告模板要求保留用户输入、完整回复原文、人工扣分原因和模型横向汇总。
-- `dialog_case_evaluation_report.py` 支持读取 `--case-definitions`，把 case 的 `flow / coverage / warnElapsedSeconds / maxElapsedSeconds / expectedRoutingPath / expectedActionFamily` 合并到评估结果，并输出 `summary.current / scenarioSummary / coverageSummary / candidateSummary / baselineComparison` 等批量汇总。
-- `dialog_case_evaluation_report.py` 新增 `--markdown-detail`，用于生成逐 case 详细回复质量评审报告，包含用户输入、完整回复、评分表、覆盖维度、链路证据、case 期望和人工复核清单。
-- `dialog_case_evaluation_report.py` 补强确认类和只读类 case 的期望路由推断，并允许用业务 toolName 作为 action 观测兜底，避免把正确的职业方向、专业对比、意向确认和 no-pending guard 回复误判为质量待复核。
-- `dialog_regression_runner.py` 与 3.0.3 open-quality case 补齐 `readonly_closure_ack` 观测口径：弱收口“嗯那就这样”按只读分析收口处理，明确不执行动作、不写偏好，避免误标为 no-pending guard 路由缺失。
-- 3.0.3 open-quality live 使用修正后 runner 复跑通过：`23/23` steps、`strong=23`、`qualityViolations={}`、`evaluationWarnings={}`，路由汇总中 `readonly_closure_ack=1` 与 `plan_confirmation_guard_no_pending=1` 已分开观测。
-- 3.0.3 effect/perf live 使用修正后 runner 复跑通过：`14/14` steps、`strong=14`、`qualityViolations={}`、`evaluationWarnings={}`；主链路动作、确认、审查、只读查询和意向确认均保持正确观测，方案状态类回复本轮最大耗时约 `8133ms`，作为后续性能观察点。
-- 3.0.3 回复质量人工复核补充“先质量后性能”结论：方案状态、审查、预算风险、专业对比、方案调整预览和只读收口可作为稳定基线；职业方向代表样本、意向影响无命中解释、边界提示去重和候选空结果替代建议列为后续质量优化候选。
-- 新增 `dialog_regression_303_dialogue_derived_cases.json` 真实对话派生评估集，基于 `dialogues/` 的真实沟通主题脱敏抽象为 88 个口语化场景，覆盖分数/画像、体检/专项、专业、地域、职业、预算、方案审查、方案操作和后续沟通；新增目录单测确保 80+ case 均带质量期望、禁用表达、耗时预算和覆盖标签。
-- `dialog_regression_runner.py` 和 `dialog_case_evaluation_report.py` 支持 `defaults + cases` case 文件结构，旧数组格式继续兼容；runner 新增 `--clear-history-per-case`，便于 80+ 场景复用真实 session 时逐 case 清理本地历史，避免 pending 或旧上下文污染评估。
-- 真实对话派生 88 case 已完成 WebSocket live 跑批并写入 3.0.3 文档：当前基线为 `strong=3 / fail=34 / needs_review=51`，中位耗时约 `2318ms`，p95 约 `67404ms`；暴露空正文、探索问题误入方案查询、资格/要求问题误入意向预览、旧 pending 污染和开放 Explore 慢请求等后续 P0/P1 优化项。
-- `dialog_case_evaluation_report.py` 修正空正文评分：无用户可见回复的 turn 直接计为 `fail`，避免 80+ 场景汇总漏算“快速返回但没有有效回答”的真实质量问题。
-- SemanticIntentRouter shadow 首轮落地：新增结构化 `SemanticIntentFrame` 与默认关闭的 `SEMANTIC_ROUTER_ENABLED` 开关；开启后仅记录 shadow 语义路由、耗时和结构化 frame，不改变用户回复、工具执行或工作台联动。runner/report 已能从本地历史提取 `semanticRouterShadow` 并汇总 taskLayer/topic/verb/sideEffect，供后续 route confusion matrix 和全量防回退门禁使用。
-- SemanticIntentRouter shadow 兼容性与延迟保护：router 改为普通 JSON 文本输出后本地 Pydantic 校验，规避 OpenAI-compatible provider 不支持 `tool_choice=required` 的问题；新增默认非阻塞 `SEMANTIC_ROUTER_BLOCKING=false`，避免开启 shadow 观测时拖慢用户首响，阻塞模式仅用于小规模混淆矩阵调试。
-- SemanticIntentRouter 支持独立轻量路由模型配置与 DeepSeek V4 Flash Non-think 评估：新增 `SEMANTIC_ROUTER_LLM_MODEL_NAME / SEMANTIC_ROUTER_LLM_BASE_URL / SEMANTIC_ROUTER_LLM_API_KEY / SEMANTIC_ROUTER_LLM_ENABLE_THINKING` 等配置，允许路由 shadow 使用与主 Agent 不同的模型；`enable_thinking=false` 会写入 OpenAI-compatible `extra_body`。报告工具新增 `semanticMappedRoute` 和 route comparison 汇总，实体解析兼容数字/对象形式。实测 DeepSeek V4 Flash Non-think 在 14 step effect/perf 中业务全通过、解析错误清零，但 `8s` timeout 仍为 `7/14`，结论是继续 shadow/低置信仲裁评估，不能全量阻塞接管主路由。
-- SemanticIntentRouter 输入压缩与观测增强：router prompt 改为预算内完整 JSON 压缩，不再截断序列化 JSON；shadow 结果新增 `promptChars`。小规模 DeepSeek V4 Flash Non-think probe 中 prompt 已降到 `368-1124` 字符，但仍有 `3/4` timeout，进一步确认全量阻塞路由不可用，后续应走非阻塞 shadow 或低置信冲突短超时仲裁。
-- Selective arbitration shadow-only 观测首轮落地：`fast_route_arbitrator` 在不改变真实 selected path 的前提下，新增 `semanticArbitrationNeeded / semanticArbitrationReason / semanticArbitrationCandidatePaths`。单一高置信 fast route 不触发，候选接近、低置信候选和 intent/plan 混合候选会被标记为后续语义裁判评估对象；确认/apply 和已有稳定专项链路仍不等待 LLM。
-- Selective arbitration e2e 可观测性补齐：新增内部历史消息 `route-observability`，把 fast-route 成功路径的 `routingPath / routeDecision.arbitration` 落入本地历史供 `dialog_regression_runner.py` 读取；`build_runtime_history` 会过滤该内部消息，避免污染主模型上下文或用户可见回复。
-- `dialog_regression_runner.py` 的 metrics summary 新增 `fastRouteArbitration` 分布统计，按 observed、semanticArbitrationNeeded、selectedPaths、neededReasons 和候选路径汇总。3.0.3 effect/perf 14 step 复跑 `14/14` 通过，10 个 fast-route 观测中 `semanticArbitrationNeeded=0`，确认稳定高置信路径不应引入 LLM 仲裁等待。
-- 3.0.3 open-quality 仲裁分布复核：`23/23` steps 通过，19 个 fast-route 观测全部 `semanticArbitrationNeeded=0`；路径分布为 `major_intent=2 / career_direction=5 / major_compare=6 / plan_query=2 / plan_fast=4`。80+ dialogue-derived 直接全量跑时首批开放探索 case 回落 `full_agent`，出现约 `152-163s` 的两次远端模型调用慢请求，已记录为开放 Explore / score-profile 慢路径专项问题，而不是 selective arbitration 本身的问题。
-- 分级路由评估框架首轮落地：报告工具新增 `expectedSemanticFrame` 支持，可按 case coverage 自动推导 `taskLayer / topic / verb / sideEffect / minConfidence` 期望，并汇总 `expectedFrameComparison / expectedFrameMismatches`；semantic shadow 未启用或超时时只记 `semantic_frame_unverified` warning，成功返回但不匹配才计入 `semantic_frame_mismatch`。当前 L2 只做 shadow/evaluation，不接管主链路，避免继续用 score/profile 关键词补丁解决开放口语问题。
-- 新增 `examples/semantic_frame_evaluator.py` 离线工具，用于对齐 case definitions 与 runner 输出中的 `semanticRouterShadow.frame`，汇总 match/mismatch/unverified、按 flow/coverage 的分布和代表样例；`dialog_quality_gate.py` 为每个 live case 文件追加 semantic-frame 报告命令。当前 dialogue-derived 88 case expected-only 检查已确认 `expectedTotal=88`。
-- 新增 `examples/semantic_frame_probe.py`，可直接调用 `SemanticIntentRouter.route_shadow` 生成 runner 兼容 records，避免 full-agent 慢路径干扰 L2 语义评估。score/profile prompt 边界补充后，同一 5 条抽样从 `4 mismatch + 1 timeout` 改善为 `4 match + 1 timeout`；20 条 dialogue-derived 混合抽样在修正评估口径后为 `14 match / 0 mismatch / 6 timeout`，结论是分类边界改善但 timeout 仍阻止 L2 接管。
-- Semantic frame probe 支持无超时评估：`timeout_seconds <= 0` 时不再用 `asyncio.wait_for` 截断路由模型返回，评估器同步输出 median/p95/max 延迟。DeepSeek V4 Flash Non-think 在 20 条 dialogue-derived 混合样例无超时 probe 中 `20/20 match`，延迟 `median=9123ms / p95=32206ms / max=62839ms`；结论是样例内分类质量可用，但真实长尾延迟过大，仍不能全量阻塞接管主路由。
-- 3.0.3 路由优化范围收缩为高置信固定类型：明确方案查询、排序/移动/删除/加入、专业对比、意向确认、职业方向只读分析等继续作为快捷入口候选；开放 Explore、弱承接、闲聊、信息不足和跨领域混合表达仍交给原 Agent 自行判断和调用工具。百家 `deepseek-v4-pro` 非思考无超时 20 条 semantic probe 为 `16/19 match`，延迟 `median=9970ms / p95=13708ms / max=13912ms`，用于证明不能仅按 topic 扩大接管范围。
-- `fast_route_arbitrator` 增加 `fixedScenario` 白名单：只有明确方案状态/审查/排序/移动/删除/加入、本地方案/候选查找、精确二/三专业对比、目录专业意向预览、职业方向 taxonomy 分析和地域安全取舍这类细分固定场景可以进入快捷入口；matched 但不在白名单的候选会被 quality gate 挡回 full Agent，避免“专业相关”泛化为专业对比或“方案相关”泛化为方案查询。
-- 高置信固定场景小模型路由首轮接入：新增 `SEMANTIC_ROUTER_FIXED_ROUTE_ENABLED` 开关，开启后用轻量 LLM 只判定 `major_compare.readonly / major_intent.preview / career_direction.readonly` 三类场景并抽取实体；本地 resolver 再校验专业目录、职业 taxonomy、sideEffect、置信度和歧义，校验失败全部回 full Agent。明确方案状态、局部查询、排序/移动/删除等确定性 plan 路径命中时不会调用小模型，避免稳定快路径增加延迟。
-- full Agent 自由试工具观测增强：`conversation_turn_event.routeDecision.toolTrial` 记录 full Agent 实际工具列表、重复工具名、是否重复试工具，以及 fixed-scenario 小模型 fallback 原因，便于持续跟踪“高置信场景未接住后大模型自由试工具”的问题。
-- 3.0.3 Agent 路由优化设计重新收口：后续先从真实 e2e、80+ dialogue-derived、多模型 benchmark 和 `conversation_turn_event` 中汇总 full Agent 自由试工具/重复工具/超时/字符串 fast route 临时补丁问题表，再决定哪些高价值问题交给小模型路由；对暂时仍需 full Agent 的开放场景，优先补充 progress hint 和 timeout fallback，让用户理解系统正在正常处理。
-- `dialog_case_evaluation_report.py` 新增 full-agent 工具试探问题表和字符串快路径盘点：报告会保留重复工具调用序列，汇总 slow/very_slow、many tools、repeated tools、missing/late progress、expected fast route fallback 等问题，并在 Markdown 中输出 `Full Agent Tool Trial Issues` 与 `String Patch Inventory`，用于先定位问题再决定小模型路由覆盖范围。
-- 新增 `examples/dialog_quality_gate.py` 作为 3.0.3 Agent 对话质量全量门禁入口：默认 dry-run 生成 local/live/report/model 清单，显式 `--execute` 才运行；固定覆盖 3.0.1/3.0.2/3.0.3、历史 `dialog_regression_*`、80+ dialogue-derived、逐 case markdown 报告和多模型 benchmark，避免后续语义路由接管前遗漏 regression/e2e。
-- `conversation_turn_event` 补充 3.0.3 观测字段：`routeDecision`、LLM request/token、toolCallCount 和结构化 toolCalls 摘要；full-agent 工具调用会记录 actionFamily、stage、resultKind、applied/messageCode，direct pending/guard 路径明确记录 `llmRequests=0`。
-- `dialog_regression_runner.py` 的 metrics 输出新增 `turnObservability`，从本地 SQLite 历史解析每轮 tool call、actionFamily、stage、resultKind 和 applied 状态，便于在 WebSocket e2e 中定位慢点和误路由。
-- 新增 Plan 高置信快路径 `plan_fast_route`：在已有 planning summary 时，方案状态、数字志愿/专业组移动、数字删除、指定维度排序和显式审查会跳过主模型自由试工具，直接进入 `_plan_next_action_model -> execute_plan_action`；高副作用动作仍只生成 preview，确认后再 apply。
-- Explore 职业方向分析首轮减重：体制内/稳定就业/读研等有限 taxonomy 支持本地归一化，避免常见表达额外调用 slot 识别 LLM；方向分析内部润色 LLM 增加 10s 短超时，超时后使用结构化事实 fallback 交给主模型组织。
-- 收紧专业对比调度边界：两个具体专业的只读对比优先 `compare_majors / compare_majors_adhoc`，避免先进入 `analyze_current_major_interest` 或 Intent 确认链。
-- Explore 调度规则补充“同轮不重复查状态”：调用方向/专业/学校/地域适配分析工具后，不再补调 `plan_next_action(query_state)` 或 `query_volunteer_plan` 做重复状态查询。
-- `compare_majors / compare_majors_adhoc` 补充缺失权重数据兜底：会话缺少分数画像或权重接口返回空数据时，不再用空指标生成“综合得分相同”等误导结论。
-- Explore 职业方向工具新增 `allow_explore_inner_llm` 开关：正式 ChatService 主链路关闭工具内部二次润色 LLM，保留结构化事实交给主模型最终组织，减少只读职业方向分析中的 10s 内层生成超时；直接工具调用和既有测试默认行为不变。
-- 3.0.3 effect/perf e2e 再次复测通过 8 个步骤；职业方向承接分析日志确认跳过 Explore 内层生成 LLM，端到端约 `28.6s`，无工作台联动、无 pending 误确认，回复仍保持结构化。
-- 专业对比只读快路由首轮落地：两个标准三级专业名的只读比较会跳过完整 ChatAgent，直接调用 `compare_majors` 并保留工具调用历史 trace；专业类、简称、三专业比较和方案/意向变更仍回落主链路。
-- 专业对比缺权重业务态新增用户态 renderer：当 `compare_majors` 已确认当前会话缺少可用个性化量化评分时，不再触发额外小模型生成，改为基于三级专业所属专业类画像输出结构化通用对比建议；真实复盘中移除了约 `96.7s` 的额外 LLM 耗时来源。
-- 职业方向只读快路由首轮落地：体制内/稳定就业/读研等本地 taxonomy 可解析的明确只读分析，会跳过完整 ChatAgent，直接复用 `analyze_current_career_direction` 的分段工具结果；意向写入、方案变更、确认和泛方向探索仍回落主链路。
-- 职业方向只读分析回复补充去重：快路由直接返回工具分段文本后，多方向比较中相同的学生选科或分数段判断只展示一次，避免用户看到重复结论。
-- Intent / Plan 多步回复补充用户可理解的进度提示：方案 fast route 会提示正在读取和生成预览，方案/意向确认直达执行会提示正在按确认更新；提示只描述处理阶段，不改变路由、pending 或实际方案操作语义。
-- `dialog_regression_runner.py` 支持 thinking/progress 断言和 `thinkingMessages` 指标；3.0.3 effect/perf 场景开始校验方案状态、方案预览、Intent preview/confirm、确认执行、职业方向承接和专业对比只读快路径的用户可见进度提示。
-- Intent preview 超时兜底：当偏好/要求预览工具已经写入待确认缓存、但完整 ChatAgent 在最终组织回复阶段超时时，WebSocket 端会读取结构化 `planEditCache` 返回“待确认内容 + 下一步确认语”的用户文案；确认前不会正式生效，也不会直接改动方案，不发送工作台联动卡片。
-- Intent preview 工作台联动收口：未确认的偏好/要求预览不再自动发送候选库刷新卡片，避免用户误解为偏好已生效；确认或勾选采纳后仍按结构化执行结果刷新候选。
-- 专业意向预览快路由首轮落地：明确专业偏好/排除表达会基于本科/专科专业目录装配 `MajorIntentPreviewInput`，跳过完整 ChatAgent 选工具，直接复用现有 `preview_current_major_intent_confirmation` 生成待确认预览；不直接写偏好、不刷新候选、不改方案。
-- 3.0.3 effect/perf e2e 补充 Intent preview 文案边界：首轮预览禁止出现“已经记下 / 已记录 / 当前已记录”等确认后语义，真实 WebSocket 复跑 10 steps 全部通过，Intent preview 首轮约 `2.3s`，确认后才调用 `update_volunteer_intent_state` 应用。
-- 学校 / 专业局部只读查询快路由首轮落地：明确“当前方案里有没有 X / 候选里看看 X / XX院校相关专业是否有多个”会跳过完整 ChatAgent，直接复用 `query_volunteer_plan` 返回当前方案和候选命中结果；加入、删除、移动、排序、补齐、审查、分数线、职业方向和专业对比仍回落既有链路。
-- 3.0.3 effect/perf 场景补充局部只读查询 case，校验无工作台联动、无内部字段、无 `id=` 展示，并校验用户可见 thinking 为“正在查当前方案和候选里的相关结果”；真实 WebSocket 复跑 11 steps 全部通过，中位数约 `2443ms`，新增局部查询场景约 `2.27s` 且 `llmRequests=0`。
-- 名称 / 简称方案操作快路由首轮落地：`把湖北工程学院的计算机科学与技术改到第3位`、`去掉湖北工程学院.计算机科学与技术`、`把广西师大统计加进来` 这类高置信单动作会跳过完整 ChatAgent，保留原始引用进入 `_plan_next_action_model -> execute_plan_action` 预览链路；唯一性解析、歧义澄清和确认后执行仍由既有执行层负责。
-- `add_units` 预览阶段补齐候选唯一定位：命中时只写入 `resolved_apply_payload` 等待用户确认，不会未确认直接加入方案；已在方案中或无法唯一定位时返回用户可理解提示并清理 pending，避免后续“确认”误执行。
-- `ActionResolver shadow` 补齐 `add_units` 映射，名称/简称类快路由也会记录 typed resolver 对比结果，便于后续统一路由实现。
-- `move_unit` 命名志愿预览补齐可读摘要：唯一定位后会展示学校、专业、当前位置和目标位置，同时保留 `resolved_apply_payload` 等待确认，避免只回复“会调整指定志愿的位置”这类泛化文案。
-- `add_units / remove_units` 命名志愿预览补齐可读摘要：唯一定位后会展示学校、专业和加入/移出动作方向，同时保留确认 payload；不会未确认直接改方案。
-- `dialog_regression_303_effect_perf_cases.json` 增加名称移动和简称加入预览场景，校验 thinking、确认边界、无工作台联动和内部字段屏蔽；本轮 3.0.3 agent 相关单测回归 `312 passed`，真实 WebSocket effect/perf 13 steps 全部通过，中位数约 `2182ms`。
-- 3.0.3 Agent 依赖与退化风险复盘：文档补充 fast route、pending、后端 planning API、专业目录、career taxonomy、runner metrics 等内部依赖点和潜在影响；新增 release 级快路由优先级矩阵单测，防止方案查询、意向、专业对比和职业方向场景被错误跨层接管；本轮相关合并单测 `346 passed`。
-- 专业组移动/删除确认链路增加分段耗时观测：Agent 输出 `plan_ordered_unit_mutation_timing / plan_ordered_unit_post_apply_timing`，Server 输出 `planning_ordered_unit_move_timing / planning_ordered_unit_remove_timing`，用于定位确认慢点是在专业组定位、后端状态重建、行为事件、保存、响应体返回还是执行后重复定位。
-- ActionResolver 进入影子对比首轮：补齐 `unit_refs` 到专业组移动/删除、结构化 `sort` 到方案排序的映射；`plan_fast_route` 命中时输出 `action_resolver_shadow_event`，用于对比当前路由 action family 与 typed resolver 输出，不改变实际执行。
-- 3.0.3 完成方案高频操作轻量持久化首轮落地：新增 `planningMutableState` overlay，`moveOrderedItem / moveOrderedUnit / removeOrderedUnits / sortOrderedPlan` 只写入小状态，完整候选池与推荐 overlay 不随每次方案操作重写。
-- 3.0.3 effect/perf e2e 复测通过 8 个步骤；专业组移动确认从前次约 32.7s 回落到约 3.8s，Agent `mutationRequestDurationMs` 降到约 538ms，本地 DB 验证 mutable overlay 约 120KB、完整 planningState 约 16MB。
+- 新增职业方向回归集 `examples/dialog_regression_303_career_direction_cases.json`，覆盖大城市就业 vs 考编、读研 vs 稳定就业、体制内稳定就业承接和出分前先看大方向；评估报告同步识别职业路径、市场化就业和用户侧语言质量。
+- 恢复 3.0.3 full-agent 观测链路：`conversation_turn_event` 重新记录 `routingPath=full_agent`、模型配置、LLM 请求/token、结构化 tool call 摘要和 `routeDecision.toolTrial`，并把 `route-observability` 内部消息写入本地 history 供回归 runner 离线解析；runtime history 会过滤该内部消息，不进入后续大模型上下文。
+- `dialog_case_evaluation_report.py` 的工具链问题聚合支持直接消费 `turnObservability.toolCalls`：即使本地 history 未带出 `routingPath/routeDecision`，也能识别慢工具链、重复工具、多工具调用和工具错误结果；最新复跑 88 个真实对话衍生 case 后，报告聚合 `Full Agent Tool Trial Issues.count=81`，其中 `slow_full_agent=81`、`very_slow_full_agent=36`、`repeated_tool_calls=2`、`many_tool_calls=4`、`tool_result_error=1`。
 - 新增 `examples/dialog_regression_full_journey_cases.json` 并扩展到 9 个 case，专门覆盖“开场上下文 -> Explore -> 软意向 -> 硬约束 -> 候选查看/刷新 -> 方案查询/调整/确认/审查”的完整链路；包含专业、职业、地域、学校、专业组操作、候选别名加入、审查后修复、软硬意向混合和确认边界，并补充目录级单测按 coverage 标签校验薄弱场景。
 - `dialog_regression_runner.py` 新增 `--session-offset`，支持把固定 case session 映射到一批干净数字会话，并在输出里保留原始 `baseSessionId`，用于排除历史聊天记录和旧 pending 状态对真实 WebSocket 回归的污染。
 - `dialog_regression_runner.py` 新增 `--clear-history` 和 `--history-db`，支持在真实 `16/17` 等后端数据完整会话上只清理 Agent 本地 SQLite 对话历史后复跑，避免 `--session-offset` 丢失原 session 成绩、候选池和排序方案导致假失败。
-- `dialog_regression_runner.py` 新增 `warnElapsedSeconds / maxElapsedSeconds` 场景级耗时预算、整体 metrics summary 和 `--metrics-output` JSON 归档，支持把对话效果断言与 provider 延迟观察放在同一轮 WebSocket 回归里。
-- 新增 `examples/dialog_regression_302_effect_perf_cases.json` 和 `tests/e2e/test_agent_dialog_effect_perf.py`，覆盖 3.0.2 对话效果/性能 smoke：结构化方案查询、只读职业方向承接、专业+大学移动、专业组整体移动、歧义目标安全解释、新会话 Explore/Intent preview 和无 pending 确认快速保护。
-- 新增 `examples/dialog_regression_303_effect_perf_cases.json`，并将效果/性能 e2e 默认切到 3.0.3 用例集合；覆盖结构化方案现状、专业组 preview/confirm、排序预览、只读 Explore 不联动和无 pending 确认保护，把“回复质量”与延迟一起作为回归门槛。
 - 新增 Agent HTTP 健康检查接口 `/health` 和 `/gaotu-assistant-agent/health`，用于 Docker Compose healthcheck 和发布后远端探活，不影响现有 WebSocket 对话链路。
 - 3.0.1 对话规划链路新增 `sort_ordered_plan` 动作，支持用户通过对话按录取率、院校层次或推荐系数排序当前方案；排序作为高副作用动作进入 preview -> 确认 -> apply 流程，并刷新方案与审查状态。
 - 补充 3.0.1 对话回归和模型 benchmark 场景，覆盖方案排序、禁用旧锁定入口、候选筛选可见联动等端到端行为。
 - 新增最小结构化日志 `conversation_turn_event / plan_action_event / intent_state_event`，记录路由路径、action family、耗时、执行状态和错误类型，用于后续评估关键词兜底、模型效果和工具稳定性。
-- `conversation_turn_event` 的 full-agent 路径补充 `modelProvider / modelName`，便于按模型配置对比对话效果和耗时；日志不记录 API Key。
 - 对话规划链路新增专业组级动作设计与基础执行接入：`move_ordered_unit / remove_ordered_unit` 支持按 `unit_ids` 或“第 N 个专业组”定位专业组，确认后调用后端组级移动/删除接口并刷新方案与审查状态。
 
 ### Fixed
 
-- 3.0.3 路由边界修复：方案局部查询必须有学校或专业实体，`冷门是不是坑 / 怎么排优先级` 等开放探索不再被局部查询抢路由；体检、色弱、口试、专项、资格、限制、美术基础等政策/要求问题不再生成专业意向 pending；专业对比支持“怎么排优先级”和 `财管 -> 财务管理` 简称。复跑 effect/perf `14/14` strong、open-quality `23/23` strong、realistic-user 聚焦复查 `9/9` 通过。
-- 3.0.3 回复质量 P1 修复：Intent preview 清理 `level1/level2/level3` 等内部专业层级词；Intent confirm 改为“后续筛选和方案调整参考”，避免“候选结果收紧”造成候选池永久变化的误解；职业方向承接分析补当前方案承接强弱、数量和示例，并去掉重复结论；专业对比缺量化评分时会使用本轮用户输入里的“普通家庭 / 女生”等约束。
-- 3.0.3 回复质量继续补强：方案局部查询和候选查询命中后增加轻量下一步引导，但仍保持只读不联动；`add_units` 预览在能读取当前排序方案总数时补充数量影响，说明本次预计增加多少个志愿；`sort_ordered_plan` 预览补充排序方向说明，避免用户不知道录取率、院校层次、推荐系数分别如何排。
-- 3.0.3 方案操作预览影响面补强：普通志愿移动、移出和候选加入预览会说明对方案数量、方案顺序、导出内容和审查状态的影响；只有 `plan_next_action` 形成排序 pending 时也会补齐排序方向和待重新审查说明。
-- 3.0.3 无 pending 确认保护补充上下文文案：职业方向只读、专业对比只读和局部查询后用户回复“确认”时，仍不执行任何动作，但会结合上一轮上下文提示可继续展开、记成偏好或进入具体方案预览。
-- 3.0.3 无 pending 确认保护增加文本兜底：当快路径或降级场景只保存 assistant 文本、没有完整 tool trace 时，也能识别上一轮是职业方向分析、专业对比或局部查询，避免退回泛化“没有上一轮待确认动作”。
-- 3.0.3 Intent 确认回复补充生效内容复述：确认偏好或要求后，会从 `merged` 中提取专业、院校、地域和发展方向的正/负向条目，展示“本次确认内容”，便于用户核对刚刚生效的偏好/要求。
-- 3.0.3 Intent 确认回复结构化：确认后按“本次确认内容 / 后续使用 / 候选结果 / 下一步”组织，减少一整段长句，并避免“候选展示会按要求更新”这类容易被理解为候选池永久变化的表达。
-- 3.0.3 专业对比 fallback 改成结构化分段输出：无量化权重时仍做通用比较，但拆成“会话参考 / 专业A / 专业B / 选择建议 / 下一步”，减少一整段平铺文字的薄感。
-- 3.0.3 预览 / 举例类回复质量标准提升：不能只给对象和个例，必须尽量覆盖学校层次、冲稳保、专业热度、数量缺口等关键分布，再给代表样本和下一步建议。
-- 3.0.3 case 级评估工具补强：`dialog_case_evaluation_report.py` 输出 `qualityViolations`、`distributionCoverage` 和 `verdict`，可自动标记内部术语外露、待确认边界冲突、预览缺少关键分布等薄弱回复。
-- 3.0.3 case 级评估工具新增待确认意向语气门禁：待确认上下文里如果出现没有“确认后”条件的“把 X 记成/作为/后续都会按要求”等已生效表达，会标记为 `pending_intent_effective_wording`。
-- 3.0.3 case 级评估工具修正确认保护误判：确认类短回复不再被“预览”字样误判为预览/示例回复，避免正确的 no-pending guard 被标成 `thin_preview_distribution`。
-- 3.0.3 方案/候选查询分布摘要用户化：院校信息展示为双一流、公办/民办和“院校排名约 X-Y”等画像，专业信息展示热度、计划数、招生计划等标签，避免裸露内部排名字段。
-- 3.0.3 局部查询示例文案继续收口：专业热度标签去重为“热度X / 计划数”，示例解释改为“专业信息”，避免出现“专业热度专业热度”这类重复前缀。
-- 3.0.3 专业对比 fallback 文案去系统化：不再出现“个性化量化评分 / 系统分数 / 系统评分”，改为“还没有完整结合分数、省份、选科和方案位置，先做方向判断”。
-- 3.0.3 Intent pending 增加 Agent 历史兜底：后端 `planEditCache` 仍是主路径；读不到时从最近一次 Intent preview 工具调用恢复待确认 payload，避免“确认这个偏好/要求”误走无 pending guard；已处理过的 pending 不会从历史里复活。真实 WebSocket 两步验证通过，中位耗时约 `2035ms`。
-- 3.0.3 Intent 确认回复收紧：没有实际候选数量事实时，不再说“候选展示会按这条要求更新、现在可以去看候选结果”，改为“后续查看候选和方案时会按这条要求作为参考”。
-- 3.0.3 Intent preview 条目语气收紧：专业、院校、地域和发展方向的待确认条目统一使用“确认后，将把...”表达，避免单条内容看起来已经生效；对应条目级单测、WebSocket 兼容样例和评估门禁已补充。
-- 3.0.3 Intent existing-only 文案修复：当用户再次表达已经存在的偏好/排除项时，回复改为“当前已经在后续参考中，不需要重复确认”，并列出“已在参考的偏好/排除项”，避免把既有内容误说成新的待确认内容。固定会话 `880203` WebSocket 两步验证通过。
-- 3.0.3 真实口语化输入修复：`法/财`、`新媒体/跨电`、`青城`、`会计审计可以 土木别要`、`保底够不够啊`、`嗯可以` 等表达已纳入既有高置信快路由或确认保护；不新增普通业务模板短路，高副作用动作仍保持 preview -> confirm -> apply 边界。
-- 3.0.3 quality 主回归补齐方案审查：审查 case 返回 `review` 工作台刷新且不暴露内部位置标记；审查回复改为“审查结论 / 主要问题 / 典型涉及 / 下一步建议”的结构化要点。真实 WebSocket `dialog_regression_303_effect_perf_cases.json --clear-history --keep-response-text --assert-plan-style` 最新复跑 `14/14` steps 通过，中位耗时约 `2240ms`，最大耗时约 `4140ms`。
-- 3.0.3 待确认意向影响追问收口：已有 `planEditCache` 待确认内容时，“先不确认，看看这个偏好会影响当前方案吗”直接走 `pending_intent_impact_fast_route`，基于当前方案/候选事实做只读说明；不调用主 Agent、不确认、不刷新工作台、不改方案。
-- 3.0.3 Intent preview 文案继续用户化：去掉“候选结果收紧”“专家推荐”等表达；结构化影响文本不再重复套“当前判断”标题；已有真实方案/候选命中时去掉“我先帮你看看 / 顺手看看”等泛化句。
-- 3.0.3 Intent 专业意向标签源头用户化：内部仍保留 `level1/level2/level3` 结构用于存储、编码和候选过滤，用户可见回复改为“专业门类 / 专业类 / 具体专业 / 偏好专业 / 排除专业”，并补充单测防止 `level3` 再次外露。
-- 3.0.3 职业方向只读回复结构收口：`analyze_current_career_direction` 返回内容从“当前判断”下再嵌“初步判断 / 需要补充留意 / 可以继续展开”改为“方案承接 / 需要留意 / 候选机会 / 下一步”；不改变方向识别、方案/候选事实计算和只读不联动边界。最新真实 WebSocket 开放式质量 `4/4` 通过，effect/perf `14/14` 通过。
-- 3.0.3 职业方向代表样本去重：代表样本只保留真实院校/专业样本，不再重复“方案里大约有 X 个”“候选里还有 X 个机会”等数量判断；完整 effect/perf 真实 WebSocket `14/14` 通过，中位耗时约 `2320ms`，最大耗时约 `4247ms`，离线质量评分 `qualityViolations=0`、`strong=5 / needs_review=9`，当前宽回归 `726 passed`。
-- 3.0.3 职业方向只读回复补充“本次边界”：明确只做方向分析，不会自动修改偏好、方案或方案顺序；后续若要按方向调整方案，仍走预览确认后执行。
-- 3.0.3 方案调整确认完成回复补充后续动作提示：移动、删除、加入、替换和排序执行成功后，如果后端结果没有说明审查/导出影响，会补充方案/导出已更新、审查状态待重新审查、可到方案区查看并必要时审查。
-- 3.0.3 只读边界与确认完成提示补强后，聚焦单测 `228 passed`，宽回归 `726 passed`；真实 WebSocket effect/perf `14/14` 通过，中位耗时约 `2263ms`，最大耗时约 `4576ms`，离线质量评分 `qualityViolations=0`、`strong=6 / needs_review=8`。
-- 3.0.3 回复结构继续补强：排序预览改为“动作 / 排序方式 / 执行影响 / 确认”的要点结构；无 pending 的职业方向确认保护给出继续分析、调整方案、查看方案和不确定下一步四类出口；已有偏好提示合并同类项并说明不会重复写入或改方案；专业对比只读回复补充“本次边界”。
-- 3.0.3 最终回复质量回归：焦点单测最高 `350 passed`，宽回归 `726 passed`；真实 WebSocket effect/perf `14/14` 通过，中位耗时约 `2297ms`，最大耗时约 `4425ms`，离线质量评分 `qualityViolations=0`、`strong=14 / needs_review=0`。
-- 3.0.3 主对话技能注入收口：`BaseAgent` 默认只注入 skills 边界摘要，不再把 `list_skills / load_skill / read_skill_resource / run_skill_script` 暴露给 ChatAgent 运行时；保留 `expose_skill_tools=True` 给专门需要完整技能工具的 Agent。该调整用于消除开放式 Explore 中先调用 `load_skill` 的额外轮次，不改变业务工具、确认边界或用户侧回复结构；聚焦单测 `40 passed`，真实 WebSocket effect/perf `14/14` 通过，open quality `4/4` 通过，职业方向承接场景 tool trace 仅有 `analyze_current_career_direction`。
-- 3.0.3 open-quality 最终复核：本地独立 Agent `8107` 在 Agent/Server/Rank 依赖可用时复跑 `dialog_regression_303_open_quality_cases.json --clear-history --keep-response-text --assert-plan-style`，`23/23` steps 通过，失败 `0`；中位耗时约 `2283ms`，p95 约 `3794ms`，最大约 `3969ms`；离线评分 `strong=23 / needs_review=0 / fail=0`，无 `route_mismatch`、`unexpected_action` 或薄预览硬失败。当前没有触发 LLM Intent Router shadow 条件，继续使用本地候选 + 统一仲裁主路径。
-- 3.0.3 重启后 open-quality live 复验：本地 `8107/8080/5001` 链路复跑 `23/23` steps 通过，中位耗时约 `2242ms`，p95 约 `3661ms`，最大约 `3819ms`；详细评分仍为 `strong=23 / needs_review=0 / fail=0`，无质量 violation 或 warning。
-- 3.0.3 对话样例展示清洗：新增用户侧院校/专业样本文本清洗，方案前排、意向影响和职业方向代表样本不再展示 `办学地点`、合作方、前三年就读、外语成绩、学费说明等长招生备注，保留院校、专业、冲稳保和位置等核心信息；最新 open-quality live 复跑 `/private/tmp/zhiyuan_agent_303_open_quality_after_display_clean_live.json`，`23/23` steps 通过，中位耗时约 `2256ms`，p95 约 `3713ms`，评分 `strong=23 / needs_review=0 / fail=0`，长备注关键词抽检未命中。
-- 3.0.3 地域偏好与录取安全取舍专项链路：`北京天津想去但别最后没学上`、`孩子就想去北京天津但分数不算高这样是不是太冒险先别改` 这类只读问题不再回落分钟级 full Agent；统一仲裁先挡住普通方案概览薄回复，再基于当前方案、候选补充信息和审查结果生成结构化取舍分析。真实 WebSocket 聚焦复跑 `2/2` 通过，中位耗时约 `2401ms`，`llmRequests=0`，不会写偏好、改方案或生成确认卡。
-- 3.0.3 调整分析只读边界修复：`就按别太冒险的思路把这版调稳点，先给我看看会怎么动` 这类 `analyze_adjustment` 场景不再标记 `applied=true`，也不再发送 `ordered/review` 工作台刷新卡片；真实审查和确认后的移动/排序/加入/删除仍保留对应刷新。复跑 open-quality `23/23` 通过，中位耗时约 `2242ms`；effect/perf `14/14` 通过，中位耗时约 `2236ms`。
-- 3.0.3 回复结构 P1 收口：候选空结果、局部查询、命名移动预览、候选加入预览、专业组移动预览和排序预览统一为用户可扫读的小节结构；不改变路由、pending、执行 payload 或工作台刷新语义。复跑 effect/perf `14/14` 通过，结构均分约 `3.21 -> 3.79`；open-quality `23/23` 通过，结构均分约 `3.57 -> 3.65`。
-- Plan fast route 进度提示修复：mutation 类请求如果仍处于 `analyze` 阶段，不再提示“正在按你的确认更新方案”，改为“正在确认当前方案是否可以调整”，避免无方案或缺少必要输入时 thinking 文案和最终回复冲突。
-- 3.0.3 Intent 待确认回复结构收口：待确认预览和“先不确认，看看影响”回复统一为“本次边界 / 影响分析 / 待确认内容 / 下一步”一类可扫读结构；去掉“结合当前方案给你的提醒”下嵌多级标题的重复感，并在已有具体方案命中时清理默认兜底说明。不改变 `planEditCache`、pending 确认、确认写入或工作台联动语义。相关单元/质量工具回归 `287 passed`；真实 open-quality `23/23` strong，effect/perf `14/14` strong。
-- 3.0.3 回复质量门禁可执行化：`dialog_case_evaluation_report.py` 支持 `qualityFocus` 和 `minTextLengthWarn`，把只读边界、确认边界、下一步、用户语言、决策依据覆盖和最低信息量纳入自动 `needs_review`；3.0.3 effect/perf、open-quality、realistic-user case 同步补充质量元数据。方案概览和局部查询统一补充“不会改动当前方案”的用户边界说明，不改变路由、pending、执行或工作台刷新语义；相关宽回归 `315 passed`，真实 WebSocket effect/perf `14/14` strong，open-quality `23/23` strong，realistic-user `9/9` strong。
-- 3.0.3 候选空结果回复收口：`候选里还有没有更稳一点的会计审计` 走 `plan_query_fast_route`，后端直查 `session=17` 中 `会计学+审计学`、单独 `会计学`、单独 `审计学` 均为 `total=0`；回复改为明确说明已按具体专业查过且当前候选池无结果，并引导放宽到专业类、查看当前方案相近志愿或做更稳调整建议。评估工具同步支持空结果等价验收，避免把真实无数据误判为薄预览或路由失败。
-- 3.0.3 case 级评估工具补充 `expectedNoAction` 和无动作确认保护评分：只读分析、候选空结果、无 pending 的“确认”不应触发方案或偏好动作，若出现动作会标记 `unexpected_action`；正确的确认保护会按边界说明和下一步出口评分。
-- 修复专业组移动/删除 apply 后重复按“第 N 个专业组”解析目标的问题；移动后方案顺序已变化，重复解析可能记录成另一个专业组。现在 `executed_actions` 和后续日志复用执行前解析出的 unitIds。
-- 3.0.3 只读分析后泛确认保护：当后端仍有旧 `planEditCache`，但上一轮用户可见内容是职业方向、专业对比或方案局部查询这类只读分析时，用户只说“确认”不再消费旧意向 pending，而是返回无待执行动作的上下文提示；“确认这个偏好 / 确认这个要求”等显式确认仍按原逻辑写入后续参考。
-- 3.0.3 effect/perf 有效服务复核：本地 Rank/Backend 恢复后确认 `session=16` 专业组方案 `45/48`、`session=17` 专业+大学方案 `94/96`，此前 `ordered_total=0` 为服务未运行导致的假失败；真实 WebSocket 复跑 `14/14` 通过，质量评分 `strong=14 / needs_review=0 / fail=0`，中位耗时约 `2252ms`，p95 约 `3930ms`。
-- 3.0.3 open-quality 有效服务复核：真实 WebSocket 复跑 `23/23` 通过，质量评分 `strong=23 / needs_review=0 / fail=0`，中位耗时约 `2245ms`，p95 约 `3668ms`；记录两个后续非阻断质量优化点：预算风险边界句去重、医学/护理意向展示合并。
-- 3.0.3 后端补充 mutable overlay 回归：专业+大学模式单志愿移动、院校专业组模式组删除、旧 mutable 版本忽略，以及行为事件存储回归均通过单测覆盖。
-- 3.0.3 专业组 mutation 慢请求完成补充定位：确认慢例 `llmRequests=0`，Agent `mutationRequestDurationMs≈28.1s` 与 Server controller `unit/move≈28.1s` 对齐；当前源码复跑 service 分段常态约 `1.8s - 2.3s`，最大头是完整 `PlanningStateDTO` 保存，后续优化重点调整为状态持久化拆分而不是继续压模型。
-- 3.0.3 benchmark 文档补充效果质量门禁：性能评估需同时检查用户可理解、信息充足、结构清楚、确认边界、只读不误联动、歧义不误操作和事实一致。
-- `query_volunteer_plan` 候选示例不再展示 `id=...`，只保留学校、专业、冲稳保和录取率等用户可理解信息，避免局部查询回复继续暴露无意义内部编号。
-- 方案现状的偏好摘要在超过展示数量时显示“等 N 项”，避免“当前偏好”只列前三项而“贴近偏好示例”命中未展开偏好时让用户误以为前后矛盾。
-- Explore 调度指令收紧：明确职业/专业/院校/地域专用工具可承接时不先调用 `load_skill`，真实 3.0.3 e2e 中“体制内稳定就业承接分析”从 `load_skill + analyze_current_career_direction` 收敛为单个专用工具，端到端从约 41s 降到约 26s，回复质量保持结构化。
-- 方案 pending 确认边界补强：如果 pending 后用户明确“先不要改方案 / 只分析 / 不执行 / 不调整”，会清掉旧方案 pending；后续单独说“确认”不再误执行旧排序或移动。3.0.3 e2e 增加排序预览后只读分析再确认的保护场景。
+- Agent 工具直返收口为通用 Tool Reply Policy：`ChatAgent` 不再按 `execute_plan_action` 做局部特判，而是统一依据工具显式 `reply_strategy` 和结构化 `result_kind/reply_focus` 判断是否直返；受控阻断、无变化和意向待确认可直接结束本轮，方案查询、审查、Explore、专业对比和正常预览仍交给模型组织回复，避免为降延迟牺牲信息量。
+- 方案调整安全边界补强：模型把移动/删除/替换等高副作用动作误传为 `stage=analyze` 时，执行层会改走真实 `preview` 解析链路，必须先唯一定位当前方案/候选目标；无法定位时直接给用户可理解的阻断提示，不再生成没有真实目标的“确认后执行”假预览。
+- 同轮 pending 清理修复：当 `plan_next_action(preview)` 先留下待确认动作、后续 `execute_plan_action(error)` 已经阻断时，服务层会清理该 pending，避免回复后面再追加“确认后执行”。
+- 方案替换缺参直返文案用户语言化：缺少替换目标或新志愿筛选方向时，不再暴露 `volunteer_ids / replacement_scope` 等内部字段，改为提示补充学校/专业名称或替换方向。
+- 职业方向 Explore 补齐“市场化就业导向”：新增 `market_employment` slot 并接入职业方向工具 schema、职业意向抽取、Explore 事实匹配和 Intent/方案关系分析；“大城市就业和考编哪个更现实”可由模型传入 `market_employment + system_public_service`，不再只靠稳定就业或最终回复兜底。
+- 泛方向 Explore 支持结构化 `generic_direction=true` 参数：full agent 对“先看大方向 / 出分前先定方向 / 适合什么方向”等问法可直接声明泛方向分析，工具跳过内部二次 LLM 判定；真实复测中工具节点从约 `15.9s` 降到约 `293ms`，回复仍保留体制内/市场化/读研三条方向框架。
+- Explore 只读边界补强：用户明确说“先不要改方案 / 先别动 / 只分析”时，最终回复会自然说明“本轮只做分析，不会改动方案”；职业方向承接复测已覆盖该边界。
+- 回复风格约束和评估器补充用户侧中文表达质量检查，避免 `increasingly` 这类不必要英文夹杂进入最终回复；专业英文缩写和正式英文名仍允许。
+- 3.0.3 真实对话评估口径收口：旧 fast route 预期不再作为质量硬失败，只保留确认守护等严格路由校验；空方案结果不再触发“预览必须覆盖分布”的误报；同步修正预算/中外合作、偏好可变更、弱确认收口、专业组策略等 case 元数据。
+- 长耗时 thinking 文案去内部化：模型等待和工具后等待提示不再出现“模型返回 / 工具结果 / 完整回复”等内部表达，统一改为“整理可用信息 / 补全结论 / 保留当前会话状态”等用户侧语言。
+- 3.0.3 full-agent 主对话收口技能工具暴露：`ChatAgent` 默认只注入技能边界摘要，不再把 `load_skill/list_skills/read_skill_resource/run_skill_script` 作为可调用工具暴露给模型，避免开放 Explore 先加载 skill 再调用专用业务工具；`BaseAgent(expose_skill_tools=True)` 仍保留完整技能工具给专门 Agent 使用。
+- 收紧 Explore / Plan 工具边界提示：专业对比优先 `compare_majors` 且不默认追加专业介绍，单专业适配优先 `analyze_current_major_interest`，职业/地域取舍避免同轮叠加；方案统计问题按 `query_state` 回答，风险审查按 `review_plan` 回答，不自动升级成删除、替换或补偿预览。
+- full-agent 路径补充首轮静默等待提示：如果模型理解/生成阶段超过短阈值且尚未发送工具进度，会推送“正在理解你的问题，并结合当前信息整理回答...”；已有工具进度时不重复发送，不改变路由、工具执行或最终回复内容。
+- Explore 职业方向工具内层判定收口：`resolve_career_direction_slots` 与 `should_use_generic_direction_analysis` 共享一次 `CareerDirectionRouteDecision`，同轮缓存复用职业方向 slot 和泛方向适配判断，减少“先抽方向、再判泛方向”的重复 LLM 调用；不新增字符串快路由，不改变只读分析边界。
+- 正式聊天主链路关闭 Explore 职业方向工具内层草稿生成：`ChatService` 注入 `allow_explore_inner_llm=false` 后，单方向、多方向和泛方向 Explore 只读取结构化事实并返回 fallback 文本，由 full agent 主模型统一组织最终回复；直接调用工具仍默认保留内部生成能力。
+- 正式聊天主链路关闭专业对比工具内层总结生成：`compare_majors / compare_majors_adhoc` 在 `allow_explore_inner_llm=false` 时返回专业类、量化指标、综合评分、个性化备注和数据来源等结构化对比事实，由 full agent 最终组织；缺权重时明确提示缺少完整个性化量化评分，不再把空指标解释成“得分相同”。
+- 正式聊天主链路关闭院校对比工具内层总结生成：`compare_schools / compare_schools_adhoc` 在 `allow_explore_inner_llm=false` 时返回城市资源、升学通道、院校层次、综合评分、个性化备注和数据来源等结构化院校对比事实，由 full agent 最终组织；缺权重时明确提示缺少完整个性化量化评分。
+- 正式聊天主链路关闭专业推荐工具内层总结生成：`get_major_recommendations / get_major_recommendations_adhoc` 在 `allow_explore_inner_llm=false` 时返回推荐专业、性别分布适配、满意度、薪酬、热度和数据来源等结构化推荐事实，由 full agent 最终组织；院校推荐工具本身已是确定性文本，本轮不改。
+- Intent 恢复阶段合并正负意向抽取：专业和地域 recovery scope 优先通过 `extract_*_intents_with_polarity` 一次模型请求同时恢复正面/负面意向，减少同一链路连续两次抽取；组合抽取异常时自动回退旧的正负单抽取，不改变确认卡片和意向写入边界。
+- 职业方向只读分析入口不再硬编码体制内：`preview_interest_analysis_from_request(recovery_scope="career_preference")` 会先解析当前用户实际提到的职业方向，稳定就业/读研等单方向和多方向对比都走对应 Explore 分析；解析不到时才保留旧体制内兜底。
+- 待确认意向不再自动刷新候选工作台：`preview_current_*_intent_confirmation` 只生成待确认文本和影响分析，确认/勾选前不发送 `planningWorkspaceAction(candidate)`；真正采纳约束后仍保留 `candidateFilters` 联动候选栏。
+- 待确认意向回复边界更清晰：未确认偏好的后续只读追问会补充“待确认内容 / 尚未确认 / 确认前不会写入后续参考”，但该边界不会污染已经进入 `plan_next_action -> execute_plan_action` 的方案排序、审查、移动或删除回复。
+- 方案排序预览补充用户可判断的信息：`sort_ordered_plan` 的 preview 结果现在返回排序字段、自然排序方向、当前方案数量、冲稳保分布和排序后前几项示例；确认前不执行后端排序，确认后仍刷新方案和审查。
 - 统一待确认状态边界：当 `RequestContext.conversation_phase` 已注入时，运行时只认 `conversation_phase.pending` 作为当前待确认源；旧 `pending_plan_action` / `pending_intent_change` 仅在没有 phase 对象的兼容入口里回退，避免新旧状态不同步引发确认错位。
 - pending 确认链路补齐版本和轮次守护：preview 结果会记录 `planning_version` 和 `created_turn`，确认时若当前 `planningState.version` 已变化或 pending 已过期，会直接拦截并提示重新查看当前方案，避免把旧预览误执行成当前方案修改。
 - 意向确认缓存收口：`planEditCache` 先转换为 `PendingConfirmation` 注入 `conversation_phase.pending`，后续确认流程优先读 phase 内的 payload；只有旧桥接入口才直接回读 backend cache。
@@ -219,6 +95,13 @@
 - `BaseAgent` 兼容旧 `{role, content}` 格式的 `message_history`，进入 pydantic-ai 前转换为 `ModelRequest/ModelResponse`，修复 pydantic-ai 升级后历史消息集成测试失败。
 - `ProfileManager.get_current_profile` 兼容历史后端 payload `data.dataValue`，避免旧画像结构下增量更新专业、院校、城市意向时丢失已有数据。
 - 真实 internal client e2e 和真实 LLM e2e 改为显式开关执行，默认全量 pytest 不再受本地网络、内部服务可达性或模型费用影响。
+- 3.0.3 full-agent 工具链收敛：新增 `compare_major_options` 承接三个及以上专业的取舍/优先级判断，避免模型拆成多次二元 `compare_majors`；新增 `get_major_introductions` 承接多个专业的学习内容、基础要求、就业方向对照，避免同轮并行多次 `get_major_introduction`。两者均保留 full agent 最终组织回复，不引入字符串快路由或模板回复。
+- 候选空结果语义修正：`query_volunteer_plan` 的候选池空命中会明确表达为业务空结果，不再被最终回复改写成“系统延迟 / 查询没拉出来”。
+- 旧待确认意向边界收口：无关只读 Explore 回复不再追加旧 pending intent 的“确认后生效”尾巴，避免历史缓存污染当前问题。
+- 同一工具节点的重复进度提示去重：模型并行调用多个同类工具时，只推送一次相同用户侧进度文案。
+- full-agent 长等待感优化：非确认类请求在上下文读取阶段可提前提示“正在读取当前会话信息...”，初始理解提示从 `3.0s` 前移到 `1.5s`；不改变路由、工具调用或最终回复内容。
+- 3.0.3 对话质量评估口径校准：离线评估器将 `compare_major_options` 计入专业对比动作观测，补充学习要求/就业路径/排序建议/下一步等自然表达别名；`readonly_boundary` 仅在方案、候选、意向、确认或用户明确“先别动/只分析”等有副作用歧义的场景强制要求，避免纯专业知识咨询被误判为质量不足。
+- 职业方向只读分析工具支持结构化方向参数：`analyze_current_career_direction(career_directions=[...])` 可直接接收考公/体制内、稳定就业、读研/深造等枚举方向，明确方向场景可跳过工具内部方向识别 LLM；无参或无效参数仍回落原 resolver，不引入字符串快路由。
 
 ### Fixed (回归测试稳定性)
 
@@ -679,3 +562,20 @@
 - Plan 文本清理补充“这意味着。”这类 dangling 残句，减少真实对话里未展开解释的半截句。
 - Plan 预览执行结果统一追加“需要确认后才会执行”，避免重排、补稳等高副作用动作只描述影响但没有明确确认门禁。
 - `query_volunteer_plan` 已纳入 Plan 文本 guard，候选/局部查询回复里的“可能的原因 / 当前情况”这类标题残句也会被清理。
+- `ChatService` 收窄方案预览确认边界：只有本轮工具结果属于方案变更、调整分析或补齐预览上下文时，才追加“没有可执行调整预览”的保护文案；`query_state` 等只读方案查询不再因为回复里提到“确认偏好”而被误加方案调整警告。
+- `ChatService` 增加 full agent 长耗时进度提示：初始理解提示和工具提示之外，超过约 `12s / 25s` 且近期没有新提示时，会继续发送用户可理解的处理中提示，避免高质量回复等待期间页面长时间无反馈。
+- 3.0.3 live 复测补充记录：专业简称对比当前只调用 `compare_majors`，正文质量可用但耗时仍约 `36s`；“考公 + 这版支撑吗”复测已不再混入方案调整预览尾巴，但本地 `8080` 后端未启动时方案事实会降级为空方案，不能作为方案类质量结论。
+- 专业意向抽取候选召回补充受控领域别名：`财会/财管/会计/财务`、`新传`、`跨电` 等口语简称会展开到对应专业类和具体专业，仅用于实体候选召回，不做路由决策。
+- 新增集中维护的常用专业简称表，`计科/软工/AI/电气自动化/通信/土木/财管/会计/财务/新传/新媒体/跨电/国贸/中文/临床/口腔` 等简称可持续补充；其中确定性简称会接入分数线查询与选科校验的 `resolve_major_names_async`，`财会/大数据/电信` 等多目标简称仅用于候选召回，避免错误归一。
+- Intent 调度规则补充 preview 停止边界：`preview_current_*_intent_confirmation` 返回后，本轮应直接回复并等待确认，不再重复调用同一个 preview 工具。
+- WebSocket 超时兜底文案改为引用用户原问题，并明确不会自动写入偏好或改动方案，避免长尾超时时输出与当前问题无关的示例。
+- Agent 主链路补充节点级耗时观测：成功时记录 `nodeTimings / firstToolCallAtMs`，被服务超时取消时也会在 `conversation_turn_event.routeDecision.agentRun` 中记录 `failedNode / failedNodeElapsedMs / errorType`，便于区分首轮模型请求挂起、工具慢和最终回复慢。
+- 长耗时 thinking 提示按阶段区分：未进入工具阶段时提示正在等待模型返回且不会自动写入偏好或改方案；进入工具阶段后才提示正在结合工具结果整理结论，避免进度文案和真实链路不一致。
+- 对话质量评估报告补充 Agent 中断节点识别：当复测记录里存在 `routeDecision.agentRun.failedNode` 时，会输出 `agent_run_interrupted` / `first_model_request_or_final_generation_interrupted`，用于跟踪模型供应商首轮请求长尾。
+- 对话质量评估报告补充慢节点归因：成功但耗时较长的 full-agent 轮次会输出 `slowestAgentNode`，并标记首轮/最终生成慢、首个工具调用晚或工具链慢，方便后续按瓶颈类型优化。
+- 对话回归 runner 在请求失败时也会回读本地 history DB 中的 route observability，避免客户端超时导致服务端已记录的 `agentRun.failedNode` 丢失。
+- LLM 配置新增 `LLM_TIMEOUT_SECONDS`，默认 `0` 不启用模型请求层超时；需要定位供应商首轮请求长尾时可显式开启，便于比外层 180s 服务超时更早获得可观测错误。
+- 复跑混合专业意向 case `医学护理这些别碰，财会还能接受，先看看影响`：重复 preview 已消失，仅调用一次 `preview_current_major_intent_confirmation`；回复质量为 strong，但总耗时约 `118.8s`，节点观测显示主要瓶颈在 `CallToolsNode(preview_current_major_intent_confirmation)` 内部的专业意向抽取 LLM，约 `94s`。
+- 专业意向预览工具内部新增保守本地恢复与校正：进入 `preview_current_major_intent_confirmation` 后，对“医学护理这些别碰，财会还能接受”这类明确混合正负专业意向，基于专业目录和受控别名恢复 `negative_level1/negative_level3/level2`，避免再走工具内专业抽取 LLM；如果模型主动传入过度展开 payload，也会按本轮用户原话收回，不把一级门类扩成几十个下级专业。
+- 混合专业意向真实复测更新：同一 case 工具节点从约 `94s` 降到 `12ms`，只调用一次 preview，回复仍为 strong 并停在待确认边界；总耗时约 `48.8s`，剩余慢点主要在外层 full agent 两次模型请求。
+- Intent 预览影响说明补充临时占位清理：当方案/候选事实不可用且只剩“我先帮你看看 / 继续看看方案匹配 / 直接让我给你调整建议”等泛化句时，回落到“待确认、确认前不生效、不改方案”的边界说明；真实复测同一混合专业意向 case 为 strong、无质量违规，工具节点约 `8ms`，剩余耗时主要在首轮模型请求约 `40.7s`。

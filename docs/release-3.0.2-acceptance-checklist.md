@@ -291,24 +291,13 @@ cd zhiyuan-agent
   --assert-plan-style \
   --response-timeout 180 \
   --clear-history
-
-.venv/bin/python examples/dialog_regression_runner.py \
-  --cases examples/dialog_regression_302_effect_perf_cases.json \
-  --assert-plan-style \
-  --response-timeout 180 \
-  --clear-history \
-  --metrics-output examples/dialog_regression_302_effect_perf_output.json
-
-RUN_AGENT_DIALOG_E2E=1 \
-AGENT_DIALOG_E2E_METRICS_OUTPUT=examples/dialog_regression_302_effect_perf_output.json \
-.venv/bin/python -m pytest tests/e2e/test_agent_dialog_effect_perf.py -v -s
 ```
 
 状态：
 
 - 时间：2026-05-19 首轮，2026-05-20 复跑
 - 结果：302 Plan 操作真实 WebSocket 回归通过；Explore/Intent 重模型效果继续作为观察项
-- 样例文件：`zhiyuan-agent/examples/dialog_regression_302_agent_cases.json`、`zhiyuan-agent/examples/dialog_regression_302_explore_intent_cases.json`、`zhiyuan-agent/examples/dialog_regression_302_readonly_real_session_cases.json`、`zhiyuan-agent/examples/dialog_regression_302_effect_perf_cases.json`
+- 样例文件：`zhiyuan-agent/examples/dialog_regression_302_agent_cases.json`、`zhiyuan-agent/examples/dialog_regression_302_explore_intent_cases.json`、`zhiyuan-agent/examples/dialog_regression_302_readonly_real_session_cases.json`
 
 覆盖点：
 
@@ -318,8 +307,6 @@ AGENT_DIALOG_E2E_METRICS_OUTPUT=examples/dialog_regression_302_effect_perf_outpu
 - 高副作用动作确认后刷新方案区。
 - Explore/Intent 前置层不误触发方案变更，Intent 仍先 preview 后确认。
 - 用户未确认意向时查询方案，不应自动确认或重复弹确认。
-- 新增效果/性能 smoke 覆盖：只读结构化方案回复、只读职业方向承接、新会话 Explore、软硬意向 preview、歧义学校/专业安全解释、无 pending 确认快速保护。
-- runner 已新增 `warnElapsedSeconds / maxElapsedSeconds` 和 `--metrics-output`，输出每轮耗时分布和最慢步骤；warn 用于观察 provider 延迟，hard max 仅用于不应走主模型的快速保护或确认 apply 链路。
 
 首轮真实运行记录：
 
@@ -353,16 +340,6 @@ AGENT_DIALOG_E2E_METRICS_OUTPUT=examples/dialog_regression_302_effect_perf_outpu
   - “当前方案对体制内稳定就业方向承接得怎么样”通过，约 104s，能读取真实方案、考生分数和候选信息，未发送工作台卡片。
   - “如果分数刚好压线，可选机会少是什么原因”通过，约 41s，能结合山东 450 分、物史地、当前冲稳保结构解释原因，未发送工作台卡片。
   - 结论：只读 Explore/Intent 能在真实方案数据上工作，但泛方向分析仍有明显大模型耗时，作为后续性能优化观察项，不阻塞本次 Plan/pending 收口。
-- 2026-05-23 补充效果/性能验证基础：
-  - 新增 `dialog_regression_302_effect_perf_cases.json`，专门覆盖效果质量和耗时观察，不替代原有 Plan/Explore/Readonly 三组回归。
-  - 新增 `tests/e2e/test_agent_dialog_effect_perf.py`，默认跳过，设置 `RUN_AGENT_DIALOG_E2E=1` 后通过真实 WebSocket 跑新增场景。
-  - 新增 runner metrics summary 和 JSON 输出能力，便于后续把模型 provider 延迟、首包耗时、最终耗时和失败断言归档。
-  - 聚焦单测通过：`test_dialog_regression_runner.py + test_mainline_dialog_scenarios.py + test_agent_dialog_effect_perf.py` 为 `27 passed, 1 skipped`；`test_chat_service_history_persistence.py -k "no_pending or runtime or pending"` 为 `37 passed, 57 deselected`；`test_pending_protocol.py + test_execution_preview.py + test_execution_apply.py` 为 `262 passed`。
-  - 本地服务启动后补跑真实 WebSocket e2e：`RUN_AGENT_DIALOG_E2E=1 AGENT_DIALOG_E2E_METRICS_OUTPUT=examples/dialog_regression_302_effect_perf_output.json .venv/bin/python -m pytest tests/e2e/test_agent_dialog_effect_perf.py -v -s`，结果 `1 passed in 528.01s`。
-  - 新增 11 个真实步骤全部通过，未出现内部字段泄露、只读场景误刷新、无 pending 确认误执行等问题；专业+大学移动、专业组整体移动均完成 preview -> confirm -> apply，确认后发送 `ordered refresh=true`。
-  - 性能汇总：`median=31.994s`，`p95=max=140.709s`，最慢 5 条为职业方向承接 `140.709s`、新会话专业对比 `111.758s`、专业移动预览 `69.047s`、专业组移动预览 `62.857s`、方案概览 `60.651s`。
-  - 快速链路正常：无 pending 的“确认”走 guard，`2.145s` 返回，无 followup；确认 apply 分别约 `4.461s` 和 `5.406s`，主要耗时不在后端执行。
-  - 当前性能问题仍集中在主模型多轮工具编排和工具内二次 LLM：方案概览 3 次 LLM 往返、职业方向承接约 2 次主链 + 工具内生成、专业对比额外触发抽取/比较/专业介绍。专业移动预览还出现一次 `move_unit stage=analyze` 错误后再重新收敛到 preview，说明位置移动类 prompt 仍有重复规划和无效工具往返。后续优化应优先减少只读查询和位置移动预览的重复模型往返。
 
 ### 5.2 前端验证
 

@@ -50,7 +50,6 @@ import com.ytell.zhiyuan.model.dto.planning.ReviewStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.UpdateLatentProfileReq;
 import com.ytell.zhiyuan.model.dto.planning.InitialRecommendationGenerateReq;
 import com.ytell.zhiyuan.model.dto.planning.PlanningBehaviorEventDTO;
-import com.ytell.zhiyuan.model.dto.planning.PlanningMutableStateDTO;
 import com.ytell.zhiyuan.model.entity.biz.ChatSessionExtraData;
 import com.ytell.zhiyuan.model.enums.VolunteerModel;
 import com.ytell.zhiyuan.service.shared.ChatSessionExtraDataSharedService;
@@ -68,7 +67,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -3047,7 +3045,7 @@ public class PlanningStateServiceTest {
         assertTrue(moved.getStaleFlags().getReview());
         assertTrue(moved.getStaleFlags().getPlanAdjustment());
 
-        stored = storedStateFrom(moved);
+        stored = latestStoredStateFromUpdate();
         when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
                 .thenReturn(stored);
 
@@ -3112,7 +3110,7 @@ public class PlanningStateServiceTest {
         assertEquals("ps2_m2", moved.getOrderedPlanState().getItems().get(0).getVolunteerId());
         assertEquals("ps1_m1", moved.getOrderedPlanState().getItems().get(1).getVolunteerId());
 
-        stored = storedStateFrom(moved);
+        stored = latestStoredStateFromUpdate();
         when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
                 .thenReturn(stored);
         OrderedPinReq pinReq = new OrderedPinReq();
@@ -3178,7 +3176,7 @@ public class PlanningStateServiceTest {
         assertEquals("ps1_m1", movedDown.getOrderedPlanState().getItems().get(1).getVolunteerId());
         assertEquals("ps3_m3", movedDown.getOrderedPlanState().getItems().get(2).getVolunteerId());
 
-        stored = storedStateFrom(movedDown);
+        stored = latestStoredStateFromUpdate();
         when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
                 .thenReturn(stored);
         OrderedMoveReq moveUpReq = new OrderedMoveReq();
@@ -3438,125 +3436,6 @@ public class PlanningStateServiceTest {
         assertEquals("ps1_m1", unitRemoveItems.getJSONObject(0).getString("volunteerId"));
         assertEquals("s1", unitRemoveItems.getJSONObject(0).getString("schoolId"));
         assertEquals(Double.valueOf(35D), unitRemoveItems.getJSONObject(0).getDouble("admissionRatio"));
-    }
-
-    @Test
-    void shouldPersistOrderedItemMoveInMutableStateForMajorMode() {
-        AtomicReference<ChatSessionExtraData> planningStateRef = bindPlanningStateStore();
-        PlanningStateDTO state = new PlanningStateDTO();
-        state.setSessionId(1L);
-        state.setVersion(3);
-        CandidatePoolStateDTO candidatePoolState = new CandidatePoolStateDTO();
-        candidatePoolState.setVolunteerModel(VolunteerModel.major.name());
-        candidatePoolState.getItems().add(buildCandidateItem("ps1_m1", "ps1", "s1", "学校A", "冲", "专业A", 35D, 60D, 35D, false));
-        candidatePoolState.getItems().add(buildCandidateItem("ps2_m2", "ps2", "s2", "学校B", "稳", "专业B", 45D, 80D, 45D, false));
-        state.setCandidatePoolState(candidatePoolState);
-        OrderedPlanStateDTO orderedPlanState = new OrderedPlanStateDTO();
-        orderedPlanState.getItems().add(buildOrderedItem("ps1_m1", "学校A", "专业A", "冲", 1));
-        orderedPlanState.getItems().add(buildOrderedItem("ps2_m2", "学校B", "专业B", "稳", 2));
-        state.setOrderedPlanState(orderedPlanState);
-        ReflectionTestUtils.invokeMethod(planningStateService, "recalculateOrderedSummary", orderedPlanState, candidatePoolState);
-        saveStateToStore(1L, state);
-        Mockito.clearInvocations(chatSessionExtraDataSharedService);
-
-        OrderedMoveReq moveReq = new OrderedMoveReq();
-        moveReq.setVolunteerId("ps2_m2");
-        moveReq.setTargetPosition(1);
-        PlanningStateDTO moved = planningStateService.moveOrderedItem(1L, moveReq);
-
-        assertEquals(Integer.valueOf(4), moved.getVersion());
-        assertEquals("ps2_m2", moved.getOrderedPlanState().getItems().get(0).getVolunteerId());
-        PlanningStateDTO baseState = JSONObject.parseObject(planningStateRef.get().getDataValue(), PlanningStateDTO.class);
-        assertEquals("ps1_m1", baseState.getOrderedPlanState().getItems().get(0).getVolunteerId());
-        ArgumentCaptor<ChatSessionExtraData> saveCaptor = ArgumentCaptor.forClass(ChatSessionExtraData.class);
-        verify(chatSessionExtraDataSharedService, times(1)).save(saveCaptor.capture());
-        assertEquals(ChatSessionExtraDataConstants.PLANNING_MUTABLE_STATE_KEY, saveCaptor.getValue().getDataKey());
-        verify(chatSessionExtraDataSharedService, never()).updateById(any(ChatSessionExtraData.class));
-
-        PlanningStateDTO reloaded = planningStateService.getPlanningState(1L);
-        assertEquals(Integer.valueOf(4), reloaded.getVersion());
-        assertEquals("ps2_m2", reloaded.getOrderedPlanState().getItems().get(0).getVolunteerId());
-        assertTrue(reloaded.getStaleFlags().getReview());
-    }
-
-    @Test
-    void shouldPersistOrderedUnitRemoveInMutableStateForMajorGroupMode() {
-        bindPlanningStateStore();
-        PlanningStateDTO state = new PlanningStateDTO();
-        state.setSessionId(1L);
-        state.setVersion(7);
-        CandidatePoolStateDTO candidatePoolState = new CandidatePoolStateDTO();
-        candidatePoolState.setVolunteerModel(VolunteerModel.majorGroup.name());
-        candidatePoolState.getItems().add(buildCandidateItem("ps1_m1", "ps1", "s1", "学校A", "冲", "专业A1", 35D, 60D, 35D, false));
-        candidatePoolState.getItems().add(buildCandidateItem("ps1_m2", "ps1", "s1", "学校A", "冲", "专业A2", 33D, 58D, 35D, false));
-        candidatePoolState.getItems().add(buildCandidateItem("ps2_m3", "ps2", "s2", "学校B", "稳", "专业B1", 45D, 90D, 45D, false));
-        state.setCandidatePoolState(candidatePoolState);
-
-        DraftPlanStateDTO draftPlanState = new DraftPlanStateDTO();
-        draftPlanState.getItems().add(buildDraftItem("ps1_m1", "学校A", "专业A1", "冲"));
-        draftPlanState.getItems().add(buildDraftItem("ps1_m2", "学校A", "专业A2", "冲"));
-        draftPlanState.getItems().add(buildDraftItem("ps2_m3", "学校B", "专业B1", "稳"));
-        ReflectionTestUtils.invokeMethod(planningStateService, "syncDraftUnitsWithItems", draftPlanState, candidatePoolState.getItems(), candidatePoolState);
-        ReflectionTestUtils.invokeMethod(planningStateService, "recalculateDraftSummary", draftPlanState, candidatePoolState);
-        state.setDraftPlanState(draftPlanState);
-
-        OrderedPlanStateDTO orderedPlanState = new OrderedPlanStateDTO();
-        orderedPlanState.getItems().add(buildOrderedItem("ps1_m1", "学校A", "专业A1", "冲", 1));
-        orderedPlanState.getItems().add(buildOrderedItem("ps1_m2", "学校A", "专业A2", "冲", 2));
-        orderedPlanState.getItems().add(buildOrderedItem("ps2_m3", "学校B", "专业B1", "稳", 3));
-        orderedPlanState.setUnits(ReflectionTestUtils.invokeMethod(planningStateService,
-                "buildOrderedUnitsFromOrderedItems", orderedPlanState.getItems(), draftPlanState, candidatePoolState.getItems()));
-        state.setOrderedPlanState(orderedPlanState);
-        ReflectionTestUtils.invokeMethod(planningStateService, "recalculateOrderedSummary", orderedPlanState, candidatePoolState);
-        saveStateToStore(1L, state);
-        Mockito.clearInvocations(chatSessionExtraDataSharedService);
-
-        OrderedUnitRemoveReq removeReq = new OrderedUnitRemoveReq();
-        removeReq.setUnitIds(java.util.Arrays.asList("ps1"));
-        PlanningStateDTO removed = planningStateService.removeOrderedUnits(1L, removeReq);
-
-        assertEquals(Integer.valueOf(8), removed.getVersion());
-        assertEquals(1, removed.getOrderedPlanState().getItems().size());
-        assertEquals(1, removed.getDraftPlanState().getItems().size());
-        ArgumentCaptor<ChatSessionExtraData> saveCaptor = ArgumentCaptor.forClass(ChatSessionExtraData.class);
-        verify(chatSessionExtraDataSharedService, times(1)).save(saveCaptor.capture());
-        assertEquals(ChatSessionExtraDataConstants.PLANNING_MUTABLE_STATE_KEY, saveCaptor.getValue().getDataKey());
-
-        PlanningStateDTO reloaded = planningStateService.getPlanningState(1L);
-        assertEquals(Integer.valueOf(8), reloaded.getVersion());
-        assertEquals("ps2_m3", reloaded.getOrderedPlanState().getItems().get(0).getVolunteerId());
-        assertEquals("ps2_m3", reloaded.getDraftPlanState().getItems().get(0).getVolunteerId());
-        assertEquals(1, reloaded.getOrderedPlanState().getUnits().size());
-        assertEquals(1, reloaded.getDraftPlanState().getUnits().size());
-    }
-
-    @Test
-    void shouldIgnoreStalePlanningMutableStateVersion() {
-        bindPlanningStateStore();
-        PlanningStateDTO base = new PlanningStateDTO();
-        base.setSessionId(1L);
-        base.setVersion(5);
-        OrderedPlanStateDTO baseOrdered = new OrderedPlanStateDTO();
-        baseOrdered.getItems().add(buildOrderedItem("base_m1", "学校A", "专业A", "冲", 1));
-        base.setOrderedPlanState(baseOrdered);
-        saveStateToStore(1L, base);
-
-        PlanningMutableStateDTO staleMutable = new PlanningMutableStateDTO();
-        staleMutable.setVersion(4);
-        staleMutable.setPhase("ordered");
-        OrderedPlanStateDTO staleOrdered = new OrderedPlanStateDTO();
-        staleOrdered.getItems().add(buildOrderedItem("stale_m1", "学校B", "专业B", "稳", 1));
-        staleMutable.setOrderedPlanState(staleOrdered);
-        ChatSessionExtraData mutableData = new ChatSessionExtraData();
-        mutableData.setChatSessionId(1L);
-        mutableData.setDataKey(ChatSessionExtraDataConstants.PLANNING_MUTABLE_STATE_KEY);
-        mutableData.setDataValue(JSONObject.toJSONString(staleMutable));
-        chatSessionExtraDataSharedService.save(mutableData);
-
-        PlanningStateDTO loaded = planningStateService.getPlanningState(1L);
-
-        assertEquals(Integer.valueOf(5), loaded.getVersion());
-        assertEquals("base_m1", loaded.getOrderedPlanState().getItems().get(0).getVolunteerId());
     }
 
     @Test
@@ -4210,14 +4089,6 @@ public class PlanningStateServiceTest {
         return stored;
     }
 
-    private ChatSessionExtraData storedStateFrom(PlanningStateDTO state) {
-        ChatSessionExtraData stored = new ChatSessionExtraData();
-        stored.setDataKey(ChatSessionExtraDataConstants.PLANNING_STATE_KEY);
-        stored.setDataValue(JSONObject.toJSONString(state));
-        reset(chatSessionExtraDataSharedService);
-        return stored;
-    }
-
     private VolunteerRecommendListResponse.VolunteerSchool buildSchool(String planSchoolDataId, String schoolId,
                                                                        String schoolName, String provinceName,
                                                                        Integer rankInTier,
@@ -4505,43 +4376,25 @@ public class PlanningStateServiceTest {
     }
 
     private AtomicReference<ChatSessionExtraData> bindPlanningStateStore(Long chatSessionId) {
-        Map<String, AtomicReference<ChatSessionExtraData>> store = new HashMap<String, AtomicReference<ChatSessionExtraData>>();
         AtomicReference<ChatSessionExtraData> planningStateRef = new AtomicReference<ChatSessionExtraData>();
-        store.put(ChatSessionExtraDataConstants.PLANNING_STATE_KEY, planningStateRef);
-        when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(chatSessionId), Mockito.argThat(dataKey ->
-                ChatSessionExtraDataConstants.PLANNING_STATE_KEY.equals(dataKey)
-                        || ChatSessionExtraDataConstants.PLANNING_MUTABLE_STATE_KEY.equals(dataKey))))
-                .thenAnswer(invocation -> {
-                    String dataKey = invocation.getArgument(1);
-                    AtomicReference<ChatSessionExtraData> ref = store.get(dataKey);
-                    return ref == null ? null : ref.get();
-                });
+        when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(chatSessionId), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
+                .thenAnswer(invocation -> planningStateRef.get());
         doAnswer(invocation -> {
             ChatSessionExtraData data = invocation.getArgument(0);
             ChatSessionExtraData stored = new ChatSessionExtraData();
             stored.setChatSessionId(data.getChatSessionId());
-            stored.setDataKey(data.getDataKey());
+            stored.setDataKey(ChatSessionExtraDataConstants.PLANNING_STATE_KEY);
             stored.setDataValue(data.getDataValue());
-            AtomicReference<ChatSessionExtraData> ref = store.get(data.getDataKey());
-            if (ref == null) {
-                ref = new AtomicReference<ChatSessionExtraData>();
-                store.put(data.getDataKey(), ref);
-            }
-            ref.set(stored);
+            planningStateRef.set(stored);
             return true;
         }).when(chatSessionExtraDataSharedService).save(any(ChatSessionExtraData.class));
         doAnswer(invocation -> {
             ChatSessionExtraData data = invocation.getArgument(0);
             ChatSessionExtraData stored = new ChatSessionExtraData();
             stored.setChatSessionId(data.getChatSessionId());
-            stored.setDataKey(data.getDataKey());
+            stored.setDataKey(ChatSessionExtraDataConstants.PLANNING_STATE_KEY);
             stored.setDataValue(data.getDataValue());
-            AtomicReference<ChatSessionExtraData> ref = store.get(data.getDataKey());
-            if (ref == null) {
-                ref = new AtomicReference<ChatSessionExtraData>();
-                store.put(data.getDataKey(), ref);
-            }
-            ref.set(stored);
+            planningStateRef.set(stored);
             return true;
         }).when(chatSessionExtraDataSharedService).updateById(any(ChatSessionExtraData.class));
         return planningStateRef;

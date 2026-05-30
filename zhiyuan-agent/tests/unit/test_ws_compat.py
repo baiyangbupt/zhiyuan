@@ -476,32 +476,21 @@ def test_ws_compat_structured_session_query_state_returns_rich_text_without_work
                 "content": "看看现在的方案",
                 "inputType": "text",
             })
-            responses = []
-            resp = None
-            for _ in range(4):
-                item = ws.receive_json()
-                responses.append(item)
-                if item.get("type") == "text" and item.get("end") is True:
-                    resp = item
-                    break
+            resp = ws.receive_json()
 
-    assert resp is not None, responses
-    thinking_contents = [item.get("content") for item in responses if item.get("type") == "thinking"]
-    assert "正在读取当前方案并整理这次请求..." in thinking_contents
-    assert "正在整理当前方案的数量、梯度和风险..." in thinking_contents
     assert resp["type"] == "text"
     assert resp["end"] is True
     content = resp["content"]
-    assert "方案已经有了" in content
-    assert "45/45" in content
-    assert "冲18 / 稳13 / 保14" in content
-    assert "暂时没有明显风险" in content
+    assert "我看了当前方案，核心情况如下" in content
+    assert "- 完整度：45/45 个志愿。" in content
+    assert "- 冲稳保：冲18 / 稳13 / 保14。" in content
+    assert "- 审查：暂时没有明显风险。" in content
     assert "贴近偏好的例子" in content
     assert "北京财经学院-财政学(冲)第1位" in content
     assert "方案前几个志愿" not in content
     assert "@1" not in content
     assert "(unknown)" not in content
-    assert fake_agent.calls == []
+    assert fake_agent.tool_results[0]["workspace_refresh_targets"] == []
     saved_types = [call.kwargs.get("ws_type") for call in mock_store.save_agent_message.await_args_list]
     assert "planningWorkspaceAction" not in saved_types
 
@@ -765,46 +754,6 @@ def test_ws_compat_timeout_uses_plan_execution_fallback_and_followup(client):
     mock_builder.assert_called_once_with("sess-timeout", "帮我审查一下当前方案")
 
 
-def test_ws_compat_timeout_uses_pending_intent_fallback_after_plan_miss(client):
-    mock_service = AsyncMock()
-    mock_service.handle_message = AsyncMock(side_effect=asyncio.TimeoutError())
-    mock_service.handle_intent_select = AsyncMock()
-    client.app.state.chat_service = mock_service
-
-    fallback = ChatServiceResponseEnvelope(
-        primary="我已经把这次提到的想法整理成待确认内容了。\n\n- 确认后，将把法学类作为后续优先参考的专业方向\n- 确认后，将把护理学类作为明确不考虑的内容，后续查看候选和方案时会按这个要求作为参考\n\n如果确认要作为后续参考，直接回复“确认这个要求”。确认前不会写入后续参考，也不会直接改动当前方案。",
-    )
-
-    with client.websocket_connect(WS_PATH) as ws:
-        with patch("app.server.message_store") as mock_store, \
-                patch(
-                    "app.server.build_timeout_fallback_from_recent_plan_execution",
-                    return_value=None,
-                ) as plan_builder, \
-                patch(
-                    "app.server.build_timeout_fallback_from_pending_intent_preview",
-                    AsyncMock(return_value=fallback),
-                ) as intent_builder:
-            mock_store.save_user_message = AsyncMock(return_value=1)
-            mock_store.save_agent_message = AsyncMock(return_value=2)
-
-            ws.send_json({
-                "sessionId": "sess-intent-timeout",
-                "userId": "user-intent-timeout",
-                "content": "我倾向法学，但护理不要",
-                "inputType": "text",
-            })
-            resp = ws.receive_json()
-
-    assert resp["type"] == "text"
-    assert "待确认" in resp["content"]
-    assert "法学类" in resp["content"]
-    assert "护理学类" in resp["content"]
-    assert "确认前不会写入后续参考" in resp["content"]
-    plan_builder.assert_called_once_with("sess-intent-timeout", "我倾向法学，但护理不要")
-    intent_builder.assert_awaited_once_with("sess-intent-timeout", "我倾向法学，但护理不要")
-
-
 def test_ws_compat_timeout_without_plan_execution_fallback_returns_generic_reply(client):
     mock_service = AsyncMock()
     mock_service.handle_message = AsyncMock(side_effect=asyncio.TimeoutError())
@@ -812,15 +761,10 @@ def test_ws_compat_timeout_without_plan_execution_fallback_returns_generic_reply
     client.app.state.chat_service = mock_service
 
     with client.websocket_connect(WS_PATH) as ws:
-        with patch("app.server.message_store") as mock_store, \
-                patch(
-                    "app.server.build_timeout_fallback_from_recent_plan_execution",
-                    return_value=None,
-                ) as mock_builder, \
-                patch(
-                    "app.server.build_timeout_fallback_from_pending_intent_preview",
-                    AsyncMock(return_value=None),
-                ) as intent_builder:
+        with patch("app.server.message_store") as mock_store, patch(
+            "app.server.build_timeout_fallback_from_recent_plan_execution",
+            return_value=None,
+        ) as mock_builder:
             mock_store.save_user_message = AsyncMock(return_value=1)
             mock_store.save_agent_message = AsyncMock(return_value=2)
 
@@ -834,5 +778,6 @@ def test_ws_compat_timeout_without_plan_execution_fallback_returns_generic_reply
 
     assert resp["type"] == "text"
     assert "这次分析耗时有点长" in resp["content"]
+    assert "帮我审查一下当前方案" in resp["content"]
+    assert "不会自动写入偏好或改动方案" in resp["content"]
     mock_builder.assert_called_once_with("sess-timeout-none", "帮我审查一下当前方案")
-    intent_builder.assert_awaited_once_with("sess-timeout-none", "帮我审查一下当前方案")

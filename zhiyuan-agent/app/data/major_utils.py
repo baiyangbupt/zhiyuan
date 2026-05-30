@@ -2,6 +2,12 @@
 
 import itertools
 
+from app.data.major_aliases import resolve_major_alias_candidates_for_text
+
+
+def _resolve_alias_major_names(chat_content: str) -> list[str]:
+    return resolve_major_alias_candidates_for_text(chat_content)
+
 
 def filter_major_hierarchy_by_prefix(
     chat_history: list[dict],
@@ -37,9 +43,11 @@ def filter_major_hierarchy_by_prefix(
     """
     chat_content = '\n'.join([msg.get('content', '') for msg in chat_history])
     reserved_line_numbers: list[int] = []
+    alias_included = _resolve_alias_major_names(chat_content)
 
     # Find categories (level1) mentioned in chat
     category_included = [cat for cat in category_line_map.keys() if cat in chat_content]
+    category_included.extend([name for name in alias_included if name in category_line_map])
     for category in category_included:
         # category_line_map includes the category line and all its descendant lines
         reserved_line_numbers.extend(category_line_map[category])
@@ -52,6 +60,7 @@ def filter_major_hierarchy_by_prefix(
     )
 
     # Filter to only subcategories that exist in subcategory_line_map
+    subcategory_included.extend(alias_included)
     subcategory_included = [s for s in subcategory_included if s in subcategory_line_map]
 
     for subcategory in subcategory_included:
@@ -66,6 +75,7 @@ def filter_major_hierarchy_by_prefix(
     )
 
     # Filter to only majors that exist in major_line_map
+    major_included.extend(alias_included)
     major_included = [m for m in major_included if m in major_line_map]
 
     for major in major_included:
@@ -122,4 +132,3 @@ def fuzzy_match_major_name(
                 seen.add(name)
 
     return candidates[:max_candidates]
-

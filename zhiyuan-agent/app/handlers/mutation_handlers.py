@@ -85,6 +85,7 @@ async def handle_add_units(
                 state_summary=state_summary,
                 summary=state_summary,
                 reply_focus=["already_in_plan"],
+                reply_strategy="direct_reply",
                 next_step_hints=["告诉用户目标已经在方案中，不要说已新增。可提示当前位置或建议继续排序/调整。"],
             )
         if missing_refs or not resolved_ids:
@@ -101,6 +102,7 @@ async def handle_add_units(
                 state_summary=_candidate_ref_resolution_message(missing_text),
                 summary=_candidate_ref_resolution_message(missing_text),
                 reply_focus=["missing_inputs", "needs_candidate_selection"],
+                reply_strategy="direct_blocking",
                 next_step_hints=["先定位候选池里的真实 volunteerId，再执行加入方案。"],
             )
         state_summary = await select_planning_ordered_items(ctx, resolved_ids, source="plan_execution")
@@ -130,6 +132,7 @@ async def handle_add_units(
                 state_summary=state_summary,
                 summary=state_summary,
                 reply_focus=["no_candidates", "needs_candidate_selection"],
+                reply_strategy="direct_reply",
                 next_step_hints=["告诉用户当前条件下没有找到可加入方案的候选，不要说已新增；可以建议先放宽补入条件或明确候选。"],
             )
 
@@ -207,6 +210,7 @@ async def handle_remove_units(
         state_summary=state_summary,
         summary=state_summary,
         reply_focus=reply_focus,
+        reply_strategy="direct_blocking" if result_kind == "error" and "needs_volunteer_selection" in reply_focus else None,
         next_step_hints=next_step_hints,
     )
 
@@ -256,6 +260,7 @@ async def handle_move_unit(
         state_summary=state_summary,
         summary=state_summary,
         reply_focus=reply_focus,
+        reply_strategy="direct_blocking" if result_kind == "error" and "needs_volunteer_selection" in reply_focus else None,
         next_step_hints=next_step_hints,
     )
 
@@ -305,6 +310,7 @@ async def handle_pin_unit(
         state_summary=state_summary,
         summary=state_summary,
         reply_focus=reply_focus,
+        reply_strategy="direct_blocking" if result_kind == "error" and "needs_volunteer_selection" in reply_focus else None,
         next_step_hints=next_step_hints,
     )
 
@@ -353,6 +359,7 @@ async def handle_unpin_unit(
         state_summary=state_summary,
         summary=state_summary,
         reply_focus=reply_focus,
+        reply_strategy="direct_blocking" if result_kind == "error" and "needs_volunteer_selection" in reply_focus else None,
         next_step_hints=next_step_hints,
     )
 
@@ -465,6 +472,7 @@ async def handle_replace_units(
         state_summary=state_summary,
         summary=state_summary,
         reply_focus=reply_focus,
+        reply_strategy="direct_blocking" if result_kind == "error" and "needs_volunteer_selection" in reply_focus else None,
         next_step_hints=next_step_hints,
     )
 

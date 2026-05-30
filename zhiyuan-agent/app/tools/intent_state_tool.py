@@ -25,6 +25,10 @@ from app.domain.career_slots import (
     to_career_label,
     to_career_labels,
 )
+from app.domain.major_entity_resolver import (
+    append_major_mentions_to_payload,
+    resolve_major_mentions_from_text,
+)
 from app.services.profile_manager import ProfileManager
 from app.tools.intent_relation_tool import (
     build_impact_preview_from_analysis as _build_impact_preview_from_analysis,
@@ -391,7 +395,7 @@ def _build_select_items(
                     })
                 else:
                     items.append({
-                        "content": f"确认后，将把{name}作为后续优先参考的专业方向。",
+                        "content": f"将{name}更新为偏好方向，后续专家推荐会更优先考虑它。",
                         "value": {"major_intents": {level: [name]}},
                         "selected": True,
                     })
@@ -411,9 +415,9 @@ def _build_select_items(
                 else:
                     items.append({
                         "content": (
-                            f"确认后，将把{name}作为后续尽量降低优先级的专业方向。"
+                            f"将{name}设为排除方向，后续专家推荐会降低它的优先级。"
                             if intent_mode == INTENT_MODE_PREFERENCE
-                            else f"确认后，将把{name}作为明确不考虑的内容，后续查看候选和方案时会按这个要求作为参考。"
+                            else f"把{name}记成明确不考虑的内容，后面看候选和方案时都会按这个要求来。"
                         ),
                         "value": {"major_intents": {level: [name]}},
                         "selected": True,
@@ -435,7 +439,7 @@ def _build_select_items(
                     })
                 else:
                     items.append({
-                        "content": f"确认后，将把{name}作为后续优先参考的院校。",
+                        "content": f"将{name}更新为偏好院校，后续专家推荐会更优先考虑它。",
                         "value": {"school_intents": {sub_key: [name]}},
                         "selected": True,
                     })
@@ -455,9 +459,9 @@ def _build_select_items(
                 else:
                     items.append({
                         "content": (
-                            f"确认后，将把{name}作为后续尽量降低优先级的院校。"
+                            f"将{name}设为排除院校，后续专家推荐会降低它的优先级。"
                             if intent_mode == INTENT_MODE_PREFERENCE
-                            else f"确认后，将把{name}作为明确不考虑的院校，后续查看候选和方案时会按这个要求作为参考。"
+                            else f"把{name}记成明确不考虑的院校，后面看候选和方案时都会按这个要求来。"
                         ),
                         "value": {"school_intents": {sub_key: [name]}},
                         "selected": True,
@@ -479,7 +483,7 @@ def _build_select_items(
                     })
                 else:
                     items.append({
-                        "content": f"确认后，将把{name}作为后续优先参考的地域。",
+                        "content": f"将{name}更新为偏好地域，后续专家推荐会更优先考虑它。",
                         "value": {"city_intents": {sub_key: [name]}},
                         "selected": True,
                     })
@@ -499,9 +503,9 @@ def _build_select_items(
                 else:
                     items.append({
                         "content": (
-                            f"确认后，将把{name}作为你暂时不太想去的地区，后续查看方案时会尽量往后放。"
+                            f"先把{name}记成你暂时不太想去的地区，后面给你看方案时会尽量往后放。"
                             if intent_mode == INTENT_MODE_PREFERENCE
-                            else f"确认后，将把{name}作为明确不考虑的地区，后续查看候选和方案时会按这个要求作为参考。"
+                            else f"把{name}记成明确不考虑的地区，后面看候选和方案时都会按这个要求来。"
                         ),
                         "value": {"city_intents": {sub_key: [name]}},
                         "selected": True,
@@ -515,7 +519,7 @@ def _build_select_items(
             for value in values:
                 label = to_career_label(value)
                 items.append({
-                    "content": f"确认后，将把“{label}”作为你更看重的方向，后续我会优先按这个思路帮你看方案。",
+                    "content": f"把“{label}”记成你更看重的方向，后面我会优先按这个思路帮你看方案。",
                     "value": {"career_intents": {sub_key: [value]}},
                     "selected": True,
                 })
@@ -527,7 +531,7 @@ def _build_select_items(
             for value in values:
                 label = to_career_label(value)
                 items.append({
-                    "content": f"确认后，将把“{label}”作为你暂时不考虑的方向，后续我会尽量避开这类建议。",
+                    "content": f"把“{label}”记成你暂时不考虑的方向，后面我会尽量避开这类建议。",
                     "value": {"career_intents": {sub_key: [value]}},
                     "selected": True,
                 })
@@ -585,9 +589,9 @@ def _build_preview_title(
         return "你提到的这个方向，我先结合你现在的情况做个初步分析。"
 
     if intent_mode == INTENT_MODE_CONSTRAINT:
-        suffix = "确认前不会写入后续参考，也不会直接改动当前方案。"
+        suffix = "你可以勾选想采纳的内容后点击【采纳】。采纳后，候选结果会按这个要求一起收紧，我也能继续帮你看现在的方案要不要调整。"
     else:
-        suffix = "确认后我会按这个思路继续帮你看方案和给建议。"
+        suffix = "你可以勾选想采纳的内容后点击【采纳】。采纳后，我会按这个思路继续帮你看方案和给建议。"
     if edit_flag:
         # Strip null, translate to Chinese, join
         flags = [
@@ -943,6 +947,165 @@ _LOCAL_MAJOR_COMPARE_SUFFIX_PATTERNS = (
     r"(?:哪个更适合我|哪个更适合|哪个更值得继续看|哪个更值得学|哪个更好|哪个好)$",
     r"(?:怎么选|怎么兼顾)$",
 )
+_LOCAL_MAJOR_CLAUSE_SPLIT_PATTERN = re.compile(r"[，,。；;！？?!\n]+|(?:但是|但|不过|然后|同时)")
+_LOCAL_MAJOR_POSITIVE_MARKERS = (
+    "能接受",
+    "可以接受",
+    "还能接受",
+    "可接受",
+    "可以",
+    "能考虑",
+    "可以考虑",
+    "考虑",
+    "还行",
+    "感兴趣",
+    "喜欢",
+    "想学",
+    "想读",
+    "想报",
+    "保留",
+    "纳入",
+)
+_LOCAL_MAJOR_NEGATIVE_MARKERS = (
+    "别碰",
+    "别要",
+    "别选",
+    "不要",
+    "不考虑",
+    "不想学",
+    "不想读",
+    "不接受",
+    "不感兴趣",
+    "排除",
+    "去掉",
+    "避开",
+)
+
+_LOCAL_MAJOR_READONLY_OR_CLARIFICATION_MARKERS = (
+    "是不是",
+    "算不算",
+    "要不要",
+    "能不能",
+    "该不该",
+    "怎么理解",
+    "什么意思",
+)
+
+
+def _refine_major_boundary_mentions(
+    payload: dict[str, list[str]] | None,
+    utterance: str,
+    batch: str,
+) -> dict[str, list[str]] | None:
+    return _drop_empty_entries(payload)
+
+
+def _recover_polarity_major_intent_locally_from_latest_utterance(
+    utterance: str,
+    batch: str,
+) -> dict[str, list[str]] | None:
+    payload: dict[str, list[str]] = {}
+    for raw_clause in _LOCAL_MAJOR_CLAUSE_SPLIT_PATTERN.split(utterance):
+        clause = str(raw_clause or "").strip()
+        if not clause:
+            continue
+        if any(marker in clause for marker in _LOCAL_MAJOR_READONLY_OR_CLARIFICATION_MARKERS):
+            continue
+        has_negative = any(marker in clause for marker in _LOCAL_MAJOR_NEGATIVE_MARKERS)
+        has_positive = any(marker in clause for marker in _LOCAL_MAJOR_POSITIVE_MARKERS)
+        if has_negative == has_positive:
+            continue
+        mentions = resolve_major_mentions_from_text(clause, batch)
+        if not mentions:
+            continue
+        append_major_mentions_to_payload(payload, mentions, negative=has_negative)
+    return _refine_major_boundary_mentions(_drop_empty_entries(payload), utterance, batch)
+
+
+def _count_major_payload_values(payload: dict[str, Any] | None) -> int:
+    if not payload:
+        return 0
+    return sum(len(_as_string_list(values)) for values in payload.values())
+
+
+def _has_positive_major_values(payload: dict[str, Any] | None) -> bool:
+    return any(_as_string_list((payload or {}).get(level)) for level in ("level1", "level2", "level3"))
+
+
+def _has_negative_major_values(payload: dict[str, Any] | None) -> bool:
+    return any(_as_string_list((payload or {}).get(f"negative_{level}")) for level in ("level1", "level2", "level3"))
+
+
+def _should_replace_major_intents_with_local_payload(
+    existing: dict[str, Any] | None,
+    local_payload: dict[str, Any] | None,
+) -> bool:
+    if not _has_non_empty_payload(local_payload):
+        return False
+    if not _has_non_empty_payload(existing):
+        return True
+
+    local_has_positive = _has_positive_major_values(local_payload)
+    local_has_negative = _has_negative_major_values(local_payload)
+    existing_has_positive = _has_positive_major_values(existing)
+    existing_has_negative = _has_negative_major_values(existing)
+    if local_has_positive and not existing_has_positive:
+        return True
+    if local_has_negative and not existing_has_negative:
+        return True
+
+    existing_count = _count_major_payload_values(existing)
+    local_count = _count_major_payload_values(local_payload)
+    existing_negative_level3 = _as_string_list((existing or {}).get("negative_level3"))
+    if existing_count > max(12, local_count * 4):
+        return True
+    if existing_negative_level3 and len(existing_negative_level3) > 10 and _as_string_list((existing or {}).get("negative_level1")):
+        return True
+    return False
+
+
+def _merge_major_intent_payloads(
+    base: dict[str, Any] | None,
+    supplement: dict[str, Any] | None,
+) -> dict[str, list[str]] | None:
+    merged: dict[str, list[str]] = {}
+    for payload in (base or {}, supplement or {}):
+        for key, values in payload.items():
+            normalized_values = _as_string_list(values)
+            if not normalized_values:
+                continue
+            bucket = merged.setdefault(key, [])
+            for value in normalized_values:
+                if value not in bucket:
+                    bucket.append(value)
+    return merged or None
+
+
+def _refine_major_intents_with_local_latest_utterance(
+    major_intents: dict[str, Any] | None,
+    *,
+    latest_utterance: str,
+    batch: str,
+    recovery_scope: str | None,
+) -> dict[str, Any] | None:
+    if (recovery_scope or "").strip().lower() != "major":
+        return major_intents
+    local_payload = _recover_polarity_major_intent_locally_from_latest_utterance(latest_utterance, batch)
+    if _should_replace_major_intents_with_local_payload(major_intents, local_payload):
+        logger.info(
+            "Major intents refined from latest utterance local recovery: existing_count=%s local=%s",
+            _count_major_payload_values(major_intents),
+            local_payload,
+        )
+        return local_payload
+    merged_payload = _merge_major_intent_payloads(major_intents, local_payload)
+    if merged_payload != major_intents:
+        logger.info(
+            "Major intents supplemented from latest utterance local recovery: existing_count=%s local=%s",
+            _count_major_payload_values(major_intents),
+            local_payload,
+        )
+    return merged_payload
 
 
 def _cleanup_local_major_target(value: str) -> str:
@@ -987,6 +1150,10 @@ async def _recover_major_intent_locally_from_latest_utterance(
     utterance = _latest_user_utterance(ctx).strip()
     if not utterance:
         return None
+
+    polarity_payload = _recover_polarity_major_intent_locally_from_latest_utterance(utterance, batch)
+    if polarity_payload:
+        return polarity_payload
 
     for pattern in _LOCAL_MAJOR_NEGATIVE_PATTERNS:
         match = re.match(pattern, utterance)
@@ -1085,8 +1252,16 @@ async def _recover_intents_from_context(
 ) -> tuple[dict | None, dict | None, dict | None, dict | None]:
     """Best-effort recovery when the model calls intent analysis with empty params."""
     from app.tools.career_intent_tool import extract_career_intent
-    from app.tools.city_intent_tool import extract_city_intent, extract_negative_city_intent
-    from app.tools.major_intent_tool import extract_major_intent, extract_negative_major_intent
+    from app.tools.city_intent_tool import (
+        extract_city_intent,
+        extract_city_intents_with_polarity,
+        extract_negative_city_intent,
+    )
+    from app.tools.major_intent_tool import (
+        extract_major_intent,
+        extract_major_intents_with_polarity,
+        extract_negative_major_intent,
+    )
     from app.tools.school_intent_tool import extract_school_intent
 
     recovered_major: dict[str, Any] = {}
@@ -1105,8 +1280,18 @@ async def _recover_intents_from_context(
 
     if normalized_scope in {"generic", "region", "city"}:
         try:
-            positive_city = json.loads(await extract_city_intent(recovery_ctx))
-            negative_city = json.loads(await extract_negative_city_intent(recovery_ctx))
+            try:
+                city_polarity = json.loads(await extract_city_intents_with_polarity(recovery_ctx))
+                positive_city = city_polarity.get("positive") or {}
+                negative_city = city_polarity.get("negative") or {}
+            except Exception:
+                logger.warning(
+                    "Combined city intent recovery failed, falling back to separate extractors: session_id=%s",
+                    ctx.deps.sessionid,
+                    exc_info=True,
+                )
+                positive_city = json.loads(await extract_city_intent(recovery_ctx))
+                negative_city = json.loads(await extract_negative_city_intent(recovery_ctx))
             for key in ("province", "city", "area"):
                 values = positive_city.get(key, [])
                 if values:
@@ -1126,8 +1311,18 @@ async def _recover_intents_from_context(
             if local_major:
                 recovered_major.update(local_major)
             else:
-                positive_major = json.loads(await extract_major_intent(recovery_ctx))
-                negative_major = json.loads(await extract_negative_major_intent(recovery_ctx))
+                try:
+                    major_polarity = json.loads(await extract_major_intents_with_polarity(recovery_ctx))
+                    positive_major = major_polarity.get("positive") or {}
+                    negative_major = major_polarity.get("negative") or {}
+                except Exception:
+                    logger.warning(
+                        "Combined major intent recovery failed, falling back to separate extractors: session_id=%s",
+                        ctx.deps.sessionid,
+                        exc_info=True,
+                    )
+                    positive_major = json.loads(await extract_major_intent(recovery_ctx))
+                    negative_major = json.loads(await extract_negative_major_intent(recovery_ctx))
                 for key in ("level1", "level2", "level3"):
                     values = positive_major.get(key, [])
                     if values:
@@ -1385,6 +1580,12 @@ async def analyze_volunteer_intent_change(
         school_intents,
         city_intents,
         career_intents,
+    )
+    major_intents = _refine_major_intents_with_local_latest_utterance(
+        major_intents,
+        latest_utterance=latest_utterance,
+        batch=batch,
+        recovery_scope=recovery_scope,
     )
     major_intents = await _normalize_major_intent_names_for_batch(major_intents, batch)
 

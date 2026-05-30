@@ -1,0 +1,333 @@
+"""Reusable major entity resolution backed by the official major hierarchy."""
+
+from __future__ import annotations
+
+from functools import lru_cache
+from typing import Any
+
+from app.data.major_aliases import COMMON_MAJOR_ALIAS_TABLE
+from app.data.major_data import (
+    associate_category_line_map,
+    associate_major_line_map,
+    associate_major_mappings,
+    associate_subcategory_line_map,
+    bachelor_category_line_map,
+    bachelor_major_line_map,
+    bachelor_major_mappings,
+    bachelor_subcategory_line_map,
+)
+from app.domain.entity_resolution import EntityResolutionCandidate, EntityResolutionResult
+
+
+def compact_major_text(value: Any) -> str:
+    return "".join(str(value or "").split()).lower()
+
+
+def major_name_sets_for_batch(batch: str | None) -> dict[str, set[str]]:
+    if batch and batch != "01":
+        return {
+            "level1": set(associate_category_line_map.keys()),
+            "level2": set(associate_subcategory_line_map.keys()),
+            "level3": set(associate_major_line_map.keys()),
+        }
+    return {
+        "level1": set(bachelor_category_line_map.keys()),
+        "level2": set(bachelor_subcategory_line_map.keys()),
+        "level3": set(bachelor_major_line_map.keys()),
+    }
+
+
+def major_parent_mappings_for_batch(batch: str | None) -> dict[str, dict[str, str]]:
+    return associate_major_mappings if batch and batch != "01" else bachelor_major_mappings
+
+
+def _auto_alias_candidates_for_major_name(name: str, level: str) -> set[str]:
+    compact_name = compact_major_text(name)
+    if len(compact_name) < 3:
+        return set()
+    if level == "level2":
+        suffixes = ("学类", "科学类", "工程类", "类")
+    elif level == "level3":
+        suffixes = ("科学与技术", "工程", "技术", "管理", "学")
+    else:
+        suffixes = ()
+
+    aliases: set[str] = set()
+    for suffix in suffixes:
+        compact_suffix = compact_major_text(suffix)
+        if compact_suffix and compact_name.endswith(compact_suffix):
+            alias = compact_name[: -len(compact_suffix)]
+            if len(alias) >= 2:
+                aliases.add(alias)
+    return aliases
+
+
+@lru_cache(maxsize=2)
+def auto_major_alias_index_for_batch(batch: str | None) -> dict[str, tuple[str, str]]:
+    available = major_name_sets_for_batch(batch)
+    raw_index: dict[str, list[tuple[str, str]]] = {}
+    for level in ("level2", "level3"):
+        for name in available[level]:
+            for alias in _auto_alias_candidates_for_major_name(name, level):
+                raw_index.setdefault(alias, []).append((level, name))
+
+    standard_names = {
+        compact_major_text(name)
+        for names in available.values()
+        for name in names
+    }
+    deterministic: dict[str, tuple[str, str]] = {}
+    for alias, candidates in raw_index.items():
+        unique_candidates = list(dict.fromkeys(candidates))
+        if len(unique_candidates) != 1:
+            continue
+        if alias in standard_names:
+            continue
+        deterministic[alias] = unique_candidates[0]
+    return deterministic
+
+
+def _candidate(
+    *,
+    raw_text: str,
+    canonical_name: str,
+    level: str,
+    source: str,
+    confidence: str = "high",
+) -> EntityResolutionCandidate:
+    return EntityResolutionCandidate(
+        entity_type="major",
+        raw_text=raw_text,
+        canonical_name=canonical_name,
+        level=level,
+        source=source,  # type: ignore[arg-type]
+        confidence=confidence,  # type: ignore[arg-type]
+    )
+
+
+def resolve_major_entity(text: str, batch: str | None = "01") -> EntityResolutionResult:
+    """Resolve a single user-facing major expression to official hierarchy nodes.
+
+    The resolver is deterministic and catalog-backed. It returns multiple
+    candidates for intentionally broad aliases such as "财会" instead of choosing
+    an arbitrary concrete major.
+    """
+
+    raw_text = str(text or "").strip()
+    compact = compact_major_text(raw_text)
+    if not compact:
+        return EntityResolutionResult(raw_text=raw_text, entity_type="major")
+
+    available = major_name_sets_for_batch(batch)
+    candidates: list[EntityResolutionCandidate] = []
+    seen: set[tuple[str, str]] = set()
+
+    def append(level: str, name: str, source: str, confidence: str = "high") -> None:
+        if name not in available.get(level, set()):
+            return
+        key = (level, name)
+        if key in seen:
+            return
+        candidates.append(
+            _candidate(
+                raw_text=raw_text,
+                canonical_name=name,
+                level=level,
+                source=source,
+                confidence=confidence,
+            )
+        )
+        seen.add(key)
+
+    for level in ("level1", "level2", "level3"):
+        for name in available[level]:
+            if compact_major_text(name) == compact:
+                append(level, name, "exact")
+
+    aliases_by_level = COMMON_MAJOR_ALIAS_TABLE.get(compact)
+    if aliases_by_level:
+        level1_candidates = [name for name in aliases_by_level.get("level1", ()) if name in available["level1"]]
+        level2_candidates = [name for name in aliases_by_level.get("level2", ()) if name in available["level2"]]
+        level3_candidates = [name for name in aliases_by_level.get("level3", ()) if name in available["level3"]]
+        if len(level3_candidates) == 1:
+            append("level3", level3_candidates[0], "alias")
+        else:
+            for name in level1_candidates:
+                append("level1", name, "alias")
+            for name in level2_candidates:
+                append("level2", name, "alias")
+            for name in level3_candidates:
+                append("level3", name, "alias")
+
+    auto_alias = auto_major_alias_index_for_batch(batch).get(compact)
+    if auto_alias:
+        level, name = auto_alias
+        append(level, name, "auto_alias")
+
+    ambiguous = len({(candidate.level, candidate.canonical_name) for candidate in candidates}) > 1
+    return EntityResolutionResult(
+        raw_text=raw_text,
+        entity_type="major",
+        candidates=tuple(candidates),
+        ambiguous=ambiguous,
+    )
+
+
+def resolve_major_mentions_from_text(text: str, batch: str | None = "01") -> list[EntityResolutionCandidate]:
+    """Find catalog-backed major mentions in a short user utterance."""
+
+    compact_text = compact_major_text(text)
+    if not compact_text:
+        return []
+
+    available = major_name_sets_for_batch(batch)
+    spans: list[tuple[int, int, EntityResolutionCandidate]] = []
+
+    def add_span(start: int, end: int, candidate: EntityResolutionCandidate) -> None:
+        spans.append((start, end, candidate))
+
+    for alias in COMMON_MAJOR_ALIAS_TABLE:
+        compact_alias = compact_major_text(alias)
+        if not compact_alias:
+            continue
+        start = compact_text.find(compact_alias)
+        if start < 0:
+            continue
+        result = resolve_major_entity(alias, batch)
+        candidates = list(result.candidates)
+        level2_candidates = [candidate for candidate in candidates if candidate.level == "level2"]
+        level3_candidates = [candidate for candidate in candidates if candidate.level == "level3"]
+        if len(level3_candidates) > 1 and level2_candidates:
+            candidates = level2_candidates
+        for candidate in candidates:
+            add_span(start, start + len(compact_alias), candidate)
+
+    for alias, (level, name) in auto_major_alias_index_for_batch(batch).items():
+        start = compact_text.find(alias)
+        if start >= 0 and name in available[level]:
+            add_span(
+                start,
+                start + len(alias),
+                _candidate(raw_text=alias, canonical_name=name, level=level, source="auto_alias"),
+            )
+
+    for level in ("level2", "level3", "level1"):
+        for name in available[level]:
+            compact_name = compact_major_text(name)
+            if len(compact_name) < 2:
+                continue
+            start = compact_text.find(compact_name)
+            if start >= 0:
+                add_span(
+                    start,
+                    start + len(compact_name),
+                    _candidate(raw_text=name, canonical_name=name, level=level, source="exact"),
+                )
+
+    priority = {"level2": 0, "level1": 1, "level3": 2}
+    ordered = sorted(
+        spans,
+        key=lambda item: (-(item[1] - item[0]), item[0], priority.get(item[2].level or "", 9), item[2].canonical_name),
+    )
+    selected: list[tuple[int, int, EntityResolutionCandidate]] = []
+    for start, end, candidate in ordered:
+        if any(not (end <= kept_start or start >= kept_end) for kept_start, kept_end, _ in selected):
+            continue
+        selected.append((start, end, candidate))
+    selected.sort(key=lambda item: item[0])
+
+    result: list[EntityResolutionCandidate] = []
+    seen: set[tuple[str | None, str]] = set()
+    for _, _, candidate in selected:
+        key = (candidate.level, candidate.canonical_name)
+        if key in seen:
+            continue
+        result.append(candidate)
+        seen.add(key)
+    return result
+
+
+def major_alias_variants_for_name(name: Any, batch: str | None = "01") -> list[str]:
+    """Return deterministic user-facing aliases for an official major name."""
+
+    raw_name = str(name or "").strip()
+    if not raw_name:
+        return []
+    base_name = re_split_major_base(raw_name)
+    available = major_name_sets_for_batch(batch)
+    variants: list[str] = []
+
+    for alias, aliases_by_level in COMMON_MAJOR_ALIAS_TABLE.items():
+        for level, names in aliases_by_level.items():
+            if base_name in names and base_name in available.get(level, set()):
+                variants.append(alias)
+
+    for alias, (level, canonical_name) in auto_major_alias_index_for_batch(batch).items():
+        if canonical_name == base_name and canonical_name in available.get(level, set()):
+            variants.append(alias)
+
+    target_token = _major_target_token(base_name)
+    if target_token and target_token != base_name:
+        variants.append(target_token)
+    return list(dict.fromkeys(variant for variant in variants if variant and variant != raw_name and variant != base_name))
+
+
+def re_split_major_base(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return text.split("（", 1)[0].split("(", 1)[0].strip()
+
+
+def _major_target_token(value: str) -> str:
+    text = re_split_major_base(value)
+    if text.endswith("类"):
+        return text[:-1].strip()
+    if text.endswith("学") and len(text) > 2:
+        return text[:-1].strip()
+    return text
+
+
+def append_major_mentions_to_payload(
+    payload: dict[str, list[str]],
+    mentions: list[EntityResolutionCandidate],
+    *,
+    negative: bool,
+) -> None:
+    for mention in mentions:
+        if mention.level not in {"level1", "level2", "level3"}:
+            continue
+        key = f"negative_{mention.level}" if negative else mention.level
+        bucket = payload.setdefault(key, [])
+        if mention.canonical_name not in bucket:
+            bucket.append(mention.canonical_name)
+
+
+def build_major_relation_notes(major_intents: dict[str, list[str]] | None, batch: str | None = "01") -> list[str]:
+    """Build generic parent/child notes from the official major hierarchy."""
+
+    if not major_intents:
+        return []
+    mappings = major_parent_mappings_for_batch(batch)
+    level2_to_level1 = mappings.get("level2_to_level1", {})
+    level3_to_level2 = mappings.get("level3_to_level2", {})
+
+    notes: list[str] = []
+    negative_level1 = list(major_intents.get("negative_level1") or [])
+    negative_level2 = list(major_intents.get("negative_level2") or [])
+    negative_level3 = list(major_intents.get("negative_level3") or [])
+
+    for level2 in negative_level2:
+        parent = level2_to_level1.get(level2)
+        if parent and parent in negative_level1:
+            notes.append(f"{level2}属于{parent}门类；如果确认排除{parent}，这个专业类也会一并避开。")
+
+    for level3 in negative_level3:
+        parent_level2 = level3_to_level2.get(level3)
+        parent_level1 = level2_to_level1.get(parent_level2 or "")
+        if parent_level2 and parent_level2 in negative_level2:
+            notes.append(f"{level3}属于{parent_level2}；如果确认排除{parent_level2}，这个具体专业也会一并避开。")
+        elif parent_level1 and parent_level1 in negative_level1:
+            notes.append(f"{level3}属于{parent_level1}门类；如果确认排除{parent_level1}，这个具体专业也会一并避开。")
+
+    return list(dict.fromkeys(notes))

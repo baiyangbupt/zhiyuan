@@ -125,6 +125,188 @@ async def get_major_introduction(
     return f"关于{major_name}，暂未找到匹配的标准专业，你可以根据自身知识进行回答。"
 
 
+async def get_major_introductions(
+    ctx: RunContext[RequestContext],
+    major_names: list[str],
+) -> str:
+    """批量获取多个专业或专业类的介绍事实，用于课程、基础要求和就业方向横向对照。
+
+    适合回答“建筑学和城乡规划要不要美术基础”“几个专业学什么、就业有什么区别”
+    这类多专业只读问题。只有一个专业时，请优先使用 `get_major_introduction`。
+    """
+    logger.info("get_major_introductions called: major_names=%s", major_names)
+
+    batch = ctx.deps.batch
+    is_bachelor = batch is None or batch == "" or batch == "01"
+
+    if is_bachelor:
+        level3_labels = bachelor_level3_labels
+        level3_id_map = bachelor_level3_id_map
+        level2_labels = bachelor_level2_labels
+        level2_id_map = bachelor_level2_id_map
+    else:
+        level3_labels = associate_level3_labels
+        level3_id_map = associate_level3_id_map
+        level2_labels = associate_level2_labels
+        level2_id_map = associate_level2_id_map
+
+    normalized_names: list[str] = []
+    for raw_name in major_names or []:
+        name = str(raw_name or "").strip()
+        if name.endswith("专业"):
+            name = name[:-2]
+        if name and name not in normalized_names:
+            normalized_names.append(name)
+
+    if len(normalized_names) < 2:
+        return "至少需要两个明确专业，才能做专业介绍和基础要求的横向对照。"
+
+    limited_names = normalized_names[:6]
+    plan_title, plan_items = await _load_current_plan(ctx.deps.sessionid)
+    lines: list[str] = [
+        "多专业介绍对照：" + "、".join(limited_names),
+    ]
+    if len(normalized_names) > len(limited_names):
+        lines.append("本次先展示前 6 个专业，避免一次对照过长。")
+
+    lines.extend(["", "专业基础事实："])
+    for major_name in limited_names:
+        try:
+            fact = await _load_major_intro_fact(
+                major_name,
+                level3_labels=level3_labels,
+                level3_id_map=level3_id_map,
+                level2_labels=level2_labels,
+                level2_id_map=level2_id_map,
+            )
+            lines.extend(
+                await _render_major_intro_fact_lines(
+                    ctx.deps.sessionid,
+                    fact,
+                    plan_title=plan_title,
+                    plan_items=plan_items,
+                )
+            )
+        except Exception:
+            logger.exception("批量获取专业信息失败: %s", major_name)
+            lines.append(f"- {major_name}：获取专业信息时发生错误，请稍后重试。")
+
+    lines.extend(
+        [
+            "",
+            "回答使用提示：",
+            "- 横向回答时优先比较学习内容、基础要求、课程训练、就业方向和当前方案/候选承接。",
+            "- 如果用户问美术、制图、体检、选科等具体门槛，要区分“录取门槛”和“入学后的学习要求”，不要把课程训练误说成所有学校都要单独考试。",
+            "",
+            "[数据来源]",
+            "- 数据源：教育部专业目录、高校官方培养方案",
+        ]
+    )
+    return "\n".join(lines)
+
+
+async def _load_major_intro_fact(
+    major_name: str,
+    *,
+    level3_labels: set[str],
+    level3_id_map: dict[str, str],
+    level2_labels: set[str],
+    level2_id_map: dict[str, str],
+) -> dict[str, Any]:
+    if major_name in level3_labels:
+        major_info = await get_major_profile(major_name)
+        return {
+            "found": True,
+            "name": major_name,
+            "level": 3,
+            "major_id": level3_id_map.get(major_name, ""),
+            "overview_label": "培养目标",
+            "overview": major_info.get("trainDemand", ""),
+            "knowledge_label": "知识体系",
+            "knowledge": major_info.get("knowledge", ""),
+            "course_label": "课程体系",
+            "course": major_info.get("course", ""),
+            "employment_label": "就业方向",
+            "employment": major_info.get("jobOrientation", ""),
+        }
+
+    if major_name in level2_labels:
+        major_info = await get_major_category_profile(major_name)
+        return {
+            "found": True,
+            "name": major_name,
+            "level": 2,
+            "major_id": level2_id_map.get(major_name, ""),
+            "overview_label": "专业介绍",
+            "overview": major_info.get("majorOverview", ""),
+            "knowledge_label": "学习重点",
+            "knowledge": "",
+            "course_label": "学习课程",
+            "course": major_info.get("studyCourses", ""),
+            "employment_label": "就业方向",
+            "employment": major_info.get("employmentDirection", ""),
+        }
+
+    return {
+        "found": False,
+        "name": major_name,
+        "level": 0,
+        "major_id": "",
+    }
+
+
+async def _render_major_intro_fact_lines(
+    session_id: str,
+    fact: dict[str, Any],
+    *,
+    plan_title: str,
+    plan_items: list[dict[str, Any]],
+) -> list[str]:
+    major_name = str(fact.get("name") or "")
+    if not fact.get("found"):
+        return [f"- {major_name}：暂未找到匹配的标准专业或专业类。"]
+
+    major_id = str(fact.get("major_id") or "")
+    level = int(fact.get("level") or 0)
+    matched_plan_items = [
+        item for item in plan_items if _matches_major_item(item, major_id, level, major_name)
+    ]
+    candidate_result = await _query_major_candidates(session_id, major_id, level, major_name)
+    candidate_data = candidate_result.get("data") or {}
+    candidate_items = candidate_data.get("items") or []
+    candidate_total = candidate_data.get("total") or 0
+
+    lines = [
+        f"- {major_name}：{fact.get('overview_label')}：{_compact_text(fact.get('overview'))}；"
+        f"{fact.get('knowledge_label')}：{_compact_text(fact.get('knowledge'))}；"
+        f"{fact.get('course_label')}：{_compact_text(fact.get('course'))}；"
+        f"{fact.get('employment_label')}：{_compact_text(fact.get('employment'))}。"
+    ]
+    if matched_plan_items:
+        examples = "；".join(_build_plan_snippet(item) for item in matched_plan_items[:2])
+        lines.append(f"  - {plan_title}中命中 {len(matched_plan_items)} 个相关志愿：{examples}。")
+    else:
+        lines.append(f"  - {plan_title}里暂时没有命中“{major_name}”相关志愿。")
+
+    if candidate_result.get("code") == 0 and candidate_items:
+        examples = "；".join(_build_candidate_snippet(item) for item in candidate_items[:2])
+        lines.append(f"  - 当前候选里还有 {candidate_total} 个相关机会，示例：{examples}。")
+    elif candidate_result.get("code") == 0:
+        lines.append(f"  - 当前候选里暂时没有筛到“{major_name}”相关机会。")
+    else:
+        lines.append("  - 当前候选机会暂时查询失败。")
+    return lines
+
+
+def _compact_text(value: Any, limit: int = 120) -> str:
+    text = " ".join(str(value or "").split())
+    if not text:
+        return "暂无"
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "..."
+
+
 def _extract_plan_items(response: dict[str, Any]) -> list[dict[str, Any]]:
     return (response.get("data") or {}).get("items") or []
 

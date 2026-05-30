@@ -2,6 +2,12 @@
 
 本文记录 `3.0.2` 与 `3.0.3` 的 case 级对照结果，以及补充的质量评分和多模型对照结果。
 
+状态说明：
+
+- 本文件保留的是此前 `3.0.3` 快路径 / semantic shadow 试验期的 first-pass 评估结果，用于历史对照和问题复盘。
+- 2026-05-29 起，运行时代码已回到 `prod-3.0.2` 基线，并已重新跑 88 个 dialogue-derived full agent case。
+- 因此本文件中的 `3.0.3` 结果不能视为当前运行时代码状态；新的基线结论以 `docs/release-3.0.3-agent-effect-performance-deep-dive.md` 的 `4.9 full agent 88 case 基线复盘` 为准。
+
 当前这轮先看：
 
 - 路由是否更稳。

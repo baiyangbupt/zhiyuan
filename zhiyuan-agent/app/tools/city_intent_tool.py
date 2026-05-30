@@ -15,7 +15,7 @@ from app.config import ExtractConfig, LLMConfig
 from app.data.city_data import province_city_hierarchy_text
 from app.data.message_utils import format_messages, trim_last_n_messages
 from app.llm.client import LLMClient
-from app.schemas.city_intent import CityIntentResult, NegativeCityIntentResult
+from app.schemas.city_intent import CityIntentPolarityResult, CityIntentResult, NegativeCityIntentResult
 from app.tools.extraction_json import parse_extraction_json
 
 logger = logging.getLogger(__name__)
@@ -212,6 +212,57 @@ def _build_negative_system_message(chat_history_str: str, student_info: str) -> 
 """
 
 
+def _build_polarity_system_message(chat_history_str: str, student_info: str) -> str:
+    """Construct one-pass positive/negative city intent extraction prompt."""
+    return f"""\
+# 【任务背景】
+你是一个专业的省份和城市实体提取工具，需要根据学生与规划师的当前对话，同时提取正面地域意向和负面地域意向。
+
+# 【学生信息】
+{student_info}
+
+# 【对话历史】
+{chat_history_str}
+
+# 抽取任务和规则
+1. positive 表示学生想去、考虑、接受、喜欢、希望加入或排序靠前的省份/城市。
+2. negative 表示学生不想去、不考虑、不接受、不喜欢、希望删除或排序靠后的省份/城市。
+3. 只抽取学生明确表达的地域意向。闲聊、举例、学校名称中包含的省市不要抽取，例如“江西财经”不能抽取“江西”。
+4. 同一个省份或城市不能同时出现在 positive 和 negative；若态度发生变化，按最后一次明确态度处理。
+5. 直辖市北京、天津、上海、重庆放入 province，不放入 city。
+6. 若用户只表达省份意向，放入 province；若精确到城市，放入 city，其对应省份不用额外返回。
+7. 地域泛称按常识展开，但必须返回【省市层级结构】里的实体，例如江浙沪对应江苏、浙江、上海。
+8. 无法确定或不存在的地域不要返回。
+
+# 【省市层级结构】
+```
+{province_city_hierarchy_text}
+```
+
+# 【返回格式】
+只返回 JSON，不要解释：
+{{
+  "positive": {{
+    "province": [],
+    "city": [],
+    "area": []
+  }},
+  "negative": {{
+    "province": [],
+    "city": []
+  }}
+}}
+"""
+
+
+def _empty_city_result() -> dict[str, list[str]]:
+    return {"province": [], "city": [], "area": []}
+
+
+def _empty_negative_city_result() -> dict[str, list[str]]:
+    return {"province": [], "city": []}
+
+
 async def extract_city_intent(
     ctx: RunContext[RequestContext],
     **kwargs,
@@ -348,4 +399,58 @@ async def extract_negative_city_intent(
         return result_json
     except Exception:
         logger.exception("extract_negative_city_intent: LLM extraction failed")
+        raise
+
+
+async def extract_city_intents_with_polarity(
+    ctx: RunContext[RequestContext],
+    **kwargs,
+) -> str:
+    """Extract positive and negative city intents in one model call."""
+    chat_history = ctx.deps.chat_history
+    score_detail = ctx.deps.score_detail
+
+    logger.info(
+        "extract_city_intents_with_polarity called: chat_history_len=%d, has_score_detail=%s",
+        len(chat_history) if chat_history else 0,
+        score_detail is not None,
+    )
+
+    if not chat_history:
+        logger.warning("extract_city_intents_with_polarity: chat_history is empty, returning empty result")
+        return json.dumps(
+            {"positive": _empty_city_result(), "negative": _empty_negative_city_result()},
+            ensure_ascii=False,
+        )
+
+    student_info = _format_student_info(score_detail)
+    config = _get_extract_config()
+    trimmed_history = trim_last_n_messages(chat_history, config.last_n_messages)
+    logger.info(
+        "extract_city_intents_with_polarity: trimmed chat_history from %d to %d messages (last_n=%d)",
+        len(chat_history), len(trimmed_history), config.last_n_messages,
+    )
+
+    chat_history_str = format_messages(trimmed_history)
+    system_message = _build_polarity_system_message(chat_history_str, student_info)
+    llm_client = _get_extraction_client()
+    logger.info("extract_city_intents_with_polarity: calling LLM for extraction...")
+
+    extraction_agent = Agent(
+        model=llm_client.model,
+        output_type=str,
+        instructions=system_message,
+    )
+
+    try:
+        result = await extraction_agent.run("请同时提取正面和负面地域意向", model_settings={"temperature": 0})
+        result_data = parse_extraction_json(result.output, CityIntentPolarityResult).model_dump()
+        logger.info(
+            "extract_city_intents_with_polarity: LLM extraction complete - positive=%s negative=%s",
+            result_data["positive"],
+            result_data["negative"],
+        )
+        return json.dumps(result_data, ensure_ascii=False)
+    except Exception:
+        logger.exception("extract_city_intents_with_polarity: LLM extraction failed")
         raise

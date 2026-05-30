@@ -902,14 +902,6 @@ async def _load_visible_plan_states(
     return ordered_state, draft_state
 
 
-def _format_intent_summary_values(values: list[str], *, limit: int = 3) -> str:
-    display_values = [str(value).strip() for value in values[:limit] if str(value).strip()]
-    text = ",".join(display_values)
-    if len(values) > limit:
-        text = f"{text}等{len(values)}项" if text else f"共{len(values)}项"
-    return text
-
-
 def _build_plan_intent_relation_lines(
     planning_state: dict[str, Any] | None,
     plan_items: list[dict[str, Any]] | None,
@@ -928,19 +920,19 @@ def _build_plan_intent_relation_lines(
 
     summary_parts: list[str] = []
     if positive_majors:
-        summary_parts.append(f"偏好专业={_format_intent_summary_values(positive_majors)}")
+        summary_parts.append(f"偏好专业={','.join(positive_majors[:3])}")
     if negative_majors:
-        summary_parts.append(f"排除专业={_format_intent_summary_values(negative_majors)}")
+        summary_parts.append(f"排除专业={','.join(negative_majors[:3])}")
     if positive_schools:
-        summary_parts.append(f"偏好院校={_format_intent_summary_values(positive_schools)}")
+        summary_parts.append(f"偏好院校={','.join(positive_schools[:3])}")
     if negative_schools:
-        summary_parts.append(f"排除院校={_format_intent_summary_values(negative_schools)}")
+        summary_parts.append(f"排除院校={','.join(negative_schools[:3])}")
     if positive_regions:
-        summary_parts.append(f"偏好地域={_format_intent_summary_values(positive_regions)}")
+        summary_parts.append(f"偏好地域={','.join(positive_regions[:3])}")
     if negative_regions:
-        summary_parts.append(f"排除地域={_format_intent_summary_values(negative_regions)}")
+        summary_parts.append(f"排除地域={','.join(negative_regions[:3])}")
     if career_types:
-        summary_parts.append(f"发展方向={_format_intent_summary_values(career_types, limit=2)}")
+        summary_parts.append(f"发展方向={','.join(career_types[:2])}")
 
     if not summary_parts:
         return []
@@ -1030,29 +1022,15 @@ def _format_review_result(
     summary = review_state.get("summary") or {}
     checks = review_state.get("checks") or []
     compensation_preview = review_state.get("compensationPreview") or {}
-    failed_checks = _review_failed_summaries(checks)
-    tier_counts = summary.get("tierCounts") or summary.get("unitTierCounts") or {}
-    total_checks = int(summary.get("riskCount") or 0) + int(summary.get("warnCount") or 0) + int(summary.get("passedCount") or 0)
-    review_distribution = []
-    if tier_counts:
-        review_distribution.append(f"冲稳保分布：{_format_tier_counts(tier_counts)}")
-    if failed_checks:
-        review_distribution.append(f"重点问题：{'；'.join(failed_checks[:3])}")
-    if summary.get("riskCount") or summary.get("warnCount"):
-        review_distribution.append(
-            f"风险提醒密度：{int(summary.get('riskCount') or 0) + int(summary.get('warnCount') or 0)}/{max(total_checks, 1)}"
-        )
 
     lines = ["已完成当前方案审查。"]
     lines.append(
         f"- 审查结果：风险{summary.get('riskCount') or 0}项，提醒{summary.get('warnCount') or 0}项，通过{summary.get('passedCount') or 0}项"
     )
-    if review_distribution:
-        lines.extend(f"- {item}" for item in review_distribution)
 
     risk_summaries = _collect_non_passed_summaries(checks)
     if risk_summaries:
-        lines.append(f"- 主要问题：{'；'.join(risk_summaries[:3])}")
+        lines.append(f"- 主要问题：{'；'.join(risk_summaries)}")
 
     relation_lines = _build_plan_intent_relation_lines(
         planning_state,
@@ -1076,7 +1054,7 @@ def _format_review_result(
             f"- 可用补偿：{len(preview_actions)}项，主要为{'；'.join(_collect_action_summaries(preview_actions))}"
         )
 
-    lines.append("如果你想继续处理，我可以先预览补偿建议，或直接告诉我想往更稳、某个地域、某类专业方向调整。")
+    lines.append("如果你想继续处理，我可以先预览补偿建议，再确认是否应用。")
     return "\n".join(lines)
 
 
@@ -1305,32 +1283,21 @@ def _format_ordered_result(ordered_state: dict[str, Any], planning_state: dict[s
     tier_counts = summary.get("unitTierCounts") or summary.get("tierCounts") or {}
     failed_checks = _review_failed_summaries(review_checks)
     gradient_ok = bool(summary.get("gradientOk")) and not _has_probability_gradient_warning(failed_checks)
-    tier_distribution_lines: list[str] = []
-    for tier in ("冲", "稳", "保"):
-        distribution = _format_tier_ratio_distribution(items, tier)
-        if distribution:
-            tier_distribution_lines.append(distribution)
     lines = ["方案志愿概况："]
     lines.append(f"- 排序总数：{_format_total_with_target(unit_total, target_total)}")
     lines.append(f"- 区间分布：{_format_tier_counts(tier_counts)}")
     lines.append(f"- 录取率梯度是否达标：{'是' if gradient_ok else '否'}")
     lines.append(f"- 保底是否达标：{'是' if summary.get('safetyOk') else '否'}")
-    if tier_distribution_lines:
-        lines.append(f"- 冲稳保细分：{'；'.join(tier_distribution_lines)}")
+    for tier in ("冲", "稳", "保"):
+        distribution = _format_tier_ratio_distribution(items, tier)
+        if distribution:
+            lines.append(f"- {distribution}")
     if review_summary:
         lines.append(
             f"- 复审结果：风险{review_summary.get('riskCount') or 0}项，提醒{review_summary.get('warnCount') or 0}项"
         )
         if failed_checks:
             lines.append(f"- 主要提醒：{'；'.join(failed_checks[:3])}")
-    top_tier_items = {tier: [] for tier in ("冲", "稳", "保")}
-    for item in items:
-        tier = str(item.get("tier") or "").strip()
-        if tier in top_tier_items and len(top_tier_items[tier]) < 2:
-            top_tier_items[tier].append(_format_plan_item_brief(item, include_position=True))
-    example_parts = [f"{tier}区代表：{'；'.join(snippets)}" for tier, snippets in top_tier_items.items() if snippets]
-    if example_parts:
-        lines.append(f"- 代表样本：{'；'.join(example_parts)}")
     count_gap_hint = _build_count_gap_hint(unit_total, target_total)
     if count_gap_hint:
         lines.append(f"- 数量检查：{count_gap_hint}")
@@ -1372,7 +1339,6 @@ def _format_plan_status_overview(
     active_plan_state = ordered_state or draft_state or {}
     active_summary = active_plan_state.get("summary") or {}
     tier_counts = active_summary.get("unitTierCounts") or active_summary.get("tierCounts") or {}
-    tier_distribution_lines: list[str] = []
     if tier_counts:
         lines.append(f"- 冲稳保分布：{_format_tier_counts(tier_counts)}")
 
@@ -1385,9 +1351,7 @@ def _format_plan_status_overview(
         for tier in ("冲", "稳", "保"):
             distribution = _format_tier_ratio_distribution(active_plan_state.get("items") or [], tier)
             if distribution:
-                tier_distribution_lines.append(distribution)
-        if tier_distribution_lines:
-            lines.append(f"- 冲稳保细分：{'；'.join(tier_distribution_lines)}")
+                lines.append(f"- {distribution}")
 
     lines.append(f"- 风险与提醒：风险{summary.review_risk_count}项，提醒{summary.review_warn_count}项")
 
@@ -1398,16 +1362,6 @@ def _format_plan_status_overview(
     if item_text:
         prefix = "方案前列" if ordered_state else "草稿前列"
         lines.append(f"- {prefix}：{item_text}")
-
-    if ordered_state and active_plan_state.get("items"):
-        top_tier_examples: dict[str, list[str]] = {tier: [] for tier in ("冲", "稳", "保")}
-        for item in active_plan_state.get("items") or []:
-            tier = str(item.get("tier") or "").strip()
-            if tier in top_tier_examples and len(top_tier_examples[tier]) < 1:
-                top_tier_examples[tier].append(_format_plan_item_brief(item, include_position=True))
-        example_text = [f"{tier}区代表：{';'.join(snippets)}" for tier, snippets in top_tier_examples.items() if snippets]
-        if example_text:
-            lines.append(f"- 代表样本：{'；'.join(example_text)}")
 
     if summary.pending_action_count > 0:
         lines.append(

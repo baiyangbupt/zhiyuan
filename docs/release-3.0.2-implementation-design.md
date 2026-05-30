@@ -730,10 +730,6 @@ Agent 单测：
 - 覆盖 Explore/Intent 前置层：专业/职业/地域/院校探索，软偏好、硬约束、软硬混合、意向修订、未确认意向下查询方案、候选风险解释和专项资格解释。
 - `zhiyuan-agent/examples/dialog_regression_302_readonly_real_session_cases.json`
 - 覆盖真实 `session=17` 后端方案数据下的只读 Explore/Intent smoke，要求不发送无意义工作台联动卡片。
-- `zhiyuan-agent/examples/dialog_regression_302_effect_perf_cases.json`
-- 覆盖 3.0.2 后续对话效果和性能 smoke：结构化方案查询、只读职业方向承接、专业+大学移动、专业组整体移动、歧义学校/专业名安全解释、新会话 Explore/Intent preview，以及无 pending 确认的快速保护。
-- `zhiyuan-agent/tests/e2e/test_agent_dialog_effect_perf.py`
-- 通过 `RUN_AGENT_DIALOG_E2E=1` 显式开启真实 WebSocket e2e；默认跳过，避免普通单测受本地服务、网络和模型费用影响。
 - 运行方式：
 
 ```bash
@@ -752,17 +748,6 @@ cd zhiyuan-agent
   --assert-plan-style \
   --response-timeout 180 \
   --clear-history
-
-.venv/bin/python examples/dialog_regression_runner.py \
-  --cases examples/dialog_regression_302_effect_perf_cases.json \
-  --assert-plan-style \
-  --response-timeout 180 \
-  --clear-history \
-  --metrics-output examples/dialog_regression_302_effect_perf_output.json
-
-RUN_AGENT_DIALOG_E2E=1 \
-AGENT_DIALOG_E2E_METRICS_OUTPUT=examples/dialog_regression_302_effect_perf_output.json \
-.venv/bin/python -m pytest tests/e2e/test_agent_dialog_effect_perf.py -v -s
 ```
 
 这些样例需要本地 agent/server/web 数据链路和模型配置可用；自动单测只负责验证 pending 协议、runtime history 和场景目录结构不破坏内部结构。
@@ -772,14 +757,6 @@ AGENT_DIALOG_E2E_METRICS_OUTPUT=examples/dialog_regression_302_effect_perf_outpu
 - 方案编辑、方案查询、候选承接这类依赖真实后端会话数据的回归，优先使用已有数据完整的 session（例如本地 `16/17`），并在执行前清理 Agent 本地 SQLite 对话历史。
 - Explore/Intent 纯对话历史隔离、确认边界和模型回复风格观察，可以使用 `--session-offset` 跑干净数字 session。
 - 如果 offset 后样例提示“缺少成绩信息”“方案为空”“候选为空”，不能直接判定为业务链路失败，应先确认该映射 session 是否具备后端基础数据。
-
-效果和性能评估口径：
-
-- 效果优先看用户可理解语言：不得暴露 `payload / stage / action_family / volunteerId` 等内部结构，不再使用“草稿”语言；只读问法不得发送无意义工作台卡片。
-- 高副作用动作仍按 preview -> confirm -> apply；确认后才允许刷新 `ordered` 工作台。
-- 性能先按 `first/final elapsed` 观察趋势；`dialog_regression_runner.py` 输出每步耗时、汇总分布和最慢步骤，单条 case 可配置 `warnElapsedSeconds / maxElapsedSeconds`。
-- 无 pending 的“确认”必须走快速保护，不进入主模型；当前新增 smoke 用 `maxElapsedSeconds=5` 兜底这条低成本链路。
-- 真实 LLM 结果受 provider 延迟影响，warn 阈值只用于观察；只有明确的直接保护链路或确认 apply 这类不应走主模型的步骤才配置 hard max。
 
 ### 8.7 WebSocket 异常收口
 

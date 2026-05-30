@@ -9,10 +9,11 @@ import pytest
 from pydantic_ai import RunContext
 
 from app.agent.context import RequestContext
-from app.schemas.major_intent import MajorIntentResult, NegativeMajorIntentResult
+from app.schemas.major_intent import MajorIntentPolarityResult, MajorIntentResult, NegativeMajorIntentResult
 from app.tools.major_intent_tool import (
     _build_negative_system_message_bachelor,
     _build_system_message_bachelor,
+    extract_major_intents_with_polarity,
     extract_major_intent,
     extract_negative_major_intent,
 )
@@ -512,3 +513,60 @@ class TestExtractNegativeMajorIntent:
         mock_agent_instance.run.assert_called_once()
         call_kwargs = mock_agent_instance.run.call_args[1]
         assert call_kwargs["model_settings"]["temperature"] == 0
+
+
+class TestExtractMajorIntentsWithPolarity:
+    """Tests for combined positive/negative major intent extraction."""
+
+    def _make_run_context(self, **kwargs) -> MagicMock:
+        defaults = {
+            "userid": "test_user",
+            "sessionid": "test_session",
+            "chat_history": None,
+            "batch": None,
+            "score_detail": None,
+        }
+        defaults.update(kwargs)
+        ctx = MagicMock(spec=RunContext)
+        ctx.deps = RequestContext(**defaults)
+        return ctx
+
+    async def test_returns_empty_when_chat_history_is_empty(self):
+        ctx = self._make_run_context(chat_history=[])
+
+        result = await extract_major_intents_with_polarity(ctx)
+
+        parsed = json.loads(result)
+        assert parsed["positive"]["level2"] == []
+        assert parsed["negative"]["level2"] == []
+
+    @patch("app.tools.major_intent_tool._get_extraction_client")
+    @patch("app.tools.major_intent_tool._get_extract_config")
+    @patch("app.tools.major_intent_tool.Agent")
+    async def test_extracts_positive_and_negative_in_one_call(
+        self, mock_agent_cls, mock_config, mock_client
+    ):
+        mock_config.return_value.last_n_messages = 10
+        mock_result = MagicMock()
+        mock_result.output = MajorIntentPolarityResult(
+            positive=MajorIntentResult(allkeys=["法学"], level2=["法学类"], level3=[]),
+            negative=NegativeMajorIntentResult(allkeys=["护理"], level2=["护理学类"], level3=[]),
+        ).model_dump_json()
+        mock_agent_instance = MagicMock()
+        mock_agent_instance.run = AsyncMock(return_value=mock_result)
+        mock_agent_cls.return_value = mock_agent_instance
+        mock_client.return_value.model = MagicMock()
+
+        ctx = self._make_run_context(
+            chat_history=[{"role": "user", "content": "我倾向法学，但护理不要"}],
+            batch="01",
+        )
+
+        result = await extract_major_intents_with_polarity(ctx)
+
+        parsed = json.loads(result)
+        assert parsed["positive"]["level2"] == ["法学类"]
+        assert parsed["negative"]["level2"] == ["护理学类"]
+        mock_agent_cls.assert_called_once()
+        mock_agent_instance.run.assert_awaited_once()
+        assert mock_agent_instance.run.await_args.kwargs["model_settings"]["temperature"] == 0

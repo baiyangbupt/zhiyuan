@@ -125,3 +125,17 @@ def test_execute_defaults_to_local_only(tmp_path, monkeypatch):
     assert exc.value.code == 0
     assert captured["categories"] == ["local"]
     assert captured["stop"] is True
+
+
+def test_local_gate_filters_removed_pytest_targets(tmp_path):
+    commands = gate.build_gate_plan(metrics_dir=tmp_path)
+    local = next(command for command in commands if command.name == "local-pytest-regression")
+
+    assert "tests/unit/test_dialog_quality_gate.py" in local.command
+    assert "tests/unit/models/test_semantic_router.py" not in local.command
+    assert "tests/unit/test_major_intent_fast_router.py" not in local.command
+    assert all(
+        (gate.ROOT / target).exists()
+        for target in local.command
+        if target.startswith("tests/")
+    )

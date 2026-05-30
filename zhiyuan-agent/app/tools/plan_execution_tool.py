@@ -11,6 +11,9 @@ from typing import Any
 from pydantic_ai import RunContext
 
 from app.agent.context import RequestContext, resolve_pending_confirmation
+from app.domain.major_entity_resolver import major_alias_variants_for_name
+from app.domain.school_entity_resolver import school_alias_variants
+from app.domain.school_major_ref_resolver import resolve_school_major_ref
 from app.sync.state_sync import PlanningStateSync
 from app.tools.plan_orchestration_models import (
     PlanActionPlan,
@@ -283,10 +286,10 @@ async def _build_move_ordered_unit_preview_summary(
         count_text = f"，组内共 {major_count} 个专业" if major_count > 0 else ""
         source_text = f"第 {source_position} 个专业组" if source_position else "当前定位到的专业组"
         target_text = f"第 {int(target_position)} 个专业组位置"
-        summary = _format_preview_sections(
-            ("定位结果", [f"会整体移动{source_text}：{unit_name}{count_text}，目标是移动到{target_text}。"]),
-            ("位置口径", ["这里的“第几个”按专业组顺序计算，不是按单条志愿位置计算。"]),
-            ("执行影响", ["该组内专业会保持连续，组内专业顺序不变。"]),
+        summary = (
+            f"会整体移动{source_text}：{unit_name}{count_text}，目标是移动到{target_text}。"
+            "这里的“第几个”按专业组顺序计算，不是按单条志愿位置计算；"
+            "执行后该组内专业会保持连续，组内专业顺序不变。"
         )
         return summary, {
             "source_unit_id": source_unit_id,
@@ -337,10 +340,10 @@ async def _build_remove_ordered_unit_preview_summary(
         count_text = f"，组内共 {major_count} 个专业" if major_count > 0 else ""
         source_text = f"第 {source_position} 个专业组" if source_position else "当前定位到的专业组"
         removed_count_text = f"{major_count} 个专业 / 1 个专业组" if major_count > 0 else "1 个专业组"
-        summary = _format_preview_sections(
-            ("定位结果", [f"会整体删除{source_text}：{unit_name}{count_text}。"]),
-            ("位置口径", ["这里的“第几个”按专业组顺序计算，不是按单条志愿位置计算。"]),
-            ("执行影响", [f"该组内专业会一并移出，后续专业组前移，方案数量将减少 {removed_count_text}。"]),
+        summary = (
+            f"会整体删除{source_text}：{unit_name}{count_text}。"
+            "这里的“第几个”按专业组顺序计算，不是按单条志愿位置计算；"
+            f"执行后该组内专业会一并移出，后续专业组前移，方案数量将减少 {removed_count_text}。"
         )
         return summary, {
             "source_unit_id": source_unit_id,
@@ -428,23 +431,25 @@ def _execution_missing_inputs(plan_model: PlanActionPlan) -> list[str]:
     return missing
 
 
-def _format_preview_sections(*sections: tuple[str, list[str] | None] | tuple[str, str | None]) -> str:
-    blocks: list[str] = []
-    for title, content in sections:
-        if not content:
-            continue
-        display_title = f"**{title}**"
-        if isinstance(content, list):
-            lines = [str(line or "").strip() for line in content if str(line or "").strip()]
-            if not lines:
-                continue
-            blocks.append(f"{display_title}\n" + "\n".join(f"- {line}" for line in lines))
-        else:
-            text = str(content or "").strip()
-            if not text:
-                continue
-            blocks.append(f"{display_title}\n{text}")
-    return "\n\n".join(blocks)
+def _execution_missing_inputs_message(plan_model: PlanActionPlan, missing_inputs: list[str]) -> str:
+    missing = {str(item or "").strip() for item in missing_inputs if str(item or "").strip()}
+    if plan_model.action_family == "replace_units":
+        if {"volunteer_ids", "replacement_scope"}.issubset(missing):
+            return (
+                "这次替换还没说清楚：要替换当前方案里的哪条志愿，以及希望换成什么方向。"
+                "请补充学校/专业名称和替换方向，我会先给你一版可确认的预览。"
+            )
+        if "volunteer_ids" in missing:
+            return (
+                "这次替换还没定位到当前方案里的具体志愿。"
+                "请补充学校、专业组或专业名称，我会先确认目标后再给你预览。"
+            )
+        if "replacement_scope" in missing:
+            return (
+                "这次替换还缺少新志愿的筛选方向。"
+                "请说明想换成哪个专业、院校或地域范围，我会先给你一版可确认的预览。"
+            )
+    return "这次操作还缺少必要信息，请补充清楚后我再继续。"
 
 
 def _hydrate_replace_filters_from_profile(
@@ -475,7 +480,7 @@ def _with_confirmation_hint(summary: str) -> str:
     text = (summary or "").strip() or "这个动作会改动当前方案。"
     if "确认" in text and ("执行" in text or "后" in text):
         return text
-    return f"{text}\n\n需要你确认后才会执行。"
+    return f"{text} 需要你确认后才会执行。"
 
 
 def _normalize_keywords(value: str | None) -> list[str]:
@@ -529,84 +534,11 @@ def _major_base_name(value: Any) -> str:
     return re.split(r"[（(]", text, maxsplit=1)[0].strip()
 
 
-_MAJOR_ALIAS_BY_BASE_NAME = {
-    "计算机科学与技术": ["计科", "计算机"],
-    "软件工程": ["软件"],
-    "通信工程": ["通信"],
-    "统计学": ["统计"],
-    "汉语言文学": ["汉语言", "中文"],
-    "会计学": ["会计"],
-    "财务管理": ["财管"],
-    "工商管理": ["工商"],
-    "临床医学": ["临床"],
-    "口腔医学": ["口腔"],
-    "中医学": ["中医"],
-    "针灸推拿学": ["针推", "针灸推拿"],
-    "土木工程": ["土木"],
-    "电气工程及其自动化": ["电气"],
-    "数据科学与大数据技术": ["大数据"],
-    "电子信息工程": ["电子信息"],
-    "机械设计制造及其自动化": ["机械"],
-}
-
-
-_SCHOOL_SUFFIX_ALIAS_RULES = [
-    ("师范大学", "师大"),
-    ("工业大学", "工大"),
-    ("农业大学", "农大"),
-    ("医科大学", "医大"),
-    ("财经大学", "财大"),
-    ("外国语大学", "外大"),
-    ("科技大学", "科大"),
-    ("交通大学", "交大"),
-    ("邮电大学", "邮电"),
-    ("理工大学", "理工"),
-    ("工程学院", "工程"),
-]
-
-
-_SCHOOL_PREFIX_SHORT_NAMES = {
-    "北京": "北",
-    "上海": "上",
-    "南京": "南",
-    "武汉": "武",
-    "湖北": "湖",
-    "湖南": "湖",
-    "广西": "桂",
-    "广东": "粤",
-    "山东": "鲁",
-    "山西": "晋",
-    "河北": "冀",
-    "河南": "豫",
-    "四川": "川",
-    "重庆": "渝",
-    "天津": "津",
-    "浙江": "浙",
-    "江苏": "苏",
-    "安徽": "皖",
-    "福建": "闽",
-    "江西": "赣",
-    "陕西": "陕",
-    "辽宁": "辽",
-    "吉林": "吉",
-    "黑龙江": "黑",
-    "云南": "云",
-    "贵州": "贵",
-    "甘肃": "甘",
-    "青海": "青",
-    "宁夏": "宁",
-    "新疆": "新",
-    "内蒙古": "蒙",
-    "西藏": "藏",
-    "海南": "琼",
-}
-
-
 def _major_alias_variants(value: Any) -> list[str]:
     base_name = _major_base_name(value)
     if not base_name:
         return []
-    variants = list(_MAJOR_ALIAS_BY_BASE_NAME.get(base_name, []))
+    variants = major_alias_variants_for_name(base_name)
     target_token = _major_target_token(base_name)
     if target_token and target_token != base_name:
         variants.append(target_token)
@@ -614,26 +546,7 @@ def _major_alias_variants(value: Any) -> list[str]:
 
 
 def _school_alias_variants(value: Any) -> list[str]:
-    text = str(value or "").strip()
-    if not text:
-        return []
-    base_name = re.sub(r"\s*[（(][^()（）]*[)）]\s*$", "", text).strip()
-    base_name = re.sub(r"\s*(?:第?\d+组|[A-Za-z0-9]+专业组|第?\d+专业组|专业组)\s*$", "", base_name).strip()
-    if not base_name:
-        return []
-
-    aliases: list[str] = []
-    for suffix, suffix_alias in _SCHOOL_SUFFIX_ALIAS_RULES:
-        if not base_name.endswith(suffix):
-            continue
-        prefix = base_name[: -len(suffix)].strip()
-        if not prefix:
-            continue
-        aliases.append(f"{prefix}{suffix_alias}")
-        short_prefix = _SCHOOL_PREFIX_SHORT_NAMES.get(prefix)
-        if short_prefix:
-            aliases.append(f"{short_prefix}{suffix_alias[:1]}")
-    return list(dict.fromkeys(alias for alias in aliases if alias and alias != base_name))
+    return school_alias_variants(value)
 
 
 def _major_name_variants(value: Any) -> list[str]:
@@ -857,211 +770,12 @@ async def _resolve_ordered_volunteer_refs(
     return resolved, missing
 
 
-async def _load_ordered_items_by_id(ctx: RunContext[RequestContext]) -> dict[str, dict[str, Any]]:
-    try:
-        result = await _get_planning_ordered_plan_request(ctx.deps.sessionid)
-    except Exception:
-        logger.warning("load ordered items for display failed: session_id=%s", ctx.deps.sessionid, exc_info=True)
-        return {}
-    if result.get("code") != 0:
-        return {}
-    items = (result.get("data") or {}).get("items") or []
-    item_by_id: dict[str, dict[str, Any]] = {}
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        volunteer_id = str(item.get("volunteerId") or "").strip()
-        if volunteer_id:
-            item_by_id[volunteer_id] = item
-    return item_by_id
-
-
-async def _load_ordered_plan_count_context(ctx: RunContext[RequestContext]) -> dict[str, int]:
-    try:
-        result = await _get_planning_ordered_plan_request(ctx.deps.sessionid)
-    except Exception:
-        logger.warning("load ordered plan count context failed: session_id=%s", ctx.deps.sessionid, exc_info=True)
-        return {}
-    if result.get("code") != 0:
-        return {}
-    data = result.get("data") or {}
-    summary = data.get("summary") or {}
-    items = data.get("items") or []
-    current_total = _summary_total(summary)
-    if not current_total and not summary:
-        current_total = len(items)
-    target_total = summary.get("targetUnitCount") or summary.get("targetCount") or 0
-    context: dict[str, int] = {}
-    if summary or items or target_total:
-        context["current_total"] = int(current_total)
-    if target_total:
-        context["target_total"] = int(target_total)
-    return context
-
-
-def _item_display_name(item: dict[str, Any] | None, fallback: str = "这条志愿") -> str:
-    item = item or {}
-    school_name = str(item.get("schoolName") or "").strip()
-    major_name = str(item.get("majorName") or "").strip()
-    source_parts = [part for part in (school_name, _major_base_name(major_name) or major_name) if part]
-    return "-".join(source_parts) if source_parts else fallback
-
-
-def _append_preview_impact(summary: str, impact: str) -> str:
-    summary = (summary or "").strip()
-    impact = (impact or "").strip()
-    if not summary or not impact or impact in summary:
-        return summary
-    return f"{summary}\n\n{impact}"
-
-
-def _format_action_preview(
-    *,
-    result_line: str,
-    impact_lines: list[str] | None = None,
-    extra_sections: list[tuple[str, list[str]]] | None = None,
-) -> str:
-    sections: list[tuple[str, list[str] | None]] = [("定位结果", [result_line])]
-    sections.extend(extra_sections or [])
-    if impact_lines:
-        sections.append(("执行影响", impact_lines))
-    return _format_preview_sections(*sections)
-
-
-async def _build_move_unit_preview_summary(
-    ctx: RunContext[RequestContext],
-    plan_model: PlanActionPlan,
-    resolved_ids: list[str],
-) -> tuple[str, dict[str, Any]]:
-    atomic = _first_atomic_action(plan_model)
-    target_position = getattr(atomic, "target_position", None) if atomic is not None else None
-    target_text = f"第{int(target_position)}位" if target_position is not None else "指定位置"
-    item_by_id = await _load_ordered_items_by_id(ctx)
-    item = item_by_id.get(resolved_ids[0]) if resolved_ids else None
-    if item:
-        current_position = item.get("position")
-        source_text = _item_display_name(item)
-        position_text = f"当前在第{int(current_position)}位，" if current_position is not None else ""
-        result_line = f"已定位到 {source_text}，{position_text}会移动到{target_text}。"
-    else:
-        result_line = f"已定位到当前方案中的指定志愿，会移动到{target_text}。"
-    summary = _format_action_preview(
-        result_line=result_line,
-        impact_lines=["执行后会改变方案顺序和导出顺序。", "审查状态会进入待重新审查。"],
-    )
-    facts = {
-        "resolved_apply_payload": _build_resolved_apply_payload(
-            plan_model,
-            volunteer_ids=resolved_ids,
-        )
-    }
-    return summary, facts
-
-
-async def _build_remove_units_preview_summary(
-    ctx: RunContext[RequestContext],
-    plan_model: PlanActionPlan,
-    resolved_ids: list[str],
-) -> tuple[str, dict[str, Any]]:
-    item_by_id = await _load_ordered_items_by_id(ctx)
-    labels = [
-        _item_display_name(item_by_id.get(volunteer_id))
-        for volunteer_id in resolved_ids[:3]
-        if volunteer_id
-    ]
-    if not labels:
-        result_line = "已定位到当前方案中的指定志愿，会从当前方案中移出。"
-    elif len(resolved_ids) == 1:
-        result_line = f"已定位到当前方案里的 {labels[0]}，会从当前方案中移出。"
-    else:
-        extra_text = f"等 {len(resolved_ids)} 条志愿" if len(resolved_ids) > len(labels) else f"{len(resolved_ids)} 条志愿"
-        result_line = f"已定位到当前方案里的 {'、'.join(labels)}，会从当前方案中移出，共 {extra_text}。"
-    summary = _format_action_preview(
-        result_line=result_line,
-        impact_lines=["执行后会减少方案数量。", "会影响导出顺序。", "审查状态会进入待重新审查。"],
-    )
-    facts = {
-        "resolved_apply_payload": _build_resolved_apply_payload(
-            plan_model,
-            volunteer_ids=resolved_ids,
-        )
-    }
-    return summary, facts
-
-
-async def _load_candidate_items_by_id(
-    ctx: RunContext[RequestContext],
-    refs: list[str],
-) -> dict[str, dict[str, Any]]:
-    items_by_id: dict[str, dict[str, Any]] = {}
-    for ref in refs:
-        for item in await _candidate_items_for_ref(ctx, ref):
-            if not isinstance(item, dict):
-                continue
-            volunteer_id = str(item.get("volunteerId") or "").strip()
-            if volunteer_id and volunteer_id not in items_by_id:
-                items_by_id[volunteer_id] = item
-    return items_by_id
-
-
-async def _build_add_units_preview_summary(
-    ctx: RunContext[RequestContext],
-    plan_model: PlanActionPlan,
-    refs: list[str],
-    resolved_ids: list[str],
-) -> tuple[str, dict[str, Any]]:
-    item_by_id = await _load_candidate_items_by_id(ctx, refs)
-    count_context = await _load_ordered_plan_count_context(ctx)
-    labels = [
-        _item_display_name(item_by_id.get(volunteer_id), fallback="这条候选志愿")
-        for volunteer_id in resolved_ids[:3]
-        if volunteer_id
-    ]
-    if not labels:
-        result_line = "已在候选里定位到指定志愿，会加入当前方案。"
-    elif len(resolved_ids) == 1:
-        result_line = f"已在候选里定位到 {labels[0]}，会加入当前方案。"
-    else:
-        extra_text = f"等 {len(resolved_ids)} 条候选志愿" if len(resolved_ids) > len(labels) else f"{len(resolved_ids)} 条候选志愿"
-        result_line = f"已在候选里定位到 {'、'.join(labels)}，会加入当前方案，共 {extra_text}。"
-    has_current_total = "current_total" in count_context
-    current_total = count_context.get("current_total", 0)
-    target_total = count_context.get("target_total")
-    add_count = len(resolved_ids)
-    count_lines: list[str] = []
-    if has_current_total and add_count:
-        expected_total = current_total + add_count
-        if target_total:
-            count_lines.append(f"当前方案已有 {current_total}/{target_total} 个志愿，本次预计增加 {add_count} 个，约 {expected_total}/{target_total}。")
-        else:
-            count_lines.append(f"当前方案已有 {current_total} 个志愿，本次预计增加 {add_count} 个。")
-    extra_sections = [("数量变化", count_lines)] if count_lines else []
-    summary = _format_action_preview(
-        result_line=result_line,
-        extra_sections=extra_sections,
-        impact_lines=["执行后会更新方案数量和导出内容。", "审查状态会进入待重新审查。"],
-    )
-    facts = {
-        "resolved_apply_payload": _build_resolved_apply_payload(
-            plan_model,
-            volunteer_ids=resolved_ids,
-        )
-    }
-    if has_current_total:
-        facts["current_ordered_total"] = current_total
-        facts["expected_ordered_total"] = current_total + add_count
-    if target_total:
-        facts["target_total"] = target_total
-    if add_count:
-        facts["add_count"] = add_count
-    return summary, facts
-
-
 def _ordered_ref_resolution_message(missing_text: str, action_label: str) -> str:
     return (
-        f"我还没有定位到这些志愿在当前方案里的真实编号：{missing_text}。"
-        f"为避免误删或误重排，请先在方案里点选要{action_label}的志愿，"
-        "或让我先按当前方案重新定位后再给你确认。"
+        f"我理解你想{action_label}的是：{missing_text}。"
+        "但我在当前方案里还没有唯一匹配到这条志愿。"
+        f"为避免动错，请先在方案里点选要{action_label}的那条，"
+        "或补充更完整的学校、专业组、专业名称后我再给你确认。"
     )
 
 
@@ -1088,7 +802,7 @@ def _build_resolved_apply_payload(
 
 def _candidate_ref_resolution_message(missing_text: str) -> str:
     return (
-        f"我还没有在候选里唯一定位到这些志愿：{missing_text}。"
+        f"我理解你想加入的是：{missing_text}。但我还没有在候选里唯一匹配到这条志愿。"
         "为避免误加，请先在候选列表里点选要加入方案的志愿，"
         "或补充专业组、城市、学校全称等信息后我再给你确认。"
     )
@@ -1112,28 +826,82 @@ def _split_school_major_ref(value: Any) -> tuple[str, str]:
     return "", ""
 
 
-async def _candidate_items_for_ref(ctx: RunContext[RequestContext], ref: str) -> list[dict[str, Any]]:
+async def _candidate_state_items(ctx: RunContext[RequestContext]) -> list[dict[str, Any]]:
     session_id = ctx.deps.sessionid
-    state_items: list[dict[str, Any]] = []
     try:
         state_result = await _get_planning_state_request(session_id)
         state = state_result.get("data") or {} if state_result.get("code") == 0 else {}
         raw_items = ((state.get("candidatePoolState") or {}).get("items") or [])
-        state_items = [item for item in raw_items if isinstance(item, dict)]
+        return [item for item in raw_items if isinstance(item, dict)]
     except Exception:
         logger.warning("load candidate state for ref resolution failed: session_id=%s", session_id, exc_info=True)
+    return []
 
+
+def _resolve_candidate_ref_from_items(text: str, items: list[dict[str, Any]]) -> str | None:
+    exact_candidates: dict[str, list[str]] = {}
+    compact_candidates: dict[str, list[str]] = {}
+    compact_labels: list[tuple[str, str]] = []
+    for item in items:
+        volunteer_id = str(item.get("volunteerId") or "").strip()
+        if not volunteer_id:
+            continue
+        for label in _ordered_item_labels(item):
+            exact_candidates.setdefault(label, [])
+            if volunteer_id not in exact_candidates[label]:
+                exact_candidates[label].append(volunteer_id)
+            compact_label = _compact_ref_text(label)
+            compact_candidates.setdefault(compact_label, [])
+            if volunteer_id not in compact_candidates[compact_label]:
+                compact_candidates[compact_label].append(volunteer_id)
+            compact_labels.append((compact_label, volunteer_id))
+
+    exact_matches = exact_candidates.get(text) or []
+    if len(exact_matches) == 1:
+        return exact_matches[0]
+    compact_ref = _compact_ref_text(text)
+    compact_matches = compact_candidates.get(compact_ref) or []
+    if len(compact_matches) == 1:
+        return compact_matches[0]
+    if compact_ref:
+        partial_matches = [
+            candidate_id
+            for label, candidate_id in compact_labels
+            if compact_ref in label or label in compact_ref
+        ]
+        unique_matches = list(dict.fromkeys(partial_matches))
+        if len(unique_matches) == 1:
+            return unique_matches[0]
+    return None
+
+
+async def _candidate_items_for_ref(
+    ctx: RunContext[RequestContext],
+    ref: str,
+    *,
+    state_items: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    session_id = ctx.deps.sessionid
+    loaded_state_items = state_items if state_items is not None else await _candidate_state_items(ctx)
     school_keyword, major_keyword = _split_school_major_ref(ref)
-    if not school_keyword and not major_keyword:
-        return state_items
+    school_keywords = [school_keyword] if school_keyword else []
+    major_keywords = [major_keyword] if major_keyword else []
+    if not school_keywords and not major_keywords:
+        ref_resolution = resolve_school_major_ref(ref, getattr(ctx.deps, "batch", None) or "01")
+        if ref_resolution.can_query:
+            school_keywords = ref_resolution.school_keywords
+            major_keywords = ref_resolution.major_keywords
+
+    if not school_keywords and not major_keywords:
+        return loaded_state_items
 
     queried_items: list[dict[str, Any]] = []
     try:
         query_result = await _query_planning_candidate_pool_request(
             _DEFAULT_TENANT_ID,
             session_id,
-            school_keywords=[school_keyword] if school_keyword else [],
-            major_keywords=[major_keyword] if major_keyword else [],
+            school_keywords=school_keywords,
+            major_keywords=major_keywords,
             page=1,
             page_size=100,
         )
@@ -1148,7 +916,7 @@ async def _candidate_items_for_ref(ctx: RunContext[RequestContext], ref: str) ->
 
     merged: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for item in [*queried_items, *state_items]:
+    for item in [*queried_items, *loaded_state_items]:
         volunteer_id = str(item.get("volunteerId") or "").strip()
         key = volunteer_id or f"{item.get('schoolName')}::{item.get('majorName')}::{item.get('position')}"
         if key in seen:
@@ -1175,42 +943,11 @@ async def _resolve_candidate_volunteer_refs(
                 resolved.append(text)
             continue
 
-        items = await _candidate_items_for_ref(ctx, text)
-        exact_candidates: dict[str, list[str]] = {}
-        compact_candidates: dict[str, list[str]] = {}
-        compact_labels: list[tuple[str, str]] = []
-        for item in items:
-            volunteer_id = str(item.get("volunteerId") or "").strip()
-            if not volunteer_id:
-                continue
-            for label in _ordered_item_labels(item):
-                exact_candidates.setdefault(label, [])
-                if volunteer_id not in exact_candidates[label]:
-                    exact_candidates[label].append(volunteer_id)
-                compact_label = _compact_ref_text(label)
-                compact_candidates.setdefault(compact_label, [])
-                if volunteer_id not in compact_candidates[compact_label]:
-                    compact_candidates[compact_label].append(volunteer_id)
-                compact_labels.append((compact_label, volunteer_id))
-
-        volunteer_id = None
-        exact_matches = exact_candidates.get(text) or []
-        if len(exact_matches) == 1:
-            volunteer_id = exact_matches[0]
-        compact_ref = _compact_ref_text(text)
+        state_items = await _candidate_state_items(ctx)
+        volunteer_id = _resolve_candidate_ref_from_items(text, state_items)
         if not volunteer_id:
-            compact_matches = compact_candidates.get(compact_ref) or []
-            if len(compact_matches) == 1:
-                volunteer_id = compact_matches[0]
-        if not volunteer_id and compact_ref:
-            partial_matches = [
-                candidate_id
-                for label, candidate_id in compact_labels
-                if compact_ref in label or label in compact_ref
-            ]
-            unique_matches = list(dict.fromkeys(partial_matches))
-            if len(unique_matches) == 1:
-                volunteer_id = unique_matches[0]
+            items = await _candidate_items_for_ref(ctx, text, state_items=state_items)
+            volunteer_id = _resolve_candidate_ref_from_items(text, items)
         if volunteer_id:
             if volunteer_id not in resolved:
                 resolved.append(volunteer_id)
@@ -1837,9 +1574,9 @@ _SORT_FIELD_LABELS = {
 }
 
 _SORT_FIELD_DIRECTIONS = {
-    "admissionRatio": "录取率低的排在前面",
-    "schoolRank": "排名靠前的排在前面",
-    "finalScore": "推荐系数高的排在前面",
+    "admissionRatio": "升序（录取率低的冲档机会会更靠前，录取率高的保底机会会更靠后）",
+    "schoolRank": "升序（院校排名/层次更靠前的机会优先）",
+    "finalScore": "降序（系统综合推荐系数更高的机会优先）",
 }
 
 
@@ -1861,19 +1598,122 @@ def _infer_ordered_sort_field(plan_model: PlanActionPlan) -> str:
     return "admissionRatio"
 
 
-def _enrich_sort_preview_summary(plan_model: PlanActionPlan, summary: str) -> str:
+def _item_sort_value(item: dict[str, Any], sort_field: str) -> float | None:
+    value = item.get(sort_field)
+    if value is None and sort_field == "admissionRatio":
+        value = item.get("enrollRatio")
+    if value is None and sort_field == "schoolRank":
+        value = item.get("schoolRanking") or item.get("rank")
+    if value is None and sort_field == "finalScore":
+        value = item.get("recommendationScore") or item.get("score")
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _format_sort_value(value: float | None, sort_field: str) -> str:
+    if value is None:
+        return "-"
+    if sort_field == "admissionRatio":
+        return f"{int(value)}%" if value.is_integer() else f"{value:.1f}%"
+    if value.is_integer():
+        return str(int(value))
+    return f"{value:.1f}"
+
+
+def _format_sort_preview_item(item: dict[str, Any], sort_field: str) -> str:
+    school_name = str(item.get("schoolName") or "未知院校").strip()
+    major_name = str(item.get("majorName") or "").strip()
+    tier = str(item.get("tier") or "未知").strip()
+    position = item.get("position")
+    value = _format_sort_value(_item_sort_value(item, sort_field), sort_field)
+    name = f"{school_name}-{major_name}" if major_name else school_name
+    suffix = f"{tier}，{_SORT_FIELD_LABELS.get(sort_field, sort_field)}{value}"
+    if position is not None:
+        suffix += f"，原第{position}位"
+    return f"{name}（{suffix}）"
+
+
+async def _build_sort_ordered_plan_preview_summary(
+    ctx: RunContext[RequestContext],
+    plan_model: PlanActionPlan,
+) -> tuple[str, dict[str, Any]]:
+    session_id = ctx.deps.sessionid
     sort_field = _infer_ordered_sort_field(plan_model)
-    label = _SORT_FIELD_LABELS.get(sort_field, "录取率")
-    direction = _SORT_FIELD_DIRECTIONS.get(sort_field, "录取率低的排在前面")
-    summary = (summary or "").strip()
-    action_summary = f"会按{label}重新排序当前方案。"
-    if summary and "重新排序当前方案" not in summary:
-        action_summary = summary
-    return _format_preview_sections(
-        ("排序动作", [action_summary]),
-        ("排序方式", [f"{direction}。"]),
-        ("执行影响", ["会实际改变方案顺序和导出顺序。", "审查状态会进入待重新审查。"]),
+    sort_label = _SORT_FIELD_LABELS.get(sort_field, "录取率")
+    direction = _SORT_FIELD_DIRECTIONS.get(sort_field, "按系统默认方向")
+    try:
+        state_resp = await _get_planning_state_request(session_id)
+        planning_state = (state_resp or {}).get("data") or {}
+    except Exception:
+        logger.warning("build sort preview failed to load planning state: session_id=%s", session_id, exc_info=True)
+        planning_state = {}
+
+    ordered_state = (planning_state.get("orderedPlanState") or {}) if isinstance(planning_state, dict) else {}
+    ordered_summary = ordered_state.get("summary") or {}
+    items = list(ordered_state.get("items") or [])
+    total = _summary_total(ordered_summary) or len(items)
+    target_total = ordered_summary.get("targetUnitCount") or ordered_summary.get("targetCount") or total
+    tier_counts = ordered_summary.get("unitTierCounts") or ordered_summary.get("tierCounts") or {}
+    tier_text = ""
+    if isinstance(tier_counts, dict) and tier_counts:
+        tier_text = f"；当前冲稳保为：冲{tier_counts.get('冲', 0)} / 稳{tier_counts.get('稳', 0)} / 保{tier_counts.get('保', 0)}"
+
+    sorted_items = sorted(
+        items,
+        key=lambda item: (
+            _item_sort_value(item, sort_field) is None,
+            _item_sort_value(item, sort_field) if sort_field != "finalScore" else -(_item_sort_value(item, sort_field) or 0),
+            _item_sort_value(item, "admissionRatio") is None,
+            _item_sort_value(item, "admissionRatio") or 0,
+            -(_item_sort_value(item, "finalScore") or 0),
+            int(item.get("position") or 0),
+        ),
     )
+    if sort_field == "admissionRatio":
+        sorted_items = sorted(
+            items,
+            key=lambda item: (
+                _item_sort_value(item, "admissionRatio") is None,
+                _item_sort_value(item, "admissionRatio") or 0,
+                _item_sort_value(item, "schoolRank") is None,
+                _item_sort_value(item, "schoolRank") or 0,
+                -(_item_sort_value(item, "finalScore") or 0),
+                int(item.get("position") or 0),
+            ),
+        )
+    elif sort_field == "schoolRank":
+        sorted_items = sorted(
+            items,
+            key=lambda item: (
+                _item_sort_value(item, "schoolRank") is None,
+                _item_sort_value(item, "schoolRank") or 0,
+                _item_sort_value(item, "admissionRatio") is None,
+                _item_sort_value(item, "admissionRatio") or 0,
+                -(_item_sort_value(item, "finalScore") or 0),
+                int(item.get("position") or 0),
+            ),
+        )
+
+    top_examples = [_format_sort_preview_item(item, sort_field) for item in sorted_items[:5]]
+    example_text = "；".join(top_examples)
+    if example_text:
+        example_text = f"。按这个口径预览，前几项大致会变成：{example_text}"
+    summary = (
+        f"会按{sort_label}重新排序当前方案，排序方向是{direction}。"
+        f"当前方案共 {total}/{target_total or total} 个{tier_text}{example_text}。"
+        "这会实际改变方案顺序和导出顺序，并让审查状态进入待重新审查。"
+    )
+    return summary, {
+        "sort_field": sort_field,
+        "sort_label": sort_label,
+        "sort_direction": direction,
+        "total": total,
+        "target_total": target_total or total,
+        "tier_counts": tier_counts if isinstance(tier_counts, dict) else {},
+        "top_examples": top_examples,
+    }
 
 
 async def _sort_ordered_plan(ctx: RunContext[RequestContext], plan_model: PlanActionPlan) -> tuple[bool, str]:
@@ -1899,159 +1739,49 @@ async def _sort_ordered_plan(ctx: RunContext[RequestContext], plan_model: PlanAc
         return False, f"按{sort_label}排序时发生错误，请稍后重试。"
 
 
-async def _move_ordered_unit(ctx: RunContext[RequestContext], plan_model: PlanActionPlan) -> tuple[bool, str, list[str]]:
+async def _move_ordered_unit(ctx: RunContext[RequestContext], plan_model: PlanActionPlan) -> tuple[bool, str]:
     session_id = ctx.deps.sessionid
-    started_at = time.monotonic()
-    resolve_started_at = time.monotonic()
     unit_ids = await _resolve_ordered_unit_ids(ctx, plan_model)
-    resolve_duration_ms = int((time.monotonic() - resolve_started_at) * 1000)
     action = _first_atomic_action(plan_model)
     target_position = getattr(action, "target_position", None)
     if not unit_ids:
-        log_event(
-            "plan_ordered_unit_mutation_timing",
-            sessionId=session_id,
-            actionFamily="move_ordered_unit",
-            status="blocked",
-            reason="missing_unit_ids",
-            resolveUnitDurationMs=resolve_duration_ms,
-            mutationRequestDurationMs=0,
-            totalDurationMs=int((time.monotonic() - started_at) * 1000),
-        )
-        return False, "还没有定位到要移动的专业组。请说明专业组名称或第几个专业组。", unit_ids
+        return False, "还没有定位到要移动的专业组。请说明专业组名称或第几个专业组。"
     if target_position is None:
-        log_event(
-            "plan_ordered_unit_mutation_timing",
-            sessionId=session_id,
-            actionFamily="move_ordered_unit",
-            status="blocked",
-            reason="missing_target_position",
-            unitIds=unit_ids,
-            resolveUnitDurationMs=resolve_duration_ms,
-            mutationRequestDurationMs=0,
-            totalDurationMs=int((time.monotonic() - started_at) * 1000),
-        )
-        return False, "还没有定位到目标位置。请说明要移动到第几位。", unit_ids
+        return False, "还没有定位到目标位置。请说明要移动到第几位。"
     try:
-        mutation_started_at = time.monotonic()
         result = await _move_planning_ordered_plan_unit_request(
             _DEFAULT_TENANT_ID,
             session_id,
             unit_ids[0],
             int(target_position),
         )
-        mutation_duration_ms = int((time.monotonic() - mutation_started_at) * 1000)
         if not _internal_mutation_ok(result):
-            log_event(
-                "plan_ordered_unit_mutation_timing",
-                sessionId=session_id,
-                actionFamily="move_ordered_unit",
-                status="error",
-                reason="backend_mutation_failed",
-                unitIds=unit_ids,
-                targetPosition=int(target_position),
-                resolveUnitDurationMs=resolve_duration_ms,
-                mutationRequestDurationMs=mutation_duration_ms,
-                totalDurationMs=int((time.monotonic() - started_at) * 1000),
-            )
-            return False, "专业组移动失败，请稍后重试或改用页面操作。", unit_ids
+            return False, "专业组移动失败，请稍后重试或改用页面操作。"
         data = (result or {}).get("data") or {}
-        log_event(
-            "plan_ordered_unit_mutation_timing",
-            sessionId=session_id,
-            actionFamily="move_ordered_unit",
-            status="success",
-            unitIds=unit_ids,
-            targetPosition=int(target_position),
-            responseVersion=data.get("version"),
-            resolveUnitDurationMs=resolve_duration_ms,
-            mutationRequestDurationMs=mutation_duration_ms,
-            totalDurationMs=int((time.monotonic() - started_at) * 1000),
-        )
-        return True, str(data.get("message") or result.get("message") or f"已将该专业组移动到第 {target_position} 位，方案顺序已更新。"), unit_ids
+        return True, str(data.get("message") or result.get("message") or f"已将该专业组移动到第 {target_position} 位，方案顺序已更新。")
     except Exception:
-        log_event(
-            "plan_ordered_unit_mutation_timing",
-            sessionId=session_id,
-            actionFamily="move_ordered_unit",
-            status="error",
-            reason="exception",
-            unitIds=unit_ids,
-            targetPosition=target_position,
-            resolveUnitDurationMs=resolve_duration_ms,
-            mutationRequestDurationMs=None,
-            totalDurationMs=int((time.monotonic() - started_at) * 1000),
-        )
         logger.exception("_move_ordered_unit failed: session_id=%s unit_ids=%s target=%s", session_id, unit_ids, target_position)
-        return False, "专业组移动失败，请稍后重试或改用页面操作。", unit_ids
+        return False, "专业组移动失败，请稍后重试或改用页面操作。"
 
 
-async def _remove_ordered_units(ctx: RunContext[RequestContext], plan_model: PlanActionPlan) -> tuple[bool, str, list[str]]:
+async def _remove_ordered_units(ctx: RunContext[RequestContext], plan_model: PlanActionPlan) -> tuple[bool, str]:
     session_id = ctx.deps.sessionid
-    started_at = time.monotonic()
-    resolve_started_at = time.monotonic()
     unit_ids = await _resolve_ordered_unit_ids(ctx, plan_model)
-    resolve_duration_ms = int((time.monotonic() - resolve_started_at) * 1000)
     if not unit_ids:
-        log_event(
-            "plan_ordered_unit_mutation_timing",
-            sessionId=session_id,
-            actionFamily="remove_ordered_unit",
-            status="blocked",
-            reason="missing_unit_ids",
-            resolveUnitDurationMs=resolve_duration_ms,
-            mutationRequestDurationMs=0,
-            totalDurationMs=int((time.monotonic() - started_at) * 1000),
-        )
-        return False, "还没有定位到要删除的专业组。请说明专业组名称或第几个专业组。", unit_ids
+        return False, "还没有定位到要删除的专业组。请说明专业组名称或第几个专业组。"
     try:
-        mutation_started_at = time.monotonic()
         result = await _remove_planning_ordered_plan_units_request(
             _DEFAULT_TENANT_ID,
             session_id,
             unit_ids,
         )
-        mutation_duration_ms = int((time.monotonic() - mutation_started_at) * 1000)
         if not _internal_mutation_ok(result):
-            log_event(
-                "plan_ordered_unit_mutation_timing",
-                sessionId=session_id,
-                actionFamily="remove_ordered_unit",
-                status="error",
-                reason="backend_mutation_failed",
-                unitIds=unit_ids,
-                resolveUnitDurationMs=resolve_duration_ms,
-                mutationRequestDurationMs=mutation_duration_ms,
-                totalDurationMs=int((time.monotonic() - started_at) * 1000),
-            )
-            return False, "专业组删除失败，请稍后重试或改用页面操作。", unit_ids
+            return False, "专业组删除失败，请稍后重试或改用页面操作。"
         data = (result or {}).get("data") or {}
-        log_event(
-            "plan_ordered_unit_mutation_timing",
-            sessionId=session_id,
-            actionFamily="remove_ordered_unit",
-            status="success",
-            unitIds=unit_ids,
-            responseVersion=data.get("version"),
-            resolveUnitDurationMs=resolve_duration_ms,
-            mutationRequestDurationMs=mutation_duration_ms,
-            totalDurationMs=int((time.monotonic() - started_at) * 1000),
-        )
-        return True, str(data.get("message") or result.get("message") or f"已从方案中删除 {len(unit_ids)} 个专业组，方案顺序已更新。"), unit_ids
+        return True, str(data.get("message") or result.get("message") or f"已从方案中删除 {len(unit_ids)} 个专业组，方案顺序已更新。")
     except Exception:
-        log_event(
-            "plan_ordered_unit_mutation_timing",
-            sessionId=session_id,
-            actionFamily="remove_ordered_unit",
-            status="error",
-            reason="exception",
-            unitIds=unit_ids,
-            resolveUnitDurationMs=resolve_duration_ms,
-            mutationRequestDurationMs=None,
-            totalDurationMs=int((time.monotonic() - started_at) * 1000),
-        )
         logger.exception("_remove_ordered_units failed: session_id=%s unit_ids=%s", session_id, unit_ids)
-        return False, "专业组删除失败，请稍后重试或改用页面操作。", unit_ids
+        return False, "专业组删除失败，请稍后重试或改用页面操作。"
 
 
 
@@ -2108,6 +1838,7 @@ async def _post_process_handler_result(
         state_summary=result.state_summary,
         summary=summary,
         reply_focus=reply_focus,
+        reply_strategy=result.reply_strategy,
         next_step_hints=next_step_hints,
         facts=result.facts,
     )
@@ -2154,25 +1885,24 @@ async def _execute_plan_action_model(
         if item not in missing_inputs:
             missing_inputs.append(item)
     if missing_inputs:
-        if "existing_plan" in missing_inputs:
-            missing_text = (
-                "当前还没有可审查或可调整的方案。你可以先生成一版基础方案，"
-                "等方案出来后我再帮你审查风险、替换冲突项或调整顺序。"
-            )
-            next_hints = ["先生成一版基础方案，再继续审查或调整。"]
-        else:
-            missing_text = f"这一步还缺少必要信息：{', '.join(missing_inputs)}。请先补充清楚后再继续。"
-            next_hints = ["先补齐缺失输入，再继续执行当前方案动作。"]
         return PlanExecutionResult(
             applied=False,
             action_family=plan_model.action_family,
             stage=plan_model.stage,
             result_kind="error",
             context_summary=plan_model.context_summary,
-            summary=missing_text,
+            summary=_execution_missing_inputs_message(plan_model, missing_inputs),
             reply_focus=["missing_inputs"],
-            next_step_hints=next_hints,
+            reply_strategy="direct_blocking",
+            next_step_hints=["先补齐缺失输入，再继续执行当前方案动作。"],
         )
+
+    if plan_model.stage == "analyze" and plan_model.action_family in _MUTATING_ACTION_FAMILIES:
+        # A mutating action can only become user-confirmable after the preview
+        # path has resolved concrete targets and produced a reusable apply payload.
+        # Treat model-supplied analyze payloads as preview requests, so they still
+        # pass through the same uniqueness and safety checks.
+        plan_model = plan_model.model_copy(update={"stage": "preview"})
 
     if not _allows_mutating_apply(ctx, plan_model):
         preview_summary = plan_model.preview_summary
@@ -2196,6 +1926,11 @@ async def _execute_plan_action_model(
                     plan_model,
                     volunteer_ids=resolved_ids,
                 )
+        elif plan_model.action_family == "sort_ordered_plan":
+            resolved_summary, resolved_facts = await _build_sort_ordered_plan_preview_summary(ctx, plan_model)
+            if resolved_summary:
+                preview_summary = resolved_summary
+                preview_facts = resolved_facts
         return PlanExecutionResult(
             applied=False,
             action_family=plan_model.action_family,
@@ -2276,10 +2011,12 @@ async def _execute_plan_action_model(
                 result_kind="error",
                 context_summary=plan_model.context_summary,
                 summary=(
-                    f"我还没有定位到这些志愿在当前方案里的真实编号：{missing_text}。"
-                    "请先明确当前方案里的具体志愿，或让我先重新定位后再给你确认。"
+                    f"我理解你想替换的是：{missing_text}。"
+                    "但我在当前方案里还没有唯一匹配到这条志愿。"
+                    "请先明确当前方案里的具体志愿，或补充更完整的学校、专业组、专业名称后我再给你确认。"
                 ),
                 reply_focus=["missing_inputs", "needs_volunteer_selection"],
+                reply_strategy="direct_blocking",
                 next_step_hints=["先定位当前方案里对应的志愿，再生成可确认的替换预览。"],
             )
         if atomic and effective_ids and review_issue_target is not None:
@@ -2357,20 +2094,9 @@ async def _execute_plan_action_model(
                     context_summary=plan_model.context_summary,
                     summary=_ordered_ref_resolution_message(missing_text, "移除"),
                     reply_focus=["missing_inputs", "needs_volunteer_selection"],
+                    reply_strategy="direct_blocking",
                     next_step_hints=["先定位当前方案里的真实 volunteerId，再生成可确认的移除预览。"],
                 )
-            preview_summary, preview_facts = await _build_remove_units_preview_summary(ctx, plan_model, resolved_ids)
-            return PlanExecutionResult(
-                applied=False,
-                action_family=plan_model.action_family,
-                stage=plan_model.stage,
-                result_kind="preview_only",
-                context_summary=plan_model.context_summary,
-                summary=_with_confirmation_hint(preview_summary),
-                reply_focus=["preview_only", "confirmation_required"],
-                next_step_hints=["先向用户说明已定位到哪条志愿；用户确认后，再执行移出方案动作。"],
-                facts=_facts_with_planning_version(preview_facts, ctx),
-            )
 
     if plan_model.stage == "preview" and plan_model.action_family == "move_unit":
         atomic = plan_model.atomic_actions[0] if plan_model.atomic_actions else None
@@ -2387,68 +2113,9 @@ async def _execute_plan_action_model(
                     context_summary=plan_model.context_summary,
                     summary=_ordered_ref_resolution_message(missing_text, "移动"),
                     reply_focus=["missing_inputs", "needs_volunteer_selection"],
+                    reply_strategy="direct_blocking",
                     next_step_hints=["先定位当前方案里的真实 volunteerId，再生成可确认的位置调整预览。"],
                 )
-            preview_summary, preview_facts = await _build_move_unit_preview_summary(ctx, plan_model, resolved_ids)
-            return PlanExecutionResult(
-                applied=False,
-                action_family=plan_model.action_family,
-                stage=plan_model.stage,
-                result_kind="preview_only",
-                context_summary=plan_model.context_summary,
-                summary=_with_confirmation_hint(preview_summary),
-                reply_focus=["preview_only", "confirmation_required"],
-                next_step_hints=["先向用户说明已定位到哪条志愿和目标位置；用户确认后，再执行移动方案动作。"],
-                facts=_facts_with_planning_version(preview_facts, ctx),
-            )
-
-    if plan_model.stage == "preview" and plan_model.action_family == "add_units":
-        atomic = plan_model.atomic_actions[0] if plan_model.atomic_actions else None
-        refs = list(atomic.volunteer_ids or []) if atomic else []
-        if refs:
-            existing_ids: list[str] = []
-            if any(any(ord(char) > 127 for char in str(ref or "")) for ref in refs):
-                existing_ids, _ = await _resolve_ordered_volunteer_refs(ctx, refs)
-            resolved_ids, missing_refs = await _resolve_candidate_volunteer_refs(ctx, refs)
-            resolved_ids = [volunteer_id for volunteer_id in resolved_ids if volunteer_id not in set(existing_ids)]
-            if existing_ids and not resolved_ids and not missing_refs:
-                refs_text = "、".join(refs[:5])
-                return PlanExecutionResult(
-                    applied=False,
-                    action_family=plan_model.action_family,
-                    stage=plan_model.stage,
-                    result_kind="no_change",
-                    context_summary=plan_model.context_summary,
-                    summary=f"{refs_text} 已经在当前方案中，无需重复加入。",
-                    reply_focus=["already_in_plan"],
-                    next_step_hints=["告诉用户目标已经在方案中，不要说已新增。可提示继续排序或调整。"],
-                    facts=_facts_with_planning_version({}, ctx),
-                )
-            if missing_refs or not resolved_ids:
-                missing_text = "、".join(missing_refs[:5]) if missing_refs else "要加入的候选志愿"
-                return PlanExecutionResult(
-                    applied=False,
-                    action_family=plan_model.action_family,
-                    stage=plan_model.stage,
-                    result_kind="error",
-                    context_summary=plan_model.context_summary,
-                    summary=_candidate_ref_resolution_message(missing_text),
-                    reply_focus=["missing_inputs", "needs_candidate_selection"],
-                    next_step_hints=["先定位候选池里的真实 volunteerId，再生成可确认的加入预览。"],
-                    facts=_facts_with_planning_version({}, ctx),
-                )
-            preview_summary, preview_facts = await _build_add_units_preview_summary(ctx, plan_model, refs, resolved_ids)
-            return PlanExecutionResult(
-                applied=False,
-                action_family=plan_model.action_family,
-                stage=plan_model.stage,
-                result_kind="preview_only",
-                context_summary=plan_model.context_summary,
-                summary=_with_confirmation_hint(preview_summary),
-                reply_focus=["preview_only", "confirmation_required"],
-                next_step_hints=["先向用户说明将要加入哪些候选；用户确认后，再执行加入方案动作。"],
-                facts=_facts_with_planning_version(preview_facts, ctx),
-            )
 
     if plan_model.stage in {"analyze", "preview"}:
         preview_summary = plan_model.preview_summary or "当前阶段仅分析或预览，不执行实际改动。"
@@ -2473,7 +2140,10 @@ async def _execute_plan_action_model(
                     volunteer_ids=resolved_ids,
                 )
         elif plan_model.stage == "preview" and plan_model.action_family == "sort_ordered_plan":
-            preview_summary = _enrich_sort_preview_summary(plan_model, preview_summary)
+            resolved_summary, resolved_facts = await _build_sort_ordered_plan_preview_summary(ctx, plan_model)
+            if resolved_summary:
+                preview_summary = resolved_summary
+                preview_facts = resolved_facts
         if plan_model.stage == "preview" and plan_model.action_family in _MUTATING_ACTION_FAMILIES:
             preview_summary = _with_confirmation_hint(preview_summary)
         return PlanExecutionResult(
@@ -2506,16 +2176,8 @@ async def _execute_plan_action_model(
         )
 
     if plan_model.action_family == "move_ordered_unit":
-        success, state_summary, unit_ids = await _move_ordered_unit(ctx, plan_model)
-        log_event(
-            "plan_ordered_unit_post_apply_timing",
-            sessionId=ctx.deps.sessionid,
-            actionFamily=plan_model.action_family,
-            status="success" if success else "error",
-            unitIds=unit_ids,
-            postResolveDurationMs=0,
-            reusedPreMutationUnitIds=True,
-        )
+        success, state_summary = await _move_ordered_unit(ctx, plan_model)
+        unit_ids = await _resolve_ordered_unit_ids(ctx, plan_model)
         return PlanExecutionResult(
             applied=success,
             action_family=plan_model.action_family,
@@ -2531,16 +2193,8 @@ async def _execute_plan_action_model(
         )
 
     if plan_model.action_family == "remove_ordered_unit":
-        success, state_summary, unit_ids = await _remove_ordered_units(ctx, plan_model)
-        log_event(
-            "plan_ordered_unit_post_apply_timing",
-            sessionId=ctx.deps.sessionid,
-            actionFamily=plan_model.action_family,
-            status="success" if success else "error",
-            unitIds=unit_ids,
-            postResolveDurationMs=0,
-            reusedPreMutationUnitIds=True,
-        )
+        success, state_summary = await _remove_ordered_units(ctx, plan_model)
+        unit_ids = await _resolve_ordered_unit_ids(ctx, plan_model)
         return PlanExecutionResult(
             applied=success,
             action_family=plan_model.action_family,
@@ -2593,8 +2247,9 @@ async def execute_plan_action(
             stage="apply",
             result_kind="error",
             context_summary="",
-            summary="方案操作数据格式有误，请重新生成操作计划后重试。",
+            summary="这次还没有形成可确认的方案调整内容。请再说明一下要调整哪所学校或哪个专业，我会先给你一版可确认的预览。",
             reply_focus=["missing_plan_payload"],
+            reply_strategy="direct_blocking",
             next_step_hints=["[LLM_INTERNAL] 先生成完整的操作计划，再执行方案动作。"],
         )
         result_data = fallback.model_dump()
@@ -2618,8 +2273,9 @@ async def execute_plan_action(
             stage=str(data.get("stage") or "apply"),
             result_kind="error",
             context_summary=str(data.get("context_summary") or ""),
-            summary="方案操作信息不完整，请先确认操作目标后重试。",
+            summary="这次还没有形成可确认的方案调整内容。请再说明一下要调整哪所学校或哪个专业，我会先给你一版可确认的预览。",
             reply_focus=["missing_plan_payload"],
+            reply_strategy="direct_blocking",
             next_step_hints=["[LLM_INTERNAL] 先生成完整的操作计划，再执行方案动作。"],
         )
         result_data = fallback.model_dump()

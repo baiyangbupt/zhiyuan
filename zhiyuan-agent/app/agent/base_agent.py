@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import logging
+import contextlib
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any, Generic, TypeVar
 
 from pydantic_ai import Agent, CallToolsNode, RunContext, RunUsage, ToolCallPart
-from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
+from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, ToolReturnPart, UserPromptPart
 from pydantic_ai.toolsets import AbstractToolset
 from pydantic_graph import End
 
@@ -45,8 +47,8 @@ class BaseAgent(Generic[T]):
         output_type: Any = str,
         tools: list[Any] | None = None,
         skill_dirs: list[str] | None = None,
-        expose_skill_tools: bool = False,
         deps_type: type[Any] | None = None,
+        expose_skill_tools: bool = False,
     ):
         self.llm_client = llm_client
         self.skills_toolset: AbstractToolset | None = None
@@ -70,7 +72,8 @@ class BaseAgent(Generic[T]):
             deps_type=deps_type,
         )
 
-        # 注入技能列表到 system prompt
+        # 注入技能列表到 system prompt。主对话可以只保留技能边界摘要，
+        # 不暴露 load_skill 等技能管理工具，避免和业务工具形成重复调度。
         if self.skills_toolset is not None:
             _toolset = self.skills_toolset
 
@@ -98,6 +101,30 @@ class BaseAgent(Generic[T]):
         """将工具名映射为用户可见的中文提示。子类可覆写。返回 None 表示不推送。"""
         return None
 
+    def should_return_directly_from_tool(
+        self,
+        tool_names: list[str],
+        tool_returns: list[ToolReturnPart],
+        deps: Any | None = None,
+    ) -> bool:
+        """Whether this agent can use a tool's rendered text as final output."""
+        return False
+
+    def render_direct_tool_output(
+        self,
+        tool_names: list[str],
+        tool_returns: list[ToolReturnPart],
+        deps: Any | None = None,
+    ) -> str | None:
+        """Render the final output for direct tool-return paths."""
+        if len(tool_returns) != 1:
+            return None
+        content = tool_returns[0].content
+        if not isinstance(content, str):
+            return None
+        text = content.strip()
+        return text or None
+
     async def run_with_history(
         self,
         user_prompt: str,
@@ -124,6 +151,8 @@ class BaseAgent(Generic[T]):
                    len(user_prompt), len(message_history) if message_history else 0)
 
         normalized_history = self._normalize_message_history(message_history)
+        run_started_at = time.monotonic()
+        observability = self._init_observability(deps, user_prompt, normalized_history)
 
         async with self.agent.iter(
             user_prompt, message_history=normalized_history, deps=deps
@@ -132,27 +161,113 @@ class BaseAgent(Generic[T]):
             node_count = 0
             while not isinstance(node, End):
                 node_count += 1
-                logger.debug("Agent processing node #%d: %s", node_count, type(node).__name__)
+                node_name = type(node).__name__
+                node_started_at = time.monotonic()
+                logger.debug("Agent processing node #%d: %s", node_count, node_name)
+                observability["currentNode"] = node_name
+                observability["currentNodeIndex"] = node_count
                 await self.on_node(node, agent_run)
 
                 # 工具调用前推送进度提示
+                tool_names: list[str] = []
                 if on_progress and isinstance(node, CallToolsNode):
+                    sent_hints: set[str] = set()
                     for part in node.model_response.parts:
                         if isinstance(part, ToolCallPart):
+                            tool_names.append(part.tool_name)
                             hint = self.get_progress_hint(part.tool_name)
-                            if hint:
+                            if hint and hint not in sent_hints:
+                                sent_hints.add(hint)
                                 try:
                                     await on_progress(hint)
                                 except Exception:
                                     logger.debug("on_progress callback failed for %s", part.tool_name)
+                elif isinstance(node, CallToolsNode):
+                    tool_names = [
+                        part.tool_name
+                        for part in node.model_response.parts
+                        if isinstance(part, ToolCallPart)
+                    ]
 
-                node = await agent_run.next(node)
+                if tool_names and observability.get("firstToolCallAtMs") is None:
+                    observability["firstToolCallAtMs"] = int((node_started_at - run_started_at) * 1000)
+                    observability["firstToolNames"] = list(tool_names)
+
+                try:
+                    node = await agent_run.next(node)
+                except BaseException as exc:
+                    duration_ms = int((time.monotonic() - node_started_at) * 1000)
+                    self._record_node_observability(
+                        observability,
+                        node_name=node_name,
+                        node_index=node_count,
+                        duration_ms=duration_ms,
+                        tool_names=tool_names,
+                        status="interrupted",
+                    )
+                    observability["completed"] = False
+                    observability["failedNode"] = node_name
+                    observability["failedNodeIndex"] = node_count
+                    observability["failedNodeElapsedMs"] = duration_ms
+                    observability["errorType"] = type(exc).__name__
+                    observability["totalDurationMs"] = int((time.monotonic() - run_started_at) * 1000)
+                    raise
+
+                direct_tool_returns = self._extract_tool_returns_from_next_node(node)
+                self._record_node_observability(
+                    observability,
+                    node_name=node_name,
+                    node_index=node_count,
+                    duration_ms=int((time.monotonic() - node_started_at) * 1000),
+                    tool_names=tool_names,
+                    status="success",
+                )
+                if (
+                    tool_names
+                    and direct_tool_returns
+                    and self.should_return_directly_from_tool(tool_names, direct_tool_returns, deps)
+                ):
+                    direct_output = self.render_direct_tool_output(tool_names, direct_tool_returns, deps)
+                    if direct_output:
+                        output = direct_output
+                        usage = agent_run.usage()
+                        if hasattr(usage, "__await__"):
+                            usage = await usage
+                        observability["completed"] = True
+                        observability["directToolReturn"] = True
+                        observability["totalDurationMs"] = int((time.monotonic() - run_started_at) * 1000)
+                        observability["requests"] = usage.requests
+                        observability["toolCalls"] = usage.tool_calls
+
+                        partial_messages = await self._resolve_messages(agent_run.all_messages())
+                        tool_request = getattr(node, "request", None)
+                        direct_response = ModelResponse(
+                            parts=[TextPart(content=direct_output)],
+                            model_name="direct-tool-result",
+                        )
+                        all_messages = list(partial_messages)
+                        if isinstance(tool_request, ModelRequest):
+                            all_messages.append(tool_request)
+                        all_messages.append(direct_response)
+                        history_len = len(normalized_history or [])
+                        new_messages = list(all_messages[history_len:])
+                        logger.info(
+                            "Agent completed via direct tool return: nodes=%d output_len=%d messages=%d",
+                            node_count,
+                            len(str(output)),
+                            len(all_messages),
+                        )
+                        return output, new_messages, all_messages, usage
             await self.on_complete(agent_run)
 
             output = agent_run.result.output
             usage = agent_run.usage()
             if hasattr(usage, "__await__"):
                 usage = await usage
+            observability["completed"] = True
+            observability["totalDurationMs"] = int((time.monotonic() - run_started_at) * 1000)
+            observability["requests"] = usage.requests
+            observability["toolCalls"] = usage.tool_calls
 
             logger.info(
                 "Agent usage: requests=%d input_tokens=%d output_tokens=%d "
@@ -173,6 +288,58 @@ class BaseAgent(Generic[T]):
             logger.info("Agent completed: nodes=%d output_len=%d messages=%d",
                        node_count, len(str(output)), len(all_messages))
             return output, new_messages, all_messages, usage
+
+    def _extract_tool_returns_from_next_node(self, node: Any) -> list[ToolReturnPart]:
+        request = getattr(node, "request", None)
+        if not isinstance(request, ModelRequest):
+            return []
+        return [part for part in request.parts if isinstance(part, ToolReturnPart)]
+
+    def _init_observability(
+        self,
+        deps: Any | None,
+        user_prompt: str,
+        normalized_history: list[Any] | None,
+    ) -> dict[str, Any]:
+        observability: dict[str, Any]
+        if deps is not None and isinstance(getattr(deps, "agent_observability", None), dict):
+            observability = getattr(deps, "agent_observability")
+            observability.clear()
+        else:
+            observability = {}
+            if deps is not None:
+                with contextlib.suppress(Exception):
+                    setattr(deps, "agent_observability", observability)
+        observability.update(
+            {
+                "promptLength": len(user_prompt or ""),
+                "historyLength": len(normalized_history or []),
+                "nodeTimings": [],
+                "firstToolCallAtMs": None,
+                "completed": False,
+            }
+        )
+        return observability
+
+    def _record_node_observability(
+        self,
+        observability: dict[str, Any],
+        *,
+        node_name: str,
+        node_index: int,
+        duration_ms: int,
+        tool_names: list[str],
+        status: str,
+    ) -> None:
+        item: dict[str, Any] = {
+            "index": node_index,
+            "node": node_name,
+            "durationMs": duration_ms,
+            "status": status,
+        }
+        if tool_names:
+            item["toolNames"] = list(tool_names)
+        observability.setdefault("nodeTimings", []).append(item)
 
     async def _resolve_messages(self, messages_result: Any) -> list[Any]:
         """Resolve a pydantic-ai message accessor that may return awaitables."""

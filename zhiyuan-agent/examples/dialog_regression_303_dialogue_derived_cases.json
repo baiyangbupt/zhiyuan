@@ -218,14 +218,14 @@
     {
       "name": "303-dialogue-color-weakness-major-avoid",
       "sessionId": "880621",
-      "flow": ["explore", "intent"],
-      "coverage": ["eligibility_constraints", "medical_check", "color_weakness", "hard_major_constraint"],
+      "flow": ["explore"],
+      "coverage": ["eligibility_constraints", "medical_check", "color_weakness", "readonly_policy"],
       "prompts": [
         {
           "prompt": "色弱是不是医学化工都要避开",
           "assertContainsAny": ["色弱", "体检", "医学", "化工", "限制", "风险"],
-          "expectedKeyPoints": ["体检限制", "医学", "化工", "确认前", "下一步"],
-          "qualityFocus": ["rich_decision_basis", "preview_confirm_boundary"],
+          "expectedKeyPoints": ["色弱", "医学", "化工", "体检要求", "下一步"],
+          "qualityFocus": ["rich_decision_basis", "readonly_boundary"],
           "minTextLengthWarn": 180
         }
       ]
@@ -434,6 +434,11 @@
         {
           "prompt": "建筑城乡规划要不要美术基础",
           "assertContainsAny": ["建筑", "城乡规划", "美术", "学习", "就业", "建议"],
+          "expectedToolNames": ["get_major_introductions"],
+          "assertToolNamesNotContain": ["get_major_introduction"],
+          "expectedToolCounts": {"get_major_introductions": 1},
+          "maxToolCallCount": 1,
+          "assertNoRepeatedToolNames": true,
           "expectedKeyPoints": ["建筑学", "城乡规划", "美术基础", "学习要求", "下一步"],
           "qualityFocus": ["readonly_boundary", "rich_decision_basis"],
           "minTextLengthWarn": 180
@@ -494,6 +499,11 @@
         {
           "prompt": "财管会计审计这几个怎么排优先级",
           "assertContainsAny": ["财务管理", "会计", "审计", "优先级", "就业", "建议"],
+          "expectedToolNames": ["compare_major_options"],
+          "assertToolNamesNotContain": ["compare_majors", "analyze_current_major_interest"],
+          "expectedToolCounts": {"compare_major_options": 1},
+          "maxToolCallCount": 1,
+          "assertNoRepeatedToolNames": true,
           "expectedKeyPoints": ["财务管理", "会计", "审计", "就业路径", "排序建议"],
           "qualityFocus": ["readonly_boundary", "rich_decision_basis"],
           "minTextLengthWarn": 200
@@ -878,14 +888,14 @@
     {
       "name": "303-dialogue-budget-less-sino-foreign",
       "sessionId": "17",
-      "flow": ["intent", "plan"],
-      "coverage": ["budget_tuition", "sino_foreign", "hard_major_constraint"],
+      "flow": ["explore", "plan"],
+      "coverage": ["budget_tuition", "sino_foreign", "tuition_risk", "readonly_policy"],
       "prompts": [
         {
           "prompt": "预算一般，是不是要少放中外合作",
-          "assertContainsAny": ["预算", "中外合作", "学费", "确认", "方案", "风险"],
-          "expectedKeyPoints": ["预算", "中外合作", "确认前", "当前方案", "下一步"],
-          "qualityFocus": ["preview_confirm_boundary", "rich_decision_basis"],
+          "assertContainsAny": ["预算", "中外合作", "学费", "方案", "风险"],
+          "expectedKeyPoints": ["预算", "中外合作", "学费", "方案位置", "下一步"],
+          "qualityFocus": ["readonly_boundary", "rich_decision_basis"],
           "minTextLengthWarn": 180
         }
       ]
@@ -1138,7 +1148,7 @@
       "prompts": [
         {
           "prompt": "把第5个挪到第2个看看影响",
-          "assertContainsAny": ["第5", "第2", "移动", "影响", "确认", "导出顺序"],
+          "assertContainsAny": ["第5", "第 5", "第2", "第 2", "移动", "调整", "影响", "正式方案", "导出顺序"],
           "expectedKeyPoints": ["当前位置", "目标位置", "导出顺序", "确认后"],
           "qualityFocus": ["preview_confirm_boundary"],
           "minTextLengthWarn": 140
@@ -1208,14 +1218,14 @@
     {
       "name": "303-dialogue-operation-major-group-keep-safest-major",
       "sessionId": "16",
-      "flow": ["plan"],
-      "coverage": ["plan_operations", "majorGroup_model", "group_mode", "preview_confirm_boundary"],
+      "flow": ["explore", "plan"],
+      "coverage": ["plan_operations", "majorGroup_model", "group_mode", "readonly_policy"],
       "prompts": [
         {
           "prompt": "专业组里只保留最稳的专业行不行",
           "assertContainsAny": ["专业组", "专业", "录取率", "稳", "确认", "风险"],
-          "expectedKeyPoints": ["专业组", "专业录取率", "保留", "风险", "确认后"],
-          "qualityFocus": ["preview_confirm_boundary", "rich_decision_basis"],
+          "expectedKeyPoints": ["专业组", "保留", "风险", "调剂", "下一步"],
+          "qualityFocus": ["readonly_boundary", "rich_decision_basis"],
           "minTextLengthWarn": 180
         }
       ]
@@ -1228,8 +1238,8 @@
       "prompts": [
         {
           "prompt": "确认",
-          "assertContainsAny": ["没有待确认", "没有待执行", "不会改动", "可以继续"],
-          "expectedKeyPoints": ["没有待确认", "不会改动方案", "下一步"],
+          "assertContainsAny": ["没有待确认", "没有上一轮待确认", "没有待执行", "不会改动", "可以继续"],
+          "expectedKeyPoints": ["没有待确认", "没有上一轮待确认", "不会改动方案", "下一步"],
           "expectedNoAction": true,
           "assertNoFollowups": true,
           "qualityFocus": ["readonly_boundary", "actionable_next_step"],
@@ -1240,8 +1250,8 @@
     {
       "name": "303-dialogue-followup-weak-closure",
       "sessionId": "880691",
-      "flow": ["confirm_guard"],
-      "coverage": ["followup_guard", "readonly_closure_ack", "vague_confirm"],
+      "flow": ["readonly"],
+      "coverage": ["followup_guard", "no_action", "vague_confirm"],
       "prompts": [
         {
           "prompt": "嗯那就这样",
@@ -1334,14 +1344,14 @@
     {
       "name": "303-dialogue-followup-change-preference-later",
       "sessionId": "880697",
-      "flow": ["intent"],
-      "coverage": ["followup_guard", "intent_change", "soft_major_intent"],
+      "flow": ["readonly", "intent"],
+      "coverage": ["followup_guard", "intent_change", "intent_boundary", "readonly_policy"],
       "prompts": [
         {
           "prompt": "如果孩子改主意了，之前偏好还能改吗",
           "assertContainsAny": ["偏好", "修改", "确认", "方案", "后续", "不会"],
           "expectedKeyPoints": ["偏好可调整", "确认边界", "方案需要重看", "下一步"],
-          "qualityFocus": ["preview_confirm_boundary", "rich_decision_basis"],
+          "qualityFocus": ["readonly_boundary", "rich_decision_basis"],
           "minTextLengthWarn": 160
         }
       ]

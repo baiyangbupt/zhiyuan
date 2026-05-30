@@ -212,6 +212,7 @@ class TestStyleRules:
         result = build_style_rules()
         assert len(result) > 100
         assert "回复风格" in result
+        assert "不要夹杂不必要的英文词" in result
 
 
 # ---------------------------------------------------------------------------
@@ -242,12 +243,52 @@ class TestToolDispatchRules:
         assert "remove_units" in result
         assert "唯一性校验" in result
 
-    def test_major_choice_questions_should_not_use_plan_local_lookup(self):
+    def test_explore_tool_boundaries_reduce_redundant_tool_chains(self):
         result = build_tool_dispatch_rules()
+        assert "两个具体专业/专业类做只读比较" in result
+        assert "`compare_majors` 或 `compare_majors_adhoc`" in result
+        assert "三个及以上具体专业/专业类" in result
+        assert "`compare_major_options`" in result
+        assert "不要拆成多次二元 `compare_majors`" in result
+        assert "`get_major_introductions`" in result
+        assert "不要并行或连续多次调用 `get_major_introduction`" in result
+        assert "不要先调用 `analyze_current_major_interest`" in result
+        assert "不要在同一轮再追加 `get_major_introduction`" in result
+        assert "只有用户明确同时问职业和地域时" in result
+        assert "直接传 `career_directions`" in result
+        assert "`system_public_service`" in result
+        assert "`stable_employment`" in result
+        assert "`further_study`" in result
+        assert "`market_employment`" in result
+        assert "先看大方向" in result
+        assert "`analyze_current_career_direction(generic_direction=true)`" in result
+        assert "不能只列“可以聊什么”" in result
+        assert "这轮只做分析，不会改动你的方案" in result
+        assert "不要再补调 `plan_next_action(action_family=\"query_state\")`" in result
 
-        assert "财会、法学、新媒体哪个更不容易踩坑" in result
-        assert "不要调用 `query_volunteer_plan`" in result
-        assert "取舍判断" in result
+    def test_intent_preview_tool_boundaries_stop_after_preview(self):
+        result = build_tool_dispatch_rules()
+        assert "`preview_current_*_intent_confirmation` 返回后" in result
+        assert "不要在同一轮重复调用同一个 preview 工具" in result
+        assert "直接传结构化参数" in result
+        assert "看看影响" in result
+        assert "不要把一级门类自动展开成所有下级专业" in result
+        assert "不要自行补充未出现的相邻专业范围" in result
+        assert "师范、护理、土木" in result
+        assert "不要调用 `preview_current_school_intent_confirmation`" in result
+
+    def test_plan_tool_boundaries_do_not_upgrade_queries_to_mutations(self):
+        result = build_tool_dispatch_rules()
+        assert "公办/民办占比" in result
+        assert "高收费占比" in result
+        assert "不要升级成 `review_plan` 或改方案预览" in result
+        assert "如果用户只是问是否存在某类风险" in result
+        assert "不要自动规划删除、替换或补偿" in result
+
+    def test_plan_local_query_empty_result_should_not_be_worded_as_system_delay(self):
+        result = build_tool_dispatch_rules()
+        assert "暂时没有筛到/没有命中" in result
+        assert "不要改写成“系统延迟、稍后再试、查询没拉出来”" in result
 
     def test_plan_tool_docs_say_refs_do_not_need_pre_query(self):
         assert "不适合在移动/删除前作为“定位 ID”的前置步骤" in (query_volunteer_plan.__doc__ or "")

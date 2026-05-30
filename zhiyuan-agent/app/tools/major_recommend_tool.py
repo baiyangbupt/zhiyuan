@@ -27,6 +27,52 @@ def _get_llm_client() -> LLMClient:
     return _llm_client
 
 
+def _allow_explore_inner_llm(request_context: RequestContext) -> bool:
+    return bool(getattr(request_context, "allow_explore_inner_llm", True))
+
+
+def _format_metric_value(value) -> str:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return "暂无"
+    if numeric <= 0:
+        return "暂无"
+    return f"{numeric:.1f}".rstrip("0").rstrip(".")
+
+
+def _render_major_recommendation_facts(major_list: list[dict], sex_name: str) -> str:
+    lines: list[str] = [
+        "专业推荐参考：",
+        f"下面按当前学生情况和{sex_name or '学生'}相关指标整理可重点看的专业方向。",
+        "",
+        "推荐列表：",
+    ]
+    for index, item in enumerate(major_list[:8], 1):
+        major = item.get("major") or item.get("majorName") or item.get("name") or "未知专业"
+        gender_index = _format_metric_value(item.get("gender_index"))
+        satisfy_index = _format_metric_value(item.get("satisfy_index"))
+        salary_avg = _format_metric_value(item.get("salary_avg"))
+        hot_index = _format_metric_value(item.get("hot_index"))
+        lines.append(
+            f"{index}. {major}：性别分布适配 {gender_index}，满意度 {satisfy_index}，薪酬 {salary_avg}，热度 {hot_index}。"
+        )
+
+    lines.extend(
+        [
+            "",
+            "判断建议：",
+            "- 这些专业可以作为优先了解清单，但不能只按热度决定；还要结合你的选科、分数、城市机会和家庭试错成本。",
+            "- 如果其中某个方向你明显排斥，后续应把它记成排除要求，再看方案和候选是否需要调整。",
+            "",
+            "[数据来源]",
+            "- 数据源：高校毕业生就业调查数据、招生报考统计",
+            "- 计算方法：多维指标加权推荐模型",
+        ]
+    )
+    return "\n".join(lines)
+
+
 async def get_major_recommendations(
     ctx: RunContext[RequestContext],
 ) -> str:
@@ -54,7 +100,9 @@ async def get_major_recommendations(
         if ctx.deps.score_detail and ctx.deps.score_detail.sex:
             sex_name = ctx.deps.score_detail.sex
 
-        return await _summarize_recommendations(major_list, sex_name)
+        if _allow_explore_inner_llm(ctx.deps):
+            return await _summarize_recommendations(major_list, sex_name)
+        return _render_major_recommendation_facts(major_list, sex_name)
 
     except Exception:
         logger.exception("获取专业推荐失败")
@@ -148,7 +196,9 @@ async def get_major_recommendations_adhoc(
         if not major_list:
             return "暂时没有找到合适的专业推荐"
 
-        return await _summarize_recommendations(major_list, sex)
+        if _allow_explore_inner_llm(ctx.deps):
+            return await _summarize_recommendations(major_list, sex)
+        return _render_major_recommendation_facts(major_list, sex)
 
     except ValueError as e:
         return f"输入信息有误：{e}"

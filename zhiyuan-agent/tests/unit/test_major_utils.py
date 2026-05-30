@@ -79,6 +79,154 @@ class TestFilterMajorHierarchyByPrefix:
 
         assert result == ""
 
+    def test_filter_expands_common_major_aliases(self):
+        """财会类口语简称 should expose accounting/business candidates."""
+        chat_history = [
+            {"role": "user", "content": "医学护理这些别碰，财会还能接受"},
+        ]
+        prefix_index = {
+            "医学": ["医学"],
+            "护理": ["护理学类", "护理学"],
+        }
+        major_lines = [
+            "管理学",
+            "  工商管理类",
+            "    会计学",
+            "    财务管理",
+            "    审计学",
+            "医学",
+            "  护理学类",
+            "    护理学",
+        ]
+        category_line_map = {"管理学": [0, 1, 2, 3, 4], "医学": [5, 6, 7]}
+        subcategory_line_map = {
+            "工商管理类": [1, 2, 3, 4],
+            "护理学类": [6, 7],
+        }
+        major_line_map = {
+            "会计学": [2],
+            "财务管理": [3],
+            "审计学": [4],
+            "护理学": [7],
+        }
+        subcategory_to_category = {"工商管理类": "管理学", "护理学类": "医学"}
+        major_to_subcategory = {
+            "会计学": "工商管理类",
+            "财务管理": "工商管理类",
+            "审计学": "工商管理类",
+            "护理学": "护理学类",
+        }
+
+        result = filter_major_hierarchy_by_prefix(
+            chat_history,
+            prefix_index,
+            major_lines,
+            category_line_map,
+            subcategory_line_map,
+            major_line_map,
+            subcategory_to_category,
+            major_to_subcategory,
+        )
+
+        assert "工商管理类" in result
+        assert "会计学" in result
+        assert "财务管理" in result
+        assert "护理学类" in result
+
+    def test_filter_expands_computer_science_alias(self):
+        """计科 should expose computer science candidates from the common alias table."""
+        chat_history = [
+            {"role": "user", "content": "计科以后就业怎么样"},
+        ]
+        prefix_index = {}
+        major_lines = [
+            "工学",
+            "  计算机类",
+            "    计算机科学与技术",
+            "    软件工程",
+        ]
+        category_line_map = {"工学": [0, 1, 2, 3]}
+        subcategory_line_map = {"计算机类": [1, 2, 3]}
+        major_line_map = {
+            "计算机科学与技术": [2],
+            "软件工程": [3],
+        }
+        subcategory_to_category = {"计算机类": "工学"}
+        major_to_subcategory = {
+            "计算机科学与技术": "计算机类",
+            "软件工程": "计算机类",
+        }
+
+        result = filter_major_hierarchy_by_prefix(
+            chat_history,
+            prefix_index,
+            major_lines,
+            category_line_map,
+            subcategory_line_map,
+            major_line_map,
+            subcategory_to_category,
+            major_to_subcategory,
+        )
+
+        assert "计算机类" in result
+        assert "计算机科学与技术" in result
+
+    def test_filter_expands_mixed_english_and_multi_target_aliases(self):
+        """AI and 大数据 should expose candidates without forcing one final major."""
+        chat_history = [
+            {"role": "user", "content": "AI和大数据哪个更适合女生"},
+        ]
+        prefix_index = {}
+        major_lines = [
+            "工学",
+            "  电子信息类",
+            "    人工智能",
+            "  计算机类",
+            "    数据科学与大数据技术",
+            "管理学",
+            "  管理科学与工程类",
+            "    大数据管理与应用",
+        ]
+        category_line_map = {"工学": [0, 1, 2, 3, 4], "管理学": [5, 6, 7]}
+        subcategory_line_map = {
+            "电子信息类": [1, 2],
+            "计算机类": [3, 4],
+            "管理科学与工程类": [6, 7],
+        }
+        major_line_map = {
+            "人工智能": [2],
+            "数据科学与大数据技术": [4],
+            "大数据管理与应用": [7],
+        }
+        subcategory_to_category = {
+            "电子信息类": "工学",
+            "计算机类": "工学",
+            "管理科学与工程类": "管理学",
+        }
+        major_to_subcategory = {
+            "人工智能": "电子信息类",
+            "数据科学与大数据技术": "计算机类",
+            "大数据管理与应用": "管理科学与工程类",
+        }
+
+        result = filter_major_hierarchy_by_prefix(
+            chat_history,
+            prefix_index,
+            major_lines,
+            category_line_map,
+            subcategory_line_map,
+            major_line_map,
+            subcategory_to_category,
+            major_to_subcategory,
+        )
+
+        assert "电子信息类" in result
+        assert "人工智能" in result
+        assert "计算机类" in result
+        assert "数据科学与大数据技术" in result
+        assert "管理科学与工程类" in result
+        assert "大数据管理与应用" in result
+
     def test_filter_includes_parent_subcategory(self):
         """Test that parent subcategory is included when major is matched."""
         chat_history = [

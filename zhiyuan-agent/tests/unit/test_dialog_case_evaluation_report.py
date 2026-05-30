@@ -161,6 +161,7 @@ def test_score_case_warns_without_failing_when_expected_semantic_frame_is_unveri
                 "sideEffect": "readonly",
                 "minConfidence": 0.85,
             },
+            "expectedSemanticFrameSource": "explicit",
             "semanticRouterShadow": {"status": "disabled"},
         }
     )
@@ -196,6 +197,24 @@ def test_score_case_accepts_expected_semantic_frame_value_sets():
     )
 
     assert score["semanticExpectation"]["matched"] is True
+
+
+def test_score_case_suppresses_unverified_warning_for_inferred_semantic_frame():
+    score = report._score_case(
+        {
+            "prompt": "建筑城乡规划要不要美术基础",
+            "responseText": "建筑学入学后课程有手绘训练，城乡规划相对少一些。可以继续问具体学校。",
+            "expectedSemanticFrame": {
+                "taskLayer": "explore",
+                "topic": "major",
+                "verb": "explain",
+                "sideEffect": "readonly",
+            },
+            "expectedSemanticFrameSource": "inferred",
+        }
+    )
+
+    assert "semantic_frame_unverified:missing" not in score["evaluationWarnings"]
     assert score["qualityViolations"] == []
 
 
@@ -430,6 +449,22 @@ def test_score_case_does_not_apply_distribution_gate_to_empty_candidate_result()
     assert score["verdict"] != "fail"
 
 
+def test_score_case_does_not_apply_distribution_gate_to_empty_plan_result():
+    score = report._score_case(
+        {
+            "prompt": "按推荐系数排一下，但别直接动",
+            "responseText": (
+                "当前还没有正式方案，暂时没法按推荐系数预览排序效果。"
+                "你可以先让我生成一套志愿方案，生成之后再随时调整排序。"
+            ),
+            "elapsedMs": 900,
+        }
+    )
+
+    assert "thin_preview_distribution" not in score["qualityViolations"]
+    assert score["verdict"] != "fail"
+
+
 def test_score_case_does_not_treat_confirm_guard_as_preview():
     score = report._score_case(
         {
@@ -521,6 +556,21 @@ def test_score_case_allows_if_you_confirm_pending_preview_wording():
                 "- 如果你确认，会把土木工程作为明确不考虑的内容。\n\n"
                 "确认前不会写入后续参考，也不会直接改动当前方案。\n\n"
                 "**下一步**\n- 如果确认要作为后续参考，直接回复“确认这个偏好”。"
+            ),
+            "elapsedMs": 900,
+        }
+    )
+
+    assert "pending_intent_effective_wording" not in score["qualityViolations"]
+
+
+def test_score_case_allows_if_you_want_pending_preview_wording():
+    score = report._score_case(
+        {
+            "prompt": "新闻新媒体能不能当备选，不想太虚",
+            "responseText": (
+                "新闻传播类可以作为备选，但要看你能不能接受内容生产、传播运营和岗位波动。\n\n"
+                "如果你想，我可以把它先记成待确认偏好，确认前不会写入后续参考。"
             ),
             "elapsedMs": 900,
         }
@@ -712,7 +762,7 @@ def test_case_definitions_attach_flow_coverage_and_latency_budget(tmp_path):
 
     assert merged["flow"] == ["plan"]
     assert merged["coverage"] == ["plan_fast_route", "sort_ordered_plan"]
-    assert merged["expectedRoutingPath"] == "plan_fast_route"
+    assert merged["expectedRoutingPath"] is None
     assert merged["expectedActionFamily"] == "sort_ordered_plan"
     assert merged["latencyBudget"] == {"warnElapsedMs": 3000, "maxElapsedMs": 5000}
     assert merged["assertions"] == {"assertContains": ["排序", "确认"]}
@@ -721,7 +771,7 @@ def test_case_definitions_attach_flow_coverage_and_latency_budget(tmp_path):
         "qualityFocus": ["preview_confirm_boundary"],
     }
     assert "latency_warn_exceeded" in ",".join(merged["current"]["score"]["evaluationWarnings"])
-    assert "missing_route_observability" in ",".join(merged["current"]["score"]["evaluationWarnings"])
+    assert "missing_route_observability" not in ",".join(merged["current"]["score"]["evaluationWarnings"])
 
 
 def test_case_definitions_support_defaults_object_payload(tmp_path):
@@ -844,7 +894,7 @@ def test_case_definitions_infer_confirm_routes_from_prompt_and_coverage(tmp_path
     assert "expectedActionFamily" not in definitions["readonly-confirm#1"]
 
 
-def test_score_case_flags_route_and_action_family_mismatch():
+def test_score_case_treats_legacy_fast_route_mismatch_as_warning_not_quality_failure():
     score = report._score_case(
         {
             "prompt": "按院校层次排序",
@@ -860,8 +910,26 @@ def test_score_case_flags_route_and_action_family_mismatch():
         }
     )
 
-    assert "route_mismatch:plan_fast_route!=full_agent" in score["qualityViolations"]
+    assert "route_mismatch:plan_fast_route!=full_agent" not in score["qualityViolations"]
+    assert "optimization_route_not_matched:plan_fast_route!=full_agent" in score["evaluationWarnings"]
     assert any(item.startswith("action_family_mismatch:") for item in score["qualityViolations"])
+    assert score["verdict"] == "fail"
+
+
+def test_score_case_flags_strict_route_mismatch():
+    score = report._score_case(
+        {
+            "prompt": "确认",
+            "responseText": "这轮没有待确认的偏好或方案动作，我不会改动方案。",
+            "elapsedMs": 900,
+            "expectedRoutingPath": "plan_confirmation_guard_no_pending",
+            "expectedNoAction": True,
+            "routingPath": "full_agent",
+            "turnObservability": {"actionFamilies": [], "toolCalls": []},
+        }
+    )
+
+    assert "route_mismatch:plan_confirmation_guard_no_pending!=full_agent" in score["qualityViolations"]
     assert score["verdict"] == "fail"
 
 
@@ -921,6 +989,75 @@ def test_score_case_uses_tool_name_as_action_observability_alias():
     assert "missing_action_observability:analyze_current_career_direction" not in score["evaluationWarnings"]
     assert not any(item.startswith("action_family_mismatch:") for item in score["qualityViolations"])
     assert score["route"] >= 4
+
+
+def test_score_case_accepts_multi_major_tool_as_major_compare_observability_alias():
+    score = report._score_case(
+        {
+            "prompt": "财管会计审计这几个怎么排优先级",
+            "responseText": (
+                "默认优先级：会计学 > 财务管理 > 审计学。\n\n"
+                "会计学就业面最宽，企业财务、金融机构和考公岗位口径更大；"
+                "财务管理偏资金运作和管理决策；审计学路径更专，偏事务所、内审和风控。\n\n"
+                "如果你更看重稳定和考公，可以先会计，再财管，最后审计；愿意补充分数和就业倾向后，我可以继续细化。"
+            ),
+            "elapsedMs": 900,
+            "expectedActionFamily": "compare_majors",
+            "turnObservability": {
+                "toolCalls": [{"name": "compare_major_options"}],
+            },
+            "qualityExpectations": {
+                "expectedKeyPoints": ["财务管理", "会计", "审计", "就业路径", "排序建议"],
+                "qualityFocus": ["rich_decision_basis", "actionable_next_step"],
+            },
+        }
+    )
+
+    assert "missing_action_observability:compare_majors" not in score["evaluationWarnings"]
+    assert not any(item.startswith("missing_expected_keypoint:") for item in score["evaluationWarnings"])
+    assert not any(item.startswith("action_family_mismatch:") for item in score["qualityViolations"])
+    assert score["route"] >= 4
+
+
+def test_score_case_does_not_require_readonly_boundary_for_pure_explore_information_question():
+    score = report._score_case(
+        {
+            "prompt": "建筑城乡规划要不要美术基础",
+            "responseText": (
+                "录取门槛上，多数学校不强制要求美术基础。\n\n"
+                "建筑学入学后课程里会有建筑美术、设计表达和手绘训练；"
+                "城乡规划更偏总体规划、详细规划、法规和空间布局，美术压力相对低。\n\n"
+                "如果完全零基础，可以优先看城乡规划，或提前补一点素描和快速表现。可以直接问我具体学校在你省的情况。"
+            ),
+            "elapsedMs": 900,
+            "coverage": ["major_preference", "architecture_major", "skill_requirement"],
+            "qualityExpectations": {
+                "expectedKeyPoints": ["建筑学", "城乡规划", "美术基础", "学习要求", "下一步"],
+                "qualityFocus": ["readonly_boundary", "rich_decision_basis", "actionable_next_step"],
+            },
+        }
+    )
+
+    assert "missing_quality_focus:readonly_boundary" not in score["evaluationWarnings"]
+    assert not any(item.startswith("missing_expected_keypoint:") for item in score["evaluationWarnings"])
+    assert not any(item.startswith("missing_quality_focus:rich_decision_basis") for item in score["evaluationWarnings"])
+
+
+def test_score_case_still_requires_readonly_boundary_for_plan_adjacent_question():
+    score = report._score_case(
+        {
+            "prompt": "这版方案是不是太冲了，先别动",
+            "responseText": "当前方案冲区偏多，保底不足。下一步可以继续看保底补齐。",
+            "elapsedMs": 900,
+            "coverage": ["plan_review_strategy", "plan_analysis"],
+            "qualityExpectations": {
+                "qualityFocus": ["readonly_boundary", "rich_decision_basis"],
+            },
+        }
+    )
+
+    assert "missing_quality_focus:readonly_boundary" in score["evaluationWarnings"]
+    assert score["verdict"] == "needs_review"
 
 
 def test_score_case_flags_latency_budget_hard_failure():
@@ -1092,6 +1229,39 @@ def test_score_case_quality_focus_flags_system_language():
     assert score["verdict"] == "needs_review"
 
 
+def test_score_case_quality_focus_flags_unnecessary_english_mixed_wording():
+    score = report._score_case(
+        {
+            "prompt": "体制内稳定就业承接怎么样",
+            "responseText": "学历门槛 increasingly 要硕士，baseline 是本科。下一步可以继续看方案。",
+            "elapsedMs": 900,
+            "qualityExpectations": {
+                "qualityFocus": ["user_language"],
+            },
+        }
+    )
+
+    assert "missing_quality_focus:user_language" in score["evaluationWarnings"]
+    assert score["verdict"] == "needs_review"
+
+
+def test_expected_keypoint_next_step_accepts_user_friendly_followup_wording():
+    score = report._score_case(
+        {
+            "prompt": "大城市就业和考编哪个更现实",
+            "responseText": "可以告诉我你的省份、分数和选科，我再继续判断哪条路更现实。",
+            "elapsedMs": 900,
+            "qualityExpectations": {
+                "expectedKeyPoints": ["下一步"],
+                "qualityFocus": ["actionable_next_step"],
+            },
+        }
+    )
+
+    assert not any(item.startswith("missing_expected_keypoint:下一步") for item in score["evaluationWarnings"])
+    assert not any(item == "missing_quality_focus:actionable_next_step" for item in score["evaluationWarnings"])
+
+
 def test_summarize_reports_groups_quality_by_scenario_and_coverage():
     reports = [
         {
@@ -1257,11 +1427,98 @@ def test_full_agent_tool_trial_issue_detects_repeated_slow_tools():
     assert "repeated_tool_calls" in issue["issueTypes"]
     assert "very_slow_full_agent" in issue["issueTypes"]
     assert "missing_progress_for_long_task" in issue["issueTypes"]
-    assert "expected_fast_route_fell_back_full_agent" in issue["issueTypes"]
+    assert "expected_route_mismatch_full_agent" in issue["issueTypes"]
     assert summary["fullAgentToolTrialIssues"]["count"] == 1
     assert summary["fullAgentToolTrialIssues"]["slowOrTimeoutCount"] == 1
     assert summary["fullAgentToolTrialIssues"]["missingProgressCount"] == 1
     assert summary["fullAgentToolTrialIssues"]["byRepeatedTool"] == {"query_volunteer_plan": 1}
+
+
+def test_full_agent_tool_trial_issue_reports_interrupted_agent_node():
+    item = report._build_case_report(
+        "timeout-intent#1",
+        None,
+        {
+            "case": "timeout-intent",
+            "stepIndex": 1,
+            "prompt": "医学护理这些别碰，财会还能接受，先看看影响",
+            "responseText": "这次分析耗时有点长，我先暂停在这里。",
+            "elapsedMs": 180_000,
+            "firstMessageMs": 3_000,
+            "turnObservability": {
+                "routingPath": "full_agent",
+                "routeDecision": {
+                    "fallbackReason": "agent_run_interrupted",
+                    "agentRun": {
+                        "failedNode": "ModelRequestNode",
+                        "failedNodeElapsedMs": 180000,
+                        "nodeTimings": [
+                            {
+                                "index": 1,
+                                "node": "ModelRequestNode",
+                                "durationMs": 180000,
+                                "status": "interrupted",
+                            }
+                        ],
+                    },
+                },
+            },
+        },
+        {},
+    )
+
+    issue = item["current"]["fullAgentToolTrialIssue"]
+
+    assert issue["agentRun"]["failedNode"] == "ModelRequestNode"
+    assert "agent_run_interrupted" in issue["issueTypes"]
+    assert "first_model_request_or_final_generation_interrupted" in issue["issueTypes"]
+    assert "very_slow_full_agent" in issue["issueTypes"]
+
+
+def test_full_agent_tool_trial_issue_reports_slow_successful_agent_node():
+    item = report._build_case_report(
+        "slow-model#1",
+        None,
+        {
+            "case": "slow-model",
+            "stepIndex": 1,
+            "prompt": "孩子不想当老师，师范是不是都别要",
+            "responseText": "可以先区分师范类和非师范就业方向。",
+            "elapsedMs": 95_000,
+            "firstMessageMs": 3_000,
+            "turnObservability": {
+                "routingPath": "full_agent",
+                "routeDecision": {
+                    "agentRun": {
+                        "completed": True,
+                        "firstToolCallAtMs": None,
+                        "nodeTimings": [
+                            {
+                                "index": 1,
+                                "node": "ModelRequestNode",
+                                "durationMs": 94_000,
+                                "status": "success",
+                            }
+                        ],
+                    },
+                    "toolTrial": {
+                        "toolNames": [],
+                        "toolNameCounts": {},
+                        "repeatedToolNames": [],
+                        "hasToolCalls": False,
+                    },
+                },
+            },
+        },
+        {},
+    )
+
+    issue = item["current"]["fullAgentToolTrialIssue"]
+
+    assert issue["slowestAgentNode"]["node"] == "ModelRequestNode"
+    assert "slow_agent_node" in issue["issueTypes"]
+    assert "very_slow_agent_node" in issue["issueTypes"]
+    assert "slow_before_first_tool_or_final_generation" in issue["issueTypes"]
 
 
 def test_full_agent_tool_trial_issue_synthesizes_tool_sequence_from_observability():
@@ -1294,37 +1551,39 @@ def test_full_agent_tool_trial_issue_synthesizes_tool_sequence_from_observabilit
     assert "missing_progress_for_long_task" not in issue["issueTypes"]
 
 
-def test_string_patch_inventory_marks_fast_route_expression_risk():
-    item = report._build_case_report(
-        "major-short#1",
-        None,
-        {
-            "case": "major-short",
-            "stepIndex": 1,
-            "prompt": "法和财哪个更适合女孩子，家里一般",
-            "responseText": "法学和财政学可以从就业路径、学习门槛和家庭投入看。",
-            "elapsedMs": 900,
-            "coverage": ["major_compare"],
-            "turnObservability": {
-                "routingPath": "major_compare_fast_route",
-                "routeDecision": {
-                    "source": "major_compare_fast_route",
-                    "matched": True,
-                    "reason": "matched_major_count_2",
+def test_tool_trial_issue_detects_observed_tool_chain_without_routing_path():
+    record = {
+        "case": "remove-expensive-preview",
+        "stepIndex": 1,
+        "prompt": "把太贵的那几个先去掉看看",
+        "responseText": "我先列出高收费项，请你确认范围后再处理。",
+        "elapsedMs": 103_000,
+        "thinkingText": "正在读取方案并处理你的请求...",
+        "turnObservability": {
+            "toolCalls": [
+                {"name": "plan_next_action", "actionFamily": "remove_units", "stage": "preview"},
+                {
+                    "name": "execute_plan_action",
+                    "actionFamily": "remove_units",
+                    "stage": "preview",
+                    "resultKind": "error",
+                    "success": False,
                 },
-            },
+                {"name": "query_volunteer_plan"},
+                {"name": "query_volunteer_plan"},
+            ],
         },
-        {},
-    )
+    }
 
-    inventory = item["current"]["stringPatchInventory"]
-    summary = report._summarize_reports([item])
+    issue = report._build_full_agent_tool_trial_issue(record)
 
-    assert inventory["existingStringPatch"] == "yes"
-    assert inventory["stringPatchRisk"] == "high_expression_fragility"
-    assert summary["stringPatchInventory"]["count"] == 1
-    assert summary["stringPatchInventory"]["byRoutingPath"] == {"major_compare_fast_route": 1}
-    assert summary["fullAgentToolTrialIssues"]["count"] == 0
+    assert issue is not None
+    assert issue["actualRoutingPath"] is None
+    assert issue["repeatedToolNames"] == ["query_volunteer_plan"]
+    assert "tool_result_error" in issue["issueTypes"]
+    assert "repeated_tool_calls" in issue["issueTypes"]
+    assert "many_tool_calls" in issue["issueTypes"]
+    assert "very_slow_tool_chain" in issue["issueTypes"]
 
 
 def test_markdown_summary_renders_full_agent_issue_table():

@@ -33,6 +33,20 @@ class TestChatAgentToolRegistration:
         assert "priority" not in major_schema["properties"]
         assert schema["properties"]["intent_mode"]["anyOf"][0]["enum"] == ["preference", "constraint"]
 
+    def test_career_direction_tool_schema_exposes_direction_slot_enum(self):
+        from app.tools.intent_preview_tool import analyze_current_career_direction
+
+        schema = Tool(analyze_current_career_direction).function_schema.json_schema
+        direction_items = schema["properties"]["career_directions"]["anyOf"][0]["items"]
+
+        assert "generic_direction" in schema["properties"]
+        assert direction_items["enum"] == [
+            "system_public_service",
+            "stable_employment",
+            "further_study",
+            "market_employment",
+        ]
+
     def test_plan_query_tool_schema_exposes_enums_for_scope_and_match_mode(self):
         from app.tools.plan_query_tool import query_volunteer_plan
 
@@ -53,6 +67,8 @@ class TestChatAgentToolRegistration:
             client = LLMClient(config)
 
             from app.agent.chat_agent import ChatAgent
+            from app.tools.major_compare_tool import compare_major_options
+            from app.tools.major_info_tool import get_major_introductions
             from app.tools.city_intent_tool import extract_city_intent, extract_negative_city_intent
             from app.tools.major_intent_tool import extract_major_intent, extract_negative_major_intent
             from app.tools.school_intent_tool import extract_school_intent
@@ -60,6 +76,8 @@ class TestChatAgentToolRegistration:
             ChatAgent(client)
 
             registered_tools = agent_cls.call_args.kwargs["tools"]
+            assert compare_major_options in registered_tools
+            assert get_major_introductions in registered_tools
             assert extract_school_intent not in registered_tools
             assert extract_major_intent not in registered_tools
             assert extract_negative_major_intent not in registered_tools
@@ -213,6 +231,117 @@ class TestChatAgentToolRegistration:
             registered_names = {tool.__name__ for tool in registered_tools}
             assert "analyze_volunteer_intent_change" not in registered_names
 
+    def test_chat_agent_uses_tool_reply_policy_for_direct_returns(self):
+        with patch("app.agent.base_agent.Agent", return_value=MagicMock()):
+            from pydantic_ai.messages import ToolReturnPart
+
+            from app.agent.chat_agent import ChatAgent
+            from app.llm.client import LLMClient
+
+            client = MagicMock(spec=LLMClient)
+            client.model = TestModel()
+            client.model_settings = {}
+            agent = ChatAgent(client)
+
+        intent_returns = [
+            ToolReturnPart(
+                tool_name="preview_current_major_intent_confirmation",
+                content="我先整理成待确认偏好。",
+                tool_call_id="intent-preview-call",
+            )
+        ]
+        assert (
+            agent.should_return_directly_from_tool(
+                ["preview_current_major_intent_confirmation"],
+                intent_returns,
+                None,
+            )
+            is True
+        )
+        assert agent.should_return_directly_from_tool(["execute_plan_action"], [], None) is False
+        assert agent.should_return_directly_from_tool(
+            ["preview_current_major_intent_confirmation", "query_volunteer_plan"],
+            intent_returns,
+            None,
+        ) is False
+
+    def test_chat_agent_direct_returns_plan_selection_blocking_error(self):
+        with patch("app.agent.base_agent.Agent", return_value=MagicMock()):
+            from pydantic_ai.messages import ToolReturnPart
+
+            from app.agent.chat_agent import ChatAgent
+            from app.llm.client import LLMClient
+
+            client = MagicMock(spec=LLMClient)
+            client.model = TestModel()
+            client.model_settings = {}
+            agent = ChatAgent(client)
+
+        tool_returns = [
+            ToolReturnPart(
+                tool_name="execute_plan_action",
+                content='{"result_kind":"error","summary":"我还没有唯一定位到这个志愿，请点选或补充学校专业组。","reply_focus":["missing_inputs","needs_volunteer_selection"]}',
+                tool_call_id="call-1",
+            )
+        ]
+
+        assert agent.should_return_directly_from_tool(["execute_plan_action"], tool_returns, None) is True
+        assert (
+            agent.render_direct_tool_output(["execute_plan_action"], tool_returns, None)
+            == "我还没有唯一定位到这个志愿，请点选或补充学校专业组。"
+        )
+
+    def test_chat_agent_direct_returns_incomplete_plan_payload_blocking_error(self):
+        with patch("app.agent.base_agent.Agent", return_value=MagicMock()):
+            from pydantic_ai.messages import ToolReturnPart
+
+            from app.agent.chat_agent import ChatAgent
+            from app.llm.client import LLMClient
+
+            client = MagicMock(spec=LLMClient)
+            client.model = TestModel()
+            client.model_settings = {}
+            agent = ChatAgent(client)
+
+        tool_returns = [
+            ToolReturnPart(
+                tool_name="execute_plan_action",
+                content=(
+                    '{"result_kind":"error","summary":"这次还没有形成可确认的方案调整内容。",'
+                    '"reply_focus":["missing_plan_payload"]}'
+                ),
+                tool_call_id="call-1",
+            )
+        ]
+
+        assert agent.should_return_directly_from_tool(["execute_plan_action"], tool_returns, None) is True
+        assert (
+            agent.render_direct_tool_output(["execute_plan_action"], tool_returns, None)
+            == "这次还没有形成可确认的方案调整内容。"
+        )
+
+    def test_chat_agent_does_not_direct_return_normal_plan_preview(self):
+        with patch("app.agent.base_agent.Agent", return_value=MagicMock()):
+            from pydantic_ai.messages import ToolReturnPart
+
+            from app.agent.chat_agent import ChatAgent
+            from app.llm.client import LLMClient
+
+            client = MagicMock(spec=LLMClient)
+            client.model = TestModel()
+            client.model_settings = {}
+            agent = ChatAgent(client)
+
+        tool_returns = [
+            ToolReturnPart(
+                tool_name="execute_plan_action",
+                content='{"result_kind":"preview_only","summary":"会把这个志愿移动到第3位。","reply_focus":["preview_only","confirmation_required"]}',
+                tool_call_id="call-1",
+            )
+        ]
+
+        assert agent.should_return_directly_from_tool(["execute_plan_action"], tool_returns, None) is False
+
     def test_chat_agent_registers_plan_orchestration_tools(self):
         agent_mock = MagicMock()
         with patch("app.llm.client.OpenAIChatModel", return_value=MagicMock()), patch(
@@ -240,6 +369,28 @@ class TestChatAgentToolRegistration:
             assert "query_planning_plan_overview" not in registered_names
             assert "run_planning_review" not in registered_names
             assert "analyze_planning_plan_adjustment" not in registered_names
+
+    def test_chat_agent_hides_skill_management_tools_from_main_dialog(self):
+        agent_mock = MagicMock()
+        skill_toolset = MagicMock()
+        with patch("app.llm.client.OpenAIChatModel", return_value=MagicMock()), patch(
+            "app.llm.client.OpenAIProvider", return_value=MagicMock()
+        ), patch("app.agent.base_agent.SkillsToolset", return_value=skill_toolset), patch(
+            "app.agent.base_agent.Agent", return_value=agent_mock
+        ) as agent_cls:
+            from app.config import LLMConfig
+            from app.llm.client import LLMClient
+
+            config = LLMConfig(provider="openai", api_key="sk-test")
+            client = LLMClient(config)
+
+            from app.agent.chat_agent import ChatAgent
+
+            chat_agent = ChatAgent(client)
+
+            assert chat_agent.skills_toolset is skill_toolset
+            assert agent_cls.call_args.kwargs["toolsets"] == []
+            agent_mock.instructions.assert_called_once()
 
     def test_chat_agent_model_tool_call_routes_plan_status_query_through_orchestration_chain(self):
         recorded: list[dict] = []

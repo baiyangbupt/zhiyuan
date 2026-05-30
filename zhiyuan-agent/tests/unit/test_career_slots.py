@@ -1,5 +1,6 @@
 from app.domain.career_slots import (
     CAREER_FURTHER_STUDY,
+    CAREER_MARKET_EMPLOYMENT,
     CAREER_STABLE_EMPLOYMENT,
     CAREER_SYSTEM_PUBLIC_SERVICE,
     normalize_career_slots,
@@ -14,6 +15,7 @@ def test_to_career_label_and_labels():
         "稳定就业导向",
         "深造发展导向",
     ]
+    assert to_career_label(CAREER_MARKET_EMPLOYMENT) == "市场化就业导向"
 
 
 def test_normalize_career_slots_filters_invalid_and_deduplicates():

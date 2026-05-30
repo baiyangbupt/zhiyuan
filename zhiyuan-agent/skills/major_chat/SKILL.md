@@ -38,7 +38,7 @@ description: 处理高考志愿填报场景中关于专业的咨询对话，包�
 - **参数**：`major_name1`、`major_name2`（两个专业名称）
 - **使用场景**：用户询问"XX专业和YY专业哪个好"、"对比一下XX和YY"
 - **注意**：如果用户输入的专业名称不标准，工具内部会进行模糊匹配
-- **边界**：如果用户明确是在做两个专业的只读对比，并且说了"先分析"、"不要记偏好"、"不要改方案"，优先使用本工具，不要先进入 `analyze_current_major_interest` 或 Intent 确认链。
+- **编排边界**：如果用户只是在比较两个专业/专业类，优先直接调用本工具；不要先调用 `analyze_current_major_interest`。除非用户追问课程、学习内容或就业细节，不要同一轮追加 `get_major_introduction`
 
 ### get_major_recommendations
 - **用途**：基于学生画像获取个性化专业推荐及总结

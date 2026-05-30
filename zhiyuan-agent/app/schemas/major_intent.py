@@ -19,3 +19,10 @@ class NegativeMajorIntentResult(BaseModel):
     level1: list[str] = Field(default_factory=list, description="负面一级专业（门类）")
     level2: list[str] = Field(default_factory=list, description="负面二级专业")
     level3: list[str] = Field(default_factory=list, description="负面三级专业")
+
+
+class MajorIntentPolarityResult(BaseModel):
+    """Combined positive/negative major intent extraction result."""
+
+    positive: MajorIntentResult = Field(default_factory=MajorIntentResult, description="正面专业意向")
+    negative: NegativeMajorIntentResult = Field(default_factory=NegativeMajorIntentResult, description="负面专业意向")

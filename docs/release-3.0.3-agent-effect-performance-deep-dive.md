@@ -9,27 +9,81 @@
 - `docs/release-3.0.1-agent-optimization-design.md`
 - `docs/release-3.0.3-agent-response-quality-review.md`
 
+## 0. 基线重置记录
+
+2026-05-29 决策：近期围绕 fast route、semantic route、字符串补丁式分流的运行时代码不再继续迭代；运行时代码先回到 `prod-3.0.2` 发布状态，重新 deep dive 当前 full agent 本身的效率、性能和回复质量问题。
+
+本次保留范围：
+
+- `3.0.3` 相关设计、评估和测试用例文档。
+- 对话回归、case 评估、质量门禁、多模型 benchmark、semantic frame probe/evaluator 等测试工具和脚本。
+- 已沉淀的真实对话衍生 case 文件，用于后续重新跑 full agent 基线。
+
+不保留范围：
+
+- 运行时 fast route / fixed scenario route / semantic intent route 相关实现。
+- 逐 case 字符串匹配补丁及其运行时接入。
+- 依赖上述运行时代码的路由单测，除非它们只是评估工具自身的测试。
+
+当前校验：
+
+- `zhiyuan-agent/app`、`zhiyuan-server/src` 等运行时代码与 `prod-3.0.2` 对齐。
+- 评估工具可在 `prod-3.0.2` 运行时基线上导入和运行。
+- `semantic_frame_probe.py` 作为评估工具保留；在没有 3.0.3 semantic router 运行时代码时不会阻断导入，实际执行 probe 会明确提示依赖不可用。
+- 工具脚本相关单测：`106 passed`。
+
+注意：`/private/tmp/zhiyuan_agent_303_dialogue_derived_live.json` 等既有输出包含 3.0.3 fast route 历史结果，不能直接作为“纯 3.0.2 full agent 基线”结论。它们只能用于历史对照；重新评估必须基于 `prod-3.0.2` 运行时重新跑 WebSocket e2e。
+
+### 0.1 历史 deep dive 资料的使用口径
+
+本文件后续章节保留了此前 `3.0.3` deep dive 的大量记录，包括 Plan/Explore/Intent 快路径、semantic route shadow、selective arbitration、专业对比 renderer、职业方向快路由、局部查询快路由等设计和验证结果。这些内容现在不再表示“当前运行时代码已经保留”，而应按下面口径使用：
+
+- **可作为问题证据**：此前 case 里已经观察到的 full agent 慢点、误试工具、重复 LLM 调用、回复过薄或边界不清等问题，仍然对当前分析有效。
+- **可作为候选优化方案**：此前落过的快路径、renderer、semantic frame、progress hint 等方案可以作为后续设计输入，但需要重新基于 `prod-3.0.2` 基线评估后再决定是否恢复或重做。
+- **不可作为当前实现状态**：运行时代码已经回到 `prod-3.0.2`，所以文档中出现的 `plan_fast_route`、`major_compare_fast_route`、`SemanticIntentRouter`、`fixedScenario`、`fast_route_arbitrator` 等都应理解为历史试验或候选设计。
+- **不可替代新基线数据**：此前 `/private/tmp` 下的 3.0.3 输出多数混入了 fast route 或 semantic shadow 结果，不能直接证明 full agent 当前表现。当前必须以新跑出的 `zhiyuan_agent_303_full_agent_baseline_live.json` 为准。
+
+因此，当前整理方式是：先把历史 case 结论纳入“问题画像”和“候选方案库”，再用新的 full-agent 基线回归确认哪些问题仍然存在、影响多大、优先级如何。
+
+### 0.2 历史 deep dive 已沉淀的问题画像
+
+此前围绕 3.0.3 的 case 和真实 WebSocket 验证，已经反复出现以下问题类型：
+
+| 问题类型 | 历史样例 | 用户侧影响 | 当前是否需重新验证 |
+| --- | --- | --- | --- |
+| Plan 明确动作也进入完整 Agent | `把第2个志愿移到第4位`、`按院校层次排序` | 预览慢，且可能先走错工具再重试 | 是 |
+| Plan 状态查看上下文过重 | `看看现在的方案` | 回复可用但首包慢，输入 token 大 | 是 |
+| Explore 只读分析误进多工具链 | `法学和财政学哪个更适合...`、`体制内稳定就业承接` | 2-4 次 LLM，耗时可到 1-2 分钟 | 是 |
+| 专业意向表达触发重复抽取 | `我倾向法学和财政学，但护理不要` | 正负向各自抽取，可能超时；确认边界也更难解释 | 是 |
+| 开放口语 Explore 缺少轻量承接 | `一模二模差挺多...`、`孩子数学忽高忽低...` | full agent 大上下文 + 多次模型调用，长时间无反馈 | 是 |
+| 政策/资格类问题路由不稳定 | 口试、专项、体检、视力、色弱等 | 可能无进度提示，或误接到意向/方案链路 | 是 |
+| 进度提示覆盖不足 | 首轮模型选工具前、工具内部 LLM、最终回复生成阶段 | 用户看到系统“没动静”，即使后台在工作 | 是 |
+| 回复质量和性能相互拉扯 | 方案概览、审查、专业对比、职业方向 | 为了快可能变薄；为了丰满可能继续慢 | 是 |
+
+这些问题不能靠继续补个别关键词解决。后续设计要优先基于“任务层级 + 副作用边界 + 可验证事实”的结构化分层：确认/执行类由状态机保护，高置信固定类可以考虑结构化入口，开放咨询继续保留完整 Agent 或经过充分评估后再接管。
+
 ## 1. 本期目标
 
-`3.0.3` 的核心目标不是继续堆 UI 功能，而是把对话 Agent 的主链路变得更稳定、更快、更可观测：
+`3.0.3` 重置后的核心目标不是继续堆 UI 功能，也不是继续给 fast route 打补丁，而是先把 `prod-3.0.2` full agent 的主链路问题重新看清楚：
 
-1. 明确用户一句话如何进入 Explore、Intent、Plan 三层，不再依赖模型反复试工具。
-2. 对高置信、低歧义的方案操作建立结构化快路径，降低延迟和误路由。
-3. 保留大模型润色和解释能力，但减少无意义的多轮模型调用。
-4. 建立可持续的效果与性能 benchmark，后续每次换模型、改提示词、改工具都能量化比较。
-5. 在不破坏 `preview -> confirm -> apply` 安全边界的前提下，提高方案查看、排序、移动、删除、审查、意向确认的端到端体验。
+1. 用 80+ 真实对话衍生 case 复测 full agent，定位慢点、误路由、重复工具调用和回复质量问题。
+2. 区分三类请求：确定性工具/skill 请求、领域内需要多级编排的请求、与工具无关的普通闲聊。
+3. 保留大模型的解释和组织能力，不能为了快把回复压薄、做僵硬模板或丢掉用户想要的信息。
+4. 建立可持续的效果与性能 benchmark，后续每次换模型、改提示词、改工具或恢复某类结构化入口，都能量化比较。
+5. 在不破坏 `preview -> confirm -> apply` 安全边界的前提下，再决定是否恢复高置信结构化入口、semantic shadow 或特定只读 renderer。
 
 不在本期做：
 
 - 不把所有对话改成规则模板回复。
+- 不把历史 fast route 实现直接视为当前方案。
 - 不绕过确认机制直接执行高副作用动作。
 - 不把 provider 切换当成唯一优化手段。
 - 不重写后端方案算法。
 - 不删除历史兼容路径，除非已有测试证明无消费方。
 
-## 2. 当前实测表现
+## 2. 早期小样本实测表现
 
-基于当前本地真实 WebSocket e2e 验证，`dialog_regression_302_effect_perf_cases.json` 共 11 个步骤全部功能通过，但性能波动明显。
+本节保留早期 `dialog_regression_302_effect_perf_cases.json` 的 11 step 小样本结果，用于说明 3.0.3 deep dive 最初为什么聚焦 Agent 性能和工具链问题。它不是重置后的最终基线；当前 `prod-3.0.2` full agent 88 case 基线见 4.9。
 
 | 指标 | 当前结果 |
 | --- | --- |
@@ -226,9 +280,425 @@ WebSocket / HTTP
 
 因此需要先把效果和性能观测做细，否则后续只能凭感觉优化。
 
-## 5. 3.0.3 方案设计
+### 4.6 回到 3.0.2 后的 full agent 调用链确认
 
-### 5.1 总体架构
+`prod-3.0.2` 基线下，非确认类消息主链路如下：
+
+```text
+ChatService.handle_message
+  -> load persisted history
+  -> extract pending plan / pending intent
+  -> build_runtime_history
+  -> fetch score_detail / init_profile / planning_summary
+  -> build ConversationPhase
+  -> direct pending confirm guard
+  -> ChatAgent.run_with_message_deltas
+       -> Pydantic Agent initial LLM request
+       -> CallToolsNode
+            -> tool progress hint
+            -> selected tool execution
+            -> tool may call backend and/or nested LLM
+       -> optional more tool rounds
+       -> final LLM answer
+  -> normalize plan / intent reply wording
+  -> save history
+  -> emit workspace followup
+```
+
+进度提示的关键限制：
+
+- 只有进入 `CallToolsNode` 后，才会根据工具名发送 thinking/progress 文案。
+- 初始 LLM 还没决定工具之前，用户看不到进度。
+- 工具内部如果再调 LLM，例如职业方向 slot 识别、方向分析生成、专业对比总结，外层只知道“某个工具在执行”，不知道内部卡在哪。
+- 工具返回后到最终回复生成之间，也没有阶段性提示。
+
+这意味着“用户感觉系统没动静”的场景，不一定是后端工具慢；也可能是首轮模型路由慢、工具内部模型慢，或 final answer 慢。
+
+### 4.7 需要重新验证的 full agent 问题
+
+从代码链路看，`prod-3.0.2` full agent 仍有以下高风险点，需要通过重新跑基线确认影响程度：
+
+1. 工具自由选择面过大：`ChatAgent` 暴露专业介绍、专业对比、学校对比、推荐、方案查询、方案编排、意向预览、意向确认、分数线查询等多类工具；低歧义请求也可能先选错工具再自我修正。
+2. Explore 工具内嵌多次模型调用：职业方向可能经历方向识别、泛方向判定、方向分析生成；专业对比可能经历专业名消歧、权重查询、对比总结。
+3. Plan 链路上下文读取较重：`plan_next_action` 每次都会调用 `_collect_plan_context_inputs_model`，如果同轮重复调用会重复读状态并膨胀历史。
+4. 观测只到 turn 级：当前 `conversation_turn_event` 有总耗时、LLM 总耗时、工具名序列和 usage 汇总，但缺少每次 LLM request、每个工具、工具内部子任务的耗时。
+5. 回复质量与延迟耦合：为了降延迟直接压薄回复会丢信息；本阶段先评估 full agent 的真实质量和耗时，再决定是否需要结构化入口、小模型路由或工具内降级。
+
+### 4.8 重新跑基线的命令
+
+在本地启动 `prod-3.0.2` 运行时代码后，先跑完整真实对话衍生 case，不启用任何 fast route / semantic route 运行时逻辑：
+
+```bash
+cd zhiyuan-agent
+RUN_AGENT_DIALOG_E2E=1 \
+AGENT_DIALOG_E2E_METRICS_OUTPUT=/private/tmp/zhiyuan_agent_303_full_agent_baseline_live.json \
+.venv/bin/python examples/dialog_regression_runner.py \
+  --cases examples/dialog_regression_303_dialogue_derived_cases.json \
+  --url ws://127.0.0.1:8000/gaotu-assistant-agent/plus/chat/1/bot/test/do \
+  --response-timeout 180 \
+  --keep-response-text
+```
+
+生成质量和性能报告：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python examples/dialog_case_evaluation_report.py \
+  --current /private/tmp/zhiyuan_agent_303_full_agent_baseline_live.json \
+  --case-definitions examples/dialog_regression_303_dialogue_derived_cases.json \
+  --output /private/tmp/zhiyuan_agent_303_full_agent_baseline_eval.json
+
+.venv/bin/python examples/dialog_case_evaluation_report.py \
+  --current /private/tmp/zhiyuan_agent_303_full_agent_baseline_live.json \
+  --case-definitions examples/dialog_regression_303_dialogue_derived_cases.json \
+  --markdown-detail \
+  --output /private/tmp/zhiyuan_agent_303_full_agent_baseline_eval.md
+```
+
+基线报告重点看：
+
+- `elapsedMedianMs / elapsedP95Ms / elapsedMaxMs`。
+- `firstMessageMs` 是否长时间为空白或超过 10s。
+- `usage.requests`、`tool_calls` 与慢 case 的关系。
+- 是否存在重复工具调用、错误工具后重试、工具链过长。
+- 质量维度是否因为慢链路仍然没有给出足够信息。
+
+### 4.9 full agent 88 case 基线复盘
+
+2026-05-29 已按上述口径重新跑 `dialog_regression_303_dialogue_derived_cases.json`，这次运行时代码按 `prod-3.0.2` 基线，不启用 3.0.3 fast route / semantic route 运行时代码。
+
+执行命令：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python examples/dialog_regression_runner.py \
+  --url ws://127.0.0.1:8000/gaotu-assistant-agent/plus/chat/1/bot/test/do \
+  --cases examples/dialog_regression_303_dialogue_derived_cases.json \
+  --response-timeout 220 \
+  --clear-history-per-case \
+  --keep-response-text \
+  --metrics-output /private/tmp/zhiyuan_agent_303_full_agent_baseline_live.json
+```
+
+输出：
+
+- `/private/tmp/zhiyuan_agent_303_full_agent_baseline_live.json`
+- `/private/tmp/zhiyuan_agent_303_full_agent_baseline_eval.json`
+- `/private/tmp/zhiyuan_agent_303_full_agent_baseline_eval.md`
+
+runner 退出码为 `1`，原因是 case 质量/性能门禁失败；不是 WebSocket runner 或服务崩溃。88 个 step 都拿到了用户可见回复，但有明显长尾、质量警告和部分断言/评估口径问题。
+
+总体指标：
+
+| 指标 | 结果 |
+| --- | ---: |
+| steps | 88 |
+| verdict | `fail=17 / needs_review=71 / strong=0` |
+| latency | min `2450ms` / median `30661ms` / p95 `99659ms` / max `185860ms` |
+| first message | median `8252ms` |
+| final message | median `28658ms` |
+| 平均分 | correctness `4.51` / completeness `4.66` / naturalness `3.98` / actionability `3.38` / latency `1.31` / structure `3.44` / route `4.25` |
+
+按场景看：
+
+| flow | count | verdict | median / p95 / max |
+| --- | ---: | --- | ---: |
+| explore | 52 | `fail=6 / needs_review=46` | `30661ms / 98234ms / 119701ms` |
+| plan | 41 | `fail=6 / needs_review=35` | `28950ms / 69888ms / 185860ms` |
+| intent | 10 | `fail=6 / needs_review=4` | `40358ms / 152678ms / 185860ms` |
+| review | 9 | `needs_review=9` | `28950ms / 42648ms / 45240ms` |
+| confirm_guard | 2 | `fail=1 / needs_review=1` | `8869ms / 14646ms / 15288ms` |
+| readonly | 2 | `fail=2` | `12982ms / 15469ms / 15745ms` |
+
+最慢样例：
+
+| prompt | 耗时 | 工具链 | 复盘 |
+| --- | ---: | --- | --- |
+| `孩子不想当老师，师范是不是都别要` | `185860ms` | 无可见 tool call | 最终走超时兜底，说明首轮模型/最终生成阶段可能卡住；缺少更细粒度 LLM request 观测。 |
+| `等成绩出来再定，今天先看大方向` | `119701ms` | `load_skill -> analyze_current_career_direction` | 开放 Explore 同轮加载 skill 又跑职业方向分析，长时间无足够进度解释。 |
+| `会计审计还行，土木别要` | `112123ms` | `preview_current_major_intent_confirmation` | 回复内容基本可理解，但 pending 文案里“后续不再推荐/正式记成”容易被评估为已生效语气，且耗时超 100s。 |
+| `历史政治地理这个组合，就业别太窄咋选` | `109339ms` | `analyze_current_career_direction` | 选科组合 + 就业面问题被职业方向工具承接，质量可复核但链路过慢。 |
+| `大城市就业和考编哪个更现实` | `102153ms` | `analyze_current_career_direction` | 职业取舍类问题仍是 Explore 长尾。 |
+| `法律听着稳但怕太卷，财政会不会更实际` | `95027ms` | `analyze_current_career_direction -> compare_majors` | 专业对比被同时拆成职业方向和专业比较，属于工具自由试探。 |
+| `孩子内向，不太想天天跟人打交道` | `87382ms` | `analyze_current_career_direction` | 用户话术很口语，最终进入职业方向分析，但耗时和等待感过重。 |
+| `汉语言和历史哪个更稳一点` | `85301ms` | `compare_majors -> analyze_current_major_interest` | 明确专业对比后又追加专业兴趣分析，说明工具边界仍不够硬。 |
+
+工具调用分布：
+
+| tool | count |
+| --- | ---: |
+| `load_skill` | 37 |
+| `plan_next_action` | 30 |
+| `execute_plan_action` | 22 |
+| `analyze_current_career_direction` | 15 |
+| `collect_plan_context_inputs` | 10 |
+| `analyze_current_major_interest` | 6 |
+| `get_major_introduction` | 6 |
+| `compare_majors` | 5 |
+| `query_volunteer_plan` | 5 |
+| `analyze_current_region_interest` | 4 |
+
+高频工具序列：
+
+| 工具序列 | 次数 | 说明 |
+| --- | ---: | --- |
+| `load_skill` | 13 | 许多开放问法只加载 skill 后由主模型组织，首轮和最终生成仍可能很慢。 |
+| `plan_next_action -> execute_plan_action` | 12 | 方案查询/预览主路径可工作，但在 full agent 下仍需要模型先规划。 |
+| 无工具 | 10 | 包含无 pending guard 和部分超时兜底；无工具并不等于快。 |
+| `analyze_current_career_direction` | 6 | 职业方向单工具链仍有 80s+ 长尾。 |
+| `load_skill -> analyze_current_career_direction` | 5 | 明显的重复领域承接，后续应减少。 |
+| `collect_plan_context_inputs -> plan_next_action -> execute_plan_action` | 3 | 方案链路存在重复上下文读取。 |
+
+这次能确认的问题：
+
+1. **长尾是当前最大问题**：median 已经到 30s，p95 接近 100s，用户很容易感觉系统卡住。回复质量优先于延迟，但 50-100s 的无效等待不可接受。
+2. **Explore/Intent 是主要慢点**：职业方向、专业对比、专业意向、口语化家庭约束等场景经常触发工具内部 LLM 或多个工具串联。
+3. **full agent 仍会自由试工具**：专业比较可能同时走职业方向和专业比较，开放职业问题可能先 `load_skill` 再 `analyze_current_career_direction`，方案问题可能先 `collect_plan_context_inputs` 再规划执行。
+4. **Plan 查询/审查质量比早期好，但链路仍重**：`看看方案`、审查、排序预览能给出结构化信息，但经常 `plan_next_action -> execute_plan_action`，输入历史和方案上下文仍容易膨胀。
+5. **进度提示不足**：报告有 `missing_progress_for_long_task=20`，慢 case 往往只有泛化 thinking，无法告诉用户“正在读取方案/比较专业/生成承接分析”。
+6. **观测缺口仍明显**：报告中 `Full Agent Tool Trial Issues` 为 0，不代表没有工具试探；原因是 `prod-3.0.2` 基线的 runner 输出大多缺 `routingPath` 和更细 action trace。stdout、tool 序列和 agent 日志已经能看到工具试探，但评估器还不能自动聚合。
+7. **部分失败是评估口径过窄**：例如无 pending 时回复“我这边没有上一轮待确认的方案动作”是合理保护，但断言未覆盖该表达；“现在信息不全，先给我列缺啥”实际列出了 7 项信息，断言仍可能漏判。这些应修评估器或 case 断言，不应贸然改业务逻辑。
+8. **共享 session 污染影响判断**：`sessionId=17` 被多类 Plan/Intent case 共用。runner 清理的是 agent 本地 SQLite 历史，但后端方案、偏好和 ordered state 仍会被前序 case 影响。后续 Plan/Intent 深评应拆干净会话，避免把历史状态污染误判为路由问题。
+
+### 4.10 当前优先级和下一步
+
+在重新设计前，先按下面顺序推进，不恢复字符串/关键词 fast route：
+
+1. **补观测**：记录每次 LLM request 耗时、首 token/首消息耗时、每个工具耗时、工具内部 LLM 耗时、最终回复生成耗时、输入 token 来源。没有这些数据，无法判断 `185s` 无工具超时是初始模型、最终模型还是上下文过大。
+2. **校准评估器**：修正 `confirm-without-pending`、`missing-info-list` 等合理回复被误判的问题；同时让 `fullAgentToolTrialIssues` 能基于工具序列识别重复工具、错工具后重试和缺进度。
+3. **拆干净会话重跑 Plan/Intent**：为专业+大学和院校专业组各准备独立会话，分别覆盖查询、审查、排序、移动、加入、删除、意向预览/确认/取消，避免共用 `session=17`。
+4. **分层复跑 88 case**：先分 Explore、Intent、Plan、Review 跑，避免开放 Explore 长尾阻塞整批报告；保留全量跑作为最终验收。
+5. **先优化 full agent 提示和工具边界**：明确只读问题不要写 pending，明确专业对比不要再追加专业兴趣分析，明确职业方向工具命中后不要再 `load_skill`，明确方案查询/审查不重复读取上下文。
+6. **再评估结构化入口**：只有当某类场景高置信、低歧义、回复质量稳定且能显著降低等待时，才考虑恢复 typed resolver、renderer 或小模型 semantic shadow；仍必须保留 `preview -> confirm -> apply`。
+
+### 4.11 可直接恢复的观测工具
+
+此前 3.0.3 已做过一批观测和评估工具，其中一部分不改变业务行为，可以直接恢复到当前 `prod-3.0.2` full agent 基线上，用于下一轮优化前定位问题。
+
+可恢复范围：
+
+| 能力 | 是否恢复 | 原因 |
+| --- | --- | --- |
+| `conversation_turn_event` 的 `routingPath=full_agent`、`routeDecision.toolTrial`、`llmRequests`、token、model、`toolCallCount` | 是 | 只写结构化日志，帮助判断慢点和工具试探，不改变回复。 |
+| full agent 工具调用摘要：`actionFamily / stage / resultKind / applied / messageCode` | 是 | 从已有 tool call/return 中压缩提取，避免报告只能看到工具名。 |
+| `route-observability` 内部历史消息 | 是 | 让 `dialog_regression_runner.py` 能从本地 SQLite history 直接读到 turn event；同时 runtime history 必须过滤，避免进入大模型上下文。 |
+| `dialog_case_evaluation_report.py` 的 `Full Agent Tool Trial Issues` 聚合 | 是 | 用于自动归类重复工具、预期路由落回 full agent、慢任务缺进度等问题。 |
+| progress hint 用户侧文案优化 | 可以恢复 | 只影响用户等待期间看到的提示，不改变工具选择。需要保留“确认前不生效”的表达边界。 |
+| `semantic_frame_evaluator.py`、`semantic_frame_probe.py` | 保留为离线/影子评估 | 不接主链路，只用于评估未来是否可用小模型做语义帧。 |
+
+暂不恢复范围：
+
+| 能力 | 暂不恢复原因 |
+| --- | --- |
+| `plan_fast_route / plan_query_fast_route / major_intent_fast_route / major_compare_fast_route / career_direction_fast_route` 等执行接管 | 当前要先评估 full agent 本身问题，不能直接恢复历史快路径掩盖根因。 |
+| `fixed_scenario_route_resolver / fast_route_arbitrator` 主路径接入 | 仍属于路由接管，需要设计确认和质量评估后再恢复。 |
+| `SemanticIntentRouter` 阻塞或接管主路径 | 小样本显示可作为候选，但延迟和混淆边界仍不足以全量前置。 |
+| 专业对比/地域 renderer 直接返回 | 属于回复生成策略，后续要基于质量评估决定是否恢复。 |
+| 字符串/关键词补丁式路由 | 已明确不继续走逐 case 补丁。 |
+
+本轮代码恢复目标：
+
+1. 恢复 full-agent turn 级观测，不改变用户可见业务逻辑。
+2. 恢复 runner/report 对观测消息和工具试探的解析，下一轮 88 case 报告应能看到 `Full Agent Tool Trial Issues` 不再为空。
+3. 观测消息必须从 `build_runtime_history` 过滤，确保不会增加后续 LLM 输入 token 或污染回复。
+4. 不恢复任何 fast route、semantic route、renderer、typed resolver 的主路径接管。
+
+落地记录：
+
+- `ChatService` full-agent 路径恢复 `turn_event` 结构化对象，包含 `routingPath=full_agent`、`routeDecision.toolTrial`、模型 provider/model、`llmRequests`、input/output/total tokens、`toolCallCount`、`llmDurationMs` 和压缩后的 `toolCalls`。
+- `toolCalls` 摘要会从 tool call args 和 tool return 中提取 `actionFamily / stage / resultKind / applied / messageCode`，不展开用户 payload。
+- `route-observability` 内部消息写入本地 SQLite history，插在最终用户可见回复前，避免破坏“最后一条消息是本轮回复”的既有语义。
+- `build_runtime_history` 会过滤 `route-observability`，因此内部观测不会进入后续 LLM prompt，也不会增加 token。
+- `dialog_case_evaluation_report.py` 已具备基于 `routeDecision.toolTrial` 和 `turnObservability.toolCalls` 聚合 `Full Agent Tool Trial Issues` 的能力；下一轮 full-agent 88 case 复跑应重点看该 section。
+- 本次没有恢复任何 fast route/semantic route 执行接管。
+
+验证记录：
+
+- `PYTHONPYCACHEPREFIX=/private/tmp/zhiyuan-pycache python3 -m py_compile zhiyuan-agent/app/service.py`
+- `cd zhiyuan-agent && .venv/bin/python -m pytest tests/unit/test_chat_service_history_persistence.py tests/unit/test_dialog_regression_runner.py tests/unit/test_dialog_case_evaluation_report.py -q`：`171 passed`
+- `cd zhiyuan-agent && .venv/bin/python -m pytest tests/unit/test_chat_service_history_persistence.py tests/unit/test_dialog_regression_runner.py tests/unit/test_dialog_case_evaluation_report.py tests/unit/test_mainline_dialog_scenarios.py tests/unit/test_chat_agent_progress_hints.py tests/unit/test_ws_compat.py tests/unit/test_base_agent.py -q`：`216 passed`
+
+### 4.12 恢复观测后的 88 case 复跑
+
+2026-05-29 在不恢复 fast route / semantic route 执行接管的前提下，复跑 88 个真实对话衍生 case，验证 restored observability 是否能把 full agent 工具链问题暴露出来。
+
+执行命令：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python examples/dialog_regression_runner.py \
+  --url ws://127.0.0.1:8000/gaotu-assistant-agent/plus/chat/1/bot/test/do \
+  --cases examples/dialog_regression_303_dialogue_derived_cases.json \
+  --response-timeout 220 \
+  --clear-history-per-case \
+  --keep-response-text \
+  --metrics-output /private/tmp/zhiyuan_agent_303_full_agent_observability_live.json
+```
+
+输出：
+
+- `/private/tmp/zhiyuan_agent_303_full_agent_observability_live.json`
+- `/private/tmp/zhiyuan_agent_303_full_agent_observability_eval.json`
+- `/private/tmp/zhiyuan_agent_303_full_agent_observability_eval.md`
+
+runner 退出码仍为 `1`，但 88 个 step 都拿到了用户可见回复，`request failed=0`。失败来自质量/性能门禁：9 个 case 超过 `100s`，1 个 case 是“无 pending 确认”的断言文案口径未覆盖实际合理表达。评估报告的总体判定为 `fail=19 / needs_review=69 / strong=0`，说明当前质量仍需人工复核和持续优化。
+
+总体延迟：
+
+| 指标 | 结果 |
+| --- | ---: |
+| steps | 88 |
+| median | `27999ms` |
+| p95 | `108244ms` |
+| max | `155647ms` |
+| first message median | `7180ms` |
+| final message median | `25997ms` |
+
+观测恢复后的工具链聚合结果：
+
+| 指标 | 结果 |
+| --- | ---: |
+| `Full Agent Tool Trial Issues.count` | 78 |
+| `slowOrTimeoutCount` | 78 |
+| `missingProgressCount` | 28 |
+| `very_slow_tool_chain` | 39 |
+| `repeated_tool_calls` | 8 |
+| `many_tool_calls` | 16 |
+| `tool_result_error` | 1 |
+
+高频工具：
+
+| tool | count |
+| --- | ---: |
+| `load_skill` | 39 |
+| `plan_next_action` | 30 |
+| `execute_plan_action` | 22 |
+| `analyze_current_career_direction` | 15 |
+| `collect_plan_context_inputs` | 9 |
+| `analyze_current_major_interest` | 7 |
+| `get_major_introduction` | 6 |
+| `analyze_current_region_interest` | 6 |
+| `compare_majors` | 5 |
+| `query_volunteer_plan` | 4 |
+
+重复工具分布：
+
+| repeated tool | count |
+| --- | ---: |
+| `plan_next_action` | 4 |
+| `execute_plan_action` | 2 |
+| `load_skill` | 2 |
+| `query_volunteer_plan` | 1 |
+| `compare_majors` | 1 |
+| `get_major_introduction` | 1 |
+
+最慢和最有代表性的问题：
+
+| case | 耗时 | 工具链 | 问题 |
+| --- | ---: | --- | --- |
+| `计算机太累的话，信息管理这种算不算折中` | `155647ms` | `analyze_current_major_interest -> get_major_introduction -> compare_majors` | 专业适配、专业介绍、专业对比串行叠加；回复可读，但工具成本过高。 |
+| `物理不太好但选了物化地，计算机还现实吗` | `134020ms` | `analyze_current_major_interest` | 单工具也能超过 2 分钟，说明工具内部或最终生成耗时仍需细分观测。 |
+| `新闻新媒体能不能当备选，不想太虚` | `123953ms` | `analyze_current_major_interest -> get_major_introduction` | 适配分析后追加专业介绍，信息增益存在但等待过长。 |
+| `等成绩出来再定，今天先看大方向` | `110327ms` | `load_skill -> analyze_current_career_direction` | 开放 Explore 被职业方向工具承接，等待长且用户只想先聊大方向。 |
+| `离家近和好专业冲突怎么取舍` | `109732ms` | `load_skill -> load_skill -> analyze_current_career_direction -> analyze_current_region_interest` | 重复 skill 加载、职业和地域分析同时触发。 |
+| `把太贵的那几个先去掉看看` | `103921ms` | `load_skill -> collect_plan_context_inputs -> plan_next_action -> execute_plan_action(error) -> query_volunteer_plan -> query_volunteer_plan -> plan_next_action -> execute_plan_action(error)` | 典型错误预览后重试；最后回复澄清范围是合理的，但工具链过长。 |
+
+这轮新确认的结论：
+
+1. **观测工具已经能发现真实问题**：`Full Agent Tool Trial Issues` 不再为空，能聚合重复工具、工具错误结果、慢工具链和长任务缺进度。
+2. **回复质量和延迟的矛盾仍然存在**：很多慢 case 的最终回复内容并不差，不能简单短路成薄模板；优化应优先减少重复/串行工具成本。
+3. **Explore 是首批优化主战场**：专业适配、专业对比、职业方向、地域取舍最容易产生 60-150 秒长尾。
+4. **Plan 预览/查询存在过度升级**：例如“公办占比怎么样”从查询升级到审查，“高收费风险”进入 remove preview；需要收紧 tool boundary，不是用关键词绕过。
+5. **确认边界整体安全**：排序、移动等高副作用操作仍停在 preview；无 pending 时不会误执行。断言失败属于测试文案覆盖不足。
+6. **下一步不应恢复字符串快路由**：本轮问题主要是工具编排、工具内部耗时、进度提示和报告归因；字符串补丁只能解决个别表达，不能系统性降低风险。
+
+评估器修复记录：
+
+- `dialog_case_evaluation_report.py` 补充从 `turnObservability.toolCalls` 直接识别工具链问题，即使本地 history 没带出 `routingPath/routeDecision`，也能统计慢工具链、重复工具、错误结果和多工具调用。
+- 新增单测覆盖“没有 routingPath 但有 toolCalls 的错误预览 + 重复查询”场景，避免后续报告再次把工具链问题统计为 0。
+- `PYTHONPYCACHEPREFIX=/private/tmp/zhiyuan-pycache python3 -m py_compile examples/dialog_case_evaluation_report.py` 通过。
+- `cd zhiyuan-agent && .venv/bin/python -m pytest tests/unit/test_dialog_case_evaluation_report.py tests/unit/test_dialog_regression_runner.py -q`：`77 passed`。
+
+下一步优化顺序：
+
+1. **先做工具边界/编排优化设计**：减少 Explore 同轮 `load_skill + analyze_*`、专业对比里 `analyze_current_major_interest + compare_majors`、Plan 查询里 `query_state + review_plan` 的重复组合。
+2. **补进度提示**：首轮模型选择工具前、工具内部长任务、错误预览重试时要给用户可理解的状态，而不是长时间无反馈。
+3. **拆分场景回归**：按 Explore / Intent / Plan / Review 分批跑，避免开放 Explore 长尾阻塞整批；Plan/Intent 使用干净后端会话验证 preview -> confirm -> apply。
+4. **再评估是否恢复高置信结构化入口**：只有当某类场景的工具边界、质量标准和副作用边界都稳定后，再考虑 typed resolver 或小模型 semantic shadow；仍不走逐 case 字符串补丁。
+
+### 4.13 full agent 工具边界与技能工具收口设计
+
+88 case 复跑后，首个低风险优化点不是恢复 fast route，而是先处理 full agent 自身可见工具和指令边界不一致的问题。
+
+确认到的根因：
+
+- `pydantic_ai_skills.SkillsToolset` 默认提示会要求模型在命中技能域时先调用 `load_skill`。
+- 当前主对话已经注册了 `analyze_current_career_direction`、`compare_majors`、`plan_next_action`、`execute_plan_action` 等业务工具，`load_skill` 在主链路里只会增加一轮模型/工具往返。
+- 88 case 中 `load_skill` 出现 39 次，且代表性慢 case 包含 `load_skill -> analyze_current_career_direction`、`load_skill -> load_skill -> analyze_current_career_direction -> analyze_current_region_interest`。
+- `tool_dispatch_rules.py` 已经要求不要先 `collect_plan_context_inputs` 查询方案状态，但 `plan_chat` skill 仍保留“方案现状先 collect”的旧口径；如果 skill 被加载，会给模型相反的编排提示。
+
+本轮设计原则：
+
+1. **不做字符串快路由**：不通过关键词直接接管用户请求，不绕开大模型对开放问题的组织能力。
+2. **不缩短为薄模板**：Explore/Plan 最终回复仍由模型基于工具事实自然组织，允许结构化标题和要点。
+3. **先减少无效工具轮次**：主对话默认只注入技能边界摘要，不把 `list_skills/load_skill/read_skill_resource/run_skill_script` 暴露给模型；需要完整技能工具的专门 Agent 可以显式开启。
+4. **收紧语义工具边界**：
+   - 明确多个专业/专业类的比较优先 `compare_majors / compare_majors_adhoc`，不要先泛化成 `analyze_current_major_interest`；除非用户追问“学什么/课程/就业详情”，不要同轮追加 `get_major_introduction`。
+   - 单个专业“适不适合我”优先 `analyze_current_major_interest`，不是 Intent 写入，也不要默认再追加专业介绍。
+   - 职业方向问题优先 `analyze_current_career_direction`；地域取舍优先 `analyze_current_region_interest`。只有用户明确同时问职业和地域时，才组合两个 Explore 工具。
+   - Explore 专用工具已经包含“当前方案承接/候选机会”的事实时，同一轮不要再补 `plan_next_action(query_state)` 或 `query_volunteer_plan`。
+   - 方案状态/数量/分布/占比类问题优先 `query_state -> execute_plan_action`；审查/风险类问题用 `review_plan`；“有没有高收费/公办占比怎么样”不能升级成删除、替换或补偿预览，除非用户明确要求改方案。
+   - `execute_plan_action(result_kind="error")` 后不重复同一 `action_family` 试探，应直接说明失败原因和可补充的信息。
+
+预期收益：
+
+- `load_skill` 从主对话工具序列中消失，减少一轮无业务收益的工具调用。
+- 专业对比、职业方向、地域取舍等只读 Explore 场景更容易收敛到单个专用工具。
+- Plan 查询和风险分析不再被提示词诱导成“查询 + 审查 + 删除预览”的过度升级。
+- 对仍由 full agent 直接生成、短时间内没有工具进度的开放问题，超过短阈值会先推送“正在理解你的问题，并结合当前信息整理回答...”，降低用户感知上的无响应等待。
+
+验证计划：
+
+- 单测保护：ChatAgent 默认不注册技能管理工具；完整技能工具仍可通过 `BaseAgent(expose_skill_tools=True)` 显式开启；指令文本包含新的 Explore/Plan 边界。
+- 聚焦验证：先跑指令、BaseAgent、ChatAgent 工具注册、评估报告相关单测。
+- 真实 WebSocket 验证：下一轮优先复跑 88 case 中 `load_skill` 高频和专业对比/职业方向/Plan 过度升级样例，对比 `toolCalls`、首包延迟、最终回复质量。
+
+首轮抽样验证：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python examples/dialog_regression_runner.py \
+  --url ws://127.0.0.1:8010/gaotu-assistant-agent/plus/chat/1/bot/test/do \
+  --session 990303 \
+  --prompts '等成绩出来再定，今天先看大方向' '汉语言和历史哪个更稳一点' '公办占比怎么样' \
+  --response-timeout 220 \
+  --clear-history \
+  --keep-response-text \
+  --metrics-output /private/tmp/zhiyuan_agent_303_tool_boundary_probe.json
+```
+
+结果：
+
+| prompt | 耗时 | 工具链 | 结论 |
+| --- | ---: | --- | --- |
+| `等成绩出来再定，今天先看大方向` | `9229ms` | 无工具 | 不再 `load_skill`；回复质量可用，但首条消息约 `7.2s`，需补首轮静默等待提示。 |
+| `汉语言和历史哪个更稳一点` | `29627ms` | `compare_majors` | 只走专业对比工具，不再追加 `analyze_current_major_interest` 或 `get_major_introduction`；回复包含就业面、壁垒、深造和结论。 |
+| `公办占比怎么样` | `10572ms` | `plan_next_action(query_state) -> execute_plan_action(query_state)` | 只读统计未升级成审查或变更预览；无正式方案时诚实说明。 |
+
+本轮实施结果：
+
+- `BaseAgent` 默认使用技能边界摘要模板，不暴露技能管理工具，也不再把“先调用 load_skill”的默认技能提示注入主对话；`expose_skill_tools=True` 仍保留完整技能工具。
+- `ChatAgent` 显式 `expose_skill_tools=False`。
+- `tool_dispatch_rules`、`explore_chat`、`major_chat`、`plan_chat` 同步收紧工具边界。
+- `ChatService` 增加首轮静默等待提示：full agent 路径超过短阈值且尚未发送工具进度时，推送一条用户可理解的 thinking；如果工具进度已经出现，不重复发送。
+- 首轮静默提示复验：相同 3 条抽样在 `8011` 最新代码上通过，第一条约 `3.4s` 先出现“正在理解你的问题，并结合当前信息整理回答...”；三条工具链仍未出现 `load_skill`，但 provider 长尾明显，最大耗时 `86893ms`，后续仍需继续做模型/工具内部耗时拆分。
+- 聚焦验证：`144 passed`；语法检查和 `git diff --check` 通过。
+
+## 5. 历史候选方案库
+
+本节开始记录此前 3.0.3 deep dive 中已经设计和试验过的候选方案。它们不是当前运行时代码状态；当前是否恢复，需要等新的 `prod-3.0.2` full-agent 基线报告完成后再评估。
+
+### 5.1 候选总体架构
 
 建议把当前完整 Agent 链路拆成三层：
 
@@ -574,7 +1044,9 @@ PlanFastRouter -> execute_plan_action -> service reply renderer
 - 确认边界要和效果一起验收：只读分析不能保留会让下一句“确认”误执行的旧方案 pending。
 - 性能 benchmark 必须保留人工抽样看全文；本次即发现“偏好摘要只展示前三项，但示例命中隐藏偏好”的效果问题，已通过截断提示修复。
 
-## 7. 落地顺序
+## 7. 历史试验落地记录
+
+本节保留此前围绕候选方案做过的实现和验证记录，用于后续判断“哪些方向曾经有效、哪些方向风险较大”。当前运行时代码已回到 `prod-3.0.2`，因此这里的 `已新增 / 已接入 / 已验证` 都表示历史试验结果，不表示当前代码仍保留。
 
 ### Phase 0：补齐观测
 
@@ -1473,6 +1945,164 @@ P1 修复后复跑结果：
 - 补充新会话链路：session `880403`，覆盖“山东450分物理历史地理 -> 网络与新媒体和跨境电商对比 -> 记成偏好”。三步均通过；专业对比约 `2166ms`，能展示新闻传播学类和电子商务类的就业路径、门槛、稳定性和试错成本；Intent preview 约 `2319ms`，能把 `跨境电商` 归一成 `跨境电子商务`。
 - 同一补充链路的第一步开放式 Explore 曾慢到约 `46925ms`，当时观测到 `load_skill` 和 `analyze_current_career_direction` 同轮出现；技能工具收紧后的 effect/perf 与 open quality 已确认主回归路径不再出现 `load_skill`。如果后续仍有开放表达回落完整 Agent 且变慢，重点应继续看完整 Agent 两次远端模型调用和开放式方向分析组织，而不是回退到字符串模板。
 
+### 4.14 Explore 内部方向判定合并设计
+
+技能工具收口后，职业方向 Explore 的外层工具链已经从 `load_skill -> analyze_current_career_direction` 收敛为单个 `analyze_current_career_direction`。但真实日志仍显示，工具内部可能继续串行触发：
+
+1. full agent 首轮模型判断并调用 `analyze_current_career_direction`；
+2. 工具内 LLM 识别 `system_public_service / stable_employment / further_study` 等发展方向 slot；
+3. 如果 slot 为空，再用另一个工具内 LLM 判断是否属于“泛方向适配”；
+4. 读取方案 / 候选事实；
+5. 工具内生成分析草稿；
+6. full agent 最终组织回复。
+
+其中第 2、3 步本质都是“理解用户这句职业方向问题应该怎么承接”，串行调用会把“等成绩出来再定，今天先看大方向”这类开放 Explore 变成长尾链路。这个问题不能继续通过扩大关键词命中来解决，因为真实表达非常口语化，关键词补丁会带来漏判和误判。
+
+本轮设计只优化工具内部，不改变 full agent 主路径：
+
+- 保留 `analyze_current_career_direction` 作为模型可调用的业务工具，不新增 service 层字符串快路由。
+- 将“方向 slot 识别”和“泛方向适配判定”合并为一次内部语义判定，输出 `positive / negative / shouldAnalyze / reason`。
+- 判定结果按当前 `RequestContext + latest_user_text` 缓存在上下文对象上；同轮先调用 `resolve_career_direction_slots` 后再调用 `should_use_generic_direction_analysis` 时，不再重复请求模型。
+- 旧函数名继续保留，避免影响 `intent_preview_tool`、单测和未来工具调用入口；只是它们底层共用同一个 decision。
+- 不改变只读边界：职业方向 Explore 仍只返回分析，不写 pending、不触发方案修改、不发送工作台联动卡片。
+
+预期收益：
+
+- 泛方向 Explore 至少减少 1 次工具内部 LLM 调用。
+- 多方向 / 单方向问题仍能返回原来的 slot 列表，不影响 `preview_direction_comparison_from_request` 和 `preview_direction_analysis_from_request`。
+- 如果模型服务长尾仍主要发生在“分析草稿生成”或 full agent 最终组织阶段，后续再单独评估是否关闭真实聊天主链路的 Explore 内层生成；本轮不直接削薄用户侧回复。
+
+实施结果：
+
+- `explore_direction_tool` 新增 `CareerDirectionRouteDecision`，将职业方向 slot 和泛方向适配标记合并到一次工具内语义判定。
+- `resolve_career_direction_slots` 与 `should_use_generic_direction_analysis` 继续保留旧入口，但底层共享同一个 decision，并按 `latest_user_text` 缓存在 `RequestContext` 上。
+- 新增单测覆盖“先取 slot、再判断泛方向”只调用一次内部 route agent，避免泛方向 fallback 重复跑模型。
+- 聚焦回归：`tests/unit/test_explore_direction_scenarios_sync.py`，`11 passed`。
+- Agent 宽回归：`tests/unit/test_explore_direction_scenarios_sync.py tests/unit/test_dialog_scenario_stability.py tests/unit/test_intent_state_tool.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_base_agent.py tests/unit/test_chat_agent_tools.py tests/unit/test_chat_agent_init_profile.py tests/unit/test_instructions.py -q`，`301 passed`。
+- 编译校验：`py_compile explore_direction_tool.py intent_preview_tool.py` 通过；`git diff --check` 通过。
+
+### 4.15 Explore 内层生成收口设计
+
+在 4.14 后，泛方向判断已从两次内部判定收敛为一次，但职业方向 Explore 仍有一段重复生成：
+
+```text
+analyze_current_career_direction
+  -> preview_direction_analysis / preview_direction_comparison / preview_generic_direction_analysis
+      -> 读取 planning state / candidate sample
+      -> 构造 student_fit_fact / direction_facts
+      -> 工具内部 LLM 生成 DirectionAnalysisDraft
+  -> ChatAgent 主模型基于工具结果再生成最终回复
+```
+
+这会让用户同一句只读探索经历“工具内生成 + 主模型最终生成”两层远端模型调用。考虑到工具已经有结构化事实和 fallback 文本，正式聊天主链路可以跳过工具内部草稿生成，把最终表达交给 ChatAgent；直接单测、脚本或未来独立调用工具时仍保留原内部生成能力。
+
+设计边界：
+
+- `RequestContext.allow_explore_inner_llm` 默认 `True`，保持直接调用工具的既有行为。
+- `ChatService` 构造正式对话 `RequestContext` 时设置为 `False`，仅关闭主对话链路里的 Explore 内层生成。
+- `preview_direction_analysis_from_request`、`preview_generic_direction_analysis_from_request`、`preview_direction_comparison_from_request` 判断该开关；关闭时只使用结构化事实 fallback，不调用 `_generate_*_analysis_content`。
+- 不改变 `analyze_current_career_direction` 是否被调用，不改变只读 / pending / 工作台联动边界，也不把最终回复改成确定性模板。用户最终仍由 full agent 基于工具返回内容组织。
+- 质量风险：少一次工具内自由生成，某些开放 Explore 的措辞可能更依赖 fallback 事实质量。通过保留“学生本人判断 / 方案承接 / 候选机会 / 下一步”的结构，避免回复被压成薄摘要。
+
+实施结果：
+
+- `RequestContext` 新增 `allow_explore_inner_llm`，默认 `True`；`ChatService` 正式聊天主链路创建上下文时设置为 `False`。
+- `preview_direction_analysis_from_request`、`preview_generic_direction_analysis_from_request`、`preview_direction_comparison_from_request` 在该开关关闭时跳过工具内 `_generate_*_analysis_content`，直接返回结构化事实 fallback。
+- 新增单测覆盖单方向、多方向和泛方向三条 Explore 链路在主链路开关关闭时不会调用内部生成；同时验证 `ChatService` 注入 `allow_explore_inner_llm=False`。
+- 聚焦回归：`tests/unit/test_explore_direction_scenarios_sync.py tests/unit/test_chat_service_history_persistence.py -q`，`111 passed`。
+- Agent 宽回归：`tests/unit/test_explore_direction_scenarios_sync.py tests/unit/test_dialog_scenario_stability.py tests/unit/test_intent_state_tool.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_base_agent.py tests/unit/test_chat_agent_tools.py tests/unit/test_chat_agent_init_profile.py tests/unit/test_instructions.py -q`，`304 passed`。
+- 编译校验：`py_compile context.py service.py explore_direction_tool.py intent_preview_tool.py` 通过；`git diff --check` 通过。
+
+### 4.16 专业对比工具内层生成收口设计
+
+`compare_majors` 当前不是路由问题，而是工具内部也有一层总结模型：
+
+```text
+full agent 首轮模型
+  -> compare_majors
+      -> 专业名规范化 / 权重查询
+      -> _summarize_comparison 内部 LLM 生成专业对比总结
+  -> full agent 最终模型基于工具结果再组织回复
+```
+
+这和职业方向 Explore 的重复生成类似。区别是：专业对比的事实主要来自两个来源：
+
+- 三级专业目录及其所属专业类；
+- `query_volunteer_analysis_weight / rank query_weight` 返回的性别指数、满意度、薪酬、热度、综合评分和个性化备注。
+
+本轮不恢复 `major_compare_fast_route`，也不做“法学/财政学”这类 pair 专属模板。优化点只放在工具内部：
+
+- `RequestContext.allow_explore_inner_llm=False` 时，`compare_majors / compare_majors_adhoc` 不再调用 `_summarize_comparison` 的内部 LLM。
+- 工具直接返回结构化、用户可读的对比事实：专业所属类、当前是否有个性化量化数据、四个指标的相对强弱、综合评分差异、个性化备注和下一步建议。
+- 如果权重数据为空或缺失，不输出“两个专业得分相同”这种误导性结论，而是明确说明“当前缺少个性化量化评分”，再给通用比较维度，等待 full agent 根据用户上下文组织最终判断。
+- 直接调用工具、独立脚本和既有默认用法仍保留内部 LLM 生成能力，避免一次性改变所有消费方。
+
+质量边界：
+
+- 专业对比回复允许结构化，不能变成薄的“哪个更好”结论。
+- 至少覆盖就业路径、稳定性 / 热度、学习或试错成本、是否适合当前学生这几类判断维度中的若干项。
+- 如果缺少画像，不假装已经知道性别、家庭、分数；但用户本轮已经提供的信息可由 full agent 在最终组织阶段补进去。
+
+实施结果：
+
+- `major_compare_tool` 复用 `allow_explore_inner_llm`：默认仍走内部 `_summarize_comparison`，正式聊天主链路关闭时返回结构化对比事实。
+- 结构化事实包含专业所属类、是否有个性化量化指标、性别分布适配、满意度、薪酬、热度、综合评分、个性化备注和数据来源。
+- 缺权重时明确提示“当前缺少完整个性化量化评分”，不再把空指标解释成“得分相同”。
+- 聚焦单测：`tests/unit/test_compare_resolution.py -q`，`5 passed`。
+- Agent 宽回归：`tests/unit/test_compare_resolution.py tests/unit/test_explore_direction_scenarios_sync.py tests/unit/test_dialog_scenario_stability.py tests/unit/test_intent_state_tool.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_base_agent.py tests/unit/test_chat_agent_tools.py tests/unit/test_chat_agent_init_profile.py tests/unit/test_instructions.py -q`，`309 passed`。
+- 编译校验：`py_compile context.py service.py explore_direction_tool.py intent_preview_tool.py major_compare_tool.py` 通过；`git diff --check` 通过。
+
+### 4.17 学校对比工具内层生成收口设计
+
+`compare_schools / compare_schools_adhoc` 和专业对比存在同类重复生成：
+
+```text
+full agent 首轮模型
+  -> compare_schools
+      -> 学校名规范化 / 权重查询
+      -> _summarize_comparison 内部 LLM 生成院校对比总结
+  -> full agent 最终模型基于工具结果再组织回复
+```
+
+这类问题的事实来自 `query_school_analysis_weight / rank query_weight`，包括省份 GDP、城市等级、考研率、保研率、院校等级、综合评分和个性化备注。正式聊天主链路可以直接返回这些结构化事实，由 full agent 最终组织成用户可读建议。
+
+设计边界：
+
+- 不新增学校对比 fast route，不靠字符串判断用户是否要比较院校；仍由 full agent 自己选择 `compare_schools`。
+- `allow_explore_inner_llm=False` 时，学校对比工具跳过内部总结 LLM，返回院校对比事实和数据来源。
+- 直接调用工具默认仍保留内部 LLM 总结。
+- 缺少权重时明确说明缺少完整个性化量化评分，不把空指标解释成“两个学校一样”。
+- 只读边界不变：不写 pending、不改方案、不触发工作台卡片。
+
+实施结果：
+
+- `school_compare_tool` 复用 `allow_explore_inner_llm`：默认仍走内部 `_summarize_comparison`，正式聊天主链路关闭时返回结构化院校对比事实。
+- 结构化事实包含省份经济资源、城市等级、考研率、保研率、院校等级、综合评分、个性化备注和数据来源。
+- 缺权重时明确提示“当前缺少完整个性化量化评分”，不把空指标解释成“得分相同”。
+- 聚焦单测：`tests/unit/test_compare_resolution.py -q`，`8 passed`。
+- Agent 宽回归：`tests/unit/test_compare_resolution.py tests/unit/test_explore_direction_scenarios_sync.py tests/unit/test_dialog_scenario_stability.py tests/unit/test_intent_state_tool.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_base_agent.py tests/unit/test_chat_agent_tools.py tests/unit/test_chat_agent_init_profile.py tests/unit/test_instructions.py -q`，`312 passed`。
+- 编译校验：`py_compile context.py service.py explore_direction_tool.py intent_preview_tool.py major_compare_tool.py school_compare_tool.py` 通过；`git diff --check` 通过。
+
+### 4.18 专业推荐工具内层生成收口设计
+
+`get_major_recommendations / get_major_recommendations_adhoc` 也会在工具内部把推荐专业列表交给 LLM 总结，然后 full agent 再最终组织回复。院校推荐 `get_school_recommendations` 当前已经是确定性文本，不需要同类处理。
+
+设计边界：
+
+- 不新增专业推荐路由；仍由 full agent 判断是否需要调用 `get_major_recommendations`。
+- `allow_explore_inner_llm=False` 时，专业推荐工具跳过内部 `_summarize_recommendations`，返回推荐专业列表、关键指标和数据来源。
+- 直接调用工具默认仍保留内部 LLM 总结。
+- 结构化事实必须保留推荐对象、性别指数、满意度、薪酬、热度等关键信息，避免回复只剩“推荐几个专业”的薄列表。
+- 只读边界不变：不写 pending、不改方案、不触发工作台卡片。
+
+实施结果：
+
+- `major_recommend_tool` 复用 `allow_explore_inner_llm`：默认仍走内部 `_summarize_recommendations`，正式聊天主链路关闭时返回结构化推荐事实。
+- 结构化事实包含推荐专业、性别分布适配、满意度、薪酬、热度、判断建议和数据来源。
+- 聚焦单测：`tests/unit/test_major_recommend_tool.py -q`，`2 passed`。
+- Agent 宽回归：`tests/unit/test_major_recommend_tool.py tests/unit/test_compare_resolution.py tests/unit/test_explore_direction_scenarios_sync.py tests/unit/test_dialog_scenario_stability.py tests/unit/test_intent_state_tool.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_base_agent.py tests/unit/test_chat_agent_tools.py tests/unit/test_chat_agent_init_profile.py tests/unit/test_instructions.py -q`，`314 passed`。
+- 编译校验：`py_compile context.py service.py explore_direction_tool.py intent_preview_tool.py major_compare_tool.py school_compare_tool.py major_recommend_tool.py` 通过；`git diff --check` 通过。
+
 ## 10. Semantic Router 模型候选评估
 
 2026-05-28 对 `SemanticIntentRouter` 做了阻塞 shadow 小样本评估，重点验证“轻量模型是否可做全局前置语义路由”。本轮没有把 shadow 接入主路由，只在 `turnObservability.semanticRouterShadow` 和报告里记录结果。
@@ -1694,6 +2324,7 @@ L3 full_agent fallback
 
 - 新增 `examples/semantic_frame_evaluator.py`，复用报告工具的 case expansion、coverage 推导和语义帧匹配逻辑。
 - `dialog_quality_gate.py` 会为每个 live case 文件追加 `semantic-frame-*` 报告命令，依赖对应 live 输出。
+- `dialog_quality_gate.py` 的 local gate 会过滤当前 checkout 中已经不存在的历史测试目标，避免 3.0.3 撤回 fast-route/semantic-router 运行时代码后，评估入口仍被旧测试文件名卡住。
 - 对 `dialog_regression_303_dialogue_derived_cases.json` 执行 expected-only 检查：`total=88 / expectedTotal=88 / comparableTotal=0`，说明 88 个真实对话派生样例都具备 L2 语义期望。
 - 当前期望分布：`taskLayer` 包含 `explore=49 / plan=36 / intent=15 / general=9`，`sideEffect` 包含 `readonly=70 / preview=18 / none=9`。部分 case 允许多个合理层级或动作，因此分布计数会大于 case 总数。
 
@@ -1714,14 +2345,807 @@ L3 full_agent fallback
 - 不设超时后，DeepSeek V4 Flash Non-think 在 20 条混合样例上的分类效果可用，但真实延迟长尾严重，最长超过 `60s`；后续要继续比较更轻/更稳的路由模型，或做 selective、失败 fallback，不能全量阻塞接管。
 - 当前 L2 继续保持 shadow/evaluation；真正可接管前，至少需要覆盖 88 条 dialogue-derived、effect/perf、open-quality 和多模型场景，并同时满足分类准确率与超时率门槛。
 
-## 11. 待确认决策
+## 11. 重置后的待确认决策
 
 需要确认后再进入代码实现：
 
 1. 是否同意 `3.0.3` 优先做 Agent 效果和性能，不再继续扩 UI 范围。
-2. 是否同意先落 Phase 0 观测，再落 Phase 1 Plan 快路径。
-3. 是否同意快路径只做结构化动作装配，不直接模板化回复。
-4. 是否同意职业方向有限 taxonomy 可以本地规范化，开放式方向问题继续走 LLM。
-5. 是否同意名称/简称类方案操作先保守处理：唯一命中才执行预览，歧义必须澄清。
+2. 是否同意以 `prod-3.0.2` full agent 88 case 基线作为当前事实基准，不再用混入历史 fast route 的输出判断当前效果。
+3. 是否同意先落观测和评估器校准：拆出每次 LLM、每个工具、工具内部 LLM、首响、最终回复和输入 token 来源。
+4. 是否同意先修 full agent 工具边界和提示词，例如专业对比不追加专业兴趣分析、职业方向命中后不重复 `load_skill`、方案链路不重复读取上下文。
+5. 是否同意后续任何结构化入口、小模型 semantic route 或 renderer 都必须先通过 80+ dialogue-derived、历史 regression、effect/perf、open-quality 和多模型质量评估，再决定是否接回主路径。
 
-确认后建议从 Phase 0 开始落地，先让每个慢 case 的 LLM 次数、tool 耗时和 action 路径可见，再进入 Plan 快路径改造。
+确认后建议先进入“观测 + 评估器校准 + 分层复跑”阶段。Plan/Explore/Intent 的结构化入口可以作为候选方案保留，但不直接恢复历史运行时代码，也不继续补逐 case 字符串规则。
+
+## 12. Full Agent 内部工具调用收口
+
+### 12.1 Intent 恢复阶段正负抽取合并
+
+问题：
+
+- 在 full agent 主链路里，意向预览工具本身已经是明确业务路径，例如专业意向预览、地域意向预览。
+- 当模型调用 preview 工具但没有传结构化 `major_intents/city_intents` 时，`analyze_volunteer_intent_change` 会按 `recovery_scope` 从最新用户输入恢复意向。
+- 之前专业 scope 会连续调用 `extract_major_intent` 和 `extract_negative_major_intent`，地域 scope 会连续调用 `extract_city_intent` 和 `extract_negative_city_intent`。这属于同一条已确定链路中的重复语义抽取，会增加一次模型请求延迟。
+- 这不是路由问题，也不应该用字符串 fast route 解决。用户可能说“法学可以，护理别放”“北京周边能看，上海算了”等混合表达，正负意向需要一起判断。
+
+设计：
+
+- 新增工具内部组合抽取入口：
+  - `extract_major_intents_with_polarity`：一次模型请求返回 `positive` 和 `negative` 两个专业意向结构。
+  - `extract_city_intents_with_polarity`：一次模型请求返回 `positive` 和 `negative` 两个地域意向结构。
+- 仅在 `_recover_intents_from_context` 的 recovery 分支使用组合抽取：
+  - `recovery_scope=major` 或 `generic` 的专业恢复优先用组合抽取。
+  - `recovery_scope=region/city` 或 `generic` 的地域恢复优先用组合抽取。
+- 保留旧的 `extract_major_intent / extract_negative_major_intent / extract_city_intent / extract_negative_city_intent`：
+  - 其他直接调用不受影响。
+  - 组合抽取输出格式异常、模型异常时，自动回退到旧的正负单抽取，保证质量和稳定性优先。
+- 不改变 full agent 主路由，不新增关键词路由，不恢复 semantic router 接管。
+
+用户侧影响：
+
+- 对“我倾向法学和财政学，但护理不要”这类正负混合意向，仍会进入确认卡片流程，用户确认后再写入偏好/要求。
+- 对“更想去北京，上海不要”这类地域混合意向，仍保持正负意向分开呈现和候选过滤语义。
+- 正常情况下少一次工具内部 LLM 请求；组合抽取失败时宁可慢一点，也回退到旧链路。
+
+验证：
+
+- 新增组合抽取单测覆盖专业和地域的正负同轮解析。
+- 新增 recovery scope 单测验证：
+  - `major` scope 优先调用一次 `extract_major_intents_with_polarity`，不调用旧正负抽取。
+  - `region` scope 优先调用一次 `extract_city_intents_with_polarity`，不调用旧正负抽取。
+  - `career_preference` 和 `school` scope 不触发专业/地域组合抽取。
+  - 组合抽取异常时回退旧正负抽取。
+- 聚焦测试：`tests/unit/test_major_intent_tool.py tests/unit/test_city_intent_tool.py tests/unit/test_intent_state_tool.py`，`167 passed`。
+- 扩展 Agent 回归集合：`test_major_recommend_tool / test_compare_resolution / test_explore_direction_scenarios_sync / test_dialog_scenario_stability / test_intent_state_tool / test_chat_service_history_persistence / test_base_agent / test_chat_agent_tools / test_chat_agent_init_profile / test_instructions`，`316 passed`。
+
+### 12.2 职业方向只读分析不再硬编码体制内
+
+问题：
+
+- `preview_interest_analysis_from_request(recovery_scope="career_preference")` 是只读 Explore 入口，用于“体制内适不适合我 / 稳定就业值不值得 / 读研和稳定哪个更适合”等方向分析。
+- 旧实现只要 scope 是 `career_preference`，就直接调用 `preview_direction_analysis_from_request(..., system_public_service)`。
+- 这会导致用户问“稳定就业适不适合我”或“读研和稳定就业哪个更适合”时，也被兜成体制内方向分析，属于回复正确性问题。
+
+设计与实现：
+
+- 进入 career scope 后先调用 `_resolve_career_direction_slots(request_context)`：
+  - 解析出 1 个方向时，按真实 slot 调用单方向分析。
+  - 解析出多个方向时，调用方向对比分析。
+  - 解析不到时，保留原体制内兜底，兼容旧的 scope-only 调用。
+- 这不是意向写入，也不会创建 pending；仍是只读 Explore 分析。
+- 不新增字符串路由，不扩大职业意向确认的本地规则，避免把“适不适合 / 先看看”误写成偏好。
+
+验证：
+
+- 新增单测覆盖：
+  - `稳定就业适不适合我` 使用 `stable_employment` 单方向分析。
+  - `稳定就业和读研哪个更适合` 使用多方向对比。
+  - 原体制内路径保持兼容。
+- 职业/意向/Explore 聚焦回归：`tests/unit/test_intent_state_tool.py tests/unit/test_dialog_scenario_stability.py tests/unit/test_explore_direction_scenarios_sync.py`，`146 passed`。
+- 扩展 Agent 回归集合：新增合并抽取、职业方向修复、Compare/Recommend/Service/Instructions 相关测试共 `392 passed`。
+
+### 12.3 评估 gate 清单同步
+
+问题：
+
+- 3.0.3 过程中撤掉了旧 fast-route / semantic-router 运行时代码和对应测试文件，但 `dialog_quality_gate.py` 的 `LOCAL_PYTEST_TARGETS` 里仍残留部分旧文件。
+- 这会导致后续执行 `dialog_quality_gate.py --execute --mode local` 时，因为 pytest 收到不存在的测试路径而失败，影响本地评估流程可信度。
+
+实现：
+
+- 新增 `_existing_local_pytest_targets()`，构建 local gate 计划时只纳入当前 checkout 实际存在的 `tests/...` 目标。
+- dry-run 和 execute 使用同一套过滤后的命令，避免计划看起来可用但执行失败。
+- 新增单测验证 local gate 不包含已删除的 `test_semantic_router.py / test_major_intent_fast_router.py / test_plan_query_fast_router.py / test_fast_route_arbitrator.py`，且所有 `tests/` 目标都存在。
+
+验证：
+
+- `tests/unit/test_dialog_quality_gate.py`，`7 passed`。
+- 生成 local gate dry-run：`/private/tmp/zhiyuan_303_quality_gate_local_plan.json`，包含 `19` 个存在的测试目标，`missing=[]`。
+- 相关回归集合：`476 passed`。
+- `py_compile` 和 `git diff --check` 通过。
+
+### 12.4 待确认意向与方案预览回复边界复测
+
+本轮补充真实 WebSocket 小样本，重点不只看耗时，也看最终回复是否对用户有用、是否误触发工作台联动。
+
+初始 smoke：
+
+- case 文件：`/private/tmp/zhiyuan_303_quality_smoke_cases.json`，覆盖 `plan / intent / explore / career / sort preview`，共 `8` 个 case、`9` 轮。
+- 输出：`/private/tmp/zhiyuan_303_quality_smoke_live.json`。
+- 结果：`successfulSteps=9 / failedSteps=0`，但延迟 `median=37637ms / p95=115282ms / max=115282ms`。
+- 回复质量：方案概览、专业对比、职业承接、压线保底等正文已经明显优于旧的“方案情况如下”拼接式回复，能够给出结论、依据、风险和下一步。
+- 问题：
+  - `preview_current_major_intent_confirmation` 后仍发送 `planningWorkspaceAction(candidate)`，确认前让前端看起来像候选库已经跟随未确认偏好联动。
+  - 待确认偏好的二轮追问缺少稳定的“尚未确认 / 确认前不会写入后续参考”边界。
+  - 排序预览有时只说“会改变顺序和导出顺序”，缺少排序方向、前几项变化、冲稳保结构等用户需要判断的信息。
+  - Explore 类场景仍有 70s-115s 长尾，例如专业对比和职业方向承接。
+
+修复：
+
+- 意向预览阶段不再自动追加候选库刷新卡片；只有用户确认/勾选后真正采纳约束，才继续通过 `candidateFilters` 联动候选栏。
+- 对存在待确认意向的只读追问，后处理兜底追加用户可见边界：“待确认内容 / 尚未确认 / 确认前不会写入后续参考”。
+- 该边界限定为意向场景：如果本轮已经走 `plan_next_action -> execute_plan_action` 的方案链路，不把意向 pending 尾巴追加到排序、审查、移动、删除等方案回复里。
+- `sort_ordered_plan` 预览阶段补充结构化事实：排序字段、自然排序方向、当前数量、冲稳保分布和排序后前几项示例；确认前不执行后端排序。
+
+复测：
+
+- 意向 + 排序复测输出：`/private/tmp/zhiyuan_303_quality_fix_verify_live_after_restart.json`。
+  - `successfulSteps=3 / failedSteps=0`。
+  - 意向首轮 `followupMessages=0`，确认前不再联动候选。
+  - 二轮影响分析包含“尚未确认 / 确认前不会写入后续参考”。
+  - 延迟 `min=21551ms / median=22160ms / max=49023ms`，仍偏高。
+- 排序边界单独复测：`/private/tmp/zhiyuan_303_sort_preview_after_boundary_fix.json`。
+  - `elapsedMs=27887`，`followupMessages=0`。
+  - 回复包含推荐系数降序、当前 `94/96`、排序后前几位示例、导出顺序影响、审查待重新审查、以及“冲66 / 稳28 / 保0 仅靠排序不能解决”的风险提醒。
+  - 不再追加“待确认偏好”尾巴，说明方案链路和意向 pending 边界已隔离。
+
+验证：
+
+- 聚焦单测：意向预览不刷新候选、待确认追问补边界、约束采纳后仍可联动候选、排序预览有分布与示例，`6 passed`。
+- 相关回归：`tests/unit/test_chat_service_history_persistence.py`、排序预览相关 `test_plan_execution_tool`、`test_dialog_scenario_stability.py`，`137 passed`。
+
+遗留：
+
+- 真实回复质量已改善，但 full agent 长尾仍明显。日志里排序预览仍有 `3` 次 LLM 请求、约 `28k` tokens；专业/职业 Explore 场景最高超过 `100s`。后续继续优先优化 full agent 工具链和上下文裁剪，不用字符串快路由替代质量判断。
+- runner 中部分 `assertThinkingContains` 仍绑定旧固定进度文案，实际回复正文已经满足用户边界；后续应把 thinking 断言改成语义类断言，避免进度提示文案优化造成误报。
+
+#### 12.4.1 当前代码 live 复测与边界修正
+
+本轮继续回到当前 full agent 主路径验证，未恢复字符串 fast route，也未启用小模型路由接管。
+
+复测结果：
+
+- 专业简称对比：`法和财哪个更适合女孩子，家里一般`
+  - 输出：`/private/tmp/zhiyuan_303_major_compare_current_live.json`
+  - 路由：`routingPath=full_agent`，工具只调用 `compare_majors`，未再出现旧输出里的 `load_skill`、`analyze_current_career_direction` 或重复 `get_major_introduction`。
+  - 回复质量：正文能围绕家庭经济容错、职业门槛、考公路径、转行兜底给出结构化判断，结论是“普通家庭想更稳可优先看财务/会计类，法学更适合能接受考研+法考长期投入的人”。
+  - 性能：`elapsedMs=36374`，`firstMessageMs=3039`。质量可用，但 full agent + 工具 + 最终组织仍慢。
+- 专业简称对比长耗时提示复测：同一输入复跑到 `/private/tmp/zhiyuan_303_major_compare_long_progress_live.json`
+  - 性能：`elapsedMs=30483`，`firstMessageMs=3038`。
+  - thinking：包含“正在理解你的问题”“正在对比这几个专业的差异”“这轮分析耗时较长...”三段提示，说明长耗时期间用户能持续感知系统仍在处理。
+  - 回复质量：正文仍保持结构化，围绕法学、金融/财会、普通家庭容错、考公和直接就业分别给出判断，没有因为补进度提示而退化成薄回复。
+- 考公/稳定方向：`想稳点以后考公 这版支撑吗`
+  - 输出：`/private/tmp/zhiyuan_303_career_plan_support_boundary_fix_live.json`
+  - 路由：`routingPath=full_agent`，工具调用 `collect_plan_context_inputs -> preview_current_career_intent_confirmation`。
+  - 性能：`elapsedMs=26720`，`firstMessageMs=3037`。
+  - 当前限制：本地 `INTERNAL_SERVICE_URL=http://localhost:8080` 未启动，Agent 读取方案状态失败，因此回复降级为“目前还没有正式方案”。这不能作为方案承接质量结论，只能用于验证边界和工具选择。
+
+新发现问题：
+
+- 当本轮进入 Plan 只读查询（如 `query_state`），但回复里提到“确认考公偏好”时，原有 `_append_plan_preview_confirmation_boundary` 会把“回复确认”误判成方案调整确认，追加“还没有拿到可执行的调整预览”的尾巴。
+- 这会把“意向待确认”和“方案调整待确认”混在一起，用户会误以为系统正在准备改方案。
+
+修复：
+
+- 新增 `_tool_returns_plan_mutation_context()`，只在本轮工具返回属于方案变更上下文时，才允许追加“没有可执行调整预览”的保护文案。
+- 只读 Plan 查询（`query_state/query_draft/query_ordered/query_candidates`）不会再因为回复中存在“确认偏好”而触发方案调整边界。
+- 保留原保护能力：对 `replace_units/remove_units/sort_ordered_plan/preview_compensation/analyze_adjustment` 等确实属于方案变更或调整分析的场景，如果模型说“回复确认即可执行”但没有可复用 preview payload，仍会清理未支撑的确认执行文案并追加安全边界。
+- 补充 full agent 长耗时进度提示：在初始提示和工具提示之外，超过约 `12s / 25s` 且近期没有新提示时，继续发送“还在处理 / 这轮分析耗时较长”的用户可理解提示。该改动不改变路由和回复内容，只改善长等待期间的可感知状态。
+
+验证：
+
+- 单测：`test_plan_preview_confirmation_boundary_corrects_confirm_copy_without_pending_payload`、`test_plan_preview_confirmation_boundary_ignores_intent_confirm_copy_on_query_state`、`test_plan_preview_confirmation_boundary_removes_unbacked_replace_confirm_section`、`test_plan_preview_confirmation_boundary_removes_immediate_execute_copy_without_payload`，`4 passed`。
+- 进度提示单测：`test_chat_service_emits_initial_progress_when_full_agent_is_silent`、`test_chat_service_does_not_duplicate_initial_progress_after_tool_progress`、`test_chat_service_emits_long_running_progress_for_slow_full_agent`，`3 passed`。
+- live 复测：`/private/tmp/zhiyuan_303_career_plan_support_boundary_fix_live.json` 中已不再出现“还没有拿到可执行的调整预览”，只保留“待确认内容 / 尚未确认 / 确认前不会写入后续参考”的意向边界。
+
+后续判断：
+
+- 当前最主要的性能瓶颈仍是 full agent 每轮需要带完整工具 schema 与指令，简单问题输入 token 约 `16k`，再叠加工具后最终组织，容易落到 `25s-40s`。
+- 这轮不通过关键词抢路由来压延迟；下一步优先做两件事：
+  1. 在本地 Server/Rank 可用时复跑方案类 case，避免“后端未启动导致空方案”的假结论。
+  2. 继续从 full agent 工具面和上下文面优化，例如减少重复上下文读取、裁剪不必要工具暴露、把长耗时 case 的 progress hint 做到更连续。
+
+#### 12.4.2 正负专业意向混合表达长尾
+
+新增真实口语 case：
+
+- 输入：`医学护理这些别碰，财会还能接受，先看看影响`
+- 首次输出：`/private/tmp/zhiyuan_303_mixed_major_intent_live.json`
+- 问题：
+  - full agent 连续多次重复进入专业意向预览链路，每次又触发 `extract_major_intents_with_polarity`，最终到 `180s` 超时。
+  - 抽取候选层级只包含“医学/护理”相关内容，没有包含“财会”相关专业，因此正向“财会还能接受”被漏掉。
+  - 超时兜底文案过泛，还举了“计算机方向”的无关例子，用户侧会感觉系统没有理解当前问题。
+
+修复与设计边界：
+
+- 专业层级候选过滤补充受控领域别名扩展：`财会/财管/会计/财务` 扩展到 `工商管理类 / 会计学 / 财务管理 / 审计学`，`新传` 扩展到新闻传播相关，`跨电` 扩展到电子商务相关。该逻辑只用于实体候选召回，不做路由决策。
+- 专业简称归一化新增集中维护的常用表：确定性简称（如 `计科 -> 计算机科学与技术`、`软工 -> 软件工程`、`AI -> 人工智能`、`国贸 -> 国际经济与贸易`、`口腔 -> 口腔医学`）可在分数线查询、选科校验等 `resolve_major_names_async` 链路本地前置命中；多目标简称（如 `财会`、`大数据`）只用于候选召回，不在 level3 normalize 中强行落到某一个专业，避免误查分数线或误做选科校验。
+- `extract_major_intents_with_polarity` 提示补充“财会/财务/会计/财管”的匹配规则，避免模型在候选已召回时仍漏掉正向意向。
+- `preview_current_major_intent_confirmation` 工具描述补充混合输入示例，要求用户已经说清目标时直接传 `major_intents`，不要无参数重复调用。
+- Tool dispatch rules 补充硬边界：`preview_current_*_intent_confirmation` 返回后，本轮直接基于工具结果回复用户并等待确认，不要重复调用同一个 preview 工具。
+- WebSocket 超时兜底改为引用用户原问题，并明确“这轮还没有拿到完整分析结果，也不会自动写入偏好或改动方案”，不再输出无关示例。
+
+验证：
+
+- `tests/unit/test_major_utils.py` 覆盖“财会还能接受”可召回工商管理类、会计学、财务管理及负向护理学类。
+- `tests/unit/test_score_and_validation_normalization.py` 覆盖 `计科/国贸/AI/口腔` 在分数线/选科校验 normalize 前置命中，且 `财会/大数据` 这类多目标简称不会被硬归一到单一 level3 专业。
+- `tests/unit/test_instructions.py::TestToolDispatchRules::test_intent_preview_tool_boundaries_stop_after_preview` 验证调度规则包含 preview 后停下的约束。
+- `tests/unit/test_ws_compat.py` 超时兜底回归验证保留原用户问题和无副作用边界。
+- 聚焦测试：`12 passed`。
+
+复测说明：
+
+- 复测输出：`/private/tmp/zhiyuan_303_mixed_major_intent_after_alias_live.json`。
+- 本次复测仍在 `180s` 超时，但日志显示首轮模型请求本身没有完成，没有进入工具调用阶段，因此这次不能证明重复 preview 已解决或未解决；它说明当前供应商/模型还有首轮请求挂起的长尾。
+- 针对这类“未进入工具阶段”的长尾，Agent 迭代层补充节点耗时观测：每个节点会记录 `nodeTimings`，如果被 `wait_for` 取消，会记录 `failedNode / failedNodeElapsedMs / errorType` 并写入 `conversation_turn_event.routeDecision.agentRun`。后续复跑时可以直接区分首轮模型请求挂起、工具节点慢、还是最终回复生成慢。
+- 长耗时用户提示拆成两类：尚未进入工具阶段时提示“正在等待模型返回 / 不会自动写入偏好或改动方案”；已经进入工具阶段后才提示“结合工具结果整理结论”，避免用户看到与实际阶段不一致的处理中说明。
+- `dialog_case_evaluation_report.py` 同步识别 `routeDecision.agentRun.failedNode`，报告中会标记 `agent_run_interrupted` 与 `first_model_request_or_final_generation_interrupted`，避免复测后只看到“超时”而看不出是否根本没有进入工具阶段。
+- 评估报告进一步识别慢但成功的 Agent 节点：会输出 `slowestAgentNode`，并标记 `slow_agent_node / very_slow_agent_node / slow_before_first_tool_or_final_generation / late_first_tool_call`，用于区分“首轮模型慢”“工具调用前等待久”“工具链慢”这几类不同优化对象。
+- `dialog_regression_runner.py` 在单轮请求异常时也会尝试从本地 history DB 读取该 prompt 对应的 route observability；如果服务端已写入失败观测，即使 runner 自己先超时，也能在 metrics 里保留 `failedNode` 等诊断信息。
+- LLM client 新增默认关闭的 `LLM_TIMEOUT_SECONDS` 配置，`0` 表示不设置模型请求层超时，仍使用外层服务超时兜底。后续做供应商稳定性实验时可以显式设置模型请求层 timeout，让首轮模型挂起更早返回可观测错误；默认不改变当前线上行为。
+- 后续需要在模型服务稳定后再复跑该 case，重点看：
+  1. 是否只调用一次 `preview_current_major_intent_confirmation`；
+  2. 是否识别出负向医学/护理和正向财会；
+  3. 是否停在待确认回复而不是重复抽取。
+
+复跑结论：
+
+- 复测输出：`/private/tmp/zhiyuan_303_mixed_major_intent_observability_live.json`
+- 评估报告：`/private/tmp/zhiyuan_303_mixed_major_intent_observability_eval.md`
+- 输入：`医学护理这些别碰，财会还能接受，先看看影响`
+- 结果：`successfulSteps=1 / failedSteps=0`，最终回复质量评分 `strong`。
+- 工具链：只调用 `1` 次 `preview_current_major_intent_confirmation`，`repeatedToolNames=[]`，说明重复 preview 问题在本轮已消失。
+- 识别结果：回复正确识别负向 `医学类 / 护理学类` 与正向 `财会相关（工商管理类下会计/财务管理等）`，并停在待确认状态，没有写入偏好或改方案。
+- 性能：总耗时 `118792ms`，首个 thinking 约 `3042ms`，最终回复约 `116788ms`。
+- 节点归因：`ModelRequestNode` 首轮约 `12991ms`，`CallToolsNode(preview_current_major_intent_confirmation)` 约 `94014ms`，最终 `ModelRequestNode` 约 `9711ms`。
+- 结论：这次不是首轮模型请求挂死，也不是重复 preview；当前主要瓶颈是专业意向预览工具内部的 `extract_major_intents_with_polarity` LLM 抽取，日志显示该内部请求从 `17:07:51` 到 `17:09:25`，约 `94s`。
+
+下一步优化对象：
+
+1. 优先分析 `preview_current_major_intent_confirmation -> analyze_volunteer_intent_change -> extract_major_intents_with_polarity` 的内部抽取提示词、候选层级长度和模型调用配置。
+2. 对已经通过候选召回明确到少量专业类/专业的输入，考虑让工具返回结构化候选事实，减少内部抽取 LLM 的上下文长度或请求次数；但仍保持待确认边界，不直接写状态。
+3. 用同一 case 作为回归样例，目标是保持当前回复质量和确认边界，同时把工具节点耗时从分钟级降下来。
+
+本轮继续修复：
+
+- 专业意向预览工具内部新增保守本地恢复：当已经进入 `preview_current_major_intent_confirmation`，且最新用户输入在同一句里清楚表达正向/负向专业意向时，优先基于专业目录和受控别名表恢复结构化 payload。
+- 支持混合正负例：`医学护理这些别碰，财会还能接受，先看看影响` 会恢复为 `negative_level1=["医学"]`、`negative_level3=["护理学"]`、`level2=["工商管理类"]`；`土木别要，计科可以` 会恢复为 `negative_level3=["土木工程"]`、`level3=["计算机科学与技术"]`。
+- 该逻辑只在已进入专业 Intent 工具后生效，不作为顶层对话路由，不改变 Explore / Plan 主链路；无法在目录或别名表中稳定落位时继续回落到原来的 LLM 抽取。
+- 当模型主动传入过度展开的专业 payload 时，工具会用本轮用户原话可支撑的本地结构做校正，避免把“医学别碰”展开成几十个医学下级专业，同时补回“财会还能接受”这类被漏掉的正向意向。
+- Tool dispatch rules 补充语义边界：用户同时表达“排除哪些专业 / 哪些还能接受 / 看看影响”时属于 Intent 影响预览；专业意向最终回复只能复述工具 JSON 已出现的专业门类、专业类或专业，不能自行扩展相邻专业范围。
+
+复测：
+
+- 聚焦单测：`tests/unit/test_intent_state_tool.py` 新增本地混合恢复、简称混合恢复、过度展开 payload 校正；`tests/unit/test_instructions.py` 覆盖 Intent 影响预览和不自行扩展专业范围的指令。
+- 相关回归：`206 passed`。
+- 真实 WebSocket 输出：`/private/tmp/zhiyuan_303_mixed_major_intent_instruction_refine_live.json`。
+- 评估报告：`/private/tmp/zhiyuan_303_mixed_major_intent_instruction_refine_eval.md`。
+- 结果：`strong C5/F5/A5/L1/R4`，只调用一次 `preview_current_major_intent_confirmation`，`repeatedToolNames=[]`。
+- 节点归因：首轮 `ModelRequestNode=19288ms`，`CallToolsNode(preview_current_major_intent_confirmation)=12ms`，最终 `ModelRequestNode=27397ms`，总耗时约 `48.8s`。
+- 结论：原先 `94s` 的工具内部专业抽取 LLM 已从该高置信混合表达里移除；当前剩余慢点主要是外层 full agent 的两次模型请求，后续需要继续评估是否通过模型配置、回复生成约束或更轻的最终组织链路降低延迟。
+
+临时影响说明清理复核：
+
+- 问题：同一 case 在 direct tool return 后，仍可能把 `build_plan_relation_analysis` 生成的“我先帮你看看 / 继续看看方案匹配 / 直接让我给你调整建议”等占位句当成有效影响说明，导致用户看到没有事实支撑的“影响说明”。
+- 临时修复范围：仅在 Intent 预览最终成文前清理这些已观测占位句；不参与路由、不识别用户意图、不改 pending 状态，也不影响真实方案/候选事实行。
+- 单测：`test_render_intent_analysis_text_replaces_generic_impact_placeholder_for_confirmed_preview` 覆盖新旧占位句，确认会回落到“待确认、确认前不生效、不改方案”的边界说明。
+- 相关回归：`166 passed`，覆盖 base agent、ChatAgent tool direct return、长耗时 progress、intent state、评估报告和 regression runner 观测链路。
+- 真实 WebSocket 输出：`/private/tmp/zhiyuan_303_mixed_major_intent_direct_preview_tempfix_live.json`。
+- 评估报告：`/private/tmp/zhiyuan_303_mixed_major_intent_direct_preview_tempfix_eval.md`。
+- 结果：`strong C5/F5/A4/L1/R4`，无质量违规；只调用一次 `preview_current_major_intent_confirmation`，`directToolReturn=true`，`CallToolsNode=8ms`。
+- 延迟归因：总耗时约 `42.8s`，首个 thinking 约 `3.0s`，最终回复约 `40.8s`；慢点集中在首轮 `ModelRequestNode=40.7s`，不是工具内部抽取，也不是重复 preview。
+- 判断：临时方案已经解决“泛化影响说明泄漏”的输出质量问题；但它仍是文本占位清理。后续如果类似占位句继续扩散，应把 `impactAnalysis` 改成结构化事实/占位标记，用是否存在 `fact` 决定展示影响说明，而不是继续堆字符串。
+
+#### 12.4.3 真实对话派生 88 case 全量复跑
+
+本轮继续按“回复质量优先、延迟次之”的口径复跑真实对话派生集，没有恢复字符串 fast route，也没有为了性能把回复做薄。
+
+运行方式：
+
+- Agent：本地 `127.0.0.1:8001`，复跑完成后已停止。
+- Case：`examples/dialog_regression_303_dialogue_derived_cases.json`，共 `88` 条。
+- 分批输出：
+  - `/private/tmp/zhiyuan_303_dialogue_derived_canary12_live.json`
+  - `/private/tmp/zhiyuan_303_dialogue_derived_batch2_20_live.json`
+  - `/private/tmp/zhiyuan_303_dialogue_derived_batch3_24_live.json`
+  - `/private/tmp/zhiyuan_303_dialogue_derived_batch4_16_live_current.json`
+  - `/private/tmp/zhiyuan_303_dialogue_derived_batch5_16_live_corrected.json`
+- 汇总输出：`/private/tmp/zhiyuan_303_dialogue_derived_all88_live_current.json`
+- 汇总报告：`/private/tmp/zhiyuan_303_dialogue_derived_all88_eval_current.md`
+
+汇总结果：
+
+- `totalCases=88`
+- `current verdicts={'needs_review': 87, 'fail': 1}`
+- `elapsedMedianMs=23670`
+- `elapsedP95Ms=75689`
+- `elapsedMaxMs=172968`
+- `firstMessageMedianMs=3015`
+- `finalMessageMedianMs=21668`
+- `missingProgressCount=0`
+- `Full Agent Tool Trial Issues.count=81`
+- `slow_full_agent=81`
+- `very_slow_full_agent=36`
+- `very_slow_agent_node=58`
+- `repeated_tool_calls=2`
+- `many_tool_calls=4`
+- `tool_result_error=1`
+
+质量观察：
+
+- 多数开放 Explore / 取舍类问题的回复质量可用，能给出结构化判断和下一步，例如地域取舍、民办 vs 公办、稳定就业、考公、体检风险、预算/高收费风险等。
+- 没有发现为了降低延迟导致的“薄回复”成为主问题；相反，慢 case 往往是回复内容较丰满、最终组织阶段较长。
+- `thinking` 首响稳定在约 `3s`，长耗时 case 也能持续提示。已修正“等待模型返回”等内部表达，改为“正在整理可用信息 / 正在补全结论”等用户侧语言。
+- 方案类 case 因本地 clean session 多数没有正式方案，回复主要验证“无方案边界”是否正确：没有误执行、没有误发工作台刷新，能引导先生成方案或补充信息。
+
+真实问题：
+
+1. `专业组里只保留最稳的专业行不行`
+   - 结果质量：回复内容较好，能解释“只留一个专业 + 不服从调剂 / 服从调剂”的风险，并给出“组内尽量填满、最稳兜底、谨慎调剂”的建议。
+   - 性能：`elapsedMs=172968`，超过 `maxElapsedMs=100000`。
+   - 节点归因：`plan_next_action` 后最终 `ModelRequestNode=159242ms`，不是重复工具，也不是工具内部耗时。
+   - 判断：这是高质量长回复的最终生成长尾。短期不应通过关键词 fast route 或薄模板解决；更合理方向是降低该类只读策略问题暴露的 Plan 工具负担，或优化最终回复生成上下文规模。
+2. `候选里有稳一点的会计加进来吗，先别加`
+   - 回复：`查询暂时没拉出来，可能是系统有点延迟...`
+   - 问题：在 clean session / 无候选环境下，这种表达容易把正常空结果说成系统延迟。
+   - 已修正：`query_volunteer_plan` 的候选空结果现在明确说明“当前候选池按这个条件没有命中，不是系统延迟或查询失败”；Plan 调度规则也要求最终回复不得把“暂时没有筛到/没有命中”改写成“系统延迟、稍后再试、查询没拉出来”，除非工具明确返回查询失败。
+3. 部分开放取舍 case 多工具叠加：
+   - 例如 `大城市民办和小城市公办怎么选` 会调用地域 + 职业两个工具；`中外合作贵不贵，值不值得放` 会调用职业、方案、院校多个工具。
+   - 当前回复质量可用，但延迟高。下一步应从工具暴露和调度边界收敛，减少同轮非必要工具，不通过字符串匹配抢路由。
+
+评估工具修正：
+
+- 旧 fast route 预期不再作为质量硬失败，仅保留严格确认守护类路由校验；否则当前 full agent 基线会被旧优化路线误判为质量失败。
+- 空方案结果纳入 `_EMPTY_RESULT_TOKENS`，空方案时不再强制套用“预览/示例必须覆盖分布”的质量门禁。
+- 条件性 pending 建议（如“如果你想，我可以把它先记成待确认偏好”）不再被误判为“已经生效”的 pending 文案；仍会继续拦截未加确认条件的“已经记成 / 后续都会按这个要求”。
+- 修正多个 case 元数据：预算/中外合作、偏好可变更、弱确认收口、专业组策略等从错误的 preview / intent 预期调整为只读或空方案边界场景。
+
+验证：
+
+- `cd zhiyuan-agent && .venv/bin/python -m pytest tests/unit/test_dialog_case_evaluation_report.py -q`：`54 passed`。
+- `cd zhiyuan-agent && .venv/bin/python -m pytest tests/unit/test_plan_query_tool.py tests/unit/test_instructions.py tests/unit/test_dialog_case_evaluation_report.py -q`：`105 passed`。
+- 离线报告重算：`/private/tmp/zhiyuan_303_dialogue_derived_all88_eval_current.md`，剩余硬失败仅为专业组策略长尾延迟。
+
+结论：
+
+- 当前瓶颈主要不是“缺少快路由”，而是 full agent 在开放式问题上上下文和工具选择偏重、最终回复生成长尾明显。
+- 继续优化时应优先做可维护的系统性收敛：工具暴露边界、只读策略场景的上下文裁剪、空结果语义稳定、慢节点观测与模型供应商稳定性评估。
+- 不建议回到字符串关键词补丁；真实输入的说法变化太大，容易造成覆盖漏洞和误路由。
+
+#### 12.4.4 工具边界收敛：多专业取舍与多专业介绍
+
+本轮继续按“回复质量优先、延迟次之”的口径处理工具链冗余，不恢复字符串 fast route，也不在 service 层做固定模板回复。
+
+问题一：三专业取舍被拆成多次二元对比。
+
+- 代表输入：`财管会计审计这几个怎么排优先级`
+- 旧表现：full agent 会连续调用 `compare_majors(财务管理, 会计学)` 和 `compare_majors(会计学, 审计学)`，最终能答，但工具链和最终组织都偏重。
+- 修复：新增 `compare_major_options`，用于三个及以上具体专业/专业类的优先级、排序、取舍判断；一次查询多专业横向事实，再由主模型组织用户侧回复。
+- 指令边界：两个专业仍用 `compare_majors / compare_majors_adhoc`；三个及以上取舍用 `compare_major_options`，不要拆成多次二元对比，也不要先绕到 `analyze_current_major_interest` 或 Intent 预览。
+
+复测：
+
+- 输出：`/private/tmp/zhiyuan_303_accounting_priority_major_options_backend_live.json`
+- 路径：`routingPath=full_agent`
+- 工具：`compare_major_options` 1 次，`repeatedToolNames=[]`
+- 性能：后端权重查询约 `61ms`，端到端约 `15.6s`；后续再次复测 `/private/tmp/zhiyuan_303_accounting_priority_after_major_intro_live.json` 仍保持单次 `compare_major_options`。
+- 回复质量：保留“默认排序 / 为什么这样排 / 按考公、企业就业、事务所、读研目标调整 / 下一步细化”的结构，没有退化成薄回复。
+
+问题二：多个专业的学习内容/基础要求对照被并行打多个专业介绍工具。
+
+- 代表输入：`建筑城乡规划要不要美术基础`
+- 旧表现：同轮并行调用 `get_major_introduction` 3 次。回复质量较好，但 `toolTrial.hasRepeatedToolCalls=true`，属于可维护性和延迟风险。
+- 修复：新增 `get_major_introductions`，用于多个专业的学习内容、基础要求、课程训练、就业方向横向对照；一次读取当前方案状态，每个专业读取 profile 与候选承接事实，最终仍由主模型组织回复。
+- 指令边界：多个专业介绍/基础要求对照优先 `get_major_introductions`，不要并行或连续多次调用 `get_major_introduction`；单专业介绍仍保留原工具。
+
+复测：
+
+- 修复前输出：`/private/tmp/zhiyuan_303_architecture_foundation_backend_live.json`
+  - 工具：`get_major_introduction` 3 次。
+  - 性能：约 `19.6s`。
+  - 回复质量：可用，能解释建筑学和城乡规划对美术基础的差异。
+- 修复后输出：`/private/tmp/zhiyuan_303_architecture_foundation_major_introductions_live.json`
+  - 工具：`get_major_introductions` 1 次，`repeatedToolNames=[]`。
+  - 性能：约 `17.5s`。
+  - 回复质量：保留“录取门槛 / 入学后要求 / 没有美术基础怎么办 / 方案承接”的结构，且更明确地区分“录取时通常不额外考美术”和“入学后建筑学训练更重”。
+
+相邻回归：
+
+- 候选空结果：`/private/tmp/zhiyuan_303_candidate_empty_semantics_backend_live.json`
+  - 输入：`候选里有稳一点的会计加进来吗，先别加`
+  - 工具：`query_volunteer_plan` 1 次。
+  - 结果：明确表达“候选里目前没有会计学相关的候选机会”，没有再说成系统延迟，也没有误加入方案。
+- 专业组策略：`/private/tmp/zhiyuan_303_major_group_strategy_backend_live.json`
+  - 输入：`专业组里只保留最稳的专业行不行`
+  - 工具：0 次。
+  - 结果：作为只读策略建议回答，不误进方案修改；质量可用，但仍有约 `19s` 的首轮模型生成耗时。
+
+验证：
+
+- 聚焦单测：`tests/unit/test_major_info_tool.py tests/unit/test_compare_resolution.py tests/unit/test_chat_agent_tools.py::TestChatAgentToolRegistration::test_chat_agent_does_not_register_low_level_intent_extractors tests/unit/test_instructions.py::TestToolDispatchRules::test_explore_tool_boundaries_reduce_redundant_tool_chains tests/unit/test_chat_agent_init_profile.py::test_build_instructions_includes_explore_first_direction_fit_guidance tests/unit/test_chat_agent_progress_hints.py -q`，`24 passed`。
+- 前一轮 pending 边界、候选空结果和 progress 去重聚焦单测保持通过：`14 passed`、`105 passed`。
+
+结论：
+
+- 当前优化方向是“把模型已经想调用的同类工具合并成更合适的结构化工具”，不是靠输入字符串抢路由。
+- 这能减少重复工具调用、降低工具试探风险，并保留 full agent 对最终回复的自然组织能力。
+- 剩余主要慢点仍是外层两次模型请求，尤其是首轮工具选择和最终回复生成。后续继续看模型供应商稳定性、工具 schema/指令规模和只读策略问题的上下文裁剪。
+
+#### 12.4.5 长等待感优化：更早的用户侧进度提示
+
+问题：
+
+- 上述真实 case 的工具链已经收敛，但端到端仍常见 `20s+`，慢点集中在外层 `ModelRequestNode`。
+- 用户真正困惑的是“系统是不是没动”，不是所有场景都必须把最终回复压到几秒内。
+- 原 `firstMessageMs` 约 `3s`，如果上下文读取或模型首轮选择慢，前几秒会没有任何反馈。
+
+设计：
+
+- 不改变路由、不改变工具选择、不改变最终回复。
+- 增加上下文读取阶段的早期提示：如果非确认类请求进入成绩、画像、planning 摘要读取阶段超过短阈值，发送 `正在读取当前会话信息...`。
+- 将 full-agent 初始理解提示从 `3.0s` 调整为 `1.5s`，文案仍是用户侧语言：`正在理解你的问题，并结合当前信息整理回答...`。
+- 确认类请求（如上一轮 preview 后的“确认”）仍走 direct pending guard/confirm，不额外发送上下文提示，避免快速执行动作时出现多余 thinking。
+
+验证：
+
+- 单测覆盖：
+  - 上下文读取慢时先发 `正在读取当前会话信息...`，随后进入模型理解提示。
+  - 工具进度已经发送时，不重复发送初始理解提示。
+  - 长耗时提示仍不包含 `模型 / 工具结果 / action / payload / stage / volunteerId` 等内部表达。
+- 真实 WebSocket 小回归：
+  - `/private/tmp/zhiyuan_303_tool_boundary_early_progress_live.json`
+  - `/private/tmp/zhiyuan_303_tool_boundary_initial_1p5s_live.json`
+  - `建筑城乡规划要不要美术基础` 与 `财管会计审计这几个怎么排优先级` 工具链仍分别为单次 `get_major_introductions` / `compare_major_options`。
+  - 本地上下文接口较快时早期上下文提示不会出现；初始理解提示前移后，两个 case 的 `firstMessageMs` 从约 `3.3s` 降到约 `1.8s`。
+  - 端到端耗时仍取决于模型长尾，本轮分别约 `18.8s` 和 `15.1s`；这是感知改善，不是模型请求数优化。
+
+影响：
+
+- 这是感知层优化，不减少 LLM 请求数，也不降低回复质量。
+- 如果后端上下文读取本身变慢，用户能更早看到系统正在读取当前会话信息；如果上下文读取很快，则仍直接进入 full agent 的理解提示和工具提示。
+
+#### 12.4.6 评估口径校准：区分回复质量、工具边界和模型长尾
+
+本轮在两条真实 dialogue-derived case 上复查后发现：运行链路已经通过 `compare_major_options` / `get_major_introductions` 收敛了重复工具调用，回复内容也达到用户侧可读标准，但自动评估仍把它们标为 `needs_review`。原因主要是评估器口径滞后，而不是回复质量退化。
+
+问题：
+
+- `major_compare` 场景只把 `compare_majors` 视为有效动作观测，未把新聚合工具 `compare_major_options` 计入，因此 `财管会计审计这几个怎么排优先级` 被误报 `missing_action_observability:compare_majors`。
+- 关键点匹配过窄：`就业路径` 未识别“就业面、企业财务、金融机构、事务所、风控、考公”等自然表达；`学习要求` 未识别“入学后课程、课程训练、核心能力、美术训练”；`下一步` 未识别“可以直接问我、愿意补充”等用户侧引导。
+- `readonly_boundary` 对纯 Explore 信息咨询要求过重。像 `建筑城乡规划要不要美术基础` 这种只读专业知识问题，本身不会被用户理解为方案变更，不应强制占用回复篇幅说“不会改方案”。方案、候选、意向、确认、移动、删除、排序等有副作用歧义的场景仍保留该要求。
+- 自动推断出来的 semantic frame 在当前 full-agent 基线中没有开启 shadow 验证时，不应作为普通报告的质量告警；显式指定的语义帧测试仍保留未验证告警。
+
+修正：
+
+- `compare_majors` 的动作观测别名扩展为 `compare_majors / compare_majors_adhoc / compare_major_options`。
+- 增加关键点同义表达：学习要求、就业路径、排序建议、下一步等。
+- 增加决策依据识别维度：`career_path / learning_requirement / admission_requirement / decision_recommendation`，避免结构化表格和自然表达被低估。
+- `readonly_boundary` 改为条件要求：计划/候选/意向/确认/变更相关 coverage 或用户明确说“先别动、只分析、别直接加”等才强制要求；纯专业知识咨询不再误报。
+- case 定义中显式 `expectedSemanticFrame` 标记为 `explicit`；覆盖标签推断出来的语义帧标记为 `inferred`，未启用 shadow 时不再产生报告噪音。
+
+复跑结果：
+
+- 输出报告：`/private/tmp/zhiyuan_303_tool_boundary_initial_1p5s_eval_refined.md`
+- 两条真实 case：`current verdicts={'strong': 2}`。
+- 质量违规：`quality violations={}`。
+- 评估告警：`evaluation warnings={}`。
+- 延迟仍清晰保留：median `16936ms`，max `18755ms`；`Full Agent Tool Trial Issues` 仍记录 `slow_tool_chain / slow_full_agent / slow_agent_node`。
+- 结论更准确：这两条 case 的当前主要问题不是回复薄、工具错或边界错，而是 full agent 外层两轮模型请求仍偏慢。
+
+验证：
+
+- `cd zhiyuan-agent && .venv/bin/python -m pytest tests/unit/test_dialog_case_evaluation_report.py -q`：`58 passed`。
+- 离线报告重算命令：
+  - `.venv/bin/python examples/dialog_case_evaluation_report.py --current /private/tmp/zhiyuan_303_tool_boundary_initial_1p5s_live.json --case-definitions /private/tmp/zhiyuan_303_tool_boundary_cases.json --markdown-detail --output /private/tmp/zhiyuan_303_tool_boundary_initial_1p5s_eval_refined.md`
+
+影响：
+
+- 只调整离线评估和报告，不改变 agent 运行时路由、工具选择或最终回复。
+- 后续评估能更稳定地区分三类问题：用户侧回复质量、工具调用边界、模型请求长尾。
+- 这为继续做 full-agent 深挖提供更干净的基线，避免重新引入字符串快路由来“修复”其实是评估误判的问题。
+
+#### 12.4.7 职业方向工具参数化：减少工具内部方向识别长尾
+
+继续复跑旧 88 case 中的职业方向慢样例后，当前代码表现为：
+
+- 输入：`大城市就业和考编哪个更现实`
+- 输出：`/private/tmp/zhiyuan_303_career_big_city_vs_exam_current_live.json`
+- 工具链：`analyze_current_career_direction` 1 次，没有 `load_skill`，没有 pending，也没有工作台联动。
+- 回复质量：可用，能对比考编/体制内与大城市市场化就业，覆盖优势、现实门槛、适合人群和下一步信息补充。
+- 耗时：约 `44.6s`；其中首轮模型约 `4.9s`，工具约 `27.7s`，最终模型约 `9.8s`。
+
+定位：
+
+- `ChatService` 已经在正式聊天主链路里设置 `allow_explore_inner_llm=false`，所以职业方向工具不再做内部草稿生成。
+- 当前工具内部慢点主要来自 `resolve_career_direction_slots`：外层 full agent 已经理解用户在问职业路径，却仍让工具再发起一次职业方向 slot 识别 LLM。
+- 这不是字符串快路由问题，而是工具接口缺少结构化参数，导致模型已经判断出的语义不能传给工具复用。
+
+修复设计：
+
+- `analyze_current_career_direction` 增加可选参数 `career_directions`。
+- 参数枚举固定为：
+  - `system_public_service`：考公、考编、体制内、公务员、事业单位。
+  - `stable_employment`：稳定就业、求稳、抗风险。
+  - `further_study`：读研、深造、升学。
+- 外层模型如果当前用户句子已经明确提到这些方向，直接把一个或多个枚举传入工具。
+- 工具收到有效参数后直接进入单方向或多方向分析，不再调用 `_resolve_career_direction_slots`。
+- 参数为空或无效时继续走原有 resolver 兜底，保证开放口语和未覆盖表达不退化。
+- 仍由 full agent 组织最终回复；不引入 service 层字符串路由，也不把回复改成模板。
+
+预期影响：
+
+- 对“考编 vs 大城市就业”“读研还是求稳”“体制内和稳定就业承接”等显式职业方向问题，减少一次工具内部 LLM 调用。
+- 对没有明确方向的泛问法，例如“我适合什么方向 / 先看大方向”，仍保持原有语义判定和泛方向分析链路。
+- 只影响只读 Explore 分析，不写 pending、不修改方案、不发送工作台卡片。
+
+验证：
+
+- 单测新增覆盖：
+  - 工具 schema 暴露 `career_directions` 枚举。
+  - 显式传入多个方向时，不再调用 resolver，直接进入方向对比。
+  - 传入无效方向时回落 resolver。
+  - 指令要求模型在明确方向场景直接传 `career_directions`。
+- 聚焦测试：
+  - `cd zhiyuan-agent && .venv/bin/python -m pytest tests/unit/test_explore_direction_scenarios_sync.py tests/unit/test_chat_agent_tools.py tests/unit/test_instructions.py -q`：`64 passed`。
+
+待验证：
+
+- 需要重启本地 agent 进程后复跑真实 WebSocket，确认远端模型会按照新 schema 传入 `career_directions`。
+- 如果模型仍不传参数，下一步不是加关键词快路由，而是继续优化工具描述和 few-shot 指令，使模型把已理解出的方向以结构化参数传给工具。
+
+#### 12.4.8 职业方向 taxonomy 与泛方向参数化
+
+本轮继续围绕职业方向 Explore 做深挖，重点处理两个问题：一是“大城市就业 / 市场化就业”没有结构化 slot，二是“先看大方向”这类泛方向问法会在工具内部再触发一次 LLM 判定。
+
+问题：
+
+- `大城市就业和考编哪个更现实` 之前只能稳定识别 `system_public_service`，市场化就业这一侧没有结构化 slot，工具事实层只能靠最终模型自行补全，后续意向承接和方案关系分析也缺少统一标签。
+- `等成绩出来再定，今天先看大方向` 在加强回复质量后会进入 `analyze_current_career_direction`，但工具内部仍调用 `resolve_career_direction_route` 判断“是否泛方向”，导致工具节点约 `15.9s`。
+- 一次真实回复里出现了 `学历门槛 increasingly 要硕士` 这类中英混排，说明用户侧语言质量需要纳入评估约束。
+
+修复：
+
+- 新增职业方向 slot：
+  - `market_employment`：企业就业 / 市场化就业 / 大城市就业 / 互联网或产业岗位。
+  - 标签为“市场化就业导向”。
+  - 接入 `analyze_current_career_direction(career_directions=...)` schema、职业意向抽取、职业方向 Explore 事实匹配和 Intent/方案关系分析。
+- `intent_relation_tool` 的职业方向匹配从“所有 career intent 都按体制内匹配”改为按 slot 匹配：
+  - `system_public_service`：政法、师范、法学、汉语言、行政管理等。
+  - `stable_employment`：公办、师范、医药、政法、农林及稳定岗位口径。
+  - `further_study`：保研、双一流、985/211、硕博点、升学率等。
+  - `market_employment`：理工/财经/综合、计算机、电子信息、金融、会计、互联网、实习、产业等。
+- `analyze_current_career_direction` 增加 `generic_direction: bool` 参数：
+  - full agent 对“适合什么方向 / 先看大方向 / 出分前先定方向”等泛方向问题调用 `analyze_current_career_direction(generic_direction=true)`。
+  - 工具收到该参数后直接进入泛方向分析，跳过内部 `resolve_career_direction_route` LLM。
+- Explore 指令补充质量底线：
+  - 出分前或信息不完整的泛方向回复不能只列“可以聊什么”。
+  - 至少给出体制内/稳定就业、市场化就业/大城市就业、读研/深造等 2-3 条方向框架，分别说明关键筹码、适合人群、主要风险和下一步。
+- 回复风格与评估补充：
+  - 用户正文不得夹杂不必要英文词或中英混排，专业英文缩写和正式英文名除外。
+  - `dialog_case_evaluation_report` 把 `increasingly / vs / TODO / N/A` 等纳入 `user_language` 风险提示。
+  - 新增职业方向专项回归文件 `examples/dialog_regression_303_career_direction_cases.json`。
+
+验证：
+
+- 聚焦单测：
+  - `cd zhiyuan-agent && .venv/bin/python -m pytest tests/unit/test_career_slots.py tests/unit/test_chat_agent_tools.py tests/unit/test_instructions.py tests/unit/test_explore_direction_scenarios_sync.py tests/unit/test_intent_state_tool.py tests/unit/test_dialog_case_evaluation_report.py -q`：`227 passed`。
+  - 增加 `generic_direction` 后补跑：`tests/unit/test_chat_agent_tools.py tests/unit/test_instructions.py tests/unit/test_explore_direction_scenarios_sync.py tests/unit/test_dialog_case_evaluation_report.py -q`：`126 passed`。
+- 真实 WebSocket：
+  - `/private/tmp/zhiyuan_303_career_direction_cases_live.json`
+  - 4 条职业方向 case 全部成功，耗时区间约 `10.2s - 19.6s`，没有重复工具调用；报告 `/private/tmp/zhiyuan_303_career_direction_cases_eval.md` 显示主要问题为 `slow_full_agent` 和部分回复信息量/下一步口径不足。
+  - 针对薄弱 case `等成绩出来再定，今天先看大方向`，加强指令后输出 `/private/tmp/zhiyuan_303_general_direction_after_instruction_live.json`：回复覆盖体制内/稳定就业、市场化就业、大城市发展、读研深造的适配人群、关键筹码和风险，但工具节点因内部泛方向判定约 `15.9s`。
+  - 增加 `generic_direction` 参数后复跑 `/private/tmp/zhiyuan_303_general_direction_generic_param_live.json`：日志确认 `using_generic_direction_analysis=explicit`；工具节点从约 `15.9s` 降到约 `293ms`，端到端从约 `34.3s` 降到约 `19.0s`，回复仍保留三条方向框架和下一步。
+  - 全量职业方向 case 复跑 `/private/tmp/zhiyuan_303_career_direction_cases_after_generic_param_live.json`，评估报告 `/private/tmp/zhiyuan_303_career_direction_cases_after_generic_param_eval.md`：4 条全部成功，无质量违规，2 条 strong、2 条 needs_review；needs_review 主要来自 full-agent 慢节点和只读边界/用户语言口径继续收紧。
+  - 只读边界复跑 `/private/tmp/zhiyuan_303_career_readonly_boundary_live.json`：`体制内稳定就业承接怎么样，先不要改方案` 首句明确“这轮只做分析，不会改动你的方案”；工具节点约 `126ms`，端到端约 `16.2s`。
+- 最终聚焦单测：
+  - `cd zhiyuan-agent && .venv/bin/python -m pytest tests/unit/test_career_slots.py tests/unit/test_chat_agent_tools.py tests/unit/test_instructions.py tests/unit/test_explore_direction_scenarios_sync.py tests/unit/test_intent_state_tool.py tests/unit/test_dialog_case_evaluation_report.py -q`：`228 passed`。
+
+结论：
+
+- 这次优化仍保持 full agent 主路由，没有恢复 service 层字符串快路由。
+- 性能收益来自“工具结构化参数复用外层模型已理解的语义”，不是把回复模板化。
+- 当前剩余慢点主要是 full agent 外层两次主模型请求，尤其最终组织回复节点仍常见 `10s+`；后续可继续从模型选择、上下文裁剪和工具返回事实压缩入手，但不能牺牲回复信息量。
+
+#### 12.4.9 专业/院校实体理解公共层
+
+本轮继续处理真实对话里反复出现的实体理解问题。用户明确指出，继续补 `_phrase_mentions_tcm_boundary`、`_major_boundary_notes` 或单独追加“审计”等别名，无法解决自然语言里大量简称、父子层级和只读/写入边界问题。因此本轮不再做 case 级补丁，而是把专业、院校识别收敛成可复用公共层。
+
+现状确认：
+
+- `extract_major_intent / extract_major_intents_with_polarity` 已存在，但只在 Intent 预览缺少结构化参数时作为 fallback 调用。
+- `extract_school_intent` 同样只服务院校意向 fallback。
+- 方案加入/删除/移动里的“广西师大统计”“湖北工程学院的计算机科学与技术”不走上述 extractor，而是由 `plan_execution_tool` 基于当前方案/候选池解析真实 `volunteerId`。
+- 因此当前不是没有 extractor，而是缺少跨 Intent / Explore / Plan 的统一实体解析契约。
+
+本轮落地：
+
+- 新增 `zhiyuan-agent/app/domain/entity_resolution.py`，定义统一候选结构：
+  - `entity_type`：`major / school / school_major_ref`
+  - `canonical_name`
+  - `level`
+  - `source`：`exact / alias / auto_alias / catalog / extractor / item_match`
+  - `confidence`
+  - `ambiguous`
+- 新增 `zhiyuan-agent/app/domain/major_entity_resolver.py`：
+  - 直接复用官方专业目录 `major_data.py`。
+  - 复用 `major_aliases.py` 作为受控常用简称表。
+  - 从目录自动生成唯一简称，仅当别名只指向一个官方专业/专业类时接受。
+  - `resolve_major_mentions_from_text` 用于短句里的专业实体召回。
+  - `build_major_relation_notes` 基于 `level3_to_level2 / level2_to_level1` 生成通用父子层级说明，不再写死“中医/师范”等话术。
+- 新增 `zhiyuan-agent/app/domain/school_entity_resolver.py`：
+  - 复用官方院校目录。
+  - 抽出院校简称规则，如“广西师大”“湖工”。
+  - 多候选时返回 `ambiguous=true`，不猜。
+- 新增 `zhiyuan-agent/app/domain/school_major_ref_resolver.py`：
+  - 面向方案操作里的“学校+专业”引用，例如“广西师大统计”“湖北工程学院的计算机科学与技术”。
+  - 先按显式分隔符拆分；没有分隔符时用院校目录和专业目录做边界扫描。
+  - 只输出标准化查询线索，如 `school_keywords=["广西师范大学"]`、`major_keywords=["统计学"]`。
+  - 如果学校或专业侧存在多候选歧义，例如“湖工计科”，返回歧义状态，不生成查询线索。
+- `intent_state_tool` 的本地专业恢复改为调用 `resolve_major_mentions_from_text + append_major_mentions_to_payload`。
+- `intent_response_tool` 的专业边界提示改为调用 `build_major_relation_notes`。
+- 移除“师范/老师”直接补成 `教育学类` 的运行时特殊逻辑，避免把“师范是不是都别要”这类咨询/澄清句误写成待确认排除。
+- `plan_execution_tool` 小范围接入学校+专业引用解析：
+  - 候选加入先用当前 `candidatePoolState.items` 做真实 item 唯一匹配，能匹配则不额外查询。
+  - 当前页未加载目标时，再用 `school_major_ref_resolver` 生成候选池查询关键词。
+  - 查询返回后仍走现有 `_ordered_item_labels` 唯一命中逻辑，只有唯一真实 `volunteerId` 才会执行加入。
+  - 不把公共 resolver 的结果直接当作执行目标，避免把简称/口语表达误执行成错误志愿。
+- `plan_execution_tool` 的 item label 生成复用公共专业/院校别名层：
+  - 删除 Plan 内部重复维护的院校简称规则，统一调用 `school_alias_variants`。
+  - 专业简称统一从 `major_aliases.py + major_alias_variants_for_name` 反查，覆盖“审计、软工、国贸、新媒体、计科、统计”等常用表达。
+  - 已选方案里的移动/删除仍不靠公共 resolver 直接选目标，而是把公共别名加入 item label 后继续做唯一真实 `volunteerId` 匹配。
+
+当前边界：
+
+- 本轮没有把 Plan 执行层整体改写为公共 resolver。`plan_execution_tool` 基于当前方案/候选池的唯一命中与歧义保护仍是最终落点。
+- `school_major_ref_resolver` 当前只增强候选池查询召回，尤其是目标不在当前候选页时的“简称+专业”表达。
+- 已选方案里的删除/移动仍依赖当前方案 item 的 label/alias 唯一匹配；公共层只提供 label 变体，不直接选择执行目标。
+- `extract_major/school` 不废弃；它们继续作为 LLM 语义抽取 fallback。公共 resolver 负责 deterministic/catalog/alias 层，extractor 负责更开放的语义补位。
+
+验证重点：
+
+- `会计审计还行，土木别要`：公共解析能召回会计学、审计学、土木工程。
+- `医学 + 中医学类/中医学`：层级说明来自目录关系。
+- `孩子不想当老师，师范是不是都别要`：不再被本地特殊逻辑直接写成排除教育学类。
+- `广西师大`：可解析为广西师范大学。
+- `湖工`：如果命中湖北工程学院、湖北工业大学等多个候选，必须标记歧义，不猜。
+- `广西师大统计`：
+  - 如果当前候选状态页已经有唯一 item，直接解析到该 `volunteerId`，不触发额外候选查询。
+  - 如果当前候选状态页为空或没加载到目标，用 `广西师范大学 + 统计学` 查询候选池；查询结果仍必须唯一命中真实 `volunteerId` 才允许加入方案。
+- `湖工计科`：学校简称歧义时不生成候选查询线索；如果当前候选/方案 item 也不能唯一命中，则返回需要用户点选或补充信息。
+- `青岛城市学院新媒体`：专业简称来自公共 `major_aliases.py`，可在当前方案 item 中唯一匹配到“网络与新媒体”后再移动；如果当前方案里多个 item 都匹配，仍返回需要点选，不猜。
+
+聚焦验证：
+
+- `cd zhiyuan-agent && .venv/bin/python -m pytest tests/unit/test_entity_resolution.py tests/unit/test_intent_state_tool.py::test_local_major_recovery_does_not_force_teacher_track_into_intent_preview tests/unit/test_intent_state_tool.py::test_refine_major_intents_supplements_model_omitted_major_alias tests/unit/test_intent_state_tool.py::test_render_intent_analysis_text_explains_tcm_boundary_under_medical_constraint -q`：`9 passed`。
+- `cd zhiyuan-agent && .venv/bin/python -m pytest tests/unit/test_intent_state_tool.py::test_recover_major_intent_from_context_recovers_mixed_polarity_locally_without_llm tests/unit/test_intent_state_tool.py::test_recover_major_intent_from_context_recovers_common_major_abbreviations_locally tests/unit/test_intent_state_tool.py::test_recover_intents_from_context_major_scope_only_uses_major_extractors tests/unit/test_intent_state_tool.py::test_recover_intents_from_context_major_scope_falls_back_when_combined_extractor_fails tests/unit/test_intent_state_tool.py::test_recover_intents_from_context_school_scope_only_uses_school_extractor -q`：`5 passed`。
+- `cd zhiyuan-agent && .venv/bin/python -m pytest tests/unit/test_entity_resolution.py tests/unit/test_major_utils.py tests/unit/test_code_enrichment.py tests/unit/test_major_intent_tool.py -q`：`62 passed`。
+- `cd zhiyuan-agent && .venv/bin/python -m pytest tests/unit/test_entity_resolution.py tests/unit/test_plan_execution_tool.py::test_execute_plan_action_add_units_queries_candidate_pool_for_unloaded_short_ref tests/unit/test_plan_execution_tool.py::test_execute_plan_action_add_units_resolves_candidate_school_major_alias_ref tests/unit/test_plan_execution_tool.py::test_execute_plan_action_add_units_does_not_guess_ambiguous_candidate_alias_ref tests/unit/test_plan_execution_tool.py::test_execute_plan_action_runs_move_unit_after_resolving_school_major_alias_ref tests/unit/test_plan_execution_tool.py::test_execute_plan_action_does_not_guess_ambiguous_school_major_alias_ref -q`：`13 passed`。
+- `cd zhiyuan-agent && .venv/bin/python -m pytest tests/unit/test_entity_resolution.py tests/unit/test_plan_execution_tool.py -q`：`98 passed`。
+- `cd zhiyuan-agent && .venv/bin/python -m pytest tests/unit/test_entity_resolution.py tests/unit/test_major_utils.py tests/unit/test_code_enrichment.py tests/unit/test_major_intent_tool.py tests/unit/test_intent_state_tool.py tests/unit/test_plan_execution_tool.py -q`：`258 passed`。
+
+真实链路 smoke：
+
+- `会计审计还行，土木别要 -> 确认`：
+  - 输出文件：`/private/tmp/zhiyuan_303_entity_intent_smoke.json`。
+  - 首轮耗时约 `9.4s`，工具链为 `preview_current_major_intent_confirmation` 一次。
+  - 回复正确识别“会计学、审计学”为偏好，“土木类”为排除；确认轮走 `direct_pending_intent_confirm`，耗时约 `2.3s`。
+- `青岛城市学院新媒体挪到第3位看看`：
+  - 输出文件：`/private/tmp/zhiyuan_303_entity_plan_ref_smoke.json`。
+  - 当前会话里没有唯一的“青岛城市学院-网络与新媒体”组合，系统没有执行移动，而是提示澄清“青岛电影学院-网络与新媒体”或“青岛城市学院其他专业”。
+  - 暴露问题：full agent 出现 `query_volunteer_plan` 重复调用 2 次，总耗时约 `31.6s`，后续应继续优化工具试探和重复查询。
+- `广西师大统计挪到第3位看看`：
+  - 输出文件：`/private/tmp/zhiyuan_303_entity_plan_alias_smoke.json`。
+  - 当前方案没有广西师范大学/统计学时没有执行移动，回复解释无法直接挪，并给出“加入方案/先查可上概率/补充信息”的下一步。
+  - 暴露问题：模型把明确移动请求先组织成 `move_unit analyze`，随后重复 `query_volunteer_plan` 3 次；实体安全边界正确，但路由与性能仍需后续优化。
+
+#### 12.4.10 Plan 选择阻断结果直出
+
+在 12.4.9 的真实链路 smoke 里，实体解析和执行安全边界已经正确，但出现了新的性能问题：`execute_plan_action` 已经返回“无法唯一定位，需要用户点选或补充信息”后，full agent 仍继续调用 `query_volunteer_plan` 试图自行补查，导致同一轮重复查询 2-3 次。
+
+问题复盘：
+
+- `tool_dispatch_rules` 已经要求 `execute_plan_action result_kind="error"` 时不要重复重试，但实际模型仍可能把这个错误理解为“还需要再查一遍当前方案”。
+- 这类错误不是系统故障，而是受控的业务阻断：没有唯一定位到当前方案/候选里的真实志愿，继续查不会让执行更安全。
+- 如果任由模型继续补查，用户侧会看到更长等待；且模型可能把“目标不存在”改写成多个猜测选项，反而弱化“需要点选/补充”的核心安全边界。
+
+修复：
+
+- 在 `ChatAgent.should_return_directly_from_tool` 中新增严格限定的 direct return：
+  - 只处理单个 `execute_plan_action` 工具返回。
+  - 只在 `result_kind="error"` 且 `reply_focus` 包含 `needs_volunteer_selection` 或 `needs_candidate_selection` 时触发。
+  - 直接使用工具返回的 `summary/state_summary` 作为用户回复，结束本轮。
+- 不影响：
+  - 正常 `preview_only`，仍由模型组织确认话术。
+  - 正常 `mutation_result`，仍由模型说明执行结果和复审。
+  - `review_plan/query_state/analyze_adjustment` 等只读结果。
+  - 一般系统错误和 stale pending 错误。
+
+验证：
+
+- 单测：
+  - `cd zhiyuan-agent && .venv/bin/python -m pytest tests/unit/test_chat_agent_tools.py::TestChatAgentToolRegistration::test_chat_agent_only_direct_returns_intent_preview_tools tests/unit/test_chat_agent_tools.py::TestChatAgentToolRegistration::test_chat_agent_direct_returns_plan_selection_blocking_error tests/unit/test_chat_agent_tools.py::TestChatAgentToolRegistration::test_chat_agent_does_not_direct_return_normal_plan_preview tests/unit/test_base_agent.py::test_run_can_return_directly_after_user_facing_tool_result -q`：`4 passed`。
+  - `cd zhiyuan-agent && .venv/bin/python -m pytest tests/unit/test_chat_agent_tools.py tests/unit/test_base_agent.py tests/unit/test_plan_execution_tool.py tests/unit/test_entity_resolution.py -q`：`140 passed`。
+- 真实链路复测：
+  - `青岛城市学院新媒体挪到第3位看看`
+    - 修复前：`plan_next_action -> execute_plan_action -> query_volunteer_plan -> query_volunteer_plan`，耗时约 `31.6s`。
+    - 修复后：`plan_next_action -> execute_plan_action`，无重复查询，耗时约 `18.7s`。
+    - 输出文件：`/private/tmp/zhiyuan_303_plan_selection_blocking_direct_return_after.json`。
+  - `广西师大统计挪到第3位看看`
+    - 修复前：`plan_next_action(analyze) -> query_volunteer_plan * 3`，耗时约 `15.9s`。
+    - 修复后：`plan_next_action -> execute_plan_action`，无重复查询，耗时约 `14.4s`。
+    - 输出文件：`/private/tmp/zhiyuan_303_plan_alias_blocking_direct_return_after.json`。
+
+剩余问题：
+
+- 这次只解决“执行层已经给出选择阻断后，模型继续补查”的重复工具问题。
+- 明确移动请求仍需要两次主模型请求（先生成 plan，再执行 tool），因此延迟仍在 14-19s 区间。
+- 后续如果要继续降延迟，应优化 Plan 预览生成链路或高置信 Plan 动作结构化入口，但仍不能绕过 `preview -> confirm -> apply` 和唯一命中校验。
+
+补充修复：
+
+- 真实复测中又出现一种相邻问题：模型先调用 `plan_next_action(stage=analyze)`，该结果已经提示缺少可唯一定位的 `volunteer_id`；随后模型自行构造了一个简化版 `execute_plan_action` payload，只带 `action_family / volunteer_ids / target_position / user_confirmed=false`，没有完整 `stage / atomic_actions`。
+- 旧执行层会把这类简化 payload 判成 `missing_plan_payload`，返回“方案操作信息不完整”。该文案对用户不友好，并且没有被 direct return 规则识别，模型又继续调用 `plan_next_action` 和 `query_volunteer_plan` 补救，导致单轮变成 `6` 次模型请求、`5` 次工具调用，耗时约 `38.6s`。
+- 修复分两层：
+  - `normalize_plan_action_payload` 兼容这类简化动作 payload：当模型显式传入 `user_confirmed=false` 且是高副作用动作时，补成 `stage=preview` 并生成 `atomic_actions`，让执行层走既有的真实志愿唯一匹配、歧义阻断和确认预览逻辑。
+  - 为避免影响确认后的真实执行，该兼容只在 payload 显式包含 `user_confirmed` 时生效；历史 pending 确认注入的标准 `apply` payload 不会被降级。
+  - `ChatAgent` 的 direct return 阻断范围增加 `missing_plan_payload`，并把用户可见文案改成“还没有形成可确认的方案调整内容”，不暴露 payload、stage、volunteerId 等内部概念。
+- 安全边界不变：
+  - 简化 payload 只会进入 preview 或选择阻断，不会绕过确认直接执行。
+  - 唯一命中后只返回 `resolved_apply_payload` 给确认轮使用；真实执行仍要求 pending 确认。
+  - 多个志愿都能匹配同一句简称时，仍返回“没有唯一匹配”，不猜。
+
+新增验证：
+
+- `cd zhiyuan-agent && .venv/bin/python -m pytest tests/unit/test_chat_agent_tools.py::TestChatAgentToolRegistration::test_chat_agent_direct_returns_plan_selection_blocking_error tests/unit/test_chat_agent_tools.py::TestChatAgentToolRegistration::test_chat_agent_direct_returns_incomplete_plan_payload_blocking_error tests/unit/test_chat_agent_tools.py::TestChatAgentToolRegistration::test_chat_agent_does_not_direct_return_normal_plan_preview tests/unit/test_plan_execution_tool.py::test_execute_plan_action_returns_structured_error_when_payload_schema_is_incomplete tests/unit/test_plan_execution_tool.py::test_execute_plan_action_normalizes_simplified_unconfirmed_move_payload_to_preview tests/unit/test_plan_execution_tool.py::test_execute_plan_action_simplified_move_payload_still_blocks_ambiguous_ref_before_confirmation -q`：`6 passed`。
+- `cd zhiyuan-agent && .venv/bin/python -m pytest tests/unit/test_chat_agent_tools.py tests/unit/test_base_agent.py tests/unit/test_plan_execution_tool.py tests/unit/test_entity_resolution.py -q`：`143 passed`。
+
+#### 12.4.11 通用 Tool Reply Policy
+
+用户指出 12.4.10 里按 `tool_name == execute_plan_action` 做直返判断仍然偏局部：如果其他工具也返回“已经足够给用户看的受控阻断”，仍可能出现同样的重复工具调用；反过来，如果模型误把非方案问题打到 `execute_plan_action`，也可能被片面直返掩盖上游路由问题。因此本轮把直返判断从 `ChatAgent` 的 tool name 特判抽成统一策略层。
+
+问题抽象：
+
+- 工具返回后，系统需要统一判断当前结果应如何处理：
+  - `continue_model`：继续交给大模型组织回复。
+  - `direct_reply`：工具结果已经是稳定用户回复，直接结束本轮。
+  - `direct_blocking`：工具已经给出业务阻断，继续试工具只会增加延迟或误导用户。
+  - `preview_wait_confirm`：工具已经形成待确认预览，直接回复并等待用户确认。
+- 默认必须保守：没有明确策略或高确定性结构时继续交给模型，不因为追求速度牺牲回复质量。
+
+落地：
+
+- 新增 `app/agent/tool_reply_policy.py`：
+  - `ToolReplyDecision` 统一描述直返策略、回复文本和原因。
+  - `decide_tool_reply(tool_names, tool_returns, deps)` 作为唯一入口。
+  - 多工具同轮默认不直返，避免吞掉后续工具上下文。
+  - 工具显式返回 `reply_strategy` 时优先执行。
+  - 兼容高确定性结构化兜底：
+    - Intent preview 工具：`preview_wait_confirm`。
+    - `result_kind=error` 且 `reply_focus` 命中 `needs_volunteer_selection / needs_candidate_selection / missing_plan_payload`：`direct_blocking`。
+    - `result_kind=no_change`：`direct_reply`。
+- `ChatAgent.should_return_directly_from_tool` 和 `render_direct_tool_output` 改为只调用 `decide_tool_reply`，不再直接解析 `execute_plan_action` 的细节。
+- `PlanExecutionResult` 增加可选 `reply_strategy` 字段。
+- Plan 执行层对以下高确定性结果显式设置策略：
+  - 当前方案/候选无法唯一定位：`direct_blocking`。
+  - 工具 payload 不完整，无法形成可确认预览：`direct_blocking`。
+  - add 已在方案中或候选条件下没有可加入项：`direct_reply`。
+- 保持不接管的场景：
+  - 正常 `preview_only`，仍交给模型组织更自然的确认说明。
+  - 正常 `mutation_result`，仍交给模型说明执行结果、刷新和复审影响。
+  - `query_state / review_plan / analyze_adjustment / Explore / 专业对比`，仍交给模型保证回复信息量。
+  - 一般系统错误、后端异常，不做直返，避免吞掉可解释的降级建议。
+
+同时修正 12.4.10 真实 smoke 暴露出的确认文案问题：
+
+- 同一轮里 `plan_next_action(stage=preview)` 可能先留下 pending，但后续 `execute_plan_action(result_kind=error)` 已经明确阻断。
+- 旧 `_extract_pending_plan_action` 没有被后续 error 清空，导致服务层又追加“如果你确认要这样做，我再执行”。
+- 修复后，`execute_plan_action result_kind=error` 会清理同一轮同类 pending，避免“没有可执行预览却让用户确认”。
+
+继续补充 12.4.10 中真实 smoke 暴露的另一类边界：
+
+- 模型有时会把明确的移动/删除/替换请求组织成 `stage=analyze`，但这类动作本质上已经是高副作用调整。如果直接按 analyze 返回“当前阶段仅分析或预览”，模型可能继续自行组织成“已生成预览，确认后执行”，造成没有真实定位和没有可复用 apply payload 的假预览。
+- 修复后，`execute_plan_action` 对 `move_unit / remove_units / replace_units / sort_ordered_plan / add_units` 等 mutating action 的 `stage=analyze` 统一改走 `preview` 安全路径：必须先解析当前方案/候选里的真实目标，无法唯一命中就返回受控阻断；只有成功解析后才会形成可确认预览。
+- 该修复不绕过 `preview -> confirm -> apply`，也不把 analyze 直接执行成 apply。
+
+同时补齐用户可见文案边界：
+
+- 直返策略会尊重工具显式 `reply_strategy`，因此工具返回内容必须已经是用户语言。
+- `replace_units` 缺少目标或替换范围时，不再输出 `volunteer_ids / replacement_scope` 这类内部字段，改为提示“还没定位到要替换的志愿”或“还缺少新志愿筛选方向”。
+
+新增验证：
+
+- `cd zhiyuan-agent && .venv/bin/python -m pytest tests/unit/test_tool_reply_policy.py tests/unit/test_chat_agent_tools.py::TestChatAgentToolRegistration::test_chat_agent_uses_tool_reply_policy_for_direct_returns tests/unit/test_chat_agent_tools.py::TestChatAgentToolRegistration::test_chat_agent_direct_returns_plan_selection_blocking_error tests/unit/test_chat_agent_tools.py::TestChatAgentToolRegistration::test_chat_agent_direct_returns_incomplete_plan_payload_blocking_error tests/unit/test_chat_agent_tools.py::TestChatAgentToolRegistration::test_chat_agent_does_not_direct_return_normal_plan_preview -q`：`11 passed`。
+- `cd zhiyuan-agent && .venv/bin/python -m pytest tests/unit/test_chat_agent_tools.py tests/unit/test_base_agent.py tests/unit/test_plan_execution_tool.py tests/unit/test_entity_resolution.py tests/unit/test_chat_service_history_persistence.py::test_extract_pending_plan_action_clears_plan_next_preview_after_execute_error tests/unit/test_chat_service_history_persistence.py::test_plan_preview_confirmation_boundary_does_not_append_after_execute_error_clears_pending tests/unit/test_tool_reply_policy.py -q`：`152 passed`。
+- `cd zhiyuan-agent && .venv/bin/python -m pytest tests/unit/test_tool_reply_policy.py tests/unit/test_chat_agent_tools.py::TestChatAgentToolRegistration::test_chat_agent_uses_tool_reply_policy_for_direct_returns tests/unit/test_chat_agent_tools.py::TestChatAgentToolRegistration::test_chat_agent_direct_returns_plan_selection_blocking_error tests/unit/test_chat_agent_tools.py::TestChatAgentToolRegistration::test_chat_agent_direct_returns_incomplete_plan_payload_blocking_error tests/unit/test_chat_agent_tools.py::TestChatAgentToolRegistration::test_chat_agent_does_not_direct_return_normal_plan_preview tests/unit/test_plan_execution_tool.py::test_execute_plan_action_analyze_move_payload_runs_preview_resolution_before_confirmation tests/unit/test_plan_execution_tool.py::test_execute_plan_action_replace_missing_scope_uses_user_facing_blocking_message tests/unit/test_chat_service_history_persistence.py::test_extract_pending_plan_action_clears_plan_next_preview_after_execute_error tests/unit/test_chat_service_history_persistence.py::test_plan_preview_confirmation_boundary_does_not_append_after_execute_error_clears_pending -q`：`15 passed`。
+- 真实 WebSocket smoke：`session=17 / 青岛城市学院新媒体挪到第3位看看`，修复后链路为 `plan_next_action -> execute_plan_action`，`execute_plan_action` 返回 `result_kind=error / reply_strategy=direct_blocking`，最终回复为“我理解你想移动的是：青岛城市学院新媒体。但我在当前方案里还没有唯一匹配到这条志愿...”，没有重复 `query_volunteer_plan`，没有拼出“确认后执行”的假预览，端到端约 `18.3s`。
+- 非阻断 smoke：`会计审计还行，土木别要` 仍走 `preview_current_major_intent_confirmation` 待确认直返；`看看现在的方案` 仍走 `query_state` 后交给模型组织结构化概览，未被 Tool Reply Policy 截断。

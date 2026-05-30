@@ -128,6 +128,10 @@ def test_build_instructions_includes_plan_orchestration_boundaries():
     assert "不是新的长期偏好或要求" in instructions
     assert "不要调用 Intent 状态工具" in instructions
     assert "不要调用 Intent 状态工具" in instructions
+    assert "公办/民办占比" in instructions
+    assert "不要升级成 `review_plan` 或改方案预览" in instructions
+    assert "如果用户只是问是否存在某类风险" in instructions
+    assert "不要自动规划删除、替换或补偿" in instructions
 
 
 def test_build_instructions_includes_pending_plan_action_confirmation_payload():
@@ -168,7 +172,6 @@ def test_build_instructions_includes_explore_first_direction_fit_guidance():
     assert "`analyze_current_school_interest`" in instructions
     assert "`analyze_current_major_interest`" in instructions
     assert "`analyze_current_region_interest`" in instructions
-    assert "不要为了读取领域说明而增加额外工具轮次" in instructions
     assert "`preview_current_major_intent_confirmation`" in instructions
     assert "`preview_current_school_intent_confirmation`" in instructions
     assert "`preview_current_region_intent_confirmation`" in instructions
@@ -179,7 +182,17 @@ def test_build_instructions_includes_explore_first_direction_fit_guidance():
     assert "用户意向与方向探索不要混在一起" in instructions
     assert "想学网络与新媒体" in instructions
     assert "先走 Intent 确认预览" in instructions
+    assert "两个具体专业/专业类做只读比较" in instructions
+    assert "`compare_major_options`" in instructions
+    assert "`compare_majors` 或 `compare_majors_adhoc`" in instructions
+    assert "`get_major_introductions`" in instructions
+    assert "不要并行或连续多次调用 `get_major_introduction`" in instructions
+    assert "不要先调用 `analyze_current_major_interest`" in instructions
+    assert "不要在同一轮再追加 `get_major_introduction`" in instructions
+    assert "Explore 专用工具已经返回当前方案承接" in instructions
+    assert "不要再补调 `plan_next_action(action_family=\"query_state\")`" in instructions
     assert "直接传结构化参数" in instructions
+    assert "不要在同一轮重复调用同一个 preview 工具" in instructions
     assert "只使用 canonical key" in instructions
     assert "不要说“画像、加入画像、写入画像、更新画像”" in instructions
 
@@ -196,6 +209,6 @@ def test_build_instructions_includes_first_turn_onboarding_guidance():
     instructions = _build_instructions(ctx)
 
     assert "这是用户进入当前会话后的起手阶段" in instructions
-    assert "结合当前会话状态、已有报考参考信息和 planning 状态" in instructions
+    assert "结合当前会话状态、已有报考参考信息、planning 状态和你准备调用的 skill" in instructions
     assert "对话框适合直接提问、工作台适合查看方案和候选" in instructions
     assert "不要固定成同一套例子" in instructions

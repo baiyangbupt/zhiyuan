@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.tools.major_info_tool import _get_analysis_summary, get_major_introduction
+from app.tools.major_info_tool import _get_analysis_summary, get_major_introduction, get_major_introductions
 
 
 def _ctx(session_id: str = "23", batch: str = "01"):
@@ -116,6 +116,80 @@ async def test_get_major_introduction_level2_uses_category_profile_and_fallback_
     assert "计算机类的就业方向：软件开发、测试、运维、数据方向" in result
     assert "当前方案里暂时没有命中“计算机类”相关志愿。" in result
     assert "当前候选里还有 3 个相关机会" in result
+
+
+@pytest.mark.asyncio
+async def test_get_major_introductions_returns_multi_major_facts_and_reuses_plan_load():
+    ordered_result = {
+        "code": 0,
+        "data": {
+            "items": [
+                {
+                    "schoolName": "北京建筑大学(01)",
+                    "majorName": "建筑学",
+                    "majorId": "664",
+                    "tier": "稳",
+                    "admissionRatio": 58,
+                },
+                {
+                    "schoolName": "山东建筑大学(02)",
+                    "majorName": "城乡规划",
+                    "majorId": "666",
+                    "tier": "保",
+                    "admissionRatio": 72,
+                },
+            ]
+        },
+    }
+    candidate_result = {
+        "code": 0,
+        "data": {
+            "total": 2,
+            "items": [
+                {
+                    "schoolName": "河北工程大学(01)",
+                    "majorName": "建筑学",
+                    "majorId": "664",
+                    "tier": "稳",
+                    "admissionRatio": 61,
+                }
+            ],
+        },
+    }
+
+    async def fake_profile(name: str):
+        return {
+            "trainDemand": f"{name}培养目标",
+            "knowledge": f"{name}知识体系",
+            "course": f"{name}课程体系",
+            "jobOrientation": f"{name}就业方向",
+        }
+
+    with (
+        patch("app.tools.major_info_tool.get_major_profile", new=AsyncMock(side_effect=fake_profile)) as profile_mock,
+        patch("app.tools.major_info_tool.get_planning_ordered_plan", new=AsyncMock(return_value=ordered_result)) as ordered_mock,
+        patch("app.tools.major_info_tool.get_planning_draft", new=AsyncMock(return_value={"code": 0, "data": {"items": []}})) as draft_mock,
+        patch("app.tools.major_info_tool.query_planning_candidate_pool", new=AsyncMock(return_value=candidate_result)) as candidate_mock,
+    ):
+        result = await get_major_introductions(_ctx(), ["建筑学", "城乡规划"])
+
+    assert profile_mock.await_count == 2
+    ordered_mock.assert_awaited_once()
+    draft_mock.assert_not_awaited()
+    assert candidate_mock.await_count == 2
+    assert "多专业介绍对照：建筑学、城乡规划" in result
+    assert "建筑学：培养目标：建筑学培养目标" in result
+    assert "城乡规划：培养目标：城乡规划培养目标" in result
+    assert "当前排序方案中命中 1 个相关志愿" in result
+    assert "当前候选里还有 2 个相关机会" in result
+    assert "录取门槛" in result
+    assert "高校官方培养方案" in result
+
+
+@pytest.mark.asyncio
+async def test_get_major_introductions_requires_at_least_two_majors():
+    result = await get_major_introductions(_ctx(), ["建筑学"])
+    assert result == "至少需要两个明确专业，才能做专业介绍和基础要求的横向对照。"
 
 
 @pytest.mark.asyncio

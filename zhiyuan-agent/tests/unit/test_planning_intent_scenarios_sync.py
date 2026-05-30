@@ -150,8 +150,6 @@ def test_intent_scenario_confirmed_preference_returns_text_without_candidate_req
     latent_mock.assert_not_awaited()
     assert resp.applied is True
     assert "记下来了" in resp.message
-    assert "本次确认内容" in resp.message
-    assert "排除地域：上海" in resp.message
     assert "现在这份方案" in resp.message
 
 
@@ -192,7 +190,6 @@ def test_intent_scenario_confirmed_career_negative_preference_removes_latent_pro
 
     assert resp.applied is True
     assert "记下来了" in resp.message
-    assert "排除发展方向：体制内/考公导向" in resp.message
     query_mock.assert_not_awaited()
     state_mock.assert_awaited_once()
     latent_mock.assert_awaited_once_with(
@@ -227,8 +224,6 @@ def test_intent_scenario_confirmed_constraint_returns_candidate_text():
 
     assert resp.filteredTotal == 64
     assert resp.baseTotal == 3200
-    assert "本次确认内容" in resp.message
-    assert "排除地域：北京" in resp.message
 
 
 def test_intent_scenario_interest_followup_candidate_query_with_city_preference_returns_text():

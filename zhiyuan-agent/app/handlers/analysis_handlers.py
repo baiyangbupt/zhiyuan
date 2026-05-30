@@ -38,17 +38,10 @@ _DEFAULT_TENANT_ID = 1
 
 def _normalize_review_summary_for_user(summary: str) -> str:
     normalized = str(summary or "").strip()
-    normalized = normalized.strip(" 。；;")
     if "部分专业组主要依靠非意向专业托底" in normalized:
         return "部分专业组主要依靠非意向托底专业作为组内安全垫"
     if "存在专业组缺少组内安全垫专业" in normalized:
         return "部分专业组缺少组内安全垫专业"
-    return normalized
-
-
-def _normalize_sentence_for_bullet(text: str) -> str:
-    normalized = str(text or "").strip()
-    normalized = normalized.strip(" 。；;")
     return normalized
 
 
@@ -129,21 +122,13 @@ def _build_review_summary(facts: dict[str, Any]) -> tuple[str, list[str], list[s
     compensation_count = int(facts.get("compensation_action_count") or 0)
     compensation_text = _compact_list_text(facts.get("compensation_summaries"))
 
-    lines = [
-        "**审查结论**",
-        "",
-        f"- 已完成方案审查：风险 {risk_count} 项，提醒 {warn_count} 项。",
-    ]
+    parts = [f"已完成方案审查，风险 {risk_count} 项，提醒 {warn_count} 项"]
     if problems_text:
-        lines.append(f"- 主要问题：{problems_text}。")
-    elif risk_count == 0 and warn_count == 0:
-        lines.append("- 当前暂无明显风险或提醒。")
+        parts.append(f"主要问题是 {problems_text}")
     if issue_examples_text:
-        lines.append(f"- 典型涉及：{issue_examples_text}。")
+        parts.append(f"典型涉及 {issue_examples_text}")
     if compensation_count > 0 and compensation_text:
-        lines.append(f"- 可补齐动作：当前还有 {compensation_count} 项，主要是 {compensation_text}。")
-    if risk_count > 0 or warn_count > 0:
-        lines.append("- 建议先查看方案区里的审查详情，再决定是否补齐、替换或调整顺序。")
+        parts.append(f"当前还有 {compensation_count} 项可补偿动作，主要是 {compensation_text}")
 
     reply_focus = ["review_result", "risk_warning"]
     if problems_text:
@@ -158,7 +143,7 @@ def _build_review_summary(facts: dict[str, Any]) -> tuple[str, list[str], list[s
         next_step_hints.append("如果用户想继续处理，可以先看看怎么补，再决定是否应用。")
     if risk_count == 0 and warn_count == 0:
         next_step_hints.append("如果用户只是确认当前是否稳定，可以明确说明目前没有明显风险或提醒。")
-    return "\n".join(lines), reply_focus, next_step_hints
+    return "；".join(parts) + "。", reply_focus, next_step_hints
 
 
 def _build_adjustment_summary(facts: dict[str, Any]) -> tuple[str, list[str], list[str]]:
@@ -172,20 +157,20 @@ def _build_adjustment_summary(facts: dict[str, Any]) -> tuple[str, list[str], li
         if isinstance(item, dict) and str(item.get("summary") or "").strip()
     ]
     example_summaries = [
-        _normalize_sentence_for_bullet(item.get("description") or item.get("title") or "")
+        str(item.get("description") or item.get("title") or "").strip()
         for item in (facts.get("example_suggestions") or [])
-        if isinstance(item, dict) and _normalize_sentence_for_bullet(item.get("description") or item.get("title") or "")
+        if isinstance(item, dict) and str(item.get("description") or item.get("title") or "").strip()
     ]
     review_issue_hit_plan_examples_text = _issue_hit_plan_examples_text(
         facts.get("review_issue_hit_plan_examples")
     )
     first_step_hint = _adjustment_first_step_hint(facts)
 
-    lines: list[str] = ["**调整分析**"]
+    parts: list[str] = []
     if summary_text:
-        lines.append(f"- 主要判断：{summary_text}")
+        parts.append(summary_text)
     elif rule_summaries:
-        lines.append(f"- 主要判断：{'；'.join(rule_summaries[:2])}")
+        parts.append("；".join(rule_summaries[:2]))
 
     if has_actionable_suggestions:
         counts_text = (
@@ -194,7 +179,7 @@ def _build_adjustment_summary(facts: dict[str, Any]) -> tuple[str, list[str], li
             f"替换 {int(actionable_counts.get('replace') or 0)} 条，"
             f"移除 {int(actionable_counts.get('remove') or 0)} 条"
         )
-        lines.append(f"- 可执行建议：{counts_text}。")
+        parts.append(f"当前可执行建议概览：{counts_text}")
     else:
         counts_text = (
             f"补充建议 {int(suggestion_counts.get('add') or 0)} 条，"
@@ -202,14 +187,13 @@ def _build_adjustment_summary(facts: dict[str, Any]) -> tuple[str, list[str], li
             f"替换建议 {int(suggestion_counts.get('replace') or 0)} 条，"
             f"移除建议 {int(suggestion_counts.get('remove') or 0)} 条"
         )
-        lines.append(f"- 当前边界：现在拿到的是分析结论，还不是可直接执行的调整清单。")
-        lines.append(f"- 建议数量：{counts_text}。")
+        parts.append(f"当前先拿到的是分析结论，不是可直接执行的调整清单：{counts_text}")
     if example_summaries:
-        lines.append(f"- 优先关注：{'；'.join(example_summaries[:2])}。")
+        parts.append(f"可以优先关注：{'；'.join(example_summaries[:2])}")
     if not example_summaries and review_issue_hit_plan_examples_text:
-        lines.append(f"- 可先查看：{review_issue_hit_plan_examples_text}。")
+        parts.append(f"如果先从减法入手，可优先查看：{review_issue_hit_plan_examples_text}")
     if not has_actionable_suggestions and first_step_hint:
-        lines.append(f"- 下一步抓手：{first_step_hint}")
+        parts.append(first_step_hint)
 
     reply_focus = ["adjustment_analysis", "suggestion_counts"]
     if summary_text or rule_summaries:
@@ -232,7 +216,7 @@ def _build_adjustment_summary(facts: dict[str, Any]) -> tuple[str, list[str], li
             next_step_hints.append(
                 "优先把用户引到当前系统已经能稳定执行的第一步动作，不要口头承诺整套更稳方案已经可直接执行。"
             )
-    return "\n".join(lines), reply_focus, next_step_hints
+    return "；".join(parts) + "。", reply_focus, next_step_hints
 
 
 # ---------------------------------------------------------------------------
@@ -300,11 +284,11 @@ async def handle_analyze_adjustment(
     state_summary, reply_focus, next_step_hints = _build_adjustment_summary(facts)
 
     return PlanExecutionResult(
-        applied=False,
+        applied=True,
         action_family="analyze_adjustment",
         stage=plan.stage,
         result_kind="adjustment_analysis",
-        workspace_refresh_targets=[],
+        workspace_refresh_targets=["ordered", "review"],
         context_summary=plan.context_summary,
         state_summary=state_summary,
         summary=state_summary,

@@ -12,7 +12,6 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from app.schemas.user_profile import UserProfile
-from app.tools.explore_direction_tool import preview_direction_comparison_from_request
 from app.tools import intent_preview_tool as intent_preview_tool_module
 from app.tools.intent_preview_tool import (
     analyze_current_career_direction,
@@ -229,7 +228,10 @@ def test_dialog_scenario_career_interest_preview_routes_to_direction_analysis_pa
     with patch(
         "app.tools.intent_preview_tool._preview_direction_analysis_from_request",
         new=AsyncMock(return_value="方向分析"),
-    ) as mock_preview:
+    ) as mock_preview, patch(
+        "app.tools.intent_preview_tool._resolve_career_direction_slots",
+        new=AsyncMock(return_value=["system_public_service"]),
+    ) as resolve_mock:
         resp = _run(
             preview_interest_analysis_from_request(
                 request_context,
@@ -237,6 +239,7 @@ def test_dialog_scenario_career_interest_preview_routes_to_direction_analysis_pa
             )
         )
 
+    resolve_mock.assert_awaited_once_with(request_context)
     mock_preview.assert_awaited_once_with(request_context, "system_public_service")
     assert resp == "方向分析"
 
@@ -333,85 +336,6 @@ def test_dialog_scenario_career_compare_explore_keeps_comparison_not_plan_listin
     assert "下一步" in resp
 
 
-def test_career_direction_comparison_reply_answers_current_plan_fit_first():
-    request_context = SimpleNamespace(
-        sessionid="305b",
-        batch="01",
-        chat_history=[{"role": "user", "content": "当前方案对体制内稳定就业方向承接得怎么样，先不要改方案"}],
-        score_detail=None,
-        init_profile=None,
-        allow_explore_inner_llm=False,
-    )
-    planning_state = {
-        "orderedPlanState": {
-            "items": [
-                {
-                    "volunteerId": "v1",
-                    "schoolName": "北京政法学院",
-                    "majorName": "法学",
-                    "majorCategory": "法学类",
-                    "schoolCategory": "政法",
-                    "schoolNature": "公办",
-                    "tier": "稳",
-                    "provinceName": "北京",
-                },
-                {
-                    "volunteerId": "v2",
-                    "schoolName": "天津师范大学",
-                    "majorName": "汉语言文学",
-                    "majorCategory": "中国语言文学类",
-                    "schoolCategory": "师范",
-                    "schoolNature": "公办",
-                    "tier": "稳",
-                    "provinceName": "天津",
-                },
-                {
-                    "volunteerId": "v3",
-                    "schoolName": "某理工学院",
-                    "majorName": "机械设计制造及其自动化",
-                    "majorCategory": "机械类",
-                    "tier": "冲",
-                    "provinceName": "河北",
-                },
-            ]
-        },
-        "candidatePoolState": {
-            "items": [
-                {
-                    "volunteerId": "c1",
-                    "schoolName": "河北师范大学",
-                    "majorName": "教育学",
-                    "majorCategory": "教育学类",
-                    "schoolCategory": "师范",
-                    "schoolNature": "公办",
-                    "tier": "稳",
-                    "provinceName": "河北",
-                }
-            ]
-        },
-    }
-
-    with patch("app.tools.explore_direction_tool.get_planning_state", AsyncMock(return_value={"data": planning_state})):
-        resp = _run(
-            preview_direction_comparison_from_request(
-                request_context,
-                ["system_public_service", "stable_employment"],
-            )
-        )
-
-    assert "当前方案对" in resp
-    assert "整体承接" in resp
-    assert "方案内大约有" in resp
-    assert "北京政法学院-法学" in resp
-    assert "候选里和" in resp
-    assert resp.count("当前方案对") == 1
-    assert "我先帮你做了一个方向对比分析" not in resp
-    assert "**方案承接**" in resp
-    assert "**候选机会**" in resp
-    assert "**当前判断**" not in resp
-    assert "  初步判断：" not in resp
-
-
 def test_dialog_scenario_career_explore_can_naturally_offer_professional_assessment_hint():
     request_context = SimpleNamespace(
         sessionid="305c",
@@ -421,14 +345,20 @@ def test_dialog_scenario_career_explore_can_naturally_offer_professional_assessm
         init_profile=None,
         planning_summary=None,
     )
-    with patch(
-        "app.tools.intent_preview_tool._preview_direction_analysis_from_request",
-        new=AsyncMock(
-            return_value=(
-                "分析结论\n- 我先帮你看一眼体制内这条路和你现在的情况。\n\n"
-                "当前判断\n- 这一步更适合先看你本人是否值得重点了解，再看当前方案有没有承接。\n\n"
-                "下一步\n- 如果你想把这件事看得更细一点，也可以后面结合 MBTI 和霍兰德职业兴趣测评再继续收一层。"
-            )
+    with (
+        patch(
+            "app.tools.intent_preview_tool._preview_direction_comparison_from_request",
+            new=AsyncMock(
+                return_value=(
+                    "分析结论\n- 我先帮你看一眼体制内和读研这两条路。\n\n"
+                    "当前判断\n- 这一步更适合先看你本人是否值得重点了解，再看当前方案有没有承接。\n\n"
+                    "下一步\n- 如果你想把这件事看得更细一点，也可以后面结合 MBTI 和霍兰德职业兴趣测评再继续收一层。"
+                )
+            ),
+        ),
+        patch(
+            "app.tools.intent_preview_tool._resolve_career_direction_slots",
+            new=AsyncMock(return_value=["system_public_service", "further_study"]),
         ),
     ):
         resp = _run(

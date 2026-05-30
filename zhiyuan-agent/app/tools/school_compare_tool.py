@@ -37,6 +37,10 @@ def _get_llm_client() -> LLMClient:
     return _llm_client
 
 
+def _allow_explore_inner_llm(request_context: RequestContext) -> bool:
+    return bool(getattr(request_context, "allow_explore_inner_llm", True))
+
+
 async def compare_schools(
     ctx: RunContext[RequestContext],
     school_name1: str,
@@ -105,8 +109,15 @@ async def compare_schools(
         logger.info("学校1权重数据: %s", weights1)
         logger.info("学校2权重数据: %s", weights2)
 
-        return await _summarize_comparison(
-            school_name1, school_name2, weights1, weights2
+        if _allow_explore_inner_llm(ctx.deps):
+            return await _summarize_comparison(
+                school_name1, school_name2, weights1, weights2
+            )
+        return _render_school_comparison_facts(
+            school_name1,
+            school_name2,
+            weights1,
+            weights2,
         )
 
     except Exception:
@@ -146,6 +157,130 @@ async def _resolve_school_name(
         model_settings={"temperature": 0},
     )
     return result.output.strip()
+
+
+def _first_weight_item(weights: dict) -> dict:
+    querylist = (weights or {}).get("querylist", [])
+    return querylist[0] if querylist else {}
+
+
+def _numeric_weight(value) -> float | None:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if numeric <= 0:
+        return None
+    return numeric
+
+
+def _format_metric_value(value) -> str:
+    numeric = _numeric_weight(value)
+    if numeric is None:
+        return "暂无"
+    return f"{numeric:.1f}".rstrip("0").rstrip(".")
+
+
+def _metric_compare_line(
+    label: str,
+    school_name1: str,
+    school_name2: str,
+    value1,
+    value2,
+    explanation: str,
+) -> str:
+    numeric1 = _numeric_weight(value1)
+    numeric2 = _numeric_weight(value2)
+    display = f"{school_name1} {_format_metric_value(value1)} / {school_name2} {_format_metric_value(value2)}"
+    if numeric1 is None or numeric2 is None:
+        return f"{label}：{display}。当前至少有一方缺少有效量化数据，适合只作定性参考。"
+    if abs(numeric1 - numeric2) < 1e-6:
+        return f"{label}：{display}。两者差异不明显，{explanation}"
+    stronger = school_name1 if numeric1 > numeric2 else school_name2
+    return f"{label}：{display}。相对看，{stronger}在这个维度更占优，{explanation}"
+
+
+def _score_compare_line(school_name1: str, school_name2: str, score1, score2) -> str:
+    numeric1 = _numeric_weight(score1)
+    numeric2 = _numeric_weight(score2)
+    display = f"{school_name1} {_format_metric_value(score1)} / {school_name2} {_format_metric_value(score2)}"
+    if numeric1 is None or numeric2 is None:
+        return f"综合评分：{display}。当前缺少完整个性化量化评分，不能只按分数判断哪所院校一定更适合。"
+    if abs(numeric1 - numeric2) < 1e-6:
+        return f"综合评分：{display}。两者综合差异不明显，建议继续看城市、专业承接、录取概率和学费成本。"
+    stronger = school_name1 if numeric1 > numeric2 else school_name2
+    return f"综合评分：{display}。按当前量化结果，{stronger}整体更占优，但仍要结合具体专业、录取概率和地域接受度。"
+
+
+def _has_personalized_weight(q1: dict, q2: dict) -> bool:
+    metric_keys = (
+        "province_gdp",
+        "city_level",
+        "upgrade_ratio",
+        "postgraduate_recommend_ratio",
+        "level_score",
+        "college_score",
+        "college_score_new",
+    )
+    return any(_numeric_weight(q1.get(key)) is not None for key in metric_keys) or any(
+        _numeric_weight(q2.get(key)) is not None for key in metric_keys
+    )
+
+
+def _render_school_comparison_facts(
+    school_name1: str,
+    school_name2: str,
+    weights1: dict,
+    weights2: dict,
+) -> str:
+    weights1 = weights1 or {}
+    weights2 = weights2 or {}
+    q1 = _first_weight_item(weights1)
+    q2 = _first_weight_item(weights2)
+    has_weight = _has_personalized_weight(q1, q2)
+
+    lines: list[str] = [
+        f"院校对比：{school_name1} vs {school_name2}",
+    ]
+    if has_weight:
+        lines.append("当前有可参考的个性化量化指标，下面按城市资源、升学通道、院校层次和综合评分做对照。")
+    else:
+        lines.append("当前缺少完整个性化量化评分，所以先给出可用于判断的院校维度和指标空缺说明；最终建议需要结合专业、录取概率、地域和费用再判断。")
+
+    lines.extend(
+        [
+            "",
+            "关键指标：",
+            f"- {_metric_compare_line('省份经济资源', school_name1, school_name2, q1.get('province_gdp'), q2.get('province_gdp'), '它反映所在省份的就业和实习资源基础。')}",
+            f"- {_metric_compare_line('城市等级', school_name1, school_name2, q1.get('city_level'), q2.get('city_level'), '它更适合用来观察城市平台和实习机会。')}",
+            f"- {_metric_compare_line('考研率', school_name1, school_name2, q1.get('upgrade_ratio'), q2.get('upgrade_ratio'), '它反映继续升学氛围，但不能替代具体专业实力。')}",
+            f"- {_metric_compare_line('保研率', school_name1, school_name2, q1.get('postgraduate_recommend_ratio'), q2.get('postgraduate_recommend_ratio'), '它更适合用来观察校内升学通道。')}",
+            f"- {_metric_compare_line('院校等级', school_name1, school_name2, q1.get('level_score'), q2.get('level_score'), '它反映学校整体层次和社会认可度。')}",
+            f"- {_score_compare_line(school_name1, school_name2, q1.get('college_score_new') or q1.get('college_score'), q2.get('college_score_new') or q2.get('college_score'))}",
+            "",
+            "判断建议：",
+            "- 院校对比不要只看学校名，要同时看所在城市、专业是否承接你的目标、录取概率和费用压力。",
+        ]
+    )
+
+    remark1 = str(q1.get("college_remark") or "").strip()
+    remark2 = str(q2.get("college_remark") or "").strip()
+    if remark1:
+        lines.append(f"- {school_name1}在当前个性化模型里被标记为：{remark1}。")
+    if remark2:
+        lines.append(f"- {school_name2}在当前个性化模型里被标记为：{remark2}。")
+    if not remark1 and not remark2:
+        lines.append("- 当前没有额外个性化备注，建议把院校层次、专业质量、地域接受度和录取安全一起纳入判断。")
+
+    lines.extend(
+        [
+            "",
+            "[数据来源]",
+            "- 数据源：国家统计局GDP数据、教育部学科评估、高校官方升学数据",
+            "- 计算方法：熵权法(Entropy Weight Method)多维指标综合评分",
+        ]
+    )
+    return "\n".join(lines)
 
 
 async def _summarize_comparison(
@@ -293,8 +428,15 @@ async def compare_schools_adhoc(
         logger.info("adhoc 学校1权重数据: %s", weights1)
         logger.info("adhoc 学校2权重数据: %s", weights2)
 
-        return await _summarize_comparison(
-            school_name1, school_name2, weights1, weights2
+        if _allow_explore_inner_llm(ctx.deps):
+            return await _summarize_comparison(
+                school_name1, school_name2, weights1, weights2
+            )
+        return _render_school_comparison_facts(
+            school_name1,
+            school_name2,
+            weights1,
+            weights2,
         )
 
     except ValueError as e:

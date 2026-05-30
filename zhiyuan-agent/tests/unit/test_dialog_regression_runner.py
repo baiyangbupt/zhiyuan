@@ -206,6 +206,78 @@ def test_run_cases_supports_per_case_history_clear(monkeypatch, tmp_path):
     assert rows == []
 
 
+def test_run_cases_keeps_observability_when_request_fails(monkeypatch, tmp_path):
+    db_path = tmp_path / "history.db"
+    metrics_path = tmp_path / "metrics.json"
+    prompt = "医学护理这些别碰，财会还能接受，先看看影响"
+    history = [
+        {"parts": [{"part_kind": "user-prompt", "content": prompt}]},
+        {
+            "model_name": "route-observability",
+            "parts": [
+                {
+                    "part_kind": "text",
+                    "content": json.dumps(
+                        {
+                            "type": "routeObservability",
+                            "event": "conversation_turn_event",
+                            "routingPath": "full_agent",
+                            "routeDecision": {
+                                "fallbackReason": "agent_run_interrupted",
+                                "agentRun": {
+                                    "failedNode": "ModelRequestNode",
+                                    "failedNodeElapsedMs": 180000,
+                                },
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                }
+            ],
+        },
+    ]
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE chat_session_history (
+                session_id TEXT PRIMARY KEY,
+                history_json TEXT NOT NULL,
+                schema_version INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO chat_session_history(session_id, history_json, created_at, updated_at) VALUES (?, ?, ?, ?)",
+            ("17", json.dumps(history, ensure_ascii=False), "now", "now"),
+        )
+        conn.commit()
+
+    async def fake_ask_once(*args, **kwargs):
+        raise TimeoutError("client timed out")
+
+    monkeypatch.setattr(runner, "_ask_once", fake_ask_once)
+
+    try:
+        asyncio.run(
+            runner._run_cases(
+                "ws://test",
+                "user",
+                [{"name": "case-a", "sessionId": "17", "prompts": [{"prompt": prompt}]}],
+                history_db=str(db_path),
+                metrics_output=str(metrics_path),
+            )
+        )
+    except SystemExit as exc:
+        assert exc.code == 1
+
+    payload = json.loads(metrics_path.read_text(encoding="utf-8"))
+    observability = payload["records"][0]["turnObservability"]
+    assert observability["routingPath"] == "full_agent"
+    assert observability["routeDecision"]["agentRun"]["failedNode"] == "ModelRequestNode"
+
+
 def test_latest_turn_messages_returns_latest_matching_prompt():
     history = [
         {"parts": [{"part_kind": "user-prompt", "content": "看看方案"}]},
@@ -518,6 +590,52 @@ def test_content_assertions_report_missing_thinking_message():
     )
 
     assert any("assertThinkingContains FAILED" in item for item in violations)
+
+
+def test_tool_assertions_can_require_exact_tool_sequence():
+    violations = runner._check_tool_assertions(
+        {
+            "toolCalls": [
+                {"name": "compare_major_options"},
+            ]
+        },
+        {
+            "prompt": "财管会计审计怎么排",
+            "expectedToolNames": ["compare_major_options"],
+            "expectedToolCounts": {"compare_major_options": 1},
+            "assertToolNamesNotContain": ["compare_majors"],
+            "assertNoRepeatedToolNames": True,
+        },
+        "case-tools",
+        "880640",
+    )
+
+    assert violations == []
+
+
+def test_tool_assertions_report_repeated_or_forbidden_tools():
+    violations = runner._check_tool_assertions(
+        {
+            "toolCalls": [
+                {"name": "get_major_introduction"},
+                {"name": "get_major_introduction"},
+            ]
+        },
+        {
+            "prompt": "建筑城乡规划要不要美术基础",
+            "expectedToolNames": ["get_major_introductions"],
+            "assertToolNamesNotContain": ["get_major_introduction"],
+            "maxToolCallCount": 1,
+            "assertNoRepeatedToolNames": True,
+        },
+        "case-tools",
+        "880636",
+    )
+
+    assert any("expectedToolNames FAILED" in item for item in violations)
+    assert any("assertToolNamesNotContain FAILED" in item for item in violations)
+    assert any("maxToolCallCount FAILED" in item for item in violations)
+    assert any("assertNoRepeatedToolNames FAILED" in item for item in violations)
 
 
 def test_case_metrics_can_store_response_text_when_enabled():

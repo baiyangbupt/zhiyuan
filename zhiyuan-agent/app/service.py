@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import re
@@ -22,27 +23,10 @@ from app.agent.context import (
 )
 from app.models.conversation_phase import ConversationPhase, PendingConfirmation
 from app.agent.usage_tracker import UsageTracker
-from app.config import HistoryConfig, SemanticRouterConfig
+from app.config import HistoryConfig
 from app.data.history_store import ChatHistoryStore
 from app.data.message_utils import pydantic_ai_messages_to_dicts
-from app.domain.career_slots import to_career_label
 from app.llm.client import LLMClient
-from app.resolver.action_resolver_shadow import action_resolver_shadow_from_plan_fast_decision
-from app.resolver.career_direction_fast_router import resolve_career_direction_fast_route
-from app.resolver.fast_route_arbitrator import arbitrate_fast_route_candidates
-from app.resolver.fixed_scenario_route_resolver import resolve_fixed_scenario_routes
-from app.resolver.major_compare_fast_router import resolve_major_compare_fast_route
-from app.resolver.major_compare_reply_renderer import (
-    is_missing_weight_major_compare_result,
-    render_multi_major_compare_reply,
-    render_missing_weight_major_compare_reply,
-)
-from app.resolver.major_intent_fast_router import resolve_major_intent_fast_route
-from app.resolver.plan_fast_router import resolve_plan_fast_route
-from app.resolver.plan_query_fast_router import resolve_plan_query_fast_route
-from app.resolver.region_safety_tradeoff_renderer import render_region_safety_tradeoff_reply
-from app.resolver.semantic_intent_router import SemanticIntentRouter
-from app.schemas.tool_inputs import MajorIntentPreviewInput
 from app.schemas.user_profile import UserProfile
 from app.schemas.ws import WSResponse
 from app.sync.state_sync import PlanningStateSync
@@ -53,28 +37,16 @@ from app.tools.plan_execution_tool import (
     execute_plan_action,
 )
 from app.tools.plan_orchestration_models import normalize_plan_action_payload
-from app.tools.plan_orchestration_tool import _plan_next_action_model
 from app.tools.intent_state_tool import (
     apply_selected_intents as _apply_selected_intents,
     update_volunteer_intent_state,
 )
-from app.tools.intent_preview_tool import analyze_current_career_direction
-from app.tools.intent_preview_tool import preview_current_major_intent_confirmation
-from app.tools.intent_relation_tool import (
-    build_impact_preview_from_analysis as _build_impact_preview_from_analysis,
-    build_plan_relation_analysis as _build_plan_relation_analysis,
-    enrich_plan_relation_analysis_from_state as _enrich_plan_relation_analysis_from_state,
-)
-from app.tools.major_compare_tool import compare_majors
-from app.tools.plan_query_tool import query_volunteer_plan
 from app.tools.intent_response_tool import (
-    format_intent_impact_markdown,
     parse_explore_followup_result,
     parse_intent_state_update_result,
     render_explore_followup_result,
     render_intent_state_update,
 )
-from app.util.display_text import clean_plan_sample_text
 from app.util.internal_client import (
     get_intent_change_cache,
     get_planning_workspace_state,
@@ -157,7 +129,6 @@ _PLAN_MUTATION_PROMPT_KEYWORDS = (
     "补几个",
 )
 _UNBACKED_CONFIRM_SENTENCE_RE = re.compile(r"确认要我.*执行")
-_SEMANTIC_ROUTER_SHADOW_MODEL_NAME = "semantic-router-shadow"
 _ROUTE_OBSERVABILITY_MODEL_NAME = "route-observability"
 
 
@@ -182,33 +153,6 @@ def _log_conversation_turn_event(**fields: Any) -> None:
     log_event("conversation_turn_event", **fields)
 
 
-def _attach_semantic_router_shadow(route_decision: dict[str, Any], shadow: Any | None) -> dict[str, Any]:
-    if shadow is None:
-        return route_decision
-    try:
-        payload = shadow.event_payload()
-    except Exception:
-        return route_decision
-    route_decision["semanticRouterShadow"] = payload
-    return route_decision
-
-
-def _semantic_router_shadow_message(shadow: Any | None) -> ModelResponse | None:
-    if shadow is None or getattr(shadow, "status", "") == "disabled":
-        return None
-    try:
-        content = json.dumps(
-            {
-                "type": "semanticRouterShadow",
-                "semanticRouterShadow": shadow.event_payload(),
-            },
-            ensure_ascii=False,
-        )
-    except Exception:
-        return None
-    return ModelResponse(parts=[TextPart(content=content)], model_name=_SEMANTIC_ROUTER_SHADOW_MODEL_NAME)
-
-
 def _route_observability_message(turn_event: dict[str, Any] | None) -> ModelResponse | None:
     if not turn_event:
         return None
@@ -226,27 +170,19 @@ def _route_observability_message(turn_event: dict[str, Any] | None) -> ModelResp
     return ModelResponse(parts=[TextPart(content=content)], model_name=_ROUTE_OBSERVABILITY_MODEL_NAME)
 
 
-def _append_semantic_router_shadow_message(messages: list[Any], shadow: Any | None) -> list[Any]:
-    shadow_message = _semantic_router_shadow_message(shadow)
-    if shadow_message is None:
+def _append_route_observability_message(messages: list[Any], turn_event: dict[str, Any] | None) -> list[Any]:
+    observability_message = _route_observability_message(turn_event)
+    if observability_message is None:
         return messages
-    return [*messages, shadow_message]
-
-
-def _is_semantic_router_shadow_message(message: Any) -> bool:
-    if not isinstance(message, ModelResponse):
-        return False
-    if str(getattr(message, "model_name", "") or "") == _SEMANTIC_ROUTER_SHADOW_MODEL_NAME:
-        return True
-    for part in getattr(message, "parts", []) or []:
-        if isinstance(part, TextPart):
-            try:
-                data = json.loads(part.content)
-            except Exception:
-                continue
-            if isinstance(data, dict) and data.get("type") == "semanticRouterShadow":
-                return True
-    return False
+    result = list(messages)
+    for index in range(len(result) - 1, -1, -1):
+        message = result[index]
+        if not isinstance(message, ModelResponse) or _is_route_observability_message(message):
+            continue
+        if any(isinstance(part, TextPart) for part in getattr(message, "parts", []) or []):
+            result.insert(index, observability_message)
+            return result
+    return [*result, observability_message]
 
 
 def _is_route_observability_message(message: Any) -> bool:
@@ -263,50 +199,6 @@ def _is_route_observability_message(message: Any) -> bool:
             if isinstance(data, dict) and data.get("type") == "routeObservability":
                 return True
     return False
-
-
-def _semantic_router_scheduled_result() -> Any:
-    from app.models.semantic_router import SemanticRouterShadowResult
-
-    return SemanticRouterShadowResult(enabled=True, status="scheduled")
-
-
-async def _safe_emit_progress(on_progress: ProgressCallback | None, hint: str) -> None:
-    if not on_progress or not hint:
-        return
-    try:
-        await on_progress(hint)
-    except Exception:
-        logger.debug("on_progress callback failed: hint=%s", hint, exc_info=True)
-
-
-def _plan_fast_route_execute_progress_hint(action_family: str | None, stage: str | None) -> str:
-    family = str(action_family or "").strip()
-    normalized_stage = str(stage or "").strip()
-    if family == "query_state":
-        return "正在整理当前方案的数量、梯度和风险..."
-    mutation_families = {
-        "sort_ordered_plan",
-        "move_unit",
-        "move_ordered_unit",
-        "remove_units",
-        "remove_ordered_unit",
-        "add_units",
-        "replace_units",
-    }
-    if family in mutation_families:
-        if normalized_stage == "preview":
-            return "正在生成这次调整的影响预览..."
-        if normalized_stage == "apply":
-            return "正在按你的确认更新方案..."
-        return "正在确认当前方案是否可以调整..."
-    if family in {"run_review", "review_plan"}:
-        return "正在检查当前方案的风险点..."
-    if family in {"generate_plan", "regenerate_order", "apply_compensation"}:
-        if normalized_stage == "preview":
-            return "正在整理这次方案调整的确认信息..."
-        return "正在生成并整理方案结果..."
-    return "正在整理方案结果..."
 
 
 def _llm_config_value(llm_client: LLMClient, field_name: str) -> str | None:
@@ -454,47 +346,6 @@ def _compact_runtime_message(message: Any, max_tool_return_chars: int) -> tuple[
     return ModelRequest(parts=compacted_parts), dropped
 
 
-def _sanitize_runtime_tool_pairs(messages: list[Any]) -> list[Any]:
-    """Remove tool-return messages whose matching tool call was trimmed away.
-
-    Some OpenAI-compatible providers reject history that contains a tool role
-    without a preceding assistant tool call. This only changes the short runtime
-    history sent to the model; persisted history remains complete.
-    """
-    if not messages:
-        return messages
-
-    seen_tool_calls: set[str] = set()
-    sanitized: list[Any] = []
-    for message in messages:
-        if isinstance(message, ModelResponse):
-            for part in getattr(message, "parts", []) or []:
-                if isinstance(part, ToolCallPart) and part.tool_call_id:
-                    seen_tool_calls.add(str(part.tool_call_id))
-            sanitized.append(message)
-            continue
-
-        if isinstance(message, ModelRequest):
-            parts = list(getattr(message, "parts", []) or [])
-            if any(isinstance(part, ToolReturnPart) for part in parts):
-                kept_parts = [
-                    part
-                    for part in parts
-                    if not isinstance(part, ToolReturnPart)
-                    or (part.tool_call_id and str(part.tool_call_id) in seen_tool_calls)
-                ]
-                if not kept_parts:
-                    continue
-                if len(kept_parts) != len(parts):
-                    message = ModelRequest(parts=kept_parts)
-            sanitized.append(message)
-            continue
-
-        sanitized.append(message)
-
-    return sanitized
-
-
 def build_runtime_history(
     full_history: list[Any] | None,
     *,
@@ -510,8 +361,7 @@ def build_runtime_history(
     history = [
         message
         for message in list(full_history or [])
-        if not _is_semantic_router_shadow_message(message)
-        and not _is_route_observability_message(message)
+        if not _is_route_observability_message(message)
     ]
     cfg = config or HistoryConfig()
     max_messages = max(0, int(getattr(cfg, "runtime_max_messages", 24) or 0))
@@ -548,7 +398,6 @@ def build_runtime_history(
         compacted, dropped = _compact_runtime_message(message, max_tool_return_chars)
         compacted_history.append(compacted)
         dropped_tool_returns += dropped
-    compacted_history = _sanitize_runtime_tool_pairs(compacted_history)
 
     chat_history = pydantic_ai_messages_to_dicts(compacted_history)
     chat_history.append({"role": "user", "content": latest_user_content})
@@ -565,7 +414,7 @@ def build_runtime_history(
     )
 
 
-_SUPPORTED_WORKSPACE_ACTION_TARGETS = {"candidate", "ordered", "review"}
+_SUPPORTED_WORKSPACE_ACTION_TARGETS = {"candidate", "ordered"}
 
 
 def _dedupe_workspace_targets(targets: list[str]) -> list[str]:
@@ -588,11 +437,6 @@ _WORKSPACE_ACTION_COPY = {
         "title": "查看调整后的排序方案",
         "content": "已刷新排序方案，可以查看本次调整后的志愿列表和位置变化。",
         "actionText": "打开排序方案",
-    },
-    "review": {
-        "title": "查看方案审查结果",
-        "content": "已刷新方案审查，可以查看梯度、保底和风险项是否达标。",
-        "actionText": "打开审查结果",
     },
 }
 
@@ -744,9 +588,8 @@ def _summarize_tool_calls_for_observability(
 ) -> list[dict[str, Any]]:
     """Build compact tool-call metadata for structured logs.
 
-    The persisted chat history already contains full tool args/results. This
-    summary keeps only route/action/result fields needed by effect/perf
-    benchmark analysis and deliberately avoids user payload expansion.
+    Persisted history keeps full tool args/results. This summary only carries
+    route/action/result fields needed by effect/perf reports.
     """
     returns_by_call_id: dict[str, dict[str, Any]] = {}
     for part in tool_returns:
@@ -799,28 +642,20 @@ def _summarize_tool_calls_for_observability(
     return summarized
 
 
-def _summarize_full_agent_tool_trial(
-    tool_names: list[str],
-    *,
-    fixed_scenario_route_decision: dict[str, Any] | None = None,
-) -> dict[str, Any]:
+def _summarize_full_agent_tool_trial(tool_names: list[str]) -> dict[str, Any]:
     counts: dict[str, int] = {}
     for name in tool_names:
         if not name:
             continue
         counts[name] = counts.get(name, 0) + 1
     repeated = [name for name, count in counts.items() if count > 1]
-    summary: dict[str, Any] = {
+    return {
         "toolNames": list(tool_names),
         "toolNameCounts": counts,
         "repeatedToolNames": repeated,
         "hasRepeatedToolCalls": bool(repeated),
         "hasToolCalls": bool(tool_names),
     }
-    if fixed_scenario_route_decision is not None:
-        summary["fixedScenarioRouter"] = fixed_scenario_route_decision
-        summary["fixedScenarioFallbackReason"] = fixed_scenario_route_decision.get("fallbackReason")
-    return summary
 
 
 def _tool_calls_include_plan_workspace_refresh(messages: list[Any] | None) -> list[str]:
@@ -907,6 +742,27 @@ def _tool_returns_successful_plan_apply(messages: list[Any] | None) -> bool:
     return False
 
 
+def _tool_returns_plan_mutation_context(messages: list[Any] | None) -> bool:
+    """Return true when this turn is actually about a plan mutation flow.
+
+    Read-only plan queries may still mention confirming a pending intent. Those
+    should not receive the "no executable plan preview" boundary, otherwise the
+    user sees a plan-adjustment warning for a preference confirmation.
+    """
+    mutation_families = set(_PENDING_PLAN_ACTION_FAMILIES)
+    mutation_families.update({"analyze_adjustment", "preview_compensation"})
+    for part in _iter_tool_return_parts(messages):
+        if part.tool_name not in {"plan_next_action", "execute_plan_action"}:
+            continue
+        data = _parse_tool_return_json(part.content)
+        if not data:
+            continue
+        action_family = str(data.get("action_family") or "").strip()
+        if action_family in mutation_families:
+            return True
+    return False
+
+
 def _tool_calls_include_plan_chain(messages: list[Any] | None) -> bool:
     plan_tool_names = {
         "collect_plan_context_inputs",
@@ -934,15 +790,6 @@ def _normalize_pending_intent_reply(reply: str) -> str:
         return reply
     normalized = reply
     replacements = (
-        ("这个想法我这边已经记下并在参考了。", "这个想法我先整理成待确认内容。"),
-        ("当前已记录偏好", "待确认偏好"),
-        ("当前已记录排除", "待确认排除"),
-        ("当前已记录", "待确认"),
-        ("已记录偏好", "待确认偏好"),
-        ("已记录排除", "待确认排除"),
-        ("已记录", "待确认"),
-        ("已经记下并在参考", "先整理成待确认内容"),
-        ("已经记下", "先整理成待确认内容"),
         ("好的，我记下了你对", "我先把你对"),
         ("好的，我已经记下了你对", "我先把你对"),
         ("我记下了你对", "我先把你对"),
@@ -951,31 +798,110 @@ def _normalize_pending_intent_reply(reply: str) -> str:
         ("好的，我已经记下了", "我先整理一下"),
         ("我已经按你的偏好记录下来", "我先把这个偏好整理出来，等你确认后再作为后续参考"),
         ("我已经记录下来", "我先把这个偏好整理出来，等你确认后再作为后续参考"),
-        ("确认前不会正式生效", "确认前不会写入后续参考"),
-        ("确认后才会正式记入后续参考", "确认后会写入后续参考"),
-        ("你确认后我再正式生效", "你确认后我再写入后续参考"),
-        ("我再正式生效", "我再写入后续参考"),
     )
     for source, target in replacements:
         normalized = normalized.replace(source, target)
-    normalized = re.sub(r"[（(]\s*level[123]\s*[）)]", "", normalized)
     if normalized != reply and "确认" not in normalized:
         normalized = normalized.rstrip("。") + "。如果确认要按这个方向作为后续参考，你再回复确认。"
-    if "确认前不会写入后续参考" not in normalized and "待确认" in normalized and "确认" in normalized:
-        normalized = normalized.rstrip()
-        if normalized:
-            normalized = normalized.rstrip("。") + "。"
-        normalized += "确认前不会写入后续参考，也不会直接改动当前方案。"
-    if (
-        "下一步" not in normalized
-        and "待确认" in normalized
-        and ("后续参考" in normalized or "确认后" in normalized)
-    ):
-        normalized = normalized.rstrip()
-        if normalized:
-            normalized += "\n\n"
-        normalized += "**下一步**\n- 如果确认要作为后续参考，直接回复“确认这个偏好”或“确认这个要求”。"
     return normalized
+
+
+def _reply_looks_like_unbacked_intent_preview(reply: str) -> bool:
+    compact = _compact_plan_reply_text(reply)
+    if not compact:
+        return False
+    if "待确认内容" not in compact:
+        return False
+    return any(marker in compact for marker in ("回复确认", "直接回复确认", "确认后", "确认就", "确认这个", "按上面执行"))
+
+
+def _normalize_unbacked_intent_preview_reply(reply: str) -> str:
+    """Avoid fake pending intent previews when the model did not call preview tools."""
+    if not _reply_looks_like_unbacked_intent_preview(reply):
+        return reply
+    normalized = re.sub(r"\*\*待确认内容\*\*", "**这轮先按咨询结论理解**", reply)
+    normalized = re.sub(r"(?m)^我先把.*整理成待确认(?:偏好|要求|内容)[：:]?\s*$", "我先把这轮结论说明清楚：", normalized)
+    replacements = (
+        ("回复\"确认\"就按上面执行；", "如果你想把这个作为后续要求，再明确告诉我“把这个要求记下来”；"),
+        ("回复“确认”就按上面执行；", "如果你想把这个作为后续要求，再明确告诉我“把这个要求记下来”；"),
+        ("直接回复“确认”", "明确告诉我“把这个要求记下来”"),
+        ("直接回复\"确认\"", "明确告诉我“把这个要求记下来”"),
+        ("确认后，", "如果后续正式记成要求，"),
+    )
+    for source, target in replacements:
+        normalized = normalized.replace(source, target)
+    if "没有正式进入待确认状态" not in normalized:
+        normalized = (
+            normalized.rstrip()
+            + "\n\n补充说明：这轮没有正式进入待确认状态，也不会写入后续参考或改动方案；"
+            "如果要正式采用，请明确说“把这个要求记下来”。"
+        )
+    return normalized
+
+
+def _append_pending_intent_boundary(reply: str, *, has_pending_intent: bool) -> str:
+    """Keep pending intent analysis visibly non-mutating across follow-up turns."""
+    if not has_pending_intent or not isinstance(reply, str) or not reply.strip():
+        return reply
+    compact = _compact_plan_reply_text(reply)
+    if any(marker in compact for marker in ("尚未确认", "待确认内容", "确认前不会写入后续参考")):
+        return reply
+    if any(marker in compact for marker in ("已正式生效", "已经生效", "记下来了", "已记录")):
+        return reply
+    return (
+        reply.rstrip()
+        + "\n\n补充说明：这条**待确认内容**目前仍是**尚未确认**状态，确认前不会写入后续参考；"
+        "如果要正式采用，再回复“确认”。"
+    )
+
+
+_PENDING_INTENT_FOLLOWUP_USER_TOKENS = (
+    "先不确认",
+    "不确认",
+    "暂不确认",
+    "还没确认",
+    "看看影响",
+    "看影响",
+    "有什么影响",
+    "会不会影响",
+    "影响方案",
+    "这个偏好",
+    "这个要求",
+    "这个意向",
+    "刚才的偏好",
+    "刚才的要求",
+    "上面的偏好",
+    "上面的要求",
+)
+
+_PENDING_INTENT_FOLLOWUP_REPLY_TOKENS = (
+    "这个偏好",
+    "这个要求",
+    "这个意向",
+    "该偏好",
+    "该要求",
+    "待确认偏好",
+    "待确认要求",
+    "待确认意向",
+    "偏好会影响",
+    "要求会影响",
+    "意向会影响",
+)
+
+
+def _is_pending_intent_followup_turn(content: str, reply: str) -> bool:
+    """Whether an existing pending intent is relevant to this read-only turn.
+
+    A session may contain an old backend pending-intent cache while the user asks
+    an unrelated Explore question. In that case appending a confirmation
+    boundary is confusing. Keep the boundary only when this turn explicitly
+    references the pending preference/requirement or its impact.
+    """
+    compact_content = _compact_plan_reply_text(content)
+    compact_reply = _compact_plan_reply_text(reply)
+    return any(token in compact_content for token in _PENDING_INTENT_FOLLOWUP_USER_TOKENS) or any(
+        token in compact_reply for token in _PENDING_INTENT_FOLLOWUP_REPLY_TOKENS
+    )
 
 
 _PENDING_PLAN_ACTION_FAMILIES = {
@@ -1045,33 +971,6 @@ def _text_looks_like_adjustment_request(text: str | None) -> bool:
     )
 
 
-def _text_clears_pending_plan_action(text: str | None) -> bool:
-    compact = re.sub(r"\s+", "", str(text or "").strip())
-    if not compact:
-        return False
-    return any(
-        token in compact
-        for token in (
-            "先不要改方案",
-            "不要改方案",
-            "别改方案",
-            "不改方案",
-            "先不改",
-            "先不要调整",
-            "不要调整",
-            "不调整",
-            "先不执行",
-            "不要执行",
-            "不执行",
-            "只分析",
-            "先只分析",
-            "只看分析",
-            "只看看",
-            "只看一下",
-        )
-    )
-
-
 def _build_pending_plan_action_from_payload(payload: dict[str, Any], summary: str | None = None) -> dict[str, Any] | None:
     payload = normalize_plan_action_payload(payload)
     preview_action_family = str(payload.get("action_family") or "").strip()
@@ -1129,79 +1028,6 @@ def _parse_tool_call_args(args: Any) -> dict[str, Any]:
     return {}
 
 
-def _extract_pending_intent_confirmation_from_history(messages: list[Any] | None) -> PendingConfirmation | None:
-    """Recover pending intent preview payload from Agent history.
-
-    The normal source of truth is backend ``planEditCache``. This history-based
-    recovery only covers local/offline degradation where the preview response was
-    saved but the backend cache could not be written or read.
-    """
-    latest_pending: PendingConfirmation | None = None
-    user_turns_since_pending = 0
-    current_user_turn = 0
-    preview_tools = {
-        "preview_current_intent_confirmation",
-        "preview_current_major_intent_confirmation",
-        "preview_current_school_intent_confirmation",
-        "preview_current_region_intent_confirmation",
-        "preview_current_career_intent_confirmation",
-    }
-
-    for message in messages or []:
-        if isinstance(message, ModelRequest):
-            for part in getattr(message, "parts", []) or []:
-                if not isinstance(part, ToolReturnPart) or part.tool_name != "update_volunteer_intent_state":
-                    continue
-                result = _parse_tool_return_json(part.content)
-                if not result:
-                    continue
-                if result.get("applied") is True or result.get("messageCode") == "reject_success":
-                    latest_pending = None
-                    user_turns_since_pending = 0
-
-        if isinstance(message, ModelRequest):
-            user_prompt_parts = [
-                part for part in getattr(message, "parts", []) or []
-                if isinstance(part, UserPromptPart)
-            ]
-            if user_prompt_parts:
-                current_user_turn += 1
-                user_text = "\n".join(str(part.content or "") for part in user_prompt_parts)
-                if latest_pending is not None and _text_clears_pending_plan_action(user_text):
-                    latest_pending = None
-                    user_turns_since_pending = 0
-                elif latest_pending is not None:
-                    user_turns_since_pending += 1
-                    if user_turns_since_pending > 3:
-                        latest_pending = None
-                        user_turns_since_pending = 0
-                continue
-
-        if not isinstance(message, ModelResponse):
-            continue
-        for part in getattr(message, "parts", []) or []:
-            if not isinstance(part, ToolCallPart) or part.tool_name not in preview_tools:
-                continue
-            args = _parse_tool_call_args(part.args)
-            cache_data = {
-                key: args.get(key) or {}
-                for key in ("major_intents", "school_intents", "city_intents", "career_intents")
-                if isinstance(args.get(key), dict) and args.get(key)
-            }
-            if not cache_data:
-                continue
-            cache_data["intent_mode"] = str(args.get("intent_mode") or "preference").strip() or "preference"
-            pending = PendingConfirmation.from_legacy_intent_change(cache_data)
-            if pending is None:
-                continue
-            if current_user_turn > 0:
-                pending = pending.model_copy(update={"created_turn": current_user_turn})
-            latest_pending = pending
-            user_turns_since_pending = 0
-
-    return latest_pending
-
-
 def _extract_pending_plan_action(messages: list[Any] | None) -> dict[str, Any] | None:
     """Find the latest preview-only mutating plan action that still awaits confirmation."""
     pending_calls: dict[str, dict[str, Any]] = {}
@@ -1237,13 +1063,9 @@ def _extract_pending_plan_action(messages: list[Any] | None) -> dict[str, Any] |
         ]
         if user_prompt_parts:
             current_user_turn += 1
-            user_text = "\n".join(str(part.content or "") for part in user_prompt_parts)
             pending_calls.clear()
             last_non_actionable_adjustment_goal = None
-            if latest_pending is not None and _text_clears_pending_plan_action(user_text):
-                latest_pending = None
-                user_turns_since_pending = 0
-            elif latest_pending is not None:
+            if latest_pending is not None:
                 user_turns_since_pending += 1
                 if user_turns_since_pending > 3:
                     latest_pending = None
@@ -1278,6 +1100,16 @@ def _extract_pending_plan_action(messages: list[Any] | None) -> dict[str, Any] |
                 continue
             action_family = str(result.get("action_family") or "").strip()
             result_kind = str(result.get("result_kind") or "").strip()
+            if result_kind == "error":
+                effective_error_action_family = _PLAN_PREVIEW_TO_APPLY_ACTION_FAMILIES.get(
+                    action_family,
+                    action_family,
+                )
+                if effective_error_action_family in _PENDING_PLAN_ACTION_FAMILIES:
+                    latest_pending = None
+                    user_turns_since_pending = 0
+                    pending_calls.clear()
+                continue
             if result_kind == "adjustment_analysis" and not _adjustment_analysis_has_actionable_suggestions(result):
                 latest_pending = None
                 call_payload = pending_calls.get(str(part.tool_call_id or "")) or {}
@@ -1301,12 +1133,6 @@ def _extract_pending_plan_action(messages: list[Any] | None) -> dict[str, Any] |
                 result.get("applied") is True
                 or call_stage == "apply"
             ):
-                if effective_action_family in _PENDING_PLAN_ACTION_FAMILIES:
-                    latest_pending = None
-                    user_turns_since_pending = 0
-                    pending_calls.clear()
-                continue
-            if not is_preview_result and call_stage == "preview":
                 if effective_action_family in _PENDING_PLAN_ACTION_FAMILIES:
                     latest_pending = None
                     user_turns_since_pending = 0
@@ -1359,15 +1185,9 @@ _PLAN_ACTION_CONFIRM_PHRASES = {
     "确认执行",
     "确定",
     "可以",
-    "嗯可以",
-    "可以的",
     "好",
     "好的",
-    "嗯好",
-    "嗯好的",
-    "好呀",
     "行",
-    "嗯行",
     "没问题",
     "执行",
     "开始执行",
@@ -1391,15 +1211,9 @@ _INTENT_CONFIRM_PHRASES = {
     "确认",
     "确定",
     "可以",
-    "嗯可以",
-    "可以的",
     "好",
     "好的",
-    "嗯好",
-    "嗯好的",
-    "好呀",
     "行",
-    "嗯行",
     "没问题",
     "就按这个来",
     "按这个来",
@@ -1422,219 +1236,12 @@ def _is_plan_action_confirmation(content: str) -> bool:
     return normalized.startswith(("确认", "执行")) and len(normalized) <= 8
 
 
-_READONLY_CLOSURE_ACK_PHRASES = {
-    "嗯那就这样",
-    "那就这样",
-    "先这样",
-    "先这样吧",
-    "就先这样",
-    "就先这样吧",
-}
-
-
-def _is_readonly_closure_ack(content: str) -> bool:
-    normalized = re.sub(r"\s+", "", (content or "").strip())
-    normalized = normalized.strip("。.!！?")
-    return normalized in _READONLY_CLOSURE_ACK_PHRASES
-
-
 def _is_pending_intent_confirmation(content: str) -> bool:
     normalized = re.sub(r"\s+", "", (content or "").strip())
     normalized = normalized.strip("。.!！?")
     if not normalized:
         return False
     return normalized in _INTENT_CONFIRM_PHRASES
-
-
-_EXPLICIT_INTENT_CONFIRM_TOKENS = (
-    "偏好",
-    "要求",
-    "意向",
-    "参考",
-    "记下",
-    "记录",
-)
-
-
-def _is_generic_confirmation(content: str) -> bool:
-    normalized = re.sub(r"\s+", "", (content or "").strip())
-    normalized = normalized.strip("。.!！?")
-    if not normalized:
-        return False
-    if any(token in normalized for token in _EXPLICIT_INTENT_CONFIRM_TOKENS):
-        return False
-    return normalized in (_PLAN_ACTION_CONFIRM_PHRASES | _INTENT_CONFIRM_PHRASES)
-
-
-_PENDING_INTENT_IMPACT_TOKENS = (
-    "影响",
-    "匹配",
-    "承接",
-    "冲突",
-    "符合",
-    "不符合",
-    "当前方案",
-    "现在方案",
-    "现有方案",
-    "候选",
-    "还剩",
-    "结果",
-)
-
-_PENDING_INTENT_REFERENCE_TOKENS = (
-    "这个",
-    "这条",
-    "这些",
-    "刚才",
-    "上面",
-    "偏好",
-    "要求",
-    "想法",
-)
-
-_PENDING_INTENT_MUTATION_TOKENS = (
-    "直接改",
-    "帮我改",
-    "调整方案",
-    "改方案",
-    "加入方案",
-    "加进方案",
-    "加入志愿",
-    "删除",
-    "删掉",
-    "去掉",
-    "移动",
-    "移到",
-    "排序",
-    "重排",
-    "生成",
-    "执行",
-    "审查",
-)
-
-
-def _is_pending_intent_impact_question(content: str) -> bool:
-    normalized = re.sub(r"\s+", "", (content or "").strip())
-    normalized = normalized.strip("。.!！?？")
-    if not normalized or _is_pending_intent_confirmation(normalized):
-        return False
-    if any(token in normalized for token in _PENDING_INTENT_MUTATION_TOKENS):
-        return False
-    return (
-        any(token in normalized for token in _PENDING_INTENT_IMPACT_TOKENS)
-        and any(token in normalized for token in _PENDING_INTENT_REFERENCE_TOKENS)
-    )
-
-
-def _message_text(message: Any) -> str:
-    texts = [
-        str(getattr(part, "content", "") or "")
-        for part in getattr(message, "parts", []) or []
-        if isinstance(part, TextPart) and str(getattr(part, "content", "") or "").strip()
-    ]
-    return "\n".join(texts)
-
-
-def _infer_readonly_context_from_text(text: str) -> str | None:
-    compact = re.sub(r"\s+", "", str(text or ""))
-    if not compact:
-        return None
-    if (
-        "方案承接" in compact
-        or ("当前方案对" in compact and "承接" in compact)
-    ) and any(token in compact for token in ("职业方向", "体制内", "考公", "稳定就业", "读研", "就业导向")):
-        return "career_direction"
-    if (
-        "专业对比" in compact
-        or "这轮先按通用维度看" in compact
-        or ("选择建议" in compact and "就业路径" in compact and "门槛" in compact)
-    ):
-        return "major_compare"
-    if (
-        "当前排序方案里共命中" in compact
-        or "候选里共命中" in compact
-        or ("下面仅展示前" in compact and any(token in compact for token in ("志愿", "机会")))
-    ):
-        return "plan_query"
-    return None
-
-
-def _last_readonly_context_kind(messages: list[Any] | None) -> str | None:
-    for message in reversed(messages or []):
-        if not isinstance(message, ModelResponse):
-            continue
-        for part in getattr(message, "parts", []) or []:
-            if not isinstance(part, ToolCallPart):
-                continue
-            if part.tool_name == "analyze_current_career_direction":
-                return "career_direction"
-            if part.tool_name in {"compare_majors", "compare_majors_adhoc"}:
-                return "major_compare"
-            if part.tool_name == "query_volunteer_plan":
-                return "plan_query"
-        inferred = _infer_readonly_context_from_text(_message_text(message))
-        if inferred:
-            return inferred
-    return None
-
-
-def _build_no_pending_confirmation_guard_reply(messages: list[Any] | None) -> str:
-    context_kind = _last_readonly_context_kind(messages)
-    if context_kind == "career_direction":
-        return (
-            "上一轮只是职业方向和当前方案承接分析，没有待执行的方案动作。\n\n"
-            "下一步可以这样继续：\n"
-            "- 继续分析：说“展开体制内方向”或“展开读研方向”。\n"
-            "- 想调整方案：说“按这个方向看看方案怎么调”，我会先说明会影响哪些志愿和风险点，再给预览，等你确认后执行。\n"
-            "- 只想看方案：说“看看当前方案”或“审查当前方案”。\n"
-            "- 不确定怎么继续：直接说“帮我看下一步”，我会先分析，不会直接改方案。"
-        )
-    if context_kind == "major_compare":
-        return (
-            "上一轮只是专业对比分析，没有待确认的偏好或方案动作。\n\n"
-            "下一步可以这样继续：\n"
-            "- 想沉淀偏好：直接说“把这个记成偏好”。\n"
-            "- 想看方案影响：直接说想看哪个专业方向和当前方案的匹配情况。"
-        )
-    if context_kind == "plan_query":
-        return (
-            "上一轮只是查询当前方案或候选结果，没有待执行的方案动作。\n\n"
-            "边界提醒：这次不会执行移动、删除、加入或排序，也不会改动当前方案。\n\n"
-            "下一步可以这样继续：\n"
-            "- 处理当前方案：说要移动、删除或按哪个维度排序。\n"
-            "- 处理候选志愿：说要加入哪所学校或哪个专业，我会先给确认预览。"
-        )
-    return (
-        "我这边没有待确认的方案动作，也没有上一轮待确认的方案动作可以执行。\n\n"
-        "你可以直接说想做哪一步：\n"
-        "- 生成或查看方案。\n"
-        "- 审查当前方案。\n"
-        "- 按专业、院校、地域或录取率调整方案。\n\n"
-        "涉及改动时，我会先说明影响，确认后再执行。"
-    )
-
-
-def _build_readonly_closure_ack_reply(messages: list[Any] | None) -> str:
-    context_kind = _last_readonly_context_kind(messages)
-    if context_kind == "major_compare":
-        return (
-            "好的，先按刚才的专业对比结论作为参考。\n\n"
-            "这轮没有待确认的偏好或方案动作，我不会改动方案。后面如果想继续，可以直接说“把这个记成偏好”或“看看方案里怎么体现”。"
-        )
-    if context_kind == "career_direction":
-        return (
-            "好的，先按刚才的方向分析作为参考。\n\n"
-            "这轮没有待执行的方案动作，我不会改动方案。后面如果要落到方案里，可以再说“按这个方向看看怎么调”。"
-        )
-    if context_kind == "plan_query":
-        return (
-            "好的，先按刚才查到的方案结果作为参考。\n\n"
-            "这轮不执行移动、删除、加入或排序。后面要调整时，直接说具体学校、专业或位置即可。"
-        )
-    return (
-        "好的，先这样。\n\n"
-        "这轮没有待确认的方案动作，我不会改动当前方案。"
-    )
 
 
 def _sanitize_reply_for_user(reply: str) -> str:
@@ -1644,8 +1251,6 @@ def _sanitize_reply_for_user(reply: str) -> str:
     reply = re.sub(r'\n?\[LLM_INTERNAL\][^\n]*', '', reply)
     # 移除行内的 [LLM_INTERNAL] 标记
     reply = re.sub(r'\[LLM_INTERNAL\]\s*', '', reply)
-    # 移除旧方案引用里给模型/工具看的 @位置 标记，用户侧用自然序号和工作台定位。
-    reply = re.sub(r'@\d+\b', '', reply)
     return reply.strip()
 
 
@@ -1742,20 +1347,17 @@ def _build_basic_plan_status_reply(planning: PlanningSummary) -> str:
     return ''.join(lines)
 
 
-async def _load_pending_intent_confirmation(
-    session_id: str,
-    history: list[Any] | None = None,
-) -> PendingConfirmation | None:
+async def _load_pending_intent_confirmation(session_id: str) -> PendingConfirmation | None:
     try:
         cache_result = await get_intent_change_cache(session_id)
     except Exception:
         logger.warning("Failed to load intent change cache for phase bootstrap: session_id=%s", session_id, exc_info=True)
-        cache_result = {}
+        return None
     raw_data = (cache_result or {}).get("data")
     cache_data = raw_data.get("planEditCache") if isinstance(raw_data, dict) else None
-    if cache_data:
-        return PendingConfirmation.from_legacy_intent_change(cache_data)
-    return _extract_pending_intent_confirmation_from_history(history)
+    if not cache_data:
+        return None
+    return PendingConfirmation.from_legacy_intent_change(cache_data)
 
 
 def _direct_pending_intent_reply(result_text: str) -> str:
@@ -1767,181 +1369,13 @@ def _direct_pending_intent_reply(result_text: str) -> str:
     return render_intent_state_update(result)
 
 
-def _append_unique_text(items: list[str], text: str) -> None:
-    value = str(text or "").strip()
-    if value and value not in items:
-        items.append(value)
-
-
-def _pending_intent_item_lines(cache_data: dict[str, Any]) -> list[str]:
-    if not isinstance(cache_data, dict):
-        return []
-
-    intent_mode = str(cache_data.get("intent_mode") or "preference").strip()
-    strict_constraint = intent_mode == "constraint"
-    lines: list[str] = []
-
-    major_intents = cache_data.get("major_intents") if isinstance(cache_data.get("major_intents"), dict) else {}
-    for key in ("level1", "level2", "level3"):
-        for name in major_intents.get(key) or []:
-            _append_unique_text(lines, f"确认后，将把{name}作为后续优先参考的专业方向")
-    for key in ("negative_level1", "negative_level2", "negative_level3"):
-        for name in major_intents.get(key) or []:
-            if strict_constraint:
-                _append_unique_text(lines, f"确认后，将把{name}作为明确不考虑的内容")
-            else:
-                _append_unique_text(lines, f"确认后，会尽量降低{name}的优先级")
-
-    school_intents = cache_data.get("school_intents") if isinstance(cache_data.get("school_intents"), dict) else {}
-    for name in school_intents.get("colleges") or []:
-        _append_unique_text(lines, f"确认后，将把{name}作为后续优先参考的院校")
-    for name in school_intents.get("negative_colleges") or []:
-        if strict_constraint:
-            _append_unique_text(lines, f"确认后，将把{name}作为明确不考虑的院校")
-        else:
-            _append_unique_text(lines, f"确认后，会尽量降低{name}的优先级")
-
-    city_intents = cache_data.get("city_intents") if isinstance(cache_data.get("city_intents"), dict) else {}
-    for key in ("province", "city"):
-        for name in city_intents.get(key) or []:
-            _append_unique_text(lines, f"确认后，将把{name}作为后续优先参考的地域")
-    for key in ("negative_province", "negative_city"):
-        for name in city_intents.get(key) or []:
-            if strict_constraint:
-                _append_unique_text(lines, f"确认后，将把{name}作为明确不考虑的地域")
-            else:
-                _append_unique_text(lines, f"确认后，会尽量降低{name}的优先级")
-
-    career_intents = cache_data.get("career_intents") if isinstance(cache_data.get("career_intents"), dict) else {}
-    for value in career_intents.get("positive") or []:
-        _append_unique_text(lines, f"确认后，将把{to_career_label(str(value))}作为后续优先参考的发展方向")
-    for value in career_intents.get("negative") or []:
-        label = to_career_label(str(value))
-        if strict_constraint:
-            _append_unique_text(lines, f"确认后，将把{label}作为明确不考虑的发展方向")
-        else:
-            _append_unique_text(lines, f"确认后，会尽量降低{label}的优先级")
-
-    return lines
-
-
-def _build_pending_intent_timeout_reply(cache_data: dict[str, Any]) -> str | None:
-    item_lines = _pending_intent_item_lines(cache_data)
-    if not item_lines:
-        return None
-
-    intent_mode = str(cache_data.get("intent_mode") or "preference").strip()
-    confirm_phrase = "确认这个要求" if intent_mode == "constraint" else "确认这个偏好"
-    lines = [
-        "我已经把这次提到的想法整理成待确认内容了，先把关键内容给你：",
-        "",
-        "**待确认内容**",
-    ]
-    lines.extend(f"- {line}" for line in item_lines[:8])
-    if len(item_lines) > 8:
-        lines.append(f"- 还有 {len(item_lines) - 8} 项相近内容")
-    lines.extend([
-        "",
-        "**下一步**",
-        f"如果确认要作为后续参考，直接回复“{confirm_phrase}”。确认前不会写入后续参考，也不会直接改动当前方案。",
-    ])
-    return _sanitize_reply_for_user(_normalize_user_facing_terms("\n".join(lines)))
-
-
-async def _build_pending_intent_impact_reply(
-    session_id: str,
-    pending: PendingConfirmation,
-) -> str | None:
-    cache_data = pending.execution_payload if isinstance(pending.execution_payload, dict) else {}
-    if not cache_data:
-        return None
-    item_lines = _pending_intent_item_lines(cache_data)
-    if not item_lines:
-        return None
-
-    intent_mode = str(cache_data.get("intent_mode") or "preference").strip()
-    major_intents = cache_data.get("major_intents") if isinstance(cache_data.get("major_intents"), dict) else None
-    school_intents = cache_data.get("school_intents") if isinstance(cache_data.get("school_intents"), dict) else None
-    city_intents = cache_data.get("city_intents") if isinstance(cache_data.get("city_intents"), dict) else None
-    career_intents = cache_data.get("career_intents") if isinstance(cache_data.get("career_intents"), dict) else None
-
-    analysis = _build_plan_relation_analysis(
-        intent_mode,
-        career_intents=career_intents,
-    )
-    analysis = await _enrich_plan_relation_analysis_from_state(
-        session_id,
-        analysis,
-        intent_mode=intent_mode,
-        major_intents=major_intents,
-        school_intents=school_intents,
-        city_intents=city_intents,
-        career_intents=career_intents,
-    )
-    impact_text = format_intent_impact_markdown(
-        _build_impact_preview_from_analysis(analysis),
-        section_title="影响分析",
-    )
-    confirm_phrase = "确认这个要求" if intent_mode == "constraint" else "确认这个偏好"
-    lines = [
-        "**本次边界**",
-        "- 这条想法仍然尚未确认，只是待确认内容。",
-        "- 确认前不会写入后续参考，也不会改动当前方案。",
-        "",
-        impact_text,
-        "",
-        "**待确认内容**",
-    ]
-    lines.extend(f"- {line}" for line in item_lines[:8])
-    if len(item_lines) > 8:
-        lines.append(f"- 还有 {len(item_lines) - 8} 项相近内容")
-    lines.extend(
-        [
-            "",
-            "**下一步**",
-            f"- 如果要写入后续参考，直接回复“{confirm_phrase}”。",
-            "- 如果只是继续了解，也可以继续问它和当前方案、候选机会的关系。",
-        ]
-    )
-    return _sanitize_reply_for_user(_normalize_user_facing_terms("\n".join(lines)))
-
-
-async def build_timeout_fallback_from_pending_intent_preview(
-    session_id: str,
-    user_prompt: str | None = None,
-) -> ChatServiceResponseEnvelope | None:
-    """Build a user-facing fallback when intent preview finished but final LLM timed out."""
-    try:
-        cache_result = await get_intent_change_cache(session_id)
-    except Exception:
-        logger.warning(
-            "Failed to load pending intent cache for timeout fallback: session_id=%s prompt=%s",
-            session_id,
-            user_prompt,
-            exc_info=True,
-        )
-        return None
-
-    raw_data = (cache_result or {}).get("data")
-    cache_data = raw_data.get("planEditCache") if isinstance(raw_data, dict) else None
-    if not isinstance(cache_data, dict) or not cache_data:
-        return None
-
-    reply = _build_pending_intent_timeout_reply(cache_data)
-    if not reply:
-        return None
-    return ChatServiceResponseEnvelope(primary=reply)
-
-
 def _should_guard_plan_reply(content: str) -> bool:
     return any(keyword in content for keyword in _PLAN_STYLE_GUARD_PROMPT_KEYWORDS)
 
 
 def _normalize_user_facing_terms(reply: str) -> str:
     """Remove internal product terms from user-facing replies."""
-    if not isinstance(reply, str):
-        return reply
-    if "画像" not in reply and "level" not in reply:
+    if not isinstance(reply, str) or "画像" not in reply:
         return reply
     replacements = (
         ("加入画像", "记成后续报考参考"),
@@ -1960,78 +1394,7 @@ def _normalize_user_facing_terms(reply: str) -> str:
     normalized = reply
     for source, target in replacements:
         normalized = normalized.replace(source, target)
-    normalized = re.sub(r"[（(]\s*level[123]\s*[）)]", "", normalized)
     return normalized
-
-
-_READONLY_BOUNDARY_PROMPT_TOKENS = (
-    "先只分析",
-    "只分析",
-    "先分析",
-    "先说说",
-    "先聊聊",
-    "先看看",
-    "先看下",
-    "不要记偏好",
-    "不记偏好",
-    "别记偏好",
-    "先别记",
-    "别记",
-    "不要记下来",
-    "不记下来",
-    "别记下来",
-    "不要改方案",
-    "不改方案",
-    "别改方案",
-    "不要直接改方案",
-    "不要直接改",
-    "别直接改方案",
-    "别直接改",
-    "不要改",
-    "别改",
-    "先不要改方案",
-    "先别改",
-    "先别动",
-    "不动",
-)
-
-_READONLY_BOUNDARY_REPLY_TOKENS = (
-    "不会写入",
-    "不会记入",
-    "不会记录",
-    "不写入",
-    "不记入",
-    "不记录",
-    "不会改动",
-    "不会自动改动",
-    "不会自动修改",
-    "不会改方案",
-    "不改动方案",
-    "不改方案",
-    "只分析",
-    "只是分析",
-    "本轮只",
-)
-
-
-def _prompt_requests_readonly_boundary(content: str | None) -> bool:
-    compact = re.sub(r"\s+", "", str(content or ""))
-    return any(token in compact for token in _READONLY_BOUNDARY_PROMPT_TOKENS)
-
-
-def _append_readonly_boundary_if_requested(reply: str, content: str | None) -> str:
-    if not isinstance(reply, str) or not reply.strip():
-        return reply
-    if not _prompt_requests_readonly_boundary(content):
-        return reply
-    compact_reply = re.sub(r"\s+", "", reply)
-    if any(token in compact_reply for token in _READONLY_BOUNDARY_REPLY_TOKENS):
-        return reply
-    return (
-        reply.rstrip()
-        + "\n\n**本轮边界**\n"
-        + "- 这次只做分析和参考，不会写入偏好，也不会改动当前方案。"
-    )
 
 
 def _plan_reply_needs_normalization(reply: str) -> bool:
@@ -2109,6 +1472,8 @@ def _append_plan_preview_confirmation_boundary(
     asks_confirmation = _reply_has_plan_confirmation_request(reply)
     if not pending_action:
         if asks_confirmation:
+            if not _tool_returns_plan_mutation_context(new_messages):
+                return reply
             reply = _remove_unbacked_plan_confirmation_copy(reply)
             return (
                 reply.rstrip()
@@ -2121,8 +1486,6 @@ def _append_plan_preview_confirmation_boundary(
         return reply
     if _reply_conflicts_with_pending_plan_action(reply):
         return _build_pending_plan_preview_reply(pending_action)
-    if action_family == "sort_ordered_plan":
-        reply = _enrich_pending_sort_preview_summary(pending_action, reply)
     if asks_confirmation:
         return reply
     return reply.rstrip() + "\n\n如果你确认要这样做，我再执行；现在还不会改动方案。"
@@ -2169,63 +1532,10 @@ def _reply_conflicts_with_pending_plan_action(reply: str) -> bool:
     )
 
 
-def _pending_sort_label_and_direction(pending_action: dict[str, Any]) -> tuple[str, str]:
-    raw_values: list[str] = [
-        str(pending_action.get("summary") or ""),
-        str(pending_action.get("user_goal") or ""),
-    ]
-    payload_text = str(pending_action.get("plan_payload") or "").strip()
-    if payload_text:
-        try:
-            payload = json.loads(payload_text)
-        except (TypeError, ValueError):
-            payload = {}
-        if isinstance(payload, dict):
-            raw_values.extend([
-                str(payload.get("preview_summary") or ""),
-                str(payload.get("user_goal") or ""),
-            ])
-            for action in payload.get("atomic_actions") or []:
-                if not isinstance(action, dict):
-                    continue
-                filters = action.get("filters") if isinstance(action.get("filters"), dict) else {}
-                raw_values.extend([
-                    str(filters.get("sort_field") or ""),
-                    str(filters.get("sortField") or ""),
-                    str(filters.get("field") or ""),
-                    str(action.get("reason") or ""),
-                ])
-    joined = " ".join(raw_values)
-    if any(token in joined for token in ("schoolRank", "school_rank", "schoolLevel", "school_level", "院校层次", "学校层次", "院校排名", "好学校")):
-        return "院校层次", "排名靠前的排在前面"
-    if any(token in joined for token in ("finalScore", "final_score", "recommendationScore", "recommendation_score", "推荐系数")):
-        return "推荐系数", "推荐系数高的排在前面"
-    return "录取率", "录取率低的排在前面"
-
-
-def _enrich_pending_sort_preview_summary(pending_action: dict[str, Any], summary: str) -> str:
-    label, direction = _pending_sort_label_and_direction(pending_action)
-    summary = (summary or "").strip()
-    action_summary = f"会按{label}重新排序当前方案。"
-    if summary and "重新排序当前方案" not in summary:
-        action_summary = summary
-    compact_summary = _compact_plan_reply_text(summary)
-    if "排序方式" in compact_summary and "执行影响" in compact_summary:
-        return summary
-    sections = [
-        action_summary,
-        f"排序方式：\n- {direction}。",
-        "执行影响：\n- 会实际改变方案顺序和导出顺序。\n- 审查状态会进入待重新审查。",
-    ]
-    return "\n\n".join(section.strip() for section in sections if section.strip())
-
-
 def _build_pending_plan_preview_reply(pending_action: dict[str, Any]) -> str:
     action_family = str(pending_action.get("action_family") or "")
     summary = str(pending_action.get("summary") or "").strip()
     summary = summary.replace("补偿", "补齐")
-    if action_family == "sort_ordered_plan":
-        summary = _enrich_pending_sort_preview_summary(pending_action, summary)
     if action_family == "apply_compensation":
         title = "补齐建议预览已生成。"
         boundary = "如果你确认要应用这条补齐建议，我再执行；现在还不会改动方案。"
@@ -2287,45 +1597,6 @@ def _direct_pending_plan_action_reply(action_family: str, result: dict[str, Any]
     reply = str(result.get("summary") or default_reply)
     if action_family == "apply_compensation":
         reply = reply.replace("补偿", "补齐")
-    return _append_confirmed_plan_action_next_step(action_family, reply)
-
-
-_CONFIRMED_PLAN_ACTION_NEXT_STEPS = {
-    "sort_ordered_plan": "方案顺序和导出顺序已同步更新。\n- 审查状态：待重新审查。\n- 下一步：可以到方案区查看排序结果，必要时再点“审查”。",
-    "move_ordered_unit": "方案顺序和导出顺序已同步更新。\n- 审查状态：待重新审查。\n- 下一步：可以到方案区查看移动结果，必要时再点“审查”。",
-    "move_unit": "方案顺序和导出顺序已同步更新。\n- 审查状态：待重新审查。\n- 下一步：可以到方案区查看移动结果，必要时再点“审查”。",
-    "remove_ordered_unit": "方案数量和导出内容已同步更新。\n- 审查状态：待重新审查。\n- 下一步：可以到方案区查看删除结果，必要时再点“审查”。",
-    "remove_units": "方案数量和导出内容已同步更新。\n- 审查状态：待重新审查。\n- 下一步：可以到方案区查看删除结果，必要时再点“审查”。",
-    "add_units": "方案数量和导出内容已同步更新。\n- 审查状态：待重新审查。\n- 下一步：可以到方案区查看加入结果，必要时再点“审查”。",
-    "replace_units": "方案内容和导出内容已同步更新。\n- 审查状态：待重新审查。\n- 下一步：可以到方案区查看替换结果，必要时再点“审查”。",
-}
-
-
-def _append_confirmed_plan_action_next_step(action_family: str, reply: str) -> str:
-    reply = str(reply or "").strip()
-    hint = _CONFIRMED_PLAN_ACTION_NEXT_STEPS.get(action_family)
-    if not reply or not hint:
-        return reply
-    if any(keyword in reply for keyword in ("待重新审查", "重新审查", "审查状态", "复审", "复查", "导出顺序", "导出内容")):
-        return reply
-    return f"{reply}\n\n{hint}"
-
-
-def _direct_plan_fast_route_reply(result: dict[str, Any]) -> str:
-    reply = str(
-        result.get("summary")
-        or result.get("state_summary")
-        or result.get("review_summary")
-        or ""
-    ).strip()
-    if not reply:
-        return "我已经完成这一步处理。"
-    reply = reply.replace("补偿", "补齐")
-    if str(result.get("result_kind") or "").strip() == "adjustment_analysis":
-        if "方案顺序" not in reply and "导出顺序" not in reply:
-            reply = f"{reply}\n\n影响说明：这一步先分析怎么调稳，不会直接改方案；后续如果进入具体移动、删除、补入或排序，才会影响方案顺序和导出顺序，并让审查状态进入待重新审查。"
-        if "确认后" not in reply and "需要你确认" not in reply:
-            reply = f"{reply}\n下一步如果要执行具体调整，我会先给出明确动作，确认后才会执行。"
     return reply
 
 
@@ -2389,7 +1660,12 @@ def _build_plan_timeout_fallback_reply(result: dict[str, Any]) -> str | None:
 
 
 def _clean_status_item_for_user(value: Any) -> str:
-    return clean_plan_sample_text(value)
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = text.replace("(unknown)", "")
+    text = re.sub(r"@(\d+)", r"第\1位", text)
+    return text
 
 
 def _format_status_tier_counts(tier_counts: Any) -> str:
@@ -2512,14 +1788,28 @@ class ChatService:
 
     # 每 _LOG_INTERVAL 轮输出一次 session 累计 token 消耗摘要
     _LOG_INTERVAL = 5
+    _INITIAL_PROGRESS_DELAY_SECONDS = 1.5
+    _INITIAL_PROGRESS_HINT = "正在理解你的问题，并结合当前信息整理回答..."
+    _EARLY_CONTEXT_PROGRESS_DELAY_SECONDS = 1.2
+    _EARLY_CONTEXT_PROGRESS_HINT = "正在读取当前会话信息..."
+    _LONG_PROGRESS_MODEL_WAIT_HINTS = (
+        (12.0, "还在分析你的问题，正在整理可用信息，请稍等..."),
+        (25.0, "这轮回答比平时慢一些，我会继续保留当前会话状态；没有明确确认前不会改动偏好或方案。"),
+        (60.0, "还在整理完整结论，我会继续保留当前会话状态；如果超时，会先给你安全提示。"),
+    )
+    _LONG_PROGRESS_TOOL_HINTS = (
+        (12.0, "还在处理，这轮需要结合当前信息整理结论，请稍等..."),
+        (25.0, "这轮分析耗时较长，我会继续等待结果，并尽量给出已确认的信息和下一步建议..."),
+        (60.0, "已经整理出部分分析信息，正在补全结论；我会继续保留当前会话状态。"),
+    )
+    _LONG_PROGRESS_HINTS = _LONG_PROGRESS_TOOL_HINTS
+    _MIN_PROGRESS_INTERVAL_SECONDS = 8.0
 
     def __init__(self, llm_client: LLMClient, history_store: ChatHistoryStore):
         self.llm_client = llm_client
         self.agent = ChatAgent(llm_client)
         self.history_store = history_store
         self.history_config = HistoryConfig()
-        self.semantic_router_config = SemanticRouterConfig()
-        self.semantic_router = SemanticIntentRouter(llm_client, self.semantic_router_config)
         self._usage_trackers: dict[str, UsageTracker] = {}
 
     # ── 公开接口：session 级 usage 查询 ───────────────────────────
@@ -2556,6 +1846,26 @@ class ChatService:
         clear_recent_plan_execution_result(session_id, content)
         past_turn_count = _count_user_turns(history)
         current_turn = past_turn_count + 1
+        context_progress_sent = False
+
+        async def emit_context_progress() -> None:
+            nonlocal context_progress_sent
+            if context_progress_sent or on_progress is None:
+                return
+            context_progress_sent = True
+            await on_progress(self._EARLY_CONTEXT_PROGRESS_HINT)
+
+        async def delayed_context_progress() -> None:
+            if on_progress is None:
+                return
+            await asyncio.sleep(self._EARLY_CONTEXT_PROGRESS_DELAY_SECONDS)
+            if context_progress_sent:
+                return
+            await emit_context_progress()
+
+        context_progress_task: asyncio.Task[None] | None = None
+        if on_progress is not None and not _is_plan_action_confirmation(content):
+            context_progress_task = asyncio.create_task(delayed_context_progress())
 
         # 打印原始 history 内容，便于调试格式
         # if history:
@@ -2564,7 +1874,6 @@ class ChatService:
         #         #logger.info("history[%d] type=%s content=%s", i, type(msg).__name__, msg)
 
         pending_plan_action = _extract_pending_plan_action(history)
-        pending_intent_confirmation: PendingConfirmation | None = None
         runtime_history = build_runtime_history(
             history,
             latest_user_content=content,
@@ -2582,58 +1891,6 @@ class ChatService:
             runtime_history.dropped_tool_return_count,
             runtime_history.has_pending,
         )
-
-        if not pending_plan_action:
-            pending_intent_confirmation = await _load_pending_intent_confirmation(session_id, history)
-            if pending_intent_confirmation and _is_pending_intent_impact_question(content):
-                turn_started_at = time.monotonic()
-                await _safe_emit_progress(on_progress, "正在结合这条待确认想法查看当前方案影响...")
-                tool_started_at = time.monotonic()
-                reply = await _build_pending_intent_impact_reply(session_id, pending_intent_confirmation)
-                tool_duration_ms = int((time.monotonic() - tool_started_at) * 1000)
-                if reply:
-                    new_messages = [
-                        ModelRequest(parts=[UserPromptPart(content=content)]),
-                        ModelResponse(parts=[TextPart(content=reply)], model_name="pending-intent-impact-fast-route"),
-                    ]
-                    try:
-                        history_to_save = list(history or [])
-                        history_to_save.extend(new_messages)
-                        await self.history_store.save(session_id, history_to_save)
-                    except Exception:
-                        logger.exception("Failed to save early pending intent impact history: session_id=%s", session_id)
-                    _log_conversation_turn_event(
-                        sessionId=session_id,
-                        userId=user_id,
-                        scene="intent",
-                        routingPath="pending_intent_impact_fast_route",
-                        routeDecision={
-                            "source": "direct_pending",
-                            "matched": True,
-                            "confidence": "high",
-                            "route": "intent",
-                            "reason": "pending_intent_impact_question",
-                        },
-                        pendingType="intent",
-                        actionFamily="preview_intent_impact",
-                        resultKind="intent_impact_preview",
-                        llmRequests=0,
-                        inputTokens=0,
-                        outputTokens=0,
-                        totalTokens=0,
-                        totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
-                        toolDurationMs=tool_duration_ms,
-                        toolCalls=[
-                            {
-                                "name": "enrich_plan_relation_analysis_from_state",
-                                "durationMs": tool_duration_ms,
-                                "success": True,
-                            }
-                        ],
-                        status="success",
-                        errorType=None,
-                    )
-                    return reply
 
         # 获取用户成绩详情
         parsed_score_detail = None
@@ -2685,13 +1942,11 @@ class ChatService:
 
         # 获取 planningState 轻量摘要
         parsed_planning_summary = None
-        planning_state_data: dict[str, Any] = {}
         try:
             planning_response = await get_planning_workspace_state(session_id)
             if planning_response.get("code") == 0:
                 planning_data = planning_response.get("data", {})
-                planning_state_data = planning_data if isinstance(planning_data, dict) else {}
-                parsed_planning_summary = PlanningSummary.from_backend_state(planning_state_data)
+                parsed_planning_summary = PlanningSummary.from_backend_state(planning_data)
                 if parsed_planning_summary:
                     logger.info(
                         "Fetched planning summary: phase=%s version=%s draft_total=%s ordered_total=%s review_risk=%s pending_actions=%s",
@@ -2705,8 +1960,7 @@ class ChatService:
         except Exception as e:
             logger.warning("Failed to fetch planning state: %s", e)
 
-        if pending_intent_confirmation is None:
-            pending_intent_confirmation = await _load_pending_intent_confirmation(session_id, history)
+        pending_intent_confirmation = await _load_pending_intent_confirmation(session_id)
         pending_intent_change = bool(pending_intent_confirmation)
 
         # 构建统一的 ConversationPhase
@@ -2743,6 +1997,12 @@ class ChatService:
                 )
                 conversation_phase.clear_pending()
 
+        if context_progress_task is not None:
+            if not context_progress_task.done():
+                context_progress_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await context_progress_task
+
         # 创建 RequestContext
         request_context = RequestContext(
             userid=user_id,
@@ -2762,49 +2022,11 @@ class ChatService:
         active_pending_kind = str(getattr(active_pending, "kind", "") or "").strip()
         active_plan_payload_text = resolve_pending_plan_payload_text(request_context)
         turn_started_at = time.monotonic()
-        if self.semantic_router_config.enabled and not self.semantic_router_config.blocking:
-            async def _run_semantic_router_shadow_background() -> None:
-                shadow_started_at = time.monotonic()
-                shadow = await self.semantic_router.route_shadow(
-                    content,
-                    request_context=request_context,
-                    active_pending=active_pending,
-                )
-                if shadow.status != "disabled":
-                    log_event(
-                        "semantic_router_shadow_event",
-                        sessionId=session_id,
-                        userId=user_id,
-                        prompt=content,
-                        shadow=shadow.event_payload(),
-                        totalDurationMs=int((time.monotonic() - shadow_started_at) * 1000),
-                        nonBlocking=True,
-                    )
-
-            asyncio.create_task(_run_semantic_router_shadow_background())
-            semantic_router_shadow = _semantic_router_scheduled_result()
-        else:
-            semantic_router_shadow = await self.semantic_router.route_shadow(
-                content,
-                request_context=request_context,
-                active_pending=active_pending,
-            )
-            if semantic_router_shadow.status != "disabled":
-                log_event(
-                    "semantic_router_shadow_event",
-                    sessionId=session_id,
-                    userId=user_id,
-                    prompt=content,
-                    shadow=semantic_router_shadow.event_payload(),
-                    totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
-                    nonBlocking=False,
-                )
 
         if active_pending_kind == "plan_mutation" and _is_plan_action_confirmation(content):
             action_family = str(getattr(active_pending, "action_family", "") or "").strip()
             plan_payload = active_plan_payload_text
             tool_call_id = f"direct-{action_family or 'pending-plan'}-confirmation"
-            await _safe_emit_progress(on_progress, "正在按你的确认更新方案，完成后会刷新工作台...")
             tool_started_at = time.monotonic()
             result_text = await execute_plan_action(SimpleNamespace(deps=request_context), plan_payload)
             tool_duration_ms = int((time.monotonic() - tool_started_at) * 1000)
@@ -2835,7 +2057,7 @@ class ChatService:
             ]
             try:
                 history_to_save = list(history or [])
-                history_to_save.extend(_append_semantic_router_shadow_message(new_messages, semantic_router_shadow))
+                history_to_save.extend(new_messages)
                 await self.history_store.save(session_id, history_to_save)
             except Exception:
                 logger.exception("Failed to save direct pending plan confirmation history: session_id=%s", session_id)
@@ -2844,20 +2066,8 @@ class ChatService:
                 userId=user_id,
                 scene="plan",
                 routingPath="direct_pending_plan_confirm",
-                routeDecision=_attach_semantic_router_shadow({
-                    "source": "direct_pending",
-                    "matched": True,
-                    "confidence": "high",
-                    "route": "plan",
-                    "reason": "plan_pending_confirmation",
-                }, semantic_router_shadow),
                 pendingType="plan",
                 actionFamily=action_family or result.get("action_family"),
-                resultKind=result.get("result_kind"),
-                llmRequests=0,
-                inputTokens=0,
-                outputTokens=0,
-                totalTokens=0,
                 totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
                 toolDurationMs=tool_duration_ms,
                 toolCalls=[
@@ -2884,51 +2094,8 @@ class ChatService:
                 )
             return reply
 
-        if (
-            active_pending_kind == "intent_change"
-            and _is_pending_intent_confirmation(content)
-            and _is_generic_confirmation(content)
-            and _last_readonly_context_kind(history)
-        ):
-            reply = _build_no_pending_confirmation_guard_reply(history)
-            new_messages = [
-                ModelRequest(parts=[UserPromptPart(content=content)]),
-                ModelResponse(parts=[TextPart(content=reply)], model_name="direct-plan-confirmation-guard"),
-            ]
-            try:
-                history_to_save = list(history or [])
-                history_to_save.extend(_append_semantic_router_shadow_message(new_messages, semantic_router_shadow))
-                await self.history_store.save(session_id, history_to_save)
-            except Exception:
-                logger.exception("Failed to save readonly-over-pending confirmation guard history: session_id=%s", session_id)
-            _log_conversation_turn_event(
-                sessionId=session_id,
-                userId=user_id,
-                scene="general",
-                routingPath="plan_confirmation_guard_no_pending",
-                routeDecision=_attach_semantic_router_shadow({
-                    "source": "direct_guard",
-                    "matched": True,
-                    "confidence": "high",
-                    "route": "general",
-                    "reason": "generic_confirm_after_readonly_over_stale_intent_pending",
-                }, semantic_router_shadow),
-                pendingType="intent",
-                actionFamily=None,
-                resultKind="readonly_confirmation_guard",
-                llmRequests=0,
-                inputTokens=0,
-                outputTokens=0,
-                totalTokens=0,
-                totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
-                status="success",
-                errorType=None,
-            )
-            return reply
-
         if active_pending_kind == "intent_change" and _is_pending_intent_confirmation(content):
             tool_call_id = "direct-pending-intent-confirmation"
-            await _safe_emit_progress(on_progress, "正在按你的确认更新后续参考偏好...")
             tool_started_at = time.monotonic()
             result_text = await update_volunteer_intent_state(
                 SimpleNamespace(deps=request_context),
@@ -2961,7 +2128,7 @@ class ChatService:
             ]
             try:
                 history_to_save = list(history or [])
-                history_to_save.extend(_append_semantic_router_shadow_message(new_messages, semantic_router_shadow))
+                history_to_save.extend(new_messages)
                 await self.history_store.save(session_id, history_to_save)
             except Exception:
                 logger.exception("Failed to save direct pending intent confirmation history: session_id=%s", session_id)
@@ -2971,20 +2138,8 @@ class ChatService:
                 userId=user_id,
                 scene="intent",
                 routingPath="direct_pending_intent_confirm",
-                routeDecision=_attach_semantic_router_shadow({
-                    "source": "direct_pending",
-                    "matched": True,
-                    "confidence": "high",
-                    "route": "intent",
-                    "reason": "intent_pending_confirmation",
-                }, semantic_router_shadow),
                 pendingType="intent",
                 actionFamily=None,
-                resultKind=None,
-                llmRequests=0,
-                inputTokens=0,
-                outputTokens=0,
-                totalTokens=0,
                 totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
                 toolDurationMs=tool_duration_ms,
                 toolCalls=[
@@ -3001,64 +2156,15 @@ class ChatService:
             )
             return reply
 
-        if active_pending_kind == "intent_change" and _is_pending_intent_impact_question(content):
-            await _safe_emit_progress(on_progress, "正在结合这条待确认想法查看当前方案影响...")
-            tool_started_at = time.monotonic()
-            reply = await _build_pending_intent_impact_reply(session_id, active_pending)
-            tool_duration_ms = int((time.monotonic() - tool_started_at) * 1000)
-            if reply:
-                new_messages = [
-                    ModelRequest(parts=[UserPromptPart(content=content)]),
-                    ModelResponse(parts=[TextPart(content=reply)], model_name="pending-intent-impact-fast-route"),
-                ]
-                try:
-                    history_to_save = list(history or [])
-                    history_to_save.extend(_append_semantic_router_shadow_message(new_messages, semantic_router_shadow))
-                    await self.history_store.save(session_id, history_to_save)
-                except Exception:
-                    logger.exception("Failed to save pending intent impact history: session_id=%s", session_id)
-                _log_conversation_turn_event(
-                    sessionId=session_id,
-                    userId=user_id,
-                    scene="intent",
-                    routingPath="pending_intent_impact_fast_route",
-                    routeDecision=_attach_semantic_router_shadow({
-                        "source": "direct_pending",
-                        "matched": True,
-                        "confidence": "high",
-                        "route": "intent",
-                        "reason": "pending_intent_impact_question",
-                    }, semantic_router_shadow),
-                    pendingType="intent",
-                    actionFamily="preview_intent_impact",
-                    resultKind="intent_impact_preview",
-                    llmRequests=0,
-                    inputTokens=0,
-                    outputTokens=0,
-                    totalTokens=0,
-                    totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
-                    toolDurationMs=tool_duration_ms,
-                    toolCalls=[
-                        {
-                            "name": "enrich_plan_relation_analysis_from_state",
-                            "durationMs": tool_duration_ms,
-                            "success": True,
-                        }
-                    ],
-                    status="success",
-                    errorType=None,
-                )
-                return reply
-
         if active_pending is None and _is_plan_action_confirmation(content):
-            reply = _build_no_pending_confirmation_guard_reply(history)
+            reply = "我这边没有上一轮待确认的方案动作。你可以直接说想生成方案、审查方案或怎么调整，我会先说明影响，确认后再执行。"
             new_messages = [
                 ModelRequest(parts=[UserPromptPart(content=content)]),
                 ModelResponse(parts=[TextPart(content=reply)], model_name="direct-plan-confirmation-guard"),
             ]
             try:
                 history_to_save = list(history or [])
-                history_to_save.extend(_append_semantic_router_shadow_message(new_messages, semantic_router_shadow))
+                history_to_save.extend(new_messages)
                 await self.history_store.save(session_id, history_to_save)
             except Exception:
                 logger.exception("Failed to save no-pending plan confirmation guard history: session_id=%s", session_id)
@@ -3067,841 +2173,128 @@ class ChatService:
                 userId=user_id,
                 scene="plan",
                 routingPath="plan_confirmation_guard_no_pending",
-                routeDecision=_attach_semantic_router_shadow({
-                    "source": "direct_guard",
-                    "matched": True,
-                    "confidence": "high",
-                    "route": "plan",
-                    "reason": "no_pending_confirmation_guard",
-                }, semantic_router_shadow),
                 pendingType=None,
                 actionFamily=None,
-                resultKind=None,
-                llmRequests=0,
-                inputTokens=0,
-                outputTokens=0,
-                totalTokens=0,
                 totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
                 status="success",
                 errorType=None,
             )
             return reply
 
-        if active_pending is None and _is_readonly_closure_ack(content):
-            reply = _build_readonly_closure_ack_reply(history)
-            new_messages = [
-                ModelRequest(parts=[UserPromptPart(content=content)]),
-                ModelResponse(parts=[TextPart(content=reply)], model_name="direct-readonly-closure-ack"),
-            ]
-            try:
-                history_to_save = list(history or [])
-                history_to_save.extend(_append_semantic_router_shadow_message(new_messages, semantic_router_shadow))
-                await self.history_store.save(session_id, history_to_save)
-            except Exception:
-                logger.exception("Failed to save readonly closure ack history: session_id=%s", session_id)
-            _log_conversation_turn_event(
-                sessionId=session_id,
-                userId=user_id,
-                scene="general",
-                routingPath="readonly_closure_ack",
-                routeDecision=_attach_semantic_router_shadow({
-                    "source": "direct_guard",
-                    "matched": True,
-                    "confidence": "high",
-                    "route": "general",
-                    "reason": "readonly_closure_ack",
-                }, semantic_router_shadow),
-                pendingType=None,
-                actionFamily=None,
-                resultKind="ack",
-                llmRequests=0,
-                inputTokens=0,
-                outputTokens=0,
-                totalTokens=0,
-                totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
-                status="success",
-                errorType=None,
-            )
-            return reply
+        progress_sent = False
+        tool_progress_sent = False
+        last_progress_at: float | None = None
 
-        plan_fast_candidate = (
-            resolve_plan_fast_route(content)
-            if request_context.planning_summary is not None
-            else None
-        )
-        plan_query_candidate = resolve_plan_query_fast_route(content, batch=request_context.batch)
-        fixed_scenario_route_decision: dict[str, Any] | None = None
-        should_try_fixed_scenario_router = (
-            self.semantic_router_config.fixed_route_enabled
-            and not bool(getattr(plan_fast_candidate, "matched", False))
-            and not bool(getattr(plan_query_candidate, "matched", False))
-        )
-        if should_try_fixed_scenario_router:
-            fixed_route_result = await self.semantic_router.route_fixed_scenario(
-                content,
-                request_context=request_context,
-                active_pending=active_pending,
-            )
-            fixed_resolved = resolve_fixed_scenario_routes(
-                fixed_route_result,
-                batch=request_context.batch,
-                min_confidence=self.semantic_router_config.fixed_route_min_confidence,
-            )
-            fixed_scenario_route_decision = fixed_resolved.route_decision
-            major_intent_candidate = fixed_resolved.major_intent_decision
-            major_compare_candidate = fixed_resolved.major_compare_decision
-            career_direction_candidate = fixed_resolved.career_direction_decision
-            if fixed_scenario_route_decision is not None:
-                log_event(
-                    "fixed_scenario_router_event",
-                    sessionId=session_id,
-                    userId=user_id,
-                    prompt=content,
-                    routeDecision=fixed_scenario_route_decision,
-                    totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
-                )
-        else:
-            major_intent_candidate = resolve_major_intent_fast_route(content, batch=request_context.batch)
-            major_compare_candidate = resolve_major_compare_fast_route(content, batch=request_context.batch)
-            career_direction_candidate = resolve_career_direction_fast_route(content)
-        fast_arbitration = arbitrate_fast_route_candidates(
-            content,
-            plan_fast_decision=plan_fast_candidate,
-            plan_query_decision=plan_query_candidate,
-            major_intent_decision=major_intent_candidate,
-            major_compare_decision=major_compare_candidate,
-            career_direction_decision=career_direction_candidate,
-        )
-        fast_arbitration_route_decision = fast_arbitration.route_decision()
-        if fixed_scenario_route_decision is not None:
-            fast_arbitration_route_decision["fixedScenarioRouter"] = fixed_scenario_route_decision
-        if fast_arbitration.selected is None and fast_arbitration.candidates:
-            log_event(
-                "fast_route_arbitration_fallback_event",
-                sessionId=session_id,
-                userId=user_id,
-                routeDecision=_attach_semantic_router_shadow(
-                    fast_arbitration_route_decision,
-                    semantic_router_shadow,
-                ),
-                totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
-                )
+        async def emit_progress(hint: str, *, is_tool_progress: bool = False) -> None:
+            nonlocal progress_sent, tool_progress_sent, last_progress_at
+            progress_sent = True
+            if is_tool_progress:
+                tool_progress_sent = True
+            last_progress_at = time.monotonic()
+            if on_progress is not None:
+                await on_progress(hint)
 
-        region_safety_decision = fast_arbitration.decision_for("region_safety_tradeoff_route")
-        if region_safety_decision is not None:
-            route_decision = {
-                "source": "region_safety_tradeoff_route",
-                "matched": True,
-                "confidence": "high",
-                "route": "explore",
-                "reason": "region_safety_tradeoff_structured_analysis",
-                "arbitration": fast_arbitration_route_decision,
-            }
-            route_decision = _attach_semantic_router_shadow(route_decision, semantic_router_shadow)
-            tool_call_id = "fast-analyze-region-safety-tradeoff"
-            tool_started_at = time.monotonic()
-            try:
-                await _safe_emit_progress(on_progress, "正在结合地域偏好和录取安全做取舍分析...")
-                reply = render_region_safety_tradeoff_reply(
-                    content,
-                    planning_state_data,
-                    request_context,
-                )
-                tool_duration_ms = int((time.monotonic() - tool_started_at) * 1000)
-                if reply:
-                    reply = _sanitize_reply_for_user(_normalize_user_facing_terms(reply))
-                    reply = _append_readonly_boundary_if_requested(reply, content)
-                    new_messages = [
-                        ModelRequest(parts=[UserPromptPart(content=content)]),
-                        ModelResponse(
-                            parts=[
-                                ToolCallPart(
-                                    tool_name="analyze_region_safety_tradeoff",
-                                    args={"query": content},
-                                    tool_call_id=tool_call_id,
-                                )
-                            ],
-                            model_name="region-safety-tradeoff-route",
-                        ),
-                        ModelRequest(
-                            parts=[
-                                ToolReturnPart(
-                                    tool_name="analyze_region_safety_tradeoff",
-                                    content=reply,
-                                    tool_call_id=tool_call_id,
-                                )
-                            ]
-                        ),
-                        ModelResponse(parts=[TextPart(content=reply)], model_name="region-safety-tradeoff-route"),
-                    ]
-                    route_message = _route_observability_message(
-                        {
-                            "routingPath": "region_safety_tradeoff_route",
-                            "routeDecision": route_decision,
-                        }
-                    )
-                    if route_message is not None:
-                        new_messages.append(route_message)
-                    try:
-                        history_to_save = list(history or [])
-                        history_to_save.extend(_append_semantic_router_shadow_message(new_messages, semantic_router_shadow))
-                        await self.history_store.save(session_id, history_to_save)
-                    except Exception:
-                        logger.exception("Failed to save region safety route history: session_id=%s", session_id)
-                    _log_conversation_turn_event(
-                        sessionId=session_id,
-                        userId=user_id,
-                        scene="explore",
-                        routingPath="region_safety_tradeoff_route",
-                        routeDecision=route_decision,
-                        pendingType=None,
-                        actionFamily="analyze_region_safety_tradeoff",
-                        resultKind="region_safety_tradeoff_analysis",
-                        modelProvider=_llm_config_value(self.llm_client, "provider"),
-                        modelName=_llm_config_value(self.llm_client, "model_name"),
-                        llmRequests=0,
-                        inputTokens=0,
-                        outputTokens=0,
-                        totalTokens=0,
-                        toolCallCount=1,
-                        totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
-                        llmDurationMs=0,
-                        toolDurationMs=tool_duration_ms,
-                        toolCalls=[
-                            {
-                                "name": "analyze_region_safety_tradeoff",
-                                "durationMs": tool_duration_ms,
-                                "success": True,
-                            }
-                        ],
-                        postProcessingApplied=["region_safety_tradeoff_renderer"],
-                        status="success",
-                        errorType=None,
-                    )
-                    return reply
-            except Exception:
-                logger.exception("Region safety tradeoff route failed; falling back to full agent: session_id=%s", session_id)
+        async def progress_wrapper(hint: str) -> None:
+            await emit_progress(hint, is_tool_progress=True)
 
-        fast_decision = fast_arbitration.decision_for("plan_fast_route")
-        if fast_decision is not None and fast_decision.matched:
-            route_decision = fast_decision.route_decision()
-            route_decision["arbitration"] = fast_arbitration_route_decision
-            route_decision = _attach_semantic_router_shadow(route_decision, semantic_router_shadow)
-            try:
-                shadow = action_resolver_shadow_from_plan_fast_decision(
-                    text=content,
-                    decision=fast_decision,
-                    planning_summary=request_context.planning_summary,
-                    phase=request_context.conversation_phase,
-                )
-                if shadow is not None:
-                    log_event(
-                        "action_resolver_shadow_event",
-                        sessionId=session_id,
-                        userId=user_id,
-                        source="plan_fast_route",
-                        routeDecision=route_decision,
-                        actualActionFamily=shadow.get("actualActionFamily"),
-                        shadowActionFamily=shadow.get("shadowActionFamily"),
-                        shadowStage=shadow.get("shadowStage"),
-                        actionFamilyMatch=shadow.get("actionFamilyMatch"),
-                        missingInputs=shadow.get("missingInputs"),
-                        normalizationApplied=shadow.get("normalizationApplied"),
-                        totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
-                    )
-            except Exception:
-                logger.warning(
-                    "ActionResolver shadow failed for plan fast route: session_id=%s action_family=%s",
-                    session_id,
-                    fast_decision.action_family,
-                    exc_info=True,
-                )
-            plan_next_call_id = f"fast-plan-next-{fast_decision.action_family}"
-            execute_call_id = f"fast-execute-{fast_decision.action_family}"
-            try:
-                await _safe_emit_progress(on_progress, "正在读取当前方案并整理这次请求...")
-                plan_next_started_at = time.monotonic()
-                plan_model = await _plan_next_action_model(
-                    SimpleNamespace(deps=request_context),
-                    user_goal=fast_decision.user_goal or content,
-                    action_family=fast_decision.action_family,  # type: ignore[arg-type]
-                    volunteer_ids=fast_decision.volunteer_ids,
-                    unit_ids=fast_decision.unit_ids,
-                    target_position=fast_decision.target_position,
-                    sort_field=fast_decision.filters.get("sort_field"),
-                    user_confirmed=False,
-                )
-                plan_next_duration_ms = int((time.monotonic() - plan_next_started_at) * 1000)
-                plan_payload = json.dumps(plan_model.model_dump(), ensure_ascii=False)
-                await _safe_emit_progress(
-                    on_progress,
-                    _plan_fast_route_execute_progress_hint(fast_decision.action_family, plan_model.stage),
-                )
-                execute_started_at = time.monotonic()
-                result_text = await execute_plan_action(SimpleNamespace(deps=request_context), plan_payload)
-                execute_duration_ms = int((time.monotonic() - execute_started_at) * 1000)
-                result = _parse_tool_return_json(result_text) or {}
-                reply = _direct_plan_fast_route_reply(result)
-                if isinstance(reply, str):
-                    reply = _sanitize_reply_for_user(_normalize_user_facing_terms(reply))
+        async def delayed_initial_progress() -> None:
+            if on_progress is None:
+                return
+            await asyncio.sleep(self._INITIAL_PROGRESS_DELAY_SECONDS)
+            if progress_sent:
+                return
+            await emit_progress(self._INITIAL_PROGRESS_HINT)
 
-                new_messages = [
-                    ModelRequest(parts=[UserPromptPart(content=content)]),
-                    ModelResponse(
-                        parts=[
-                            ToolCallPart(
-                                tool_name="plan_next_action",
-                                args={
-                                    "user_goal": fast_decision.user_goal or content,
-                                    "action_family": fast_decision.action_family,
-                                    "volunteer_ids": fast_decision.volunteer_ids,
-                                    "unit_ids": fast_decision.unit_ids,
-                                    "target_position": fast_decision.target_position,
-                                    "sort_field": fast_decision.filters.get("sort_field"),
-                                    "user_confirmed": False,
-                                },
-                                tool_call_id=plan_next_call_id,
-                            )
-                        ],
-                        model_name="plan-fast-route",
-                    ),
-                    ModelRequest(
-                        parts=[
-                            ToolReturnPart(
-                                tool_name="plan_next_action",
-                                content=plan_payload,
-                                tool_call_id=plan_next_call_id,
-                            )
-                        ]
-                    ),
-                    ModelResponse(
-                        parts=[
-                            ToolCallPart(
-                                tool_name="execute_plan_action",
-                                args={"plan_payload": plan_payload},
-                                tool_call_id=execute_call_id,
-                            )
-                        ],
-                        model_name="plan-fast-route",
-                    ),
-                    ModelRequest(
-                        parts=[
-                            ToolReturnPart(
-                                tool_name="execute_plan_action",
-                                content=result_text,
-                                tool_call_id=execute_call_id,
-                            )
-                        ]
-                    ),
-                    ModelResponse(parts=[TextPart(content=reply)], model_name="plan-fast-route"),
-                ]
-                route_message = _route_observability_message(
-                    {
-                        "routingPath": "plan_fast_route",
-                        "routeDecision": route_decision,
-                    }
-                )
-                if route_message is not None:
-                    new_messages.append(route_message)
-                try:
-                    history_to_save = list(history or [])
-                    history_to_save.extend(_append_semantic_router_shadow_message(new_messages, semantic_router_shadow))
-                    await self.history_store.save(session_id, history_to_save)
-                except Exception:
-                    logger.exception("Failed to save plan fast route history: session_id=%s", session_id)
-                _log_conversation_turn_event(
-                    sessionId=session_id,
-                    userId=user_id,
-                    scene="plan",
-                    routingPath="plan_fast_route",
-                    routeDecision=route_decision,
-                    pendingType=None,
-                    actionFamily=result.get("action_family") or fast_decision.action_family,
-                    resultKind=result.get("result_kind"),
-                    modelProvider=_llm_config_value(self.llm_client, "provider"),
-                    modelName=_llm_config_value(self.llm_client, "model_name"),
-                    llmRequests=0,
-                    inputTokens=0,
-                    outputTokens=0,
-                    totalTokens=0,
-                    toolCallCount=2,
-                    totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
-                    llmDurationMs=0,
-                    toolDurationMs=plan_next_duration_ms + execute_duration_ms,
-                    toolCalls=[
-                        {
-                            "name": "plan_next_action",
-                            "durationMs": plan_next_duration_ms,
-                            "success": True,
-                            "actionFamily": fast_decision.action_family,
-                            "stage": plan_model.stage,
-                        },
-                        {
-                            "name": "execute_plan_action",
-                            "durationMs": execute_duration_ms,
-                            "success": bool(result) and result.get("result_kind") != "error",
-                            "actionFamily": result.get("action_family") or fast_decision.action_family,
-                            "stage": result.get("stage"),
-                            "resultKind": result.get("result_kind"),
-                            "applied": bool(result.get("applied")),
-                        },
-                    ],
-                    postProcessingApplied=[],
-                    status="success" if result.get("result_kind") != "error" else "error",
-                    errorType=result.get("result_kind") if result.get("result_kind") == "error" else None,
-                )
-                workspace_refresh_targets = _dedupe_workspace_targets(
-                    [str(target) for target in (result.get("workspace_refresh_targets") or [])]
-                )
-                if workspace_refresh_targets:
-                    return ChatServiceResponseEnvelope(
-                        primary=reply,
-                        followups=[
-                            _build_workspace_action_response(session_id, target)
-                            for target in workspace_refresh_targets
-                        ],
-                    )
-                return reply
-            except Exception:
-                logger.exception(
-                    "Plan fast route failed; falling back to full agent: session_id=%s action_family=%s",
-                    session_id,
-                    fast_decision.action_family,
-                )
+        progress_started_at = time.monotonic()
 
-        plan_query_decision = fast_arbitration.decision_for("plan_query_fast_route")
-        if plan_query_decision is not None and plan_query_decision.matched:
-            route_decision = plan_query_decision.route_decision()
-            route_decision["arbitration"] = fast_arbitration_route_decision
-            route_decision = _attach_semantic_router_shadow(route_decision, semantic_router_shadow)
-            tool_call_id = "fast-query-volunteer-plan"
-            tool_started_at = time.monotonic()
-            tool_args = plan_query_decision.tool_args()
-            try:
-                await _safe_emit_progress(on_progress, "正在查当前方案和候选里的相关结果...")
-                tool_result_text = await query_volunteer_plan(
-                    SimpleNamespace(deps=request_context),
-                    **tool_args,
+        async def delayed_long_progress() -> None:
+            if on_progress is None:
+                return
+            model_wait_hints = dict(self._LONG_PROGRESS_MODEL_WAIT_HINTS)
+            tool_hints = dict(self._LONG_PROGRESS_TOOL_HINTS)
+            delay_points = sorted(set(model_wait_hints) | set(tool_hints))
+            for delay_seconds in delay_points:
+                wait_seconds = max(0.0, progress_started_at + delay_seconds - time.monotonic())
+                await asyncio.sleep(wait_seconds)
+                now = time.monotonic()
+                if (
+                    last_progress_at is not None
+                    and now - last_progress_at < self._MIN_PROGRESS_INTERVAL_SECONDS
+                ):
+                    continue
+                hint = (
+                    tool_hints.get(delay_seconds)
+                    if tool_progress_sent
+                    else model_wait_hints.get(delay_seconds)
                 )
-                tool_duration_ms = int((time.monotonic() - tool_started_at) * 1000)
-                reply = _sanitize_reply_for_user(_normalize_user_facing_terms(str(tool_result_text or "").strip()))
-                reply = _append_readonly_boundary_if_requested(reply, content)
+                if not hint:
+                    continue
+                await emit_progress(hint)
 
-                new_messages = [
-                    ModelRequest(parts=[UserPromptPart(content=content)]),
-                    ModelResponse(
-                        parts=[
-                            ToolCallPart(
-                                tool_name="query_volunteer_plan",
-                                args=tool_args,
-                                tool_call_id=tool_call_id,
-                            )
-                        ],
-                        model_name="plan-query-fast-route",
-                    ),
-                    ModelRequest(
-                        parts=[
-                            ToolReturnPart(
-                                tool_name="query_volunteer_plan",
-                                content=tool_result_text,
-                                tool_call_id=tool_call_id,
-                            )
-                        ]
-                    ),
-                    ModelResponse(parts=[TextPart(content=reply)], model_name="plan-query-fast-route"),
-                ]
-                route_message = _route_observability_message(
-                    {
-                        "routingPath": "plan_query_fast_route",
-                        "routeDecision": route_decision,
-                    }
-                )
-                if route_message is not None:
-                    new_messages.append(route_message)
-                try:
-                    history_to_save = list(history or [])
-                    history_to_save.extend(_append_semantic_router_shadow_message(new_messages, semantic_router_shadow))
-                    await self.history_store.save(session_id, history_to_save)
-                except Exception:
-                    logger.exception("Failed to save plan query fast route history: session_id=%s", session_id)
-                _log_conversation_turn_event(
-                    sessionId=session_id,
-                    userId=user_id,
-                    scene="plan",
-                    routingPath="plan_query_fast_route",
-                    routeDecision=route_decision,
-                    pendingType=None,
-                    actionFamily="query_volunteer_plan",
-                    resultKind="plan_local_query",
-                    modelProvider=_llm_config_value(self.llm_client, "provider"),
-                    modelName=_llm_config_value(self.llm_client, "model_name"),
-                    llmRequests=0,
-                    inputTokens=0,
-                    outputTokens=0,
-                    totalTokens=0,
-                    toolCallCount=1,
-                    totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
-                    llmDurationMs=0,
-                    toolDurationMs=tool_duration_ms,
-                    toolCalls=[
-                        {
-                            "name": "query_volunteer_plan",
-                            "durationMs": tool_duration_ms,
-                            "success": True,
-                            "scope": plan_query_decision.scope,
-                        }
-                    ],
-                    postProcessingApplied=[],
-                    status="success",
-                    errorType=None,
-                )
-                return reply
-            except Exception:
-                logger.exception(
-                    "Plan query fast route failed; falling back to full agent: session_id=%s args=%s",
-                    session_id,
-                    tool_args,
-                )
-
-        major_intent_decision = fast_arbitration.decision_for("major_intent_fast_route")
-        if major_intent_decision is not None and major_intent_decision.matched:
-            route_decision = major_intent_decision.route_decision()
-            route_decision["arbitration"] = fast_arbitration_route_decision
-            route_decision = _attach_semantic_router_shadow(route_decision, semantic_router_shadow)
-            tool_call_id = "fast-preview-major-intent"
-            tool_started_at = time.monotonic()
-            try:
-                await _safe_emit_progress(on_progress, "正在整理这个专业想法的影响，等你确认后才会记入偏好...")
-                major_intents = MajorIntentPreviewInput.model_validate(major_intent_decision.major_intents)
-                tool_result_text = await preview_current_major_intent_confirmation(
-                    SimpleNamespace(deps=request_context),
-                    major_intents=major_intents,
-                    intent_mode=major_intent_decision.intent_mode,  # type: ignore[arg-type]
-                )
-                tool_duration_ms = int((time.monotonic() - tool_started_at) * 1000)
-                reply = _normalize_pending_intent_reply(str(tool_result_text or "").strip())
-                reply = _sanitize_reply_for_user(_normalize_user_facing_terms(reply))
-
-                new_messages = [
-                    ModelRequest(parts=[UserPromptPart(content=content)]),
-                    ModelResponse(
-                        parts=[
-                            ToolCallPart(
-                                tool_name="preview_current_major_intent_confirmation",
-                                args={
-                                    "major_intents": major_intent_decision.major_intents,
-                                    "intent_mode": major_intent_decision.intent_mode,
-                                },
-                                tool_call_id=tool_call_id,
-                            )
-                        ],
-                        model_name="major-intent-fast-route",
-                    ),
-                    ModelRequest(
-                        parts=[
-                            ToolReturnPart(
-                                tool_name="preview_current_major_intent_confirmation",
-                                content=tool_result_text,
-                                tool_call_id=tool_call_id,
-                            )
-                        ]
-                    ),
-                    ModelResponse(parts=[TextPart(content=reply)], model_name="major-intent-fast-route"),
-                ]
-                route_message = _route_observability_message(
-                    {
-                        "routingPath": "major_intent_fast_route",
-                        "routeDecision": route_decision,
-                    }
-                )
-                if route_message is not None:
-                    new_messages.append(route_message)
-                try:
-                    history_to_save = list(history or [])
-                    history_to_save.extend(_append_semantic_router_shadow_message(new_messages, semantic_router_shadow))
-                    await self.history_store.save(session_id, history_to_save)
-                except Exception:
-                    logger.exception("Failed to save major intent fast route history: session_id=%s", session_id)
-                _log_conversation_turn_event(
-                    sessionId=session_id,
-                    userId=user_id,
-                    scene="intent",
-                    routingPath="major_intent_fast_route",
-                    routeDecision=route_decision,
-                    pendingType=None,
-                    actionFamily="preview_major_intent",
-                    resultKind="intent_preview",
-                    modelProvider=_llm_config_value(self.llm_client, "provider"),
-                    modelName=_llm_config_value(self.llm_client, "model_name"),
-                    llmRequests=0,
-                    inputTokens=0,
-                    outputTokens=0,
-                    totalTokens=0,
-                    toolCallCount=1,
-                    totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
-                    llmDurationMs=0,
-                    toolDurationMs=tool_duration_ms,
-                    toolCalls=[
-                        {
-                            "name": "preview_current_major_intent_confirmation",
-                            "durationMs": tool_duration_ms,
-                            "success": True,
-                            "intentMode": major_intent_decision.intent_mode,
-                            "majorIntents": major_intent_decision.major_intents,
-                        }
-                    ],
-                    postProcessingApplied=[],
-                    status="success",
-                    errorType=None,
-                )
-                return reply
-            except Exception:
-                logger.exception(
-                    "Major intent fast route failed; falling back to full agent: session_id=%s major_intents=%s",
-                    session_id,
-                    major_intent_decision.major_intents,
-                )
-
-        major_compare_decision = fast_arbitration.decision_for("major_compare_fast_route")
-        if major_compare_decision is not None and major_compare_decision.matched:
-            route_decision = major_compare_decision.route_decision()
-            route_decision["arbitration"] = fast_arbitration_route_decision
-            route_decision = _attach_semantic_router_shadow(route_decision, semantic_router_shadow)
-            tool_call_id = "fast-compare-majors"
-            tool_started_at = time.monotonic()
-            try:
-                await _safe_emit_progress(on_progress, "正在对比这几个专业的差异...")
-                major_names = list(major_compare_decision.major_names or [
-                    major_compare_decision.major_name1,
-                    major_compare_decision.major_name2,
-                ])
-                used_missing_weight_renderer = False
-                used_multi_major_renderer = len(major_names) > 2
-                if used_multi_major_renderer:
-                    tool_result_text = json.dumps(
-                        {
-                            "result_kind": "multi_major_compare",
-                            "major_names": major_names,
-                        },
-                        ensure_ascii=False,
-                    )
-                    reply = render_multi_major_compare_reply(
-                        major_names=major_names,
-                        request_context=request_context,
-                    )
-                else:
-                    tool_result_text = await compare_majors(
-                        SimpleNamespace(deps=request_context),
-                        major_compare_decision.major_name1,
-                        major_compare_decision.major_name2,
-                    )
-                    if is_missing_weight_major_compare_result(tool_result_text):
-                        reply = render_missing_weight_major_compare_reply(
-                            major_name1=major_compare_decision.major_name1,
-                            major_name2=major_compare_decision.major_name2,
-                            request_context=request_context,
-                        )
-                        used_missing_weight_renderer = True
-                    else:
-                        reply = tool_result_text
-                tool_duration_ms = int((time.monotonic() - tool_started_at) * 1000)
-                reply = _sanitize_reply_for_user(_normalize_user_facing_terms(str(reply or "").strip()))
-                reply = _append_readonly_boundary_if_requested(reply, content)
-
-                new_messages = [
-                    ModelRequest(parts=[UserPromptPart(content=content)]),
-                    ModelResponse(
-                        parts=[
-                            ToolCallPart(
-                                tool_name="compare_majors",
-                                args={
-                                    "major_name1": major_compare_decision.major_name1,
-                                    "major_name2": major_compare_decision.major_name2,
-                                    "major_names": major_names,
-                                },
-                                tool_call_id=tool_call_id,
-                            )
-                        ],
-                        model_name="major-compare-fast-route",
-                    ),
-                    ModelRequest(
-                        parts=[
-                            ToolReturnPart(
-                                tool_name="compare_majors",
-                                content=tool_result_text,
-                                tool_call_id=tool_call_id,
-                            )
-                        ]
-                    ),
-                    ModelResponse(parts=[TextPart(content=reply)], model_name="major-compare-fast-route"),
-                ]
-                route_message = _route_observability_message(
-                    {
-                        "routingPath": "major_compare_fast_route",
-                        "routeDecision": route_decision,
-                    }
-                )
-                if route_message is not None:
-                    new_messages.append(route_message)
-                try:
-                    history_to_save = list(history or [])
-                    history_to_save.extend(_append_semantic_router_shadow_message(new_messages, semantic_router_shadow))
-                    await self.history_store.save(session_id, history_to_save)
-                except Exception:
-                    logger.exception("Failed to save major compare fast route history: session_id=%s", session_id)
-                _log_conversation_turn_event(
-                    sessionId=session_id,
-                    userId=user_id,
-                    scene="explore",
-                    routingPath="major_compare_fast_route",
-                    routeDecision=route_decision,
-                    pendingType=None,
-                    actionFamily="compare_majors",
-                    resultKind=(
-                        "multi_major_compare"
-                        if used_multi_major_renderer
-                        else "missing_weight_fallback"
-                        if is_missing_weight_major_compare_result(tool_result_text)
-                        else "major_compare"
-                    ),
-                    modelProvider=_llm_config_value(self.llm_client, "provider"),
-                    modelName=_llm_config_value(self.llm_client, "model_name"),
-                    llmRequests=0,
-                    inputTokens=None,
-                    outputTokens=None,
-                    totalTokens=None,
-                    toolCallCount=1,
-                    totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
-                    llmDurationMs=0,
-                    toolDurationMs=tool_duration_ms,
-                    toolCalls=[
-                        {
-                            "name": "compare_majors",
-                            "durationMs": tool_duration_ms,
-                            "success": True,
-                            "majorNames": [
-                                *major_names,
-                            ],
-                        }
-                    ],
-                    postProcessingApplied=(
-                        ["multi_major_compare_renderer"]
-                        if used_multi_major_renderer
-                        else ["missing_weight_major_compare_renderer"]
-                        if used_missing_weight_renderer
-                        else []
-                    ),
-                    status="success",
-                    errorType=None,
-                )
-                return reply
-            except Exception:
-                logger.exception(
-                    "Major compare fast route failed; falling back to full agent: session_id=%s majors=%s/%s",
-                    session_id,
-                    major_compare_decision.major_name1,
-                    major_compare_decision.major_name2,
-                )
-
-        career_direction_decision = fast_arbitration.decision_for("career_direction_fast_route")
-        if career_direction_decision is not None and career_direction_decision.matched:
-            route_decision = career_direction_decision.route_decision()
-            route_decision["arbitration"] = fast_arbitration_route_decision
-            route_decision = _attach_semantic_router_shadow(route_decision, semantic_router_shadow)
-            tool_call_id = "fast-analyze-current-career-direction"
-            tool_started_at = time.monotonic()
-            try:
-                await _safe_emit_progress(on_progress, "正在看这条方向和当前方案的承接情况...")
-                tool_result_text = await analyze_current_career_direction(SimpleNamespace(deps=request_context))
-                tool_duration_ms = int((time.monotonic() - tool_started_at) * 1000)
-                reply = _sanitize_reply_for_user(_normalize_user_facing_terms(str(tool_result_text or "").strip()))
-                reply = _append_readonly_boundary_if_requested(reply, content)
-
-                new_messages = [
-                    ModelRequest(parts=[UserPromptPart(content=content)]),
-                    ModelResponse(
-                        parts=[
-                            ToolCallPart(
-                                tool_name="analyze_current_career_direction",
-                                args={
-                                    "direction_slots": list(career_direction_decision.direction_slots),
-                                },
-                                tool_call_id=tool_call_id,
-                            )
-                        ],
-                        model_name="career-direction-fast-route",
-                    ),
-                    ModelRequest(
-                        parts=[
-                            ToolReturnPart(
-                                tool_name="analyze_current_career_direction",
-                                content=tool_result_text,
-                                tool_call_id=tool_call_id,
-                            )
-                        ]
-                    ),
-                    ModelResponse(parts=[TextPart(content=reply)], model_name="career-direction-fast-route"),
-                ]
-                route_message = _route_observability_message(
-                    {
-                        "routingPath": "career_direction_fast_route",
-                        "routeDecision": route_decision,
-                    }
-                )
-                if route_message is not None:
-                    new_messages.append(route_message)
-                try:
-                    history_to_save = list(history or [])
-                    history_to_save.extend(_append_semantic_router_shadow_message(new_messages, semantic_router_shadow))
-                    await self.history_store.save(session_id, history_to_save)
-                except Exception:
-                    logger.exception("Failed to save career direction fast route history: session_id=%s", session_id)
-                _log_conversation_turn_event(
-                    sessionId=session_id,
-                    userId=user_id,
-                    scene="explore",
-                    routingPath="career_direction_fast_route",
-                    routeDecision=route_decision,
-                    pendingType=None,
-                    actionFamily="analyze_current_career_direction",
-                    resultKind="career_direction_analysis",
-                    modelProvider=_llm_config_value(self.llm_client, "provider"),
-                    modelName=_llm_config_value(self.llm_client, "model_name"),
-                    llmRequests=0,
-                    inputTokens=None,
-                    outputTokens=None,
-                    totalTokens=None,
-                    toolCallCount=1,
-                    totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
-                    llmDurationMs=0,
-                    toolDurationMs=tool_duration_ms,
-                    toolCalls=[
-                        {
-                            "name": "analyze_current_career_direction",
-                            "durationMs": tool_duration_ms,
-                            "success": True,
-                            "directionSlots": list(career_direction_decision.direction_slots),
-                        }
-                    ],
-                    postProcessingApplied=[],
-                    status="success",
-                    errorType=None,
-                )
-                return reply
-            except Exception:
-                logger.exception(
-                    "Career direction fast route failed; falling back to full agent: session_id=%s direction_slots=%s",
-                    session_id,
-                    career_direction_decision.direction_slots,
-                )
+        initial_progress_task: asyncio.Task[None] | None = None
+        long_progress_task: asyncio.Task[None] | None = None
+        if on_progress is not None:
+            initial_progress_task = asyncio.create_task(delayed_initial_progress())
+            long_progress_task = asyncio.create_task(delayed_long_progress())
 
         llm_started_at = time.monotonic()
-        reply, new_messages, all_messages, usage = await self.agent.run_with_message_deltas(
-            user_prompt=content,
-            message_history=runtime_history.model_history,
-            deps=request_context,
-            on_progress=on_progress,
-        )
+        try:
+            reply, new_messages, all_messages, usage = await self.agent.run_with_message_deltas(
+                user_prompt=content,
+                message_history=runtime_history.model_history,
+                deps=request_context,
+                on_progress=progress_wrapper if on_progress is not None else None,
+            )
+        except BaseException as exc:
+            llm_duration_ms = int((time.monotonic() - llm_started_at) * 1000)
+            status = "cancelled" if isinstance(exc, asyncio.CancelledError) else "error"
+            turn_event = {
+                "sessionId": session_id,
+                "userId": user_id,
+                "scene": "unknown",
+                "routingPath": "full_agent",
+                "routeDecision": {
+                    "source": "full_agent",
+                    "matched": False,
+                    "confidence": "model",
+                    "route": "unknown",
+                    "fallbackReason": "agent_run_interrupted",
+                    "agentRun": dict(getattr(request_context, "agent_observability", {}) or {}),
+                },
+                "pendingType": "plan" if active_pending_kind == "plan_mutation" else "intent" if active_pending_kind == "intent_change" else None,
+                "actionFamily": None,
+                "modelProvider": _llm_config_value(self.llm_client, "provider"),
+                "modelName": _llm_config_value(self.llm_client, "model_name"),
+                "llmRequests": None,
+                "inputTokens": None,
+                "outputTokens": None,
+                "totalTokens": None,
+                "toolCallCount": None,
+                "totalDurationMs": int((time.monotonic() - turn_started_at) * 1000),
+                "llmDurationMs": llm_duration_ms,
+                "toolDurationMs": None,
+                "toolCalls": [],
+                "postProcessingApplied": [],
+                "status": status,
+                "errorType": type(exc).__name__,
+            }
+            _log_conversation_turn_event(**turn_event)
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                failed_history = list(history or [])
+                failed_history.extend(
+                    _append_route_observability_message(
+                        [ModelRequest(parts=[UserPromptPart(content=content)])],
+                        turn_event,
+                    )
+                )
+                await self.history_store.save(session_id, failed_history)
+            raise
+        finally:
+            for progress_task in (initial_progress_task, long_progress_task):
+                if progress_task is not None:
+                    progress_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await progress_task
         llm_duration_ms = int((time.monotonic() - llm_started_at) * 1000)
 
         # ── Token usage 追踪 ──────────────────────────────────────
@@ -3958,37 +2351,36 @@ class ChatService:
                 _replace_text_reply(all_messages, reply, user_facing_reply)
                 reply = user_facing_reply
 
-        if isinstance(reply, str):
-            readonly_bounded_reply = _append_readonly_boundary_if_requested(reply, content)
-            if readonly_bounded_reply != reply:
-                _replace_text_reply(new_messages, reply, readonly_bounded_reply)
-                _replace_text_reply(all_messages, reply, readonly_bounded_reply)
-                reply = readonly_bounded_reply
+        has_pending_intent_context = intent_preview_used or (
+            active_pending_kind == "intent_change"
+            and not plan_chain_used
+            and not _is_plan_action_confirmation(content)
+            and _is_pending_intent_followup_turn(content, reply)
+        )
+        if isinstance(reply, str) and not intent_preview_used and not has_pending_intent_context:
+            unbacked_intent_reply = _normalize_unbacked_intent_preview_reply(reply)
+            if unbacked_intent_reply != reply:
+                _replace_text_reply(new_messages, reply, unbacked_intent_reply)
+                _replace_text_reply(all_messages, reply, unbacked_intent_reply)
+                reply = unbacked_intent_reply
 
-        # ── 保存历史 ──────────────────────────────────────────────
-        try:
-            history_to_save = list(history or [])
-            if history_to_save and new_messages:
-                history_to_save.extend(_append_semantic_router_shadow_message(new_messages, semantic_router_shadow))
-            elif new_messages:
-                history_to_save = _append_semantic_router_shadow_message(list(new_messages), semantic_router_shadow)
-            else:
-                runtime_len = len(runtime_history.model_history or [])
-                inferred_new_messages = list(all_messages[runtime_len:]) if len(all_messages) >= runtime_len else []
-                if history_to_save and inferred_new_messages:
-                    history_to_save.extend(inferred_new_messages)
-                elif inferred_new_messages:
-                    history_to_save = inferred_new_messages
-                elif not history_to_save:
-                    history_to_save = list(all_messages)
-
-            await self.history_store.save(session_id, history_to_save)
-        except Exception:
-            logger.exception("Failed to save chat history: session_id=%s", session_id)
+        if isinstance(reply, str) and has_pending_intent_context:
+            bounded_intent_reply = _append_pending_intent_boundary(
+                reply,
+                has_pending_intent=has_pending_intent_context,
+            )
+            if bounded_intent_reply != reply:
+                _replace_text_reply(new_messages, reply, bounded_intent_reply)
+                _replace_text_reply(all_messages, reply, bounded_intent_reply)
+                reply = bounded_intent_reply
 
         workspace_refresh_targets = _tool_calls_include_plan_workspace_refresh(new_messages)
         if not new_messages:
             workspace_refresh_targets = _tool_calls_include_plan_workspace_refresh(all_messages)
+        # Intent preview only prepares a pending preference/constraint. Do not
+        # refresh the workspace until the user confirms or explicitly selects
+        # the intent card; otherwise the UI looks as if an unconfirmed intent
+        # has already changed candidate results.
 
         workspace_view_targets = _tool_calls_include_plan_view_targets(
             new_messages if new_messages else all_messages
@@ -3998,10 +2390,7 @@ class ChatService:
         tool_returns = _iter_tool_return_parts(tool_messages)
         called_tool_names = [part.tool_name for part in tool_calls]
         observed_tool_calls = _summarize_tool_calls_for_observability(tool_calls, tool_returns)
-        full_agent_tool_trial = _summarize_full_agent_tool_trial(
-            called_tool_names,
-            fixed_scenario_route_decision=fixed_scenario_route_decision,
-        )
+        full_agent_tool_trial = _summarize_full_agent_tool_trial(called_tool_names)
         if any(name in {"collect_plan_context_inputs", "plan_next_action", "execute_plan_action", "query_volunteer_plan"} for name in called_tool_names):
             scene = "plan"
         elif any("intent" in name for name in called_tool_names):
@@ -4012,35 +2401,66 @@ class ChatService:
             scene = "unknown"
         action_family = _select_conversation_action_family(tool_returns)
         pending_type = "plan" if active_pending_kind == "plan_mutation" else "intent" if active_pending_kind == "intent_change" else None
-        _log_conversation_turn_event(
-            sessionId=session_id,
-            userId=user_id,
-            scene=scene,
-            routingPath="full_agent",
-            routeDecision=_attach_semantic_router_shadow({
+        turn_event = {
+            "sessionId": session_id,
+            "userId": user_id,
+            "scene": scene,
+            "routingPath": "full_agent",
+            "routeDecision": {
                 "source": "full_agent",
                 "matched": True,
                 "confidence": "model",
                 "route": scene,
                 "fallbackReason": "no_direct_route",
                 "toolTrial": full_agent_tool_trial,
-            }, semantic_router_shadow),
-            pendingType=pending_type,
-            actionFamily=action_family,
-            modelProvider=_llm_config_value(self.llm_client, "provider"),
-            modelName=_llm_config_value(self.llm_client, "model_name"),
-            llmRequests=getattr(usage, "requests", None),
-            inputTokens=getattr(usage, "input_tokens", None),
-            outputTokens=getattr(usage, "output_tokens", None),
-            totalTokens=getattr(usage, "total_tokens", None),
-            toolCallCount=getattr(usage, "tool_calls", None),
-            totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
-            llmDurationMs=llm_duration_ms,
-            toolDurationMs=None,
-            toolCalls=observed_tool_calls,
-            postProcessingApplied=[],
-            status="success",
-            errorType=None,
+                "agentRun": dict(getattr(request_context, "agent_observability", {}) or {}),
+            },
+            "pendingType": pending_type,
+            "actionFamily": action_family,
+            "modelProvider": _llm_config_value(self.llm_client, "provider"),
+            "modelName": _llm_config_value(self.llm_client, "model_name"),
+            "llmRequests": getattr(usage, "requests", None),
+            "inputTokens": getattr(usage, "input_tokens", None),
+            "outputTokens": getattr(usage, "output_tokens", None),
+            "totalTokens": getattr(usage, "total_tokens", None),
+            "toolCallCount": getattr(usage, "tool_calls", None),
+            "totalDurationMs": int((time.monotonic() - turn_started_at) * 1000),
+            "llmDurationMs": llm_duration_ms,
+            "toolDurationMs": None,
+            "toolCalls": observed_tool_calls,
+            "postProcessingApplied": [],
+            "status": "success",
+            "errorType": None,
+        }
+        _log_conversation_turn_event(
+            **turn_event,
+        )
+
+        # ── 保存历史 ──────────────────────────────────────────────
+        try:
+            history_to_save = list(history or [])
+            if history_to_save and new_messages:
+                history_to_save.extend(_append_route_observability_message(new_messages, turn_event))
+            elif new_messages:
+                history_to_save = _append_route_observability_message(list(new_messages), turn_event)
+            else:
+                runtime_len = len(runtime_history.model_history or [])
+                inferred_new_messages = list(all_messages[runtime_len:]) if len(all_messages) >= runtime_len else []
+                inferred_new_messages = _append_route_observability_message(inferred_new_messages, turn_event)
+                if history_to_save and inferred_new_messages:
+                    history_to_save.extend(inferred_new_messages)
+                elif inferred_new_messages:
+                    history_to_save = inferred_new_messages
+                elif not history_to_save:
+                    history_to_save = _append_route_observability_message(list(all_messages), turn_event)
+
+            await self.history_store.save(session_id, history_to_save)
+        except Exception:
+            logger.exception("Failed to save chat history: session_id=%s", session_id)
+
+        logger.debug(
+            "Conversation turn event: %s",
+            json.dumps(turn_event, ensure_ascii=False, default=str),
         )
 
         logger.info(

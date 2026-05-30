@@ -85,13 +85,44 @@ _TOP_LEVEL_ATOMIC_ACTION_FAMILIES = {
     "sort_ordered_plan",
 }
 
+_MUTATING_ACTION_FAMILIES = {
+    "generate_plan",
+    "add_units",
+    "remove_units",
+    "move_unit",
+    "move_ordered_unit",
+    "pin_unit",
+    "unpin_unit",
+    "replace_units",
+    "remove_ordered_unit",
+    "sort_ordered_plan",
+    "regenerate_order",
+    "apply_compensation",
+}
+
 
 def normalize_plan_action_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
     normalized = dict(payload or {})
+    action_family = str(normalized.get("action_family") or "").strip()
+    current_stage = str(normalized.get("current_stage") or normalized.get("stage") or "").strip()
+    has_user_confirmed = "user_confirmed" in normalized
+    user_confirmed = bool(normalized.get("user_confirmed"))
+    if current_stage in {"analyze", "preview", "apply", "review"}:
+        stage = current_stage
+        if (
+            stage == "apply"
+            and action_family in _MUTATING_ACTION_FAMILIES
+            and has_user_confirmed
+            and not user_confirmed
+        ):
+            stage = "preview"
+        normalized["stage"] = stage
+    elif action_family in _MUTATING_ACTION_FAMILIES and has_user_confirmed:
+        normalized["stage"] = "apply" if user_confirmed else "preview"
+
     if normalized.get("atomic_actions"):
         return normalized
 
-    action_family = str(normalized.get("action_family") or "").strip()
     if action_family not in _TOP_LEVEL_ATOMIC_ACTION_FAMILIES:
         return normalized
 
@@ -209,5 +240,11 @@ class PlanExecutionResult(BaseModel):
     state_summary: str = ""
     summary: str = ""
     reply_focus: list[str] = Field(default_factory=list)
+    reply_strategy: Literal[
+        "continue_model",
+        "direct_reply",
+        "direct_blocking",
+        "preview_wait_confirm",
+    ] | None = None
     next_step_hints: list[str] = Field(default_factory=list)
     facts: dict[str, Any] = Field(default_factory=dict)

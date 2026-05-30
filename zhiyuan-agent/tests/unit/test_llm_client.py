@@ -101,12 +101,27 @@ def test_model_settings_passed(mocker):
     mocker.patch("app.llm.client.OpenAIProvider", return_value=MagicMock())
 
     config = LLMConfig(
-        provider="openai", api_key="sk-test", temperature=0.3, max_tokens=2048
+        provider="openai",
+        api_key="sk-test",
+        temperature=0.3,
+        max_tokens=2048,
+        timeout_seconds=30,
     )
     client = LLMClient(config)
 
     assert client.model_settings["temperature"] == 0.3
     assert client.model_settings["max_tokens"] == 2048
+    assert client.model_settings["timeout"] == 30
+
+
+def test_model_settings_do_not_set_timeout_by_default(mocker):
+    mocker.patch("app.llm.client.OpenAIChatModel", return_value=MagicMock())
+    mocker.patch("app.llm.client.OpenAIProvider", return_value=MagicMock())
+
+    config = LLMConfig(provider="openai", api_key="sk-test")
+    client = LLMClient(config)
+
+    assert "timeout" not in client.model_settings
 
 
 # ---- 5. config=None 自动构造 ----

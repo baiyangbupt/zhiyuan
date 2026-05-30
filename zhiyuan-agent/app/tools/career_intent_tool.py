@@ -11,6 +11,7 @@ from app.agent.context import RequestContext
 from app.config import ExtractConfig, LLMConfig
 from app.domain.career_slots import (
     CAREER_FURTHER_STUDY,
+    CAREER_MARKET_EMPLOYMENT,
     CAREER_STABLE_EMPLOYMENT,
     CAREER_SYSTEM_PUBLIC_SERVICE,
 )
@@ -49,10 +50,11 @@ def _build_system_message(chat_history: list[dict]) -> str:
 {chat_history_str}
 
 # 【抽取目标】
-你只能从下面 3 个方向槽位中做选择，不能创造新槽位：
+你只能从下面 4 个方向槽位中做选择，不能创造新槽位：
 - {CAREER_SYSTEM_PUBLIC_SERVICE}：体制内/考公/考编/公务员/事业单位/进编制/进体制等
 - {CAREER_STABLE_EMPLOYMENT}：稳定就业/求稳/工作稳定/抗风险/先就业稳定下来等
 - {CAREER_FURTHER_STUDY}：读研/保研/深造/继续升学/学术发展等
+- {CAREER_MARKET_EMPLOYMENT}：企业就业/市场化就业/大城市就业/互联网或产业岗位/去企业发展等
 
 # 【抽取规则】
 1. 只抽取学生明确表达的方向态度。中性了解、泛泛讨论、信息查询，不要硬判成偏好。

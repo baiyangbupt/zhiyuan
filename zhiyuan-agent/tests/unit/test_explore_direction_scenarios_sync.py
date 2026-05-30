@@ -16,13 +16,13 @@ from app.agent.context import PlanningSummary, RequestContext, ScoreDetail
 from app.schemas.user_profile import UserProfile
 from app.tools.explore_direction_tool import (
     CAREER_FURTHER_STUDY,
+    CAREER_MARKET_EMPLOYMENT,
     CAREER_STABLE_EMPLOYMENT,
     CAREER_SYSTEM_PUBLIC_SERVICE,
-    _direction_focus_snapshot,
-    _format_candidate_brief,
     preview_direction_analysis_from_request,
     preview_direction_comparison_from_request,
     resolve_career_direction_slots,
+    should_use_generic_direction_analysis,
 )
 from app.tools.intent_preview_tool import analyze_current_career_direction
 from app.tools.explore_direction_tool import preview_generic_direction_analysis_from_request
@@ -141,6 +141,42 @@ def _planning_state_with_direction_examples() -> dict:
     }
 
 
+def _planning_state_with_market_examples() -> dict:
+    return {
+        "data": {
+            "orderedPlanState": {
+                "items": [
+                    {
+                        "volunteerId": "ordered-market-1",
+                        "schoolName": "北京工业大学",
+                        "majorName": "计算机科学与技术",
+                        "schoolCategory": "理工",
+                        "majorCategory": "计算机类",
+                        "provinceName": "北京",
+                        "tier": "稳",
+                        "schoolRankTags": ["省重点"],
+                        "majorRankTags": ["就业面较宽"],
+                    }
+                ]
+            },
+            "candidatePoolState": {
+                "items": [
+                    {
+                        "volunteerId": "candidate-market-1",
+                        "schoolName": "天津财经大学",
+                        "majorName": "金融学",
+                        "schoolCategory": "财经",
+                        "majorCategory": "金融学类",
+                        "provinceName": "天津",
+                        "tier": "稳",
+                        "majorPlanTags": ["就业方向明确"],
+                    }
+                ]
+            },
+        }
+    }
+
+
 def _planning_state_with_future_development(career_types: list[str]) -> dict:
     payload = _planning_state_with_direction_examples()
     payload["data"]["profileState"] = {
@@ -168,7 +204,7 @@ def test_direction_explore_public_service_uses_student_plan_candidate_facts_and_
                 "候选里中国政法大学-行政管理、天津师范大学-思想政治教育可以继续展开比较。"
             ],
             "nextActionHints": [
-                "下一步可以先看这些机会是否符合你的地域和录取梯度，再决定要不要记成后续偏好。"
+                "下一步可以先看这些机会是否符合你的地域和录取梯度，再决定要不要记成偏好。"
             ],
         }
     )
@@ -182,7 +218,6 @@ def test_direction_explore_public_service_uses_student_plan_candidate_facts_and_
     assert "北京师范大学-法学" in resp
     assert "中国政法大学-行政管理" in resp
     assert "下一步" in resp
-    assert "代表样本" in resp
     assert "记成后续偏好" in resp
 
     prompt = agent.prompts[0]
@@ -197,6 +232,23 @@ def test_direction_explore_public_service_uses_student_plan_candidate_facts_and_
     assert "中国政法大学-行政管理" in prompt
     assert "evidenceExamples" in prompt
     assert "schoolCategory:师范" in prompt or "schoolCategory:政法" in prompt
+
+
+def test_direction_explore_skips_inner_llm_when_chat_service_disables_it():
+    request_context = _request_context(session_id="401b", text="体制内适不适合我")
+    request_context.allow_explore_inner_llm = False
+
+    with (
+        patch("app.tools.explore_direction_tool.get_planning_state", new=AsyncMock(return_value=_planning_state_with_direction_examples())),
+        patch("app.tools.explore_direction_tool._generate_direction_analysis_content", new=AsyncMock()) as generation_mock,
+    ):
+        resp = _run(preview_direction_analysis_from_request(request_context, CAREER_SYSTEM_PUBLIC_SERVICE))
+
+    generation_mock.assert_not_awaited()
+    assert "体制内/考公导向" in resp
+    assert "你的当前选科是物理、化学、生物" in resp
+    assert "当前方案里已经有一部分内容能承接这条方向" in resp
+    assert "下一步" in resp
 
 
 def test_direction_explore_fallback_still_analyzes_when_llm_generation_fails():
@@ -219,22 +271,9 @@ def test_direction_explore_fallback_still_analyzes_when_llm_generation_fails():
     assert "你的当前选科是物理、化学、生物" in resp
     assert "就业确定性、岗位稳定性和路径清晰度" in resp
     assert "候选里暂时没看到特别密集的新机会" in resp
-    assert "可以继续按这条方向看当前方案" in resp
-    assert "把它记成后续偏好" in resp
-    assert "我先不急着替你下结论" not in resp
-    assert "这类方向更看重就业确定性、岗位稳定性和路径清晰度" not in resp
-    assert resp.count("你的当前选科是物理、化学、生物") == 1
-    assert resp.count("就业确定性、岗位稳定性和路径清晰度") == 1
-
-
-def test_direction_slot_resolver_uses_local_taxonomy_for_common_terms():
-    ctx = _request_context(text="当前方案对体制内稳定就业方向承接得怎么样，先不要改方案")
-
-    with patch("app.tools.explore_direction_tool._get_career_direction_resolver_agent") as resolver_factory:
-        slots = _run(resolve_career_direction_slots(ctx))
-
-    assert slots == [CAREER_SYSTEM_PUBLIC_SERVICE, CAREER_STABLE_EMPLOYMENT]
-    resolver_factory.assert_not_called()
+    assert "如果你愿意把它记成后续偏好" in resp
+    assert "MBTI" in resp
+    assert "霍兰德" in resp
 
 
 def test_direction_explore_comparison_supports_three_directions_with_distinct_facts():
@@ -283,83 +322,25 @@ def test_direction_explore_comparison_supports_three_directions_with_distinct_fa
     assert "如果是多方向，允许比较多个方向，不要默认只有两个" in prompt
 
 
-def test_direction_focus_snapshot_keeps_only_concrete_samples():
-    snapshot = _direction_focus_snapshot(
-        {
-            "currentPlanFit": [
-                "当前方案里和“体制内/考公导向”更贴近的大约有 2 个志愿，承接程度偏弱。",
-                "方案内相对贴近的例子：青岛恒星科技学院-学前教育（冲）；海口经济学院-英语（冲）。",
-                "你的当前选科是物理、历史、地理。",
-            ],
-            "currentPlanConflict": [
-                "当前分数段更适合优先保证就业确定性。",
-            ],
-            "candidateOpportunity": [
-                "候选里和“体制内/考公导向”更相关、但还没进方案的大约还有 46 个机会。",
-                "候选示例：中国政法大学-行政管理；天津师范大学-思想政治教育。",
-            ],
-        }
-    )
+def test_direction_explore_comparison_skips_inner_llm_when_chat_service_disables_it():
+    request_context = _request_context(session_id="403b", text="深造、稳定就业和体制内哪个更适合")
+    request_context.allow_explore_inner_llm = False
 
-    assert snapshot == [
-        "方案承接代表：青岛恒星科技学院-学前教育；海口经济学院-英语",
-        "候选机会代表：中国政法大学-行政管理；天津师范大学-思想政治教育",
-    ]
-    assert all("大约有" not in item for item in snapshot)
+    with (
+        patch("app.tools.explore_direction_tool.get_planning_state", new=AsyncMock(return_value=_planning_state_with_direction_examples())),
+        patch("app.tools.explore_direction_tool._generate_direction_analysis_content", new=AsyncMock()) as generation_mock,
+    ):
+        resp = _run(
+            preview_direction_comparison_from_request(
+                request_context,
+                [CAREER_FURTHER_STUDY, CAREER_STABLE_EMPLOYMENT, CAREER_SYSTEM_PUBLIC_SERVICE],
+            )
+        )
 
-
-def test_direction_focus_snapshot_uses_structured_examples_when_reply_is_only_counts():
-    snapshot = _direction_focus_snapshot(
-        {
-            "currentPlanFit": [
-                "当前方案里已经有一部分内容能承接这条方向，大约有 5 个志愿相对更贴近。"
-            ],
-            "candidateOpportunity": [
-                "候选里还有一些更贴近这条方向的机会，粗看大约有 46 个可以继续深挖。"
-            ],
-        },
-        direction_facts=[
-            {
-                "orderedExamples": ["北京师范大学-法学（稳/北京）"],
-                "candidateExamples": ["中国政法大学-行政管理（冲/北京）"],
-            }
-        ],
-    )
-
-    assert snapshot == [
-        "方案承接代表：北京师范大学-法学",
-        "候选机会代表：中国政法大学-行政管理",
-    ]
-
-
-def test_direction_focus_snapshot_trims_long_admission_notes_and_dedupes_samples():
-    snapshot = _direction_focus_snapshot(
-        {
-            "currentPlanFit": [
-                "方案内相对贴近的例子：河北师范大学第201组(中外合作办学组)-翻译(中外合作办学)(合作方：英国斯特灵大学；要求外语单科成绩不低于95分(含)，前三年就读于河北师范大学，每年学费为26000元)；河北师范大学第201组(中外合作办学组)-翻译(中外合作办学)(合作方：英国斯特灵大学)。",
-            ],
-            "candidateOpportunity": [],
-        }
-    )
-
-    assert snapshot == ["方案承接代表：河北师范大学第201组-翻译"]
-    assert "合作方" not in snapshot[0]
-    assert "前三年" not in snapshot[0]
-
-
-def test_candidate_brief_trims_long_admission_notes_for_inline_examples():
-    brief = _format_candidate_brief(
-        {
-            "schoolName": "河北师范大学第201组(中外合作办学组)",
-            "majorName": "翻译(中外合作办学)(合作方：英国斯特灵大学；要求外语单科成绩不低于95分(含)，前三年就读于河北师范大学，每年学费为26000元)",
-            "tier": "稳",
-            "provinceName": "河北",
-        }
-    )
-
-    assert brief == "河北师范大学第201组-翻译（稳/河北）"
-    assert "合作方" not in brief
-    assert "前三年" not in brief
+    generation_mock.assert_not_awaited()
+    assert "方向对比分析" in resp
+    assert "这类问题更适合先看你本人更适合哪条路径" in resp
+    assert "候选里和“体制内/考公导向”更相关" in resp
 
 
 def test_direction_explore_comparison_fallback_includes_professional_assessment_hint():
@@ -379,7 +360,6 @@ def test_direction_explore_comparison_fallback_includes_professional_assessment_
 
     assert "MBTI" in resp
     assert "霍兰德" in resp
-    assert resp.count("你的当前选科是物理、化学、生物") == 1
 
 
 def test_direction_explore_public_service_fallback_explains_student_fit_before_plan_examples():
@@ -469,6 +449,143 @@ def test_direction_explore_wrapper_routes_model_resolved_multiple_slots_to_compa
     single_mock.assert_not_awaited()
 
 
+def test_direction_explore_uses_explicit_generic_flag_without_resolver():
+    ctx = SimpleNamespace(
+        deps=_request_context(session_id="404-generic", text="等成绩出来再定，今天先看大方向")
+    )
+
+    with (
+        patch("app.tools.intent_preview_tool._resolve_career_direction_slots", new=AsyncMock()) as resolver_mock,
+        patch("app.tools.intent_preview_tool._should_use_generic_direction_analysis", new=AsyncMock()) as generic_resolver_mock,
+        patch(
+            "app.tools.intent_preview_tool._preview_generic_direction_analysis_from_request",
+            new=AsyncMock(return_value="泛方向分析结果"),
+        ) as generic_mock,
+        patch(
+            "app.tools.intent_preview_tool.preview_direction_comparison_from_request",
+            new=AsyncMock(),
+        ) as comparison_mock,
+        patch(
+            "app.tools.intent_preview_tool.preview_direction_analysis_from_request",
+            new=AsyncMock(),
+        ) as single_mock,
+    ):
+        resp = _run(analyze_current_career_direction(ctx, generic_direction=True))
+
+    assert resp == "泛方向分析结果"
+    resolver_mock.assert_not_awaited()
+    generic_resolver_mock.assert_not_awaited()
+    generic_mock.assert_awaited_once_with(ctx.deps)
+    comparison_mock.assert_not_awaited()
+    single_mock.assert_not_awaited()
+
+
+def test_direction_explore_uses_explicit_direction_slots_without_resolver():
+    ctx = SimpleNamespace(
+        deps=_request_context(session_id="404-explicit", text="大城市就业和考编哪个更现实")
+    )
+
+    with (
+        patch("app.tools.intent_preview_tool._resolve_career_direction_slots", new=AsyncMock()) as resolver_mock,
+        patch(
+            "app.tools.intent_preview_tool.preview_direction_comparison_from_request",
+            new=AsyncMock(return_value="方向对比结果"),
+        ) as comparison_mock,
+        patch(
+            "app.tools.intent_preview_tool.preview_direction_analysis_from_request",
+            new=AsyncMock(return_value="单方向结果"),
+        ) as single_mock,
+    ):
+        resp = _run(
+            analyze_current_career_direction(
+                ctx,
+                career_directions=[CAREER_SYSTEM_PUBLIC_SERVICE, CAREER_MARKET_EMPLOYMENT],
+            )
+        )
+
+    assert resp == "方向对比结果"
+    resolver_mock.assert_not_awaited()
+    comparison_mock.assert_awaited_once_with(
+        ctx.deps,
+        [CAREER_SYSTEM_PUBLIC_SERVICE, CAREER_MARKET_EMPLOYMENT],
+    )
+    single_mock.assert_not_awaited()
+
+
+def test_direction_explore_market_employment_keeps_city_and_industry_signal():
+    agent = _CapturingDirectionAgent(
+        {
+            "summaryTitle": "大城市就业更要同时看产业机会和专业技能",
+            "currentPlanFit": [
+                "北京工业大学-计算机科学与技术能承接一部分市场化就业方向。",
+                "这条路要看城市产业、实习机会和技能可迁移性。",
+            ],
+            "currentPlanConflict": [
+                "如果只看学校层次、不看行业和岗位面，判断会偏粗。"
+            ],
+            "candidateOpportunity": [
+                "天津财经大学-金融学可以作为财经类就业机会继续比较。"
+            ],
+            "nextActionHints": [
+                "下一步可以把它和考编方向放在一起比较。"
+            ],
+        }
+    )
+
+    with (
+        patch("app.tools.explore_direction_tool.get_planning_state", new=AsyncMock(return_value=_planning_state_with_market_examples())),
+        patch("app.tools.explore_direction_tool._get_direction_analysis_agent", return_value=agent),
+    ):
+        resp = _run(
+            preview_direction_analysis_from_request(
+                _request_context(session_id="409", text="大城市就业这条路现实吗"),
+                CAREER_MARKET_EMPLOYMENT,
+            )
+        )
+
+    assert "市场化就业导向" in resp
+    assert "北京工业大学-计算机科学与技术" in resp
+    assert "城市产业、实习机会和技能可迁移性" in resp
+    assert "天津财经大学-金融学" in resp
+
+    prompt = agent.prompts[0]
+    assert "market_employment" in prompt
+    assert "majorCategory:计算机类" in prompt
+    assert "schoolCategory:财经" in prompt
+
+
+def test_direction_explore_ignores_invalid_explicit_slots_and_falls_back_to_resolver():
+    ctx = SimpleNamespace(
+        deps=_request_context(session_id="404-invalid", text="这个以后怎么样")
+    )
+
+    with (
+        patch(
+            "app.tools.intent_preview_tool._resolve_career_direction_slots",
+            new=AsyncMock(return_value=[CAREER_STABLE_EMPLOYMENT]),
+        ) as resolver_mock,
+        patch(
+            "app.tools.intent_preview_tool.preview_direction_comparison_from_request",
+            new=AsyncMock(),
+        ) as comparison_mock,
+        patch(
+            "app.tools.intent_preview_tool.preview_direction_analysis_from_request",
+            new=AsyncMock(return_value="稳定就业分析"),
+        ) as single_mock,
+    ):
+        resp = _run(
+            analyze_current_career_direction(
+                ctx,
+                career_directions=["unknown"],  # type: ignore[list-item]
+            )
+        )
+
+    assert resp == "稳定就业分析"
+    resolver_mock.assert_awaited_once_with(ctx.deps)
+    comparison_mock.assert_not_awaited()
+    single_mock.assert_awaited_once_with(ctx.deps, CAREER_STABLE_EMPLOYMENT)
+
+
 def test_direction_explore_resolver_empty_result_asks_for_clearer_direction_without_state_change():
     ctx = SimpleNamespace(
         deps=_request_context(session_id="405", text="这个以后怎么样")
@@ -487,6 +604,27 @@ def test_direction_explore_resolver_empty_result_asks_for_clearer_direction_with
     assert "读研" in resp
     comparison_mock.assert_not_awaited()
     single_mock.assert_not_awaited()
+
+
+def test_career_direction_route_reuses_combined_decision_for_generic_fallback():
+    request_context = _request_context(session_id="405b", text="等成绩出来再定，今天先看大方向")
+    route_agent = _CapturingDirectionAgent(
+        {
+            "positive": [],
+            "negative": [],
+            "shouldAnalyze": True,
+            "reason": "用户在问泛方向适配，不是具体改方案。",
+        }
+    )
+
+    with patch("app.tools.explore_direction_tool._get_career_direction_resolver_agent", return_value=route_agent):
+        slots = _run(resolve_career_direction_slots(request_context))
+        should_analyze = _run(should_use_generic_direction_analysis(request_context))
+
+    assert slots == []
+    assert should_analyze is True
+    assert len(route_agent.prompts) == 1
+    assert "等成绩出来再定" in route_agent.prompts[0]
 
 
 def test_generic_direction_explore_fallback_starts_with_student_fit_not_school_listing():
@@ -517,3 +655,32 @@ def test_generic_direction_explore_fallback_starts_with_student_fit_not_school_l
     assert "你的当前选科是物理、化学、生物" in resp
     assert "你已经明确对计算机类、电子信息类这类方向有兴趣" in resp
     assert "当前方案" in resp
+
+
+def test_generic_direction_explore_skips_inner_llm_when_chat_service_disables_it():
+    request_context = _request_context(session_id="406b", text="适合什么方向")
+    request_context.allow_explore_inner_llm = False
+    request_context.score_detail = SimpleNamespace(
+        province="北京",
+        total_score=605,
+        subject_list=["物理", "化学", "生物"],
+        sex="女",
+        volunteer_model="majorGroup",
+    )
+    request_context.init_profile = SimpleNamespace(
+        major=SimpleNamespace(level1=["工学"], level2=["计算机类"], negative_level2=[]),
+        city=SimpleNamespace(province=["北京"], negative_province=[]),
+        strength_subjects=["物理"],
+    )
+
+    with (
+        patch("app.tools.explore_direction_tool.get_planning_workspace_state", new=AsyncMock(return_value=_planning_state_with_direction_examples())),
+        patch("app.tools.explore_direction_tool.query_planning_candidate_pool", new=AsyncMock(return_value={"data": {"items": []}})),
+        patch("app.tools.explore_direction_tool._generate_generic_direction_analysis_content", new=AsyncMock()) as generation_mock,
+    ):
+        resp = _run(preview_generic_direction_analysis_from_request(request_context))
+
+    generation_mock.assert_not_awaited()
+    assert "泛方向" not in resp
+    assert "你的当前选科是物理、化学、生物" in resp
+    assert "计算机类" in resp

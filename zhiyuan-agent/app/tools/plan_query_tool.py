@@ -89,25 +89,6 @@ _GENERIC_QUERY_SUFFIXES = (
     "志愿",
     "机会",
 )
-
-
-def _format_query_sections(*sections: tuple[str, list[str] | None] | tuple[str, str | None]) -> str:
-    blocks: list[str] = []
-    for title, content in sections:
-        if not content:
-            continue
-        display_title = f"**{title}**"
-        if isinstance(content, list):
-            lines = [str(line or "").strip() for line in content if str(line or "").strip()]
-            if not lines:
-                continue
-            blocks.append(f"{display_title}\n" + "\n".join(f"- {line}" for line in lines))
-        else:
-            text = str(content or "").strip()
-            if not text:
-                continue
-            blocks.append(f"{display_title}\n{text}")
-    return "\n\n".join(blocks)
 _PROVINCES = (
     "北京", "天津", "河北", "山西", "内蒙古", "辽宁", "吉林", "黑龙江",
     "上海", "江苏", "浙江", "安徽", "福建", "江西", "山东", "河南",
@@ -126,11 +107,6 @@ _PLAN_ACTION_QUERY_HINTS = (
     "加入方案",
     "放进方案",
 )
-_MAJOR_LEVEL1_QUERY_ALIASES = {
-    "医学",
-    "学医",
-    "医药",
-}
 
 
 def _compact_text(value: str) -> str:
@@ -308,24 +284,6 @@ def _match_values(haystacks: list[str], needles: list[str]) -> bool:
     return False
 
 
-def _normalize_major_query_needles(values: list[str]) -> list[str]:
-    needles: list[str] = []
-    for value in values or []:
-        text = str(value or "").strip()
-        if not text:
-            continue
-        _append_unique(needles, text)
-        if text in _MAJOR_LEVEL1_QUERY_ALIASES:
-            _append_unique(needles, "医学")
-            _append_unique(needles, "医学类")
-            _append_unique(needles, "临床医学")
-            _append_unique(needles, "口腔医学")
-            _append_unique(needles, "中医学")
-            _append_unique(needles, "护理")
-            _append_unique(needles, "药学")
-    return needles
-
-
 def _matches_structured_filters(
     item: dict[str, Any],
     filters: dict[str, list[str]],
@@ -368,7 +326,7 @@ def _matches_structured_filters(
     if filters.get("school_keywords"):
         checks.append(_match_values(school_values, filters["school_keywords"]))
     if filters.get("major_keywords"):
-        checks.append(_match_values(major_values, _normalize_major_query_needles(filters["major_keywords"])))
+        checks.append(_match_values(major_values, filters["major_keywords"]))
     if filters.get("school_tags"):
         checks.append(_match_values(school_tag_values, filters["school_tags"]))
     if filters.get("major_tags"):
@@ -430,93 +388,6 @@ def _format_ratio(value: Any) -> str:
     return f"{int(numeric)}%" if numeric.is_integer() else f"{numeric:.1f}%"
 
 
-def _append_unique(values: list[str], value: Any) -> None:
-    text = str(value or "").strip()
-    if text and text not in values:
-        values.append(text)
-
-
-def _as_positive_int(value: Any) -> int | None:
-    if value is None or isinstance(value, bool):
-        return None
-    try:
-        number = int(float(value))
-    except (TypeError, ValueError):
-        return None
-    return number if number > 0 else None
-
-
-def _format_school_profile_summary(items: list[dict[str, Any]]) -> str:
-    labels: list[str] = []
-    ranks: list[int] = []
-    useful_tag_keywords = ("985", "211", "双一流", "公办", "民办", "省重点", "国家重点", "本科")
-    for item in items:
-        school_level = str(item.get("schoolLevel") or "").strip()
-        if school_level:
-            _append_unique(labels, school_level)
-        rank = _as_positive_int(item.get("schoolRank"))
-        if rank is not None:
-            ranks.append(rank)
-        for tag in [*(item.get("schoolRankTags") or []), *(item.get("schoolBasicTags") or [])]:
-            tag_text = str(tag or "").strip()
-            if tag_text and any(keyword in tag_text for keyword in useful_tag_keywords):
-                _append_unique(labels, tag_text)
-
-    if ranks:
-        ordered = sorted(ranks)
-        if ordered[0] == ordered[-1]:
-            _append_unique(labels, f"院校排名约{ordered[0]}")
-        else:
-            _append_unique(labels, f"院校排名约{ordered[0]}-{ordered[-1]}")
-
-    return "、".join(labels[:4]) if labels else "暂无明显学校层次标签"
-
-
-def _format_major_heat_summary(items: list[dict[str, Any]]) -> str:
-    labels: list[str] = []
-    useful_tag_keywords = ("热度", "热门", "冷门", "计划数", "招生计划", "就业", "特色")
-    for item in items:
-        for tag in [*(item.get("majorRankTags") or []), *(item.get("majorPlanTags") or [])]:
-            tag_text = str(tag or "").strip()
-            if tag_text and any(keyword in tag_text for keyword in useful_tag_keywords):
-                if tag_text.startswith("专业热度"):
-                    tag_text = "热度" + tag_text.removeprefix("专业热度")
-                _append_unique(labels, tag_text)
-    return "、".join(labels[:4]) if labels else "暂无明显专业热度标签"
-
-
-def _format_tier_summary(items: list[dict[str, Any]]) -> str:
-    counts = {"冲": 0, "稳": 0, "保": 0, "其他": 0}
-    for item in items:
-        tier = str(item.get("tier") or "").strip()
-        if tier in counts:
-            counts[tier] += 1
-        else:
-            counts["其他"] += 1
-    tier_text = " / ".join(f"{key}{value}" for key, value in counts.items() if value)
-    if not tier_text:
-        tier_text = "暂无明显冲稳保分布"
-    school_text = _format_school_profile_summary(items)
-    heat_text = _format_major_heat_summary(items)
-    return f"冲稳保：{tier_text}；学校层次：{school_text}；专业热度：{heat_text}"
-
-
-def _format_example_reason(item: dict[str, Any]) -> str:
-    parts: list[str] = []
-    tier = str(item.get("tier") or "").strip()
-    if tier:
-        parts.append(f"{tier}区样本")
-    school_level = _format_school_profile_summary([item])
-    if school_level != "暂无明显学校层次标签":
-        parts.append(f"学校层次{school_level}")
-    major_heat = _format_major_heat_summary([item])
-    if major_heat != "暂无明显专业热度标签":
-        parts.append(f"专业信息：{major_heat}")
-    if not parts:
-        parts.append("代表样本")
-    return "，".join(parts)
-
-
 def _build_plan_item_snippet(item: dict[str, Any]) -> str:
     school_name = item.get("schoolName") or "未知院校"
     major_name = item.get("majorName") or "未知专业"
@@ -530,7 +401,8 @@ def _build_candidate_item_snippet(item: dict[str, Any]) -> str:
     major_name = item.get("majorName") or "未知专业"
     tier = item.get("tier") or "未知"
     ratio = _format_ratio(item.get("admissionRatio"))
-    return f"{school_name}-{major_name}（{tier}，录取率{ratio}）"
+    volunteer_id = item.get("volunteerId") or "unknown"
+    return f"{school_name}-{major_name}（{tier}，录取率{ratio}，id={volunteer_id}）"
 
 
 def _extract_plan_items(response: dict[str, Any]) -> list[dict[str, Any]]:
@@ -587,28 +459,13 @@ def _format_plan_result(title: str, items: list[dict[str, Any]], display_keyword
         if matched:
             examples = matched[:5]
             snippets = "；".join(_build_plan_item_snippet(item) for item in examples)
-            return _format_query_sections(
-                ("查询结论", [f"{title}里共命中了 {len(matched)} 条和“{display_keyword}”相关的志愿。"]),
-                ("关键分布", [_format_tier_summary(matched)]),
-                ("代表样本", [f"下面仅展示前 {len(examples)} 条示例：{snippets}"]),
-                ("样本说明", [reason for reason in (_format_example_reason(item) for item in examples) if reason]),
-                ("下一步", ["下一步如果要处理这些志愿，可以告诉我保留哪几个、移动到哪里，或只看更稳/录取率更高的。"]),
-                ("本轮边界", ["这次只做查询和分析，不会自动改动当前方案。"]),
+            return (
+                f"{title}里共命中了 {len(matched)} 条和“{display_keyword}”相关的志愿。"
+                f"下面仅展示前 {len(examples)} 条示例：{snippets}"
             )
-        return _format_query_sections(
-            ("查询结论", [f"{title}里暂时没有命中“{display_keyword}”的志愿。"]),
-            ("本轮边界", ["这次只做查询和分析，不会自动改动当前方案。"]),
-            ("当前判断", ["如果这是明确不想要的方向，当前方案暂时没有看到直接冲突。"]),
-            ("下一步", ["后续也可以再让我按更具体的学校或专业名复查。"]),
-        )
+        return f"{title}里暂时没有命中“{display_keyword}”的志愿。"
     snippets = "；".join(_build_plan_item_snippet(item) for item in items[:5])
-    return _format_query_sections(
-        ("查询结论", [f"{title}前几项是：{snippets}"]),
-        ("关键分布", [_format_tier_summary(items)]),
-        ("样本说明", [reason for reason in (_format_example_reason(item) for item in items[:5]) if reason]),
-        ("本轮边界", ["这次只做查询和分析，不会自动改动当前方案。"]),
-        ("下一步", ["如果要继续调整，可以告诉我按录取率、院校层次排序，或移动/删除具体志愿。"]),
-    )
+    return f"{title}前几项是：{snippets}"
 
 
 async def _query_candidate_opportunities(
@@ -658,98 +515,20 @@ async def _query_candidate_opportunities_with_filters(
     )
 
 
-def _candidate_item_key(item: dict[str, Any]) -> str:
-    for key in ("volunteerId", "unitId", "id"):
-        value = str(item.get(key) or "").strip()
-        if value:
-            return f"{key}:{value}"
-    return "|".join(
-        str(item.get(key) or "").strip()
-        for key in ("schoolName", "majorName", "groupCode", "majorCode")
-    )
-
-
-def _should_retry_candidate_by_single_major(filters: dict[str, list[str]]) -> bool:
-    return (
-        len(filters.get("major_keywords") or []) > 1
-        and not filters.get("school_keywords")
-        and not filters.get("major_tags")
-    )
-
-
-async def _query_candidate_opportunities_with_filters_fallback(
-    session_id: str,
-    filters: dict[str, list[str]],
-) -> dict[str, Any]:
-    """Query candidates with a fallback for "A/B major" OR semantics.
-
-    Some upstream candidate query implementations interpret multiple major
-    names too narrowly. User wording like "会计审计" usually means "会计或审计",
-    so when the combined query is empty we retry each major separately and merge
-    the visible examples.
-    """
-    result = await _query_candidate_opportunities_with_filters(session_id, filters)
-    items = ((result.get("data") or {}).get("items") or []) if isinstance(result, dict) else []
-    if items or result.get("code") != 0 or not _should_retry_candidate_by_single_major(filters):
-        return result
-
-    merged_items: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    total = 0
-    for major_name in filters.get("major_keywords") or []:
-        single_filters = dict(filters)
-        single_filters["major_keywords"] = [major_name]
-        single_result = await _query_candidate_opportunities_with_filters(session_id, single_filters)
-        if single_result.get("code") != 0:
-            continue
-        single_data = single_result.get("data") or {}
-        total += int(single_data.get("total") or 0)
-        for item in single_data.get("items") or []:
-            if not isinstance(item, dict):
-                continue
-            key = _candidate_item_key(item)
-            if key in seen:
-                continue
-            seen.add(key)
-            merged_items.append(item)
-
-    if not merged_items:
-        return result
-    return {
-        "code": 0,
-        "data": {
-            "total": total or len(merged_items),
-            "items": merged_items[:20],
-        },
-    }
-
-
 def _format_candidate_result(response: dict[str, Any], keyword: str) -> str:
     data = response.get("data") or {}
     items = data.get("items") or []
     total = data.get("total") or 0
     if not items:
-        return _format_query_sections(
-            ("查询结论", [f"候选里暂时没有筛到和“{keyword}”相关的机会。"]),
-            ("本次边界", ["这次只是查询候选，不会直接加入方案。"]),
-            ("可能原因", ["当前候选池里确实没有这类机会，或专业名称口径比较窄。"]),
-            (
-                "下一步",
-                [
-                    "下一步可以换成更宽的专业类再查。",
-                    "也可以只看当前方案里的相近志愿，或让我继续按“更稳一点”的思路给调整预览。",
-                ],
-            ),
+        return (
+            f"候选里暂时没有筛到和“{keyword}”相关的机会。"
+            "这表示当前候选池按这个条件没有命中，不是系统延迟或查询失败。"
         )
     examples = items[:5]
     snippets = "；".join(_build_candidate_item_snippet(item) for item in examples)
-    return _format_query_sections(
-        ("查询结论", [f"候选里共命中了 {total} 条和“{keyword}”相关的机会。"]),
-        ("关键分布", [_format_tier_summary(items)]),
-        ("代表样本", [f"下面仅展示前 {len(examples)} 条示例：{snippets}"]),
-        ("样本说明", [reason for reason in (_format_example_reason(item) for item in examples) if reason]),
-        ("本次边界", ["这次只是查询候选，不会直接加入方案。"]),
-        ("下一步", ["下一步可以继续缩小条件，比如只看更稳、录取率更高，或判断是否值得加入当前方案。"]),
+    return (
+        f"候选里共命中了 {total} 条和“{keyword}”相关的机会。"
+        f"下面仅展示前 {len(examples)} 条示例：{snippets}"
     )
 
 
@@ -805,20 +584,11 @@ def _format_structured_plan_result(
     if matched:
         examples = matched[:5]
         snippets = "；".join(_build_plan_item_snippet(item) for item in examples)
-        return _format_query_sections(
-            ("查询结论", [f"{title}里共命中了 {len(matched)} 条符合“{description}”的志愿。"]),
-            ("关键分布", [_format_tier_summary(matched)]),
-            ("代表样本", [f"下面仅展示前 {len(examples)} 条示例：{snippets}"]),
-            ("样本说明", [reason for reason in (_format_example_reason(item) for item in examples) if reason]),
-            ("本轮边界", ["这次只做查询和分析，不会自动改动当前方案。"]),
-            ("下一步", ["下一步如果要处理这些志愿，可以告诉我保留哪几个、移动到哪里，或只看更稳/录取率更高的。"]),
+        return (
+            f"{title}里共命中了 {len(matched)} 条符合“{description}”的志愿。"
+            f"下面仅展示前 {len(examples)} 条示例：{snippets}"
         )
-    return _format_query_sections(
-        ("查询结论", [f"{title}里暂时没有命中符合“{description}”的志愿。"]),
-        ("本轮边界", ["这次只做查询和分析，不会自动改动当前方案。"]),
-        ("当前判断", ["如果这是明确不想要的方向，当前方案暂时没有看到直接冲突。"]),
-        ("下一步", ["后续也可以再让我按更具体的学校或专业名复查。"]),
-    )
+    return f"{title}里暂时没有命中符合“{description}”的志愿。"
 
 
 def _format_structured_candidate_result(response: dict[str, Any], description: str) -> str:
@@ -826,33 +596,15 @@ def _format_structured_candidate_result(response: dict[str, Any], description: s
     items = data.get("items") or []
     total = data.get("total") or 0
     if not items:
-        return _format_query_sections(
-            ("查询结论", [f"候选里暂时没有筛到符合“{description}”的机会。"]),
-            ("本次边界", ["这次只是查询候选，不会直接加入方案。"]),
-            (
-                "可能原因",
-                [
-                    "我已按这几个具体专业分别查过，当前候选池没有返回可用结果。",
-                    "这通常说明该会话的可选范围里暂时没有这些具体专业，或专业名称口径需要放宽到专业类。",
-                ],
-            ),
-            (
-                "下一步",
-                [
-                    "下一步可以换成更宽的专业类再查。",
-                    "也可以只看当前方案里的相近志愿，或让我继续按“更稳一点”的思路做调整建议。",
-                ],
-            ),
+        return (
+            f"候选里暂时没有筛到符合“{description}”的机会。"
+            "这表示当前候选池按这个条件没有命中，不是系统延迟或查询失败。"
         )
     examples = items[:5]
     snippets = "；".join(_build_candidate_item_snippet(item) for item in examples)
-    return _format_query_sections(
-        ("查询结论", [f"候选里共命中了 {total} 条符合“{description}”的机会。"]),
-        ("关键分布", [_format_tier_summary(items)]),
-        ("代表样本", [f"下面仅展示前 {len(examples)} 条示例：{snippets}"]),
-        ("样本说明", [reason for reason in (_format_example_reason(item) for item in examples) if reason]),
-        ("本次边界", ["这次只是查询候选，不会直接加入方案。"]),
-        ("下一步", ["下一步可以继续缩小条件，比如只看更稳、录取率更高，或判断是否值得加入当前方案。"]),
+    return (
+        f"候选里共命中了 {total} 条符合“{description}”的机会。"
+        f"下面仅展示前 {len(examples)} 条示例：{snippets}"
     )
 
 
@@ -904,12 +656,6 @@ async def query_volunteer_plan(
     has_structured_filters = _has_structured_filters(structured_filters)
     filter_description = _describe_structured_filters(structured_filters, (query or "").strip())
     normalized_match_mode = _normalize_match_mode(match_mode)
-    if (
-        normalized_match_mode == _MATCH_MODE_AND
-        and not structured_filters.get("school_keywords")
-        and len(structured_filters.get("major_keywords") or []) > 1
-    ):
-        normalized_match_mode = _MATCH_MODE_OR
 
     query_keywords = _build_query_keywords(query)
     display_keyword = query_keywords[0] if query_keywords else ((query or "").strip())
@@ -921,7 +667,7 @@ async def query_volunteer_plan(
     try:
         if has_structured_filters:
             if normalized_scope == _CANDIDATE_SCOPE:
-                candidate_result = await _query_candidate_opportunities_with_filters_fallback(session_id, structured_filters)
+                candidate_result = await _query_candidate_opportunities_with_filters(session_id, structured_filters)
                 if candidate_result.get("code") != 0:
                     return "查询候选机会失败，请稍后重试。"
                 return _format_structured_candidate_result(candidate_result, filter_description)
@@ -946,7 +692,7 @@ async def query_volunteer_plan(
             if matched_plan_items:
                 return plan_text
 
-            candidate_result = await _query_candidate_opportunities_with_filters_fallback(session_id, structured_filters)
+            candidate_result = await _query_candidate_opportunities_with_filters(session_id, structured_filters)
             if candidate_result.get("code") != 0:
                 return plan_text
             candidate_text = _format_structured_candidate_result(candidate_result, filter_description)
