@@ -29,7 +29,7 @@ async def test_handle_planning_request_routes_state_query():
 async def test_handle_planning_request_returns_text_for_candidate_query():
     with patch(
         "app.tools.planning_router_tool._run_planned_request",
-        new=AsyncMock(return_value="这是当前候选池查询结果。\n- 候选示例：A大学-计算机(稳/北京) id=v1"),
+        new=AsyncMock(return_value="这是当前候选池查询结果。\n- 候选示例：A大学-计算机(稳/北京/录取率70%)"),
     ) as mock_run:
         result = await handle_planning_request(
             _ctx(),

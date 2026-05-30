@@ -745,6 +745,9 @@ def test_query_planning_candidate_pool_uses_filters_and_formats_result():
                     "provinceName": "北京",
                     "volunteerId": "v101",
                     "finalScore": 95.5,
+                    "admissionRatio": 35,
+                    "schoolNature": "公办",
+                    "tuitionPerYear": 5000,
                 },
                 {
                     "schoolName": "中国人民大学",
@@ -795,7 +798,8 @@ def test_query_planning_candidate_pool_uses_filters_and_formats_result():
     )
     assert "候选志愿查询结果：" in result
     assert "命中数量：2" in result
-    assert "id=v101" in result
+    assert "北京大学-经济学(sprint/北京/录取率35%/公办/学费5000元/年) 分值95.5" in result
+    assert "id=v101" not in result
     assert "volunteerId" not in result
 
 

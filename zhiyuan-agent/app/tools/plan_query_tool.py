@@ -401,6 +401,32 @@ def _format_ratio(value: Any) -> str:
     return f"{int(numeric)}%" if numeric.is_integer() else f"{numeric:.1f}%"
 
 
+def _candidate_ratio_value(item: dict[str, Any]) -> Any:
+    if item.get("admissionRatio") is not None:
+        return item.get("admissionRatio")
+    if item.get("schoolEnrollRatio") is not None:
+        return item.get("schoolEnrollRatio")
+    return item.get("enrollRatio")
+
+
+def _format_tuition(value: Any) -> str | None:
+    if value is None:
+        return None
+    try:
+        amount = int(float(value))
+    except (TypeError, ValueError):
+        return None
+    if amount <= 0:
+        return None
+    return f"学费{amount}元/年"
+
+
+def _append_unique(parts: list[str], value: Any) -> None:
+    text = str(value or "").strip()
+    if text and text not in parts:
+        parts.append(text)
+
+
 def _build_plan_item_snippet(item: dict[str, Any]) -> str:
     school_name = item.get("schoolName") or "未知院校"
     major_name = item.get("majorName") or "未知专业"
@@ -413,9 +439,17 @@ def _build_candidate_item_snippet(item: dict[str, Any]) -> str:
     school_name = item.get("schoolName") or "未知院校"
     major_name = item.get("majorName") or "未知专业"
     tier = item.get("tier") or "未知"
-    ratio = _format_ratio(item.get("admissionRatio"))
-    volunteer_id = item.get("volunteerId") or "unknown"
-    return f"{school_name}-{major_name}（{tier}，录取率{ratio}，id={volunteer_id}）"
+    ratio = _format_ratio(_candidate_ratio_value(item))
+    detail_parts = [tier]
+    if ratio != "-":
+        detail_parts.append(f"录取率{ratio}")
+    _append_unique(detail_parts, item.get("provinceName"))
+    _append_unique(detail_parts, item.get("cityName"))
+    _append_unique(detail_parts, item.get("schoolNature"))
+    tuition = _format_tuition(item.get("tuitionPerYear"))
+    if tuition:
+        detail_parts.append(tuition)
+    return f"{school_name}-{major_name}（{'，'.join(detail_parts)}）"
 
 
 def _extract_plan_items(response: dict[str, Any]) -> list[dict[str, Any]]:

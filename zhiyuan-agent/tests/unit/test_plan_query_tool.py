@@ -282,6 +282,50 @@ async def test_query_volunteer_plan_structured_region_and_major_filters_use_cand
 
 
 @pytest.mark.asyncio
+async def test_query_volunteer_plan_candidate_summary_uses_user_facing_fields_without_ids():
+    candidate_result = {
+        "code": 0,
+        "data": {
+            "items": [
+                {
+                    "volunteerId": "v-accounting-1",
+                    "schoolName": "南宁学院第01组",
+                    "majorName": "会计学",
+                    "tier": "稳",
+                    "admissionRatio": 63.5,
+                    "provinceName": "广西",
+                    "cityName": "南宁",
+                    "schoolNature": "民办",
+                    "tuitionPerYear": 19800,
+                }
+            ],
+            "total": 1,
+        },
+    }
+
+    with (
+        patch("app.tools.plan_query_tool.extract_candidate_query_filters_async", new=AsyncMock(return_value={})),
+        patch("app.tools.plan_query_tool.query_planning_candidate_pool", new=AsyncMock(return_value=candidate_result)),
+    ):
+        result = await query_volunteer_plan(
+            _ctx(),
+            "候选里还有没有更稳一点的会计审计，别直接加",
+            scope="candidate",
+            tiers=["稳"],
+            major_keywords=["会计学"],
+        )
+
+    assert "南宁学院第01组-会计学" in result
+    assert "录取率63.5%" in result
+    assert "广西" in result
+    assert "南宁" in result
+    assert "民办" in result
+    assert "学费19800元/年" in result
+    assert "id=" not in result
+    assert "volunteerId" not in result
+
+
+@pytest.mark.asyncio
 async def test_query_volunteer_plan_falls_back_to_draft_when_ordered_plan_is_empty():
     ordered_result = {"code": 0, "data": {"items": []}}
     draft_result = {

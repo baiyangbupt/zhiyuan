@@ -160,11 +160,25 @@ def _format_candidate_items(items: list[dict[str, Any]], limit: int = 5) -> str 
         school_name = item.get("schoolName") or "未知院校"
         major_name = item.get("majorName") or _first_major_name(item) or "未知专业"
         tier = item.get("tier") or "unknown"
-        volunteer_id = item.get("volunteerId") or "unknown"
         score = item.get("finalScore")
         province_name = item.get("provinceName") or ""
+        ratio_text = _format_ratio(_item_admission_ratio(item))
+        detail_parts = [tier]
+        if province_name:
+            detail_parts.append(province_name)
+        if ratio_text:
+            detail_parts.append(f"录取率{ratio_text}")
+        if item.get("schoolNature"):
+            detail_parts.append(str(item.get("schoolNature")))
+        if item.get("tuitionPerYear") is not None:
+            try:
+                tuition = int(float(item.get("tuitionPerYear")))
+            except (TypeError, ValueError):
+                tuition = 0
+            if tuition > 0:
+                detail_parts.append(f"学费{tuition}元/年")
         tail = f" 分值{score}" if score is not None else ""
-        snippets.append(f"{school_name}-{major_name}({tier}/{province_name}) id={volunteer_id}{tail}")
+        snippets.append(f"{school_name}-{major_name}({'/'.join(detail_parts)}){tail}")
     if not snippets:
         return None
     return "；".join(snippets)

@@ -3240,3 +3240,16 @@ L3 full_agent fallback
 - 验证：
   - 聚焦回归：`cd zhiyuan-agent && .venv/bin/python -m pytest tests/unit/test_candidate_filter_extraction_tool.py tests/unit/test_plan_query_tool.py tests/unit/test_plan_execution_tool.py tests/unit/test_tool_reply_policy.py tests/unit/test_base_agent.py tests/unit/test_chat_service_history_persistence.py -q`：`267 passed`。
   - 百家 Kimi smoke：同一 `session=120 / 帮我查一下候选池里稳档师范类机会，不要加入方案`，最终候选查询 filters 为 `tiers=["稳"] / major_keywords=[] / school_tags=["师范"] / major_tags=[]`；回复从只命中 1 条扩展为 2 条，包含 `南宁师范大学(01)-地理科学（师范）` 和 `广西师范大学(01)-朝鲜语`，并在最终回复中区分“师范类院校”和“专业本身是否师范”，无 follow-up 卡片、无确认预览。端到端约 `21.8s`。
+
+补充修复：候选查询示例去内部 ID 化。
+
+- 复测“候选里还有没有更稳一点的会计审计，别直接加”时，候选查询质量已经恢复，但工具摘要仍可能以 `id=...` 形式把内部 `volunteerId` 暴露给最终模型。即使最终回复不一定原样输出，这类字段也会增加用户侧出现难懂格式的风险。
+- 修复方式：
+  - `query_volunteer_plan(scope=candidate)` 的候选示例改为用户可读字段：学校、专业、冲稳保、录取率、地域、院校性质、学费。
+  - 兼容 `query_planning_candidate_pool` 摘要同步去掉 `id=...`，但只改用户可见文本，不删除结构化数据里的 `volunteerId`，因此不影响后续加入方案、移动、删除等执行链路。
+  - 这不是路由快路径，也不改变候选筛选、pending 或确认行为。
+- 验证：
+  - 聚焦回归：`cd zhiyuan-agent && .venv/bin/python -m pytest tests/unit/test_plan_query_tool.py tests/unit/test_planning_workflow_tool.py tests/unit/test_planning_router_tool.py -q`：`75 passed`。
+  - 百家 Kimi smoke：`session=120 / 候选里还有没有更稳一点的会计审计，别直接加`，最终回复以表格列出 3 条稳档会计学候选，包含学校、专业、层级、录取率、学费和地域；`rg` 检查输出文件未命中 `id=`、`volunteerId`、`planningWorkspaceAction` 或“确认后”。本轮无 follow-up 卡片、无确认预览，端到端约 `38.3s`。
+- 后续性能观察：
+  - 该 smoke 仍走 `plan_next_action(query_state) -> execute_plan_action(query_state) -> query_volunteer_plan`，共 4 次模型请求。质量和安全边界可接受，但只读候选查询仍存在不必要状态查询和多次模型往返，后续应优先在 full-agent 工具选择层减少无效状态探查，而不是用字符串快路由替代。
