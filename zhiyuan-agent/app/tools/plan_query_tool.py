@@ -470,6 +470,31 @@ def _merge_structured_filters(
     return merged
 
 
+def _drop_major_keywords_shadowed_by_school_tags(
+    filters: dict[str, list[str]],
+    supplemental_filters: dict[str, list[str]],
+) -> dict[str, list[str]]:
+    """Avoid turning an institution-type query into a stricter major query.
+
+    The main model may pass values such as 师范 as a major keyword even when
+    the shared extractor has identified the same phrase as a school tag from
+    wording like 师范类院校/师范类机会. Keeping both becomes an AND filter and can
+    hide valid school-category opportunities. This only reconciles structured
+    fields after extraction; it is not a route or keyword fast path.
+    """
+    school_tags = {str(tag or "").strip() for tag in supplemental_filters.get("school_tags") or [] if str(tag or "").strip()}
+    if not school_tags or not filters.get("major_keywords"):
+        return filters
+
+    cleaned = dict(filters)
+    cleaned["major_keywords"] = [
+        keyword
+        for keyword in filters.get("major_keywords") or []
+        if str(keyword or "").strip() not in school_tags
+    ]
+    return cleaned
+
+
 async def _extract_query_filters_for_candidate_scope(
     query: str,
     *,
@@ -707,6 +732,7 @@ async def query_volunteer_plan(
         )
         if extracted_filters:
             structured_filters = _merge_structured_filters(structured_filters, extracted_filters)
+            structured_filters = _drop_major_keywords_shadowed_by_school_tags(structured_filters, extracted_filters)
             has_structured_filters = _has_structured_filters(structured_filters)
     filter_description = _describe_structured_filters(structured_filters, (query or "").strip())
 

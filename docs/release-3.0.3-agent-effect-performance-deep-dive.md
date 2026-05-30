@@ -3229,3 +3229,14 @@ L3 full_agent fallback
 - 验证：
   - 聚焦回归：`cd zhiyuan-agent && .venv/bin/python -m pytest tests/unit/test_candidate_filter_extraction_tool.py tests/unit/test_plan_query_tool.py tests/unit/test_plan_execution_tool.py tests/unit/test_tool_reply_policy.py tests/unit/test_base_agent.py tests/unit/test_chat_service_history_persistence.py -q`：`266 passed`。
   - 百家 Kimi smoke：`session=120 / 帮我查一下候选池里稳档师范类机会，不要加入方案`，抽取日志显示 raw `school_tags=["师范类"]`，normalized `school_tags=["师范"] / major_tags=[]`；最终仍只调用一次 `query_volunteer_plan`，无 follow-up 卡片、无确认预览，回复命中 `南宁师范大学(01)-地理科学（师范）`，录取率约 `60%`。端到端约 `33.3s`，其中两次模型请求各约 `9-10s`，工具节点约 `11s`，说明质量链路恢复，但候选只读仍存在“主模型 + 抽取模型 + 后端查询 + 最终模型”叠加耗时。
+
+补充修复：院校标签与专业关键词冲突消解。
+
+- 上述 smoke 继续检查时发现，主模型有时会在调用 `query_volunteer_plan(scope=candidate)` 时把“师范类”压缩为 `major_keywords=["师范"]`，共享抽取层同时又正确识别出 `school_tags=["师范"]`。如果两者都保留，会变成“院校是师范类 AND 专业名/专业类也含师范”的窄筛选，漏掉师范类院校里的非师范专业机会。
+- 修复方式：
+  - 在 `query_volunteer_plan` 的结构化筛选合并层增加冲突消解：只有当共享抽取层明确给出同值 `school_tags` 时，才移除同值 `major_keywords`。
+  - 这仍然不是路由规则，也不是字符串快路径；它只是在模型参数和抽取层结果冲突时，优先信任专门抽取器对字段归属的判断。
+  - 不影响真实专业查询，例如 `生物工程 / 网络与新媒体 / 教育学类 / 师范专业` 等仍可作为专业关键词或专业标签传递。
+- 验证：
+  - 聚焦回归：`cd zhiyuan-agent && .venv/bin/python -m pytest tests/unit/test_candidate_filter_extraction_tool.py tests/unit/test_plan_query_tool.py tests/unit/test_plan_execution_tool.py tests/unit/test_tool_reply_policy.py tests/unit/test_base_agent.py tests/unit/test_chat_service_history_persistence.py -q`：`267 passed`。
+  - 百家 Kimi smoke：同一 `session=120 / 帮我查一下候选池里稳档师范类机会，不要加入方案`，最终候选查询 filters 为 `tiers=["稳"] / major_keywords=[] / school_tags=["师范"] / major_tags=[]`；回复从只命中 1 条扩展为 2 条，包含 `南宁师范大学(01)-地理科学（师范）` 和 `广西师范大学(01)-朝鲜语`，并在最终回复中区分“师范类院校”和“专业本身是否师范”，无 follow-up 卡片、无确认预览。端到端约 `21.8s`。

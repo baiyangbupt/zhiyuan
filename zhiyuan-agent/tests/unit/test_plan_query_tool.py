@@ -578,6 +578,49 @@ async def test_query_volunteer_plan_candidate_scope_supplements_filters_with_ext
 
 
 @pytest.mark.asyncio
+async def test_query_volunteer_plan_drops_major_keyword_when_extractor_identifies_same_school_tag():
+    candidate_result = {"code": 0, "data": {"total": 0, "items": []}}
+    extracted = {
+        "should_query_candidate": True,
+        "confidence": 0.95,
+        "ambiguities": [],
+        "filters": {
+            "tiers": ["稳"],
+            "province_names": [],
+            "city_names": [],
+            "school_keywords": [],
+            "major_keywords": [],
+            "school_tags": ["师范"],
+            "major_tags": [],
+        },
+    }
+
+    with patch(
+        "app.tools.plan_query_tool.extract_candidate_query_filters_async",
+        new=AsyncMock(return_value=extracted),
+    ), patch(
+        "app.tools.plan_query_tool.query_planning_candidate_pool",
+        new=AsyncMock(return_value=candidate_result),
+    ) as candidate_mock:
+        await query_volunteer_plan(
+            _ctx(
+                "120",
+                chat_history=[
+                    {"role": "user", "content": "帮我查一下候选池里稳档师范类机会，不要加入方案"},
+                ],
+            ),
+            "",
+            scope="candidate",
+            major_keywords=["师范"],
+        )
+
+    candidate_mock.assert_awaited_once()
+    assert candidate_mock.await_args.kwargs["tiers"] == ["稳"]
+    assert candidate_mock.await_args.kwargs["school_tags"] == ["师范"]
+    assert candidate_mock.await_args.kwargs["major_keywords"] == []
+
+
+@pytest.mark.asyncio
 async def test_query_volunteer_plan_candidate_scope_extracts_from_latest_user_when_tool_query_is_empty():
     candidate_result = {"code": 0, "data": {"total": 0, "items": []}}
     extracted = {
