@@ -18,10 +18,12 @@ from app.handlers.shared import summary_total, summary_target_total
 from app.tools.plan_orchestration_models import PlanActionPlan, PlanExecutionResult
 from app.tools.planning_workflow_tool import (
     _build_compensation_preview_facts,
+    _build_plan_adjustment_facts,
     _build_plan_intent_relation_lines,
 )
 from app.util.internal_client import (
     apply_planning_compensation as _apply_planning_compensation_request,
+    analyze_planning_plan_adjustment as _analyze_planning_plan_adjustment_request,
     get_planning_state as _get_planning_state_request,
     preview_planning_compensation as _preview_planning_compensation_request,
     run_planning_review as _run_planning_review_request,
@@ -42,6 +44,36 @@ def _build_compensation_summary(facts: dict[str, Any]) -> tuple[str, list[str], 
     estimated_count = int(facts.get("estimated_fill_count") or facts.get("estimated_volunteer_count") or 0)
     action_text = _compact_list_text(facts.get("action_summaries"))
     if action_count <= 0 or estimated_count <= 0:
+        fallback = facts.get("adjustment_fallback") if isinstance(facts.get("adjustment_fallback"), dict) else {}
+        fallback_summary = str(fallback.get("summary_text") or "").strip()
+        actionable_counts = fallback.get("actionable_suggestion_counts") or {}
+        has_actionable = bool(fallback.get("has_actionable_suggestions"))
+        examples = [
+            str(item.get("description") or item.get("title") or "").strip()
+            for item in (fallback.get("example_suggestions") or [])
+            if isinstance(item, dict) and str(item.get("description") or item.get("title") or "").strip()
+        ]
+        if fallback_summary or has_actionable or examples:
+            counts_text = (
+                f"补充 {int(actionable_counts.get('add') or 0)} 条，"
+                f"调序 {int(actionable_counts.get('reorder') or 0)} 条，"
+                f"替换 {int(actionable_counts.get('replace') or 0)} 条，"
+                f"移除 {int(actionable_counts.get('remove') or 0)} 条"
+            )
+            parts = [
+                "这轮没有拿到可直接补入的志愿，所以不会直接改动方案。",
+            ]
+            if fallback_summary:
+                parts.append(f"但调整分析显示：{fallback_summary}")
+            if has_actionable:
+                parts.append(f"当前可继续细化的方向包括：{counts_text}")
+            if examples:
+                parts.append(f"优先可以看：{'；'.join(examples[:2])}")
+            return (
+                "；".join(parts) + "。",
+                ["compensation_preview", "empty_compensation_preview", "adjustment_fallback"],
+                ["先说明补齐预览为空且不会改动方案；再基于调整分析说明可继续预览的重排、替换或补充方向。"],
+            )
         summary = (
             "这轮没有拿到可直接执行的调稳补齐预览。"
             "当前不会改动方案；如果目标是降低风险，建议改用替换高风险志愿、按录取率重排，"
@@ -80,6 +112,27 @@ async def _refresh_review_and_state(session_id: str) -> dict[str, Any] | None:
     except Exception:
         logger.exception("refresh planning state failed after plan execution: session_id=%s", session_id)
     return None
+
+
+async def _build_adjustment_fallback_facts(session_id: str) -> dict[str, Any]:
+    try:
+        adjustment_result = await _analyze_planning_plan_adjustment_request(
+            _DEFAULT_TENANT_ID, session_id
+        )
+        if adjustment_result.get("code") != 0:
+            return {}
+        planning_state = await _get_planning_state_with_latest_profile(session_id)
+        ordered_state = (planning_state.get("orderedPlanState") or {}) if planning_state else {}
+        draft_state = (planning_state.get("draftPlanState") or {}) if planning_state else {}
+        return _build_plan_adjustment_facts(
+            adjustment_result.get("data") or {},
+            planning_state=planning_state,
+            ordered_state=ordered_state,
+            draft_state=draft_state,
+        )
+    except Exception:
+        logger.warning("build adjustment fallback failed: session_id=%s", session_id, exc_info=True)
+        return {}
 
 
 def _append_intent_relation_summary(base_text: str, planning_state: dict[str, Any] | None) -> str:
@@ -185,6 +238,10 @@ async def handle_preview_compensation(
     preview_result = await _preview_planning_compensation_request(session_id)
     preview_state = preview_result.get("data") or {} if preview_result.get("code") == 0 else {}
     facts = _build_compensation_preview_facts(preview_state)
+    if int(facts.get("action_count") or 0) <= 0 or int(facts.get("estimated_fill_count") or 0) <= 0:
+        adjustment_fallback = await _build_adjustment_fallback_facts(session_id)
+        if adjustment_fallback:
+            facts["adjustment_fallback"] = adjustment_fallback
     planning_version = _planning_version_from_context(ctx)
     if planning_version > 0:
         facts["planning_version"] = planning_version

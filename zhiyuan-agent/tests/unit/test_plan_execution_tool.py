@@ -2949,6 +2949,78 @@ def test_execute_plan_action_empty_compensation_preview_explains_no_actionable_p
     mock_preview.assert_awaited_once()
 
 
+def test_execute_plan_action_empty_compensation_preview_includes_adjustment_fallback():
+    payload = {
+        "stage": "preview",
+        "action_family": "preview_compensation",
+        "context_summary": "阶段=reviewed；方案=94/96",
+        "preview_summary": "调稳一点",
+        "missing_inputs": [],
+        "should_rerun_review": False,
+        "intent_relation": "unknown",
+        "atomic_actions": [],
+    }
+
+    with patch(
+        "app.handlers.compensation_handlers._preview_planning_compensation_request",
+        new=AsyncMock(return_value={"code": 0, "data": {"actions": []}}),
+    ) as mock_preview, patch(
+        "app.handlers.compensation_handlers._analyze_planning_plan_adjustment_request",
+        new=AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "analysis": {
+                        "summaryText": "当前排序存在录取概率倒挂；当前录取概率梯度存在断层",
+                        "rules": [
+                            {
+                                "hit": True,
+                                "summary": "当前排序存在录取概率倒挂",
+                                "suggestionTypes": ["reorder"],
+                            },
+                        ],
+                    },
+                    "suggestions": {
+                        "addSuggestions": [],
+                        "reorderSuggestions": [
+                            {
+                                "title": "调整相邻志愿顺序",
+                                "description": "建议检查相邻志愿顺序，确认是否符合个人真实意向。",
+                                "orderedVolunteerIds": ["v2", "v1"],
+                            }
+                        ],
+                        "replaceSuggestions": [
+                            {
+                                "title": "替换断层边界志愿",
+                                "description": "当前录取概率梯度存在断层",
+                                "removeVolunteerIds": ["v1"],
+                                "candidateVolunteerIds": ["v3"],
+                            }
+                        ],
+                        "removeSuggestions": [],
+                    },
+                },
+            }
+        ),
+    ) as mock_adjust, patch(
+        "app.handlers.compensation_handlers._get_planning_state_with_latest_profile",
+        new=AsyncMock(return_value={"orderedPlanState": {"items": []}, "draftPlanState": {"items": []}}),
+    ) as mock_state:
+        result = asyncio.run(execute_plan_action(_ctx_with_pending("regenerate_order"), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["result_kind"] == "compensation_preview"
+    assert "没有拿到可直接补入的志愿" in data["summary"]
+    assert "当前排序存在录取概率倒挂" in data["summary"]
+    assert "调序 1 条" in data["summary"]
+    assert "替换 1 条" in data["summary"]
+    assert "adjustment_fallback" in data["reply_focus"]
+    assert data["facts"]["adjustment_fallback"]["has_actionable_suggestions"] is True
+    mock_preview.assert_awaited_once()
+    mock_adjust.assert_awaited_once()
+    mock_state.assert_awaited_once()
+
+
 def test_execute_plan_action_routes_preview_stage_adjustment_analysis_to_handler():
     payload = {
         "stage": "preview",

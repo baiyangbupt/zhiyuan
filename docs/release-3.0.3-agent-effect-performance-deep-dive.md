@@ -4120,3 +4120,38 @@ cd zhiyuan-agent
   - `就按别太冒险的思路把这版调稳点，先给我看看会怎么动`
 - 两条均在首轮 `ModelRequestNode` 中断，`toolCallCount=0`，未进入 `query_volunteer_plan` 或 `plan_next_action / execute_plan_action`，因此不能用这次结果判断候选查询观测或调稳预览边界是否生效。
 - 服务端观测显示 `modelProvider=openai_compatible / modelName=kimi-k2.6 / errorType=ModelAPIError`，后续已补充 provider 错误摘要观测，便于复跑时区分供应商限流、鉴权、模型不可用或网络错误。
+
+#### 12.4.27 调稳预览空补偿的调整分析兜底
+
+本轮继续沿用 full Agent 主路径，不恢复字符串快路由。
+
+问题复盘：
+
+- 聚焦复跑 `就按别太冒险的思路把这版调稳点，先给我看看会怎么动` 时，链路正确进入 `plan_next_action -> execute_plan_action`，且没有重复试工具。
+- 但 `preview_compensation` 只代表狭义“补入/补齐”能力。当后端 compensation preview 没有可补入动作时，回复会停在“没有可直接补稳候选”，再给泛化建议。
+- 同一会话直接调用后端 `plan-adjustment/analyze` 可以拿到更完整的结构信息：数量不足、冲稳保失衡、概率倒挂、概率断层、本省保底不足，并且存在可行动的调序与替换建议。
+- 根因不是模型路由错误，也不是后端没有分析数据，而是“调稳预览”场景只消费了补偿预览这条窄链路，没有在补偿为空时补读调整分析 facts。
+
+修复设计：
+
+- 不增加自然语言关键词匹配，不改变高副作用确认门禁。
+- 在 `preview_compensation` handler 内部做只读兜底：先调用 compensation preview；当 `action_count=0` 或预计补入数为 0 时，再调用 `plan-adjustment/analyze`，将 `_build_plan_adjustment_facts` 结果挂到 `facts.adjustment_fallback`。
+- `_build_compensation_summary` 在存在 `adjustment_fallback` 时，优先说明“本轮没有可直接补入志愿、不会自动改动方案”，再给出调整分析摘要、可行动建议计数和代表性建议。
+- 该兜底仍返回 `result_kind=compensation_preview / applied=false`，语义上是“补偿预览为空后的调整分析补充”，不是实际执行替换、重排或补齐。
+
+验证：
+
+- 单测新增 `test_execute_plan_action_empty_compensation_preview_includes_adjustment_fallback`，覆盖补偿为空但 adjustment 存在调序/替换建议的结构化返回。
+- 聚焦单测 `tests/unit/test_plan_execution_tool.py -q` 通过，`108 passed`。
+- 真实 WebSocket 复跑 `session=17`：
+  - 输入：`就按别太冒险的思路把这版调稳点，先给我看看会怎么动`
+  - 链路：`plan_next_action(preview_compensation) -> execute_plan_action(compensation_preview)`
+  - 工具调用：2 次，无重复试工具，无未确认执行。
+  - 回复已从“没有可补齐动作 + 泛化建议”改善为：明确不自动改动方案，同时列出冲稳保失衡、概率倒挂、概率断层、本省保底不足，并给出可执行方向“调序 1 条 / 替换 1 条”。
+  - 耗时约 `31.5s`，主要仍是 3 次模型请求，后端补偿/调整工具耗时不高。
+
+影响面：
+
+- 正向：用户要求“先看怎么调稳”时，即使补齐预览为空，也能看到当前方案为什么不稳、哪里可以继续预览调整，回复信息量和可操作性更好。
+- 边界：该修复只发生在 `preview_compensation` 补偿为空时；补偿 preview 有动作时不额外调用 adjustment；直接 `analyze_adjustment`、审查、排序、移动、删除、替换等链路不受影响。
+- 遗留：仍没有把 adjustment suggestion 自动转换成具体可确认的 replace/sort preview。下一步如要进一步增强，需要设计“adjustment suggestion -> typed plan action preview”的结构化承接，而不是靠模型口头建议。
