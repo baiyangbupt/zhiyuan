@@ -765,11 +765,17 @@ def test_analyze_current_major_interest_wrapper_uses_major_scope():
 def test_analyze_current_major_interest_delegates_two_concrete_majors_to_compare_tool():
     from app.agent.context import RequestContext
 
+    progress_hints: list[str] = []
+
+    async def on_progress(hint: str) -> None:
+        progress_hints.append(hint)
+
     request_context = RequestContext(
         userid="u1",
         sessionid="s1",
         chat_history=[{"role": "user", "content": "法学和财政学哪个更适合普通家庭女生，先只分析不要记偏好"}],
         batch="01",
+        progress_callback=on_progress,
     )
     ctx = SimpleNamespace(deps=request_context)
 
@@ -777,7 +783,12 @@ def test_analyze_current_major_interest_delegates_two_concrete_majors_to_compare
             patch("app.tools.intent_preview_tool.analyze_volunteer_intent_change", new=AsyncMock()) as analyze_mock:
         resp = asyncio.run(analyze_current_major_interest(ctx))
 
-    assert resp == "法学和财政学对比结果"
+    data = json.loads(resp)
+    assert data["reply_strategy"] == "continue_model"
+    assert data["analysis_kind"] == "major_compare"
+    assert data["major_names"] == ["法学", "财政学"]
+    assert data["message"] == "法学和财政学对比结果"
+    assert progress_hints == ["正在对比这几个专业的差异..."]
     compare_mock.assert_awaited_once_with(ctx, "法学", "财政学")
     analyze_mock.assert_not_awaited()
 
@@ -2333,6 +2344,7 @@ def test_render_intent_analysis_text_hides_internal_major_levels():
 
     assert "level2" not in text
     assert "level3" not in text
+    assert "当前已经在后续报考参考" in text
     assert "当前已有参考偏好具体专业：会计学" in text
     assert "当前已有参考排除专业类：护理学类" in text
 

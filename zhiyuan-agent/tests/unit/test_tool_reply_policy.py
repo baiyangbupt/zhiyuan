@@ -94,6 +94,25 @@ def test_policy_keeps_unrendered_readonly_explore_payload_for_model_summary():
     assert decision.should_return_directly is False
 
 
+def test_policy_keeps_delegated_major_compare_for_model_synthesis():
+    decision = decide_tool_reply(
+        ["analyze_current_major_interest"],
+        [
+            _tool_return(
+                "analyze_current_major_interest",
+                (
+                    '{"reply_strategy":"continue_model","analysis_kind":"major_compare",'
+                    '"message":"专业对比事实：网络与新媒体 vs 跨境电子商务"}'
+                ),
+            )
+        ],
+    )
+
+    assert decision.strategy == "continue_model"
+    assert decision.should_return_directly is False
+    assert decision.reason == "explicit_continue_model"
+
+
 def test_policy_direct_returns_explicit_strategy_from_any_tool():
     decision = decide_tool_reply(
         ["query_volunteer_plan"],
@@ -186,6 +205,49 @@ def test_policy_direct_returns_structured_review_result():
     assert decision.should_return_directly is True
     assert decision.reason == "structured_review_result"
     assert "风险 3 项" in (decision.reply or "")
+
+
+def test_policy_keeps_plan_result_for_model_synthesis_after_explore_tool():
+    class Deps:
+        agent_observability = {
+            "toolNameCounts": {
+                "analyze_current_career_direction": 1,
+                "execute_plan_action": 1,
+            }
+        }
+
+    decision = decide_tool_reply(
+        ["execute_plan_action"],
+        [
+            _tool_return(
+                "execute_plan_action",
+                (
+                    '{"action_family":"review_plan","result_kind":"review_result",'
+                    '"summary":"已完成方案审查，当前共检出 **风险 2 项、提醒 0 项**。",'
+                    '"reply_focus":["review_result","risk_warning","direct_review_reply"]}'
+                ),
+            )
+        ],
+        Deps(),
+    )
+
+    assert decision.strategy == "continue_model"
+    assert decision.should_return_directly is False
+    assert decision.reason == "prior_tool_facts_need_model_synthesis"
+
+
+def test_policy_direct_returns_single_explore_tool_despite_observability_current_count():
+    class Deps:
+        agent_observability = {"toolNameCounts": {"analyze_current_career_direction": 1}}
+
+    decision = decide_tool_reply(
+        ["analyze_current_career_direction"],
+        [_tool_return("analyze_current_career_direction", "这轮只做分析，不会改动你的方案。")],
+        Deps(),
+    )
+
+    assert decision.strategy == "direct_reply"
+    assert decision.should_return_directly is True
 
 
 def test_policy_keeps_normal_preview_for_model_summary():

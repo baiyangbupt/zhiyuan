@@ -1149,6 +1149,10 @@ def _no_pending_intent_confirmation_guard_reply() -> str:
     return "我这边没有找到上一轮仍在等待确认的偏好调整。你可以直接说想保留、排除或重点关注的方向，我会先整理成待确认内容。"
 
 
+def _readonly_closure_ack_reply() -> str:
+    return "先按刚才的分析结论理解。这轮没有待确认的偏好或方案动作，也不会改动方案；后面想继续看具体学校、专业或方案调整，随时告诉我。"
+
+
 _PENDING_PLAN_ACTION_FAMILIES = {
     "generate_plan",
     "add_units",
@@ -1482,6 +1486,24 @@ _INTENT_CONFIRM_PHRASES = {
 }
 
 
+_READONLY_CLOSURE_ACK_PHRASES = {
+    "嗯那就这样",
+    "那就这样",
+    "那先这样",
+    "先这样",
+    "先这样吧",
+    "就这样",
+    "就这样吧",
+    "好先这样",
+    "好的先这样",
+    "行先这样",
+    "嗯先这样",
+    "嗯就这样",
+    "先按这个吧",
+    "先按刚才的吧",
+}
+
+
 def _is_plan_action_confirmation(content: str) -> bool:
     normalized = re.sub(r"\s+", "", (content or "").strip())
     normalized = normalized.strip("。.!！?")
@@ -1498,6 +1520,14 @@ def _is_pending_intent_confirmation(content: str) -> bool:
     if not normalized:
         return False
     return normalized in _INTENT_CONFIRM_PHRASES
+
+
+def _is_readonly_closure_ack(content: str) -> bool:
+    normalized = re.sub(r"\s+", "", (content or "").strip())
+    normalized = normalized.strip("。.!！?？")
+    if not normalized:
+        return False
+    return normalized in _READONLY_CLOSURE_ACK_PHRASES
 
 
 def _is_explicit_pending_intent_confirmation(content: str) -> bool:
@@ -2574,6 +2604,31 @@ class ChatService:
                 userId=user_id,
                 scene="intent",
                 routingPath="intent_confirmation_guard_no_pending",
+                pendingType=None,
+                actionFamily=None,
+                totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
+                status="success",
+                errorType=None,
+            )
+            return reply
+
+        if active_pending is None and _latest_turn_looks_readonly(history) and _is_readonly_closure_ack(content):
+            reply = _readonly_closure_ack_reply()
+            new_messages = [
+                ModelRequest(parts=[UserPromptPart(content=content)]),
+                ModelResponse(parts=[TextPart(content=reply)], model_name="direct-readonly-closure-ack"),
+            ]
+            try:
+                history_to_save = list(history or [])
+                history_to_save.extend(new_messages)
+                await self.history_store.save(session_id, history_to_save)
+            except Exception:
+                logger.exception("Failed to save readonly closure ack history: session_id=%s", session_id)
+            _log_conversation_turn_event(
+                sessionId=session_id,
+                userId=user_id,
+                scene="explore",
+                routingPath="readonly_closure_ack",
                 pendingType=None,
                 actionFamily=None,
                 totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),

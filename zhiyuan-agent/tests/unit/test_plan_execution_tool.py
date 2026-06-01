@@ -2463,7 +2463,7 @@ def test_execute_plan_action_runs_query_ordered():
     mock_query.assert_awaited_once()
 
 
-def test_execute_plan_action_redirects_entity_status_query_to_local_plan_lookup():
+def test_execute_plan_action_redirects_school_status_query_to_local_plan_lookup():
     payload = {
         "stage": "apply",
         "action_family": "query_state",
@@ -2493,7 +2493,45 @@ def test_execute_plan_action_redirects_entity_status_query_to_local_plan_lookup(
     mock_query.assert_awaited_once()
     assert mock_query.await_args.kwargs["scope"] == "plan"
     assert mock_query.await_args.kwargs["school_keywords"] == ["青岛城市学院"]
+    assert "major_keywords" not in mock_query.await_args.kwargs
     mock_state.assert_not_awaited()
+
+
+def test_execute_plan_action_keeps_major_only_status_query_on_status_overview_path():
+    payload = {
+        "stage": "apply",
+        "action_family": "query_state",
+        "user_goal": "这版是不是太冲了，能不能给我说人话",
+        "context_summary": "阶段=ordered；方案=20/30",
+        "preview_summary": "",
+        "missing_inputs": [],
+        "should_rerun_review": False,
+        "intent_relation": "unknown",
+        "atomic_actions": [],
+    }
+
+    with patch(
+        "app.handlers.query_handlers.query_volunteer_plan",
+        new=AsyncMock(return_value="不应调用局部查询"),
+    ) as mock_query, patch(
+        "app.handlers.query_handlers._get_planning_state_with_latest_profile",
+        new=AsyncMock(
+            return_value={
+                "phase": "reviewed",
+                "orderedPlanState": {"summary": {"unitTotal": 20, "targetUnitCount": 30}},
+                "reviewState": {"summary": {"riskCount": 1, "warnCount": 0}},
+            }
+        ),
+    ) as mock_state:
+        result = asyncio.run(execute_plan_action(_ctx(), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["result_kind"] == "status_overview"
+    assert "方案已经有了" in data["summary"]
+    assert "20/30 个志愿" in data["summary"]
+    assert "local_plan_query" not in data["reply_focus"]
+    mock_query.assert_not_awaited()
+    mock_state.assert_awaited_once()
 
 
 def test_execute_plan_action_keeps_plain_status_query_on_status_overview_path():

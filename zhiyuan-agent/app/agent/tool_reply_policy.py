@@ -75,6 +75,8 @@ def decide_tool_reply(
         return ToolReplyDecision()
 
     tool_name = str(tool_names[0] or "").strip()
+    if _has_prior_synthesis_facts(deps, current_tool_names=tool_names):
+        return ToolReplyDecision(reason="prior_tool_facts_need_model_synthesis")
     tool_return = tool_returns[0]
     payload = parse_tool_return_payload(tool_return)
     raw_text = parse_tool_return_text(tool_return)
@@ -249,6 +251,39 @@ def _normalize_reply_strategy(value: Any) -> str:
     if text in {"direct_reply", "direct_blocking", "preview_wait_confirm", "continue_model"}:
         return text
     return ""
+
+
+def _has_prior_synthesis_facts(deps: Any | None, *, current_tool_names: list[str]) -> bool:
+    """Keep multi-tool analysis turns on the model synthesis path.
+
+    Direct tool return is safe when the current tool result is the whole answer.
+    It is unsafe after the same turn already collected independent Explore or
+    comparison facts: the last tool can otherwise overwrite the user's primary
+    question, for example a career-direction analysis followed by a plan review.
+    """
+    if deps is None:
+        return False
+    observability = getattr(deps, "agent_observability", None)
+    if not isinstance(observability, dict):
+        return False
+    counts = observability.get("toolNameCounts")
+    if not isinstance(counts, dict):
+        return False
+    synthesis_tools = READONLY_EXPLORE_TOOL_NAMES | {
+        "compare_majors",
+        "compare_majors_adhoc",
+        "compare_major_options",
+        "get_major_introductions",
+        "get_major_introduction",
+    }
+    current_counts: dict[str, int] = {}
+    for tool_name in current_tool_names:
+        current_counts[tool_name] = current_counts.get(tool_name, 0) + 1
+    for tool_name in synthesis_tools:
+        prior_count = int(counts.get(tool_name) or 0) - int(current_counts.get(tool_name) or 0)
+        if prior_count > 0:
+            return True
+    return False
 
 
 def _query_result_should_continue(text: str) -> bool:

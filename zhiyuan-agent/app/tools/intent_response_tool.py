@@ -518,7 +518,7 @@ def render_intent_analysis_text(
             ]
         return format_text_sections(
             ("待确认内容", [_render_intent_preview_item(item) for item in (items or [])]),
-            ("已经在参考的内容", [_render_intent_preview_item(item) for item in (existing_items or [])]),
+            ("当前已经在后续报考参考", [_render_intent_preview_item(item) for item in (existing_items or [])]),
             ("影响说明", resolved_impact),
             ("下一步", next_steps),
         )
@@ -535,7 +535,7 @@ def render_intent_analysis_text(
     if items:
         sections.append(("这次识别到的参考范围", [_render_intent_preview_item(item) for item in items]))
     if existing_items:
-        sections.append(("当前已经在参考的内容", [item.get("content", "") for item in existing_items]))
+        sections.append(("当前已经在后续报考参考", [item.get("content", "") for item in existing_items]))
 
     next_steps = [
         "如果你想继续深入，我可以顺着这个方向再分析它和当前方案、候选机会的关系。",

@@ -523,13 +523,13 @@ def test_direction_explore_wrapper_routes_model_resolved_multiple_slots_to_compa
     single_mock.assert_not_awaited()
 
 
-def test_direction_explore_uses_explicit_generic_flag_without_resolver():
+def test_direction_explore_uses_explicit_generic_flag_after_no_concrete_slots():
     ctx = SimpleNamespace(
         deps=_request_context(session_id="404-generic", text="等成绩出来再定，今天先看大方向")
     )
 
     with (
-        patch("app.tools.intent_preview_tool._resolve_career_direction_slots", new=AsyncMock()) as resolver_mock,
+        patch("app.tools.intent_preview_tool._resolve_career_direction_slots", new=AsyncMock(return_value=[])) as resolver_mock,
         patch("app.tools.intent_preview_tool._should_use_generic_direction_analysis", new=AsyncMock()) as generic_resolver_mock,
         patch(
             "app.tools.intent_preview_tool._preview_generic_direction_analysis_from_request",
@@ -547,10 +547,39 @@ def test_direction_explore_uses_explicit_generic_flag_without_resolver():
         resp = _run(analyze_current_career_direction(ctx, generic_direction=True))
 
     assert resp == "泛方向分析结果"
-    resolver_mock.assert_not_awaited()
+    resolver_mock.assert_awaited_once_with(ctx.deps)
     generic_resolver_mock.assert_not_awaited()
     generic_mock.assert_awaited_once_with(ctx.deps)
     comparison_mock.assert_not_awaited()
+    single_mock.assert_not_awaited()
+
+
+def test_direction_explore_generic_flag_preserves_resolved_concrete_slots():
+    ctx = SimpleNamespace(
+        deps=_request_context(session_id="404-generic-concrete", text="读研和稳定就业哪个更实际点，先别改偏好")
+    )
+
+    with (
+        patch(
+            "app.tools.intent_preview_tool._resolve_career_direction_slots",
+            new=AsyncMock(return_value=[CAREER_FURTHER_STUDY, CAREER_STABLE_EMPLOYMENT]),
+        ) as resolver_mock,
+        patch("app.tools.intent_preview_tool._preview_generic_direction_analysis_from_request", new=AsyncMock()) as generic_mock,
+        patch(
+            "app.tools.intent_preview_tool.preview_direction_comparison_from_request",
+            new=AsyncMock(return_value="读研和稳定就业对比结果"),
+        ) as comparison_mock,
+        patch(
+            "app.tools.intent_preview_tool.preview_direction_analysis_from_request",
+            new=AsyncMock(),
+        ) as single_mock,
+    ):
+        resp = _run(analyze_current_career_direction(ctx, generic_direction=True))
+
+    assert resp == "读研和稳定就业对比结果"
+    resolver_mock.assert_awaited_once_with(ctx.deps)
+    comparison_mock.assert_awaited_once_with(ctx.deps, [CAREER_FURTHER_STUDY, CAREER_STABLE_EMPLOYMENT])
+    generic_mock.assert_not_awaited()
     single_mock.assert_not_awaited()
 
 

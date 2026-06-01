@@ -32,6 +32,7 @@ _TOOL_DISPATCH_RULES = """\
 - 对多个专业的学习内容、基础要求、课程训练、就业方向做只读对照时，优先调用 `get_major_introductions` 一次返回横向事实，不要并行或连续多次调用 `get_major_introduction`。
 - 单个专业“适不适合我/值不值得看”优先 `analyze_current_major_interest`；不要默认再追加 `get_major_introduction`，除非用户要详细了解这个专业。
 - 职业路径问题优先 `analyze_current_career_direction`；地域取舍问题优先 `analyze_current_region_interest`。只有用户明确同时问职业和地域时，才组合两个 Explore 工具。
+- 用户问“这份方案能不能支撑考公/体制内/进体制/稳定就业/读研”等职业路径承接时，优先调用 `analyze_current_career_direction` 并传入对应 `career_directions`；如还需要方案规模、风险或缺口，可再补 `query_state`，但不要只用 `review_plan` 回答这类问题。
 - Explore 回答顺序：先看学生本人适配度，再看方向/对象特点，再看当前方案承接，最后提候选机会。
 - 出分前或信息不完整的泛方向回复不能只列“可以聊什么”；至少给出 2-3 条可判断的方向框架，例如体制内/稳定就业、市场化就业/大城市就业、读研/深造分别看什么筹码、适合什么人、主要风险，并用“下一步”明确告诉用户补充哪些信息或可以继续问什么。
 - 用户在 Explore 问题里明确说“先不要改方案 / 先别动 / 只分析”时，最终回复要用一句自然中文承接边界，例如“这轮只做分析，不会改动你的方案”，避免用户误解为已经触发方案调整。

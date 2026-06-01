@@ -3298,6 +3298,58 @@ def test_chat_service_routes_no_pending_intent_confirmation_to_intent_guard(tmp_
     assert fake_agent.calls == []
 
 
+def test_chat_service_short_ack_after_readonly_turn_does_not_call_agent(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    history = [
+        ModelRequest(parts=[UserPromptPart(content="新媒体和跨电哪个更适合数学不太好的，先说说")]),
+        ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="analyze_current_major_interest",
+                    args={},
+                    tool_call_id="major-compare-via-interest",
+                )
+            ],
+            model_name="test-model",
+        ),
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="analyze_current_major_interest",
+                    content=json.dumps(
+                        {
+                            "reply_strategy": "continue_model",
+                            "analysis_kind": "major_compare",
+                            "message": "专业对比事实。",
+                        },
+                        ensure_ascii=False,
+                    ),
+                    tool_call_id="major-compare-via-interest",
+                )
+            ]
+        ),
+        ModelResponse(parts=[TextPart(content="先按专业对比给你分析，不会记录偏好。")], model_name="test-model"),
+    ]
+    asyncio.run(store.save("session-readonly-short-ack", history))
+    fake_agent = _FakeAgent(["不应该调用模型"])
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_intent_change_cache", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
+            patch("app.service._log_conversation_turn_event") as log_mock:
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(service.handle_message("session-readonly-short-ack", "user-1", "嗯那就这样"))
+
+    assert "先按刚才的分析结论理解" in reply
+    assert "没有待确认的偏好或方案动作" in reply
+    assert "不会改动方案" in reply
+    assert fake_agent.calls == []
+    assert log_mock.call_args.kwargs["routingPath"] == "readonly_closure_ack"
+
+
 def test_chat_service_does_not_block_intent_confirmation_when_intent_cache_exists(tmp_path, mock_llm_client):
     db_path = tmp_path / "history.db"
     store = ChatHistoryStore(str(db_path))

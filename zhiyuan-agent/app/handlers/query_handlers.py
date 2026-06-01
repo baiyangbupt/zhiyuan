@@ -15,7 +15,6 @@ from typing import Any
 from pydantic_ai import RunContext
 
 from app.agent.context import RequestContext
-from app.domain.major_entity_resolver import resolve_major_mentions_from_text
 from app.domain.school_entity_resolver import compact_school_text, school_name_set_for_batch
 from app.handlers.registry import register_handler
 from app.tools.plan_orchestration_models import PlanActionPlan, PlanExecutionResult
@@ -56,21 +55,6 @@ def _school_mentions_from_text(text: str, batch: str | None) -> list[str]:
             names.append(school_name)
     names.sort(key=lambda value: len(compact_school_text(value)), reverse=True)
     return list(dict.fromkeys(names))
-
-
-def _entity_query_filters_from_goal(text: str, batch: str | None) -> dict[str, list[str]]:
-    school_keywords = _school_mentions_from_text(text, batch)[:3]
-    major_keywords = [
-        candidate.canonical_name
-        for candidate in resolve_major_mentions_from_text(text, batch)
-        if str(candidate.canonical_name or "").strip()
-    ][:5]
-    filters: dict[str, list[str]] = {}
-    if school_keywords:
-        filters["school_keywords"] = list(dict.fromkeys(school_keywords))
-    if major_keywords:
-        filters["major_keywords"] = list(dict.fromkeys(major_keywords))
-    return filters
 
 
 # ---------------------------------------------------------------------------
@@ -307,14 +291,13 @@ async def handle_query_state(
     ctx: RunContext[RequestContext], plan: PlanActionPlan
 ) -> PlanExecutionResult:
     session_id = ctx.deps.sessionid
-    entity_filters = _entity_query_filters_from_goal(plan.user_goal, getattr(ctx.deps, "batch", None) or "01")
-    if entity_filters:
+    school_keywords = _school_mentions_from_text(plan.user_goal, getattr(ctx.deps, "batch", None) or "01")[:3]
+    if school_keywords:
         state_summary = await query_volunteer_plan(
             ctx,
             plan.user_goal,
             scope="plan",
-            school_keywords=entity_filters.get("school_keywords"),
-            major_keywords=entity_filters.get("major_keywords"),
+            school_keywords=school_keywords,
             match_mode="and",
         )
         return PlanExecutionResult(
@@ -330,7 +313,7 @@ async def handle_query_state(
             reply_strategy="direct_reply",
             facts={
                 "query_redirect": "local_plan_query",
-                "query_filters": entity_filters,
+                "query_filters": {"school_keywords": school_keywords},
             },
         )
 

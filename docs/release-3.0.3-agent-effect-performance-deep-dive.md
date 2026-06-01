@@ -4006,3 +4006,77 @@ cd zhiyuan-agent
 - 百家 Kimi 的首轮模型请求长尾明显。本轮最慢 case `99074ms`，其中首轮工具选择约 `52891ms`，最终组织回复约 `34271ms`。
 - 同一 case 仍出现多工具试探：`get_major_introductions -> analyze_current_major_interest x2 -> preview_current_major_intent_confirmation`。质量可接受，但性能链路仍需后续从工具契约和最终合成层继续收敛，不能用关键词抢路由解决。
 - 聚焦回归通过后，下一步仍需跑 `effect/perf` 主回归和 open-quality 全量，确认方案审查、排序、移动、职业方向和多意图链路没有退化。
+
+#### 12.4.25 百家 Kimi open-quality 全量回归与剩余链路收口
+
+本轮继续使用百家 `kimi-k2.6`，保持 full Agent 主路径，不启用字符串快路由。核心目标是验证 12.4.24 后续修复是否会影响 open-quality 全量场景，并继续定位剩余质量/性能问题。
+
+本轮修复点：
+
+- **多工具合成边界**：`ToolReplyPolicy` 增加 prior synthesis facts 判断。如果同一轮已经收集过职业方向、专业对比、专业介绍等 Explore/compare facts，后续即使命中可直返工具，也交回主模型统一合成，避免最后一个工具结果覆盖用户的主问题。
+- **专业对比承接**：`analyze_current_major_interest` 在当前用户文本能精确解析出两个三级专业时，委托 `compare_majors` 获取对比事实，并以 `reply_strategy=continue_model` 返回，保留主模型综合回复能力；同时补充“正在对比这几个专业的差异...”进度提示。
+- **职业方向 slot 优先级**：`analyze_current_career_direction` 不再让 `generic_direction=true` 直接吞掉明确方向。当用户说“读研和稳定就业哪个更实际点”这类明确对比时，先解析具体 slots，解析不到才回泛方向分析。
+- **方案状态查询重定向收口**：`query_state` 只在识别到明确学校名时重定向到局部方案查询；不再因为专业词命中把“这版是不是太冲了”这类状态问题改成专业局部查询。
+- **只读收尾确认保护**：只在上一轮确认为只读分析/查询、且当前没有 pending 的情况下，对“嗯那就这样”等极短收尾语返回轻量确认，不调用 Agent、不写偏好、不改方案。该逻辑是窄护栏，不作为业务路由。
+- **既有偏好文案统一**：既有偏好不重复新增的回复统一使用“当前已经在后续报考参考 / 本轮不会重复新增”，避免用户误解“已经在参考的内容”范围。
+
+聚焦验证：
+
+- `读研和稳定就业哪个更实际点，先别改偏好`
+  - 修复前：可能被泛方向分析吞掉，回复缺少“读研/深造”和“稳定就业”显式对比。
+  - 修复后：单次 `analyze_current_career_direction`，回复明确对比“深造发展导向”和“稳定就业导向”，端到端约 `4-6s`。
+- `我倾向会计学和审计学，但土木工程不要`
+  - 修复后：当这些内容已存在于用户参考里，回复明确“当前已经在后续报考参考 / 本轮不会重复新增”，并列出会计学、审计学、土木工程。
+- `新媒体和跨电哪个更适合数学不太好的，先说说 -> 嗯那就这样`
+  - 第二轮走 `readonly_closure_ack`，无 pending、无工具调用、无方案改动，约 `2.1s`。
+
+全量回归：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python examples/dialog_regression_runner.py \
+  --url ws://127.0.0.1:8036/gaotu-assistant-agent/plus/chat/1/bot/test/do \
+  --cases examples/dialog_regression_303_open_quality_cases.json \
+  --response-timeout 180 \
+  --keep-response-text \
+  --assert-plan-style \
+  --clear-history-per-case \
+  --metrics-output /private/tmp/zhiyuan_303_open_quality_baijia_after_existing_heading_fix_8036.json
+```
+
+结果：
+
+| 指标 | 结果 |
+| --- | ---: |
+| steps | `23` |
+| successfulSteps | `23` |
+| failedSteps | `0` |
+| median | `18704ms` |
+| p95 | `42281ms` |
+| max | `48129ms` |
+
+最慢场景：
+
+| 场景 | 耗时 | 主要链路 |
+| --- | ---: | --- |
+| `法学和财政学哪个更适合普通家庭女生` | `48129ms` | `compare_majors -> analyze_current_major_interest -> get_major_introductions -> final model` |
+| `候选里还有没有更稳一点的会计审计，别直接加` | `42281ms` | `query_volunteer_plan`，工具节点耗时较高 |
+| `就按别太冒险的思路把这版调稳点，先给我看看会怎么动` | `41472ms` | `collect_plan_context_inputs -> plan_next_action -> execute_plan_action -> final model` |
+| `家里就想让孩子以后稳一点进体制，这个方案能撑住吗` | `36899ms` | `analyze_current_career_direction + plan_next_action` 后主模型综合 |
+| `医学护理这些别碰，财会还能接受，先看看影响` | `36580ms` | 单次 `analyze_current_major_interest`，首轮模型选择较慢 |
+
+质量结论：
+
+- open-quality 全量没有内容失败，也没有发现未确认直接改方案。
+- 职业方向明确 slot 问题已修复，`读研 vs 稳定就业` 不再退化成泛方向。
+- 既有偏好回复更清楚，能稳定命中“不重复新增”的用户侧文案。
+- 专业对比回复保留结构化、较丰满的解释，没有为了降延迟压成薄回复。
+- 多工具合成边界更安全，但多工具链仍是性能长尾来源。
+
+后续优先级：
+
+1. `query_volunteer_plan` 候选只读查询仍可能在工具节点耗时 30s+，需要拆分抽取、后端查询和摘要生成耗时。
+2. “调稳点”仍偏策略说明，缺少稳定可执行的替换/补齐预览，需要继续完善补偿预览能力和可确认边界。
+3. 专业对比类仍可能追加 `analyze_current_major_interest / get_major_introductions`，质量可用但链路偏长；后续应从结构化专业对比 facts 和最终合成层继续收口。
+4. 职业方向 + 方案承接的复杂问法有时会组合 `analyze_current_career_direction` 和 `plan_next_action`，回复质量更强但耗时变长；后续要评估是否把方案状态 facts 更稳定地内聚到职业方向工具。
+5. 继续坚持不扩大关键词快路由；性能优化优先通过工具契约、结构化 facts、模型请求数和后端查询耗时拆分解决。

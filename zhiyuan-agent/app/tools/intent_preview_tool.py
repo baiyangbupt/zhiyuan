@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import contextlib
 from types import SimpleNamespace
 from typing import Literal
 
@@ -58,6 +59,14 @@ def _latest_user_text(request_context: RequestContext) -> str:
         if message.get("role") == "user" and message.get("content"):
             return str(message.get("content") or "").strip()
     return ""
+
+
+async def _emit_progress_hint(request_context: RequestContext, hint: str) -> None:
+    callback = getattr(request_context, "progress_callback", None)
+    if callback is None:
+        return
+    with contextlib.suppress(Exception):
+        await callback(hint)
 
 
 def _resolved_major_names_from_latest_text(request_context: RequestContext) -> list[str]:
@@ -148,7 +157,17 @@ async def analyze_current_major_interest(
     """
     resolved_major_names = _resolved_major_names_from_latest_text(ctx.deps)
     if len(resolved_major_names) == 2:
-        return await compare_majors(ctx, resolved_major_names[0], resolved_major_names[1])
+        await _emit_progress_hint(ctx.deps, "正在对比这几个专业的差异...")
+        comparison = await compare_majors(ctx, resolved_major_names[0], resolved_major_names[1])
+        return json.dumps(
+            {
+                "reply_strategy": "continue_model",
+                "analysis_kind": "major_compare",
+                "major_names": resolved_major_names,
+                "message": comparison,
+            },
+            ensure_ascii=False,
+        )
     return await analyze_current_interest(
         ctx,
         intent_mode=intent_mode,
@@ -192,14 +211,6 @@ async def analyze_current_career_direction(
         if message.get("role") == "user" and message.get("content"):
             latest_user_text = str(message.get("content") or "")
             break
-    if generic_direction or _likely_generic_direction_question(latest_user_text):
-        logger.info(
-            "analyze_current_career_direction: session_id=%s using_generic_direction_analysis=%s",
-            _session_id(ctx.deps),
-            "explicit" if generic_direction else "local",
-        )
-        return await _preview_generic_direction_analysis_from_request(ctx.deps)
-
     direction_slots = normalize_career_slots(list(career_directions or []))
     if direction_slots:
         logger.info(
@@ -208,7 +219,18 @@ async def analyze_current_career_direction(
             direction_slots,
         )
     else:
-        direction_slots = await _resolve_career_direction_slots(ctx.deps)
+        if generic_direction or _likely_generic_direction_question(latest_user_text):
+            try:
+                direction_slots = await _resolve_career_direction_slots(ctx.deps)
+            except Exception:
+                logger.warning(
+                    "analyze_current_career_direction: career slot resolve failed before generic fallback: session_id=%s",
+                    _session_id(ctx.deps),
+                    exc_info=True,
+                )
+                direction_slots = []
+        else:
+            direction_slots = await _resolve_career_direction_slots(ctx.deps)
     logger.info(
         "analyze_current_career_direction: session_id=%s direction_slots=%s",
         _session_id(ctx.deps),
@@ -218,6 +240,13 @@ async def analyze_current_career_direction(
         return await preview_direction_comparison_from_request(ctx.deps, direction_slots)
     if len(direction_slots) == 1:
         return await preview_direction_analysis_from_request(ctx.deps, direction_slots[0])
+    if generic_direction or _likely_generic_direction_question(latest_user_text):
+        logger.info(
+            "analyze_current_career_direction: session_id=%s using_generic_direction_analysis=%s",
+            _session_id(ctx.deps),
+            "explicit" if generic_direction else "local",
+        )
+        return await _preview_generic_direction_analysis_from_request(ctx.deps)
     try:
         if await _should_use_generic_direction_analysis(ctx.deps):
             logger.info(
