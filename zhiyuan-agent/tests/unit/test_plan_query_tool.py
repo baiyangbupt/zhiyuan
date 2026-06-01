@@ -20,7 +20,14 @@ from app.tools.plan_query_tool import (
 
 
 def _ctx(session_id: str = "23", batch: str = "01", chat_history: list[dict] | None = None):
-    return SimpleNamespace(deps=SimpleNamespace(sessionid=session_id, batch=batch, chat_history=chat_history or []))
+    return SimpleNamespace(
+        deps=SimpleNamespace(
+            sessionid=session_id,
+            batch=batch,
+            chat_history=chat_history or [],
+            agent_observability={},
+        )
+    )
 
 
 def test_normalize_query_text_strips_filler_words():
@@ -657,6 +664,53 @@ async def test_query_volunteer_plan_candidate_scope_supplements_omitted_major_al
     assert candidate_mock.await_args.kwargs["major_keywords"] == ["会计学", "审计学"]
     assert "专业:会计学、审计学" in result
     assert "扩大到同一专业类" in result
+
+
+@pytest.mark.asyncio
+async def test_query_volunteer_plan_records_internal_timing_observability():
+    candidate_result = {"code": 0, "data": {"total": 0, "items": []}}
+    extracted = {
+        "should_query_candidate": True,
+        "confidence": 0.9,
+        "ambiguities": [],
+        "filters": {
+            "tiers": ["稳"],
+            "province_names": [],
+            "city_names": [],
+            "school_keywords": [],
+            "major_keywords": ["会计学"],
+            "school_tags": [],
+            "major_tags": [],
+        },
+    }
+    ctx = _ctx("120")
+
+    with patch(
+        "app.tools.plan_query_tool.extract_candidate_query_filters_async",
+        new=AsyncMock(return_value=extracted),
+    ), patch(
+        "app.tools.plan_query_tool.query_planning_candidate_pool",
+        new=AsyncMock(return_value=candidate_result),
+    ):
+        result = await query_volunteer_plan(
+            ctx,
+            "候选里还有没有更稳一点的会计审计，别直接加",
+            scope="candidate",
+        )
+
+    assert "候选里暂时没有筛到符合" in result
+    timing = ctx.deps.agent_observability["toolInternalTimings"][0]
+    assert timing["tool"] == "query_volunteer_plan"
+    assert timing["requestedScope"] == "candidate"
+    assert timing["resolvedScope"] == "candidate"
+    assert timing["status"] == "success"
+    assert timing["hasStructuredFilters"] is True
+    assert timing["filterKeys"] == ["tiers", "major_keywords"]
+    assert [step["step"] for step in timing["steps"]] == [
+        "normalize_explicit_filters",
+        "extract_candidate_filters",
+        "query_candidate_with_filters",
+    ]
 
 
 @pytest.mark.asyncio

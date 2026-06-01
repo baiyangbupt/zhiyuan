@@ -288,6 +288,27 @@ async def test_run_stops_repeated_query_tool_loop_generically():
     assert new_messages[-1].parts[0].content == reply
 
 
+def test_record_exception_observability_keeps_provider_error_details(client, mocker):
+    mocker.patch("app.agent.base_agent.Agent")
+    agent = BaseAgent(llm_client=client, instructions="test")
+    response = SimpleNamespace(status_code=429, text='{"error":"rate limited"}')
+    exc = RuntimeError("provider error")
+    exc.status_code = 503
+    exc.code = "server_busy"
+    exc.body = {"message": "System is too busy now"}
+    exc.response = response
+    observability: dict[str, Any] = {}
+
+    agent._record_exception_observability(observability, exc)
+
+    assert observability["errorType"] == "RuntimeError"
+    assert observability["errorStatusCode"] == "429"
+    assert observability["errorCode"] == "server_busy"
+    assert observability["errorResponseText"] == '{"error":"rate limited"}'
+    assert "System is too busy now" in observability["errorBody"]
+    assert observability["errorMessage"] == "provider error"
+
+
 # ---- 7. on_node 钩子默认不报错 ----
 
 async def test_on_node_hook_default(client, mocker):

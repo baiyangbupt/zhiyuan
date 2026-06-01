@@ -304,6 +304,16 @@ class TestToolDispatchRules:
         assert '不要先调用 `plan_next_action(action_family="query_state")`' in result
         assert "只有用户明确要求加入、替换、补齐或调整当前方案时" in result
 
+    def test_plan_adjustment_preview_boundary_prefers_compensation_preview(self):
+        result = build_tool_dispatch_rules()
+        assert "区分“调整分析”和“调整预览”" in result
+        assert "用户只是问当前方案哪里不稳、怎么优化、是否太冒险时" in result
+        assert "`analyze_adjustment`" in result
+        assert "先给我看会怎么动" in result
+        assert "整体调稳、补稳、降低冒险程度" in result
+        assert "`preview_compensation`" in result
+        assert "没有可执行补齐动作" in result
+
     def test_plan_tool_docs_say_refs_do_not_need_pre_query(self):
         assert "不适合在移动/删除前作为“定位 ID”的前置步骤" in (query_volunteer_plan.__doc__ or "")
         assert "不应为了定位而先调用 query_volunteer_plan" in (plan_next_action.__doc__ or "")

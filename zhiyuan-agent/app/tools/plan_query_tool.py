@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from typing import Any, Literal
 
 from pydantic_ai import RunContext
@@ -220,6 +221,59 @@ def _candidate_filter_source_text(ctx: RunContext[RequestContext], query: str) -
         if part and part not in merged:
             merged.append(part)
     return " ".join(merged)
+
+
+def _append_query_observability(
+    ctx: RunContext[RequestContext],
+    *,
+    session_id: str,
+    requested_scope: str,
+    resolved_scope: str,
+    has_structured_filters: bool,
+    filter_keys: list[str],
+    timings: list[dict[str, Any]],
+    total_duration_ms: int,
+    status: str,
+) -> None:
+    observability = getattr(getattr(ctx, "deps", None), "agent_observability", None)
+    if not isinstance(observability, dict):
+        return
+    observability.setdefault("toolInternalTimings", []).append(
+        {
+            "tool": "query_volunteer_plan",
+            "sessionId": session_id,
+            "requestedScope": requested_scope,
+            "resolvedScope": resolved_scope,
+            "status": status,
+            "durationMs": total_duration_ms,
+            "hasStructuredFilters": has_structured_filters,
+            "filterKeys": filter_keys,
+            "steps": timings,
+        }
+    )
+
+
+def _filter_keys(filters: dict[str, list[str]]) -> list[str]:
+    return [key for key, values in filters.items() if values]
+
+
+async def _timed_async_step(
+    timings: list[dict[str, Any]],
+    name: str,
+    func: Any,
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
+    started_at = time.perf_counter()
+    try:
+        return await func(*args, **kwargs)
+    finally:
+        timings.append(
+            {
+                "step": name,
+                "durationMs": int((time.perf_counter() - started_at) * 1000),
+            }
+        )
 
 
 def _infer_query_focus(query: str, normalized_query: str) -> str:
@@ -780,12 +834,32 @@ async def query_volunteer_plan(
     """
     session_id = ctx.deps.sessionid
     batch = getattr(ctx.deps, "batch", None) or "01"
+    requested_scope = str(scope or _AUTO_SCOPE)
+    timings: list[dict[str, Any]] = []
+    tool_started_at = time.perf_counter()
+    normalized_scope = _AUTO_SCOPE
+    has_structured_filters = False
+    structured_filters: dict[str, list[str]] = {}
     logger.info("query_volunteer_plan called: session_id=%s, query=%s, scope=%s", session_id, query, scope)
 
     if _looks_like_plan_action_query(query):
+        _append_query_observability(
+            ctx,
+            session_id=session_id,
+            requested_scope=requested_scope,
+            resolved_scope="plan_action_rejected",
+            has_structured_filters=False,
+            filter_keys=[],
+            timings=timings,
+            total_duration_ms=int((time.perf_counter() - tool_started_at) * 1000),
+            status="rejected_plan_action_query",
+        )
         return "这是补齐或调整当前方案的动作诉求，不是局部查询；应先走方案动作预览，用户确认后再执行。"
 
-    structured_filters = await _normalize_local_query_filters_async(
+    structured_filters = await _timed_async_step(
+        timings,
+        "normalize_explicit_filters",
+        _normalize_local_query_filters_async,
         batch=batch,
         tiers=tiers,
         province_names=province_names,
@@ -806,7 +880,10 @@ async def query_volunteer_plan(
         normalized_scope = _resolve_query_scope(query)
     if normalized_scope in {_CANDIDATE_SCOPE, _PLAN_THEN_CANDIDATE_SCOPE}:
         candidate_filter_text = _candidate_filter_source_text(ctx, query)
-        extracted_filters = await _extract_query_filters_for_candidate_scope(
+        extracted_filters = await _timed_async_step(
+            timings,
+            "extract_candidate_filters",
+            _extract_query_filters_for_candidate_scope,
             candidate_filter_text,
             batch=batch,
         )
@@ -825,13 +902,42 @@ async def query_volunteer_plan(
     try:
         if has_structured_filters:
             if normalized_scope == _CANDIDATE_SCOPE:
-                candidate_result = await _query_candidate_opportunities_with_filters(session_id, structured_filters)
+                candidate_result = await _timed_async_step(
+                    timings,
+                    "query_candidate_with_filters",
+                    _query_candidate_opportunities_with_filters,
+                    session_id,
+                    structured_filters,
+                )
+                status = "candidate_query_failed" if candidate_result.get("code") != 0 else "success"
+                _append_query_observability(
+                    ctx,
+                    session_id=session_id,
+                    requested_scope=requested_scope,
+                    resolved_scope=normalized_scope,
+                    has_structured_filters=has_structured_filters,
+                    filter_keys=_filter_keys(structured_filters),
+                    timings=timings,
+                    total_duration_ms=int((time.perf_counter() - tool_started_at) * 1000),
+                    status=status,
+                )
                 if candidate_result.get("code") != 0:
                     return "查询候选机会失败，请稍后重试。"
                 return _format_structured_candidate_result(candidate_result, filter_description)
 
-            plan_title, plan_items = await _load_current_plan(session_id)
-            plan_items = await _enrich_plan_items_with_candidate_metadata(session_id, plan_items)
+            plan_title, plan_items = await _timed_async_step(
+                timings,
+                "load_current_plan",
+                _load_current_plan,
+                session_id,
+            )
+            plan_items = await _timed_async_step(
+                timings,
+                "enrich_plan_items_with_candidate_metadata",
+                _enrich_plan_items_with_candidate_metadata,
+                session_id,
+                plan_items,
+            )
             plan_text = _format_structured_plan_result(
                 plan_title,
                 plan_items,
@@ -840,6 +946,17 @@ async def query_volunteer_plan(
                 match_mode=normalized_match_mode,
             )
             if normalized_scope == _PLAN_SCOPE:
+                _append_query_observability(
+                    ctx,
+                    session_id=session_id,
+                    requested_scope=requested_scope,
+                    resolved_scope=normalized_scope,
+                    has_structured_filters=has_structured_filters,
+                    filter_keys=_filter_keys(structured_filters),
+                    timings=timings,
+                    total_duration_ms=int((time.perf_counter() - tool_started_at) * 1000),
+                    status="success",
+                )
                 return plan_text
 
             matched_plan_items = [
@@ -848,12 +965,51 @@ async def query_volunteer_plan(
                 if _matches_structured_filters(item, structured_filters, match_mode=normalized_match_mode)
             ]
             if matched_plan_items:
+                _append_query_observability(
+                    ctx,
+                    session_id=session_id,
+                    requested_scope=requested_scope,
+                    resolved_scope=normalized_scope,
+                    has_structured_filters=has_structured_filters,
+                    filter_keys=_filter_keys(structured_filters),
+                    timings=timings,
+                    total_duration_ms=int((time.perf_counter() - tool_started_at) * 1000),
+                    status="success_plan_hit",
+                )
                 return plan_text
 
-            candidate_result = await _query_candidate_opportunities_with_filters(session_id, structured_filters)
+            candidate_result = await _timed_async_step(
+                timings,
+                "query_candidate_with_filters",
+                _query_candidate_opportunities_with_filters,
+                session_id,
+                structured_filters,
+            )
             if candidate_result.get("code") != 0:
+                _append_query_observability(
+                    ctx,
+                    session_id=session_id,
+                    requested_scope=requested_scope,
+                    resolved_scope=normalized_scope,
+                    has_structured_filters=has_structured_filters,
+                    filter_keys=_filter_keys(structured_filters),
+                    timings=timings,
+                    total_duration_ms=int((time.perf_counter() - tool_started_at) * 1000),
+                    status="candidate_query_failed_after_plan_miss",
+                )
                 return plan_text
             candidate_text = _format_structured_candidate_result(candidate_result, filter_description)
+            _append_query_observability(
+                ctx,
+                session_id=session_id,
+                requested_scope=requested_scope,
+                resolved_scope=normalized_scope,
+                has_structured_filters=has_structured_filters,
+                filter_keys=_filter_keys(structured_filters),
+                timings=timings,
+                total_duration_ms=int((time.perf_counter() - tool_started_at) * 1000),
+                status="success_plan_miss_candidate_checked",
+            )
             return (
                 f"{plan_text}\n"
                 f"{candidate_text}\n"
@@ -861,25 +1017,100 @@ async def query_volunteer_plan(
             )
 
         if normalized_scope == _CANDIDATE_SCOPE:
-            candidate_result = await _query_candidate_opportunities(session_id, query, lookup_keyword)
+            candidate_result = await _timed_async_step(
+                timings,
+                "query_candidate_keyword",
+                _query_candidate_opportunities,
+                session_id,
+                query,
+                lookup_keyword,
+            )
+            status = "candidate_query_failed" if candidate_result.get("code") != 0 else "success"
+            _append_query_observability(
+                ctx,
+                session_id=session_id,
+                requested_scope=requested_scope,
+                resolved_scope=normalized_scope,
+                has_structured_filters=has_structured_filters,
+                filter_keys=_filter_keys(structured_filters),
+                timings=timings,
+                total_duration_ms=int((time.perf_counter() - tool_started_at) * 1000),
+                status=status,
+            )
             if candidate_result.get("code") != 0:
                 return "查询候选机会失败，请稍后重试。"
             return _format_candidate_result(candidate_result, display_keyword)
 
-        plan_title, plan_items = await _load_current_plan(session_id)
+        plan_title, plan_items = await _timed_async_step(
+            timings,
+            "load_current_plan",
+            _load_current_plan,
+            session_id,
+        )
         plan_text = _format_plan_result(plan_title, plan_items, display_keyword, query_keywords)
 
         if normalized_scope == _PLAN_SCOPE:
+            _append_query_observability(
+                ctx,
+                session_id=session_id,
+                requested_scope=requested_scope,
+                resolved_scope=normalized_scope,
+                has_structured_filters=has_structured_filters,
+                filter_keys=_filter_keys(structured_filters),
+                timings=timings,
+                total_duration_ms=int((time.perf_counter() - tool_started_at) * 1000),
+                status="success",
+            )
             return plan_text
 
         matched_plan_items = [item for item in plan_items if _matches_any_query_keyword(item, query_keywords)]
         if matched_plan_items:
+            _append_query_observability(
+                ctx,
+                session_id=session_id,
+                requested_scope=requested_scope,
+                resolved_scope=normalized_scope,
+                has_structured_filters=has_structured_filters,
+                filter_keys=_filter_keys(structured_filters),
+                timings=timings,
+                total_duration_ms=int((time.perf_counter() - tool_started_at) * 1000),
+                status="success_plan_hit",
+            )
             return plan_text
 
-        candidate_result = await _query_candidate_opportunities(session_id, query, lookup_keyword)
+        candidate_result = await _timed_async_step(
+            timings,
+            "query_candidate_keyword",
+            _query_candidate_opportunities,
+            session_id,
+            query,
+            lookup_keyword,
+        )
         if candidate_result.get("code") != 0:
+            _append_query_observability(
+                ctx,
+                session_id=session_id,
+                requested_scope=requested_scope,
+                resolved_scope=normalized_scope,
+                has_structured_filters=has_structured_filters,
+                filter_keys=_filter_keys(structured_filters),
+                timings=timings,
+                total_duration_ms=int((time.perf_counter() - tool_started_at) * 1000),
+                status="candidate_query_failed_after_plan_miss",
+            )
             return plan_text
         candidate_text = _format_candidate_result(candidate_result, display_keyword)
+        _append_query_observability(
+            ctx,
+            session_id=session_id,
+            requested_scope=requested_scope,
+            resolved_scope=normalized_scope,
+            has_structured_filters=has_structured_filters,
+            filter_keys=_filter_keys(structured_filters),
+            timings=timings,
+            total_duration_ms=int((time.perf_counter() - tool_started_at) * 1000),
+            status="success_plan_miss_candidate_checked",
+        )
         return (
             f"{plan_text}\n"
             f"{candidate_text}\n"
@@ -887,4 +1118,15 @@ async def query_volunteer_plan(
         )
     except Exception:
         logger.exception("query_volunteer_plan failed: session_id=%s", session_id)
+        _append_query_observability(
+            ctx,
+            session_id=session_id,
+            requested_scope=requested_scope,
+            resolved_scope=normalized_scope,
+            has_structured_filters=has_structured_filters,
+            filter_keys=_filter_keys(structured_filters),
+            timings=timings,
+            total_duration_ms=int((time.perf_counter() - tool_started_at) * 1000),
+            status="error",
+        )
         return "查询当前方案时发生错误，请稍后重试。"

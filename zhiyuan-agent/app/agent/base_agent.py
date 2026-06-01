@@ -253,7 +253,7 @@ class BaseAgent(Generic[T]):
                     observability["failedNode"] = node_name
                     observability["failedNodeIndex"] = node_count
                     observability["failedNodeElapsedMs"] = duration_ms
-                    observability["errorType"] = type(exc).__name__
+                    self._record_exception_observability(observability, exc)
                     observability["totalDurationMs"] = int((time.monotonic() - run_started_at) * 1000)
                     raise
 
@@ -384,6 +384,41 @@ class BaseAgent(Generic[T]):
         if tool_names:
             item["toolNames"] = list(tool_names)
         observability.setdefault("nodeTimings", []).append(item)
+
+    def _record_exception_observability(
+        self,
+        observability: dict[str, Any],
+        exc: BaseException,
+    ) -> None:
+        observability["errorType"] = type(exc).__name__
+        for attr_name, target_key in (
+            ("status_code", "errorStatusCode"),
+            ("code", "errorCode"),
+            ("type", "errorProviderType"),
+        ):
+            value = getattr(exc, attr_name, None)
+            if value is not None:
+                observability[target_key] = str(value)
+        response = getattr(exc, "response", None)
+        response_status = getattr(response, "status_code", None)
+        if response_status is not None:
+            observability["errorStatusCode"] = str(response_status)
+        response_text = getattr(response, "text", None)
+        if response_text:
+            observability["errorResponseText"] = self._compact_error_text(str(response_text))
+        body = getattr(exc, "body", None)
+        if body is not None:
+            observability["errorBody"] = self._compact_error_text(str(body))
+        message = str(exc).strip()
+        if message:
+            observability["errorMessage"] = self._compact_error_text(message)
+
+    @staticmethod
+    def _compact_error_text(text: str, *, limit: int = 500) -> str:
+        compact = " ".join(str(text or "").split())
+        if len(compact) <= limit:
+            return compact
+        return compact[: limit - 3] + "..."
 
     def _guard_repeated_tool_calls(self, tool_names: list[str], observability: dict[str, Any]) -> str | None:
         if not tool_names:

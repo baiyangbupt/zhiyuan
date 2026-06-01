@@ -4,6 +4,8 @@
 
 ### Added
 
+- `query_volunteer_plan` 增加工具内部耗时观测，写入 `agent_observability.toolInternalTimings`，可拆分显式筛选归一化、候选筛选抽取、当前方案读取、候选元数据补齐和候选池查询等阶段，便于定位候选只读查询长尾。
+- Agent 节点异常观测补充 provider 错误摘要，`agentRun` 会尽量记录 `errorStatusCode / errorCode / errorResponseText / errorBody / errorMessage`，用于区分百家/兼容模型服务的限流、鉴权、模型不可用或网络错误。
 - 新增职业方向回归集 `examples/dialog_regression_303_career_direction_cases.json`，覆盖大城市就业 vs 考编、读研 vs 稳定就业、体制内稳定就业承接和出分前先看大方向；评估报告同步识别职业路径、市场化就业和用户侧语言质量。
 - 恢复 3.0.3 full-agent 观测链路：`conversation_turn_event` 重新记录 `routingPath=full_agent`、模型配置、LLM 请求/token、结构化 tool call 摘要和 `routeDecision.toolTrial`，并把 `route-observability` 内部消息写入本地 history 供回归 runner 离线解析；runtime history 会过滤该内部消息，不进入后续大模型上下文。
 - `dialog_case_evaluation_report.py` 的工具链问题聚合支持直接消费 `turnObservability.toolCalls`：即使本地 history 未带出 `routingPath/routeDecision`，也能识别慢工具链、重复工具、多工具调用和工具错误结果；最新复跑 88 个真实对话衍生 case 后，报告聚合 `Full Agent Tool Trial Issues.count=81`，其中 `slow_full_agent=81`、`very_slow_full_agent=36`、`repeated_tool_calls=2`、`many_tool_calls=4`、`tool_result_error=1`。
@@ -18,6 +20,7 @@
 
 ### Fixed
 
+- 调稳/别冒险类方案请求的工具调度边界收口：用户只是问“哪里不稳/怎么优化”时仍走 `analyze_adjustment`；用户明确要“先给我看会怎么动/给一版预览/确认后再执行”时优先规划可确认预览，整体调稳场景优先 `preview_compensation`，没有可执行补齐动作时再说明只能先分析并引导替换、重排或放宽筛选。
 - 3.0.3 open-quality 全量收口：百家 `kimi-k2.6` 下 `examples/dialog_regression_303_open_quality_cases.json` 复跑 `23/23` steps 通过；修复明确职业方向被泛方向吞掉的问题，`读研 vs 稳定就业` 会优先保留具体方向 slot 后再分析，不再退化成泛方向回复。
 - Agent 多工具回复合成边界补强：同一轮已收集 Explore/专业对比/专业介绍等事实时，后续可直返工具不会覆盖前序事实，而是交回主模型统一合成，避免职业方向 + 方案审查、专业对比 + 专业介绍等多意图场景只回答最后一个工具结果。
 - 专业对比承接优化：`analyze_current_major_interest` 精确识别两个三级专业时委托 `compare_majors` 获取结构化对比事实，并通过 `reply_strategy=continue_model` 交由主模型生成完整回复；同时补充“正在对比这几个专业的差异...”进度提示。

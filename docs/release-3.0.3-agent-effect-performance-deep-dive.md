@@ -4080,3 +4080,43 @@ cd zhiyuan-agent
 3. 专业对比类仍可能追加 `analyze_current_major_interest / get_major_introductions`，质量可用但链路偏长；后续应从结构化专业对比 facts 和最终合成层继续收口。
 4. 职业方向 + 方案承接的复杂问法有时会组合 `analyze_current_career_direction` 和 `plan_next_action`，回复质量更强但耗时变长；后续要评估是否把方案状态 facts 更稳定地内聚到职业方向工具。
 5. 继续坚持不扩大关键词快路由；性能优化优先通过工具契约、结构化 facts、模型请求数和后端查询耗时拆分解决。
+
+#### 12.4.26 查询耗时观测与调稳预览边界收口
+
+本轮继续沿用 full Agent 主路径，不恢复字符串快路由。
+
+改动 1：`query_volunteer_plan` 内部耗时观测。
+
+- 背景：open-quality 全量里 `候选里还有没有更稳一点的会计审计，别直接加` 仍可能耗时 40s+，但旧观测只能看到 `query_volunteer_plan` 整体慢，无法判断慢在抽取模型、后端候选查询、方案读取还是最终模型组织。
+- 实现：在 `RequestContext.agent_observability.toolInternalTimings` 里追加 `query_volunteer_plan` 分段，包括：
+  - `normalize_explicit_filters`
+  - `extract_candidate_filters`
+  - `load_current_plan`
+  - `enrich_plan_items_with_candidate_metadata`
+  - `query_candidate_with_filters`
+  - `query_candidate_keyword`
+- 影响：只增加观测字段，不改变路由、筛选、返回文案、pending、工作台联动或确认机制。后续 runner 输出里的 `routeDecision.agentRun.toolInternalTimings` 可直接用来拆慢点。
+
+改动 2：调稳/别冒险类请求的工具选择边界收口。
+
+- 背景：`就按别太冒险的思路把这版调稳点，先给我看看会怎么动` 这类话术，用户要的是“先看会怎么调整”的可确认预览；此前真实链路有时退化成 `analyze_adjustment`，输出偏策略说明，缺少可执行 preview。
+- 实现：在工具调度规则里明确区分：
+  - 用户只是问“哪里不稳 / 怎么优化 / 是否太冒险”时，走 `analyze_adjustment`。
+  - 用户明确要“先给我看会怎么动 / 给一版预览 / 确认后再执行 / 别直接改但先看看怎么调”时，优先规划可确认动作预览。
+  - 若诉求是整体调稳、补稳、降低冒险程度且未点名单条志愿，优先 `preview_compensation`；如果工具返回没有可执行补齐动作，再说明只能先分析，并引导到替换高风险项、按录取率重排或放宽筛选。
+- 影响：这是提示层工具选择约束，不是运行时代码的关键词接管；仍由主模型理解用户意图并调用 `plan_next_action -> execute_plan_action`，高副作用动作仍遵守 `preview -> confirm -> apply`。
+
+聚焦验证：
+
+- `tests/unit/test_plan_query_tool.py`：新增观测断言，确认候选查询返回内容不变，同时记录 `normalize_explicit_filters -> extract_candidate_filters -> query_candidate_with_filters`。
+- `tests/unit/test_tool_reply_policy.py`、`tests/unit/test_base_agent.py`：确认直接返回和工具循环保护未受影响。
+- `tests/unit/test_instructions.py`：确认调稳预览语义边界已经进入 Agent 指令。
+
+真实 WebSocket 验证记录：
+
+- 使用本地当前代码独立启动 Agent `127.0.0.1:8036`，后端指向 `127.0.0.1:18082`，模型配置为百家 `kimi-k2.6`。
+- 复跑两条聚焦输入：
+  - `候选里还有没有更稳一点的会计审计，别直接加`
+  - `就按别太冒险的思路把这版调稳点，先给我看看会怎么动`
+- 两条均在首轮 `ModelRequestNode` 中断，`toolCallCount=0`，未进入 `query_volunteer_plan` 或 `plan_next_action / execute_plan_action`，因此不能用这次结果判断候选查询观测或调稳预览边界是否生效。
+- 服务端观测显示 `modelProvider=openai_compatible / modelName=kimi-k2.6 / errorType=ModelAPIError`，后续已补充 provider 错误摘要观测，便于复跑时区分供应商限流、鉴权、模型不可用或网络错误。
