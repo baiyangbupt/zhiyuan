@@ -15,6 +15,7 @@ from typing import Any, Literal
 from pydantic_ai import RunContext
 
 from app.agent.context import RequestContext
+from app.domain.major_entity_resolver import resolve_major_mentions_from_text
 from app.tools.candidate_filter_extraction_tool import (
     extract_candidate_query_filters_async,
     normalize_candidate_query_filters_async,
@@ -504,6 +505,49 @@ def _merge_structured_filters(
     return merged
 
 
+def _merge_filter_lists(base: list[str], extra: list[str]) -> list[str]:
+    merged: list[str] = []
+    for value in [*(base or []), *(extra or [])]:
+        text = str(value or "").strip()
+        if text and text not in merged:
+            merged.append(text)
+    return merged
+
+
+def _supplement_major_keywords_from_mentions(
+    filters: dict[str, list[str]],
+    text: str,
+    *,
+    batch: str,
+) -> dict[str, list[str]]:
+    """Use the shared catalog resolver to fill major aliases omitted by LLM extraction.
+
+    This is not a route shortcut. It only reconciles already selected candidate
+    query filters so short forms such as “会计审计” or “计科” do not lose one of
+    the mentioned majors.
+    """
+    if not filters.get("major_keywords"):
+        return filters
+
+    mentions = resolve_major_mentions_from_text(text, batch)
+    if not mentions:
+        return filters
+
+    additions: list[str] = []
+    for mention in mentions:
+        if mention.level not in {"level2", "level3"}:
+            continue
+        name = str(mention.canonical_name or "").strip()
+        if name and name not in additions:
+            additions.append(name)
+    if not additions:
+        return filters
+
+    updated = dict(filters)
+    updated["major_keywords"] = _merge_filter_lists(filters.get("major_keywords") or [], additions)
+    return updated
+
+
 def _drop_major_keywords_shadowed_by_school_tags(
     filters: dict[str, list[str]],
     supplemental_filters: dict[str, list[str]],
@@ -696,6 +740,7 @@ def _format_structured_candidate_result(response: dict[str, Any], description: s
         return (
             f"候选里暂时没有筛到符合“{description}”的机会。"
             "这表示当前候选池按这个条件没有命中，不是系统延迟或查询失败。"
+            "如果你想继续看，可以把条件放宽一点，比如去掉稳/保限制、扩大到同一专业类，或者让我回到当前方案里找相近项。"
         )
     examples = items[:5]
     snippets = "；".join(_build_candidate_item_snippet(item) for item in examples)
@@ -760,14 +805,21 @@ async def query_volunteer_plan(
     if normalized_scope == _AUTO_SCOPE:
         normalized_scope = _resolve_query_scope(query)
     if normalized_scope in {_CANDIDATE_SCOPE, _PLAN_THEN_CANDIDATE_SCOPE}:
+        candidate_filter_text = _candidate_filter_source_text(ctx, query)
         extracted_filters = await _extract_query_filters_for_candidate_scope(
-            _candidate_filter_source_text(ctx, query),
+            candidate_filter_text,
             batch=batch,
         )
         if extracted_filters:
             structured_filters = _merge_structured_filters(structured_filters, extracted_filters)
             structured_filters = _drop_major_keywords_shadowed_by_school_tags(structured_filters, extracted_filters)
             has_structured_filters = _has_structured_filters(structured_filters)
+        structured_filters = _supplement_major_keywords_from_mentions(
+            structured_filters,
+            candidate_filter_text,
+            batch=batch,
+        )
+        has_structured_filters = _has_structured_filters(structured_filters)
     filter_description = _describe_structured_filters(structured_filters, (query or "").strip())
 
     try:

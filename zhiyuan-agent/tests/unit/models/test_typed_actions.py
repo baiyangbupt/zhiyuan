@@ -11,7 +11,6 @@ from app.models.typed_actions import (
     GeneratePlanAction,
     MoveOrderedUnitAction,
     MoveUnitAction,
-    PinUnitAction,
     PlanAction,
     PreviewCompensationAction,
     QueryCandidatesAction,
@@ -25,7 +24,7 @@ from app.models.typed_actions import (
     ReviewIssueRef,
     ReviewPlanAction,
     SelectionFilters,
-    UnpinUnitAction,
+    SortOrderedPlanAction,
 )
 
 
@@ -234,23 +233,17 @@ class TestMutationActions:
         assert a.action_type == "remove_ordered_unit"
         assert a.unit_ids == ["unit-1", "unit-2"]
 
-    def test_pin_unit(self):
-        a = PinUnitAction(volunteer_id="v1")
-        assert a.action_type == "pin_unit"
-
-    def test_unpin_unit(self):
-        a = UnpinUnitAction(volunteer_id="v2")
-        assert a.action_type == "unpin_unit"
-
     def test_replace_units(self):
         a = ReplaceUnitsAction(
             remove_ids=["v1", "v2"],
+            source_major_names=["会计学", "审计学"],
             replacement_filters=SelectionFilters(tier="稳"),
             review_issue=ReviewIssueRef(code="high_tuition"),
         )
         assert a.action_type == "replace_units"
         assert a.has_target
         assert len(a.remove_ids) == 2
+        assert a.source_major_names == ["会计学", "审计学"]
 
     def test_replace_units_no_target(self):
         a = ReplaceUnitsAction()
@@ -260,6 +253,11 @@ class TestMutationActions:
         a = RegenerateOrderAction(structural_rebalance=True)
         assert a.action_type == "regenerate_order"
         assert a.structural_rebalance is True
+
+    def test_sort_ordered_plan(self):
+        a = SortOrderedPlanAction(sort_field="schoolRank")
+        assert a.action_type == "sort_ordered_plan"
+        assert a.sort_field == "schoolRank"
 
 
 # ---------------------------------------------------------------------------
@@ -287,9 +285,8 @@ class TestPlanActionUnion:
         ("move_unit", MoveUnitAction),
         ("move_ordered_unit", MoveOrderedUnitAction),
         ("remove_ordered_unit", RemoveOrderedUnitAction),
-        ("pin_unit", PinUnitAction),
-        ("unpin_unit", UnpinUnitAction),
         ("replace_units", ReplaceUnitsAction),
+        ("sort_ordered_plan", SortOrderedPlanAction),
         ("regenerate_order", RegenerateOrderAction),
     ])
     def test_discriminator_dispatch(self, action_type, expected_cls):
@@ -339,8 +336,8 @@ class TestPlanActionUnion:
 class TestActionTypeToFamily:
     """ACTION_TYPE_TO_FAMILY 映射表。"""
 
-    def test_all_19_families_present(self):
-        assert len(ACTION_TYPE_TO_FAMILY) == 19
+    def test_all_17_families_present(self):
+        assert len(ACTION_TYPE_TO_FAMILY) == 17
 
     def test_current_1to1_mapping(self):
         """当前 action_type 与 action_family 一一对应。"""
@@ -355,7 +352,7 @@ class TestActionTypeToFamily:
         "preview_compensation", "apply_compensation",
         "add_units", "remove_units", "move_unit",
         "move_ordered_unit", "remove_ordered_unit",
-        "pin_unit", "unpin_unit", "replace_units",
+        "replace_units",
         "sort_ordered_plan", "regenerate_order",
     ])
     def test_all_expected_types(self, action_type):

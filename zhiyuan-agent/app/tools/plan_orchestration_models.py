@@ -59,6 +59,8 @@ class PlanAtomicAction(BaseModel):
     action_type: str
     volunteer_ids: list[str] = Field(default_factory=list)
     unit_ids: list[str] = Field(default_factory=list)
+    source_major_names: list[str] = Field(default_factory=list)
+    source_position: int | None = None
     target_position: int | None = None
     filters: dict[str, Any] = Field(default_factory=dict)
     reason: str = ""
@@ -78,8 +80,6 @@ _TOP_LEVEL_ATOMIC_ACTION_FAMILIES = {
     "remove_units",
     "move_unit",
     "move_ordered_unit",
-    "pin_unit",
-    "unpin_unit",
     "replace_units",
     "remove_ordered_unit",
     "sort_ordered_plan",
@@ -91,8 +91,6 @@ _MUTATING_ACTION_FAMILIES = {
     "remove_units",
     "move_unit",
     "move_ordered_unit",
-    "pin_unit",
-    "unpin_unit",
     "replace_units",
     "remove_ordered_unit",
     "sort_ordered_plan",
@@ -139,15 +137,29 @@ def normalize_plan_action_payload(payload: dict[str, Any] | None) -> dict[str, A
         single_unit_id = str(raw_unit_ids or "").strip()
         unit_ids = [single_unit_id] if single_unit_id else []
 
+    raw_source_major_names = normalized.get("source_major_names") or normalized.get("sourceMajorNames")
+    if isinstance(raw_source_major_names, list):
+        source_major_names = [
+            str(item or "").strip()
+            for item in raw_source_major_names
+            if str(item or "").strip()
+        ]
+    else:
+        single_source_major_name = str(raw_source_major_names or "").strip()
+        source_major_names = [single_source_major_name] if single_source_major_name else []
+
     raw_filters = normalized.get("filters")
     filters = raw_filters if isinstance(raw_filters, dict) else {}
     reason = str(normalized.get("reason") or normalized.get("user_goal") or "").strip()
     target_position = normalized.get("target_position")
+    source_position = normalized.get("source_position")
     review_issue_target = normalized.get("review_issue_target")
     has_atomic_shape = (
         bool(volunteer_ids)
         or bool(unit_ids)
+        or bool(source_major_names)
         or bool(filters)
+        or source_position is not None
         or target_position is not None
         or isinstance(review_issue_target, dict)
     )
@@ -159,6 +171,8 @@ def normalize_plan_action_payload(payload: dict[str, Any] | None) -> dict[str, A
             "action_type": action_family,
             "volunteer_ids": volunteer_ids,
             "unit_ids": unit_ids,
+            "source_major_names": source_major_names,
+            "source_position": source_position,
             "target_position": target_position,
             "filters": filters,
             "reason": reason,

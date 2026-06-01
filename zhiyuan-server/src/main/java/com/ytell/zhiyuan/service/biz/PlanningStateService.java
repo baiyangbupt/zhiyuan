@@ -1086,9 +1086,7 @@ public class PlanningStateService {
         if (state.getCandidateViewState() == null) {
             state.setCandidateViewState(buildDefaultCandidateViewState(state.getProfileState()));
         }
-        if (shouldRefreshRecommendationOverlay(state)) {
-            refreshRecommendationOverlay(tenantId, chatSessionId, state);
-        }
+        refreshRecommendationOverlayBestEffort(tenantId, chatSessionId, state, "candidate-pool query");
         List<CandidateItemDTO> items = normalizeCandidateIdentities(
                 state.getCandidatePoolState(),
                 mergeOverlayIntoCandidates(
@@ -1130,9 +1128,7 @@ public class PlanningStateService {
 
     public CandidateFilterOptionsDTO getCandidateFilterOptions(Long tenantId, Long chatSessionId) {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
-        if (shouldRefreshRecommendationOverlay(state)) {
-            refreshRecommendationOverlay(tenantId, chatSessionId, state);
-        }
+        refreshRecommendationOverlayBestEffort(tenantId, chatSessionId, state, "candidate filter options");
         List<CandidateItemDTO> items = mergeOverlayIntoCandidates(
                 state.getCandidatePoolState().getItems(),
                 state.getRecommendationOverlayState());
@@ -5192,6 +5188,20 @@ public class PlanningStateService {
         state.setRecommendationOverlayState(buildRecommendationOverlayState(overlayCandidatePoolState, state.getVersion()));
         state.getStaleFlags().setRecommendationOverlay(false);
         savePlanningState(chatSessionId, state);
+    }
+
+    private void refreshRecommendationOverlayBestEffort(Long tenantId,
+                                                        Long chatSessionId,
+                                                        PlanningStateDTO state,
+                                                        String scene) {
+        if (!shouldRefreshRecommendationOverlay(state)) {
+            return;
+        }
+        try {
+            refreshRecommendationOverlay(tenantId, chatSessionId, state);
+        } catch (Exception e) {
+            log.warn("Skip recommendation overlay refresh for {}: chatSessionId={}", scene, chatSessionId, e);
+        }
     }
 
     private List<CandidateItemDTO> resolveEffectiveCandidates(Long tenantId,

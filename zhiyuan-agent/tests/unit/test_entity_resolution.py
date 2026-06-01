@@ -66,6 +66,12 @@ def test_build_major_relation_notes_uses_catalog_parent_child_relationship():
     assert any("中医学属于中医学类" in note for note in notes)
 
 
+def test_build_major_relation_notes_explains_teacher_track_is_not_all_teacher_colleges():
+    notes = build_major_relation_notes({"negative_level2": ["教育学类"]}, "01")
+
+    assert any("师范院校里的非师范专业不等于都要排除" in note for note in notes)
+
+
 def test_resolve_school_entity_handles_unambiguous_short_alias():
     result = resolve_school_entity("广西师大", "01")
 

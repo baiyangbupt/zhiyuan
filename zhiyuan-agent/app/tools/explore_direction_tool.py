@@ -90,6 +90,7 @@ class DirectionAnalysisDraft(BaseModel):
     currentPlanConflict: list[str] = Field(default_factory=list)
     candidateOpportunity: list[str] = Field(default_factory=list)
     nextActionHints: list[str] = Field(default_factory=list)
+    planOverview: list[str] = Field(default_factory=list)
 
 
 class CareerDirectionRouteDecision(CareerIntentResult):
@@ -210,7 +211,7 @@ def _format_text_sections(*sections: tuple[str, list[str] | None] | tuple[str, s
             continue
         display_title = f"**{title}**"
         if isinstance(content, list):
-            lines = [line for line in content if line]
+            lines = list(dict.fromkeys(str(line).strip() for line in content if str(line or "").strip()))
             if not lines:
                 continue
             blocks.append(f"{display_title}\n" + "\n".join(f"- {line}" for line in lines))
@@ -220,6 +221,108 @@ def _format_text_sections(*sections: tuple[str, list[str] | None] | tuple[str, s
                 continue
             blocks.append(f"{display_title}\n{text}")
     return "\n\n".join(blocks)
+
+
+def _coerce_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _pick_first_positive_int(*values: Any) -> int:
+    for value in values:
+        number = _coerce_int(value)
+        if number > 0:
+            return number
+    return 0
+
+
+def _build_tier_counts_from_items(items: list[dict[str, Any]]) -> dict[str, int]:
+    counter: Counter[str] = Counter()
+    for item in items:
+        tier = str(item.get("tier") or "").strip()
+        if tier in {"冲", "稳", "保"}:
+            counter[tier] += 1
+    return {tier: counter.get(tier, 0) for tier in ("冲", "稳", "保")}
+
+
+def _normalize_tier_counts(tier_counts: dict[str, Any], items: list[dict[str, Any]]) -> dict[str, int]:
+    if not tier_counts:
+        return _build_tier_counts_from_items(items)
+    return {
+        "冲": _coerce_int(tier_counts.get("冲", tier_counts.get("sprint"))),
+        "稳": _coerce_int(tier_counts.get("稳", tier_counts.get("safe"))),
+        "保": _coerce_int(tier_counts.get("保", tier_counts.get("protect"))),
+    }
+
+
+def _format_tier_counts(tier_counts: dict[str, int]) -> str:
+    return f"冲{tier_counts.get('冲', 0)} / 稳{tier_counts.get('稳', 0)} / 保{tier_counts.get('保', 0)}"
+
+
+def _build_plan_overview_fact(
+    planning_state: dict[str, Any],
+    ordered_items: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if not planning_state:
+        return {}
+    ordered_state = planning_state.get("orderedPlanState") or {}
+    ordered_summary = ordered_state.get("summary") or {}
+    candidate_state = planning_state.get("candidatePoolState") or {}
+    review_state = planning_state.get("reviewState") or {}
+    review_summary = review_state.get("summary") or {}
+    review_checks = review_state.get("checks") or []
+    current_total = _pick_first_positive_int(
+        ordered_summary.get("unitTotal"),
+        ordered_summary.get("total"),
+        len(ordered_items),
+    )
+    target_total = _pick_first_positive_int(
+        ordered_summary.get("targetUnitCount"),
+        ordered_summary.get("targetCount"),
+        candidate_state.get("requiredCount"),
+        current_total,
+    )
+    tier_counts = _normalize_tier_counts(
+        ordered_summary.get("unitTierCounts") or ordered_summary.get("tierCounts") or {},
+        ordered_items,
+    )
+    risk_summaries: list[str] = []
+    for check in review_checks:
+        if check.get("passed") is True:
+            continue
+        summary = str(check.get("summary") or "").strip()
+        if summary:
+            risk_summaries.append(summary)
+        if len(risk_summaries) >= 2:
+            break
+    return {
+        "phase": planning_state.get("phase") or "",
+        "currentTotal": current_total,
+        "targetTotal": target_total,
+        "tierCounts": tier_counts,
+        "riskCount": _coerce_int(review_summary.get("riskCount")),
+        "warnCount": _coerce_int(review_summary.get("warnCount")),
+        "riskSummaries": risk_summaries,
+    }
+
+
+def _format_plan_overview_lines(plan_overview: dict[str, Any]) -> list[str]:
+    current_total = _coerce_int(plan_overview.get("currentTotal"))
+    if not plan_overview or current_total <= 0:
+        return []
+    target_total = _coerce_int(plan_overview.get("targetTotal"))
+    tier_counts = plan_overview.get("tierCounts") or {}
+    risk_count = _coerce_int(plan_overview.get("riskCount"))
+    warn_count = _coerce_int(plan_overview.get("warnCount"))
+    total_text = f"{current_total}/{target_total}" if target_total > 0 else str(current_total)
+    lines = [f"当前方案已有 {total_text} 个志愿，冲稳保分布：{_format_tier_counts(tier_counts)}。"]
+    lines.append(f"当前审查记录为风险 {risk_count} 项、提醒 {warn_count} 项；这轮只做方向承接分析，不会改动方案。")
+    risk_summaries = [str(item).strip() for item in (plan_overview.get("riskSummaries") or []) if str(item or "").strip()]
+    if risk_summaries:
+        lines.append(f"需要留意的结构提醒：{'；'.join(risk_summaries[:2])}。")
+    return lines
 
 
 def _get_direction_analysis_llm_client() -> LLMClient:
@@ -433,6 +536,84 @@ def _direction_alignment_evidence(item: dict[str, Any], direction_slot: str) -> 
     return []
 
 
+def _evidence_text(evidence: list[str]) -> str:
+    return "；".join(str(item or "") for item in evidence)
+
+
+def _evidence_has_field(evidence: list[str], *fields: str) -> bool:
+    prefixes = tuple(f"{field}:" for field in fields)
+    return any(str(item or "").startswith(prefixes) for item in evidence)
+
+
+def _direction_evidence_score(item: dict[str, Any], direction_slot: str) -> int:
+    evidence = _direction_alignment_evidence(item, direction_slot)
+    if not evidence:
+        return 0
+    text = _evidence_text(evidence)
+    score = len(evidence)
+    if direction_slot == CAREER_FURTHER_STUDY:
+        for marker in ("保研", "硕士点", "博士点", "双一流", "985", "211", "国重点"):
+            if marker in text:
+                score += 8
+        if "升学率" in text:
+            score += 5
+        if "省重点" in text:
+            score += 2
+    elif direction_slot == CAREER_SYSTEM_PUBLIC_SERVICE:
+        if _evidence_has_field(evidence, "majorName", "majorCategory", "majorDiscipline"):
+            score += 8
+        for marker, weight in (
+            ("公安", 8),
+            ("警校", 8),
+            ("部委院校", 7),
+            ("政法", 6),
+            ("师范", 5),
+            ("财经", 3),
+            ("农林", 1),
+            ("医药", 1),
+        ):
+            if marker in text:
+                score += weight
+    elif direction_slot == CAREER_STABLE_EMPLOYMENT:
+        if _evidence_has_field(evidence, "majorName", "majorCategory", "majorDiscipline"):
+            score += 6
+        if "公办" in text:
+            score += 2
+        for marker, weight in (("师范", 5), ("医药", 4), ("政法", 4), ("农林", 2)):
+            if marker in text:
+                score += weight
+    elif direction_slot == CAREER_MARKET_EMPLOYMENT:
+        if _evidence_has_field(evidence, "majorName", "majorCategory", "majorDiscipline"):
+            score += 7
+        for marker, weight in (
+            ("计算机", 7),
+            ("软件", 7),
+            ("人工智能", 7),
+            ("大数据", 6),
+            ("金融", 5),
+            ("会计", 5),
+            ("审计", 5),
+            ("就业", 4),
+            ("实习", 4),
+            ("产业", 3),
+        ):
+            if marker in text:
+                score += weight
+    return score
+
+
+def _rank_direction_matches(items: list[dict[str, Any]], direction_slot: str) -> list[dict[str, Any]]:
+    indexed = list(enumerate(items))
+    return [
+        item
+        for _, item in sorted(
+            indexed,
+            key=lambda pair: (_direction_evidence_score(pair[1], direction_slot), -pair[0]),
+            reverse=True,
+        )
+    ]
+
+
 def _is_public_service_aligned_item(item: dict[str, Any]) -> bool:
     return bool(_direction_alignment_evidence(item, CAREER_SYSTEM_PUBLIC_SERVICE))
 
@@ -467,6 +648,32 @@ def _format_candidate_brief(item: dict[str, Any]) -> str:
     tier = item.get("tier") or "未知"
     province_name = item.get("provinceName") or ""
     return f"{school_name}-{major_name}（{tier}{f'/{province_name}' if province_name else ''}）"
+
+
+def _format_brief_examples(examples: list[str], limit: int = 2) -> str:
+    return "、".join(str(item).strip() for item in examples[:limit] if str(item or "").strip())
+
+
+def _direction_plan_fit_lines(direction_fact: dict[str, Any]) -> list[str]:
+    label = str(direction_fact.get("label") or "这个方向")
+    count = _coerce_int(direction_fact.get("orderedMatchCount"))
+    examples = _format_brief_examples(direction_fact.get("orderedExamples") or [])
+    if count <= 0:
+        return [f"如果只看当前方案，“{label}”的直接承接还不明显，后续若要强化这条路，需要从候选里再补贴近项。"]
+    if examples:
+        return [f"如果只看当前方案，和“{label}”更贴近的大约有 {count} 个志愿，代表样本有：{examples}。"]
+    return [f"如果只看当前方案，和“{label}”更贴近的大约有 {count} 个志愿。"]
+
+
+def _direction_candidate_opportunity_lines(direction_fact: dict[str, Any]) -> list[str]:
+    label = str(direction_fact.get("label") or "这个方向")
+    count = _coerce_int(direction_fact.get("candidateOpportunityCount"))
+    examples = _format_brief_examples(direction_fact.get("candidateExamples") or [])
+    if count <= 0:
+        return [f"候选里暂时没有看到和“{label}”特别密集、且尚未进入方案的新机会。"]
+    if examples:
+        return [f"候选里和“{label}”更相关、但还没进方案的大约还有 {count} 个机会，代表样本有：{examples}。"]
+    return [f"候选里和“{label}”更相关、但还没进方案的大约还有 {count} 个机会。"]
 
 
 def _extract_direction_label_from_item(item: dict[str, Any]) -> str | None:
@@ -689,19 +896,21 @@ def _build_direction_slot_fact(
         for item in candidate_items
         if item.get("volunteerId") not in ordered_ids and _item_matches_direction_slot(item, direction_slot)
     ]
+    ordered_examples = _rank_direction_matches(ordered_matches, direction_slot)[:3]
+    candidate_examples = _rank_direction_matches(candidate_matches, direction_slot)[:3]
     return {
         "slot": direction_slot,
         "label": to_career_label(direction_slot),
         "orderedMatchCount": len(ordered_matches),
         "candidateOpportunityCount": len(candidate_matches),
-        "orderedExamples": [_format_candidate_brief(item) for item in ordered_matches[:3]],
-        "candidateExamples": [_format_candidate_brief(item) for item in candidate_matches[:3]],
+        "orderedExamples": [_format_candidate_brief(item) for item in ordered_examples],
+        "candidateExamples": [_format_candidate_brief(item) for item in candidate_examples],
         "evidenceExamples": [
             {
                 "item": _format_candidate_brief(item),
                 "evidence": _direction_alignment_evidence(item, direction_slot)[:3],
             }
-            for item in (ordered_matches + candidate_matches)[:3]
+            for item in (ordered_examples + candidate_examples)[:3]
         ],
     }
 
@@ -767,7 +976,7 @@ def _build_impact_preview_from_analysis(analysis: dict[str, Any]) -> str:
         ("nextActionHints", "如果继续了解"),
     )
     for key, title in section_map:
-        items = analysis.get(key) or []
+        items = list(dict.fromkeys(str(item).strip() for item in (analysis.get(key) or []) if str(item or "").strip()))
         if not items:
             continue
         lines.append(f"  {title}：")
@@ -852,14 +1061,30 @@ async def preview_direction_analysis_from_request(
         ordered_total=ordered_total,
         candidate_match_count=candidate_match_count,
     )
+    plan_overview = _build_plan_overview_fact(planning_state, ordered_items)
+    plan_overview_lines = _format_plan_overview_lines(plan_overview)
+    direction_fact = _build_direction_slot_fact(direction_slot, ordered_items, candidate_items, ordered_ids)
+    fit_lines = _direction_plan_fit_lines(direction_fact)
+    opportunity_lines = _direction_candidate_opportunity_lines(direction_fact)
+    analysis["planOverview"] = plan_overview_lines
+    analysis["currentPlanFit"] = list(analysis.get("currentPlanFit") or []) + fit_lines
+    analysis["candidateOpportunity"] = list(analysis.get("candidateOpportunity") or []) + opportunity_lines
     if _allow_explore_inner_llm(request_context):
         try:
             generated = await _generate_direction_analysis_content(
                 request_context,
                 [student_fit_fact],
-                [_build_direction_slot_fact(direction_slot, ordered_items, candidate_items, ordered_ids)],
+                [
+                    {
+                        "planOverview": plan_overview,
+                        "direction": direction_fact,
+                    }
+                ],
             )
             analysis.update(generated.model_dump())
+            analysis["planOverview"] = plan_overview_lines
+            analysis["currentPlanFit"] = fit_lines + list(analysis.get("currentPlanFit") or [])
+            analysis["candidateOpportunity"] = opportunity_lines + list(analysis.get("candidateOpportunity") or [])
         except Exception:
             logger.warning(
                 "Generate direction analysis content failed, falling back to template: session_id=%s direction_slot=%s",
@@ -876,6 +1101,7 @@ async def preview_direction_analysis_from_request(
 
     return _format_text_sections(
         ("分析结论", [f"你提到的“{to_career_label(direction_slot)}”，我先帮你做了一个初步判断。"]),
+        ("当前方案概况", analysis.get("planOverview")),
         ("当前判断", _build_impact_preview_from_analysis(analysis)),
         ("下一步", ["如果你愿意把它记成后续偏好，我可以再按这个方向继续帮你看方案。"]),
     )
@@ -999,20 +1225,20 @@ async def preview_direction_comparison_from_request(
     fit_points: list[str] = []
     opportunity_points: list[str] = []
     labels = [to_career_label(slot) for slot in normalized_slots]
-    for slot, label in zip(normalized_slots, labels):
-        ordered_match_count = sum(1 for item in ordered_items if _item_matches_direction_slot(item, slot))
-        candidate_match_count = sum(
-            1
-            for item in candidate_items
-            if item.get("volunteerId") not in ordered_ids and _item_matches_direction_slot(item, slot)
-        )
-        fit_points.append(f"如果只看当前方案承接，和“{label}”更贴近的大约有 {ordered_match_count} 个志愿。")
-        opportunity_points.append(f"候选里和“{label}”更相关、但还没进方案的大约还有 {candidate_match_count} 个机会。")
+    direction_facts = [
+        _build_direction_slot_fact(slot, ordered_items, candidate_items, ordered_ids)
+        for slot in normalized_slots
+    ]
+    for fact in direction_facts:
+        fit_points.extend(_direction_plan_fit_lines(fact))
+        opportunity_points.extend(_direction_candidate_opportunity_lines(fact))
 
+    plan_overview_lines = _format_plan_overview_lines(_build_plan_overview_fact(planning_state, ordered_items))
     analysis = {
         "stage": ANALYSIS_STAGE_INTEREST,
         "summaryTitle": f"我先帮你把“{'”和“'.join(labels)}”放在一起看一眼",
-        "currentPlanFit": ["这类问题更适合先看你本人更适合哪条路径，再看当前方案更偏向哪一边。"],
+        "planOverview": plan_overview_lines,
+        "currentPlanFit": ["这类问题更适合先看你本人更适合哪条路径，再看当前方案更偏向哪一边。"] + fit_points,
         "currentPlanConflict": [],
         "candidateOpportunity": opportunity_points,
         "nextActionHints": [
@@ -1032,12 +1258,13 @@ async def preview_direction_comparison_from_request(
             generated = await _generate_direction_analysis_content(
                 request_context,
                 student_fit_facts,
-                [
-                    _build_direction_slot_fact(slot, ordered_items, candidate_items, ordered_ids)
-                    for slot in normalized_slots
-                ],
+                direction_facts,
             )
             analysis.update(generated.model_dump())
+            analysis["planOverview"] = plan_overview_lines
+            if direction_facts:
+                analysis["currentPlanFit"] = fit_points + list(analysis.get("currentPlanFit") or [])
+                analysis["candidateOpportunity"] = opportunity_points + list(analysis.get("candidateOpportunity") or [])
         except Exception:
             logger.warning(
                 "Generate direction comparison content failed, falling back to template: session_id=%s direction_slots=%s",
@@ -1053,7 +1280,8 @@ async def preview_direction_comparison_from_request(
         )
 
     return _format_text_sections(
-        ("分析结论", ["我先帮你做了一个方向对比分析。"]),
+        ("分析结论", ["先给你一个方向判断，这轮只做分析，不会改动方案。"]),
+        ("当前方案概况", analysis.get("planOverview")),
         ("当前判断", _build_impact_preview_from_analysis(analysis)),
         ("下一步", ["如果你愿意，我可以接着单独展开其中一个方向，再看它和当前方案到底有多匹配。"]),
     )

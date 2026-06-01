@@ -18,6 +18,7 @@
 
 ### Fixed
 
+- 3.0.3 意向影响分析边界修复：当 `preview_current_*_intent_confirmation` 内部语义仲裁已降级为 `analysisStage=interest` 时，结构化返回改为 `reply_strategy=continue_model`，Tool Reply Policy 不再把它当成待确认预览直返，避免“先看看影响”类问题被泛化待确认文案截断；专业 interest-stage 渲染基于结构化 `major_intents` 补充“避开什么、接受什么、对候选/方案意味着什么、确认前不生效”等通用影响说明。
 - 旧待确认意向确认护栏补强：当用户在待确认意向之后又进行了方案/候选只读查询，再回复“确认”时，不再误确认更早的 `planEditCache` 偏好；短确认必须贴近最近一轮意向预览或意向影响说明才会直接生效。
 - full-agent 工具循环断路：同一轮内 `query_volunteer_plan` 重复调用超过上限时，Agent 会停止重复查询并返回用户可理解的收敛提示，同时避免把未执行的孤立 tool call 写入历史。
 - 只读候选查询不再自动发送候选工作区联动卡片，也不会留下可确认的修改预览：`query_candidates` 这类查看候选的只读结果只由文本回复承接，不触发 `planningWorkspaceAction(candidate)`；当用户明确说“只查/只看/别直接加/不要改方案”时，误生成的 add/remove/move/sort 预览会被服务层改写为只读结果，真正采纳约束或修改方案的场景仍保留工作区刷新。

@@ -19,6 +19,7 @@ from app.tools.explore_direction_tool import (
     CAREER_MARKET_EMPLOYMENT,
     CAREER_STABLE_EMPLOYMENT,
     CAREER_SYSTEM_PUBLIC_SERVICE,
+    _build_impact_preview_from_analysis,
     preview_direction_analysis_from_request,
     preview_direction_comparison_from_request,
     resolve_career_direction_slots,
@@ -77,10 +78,28 @@ def _request_context(
     )
 
 
+def test_direction_impact_preview_deduplicates_repeated_points():
+    text = _build_impact_preview_from_analysis(
+        {
+            "summaryTitle": "先看方向承接",
+            "currentPlanFit": ["当前选科没有直接挡住", "当前选科没有直接挡住"],
+            "candidateOpportunity": ["候选里还有机会", "候选里还有机会"],
+        }
+    )
+
+    assert text.count("当前选科没有直接挡住") == 1
+    assert text.count("候选里还有机会") == 1
+
+
 def _planning_state_with_direction_examples() -> dict:
     return {
         "data": {
             "orderedPlanState": {
+                "summary": {
+                    "unitTotal": 2,
+                    "targetUnitCount": 3,
+                    "unitTierCounts": {"冲": 1, "稳": 1, "保": 0},
+                },
                 "items": [
                     {
                         "volunteerId": "ordered-1",
@@ -105,6 +124,7 @@ def _planning_state_with_direction_examples() -> dict:
                 ]
             },
             "candidatePoolState": {
+                "requiredCount": 3,
                 "items": [
                     {
                         "volunteerId": "candidate-1",
@@ -116,6 +136,16 @@ def _planning_state_with_direction_examples() -> dict:
                         "provinceName": "北京",
                         "tier": "冲",
                         "schoolRankTags": ["双一流"],
+                    },
+                    {
+                        "volunteerId": "candidate-study-1",
+                        "schoolName": "北京科技大学",
+                        "majorName": "信息管理与信息系统",
+                        "schoolCategory": "理工",
+                        "majorCategory": "管理科学与工程类",
+                        "provinceName": "北京",
+                        "tier": "稳",
+                        "schoolRankTags": ["硕士点", "保研"],
                     },
                     {
                         "volunteerId": "candidate-2",
@@ -136,6 +166,12 @@ def _planning_state_with_direction_examples() -> dict:
                         "tier": "稳",
                     },
                 ]
+            },
+            "reviewState": {
+                "summary": {"riskCount": 0, "warnCount": 1},
+                "checks": [
+                    {"passed": False, "summary": "保底数量还可以继续补强"},
+                ],
             },
         }
     }
@@ -215,8 +251,13 @@ def test_direction_explore_public_service_uses_student_plan_candidate_facts_and_
     ):
         resp = _run(preview_direction_analysis_from_request(_request_context(), CAREER_SYSTEM_PUBLIC_SERVICE))
     assert "北京物化生考生" in resp
+    assert "当前方案已有 2/3 个志愿" in resp
+    assert "冲稳保分布：冲1 / 稳1 / 保0" in resp
+    assert "风险 0 项、提醒 1 项" in resp
+    assert "保底数量还可以继续补强" in resp
     assert "北京师范大学-法学" in resp
     assert "中国政法大学-行政管理" in resp
+    assert "代表样本有：北京师范大学-法学" in resp
     assert "下一步" in resp
     assert "记成后续偏好" in resp
 
@@ -230,8 +271,31 @@ def test_direction_explore_public_service_uses_student_plan_candidate_facts_and_
     assert "你现在的兴趣又明显偏向计算机类" in prompt
     assert "北京师范大学-法学" in prompt
     assert "中国政法大学-行政管理" in prompt
+    assert "planOverview" in prompt
+    assert '"targetTotal": 3' in prompt
     assert "evidenceExamples" in prompt
     assert "schoolCategory:师范" in prompt or "schoolCategory:政法" in prompt
+
+
+def test_direction_examples_rank_stronger_evidence_before_broad_category_tags():
+    request_context = _request_context(session_id="401-rank", text="体制内和读研分别有哪些支撑")
+    request_context.allow_explore_inner_llm = False
+
+    with patch(
+        "app.tools.explore_direction_tool.get_planning_state",
+        new=AsyncMock(return_value=_planning_state_with_direction_examples()),
+    ):
+        resp = _run(
+            preview_direction_comparison_from_request(
+                request_context,
+                [CAREER_SYSTEM_PUBLIC_SERVICE, CAREER_FURTHER_STUDY],
+            )
+        )
+
+    assert "候选里和“深造发展导向”更相关" in resp
+    assert "北京科技大学-信息管理与信息系统" in resp
+    further_study_line = next(line for line in resp.splitlines() if "候选里和“深造发展导向”更相关" in line)
+    assert further_study_line.index("北京科技大学-信息管理与信息系统") < further_study_line.index("中国政法大学-行政管理")
 
 
 def test_direction_explore_skips_inner_llm_when_chat_service_disables_it():
@@ -246,8 +310,10 @@ def test_direction_explore_skips_inner_llm_when_chat_service_disables_it():
 
     generation_mock.assert_not_awaited()
     assert "体制内/考公导向" in resp
+    assert "当前方案已有 2/3 个志愿" in resp
     assert "你的当前选科是物理、化学、生物" in resp
     assert "当前方案里已经有一部分内容能承接这条方向" in resp
+    assert "代表样本有：北京师范大学-法学" in resp
     assert "下一步" in resp
 
 
@@ -307,9 +373,14 @@ def test_direction_explore_comparison_supports_three_directions_with_distinct_fa
             )
         )
 
-    assert "方向对比分析" in resp
+    assert "方向判断" in resp
+    assert "当前方案已有 2/3 个志愿" in resp
+    assert "冲稳保分布：冲1 / 稳1 / 保0" in resp
     assert "三个方向可以一起比较" in resp
     assert "深造看院校平台" in resp
+    assert "和“体制内/考公导向”更贴近的大约有 1 个志愿" in resp
+    assert "北京师范大学-法学" in resp
+    assert "和“深造发展导向”更贴近的大约有 2 个志愿" in resp
     assert "北京工业大学" in resp
     assert "先选一个主方向" in resp
 
@@ -338,8 +409,11 @@ def test_direction_explore_comparison_skips_inner_llm_when_chat_service_disables
         )
 
     generation_mock.assert_not_awaited()
-    assert "方向对比分析" in resp
+    assert "方向判断" in resp
+    assert "当前方案已有 2/3 个志愿" in resp
     assert "这类问题更适合先看你本人更适合哪条路径" in resp
+    assert "和“体制内/考公导向”更贴近的大约有 1 个志愿" in resp
+    assert "代表样本有：北京师范大学-法学" in resp
     assert "候选里和“体制内/考公导向”更相关" in resp
 
 

@@ -7,13 +7,19 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from pydantic_ai import RunContext
 
 from app.agent.context import RequestContext
 from app.handlers.registry import register_handler
-from app.handlers.query_handlers import _get_planning_state_with_latest_profile, _compact_list_text
+from app.handlers.query_handlers import (
+    _get_planning_state_with_latest_profile,
+    _compact_list_text,
+    _tier_counts_text,
+)
+from app.handlers.shared import summary_target_total, summary_total
 from app.tools.plan_orchestration_models import PlanActionPlan, PlanExecutionResult
 from app.tools.planning_workflow_tool import (
     _build_plan_adjustment_facts,
@@ -146,6 +152,104 @@ def _build_review_summary(facts: dict[str, Any]) -> tuple[str, list[str], list[s
     return "；".join(parts) + "。", reply_focus, next_step_hints
 
 
+def _clean_plan_position_text(text: str) -> str:
+    return re.sub(r"@(\d+)", r"第\1位", str(text or "").strip())
+
+
+def _build_review_direct_reply(facts: dict[str, Any]) -> str:
+    risk_count = int(facts.get("risk_count") or 0)
+    warn_count = int(facts.get("warn_count") or 0)
+    passed_count = int(facts.get("passed_count") or 0)
+    plan_total = int(facts.get("plan_total") or 0)
+    target_total = int(facts.get("target_total") or 0)
+    tier_text = _tier_counts_text(facts.get("tier_counts"))
+
+    lines = [f"已完成方案审查，当前共检出 **风险 {risk_count} 项、提醒 {warn_count} 项**。"]
+    if plan_total:
+        total_text = f"{plan_total}/{target_total}" if target_total else str(plan_total)
+        overview = f"- 方案规模：{total_text} 个志愿"
+        if tier_text:
+            overview += f"，冲稳保分布：{tier_text}"
+        overview += f"；已通过 {passed_count} 项检查。"
+        lines.append(overview)
+
+    problems = [
+        _normalize_review_summary_for_user(item)
+        for item in (facts.get("main_problems") or [])
+        if str(item or "").strip()
+    ]
+    if problems:
+        lines.append("")
+        lines.append("### 主要问题")
+        for index, item in enumerate(problems[:3], start=1):
+            lines.append(f"{index}. {item}")
+
+    issue_examples = facts.get("issue_hit_plan_examples") or []
+    if issue_examples:
+        lines.append("")
+        lines.append("### 典型涉及")
+        for item in issue_examples[:3]:
+            if not isinstance(item, dict):
+                continue
+            summary = _normalize_review_summary_for_user(str(item.get("summary") or ""))
+            affected_items = [
+                _clean_plan_position_text(str(name or ""))
+                for name in (item.get("items") or [])
+                if str(name or "").strip()
+            ]
+            if summary and affected_items:
+                lines.append(f"- {summary}：{'；'.join(affected_items[:2])}")
+
+    cost_risk_lines = _build_cost_risk_lines(issue_examples)
+    if cost_risk_lines:
+        lines.append("")
+        lines.append("### 费用风险")
+        lines.extend(cost_risk_lines)
+
+    relation = facts.get("intent_relation") if isinstance(facts.get("intent_relation"), dict) else {}
+    coverage = str(relation.get("coverage") or "").strip()
+    aligned_examples = str(relation.get("aligned_examples") or "").strip()
+    conflict_examples = str(relation.get("conflict_examples") or "").strip()
+    if coverage or aligned_examples or conflict_examples:
+        lines.append("")
+        lines.append("### 偏好承接")
+        if coverage:
+            lines.append(f"- {coverage}")
+        if aligned_examples:
+            lines.append(f"- {aligned_examples}")
+        if conflict_examples:
+            lines.append(f"- {conflict_examples}")
+
+    compensation_count = int(facts.get("compensation_action_count") or 0)
+    compensation_text = _compact_list_text(facts.get("compensation_summaries"))
+    lines.append("")
+    lines.append("### 下一步")
+    if compensation_count > 0 and compensation_text:
+        lines.append(f"- 可以先看补齐建议：{compensation_text}。我会先给预览，确认后再应用。")
+    elif risk_count > 0 or warn_count > 0:
+        lines.append("- 建议先处理上面的高风险项；如果要调整方案，我会先给预览，确认后再执行。")
+    else:
+        lines.append("- 当前没有明显风险；如果你想更稳，可以继续让我按地域、专业或录取率细看。")
+
+    return "\n".join(lines)
+
+
+def _build_cost_risk_lines(issue_examples: list[dict[str, Any]]) -> list[str]:
+    issue_codes = {
+        str(item.get("code") or "").strip()
+        for item in issue_examples
+        if isinstance(item, dict)
+    }
+    lines: list[str] = []
+    if "high_tuition" in issue_codes:
+        lines.append("- 家庭预算一般时，高收费专业要单独确认学费、住宿和四年总成本，不建议只看录取概率。")
+    if "cooperative_program" in issue_codes:
+        lines.append("- 中外合作项目还要额外看培养模式、外语要求、是否有出国阶段，以及境外阶段费用是否能接受。")
+    if lines:
+        lines.append("- 如果预算压力比较敏感，下一步更适合先把这些条目列出来，再看是否替换成正常收费或更稳的志愿。")
+    return lines
+
+
 def _build_adjustment_summary(facts: dict[str, Any]) -> tuple[str, list[str], list[str]]:
     summary_text = str(facts.get("summary_text") or "").strip()
     suggestion_counts = facts.get("suggestion_counts") or {}
@@ -241,7 +345,18 @@ async def handle_review_plan(
         ordered_state=ordered_state,
         draft_state=draft_state,
     )
+    active_summary = (
+        (ordered_state or {}).get("summary")
+        or (draft_state or {}).get("summary")
+        or {}
+    )
+    facts["plan_total"] = summary_total(active_summary)
+    facts["target_total"] = summary_target_total(active_summary)
+    facts["tier_counts"] = active_summary.get("unitTierCounts") or active_summary.get("tierCounts") or {}
     review_summary, reply_focus, next_step_hints = _build_review_summary(facts)
+    direct_reply = _build_review_direct_reply(facts)
+    if "direct_review_reply" not in reply_focus:
+        reply_focus.append("direct_review_reply")
 
     return PlanExecutionResult(
         applied=True,
@@ -252,8 +367,8 @@ async def handle_review_plan(
         workspace_refresh_targets=["review"],
         context_summary=plan.context_summary,
         review_summary=review_summary,
-        state_summary=review_summary,
-        summary=review_summary,
+        state_summary=direct_reply,
+        summary=direct_reply,
         reply_focus=reply_focus,
         next_step_hints=next_step_hints,
         facts=facts,

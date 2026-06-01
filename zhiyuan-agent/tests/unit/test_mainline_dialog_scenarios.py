@@ -501,16 +501,15 @@ def test_mainline_dialog_intent_preview_then_plan_status_does_not_reopen_candida
         first = _run(service.handle_message("session-mainline-57", "user-57", "想学网络与新媒体"))
         second = _run(service.handle_message("session-mainline-57", "user-57", "现在方案怎么样"))
 
-    assert isinstance(first, ChatServiceResponseEnvelope)
-    assert first.primary.startswith("我先把网络与新媒体整理成待确认偏好")
-    assert _workspace_targets(first) == ["candidate"]
+    assert isinstance(first, str)
+    assert first.startswith("我先把网络与新媒体整理成待确认偏好")
     assert not isinstance(second, ChatServiceResponseEnvelope)
     assert "45/45" in second
     assert "冲8 / 稳18 / 保19" in second
     assert agent.calls[1]["message_history_len"] > 0
 
 
-def test_mainline_dialog_cross_border_ecommerce_uses_full_major_name_and_candidate_refresh(tmp_path):
+def test_mainline_dialog_cross_border_ecommerce_uses_full_major_name_without_candidate_refresh(tmp_path):
     agent = _ScenarioAgent(
         [
             {
@@ -545,10 +544,9 @@ def test_mainline_dialog_cross_border_ecommerce_uses_full_major_name_and_candida
     ):
         reply = _run(service.handle_message("session-mainline-cross-border", "user-57", "想学跨境电商"))
 
-    assert isinstance(reply, ChatServiceResponseEnvelope)
-    assert "跨境电子商务" in reply.primary
-    assert "画像" not in reply.primary
-    assert _workspace_targets(reply) == ["candidate"]
+    assert isinstance(reply, str)
+    assert "跨境电子商务" in reply
+    assert "画像" not in reply
     assert agent.calls[0]["user_prompt"] == "想学跨境电商"
 
 
@@ -629,8 +627,8 @@ def test_mainline_dialog_negative_accounting_then_confirm_plan_adjustment_uses_m
         preview_reply = _run(service.handle_message("session-mainline-adjust", "user-57", "那帮我替换掉"))
         apply_reply = _run(service.handle_message("session-mainline-adjust", "user-57", "确认"))
 
-    assert isinstance(intent_reply, ChatServiceResponseEnvelope)
-    assert _workspace_targets(intent_reply) == ["candidate"]
+    assert isinstance(intent_reply, str)
+    assert "待确认排除要求" in intent_reply
     assert not isinstance(preview_reply, ChatServiceResponseEnvelope)
     assert "确认后才会改动当前方案" in preview_reply
     assert isinstance(apply_reply, ChatServiceResponseEnvelope)

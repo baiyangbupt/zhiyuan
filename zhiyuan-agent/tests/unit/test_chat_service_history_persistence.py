@@ -22,9 +22,11 @@ from app.service import (
     _extract_pending_plan_action,
     _normalize_pending_intent_reply,
     _normalize_plan_reply_style,
+    _normalize_unbacked_recorded_wording,
     _normalize_unbacked_intent_preview_reply,
     _normalize_user_facing_terms,
     _select_conversation_action_family,
+    _extract_recent_intent_analysis_payload,
     _tool_calls_include_plan_workspace_refresh,
 )
 
@@ -88,6 +90,7 @@ class _FakeAgent:
                 "planning_summary": deps.planning_summary if deps else None,
                 "pending_plan_action": deps.pending_plan_action if deps else None,
                 "allow_explore_inner_llm": deps.allow_explore_inner_llm if deps else None,
+                "recent_intent_analysis": deps.recent_intent_analysis if deps else None,
             }
         )
         reply = self._replies[len(self.calls) - 1]
@@ -127,6 +130,39 @@ class _CancellingAgent:
         raise asyncio.CancelledError()
 
 
+class _InterruptedAgent:
+    async def run_with_message_deltas(self, user_prompt, message_history=None, deps=None, on_progress=None):
+        deps.agent_observability.update(
+            {
+                "completed": False,
+                "failedNode": "ModelRequestNode",
+                "failedNodeIndex": 2,
+                "failedNodeElapsedMs": 27000,
+                "errorType": "ModelAPIError",
+                "nodeTimings": [
+                    {
+                        "index": 1,
+                        "node": "UserPromptNode",
+                        "durationMs": 0,
+                        "status": "success",
+                    },
+                    {
+                        "index": 2,
+                        "node": "ModelRequestNode",
+                        "durationMs": 27000,
+                        "status": "interrupted",
+                    },
+                ],
+            }
+        )
+        raise RuntimeError("model api interrupted")
+
+
+class _BuggyAgent:
+    async def run_with_message_deltas(self, user_prompt, message_history=None, deps=None, on_progress=None):
+        raise RuntimeError("plain bug")
+
+
 @pytest.fixture
 def mock_llm_client():
     client = MagicMock()
@@ -154,6 +190,51 @@ def test_chat_service_logs_interrupted_full_agent_observability(tmp_path, mock_l
     assert event["errorType"] == "CancelledError"
     assert event["routeDecision"]["fallbackReason"] == "agent_run_interrupted"
     assert event["routeDecision"]["agentRun"]["failedNode"] == "ModelRequestNode"
+
+
+def test_chat_service_returns_safe_fallback_when_model_run_is_interrupted(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+
+    with patch("app.service.ChatAgent", return_value=_InterruptedAgent()), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={
+                "code": 0,
+                "data": {
+                    "phase": "reviewed",
+                    "orderedPlanState": {
+                        "summary": {
+                            "total": 94,
+                            "targetCount": 96,
+                            "tierCounts": {"冲": 66, "稳": 28, "保": 0},
+                        }
+                    },
+                    "draftPlanState": {"summary": {"total": 94, "targetCount": 96}},
+                    "reviewState": {"summary": {"riskCount": 3, "warnCount": 5}},
+                },
+            })):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(service.handle_message("session-interrupted-fallback", "user-1", "这版是不是太冲了"))
+
+    assert "模型服务中断" in reply
+    assert "不会" not in reply or "不改动" in reply
+    assert "冲 66" in reply
+    assert "稳 28" in reply
+    assert "保 0" in reply
+
+
+def test_chat_service_still_raises_plain_agent_bug(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+
+    with patch("app.service.ChatAgent", return_value=_BuggyAgent()), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})):
+        service = ChatService(mock_llm_client, store)
+        with pytest.raises(RuntimeError, match="plain bug"):
+            asyncio.run(service.handle_message("session-plain-bug", "user-1", "测试"))
 
 
 def test_chat_service_persists_and_recovers_history(tmp_path, mock_llm_client):
@@ -460,6 +541,92 @@ def test_chat_service_uses_main_agent_as_single_dialog_entry(tmp_path, mock_llm_
     assert reply == "intent popup by agent"
     assert len(fake_agent.calls) == 1
     assert fake_agent.calls[0]["user_prompt"] == "不想去浙江"
+
+
+def test_extract_recent_intent_analysis_payload_prefers_latest_structured_preview():
+    first_payload = {
+        "status": "ready",
+        "sessionId": "s1",
+        "items": [{"content": "偏好法学", "value": {"major_intents": {"level3": ["法学"]}}}],
+    }
+    latest_payload = {
+        "status": "existing_only",
+        "sessionId": "s1",
+        "existingItems": [
+            {"content": "当前已有参考偏好具体专业：会计学", "value": {"major_intents": {"level3": ["会计学"]}}},
+        ],
+    }
+    history = [
+        ModelRequest(parts=[UserPromptPart(content="想学法学")]),
+        ModelResponse(parts=[ToolCallPart(tool_name="preview_current_major_intent_confirmation", args={}, tool_call_id="intent-1")]),
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="preview_current_major_intent_confirmation",
+                    content=json.dumps(first_payload, ensure_ascii=False),
+                    tool_call_id="intent-1",
+                )
+            ]
+        ),
+        ModelRequest(parts=[UserPromptPart(content="会计也行")]),
+        ModelResponse(parts=[ToolCallPart(tool_name="preview_current_major_intent_confirmation", args={}, tool_call_id="intent-2")]),
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="preview_current_major_intent_confirmation",
+                    content=json.dumps(latest_payload, ensure_ascii=False),
+                    tool_call_id="intent-2",
+                )
+            ]
+        ),
+    ]
+
+    assert _extract_recent_intent_analysis_payload(history) == latest_payload
+
+
+def test_chat_service_injects_recent_intent_payload_into_request_context(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    recent_payload = {
+        "status": "existing_only",
+        "sessionId": "session-recent-intent",
+        "items": [],
+        "existingItems": [
+            {"content": "当前已有参考偏好具体专业：会计学", "value": {"major_intents": {"level3": ["会计学"]}}},
+        ],
+    }
+    asyncio.run(
+        store.save(
+            "session-recent-intent",
+            [
+                ModelRequest(parts=[UserPromptPart(content="我倾向会计学")]),
+                ModelResponse(parts=[ToolCallPart(tool_name="preview_current_major_intent_confirmation", args={}, tool_call_id="intent-existing")]),
+                ModelRequest(
+                    parts=[
+                        ToolReturnPart(
+                            tool_name="preview_current_major_intent_confirmation",
+                            content=json.dumps(recent_payload, ensure_ascii=False),
+                            tool_call_id="intent-existing",
+                        )
+                    ]
+                ),
+                ModelResponse(parts=[TextPart(content="这个想法当前已经在后续报考参考里。")]),
+            ],
+        )
+    )
+    fake_agent = _FakeAgent(["我会结合当前方案看这个偏好。"])
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_intent_change_cache", AsyncMock(return_value={"data": {"planEditCache": None}})):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(service.handle_message("session-recent-intent", "user-57", "看看这个偏好会影响当前方案吗"))
+
+    assert reply == "我会结合当前方案看这个偏好。"
+    assert fake_agent.calls[0]["chat_history"][-1] == {"role": "user", "content": "看看这个偏好会影响当前方案吗"}
+    assert fake_agent.calls[0]["recent_intent_analysis"] == recent_payload
 
 
 class _FakeAgentWithToolCalls:
@@ -2272,7 +2439,8 @@ def test_chat_service_does_not_apply_stale_pending_intent_after_readonly_plan_qu
         reply = asyncio.run(service.handle_message("session-intent-stale-after-readonly", "user-1", "确认"))
 
     assert isinstance(reply, str)
-    assert "没有找到上一轮仍在等待确认的偏好调整" in reply
+    assert "上一轮只是继续分析或查询" in reply
+    assert "没有待确认的偏好或方案动作" in reply
     update_mock.assert_not_awaited()
     assert fake_agent.calls == []
 
@@ -3017,6 +3185,82 @@ def test_chat_service_directly_applies_pending_after_explanatory_turn(tmp_path, 
     assert fake_agent.calls == []
 
 
+def test_chat_service_does_not_apply_stale_plan_pending_after_readonly_turn(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    preview_payload = {
+        "stage": "preview",
+        "action_family": "sort_ordered_plan",
+        "user_goal": "按院校层次排序",
+        "missing_inputs": [],
+        "atomic_actions": [],
+        "sort_field": "school_rank",
+        "preview_summary": "会按院校层次重新排序当前方案。",
+    }
+    history = [
+        ModelRequest(parts=[UserPromptPart(content="按院校层次排序")]),
+        ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="plan_next_action",
+                    args={"action_family": "sort_ordered_plan"},
+                    tool_call_id="sort-preview-call",
+                )
+            ],
+            model_name="test-model",
+        ),
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="plan_next_action",
+                    content=json.dumps(preview_payload, ensure_ascii=False),
+                    tool_call_id="sort-preview-call",
+                )
+            ]
+        ),
+        ModelResponse(parts=[TextPart(content="排序预览已生成，确认后执行。")], model_name="test-model"),
+        ModelRequest(parts=[UserPromptPart(content="当前方案对体制内稳定就业方向承接得怎么样，先不要改方案")]),
+        ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="analyze_current_career_direction",
+                    args={"career_directions": ["system_public_service", "stable_employment"]},
+                    tool_call_id="career-readonly-call",
+                )
+            ],
+            model_name="test-model",
+        ),
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="analyze_current_career_direction",
+                    content=json.dumps({"summary": "只读分析，不改方案。"}, ensure_ascii=False),
+                    tool_call_id="career-readonly-call",
+                )
+            ]
+        ),
+        ModelResponse(parts=[TextPart(content="这轮只做分析，不会改动你的方案。")], model_name="test-model"),
+    ]
+    asyncio.run(store.save("session-stale-plan-pending-after-readonly", history))
+    fake_agent = _FakeAgent(["不应该调用模型"])
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_intent_change_cache", AsyncMock(return_value={"data": {"planEditCache": None}})), \
+            patch("app.service.execute_plan_action", AsyncMock()) as execute_mock:
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(service.handle_message("session-stale-plan-pending-after-readonly", "user-1", "确认"))
+
+    assert reply == (
+        "上一轮只是职业方向分析，没有待确认的偏好或方案动作，也没有待执行的方案动作。"
+        "如果你想展开体制内方向和当前方案的匹配，我可以继续分析；如果要调整方案，请直接说想怎么调，我会先给预览，确认后再执行。"
+    )
+    execute_mock.assert_not_awaited()
+    assert fake_agent.calls == []
+
+
 def test_chat_service_blocks_plan_confirmation_without_pending_action(tmp_path, mock_llm_client):
     db_path = tmp_path / "history.db"
     store = ChatHistoryStore(str(db_path))
@@ -3035,6 +3279,23 @@ def test_chat_service_blocks_plan_confirmation_without_pending_action(tmp_path, 
     saved_history = asyncio.run(store.load("session-no-pending-confirm"))
     assert saved_history is not None
     assert len(saved_history) == 2
+
+
+def test_chat_service_routes_no_pending_intent_confirmation_to_intent_guard(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    fake_agent = _FakeAgent(["不应该调用模型"])
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_intent_change_cache", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(service.handle_message("session-no-pending-intent-confirm", "user-1", "确认这个偏好"))
+
+    assert reply == "我这边没有找到上一轮仍在等待确认的偏好调整。你可以直接说想保留、排除或重点关注的方向，我会先整理成待确认内容。"
+    assert fake_agent.calls == []
 
 
 def test_chat_service_does_not_block_intent_confirmation_when_intent_cache_exists(tmp_path, mock_llm_client):
@@ -3374,18 +3635,28 @@ def test_plan_timeout_fallback_does_not_expose_internal_hints():
     assert "如果用户关心" not in reply
 
 
-def test_timeout_fallback_skips_query_state_for_mutation_prompt():
+def test_timeout_fallback_uses_query_state_status_overview():
     with patch(
         "app.service.consume_recent_plan_execution_result",
         return_value={
             "result_kind": "status_overview",
             "action_family": "query_state",
-            "summary": "当前方案 45/45。",
+            "summary": "方案已经有了，目前有 45/45 个志愿。",
+            "facts": {
+                "current_total": 45,
+                "target_total": 45,
+                "tier_counts": {"冲": 18, "稳": 13, "保": 14},
+                "risk_count": 0,
+                "warn_count": 0,
+            },
         },
     ):
-        fallback = build_timeout_fallback_from_recent_plan_execution("s1", "删除第5个专业组")
+        fallback = build_timeout_fallback_from_recent_plan_execution("s1", "看看方案")
 
-    assert fallback is None
+    assert fallback is not None
+    assert fallback.primary
+    assert "45/45" in fallback.primary
+    assert "冲18 / 稳13 / 保14" in fallback.primary
 
 
 def test_chat_service_ignores_historical_intent_preview_for_query_state_workspace_refresh(tmp_path, mock_llm_client):
@@ -3540,6 +3811,64 @@ def test_chat_service_appends_confirmation_boundary_for_plan_next_action_preview
     assert saved_history is not None
     saved_text = next(part.content for part in saved_history[-1].parts if isinstance(part, TextPart))
     assert saved_text == reply
+
+
+def test_chat_service_appends_unit_position_note_for_ordered_unit_preview(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    preview_plan = {
+        "stage": "preview",
+        "action_family": "move_ordered_unit",
+        "user_goal": "把第4个专业组移到第2位",
+        "requires_confirmation": True,
+        "missing_inputs": [],
+        "atomic_actions": [
+            {
+                "action_type": "move_ordered_unit",
+                "unit_ids": ["第4个专业组"],
+                "target_position": 2,
+            }
+        ],
+        "preview_summary": "会整体移动指定专业组。",
+    }
+    fake_agent = _FakeAgentWithToolCalls(
+        "预览如下：第4个志愿组会移动到第2位，组内专业顺序保持不变。确认后执行。",
+        [
+            ToolCallPart(
+                tool_name="execute_plan_action",
+                args={"plan_payload": json.dumps(preview_plan, ensure_ascii=False)},
+                tool_call_id="ordered-unit-preview-note",
+            )
+        ],
+        [
+            ToolReturnPart(
+                tool_name="execute_plan_action",
+                content=json.dumps(
+                    {
+                        "applied": False,
+                        "action_family": "move_ordered_unit",
+                        "stage": "preview",
+                        "result_kind": "preview_only",
+                        "summary": "会整体移动指定专业组。",
+                    },
+                    ensure_ascii=False,
+                ),
+                tool_call_id="ordered-unit-preview-note",
+            )
+        ],
+    )
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(service.handle_message("session-ordered-unit-preview-note", "user-1", "把第4个专业组移到第2位"))
+
+    assert "不是按单条志愿位置计算" in reply
+    assert "组内专业会保持连续" in reply
+    assert "志愿组" not in reply
+    assert "第4个专业组" in reply
 
 
 def test_chat_service_confirms_plan_next_action_preview_without_execute(tmp_path, mock_llm_client):
@@ -4077,6 +4406,17 @@ def test_normalize_user_facing_terms_removes_profile_jargon():
     assert "记成后续报考参考" in normalized
 
 
+def test_normalize_user_facing_terms_uses_join_plan_wording_for_add_preview():
+    reply = "**添加预览**\n执行后会将该志愿补入方案。确认要添加吗？"
+
+    normalized = _normalize_user_facing_terms(reply)
+
+    assert "添加预览" not in normalized
+    assert "添加吗" not in normalized
+    assert "加入方案预览" in normalized
+    assert "确认加入方案吗" in normalized
+
+
 def test_normalize_pending_intent_reply_avoids_premature_recorded_wording():
     reply = "好的，我记下了你对跨境电商的兴趣。候选库里有一个相关机会。"
 
@@ -4085,6 +4425,25 @@ def test_normalize_pending_intent_reply_avoids_premature_recorded_wording():
     assert "我记下了" not in normalized
     assert "确认" in normalized
     assert "后续参考" in normalized
+
+
+def test_normalize_unbacked_recorded_wording_avoids_fake_saved_conclusion():
+    reply = "好的，新媒体方向对数学要求更友好，这个判断可以先记下来。"
+
+    normalized = _normalize_unbacked_recorded_wording(reply)
+
+    assert "记下来" not in normalized
+    assert "当前分析结论参考" in normalized
+
+
+def test_normalize_unbacked_recorded_wording_avoids_fake_preference_closure():
+    reply = "好的，明白了。你倾向**网络与新媒体**这个方向，它对数学要求更低。"
+
+    normalized = _normalize_unbacked_recorded_wording(reply)
+
+    assert "你倾向" not in normalized
+    assert "先按刚才的分析结论理解" in normalized
+    assert "**网络与新媒体**这个方向" in normalized
 
 
 def test_chat_service_normalizes_toolless_intent_reply_profile_jargon_in_history(tmp_path, mock_llm_client):
@@ -4260,6 +4619,114 @@ def test_chat_service_appends_pending_intent_boundary_on_followup_analysis(tmp_p
     assert "确认前不会写入后续参考" in reply
 
 
+def test_chat_service_does_not_append_pending_intent_boundary_to_existing_only_preview(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    fake_agent = _FakeAgentWithToolCalls(
+        "这个想法当前已经在后续报考参考里。本轮不会重复新增。",
+        [
+            ToolCallPart(
+                tool_name="preview_current_major_intent_confirmation",
+                args={"intent_mode": "constraint"},
+                tool_call_id="existing-only-intent-preview",
+            )
+        ],
+        [
+            ToolReturnPart(
+                tool_name="preview_current_major_intent_confirmation",
+                content=json.dumps(
+                    {
+                        "status": "existing_only",
+                        "sessionId": "session-existing-only-intent-preview",
+                        "intentMode": "constraint",
+                        "items": [],
+                        "existingItems": [{"content": "当前已有参考排除具体专业：护理学"}],
+                    },
+                    ensure_ascii=False,
+                ),
+                tool_call_id="existing-only-intent-preview",
+            )
+        ],
+    )
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_intent_change_cache", AsyncMock(return_value={"data": {"planEditCache": None}})):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(service.handle_message("session-existing-only-intent-preview", "user-57", "护理不要"))
+
+    assert isinstance(reply, str)
+    assert "当前已经在后续报考参考" in reply
+    assert "待确认内容" not in reply
+    assert "确认前不会写入后续参考" not in reply
+
+
+def test_chat_service_does_not_append_pending_boundary_to_interest_stage_intent_analysis(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    fake_agent = _FakeAgentWithToolCalls(
+        (
+            "**初步判断**\n"
+            "- 先按这个方向看影响和边界。\n\n"
+            "**当前情况**\n"
+            "- 医学、护理需要避开，财会可以作为可接受方向先看影响。"
+        ),
+        [
+            ToolCallPart(
+                tool_name="preview_current_major_intent_confirmation",
+                args={"intent_mode": "constraint"},
+                tool_call_id="interest-intent-preview",
+            )
+        ],
+        [
+            ToolReturnPart(
+                tool_name="preview_current_major_intent_confirmation",
+                content=json.dumps(
+                    {
+                        "status": "ready",
+                        "sessionId": "session-interest-stage-intent-analysis",
+                        "intentMode": "constraint",
+                        "analysisStage": "interest",
+                        "items": [
+                            {
+                                "content": "把医学记成明确不考虑的内容。",
+                                "value": {"major_intents": {"negative_level1": ["医学"]}},
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                tool_call_id="interest-intent-preview",
+            )
+        ],
+    )
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
+            patch(
+                "app.service.get_intent_change_cache",
+                AsyncMock(return_value={"data": {"planEditCache": {"major_intents": {"level3": ["会计学"]}}}}),
+            ):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(
+            service.handle_message(
+                "session-interest-stage-intent-analysis",
+                "user-57",
+                "医学护理这些别碰，财会还能接受，先看看影响",
+            )
+        )
+
+    assert isinstance(reply, str)
+    assert "医学、护理" in reply
+    assert "待确认内容" not in reply
+    assert "尚未确认" not in reply
+    assert "确认前不会写入后续参考" not in reply
+
+
 def test_chat_service_does_not_append_pending_intent_boundary_to_unrelated_readonly_question(tmp_path, mock_llm_client):
     db_path = tmp_path / "history.db"
     store = ChatHistoryStore(str(db_path))
@@ -4278,6 +4745,56 @@ def test_chat_service_does_not_append_pending_intent_boundary_to_unrelated_reado
 
     assert isinstance(reply, str)
     assert "建筑学对美术基础要求更高" in reply
+    assert "尚未确认" not in reply
+    assert "确认前不会写入后续参考" not in reply
+
+
+def test_chat_service_does_not_append_stale_pending_boundary_to_readonly_major_interest(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    fake_agent = _FakeAgentWithToolCalls(
+        (
+            "**排除医学与护理的影响**\n"
+            "医学和护理会收窄候选范围。\n\n"
+            "**接受财会方向的影响**\n"
+            "财会可以作为后续可接受方向先看。"
+        ),
+        [
+            ToolCallPart(
+                tool_name="analyze_current_major_interest",
+                args={"intent_mode": "preference"},
+                tool_call_id="major-interest-readonly",
+            )
+        ],
+        [
+            ToolReturnPart(
+                tool_name="analyze_current_major_interest",
+                content="只读专业影响分析",
+                tool_call_id="major-interest-readonly",
+            )
+        ],
+    )
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
+            patch(
+                "app.service.get_intent_change_cache",
+                AsyncMock(return_value={"data": {"planEditCache": {"major_intents": {"level3": ["会计学"]}}}}),
+            ):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(
+            service.handle_message(
+                "session-stale-pending-readonly-major-interest",
+                "user-57",
+                "医学护理这些别碰，财会还能接受，先看看影响",
+            )
+        )
+
+    assert isinstance(reply, str)
+    assert "医学和护理会收窄候选范围" in reply
+    assert "待确认内容" not in reply
     assert "尚未确认" not in reply
     assert "确认前不会写入后续参考" not in reply
 
@@ -4643,7 +5160,8 @@ def test_chat_service_handle_intent_select_preference_end_to_end_returns_analysi
         )
 
     assert isinstance(reply, str)
-    assert "记下来了" in reply
+    assert "已确认" in reply
+    assert "后续报考参考" in reply
     query_mock.assert_not_awaited()
     state_mock.assert_not_awaited()
 

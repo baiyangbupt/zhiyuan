@@ -3,7 +3,8 @@
 每种 action_family 注册一个 handler 函数。
 dispatcher 通过 HANDLER_REGISTRY[action_family] 获取对应 handler。
 
-当前阶段：只有 query handlers 已迁入，其他仍由旧 _execute_plan_action_model 处理。
+当前阶段：Plan 主路径 action 已迁入注册表；执行层只保留安全门禁、
+preview 预览生成和历史兼容兜底。
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ HandlerFunc = Callable[
 ]
 
 # 注册表：action_family → handler 函数
-# 未注册的 action_family 会 fallback 到旧 _execute_plan_action_model
+# 未注册的 action_family 会 fallback 到执行层的 unsupported_action。
 HANDLER_REGISTRY: dict[str, HandlerFunc] = {}
 
 

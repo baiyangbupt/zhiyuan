@@ -264,6 +264,7 @@ class TestToolDispatchRules:
         assert "`analyze_current_career_direction(generic_direction=true)`" in result
         assert "不能只列“可以聊什么”" in result
         assert "这轮只做分析，不会改动你的方案" in result
+        assert "Explore 专用工具已经返回当前方案概况" in result
         assert "不要再补调 `plan_next_action(action_family=\"query_state\")`" in result
 
     def test_intent_preview_tool_boundaries_stop_after_preview(self):
@@ -271,7 +272,9 @@ class TestToolDispatchRules:
         assert "`preview_current_*_intent_confirmation` 返回后" in result
         assert "不要在同一轮重复调用同一个 preview 工具" in result
         assert "直接传结构化参数" in result
-        assert "看看影响" in result
+        assert "没有明确要求“先看影响、边界、利弊、风险或承接情况”" in result
+        assert "必须走对应 Intent 预览入口" in result
+        assert "先看影响" in result
         assert "不要把一级门类自动展开成所有下级专业" in result
         assert "不要自行补充未出现的相邻专业范围" in result
         assert "师范、护理、土木" in result
@@ -284,6 +287,10 @@ class TestToolDispatchRules:
         assert "不要升级成 `review_plan` 或改方案预览" in result
         assert "如果用户只是问是否存在某类风险" in result
         assert "不要自动规划删除、替换或补偿" in result
+        assert 'result_kind="review_result"' in result
+        assert "本轮审查结果是风险与提醒数量的权威事实" in result
+        assert "不要再拿历史上下文里的旧方案概览" in result
+        assert "单纯方案审查 `review_plan` 不要先调用 `collect_plan_context_inputs`" in result
 
     def test_plan_local_query_empty_result_should_not_be_worded_as_system_delay(self):
         result = build_tool_dispatch_rules()

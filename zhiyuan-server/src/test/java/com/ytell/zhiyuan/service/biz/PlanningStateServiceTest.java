@@ -1599,6 +1599,57 @@ public class PlanningStateServiceTest {
     }
 
     @Test
+    void shouldQueryCandidatePoolWithStoredItemsWhenOverlayRefreshFails() {
+        bindPlanningStateStore(17L);
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(17L);
+        state.setVersion(220);
+        state.getStaleFlags().setRecommendationOverlay(true);
+        CandidatePoolStateDTO candidatePoolState = new CandidatePoolStateDTO();
+        candidatePoolState.setVolunteerModel(VolunteerModel.major.name());
+        candidatePoolState.getItems().add(buildCandidateItem(
+                "ps1_m1", "ps1", "s1", "学校A", "稳", "会计学", 62D, 81D, 62D, false));
+        candidatePoolState.getItems().add(buildCandidateItem(
+                "ps2_m2", "ps2", "s2", "学校B", "冲", "计算机科学与技术", 35D, 90D, 35D, false));
+        state.setCandidatePoolState(candidatePoolState);
+        saveStateToStore(17L, state);
+        when(volunteerBizService.recommendVolunteerList(1L, 17L, false, false))
+                .thenThrow(new RuntimeException("rank unavailable"));
+
+        CandidatePoolQueryReq queryReq = new CandidatePoolQueryReq();
+        queryReq.getFilters().setTiers(java.util.Arrays.asList("稳", "保"));
+        queryReq.getFilters().setMajorKeywords(java.util.Arrays.asList("会计"));
+        CandidatePoolQueryRes queryRes = planningStateService.queryCandidatePool(1L, 17L, queryReq);
+
+        assertEquals(Integer.valueOf(1), queryRes.getTotal());
+        assertEquals("会计学", queryRes.getItems().get(0).getMajorName());
+    }
+
+    @Test
+    void shouldReturnCandidateFilterOptionsWithStoredItemsWhenOverlayRefreshFails() {
+        bindPlanningStateStore(17L);
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(17L);
+        state.setVersion(220);
+        state.getStaleFlags().setRecommendationOverlay(true);
+        CandidatePoolStateDTO candidatePoolState = new CandidatePoolStateDTO();
+        candidatePoolState.setVolunteerModel(VolunteerModel.major.name());
+        CandidateItemDTO candidate = buildCandidateItem(
+                "ps1_m1", "ps1", "s1", "学校A", "稳", "会计学", 62D, 81D, 62D, false);
+        candidate.setProvinceName("山东");
+        candidate.setCityName("济南");
+        candidatePoolState.getItems().add(candidate);
+        state.setCandidatePoolState(candidatePoolState);
+        saveStateToStore(17L, state);
+        when(volunteerBizService.recommendVolunteerList(1L, 17L, false, false))
+                .thenThrow(new RuntimeException("rank unavailable"));
+
+        CandidateFilterOptionsDTO options = planningStateService.getCandidateFilterOptions(1L, 17L);
+
+        assertTrue(options.getProvinceNames().contains("山东"));
+    }
+
+    @Test
     void shouldGenerateInitialRecommendationAndPlanAdjustmentSkeleton() {
         bindPlanningStateStore();
 

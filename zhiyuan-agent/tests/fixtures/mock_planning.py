@@ -52,8 +52,6 @@ _EXECUTION_TOOL_ALIASES = {
     "select_planning_ordered_items",
     "remove_planning_ordered_items",
     "move_planning_ordered_item",
-    "pin_planning_ordered_item",
-    "unpin_planning_ordered_item",
     "run_planning_review",
     "analyze_planning_plan_adjustment",
     "preview_planning_compensation",
@@ -61,10 +59,8 @@ _EXECUTION_TOOL_ALIASES = {
 
 _MUTATION_HANDLER_ALIASES = {
     "move_planning_ordered_item",
-    "pin_planning_ordered_item",
     "remove_planning_ordered_items",
     "select_planning_ordered_items",
-    "unpin_planning_ordered_item",
 }
 
 _QUERY_HANDLER_ALIASES = {

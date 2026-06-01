@@ -34,7 +34,7 @@ from pydantic import BaseModel, Field
 # | pin         | pin_unit                  |                     |
 # | unpin       | unpin_unit                |                     |
 # | replace     | replace_units             |                     |
-# | reorder     | regenerate_order          |                     |
+# | reorder     | sort_ordered_plan / regenerate_order | scope.sort_field 决定 |
 # | compensate  | preview_compensation / apply_compensation |       |
 # | compare     | —                         | Explore 比较        |
 # | recommend   | —                         | Explore 推荐        |
@@ -116,7 +116,8 @@ class TargetSpec(BaseModel):
     # 审查问题编码（14 种，如 "high_tuition", "cooperative_program" 等）
     review_issue_code: str | None = None
 
-    # 目标位置（move_unit 场景）
+    # 源位置 / 目标位置（move_unit / move_ordered_unit 场景）
+    source_position: int | None = None
     position: int | None = None
 
     @property
@@ -154,6 +155,12 @@ class ScopeSpec(BaseModel):
     # 返回数量限制
     limit: int = 5
 
+    # 替换类操作是否要求替换后方案数量不减少；用于触发容量预检。
+    preserve_count: bool = False
+
+    # 当前方案排序字段。为空表示整体重新生成顺序；非空表示按指定字段排序。
+    sort_field: Literal["admissionRatio", "schoolRank", "finalScore", ""] = ""
+
     # 是否针对 review issue 批量操作
     is_review_issue_batch: bool = False
 
@@ -167,6 +174,7 @@ class ScopeSpec(BaseModel):
             or self.major_tags
             or self.school_keyword
             or self.major_keyword
+            or self.preserve_count
         )
 
 
@@ -182,8 +190,9 @@ class IntentFrame(BaseModel):
     - ActionResolver 负责 IntentFrame → PlanActionPlan 的映射
 
     兼容说明：
-    - Phase 2 之前，现有的关键词匹配逻辑仍正常工作
-    - ActionResolver 会与旧逻辑并行运行对比，确认无差异后切换
+    - 运行时动作选择不再从 raw_utterance / user_goal 做关键词改写。
+    - raw_utterance 仅用于日志、解释和实体消歧；动作族、位置、排序字段、
+      审查问题等必须由结构化字段承载。
     """
 
     task_layer: TaskLayer

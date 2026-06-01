@@ -622,6 +622,44 @@ async def test_query_volunteer_plan_candidate_scope_supplements_filters_with_ext
 
 
 @pytest.mark.asyncio
+async def test_query_volunteer_plan_candidate_scope_supplements_omitted_major_alias_mentions():
+    candidate_result = {"code": 0, "data": {"total": 0, "items": []}}
+    extracted = {
+        "should_query_candidate": True,
+        "confidence": 0.9,
+        "ambiguities": [],
+        "filters": {
+            "tiers": ["稳"],
+            "province_names": [],
+            "city_names": [],
+            "school_keywords": [],
+            "major_keywords": ["会计学"],
+            "school_tags": [],
+            "major_tags": [],
+        },
+    }
+
+    with patch(
+        "app.tools.plan_query_tool.extract_candidate_query_filters_async",
+        new=AsyncMock(return_value=extracted),
+    ), patch(
+        "app.tools.plan_query_tool.query_planning_candidate_pool",
+        new=AsyncMock(return_value=candidate_result),
+    ) as candidate_mock:
+        result = await query_volunteer_plan(
+            _ctx("120"),
+            "候选里还有没有更稳一点的会计审计，别直接加",
+            scope="candidate",
+        )
+
+    candidate_mock.assert_awaited_once()
+    assert candidate_mock.await_args.kwargs["tiers"] == ["稳"]
+    assert candidate_mock.await_args.kwargs["major_keywords"] == ["会计学", "审计学"]
+    assert "专业:会计学、审计学" in result
+    assert "扩大到同一专业类" in result
+
+
+@pytest.mark.asyncio
 async def test_query_volunteer_plan_drops_major_keyword_when_extractor_identifies_same_school_tag():
     candidate_result = {"code": 0, "data": {"total": 0, "items": []}}
     extracted = {

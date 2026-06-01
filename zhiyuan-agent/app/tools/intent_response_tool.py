@@ -6,6 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from app.domain.career_slots import to_career_labels
 from app.domain.major_entity_resolver import build_major_relation_notes
 
 
@@ -84,19 +85,117 @@ def parse_explore_followup_result(result_text: str) -> ExploreFollowupResult:
     return ExploreFollowupResult.model_validate_json(result_text)
 
 
+def _unique_text_values(values: Any) -> list[str]:
+    raw_values = values if isinstance(values, list) else [values] if values else []
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in raw_values:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            continue
+        result.append(text)
+        seen.add(text)
+    return result
+
+
+def _collect_major_summary_values(major_intents: dict[str, Any], keys: tuple[str, ...]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for key in keys:
+        for value in _unique_text_values(major_intents.get(key)):
+            if value in seen:
+                continue
+            result.append(value)
+            seen.add(value)
+    return result
+
+
+def _format_confirmed_intent_summary(merged: dict[str, Any]) -> list[str]:
+    summary: list[str] = []
+    major_intents = merged.get("major_intents") or {}
+    if isinstance(major_intents, dict):
+        positive = _collect_major_summary_values(major_intents, ("level3", "level2", "level1"))
+        negative = _collect_major_summary_values(
+            major_intents,
+            ("negative_level3", "negative_level2", "negative_level1"),
+        )
+        if positive:
+            summary.append(f"偏好专业：{'、'.join(positive)}")
+        if negative:
+            summary.append(f"排除专业：{'、'.join(negative)}")
+
+    school_intents = merged.get("school_intents") or {}
+    if isinstance(school_intents, dict):
+        preferred_schools = _unique_text_values(school_intents.get("colleges"))
+        negative_schools = _unique_text_values(school_intents.get("negative_colleges"))
+        if preferred_schools:
+            summary.append(f"偏好院校：{'、'.join(preferred_schools)}")
+        if negative_schools:
+            summary.append(f"排除院校：{'、'.join(negative_schools)}")
+
+    city_intents = merged.get("city_intents") or {}
+    if isinstance(city_intents, dict):
+        preferred_regions = _unique_text_values(city_intents.get("province")) + _unique_text_values(city_intents.get("city"))
+        negative_regions = _unique_text_values(city_intents.get("negative_province")) + _unique_text_values(city_intents.get("negative_city"))
+        if preferred_regions:
+            summary.append(f"偏好地域：{'、'.join(dict.fromkeys(preferred_regions))}")
+        if negative_regions:
+            summary.append(f"排除地域：{'、'.join(dict.fromkeys(negative_regions))}")
+
+    career_intents = merged.get("career_intents") or {}
+    if isinstance(career_intents, dict):
+        preferred_careers = _unique_text_values(to_career_labels(career_intents.get("positive")))
+        negative_careers = _unique_text_values(to_career_labels(career_intents.get("negative")))
+        if preferred_careers:
+            summary.append(f"偏好发展方向：{'、'.join(preferred_careers)}")
+        if negative_careers:
+            summary.append(f"排除发展方向：{'、'.join(negative_careers)}")
+    return summary
+
+
+def _format_intent_state_update_with_summary(
+    *,
+    base: str,
+    result: IntentStateUpdateResult,
+    next_step: str,
+    usage_text: str | None = None,
+) -> str:
+    lines = [base]
+    summary = _format_confirmed_intent_summary(result.merged)
+    if summary:
+        lines.append(f"- 本次确认内容：{'；'.join(summary)}。")
+    if usage_text:
+        lines.append(f"- 后续使用：{usage_text}")
+    lines.append(f"- 下一步：{next_step}")
+    return "\n".join(lines)
+
+
 def render_intent_state_update(result: IntentStateUpdateResult) -> str:
     if result.message:
         return result.message
 
     code = result.messageCode
     if code == "constraint_applied":
+        base = "已确认，这次内容会作为后续报考参考。"
         if result.baseTotal is not None and result.filteredTotal is not None:
-            return f"我已经按你的要求把候选结果收紧了，现在大约能看到 {result.filteredTotal} 个结果，整体候选大约是 {result.baseTotal} 个。要是你愿意，我也可以继续帮你看看这份方案里还有没有不符合这条要求的地方。"
-        if result.filteredTotal is not None:
-            return f"我已经按你的要求把候选结果收紧了，现在大约还有 {result.filteredTotal} 个结果。要是你愿意，我也可以继续帮你看看这份方案里还有没有不符合这条要求的地方。"
-        return "我已经按你的要求把候选结果收紧了，你现在可以直接去看筛选后的结果。要是你愿意，我也可以继续帮你看看这份方案里还有没有不符合这条要求的地方。"
+            usage_text = f"按这条要求看，候选大约还有 {result.filteredTotal} 个，整体候选大约是 {result.baseTotal} 个。"
+        elif result.filteredTotal is not None:
+            usage_text = f"按这条要求看，候选大约还有 {result.filteredTotal} 个。"
+        else:
+            usage_text = "后续查看候选和方案时会作为参考，不会直接改动当前方案顺序。"
+        return _format_intent_state_update_with_summary(
+            base=base,
+            result=result,
+            usage_text=usage_text,
+            next_step="可以继续查看候选机会，或者让我检查当前方案里有没有不符合这条要求的地方。",
+        )
     if code == "preference_applied":
-        return "好的，我已经按你的确认记下来了，后续会按这个方向作为报考参考。接下来如果你愿意，我可以继续帮你看看现在这份方案哪些地方比较贴近你的想法、哪些地方还可以再优化。"
+        return _format_intent_state_update_with_summary(
+            base="已确认，这个偏好会作为后续报考参考。",
+            result=result,
+            usage_text="后续查看候选和方案时会作为参考，不会直接改动当前方案顺序。",
+            next_step="可以继续让我看看现在这份方案哪些地方比较贴近你的想法、哪些地方还可以再优化。",
+        )
     if code == "reject_success":
         return "已取消本次意向调整。你可以重新说明想保留、排除或更偏好的方向，或者继续其他咨询。"
     if code == "no_pending":
@@ -189,6 +288,33 @@ def _has_specific_impact_text(impact_text: str | None) -> bool:
             continue
         meaningful_lines.append(stripped)
     return bool(meaningful_lines)
+
+
+def _strip_duplicated_interest_impact_heading(impact_text: str | None) -> str:
+    text = str(impact_text or "").strip()
+    if not text:
+        return ""
+    lines = text.splitlines()
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    if lines and lines[0].strip().startswith("**") and lines[0].strip().endswith("**"):
+        lines.pop(0)
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    if lines and lines[0].strip() == "**初步判断**":
+        lines.pop(0)
+    cleaned: list[str] = []
+    skip_next_blank = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped in {"**先帮你看一眼**", "**初步判断**"}:
+            skip_next_blank = True
+            continue
+        if skip_next_blank and not stripped:
+            continue
+        skip_next_blank = False
+        cleaned.append(line)
+    return "\n".join(cleaned).strip()
 
 
 def _fallback_intent_impact_text(intent_mode: str) -> str:
@@ -299,6 +425,75 @@ def _major_boundary_notes(items: list[dict[str, Any]] | None) -> list[str]:
     return build_major_relation_notes(major_values)
 
 
+def _merge_major_values(major_values: dict[str, list[str]], keys: tuple[str, ...]) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for key in keys:
+        for value in major_values.get(key) or []:
+            text = str(value or "").strip()
+            if not text or text in seen:
+                continue
+            merged.append(text)
+            seen.add(text)
+    return merged
+
+
+def _short_join(values: list[str], limit: int = 4) -> str:
+    visible = values[:limit]
+    suffix = f"等{len(values)}项" if len(values) > limit else ""
+    return "、".join(visible) + suffix
+
+
+def _interest_stage_title_lines(title: str, items: list[dict[str, Any]] | None) -> list[str]:
+    major_values = _collect_major_intent_values(items)
+    positive = _merge_major_values(major_values, ("level3", "level2", "level1"))
+    negative = _merge_major_values(major_values, ("negative_level3", "negative_level2", "negative_level1"))
+    if positive and negative:
+        return [
+            f"先按“避开 {_short_join(negative)}，同时把 {_short_join(positive)} 作为可接受方向”来看影响；这轮只做分析，不会直接写入偏好或改动方案。"
+        ]
+    if negative:
+        return [
+            f"先看“避开 {_short_join(negative)}”会带来什么影响；这轮只做分析，不会直接写入排除条件或改动方案。"
+        ]
+    if positive:
+        return [
+            f"先看“关注 {_short_join(positive)}”对后续候选和方案承接有什么影响；这轮只做分析，不会直接写入偏好或改动方案。"
+        ]
+    return [title.replace("我先结合你现在的情况做个初步分析。", "先按这个方向看影响和边界。")]
+
+
+def _major_interest_impact_lines(items: list[dict[str, Any]] | None) -> list[str]:
+    major_values = _collect_major_intent_values(items)
+    positive = _merge_major_values(major_values, ("level3", "level2", "level1"))
+    negative = _merge_major_values(major_values, ("negative_level3", "negative_level2", "negative_level1"))
+    positive_broad = _merge_major_values(major_values, ("level2", "level1"))
+    negative_broad = _merge_major_values(major_values, ("negative_level2", "negative_level1"))
+
+    lines: list[str] = []
+    if negative:
+        lines.append(
+            f"排除 {_short_join(negative)} 后，后续查看候选和方案时会优先检查这些方向是否需要避开；如果当前方案里已有相关志愿，需要单独判断是否替换或移除。"
+        )
+    if positive:
+        lines.append(
+            f"保留 {_short_join(positive)} 后，可以把它作为补位和优化方案的参考方向，重点看它在冲、稳、保各层有没有足够承接。"
+        )
+    if positive and negative:
+        lines.append(
+            "这类组合的实际意义是先明确“不要什么”，再用可接受方向补足候选和方案结构；确认前它只是分析口径，不会改变后续推荐。"
+        )
+    if negative_broad:
+        lines.append(
+            f"{_short_join(negative_broad)} 属于较宽的专业范围，真正作为硬性排除前，建议再确认是否要连同相关下级专业一起避开。"
+        )
+    if positive_broad:
+        lines.append(
+            f"{_short_join(positive_broad)} 覆盖面相对更宽，后续如果要精细调整，最好再落到具体专业或学校专业组。"
+        )
+    return lines
+
+
 def render_intent_analysis_text(
     *,
     title: str,
@@ -308,9 +503,9 @@ def render_intent_analysis_text(
     items: list[dict[str, Any]] | None = None,
     existing_items: list[dict[str, Any]] | None = None,
 ) -> str:
+    boundary_notes = _major_boundary_notes(items)
     if analysis_stage != "interest":
         resolved_impact = impact_text if _has_specific_impact_text(impact_text) else _fallback_intent_impact_text(intent_mode)
-        boundary_notes = _major_boundary_notes(items)
         if boundary_notes:
             resolved_impact = "\n".join(f"- {note}" for note in boundary_notes) + f"\n{resolved_impact}"
         if intent_mode == "constraint":
@@ -328,12 +523,17 @@ def render_intent_analysis_text(
             ("下一步", next_steps),
         )
 
+    resolved_impact = impact_text
+    if boundary_notes:
+        resolved_impact = "\n".join(f"- {note}" for note in boundary_notes) + (f"\n{impact_text}" if impact_text else "")
+    resolved_impact = _strip_duplicated_interest_impact_heading(resolved_impact)
     sections: list[tuple[str, list[str] | None] | tuple[str, str | None]] = [
-        ("初步判断", [title]),
-        ("当前情况", impact_text),
+        ("初步判断", _interest_stage_title_lines(title, items)),
+        ("影响边界", _major_interest_impact_lines(items)),
+        ("当前情况", resolved_impact),
     ]
     if items:
-        sections.append(("这次识别到的可采纳内容", [item.get("content", "") for item in items]))
+        sections.append(("这次识别到的参考范围", [_render_intent_preview_item(item) for item in items]))
     if existing_items:
         sections.append(("当前已经在参考的内容", [item.get("content", "") for item in existing_items]))
 
@@ -357,7 +557,7 @@ def render_intent_analysis_payload(payload_text: str) -> str:
                 intent_mode=payload.intentMode,
                 existing_items=[item.model_dump() for item in payload.existingItems],
             )
-        all_existing_text = "这个想法我这边已经记下并在参考了。如果你愿意，我可以继续帮你看看现在这份方案和它有多匹配。"
+        all_existing_text = "这个想法当前已经在后续报考参考里。本轮不会重复新增；如果你愿意，我可以继续帮你看看现在这份方案和它有多匹配。"
         if payload.existingItems:
             details = "\n".join(f"- {_sanitize_user_facing_intent_text(item.content)}" for item in payload.existingItems)
             all_existing_text += "\n" + details

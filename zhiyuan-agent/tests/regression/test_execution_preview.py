@@ -31,11 +31,11 @@ def _run_ctx(*, volunteer_model: str = "major", **kwargs):
 
 
 # ---------------------------------------------------------------------------
-# 1. regenerate_order + structural_rebalance → analyze early exit
+# 1. regenerate_order 不再从 user_goal 文本推断结构重平衡
 # ---------------------------------------------------------------------------
 
-class TestRegenerateOrderStructuralRebalanceEarlyExit:
-    """regenerate_order + user_goal 包含结构重平衡关键词 → analyze 阶段返回。"""
+class TestRegenerateOrderDoesNotInferStructuralRebalance:
+    """regenerate_order 只表示整体重新生成排序，不从 user_goal 关键词改成结构调整。"""
 
     @pytest.mark.parametrize("user_goal", [
         "别动总数压冲区保区",
@@ -44,7 +44,7 @@ class TestRegenerateOrderStructuralRebalanceEarlyExit:
         "保持总数本省保底",
     ])
     @pytest.mark.parametrize("volunteer_model", ["major", "majorGroup"])
-    async def test_structural_rebalance_returns_analyze(self, user_goal: str, volunteer_model: str):
+    async def test_structural_rebalance_text_still_returns_preview(self, user_goal: str, volunteer_model: str):
         ctx = _run_ctx(volunteer_model=volunteer_model)
         plan = make_plan_action_plan(
             action_family="regenerate_order",
@@ -53,9 +53,9 @@ class TestRegenerateOrderStructuralRebalanceEarlyExit:
         )
         result = await _execute_plan_action_model(ctx, plan)
         assert result.applied is False
-        assert result.stage == "analyze"
+        assert result.stage == "preview"
         assert result.result_kind == "preview_only"
-        assert "structural_rebalance_requires_scope" in result.reply_focus
+        assert "structural_rebalance_requires_scope" not in result.reply_focus
 
     @pytest.mark.parametrize("user_goal", [
         "别动总数",      # 缺少保区/冲区
@@ -105,7 +105,10 @@ class TestMissingInputsEarlyExit:
         assert result.applied is False
         assert result.result_kind == "error"
         assert "missing_inputs" in result.reply_focus
-        assert "volunteer_ids" in result.summary
+        assert result.reply_strategy == "direct_blocking"
+        assert result.summary
+        assert "volunteer_ids" not in result.summary
+        assert "请" in result.summary
 
     @pytest.mark.parametrize("volunteer_model", ["major", "majorGroup"])
     async def test_replace_units_execution_missing_inputs(self, volunteer_model: str):
@@ -246,18 +249,28 @@ class TestGenericPreviewAnalyzeFallback:
         # analyze 阶段不应有确认提示（除非 preview_summary 本身就带了）
         assert result.applied is False
 
-    @pytest.mark.parametrize("action_family", [
-        "query_state",
-        "query_draft",
-        "query_ordered",
-        "query_candidates",
-        "review_plan",
-        "analyze_adjustment",
-        "preview_compensation",
+    @pytest.mark.parametrize("action_family,expected_kind", [
+        ("query_state", "status_overview"),
+        ("query_draft", "draft_snapshot"),
+        ("query_ordered", "ordered_snapshot"),
+        ("query_candidates", "candidate_snapshot"),
+        ("review_plan", "review_result"),
+        ("analyze_adjustment", "adjustment_analysis"),
+        ("preview_compensation", "compensation_preview"),
     ])
     @pytest.mark.parametrize("volunteer_model", ["major", "majorGroup"])
-    async def test_non_mutating_preview_no_confirmation_hint(self, action_family: str, volunteer_model: str):
-        """非 mutating action 的 preview → summary 不带确认提示。"""
+    async def test_non_mutating_preview_routes_to_registered_handler_without_confirmation_hint(
+        self,
+        action_family: str,
+        expected_kind: str,
+        volunteer_model: str,
+        patch_backend,
+        patch_planning,
+    ):
+        """只读 action 即使 stage=preview，也应走注册 handler，不落 generic preview fallback。"""
+        patch_planning.query_planning_draft.return_value = "草稿方案概览"
+        patch_planning.query_planning_ordered_plan.return_value = "排序方案概览"
+        patch_planning.query_planning_candidate_pool.return_value = "候选池概览"
         ctx = _run_ctx(volunteer_model=volunteer_model)
         plan = make_plan_action_plan(
             action_family=action_family,
@@ -265,9 +278,9 @@ class TestGenericPreviewAnalyzeFallback:
             preview_summary="查看当前方案状态。",
         )
         result = await _execute_plan_action_model(ctx, plan)
-        assert result.applied is False
-        # 非 mutating action 不应被注入确认提示
-        assert result.summary == "查看当前方案状态。"
+        assert result.result_kind == expected_kind
+        assert "preview_only" not in result.reply_focus
+        assert "需要你确认后才会执行" not in result.summary
 
 
 # ---------------------------------------------------------------------------

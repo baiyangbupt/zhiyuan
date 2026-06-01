@@ -37,13 +37,20 @@ _TOOL_DISPATCH_RULES = """\
 - 用户在 Explore 问题里明确说“先不要改方案 / 先别动 / 只分析”时，最终回复要用一句自然中文承接边界，例如“这轮只做分析，不会改动你的方案”，避免用户误解为已经触发方案调整。
 - Explore 工具返回的分析已按用户可读结构组织好，你可以少量压缩但应保留小标题、换行和要点结构。
 - 用户只是了解方向、学校、专业、适配度时，优先给分析，不要强行触发工作台视图或数据变更。
-- Explore 专用工具已经返回当前方案承接、候选机会或风险提示时，本轮不要再补调 `plan_next_action(action_family="query_state")` 或 `query_volunteer_plan` 做重复状态查询。
+- Explore 专用工具已经返回当前方案概况、当前方案承接、候选机会或风险提示时，本轮不要再补调 `plan_next_action(action_family="query_state")` 或 `query_volunteer_plan` 做重复状态查询。
 
 ## Intent 层规则
 - 用户表达长期偏好或明确要求时，必须先用对应主题的高层 Intent 预览入口获取确认分析事实：专业用 `preview_current_major_intent_confirmation`，院校用 `preview_current_school_intent_confirmation`，地域用 `preview_current_region_intent_confirmation`，职业路径用 `preview_current_career_intent_confirmation`。
 - 对新偏好/新要求的首轮表达，不要在同一轮里先调 preview 又立刻调 `update_volunteer_intent_state(action="confirm")`；必须等用户明确确认后才能生效。
 - 用户单独表达兴趣或倾向（想学网络与新媒体/想去北京）时，先走 Intent 确认预览，不是 Plan 问题。
-- 用户同时表达“哪些专业/专业类/门类排除、哪些还能接受或倾向”，并追问“看看影响/会有什么影响/先分析影响”时，属于 Intent 影响预览；应调用对应 `preview_current_*_intent_confirmation`，不要当成普通闲聊或只读专业适配。
+- 用户同时表达“哪些专业/专业类/门类排除、哪些还能接受或倾向”时，先判断本轮期望：
+  - 如果没有明确要求“先看影响、边界、利弊、风险或承接情况”，这属于明确改变后续推荐口径，必须走对应 Intent 预览入口，等待用户确认后才生效。
+  - 如果本轮重点是“先看影响、边界、利弊、风险或承接情况”，属于只读影响分析；优先调用对应主题的 Explore/interest 工具（如 `analyze_current_major_interest`），不要直接生成待确认卡片。回复末尾可以自然询问是否需要把这些想法记为后续参考。
+- 区分 Explore 边界分析和 Intent 写入，不看“能不能/算不算/是不是”等虚词本身，而看用户本轮期望的结果：
+  1. 如果用户要的是概念边界、适配判断、利弊取舍或范围解释，最终应该得到分析结论，不应该出现待确认卡片或写入缓存。
+  2. 如果用户明确要把某个专业、院校、地域或发展方向作为后续参考、排除项或长期要求，才进入 Intent 确认预览。
+  3. 如果一句话同时包含“已有倾向”和“先看影响/边界/利弊/风险”的请求，先回答边界和影响，再用自然语言询问是否需要记录；不要直接生成待确认内容。
+  4. 判断维度包括：用户是否要求系统以后记住、是否要求改变候选/方案、是否只是在问分类归属或风险边界、回复是否需要确认后才产生副作用。
 - “师范、护理、土木、会计、审计、财政、法学、医学、中医、计算机、新闻、新媒体、档案、图书馆”等是专业、专业类或职业方向语义，不是院校名称；用户说“不想当老师/师范是不是别要/护理不要/土木别要”时应走专业或职业相关工具，不要调用 `preview_current_school_intent_confirmation`。
 - 调用 preview 时如果用户已经说清楚了目标，直接传结构化参数，避免为同一句显式表达再额外发起一轮抽取。
 - `preview_current_*_intent_confirmation` 返回后，本轮直接基于工具结果回复用户并等待确认；不要在同一轮重复调用同一个 preview 工具，也不要为了“再看影响”继续重复抽取。
@@ -55,10 +62,12 @@ _TOOL_DISPATCH_RULES = """\
 ## Plan 层规则
 - 用户围绕当前方案查状态/问风险/看候选/要补偿或重排时，统一优先走 Plan 编排工具。
 - 对“方案有了么 / 看看现在的方案 / 现在方案怎么样 / 当前方案如何”这类方案现状问题，直接调用 `plan_next_action(action_family="query_state")`，再调用 `execute_plan_action`；不要先单独调用 `collect_plan_context_inputs`，避免重复读取上下文和额外模型往返。
+- `plan_next_action` 只是生成结构化动作计划，不是给用户的最终事实结果。凡是 `plan_next_action` 返回 `stage="preview"`、`stage="apply"` 或 `stage="review"`，必须继续调用 `execute_plan_action(plan_payload=plan_next_action返回的完整JSON)` 获取预览、执行或审查结果；不要只凭 `plan_next_action.preview_summary` 直接回复用户。
 - 对方案数量、冲稳保分布、公办/民办占比、地域占比、高收费占比这类状态统计问题，也按 `query_state` 读取当前状态回答，不要升级成 `review_plan` 或改方案预览。
 - 对“审查一下 / 有什么风险 / 稳不稳 / 哪里不合理”这类风险判断问题，优先走 `review_plan`；如果用户只是问是否存在某类风险，先给审查结论，不要自动规划删除、替换或补偿。
+- `review_plan` / `execute_plan_action(result_kind="review_result")` 返回的本轮审查结果是风险与提醒数量的权威事实；最终回复不要再拿历史上下文里的旧方案概览自行追加“工具未标记但实际存在”的风险结论。如需补充结构性观察，必须明确区分为“上次方案概览显示/待重新审查”，并建议用户查看方案或重新审查。
 - 对“候选里 / 还能报 / 有没有更稳一点 / 先查一下 / 别直接加 / 不要改方案”这类只读候选机会查询，直接调用 `query_volunteer_plan(scope="candidate")` 并传入已理解的专业、院校、地域、冲稳保或标签筛选；不要先调用 `plan_next_action(action_family="query_state")` 或 `execute_plan_action(query_state)` 试探方案状态。只有用户明确要求加入、替换、补齐或调整当前方案时，才规划成对应 preview。
-- 对需要完整分析、预览、执行或审查的 Plan 链路，再按 `collect_plan_context_inputs` -> `plan_next_action` -> `execute_plan_action` 组织。
+- 对复杂补偿、替换、综合调整分析等需要补齐多类上下文的 Plan 链路，再按 `collect_plan_context_inputs` -> `plan_next_action` -> `execute_plan_action` 组织；单纯方案审查 `review_plan` 不要先调用 `collect_plan_context_inputs`。
 - 方案现状问法先直接回答结论句：有没有方案、当前多少个、风险/提醒各多少。
 - `query_volunteer_plan` 只用于局部命中查询（某个学校/专业是否在方案里），不要用它回答整体方案状态。
 - `query_volunteer_plan` 返回“暂时没有筛到/没有命中”时，这是当前方案或候选池按条件为空的业务结果；不要改写成“系统延迟、稍后再试、查询没拉出来”，除非工具明确返回查询失败。
@@ -67,13 +76,15 @@ _TOOL_DISPATCH_RULES = """\
 - 用户明确要求把某个候选、学校+专业或简称加入当前方案时，属于改变方案内容，应规划成 `add_units` preview；`volunteer_ids` 可以填用户原始引用（如“广西师大统计”），执行层会解析真实候选 ID，无法唯一定位时由执行层返回澄清，不要改走学校/分数线 Explore 分析。
 - 用户明确要求移动当前方案里的学校+专业到指定位置时（如“把青岛电影学院的新闻学改到第3位”“把湖北工程学院.计算机科学与技术移到第3位”），应规划成 `move_unit` preview：`volunteer_ids` 填用户原始学校+专业引用，`target_position` 填目标位置；不要先用 `query_volunteer_plan` 或反复 `collect_plan_context_inputs`。
 - 用户明确要求删除当前方案里的学校+专业时（如“去掉青岛电影学院.广告学”“删除湖北工程学院的计算机科学与技术”），应规划成 `remove_units` preview：`volunteer_ids` 填用户原始学校+专业引用；不要先用局部查询替代删除预览。执行层会唯一性校验，无法唯一定位时返回澄清。
+- 用户明确要求按源专业整体替换当前方案里的多条志愿时（如“把会计和审计都换成新媒体方向”），应规划成 `replace_units` preview：`volunteer_ids` 填已点名或可定位的源志愿引用，`source_major_names` 显式填写源专业名列表，补入范围写入 `major_keyword` / `major_tags` 等筛选字段；不要只把源专业范围写进 `user_goal`。
 - 高副作用动作（generate/add/remove/move/move_ordered_unit/remove_ordered_unit/sort_ordered_plan/replace/regenerate_order/apply_compensation）必须先 preview 再等确认。
 - 用户没有明确确认当前动作时，不要把高副作用动作传成 `current_stage="apply"`，也不要传 `user_confirmed=true`；本轮重新发起动作也要先形成 preview。
 - `execute_plan_action` 返回 `result_kind="preview_only"` 后，本轮直接说明预览并等待确认，不要继续围绕同一动作反复查询。
 - 在院校专业组模式下，如果用户明确说“专业组/这一组/整组”，应规划成 `move_ordered_unit` 或 `remove_ordered_unit`，不要打散组内专业。
-- “删除第 N 个专业组/去掉第 N 个专业组”必须规划成 `remove_ordered_unit` preview，并把“第 N 个专业组”保留在 `user_goal` 或 atomic action `reason` 中，交给执行层按当前专业组顺序解析；不要先返回 `query_state` 概览。
-- “把第 N 个专业组移到第 M 位”必须规划成 `move_ordered_unit` preview，`target_position=M`，并把源位置“第 N 个专业组”保留在 `user_goal` 或 atomic action `reason` 中；不要改成单条志愿移动。
-- 对 `move_ordered_unit/remove_ordered_unit` 的 preview，最终回复只展示工具返回的源专业组、目标专业组位置、组内专业数和确认提示；不要自行补充“当前前 N 位概况”“前 N 条志愿列表”等内容，避免把专业组位置和单条志愿位置混淆。
+- “删除第 N 个专业组/去掉第 N 个专业组”必须规划成 `remove_ordered_unit` preview，并显式填写 `source_position=N`；不要只把“第 N 个专业组”写进 `user_goal` 或 atomic action `reason`，也不要先返回 `query_state` 概览。
+- “把第 N 个专业组移到第 M 位”必须规划成 `move_ordered_unit` preview，并显式填写 `source_position=N`、`target_position=M`；不要只把源位置写进自然语言字段，也不要改成单条志愿移动。
+- 对 `move_ordered_unit/remove_ordered_unit` 的 preview，最终回复只展示工具返回的源专业组、目标专业组位置、组内专业数和确认提示；位置按专业组顺序计算，不是按单条志愿位置计算；不要自行补充“当前前 N 位概况”“前 N 条志愿列表”等内容，避免把专业组位置和单条志愿位置混淆。
+- 院校专业组模式下，用户侧统一使用“专业组”表述；不要把专业组改写成“志愿组”。
 - 3.0.1 新版工作台不提供固定/锁定志愿入口。用户要求“锁定/固定/取消固定”时，不要规划 pin/unpin，应说明当前不提供该入口，并建议移动到指定位置或使用方案排序。
 - 对“按录取率排序 / 按院校层次排序 / 按推荐系数排序”这类指定维度排序，规划成 `sort_ordered_plan`，不要当成长期偏好，也不要走旧的整体重新生成排序。
 - 只要问的是时效性问题（当前状态/重排后结果/审查后情况），即使历史里答过，也要重新读取当前 plan 状态。

@@ -52,6 +52,30 @@ class TestRegistry:
         """未注册的 action_family 不在 registry 中。"""
         assert "nonexistent_family" not in HANDLER_REGISTRY
 
+    def test_handler_registry_matches_active_plan_actions(self):
+        expected = {
+            "query_state",
+            "query_draft",
+            "query_ordered",
+            "query_candidates",
+            "review_plan",
+            "analyze_adjustment",
+            "preview_compensation",
+            "apply_compensation",
+            "generate_plan",
+            "add_units",
+            "remove_units",
+            "move_unit",
+            "replace_units",
+            "regenerate_order",
+            "sort_ordered_plan",
+            "move_ordered_unit",
+            "remove_ordered_unit",
+        }
+        assert expected.issubset(HANDLER_REGISTRY)
+        assert "pin_unit" not in HANDLER_REGISTRY
+        assert "unpin_unit" not in HANDLER_REGISTRY
+
 
 class TestHandlerPackageImports:
     """验证 handler 子模块可正常导入。"""

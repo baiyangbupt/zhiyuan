@@ -43,8 +43,11 @@ from app.tools.intent_state_tool import (
     _enrich_plan_relation_analysis_from_state,
     _build_single_turn_recovery_context,
     _build_proposed_profile,
+    IntentSideEffectDecision,
+    _major_relation_notes_from_latest_utterance,
     _recover_polarity_major_intent_locally_from_latest_utterance,
     _recover_intents_from_context,
+    _refine_major_boundary_mentions,
     _refine_major_intents_with_local_latest_utterance,
     _build_select_items,
     ANALYSIS_STAGE_CONFIRMED,
@@ -294,6 +297,10 @@ class TestBuildSelectItems:
         )
         assert len(items) == 0
         assert len(existing) == 3
+        assert existing[0]["value"] == {"major_intents": {"level3": ["软件工程"]}}
+        assert existing[1]["value"] == {"school_intents": {"colleges": ["北京大学"]}}
+        assert existing[2]["value"] == {"city_intents": {"province": ["北京"]}}
+        assert existing[0]["selected"] is False
 
     def test_mixed_new_and_existing(self, existing_profile):
         """Some new, some existing."""
@@ -395,7 +402,7 @@ async def test_analyze_intent_change_recovers_empty_args_via_fallback_extraction
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
+        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()) as save_mock,
         patch("app.tools.intent_state_tool.get_planning_state", new=AsyncMock(return_value={"data": {"orderedPlanState": {"items": []}, "candidatePoolState": {"items": []}}})),
         patch("app.tools.city_intent_tool.extract_city_intents_with_polarity", new=AsyncMock(return_value='{"positive": {"province": [], "city": [], "area": []}, "negative": {"province": ["上海"], "city": []}}')),
         patch("app.tools.major_intent_tool.extract_major_intents_with_polarity", new=AsyncMock(return_value='{"positive": {"level1": [], "level2": [], "level3": []}, "negative": {"level1": [], "level2": [], "level3": []}}')),
@@ -422,7 +429,7 @@ async def test_analyze_intent_change_soft_negative_stays_preference(empty_profil
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
+        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()) as save_mock,
         patch("app.tools.intent_state_tool.get_planning_state", new=AsyncMock(return_value={"data": {"orderedPlanState": {"items": []}, "candidatePoolState": {"items": []}}})),
     ):
         mock_pm = mock_pm_cls.return_value
@@ -451,7 +458,7 @@ async def test_analyze_intent_change_interest_stage_returns_structured_analysis(
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
+        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()) as save_mock,
         patch("app.tools.intent_state_tool.get_planning_state", new=AsyncMock(return_value={"data": {"orderedPlanState": {"items": []}, "candidatePoolState": {"items": []}}})),
     ):
         mock_pm = mock_pm_cls.return_value
@@ -466,7 +473,8 @@ async def test_analyze_intent_change_interest_stage_returns_structured_analysis(
             analysis_stage="interest",
         )
 
-    assert "先帮你看一眼" in resp
+    assert "初步判断" in resp
+    assert "这次识别到的参考范围" in resp
     assert "下一步" in resp
 
 
@@ -754,6 +762,46 @@ def test_analyze_current_major_interest_wrapper_uses_major_scope():
     )
 
 
+def test_analyze_current_major_interest_delegates_two_concrete_majors_to_compare_tool():
+    from app.agent.context import RequestContext
+
+    request_context = RequestContext(
+        userid="u1",
+        sessionid="s1",
+        chat_history=[{"role": "user", "content": "法学和财政学哪个更适合普通家庭女生，先只分析不要记偏好"}],
+        batch="01",
+    )
+    ctx = SimpleNamespace(deps=request_context)
+
+    with patch("app.tools.intent_preview_tool.compare_majors", new=AsyncMock(return_value="法学和财政学对比结果")) as compare_mock, \
+            patch("app.tools.intent_preview_tool.analyze_volunteer_intent_change", new=AsyncMock()) as analyze_mock:
+        resp = asyncio.run(analyze_current_major_interest(ctx))
+
+    assert resp == "法学和财政学对比结果"
+    compare_mock.assert_awaited_once_with(ctx, "法学", "财政学")
+    analyze_mock.assert_not_awaited()
+
+
+def test_analyze_current_major_interest_keeps_multiple_major_mentions_on_interest_path():
+    from app.agent.context import RequestContext
+
+    request_context = RequestContext(
+        userid="u1",
+        sessionid="s1",
+        chat_history=[{"role": "user", "content": "法学、财政学、审计学怎么排优先级"}],
+        batch="01",
+    )
+    ctx = SimpleNamespace(deps=request_context)
+
+    with patch("app.tools.intent_preview_tool.compare_majors", new=AsyncMock()) as compare_mock, \
+            patch("app.tools.intent_preview_tool.analyze_volunteer_intent_change", new=AsyncMock(return_value='{"status":"empty","sessionId":"s1","message":"继续由专业适配工具分析"}')) as analyze_mock:
+        resp = asyncio.run(analyze_current_major_interest(ctx))
+
+    assert resp == "继续由专业适配工具分析"
+    compare_mock.assert_not_awaited()
+    analyze_mock.assert_awaited_once()
+
+
 def test_analyze_current_region_interest_wrapper_uses_region_scope():
     from app.agent.context import RequestContext
 
@@ -826,6 +874,175 @@ async def test_analyze_intent_change_major_fit_question_forces_read_only_interes
     save_mock.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_analyze_intent_change_semantic_arbitration_downgrades_boundary_question(empty_profile):
+    ctx = SimpleNamespace(
+        deps=SimpleNamespace(
+            userid="u1",
+            sessionid="758",
+            batch="01",
+            chat_history=[{"role": "user", "content": "孩子不想当老师，师范是不是都别要"}],
+            enable_intent_side_effect_arbitration=True,
+            agent_observability={},
+        )
+    )
+
+    with (
+        patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
+        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()) as save_mock,
+        patch(
+            "app.tools.intent_state_tool._classify_intent_side_effect",
+            new=AsyncMock(
+                return_value=IntentSideEffectDecision(
+                    decision="analysis_only",
+                    confidence=0.91,
+                    reason="用户在问师范和当老师的边界，不是要求直接记录排除。",
+                )
+            ),
+        ) as classifier_mock,
+        patch(
+            "app.tools.intent_state_tool._enrich_plan_relation_analysis_from_state",
+            new=AsyncMock(
+                return_value={
+                    "summaryTitle": "先帮你判断一下师范边界",
+                    "currentPlanFit": ["先区分师范院校和师范专业。"],
+                    "currentPlanConflict": [],
+                    "candidateOpportunity": [],
+                    "nextActionHints": ["如需记录，再明确告诉我。"],
+                }
+            ),
+        ),
+    ):
+        mock_pm = mock_pm_cls.return_value
+        mock_pm.get_current_profile = AsyncMock(return_value=empty_profile)
+
+        payload_text = await analyze_volunteer_intent_change(
+            ctx,
+            major_intents={"negative_level2": ["教育学类"]},
+        )
+
+    payload = json.loads(payload_text)
+    assert payload["analysisStage"] == ANALYSIS_STAGE_INTEREST
+    assert payload["items"][0]["value"] == {"major_intents": {"negative_level2": ["教育学类"]}}
+    assert ctx.deps.agent_observability["intentSideEffectDecision"]["decision"] == "analysis_only"
+    classifier_mock.assert_awaited_once()
+    save_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_analyze_intent_change_semantic_arbitration_keeps_school_preference(empty_profile):
+    ctx = SimpleNamespace(
+        deps=SimpleNamespace(
+            userid="u1",
+            sessionid="759",
+            batch="01",
+            chat_history=[{"role": "user", "content": "华南理工这类学校能不能多看看"}],
+            enable_intent_side_effect_arbitration=True,
+            agent_observability={},
+        )
+    )
+
+    with (
+        patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
+        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()) as save_mock,
+        patch(
+            "app.tools.intent_state_tool._classify_intent_side_effect",
+            new=AsyncMock(
+                return_value=IntentSideEffectDecision(
+                    decision="intent_preview",
+                    confidence=0.88,
+                    reason="用户希望后续多看这类院校。",
+                )
+            ),
+        ) as classifier_mock,
+        patch(
+            "app.tools.intent_state_tool._enrich_plan_relation_analysis_from_state",
+            new=AsyncMock(
+                return_value={
+                    "summaryTitle": "先整理院校偏好",
+                    "currentPlanFit": [],
+                    "currentPlanConflict": [],
+                    "candidateOpportunity": [],
+                    "nextActionHints": [],
+                }
+            ),
+        ),
+    ):
+        mock_pm = mock_pm_cls.return_value
+        mock_pm.get_current_profile = AsyncMock(return_value=empty_profile)
+
+        payload_text = await analyze_volunteer_intent_change(
+            ctx,
+            school_intents={"colleges": ["华南理工大学"]},
+        )
+
+    payload = json.loads(payload_text)
+    assert payload["analysisStage"] == ANALYSIS_STAGE_CONFIRMED
+    assert payload["items"][0]["value"] == {"school_intents": {"colleges": ["华南理工大学"]}}
+    assert ctx.deps.agent_observability["intentSideEffectDecision"]["decision"] == "intent_preview"
+    classifier_mock.assert_awaited_once()
+    save_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_analyze_intent_change_semantic_arbitration_downgrades_impact_first_request(empty_profile):
+    ctx = SimpleNamespace(
+        deps=SimpleNamespace(
+            userid="u1",
+            sessionid="760",
+            batch="01",
+            chat_history=[{"role": "user", "content": "医学护理这些别碰，财会还能接受，先看看影响"}],
+            enable_intent_side_effect_arbitration=True,
+            agent_observability={},
+        )
+    )
+
+    with (
+        patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
+        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()) as save_mock,
+        patch(
+            "app.tools.intent_state_tool._classify_intent_side_effect",
+            new=AsyncMock(
+                return_value=IntentSideEffectDecision(
+                    decision="mixed_answer_then_ask",
+                    confidence=0.9,
+                    reason="用户要求先看影响，应先分析再询问是否记录。",
+                )
+            ),
+        ) as classifier_mock,
+        patch(
+            "app.tools.intent_state_tool._enrich_plan_relation_analysis_from_state",
+            new=AsyncMock(
+                return_value={
+                    "summaryTitle": "先看这个方向对方案的影响",
+                    "currentPlanFit": ["财会类可以作为可接受方向继续看承接。"],
+                    "currentPlanConflict": ["医学和护理需要检查当前方案是否已有相关条目。"],
+                    "candidateOpportunity": [],
+                    "nextActionHints": ["如果要记为后续参考，再明确确认。"],
+                }
+            ),
+        ),
+    ):
+        mock_pm = mock_pm_cls.return_value
+        mock_pm.get_current_profile = AsyncMock(return_value=empty_profile)
+
+        payload_text = await analyze_volunteer_intent_change(
+            ctx,
+            major_intents={
+                "level2": ["工商管理类", "财政学类", "金融学类"],
+                "negative_level1": ["医学"],
+                "negative_level2": ["护理学类"],
+            },
+        )
+
+    payload = json.loads(payload_text)
+    assert payload["analysisStage"] == ANALYSIS_STAGE_INTEREST
+    assert payload["items"]
+    assert ctx.deps.agent_observability["intentSideEffectDecision"]["decision"] == "mixed_answer_then_ask"
+    classifier_mock.assert_awaited_once()
+    save_mock.assert_not_awaited()
+
+
 def test_analyze_intent_change_interest_stage_existing_preference_returns_analysis_preview():
     existing_profile = UserProfile(city=CityIntent(province=["北京"]))
     ctx = SimpleNamespace(
@@ -838,7 +1055,7 @@ def test_analyze_intent_change_interest_stage_existing_preference_returns_analys
 
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
+        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()) as save_mock,
         patch(
             "app.tools.intent_state_tool._enrich_plan_relation_analysis_from_state",
             new=AsyncMock(
@@ -869,6 +1086,7 @@ def test_analyze_intent_change_interest_stage_existing_preference_returns_analys
 
     assert "北京" in resp
     assert "现在比较贴近的部分" in resp
+    save_mock.assert_not_awaited()
 
 
 def test_analyze_current_career_direction_wrapper_uses_career_scope():
@@ -988,6 +1206,119 @@ def test_preview_current_major_intent_confirmation_wrapper_passes_explicit_major
         confirm_enabled=True,
         intent_mode=None,
     )
+
+
+def test_preview_current_major_intent_confirmation_wrapper_keeps_structured_payload():
+    from app.agent.context import RequestContext
+
+    request_context = RequestContext(
+        userid="u1",
+        sessionid="s1",
+        chat_history=[{"role": "user", "content": "想学网络与新媒体"}],
+        batch="01",
+    )
+    ctx = SimpleNamespace(deps=request_context)
+    payload = json.dumps(
+        {
+            "status": "ready",
+            "sessionId": "s1",
+            "title": "好的，我先把这次你提到的想法整理一下。",
+            "items": [
+                {
+                    "content": "将网络与新媒体更新为偏好方向。",
+                    "value": {"major_intents": {"level3": ["网络与新媒体"]}},
+                    "selected": True,
+                }
+            ],
+            "impactText": "当前方案里暂未看到特别贴近的志愿。",
+        },
+        ensure_ascii=False,
+    )
+
+    with patch("app.tools.intent_preview_tool.analyze_volunteer_intent_change", new=AsyncMock(return_value=payload)):
+        resp = asyncio.run(preview_current_major_intent_confirmation(ctx))
+
+    data = json.loads(resp)
+    assert data["status"] == "ready"
+    assert data["reply_strategy"] == "preview_wait_confirm"
+    assert data["items"][0]["value"] == {"major_intents": {"level3": ["网络与新媒体"]}}
+    assert "待确认内容" in data["message"]
+
+
+def test_preview_current_major_intent_confirmation_wrapper_marks_interest_stage_for_model_synthesis():
+    from app.agent.context import RequestContext
+
+    request_context = RequestContext(
+        userid="u1",
+        sessionid="s1",
+        chat_history=[{"role": "user", "content": "医学护理这些别碰，财会还能接受，先看看影响"}],
+        batch="01",
+    )
+    ctx = SimpleNamespace(deps=request_context)
+    payload = json.dumps(
+        {
+            "status": "ready",
+            "sessionId": "s1",
+            "title": "先按这个方向看影响和边界。",
+            "analysisStage": ANALYSIS_STAGE_INTEREST,
+            "items": [
+                {
+                    "content": "排除医学",
+                    "value": {"major_intents": {"negative_level1": ["医学"]}},
+                    "selected": True,
+                },
+                {
+                    "content": "偏好会计学",
+                    "value": {"major_intents": {"level3": ["会计学"]}},
+                    "selected": True,
+                },
+            ],
+            "impactText": "医学方向会被避开，财会方向可继续看候选承接。",
+        },
+        ensure_ascii=False,
+    )
+
+    with patch("app.tools.intent_preview_tool.analyze_volunteer_intent_change", new=AsyncMock(return_value=payload)):
+        resp = asyncio.run(preview_current_major_intent_confirmation(ctx))
+
+    data = json.loads(resp)
+    assert data["analysisStage"] == ANALYSIS_STAGE_INTEREST
+    assert data["reply_strategy"] == "continue_model"
+    assert "医学方向会被避开" in data["message"]
+
+
+def test_interest_stage_major_analysis_renders_concrete_impact_boundaries():
+    from app.tools.intent_response_tool import render_intent_analysis_payload
+
+    payload = json.dumps(
+        {
+            "status": "ready",
+            "sessionId": "s1",
+            "title": "你提到的这个方向，我先结合你现在的情况做个初步分析。",
+            "analysisStage": ANALYSIS_STAGE_INTEREST,
+            "items": [
+                {
+                    "content": "偏好会计学",
+                    "value": {"major_intents": {"level3": ["会计学"]}},
+                    "selected": True,
+                },
+                {
+                    "content": "排除医学",
+                    "value": {"major_intents": {"negative_level1": ["医学"]}},
+                    "selected": True,
+                },
+            ],
+            "impactText": "我先帮你看看，这个要求和你现在的方案是否有冲突，以及还有没有合适的可选机会。",
+        },
+        ensure_ascii=False,
+    )
+
+    rendered = render_intent_analysis_payload(payload)
+
+    assert "避开 医学" in rendered
+    assert "会计学" in rendered
+    assert "确认前它只是分析口径" in rendered
+    assert "当前方案里已有相关志愿" in rendered
 
 
 @pytest.mark.asyncio
@@ -1155,7 +1486,7 @@ async def test_recover_major_intent_from_context_recovers_mixed_polarity_locally
     assert major_intents == {
         "negative_level1": ["医学"],
         "negative_level3": ["护理学"],
-        "level2": ["工商管理类"],
+        "level3": ["会计学", "财务管理", "审计学"],
     }
     assert school_intents is None
     assert city_intents is None
@@ -1163,6 +1494,61 @@ async def test_recover_major_intent_from_context_recovers_mixed_polarity_locally
     extract_polarity_mock.assert_not_awaited()
     extract_major_mock.assert_not_awaited()
     extract_negative_mock.assert_not_awaited()
+
+
+def test_local_major_recovery_keeps_positive_tendency_and_negative_constraint():
+    payload = _recover_polarity_major_intent_locally_from_latest_utterance(
+        "我倾向法学和财政学但护理不要",
+        "01",
+    )
+
+    assert payload == {
+        "level3": ["法学", "财政学"],
+        "negative_level3": ["护理学"],
+    }
+
+
+def test_refine_major_intents_dedupes_same_name_across_levels():
+    payload = _refine_major_intents_with_local_latest_utterance(
+        {"level3": ["法学", "财政学"], "negative_level3": ["护理学"]},
+        latest_utterance="我倾向法学和财政学但护理不要",
+        batch="01",
+        recovery_scope="major",
+    )
+
+    assert payload == {
+        "level3": ["法学", "财政学"],
+        "negative_level3": ["护理学"],
+    }
+
+
+def test_build_select_items_dedupes_same_major_name_across_levels():
+    profile = SimpleNamespace(
+        major=SimpleNamespace(
+            level1=[],
+            level2=[],
+            level3=[],
+            negative_level1=[],
+            negative_level2=[],
+            negative_level3=[],
+        ),
+        school=SimpleNamespace(colleges=[], negative_colleges=[]),
+        city=SimpleNamespace(province=[], city=[], negative_province=[], negative_city=[]),
+    )
+
+    items, existing_items = _build_select_items(
+        profile,
+        {"level1": ["法学"], "level3": ["法学", "财政学"], "negative_level3": ["护理学"]},
+        None,
+        None,
+    )
+
+    assert existing_items == []
+    assert [item["value"] for item in items] == [
+        {"major_intents": {"level3": ["法学"]}},
+        {"major_intents": {"level3": ["财政学"]}},
+        {"major_intents": {"negative_level3": ["护理学"]}},
+    ]
 
 
 def test_refine_major_intents_replaces_model_overexpanded_payload_with_local_latest_utterance():
@@ -1195,7 +1581,7 @@ def test_refine_major_intents_replaces_model_overexpanded_payload_with_local_lat
     assert refined == {
         "negative_level1": ["医学"],
         "negative_level3": ["护理学"],
-        "level2": ["工商管理类"],
+        "level3": ["会计学", "财务管理", "审计学"],
     }
 
 
@@ -1483,7 +1869,8 @@ async def test_update_volunteer_intent_state_confirm_returns_structured_result()
     assert result["action"] == "confirm"
     assert result["applied"] is True
     assert result["intentMode"] == INTENT_MODE_PREFERENCE
-    assert "记下来了" in result["message"]
+    assert "已确认" in result["message"]
+    assert "后续报考参考" in result["message"]
 
 
 @pytest.mark.asyncio
@@ -1699,7 +2086,7 @@ async def test_preview_direction_comparison_from_request_returns_compare_text():
             ["further_study", "stable_employment"],
         )
 
-    assert "方向对比分析" in resp
+    assert "方向判断" in resp
     assert "模型生成的双方向分析" in resp
 
 
@@ -1868,7 +2255,7 @@ async def test_analyze_intent_change_existing_constraint_still_returns_candidate
         )
 
     assert "安徽" in resp
-    assert "当前已记录排除省份" in resp
+    assert "当前已有参考排除省份" in resp
 
 
 @pytest.mark.asyncio
@@ -1897,7 +2284,8 @@ async def test_analyze_intent_change_existing_preference_returns_helpful_text(ex
             None,
         )
 
-    assert "已经记下" in resp
+    assert "当前已经在后续报考参考" in resp
+    assert "已经记下" not in resp
     assert "现在这份方案" in resp
     assert "专家优选组合" not in resp
     assert "暂时不用重复更新" not in resp
@@ -1938,15 +2326,15 @@ def test_render_intent_analysis_text_hides_internal_major_levels():
         analysis_stage=ANALYSIS_STAGE_CONFIRMED,
         intent_mode=INTENT_MODE_PREFERENCE,
         existing_items=[
-            {"content": "当前已记录偏好专业（level3）：会计学"},
-            {"content": "当前已记录排除专业（level2）：护理学类"},
+            {"content": "当前已有参考偏好专业（level3）：会计学"},
+            {"content": "当前已有参考排除专业（level2）：护理学类"},
         ],
     )
 
     assert "level2" not in text
     assert "level3" not in text
-    assert "当前已记录偏好具体专业：会计学" in text
-    assert "当前已记录排除专业类：护理学类" in text
+    assert "当前已有参考偏好具体专业：会计学" in text
+    assert "当前已有参考排除专业类：护理学类" in text
 
 
 def test_local_major_recovery_does_not_force_teacher_track_into_intent_preview():
@@ -1958,6 +2346,24 @@ def test_local_major_recovery_does_not_force_teacher_track_into_intent_preview()
     assert payload is None
 
 
+def test_major_relation_notes_from_latest_utterance_explains_named_child_under_negative_parent():
+    notes = _major_relation_notes_from_latest_utterance(
+        {"negative_level1": ["医学"], "negative_level3": ["护理学"]},
+        "医学护理都别碰，但中医到底算不算",
+        "01",
+    )
+
+    assert any("中医学属于医学门类" in note for note in notes)
+
+
+def test_intent_side_effect_decision_accepts_text_confidence():
+    decision = IntentSideEffectDecision.model_validate(
+        {"decision": "analysis_only", "confidence": "high", "reason": "边界分析"}
+    )
+
+    assert decision.confidence == 0.9
+
+
 def test_refine_major_intents_supplements_model_omitted_major_alias():
     refined = _refine_major_intents_with_local_latest_utterance(
         {"level3": ["会计学"], "negative_level3": ["土木工程"]},
@@ -1967,6 +2373,39 @@ def test_refine_major_intents_supplements_model_omitted_major_alias():
     )
 
     assert refined == {"level3": ["会计学", "审计学"], "negative_level3": ["土木工程"]}
+
+
+def test_refine_major_intents_keeps_concrete_major_when_parent_was_not_explicit():
+    refined = intent_state_tool_module._refine_major_intents_by_explicit_mentions(
+        {"negative_level2": ["土木类"], "negative_level3": ["土木工程"]},
+        latest_utterance="我倾向会计学和审计学，但土木工程不要",
+        batch="01",
+    )
+
+    assert refined == {"negative_level3": ["土木工程"]}
+
+
+def test_refine_major_intents_keeps_broad_parent_when_parent_was_explicit():
+    refined = intent_state_tool_module._refine_major_intents_by_explicit_mentions(
+        {"negative_level2": ["土木类"], "negative_level3": ["土木工程"]},
+        latest_utterance="土木建筑那种别碰",
+        batch="01",
+    )
+
+    assert refined == {"negative_level2": ["土木类"], "negative_level3": ["土木工程"]}
+
+
+def test_local_major_recovery_expands_broad_alias_for_user_facing_intent_analysis():
+    payload = _recover_polarity_major_intent_locally_from_latest_utterance(
+        "医学护理这些别碰，财会还能接受，先看看影响",
+        "01",
+    )
+
+    assert payload == {
+        "level3": ["会计学", "财务管理", "审计学"],
+        "negative_level1": ["医学"],
+        "negative_level3": ["护理学"],
+    }
 
 
 def test_render_intent_analysis_text_explains_tcm_boundary_under_medical_constraint():
@@ -1983,6 +2422,44 @@ def test_render_intent_analysis_text_explains_tcm_boundary_under_medical_constra
 
     assert "中医学类属于医学门类" in text
     assert "确认前不会写入偏好" in text
+
+
+def test_render_intent_interest_text_explains_teacher_track_boundary():
+    text = render_intent_analysis_text(
+        title="我先帮你判断一下这个范围。",
+        impact_text="",
+        analysis_stage=ANALYSIS_STAGE_INTEREST,
+        intent_mode=INTENT_MODE_CONSTRAINT,
+        items=[
+            {"content": "把教育学类记成明确不考虑的内容。", "value": {"major_intents": {"negative_level2": ["教育学类"]}}},
+        ],
+    )
+
+    assert "师范院校里的非师范专业不等于都要排除" in text
+    assert "这次识别到的参考范围" in text
+    assert "待确认内容" not in text
+
+
+def test_render_intent_interest_text_strips_nested_impact_heading():
+    text = render_intent_analysis_text(
+        title="你提到的这个要求，我先结合你现在的情况做个初步分析。",
+        impact_text=(
+            "**先帮你看一眼**\n"
+            "\n**初步判断**\n"
+            "- 我先帮你看看这个要求和你现在的方案是否有冲突。"
+        ),
+        analysis_stage=ANALYSIS_STAGE_INTEREST,
+        intent_mode=INTENT_MODE_CONSTRAINT,
+        items=[
+            {"content": "把医学记成明确不考虑的内容。", "value": {"major_intents": {"negative_level1": ["医学"]}}},
+            {"content": "把会计学更新为偏好方向。", "value": {"major_intents": {"level3": ["会计学"]}}},
+        ],
+    )
+
+    assert text.count("**初步判断**") == 1
+    assert "先帮你看一眼" not in text
+    assert "先按这个方向看影响和边界" in text
+    assert "待确认内容" not in text
 
 
 def test_render_intent_analysis_text_replaces_generic_impact_placeholder_for_confirmed_preview():
@@ -2040,9 +2517,30 @@ def test_intent_candidate_messages_do_not_use_left_right_layout_wording():
     assert "右侧" not in combined
     assert "左侧" not in combined
     assert "候选结果" in followup_text
-    assert "候选结果" in update_text
+    assert "后续报考参考" in update_text
     assert "还可以再看看的机会" in preview_text
     assert "下一步建议" in preview_text
+
+
+def test_render_intent_state_update_summarizes_confirmed_major_intents():
+    text = render_intent_state_update(
+        IntentStateUpdateResult(
+            action="apply",
+            sessionId="style-3",
+            messageCode="constraint_applied",
+            merged={
+                "major_intents": {
+                    "level1": ["法学"],
+                    "level3": ["法学", "财政学"],
+                    "negative_level3": ["护理学"],
+                }
+            },
+        )
+    )
+
+    assert "本次确认内容：偏好专业：法学、财政学；排除专业：护理学" in text
+    assert "偏好专业门类：法学" not in text
+    assert "不会直接改动当前方案顺序" in text
 
 
 def test_build_impact_preview_uses_interest_stage_summary_when_requested():
@@ -2886,6 +3384,71 @@ async def test_recover_intents_from_context_major_scope_falls_back_when_combined
 
 
 @pytest.mark.asyncio
+async def test_recover_intents_from_context_uses_recent_existing_only_payload_when_latest_turn_has_no_entities():
+    ctx = SimpleNamespace(
+        deps=SimpleNamespace(
+            userid="u1",
+            sessionid="s1",
+            chat_history=[
+                {"role": "user", "content": "先不确认，看看这个偏好会影响当前方案吗"},
+            ],
+            batch="01",
+            score_detail=None,
+            init_profile=None,
+            planning_summary=None,
+            recent_intent_analysis={
+                "status": "existing_only",
+                "sessionId": "s1",
+                "items": [],
+                "existingItems": [
+                    {
+                        "content": "当前已有参考偏好具体专业：会计学",
+                        "value": {"major_intents": {"level3": ["会计学"]}},
+                    },
+                    {
+                        "content": "当前已有参考排除具体专业：土木工程",
+                        "value": {"major_intents": {"negative_level3": ["土木工程"]}},
+                    },
+                ],
+            },
+        )
+    )
+
+    with (
+        patch("app.tools.intent_state_tool._recover_major_intent_from_recent_context", new=AsyncMock(return_value=None)),
+        patch("app.tools.intent_state_tool._recover_major_intent_locally_from_latest_utterance", new=AsyncMock(return_value=None)),
+        patch(
+            "app.tools.major_intent_tool.extract_major_intents_with_polarity",
+            new=AsyncMock(
+                return_value=json.dumps(
+                    {
+                        "positive": {"level1": [], "level2": [], "level3": []},
+                        "negative": {"level1": [], "level2": [], "level3": []},
+                    },
+                    ensure_ascii=False,
+                )
+            ),
+        ),
+        patch("app.tools.major_intent_tool.extract_major_intent", new=AsyncMock()) as major_mock,
+        patch("app.tools.major_intent_tool.extract_negative_major_intent", new=AsyncMock()) as negative_major_mock,
+        patch("app.tools.city_intent_tool.extract_city_intents_with_polarity", new=AsyncMock()) as city_polarity_mock,
+        patch("app.tools.school_intent_tool.extract_school_intent", new=AsyncMock()) as school_mock,
+        patch("app.tools.career_intent_tool.extract_career_intent", new=AsyncMock()) as career_mock,
+    ):
+        major, school, city, career = await _recover_intents_from_context(ctx, recovery_scope="major")
+
+    major_mock.assert_not_awaited()
+    negative_major_mock.assert_not_awaited()
+    city_polarity_mock.assert_not_awaited()
+    school_mock.assert_not_awaited()
+    career_mock.assert_not_awaited()
+    assert major == {"level3": ["会计学"], "negative_level3": ["土木工程"]}
+    assert school is None
+    assert city is None
+    assert career is None
+
+
+@pytest.mark.asyncio
 async def test_recover_intents_from_context_region_scope_only_uses_city_extractors():
     ctx = SimpleNamespace(
         deps=SimpleNamespace(
@@ -3057,7 +3620,8 @@ async def test_apply_preference_intents_returns_text_without_candidate_requery()
     latent_mock.assert_not_awaited()
     assert resp.applied is True
     assert resp.intentMode == INTENT_MODE_PREFERENCE
-    assert "记下来了" in resp.message
+    assert "已确认" in resp.message
+    assert "后续报考参考" in resp.message
     assert "现在这份方案" in resp.message
     assert "专家优选组合" not in resp.message
 
@@ -3093,7 +3657,8 @@ async def test_apply_preference_career_intent_updates_planning_latent_profile():
         future_development={"careerTypes": ["读研", "体制内/考公导向"]},
     )
     assert resp.applied is True
-    assert "记下来了" in resp.message
+    assert "已确认" in resp.message
+    assert "后续报考参考" in resp.message
 
 
 def test_career_relation_matching_uses_each_direction_slot_not_only_public_service():
@@ -3303,7 +3868,8 @@ async def test_confirm_intent_change_with_career_intent_updates_latent_profile()
         resp = await _confirm_update(ctx)
 
     assert resp["applied"] is True
-    assert "记下来了" in resp["message"]
+    assert "已确认" in resp["message"]
+    assert "后续报考参考" in resp["message"]
     query_mock.assert_not_awaited()
     state_mock.assert_awaited_once()
     latent_mock.assert_awaited_once_with(
@@ -3340,5 +3906,6 @@ async def test_handle_intent_select_preference_does_not_regenerate_candidate_poo
         resp = (await _apply_selected("7", "01", selected_data))["message"]
 
     assert isinstance(resp, str)
-    assert "记下来了" in resp
+    assert "已确认" in resp
+    assert "后续报考参考" in resp
     query_mock.assert_not_awaited()

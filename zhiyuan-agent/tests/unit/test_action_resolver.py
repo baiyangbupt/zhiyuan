@@ -56,7 +56,8 @@ def _frame(
     target_keys = {"volunteer_refs", "school_names", "major_names", "region_names",
                    "career_types", "review_issue_code", "position"}
     scope_keys = {"tier", "province", "school_tags", "major_tags",
-                  "school_keyword", "major_keyword", "limit", "is_review_issue_batch"}
+                  "school_keyword", "major_keyword", "limit", "is_review_issue_batch",
+                  "sort_field"}
 
     for key, value in kwargs.items():
         if key in target_keys:
@@ -124,6 +125,14 @@ class TestVerbToActionFamily:
         ctx = _ctx(ordered_count=30)
         result = resolver.resolve(frame, ctx)
         assert result.action_family == "query_state"
+
+    def test_reorder_with_sort_field_maps_to_sort_ordered_plan(self, resolver):
+        frame = _frame(verb="reorder", sort_field="schoolRank")
+        ctx = _ctx(ordered_count=30)
+        result = resolver.resolve(frame, ctx)
+        assert result.action_family == "sort_ordered_plan"
+        assert result.stage == "preview"
+        assert result.requires_confirmation is True
 
 
 # ---------------------------------------------------------------------------
@@ -529,12 +538,13 @@ class TestConfirmationFlag:
         assert result.requires_confirmation is False
 
     @pytest.mark.parametrize("family", [
-        "generate_plan", "regenerate_order", "apply_compensation", "replace_units",
+        "generate_plan", "sort_ordered_plan", "regenerate_order", "apply_compensation", "replace_units",
     ])
     def test_always_confirm(self, resolver, family):
         """高副作用动作总是需要确认。"""
         verb_map = {
             "generate_plan": "generate",
+            "sort_ordered_plan": "reorder",
             "regenerate_order": "reorder",
             "apply_compensation": "confirm",
             "replace_units": "replace",
@@ -543,6 +553,8 @@ class TestConfirmationFlag:
         if family == "replace_units":
             extra["volunteer_refs"] = ["v1"]
             extra["tier"] = "稳"
+        if family == "sort_ordered_plan":
+            extra["sort_field"] = "schoolRank"
         if family == "apply_compensation":
             extra["is_confirmation_of_previous"] = True
         frame = _frame(verb=verb_map[family], **extra)
@@ -661,12 +673,19 @@ class TestTypedActionConstruction:
         assert result.action.review_issue.code == "high_tuition"
 
     def test_replace_units_action(self, resolver):
-        frame = _frame(verb="replace", volunteer_refs=["v1"], tier="稳", province="北京")
+        frame = _frame(
+            verb="replace",
+            volunteer_refs=["v1"],
+            major_names=["会计学"],
+            tier="稳",
+            province="北京",
+        )
         ctx = _ctx(ordered_count=30)
         result = resolver.resolve(frame, ctx)
         from app.models.typed_actions import ReplaceUnitsAction
         assert isinstance(result.action, ReplaceUnitsAction)
         assert result.action.remove_ids == ["v1"]
+        assert result.action.source_major_names == ["会计学"]
         assert result.action.replacement_filters.tier == "稳"
         assert result.action.replacement_filters.province == "北京"
 
@@ -677,6 +696,14 @@ class TestTypedActionConstruction:
         from app.models.typed_actions import RegenerateOrderAction
         assert isinstance(result.action, RegenerateOrderAction)
         assert result.action.structural_rebalance is True
+
+    def test_sort_ordered_plan_action(self, resolver):
+        frame = _frame(verb="reorder", sort_field="schoolRank")
+        ctx = _ctx(ordered_count=30)
+        result = resolver.resolve(frame, ctx)
+        from app.models.typed_actions import SortOrderedPlanAction
+        assert isinstance(result.action, SortOrderedPlanAction)
+        assert result.action.sort_field == "schoolRank"
 
     def test_generate_plan_action(self, resolver):
         frame = _frame(verb="generate")
@@ -775,6 +802,14 @@ class TestEndToEndScenarios:
         ctx = _ctx(ordered_count=50)
         result = resolver.resolve(frame, ctx)
         assert result.action_family == "regenerate_order"
+        assert result.requires_confirmation is True
+
+    def test_scenario_sort_by_school_rank(self, resolver):
+        """"按院校层次排序" → sort_ordered_plan。"""
+        frame = _frame(verb="reorder", sort_field="schoolRank", raw_utterance="按院校层次排序")
+        ctx = _ctx(ordered_count=50)
+        result = resolver.resolve(frame, ctx)
+        assert result.action_family == "sort_ordered_plan"
         assert result.requires_confirmation is True
 
     def test_scenario_no_plan_blocks_review(self, resolver):

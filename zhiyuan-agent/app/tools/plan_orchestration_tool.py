@@ -1,15 +1,14 @@
 from __future__ import annotations
 
 import json
-import re
 from typing import Any, Literal
 
 from pydantic_ai import RunContext
 
 from app.agent.context import RequestContext
+from app.domain.school_major_ref_resolver import resolve_school_major_ref
 from app.tools.plan_context_tool import _collect_plan_context_inputs_model
 from app.tools.plan_orchestration_models import PlanActionPlan, PlanAtomicAction, PlanReviewIssueTarget
-from app.tools.review_issue_registry import match_review_issue_code_from_goal
 
 
 _PLAN_DEPENDENT_ACTIONS = {
@@ -33,20 +32,12 @@ _MUTATING_ACTION_FAMILIES = {
     "remove_units",
     "move_unit",
     "move_ordered_unit",
-    "pin_unit",
-    "unpin_unit",
     "replace_units",
     "remove_ordered_unit",
     "sort_ordered_plan",
     "regenerate_order",
     "apply_compensation",
 }
-
-_UNIT_POSITION_REF_RE = re.compile(r"第\s*\d+\s*(?:个)?(?:专业组|志愿组|组)")
-
-
-# --- Deprecated: 以下关键词匹配函数将在 IntentFrame 完整接入后移除 (see ActionResolver) ---
-
 
 def _has_selection_scope(filters: dict[str, str]) -> bool:
     for key, value in filters.items():
@@ -77,14 +68,6 @@ def _infer_intent_relation(summary: str) -> Literal["support", "conflict", "mixe
     return "unknown"
 
 
-def _is_plan_filled_to_target(context_inputs: object) -> bool:
-    ordered_count = int(getattr(context_inputs, "ordered_count", 0) or 0)
-    target_count = int(getattr(context_inputs, "target_count", 0) or 0)
-    if ordered_count <= 0 or target_count <= 0:
-        return False
-    return ordered_count >= target_count
-
-
 def _context_review_issues(context_inputs: object) -> list[dict[str, Any]]:
     issues = getattr(context_inputs, "review_issues", []) or []
     return issues if isinstance(issues, list) else []
@@ -100,161 +83,43 @@ def _find_review_issue_by_code(review_issues: list[dict[str, Any]], code: str | 
     return None
 
 
-def _contains_narrowing_scope(text: str) -> bool:
-    compact = str(text or "").strip()
-    return any(token in compact for token in ("大学", "学院", "学校", "专业组", "校区", "@", "第"))
-
-
-def _goal_requests_replacement(text: str) -> bool:
-    compact = str(text or "").strip()
-    return any(token in compact for token in ("换成", "替换成", "补回", "补上", "补入", "保持", "补齐", "凑满"))
-
-
-def _goal_explicitly_requests_reorder(text: str) -> bool:
-    compact = str(text or "").strip()
-    return any(
-        token in compact
-        for token in (
-            "重排",
-            "重新排",
-            "重新排序",
-            "排一排",
-            "排一下",
-            "顺一下",
-            "弄顺",
-            "理一下顺序",
-        )
-    )
-
-
-def _goal_mentions_major_group_unit(text: str) -> bool:
-    compact = str(text or "").strip()
-    return any(token in compact for token in ("专业组", "这一组", "整组", "院校专业组"))
-
-
-def _goal_requests_adjustment_analysis(text: str) -> bool:
-    compact = str(text or "").strip()
-    return any(
-        token in compact
-        for token in (
-            "怎么调",
-            "怎么优化",
-            "更合理",
-            "更稳",
-            "稳一点",
-            "更保守",
-            "保守一点",
-            "风险低一点",
-            "降风险",
-            "按这个思路",
-            "按更稳的思路",
-            "弄一版",
-            "优化一下",
-        )
-    )
-
-
-def _goal_requests_stability_fill_preview(text: str) -> bool:
-    compact = str(text or "").strip()
-    return any(
-        token in compact
-        for token in (
-            "更稳",
-            "稳一点",
-            "保底",
-            "更保守",
-            "风险低一点",
-            "补稳",
-            "可确认预览",
-            "先给我一版",
-        )
-    )
-
-
-def _goal_requests_structural_rebalance(text: str) -> bool:
-    compact = str(text or "").strip()
-    return (
-        ("别动总数" in compact or "总数不变" in compact or "保持总数" in compact)
-        and (
-            "保区" in compact
-            or "压冲区" in compact
-            or "本地保底" in compact
-            or "本省保底" in compact
-        )
-    )
-
-
-def _goal_explicitly_requests_regeneration(text: str) -> bool:
-    compact = str(text or "").strip()
-    return any(
-        token in compact
-        for token in (
-            "重新生成",
-            "重生成",
-            "重新出一版",
-            "重新给我一版",
-            "覆盖当前方案",
-            "覆盖掉当前方案",
-        )
-    )
-
-
 def _normalize_adjustment_action_family(
     action_family: str,
     user_goal: str,
     context_inputs: object,
 ) -> str:
-    normalized_action_family = str(action_family or "").strip()
-    if (
-        normalized_action_family == "generate_plan"
-        and _has_existing_plan(context_inputs)
-        and not _goal_explicitly_requests_regeneration(user_goal)
-        and _goal_requests_adjustment_analysis(user_goal)
-    ):
-        return "analyze_adjustment"
-    if (
-        normalized_action_family == "preview_compensation"
-        and not _is_plan_filled_to_target(context_inputs)
-        and _goal_requests_stability_fill_preview(user_goal)
-    ):
-        return "add_units"
-    if normalized_action_family == "regenerate_order" and _goal_requests_structural_rebalance(user_goal):
-        return "replace_units"
-    if normalized_action_family == "preview_compensation" and _is_plan_filled_to_target(context_inputs):
-        return "analyze_adjustment"
-    if (
-        normalized_action_family == "regenerate_order"
-        and not _goal_explicitly_requests_reorder(user_goal)
-        and _goal_requests_adjustment_analysis(user_goal)
-    ):
-        return "analyze_adjustment"
-    return normalized_action_family
+    """Compatibility shim kept for older imports.
+
+    Runtime action-family decisions must come from explicit tool arguments or
+    typed intent fields. Do not infer or rewrite actions from user_goal text.
+    """
+    return str(action_family or "").strip()
 
 
 def _build_missing_inputs(
     action_family: str,
     volunteer_ids: list[str] | None,
     unit_ids: list[str] | None,
+    source_position: int | None,
     target_position: int | None,
     filters: dict[str, str],
     review_issue_target: PlanReviewIssueTarget | None = None,
     user_goal: str = "",
 ) -> list[str]:
     missing: list[str] = []
-    has_unit_position_ref = bool(_UNIT_POSITION_REF_RE.search(str(user_goal or "")))
     if action_family == "remove_units" and not volunteer_ids and review_issue_target is None:
         missing.append("volunteer_ids")
     if action_family == "move_unit":
-        if not volunteer_ids:
+        if not volunteer_ids and source_position is None:
             missing.append("volunteer_id")
         if target_position is None:
             missing.append("target_position")
     if action_family == "move_ordered_unit":
-        if not unit_ids and not has_unit_position_ref:
+        if not unit_ids and source_position is None:
             missing.append("unit_ids")
         if target_position is None:
             missing.append("target_position")
-    if action_family == "remove_ordered_unit" and not unit_ids and not has_unit_position_ref:
+    if action_family == "remove_ordered_unit" and not unit_ids and source_position is None:
         missing.append("unit_ids")
     if action_family == "add_units" and not volunteer_ids and not _has_selection_scope(filters):
         missing.append("selection_scope")
@@ -285,49 +150,13 @@ def _infer_replace_filters_from_profile(ctx: RunContext[RequestContext], filters
     return inferred
 
 
-def _infer_add_filters_for_stability(
-    ctx: RunContext[RequestContext],
-    context_inputs: object,
-    filters: dict[str, str],
-) -> dict[str, str]:
-    inferred = dict(filters)
-    if not str(inferred.get("tier") or "").strip():
-        inferred["tier"] = "保"
-    if not str(inferred.get("province_keyword") or "").strip():
-        preferred_regions = list(getattr(context_inputs, "positive_regions", []) or [])
-        for candidate in ("北京", "天津", "河北"):
-            if candidate in preferred_regions:
-                inferred["province_keyword"] = candidate
-                break
-
-    profile = getattr(ctx.deps, "init_profile", None)
-    if profile is not None:
-        major_level2 = [value for value in getattr(profile.major, "level2", []) if str(value or "").strip()]
-        if major_level2 and str(inferred.get("major_tags") or "").strip() in {"", "[]"}:
-            inferred["major_tags"] = json.dumps(major_level2, ensure_ascii=False)
-    return inferred
-
-
-def _infer_replace_filters_for_structural_rebalance(
-    ctx: RunContext[RequestContext],
-    context_inputs: object,
-    filters: dict[str, str],
-) -> dict[str, str]:
-    inferred = dict(filters)
-    if not str(inferred.get("province_keyword") or "").strip():
-        preferred_regions = list(getattr(context_inputs, "positive_regions", []) or [])
-        for candidate in ("北京", "天津", "河北"):
-            if candidate in preferred_regions:
-                inferred["province_keyword"] = candidate
-                break
-    if not str(inferred.get("tier") or "").strip():
-        inferred["tier"] = "保"
-    profile = getattr(ctx.deps, "init_profile", None)
-    if profile is not None:
-        major_level2 = [value for value in getattr(profile.major, "level2", []) if str(value or "").strip()]
-        if major_level2 and str(inferred.get("major_tags") or "").strip() in {"", "[]"}:
-            inferred["major_tags"] = json.dumps(major_level2, ensure_ascii=False)
-    return inferred
+def _infer_school_major_refs_from_goal(ctx: RunContext[RequestContext], user_goal: str) -> list[str]:
+    resolution = resolve_school_major_ref(user_goal, getattr(ctx.deps, "batch", None) or "01")
+    if not resolution.can_query or resolution.ambiguous:
+        return []
+    school = resolution.school_keywords[0]
+    major = resolution.major_keywords[0]
+    return [f"{school}的{major}"] if school and major else []
 
 
 def _determine_stage(
@@ -370,8 +199,6 @@ async def _plan_next_action_model(
         "remove_units",
         "move_unit",
         "move_ordered_unit",
-        "pin_unit",
-        "unpin_unit",
         "replace_units",
         "remove_ordered_unit",
         "sort_ordered_plan",
@@ -382,13 +209,19 @@ async def _plan_next_action_model(
     current_stage: str | None = None,
     volunteer_ids: list[str] | None = None,
     unit_ids: list[str] | None = None,
+    source_major_names: list[str] | None = None,
+    source_position: int | None = None,
     target_position: int | None = None,
+    sort_field: Literal["admissionRatio", "schoolRank", "finalScore"] | None = None,
+    review_issue_code: str | None = None,
+    review_issue_scope_mode: Literal["full_issue", "narrowed_issue", "explicit_items"] | None = None,
     tier: str | None = None,
     province_keyword: str | None = None,
     school_keyword: str | None = None,
     major_keyword: str | None = None,
     school_tags: list[str] | None = None,
     major_tags: list[str] | None = None,
+    preserve_count: bool = False,
     limit: int = 5,
     user_confirmed: bool = False,
 ) -> PlanActionPlan:
@@ -408,22 +241,23 @@ async def _plan_next_action_model(
         "major_tags": json.dumps(major_tags or [], ensure_ascii=False),
         "limit": str(limit),
     }
+    if preserve_count:
+        base_filters["preserve_count"] = "true"
+    if action_family == "sort_ordered_plan":
+        base_filters["sort_field"] = sort_field or "admissionRatio"
     filters = dict(base_filters)
     review_issue_target: PlanReviewIssueTarget | None = None
-    if _goal_mentions_major_group_unit(user_goal):
-        if action_family == "move_unit":
-            action_family = "move_ordered_unit"  # type: ignore[assignment]
-        elif action_family == "remove_units":
-            action_family = "remove_ordered_unit"  # type: ignore[assignment]
-    matched_review_issue = _find_review_issue_by_code(
-        review_issues,
-        match_review_issue_code_from_goal(user_goal, review_issues),
-    )
+    matched_review_issue = _find_review_issue_by_code(review_issues, review_issue_code)
     if matched_review_issue:
-        scope_mode: Literal["full_issue", "narrowed_issue", "explicit_items"] = "full_issue"
-        if volunteer_ids:
+        scope_mode: Literal["full_issue", "narrowed_issue", "explicit_items"] = review_issue_scope_mode or "full_issue"
+        if review_issue_scope_mode is None and volunteer_ids:
             scope_mode = "explicit_items"
-        elif _contains_narrowing_scope(user_goal) or target_position is not None:
+        elif review_issue_scope_mode is None and (
+            unit_ids
+            or source_position is not None
+            or target_position is not None
+            or _has_selection_scope(base_filters)
+        ):
             scope_mode = "narrowed_issue"
         review_issue_target = PlanReviewIssueTarget(
             code=str(matched_review_issue.get("code") or "").strip(),
@@ -437,28 +271,27 @@ async def _plan_next_action_model(
         )
         scope_kind = str(matched_review_issue.get("scope_kind") or "").strip()
         default_action_family = str(matched_review_issue.get("default_action_family") or "").strip()
-        replacement_requested = _goal_requests_replacement(user_goal) or _has_selection_scope(base_filters)
+        replacement_requested = _has_selection_scope(base_filters)
         if scope_kind == "item_removal":
             if action_family == "replace_units" and not replacement_requested:
                 action_family = "remove_units"
             elif action_family not in {"remove_units", "replace_units"} and default_action_family:
                 action_family = default_action_family  # type: ignore[assignment]
         elif scope_kind == "structural":
-            if action_family in {"add_units", "remove_units", "move_unit", "pin_unit", "unpin_unit", "replace_units"} and default_action_family:
+            if action_family in {"add_units", "remove_units", "move_unit", "replace_units"} and default_action_family:
                 action_family = default_action_family  # type: ignore[assignment]
         elif scope_kind == "informational" and action_family in {"remove_units", "replace_units"}:
             action_family = "review_plan"
     action_family = _normalize_adjustment_action_family(action_family, user_goal, context_inputs)
     if action_family == "replace_units" and (volunteer_ids or review_issue_target is not None):
         filters = _infer_replace_filters_from_profile(ctx, filters)
-    elif action_family == "replace_units" and _goal_requests_structural_rebalance(user_goal):
-        filters = _infer_replace_filters_for_structural_rebalance(ctx, context_inputs, filters)
-    elif action_family == "add_units" and _goal_requests_stability_fill_preview(user_goal):
-        filters = _infer_add_filters_for_stability(ctx, context_inputs, filters)
+    if action_family == "add_units" and not volunteer_ids and not _has_selection_scope(filters):
+        volunteer_ids = _infer_school_major_refs_from_goal(ctx, user_goal)
     missing_inputs = _build_missing_inputs(
         action_family,
         volunteer_ids,
         unit_ids,
+        source_position,
         target_position,
         filters,
         review_issue_target=review_issue_target,
@@ -491,8 +324,6 @@ async def _plan_next_action_model(
         "remove_units",
         "move_unit",
         "move_ordered_unit",
-        "pin_unit",
-        "unpin_unit",
         "replace_units",
         "remove_ordered_unit",
         "sort_ordered_plan",
@@ -507,8 +338,6 @@ async def _plan_next_action_model(
         "remove_units",
         "move_unit",
         "move_ordered_unit",
-        "pin_unit",
-        "unpin_unit",
         "replace_units",
         "remove_ordered_unit",
         "sort_ordered_plan",
@@ -518,6 +347,8 @@ async def _plan_next_action_model(
                 action_type=action_family,
                 volunteer_ids=volunteer_ids or [],
                 unit_ids=unit_ids or [],
+                source_major_names=source_major_names or [],
+                source_position=source_position,
                 target_position=target_position,
                 filters={k: v for k, v in filters.items() if v},
                 reason=user_goal,
@@ -531,12 +362,11 @@ async def _plan_next_action_model(
         elif action_family == "regenerate_order":
             preview_summary = "会基于当前方案重新生成整体顺序，并在执行后自动复审。"
         elif action_family == "sort_ordered_plan":
-            field_label = "录取率"
-            goal_text = user_goal or ""
-            if "院校层次" in goal_text or "学校层次" in goal_text or "院校排名" in goal_text:
-                field_label = "院校层次"
-            elif "推荐系数" in goal_text:
-                field_label = "推荐系数"
+            field_label = {
+                "admissionRatio": "录取率",
+                "schoolRank": "院校层次",
+                "finalScore": "推荐系数",
+            }.get(str(sort_field or "admissionRatio"), "录取率")
             preview_summary = f"会按{field_label}重新排序当前方案，排序会实际改变方案顺序和导出顺序，并让审查状态进入待重新审查。"
         elif action_family == "add_units":
             preview_summary = "会补入指定志愿或按条件补入候选，并同步刷新当前方案和审查结果。"
@@ -553,10 +383,6 @@ async def _plan_next_action_model(
             preview_summary = "会整体移动指定专业组，组内专业顺序保持不变，并在执行后重新审查整体结构。"
         elif action_family == "remove_ordered_unit":
             preview_summary = "会从当前方案中删除指定专业组，组内专业会随专业组一并移出，并在执行后重新审查整体结构。"
-        elif action_family == "pin_unit":
-            preview_summary = "新版工作台暂不提供固定/锁定志愿入口；如果要稳定位置，建议改用移动到指定位置或方案排序。"
-        elif action_family == "unpin_unit":
-            preview_summary = "新版工作台暂不提供固定/锁定志愿入口；当前无需取消固定。"
         elif action_family == "replace_units":
             if review_issue_target and review_issue_target.scope_mode == "full_issue" and review_issue_target.label:
                 preview_summary = f"会先移出当前审查命中的整批{review_issue_target.label}项，再按新的筛选条件补入候选，并在执行后重新审查整体结构。"
@@ -621,8 +447,6 @@ async def plan_next_action(
         "remove_units",
         "move_unit",
         "move_ordered_unit",
-        "pin_unit",
-        "unpin_unit",
         "replace_units",
         "remove_ordered_unit",
         "sort_ordered_plan",
@@ -633,13 +457,19 @@ async def plan_next_action(
     current_stage: str | None = None,
     volunteer_ids: list[str] | None = None,
     unit_ids: list[str] | None = None,
+    source_major_names: list[str] | None = None,
+    source_position: int | None = None,
     target_position: int | None = None,
+    sort_field: Literal["admissionRatio", "schoolRank", "finalScore"] | None = None,
+    review_issue_code: str | None = None,
+    review_issue_scope_mode: Literal["full_issue", "narrowed_issue", "explicit_items"] | None = None,
     tier: str | None = None,
     province_keyword: str | None = None,
     school_keyword: str | None = None,
     major_keyword: str | None = None,
     school_tags: list[str] | None = None,
     major_tags: list[str] | None = None,
+    preserve_count: bool = False,
     limit: int = 5,
     user_confirmed: bool = False,
 ) -> str:
@@ -649,6 +479,21 @@ async def plan_next_action(
     `volunteer_ids` 可以直接填写用户原始引用（如“青岛电影学院的新闻学”、
     “湖北工程学院.计算机科学与技术”、“广西师大统计”），后续执行层会解析真实 ID；
     若无法唯一定位，执行层会返回澄清，不应为了定位而先调用 query_volunteer_plan。
+
+    对位置移动必须显式填写结构化参数：
+    - 单条志愿移动：`action_family="move_unit"`，`volunteer_ids=["用户提到的学校+专业"]`，
+    `target_position=N`。
+    - 专业组整体移动：`action_family="move_ordered_unit"`，优先填写真实 `unit_ids`；
+      如果用户只说“第N个专业组”，需要显式填写 `source_position=N` 和
+      `target_position=M`，执行层会按当前专业组顺序解析。
+    对单条志愿移动不要只把目标和位置写在 `user_goal` 里；缺少 `volunteer_ids`
+    或 `target_position` 时，本工具会要求补充信息。按字段排序时必须显式填写
+    `sort_field`：录取率=`admissionRatio`，院校层次=`schoolRank`，推荐系数=`finalScore`。
+    替换操作如果要求“替换后数量不能减少/保持总数”，必须显式填写
+    `preserve_count=True`，执行层才会先做候选容量预检。
+    替换操作如果用户要按源专业整体替换（例如把当前方案里所有会计、审计
+    方向都替换掉），必须显式填写 `source_major_names=["会计学", "审计学"]`；
+    不要只把源范围写进 `user_goal`。
     """
     model = await _plan_next_action_model(
         ctx,
@@ -657,13 +502,19 @@ async def plan_next_action(
         current_stage=current_stage,
         volunteer_ids=volunteer_ids,
         unit_ids=unit_ids,
+        source_major_names=source_major_names,
+        source_position=source_position,
         target_position=target_position,
+        sort_field=sort_field,
+        review_issue_code=review_issue_code,
+        review_issue_scope_mode=review_issue_scope_mode,
         tier=tier,
         province_keyword=province_keyword,
         school_keyword=school_keyword,
         major_keyword=major_keyword,
         school_tags=school_tags,
         major_tags=major_tags,
+        preserve_count=preserve_count,
         limit=limit,
         user_confirmed=user_confirmed,
     )

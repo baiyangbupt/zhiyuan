@@ -41,6 +41,17 @@ def _build_compensation_summary(facts: dict[str, Any]) -> tuple[str, list[str], 
     action_count = int(facts.get("action_count") or 0)
     estimated_count = int(facts.get("estimated_fill_count") or facts.get("estimated_volunteer_count") or 0)
     action_text = _compact_list_text(facts.get("action_summaries"))
+    if action_count <= 0 or estimated_count <= 0:
+        summary = (
+            "这轮没有拿到可直接执行的调稳补齐预览。"
+            "当前不会改动方案；如果目标是降低风险，建议改用替换高风险志愿、按录取率重排，"
+            "或先放宽地域、专业、院校等筛选条件后再看新的补齐机会。"
+        )
+        return (
+            summary,
+            ["compensation_preview", "empty_compensation_preview"],
+            ["先说明没有可执行补齐动作，不要引导用户确认空动作；再建议替换、重排或放宽筛选。"],
+        )
     parts = [f"当前可先看的补齐建议共有 {action_count} 项动作，预计补入 {estimated_count} 个志愿"]
     if action_text:
         parts.append(f"主要补偿方向是 {action_text}")

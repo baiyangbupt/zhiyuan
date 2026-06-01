@@ -1,228 +1,153 @@
-"""回归基线：plan_orchestration_tool 中 8 个 _goal_requests_* 关键词匹配函数的 truth table。"""
+"""回归基线：Plan 路由不再依赖关键词 matcher。
+
+该文件保留原文件名，避免测试清单漂移；内容改为验证结构化字段契约。
+"""
 
 from __future__ import annotations
 
 import pytest
 
-from app.tools.plan_orchestration_tool import (
-    _goal_explicitly_requests_regeneration,
-    _goal_explicitly_requests_reorder,
-    _goal_requests_adjustment_analysis,
-    _goal_requests_replacement,
-    _goal_requests_stability_fill_preview,
-    _goal_requests_structural_rebalance,
+from app.models.intent_frame import IntentFrame, ScopeSpec, TargetSpec
+from app.resolver.action_resolver import ActionResolver
+from app.tools.review_issue_registry import (
+    review_issue_default_action_family,
+    review_issue_label,
+    review_issue_scope_kind,
+    review_issue_supported_action_families,
 )
-from app.tools.review_issue_registry import match_review_issue_code_from_goal
-from tests.factories import make_review_issue
+from tests.factories import make_plan_context_inputs
 
 
-# ---------------------------------------------------------------------------
-# _goal_requests_replacement
-# ---------------------------------------------------------------------------
-
-class TestGoalRequestsReplacement:
-    @pytest.mark.parametrize("text,expected", [
-        ("把高收费的换成正常的", True),
-        ("替换成非中外合作的", True),
-        ("补回几个稳的", True),
-        ("补上两个保底的", True),
-        ("补入候选", True),
-        ("保持总数不变", True),
-        ("补齐到96个", True),
-        ("凑满方案", True),
-        # 不匹配
-        ("看看方案怎么样", False),
-        ("帮我审查一下", False),
-        ("重新排一下", False),
-        ("更稳一点", False),
-        ("删掉这几个", False),
-        ("", False),
-    ])
-    @pytest.mark.parametrize("volunteer_model", ["major", "majorGroup"])
-    def test_truth_table(self, text: str, expected: bool, volunteer_model: str):
-        assert _goal_requests_replacement(text) is expected
+resolver = ActionResolver()
+HAS_PLAN = make_plan_context_inputs(draft_count=30, ordered_count=30, target_count=30)
 
 
-# ---------------------------------------------------------------------------
-# _goal_explicitly_requests_reorder
-# ---------------------------------------------------------------------------
-
-class TestGoalExplicitlyRequestsReorder:
-    @pytest.mark.parametrize("text,expected", [
-        ("帮我重排一下", True),
-        ("重新排序", True),
-        ("重新排一下", True),
-        ("排一排", True),
-        ("排一下", True),
-        ("帮我顺一下", True),
-        ("弄顺了", True),
-        ("理一下顺序", True),
-        # 不匹配
-        ("更稳一点", False),
-        ("怎么优化", False),
-        ("审查一下", False),
-        ("看看方案", False),
-        ("按这个思路来", False),
-        ("", False),
-    ])
-    @pytest.mark.parametrize("volunteer_model", ["major", "majorGroup"])
-    def test_truth_table(self, text: str, expected: bool, volunteer_model: str):
-        assert _goal_explicitly_requests_reorder(text) is expected
-
-
-# ---------------------------------------------------------------------------
-# _goal_requests_adjustment_analysis
-# ---------------------------------------------------------------------------
-
-class TestGoalRequestsAdjustmentAnalysis:
-    @pytest.mark.parametrize("text,expected", [
-        ("怎么调方案", True),
-        ("怎么优化当前方案", True),
-        ("更合理一些", True),
-        ("更稳一点", True),
-        ("稳一点", True),
-        ("更保守一些", True),
-        ("保守一点", True),
-        ("风险低一点", True),
-        ("降风险", True),
-        ("按这个思路调", True),
-        ("按更稳的思路来", True),
-        ("弄一版更好的", True),
-        ("优化一下方案", True),
-        # 不匹配
-        ("重新排一下", False),
-        ("帮我审查", False),
-        ("看看方案有什么建议", False),
-        ("删掉高收费的", False),
-        ("", False),
-    ])
-    @pytest.mark.parametrize("volunteer_model", ["major", "majorGroup"])
-    def test_truth_table(self, text: str, expected: bool, volunteer_model: str):
-        assert _goal_requests_adjustment_analysis(text) is expected
+def _frame(verb: str, **kwargs) -> IntentFrame:
+    target_fields = {}
+    scope_fields = {}
+    for key in (
+        "volunteer_refs",
+        "unit_refs",
+        "school_names",
+        "major_names",
+        "region_names",
+        "review_issue_code",
+        "source_position",
+        "position",
+    ):
+        if key in kwargs:
+            target_fields[key] = kwargs.pop(key)
+    for key in (
+        "tier",
+        "province",
+        "school_tags",
+        "major_tags",
+        "school_keyword",
+        "major_keyword",
+        "limit",
+        "sort_field",
+        "preserve_count",
+    ):
+        if key in kwargs:
+            scope_fields[key] = kwargs.pop(key)
+    return IntentFrame(
+        task_layer="plan",
+        topic=kwargs.pop("topic", "general"),
+        verb=verb,
+        raw_utterance=kwargs.pop("raw_utterance", ""),
+        target=TargetSpec(**target_fields),
+        scope=ScopeSpec(**scope_fields),
+    )
 
 
-# ---------------------------------------------------------------------------
-# _goal_requests_stability_fill_preview
-# ---------------------------------------------------------------------------
-
-class TestGoalRequestsStabilityFillPreview:
-    @pytest.mark.parametrize("text,expected", [
-        ("补几个更稳的", True),
-        ("稳一点的志愿", True),
-        ("加几个保底", True),
-        ("更保守一些", True),
-        ("风险低一点的志愿", True),
-        ("补稳几个", True),
-        ("可确认预览", True),
-        ("先给我一版", True),
-        # 不匹配
-        ("重新排一下", False),
-        ("帮我审查", False),
-        ("删掉这几个", False),
-        ("补几个计算机的", False),
-        ("", False),
-    ])
-    @pytest.mark.parametrize("volunteer_model", ["major", "majorGroup"])
-    def test_truth_table(self, text: str, expected: bool, volunteer_model: str):
-        assert _goal_requests_stability_fill_preview(text) is expected
+@pytest.mark.parametrize(
+    "verb,scope_kwargs,expected_family",
+    [
+        ("analyze", {}, "analyze_adjustment"),
+        ("add", {"tier": "稳"}, "add_units"),
+        ("replace", {"tier": "保", "preserve_count": True}, "replace_units"),
+        ("reorder", {}, "regenerate_order"),
+        ("reorder", {"sort_field": "schoolRank"}, "sort_ordered_plan"),
+        ("review", {}, "review_plan"),
+    ],
+)
+@pytest.mark.parametrize("volunteer_model", ["major", "majorGroup"])
+def test_action_decision_comes_from_structured_verb_and_scope(
+    verb: str,
+    scope_kwargs: dict,
+    expected_family: str,
+    volunteer_model: str,
+):
+    result = resolver.resolve(_frame(verb, **scope_kwargs), HAS_PLAN)
+    assert result.action_family == expected_family
 
 
-# ---------------------------------------------------------------------------
-# _goal_requests_structural_rebalance
-# ---------------------------------------------------------------------------
-
-class TestGoalRequestsStructuralRebalance:
-    @pytest.mark.parametrize("text,expected", [
-        ("别动总数压冲区保区", True),  # 别动总数 + 保区
-        ("总数不变压冲区", True),       # 总数不变 + 压冲区
-        ("保持总数本地保底", True),     # 保持总数 + 本地保底
-        ("保持总数本省保底", True),     # 保持总数 + 本省保底
-        # 只有一半条件不匹配
-        ("别动总数", False),
-        ("保区", False),
-        ("压冲区", False),
-        ("本地保底", False),
-        # 完全不匹配
-        ("更稳一点", False),
-        ("重新排一下", False),
-        ("补几个稳的", False),
-        ("", False),
-    ])
-    @pytest.mark.parametrize("volunteer_model", ["major", "majorGroup"])
-    def test_truth_table(self, text: str, expected: bool, volunteer_model: str):
-        assert _goal_requests_structural_rebalance(text) is expected
-
-
-# ---------------------------------------------------------------------------
-# _goal_explicitly_requests_regeneration
-# ---------------------------------------------------------------------------
-
-class TestGoalExplicitlyRequestsRegeneration:
-    @pytest.mark.parametrize("text,expected", [
-        ("重新生成方案", True),
-        ("重生成一版", True),
-        ("重新出一版", True),
-        ("重新给我一版方案", True),
-        ("覆盖当前方案", True),
-        ("覆盖掉当前方案", True),
-        # 不匹配
-        ("更稳一点", False),
-        ("怎么优化", False),
-        ("重新排一下", False),
-        ("帮我审查", False),
-        ("弄一版更好的", False),
-        ("", False),
-    ])
-    @pytest.mark.parametrize("volunteer_model", ["major", "majorGroup"])
-    def test_truth_table(self, text: str, expected: bool, volunteer_model: str):
-        assert _goal_explicitly_requests_regeneration(text) is expected
+@pytest.mark.parametrize(
+    "code,expected_label,expected_kind,expected_default,expected_supported",
+    [
+        ("high_tuition", "高收费", "item_removal", "remove_units", ["remove_units", "replace_units"]),
+        ("cooperative_program", "中外合作", "item_removal", "remove_units", ["remove_units", "replace_units"]),
+        ("probability_gap", "梯度断层", "structural", "analyze_adjustment", ["analyze_adjustment"]),
+        ("count_validation", "数量缺口", "structural", "preview_compensation", ["preview_compensation"]),
+        ("plan_update_notice", "招生计划更新提示", "informational", None, []),
+    ],
+)
+@pytest.mark.parametrize("volunteer_model", ["major", "majorGroup"])
+def test_review_issue_registry_is_code_based(
+    code: str,
+    expected_label: str,
+    expected_kind: str,
+    expected_default: str | None,
+    expected_supported: list[str],
+    volunteer_model: str,
+):
+    assert review_issue_label(code) == expected_label
+    assert review_issue_scope_kind(code) == expected_kind
+    assert review_issue_default_action_family(code) == expected_default
+    assert review_issue_supported_action_families(code) == expected_supported
 
 
-# ---------------------------------------------------------------------------
-# match_review_issue_code_from_goal (review_issue_registry)
-# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("volunteer_model", ["major", "majorGroup"])
+def test_item_removal_issue_requires_structured_review_issue_code(volunteer_model: str):
+    without_code = resolver.resolve(_frame("remove", raw_utterance="删掉高收费"), HAS_PLAN)
+    assert without_code.action_family == "remove_units"
+    assert without_code.review_issue_override is False
+    assert "volunteer_ids" in without_code.missing_inputs
 
-class TestMatchReviewIssueCodeFromGoal:
-    """验证 review issue 关键词匹配的 truth table。"""
+    with_code = resolver.resolve(
+        _frame("remove", review_issue_code="high_tuition", raw_utterance="删掉高收费"),
+        HAS_PLAN,
+    )
+    assert with_code.action_family == "remove_units"
+    assert with_code.missing_inputs == []
+    assert with_code.action.review_issue.code == "high_tuition"
 
-    @pytest.fixture()
-    def review_issues(self) -> list[dict]:
-        return [
-            make_review_issue(code="high_tuition", label="高收费"),
-            make_review_issue(code="cooperative_program", label="中外合作"),
-            make_review_issue(code="admission_limit", label="限报条件"),
-            make_review_issue(code="probability_inversion", label="概率倒挂"),
-            make_review_issue(code="probability_gap", label="梯度断层"),
-            make_review_issue(code="ratio_distribution", label="冲稳保配比"),
-            make_review_issue(code="safety_guard", label="本省保底不足"),
-            make_review_issue(code="count_validation", label="数量缺口"),
-        ]
+    query_with_code = resolver.resolve(
+        _frame("query", review_issue_code="high_tuition", raw_utterance="处理高收费"),
+        HAS_PLAN,
+    )
+    assert query_with_code.action_family == "remove_units"
+    assert query_with_code.review_issue_override is True
 
-    @pytest.mark.parametrize("text,expected_code", [
-        # 精确标签匹配
-        ("删掉高收费的", "high_tuition"),
-        ("把高学费项目去掉", "high_tuition"),
-        ("中外合作的都不要", "cooperative_program"),
-        ("中外合作办学的删掉", "cooperative_program"),
-        ("限报的去掉", "admission_limit"),
-        ("限制报考的删掉", "admission_limit"),
-        ("概率倒挂怎么办", "probability_inversion"),
-        ("录取概率倒挂的问题", "probability_inversion"),
-        ("梯度断层怎么处理", "probability_gap"),
-        ("冲稳保配比不合理", "ratio_distribution"),
-        ("保区占比太少", "ratio_distribution"),
-        ("本省保底不足", "safety_guard"),
-        ("保底不足怎么补", "safety_guard"),
-        ("数量不足", "count_validation"),
-        ("补齐数量", "count_validation"),
-        # 不匹配
-        ("看看方案怎么样", None),
-        ("帮我审查一下", None),
-        ("更稳一点", None),
-        ("重新排一下", None),
-        ("", None),
-    ])
-    @pytest.mark.parametrize("volunteer_model", ["major", "majorGroup"])
-    def test_truth_table(self, text: str, expected_code: str | None, review_issues: list[dict], volunteer_model: str):
-        result = match_review_issue_code_from_goal(text, review_issues)
-        assert result == expected_code
+
+@pytest.mark.parametrize("volunteer_model", ["major", "majorGroup"])
+def test_sort_field_must_be_structured(volunteer_model: str):
+    text_only = resolver.resolve(_frame("reorder", raw_utterance="按院校层次排"), HAS_PLAN)
+    assert text_only.action_family == "regenerate_order"
+
+    structured = resolver.resolve(_frame("reorder", sort_field="schoolRank"), HAS_PLAN)
+    assert structured.action_family == "sort_ordered_plan"
+
+
+@pytest.mark.parametrize("volunteer_model", ["major", "majorGroup"])
+def test_unit_position_must_be_structured(volunteer_model: str):
+    missing = resolver.resolve(_frame("move", raw_utterance="把第3个专业组移到第5位"), HAS_PLAN)
+    assert missing.action_family == "move_unit"
+    assert "volunteer_id" in missing.missing_inputs
+
+    structured = resolver.resolve(
+        _frame("move", unit_refs=[], source_position=3, position=5),
+        HAS_PLAN,
+    )
+    assert structured.action_family == "move_ordered_unit"
+    assert structured.missing_inputs == []

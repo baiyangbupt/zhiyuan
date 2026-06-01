@@ -27,7 +27,30 @@ class TestChatAgentToolRegistration:
             client = LLMClient(config)
             agent = ChatAgent(client)
 
-        assert agent.get_progress_hint("query_volunteer_plan") == "正在查看当前方案和候选机会..."
+        assert agent.get_progress_hint("query_volunteer_plan") == "正在查当前方案和候选里的相关结果..."
+
+    def test_execute_plan_action_progress_hint_uses_structured_preview_args(self):
+        agent_mock = MagicMock()
+        with patch("app.llm.client.OpenAIChatModel", return_value=MagicMock()), patch(
+            "app.llm.client.OpenAIProvider", return_value=MagicMock()
+        ), patch("app.agent.base_agent.Agent", return_value=agent_mock):
+            from pydantic_ai.messages import ToolCallPart
+
+            from app.agent.chat_agent import ChatAgent
+            from app.config import LLMConfig
+            from app.llm.client import LLMClient
+
+            config = LLMConfig(provider="openai", api_key="sk-test")
+            client = LLMClient(config)
+            agent = ChatAgent(client)
+
+        tool_call = ToolCallPart(
+            tool_name="execute_plan_action",
+            args={"action_family": "sort_ordered_plan", "stage": "preview"},
+            tool_call_id="sort-preview",
+        )
+
+        assert agent.get_progress_hint_for_tool_call(tool_call) == "正在生成这次调整的影响预览..."
 
     def test_intent_preview_tool_schema_exposes_closed_major_intent_keys(self):
         from app.tools.intent_preview_tool import preview_current_major_intent_confirmation
@@ -352,6 +375,196 @@ class TestChatAgentToolRegistration:
                 tool_name="execute_plan_action",
                 content='{"result_kind":"preview_only","summary":"会把这个志愿移动到第3位。","reply_focus":["preview_only","confirmation_required"]}',
                 tool_call_id="call-1",
+            )
+        ]
+
+        assert agent.should_return_directly_from_tool(["execute_plan_action"], tool_returns, None) is False
+
+    def test_chat_agent_direct_returns_ordered_unit_preview(self):
+        with patch("app.agent.base_agent.Agent", return_value=MagicMock()):
+            from pydantic_ai.messages import ToolReturnPart
+
+            from app.agent.chat_agent import ChatAgent
+            from app.llm.client import LLMClient
+
+            client = MagicMock(spec=LLMClient)
+            client.model = TestModel()
+            client.model_settings = {}
+            agent = ChatAgent(client)
+
+        tool_returns = [
+            ToolReturnPart(
+                tool_name="execute_plan_action",
+                content=(
+                    '{"result_kind":"preview_only","summary":"会整体移动第 4 个专业组到第 2 个专业组位置。'
+                    '需要你确认后才会执行。",'
+                    '"reply_focus":["preview_only","confirmation_required","unit_position_preview"]}'
+                ),
+                tool_call_id="call-1",
+            )
+        ]
+
+        assert agent.should_return_directly_from_tool(["execute_plan_action"], tool_returns, None) is True
+        assert (
+            agent.render_direct_tool_output(["execute_plan_action"], tool_returns, None)
+            == "会整体移动第 4 个专业组到第 2 个专业组位置。需要你确认后才会执行。"
+        )
+
+    def test_chat_agent_direct_returns_read_only_plan_query_result(self):
+        with patch("app.agent.base_agent.Agent", return_value=MagicMock()):
+            from pydantic_ai.messages import ToolReturnPart
+
+            from app.agent.chat_agent import ChatAgent
+            from app.llm.client import LLMClient
+
+            client = MagicMock(spec=LLMClient)
+            client.model = TestModel()
+            client.model_settings = {}
+            agent = ChatAgent(client)
+
+        tool_returns = [
+            ToolReturnPart(
+                tool_name="query_volunteer_plan",
+                content="候选里共命中了 5 条符合“稳 会计 审计”的机会。下面仅展示前 5 条示例：A大学-会计学（稳，录取率62%）",
+                tool_call_id="query-candidate-1",
+            )
+        ]
+
+        assert agent.should_return_directly_from_tool(["query_volunteer_plan"], tool_returns, None) is True
+        assert (
+            agent.render_direct_tool_output(["query_volunteer_plan"], tool_returns, None)
+            == "候选里共命中了 5 条符合“稳 会计 审计”的机会。下面仅展示前 5 条示例：A大学-会计学（稳，录取率62%）"
+        )
+
+    def test_chat_agent_direct_returns_read_only_explore_result(self):
+        with patch("app.agent.base_agent.Agent", return_value=MagicMock()):
+            from pydantic_ai.messages import ToolReturnPart
+
+            from app.agent.chat_agent import ChatAgent
+            from app.llm.client import LLMClient
+
+            client = MagicMock(spec=LLMClient)
+            client.model = TestModel()
+            client.model_settings = {}
+            agent = ChatAgent(client)
+
+        tool_returns = [
+            ToolReturnPart(
+                tool_name="analyze_current_career_direction",
+                content="这轮只做分析，不会改动你的方案。\n\n当前方案对体制内方向有一定承接。",
+                tool_call_id="career-readonly-direct",
+            )
+        ]
+
+        assert agent.should_return_directly_from_tool(["analyze_current_career_direction"], tool_returns, None) is True
+        assert (
+            agent.render_direct_tool_output(["analyze_current_career_direction"], tool_returns, None)
+            == "这轮只做分析，不会改动你的方案。\n\n当前方案对体制内方向有一定承接。"
+        )
+
+    def test_chat_agent_does_not_direct_return_plan_query_action_boundary(self):
+        with patch("app.agent.base_agent.Agent", return_value=MagicMock()):
+            from pydantic_ai.messages import ToolReturnPart
+
+            from app.agent.chat_agent import ChatAgent
+            from app.llm.client import LLMClient
+
+            client = MagicMock(spec=LLMClient)
+            client.model = TestModel()
+            client.model_settings = {}
+            agent = ChatAgent(client)
+
+        tool_returns = [
+            ToolReturnPart(
+                tool_name="query_volunteer_plan",
+                content="这是补齐或调整当前方案的动作诉求，不是局部查询；应先走方案动作预览，用户确认后再执行。",
+                tool_call_id="query-candidate-boundary",
+            )
+        ]
+
+        assert agent.should_return_directly_from_tool(["query_volunteer_plan"], tool_returns, None) is False
+
+    def test_chat_agent_direct_returns_compensation_preview(self):
+        with patch("app.agent.base_agent.Agent", return_value=MagicMock()):
+            from pydantic_ai.messages import ToolReturnPart
+
+            from app.agent.chat_agent import ChatAgent
+            from app.llm.client import LLMClient
+
+            client = MagicMock(spec=LLMClient)
+            client.model = TestModel()
+            client.model_settings = {}
+            agent = ChatAgent(client)
+
+        tool_returns = [
+            ToolReturnPart(
+                tool_name="execute_plan_action",
+                content=(
+                    '{"result_kind":"compensation_preview",'
+                    '"summary":"当前可先看的补齐建议共有 1 项动作，预计补入 2 个志愿。",'
+                    '"reply_focus":["compensation_preview"]}'
+                ),
+                tool_call_id="compensation-preview-direct",
+            )
+        ]
+
+        assert agent.should_return_directly_from_tool(["execute_plan_action"], tool_returns, None) is True
+        assert (
+            agent.render_direct_tool_output(["execute_plan_action"], tool_returns, None)
+            == "当前可先看的补齐建议共有 1 项动作，预计补入 2 个志愿。"
+        )
+
+    def test_chat_agent_direct_returns_sort_ordered_plan_preview(self):
+        with patch("app.agent.base_agent.Agent", return_value=MagicMock()):
+            from pydantic_ai.messages import ToolReturnPart
+
+            from app.agent.chat_agent import ChatAgent
+            from app.llm.client import LLMClient
+
+            client = MagicMock(spec=LLMClient)
+            client.model = TestModel()
+            client.model_settings = {}
+            agent = ChatAgent(client)
+
+        tool_returns = [
+            ToolReturnPart(
+                tool_name="execute_plan_action",
+                content=(
+                    '{"action_family":"sort_ordered_plan","result_kind":"preview_only",'
+                    '"summary":"会按推荐系数重新排序当前方案，推荐系数高的排在前面。需要你确认后才会执行。",'
+                    '"reply_focus":["preview_only","sort_preview"]}'
+                ),
+                tool_call_id="sort-preview-direct",
+            )
+        ]
+
+        assert agent.should_return_directly_from_tool(["execute_plan_action"], tool_returns, None) is True
+        assert (
+            agent.render_direct_tool_output(["execute_plan_action"], tool_returns, None)
+            == "会按推荐系数重新排序当前方案，推荐系数高的排在前面。需要你确认后才会执行。"
+        )
+
+    def test_chat_agent_keeps_empty_compensation_preview_for_model_summary(self):
+        with patch("app.agent.base_agent.Agent", return_value=MagicMock()):
+            from pydantic_ai.messages import ToolReturnPart
+
+            from app.agent.chat_agent import ChatAgent
+            from app.llm.client import LLMClient
+
+            client = MagicMock(spec=LLMClient)
+            client.model = TestModel()
+            client.model_settings = {}
+            agent = ChatAgent(client)
+
+        tool_returns = [
+            ToolReturnPart(
+                tool_name="execute_plan_action",
+                content=(
+                    '{"result_kind":"compensation_preview",'
+                    '"summary":"这轮没有拿到可直接执行的调稳补齐预览。",'
+                    '"reply_focus":["compensation_preview","empty_compensation_preview"]}'
+                ),
+                tool_call_id="empty-compensation-preview",
             )
         ]
 
@@ -1078,6 +1291,69 @@ class TestChatAgentToolRegistration:
 
         assert "会计学" in result
         assert recorded == ["intent_mode:preference"]
+
+    def test_chat_agent_mixed_major_preference_routes_to_intent_preview_not_readonly_analysis(self):
+        recorded: list[str] = []
+
+        async def fake_preview_current_major_intent_confirmation(
+            ctx: RunContext,
+            major_intents=None,
+            intent_mode=None,
+        ) -> str:
+            recorded.append("preview_current_major_intent_confirmation")
+            return (
+                '{"status":"pending","items":['
+                '{"content":"偏好会计学、审计学"},'
+                '{"content":"排除土木工程、建筑学"}'
+                '],"message":"先确认是否记成后续参考。"}'
+            )
+
+        async def fake_analyze_current_major_interest(
+            ctx: RunContext,
+            intent_mode=None,
+        ) -> str:
+            recorded.append("analyze_current_major_interest")
+            return "should not be called"
+
+        with patch("app.agent.base_agent.SkillsToolset", None):
+            from app.agent.base_agent import BaseAgent
+            from app.agent.context import RequestContext
+            from app.agent.instructions.assembler import build_instructions as _build_instructions
+            from app.llm.client import LLMClient
+
+            client = LLMClient.__new__(LLMClient)
+            client.model = TestModel(call_tools=["fake_preview_current_major_intent_confirmation"])
+            client.model_settings = {}
+            client.model.gen_tool_args = MagicMock(
+                return_value={
+                    "major_intents": {
+                        "level3": ["会计学", "审计学"],
+                        "negative_level3": ["土木工程", "建筑学"],
+                    },
+                    "intent_mode": "preference",
+                }
+            )
+
+            agent = BaseAgent(
+                llm_client=client,
+                instructions=_build_instructions,
+                output_type=str,
+                tools=[
+                    fake_preview_current_major_intent_confirmation,
+                    fake_analyze_current_major_interest,
+                ],
+                deps_type=RequestContext,
+            )
+            result = asyncio.run(
+                agent.run(
+                    "会计审计这类还行，土木建筑那种别碰",
+                    deps=RequestContext(userid="u1", sessionid="mixed-major-1"),
+                )
+            )
+
+        assert "会计学" in result
+        assert "土木工程" in result
+        assert recorded == ["preview_current_major_intent_confirmation"]
 
     def test_chat_agent_intent_confirmation_updates_state_without_repreviewing_intent(self):
         recorded: list[str] = []

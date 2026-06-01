@@ -81,15 +81,6 @@ class ActionResolution(BaseModel):
     should_refresh_workspace: bool = False
 
 
-def _infer_sort_field(text: str) -> Literal["admissionRatio", "schoolRank", "finalScore"]:
-    compact = str(text or "")
-    if "院校层次" in compact or "学校层次" in compact or "院校排名" in compact:
-        return "schoolRank"
-    if "推荐系数" in compact or "推荐分" in compact:
-        return "finalScore"
-    return "admissionRatio"
-
-
 # ---------------------------------------------------------------------------
 # 不需要现有方案就能执行的动作
 # ---------------------------------------------------------------------------
@@ -288,6 +279,15 @@ class ActionResolver:
         if frame.verb == "confirm" and frame.is_confirmation_of_previous:
             return "apply_compensation"
 
+        if frame.verb == "move" and (frame.target.unit_refs or frame.target.source_position is not None):
+            return "move_ordered_unit"
+
+        if frame.verb == "remove" and (frame.target.unit_refs or frame.target.source_position is not None):
+            return "remove_ordered_unit"
+
+        if frame.verb == "reorder" and frame.scope.sort_field:
+            return "sort_ordered_plan"
+
         return self._VERB_TO_FAMILY.get(frame.verb, "query_state")
 
     def _resolve_query_family(self, frame: IntentFrame) -> str:
@@ -325,8 +325,7 @@ class ActionResolver:
         default_action = review_issue_default_action_family(review_issue_code)
 
         if scope_kind == "item_removal":
-            # 旧逻辑：replacement_requested = _goal_requests_replacement(user_goal) or _has_selection_scope(filters)
-            # 新逻辑：必须有实际筛选条件才算有替换意图，verb=replace 但无条件视为误分类
+            # 必须有实际筛选条件才算有替换意图；verb=replace 但无条件视为误分类。
             has_replacement_intent = frame.scope.has_filters
             if action_family == "replace_units" and not has_replacement_intent:
                 return "remove_units"
@@ -457,6 +456,7 @@ class ActionResolver:
                     if frame.target.volunteer_refs
                     else ""
                 ),
+                source_position=frame.target.source_position,
                 target_position=frame.target.position,
                 reason=frame.raw_utterance,
             ),
@@ -466,21 +466,24 @@ class ActionResolver:
                     if frame.target.unit_refs
                     else ""
                 ),
+                source_position=frame.target.source_position,
                 target_position=frame.target.position,
                 reason=frame.raw_utterance,
             ),
             "remove_ordered_unit": lambda: RemoveOrderedUnitAction(
                 unit_ids=frame.target.unit_refs,
+                source_position=frame.target.source_position,
                 reason=frame.raw_utterance,
             ),
             "replace_units": lambda: ReplaceUnitsAction(
                 remove_ids=frame.target.volunteer_refs,
+                source_major_names=frame.target.major_names,
                 replacement_filters=filters,
                 review_issue=review_issue,
                 reason=frame.raw_utterance,
             ),
             "sort_ordered_plan": lambda: SortOrderedPlanAction(
-                sort_field=_infer_sort_field(frame.raw_utterance),
+                sort_field=frame.scope.sort_field or "admissionRatio",
                 reason=frame.raw_utterance,
             ),
             "regenerate_order": lambda: RegenerateOrderAction(
@@ -509,19 +512,19 @@ class ActionResolver:
                 missing.append("volunteer_ids")
 
         if action_family == "move_unit":
-            if not frame.target.volunteer_refs:
+            if not frame.target.volunteer_refs and frame.target.source_position is None:
                 missing.append("volunteer_id")
             if frame.target.position is None:
                 missing.append("target_position")
 
         if action_family == "move_ordered_unit":
-            if not frame.target.unit_refs:
+            if not frame.target.unit_refs and frame.target.source_position is None:
                 missing.append("unit_ids")
             if frame.target.position is None:
                 missing.append("target_position")
 
         if action_family == "remove_ordered_unit":
-            if not frame.target.unit_refs:
+            if not frame.target.unit_refs and frame.target.source_position is None:
                 missing.append("unit_ids")
 
         if action_family == "add_units":
@@ -618,6 +621,7 @@ class ActionResolver:
             major_keyword=scope.major_keyword,
             tier=scope.tier,
             limit=scope.limit,
+            preserve_count=bool(getattr(scope, "preserve_count", False)),
         )
 
     @staticmethod

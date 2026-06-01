@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from types import SimpleNamespace
 from typing import Literal
@@ -10,6 +11,7 @@ from pydantic import BaseModel
 from pydantic_ai import RunContext
 
 from app.agent.context import RequestContext
+from app.domain.major_entity_resolver import resolve_major_mentions_from_text
 from app.schemas.tool_inputs import (
     CareerIntentPreviewInput,
     CityIntentPreviewInput,
@@ -25,13 +27,14 @@ from app.tools.explore_direction_tool import (
     should_use_generic_direction_analysis as _should_use_generic_direction_analysis,
 )
 from app.domain.career_slots import CAREER_SLOT_VALUES, normalize_career_slots
-from app.tools.intent_response_tool import render_intent_analysis_payload
+from app.tools.intent_response_tool import parse_intent_analysis_payload, render_intent_analysis_payload
 from app.tools.intent_state_tool import (
     ANALYSIS_STAGE_CONFIRMED,
     ANALYSIS_STAGE_INTEREST,
     INTENT_MODE_PREFERENCE,
     analyze_volunteer_intent_change,
 )
+from app.tools.major_compare_tool import compare_majors
 
 logger = logging.getLogger(__name__)
 IntentMode = Literal["preference", "constraint"]
@@ -48,6 +51,46 @@ def _payload_from_model(model_cls: type[BaseModel], value: BaseModel | dict | No
     payload = model.model_dump()
     normalized = {key: item for key, item in payload.items() if item}
     return normalized or None
+
+
+def _latest_user_text(request_context: RequestContext) -> str:
+    for message in reversed(request_context.chat_history or []):
+        if message.get("role") == "user" and message.get("content"):
+            return str(message.get("content") or "").strip()
+    return ""
+
+
+def _resolved_major_names_from_latest_text(request_context: RequestContext) -> list[str]:
+    mentions = resolve_major_mentions_from_text(_latest_user_text(request_context), request_context.batch or "01")
+    names: list[str] = []
+    for mention in mentions:
+        if mention.level != "level3":
+            continue
+        name = str(mention.canonical_name or "").strip()
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def _render_structured_preview_tool_payload(payload_text: str) -> str:
+    """Keep preview tool returns structured while preserving the user-facing text.
+
+    Direct tool-reply policy reads the ``message`` field for display. Persisted
+    history keeps the full payload so later follow-up questions can recover the
+    exact intent values from ``items`` / ``existingItems`` instead of guessing
+    from natural-language assistant text.
+    """
+    rendered = render_intent_analysis_payload(payload_text)
+    try:
+        payload = parse_intent_analysis_payload(payload_text)
+    except Exception:
+        return rendered
+    if payload.status == "empty":
+        return rendered
+    data = payload.model_dump()
+    data["reply_strategy"] = "continue_model" if payload.analysisStage == ANALYSIS_STAGE_INTEREST else "preview_wait_confirm"
+    data["message"] = rendered
+    return json.dumps(data, ensure_ascii=False)
 
 
 async def analyze_current_interest(
@@ -96,8 +139,16 @@ async def analyze_current_major_interest(
     """Read-only Explore analysis for major fit questions like “电子信息工程适合我吗”.
 
     Use this when the user is only asking whether a major or major category fits
-    them. Do not use it to write new preferences into pending intent state.
+    them. Do not use this for two-option or multi-option major comparison; use
+    `compare_majors` / `compare_major_options` for those cases. Do not use it
+    to write new preferences into pending intent state.
+    If the user states mixed positive/negative major preferences without asking
+    to first see impact, boundary, pros/cons, or risks, use
+    `preview_current_major_intent_confirmation` instead.
     """
+    resolved_major_names = _resolved_major_names_from_latest_text(ctx.deps)
+    if len(resolved_major_names) == 2:
+        return await compare_majors(ctx, resolved_major_names[0], resolved_major_names[1])
     return await analyze_current_interest(
         ctx,
         intent_mode=intent_mode,
@@ -247,7 +298,7 @@ async def preview_current_intent_confirmation(
     If you already know the explicit structured intent from the current turn,
     pass it in directly so the tool can skip another extraction round.
     """
-    return render_intent_analysis_payload(
+    return _render_structured_preview_tool_payload(
         await analyze_volunteer_intent_change(
             ctx,
             _payload_from_model(MajorIntentPreviewInput, major_intents),
@@ -274,6 +325,9 @@ async def preview_current_major_intent_confirmation(
     For mixed explicit input like “医学护理这些别碰，财会还能接受”, pass
     `major_intents` directly with positive and negative fields instead of
     calling this tool repeatedly without arguments.
+    Mixed positive/negative utterances without an explicit "first analyze the
+    impact/boundary" request are preference/constraint previews, not read-only
+    major-fit analysis.
     Do not use this for read-only fit questions like “电子信息工程适合我吗”.
     If the current turn already names the target major clearly, pass
     `major_intents` directly so the tool can reuse it instead of extracting again.

@@ -18,11 +18,9 @@ from app.tools.planning_workflow_tool import (
     ban_planning_draft_items,
     generate_planning_initial_plan,
     lock_planning_draft_items,
-    pin_planning_ordered_item,
     query_planning_candidate_pool,
     query_planning_plan_overview,
     remove_planning_draft_items,
-    unpin_planning_ordered_item,
 )
 
 logger = logging.getLogger(__name__)
@@ -145,7 +143,7 @@ async def handle_planning_request(
     - `candidate_query` / `candidate_select`
     - `draft_remove` / `draft_lock` / `draft_unlock` / `draft_ban`
     - `initial_plan_generate`
-    - `ordered_regenerate` / `ordered_move` / `ordered_pin` / `ordered_unpin`
+    - `ordered_regenerate` / `ordered_move` / `ordered_remove`
     - `review` / `compensation_preview` / `compensation_apply`
 
     使用建议：
@@ -327,5 +325,5 @@ async def handle_planning_request(
         "未识别的 planning request_type。"
         "可用值包括：state、candidate_query、candidate_select、draft_query、ordered_query、"
         "draft_remove、draft_lock、draft_unlock、draft_ban、initial_plan_generate、ordered_regenerate、ordered_move、ordered_remove、"
-        "ordered_pin、ordered_unpin、review、plan_adjustment_analyze、compensation_preview、compensation_apply。"
+        "review、plan_adjustment_analyze、compensation_preview、compensation_apply。"
     )

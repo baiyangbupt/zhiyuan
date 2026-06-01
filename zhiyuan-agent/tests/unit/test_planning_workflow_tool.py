@@ -1256,7 +1256,7 @@ def test_select_planning_ordered_items_refreshes_ordered_state():
     assert "排序总数：1" in result
 
 
-def test_move_pin_and_unpin_planning_ordered_item_use_session():
+def test_move_keeps_ordered_backend_and_pin_unpin_are_disabled():
     ctx = _make_ctx("move-session")
     response = {
         "code": 0,
@@ -1275,8 +1275,6 @@ def test_move_pin_and_unpin_planning_ordered_item_use_session():
 
     with (
         patch("app.tools.planning_workflow_tool._move_planning_ordered_item_request", AsyncMock(return_value=response)) as mock_move,
-        patch("app.tools.planning_workflow_tool._pin_planning_ordered_item_request", AsyncMock(return_value=response)) as mock_pin,
-        patch("app.tools.planning_workflow_tool._unpin_planning_ordered_item_request", AsyncMock(return_value=response)) as mock_unpin,
         patch("app.tools.planning_workflow_tool._run_planning_review_request", AsyncMock(return_value={"code": 0, "data": {}})),
         patch("app.tools.planning_workflow_tool._get_planning_state_request", AsyncMock(return_value={"code": 0, "data": response["data"]})),
     ):
@@ -1285,11 +1283,9 @@ def test_move_pin_and_unpin_planning_ordered_item_use_session():
         unpin_result = asyncio.run(unpin_planning_ordered_item(ctx, "v1"))
 
     mock_move.assert_awaited_once_with("move-session", "v1", 3)
-    mock_pin.assert_awaited_once_with("move-session", "v1", 3)
-    mock_unpin.assert_awaited_once_with("move-session", "v1")
     assert "已将志愿移动到第3位。" in move_result
-    assert "已将志愿固定在第3位。" in pin_result
-    assert "已取消该志愿的位置标记。" in unpin_result
+    assert "暂不提供固定/锁定志愿入口" in pin_result
+    assert "暂不提供固定/锁定志愿入口" in unpin_result
 
 
 def test_apply_planning_compensation_requires_confirmation():

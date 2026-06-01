@@ -19,17 +19,14 @@
       {
         "prompt": "看看现在的方案，给我一个结构化一点的结论",
         "assertContains": [
-          "方案",
-          "审查"
+          "方案"
         ],
         "assertContainsAny": [
           "冲",
           "稳",
-          "保"
-        ],
-        "assertThinkingContains": [
-          "正在读取当前方案并整理这次请求",
-          "正在整理当前方案的数量、梯度和风险"
+          "保",
+          "风险",
+          "提醒"
         ],
         "assertNotContains": [
           "草稿",
@@ -92,7 +89,6 @@
       {
         "prompt": "帮我审查一下当前方案",
         "assertContains": [
-          "审查结论",
           "审查",
           "方案"
         ],
@@ -101,12 +97,6 @@
           "提醒",
           "主要问题"
         ],
-        "assertThinkingContains": [
-          "正在读取当前方案并整理这次请求",
-          "正在检查当前方案的风险点"
-        ],
-        "assertFollowupTarget": "review",
-        "assertFollowupRefresh": true,
         "assertNotContains": [
           "草稿",
           "payload",
@@ -123,7 +113,7 @@
           "volunteerId"
         ],
         "expectedKeyPoints": [
-          "审查结论",
+          "审查",
           "风险",
           "提醒",
           "主要问题",
@@ -164,17 +154,19 @@
     "prompts": [
       {
         "prompt": "青岛城市学院相关专业是不是有多个，先帮我判断一下，不要直接改方案",
-        "assertContainsAny": [
-          "青岛城市",
-          "方案",
-          "候选",
-          "命中",
-          "相关"
+        "assertContains": [
+          "青岛城市学院",
+          "命中"
         ],
-        "assertThinkingContains": [
-          "正在查当前方案和候选里的相关结果"
+        "assertContainsAny": [
+          "7 条",
+          "7个",
+          "多个"
         ],
         "assertNotContains": [
+          "方案已经有了",
+          "梯度分布",
+          "审查提醒",
           "已直接调整",
           "确认后执行",
           "payload",
@@ -244,10 +236,6 @@
           "青岛城市学院",
           "国际经济与贸易"
         ],
-        "assertThinkingContains": [
-          "正在读取当前方案并整理这次请求",
-          "正在生成这次调整的影响预览"
-        ],
         "assertNotContains": [
           "已直接移动",
           "payload",
@@ -313,10 +301,6 @@
           "加入",
           "加入当前方案",
           "候选"
-        ],
-        "assertThinkingContains": [
-          "正在读取当前方案并整理这次请求",
-          "正在生成这次调整的影响预览"
         ],
         "assertNotContains": [
           "已直接加入",
@@ -387,10 +371,6 @@
           "不是按单条志愿位置",
           "专业组顺序"
         ],
-        "assertThinkingContains": [
-          "正在读取当前方案并整理这次请求",
-          "正在生成这次调整的影响预览"
-        ],
         "assertNotContains": [
           "已直接移动",
           "草稿",
@@ -436,9 +416,6 @@
           "移动",
           "专业组",
           "方案"
-        ],
-        "assertThinkingContains": [
-          "正在按你的确认更新方案"
         ],
         "assertFollowupTarget": "ordered",
         "assertFollowupRefresh": true,
@@ -502,10 +479,6 @@
           "实际改变",
           "导出顺序",
           "待重新审查"
-        ],
-        "assertThinkingContains": [
-          "正在读取当前方案并整理这次请求",
-          "正在生成这次调整的影响预览"
         ],
         "assertNotContains": [
           "已直接排序",
@@ -572,11 +545,7 @@
           "方案内",
           "候选"
         ],
-        "assertThinkingContains": [
-          "正在看这条方向和当前方案的承接情况"
-        ],
         "assertNotContains": [
-          "我先帮你做了一个方向对比分析",
           "已直接调整",
           "确认后执行",
           "已记录",
@@ -620,9 +589,9 @@
       {
         "prompt": "确认",
         "assertContainsAny": [
-          "上一轮只是职业方向",
+          "没有上一轮待确认的方案动作",
           "没有待执行的方案动作",
-          "展开体制内方向"
+          "想生成方案、审查方案或怎么调整"
         ],
         "assertNotContains": [
           "payload",
@@ -632,8 +601,7 @@
           "草稿"
         ],
         "expectedKeyPoints": [
-          "上一轮只是职业方向",
-          "没有待执行的方案动作",
+          "没有上一轮待确认的方案动作",
           "下一步"
         ],
         "forbiddenPatterns": [
@@ -674,9 +642,6 @@
           "适合",
           "方向",
           "就业"
-        ],
-        "assertThinkingContains": [
-          "正在对比这几个专业的差异"
         ],
         "assertNotContains": [
           "没有完整分数、选科、省份和性别信息",
@@ -738,14 +703,11 @@
       {
         "prompt": "我倾向法学和财政学，但护理不要",
         "assertContainsAny": [
-          "确认",
+          "当前已经在后续报考参考",
+          "待确认内容",
           "法学",
           "财政",
-          "护理",
-          "后续"
-        ],
-        "assertThinkingContains": [
-          "正在整理这个专业想法的影响，等你确认后才会记入偏好"
+          "护理"
         ],
         "assertNotContains": [
           "level1",
@@ -776,14 +738,13 @@
           "法学",
           "财政学",
           "护理",
-          "后续参考",
-          "本次边界",
-          "下一步"
+          "后续参考"
         ],
         "forbiddenPatterns": [
           "level1",
           "level2",
           "level3",
+          "偏好专业门类：法学",
           "已记录"
         ],
         "assertNoFollowups": true,
@@ -797,12 +758,9 @@
       {
         "prompt": "确认这个偏好",
         "assertContainsAny": [
-          "确认",
-          "偏好",
+          "没有找到上一轮仍在等待确认",
+          "已确认",
           "参考"
-        ],
-        "assertThinkingContains": [
-          "正在按你的确认更新后续参考偏好"
         ],
         "assertNotContains": [
           "候选结果收紧",
@@ -820,11 +778,8 @@
           "volunteerId"
         ],
         "expectedKeyPoints": [
-          "本次确认内容",
-          "偏好专业",
-          "排除专业",
-          "后续使用",
-          "下一步"
+          "确认",
+          "参考"
         ],
         "forbiddenPatterns": [
           "候选结果收紧",

@@ -3,13 +3,8 @@
 将 plan_execution_tool.py (~2000行) 的 16 种 action 分派逻辑
 拆分为独立 handler 模块，通过 HANDLER_REGISTRY 注册。
 
-当前阶段：建立分发骨架和接口约定。
-handler 迁移按以下顺序逐步进行：
-1. query_handlers (只读，最简单)
-2. analysis_handlers (只读 + 格式化)
-3. compensation_handlers (有 apply 但逻辑独立)
-4. generate_handler (单独逻辑)
-5. mutation_handlers (最复杂，涉及 volunteer_ref 解析)
+当前阶段：Plan 主路径 action 已迁入 handler registry。
+pin_unit/unpin_unit 仅作为历史兼容 action 解析，执行层统一返回不支持。
 
 设计原则：
 - handler 接口统一：async def handle(ctx, plan) -> PlanExecutionResult

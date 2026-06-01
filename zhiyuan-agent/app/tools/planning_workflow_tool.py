@@ -33,12 +33,10 @@ from app.util.internal_client import (
     get_planning_ordered_plan as _get_planning_ordered_plan_request,
     lock_planning_draft_items as _lock_planning_draft_items_request,
     move_planning_ordered_item as _move_planning_ordered_item_request,
-    pin_planning_ordered_item as _pin_planning_ordered_item_request,
     preview_planning_compensation as _preview_planning_compensation_request,
     remove_planning_draft_items as _remove_planning_draft_items_request,
     run_planning_review as _run_planning_review_request,
     select_planning_draft_items as _select_planning_draft_items_request,
-    unpin_planning_ordered_item as _unpin_planning_ordered_item_request,
 )
 
 logger = logging.getLogger(__name__)
@@ -1895,41 +1893,31 @@ async def pin_planning_ordered_item(
     volunteer_id: str,
     target_position: int,
 ) -> str:
-    """固定指定志愿在排序方案中的位置。"""
+    """兼容旧接口：新版工作台不再提供用户侧固定入口。"""
     session_id = ctx.deps.sessionid
     logger.info(
-        "pin_planning_ordered_item called: session_id=%s volunteer_id=%s target_position=%s",
+        "pin_planning_ordered_item disabled: session_id=%s volunteer_id=%s target_position=%s",
         session_id,
         volunteer_id,
         target_position,
     )
 
-    result = await _pin_planning_ordered_item_request(session_id, volunteer_id, target_position)
-    if result.get("code") != 0:
-        return "固定排序项失败，请稍后重试。"
-    refreshed_state = await _rerun_review_and_fetch_state(session_id)
-    ordered_state = ((refreshed_state or {}).get("orderedPlanState") or {}) or ((result.get("data") or {}).get("orderedPlanState") or {})
-    return f"已将志愿固定在第{target_position}位。\n" + _format_ordered_result(ordered_state)
+    return "新版工作台暂不提供固定/锁定志愿入口。可以改用移动到指定位置或方案排序。"
 
 
 async def unpin_planning_ordered_item(
     ctx: RunContext[RequestContext],
     volunteer_id: str,
 ) -> str:
-    """取消固定指定志愿。"""
+    """兼容旧接口：新版工作台不再提供用户侧取消固定入口。"""
     session_id = ctx.deps.sessionid
     logger.info(
-        "unpin_planning_ordered_item called: session_id=%s volunteer_id=%s",
+        "unpin_planning_ordered_item disabled: session_id=%s volunteer_id=%s",
         session_id,
         volunteer_id,
     )
 
-    result = await _unpin_planning_ordered_item_request(session_id, volunteer_id)
-    if result.get("code") != 0:
-        return "取消固定排序项失败，请稍后重试。"
-    refreshed_state = await _rerun_review_and_fetch_state(session_id)
-    ordered_state = ((refreshed_state or {}).get("orderedPlanState") or {}) or ((result.get("data") or {}).get("orderedPlanState") or {})
-    return "已取消该志愿的位置标记。\n" + _format_ordered_result(ordered_state)
+    return "新版工作台暂不提供固定/锁定志愿入口。当前无需取消固定。"
 
 
 async def run_planning_review(ctx: RunContext[RequestContext]) -> str:

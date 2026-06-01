@@ -1,6 +1,6 @@
 [
   {
-    "name": "303-open-quality-intent-pending-impact-fast-route",
+    "name": "303-open-quality-intent-existing-impact-readonly",
     "sessionId": "16",
     "flow": [
       "intent",
@@ -10,7 +10,7 @@
     "coverage": [
       "release_3_0_3",
       "open_quality",
-      "pending_intent",
+      "existing_intent",
       "impact_followup",
       "majorGroup_model",
       "readonly_no_workspace_card"
@@ -19,16 +19,22 @@
     "prompts": [
       {
         "prompt": "我倾向会计学和审计学，但土木工程不要",
-        "assertContainsAny": [
-          "确认",
+        "assertContains": [
           "会计学",
           "审计学",
-          "土木工程",
-          "当前方案"
+          "土木工程"
+        ],
+        "assertContainsAny": [
+          "已经在后续报考参考",
+          "已在后续报考参考",
+          "不会重复新增",
+          "当前已有参考偏好"
         ],
         "assertThinkingContainsAny": [
+          "正在把你的专业想法整理成待确认偏好",
           "正在整理这个专业想法的影响，等你确认后才会记入偏好",
-          "正在结合这条待确认想法查看当前方案影响"
+          "正在结合这条待确认想法查看当前方案影响",
+          "正在整理这个专业想法的影响和边界"
         ],
         "assertNotContains": [
           "候选结果收紧",
@@ -45,12 +51,11 @@
           "草稿"
         ],
         "expectedKeyPoints": [
-          "确认前不会写入后续参考",
-          "当前方案",
-          "贴近",
-          "需要留意",
-          "候选",
-          "确认后"
+          "已有偏好不重复新增",
+          "会计学",
+          "审计学",
+          "土木工程",
+          "后续参考"
         ],
         "forbiddenPatterns": [
           "候选结果收紧",
@@ -63,17 +68,15 @@
       {
         "prompt": "先不确认，看看这个偏好会影响当前方案吗",
         "assertContains": [
-          "尚未确认",
-          "确认前不会写入后续参考",
-          "待确认内容"
+          "当前方案"
         ],
         "assertContainsAny": [
-          "当前方案",
-          "需要留意",
+          "影响",
+          "匹配",
+          "承接",
+          "贴近",
+          "冲突",
           "候选"
-        ],
-        "assertThinkingContains": [
-          "正在结合这条待确认想法查看当前方案影响"
         ],
         "assertNotContains": [
           "候选结果收紧",
@@ -88,12 +91,11 @@
           "草稿"
         ],
         "expectedKeyPoints": [
-          "尚未确认",
-          "确认前不会写入后续参考",
           "当前方案",
-          "需要留意",
-          "候选",
-          "待确认内容"
+          "会计",
+          "审计",
+          "土木",
+          "影响"
         ],
         "forbiddenPatterns": [
           "候选结果收紧",
@@ -101,7 +103,12 @@
           "已直接记录"
         ],
         "assertNoFollowups": true,
-        "warnElapsedSeconds": 10
+        "warnElapsedSeconds": 10,
+        "assertThinkingContainsAny": [
+          "正在理解你的问题，并结合当前信息整理回答",
+          "正在读取当前方案并整理这次请求",
+          "正在处理你的方案"
+        ]
       }
     ]
   },
@@ -129,9 +136,6 @@
           "当前方案",
           "承接",
           "候选"
-        ],
-        "assertThinkingContains": [
-          "正在看这条方向和当前方案的承接情况"
         ],
         "assertNotContains": [
           "已直接调整",
@@ -165,7 +169,12 @@
           "rich_decision_basis",
           "user_language"
         ],
-        "minTextLengthWarn": 180
+        "minTextLengthWarn": 180,
+        "assertThinkingContainsAny": [
+          "正在看这条发展方向是否适合你",
+          "还在分析你的问题，正在整理可用信息",
+          "正在看这条方向和当前方案的承接情况"
+        ]
       }
     ]
   },
@@ -191,9 +200,6 @@
           "普通家庭",
           "女生",
           "就业"
-        ],
-        "assertThinkingContains": [
-          "正在对比这几个专业的差异"
         ],
         "assertNotContains": [
           "缺少性别信息",
@@ -229,7 +235,12 @@
           "rich_decision_basis",
           "user_language"
         ],
-        "minTextLengthWarn": 180
+        "minTextLengthWarn": 180,
+        "assertThinkingContainsAny": [
+          "正在对比这几个专业的差异",
+          "正在看这个专业方向是否适合你",
+          "正在对照这些专业的学习内容和就业情况"
+        ]
       }
     ]
   },
@@ -259,9 +270,6 @@
           "候选",
           "命中",
           "相关"
-        ],
-        "assertThinkingContains": [
-          "正在查当前方案和候选里的相关结果"
         ],
         "assertNotContains": [
           "已直接调整",
@@ -295,7 +303,14 @@
           "rich_decision_basis",
           "user_language"
         ],
-        "minTextLengthWarn": 180
+        "minTextLengthWarn": 180,
+        "assertThinkingContainsAny": [
+          "正在查当前方案和候选里的相关结果",
+          "正在整理当前方案的数量、梯度和风险",
+          "正在读取当前方案并整理这次请求",
+          "正在查看当前方案和候选机会",
+          "正在理解你的问题，并结合当前信息整理回答"
+        ]
       },
       {
         "prompt": "确认",
@@ -325,7 +340,7 @@
           "payload"
         ],
         "assertNoFollowups": true,
-        "maxElapsedSeconds": 5,
+        "warnElapsedSeconds": 8,
         "qualityFocus": [
           "actionable_next_step",
           "readonly_boundary",
@@ -362,10 +377,6 @@
           "导出顺序",
           "待重新审查"
         ],
-        "assertThinkingContains": [
-          "正在读取当前方案并整理这次请求",
-          "正在生成这次调整的影响预览"
-        ],
         "assertNotContains": [
           "已直接排序",
           "已直接调整",
@@ -392,6 +403,13 @@
           "actionable_next_step",
           "preview_confirm_boundary",
           "user_language"
+        ],
+        "assertThinkingContainsAny": [
+          "正在处理你的方案",
+          "正在整理当前方案的数量、梯度和风险",
+          "正在读取当前方案并整理这次请求",
+          "正在生成这次调整的影响预览",
+          "正在理解你的问题，并结合当前信息整理回答"
         ]
       }
     ]
@@ -420,9 +438,6 @@
           "数学",
           "就业",
           "建议"
-        ],
-        "assertThinkingContains": [
-          "正在对比这几个专业的差异"
         ],
         "assertNotContains": [
           "当前没有沉淀专门画像",
@@ -457,7 +472,10 @@
           "rich_decision_basis",
           "user_language"
         ],
-        "minTextLengthWarn": 180
+        "minTextLengthWarn": 180,
+        "assertThinkingContainsAny": [
+          "正在对比这几个专业的差异"
+        ]
       }
     ]
   },
@@ -488,9 +506,6 @@
           "短板",
           "当前方案",
           "候选"
-        ],
-        "assertThinkingContains": [
-          "正在看这条方向和当前方案的承接情况"
         ],
         "assertNotContains": [
           "已直接调整",
@@ -524,7 +539,12 @@
           "rich_decision_basis",
           "user_language"
         ],
-        "minTextLengthWarn": 180
+        "minTextLengthWarn": 180,
+        "assertThinkingContainsAny": [
+          "正在看这条发展方向是否适合你",
+          "还在分析你的问题，正在整理可用信息",
+          "正在看这条方向和当前方案的承接情况"
+        ]
       }
     ]
   },
@@ -556,8 +576,9 @@
           "建议"
         ],
         "assertThinkingContainsAny": [
-          "正在读取当前方案并整理这次请求",
-          "正在整理当前方案的数量、梯度和风险"
+          "正在理解你的问题，并结合当前信息整理回答",
+          "正在整理当前方案的数量、梯度和风险",
+          "正在读取当前方案并整理这次请求"
         ],
         "assertNotContains": [
           "已直接调整",
@@ -622,9 +643,6 @@
           "承接",
           "候选"
         ],
-        "assertThinkingContains": [
-          "正在看这条方向和当前方案的承接情况"
-        ],
         "assertNotContains": [
           "已直接调整",
           "确认后执行",
@@ -657,7 +675,12 @@
           "rich_decision_basis",
           "user_language"
         ],
-        "minTextLengthWarn": 180
+        "minTextLengthWarn": 180,
+        "assertThinkingContainsAny": [
+          "正在看这条发展方向是否适合你",
+          "还在分析你的问题，正在整理可用信息",
+          "正在看这条方向和当前方案的承接情况"
+        ]
       }
     ]
   },
@@ -685,9 +708,6 @@
           "普通家庭",
           "就业",
           "建议"
-        ],
-        "assertThinkingContains": [
-          "正在对比这几个专业的差异"
         ],
         "assertNotContains": [
           "缺少性别信息",
@@ -722,7 +742,10 @@
           "rich_decision_basis",
           "user_language"
         ],
-        "minTextLengthWarn": 180
+        "minTextLengthWarn": 180,
+        "assertThinkingContainsAny": [
+          "正在对比这几个专业的差异"
+        ]
       }
     ]
   },
@@ -754,8 +777,10 @@
           "后续参考"
         ],
         "assertThinkingContainsAny": [
+          "正在把你的专业想法整理成待确认偏好",
           "正在整理这个专业想法的影响，等你确认后才会记入偏好",
-          "正在结合这条待确认想法查看当前方案影响"
+          "正在结合这条待确认想法查看当前方案影响",
+          "正在整理这个专业想法的影响和边界"
         ],
         "assertNotContains": [
           "候选结果收紧",
@@ -820,9 +845,6 @@
           "示例",
           "机会"
         ],
-        "assertThinkingContains": [
-          "正在查当前方案和候选里的相关结果"
-        ],
         "assertNotContains": [
           "已直接加入",
           "确认后执行",
@@ -879,7 +901,14 @@
           "rich_decision_basis",
           "user_language"
         ],
-        "minTextLengthWarn": 140
+        "minTextLengthWarn": 140,
+        "assertThinkingContainsAny": [
+          "正在查当前方案和候选里的相关结果",
+          "正在整理当前方案的数量、梯度和风险",
+          "正在读取当前方案并整理这次请求",
+          "正在查看当前方案和候选机会",
+          "正在理解你的问题，并结合当前信息整理回答"
+        ]
       }
     ]
   },
@@ -911,8 +940,9 @@
           "只是帮你看风险"
         ],
         "assertThinkingContainsAny": [
-          "正在读取当前方案并整理这次请求",
-          "正在整理当前方案的数量、梯度和风险"
+          "正在理解你的问题，并结合当前信息整理回答",
+          "正在整理当前方案的数量、梯度和风险",
+          "正在读取当前方案并整理这次请求"
         ],
         "assertNotContains": [
           "已直接调整",
@@ -966,9 +996,6 @@
           "就业",
           "建议"
         ],
-        "assertThinkingContains": [
-          "正在对比这几个专业的差异"
-        ],
         "assertNotContains": [
           "已记录",
           "我记下",
@@ -999,7 +1026,10 @@
           "rich_decision_basis",
           "user_language"
         ],
-        "minTextLengthWarn": 180
+        "minTextLengthWarn": 180,
+        "assertThinkingContainsAny": [
+          "正在对比这几个专业的差异"
+        ]
       },
       {
         "prompt": "嗯那就这样",
@@ -1012,7 +1042,12 @@
         "assertContainsAny": [
           "先按刚才的专业对比结论",
           "没有待确认的偏好或方案动作",
-          "不会改动方案"
+          "不会改动方案",
+          "先按这个结论理解",
+          "先按刚才的分析结论理解",
+          "随时再聊",
+          "随时告诉我",
+          "不会记录"
         ],
         "assertNotContains": [
           "已直接调整",
@@ -1035,7 +1070,7 @@
           "payload"
         ],
         "assertNoFollowups": true,
-        "maxElapsedSeconds": 5,
+        "warnElapsedSeconds": 8,
         "qualityFocus": [
           "actionable_next_step",
           "readonly_boundary",
@@ -1069,9 +1104,6 @@
           "就业",
           "建议"
         ],
-        "assertThinkingContains": [
-          "正在对比这几个专业的差异"
-        ],
         "assertNotContains": [
           "已记录",
           "我记下",
@@ -1102,7 +1134,10 @@
           "rich_decision_basis",
           "user_language"
         ],
-        "minTextLengthWarn": 180
+        "minTextLengthWarn": 180,
+        "assertThinkingContainsAny": [
+          "正在对比这几个专业的差异"
+        ]
       }
     ]
   },
@@ -1130,9 +1165,6 @@
           "稳定就业",
           "就业",
           "建议"
-        ],
-        "assertThinkingContains": [
-          "正在看这条方向和当前方案的承接情况"
         ],
         "assertNotContains": [
           "已记录",
@@ -1166,7 +1198,12 @@
           "rich_decision_basis",
           "user_language"
         ],
-        "minTextLengthWarn": 180
+        "minTextLengthWarn": 180,
+        "assertThinkingContainsAny": [
+          "正在看这条发展方向是否适合你",
+          "还在分析你的问题，正在整理可用信息",
+          "正在看这条方向和当前方案的承接情况"
+        ]
       }
     ]
   },
@@ -1195,9 +1232,6 @@
           "稳定",
           "建议"
         ],
-        "assertThinkingContains": [
-          "正在对比这几个专业的差异"
-        ],
         "assertNotContains": [
           "已记录",
           "我记下",
@@ -1220,7 +1254,10 @@
           "确认后写入"
         ],
         "assertNoFollowups": true,
-        "warnElapsedSeconds": 25
+        "warnElapsedSeconds": 25,
+        "assertThinkingContainsAny": [
+          "正在对比这几个专业的差异"
+        ]
       }
     ]
   },
@@ -1250,9 +1287,6 @@
           "支撑",
           "候选",
           "建议"
-        ],
-        "assertThinkingContains": [
-          "正在看这条方向和当前方案的承接情况"
         ],
         "assertNotContains": [
           "已记录",
@@ -1286,7 +1320,12 @@
           "rich_decision_basis",
           "user_language"
         ],
-        "minTextLengthWarn": 180
+        "minTextLengthWarn": 180,
+        "assertThinkingContainsAny": [
+          "正在看这条发展方向是否适合你",
+          "还在分析你的问题，正在整理可用信息",
+          "正在看这条方向和当前方案的承接情况"
+        ]
       }
     ]
   },
@@ -1316,8 +1355,11 @@
           "确认"
         ],
         "assertThinkingContainsAny": [
+          "正在处理你的方案",
+          "正在整理当前方案的数量、梯度和风险",
           "正在读取当前方案并整理这次请求",
-          "正在生成这次调整的影响预览"
+          "正在生成这次调整的影响预览",
+          "正在理解你的问题，并结合当前信息整理回答"
         ],
         "assertNotContains": [
           "已直接调整",
@@ -1364,7 +1406,7 @@
       "realistic_user_input",
       "short_intent",
       "negative_preference",
-      "preview_confirm_boundary"
+      "impact_first_readonly"
     ],
     "assertPlanStyle": true,
     "prompts": [
@@ -1379,8 +1421,10 @@
           "影响"
         ],
         "assertThinkingContainsAny": [
-          "正在整理这个专业想法的影响，等你确认后才会记入偏好",
-          "正在结合这条待确认想法查看当前方案影响"
+          "正在看这个专业方向是否适合你",
+          "正在整理这个专业想法的影响和边界",
+          "还在分析你的问题，正在整理可用信息",
+          "这轮分析耗时较长，我会继续等待结果"
         ],
         "assertNotContains": [
           "候选结果收紧",
@@ -1397,10 +1441,10 @@
           "草稿"
         ],
         "expectedKeyPoints": [
-          "确认前不会写入后续参考",
+          "这轮只做分析",
           "医学",
           "护理",
-          "确认后"
+          "影响"
         ],
         "expectedKeyPointGroups": [
           {

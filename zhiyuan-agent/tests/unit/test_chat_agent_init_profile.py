@@ -116,6 +116,8 @@ def test_build_instructions_includes_plan_orchestration_boundaries():
     assert "高副作用动作" in instructions
     assert "`move_ordered_unit` 或 `remove_ordered_unit`" in instructions
     assert "删除第 N 个专业组" in instructions
+    assert "专业组顺序" in instructions
+    assert "专业组/志愿组" not in instructions
     assert "target_position=M" in instructions
     assert "青岛电影学院的新闻学" in instructions
     assert "query_volunteer_plan" in instructions
@@ -132,6 +134,9 @@ def test_build_instructions_includes_plan_orchestration_boundaries():
     assert "不要升级成 `review_plan` 或改方案预览" in instructions
     assert "如果用户只是问是否存在某类风险" in instructions
     assert "不要自动规划删除、替换或补偿" in instructions
+    assert "本轮审查结果是风险与提醒数量的权威事实" in instructions
+    assert "不要再拿历史上下文里的旧方案概览" in instructions
+    assert "单纯方案审查 `review_plan` 不要先调用 `collect_plan_context_inputs`" in instructions
 
 
 def test_build_instructions_includes_pending_plan_action_confirmation_payload():
@@ -189,7 +194,7 @@ def test_build_instructions_includes_explore_first_direction_fit_guidance():
     assert "不要并行或连续多次调用 `get_major_introduction`" in instructions
     assert "不要先调用 `analyze_current_major_interest`" in instructions
     assert "不要在同一轮再追加 `get_major_introduction`" in instructions
-    assert "Explore 专用工具已经返回当前方案承接" in instructions
+    assert "Explore 专用工具已经返回当前方案概况" in instructions
     assert "不要再补调 `plan_next_action(action_family=\"query_state\")`" in instructions
     assert "直接传结构化参数" in instructions
     assert "不要在同一轮重复调用同一个 preview 工具" in instructions

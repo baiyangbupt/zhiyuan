@@ -92,7 +92,7 @@ def test_intent_scenario_interest_stage_preference_returns_interest_text_with_ne
             )
         )
 
-    assert "分析结论" in resp
+    assert "初步判断" in resp
     assert "下一步" in resp
 
 
@@ -119,7 +119,7 @@ def test_intent_scenario_interest_stage_major_preference_also_returns_interest_t
             )
         )
 
-    assert "分析结论" in resp
+    assert "初步判断" in resp
     assert "计算机类" in resp
 
 
@@ -149,7 +149,8 @@ def test_intent_scenario_confirmed_preference_returns_text_without_candidate_req
     state_mock.assert_not_awaited()
     latent_mock.assert_not_awaited()
     assert resp.applied is True
-    assert "记下来了" in resp.message
+    assert "已确认" in resp.message
+    assert "后续报考参考" in resp.message
     assert "现在这份方案" in resp.message
 
 
@@ -189,7 +190,8 @@ def test_intent_scenario_confirmed_career_negative_preference_removes_latent_pro
         )
 
     assert resp.applied is True
-    assert "记下来了" in resp.message
+    assert "已确认" in resp.message
+    assert "后续报考参考" in resp.message
     query_mock.assert_not_awaited()
     state_mock.assert_awaited_once()
     latent_mock.assert_awaited_once_with(
@@ -310,7 +312,8 @@ def test_intent_scenario_handle_select_prefer_confirm_returns_confirm_text():
             )
         )
 
-    assert "可采纳内容" in resp or "如果你确认要把这些记成后续偏好" in resp
+    assert "待确认内容" in resp
+    assert "确认前不会写入后续参考" in resp
 
 
 def test_intent_scenario_handle_select_constraint_returns_candidate_query_text():
@@ -405,7 +408,8 @@ def test_intent_scenario_confirm_intent_change_with_career_preference_updates_la
         resp = json.loads(asyncio.run(update_volunteer_intent_state(ctx, action="confirm")))
 
     assert resp["applied"] is True
-    assert "记下来了" in resp["message"]
+    assert "已确认" in resp["message"]
+    assert "后续报考参考" in resp["message"]
     query_mock.assert_not_awaited()
     state_mock.assert_awaited_once()
     latent_mock.assert_awaited_once_with(

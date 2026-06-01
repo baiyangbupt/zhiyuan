@@ -131,6 +131,8 @@ class RequestContext:
     conversation_phase: ConversationPhase | None = None  # Phase 3 新增：统一对话阶段状态
     progress_callback: Callable[[str], Awaitable[None]] | None = None
     allow_explore_inner_llm: bool = True  # 正式聊天主链路可关闭 Explore 工具内二次生成，由主模型统一组织最终回复
+    enable_intent_side_effect_arbitration: bool = False  # 主链路用于拦截误触发的意向待确认副作用
+    recent_intent_analysis: dict[str, Any] | None = None  # 最近一次 Intent 工具结构化结果，供指代追问恢复上下文
     agent_observability: dict[str, Any] = field(default_factory=dict)  # 本轮 Agent 节点耗时与失败定位信息
 
 

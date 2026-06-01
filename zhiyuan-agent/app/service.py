@@ -110,24 +110,6 @@ _PLAN_STYLE_GUARD_PROMPT_KEYWORDS = (
     "往后挪",
     "换成",
 )
-_PLAN_MUTATION_PROMPT_KEYWORDS = (
-    "删除",
-    "删掉",
-    "去掉",
-    "移到",
-    "移动",
-    "往前挪",
-    "往后挪",
-    "排序",
-    "重排",
-    "加入",
-    "加进来",
-    "加进去",
-    "换成",
-    "替换",
-    "补齐",
-    "补几个",
-)
 _READONLY_USER_PROMPT_MARKERS = (
     "先别动",
     "先不要动",
@@ -557,6 +539,25 @@ def _parse_tool_return_json(content: Any) -> dict[str, Any] | None:
     return None
 
 
+def _extract_recent_intent_analysis_payload(messages: list[Any] | None) -> dict[str, Any] | None:
+    """Return the latest structured Intent analysis payload from persisted history.
+
+    The user-facing chat text intentionally omits internal selection values, but
+    follow-up analysis such as "这个偏好会影响当前方案吗" still needs the exact
+    prior intent facts. Persisted pydantic-ai history keeps tool returns, so we
+    recover from that structured source instead of guessing from natural text.
+    """
+    for part in reversed(_iter_tool_return_parts(messages)):
+        if part.tool_name not in _INTENT_PREVIEW_TOOL_NAMES:
+            continue
+        data = _parse_tool_return_json(part.content)
+        if not data:
+            continue
+        if any(key in data for key in ("items", "existingItems", "impactAnalysis", "impactText")):
+            return data
+    return None
+
+
 def _extract_execute_plan_action_refresh_targets(part: ToolReturnPart) -> list[str]:
     if part.tool_name != "execute_plan_action":
         return []
@@ -712,8 +713,6 @@ def _tool_calls_include_plan_workspace_refresh(messages: list[Any] | None) -> li
         "generate_planning_ordered_plan",
         "generate_planning_initial_plan",
         "move_planning_ordered_item",
-        "pin_planning_ordered_item",
-        "unpin_planning_ordered_item",
         "apply_planning_compensation",
     }
     execute_plan_action_targets = {
@@ -823,6 +822,29 @@ def _tool_calls_include_intent_preview(messages: list[Any] | None) -> bool:
     return any(part.tool_name in _INTENT_PREVIEW_TOOL_NAMES for part in _iter_tool_call_parts(messages))
 
 
+def _tool_returns_intent_existing_only(messages: list[Any] | None) -> bool:
+    for part in _iter_tool_return_parts(messages):
+        if part.tool_name not in _INTENT_PREVIEW_TOOL_NAMES:
+            continue
+        data = _parse_tool_return_json(part.content)
+        if str((data or {}).get("status") or "").strip() == "existing_only":
+            return True
+        text = str(getattr(part, "content", "") or "")
+        if "当前已经在后续报考参考" in text and "本轮不会重复新增" in text:
+            return True
+    return False
+
+
+def _tool_returns_interest_stage_intent_analysis(messages: list[Any] | None) -> bool:
+    for part in _iter_tool_return_parts(messages):
+        if part.tool_name not in _INTENT_PREVIEW_TOOL_NAMES:
+            continue
+        data = _parse_tool_return_json(part.content)
+        if str((data or {}).get("analysisStage") or "").strip() == "interest":
+            return True
+    return False
+
+
 def _normalize_pending_intent_reply(reply: str) -> str:
     if not isinstance(reply, str):
         return reply
@@ -842,6 +864,38 @@ def _normalize_pending_intent_reply(reply: str) -> str:
     if normalized != reply and "确认" not in normalized:
         normalized = normalized.rstrip("。") + "。如果确认要按这个方向作为后续参考，你再回复确认。"
     return normalized
+
+
+def _normalize_unbacked_recorded_wording(reply: str) -> str:
+    """Avoid implying that a read-only conclusion has been saved as user intent."""
+    if not isinstance(reply, str) or not reply.strip():
+        return reply
+    normalized = reply
+    replacements = (
+        ("这个判断可以先记下来", "这个判断可以先作为当前分析结论参考"),
+        ("这个结论可以先记下来", "这个结论可以先作为当前分析结论参考"),
+        ("这个方向可以先记下来", "这个方向可以先作为当前讨论方向参考"),
+        ("先记下来", "先作为当前结论参考"),
+        ("我先记下来", "我先按当前结论理解"),
+        ("我会先记下来", "我会先按当前结论理解"),
+    )
+    for source, target in replacements:
+        normalized = normalized.replace(source, target)
+    normalized = re.sub(
+        r"(?m)^好的，明白了。你倾向(.+?)这个方向，",
+        r"好的，先按刚才的分析结论理解：\1这个方向",
+        normalized,
+    )
+    normalized = re.sub(
+        r"(?m)^好的，明白了。你更倾向(.+?)这个方向，",
+        r"好的，先按刚才的分析结论理解：\1这个方向",
+        normalized,
+    )
+    return normalized
+
+
+def _reply_is_existing_only_intent_notice(reply: str) -> bool:
+    return "当前已经在后续报考参考" in str(reply or "") and "本轮不会重复新增" in str(reply or "")
 
 
 def _reply_looks_like_unbacked_intent_preview(reply: str) -> bool:
@@ -997,7 +1051,11 @@ def _latest_turn_has_plan_mutation_preview(messages: list[Any] | None) -> bool:
         action_family = str(data.get("action_family") or "").strip()
         effective_family = _PLAN_PREVIEW_TO_APPLY_ACTION_FAMILIES.get(action_family, action_family)
         result_kind = str(data.get("result_kind") or "").strip()
-        if effective_family in _PENDING_PLAN_ACTION_FAMILIES and result_kind in {"preview_only", "compensation_preview"}:
+        result_stage = str(data.get("stage") or "").strip()
+        if effective_family in _PENDING_PLAN_ACTION_FAMILIES and (
+            result_kind == "compensation_preview"
+            or result_stage == "preview"
+        ):
             return True
     return False
 
@@ -1064,6 +1122,31 @@ def _should_apply_pending_intent_directly(content: str, history: list[Any] | Non
     if _latest_turn_looks_readonly(history):
         return False
     return False
+
+
+def _should_apply_pending_plan_directly(content: str, history: list[Any] | None) -> bool:
+    if not _is_plan_action_confirmation(content):
+        return False
+    if not history:
+        return True
+    if _latest_turn_has_plan_mutation_preview(history):
+        return True
+    if _latest_turn_looks_readonly(history):
+        return False
+    return True
+
+
+def _stale_pending_plan_confirmation_guard_reply(history: list[Any] | None = None) -> str:
+    if _latest_turn_tool_names(history) and "analyze_current_career_direction" in _latest_turn_tool_names(history):
+        return (
+            "上一轮只是职业方向分析，没有待确认的偏好或方案动作，也没有待执行的方案动作。"
+            "如果你想展开体制内方向和当前方案的匹配，我可以继续分析；如果要调整方案，请直接说想怎么调，我会先给预览，确认后再执行。"
+        )
+    return "上一轮只是继续分析或查询，没有待确认的偏好或方案动作，也没有待执行的方案动作。你可以直接说想生成方案、审查方案或怎么调整，我会先说明影响，确认后再执行。"
+
+
+def _no_pending_intent_confirmation_guard_reply() -> str:
+    return "我这边没有找到上一轮仍在等待确认的偏好调整。你可以直接说想保留、排除或重点关注的方向，我会先整理成待确认内容。"
 
 
 _PENDING_PLAN_ACTION_FAMILIES = {
@@ -1282,9 +1365,16 @@ def _extract_pending_plan_action(messages: list[Any] | None) -> dict[str, Any] |
                     or last_non_actionable_adjustment_goal
                 )
                 continue
-            is_preview_result = result_kind in {"preview_only", "compensation_preview"}
             call_id = str(part.tool_call_id or "")
             call_payload = pending_calls.get(call_id) or {}
+            result_stage = str(result.get("stage") or call_payload.get("stage") or "").strip()
+            is_preview_result = (
+                result_kind == "compensation_preview"
+                or (
+                    result_kind == "preview_only"
+                    and result_stage == "preview"
+                )
+            )
             call_action_family = str(call_payload.get("action_family") or "").strip()
             effective_action_family = _PLAN_PREVIEW_TO_APPLY_ACTION_FAMILIES.get(
                 action_family or call_action_family,
@@ -1385,6 +1475,10 @@ _INTENT_CONFIRM_PHRASES = {
     "确认偏好",
     "确认这个要求",
     "确认要求",
+    "确认这个意向",
+    "确认意向",
+    "确认这个参考",
+    "确认参考",
 }
 
 
@@ -1404,6 +1498,23 @@ def _is_pending_intent_confirmation(content: str) -> bool:
     if not normalized:
         return False
     return normalized in _INTENT_CONFIRM_PHRASES
+
+
+def _is_explicit_pending_intent_confirmation(content: str) -> bool:
+    normalized = re.sub(r"\s+", "", (content or "").strip())
+    normalized = normalized.strip("。.!！?")
+    if not normalized:
+        return False
+    return normalized in {
+        "确认这个偏好",
+        "确认偏好",
+        "确认这个要求",
+        "确认要求",
+        "确认这个意向",
+        "确认意向",
+        "确认这个参考",
+        "确认参考",
+    }
 
 
 def _sanitize_reply_for_user(reply: str) -> str:
@@ -1446,13 +1557,6 @@ def _prompt_explicitly_readonly(content: str | None) -> bool:
     if not compact:
         return False
     return any(marker in compact for marker in _READONLY_USER_PROMPT_MARKERS)
-
-
-def _is_plan_mutation_request(content: str) -> bool:
-    normalized = re.sub(r"\s+", "", (content or "").strip())
-    if not normalized:
-        return False
-    return any(keyword in normalized for keyword in _PLAN_MUTATION_PROMPT_KEYWORDS)
 
 
 def _build_basic_plan_status_reply(planning: PlanningSummary) -> str:
@@ -1516,6 +1620,35 @@ def _build_basic_plan_status_reply(planning: PlanningSummary) -> str:
     return ''.join(lines)
 
 
+def _build_agent_interruption_fallback_reply(
+    content: str,
+    planning: PlanningSummary | None,
+    agent_observability: dict[str, Any] | None = None,
+) -> str | None:
+    """Return a safe user-facing reply when the model run is interrupted.
+
+    This is intentionally conservative: it only uses already loaded planning
+    summary facts and never claims that a tool action was completed.
+    """
+    if not isinstance(agent_observability, dict) or not agent_observability.get("failedNode"):
+        return None
+
+    prefix = (
+        "这轮模型服务中断了，我先不改动你的方案或偏好。"
+        "为了不让你一直等，我先根据已经读取到的信息给一个安全版结论："
+    )
+    if planning is not None and (planning.ordered_total > 0 or planning.draft_total > 0):
+        status_reply = _build_basic_plan_status_reply(planning).strip()
+        if status_reply:
+            return f"{prefix}\n\n{status_reply}"
+
+    return (
+        "这轮模型服务中断了，我先不改动你的方案或偏好。"
+        "你可以再发一次刚才的问题，我会继续按当前会话信息处理；"
+        "如果涉及方案调整，我仍会先给预览，等你确认后再执行。"
+    )
+
+
 async def _load_pending_intent_confirmation(session_id: str) -> PendingConfirmation | None:
     try:
         cache_result = await get_intent_change_cache(session_id)
@@ -1544,9 +1677,10 @@ def _should_guard_plan_reply(content: str) -> bool:
 
 def _normalize_user_facing_terms(reply: str) -> str:
     """Remove internal product terms from user-facing replies."""
-    if not isinstance(reply, str) or "画像" not in reply:
+    if not isinstance(reply, str):
         return reply
     replacements = (
+        ("志愿组", "专业组"),
         ("加入画像", "记成后续报考参考"),
         ("纳入画像", "纳入后续报考参考"),
         ("写入画像", "记成后续报考参考"),
@@ -1563,6 +1697,18 @@ def _normalize_user_facing_terms(reply: str) -> str:
     normalized = reply
     for source, target in replacements:
         normalized = normalized.replace(source, target)
+    if any(token in normalized for token in ("方案", "志愿", "候选")):
+        plan_add_replacements = (
+            ("添加预览", "加入方案预览"),
+            ("添加建议", "加入方案建议"),
+            ("确认要添加吗", "确认加入方案吗"),
+            ("确认添加吗", "确认加入方案吗"),
+            ("要添加吗", "要加入方案吗"),
+            ("执行添加", "执行加入方案"),
+            ("执行后会将该志愿补入方案", "执行后会将该志愿加入方案"),
+        )
+        for source, target in plan_add_replacements:
+            normalized = normalized.replace(source, target)
     return normalized
 
 
@@ -1653,6 +1799,13 @@ def _append_plan_preview_confirmation_boundary(
     action_family = str(pending_action.get("action_family") or "")
     if action_family not in _PENDING_PLAN_ACTION_FAMILIES:
         return reply
+    if action_family in {"move_ordered_unit", "remove_ordered_unit"}:
+        compact_reply = _compact_plan_reply_text(reply)
+        if "不是按单条志愿位置" not in compact_reply and "按专业组顺序计算" not in compact_reply:
+            reply = (
+                reply.rstrip()
+                + "\n\n位置说明：这里的“第几个”按专业组顺序计算，不是按单条志愿位置计算；组内专业会保持连续。"
+            )
     if _reply_conflicts_with_pending_plan_action(reply):
         return _build_pending_plan_preview_reply(pending_action)
     if asks_confirmation:
@@ -1947,17 +2100,6 @@ def build_timeout_fallback_from_recent_plan_execution(
     result = consume_recent_plan_execution_result(session_id, user_prompt)
     if not result:
         return None
-    if (
-        _is_plan_mutation_request(user_prompt)
-        and str(result.get("action_family") or "").strip() == "query_state"
-        and str(result.get("result_kind") or "").strip() == "status_overview"
-    ):
-        logger.info(
-            "Skip query_state timeout fallback for mutating prompt: session_id=%s prompt=%s",
-            session_id,
-            user_prompt,
-        )
-        return None
     reply = _build_plan_timeout_fallback_reply(result)
     if not reply:
         return None
@@ -2084,6 +2226,9 @@ class ChatService:
             config=self.history_config,
         )
         chat_history = runtime_history.chat_history
+        recent_intent_analysis = _extract_recent_intent_analysis_payload(runtime_history.model_history)
+        if recent_intent_analysis is None:
+            recent_intent_analysis = _extract_recent_intent_analysis_payload(history)
         logger.info(
             "Runtime history prepared: session_id=%s full_len=%d runtime_len=%d full_chars=%d runtime_chars=%d dropped_tool_returns=%d has_pending=%s",
             session_id,
@@ -2220,13 +2365,15 @@ class ChatService:
             conversation_phase=conversation_phase,
             progress_callback=on_progress,
             allow_explore_inner_llm=False,
+            enable_intent_side_effect_arbitration=True,
+            recent_intent_analysis=recent_intent_analysis,
         )
         active_pending = resolve_pending_confirmation(request_context)
         active_pending_kind = str(getattr(active_pending, "kind", "") or "").strip()
         active_plan_payload_text = resolve_pending_plan_payload_text(request_context)
         turn_started_at = time.monotonic()
 
-        if active_pending_kind == "plan_mutation" and _is_plan_action_confirmation(content):
+        if active_pending_kind == "plan_mutation" and _should_apply_pending_plan_directly(content, history):
             action_family = str(getattr(active_pending, "action_family", "") or "").strip()
             plan_payload = active_plan_payload_text
             tool_call_id = f"direct-{action_family or 'pending-plan'}-confirmation"
@@ -2297,6 +2444,31 @@ class ChatService:
                 )
             return reply
 
+        if active_pending_kind == "plan_mutation" and _is_plan_action_confirmation(content):
+            reply = _stale_pending_plan_confirmation_guard_reply(history)
+            new_messages = [
+                ModelRequest(parts=[UserPromptPart(content=content)]),
+                ModelResponse(parts=[TextPart(content=reply)], model_name="direct-plan-confirmation-guard"),
+            ]
+            try:
+                history_to_save = list(history or [])
+                history_to_save.extend(new_messages)
+                await self.history_store.save(session_id, history_to_save)
+            except Exception:
+                logger.exception("Failed to save stale pending plan confirmation guard history: session_id=%s", session_id)
+            _log_conversation_turn_event(
+                sessionId=session_id,
+                userId=user_id,
+                scene="plan",
+                routingPath="plan_confirmation_guard_stale_pending",
+                pendingType="plan",
+                actionFamily=None,
+                totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
+                status="success",
+                errorType=None,
+            )
+            return reply
+
         if active_pending_kind == "intent_change" and _should_apply_pending_intent_directly(content, history):
             tool_call_id = "direct-pending-intent-confirmation"
             tool_started_at = time.monotonic()
@@ -2360,7 +2532,8 @@ class ChatService:
             return reply
 
         if active_pending_kind == "intent_change" and _is_pending_intent_confirmation(content):
-            reply = "我这边没有找到上一轮仍在等待确认的偏好调整。你可以直接说想保留、排除或重点关注的方向，我会先整理成待确认内容。"
+            readonly_previous_turn = _latest_turn_looks_readonly(history)
+            reply = _stale_pending_plan_confirmation_guard_reply(history) if readonly_previous_turn else _no_pending_intent_confirmation_guard_reply()
             new_messages = [
                 ModelRequest(parts=[UserPromptPart(content=content)]),
                 ModelResponse(parts=[TextPart(content=reply)], model_name="direct-intent-confirmation-guard"),
@@ -2374,9 +2547,34 @@ class ChatService:
             _log_conversation_turn_event(
                 sessionId=session_id,
                 userId=user_id,
+                scene="plan" if readonly_previous_turn else "intent",
+                routingPath="plan_confirmation_guard_no_pending" if readonly_previous_turn else "intent_confirmation_guard_stale_pending",
+                pendingType=None if readonly_previous_turn else "intent",
+                actionFamily=None,
+                totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
+                status="success",
+                errorType=None,
+            )
+            return reply
+
+        if active_pending is None and _is_explicit_pending_intent_confirmation(content):
+            reply = _no_pending_intent_confirmation_guard_reply()
+            new_messages = [
+                ModelRequest(parts=[UserPromptPart(content=content)]),
+                ModelResponse(parts=[TextPart(content=reply)], model_name="direct-intent-confirmation-guard"),
+            ]
+            try:
+                history_to_save = list(history or [])
+                history_to_save.extend(new_messages)
+                await self.history_store.save(session_id, history_to_save)
+            except Exception:
+                logger.exception("Failed to save no-pending intent confirmation guard history: session_id=%s", session_id)
+            _log_conversation_turn_event(
+                sessionId=session_id,
+                userId=user_id,
                 scene="intent",
-                routingPath="intent_confirmation_guard_stale_pending",
-                pendingType="intent",
+                routingPath="intent_confirmation_guard_no_pending",
+                pendingType=None,
                 actionFamily=None,
                 totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
                 status="success",
@@ -2516,6 +2714,19 @@ class ChatService:
                     )
                 )
                 await self.history_store.save(session_id, failed_history)
+            fallback_reply = _build_agent_interruption_fallback_reply(
+                content,
+                parsed_planning_summary,
+                request_context.agent_observability,
+            )
+            if fallback_reply and not isinstance(exc, asyncio.CancelledError):
+                fallback_messages = [
+                    ModelRequest(parts=[UserPromptPart(content=content)]),
+                    ModelResponse(parts=[TextPart(content=fallback_reply)], model_name="agent-interruption-fallback"),
+                ]
+                with contextlib.suppress(Exception, asyncio.CancelledError):
+                    await self.history_store.save(session_id, list(history or []) + fallback_messages)
+                return fallback_reply
             raise
         finally:
             for progress_task in (initial_progress_task, long_progress_task):
@@ -2548,6 +2759,25 @@ class ChatService:
         intent_preview_used = intent_preview_used_current_turn
         if not new_messages:
             intent_preview_used = _tool_calls_include_intent_preview(all_messages)
+        intent_existing_only = _tool_returns_intent_existing_only(new_messages)
+        if not new_messages:
+            intent_existing_only = _tool_returns_intent_existing_only(all_messages)
+        intent_side_effect_decision = request_context.agent_observability.get("intentSideEffectDecision")
+        intent_interest_stage_result = _tool_returns_interest_stage_intent_analysis(new_messages)
+        if not new_messages:
+            intent_interest_stage_result = _tool_returns_interest_stage_intent_analysis(all_messages)
+        intent_preview_downgraded = (
+            intent_interest_stage_result
+            or (
+                isinstance(intent_side_effect_decision, dict)
+                and str(intent_side_effect_decision.get("decision") or "").strip() in {"analysis_only", "mixed_answer_then_ask"}
+                and float(intent_side_effect_decision.get("confidence") or 0.0) >= 0.7
+            )
+        )
+        if intent_preview_downgraded and getattr(request_context, "conversation_phase", None) is not None:
+            request_context.conversation_phase.clear_pending()
+            request_context.pending_intent_change = False
+            active_pending_kind = ""
         readonly_prompt = _prompt_explicitly_readonly(content)
         readonly_mutation_preview_guarded = False
         if readonly_prompt and _tool_returns_mutating_plan_preview(new_messages):
@@ -2578,7 +2808,7 @@ class ChatService:
                 _replace_text_reply(all_messages, reply, bounded_reply)
                 reply = bounded_reply
 
-        if intent_preview_used and isinstance(reply, str):
+        if intent_preview_used and not intent_preview_downgraded and isinstance(reply, str):
             pending_intent_reply = _normalize_pending_intent_reply(reply)
             if pending_intent_reply != reply:
                 _replace_text_reply(new_messages, reply, pending_intent_reply)
@@ -2592,20 +2822,29 @@ class ChatService:
                 _replace_text_reply(all_messages, reply, user_facing_reply)
                 reply = user_facing_reply
 
-        has_pending_intent_context = intent_preview_used or (
+        latest_turn_readonly = _latest_turn_looks_readonly(new_messages if new_messages else all_messages)
+        has_pending_intent_context = (intent_preview_used and not intent_preview_downgraded) or (
             active_pending_kind == "intent_change"
+            and not latest_turn_readonly
             and not plan_chain_used
             and not _is_plan_action_confirmation(content)
             and _is_pending_intent_followup_turn(content, reply)
         )
+        if isinstance(reply, str) and _reply_is_existing_only_intent_notice(reply):
+            has_pending_intent_context = False
         if isinstance(reply, str) and not intent_preview_used and not has_pending_intent_context:
             unbacked_intent_reply = _normalize_unbacked_intent_preview_reply(reply)
             if unbacked_intent_reply != reply:
                 _replace_text_reply(new_messages, reply, unbacked_intent_reply)
                 _replace_text_reply(all_messages, reply, unbacked_intent_reply)
                 reply = unbacked_intent_reply
+            unbacked_recorded_reply = _normalize_unbacked_recorded_wording(reply)
+            if unbacked_recorded_reply != reply:
+                _replace_text_reply(new_messages, reply, unbacked_recorded_reply)
+                _replace_text_reply(all_messages, reply, unbacked_recorded_reply)
+                reply = unbacked_recorded_reply
 
-        if isinstance(reply, str) and has_pending_intent_context:
+        if isinstance(reply, str) and has_pending_intent_context and not intent_existing_only:
             bounded_intent_reply = _append_pending_intent_boundary(
                 reply,
                 has_pending_intent=has_pending_intent_context,

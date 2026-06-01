@@ -316,7 +316,7 @@ def test_dialog_scenario_career_compare_explore_keeps_comparison_not_plan_listin
             "app.tools.intent_preview_tool.preview_direction_comparison_from_request",
             new=AsyncMock(
                 return_value=(
-                    "分析结论\n- 我先帮你做了一个方向对比分析。\n\n"
+                    "分析结论\n- 先给你一个方向判断，这轮只做分析，不会改动方案。\n\n"
                     "当前判断\n- 这类问题更适合先看你本人更适合哪条路径，再看当前方案更偏向哪一边。\n"
                     "- 深造看培养平台，稳定就业看岗位确定性，体制内看专业和院校属性。\n\n"
                     "下一步\n- 如果你愿意，我可以接着单独展开其中一个方向，再看它和当前方案到底有多匹配。"
@@ -331,7 +331,7 @@ def test_dialog_scenario_career_compare_explore_keeps_comparison_not_plan_listin
         resp = _run(analyze_current_career_direction(ctx))
 
     comparison_mock.assert_awaited_once()
-    assert "方向对比分析" in resp
+    assert "方向判断" in resp
     assert "先看你本人更适合哪条路径" in resp
     assert "下一步" in resp
 
@@ -466,7 +466,8 @@ def test_dialog_scenario_confirmed_career_preference_updates_latent_profile_only
         resp = json.loads(_run(update_volunteer_intent_state(ctx, action="confirm")))["message"]
 
     assert isinstance(resp, str)
-    assert "记下来了" in resp
+    assert "已确认" in resp
+    assert "后续报考参考" in resp
     query_mock.assert_not_awaited()
     state_mock.assert_awaited_once()
     latent_mock.assert_awaited_once_with(

@@ -721,3 +721,94 @@ def test_planning_scenario_review_plan_runs_through_plan_orchestration_chain():
     assert result_data["facts"]["warn_count"] == 2
     mock_review_request.assert_awaited_once()
     mock_state.assert_awaited_once()
+
+
+def test_plan_next_action_requires_structured_major_group_position_ref():
+    with patch(
+        "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
+        new=AsyncMock(
+            return_value=SimpleNamespace(
+                summary="阶段=ordered；方案=45/45；院校专业组模式",
+                draft_count=0,
+                ordered_count=45,
+                target_count=45,
+                relation_lines=[],
+                review_issues=[],
+            )
+        ),
+    ):
+        resp = asyncio.run(
+            plan_next_action(
+                _ctx("916"),
+                user_goal="把第4个专业组移到第2位",
+                action_family="move_ordered_unit",
+            )
+        )
+
+    payload = json.loads(resp)
+    assert payload["stage"] == "analyze"
+    assert payload["action_family"] == "move_ordered_unit"
+    assert set(payload["missing_inputs"]) == {"unit_ids", "target_position"}
+    assert payload["requires_confirmation"] is False
+
+
+def test_plan_next_action_accepts_structured_major_group_position_ref():
+    with patch(
+        "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
+        new=AsyncMock(
+            return_value=SimpleNamespace(
+                summary="阶段=ordered；方案=45/45；院校专业组模式",
+                draft_count=0,
+                ordered_count=45,
+                target_count=45,
+                relation_lines=[],
+                review_issues=[],
+            )
+        ),
+    ):
+        resp = asyncio.run(
+            plan_next_action(
+                _ctx("916"),
+                user_goal="把第4个专业组移到第2位",
+                action_family="move_ordered_unit",
+                source_position=4,
+                target_position=2,
+            )
+        )
+
+    payload = json.loads(resp)
+    assert payload["stage"] == "preview"
+    assert payload["action_family"] == "move_ordered_unit"
+    assert payload["missing_inputs"] == []
+    assert payload["atomic_actions"][0]["source_position"] == 4
+    assert payload["atomic_actions"][0]["target_position"] == 2
+    assert payload["requires_confirmation"] is True
+
+
+def test_plan_next_action_requires_structured_named_move_position_ref():
+    with patch(
+        "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
+        new=AsyncMock(
+            return_value=SimpleNamespace(
+                summary="阶段=ordered；方案=94/96",
+                draft_count=0,
+                ordered_count=94,
+                target_count=96,
+                relation_lines=[],
+                review_issues=[],
+            )
+        ),
+    ):
+        resp = asyncio.run(
+            plan_next_action(
+                _ctx("917"),
+                user_goal="把青岛城市学院的国际经济与贸易改到第3位",
+                action_family="move_unit",
+            )
+        )
+
+    payload = json.loads(resp)
+    assert payload["stage"] == "analyze"
+    assert payload["action_family"] == "move_unit"
+    assert set(payload["missing_inputs"]) == {"volunteer_id", "target_position"}
+    assert payload["requires_confirmation"] is False

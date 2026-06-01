@@ -224,7 +224,7 @@ def resolve_major_mentions_from_text(text: str, batch: str | None = "01") -> lis
                     _candidate(raw_text=name, canonical_name=name, level=level, source="exact"),
                 )
 
-    priority = {"level2": 0, "level1": 1, "level3": 2}
+    priority = {"level3": 0, "level2": 1, "level1": 2}
     ordered = sorted(
         spans,
         key=lambda item: (-(item[1] - item[0]), item[0], priority.get(item[2].level or "", 9), item[2].canonical_name),
@@ -316,6 +316,9 @@ def build_major_relation_notes(major_intents: dict[str, list[str]] | None, batch
     negative_level1 = list(major_intents.get("negative_level1") or [])
     negative_level2 = list(major_intents.get("negative_level2") or [])
     negative_level3 = list(major_intents.get("negative_level3") or [])
+
+    if "教育学类" in negative_level2:
+        notes.append("如果核心是不想当老师，教育学类和师范培养方向需要谨慎；但师范院校里的非师范专业不等于都要排除。")
 
     for level2 in negative_level2:
         parent = level2_to_level1.get(level2)

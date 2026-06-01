@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -14,7 +13,6 @@ class ReviewIssueRule:
     label: str
     scope_kind: ReviewIssueScopeKind
     default_action_family: str | None
-    aliases: tuple[str, ...] = ()
 
 
 _REVIEW_ISSUE_RULES: dict[str, ReviewIssueRule] = {
@@ -23,84 +21,72 @@ _REVIEW_ISSUE_RULES: dict[str, ReviewIssueRule] = {
         label="高收费",
         scope_kind="item_removal",
         default_action_family="remove_units",
-        aliases=("高收费", "高学费"),
     ),
     "cooperative_program": ReviewIssueRule(
         code="cooperative_program",
         label="中外合作",
         scope_kind="item_removal",
         default_action_family="remove_units",
-        aliases=("中外合作", "中外合作办学"),
     ),
     "admission_limit": ReviewIssueRule(
         code="admission_limit",
         label="限报条件",
         scope_kind="item_removal",
         default_action_family="remove_units",
-        aliases=("限报", "限制报考", "报考限制"),
     ),
     "special_enrollment": ReviewIssueRule(
         code="special_enrollment",
         label="特殊类型招生",
         scope_kind="item_removal",
         default_action_family="remove_units",
-        aliases=("特殊类型", "专项", "公费", "定向", "强基"),
     ),
     "probability_inversion": ReviewIssueRule(
         code="probability_inversion",
         label="概率倒挂",
         scope_kind="structural",
         default_action_family="analyze_adjustment",
-        aliases=("倒挂", "录取概率倒挂"),
     ),
     "probability_gap": ReviewIssueRule(
         code="probability_gap",
         label="梯度断层",
         scope_kind="structural",
         default_action_family="analyze_adjustment",
-        aliases=("梯度断层", "断层", "概率断层"),
     ),
     "ratio_distribution": ReviewIssueRule(
         code="ratio_distribution",
         label="冲稳保配比",
         scope_kind="structural",
         default_action_family="analyze_adjustment",
-        aliases=("冲稳保", "配比", "冲区占比", "保区占比"),
     ),
     "safety_guard": ReviewIssueRule(
         code="safety_guard",
         label="本省保底不足",
         scope_kind="structural",
         default_action_family="preview_compensation",
-        aliases=("本省保底", "保底不足", "兜底"),
     ),
     "count_validation": ReviewIssueRule(
         code="count_validation",
         label="数量缺口",
         scope_kind="structural",
         default_action_family="preview_compensation",
-        aliases=("数量不足", "补满", "补齐", "数量要求"),
     ),
     "edge_score": ReviewIssueRule(
         code="edge_score",
         label="边缘分",
         scope_kind="structural",
         default_action_family="analyze_adjustment",
-        aliases=("边缘分", "边缘分数"),
     ),
     "major_group_safety_intent_alignment": ReviewIssueRule(
         code="major_group_safety_intent_alignment",
         label="非意向托底",
         scope_kind="structural",
         default_action_family="analyze_adjustment",
-        aliases=("非意向托底", "托底专业", "非意向专业"),
     ),
     "group_inner_safety_guard": ReviewIssueRule(
         code="group_inner_safety_guard",
         label="组内安全垫不足",
         scope_kind="structural",
         default_action_family="analyze_adjustment",
-        aliases=("安全垫", "组内安全垫"),
     ),
     "plan_update_notice": ReviewIssueRule(
         code="plan_update_notice",
@@ -126,8 +112,6 @@ def review_issue_label(code: str | None, summary: str | None = None) -> str:
     if rule:
         return rule.label
     text = str(summary or code or "").strip()
-    text = re.sub(r"^(当前方案|当前排序|当前志愿|当前分数)", "", text)
-    text = re.sub(r"^(包含|存在|属于|未发现|缺少)", "", text)
     return text or str(code or "").strip() or "审查问题"
 
 
@@ -278,27 +262,3 @@ def summarize_review_issue_scope(issue: dict[str, Any]) -> str:
     if unit_count > 0 or volunteer_count > 0:
         return f"{label}({unit_count}u/{volunteer_count}v)"
     return label
-
-
-def match_review_issue_code_from_goal(text: str | None, review_issues: list[dict[str, Any]]) -> str | None:
-    normalized = re.sub(r"\s+", "", str(text or "").strip())
-    if not normalized:
-        return None
-    best_match: tuple[int, str] | None = None
-    for issue in review_issues or []:
-        code = str(issue.get("code") or "").strip()
-        if not code:
-            continue
-        rule = get_review_issue_rule(code)
-        candidates = [code, str(issue.get("label") or "").strip(), str(issue.get("summary") or "").strip()]
-        if rule:
-            candidates.extend(rule.aliases)
-        for candidate in candidates:
-            compact = re.sub(r"\s+", "", str(candidate or "").strip())
-            if not compact:
-                continue
-            if compact in normalized:
-                match = (len(compact), code)
-                if best_match is None or match[0] > best_match[0]:
-                    best_match = match
-    return best_match[1] if best_match else None

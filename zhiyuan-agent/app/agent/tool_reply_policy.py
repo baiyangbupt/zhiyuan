@@ -21,6 +21,14 @@ INTENT_PREVIEW_TOOL_NAMES = {
     "preview_current_career_intent_confirmation",
 }
 
+READONLY_EXPLORE_TOOL_NAMES = {
+    "analyze_current_interest",
+    "analyze_current_school_interest",
+    "analyze_current_major_interest",
+    "analyze_current_region_interest",
+    "analyze_current_career_direction",
+}
+
 DIRECT_BLOCKING_REPLY_FOCUS = {
     "needs_volunteer_selection",
     "needs_candidate_selection",
@@ -30,6 +38,13 @@ DIRECT_BLOCKING_REPLY_FOCUS = {
 DIRECT_REPLY_RESULT_KINDS = {
     "no_change",
 }
+
+_QUERY_VOLUNTEER_PLAN_CONTINUE_MARKERS = (
+    "不是局部查询",
+    "应先走方案动作预览",
+    "查询候选机会失败",
+    "查询当前方案时发生错误",
+)
 
 
 @dataclass(frozen=True)
@@ -65,6 +80,11 @@ def decide_tool_reply(
     raw_text = parse_tool_return_text(tool_return)
 
     explicit_strategy = _normalize_reply_strategy(payload.get("reply_strategy")) if payload else ""
+    if explicit_strategy == "continue_model":
+        return ToolReplyDecision(
+            strategy="continue_model",
+            reason="explicit_continue_model",
+        )
     if explicit_strategy in {"direct_reply", "direct_blocking", "preview_wait_confirm"}:
         reply = _payload_reply(payload) or raw_text
         return ToolReplyDecision(
@@ -81,15 +101,100 @@ def decide_tool_reply(
             reason="intent_preview_tool",
         )
 
+    if tool_name == "query_volunteer_plan" and raw_text and not _query_result_should_continue(raw_text):
+        return ToolReplyDecision(
+            strategy="direct_reply",
+            reply=raw_text,
+            reason="read_only_plan_query_result",
+        )
+
+    if tool_name in READONLY_EXPLORE_TOOL_NAMES:
+        reply = _readonly_explore_reply(payload, raw_text)
+        if reply:
+            return ToolReplyDecision(
+                strategy="direct_reply",
+                reply=reply,
+                reason="read_only_explore_result",
+            )
+
     if payload:
         result_kind = str(payload.get("result_kind") or "").strip()
+        action_family = str(payload.get("action_family") or "").strip()
         reply_focus = _reply_focus_set(payload)
         reply = _payload_reply(payload)
+        if (
+            tool_name == "execute_plan_action"
+            and action_family == "query_state"
+            and result_kind == "status_overview"
+            and reply
+        ):
+            return ToolReplyDecision(
+                strategy="direct_reply",
+                reply=reply,
+                reason="structured_status_overview",
+            )
+        if (
+            tool_name == "execute_plan_action"
+            and action_family == "review_plan"
+            and result_kind == "review_result"
+            and "direct_review_reply" in reply_focus
+            and reply
+        ):
+            return ToolReplyDecision(
+                strategy="direct_reply",
+                reply=reply,
+                reason="structured_review_result",
+            )
         if result_kind == "error" and reply_focus & DIRECT_BLOCKING_REPLY_FOCUS and reply:
             return ToolReplyDecision(
                 strategy="direct_blocking",
                 reply=reply,
                 reason="structured_blocking_result",
+            )
+        if (
+            tool_name == "execute_plan_action"
+            and result_kind == "preview_only"
+            and str(payload.get("action_family") or "").strip() == "sort_ordered_plan"
+            and reply
+        ):
+            return ToolReplyDecision(
+                strategy="preview_wait_confirm",
+                reply=reply,
+                reason="structured_sort_preview",
+            )
+        if (
+            tool_name == "execute_plan_action"
+            and result_kind == "preview_only"
+            and ({"unit_position_preview", "volunteer_position_preview"} & reply_focus)
+            and reply
+        ):
+            return ToolReplyDecision(
+                strategy="preview_wait_confirm",
+                reply=reply,
+                reason="structured_position_preview",
+            )
+        if (
+            tool_name == "execute_plan_action"
+            and action_family == "add_units"
+            and result_kind == "preview_only"
+            and "confirmation_required" in reply_focus
+            and reply
+        ):
+            return ToolReplyDecision(
+                strategy="preview_wait_confirm",
+                reply=reply,
+                reason="structured_add_preview",
+            )
+        if (
+            tool_name == "execute_plan_action"
+            and result_kind == "compensation_preview"
+            and "empty_compensation_preview" not in reply_focus
+            and reply
+        ):
+            return ToolReplyDecision(
+                strategy="preview_wait_confirm",
+                reply=reply,
+                reason="structured_compensation_preview",
             )
         if result_kind in DIRECT_REPLY_RESULT_KINDS and reply:
             return ToolReplyDecision(
@@ -144,3 +249,28 @@ def _normalize_reply_strategy(value: Any) -> str:
     if text in {"direct_reply", "direct_blocking", "preview_wait_confirm", "continue_model"}:
         return text
     return ""
+
+
+def _query_result_should_continue(text: str) -> bool:
+    normalized = str(text or "").strip()
+    if not normalized:
+        return True
+    return any(marker in normalized for marker in _QUERY_VOLUNTEER_PLAN_CONTINUE_MARKERS)
+
+
+def _readonly_explore_reply(payload: dict[str, Any], raw_text: str | None) -> str | None:
+    if payload:
+        return _payload_reply(payload)
+    text = str(raw_text or "").strip()
+    if not text:
+        return None
+    if _looks_like_structured_payload_without_reply(text):
+        return None
+    return text
+
+
+def _looks_like_structured_payload_without_reply(text: str) -> bool:
+    stripped = text.strip()
+    return (stripped.startswith("{") and stripped.endswith("}")) or (
+        stripped.startswith("[") and stripped.endswith("]")
+    )

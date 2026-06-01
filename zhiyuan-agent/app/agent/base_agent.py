@@ -105,6 +105,14 @@ class BaseAgent(Generic[T]):
         """将工具名映射为用户可见的中文提示。子类可覆写。返回 None 表示不推送。"""
         return None
 
+    def get_progress_hint_for_tool_call(self, tool_call: ToolCallPart) -> str | None:
+        """Return a progress hint for one concrete tool call.
+
+        Subclasses can inspect structured tool arguments here. The fallback keeps
+        the historical tool-name-only behavior.
+        """
+        return self.get_progress_hint(tool_call.tool_name)
+
     def should_return_directly_from_tool(
         self,
         tool_names: list[str],
@@ -179,7 +187,7 @@ class BaseAgent(Generic[T]):
                     for part in node.model_response.parts:
                         if isinstance(part, ToolCallPart):
                             tool_names.append(part.tool_name)
-                            hint = self.get_progress_hint(part.tool_name)
+                            hint = self.get_progress_hint_for_tool_call(part)
                             if hint and hint not in sent_hints:
                                 sent_hints.add(hint)
                                 try:

@@ -17,8 +17,9 @@
     "prompts": [
       {
         "prompt": "青岛城市学院相关专业是不是有多个，先帮我判断一下，不要直接改方案",
-        "assertContainsAny": ["青岛城市", "方案", "候选", "命中", "相关"],
-        "assertNotContains": ["已直接调整", "确认后执行", "payload", "stage", "action_family", "volunteerId", "id=", "草稿"]
+        "assertContains": ["青岛城市学院", "命中"],
+        "assertContainsAny": ["7 条", "7个", "多个"],
+        "assertNotContains": ["方案已经有了", "梯度分布", "审查提醒", "已直接调整", "确认后执行", "payload", "stage", "action_family", "volunteerId", "id=", "草稿"]
       }
     ]
   },

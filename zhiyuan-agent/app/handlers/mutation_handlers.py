@@ -1,7 +1,7 @@
 """志愿增删改类 handler。
 
-覆盖 action_family: add_units, remove_units, move_unit, pin_unit,
-unpin_unit, replace_units, regenerate_order。
+覆盖 action_family: add_units, remove_units, move_unit, replace_units,
+regenerate_order, sort_ordered_plan, move_ordered_unit, remove_ordered_unit。
 最复杂，涉及 volunteer_ref 解析和多步动作组合。
 """
 
@@ -17,25 +17,28 @@ from app.handlers.registry import register_handler
 from app.tools.plan_orchestration_models import PlanActionPlan, PlanExecutionResult
 from app.tools.planning_workflow_tool import (
     move_planning_ordered_item,
-    pin_planning_ordered_item,
     remove_planning_ordered_items,
     select_planning_ordered_items,
-    unpin_planning_ordered_item,
 )
 from app.tools.plan_execution_tool import (
     _count_ordered_units_for_ids,
     _candidate_ref_resolution_message,
-    _goal_requests_replacement,
+    _extract_source_major_names,
+    _infer_ordered_sort_field,
+    _move_ordered_unit,
     _ordered_ref_resolution_message,
     _parse_filter_list,
     _preview_or_block_replace_by_candidate_capacity,
     _regenerate_ordered_plan,
+    _remove_ordered_units,
     _replace_no_add_clarification,
     _resolve_ordered_volunteer_refs,
     _resolve_candidate_volunteer_refs,
+    _resolve_ordered_unit_ids,
     _resolve_review_issue_action_scope,
     _select_candidates_by_filters_into_plan,
     _should_preflight_replace_capacity,
+    _sort_ordered_plan,
     _structural_review_issue_guidance,
 )
 
@@ -51,6 +54,17 @@ _NO_ADD_CANDIDATES_MESSAGE = "当前条件下没有找到可加入方案的候�
 
 def _contains_natural_ref_text(refs: list[str]) -> bool:
     return any(any(ord(char) > 127 for char in str(ref or "")) for ref in refs)
+
+
+def _has_replacement_scope(filters: dict[str, Any] | None) -> bool:
+    for key, value in (filters or {}).items():
+        if key == "limit":
+            continue
+        if key in {"school_tags", "major_tags"} and str(value or "").strip() == "[]":
+            continue
+        if str(value or "").strip():
+            return True
+    return False
 
 
 @register_handler("add_units")
@@ -265,105 +279,6 @@ async def handle_move_unit(
     )
 
 
-@register_handler("pin_unit")
-async def handle_pin_unit(
-    ctx: RunContext[RequestContext], plan: PlanActionPlan
-) -> PlanExecutionResult:
-    reply_focus: list[str] = ["mutation_result", "plan_update", "pinned_unit"]
-    next_step_hints: list[str] = ["优先说明固定位置是否完成，再根据需要补充复审影响。"]
-    result_kind = "mutation_result"
-    atomic = plan.atomic_actions[0]
-    resolved_ids, missing_refs = await _resolve_ordered_volunteer_refs(ctx, atomic.volunteer_ids)
-    executed_actions: list[dict[str, object]] = []
-    affected_volunteer_ids: list[str] = []
-
-    if missing_refs or not resolved_ids:
-        missing_text = "、".join(missing_refs[:5]) if missing_refs else "要固定的志愿"
-        result_kind = "error"
-        state_summary = _ordered_ref_resolution_message(missing_text, "固定")
-        workspace_targets = ["ordered"]
-        reply_focus = ["missing_inputs", "needs_volunteer_selection"]
-        next_step_hints = ["先定位当前方案里的真实 volunteerId，再执行固定位置。"]
-    else:
-        volunteer_id = resolved_ids[0]
-        state_summary = await pin_planning_ordered_item(ctx, volunteer_id, atomic.target_position or 1)
-        executed_actions.append(
-            {
-                "action": "pin_unit",
-                "volunteerIds": [volunteer_id],
-                "requestedVolunteerRefs": atomic.volunteer_ids,
-                "targetPosition": atomic.target_position,
-            }
-        )
-        affected_volunteer_ids.append(volunteer_id)
-        workspace_targets = ["ordered", "review"]
-
-    return PlanExecutionResult(
-        applied=(result_kind != "error" and plan.stage in {"apply", "review"}),
-        action_family="pin_unit",
-        stage=plan.stage,
-        result_kind=result_kind,
-        executed_actions=executed_actions,
-        affected_volunteer_ids=affected_volunteer_ids,
-        workspace_refresh_targets=workspace_targets,
-        context_summary=plan.context_summary,
-        state_summary=state_summary,
-        summary=state_summary,
-        reply_focus=reply_focus,
-        reply_strategy="direct_blocking" if result_kind == "error" and "needs_volunteer_selection" in reply_focus else None,
-        next_step_hints=next_step_hints,
-    )
-
-
-@register_handler("unpin_unit")
-async def handle_unpin_unit(
-    ctx: RunContext[RequestContext], plan: PlanActionPlan
-) -> PlanExecutionResult:
-    reply_focus: list[str] = ["mutation_result", "plan_update", "unpinned_unit"]
-    next_step_hints: list[str] = ["优先说明取消固定是否完成，再根据需要补充复审影响。"]
-    result_kind = "mutation_result"
-    atomic = plan.atomic_actions[0]
-    resolved_ids, missing_refs = await _resolve_ordered_volunteer_refs(ctx, atomic.volunteer_ids)
-    executed_actions: list[dict[str, object]] = []
-    affected_volunteer_ids: list[str] = []
-
-    if missing_refs or not resolved_ids:
-        missing_text = "、".join(missing_refs[:5]) if missing_refs else "要取消固定的志愿"
-        result_kind = "error"
-        state_summary = _ordered_ref_resolution_message(missing_text, "取消固定")
-        workspace_targets = ["ordered"]
-        reply_focus = ["missing_inputs", "needs_volunteer_selection"]
-        next_step_hints = ["先定位当前方案里的真实 volunteerId，再执行取消固定。"]
-    else:
-        volunteer_id = resolved_ids[0]
-        state_summary = await unpin_planning_ordered_item(ctx, volunteer_id)
-        executed_actions.append(
-            {
-                "action": "unpin_unit",
-                "volunteerIds": [volunteer_id],
-                "requestedVolunteerRefs": atomic.volunteer_ids,
-            }
-        )
-        affected_volunteer_ids.append(volunteer_id)
-        workspace_targets = ["ordered", "review"]
-
-    return PlanExecutionResult(
-        applied=(result_kind != "error" and plan.stage in {"apply", "review"}),
-        action_family="unpin_unit",
-        stage=plan.stage,
-        result_kind=result_kind,
-        executed_actions=executed_actions,
-        affected_volunteer_ids=affected_volunteer_ids,
-        workspace_refresh_targets=workspace_targets,
-        context_summary=plan.context_summary,
-        state_summary=state_summary,
-        summary=state_summary,
-        reply_focus=reply_focus,
-        reply_strategy="direct_blocking" if result_kind == "error" and "needs_volunteer_selection" in reply_focus else None,
-        next_step_hints=next_step_hints,
-    )
-
-
 @register_handler("replace_units")
 async def handle_replace_units(
     ctx: RunContext[RequestContext], plan: PlanActionPlan
@@ -374,7 +289,9 @@ async def handle_replace_units(
     atomic = plan.atomic_actions[0]
     filters = atomic.filters
     resolved_ids, missing_refs = await _resolve_ordered_volunteer_refs(
-        ctx, atomic.volunteer_ids, broad_goal_text=plan.user_goal,
+        ctx,
+        atomic.volunteer_ids,
+        source_major_names=_extract_source_major_names(plan),
     )
     effective_ids, ordered_items, review_issue_target, review_issue = await _resolve_review_issue_action_scope(
         ctx, plan, resolved_ids,
@@ -382,6 +299,7 @@ async def handle_replace_units(
     executed_actions: list[dict[str, object]] = []
     affected_volunteer_ids: list[str] = []
     state_summary = ""
+    replacement_requested = _has_replacement_scope(filters)
 
     if review_issue and str(review_issue.get("scope_kind") or "").strip() == "structural":
         result_kind = "error"
@@ -392,7 +310,7 @@ async def handle_replace_units(
         review_issue
         and str(review_issue.get("scope_kind") or "").strip() == "item_removal"
         and review_issue_target is not None
-        and not _goal_requests_replacement(plan.user_goal)
+        and not replacement_requested
     ):
         state_summary = await remove_planning_ordered_items(ctx, effective_ids)
         executed_actions.append(
@@ -495,4 +413,67 @@ async def handle_regenerate_order(
         summary=state_summary,
         reply_focus=["mutation_result", "plan_update", "regenerated_order"],
         next_step_hints=["优先说明重排后的整体数量、风险和提醒，不要只说已执行。"],
+    )
+
+
+@register_handler("sort_ordered_plan")
+async def handle_sort_ordered_plan(
+    ctx: RunContext[RequestContext], plan: PlanActionPlan
+) -> PlanExecutionResult:
+    success, state_summary = await _sort_ordered_plan(ctx, plan)
+    sort_field = _infer_ordered_sort_field(plan)
+    return PlanExecutionResult(
+        applied=success,
+        action_family="sort_ordered_plan",
+        stage=plan.stage,
+        result_kind="mutation_result" if success else "error",
+        executed_actions=[{"action": "sort_ordered_plan", "sortField": sort_field}] if success else [],
+        workspace_refresh_targets=["ordered", "review"] if success else [],
+        context_summary=plan.context_summary,
+        state_summary=state_summary,
+        summary=state_summary,
+        reply_focus=["mutation_result", "plan_update", "sort_ordered_plan"] if success else ["mutation_failed", "sort_ordered_plan"],
+        next_step_hints=["说明排序已改变当前方案顺序，并提醒审查状态需要重新确认。"] if success else ["说明这次排序没有执行成功，不要提示方案已经刷新。"],
+    )
+
+
+@register_handler("move_ordered_unit")
+async def handle_move_ordered_unit(
+    ctx: RunContext[RequestContext], plan: PlanActionPlan
+) -> PlanExecutionResult:
+    success, state_summary = await _move_ordered_unit(ctx, plan)
+    unit_ids = await _resolve_ordered_unit_ids(ctx, plan)
+    return PlanExecutionResult(
+        applied=success,
+        action_family="move_ordered_unit",
+        stage=plan.stage,
+        result_kind="mutation_result" if success else "error",
+        executed_actions=[{"action": "move_ordered_unit", "unitIds": unit_ids}] if success else [],
+        workspace_refresh_targets=["ordered", "review"] if success else [],
+        context_summary=plan.context_summary,
+        state_summary=state_summary,
+        summary=state_summary,
+        reply_focus=["mutation_result", "plan_update", "unit_level_operation"] if success else ["mutation_failed", "unit_level_operation"],
+        next_step_hints=["说明专业组已整体移动，并提醒审查状态需要重新确认。"] if success else ["说明这次专业组移动没有执行成功，不要提示方案已经刷新。"],
+    )
+
+
+@register_handler("remove_ordered_unit")
+async def handle_remove_ordered_unit(
+    ctx: RunContext[RequestContext], plan: PlanActionPlan
+) -> PlanExecutionResult:
+    success, state_summary = await _remove_ordered_units(ctx, plan)
+    unit_ids = await _resolve_ordered_unit_ids(ctx, plan)
+    return PlanExecutionResult(
+        applied=success,
+        action_family="remove_ordered_unit",
+        stage=plan.stage,
+        result_kind="mutation_result" if success else "error",
+        executed_actions=[{"action": "remove_ordered_unit", "unitIds": unit_ids}] if success else [],
+        workspace_refresh_targets=["ordered", "review"] if success else [],
+        context_summary=plan.context_summary,
+        state_summary=state_summary,
+        summary=state_summary,
+        reply_focus=["mutation_result", "plan_update", "unit_level_operation"] if success else ["mutation_failed", "unit_level_operation"],
+        next_step_hints=["说明专业组已从方案移出，并提醒审查状态需要重新确认。"] if success else ["说明这次专业组删除没有执行成功，不要提示方案已经刷新。"],
     )

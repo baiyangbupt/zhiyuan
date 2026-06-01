@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from types import SimpleNamespace
+from typing import get_type_hints
 from unittest.mock import AsyncMock, patch
 
 from app.agent.context import RequestContext
@@ -77,6 +78,7 @@ def test_plan_next_action_ignores_apply_stage_for_mutation_without_confirmation(
                 user_goal="按院校层次排序",
                 action_family="sort_ordered_plan",
                 current_stage="apply",
+                sort_field="schoolRank",
                 user_confirmed=False,
             )
         )
@@ -100,6 +102,7 @@ def test_plan_next_action_allows_apply_stage_for_mutation_after_confirmation():
                 user_goal="按院校层次排序",
                 action_family="sort_ordered_plan",
                 current_stage="apply",
+                sort_field="schoolRank",
                 user_confirmed=True,
             )
         )
@@ -132,6 +135,27 @@ def test_plan_next_action_requires_add_units_selection_scope_when_no_ids():
     assert data["stage"] == "analyze"
     assert data["requires_confirmation"] is False
     assert data["missing_inputs"] == ["selection_scope"]
+
+
+def test_plan_next_action_infers_add_units_school_major_ref_from_goal():
+    with patch(
+        "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
+        new=AsyncMock(return_value=_context_inputs(summary="阶段=ordered；方案=20/30")),
+    ):
+        result = asyncio.run(
+            plan_next_action(
+                _ctx(),
+                user_goal="把河南农业大学的建筑类加进来",
+                action_family="add_units",
+                user_confirmed=False,
+            )
+        )
+
+    data = json.loads(result)
+    assert data["stage"] == "preview"
+    assert data["requires_confirmation"] is True
+    assert data["missing_inputs"] == []
+    assert data["atomic_actions"][0]["volunteer_ids"] == ["河南农业大学的建筑类"]
 
 
 def test_plan_next_action_requires_missing_inputs_for_move():
@@ -194,6 +218,7 @@ def test_plan_next_action_builds_preview_for_move_ordered_unit_position_ref():
                 _ctx(),
                 user_goal="把第3个专业组移动到第5位",
                 action_family="move_ordered_unit",
+                source_position=3,
                 target_position=5,
             )
         )
@@ -203,6 +228,7 @@ def test_plan_next_action_builds_preview_for_move_ordered_unit_position_ref():
     assert data["action_family"] == "move_ordered_unit"
     assert data["missing_inputs"] == []
     assert data["atomic_actions"][0]["unit_ids"] == []
+    assert data["atomic_actions"][0]["source_position"] == 3
     assert data["atomic_actions"][0]["target_position"] == 5
 
 
@@ -228,7 +254,7 @@ def test_plan_next_action_requires_missing_inputs_for_move_ordered_unit():
     assert set(data["missing_inputs"]) == {"unit_ids", "target_position"}
 
 
-def test_plan_next_action_coerces_major_group_move_to_ordered_unit_action():
+def test_plan_next_action_does_not_coerce_major_group_move_by_text():
     with patch(
         "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
         new=AsyncMock(
@@ -248,12 +274,12 @@ def test_plan_next_action_coerces_major_group_move_to_ordered_unit_action():
         )
 
     data = json.loads(result)
-    assert data["stage"] == "preview"
-    assert data["action_family"] == "move_ordered_unit"
-    assert data["atomic_actions"][0]["unit_ids"] == ["unit-3"]
+    assert data["stage"] == "analyze"
+    assert data["action_family"] == "move_unit"
+    assert "volunteer_id" in data["missing_inputs"]
 
 
-def test_plan_next_action_coerces_major_group_remove_to_ordered_unit_action():
+def test_plan_next_action_does_not_coerce_major_group_remove_by_text():
     with patch(
         "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
         new=AsyncMock(
@@ -272,34 +298,15 @@ def test_plan_next_action_coerces_major_group_remove_to_ordered_unit_action():
         )
 
     data = json.loads(result)
-    assert data["stage"] == "preview"
-    assert data["action_family"] == "remove_ordered_unit"
-    assert data["atomic_actions"][0]["unit_ids"] == ["unit-3"]
-    assert "删除指定专业组" in data["preview_summary"]
+    assert data["stage"] == "analyze"
+    assert data["action_family"] == "remove_units"
+    assert data["missing_inputs"] == ["volunteer_ids"]
 
 
-def test_plan_next_action_guides_when_unpin_is_disabled():
-    with patch(
-        "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
-        new=AsyncMock(
-            return_value=_context_inputs(
-                summary="阶段=ordered；方案=20/30",
-            )
-        ),
-    ):
-        result = asyncio.run(
-            plan_next_action(
-                _ctx(),
-                user_goal="取消固定",
-                action_family="unpin_unit",
-            )
-        )
-
-    data = json.loads(result)
-    assert data["stage"] == "preview"
-    assert data["missing_inputs"] == []
-    assert data["action_family"] == "unpin_unit"
-    assert "不提供固定/锁定志愿入口" in data["preview_summary"]
+def test_plan_next_action_public_actions_do_not_expose_pin_unpin():
+    action_literal = get_type_hints(plan_next_action)["action_family"]
+    assert "pin_unit" not in action_literal.__args__
+    assert "unpin_unit" not in action_literal.__args__
 
 
 def test_plan_next_action_query_candidates_executes_as_read_only_apply():
@@ -415,6 +422,36 @@ def test_plan_next_action_builds_preview_for_replace_units_without_confirmation(
     assert "移出指定志愿" in data["preview_summary"]
 
 
+def test_plan_next_action_passes_structured_replace_source_major_names():
+    with patch(
+        "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
+        new=AsyncMock(
+            return_value=_context_inputs(
+                summary="阶段=ordered；方案=30/30",
+                draft_count=30,
+                ordered_count=30,
+            )
+        ),
+    ):
+        result = asyncio.run(
+            plan_next_action(
+                _ctx(),
+                user_goal="把会计审计换成新媒体",
+                action_family="replace_units",
+                volunteer_ids=["南宁学院第01组-会计学", "广州新华学院第01组-审计学"],
+                source_major_names=["会计学", "审计学"],
+                major_keyword="网络与新媒体",
+                limit=5,
+            )
+        )
+
+    data = json.loads(result)
+    assert data["stage"] == "preview"
+    assert data["action_family"] == "replace_units"
+    assert data["atomic_actions"][0]["source_major_names"] == ["会计学", "审计学"]
+    assert data["atomic_actions"][0]["filters"]["major_keyword"] == "网络与新媒体"
+
+
 def test_plan_next_action_coerces_broad_item_removal_issue_to_remove_units():
     with patch(
         "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
@@ -442,6 +479,7 @@ def test_plan_next_action_coerces_broad_item_removal_issue_to_remove_units():
                 _ctx(),
                 user_goal="先处理高收费",
                 action_family="replace_units",
+                review_issue_code="high_tuition",
                 user_confirmed=False,
             )
         )
@@ -482,6 +520,7 @@ def test_plan_next_action_coerces_structural_review_issue_to_default_action():
                 _ctx(),
                 user_goal="先处理数量不足",
                 action_family="remove_units",
+                review_issue_code="count_validation",
             )
         )
 
@@ -519,11 +558,39 @@ def test_plan_next_action_coerces_filled_safety_guard_compensation_request_to_ad
                 _ctx(),
                 user_goal="帮我补几个更稳的",
                 action_family="preview_compensation",
+                review_issue_code="safety_guard",
             )
         )
 
     data = json.loads(result)
-    assert data["action_family"] == "analyze_adjustment"
+    assert data["action_family"] == "preview_compensation"
+    assert data["stage"] == "apply"
+    assert data["requires_confirmation"] is False
+    assert data["atomic_actions"] == []
+
+
+def test_plan_next_action_does_not_patch_abstract_stability_wording_by_string():
+    with patch(
+        "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
+        new=AsyncMock(
+            return_value=_context_inputs(
+                summary="阶段=ordered；方案=94/96；风险=3；提醒=2",
+                target_count=96,
+                draft_count=94,
+                ordered_count=94,
+            )
+        ),
+    ):
+        result = asyncio.run(
+            plan_next_action(
+                _ctx(),
+                user_goal="就按别太冒险的思路把这版调稳点，先给我看看会怎么动",
+                action_family="preview_compensation",
+            )
+        )
+
+    data = json.loads(result)
+    assert data["action_family"] == "preview_compensation"
     assert data["stage"] == "apply"
     assert data["requires_confirmation"] is False
     assert data["atomic_actions"] == []
@@ -554,7 +621,7 @@ def test_plan_next_action_keeps_explicit_reorder_request_as_regenerate_order():
     assert data["requires_confirmation"] is True
 
 
-def test_plan_next_action_coerces_stability_wording_from_regenerate_to_adjustment_analysis():
+def test_plan_next_action_does_not_coerce_stability_wording_from_regenerate():
     with patch(
         "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
         new=AsyncMock(
@@ -574,12 +641,12 @@ def test_plan_next_action_coerces_stability_wording_from_regenerate_to_adjustmen
         )
 
     data = json.loads(result)
-    assert data["action_family"] == "analyze_adjustment"
-    assert data["stage"] == "apply"
-    assert data["requires_confirmation"] is False
+    assert data["action_family"] == "regenerate_order"
+    assert data["stage"] == "preview"
+    assert data["requires_confirmation"] is True
 
 
-def test_plan_next_action_coerces_optimize_wording_from_regenerate_to_adjustment_analysis():
+def test_plan_next_action_does_not_coerce_optimize_wording_from_regenerate():
     with patch(
         "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
         new=AsyncMock(
@@ -599,12 +666,12 @@ def test_plan_next_action_coerces_optimize_wording_from_regenerate_to_adjustment
         )
 
     data = json.loads(result)
-    assert data["action_family"] == "analyze_adjustment"
-    assert data["stage"] == "apply"
-    assert data["requires_confirmation"] is False
+    assert data["action_family"] == "regenerate_order"
+    assert data["stage"] == "preview"
+    assert data["requires_confirmation"] is True
 
 
-def test_plan_next_action_coerces_adjustment_wording_from_generate_to_adjustment_analysis_when_plan_exists():
+def test_plan_next_action_does_not_coerce_adjustment_wording_from_generate_when_plan_exists():
     with patch(
         "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
         new=AsyncMock(
@@ -624,9 +691,9 @@ def test_plan_next_action_coerces_adjustment_wording_from_generate_to_adjustment
         )
 
     data = json.loads(result)
-    assert data["action_family"] == "analyze_adjustment"
-    assert data["stage"] == "apply"
-    assert data["requires_confirmation"] is False
+    assert data["action_family"] == "generate_plan"
+    assert data["stage"] == "preview"
+    assert data["requires_confirmation"] is True
 
 
 def test_plan_next_action_requires_replace_units_remove_and_replacement_scope():
@@ -726,7 +793,7 @@ def test_plan_next_action_requires_existing_plan_for_review_adjustment_and_add()
     assert "existing_plan" in add_data["missing_inputs"]
 
 
-def test_plan_next_action_infers_stability_add_filters_when_gap_exists():
+def test_plan_next_action_keeps_compensation_preview_without_string_filter_inference():
     init_profile = UserProfile.model_validate(
         {
             "major": {
@@ -762,19 +829,18 @@ def test_plan_next_action_infers_stability_add_filters_when_gap_exists():
                 _ctx(init_profile=init_profile),
                 user_goal="先给我一版真正更稳的可确认预览",
                 action_family="preview_compensation",
+                review_issue_code="count_validation",
             )
         )
 
     data = json.loads(result)
-    assert data["action_family"] == "add_units"
-    assert data["stage"] == "preview"
-    assert data["requires_confirmation"] is True
-    filters = data["atomic_actions"][0]["filters"]
-    assert filters["tier"] == "保"
-    assert json.loads(filters["major_tags"]) == ["计算机类", "电子信息类", "自动化类"]
+    assert data["action_family"] == "preview_compensation"
+    assert data["stage"] == "apply"
+    assert data["requires_confirmation"] is False
+    assert data["atomic_actions"] == []
 
 
-def test_plan_next_action_coerces_structural_rebalance_goal_to_replace_preview():
+def test_plan_next_action_does_not_coerce_structural_rebalance_goal_to_replace_preview():
     init_profile = UserProfile.model_validate(
         {
             "major": {
@@ -803,16 +869,12 @@ def test_plan_next_action_coerces_structural_rebalance_goal_to_replace_preview()
         )
 
     data = json.loads(result)
-    assert data["action_family"] == "replace_units"
-    assert data["stage"] == "analyze"
-    assert data["requires_confirmation"] is False
-    assert "volunteer_ids" in data["missing_inputs"]
-    filters = data["atomic_actions"][0]["filters"]
-    assert filters["tier"] == "保"
-    assert json.loads(filters["major_tags"]) == ["计算机类", "电子信息类", "自动化类"]
+    assert data["action_family"] == "regenerate_order"
+    assert data["stage"] == "preview"
+    assert data["requires_confirmation"] is True
 
 
-def test_plan_next_action_coerces_structural_rebalance_when_goal_uses_keep_total_alias():
+def test_plan_next_action_does_not_coerce_structural_rebalance_when_goal_uses_keep_total_alias():
     init_profile = UserProfile.model_validate(
         {
             "major": {
@@ -841,5 +903,5 @@ def test_plan_next_action_coerces_structural_rebalance_when_goal_uses_keep_total
         )
 
     data = json.loads(result)
-    assert data["action_family"] == "replace_units"
-    assert data["stage"] == "analyze"
+    assert data["action_family"] == "regenerate_order"
+    assert data["stage"] == "preview"

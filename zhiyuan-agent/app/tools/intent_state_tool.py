@@ -13,9 +13,12 @@ import time
 from types import SimpleNamespace
 from typing import Any
 
+from pydantic import BaseModel, Field, field_validator
+from pydantic_ai import Agent
 from pydantic_ai import RunContext
 
 from app.agent.context import RequestContext, has_pending_intent_confirmation, resolve_pending_confirmation
+from app.config import LLMConfig
 from app.domain.career_slots import (
     CAREER_FURTHER_STUDY,
     CAREER_LABEL_MAP,
@@ -27,6 +30,8 @@ from app.domain.career_slots import (
 )
 from app.domain.major_entity_resolver import (
     append_major_mentions_to_payload,
+    major_parent_mappings_for_batch,
+    major_name_sets_for_batch,
     resolve_major_mentions_from_text,
 )
 from app.services.profile_manager import ProfileManager
@@ -44,6 +49,8 @@ from app.tools.intent_response_tool import (
     serialize_intent_analysis_payload,
     serialize_intent_state_update_result,
 )
+from app.tools.extraction_json import parse_extraction_json
+from app.llm.client import LLMClient
 from app.util.code_enrichment import (
     add_codes_to_profile,
     get_major_codes,
@@ -71,6 +78,69 @@ INTENT_MODE_PREFERENCE = "preference"
 INTENT_MODE_CONSTRAINT = "constraint"
 ANALYSIS_STAGE_INTEREST = "interest"
 ANALYSIS_STAGE_CONFIRMED = "confirmed"
+_intent_side_effect_llm_client: LLMClient | None = None
+_intent_side_effect_agent: Agent[None, str] | None = None
+
+
+class IntentSideEffectDecision(BaseModel):
+    decision: str = Field(default="intent_preview")
+    confidence: float = Field(default=0.0)
+    reason: str = ""
+
+    @field_validator("confidence", mode="before")
+    @classmethod
+    def _coerce_confidence(cls, value: Any) -> float:
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"high", "高", "高置信"}:
+                return 0.9
+            if normalized in {"medium", "中", "中等", "中置信"}:
+                return 0.65
+            if normalized in {"low", "低", "低置信"}:
+                return 0.35
+        return value
+
+
+def _get_intent_side_effect_llm_client() -> LLMClient:
+    global _intent_side_effect_llm_client
+    if _intent_side_effect_llm_client is None:
+        _intent_side_effect_llm_client = LLMClient(LLMConfig())
+    return _intent_side_effect_llm_client
+
+
+def _get_intent_side_effect_agent() -> Agent[None, str]:
+    global _intent_side_effect_agent
+    if _intent_side_effect_agent is None:
+        _intent_side_effect_agent = Agent(
+            model=_get_intent_side_effect_llm_client().model,
+            output_type=str,
+            instructions=(
+                "你是高考志愿对话里的副作用语义仲裁器。"
+                "只判断当前用户是不是在要求系统把偏好/要求写入待确认状态。"
+                "不要根据“能不能、算不算、是不是、要不要”等虚词做决定；同一个虚词在不同语境下可能是分析，也可能是偏好。"
+                "判断维度：1 用户期望的结果是解释边界/利弊/适配，还是让系统以后记住；"
+                "2 用户是否要求改变候选、方案或后续推荐口径；"
+                "3 当前结构化意向是否只是为了回答分类归属、风险边界或取舍问题；"
+                "4 如果直接出现待确认卡片，用户是否会误以为系统已经替他做了结论。"
+                "如果用户已经表达若干偏好/排除想法，但本轮明确要先看影响、边界、利弊、风险或承接情况，"
+                "应判为 mixed_answer_then_ask 或 analysis_only；先回答影响，再自然询问是否需要记录，不能直接出待确认卡片。"
+                "如果用户是在要求系统以后对某个具体专业、院校、地域或方向多看、多关注、优先看、后续多给机会，"
+                "这属于改变后续推荐口径，应判为 intent_preview；不要因为句子里有征询语气就降级。"
+                "decision 只能是 intent_preview、analysis_only、mixed_answer_then_ask。"
+                "intent_preview 表示可以生成待确认卡片；analysis_only 表示只应回答分析；"
+                "mixed_answer_then_ask 表示先解释边界，再自然询问是否需要记录，不能直接写待确认。"
+                "输出 JSON：decision, confidence, reason。"
+            ),
+        )
+    return _intent_side_effect_agent
+
+
+def _normalize_intent_side_effect_decision(decision: IntentSideEffectDecision) -> IntentSideEffectDecision:
+    normalized = str(decision.decision or "").strip()
+    if normalized not in {"intent_preview", "analysis_only", "mixed_answer_then_ask"}:
+        normalized = "intent_preview"
+    confidence = max(0.0, min(1.0, float(decision.confidence or 0.0)))
+    return IntentSideEffectDecision(decision=normalized, confidence=confidence, reason=decision.reason)
 _INTENT_CONFIRM_UTTERANCE_PHRASES = {
     "确认",
     "确定",
@@ -189,9 +259,19 @@ def _merge_intent_payload_dict(existing: dict[str, Any] | None, current: dict[st
     return merged or None
 
 
+def _existing_intent_item(content: str, value: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "content": content,
+        "value": value,
+        "selected": False,
+    }
+
+
 async def _merge_cache_data_with_existing_pending(session_id: str, current_cache: dict[str, Any]) -> dict[str, Any]:
     existing_merged, _ = await _load_cached_intents(session_id)
-    merged_major = _merge_intent_payload_dict(existing_merged.get("major_intents"), current_cache.get("major_intents"))
+    merged_major = _dedupe_major_intent_payload_across_levels(
+        _merge_intent_payload_dict(existing_merged.get("major_intents"), current_cache.get("major_intents"))
+    )
     merged_school = _merge_intent_payload_dict(existing_merged.get("school_intents"), current_cache.get("school_intents"))
     merged_city = _merge_intent_payload_dict(existing_merged.get("city_intents"), current_cache.get("city_intents"))
     merged_career = _merge_intent_payload_dict(existing_merged.get("career_intents"), current_cache.get("career_intents"))
@@ -378,6 +458,7 @@ def _build_select_items(
     """
     items: list[dict[str, Any]] = []
     existing_items: list[dict[str, Any]] = []
+    major_intents = _dedupe_major_intent_payload_across_levels(major_intents)
 
     # --- Major intents ---
     if major_intents:
@@ -390,9 +471,10 @@ def _build_select_items(
                 _, already = _diff_list(existing, [name])
                 label = _LABEL_MAP[f"major_intents.{level}"]
                 if already:
-                    existing_items.append({
-                        "content": f"当前已记录偏好{label}：{name}",
-                    })
+                    existing_items.append(_existing_intent_item(
+                        f"当前已有参考偏好{label}：{name}",
+                        {"major_intents": {level: [name]}},
+                    ))
                 else:
                     items.append({
                         "content": f"将{name}更新为偏好方向，后续专家推荐会更优先考虑它。",
@@ -409,9 +491,10 @@ def _build_select_items(
                 _, already = _diff_list(existing, [name])
                 label = _LABEL_MAP[f"major_intents.{level}"]
                 if already:
-                    existing_items.append({
-                        "content": f"当前已记录{label}：{name}",
-                    })
+                    existing_items.append(_existing_intent_item(
+                        f"当前已有参考{label}：{name}",
+                        {"major_intents": {level: [name]}},
+                    ))
                 else:
                     items.append({
                         "content": (
@@ -434,9 +517,10 @@ def _build_select_items(
                 _, already = _diff_list(existing, [name])
                 label = _LABEL_MAP[f"school_intents.{sub_key}"]
                 if already:
-                    existing_items.append({
-                        "content": f"当前已记录偏好{label}：{name}",
-                    })
+                    existing_items.append(_existing_intent_item(
+                        f"当前已有参考偏好{label}：{name}",
+                        {"school_intents": {sub_key: [name]}},
+                    ))
                 else:
                     items.append({
                         "content": f"将{name}更新为偏好院校，后续专家推荐会更优先考虑它。",
@@ -453,9 +537,10 @@ def _build_select_items(
                 _, already = _diff_list(existing, [name])
                 label = _LABEL_MAP[f"school_intents.{sub_key}"]
                 if already:
-                    existing_items.append({
-                        "content": f"当前已记录{label}：{name}",
-                    })
+                    existing_items.append(_existing_intent_item(
+                        f"当前已有参考{label}：{name}",
+                        {"school_intents": {sub_key: [name]}},
+                    ))
                 else:
                     items.append({
                         "content": (
@@ -478,9 +563,10 @@ def _build_select_items(
                 _, already = _diff_list(existing, [name])
                 label = _LABEL_MAP[f"city_intents.{sub_key}"]
                 if already:
-                    existing_items.append({
-                        "content": f"当前已记录偏好{label}：{name}",
-                    })
+                    existing_items.append(_existing_intent_item(
+                        f"当前已有参考偏好{label}：{name}",
+                        {"city_intents": {sub_key: [name]}},
+                    ))
                 else:
                     items.append({
                         "content": f"将{name}更新为偏好地域，后续专家推荐会更优先考虑它。",
@@ -497,9 +583,10 @@ def _build_select_items(
                 _, already = _diff_list(existing, [name])
                 label = _LABEL_MAP[f"city_intents.{sub_key}"]
                 if already:
-                    existing_items.append({
-                        "content": f"当前已记录{label}：{name}",
-                    })
+                    existing_items.append(_existing_intent_item(
+                        f"当前已有参考{label}：{name}",
+                        {"city_intents": {sub_key: [name]}},
+                    ))
                 else:
                     items.append({
                         "content": (
@@ -686,6 +773,106 @@ def _classify_intent_mode(
     return INTENT_MODE_CONSTRAINT
 
 
+def _intent_topic(
+    major_intents: dict | None,
+    school_intents: dict | None,
+    city_intents: dict | None,
+    career_intents: dict | None = None,
+) -> str:
+    topics: list[str] = []
+    if major_intents:
+        topics.append("major")
+    if school_intents:
+        topics.append("school")
+    if city_intents:
+        topics.append("region")
+    if career_intents:
+        topics.append("career")
+    return ",".join(topics) if topics else "unknown"
+
+
+async def _classify_intent_side_effect(
+    *,
+    latest_utterance: str,
+    major_intents: dict | None,
+    school_intents: dict | None,
+    city_intents: dict | None,
+    career_intents: dict | None,
+    intent_mode: str,
+) -> IntentSideEffectDecision:
+    prompt = json.dumps(
+        {
+            "latestUserText": latest_utterance,
+            "topic": _intent_topic(major_intents, school_intents, city_intents, career_intents),
+            "intentMode": intent_mode,
+            "structuredIntents": {
+                "major": major_intents or {},
+                "school": school_intents or {},
+                "region": city_intents or {},
+                "career": career_intents or {},
+            },
+            "decisionQuestion": (
+                "当前是否应生成待确认偏好/要求卡片并写入待确认缓存？"
+                "还是只应该回答边界、取舍或适配分析？"
+            ),
+        },
+        ensure_ascii=False,
+    )
+    result = await _get_intent_side_effect_agent().run(prompt)
+    return _normalize_intent_side_effect_decision(parse_extraction_json(result.output, IntentSideEffectDecision))
+
+
+async def _maybe_downgrade_intent_preview_by_semantics(
+    ctx: RunContext[RequestContext],
+    *,
+    latest_utterance: str,
+    major_intents: dict | None,
+    school_intents: dict | None,
+    city_intents: dict | None,
+    career_intents: dict | None,
+    intent_mode: str,
+    analysis_stage: str,
+    confirm_enabled: bool,
+    persist_cache: bool | None,
+) -> tuple[str, bool, bool | None, IntentSideEffectDecision | None]:
+    if analysis_stage == ANALYSIS_STAGE_INTEREST or not confirm_enabled:
+        return analysis_stage, confirm_enabled, persist_cache, None
+    if not bool(getattr(ctx.deps, "enable_intent_side_effect_arbitration", False)):
+        return analysis_stage, confirm_enabled, persist_cache, None
+    try:
+        decision = await _classify_intent_side_effect(
+            latest_utterance=latest_utterance,
+            major_intents=major_intents,
+            school_intents=school_intents,
+            city_intents=city_intents,
+            career_intents=career_intents,
+            intent_mode=intent_mode,
+        )
+    except Exception:
+        logger.warning(
+            "Intent side-effect arbitration failed, keeping preview path: session_id=%s",
+            getattr(ctx.deps, "sessionid", ""),
+            exc_info=True,
+        )
+        return analysis_stage, confirm_enabled, persist_cache, None
+
+    observability = getattr(ctx.deps, "agent_observability", None)
+    if isinstance(observability, dict):
+        observability["intentSideEffectDecision"] = decision.model_dump()
+
+    if decision.decision in {"analysis_only", "mixed_answer_then_ask"} and decision.confidence >= 0.7:
+        logger.info(
+            "Intent preview downgraded to interest analysis by semantic arbitration: session_id=%s decision=%s confidence=%s reason=%s",
+            getattr(ctx.deps, "sessionid", ""),
+            decision.decision,
+            decision.confidence,
+            decision.reason,
+        )
+        return ANALYSIS_STAGE_INTEREST, False, False, decision
+
+    return analysis_stage, confirm_enabled, persist_cache, decision
+
+
 def _impact_title(intent_mode: str) -> str:
     if intent_mode == INTENT_MODE_CONSTRAINT:
         return "对当前方案、候选范围与下一步分析的关联判断"
@@ -803,6 +990,120 @@ def _normalize_intent_payload(
     return normalized or None
 
 
+def _dedupe_major_intent_payload_across_levels(payload: dict[str, Any] | None) -> dict[str, list[str]] | None:
+    """Remove same-name duplicates across major hierarchy levels.
+
+    Names such as "法学" and "经济学" can exist both as a discipline and as a
+    concrete major. If the model and local recovery both hit different levels,
+    showing both to users looks like duplicate intent. Keep the most specific
+    level when the same name appears under the same polarity.
+    """
+    if not payload:
+        return None
+
+    result: dict[str, list[str]] = {}
+    polarity_groups = (
+        ("level3", "level2", "level1"),
+        ("negative_level3", "negative_level2", "negative_level1"),
+    )
+    consumed_keys: set[str] = set()
+    for group in polarity_groups:
+        seen_names: set[str] = set()
+        for key in group:
+            consumed_keys.add(key)
+            values = _as_string_list(payload.get(key))
+            if not values:
+                continue
+            bucket: list[str] = []
+            for value in values:
+                name = str(value or "").strip()
+                if not name or name in seen_names:
+                    continue
+                bucket.append(name)
+                seen_names.add(name)
+            if bucket:
+                result[key] = bucket
+
+    for key, values in payload.items():
+        if key in consumed_keys:
+            continue
+        normalized_values = list(dict.fromkeys(_as_string_list(values)))
+        if normalized_values:
+            result[key] = normalized_values
+    return result or None
+
+
+def _major_mentions_by_level(text: str, batch: str) -> dict[str, set[str]]:
+    mentions: dict[str, set[str]] = {"level1": set(), "level2": set(), "level3": set()}
+    for mention in resolve_major_mentions_from_text(text, batch):
+        level = str(mention.level or "")
+        name = str(mention.canonical_name or "").strip()
+        if level in mentions and name:
+            mentions[level].add(name)
+    return mentions
+
+
+def _refine_major_intents_by_explicit_mentions(
+    major_intents: dict[str, Any] | None,
+    *,
+    latest_utterance: str,
+    batch: str,
+) -> dict[str, Any] | None:
+    """Avoid widening a named concrete major into its parent category.
+
+    Model extraction can occasionally infer both "土木工程" and its parent "土木类"
+    from a sentence that only explicitly names the concrete major. That changes
+    the user's requirement from "do not choose this major" to "avoid the whole
+    category". Keep the broader level only when it is explicitly mentioned by
+    the user or there are no concrete children under the same parent.
+    """
+    payload = _dedupe_major_intent_payload_across_levels(major_intents)
+    if not payload or not str(latest_utterance or "").strip():
+        return payload
+
+    mentions = _major_mentions_by_level(latest_utterance, batch)
+    mappings = major_parent_mappings_for_batch(batch)
+    level3_to_level2 = mappings.get("level3_to_level2", {})
+    level2_to_level1 = mappings.get("level2_to_level1", {})
+    refined = {key: list(values) for key, values in payload.items()}
+
+    for level2_key, level3_key in (("level2", "level3"), ("negative_level2", "negative_level3")):
+        level2_values = _as_string_list(refined.get(level2_key))
+        level3_values = _as_string_list(refined.get(level3_key))
+        if not level2_values or not level3_values:
+            continue
+        explicit_level2 = mentions["level2"]
+        child_parent_values = {level3_to_level2.get(name) for name in level3_values}
+        kept = [
+            name
+            for name in level2_values
+            if name in explicit_level2 or name not in child_parent_values
+        ]
+        if kept:
+            refined[level2_key] = kept
+        else:
+            refined.pop(level2_key, None)
+
+    for level1_key, level2_key in (("level1", "level2"), ("negative_level1", "negative_level2")):
+        level1_values = _as_string_list(refined.get(level1_key))
+        level2_values = _as_string_list(refined.get(level2_key))
+        if not level1_values or not level2_values:
+            continue
+        explicit_level1 = mentions["level1"]
+        child_parent_values = {level2_to_level1.get(name) for name in level2_values}
+        kept = [
+            name
+            for name in level1_values
+            if name in explicit_level1 or name not in child_parent_values
+        ]
+        if kept:
+            refined[level1_key] = kept
+        else:
+            refined.pop(level1_key, None)
+
+    return _dedupe_major_intent_payload_across_levels(refined)
+
+
 def _normalize_intent_inputs(
     major_intents: dict | None,
     school_intents: dict | None,
@@ -829,12 +1130,13 @@ def _normalize_intent_inputs(
         "unwanted": "negative_level3",
         "negative": "negative_level3",
     }
+    major_payload = _normalize_intent_payload(
+        major_intents,
+        allowed_keys=_MAJOR_POSITIVE_KEYS + _MAJOR_NEGATIVE_KEYS,
+        alias_map=major_aliases,
+    )
     return (
-        _normalize_intent_payload(
-            major_intents,
-            allowed_keys=_MAJOR_POSITIVE_KEYS + _MAJOR_NEGATIVE_KEYS,
-            alias_map=major_aliases,
-        ),
+        _dedupe_major_intent_payload_across_levels(major_payload),
         _normalize_intent_payload(
             school_intents,
             allowed_keys=_SCHOOL_POSITIVE_KEYS + _SCHOOL_NEGATIVE_KEYS,
@@ -848,6 +1150,71 @@ def _normalize_intent_inputs(
             allowed_keys=_CAREER_POSITIVE_KEYS + _CAREER_NEGATIVE_KEYS,
         ),
     )
+
+
+def _merge_intents_from_preview_items(items: Any) -> tuple[dict | None, dict | None, dict | None, dict | None]:
+    """Recover structured intent facts from prior preview items/existingItems."""
+    merged_major: dict[str, Any] = {}
+    merged_school: dict[str, Any] = {}
+    merged_city: dict[str, Any] = {}
+    merged_career: dict[str, Any] = {}
+    if not isinstance(items, list):
+        return None, None, None, None
+
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        value = item.get("value")
+        if not isinstance(value, dict):
+            continue
+        major_payload, school_payload, city_payload, career_payload = _normalize_intent_inputs(
+            value.get("major_intents") if isinstance(value.get("major_intents"), dict) else None,
+            value.get("school_intents") if isinstance(value.get("school_intents"), dict) else None,
+            value.get("city_intents") if isinstance(value.get("city_intents"), dict) else None,
+            value.get("career_intents") if isinstance(value.get("career_intents"), dict) else None,
+        )
+        for target, payload in (
+            (merged_major, major_payload),
+            (merged_school, school_payload),
+            (merged_city, city_payload),
+            (merged_career, career_payload),
+        ):
+            for key, values in (payload or {}).items():
+                if not values:
+                    continue
+                target[key] = _merge_list(target.get(key), _as_string_list(values))
+
+    return (
+        _dedupe_major_intent_payload_across_levels(merged_major),
+        _drop_empty_entries(merged_school),
+        _drop_empty_entries(merged_city),
+        _drop_empty_entries(merged_career),
+    )
+
+
+def _recover_intents_from_recent_analysis(
+    ctx: RunContext[RequestContext],
+    recovery_scope: str | None = None,
+) -> tuple[dict | None, dict | None, dict | None, dict | None]:
+    recent_payload = getattr(ctx.deps, "recent_intent_analysis", None)
+    if not isinstance(recent_payload, dict):
+        return None, None, None, None
+    items: list[Any] = []
+    for key in ("items", "existingItems"):
+        raw_items = recent_payload.get(key)
+        if isinstance(raw_items, list):
+            items.extend(raw_items)
+    major, school, city, career = _merge_intents_from_preview_items(items)
+    normalized_scope = (recovery_scope or "generic").strip().lower()
+    if normalized_scope == "major":
+        return major, None, None, None
+    if normalized_scope == "school":
+        return None, school, None, None
+    if normalized_scope in {"region", "city"}:
+        return None, None, city, None
+    if normalized_scope == "career_preference":
+        return None, None, None, career
+    return major, school, city, career
 
 
 async def _normalize_major_intent_names_for_batch(
@@ -876,7 +1243,7 @@ async def _normalize_major_intent_names_for_batch(
             logger.warning("Normalize major intent names failed: key=%s names=%s batch=%s", key, names, batch, exc_info=True)
             resolved_names = names
         normalized[key] = list(dict.fromkeys(resolved_names or names))
-    return normalized or None
+    return _dedupe_major_intent_payload_across_levels(normalized)
 
 
 def _should_use_direction_interest_analysis(
@@ -957,6 +1324,11 @@ _LOCAL_MAJOR_POSITIVE_MARKERS = (
     "能考虑",
     "可以考虑",
     "考虑",
+    "倾向",
+    "偏向",
+    "偏好",
+    "更偏",
+    "优先",
     "还行",
     "感兴趣",
     "喜欢",
@@ -997,7 +1369,45 @@ def _refine_major_boundary_mentions(
     utterance: str,
     batch: str,
 ) -> dict[str, list[str]] | None:
-    return _drop_empty_entries(payload)
+    return _normalize_intent_payload(
+        payload,
+        allowed_keys=_MAJOR_POSITIVE_KEYS + _MAJOR_NEGATIVE_KEYS,
+    )
+
+
+def _major_relation_notes_from_latest_utterance(
+    major_intents: dict[str, Any] | None,
+    utterance: str,
+    batch: str,
+) -> list[str]:
+    if not major_intents or not str(utterance or "").strip():
+        return []
+    mappings = major_parent_mappings_for_batch(batch)
+    level2_to_level1 = mappings.get("level2_to_level1", {})
+    level3_to_level2 = mappings.get("level3_to_level2", {})
+    negative_level1 = set(_as_string_list(major_intents.get("negative_level1")))
+    negative_level2 = set(_as_string_list(major_intents.get("negative_level2")))
+    negative_level3 = set(_as_string_list(major_intents.get("negative_level3")))
+
+    notes: list[str] = []
+    for mention in resolve_major_mentions_from_text(utterance, batch):
+        level = mention.level
+        name = mention.canonical_name
+        if level == "level2":
+            parent_level1 = level2_to_level1.get(name)
+            if name not in negative_level2 and parent_level1 in negative_level1:
+                notes.append(f"{name}属于{parent_level1}门类；如果确认排除{parent_level1}，这个专业类也会一并避开。")
+        elif level == "level3":
+            parent_level2 = level3_to_level2.get(name)
+            parent_level1 = level2_to_level1.get(parent_level2 or "")
+            if name in negative_level3:
+                continue
+            if parent_level2 in negative_level2:
+                notes.append(f"{name}属于{parent_level2}；如果确认排除{parent_level2}，这个具体专业也会一并避开。")
+            elif parent_level1 in negative_level1:
+                notes.append(f"{name}属于{parent_level1}门类；如果确认排除{parent_level1}，这个具体专业也会一并避开。")
+
+    return list(dict.fromkeys(notes))
 
 
 def _recover_polarity_major_intent_locally_from_latest_utterance(
@@ -1019,7 +1429,54 @@ def _recover_polarity_major_intent_locally_from_latest_utterance(
         if not mentions:
             continue
         append_major_mentions_to_payload(payload, mentions, negative=has_negative)
+        _supplement_broad_major_mentions_to_payload(payload, clause, batch, negative=has_negative)
     return _refine_major_boundary_mentions(_drop_empty_entries(payload), utterance, batch)
+
+
+def _supplement_broad_major_mentions_to_payload(
+    payload: dict[str, list[str]],
+    clause: str,
+    batch: str,
+    *,
+    negative: bool,
+) -> None:
+    """Keep user-facing representative majors for broad aliases like 财会.
+
+    The shared mention resolver intentionally collapses broad aliases to a
+    category to avoid over-specific matching globally. Intent/explore replies,
+    however, need the representative concrete majors so the user can understand
+    what the alias means.
+    """
+    from app.data.major_aliases import COMMON_MAJOR_ALIAS_TABLE
+
+    compact_clause = "".join(str(clause or "").split()).lower()
+    if not compact_clause:
+        return
+    available = major_name_sets_for_batch(batch)
+    key = "negative_level3" if negative else "level3"
+    bucket = payload.setdefault(key, [])
+    for alias, aliases_by_level in COMMON_MAJOR_ALIAS_TABLE.items():
+        compact_alias = "".join(str(alias or "").split()).lower()
+        if not compact_alias or compact_alias not in compact_clause:
+            continue
+        level3_candidates = [
+            name
+            for name in aliases_by_level.get("level3", ())
+            if name in available.get("level3", set())
+        ]
+        if len(level3_candidates) <= 1:
+            continue
+        level2_key = "negative_level2" if negative else "level2"
+        level2_candidates = set(aliases_by_level.get("level2", ()))
+        if level2_candidates and payload.get(level2_key):
+            payload[level2_key] = [
+                name for name in payload[level2_key] if name not in level2_candidates
+            ]
+            if not payload[level2_key]:
+                payload.pop(level2_key, None)
+        for name in level3_candidates:
+            if name not in bucket:
+                bucket.append(name)
 
 
 def _count_major_payload_values(payload: dict[str, Any] | None) -> int:
@@ -1078,7 +1535,7 @@ def _merge_major_intent_payloads(
             for value in normalized_values:
                 if value not in bucket:
                     bucket.append(value)
-    return merged or None
+    return _dedupe_major_intent_payload_across_levels(merged)
 
 
 def _refine_major_intents_with_local_latest_utterance(
@@ -1352,12 +1809,19 @@ async def _recover_intents_from_context(
         except Exception:
             logger.warning("Fallback career intent extraction failed: session_id=%s", ctx.deps.sessionid, exc_info=True)
 
-    return (
-        recovered_major or None,
-        recovered_school or None,
-        recovered_city or None,
-        _drop_empty_entries(recovered_career),
-    )
+    major = recovered_major or None
+    school = recovered_school or None
+    city = recovered_city or None
+    career = _drop_empty_entries(recovered_career)
+    if not _has_any_intent_payload(major, school, city, career):
+        major, school, city, career = _recover_intents_from_recent_analysis(ctx, recovery_scope=recovery_scope)
+        if _has_any_intent_payload(major, school, city, career):
+            logger.info(
+                "Recovered intents from recent structured intent analysis: session_id=%s recovery_scope=%s",
+                ctx.deps.sessionid,
+                recovery_scope,
+            )
+    return major, school, city, career
 
 
 def _build_candidate_filters_from_intents(merged: dict[str, Any]) -> dict[str, Any]:
@@ -1588,6 +2052,11 @@ async def analyze_volunteer_intent_change(
         recovery_scope=recovery_scope,
     )
     major_intents = await _normalize_major_intent_names_for_batch(major_intents, batch)
+    major_intents = _refine_major_intents_by_explicit_mentions(
+        major_intents,
+        latest_utterance=latest_utterance,
+        batch=batch,
+    )
 
     if not _has_any_intent_payload(major_intents, school_intents, city_intents, career_intents) and _should_attempt_intent_recovery(
         analysis_stage=analysis_stage,
@@ -1610,6 +2079,11 @@ async def analyze_volunteer_intent_change(
             career_intents,
         )
         major_intents = await _normalize_major_intent_names_for_batch(major_intents, batch)
+        major_intents = _refine_major_intents_by_explicit_mentions(
+            major_intents,
+            latest_utterance=latest_utterance,
+            batch=batch,
+        )
 
     if not _has_any_intent_payload(major_intents, school_intents, city_intents, career_intents):
         return serialize_intent_analysis_payload(
@@ -1628,6 +2102,18 @@ async def analyze_volunteer_intent_change(
         career_intents,
         edit_flag=edit_flag,
         explicit_intent_mode=intent_mode,
+    )
+    analysis_stage, confirm_enabled, persist_cache, _ = await _maybe_downgrade_intent_preview_by_semantics(
+        ctx,
+        latest_utterance=latest_utterance,
+        major_intents=major_intents,
+        school_intents=school_intents,
+        city_intents=city_intents,
+        career_intents=career_intents,
+        intent_mode=resolved_intent_mode,
+        analysis_stage=analysis_stage,
+        confirm_enabled=confirm_enabled,
+        persist_cache=persist_cache,
     )
 
     pm = ProfileManager(int(session_id), batch)
@@ -1660,22 +2146,28 @@ async def analyze_volunteer_intent_change(
         impact_text = _build_impact_preview_from_analysis(impact_analysis)
     except Exception:
         logger.warning("基于当前方案状态生成关联分析失败: session_id=%s", session_id, exc_info=True)
+    latest_relation_notes = _major_relation_notes_from_latest_utterance(major_intents, latest_utterance, batch)
+    if latest_relation_notes:
+        relation_text = "\n".join(f"- {note}" for note in latest_relation_notes)
+        impact_text = f"{relation_text}\n{impact_text}" if impact_text else relation_text
 
     cache_data = _build_cache_data(major_intents, school_intents, city_intents, career_intents, resolved_intent_mode)
-    should_persist_cache = persist_cache if persist_cache is not None else True
+    status = "existing_only" if not items else "ready"
+    should_persist_cache = (persist_cache if persist_cache is not None else True) and status != "existing_only"
     if should_persist_cache:
         cache_data = await _merge_cache_data_with_existing_pending(session_id, cache_data)
         await save_intent_change_cache(int(session_id), cache_data)
     else:
         logger.info(
-            "Skipping intent change cache persistence for read-only analysis: session_id=%s analysis_stage=%s utterance=%s",
+            "Skipping intent change cache persistence: session_id=%s analysis_stage=%s status=%s utterance=%s",
             session_id,
             analysis_stage,
+            status,
             latest_utterance,
         )
 
     payload = IntentAnalysisPayload(
-        status="existing_only" if not items else "ready",
+        status=status,
         sessionId=session_id,
         title=_build_preview_title(edit_flag, resolved_intent_mode, analysis_stage),
         intentMode=resolved_intent_mode,

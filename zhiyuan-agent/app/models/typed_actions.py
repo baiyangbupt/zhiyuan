@@ -61,6 +61,7 @@ class SelectionFilters(BaseModel):
     major_keyword: str = ""
     tier: Literal["冲", "稳", "保", ""] = ""
     limit: int = 5
+    preserve_count: bool = False
 
     def to_atomic_filters(self) -> dict[str, Any]:
         """转换为 PlanAtomicAction.filters dict（兼容现有执行层）。"""
@@ -79,6 +80,8 @@ class SelectionFilters(BaseModel):
             result["tier"] = self.tier
         if self.limit != 5:
             result["limit"] = self.limit
+        if self.preserve_count:
+            result["preserve_count"] = True
         return result
 
     @property
@@ -190,6 +193,7 @@ class MoveUnitAction(_ActionBase):
     """移动志愿位置。"""
     action_type: Literal["move_unit"] = "move_unit"
     volunteer_id: str = ""
+    source_position: int | None = None
     target_position: int | None = None
 
 
@@ -197,6 +201,7 @@ class MoveOrderedUnitAction(_ActionBase):
     """移动专业组位置。"""
     action_type: Literal["move_ordered_unit"] = "move_ordered_unit"
     unit_id: str = ""
+    source_position: int | None = None
     target_position: int | None = None
 
 
@@ -204,18 +209,7 @@ class RemoveOrderedUnitAction(_ActionBase):
     """删除专业组。"""
     action_type: Literal["remove_ordered_unit"] = "remove_ordered_unit"
     unit_ids: list[str] = Field(default_factory=list)
-
-
-class PinUnitAction(_ActionBase):
-    """锁定志愿。"""
-    action_type: Literal["pin_unit"] = "pin_unit"
-    volunteer_id: str = ""
-
-
-class UnpinUnitAction(_ActionBase):
-    """解锁志愿。"""
-    action_type: Literal["unpin_unit"] = "unpin_unit"
-    volunteer_id: str = ""
+    source_position: int | None = None
 
 
 class ReplaceUnitsAction(_ActionBase):
@@ -225,6 +219,8 @@ class ReplaceUnitsAction(_ActionBase):
     """
     action_type: Literal["replace_units"] = "replace_units"
     remove_ids: list[str] = Field(default_factory=list)
+    # 源侧按专业整体替换时显式填写。为空时只处理 remove_ids 定位到的具体志愿。
+    source_major_names: list[str] = Field(default_factory=list)
     replacement_filters: SelectionFilters = Field(default_factory=SelectionFilters)
     review_issue: ReviewIssueRef | None = None
 
@@ -266,8 +262,6 @@ PlanAction = Annotated[
         MoveUnitAction,
         MoveOrderedUnitAction,
         RemoveOrderedUnitAction,
-        PinUnitAction,
-        UnpinUnitAction,
         ReplaceUnitsAction,
         SortOrderedPlanAction,
         RegenerateOrderAction,
@@ -302,8 +296,6 @@ ACTION_TYPE_TO_FAMILY: dict[str, str] = {
     "move_unit": "move_unit",
     "move_ordered_unit": "move_ordered_unit",
     "remove_ordered_unit": "remove_ordered_unit",
-    "pin_unit": "pin_unit",
-    "unpin_unit": "unpin_unit",
     "replace_units": "replace_units",
     "sort_ordered_plan": "sort_ordered_plan",
     "regenerate_order": "regenerate_order",
