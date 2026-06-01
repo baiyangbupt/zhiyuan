@@ -20,6 +20,7 @@ from app.tools.explore_direction_tool import (
     CAREER_STABLE_EMPLOYMENT,
     CAREER_SYSTEM_PUBLIC_SERVICE,
     _build_impact_preview_from_analysis,
+    _format_candidate_brief,
     preview_direction_analysis_from_request,
     preview_direction_comparison_from_request,
     resolve_career_direction_slots,
@@ -31,6 +32,20 @@ from app.tools.explore_direction_tool import preview_generic_direction_analysis_
 
 def _run(coro):
     return asyncio.run(coro)
+
+
+def test_format_candidate_brief_strips_long_admission_notes():
+    text = _format_candidate_brief(
+        {
+            "schoolName": "河北师范大学第201组",
+            "majorName": "翻译(中外合作办学)(合作方：英国斯特灵大学；要求外语单科成绩不低于95分)",
+            "tier": "稳",
+            "provinceName": "河北",
+        }
+    )
+
+    assert text == "河北师范大学第201组-翻译（稳/河北）"
+    assert "合作方" not in text
 
 
 class _CapturingDirectionAgent:

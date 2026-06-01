@@ -4155,3 +4155,33 @@ cd zhiyuan-agent
 - 正向：用户要求“先看怎么调稳”时，即使补齐预览为空，也能看到当前方案为什么不稳、哪里可以继续预览调整，回复信息量和可操作性更好。
 - 边界：该修复只发生在 `preview_compensation` 补偿为空时；补偿 preview 有动作时不额外调用 adjustment；直接 `analyze_adjustment`、审查、排序、移动、删除、替换等链路不受影响。
 - 遗留：仍没有把 adjustment suggestion 自动转换成具体可确认的 replace/sort preview。下一步如要进一步增强，需要设计“adjustment suggestion -> typed plan action preview”的结构化承接，而不是靠模型口头建议。
+
+#### 12.4.28 费用风险路由与职业方向样本可读性
+
+本轮继续沿用 full Agent 主路径，不增加字符串快路由。
+
+问题复盘：
+
+- open-quality 全量里 `方案里中外合作是不是有点多，家里预算一般，帮我用大白话看下风险，先别动` 被模型走成 `query_state`，回复只给普通方案概览，没有展开高收费/中外合作的费用风险。
+- 职业方向承接类回复虽然能调用 `analyze_current_career_direction`，但代表样本会把专业名里的长招生说明一起带出，例如中外合作项目的合作方、单科成绩、学习地点、学费说明，导致用户很难扫读。
+
+修复设计：
+
+- 工具调度规则补充费用风险边界：费用、预算、中外合作、高收费、学费压力这类风险解释问题，优先走 `review_plan`，基于审查结果说明风险类型、典型涉及和费用影响；不要只用 `query_state` 返回普通方案概览。
+- 职业方向样本格式改为专业主干短名：`_format_candidate_brief` 只保留第一个括号前的专业名，并继续保留院校、档位和省份。该修复只影响 Explore 职业方向回复里的示例展示，不改变匹配、排序或后端数据。
+
+验证：
+
+- 单测：`tests/unit/test_explore_direction_scenarios_sync.py tests/unit/test_instructions.py -q` 通过，`49 passed`。
+- 真实 WebSocket 复测预算风险：
+  - 输入：`方案里中外合作是不是有点多，家里预算一般，帮我用大白话看下风险，先别动`
+  - 链路已从 `query_state` 改为 `plan_next_action(review_plan) -> execute_plan_action(review_result)`。
+  - 回复包含高收费专业、费用风险和“确认后再执行”的边界，避免只返回普通方案概览。
+- 真实 WebSocket 复测职业方向：
+  - 输入：`家里就想让孩子以后稳一点进体制，这个方案能撑住吗，先别动`
+  - 代表样本已从长招生说明收敛为 `河北师范大学第201组-翻译（稳）`、`南京师范大学泰州学院第102组-数学与应用数学（冲）` 这类短名。
+
+遗留：
+
+- `review_plan` 的典型涉及仍可能带出长专业说明，费用风险 case 的可读性虽已改善但还不够“说人话”。后续可以把 `_clean_plan_position_text` 或审查示例格式统一切到专业主干短名。
+- 职业方向 direct tool return 仍偏工具报告式，存在重复句和“下一步”模板感；这属于 `analyze_current_career_direction` 最终渲染层优化，不在本轮小修里扩大。

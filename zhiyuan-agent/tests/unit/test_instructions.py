@@ -287,6 +287,8 @@ class TestToolDispatchRules:
         assert "不要升级成 `review_plan` 或改方案预览" in result
         assert "如果用户只是问是否存在某类风险" in result
         assert "不要自动规划删除、替换或补偿" in result
+        assert "费用、预算、中外合作、高收费、学费压力" in result
+        assert "不要只用 `query_state` 返回普通方案概览" in result
         assert 'result_kind="review_result"' in result
         assert "本轮审查结果是风险与提醒数量的权威事实" in result
         assert "不要再拿历史上下文里的旧方案概览" in result

@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import asyncio
+import re
 from collections import Counter, defaultdict
 from typing import Any
 
@@ -645,6 +646,7 @@ def _item_matches_direction_slot(item: dict[str, Any], direction_slot: str) -> b
 def _format_candidate_brief(item: dict[str, Any]) -> str:
     school_name = item.get("schoolName") or "未知院校"
     major_name = item.get("majorName") or "未知专业"
+    major_name = re.split(r"[（(]", str(major_name), maxsplit=1)[0].strip() or str(item.get("majorName") or "未知专业")
     tier = item.get("tier") or "未知"
     province_name = item.get("provinceName") or ""
     return f"{school_name}-{major_name}（{tier}{f'/{province_name}' if province_name else ''}）"

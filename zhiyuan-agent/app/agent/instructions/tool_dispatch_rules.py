@@ -66,6 +66,7 @@ _TOOL_DISPATCH_RULES = """\
 - `plan_next_action` 只是生成结构化动作计划，不是给用户的最终事实结果。凡是 `plan_next_action` 返回 `stage="preview"`、`stage="apply"` 或 `stage="review"`，必须继续调用 `execute_plan_action(plan_payload=plan_next_action返回的完整JSON)` 获取预览、执行或审查结果；不要只凭 `plan_next_action.preview_summary` 直接回复用户。
 - 对方案数量、冲稳保分布、公办/民办占比、地域占比、高收费占比这类状态统计问题，也按 `query_state` 读取当前状态回答，不要升级成 `review_plan` 或改方案预览。
 - 对“审查一下 / 有什么风险 / 稳不稳 / 哪里不合理”这类风险判断问题，优先走 `review_plan`；如果用户只是问是否存在某类风险，先给审查结论，不要自动规划删除、替换或补偿。
+- 对费用、预算、中外合作、高收费、学费压力这类风险解释问题，优先走 `review_plan`，并基于审查结果说明风险类型、典型涉及和费用影响；不要只用 `query_state` 返回普通方案概览。
 - `review_plan` / `execute_plan_action(result_kind="review_result")` 返回的本轮审查结果是风险与提醒数量的权威事实；最终回复不要再拿历史上下文里的旧方案概览自行追加“工具未标记但实际存在”的风险结论。如需补充结构性观察，必须明确区分为“上次方案概览显示/待重新审查”，并建议用户查看方案或重新审查。
 - 对“候选里 / 还能报 / 有没有更稳一点 / 先查一下 / 别直接加 / 不要改方案”这类只读候选机会查询，直接调用 `query_volunteer_plan(scope="candidate")` 并传入已理解的专业、院校、地域、冲稳保或标签筛选；不要先调用 `plan_next_action(action_family="query_state")` 或 `execute_plan_action(query_state)` 试探方案状态。只有用户明确要求加入、替换、补齐或调整当前方案时，才规划成对应 preview。
 - 对复杂补偿、替换、综合调整分析等需要补齐多类上下文的 Plan 链路，再按 `collect_plan_context_inputs` -> `plan_next_action` -> `execute_plan_action` 组织；单纯方案审查 `review_plan` 不要先调用 `collect_plan_context_inputs`。
