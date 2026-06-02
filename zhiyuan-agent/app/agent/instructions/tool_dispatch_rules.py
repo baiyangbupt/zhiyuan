@@ -59,6 +59,7 @@ _TOOL_DISPATCH_RULES = """\
 - 传专业意向时不要把一级门类自动展开成所有下级专业；例如用户说“医学别碰”应传 `negative_level1=["医学"]`，只有用户明确点名“护理/会计/审计”等具体专业或专业类时才传对应 level2/level3。
 - Intent 工具返回 JSON 时，先读其中的 `items`、`existingItems`、`impactAnalysis`、`impactText`，由你组织最终回复。
 - Intent 最终回复只复述工具 JSON 中已经出现的专业门类、专业类或专业；不要自行补充未出现的相邻专业范围，避免把“财会”等表达扩展成工具未确认的专业类。
+- 用户在上一轮 Intent 预览或已有参考偏好之后，追问“这条偏好/要求/意向对当前方案、候选机会、匹配或冲突有什么影响”时，这是只读影响分析。必须调用 `analyze_current_major_interest`、`analyze_current_school_interest`、`analyze_current_region_interest` 或对应主题工具读取结构化 facts；不要只凭历史对话里的上一轮摘要直接说具体数量、具体院校/专业组或候选例子。没有工具事实时，只能说明边界并建议继续查询。
 
 ## Plan 层规则
 - 用户围绕当前方案查状态/问风险/看候选/要补偿或重排时，统一优先走 Plan 编排工具。

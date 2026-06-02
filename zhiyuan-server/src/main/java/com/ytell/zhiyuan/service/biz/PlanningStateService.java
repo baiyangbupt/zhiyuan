@@ -680,6 +680,15 @@ public class PlanningStateService {
         return touchAndSaveConstraint(chatSessionId, state);
     }
 
+    public PlanningStateVersionDTO markIntentChangeStale(Long chatSessionId, MarkPlanningIntentStaleReq req) {
+        PlanningStateDTO state = loadPlanningState(chatSessionId);
+        String intentMode = req == null ? null : req.getIntentMode();
+        if ("constraint".equalsIgnoreCase(intentMode)) {
+            return touchAndSaveConstraint(chatSessionId, state);
+        }
+        return touchAndSavePreference(chatSessionId, state);
+    }
+
     public ConstraintDeriveRes deriveConstraints(Long chatSessionId) {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
         DerivedPreferencesDTO derived = buildDerivedPreferences(state.getProfileState());

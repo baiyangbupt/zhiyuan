@@ -503,6 +503,18 @@ async def update_planning_latent_profile(
     )
 
 
+async def mark_planning_intent_change_stale(
+    thread_id: Union[str, int],
+    intent_mode: str = "preference",
+) -> Dict[str, Any]:
+    """标记意向采纳后的 planning stale flags。"""
+    return await http_client.post(
+        endpoint=f"/gaotu-assistant-bot/inner/planning/1/session/intent-change/stale?chatSessionId={thread_id}",
+        json_data={"intentMode": intent_mode or "preference"},
+        error_msg="标记 planning 意向变更过期失败",
+    )
+
+
 async def run_planning_review(thread_id: Union[str, int]) -> Dict[str, Any]:
     """执行统一规划方案审查。"""
     return await http_client.post(
@@ -856,6 +868,37 @@ async def get_intent_change_cache(
 ) -> Dict[str, Any]:
     """Fetch pending intent-change confirmation data."""
     return await get_extra_data(chat_session_id, "planEditCache", version)
+
+
+# ── 待确认卡片 ────────────────────────────────────────────────────
+
+
+async def save_pending_confirmation(
+    chat_session_id: Union[str, int],
+    data_value: Dict[str, Any],
+    version: int = 0,
+) -> Dict[str, Any]:
+    """Store the active pending confirmation card state."""
+    payload = {
+        "chatSessionId": chat_session_id,
+        "dataKey": "pendingConfirmation",
+        "dataType": "JSON_OBJECT",
+        "dataValue": data_value,
+        "version": version,
+    }
+    logger.info("存储待确认卡片状态: {}", payload)
+    return await http_client.post(
+        endpoint="/gaotu-assistant-bot/inner/chat/1/session/add-extra-data",
+        json_data=payload,
+        error_msg="存储待确认卡片状态失败",
+    )
+
+
+async def get_pending_confirmation(
+    chat_session_id: Union[str, int], version: int = 0
+) -> Dict[str, Any]:
+    """Fetch the active pending confirmation card state."""
+    return await get_extra_data(chat_session_id, "pendingConfirmation", version)
 
 
 # ── 方案参数校验 ──────────────────────────────────────────────────

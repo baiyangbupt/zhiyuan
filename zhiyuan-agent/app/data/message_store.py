@@ -31,6 +31,7 @@ class MessageStore:
             "planEditSelectPopup",
             "intentDetectSelectPopup",
             "intentConfirmPopup",
+            "pendingConfirmationCard",
             "planningWorkspaceAction",
         }:
             # content is a JSON string; parse it to store as a dict

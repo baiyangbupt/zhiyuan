@@ -8,7 +8,7 @@ from pydantic import BaseModel
 class WSMessage(BaseModel):
     """客户端 → 服务端 WebSocket 消息。"""
 
-    type: Literal["chat", "planEditSelect", "intentDetectSelect", "intentSelect"] = "chat"
+    type: Literal["chat", "planEditSelect", "intentDetectSelect", "intentSelect", "pendingConfirmation"] = "chat"
     session_id: str
     user_id: str = ""
     content: str  # planEditSelect / intentDetectSelect / intentSelect 时为 JSON: {"selected": [...], "message_id": "..."}
@@ -25,6 +25,7 @@ class WSResponse(BaseModel):
         "planEditSelectPopup",
         "intentDetectSelectPopup",
         "intentConfirmPopup",
+        "pendingConfirmationCard",
         "planningWorkspaceAction",
         "thinking",
     ]

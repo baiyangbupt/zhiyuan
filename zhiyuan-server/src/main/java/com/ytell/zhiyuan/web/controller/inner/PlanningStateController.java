@@ -91,6 +91,16 @@ public class PlanningStateController {
         return BaseResponse.success(planningStateService.updatePhysicalConstraints(chatSessionId, req));
     }
 
+    @PostMapping("/session/intent-change/stale")
+    @ApiOperation("标记意向变更后的规划状态过期")
+    public BaseResponse<PlanningStateVersionDTO> markIntentChangeStale(@PathVariable("tenantId") Long tenantId,
+                                                                       @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId,
+                                                                       @RequestBody(required = false) MarkPlanningIntentStaleReq req) {
+        log.info("markIntentChangeStale: tenantId={}, chatSessionId={}, intentMode={}",
+                tenantId, chatSessionId, req == null ? null : req.getIntentMode());
+        return BaseResponse.success(planningStateService.markIntentChangeStale(chatSessionId, req));
+    }
+
     @PostMapping("/session/constraints/derive")
     @ApiOperation("生成派生偏好")
     public BaseResponse<ConstraintDeriveRes> deriveConstraints(@PathVariable("tenantId") Long tenantId,

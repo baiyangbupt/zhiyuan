@@ -55,6 +55,10 @@ COMMON_MAJOR_ALIAS_TABLE: dict[str, dict[str, tuple[str, ...]]] = {
         "level2": ("土木类",),
         "level3": ("土木工程",),
     },
+    "土木建筑": {
+        "level2": ("土木类", "建筑类"),
+        "level3": ("土木工程", "建筑学"),
+    },
     "财会": {
         "level2": ("工商管理类",),
         "level3": ("会计学", "财务管理", "审计学"),

@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef, forwardRef, useImperativeHandle, useCallback } from 'react';
 import { message, Spin, Empty, Button, Input, Row, Col, Card, Checkbox, Modal } from 'antd';
 import {
+  CheckCircleOutlined,
   DislikeOutlined,
   LikeOutlined,
   VerticalAlignBottomOutlined,
@@ -104,6 +105,13 @@ interface IIntentCardContent {
   volunteerIds?: string[];
   refresh?: boolean;
   candidateFilters?: PlanningWorkspaceIntent['candidateFilters'];
+  kind?: 'intent_change' | 'plan_mutation';
+  actionFamily?: string;
+  summary?: string;
+  pendingId?: string;
+  status?: 'active' | 'applied' | 'cancelled' | 'replaced' | 'expired';
+  confirmText?: string;
+  cancelText?: string;
 }
 
 const isIntentConfirmCard = (contentObj?: IIntentCardContent | null) =>
@@ -113,6 +121,9 @@ const isIntentConfirmCard = (contentObj?: IIntentCardContent | null) =>
 
 const isInterestAnalysisCard = (contentObj?: IIntentCardContent | null) =>
   contentObj?.type === 'interestAnalysisPopup';
+
+const isPendingConfirmationCard = (contentObj?: IIntentCardContent | null) =>
+  contentObj?.type === 'pendingConfirmationCard';
 
 const isIntentAnalysisCard = (contentObj?: IIntentCardContent | null) =>
   isIntentConfirmCard(contentObj) || isInterestAnalysisCard(contentObj);
@@ -858,6 +869,32 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
     );
   };
 
+  const markPendingConfirmationCardHandled = (
+    messageId: number,
+    status: 'applied' | 'cancelled'
+  ) => {
+    setMessageList(prevList =>
+      prevList.map(item => {
+        if (item.id !== messageId || item.contentType !== 'CARD') {
+          return item;
+        }
+        const contentObj = parseCardContent(item.content);
+        if (!isPendingConfirmationCard(contentObj)) {
+          return item;
+        }
+        return {
+          ...item,
+          content: JSON.stringify({
+            ...contentObj,
+            clickable: false,
+            clicked: status === 'applied',
+            status,
+          }),
+        };
+      })
+    );
+  };
+
   const renderImpactBlock = (impact?: string, impactTitle?: string) => {
     const impactText = impact?.trim();
     if (!impactText) {
@@ -974,6 +1011,47 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
     });
   };
 
+  const handlePendingConfirmationClick = async (
+    msg: IMessage,
+    action: 'confirm' | 'cancel'
+  ) => {
+    const contentObj = parseCardContent(msg.content);
+    if (!isPendingConfirmationCard(contentObj) || contentObj?.clickable === false) {
+      return;
+    }
+    const cardContent = contentObj as IIntentCardContent;
+    try {
+      setAnswerLoading(true);
+      setIsTimeout(false);
+      setThinkingHints([]);
+      clearAnswerTimeout();
+      answerTimeoutTimerRef.current = setTimeout(() => {
+        console.warn('⚠️ 回答超时，显示放弃等待按钮');
+        setIsTimeout(true);
+        message.warning('等待回复超时，您可以继续等待或放弃等待');
+      }, ANSWER_TIMEOUT);
+
+      await sendMessage?.({
+        sessionId: routerParams.chatSessionId,
+        userId: routerParams.userId || '',
+        content: {
+          action,
+          kind: cardContent.kind || 'plan_mutation',
+          pendingId: cardContent.pendingId,
+          message_id: msg.id,
+        },
+        inputType: 'pendingConfirmation',
+      });
+      markPendingConfirmationCardHandled(msg.id, action === 'confirm' ? 'applied' : 'cancelled');
+      if (action === 'confirm') {
+        setFetchFlag(prev => prev + 1);
+      }
+    } catch (error) {
+      resetAnswerLoading();
+      console.error('待确认卡片操作失败', error);
+    }
+  };
+
   // 消息反馈
   const handleClickFeedback = (feedback: number, type: 'link' | 'dislike', messageId: number) => {
     let newFeedback = 0;
@@ -994,6 +1072,39 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
   const displayMessageList = messageList.filter(
     (record, index, records) => !isLegacyAutoPlanPrompt(record, index, records)
   );
+  const activePendingCardMessageId = displayMessageList.reduce<number | null>((latestId, record) => {
+    if (record.messageFrom !== '0' || record.contentType !== 'CARD') {
+      return latestId;
+    }
+    const contentObj = parseCardContent(record.content);
+    if (
+      isPendingConfirmationCard(contentObj) &&
+      contentObj?.clickable !== false &&
+      (contentObj?.status || 'active') === 'active'
+    ) {
+      return record.id;
+    }
+    return latestId;
+  }, null);
+  const getEffectivePendingCardContent = (
+    record: IMessage,
+    contentObj: IIntentCardContent
+  ): IIntentCardContent => {
+    if (
+      isPendingConfirmationCard(contentObj) &&
+      contentObj?.clickable !== false &&
+      (contentObj?.status || 'active') === 'active' &&
+      activePendingCardMessageId !== null &&
+      record.id !== activePendingCardMessageId
+    ) {
+      return {
+        ...contentObj,
+        clickable: false,
+        status: 'replaced',
+      };
+    }
+    return contentObj;
+  };
   const quickReplyList = quickReplyActions || [];
   const hasUserStartedConversation = displayMessageList.some(
     record =>
@@ -1116,6 +1227,65 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
                                       >
                                         {contentObj.actionText || fallbackCopy.actionText}
                                       </Button>
+                                    </div>
+                                  );
+                                }
+                                if (isPendingConfirmationCard(contentObj)) {
+                                  const effectiveContentObj = getEffectivePendingCardContent(
+                                    message,
+                                    contentObj
+                                  );
+                                  const cardDisabled =
+                                    effectiveContentObj?.clickable === false ||
+                                    ['applied', 'cancelled', 'replaced', 'expired'].includes(
+                                      effectiveContentObj?.status || ''
+                                    );
+                                  let statusText = '';
+                                  if (effectiveContentObj?.status === 'applied' || effectiveContentObj?.clicked) {
+                                    statusText =
+                                      effectiveContentObj?.kind === 'intent_change' ? '已采纳' : '已确认';
+                                  } else if (effectiveContentObj?.status === 'cancelled') {
+                                    statusText =
+                                      effectiveContentObj?.kind === 'intent_change' ? '未采纳' : '已取消';
+                                  } else if (effectiveContentObj?.status === 'replaced') {
+                                    statusText = '已被新的确认卡替代';
+                                  } else if (effectiveContentObj?.status === 'expired') {
+                                    statusText = '已失效';
+                                  }
+                                  return (
+                                    <div className={style.workspaceActionCard}>
+                                      <div className={style.workspaceActionTitle}>
+                                        {effectiveContentObj.title || '请确认本次方案调整'}
+                                      </div>
+                                      {(effectiveContentObj.summary || effectiveContentObj.content) ? (
+                                        <div className={style.workspaceActionContent}>
+                                          {effectiveContentObj.summary || effectiveContentObj.content}
+                                        </div>
+                                      ) : null}
+                                      {renderImpactBlock(effectiveContentObj.impact, effectiveContentObj.impactTitle)}
+                                      {statusText ? (
+                                        <div style={{ color: '#8C8C8C', marginTop: 8 }}>{statusText}</div>
+                                      ) : (
+                                        <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                                          <Button
+                                            className={style.generateButton}
+                                            size="small"
+                                            disabled={cardDisabled || answerLoading}
+                                            onClick={() => handlePendingConfirmationClick(message, 'confirm')}
+                                          >
+                                            <CheckCircleOutlined />
+                                            {effectiveContentObj.confirmText || '确认执行'}
+                                          </Button>
+                                          <Button
+                                            size="small"
+                                            disabled={cardDisabled || answerLoading}
+                                            onClick={() => handlePendingConfirmationClick(message, 'cancel')}
+                                          >
+                                            <CloseCircleOutlined />
+                                            {effectiveContentObj.cancelText || '暂不执行'}
+                                          </Button>
+                                        </div>
+                                      )}
                                     </div>
                                   );
                                 }

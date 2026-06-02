@@ -6,7 +6,9 @@ import json
 import logging
 import re
 import time
+import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
 
@@ -39,6 +41,7 @@ from app.tools.plan_execution_tool import (
 from app.tools.plan_orchestration_models import normalize_plan_action_payload
 from app.tools.intent_state_tool import (
     apply_selected_intents as _apply_selected_intents,
+    merge_selected_values,
     update_volunteer_intent_state,
 )
 from app.tools.intent_response_tool import (
@@ -48,10 +51,13 @@ from app.tools.intent_response_tool import (
     render_intent_state_update,
 )
 from app.util.internal_client import (
+    get_message_by_id,
+    get_pending_confirmation,
     get_intent_change_cache,
     get_planning_workspace_state,
     get_user_init_profile,
     get_user_score_detail,
+    save_pending_confirmation,
 )
 from app.util.structured_log import log_event
 
@@ -146,16 +152,6 @@ _INTENT_PREVIEW_TOOL_NAMES = {
     "preview_current_region_intent_confirmation",
     "preview_current_career_intent_confirmation",
 }
-
-
-def _safe_result_field(result_text: str, field: str) -> Any:
-    try:
-        parsed = json.loads(result_text)
-        if isinstance(parsed, dict):
-            return parsed.get(field)
-    except Exception:
-        return None
-    return None
 
 
 def _as_int(value: Any, default: int = 0) -> int:
@@ -336,15 +332,23 @@ def _compact_tool_return_content(content: Any) -> str:
     return json.dumps(compacted, ensure_ascii=False)
 
 
+def _should_compact_runtime_tool_return(part: ToolReturnPart, max_tool_return_chars: int) -> bool:
+    if not isinstance(part.content, str):
+        return False
+    if part.tool_name in _INTENT_PREVIEW_TOOL_NAMES:
+        return True
+    return max_tool_return_chars > 0 and len(part.content) > max_tool_return_chars
+
+
 def _compact_runtime_message(message: Any, max_tool_return_chars: int) -> tuple[Any, int]:
-    if not isinstance(message, ModelRequest) or max_tool_return_chars <= 0:
+    if not isinstance(message, ModelRequest):
         return message, 0
 
     changed = False
     dropped = 0
     compacted_parts: list[Any] = []
     for part in getattr(message, "parts", []) or []:
-        if isinstance(part, ToolReturnPart) and isinstance(part.content, str) and len(part.content) > max_tool_return_chars:
+        if isinstance(part, ToolReturnPart) and _should_compact_runtime_tool_return(part, max_tool_return_chars):
             compacted_parts.append(
                 ToolReturnPart(
                     tool_name=part.tool_name,
@@ -457,7 +461,13 @@ _WORKSPACE_ACTION_COPY = {
 }
 
 
-def _build_workspace_action_response(session_id: str, target: str, *, refresh: bool = True) -> WSResponse:
+def _build_workspace_action_response(
+    session_id: str,
+    target: str,
+    *,
+    refresh: bool = True,
+    extra_payload: dict[str, Any] | None = None,
+) -> WSResponse:
     target_value = str(target or "").strip()
     if target_value not in _WORKSPACE_ACTION_COPY:
         raise ValueError(f"Unsupported workspace action target: {target_value}")
@@ -478,9 +488,257 @@ def _build_workspace_action_response(session_id: str, target: str, *, refresh: b
                 "targetView": target_value,
                 "refresh": refresh,
                 **copy,
+                **(extra_payload or {}),
             },
             ensure_ascii=False,
         ),
+    )
+
+
+def _extract_extra_data_value(response: dict[str, Any] | None, key: str) -> dict[str, Any] | None:
+    data = (response or {}).get("data")
+    if not isinstance(data, dict):
+        return None
+    value = data.get(key)
+    if value is None:
+        value = data.get("dataValue")
+    return value if isinstance(value, dict) else None
+
+
+async def _load_pending_confirmation_state(session_id: str) -> dict[str, Any] | None:
+    try:
+        response = await get_pending_confirmation(session_id)
+    except Exception:
+        logger.warning("Failed to load pending confirmation state: session_id=%s", session_id, exc_info=True)
+        return None
+    return _extract_extra_data_value(response, "pendingConfirmation")
+
+
+async def _save_pending_confirmation_state(session_id: str, state: dict[str, Any]) -> None:
+    try:
+        await save_pending_confirmation(session_id, state)
+    except Exception:
+        logger.warning("Failed to save pending confirmation state: session_id=%s", session_id, exc_info=True)
+
+
+def _build_plan_pending_state(
+    session_id: str,
+    pending_plan_action: dict[str, Any],
+    *,
+    replaced_pending: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    pending_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    action_family = str(pending_plan_action.get("action_family") or "").strip()
+    plan_payload = pending_plan_action.get("plan_payload")
+    payload_data: dict[str, Any] = {}
+    if isinstance(plan_payload, str) and plan_payload.strip():
+        try:
+            parsed = json.loads(plan_payload)
+            if isinstance(parsed, dict):
+                payload_data = parsed
+        except Exception:
+            payload_data = {}
+    source_backend_version = _as_int(
+        pending_plan_action.get("source_backend_version")
+        or pending_plan_action.get("planning_version")
+        or payload_data.get("source_backend_version")
+        or payload_data.get("planning_version")
+    )
+    state = {
+        "type": "pendingConfirmation",
+        "pendingId": pending_id,
+        "sessionId": str(session_id),
+        "kind": "plan_mutation",
+        "status": "active",
+        "actionFamily": action_family,
+        "summary": str(pending_plan_action.get("summary") or "").strip(),
+        "userGoal": str(pending_plan_action.get("user_goal") or "").strip(),
+        "executionPayload": {
+            "toolName": "execute_plan_action",
+            "planPayload": plan_payload if isinstance(plan_payload, str) else "",
+        },
+        "createdAt": now,
+        "updatedAt": now,
+        "sourceBackendVersion": source_backend_version,
+    }
+    if replaced_pending and replaced_pending.get("pendingId"):
+        state["replacesPendingId"] = replaced_pending.get("pendingId")
+    return state
+
+
+def _summarize_intent_values(merged: dict[str, Any]) -> str:
+    parts: list[str] = []
+    major_intents = merged.get("major_intents") if isinstance(merged.get("major_intents"), dict) else {}
+    school_intents = merged.get("school_intents") if isinstance(merged.get("school_intents"), dict) else {}
+    city_intents = merged.get("city_intents") if isinstance(merged.get("city_intents"), dict) else {}
+    career_intents = merged.get("career_intents") if isinstance(merged.get("career_intents"), dict) else {}
+
+    def add(label: str, values: Any) -> None:
+        raw_values = values if isinstance(values, list) else [values] if values else []
+        texts = [str(value or "").strip() for value in raw_values if str(value or "").strip()]
+        if texts:
+            parts.append(f"{label}：{'、'.join(dict.fromkeys(texts))}")
+
+    add("偏好专业", major_intents.get("level3") or major_intents.get("level2") or major_intents.get("level1"))
+    add("排除专业", major_intents.get("negative_level3") or major_intents.get("negative_level2") or major_intents.get("negative_level1"))
+    add("偏好院校", school_intents.get("colleges"))
+    add("排除院校", school_intents.get("negative_colleges"))
+    add("偏好地域", (city_intents.get("province") or []) + (city_intents.get("city") or []))
+    add("排除地域", (city_intents.get("negative_province") or []) + (city_intents.get("negative_city") or []))
+    add("发展方向", career_intents.get("positive"))
+    add("排除方向", career_intents.get("negative"))
+    return "；".join(parts)
+
+
+def _build_intent_pending_state(
+    session_id: str,
+    *,
+    selected_data: dict[str, Any],
+    merged: dict[str, Any],
+    intent_mode: str,
+    batch: str,
+    summary: str,
+    replaced_pending: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    pending_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    state = {
+        "type": "pendingConfirmation",
+        "pendingId": pending_id,
+        "sessionId": str(session_id),
+        "kind": "intent_change",
+        "status": "active",
+        "actionFamily": "apply_selected_intents",
+        "summary": summary,
+        "executionPayload": {
+            "toolName": "apply_selected_intents",
+            "selectedData": selected_data,
+            "merged": merged,
+            "intentMode": intent_mode,
+            "batch": batch,
+        },
+        "createdAt": now,
+        "updatedAt": now,
+    }
+    if replaced_pending and replaced_pending.get("pendingId"):
+        state["replacesPendingId"] = replaced_pending.get("pendingId")
+    return state
+
+
+async def _create_pending_intent_confirmation_response(
+    session_id: str,
+    *,
+    selected_data: dict[str, Any],
+    merged: dict[str, Any],
+    intent_mode: str,
+    batch: str,
+) -> ChatServiceResponseEnvelope:
+    replaced_pending = await _load_pending_confirmation_state(session_id)
+    summary = _summarize_intent_values(merged)
+    mode_text = "要求" if intent_mode == "constraint" else "偏好"
+    if not summary:
+        summary = f"本次选择的{mode_text}内容。"
+    pending_state = _build_intent_pending_state(
+        session_id,
+        selected_data=selected_data,
+        merged=merged,
+        intent_mode=intent_mode,
+        batch=batch,
+        summary=summary,
+        replaced_pending=replaced_pending if isinstance(replaced_pending, dict) else None,
+    )
+    await _save_pending_confirmation_state(session_id, pending_state)
+    payload = {
+        "type": "pendingConfirmationCard",
+        "pendingId": pending_state["pendingId"],
+        "kind": "intent_change",
+        "actionFamily": "apply_selected_intents",
+        "title": f"确认采纳这次{mode_text}",
+        "summary": summary,
+        "content": summary,
+        "impactTitle": "确认说明",
+        "impact": "点击采纳前不会写入后续报考参考；采纳后会按这次内容继续看候选和方案。",
+        "clickable": True,
+        "status": "active",
+        "confirmText": "采纳",
+        "cancelText": "暂不采纳",
+    }
+    primary = f"我已把这次{mode_text}整理好了。请点击确认卡片采纳；点击前不会生效。"
+    return ChatServiceResponseEnvelope(
+        primary=primary,
+        followups=[
+            WSResponse(
+                type="pendingConfirmationCard",
+                session_id=session_id,
+                content=json.dumps(payload, ensure_ascii=False),
+            )
+        ],
+    )
+
+
+async def _resolve_intent_mode_from_message(message_id: Any) -> str:
+    if not message_id:
+        return "preference"
+    try:
+        msg_resp = await get_message_by_id(message_id)
+        msg_data = (msg_resp or {}).get("data", {})
+        content_raw = msg_data.get("content", "")
+        content_obj = json.loads(content_raw) if isinstance(content_raw, str) else content_raw
+        if isinstance(content_obj, dict):
+            intent_mode = str(content_obj.get("intentMode") or "").strip()
+            if intent_mode in {"preference", "constraint"}:
+                return intent_mode
+    except Exception:
+        logger.warning("Failed to resolve intent mode from card: message_id=%s", message_id, exc_info=True)
+    return "preference"
+
+
+async def _create_pending_plan_confirmation_response(
+    session_id: str,
+    pending_plan_action: dict[str, Any],
+) -> WSResponse:
+    replaced_pending = await _load_pending_confirmation_state(session_id)
+    pending_state = _build_plan_pending_state(
+        session_id,
+        pending_plan_action,
+        replaced_pending=replaced_pending if isinstance(replaced_pending, dict) else None,
+    )
+    await _save_pending_confirmation_state(session_id, pending_state)
+
+    action_family = str(pending_plan_action.get("action_family") or "").strip()
+    summary = str(pending_plan_action.get("summary") or "").strip()
+    title_by_action = {
+        "add_units": "确认加入方案",
+        "remove_units": "确认移出志愿",
+        "move_unit": "确认移动志愿",
+        "move_ordered_unit": "确认移动专业组",
+        "remove_ordered_unit": "确认移出专业组",
+        "replace_units": "确认替换志愿",
+        "sort_ordered_plan": "确认方案排序",
+        "regenerate_order": "确认重排方案",
+        "apply_compensation": "确认补齐方案",
+        "generate_plan": "确认生成方案",
+    }
+    payload = {
+        "type": "pendingConfirmationCard",
+        "pendingId": pending_state["pendingId"],
+        "kind": "plan_mutation",
+        "actionFamily": action_family,
+        "title": title_by_action.get(action_family) or "请确认本次方案调整",
+        "summary": summary or "确认后会执行本次方案调整。",
+        "content": summary or "确认后会执行本次方案调整。",
+        "impactTitle": "确认说明",
+        "impact": "点击确认前不会改动当前方案；如果继续对话但不点击卡片，本次调整不会执行。",
+        "clickable": True,
+        "status": "active",
+        "confirmText": "确认执行",
+        "cancelText": "暂不执行",
+    }
+    return WSResponse(
+        type="pendingConfirmationCard",
+        session_id=session_id,
+        content=json.dumps(payload, ensure_ascii=False),
     )
 
 
@@ -856,13 +1114,13 @@ def _normalize_pending_intent_reply(reply: str) -> str:
         ("我已经记下了你对", "我先把你对"),
         ("好的，我记下了", "我先整理一下"),
         ("好的，我已经记下了", "我先整理一下"),
-        ("我已经按你的偏好记录下来", "我先把这个偏好整理出来，等你确认后再作为后续参考"),
-        ("我已经记录下来", "我先把这个偏好整理出来，等你确认后再作为后续参考"),
+        ("我已经按你的偏好记录下来", "我先把这个偏好整理出来，等你点击卡片采纳后再作为后续参考"),
+        ("我已经记录下来", "我先把这个偏好整理出来，等你点击卡片采纳后再作为后续参考"),
     )
     for source, target in replacements:
         normalized = normalized.replace(source, target)
     if normalized != reply and "确认" not in normalized:
-        normalized = normalized.rstrip("。") + "。如果确认要按这个方向作为后续参考，你再回复确认。"
+        normalized = normalized.rstrip("。") + "。如果要按这个方向作为后续参考，请点击卡片采纳。"
     return normalized
 
 
@@ -943,7 +1201,7 @@ def _append_pending_intent_boundary(reply: str, *, has_pending_intent: bool) -> 
     return (
         reply.rstrip()
         + "\n\n补充说明：这条**待确认内容**目前仍是**尚未确认**状态，确认前不会写入后续参考；"
-        "如果要正式采用，再回复“确认”。"
+        "如果要正式采用，请点击上方卡片采纳。"
     )
 
 
@@ -1108,45 +1366,26 @@ def _latest_turn_looks_readonly(messages: list[Any] | None) -> bool:
     return True
 
 
-def _should_apply_pending_intent_directly(content: str, history: list[Any] | None) -> bool:
-    if not _is_pending_intent_confirmation(content):
-        return False
-    if not history:
-        return True
-    latest_response = _last_user_visible_text_response(history)
-    latest_reply = _message_text_content(latest_response)
-    if _latest_turn_has_intent_preview(history):
-        return True
-    if latest_reply and _is_pending_intent_followup_turn(content, latest_reply):
-        return True
-    if _latest_turn_looks_readonly(history):
-        return False
-    return False
-
-
-def _should_apply_pending_plan_directly(content: str, history: list[Any] | None) -> bool:
-    if not _is_plan_action_confirmation(content):
-        return False
-    if not history:
-        return True
-    if _latest_turn_has_plan_mutation_preview(history):
-        return True
-    if _latest_turn_looks_readonly(history):
-        return False
-    return True
-
-
-def _stale_pending_plan_confirmation_guard_reply(history: list[Any] | None = None) -> str:
-    if _latest_turn_tool_names(history) and "analyze_current_career_direction" in _latest_turn_tool_names(history):
-        return (
-            "上一轮只是职业方向分析，没有待确认的偏好或方案动作，也没有待执行的方案动作。"
-            "如果你想展开体制内方向和当前方案的匹配，我可以继续分析；如果要调整方案，请直接说想怎么调，我会先给预览，确认后再执行。"
-        )
-    return "上一轮只是继续分析或查询，没有待确认的偏好或方案动作，也没有待执行的方案动作。你可以直接说想生成方案、审查方案或怎么调整，我会先说明影响，确认后再执行。"
-
-
 def _no_pending_intent_confirmation_guard_reply() -> str:
     return "我这边没有找到上一轮仍在等待确认的偏好调整。你可以直接说想保留、排除或重点关注的方向，我会先整理成待确认内容。"
+
+
+def _pending_requires_card_click_reply(kind: str | None = None) -> str:
+    if kind == "plan_mutation":
+        return "这次方案调整还在待确认状态。请点击上方卡片里的确认按钮后，我再执行；只在对话里回复确认不会直接改动方案。"
+    if kind == "intent_change":
+        return "这次偏好或要求还在待确认状态。请点击上方卡片里的采纳按钮后，我再更新后续报考参考；只在对话里回复确认不会直接生效。"
+    return "这次更新还在待确认状态。请点击上方卡片里的确认按钮后，我再执行；只在对话里回复确认不会直接生效。"
+
+
+def _pending_plan_card_applied_reply(action_family: str, result: dict[str, Any]) -> str:
+    default_reply = "已按你的确认执行上一轮方案调整。"
+    if action_family == "apply_compensation":
+        default_reply = "已按你的确认应用补齐建议，并刷新当前方案。"
+    reply = str(result.get("summary") or default_reply)
+    if action_family == "apply_compensation":
+        reply = reply.replace("补偿", "补齐")
+    return reply
 
 
 def _readonly_closure_ack_reply() -> str:
@@ -1692,15 +1931,6 @@ async def _load_pending_intent_confirmation(session_id: str) -> PendingConfirmat
     return PendingConfirmation.from_legacy_intent_change(cache_data)
 
 
-def _direct_pending_intent_reply(result_text: str) -> str:
-    try:
-        result = parse_intent_state_update_result(result_text)
-    except Exception:
-        logger.warning("Failed to parse direct pending intent confirmation result", exc_info=True)
-        return "已按你的确认应用上一轮意向调整。"
-    return render_intent_state_update(result)
-
-
 def _should_guard_plan_reply(content: str) -> bool:
     return any(keyword in content for keyword in _PLAN_STYLE_GUARD_PROMPT_KEYWORDS)
 
@@ -1974,16 +2204,6 @@ def _remove_unbacked_plan_confirmation_copy(reply: str) -> str:
     while normalized_lines and normalized_lines[-1] == "":
         normalized_lines.pop()
     return "\n".join(normalized_lines) if normalized_lines else reply
-
-
-def _direct_pending_plan_action_reply(action_family: str, result: dict[str, Any]) -> str:
-    default_reply = "已按你的确认执行上一轮方案调整。"
-    if action_family == "apply_compensation":
-        default_reply = "已按你的确认应用补齐建议，并刷新当前方案。"
-    reply = str(result.get("summary") or default_reply)
-    if action_family == "apply_compensation":
-        reply = reply.replace("补偿", "补齐")
-    return reply
 
 
 def _build_plan_timeout_fallback_reply(result: dict[str, Any]) -> str | None:
@@ -2403,187 +2623,54 @@ class ChatService:
         active_plan_payload_text = resolve_pending_plan_payload_text(request_context)
         turn_started_at = time.monotonic()
 
-        if active_pending_kind == "plan_mutation" and _should_apply_pending_plan_directly(content, history):
-            action_family = str(getattr(active_pending, "action_family", "") or "").strip()
-            plan_payload = active_plan_payload_text
-            tool_call_id = f"direct-{action_family or 'pending-plan'}-confirmation"
-            tool_started_at = time.monotonic()
-            result_text = await execute_plan_action(SimpleNamespace(deps=request_context), plan_payload)
-            tool_duration_ms = int((time.monotonic() - tool_started_at) * 1000)
-            result = _parse_tool_return_json(result_text) or {}
-            reply = _direct_pending_plan_action_reply(action_family, result)
-            new_messages = [
-                ModelRequest(parts=[UserPromptPart(content=content)]),
-                ModelResponse(
-                    parts=[
-                        ToolCallPart(
-                            tool_name="execute_plan_action",
-                            args={"plan_payload": plan_payload},
-                            tool_call_id=tool_call_id,
-                        )
-                    ],
-                    model_name="direct-pending-plan-confirmation",
-                ),
-                ModelRequest(
-                    parts=[
-                        ToolReturnPart(
-                            tool_name="execute_plan_action",
-                            content=result_text,
-                            tool_call_id=tool_call_id,
-                        )
-                    ]
-                ),
-                ModelResponse(parts=[TextPart(content=reply)], model_name="direct-pending-plan-confirmation"),
-            ]
-            try:
-                history_to_save = list(history or [])
-                history_to_save.extend(new_messages)
-                await self.history_store.save(session_id, history_to_save)
-            except Exception:
-                logger.exception("Failed to save direct pending plan confirmation history: session_id=%s", session_id)
-            _log_conversation_turn_event(
-                sessionId=session_id,
-                userId=user_id,
-                scene="plan",
-                routingPath="direct_pending_plan_confirm",
-                pendingType="plan",
-                actionFamily=action_family or result.get("action_family"),
-                totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
-                toolDurationMs=tool_duration_ms,
-                toolCalls=[
-                    {
-                        "name": "execute_plan_action",
-                        "durationMs": tool_duration_ms,
-                        "success": bool(result) and result.get("result_kind") != "error",
-                        "actionFamily": action_family or result.get("action_family"),
-                    }
-                ],
-                status="success" if result.get("result_kind") != "error" else "error",
-                errorType=result.get("result_kind") if result.get("result_kind") == "error" else None,
-            )
-            workspace_refresh_targets = _dedupe_workspace_targets(
-                [str(target) for target in (result.get("workspace_refresh_targets") or [])]
-            )
-            if workspace_refresh_targets:
-                return ChatServiceResponseEnvelope(
-                    primary=reply,
-                    followups=[
-                        _build_workspace_action_response(session_id, target)
-                        for target in workspace_refresh_targets
-                    ],
-                )
-            return reply
-
         if active_pending_kind == "plan_mutation" and _is_plan_action_confirmation(content):
-            reply = _stale_pending_plan_confirmation_guard_reply(history)
+            action_family = str(getattr(active_pending, "action_family", "") or "").strip()
+            reply = _pending_requires_card_click_reply("plan_mutation")
             new_messages = [
                 ModelRequest(parts=[UserPromptPart(content=content)]),
-                ModelResponse(parts=[TextPart(content=reply)], model_name="direct-plan-confirmation-guard"),
+                ModelResponse(parts=[TextPart(content=reply)], model_name="pending-plan-card-required"),
             ]
             try:
                 history_to_save = list(history or [])
                 history_to_save.extend(new_messages)
                 await self.history_store.save(session_id, history_to_save)
             except Exception:
-                logger.exception("Failed to save stale pending plan confirmation guard history: session_id=%s", session_id)
+                logger.exception("Failed to save pending plan card-required guard history: session_id=%s", session_id)
             _log_conversation_turn_event(
                 sessionId=session_id,
                 userId=user_id,
                 scene="plan",
-                routingPath="plan_confirmation_guard_stale_pending",
+                routingPath="pending_plan_card_required",
                 pendingType="plan",
-                actionFamily=None,
+                actionFamily=action_family or None,
                 totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
-                status="success",
-                errorType=None,
-            )
-            return reply
-
-        if active_pending_kind == "intent_change" and _should_apply_pending_intent_directly(content, history):
-            tool_call_id = "direct-pending-intent-confirmation"
-            tool_started_at = time.monotonic()
-            result_text = await update_volunteer_intent_state(
-                SimpleNamespace(deps=request_context),
-                action="confirm",
-            )
-            tool_duration_ms = int((time.monotonic() - tool_started_at) * 1000)
-            reply = _normalize_user_facing_terms(_direct_pending_intent_reply(result_text))
-            new_messages = [
-                ModelRequest(parts=[UserPromptPart(content=content)]),
-                ModelResponse(
-                    parts=[
-                        ToolCallPart(
-                            tool_name="update_volunteer_intent_state",
-                            args={"action": "confirm"},
-                            tool_call_id=tool_call_id,
-                        )
-                    ],
-                    model_name="direct-pending-intent-confirmation",
-                ),
-                ModelRequest(
-                    parts=[
-                        ToolReturnPart(
-                            tool_name="update_volunteer_intent_state",
-                            content=result_text,
-                            tool_call_id=tool_call_id,
-                        )
-                    ]
-                ),
-                ModelResponse(parts=[TextPart(content=reply)], model_name="direct-pending-intent-confirmation"),
-            ]
-            try:
-                history_to_save = list(history or [])
-                history_to_save.extend(new_messages)
-                await self.history_store.save(session_id, history_to_save)
-            except Exception:
-                logger.exception("Failed to save direct pending intent confirmation history: session_id=%s", session_id)
-            message_code = _safe_result_field(result_text, "messageCode")
-            _log_conversation_turn_event(
-                sessionId=session_id,
-                userId=user_id,
-                scene="intent",
-                routingPath="direct_pending_intent_confirm",
-                pendingType="intent",
-                actionFamily=None,
-                totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
-                toolDurationMs=tool_duration_ms,
-                toolCalls=[
-                    {
-                        "name": "update_volunteer_intent_state",
-                        "durationMs": tool_duration_ms,
-                        "success": bool(_safe_result_field(result_text, "applied")),
-                        "action": "confirm",
-                        "messageCode": message_code,
-                    }
-                ],
-                status="success" if message_code not in {"apply_failed", "confirm_required", "no_pending"} else "error",
-                errorType=message_code if message_code in {"apply_failed", "confirm_required", "no_pending"} else None,
+                status="blocked",
+                errorType="card_confirmation_required",
             )
             return reply
 
         if active_pending_kind == "intent_change" and _is_pending_intent_confirmation(content):
-            readonly_previous_turn = _latest_turn_looks_readonly(history)
-            reply = _stale_pending_plan_confirmation_guard_reply(history) if readonly_previous_turn else _no_pending_intent_confirmation_guard_reply()
+            reply = _pending_requires_card_click_reply("intent_change")
             new_messages = [
                 ModelRequest(parts=[UserPromptPart(content=content)]),
-                ModelResponse(parts=[TextPart(content=reply)], model_name="direct-intent-confirmation-guard"),
+                ModelResponse(parts=[TextPart(content=reply)], model_name="pending-intent-card-required"),
             ]
             try:
                 history_to_save = list(history or [])
                 history_to_save.extend(new_messages)
                 await self.history_store.save(session_id, history_to_save)
             except Exception:
-                logger.exception("Failed to save stale pending intent confirmation guard history: session_id=%s", session_id)
+                logger.exception("Failed to save pending intent card-required guard history: session_id=%s", session_id)
             _log_conversation_turn_event(
                 sessionId=session_id,
                 userId=user_id,
-                scene="plan" if readonly_previous_turn else "intent",
-                routingPath="plan_confirmation_guard_no_pending" if readonly_previous_turn else "intent_confirmation_guard_stale_pending",
-                pendingType=None if readonly_previous_turn else "intent",
+                scene="intent",
+                routingPath="pending_intent_card_required",
+                pendingType="intent",
                 actionFamily=None,
                 totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
-                status="success",
-                errorType=None,
+                status="blocked",
+                errorType="card_confirmation_required",
             )
             return reply
 
@@ -3022,6 +3109,11 @@ class ChatService:
                     followups.append(
                         _build_workspace_action_response(session_id, target, refresh=False)
                     )
+        pending_confirmation_action = _extract_pending_plan_action(new_messages)
+        if pending_confirmation_action:
+            followups.append(
+                await _create_pending_plan_confirmation_response(session_id, pending_confirmation_action)
+            )
         if isinstance(reply, str):
             reply = _sanitize_reply_for_user(reply)
         if followups and not isinstance(reply, WSResponse):
@@ -3077,31 +3169,239 @@ class ChatService:
                 return "处理这一步时发生错误，请稍后重试。"
             return render_explore_followup_result(followup_result)
 
-        result_json = await _apply_selected_intents(
-            session_id=session_id,
-            batch=batch,
-            selected_data=selected_data,
-        )
+        selected_values = selected_data.get("selected", [])
+        if not selected_values:
+            return "你这次没有采纳任何意向调整。"
         try:
-            state_result = parse_intent_state_update_result(result_json)
-            result = render_intent_state_update(state_result)
+            merged = merge_selected_values(selected_values)
         except Exception:
-            logger.warning("Failed to parse intent selection result: session_id=%s", session_id, exc_info=True)
-            state_result = None
-            result = "处理这一步时发生错误，请稍后重试。"
+            logger.warning("Failed to merge selected intents: session_id=%s", session_id, exc_info=True)
+            return "处理这一步时发生错误，请稍后重试。"
+        intent_mode = await _resolve_intent_mode_from_message(selected_data.get("message_id"))
+        return await _create_pending_intent_confirmation_response(
+            session_id=session_id,
+            selected_data=selected_data,
+            merged=merged,
+            intent_mode=intent_mode,
+            batch=batch or "01",
+        )
 
-        if state_result and state_result.intentMode == "constraint" and state_result.candidateFilters:
-            return WSResponse(
-                type="planningWorkspaceAction",
+    async def handle_pending_confirmation(
+        self,
+        session_id: str,
+        user_id: str,
+        content: str,
+    ) -> str | ChatServiceResponseEnvelope:
+        """Handle explicit confirmation-card actions.
+
+        This is the migration bridge before durable pending_id endpoints land:
+        the card click is explicit, while the executable payload is still
+        recovered from recent persisted plan preview history.
+        """
+        try:
+            selected_data = json.loads(content) if isinstance(content, str) else {}
+        except (json.JSONDecodeError, TypeError):
+            return "消息格式错误，请重试。"
+        if not isinstance(selected_data, dict):
+            return "消息格式错误，请重试。"
+
+        action = str(selected_data.get("action") or "").strip().lower()
+        kind = str(selected_data.get("kind") or "").strip()
+        pending_id = str(selected_data.get("pendingId") or selected_data.get("pending_id") or "").strip()
+        pending_state = await _load_pending_confirmation_state(session_id)
+        active_pending_id = str((pending_state or {}).get("pendingId") or "").strip()
+        active_status = str((pending_state or {}).get("status") or "").strip()
+        if not pending_id:
+            return "这张确认卡片缺少校验信息，请重新生成预览后再确认。"
+        if not pending_state or active_status != "active" or active_pending_id != pending_id:
+            return "这张确认卡片已经失效。请按最新卡片操作，或重新说明想怎么调整。"
+        if kind and kind != str(pending_state.get("kind") or ""):
+            return "这张确认卡片和当前待确认操作不一致，请按最新卡片操作。"
+
+        if action in {"cancel", "reject"}:
+            cancelled_state = dict(pending_state)
+            cancelled_state["status"] = "cancelled"
+            cancelled_state["updatedAt"] = datetime.now(timezone.utc).isoformat()
+            await _save_pending_confirmation_state(session_id, cancelled_state)
+            return "已取消本次待确认操作。你可以继续说明想怎么调整，我会重新给出预览。"
+        if action not in {"confirm", "accept", "apply"}:
+            return "这张确认卡片的操作类型不完整，请刷新后重试。"
+        active_kind = str(pending_state.get("kind") or "").strip()
+        if active_kind == "intent_change":
+            execution_payload = pending_state.get("executionPayload")
+            if not isinstance(execution_payload, dict):
+                return "这张确认卡片缺少可执行内容，请重新生成。"
+            selected_data = execution_payload.get("selectedData")
+            if not isinstance(selected_data, dict):
+                return "这张确认卡片缺少可执行内容，请重新生成。"
+            result_json = await _apply_selected_intents(
                 session_id=session_id,
-                content=json.dumps(
-                    {
-                        "targetView": "candidate",
-                        "refresh": True,
-                        "candidateFilters": state_result.candidateFilters,
-                    },
-                    ensure_ascii=False,
-                ),
+                batch=str(execution_payload.get("batch") or "01"),
+                selected_data=selected_data,
             )
+            try:
+                state_result = parse_intent_state_update_result(result_json)
+                reply = render_intent_state_update(state_result)
+            except Exception:
+                logger.warning("Failed to parse pending intent confirmation result: session_id=%s", session_id, exc_info=True)
+                state_result = None
+                reply = "处理这一步时发生错误，请稍后重试。"
+            applied_state = dict(pending_state)
+            applied_state["status"] = "applied"
+            applied_state["updatedAt"] = datetime.now(timezone.utc).isoformat()
+            applied_state["resultCode"] = getattr(state_result, "messageCode", None) if state_result else None
+            await _save_pending_confirmation_state(session_id, applied_state)
+            if state_result and state_result.intentMode == "constraint":
+                followups: list[WSResponse] = []
+                if state_result.candidateFilters:
+                    followups.append(
+                        _build_workspace_action_response(
+                            session_id,
+                            "candidate",
+                            extra_payload={"candidateFilters": state_result.candidateFilters},
+                        )
+                    )
+                followups.append(
+                    _build_workspace_action_response(
+                        session_id,
+                        "ordered",
+                        extra_payload={
+                            "title": "请查看方案",
+                            "content": "这次要求已采纳，当前方案可能需要重新审查或调整。",
+                            "actionText": "查看方案",
+                        },
+                    )
+                )
+                return ChatServiceResponseEnvelope(
+                    primary=reply,
+                    followups=followups,
+                )
+            return reply
+        if active_kind != "plan_mutation":
+            return "这类确认卡片暂时还不能在这里处理，请刷新后重试。"
 
-        return result
+        execution_payload = pending_state.get("executionPayload")
+        if not isinstance(execution_payload, dict):
+            return "这张方案调整卡片缺少可执行内容，请重新生成预览。"
+        action_family = str(pending_state.get("actionFamily") or "").strip()
+        plan_payload = execution_payload.get("planPayload")
+        if not isinstance(plan_payload, str) or not plan_payload.strip():
+            return "这张方案调整卡片缺少可执行内容，请重新生成预览。"
+        pending_plan_action = {
+            "action_family": action_family,
+            "summary": pending_state.get("summary") or "",
+            "user_goal": pending_state.get("userGoal") or "",
+            "plan_payload": plan_payload,
+        }
+        history = await self.history_store.load(session_id) or []
+
+        parsed_score_detail = None
+        parsed_init_profile = None
+        parsed_planning_summary = None
+        batch = None
+        try:
+            score_response = await get_user_score_detail(session_id)
+            if score_response.get("code") == 0:
+                raw_data = score_response.get("data", {}).get("userScoreDetail", {})
+                if raw_data:
+                    parsed_score_detail = ScoreDetail.from_api_response(raw_data)
+                    batch = raw_data.get("batch") or batch
+        except Exception:
+            logger.warning("Failed to fetch score detail for pending confirmation: session_id=%s", session_id, exc_info=True)
+        try:
+            profile_response = await get_user_init_profile(session_id)
+            if profile_response.get("code") == 0:
+                raw_profile = profile_response.get("data", {})
+                if raw_profile:
+                    parsed_init_profile = UserProfile.from_api_response(raw_profile)
+        except Exception:
+            logger.warning("Failed to fetch init profile for pending confirmation: session_id=%s", session_id, exc_info=True)
+        try:
+            workspace_response = await get_planning_workspace_state(int(session_id))
+            if workspace_response.get("code") == 0:
+                parsed_planning_summary = PlanningSummary.from_workspace_response(workspace_response)
+        except Exception:
+            logger.warning("Failed to fetch planning workspace for pending confirmation: session_id=%s", session_id, exc_info=True)
+
+        conversation_phase = ConversationPhase.from_legacy_context(
+            pending_plan_action=pending_plan_action,
+            planning_summary=parsed_planning_summary,
+        )
+        request_context = RequestContext(
+            userid=user_id,
+            sessionid=session_id,
+            chat_history=[],
+            batch=batch,
+            score_detail=parsed_score_detail,
+            init_profile=parsed_init_profile,
+            planning_summary=parsed_planning_summary,
+            pending_plan_action=pending_plan_action,
+            pending_intent_change=False,
+            conversation_phase=conversation_phase,
+            allow_explore_inner_llm=False,
+        )
+
+        started_at = time.monotonic()
+        result_text = await execute_plan_action(SimpleNamespace(deps=request_context), plan_payload)
+        result = _parse_tool_return_json(result_text) or {}
+        reply = _pending_plan_card_applied_reply(action_family, result)
+        applied_state = dict(pending_state)
+        applied_state["status"] = "applied"
+        applied_state["updatedAt"] = datetime.now(timezone.utc).isoformat()
+        applied_state["resultKind"] = result.get("result_kind")
+        await _save_pending_confirmation_state(session_id, applied_state)
+
+        new_messages = [
+            ModelRequest(parts=[UserPromptPart(content="[确认卡片]")]),
+            ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="execute_plan_action",
+                        args={"plan_payload": plan_payload},
+                        tool_call_id=f"card-{action_family or 'plan'}-confirmation",
+                    )
+                ],
+                model_name="pending-confirmation-card",
+            ),
+            ModelRequest(
+                parts=[
+                    ToolReturnPart(
+                        tool_name="execute_plan_action",
+                        content=result_text,
+                        tool_call_id=f"card-{action_family or 'plan'}-confirmation",
+                    )
+                ]
+            ),
+            ModelResponse(parts=[TextPart(content=reply)], model_name="pending-confirmation-card"),
+        ]
+        try:
+            history_to_save = list(history)
+            history_to_save.extend(new_messages)
+            await self.history_store.save(session_id, history_to_save)
+        except Exception:
+            logger.exception("Failed to save pending confirmation card execution history: session_id=%s", session_id)
+
+        tool_success = bool(result) and result.get("result_kind") != "error"
+        _log_conversation_turn_event(
+            sessionId=session_id,
+            userId=user_id,
+            scene="plan",
+            routingPath="pending_plan_card_confirm",
+            pendingType="plan",
+            actionFamily=action_family or result.get("action_family"),
+            totalDurationMs=int((time.monotonic() - started_at) * 1000),
+            status="success" if tool_success else "error",
+            errorType=result.get("result_kind") if result.get("result_kind") == "error" else None,
+        )
+        workspace_refresh_targets = _dedupe_workspace_targets(
+            [str(target) for target in (result.get("workspace_refresh_targets") or [])]
+        )
+        if workspace_refresh_targets:
+            return ChatServiceResponseEnvelope(
+                primary=reply,
+                followups=[
+                    _build_workspace_action_response(session_id, target)
+                    for target in workspace_refresh_targets
+                ],
+            )
+        return reply

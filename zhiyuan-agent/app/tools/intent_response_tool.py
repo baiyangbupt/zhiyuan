@@ -41,6 +41,7 @@ class IntentStateUpdateResult(BaseModel):
     candidateFilters: dict[str, Any] | None = None
     filteredTotal: int | None = None
     baseTotal: int | None = None
+    recommendationRefresh: dict[str, Any] | None = None
 
 
 class ExploreFollowupResult(BaseModel):
@@ -201,7 +202,7 @@ def render_intent_state_update(result: IntentStateUpdateResult) -> str:
     if code == "no_pending":
         return "当前没有待确认的意向调整。"
     if code == "confirm_required":
-        return "这一步我先停在待确认状态。你明确回复“确认”或“就按这个来”后，我再正式生效。"
+        return "这一步我先停在待确认状态。请点击确认卡片采纳后，我再正式生效。"
     if code == "empty_update":
         return "没有可执行的意向更新内容。"
     if code == "apply_failed":
@@ -450,15 +451,15 @@ def _interest_stage_title_lines(title: str, items: list[dict[str, Any]] | None) 
     negative = _merge_major_values(major_values, ("negative_level3", "negative_level2", "negative_level1"))
     if positive and negative:
         return [
-            f"先按“避开 {_short_join(negative)}，同时把 {_short_join(positive)} 作为可接受方向”来看影响；这轮只做分析，不会直接写入偏好或改动方案。"
+            f"先按这个方向看影响和边界：避开 {_short_join(negative)}，同时把 {_short_join(positive)} 作为可接受方向；这轮只做分析，不会直接写入偏好或改动方案。"
         ]
     if negative:
         return [
-            f"先看“避开 {_short_join(negative)}”会带来什么影响；这轮只做分析，不会直接写入排除条件或改动方案。"
+            f"先按这个方向看影响和边界：避开 {_short_join(negative)}；这轮只做分析，不会直接写入排除条件或改动方案。"
         ]
     if positive:
         return [
-            f"先看“关注 {_short_join(positive)}”对后续候选和方案承接有什么影响；这轮只做分析，不会直接写入偏好或改动方案。"
+            f"先按这个方向看影响和边界：关注 {_short_join(positive)} 对后续候选和方案承接有什么影响；这轮只做分析，不会直接写入偏好或改动方案。"
         ]
     return [title.replace("我先结合你现在的情况做个初步分析。", "先按这个方向看影响和边界。")]
 
@@ -510,11 +511,11 @@ def render_intent_analysis_text(
             resolved_impact = "\n".join(f"- {note}" for note in boundary_notes) + f"\n{resolved_impact}"
         if intent_mode == "constraint":
             next_steps = [
-                "如果理解正确，直接回复“确认”；如果只想保留或排除其中一部分，也可以直接说明要调整的范围。",
+                "如果理解正确，请点击卡片采纳；如果只想保留或排除其中一部分，也可以直接说明要调整的范围。",
             ]
         else:
             next_steps = [
-                "如果理解正确，直接回复“确认”；如果还想改一下偏好范围，也可以直接补充说明。",
+                "如果理解正确，请点击卡片采纳；如果还想改一下偏好范围，也可以直接补充说明。",
             ]
         return format_text_sections(
             ("待确认内容", [_render_intent_preview_item(item) for item in (items or [])]),

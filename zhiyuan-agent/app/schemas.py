@@ -24,6 +24,7 @@ class WSResponse(BaseModel):
         "planEditSelectPopup",
         "intentDetectSelectPopup",
         "intentConfirmPopup",
+        "pendingConfirmationCard",
         "planningWorkspaceAction",
         "thinking",
     ]

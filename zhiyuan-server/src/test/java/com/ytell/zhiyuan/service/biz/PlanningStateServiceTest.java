@@ -47,8 +47,10 @@ import com.ytell.zhiyuan.model.dto.planning.ReorderSuggestionDTO;
 import com.ytell.zhiyuan.model.dto.planning.ReplaceSuggestionDTO;
 import com.ytell.zhiyuan.model.dto.planning.ReviewCheckDTO;
 import com.ytell.zhiyuan.model.dto.planning.ReviewStateDTO;
+import com.ytell.zhiyuan.model.dto.planning.StaleFlagsDTO;
 import com.ytell.zhiyuan.model.dto.planning.UpdateLatentProfileReq;
 import com.ytell.zhiyuan.model.dto.planning.InitialRecommendationGenerateReq;
+import com.ytell.zhiyuan.model.dto.planning.MarkPlanningIntentStaleReq;
 import com.ytell.zhiyuan.model.dto.planning.PlanningBehaviorEventDTO;
 import com.ytell.zhiyuan.model.entity.biz.ChatSessionExtraData;
 import com.ytell.zhiyuan.model.enums.VolunteerModel;
@@ -125,6 +127,56 @@ public class PlanningStateServiceTest {
         assertEquals(Long.valueOf(1L), state.getSessionId());
         assertEquals(Integer.valueOf(0), state.getVersion());
         assertEquals("profile_ready", state.getPhase());
+    }
+
+    @Test
+    void shouldMarkPreferenceIntentChangeStaleWithoutCandidatePool() {
+        bindPlanningStateStore();
+        PlanningStateDTO initial = planningStateService.getPlanningState(1L);
+        initial.getStaleFlags().setCandidatePool(false);
+        initial.getStaleFlags().setRecommendationOverlay(false);
+        initial.getStaleFlags().setInitialRecommendation(false);
+        initial.getStaleFlags().setOrderedPlan(false);
+        initial.getStaleFlags().setPlanAdjustment(false);
+        initial.getStaleFlags().setReview(false);
+        saveStateToStore(1L, initial);
+
+        MarkPlanningIntentStaleReq req = new MarkPlanningIntentStaleReq();
+        req.setIntentMode("preference");
+        PlanningStateVersionDTO version = planningStateService.markIntentChangeStale(1L, req);
+
+        assertEquals(Integer.valueOf(1), version.getVersion());
+        assertFalse(staleCandidatePool(version.getStaleFlags()));
+        assertTrue(staleRecommendationOverlay(version.getStaleFlags()));
+        assertTrue(staleInitialRecommendation(version.getStaleFlags()));
+        assertTrue(staleOrderedPlan(version.getStaleFlags()));
+        assertTrue(stalePlanAdjustment(version.getStaleFlags()));
+        assertTrue(staleReview(version.getStaleFlags()));
+    }
+
+    @Test
+    void shouldMarkConstraintIntentChangeStaleWithCandidatePool() {
+        bindPlanningStateStore();
+        PlanningStateDTO initial = planningStateService.getPlanningState(1L);
+        initial.getStaleFlags().setCandidatePool(false);
+        initial.getStaleFlags().setRecommendationOverlay(false);
+        initial.getStaleFlags().setInitialRecommendation(false);
+        initial.getStaleFlags().setOrderedPlan(false);
+        initial.getStaleFlags().setPlanAdjustment(false);
+        initial.getStaleFlags().setReview(false);
+        saveStateToStore(1L, initial);
+
+        MarkPlanningIntentStaleReq req = new MarkPlanningIntentStaleReq();
+        req.setIntentMode("constraint");
+        PlanningStateVersionDTO version = planningStateService.markIntentChangeStale(1L, req);
+
+        assertEquals(Integer.valueOf(1), version.getVersion());
+        assertTrue(staleCandidatePool(version.getStaleFlags()));
+        assertTrue(staleRecommendationOverlay(version.getStaleFlags()));
+        assertTrue(staleInitialRecommendation(version.getStaleFlags()));
+        assertTrue(staleOrderedPlan(version.getStaleFlags()));
+        assertTrue(stalePlanAdjustment(version.getStaleFlags()));
+        assertTrue(staleReview(version.getStaleFlags()));
     }
 
     @Test
@@ -4551,6 +4603,30 @@ public class PlanningStateServiceTest {
         data.setDataKey(ChatSessionExtraDataConstants.PLANNING_STATE_KEY);
         data.setDataValue(stateJson);
         chatSessionExtraDataSharedService.save(data);
+    }
+
+    private boolean staleCandidatePool(StaleFlagsDTO flags) {
+        return Boolean.TRUE.equals(flags.getCandidatePool());
+    }
+
+    private boolean staleRecommendationOverlay(StaleFlagsDTO flags) {
+        return Boolean.TRUE.equals(flags.getRecommendationOverlay());
+    }
+
+    private boolean staleInitialRecommendation(StaleFlagsDTO flags) {
+        return Boolean.TRUE.equals(flags.getInitialRecommendation());
+    }
+
+    private boolean staleOrderedPlan(StaleFlagsDTO flags) {
+        return Boolean.TRUE.equals(flags.getOrderedPlan());
+    }
+
+    private boolean stalePlanAdjustment(StaleFlagsDTO flags) {
+        return Boolean.TRUE.equals(flags.getPlanAdjustment());
+    }
+
+    private boolean staleReview(StaleFlagsDTO flags) {
+        return Boolean.TRUE.equals(flags.getReview());
     }
 
     private UserProfileData buildUserProfileData() {

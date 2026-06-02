@@ -459,9 +459,9 @@ def build_plan_relation_analysis(
     next_action_hints: list[str] = []
 
     if intent_mode == INTENT_MODE_CONSTRAINT:
-        fit_points.append("我先帮你看看，这个要求和你现在的方案是否有冲突，以及还有没有合适的可选机会。")
+        fit_points.append("这轮会重点看当前方案里是否存在需要避开的内容，以及候选里是否还有可替换机会。")
     else:
-        fit_points.append("我先帮你看看，现在这份方案里有没有贴近这个方向的内容，以及还有哪些值得继续关注的机会。")
+        fit_points.append("这轮会重点看当前方案里是否已有贴近方向，以及候选里还有哪些值得继续关注的机会。")
 
     if career_intents:
         positive = to_career_labels(career_intents.get("positive"))
@@ -473,7 +473,7 @@ def build_plan_relation_analysis(
         if positive or negative:
             opportunity_points.insert(0, "这类想法不会立刻改动候选结果，但会影响我后面怎么帮你分析和给建议。")
     else:
-        opportunity_points.append("我也会顺手看看，方案外还有没有更贴近这个方向的机会。")
+        opportunity_points.append("方案外如果还有更贴近这个方向的候选机会，也会一起作为补充参考。")
 
     if analysis_stage == ANALYSIS_STAGE_INTEREST:
         if intent_mode == INTENT_MODE_CONSTRAINT:
@@ -484,13 +484,13 @@ def build_plan_relation_analysis(
             next_action_hints.append("如果你现在只是先了解，也可以继续问我这个方向适不适合你。")
     else:
         if intent_mode == INTENT_MODE_CONSTRAINT:
-            next_action_hints.append("下一步更适合先看看方案里还有没有不符合这条要求的地方，再决定怎么调。")
+            next_action_hints.append("下一步可以先定位方案里不符合这条要求的志愿，再决定是否替换或移除。")
         else:
-            next_action_hints.append("下一步更适合继续看看这份方案和你的想法有多匹配，或者直接让我给你调整建议。")
+            next_action_hints.append("下一步可以继续看这份方案和你的想法有多匹配，或者让我给出具体调整建议。")
 
     return {
         "stage": analysis_stage,
-        "summaryTitle": "先帮你看一眼" if analysis_stage == ANALYSIS_STAGE_INTEREST else "结合当前方案给你的提醒",
+        "summaryTitle": "先看影响和边界" if analysis_stage == ANALYSIS_STAGE_INTEREST else "结合当前方案给你的提醒",
         "currentPlanFit": fit_points,
         "currentPlanConflict": conflict_points,
         "candidateOpportunity": opportunity_points,

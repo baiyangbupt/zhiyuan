@@ -1865,7 +1865,8 @@ async def test_update_volunteer_intent_state_confirm_returns_structured_result()
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
         patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
         patch("app.tools.intent_state_tool.get_planning_state", new=AsyncMock()) as state_mock,
-        patch("app.tools.intent_state_tool.query_planning_candidate_pool", new=AsyncMock()) as query_mock,
+        patch("app.tools.intent_state_tool.mark_planning_intent_change_stale", new=AsyncMock(return_value={"code": 0})) as stale_mock,
+        patch("app.tools.intent_state_tool.query_planning_candidate_pool", new=AsyncMock(return_value={"code": 0, "data": {"total": 1}})) as query_mock,
         patch("app.tools.intent_state_tool.update_planning_latent_profile", new=AsyncMock()) as latent_mock,
     ):
         mock_pm = mock_pm_cls.return_value
@@ -1874,12 +1875,15 @@ async def test_update_volunteer_intent_state_confirm_returns_structured_result()
         mock_pm.update_school_intent = AsyncMock()
         result = json.loads(await update_volunteer_intent_state(ctx, action="confirm"))
 
-    query_mock.assert_not_awaited()
+    query_mock.assert_awaited_once()
+    stale_mock.assert_awaited_once_with(5002, INTENT_MODE_PREFERENCE)
     state_mock.assert_not_awaited()
     latent_mock.assert_not_awaited()
     assert result["action"] == "confirm"
     assert result["applied"] is True
     assert result["intentMode"] == INTENT_MODE_PREFERENCE
+    assert result["recommendationRefresh"]["triggered"] is True
+    assert result["recommendationRefresh"]["success"] is True
     assert "已确认" in result["message"]
     assert "后续报考参考" in result["message"]
 
@@ -1912,6 +1916,8 @@ async def test_update_volunteer_intent_state_confirm_prefers_phase_pending():
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
         patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()) as save_mock,
         patch("app.tools.intent_state_tool.get_planning_state", new=AsyncMock()) as state_mock,
+        patch("app.tools.intent_state_tool.mark_planning_intent_change_stale", new=AsyncMock(return_value={"code": 0})) as stale_mock,
+        patch("app.tools.intent_state_tool.query_planning_candidate_pool", new=AsyncMock(return_value={"code": 0, "data": {"total": 1}})) as query_mock,
         patch("app.tools.intent_state_tool.update_planning_latent_profile", new=AsyncMock()) as latent_mock,
     ):
         mock_pm = mock_pm_cls.return_value
@@ -1924,6 +1930,8 @@ async def test_update_volunteer_intent_state_confirm_prefers_phase_pending():
     assert result["intentMode"] == INTENT_MODE_PREFERENCE
     mock_pm.update_city_intent.assert_awaited_once()
     save_mock.assert_awaited_once()
+    stale_mock.assert_awaited_once_with(5004, INTENT_MODE_PREFERENCE)
+    query_mock.assert_awaited_once()
     state_mock.assert_not_awaited()
     latent_mock.assert_not_awaited()
 
@@ -2560,9 +2568,11 @@ def test_build_impact_preview_uses_interest_stage_summary_when_requested():
         _build_plan_relation_analysis(INTENT_MODE_PREFERENCE, "interest")
     )
 
-    assert "先帮你看一眼" in text
+    assert "先看影响和边界" in text
     assert "如果继续了解" in text
     assert "现在比较贴近的部分" not in text
+    assert "我先帮你看看" not in text
+    assert "顺手看看" not in text
 
 
 def test_build_preview_title_uses_explore_wording_for_interest_stage():
@@ -3564,6 +3574,7 @@ async def test_handle_intent_select_constraint_returns_candidate_filters_action(
         patch("app.tools.intent_state_tool.get_message_by_id", new=AsyncMock(return_value={"data": {"content": json.dumps(message_content, ensure_ascii=False)}})),
         patch("app.tools.intent_state_tool.update_message", new=AsyncMock()),
         patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
+        patch("app.tools.intent_state_tool.mark_planning_intent_change_stale", new=AsyncMock(return_value={"code": 0})) as stale_mock,
         patch("app.tools.intent_state_tool.query_planning_candidate_pool", new=AsyncMock(return_value={"data": {"total": 128}})) as query_mock,
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
     ):
@@ -3576,7 +3587,8 @@ async def test_handle_intent_select_constraint_returns_candidate_filters_action(
 
     assert "128" in resp
     assert "128" in resp
-    query_mock.assert_awaited_once()
+    stale_mock.assert_awaited_once_with(7, INTENT_MODE_CONSTRAINT)
+    assert query_mock.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -3584,6 +3596,7 @@ async def test_apply_constraint_intents_updates_candidate_filters_without_regene
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
         patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
+        patch("app.tools.intent_state_tool.mark_planning_intent_change_stale", new=AsyncMock(return_value={"code": 0})) as stale_mock,
         patch("app.tools.intent_state_tool.query_planning_candidate_pool", new=AsyncMock(return_value={"data": {"total": 64}})),
         patch("app.tools.intent_state_tool.get_planning_state", new=AsyncMock(return_value={"data": {"candidatePoolState": {"summary": {"total": 3200}}}})),
     ):
@@ -3600,6 +3613,7 @@ async def test_apply_constraint_intents_updates_candidate_filters_without_regene
         )
 
     assert resp.filteredTotal == 64
+    stale_mock.assert_awaited_once_with(12, INTENT_MODE_CONSTRAINT)
     assert resp.baseTotal == 3200
     assert resp.candidateFilters["negativeProvinceNames"] == ["北京"]
     assert "专家优选组合" not in resp.message
@@ -3607,11 +3621,12 @@ async def test_apply_constraint_intents_updates_candidate_filters_without_regene
 
 
 @pytest.mark.asyncio
-async def test_apply_preference_intents_returns_text_without_candidate_requery():
+async def test_apply_preference_intents_refreshes_recommendation_overlay_without_candidate_regeneration():
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
         patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
-        patch("app.tools.intent_state_tool.query_planning_candidate_pool", new=AsyncMock()) as query_mock,
+        patch("app.tools.intent_state_tool.mark_planning_intent_change_stale", new=AsyncMock(return_value={"code": 0})) as stale_mock,
+        patch("app.tools.intent_state_tool.query_planning_candidate_pool", new=AsyncMock(return_value={"code": 0, "data": {"total": 1}})) as query_mock,
         patch("app.tools.intent_state_tool.get_planning_state", new=AsyncMock()) as state_mock,
         patch("app.tools.intent_state_tool.update_planning_latent_profile", new=AsyncMock()) as latent_mock,
     ):
@@ -3627,11 +3642,18 @@ async def test_apply_preference_intents_returns_text_without_candidate_requery()
             intent_mode=INTENT_MODE_PREFERENCE,
         )
 
-    query_mock.assert_not_awaited()
+    query_mock.assert_awaited_once()
+    stale_mock.assert_awaited_once_with(13, INTENT_MODE_PREFERENCE)
     state_mock.assert_not_awaited()
     latent_mock.assert_not_awaited()
     assert resp.applied is True
     assert resp.intentMode == INTENT_MODE_PREFERENCE
+    assert resp.recommendationRefresh == {
+        "triggered": True,
+        "success": True,
+        "mode": "overlay_best_effort",
+        "staleMarked": True,
+    }
     assert "已确认" in resp.message
     assert "后续报考参考" in resp.message
     assert "现在这份方案" in resp.message
@@ -3643,7 +3665,8 @@ async def test_apply_preference_career_intent_updates_planning_latent_profile():
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
         patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
-        patch("app.tools.intent_state_tool.query_planning_candidate_pool", new=AsyncMock()) as query_mock,
+        patch("app.tools.intent_state_tool.mark_planning_intent_change_stale", new=AsyncMock(return_value={"code": 0})) as stale_mock,
+        patch("app.tools.intent_state_tool.query_planning_candidate_pool", new=AsyncMock(return_value={"code": 0, "data": {"total": 1}})) as query_mock,
         patch(
             "app.tools.intent_state_tool.get_planning_state",
             new=AsyncMock(return_value={"data": {"profileState": {"latentProfile": {"futureDevelopment": {"careerTypes": ["读研"]}}}}}),
@@ -3662,7 +3685,8 @@ async def test_apply_preference_career_intent_updates_planning_latent_profile():
             intent_mode=INTENT_MODE_PREFERENCE,
         )
 
-    query_mock.assert_not_awaited()
+    query_mock.assert_awaited_once()
+    stale_mock.assert_awaited_once_with(13, INTENT_MODE_PREFERENCE)
     state_mock.assert_awaited_once()
     latent_mock.assert_awaited_once_with(
         13,
@@ -3869,7 +3893,8 @@ async def test_confirm_intent_change_with_career_intent_updates_latent_profile()
             new=AsyncMock(return_value={"data": {"profileState": {"latentProfile": {"futureDevelopment": {"careerTypes": ["读研"]}}}}}),
         ) as state_mock,
         patch("app.tools.intent_state_tool.update_planning_latent_profile", new=AsyncMock()) as latent_mock,
-        patch("app.tools.intent_state_tool.query_planning_candidate_pool", new=AsyncMock()) as query_mock,
+        patch("app.tools.intent_state_tool.mark_planning_intent_change_stale", new=AsyncMock(return_value={"code": 0})) as stale_mock,
+        patch("app.tools.intent_state_tool.query_planning_candidate_pool", new=AsyncMock(return_value={"code": 0, "data": {"total": 1}})) as query_mock,
         patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
     ):
         mock_pm = mock_pm_cls.return_value
@@ -3882,7 +3907,8 @@ async def test_confirm_intent_change_with_career_intent_updates_latent_profile()
     assert resp["applied"] is True
     assert "已确认" in resp["message"]
     assert "后续报考参考" in resp["message"]
-    query_mock.assert_not_awaited()
+    query_mock.assert_awaited_once()
+    stale_mock.assert_awaited_once_with(31, INTENT_MODE_PREFERENCE)
     state_mock.assert_awaited_once()
     latent_mock.assert_awaited_once_with(
         31,
@@ -3907,7 +3933,8 @@ async def test_handle_intent_select_preference_does_not_regenerate_candidate_poo
         patch("app.tools.intent_state_tool.get_message_by_id", new=AsyncMock(return_value={"data": {"content": json.dumps(message_content, ensure_ascii=False)}})),
         patch("app.tools.intent_state_tool.update_message", new=AsyncMock()),
         patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
-        patch("app.tools.intent_state_tool.query_planning_candidate_pool", new=AsyncMock()) as query_mock,
+        patch("app.tools.intent_state_tool.mark_planning_intent_change_stale", new=AsyncMock(return_value={"code": 0})) as stale_mock,
+        patch("app.tools.intent_state_tool.query_planning_candidate_pool", new=AsyncMock(return_value={"code": 0, "data": {"total": 1}})) as query_mock,
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
     ):
         mock_pm = mock_pm_cls.return_value
@@ -3920,4 +3947,5 @@ async def test_handle_intent_select_preference_does_not_regenerate_candidate_poo
     assert isinstance(resp, str)
     assert "已确认" in resp
     assert "后续报考参考" in resp
-    query_mock.assert_not_awaited()
+    stale_mock.assert_awaited_once_with(7, INTENT_MODE_PREFERENCE)
+    query_mock.assert_awaited_once()

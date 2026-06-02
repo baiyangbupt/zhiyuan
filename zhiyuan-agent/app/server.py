@@ -33,7 +33,7 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-_NON_PERSISTENT_USER_MESSAGE_TYPES = {"planEditSelect", "intentSelect"}
+_NON_PERSISTENT_USER_MESSAGE_TYPES = {"planEditSelect", "intentSelect", "pendingConfirmation"}
 _CHAT_SERVICE_TIMEOUT_SECONDS = 180
 
 
@@ -158,6 +158,12 @@ async def _handle_ws_loop(ws: WebSocket, service: ChatService):
                     user_id=msg.user_id,
                     content=msg.content,
                 )
+            elif msg.type == "pendingConfirmation":
+                reply = await service.handle_pending_confirmation(
+                    session_id=msg.session_id,
+                    user_id=msg.user_id,
+                    content=msg.content,
+                )
             else:
                 # 构造进度回调：推送 thinking 消息到前端
                 async def on_progress(hint: str, _sid: str = msg.session_id) -> None:
@@ -242,24 +248,24 @@ async def _handle_ws_loop(ws: WebSocket, service: ChatService):
                 )
 
         for followup in followup_responses:
-            if followup.type != "planningWorkspaceAction":
+            if followup.type not in {"planningWorkspaceAction", "pendingConfirmationCard"}:
                 continue
             try:
                 content_obj = json.loads(followup.content)
             except (json.JSONDecodeError, TypeError):
-                content_obj = {"type": "planningWorkspaceAction", "title": followup.content}
+                content_obj = {"type": followup.type, "title": followup.content}
             try:
                 await message_store.save_agent_message(
                     chat_session_id=msg.session_id,
-                    ws_type="planningWorkspaceAction",
+                    ws_type=followup.type,
                     content=json.dumps(content_obj, ensure_ascii=False),
                 )
             except Exception:
                 logger.exception(
-                    "Failed to persist v3 followup planningWorkspaceAction: session_id=%s",
-                    msg.session_id,
+                    "Failed to persist v3 followup card: session_id=%s type=%s",
+                    msg.session_id, followup.type,
                 )
-            followup_data = {"type": "planningWorkspaceAction", "content": content_obj, "end": True}
+            followup_data = {"type": followup.type, "content": content_obj, "end": True}
             if not await _safe_send_json(ws, followup_data, context="v3.followup"):
                 return
 
@@ -277,7 +283,7 @@ async def ws_chat(ws: WebSocket):
 
 # ── 兼容 agent-plus 前端协议 ──────────────────────────────────────
 # 前端连接路径: /gaotu-assistant-agent/plus/chat/{tenantId}/bot/{botId}/do
-# 入站格式:  {"sessionId": "...", "userId": "...", "content": "...", "inputType": "text|ping|planEditSelect|intentDetectSelect"}
+# 入站格式:  {"sessionId": "...", "userId": "...", "content": "...", "inputType": "text|ping|planEditSelect|intentDetectSelect|pendingConfirmation"}
 # 出站格式:  前端 onMessage 只检查 type!="pong" 后触发 fetchMessageList，
 #           实际渲染走消息存储，所以响应格式不关键。
 
@@ -288,6 +294,7 @@ _INPUT_TYPE_MAP = {
     "intentDetect": "chat",
     "intentDetectSelect": "intentSelect",
     "intentSelect": "intentSelect",
+    "pendingConfirmation": "pendingConfirmation",
 }
 
 
@@ -358,6 +365,12 @@ async def ws_chat_compat(ws: WebSocket, tenant_id: str, bot_id: str):
                         user_id=msg.user_id,
                         content=msg.content,
                     )
+                elif msg.type == "pendingConfirmation":
+                    reply = await service.handle_pending_confirmation(
+                        session_id=msg.session_id,
+                        user_id=msg.user_id,
+                        content=msg.content,
+                    )
                 else:
                     # 构造进度回调：推送 thinking 消息（compat 格式）
                     async def on_progress_compat(hint: str, _sid: str = msg.session_id) -> None:
@@ -388,6 +401,7 @@ async def ws_chat_compat(ws: WebSocket, tenant_id: str, bot_id: str):
                         "planEditSelectPopup",
                         "intentDetectSelectPopup",
                         "intentConfirmPopup",
+                        "pendingConfirmationCard",
                     }:
                         # content 是 JSON 字符串，解析为对象
                         try:
@@ -493,34 +507,32 @@ async def ws_chat_compat(ws: WebSocket, tenant_id: str, bot_id: str):
                 return
 
             for followup in followup_responses:
-                if followup.type != "planningWorkspaceAction":
+                if followup.type not in {"planningWorkspaceAction", "pendingConfirmationCard"}:
                     continue
                 try:
                     content_obj = json.loads(followup.content)
                 except (json.JSONDecodeError, TypeError):
-                    content_obj = {"type": "planningWorkspaceAction", "title": followup.content}
+                    content_obj = {"type": followup.type, "title": followup.content}
 
                 try:
                     await message_store.save_agent_message(
                         chat_session_id=msg.session_id,
-                        ws_type="planningWorkspaceAction",
+                        ws_type=followup.type,
                         content=json.dumps(content_obj, ensure_ascii=False),
                     )
                 except Exception:
                     logger.exception(
-                        "Failed to persist followup planningWorkspaceAction message: session_id=%s",
-                        msg.session_id,
+                        "Failed to persist followup card message: session_id=%s type=%s",
+                        msg.session_id, followup.type,
                     )
 
                 logger.info(
-                    "Sending compat followup: session_id=%s type=planningWorkspaceAction target=%s title=%s",
-                    msg.session_id,
-                    content_obj.get("targetView"),
-                    content_obj.get("title"),
+                    "Sending compat followup: session_id=%s type=%s title=%s",
+                    msg.session_id, followup.type, content_obj.get("title"),
                 )
                 if not await _safe_send_json(
                     ws,
-                    {"type": "planningWorkspaceAction", "content": content_obj, "end": True},
+                    {"type": followup.type, "content": content_obj, "end": True},
                     context="compat.followup",
                 ):
                     return

@@ -61,6 +61,7 @@ from app.util.code_enrichment import (
 from app.util.internal_client import (
     get_intent_change_cache,
     get_planning_state,
+    mark_planning_intent_change_stale,
     get_message_by_id,
     query_planning_candidate_pool,
     save_intent_change_cache,
@@ -1879,6 +1880,63 @@ async def _query_candidate_total(session_id: str, candidate_filters: dict[str, A
         return None
 
 
+async def _refresh_recommendation_overlay_best_effort(session_id: str) -> bool:
+    """Trigger backend recommendation overlay refresh after intent changes.
+
+    The backend refreshes the overlay from candidate-pool query when its stale
+    flag is set. This keeps current ordered plan untouched and only refreshes
+    recommendation/candidate scoring data.
+    """
+    try:
+        resp = await query_planning_candidate_pool(
+            1,
+            int(session_id),
+            page=1,
+            page_size=1,
+            sort_field="finalScore",
+            sort_order="desc",
+        )
+        success = isinstance(resp, dict) and (
+            resp.get("code") in {0, "0"} or resp.get("success") is True
+        )
+        logger.info(
+            "Intent recommendation overlay refresh triggered: session_id=%s success=%s",
+            session_id,
+            success,
+        )
+        return success
+    except Exception:
+        logger.warning(
+            "Intent recommendation overlay refresh failed: session_id=%s",
+            session_id,
+            exc_info=True,
+        )
+        return False
+
+
+async def _mark_intent_change_stale_best_effort(session_id: str, intent_mode: str) -> bool:
+    try:
+        resp = await mark_planning_intent_change_stale(int(session_id), intent_mode)
+        success = isinstance(resp, dict) and (
+            resp.get("code") in {0, "0"} or resp.get("success") is True
+        )
+        logger.info(
+            "Intent planning stale flags marked: session_id=%s intent_mode=%s success=%s",
+            session_id,
+            intent_mode,
+            success,
+        )
+        return success
+    except Exception:
+        logger.warning(
+            "Intent planning stale flag mark failed: session_id=%s intent_mode=%s",
+            session_id,
+            intent_mode,
+            exc_info=True,
+        )
+        return False
+
+
 async def _query_candidate_base_total(session_id: str) -> int | None:
     try:
         planning_state = await get_planning_state(int(session_id))
@@ -1970,6 +2028,8 @@ async def _apply_intents(
         )
         base_total = await _query_candidate_base_total(session_id)
         filtered_total = await _query_candidate_total(session_id, candidate_filters)
+        stale_mark_success = await _mark_intent_change_stale_best_effort(session_id, intent_mode)
+        recommendation_refresh_success = await _refresh_recommendation_overlay_best_effort(session_id)
         logger.info("Constraint intents applied without regenerating candidate pool: session_id=%s", session_id)
         result = IntentStateUpdateResult(
             action="apply",
@@ -1981,10 +2041,18 @@ async def _apply_intents(
             candidateFilters=candidate_filters,
             filteredTotal=filtered_total,
             baseTotal=base_total,
+            recommendationRefresh={
+                "triggered": True,
+                "success": recommendation_refresh_success,
+                "mode": "overlay_best_effort",
+                "staleMarked": stale_mark_success,
+            },
         )
         result.message = render_intent_state_update(result)
         return result
 
+    stale_mark_success = await _mark_intent_change_stale_best_effort(session_id, intent_mode)
+    recommendation_refresh_success = await _refresh_recommendation_overlay_best_effort(session_id)
     logger.info("Preference intents applied: session_id=%s", session_id)
     result = IntentStateUpdateResult(
         action="apply",
@@ -1993,6 +2061,12 @@ async def _apply_intents(
         applied=True,
         messageCode="preference_applied",
         merged=merged,
+        recommendationRefresh={
+            "triggered": True,
+            "success": recommendation_refresh_success,
+            "mode": "overlay_best_effort",
+            "staleMarked": stale_mark_success,
+        },
     )
     result.message = render_intent_state_update(result)
     return result
