@@ -1493,6 +1493,10 @@ def _readonly_closure_ack_reply() -> str:
     return "先按刚才的分析结论理解。这轮没有待确认的偏好或方案动作，也不会改动方案；后面想继续看具体学校、专业或方案调整，随时告诉我。"
 
 
+def _no_pending_plan_confirmation_guard_reply() -> str:
+    return "我这边没有上一轮待确认的方案动作。你可以直接说想生成方案、审查方案或怎么调整，我会先说明影响，确认后再执行。"
+
+
 _PENDING_PLAN_ACTION_FAMILIES = {
     "generate_plan",
     "add_units",
@@ -1885,6 +1889,187 @@ def _is_explicit_pending_intent_confirmation(content: str) -> bool:
         "确认这个参考",
         "确认参考",
     }
+
+
+async def _save_direct_guard_history(
+    history_store: ChatHistoryStore,
+    session_id: str,
+    history: list[Any] | None,
+    content: str,
+    reply: str,
+    *,
+    model_name: str,
+) -> None:
+    new_messages = [
+        ModelRequest(parts=[UserPromptPart(content=content)]),
+        ModelResponse(parts=[TextPart(content=reply)], model_name=model_name),
+    ]
+    try:
+        history_to_save = list(history or [])
+        history_to_save.extend(new_messages)
+        await history_store.save(session_id, history_to_save)
+    except Exception:
+        logger.exception("Failed to save direct guard history: session_id=%s model=%s", session_id, model_name)
+
+
+async def _early_confirmation_guard_reply(
+    history_store: ChatHistoryStore,
+    session_id: str,
+    user_id: str,
+    content: str,
+    history: list[Any] | None,
+) -> str | None:
+    """Handle short confirmation-only turns before expensive context loading."""
+    is_plan_confirm = _is_plan_action_confirmation(content)
+    is_intent_confirm = _is_pending_intent_confirmation(content)
+    is_explicit_intent_confirm = _is_explicit_pending_intent_confirmation(content)
+    if not (is_plan_confirm or is_intent_confirm or is_explicit_intent_confirm):
+        return None
+    if _is_readonly_closure_ack(content) and _latest_turn_looks_readonly(history):
+        return None
+    started_at = time.monotonic()
+    if _extract_pending_plan_action(history) is not None and is_plan_confirm:
+        reply = _pending_requires_card_click_reply("plan_mutation")
+        await _save_direct_guard_history(
+            history_store,
+            session_id,
+            history,
+            content,
+            reply,
+            model_name="pending-plan-card-required",
+        )
+        _log_conversation_turn_event(
+            sessionId=session_id,
+            userId=user_id,
+            scene="plan",
+            routingPath="pending_plan_card_required",
+            pendingType="plan",
+            actionFamily=None,
+            totalDurationMs=int((time.monotonic() - started_at) * 1000),
+            status="blocked",
+            errorType="card_confirmation_required",
+        )
+        return reply
+
+    pending_state = await _load_pending_confirmation_state(session_id)
+    pending_kind = str((pending_state or {}).get("kind") or "").strip()
+    pending_status = str((pending_state or {}).get("status") or "").strip()
+    if pending_status == "active" and pending_kind in {"plan_mutation", "intent_change"}:
+        if pending_kind == "plan_mutation" and is_plan_confirm:
+            reply = _pending_requires_card_click_reply("plan_mutation")
+            await _save_direct_guard_history(
+                history_store,
+                session_id,
+                history,
+                content,
+                reply,
+                model_name="pending-plan-card-required",
+            )
+            _log_conversation_turn_event(
+                sessionId=session_id,
+                userId=user_id,
+                scene="plan",
+                routingPath="pending_plan_card_required",
+                pendingType="plan",
+                actionFamily=str(pending_state.get("actionFamily") or "") or None,
+                totalDurationMs=int((time.monotonic() - started_at) * 1000),
+                status="blocked",
+                errorType="card_confirmation_required",
+            )
+            return reply
+        if pending_kind == "intent_change" and is_intent_confirm:
+            reply = _pending_requires_card_click_reply("intent_change")
+            await _save_direct_guard_history(
+                history_store,
+                session_id,
+                history,
+                content,
+                reply,
+                model_name="pending-intent-card-required",
+            )
+            _log_conversation_turn_event(
+                sessionId=session_id,
+                userId=user_id,
+                scene="intent",
+                routingPath="pending_intent_card_required",
+                pendingType="intent",
+                actionFamily=None,
+                totalDurationMs=int((time.monotonic() - started_at) * 1000),
+                status="blocked",
+                errorType="card_confirmation_required",
+            )
+            return reply
+
+    if is_explicit_intent_confirm:
+        reply = _no_pending_intent_confirmation_guard_reply()
+        await _save_direct_guard_history(
+            history_store,
+            session_id,
+            history,
+            content,
+            reply,
+            model_name="direct-intent-confirmation-guard",
+        )
+        _log_conversation_turn_event(
+            sessionId=session_id,
+            userId=user_id,
+            scene="intent",
+            routingPath="intent_confirmation_guard_no_pending",
+            pendingType=None,
+            actionFamily=None,
+            totalDurationMs=int((time.monotonic() - started_at) * 1000),
+            status="success",
+            errorType=None,
+        )
+        return reply
+
+    if is_plan_confirm and content.strip().strip("。.!！?？") in _PLAN_ACTION_CONFIRM_PHRASES:
+        pending_intent_confirmation = await _load_pending_intent_confirmation(session_id)
+        if pending_intent_confirmation and is_intent_confirm:
+            reply = _pending_requires_card_click_reply("intent_change")
+            await _save_direct_guard_history(
+                history_store,
+                session_id,
+                history,
+                content,
+                reply,
+                model_name="pending-intent-card-required",
+            )
+            _log_conversation_turn_event(
+                sessionId=session_id,
+                userId=user_id,
+                scene="intent",
+                routingPath="pending_intent_card_required",
+                pendingType="intent",
+                actionFamily=None,
+                totalDurationMs=int((time.monotonic() - started_at) * 1000),
+                status="blocked",
+                errorType="card_confirmation_required",
+            )
+            return reply
+        reply = _no_pending_plan_confirmation_guard_reply()
+        await _save_direct_guard_history(
+            history_store,
+            session_id,
+            history,
+            content,
+            reply,
+            model_name="direct-plan-confirmation-guard",
+        )
+        _log_conversation_turn_event(
+            sessionId=session_id,
+            userId=user_id,
+            scene="plan",
+            routingPath="plan_confirmation_guard_no_pending",
+            pendingType=None,
+            actionFamily=None,
+            totalDurationMs=int((time.monotonic() - started_at) * 1000),
+            status="success",
+            errorType=None,
+        )
+        return reply
+
+    return None
 
 
 def _sanitize_reply_for_user(reply: str) -> str:
@@ -2563,6 +2748,17 @@ class ChatService:
             len(history) if history else 0,
         )
         clear_recent_plan_execution_result(session_id, content)
+
+        early_guard_reply = await _early_confirmation_guard_reply(
+            self.history_store,
+            session_id,
+            user_id,
+            content,
+            history,
+        )
+        if early_guard_reply is not None:
+            return early_guard_reply
+
         past_turn_count = _count_user_turns(history)
         current_turn = past_turn_count + 1
         context_progress_sent = False

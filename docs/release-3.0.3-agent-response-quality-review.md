@@ -2390,3 +2390,45 @@ cd zhiyuan-agent
 
 - 评估工具测试：`99 passed`。
 - effect/perf 历史 output 自评：`verdicts={'unscored': 11}`，`qualityViolationsByType={}`，`evaluationWarningsByType` 包含 `missing_response_text=11`。
+
+##### 14.12.16 无待确认文本确认 guard 的早期返回优化
+
+真实 WebSocket 复跑发现：`确认` 这类 no-pending guard 虽然没有进入模型和工具，但仍在 guard 前加载成绩、画像、workspace 等上下文，导致本地延迟约 `15.1s`，首包约 `13.1s`。这类请求本质只是确认保护，不需要完整上下文。
+
+修正：
+
+- 在 `ChatService.handle_message()` 加入早期确认 guard：
+  - 历史加载后立即识别短确认类输入。
+  - 只读取 active `pendingConfirmation` 和必要的 legacy intent fallback。
+  - 不加载 score/profile/workspace，不进入 Agent。
+- 兼容边界：
+  - 历史里仍能识别旧 plan preview pending 时，继续提示用户点击确认卡片，不误判为无待确认。
+  - 只读分析后的“就这样”仍走 readonly closure ack，不被 plan no-pending guard 抢走。
+  - `确认生成` 这类不只是确认的短句不被早期 no-pending guard 抢走，继续交给原主链路。
+
+验证：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest tests/unit/test_chat_service_history_persistence.py -q
+.venv/bin/python -m pytest tests/unit/test_mainline_dialog_scenarios.py tests/unit/test_tool_reply_policy.py tests/regression/test_pending_protocol.py tests/regression/test_execution_apply.py -q
+.venv/bin/python -m pytest tests/unit/test_dialog_case_evaluation_report.py tests/unit/test_dialog_regression_runner.py tests/unit/test_dialog_quality_gate.py -q
+.venv/bin/python -m pytest tests/unit/test_ws_compat.py -q
+
+.venv/bin/python examples/dialog_regression_runner.py \
+  --url ws://127.0.0.1:8000/gaotu-assistant-agent/plus/chat/1/bot/test/do \
+  --session 990651 \
+  --prompts "确认" \
+  --response-timeout 30 \
+  --keep-response-text \
+  --assert-plan-style \
+  --metrics-output /private/tmp/zhiyuan_303_no_pending_confirm_guard_live_after_early_guard.json
+```
+
+结果：
+
+- history persistence：`133 passed`。
+- mainline / tool reply / pending / execution：`198 passed`。
+- evaluation tools：`99 passed`。
+- ws compat：`19 passed`。
+- live no-pending confirm guard：`elapsedMs=2313`，`firstMessageMs=312`，无模型/工具调用；修复前同场景约 `elapsedMs=15145`，`firstMessageMs=13142`。

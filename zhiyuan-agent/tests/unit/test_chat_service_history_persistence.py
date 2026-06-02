@@ -3433,15 +3433,20 @@ def test_chat_service_blocks_plan_confirmation_without_pending_action(tmp_path, 
     fake_agent = _FakeAgent(["不应该调用模型"])
 
     with patch("app.service.ChatAgent", return_value=fake_agent), \
-            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
-            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
-            patch("app.service.get_intent_change_cache", AsyncMock(return_value={"code": 1})), \
-            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})):
+            patch("app.service.get_pending_confirmation", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})) as score_mock, \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})) as profile_mock, \
+            patch("app.service.get_intent_change_cache", AsyncMock(return_value={"code": 1})) as intent_cache_mock, \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})) as workspace_mock:
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-no-pending-confirm", "user-1", "确认"))
 
     assert reply == "我这边没有上一轮待确认的方案动作。你可以直接说想生成方案、审查方案或怎么调整，我会先说明影响，确认后再执行。"
     assert fake_agent.calls == []
+    score_mock.assert_not_awaited()
+    profile_mock.assert_not_awaited()
+    intent_cache_mock.assert_awaited_once()
+    workspace_mock.assert_not_awaited()
     saved_history = asyncio.run(store.load("session-no-pending-confirm"))
     assert saved_history is not None
     assert len(saved_history) == 2
@@ -3453,15 +3458,20 @@ def test_chat_service_routes_no_pending_intent_confirmation_to_intent_guard(tmp_
     fake_agent = _FakeAgent(["不应该调用模型"])
 
     with patch("app.service.ChatAgent", return_value=fake_agent), \
-            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
-            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
-            patch("app.service.get_intent_change_cache", AsyncMock(return_value={"code": 1})), \
-            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})):
+            patch("app.service.get_pending_confirmation", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})) as score_mock, \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})) as profile_mock, \
+            patch("app.service.get_intent_change_cache", AsyncMock(return_value={"code": 1})) as intent_cache_mock, \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})) as workspace_mock:
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-no-pending-intent-confirm", "user-1", "确认这个偏好"))
 
     assert reply == "我这边没有找到上一轮仍在等待确认的偏好调整。你可以直接说想保留、排除或重点关注的方向，我会先整理成待确认内容。"
     assert fake_agent.calls == []
+    score_mock.assert_not_awaited()
+    profile_mock.assert_not_awaited()
+    intent_cache_mock.assert_not_awaited()
+    workspace_mock.assert_not_awaited()
 
 
 def test_chat_service_short_ack_after_readonly_turn_does_not_call_agent(tmp_path, mock_llm_client):
