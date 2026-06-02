@@ -15,7 +15,12 @@ from app.tools.intent_response_tool import (
     serialize_explore_followup_result,
 )
 from app.util.code_enrichment import normalize_candidate_filters_async
-from app.util.internal_client import get_intent_change_cache, get_planning_state, query_planning_candidate_pool
+from app.util.internal_client import (
+    get_intent_change_cache,
+    get_pending_confirmation,
+    get_planning_state,
+    query_planning_candidate_pool,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +101,32 @@ async def _query_candidate_base_total(session_id: str) -> int | None:
 
 
 async def _load_cached_intents(session_id: str) -> tuple[dict[str, Any], str]:
+    try:
+        pending_result = await get_pending_confirmation(session_id)
+        pending_data = (pending_result or {}).get("data", {}).get("pendingConfirmation") or {}
+        if (
+            isinstance(pending_data, dict)
+            and pending_data.get("status") == "active"
+            and pending_data.get("kind") == "intent_change"
+        ):
+            execution_payload = pending_data.get("executionPayload") or {}
+            merged = execution_payload.get("merged") or {}
+            if isinstance(merged, dict) and _has_any_intent_payload(
+                merged.get("major_intents"),
+                merged.get("school_intents"),
+                merged.get("city_intents"),
+                merged.get("career_intents"),
+            ):
+                intent_mode = execution_payload.get("intentMode") or pending_data.get("intentMode") or "preference"
+                return {
+                    "major_intents": merged.get("major_intents") or {},
+                    "school_intents": merged.get("school_intents") or {},
+                    "city_intents": merged.get("city_intents") or {},
+                    "career_intents": merged.get("career_intents") or {},
+                }, intent_mode
+    except Exception:
+        logger.warning("Load pendingConfirmation intents failed: session_id=%s", session_id, exc_info=True)
+
     cache_result = await get_intent_change_cache(session_id)
     cache_data = (cache_result or {}).get("data", {}).get("planEditCache") or {}
     merged = {

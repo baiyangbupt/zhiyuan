@@ -128,6 +128,7 @@ def test_intent_scenario_confirmed_preference_returns_text_without_candidate_req
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
         patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
         patch("app.tools.intent_state_tool.query_planning_candidate_pool", new=AsyncMock()) as query_mock,
+        patch("app.tools.intent_state_tool.mark_planning_intent_change_stale", new=AsyncMock(return_value={"code": 0})),
         patch("app.tools.intent_state_tool.get_planning_state", new=AsyncMock()) as state_mock,
         patch("app.tools.intent_state_tool.update_planning_latent_profile", new=AsyncMock()) as latent_mock,
     ):
@@ -145,7 +146,8 @@ def test_intent_scenario_confirmed_preference_returns_text_without_candidate_req
             )
         )
 
-    query_mock.assert_not_awaited()
+    query_mock.assert_awaited_once()
+    assert query_mock.await_args.kwargs["sort_field"] == "finalScore"
     state_mock.assert_not_awaited()
     latent_mock.assert_not_awaited()
     assert resp.applied is True
@@ -158,6 +160,7 @@ def test_intent_scenario_confirmed_career_negative_preference_removes_latent_pro
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
         patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
+        patch("app.tools.intent_state_tool.mark_planning_intent_change_stale", new=AsyncMock(return_value={"code": 0})),
         patch(
             "app.tools.intent_state_tool.get_planning_state",
             new=AsyncMock(
@@ -192,7 +195,8 @@ def test_intent_scenario_confirmed_career_negative_preference_removes_latent_pro
     assert resp.applied is True
     assert "已确认" in resp.message
     assert "后续报考参考" in resp.message
-    query_mock.assert_not_awaited()
+    query_mock.assert_awaited_once()
+    assert query_mock.await_args.kwargs["sort_field"] == "finalScore"
     state_mock.assert_awaited_once()
     latent_mock.assert_awaited_once_with(
         1033,
@@ -313,7 +317,7 @@ def test_intent_scenario_handle_select_prefer_confirm_returns_confirm_text():
         )
 
     assert "待确认内容" in resp
-    assert "确认前不会写入后续参考" in resp
+    assert "点击卡片采纳" in resp
 
 
 def test_intent_scenario_handle_select_constraint_returns_candidate_query_text():
@@ -399,6 +403,7 @@ def test_intent_scenario_confirm_intent_change_with_career_preference_updates_la
         ) as state_mock,
         patch("app.tools.intent_state_tool.update_planning_latent_profile", new=AsyncMock()) as latent_mock,
         patch("app.tools.intent_state_tool.query_planning_candidate_pool", new=AsyncMock()) as query_mock,
+        patch("app.tools.intent_state_tool.mark_planning_intent_change_stale", new=AsyncMock(return_value={"code": 0})),
         patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
     ):
         mock_pm = mock_pm_cls.return_value
@@ -410,7 +415,8 @@ def test_intent_scenario_confirm_intent_change_with_career_preference_updates_la
     assert resp["applied"] is True
     assert "已确认" in resp["message"]
     assert "后续报考参考" in resp["message"]
-    query_mock.assert_not_awaited()
+    query_mock.assert_awaited_once()
+    assert query_mock.await_args.kwargs["sort_field"] == "finalScore"
     state_mock.assert_awaited_once()
     latent_mock.assert_awaited_once_with(
         1008,

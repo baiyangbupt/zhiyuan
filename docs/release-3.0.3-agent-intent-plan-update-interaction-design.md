@@ -1055,6 +1055,7 @@ cd ../zhiyuan-agent
   - 向前端追加 `pendingConfirmationCard`。
 - `analyze_volunteer_intent_change()` 默认不再写匿名 `planEditCache`。
 - 新 `pendingConfirmation` 保存后会 best-effort 清空旧 `planEditCache`，避免历史残留污染后续追问。
+- 待确认意向后的只读追问优先读取 `pendingConfirmation(kind=intent_change,status=active)`；旧 `planEditCache` 仅作为历史 fallback。
 - 文本“确认/可以/好的”仍只提示用户点击卡片，不执行更新。
 - 点击卡片后才调用 `apply_selected_intents`，执行成功后把 pending 状态更新为 `applied`。
 
@@ -1076,8 +1077,11 @@ cd ../zhiyuan-agent
 ```bash
 cd zhiyuan-agent
 .venv/bin/python -m py_compile app/service.py
+.venv/bin/python -m py_compile app/tools/explore_followup_tool.py app/tools/intent_state_tool.py app/service.py
 .venv/bin/python -m pytest tests/unit/test_chat_service_history_persistence.py -q -k 'structured_intent_preview or pending_confirmation or pending_from_confirmation_card or rejects_replaced'
 .venv/bin/python -m pytest tests/unit/test_intent_state_tool.py -q
+.venv/bin/python -m pytest tests/unit/test_planning_intent_scenarios_sync.py -q
+.venv/bin/python -m pytest tests/unit/test_intent_state_tool.py tests/unit/test_planning_intent_scenarios_sync.py -q
 
 .venv/bin/python examples/dialog_regression_runner.py \
   --url ws://127.0.0.1:8000/gaotu-assistant-agent/plus/chat/1/bot/test/do \
@@ -1103,7 +1107,9 @@ npx tsc --noEmit
 
 - `py_compile` 通过。
 - `test_chat_service_history_persistence.py`：`132 passed`。
-- `test_intent_state_tool.py`：`124 passed`。
+- `test_intent_state_tool.py`：`125 passed`。
+- `test_planning_intent_scenarios_sync.py`：`11 passed`。
+- `test_intent_state_tool.py tests/unit/test_planning_intent_scenarios_sync.py`：`136 passed`。
 - 新增 focused pending 测试：`5 passed, 127 deselected`。
 - 真实 websocket 回归：
   - `pendingConfirmationCard` 已返回。

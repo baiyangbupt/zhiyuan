@@ -2191,6 +2191,48 @@ async def test_handle_intent_select_interest_candidate_query_returns_text_only()
 
 
 @pytest.mark.asyncio
+async def test_handle_intent_select_interest_candidate_query_prefers_pending_confirmation():
+    pending_payload = {
+        "data": {
+            "pendingConfirmation": {
+                "status": "active",
+                "kind": "intent_change",
+                "executionPayload": {
+                    "intentMode": "preference",
+                    "merged": {
+                        "city_intents": {"province": ["北京"]},
+                    },
+                },
+            }
+        }
+    }
+    legacy_cache_payload = {
+        "data": {
+            "planEditCache": {
+                "city_intents": {"province": ["上海"]},
+                "intent_mode": "preference",
+            }
+        }
+    }
+
+    with (
+        patch("app.tools.explore_followup_tool.get_pending_confirmation", new=AsyncMock(return_value=pending_payload)),
+        patch("app.tools.explore_followup_tool.get_intent_change_cache", new=AsyncMock(return_value=legacy_cache_payload)) as legacy_cache_mock,
+        patch("app.tools.explore_followup_tool.get_planning_state", new=AsyncMock(return_value={"data": {"candidatePoolState": {"summary": {"total": 3200}}}})),
+        patch("app.tools.explore_followup_tool.query_planning_candidate_pool", new=AsyncMock(return_value={"data": {"total": 88}})) as query_mock,
+    ):
+        resp = await _render_followup(
+            session_id="91",
+            batch="01",
+            action_type="candidate_query",
+        )
+
+    assert "88" in resp
+    legacy_cache_mock.assert_not_awaited()
+    assert query_mock.await_args.kwargs["province_names"] == ["北京"]
+
+
+@pytest.mark.asyncio
 async def test_handle_intent_select_interest_plan_analyze_returns_interest_preview(empty_profile):
     cache_payload = {
         "data": {
