@@ -2421,60 +2421,24 @@ async def update_volunteer_intent_state(
         resolved_merged = merged
         resolved_mode = intent_mode or INTENT_MODE_PREFERENCE
         if normalized_action == "confirm":
-            latest_utterance = _latest_user_utterance(ctx)
-            had_pending_before_turn = has_pending_intent_confirmation(ctx.deps)
-            if (
-                not had_pending_before_turn
-                and not _is_intent_confirmation_utterance(latest_utterance)
-            ):
-                result = IntentStateUpdateResult(
-                    action="confirm",
-                    sessionId=session_id,
-                    intentMode=resolved_mode,
-                    applied=False,
-                    messageCode="confirm_required",
-                )
-                log_event(
-                    "intent_state_event",
-                    sessionId=session_id,
-                    action="confirm",
-                    applied=False,
-                    messageCode="confirm_required",
-                    durationMs=int((time.monotonic() - started_at) * 1000),
-                    status="error",
-                )
-                return serialize_intent_state_update_result(result)
-            pending_confirmation = resolve_pending_confirmation(ctx.deps)
-            cache_data = None
-            if pending_confirmation is not None and pending_confirmation.kind == "intent_change":
-                cache_data = pending_confirmation.execution_payload
-            if not isinstance(cache_data, dict) or not cache_data:
-                cache_result = await get_intent_change_cache(session_id)
-                cache_data = (cache_result or {}).get("data", {}).get("planEditCache")
-            if not cache_data:
-                result = IntentStateUpdateResult(
-                    action="confirm",
-                    sessionId=session_id,
-                    applied=False,
-                    messageCode="no_pending",
-                )
-                log_event(
-                    "intent_state_event",
-                    sessionId=session_id,
-                    action="confirm",
-                    applied=False,
-                    messageCode="no_pending",
-                    durationMs=int((time.monotonic() - started_at) * 1000),
-                    status="error",
-                )
-                return serialize_intent_state_update_result(result)
-            resolved_mode = cache_data.get("intent_mode") or INTENT_MODE_PREFERENCE
-            resolved_merged = {
-                "major_intents": cache_data.get("major_intents") or {},
-                "school_intents": cache_data.get("school_intents") or {},
-                "city_intents": cache_data.get("city_intents") or {},
-                "career_intents": cache_data.get("career_intents") or {},
-            }
+            result = IntentStateUpdateResult(
+                action="confirm",
+                sessionId=session_id,
+                intentMode=resolved_mode,
+                applied=False,
+                messageCode="confirm_required",
+            )
+            log_event(
+                "intent_state_event",
+                sessionId=session_id,
+                action="confirm",
+                applied=False,
+                messageCode="confirm_required",
+                durationMs=int((time.monotonic() - started_at) * 1000),
+                status="blocked",
+                errorType="card_confirmation_required",
+            )
+            return serialize_intent_state_update_result(result)
 
         if not resolved_merged:
             result = IntentStateUpdateResult(

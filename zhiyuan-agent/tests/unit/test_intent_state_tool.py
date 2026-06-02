@@ -1851,7 +1851,7 @@ async def test_analyze_volunteer_intent_change_returns_structured_payload(empty_
 
 
 @pytest.mark.asyncio
-async def test_update_volunteer_intent_state_confirm_returns_structured_result():
+async def test_update_volunteer_intent_state_confirm_requires_card_click_even_with_legacy_cache():
     ctx = SimpleNamespace(
         deps=SimpleNamespace(
             sessionid="5002",
@@ -1875,21 +1875,19 @@ async def test_update_volunteer_intent_state_confirm_returns_structured_result()
         mock_pm.update_school_intent = AsyncMock()
         result = json.loads(await update_volunteer_intent_state(ctx, action="confirm"))
 
-    query_mock.assert_awaited_once()
-    stale_mock.assert_awaited_once_with(5002, INTENT_MODE_PREFERENCE)
+    query_mock.assert_not_awaited()
+    stale_mock.assert_not_awaited()
     state_mock.assert_not_awaited()
     latent_mock.assert_not_awaited()
     assert result["action"] == "confirm"
-    assert result["applied"] is True
+    assert result["applied"] is False
     assert result["intentMode"] == INTENT_MODE_PREFERENCE
-    assert result["recommendationRefresh"]["triggered"] is True
-    assert result["recommendationRefresh"]["success"] is True
-    assert "已确认" in result["message"]
-    assert "后续报考参考" in result["message"]
+    assert result["messageCode"] == "confirm_required"
+    assert "确认卡片" in result["message"]
 
 
 @pytest.mark.asyncio
-async def test_update_volunteer_intent_state_confirm_prefers_phase_pending():
+async def test_update_volunteer_intent_state_confirm_does_not_apply_phase_pending():
     from app.models.conversation_phase import ConversationPhase, PendingConfirmation, PhaseState
 
     ctx = SimpleNamespace(
@@ -1926,12 +1924,13 @@ async def test_update_volunteer_intent_state_confirm_prefers_phase_pending():
         mock_pm.update_school_intent = AsyncMock()
         result = json.loads(await update_volunteer_intent_state(ctx, action="confirm"))
 
-    assert result["applied"] is True
+    assert result["applied"] is False
     assert result["intentMode"] == INTENT_MODE_PREFERENCE
-    mock_pm.update_city_intent.assert_awaited_once()
-    save_mock.assert_awaited_once()
-    stale_mock.assert_awaited_once_with(5004, INTENT_MODE_PREFERENCE)
-    query_mock.assert_awaited_once()
+    assert result["messageCode"] == "confirm_required"
+    mock_pm.update_city_intent.assert_not_awaited()
+    save_mock.assert_not_awaited()
+    stale_mock.assert_not_awaited()
+    query_mock.assert_not_awaited()
     state_mock.assert_not_awaited()
     latent_mock.assert_not_awaited()
 
@@ -3903,7 +3902,7 @@ async def test_analyze_intent_change_interest_stage_without_scope_does_not_trigg
 
 
 @pytest.mark.asyncio
-async def test_confirm_intent_change_with_career_intent_updates_latent_profile():
+async def test_confirm_intent_change_with_career_intent_requires_card_click():
     ctx = SimpleNamespace(
         deps=SimpleNamespace(
             sessionid="31",
@@ -3943,16 +3942,13 @@ async def test_confirm_intent_change_with_career_intent_updates_latent_profile()
 
         resp = await _confirm_update(ctx)
 
-    assert resp["applied"] is True
-    assert "已确认" in resp["message"]
-    assert "后续报考参考" in resp["message"]
-    query_mock.assert_awaited_once()
-    stale_mock.assert_awaited_once_with(31, INTENT_MODE_PREFERENCE)
-    state_mock.assert_awaited_once()
-    latent_mock.assert_awaited_once_with(
-        31,
-        future_development={"careerTypes": ["读研", "体制内/考公导向"]},
-    )
+    assert resp["applied"] is False
+    assert resp["messageCode"] == "confirm_required"
+    assert "确认卡片" in resp["message"]
+    query_mock.assert_not_awaited()
+    stale_mock.assert_not_awaited()
+    state_mock.assert_not_awaited()
+    latent_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio

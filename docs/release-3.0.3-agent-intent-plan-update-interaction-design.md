@@ -1144,3 +1144,45 @@ npx tsc --noEmit
 
 - 新增 WebSocket 兼容测试，覆盖 `intentSelect` 返回 `pendingConfirmationCard` 时，服务端按卡片类型持久化并下发给前端。
 - 继续保留历史 `intentSelect` 序列化测试，确保旧前端提交对象仍会被转换为 JSON 字符串传给服务层。
+
+## 32. 2026-06-02 工具层 Confirm 旁路收口
+
+本阶段继续收敛 Intent 确认协议，关闭工具层 `update_volunteer_intent_state(action="confirm")` 的直接写入能力。
+
+背景问题：
+
+- 服务层已经拦截用户在对话里回复“确认/可以/好的”，并要求点击确认卡片。
+- 但 Agent 模型仍可能在非卡片点击路径误调用 `update_volunteer_intent_state(action="confirm")`。
+- 旧工具实现会从 `conversation_phase.pending` 或 `planEditCache` 读取待确认内容并直接写入偏好/要求，形成绕过前端确认卡片的旁路。
+
+本次调整：
+
+- `update_volunteer_intent_state(action="confirm")` 统一返回 `messageCode=confirm_required`，不再读取 `planEditCache` 或 `conversation_phase.pending` 执行写入。
+- 真正采纳意向/要求只保留一个执行入口：
+  - 前端点击 `pendingConfirmationCard`。
+  - WebSocket 发送 `inputType=pendingConfirmation`。
+  - 服务端校验 `pendingId/status/kind`。
+  - 通过 `apply_selected_intents()` 执行写入。
+- `apply_selected_intents()` 保留为内部执行函数，用于卡片确认后的实际落库、推荐刷新、候选筛选信息生成。
+- `reject` 仍只用于清空旧缓存/取消语义，不会写入偏好或要求。
+
+影响：
+
+- 模型误调用 confirm 工具时，不会改变用户偏好、硬要求、候选筛选、方案状态或推荐 overlay。
+- 旧会话中仅有 `planEditCache` 而没有新 `pendingConfirmationCard` 的情况下，不能再通过自然语言确认直接生效；需要重新生成新的确认卡片。
+- 旧单测中直接调用工具 confirm 并期待写入的用例已调整为验证“不执行、提示点击确认卡片”。
+
+验证补充：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest tests/unit/test_intent_state_tool.py -q -k 'update_volunteer_intent_state_confirm or confirm_prefers_phase or confirm_requires_card'
+.venv/bin/python -m pytest tests/unit/test_planning_intent_scenarios_sync.py -q -k 'confirm'
+.venv/bin/python -m pytest tests/unit/test_dialog_scenario_stability.py -q -k 'confirm'
+```
+
+验证结果：
+
+- `test_intent_state_tool.py` focused：`3 passed`。
+- `test_planning_intent_scenarios_sync.py` focused：`6 passed`。
+- `test_dialog_scenario_stability.py` focused：`13 passed`。

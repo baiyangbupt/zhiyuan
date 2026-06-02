@@ -379,7 +379,7 @@ def test_intent_scenario_handle_select_on_already_clicked_message_short_circuits
     assert resp == "该消息不可再点击。"
 
 
-def test_intent_scenario_confirm_intent_change_with_career_preference_updates_latent_profile_only_after_confirm():
+def test_intent_scenario_confirm_tool_requires_card_click_for_career_preference():
     ctx = SimpleNamespace(deps=SimpleNamespace(sessionid="1008", batch="01", pending_intent_change=True))
 
     with (
@@ -412,13 +412,9 @@ def test_intent_scenario_confirm_intent_change_with_career_preference_updates_la
         mock_pm.update_school_intent = AsyncMock()
         resp = json.loads(asyncio.run(update_volunteer_intent_state(ctx, action="confirm")))
 
-    assert resp["applied"] is True
-    assert "已确认" in resp["message"]
-    assert "后续报考参考" in resp["message"]
-    query_mock.assert_awaited_once()
-    assert query_mock.await_args.kwargs["sort_field"] == "finalScore"
-    state_mock.assert_awaited_once()
-    latent_mock.assert_awaited_once_with(
-        1008,
-        future_development={"careerTypes": ["读研", "体制内/考公导向"]},
-    )
+    assert resp["applied"] is False
+    assert resp["messageCode"] == "confirm_required"
+    assert "确认卡片" in resp["message"]
+    query_mock.assert_not_awaited()
+    state_mock.assert_not_awaited()
+    latent_mock.assert_not_awaited()

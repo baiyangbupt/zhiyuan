@@ -426,7 +426,7 @@ def test_dialog_scenario_generic_direction_question_via_career_tool_falls_back_t
     preview_mock.assert_awaited_once_with(ctx.deps)
 
 
-def test_dialog_scenario_confirmed_career_preference_updates_latent_profile_only_after_confirm():
+def test_dialog_scenario_confirm_tool_requires_card_click_for_career_preference():
     ctx = SimpleNamespace(
         deps=SimpleNamespace(
             sessionid="306",
@@ -466,14 +466,10 @@ def test_dialog_scenario_confirmed_career_preference_updates_latent_profile_only
         resp = json.loads(_run(update_volunteer_intent_state(ctx, action="confirm")))["message"]
 
     assert isinstance(resp, str)
-    assert "已确认" in resp
-    assert "后续报考参考" in resp
+    assert "确认卡片" in resp
     query_mock.assert_not_awaited()
-    state_mock.assert_awaited_once()
-    latent_mock.assert_awaited_once_with(
-        306,
-        future_development={"careerTypes": ["读研", "体制内/考公导向"]},
-    )
+    state_mock.assert_not_awaited()
+    latent_mock.assert_not_awaited()
 
 
 def test_dialog_scenario_interest_followup_candidate_query_for_career_returns_text_not_workspace_action():
@@ -771,8 +767,8 @@ def test_dialog_scenario_after_plan_discussion_user_adds_constraint_updates_cand
         mock_pm.update_school_intent = AsyncMock()
         resp = json.loads(_run(update_volunteer_intent_state(ctx, action="confirm")))["message"]
 
-    assert "128" in resp
-    query_mock.assert_awaited_once()
+    assert "确认卡片" in resp
+    query_mock.assert_not_awaited()
 
 
 def test_dialog_scenario_career_attitude_reversal_recovery_uses_latest_user_turn_only():
@@ -958,7 +954,7 @@ def test_dialog_scenario_reject_then_confirm_does_not_apply_anything():
         mock_pm.update_school_intent = AsyncMock()
         resp = json.loads(_run(update_volunteer_intent_state(ctx, action="confirm")))["message"]
 
-    assert resp == "当前没有待确认的意向调整。"
+    assert "确认卡片" in resp
     latent_mock.assert_not_awaited()
     query_mock.assert_not_awaited()
 
@@ -1032,7 +1028,7 @@ def test_dialog_scenario_hedged_career_statement_stays_interest_analysis_before_
     assert "下一步" in resp
 
 
-def test_dialog_scenario_second_confirm_preview_overwrites_cache_with_latest_intent():
+def test_dialog_scenario_second_confirm_preview_does_not_write_legacy_cache():
     ctx_first = SimpleNamespace(
         deps=SimpleNamespace(
             userid="u1",
@@ -1075,15 +1071,10 @@ def test_dialog_scenario_second_confirm_preview_overwrites_cache_with_latest_int
         _run(_render_analysis(ctx_first, city_intents={"province": ["北京"]}))
         _run(_render_analysis(ctx_second, edit_flag="delete"))
 
-    assert save_mock.await_count == 2
-    first_payload = save_mock.await_args_list[0].args[1]
-    second_payload = save_mock.await_args_list[1].args[1]
-    assert first_payload["city_intents"] == {"province": ["北京"]}
-    assert second_payload["city_intents"] == {"negative_province": ["上海"]}
-    assert second_payload["intent_mode"] == INTENT_MODE_CONSTRAINT
+    assert save_mock.await_count == 0
 
 
-def test_dialog_scenario_confirm_reads_latest_cache_not_previous_preview_state():
+def test_dialog_scenario_confirm_tool_ignores_latest_legacy_cache():
     ctx = SimpleNamespace(
         deps=SimpleNamespace(
             sessionid="321",
@@ -1120,8 +1111,7 @@ def test_dialog_scenario_confirm_reads_latest_cache_not_previous_preview_state()
         mock_pm.update_school_intent = AsyncMock()
         resp = json.loads(_run(update_volunteer_intent_state(ctx, action="confirm")))["message"]
 
-    assert "88" in resp
-    assert "1000" in resp
+    assert "确认卡片" in resp
 
 
 def test_dialog_scenario_explicit_intent_mode_overrides_structural_fallback():
@@ -1193,7 +1183,7 @@ def test_dialog_scenario_interest_followup_constrain_confirm_passes_cached_inten
     assert kwargs["confirm_enabled"] is True
 
 
-def test_dialog_scenario_major_category_preference_preview_caches_latest_major_intent():
+def test_dialog_scenario_major_category_preference_preview_does_not_write_legacy_cache():
     ctx = SimpleNamespace(
         deps=SimpleNamespace(
             userid="u1",
@@ -1225,9 +1215,7 @@ def test_dialog_scenario_major_category_preference_preview_caches_latest_major_i
 
     assert "计算机类" in resp
     assert "电子信息类" in resp
-    payload = save_mock.await_args.args[1]
-    assert payload["major_intents"] == {"level2": ["计算机类", "电子信息类"]}
-    assert payload["intent_mode"] == INTENT_MODE_PREFERENCE
+    save_mock.assert_not_awaited()
 
 
 def test_dialog_scenario_explicit_major_exclusion_recovers_as_constraint_from_latest_turn():
@@ -1270,9 +1258,7 @@ def test_dialog_scenario_explicit_major_exclusion_recovers_as_constraint_from_la
         resp = _run(_render_analysis(ctx, edit_flag="delete"))
 
     assert "医学" in resp
-    payload = save_mock.await_args.args[1]
-    assert payload["major_intents"] == {"negative_level1": ["医学"], "negative_level2": ["临床医学类"]}
-    assert payload["intent_mode"] == INTENT_MODE_CONSTRAINT
+    save_mock.assert_not_awaited()
 
 
 def test_dialog_scenario_school_named_preference_stays_intent_preview_not_candidate_refresh():
@@ -1308,9 +1294,7 @@ def test_dialog_scenario_school_named_preference_stays_intent_preview_not_candid
 
     assert "华南理工大学" in resp
     query_mock.assert_not_awaited()
-    payload = save_mock.await_args.args[1]
-    assert payload["school_intents"] == {"colleges": ["华南理工大学"]}
-    assert payload["intent_mode"] == INTENT_MODE_PREFERENCE
+    save_mock.assert_not_awaited()
 
 
 def test_dialog_scenario_interest_followup_candidate_query_with_major_category_returns_major_filters_only():
@@ -1353,7 +1337,7 @@ def test_dialog_scenario_interest_followup_candidate_query_with_major_category_r
     assert query_kwargs["major_keywords"] == ["计算机类"]
 
 
-def test_dialog_scenario_confirm_major_constraint_outputs_negative_major_filters():
+def test_dialog_scenario_confirm_tool_does_not_output_negative_major_filters():
     ctx = SimpleNamespace(
         deps=SimpleNamespace(
             sessionid="328",
@@ -1390,13 +1374,10 @@ def test_dialog_scenario_confirm_major_constraint_outputs_negative_major_filters
         mock_pm.update_school_intent = AsyncMock()
         result = json.loads(_run(update_volunteer_intent_state(ctx, action="confirm")))
 
-    assert result["intentMode"] == INTENT_MODE_CONSTRAINT
-    assert result["candidateFilters"]["negativeMajorTags"] == ["医学"]
-    assert result["candidateFilters"]["negativeMajorKeywords"] == ["临床医学类"]
-    assert result["filteredTotal"] == 150
-    query_kwargs = query_mock.await_args.kwargs
-    assert query_kwargs["negative_major_tags"] == ["医学"]
-    assert query_kwargs["negative_major_keywords"] == ["临床医学类"]
+    assert result["applied"] is False
+    assert result["messageCode"] == "confirm_required"
+    assert "确认卡片" in result["message"]
+    query_mock.assert_not_awaited()
 
 
 def test_dialog_scenario_biology_interest_and_far_region_requirement_can_coexist_in_preview():
@@ -1434,7 +1415,4 @@ def test_dialog_scenario_biology_interest_and_far_region_requirement_can_coexist
     assert "生物工程类" in resp
     assert "新疆" in resp
     assert "黑龙江" in resp
-    payload = save_mock.await_args.args[1]
-    assert payload["major_intents"] == {"level2": ["生物工程类"]}
-    assert payload["city_intents"] == {"negative_province": ["新疆", "黑龙江"]}
-    assert payload["intent_mode"] == INTENT_MODE_CONSTRAINT
+    save_mock.assert_not_awaited()
