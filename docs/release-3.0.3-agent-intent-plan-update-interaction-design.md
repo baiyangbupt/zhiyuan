@@ -1033,13 +1033,53 @@ cd ../zhiyuan-agent
 - 后端 `pendingId` 校验仍是最终安全边界；即使前端状态异常，旧卡也不能执行。
 - 不引入多 pending 队列，符合本阶段“新 pending 替代旧 pending”的简单协议。
 
+### 22.4 高层 Intent Preview 统一接入 PendingConfirmation
+
+复测发现：
+
+- `preview_current_major_intent_confirmation`
+- `preview_current_school_intent_confirmation`
+- `preview_current_region_intent_confirmation`
+- `preview_current_career_intent_confirmation`
+
+这些高层 Intent 工具会返回结构化 `IntentAnalysisPayload`，但 direct tool reply 展示给用户的是其中的 `message` 文本。此前服务层只对旧 Intent 卡片点击迁移和方案预览生成 `pendingConfirmationCard`，导致高层 preview 仍只写旧 `planEditCache`，没有落 `pendingConfirmation`。
+
+本次修复：
+
+- 服务层不从用户可见文案里反解析意向内容。
+- 服务层从当前轮 `ToolReturnPart.content` 读取结构化 `IntentAnalysisPayload`。
+- 当 `analysisStage=confirmed` 且 `items.value` 存在时：
+  - 合并 `items.value` 为待采纳偏好/要求。
+  - 从当前会话分数信息读取 `batch`，避免跨批次确认时固定成本科批。
+  - 写入统一 `pendingConfirmation`。
+  - 向前端追加 `pendingConfirmationCard`。
+- 文本“确认/可以/好的”仍只提示用户点击卡片，不执行更新。
+- 点击卡片后才调用 `apply_selected_intents`，执行成功后把 pending 状态更新为 `applied`。
+
+验证结果：
+
+- session `990405` 输入“把北京的学校优先考虑”：
+  - 返回 `pendingConfirmationCard`。
+  - 后端 `pendingConfirmation.status=active`。
+  - 文本“确认”只返回“请点击上方卡片里的采纳按钮”，未执行更新。
+  - 模拟前端点击卡片后，返回“已确认，这个偏好会作为后续报考参考”。
+  - 后端 `pendingConfirmation.status=applied`，`resultCode=preference_applied`。
+
 验证命令：
 
 ```bash
 cd zhiyuan-agent
 .venv/bin/python -m py_compile app/service.py
-.venv/bin/python -m pytest tests/unit/test_chat_service_history_persistence.py -q
+.venv/bin/python -m pytest tests/unit/test_chat_service_history_persistence.py -q -k 'structured_intent_preview or pending_confirmation or pending_from_confirmation_card or rejects_replaced'
 .venv/bin/python -m pytest tests/unit/test_intent_state_tool.py -q
+
+.venv/bin/python examples/dialog_regression_runner.py \
+  --url ws://127.0.0.1:8000/gaotu-assistant-agent/plus/chat/1/bot/test/do \
+  --session 990405 \
+  --prompts "把北京的学校优先考虑" "确认" \
+  --response-timeout 120 \
+  --keep-response-text \
+  --metrics-output /private/tmp/zhiyuan_303_pending_card_after_payload_fix.json
 
 cd ../zhiyuan-web
 npx tsc --noEmit
@@ -1048,6 +1088,12 @@ npx tsc --noEmit
 验证结果：
 
 - `py_compile` 通过。
-- `test_chat_service_history_persistence.py`：`131 passed`。
+- `test_chat_service_history_persistence.py`：`132 passed`。
 - `test_intent_state_tool.py`：`124 passed`。
+- 新增 focused pending 测试：`5 passed, 127 deselected`。
+- 真实 websocket 回归：
+  - `pendingConfirmationCard` 已返回。
+  - `pendingConfirmation` 已落库。
+  - 文本确认不会执行。
+  - 卡片确认会执行并置为 `applied`。
 - `npx tsc --noEmit` 未通过，失败点为项目既有类型错误，未指向本次修改的 `MessageList/index.tsx`。

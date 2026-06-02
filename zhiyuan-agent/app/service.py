@@ -45,6 +45,7 @@ from app.tools.intent_state_tool import (
     update_volunteer_intent_state,
 )
 from app.tools.intent_response_tool import (
+    parse_intent_analysis_payload,
     parse_explore_followup_result,
     parse_intent_state_update_result,
     render_explore_followup_result,
@@ -674,6 +675,97 @@ async def _create_pending_intent_confirmation_response(
                 content=json.dumps(payload, ensure_ascii=False),
             )
         ],
+    )
+
+
+async def _resolve_session_batch(session_id: str, default: str = "01") -> str:
+    try:
+        score_response = await get_user_score_detail(session_id)
+        if score_response.get("code") == 0:
+            raw_data = score_response.get("data", {}).get("userScoreDetail", {})
+            if isinstance(raw_data, dict):
+                batch = str(raw_data.get("batch") or "").strip()
+                if batch:
+                    return batch
+    except Exception:
+        logger.warning("Failed to resolve session batch: session_id=%s", session_id, exc_info=True)
+    return default
+
+
+async def _create_pending_intent_confirmation_from_preview_payload(
+    session_id: str,
+    payload: dict[str, Any] | None,
+) -> WSResponse | None:
+    """Create a unified pending card from structured intent preview output."""
+    if not isinstance(payload, dict):
+        return None
+    try:
+        preview = parse_intent_analysis_payload(json.dumps(payload, ensure_ascii=False))
+    except Exception:
+        return None
+    if preview.analysisStage != "confirmed":
+        return None
+    if preview.status not in {"ready", "existing_only"}:
+        return None
+    selected_values = [
+        item.value
+        for item in preview.items
+        if item.selected and isinstance(item.value, dict) and item.value
+    ]
+    if not selected_values:
+        return None
+    try:
+        merged = merge_selected_values(selected_values)
+    except Exception:
+        logger.warning(
+            "Failed to merge structured intent preview values: session_id=%s",
+            session_id,
+            exc_info=True,
+        )
+        return None
+    if not merged:
+        return None
+    intent_mode = str(preview.intentMode or "preference").strip()
+    if intent_mode not in {"preference", "constraint"}:
+        intent_mode = "preference"
+    batch = await _resolve_session_batch(session_id)
+    selected_data = {
+        "selected": selected_values,
+        "intentMode": intent_mode,
+        "batch": batch,
+    }
+    replaced_pending = await _load_pending_confirmation_state(session_id)
+    summary = _summarize_intent_values(merged) or preview.title or "本次待采纳内容。"
+    pending_state = _build_intent_pending_state(
+        session_id,
+        selected_data=selected_data,
+        merged=merged,
+        intent_mode=intent_mode,
+        batch=batch,
+        summary=summary,
+        replaced_pending=replaced_pending if isinstance(replaced_pending, dict) else None,
+    )
+    await _save_pending_confirmation_state(session_id, pending_state)
+    mode_text = "要求" if intent_mode == "constraint" else "偏好"
+    payload = {
+        "type": "pendingConfirmationCard",
+        "pendingId": pending_state["pendingId"],
+        "kind": "intent_change",
+        "actionFamily": "apply_selected_intents",
+        "title": f"确认采纳这次{mode_text}",
+        "summary": summary,
+        "content": summary,
+        "impactTitle": "确认说明",
+        "impact": "点击采纳前不会写入后续报考参考；采纳后会按这次内容继续看候选和方案。",
+        "clickable": True,
+        "status": "active",
+        "confirmText": "采纳",
+        "cancelText": "暂不采纳",
+    }
+    return WSResponse(
+        type="pendingConfirmationCard",
+        session_id=session_id,
+        content=json.dumps(payload, ensure_ascii=False),
     )
 
 
@@ -3114,6 +3206,13 @@ class ChatService:
             followups.append(
                 await _create_pending_plan_confirmation_response(session_id, pending_confirmation_action)
             )
+        if intent_preview_used and not intent_preview_downgraded:
+            preview_payload = _extract_recent_intent_analysis_payload(new_messages)
+            if not preview_payload:
+                preview_payload = _extract_recent_intent_analysis_payload(all_messages)
+            pending_intent_card = await _create_pending_intent_confirmation_from_preview_payload(session_id, preview_payload)
+            if pending_intent_card is not None:
+                followups.append(pending_intent_card)
         if isinstance(reply, str):
             reply = _sanitize_reply_for_user(reply)
         if followups and not isinstance(reply, WSResponse):

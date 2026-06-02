@@ -110,6 +110,68 @@ class _FakeAgent:
         return reply, new_messages, all_messages, usage
 
 
+class _FakeIntentPreviewAgent:
+    def __init__(self, payload: dict):
+        self.payload = payload
+        self.calls: list[dict] = []
+
+    async def run_with_message_deltas(self, user_prompt, message_history=None, deps=None, on_progress=None):
+        if deps is not None:
+            deps.agent_observability.update(
+                {
+                    "completed": True,
+                    "nodeTimings": [
+                        {
+                            "index": 1,
+                            "node": "ModelRequestNode",
+                            "durationMs": 12,
+                            "status": "success",
+                        },
+                        {
+                            "index": 2,
+                            "node": "CallToolsNode",
+                            "durationMs": 8,
+                            "status": "success",
+                            "toolNames": ["preview_current_region_intent_confirmation"],
+                        },
+                    ],
+                }
+            )
+        self.calls.append({"user_prompt": user_prompt, "message_history": message_history})
+        content = json.dumps(self.payload, ensure_ascii=False)
+        new_messages = [
+            ModelRequest(parts=[UserPromptPart(content=user_prompt)]),
+            ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="preview_current_region_intent_confirmation",
+                        args={},
+                        tool_call_id="intent-preview-1",
+                    )
+                ]
+            ),
+            ModelRequest(
+                parts=[
+                    ToolReturnPart(
+                        tool_name="preview_current_region_intent_confirmation",
+                        content=content,
+                        tool_call_id="intent-preview-1",
+                    )
+                ]
+            ),
+            ModelResponse(parts=[TextPart(content=content)], model_name="direct-tool-result"),
+        ]
+        all_messages = (message_history or []) + new_messages
+        usage = MagicMock(
+            input_tokens=1,
+            output_tokens=1,
+            total_tokens=2,
+            requests=1,
+            tool_calls=1,
+        )
+        return content, new_messages, all_messages, usage
+
+
 def _assert_pending_card_envelope(
     reply,
     expected_primary: str,
@@ -637,6 +699,56 @@ def test_chat_service_uses_main_agent_as_single_dialog_entry(tmp_path, mock_llm_
     assert reply == "intent popup by agent"
     assert len(fake_agent.calls) == 1
     assert fake_agent.calls[0]["user_prompt"] == "不想去浙江"
+
+
+def test_chat_service_converts_structured_intent_preview_to_pending_confirmation_card(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    preview_payload = {
+        "status": "ready",
+        "sessionId": "session-intent-preview-card",
+        "title": "待确认偏好",
+        "intentMode": "preference",
+        "analysisStage": "confirmed",
+        "items": [
+            {
+                "content": "偏好城市：北京",
+                "value": {"city_intents": {"city": ["北京"]}},
+                "selected": True,
+            }
+        ],
+        "existingItems": [],
+        "message": "待确认内容：偏好城市北京。",
+    }
+    fake_agent = _FakeIntentPreviewAgent(preview_payload)
+    pending_state, save_pending_mock, get_pending_mock = _pending_confirmation_store()
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 0, "data": {"userScoreDetail": {"batch": "02"}}})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_intent_change_cache", AsyncMock(return_value={"data": {"planEditCache": None}})), \
+            patch("app.service.save_pending_confirmation", save_pending_mock), \
+            patch("app.service.get_pending_confirmation", get_pending_mock):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(
+            service.handle_message("session-intent-preview-card", "user-1", "北京优先")
+        )
+
+    assert isinstance(reply, ChatServiceResponseEnvelope)
+    assert len(reply.followups) == 1
+    card_payload = json.loads(reply.followups[0].content)
+    assert card_payload["type"] == "pendingConfirmationCard"
+    assert card_payload["kind"] == "intent_change"
+    assert card_payload["actionFamily"] == "apply_selected_intents"
+    assert "偏好地域：北京" in card_payload["summary"]
+    assert pending_state["value"]["kind"] == "intent_change"
+    assert pending_state["value"]["status"] == "active"
+    assert pending_state["value"]["executionPayload"]["selectedData"]["selected"] == [
+        {"city_intents": {"city": ["北京"]}}
+    ]
+    assert pending_state["value"]["executionPayload"]["batch"] == "02"
+    assert pending_state["value"]["executionPayload"]["selectedData"]["batch"] == "02"
 
 
 def test_extract_recent_intent_analysis_payload_prefers_latest_structured_preview():
