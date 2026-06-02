@@ -417,6 +417,22 @@ def test_score_case_marks_empty_response_as_failed_verdict():
     assert score["verdict"] == "fail"
 
 
+def test_score_case_marks_metrics_without_response_text_as_unscored():
+    score = report._score_case(
+        {
+            "prompt": "看看现在的方案",
+            "elapsedMs": 2100,
+            "turnObservability": {
+                "toolCalls": [{"name": "execute_plan_action", "actionFamily": "query_state"}],
+            },
+        }
+    )
+
+    assert score["qualityViolations"] == []
+    assert "missing_response_text:run_with_keep_response_text" in score["evaluationWarnings"]
+    assert score["verdict"] == "unscored"
+
+
 def test_score_case_flags_thin_preview_without_distribution_coverage():
     score = report._score_case(
         {

@@ -826,6 +826,10 @@ def _extract_text(record: dict[str, Any]) -> str:
     return _normalize_text(record.get("responseText") or record.get("text") or record.get("reply") or "")
 
 
+def _has_response_text_field(record: dict[str, Any]) -> bool:
+    return any(key in record for key in ("responseText", "text", "reply"))
+
+
 def _extract_error_text(record: dict[str, Any]) -> str:
     return _normalize_text(record.get("wsError") or record.get("error") or "")
 
@@ -1706,6 +1710,27 @@ def _score_case(record: dict[str, Any]) -> dict[str, Any]:
     coverage = _distribution_coverage(text)
     violations = _quality_violations(record, text)
     warnings = _evaluation_warnings(record, text)
+
+    if not text and not _has_response_text_field(record) and not error_text:
+        return {
+            "correctness": 0,
+            "completeness": 0,
+            "naturalness": 0,
+            "actionability": 0,
+            "latency": 0,
+            "structure": 0,
+            "route": _route_score(record),
+            "distributionCoverage": coverage,
+            "qualityViolations": [],
+            "evaluationWarnings": warnings + ["missing_response_text:run_with_keep_response_text"],
+            "routingPath": _extract_routing_path(record),
+            "semanticRouterShadow": _extract_semantic_router_shadow(record),
+            "semanticMappedRoute": _semantic_mapped_route(record),
+            "semanticExpectation": _semantic_expectation_result(record),
+            "actionFamilies": _extract_action_families(record),
+            "toolNames": _extract_tool_names(record),
+            "verdict": "unscored",
+        }
 
     if not text:
         return {

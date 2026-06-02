@@ -2361,3 +2361,32 @@ cd zhiyuan-agent
 - dialog runner / report：`91 passed`。
 - mainline / tool reply policy：`36 passed`。
 - pending / execution regression：`410 passed`。
+
+##### 14.12.15 评估报告对旧 metrics 文件的边界修正
+
+本轮继续跑 3.0.3 历史 output 的自评报告时发现：`dialog_regression_303_effect_perf_output.json` 等早期输出没有使用 `--keep-response-text`，记录里只有耗时、工具链和 follow-up 数量，没有 `responseText/text/reply`。
+
+旧报告工具会把这类“缺少回复文本字段”的记录误判为 `empty_response`，导致历史 effect/perf output 全部显示 `fail`。这不是当前回复质量失败，而是输入数据不可用于文本质量评分。
+
+修正：
+
+- 如果记录明确包含 `responseText/text/reply` 字段但内容为空，仍判定为 `empty_response` 和 `fail`。
+- 如果记录完全没有回复文本字段，判定为 `unscored`，并增加 `missing_response_text:run_with_keep_response_text` warning。
+- 这类旧 metrics 仍可用于耗时、工具链、重复工具调用和缺少进度提示分析，但不能作为回复质量结论。
+
+验证：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest tests/unit/test_dialog_case_evaluation_report.py tests/unit/test_dialog_regression_runner.py tests/unit/test_dialog_quality_gate.py -q
+.venv/bin/python examples/dialog_case_evaluation_report.py \
+  --baseline examples/dialog_regression_303_effect_perf_output.json \
+  --current examples/dialog_regression_303_effect_perf_output.json \
+  --case-definitions examples/dialog_regression_303_effect_perf_cases.json \
+  --output /private/tmp/zhiyuan_303_effect_perf_self_report_after_missing_text_fix.json
+```
+
+结果：
+
+- 评估工具测试：`99 passed`。
+- effect/perf 历史 output 自评：`verdicts={'unscored': 11}`，`qualityViolationsByType={}`，`evaluationWarningsByType` 包含 `missing_response_text=11`。
