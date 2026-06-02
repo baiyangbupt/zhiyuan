@@ -706,7 +706,7 @@ def test_chat_service_converts_structured_intent_preview_to_pending_confirmation
     store = ChatHistoryStore(str(db_path))
     preview_payload = {
         "status": "ready",
-        "sessionId": "session-intent-preview-card",
+        "sessionId": "990501",
         "title": "待确认偏好",
         "intentMode": "preference",
         "analysisStage": "confirmed",
@@ -722,17 +722,19 @@ def test_chat_service_converts_structured_intent_preview_to_pending_confirmation
     }
     fake_agent = _FakeIntentPreviewAgent(preview_payload)
     pending_state, save_pending_mock, get_pending_mock = _pending_confirmation_store()
+    clear_legacy_cache_mock = AsyncMock(return_value={"code": 0})
 
     with patch("app.service.ChatAgent", return_value=fake_agent), \
             patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 0, "data": {"userScoreDetail": {"batch": "02"}}})), \
             patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
             patch("app.service.get_intent_change_cache", AsyncMock(return_value={"data": {"planEditCache": None}})), \
+            patch("app.service.save_intent_change_cache", clear_legacy_cache_mock), \
             patch("app.service.save_pending_confirmation", save_pending_mock), \
             patch("app.service.get_pending_confirmation", get_pending_mock):
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(
-            service.handle_message("session-intent-preview-card", "user-1", "北京优先")
+            service.handle_message("990501", "user-1", "北京优先")
         )
 
     assert isinstance(reply, ChatServiceResponseEnvelope)
@@ -749,6 +751,7 @@ def test_chat_service_converts_structured_intent_preview_to_pending_confirmation
     ]
     assert pending_state["value"]["executionPayload"]["batch"] == "02"
     assert pending_state["value"]["executionPayload"]["selectedData"]["batch"] == "02"
+    clear_legacy_cache_mock.assert_awaited_once_with(990501, {})
 
 
 def test_extract_recent_intent_analysis_payload_prefers_latest_structured_preview():

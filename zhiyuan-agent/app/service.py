@@ -58,6 +58,7 @@ from app.util.internal_client import (
     get_planning_workspace_state,
     get_user_init_profile,
     get_user_score_detail,
+    save_intent_change_cache,
     save_pending_confirmation,
 )
 from app.util.structured_log import log_event
@@ -522,6 +523,13 @@ async def _save_pending_confirmation_state(session_id: str, state: dict[str, Any
         logger.warning("Failed to save pending confirmation state: session_id=%s", session_id, exc_info=True)
 
 
+async def _clear_legacy_plan_edit_cache_best_effort(session_id: str) -> None:
+    try:
+        await save_intent_change_cache(int(session_id), {})
+    except Exception:
+        logger.warning("Failed to clear legacy planEditCache: session_id=%s", session_id, exc_info=True)
+
+
 def _build_plan_pending_state(
     session_id: str,
     pending_plan_action: dict[str, Any],
@@ -746,6 +754,7 @@ async def _create_pending_intent_confirmation_from_preview_payload(
         replaced_pending=replaced_pending if isinstance(replaced_pending, dict) else None,
     )
     await _save_pending_confirmation_state(session_id, pending_state)
+    await _clear_legacy_plan_edit_cache_best_effort(session_id)
     mode_text = "要求" if intent_mode == "constraint" else "偏好"
     payload = {
         "type": "pendingConfirmationCard",

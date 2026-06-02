@@ -1053,6 +1053,8 @@ cd ../zhiyuan-agent
   - 从当前会话分数信息读取 `batch`，避免跨批次确认时固定成本科批。
   - 写入统一 `pendingConfirmation`。
   - 向前端追加 `pendingConfirmationCard`。
+- `analyze_volunteer_intent_change()` 默认不再写匿名 `planEditCache`。
+- 新 `pendingConfirmation` 保存后会 best-effort 清空旧 `planEditCache`，避免历史残留污染后续追问。
 - 文本“确认/可以/好的”仍只提示用户点击卡片，不执行更新。
 - 点击卡片后才调用 `apply_selected_intents`，执行成功后把 pending 状态更新为 `applied`。
 
@@ -1064,6 +1066,10 @@ cd ../zhiyuan-agent
   - 文本“确认”只返回“请点击上方卡片里的采纳按钮”，未执行更新。
   - 模拟前端点击卡片后，返回“已确认，这个偏好会作为后续报考参考”。
   - 后端 `pendingConfirmation.status=applied`，`resultCode=preference_applied`。
+- session `990407` 输入“把北京的学校优先考虑”：
+  - 返回 `pendingConfirmationCard`。
+  - 后端 `pendingConfirmation.status=active`。
+  - 后端 `planEditCache={}`，确认新 preview 不再写旧匿名 cache。
 
 验证命令：
 
@@ -1081,6 +1087,14 @@ cd zhiyuan-agent
   --keep-response-text \
   --metrics-output /private/tmp/zhiyuan_303_pending_card_after_payload_fix.json
 
+.venv/bin/python examples/dialog_regression_runner.py \
+  --url ws://127.0.0.1:8000/gaotu-assistant-agent/plus/chat/1/bot/test/do \
+  --session 990407 \
+  --prompts "把北京的学校优先考虑" \
+  --response-timeout 120 \
+  --keep-response-text \
+  --metrics-output /private/tmp/zhiyuan_303_plan_edit_cache_cleared.json
+
 cd ../zhiyuan-web
 npx tsc --noEmit
 ```
@@ -1094,6 +1108,7 @@ npx tsc --noEmit
 - 真实 websocket 回归：
   - `pendingConfirmationCard` 已返回。
   - `pendingConfirmation` 已落库。
+  - 新 preview 后 `planEditCache={}`。
   - 文本确认不会执行。
   - 卡片确认会执行并置为 `applied`。
 - `npx tsc --noEmit` 未通过，失败点为项目既有类型错误，未指向本次修改的 `MessageList/index.tsx`。

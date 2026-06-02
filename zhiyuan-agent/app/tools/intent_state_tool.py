@@ -2227,7 +2227,9 @@ async def analyze_volunteer_intent_change(
 
     cache_data = _build_cache_data(major_intents, school_intents, city_intents, career_intents, resolved_intent_mode)
     status = "existing_only" if not items else "ready"
-    should_persist_cache = (persist_cache if persist_cache is not None else True) and status != "existing_only"
+    # 3.0.3 后，新待确认意向以 pendingConfirmation 为主状态源。
+    # planEditCache 仅保留为旧会话 adapter，除非调用方显式要求兼容写入。
+    should_persist_cache = bool(persist_cache) and status != "existing_only"
     if should_persist_cache:
         cache_data = await _merge_cache_data_with_existing_pending(session_id, cache_data)
         await save_intent_change_cache(int(session_id), cache_data)

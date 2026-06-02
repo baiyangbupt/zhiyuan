@@ -992,7 +992,7 @@ async def test_analyze_intent_change_semantic_arbitration_keeps_school_preferenc
     assert payload["items"][0]["value"] == {"school_intents": {"colleges": ["华南理工大学"]}}
     assert ctx.deps.agent_observability["intentSideEffectDecision"]["decision"] == "intent_preview"
     classifier_mock.assert_awaited_once()
-    save_mock.assert_awaited_once()
+    save_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1427,6 +1427,7 @@ async def test_analyze_intent_change_merges_with_existing_pending_cache():
             analysis_stage=ANALYSIS_STAGE_CONFIRMED,
             recovery_scope="major",
             confirm_enabled=True,
+            persist_cache=True,
         )
 
     assert "审计学" in payload
@@ -1812,11 +1813,10 @@ async def test_preview_current_career_intent_confirmation_negative_request_prese
         payload_text = await preview_current_career_intent_confirmation(ctx)
 
     assert "体制内/考公导向" in payload_text
-    save_mock.assert_awaited_once()
-    saved_args = save_mock.await_args.args
-    assert saved_args[0] == 1011
-    assert saved_args[1]["intent_mode"] == INTENT_MODE_CONSTRAINT
-    assert saved_args[1]["career_intents"] == {"negative": ["system_public_service"]}
+    save_mock.assert_not_awaited()
+    payload = json.loads(payload_text)
+    assert payload["intentMode"] == INTENT_MODE_CONSTRAINT
+    assert payload["items"][0]["value"] == {"career_intents": {"negative": ["system_public_service"]}}
 
 
 @pytest.mark.asyncio
@@ -2921,9 +2921,8 @@ async def test_analyze_intent_change_normalizes_cross_border_ecommerce_alias_and
         )
 
     payload = json.loads(payload_text)
-    cached = save_mock.await_args.args[1]
     assert payload["items"][0]["value"] == {"major_intents": {"level3": ["跨境电子商务"]}}
-    assert cached["major_intents"] == {"level3": ["跨境电子商务"]}
+    save_mock.assert_not_awaited()
     assert "跨境电商" not in payload["impactText"]
     assert "广州工商学院(201)-跨境电子商务" in payload["impactText"]
 
@@ -2978,9 +2977,8 @@ async def test_analyze_intent_change_normalizes_audit_alias_and_includes_fourth_
         )
 
     payload = json.loads(payload_text)
-    cached = save_mock.await_args.args[1]
     assert payload["items"][0]["value"] == {"major_intents": {"negative_level3": ["审计学"]}}
-    assert cached["major_intents"] == {"negative_level3": ["审计学"]}
+    save_mock.assert_not_awaited()
     assert "审计学" in payload["impactText"]
     assert "广东白云学院第01组-审计学" in payload["impactText"]
     assert "审计）" not in payload["impactText"]
@@ -3037,9 +3035,8 @@ async def test_analyze_intent_change_normalizes_accounting_alias_from_user_dialo
         )
 
     payload = json.loads(payload_text)
-    cached = save_mock.await_args.args[1]
     assert payload["items"][0]["value"] == {"major_intents": {"negative_level3": ["会计学"]}}
-    assert cached["major_intents"] == {"negative_level3": ["会计学"]}
+    save_mock.assert_not_awaited()
     assert "南宁学院第01组-会计学" in payload["impactText"]
     assert "广州商学院第01组-会计学" in payload["impactText"]
 
