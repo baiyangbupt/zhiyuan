@@ -729,7 +729,7 @@ cd zhiyuan-agent
 
 - 这一步是迁移桥接方案，执行 payload 仍从近期历史 preview 中恢复，不是最终 `pending_id` 持久化模型；第三阶段已替换为 extra-data 持久 pending。
 - 卡片点击后的置灰状态前端先本地处理，刷新后的 replaced/expired/applied 持久状态仍待新 pending 表支撑。
-- Intent 仍使用旧卡片采纳链路，尚未迁移到统一 `pendingConfirmationCard`。
+- 当时限制：Intent 仍使用旧卡片采纳链路，尚未迁移到统一 `pendingConfirmationCard`。后续第四阶段已迁移，旧卡片入口只作为 adapter。
 - Intent 采纳后的异步专家优选/rank 刷新仍未接入。
 
 验证命令：
@@ -782,7 +782,7 @@ cd ../zhiyuan-web
 
 - 仍未新增独立 pending/event 表；当前使用 extra-data 单 key 覆盖 active pending，足够支撑单 active 卡片协议，但不能完整追踪所有历史 pending 事件。
 - 前端刷新后对历史旧卡片的“置灰展示”还依赖消息内容和点击返回提示；后续可以通过 messageId/pendingId 批量查状态后渲染为 expired/replaced。
-- Intent 变更仍在旧 `planEditCache` + `intentSelect` 链路，尚未迁移到统一 `pendingConfirmation`。
+- 当时限制：Intent 变更仍在旧 `planEditCache` + `intentSelect` 链路，尚未迁移到统一 `pendingConfirmation`。后续第四阶段和结构化 preview 修复后，`pendingConfirmation` 已成为主状态源，`planEditCache` 仅作为 legacy fallback。
 - 意向/要求确认后的专家优选 rank 异步刷新仍未接入。
 - 方案版本冲突当前只记录 `sourceBackendVersion`，确认时尚未强制比较最新 workspace version。
 
@@ -835,7 +835,7 @@ cd zhiyuan-agent
 
 - 旧 Intent 卡片本身还会先变成本地已点击状态；刷新后以后端消息状态为准。后续如果要更强一致，需要在前端按 pending 状态恢复旧卡片 disabled/expired。
 - 意向/要求采纳后的专家优选/rank 刷新已在第五阶段接入 best-effort overlay refresh；显式后端刷新 API 仍待补。
-- 旧 `planEditCache` 仍作为 intent preview 缓存存在；它不再是用户点击后直接生效的入口，但 preview 生成链路尚未完全迁移到 `pendingConfirmation`。
+- 旧 `planEditCache` 在本阶段仍作为 intent preview 缓存存在；后续结构化 preview 修复后，`pendingConfirmation` 已成为新 preview 主状态，`planEditCache` 仅保留为历史 fallback。
 - 约束类 intent 采纳后已提示用户查看方案；是否自动触发审查或自动修复仍保持后续独立设计，不在本阶段隐式执行。
 
 验证命令：
@@ -1120,3 +1120,27 @@ npx tsc --noEmit
   - 文本确认不会执行。
   - 卡片确认会执行并置为 `applied`。
 - `npx tsc --noEmit` 未通过，失败点为项目既有类型错误，未指向本次修改的 `MessageList/index.tsx`。
+
+## 31. 2026-06-02 旧卡片入口兼容确认
+
+本阶段复查旧前端卡片入口，确认它们只作为兼容适配，不再承担真正写入状态的职责。
+
+当前结论：
+
+- `inputType=intentSelect` / `inputType=planEditSelect` 仍保留，原因是历史消息和旧卡片组件仍会通过这个入口提交勾选内容。
+- 普通旧 Intent 卡片点击进入 `ChatService.handle_intent_select()` 后，只会把勾选项合并为新的 active `pendingConfirmation(kind=intent_change)`，并返回新的 `pendingConfirmationCard`。
+- 旧入口不会直接调用 `_apply_selected_intents`，不会直接写入软意向、硬要求、候选筛选或方案状态。
+- 真正执行写入只允许通过 `inputType=pendingConfirmation`，并且必须校验 `pendingId/status/kind` 与后端 active pending 一致。
+- `actionType` 分支保留为只读 follow-up 行为，例如“看看候选”“分析方案”等，不属于采纳写入入口。
+- 前端旧卡片点击后可以本地标记为已处理，但这只是旧卡片完成“生成待确认卡片”的动作；用户仍需要点击新的确认卡片才会生效。
+
+兼容策略：
+
+- 旧会话里的旧卡片不直接失效；点击后转换为新的确认卡片。
+- 如果旧卡片缺少可执行信息或后端无法解析，返回错误/重试提示，不写入状态。
+- 如果同一会话又生成新的 pending，旧确认卡片点击时会因 `pendingId` 不匹配被后端拒绝。
+
+验证补充：
+
+- 新增 WebSocket 兼容测试，覆盖 `intentSelect` 返回 `pendingConfirmationCard` 时，服务端按卡片类型持久化并下发给前端。
+- 继续保留历史 `intentSelect` 序列化测试，确保旧前端提交对象仍会被转换为 JSON 字符串传给服务层。

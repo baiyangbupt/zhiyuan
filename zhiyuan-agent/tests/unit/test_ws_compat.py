@@ -580,6 +580,52 @@ def test_ws_compat_intent_select_constraint_end_to_end_returns_workspace_action(
     assert resp["content"]["candidateFilters"]["negativeProvinceNames"] == ["北京"]
 
 
+def test_ws_compat_intent_select_can_return_pending_confirmation_card(client):
+    card_payload = {
+        "type": "pendingConfirmationCard",
+        "kind": "intent_change",
+        "pendingId": "pending-intent-compat-1",
+        "title": "确认采纳这次要求",
+        "summary": "排除北京。",
+        "confirmText": "采纳",
+        "cancelText": "暂不采纳",
+        "clickable": True,
+    }
+
+    mock_service = AsyncMock()
+    client.app.state.chat_service = mock_service
+    mock_service.handle_message = AsyncMock()
+    mock_service.handle_intent_select = AsyncMock(return_value=WSResponse(
+        type="pendingConfirmationCard",
+        session_id="33",
+        content=json.dumps(card_payload, ensure_ascii=False),
+    ))
+
+    with client.websocket_connect(WS_PATH) as ws:
+        with patch("app.server.message_store") as mock_store:
+            mock_store.save_user_message = AsyncMock(return_value=1)
+            mock_store.save_agent_message = AsyncMock(return_value=991)
+
+            ws.send_json({
+                "sessionId": "33",
+                "userId": "user-intent-select",
+                "content": {
+                    "action": "采纳",
+                    "message_id": 3001,
+                    "selected": [{"city_intents": {"negative_province": ["北京"]}}],
+                },
+                "inputType": "intentSelect",
+            })
+            resp = ws.receive_json()
+
+    assert resp["type"] == "pendingConfirmationCard"
+    assert resp["content"]["pendingId"] == "pending-intent-compat-1"
+    assert resp["content"]["message_id"] == 991
+    saved_kwargs = mock_store.save_agent_message.await_args.kwargs
+    assert saved_kwargs["ws_type"] == "pendingConfirmationCard"
+    mock_service.handle_message.assert_not_awaited()
+
+
 def test_ws_compat_multi_turn_constraint_preview_confirm_then_plan_query(client):
     message_content = {
         "intentMode": "constraint",
