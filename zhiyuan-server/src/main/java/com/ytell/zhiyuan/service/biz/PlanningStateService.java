@@ -4133,6 +4133,7 @@ public class PlanningStateService {
 
         List<CandidateItemDTO> candidates = defaultCandidates(candidatePoolState.getItems());
         List<CandidateItemDTO> preferredCandidates = selectLegacyPreferredCandidates(candidates, candidatePoolState, legacyPlanSource);
+        preferredCandidates = expandLegacyMajorGroupPreferredCandidates(preferredCandidates, candidates, candidatePoolState);
         DraftPlanStateDTO draftPlanState = buildLegacyDraftPlanState(preferredCandidates, candidatePoolState, legacyPlanSource.submitted);
         OrderedPlanStateDTO orderedPlanState = buildLegacyOrderedPlanState(draftPlanState, candidatePoolState, candidates, legacyPlanSource);
 
@@ -4186,7 +4187,7 @@ public class PlanningStateService {
                 .sorted(buildLegacyPreferredComparator())
                 .collect(Collectors.toList());
         if (!preferred.isEmpty()) {
-            return preferred;
+            return deduplicateLegacyMajorGroupPreferredUnits(preferred, candidatePoolState);
         }
         if (legacyPlanSource != null && "original".equals(legacyPlanSource.source)) {
             return Lists.newArrayList();
@@ -4210,12 +4211,59 @@ public class PlanningStateService {
                 if ((int) selected.stream().filter(item -> tier.equals(item.getTier())).count() >= required) {
                     break;
                 }
-                if (selectedIds.add(candidate.getVolunteerId())) {
+                String selectedKey = isMajorGroupMode(candidatePoolState)
+                        ? resolveInitialRecommendationUnitId(candidate)
+                        : candidate.getVolunteerId();
+                if (selectedIds.add(selectedKey)) {
                     selected.add(candidate);
                 }
             }
         }
         return selected;
+    }
+
+    private List<CandidateItemDTO> deduplicateLegacyMajorGroupPreferredUnits(List<CandidateItemDTO> preferred,
+                                                                                CandidatePoolStateDTO candidatePoolState) {
+        if (!isMajorGroupMode(candidatePoolState)) {
+            return preferred;
+        }
+        Map<String, CandidateItemDTO> unitMap = new LinkedHashMap<String, CandidateItemDTO>();
+        for (CandidateItemDTO candidate : defaultCandidates(preferred)) {
+            String unitId = resolveInitialRecommendationUnitId(candidate);
+            if (!Strings.isNullOrEmpty(unitId) && !unitMap.containsKey(unitId)) {
+                unitMap.put(unitId, candidate);
+            }
+        }
+        return Lists.newArrayList(unitMap.values());
+    }
+
+    private List<CandidateItemDTO> expandLegacyMajorGroupPreferredCandidates(List<CandidateItemDTO> preferredCandidates,
+                                                                             List<CandidateItemDTO> candidates,
+                                                                             CandidatePoolStateDTO candidatePoolState) {
+        if (!isMajorGroupMode(candidatePoolState) || preferredCandidates == null || preferredCandidates.isEmpty()) {
+            return preferredCandidates;
+        }
+        Map<String, List<CandidateItemDTO>> candidateUnitMap = groupCandidatesByUnit(candidates);
+        List<CandidateItemDTO> expanded = Lists.newArrayList();
+        Set<String> addedVolunteerIds = new LinkedHashSet<String>();
+        for (CandidateItemDTO preferred : defaultCandidates(preferredCandidates)) {
+            String unitId = resolveInitialRecommendationUnitId(preferred);
+            List<CandidateItemDTO> unitCandidates = candidateUnitMap.get(unitId);
+            if (unitCandidates == null || unitCandidates.isEmpty()) {
+                if (!Strings.isNullOrEmpty(preferred.getVolunteerId()) && addedVolunteerIds.add(preferred.getVolunteerId())) {
+                    expanded.add(preferred);
+                }
+                continue;
+            }
+            for (CandidateItemDTO candidate : unitCandidates.stream()
+                    .sorted(buildMajorGroupInnerCandidateComparator())
+                    .collect(Collectors.toList())) {
+                if (!Strings.isNullOrEmpty(candidate.getVolunteerId()) && addedVolunteerIds.add(candidate.getVolunteerId())) {
+                    expanded.add(candidate);
+                }
+            }
+        }
+        return expanded;
     }
 
     private Comparator<CandidateItemDTO> buildLegacyPreferredComparator() {
@@ -5124,7 +5172,7 @@ public class PlanningStateService {
             }
             for (VolunteerRecommendListResponse.VolunteerMajor major : school.getMajors()) {
                 CandidateItemDTO item = new CandidateItemDTO();
-                item.setVolunteerId(safeId(school.getPlanSchoolDataId(), major.getPlanMajorDataId(), major.getMajorId()));
+                item.setVolunteerId(legacyMajorVolunteerId(school, major));
                 item.setTier(tier);
                 fillSchoolFields(item, school);
                 item.setMajorId(major.getMajorId());
@@ -6102,6 +6150,22 @@ public class PlanningStateService {
             items.add(item);
         }
         return items;
+    }
+
+    private String legacyMajorVolunteerId(VolunteerRecommendListResponse.VolunteerSchool school,
+                                          VolunteerRecommendListResponse.VolunteerMajor major) {
+        String planSchoolDataId = school == null ? null : school.getPlanSchoolDataId();
+        String majorIdentity = major == null ? null : major.getPlanMajorDataId();
+        if (Strings.isNullOrEmpty(majorIdentity) && major != null) {
+            majorIdentity = major.getMajorId();
+        }
+        if (Strings.isNullOrEmpty(majorIdentity) && major != null) {
+            majorIdentity = major.getMajorUnitCode();
+        }
+        if (Strings.isNullOrEmpty(majorIdentity) && major != null) {
+            majorIdentity = major.getMajor_name();
+        }
+        return safeId(planSchoolDataId, majorIdentity, major == null ? null : major.getMajor_name());
     }
 
     private String safeId(String first, String second, String third) {
