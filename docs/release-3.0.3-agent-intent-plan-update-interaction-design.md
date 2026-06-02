@@ -1049,7 +1049,7 @@ cd ../zhiyuan-agent
 - 服务层不从用户可见文案里反解析意向内容。
 - 服务层从当前轮 `ToolReturnPart.content` 读取结构化 `IntentAnalysisPayload`。
 - 当 `analysisStage=confirmed` 且 `items.value` 存在时：
-  - 合并 `items.value` 为待采纳偏好/要求。
+  - 合并 `items.value` 为确认后生效的偏好/要求。
   - 从当前会话分数信息读取 `batch`，避免跨批次确认时固定成本科批。
   - 写入统一 `pendingConfirmation`。
   - 向前端追加 `pendingConfirmationCard`。
@@ -1354,13 +1354,13 @@ cd zhiyuan-agent
 - `pendingConfirmationCard.summary` 和 `content` 不再只取一个专业层级。
 - 具体专业、专业类、专业门类分别展示，避免把“经济学”写成“偏好专业”并遮住“法学/财政学”。
 - `content` 使用两段用户语言：
-  - `待采纳`：本次点击卡片后会写入的内容。
-  - `当前已经在后续报考参考`：仅披露已有状态，不作为本次新写入。
+  - `确认后生效`：本次点击卡片后会写入的内容。
+  - `已作为参考`：仅披露已有状态，不作为本次新写入。
 
 示例：
 
 ```text
-待采纳：
+确认后生效：
 - 偏好专业：法学、财政学
 - 排除专业：护理学
 ```

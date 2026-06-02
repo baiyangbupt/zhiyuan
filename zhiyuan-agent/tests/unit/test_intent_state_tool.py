@@ -2344,7 +2344,7 @@ async def test_analyze_intent_change_existing_preference_returns_helpful_text(ex
             None,
         )
 
-    assert "当前已经在后续报考参考" in resp
+    assert "已经作为后续报考参考" in resp
     assert "已经记下" not in resp
     assert "现在这份方案" in resp
     assert "专家优选组合" not in resp
@@ -2393,7 +2393,7 @@ def test_render_intent_analysis_text_hides_internal_major_levels():
 
     assert "level2" not in text
     assert "level3" not in text
-    assert "当前已经在后续报考参考" in text
+    assert "已作为参考" in text
     assert "当前已有参考偏好具体专业：会计学" in text
     assert "当前已有参考排除专业类：护理学类" in text
 

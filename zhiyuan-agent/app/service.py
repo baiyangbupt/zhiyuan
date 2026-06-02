@@ -627,13 +627,13 @@ def _format_intent_card_content(summary: str, *, existing_summary: str = "") -> 
     lines: list[str] = []
     summary_parts = [part.strip() for part in str(summary or "").split("；") if part.strip()]
     if summary_parts:
-        lines.append("待采纳：")
+        lines.append("确认后生效：")
         lines.extend(f"- {part}" for part in summary_parts)
     existing_parts = [part.strip() for part in str(existing_summary or "").split("；") if part.strip()]
     if existing_parts:
         if lines:
             lines.append("")
-        lines.append("当前已经在后续报考参考：")
+        lines.append("已作为参考：")
         lines.extend(f"- {part}" for part in existing_parts)
     return "\n".join(lines).strip() or summary
 
@@ -784,7 +784,7 @@ async def _create_pending_intent_confirmation_from_preview_payload(
         "batch": batch,
     }
     replaced_pending = await _load_pending_confirmation_state(session_id)
-    summary = _summarize_intent_values(merged) or preview.title or "本次待采纳内容。"
+    summary = _summarize_intent_values(merged) or preview.title or "本次确认后生效内容。"
     pending_state = _build_intent_pending_state(
         session_id,
         selected_data=selected_data,
@@ -1231,7 +1231,7 @@ def _tool_returns_intent_existing_only(messages: list[Any] | None) -> bool:
         if str((data or {}).get("status") or "").strip() == "existing_only":
             return True
         text = str(getattr(part, "content", "") or "")
-        if "当前已经在后续报考参考" in text and "本轮不会重复新增" in text:
+        if _is_existing_only_intent_notice_text(text):
             return True
     return False
 
@@ -1296,7 +1296,21 @@ def _normalize_unbacked_recorded_wording(reply: str) -> str:
 
 
 def _reply_is_existing_only_intent_notice(reply: str) -> bool:
-    return "当前已经在后续报考参考" in str(reply or "") and "本轮不会重复新增" in str(reply or "")
+    return _is_existing_only_intent_notice_text(str(reply or ""))
+
+
+def _is_existing_only_intent_notice_text(text: str) -> bool:
+    normalized = str(text or "")
+    if "本轮不会重复新增" not in normalized:
+        return False
+    return any(
+        marker in normalized
+        for marker in (
+            "当前已经在后续报考参考",
+            "已经作为后续报考参考",
+            "已作为参考",
+        )
+    )
 
 
 def _reply_looks_like_unbacked_intent_preview(reply: str) -> bool:

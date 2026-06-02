@@ -813,10 +813,10 @@ def test_chat_service_intent_pending_card_summarizes_all_major_levels_and_existi
     assert isinstance(reply, ChatServiceResponseEnvelope)
     card_payload = json.loads(reply.followups[0].content)
     assert card_payload["summary"] == "偏好专业类：经济学；排除专业门类：医学"
-    assert "待采纳：" in card_payload["content"]
+    assert "确认后生效：" in card_payload["content"]
     assert "- 偏好专业类：经济学" in card_payload["content"]
     assert "- 排除专业门类：医学" in card_payload["content"]
-    assert "当前已经在后续报考参考：" in card_payload["content"]
+    assert "已作为参考：" in card_payload["content"]
     assert "- 偏好专业：法学、财政学" in card_payload["content"]
     assert "- 排除专业：护理学" in card_payload["content"]
     assert pending_state["value"]["summary"] == "偏好专业类：经济学；排除专业门类：医学"
