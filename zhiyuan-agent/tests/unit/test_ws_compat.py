@@ -534,7 +534,7 @@ def test_ws_compat_model_driven_intent_popup_roundtrip(client):
     assert resp["content"]["intentMode"] == "constraint"
 
 
-def test_ws_compat_intent_select_constraint_end_to_end_returns_workspace_action(client):
+def test_ws_compat_intent_select_constraint_returns_pending_confirmation_card_not_workspace_action(client):
     message_content = {
         "intentMode": "constraint",
         "clickable": True,
@@ -546,14 +546,18 @@ def test_ws_compat_intent_select_constraint_end_to_end_returns_workspace_action(
     client.app.state.chat_service = mock_service
     mock_service.handle_message = AsyncMock()
     mock_service.handle_intent_select = AsyncMock(return_value=WSResponse(
-        type="planningWorkspaceAction",
+        type="pendingConfirmationCard",
         session_id="33",
         content=json.dumps(
             {
-                "targetView": "candidate",
-                "refresh": True,
-                "candidateFilters": {"negativeProvinceNames": ["北京"]},
-                "content": "还剩 96 个候选，原来共有 2800 个。",
+                "type": "pendingConfirmationCard",
+                "kind": "intent_change",
+                "pendingId": "pending-intent-constraint-1",
+                "title": "确认采纳这次要求",
+                "summary": "排除北京。",
+                "confirmText": "采纳",
+                "cancelText": "暂不采纳",
+                "clickable": True,
             },
             ensure_ascii=False,
         ),
@@ -576,8 +580,10 @@ def test_ws_compat_intent_select_constraint_end_to_end_returns_workspace_action(
             })
             resp = ws.receive_json()
 
-    assert resp["type"] == "planningWorkspaceAction"
-    assert resp["content"]["candidateFilters"]["negativeProvinceNames"] == ["北京"]
+    assert resp["type"] == "pendingConfirmationCard"
+    assert resp["content"]["pendingId"] == "pending-intent-constraint-1"
+    assert "candidateFilters" not in resp["content"]
+    assert mock_store.save_agent_message.await_args.kwargs["ws_type"] == "pendingConfirmationCard"
 
 
 def test_ws_compat_intent_select_can_return_pending_confirmation_card(client):
@@ -626,7 +632,7 @@ def test_ws_compat_intent_select_can_return_pending_confirmation_card(client):
     mock_service.handle_message.assert_not_awaited()
 
 
-def test_ws_compat_multi_turn_constraint_preview_confirm_then_plan_query(client):
+def test_ws_compat_multi_turn_constraint_preview_card_click_then_plan_query(client):
     message_content = {
         "intentMode": "constraint",
         "clickable": True,
@@ -644,9 +650,39 @@ def test_ws_compat_multi_turn_constraint_preview_confirm_then_plan_query(client)
         "已分析当前方案建议",
     ])
     mock_service.handle_intent_select = AsyncMock(return_value=WSResponse(
-        type="planningWorkspaceAction",
+        type="pendingConfirmationCard",
         session_id="34",
-        content=json.dumps({"candidateFilters": {"negativeProvinceNames": ["北京"]}}, ensure_ascii=False),
+        content=json.dumps(
+            {
+                "type": "pendingConfirmationCard",
+                "kind": "intent_change",
+                "pendingId": "pending-intent-34",
+                "title": "确认采纳这次要求",
+                "summary": "排除北京。",
+                "confirmText": "采纳",
+                "cancelText": "暂不采纳",
+                "clickable": True,
+            },
+            ensure_ascii=False,
+        ),
+    ))
+    mock_service.handle_pending_confirmation = AsyncMock(return_value=ChatServiceResponseEnvelope(
+        primary="已采纳这次要求，后续会避开北京。",
+        followups=[
+            WSResponse(
+                type="planningWorkspaceAction",
+                session_id="34",
+                content=json.dumps(
+                    {
+                        "type": "planningWorkspaceAction",
+                        "targetView": "candidate",
+                        "refresh": True,
+                        "candidateFilters": {"negativeProvinceNames": ["北京"]},
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        ],
     ))
     client.app.state.chat_service = mock_service
 
@@ -668,13 +704,30 @@ def test_ws_compat_multi_turn_constraint_preview_confirm_then_plan_query(client)
                 },
                 "inputType": "intentSelect",
             })
+            pending_card_resp = ws.receive_json()
+
+            ws.send_json({
+                "sessionId": "34",
+                "userId": "user-multi-turn",
+                "content": {
+                    "action": "confirm",
+                    "kind": "intent_change",
+                    "pendingId": pending_card_resp["content"]["pendingId"],
+                },
+                "inputType": "pendingConfirmation",
+            })
             confirm_resp = ws.receive_json()
+            workspace_resp = ws.receive_json()
 
             ws.send_json({"sessionId": "34", "userId": "user-multi-turn", "content": "看看方案有什么建议", "inputType": "text"})
             plan_resp = ws.receive_json()
 
     assert preview_resp["type"] == "intentConfirmPopup"
-    assert confirm_resp["type"] == "planningWorkspaceAction"
+    assert pending_card_resp["type"] == "pendingConfirmationCard"
+    assert confirm_resp["type"] == "text"
+    assert "已采纳" in confirm_resp["content"]
+    assert workspace_resp["type"] == "planningWorkspaceAction"
+    assert workspace_resp["content"]["candidateFilters"]["negativeProvinceNames"] == ["北京"]
     assert plan_resp["type"] == "text"
     assert plan_resp["content"] == "已分析当前方案建议"
 

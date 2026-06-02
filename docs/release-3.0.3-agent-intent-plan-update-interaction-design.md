@@ -1145,6 +1145,14 @@ npx tsc --noEmit
 - 新增 WebSocket 兼容测试，覆盖 `intentSelect` 返回 `pendingConfirmationCard` 时，服务端按卡片类型持久化并下发给前端。
 - 继续保留历史 `intentSelect` 序列化测试，确保旧前端提交对象仍会被转换为 JSON 字符串传给服务层。
 
+2026-06-02 补充收口：
+
+- `tests/unit/test_ws_compat.py` 中旧的 mock 测试曾用 `intentSelect -> planningWorkspaceAction` 表达“采纳后刷新候选”，这不再符合 3.0.3 协议，容易被误读成旧卡片点击可以直接生效。
+- 测试已改为两段式：
+  1. 旧 `intentSelect` 点击只返回 `pendingConfirmationCard`，不携带 `candidateFilters`，不刷新工作台。
+  2. 前端再发送 `inputType=pendingConfirmation` 且 `pendingId` 匹配后，才返回文本结果和 `planningWorkspaceAction` follow-up。
+- 运行逻辑没有改动；本次只把测试语义与当前协议对齐。`planningWorkspaceAction` 类型仍保留，用于真实卡片确认后的工作台刷新、只读 follow-up 和超时兜底。
+
 ## 32. 2026-06-02 工具层 Confirm 旁路收口
 
 本阶段继续收敛 Intent 确认协议，关闭工具层 `update_volunteer_intent_state(action="confirm")` 的直接写入能力。
