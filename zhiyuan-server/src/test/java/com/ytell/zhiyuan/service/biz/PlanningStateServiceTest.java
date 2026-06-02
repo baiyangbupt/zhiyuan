@@ -260,17 +260,22 @@ public class PlanningStateServiceTest {
         VolunteerRecommendListResponse.VolunteerSchool sprint = buildSchool(
                 "ps1", "s1", "学校A第01组", "北京", 1,
                 buildMajorWithRatio("m1", "专业A", "18"));
-        sprint.setMajors(java.util.Arrays.asList(
-                buildMajorWithRatio("m1", "专业A", "18"),
-                buildMajorWithRatio("m2", "专业B", "22"),
-                buildMajorWithRatio("m3", "专业C", "25")));
+        VolunteerRecommendListResponse.VolunteerMajor majorA = buildMajorWithRatio("m1", "专业A", "18");
+        VolunteerRecommendListResponse.VolunteerMajor majorB = buildMajorWithRatio("m2", "专业B", "22");
+        VolunteerRecommendListResponse.VolunteerMajor majorC = buildMajorWithRatio("m3", "专业C", "25");
+        majorA.setPlanMajorDataId(null);
+        majorB.setPlanMajorDataId(null);
+        majorC.setPlanMajorDataId(null);
+        sprint.setMajors(java.util.Arrays.asList(majorA, majorB, majorC));
         sprint.setIs_preferred(true);
         VolunteerRecommendListResponse.VolunteerSchool safe = buildSchool(
                 "ps2", "s2", "学校B第01组", "天津", 1,
                 buildMajorWithRatio("m4", "专业D", "52"));
-        safe.setMajors(java.util.Arrays.asList(
-                buildMajorWithRatio("m4", "专业D", "52"),
-                buildMajorWithRatio("m5", "专业E", "58")));
+        VolunteerRecommendListResponse.VolunteerMajor majorD = buildMajorWithRatio("m4", "专业D", "52");
+        VolunteerRecommendListResponse.VolunteerMajor majorE = buildMajorWithRatio("m5", "专业E", "58");
+        majorD.setPlanMajorDataId(null);
+        majorE.setPlanMajorDataId(null);
+        safe.setMajors(java.util.Arrays.asList(majorD, majorE));
         safe.setIs_preferred(true);
         legacy.setSprints(java.util.Arrays.asList(sprint));
         legacy.setSafes(java.util.Arrays.asList(safe));
@@ -281,14 +286,99 @@ public class PlanningStateServiceTest {
         PlanningStateDTO state = planningStateService.getPlanningState(1L);
 
         assertEquals("majorGroup", state.getCandidatePoolState().getVolunteerModel());
+        assertEquals(5, state.getCandidatePoolState().getItems().size());
+        assertEquals(5, state.getDraftPlanState().getItems().size());
         assertEquals(5, state.getOrderedPlanState().getItems().size());
+        assertEquals(5, state.getOrderedPlanState().getItems().stream()
+                .map(OrderedItemDTO::getVolunteerId)
+                .distinct()
+                .count());
         assertEquals(2, state.getOrderedPlanState().getSummary().getTotal());
         assertEquals(1, state.getOrderedPlanState().getSummary().getTierCounts().get("冲"));
         assertEquals(1, state.getOrderedPlanState().getSummary().getTierCounts().get("稳"));
         assertEquals(2, state.getOrderedPlanState().getUnits().size());
         assertTrue(state.getOrderedPlanState().getUnits().stream()
                 .allMatch(unit -> unit.getMajorItems() != null && !unit.getMajorItems().isEmpty()));
+        Map<String, OrderedUnitDTO> orderedUnitMap = state.getOrderedPlanState().getUnits().stream()
+                .collect(Collectors.toMap(OrderedUnitDTO::getUnitId, unit -> unit));
+        assertEquals(3, orderedUnitMap.get("ps1").getMajorItems().size());
+        assertEquals(2, orderedUnitMap.get("ps2").getMajorItems().size());
+        assertTrue(orderedUnitMap.get("ps1").getMajorItems().stream()
+                .map(PlanningUnitMajorDTO::getMajorName)
+                .collect(Collectors.toSet())
+                .containsAll(java.util.Arrays.asList("专业A", "专业B", "专业C")));
         assertEquals("legacy_import", state.getOrderedPlanState().getGenerationMode());
+    }
+
+    @Test
+    void shouldPreserveLegacyMajorGroupMajorsForExternalSession941() throws Exception {
+        String sampleDir = System.getProperty("legacy.sample.dir", System.getenv("LEGACY_SAMPLE_DIR"));
+        Assumptions.assumeTrue(sampleDir != null && !sampleDir.trim().isEmpty(), "legacy sample dir not configured");
+        Path sampleFile = Paths.get(sampleDir, "session_volunteer_941_temp.json");
+        Assumptions.assumeTrue(Files.exists(sampleFile), "legacy 941 temp sample not found: " + sampleFile);
+
+        bindPlanningStateStore(941L);
+        VolunteerBizService parser = new VolunteerBizService();
+        VolunteerRecommendListResponse legacy = parser.parseVolunteerRecommendListResponse(
+                new String(Files.readAllBytes(sampleFile), StandardCharsets.UTF_8));
+
+        when(volunteerBizService.loadFinalSubmitVolunteerData(941L)).thenThrow(new RuntimeException("missing final"));
+        when(volunteerBizService.loadCachedRecommendData(941L)).thenReturn(legacy);
+
+        PlanningStateDTO state = planningStateService.getPlanningState(941L);
+
+        assertEquals("majorGroup", state.getCandidatePoolState().getVolunteerModel());
+        assertEquals(40, state.getOrderedPlanState().getUnits().size());
+        assertTrue(state.getOrderedPlanState().getItems().size() > state.getOrderedPlanState().getUnits().size());
+        assertEquals(state.getOrderedPlanState().getItems().size(), state.getDraftPlanState().getItems().size());
+        assertEquals(state.getOrderedPlanState().getItems().size(), state.getOrderedPlanState().getItems().stream()
+                .map(OrderedItemDTO::getVolunteerId)
+                .distinct()
+                .count());
+        OrderedUnitDTO unit = state.getOrderedPlanState().getUnits().stream()
+                .filter(item -> "53020261003178".equals(item.getUnitId()))
+                .findFirst()
+                .orElse(null);
+        assertNotNull(unit);
+        assertEquals(2, unit.getMajorItems().size());
+        assertTrue(unit.getMajorItems().stream()
+                .map(PlanningUnitMajorDTO::getMajorName)
+                .collect(Collectors.toSet())
+                .containsAll(java.util.Arrays.asList("计算机科学与技术(校本部)", "网络空间安全(校本部)")));
+        assertTrue(unit.getMajorItems().stream()
+                .map(PlanningUnitMajorDTO::getVolunteerId)
+                .collect(Collectors.toSet())
+                .containsAll(java.util.Arrays.asList("53020261003178_574", "53020261003178_584")));
+
+        OrderedPlanSortReq sortReq = new OrderedPlanSortReq();
+        sortReq.setSortField("admissionRatio");
+        PlanningStateDTO sorted = planningStateService.sortOrderedPlan(941L, sortReq);
+        assertEquals(40, sorted.getOrderedPlanState().getUnits().size());
+        OrderedUnitDTO sortedUnit = sorted.getOrderedPlanState().getUnits().stream()
+                .filter(item -> "53020261003178".equals(item.getUnitId()))
+                .findFirst()
+                .orElse(null);
+        assertNotNull(sortedUnit);
+        assertEquals(2, sortedUnit.getMajorItems().size());
+
+        DraftRemoveReq removeReq = new DraftRemoveReq();
+        removeReq.setVolunteerIds(java.util.Arrays.asList("53020261003178_574"));
+        PlanningStateDTO removed = planningStateService.removeDraftItems(941L, removeReq);
+        assertEquals(sorted.getOrderedPlanState().getItems().size() - 1, removed.getOrderedPlanState().getItems().size());
+        OrderedUnitDTO removedUnit = removed.getOrderedPlanState().getUnits().stream()
+                .filter(item -> "53020261003178".equals(item.getUnitId()))
+                .findFirst()
+                .orElse(null);
+        assertNotNull(removedUnit);
+        assertEquals(1, removedUnit.getMajorItems().size());
+        assertEquals("53020261003178_584", removedUnit.getMajorItems().get(0).getVolunteerId());
+
+        PlanAdjustmentAnalyzeReq analyzeReq = new PlanAdjustmentAnalyzeReq();
+        analyzeReq.setTarget("ordered");
+        PlanAdjustmentStateDTO adjustmentState = planningStateService.analyzePlanAdjustment(1L, 941L, analyzeReq);
+        assertNotNull(adjustmentState.getAnalysis());
+        assertNotNull(adjustmentState.getAnalysis().getRules());
+        assertFalse(adjustmentState.getAnalysis().getRules().isEmpty());
     }
 
     @Test

@@ -236,3 +236,220 @@ INTERNAL_SERVICE_URL=https://zhiyuan.ytell.cn .venv/bin/python -m uvicorn app.se
 - 不建议立即下线老 `/volunteer/*` 接口。
 - 不建议把 `planEditCache` 自动应用到当前最终方案。
 - 不建议未完成人工页面对照和灰度观察前把所有会话默认切到 V2。
+
+## 7. 2026-06-01 生产发现：历史专业组方案迁移后组内专业丢失
+
+### 7.1 问题现象
+
+生产会话 `chatSessionId=941` 从老版本历史方案懒迁移到 V2 工作台后，院校专业组在前端排序区每组只展示 1 个专业。页面本身可以正常加载，问题集中在专业组内专业明细不完整。
+
+已确认的只读证据：
+
+- 当前接口 `workspace-state?chatSessionId=941` 返回 `200`，`volunteerModel=majorGroup`。
+- 当前 V2 状态：`orderedPlanState.units=40`，`orderedPlanState.items=40`。
+- 当前 V2 状态中每个 `orderedPlanState.units[].majorItems` 都只有 1 个专业。
+- 老方案文件 `/apps/volunnter-tmpdata/session_volunteer_941_temp.json` 中，同一个专业组原本包含多个 `majors`：
+  - `山东政法学院(03组)` / `planSchoolDataId=53020261003178` 有 2 个专业：`计算机科学与技术(校本部)`、`网络空间安全(校本部)`。
+  - `sprints` 中多专业组 `356` 个，`safes` 中多专业组 `96` 个，`protects` 中多专业组 `350` 个。
+- 因此老 JSON 原始数据并未丢失；丢失发生在老 JSON 转 V2 `planningState` 的兼容迁移阶段。
+
+### 7.2 当前判断
+
+该问题不是前端单独展示问题。前端专业组模式优先读取：
+
+```text
+orderedPlanState.units[].majorItems
+```
+
+当前后端返回的 `majorItems` 已经只剩 1 个专业，前端只能展示 1 个。
+
+该问题也不是老方案 JSON 损坏。`session_volunteer_941_temp.json` 中同组多专业仍完整存在。
+
+当前根因判断为：历史方案兼容迁移逻辑对院校专业组内多个专业的身份建模不完整，导致同组多个专业在迁移选择和去重阶段被压缩成一个专业。
+
+关键链路：
+
+```text
+buildPlanningStateFromLegacyPlan
+  -> buildLegacyCandidatePoolState
+  -> flattenCandidates
+  -> selectLegacyPreferredCandidates
+  -> buildLegacyDraftPlanState
+  -> buildLegacyOrderedPlanState
+  -> buildOrderedUnitsFromOrderedItems
+```
+
+当前 `flattenCandidates` 中专业组下专业的 `volunteerId` 使用：
+
+```java
+safeId(school.getPlanSchoolDataId(), major.getPlanMajorDataId(), major.getMajorId())
+```
+
+在部分老文件结构中，专业组内多个专业无法形成稳定的专业级唯一身份，后续 `selectLegacyPreferredCandidates` 又按 `volunteerId` 去重，最终每个专业组只保留一个专业进入 `draft/ordered`。
+
+### 7.3 影响范围
+
+已知影响：
+
+- 只影响老版本历史方案懒迁移到 V2 工作台的院校专业组模式会话。
+- 专业+大学模式不属于同一问题。
+- 新建 3.0.x 会话的专业组生成链路已有独立单测和人工验收，不应直接受该历史迁移问题影响。
+- 已经错误生成并落库 `planningState` 的历史会话，仅修代码不会自动恢复，需要重建或修复该会话的 V2 状态。
+
+需要进一步扫描确认：
+
+1. 已落库 `planningState` 且 `volunteerModel=majorGroup` 的历史会话中，`orderedPlanState.units[].majorItems` 是否大量为 1。
+2. 对应老文件中同一 `planSchoolDataId` 下 `majors` 是否大于 1。
+3. 这些会话的 `planningState.create_time/update_time`，用于判断是在 3.0.1 阶段已生成，还是 3.0.2 投产后首次懒迁移生成。
+
+### 7.4 处理方案
+
+建议按“先修迁移逻辑，再修已迁移数据”的顺序处理。
+
+#### 方案 A：修后端迁移逻辑
+
+目标：老专业组下每个专业在 V2 candidate/draft/ordered 中具备专业级唯一身份，同时专业组仍以 `planSchoolDataId` 作为 unit 聚合键。
+
+建议调整：
+
+1. 在 `flattenCandidates` 中区分专业组模式和专业+大学模式。
+2. 专业组模式下：
+   - `candidate.volunteerId` 使用专业级唯一 ID，例如 `planSchoolDataId + "_" + planMajorDataId`，必要时追加 `majorId/majorUnitCode` 作为兜底。
+   - `candidate.planSchoolDataId` 保持为专业组 ID。
+   - `resolveInitialRecommendationUnitId(candidate)` 仍返回 `planSchoolDataId`，用于聚合成一个专业组。
+3. `selectLegacyPreferredCandidates` 对专业组模式不要按专业明细数量直接等同目标志愿数；应按专业组选中目标 unit 后，将该 unit 下应展示的组内专业带入 `draftUnit.majorItems` 和 `orderedUnit.majorItems`。
+4. `buildLegacyDraftPlanState/buildLegacyOrderedPlanState` 对专业组模式应保证：
+   - `orderedPlanState.units` 按老优选专业组顺序排列。
+   - 每个 `unit.majorItems` 保留老文件中该专业组内的多个专业。
+   - `orderedPlanState.summary.total/unitTotal` 仍按专业组数量统计。
+   - `orderedPlanState.items` 的语义需要明确：可以保留为组代表项，或扩展为专业明细项，但前端和导出必须一致。
+
+#### 方案 B：补测试样本
+
+必须新增生产样本回归，至少覆盖 `sessionId=941`：
+
+- 输入：`session_volunteer_941_temp.json`。
+- 验证：
+  - 迁移后 `volunteerModel=majorGroup`。
+  - `orderedPlanState.units` 数量符合老优选专业组数量。
+  - 至少一个 unit 的 `majorItems.size() > 1`。
+  - `planSchoolDataId=53020261003178` 的 unit 包含 `计算机科学与技术(校本部)` 和 `网络空间安全(校本部)`。
+  - 组内专业按录取率升序展示。
+  - 导出与页面组内专业一致。
+
+#### 方案 C：修复已迁移会话
+
+代码修复上线后，对已经错误落库的历史会话不能只依赖懒迁移，需要主动处理：
+
+1. 单会话修复：
+   - 先备份 `chat_session_data` 中 `chatSessionId=941, data_key=planningState` 的当前值。
+   - 删除或重置该会话 `planningState`。
+   - 重新访问 V2 触发懒迁移。
+   - 对比老文件和新 V2 页面。
+2. 批量修复：
+   - 先只读扫描疑似受影响会话，不直接批量删除。
+   - 生成候选清单：历史来源、专业组模式、`units.majorItems` 全部或大部分为 1、老文件存在多专业组。
+   - 分批执行重建，每批后抽样人工验收。
+
+### 7.5 风险与回滚
+
+风险：
+
+- 改变历史迁移结果会影响老会话 V2 工作台展示、导出和 Agent 方案编辑上下文。
+- 若 `orderedPlanState.items` 从“组代表项”改为“专业明细项”，可能影响排序、删除、导出、行为事件统计，需谨慎评估。
+
+建议优先采用低风险口径：
+
+- `orderedPlanState.units` 作为专业组展示和导出的权威来源。
+- `items` 可继续保留组代表项，避免影响现有按 unit 计数逻辑。
+- 修复重点放在 `units.majorItems` 补全和 `candidatePoolState.items` 专业级身份唯一。
+
+回滚：
+
+- 代码回滚后，已重建的 `planningState` 可通过备份恢复。
+- 对单会话修复必须先备份原 `planningState`。
+- 批量修复必须保留修复前快照和执行清单。
+
+### 7.6 当前建议下一步
+
+1. 先实现后端迁移逻辑修复和 `941` 样本单测。
+2. 在本地用 `941` 老文件验证页面、导出、Agent 上下文。
+3. 上线修复版本。
+4. 仅对 `941` 做单会话 `planningState` 重建验证。
+5. 扫描生产疑似受影响会话，形成清单后再分批修复。
+
+
+### 7.6 2026-06-01 Hotfix 修复结果
+
+本轮已按“历史迁移结构必须和 3.0.2 新建专业组结构一致”的原则修复后端迁移逻辑。
+
+修复结论：
+
+- 旧版本专业组历史方案迁移后，不再只把优选专业组作为 1 条代表 item 保存。
+- 专业组候选项 `volunteerId` 增加专业级兜底身份：`planSchoolDataId + planMajorDataId/majorId/majorUnitCode/majorName`。
+- 对老数据中 `planMajorDataId` 为空的情况，使用 `majorId` 兜底，解决 `sessionId=941` 中 `53020261003178` 组内两个专业被压成同一 ID 的问题。
+- 迁移选择仍按老版本优选专业组或冲稳保目标数选择专业组；选中专业组后，再展开该组内完整专业明细进入 `draftPlanState.items` 和 `orderedPlanState.items`。
+- `orderedPlanState.units` 仍按专业组聚合，用于页面专业组展示、整组排序/移动/删除、导出和审查结构化快照。
+- 因此历史迁移后的结构与新建专业组保持一致：`ordered.items = 方案内专业明细`，`ordered.units = 专业组聚合视图`。
+
+已覆盖的一致性范围：
+
+- 页面展示：`orderedPlanState.units[].majorItems` 保留组内多专业。
+- 组内动作：`orderedPlanState.items[].volunteerId` 为专业级唯一 ID，可支持组内专业移动/删除。
+- 整组动作：`unitId=planSchoolDataId` 保持稳定，可支持整组移动/删除。
+- 排序：专业组排序后 `units.majorItems` 不丢失。
+- 删除：删除组内单个专业后，`ordered.items` 与 `ordered.units.majorItems` 同步减少。
+- 审查/调整：`analyzePlanAdjustment(target=ordered)` 能基于迁移后的结构执行。
+- 导出：导出构建逻辑优先使用 `ordered.units`，迁移后的组内专业明细可被导出使用。
+
+本地验证命令：
+
+```bash
+cd zhiyuan-server
+mvn -Dtest=PlanningStateServiceTest#shouldPreserveLegacyMajorGroupMajorsForExternalSession941   -Dlegacy.sample.dir=/tmp/legacy-941 test
+mvn -Dtest=PlanningStateServiceTest -Dlegacy.sample.dir=/tmp/legacy-941 test
+```
+
+验证结果：
+
+- `shouldPreserveLegacyMajorGroupMajorsForExternalSession941` 通过。
+- `PlanningStateServiceTest` 整类通过：`Tests run: 97, Failures: 0, Errors: 0, Skipped: 1`。
+- 真实样本 `session_volunteer_941_temp.json` 迁移后：`candidate=6216`，`ordered.items=160`，`ordered.units=40`。
+- `planSchoolDataId=53020261003178` 的组内专业恢复为 2 个：`53020261003178_574`、`53020261003178_584`。
+
+上线后处理要求：
+
+1. 先部署后端 hotfix。
+2. 对已错误落库的 `sessionId=941` 备份并重置 `planningState`，重新触发懒迁移。
+3. 验证 `workspace-state?chatSessionId=941`：`ordered.items` 应大于 `ordered.units`，且目标组内专业为 2 个。
+4. 前端验证：页面能展示两个专业，组内专业动作和整组动作均可正常触发。
+5. 后续再只读扫描其他已落库历史专业组会话，确认是否需要分批重建。
+
+### 7.7 2026-06-01 生产 hotfix 启动与 941 重建验证
+
+生产执行结果：
+
+- 已备份原生产 jar：`/root/work/zhiyuan-server-3.0.2/zhiyuan-server.jar.bak-20260601-legacy-major-group-hotfix`。
+- 已替换后端 jar：`/root/work/zhiyuan-server-3.0.2/zhiyuan-server.jar`。
+- 已重启服务：`zhiyuan-server-3.0.2-prod.service`。
+- 新服务进程：`PID=19956`。
+- 启动时间：`2026-06-01 20:34:58 CST`。
+- 本机健康检查：`http://127.0.0.1:8090/v2/api-docs` 返回 `200`，耗时约 `0.029s`。
+- 启动后日志未发现新的 ERROR/Exception；旧进程退出时出现过 Druid shutdown 阶段异常，不影响新进程启动。
+
+`sessionId=941` 单会话重建结果：
+
+- 已删除旧缓存行：`assistant_chat_session_extra_data.data_key=planningState`，删除前 `data_value` 长度约 `15575799`。
+- 重新请求 `workspace-state?chatSessionId=941` 触发新代码懒迁移，接口返回 `200`，耗时约 `2.214s`，返回体约 `626672` 字节。
+- 重建后 `orderedPlanState.items=160`，`orderedPlanState.units=40`，`items` 内 `volunteerId` 唯一数为 `160`。
+- 目标专业组 `unitId=53020261003178`、学校 `山东政法学院(03组)` 下已恢复 2 个专业：
+  - `53020261003178_574`：`计算机科学与技术(校本部)`
+  - `53020261003178_584`：`网络空间安全(校本部)`
+
+当前结论：
+
+- 后端 hotfix 已在生产新服务生效。
+- `941` 已从旧错误缓存重建为 3.0.2 专业组统一结构。
+- 前端仍需人工打开 `sessionId=941` 验证页面展示、组内专业移动/删除、整组排序/导出/审查。
+- 暂不建议批量重建其他历史会话；下一步应先只读扫描疑似受影响会话，形成清单后分批处理。
+
