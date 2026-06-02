@@ -2306,3 +2306,38 @@ case 2：
 - 方案/职业承接必须覆盖当前方案事实、方向承接强弱、代表样本、短板和下一步。
 - 只读分析必须明确不会写偏好、不改方案；高副作用动作必须仍然 preview -> confirm -> apply。
 - 性能优化优先减少无效工具和模型往返；不能把自然语言表达继续堆成大面积关键词匹配。
+
+##### 14.12.14 显式确认协议收口后的回归记录
+
+本轮继续收敛 3.0.3 的确认协议，重点确认“自然语言确认”不会重新绕过卡片执行。
+
+代码层结论：
+
+- 旧 `intentSelect/planEditSelect` 只作为兼容 adapter：旧卡片点击后生成新的 `pendingConfirmationCard`，不会直接写入偏好、要求或方案状态。
+- `update_volunteer_intent_state(action="confirm")` 不再读取 `planEditCache` 或 `conversation_phase.pending` 执行写入，只返回需要点击确认卡片。
+- `IntentFrame` 不再暴露 `confirm/reject/pin/unpin` 作为自然语言结构化动作；`ActionResolver` 中不可达的确认 apply 分支已清理。
+- 方案调整 preview 返回 `ChatServiceResponseEnvelope + pendingConfirmationCard` 是正确行为；用户只在对话里说“确认”会被提示点击卡片，不会执行 apply。
+- 真正执行仍只走 `inputType=pendingConfirmation`，并校验 `pendingId/status/kind`。
+
+本轮测试修正：
+
+- `test_mainline_dialog_negative_accounting_then_confirm_plan_adjustment_uses_model_reply` 已按新协议调整：
+  - 方案替换预览必须带 `pendingConfirmationCard`。
+  - 文本“确认”不执行方案修改。
+  - 模拟卡片点击后才调用 `execute_plan_action(apply)` 并返回工作区刷新。
+- 3.0.3 文档中部分历史试验记录提到 `tests/unit/test_fast_route_arbitrator.py`，但当前代码树没有该测试文件；这些记录保留为历史上下文，不作为当前验证命令。当前有效回归入口以现存测试文件为准。
+
+本轮本地验证：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest tests/regression/test_pending_protocol.py tests/regression/test_execution_preview.py tests/regression/test_execution_apply.py tests/regression/test_determine_stage.py tests/regression/test_normalize_action.py -q
+.venv/bin/python -m pytest tests/unit/test_dialog_case_evaluation_report.py tests/unit/test_dialog_quality_gate.py tests/unit/test_semantic_frame_evaluator.py tests/unit/test_semantic_frame_probe.py -q
+.venv/bin/python -m pytest tests/unit/test_mainline_dialog_scenarios.py tests/unit/test_tool_reply_policy.py -q
+```
+
+结果：
+
+- pending/execution regression：`410 passed`。
+- quality/evaluation 工具：`75 passed`。
+- mainline/tool reply policy：`36 passed`。
