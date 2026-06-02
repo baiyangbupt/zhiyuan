@@ -3538,6 +3538,50 @@ def test_chat_service_requires_card_click_for_intent_text_confirmation_when_inte
     intent_cache_mock.assert_awaited_once()
 
 
+def test_chat_service_requires_card_click_for_pending_confirmation_intent_text_confirmation(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    fake_agent = _FakeAgent(["不应该调用模型"])
+    pending_state, save_pending_mock, get_pending_mock = _pending_confirmation_store(
+        {
+            "type": "pendingConfirmation",
+            "pendingId": "pending-intent-main",
+            "sessionId": "990502",
+            "kind": "intent_change",
+            "status": "active",
+            "actionFamily": "apply_selected_intents",
+            "summary": "偏好地域：北京",
+            "executionPayload": {
+                "toolName": "apply_selected_intents",
+                "merged": {"city_intents": {"province": ["北京"]}},
+                "selectedData": {
+                    "selected": [{"city_intents": {"province": ["北京"]}}],
+                    "intentMode": "preference",
+                    "batch": "01",
+                },
+                "intentMode": "preference",
+                "batch": "01",
+            },
+        }
+    )
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_pending_confirmation", get_pending_mock), \
+            patch("app.service.save_pending_confirmation", save_pending_mock), \
+            patch("app.service.get_intent_change_cache", AsyncMock(return_value={"data": {"planEditCache": {}}})) as cache_mock, \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.update_volunteer_intent_state", AsyncMock()) as update_mock:
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(service.handle_message("990502", "user-1", "确认"))
+
+    assert reply == "这次偏好或要求还在待确认状态。请点击上方卡片里的采纳按钮后，我再更新后续报考参考；只在对话里回复确认不会直接生效。"
+    assert pending_state["value"]["pendingId"] == "pending-intent-main"
+    cache_mock.assert_not_awaited()
+    update_mock.assert_not_awaited()
+    assert fake_agent.calls == []
+
+
 def test_chat_service_requires_card_click_for_plan_next_action_pending_text_confirmation(tmp_path, mock_llm_client):
     db_path = tmp_path / "history.db"
     store = ChatHistoryStore(str(db_path))

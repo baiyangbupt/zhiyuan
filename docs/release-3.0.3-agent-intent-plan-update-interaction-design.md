@@ -1056,6 +1056,7 @@ cd ../zhiyuan-agent
 - `analyze_volunteer_intent_change()` 默认不再写匿名 `planEditCache`。
 - 新 `pendingConfirmation` 保存后会 best-effort 清空旧 `planEditCache`，避免历史残留污染后续追问。
 - 待确认意向后的只读追问优先读取 `pendingConfirmation(kind=intent_change,status=active)`；旧 `planEditCache` 仅作为历史 fallback。
+- 对话轮次开始时的“文本确认必须点卡片”拦截也优先读取 active `pendingConfirmation`；旧 `planEditCache` 只作为兼容 fallback。
 - 文本“确认/可以/好的”仍只提示用户点击卡片，不执行更新。
 - 点击卡片后才调用 `apply_selected_intents`，执行成功后把 pending 状态更新为 `applied`。
 
@@ -1079,6 +1080,7 @@ cd zhiyuan-agent
 .venv/bin/python -m py_compile app/service.py
 .venv/bin/python -m py_compile app/tools/explore_followup_tool.py app/tools/intent_state_tool.py app/service.py
 .venv/bin/python -m pytest tests/unit/test_chat_service_history_persistence.py -q -k 'structured_intent_preview or pending_confirmation or pending_from_confirmation_card or rejects_replaced'
+.venv/bin/python -m pytest tests/unit/test_chat_service_history_persistence.py -q -k 'pending_confirmation_intent_text_confirmation or intent_text_confirmation_when_intent_cache_exists or structured_intent_preview'
 .venv/bin/python -m pytest tests/unit/test_intent_state_tool.py -q
 .venv/bin/python -m pytest tests/unit/test_planning_intent_scenarios_sync.py -q
 .venv/bin/python -m pytest tests/unit/test_intent_state_tool.py tests/unit/test_planning_intent_scenarios_sync.py -q

@@ -2021,6 +2021,29 @@ def _build_agent_interruption_fallback_reply(
 
 async def _load_pending_intent_confirmation(session_id: str) -> PendingConfirmation | None:
     try:
+        pending_result = await get_pending_confirmation(session_id)
+        pending_data = (pending_result or {}).get("data", {}).get("pendingConfirmation") or {}
+        if (
+            isinstance(pending_data, dict)
+            and pending_data.get("status") == "active"
+            and pending_data.get("kind") == "intent_change"
+        ):
+            execution_payload = pending_data.get("executionPayload") or {}
+            if isinstance(execution_payload, dict):
+                merged = execution_payload.get("merged")
+                selected_data = execution_payload.get("selectedData")
+                intent_payload = merged if isinstance(merged, dict) and merged else selected_data
+                if isinstance(intent_payload, dict) and intent_payload:
+                    return PendingConfirmation(
+                        kind="intent_change",
+                        action_family=str(pending_data.get("actionFamily") or "apply_selected_intents"),
+                        preview_summary=str(pending_data.get("summary") or ""),
+                        execution_payload=execution_payload,
+                    )
+    except Exception:
+        logger.warning("Failed to load pendingConfirmation for phase bootstrap: session_id=%s", session_id, exc_info=True)
+
+    try:
         cache_result = await get_intent_change_cache(session_id)
     except Exception:
         logger.warning("Failed to load intent change cache for phase bootstrap: session_id=%s", session_id, exc_info=True)

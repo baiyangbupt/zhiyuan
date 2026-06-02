@@ -139,8 +139,8 @@ class RequestContext:
 def resolve_pending_confirmation(deps: Any) -> "PendingConfirmation | None":
     """Resolve the active pending confirmation from unified state first.
 
-    When ``conversation_phase`` is present, its ``pending`` field is the
-    authoritative source. Legacy ``pending_plan_action`` / ``pending_intent_change``
+    ``conversation_phase.pending`` is built from backend ``pendingConfirmation``
+    for new sessions. Legacy ``pending_plan_action`` / ``pending_intent_change``
     only serve as compatibility fallbacks for older call sites that have not
     injected a phase object yet.
     """

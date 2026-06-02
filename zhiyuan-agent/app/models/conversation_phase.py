@@ -1,15 +1,8 @@
 """对话阶段状态机 + 统一待确认协议。
 
-替代现有的双轨 pending 机制：
-- Intent 层的 pending_intent_change: bool + planEditCache（先转换为 PendingConfirmation）
-- Plan 层的 pending_plan_action: dict + _is_short_plan_confirmation
-
-统一为 PendingConfirmation 模型，一个字段覆盖两种待确认场景。
-
-兼容策略：
-- 旧 pending_plan_action dict 可通过 PendingConfirmation.from_legacy_plan_action() 转换
-- 旧 pending_intent_change bool 可通过 PendingConfirmation.from_legacy_intent_change() 转换
-- Phase 3 正式切换前，新旧字段并存
+3.0.3 起主状态源是后端 ``pendingConfirmation``，用户必须点击确认卡片
+才能执行意向或方案更新。旧 ``pending_plan_action`` 与 ``planEditCache``
+只作为历史会话 adapter，不能再作为新链路的确认主源。
 """
 
 from __future__ import annotations
@@ -250,7 +243,8 @@ class ConversationPhase(BaseModel):
     ) -> ConversationPhase:
         """从旧的 RequestContext 字段推断初始状态。
 
-        兼容现有会话：无需一次性迁移所有 session 数据。
+        新会话应由后端 pendingConfirmation 注入
+        ``pending_intent_confirmation``。旧字段仅用于历史会话兼容。
         """
         pending: PendingConfirmation | None = None
         state = PhaseState.EXPLORE
