@@ -163,14 +163,12 @@ class TestIntentFrame:
     @pytest.mark.parametrize("verb", [
         # Plan 操作
         "query", "analyze", "review", "generate",
-        "add", "remove", "move", "pin", "unpin",
+        "add", "remove", "move",
         "replace", "reorder", "compensate",
         # Explore 操作
         "compare", "recommend", "explain", "explore",
         # Intent 操作
         "set_preference", "set_constraint", "remove_preference",
-        # 确认/拒绝
-        "confirm", "reject",
     ])
     def test_valid_verbs(self, verb):
         frame = IntentFrame(task_layer="plan", verb=verb)
@@ -180,24 +178,10 @@ class TestIntentFrame:
         with pytest.raises(ValidationError):
             IntentFrame(task_layer="plan", verb="invalid_verb")
 
-    def test_confirm_intent(self):
-        """确认意图：is_confirmation_of_previous=True。"""
-        frame = IntentFrame(
-            task_layer="plan",
-            verb="confirm",
-            is_confirmation_of_previous=True,
-        )
-        assert frame.is_confirmation_of_previous
-        assert frame.verb == "confirm"
-
-    def test_reject_intent(self):
-        frame = IntentFrame(
-            task_layer="plan",
-            verb="reject",
-            is_confirmation_of_previous=True,
-        )
-        assert frame.verb == "reject"
-        assert frame.is_confirmation_of_previous
+    @pytest.mark.parametrize("verb", ["confirm", "reject", "pin", "unpin"])
+    def test_removed_verbs_are_not_public_frame_actions(self, verb):
+        with pytest.raises(ValidationError):
+            IntentFrame(task_layer="plan", verb=verb)
 
     def test_serialization_roundtrip(self):
         """序列化/反序列化完整往返。"""

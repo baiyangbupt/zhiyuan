@@ -106,17 +106,9 @@ class TestVerbToActionFamily:
         assert "pin" not in get_args(Verb)
         assert "unpin" not in get_args(Verb)
 
-    def test_confirm_verb(self, resolver):
-        frame = _frame(verb="confirm", is_confirmation_of_previous=True)
-        ctx = _ctx(ordered_count=30)
-        result = resolver.resolve(frame, ctx)
-        assert result.action_family == "apply_compensation"
-
-    def test_reject_verb(self, resolver):
-        frame = _frame(verb="reject")
-        ctx = _ctx(ordered_count=30)
-        result = resolver.resolve(frame, ctx)
-        assert result.action_family == "query_state"
+    def test_confirm_reject_verbs_not_exposed_in_intent_frame(self):
+        assert "confirm" not in get_args(Verb)
+        assert "reject" not in get_args(Verb)
 
     def test_reorder_with_sort_field_maps_to_sort_ordered_plan(self, resolver):
         frame = _frame(verb="reorder", sort_field="schoolRank")
@@ -459,13 +451,6 @@ class TestStageDetermination:
         result = resolver.resolve(frame, ctx)
         assert result.stage == "review"
 
-    def test_confirmed_stage_apply(self, resolver):
-        """用户确认 → apply。"""
-        frame = _frame(verb="confirm", is_confirmation_of_previous=True)
-        ctx = _ctx(ordered_count=30)
-        result = resolver.resolve(frame, ctx)
-        assert result.stage == "apply"
-
     def test_default_stage_preview(self, resolver):
         """默认 → preview。"""
         frame = _frame(verb="generate")
@@ -516,7 +501,7 @@ class TestConfirmationFlag:
         assert result.requires_confirmation is False
 
     @pytest.mark.parametrize("family", [
-        "generate_plan", "sort_ordered_plan", "regenerate_order", "apply_compensation", "replace_units",
+        "generate_plan", "sort_ordered_plan", "regenerate_order", "replace_units",
     ])
     def test_always_confirm(self, resolver, family):
         """高副作用动作总是需要确认。"""
@@ -524,7 +509,6 @@ class TestConfirmationFlag:
             "generate_plan": "generate",
             "sort_ordered_plan": "reorder",
             "regenerate_order": "reorder",
-            "apply_compensation": "confirm",
             "replace_units": "replace",
         }
         extra = {}
@@ -533,15 +517,10 @@ class TestConfirmationFlag:
             extra["tier"] = "稳"
         if family == "sort_ordered_plan":
             extra["sort_field"] = "schoolRank"
-        if family == "apply_compensation":
-            extra["is_confirmation_of_previous"] = True
         frame = _frame(verb=verb_map[family], **extra)
         ctx = _ctx(ordered_count=30)
         result = resolver.resolve(frame, ctx)
-        # apply_compensation with confirmed → stage=apply, but confirmation is on
-        # Note: for confirmed verb, stage=apply which means it's already past confirmation
-        if family != "apply_compensation":
-            assert result.requires_confirmation is True
+        assert result.requires_confirmation is True
 
     def test_no_confirmation_when_analyze_stage(self, resolver):
         """analyze 阶段不需要确认。"""
@@ -578,14 +557,6 @@ class TestNonPlanLayer:
 
 class TestWorkspaceFlags:
     """should_rerun_review / should_refresh_workspace。"""
-
-    def test_rerun_review_on_apply_mutation(self, resolver):
-        """apply 阶段的变更动作触发 rerun_review。"""
-        frame = _frame(verb="confirm", is_confirmation_of_previous=True)
-        ctx = _ctx(ordered_count=30)
-        result = resolver.resolve(frame, ctx)
-        assert result.should_rerun_review is True
-        assert result.should_refresh_workspace is True
 
     def test_no_rerun_review_on_preview(self, resolver):
         frame = _frame(verb="generate")

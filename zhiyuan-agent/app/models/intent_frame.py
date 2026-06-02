@@ -41,8 +41,6 @@ from pydantic import BaseModel, Field
 # | set_preference   | → Intent 偏好工具    |                     |
 # | set_constraint   | → Intent 约束工具    |                     |
 # | remove_preference| → Intent 清除工具    |                     |
-# | confirm     | (消费 pending)            |                     |
-# | reject      | (清除 pending)            |                     |
 
 Verb = Literal[
     # === Plan 操作 ===
@@ -68,9 +66,6 @@ Verb = Literal[
     "set_constraint",     # 设置约束
     "remove_preference",  # 清除偏好
 
-    # === 确认/拒绝 ===
-    "confirm",        # 确认待定操作
-    "reject",         # 拒绝待定操作
 ]
 
 Topic = Literal[
@@ -201,5 +196,6 @@ class IntentFrame(BaseModel):
     # 保留原始用户表达，供日志和兜底
     raw_utterance: str = ""
 
-    # 是否是对上一轮 pending 操作的确认/拒绝
+    # 历史字段，仅用于兼容旧样本；自然语言 frame 不再承载确认执行。
+    # 确认/取消必须通过 pendingConfirmation 卡片入口。
     is_confirmation_of_previous: bool = False

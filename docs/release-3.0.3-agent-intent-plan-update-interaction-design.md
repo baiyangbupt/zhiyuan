@@ -1208,3 +1208,31 @@ cd zhiyuan-agent
 验证结果：
 
 - `239 passed`。
+
+## 34. 2026-06-02 结构化确认 Verb 收口
+
+本阶段继续清理自然语言结构化路由里的确认执行入口。
+
+背景问题：
+
+- `IntentFrame` 原本还暴露 `confirm/reject` verb，`ActionResolver` 可把 `confirm + is_confirmation_of_previous=true` 映射到 `apply_compensation`。
+- 当前服务层已经规定：方案和意向更新都必须由前端确认卡片发送 `inputType=pendingConfirmation` 后执行。
+- 如果后续 semantic frame/ActionResolver 接入主链路，保留 `confirm` verb 会重新形成“自然语言确认 -> apply”的旁路风险。
+
+本次调整：
+
+- 从 `IntentFrame.Verb` 中移除 `confirm/reject`。
+- `is_confirmation_of_previous` 保留为历史字段，但自然语言 frame 不再承载确认执行。
+- `apply_compensation` 作为执行层 action 仍保留，只能由已经校验过的 pending confirmation / 内部 apply payload 调用。
+- `ActionResolver` 测试改为验证 `confirm/reject` 不在公开 verb 列表中。
+
+验证补充：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest tests/unit/models/test_intent_frame.py tests/unit/test_action_resolver.py -q
+```
+
+验证结果：
+
+- `156 passed`。
