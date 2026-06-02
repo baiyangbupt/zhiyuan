@@ -14,18 +14,22 @@ import argparse
 import asyncio
 import importlib.util
 import json
+import os
 import sqlite3
 import statistics
 import time
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
+from urllib import error, request
 
 import websockets
 
 DEFAULT_URL = "ws://127.0.0.1:8000/gaotu-assistant-agent/plus/chat/1/bot/test/do"
 DEFAULT_USER_ID = "dialog-regression-user"
 DEFAULT_HISTORY_DB = Path(__file__).resolve().parents[1] / "data" / "chat_history.db"
+DEFAULT_INTERNAL_SERVICE_URL = os.environ.get("INTERNAL_SERVICE_URL") or "http://127.0.0.1:8080"
+PENDING_STATE_KEYS = ("pendingConfirmation", "planEditCache")
 
 DEFAULT_CASES: list[dict[str, Any]] = [
     {
@@ -223,6 +227,58 @@ def _clear_history(db_path: Path, session_ids: list[str]) -> int:
     return cursor.rowcount if cursor.rowcount is not None else 0
 
 
+def _clear_backend_pending_state(
+    base_url: str,
+    session_ids: list[str],
+    *,
+    timeout_seconds: float = 5,
+) -> list[dict[str, Any]]:
+    """Clear backend pending state used by confirmation-card flows.
+
+    SQLite history cleanup is not enough for live regression: pending
+    confirmations live in backend extra-data and can otherwise leak across
+    cases that reuse real session ids.
+    """
+    results: list[dict[str, Any]] = []
+    normalized_base_url = str(base_url or "").rstrip("/")
+    if not normalized_base_url:
+        return results
+    for session_id in session_ids:
+        for key in PENDING_STATE_KEYS:
+            payload = {
+                "chatSessionId": session_id,
+                "dataKey": key,
+                "dataType": "JSON_OBJECT",
+                "dataValue": {},
+                "version": 0,
+            }
+            req = request.Request(
+                f"{normalized_base_url}/gaotu-assistant-bot/inner/chat/1/session/add-extra-data",
+                data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                },
+                method="POST",
+            )
+            result: dict[str, Any] = {"session": session_id, "key": key, "ok": False}
+            try:
+                with request.urlopen(req, timeout=timeout_seconds) as response:
+                    raw = response.read().decode("utf-8")
+                result["status"] = response.status
+                result["ok"] = 200 <= int(response.status) < 300
+                if raw:
+                    try:
+                        parsed = json.loads(raw)
+                    except Exception:
+                        parsed = raw[:200]
+                    result["response"] = parsed
+            except (OSError, error.URLError, TimeoutError) as exc:
+                result["error"] = f"{type(exc).__name__}: {exc}"
+            results.append(result)
+    return results
+
+
 def _load_history_json(db_path: Path, session_id: str) -> list[dict[str, Any]]:
     if not db_path.exists():
         return []
@@ -411,13 +467,20 @@ def _summarize_turn_observability(turn_messages: list[dict[str, Any]]) -> dict[s
     return summary
 
 
-def _followup_summary(followups: list[dict[str, Any]]) -> tuple[list[str], list[bool]]:
+def _followup_summary(followups: list[dict[str, Any]]) -> tuple[list[str], list[bool], list[str]]:
     targets: list[str] = []
     refreshes: list[bool] = []
+    types: list[str] = []
     for item in followups:
+        item_type = str(item.get("type") or "").strip()
+        if item_type and item_type not in types:
+            types.append(item_type)
         content = item.get("content")
         if not isinstance(content, dict):
             continue
+        content_type = str(content.get("type") or "").strip()
+        if content_type and content_type not in types:
+            types.append(content_type)
         target = content.get("targetView")
         if target is not None:
             text = str(target).strip()
@@ -426,7 +489,7 @@ def _followup_summary(followups: list[dict[str, Any]]) -> tuple[list[str], list[
         refresh = content.get("refresh")
         if isinstance(refresh, bool):
             refreshes.append(refresh)
-    return targets, refreshes
+    return targets, refreshes, types
 
 
 def _summarize_primary(messages: list[dict[str, Any]]) -> str:
@@ -483,6 +546,8 @@ def _check_content_assertions(
     assert_thinking_not_contains = step.get("assertThinkingNotContains") or []
     assert_followup_target = step.get("assertFollowupTarget")
     assert_followup_refresh = step.get("assertFollowupRefresh")
+    assert_followup_type = step.get("assertFollowupType")
+    assert_followup_count = step.get("assertFollowupCount")
     assert_no_followups = bool(step.get("assertNoFollowups"))
 
     combined_text = text.lower()
@@ -540,6 +605,23 @@ def _check_content_assertions(
             violations.append(
                 f"{case_name} session={session_id} prompt={prompt_label}: "
                 f"assertFollowupRefresh FAILED — expected refresh={assert_followup_refresh} not in followups"
+            )
+    if assert_followup_type:
+        _, _, followup_types = _followup_summary(followups)
+        if str(assert_followup_type) not in followup_types:
+            violations.append(
+                f"{case_name} session={session_id} prompt={prompt_label}: "
+                f"assertFollowupType FAILED — expected type='{assert_followup_type}' not in followups"
+            )
+    if assert_followup_count is not None:
+        try:
+            expected_count = int(assert_followup_count)
+        except (TypeError, ValueError):
+            expected_count = None
+        if expected_count is not None and len(followups) != expected_count:
+            violations.append(
+                f"{case_name} session={session_id} prompt={prompt_label}: "
+                f"assertFollowupCount FAILED — expected {expected_count} followups but got {len(followups)}"
             )
     if assert_no_followups and followups:
         violations.append(
@@ -791,6 +873,8 @@ async def _run_cases(
     history_db: str | None = str(DEFAULT_HISTORY_DB),
     keep_response_text: bool = False,
     clear_history_per_case: bool = False,
+    clear_backend_pending_per_case: bool = False,
+    internal_service_url: str = DEFAULT_INTERNAL_SERVICE_URL,
 ) -> None:
     failures: list[str] = []
     warnings: list[str] = []
@@ -811,6 +895,25 @@ async def _run_cases(
                     ensure_ascii=False,
                 )
             )
+        if clear_backend_pending_per_case:
+            pending_results = _clear_backend_pending_state(internal_service_url, [session_id])
+            print(
+                "clearedCaseBackendPending="
+                + json.dumps(
+                    {
+                        "baseUrl": internal_service_url,
+                        "session": session_id,
+                        "results": pending_results,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            failed_pending_clears = [item for item in pending_results if not item.get("ok")]
+            if failed_pending_clears:
+                warnings.append(
+                    f"{name} session={session_id}: backend pending clear had failures: "
+                    + json.dumps(failed_pending_clears, ensure_ascii=False)
+                )
         case_assert_style = bool(case.get("assertPlanStyle", assert_plan_style))
         base_session_id = str(case.get("baseSessionId") or "")
         session_label = f"{session_id} base={base_session_id}" if base_session_id else session_id
@@ -887,10 +990,11 @@ async def _run_cases(
                 if turn_observability.get("historyMessages"):
                     record["turnObservability"] = turn_observability
             if followups:
-                followup_targets, followup_refreshes = _followup_summary(followups)
+                followup_targets, followup_refreshes, followup_types = _followup_summary(followups)
                 record["followupCount"] = len(followups)
                 record["followupTargets"] = followup_targets
                 record["followupRefreshes"] = followup_refreshes
+                record["followupTypes"] = followup_types
             text = _extract_text(primary)
             if case_assert_style:
                 violations = _check_plan_reply_style(text)
@@ -1009,6 +1113,21 @@ def main() -> None:
         action="store_true",
         help="delete the local Agent SQLite history row for a case session before each case; useful when many cases reuse real session ids",
     )
+    parser.add_argument(
+        "--clear-backend-pending",
+        action="store_true",
+        help="clear backend pendingConfirmation and legacy planEditCache for all case sessions before running",
+    )
+    parser.add_argument(
+        "--clear-backend-pending-per-case",
+        action="store_true",
+        help="clear backend pendingConfirmation and legacy planEditCache for a case session before each case",
+    )
+    parser.add_argument(
+        "--internal-service-url",
+        default=DEFAULT_INTERNAL_SERVICE_URL,
+        help="backend base URL used by --clear-backend-pending options",
+    )
     args = parser.parse_args()
 
     if args.session:
@@ -1031,6 +1150,20 @@ def main() -> None:
                 ensure_ascii=False,
             )
         )
+    if args.clear_backend_pending:
+        session_ids = _case_session_ids(cases)
+        pending_results = _clear_backend_pending_state(args.internal_service_url, session_ids)
+        print(
+            "clearedBackendPending="
+            + json.dumps(
+                {
+                    "baseUrl": args.internal_service_url,
+                    "sessions": session_ids,
+                    "results": pending_results,
+                },
+                ensure_ascii=False,
+            )
+        )
 
     asyncio.run(
         _run_cases(
@@ -1044,6 +1177,8 @@ def main() -> None:
             history_db=args.history_db,
             keep_response_text=args.keep_response_text,
             clear_history_per_case=args.clear_history_per_case,
+            clear_backend_pending_per_case=args.clear_backend_pending_per_case,
+            internal_service_url=args.internal_service_url,
         )
     )
 

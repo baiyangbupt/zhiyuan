@@ -8,8 +8,9 @@ import pytest
 from app.tools.major_info_tool import _get_analysis_summary, get_major_introduction, get_major_introductions
 
 
-def _ctx(session_id: str = "23", batch: str = "01"):
-    return SimpleNamespace(deps=SimpleNamespace(sessionid=session_id, batch=batch))
+def _ctx(session_id: str = "23", batch: str = "01", **extra):
+    deps = SimpleNamespace(sessionid=session_id, batch=batch, **extra)
+    return SimpleNamespace(deps=deps)
 
 
 @pytest.mark.asyncio
@@ -119,7 +120,43 @@ async def test_get_major_introduction_level2_uses_category_profile_and_fallback_
 
 
 @pytest.mark.asyncio
-async def test_get_major_introductions_returns_multi_major_facts_and_reuses_plan_load():
+async def test_get_major_introductions_defaults_to_lightweight_facts_without_plan_or_candidate_queries():
+    async def fake_profile(name: str):
+        return {
+            "trainDemand": f"{name}培养目标",
+            "knowledge": f"{name}知识体系",
+            "course": f"{name}课程体系",
+            "jobOrientation": f"{name}就业方向",
+        }
+
+    observability: dict = {}
+    with (
+        patch("app.tools.major_info_tool.get_major_profile", new=AsyncMock(side_effect=fake_profile)) as profile_mock,
+        patch("app.tools.major_info_tool.get_planning_ordered_plan", new=AsyncMock()) as ordered_mock,
+        patch("app.tools.major_info_tool.get_planning_draft", new=AsyncMock()) as draft_mock,
+        patch("app.tools.major_info_tool.query_planning_candidate_pool", new=AsyncMock()) as candidate_mock,
+    ):
+        result = await get_major_introductions(
+            _ctx(agent_observability=observability),
+            ["建筑学", "城乡规划"],
+        )
+
+    assert profile_mock.await_count == 2
+    ordered_mock.assert_not_awaited()
+    draft_mock.assert_not_awaited()
+    candidate_mock.assert_not_awaited()
+    assert "多专业介绍对照：建筑学、城乡规划" in result
+    assert "建筑学：培养目标：建筑学培养目标" in result
+    assert "城乡规划：培养目标：城乡规划培养目标" in result
+    assert "未额外查询当前方案和候选机会" in result
+    assert "当前排序方案中命中" not in result
+    assert "当前候选里还有" not in result
+    assert observability["toolInternalTimings"][0]["tool"] == "get_major_introductions"
+    assert observability["toolInternalTimings"][0]["includePlanContext"] is False
+
+
+@pytest.mark.asyncio
+async def test_get_major_introductions_can_include_plan_and_candidate_context_when_requested():
     ordered_result = {
         "code": 0,
         "data": {
@@ -171,7 +208,7 @@ async def test_get_major_introductions_returns_multi_major_facts_and_reuses_plan
         patch("app.tools.major_info_tool.get_planning_draft", new=AsyncMock(return_value={"code": 0, "data": {"items": []}})) as draft_mock,
         patch("app.tools.major_info_tool.query_planning_candidate_pool", new=AsyncMock(return_value=candidate_result)) as candidate_mock,
     ):
-        result = await get_major_introductions(_ctx(), ["建筑学", "城乡规划"])
+        result = await get_major_introductions(_ctx(), ["建筑学", "城乡规划"], include_plan_context=True)
 
     assert profile_mock.await_count == 2
     ordered_mock.assert_awaited_once()

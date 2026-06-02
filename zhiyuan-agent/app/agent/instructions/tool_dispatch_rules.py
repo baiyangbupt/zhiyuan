@@ -29,7 +29,7 @@ _TOOL_DISPATCH_RULES = """\
 - 对具体专业适配问题（电子信息工程适合我吗），属于 Explore + major，不是 Intent 偏好写入。
 - 对两个具体专业/专业类做只读比较时，优先调用 `compare_majors` 或 `compare_majors_adhoc`；对三个及以上具体专业/专业类做优先级、排序、取舍判断时，优先调用 `compare_major_options` 一次返回横向事实，不要拆成多次二元 `compare_majors`，不要先调用 `analyze_current_major_interest`，也不要进入 Intent 预览。
 - `compare_majors` 已经能承接专业差异和适配判断；除非用户明确追问“学什么/课程/就业详情/专业介绍”，不要在同一轮再追加 `get_major_introduction`。
-- 对多个专业的学习内容、基础要求、课程训练、就业方向做只读对照时，优先调用 `get_major_introductions` 一次返回横向事实，不要并行或连续多次调用 `get_major_introduction`。
+- 对多个专业的学习内容、基础要求、课程训练、就业方向做只读对照时，优先调用 `get_major_introductions` 一次返回横向事实，不要并行或连续多次调用 `get_major_introduction`。`get_major_introductions` 默认不查当前方案和候选机会；只有用户明确问当前方案承接、候选机会或这个分数段能报哪些时，才传 `include_plan_context=true`。
 - 单个专业“适不适合我/值不值得看”优先 `analyze_current_major_interest`；不要默认再追加 `get_major_introduction`，除非用户要详细了解这个专业。
 - 职业路径问题优先 `analyze_current_career_direction`；地域取舍问题优先 `analyze_current_region_interest`。只有用户明确同时问职业和地域时，才组合两个 Explore 工具。
 - 用户问“这份方案能不能支撑考公/体制内/进体制/稳定就业/读研”等职业路径承接时，优先调用 `analyze_current_career_direction` 并传入对应 `career_directions`；如还需要方案规模、风险或缺口，可再补 `query_state`，但不要只用 `review_plan` 回答这类问题。

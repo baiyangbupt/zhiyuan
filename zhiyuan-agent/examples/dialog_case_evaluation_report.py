@@ -1370,9 +1370,26 @@ def _is_preview_or_example_case(record: dict[str, Any], text: str) -> bool:
     case_name = _normalize_text(record.get("case")).lower()
     if "intent" in case_name:
         return False
+    action_family = _normalize_text(record.get("actionFamily"))
+    observed_actions = set(_extract_action_families(record))
+    point_mutation_actions = {
+        "move_unit",
+        "move_ordered_unit",
+        "add_units",
+        "remove_units",
+        "remove_ordered_unit",
+        "replace_units",
+    }
+    if action_family in point_mutation_actions or observed_actions & point_mutation_actions:
+        return False
     coverage = record.get("coverage")
     if isinstance(coverage, list) and "career_short_prompt" in {str(item) for item in coverage}:
         return False
+    quality_focus = record.get("qualityFocus")
+    if isinstance(quality_focus, list):
+        focuses = {str(item) for item in quality_focus}
+        if "multi_distribution" in focuses:
+            return True
     prompt = _normalize_text(record.get("prompt"))
     if prompt in {"确认", "确认执行", "确认这个偏好", "确认这个要求"}:
         return False

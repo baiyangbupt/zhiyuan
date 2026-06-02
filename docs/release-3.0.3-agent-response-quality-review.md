@@ -2432,3 +2432,125 @@ cd zhiyuan-agent
 - evaluation tools：`99 passed`。
 - ws compat：`19 passed`。
 - live no-pending confirm guard：`elapsedMs=2313`，`firstMessageMs=312`，无模型/工具调用；修复前同场景约 `elapsedMs=15145`，`firstMessageMs=13142`。
+
+##### 14.12.17 待确认状态清理与百家模型超时记录
+
+本轮继续复跑 3.0.3 effect/perf 场景时发现，仅清理 Agent 本地 SQLite history 还不够。真实会话使用后端已有 session id 时，`pendingConfirmation` 和 legacy `planEditCache` 保存在后端 extra-data 中，会跨 case 残留，导致下一条 case 误读到旧待确认状态。
+
+评估工具调整：
+
+- `examples/dialog_regression_runner.py` 增加 `--clear-backend-pending` 和 `--clear-backend-pending-per-case`。
+- 清理目标为后端 extra-data key：`pendingConfirmation`、`planEditCache`。
+- 清理接口复用现有后端 extra-data 写入接口，写入 `{}`，不新增业务接口。
+- metrics 中记录 `clearedCaseBackendPending`，便于确认每个 case 的后端 pending 是否清理成功。
+- runner 增加 `assertFollowupType` 和 `assertFollowupCount`，用于验证高副作用 preview 必须返回 `pendingConfirmationCard`。
+
+case 调整：
+
+- `dialog_regression_303_effect_perf_cases.json` 中 4 个方案变更 preview case 已从 `assertNoFollowups=true` 改为：
+  - `assertFollowupType=pendingConfirmationCard`
+  - `assertFollowupCount=1`
+- 这符合 3.0.3 当前协议：方案移动、加入、专业组移动、排序都属于高副作用动作，preview 后必须生成确认卡片；用户在文本里说“确认”不能直接执行。
+
+本轮 live 复跑命令：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python examples/dialog_regression_runner.py \
+  --url ws://127.0.0.1:8000/gaotu-assistant-agent/plus/chat/1/bot/test/do \
+  --cases examples/dialog_regression_303_effect_perf_cases.json \
+  --response-timeout 180 \
+  --keep-response-text \
+  --assert-plan-style \
+  --metrics-output /private/tmp/zhiyuan_303_effect_perf_after_pending_case_fix.json \
+  --clear-history-per-case \
+  --clear-backend-pending-per-case \
+  --internal-service-url http://127.0.0.1:8080
+```
+
+结果：
+
+- 后端 pending 清理成功：`pendingConfirmation` 和 `planEditCache` 的清理返回 `ok=true`。
+- 但所有进入 full Agent 的首轮模型请求均在约 `16.3s` 超时，未进入工具调用阶段。
+- Agent 日志显示 provider 为 `openai_compatible`，model 为 `kimi-k2.6`，base URL 为 `https://llm.baijia.com/v1`，异常为 `ModelAPIError: Request timed out`。
+- 直接 `curl` 百家 Kimi chat completions，`30s` 后同样超时，`HTTP_STATUS=000`。
+
+结论：
+
+- 本轮 effect/perf live 失败不能归因于确认卡片协议、runner case 或业务工具链退化。
+- 已确认的问题是模型供应商/网络层首轮请求超时；后续需要在百家 Kimi 恢复后，用同一命令复跑。
+- 在模型服务恢复前，本轮只能用单测和离线断言确认协议边界，不能给出 full Agent live 回复质量结论。
+
+##### 14.12.18 模型恢复后 effect/perf 回归与意向卡片摘要修复
+
+百家 Kimi 服务恢复后，使用当前代码临时启动 Agent `8036` 端口复跑 3.0.3 effect/perf 场景：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python examples/dialog_regression_runner.py \
+  --url ws://127.0.0.1:8036/gaotu-assistant-agent/plus/chat/1/bot/test/do \
+  --cases examples/dialog_regression_303_effect_perf_cases.json \
+  --response-timeout 180 \
+  --keep-response-text \
+  --assert-plan-style \
+  --metrics-output /private/tmp/zhiyuan_303_effect_perf_8036_after_intent_card_fix.json \
+  --clear-history-per-case \
+  --clear-backend-pending-per-case \
+  --internal-service-url http://127.0.0.1:8080
+```
+
+结果：
+
+- live 回归：`14/14` steps 成功，无断言失败。
+- 所有方案移动、加入、专业组移动、排序 preview 均返回 1 张 `pendingConfirmationCard`。
+- 文本“确认/确认这个偏好”不会执行方案或意向写入，只提示点击确认卡片。
+- latency：median `25030ms`，p95 `42094ms`，max `44099ms`。
+- 延迟告警 4 个：方案状态 `31.9s`、方案局部查询 `34.1s`、命名移动 preview `44.1s`、专业组移动 preview `41.0s`。
+- 慢点主要仍在模型请求长尾；其中局部查询还有一次 `extract_candidate_filters` 约 `13.0s`，后续需要继续优化结构化条件抽取链路。
+
+本轮还修复了意向确认卡片摘要的用户可见内容：
+
+- 原问题：当结构化意向里同时存在专业类和具体专业时，卡片摘要只取第一个非空层级，容易出现“偏好专业：经济学”遮住“法学/财政学”的情况。
+- 修复：`_summarize_intent_values()` 按具体专业、专业类、专业门类分别展示，不再把上级分类冒充具体专业。
+- 修复：`pendingConfirmationCard.content` 改为分区展示：
+  - `待采纳`：本轮将要写入的偏好/要求。
+  - `当前已经在后续报考参考`：仅作为上下文披露，不作为本轮新写入。
+- 干净会话验证：`990880203` 输入“我倾向法学和财政学，但护理不要”后，卡片内容为：
+  - 待采纳：偏好专业=法学、财政学；排除专业=护理学。
+  - 点击前不写入；继续用文本“确认这个偏好”不会生效。
+
+离线质量报告：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python examples/dialog_case_evaluation_report.py \
+  --current /private/tmp/zhiyuan_303_effect_perf_8036_after_intent_card_fix.json \
+  --case-definitions examples/dialog_regression_303_effect_perf_cases.json \
+  --output /private/tmp/zhiyuan_303_effect_perf_8036_after_intent_card_fix_eval_after_gate_fix.json
+```
+
+结果：
+
+- `strong=1 / needs_review=13 / fail=0`。
+- `qualityViolationsByType={}`，没有硬性质量失败。
+- `needs_review` 主要来自 expected keypoint、质量丰满度和延迟告警，不影响确认协议正确性。
+- 评估器同步修正：具体移动、加入、删除、专业组移动这类点状 preview 不再强制要求方案分布覆盖；分布覆盖要求仍保留给方案概览、候选预览、排序、补偿等需要代表性信息的场景。
+
+验证：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest \
+  tests/unit/test_major_info_tool.py \
+  tests/unit/test_instructions.py \
+  tests/unit/test_chat_agent_init_profile.py \
+  tests/unit/test_dialog_regression_runner.py \
+  tests/unit/test_dialog_case_evaluation_report.py \
+  tests/unit/test_dialog_quality_gate.py \
+  tests/unit/test_tool_reply_policy.py \
+  tests/unit/test_mainline_dialog_scenarios.py \
+  tests/unit/test_chat_service_history_persistence.py \
+  tests/unit/test_ws_compat.py -q
+```
+
+结果：`337 passed`。

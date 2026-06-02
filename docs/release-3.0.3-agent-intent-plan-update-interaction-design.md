@@ -1247,3 +1247,127 @@ cd zhiyuan-agent
 
 - `156 passed`。
 - 扩展 plan/action 回归：`295 passed`。
+
+## 35. 2026-06-02 回归评估中的 Pending 状态隔离
+
+本阶段补齐 3.0.3 确认协议的回归隔离要求。原因是 live 场景大量复用真实 session id，仅清理 Agent SQLite history 不能清掉后端 extra-data 中的 active pending，可能导致 case 之间互相污染。
+
+### 35.1 状态来源
+
+当前新协议主状态：
+
+- `pendingConfirmation`：统一确认卡片主状态，保存 active/applied/cancelled/replaced/expired 语义。
+
+兼容状态：
+
+- `planEditCache`：旧 Intent preview 缓存，只作为历史 fallback，不作为新会话主 pending。
+
+因此，回归测试如果要验证“本 case 自己生成的卡片”，必须同时清理这两个 key。
+
+### 35.2 Runner 能力
+
+`examples/dialog_regression_runner.py` 新增：
+
+- `--clear-backend-pending`：运行前按 case session 批量清理后端 pending。
+- `--clear-backend-pending-per-case`：每个 case 开始前清理后端 pending。
+- `--internal-service-url`：指定后端地址，默认读取 `INTERNAL_SERVICE_URL` 或 `http://127.0.0.1:8080`。
+
+清理方式复用后端已有 extra-data 写入接口，把 `pendingConfirmation` 和 `planEditCache` 写为 `{}`。这不会改变业务协议，只用于测试隔离。
+
+### 35.3 高副作用 Preview 断言
+
+3.0.3 协议下，以下动作的 preview 都必须返回 `pendingConfirmationCard`：
+
+- 方案内志愿移动。
+- 从候选加入方案。
+- 专业组整体移动。
+- 方案排序。
+- 其他会改变方案内容、顺序或长期意向/要求的动作。
+
+`dialog_regression_runner.py` 新增 `assertFollowupType` 和 `assertFollowupCount`，用于在 case 文件中显式声明这些动作必须生成确认卡片。例如：
+
+```json
+{
+  "assertFollowupType": "pendingConfirmationCard",
+  "assertFollowupCount": 1
+}
+```
+
+这类断言比只看回复文本更可靠：文本可以说明“需要你确认”，但真正的执行边界必须以确认卡片和后端 pending 状态为准。
+
+### 35.4 当前验证结论
+
+- runner 单测已覆盖 per-case backend pending cleanup、followup type/count 断言和 metrics followup type 提取。
+- effect/perf live 复跑中，backend pending cleanup 返回 `ok=true`，说明隔离工具生效。
+- 同轮 live 失败来自百家 `kimi-k2.6` 首轮模型请求超时，未进入工具调用阶段；不能归因于 pending 协议或卡片断言。
+
+后续复跑要求：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python examples/dialog_regression_runner.py \
+  --url ws://127.0.0.1:8000/gaotu-assistant-agent/plus/chat/1/bot/test/do \
+  --cases examples/dialog_regression_303_effect_perf_cases.json \
+  --response-timeout 180 \
+  --keep-response-text \
+  --assert-plan-style \
+  --metrics-output /private/tmp/zhiyuan_303_effect_perf_after_pending_case_fix.json \
+  --clear-history-per-case \
+  --clear-backend-pending-per-case \
+  --internal-service-url http://127.0.0.1:8080
+```
+
+上线前验收标准：
+
+- 所有高副作用 preview 都返回 1 张 `pendingConfirmationCard`。
+- 文本“确认/好的/可以”不执行方案或意向写入。
+- 卡片点击仍由 `inputType=pendingConfirmation` 执行，并校验 `pendingId/status/kind`。
+- case 复用真实 session id 时，不允许被旧 `pendingConfirmation` 或 `planEditCache` 污染。
+
+### 35.5 模型恢复后的验收结论与卡片摘要修正
+
+百家 Kimi 恢复后，使用当前代码临时 Agent `8036` 端口复跑 effect/perf：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python examples/dialog_regression_runner.py \
+  --url ws://127.0.0.1:8036/gaotu-assistant-agent/plus/chat/1/bot/test/do \
+  --cases examples/dialog_regression_303_effect_perf_cases.json \
+  --response-timeout 180 \
+  --keep-response-text \
+  --assert-plan-style \
+  --metrics-output /private/tmp/zhiyuan_303_effect_perf_8036_after_intent_card_fix.json \
+  --clear-history-per-case \
+  --clear-backend-pending-per-case \
+  --internal-service-url http://127.0.0.1:8080
+```
+
+结果：
+
+- `14/14` steps 成功，无断言失败。
+- 方案移动、加入方案、专业组移动、方案排序都生成 `pendingConfirmationCard`。
+- 文本“确认”不会执行方案调整；文本“确认这个偏好”不会执行意向写入。
+- 空 pending 下的“确认”走 no-pending guard，不加载 Agent、不调用工具。
+
+本轮同步修正了 Intent 卡片摘要：
+
+- `pendingConfirmationCard.summary` 和 `content` 不再只取一个专业层级。
+- 具体专业、专业类、专业门类分别展示，避免把“经济学”写成“偏好专业”并遮住“法学/财政学”。
+- `content` 使用两段用户语言：
+  - `待采纳`：本次点击卡片后会写入的内容。
+  - `当前已经在后续报考参考`：仅披露已有状态，不作为本次新写入。
+
+示例：
+
+```text
+待采纳：
+- 偏好专业：法学、财政学
+- 排除专业：护理学
+```
+
+如果同一会话历史里已经有法学/财政学/护理学，则高层 Intent 工具会返回 `existing_only`，不生成新卡片；这属于正确的幂等行为。回归 case 已改用干净 session 验证“新意向必须生成确认卡片”。
+
+剩余风险：
+
+- 当前协议正确性已通过，但模型请求仍有长尾，effect/perf median `25.0s`、max `44.1s`。
+- 局部方案查询中 `extract_candidate_filters` 仍可能耗时约 `13s`，后续应继续优化结构化条件抽取，但不能用脆弱字符串规则替代模型理解。

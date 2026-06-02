@@ -206,6 +206,33 @@ def test_run_cases_supports_per_case_history_clear(monkeypatch, tmp_path):
     assert rows == []
 
 
+def test_run_cases_supports_per_case_backend_pending_clear(monkeypatch, tmp_path):
+    calls = []
+
+    async def fake_ask_once(*args, **kwargs):
+        return ([{"type": "text", "content": "方案已经有了。"}], [], {"firstMessageMs": 1, "finalMessageMs": 1})
+
+    def fake_clear_backend_pending_state(base_url, session_ids):
+        calls.append((base_url, session_ids))
+        return [{"session": session_ids[0], "key": "pendingConfirmation", "ok": True}]
+
+    monkeypatch.setattr(runner, "_ask_once", fake_ask_once)
+    monkeypatch.setattr(runner, "_clear_backend_pending_state", fake_clear_backend_pending_state)
+
+    asyncio.run(
+        runner._run_cases(
+            "ws://test",
+            "user",
+            [{"name": "case-a", "sessionId": "17", "prompts": [{"prompt": "看看方案", "assertContains": ["方案"]}]}],
+            history_db=str(tmp_path / "missing.db"),
+            clear_backend_pending_per_case=True,
+            internal_service_url="http://backend.test",
+        )
+    )
+
+    assert calls == [("http://backend.test", ["17"])]
+
+
 def test_run_cases_keeps_observability_when_request_fails(monkeypatch, tmp_path):
     db_path = tmp_path / "history.db"
     metrics_path = tmp_path / "metrics.json"
@@ -542,12 +569,14 @@ def test_followup_summary_extracts_targets_and_refresh_flags():
         {"content": {"targetView": "ordered", "refresh": True}},
         {"content": {"targetView": "review", "refresh": False}},
         {"content": {"targetView": "ordered", "refresh": True}},
+        {"type": "pendingConfirmationCard", "content": {"type": "pendingConfirmationCard"}},
     ]
 
-    targets, refreshes = runner._followup_summary(followups)
+    targets, refreshes, types = runner._followup_summary(followups)
 
     assert targets == ["ordered", "review"]
     assert refreshes == [True, False, True]
+    assert types == ["pendingConfirmationCard"]
 
 
 def test_content_assertions_reject_followups_when_disallowed():
@@ -560,6 +589,39 @@ def test_content_assertions_reject_followups_when_disallowed():
     )
 
     assert any("assertNoFollowups FAILED" in item for item in violations)
+
+
+def test_content_assertions_support_followup_type_and_count():
+    violations = runner._check_content_assertions(
+        "需要你确认后才会执行。",
+        [{"type": "pendingConfirmationCard", "content": {"type": "pendingConfirmationCard"}}],
+        {
+            "prompt": "按院校层次排序",
+            "assertFollowupType": "pendingConfirmationCard",
+            "assertFollowupCount": 1,
+        },
+        "case-a",
+        "17",
+    )
+
+    assert violations == []
+
+
+def test_content_assertions_report_missing_followup_type_and_count():
+    violations = runner._check_content_assertions(
+        "需要你确认后才会执行。",
+        [],
+        {
+            "prompt": "按院校层次排序",
+            "assertFollowupType": "pendingConfirmationCard",
+            "assertFollowupCount": 1,
+        },
+        "case-a",
+        "17",
+    )
+
+    assert any("assertFollowupType FAILED" in item for item in violations)
+    assert any("assertFollowupCount FAILED" in item for item in violations)
 
 
 def test_content_assertions_support_thinking_messages():

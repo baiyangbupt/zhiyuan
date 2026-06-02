@@ -252,6 +252,8 @@ class TestToolDispatchRules:
         assert "不要拆成多次二元 `compare_majors`" in result
         assert "`get_major_introductions`" in result
         assert "不要并行或连续多次调用 `get_major_introduction`" in result
+        assert "默认不查当前方案和候选机会" in result
+        assert "include_plan_context=true" in result
         assert "不要先调用 `analyze_current_major_interest`" in result
         assert "不要在同一轮再追加 `get_major_introduction`" in result
         assert "只有用户明确同时问职业和地域时" in result

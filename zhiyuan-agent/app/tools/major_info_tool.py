@@ -4,6 +4,7 @@ Retrieves detailed information about a specific major or major category.
 """
 
 import logging
+import time
 from typing import Any
 
 from pydantic_ai import RunContext
@@ -128,13 +129,23 @@ async def get_major_introduction(
 async def get_major_introductions(
     ctx: RunContext[RequestContext],
     major_names: list[str],
+    include_plan_context: bool = False,
 ) -> str:
     """批量获取多个专业或专业类的介绍事实，用于课程、基础要求和就业方向横向对照。
 
     适合回答“建筑学和城乡规划要不要美术基础”“几个专业学什么、就业有什么区别”
     这类多专业只读问题。只有一个专业时，请优先使用 `get_major_introduction`。
+    默认只返回专业基础事实，避免每个专业都查询当前方案和候选池造成长尾。
+    只有用户明确要求结合“当前方案/候选机会/这个分数段能报哪些”时，才传
+    `include_plan_context=true` 补充当前方案命中和候选机会。
     """
-    logger.info("get_major_introductions called: major_names=%s", major_names)
+    started_at = time.monotonic()
+    timings: list[dict[str, Any]] = []
+    logger.info(
+        "get_major_introductions called: major_names=%s include_plan_context=%s",
+        major_names,
+        include_plan_context,
+    )
 
     batch = ctx.deps.batch
     is_bachelor = batch is None or batch == "" or batch == "01"
@@ -162,16 +173,25 @@ async def get_major_introductions(
         return "至少需要两个明确专业，才能做专业介绍和基础要求的横向对照。"
 
     limited_names = normalized_names[:6]
-    plan_title, plan_items = await _load_current_plan(ctx.deps.sessionid)
+    plan_title = "当前方案"
+    plan_items: list[dict[str, Any]] = []
+    if include_plan_context:
+        plan_started = time.monotonic()
+        plan_title, plan_items = await _load_current_plan(ctx.deps.sessionid)
+        timings.append({"step": "load_current_plan", "durationMs": _elapsed_ms(plan_started)})
+
     lines: list[str] = [
         "多专业介绍对照：" + "、".join(limited_names),
     ]
     if len(normalized_names) > len(limited_names):
         lines.append("本次先展示前 6 个专业，避免一次对照过长。")
+    if not include_plan_context:
+        lines.append("本次先对照专业本身的学习内容、基础要求和就业方向；未额外查询当前方案和候选机会。")
 
     lines.extend(["", "专业基础事实："])
     for major_name in limited_names:
         try:
+            fact_started = time.monotonic()
             fact = await _load_major_intro_fact(
                 major_name,
                 level3_labels=level3_labels,
@@ -179,12 +199,21 @@ async def get_major_introductions(
                 level2_labels=level2_labels,
                 level2_id_map=level2_id_map,
             )
+            timings.append(
+                {
+                    "step": "load_major_intro_fact",
+                    "major": major_name,
+                    "durationMs": _elapsed_ms(fact_started),
+                }
+            )
             lines.extend(
                 await _render_major_intro_fact_lines(
                     ctx.deps.sessionid,
                     fact,
                     plan_title=plan_title,
                     plan_items=plan_items,
+                    include_plan_context=include_plan_context,
+                    timings=timings,
                 )
             )
         except Exception:
@@ -195,12 +224,21 @@ async def get_major_introductions(
         [
             "",
             "回答使用提示：",
-            "- 横向回答时优先比较学习内容、基础要求、课程训练、就业方向和当前方案/候选承接。",
+            "- 横向回答时优先比较学习内容、基础要求、课程训练、就业方向和用户给出的适配条件。",
+            "- 如果本次未查询当前方案和候选机会，不要编造方案命中或候选数量；用户明确追问时再结合当前方案/候选工具补充。",
             "- 如果用户问美术、制图、体检、选科等具体门槛，要区分“录取门槛”和“入学后的学习要求”，不要把课程训练误说成所有学校都要单独考试。",
             "",
             "[数据来源]",
             "- 数据源：教育部专业目录、高校官方培养方案",
         ]
+    )
+    _append_major_info_observability(
+        ctx,
+        tool="get_major_introductions",
+        major_names=limited_names,
+        include_plan_context=include_plan_context,
+        timings=timings,
+        total_duration_ms=_elapsed_ms(started_at),
     )
     return "\n".join(lines)
 
@@ -261,6 +299,8 @@ async def _render_major_intro_fact_lines(
     *,
     plan_title: str,
     plan_items: list[dict[str, Any]],
+    include_plan_context: bool = True,
+    timings: list[dict[str, Any]] | None = None,
 ) -> list[str]:
     major_name = str(fact.get("name") or "")
     if not fact.get("found"):
@@ -268,13 +308,6 @@ async def _render_major_intro_fact_lines(
 
     major_id = str(fact.get("major_id") or "")
     level = int(fact.get("level") or 0)
-    matched_plan_items = [
-        item for item in plan_items if _matches_major_item(item, major_id, level, major_name)
-    ]
-    candidate_result = await _query_major_candidates(session_id, major_id, level, major_name)
-    candidate_data = candidate_result.get("data") or {}
-    candidate_items = candidate_data.get("items") or []
-    candidate_total = candidate_data.get("total") or 0
 
     lines = [
         f"- {major_name}：{fact.get('overview_label')}：{_compact_text(fact.get('overview'))}；"
@@ -282,6 +315,25 @@ async def _render_major_intro_fact_lines(
         f"{fact.get('course_label')}：{_compact_text(fact.get('course'))}；"
         f"{fact.get('employment_label')}：{_compact_text(fact.get('employment'))}。"
     ]
+    if not include_plan_context:
+        return lines
+
+    matched_plan_items = [
+        item for item in plan_items if _matches_major_item(item, major_id, level, major_name)
+    ]
+    candidate_started = time.monotonic()
+    candidate_result = await _query_major_candidates(session_id, major_id, level, major_name)
+    candidate_data = candidate_result.get("data") or {}
+    candidate_items = candidate_data.get("items") or []
+    candidate_total = candidate_data.get("total") or 0
+    if timings is not None:
+        timings.append(
+            {
+                "step": "query_major_candidates",
+                "major": major_name,
+                "durationMs": _elapsed_ms(candidate_started),
+            }
+        )
     if matched_plan_items:
         examples = "；".join(_build_plan_snippet(item) for item in matched_plan_items[:2])
         lines.append(f"  - {plan_title}中命中 {len(matched_plan_items)} 个相关志愿：{examples}。")
@@ -296,6 +348,33 @@ async def _render_major_intro_fact_lines(
     else:
         lines.append("  - 当前候选机会暂时查询失败。")
     return lines
+
+
+def _elapsed_ms(started_at: float) -> int:
+    return int((time.monotonic() - started_at) * 1000)
+
+
+def _append_major_info_observability(
+    ctx: RunContext[RequestContext],
+    *,
+    tool: str,
+    major_names: list[str],
+    include_plan_context: bool,
+    timings: list[dict[str, Any]],
+    total_duration_ms: int,
+) -> None:
+    observability = getattr(getattr(ctx, "deps", None), "agent_observability", None)
+    if not isinstance(observability, dict):
+        return
+    observability.setdefault("toolInternalTimings", []).append(
+        {
+            "tool": tool,
+            "majorNames": major_names,
+            "includePlanContext": include_plan_context,
+            "durationMs": total_duration_ms,
+            "steps": list(timings),
+        }
+    )
 
 
 def _compact_text(value: Any, limit: int = 120) -> str:

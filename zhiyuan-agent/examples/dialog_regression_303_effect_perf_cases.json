@@ -263,7 +263,8 @@
           "volunteerId",
           "payload"
         ],
-        "assertNoFollowups": true,
+        "assertFollowupType": "pendingConfirmationCard",
+        "assertFollowupCount": 1,
         "warnElapsedSeconds": 30,
         "qualityFocus": [
           "actionable_next_step",
@@ -330,7 +331,8 @@
           "volunteerId",
           "payload"
         ],
-        "assertNoFollowups": true,
+        "assertFollowupType": "pendingConfirmationCard",
+        "assertFollowupCount": 1,
         "warnElapsedSeconds": 30,
         "qualityFocus": [
           "actionable_next_step",
@@ -401,7 +403,8 @@
           "草稿",
           "锁定"
         ],
-        "assertNoFollowups": true,
+        "assertFollowupType": "pendingConfirmationCard",
+        "assertFollowupCount": 1,
         "warnElapsedSeconds": 30,
         "qualityFocus": [
           "actionable_next_step",
@@ -509,7 +512,8 @@
           "草稿",
           "payload"
         ],
-        "assertNoFollowups": true,
+        "assertFollowupType": "pendingConfirmationCard",
+        "assertFollowupCount": 1,
         "warnElapsedSeconds": 30,
         "qualityFocus": [
           "actionable_next_step",
@@ -686,7 +690,7 @@
   },
   {
     "name": "303-quality-intent-preview-confirm-progress",
-    "sessionId": "880203",
+    "sessionId": "990880203",
     "flow": [
       "intent",
       "confirm"
@@ -750,19 +754,20 @@
           "偏好专业门类：法学",
           "已记录"
         ],
-        "assertNoFollowups": true,
+        "assertFollowupType": "pendingConfirmationCard",
+        "assertFollowupCount": 1,
         "warnElapsedSeconds": 60,
         "qualityFocus": [
           "actionable_next_step",
-          "readonly_boundary",
+          "preview_confirm_boundary",
           "user_language"
         ]
       },
       {
         "prompt": "确认这个偏好",
         "assertContainsAny": [
-          "没有找到上一轮仍在等待确认",
-          "已确认",
+          "点击上方卡片",
+          "不会直接生效",
           "参考"
         ],
         "assertNotContains": [

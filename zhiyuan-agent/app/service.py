@@ -589,15 +589,53 @@ def _summarize_intent_values(merged: dict[str, Any]) -> str:
         if texts:
             parts.append(f"{label}：{'、'.join(dict.fromkeys(texts))}")
 
-    add("偏好专业", major_intents.get("level3") or major_intents.get("level2") or major_intents.get("level1"))
-    add("排除专业", major_intents.get("negative_level3") or major_intents.get("negative_level2") or major_intents.get("negative_level1"))
+    add("偏好专业", major_intents.get("level3"))
+    add("偏好专业类", major_intents.get("level2"))
+    add("偏好专业门类", major_intents.get("level1"))
+    add("排除专业", major_intents.get("negative_level3"))
+    add("排除专业类", major_intents.get("negative_level2"))
+    add("排除专业门类", major_intents.get("negative_level1"))
     add("偏好院校", school_intents.get("colleges"))
     add("排除院校", school_intents.get("negative_colleges"))
-    add("偏好地域", (city_intents.get("province") or []) + (city_intents.get("city") or []))
-    add("排除地域", (city_intents.get("negative_province") or []) + (city_intents.get("negative_city") or []))
+    add("偏好地域", _as_text_list(city_intents.get("province")) + _as_text_list(city_intents.get("city")))
+    add("排除地域", _as_text_list(city_intents.get("negative_province")) + _as_text_list(city_intents.get("negative_city")))
     add("发展方向", career_intents.get("positive"))
     add("排除方向", career_intents.get("negative"))
     return "；".join(parts)
+
+
+def _as_text_list(values: Any) -> list[str]:
+    raw_values = values if isinstance(values, list) else [values] if values else []
+    return [str(value or "").strip() for value in raw_values if str(value or "").strip()]
+
+
+def _merge_intent_preview_item_values(items: list[Any]) -> dict[str, Any]:
+    values: list[dict[str, Any]] = []
+    for item in items:
+        value = getattr(item, "value", None)
+        if isinstance(value, dict) and value:
+            values.append(value)
+    if not values:
+        return {}
+    try:
+        return merge_selected_values(values)
+    except Exception:
+        return {}
+
+
+def _format_intent_card_content(summary: str, *, existing_summary: str = "") -> str:
+    lines: list[str] = []
+    summary_parts = [part.strip() for part in str(summary or "").split("；") if part.strip()]
+    if summary_parts:
+        lines.append("待采纳：")
+        lines.extend(f"- {part}" for part in summary_parts)
+    existing_parts = [part.strip() for part in str(existing_summary or "").split("；") if part.strip()]
+    if existing_parts:
+        if lines:
+            lines.append("")
+        lines.append("当前已经在后续报考参考：")
+        lines.extend(f"- {part}" for part in existing_parts)
+    return "\n".join(lines).strip() or summary
 
 
 def _build_intent_pending_state(
@@ -658,6 +696,7 @@ async def _create_pending_intent_confirmation_response(
         replaced_pending=replaced_pending if isinstance(replaced_pending, dict) else None,
     )
     await _save_pending_confirmation_state(session_id, pending_state)
+    card_content = _format_intent_card_content(summary)
     payload = {
         "type": "pendingConfirmationCard",
         "pendingId": pending_state["pendingId"],
@@ -665,7 +704,7 @@ async def _create_pending_intent_confirmation_response(
         "actionFamily": "apply_selected_intents",
         "title": f"确认采纳这次{mode_text}",
         "summary": summary,
-        "content": summary,
+        "content": card_content,
         "impactTitle": "确认说明",
         "impact": "点击采纳前不会写入后续报考参考；采纳后会按这次内容继续看候选和方案。",
         "clickable": True,
@@ -733,6 +772,8 @@ async def _create_pending_intent_confirmation_from_preview_payload(
         return None
     if not merged:
         return None
+    existing_merged = _merge_intent_preview_item_values(list(preview.existingItems))
+    existing_summary = _summarize_intent_values(existing_merged)
     intent_mode = str(preview.intentMode or "preference").strip()
     if intent_mode not in {"preference", "constraint"}:
         intent_mode = "preference"
@@ -756,6 +797,7 @@ async def _create_pending_intent_confirmation_from_preview_payload(
     await _save_pending_confirmation_state(session_id, pending_state)
     await _clear_legacy_plan_edit_cache_best_effort(session_id)
     mode_text = "要求" if intent_mode == "constraint" else "偏好"
+    card_content = _format_intent_card_content(summary, existing_summary=existing_summary)
     payload = {
         "type": "pendingConfirmationCard",
         "pendingId": pending_state["pendingId"],
@@ -763,7 +805,7 @@ async def _create_pending_intent_confirmation_from_preview_payload(
         "actionFamily": "apply_selected_intents",
         "title": f"确认采纳这次{mode_text}",
         "summary": summary,
-        "content": summary,
+        "content": card_content,
         "impactTitle": "确认说明",
         "impact": "点击采纳前不会写入后续报考参考；采纳后会按这次内容继续看候选和方案。",
         "clickable": True,

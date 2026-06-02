@@ -111,8 +111,9 @@ class _FakeAgent:
 
 
 class _FakeIntentPreviewAgent:
-    def __init__(self, payload: dict):
+    def __init__(self, payload: dict, tool_name: str = "preview_current_region_intent_confirmation"):
         self.payload = payload
+        self.tool_name = tool_name
         self.calls: list[dict] = []
 
     async def run_with_message_deltas(self, user_prompt, message_history=None, deps=None, on_progress=None):
@@ -132,7 +133,7 @@ class _FakeIntentPreviewAgent:
                             "node": "CallToolsNode",
                             "durationMs": 8,
                             "status": "success",
-                            "toolNames": ["preview_current_region_intent_confirmation"],
+                            "toolNames": [self.tool_name],
                         },
                     ],
                 }
@@ -144,7 +145,7 @@ class _FakeIntentPreviewAgent:
             ModelResponse(
                 parts=[
                     ToolCallPart(
-                        tool_name="preview_current_region_intent_confirmation",
+                        tool_name=self.tool_name,
                         args={},
                         tool_call_id="intent-preview-1",
                     )
@@ -153,7 +154,7 @@ class _FakeIntentPreviewAgent:
             ModelRequest(
                 parts=[
                     ToolReturnPart(
-                        tool_name="preview_current_region_intent_confirmation",
+                        tool_name=self.tool_name,
                         content=content,
                         tool_call_id="intent-preview-1",
                     )
@@ -752,6 +753,77 @@ def test_chat_service_converts_structured_intent_preview_to_pending_confirmation
     assert pending_state["value"]["executionPayload"]["batch"] == "02"
     assert pending_state["value"]["executionPayload"]["selectedData"]["batch"] == "02"
     clear_legacy_cache_mock.assert_awaited_once_with(990501, {})
+
+
+def test_chat_service_intent_pending_card_summarizes_all_major_levels_and_existing_items(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    preview_payload = {
+        "status": "ready",
+        "sessionId": "990502",
+        "title": "待确认偏好",
+        "intentMode": "preference",
+        "analysisStage": "confirmed",
+        "items": [
+            {
+                "content": "偏好专业类：经济学",
+                "value": {"major_intents": {"level2": ["经济学"]}},
+                "selected": True,
+            },
+            {
+                "content": "排除专业门类：医学",
+                "value": {"major_intents": {"negative_level1": ["医学"]}},
+                "selected": True,
+            },
+        ],
+        "existingItems": [
+            {
+                "content": "当前已有参考偏好专业：法学",
+                "value": {"major_intents": {"level3": ["法学", "财政学"]}},
+                "selected": True,
+            },
+            {
+                "content": "当前已有参考排除专业：护理学",
+                "value": {"major_intents": {"negative_level3": ["护理学"]}},
+                "selected": True,
+            },
+        ],
+        "message": "待确认内容：偏好专业类经济学，排除医学。",
+    }
+    fake_agent = _FakeIntentPreviewAgent(
+        preview_payload,
+        tool_name="preview_current_major_intent_confirmation",
+    )
+    pending_state, save_pending_mock, get_pending_mock = _pending_confirmation_store()
+    clear_legacy_cache_mock = AsyncMock(return_value={"code": 0})
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 0, "data": {"userScoreDetail": {"batch": "01"}}})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_intent_change_cache", AsyncMock(return_value={"data": {"planEditCache": None}})), \
+            patch("app.service.save_intent_change_cache", clear_legacy_cache_mock), \
+            patch("app.service.save_pending_confirmation", save_pending_mock), \
+            patch("app.service.get_pending_confirmation", get_pending_mock):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(
+            service.handle_message("990502", "user-1", "我倾向法学和财政学，但护理不要")
+        )
+
+    assert isinstance(reply, ChatServiceResponseEnvelope)
+    card_payload = json.loads(reply.followups[0].content)
+    assert card_payload["summary"] == "偏好专业类：经济学；排除专业门类：医学"
+    assert "待采纳：" in card_payload["content"]
+    assert "- 偏好专业类：经济学" in card_payload["content"]
+    assert "- 排除专业门类：医学" in card_payload["content"]
+    assert "当前已经在后续报考参考：" in card_payload["content"]
+    assert "- 偏好专业：法学、财政学" in card_payload["content"]
+    assert "- 排除专业：护理学" in card_payload["content"]
+    assert pending_state["value"]["summary"] == "偏好专业类：经济学；排除专业门类：医学"
+    assert pending_state["value"]["executionPayload"]["merged"] == {
+        "major_intents": {"level2": ["经济学"], "negative_level1": ["医学"]}
+    }
+    clear_legacy_cache_mock.assert_awaited_once_with(990502, {})
 
 
 def test_extract_recent_intent_analysis_payload_prefers_latest_structured_preview():

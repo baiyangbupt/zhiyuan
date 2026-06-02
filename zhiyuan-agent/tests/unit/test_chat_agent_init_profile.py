@@ -192,6 +192,8 @@ def test_build_instructions_includes_explore_first_direction_fit_guidance():
     assert "`compare_majors` 或 `compare_majors_adhoc`" in instructions
     assert "`get_major_introductions`" in instructions
     assert "不要并行或连续多次调用 `get_major_introduction`" in instructions
+    assert "默认不查当前方案和候选机会" in instructions
+    assert "include_plan_context=true" in instructions
     assert "不要先调用 `analyze_current_major_interest`" in instructions
     assert "不要在同一轮再追加 `get_major_introduction`" in instructions
     assert "Explore 专用工具已经返回当前方案概况" in instructions

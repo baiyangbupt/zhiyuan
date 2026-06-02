@@ -494,6 +494,33 @@ def test_score_case_does_not_treat_confirm_guard_as_preview():
     assert score["verdict"] != "fail"
 
 
+def test_score_case_does_not_apply_distribution_gate_to_point_mutation_preview():
+    score = report._score_case(
+        {
+            "prompt": "把青岛城市学院的国际经济与贸易改到第3位",
+            "responseText": (
+                "预览如下：\n"
+                "- 志愿：青岛城市学院 · 国际经济与贸易\n"
+                "- 当前位置：当前第 36 位\n"
+                "- 目标位置：第 3 位\n"
+                "需要你确认后才会执行。"
+            ),
+            "elapsedMs": 1200,
+            "turnObservability": {
+                "toolCalls": [
+                    {
+                        "name": "execute_plan_action",
+                        "actionFamily": "move_unit",
+                    }
+                ]
+            },
+        }
+    )
+
+    assert "thin_preview_distribution" not in score["qualityViolations"]
+    assert score["verdict"] != "fail"
+
+
 def test_score_case_rewards_rich_preview_distribution_coverage():
     score = report._score_case(
         {
