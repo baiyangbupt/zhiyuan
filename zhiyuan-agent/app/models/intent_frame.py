@@ -31,8 +31,6 @@ from pydantic import BaseModel, Field
 # | add         | add_units                 |                     |
 # | remove      | remove_units              |                     |
 # | move        | move_unit                 |                     |
-# | pin         | pin_unit                  |                     |
-# | unpin       | unpin_unit                |                     |
 # | replace     | replace_units             |                     |
 # | reorder     | sort_ordered_plan / regenerate_order | scope.sort_field 决定 |
 # | compensate  | preview_compensation / apply_compensation |       |
@@ -55,8 +53,6 @@ Verb = Literal[
     "add",            # 添加志愿
     "remove",         # 删除志愿
     "move",           # 移动志愿位置
-    "pin",            # 锁定志愿
-    "unpin",          # 解锁志愿
     "replace",        # 替换志愿
     "reorder",        # 重新排序
     "compensate",     # 补偿/补稳/补齐

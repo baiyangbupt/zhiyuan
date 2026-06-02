@@ -13,9 +13,10 @@
 """
 
 import pytest
+from typing import get_args
 
 from app.models.conversation_phase import ConversationPhase, PhaseState
-from app.models.intent_frame import IntentFrame, ScopeSpec, TargetSpec
+from app.models.intent_frame import IntentFrame, ScopeSpec, TargetSpec, Verb
 from app.resolver.action_resolver import ActionResolution, ActionResolver
 from app.tools.plan_orchestration_models import PlanContextInputs
 
@@ -101,18 +102,9 @@ class TestVerbToActionFamily:
         result = resolver.resolve(frame, ctx)
         assert result.action_family == expected_family
 
-    @pytest.mark.parametrize("verb,expected_family", [
-        ("pin", "pin_unit"),
-        ("unpin", "unpin_unit"),
-    ])
-    def test_pin_unpin_entry_blocked_in_301(self, resolver, verb, expected_family):
-        frame = _frame(verb=verb)
-        ctx = _ctx(ordered_count=30)
-        result = resolver.resolve(frame, ctx)
-        assert result.action_family == expected_family
-        assert result.stage == "blocked"
-        assert result.requires_confirmation is False
-        assert "不提供固定/锁定志愿入口" in result.blocked_reason
+    def test_pin_unpin_verbs_not_exposed_in_intent_frame(self):
+        assert "pin" not in get_args(Verb)
+        assert "unpin" not in get_args(Verb)
 
     def test_confirm_verb(self, resolver):
         frame = _frame(verb="confirm", is_confirmation_of_previous=True)
@@ -367,20 +359,6 @@ class TestMissingInputs:
         frame = _frame(verb="move", volunteer_refs=["@5"], position=3)
         ctx = _ctx(ordered_count=30)
         result = resolver.resolve(frame, ctx)
-        assert result.missing_inputs == []
-
-    def test_pin_entry_blocked_in_301(self, resolver):
-        frame = _frame(verb="pin")
-        ctx = _ctx(ordered_count=30)
-        result = resolver.resolve(frame, ctx)
-        assert result.stage == "blocked"
-        assert result.missing_inputs == []
-
-    def test_unpin_entry_blocked_in_301(self, resolver):
-        frame = _frame(verb="unpin")
-        ctx = _ctx(ordered_count=30)
-        result = resolver.resolve(frame, ctx)
-        assert result.stage == "blocked"
         assert result.missing_inputs == []
 
     def test_add_needs_scope(self, resolver):

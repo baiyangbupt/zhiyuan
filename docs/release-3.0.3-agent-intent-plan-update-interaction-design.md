@@ -1186,3 +1186,25 @@ cd zhiyuan-agent
 - `test_intent_state_tool.py` focused：`3 passed`。
 - `test_planning_intent_scenarios_sync.py` focused：`6 passed`。
 - `test_dialog_scenario_stability.py` focused：`13 passed`。
+
+## 33. 2026-06-02 Pin/Unpin 公开入口清理
+
+本阶段清理对话规划层仍暴露的固定/解锁动作，避免 Agent 在新版工作台已去掉该能力后继续规划无效动作。
+
+当前处理：
+
+- `plan_next_action` 公开 `action_family` 早已不暴露 `pin_unit/unpin_unit`。
+- 本次进一步从结构化 `IntentFrame.Verb` 中移除 `pin/unpin`，语义路由和后续 action resolver 不再把新用户请求规划成固定/解锁。
+- `ActionResolver` 内部对 `pin_unit/unpin_unit` 的 blocked 防御仍保留，用于历史 payload 或异常内部输入兜底。
+- `execute_plan_action` 对历史 `pin_unit/unpin_unit` payload 仍返回“不支持固定/锁定志愿入口”的用户侧提示，不执行任何方案状态修改。
+
+验证补充：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest tests/unit/test_action_resolver.py tests/unit/test_plan_orchestration_tool.py tests/unit/test_plan_execution_tool.py -q
+```
+
+验证结果：
+
+- `239 passed`。
