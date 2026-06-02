@@ -17,6 +17,15 @@
     gap: 16px;
   }
 
+  .sessionIdCell {
+    display: inline-block;
+    min-width: 48px;
+    font-variant-numeric: tabular-nums;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    color: #2c2e40;
+    line-height: 20px;
+  }
+
   .button {
     height: 32px;
     border-radius: 4px;

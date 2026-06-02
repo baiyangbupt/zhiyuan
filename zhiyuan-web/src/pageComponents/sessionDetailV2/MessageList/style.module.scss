@@ -456,33 +456,134 @@
     white-space: pre-wrap;
   }
 
+  .pendingConfirmationCard {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    max-width: 520px;
+    padding: 14px 16px;
+    border-radius: 10px;
+    border: 1px solid #f0d6d2;
+    background: #fffafa;
+    box-shadow: 0 8px 20px rgba(44, 46, 64, 0.06);
+  }
+
+  .pendingConfirmationHeader {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .pendingConfirmationBadge {
+    flex: 0 0 auto;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: #fff0ee;
+    color: #c73530;
+    border: 1px solid #ffd4ce;
+    font-size: 12px;
+    line-height: 18px;
+    font-weight: 600;
+  }
+
+  .pendingConfirmationTitle {
+    min-width: 0;
+    font-size: 14px;
+    line-height: 1.6;
+    font-weight: 600;
+    color: #2c2e40;
+    white-space: pre-wrap;
+  }
+
+  .pendingConfirmationContent {
+    font-size: 13px;
+    line-height: 1.8;
+    color: #515461;
+    white-space: pre-wrap;
+  }
+
+  .pendingConfirmationActions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 2px;
+  }
+
+  .pendingPrimaryButton,
+  .pendingSecondaryButton {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    border-radius: 999px;
+    padding: 0 14px;
+    font-weight: 500;
+  }
+
+  .pendingPrimaryButton {
+    border-color: #ff443d;
+    background: #ff443d;
+    color: #fff;
+  }
+
+  .pendingPrimaryButton:hover,
+  .pendingPrimaryButton:focus {
+    border-color: #e63b35 !important;
+    background: #e63b35 !important;
+    color: #fff !important;
+  }
+
+  .pendingSecondaryButton {
+    border-color: #d9dce7;
+    background: #fff;
+    color: #555b6b;
+  }
+
+  .pendingSecondaryButton:hover,
+  .pendingSecondaryButton:focus {
+    border-color: #b9becc !important;
+    color: #2c2e40 !important;
+  }
+
+  .pendingConfirmationStatus {
+    display: inline-flex;
+    align-self: flex-start;
+    padding: 3px 10px;
+    border-radius: 999px;
+    background: #f4f5f8;
+    color: #747b8c;
+    font-size: 12px;
+    line-height: 18px;
+  }
+
   .thinkingContainer {
     padding: 10px 40px;
     position: relative;
   }
 
   .thinkingContent {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-
-  .thinkingHintList {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-  }
-
-  .thinkingHintTag {
     display: inline-flex;
-    align-items: center;
-    padding: 4px 10px;
-    border-radius: 999px;
-    background: #fff0ee;
-    color: #ff443d;
+    max-width: min(520px, calc(100% - 20px));
+    flex-direction: column;
+    gap: 6px;
+    padding: 10px 14px;
+    border-radius: 12px;
+    border: 1px solid #ebeef5;
+    background: #fff;
+    box-shadow: 0 6px 18px rgba(44, 46, 64, 0.06);
+  }
+
+  .thinkingLabel {
     font-size: 12px;
-    line-height: 1.2;
-    border: 1px solid #ffd1cb;
+    line-height: 18px;
+    color: #8a91a3;
+  }
+
+  .thinkingCurrentHint {
+    font-size: 13px;
+    line-height: 1.6;
+    color: #3f4555;
+    white-space: pre-wrap;
+    word-break: break-word;
   }
 }
 
@@ -498,6 +599,28 @@
     }
     .quickReplyIcon {
       font-size: 13px;
+    }
+    .pendingConfirmationCard {
+      max-width: 100%;
+      padding: 12px;
+    }
+    .pendingConfirmationHeader {
+      flex-direction: column;
+      gap: 6px;
+    }
+    .pendingConfirmationActions {
+      flex-direction: column;
+    }
+    .pendingPrimaryButton,
+    .pendingSecondaryButton {
+      width: 100%;
+      justify-content: center;
+    }
+    .thinkingContainer {
+      padding: 8px 12px;
+    }
+    .thinkingContent {
+      max-width: 100%;
     }
     .sendMessage {
       padding: 10px 16px 12px;

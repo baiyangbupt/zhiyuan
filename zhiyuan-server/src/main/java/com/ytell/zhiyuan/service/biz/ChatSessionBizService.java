@@ -301,15 +301,7 @@ public class ChatSessionBizService {
                         .collect(Collectors.toList());
             }
             String preferredRegionStr = Joiner.on("、").skipNulls().join(preferredRegionNames);
-            String welcome = String.format(
-                    "你好，我是孙老师，后面由我陪你一起看志愿。我的工作方式会比较直接：先看你的分数、选科和批次能打开哪些机会，再判断专业、城市、院校是否适合，最后把方案风险和调整动作落到工作台里。\n"
-                            + "我现在看到你的基本情况是：%s。\n"
-                            + "已记录的关注方向：%s；地域偏好：%s。\n"
-                            + "你可以直接从下面的快捷入口开始，也可以在对话框里直接问我。",
-                    buildWelcomeStudentBrief(createSessionReq),
-                    Strings.isNullOrEmpty(preferredMajorStr) ? "还没有特别明确的专业方向" : preferredMajorStr,
-                    Strings.isNullOrEmpty(preferredRegionStr) ? "还没有特别明确的地域偏好" : preferredRegionStr
-            );
+            String welcome = buildWelcomeMessage(createSessionReq, preferredMajorStr, preferredRegionStr);
             sendWelcome(tenantId, chatSession.getId(), welcome);
             log.info("createChatSession step=sendWelcome tenantId={} chatSessionId={} costMs={}",
                     tenantId, chatSession.getId(), System.currentTimeMillis() - sendWelcomeStart);
@@ -429,6 +421,48 @@ public class ChatSessionBizService {
             }
             createSessionReq.setSubjectList(subjectItemList);
         }
+    }
+
+    private String buildWelcomeMessage(CreateSessionReq createSessionReq,
+                                       String preferredMajorStr,
+                                       String preferredRegionStr) {
+        String welcomeTarget = buildWelcomeTargetName(createSessionReq.getUserName());
+        String prepareTypeDesc = createSessionReq.getPrepareType() == null
+                ? "志愿填报"
+                : createSessionReq.getPrepareType().getDesc();
+        String strategyDesc = createSessionReq.getStrategyType() == null
+                ? "结合冲、稳、保梯度逐步校准"
+                : createSessionReq.getStrategyType().getName();
+        String majorPreference = Strings.isNullOrEmpty(preferredMajorStr)
+                ? "暂未记录特别明确的专业方向，后续可以一起梳理兴趣、能力和职业倾向"
+                : preferredMajorStr;
+        String regionPreference = Strings.isNullOrEmpty(preferredRegionStr)
+                ? "暂未记录特别明确的地域偏好，后续会结合城市机会和家庭预期一起判断"
+                : preferredRegionStr;
+
+        return String.format(
+                "%s，我是孙老师。接下来我会陪你把这次%s按步骤看清楚：先核对分数、位次、选科和批次，再结合院校、专业、城市、学费和风险梯度，逐步把可执行的志愿方案落到右侧工作台里。\n"
+                        + "我现在看到的基础信息是：%s。当前服务会重点关注候选机会筛选、冲稳保结构、方案排序、风险审查和必要的调整建议。\n"
+                        + "已记录的专业关注：%s；地域偏好：%s；填报策略：%s。\n"
+                        + "如果这些信息有变化，可以直接告诉我；如果先从现有方案看起，也可以使用下方快捷入口。",
+                welcomeTarget,
+                prepareTypeDesc,
+                buildWelcomeStudentBrief(createSessionReq),
+                majorPreference,
+                regionPreference,
+                Strings.isNullOrEmpty(strategyDesc) ? "结合冲、稳、保梯度逐步校准" : strategyDesc
+        );
+    }
+
+    private String buildWelcomeTargetName(String userName) {
+        if (Strings.isNullOrEmpty(userName)) {
+            return "你好";
+        }
+        String normalizedName = userName.trim();
+        if (Strings.isNullOrEmpty(normalizedName)) {
+            return "你好";
+        }
+        return normalizedName + "同学你好";
     }
 
     private void sendWelcome(Long tenantId, Long sessionId, String welcome) {

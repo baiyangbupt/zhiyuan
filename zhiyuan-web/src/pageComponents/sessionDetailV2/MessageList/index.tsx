@@ -436,7 +436,7 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
       return;
     }
     setAnswerLoading(true);
-    setThinkingHints(prev => (prev.includes(normalizedHint) ? prev : [...prev, normalizedHint]));
+    setThinkingHints([normalizedHint]);
   }, []);
 
   const { sendMessage, disconnect, reconnect, isConnected } = useWebSocket(websocketUrl, {
@@ -1253,22 +1253,25 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
                                     statusText = '已失效';
                                   }
                                   return (
-                                    <div className={style.workspaceActionCard}>
-                                      <div className={style.workspaceActionTitle}>
-                                        {effectiveContentObj.title || '请确认本次方案调整'}
+                                    <div className={style.pendingConfirmationCard}>
+                                      <div className={style.pendingConfirmationHeader}>
+                                        <span className={style.pendingConfirmationBadge}>待确认</span>
+                                        <div className={style.pendingConfirmationTitle}>
+                                          {effectiveContentObj.title || '请确认本次方案调整'}
+                                        </div>
                                       </div>
                                       {(effectiveContentObj.summary || effectiveContentObj.content) ? (
-                                        <div className={style.workspaceActionContent}>
+                                        <div className={style.pendingConfirmationContent}>
                                           {effectiveContentObj.summary || effectiveContentObj.content}
                                         </div>
                                       ) : null}
                                       {renderImpactBlock(effectiveContentObj.impact, effectiveContentObj.impactTitle)}
                                       {statusText ? (
-                                        <div style={{ color: '#8C8C8C', marginTop: 8 }}>{statusText}</div>
+                                        <div className={style.pendingConfirmationStatus}>{statusText}</div>
                                       ) : (
-                                        <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                                        <div className={style.pendingConfirmationActions}>
                                           <Button
-                                            className={style.generateButton}
+                                            className={style.pendingPrimaryButton}
                                             size="small"
                                             disabled={cardDisabled || answerLoading}
                                             onClick={() => handlePendingConfirmationClick(message, 'confirm')}
@@ -1277,6 +1280,7 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
                                             {effectiveContentObj.confirmText || '确认执行'}
                                           </Button>
                                           <Button
+                                            className={style.pendingSecondaryButton}
                                             size="small"
                                             disabled={cardDisabled || answerLoading}
                                             onClick={() => handlePendingConfirmationClick(message, 'cancel')}
@@ -1434,16 +1438,10 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
                 className={style.thinkingContent}
                 style={{ paddingRight: isTimeout ? '120px' : '0' }}
               >
-                <TypingAnimation text={thinkingHints[thinkingHints.length - 1] || '思考中'} />
-                {thinkingHints.length > 0 && (
-                  <div className={style.thinkingHintList}>
-                    {thinkingHints.map(hint => (
-                      <span className={style.thinkingHintTag} key={hint}>
-                        {hint}
-                      </span>
-                    ))}
-                  </div>
-                )}
+                <div className={style.thinkingLabel}>正在分析</div>
+                <div className={style.thinkingCurrentHint}>
+                  <TypingAnimation text={thinkingHints[thinkingHints.length - 1] || '思考中'} />
+                </div>
               </div>
               {isTimeout && (
                 <Button

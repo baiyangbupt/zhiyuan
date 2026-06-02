@@ -63,8 +63,12 @@ const configTable = [
   {
     prop: 'id',
     label: 'ID',
-    width: 60,
-    render: (record: any) => <Tooltip title={record}>{record}</Tooltip>,
+    width: 88,
+    render: (record: any) => (
+      <Tooltip title={record}>
+        <span className={styles.sessionIdCell}>{record}</span>
+      </Tooltip>
+    ),
   },
   {
     prop: 'sessionStatus',
