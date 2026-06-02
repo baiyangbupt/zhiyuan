@@ -5041,6 +5041,146 @@ def test_chat_service_normalizes_unbacked_intent_preview_without_tool_call(tmp_p
     assert "没有正式进入待确认状态" in reply
 
 
+def test_chat_service_recovers_unbacked_major_intent_confirmation_to_pending_card(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    bad_reply = (
+        "我先把你对会计、审计的偏好，以及对土木、建筑方向的排除意向整理一下，确认后再作为后续参考：\n"
+        "- 倾向：会计学、审计学\n"
+        "- 排除：土木类、建筑类\n"
+        "如果你确认，后续推荐和方案生成时我会优先保留财会方向，并过滤掉土木、建筑相关专业。你确认要这样记吗？"
+    )
+    fake_agent = _FakeAgent([bad_reply])
+    recovered_payload = {
+        "status": "ready",
+        "sessionId": "990503",
+        "title": "待确认要求",
+        "intentMode": "constraint",
+        "analysisStage": "confirmed",
+        "items": [
+            {
+                "content": "偏好专业：会计学、审计学",
+                "value": {"major_intents": {"level3": ["会计学", "审计学"]}},
+                "selected": True,
+            },
+            {
+                "content": "排除专业类：土木类、建筑类",
+                "value": {"major_intents": {"negative_level2": ["土木类", "建筑类"]}},
+                "selected": True,
+            },
+        ],
+        "existingItems": [],
+    }
+    pending_state, save_pending_mock, get_pending_mock = _pending_confirmation_store()
+    clear_legacy_cache_mock = AsyncMock(return_value={"code": 0})
+    recover_mock = AsyncMock(return_value=json.dumps(recovered_payload, ensure_ascii=False))
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 0, "data": {"userScoreDetail": {"batch": "01"}}})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_intent_change_cache", AsyncMock(return_value={"data": {"planEditCache": None}})), \
+            patch("app.service.analyze_volunteer_intent_change", recover_mock), \
+            patch("app.service.save_intent_change_cache", clear_legacy_cache_mock), \
+            patch("app.service.save_pending_confirmation", save_pending_mock), \
+            patch("app.service.get_pending_confirmation", get_pending_mock):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(
+            service.handle_message("990503", "user-57", "会计审计这类还行，土木建筑那种别碰")
+        )
+
+    assert isinstance(reply, ChatServiceResponseEnvelope)
+    assert reply.primary == "我已把这次偏好和排除要求整理成确认卡片。点击采纳前不会写入后续报考参考。"
+    assert len(reply.followups) == 1
+    card_payload = json.loads(reply.followups[0].content)
+    assert card_payload["type"] == "pendingConfirmationCard"
+    assert card_payload["kind"] == "intent_change"
+    assert card_payload["actionFamily"] == "apply_selected_intents"
+    assert "确认后生效：" in card_payload["content"]
+    assert "偏好专业：会计学、审计学" in card_payload["content"]
+    assert "排除专业类：土木类、建筑类" in card_payload["content"]
+    assert pending_state["value"]["kind"] == "intent_change"
+    assert pending_state["value"]["status"] == "active"
+    assert pending_state["value"]["summary"] == "偏好专业：会计学、审计学；排除专业类：土木类、建筑类"
+    assert pending_state["value"]["executionPayload"]["selectedData"]["selected"] == [
+        {"major_intents": {"level3": ["会计学", "审计学"]}},
+        {"major_intents": {"negative_level2": ["土木类", "建筑类"]}},
+    ]
+    recover_mock.assert_awaited_once()
+    clear_legacy_cache_mock.assert_awaited_once_with(990503, {})
+    saved_history = asyncio.run(store.load("990503"))
+    saved_text = next(part.content for part in saved_history[-1].parts if isinstance(part, TextPart))
+    assert saved_text == reply.primary
+    assert "你确认要这样记吗" not in saved_text
+
+
+def test_chat_service_does_not_recover_unbacked_intent_card_after_plan_review(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    review_reply = (
+        "这版确实偏冲，当前冲66 / 稳28 / 保0，主要风险是保底不足。"
+        "如果后续要把预算或排除方向作为参考，需要先生成确认卡片；这轮只是帮你看风险，不会改动方案。"
+    )
+    fake_agent = _FakeAgentWithToolCalls(
+        review_reply,
+        [
+            ToolCallPart(
+                tool_name="plan_next_action",
+                args={"action_family": "review_plan"},
+                tool_call_id="plan-review-1",
+            ),
+            ToolCallPart(
+                tool_name="execute_plan_action",
+                args={"plan_payload": "{}"},
+                tool_call_id="plan-review-2",
+            ),
+        ],
+        [
+            ToolReturnPart(
+                tool_name="plan_next_action",
+                content=json.dumps(
+                    {"action_family": "review_plan", "stage": "review", "success": True},
+                    ensure_ascii=False,
+                ),
+                tool_call_id="plan-review-1",
+            ),
+            ToolReturnPart(
+                tool_name="execute_plan_action",
+                content=json.dumps(
+                    {
+                        "action_family": "review_plan",
+                        "stage": "review",
+                        "result_kind": "review_result",
+                        "applied": True,
+                        "success": True,
+                    },
+                    ensure_ascii=False,
+                ),
+                tool_call_id="plan-review-2",
+            ),
+        ],
+    )
+    recover_mock = AsyncMock(return_value=json.dumps({"status": "empty", "sessionId": "990504"}, ensure_ascii=False))
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_intent_change_cache", AsyncMock(return_value={"data": {"planEditCache": None}})), \
+            patch("app.service.analyze_volunteer_intent_change", recover_mock):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(service.handle_message("990504", "user-57", "这版是不是太冲了，能不能给我说人话"))
+
+    assert isinstance(reply, str)
+    assert reply == review_reply
+    assert "冲66 / 稳28 / 保0" in reply
+    assert "这轮只是帮你看风险" in reply
+    recover_mock.assert_not_awaited()
+    saved_history = asyncio.run(store.load("990504"))
+    saved_text = next(part.content for part in saved_history[-1].parts if isinstance(part, TextPart))
+    assert saved_text == review_reply
+
+
 def test_chat_service_appends_pending_intent_boundary_on_followup_analysis(tmp_path, mock_llm_client):
     db_path = tmp_path / "history.db"
     store = ChatHistoryStore(str(db_path))

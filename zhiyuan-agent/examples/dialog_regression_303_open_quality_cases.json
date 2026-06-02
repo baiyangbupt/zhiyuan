@@ -397,7 +397,6 @@
           "已直接调整",
           "payload"
         ],
-        "assertNoFollowups": true,
         "warnElapsedSeconds": 30,
         "qualityFocus": [
           "actionable_next_step",
@@ -410,7 +409,9 @@
           "正在读取当前方案并整理这次请求",
           "正在生成这次调整的影响预览",
           "正在理解你的问题，并结合当前信息整理回答"
-        ]
+        ],
+        "assertFollowupCount": 1,
+        "assertFollowupType": "pendingConfirmationCard"
       }
     ]
   },
@@ -809,13 +810,14 @@
           "专家推荐",
           "已直接记录"
         ],
-        "assertNoFollowups": true,
         "warnElapsedSeconds": 25,
         "qualityFocus": [
           "actionable_next_step",
           "preview_confirm_boundary",
           "user_language"
-        ]
+        ],
+        "assertFollowupCount": 1,
+        "assertFollowupType": "pendingConfirmationCard"
       }
     ]
   },

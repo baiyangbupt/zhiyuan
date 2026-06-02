@@ -40,7 +40,9 @@ from app.tools.plan_execution_tool import (
 )
 from app.tools.plan_orchestration_models import normalize_plan_action_payload
 from app.tools.intent_state_tool import (
+    ANALYSIS_STAGE_CONFIRMED,
     apply_selected_intents as _apply_selected_intents,
+    analyze_volunteer_intent_change,
     merge_selected_values,
     update_volunteer_intent_state,
 )
@@ -820,6 +822,39 @@ async def _create_pending_intent_confirmation_from_preview_payload(
     )
 
 
+async def _recover_unbacked_major_intent_confirmation(
+    session_id: str,
+    request_context: RequestContext,
+    *,
+    reply: str,
+) -> WSResponse | None:
+    """Recover a pending intent card when the model wrote a confirm prompt but skipped the intent tool."""
+    if not isinstance(reply, str) or not _reply_looks_like_unbacked_intent_preview(reply):
+        return None
+    ctx = SimpleNamespace(deps=request_context)
+    try:
+        payload_text = await analyze_volunteer_intent_change(
+            ctx,
+            None,
+            None,
+            None,
+            None,
+            analysis_stage=ANALYSIS_STAGE_CONFIRMED,
+            recovery_scope="major",
+            confirm_enabled=True,
+            persist_cache=False,
+        )
+        preview_payload = parse_intent_analysis_payload(payload_text).model_dump()
+    except Exception:
+        logger.warning(
+            "Failed to recover unbacked major intent confirmation: session_id=%s",
+            session_id,
+            exc_info=True,
+        )
+        return None
+    return await _create_pending_intent_confirmation_from_preview_payload(session_id, preview_payload)
+
+
 async def _resolve_intent_mode_from_message(message_id: Any) -> str:
     if not message_id:
         return "preference"
@@ -1223,6 +1258,13 @@ def _tool_calls_include_intent_preview(messages: list[Any] | None) -> bool:
     return any(part.tool_name in _INTENT_PREVIEW_TOOL_NAMES for part in _iter_tool_call_parts(messages))
 
 
+def _tool_calls_allow_unbacked_intent_recovery(messages: list[Any] | None) -> bool:
+    tool_names = [str(part.tool_name or "").strip() for part in _iter_tool_call_parts(messages)]
+    if not tool_names:
+        return True
+    return all("intent" in name for name in tool_names if name)
+
+
 def _tool_returns_intent_existing_only(messages: list[Any] | None) -> bool:
     for part in _iter_tool_return_parts(messages):
         if part.tool_name not in _INTENT_PREVIEW_TOOL_NAMES:
@@ -1317,7 +1359,12 @@ def _reply_looks_like_unbacked_intent_preview(reply: str) -> bool:
     compact = _compact_plan_reply_text(reply)
     if not compact:
         return False
-    if "待确认内容" not in compact:
+    has_pending_heading = "待确认内容" in compact
+    has_unbacked_confirm_effect = (
+        any(marker in compact for marker in ("确认后", "如果你确认", "你确认", "确认要这样记"))
+        and any(marker in compact for marker in ("后续参考", "偏好", "排除", "过滤", "优先保留", "记入", "记录"))
+    )
+    if not has_pending_heading and not has_unbacked_confirm_effect:
         return False
     return any(marker in compact for marker in ("回复确认", "直接回复确认", "确认后", "确认就", "确认这个", "按上面执行"))
 
@@ -1326,6 +1373,12 @@ def _normalize_unbacked_intent_preview_reply(reply: str) -> str:
     """Avoid fake pending intent previews when the model did not call preview tools."""
     if not _reply_looks_like_unbacked_intent_preview(reply):
         return reply
+    if "待确认内容" not in _compact_plan_reply_text(reply):
+        return (
+            "这轮我还没有生成可点击的确认卡片，所以不会把这些内容写入后续报考参考。"
+            "如果你想正式采用，请直接说“把这个偏好和排除要求整理成确认卡片”，"
+            "我会先列清楚要采纳的内容，等你点击卡片后再生效。"
+        )
     normalized = re.sub(r"\*\*待确认内容\*\*", "**这轮先按咨询结论理解**", reply)
     normalized = re.sub(r"(?m)^我先把.*整理成待确认(?:偏好|要求|内容)[：:]?\s*$", "我先把这轮结论说明清楚：", normalized)
     replacements = (
@@ -3350,7 +3403,18 @@ class ChatService:
         )
         if isinstance(reply, str) and _reply_is_existing_only_intent_notice(reply):
             has_pending_intent_context = False
-        if isinstance(reply, str) and not intent_preview_used and not has_pending_intent_context:
+        allow_unbacked_intent_recovery = _tool_calls_allow_unbacked_intent_recovery(
+            new_messages if new_messages else all_messages
+        )
+        unbacked_intent_preview_detected = (
+            isinstance(reply, str)
+            and not intent_preview_used
+            and not has_pending_intent_context
+            and allow_unbacked_intent_recovery
+            and _reply_looks_like_unbacked_intent_preview(reply)
+        )
+        unbacked_intent_preview_source_reply = reply if unbacked_intent_preview_detected and isinstance(reply, str) else ""
+        if isinstance(reply, str) and not intent_preview_used and not has_pending_intent_context and allow_unbacked_intent_recovery:
             unbacked_intent_reply = _normalize_unbacked_intent_preview_reply(reply)
             if unbacked_intent_reply != reply:
                 _replace_text_reply(new_messages, reply, unbacked_intent_reply)
@@ -3400,6 +3464,18 @@ class ChatService:
         else:
             scene = "unknown"
         action_family = _select_conversation_action_family(tool_returns)
+        recovered_pending_intent_card: WSResponse | None = None
+        if unbacked_intent_preview_detected and isinstance(reply, str):
+            recovered_pending_intent_card = await _recover_unbacked_major_intent_confirmation(
+                session_id,
+                request_context,
+                reply=unbacked_intent_preview_source_reply,
+            )
+            if recovered_pending_intent_card is not None:
+                recovered_reply = "我已把这次偏好和排除要求整理成确认卡片。点击采纳前不会写入后续报考参考。"
+                _replace_text_reply(new_messages, reply, recovered_reply)
+                _replace_text_reply(all_messages, reply, recovered_reply)
+                reply = recovered_reply
         pending_type = "plan" if active_pending_kind == "plan_mutation" else "intent" if active_pending_kind == "intent_change" else None
         turn_event = {
             "sessionId": session_id,
@@ -3497,6 +3573,8 @@ class ChatService:
             pending_intent_card = await _create_pending_intent_confirmation_from_preview_payload(session_id, preview_payload)
             if pending_intent_card is not None:
                 followups.append(pending_intent_card)
+        elif recovered_pending_intent_card is not None:
+            followups.append(recovered_pending_intent_card)
         if isinstance(reply, str):
             reply = _sanitize_reply_for_user(reply)
         if followups and not isinstance(reply, WSResponse):

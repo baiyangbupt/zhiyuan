@@ -4603,3 +4603,148 @@ Agent 改造：
    - “不去上海/护理不要” -> 要求卡片。
    - “北京优先但上海不要” -> 软硬混合卡片。
    - 用户不点击卡片，只在对话里说“确认/好的” -> 不生效，只提示点击卡片。
+
+## 36. 2026-06-02 Open-Quality 确认卡片兜底收口
+
+本阶段继续处理 `3.0.3` open-quality 中的确认边界问题，重点不是新增快路由，而是修复 full Agent 偶发违反输出协议的问题。
+
+### 36.1 问题
+
+open-quality 回归中出现一类 bad case：
+
+```text
+会计审计这类还行，土木建筑那种别碰
+```
+
+模型有时没有调用 `preview_current_major_intent_confirmation`，却直接用自然语言回复：
+
+```text
+确认后再作为后续参考...
+你确认要这样记吗？
+```
+
+这会形成“看起来有确认语义，但没有真实 pendingConfirmationCard”的错位。按 3.0.3 协议，所有长期偏好、硬要求和方案变化都必须由确认卡片承载，不能靠聊天文本确认。
+
+### 36.2 实现
+
+本轮做了两层收口：
+
+1. 调度指令补强：
+   - 对同时包含正向可接受范围和负向排除范围的专业/专业类/门类表达，要求按语义判断是否属于改变后续推荐口径。
+   - 如果属于 Intent 更新，必须调用 `preview_current_major_intent_confirmation`。
+   - 如果本轮只是要求“先看影响/边界/风险/利弊”，继续走只读 Explore，不生成卡片。
+   - 指令不再列固定触发词，避免变成字符串快路由。
+
+2. 服务层兜底：
+   - 只在模型回复已经出现“确认后写入后续参考/偏好/排除”等未绑定确认语义、且本轮没有调用 preview 工具时触发。
+   - 兜底不手写业务解析，不直接从用户原话生成状态；它调用现有结构化工具 `analyze_volunteer_intent_change(..., recovery_scope="major", confirm_enabled=True, persist_cache=False)` 生成标准 intent payload。
+   - 成功后走统一 `_create_pending_intent_confirmation_from_preview_payload`，写入 `pendingConfirmation` 并返回 `pendingConfirmationCard`。
+   - 历史保存前替换回复，保证用户可见回复、SQLite history 和后续 runtime history 一致。
+
+### 36.3 误伤修正
+
+首次全量 open-quality 复跑暴露了误伤：
+
+- `这版是不是太冲了，能不能给我说人话`
+- `方案里中外合作是不是有点多，家里预算一般，帮我用大白话看下风险，先别动`
+
+这两条都走 Plan 审查链路，但审查回复里出现了“确认后/后续参考/确认卡片”等字样，被过宽的兜底错误替换成 Intent 提示。
+
+修正后新增 `_tool_calls_allow_unbacked_intent_recovery`：
+
+- 无工具调用：允许兜底。
+- 纯 Intent 工具调用：允许兜底。
+- 任意 Plan / Explore / 查询 / 专业介绍或对比工具调用：禁止兜底和未绑定 Intent 文案归一化。
+
+这样 Plan 审查、候选查询、职业方向、专业对比等只读链路不会被 Intent 兜底覆盖。
+
+### 36.4 验证
+
+单测：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest \
+  tests/unit/test_chat_service_history_persistence.py \
+  tests/unit/test_intent_state_tool.py \
+  tests/unit/test_chat_agent_tools.py \
+  tests/unit/test_instructions.py \
+  tests/unit/test_dialog_regression_runner.py -q
+```
+
+结果：
+
+- `358 passed`
+
+聚焦 live 复跑：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python examples/dialog_regression_runner.py \
+  --url ws://127.0.0.1:8037/gaotu-assistant-agent/plus/chat/1/bot/test/do \
+  --cases /private/tmp/zhiyuan_303_open_quality_plan_misfire_and_intent_cases.json \
+  --response-timeout 180 \
+  --keep-response-text \
+  --assert-plan-style \
+  --metrics-output /private/tmp/zhiyuan_303_open_quality_plan_misfire_after_scope_fix.json \
+  --clear-history-per-case \
+  --clear-backend-pending-per-case \
+  --internal-service-url http://127.0.0.1:8080
+```
+
+结果：
+
+- `3/3` steps 成功。
+- Plan 审查不再被替换成 Intent 确认提示。
+- 混合专业意向仍生成 `pendingConfirmationCard`。
+
+open-quality 全量复跑：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python examples/dialog_regression_runner.py \
+  --url ws://127.0.0.1:8037/gaotu-assistant-agent/plus/chat/1/bot/test/do \
+  --cases examples/dialog_regression_303_open_quality_cases.json \
+  --response-timeout 180 \
+  --keep-response-text \
+  --assert-plan-style \
+  --metrics-output /private/tmp/zhiyuan_303_open_quality_after_scope_fix_full.json \
+  --clear-history-per-case \
+  --clear-backend-pending-per-case \
+  --internal-service-url http://127.0.0.1:8080
+```
+
+结果：
+
+| 指标 | 结果 |
+| --- | ---: |
+| steps | 23 |
+| successfulSteps | 23 |
+| failedSteps | 0 |
+| median elapsed | 19.884s |
+| p95 elapsed | 46.999s |
+| max elapsed | 52.789s |
+
+最慢场景：
+
+| 场景 | 耗时 | 备注 |
+| --- | ---: | --- |
+| 法学 vs 财政学普通家庭女生 | 52.789s | 专业对比仍可能追加 `get_major_introductions` / `analyze_current_major_interest`，工具链偏重 |
+| 调稳预览 | 46.999s | Plan preview 多轮模型请求，仍有长尾 |
+| 中外合作预算风险 | 40.067s | Plan review 内容正确，但模型请求慢 |
+| 新媒体 vs 跨电 | 38.842s | 专业对比链路偏重 |
+| 体制内承接 | 37.296s | 有时 career 后又补 query_state |
+
+### 36.5 当前结论
+
+- 确认卡片边界已恢复稳定：没有发现未确认直接写偏好、改方案或错误生成工作区联动。
+- `pendingConfirmationCard` 已覆盖混合专业意向和方案排序预览。
+- “只读 Plan 审查/预算风险/太冲了”不再被 Intent 兜底误伤。
+- 延迟长尾仍未解决，主要集中在专业对比、职业方向承接、Plan review/preview 的多轮模型请求和最终总结阶段。
+
+后续优化方向：
+
+1. 专业对比工具链压缩：避免同一轮 `compare_majors -> get_major_introductions -> analyze_current_major_interest` 叠加。
+2. 职业方向承接压缩：已有 `analyze_current_career_direction` 事实时，减少额外 `query_state` 往返。
+3. Plan review/preview 回复生成优化：保留信息量，但降低最终总结模型长尾。
+4. 继续用 open-quality 全量作为门禁，不能用字符串快路由替代语义理解。

@@ -1371,3 +1371,29 @@ cd zhiyuan-agent
 
 - 当前协议正确性已通过，但模型请求仍有长尾，effect/perf median `25.0s`、max `44.1s`。
 - 局部方案查询中 `extract_candidate_filters` 仍可能耗时约 `13s`，后续应继续优化结构化条件抽取，但不能用脆弱字符串规则替代模型理解。
+
+### 35.6 未绑定 Intent 确认兜底的过渡口径
+
+在最终统一 pending-confirmation 接口完全落地前，3.0.3 增加了一层过渡兜底，用于修复 full Agent 偶发的输出协议不一致。
+
+触发条件：
+
+- 模型没有调用 `preview_current_*_intent_confirmation`。
+- 模型回复已经出现“确认后写入后续参考/偏好/排除”等用户侧确认语义。
+- 本轮没有 Plan、Explore、候选查询、专业对比、专业介绍等工具调用；或者只有 Intent 相关工具。
+
+行为：
+
+1. 服务层不执行写入，也不把用户自然语言“确认”当作确认。
+2. 服务层调用现有结构化 Intent 分析工具恢复标准 intent payload。
+3. 成功后创建 `pendingConfirmation(kind=intent_change)`，返回 `pendingConfirmationCard`。
+4. 用户必须点击卡片采纳后才会写入偏好或要求。
+
+明确不触发：
+
+- Plan 审查、排序、移动、补稳、候选查询。
+- Explore 专业/职业/地域/学校只读分析。
+- 专业对比和专业介绍。
+- 任意已经正确调用 Intent preview 工具的轮次。
+
+该兜底不是最终确认协议，只是避免“模型口头让用户确认，但没有真实卡片”的错位。最终目标仍然是所有更新由工具主动创建结构化 pending，前端只通过确认卡片按钮携带 `pendingId` 执行确认，服务层文本“确认/好的/就这样”不执行任何状态更新。
