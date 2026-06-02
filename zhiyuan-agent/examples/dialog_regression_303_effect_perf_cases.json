@@ -355,7 +355,8 @@
       "plan_fast_route",
       "majorGroup_model",
       "unit_level_operation",
-      "preview_confirm_apply",
+      "preview_confirm_boundary",
+      "text_confirm_guard",
       "reply_quality"
     ],
     "assertPlanStyle": true,
@@ -412,14 +413,14 @@
       {
         "prompt": "确认",
         "assertContainsAny": [
-          "已",
-          "移动",
-          "专业组",
-          "方案"
+          "点击",
+          "确认卡片",
+          "不会直接",
+          "还在待确认"
         ],
-        "assertFollowupTarget": "ordered",
-        "assertFollowupRefresh": true,
         "assertNotContains": [
+          "已直接移动",
+          "已移动",
           "草稿",
           "payload",
           "stage",
@@ -434,20 +435,22 @@
           "volunteerId"
         ],
         "expectedKeyPoints": [
-          "专业组",
-          "第 2 位",
-          "导出顺序",
-          "待重新审查",
-          "下一步"
+          "点击确认卡片",
+          "文字确认不会直接执行",
+          "不会改动方案"
         ],
         "forbiddenPatterns": [
+          "已直接移动",
+          "已移动",
           "草稿",
           "payload",
           "volunteerId"
         ],
+        "assertNoFollowups": true,
         "warnElapsedSeconds": 20,
         "qualityFocus": [
           "actionable_next_step",
+          "preview_confirm_boundary",
           "user_language"
         ]
       }

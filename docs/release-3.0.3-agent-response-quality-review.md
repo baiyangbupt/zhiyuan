@@ -2325,6 +2325,11 @@ case 2：
   - 方案替换预览必须带 `pendingConfirmationCard`。
   - 文本“确认”不执行方案修改。
   - 模拟卡片点击后才调用 `execute_plan_action(apply)` 并返回工作区刷新。
+- `examples/dialog_regression_runner.py` 当前只发送 `inputType=text`，不模拟前端 `pendingConfirmation` 卡片点击。因此 3.0.3 JSON 场景只用于验证：
+  - 高副作用动作会停在 preview / pending 边界。
+  - 用户只在对话里输入“确认”不会执行写入或方案调整。
+  - 真实卡片点击后的 apply 链路由 service / regression 单测覆盖。
+- `dialog_regression_303_effect_perf_cases.json` 中专业组移动的第二轮“确认”已从旧版“文字确认执行并刷新方案”改为新协议的“提示点击确认卡片、无 followup 刷新”。
 - 3.0.3 文档中部分历史试验记录提到 `tests/unit/test_fast_route_arbitrator.py`，但当前代码树没有该测试文件；这些记录保留为历史上下文，不作为当前验证命令。当前有效回归入口以现存测试文件为准。
 
 本轮本地验证：
@@ -2341,3 +2346,18 @@ cd zhiyuan-agent
 - pending/execution regression：`410 passed`。
 - quality/evaluation 工具：`75 passed`。
 - mainline/tool reply policy：`36 passed`。
+
+补充验证：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest tests/unit/test_dialog_regression_runner.py tests/unit/test_dialog_case_evaluation_report.py -q
+.venv/bin/python -m pytest tests/unit/test_mainline_dialog_scenarios.py tests/unit/test_tool_reply_policy.py -q
+.venv/bin/python -m pytest tests/regression/test_pending_protocol.py tests/regression/test_execution_preview.py tests/regression/test_execution_apply.py tests/regression/test_determine_stage.py tests/regression/test_normalize_action.py -q
+```
+
+结果：
+
+- dialog runner / report：`91 passed`。
+- mainline / tool reply policy：`36 passed`。
+- pending / execution regression：`410 passed`。
