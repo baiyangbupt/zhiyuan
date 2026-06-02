@@ -1223,6 +1223,7 @@ cd zhiyuan-agent
 
 - 从 `IntentFrame.Verb` 中移除 `confirm/reject`。
 - `is_confirmation_of_previous` 保留为历史字段，但自然语言 frame 不再承载确认执行。
+- `ActionResolver` 中不可达的 `confirm/reject` 映射和 `user_confirmed` apply 分支已清理，避免后续误以为自然语言 frame 可以消费 pending。
 - `apply_compensation` 作为执行层 action 仍保留，只能由已经校验过的 pending confirmation / 内部 apply payload 调用。
 - `ActionResolver` 测试改为验证 `confirm/reject` 不在公开 verb 列表中。
 
@@ -1231,8 +1232,10 @@ cd zhiyuan-agent
 ```bash
 cd zhiyuan-agent
 .venv/bin/python -m pytest tests/unit/models/test_intent_frame.py tests/unit/test_action_resolver.py -q
+.venv/bin/python -m pytest tests/unit/models/test_intent_frame.py tests/unit/test_action_resolver.py tests/unit/test_plan_orchestration_tool.py tests/unit/test_plan_execution_tool.py -q
 ```
 
 验证结果：
 
 - `156 passed`。
+- 扩展 plan/action 回归：`295 passed`。

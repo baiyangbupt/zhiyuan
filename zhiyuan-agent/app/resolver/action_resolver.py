@@ -207,10 +207,9 @@ class ActionResolver:
         # Step 5: missing inputs
         missing_inputs = self._check_missing_inputs(action_family, frame, context)
 
-        # Step 6: determine stage
-        user_confirmed = (
-            frame.verb == "confirm" and frame.is_confirmation_of_previous
-        )
+        # Step 6: determine stage. Natural-language frames never execute
+        # pending confirmations; card clicks enter the pendingConfirmation path.
+        user_confirmed = False
         stage = self._determine_stage(
             action_family,
             user_confirmed=user_confirmed,
@@ -258,26 +257,19 @@ class ActionResolver:
         "add": "add_units",
         "remove": "remove_units",
         "move": "move_unit",
-        "pin": "pin_unit",
-        "unpin": "unpin_unit",
         "replace": "replace_units",
         "reorder": "regenerate_order",
         "compensate": "preview_compensation",
-        "confirm": "apply_compensation",
-        "reject": "query_state",
     }
 
     def _verb_to_action_family(self, frame: IntentFrame) -> str:
         """IntentFrame.verb → action_family。
 
         query verb 需要由 topic 细分。
-        confirm verb 特殊：消费 pending 时对应 pending 的 action_family。
+        确认/取消不走自然语言 frame；统一由 pendingConfirmation 卡片入口处理。
         """
         if frame.verb == "query":
             return self._resolve_query_family(frame)
-
-        if frame.verb == "confirm" and frame.is_confirmation_of_previous:
-            return "apply_compensation"
 
         if frame.verb == "move" and (frame.target.unit_refs or frame.target.source_position is not None):
             return "move_ordered_unit"
