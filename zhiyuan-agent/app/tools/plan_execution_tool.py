@@ -90,6 +90,58 @@ _RECENT_PLAN_EXECUTION_TTL_SECONDS = 180.0
 _RECENT_PLAN_EXECUTION_RESULTS: dict[tuple[str, str], dict[str, Any]] = {}
 
 
+def _append_missing_json_closers(raw: str) -> str | None:
+    """Conservatively repair a JSON object truncated after complete tokens."""
+    text = str(raw or "").strip()
+    if not text.startswith("{"):
+        return None
+    stack: list[str] = []
+    in_string = False
+    escaped = False
+    for char in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            stack.append("}")
+        elif char == "[":
+            stack.append("]")
+        elif char in {"}", "]"}:
+            if not stack or stack[-1] != char:
+                return None
+            stack.pop()
+    if in_string or not stack:
+        return None
+    text = re.sub(r",\s*$", "", text)
+    return text + "".join(reversed(stack))
+
+
+def _load_plan_payload(plan_payload: str) -> tuple[dict[str, Any], bool]:
+    payload_text = str(plan_payload or "").strip()
+    try:
+        loaded = json.loads(payload_text)
+        return normalize_plan_action_payload(loaded), False
+    except Exception:
+        if not (
+            '"action_family"' in payload_text
+            and '"stage"' in payload_text
+            and '"atomic_actions"' in payload_text
+        ):
+            raise
+    repaired_text = _append_missing_json_closers(payload_text)
+    if repaired_text is None:
+        raise ValueError("plan payload is not safely repairable")
+    loaded = json.loads(repaired_text)
+    return normalize_plan_action_payload(loaded), True
+
+
 def _planning_version_from_context(ctx: RunContext[RequestContext]) -> int:
     planning_summary = getattr(ctx.deps, "planning_summary", None)
     try:
@@ -255,13 +307,54 @@ async def _resolve_ordered_unit_ids(ctx: RunContext[RequestContext], plan_model:
 
 def _unit_display_name(unit: dict[str, Any] | None) -> str:
     unit = unit or {}
-    return str(unit.get("schoolName") or unit.get("name") or unit.get("unitId") or "该专业组").strip()
+    school_name = str(unit.get("schoolName") or "").strip()
+    if _unit_kind_label(unit) == "志愿":
+        majors = _unit_major_items(unit)
+        major_name = str((majors[0] or {}).get("majorName") or "").strip() if majors else ""
+        if school_name and major_name:
+            return f"{school_name} · {major_name}"
+        if major_name:
+            return major_name
+    return str(school_name or unit.get("name") or unit.get("unitId") or "该项").strip()
 
 
 def _unit_major_count(unit: dict[str, Any] | None) -> int:
     unit = unit or {}
-    majors = unit.get("majorItems") or unit.get("items") or []
+    majors = _unit_major_items(unit)
     return len(majors) if isinstance(majors, list) else 0
+
+
+def _unit_major_items(unit: dict[str, Any] | None) -> list[dict[str, Any]]:
+    unit = unit or {}
+    majors = unit.get("majorItems") or unit.get("items") or []
+    return [item for item in majors if isinstance(item, dict)] if isinstance(majors, list) else []
+
+
+def _unit_kind_label(unit: dict[str, Any] | None) -> str:
+    unit = unit or {}
+    majors = _unit_major_items(unit)
+    if len(majors) > 1:
+        return "专业组"
+    unit_id = str(unit.get("unitId") or unit.get("id") or "").strip()
+    if unit_id:
+        for major in majors:
+            volunteer_id = str(major.get("volunteerId") or "").strip()
+            if volunteer_id.startswith(f"{unit_id}_"):
+                return "专业组"
+    return "志愿"
+
+
+def _unit_position_semantics(unit: dict[str, Any] | None) -> str:
+    return "unit_position_not_item_position" if _unit_kind_label(unit) == "专业组" else "ordered_item_position"
+
+
+def _unit_position_explanation(unit: dict[str, Any] | None) -> str:
+    if _unit_kind_label(unit) == "专业组":
+        return (
+            "位置说明：这里的“第几个”按专业组顺序计算，不是按单条志愿位置计算；"
+            "执行后该组内专业会保持连续。"
+        )
+    return "位置说明：这里的“第几个”按当前方案展示顺序计算，确认后会影响方案顺序和导出顺序。"
 
 
 async def _build_move_ordered_unit_preview_summary(
@@ -298,24 +391,24 @@ async def _build_move_ordered_unit_preview_summary(
 
         if source_unit is None:
             return (
-                "会整体移动指定专业组，目标是移动到新的专业组位置。"
-                "这里的“第几个”按专业组顺序计算，不是按单条志愿位置计算；"
-                "执行后该组内专业会保持连续，组内专业顺序不变。",
-                {"position_semantics": "unit_position_not_item_position"},
+                "会移动当前方案排序区里的指定项，目标是移动到新的方案位置。"
+                "这里的“第几个”按当前方案展示顺序计算，确认后会影响方案顺序和导出顺序。",
+                {"position_semantics": "ordered_unit_position"},
             )
 
+        label = _unit_kind_label(source_unit)
         unit_name = _unit_display_name(source_unit)
         major_count = _unit_major_count(source_unit)
-        count_text = f"，组内共 {major_count} 个专业" if major_count > 0 else ""
-        source_text = f"第 {source_position} 个专业组" if source_position else "当前定位到的专业组"
-        target_text = f"第 {int(target_position)} 个专业组位置"
+        count_text = f"，组内共 {major_count} 个专业" if label == "专业组" and major_count > 0 else ""
+        source_text = f"第 {source_position} 个{label}" if source_position else f"当前定位到的{label}"
+        target_text = f"第 {int(target_position)} 个{label}位置"
+        explanation = _unit_position_explanation(source_unit)
         summary = (
             "预览如下：\n\n"
-            f"- 源专业组：{source_text} — {unit_name}{count_text}\n"
+            f"- 源{label}：{source_text} — {unit_name}{count_text}\n"
             f"- 目标位置：{target_text}\n"
-            "- 移动方式：整组移动，组内专业顺序保持不变\n\n"
-            "位置说明：这里的“第几个”按专业组顺序计算，不是按单条志愿位置计算；"
-            "执行后该组内专业会保持连续。"
+            f"- 移动方式：{'整组移动，组内专业顺序保持不变' if label == '专业组' else '移动该志愿，其他志愿按顺序衔接'}\n\n"
+            f"{explanation}"
         )
         return summary, {
             "source_unit_id": source_unit_id,
@@ -323,7 +416,8 @@ async def _build_move_ordered_unit_preview_summary(
             "source_unit_position": source_position,
             "target_unit_position": int(target_position),
             "source_unit_major_count": major_count,
-            "position_semantics": "unit_position_not_item_position",
+            "unit_kind": label,
+            "position_semantics": _unit_position_semantics(source_unit),
         }
     except Exception:
         logger.exception("_build_move_ordered_unit_preview_summary failed: session_id=%s", ctx.deps.sessionid)
@@ -359,24 +453,36 @@ async def _build_remove_ordered_unit_preview_summary(
             source_unit_id = str(source_unit.get("unitId") or source_unit.get("id") or "").strip()
 
         if source_unit is None:
-            return None, {}
+            return (
+                "会从当前方案排序区中删除指定项。"
+                "这里的“第几个”按当前方案展示顺序计算，确认后会影响方案顺序和导出顺序。",
+                {"position_semantics": "ordered_unit_position"},
+            )
 
+        label = _unit_kind_label(source_unit)
         unit_name = _unit_display_name(source_unit)
         major_count = _unit_major_count(source_unit)
-        count_text = f"，组内共 {major_count} 个专业" if major_count > 0 else ""
-        source_text = f"第 {source_position} 个专业组" if source_position else "当前定位到的专业组"
-        removed_count_text = f"{major_count} 个专业 / 1 个专业组" if major_count > 0 else "1 个专业组"
+        count_text = f"，组内共 {major_count} 个专业" if label == "专业组" and major_count > 0 else ""
+        source_text = f"第 {source_position} 个{label}" if source_position else f"当前定位到的{label}"
+        if label == "专业组" and major_count > 0:
+            removed_count_text = f"{major_count} 个专业 / 1 个专业组"
+            remove_method_text = "执行后该组内专业会一并移出，后续专业组前移"
+        else:
+            removed_count_text = "1 个志愿"
+            remove_method_text = "执行后后续志愿前移"
+        explanation = _unit_position_explanation(source_unit)
         summary = (
-            f"会整体删除{source_text}：{unit_name}{count_text}。"
-            "这里的“第几个”按专业组顺序计算，不是按单条志愿位置计算；"
-            f"执行后该组内专业会一并移出，后续专业组前移，方案数量将减少 {removed_count_text}。"
+            f"会删除{source_text}：{unit_name}{count_text}。"
+            f"{explanation}"
+            f"{remove_method_text}，方案数量将减少 {removed_count_text}。"
         )
         return summary, {
             "source_unit_id": source_unit_id,
             "source_unit_name": unit_name,
             "source_unit_position": source_position,
             "source_unit_major_count": major_count,
-            "position_semantics": "unit_position_not_item_position",
+            "unit_kind": label,
+            "position_semantics": _unit_position_semantics(source_unit),
         }
     except Exception:
         logger.exception("_build_remove_ordered_unit_preview_summary failed: session_id=%s", ctx.deps.sessionid)
@@ -1166,6 +1272,18 @@ async def _resolve_review_issue_action_scope(
         return resolved_ids, ordered_items, None, None
     issue = _find_review_issue_by_code(review_issues, getattr(review_issue_target, "code", None))
     if issue is None:
+        try:
+            await run_planning_review(ctx)
+            review_issues, ordered_items, _ = await _load_current_review_issue_scopes(ctx)
+            issue = _find_review_issue_by_code(review_issues, getattr(review_issue_target, "code", None))
+        except Exception:
+            logger.warning(
+                "refresh review issue scopes failed: session_id=%s issue_code=%s",
+                ctx.deps.sessionid,
+                getattr(review_issue_target, "code", None),
+                exc_info=True,
+            )
+    if issue is None:
         return resolved_ids, ordered_items, review_issue_target, None
     effective_ids = _resolve_review_issue_scope_ids(issue, ordered_items, resolved_ids, review_issue_target)
     return effective_ids or resolved_ids, ordered_items, review_issue_target, issue
@@ -1683,18 +1801,150 @@ def _infer_ordered_sort_field(plan_model: PlanActionPlan) -> str:
     return "admissionRatio"
 
 
-def _item_sort_value(item: dict[str, Any], sort_field: str) -> float | None:
-    value = item.get(sort_field)
-    if value is None and sort_field == "admissionRatio":
-        value = item.get("enrollRatio")
-    if value is None and sort_field == "schoolRank":
-        value = item.get("schoolRanking") or item.get("rank")
-    if value is None and sort_field == "finalScore":
-        value = item.get("recommendationScore") or item.get("score")
-    try:
+_SORT_VALUE_ALIASES: dict[str, tuple[str, ...]] = {
+    "admissionRatio": (
+        "admissionRatio",
+        "schoolEnrollRatio",
+        "enrollRatio",
+        "admission_ratio",
+        "school_enroll_ratio",
+        "schoolEnrollRatioStr",
+        "enrollRatioStr",
+    ),
+    "schoolRank": (
+        "schoolRank",
+        "schoolRanking",
+        "school_rank",
+        "gaotuRank",
+        "rank",
+    ),
+    "finalScore": (
+        "finalScore",
+        "recommendationScore",
+        "recommendScore",
+        "recommend_score",
+        "recommendation_score",
+        "comboScore",
+        "score",
+    ),
+}
+
+_ORDERED_SORT_KEY_ORDER: dict[str, tuple[tuple[str, bool], ...]] = {
+    "admissionRatio": (("admissionRatio", False), ("schoolRank", False), ("finalScore", True)),
+    "schoolRank": (("schoolRank", False), ("admissionRatio", False), ("finalScore", True)),
+    "finalScore": (("finalScore", True), ("admissionRatio", False), ("schoolRank", False)),
+}
+
+
+def _coerce_sort_number(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
         return float(value)
+    text = str(value).strip()
+    if not text or text in {"-", "--", "未知", "暂无", "null", "None"}:
+        return None
+    normalized = text.replace(",", "").replace("％", "%").replace("%", "")
+    match = re.search(r"-?\d+(?:\.\d+)?", normalized)
+    if not match:
+        return None
+    try:
+        return float(match.group(0))
     except (TypeError, ValueError):
         return None
+
+
+def _mapping_sort_value(item: dict[str, Any] | None, sort_field: str) -> float | None:
+    if not isinstance(item, dict):
+        return None
+    for key in _SORT_VALUE_ALIASES.get(sort_field, (sort_field,)):
+        value = _coerce_sort_number(item.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _candidate_sort_lookup(planning_state: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    candidates: dict[str, dict[str, Any]] = {}
+    raw_items = ((planning_state.get("candidatePoolState") or {}).get("items") or []) if isinstance(planning_state, dict) else []
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        volunteer_id = str(item.get("volunteerId") or "").strip()
+        if volunteer_id and volunteer_id not in candidates:
+            candidates[volunteer_id] = item
+    return candidates
+
+
+def _item_sort_value(
+    item: dict[str, Any],
+    sort_field: str,
+    candidate_by_volunteer_id: dict[str, dict[str, Any]] | None = None,
+) -> float | None:
+    value = _mapping_sort_value(item, sort_field)
+    if value is not None:
+        return value
+    candidate_by_volunteer_id = candidate_by_volunteer_id or {}
+    volunteer_id = str(item.get("volunteerId") or "").strip()
+    if volunteer_id:
+        value = _mapping_sort_value(candidate_by_volunteer_id.get(volunteer_id), sort_field)
+        if value is not None:
+            return value
+
+    nested_values: list[float] = []
+    for nested in item.get("majorItems") or item.get("selectedMajors") or item.get("items") or []:
+        if not isinstance(nested, dict):
+            continue
+        value = _mapping_sort_value(nested, sort_field)
+        if value is None:
+            nested_volunteer_id = str(nested.get("volunteerId") or "").strip()
+            value = _mapping_sort_value(candidate_by_volunteer_id.get(nested_volunteer_id), sort_field)
+        if value is not None:
+            nested_values.append(value)
+    if not nested_values:
+        return None
+    if sort_field == "finalScore":
+        return max(nested_values)
+    return min(nested_values)
+
+
+def _ordered_sort_preview_items(ordered_state: dict[str, Any]) -> list[dict[str, Any]]:
+    units = [item for item in (ordered_state.get("units") or []) if isinstance(item, dict)]
+    if units:
+        return units
+    return [item for item in (ordered_state.get("items") or []) if isinstance(item, dict)]
+
+
+def _sort_preview_position(item: dict[str, Any]) -> int:
+    try:
+        return int(item.get("position") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _sort_preview_text_key(item: dict[str, Any]) -> str:
+    return str(
+        item.get("unitId")
+        or item.get("volunteerId")
+        or item.get("schoolName")
+        or item.get("majorName")
+        or ""
+    )
+
+
+def _ordered_sort_preview_key(
+    item: dict[str, Any],
+    sort_field: str,
+    candidate_by_volunteer_id: dict[str, dict[str, Any]],
+) -> tuple[Any, ...]:
+    key_parts: list[Any] = []
+    for field, descending in _ORDERED_SORT_KEY_ORDER.get(sort_field, _ORDERED_SORT_KEY_ORDER["admissionRatio"]):
+        value = _item_sort_value(item, field, candidate_by_volunteer_id)
+        key_parts.append(value is None)
+        key_parts.append((-value if descending else value) if value is not None else 0)
+    key_parts.append(_sort_preview_position(item))
+    key_parts.append(_sort_preview_text_key(item))
+    return tuple(key_parts)
 
 
 def _format_sort_value(value: float | None, sort_field: str) -> str:
@@ -1707,12 +1957,16 @@ def _format_sort_value(value: float | None, sort_field: str) -> str:
     return f"{value:.1f}"
 
 
-def _format_sort_preview_item(item: dict[str, Any], sort_field: str) -> str:
+def _format_sort_preview_item(
+    item: dict[str, Any],
+    sort_field: str,
+    candidate_by_volunteer_id: dict[str, dict[str, Any]] | None = None,
+) -> str:
     school_name = str(item.get("schoolName") or "未知院校").strip()
     major_name = str(item.get("majorName") or "").strip()
     tier = str(item.get("tier") or "未知").strip()
     position = item.get("position")
-    value = _format_sort_value(_item_sort_value(item, sort_field), sort_field)
+    value = _format_sort_value(_item_sort_value(item, sort_field, candidate_by_volunteer_id), sort_field)
     name = f"{school_name}-{major_name}" if major_name else school_name
     suffix = f"{tier}，{_SORT_FIELD_LABELS.get(sort_field, sort_field)}{value}"
     if position is not None:
@@ -1737,7 +1991,8 @@ async def _build_sort_ordered_plan_preview_summary(
 
     ordered_state = (planning_state.get("orderedPlanState") or {}) if isinstance(planning_state, dict) else {}
     ordered_summary = ordered_state.get("summary") or {}
-    items = list(ordered_state.get("items") or [])
+    items = _ordered_sort_preview_items(ordered_state)
+    candidate_by_volunteer_id = _candidate_sort_lookup(planning_state if isinstance(planning_state, dict) else {})
     total = _summary_total(ordered_summary) or len(items)
     target_total = ordered_summary.get("targetUnitCount") or ordered_summary.get("targetCount") or total
     tier_counts = ordered_summary.get("unitTierCounts") or ordered_summary.get("tierCounts") or {}
@@ -1747,41 +2002,13 @@ async def _build_sort_ordered_plan_preview_summary(
 
     sorted_items = sorted(
         items,
-        key=lambda item: (
-            _item_sort_value(item, sort_field) is None,
-            _item_sort_value(item, sort_field) if sort_field != "finalScore" else -(_item_sort_value(item, sort_field) or 0),
-            _item_sort_value(item, "admissionRatio") is None,
-            _item_sort_value(item, "admissionRatio") or 0,
-            -(_item_sort_value(item, "finalScore") or 0),
-            int(item.get("position") or 0),
-        ),
+        key=lambda item: _ordered_sort_preview_key(item, sort_field, candidate_by_volunteer_id),
     )
-    if sort_field == "admissionRatio":
-        sorted_items = sorted(
-            items,
-            key=lambda item: (
-                _item_sort_value(item, "admissionRatio") is None,
-                _item_sort_value(item, "admissionRatio") or 0,
-                _item_sort_value(item, "schoolRank") is None,
-                _item_sort_value(item, "schoolRank") or 0,
-                -(_item_sort_value(item, "finalScore") or 0),
-                int(item.get("position") or 0),
-            ),
-        )
-    elif sort_field == "schoolRank":
-        sorted_items = sorted(
-            items,
-            key=lambda item: (
-                _item_sort_value(item, "schoolRank") is None,
-                _item_sort_value(item, "schoolRank") or 0,
-                _item_sort_value(item, "admissionRatio") is None,
-                _item_sort_value(item, "admissionRatio") or 0,
-                -(_item_sort_value(item, "finalScore") or 0),
-                int(item.get("position") or 0),
-            ),
-        )
 
-    top_examples = [_format_sort_preview_item(item, sort_field) for item in sorted_items[:5]]
+    top_examples = [
+        _format_sort_preview_item(item, sort_field, candidate_by_volunteer_id)
+        for item in sorted_items[:5]
+    ]
     example_text = "；".join(top_examples)
     if example_text:
         example_text = f"。按这个口径预览，前几项大致会变成：{example_text}"
@@ -2418,7 +2645,7 @@ async def execute_plan_action(
     started_at = time.monotonic()
     logger.info("execute_plan_action: session_id=%s", ctx.deps.sessionid)
     try:
-        data = normalize_plan_action_payload(json.loads(plan_payload))
+        data, repaired_payload = _load_plan_payload(plan_payload)
     except Exception:
         fallback = PlanExecutionResult(
             applied=False,
@@ -2443,6 +2670,14 @@ async def execute_plan_action(
             errorType="invalid_payload_json",
         )
         return json.dumps(result_data, ensure_ascii=False)
+    if repaired_payload:
+        log_event(
+            "plan_action_payload_repair",
+            sessionId=ctx.deps.sessionid,
+            actionFamily=str(data.get("action_family") or "unknown"),
+            stage=str(data.get("stage") or "unknown"),
+            status="repaired",
+        )
     try:
         plan_model = PlanActionPlan.model_validate(data)
     except Exception:

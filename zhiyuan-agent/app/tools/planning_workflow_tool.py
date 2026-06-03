@@ -702,11 +702,16 @@ def _collect_issue_hit_plan_examples(
                 break
         if not affected_items:
             continue
+        affected_count = len({volunteer_id for volunteer_id in affected_ids})
+        example_count = len(affected_items)
         examples.append(
             {
                 "code": str(check.get("code") or "").strip(),
                 "summary": summary,
-                "affected_count": len({volunteer_id for volunteer_id in affected_ids}),
+                "affected_count": affected_count,
+                "example_count": example_count,
+                "count_text": f"共命中 {affected_count} 条志愿",
+                "example_text": f"下面列 {example_count} 条代表例子，不代表全部",
                 "items": affected_items,
             }
         )
@@ -847,6 +852,61 @@ def _build_plan_adjustment_facts(
     }
 
 
+def _flatten_text_values(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, (list, tuple, set)):
+        values: list[str] = []
+        for item in value:
+            values.extend(_flatten_text_values(item))
+        return values
+    return [str(value)]
+
+
+def _school_nature_label(item: dict[str, Any]) -> str:
+    values: list[str] = []
+    for key in (
+        "schoolNature",
+        "school_nature",
+        "schoolType",
+        "school_type",
+        "schoolTags",
+        "school_tags",
+        "schoolTag",
+        "tags",
+    ):
+        values.extend(_flatten_text_values(item.get(key)))
+    text = " ".join(str(value or "").strip() for value in values if str(value or "").strip())
+    if "公办" in text:
+        return "公办"
+    if "民办" in text:
+        return "民办"
+    return "未知"
+
+
+def _build_school_nature_distribution(items: list[dict[str, Any]] | None) -> dict[str, Any]:
+    counts = {"公办": 0, "民办": 0, "未知": 0}
+    total = 0
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        total += 1
+        label = _school_nature_label(item)
+        counts[label] = counts.get(label, 0) + 1
+    known_total = counts["公办"] + counts["民办"]
+    public_ratio = round(counts["公办"] / known_total * 100, 1) if known_total else None
+    return {
+        "total": total,
+        "counts": counts,
+        "known_total": known_total,
+        "unknown_count": counts["未知"],
+        "public_ratio_percent": public_ratio,
+        "basis": "current_plan_items",
+    }
+
+
 def _build_plan_status_overview_facts(
     planning_state: dict[str, Any],
     ordered_state: dict[str, Any] | None = None,
@@ -862,6 +922,7 @@ def _build_plan_status_overview_facts(
     tier_counts = active_summary.get("unitTierCounts") or active_summary.get("tierCounts") or {}
     current_total = summary.ordered_total if summary.ordered_total > 0 else summary.draft_total
     target_total = summary.ordered_target_total if summary.ordered_total > 0 else summary.draft_target_total
+    school_nature_distribution = _build_school_nature_distribution(active_items)
     return {
         "phase": summary.phase,
         "has_ordered_plan": bool(summary.ordered_total > 0),
@@ -873,6 +934,7 @@ def _build_plan_status_overview_facts(
         "target_total": target_total,
         "count_gap_hint": _build_count_gap_hint(current_total, target_total),
         "tier_counts": tier_counts,
+        "school_nature_distribution": school_nature_distribution,
         "gradient_ok": bool(active_summary.get("gradientOk")) if ordered_state else None,
         "safety_ok": bool(active_summary.get("safetyOk")) if ordered_state else None,
         "risk_count": summary.review_risk_count,

@@ -6,12 +6,19 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 class MajorIntentPreviewInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    level1: list[str] = Field(default_factory=list)
-    level2: list[str] = Field(default_factory=list)
+    level1: list[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("level1", "positive_level1"),
+    )
+    level2: list[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("level2", "positive_level2"),
+    )
     level3: list[str] = Field(
         default_factory=list,
         validation_alias=AliasChoices(
             "level3",
+            "positive_level3",
             "add",
             "include",
             "interested",
@@ -65,4 +72,3 @@ class CareerIntentPreviewInput(BaseModel):
 
     positive: list[str] = Field(default_factory=list)
     negative: list[str] = Field(default_factory=list)
-

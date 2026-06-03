@@ -762,6 +762,41 @@ def test_analyze_current_major_interest_wrapper_uses_major_scope():
     )
 
 
+def test_analyze_current_major_interest_accepts_explicit_major_intents():
+    from app.agent.context import RequestContext
+    from app.schemas.tool_inputs import MajorIntentPreviewInput
+
+    request_context = RequestContext(
+        userid="u1",
+        sessionid="s1",
+        chat_history=[{"role": "user", "content": "物理不太好但选了物化地，计算机还现实吗"}],
+        batch="01",
+    )
+    ctx = SimpleNamespace(deps=request_context)
+
+    with patch("app.tools.intent_preview_tool.analyze_volunteer_intent_change", new=AsyncMock(return_value='{"status":"empty","sessionId":"s1","message":"ok"}')) as mock_edit:
+        resp = asyncio.run(
+            analyze_current_major_interest(
+                ctx,
+                major_intents=MajorIntentPreviewInput(level2=["计算机类"]),
+            )
+        )
+
+    assert resp == "ok"
+    mock_edit.assert_awaited_once_with(
+        ctx,
+        {"level2": ["计算机类"]},
+        None,
+        None,
+        None,
+        analysis_stage=ANALYSIS_STAGE_INTEREST,
+        recovery_scope="major",
+        confirm_enabled=False,
+        intent_mode=INTENT_MODE_PREFERENCE,
+        persist_cache=False,
+    )
+
+
 def test_analyze_current_major_interest_delegates_two_concrete_majors_to_compare_tool():
     from app.agent.context import RequestContext
 
@@ -1208,6 +1243,43 @@ def test_preview_current_major_intent_confirmation_wrapper_passes_explicit_major
     mock_edit.assert_awaited_once_with(
         ctx,
         {"level3": ["网络与新媒体"]},
+        None,
+        None,
+        None,
+        analysis_stage=ANALYSIS_STAGE_CONFIRMED,
+        career_intents=None,
+        recovery_scope="major",
+        confirm_enabled=True,
+        intent_mode=None,
+    )
+
+
+def test_preview_current_major_intent_confirmation_wrapper_accepts_positive_level_aliases():
+    from app.agent.context import RequestContext
+
+    request_context = RequestContext(
+        userid="u1",
+        sessionid="s1",
+        chat_history=[{"role": "user", "content": "会计审计这类还行，土木建筑那种别碰"}],
+        batch="01",
+    )
+    ctx = SimpleNamespace(deps=request_context)
+
+    with patch("app.tools.intent_preview_tool.analyze_volunteer_intent_change", new=AsyncMock(return_value='{"status":"empty","sessionId":"s1","message":"ok"}')) as mock_edit:
+        resp = asyncio.run(
+            preview_current_major_intent_confirmation(
+                ctx,
+                major_intents={
+                    "positive_level2": ["工商管理类"],
+                    "negative_level2": ["土木类", "建筑类"],
+                },
+            )
+        )
+
+    assert resp == "ok"
+    mock_edit.assert_awaited_once_with(
+        ctx,
+        {"level2": ["工商管理类"], "negative_level2": ["土木类", "建筑类"]},
         None,
         None,
         None,
@@ -2446,6 +2518,30 @@ def test_refine_major_intents_keeps_concrete_major_when_parent_was_not_explicit(
     assert refined == {"negative_level3": ["土木工程"]}
 
 
+def test_refine_major_intents_drops_inferred_discipline_from_concrete_major():
+    refined = intent_state_tool_module._refine_major_intents_by_explicit_mentions(
+        {
+            "negative_level1": ["工学"],
+            "negative_level2": ["土木类"],
+            "negative_level3": ["土木工程"],
+        },
+        latest_utterance="我倾向会计学和审计学，但土木工程不要",
+        batch="01",
+    )
+
+    assert refined == {"negative_level3": ["土木工程"]}
+
+
+def test_refine_major_intents_drops_inferred_discipline_without_level2_child():
+    refined = intent_state_tool_module._refine_major_intents_by_explicit_mentions(
+        {"negative_level1": ["工学"], "negative_level3": ["土木工程"]},
+        latest_utterance="我倾向会计学和审计学，但土木工程不要",
+        batch="01",
+    )
+
+    assert refined == {"negative_level3": ["土木工程"]}
+
+
 def test_refine_major_intents_keeps_broad_parent_when_parent_was_explicit():
     refined = intent_state_tool_module._refine_major_intents_by_explicit_mentions(
         {"negative_level2": ["土木类"], "negative_level3": ["土木工程"]},
@@ -2454,6 +2550,65 @@ def test_refine_major_intents_keeps_broad_parent_when_parent_was_explicit():
     )
 
     assert refined == {"negative_level2": ["土木类"], "negative_level3": ["土木工程"]}
+
+
+def test_refine_major_intents_keeps_explicit_discipline():
+    refined = intent_state_tool_module._refine_major_intents_by_explicit_mentions(
+        {"negative_level1": ["工学"], "negative_level3": ["土木工程"]},
+        latest_utterance="工学都不要",
+        batch="01",
+    )
+
+    assert refined == {"negative_level3": ["土木工程"], "negative_level1": ["工学"]}
+
+
+@pytest.mark.asyncio
+async def test_analyze_intent_change_prunes_overbroad_parent_and_returns_existing_only():
+    profile = UserProfile(
+        major=MajorIntent(
+            level3=["会计学", "审计学"],
+            negative_level3=["土木工程"],
+        )
+    )
+    ctx = SimpleNamespace(
+        deps=SimpleNamespace(
+            sessionid="77",
+            batch="01",
+            chat_history=[{"role": "user", "content": "我倾向会计学和审计学，但土木工程不要"}],
+            enable_intent_side_effect_arbitration=False,
+        )
+    )
+
+    with (
+        patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
+        patch("app.tools.intent_state_tool.resolve_major_names_async", new=AsyncMock(side_effect=lambda names, level, batch: names)),
+        patch("app.tools.intent_state_tool._enrich_plan_relation_analysis_from_state", new=AsyncMock(return_value={})),
+        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()) as save_cache_mock,
+    ):
+        mock_pm = mock_pm_cls.return_value
+        mock_pm.get_current_profile = AsyncMock(return_value=profile)
+
+        payload = json.loads(
+            await analyze_volunteer_intent_change(
+                ctx,
+                major_intents={
+                    "level3": ["会计学", "审计学"],
+                    "negative_level1": ["工学"],
+                    "negative_level2": ["土木类"],
+                    "negative_level3": ["土木工程"],
+                },
+                recovery_scope="major",
+            )
+        )
+
+    assert payload["status"] == "existing_only"
+    assert payload["items"] == []
+    assert "会计学" in json.dumps(payload["existingItems"], ensure_ascii=False)
+    assert "审计学" in json.dumps(payload["existingItems"], ensure_ascii=False)
+    assert "土木工程" in json.dumps(payload["existingItems"], ensure_ascii=False)
+    assert "工学" not in json.dumps(payload, ensure_ascii=False)
+    assert "土木类" not in json.dumps(payload, ensure_ascii=False)
+    save_cache_mock.assert_not_awaited()
 
 
 def test_local_major_recovery_expands_broad_alias_for_user_facing_intent_analysis():

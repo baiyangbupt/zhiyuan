@@ -4748,3 +4748,1113 @@ cd zhiyuan-agent
 2. 职业方向承接压缩：已有 `analyze_current_career_direction` 事实时，减少额外 `query_state` 往返。
 3. Plan review/preview 回复生成优化：保留信息量，但降低最终总结模型长尾。
 4. 继续用 open-quality 全量作为门禁，不能用字符串快路由替代语义理解。
+
+## 37. 2026-06-02 Dialogue-Derived 88 Case 回归
+
+本轮继续使用真实对话派生的 88 条 case 做 full Agent 主路径回归。运行时保留当前模型路由，不恢复字符串 fast route，也不为了降低延迟削薄回复内容。
+
+### 37.1 运行命令
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python examples/dialog_regression_runner.py \
+  --url ws://127.0.0.1:8037/gaotu-assistant-agent/plus/chat/1/bot/test/do \
+  --cases examples/dialog_regression_303_dialogue_derived_cases.json \
+  --response-timeout 180 \
+  --keep-response-text \
+  --assert-plan-style \
+  --metrics-output /private/tmp/zhiyuan_303_dialogue_derived_live_20260602_regression.json \
+  --clear-history-per-case \
+  --clear-backend-pending-per-case \
+  --internal-service-url http://127.0.0.1:8080
+```
+
+详细评分报告：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python examples/dialog_case_evaluation_report.py \
+  --current /private/tmp/zhiyuan_303_dialogue_derived_live_20260602_regression.json \
+  --case-definitions examples/dialog_regression_303_dialogue_derived_cases.json \
+  --output /private/tmp/zhiyuan_303_dialogue_derived_live_20260602_regression_eval.md \
+  --markdown-detail
+```
+
+### 37.2 结果摘要
+
+Runner 本身没有连接错误或运行时崩溃，88 个 step 都拿到用户可见回复。命令退出码为 `1`，原因是内容门禁发现 6 个明确断言失败。
+
+| 指标 | 结果 |
+| --- | ---: |
+| steps | 88 |
+| successfulSteps | 88 |
+| failedSteps | 0 |
+| content assertion failures | 6 |
+| median elapsed | 10.336s |
+| p95 elapsed | 17.936s |
+| max elapsed | 27.812s |
+
+最慢 case：
+
+| case | 输入 | 耗时 |
+| --- | --- | ---: |
+| `303-dialogue-operation-major-group-keep-safest-major` | 专业组里只保留最稳的专业行不行 | 27.812s |
+| `303-dialogue-not-teacher-remove-normal` | 孩子不想当老师，师范是不是都别要 | 23.807s |
+| `303-dialogue-minor-language-current-value` | 小语种现在还能选吗，怕就业不好 | 21.036s |
+| `303-dialogue-operation-sort-recommendation` | 按推荐系数排一下，但别直接动 | 21.030s |
+| `303-dialogue-plan-major-vs-school-bias` | 优先专业还是学校，这版偏哪边 | 17.936s |
+
+详细评分报告给出的自动结论较严格：
+
+- `strong=3 / needs_review=77 / fail=8`。
+- `qualityViolations` 包含 6 个内容断言失败和 2 个 `thin_preview_distribution`。
+- `Full Agent Tool Trial Issues` 共 47 条，主要是 `slow_tool_chain / slow_full_agent / slow_agent_node`。
+
+### 37.3 明确失败 Case
+
+| case | 用户输入 | 失败表现 |
+| --- | --- | --- |
+| `303-dialogue-rank-vs-score-reference` | 排名比分数靠谱吧，方案里要怎么看 | 被路由成方案状态查询，回复“当前还没有正式志愿”，没有回答排名/位次/分数参考问题 |
+| `303-dialogue-pre-score-estimate-adjustment` | 批次线出来前先按模考估，后面咋调整 | 被路由成方案状态查询，没有回答模考预案、出分后调整和批次线边界 |
+| `303-dialogue-rural-special-plan-eligibility` | 农村户口那个专项能不能用，怎么判断 | 进入泛化意向分析，回复要求用户重新说明偏好，没有回答专项资格/政策判断 |
+| `303-dialogue-career-transfer-major-space` | 想以后有转专业空间，填报上怎么看 | 被泛化成“深造发展导向”，没有回答转专业政策、学校选择和风险 |
+| `303-dialogue-budget-good-school-high-tuition` | 如果学校好但学费高，可以冲吗 | 进入泛化意向分析，没有回答学费预算、冲刺价值和风险边界 |
+| `303-dialogue-followup-missing-info-list` | 现在信息不全，先给我列缺啥 | 先收集上下文后又转方案状态查询，最终没有列出缺失信息 |
+
+### 37.4 本轮暴露的问题类型
+
+1. **报考规则/资格/流程咨询缺少稳定只读承接**
+   - 体检、口试、专项、批次线、出分后重做、转专业等问题，有些能靠模型直接回答，有些会误进 `analyze_current_interest` 或 `query_state`。
+   - 这类不是方案调整，也不是长期意向写入，不应生成确认卡片；应作为只读政策/流程解释，并在需要时提示用户补充省份、资格或体检结论。
+
+2. **方案维度查询被压成通用状态概览**
+   - “方案里医学护理有没有混进去”“公办占比怎么样”“省外是不是太多”“这版偏专业还是学校”等问题，目前多走 `query_state -> status_overview`。
+   - 工具虽然能读取方案，但缺少结构化查询维度和面向维度的结果摘要，导致回复只给通用概览，用户问题没有被正面回答。
+
+3. **职业/地域方向工具回复过于模板化**
+   - “稳定就业和兴趣哪个先”“孩子内向”“文科就业面窄”等问题，经常被压成“某某导向是否值得重点看”的模板，没有充分回答取舍逻辑。
+   - 这类需要在职业方向工具里输出更贴近用户语言的判断维度，而不是只披露当前方案承接数量。
+
+4. **操作预览边界基本正确，但预览内容仍偏薄**
+   - 排序、按 index 移动、无 pending 确认保护都能保持“确认卡片后执行”的协议。
+   - 排序预览里仍出现 `录取率- / 院校层次- / 推荐系数-`，代表部分排序指标没有被实际带入展示，自动评分记录为 `thin_preview_distribution`。
+
+5. **延迟已低于早期 100s 长尾，但仍偏高**
+   - 88 case 中位约 `10.3s`，比早期 full Agent 100s 级别长尾已有改善。
+   - 慢点主要在最终模型总结、方案 review/preview 的二次模型请求，以及个别工具内部耗时。
+
+### 37.5 下一步修复方向
+
+本轮不应通过新增字符串关键词来补 case。更稳妥的修复方向：
+
+1. 增加或标准化只读“报考规则/资格/流程咨询”承接层，覆盖体检、口试、专项、批次线、出分后调整、转专业、学费预算等场景。
+2. 扩展 `plan_next_action / execute_plan_action` 的查询维度，让方案查询能结构化表达 `major_presence / region_distribution / public_private_ratio / tuition_risk / school_vs_major_bias / score_rank_reference` 等意图。
+3. 对 `analyze_current_career_direction`、`analyze_current_region_interest` 的最终回复模板做降模板化处理，优先回答用户问的取舍点，再披露当前方案承接。
+4. 排序和移动 preview 保持确认卡片协议不变，但补齐可展示指标，避免出现 `录取率-`、`推荐系数-` 这类无效占位。
+5. 修复后必须复跑：
+   - `dialog_regression_303_dialogue_derived_cases.json`
+   - `dialog_regression_303_open_quality_cases.json`
+   - `dialog_regression_303_effect_perf_cases.json`
+   - 相关 unit/regression/e2e，确认意向/方案变更仍然只能通过确认卡片生效。
+
+## 38. 报考政策/流程/学校规则咨询链路修复设计
+
+针对 88 case 中“排名/批次线/专项/转专业/学费/缺失信息”被误路由到 `query_state` 或 Intent 的问题，本轮补充 Policy/Search 两层只读能力。
+
+### 38.1 三段链路
+
+1. `answer_admission_policy_question`
+   - 只做咨询范围和规则领域的结构化承接。
+   - 入参拆成 `consultation_scope` 与 `rule_domain`，避免把政策问题穷举成几个细 topic。
+   - 返回 `source_lookup_required`、`source_lookup_available`、`required_sources`、`fit_required`、`plan_lookup_required` 和 `missing_fields`。
+
+2. `search_official_admission_sources`
+   - 用于官方来源检索，当前接入 Bocha Web Search。
+   - 只返回标题、URL、站点、摘要和发布时间，不直接判断“能不能报”。
+   - API key 只读取 `BOCHA_API_KEY`，不能写入代码、文档或提交内容。
+
+3. 个人适配/方案影响
+   - 当前新增 `match_admission_rule_to_student` 承接“官方规则 + 当前学生信息”的结构化匹配。
+   - 学校或专业与当前学生适配，必须在官方规则基础上再匹配分数位次、选科、体检、口试、专项资格、预算等。
+   - 政策对当前方案影响，需要后续读取当前方案/候选数据，不能只凭政策解释直接下结论。
+
+### 38.2 参数设计
+
+`consultation_scope`：
+
+| scope | 含义 |
+| --- | --- |
+| `general_policy` | 通用流程/政策，可走官方 Web search |
+| `province_policy` | 省级政策、批次线、一分一段、专项、口试、征集等 |
+| `school_rule` | 学校招生章程、招生简章、转专业、收费、培养地点、专业备注 |
+| `school_user_fit` | 某学校/专业与当前学生是否匹配 |
+| `plan_policy_impact` | 政策/资格对当前方案已有志愿的影响 |
+| `missing_info` | 当前判断还缺哪些信息 |
+
+`rule_domain`：
+
+| domain | 含义 |
+| --- | --- |
+| `score_batch` | 分数、排名/位次、批次线、模考预案、出分后重算 |
+| `application_process` | 平行志愿、征集、退档、服从调剂、投档流程 |
+| `eligibility` | 专项、定向、资格审核 |
+| `physical_exam` | 体检、色弱、视力等 |
+| `oral_exam` | 英语口试 |
+| `subject_requirement` | 选科要求 |
+| `transfer_major` | 转专业空间 |
+| `tuition_budget` | 学费、民办/中外合作、预算 |
+| `admission_fit` | 录取概率和自身匹配 |
+
+### 38.3 Bocha 测试接入
+
+新增配置：
+
+```bash
+BOCHA_API_KEY=...
+BOCHA_BASE_URL=https://api.bochaai.com/v1/web-search
+BOCHA_TIMEOUT_SECONDS=10
+```
+
+当前实现只在环境变量中读取 key。单测不会使用真实 key，也不会把 key 写入 fixture。
+
+工具级 smoke test 结论：
+
+- 直接请求 Bocha 时，响应结果在 `data.webPages.value`，不是顶层 `webPages.value`；已修复解析。
+- 默认学校章程查询容易召回第三方站点；已增加官方来源过滤。
+- 学校官方检索对 `site:` 位置敏感，`site:admissions.bjut.edu.cn ...` 放在查询最前面可以命中北京工业大学本科招生章程；工具已新增 `official_domain` 并将 `site:` 放在 query 首位。
+- 省级政策检索不能只看标题。Bocha 对 `山东省教育招生考试院 专项计划 资格` 会返回标题带考试院字样的第三方页面（如本地生活站点）；已收紧为官方域名或官方站点名过滤，避免把第三方页面当官方来源。
+- 省级检索支持已知官方域名 hint，目前 `山东 -> sdzk.cn` 会优先拼成 `site:sdzk.cn ...`。实测该 query 可能召回不足；工具会在官方域名 query 空结果时再尝试“不带 site、但带官方站点名”的 fallback query，最终仍只接受官方域名或官方站点名命中的结果，不会误收第三方内容。
+
+### 38.4 当前边界
+
+- 通用政策和学校规则问题可以通过 `answer_admission_policy_question -> search_official_admission_sources -> 模型总结` 形成官方来源感知回复。
+- 如果未配置 `BOCHA_API_KEY`，Policy 工具会直接给判断框架，并明确仍需官方核验。
+- `BOCHA_API_KEY` 只放本地 `.env` 或运行环境变量；`BochaSearchConfig` 通过 `env_file=".env"` 读取，禁止把真实 key 写入代码、测试 fixture 或文档。
+- 检索结果不是最终结论。`school_user_fit` 已接入 `match_admission_rule_to_student`，但要求模型先从官方来源中抽取结构化事实，如选科要求、体检限制、口试、专项资格、学费或分数位次参考。
+- `plan_policy_impact` 还需要继续扩展 Plan 查询维度，读取当前方案里受影响的学校、专业组、费用或资格风险。
+- `plan_policy_impact` 的 Policy 工具结果不直接返回给用户，改为 `continue_model`，避免出现“政策规则对当前方案的影响判断”这类系统化文案。
+- Bocha 对通用政策/省级政策的召回仍不稳定：学校招生章程类 query 稳定性较好；省级 `sdzk.cn` 专项资格 query 当前 fallback 后仍为空，系统应给通用判断框架并提示需要官方核验，而不是编造具体政策条款。
+
+### 38.5 已完成验证
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest \
+  tests/unit/test_admission_policy_tool.py \
+  tests/unit/test_official_source_search_tool.py \
+  tests/unit/test_chat_agent_tools.py::TestChatAgentToolRegistration::test_admission_policy_progress_hint_is_registered \
+  tests/unit/test_chat_agent_tools.py::TestChatAgentToolRegistration::test_admission_policy_tool_schema_exposes_scope_and_domain_enums \
+  tests/unit/test_chat_agent_tools.py::TestChatAgentToolRegistration::test_official_source_search_tool_schema_exposes_source_scope \
+  tests/unit/test_chat_agent_tools.py::TestChatAgentToolRegistration::test_chat_agent_does_not_register_low_level_intent_extractors \
+  tests/unit/test_chat_agent_init_profile.py::test_build_instructions_includes_planning_tool_policy \
+  tests/unit/test_chat_agent_init_profile.py::test_build_instructions_includes_plan_orchestration_boundaries \
+  -q
+```
+
+结果：`16 passed`。
+
+补充宽相关验证：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest \
+  tests/unit/test_config.py \
+  tests/unit/test_admission_fit_match_tool.py \
+  tests/unit/test_admission_policy_tool.py \
+  tests/unit/test_official_source_search_tool.py \
+  tests/unit/test_chat_agent_tools.py \
+  tests/unit/test_chat_agent_init_profile.py \
+  tests/unit/test_instructions.py \
+  tests/unit/test_tool_reply_policy.py \
+  -q
+```
+
+结果：`132 passed`。
+
+Targeted live 回归：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python examples/dialog_regression_runner.py \
+  --url ws://127.0.0.1:8037/gaotu-assistant-agent/plus/chat/1/bot/test/do \
+  --cases /private/tmp/zhiyuan_303_policy_targeted_cases.json \
+  --session-offset 40 \
+  --response-timeout 180 \
+  --keep-response-text \
+  --assert-plan-style \
+  --metrics-output /private/tmp/zhiyuan_303_policy_targeted_final.json \
+  --clear-history-per-case \
+  --clear-backend-pending-per-case \
+  --internal-service-url http://127.0.0.1:8080
+```
+
+结果：
+
+| 指标 | 值 |
+| --- | ---: |
+| steps | 6 |
+| successfulSteps | 6 |
+| failedSteps | 0 |
+| median elapsed | 17.108s |
+| p95 elapsed | 20.163s |
+| max elapsed | 20.163s |
+
+覆盖并修复的目标 bad case：
+
+- `排名比分数靠谱吧，方案里要怎么看`：不再误走 `query_state`，走 `answer_admission_policy_question`，回答位次/分数/方案指标参考。
+- `批次线出来前先按模考估，后面咋调整`：走 Policy，回答模考位次、出分后官方一分一段和招生计划校准。
+- `农村户口那个专项能不能用，怎么判断`：走 Policy，说明农村户口不等于专项资格，需要实施区域、户籍学籍和资格审核。
+- `想以后有转专业空间，填报上怎么看`：走 Policy，说明招生章程、转专业管理办法、转入名额和特殊类型限制。
+- `如果学校好但学费高，可以冲吗`：不再误进泛 Explore；走 Policy + 模型总结，回答四年总成本、冲稳保位置和预算底线。
+- `现在信息不全，先给我列缺啥`：走 Policy，列出基础成绩、资格限制、偏好约束和预算信息。
+
+### 38.6 审查问题删除预览稳定化
+
+背景：
+
+- targeted bad case `把太贵的那几个先去掉看看` 曾出现不稳定：单 case 可能形成 `remove_units` 预览，但 9 case 回归中模型有时把它规划成 `review_plan -> review_result`，只给审查说明，没有生成待确认卡片。
+- 仅靠提示词约束不稳定。模型实际传给 `plan_next_action` 的参数会把原话改写成 `user_goal="把当前方案里学费太高的志愿去掉"`，如果工具层没有识别“学费太高”与 `high_tuition` 审查问题的关系，就会停在 `review_plan`。
+
+修复：
+
+- `plan_next_action` 增加窄范围的审查问题引用恢复：
+  - 只在模型传入 `action_family="review_plan"`、且用户目标含明确删除/替换动作时触发。
+  - 只恢复当前审查问题或 `review_issue_registry` 中已登记的 `item_removal` 问题 code。
+  - 高收费同义表达补充：`学费太高`、`学费偏高`、`费用太高`、`费用偏高`、`收费太高` 等。
+  - 明确“先别改方案 / 不改方案 / 不动方案”时不触发。
+- `execute_plan_action` 在收到 `review_issue_target` 但当前 reviewState 暂无对应范围时，先补跑一次审查并重读范围；最终删除范围仍来自审查返回的 `affectedVolunteerIds`，不是文本匹配出来的范围。
+- 这不是新的 fast route，也不直接执行变更；结果仍是 `preview_only + pendingConfirmationCard`，用户点击确认前不会改方案。
+
+验证：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest \
+  tests/unit/test_plan_orchestration_tool.py \
+  tests/unit/test_plan_execution_tool.py -q
+```
+
+结果：`147 passed`。
+
+真实单 case：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python examples/dialog_regression_runner.py \
+  --url ws://127.0.0.1:8037/gaotu-assistant-agent/plus/chat/1/bot/test/do \
+  --session 17 \
+  --prompts "把太贵的那几个先去掉看看" \
+  --response-timeout 180 \
+  --keep-response-text \
+  --assert-plan-style \
+  --metrics-output /private/tmp/zhiyuan_303_remove_expensive_after_alias_refresh.json \
+  --clear-history \
+  --clear-backend-pending \
+  --internal-service-url http://127.0.0.1:8080
+```
+
+结果：
+
+- 链路：`plan_next_action(remove_units, preview) -> execute_plan_action(remove_units, preview_only)`。
+- 返回 1 张 `pendingConfirmationCard`。
+- 回复明确披露高收费范围：`30 个专业组、76 条志愿`，并提示全部移出会造成大缺口。
+- 耗时：`elapsedMs=23501`，慢点仍在主模型请求，工具执行约 `67ms`。
+
+Targeted 9 case 回归：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python examples/dialog_regression_runner.py \
+  --url ws://127.0.0.1:8037/gaotu-assistant-agent/plus/chat/1/bot/test/do \
+  --cases /private/tmp/zhiyuan_303_targeted_bad_cases.json \
+  --response-timeout 180 \
+  --keep-response-text \
+  --assert-plan-style \
+  --metrics-output /private/tmp/zhiyuan_303_targeted_after_review_issue_recovery.json \
+  --clear-history-per-case \
+  --clear-backend-pending-per-case \
+  --internal-service-url http://127.0.0.1:8080
+```
+
+结果：
+
+| 指标 | 值 |
+| --- | ---: |
+| steps | 9 |
+| successfulSteps | 9 |
+| failedSteps | 0 |
+| median elapsed | 20.929s |
+| p95 elapsed | 32.076s |
+| max elapsed | 32.076s |
+
+关键观察：
+
+- `方案里面省外是不是太多了` 已能给出结构化统计：山东省内 `35` 个、省外 `59` 个。
+- `把太贵的那几个先去掉看看` 稳定生成删除预览和确认卡片，不再停在审查结果。
+- `一年学费最多两三万，方案里高收费多吗` 保持只读审查，不误生成删除预览。
+- `公办占比怎么样` 已补充 Plan status facts 的院校性质分布：本地 session 17 可返回公办 `10`、民办 `83`、未知 `1`，公办占比约 `10.8%`。
+
+### 38.7 2026-06-03 targeted 修复与 Bocha fallback 验证
+
+本轮继续收口三个问题：公办占比事实、北京志愿移动误排序、高收费删除预览的截断 payload。
+
+代码侧修复：
+
+- `query_state` 在方案条目缺少院校性质字段时，按需从候选池补充 `schoolNature/schoolTags`，再计算 `school_nature_distribution`。
+- `sort_ordered_plan` 不再默认补 `admissionRatio`。如果用户只是说“把北京的志愿往前挪一些”，但没有指定排序字段，工具层不会把它降级成“按录取率重新排序”。
+- `execute_plan_action` 增加保守 JSON 修复：只在 payload 明显是未闭合 JSON 对象、且包含 `stage/action_family/atomic_actions` 时补闭合括号；字段缺失、尾部乱码或字符串未闭合仍按 `missing_plan_payload` 错误处理。
+- `search_official_admission_sources` 增加 Bocha fallback query：官方 `site:` query 无可用结果时，会尝试不带 `site:` 但带官方站点名的 query；过滤规则不放宽。
+- 学校章程检索增加已知学校官网域名 hint。以北京工业大学为例，模型即使未传 `official_domain`，工具也会先尝试普通 query，再 fallback 到 `site:admissions.bjut.edu.cn ...`；最终仍只返回官方招生网结果。
+
+验证：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest \
+  tests/unit/test_plan_orchestration_tool.py \
+  tests/unit/test_plan_execution_tool.py -q
+
+.venv/bin/python -m pytest \
+  tests/unit/test_admission_policy_tool.py \
+  tests/unit/test_official_source_search_tool.py \
+  tests/unit/test_chat_agent_tools.py::TestChatAgentToolRegistration::test_admission_policy_progress_hint_is_registered \
+  tests/unit/test_chat_agent_tools.py::TestChatAgentToolRegistration::test_admission_policy_tool_schema_exposes_scope_and_domain_enums \
+  tests/unit/test_chat_agent_tools.py::TestChatAgentToolRegistration::test_official_source_search_tool_schema_exposes_source_scope \
+  tests/unit/test_chat_agent_init_profile.py::test_build_instructions_includes_planning_tool_policy \
+  tests/unit/test_instructions.py -q
+```
+
+结果：
+
+- Plan 单测：`147 passed`。
+- Policy/Search 单测：`52 passed`。
+
+Targeted 9 case live 回归：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python examples/dialog_regression_runner.py \
+  --url ws://127.0.0.1:8037/gaotu-assistant-agent/plus/chat/1/bot/test/do \
+  --cases /private/tmp/zhiyuan_303_targeted_bad_cases.json \
+  --response-timeout 180 \
+  --keep-response-text \
+  --assert-plan-style \
+  --metrics-output /private/tmp/zhiyuan_303_targeted_after_payload_repair.json \
+  --clear-history-per-case \
+  --clear-backend-pending-per-case \
+  --internal-service-url http://127.0.0.1:8080
+```
+
+结果：
+
+| 指标 | 值 |
+| --- | ---: |
+| steps | 9 |
+| successfulSteps | 9 |
+| failedSteps | 0 |
+| median elapsed | 18.573s |
+| p95/max elapsed | 27.588s |
+
+关键用户侧效果：
+
+- `公办占比怎么样`：返回公办 `10`、民办 `83`、未知 `1`，公办占比约 `10.8%`。
+- `把北京的志愿往前挪一些可以吗`：不再误触发“重新排序”；当前方案没有北京志愿时，会提示先加入北京志愿或查询可选项。
+- `把太贵的那几个先去掉看看`：返回 `remove_units preview_only` 和 `pendingConfirmationCard`，披露范围为 `30` 个专业组、`76` 条志愿，点击确认前不改方案。
+
+Bocha smoke：
+
+- 本地 `.env` 已配置 `BOCHA_API_KEY`，且 `.env` 被 gitignore，不进入提交。
+- `school_brochure + official_domain=admissions.bjut.edu.cn` 可命中北京工业大学本科招生章程，返回 `3` 条官方来源。
+- `province_policy + 山东专项资格` 会尝试两条 query：
+  - `site:sdzk.cn ...`
+  - `山东省教育招生考试院 ...`
+- 当前 Bocha 对该省级专项 query 仍未返回可用官方结果，工具保持 `status=empty`，不会把第三方页面当官方依据。
+
+Full Agent policy/search smoke：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python examples/dialog_regression_runner.py \
+  --url ws://127.0.0.1:8037/gaotu-assistant-agent/plus/chat/1/bot/test/do \
+  --cases /private/tmp/zhiyuan_303_policy_search_smoke_cases.json \
+  --response-timeout 180 \
+  --keep-response-text \
+  --assert-plan-style \
+  --metrics-output /private/tmp/zhiyuan_303_policy_search_smoke_after_domain_fallback.json \
+  --clear-history-per-case \
+  --clear-backend-pending-per-case \
+  --internal-service-url http://127.0.0.1:8080
+```
+
+结果：
+
+| case | 工具链路 | 结果 |
+| --- | --- | --- |
+| 北京工业大学招生章程/转计算机限制 | `answer_admission_policy_question -> search_official_admission_sources` | 能命中北京工业大学本科招生章程来源；回复明确招生章程未直接包含详细转专业办法，需要继续看教务处/本科生院细则 |
+| 山东农村专项资格 | `answer_admission_policy_question -> search_official_admission_sources` | 回复明确“农村户口不等于具备专项资格”，要求核对实施区域、户籍学籍年限、资格审核和公示 |
+
+指标：`2/2` 成功，median `14.694s`，max `17.529s`。
+
+### 38.8 2026-06-03 只读中断兜底与 open-quality 全量复跑
+
+本轮继续使用百家 `kimi-k2.6` 和 full Agent 主路径，不启用字符串 fast route。目标是验证模型服务中断后的只读兜底、专业简称解析优先级和 open-quality 全量质量是否稳定。
+
+问题复盘：
+
+- open-quality 曾出现 3 个内容断言失败：
+  - `303-open-quality-major-compare-colloquial-pressure`
+  - `303-open-quality-no-pending-after-compare-guard` step 1
+  - `303-open-quality-no-pending-after-compare-guard` step 2
+- 根因不是工具能力缺失，而是模型服务中断兜底过于泛化。只读专业对比被中断时，回复只说“模型服务中断，可以再发一次”，没有保留“本轮是只读分析、不会写偏好、不会改方案”的上下文。
+- 因为历史里没有只读 tool marker，用户下一轮说“嗯那就这样”时，系统可能重新进入 full Agent，而不是按只读追问结束语处理。
+- 另一个问题是专业简称/别名优先级：`新媒体` 可能被自动别名解析到 `新媒体技术`，而不是更常见的 `网络与新媒体`。
+
+修复：
+
+- `service.py` 增加只读中断识别：
+  - 根据中断前工具、prompt 语义和 `先别记/不要记偏好/别记录` 等显式只读标记判断。
+  - 只读/分析中断时，兜底回复会明确“本轮不改方案、不写偏好”，并尽量保留专业上下文。
+  - 后续短确认如“嗯那就这样”可进入 `readonly_closure_ack`，不会再次进入 full Agent。
+- 中断持久化的模型名区分为：
+  - `agent-interruption-readonly-fallback`
+  - `agent-interruption-fallback`
+- `major_entity_resolver.py` 的别名排序加入 `source_priority`，常用简称表优先于自动别名，避免常见口语简称被冷门专业名抢占。
+
+验证：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest \
+  tests/unit/test_chat_service_history_persistence.py \
+  tests/unit/test_entity_resolution.py \
+  tests/unit/test_dialog_regression_runner.py \
+  tests/unit/test_dialog_case_evaluation_report.py -q
+```
+
+结果：`245 passed`。
+
+失败子集复跑：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python examples/dialog_regression_runner.py \
+  --url ws://127.0.0.1:8037/gaotu-assistant-agent/plus/chat/1/bot/test/do \
+  --cases /private/tmp/zhiyuan_303_open_quality_failed_subset_cases.json \
+  --response-timeout 180 \
+  --keep-response-text \
+  --assert-plan-style \
+  --metrics-output /private/tmp/zhiyuan_303_open_quality_failed_subset_after_interruption_fallback.json \
+  --clear-history-per-case \
+  --clear-backend-pending-per-case \
+  --internal-service-url http://127.0.0.1:8080
+```
+
+结果：`3/3` 成功。`嗯那就这样` 进入 `readonly_closure_ack`，耗时约 `2.2s`，没有触发 full Agent。
+
+open-quality 全量复跑：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python examples/dialog_regression_runner.py \
+  --url ws://127.0.0.1:8037/gaotu-assistant-agent/plus/chat/1/bot/test/do \
+  --cases examples/dialog_regression_303_open_quality_cases.json \
+  --response-timeout 180 \
+  --keep-response-text \
+  --assert-plan-style \
+  --metrics-output /private/tmp/zhiyuan_303_open_quality_after_interruption_fallback.json \
+  --clear-history-per-case \
+  --clear-backend-pending-per-case \
+  --internal-service-url http://127.0.0.1:8080
+```
+
+结果：
+
+| 指标 | 值 |
+| --- | ---: |
+| steps | 23 |
+| successfulSteps | 23 |
+| failedSteps | 0 |
+| median elapsed | 15.365s |
+| p95 elapsed | 25.775s |
+| max elapsed | 26.703s |
+| fastRouteArbitration observed | 0 |
+
+最慢样本：
+
+| case | prompt | elapsed |
+| --- | --- | ---: |
+| `303-open-quality-budget-risk-colloquial-readonly` | 方案里中外合作是不是有点多，家里预算一般，帮我用大白话看下风险，先别动 | 26.703s |
+| `303-open-quality-lazy-plan-too-risky-readonly` | 这版是不是太冲了，能不能给我说人话 | 25.775s |
+| `303-open-quality-career-multi-direction-readonly` | 当前方案对体制内和读研方向分别承接得怎么样，先不要改方案 | 23.465s |
+| `303-open-quality-plan-make-safer-preview` | 就按别太冒险的思路把这版调稳点，先给我看看会怎么动 | 23.068s |
+| `303-open-quality-major-compare-with-context` | 法学和财政学哪个更适合普通家庭女生，先只分析不要记偏好 | 20.869s |
+
+用户侧效果：
+
+- 只读专业对比后再说“嗯那就这样”，不会产生 pending，也不会重新调用 full Agent。
+- `计科/软工`、`会计/审计` 等简称和口语输入可以正常展开到专业对比。
+- `候选里还有没有更稳一点的会计审计，别直接加` 保持只读查询，没有把候选加入方案。
+- `医学护理这些别碰，财会还能接受，先看看影响` 保持分析性质，没有直接写入偏好；回复说明影响边界后再引导用户确认。
+- `把太贵的那几个先去掉看看` targeted 回归仍能形成删除预览和确认卡片，确认前不改方案。
+
+剩余风险：
+
+- 慢点仍主要在 full Agent 多轮模型请求，尤其是方案分析、预算风险和补偿预览类 case。当前质量优先，暂不通过字符串 fast route 降低耗时。
+- `answer_admission_policy_question` 在个别政策问题上可能重复调用，最终内容正确但存在性能浪费。
+- 历史会话数据缺字段时，部分方案/候选查询仍可能出现 `录取率-`、`推荐系数-` 这类展示缺口；这是数据可用性风险，不是本轮中断兜底引入。
+
+### 38.9 2026-06-03 局部方案查询简称兜底与确认协议文案收口
+
+本轮继续保持 full Agent 主路径，不恢复字符串 fast route。目标是修复 clean-history live 回归中两个用户可见问题：
+
+1. `青城那个是不是放多了，能查下` 偶发被抽取成 `城市:青城`，导致漏掉当前方案里的 `青岛城市学院`。
+2. `如果孩子改主意了，之前偏好还能改吗` 这类通用咨询，有时被 unbacked intent 保护误改成“这轮没有生成确认卡片”；修正后又出现“偏好/方案可以调整”但没有明确确认卡片边界的问题。
+
+修复：
+
+- `query_volunteer_plan` 的结构化过滤增加当前方案内院校别名兜底：
+  - 如果抽取结果把词放进省份/城市，但当前方案学校别名能精确匹配该词，则改按院校简称查询当前方案。
+  - 该逻辑基于当前方案真实学校名和 `_school_name_variants`，不是对用户话术做快路由。
+- `query_volunteer_plan` 用户侧文案统一把“当前排序方案”改成“当前方案”。
+- `_reply_looks_like_unbacked_intent_preview` 收窄触发条件：
+  - 没有“待确认内容/整理成待确认”结构时，必须同时出现具体意向条目线索（如“倾向：”“排除：”“偏好专业”）才视为伪待确认预览。
+  - 通用解释“偏好可以改，采纳后再作为参考”不再被替换成 fallback。
+- `_normalize_general_confirmation_protocol_wording` 补充确认协议安全网：
+  - 当回复在讲偏好、排除项或方案内容可以调整时，若缺少确认卡片边界，补充“正式更新前会先给确认卡片或调整预览，点击采纳前不会生效”。
+  - 把“立刻调整方案 / 改完立刻生效 / 系统会重新筛选”等自动生效语气改成“采纳后再调整”。
+
+验证：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest \
+  tests/unit/test_chat_service_history_persistence.py \
+  tests/unit/test_plan_query_tool.py \
+  tests/unit/test_tool_reply_policy.py \
+  tests/unit/test_instructions.py \
+  tests/unit/test_admission_policy_tool.py \
+  tests/unit/test_official_source_search_tool.py \
+  tests/unit/test_admission_fit_match_tool.py -q
+```
+
+结果：`263 passed`。
+
+clean-history live 回归：
+
+```bash
+cd zhiyuan-agent
+PYTHONPATH=. ./.venv/bin/python examples/dialog_regression_runner.py \
+  --url ws://127.0.0.1:8038/gaotu-assistant-agent/plus/chat/1/bot/test/do \
+  --cases /private/tmp/zhiyuan_303_focus_alias_protocol_cases.json \
+  --assert-plan-style \
+  --response-timeout 120 \
+  --keep-response-text \
+  --clear-history \
+  --clear-backend-pending \
+  --internal-service-url http://127.0.0.1:8080 \
+  --metrics-output /private/tmp/zhiyuan_303_focus_alias_protocol_final_verified.json
+```
+
+最终结果：
+
+| case | 链路 | 结果 | 耗时 |
+| --- | --- | --- | ---: |
+| `303-dialogue-operation-school-abbrev-query` | full Agent -> `query_volunteer_plan` | clean history 下真实调用工具，`filterKeys=["school_keywords"]`，命中 `青岛城市学院` 7 条 | `8.897s` |
+| `303-dialogue-followup-change-preference-later` | full Agent -> `answer_admission_policy_question` -> 模型合成 | 只读解释“系统偏好/省考试院正式志愿/录取阶段”三层边界，明确“我会先整理成确认卡片，点击采纳前不会覆盖偏好，也不会自动改候选或方案” | `11.347s` |
+
+Bocha/Policy 配置状态：
+
+- 本地 `.env` 已配置 `BOCHA_API_KEY`，且 `.env` 被 gitignore，不进入提交。
+- 代码和文档只保留 `BOCHA_API_KEY`、`BOCHA_BASE_URL`、`BOCHA_TIMEOUT_SECONDS` 变量名，不写真实 key。
+- Policy live case 本轮走 `answer_admission_policy_question`，没有触发 Web search；官方来源检索能力仍按 38.7 的 Bocha smoke 结果记录。
+
+剩余风险：
+
+- `query_volunteer_plan` 的候选过滤抽取仍可能耗时约 3-4s；质量优先，暂不加字符串快路由。
+- `青城` 当前命中依赖方案里已有 `青岛城市学院`；如果候选池中出现多个学校共享同一简称，需要继续返回歧义而不是直接唯一化。
+- 偏好/方案可调整的通用咨询现在靠回复层安全网兜底确认边界。长期更稳的方向是让 Policy/Intent 工具返回结构化 `side_effect_boundary`，由模型按结构化字段组织回复。
+
+### 38.10 2026-06-03 高收费只读边界与排序预览指标补齐
+
+本轮接续 88 个真实对话派生 case 回归后的两个质量风险做收口：
+
+1. `有没有高收费风险` 这类只读问题，模型偶发传入 `remove_units/replace_units + review_issue_code=high_tuition`，导致生成删除预览卡片。
+2. `按录取率/院校层次/推荐系数排序` 的确认预览中，前几项样例会显示 `录取率- / 院校层次- / 推荐系数-`，信息披露不足。
+
+修复：
+
+- `plan_next_action` 增加高副作用审查项保护：
+  - 当审查项属于 `item_removal`，且模型已传入 `remove_units/replace_units` 时，如果用户目标没有明确移除、替换、处理、解决或清理动作，则降回 `review_plan`。
+  - `先别动方案 / 不改方案` 等只读保护继续优先。
+  - `把太贵的那几个先去掉看看`、`先处理高收费` 这类明确操作仍生成确认预览。
+- `sort_ordered_plan` 预览补齐事实来源：
+  - 普通专业模式从 `orderedPlanState.items` 与 `candidatePoolState.items` 按 `volunteerId` 补齐录取率、院校排名、推荐系数。
+  - 专业组模式优先使用 `orderedPlanState.units`，并从 `majorItems -> candidatePoolState` 补齐院校排名等组级缺失字段。
+  - 预览排序 key 与后端 `resolveOrderedSortKeys` 对齐：录取率升序，院校排名升序，推荐系数降序，并保留对应二三级排序。
+
+验证：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest \
+  tests/unit/test_plan_orchestration_tool.py \
+  tests/unit/test_plan_execution_tool.py -q
+```
+
+结果：`152 passed`。
+
+定向 live 回归：
+
+```bash
+cd zhiyuan-agent
+PYTHONPATH=. ./.venv/bin/python examples/dialog_regression_runner.py \
+  --url ws://127.0.0.1:8039/gaotu-assistant-agent/plus/chat/1/bot/test/do \
+  --cases /private/tmp/zhiyuan_303_targeted_cases.json \
+  --response-timeout 180 \
+  --keep-response-text \
+  --assert-plan-style \
+  --metrics-output /private/tmp/zhiyuan_303_targeted_after_preview_guard_20260603.json \
+  --clear-history-per-case \
+  --clear-backend-pending-per-case \
+  --internal-service-url http://127.0.0.1:8080
+```
+
+结果：
+
+| case | 结果 | 耗时 |
+| --- | --- | ---: |
+| `303-dialogue-plan-high-fee-risk` | 走 `review_plan -> execute_plan_action(review_plan)`，无删除确认卡片 | `23.680s` |
+| `303-dialogue-operation-sort-admission-rate` | 排序预览显示 `录取率1%` 等具体值，返回确认卡片 | `19.666s` |
+| `303-dialogue-operation-sort-good-school` | 排序预览显示 `院校层次260/262/335...`，返回确认卡片 | `17.565s` |
+| `303-dialogue-operation-sort-recommendation` | 排序预览显示 `推荐系数44.9/42.4...`，返回确认卡片 | `19.868s` |
+| `303-dialogue-operation-remove-expensive-preview` | 明确操作仍返回高收费删除确认卡片 | `57.820s` |
+
+剩余风险：
+
+- `把太贵的那几个先去掉看看` 仍存在工具链偏长：`plan_next_action` 调用 3 次，`execute_plan_action` 调用 2 次，总耗时约 `57.8s`。用户侧最终结果正确，但需要继续优化 full Agent 对“明确审查项删除预览”的一次性编排。
+- 删除高收费的回复正文提示“更合适的是缩小范围”，但同时返回整批删除确认卡片。产品预期上可接受，因为确认前不会执行；后续应进一步让回复正文和卡片行为更一致，例如明确“当前卡片是整批删除预览，如要缩小范围请不要点确认，继续说明范围”。
+
+### 38.11 2026-06-03 高收费删除预览链路收敛
+
+接续 38.10 的剩余风险，本轮收敛 `把太贵的那几个先去掉看看` 的重复编排。
+
+问题复盘：
+
+- full Agent 第一轮可能把“去掉太贵项”误传成 `replace_units`，且未带 `review_issue_code`。
+- 旧工具层只在 `action_family=review_plan` 时恢复缺失的审查项 code，因此第一轮返回 `replacement_scope` 缺失，模型再绕到审查，最后才生成删除预览。
+- `execute_plan_action(remove_units preview)` 也没有像排序、加入、移动一样直返确认预览，导致模型二次改写正文和额外耗时。
+
+修复：
+
+- `_recover_missing_review_issue_mutation` 扩展到 `review_plan/remove_units/replace_units`：
+  - 当用户目标能唯一指向当前或 registry 中的 `item_removal` 审查项时，即使模型传入 `replace_units`，也能恢复为 `high_tuition -> remove_units preview`。
+  - 只读保护仍优先，`有没有高收费风险 / 高收费多吗` 不会被恢复成删除预览。
+- Tool Reply Policy 增加 `review_issue_batch_scope` 直返：
+  - `execute_plan_action` 返回审查项批量预览后，本轮直接 `preview_wait_confirm`，不再交给模型二次组织。
+  - 普通未结构化 `remove_units/move_unit/replace_units` 预览仍保持原策略，避免过度直返。
+
+验证：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest \
+  tests/unit/test_plan_orchestration_tool.py \
+  tests/unit/test_plan_execution_tool.py \
+  tests/unit/test_tool_reply_policy.py -q
+```
+
+结果：`179 passed`。
+
+单 case live：
+
+| case | 修复前 | 修复后 |
+| --- | ---: | ---: |
+| `303-dialogue-operation-remove-expensive-preview` | 5 次工具调用，约 `57.820s` | 2 次工具调用，约 `24.918s` |
+
+复跑 5 个 targeted case：
+
+| case | 结果 | 耗时 |
+| --- | --- | ---: |
+| `303-dialogue-plan-high-fee-risk` | 只读审查，无确认卡片 | `26.050s` |
+| `303-dialogue-operation-sort-admission-rate` | 排序预览指标正常，确认卡片 | `28.063s` |
+| `303-dialogue-operation-sort-good-school` | 院校层次指标正常，确认卡片 | `26.172s` |
+| `303-dialogue-operation-sort-recommendation` | 推荐系数指标正常，确认卡片 | `24.118s` |
+| `303-dialogue-operation-remove-expensive-preview` | 2 次工具调用，删除确认卡片 | `26.250s` |
+
+当前结论：
+
+- 高收费删除预览的“重复试工具”已收敛，剩余耗时主要来自 full Agent 两次模型请求，而不是工具链反复绕路。
+- 排序预览和只读高收费边界未回退。
+
+### 38.12 2026-06-03 open-quality 全量回归与意向预览入参容错
+
+本轮在 38.11 后复跑 `dialog_regression_303_open_quality_cases.json`，继续保持 full Agent 主路径，不启用字符串 fast route。
+
+运行命令：
+
+```bash
+cd zhiyuan-agent
+PYTHONPATH=. ./.venv/bin/python examples/dialog_regression_runner.py \
+  --url ws://127.0.0.1:8039/gaotu-assistant-agent/plus/chat/1/bot/test/do \
+  --cases examples/dialog_regression_303_open_quality_cases.json \
+  --response-timeout 180 \
+  --keep-response-text \
+  --assert-plan-style \
+  --metrics-output /private/tmp/zhiyuan_303_open_quality_after_direct_batch_preview_20260603.json \
+  --clear-history-per-case \
+  --clear-backend-pending-per-case \
+  --internal-service-url http://127.0.0.1:8080
+```
+
+结果：
+
+| 指标 | 值 |
+| --- | ---: |
+| steps | 23 |
+| successfulSteps | 23 |
+| failedSteps | 0 |
+| median elapsed | 20.081s |
+| p95 elapsed | 33.357s |
+| max elapsed | 41.330s |
+
+最慢 case：
+
+| case | 输入 | 耗时 |
+| --- | --- | ---: |
+| `303-open-quality-budget-risk-colloquial-readonly` | 方案里中外合作是不是有点多，家里预算一般，帮我用大白话看下风险，先别动 | 41.330s |
+| `303-open-quality-career-parent-colloquial-readonly` | 家里就想让孩子以后稳一点进体制，这个方案能撑住吗，先别动 | 33.357s |
+| `303-open-quality-major-compare-with-context` | 法学和财政学哪个更适合普通家庭女生，先只分析不要记偏好 | 32.989s |
+| `303-open-quality-plan-make-safer-preview` | 就按别太冒险的思路把这版调稳点，先给我看看会怎么动 | 28.674s |
+| `303-open-quality-lazy-plan-too-risky-readonly` | 这版是不是太冲了，能不能给我说人话 | 28.420s |
+
+质量与边界结论：
+
+- 所有 23 个步骤均返回有效回复，无内容失败。
+- 高收费只读问题保持只读审查，不生成删除卡片；明确“去掉太贵项”仍生成确认预览。
+- 排序预览继续能展示录取率、院校层次和推荐系数，不再出现排序指标全为 `-` 的问题。
+- “查询后再确认”保护仍正确：没有 active pending 时，用户自然语言“确认”不会执行历史动作。
+- 剩余主要问题是慢例，不是功能边界错误。慢点集中在只读审查、职业方向承接、专业对比和综合调稳预览的最终模型总结阶段。
+
+本轮还定位到一个意向确认预览的重复调用：
+
+- case：`303-open-quality-intent-colloquial-mixed-soft-hard`
+- 输入：`会计审计这类还行，土木建筑那种别碰`
+- 表现：最终只返回一张确认卡片，用户侧行为正确；但可观测显示 `preview_current_major_intent_confirmation` 调用两次。
+- 根因：模型第一次传入 `major_intents.positive_level2=["工商管理类"]`，当前 `MajorIntentPreviewInput` 只接受 `level2`，触发 schema retry；第二次改成 `level2` 后成功。
+- 修复：`MajorIntentPreviewInput` 增加结构化 alias：`positive_level1 -> level1`、`positive_level2 -> level2`、`positive_level3 -> level3`。对外 schema 仍只暴露 canonical 字段 `level1/level2/level3/negative_*`，内部统一归一到 canonical payload。
+
+验证：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest \
+  tests/unit/test_intent_state_tool.py::test_preview_current_major_intent_confirmation_wrapper_accepts_positive_level_aliases \
+  tests/unit/test_intent_state_tool.py::test_preview_current_major_intent_confirmation_wrapper_passes_explicit_major_intents \
+  tests/unit/test_chat_agent_tools.py::TestChatAgentToolRegistration::test_intent_preview_tool_schema_exposes_closed_major_intent_keys -q
+```
+
+结果：`3 passed`。
+
+live 单 case 复测：
+
+```bash
+cd zhiyuan-agent
+PYTHONPATH=. ./.venv/bin/python examples/dialog_regression_runner.py \
+  --url ws://127.0.0.1:8039/gaotu-assistant-agent/plus/chat/1/bot/test/do \
+  --session 880708 \
+  --prompts "会计审计这类还行，土木建筑那种别碰" \
+  --response-timeout 120 \
+  --keep-response-text \
+  --assert-plan-style \
+  --metrics-output /private/tmp/zhiyuan_303_intent_positive_alias_live_20260603.json \
+  --clear-history \
+  --clear-backend-pending \
+  --internal-service-url http://127.0.0.1:8080
+```
+
+结果：
+
+- `successfulSteps=1 / failedSteps=0`
+- `toolNameCounts={"preview_current_major_intent_confirmation": 1}`
+- `hasRepeatedToolCalls=false`
+- 返回 1 张 `pendingConfirmationCard`，`status=active`，点击前不会写入后续报考参考。
+- 耗时 `12.298s`。相比修复前同 case `10.967s` 略高，主要来自本次模型首轮请求时延；工具链已从两次预览收敛为一次。
+
+剩余优化方向：
+
+- 只读分析质量当前可接受，不为了压延迟削薄回复；下一步优先减少不必要的多工具链和最终模型二次总结长尾。
+- `budget-risk` 和 `career-parent` 这类回复已经有有效事实与结构，后续可评估是否让对应工具返回更完整的结构化 facts，减少模型重复组织，但必须保持内容丰满。
+
+### 39. 2026-06-03 develop 更新后 88 Case 与前端快捷入口验证
+
+本轮先拉取 `origin/develop` 到 `88bf5f6`（`feat: polish 3.0.3 chat interactions`），再基于当前 full Agent 主路径做回归。运行期间不恢复字符串 fast route，也不把质量较高的开放咨询压成固定短回复。
+
+#### 39.1 前端快捷入口验证
+
+PC 详情页快捷入口：
+
+- `看看现在的方案`
+- `我适合什么方向`
+- `有哪些机会可看`
+- `方案哪里要注意`
+
+验证输出：`/private/tmp/zhiyuan_303_quick_entry_live_20260603.json`
+
+| 指标 | 值 |
+| --- | ---: |
+| steps | 4 |
+| successfulSteps | 4 |
+| failedSteps | 0 |
+| median elapsed | 30.210s |
+| max elapsed | 33.138s |
+
+结论：
+
+- 4 个快捷入口都返回有效只读回复，没有生成 `pendingConfirmationCard`。
+- 回复能覆盖当前方案、方向适配、机会点和方案风险，用户侧可用。
+- 延迟偏高，主要依赖当前 thinking/progress 提示承接用户等待；后续优化仍应优先保证内容质量。
+
+#### 39.2 88 case 首轮异常与原因归类
+
+首轮输出：`/private/tmp/zhiyuan_303_dialogue_derived_after_remote_20260603.json`
+
+| 指标 | 值 |
+| --- | ---: |
+| steps | 88 |
+| successfulSteps | 88 |
+| failedSteps | 0 |
+| failure lines | 29 |
+| unique failed cases | 25 |
+| median elapsed | 3.449s |
+| p95 elapsed | 19.103s |
+| max elapsed | 29.534s |
+
+说明：
+
+- runner 层面 88 个 step 都拿到了 WebSocket 响应，但内容断言未通过，不能算通过。
+- 25 个唯一 case 稳定返回“模型服务中断”兜底，且 `toolCalls=[]`，说明没有进入工具阶段。
+- 复跑失败子集时，如果不重启 Agent，25/25 仍稳定兜底；重启 Agent 后同一批 case 恢复为正常回复。
+- 因此本轮首轮失败更像旧 Agent 进程或模型连接状态异常，不是业务逻辑稳定失败。
+
+同时发现一个可观测性缺口：中断兜底保存历史时覆盖了先前带 `route-observability` 的失败历史，导致 runner 只能看到 `toolCalls=[]`，看不到 `failedNode/errorType`。本轮已修复为 fallback 历史也保留 route-observability；后续如果再次出现“模型服务中断”，结果文件可以带出失败节点。
+
+#### 39.3 重启 Agent 后 88 case 全量通过
+
+重启 8039 Agent 后，全量复跑：
+
+```bash
+cd zhiyuan-agent
+PYTHONPATH=. ./.venv/bin/python examples/dialog_regression_runner.py \
+  --url ws://127.0.0.1:8039/gaotu-assistant-agent/plus/chat/1/bot/test/do \
+  --cases examples/dialog_regression_303_dialogue_derived_cases.json \
+  --response-timeout 180 \
+  --keep-response-text \
+  --assert-plan-style \
+  --metrics-output /private/tmp/zhiyuan_303_dialogue_derived_after_agent_restart_20260603.json \
+  --clear-history-per-case \
+  --clear-backend-pending-per-case \
+  --internal-service-url http://127.0.0.1:8080
+```
+
+结果：
+
+| 指标 | 值 |
+| --- | ---: |
+| steps | 88 |
+| successfulSteps | 88 |
+| failedSteps | 0 |
+| failures | 0 |
+| warnings | 0 |
+| fallback replies | 0 |
+| pending confirmation cards | 5 |
+| median elapsed | 19.799s |
+| p95 elapsed | 34.006s |
+| max elapsed | 41.302s |
+
+工具调用分布：
+
+| toolCallCount | case 数 |
+| ---: | ---: |
+| 0 | 11 |
+| 1 | 51 |
+| 2 | 21 |
+| 3 | 3 |
+| 4 | 2 |
+
+最慢 case：
+
+| case | 输入 | 耗时 |
+| --- | --- | ---: |
+| `303-dialogue-public-funded-normal-score-boundary` | 公费师范这种确定性强不强，分数边上能不能碰 | 41.302s |
+| `303-dialogue-operation-move-beijing-forward` | 把北京的志愿往前挪一些可以吗 | 36.016s |
+| `303-dialogue-plan-major-vs-school-bias` | 优先专业还是学校，这版偏哪边 | 35.754s |
+| `303-dialogue-big-city-private-vs-small-city-public` | 大城市民办和小城市公办怎么选 | 35.713s |
+| `303-dialogue-plan-worth-in-plain-language` | 能不能用大白话说下这版值不值得 | 34.006s |
+
+质量结论：
+
+- 88 个真实对话派生 case 全量通过，当前可作为本轮主路径通过结论。
+- 计划变更仍保持 `preview -> pendingConfirmationCard -> confirm -> apply` 边界；自然语言不直接执行高副作用动作。
+- 专业、地域、职业、政策、预算、方案审查等场景均能返回用户可读的结构化回复。
+- 回复内容没有为了压延迟变薄，整体信息量可用。
+
+剩余质量/性能观察：
+
+- 仍有 13 个 case 超过 30s，1 个 case 超过 40s。慢点主要来自最终模型总结和少数工具内部事实整理。
+- 部分开放问题会多工具试探，例如 `计算机太累的话，信息管理这种算不算折中` 触发 `analyze_current_major_interest -> compare_majors -> get_major_introductions`，质量可用但链路偏长。
+- 高收费统计口径需要后续核实：`一年学费最多两三万` 里出现“2 条中外合作”但表格列 3 条；另一个预算问题中“高收费专业 76 个”与中外合作清单口径不同，需检查 `review_plan` 的高收费分类和回复聚合逻辑。
+- 个别回复偏向先追问信息，例如英语优势、数学波动类 case，虽然通过断言，但后续可提升为“先给判断框架 + 再追问”的更丰满形态。
+
+本轮代码修复：
+
+- `examples/dialog_regression_runner.py`：增强 route-observability 摘要，支持输出 `agentRunFailure`。
+- `app/service.py`：中断兜底保存历史时保留 route-observability，不再覆盖失败观测消息。
+
+后续建议：
+
+1. 把高收费统计口径作为下一轮 targeted issue，先查 `review_plan` facts 再决定是否修业务或回复聚合。
+2. 对 30s+ 慢例按工具链分层复盘，优先减少不必要的多工具试探和最终模型重复总结。
+3. 保持当前质量优先策略；如果要引入结构化入口或小模型路由，必须先通过 88 case、open-quality、历史 regression/e2e 和确认边界验证。
+
+#### 39.5 高收费统计口径修复
+
+88 case 虽然全量通过，但人工复核发现预算/高收费相关回复存在质量问题：
+
+- `一年学费最多两三万，方案里高收费多吗`：回复说“主要集中在 2 条中外合作办学志愿”，但表格列了 3 条中外合作代表例子。
+- `预算一般，是不是要少放中外合作`：回复说“高收费专业（含中外合作）有 76 个”，同时只列 3 条中外合作例子，用户容易误解为数量互相矛盾。
+- `有没有高收费风险`：只列 2 条中外合作例子，没有明确这是代表例子还是全部命中项。
+
+定位：
+
+- 测试断言只验证关键词覆盖，因此 88/88 通过不能代表数量口径完全正确。
+- `review_plan` facts 里原本已有 `affected_count`，但用户可见 `summary` 只展示示例条目，最终模型容易把示例数量当作总数，或把高收费、中外合作、概率倒挂等不同审查 code 的数量混在一起。
+- 问题不是路由失败，也不是需要新增自然语言关键词匹配；根因是结构化事实披露不够清晰。
+
+修复：
+
+- `_collect_issue_hit_plan_examples` 增加 `example_count/count_text/example_text`，明确每个审查问题“共命中 N 条志愿”和“下面列 M 条代表例子，不代表全部”。
+- `analysis_handlers` 的审查摘要和调整分析摘要统一使用上述字段，避免只给示例不说总量。
+- `tool_dispatch_rules` 补充事实边界：`affected_count/count_text` 是总量，`items/example_text` 是代表例子；最终回复不能把示例条数说成总量，也不能混用不同审查问题数量。
+
+验证：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest \
+  tests/unit/test_plan_execution_tool.py::test_execute_plan_action_runs_review_without_duplicate_rerun \
+  tests/unit/test_plan_execution_tool.py::test_execute_plan_action_review_reply_explains_cost_risks \
+  tests/unit/test_plan_execution_tool.py::test_execute_plan_action_adjustment_analysis_uses_review_issue_examples_when_no_structured_suggestions \
+  tests/unit/test_tool_reply_policy.py::test_policy_keeps_structured_review_result_for_model_synthesis \
+  -q
+```
+
+结果：`4 passed`。
+
+Targeted live 复测：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python examples/dialog_regression_runner.py \
+  --url ws://127.0.0.1:8040/gaotu-assistant-agent/plus/chat/1/bot/test/do \
+  --cases /private/tmp/zhiyuan_303_high_fee_target_cases.json \
+  --response-timeout 180 \
+  --keep-response-text \
+  --assert-plan-style \
+  --metrics-output /private/tmp/zhiyuan_303_high_fee_after_count_text.json \
+  --clear-history-per-case \
+  --clear-backend-pending-per-case \
+  --internal-service-url http://127.0.0.1:8080
+```
+
+结果：`3/3` 通过。
+
+| case | 输入 | 耗时 | 结果观察 |
+| --- | --- | ---: | --- |
+| `303-dialogue-budget-cap-two-three-wan` | 一年学费最多两三万，方案里高收费多吗 | 27.475s | 回复明确“当前 94 个志愿中，有 76 个被标记为高收费专业”，后面列为“典型例子”，不再说成 2 条。 |
+| `303-dialogue-budget-less-sino-foreign` | 预算一般，是不是要少放中外合作 | 25.892s | 回复明确“高收费专业（含中外合作）命中了 76 条”，再说明预算风险和下一步。 |
+| `303-dialogue-plan-high-fee-risk` | 有没有高收费风险 | 31.260s | 回复明确“当前方案共命中 76 条高收费志愿”，后续只列典型例子。 |
+
+复测结论：数量口径已经从用户侧回复上收敛为“总量 + 典型例子”，没有再出现示例数量和总量混写。延迟仍偏高，3 个 case 都是 `plan_next_action -> execute_plan_action -> final model synthesis` 的 3 次模型请求，后续仍归入质量优先前提下的性能优化项。
+
+影响边界：
+
+- 只改变审查/调整 facts 的用户可读披露，不改变审查规则、不改变高收费分类、不改变方案 preview/apply 行为。
+- 继续保留 `review_result` 走模型综合回复，避免审查回复被压薄；但模型拿到的 facts 更清楚，降低数量口径混写风险。
+
+#### 39.6 裸序号方案移动预览修复
+
+88 个真实对话派生 case 复跑时，执行链路全部完成，但出现 1 个内容断言失败：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python examples/dialog_regression_runner.py \
+  --url ws://127.0.0.1:8041/gaotu-assistant-agent/plus/chat/1/bot/test/do \
+  --cases examples/dialog_regression_303_dialogue_derived_cases.json \
+  --response-timeout 180 \
+  --keep-response-text \
+  --assert-plan-style \
+  --metrics-output /private/tmp/zhiyuan_303_dialogue_derived_after_empty_query_and_major_param_20260603.json \
+  --clear-history-per-case \
+  --clear-backend-pending-per-case \
+  --internal-service-url http://127.0.0.1:8080
+```
+
+结果：
+
+| 指标 | 值 |
+| --- | ---: |
+| steps | 88 |
+| successfulSteps | 88 |
+| failedSteps | 0 |
+| 内容断言失败 | 1 |
+| median elapsed | 16.926s |
+| p95 elapsed | 32.673s |
+| max elapsed | 37.296s |
+
+失败 case：
+
+| case | 输入 | 错误回复 | 实际链路 |
+| --- | --- | --- | --- |
+| `303-dialogue-operation-move-index-preview` | 把第5个挪到第2个看看影响 | 这次操作还缺少必要信息，请补充清楚后我再继续。 | `plan_next_action(move_unit, analyze) -> execute_plan_action(error)` |
+
+定位：
+
+- 当前新版工作台里，裸序号“第 N 个 / 第 N 位 / 第 N 条”指向方案排序区的展示单元。
+- 在院校专业组模式下，这个展示单元是专业组；在专业+大学模式下，通常是单条志愿。
+- 原工具契约只强调“第 N 个专业组”才走 `move_ordered_unit`，导致模型把“第 5 个”误归为旧的 `move_unit`，但又没有可用于单条志愿解析的 `volunteer_ids`。
+
+修复：
+
+- `plan_next_action` 工具说明补齐裸序号位置语义：没有点名学校+专业时，位置引用统一按排序区展示单元处理，传 `move_ordered_unit` + `source_position` + `target_position`。
+- 编排层增加结构化矛盾规范化：如果模型传入 `move_unit/remove_units`，但参数里是 `unit_ids` 或 `source_position`，且没有 `volunteer_ids`，自动规范为 `move_ordered_unit/remove_ordered_unit`。该逻辑只看结构化字段，不从用户原文做关键词补丁。
+- `execute_plan_action` 的 ordered-unit 预览文案按数据区分“专业组/志愿”：多专业或专业组 ID 仍展示“专业组”，单专业展示单元展示为“志愿”，避免专业+大学模式下误称专业组。
+
+验证：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest \
+  tests/unit/test_plan_orchestration_tool.py \
+  tests/unit/test_plan_execution_tool.py \
+  tests/unit/test_chat_agent_init_profile.py \
+  tests/unit/test_tool_reply_policy.py \
+  tests/unit/test_instructions.py \
+  -q
+```
+
+结果：`227 passed`。
+
+Targeted live：
+
+| 输入 | 输出文件 | 结果 |
+| --- | --- | --- |
+| 把第5个挪到第2个看看影响 | `/private/tmp/zhiyuan_303_move_index_after_ordered_unit_fix_rerun.json` | `move_ordered_unit -> preview_only`，生成确认卡片，未执行实际移动。 |
+| 把第4个专业组移到第2位 | `/private/tmp/zhiyuan_303_group_move_after_ordered_unit_fix.json` | 显式专业组移动仍走 `move_ordered_unit`，组内专业不打散。 |
+| 把哈尔滨理工大学的人力资源管理改到第3位 | `/private/tmp/zhiyuan_303_named_move_after_ordered_unit_fix.json` | 命名志愿移动仍走 `move_unit`，当前位置和目标位置展示正确。 |
+| 把太贵的那几个先去掉看看 | `/private/tmp/zhiyuan_303_high_fee_after_ordered_unit_fix.json` | 高收费批量移除预览仍走 `remove_units`，确认卡片正常。 |
+
+影响边界：
+
+- 不改变后端移动/删除接口，不改变确认卡片协议，不改变真正 apply 的执行逻辑。
+- 只修复 Plan 编排层对“排序区裸序号位置引用”的动作选择，以及预览文案的用户侧标签。
+- 仍保持质量优先：该路径还有 2 次模型请求，targeted live 耗时约 23-25s，后续性能优化不能牺牲预览事实和确认边界。

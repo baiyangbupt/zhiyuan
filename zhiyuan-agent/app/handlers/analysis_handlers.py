@@ -57,6 +57,8 @@ def _issue_hit_plan_examples_text(items: list[dict[str, Any]] | None, *, limit: 
         if not isinstance(item, dict):
             continue
         summary = str(item.get("summary") or "").strip()
+        count_text = str(item.get("count_text") or "").strip()
+        example_text = str(item.get("example_text") or "").strip()
         affected_items = [
             str(name or "").strip()
             for name in (item.get("items") or [])
@@ -64,7 +66,11 @@ def _issue_hit_plan_examples_text(items: list[dict[str, Any]] | None, *, limit: 
         ]
         if not summary or not affected_items:
             continue
-        snippets.append(f"{summary}：{'；'.join(affected_items[:2])}")
+        prefix = summary
+        if count_text:
+            prefix = f"{summary}（{count_text}）"
+        example_prefix = f"{example_text}：" if example_text else ""
+        snippets.append(f"{prefix}：{example_prefix}{'；'.join(affected_items[:2])}")
     return "；".join(snippets)
 
 
@@ -192,13 +198,19 @@ def _build_review_direct_reply(facts: dict[str, Any]) -> str:
             if not isinstance(item, dict):
                 continue
             summary = _normalize_review_summary_for_user(str(item.get("summary") or ""))
+            count_text = str(item.get("count_text") or "").strip()
+            example_text = str(item.get("example_text") or "").strip()
             affected_items = [
                 _clean_plan_position_text(str(name or ""))
                 for name in (item.get("items") or [])
                 if str(name or "").strip()
             ]
             if summary and affected_items:
-                lines.append(f"- {summary}：{'；'.join(affected_items[:2])}")
+                head = summary
+                if count_text:
+                    head = f"{summary}（{count_text}）"
+                example_label = f"{example_text}：" if example_text else ""
+                lines.append(f"- {head}：{example_label}{'；'.join(affected_items[:2])}")
 
     cost_risk_lines = _build_cost_risk_lines(issue_examples)
     if cost_risk_lines:

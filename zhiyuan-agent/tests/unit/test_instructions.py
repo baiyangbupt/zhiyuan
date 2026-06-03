@@ -213,6 +213,8 @@ class TestStyleRules:
         assert len(result) > 100
         assert "回复风格" in result
         assert "不要夹杂不必要的英文词" in result
+        assert "点击采纳/确认前不会生效" in result
+        assert "首轮或干净上下文不要以“抱歉，刚才...”开头" in result
 
 
 # ---------------------------------------------------------------------------
@@ -233,6 +235,12 @@ class TestToolDispatchRules:
         assert "用户原始引用" in result
         assert "广西师大统计" in result
         assert "不要改走学校/分数线 Explore 分析" in result
+
+    def test_plan_local_abbreviation_lookup_uses_plan_query_tool(self):
+        result = build_tool_dispatch_rules()
+        assert "简称、模糊代称或口语化表达" in result
+        assert "query_volunteer_plan" in result
+        assert "不要自行把简称解释成地名或院校" in result
 
     def test_school_major_move_and_remove_refs_are_plan_mutations(self):
         result = build_tool_dispatch_rules()
@@ -296,9 +304,36 @@ class TestToolDispatchRules:
         assert "不要再拿历史上下文里的旧方案概览" in result
         assert "单纯方案审查 `review_plan` 不要先调用 `collect_plan_context_inputs`" in result
 
+    def test_plan_region_move_should_not_be_generic_sort(self):
+        result = build_tool_dispatch_rules()
+        assert "把北京/上海/某学校/某专业方向的志愿往前挪一些" in result
+        assert "不是指定维度排序" in result
+        assert "不要把它规划成 `sort_ordered_plan`" in result
+        assert "目标位置" in result
+
+    def test_plan_tuition_removal_request_should_preview_mutation(self):
+        result = build_tool_dispatch_rules()
+        assert "高收费/太贵/中外合作项" in result
+        assert "`remove_units` 或 `replace_units` preview" in result
+        assert 'review_issue_target.code="high_tuition"' in result
+        assert "不要停在 `review_plan`" in result
+
+    def test_policy_metric_explanation_should_not_be_plan_state_query(self):
+        result = build_tool_dispatch_rules()
+        assert "某个指标/规则在方案里应该怎么看" in result
+        assert "分数、位次、批次线、录取概率等指标“在方案里怎么看/怎么参考”" in result
+        assert "不是当前方案现状查询，应走 Policy" in result
+
+    def test_policy_tuition_tradeoff_should_not_use_generic_interest(self):
+        result = build_tool_dispatch_rules()
+        assert "学校层次很好但学费高能不能冲" in result
+        assert "属于学费预算取舍的 Policy 决策框架" in result
+        assert "不要调用泛化兴趣分析工具" in result
+
     def test_plan_local_query_empty_result_should_not_be_worded_as_system_delay(self):
         result = build_tool_dispatch_rules()
         assert "暂时没有筛到/没有命中" in result
+        assert "不能只回复“没有可查询的志愿”" in result
         assert "不要改写成“系统延迟、稍后再试、查询没拉出来”" in result
 
     def test_candidate_readonly_query_should_not_probe_plan_state_first(self):
@@ -317,6 +352,32 @@ class TestToolDispatchRules:
         assert "整体调稳、补稳、降低冒险程度" in result
         assert "`preview_compensation`" in result
         assert "没有可执行补齐动作" in result
+
+    def test_plan_preview_should_not_query_state_again(self):
+        result = build_tool_dispatch_rules()
+        assert '返回 `result_kind="preview_only"` 后' in result
+        assert "不要再补调 `query_state`" in result
+        assert "二次 `plan_next_action`" in result
+
+    def test_explore_tool_should_not_repeat_same_tool(self):
+        result = build_tool_dispatch_rules()
+        assert "同一轮里同一个只读 Explore 工具只调用一次" in result
+        assert "不要再次调用同一个 Explore 工具重试" in result
+
+    def test_explore_readonly_should_not_promise_direct_intent_update(self):
+        result = build_tool_dispatch_rules()
+        assert "是否需要我整理成确认卡片" in result
+        assert "不要说“我可以直接设置/排除/过滤/更新后续推荐”" in result
+
+    def test_style_rules_hide_tool_internals_from_user(self):
+        result = build_style_rules()
+        assert "不要向用户解释“工具返回/工具识别/工具调用偏了”" in result
+        assert "工具返回、工具识别、工具调用" in result
+
+    def test_style_rules_require_card_for_confirmation_wording(self):
+        result = build_style_rules()
+        assert "如果本轮没有生成确认卡片" in result
+        assert "不能说“你确认后我会过滤/执行/更新”" in result
 
     def test_plan_tool_docs_say_refs_do_not_need_pre_query(self):
         assert "不适合在移动/删除前作为“定位 ID”的前置步骤" in (query_volunteer_plan.__doc__ or "")

@@ -9,6 +9,7 @@ from app.agent.context import RequestContext
 from app.domain.school_major_ref_resolver import resolve_school_major_ref
 from app.tools.plan_context_tool import _collect_plan_context_inputs_model
 from app.tools.plan_orchestration_models import PlanActionPlan, PlanAtomicAction, PlanReviewIssueTarget
+from app.tools.review_issue_registry import get_review_issue_rule
 
 
 _PLAN_DEPENDENT_ACTIONS = {
@@ -83,6 +84,237 @@ def _find_review_issue_by_code(review_issues: list[dict[str, Any]], code: str | 
     return None
 
 
+def _review_issue_from_registry(code: str | None) -> dict[str, Any] | None:
+    rule = get_review_issue_rule(code)
+    if rule is None:
+        return None
+    return {
+        "code": rule.code,
+        "label": rule.label,
+        "summary": rule.label,
+        "scope_kind": rule.scope_kind,
+        "default_action_family": rule.default_action_family,
+        "affected_unit_count": 0,
+        "affected_volunteer_count": 0,
+        "scope_fingerprint": "",
+    }
+
+
+_REVIEW_ISSUE_TEXT_ALIASES: dict[str, tuple[str, ...]] = {
+    "high_tuition": (
+        "高收费",
+        "收费高",
+        "收费太高",
+        "学费高",
+        "学费太高",
+        "学费偏高",
+        "太贵",
+        "贵的",
+        "费用高",
+        "费用太高",
+        "费用偏高",
+        "预算压力",
+    ),
+    "cooperative_program": ("中外合作", "合作办学", "中外合办", "合作项目"),
+    "admission_limit": ("限报", "受限", "报不了", "体检限制", "色弱", "色盲", "视力限制"),
+    "special_enrollment": ("特殊类型", "专项", "地方专项", "国家专项", "高校专项"),
+}
+
+_REVIEW_ISSUE_REMOVE_ALIASES = ("去掉", "去除", "删除", "删掉", "移出", "剔除", "拿掉", "踢掉")
+_REVIEW_ISSUE_REPLACE_ALIASES = ("替换", "换成", "换掉", "改成")
+_REVIEW_ISSUE_HANDLE_ALIASES = ("处理", "解决", "清理")
+_REVIEW_ISSUE_READ_ONLY_GUARDS = (
+    "先别动",
+    "别动方案",
+    "不要动方案",
+    "不动方案",
+    "先别改",
+    "别改方案",
+    "不要改方案",
+    "不改方案",
+)
+
+_SORT_FIELD_TEXT_MARKERS: dict[str, tuple[str, ...]] = {
+    "admissionRatio": ("录取率", "概率", "冲稳保", "稳妥", "稳一点", "风险"),
+    "schoolRank": ("院校层次", "学校层次", "院校排名", "学校排名", "好学校", "学校好", "层次"),
+    "finalScore": ("推荐系数", "推荐分", "推荐度", "推荐排序", "综合推荐"),
+}
+_RANGE_MOVE_MARKERS = (
+    "往前",
+    "前挪",
+    "提前",
+    "提到前",
+    "放前",
+    "靠前",
+    "排前",
+    "往上",
+    "上移",
+)
+
+
+def _compact_user_goal_text(user_goal: str) -> str:
+    return "".join(str(user_goal or "").strip().split()).lower()
+
+
+def _infer_review_issue_mutation_action(user_goal: str) -> str | None:
+    text = _compact_user_goal_text(user_goal)
+    if not text or any(marker in text for marker in _REVIEW_ISSUE_READ_ONLY_GUARDS):
+        return None
+    if any(marker in text for marker in _REVIEW_ISSUE_REPLACE_ALIASES):
+        return "replace_units"
+    if any(marker in text for marker in _REVIEW_ISSUE_REMOVE_ALIASES):
+        return "remove_units"
+    return None
+
+
+def _review_issue_mutation_requested(user_goal: str) -> bool:
+    text = _compact_user_goal_text(user_goal)
+    if not text or any(marker in text for marker in _REVIEW_ISSUE_READ_ONLY_GUARDS):
+        return False
+    if _infer_review_issue_mutation_action(user_goal):
+        return True
+    return any(_compact_user_goal_text(marker) in text for marker in _REVIEW_ISSUE_HANDLE_ALIASES)
+
+
+def _infer_review_issue_code_from_goal(
+    user_goal: str,
+    review_issues: list[dict[str, Any]],
+) -> str | None:
+    """Recover a missing review_issue_code for known item-removal issues.
+
+    This is a narrow compatibility guard for the old direct plan_next_action
+    contract: the main model should pass review_issue_code explicitly, but can
+    occasionally call review_plan for a mutation request.  The guard only
+    matches labels/aliases of current review issues or registered item-removal
+    issues and refuses ambiguous matches.
+    """
+    text = _compact_user_goal_text(user_goal)
+    if not text:
+        return None
+
+    matched_codes: list[str] = []
+    for issue in review_issues:
+        if str(issue.get("scope_kind") or "").strip() != "item_removal":
+            continue
+        code = str(issue.get("code") or "").strip()
+        if not code:
+            continue
+        labels = [
+            str(issue.get("label") or "").strip(),
+            str(issue.get("summary") or "").strip(),
+            *_REVIEW_ISSUE_TEXT_ALIASES.get(code, ()),
+        ]
+        aliases = [alias for alias in labels if alias]
+        if any(_compact_user_goal_text(alias) in text for alias in aliases):
+            matched_codes.append(code)
+
+    unique_codes = list(dict.fromkeys(matched_codes))
+    if len(unique_codes) == 1:
+        return unique_codes[0]
+    if unique_codes:
+        return None
+
+    registry_matches: list[str] = []
+    for code, aliases in _REVIEW_ISSUE_TEXT_ALIASES.items():
+        rule = get_review_issue_rule(code)
+        if rule is None or rule.scope_kind != "item_removal":
+            continue
+        candidates = (rule.label, *(aliases or ()))
+        if any(_compact_user_goal_text(alias) in text for alias in candidates if alias):
+            registry_matches.append(code)
+    unique_registry_matches = list(dict.fromkeys(registry_matches))
+    return unique_registry_matches[0] if len(unique_registry_matches) == 1 else None
+
+
+def _recover_missing_review_issue_mutation(
+    *,
+    action_family: str,
+    review_issue_code: str | None,
+    user_goal: str,
+    review_issues: list[dict[str, Any]],
+) -> tuple[str, str | None]:
+    if review_issue_code:
+        return action_family, review_issue_code
+    if action_family not in {"review_plan", "remove_units", "replace_units"}:
+        return action_family, review_issue_code
+    mutation_action = _infer_review_issue_mutation_action(user_goal)
+    if mutation_action is None:
+        return action_family, review_issue_code
+    inferred_code = _infer_review_issue_code_from_goal(user_goal, review_issues)
+    if not inferred_code:
+        return action_family, review_issue_code
+    return mutation_action, inferred_code
+
+
+def _sort_field_supported_by_goal(sort_field: str | None, user_goal: str) -> bool:
+    field = str(sort_field or "").strip()
+    if not field:
+        return False
+    text = _compact_user_goal_text(user_goal)
+    if not text:
+        return True
+    markers = _SORT_FIELD_TEXT_MARKERS.get(field, ())
+    return any(_compact_user_goal_text(marker) in text for marker in markers if marker)
+
+
+def _looks_like_range_move_goal_without_sort_basis(user_goal: str) -> bool:
+    text = _compact_user_goal_text(user_goal)
+    if not text:
+        return False
+    return any(_compact_user_goal_text(marker) in text for marker in _RANGE_MOVE_MARKERS)
+
+
+def _guard_sort_action_misused_for_range_move(
+    action_family: str,
+    sort_field: str | None,
+    user_goal: str,
+) -> tuple[str, str | None, list[str]]:
+    """Prevent vague range moves from becoming arbitrary recommendation sorts."""
+    if action_family != "sort_ordered_plan":
+        return action_family, sort_field, []
+    if not sort_field:
+        return action_family, sort_field, []
+    if _sort_field_supported_by_goal(sort_field, user_goal):
+        return action_family, sort_field, []
+    if not _looks_like_range_move_goal_without_sort_basis(user_goal):
+        return action_family, sort_field, []
+    return (
+        "query_ordered",
+        None,
+        [
+            "用户是在要求把某个地域、院校或专业范围往前挪，不是指定排序维度；不能默认按推荐系数、录取率或院校层次重排。",
+            "需要先读取当前方案里该范围是否存在，并请用户确认具体移动范围或目标位置。",
+        ],
+    )
+
+
+def _normalize_ordered_unit_action_family(
+    *,
+    action_family: str,
+    volunteer_ids: list[str] | None,
+    unit_ids: list[str] | None,
+    source_position: int | None,
+) -> tuple[str, list[str]]:
+    """Prefer ordered-unit actions when the payload uses ordered-unit refs.
+
+    This is intentionally based on structured tool arguments, not user text.
+    A bare "第 N 个/第 N 位" in the plan workspace refers to the visible
+    ordered unit.  In major-group mode that unit is a school-major group; in
+    school-major mode it is usually one volunteer item.
+    """
+    has_volunteer_ref = bool(volunteer_ids)
+    has_unit_ref = bool(unit_ids) or source_position is not None
+    if action_family == "move_unit" and has_unit_ref and not has_volunteer_ref:
+        return "move_ordered_unit", [
+            "已按排序区展示单元处理位置引用：裸序号位置移动使用 ordered unit，不按单条志愿 ID 解析。"
+        ]
+    if action_family == "remove_units" and has_unit_ref and not has_volunteer_ref:
+        return "remove_ordered_unit", [
+            "已按排序区展示单元处理位置引用：裸序号删除使用 ordered unit，不按单条志愿 ID 解析。"
+        ]
+    return action_family, []
+
+
 def _normalize_adjustment_action_family(
     action_family: str,
     user_goal: str,
@@ -128,6 +360,8 @@ def _build_missing_inputs(
             missing.append("volunteer_ids")
         if not _has_selection_scope(filters):
             missing.append("replacement_scope")
+    if action_family == "sort_ordered_plan" and not str(filters.get("sort_field") or "").strip():
+        missing.append("sort_field")
     return missing
 
 
@@ -243,11 +477,33 @@ async def _plan_next_action_model(
     }
     if preserve_count:
         base_filters["preserve_count"] = "true"
-    if action_family == "sort_ordered_plan":
-        base_filters["sort_field"] = sort_field or "admissionRatio"
+    if action_family == "sort_ordered_plan" and sort_field:
+        base_filters["sort_field"] = sort_field
     filters = dict(base_filters)
+    sort_guard_rationale: list[str] = []
+    action_family, sort_field, sort_guard_rationale = _guard_sort_action_misused_for_range_move(
+        action_family,
+        sort_field,
+        user_goal,
+    )
+    if action_family != "sort_ordered_plan":
+        filters.pop("sort_field", None)
+    recovered_action_family, recovered_review_issue_code = _recover_missing_review_issue_mutation(
+        action_family=action_family,
+        review_issue_code=review_issue_code,
+        user_goal=user_goal,
+        review_issues=review_issues,
+    )
+    if recovered_review_issue_code:
+        if recovered_action_family != action_family:
+            action_family = recovered_action_family  # type: ignore[assignment]
+        review_issue_code = recovered_review_issue_code
+        if current_stage == "review" and action_family != "review_plan":
+            current_stage = None
     review_issue_target: PlanReviewIssueTarget | None = None
     matched_review_issue = _find_review_issue_by_code(review_issues, review_issue_code)
+    if matched_review_issue is None:
+        matched_review_issue = _review_issue_from_registry(review_issue_code)
     if matched_review_issue:
         scope_mode: Literal["full_issue", "narrowed_issue", "explicit_items"] = review_issue_scope_mode or "full_issue"
         if review_issue_scope_mode is None and volunteer_ids:
@@ -272,10 +528,13 @@ async def _plan_next_action_model(
         scope_kind = str(matched_review_issue.get("scope_kind") or "").strip()
         default_action_family = str(matched_review_issue.get("default_action_family") or "").strip()
         replacement_requested = _has_selection_scope(base_filters)
+        mutation_requested = _review_issue_mutation_requested(user_goal)
         if scope_kind == "item_removal":
-            if action_family == "replace_units" and not replacement_requested:
+            if action_family in {"remove_units", "replace_units"} and not mutation_requested:
+                action_family = "review_plan"
+            elif action_family == "replace_units" and not replacement_requested:
                 action_family = "remove_units"
-            elif action_family not in {"remove_units", "replace_units"} and default_action_family:
+            elif action_family not in {"remove_units", "replace_units"} and default_action_family and mutation_requested:
                 action_family = default_action_family  # type: ignore[assignment]
         elif scope_kind == "structural":
             if action_family in {"add_units", "remove_units", "move_unit", "replace_units"} and default_action_family:
@@ -283,6 +542,12 @@ async def _plan_next_action_model(
         elif scope_kind == "informational" and action_family in {"remove_units", "replace_units"}:
             action_family = "review_plan"
     action_family = _normalize_adjustment_action_family(action_family, user_goal, context_inputs)
+    action_family, ordered_unit_rationale = _normalize_ordered_unit_action_family(
+        action_family=action_family,
+        volunteer_ids=volunteer_ids,
+        unit_ids=unit_ids,
+        source_position=source_position,
+    )
     if action_family == "replace_units" and (volunteer_ids or review_issue_target is not None):
         filters = _infer_replace_filters_from_profile(ctx, filters)
     if action_family == "add_units" and not volunteer_ids and not _has_selection_scope(filters):
@@ -404,6 +669,8 @@ async def _plan_next_action_model(
         rationale.append(f"缺少必要输入：{','.join(missing_inputs)}")
         if "existing_plan" in missing_inputs:
             rationale.append("当前还没有方案；不能审查、补齐、补稳、重排或局部调整。应先生成一版基础方案。")
+    rationale.extend(sort_guard_rationale)
+    rationale.extend(ordered_unit_rationale)
     if preview_summary:
         rationale.append(preview_summary)
     if matched_review_issue and str(matched_review_issue.get("scope_kind") or "").strip() == "structural":
@@ -483,8 +750,12 @@ async def plan_next_action(
     对位置移动必须显式填写结构化参数：
     - 单条志愿移动：`action_family="move_unit"`，`volunteer_ids=["用户提到的学校+专业"]`，
     `target_position=N`。
+    - 排序区裸序号移动：如果用户只说“第N个/第N位/第N条”而没有点名学校+专业，
+      使用 `action_family="move_ordered_unit"`，显式填写 `source_position=N` 和
+      `target_position=M`；执行层会按当前方案展示单元顺序解析。院校专业组模式下
+      这个单元是专业组，专业+大学模式下通常是单条志愿。
     - 专业组整体移动：`action_family="move_ordered_unit"`，优先填写真实 `unit_ids`；
-      如果用户只说“第N个专业组”，需要显式填写 `source_position=N` 和
+      如果用户只说“第N个专业组”，同样显式填写 `source_position=N` 和
       `target_position=M`，执行层会按当前专业组顺序解析。
     对单条志愿移动不要只把目标和位置写在 `user_goal` 里；缺少 `volunteer_ids`
     或 `target_position` 时，本工具会要求补充信息。按字段排序时必须显式填写

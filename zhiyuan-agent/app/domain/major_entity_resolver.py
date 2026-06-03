@@ -225,9 +225,16 @@ def resolve_major_mentions_from_text(text: str, batch: str | None = "01") -> lis
                 )
 
     priority = {"level3": 0, "level2": 1, "level1": 2}
+    source_priority = {"exact": 0, "alias": 1, "catalog": 2, "extractor": 2, "auto_alias": 3}
     ordered = sorted(
         spans,
-        key=lambda item: (-(item[1] - item[0]), item[0], priority.get(item[2].level or "", 9), item[2].canonical_name),
+        key=lambda item: (
+            -(item[1] - item[0]),
+            item[0],
+            priority.get(item[2].level or "", 9),
+            source_priority.get(str(item[2].source or ""), 9),
+            item[2].canonical_name,
+        ),
     )
     selected: list[tuple[int, int, EntityResolutionCandidate]] = []
     for start, end, candidate in ordered:

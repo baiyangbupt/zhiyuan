@@ -45,6 +45,15 @@ _QUERY_VOLUNTEER_PLAN_CONTINUE_MARKERS = (
     "查询候选机会失败",
     "查询当前方案时发生错误",
 )
+_QUERY_VOLUNTEER_PLAN_EMPTY_MARKERS = (
+    "当前方案里还没有可查询的志愿",
+    "暂时没有命中",
+    "暂时没有筛到",
+)
+_QUERY_VOLUNTEER_PLAN_FAIL_STATUSES = {
+    "candidate_query_failed",
+    "candidate_query_failed_after_plan_miss",
+}
 
 
 @dataclass(frozen=True)
@@ -103,6 +112,24 @@ def decide_tool_reply(
             reason="intent_preview_tool",
         )
 
+    if tool_name == "query_volunteer_plan" and raw_text and "按当前方案里的院校简称" in raw_text:
+        return ToolReplyDecision(
+            strategy="direct_reply",
+            reply=raw_text,
+            reason="plan_query_alias_match_result",
+        )
+
+    if tool_name == "query_volunteer_plan" and _plan_query_needs_model_synthesis(raw_text, deps):
+        return ToolReplyDecision(reason="read_only_plan_query_empty_or_failed_needs_model_synthesis")
+
+    if (
+        tool_name == "query_volunteer_plan"
+        and raw_text
+        and not _query_result_should_continue(raw_text)
+        and _has_prior_tool_calls(deps, current_tool_names=tool_names)
+    ):
+        return ToolReplyDecision(reason="read_only_plan_query_needs_model_synthesis_after_prior_tools")
+
     if tool_name == "query_volunteer_plan" and raw_text and not _query_result_should_continue(raw_text):
         return ToolReplyDecision(
             strategy="direct_reply",
@@ -111,13 +138,8 @@ def decide_tool_reply(
         )
 
     if tool_name in READONLY_EXPLORE_TOOL_NAMES:
-        reply = _readonly_explore_reply(payload, raw_text)
-        if reply:
-            return ToolReplyDecision(
-                strategy="direct_reply",
-                reply=reply,
-                reason="read_only_explore_result",
-            )
+        if _readonly_explore_reply(payload, raw_text):
+            return ToolReplyDecision(reason="read_only_explore_needs_model_synthesis")
 
     if payload:
         result_kind = str(payload.get("result_kind") or "").strip()
@@ -130,11 +152,7 @@ def decide_tool_reply(
             and result_kind == "status_overview"
             and reply
         ):
-            return ToolReplyDecision(
-                strategy="direct_reply",
-                reply=reply,
-                reason="structured_status_overview",
-            )
+            return ToolReplyDecision(reason="structured_status_overview_needs_model_synthesis")
         if (
             tool_name == "execute_plan_action"
             and action_family == "review_plan"
@@ -142,11 +160,7 @@ def decide_tool_reply(
             and "direct_review_reply" in reply_focus
             and reply
         ):
-            return ToolReplyDecision(
-                strategy="direct_reply",
-                reply=reply,
-                reason="structured_review_result",
-            )
+            return ToolReplyDecision(reason="structured_review_result_needs_model_synthesis")
         if result_kind == "error" and reply_focus & DIRECT_BLOCKING_REPLY_FOCUS and reply:
             return ToolReplyDecision(
                 strategy="direct_blocking",
@@ -186,6 +200,18 @@ def decide_tool_reply(
                 strategy="preview_wait_confirm",
                 reply=reply,
                 reason="structured_add_preview",
+            )
+        if (
+            tool_name == "execute_plan_action"
+            and action_family in {"remove_units", "replace_units"}
+            and result_kind == "preview_only"
+            and "review_issue_batch_scope" in reply_focus
+            and reply
+        ):
+            return ToolReplyDecision(
+                strategy="preview_wait_confirm",
+                reply=reply,
+                reason="structured_review_issue_batch_preview",
             )
         if (
             tool_name == "execute_plan_action"
@@ -286,11 +312,63 @@ def _has_prior_synthesis_facts(deps: Any | None, *, current_tool_names: list[str
     return False
 
 
+def _has_prior_tool_calls(deps: Any | None, *, current_tool_names: list[str]) -> bool:
+    if deps is None:
+        return False
+    observability = getattr(deps, "agent_observability", None)
+    if not isinstance(observability, dict):
+        return False
+    counts = observability.get("toolNameCounts")
+    if not isinstance(counts, dict):
+        return False
+    current_counts: dict[str, int] = {}
+    for tool_name in current_tool_names:
+        current_counts[tool_name] = current_counts.get(tool_name, 0) + 1
+    for tool_name, count in counts.items():
+        prior_count = int(count or 0) - int(current_counts.get(str(tool_name), 0))
+        if prior_count > 0:
+            return True
+    return False
+
+
 def _query_result_should_continue(text: str) -> bool:
     normalized = str(text or "").strip()
     if not normalized:
         return True
     return any(marker in normalized for marker in _QUERY_VOLUNTEER_PLAN_CONTINUE_MARKERS)
+
+
+def _plan_query_needs_model_synthesis(raw_text: str | None, deps: Any | None) -> bool:
+    """Avoid returning local-query empty/failure snippets as the whole answer.
+
+    A local plan/candidate lookup may be useful evidence even when it misses,
+    but user questions can be broader than "is this item present". In those
+    cases the final reply must still answer the tradeoff or decision question.
+    """
+    text = str(raw_text or "").strip()
+    status = _latest_plan_query_status(deps)
+    if status in _QUERY_VOLUNTEER_PLAN_FAIL_STATUSES:
+        return True
+    if any(marker in text for marker in _QUERY_VOLUNTEER_PLAN_EMPTY_MARKERS):
+        return status in {"candidate_query_failed_after_plan_miss", "success_plan_miss_candidate_checked", ""}
+    return False
+
+
+def _latest_plan_query_status(deps: Any | None) -> str:
+    if deps is None:
+        return ""
+    observability = getattr(deps, "agent_observability", None)
+    if not isinstance(observability, dict):
+        return ""
+    timings = observability.get("toolInternalTimings")
+    if not isinstance(timings, list):
+        return ""
+    for item in reversed(timings):
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("tool") or "") == "query_volunteer_plan":
+            return str(item.get("status") or "").strip()
+    return ""
 
 
 def _readonly_explore_reply(payload: dict[str, Any], raw_text: str | None) -> str | None:

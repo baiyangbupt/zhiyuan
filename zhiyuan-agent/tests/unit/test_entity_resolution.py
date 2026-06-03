@@ -45,6 +45,13 @@ def test_resolve_major_mentions_supports_mixed_positive_negative_sentence():
     }
 
 
+def test_resolve_major_mentions_prefers_common_alias_over_auto_alias():
+    mentions = resolve_major_mentions_from_text("新媒体和跨电哪个更适合", "01")
+
+    assert [mention.canonical_name for mention in mentions] == ["网络与新媒体", "跨境电子商务"]
+    assert [mention.source for mention in mentions] == ["alias", "alias"]
+
+
 def test_major_alias_variants_for_name_uses_common_alias_table():
     assert "审计" in major_alias_variants_for_name("审计学", "01")
     assert "软工" in major_alias_variants_for_name("软件工程", "01")

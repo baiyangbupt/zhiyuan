@@ -28,6 +28,7 @@ from app.agent.usage_tracker import UsageTracker
 from app.config import HistoryConfig
 from app.data.history_store import ChatHistoryStore
 from app.data.message_utils import pydantic_ai_messages_to_dicts
+from app.domain.major_entity_resolver import resolve_major_mentions_from_text
 from app.llm.client import LLMClient
 from app.schemas.user_profile import UserProfile
 from app.schemas.ws import WSResponse
@@ -141,6 +142,12 @@ _READONLY_USER_PROMPT_MARKERS = (
     "不要加入",
     "别加进",
     "不要加进",
+    "先别记",
+    "先不要记",
+    "不要记偏好",
+    "别记偏好",
+    "不要记录",
+    "别记录",
 )
 _READONLY_MUTATION_GUARD_REPLY = (
     "我按“先看、先查、不直接改”的方式处理了这轮请求，当前不会加入、删除、移动或重排方案。"
@@ -1337,6 +1344,162 @@ def _normalize_unbacked_recorded_wording(reply: str) -> str:
     return normalized
 
 
+_FALSE_APOLOGY_PREFIX_RE = re.compile(
+    r"^\s*抱歉[，,]\s*刚才[^。！？!?]*(?:没有|没)[^。！？!?]*(?:回应|回答|答复)[^。！？!?]*[。！？!?]\s*(?:让我重新[^。！？!?]*[。！？!?]\s*)?",
+    re.MULTILINE,
+)
+
+
+def _history_has_prior_assistant_reply(history: list[Any] | None) -> bool:
+    for message in history or []:
+        if isinstance(message, ModelResponse):
+            if any(isinstance(part, TextPart) and str(part.content or "").strip() for part in message.parts):
+                return True
+            continue
+        if isinstance(message, dict) and str(message.get("role") or "").strip().lower() == "assistant":
+            if str(message.get("content") or "").strip():
+                return True
+    return False
+
+
+def _normalize_false_apology_reply(reply: str, history: list[Any] | None) -> str:
+    """Remove model-invented self-correction in clean first-turn contexts."""
+    if not isinstance(reply, str) or not reply.strip() or _history_has_prior_assistant_reply(history):
+        return reply
+    normalized = _FALSE_APOLOGY_PREFIX_RE.sub("", reply, count=1).lstrip()
+    return normalized or reply
+
+
+def _normalize_general_confirmation_protocol_wording(reply: str) -> str:
+    """Keep tool-less meta answers aligned with the card-confirmation protocol."""
+    if not isinstance(reply, str) or not reply.strip():
+        return reply
+    normalized = reply
+    confirmation_boundary = "我会先整理成确认卡片，点击采纳前不会覆盖偏好，也不会自动改候选或方案"
+    replacements = (
+        (
+            "直接告诉我就行",
+            "直接告诉我，我会先整理成确认卡片，等你点击采纳后再生效",
+        ),
+        (
+            "你直接告诉我新的想法就行",
+            "你可以直接告诉我新的想法，我会先整理成确认卡片，等你点击采纳后再生效",
+        ),
+        (
+            "直接告诉我新的想法就行",
+            "可以直接告诉我新的想法，我会先整理成确认卡片，点击采纳前不会生效",
+        ),
+        (
+            "我就能按新的要求重新筛选",
+            "点击采纳前不会自动改候选或方案；采纳后我再按新的要求继续看候选和方案",
+        ),
+        (
+            "我就能重新调整推荐口径和候选志愿",
+            "我会先整理成确认卡片；采纳后再调整推荐口径和候选志愿",
+        ),
+        (
+            "我会重新整理，不会锁定之前的偏好",
+            "我会先重新整理成确认卡片；点击采纳前不会覆盖之前的偏好，也不会自动改候选或方案",
+        ),
+        (
+            "随时可以在对话里改",
+            "随时可以在对话里提出调整；我会先整理成确认卡片，点击采纳前不会生效",
+        ),
+        (
+            "在我们这里，随时能改",
+            f"在我们这里，随时可以提出调整；{confirmation_boundary}",
+        ),
+        (
+            "随时能改",
+            f"随时可以提出调整；{confirmation_boundary}",
+        ),
+        (
+            "都是可以根据新想法调整的",
+            f"都可按新想法调整；{confirmation_boundary}",
+        ),
+        (
+            "可以根据新想法调整",
+            f"可按新想法调整；{confirmation_boundary}",
+        ),
+        (
+            "调整偏好后，系统会重新筛选符合条件的院校和专业",
+            "如果要正式更新偏好，我会先整理成确认卡片；点击采纳后，再按新偏好重新筛选符合条件的院校和专业",
+        ),
+        (
+            "调整后会重新匹配候选机会，已生成的方案也可以同步更新",
+            "如果要正式调整，我会先整理成确认卡片；采纳后再重新匹配候选机会，已生成的方案也会按确认后的动作更新",
+        ),
+        (
+            "修改偏好后可以重新生成或局部调整",
+            "如果要按新偏好重新生成或局部调整方案，我会先给出确认预览",
+        ),
+        (
+            "改了之后，重新生成或调整方案即可",
+            "采纳后，再按新偏好重新生成或调整方案",
+        ),
+        (
+            "增删、替换、调整顺序都可以",
+            "增删、替换、调整顺序都可以，但都会先给确认预览，点击采纳前不会改动方案",
+        ),
+        (
+            "可以重新生成方案",
+            "可以重新生成方案，执行前也会先让你确认",
+        ),
+        (
+            "再决定是否更新到后续推荐中",
+            "再决定是否整理成确认卡片；点击采纳前不会更新到后续推荐中",
+        ),
+        (
+            "我先帮你整理成待确认偏好",
+            "我可以先帮你整理成确认卡片，点击采纳前不会写入后续报考参考",
+        ),
+        (
+            "先帮你整理成待确认偏好",
+            "先帮你整理成确认卡片，点击采纳前不会写入后续报考参考",
+        ),
+        (
+            "把这个偏好先记下来",
+            "把这个想法整理成确认卡片，点击采纳前不会作为后续参考",
+        ),
+        (
+            "把偏好先记下来",
+            "把想法整理成确认卡片，点击采纳前不会作为后续参考",
+        ),
+        (
+            "先保存这个思路",
+            "先把这个思路整理成确认卡片",
+        ),
+    )
+    for source, target in replacements:
+        normalized = normalized.replace(source, target)
+    if "确认卡片" in normalized:
+        consistency_replacements = (
+            ("，改完立刻生效", ""),
+            ("改完立刻生效", "采纳后生效"),
+            ("我立刻帮你调整方案", "我会先整理成确认卡片，采纳后再调整方案"),
+            ("立刻帮你调整方案", "先整理成确认卡片，采纳后再调整方案"),
+            ("我直接帮你调整方案", "我会先整理成确认卡片，采纳后再调整方案"),
+            ("直接帮你调整方案", "先整理成确认卡片，采纳后再调整方案"),
+        )
+        for source, target in consistency_replacements:
+            normalized = normalized.replace(source, target)
+    if "确认卡片" not in normalized and _reply_discusses_changeable_intent_or_plan(normalized):
+        normalized = (
+            normalized.rstrip()
+            + "\n\n如果要正式更新偏好、要求或方案，我会先整理成确认卡片或调整预览；点击采纳前不会生效。"
+        )
+    return normalized
+
+
+def _reply_discusses_changeable_intent_or_plan(reply: str) -> bool:
+    compact = _compact_plan_reply_text(reply)
+    if not compact:
+        return False
+    has_changeable_subject = any(marker in compact for marker in ("偏好", "排除项", "方案内容", "当前方案", "志愿"))
+    has_changeable_action = any(marker in compact for marker in ("可以改", "可以调整", "随时都可以调整", "随时可以调整", "增删", "替换", "调整顺序", "重新生成"))
+    return has_changeable_subject and has_changeable_action
+
+
 def _reply_is_existing_only_intent_notice(reply: str) -> bool:
     return _is_existing_only_intent_notice_text(str(reply or ""))
 
@@ -1359,14 +1522,46 @@ def _reply_looks_like_unbacked_intent_preview(reply: str) -> bool:
     compact = _compact_plan_reply_text(reply)
     if not compact:
         return False
-    has_pending_heading = "待确认内容" in compact
+    has_pending_heading = "待确认内容" in compact or "整理成待确认" in compact
+    has_specific_intent_items = any(
+        marker in reply
+        for marker in (
+            "倾向：",
+            "倾向:",
+            "- 倾向",
+            "排除：",
+            "排除:",
+            "- 排除",
+            "偏好专业",
+            "排除专业",
+            "偏好地域",
+            "地域偏好",
+            "院校偏好",
+            "优先保留",
+            "过滤掉",
+        )
+    )
+    has_text_confirmation_request = any(
+        marker in compact
+        for marker in (
+            "回复确认",
+            "直接回复确认",
+            "确认就",
+            "确认这个",
+            "按上面执行",
+            "你确认要这样记",
+            "确认要这样记",
+        )
+    )
     has_unbacked_confirm_effect = (
         any(marker in compact for marker in ("确认后", "如果你确认", "你确认", "确认要这样记"))
         and any(marker in compact for marker in ("后续参考", "偏好", "排除", "过滤", "优先保留", "记入", "记录"))
     )
-    if not has_pending_heading and not has_unbacked_confirm_effect:
+    if not has_pending_heading and not has_text_confirmation_request:
         return False
-    return any(marker in compact for marker in ("回复确认", "直接回复确认", "确认后", "确认就", "确认这个", "按上面执行"))
+    if not has_pending_heading and not has_specific_intent_items:
+        return False
+    return has_text_confirmation_request or has_unbacked_confirm_effect
 
 
 def _normalize_unbacked_intent_preview_reply(reply: str) -> str:
@@ -1529,6 +1724,8 @@ def _latest_turn_has_plan_mutation_preview(messages: list[Any] | None) -> bool:
 
 
 def _latest_turn_looks_readonly(messages: list[Any] | None) -> bool:
+    if _latest_turn_is_readonly_interruption_fallback(messages):
+        return True
     tool_names = _latest_turn_tool_names(messages)
     if not tool_names:
         return False
@@ -1574,6 +1771,16 @@ def _latest_turn_looks_readonly(messages: list[Any] | None) -> bool:
         if bool((data or {}).get("applied")) and action_family not in _EXECUTE_PLAN_ACTION_VIEW_FAMILIES:
             return False
     return True
+
+
+def _latest_turn_is_readonly_interruption_fallback(messages: list[Any] | None) -> bool:
+    boundary = _latest_user_turn_boundary(messages)
+    for message in _messages_after_index(messages, boundary):
+        if not isinstance(message, ModelResponse):
+            continue
+        if str(getattr(message, "model_name", "") or "") == "agent-interruption-readonly-fallback":
+            return True
+    return False
 
 
 def _no_pending_intent_confirmation_guard_reply() -> str:
@@ -2284,10 +2491,151 @@ def _build_basic_plan_status_reply(planning: PlanningSummary) -> str:
     return ''.join(lines)
 
 
+_READONLY_INTERRUPTION_TOOL_NAMES = {
+    "query_volunteer_plan",
+    "analyze_current_interest",
+    "analyze_current_school_interest",
+    "analyze_current_major_interest",
+    "analyze_current_region_interest",
+    "analyze_current_career_direction",
+    "compare_majors",
+    "compare_majors_adhoc",
+    "compare_major_options",
+    "compare_schools",
+    "compare_schools_adhoc",
+    "get_major_introduction",
+    "get_major_introductions",
+    "get_school_introduction",
+    "query_admission_score",
+    "query_score_line",
+    "validate_major_subjects",
+    "validate_plan_params",
+    "answer_admission_policy_question",
+    "search_official_admission_sources",
+}
+
+
+def _agent_observability_tool_names(agent_observability: dict[str, Any] | None) -> list[str]:
+    if not isinstance(agent_observability, dict):
+        return []
+    ordered: list[str] = []
+    seen: set[str] = set()
+    raw_first = agent_observability.get("firstToolNames")
+    if isinstance(raw_first, list):
+        for name in raw_first:
+            text = str(name or "").strip()
+            if text and text not in seen:
+                ordered.append(text)
+                seen.add(text)
+    for node in agent_observability.get("nodeTimings") or []:
+        if not isinstance(node, dict):
+            continue
+        raw_names = node.get("toolNames")
+        if not isinstance(raw_names, list):
+            continue
+        for name in raw_names:
+            text = str(name or "").strip()
+            if text and text not in seen:
+                ordered.append(text)
+                seen.add(text)
+    raw_counts = agent_observability.get("toolNameCounts")
+    if isinstance(raw_counts, dict):
+        for name in raw_counts:
+            text = str(name or "").strip()
+            if text and text not in seen:
+                ordered.append(text)
+                seen.add(text)
+    return ordered
+
+
+def _agent_interruption_looks_readonly(
+    content: str,
+    agent_observability: dict[str, Any] | None,
+) -> bool:
+    tool_names = _agent_observability_tool_names(agent_observability)
+    if tool_names:
+        if any(name in _INTENT_PREVIEW_TOOL_NAMES for name in tool_names):
+            return False
+        if any(name in _READONLY_INTERRUPTION_TOOL_NAMES for name in tool_names):
+            return True
+
+    compact = re.sub(r"\s+", "", str(content or "").strip())
+    if not compact:
+        return False
+    if _prompt_explicitly_readonly(content):
+        return True
+    return any(
+        marker in compact
+        for marker in (
+            "哪个更适合",
+            "哪个更稳",
+            "哪个更实际",
+            "会不会太",
+            "能不能",
+            "是不是",
+            "怎么样",
+            "怎么判断",
+            "有什么影响",
+            "看看影响",
+            "先看看",
+            "先查一下",
+            "帮我看下",
+            "帮我看看",
+        )
+    )
+
+
+def _interrupted_prompt_prefers_plan_status_fallback(
+    content: str,
+    planning: PlanningSummary | None,
+) -> bool:
+    if planning is None or (planning.ordered_total <= 0 and planning.draft_total <= 0):
+        return False
+    compact = re.sub(r"\s+", "", str(content or "").strip())
+    if not compact:
+        return False
+    return any(marker in compact for marker in _PLAN_STYLE_GUARD_PROMPT_KEYWORDS) or any(
+        marker in compact
+        for marker in (
+            "这版",
+            "当前这版",
+            "太冲",
+            "冒险",
+            "保底",
+            "公办",
+            "民办",
+            "中外合作",
+            "学费",
+            "省外",
+            "本省",
+        )
+    )
+
+
+def _describe_interrupted_readonly_request(content: str, batch: str | None = "01") -> str:
+    major_names: list[str] = []
+    seen: set[str] = set()
+    for mention in resolve_major_mentions_from_text(content, batch):
+        name = str(getattr(mention, "canonical_name", "") or "").strip()
+        if name and name not in seen:
+            major_names.append(name)
+            seen.add(name)
+    if len(major_names) >= 2:
+        return f"你刚才问的是 {major_names[0]} 和 {major_names[1]} 的比较"
+    if len(major_names) == 1:
+        return f"你刚才问的是 {major_names[0]} 相关问题"
+    compact = str(content or "").strip()
+    if compact:
+        return f"你刚才问的是“{compact}”"
+    return "你刚才这个问题"
+
+
 def _build_agent_interruption_fallback_reply(
     content: str,
     planning: PlanningSummary | None,
     agent_observability: dict[str, Any] | None = None,
+    *,
+    batch: str | None = "01",
 ) -> str | None:
     """Return a safe user-facing reply when the model run is interrupted.
 
@@ -2296,6 +2644,17 @@ def _build_agent_interruption_fallback_reply(
     """
     if not isinstance(agent_observability, dict) or not agent_observability.get("failedNode"):
         return None
+
+    if (
+        _agent_interruption_looks_readonly(content, agent_observability)
+        and not _interrupted_prompt_prefers_plan_status_fallback(content, planning)
+    ):
+        subject = _describe_interrupted_readonly_request(content, batch)
+        return (
+            "这轮模型服务中断了，我没有改动你的方案，也没有把偏好写入后续参考。"
+            f"{subject}，这次没能完整生成分析结论；"
+            "你可以继续围绕刚才的问题追问，我会按只读分析处理。"
+        )
 
     prefix = (
         "这轮模型服务中断了，我先不改动你的方案或偏好。"
@@ -3289,14 +3648,23 @@ class ChatService:
                 content,
                 parsed_planning_summary,
                 request_context.agent_observability,
+                batch=batch,
             )
             if fallback_reply and not isinstance(exc, asyncio.CancelledError):
+                fallback_model_name = (
+                    "agent-interruption-readonly-fallback"
+                    if _agent_interruption_looks_readonly(content, request_context.agent_observability)
+                    else "agent-interruption-fallback"
+                )
                 fallback_messages = [
                     ModelRequest(parts=[UserPromptPart(content=content)]),
-                    ModelResponse(parts=[TextPart(content=fallback_reply)], model_name="agent-interruption-fallback"),
+                    ModelResponse(parts=[TextPart(content=fallback_reply)], model_name=fallback_model_name),
                 ]
                 with contextlib.suppress(Exception, asyncio.CancelledError):
-                    await self.history_store.save(session_id, list(history or []) + fallback_messages)
+                    await self.history_store.save(
+                        session_id,
+                        list(history or []) + _append_route_observability_message(fallback_messages, turn_event),
+                    )
                 return fallback_reply
             raise
         finally:
@@ -3385,6 +3753,20 @@ class ChatService:
                 _replace_text_reply(new_messages, reply, pending_intent_reply)
                 _replace_text_reply(all_messages, reply, pending_intent_reply)
                 reply = pending_intent_reply
+
+        if isinstance(reply, str):
+            false_apology_reply = _normalize_false_apology_reply(reply, history)
+            if false_apology_reply != reply:
+                _replace_text_reply(new_messages, reply, false_apology_reply)
+                _replace_text_reply(all_messages, reply, false_apology_reply)
+                reply = false_apology_reply
+
+        if isinstance(reply, str):
+            protocol_reply = _normalize_general_confirmation_protocol_wording(reply)
+            if protocol_reply != reply:
+                _replace_text_reply(new_messages, reply, protocol_reply)
+                _replace_text_reply(all_messages, reply, protocol_reply)
+                reply = protocol_reply
 
         if isinstance(reply, str):
             user_facing_reply = _normalize_user_facing_terms(reply)

@@ -72,6 +72,10 @@ def test_build_instructions_includes_planning_tool_policy():
     assert "preview_current_career_intent_confirmation" in instructions
     assert "analyze_volunteer_intent_change" not in instructions
     assert "## 任务层判断" in instructions
+    assert "## Policy 层规则" in instructions
+    assert "answer_admission_policy_question" in instructions
+    assert "search_official_admission_sources" in instructions
+    assert "match_admission_rule_to_student" in instructions
     assert "## 副作用边界" in instructions
     assert "只读查询、解释和分析可以直接做" in instructions
     assert "必须先确认" in instructions
@@ -116,6 +120,8 @@ def test_build_instructions_includes_plan_orchestration_boundaries():
     assert "高副作用动作" in instructions
     assert "`move_ordered_unit` 或 `remove_ordered_unit`" in instructions
     assert "删除第 N 个专业组" in instructions
+    assert "用户只说“第 N 个/第 N 位/第 N 条”" in instructions
+    assert "不要规划成缺少 `volunteer_ids` 的 `move_unit`" in instructions
     assert "专业组顺序" in instructions
     assert "专业组/志愿组" not in instructions
     assert "target_position=M" in instructions
@@ -130,6 +136,13 @@ def test_build_instructions_includes_plan_orchestration_boundaries():
     assert "不是新的长期偏好或要求" in instructions
     assert "不要调用 Intent 状态工具" in instructions
     assert "不要调用 Intent 状态工具" in instructions
+    assert "consultation_scope" in instructions
+    assert "school_user_fit" in instructions
+    assert "rule_domain" in instructions
+    assert "score_batch" in instructions
+    assert "source_scope=\"school_brochure\"" in instructions
+    assert "检索结果只是来源材料，不等于最终适配结论" in instructions
+    assert "不要把原始网页整段丢给它" in instructions
     assert "公办/民办占比" in instructions
     assert "不要升级成 `review_plan` 或改方案预览" in instructions
     assert "如果用户只是问是否存在某类风险" in instructions

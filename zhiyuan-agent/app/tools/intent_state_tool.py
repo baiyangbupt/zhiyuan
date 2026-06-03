@@ -1085,13 +1085,22 @@ def _refine_major_intents_by_explicit_mentions(
         else:
             refined.pop(level2_key, None)
 
-    for level1_key, level2_key in (("level1", "level2"), ("negative_level1", "negative_level2")):
+    for level1_key, level2_key, level3_key in (
+        ("level1", "level2", "level3"),
+        ("negative_level1", "negative_level2", "negative_level3"),
+    ):
         level1_values = _as_string_list(refined.get(level1_key))
-        level2_values = _as_string_list(refined.get(level2_key))
-        if not level1_values or not level2_values:
+        if not level1_values:
             continue
         explicit_level1 = mentions["level1"]
-        child_parent_values = {level2_to_level1.get(name) for name in level2_values}
+        child_parent_values: set[str | None] = {
+            level2_to_level1.get(name)
+            for name in _as_string_list(payload.get(level2_key))
+        }
+        child_parent_values.update(
+            level2_to_level1.get(level3_to_level2.get(name) or "")
+            for name in _as_string_list(payload.get(level3_key))
+        )
         kept = [
             name
             for name in level1_values

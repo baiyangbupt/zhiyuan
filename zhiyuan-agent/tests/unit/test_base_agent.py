@@ -251,6 +251,15 @@ async def test_run_can_return_directly_after_user_facing_tool_result():
     assert all_messages[-1].parts[0].content == reply
 
 
+def test_sanitize_model_output_strips_provider_reasoning_markup():
+    assert (
+        BaseAgent._sanitize_model_output("用户问的是专项政策，我已经调用工具。</think>\n可以先按三步判断专项资格。")
+        == "可以先按三步判断专项资格。"
+    )
+    assert BaseAgent._sanitize_model_output("<think>内部推理</think>\n这是给用户看的回答。") == "这是给用户看的回答。"
+    assert BaseAgent._sanitize_model_output("<think>内部推理未闭合") == ""
+
+
 async def test_run_stops_repeated_query_tool_loop_generically():
     async def query_volunteer_plan() -> str:
         return "当前方案里命中了 1 条相关机会。"

@@ -29,6 +29,23 @@ class TestChatAgentToolRegistration:
 
         assert agent.get_progress_hint("query_volunteer_plan") == "正在查当前方案和候选里的相关结果..."
 
+    def test_admission_policy_progress_hint_is_registered(self):
+        agent_mock = MagicMock()
+        with patch("app.llm.client.OpenAIChatModel", return_value=MagicMock()), patch(
+            "app.llm.client.OpenAIProvider", return_value=MagicMock()
+        ), patch("app.agent.base_agent.Agent", return_value=agent_mock):
+            from app.config import LLMConfig
+            from app.llm.client import LLMClient
+            from app.agent.chat_agent import ChatAgent
+
+            config = LLMConfig(provider="openai", api_key="sk-test")
+            client = LLMClient(config)
+            agent = ChatAgent(client)
+
+        assert agent.get_progress_hint("answer_admission_policy_question") == "正在核对报考规则和需要确认的官方依据..."
+        assert agent.get_progress_hint("search_official_admission_sources") == "正在检索官方报考政策和招生信息..."
+        assert agent.get_progress_hint("match_admission_rule_to_student") == "正在把招生规则和学生情况逐项匹配..."
+
     def test_execute_plan_action_progress_hint_uses_structured_preview_args(self):
         agent_mock = MagicMock()
         with patch("app.llm.client.OpenAIChatModel", return_value=MagicMock()), patch(
@@ -71,6 +88,15 @@ class TestChatAgentToolRegistration:
         assert "priority" not in major_schema["properties"]
         assert schema["properties"]["intent_mode"]["anyOf"][0]["enum"] == ["preference", "constraint"]
 
+    def test_major_interest_tool_schema_accepts_explicit_major_intents(self):
+        from app.tools.intent_preview_tool import analyze_current_major_interest
+
+        schema = Tool(analyze_current_major_interest).function_schema.json_schema
+
+        assert "major_intents" in schema["properties"]
+        major_ref = schema["properties"]["major_intents"]["anyOf"][0]["$ref"]
+        assert major_ref.endswith("MajorIntentPreviewInput")
+
     def test_career_direction_tool_schema_exposes_direction_slot_enum(self):
         from app.tools.intent_preview_tool import analyze_current_career_direction
 
@@ -93,6 +119,69 @@ class TestChatAgentToolRegistration:
         assert schema["properties"]["scope"]["enum"] == ["auto", "plan", "candidate", "plan_then_candidate"]
         assert schema["properties"]["match_mode"]["enum"] == ["and", "or"]
 
+    def test_admission_policy_tool_schema_exposes_scope_and_domain_enums(self):
+        from app.tools.admission_policy_tool import answer_admission_policy_question
+
+        schema = Tool(answer_admission_policy_question).function_schema.json_schema
+
+        assert schema["properties"]["consultation_scope"]["enum"] == [
+            "general_policy",
+            "province_policy",
+            "school_rule",
+            "school_user_fit",
+            "plan_policy_impact",
+            "missing_info",
+        ]
+        assert schema["properties"]["rule_domain"]["enum"] == [
+            "general",
+            "score_batch",
+            "application_process",
+            "eligibility",
+            "physical_exam",
+            "oral_exam",
+            "subject_requirement",
+            "transfer_major",
+            "tuition_budget",
+            "admission_fit",
+        ]
+        assert "fit_dimensions" in schema["properties"]
+
+    def test_official_source_search_tool_schema_exposes_source_scope(self):
+        from app.tools.official_source_search_tool import search_official_admission_sources
+
+        schema = Tool(search_official_admission_sources).function_schema.json_schema
+
+        assert schema["properties"]["source_scope"]["enum"] == [
+            "general_official",
+            "province_policy",
+            "school_brochure",
+            "school_admissions_notice",
+        ]
+        assert schema["properties"]["freshness"]["enum"] == [
+            "noLimit",
+            "oneDay",
+            "oneWeek",
+            "oneMonth",
+            "oneYear",
+        ]
+        assert "official_domain" in schema["properties"]
+
+    def test_admission_fit_match_tool_schema_exposes_fit_dimensions(self):
+        from app.tools.admission_fit_match_tool import match_admission_rule_to_student
+
+        schema = Tool(match_admission_rule_to_student).function_schema.json_schema
+
+        assert schema["properties"]["fit_dimensions"]["anyOf"][0]["items"]["enum"] == [
+            "score_rank",
+            "subjects",
+            "physical_exam",
+            "oral_exam",
+            "eligibility",
+            "budget",
+        ]
+        assert "required_subjects" in schema["properties"]
+        assert "tuition_per_year" in schema["properties"]
+
     def test_chat_agent_does_not_register_low_level_intent_extractors(self):
         agent_mock = MagicMock()
         with patch("app.llm.client.OpenAIChatModel", return_value=MagicMock()), patch(
@@ -105,6 +194,9 @@ class TestChatAgentToolRegistration:
             client = LLMClient(config)
 
             from app.agent.chat_agent import ChatAgent
+            from app.tools.admission_fit_match_tool import match_admission_rule_to_student
+            from app.tools.admission_policy_tool import answer_admission_policy_question
+            from app.tools.official_source_search_tool import search_official_admission_sources
             from app.tools.major_compare_tool import compare_major_options
             from app.tools.major_info_tool import get_major_introductions
             from app.tools.city_intent_tool import extract_city_intent, extract_negative_city_intent
@@ -114,6 +206,9 @@ class TestChatAgentToolRegistration:
             ChatAgent(client)
 
             registered_tools = agent_cls.call_args.kwargs["tools"]
+            assert match_admission_rule_to_student in registered_tools
+            assert answer_admission_policy_question in registered_tools
+            assert search_official_admission_sources in registered_tools
             assert compare_major_options in registered_tools
             assert get_major_introductions in registered_tools
             assert extract_school_intent not in registered_tools
@@ -436,7 +531,7 @@ class TestChatAgentToolRegistration:
             == "候选里共命中了 5 条符合“稳 会计 审计”的机会。下面仅展示前 5 条示例：A大学-会计学（稳，录取率62%）"
         )
 
-    def test_chat_agent_direct_returns_read_only_explore_result(self):
+    def test_chat_agent_keeps_read_only_explore_result_for_model_synthesis(self):
         with patch("app.agent.base_agent.Agent", return_value=MagicMock()):
             from pydantic_ai.messages import ToolReturnPart
 
@@ -456,11 +551,8 @@ class TestChatAgentToolRegistration:
             )
         ]
 
-        assert agent.should_return_directly_from_tool(["analyze_current_career_direction"], tool_returns, None) is True
-        assert (
-            agent.render_direct_tool_output(["analyze_current_career_direction"], tool_returns, None)
-            == "这轮只做分析，不会改动你的方案。\n\n当前方案对体制内方向有一定承接。"
-        )
+        assert agent.should_return_directly_from_tool(["analyze_current_career_direction"], tool_returns, None) is False
+        assert agent.render_direct_tool_output(["analyze_current_career_direction"], tool_returns, None) is None
 
     def test_chat_agent_does_not_direct_return_plan_query_action_boundary(self):
         with patch("app.agent.base_agent.Agent", return_value=MagicMock()):

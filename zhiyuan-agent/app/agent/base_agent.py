@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import contextlib
+import re
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any, Generic, TypeVar
@@ -30,6 +31,9 @@ DepsT = TypeVar("DepsT")
 _TOOL_REPEAT_LIMITS = {
     "query_volunteer_plan": 2,
 }
+
+_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+_THINK_OPEN_RE = re.compile(r"<think>.*", re.DOTALL | re.IGNORECASE)
 
 _SKILL_SUMMARY_INSTRUCTION_TEMPLATE = """\
 以下是系统内置的业务技能边界摘要，仅用于帮助你理解任务分工；它们不是运行时可调用工具。
@@ -273,7 +277,7 @@ class BaseAgent(Generic[T]):
                 ):
                     direct_output = self.render_direct_tool_output(tool_names, direct_tool_returns, deps)
                     if direct_output:
-                        output = direct_output
+                        output = self._sanitize_model_output(direct_output)
                         usage = agent_run.usage()
                         if hasattr(usage, "__await__"):
                             usage = await usage
@@ -286,7 +290,7 @@ class BaseAgent(Generic[T]):
                         partial_messages = await self._resolve_messages(agent_run.all_messages())
                         tool_request = getattr(node, "request", None)
                         direct_response = ModelResponse(
-                            parts=[TextPart(content=direct_output)],
+                            parts=[TextPart(content=output)],
                             model_name="direct-tool-result",
                         )
                         all_messages = list(partial_messages)
@@ -304,7 +308,7 @@ class BaseAgent(Generic[T]):
                         return output, new_messages, all_messages, usage
             await self.on_complete(agent_run)
 
-            output = agent_run.result.output
+            output = self._sanitize_model_output(agent_run.result.output)
             usage = agent_run.usage()
             if hasattr(usage, "__await__"):
                 usage = await usage
@@ -332,6 +336,21 @@ class BaseAgent(Generic[T]):
             logger.info("Agent completed: nodes=%d output_len=%d messages=%d",
                        node_count, len(str(output)), len(all_messages))
             return output, new_messages, all_messages, usage
+
+    @staticmethod
+    def _sanitize_model_output(output: Any) -> Any:
+        """Strip provider reasoning markup that must never reach users."""
+        if not isinstance(output, str):
+            return output
+        text = output.strip()
+        if not text:
+            return text
+        text = _THINK_BLOCK_RE.sub("", text)
+        if "</think>" in text.lower():
+            marker_index = text.lower().rfind("</think>")
+            text = text[marker_index + len("</think>") :]
+        text = _THINK_OPEN_RE.sub("", text)
+        return text.strip()
 
     def _extract_tool_returns_from_next_node(self, node: Any) -> list[ToolReturnPart]:
         request = getattr(node, "request", None)

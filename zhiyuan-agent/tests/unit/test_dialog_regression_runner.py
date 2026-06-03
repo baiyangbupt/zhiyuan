@@ -26,12 +26,12 @@ def test_plan_reply_style_accepts_markdown_sections_and_lists():
 
 
 def test_plan_reply_style_rejects_forced_choice_answer():
-    text = "**方案审查结论**\n\n1. 风险0项\n2. 提醒4项\n\n你现在必须决定：选哪个？"
+    text = "**方案审查结论**\n\n1. 风险0项\n2. 提醒4项\n\n你现在必须决定：你选哪个？"
 
     violations = runner._check_plan_reply_style(text)
 
     assert any("你现在必须决定" in item for item in violations)
-    assert any("选哪个" in item for item in violations)
+    assert any("你选哪个" in item for item in violations)
 
 
 def test_plan_reply_style_rejects_internal_compensation_preview_wording():

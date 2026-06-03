@@ -108,3 +108,17 @@ class HistoryConfig(BaseSettings):
     runtime_keep_pending: bool = True
     runtime_drop_tool_returns_over_chars: int = 3000
     runtime_summary_enabled: bool = False
+
+
+class BochaSearchConfig(BaseSettings):
+    """Bocha official web search configuration."""
+
+    model_config = {
+        "env_prefix": "BOCHA_",
+        "env_file": ".env",
+        "extra": "ignore",
+    }
+
+    api_key: str = ""
+    base_url: str = "https://api.bochaai.com/v1/web-search"
+    timeout_seconds: float = 10.0

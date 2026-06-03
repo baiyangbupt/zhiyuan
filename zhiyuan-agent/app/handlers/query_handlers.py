@@ -29,7 +29,7 @@ from app.tools.planning_workflow_tool import (
     query_planning_draft,
     query_planning_ordered_plan,
 )
-from app.tools.plan_query_tool import query_volunteer_plan
+from app.tools.plan_query_tool import _enrich_plan_items_with_candidate_metadata, query_volunteer_plan
 from app.util.internal_client import (
     get_planning_draft as _get_planning_draft_request,
     get_planning_ordered_plan as _get_planning_ordered_plan_request,
@@ -198,6 +198,27 @@ def _candidate_query_failed(state_summary: str) -> bool:
     return text == _CANDIDATE_QUERY_FAILED_TEXT or text.startswith("查询候选池失败")
 
 
+def _has_school_nature_metadata(items: list[dict[str, Any]] | None) -> bool:
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        if any(
+            item.get(key)
+            for key in (
+                "schoolNature",
+                "school_nature",
+                "schoolType",
+                "school_type",
+                "schoolTags",
+                "school_tags",
+                "schoolTag",
+                "tags",
+            )
+        ):
+            return True
+    return False
+
+
 def _build_status_overview_summary(facts: dict[str, Any]) -> tuple[str, list[str], list[str]]:
     current_total = int(facts.get("current_total") or 0)
     target_total = int(facts.get("target_total") or 0)
@@ -210,6 +231,7 @@ def _build_status_overview_summary(facts: dict[str, Any]) -> tuple[str, list[str
     pending_text = _compact_list_text(facts.get("pending_action_summaries"))
     top_items = facts.get("top_items") or []
     intent_relation = facts.get("intent_relation") or {}
+    school_nature_distribution = facts.get("school_nature_distribution") or {}
 
     lines: list[str] = []
     if current_total >= target_total and target_total > 0:
@@ -220,6 +242,17 @@ def _build_status_overview_summary(facts: dict[str, Any]) -> tuple[str, list[str
         lines.append("当前还没有正式志愿。")
     if tier_text:
         lines.append(f"- 梯度分布：{tier_text}。")
+    if isinstance(school_nature_distribution, dict):
+        nature_counts = school_nature_distribution.get("counts") or {}
+        public_count = int(nature_counts.get("公办") or 0)
+        private_count = int(nature_counts.get("民办") or 0)
+        unknown_count = int(nature_counts.get("未知") or 0)
+        known_total = int(school_nature_distribution.get("known_total") or 0)
+        ratio = school_nature_distribution.get("public_ratio_percent")
+        if known_total > 0:
+            ratio_text = f"，已知院校性质里公办占比约 {ratio}%" if ratio is not None else ""
+            unknown_text = f"，另有 {unknown_count} 个暂未标明性质" if unknown_count > 0 else ""
+            lines.append(f"- 院校性质：公办 {public_count} 个，民办 {private_count} 个{ratio_text}{unknown_text}。")
     if risk_count > 0 or warn_count > 0:
         lines.append(f"- 审查提醒：风险 {risk_count} 项，提醒 {warn_count} 项。")
     else:
@@ -260,6 +293,11 @@ def _build_status_overview_summary(facts: dict[str, Any]) -> tuple[str, list[str
     reply_focus = ["current_state", "count_target", "risk_warning"]
     if tier_text:
         reply_focus.append("tier_distribution")
+    if (
+        isinstance(school_nature_distribution, dict)
+        and int(school_nature_distribution.get("known_total") or 0) > 0
+    ):
+        reply_focus.append("school_nature_distribution")
     if top_items:
         reply_focus.append("sample_items")
     if intent_relation:
@@ -331,10 +369,18 @@ async def handle_query_state(
         ordered_result = await _get_planning_ordered_plan_request(session_id)
         if ordered_result.get("code") == 0:
             ordered_state = ordered_result.get("data") or {}
+            ordered_items = ordered_state.get("items") or []
+            if ordered_items and not _has_school_nature_metadata(ordered_items):
+                ordered_state = dict(ordered_state)
+                ordered_state["items"] = await _enrich_plan_items_with_candidate_metadata(session_id, ordered_items)
     elif draft_total > 0:
         draft_result = await _get_planning_draft_request(session_id)
         if draft_result.get("code") == 0:
             draft_state = draft_result.get("data") or {}
+            draft_items = draft_state.get("items") or []
+            if draft_items and not _has_school_nature_metadata(draft_items):
+                draft_state = dict(draft_state)
+                draft_state["items"] = await _enrich_plan_items_with_candidate_metadata(session_id, draft_items)
 
     facts = _build_plan_status_overview_facts(
         planning_state,

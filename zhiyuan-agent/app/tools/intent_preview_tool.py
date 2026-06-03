@@ -27,7 +27,7 @@ from app.tools.explore_direction_tool import (
     resolve_career_direction_slots as _resolve_career_direction_slots,
     should_use_generic_direction_analysis as _should_use_generic_direction_analysis,
 )
-from app.domain.career_slots import CAREER_SLOT_VALUES, normalize_career_slots
+from app.domain.career_slots import CAREER_SLOT_VALUES, CAREER_STABLE_EMPLOYMENT, normalize_career_slots
 from app.tools.intent_response_tool import parse_intent_analysis_payload, render_intent_analysis_payload
 from app.tools.intent_state_tool import (
     ANALYSIS_STAGE_CONFIRMED,
@@ -81,6 +81,32 @@ def _resolved_major_names_from_latest_text(request_context: RequestContext) -> l
     return names
 
 
+def _has_major_mentions_in_latest_text(request_context: RequestContext) -> bool:
+    return bool(resolve_major_mentions_from_text(_latest_user_text(request_context), request_context.batch or "01"))
+
+
+def _has_explicit_career_language(text: str) -> bool:
+    career_markers = (
+        "稳定就业",
+        "求稳",
+        "就业稳定",
+        "工作稳定",
+        "抗风险",
+        "体制内",
+        "考公",
+        "考编",
+        "公务员",
+        "事业编",
+        "读研",
+        "深造",
+        "升学",
+        "企业就业",
+        "市场化就业",
+        "大城市就业",
+    )
+    return any(marker in str(text or "") for marker in career_markers)
+
+
 def _render_structured_preview_tool_payload(payload_text: str) -> str:
     """Keep preview tool returns structured while preserving the user-facing text.
 
@@ -106,6 +132,7 @@ async def analyze_current_interest(
     ctx: RunContext[RequestContext],
     intent_mode: str = INTENT_MODE_PREFERENCE,
     recovery_scope: str | None = "generic",
+    major_intents: MajorIntentPreviewInput | None = None,
 ) -> str:
     """Read-only Explore analysis for interest / fit questions.
 
@@ -116,7 +143,7 @@ async def analyze_current_interest(
     return render_intent_analysis_payload(
         await analyze_volunteer_intent_change(
             ctx,
-            None,
+            _payload_from_model(MajorIntentPreviewInput, major_intents),
             None,
             None,
             None,
@@ -143,6 +170,7 @@ async def analyze_current_school_interest(
 
 async def analyze_current_major_interest(
     ctx: RunContext[RequestContext],
+    major_intents: MajorIntentPreviewInput | None = None,
     intent_mode: str = INTENT_MODE_PREFERENCE,
 ) -> str:
     """Read-only Explore analysis for major fit questions like “电子信息工程适合我吗”.
@@ -154,6 +182,9 @@ async def analyze_current_major_interest(
     If the user states mixed positive/negative major preferences without asking
     to first see impact, boundary, pros/cons, or risks, use
     `preview_current_major_intent_confirmation` instead.
+    If the user already clearly names the target major/category being analyzed,
+    pass it in `major_intents` so the tool does not need to infer from unrelated
+    context such as weak subjects or excluded directions.
     """
     resolved_major_names = _resolved_major_names_from_latest_text(ctx.deps)
     if len(resolved_major_names) == 2:
@@ -172,6 +203,7 @@ async def analyze_current_major_interest(
         ctx,
         intent_mode=intent_mode,
         recovery_scope="major",
+        major_intents=major_intents,
     )
 
 
@@ -212,12 +244,29 @@ async def analyze_current_career_direction(
             latest_user_text = str(message.get("content") or "")
             break
     direction_slots = normalize_career_slots(list(career_directions or []))
+    has_major_mentions = _has_major_mentions_in_latest_text(ctx.deps)
     if direction_slots:
+        if (
+            has_major_mentions
+            and direction_slots == [CAREER_STABLE_EMPLOYMENT]
+            and not _has_explicit_career_language(latest_user_text)
+        ):
+            logger.info(
+                "analyze_current_career_direction: session_id=%s delegating_stable_employment_major_mentions_to_major_interest",
+                _session_id(ctx.deps),
+            )
+            return await analyze_current_major_interest(ctx)
         logger.info(
             "analyze_current_career_direction: session_id=%s using_explicit_direction_slots=%s",
             _session_id(ctx.deps),
             direction_slots,
         )
+    elif has_major_mentions:
+        logger.info(
+            "analyze_current_career_direction: session_id=%s delegating_to_major_interest_for_major_mentions",
+            _session_id(ctx.deps),
+        )
+        return await analyze_current_major_interest(ctx)
     else:
         if generic_direction or _likely_generic_direction_question(latest_user_text):
             try:

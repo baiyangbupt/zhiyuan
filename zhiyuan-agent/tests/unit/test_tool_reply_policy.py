@@ -56,19 +56,18 @@ def test_policy_respects_continue_model_strategy_from_downgraded_intent_preview(
     assert decision.reason == "explicit_continue_model"
 
 
-def test_policy_direct_returns_readonly_career_explore_result():
+def test_policy_keeps_readonly_career_explore_result_for_model_synthesis():
     decision = decide_tool_reply(
         ["analyze_current_career_direction"],
         [_tool_return("analyze_current_career_direction", "这轮只做分析，不会改动你的方案。")],
     )
 
-    assert decision.strategy == "direct_reply"
-    assert decision.should_return_directly is True
-    assert decision.reply == "这轮只做分析，不会改动你的方案。"
-    assert decision.reason == "read_only_explore_result"
+    assert decision.strategy == "continue_model"
+    assert decision.should_return_directly is False
+    assert decision.reason == "read_only_explore_needs_model_synthesis"
 
 
-def test_policy_direct_returns_readonly_major_explore_result():
+def test_policy_keeps_readonly_major_explore_result_for_model_synthesis():
     decision = decide_tool_reply(
         ["analyze_current_major_interest"],
         [
@@ -79,9 +78,9 @@ def test_policy_direct_returns_readonly_major_explore_result():
         ],
     )
 
-    assert decision.strategy == "direct_reply"
-    assert decision.should_return_directly is True
-    assert "医学和护理会收窄候选范围" in (decision.reply or "")
+    assert decision.strategy == "continue_model"
+    assert decision.should_return_directly is False
+    assert decision.reason == "read_only_explore_needs_model_synthesis"
 
 
 def test_policy_keeps_unrendered_readonly_explore_payload_for_model_summary():
@@ -129,6 +128,93 @@ def test_policy_direct_returns_explicit_strategy_from_any_tool():
     assert decision.reply == "当前没有命中结果，请换个条件。"
 
 
+def test_policy_direct_returns_plan_query_alias_match_to_avoid_model_reinterpretation():
+    decision = decide_tool_reply(
+        ["query_volunteer_plan"],
+        [
+            _tool_return(
+                "query_volunteer_plan",
+                "按当前方案里的院校简称“青城”匹配到青岛城市学院；原先可能冲突的地域条件没有参与这次院校命中。\n当前方案里共命中了 7 条符合“院校:青城、青岛城市学院”的志愿。",
+            )
+        ],
+    )
+
+    assert decision.strategy == "direct_reply"
+    assert decision.should_return_directly is True
+    assert decision.reason == "plan_query_alias_match_result"
+    assert "青岛城市学院" in (decision.reply or "")
+
+
+def test_policy_keeps_plan_query_for_model_synthesis_after_prior_tools():
+    class Deps:
+        agent_observability = {
+            "toolNameCounts": {
+                "plan_next_action": 1,
+                "execute_plan_action": 1,
+                "query_volunteer_plan": 1,
+            }
+        }
+
+    decision = decide_tool_reply(
+        ["query_volunteer_plan"],
+        [
+            _tool_return(
+                "query_volunteer_plan",
+                "当前方案里共命中了 10 条符合“院校标签:公办”的志愿。下面仅展示前 5 条示例。",
+            )
+        ],
+        Deps(),
+    )
+
+    assert decision.strategy == "continue_model"
+    assert decision.should_return_directly is False
+    assert decision.reason == "read_only_plan_query_needs_model_synthesis_after_prior_tools"
+
+
+def test_policy_keeps_empty_plan_query_for_model_synthesis_when_candidate_fails():
+    class Deps:
+        agent_observability = {
+            "toolInternalTimings": [
+                {
+                    "tool": "query_volunteer_plan",
+                    "status": "candidate_query_failed_after_plan_miss",
+                }
+            ]
+        }
+
+    decision = decide_tool_reply(
+        ["query_volunteer_plan"],
+        [_tool_return("query_volunteer_plan", "当前方案里还没有可查询的志愿。")],
+        Deps(),
+    )
+
+    assert decision.strategy == "continue_model"
+    assert decision.should_return_directly is False
+    assert decision.reason == "read_only_plan_query_empty_or_failed_needs_model_synthesis"
+
+
+def test_policy_keeps_empty_plan_query_for_model_synthesis_after_plan_miss_candidate_checked():
+    class Deps:
+        agent_observability = {
+            "toolInternalTimings": [
+                {
+                    "tool": "query_volunteer_plan",
+                    "status": "success_plan_miss_candidate_checked",
+                }
+            ]
+        }
+
+    decision = decide_tool_reply(
+        ["query_volunteer_plan"],
+        [_tool_return("query_volunteer_plan", "当前方案里暂时没有命中“广西”的志愿。")],
+        Deps(),
+    )
+
+    assert decision.strategy == "continue_model"
+    assert decision.should_return_directly is False
+    assert decision.reason == "read_only_plan_query_empty_or_failed_needs_model_synthesis"
+
+
 def test_policy_direct_returns_structured_plan_selection_block():
     decision = decide_tool_reply(
         ["execute_plan_action"],
@@ -163,7 +249,7 @@ def test_policy_direct_returns_no_change_result_without_retry():
     assert decision.reply == "这条志愿已经在方案里，无需重复加入。"
 
 
-def test_policy_direct_returns_structured_status_overview():
+def test_policy_keeps_structured_status_overview_for_model_synthesis():
     decision = decide_tool_reply(
         ["execute_plan_action"],
         [
@@ -178,14 +264,13 @@ def test_policy_direct_returns_structured_status_overview():
         ],
     )
 
-    assert decision.strategy == "direct_reply"
-    assert decision.should_return_directly is True
-    assert decision.reason == "structured_status_overview"
-    assert "45/45" in (decision.reply or "")
-    assert "冲18" in (decision.reply or "")
+    assert decision.strategy == "continue_model"
+    assert decision.should_return_directly is False
+    assert decision.reason == "structured_status_overview_needs_model_synthesis"
+    assert decision.reply is None
 
 
-def test_policy_direct_returns_structured_review_result():
+def test_policy_keeps_structured_review_result_for_model_synthesis():
     decision = decide_tool_reply(
         ["execute_plan_action"],
         [
@@ -201,10 +286,10 @@ def test_policy_direct_returns_structured_review_result():
         ],
     )
 
-    assert decision.strategy == "direct_reply"
-    assert decision.should_return_directly is True
-    assert decision.reason == "structured_review_result"
-    assert "风险 3 项" in (decision.reply or "")
+    assert decision.strategy == "continue_model"
+    assert decision.should_return_directly is False
+    assert decision.reason == "structured_review_result_needs_model_synthesis"
+    assert decision.reply is None
 
 
 def test_policy_keeps_plan_result_for_model_synthesis_after_explore_tool():
@@ -236,7 +321,7 @@ def test_policy_keeps_plan_result_for_model_synthesis_after_explore_tool():
     assert decision.reason == "prior_tool_facts_need_model_synthesis"
 
 
-def test_policy_direct_returns_single_explore_tool_despite_observability_current_count():
+def test_policy_keeps_single_explore_tool_for_model_synthesis_despite_observability_current_count():
     class Deps:
         agent_observability = {"toolNameCounts": {"analyze_current_career_direction": 1}}
 
@@ -246,8 +331,9 @@ def test_policy_direct_returns_single_explore_tool_despite_observability_current
         Deps(),
     )
 
-    assert decision.strategy == "direct_reply"
-    assert decision.should_return_directly is True
+    assert decision.strategy == "continue_model"
+    assert decision.should_return_directly is False
+    assert decision.reason == "read_only_explore_needs_model_synthesis"
 
 
 def test_policy_keeps_normal_preview_for_model_summary():
@@ -287,6 +373,27 @@ def test_policy_direct_returns_confirmation_preview():
     assert decision.should_return_directly is True
     assert decision.reason == "structured_add_preview"
     assert "确认后" in (decision.reply or "")
+
+
+def test_policy_direct_returns_review_issue_batch_preview():
+    decision = decide_tool_reply(
+        ["execute_plan_action"],
+        [
+            _tool_return(
+                "execute_plan_action",
+                (
+                    '{"action_family":"remove_units","result_kind":"preview_only",'
+                    '"summary":"已定位到当前方案里当前审查命中的高收费：共 30 个专业组，涉及 76 条志愿。需要你确认后才会执行。",'
+                    '"reply_focus":["preview_only","review_issue_batch_scope"]}'
+                ),
+            )
+        ],
+    )
+
+    assert decision.strategy == "preview_wait_confirm"
+    assert decision.should_return_directly is True
+    assert decision.reason == "structured_review_issue_batch_preview"
+    assert "高收费" in (decision.reply or "")
 
 
 def test_policy_direct_returns_sort_ordered_plan_preview():

@@ -17,6 +17,7 @@ from pydantic_ai import RunContext
 
 from app.agent.context import RequestContext
 from app.domain.major_entity_resolver import resolve_major_mentions_from_text
+from app.domain.school_entity_resolver import school_alias_variants
 from app.tools.candidate_filter_extraction_tool import (
     extract_candidate_query_filters_async,
     normalize_candidate_query_filters_async,
@@ -132,13 +133,32 @@ def _school_name_variants(name: str) -> list[str]:
     if not raw:
         return []
     variants = [raw]
-    stripped_group = re.sub(r"\d{2,3}专业组.*$", "", raw).strip()
+    stripped_group = re.sub(
+        r"(?:第?\d{1,3}组.*|[A-Za-z0-9]{1,3}专业组.*|\d{1,3}专业组.*)$",
+        "",
+        raw,
+    ).strip()
     if stripped_group and stripped_group not in variants:
         variants.append(stripped_group)
     stripped_paren = re.sub(r"[（(].*?[)）]", "", stripped_group or raw).strip()
     if stripped_paren and stripped_paren not in variants:
         variants.append(stripped_paren)
+    for alias in school_alias_variants(stripped_paren or stripped_group or raw):
+        if alias and alias not in variants:
+            variants.append(alias)
+    city_college_alias = _city_college_short_alias(stripped_paren or stripped_group or raw)
+    if city_college_alias and city_college_alias not in variants:
+        variants.append(city_college_alias)
     return variants
+
+
+def _city_college_short_alias(name: str) -> str:
+    base = re.sub(r"[（(].*?[)）]", "", str(name or "")).strip()
+    match = re.match(r"^(.+?)城市学院$", base)
+    if not match:
+        return ""
+    prefix = match.group(1).strip()
+    return f"{prefix[0]}城" if prefix else ""
 
 
 def _looks_like_plan_action_query(query: str) -> bool:
@@ -731,7 +751,7 @@ async def _load_current_plan(session_id: str) -> tuple[str, list[dict[str, Any]]
     ordered_result = await get_planning_ordered_plan(session_id)
     ordered_items = _extract_plan_items(ordered_result)
     if ordered_result.get("code") == 0 and ordered_items:
-        return "当前排序方案", ordered_items
+        return "当前方案", ordered_items
 
     draft_result = await get_planning_draft(session_id)
     draft_items = _extract_plan_items(draft_result)
@@ -776,14 +796,81 @@ def _format_structured_plan_result(
     if not items:
         return f"{title}里还没有可查询的志愿。"
     matched = [item for item in items if _matches_structured_filters(item, filters, match_mode=match_mode)]
+    alias_note = ""
+    if not matched:
+        alias_filters, alias_names, alias_source_keywords = _school_alias_fallback_filters(filters, items)
+        if alias_filters:
+            fallback_matched = [
+                item for item in items if _matches_structured_filters(item, alias_filters, match_mode=match_mode)
+            ]
+            if fallback_matched:
+                matched = fallback_matched
+                description = _describe_structured_filters(alias_filters, description)
+                source_keywords = "、".join(alias_source_keywords)
+                target_names = "、".join(alias_names[:3])
+                alias_note = (
+                    f"按当前方案里的院校简称“{source_keywords}”匹配到{target_names}；"
+                    "原先可能冲突的地域条件没有参与这次院校命中。"
+                )
     if matched:
         examples = matched[:5]
         snippets = "；".join(_build_plan_item_snippet(item) for item in examples)
-        return (
+        prefix = f"{alias_note}\n" if alias_note else ""
+        return prefix + (
             f"{title}里共命中了 {len(matched)} 条符合“{description}”的志愿。"
             f"下面仅展示前 {len(examples)} 条示例：{snippets}"
         )
     return f"{title}里暂时没有命中符合“{description}”的志愿。"
+
+
+def _school_alias_fallback_filters(
+    filters: dict[str, list[str]],
+    items: list[dict[str, Any]],
+) -> tuple[dict[str, list[str]] | None, list[str], list[str]]:
+    school_keywords = [str(item or "").strip() for item in filters.get("school_keywords") or [] if str(item or "").strip()]
+    location_keywords = [
+        str(item or "").strip()
+        for item in [*(filters.get("province_names") or []), *(filters.get("city_names") or [])]
+        if str(item or "").strip()
+    ]
+    source_keywords = _merge_filter_lists(school_keywords, location_keywords)
+    if not source_keywords:
+        return None, [], []
+
+    matched_names: list[str] = []
+    matched_sources: list[str] = []
+    keyword_compacts = {keyword: _compact_text(keyword) for keyword in source_keywords}
+    for item in items:
+        school_name = str(item.get("schoolName") or "").strip()
+        if not school_name:
+            continue
+        variants = _school_name_variants(school_name)
+        if len(variants) <= 1:
+            continue
+        alias_compacts = {_compact_text(alias) for alias in variants[1:] if _compact_text(alias)}
+        if not alias_compacts:
+            continue
+        matched_keywords = [
+            keyword
+            for keyword, compact in keyword_compacts.items()
+            if compact and compact in alias_compacts
+        ]
+        if matched_keywords:
+            canonical = variants[0] if variants and variants[0] else school_name
+            if canonical not in matched_names:
+                matched_names.append(canonical)
+            for keyword in matched_keywords:
+                if keyword not in matched_sources:
+                    matched_sources.append(keyword)
+
+    if not matched_names:
+        return None, [], []
+
+    fallback = dict(filters)
+    fallback["province_names"] = []
+    fallback["city_names"] = []
+    fallback["school_keywords"] = _merge_filter_lists(matched_sources or school_keywords, matched_names)
+    return fallback, matched_names, matched_sources or school_keywords
 
 
 def _format_structured_candidate_result(response: dict[str, Any], description: str) -> str:
@@ -820,6 +907,9 @@ async def query_volunteer_plan(
     """围绕当前方案与候选机会进行局部命中查询。
 
     只适合回答“当前方案里有没有某学校/专业/地域”“候选里还有没有某方向机会”。
+    用户用院校简称、专业简称、模糊代称或口语化局部查看时（如“青城那个是不是放多了，能查下”
+    “会计审计还有吗”“北京那几个多不多”），也应把原始 query 传给本工具；工具会结合当前方案真实名称、
+    候选筛选和别名变体做局部命中查询。不要把这类局部查看改成整体 `query_state` 概览，也不要自行猜测简称含义。
     不适合回答“还差几个怎么补、补几个更稳的、怎么补满、加入方案”这类会改变方案或规划补齐动作的问题；
     这类问题应走 Plan 主链路规划 preview_compensation/add_units，并在用户确认后执行。
     也不适合在移动/删除前作为“定位 ID”的前置步骤；`move_unit/remove_units/add_units`

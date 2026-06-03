@@ -13,9 +13,12 @@ from app.llm.client import LLMClient
 from app.tools.major_compare_tool import compare_major_options, compare_majors, compare_majors_adhoc
 from app.tools.major_info_tool import get_major_introduction, get_major_introductions
 from app.tools.major_recommend_tool import get_major_recommendations, get_major_recommendations_adhoc
+from app.tools.admission_fit_match_tool import match_admission_rule_to_student
+from app.tools.official_source_search_tool import search_official_admission_sources
 from app.tools.intent_state_tool import (
     update_volunteer_intent_state,
 )
+from app.tools.admission_policy_tool import answer_admission_policy_question
 from app.tools.intent_preview_tool import (
     analyze_current_career_direction,
     analyze_current_interest,
@@ -54,6 +57,9 @@ _TOOL_PROGRESS_HINTS: dict[str, str] = {
     "get_major_introductions":          "正在对照这些专业的学习内容和就业情况...",
     "get_school_introduction":          "正在查这所院校的基础信息...",
     "query_volunteer_plan":             "正在查当前方案和候选里的相关结果...",
+    "answer_admission_policy_question": "正在核对报考规则和需要确认的官方依据...",
+    "search_official_admission_sources": "正在检索官方报考政策和招生信息...",
+    "match_admission_rule_to_student":   "正在把招生规则和学生情况逐项匹配...",
     "analyze_current_interest":         "正在结合你的问题做初步分析...",
     "analyze_current_school_interest":  "正在看这个院校方向是否适合你...",
     "analyze_current_major_interest":   "正在看这个专业方向是否适合你...",
@@ -97,6 +103,9 @@ class ChatAgent(BaseAgent[str]):
                 compare_schools_adhoc,
                 get_school_recommendations,
                 query_volunteer_plan,
+                answer_admission_policy_question,
+                search_official_admission_sources,
+                match_admission_rule_to_student,
                 collect_plan_context_inputs,
                 plan_next_action,
                 execute_plan_action,
@@ -158,4 +167,4 @@ class ChatAgent(BaseAgent[str]):
         decision = decide_tool_reply(tool_names, tool_returns, deps)
         if decision.should_return_directly:
             return decision.reply
-        return super().render_direct_tool_output(tool_names, tool_returns, deps)
+        return None

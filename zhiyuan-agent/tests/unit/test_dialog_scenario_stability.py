@@ -298,6 +298,52 @@ def test_dialog_scenario_stable_employment_explore_keeps_student_fit_and_next_st
     assert "下一步" in resp
 
 
+def test_dialog_scenario_career_tool_delegates_major_mentions_to_major_interest():
+    ctx = SimpleNamespace(
+        deps=SimpleNamespace(
+            userid="u1",
+            sessionid="306b",
+            batch="01",
+            chat_history=[{"role": "user", "content": "当前方案对财会方向承接怎么样"}],
+            score_detail=None,
+            init_profile=None,
+            planning_summary=None,
+        )
+    )
+
+    with patch(
+        "app.tools.intent_preview_tool.analyze_current_major_interest",
+        new=AsyncMock(return_value="财会方向承接分析"),
+    ) as major_mock:
+        resp = _run(analyze_current_career_direction(ctx))
+
+    major_mock.assert_awaited_once_with(ctx)
+    assert resp == "财会方向承接分析"
+
+
+def test_dialog_scenario_career_tool_delegates_inferred_stable_major_mentions_to_major_interest():
+    ctx = SimpleNamespace(
+        deps=SimpleNamespace(
+            userid="u1",
+            sessionid="306c",
+            batch="01",
+            chat_history=[{"role": "user", "content": "当前方案对财会方向承接怎么样"}],
+            score_detail=None,
+            init_profile=None,
+            planning_summary=None,
+        )
+    )
+
+    with patch(
+        "app.tools.intent_preview_tool.analyze_current_major_interest",
+        new=AsyncMock(return_value="财会方向承接分析"),
+    ) as major_mock:
+        resp = _run(analyze_current_career_direction(ctx, career_directions=["stable_employment"]))
+
+    major_mock.assert_awaited_once_with(ctx)
+    assert resp == "财会方向承接分析"
+
+
 def test_dialog_scenario_career_compare_explore_keeps_comparison_not_plan_listing():
     ctx = SimpleNamespace(
         deps=SimpleNamespace(

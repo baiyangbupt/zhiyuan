@@ -21,6 +21,8 @@ from app.service import (
     build_timeout_fallback_from_recent_plan_execution,
     _extract_pending_plan_action,
     _normalize_pending_intent_reply,
+    _normalize_false_apology_reply,
+    _normalize_general_confirmation_protocol_wording,
     _normalize_plan_reply_style,
     _normalize_unbacked_recorded_wording,
     _normalize_unbacked_intent_preview_reply,
@@ -257,6 +259,49 @@ class _InterruptedAgent:
         raise RuntimeError("model api interrupted")
 
 
+class _InterruptedReadonlyToolAgent:
+    async def run_with_message_deltas(self, user_prompt, message_history=None, deps=None, on_progress=None):
+        deps.agent_observability.update(
+            {
+                "completed": False,
+                "failedNode": "ModelRequestNode",
+                "failedNodeIndex": 4,
+                "failedNodeElapsedMs": 52000,
+                "firstToolNames": ["compare_majors"],
+                "toolNameCounts": {"compare_majors": 1},
+                "errorType": "ModelAPIError",
+                "nodeTimings": [
+                    {
+                        "index": 1,
+                        "node": "UserPromptNode",
+                        "durationMs": 0,
+                        "status": "success",
+                    },
+                    {
+                        "index": 2,
+                        "node": "ModelRequestNode",
+                        "durationMs": 1200,
+                        "status": "success",
+                    },
+                    {
+                        "index": 3,
+                        "node": "CallToolsNode",
+                        "durationMs": 20,
+                        "status": "success",
+                        "toolNames": ["compare_majors"],
+                    },
+                    {
+                        "index": 4,
+                        "node": "ModelRequestNode",
+                        "durationMs": 52000,
+                        "status": "interrupted",
+                    },
+                ],
+            }
+        )
+        raise RuntimeError("model api interrupted")
+
+
 class _BuggyAgent:
     async def run_with_message_deltas(self, user_prompt, message_history=None, deps=None, on_progress=None):
         raise RuntimeError("plain bug")
@@ -321,6 +366,85 @@ def test_chat_service_returns_safe_fallback_when_model_run_is_interrupted(tmp_pa
     assert "冲 66" in reply
     assert "稳 28" in reply
     assert "保 0" in reply
+
+
+def test_chat_service_interrupted_readonly_compare_fallback_preserves_context(
+    tmp_path,
+    mock_llm_client,
+):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+
+    with patch("app.service.ChatAgent", return_value=_InterruptedReadonlyToolAgent()), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(
+            service.handle_message(
+                "session-interrupted-readonly-compare",
+                "user-1",
+                "新媒体和跨电哪个更适合数学不太好的，先说说",
+            )
+        )
+
+    assert "模型服务中断" in reply
+    assert "没有改动你的方案" in reply
+    assert "没有把偏好写入后续参考" in reply
+    assert "网络与新媒体" in reply
+    assert "跨境电子商务" in reply
+
+    saved = asyncio.run(store.load("session-interrupted-readonly-compare"))
+    assert any(
+        isinstance(message, ModelResponse)
+        and message.model_name == "agent-interruption-readonly-fallback"
+        for message in saved
+    )
+
+
+def test_chat_service_short_ack_after_readonly_interruption_does_not_call_agent(
+    tmp_path,
+    mock_llm_client,
+):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    history = [
+        ModelRequest(parts=[UserPromptPart(content="新媒体和跨电哪个更适合数学不太好的，先说说")]),
+        ModelResponse(
+            parts=[
+                TextPart(
+                    content=(
+                        "这轮模型服务中断了，我没有改动你的方案，也没有把偏好写入后续参考。"
+                        "你刚才问的是 网络与新媒体 和 跨境电子商务 的比较，这次没能完整生成分析结论；"
+                        "你可以继续围绕刚才的问题追问，我会按只读分析处理。"
+                    )
+                )
+            ],
+            model_name="agent-interruption-readonly-fallback",
+        ),
+    ]
+    asyncio.run(store.save("session-readonly-interrupted-short-ack", history))
+    fake_agent = _FakeAgent(["不应该调用模型"])
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_intent_change_cache", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
+            patch("app.service._log_conversation_turn_event") as log_mock:
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(
+            service.handle_message(
+                "session-readonly-interrupted-short-ack",
+                "user-1",
+                "嗯那就这样",
+            )
+        )
+
+    assert "先按刚才的分析结论理解" in reply
+    assert "没有待确认的偏好或方案动作" in reply
+    assert fake_agent.calls == []
+    assert log_mock.call_args.kwargs["routingPath"] == "readonly_closure_ack"
 
 
 def test_chat_service_still_raises_plain_agent_bug(tmp_path, mock_llm_client):
@@ -4889,6 +5013,93 @@ def test_normalize_unbacked_recorded_wording_avoids_fake_preference_closure():
     assert "**网络与新媒体**这个方向" in normalized
 
 
+def test_normalize_false_apology_reply_removes_first_turn_fake_self_correction():
+    reply = "抱歉，刚才的分析没有直接回应您的问题。让我重新为您分析：\n\n## 数学不稳定怎么办"
+
+    normalized = _normalize_false_apology_reply(reply, [])
+
+    assert not normalized.startswith("抱歉")
+    assert "数学不稳定怎么办" in normalized
+
+
+def test_normalize_false_apology_reply_keeps_real_multi_turn_apology():
+    history = [ModelResponse(parts=[TextPart(content="上一轮我答错了")], model_name="test")]
+    reply = "抱歉，刚才的分析没有直接回应您的问题。让我重新为您分析：\n\n## 数学不稳定怎么办"
+
+    normalized = _normalize_false_apology_reply(reply, history)
+
+    assert normalized == reply
+
+
+def test_normalize_general_confirmation_protocol_wording_requires_card_click():
+    reply = "随时可以在对话里改。你直接告诉我新的想法就行，我会重新整理，不会锁定之前的偏好。"
+
+    normalized = _normalize_general_confirmation_protocol_wording(reply)
+
+    assert "随时可以在对话里改" not in normalized
+    assert "不会锁定之前的偏好" not in normalized
+    assert "不会自动改候选或方案" in normalized
+    assert "点击采纳前" in normalized
+
+
+def test_normalize_general_confirmation_protocol_wording_covers_followup_change_variants():
+    reply = "在我们这里，随时能改。之前填的内容都是可以根据新想法调整的，直接告诉我新的想法就行。"
+
+    normalized = _normalize_general_confirmation_protocol_wording(reply)
+
+    assert "随时能改" not in normalized
+    assert "直接告诉我新的想法就行" not in normalized
+    assert "确认卡片" in normalized
+    assert "点击采纳前" in normalized
+    assert "不会自动改候选或方案" in normalized
+
+
+def test_normalize_general_confirmation_protocol_wording_removes_auto_apply_conflicts():
+    reply = (
+        "在我们这里，随时能改，改完立刻生效。"
+        "如果孩子现在就有新想法，直接告诉我，我立刻帮你调整方案。"
+    )
+
+    normalized = _normalize_general_confirmation_protocol_wording(reply)
+
+    assert "改完立刻生效" not in normalized
+    assert "立刻帮你调整方案" not in normalized
+    assert "确认卡片" in normalized
+    assert "采纳后再调整方案" in normalized
+    assert "点击采纳前" in normalized
+
+
+def test_normalize_general_confirmation_protocol_wording_adds_card_boundary_to_change_policy_reply():
+    reply = (
+        "可以的，之前设定的偏好随时可以调整。\n"
+        "2. 修改后重新匹配：调整偏好后，系统会重新筛选符合条件的院校和专业\n"
+        "3. 不影响已生成的方案：如果你已经生成了初步方案，修改偏好后可以重新生成或局部调整\n"
+        "我可以先帮你分析调整后的影响，再决定是否更新到后续推荐中。"
+    )
+
+    normalized = _normalize_general_confirmation_protocol_wording(reply)
+
+    assert "调整偏好后，系统会重新筛选" not in normalized
+    assert "确认卡片" in normalized
+    assert "点击采纳后" in normalized
+    assert "点击采纳前不会更新到后续推荐中" in normalized
+
+
+def test_normalize_general_confirmation_protocol_wording_appends_boundary_when_changeable_reply_lacks_card():
+    reply = (
+        "可以改。之前设置的偏好、排除项和方案内容，随时都可以调整，不会锁死。\n"
+        "- 调整后会重新匹配候选机会，已生成的方案也可以同步更新\n"
+        "- 增删、替换、调整顺序都可以"
+    )
+
+    normalized = _normalize_general_confirmation_protocol_wording(reply)
+
+    assert "调整后会重新匹配候选机会，已生成的方案也可以同步更新" not in normalized
+    assert "增删、替换、调整顺序都可以，但都会先给确认预览" in normalized
+    assert "确认卡片" in normalized
+    assert "点击采纳前不会改动方案" in normalized
+
+
 def test_chat_service_normalizes_toolless_intent_reply_profile_jargon_in_history(tmp_path, mock_llm_client):
     db_path = tmp_path / "history.db"
     store = ChatHistoryStore(str(db_path))
@@ -5014,6 +5225,28 @@ def test_normalize_unbacked_intent_preview_reply_removes_fake_confirm_boundary()
     assert "把这个要求记下来" in normalized
 
 
+def test_normalize_unbacked_intent_preview_reply_keeps_general_card_protocol_explanation():
+    reply = (
+        "孩子改主意后，之前偏好可以调整。只要孩子想法变了，直接告诉我新的方向，"
+        "我会先整理成确认卡片；采纳后再调整推荐口径和候选志愿。"
+    )
+
+    normalized = _normalize_unbacked_intent_preview_reply(reply)
+
+    assert normalized == reply
+
+
+def test_normalize_unbacked_intent_preview_reply_keeps_generic_confirm_protocol_without_items():
+    reply = (
+        "可以改。如果你确认要更新，后续我会先整理确认卡片，"
+        "等你点击采纳后再作为后续参考。"
+    )
+
+    normalized = _normalize_unbacked_intent_preview_reply(reply)
+
+    assert normalized == reply
+
+
 def test_chat_service_normalizes_unbacked_intent_preview_without_tool_call(tmp_path, mock_llm_client):
     db_path = tmp_path / "history.db"
     store = ChatHistoryStore(str(db_path))
@@ -5039,6 +5272,30 @@ def test_chat_service_normalizes_unbacked_intent_preview_without_tool_call(tmp_p
     assert "待确认内容" not in reply
     assert "回复“确认”就按上面执行" not in reply
     assert "没有正式进入待确认状态" in reply
+
+
+def test_chat_service_keeps_general_preference_change_policy_answer(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    fake_agent = _FakeAgent([
+        (
+            "孩子改主意后，之前偏好可以调整。只要孩子想法变了，直接告诉我新的方向，"
+            "我会先整理成确认卡片；采纳后再调整推荐口径和候选志愿。"
+        )
+    ])
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_intent_change_cache", AsyncMock(return_value={"data": {"planEditCache": None}})):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(service.handle_message("session-general-change-policy", "user-57", "如果孩子改主意了，之前偏好还能改吗"))
+
+    assert isinstance(reply, str)
+    assert "之前偏好可以调整" in reply
+    assert "采纳后再调整推荐口径和候选志愿" in reply
+    assert "这轮我还没有生成可点击的确认卡片" not in reply
 
 
 def test_chat_service_recovers_unbacked_major_intent_confirmation_to_pending_card(tmp_path, mock_llm_client):

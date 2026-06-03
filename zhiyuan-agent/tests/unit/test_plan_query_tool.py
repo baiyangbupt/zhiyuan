@@ -109,6 +109,17 @@ def test_matches_query_supports_school_major_combined_lookup_across_group_name()
     assert _matches_query(item, "广西师范大学-工业设计")
 
 
+def test_matches_query_supports_city_college_short_alias_from_real_school_name():
+    item = {
+        "schoolName": "青岛城市学院",
+        "majorName": "法语",
+        "tier": "冲",
+    }
+
+    assert _matches_query(item, "青城")
+    assert not _matches_query(item, "青城山")
+
+
 @pytest.mark.asyncio
 async def test_query_volunteer_plan_returns_current_plan_hits_first():
     ordered_result = {
@@ -132,7 +143,7 @@ async def test_query_volunteer_plan_returns_current_plan_hits_first():
     ):
         result = await query_volunteer_plan(_ctx(), "看看生物工程")
 
-    assert "当前排序方案里共命中了" in result
+    assert "当前方案里共命中了" in result
     assert "下面仅展示前 1 条示例" in result
     assert "北京联合大学(17)-生物工程" in result
     candidate_mock.assert_not_awaited()
@@ -161,7 +172,7 @@ async def test_query_volunteer_plan_matches_school_and_major_across_group_name()
     ):
         result = await query_volunteer_plan(_ctx(), "当前方案里有没有广西师范大学工业设计")
 
-    assert "当前排序方案里共命中了 1 条和“广西师范大学工业设计”相关的志愿" in result
+    assert "当前方案里共命中了 1 条和“广西师范大学工业设计”相关的志愿" in result
     assert "广西师范大学006专业组-工业设计" in result
     candidate_mock.assert_not_awaited()
 
@@ -196,8 +207,82 @@ async def test_query_volunteer_plan_structured_school_and_major_filters_support_
             major_keywords=["工业设计"],
         )
 
-    assert "当前排序方案里共命中了 1 条符合“院校:广西师范大学；专业:工业设计”" in result
+    assert "当前方案里共命中了 1 条符合“院校:广西师范大学；专业:工业设计”" in result
     assert "广西师范大学006专业组-工业设计" in result
+    candidate_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_query_volunteer_plan_alias_school_match_overrides_conflicting_region_filter():
+    ordered_result = {
+        "code": 0,
+        "data": {
+            "items": [
+                {
+                    "volunteerId": "v-qc-1",
+                    "schoolName": "青岛城市学院",
+                    "majorName": "法语",
+                    "tier": "冲",
+                    "admissionRatio": 1,
+                    "provinceName": "山东",
+                }
+            ]
+        },
+    }
+
+    with (
+        patch("app.tools.plan_query_tool.get_planning_ordered_plan", new=AsyncMock(return_value=ordered_result)),
+        patch("app.tools.plan_query_tool.get_planning_draft", new=AsyncMock(return_value={"code": 0, "data": {"items": []}})),
+        patch("app.tools.plan_query_tool.get_planning_state", new=AsyncMock(return_value={"code": 0, "data": {"candidatePoolState": {"items": []}}})),
+        patch("app.tools.plan_query_tool.query_planning_candidate_pool", new=AsyncMock()) as candidate_mock,
+    ):
+        result = await query_volunteer_plan(
+            _ctx(),
+            scope="plan",
+            province_names=["内蒙古"],
+            school_keywords=["青城"],
+        )
+
+    assert "按当前方案里的院校简称“青城”匹配到青岛城市学院" in result
+    assert "原先可能冲突的地域条件没有参与" in result
+    assert "当前方案里共命中了 1 条符合“院校:青城、青岛城市学院”" in result
+    assert "青岛城市学院-法语" in result
+    candidate_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_query_volunteer_plan_alias_school_match_recovers_city_extraction_miss():
+    ordered_result = {
+        "code": 0,
+        "data": {
+            "items": [
+                {
+                    "volunteerId": "v-qc-1",
+                    "schoolName": "青岛城市学院",
+                    "majorName": "法语",
+                    "tier": "冲",
+                    "admissionRatio": 1,
+                    "provinceName": "山东",
+                }
+            ]
+        },
+    }
+
+    with (
+        patch("app.tools.plan_query_tool.get_planning_ordered_plan", new=AsyncMock(return_value=ordered_result)),
+        patch("app.tools.plan_query_tool.get_planning_draft", new=AsyncMock(return_value={"code": 0, "data": {"items": []}})),
+        patch("app.tools.plan_query_tool.get_planning_state", new=AsyncMock(return_value={"code": 0, "data": {"candidatePoolState": {"items": []}}})),
+        patch("app.tools.plan_query_tool.query_planning_candidate_pool", new=AsyncMock()) as candidate_mock,
+    ):
+        result = await query_volunteer_plan(
+            _ctx(),
+            scope="plan",
+            city_names=["青城"],
+        )
+
+    assert "按当前方案里的院校简称“青城”匹配到青岛城市学院" in result
+    assert "当前方案里共命中了 1 条符合“院校:青城、青岛城市学院”" in result
+    assert "青岛城市学院-法语" in result
     candidate_mock.assert_not_awaited()
 
 
@@ -224,7 +309,7 @@ async def test_query_volunteer_plan_matches_major_query_with_related_major_suffi
     ):
         result = await query_volunteer_plan(_ctx(), "当前方案里有没有网络与新媒体相关专业", scope="plan")
 
-    assert "当前排序方案里共命中了 1 条和“网络与新媒体相关专业”相关的志愿" in result
+    assert "当前方案里共命中了 1 条和“网络与新媒体相关专业”相关的志愿" in result
     assert "上海建桥学院第01组-网络与新媒体" in result
     candidate_mock.assert_not_awaited()
 
@@ -283,7 +368,7 @@ async def test_query_volunteer_plan_structured_region_and_major_filters_use_cand
             major_keywords=["网络与新媒体"],
         )
 
-    assert "当前排序方案里共命中了 1 条符合“专业:网络与新媒体；省份:上海”" in result
+    assert "当前方案里共命中了 1 条符合“专业:网络与新媒体；省份:上海”" in result
     assert "上海建桥学院第01组-网络与新媒体" in result
     candidate_mock.assert_not_awaited()
 
@@ -401,7 +486,7 @@ async def test_query_volunteer_plan_falls_back_to_candidate_opportunities_when_p
     ):
         result = await query_volunteer_plan(_ctx(), "看看生物工程")
 
-    assert "当前排序方案里暂时没有命中“生物工程”" in result
+    assert "当前方案里暂时没有命中“生物工程”" in result
     assert "候选里共命中了 2 条和“生物工程”相关的机会" in result
     assert "北京农学院(03)-生物工程" in result
 
@@ -460,7 +545,7 @@ async def test_query_volunteer_plan_explicit_plan_scope_does_not_fall_back_to_ca
     ):
         result = await query_volunteer_plan(_ctx(), "候选里还有什么生物工程", scope="plan")
 
-    assert "当前排序方案里暂时没有命中“生物工程”" in result
+    assert "当前方案里暂时没有命中“生物工程”" in result
     candidate_mock.assert_not_awaited()
 
 

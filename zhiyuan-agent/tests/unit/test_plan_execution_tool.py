@@ -162,6 +162,55 @@ def test_execute_plan_action_move_ordered_unit_preview_uses_unit_position_langua
     mock_move.assert_not_awaited()
 
 
+def test_execute_plan_action_move_ordered_unit_preview_uses_volunteer_language_for_single_major_unit():
+    payload = {
+        "stage": "preview",
+        "action_family": "move_ordered_unit",
+        "user_goal": "把第5个挪到第2个看看影响",
+        "context_summary": "阶段=ordered；方案=96/96",
+        "preview_summary": "会移动当前方案排序区里的指定项。",
+        "missing_inputs": [],
+        "atomic_actions": [
+            {
+                "action_type": "move_ordered_unit",
+                "unit_ids": [],
+                "source_position": 5,
+                "target_position": 2,
+                "filters": {},
+                "reason": "把第5个挪到第2个看看影响",
+            }
+        ],
+    }
+    state = {
+        "orderedPlanState": {
+            "units": [
+                {"unitId": "v1", "schoolName": "A大学", "majorItems": [{"majorName": "英语", "volunteerId": "v1"}]},
+                {"unitId": "v2", "schoolName": "B大学", "majorItems": [{"majorName": "计算机", "volunteerId": "v2"}]},
+                {"unitId": "v3", "schoolName": "C大学", "majorItems": [{"majorName": "会计学", "volunteerId": "v3"}]},
+                {"unitId": "v4", "schoolName": "D大学", "majorItems": [{"majorName": "电气工程", "volunteerId": "v4"}]},
+                {"unitId": "v5", "schoolName": "哈尔滨理工大学", "majorItems": [{"majorName": "人力资源管理", "volunteerId": "v5"}]},
+            ]
+        }
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_state_request",
+        new=AsyncMock(return_value={"code": 0, "data": state}),
+    ):
+        result = asyncio.run(execute_plan_action(_ctx(), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["applied"] is False
+    assert data["result_kind"] == "preview_only"
+    assert "第 5 个志愿" in data["summary"]
+    assert "第 2 个志愿位置" in data["summary"]
+    assert "哈尔滨理工大学 · 人力资源管理" in data["summary"]
+    assert "按当前方案展示顺序计算" in data["summary"]
+    assert "不是按单条志愿位置计算" not in data["summary"]
+    assert data["facts"]["unit_kind"] == "志愿"
+    assert data["facts"]["position_semantics"] == "ordered_item_position"
+
+
 def test_execute_plan_action_remove_ordered_unit_preview_uses_unit_position_language():
     payload = {
         "stage": "preview",
@@ -294,6 +343,124 @@ def test_execute_plan_action_sort_preview_includes_distribution_and_examples():
     assert data["facts"]["top_examples"][0].startswith("B大学-审计学")
     mock_state.assert_awaited_once()
     mock_sort.assert_not_awaited()
+
+
+def test_execute_plan_action_sort_preview_uses_candidate_facts_for_flat_items():
+    payload = {
+        "stage": "preview",
+        "action_family": "sort_ordered_plan",
+        "user_goal": "按院校层次排一下",
+        "context_summary": "阶段=ordered；方案=3/3",
+        "preview_summary": "会按院校层次重新排序当前方案。",
+        "missing_inputs": [],
+        "atomic_actions": [
+            {
+                "action_type": "sort_ordered_plan",
+                "filters": {"sort_field": "schoolRank"},
+            }
+        ],
+    }
+    state = {
+        "orderedPlanState": {
+            "summary": {"unitTotal": 3, "targetUnitCount": 3},
+            "items": [
+                {"volunteerId": "v1", "schoolName": "A大学", "majorName": "会计学", "tier": "稳", "position": 1},
+                {"volunteerId": "v2", "schoolName": "B大学", "majorName": "审计学", "tier": "冲", "position": 2},
+                {"volunteerId": "v3", "schoolName": "C大学", "majorName": "财务管理", "tier": "保", "position": 3},
+            ],
+        },
+        "candidatePoolState": {
+            "items": [
+                {"volunteerId": "v1", "schoolRank": 120, "admissionRatio": 66, "finalScore": 83},
+                {"volunteerId": "v2", "schoolRank": 25, "admissionRatio": 48, "recommendScore": 91},
+                {"volunteerId": "v3", "schoolRank": 230, "admissionRatio": 88, "finalScore": 77},
+            ]
+        },
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_state_request",
+        new=AsyncMock(return_value={"code": 0, "data": state}),
+    ), patch(
+        "app.tools.plan_execution_tool._sort_planning_ordered_plan_request",
+        new=AsyncMock(),
+    ):
+        result = asyncio.run(execute_plan_action(_ctx(), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["applied"] is False
+    assert "B大学-审计学" in data["summary"]
+    assert "院校层次25" in data["summary"]
+    assert "院校层次-" not in data["summary"]
+    assert data["facts"]["top_examples"][0].startswith("B大学-审计学")
+
+
+def test_execute_plan_action_sort_preview_uses_unit_and_candidate_facts_for_major_group():
+    payload = {
+        "stage": "preview",
+        "action_family": "sort_ordered_plan",
+        "user_goal": "按录取率排一下",
+        "context_summary": "阶段=ordered；方案=2/2",
+        "preview_summary": "会按录取率重新排序当前方案。",
+        "missing_inputs": [],
+        "atomic_actions": [
+            {
+                "action_type": "sort_ordered_plan",
+                "filters": {"sort_field": "admissionRatio"},
+            }
+        ],
+    }
+    state = {
+        "orderedPlanState": {
+            "summary": {"unitTotal": 2, "targetUnitCount": 2},
+            "items": [
+                {"volunteerId": "v1", "schoolName": "A大学第01组", "majorName": "会计学", "tier": "稳", "position": 1},
+                {"volunteerId": "v2", "schoolName": "B大学第02组", "majorName": "审计学", "tier": "冲", "position": 2},
+            ],
+            "units": [
+                {
+                    "unitId": "u1",
+                    "schoolName": "A大学第01组",
+                    "tier": "稳",
+                    "position": 1,
+                    "schoolEnrollRatio": "66%",
+                    "finalScore": 83,
+                    "majorItems": [{"volunteerId": "v1", "majorName": "会计学"}],
+                },
+                {
+                    "unitId": "u2",
+                    "schoolName": "B大学第02组",
+                    "tier": "冲",
+                    "position": 2,
+                    "schoolEnrollRatio": "48%",
+                    "finalScore": 91,
+                    "majorItems": [{"volunteerId": "v2", "majorName": "审计学"}],
+                },
+            ],
+        },
+        "candidatePoolState": {
+            "items": [
+                {"volunteerId": "v1", "schoolRank": 120, "admissionRatio": 65, "finalScore": 83},
+                {"volunteerId": "v2", "schoolRank": 25, "admissionRatio": 47, "finalScore": 91},
+            ]
+        },
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_state_request",
+        new=AsyncMock(return_value={"code": 0, "data": state}),
+    ), patch(
+        "app.tools.plan_execution_tool._sort_planning_ordered_plan_request",
+        new=AsyncMock(),
+    ):
+        result = asyncio.run(execute_plan_action(_ctx(), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["applied"] is False
+    assert "B大学第02组" in data["summary"]
+    assert "录取率48%" in data["summary"]
+    assert "录取率-" not in data["summary"]
+    assert data["facts"]["top_examples"][0].startswith("B大学第02组")
 
 
 def test_execute_plan_action_sorts_ordered_plan_by_school_rank_and_marks_review_stale():
@@ -537,6 +704,132 @@ def test_execute_plan_action_remove_preview_uses_review_issue_target_without_sam
     assert data["result_kind"] == "preview_only"
     assert "共 2 个专业组，涉及 3 条志愿" in data["summary"]
     assert "review_issue_batch_scope" in data["reply_focus"]
+
+
+def test_execute_plan_action_remove_preview_refreshes_review_when_issue_scope_missing():
+    payload = {
+        "stage": "preview",
+        "action_family": "remove_units",
+        "user_goal": "把太贵的那几个先去掉看看",
+        "context_summary": "阶段=ordered；方案=30/30",
+        "preview_summary": "会按高收费问题项执行移除。",
+        "missing_inputs": [],
+        "atomic_actions": [
+            {
+                "action_type": "remove_units",
+                "volunteer_ids": [],
+                "target_position": None,
+                "filters": {},
+                "reason": "把太贵的那几个先去掉看看",
+                "review_issue_target": {
+                    "code": "high_tuition",
+                    "scope_mode": "full_issue",
+                    "label": "高收费",
+                    "scope_kind": "item_removal",
+                    "default_action_family": "remove_units",
+                },
+            }
+        ],
+    }
+
+    ordered_items = [
+        {"position": 1, "volunteerId": "u1_a", "schoolName": "青岛理工大学", "majorName": "建筑学(中外合作办学)(40000元)", "tier": "冲"},
+        {"position": 2, "volunteerId": "u2_a", "schoolName": "贵州财经大学", "majorName": "市场营销(中外合作办学)(60000元)", "tier": "稳"},
+    ]
+    state_without_review = {"reviewState": {"checks": []}}
+    state_with_review = {
+        "reviewState": {
+            "checks": [
+                {
+                    "code": "high_tuition",
+                    "passed": False,
+                    "summary": "当前方案包含高收费专业",
+                    "affectedVolunteerIds": ["u1_a", "u2_a"],
+                }
+            ]
+        }
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
+        new=AsyncMock(return_value={"code": 0, "data": {"items": ordered_items}}),
+    ), patch(
+        "app.tools.plan_execution_tool._get_planning_state_request",
+        new=AsyncMock(
+            side_effect=[
+                {"code": 0, "data": state_without_review},
+                {"code": 0, "data": state_with_review},
+            ]
+        ),
+    ), patch(
+        "app.tools.plan_execution_tool.run_planning_review",
+        new=AsyncMock(return_value="审查完成：发现高收费。"),
+    ) as review_mock:
+        result = asyncio.run(execute_plan_action(_ctx(), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["result_kind"] == "preview_only"
+    assert "共 2 个专业组，涉及 2 条志愿" in data["summary"]
+    assert data["reply_focus"] == ["preview_only", "review_issue_batch_scope"]
+    review_mock.assert_awaited_once()
+
+
+def test_execute_plan_action_repairs_truncated_remove_preview_payload():
+    payload = {
+        "stage": "preview",
+        "action_family": "remove_units",
+        "user_goal": "把太贵的那几个先去掉看看",
+        "context_summary": "阶段=ordered；方案=30/30",
+        "missing_inputs": [],
+        "atomic_actions": [
+            {
+                "action_type": "remove_units",
+                "volunteer_ids": [],
+                "target_position": None,
+                "filters": {},
+                "reason": "把太贵的那几个先去掉看看",
+                "review_issue_target": {
+                    "code": "high_tuition",
+                    "scope_mode": "full_issue",
+                    "label": "高收费",
+                    "scope_kind": "item_removal",
+                    "default_action_family": "remove_units",
+                },
+            }
+        ],
+    }
+    truncated_payload = json.dumps(payload, ensure_ascii=False)[:-2]
+    ordered_items = [
+        {"position": 1, "volunteerId": "u1_a", "schoolName": "青岛理工大学", "majorName": "建筑学(中外合作办学)(40000元)", "tier": "冲"},
+        {"position": 2, "volunteerId": "u2_a", "schoolName": "贵州财经大学", "majorName": "市场营销(中外合作办学)(60000元)", "tier": "稳"},
+    ]
+    planning_state = {
+        "reviewState": {
+            "checks": [
+                {
+                    "code": "high_tuition",
+                    "passed": False,
+                    "summary": "当前方案包含高收费专业",
+                    "affectedVolunteerIds": ["u1_a", "u2_a"],
+                }
+            ]
+        }
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
+        new=AsyncMock(return_value={"code": 0, "data": {"items": ordered_items}}),
+    ), patch(
+        "app.tools.plan_execution_tool._get_planning_state_request",
+        new=AsyncMock(return_value={"code": 0, "data": planning_state}),
+    ):
+        result = asyncio.run(execute_plan_action(_ctx(), truncated_payload))
+
+    data = json.loads(result)
+    assert data["result_kind"] == "preview_only"
+    assert data["action_family"] == "remove_units"
+    assert "共 2 个专业组，涉及 2 条志愿" in data["summary"]
+    assert "missing_plan_payload" not in data["reply_focus"]
 
 
 def test_execute_plan_action_rejects_incomplete_replace_preview_payload():
@@ -2647,7 +2940,17 @@ def test_execute_plan_action_runs_query_state():
                             "majorName": "财政学",
                             "majorCategory": "财政学类",
                             "provinceName": "北京",
+                            "schoolNature": "公办",
                             "tier": "冲",
+                        },
+                        {
+                            "position": 2,
+                            "schoolName": "北京城市学院第01组",
+                            "majorName": "会计学",
+                            "majorCategory": "工商管理类",
+                            "provinceName": "北京",
+                            "schoolNature": "民办",
+                            "tier": "稳",
                         }
                     ],
                     "summary": {"unitTotal": 45, "targetUnitCount": 45},
@@ -2661,6 +2964,8 @@ def test_execute_plan_action_runs_query_state():
     assert "方案已经有了" in data["summary"]
     assert "45/45 个志愿" in data["summary"]
     assert "审查提醒：风险 0 项，提醒 2 项" in data["summary"]
+    assert "院校性质：公办 1 个，民办 1 个" in data["summary"]
+    assert "公办占比约 50.0%" in data["summary"]
     assert "前排示例" in data["summary"]
     assert "北京财经学院第01组-财政学(冲)第1位" in data["summary"]
     assert "@1" not in data["summary"]
@@ -2668,6 +2973,9 @@ def test_execute_plan_action_runs_query_state():
     assert data["workspace_refresh_targets"] == []
     assert data["facts"]["phase"] == "reviewed"
     assert data["facts"]["current_total"] == 45
+    assert data["facts"]["school_nature_distribution"]["counts"]["公办"] == 1
+    assert data["facts"]["school_nature_distribution"]["counts"]["民办"] == 1
+    assert "school_nature_distribution" in data["reply_focus"]
     assert "risk_warning" in data["reply_focus"]
     mock_state.assert_awaited_once()
     mock_ordered.assert_awaited_once()
@@ -3463,6 +3771,9 @@ def test_execute_plan_action_runs_review_without_duplicate_rerun():
     assert data["facts"]["risk_count"] == 1
     assert data["facts"]["warn_count"] == 2
     assert data["facts"]["issue_hit_plan_examples"][0]["summary"] == "保区占比过低"
+    assert data["facts"]["issue_hit_plan_examples"][0]["affected_count"] == 1
+    assert data["facts"]["issue_hit_plan_examples"][0]["count_text"] == "共命中 1 条志愿"
+    assert data["facts"]["issue_hit_plan_examples"][0]["example_text"] == "下面列 1 条代表例子，不代表全部"
     assert "武汉东湖学院第01组-网络与新媒体(稳)@39" in data["facts"]["issue_hit_plan_examples"][0]["items"][0]
     assert "网络与新媒体" in " ".join(data["facts"]["intent_relation"]["lines"])
     assert "典型涉及" in data["summary"]
@@ -3548,6 +3859,9 @@ def test_execute_plan_action_review_reply_explains_cost_risks():
     data = json.loads(result)
     assert data["result_kind"] == "review_result"
     assert "### 费用风险" in data["summary"]
+    assert "共命中 1 条志愿" in data["summary"]
+    assert "共命中 2 条志愿" in data["summary"]
+    assert "代表例子" in data["summary"]
     assert "高收费专业要单独确认学费" in data["summary"]
     assert "中外合作项目还要额外看培养模式" in data["summary"]
     assert "替换成正常收费或更稳的志愿" in data["summary"]

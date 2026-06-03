@@ -753,6 +753,13 @@
 | siliconflow-deepseek-v4-flash | `deepseek-ai/DeepSeek-V4-Flash` | 10 | 0 | 0 | 0 | 0.257s | 21.615s | 质量门禁通过，开放 LLM 场景耗时中等 |
 | siliconflow-glm-51 | `Pro/zai-org/GLM-5.1` | 10 | 0 | 0 | 0 | 0.261s | 25.354s | 质量门禁通过，开放 LLM 场景耗时略高于 DeepSeek |
 
+主备模型建议：
+
+- 现阶段主模型继续使用百家 `kimi-k2.6`，保持与线上主链路一致，作为 3.0.3 full Agent 质量回归基线。
+- 第一备选建议使用 `Pro/MiniMaxAI/MiniMax-M2.5`。上一轮开放场景横评中，它在质量门禁通过的同时延迟最好，且没有额外 assertion failure、error 或 latency warning。
+- `deepseek-ai/DeepSeek-V4-Flash` 和 `Pro/zai-org/GLM-5.1` 可以作为第二梯队备选继续保留，其中 DeepSeek 更适合继续做轻量语义路由、抽取或 shadow 评估候选，不建议在当前版本直接作为 full Agent 第一备选。
+- 当前 `LLMClient` 仍是单模型配置形态，运行时自动切换主备模型不是 3.0.3 已完成能力。本结论先作为部署预案和供应商故障时的人工切换依据；如果后续要做自动 fallback，需要单独设计模型失败判定、幂等重试、超时预算和可观测字段。
+
 输出文件：
 
 - `/private/tmp/model-provider-303-open-realistic-expanded-boundary-final.json`
@@ -2554,3 +2561,215 @@ cd zhiyuan-agent
 ```
 
 结果：`337 passed`。
+
+##### 14.12.19 高收费删除预览与 targeted bad cases 回归
+
+本轮继续针对 targeted bad cases 做收口，重点修复 `把太贵的那几个先去掉看看` 偶发只返回审查结果、不生成确认卡片的问题。
+
+问题复盘：
+
+- 失败链路：`plan_next_action(action_family=review_plan) -> execute_plan_action(review_plan)`。
+- 用户原话是“把太贵的那几个先去掉看看”，但模型实际传给工具的 `user_goal` 被改写成“把当前方案里学费太高的志愿去掉”。
+- 原工具层只在模型显式传 `review_issue_code=high_tuition` 时才会纠正为 `remove_units`；当 code 缺失时就无法稳定形成预览。
+
+修复策略：
+
+- 不新增全局字符串快路由，不直接短路 Agent。
+- 在 `plan_next_action` 内做窄范围的审查问题引用恢复：
+  - 必须是 `review_plan` 被用于明确删除/替换动作。
+  - 只匹配当前审查项或 registry 已登记的 `item_removal` 审查问题。
+  - 支持 `高收费 / 学费太高 / 学费偏高 / 费用太高 / 太贵 / 中外合作` 等审查问题别名。
+  - “先别改方案 / 不改方案 / 不动方案”不会触发。
+- 在 `execute_plan_action` 中，如果已有 `review_issue_target` 但当前 reviewState 里还没有对应范围，会先补跑审查并重读 affected ids；最终范围仍以审查结果为准。
+
+用户侧效果：
+
+修复后 `把太贵的那几个先去掉看看` 的回复不再停在“审查完了，如果你确认我再生成预览”，而是直接进入确认前预览：
+
+- 当前方案高收费范围：`30 个专业组、76 条志愿`。
+- 明确提示：全部移出后方案会从 `94` 个降到约 `18` 个，缺口很大。
+- 给出选择：确认全删，或缩小到具体学校/专业组。
+- 返回 `pendingConfirmationCard`，点击前不会改方案。
+
+targeted 9 case 结果：
+
+| case | 结果 |
+| --- | --- |
+| 农村专项资格 | 走 Policy + 官方来源检索，回答资格边界 |
+| 学费信息怎么看 | 走 `query_state`，没有误触发删除 |
+| 这版是不是太冲 | 走 `query_state`，覆盖冲稳保和保底风险 |
+| 省外是不是太多 | 给出省内 `35` / 省外 `59` 的结构化统计 |
+| 公办占比怎么样 | 返回公办 `10`、民办 `83`、未知 `1`，公办占比约 `10.8%` |
+| 一年两三万预算，高收费多吗 | 走 `review_plan` 只读审查，不生成删除卡片 |
+| 财会承接怎么样 | 不再误拿学前教育等职业方向样例；回复为财会承接 0 个 |
+| 北京志愿往前挪 | 因缺目标和位置，进入补充信息，不直接改方案 |
+| 太贵项先去掉 | 走 `remove_units preview`，返回确认卡片 |
+
+命令与结果：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest \
+  tests/unit/test_plan_orchestration_tool.py \
+  tests/unit/test_plan_execution_tool.py -q
+
+.venv/bin/python examples/dialog_regression_runner.py \
+  --url ws://127.0.0.1:8037/gaotu-assistant-agent/plus/chat/1/bot/test/do \
+  --cases /private/tmp/zhiyuan_303_targeted_bad_cases.json \
+  --response-timeout 180 \
+  --keep-response-text \
+  --assert-plan-style \
+  --metrics-output /private/tmp/zhiyuan_303_targeted_after_review_issue_recovery.json \
+  --clear-history-per-case \
+  --clear-backend-pending-per-case \
+  --internal-service-url http://127.0.0.1:8080
+```
+
+- 单测：`147 passed`。
+- live targeted：`9/9` 成功。
+- latency：median `18.573s`，p95/max `27.588s`。
+
+剩余问题：
+
+- 财会承接 case 质量可用，但链路仍偏长：`analyze_current_career_direction -> plan_next_action -> execute_plan_action`，本轮耗时约 `27.6s`。后续应把“专业方向承接”稳定归到 major/plan facts，并减少最终总结长尾。
+- Bocha 官方检索已接入 fallback query，但省级政策召回仍可能为空；学校章程检索表现更稳定。回复质量上必须继续区分“通用判断框架”和“已核验官方来源”。
+
+##### 14.12.20 Plan facts、payload 容错与 Bocha fallback
+
+本轮在不增加全局字符串 fast route 的前提下补了三个稳定性点：
+
+- `query_state` 补充院校性质分布，支持公办/民办/未知数量和公办占比。
+- `sort_ordered_plan` 缺少 `sort_field` 时不再默认按录取率排序，避免“把北京志愿往前挪”被误说成“重新排序”。
+- `execute_plan_action` 对模型截断的结构化 `plan_payload` 做保守 JSON 闭合修复，成功后仍走现有 Pydantic 校验和预览逻辑。
+- `search_official_admission_sources` 对 Bocha 增加官方 query fallback：只改变召回 query，不放宽官方来源过滤；学校章程场景补充已知学校官网域名 hint，例如北京工业大学可 fallback 到 `site:admissions.bjut.edu.cn ...`。
+
+用户侧验证结果：
+
+- `公办占比怎么样`：能给出 `公办 10 / 民办 83 / 未知 1 / 公办约 10.8%`。
+- `把北京的志愿往前挪一些可以吗`：没有北京志愿时，明确提示当前方案里没有北京志愿，不再误触发排序预览。
+- `把太贵的那几个先去掉看看`：返回高收费批量删除确认卡片，范围 `30 个专业组 / 76 条志愿`。
+- Bocha smoke：北京工业大学招生章程可命中官方来源；山东专项省级政策 fallback 后仍为空，工具不会收第三方页面。
+- Full Agent smoke：北京工业大学转计算机限制、山东农村专项资格两个 case 均走 `answer_admission_policy_question -> search_official_admission_sources`，回复能区分“招生章程已查到”和“转专业细则仍需教务处/本科生院核验”，且不会把农村户口说成专项充分条件。
+
+验证命令：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest \
+  tests/unit/test_plan_orchestration_tool.py \
+  tests/unit/test_plan_execution_tool.py -q
+
+.venv/bin/python -m pytest \
+  tests/unit/test_admission_policy_tool.py \
+  tests/unit/test_official_source_search_tool.py \
+  tests/unit/test_chat_agent_tools.py::TestChatAgentToolRegistration::test_admission_policy_progress_hint_is_registered \
+  tests/unit/test_chat_agent_tools.py::TestChatAgentToolRegistration::test_admission_policy_tool_schema_exposes_scope_and_domain_enums \
+  tests/unit/test_chat_agent_tools.py::TestChatAgentToolRegistration::test_official_source_search_tool_schema_exposes_source_scope \
+  tests/unit/test_chat_agent_init_profile.py::test_build_instructions_includes_planning_tool_policy \
+  tests/unit/test_instructions.py -q
+```
+
+结果：`147 passed`、`52 passed`。
+
+##### 14.12.21 高收费只读边界与排序预览信息量修复
+
+本轮基于 88 个 dialogue-derived case 后的 targeted 复盘，修复两个用户侧质量问题。
+
+问题 1：只读费用风险被误升级成删除卡片。
+
+- 原表现：`有没有高收费风险` 有时由模型传入 `remove_units/replace_units + high_tuition`，工具层会按审查项默认动作生成删除预览。
+- 修复后：这类问法稳定走 `review_plan`，回复给出高收费样例、费用风险说明和当前方案其他审查问题，不生成确认卡片。
+- 用户侧样例：回复列出青岛理工大学建筑学中外合作、贵州财经大学市场营销中外合作、青海民族大学土地资源管理中外合作，并提示“如果要正式更新偏好、要求或方案，会先整理成确认卡片或调整预览，点击采纳前不会生效”。
+
+问题 2：排序预览样例指标显示为 `-`。
+
+- 原表现：排序确认卡片虽然能生成，但样例中 `录取率- / 院校层次- / 推荐系数-`，用户无法判断排序依据是否可信。
+- 根因：后端 `OrderedItemDTO` 不携带完整指标；专业组模式的组级指标在 `orderedPlanState.units`，院校排名等补充事实在 `candidatePoolState.items`。
+- 修复后：排序预览从 `units + candidatePool` 补齐指标，并按后端排序 key 生成前几项样例。
+
+用户侧样例：
+
+| 用户输入 | 修复后预览信息 |
+| --- | --- |
+| `按录取率从低到高排下，先看预览` | `青岛理工大学（冲，录取率1%，原第1位）；喀什大学（冲，录取率1%，原第5位）...` |
+| `按好学校排下看看` | `青岛理工大学（冲，院校层次260，原第1位）；哈尔滨理工大学（冲，院校层次262，原第2位）...` |
+| `按推荐系数排一下，但别直接动` | `厦门大学嘉庚学院（冲，推荐系数44.9，原第7位）；南京工业大学浦江学院（冲，推荐系数42.4，原第15位）...` |
+
+验证结果：
+
+- 单测：`tests/unit/test_plan_orchestration_tool.py tests/unit/test_plan_execution_tool.py`，`152 passed`。
+- targeted live：5/5 成功，median `19.868s`，max `57.820s`。
+
+仍需优化：
+
+- `把太贵的那几个先去掉看看` 用户侧结果正确，能生成高收费删除确认卡片，但链路仍偏长，且正文在提醒用户缩小范围时仍同时返回整批删除卡片。后续应收敛为一次性编排，并让正文与卡片的选择关系更清楚。
+
+##### 14.12.22 高收费删除预览回复收敛
+
+本轮继续收敛 14.12.21 的剩余问题。
+
+修复点：
+
+- `plan_next_action` 对模型误传 `replace_units` 但用户明确说“去掉太贵项”的情况，直接恢复为 `remove_units + review_issue_target=high_tuition`，避免先返回缺替换范围，再二次审查。
+- `execute_plan_action` 返回 `review_issue_batch_scope` 后，Tool Reply Policy 直接按 `preview_wait_confirm` 返回，不再交给模型二次改写。
+
+用户侧变化：
+
+- 修复前：回复会先解释“更合适的是缩小范围”，同时又附带整批删除确认卡片，用户可能不清楚该点确认还是继续补充范围。
+- 修复后：正文和卡片一致，直接说明“当前确认卡片会按整批高收费项处理；如果只想处理某个学校、专业组或位置，请直接告诉我；确认后才会移出并复审”。
+
+验证：
+
+- 单测：`tests/unit/test_plan_orchestration_tool.py tests/unit/test_plan_execution_tool.py tests/unit/test_tool_reply_policy.py`，`179 passed`。
+- 单 case live：`把太贵的那几个先去掉看看` 从 5 次工具调用降为 2 次工具调用，耗时从约 `57.820s` 降到约 `24.918s`。
+- targeted 5 case 复跑：5/5 成功；只读高收费仍无确认卡片，三类排序预览指标正常，删除高收费返回确认卡片。
+
+剩余判断：
+
+- 当前主要耗时仍在 full Agent 模型请求，而不是工具重复试探。质量优先前提下，暂不使用字符串 fast route 继续压缩这类方案变更预览。
+
+##### 14.12.23 open-quality 全量复核与意向预览入参容错
+
+本轮在高收费删除预览收敛后复跑 open-quality 全量：
+
+- 输出：`/private/tmp/zhiyuan_303_open_quality_after_direct_batch_preview_20260603.json`
+- steps：`23`
+- successfulSteps：`23`
+- failedSteps：`0`
+- median：`20.081s`
+- p95：`33.357s`
+- max：`41.330s`
+
+质量结论：
+
+- 高收费只读风险解释质量可用，能用大白话说明中外合作数量、费用压力、英语单科门槛、排序倒挂和保底不足；没有生成删除确认卡片。
+- 明确方案变更预览仍保持确认协议，例如调稳预览、排序预览和高收费删除预览都只生成待确认卡片，点击前不执行。
+- 专业对比和职业方向分析保持了较完整的信息量，没有为了降延迟削薄回复。
+- no-pending guard 仍正确：查询后用户自然语言“确认”不会执行历史动作。
+
+发现并修复的性能/可观测性问题：
+
+- `会计审计这类还行，土木建筑那种别碰` 最终行为正确，只返回一张待确认意向卡片。
+- 但历史消息显示第一次工具调用传参为 `major_intents.positive_level2=["工商管理类"]`，schema 不接受该字段，触发 retry；第二次改成 canonical `level2` 后成功。
+- 修复方式不是增加用户话术关键词，而是为 `MajorIntentPreviewInput` 增加结构化 alias：`positive_level1/2/3` 归一到 `level1/2/3`。
+- 对外工具 schema 仍只暴露 `level1/level2/level3/negative_level1/negative_level2/negative_level3`，避免把接口契约扩散成多套字段。
+
+剩余质量/性能观察：
+
+- 最慢的 `budget-risk`、`career-parent`、`major-compare-with-context` 质量可接受，但耗时仍在 `33-41s` 区间。
+- 当前不能用字符串 fast route 压缩这些场景；后续应优先优化工具 facts 的结构化完整度和最终模型总结次数，同时保持回复内容足够丰满。
+
+验证：
+
+- `tests/unit/test_intent_state_tool.py::test_preview_current_major_intent_confirmation_wrapper_accepts_positive_level_aliases`
+- `tests/unit/test_intent_state_tool.py::test_preview_current_major_intent_confirmation_wrapper_passes_explicit_major_intents`
+- `tests/unit/test_chat_agent_tools.py::TestChatAgentToolRegistration::test_intent_preview_tool_schema_exposes_closed_major_intent_keys`
+- 结果：`3 passed`。
+
+live 单 case 复测：
+
+- 输入：`会计审计这类还行，土木建筑那种别碰`
+- 输出：继续返回待确认内容，包含偏好 `会计学、审计学`，排除 `土木类、土木工程、建筑学`。
+- followup：1 张 `pendingConfirmationCard`，`status=active`，`confirmText=采纳`。
+- 可观测：`toolNameCounts={"preview_current_major_intent_confirmation": 1}`，`hasRepeatedToolCalls=false`。
+- 结论：入参容错消除了 schema retry；用户侧确认卡片协议不变。

@@ -65,7 +65,8 @@ PLAN_STYLE_BANNED_SUBSTRINGS = [
     "当前这版财会类方案保留",
     "我现在直接帮你重新生成",
     "你现在必须决定",
-    "选哪个",
+    "你选哪个",
+    "请选一个",
     "请明确回复",
     "回复 A 或 B",
     "没有第三个选项",
@@ -461,6 +462,26 @@ def _summarize_turn_observability(turn_messages: list[dict[str, Any]]) -> dict[s
         summary["semanticRouterShadow"] = semantic_router_shadow
     if route_decision:
         summary["routeDecision"] = route_decision
+        agent_run = route_decision.get("agentRun")
+        if isinstance(agent_run, dict):
+            failed_node = str(agent_run.get("failedNode") or "").strip()
+            error_type = str(agent_run.get("errorType") or "").strip()
+            error_message = str(agent_run.get("errorMessage") or "").strip()
+            if failed_node or error_type or error_message:
+                summary["agentRunFailure"] = {
+                    key: value
+                    for key, value in {
+                        "failedNode": failed_node,
+                        "failedNodeIndex": agent_run.get("failedNodeIndex"),
+                        "failedNodeElapsedMs": agent_run.get("failedNodeElapsedMs"),
+                        "errorType": error_type,
+                        "errorMessage": error_message,
+                        "errorStatusCode": agent_run.get("errorStatusCode"),
+                        "errorResponseText": agent_run.get("errorResponseText"),
+                        "totalDurationMs": agent_run.get("totalDurationMs"),
+                    }.items()
+                    if value not in (None, "")
+                }
         arbitration = route_decision.get("arbitration")
         if isinstance(arbitration, dict):
             summary["fastRouteArbitration"] = arbitration
