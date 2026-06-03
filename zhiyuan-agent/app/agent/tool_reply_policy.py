@@ -29,13 +29,6 @@ READONLY_EXPLORE_TOOL_NAMES = {
     "analyze_current_career_direction",
 }
 
-DIRECT_READONLY_INTENT_ANALYSIS_TOOL_NAMES = {
-    "analyze_current_interest",
-    "analyze_current_school_interest",
-    "analyze_current_major_interest",
-    "analyze_current_region_interest",
-}
-
 DIRECT_BLOCKING_REPLY_FOCUS = {
     "needs_volunteer_selection",
     "needs_candidate_selection",
@@ -143,15 +136,6 @@ def decide_tool_reply(
             reply=raw_text,
             reason="read_only_plan_query_result",
         )
-
-    if tool_name in DIRECT_READONLY_INTENT_ANALYSIS_TOOL_NAMES:
-        reply = _readonly_explore_reply(payload, raw_text)
-        if reply:
-            return ToolReplyDecision(
-                strategy="direct_reply",
-                reply=reply,
-                reason="read_only_intent_analysis_result",
-            )
 
     if tool_name in READONLY_EXPLORE_TOOL_NAMES:
         if _readonly_explore_reply(payload, raw_text):

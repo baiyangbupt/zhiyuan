@@ -5955,3 +5955,134 @@ cd zhiyuan-agent
 - 不改变确认卡片点击执行协议，不改变 intent apply 逻辑。
 - 不改变职业方向、方案审查、方案排序和方案移动的主链路。
 - 只读地域/专业/院校意向分析在单工具场景下会更快、更稳定，但回复质量依赖工具渲染本身；后续如果发现其他只读主题回复偏薄，应优先补结构化 renderer，而不是恢复主模型自由总结。
+
+#### 39.8 只读 Explore 直返收窄与开放咨询质量修复
+
+39.7 的地域取舍链路修复后，继续跑 88 个 dialogue-derived case 时发现一个新的质量边界问题：`analyze_current_major_interest` / `analyze_current_region_interest` 的单工具直返虽然安全地避免了“已记录/已生效”误导，但对开放咨询问题会把工具的边界说明当成最终答案，导致信息量过薄。
+
+典型坏例：
+
+| 用户问题 | 旧行为 | 问题 |
+| --- | --- | --- |
+| `小语种现在还能选吗，怕就业不好` | `analyze_current_major_interest` 单工具直返 | 只说明识别到小语种/外国语言文学类，没有回答就业风险、复合路径和适合人群。 |
+| `广东江苏这种城市机会是不是更好` | `analyze_current_region_interest` 单工具直返 | 只说明优先关注广东/江苏，没有回答产业机会、热门地区竞争和取舍边界。 |
+| `兰州银川能不能作为兜底` | `analyze_current_region_interest` 单工具直返 | 只说明优先关注兰州/银川，没有回答兜底价值、城市资源和风险。 |
+| `专业名字差不多，怎么判断是不是一个方向` | `analyze_current_major_interest` 单工具直返 | 识别为空时回复“没整理出可调整意向”，没有回答判断方法。 |
+
+修复：
+
+- `tool_reply_policy` 删除只读意向分析的 direct-return 分支。
+- `analyze_current_interest` / `analyze_current_school_interest` / `analyze_current_major_interest` / `analyze_current_region_interest` 统一作为 Explore 事实进入主模型综合。
+- 保留方案变更预览、Intent 确认卡片、阻断错误等结构化 direct-return；排序、加入、删除、移动等仍必须先出确认卡片，点击前不执行。
+- `style_rules` 补充只读收尾约束：没有生成确认卡片时，不说“确认把 X 作为偏好/要求”；如果用户可能想用于后续推荐，只能说“我可以整理成确认卡片，点击采纳前不会生效”。
+- 中断兜底修复：地域分析中断时不再用专业目录解析用户原话，避免把“城市机会”误写成“城市管理”专业。
+- 回归 case `303-dialogue-followup-readonly-boundary` 的断言补充 `只看/不改`，避免“这轮只看不改”这类合格回复被误判。
+
+验证：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest \
+  tests/unit/test_tool_reply_policy.py \
+  tests/unit/test_instructions.py \
+  tests/unit/test_chat_service_history_persistence.py::test_chat_service_interrupted_region_fallback_does_not_parse_city_as_major \
+  -q
+```
+
+结果：`67 passed`。
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest \
+  tests/unit/test_dialog_regression_runner.py \
+  -q
+```
+
+结果：`34 passed`。
+
+目标 live 验证：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python examples/dialog_regression_runner.py \
+  --url ws://127.0.0.1:8042/gaotu-assistant-agent/plus/chat/1/bot/test/do \
+  --cases /private/tmp/zhiyuan_303_target_cases_after_readonly_direct_narrow.json \
+  --response-timeout 180 \
+  --keep-response-text \
+  --assert-plan-style \
+  --metrics-output /private/tmp/zhiyuan_303_target_after_readonly_direct_narrow_8042.json \
+  --clear-history-per-case \
+  --clear-backend-pending-per-case \
+  --internal-service-url http://127.0.0.1:8080
+```
+
+结果：`6/6` steps 通过。
+
+| case | 结果 |
+| --- | --- |
+| 广西/贵州/内蒙古排斥 | 不再 direct-return；回复覆盖利弊、不要一刀切、省会/核心城市与保底空间；无 followup。 |
+| 小语种就业风险 | 不再 thin；回复覆盖传统对口、跨境/出海、本地化、AI 冲击、适合人群和替代路径。 |
+| 兰州/银川兜底 | 不再 thin；回复覆盖西北省会兜底价值、产业/考研/考公边界和气候距离。 |
+| 专业名称相近判断 | 不再返回空意向；回复覆盖专业代码、门类、课程、学位和职业路径判断法。 |
+| 录取率排序 | 仍 direct-return 方案排序预览，并发送 `pendingConfirmationCard`；点击前不执行。 |
+
+单例复跑：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python examples/dialog_regression_runner.py \
+  --url ws://127.0.0.1:8042/gaotu-assistant-agent/plus/chat/1/bot/test/do \
+  --session 880737 \
+  --prompts 广东江苏这种城市机会是不是更好 \
+  --response-timeout 180 \
+  --keep-response-text \
+  --assert-plan-style \
+  --metrics-output /private/tmp/zhiyuan_303_region_developed_city_after_style_rule_8042.json \
+  --clear-history-per-case \
+  --clear-backend-pending-per-case \
+  --internal-service-url http://127.0.0.1:8080
+```
+
+结果：`1/1` 通过，约 `15.5s`。回复覆盖广东/江苏产业机会、高校密度、热门地区分数压力、体制内/市场就业差异；没有“确认作为偏好”的自然语言更新入口，也没有 `城市管理` 误识别。
+
+88-case 基线复跑：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python examples/dialog_regression_runner.py \
+  --url ws://127.0.0.1:8041/gaotu-assistant-agent/plus/chat/1/bot/test/do \
+  --cases examples/dialog_regression_303_dialogue_derived_cases.json \
+  --response-timeout 180 \
+  --keep-response-text \
+  --assert-plan-style \
+  --metrics-output /private/tmp/zhiyuan_303_dialogue_derived_after_readonly_boundary_20260603.json \
+  --clear-history-per-case \
+  --clear-backend-pending-per-case \
+  --internal-service-url http://127.0.0.1:8080
+```
+
+结果：88 steps 均返回；旧断言口径下 1 个 false positive（“这轮只看不改”未命中 `不会改` 等词）已通过 case 文件修正。
+
+| 指标 | 值 |
+| --- | ---: |
+| steps | 88 |
+| median | 20.026s |
+| p95 | 52.352s |
+| max | 72.874s |
+| latency warnings >45s | 7 |
+
+最慢 case：
+
+| case | elapsed | 主要慢点 |
+| --- | ---: | --- |
+| `这版是不是太冲了` | 72.874s | Plan 审查/风险说明多轮模型综合。 |
+| `一年学费最多两三万，方案里高收费多吗` | 72.686s | Plan 审查 + 高收费事实综合。 |
+| `孩子不想太累，哪些方向压力小点` | 68.624s | 职业方向 Explore 工具和最终模型综合。 |
+| `高收费会不会影响保底安全` | 65.687s | Plan 审查 + 最终模型综合。 |
+| `家里能承担但不想浪费，怎么筛` | 52.352s | Policy 问题最终模型综合。 |
+
+影响边界：
+
+- 本轮优先恢复开放咨询质量，接受只读 Explore 多一次主模型综合带来的时延增加。
+- 确认协议不变：意向/要求/方案更新仍必须通过确认卡片点击触发；自然语言确认不作为更新入口。
+- 后续性能优化不能再通过把 Explore 工具粗暴 direct-return 来压缩时延；应考虑专门的结构化 answer renderer、工具事实压缩、上下文裁剪或更稳定的前端 thinking hint。

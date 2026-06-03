@@ -2612,7 +2612,16 @@ def _interrupted_prompt_prefers_plan_status_fallback(
     )
 
 
-def _describe_interrupted_readonly_request(content: str, batch: str | None = "01") -> str:
+def _describe_interrupted_readonly_request(
+    content: str,
+    batch: str | None = "01",
+    agent_observability: dict[str, Any] | None = None,
+) -> str:
+    tool_names = set(_agent_observability_tool_names(agent_observability))
+    compact = str(content or "").strip()
+    if "analyze_current_region_interest" in tool_names:
+        return f"你刚才问的是“{compact}”" if compact else "你刚才问的是地域选择相关问题"
+
     major_names: list[str] = []
     seen: set[str] = set()
     for mention in resolve_major_mentions_from_text(content, batch):
@@ -2624,7 +2633,6 @@ def _describe_interrupted_readonly_request(content: str, batch: str | None = "01
         return f"你刚才问的是 {major_names[0]} 和 {major_names[1]} 的比较"
     if len(major_names) == 1:
         return f"你刚才问的是 {major_names[0]} 相关问题"
-    compact = str(content or "").strip()
     if compact:
         return f"你刚才问的是“{compact}”"
     return "你刚才这个问题"
@@ -2649,7 +2657,7 @@ def _build_agent_interruption_fallback_reply(
         _agent_interruption_looks_readonly(content, agent_observability)
         and not _interrupted_prompt_prefers_plan_status_fallback(content, planning)
     ):
-        subject = _describe_interrupted_readonly_request(content, batch)
+        subject = _describe_interrupted_readonly_request(content, batch, agent_observability)
         return (
             "这轮模型服务中断了，我没有改动你的方案，也没有把偏好写入后续参考。"
             f"{subject}，这次没能完整生成分析结论；"

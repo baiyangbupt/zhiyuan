@@ -1272,7 +1272,7 @@
       "prompts": [
         {
           "prompt": "先别改，我就是问问",
-          "assertContainsAny": ["不会改", "只是", "分析", "可以继续", "方案", "建议"],
+          "assertContainsAny": ["不会改", "只看", "不改", "只是", "分析", "可以继续", "方案", "建议"],
           "expectedKeyPoints": ["不会改动", "只做分析", "下一步"],
           "expectedNoAction": true,
           "assertNoFollowups": true,

@@ -302,6 +302,49 @@ class _InterruptedReadonlyToolAgent:
         raise RuntimeError("model api interrupted")
 
 
+class _InterruptedRegionReadonlyToolAgent:
+    async def run_with_message_deltas(self, user_prompt, message_history=None, deps=None, on_progress=None):
+        deps.agent_observability.update(
+            {
+                "completed": False,
+                "failedNode": "ModelRequestNode",
+                "failedNodeIndex": 4,
+                "failedNodeElapsedMs": 3000,
+                "firstToolNames": ["analyze_current_region_interest"],
+                "toolNameCounts": {"analyze_current_region_interest": 1},
+                "errorType": "ModelAPIError",
+                "nodeTimings": [
+                    {
+                        "index": 1,
+                        "node": "UserPromptNode",
+                        "durationMs": 0,
+                        "status": "success",
+                    },
+                    {
+                        "index": 2,
+                        "node": "ModelRequestNode",
+                        "durationMs": 1200,
+                        "status": "success",
+                    },
+                    {
+                        "index": 3,
+                        "node": "CallToolsNode",
+                        "durationMs": 20,
+                        "status": "success",
+                        "toolNames": ["analyze_current_region_interest"],
+                    },
+                    {
+                        "index": 4,
+                        "node": "ModelRequestNode",
+                        "durationMs": 3000,
+                        "status": "interrupted",
+                    },
+                ],
+            }
+        )
+        raise RuntimeError("model api interrupted")
+
+
 class _BuggyAgent:
     async def run_with_message_deltas(self, user_prompt, message_history=None, deps=None, on_progress=None):
         raise RuntimeError("plain bug")
@@ -400,6 +443,33 @@ def test_chat_service_interrupted_readonly_compare_fallback_preserves_context(
         and message.model_name == "agent-interruption-readonly-fallback"
         for message in saved
     )
+
+
+def test_chat_service_interrupted_region_fallback_does_not_parse_city_as_major(
+    tmp_path,
+    mock_llm_client,
+):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+
+    with patch("app.service.ChatAgent", return_value=_InterruptedRegionReadonlyToolAgent()), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(
+            service.handle_message(
+                "session-interrupted-readonly-region",
+                "user-1",
+                "广东江苏这种城市机会是不是更好",
+            )
+        )
+
+    assert "模型服务中断" in reply
+    assert "没有改动你的方案" in reply
+    assert "没有把偏好写入后续参考" in reply
+    assert "广东江苏这种城市机会是不是更好" in reply
+    assert "城市管理" not in reply
 
 
 def test_chat_service_short_ack_after_readonly_interruption_does_not_call_agent(
