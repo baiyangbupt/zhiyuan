@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -318,6 +319,83 @@ def _strip_duplicated_interest_impact_heading(impact_text: str | None) -> str:
     return "\n".join(cleaned).strip()
 
 
+def _collect_focus_terms_from_items(
+    items: list[dict[str, Any]] | None,
+    existing_items: list[dict[str, Any]] | None = None,
+) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+
+    def add_value(value: Any) -> None:
+        if isinstance(value, dict):
+            for nested in value.values():
+                add_value(nested)
+            return
+        if isinstance(value, list):
+            for nested in value:
+                add_value(nested)
+            return
+        text = str(value or "").strip()
+        if text and text not in seen:
+            result.append(text)
+            seen.add(text)
+
+    for item in (items or []) + (existing_items or []):
+        value = item.get("value")
+        if isinstance(value, dict):
+            add_value(value)
+    return result
+
+
+def _analysis_section_items(
+    impact_analysis: dict[str, Any] | None,
+    keys: tuple[str, ...],
+    *,
+    focus_terms: list[str] | None = None,
+) -> list[str]:
+    if not isinstance(impact_analysis, dict):
+        return []
+    result: list[str] = []
+    seen: set[str] = set()
+    terms = [term for term in (focus_terms or []) if term]
+    for key in keys:
+        values = impact_analysis.get(key)
+        raw_items = values if isinstance(values, list) else [values] if values else []
+        for item in raw_items:
+            text = str(item or "").strip().lstrip("-").strip()
+            if not text or text in seen:
+                continue
+            if terms and not any(term in text for term in terms) and not re.search(r"\d+\s*个", text):
+                continue
+            result.append(text)
+            seen.add(text)
+    return result
+
+
+def _filter_interest_impact_text(impact_text: str | None, focus_terms: list[str]) -> str:
+    text = str(impact_text or "").strip()
+    if not text:
+        return ""
+    terms = [term for term in focus_terms if term]
+    lines: list[str] = []
+    seen: set[str] = set()
+    for raw_line in text.splitlines():
+        stripped = raw_line.strip().lstrip("-").strip()
+        if not stripped:
+            continue
+        if stripped.startswith("**") and stripped.endswith("**"):
+            continue
+        if stripped.endswith(("：", ":")):
+            continue
+        if terms and not any(term in stripped for term in terms) and not re.search(r"\d+\s*个", stripped):
+            continue
+        if stripped in seen:
+            continue
+        lines.append(f"- {stripped}")
+        seen.add(stripped)
+    return "\n".join(lines)
+
+
 def _fallback_intent_impact_text(intent_mode: str) -> str:
     if intent_mode == "constraint":
         return "这些内容现在还只是待确认。确认前不会写入偏好，也不会改动当前方案；你确认后，我再用它们收紧候选和检查方案。"
@@ -421,6 +499,30 @@ def _collect_major_intent_values(items: list[dict[str, Any]] | None) -> dict[str
     return collected
 
 
+def _collect_region_intent_values(items: list[dict[str, Any]] | None) -> dict[str, list[str]]:
+    collected = {
+        "province": [],
+        "city": [],
+        "negative_province": [],
+        "negative_city": [],
+    }
+    for item in items or []:
+        value = item.get("value")
+        if not isinstance(value, dict):
+            continue
+        city_intents = value.get("city_intents")
+        if not isinstance(city_intents, dict):
+            continue
+        for key in collected:
+            raw_values = city_intents.get(key)
+            values = raw_values if isinstance(raw_values, list) else [raw_values] if raw_values else []
+            for value_item in values:
+                text = str(value_item or "").strip()
+                if text and text not in collected[key]:
+                    collected[key].append(text)
+    return collected
+
+
 def _major_boundary_notes(items: list[dict[str, Any]] | None) -> list[str]:
     major_values = _collect_major_intent_values(items)
     return build_major_relation_notes(major_values)
@@ -431,6 +533,19 @@ def _merge_major_values(major_values: dict[str, list[str]], keys: tuple[str, ...
     seen: set[str] = set()
     for key in keys:
         for value in major_values.get(key) or []:
+            text = str(value or "").strip()
+            if not text or text in seen:
+                continue
+            merged.append(text)
+            seen.add(text)
+    return merged
+
+
+def _merge_region_values(region_values: dict[str, list[str]], keys: tuple[str, ...]) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for key in keys:
+        for value in region_values.get(key) or []:
             text = str(value or "").strip()
             if not text or text in seen:
                 continue
@@ -460,6 +575,21 @@ def _interest_stage_title_lines(title: str, items: list[dict[str, Any]] | None) 
     if positive:
         return [
             f"先按这个方向看影响和边界：关注 {_short_join(positive)} 对后续候选和方案承接有什么影响；这轮只做分析，不会直接写入偏好或改动方案。"
+        ]
+    region_values = _collect_region_intent_values(items)
+    positive_regions = _merge_region_values(region_values, ("province", "city"))
+    negative_regions = _merge_region_values(region_values, ("negative_province", "negative_city"))
+    if positive_regions and negative_regions:
+        return [
+            f"先按地域取舍看影响和边界：优先关注 {_short_join(positive_regions)}，同时降低 {_short_join(negative_regions)} 的优先级；这轮只做分析，不会直接写入偏好或改动方案。"
+        ]
+    if negative_regions:
+        return [
+            f"先按地域取舍看影响和边界：暂不优先考虑 {_short_join(negative_regions)}；这轮只做分析，不会直接写入排除条件或改动方案。"
+        ]
+    if positive_regions:
+        return [
+            f"先按地域取舍看影响和边界：优先关注 {_short_join(positive_regions)} 对后续候选和方案承接有什么影响；这轮只做分析，不会直接写入偏好或改动方案。"
         ]
     return [title.replace("我先结合你现在的情况做个初步分析。", "先按这个方向看影响和边界。")]
 
@@ -495,6 +625,29 @@ def _major_interest_impact_lines(items: list[dict[str, Any]] | None) -> list[str
     return lines
 
 
+def _region_interest_impact_lines(items: list[dict[str, Any]] | None) -> list[str]:
+    region_values = _collect_region_intent_values(items)
+    positive = _merge_region_values(region_values, ("province", "city"))
+    negative = _merge_region_values(region_values, ("negative_province", "negative_city"))
+    lines: list[str] = []
+    if negative:
+        lines.append(
+            f"如果后续降低 {_short_join(negative)} 的优先级，优点是更尊重孩子的就读体验和家庭距离顾虑；代价是可选院校和保底空间可能变少。"
+        )
+        lines.append(
+            "如果分数段比较紧，建议不要一刀切，可以先区分省会/核心城市、院校层次和专业匹配度，再决定哪些必须排除、哪些只是靠后考虑。"
+        )
+    if positive:
+        lines.append(
+            f"如果后续优先关注 {_short_join(positive)}，可以提升地域接受度，但也要同步看这些地区在冲、稳、保各层是否有足够候选。"
+        )
+    if positive and negative:
+        lines.append(
+            "地域偏好适合先做软排序：优先可接受地区，把不太想去的地区靠后；只有孩子明确不能接受时，再作为硬性排除。"
+        )
+    return lines
+
+
 def render_intent_analysis_text(
     *,
     title: str,
@@ -503,6 +656,7 @@ def render_intent_analysis_text(
     intent_mode: str,
     items: list[dict[str, Any]] | None = None,
     existing_items: list[dict[str, Any]] | None = None,
+    impact_analysis: dict[str, Any] | None = None,
 ) -> str:
     boundary_notes = _major_boundary_notes(items)
     if analysis_stage != "interest":
@@ -524,13 +678,25 @@ def render_intent_analysis_text(
             ("下一步", next_steps),
         )
 
-    resolved_impact = impact_text
+    focus_terms = _collect_focus_terms_from_items(items, existing_items)
+    structured_impact_items = _analysis_section_items(
+        impact_analysis,
+        ("currentPlanFit", "currentPlanConflict", "candidateOpportunity"),
+        focus_terms=focus_terms,
+    )
+    resolved_impact = "\n".join(f"- {item}" for item in structured_impact_items) if structured_impact_items else impact_text
     if boundary_notes:
-        resolved_impact = "\n".join(f"- {note}" for note in boundary_notes) + (f"\n{impact_text}" if impact_text else "")
+        resolved_impact = "\n".join(f"- {note}" for note in boundary_notes) + (f"\n{resolved_impact}" if resolved_impact else "")
     resolved_impact = _strip_duplicated_interest_impact_heading(resolved_impact)
+    resolved_impact = _filter_interest_impact_text(resolved_impact, focus_terms)
+    major_impact_lines = _major_interest_impact_lines(items)
+    region_impact_lines = _region_interest_impact_lines(items)
+    if region_impact_lines and not major_impact_lines:
+        resolved_impact = ""
+    impact_lines = major_impact_lines + region_impact_lines
     sections: list[tuple[str, list[str] | None] | tuple[str, str | None]] = [
         ("初步判断", _interest_stage_title_lines(title, items)),
-        ("影响边界", _major_interest_impact_lines(items)),
+        ("影响边界", impact_lines),
         ("当前情况", resolved_impact),
     ]
     if items:
@@ -538,9 +704,14 @@ def render_intent_analysis_text(
     if existing_items:
         sections.append(("已作为参考", [item.get("content", "") for item in existing_items]))
 
-    next_steps = [
-        "如果你想继续深入，我可以顺着这个方向再分析它和当前方案、候选机会的关系。",
-    ]
+    if items:
+        next_steps = [
+            "如果要把这些想法作为后续参考，我可以先整理成确认卡片；点击采纳前不会生效。",
+        ]
+    else:
+        next_steps = [
+            "如果你想继续深入，我可以顺着这个方向再分析它和当前方案、候选机会的关系。",
+        ]
     sections.append(("下一步", next_steps))
     return format_text_sections(*sections)
 
@@ -554,10 +725,11 @@ def render_intent_analysis_payload(payload_text: str) -> str:
             return render_intent_analysis_text(
                 title=payload.title,
                 impact_text=payload.impactText,
-                analysis_stage=payload.analysisStage,
-                intent_mode=payload.intentMode,
-                existing_items=[item.model_dump() for item in payload.existingItems],
-            )
+            analysis_stage=payload.analysisStage,
+            intent_mode=payload.intentMode,
+            existing_items=[item.model_dump() for item in payload.existingItems],
+            impact_analysis=payload.impactAnalysis,
+        )
         all_existing_text = "这个想法已经作为后续报考参考。本轮不会重复新增；如果你愿意，我可以继续帮你看看现在这份方案和它有多匹配。"
         if payload.existingItems:
             details = "\n".join(f"- {_sanitize_user_facing_intent_text(item.content)}" for item in payload.existingItems)
@@ -570,4 +742,5 @@ def render_intent_analysis_payload(payload_text: str) -> str:
         intent_mode=payload.intentMode,
         items=[item.model_dump() for item in payload.items],
         existing_items=[item.model_dump() for item in payload.existingItems],
+        impact_analysis=payload.impactAnalysis,
     )

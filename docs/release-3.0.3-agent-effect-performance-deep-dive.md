@@ -5858,3 +5858,100 @@ Targeted live：
 - 不改变后端移动/删除接口，不改变确认卡片协议，不改变真正 apply 的执行逻辑。
 - 只修复 Plan 编排层对“排序区裸序号位置引用”的动作选择，以及预览文案的用户侧标签。
 - 仍保持质量优先：该路径还有 2 次模型请求，targeted live 耗时约 23-25s，后续性能优化不能牺牲预览事实和确认边界。
+
+#### 39.7 地域取舍只读链路的确认协议修复
+
+88 case 全量复跑后，所有 case 均通过，但发现一个确认协议风险：
+
+| case | 输入 | 问题 |
+| --- | --- | --- |
+| `303-dialogue-region-remote-province-acceptance` | 广西贵州内蒙这些要不要放，孩子有点排斥 | 回复曾出现“我先把这三个省份记成暂时不太想去的地区”，但本轮没有生成 `pendingConfirmationCard`。 |
+
+这类问题不能继续靠“把某几个错误话术替换掉”解决。用户表达和模型总结都会变化，逐句替换必然漏。最终收口为结构化修复：
+
+- `analyze_volunteer_intent_change` 在 `analysisStage=interest` 时，把 `items[].content` 渲染为“可整理成待确认偏好/要求”，不再在工具事实里提供“记成/更新为/后续自动过滤”等副作用措辞。
+- `tool_reply_policy` 对单工具只读意向分析直返工具结果：`analyze_current_interest` / `analyze_current_school_interest` / `analyze_current_major_interest` / `analyze_current_region_interest`。这样只读链路不再让主模型二次发挥出“已保存/确认后自动过滤”的承诺。
+- `analyze_current_career_direction` 暂不直返，职业方向通常需要更完整的模型综合；多工具链路仍保留模型综合，避免最后一个工具覆盖主问题。
+- `tool_dispatch_rules` 明确地域取舍边界：不按固定话术命中，而按语义槽位判断。只要用户是在讨论地域接受度、排斥度、是否纳入、是否值得、就读体验、家庭距离或保底空间，默认走 `analyze_current_region_interest` 做只读取舍分析；只有用户明确要列当前方案或候选中命中的地域机会、数量、学校或专业组时，才调用 `query_volunteer_plan`。
+- `intent_response_tool` 增加地域维度渲染，从结构化 `city_intents` 生成地域取舍说明，避免直返后变成空泛模板。
+- `intent_response_tool` 对 `analysisStage=interest` 的“当前情况”改为结构化事实过滤：优先读取 `impactAnalysis.currentPlanFit/currentPlanConflict/candidateOpportunity`，且只保留包含本轮识别对象或明确数量的事实行；当 `impactAnalysis` 缺失或为空时，再对固定工具输出的 `impactText` 做同样过滤。这样不会因为用户换一种说法而漏命中，也不会把“这轮会重点看/如果继续了解”这类内部占位当成用户回复。
+
+Targeted live：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python examples/dialog_regression_runner.py \
+  --url ws://127.0.0.1:8041/gaotu-assistant-agent/plus/chat/1/bot/test/do \
+  --session 880708 \
+  --prompts 广西贵州内蒙这些要不要放，孩子有点排斥 \
+  --response-timeout 120 \
+  --keep-response-text \
+  --assert-plan-style \
+  --metrics-output /private/tmp/zhiyuan_303_region_remote_after_region_renderer_final.json \
+  --clear-history-per-case \
+  --clear-backend-pending-per-case \
+  --internal-service-url http://127.0.0.1:8080
+```
+
+结果：
+
+| 指标 | 值 |
+| --- | ---: |
+| steps | 1 |
+| successfulSteps | 1 |
+| elapsed | 7.553s |
+| route | `explore` |
+| tool | `analyze_current_region_interest` |
+| directToolReturn | true |
+| followupMessages | 0 |
+
+最终回复口径：
+
+- 明确“这轮只做分析，不会直接写入排除条件或改动方案”。
+- 说明降低广西、贵州、内蒙古优先级的收益与代价：尊重就读体验、但可选院校和保底空间可能变少。
+- 建议分数紧张时不要一刀切，先区分省会/核心城市、院校层次和专业匹配度。
+- 如需作为后续参考，只能先整理确认卡片，点击采纳前不会生效。
+
+验证：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest \
+  tests/unit/test_tool_reply_policy.py \
+  tests/unit/test_instructions.py \
+  tests/unit/test_intent_state_tool.py \
+  -q
+```
+
+结果：`200 passed`。
+
+补充小集合 live 复跑：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python examples/dialog_regression_runner.py \
+  --url ws://127.0.0.1:8041/gaotu-assistant-agent/plus/chat/1/bot/test/do \
+  --cases /private/tmp/zhiyuan_303_small_regression_cases_v2.json \
+  --response-timeout 120 \
+  --keep-response-text \
+  --assert-plan-style \
+  --metrics-output /private/tmp/zhiyuan_303_small_regression_after_region_semantic_boundary_v3.json \
+  --clear-history-per-case \
+  --clear-backend-pending-per-case \
+  --internal-service-url http://127.0.0.1:8080
+```
+
+结果：`4/4` steps 通过；median `10.081s`，max `22.021s`。
+
+| case | 工具链 | 结果 |
+| --- | --- | --- |
+| 地域取舍只读 | `analyze_current_region_interest` | 单工具直返，无 followup；明确点击采纳前不生效。 |
+| 专业影响只读 | `analyze_current_major_interest` | 单工具直返，无 followup；不再混入嵌套标题和泛化占位。 |
+| 录取率排序预览 | `plan_next_action -> execute_plan_action` | 生成 `pendingConfirmationCard`，确认前不执行。 |
+| 内向职业方向 | `analyze_current_career_direction` | 只读分析，无工作台卡片；仍保留模型综合以保证回复丰满度。 |
+
+影响边界：
+
+- 不改变确认卡片点击执行协议，不改变 intent apply 逻辑。
+- 不改变职业方向、方案审查、方案排序和方案移动的主链路。
+- 只读地域/专业/院校意向分析在单工具场景下会更快、更稳定，但回复质量依赖工具渲染本身；后续如果发现其他只读主题回复偏薄，应优先补结构化 renderer，而不是恢复主模型自由总结。

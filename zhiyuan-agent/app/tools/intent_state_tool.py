@@ -441,6 +441,89 @@ def _is_negative_key(sub_key: str) -> bool:
     return sub_key.startswith("negative_")
 
 
+def _interest_stage_item_content(value: dict[str, Any] | None, intent_mode: str) -> str | None:
+    """Render analysis-only intent items without implying the preference was saved."""
+    if not isinstance(value, dict):
+        return None
+
+    label_specs = (
+        (
+            "major_intents",
+            (
+                ("level1", "专业门类", "positive"),
+                ("level2", "专业类", "positive"),
+                ("level3", "专业", "positive"),
+                ("negative_level1", "专业门类", "negative"),
+                ("negative_level2", "专业类", "negative"),
+                ("negative_level3", "专业", "negative"),
+            ),
+        ),
+        (
+            "school_intents",
+            (
+                ("colleges", "院校", "positive"),
+                ("negative_colleges", "院校", "negative"),
+            ),
+        ),
+        (
+            "city_intents",
+            (
+                ("province", "省份", "positive"),
+                ("city", "城市", "positive"),
+                ("negative_province", "省份", "negative"),
+                ("negative_city", "城市", "negative"),
+            ),
+        ),
+        (
+            "career_intents",
+            (
+                ("positive", "发展方向", "positive"),
+                ("negative", "发展方向", "negative"),
+            ),
+        ),
+    )
+
+    for category, specs in label_specs:
+        payload = value.get(category)
+        if not isinstance(payload, dict):
+            continue
+        for key, label, polarity in specs:
+            names = _as_string_list(payload.get(key))
+            if not names:
+                continue
+            text = "、".join(names)
+            if polarity == "negative":
+                if intent_mode == INTENT_MODE_CONSTRAINT:
+                    action = f"不考虑{text}（{label}）"
+                    mode_text = "要求"
+                else:
+                    action = f"降低{text}（{label}）的优先级"
+                    mode_text = "偏好"
+            else:
+                action = f"优先关注{text}（{label}）"
+                mode_text = "要求" if intent_mode == INTENT_MODE_CONSTRAINT else "偏好"
+            return f"可整理成待确认{mode_text}：{action}。当前只是分析口径，还不会影响后续推荐。"
+    return None
+
+
+def _neutralize_interest_stage_items(
+    items: list[dict[str, Any]],
+    *,
+    intent_mode: str,
+    analysis_stage: str,
+) -> list[dict[str, Any]]:
+    if analysis_stage != ANALYSIS_STAGE_INTEREST:
+        return items
+    neutralized: list[dict[str, Any]] = []
+    for item in items:
+        copied = dict(item)
+        content = _interest_stage_item_content(copied.get("value"), intent_mode)
+        if content:
+            copied["content"] = content
+        neutralized.append(copied)
+    return neutralized
+
+
 def _build_select_items(
     current_profile: Any,
     major_intents: dict | None,
@@ -449,6 +532,7 @@ def _build_select_items(
     career_intents: dict | None = None,
     *,
     intent_mode: str = INTENT_MODE_PREFERENCE,
+    analysis_stage: str = ANALYSIS_STAGE_CONFIRMED,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Generate structured items for selective adoption popup.
 
@@ -624,7 +708,14 @@ def _build_select_items(
                     "selected": True,
                 })
 
-    return items, existing_items
+    return (
+        _neutralize_interest_stage_items(
+            items,
+            intent_mode=intent_mode,
+            analysis_stage=analysis_stage,
+        ),
+        existing_items,
+    )
 
 
 def merge_selected_values(selected_values: list[dict[str, Any]]) -> dict[str, Any]:
@@ -2209,6 +2300,7 @@ async def analyze_volunteer_intent_change(
         city_intents,
         career_intents,
         intent_mode=resolved_intent_mode,
+        analysis_stage=analysis_stage,
     )
     items = [IntentPreviewItem.model_validate(item) for item in items_raw]
     existing_items = [IntentPreviewItem.model_validate(item) for item in existing_items_raw]

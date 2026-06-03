@@ -67,7 +67,7 @@ def test_policy_keeps_readonly_career_explore_result_for_model_synthesis():
     assert decision.reason == "read_only_explore_needs_model_synthesis"
 
 
-def test_policy_keeps_readonly_major_explore_result_for_model_synthesis():
+def test_policy_direct_returns_readonly_major_intent_analysis_result():
     decision = decide_tool_reply(
         ["analyze_current_major_interest"],
         [
@@ -78,9 +78,21 @@ def test_policy_keeps_readonly_major_explore_result_for_model_synthesis():
         ],
     )
 
-    assert decision.strategy == "continue_model"
-    assert decision.should_return_directly is False
-    assert decision.reason == "read_only_explore_needs_model_synthesis"
+    assert decision.strategy == "direct_reply"
+    assert decision.should_return_directly is True
+    assert decision.reason == "read_only_intent_analysis_result"
+    assert "医学和护理会收窄候选范围" in decision.reply
+
+
+def test_policy_direct_returns_readonly_region_intent_analysis_result():
+    decision = decide_tool_reply(
+        ["analyze_current_region_interest"],
+        [_tool_return("analyze_current_region_interest", "这轮只做地域影响分析，不会改动方案。")],
+    )
+
+    assert decision.strategy == "direct_reply"
+    assert decision.should_return_directly is True
+    assert decision.reason == "read_only_intent_analysis_result"
 
 
 def test_policy_keeps_unrendered_readonly_explore_payload_for_model_summary():

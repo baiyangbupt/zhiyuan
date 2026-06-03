@@ -265,6 +265,10 @@ class TestToolDispatchRules:
         assert "不要先调用 `analyze_current_major_interest`" in result
         assert "不要在同一轮再追加 `get_major_introduction`" in result
         assert "只有用户明确同时问职业和地域时" in result
+        assert "地域取舍按语义判断" in result
+        assert "接受度、排斥度、是否纳入、是否值得、就读体验、家庭距离或保底空间" in result
+        assert "不要先查当前方案或候选" in result
+        assert "明确要列出当前方案或候选中命中的地域机会" in result
         assert "直接传 `career_directions`" in result
         assert "`system_public_service`" in result
         assert "`stable_employment`" in result

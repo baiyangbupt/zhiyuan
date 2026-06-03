@@ -1084,8 +1084,77 @@ async def test_analyze_intent_change_semantic_arbitration_downgrades_impact_firs
     payload = json.loads(payload_text)
     assert payload["analysisStage"] == ANALYSIS_STAGE_INTEREST
     assert payload["items"]
+    assert "记成" not in json.dumps(payload["items"], ensure_ascii=False)
+    assert "更新为" not in json.dumps(payload["items"], ensure_ascii=False)
     assert ctx.deps.agent_observability["intentSideEffectDecision"]["decision"] == "mixed_answer_then_ask"
     classifier_mock.assert_awaited_once()
+    save_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_region_intent_downgrade_keeps_preview_language_read_only(empty_profile):
+    ctx = SimpleNamespace(
+        deps=SimpleNamespace(
+            userid="u1",
+            sessionid="761",
+            batch="01",
+            chat_history=[{"role": "user", "content": "广西贵州内蒙这些要不要放，孩子有点排斥"}],
+            enable_intent_side_effect_arbitration=True,
+            agent_observability={},
+        )
+    )
+
+    with (
+        patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
+        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()) as save_mock,
+        patch(
+            "app.tools.intent_state_tool._classify_intent_side_effect",
+            new=AsyncMock(
+                return_value=IntentSideEffectDecision(
+                    decision="mixed_answer_then_ask",
+                    confidence=0.86,
+                    reason="用户在问是否要放这些地区，应先解释取舍，再询问是否整理成确认卡片。",
+                )
+            ),
+        ),
+        patch(
+            "app.tools.intent_state_tool._enrich_plan_relation_analysis_from_state",
+            new=AsyncMock(
+                return_value={
+                    "summaryTitle": "先看偏远地区取舍",
+                    "currentPlanFit": [],
+                    "currentPlanConflict": [],
+                    "candidateOpportunity": ["这类地区可能提供部分保底机会。"],
+                    "nextActionHints": ["如果要降低优先级，需要先生成确认卡片。"],
+                }
+            ),
+        ),
+    ):
+        mock_pm = mock_pm_cls.return_value
+        mock_pm.get_current_profile = AsyncMock(return_value=empty_profile)
+
+        payload_text = await analyze_volunteer_intent_change(
+            ctx,
+            city_intents={"negative_province": ["广西", "贵州", "内蒙古"]},
+            recovery_scope="region",
+        )
+
+    payload = json.loads(payload_text)
+    rendered = render_intent_analysis_payload(payload_text)
+    payload_text_for_model = json.dumps(payload, ensure_ascii=False)
+
+    assert payload["analysisStage"] == ANALYSIS_STAGE_INTEREST
+    values = [
+        item["value"]["city_intents"]["negative_province"][0]
+        for item in payload["items"]
+    ]
+    assert values == ["广西", "贵州", "内蒙古"]
+    assert all("可整理成待确认" in item["content"] for item in payload["items"])
+    assert "记成" not in payload_text_for_model
+    assert "已经记录" not in payload_text_for_model
+    assert "后面给你看方案时会尽量往后放" not in payload_text_for_model
+    assert "确认卡片" in rendered
+    assert "点击采纳前不会生效" in rendered
     save_mock.assert_not_awaited()
 
 
@@ -1128,10 +1197,11 @@ def test_analyze_intent_change_interest_stage_existing_preference_returns_analys
                 analysis_stage=ANALYSIS_STAGE_INTEREST,
                 confirm_enabled=False,
             )
-        )
+    )
 
     assert "北京" in resp
-    assert "现在比较贴近的部分" in resp
+    assert "当前情况" in resp
+    assert "当前方案里已经有一部分在北京" in resp
     save_mock.assert_not_awaited()
 
 
@@ -2656,6 +2726,29 @@ def test_render_intent_interest_text_explains_teacher_track_boundary():
     assert "待确认内容" not in text
 
 
+def test_render_intent_interest_text_explains_region_tradeoff_boundary():
+    text = render_intent_analysis_text(
+        title="你提到的这个方向，我先结合你现在的情况做个初步分析。",
+        impact_text="",
+        analysis_stage=ANALYSIS_STAGE_INTEREST,
+        intent_mode=INTENT_MODE_PREFERENCE,
+        items=[
+            {"content": "可整理成待确认偏好。", "value": {"city_intents": {"negative_province": ["广西"]}}},
+            {"content": "可整理成待确认偏好。", "value": {"city_intents": {"negative_province": ["贵州"]}}},
+            {"content": "可整理成待确认偏好。", "value": {"city_intents": {"negative_province": ["内蒙古"]}}},
+        ],
+    )
+
+    assert "暂不优先考虑 广西、贵州、内蒙古" in text
+    assert "就读体验和家庭距离顾虑" in text
+    assert "保底空间可能变少" in text
+    assert "不要一刀切" in text
+    assert "确认卡片" in text
+    assert "点击采纳前不会生效" in text
+    assert "待确认内容" not in text
+    assert "当前情况" not in text
+
+
 def test_render_intent_interest_text_strips_nested_impact_heading():
     text = render_intent_analysis_text(
         title="你提到的这个要求，我先结合你现在的情况做个初步分析。",
@@ -2676,6 +2769,38 @@ def test_render_intent_interest_text_strips_nested_impact_heading():
     assert "先帮你看一眼" not in text
     assert "先按这个方向看影响和边界" in text
     assert "待确认内容" not in text
+
+
+def test_render_intent_interest_text_prefers_structured_impact_analysis():
+    text = render_intent_analysis_text(
+        title="你提到的这个方向，我先结合你现在的情况做个初步分析。",
+        impact_text=(
+            "先看影响和边界：\n"
+            "- 这轮会重点看当前方案里是否已有贴近方向，以及候选里还有哪些值得继续关注的机会。\n"
+            "可以继续展开看的方向：\n"
+            "- 方案外如果还有更贴近这个方向的候选机会，也会一起作为补充参考。\n"
+            "如果继续了解：\n"
+            "- 如果你愿意把它当成偏好，我可以继续帮你看现在的方案哪里比较贴近、哪里还能补强。"
+        ),
+        analysis_stage=ANALYSIS_STAGE_INTEREST,
+        intent_mode=INTENT_MODE_PREFERENCE,
+        items=[
+            {"content": "可整理成待确认偏好。", "value": {"major_intents": {"negative_level1": ["医学"]}}},
+            {"content": "可整理成待确认偏好。", "value": {"major_intents": {"negative_level3": ["护理学"]}}},
+        ],
+        impact_analysis={
+            "currentPlanFit": ["护理学属于医学门类；如果确认排除医学，这个具体专业也会一并避开。"],
+            "currentPlanConflict": [],
+            "candidateOpportunity": [],
+            "nextActionHints": ["如果你愿意把它当成偏好，我可以继续帮你看现在的方案哪里比较贴近。"],
+        },
+    )
+
+    assert "护理学属于医学门类" in text
+    assert "可以继续展开看的方向" not in text
+    assert "如果继续了解" not in text
+    assert "这轮会重点看当前方案里是否已有贴近方向" not in text
+    assert "如果你愿意把它当成偏好" not in text
 
 
 def test_render_intent_analysis_text_replaces_generic_impact_placeholder_for_confirmed_preview():

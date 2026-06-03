@@ -37,7 +37,7 @@ _TOOL_DISPATCH_RULES = """\
 - `compare_majors` 已经能承接专业差异和适配判断；除非用户明确追问“学什么/课程/就业详情/专业介绍”，不要在同一轮再追加 `get_major_introduction`。
 - 对多个专业的学习内容、基础要求、课程训练、就业方向做只读对照时，优先调用 `get_major_introductions` 一次返回横向事实，不要并行或连续多次调用 `get_major_introduction`。`get_major_introductions` 默认不查当前方案和候选机会；只有用户明确问当前方案承接、候选机会或这个分数段能报哪些时，才传 `include_plan_context=true`。
 - 单个专业“适不适合我/值不值得看”优先 `analyze_current_major_interest`；不要默认再追加 `get_major_introduction`，除非用户要详细了解这个专业。
-- 职业路径问题优先 `analyze_current_career_direction`；地域取舍问题优先 `analyze_current_region_interest`。只有用户明确同时问职业和地域时，才组合两个 Explore 工具。
+- 职业路径问题优先 `analyze_current_career_direction`；地域取舍问题优先 `analyze_current_region_interest`。地域取舍按语义判断：当用户围绕一个或多个省份/城市表达接受度、排斥度、是否纳入、是否值得、就读体验、家庭距离或保底空间等判断诉求时，默认是在问地域适配和取舍边界，不要先查当前方案或候选。只有用户明确要列出当前方案或候选中命中的地域机会、数量、学校或专业组时，才调用 `query_volunteer_plan`。只有用户明确同时问职业和地域时，才组合两个 Explore 工具。
 - 用户问“这份方案能不能支撑考公/体制内/进体制/稳定就业/读研”等职业路径承接时，优先调用 `analyze_current_career_direction` 并传入对应 `career_directions`；如还需要方案规模、风险或缺口，可再补 `query_state`，但不要只用 `review_plan` 回答这类问题。
 - Explore 回答顺序：先看学生本人适配度，再看方向/对象特点，再看当前方案承接，最后提候选机会。
 - 出分前或信息不完整的泛方向回复不能只列“可以聊什么”；至少给出 2-3 条可判断的方向框架，例如体制内/稳定就业、市场化就业/大城市就业、读研/深造分别看什么筹码、适合什么人、主要风险，并用“下一步”明确告诉用户补充哪些信息或可以继续问什么。
