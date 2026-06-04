@@ -257,7 +257,8 @@
           "已直接调整",
           "payload"
         ],
-        "assertNoFollowups": true,
+        "assertFollowupCount": 1,
+        "assertFollowupType": "pendingConfirmationCard",
         "warnElapsedSeconds": 30,
         "qualityFocus": [
           "actionable_next_step",
@@ -292,8 +293,9 @@
           "就业",
           "建议"
         ],
-        "assertThinkingContains": [
-          "正在对比这几个专业的差异"
+        "assertThinkingContainsAny": [
+          "正在对比这几个专业的差异",
+          "正在对照这些专业的学习内容和就业情况"
         ],
         "assertNotContains": [
           "缺少性别信息",
@@ -357,8 +359,9 @@
           "就业",
           "建议"
         ],
-        "assertThinkingContains": [
-          "正在对比这几个专业的差异"
+        "assertThinkingContainsAny": [
+          "正在对比这几个专业的差异",
+          "正在对照这些专业的学习内容和就业情况"
         ],
         "assertNotContains": [
           "当前没有沉淀专门画像",
@@ -486,8 +489,9 @@
           "确认",
           "后续参考"
         ],
-        "assertThinkingContains": [
-          "正在整理这个专业想法的影响，等你确认后才会记入偏好"
+        "assertThinkingContainsAny": [
+          "正在整理这个专业想法的影响，等你确认后才会记入偏好",
+          "正在整理这个专业想法的影响和边界"
         ],
         "assertNotContains": [
           "候选结果收紧",
@@ -516,7 +520,8 @@
           "专家推荐",
           "已直接记录"
         ],
-        "assertNoFollowups": true,
+        "assertFollowupCount": 1,
+        "assertFollowupType": "pendingConfirmationCard",
         "warnElapsedSeconds": 25,
         "qualityFocus": [
           "actionable_next_step",

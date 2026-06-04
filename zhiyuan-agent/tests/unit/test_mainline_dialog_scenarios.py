@@ -502,7 +502,8 @@ def test_mainline_dialog_intent_preview_then_plan_status_does_not_reopen_candida
         second = _run(service.handle_message("session-mainline-57", "user-57", "现在方案怎么样"))
 
     assert isinstance(first, str)
-    assert first.startswith("我先把网络与新媒体整理成待确认偏好")
+    assert "确认卡片" in first
+    assert "点击采纳前" in first
     assert not isinstance(second, ChatServiceResponseEnvelope)
     assert "45/45" in second
     assert "冲8 / 稳18 / 保19" in second

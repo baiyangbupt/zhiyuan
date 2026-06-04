@@ -2269,9 +2269,37 @@ _READONLY_CLOSURE_ACK_PHRASES = {
 }
 
 
-def _is_plan_action_confirmation(content: str) -> bool:
+def _normalize_confirmation_only_text(content: str, *, strip_fullwidth_question: bool = False) -> str:
     normalized = re.sub(r"\s+", "", (content or "").strip())
-    normalized = normalized.strip("。.!！?")
+    punctuation = "。.!！?？" if strip_fullwidth_question else "。.!！?"
+    normalized = normalized.strip(punctuation)
+    if not normalized:
+        return ""
+    for prefix in ("嗯嗯", "嗯"):
+        if not normalized.startswith(prefix) or len(normalized) <= len(prefix):
+            continue
+        candidate = normalized[len(prefix):]
+        if (
+            candidate in _PLAN_ACTION_CONFIRM_PHRASES
+            or candidate in _INTENT_CONFIRM_PHRASES
+            or candidate in {
+                "确认这个偏好",
+                "确认偏好",
+                "确认这个要求",
+                "确认要求",
+                "确认这个意向",
+                "确认意向",
+                "确认这个参考",
+                "确认参考",
+            }
+            or (candidate.startswith(("确认", "执行")) and len(candidate) <= 8)
+        ):
+            return candidate
+    return normalized
+
+
+def _is_plan_action_confirmation(content: str) -> bool:
+    normalized = _normalize_confirmation_only_text(content)
     if not normalized:
         return False
     if normalized in _PLAN_ACTION_CONFIRM_PHRASES:
@@ -2280,24 +2308,21 @@ def _is_plan_action_confirmation(content: str) -> bool:
 
 
 def _is_pending_intent_confirmation(content: str) -> bool:
-    normalized = re.sub(r"\s+", "", (content or "").strip())
-    normalized = normalized.strip("。.!！?")
+    normalized = _normalize_confirmation_only_text(content)
     if not normalized:
         return False
     return normalized in _INTENT_CONFIRM_PHRASES
 
 
 def _is_readonly_closure_ack(content: str) -> bool:
-    normalized = re.sub(r"\s+", "", (content or "").strip())
-    normalized = normalized.strip("。.!！?？")
+    normalized = _normalize_confirmation_only_text(content, strip_fullwidth_question=True)
     if not normalized:
         return False
     return normalized in _READONLY_CLOSURE_ACK_PHRASES
 
 
 def _is_explicit_pending_intent_confirmation(content: str) -> bool:
-    normalized = re.sub(r"\s+", "", (content or "").strip())
-    normalized = normalized.strip("。.!！?")
+    normalized = _normalize_confirmation_only_text(content)
     if not normalized:
         return False
     return normalized in {
@@ -2444,7 +2469,7 @@ async def _early_confirmation_guard_reply(
         )
         return reply
 
-    if is_plan_confirm and content.strip().strip("。.!！?？") in _PLAN_ACTION_CONFIRM_PHRASES:
+    if is_plan_confirm and _normalize_confirmation_only_text(content) in _PLAN_ACTION_CONFIRM_PHRASES:
         pending_intent_confirmation = await _load_pending_intent_confirmation(session_id)
         if pending_intent_confirmation and is_intent_confirm:
             reply = _pending_requires_card_click_reply("intent_change")
