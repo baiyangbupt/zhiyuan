@@ -117,6 +117,7 @@ def test_matches_query_supports_city_college_short_alias_from_real_school_name()
     }
 
     assert _matches_query(item, "青城")
+    assert _matches_query(item, "青岛城市学院是不是放多了")
     assert not _matches_query(item, "青城山")
 
 
@@ -282,6 +283,36 @@ async def test_query_volunteer_plan_alias_school_match_recovers_city_extraction_
 
     assert "按当前方案里的院校简称“青城”匹配到青岛城市学院" in result
     assert "当前方案里共命中了 1 条符合“院校:青城、青岛城市学院”" in result
+    assert "青岛城市学院-法语" in result
+    candidate_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_query_volunteer_plan_raw_query_uses_current_plan_school_alias_without_candidate_fallback():
+    ordered_result = {
+        "code": 0,
+        "data": {
+            "items": [
+                {
+                    "volunteerId": "v-qc-1",
+                    "schoolName": "青岛城市学院",
+                    "majorName": "法语",
+                    "tier": "冲",
+                    "admissionRatio": 1,
+                }
+            ]
+        },
+    }
+
+    with (
+        patch("app.tools.plan_query_tool.get_planning_ordered_plan", new=AsyncMock(return_value=ordered_result)),
+        patch("app.tools.plan_query_tool.get_planning_draft", new=AsyncMock(return_value={"code": 0, "data": {"items": []}})),
+        patch("app.tools.plan_query_tool.query_planning_candidate_pool", new=AsyncMock()) as candidate_mock,
+    ):
+        result = await query_volunteer_plan(_ctx(), "青城那个是不是放多了，能查下")
+
+    assert "按当前方案里的院校简称“青城”匹配到青岛城市学院" in result
+    assert "当前方案里共命中了 1 条和“青城那个是不是放多了能”相关的志愿" in result
     assert "青岛城市学院-法语" in result
     candidate_mock.assert_not_awaited()
 

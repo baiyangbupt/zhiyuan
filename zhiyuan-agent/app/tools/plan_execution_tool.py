@@ -2764,11 +2764,29 @@ async def execute_plan_action(
 
     result = guard_result or await _execute_plan_action_model(ctx, plan_model)
     result_data = result.model_dump()
+    cached_result_data = copy.deepcopy(result_data)
+    effective_action_family = (
+        "apply_compensation"
+        if str(result_data.get("action_family") or "").strip() == "preview_compensation"
+        else str(result_data.get("action_family") or "").strip()
+    )
+    if (
+        effective_action_family in _MUTATING_ACTION_FAMILIES
+        and (
+            str(result_data.get("stage") or "").strip() == "preview"
+            or str(result_data.get("result_kind") or "").strip() == "compensation_preview"
+        )
+    ):
+        pending_source_payload = normalize_plan_action_payload(copy.deepcopy(data))
+        result_facts = result_data.get("facts")
+        if isinstance(result_facts, dict) and result_facts:
+            pending_source_payload["facts"] = copy.deepcopy(result_facts)
+        cached_result_data["_pending_source_payload"] = pending_source_payload
     if result_data.get("next_step_hints"):
         result_data["next_step_hints"] = [
             f"[LLM_INTERNAL] {hint}" for hint in result_data["next_step_hints"]
         ]
-    _remember_recent_plan_execution_result(ctx, result_data)
+    _remember_recent_plan_execution_result(ctx, cached_result_data)
     log_event(
         "plan_action_event",
         sessionId=ctx.deps.sessionid,

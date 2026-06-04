@@ -346,29 +346,37 @@ def _plan_query_needs_model_synthesis(raw_text: str | None, deps: Any | None) ->
     cases the final reply must still answer the tradeoff or decision question.
     """
     text = str(raw_text or "").strip()
-    status = _latest_plan_query_status(deps)
+    latest = _latest_plan_query_info(deps)
+    status = str(latest.get("status") or "").strip()
+    has_structured_filters = latest.get("hasStructuredFilters")
     if status in _QUERY_VOLUNTEER_PLAN_FAIL_STATUSES:
         return True
     if any(marker in text for marker in _QUERY_VOLUNTEER_PLAN_EMPTY_MARKERS):
+        if has_structured_filters is False:
+            return True
         return status in {"candidate_query_failed_after_plan_miss", "success_plan_miss_candidate_checked", ""}
     return False
 
 
 def _latest_plan_query_status(deps: Any | None) -> str:
+    return str(_latest_plan_query_info(deps).get("status") or "").strip()
+
+
+def _latest_plan_query_info(deps: Any | None) -> dict[str, Any]:
     if deps is None:
-        return ""
+        return {}
     observability = getattr(deps, "agent_observability", None)
     if not isinstance(observability, dict):
-        return ""
+        return {}
     timings = observability.get("toolInternalTimings")
     if not isinstance(timings, list):
-        return ""
+        return {}
     for item in reversed(timings):
         if not isinstance(item, dict):
             continue
         if str(item.get("tool") or "") == "query_volunteer_plan":
-            return str(item.get("status") or "").strip()
-    return ""
+            return item
+    return {}
 
 
 def _readonly_explore_reply(payload: dict[str, Any], raw_text: str | None) -> str | None:

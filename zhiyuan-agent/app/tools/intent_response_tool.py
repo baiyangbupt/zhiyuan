@@ -398,8 +398,8 @@ def _filter_interest_impact_text(impact_text: str | None, focus_terms: list[str]
 
 def _fallback_intent_impact_text(intent_mode: str) -> str:
     if intent_mode == "constraint":
-        return "这些内容现在还只是待确认。确认前不会写入偏好，也不会改动当前方案；你确认后，我再用它们收紧候选和检查方案。"
-    return "这些内容现在还只是待确认。确认前不会写入后续参考；你确认后，我再把它们作为后续看方案和给建议时的参考。"
+        return "这些内容只有点击采纳后才会生效。点击采纳前不会写入偏好，也不会改动当前方案；点击采纳后，我再用它们收紧候选和检查方案。"
+    return "这些内容只有点击采纳后才会生效。点击采纳前不会写入后续参考；点击采纳后，我再把它们作为后续看方案和给建议时的参考。"
 
 
 def _format_values(values: Any) -> str:
@@ -412,6 +412,7 @@ def _format_values(values: Any) -> str:
 
 def _sanitize_user_facing_intent_text(text: str) -> str:
     replacements = {
+        "当前已有参考": "当前已记录的报考参考",
         "专业（level1）": "专业门类",
         "专业（level2）": "专业类",
         "专业（level3）": "具体专业",
@@ -672,8 +673,8 @@ def render_intent_analysis_text(
                 "如果理解正确，请点击卡片采纳；如果还想改一下偏好范围，也可以直接补充说明。",
             ]
         return format_text_sections(
-            ("待确认内容", [_render_intent_preview_item(item) for item in (items or [])]),
-            ("已作为参考", [_render_intent_preview_item(item) for item in (existing_items or [])]),
+            ("点击采纳后生效", [_render_intent_preview_item(item) for item in (items or [])]),
+            ("当前已记录的报考参考", [_render_intent_preview_item(item) for item in (existing_items or [])]),
             ("影响说明", resolved_impact),
             ("下一步", next_steps),
         )
@@ -702,7 +703,7 @@ def render_intent_analysis_text(
     if items:
         sections.append(("这次识别到的参考范围", [_render_intent_preview_item(item) for item in items]))
     if existing_items:
-        sections.append(("已作为参考", [item.get("content", "") for item in existing_items]))
+        sections.append(("当前已记录的报考参考", [item.get("content", "") for item in existing_items]))
 
     if items:
         next_steps = [
@@ -730,7 +731,7 @@ def render_intent_analysis_payload(payload_text: str) -> str:
             existing_items=[item.model_dump() for item in payload.existingItems],
             impact_analysis=payload.impactAnalysis,
         )
-        all_existing_text = "这个想法已经作为后续报考参考。本轮不会重复新增；如果你愿意，我可以继续帮你看看现在这份方案和它有多匹配。"
+        all_existing_text = "这个想法当前已经在报考参考里。本轮不会重复新增；如果你愿意，我可以继续帮你看看现在这份方案和它有多匹配。"
         if payload.existingItems:
             details = "\n".join(f"- {_sanitize_user_facing_intent_text(item.content)}" for item in payload.existingItems)
             all_existing_text += "\n" + details

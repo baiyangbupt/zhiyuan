@@ -335,6 +335,13 @@ def _matches_query(item: dict[str, Any], keyword: str) -> bool:
         return False
     if any(compact_keyword in _compact_text(item) for item in haystacks if item):
         return True
+    school_compacts = [
+        _compact_text(school_name)
+        for school_name in school_variants
+        if len(_compact_text(school_name)) >= 3
+    ]
+    if any(compact_school and compact_school in compact_keyword for compact_school in school_compacts):
+        return True
 
     combined_texts = [
         f"{school_name}-{major_name}"
@@ -346,6 +353,62 @@ def _matches_query(item: dict[str, Any], keyword: str) -> bool:
 
 def _matches_any_query_keyword(item: dict[str, Any], keywords: list[str]) -> bool:
     return any(_matches_query(item, keyword) for keyword in keywords if keyword)
+
+
+def _match_plan_items_by_query(
+    items: list[dict[str, Any]],
+    query_keywords: list[str],
+) -> tuple[list[dict[str, Any]], str]:
+    matched = [item for item in items if _matches_any_query_keyword(item, query_keywords)]
+    if matched:
+        return matched, ""
+
+    alias_matched, alias_names, alias_sources = _school_alias_matches_from_query(items, query_keywords)
+    if not alias_matched:
+        return [], ""
+
+    source_keywords = "、".join(alias_sources[:3])
+    target_names = "、".join(alias_names[:3])
+    return alias_matched, f"按当前方案里的院校简称“{source_keywords}”匹配到{target_names}。"
+
+
+def _school_alias_matches_from_query(
+    items: list[dict[str, Any]],
+    query_keywords: list[str],
+) -> tuple[list[dict[str, Any]], list[str], list[str]]:
+    query_compacts = [
+        _compact_text(keyword)
+        for keyword in query_keywords
+        if _compact_text(keyword)
+    ]
+    if not query_compacts:
+        return [], [], []
+
+    matched: list[dict[str, Any]] = []
+    matched_names: list[str] = []
+    matched_sources: list[str] = []
+    for item in items:
+        school_name = str(item.get("schoolName") or "").strip()
+        if not school_name:
+            continue
+        variants = _school_name_variants(school_name)
+        if len(variants) <= 1:
+            continue
+        for alias in variants[1:]:
+            compact_alias = _compact_text(alias)
+            if len(compact_alias) < 2:
+                continue
+            if not any(compact_alias in compact_query for compact_query in query_compacts):
+                continue
+            if item not in matched:
+                matched.append(item)
+            canonical = variants[0] if variants and variants[0] else school_name
+            if canonical not in matched_names:
+                matched_names.append(canonical)
+            if alias not in matched_sources:
+                matched_sources.append(alias)
+            break
+    return matched, matched_names, matched_sources
 
 
 def _has_structured_filters(filters: dict[str, list[str]]) -> bool:
@@ -669,11 +732,12 @@ def _format_plan_result(title: str, items: list[dict[str, Any]], display_keyword
     if not items:
         return f"{title}里还没有可查询的志愿。"
     if display_keyword:
-        matched = [item for item in items if _matches_any_query_keyword(item, query_keywords)]
+        matched, alias_note = _match_plan_items_by_query(items, query_keywords)
         if matched:
             examples = matched[:5]
             snippets = "；".join(_build_plan_item_snippet(item) for item in examples)
-            return (
+            prefix = f"{alias_note}\n" if alias_note else ""
+            return prefix + (
                 f"{title}里共命中了 {len(matched)} 条和“{display_keyword}”相关的志愿。"
                 f"下面仅展示前 {len(examples)} 条示例：{snippets}"
             )
@@ -1153,7 +1217,7 @@ async def query_volunteer_plan(
             )
             return plan_text
 
-        matched_plan_items = [item for item in plan_items if _matches_any_query_keyword(item, query_keywords)]
+        matched_plan_items, _ = _match_plan_items_by_query(plan_items, query_keywords)
         if matched_plan_items:
             _append_query_observability(
                 ctx,

@@ -636,13 +636,13 @@ def _format_intent_card_content(summary: str, *, existing_summary: str = "") -> 
     lines: list[str] = []
     summary_parts = [part.strip() for part in str(summary or "").split("；") if part.strip()]
     if summary_parts:
-        lines.append("确认后生效：")
+        lines.append("点击采纳后生效：")
         lines.extend(f"- {part}" for part in summary_parts)
     existing_parts = [part.strip() for part in str(existing_summary or "").split("；") if part.strip()]
     if existing_parts:
         if lines:
             lines.append("")
-        lines.append("已作为参考：")
+        lines.append("当前已记录的报考参考：")
         lines.extend(f"- {part}" for part in existing_parts)
     return "\n".join(lines).strip() or summary
 
@@ -715,7 +715,7 @@ async def _create_pending_intent_confirmation_response(
         "summary": summary,
         "content": card_content,
         "impactTitle": "确认说明",
-        "impact": "点击采纳前不会写入后续报考参考；采纳后会按这次内容继续看候选和方案。",
+        "impact": "点击采纳前不会写入后续报考参考；点击采纳后会按这次内容继续看候选和方案。",
         "clickable": True,
         "status": "active",
         "confirmText": "采纳",
@@ -793,7 +793,7 @@ async def _create_pending_intent_confirmation_from_preview_payload(
         "batch": batch,
     }
     replaced_pending = await _load_pending_confirmation_state(session_id)
-    summary = _summarize_intent_values(merged) or preview.title or "本次确认后生效内容。"
+    summary = _summarize_intent_values(merged) or preview.title or "本次点击采纳后生效的内容。"
     pending_state = _build_intent_pending_state(
         session_id,
         selected_data=selected_data,
@@ -816,7 +816,7 @@ async def _create_pending_intent_confirmation_from_preview_payload(
         "summary": summary,
         "content": card_content,
         "impactTitle": "确认说明",
-        "impact": "点击采纳前不会写入后续报考参考；采纳后会按这次内容继续看候选和方案。",
+        "impact": "点击采纳前不会写入后续报考参考；点击采纳后会按这次内容继续看候选和方案。",
         "clickable": True,
         "status": "active",
         "confirmText": "采纳",
@@ -829,7 +829,7 @@ async def _create_pending_intent_confirmation_from_preview_payload(
     )
 
 
-async def _recover_unbacked_major_intent_confirmation(
+async def _recover_unbacked_intent_confirmation(
     session_id: str,
     request_context: RequestContext,
     *,
@@ -847,14 +847,14 @@ async def _recover_unbacked_major_intent_confirmation(
             None,
             None,
             analysis_stage=ANALYSIS_STAGE_CONFIRMED,
-            recovery_scope="major",
+            recovery_scope="generic",
             confirm_enabled=True,
             persist_cache=False,
         )
         preview_payload = parse_intent_analysis_payload(payload_text).model_dump()
     except Exception:
         logger.warning(
-            "Failed to recover unbacked major intent confirmation: session_id=%s",
+            "Failed to recover unbacked intent confirmation: session_id=%s",
             session_id,
             exc_info=True,
         )
@@ -1308,6 +1308,7 @@ def _normalize_pending_intent_reply(reply: str) -> str:
         ("好的，我已经记下了", "我先整理一下"),
         ("我已经按你的偏好记录下来", "我先把这个偏好整理出来，等你点击卡片采纳后再作为后续参考"),
         ("我已经记录下来", "我先把这个偏好整理出来，等你点击卡片采纳后再作为后续参考"),
+        ("我先把这个偏好整理成待确认参考，你确认后我再正式生效。", "我先把这个偏好整理成确认卡片，点击采纳前不会生效。"),
     )
     for source, target in replacements:
         normalized = normalized.replace(source, target)
@@ -1472,10 +1473,56 @@ def _normalize_general_confirmation_protocol_wording(reply: str) -> str:
     )
     for source, target in replacements:
         normalized = normalized.replace(source, target)
+    normalized = re.sub(
+        r"(?:有的话可以)?(?:直接)?告诉我[，,]?我帮你记成后续参考[。！？]?",
+        "如果要正式采用，我会先整理成确认卡片；点击采纳前不会生效。",
+        normalized,
+    )
+    normalized = re.sub(
+        r"我(?:先|会先|可以先)?帮你记成后续参考[。！？]?",
+        "我会先整理成确认卡片；点击采纳前不会生效。",
+        normalized,
+    )
+    normalized = re.sub(
+        r"我可以先整理成待确认(?:偏好|要求|意向|内容)[，,]?\s*确认后",
+        "我可以先整理成确认卡片；点击采纳前不会生效。点击采纳后",
+        normalized,
+    )
+    normalized = re.sub(
+        r"我可以把(?P<topic>[^。！？\n]{0,100}?)整理成待确认(?:偏好|要求|意向|内容)[，,]?\s*确认后(?P<verb>会|再)",
+        r"我可以把\g<topic>整理成确认卡片；点击采纳前不会生效，点击采纳后\g<verb>",
+        normalized,
+    )
+    normalized = normalized.replace("我可以先整理成待确认偏好", "我可以先整理成确认卡片")
+    normalized = normalized.replace("我可以先整理成待确认要求", "我可以先整理成确认卡片")
+    normalized = normalized.replace("我可以先整理成待确认意向", "我可以先整理成确认卡片")
+    normalized = normalized.replace("我可以先整理成待确认内容", "我可以先整理成确认卡片")
+    normalized = normalized.replace("我先帮你整理成待确认偏好", "我先帮你整理成确认卡片")
+    normalized = normalized.replace("我先帮你整理成待确认要求", "我先帮你整理成确认卡片")
+    normalized = normalized.replace("我先帮你整理成待确认内容", "我先帮你整理成确认卡片")
+    normalized = normalized.replace("待确认偏好", "确认卡片")
+    normalized = normalized.replace("待确认要求", "确认卡片")
+    normalized = normalized.replace("待确认意向", "确认卡片")
+    normalized = re.sub(
+        r"我可以整理成确认(?:偏好|要求|内容)[。；;]?\s*你确认后[，,]",
+        "我可以整理成确认卡片；点击采纳前不会生效。点击采纳后，",
+        normalized,
+    )
+    normalized = normalized.replace("我可以整理成确认偏好", "我可以整理成确认卡片")
+    normalized = normalized.replace("我可以整理成确认要求", "我可以整理成确认卡片")
+    normalized = normalized.replace("我可以整理成确认内容", "我可以整理成确认卡片")
+    normalized = normalized.replace("确认卡片，采纳后", "确认卡片；点击采纳后")
+    normalized = normalized.replace("不会生效。，采纳后", "不会生效；点击采纳后")
+    normalized = normalized.replace("不会生效。，点击采纳后", "不会生效；点击采纳后")
     if "确认卡片" in normalized:
         consistency_replacements = (
             ("，改完立刻生效", ""),
             ("改完立刻生效", "采纳后生效"),
+            ("你确认后，我会", "点击卡片采纳后，我会"),
+            ("确认后，我会", "点击卡片采纳后，我会"),
+            ("你确认后再", "点击卡片采纳后再"),
+            ("确认后再", "点击卡片采纳后再"),
+            ("确认后会", "点击卡片采纳后会"),
             ("我立刻帮你调整方案", "我会先整理成确认卡片，采纳后再调整方案"),
             ("立刻帮你调整方案", "先整理成确认卡片，采纳后再调整方案"),
             ("我直接帮你调整方案", "我会先整理成确认卡片，采纳后再调整方案"),
@@ -1577,20 +1624,78 @@ def _normalize_unbacked_intent_preview_reply(reply: str) -> str:
     normalized = re.sub(r"\*\*待确认内容\*\*", "**这轮先按咨询结论理解**", reply)
     normalized = re.sub(r"(?m)^我先把.*整理成待确认(?:偏好|要求|内容)[：:]?\s*$", "我先把这轮结论说明清楚：", normalized)
     replacements = (
-        ("回复\"确认\"就按上面执行；", "如果你想把这个作为后续要求，再明确告诉我“把这个要求记下来”；"),
-        ("回复“确认”就按上面执行；", "如果你想把这个作为后续要求，再明确告诉我“把这个要求记下来”；"),
-        ("直接回复“确认”", "明确告诉我“把这个要求记下来”"),
-        ("直接回复\"确认\"", "明确告诉我“把这个要求记下来”"),
+        ("回复\"确认\"就按上面执行；", "如果你想正式采用，我会先整理成确认卡片；点击采纳前不会生效。"),
+        ("回复“确认”就按上面执行；", "如果你想正式采用，我会先整理成确认卡片；点击采纳前不会生效。"),
+        ("直接回复“确认”", "请点击确认卡片里的“采纳”"),
+        ("直接回复\"确认\"", "请点击确认卡片里的“采纳”"),
         ("确认后，", "如果后续正式记成要求，"),
     )
     for source, target in replacements:
         normalized = normalized.replace(source, target)
-    if "没有正式进入待确认状态" not in normalized:
+    if "这轮没有生成可点击的确认卡片" not in normalized:
         normalized = (
             normalized.rstrip()
-            + "\n\n补充说明：这轮没有正式进入待确认状态，也不会写入后续参考或改动方案；"
-            "如果要正式采用，请明确说“把这个要求记下来”。"
+            + "\n\n补充说明：这轮没有生成可点击的确认卡片，也不会写入后续参考或改动方案；"
+            "如果要正式采用，我会先整理成确认卡片，点击采纳后才会生效。"
         )
+    return normalized
+
+
+_DOWNGRADED_INTENT_PENDING_CLAIM_RE = re.compile(
+    r"(?:我(?:先|会先|可以)?|这边)?(?:先)?(?:帮你)?把(?P<topic>[^。！？\n]{0,80}?)"
+    r"(?:整理|记录)(?:成|为)?(?:一条|一个|一份)?待确认(?:偏好|要求|意向|内容)"
+    r"(?:[，,]?(?:(?:你|等你|如果你)?确认后)[^。！？\n]*[。！？]?)?"
+)
+_DOWNGRADED_INTENT_DIRECT_CONFIRM_RE = re.compile(
+    r"我可以把(?P<topic>[^。！？\n]{0,80}?)(?:整理|记)(?:成|为)(?P<target>排除条件|后续参考|偏好|要求)"
+    r"[。！？]?(?:(?:你|等你|如果你)?确认后)[^。！？\n]*[。！？]?"
+)
+
+
+def _normalize_downgraded_intent_preview_reply(reply: str) -> str:
+    """When intent arbitration downgrades to analysis-only, do not imply a card already exists."""
+    if not isinstance(reply, str) or not reply.strip():
+        return reply
+    compact = _compact_plan_reply_text(reply)
+    if "整理成待确认" not in compact and not any(
+        marker in compact for marker in ("待确认偏好", "待确认要求", "待确认意向", "待确认内容")
+    ):
+        return reply
+
+    def _replace_claim(match: re.Match[str]) -> str:
+        topic = str(match.group("topic") or "这个想法").strip(" ：:，,。")
+        if not topic:
+            topic = "这个想法"
+        return f"如果你想把{topic}作为后续参考，我可以整理成确认卡片；点击采纳前不会生效。"
+
+    normalized = _DOWNGRADED_INTENT_PENDING_CLAIM_RE.sub(_replace_claim, reply)
+
+    def _replace_direct_confirm(match: re.Match[str]) -> str:
+        topic = str(match.group("topic") or "这个想法").strip(" ：:，,。")
+        target = str(match.group("target") or "后续参考").strip()
+        if not topic:
+            topic = "这个想法"
+        return f"如果你想把{topic}作为{target}，我会先整理成确认卡片；点击采纳前不会生效。"
+
+    normalized = _DOWNGRADED_INTENT_DIRECT_CONFIRM_RE.sub(_replace_direct_confirm, normalized)
+    normalized = normalized.replace("你确认后我再作为后续参考去筛方案", "点击采纳后，我再作为后续参考去看候选和方案")
+    normalized = normalized.replace("你确认后我再作为后续参考", "点击采纳后，我再作为后续参考")
+    normalized = re.sub(
+        r"你确认要把(?P<topic>[^。！？\n]{0,80}?)作为后续参考吗？点击采纳前不会生效。",
+        r"如果你想把\g<topic>作为后续参考，我会先整理成确认卡片；点击采纳前不会生效。",
+        normalized,
+    )
+    normalized = re.sub(
+        r"(?:要不要|需要不需要)(?:我)?先整理成[^。！？\n？?]{0,40}(?:要求|偏好|排除条件)[？?]\s*确认后[，,]",
+        "如果要正式采用，我会先整理成确认卡片；点击采纳前不会生效。点击采纳后，",
+        normalized,
+    )
+    normalized = normalized.replace("确认后，我会", "点击卡片采纳后，我会")
+    normalized = normalized.replace("告诉我，我帮你记成后续参考。", "如果要正式采用，我会先整理成确认卡片；点击采纳前不会生效。")
+    normalized = normalized.replace("直接告诉我，我帮你记成后续参考。", "如果要正式采用，我会先整理成确认卡片；点击采纳前不会生效。")
+    normalized = normalized.replace("整理成待确认偏好", "整理成确认卡片")
+    normalized = normalized.replace("整理成待确认要求", "整理成确认卡片")
+    normalized = normalized.replace("整理成待确认意向", "整理成确认卡片")
     return normalized
 
 
@@ -1605,8 +1710,8 @@ def _append_pending_intent_boundary(reply: str, *, has_pending_intent: bool) -> 
         return reply
     return (
         reply.rstrip()
-        + "\n\n补充说明：这条**待确认内容**目前仍是**尚未确认**状态，确认前不会写入后续参考；"
-        "如果要正式采用，请点击上方卡片采纳。"
+        + "\n\n补充说明：这张确认卡片还没有采纳，点击采纳前不会写入后续报考参考；"
+        "如果要正式采用，请点击卡片里的“采纳”。"
     )
 
 
@@ -1784,14 +1889,14 @@ def _latest_turn_is_readonly_interruption_fallback(messages: list[Any] | None) -
 
 
 def _no_pending_intent_confirmation_guard_reply() -> str:
-    return "我这边没有找到上一轮仍在等待确认的偏好调整。你可以直接说想保留、排除或重点关注的方向，我会先整理成待确认内容。"
+    return "我这边没有找到上一轮仍在等待采纳的确认卡片。你可以直接说想保留、排除或重点关注的方向，我会先整理成确认卡片。"
 
 
 def _pending_requires_card_click_reply(kind: str | None = None) -> str:
     if kind == "plan_mutation":
         return "这次方案调整还在待确认状态。请点击上方卡片里的确认按钮后，我再执行；只在对话里回复确认不会直接改动方案。"
     if kind == "intent_change":
-        return "这次偏好或要求还在待确认状态。请点击上方卡片里的采纳按钮后，我再更新后续报考参考；只在对话里回复确认不会直接生效。"
+        return "这次偏好或要求已经整理成确认卡片，正在等待采纳。请点击卡片里的采纳按钮后，我再更新后续报考参考；只在对话里回复确认不会直接生效。"
     return "这次更新还在待确认状态。请点击上方卡片里的确认按钮后，我再执行；只在对话里回复确认不会直接生效。"
 
 
@@ -2738,6 +2843,9 @@ def _normalize_user_facing_terms(reply: str) -> str:
         ("用户画像", "报考参考信息"),
         ("学生画像", "学生报考参考信息"),
         ("画像", "报考参考信息"),
+        ("草稿方案", "方案"),
+        ("方案草稿", "方案"),
+        ("草稿", "方案"),
     )
     normalized = reply
     for source, target in replacements:
@@ -3150,6 +3258,45 @@ def build_timeout_fallback_from_recent_plan_execution(
             ],
         )
     return ChatServiceResponseEnvelope(primary=reply)
+
+
+async def build_interruption_fallback_from_recent_plan_execution(
+    session_id: str,
+    user_prompt: str,
+) -> ChatServiceResponseEnvelope | None:
+    result = consume_recent_plan_execution_result(session_id, user_prompt)
+    if not result:
+        return None
+
+    pending_source_payload = result.get("_pending_source_payload")
+    if isinstance(pending_source_payload, dict):
+        source_payload = dict(pending_source_payload)
+        facts = result.get("facts")
+        if isinstance(facts, dict) and facts:
+            source_payload["facts"] = facts
+        pending_action = _build_pending_plan_action_from_payload(
+            source_payload,
+            summary=str(result.get("summary") or result.get("preview_summary") or ""),
+        )
+        if pending_action is not None:
+            return ChatServiceResponseEnvelope(
+                primary=_sanitize_reply_for_user(_build_pending_plan_preview_reply(pending_action)),
+                followups=[
+                    await _create_pending_plan_confirmation_response(session_id, pending_action)
+                ],
+            )
+
+    reply = _build_plan_timeout_fallback_reply(result)
+    if not reply:
+        return None
+    workspace_refresh_targets = _dedupe_workspace_targets(
+        [str(target) for target in (result.get("workspace_refresh_targets") or [])]
+    )
+    followups = [
+        _build_workspace_action_response(session_id, target)
+        for target in workspace_refresh_targets
+    ]
+    return ChatServiceResponseEnvelope(primary=reply, followups=followups)
 
 
 def _replace_text_reply(messages: list[Any] | None, old_reply: str, new_reply: str) -> None:
@@ -3652,6 +3799,27 @@ class ChatService:
                     )
                 )
                 await self.history_store.save(session_id, failed_history)
+            recent_plan_fallback = None
+            if not isinstance(exc, asyncio.CancelledError):
+                with contextlib.suppress(Exception):
+                    recent_plan_fallback = await build_interruption_fallback_from_recent_plan_execution(
+                        session_id,
+                        content,
+                    )
+            if recent_plan_fallback is not None:
+                recovery_messages = [
+                    ModelRequest(parts=[UserPromptPart(content=content)]),
+                    ModelResponse(
+                        parts=[TextPart(content=recent_plan_fallback.primary)],
+                        model_name="agent-interruption-plan-preview-recovery",
+                    ),
+                ]
+                with contextlib.suppress(Exception, asyncio.CancelledError):
+                    await self.history_store.save(
+                        session_id,
+                        list(history or []) + _append_route_observability_message(recovery_messages, turn_event),
+                    )
+                return recent_plan_fallback
             fallback_reply = _build_agent_interruption_fallback_reply(
                 content,
                 parsed_planning_summary,
@@ -3762,6 +3930,13 @@ class ChatService:
                 _replace_text_reply(all_messages, reply, pending_intent_reply)
                 reply = pending_intent_reply
 
+        if intent_preview_downgraded and isinstance(reply, str):
+            downgraded_intent_reply = _normalize_downgraded_intent_preview_reply(reply)
+            if downgraded_intent_reply != reply:
+                _replace_text_reply(new_messages, reply, downgraded_intent_reply)
+                _replace_text_reply(all_messages, reply, downgraded_intent_reply)
+                reply = downgraded_intent_reply
+
         if isinstance(reply, str):
             false_apology_reply = _normalize_false_apology_reply(reply, history)
             if false_apology_reply != reply:
@@ -3856,7 +4031,7 @@ class ChatService:
         action_family = _select_conversation_action_family(tool_returns)
         recovered_pending_intent_card: WSResponse | None = None
         if unbacked_intent_preview_detected and isinstance(reply, str):
-            recovered_pending_intent_card = await _recover_unbacked_major_intent_confirmation(
+            recovered_pending_intent_card = await _recover_unbacked_intent_confirmation(
                 session_id,
                 request_context,
                 reply=unbacked_intent_preview_source_reply,

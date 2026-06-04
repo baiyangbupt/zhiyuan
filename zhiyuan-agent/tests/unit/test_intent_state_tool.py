@@ -414,7 +414,7 @@ async def test_analyze_intent_change_recovers_empty_args_via_fallback_extraction
         resp = await _render_analysis(ctx, None, None, None, "delete")
 
     assert "上海" in resp
-    assert "确认" in resp or "分析" in resp
+    assert "点击采纳" in resp or "分析" in resp
 
 
 @pytest.mark.asyncio
@@ -1395,7 +1395,7 @@ def test_preview_current_major_intent_confirmation_wrapper_keeps_structured_payl
     assert data["status"] == "ready"
     assert data["reply_strategy"] == "preview_wait_confirm"
     assert data["items"][0]["value"] == {"major_intents": {"level3": ["网络与新媒体"]}}
-    assert "待确认内容" in data["message"]
+    assert "点击采纳后生效" in data["message"]
 
 
 def test_preview_current_major_intent_confirmation_wrapper_marks_interest_stage_for_model_synthesis():
@@ -2457,7 +2457,7 @@ async def test_analyze_intent_change_existing_constraint_still_returns_candidate
         )
 
     assert "安徽" in resp
-    assert "当前已有参考排除省份" in resp
+    assert "当前已记录的报考参考排除省份" in resp
 
 
 @pytest.mark.asyncio
@@ -2486,7 +2486,7 @@ async def test_analyze_intent_change_existing_preference_returns_helpful_text(ex
             None,
         )
 
-    assert "已经作为后续报考参考" in resp
+    assert "当前已经在报考参考" in resp
     assert "已经记下" not in resp
     assert "现在这份方案" in resp
     assert "专家优选组合" not in resp
@@ -2515,7 +2515,7 @@ def test_render_intent_analysis_text_uses_light_markdown_sections():
         items=[{"content": "将网络与新媒体更新为偏好方向。"}],
     )
 
-    assert text.startswith("**待确认内容**")
+    assert text.startswith("**点击采纳后生效**")
     assert "\n\n**影响说明**\n" in text
     assert "**还可以再看看的机会**" in text
     assert "\n\n**下一步**\n" in text
@@ -2535,9 +2535,9 @@ def test_render_intent_analysis_text_hides_internal_major_levels():
 
     assert "level2" not in text
     assert "level3" not in text
-    assert "已作为参考" in text
-    assert "当前已有参考偏好具体专业：会计学" in text
-    assert "当前已有参考排除专业类：护理学类" in text
+    assert "当前已记录的报考参考" in text
+    assert "当前已记录的报考参考偏好具体专业：会计学" in text
+    assert "当前已记录的报考参考排除专业类：护理学类" in text
 
 
 def test_local_major_recovery_does_not_force_teacher_track_into_intent_preview():
@@ -2707,7 +2707,7 @@ def test_render_intent_analysis_text_explains_tcm_boundary_under_medical_constra
     )
 
     assert "中医学类属于医学门类" in text
-    assert "确认前不会写入偏好" in text
+    assert "点击采纳前不会写入偏好" in text
 
 
 def test_render_intent_interest_text_explains_teacher_track_boundary():
@@ -2827,7 +2827,7 @@ def test_render_intent_analysis_text_replaces_generic_impact_placeholder_for_con
     assert "我先帮你看看" not in text
     assert "我也会顺手看看" not in text
     assert "继续看看这份方案和你的想法有多匹配" not in text
-    assert "这些内容现在还只是待确认" in text
+    assert "这些内容只有点击采纳后才会生效" in text
     assert "偏好专业类：工商管理类" in text
 
 

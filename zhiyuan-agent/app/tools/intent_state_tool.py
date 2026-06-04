@@ -557,7 +557,7 @@ def _build_select_items(
                 label = _LABEL_MAP[f"major_intents.{level}"]
                 if already:
                     existing_items.append(_existing_intent_item(
-                        f"当前已有参考偏好{label}：{name}",
+                        f"当前已记录的报考参考偏好{label}：{name}",
                         {"major_intents": {level: [name]}},
                     ))
                 else:
@@ -577,7 +577,7 @@ def _build_select_items(
                 label = _LABEL_MAP[f"major_intents.{level}"]
                 if already:
                     existing_items.append(_existing_intent_item(
-                        f"当前已有参考{label}：{name}",
+                        f"当前已记录的报考参考{label}：{name}",
                         {"major_intents": {level: [name]}},
                     ))
                 else:
@@ -603,7 +603,7 @@ def _build_select_items(
                 label = _LABEL_MAP[f"school_intents.{sub_key}"]
                 if already:
                     existing_items.append(_existing_intent_item(
-                        f"当前已有参考偏好{label}：{name}",
+                        f"当前已记录的报考参考偏好{label}：{name}",
                         {"school_intents": {sub_key: [name]}},
                     ))
                 else:
@@ -623,7 +623,7 @@ def _build_select_items(
                 label = _LABEL_MAP[f"school_intents.{sub_key}"]
                 if already:
                     existing_items.append(_existing_intent_item(
-                        f"当前已有参考{label}：{name}",
+                        f"当前已记录的报考参考{label}：{name}",
                         {"school_intents": {sub_key: [name]}},
                     ))
                 else:
@@ -649,7 +649,7 @@ def _build_select_items(
                 label = _LABEL_MAP[f"city_intents.{sub_key}"]
                 if already:
                     existing_items.append(_existing_intent_item(
-                        f"当前已有参考偏好{label}：{name}",
+                        f"当前已记录的报考参考偏好{label}：{name}",
                         {"city_intents": {sub_key: [name]}},
                     ))
                 else:
@@ -669,7 +669,7 @@ def _build_select_items(
                 label = _LABEL_MAP[f"city_intents.{sub_key}"]
                 if already:
                     existing_items.append(_existing_intent_item(
-                        f"当前已有参考{label}：{name}",
+                        f"当前已记录的报考参考{label}：{name}",
                         {"city_intents": {sub_key: [name]}},
                     ))
                 else:

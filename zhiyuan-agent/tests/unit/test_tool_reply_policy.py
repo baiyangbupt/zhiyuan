@@ -228,6 +228,29 @@ def test_policy_keeps_empty_plan_query_for_model_synthesis_after_plan_miss_candi
     assert decision.reason == "read_only_plan_query_empty_or_failed_needs_model_synthesis"
 
 
+def test_policy_keeps_unstructured_empty_plan_query_for_model_synthesis():
+    class Deps:
+        agent_observability = {
+            "toolInternalTimings": [
+                {
+                    "tool": "query_volunteer_plan",
+                    "status": "success",
+                    "hasStructuredFilters": False,
+                }
+            ]
+        }
+
+    decision = decide_tool_reply(
+        ["query_volunteer_plan"],
+        [_tool_return("query_volunteer_plan", "当前方案里暂时没有命中“省外是不是太多了”的志愿。")],
+        Deps(),
+    )
+
+    assert decision.strategy == "continue_model"
+    assert decision.should_return_directly is False
+    assert decision.reason == "read_only_plan_query_empty_or_failed_needs_model_synthesis"
+
+
 def test_policy_direct_returns_structured_plan_selection_block():
     decision = decide_tool_reply(
         ["execute_plan_action"],
