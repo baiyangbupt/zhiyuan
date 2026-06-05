@@ -28,7 +28,7 @@
 userBizService.checkRights(userId, OperateCheckPoint.CreateSession, createSessionReq.getPrepareType());
 ```
 
-同时创建会话参数校验要求 `prepareType.code` 必填，避免缺失时被后续推荐查询默认成 `PREDICT` 而绕过智能填报日限。
+创建会话入口会先归一化默认值：如果请求缺失 `prepareType.code`，服务端默认补为 `VOLUNTEER/智能填报`，避免 legacy 请求因缺字段失败，也避免缺失时被后续推荐查询默认成 `PREDICT` 绕过智能填报日限。
 
 2. `UserBizService.checkRights(...)`
 
@@ -63,11 +63,11 @@ userBizService.checkRights(userId, OperateCheckPoint.CreateSession, createSessio
 
 - PC 前端创建会话时，先由用户选择的填报政策/批次推导填报类型，再随创建会话请求提交。
 - 外部集成初始化接口也必须在 `createSession.prepareType` 中传入填报类型，智能填报使用 `code=VOLUNTEER`，模拟填报使用 `code=PREDICT`。
-- 后端创建会话入口现在要求 `prepareType.code` 必填；缺失时直接拒绝，避免后续推荐查询默认成 `PREDICT` 导致权益规则不一致。
+- 后端创建会话入口会对缺失的 `prepareType.code` 默认补 `VOLUNTEER`，兼容 legacy/旧草稿/旧外部请求，同时保证智能填报期不会因为缺字段绕成 `PREDICT`。
 - 会话创建成功后，完整创建请求会写入 `userScoreDetail` extra-data。后续会话列表、详情、日限统计均以该持久化数据作为会话填报类型来源。
 - `/check-rights` 的 `prepareType` 参数是兼容性的预检查能力；最终是否能创建仍以 `createChatSession` 中的校验和权益检查为准。
 
-需要注意：`UserInfoByTokenRes.toCreateSessionReq()` 当前不补 `prepareType`，不能把它作为最终创建会话 payload 直接使用；如果后续新入口复用该转换结果，必须在调用创建接口前补齐 `prepareType`。
+需要注意：`UserInfoByTokenRes.toCreateSessionReq()` 当前不补 `prepareType`。如果后续新入口复用该转换结果直接创建会话，服务端会默认按 `VOLUNTEER` 处理。
 
 ## 历史版本和历史数据影响
 
@@ -76,10 +76,10 @@ userBizService.checkRights(userId, OperateCheckPoint.CreateSession, createSessio
 - 已创建的历史会话可以继续打开、对话、导出、排序和审查，不因本次权益规则改变而被重写。
 - 日限只作用于新的 `CreateSession` 请求，不限制已有会话的 `DoChat` 和 `ModifyScore`。
 - 当天已创建的历史会话只有在 `userScoreDetail.prepareType.code=VOLUNTEER` 且能正常解析时，才会计入当天智能填报 2 次限制。
-- 老数据如果没有 `prepareType`，不会被当作 `VOLUNTEER` 计数；但新的创建请求必须传 `prepareType.code`，否则会被拒绝。
+- 老数据如果没有 `prepareType`，不会被当作 `VOLUNTEER` 计数；新的创建请求如果缺失 `prepareType.code`，会在创建入口默认补为 `VOLUNTEER`。
 - 本 hotfix 移除了 `volunteer-super-vip-only` 配置，不需要在生产配置中新增该项；上线以替换 jar 并重启 Java 服务为准。
 
-上线前需要确认所有生产创建入口都能传入 `prepareType`：PC 创建入口、外部 integration initialize 接口、以及任何后台/脚本创建入口。
+上线前仍建议确认所有生产创建入口都显式传入 `prepareType`：PC 创建入口、外部 integration initialize 接口、以及任何后台/脚本创建入口。未显式传入的入口会按 `VOLUNTEER` 兜底。
 
 ## 当前限制与后续 TODO
 

@@ -80,13 +80,14 @@ public class ChatSessionBizServiceTest {
     }
 
     @Test
-    void shouldRejectCreateSessionWhenPrepareTypeMissing() {
+    void shouldDefaultPrepareTypeToVolunteerWhenMissing() {
         CreateSessionReq req = new CreateSessionReq();
 
-        BusinessException exception = assertThrows(BusinessException.class,
-                () -> chatSessionBizService.createChatSession(1L, req));
+        chatSessionBizService.normalizeCreateSessionDefaults(req);
 
-        assertEquals("请选择填报类型后再创建会话", exception.getMessage());
+        assertNotNull(req.getPrepareType());
+        assertEquals("VOLUNTEER", req.getPrepareType().getCode());
+        assertEquals("智能填报", req.getPrepareType().getDesc());
     }
 
     @Test
@@ -103,7 +104,7 @@ public class ChatSessionBizServiceTest {
     }
 
     @Test
-    void shouldFillDefaultSexAndStrategyTypeWhenMissing() {
+    void shouldFillDefaultSexStrategyTypeAndPrepareTypeWhenMissing() {
         CreateSessionReq req = new CreateSessionReq();
 
         chatSessionBizService.normalizeCreateSessionDefaults(req);
@@ -111,6 +112,9 @@ public class ChatSessionBizServiceTest {
         assertNotNull(req.getSex());
         assertEquals("female", req.getSex().getCode());
         assertEquals("女", req.getSex().getName());
+        assertNotNull(req.getPrepareType());
+        assertEquals("VOLUNTEER", req.getPrepareType().getCode());
+        assertEquals("智能填报", req.getPrepareType().getDesc());
         assertNotNull(req.getStrategyType());
         assertEquals("cautious", req.getStrategyType().getCode());
         assertEquals("稳妥型", req.getStrategyType().getName());

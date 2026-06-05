@@ -189,8 +189,8 @@ public class ChatSessionBizService {
     public ChatSessionVo createChatSession(Long tenantId, CreateSessionReq createSessionReq) {
         long requestStart = System.currentTimeMillis();
 
-        validateCreateSessionReq(createSessionReq);
         normalizeCreateSessionDefaults(createSessionReq);
+        validateCreateSessionReq(createSessionReq);
 
         UserBaseData userBaseData = UserInfoThreadLocalUtil.get();
         //校验权益
@@ -343,9 +343,6 @@ public class ChatSessionBizService {
         if (createSessionReq == null) {
             throw new BusinessException(110, "创建会话参数不能为空");
         }
-        if (createSessionReq.getPrepareType() == null || Strings.isNullOrEmpty(createSessionReq.getPrepareType().getCode())) {
-            throw new BusinessException(110, "请选择填报类型后再创建会话");
-        }
         if (createSessionReq.getBatch() == null || Strings.isNullOrEmpty(createSessionReq.getBatch().getCode())) {
             throw new BusinessException(110, "请选择批次后再创建会话");
         }
@@ -366,6 +363,12 @@ public class ChatSessionBizService {
     public void normalizeCreateSessionDefaults(CreateSessionReq createSessionReq) {
         if (createSessionReq == null) {
             return;
+        }
+        if (createSessionReq.getPrepareType() == null || Strings.isNullOrEmpty(createSessionReq.getPrepareType().getCode())) {
+            CreateSessionReq.PrepareType prepareType = new CreateSessionReq.PrepareType();
+            prepareType.setCode("VOLUNTEER");
+            prepareType.setDesc("智能填报");
+            createSessionReq.setPrepareType(prepareType);
         }
         if (createSessionReq.getSex() == null || Strings.isNullOrEmpty(createSessionReq.getSex().getCode())) {
             CreateSessionReq.Sex sex = new CreateSessionReq.Sex();
