@@ -7,6 +7,7 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.google.common.base.Strings;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Sets;
+import com.ytell.zhiyuan.common.config.GaotuProperties;
 import com.ytell.zhiyuan.common.exception.BusinessException;
 import com.ytell.zhiyuan.common.util.DataDealUtil;
 import com.ytell.zhiyuan.mapper.UserAuthMapper;
@@ -72,6 +73,8 @@ public class UserBizService {
     private GaotuService gaotuService;
     @Autowired
     private ChatSessionSharedService chatSessionSharedService;
+    @Autowired
+    private GaotuProperties gaotuProperties;
 
     public UserLoginResponse login(UserLoginRequest request) {
         QueryWrapper<UserCredential> queryWrapper = new QueryWrapper<>();
@@ -426,12 +429,17 @@ public class UserBizService {
             vo.setReason("用户不存在");
             return vo;
         }
+        UserVO userVo = convertToUserVO(user);
+        if (isVolunteerSuperVipOnlyEnabled() && !UserLevel.SUPER_VIP.equals(userVo.getUserLevel())) {
+            vo.setCanOperate(false);
+            vo.setReason("当前处于智能填报权益管控期，仅SUPER_VIP用户可使用该功能");
+            return vo;
+        }
         if (isRightsWhitelistUser(userId, user)) {
             vo.setCanOperate(true);
             vo.setReason("");
             return vo;
         }
-        UserVO userVo = convertToUserVO(user);
         Date expiredDate = userVo.getExpiredDate();
 
         if (expiredDate != null && expiredDate.before(new Date())) {
@@ -486,6 +494,10 @@ public class UserBizService {
     private Integer resolveCreateSessionLimit(Integer configuredLimit) {
         int baseLimit = configuredLimit == null ? 10 : configuredLimit;
         return Math.max(baseLimit, TEMP_CREATE_SESSION_LIMIT_FLOOR);
+    }
+
+    private boolean isVolunteerSuperVipOnlyEnabled() {
+        return gaotuProperties != null && Boolean.TRUE.equals(gaotuProperties.getVolunteerSuperVipOnly());
     }
 
     private User buildDefaultUser(Boolean isCustomer, String channel) {
