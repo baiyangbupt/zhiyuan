@@ -80,8 +80,21 @@ public class ChatSessionBizServiceTest {
     }
 
     @Test
+    void shouldRejectCreateSessionWhenPrepareTypeMissing() {
+        CreateSessionReq req = new CreateSessionReq();
+
+        BusinessException exception = assertThrows(BusinessException.class,
+                () -> chatSessionBizService.createChatSession(1L, req));
+
+        assertEquals("请选择填报类型后再创建会话", exception.getMessage());
+    }
+
+    @Test
     void shouldRejectCreateSessionWhenBatchMissing() {
         CreateSessionReq req = new CreateSessionReq();
+        CreateSessionReq.PrepareType prepareType = new CreateSessionReq.PrepareType();
+        prepareType.setCode("VOLUNTEER");
+        req.setPrepareType(prepareType);
 
         BusinessException exception = assertThrows(BusinessException.class,
                 () -> chatSessionBizService.createChatSession(1L, req));

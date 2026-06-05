@@ -2,6 +2,7 @@ package com.ytell.zhiyuan.web.controller;
 
 import com.ytell.zhiyuan.common.base.BaseResponse;
 import com.ytell.zhiyuan.common.exception.BusinessException;
+import com.ytell.zhiyuan.model.dto.CreateSessionReq;
 import com.ytell.zhiyuan.model.enums.AuthTypeEnum;
 import com.ytell.zhiyuan.model.enums.OperateCheckPoint;
 import com.ytell.zhiyuan.model.req.UserInfoAddReq;
@@ -105,9 +106,15 @@ public class UserController {
 
     @GetMapping ("/check-rights")
     @ApiOperation("权益校验")
-    public BaseResponse<CheckRightsResVo> checkRights(@RequestParam("checkPoint") OperateCheckPoint checkPoint) {
+    public BaseResponse<CheckRightsResVo> checkRights(@RequestParam("checkPoint") OperateCheckPoint checkPoint,
+                                                      @RequestParam(value = "prepareType", required = false) String prepareTypeCode) {
         UserBaseData userBaseData = UserInfoThreadLocalUtil.get();
-        CheckRightsResVo resVo = userBizService.checkRights(userBaseData.getUserId(),checkPoint);
+        CreateSessionReq.PrepareType prepareType = null;
+        if (prepareTypeCode != null && prepareTypeCode.trim().length() > 0) {
+            prepareType = new CreateSessionReq.PrepareType();
+            prepareType.setCode(prepareTypeCode.trim());
+        }
+        CheckRightsResVo resVo = userBizService.checkRights(userBaseData.getUserId(), checkPoint, prepareType);
         return BaseResponse.success(resVo);
     }
 

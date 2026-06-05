@@ -12,7 +12,6 @@ public class GaotuProperties {
     private String evn;
     private Boolean riskOpen;
     private Boolean authOpen;
-    private Boolean volunteerSuperVipOnly;
     private String tempDataPath;
 
 }

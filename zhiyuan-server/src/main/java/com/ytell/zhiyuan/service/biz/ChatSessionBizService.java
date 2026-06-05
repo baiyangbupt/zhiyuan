@@ -194,7 +194,7 @@ public class ChatSessionBizService {
 
         UserBaseData userBaseData = UserInfoThreadLocalUtil.get();
         //校验权益
-        CheckRightsResVo checkRightsResVo = userBizService.checkRights(userBaseData.getUserId(), OperateCheckPoint.CreateSession);
+        CheckRightsResVo checkRightsResVo = userBizService.checkRights(userBaseData.getUserId(), OperateCheckPoint.CreateSession, createSessionReq.getPrepareType());
         if (!checkRightsResVo.getCanOperate()) {
             throw new BusinessException(110, checkRightsResVo.getReason());
         }
@@ -342,6 +342,9 @@ public class ChatSessionBizService {
     private void validateCreateSessionReq(CreateSessionReq createSessionReq) {
         if (createSessionReq == null) {
             throw new BusinessException(110, "创建会话参数不能为空");
+        }
+        if (createSessionReq.getPrepareType() == null || Strings.isNullOrEmpty(createSessionReq.getPrepareType().getCode())) {
+            throw new BusinessException(110, "请选择填报类型后再创建会话");
         }
         if (createSessionReq.getBatch() == null || Strings.isNullOrEmpty(createSessionReq.getBatch().getCode())) {
             throw new BusinessException(110, "请选择批次后再创建会话");
