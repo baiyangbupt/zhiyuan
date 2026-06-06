@@ -185,12 +185,20 @@ Agent 生产环境变量沿用 `3.0.2`，重点复核：
 ```text
 INTERNAL_SERVICE_URL=http://host.docker.internal:8090
 RANK_SERVICE_URL=http://host.docker.internal:8092
+LLM_PROVIDER=openai_compatible
 LLM_BASE_URL=<脱敏>
 LLM_MODEL_NAME=<脱敏>
 LLM_API_KEY=<只在环境变量中配置，不写入文档>
+LLM_TEMPERATURE=0.7
+LLM_MAX_TOKENS=4096
+LLM_TIMEOUT_SECONDS=0
+BOCHA_API_KEY=<只在环境变量中配置，不写入文档；未启用官方来源检索可为空>
+BOCHA_BASE_URL=https://api.bochaai.com/v1/web-search
+BOCHA_TIMEOUT_SECONDS=10
 ```
 
 当前 3.0.3 主模型以线上 `kimi-k2.6` 口径为准。回复质量优先于极限延迟，不为了降低延迟临时切到未验证模型。
+Bocha 仅用于官方来源联网检索；未配置 `BOCHA_API_KEY` 时，政策/章程类工具会降级为通用判断框架和官方核验提醒，不应编造具体政策条款。
 
 ### 5.4 Release 包
 

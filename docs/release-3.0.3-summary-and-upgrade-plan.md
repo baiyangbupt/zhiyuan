@@ -184,8 +184,8 @@ mvn -Dtest=UserBizServiceTest,ChatSessionBizServiceTest test
 
 - 不配置 `gaotu.zhiyuan.volunteer-super-vip-only`，该全局开关已废弃。
 - 保留 3.0.2 已验证的 `prepareType` 默认补齐和日限逻辑。
-- Agent 模型配置以当前线上主模型为准；回复质量优先，不为了延迟切低质量模型。
-- 如果启用官方来源检索，需要确认博查/官方检索相关环境变量已配置，并有失败兜底。
+- Agent 模型配置以当前线上主模型为准；回复质量优先，不为了延迟切低质量模型；仓库只记录 `LLM_` 配置变量名和脱敏占位，真实 `LLM_API_KEY` 只放运行环境。
+- 如果启用官方来源检索，需要确认 `BOCHA_API_KEY`、`BOCHA_BASE_URL`、`BOCHA_TIMEOUT_SECONDS` 已在运行环境配置；仓库只记录变量名和脱敏占位，未配置 key 时会降级为通用判断框架和官方核验提醒。
 - Web 生产构建仍需确认 `/assistant-pc` basePath 和生产 rewrite 指向线上域名；本地功能验证必须使用 local-api 构建或本地 dev server，避免误请求线上接口。
 
 ### 4.3 生产升级执行入口
@@ -210,7 +210,7 @@ docs/release-3.0.3-production-upgrade-plan.md
 - 后端 JAR：`sha256:822908fcd0876eb9ca83be21ade6040600716cfd26f9be4ee3c47f56d2bbe726`
 - Web 镜像：image `sha256:ef5142e0b9b0d80f5ca037a5790c3f95b2ed063efc7fe1d21b529c62aa7a02af`；tar `sha256:fded71e883499cfe519383ed5db3071d29c2949e574696d63c3556682bef0808`
 - Agent 镜像：image `sha256:0d038dc02e4f9bee2e3026851377a37f717cfac94859d67d76a8fbeee86a9e8f`；tar `sha256:129de22376ad80c4ad0c1df19a9574e0f1f83bf85298e73e19ab0569cfb53fa5`
-- Release 包：`/tmp/zhiyuan-release-3.0.3-f7dd564.tar.gz`，`sha256:d8f8c531a945c193c526620ebafdc0499eb980bacad99ebdc3067dee9075dc10`
+- Release 包：`/tmp/zhiyuan-release-3.0.3-f7dd564.tar.gz`，`sha256:00591deca182da8b45bf203d4fef7ce3df3c27e596073fda263ff52f022a1607`
 
 `prod-3.0.3` tag 已创建；本地类生产演练已完成，结果见 `docs/release-3.0.3-production-upgrade-plan.md` 的 `7.4 本地类生产演练记录`。压缩包内不记录自身 hash，避免自引用导致 hash 反复变化；生产传输校验以本节记录为准。
 
