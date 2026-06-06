@@ -36,6 +36,7 @@ const SessionDetailV2 = () => {
   const [infoSummary, setInfoSummary] = useState<string>('');
   const [studentName, setStudentName] = useState<string>('');
   const [prepareTypeDesc, setPrepareTypeDesc] = useState<string>('');
+  const [examYear, setExamYear] = useState<number | string | null>(null);
   const [doChatRights, setDoChatRights] = useState<{ canOperate: boolean; reason?: string } | null>(
     null
   );
@@ -86,6 +87,7 @@ const SessionDetailV2 = () => {
         setInfoSummary(data.infoSummary || '');
         setStudentName(String(data.userName || '').trim());
         setPrepareTypeDesc(data.prepareType?.desc || '');
+        setExamYear(data.examYear || null);
       } else {
         message.error(msg || '获取会话详情失败');
       }
@@ -219,6 +221,7 @@ const SessionDetailV2 = () => {
       <WorkspacePanel
         routerParams={routerParams}
         fetchFlag={fetchFlag}
+        examYear={examYear}
         workspaceIntent={workspaceIntent}
         onWorkspaceIntentConsumed={() => setWorkspaceIntent(null)}
       />

@@ -7,6 +7,7 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.google.common.base.Strings;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Sets;
+import com.ytell.zhiyuan.common.constants.ChatSessionExtraDataConstants;
 import com.ytell.zhiyuan.common.exception.BusinessException;
 import com.ytell.zhiyuan.common.util.DataDealUtil;
 import com.ytell.zhiyuan.mapper.UserAuthMapper;
@@ -19,6 +20,7 @@ import com.ytell.zhiyuan.model.dto.UserScoreBase;
 import com.ytell.zhiyuan.model.dto.gaotu.res.UserInfoByTokenRes;
 import com.ytell.zhiyuan.model.dto.gaotu.res.UserRightsByUserIdRes;
 import com.ytell.zhiyuan.model.entity.biz.ChatSession;
+import com.ytell.zhiyuan.model.entity.biz.ChatSessionExtraData;
 import com.ytell.zhiyuan.model.entity.biz.User;
 import com.ytell.zhiyuan.model.entity.biz.UserAuth;
 import com.ytell.zhiyuan.model.entity.biz.UserCredential;
@@ -33,6 +35,7 @@ import com.ytell.zhiyuan.model.vo.*;
 import com.ytell.zhiyuan.service.GaotuService;
 import com.ytell.zhiyuan.service.SmsService;
 import com.ytell.zhiyuan.service.ThirdChannelLoginService;
+import com.ytell.zhiyuan.service.shared.ChatSessionExtraDataSharedService;
 import com.ytell.zhiyuan.service.shared.ChatSessionSharedService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.BeanUtils;
@@ -50,6 +53,7 @@ import java.util.UUID;
 @Slf4j
 public class UserBizService {
     private static final int TEMP_CREATE_SESSION_LIMIT_FLOOR = 100;
+    private static final int VOLUNTEER_DAILY_CREATE_SESSION_LIMIT = 2;
     private static final Long DEFAULT_TENANT_ID = 1L;
     private static final Long DEFAULT_BOT_ID = 1L;
     private static final String DEFAULT_CHANNEL = "ytell";
@@ -72,6 +76,8 @@ public class UserBizService {
     private GaotuService gaotuService;
     @Autowired
     private ChatSessionSharedService chatSessionSharedService;
+    @Autowired
+    private ChatSessionExtraDataSharedService chatSessionExtraDataSharedService;
 
     public UserLoginResponse login(UserLoginRequest request) {
         QueryWrapper<UserCredential> queryWrapper = new QueryWrapper<>();
@@ -419,6 +425,12 @@ public class UserBizService {
     }
 
     public CheckRightsResVo checkRights(Long userId, OperateCheckPoint checkPoint) {
+        return checkRights(userId, checkPoint, null);
+    }
+
+    public CheckRightsResVo checkRights(Long userId,
+                                        OperateCheckPoint checkPoint,
+                                        CreateSessionReq.PrepareType prepareType) {
         CheckRightsResVo vo = new CheckRightsResVo();
         User user = this.getUserInfo(userId);
         if (user == null) {
@@ -426,12 +438,12 @@ public class UserBizService {
             vo.setReason("用户不存在");
             return vo;
         }
+        UserVO userVo = convertToUserVO(user);
         if (isRightsWhitelistUser(userId, user)) {
             vo.setCanOperate(true);
             vo.setReason("");
             return vo;
         }
-        UserVO userVo = convertToUserVO(user);
         Date expiredDate = userVo.getExpiredDate();
 
         if (expiredDate != null && expiredDate.before(new Date())) {
@@ -440,10 +452,17 @@ public class UserBizService {
             return vo;
         }
         if (OperateCheckPoint.CreateSession.equals(checkPoint)) {
-            // 针对用户进行次数校验控制，校验创建会话次数
+            if (isVolunteerPrepareType(prepareType) && !UserLevel.SUPER_VIP.equals(userVo.getUserLevel())) {
+                int createdToday = countTodayCreatedSessions(userId, "VOLUNTEER");
+                if (createdToday >= VOLUNTEER_DAILY_CREATE_SESSION_LIMIT) {
+                    vo.setCanOperate(false);
+                    vo.setReason(String.format("智能填报期间，非SUPER_VIP用户每天最多创建%d个智能填报会话", VOLUNTEER_DAILY_CREATE_SESSION_LIMIT));
+                    return vo;
+                }
+            }
+            // 针对用户进行次数校验控制，校验创建会话总次数
             if (userVo.getLimitSettingsOb() != null && userVo.getLimitSettingsOb().getCreateSessionLimit() != null) {
                 Integer createSessionLimit = resolveCreateSessionLimit(userVo.getLimitSettingsOb().getCreateSessionLimit());
-                // 查询用户已创建的会话次数
                 Long createdSessionCount = chatSessionSharedService.lambdaQuery()
                         .eq(ChatSession::getUserId, userId)
                         .count();
@@ -486,6 +505,43 @@ public class UserBizService {
     private Integer resolveCreateSessionLimit(Integer configuredLimit) {
         int baseLimit = configuredLimit == null ? 10 : configuredLimit;
         return Math.max(baseLimit, TEMP_CREATE_SESSION_LIMIT_FLOOR);
+    }
+
+    private boolean isVolunteerPrepareType(CreateSessionReq.PrepareType prepareType) {
+        return prepareType != null && "VOLUNTEER".equals(prepareType.getCode());
+    }
+
+    private int countTodayCreatedSessions(Long userId, String prepareTypeCode) {
+        List<ChatSession> todaySessions = chatSessionSharedService.lambdaQuery()
+                .eq(ChatSession::getUserId, userId)
+                .ge(ChatSession::getCreateTime, DateUtil.beginOfDay(new Date()))
+                .le(ChatSession::getCreateTime, DateUtil.endOfDay(new Date()))
+                .list();
+        if (CollectionUtil.isEmpty(todaySessions)) {
+            return 0;
+        }
+        int count = 0;
+        for (ChatSession session : todaySessions) {
+            if (session == null || session.getId() == null) {
+                continue;
+            }
+            ChatSessionExtraData scoreData = chatSessionExtraDataSharedService.getBySessionIdAndDataKey(
+                    session.getId(), ChatSessionExtraDataConstants.USER_SCORE_KEY);
+            if (scoreData == null || Strings.isNullOrEmpty(scoreData.getDataValue())) {
+                continue;
+            }
+            try {
+                CreateSessionReq scoreDetail = JSONObject.parseObject(scoreData.getDataValue(), CreateSessionReq.class);
+                if (scoreDetail != null
+                        && scoreDetail.getPrepareType() != null
+                        && prepareTypeCode.equals(scoreDetail.getPrepareType().getCode())) {
+                    count++;
+                }
+            } catch (Exception e) {
+                log.warn("countTodayCreatedSessions parse score detail failed chatSessionId={}", session.getId(), e);
+            }
+        }
+        return count;
     }
 
     private User buildDefaultUser(Boolean isCustomer, String channel) {

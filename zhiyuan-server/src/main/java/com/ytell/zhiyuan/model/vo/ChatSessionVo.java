@@ -28,6 +28,7 @@ public class ChatSessionVo {
     private Date createTime;
     private Date updateTime;
     private CreateSessionReq.PrepareType prepareType;
+    private Integer examYear;
 
     public static ChatSessionVo fromEntity(ChatSession chatSession, BotVo botVo, String infoSummary) {
         ChatSessionVo vo = new ChatSessionVo();

@@ -80,8 +80,22 @@ public class ChatSessionBizServiceTest {
     }
 
     @Test
+    void shouldDefaultPrepareTypeToVolunteerWhenMissing() {
+        CreateSessionReq req = new CreateSessionReq();
+
+        chatSessionBizService.normalizeCreateSessionDefaults(req);
+
+        assertNotNull(req.getPrepareType());
+        assertEquals("VOLUNTEER", req.getPrepareType().getCode());
+        assertEquals("智能填报", req.getPrepareType().getDesc());
+    }
+
+    @Test
     void shouldRejectCreateSessionWhenBatchMissing() {
         CreateSessionReq req = new CreateSessionReq();
+        CreateSessionReq.PrepareType prepareType = new CreateSessionReq.PrepareType();
+        prepareType.setCode("VOLUNTEER");
+        req.setPrepareType(prepareType);
 
         BusinessException exception = assertThrows(BusinessException.class,
                 () -> chatSessionBizService.createChatSession(1L, req));
@@ -90,7 +104,7 @@ public class ChatSessionBizServiceTest {
     }
 
     @Test
-    void shouldFillDefaultSexAndStrategyTypeWhenMissing() {
+    void shouldFillDefaultSexStrategyTypeAndPrepareTypeWhenMissing() {
         CreateSessionReq req = new CreateSessionReq();
 
         chatSessionBizService.normalizeCreateSessionDefaults(req);
@@ -98,6 +112,9 @@ public class ChatSessionBizServiceTest {
         assertNotNull(req.getSex());
         assertEquals("female", req.getSex().getCode());
         assertEquals("女", req.getSex().getName());
+        assertNotNull(req.getPrepareType());
+        assertEquals("VOLUNTEER", req.getPrepareType().getCode());
+        assertEquals("智能填报", req.getPrepareType().getDesc());
         assertNotNull(req.getStrategyType());
         assertEquals("cautious", req.getStrategyType().getCode());
         assertEquals("稳妥型", req.getStrategyType().getName());

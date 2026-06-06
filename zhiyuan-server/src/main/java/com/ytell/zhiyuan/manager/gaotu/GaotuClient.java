@@ -25,6 +25,7 @@ public class GaotuClient {
 
     private static final String USER_MEMBER_PATH = "/user/session/getUid";
     private static final String MEMBER_SCORE_PATH = "/hl-wish/ci/ci_feign/member/noToken/getMemberScoreByMemberId";
+    private static final String COMMON_INFO_PATH = "/hl-wish/ci/memberWhitelist/noToken/commonInfo";
     private static final String BATCH_LIST_PATH = "/hl-wish/ci/h5/batchData/anno/batchListByPolicy";
     private static final String REPORT_LIST_PATH = "/hl-wish/practice-evaluation/feign/evaluation/report/list";
     private static final String REPORT_INFO_PATH = "/hl-wish/practice-evaluation/feign/evaluation/report/getById";
@@ -79,6 +80,16 @@ public class GaotuClient {
         throw new BusinessException(110, "换取用户ID失败");
     }
 
+
+
+    /**
+     * 获取主站通用信息，包括高考年份列表。
+     */
+    public ResponseDTO<CommonInfoResponse> getCommonInfo() {
+        String url = gaotuProperties.getZhiyuanUrl() + COMMON_INFO_PATH;
+        return JsonHttpUtil.get(url, Maps.newHashMap(), getHeader(), new TypeReference<ResponseDTO<CommonInfoResponse>>() {
+        });
+    }
 
     /**
      * 获取成员分数详情

@@ -172,6 +172,7 @@ interface FilterPanelGroup {
 interface WorkspacePanelProps {
   routerParams: IUserInfoParams;
   fetchFlag: number;
+  examYear?: number | string | null;
   workspaceIntent?: PlanningWorkspaceIntent | null;
   onWorkspaceIntentConsumed?: () => void;
 }
@@ -468,6 +469,7 @@ const isGeoLikeSchoolTag = (value: string, provinceNames: string[] = [], cityNam
 const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   routerParams,
   fetchFlag,
+  examYear,
   workspaceIntent,
   onWorkspaceIntentConsumed,
 }) => {
@@ -501,6 +503,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     loadedEntryCount: 0,
     loadedUnitCount: 0,
   });
+  const planYear = Number(examYear) || new Date().getFullYear();
+  const planYearTitle = `${planYear}招生计划`;
   const [candidatePoolLoading, setCandidatePoolLoading] = useState(false);
   const [candidateCacheVersion, setCandidateCacheVersion] = useState(0);
   const [showBackTop, setShowBackTop] = useState(false);
@@ -2706,7 +2710,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         <div className={style.majorTable}>
           <div className={style.orderedMajorTableHeader}>
             <div className={style.majorNameColumn}>专业</div>
-            <div className={style.majorPlanColumn}>2025招生计划</div>
+            <div className={style.majorPlanColumn}>{planYearTitle}</div>
             <div className={style.majorDataTypeColumn}>数据类型</div>
             {historyYears.map((year, yearIndex) => (
               <div key={`${rowKey}-ordered-year-${year || yearIndex}`} className={style.majorYearColumn}>
@@ -3841,7 +3845,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                     <div className={style.majorTable}>
                                       <div className={style.majorTableHeader}>
                                         <div className={style.majorNameColumn}>专业</div>
-                                        <div className={style.majorPlanColumn}>2025招生计划</div>
+                                        <div className={style.majorPlanColumn}>{planYearTitle}</div>
                                         <div className={style.majorDataTypeColumn}>数据类型</div>
                                         {historyYears.map((year, yearIndex) => (
                                           <div
