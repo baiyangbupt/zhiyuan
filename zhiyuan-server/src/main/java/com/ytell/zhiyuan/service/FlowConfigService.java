@@ -22,6 +22,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -38,6 +39,8 @@ public class FlowConfigService {
     private Resource configResource;
     @Autowired
     private UserBizService userBizService;
+    @Autowired
+    private GaotuService gaotuService;
     @Autowired
     private ProvinceCityManager provinceCityManager;
 
@@ -305,7 +308,7 @@ public class FlowConfigService {
                     field.put("defaultValue", userInfo.getString("examYear"));
                     field.put("editable", false);
                 } else {
-                    field.put("defaultValue", String.valueOf(java.time.Year.now().getValue() + 1));
+                    field.put("defaultValue", getDefaultExamYear());
                     field.put("editable", true);
                 }
                 break;
@@ -654,35 +657,32 @@ public class FlowConfigService {
      * 填充高考年份字段
      */
     private JSONArray loadExamYearField() {
-        // 年份选项可以写死，当前年份和下一年
         JSONArray options = new JSONArray();
-        int currentYear = java.time.Year.now().getValue();
-        int nextYear = currentYear + 1;
+        List<String> examYears = new ArrayList<>(gaotuService.getExamYearList());
+        if (examYears.isEmpty()) {
+            int currentYear = java.time.Year.now().getValue();
+            for (int offset = 0; offset < 4; offset++) {
+                examYears.add(String.valueOf(currentYear + offset));
+            }
+        }
+        for (String examYear : examYears) {
+            JSONObject option = new JSONObject();
+            option.put("code", examYear);
+            option.put("name", examYear + "年");
+            options.add(option);
+        }
 
-        JSONObject option1 = new JSONObject();
-        option1.put("code", String.valueOf(nextYear));
-        option1.put("name", nextYear + "年");
-        options.add(option1);
+        return options;
+    }
 
-        int nextNextYear = nextYear + 1;
-        JSONObject option2 = new JSONObject();
-        option2.put("value", String.valueOf(nextNextYear));
-        option2.put("label", nextNextYear + "年");
-        options.add(option2);
-
-        int nextNextNextYear = nextNextYear + 1;
-        JSONObject option3 = new JSONObject();
-        option3.put("value", String.valueOf(nextNextNextYear));
-        option3.put("label", nextNextNextYear + "年");
-        options.add(option3);
-
-        int nextNextNextNextYear = nextNextNextYear + 1;
-        JSONObject option4 = new JSONObject();
-        option4.put("value", String.valueOf(nextNextNextNextYear));
-        option4.put("label", nextNextNextNextYear + "年");
-        options.add(option4);
-
-    return  options;
+    private String getDefaultExamYear() {
+        if (examYearOptions != null && !examYearOptions.isEmpty()) {
+            JSONObject firstOption = examYearOptions.getJSONObject(0);
+            if (firstOption != null && firstOption.getString("code") != null) {
+                return firstOption.getString("code");
+            }
+        }
+        return String.valueOf(java.time.Year.now().getValue());
     }
 
     /**

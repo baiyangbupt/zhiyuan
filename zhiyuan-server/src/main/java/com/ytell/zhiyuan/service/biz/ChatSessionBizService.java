@@ -174,8 +174,11 @@ public class ChatSessionBizService {
     public ChatSessionVo getUserSessionDetail(Long tenantId, Long chatSessionId) {
         ChatSession chatSession = chatSessionSharedService.getById(chatSessionId);
         BotVo botVo = BotVo.defaultInstance();
-        CreateSessionReq.PrepareType prepareType = getSessionPrepareType(chatSession);
-        return ChatSessionVo.fromEntity(chatSession, botVo, getSessionExtraSummaryData(chatSession), prepareType);
+        CreateSessionReq scoreDetail = getSessionScoreDetail(chatSession);
+        CreateSessionReq.PrepareType prepareType = scoreDetail != null ? scoreDetail.getPrepareType() : null;
+        ChatSessionVo vo = ChatSessionVo.fromEntity(chatSession, botVo, getSessionExtraSummaryData(chatSession), prepareType);
+        vo.setExamYear(scoreDetail != null ? scoreDetail.getExamYear() : null);
+        return vo;
     }
 
     /**
@@ -336,7 +339,9 @@ public class ChatSessionBizService {
         CreateSessionReq.PrepareType prepareType = createSessionReq.getPrepareType();
         log.info("createChatSession step=finish tenantId={} chatSessionId={} totalCostMs={}",
                 tenantId, chatSession.getId(), System.currentTimeMillis() - requestStart);
-        return ChatSessionVo.fromEntity(chatSession, botVo, getSessionExtraSummaryData(chatSession), prepareType);
+        ChatSessionVo vo = ChatSessionVo.fromEntity(chatSession, botVo, getSessionExtraSummaryData(chatSession), prepareType);
+        vo.setExamYear(createSessionReq.getExamYear());
+        return vo;
     }
 
     private void validateCreateSessionReq(CreateSessionReq createSessionReq) {
@@ -623,15 +628,19 @@ public class ChatSessionBizService {
      * @return prepareType，如果不存在则返回null
      */
     private CreateSessionReq.PrepareType getSessionPrepareType(ChatSession chatSession) {
+        CreateSessionReq createSessionReq = getSessionScoreDetail(chatSession);
+        return createSessionReq != null ? createSessionReq.getPrepareType() : null;
+    }
+
+    private CreateSessionReq getSessionScoreDetail(ChatSession chatSession) {
         try {
             ChatSessionExtraData userScore = chatSessionExtraDataSharedService.getBySessionIdAndDataKey(chatSession.getId(), ChatSessionExtraDataConstants.USER_SCORE_KEY);
             if (userScore == null || Strings.isNullOrEmpty(userScore.getDataValue())) {
                 return null;
             }
-            CreateSessionReq createSessionReq = JSONObject.parseObject(userScore.getDataValue(), CreateSessionReq.class);
-            return createSessionReq != null ? createSessionReq.getPrepareType() : null;
+            return JSONObject.parseObject(userScore.getDataValue(), CreateSessionReq.class);
         } catch (Exception e) {
-            log.warn("获取会话prepareType失败: chatSessionId={}", chatSession.getId(), e);
+            log.warn("获取会话分数信息失败: chatSessionId={}", chatSession.getId(), e);
             return null;
         }
     }

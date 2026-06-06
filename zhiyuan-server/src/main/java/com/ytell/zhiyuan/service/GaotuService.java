@@ -19,6 +19,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.Assert;
 
 import java.math.BigDecimal;
+import java.util.Collections;
 import java.util.Date;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -36,6 +37,22 @@ public class GaotuService {
     public static void main(String[] args) {
         String name = "专家方案-" + DateUtil.format(new Date(), "MMddHHmm");
         System.out.println(name);
+    }
+
+
+    public List<String> getExamYearList() {
+        try {
+            ResponseDTO<CommonInfoResponse> response = gaotuClient.getCommonInfo();
+            if (response != null && response.getCode() != null && response.getCode() == 0
+                    && response.getData() != null
+                    && CollectionUtil.isNotEmpty(response.getData().getExamYearList())) {
+                return response.getData().getExamYearList();
+            }
+            log.warn("getExamYearList返回为空或失败: {}", JSON.toJSONString(response));
+        } catch (Exception e) {
+            log.warn("getExamYearList调用失败", e);
+        }
+        return Collections.emptyList();
     }
 
     /**
