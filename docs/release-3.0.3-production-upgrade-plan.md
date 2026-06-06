@@ -52,7 +52,7 @@ git rev-parse HEAD
 
 - 构建使用的代码必须是已提交 commit。
 - `git status --short` 不应包含未提交运行时代码；上线执行记录类文档可在构建后补写 hash。
-- 当前准备基线曾记录为 `07c7c4541bde35acdaa6d53224004606e3ec573a`，最终以上线前实际 tag 对应 commit 为准。
+- 当前发布 tag 已复核为 `prod-3.0.3 -> 15c11ebf27b56daf76c4b7fa2f2b8b5a48b46c23`；运行时代码构建源为 `f7dd564177e16c793d55e8179b46e00a114145b2`，后续文档和演练记录提交不改变运行时代码产物。
 
 ## 3. 当前 3.0.2 回滚点
 
@@ -224,16 +224,16 @@ docker save zhiyuan-agent:prod-3.0.3 zhiyuan-agent:3.0.3-amd64 \
 
 ## 6. 发布资产记录
 
-实际构建后补齐：
+当前已构建并本地类生产演练通过的资产：
 
 | 资产 | 标签/路径 | 架构 | Hash / Digest |
 | --- | --- | --- | --- |
-| Git commit | `f7dd564177e16c793d55e8179b46e00a114145b2` | - | 已构建 |
-| Git tag | `prod-3.0.3` | - | 执行前用 `git rev-parse prod-3.0.3` 复核 |
+| Git build source | `f7dd564177e16c793d55e8179b46e00a114145b2` | - | 运行时代码构建源 |
+| Git tag | `prod-3.0.3` | - | `15c11ebf27b56daf76c4b7fa2f2b8b5a48b46c23` |
 | 后端 JAR | `zhiyuan-server/target/zhiyuan-server.jar` | `linux/amd64` | `sha256:822908fcd0876eb9ca83be21ade6040600716cfd26f9be4ee3c47f56d2bbe726` |
 | Web 镜像 | `zhiyuan-web:prod-3.0.3` / `zhiyuan-web:3.0.3-amd64` | `linux/amd64` | image `sha256:ef5142e0b9b0d80f5ca037a5790c3f95b2ed063efc7fe1d21b529c62aa7a02af`; tar `sha256:fded71e883499cfe519383ed5db3071d29c2949e574696d63c3556682bef0808` |
 | Agent 镜像 | `zhiyuan-agent:prod-3.0.3` / `zhiyuan-agent:3.0.3-amd64` | `linux/amd64` | image `sha256:0d038dc02e4f9bee2e3026851377a37f717cfac94859d67d76a8fbeee86a9e8f`; tar `sha256:129de22376ad80c4ad0c1df19a9574e0f1f83bf85298e73e19ab0569cfb53fa5` |
-| Release 包 | `/tmp/zhiyuan-release-3.0.3-f7dd564.tar.gz` | - | `sha256:dfee8e0c4d615853c446443fb9a021abeeabc0cf2d757b7a874c19deb08d9c23` |
+| Release 包 | `/tmp/zhiyuan-release-3.0.3-f7dd564.tar.gz` | - | 压缩包自身 hash 以仓库主发布文档或外部传输记录为准；包内组件 hash 见 `MANIFEST.txt` |
 
 记录命令：
 
@@ -474,6 +474,8 @@ shasum -a 256 /root/work/zhiyuan-server-3.0.3/zhiyuan-server.jar
 docker image inspect zhiyuan-web:prod-3.0.3 --format '{{.Id}} {{.Architecture}}/{{.Os}}'
 docker image inspect zhiyuan-agent:prod-3.0.3 --format '{{.Id}} {{.Architecture}}/{{.Os}}'
 ```
+
+如果本地 Docker Desktop 偶发出现 `docker image inspect` 找不到刚刚列出的 tag，先用 `docker image ls zhiyuan-web` / `docker image ls zhiyuan-agent` 复核；生产机以 `docker load` 后的 tag 列表和 tar sha256 为准，不在生产机重新构建镜像。
 
 ### 8.4 Backend 切换
 

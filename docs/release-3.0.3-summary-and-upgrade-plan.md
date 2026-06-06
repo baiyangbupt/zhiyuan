@@ -210,9 +210,9 @@ docs/release-3.0.3-production-upgrade-plan.md
 - 后端 JAR：`sha256:822908fcd0876eb9ca83be21ade6040600716cfd26f9be4ee3c47f56d2bbe726`
 - Web 镜像：image `sha256:ef5142e0b9b0d80f5ca037a5790c3f95b2ed063efc7fe1d21b529c62aa7a02af`；tar `sha256:fded71e883499cfe519383ed5db3071d29c2949e574696d63c3556682bef0808`
 - Agent 镜像：image `sha256:0d038dc02e4f9bee2e3026851377a37f717cfac94859d67d76a8fbeee86a9e8f`；tar `sha256:129de22376ad80c4ad0c1df19a9574e0f1f83bf85298e73e19ab0569cfb53fa5`
-- Release 包：`/tmp/zhiyuan-release-3.0.3-f7dd564.tar.gz`，`sha256:dfee8e0c4d615853c446443fb9a021abeeabc0cf2d757b7a874c19deb08d9c23`
+- Release 包：`/tmp/zhiyuan-release-3.0.3-f7dd564.tar.gz`，`sha256:d8f8c531a945c193c526620ebafdc0499eb980bacad99ebdc3067dee9075dc10`
 
-`prod-3.0.3` tag 已创建；本地类生产演练已完成，结果见 `docs/release-3.0.3-production-upgrade-plan.md` 的 `7.4 本地类生产演练记录`。
+`prod-3.0.3` tag 已创建；本地类生产演练已完成，结果见 `docs/release-3.0.3-production-upgrade-plan.md` 的 `7.4 本地类生产演练记录`。压缩包内不记录自身 hash，避免自引用导致 hash 反复变化；生产传输校验以本节记录为准。
 
 ## 5. 遗留问题和后续优化
 
