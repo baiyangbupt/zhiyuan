@@ -11,4 +11,6 @@ public class HardConstraintsDTO {
     private List<String> mustExcludeRegions = Lists.newArrayList();
     private List<String> mustIncludeMajors = Lists.newArrayList();
     private List<String> mustExcludeMajors = Lists.newArrayList();
+    private List<String> mustIncludeSchools = Lists.newArrayList();
+    private List<String> mustExcludeSchools = Lists.newArrayList();
 }

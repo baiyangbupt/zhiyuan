@@ -135,6 +135,27 @@ def test_plan_next_action_requires_sort_field_for_sort_ordered_plan():
     assert data["atomic_actions"][0]["filters"].get("sort_field") is None
 
 
+def test_plan_next_action_infers_explicit_sort_field_from_goal():
+    with patch(
+        "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
+        new=AsyncMock(return_value=_context_inputs(summary="阶段=ordered；方案=48/48")),
+    ):
+        result = asyncio.run(
+            plan_next_action(
+                _ctx(),
+                user_goal="这版按推荐系数重新排一下，先给我看会怎么动",
+                action_family="sort_ordered_plan",
+                user_confirmed=False,
+            )
+        )
+
+    data = json.loads(result)
+    assert data["stage"] == "preview"
+    assert data["missing_inputs"] == []
+    assert data["atomic_actions"][0]["filters"]["sort_field"] == "finalScore"
+    assert "推荐系数" in data["preview_summary"]
+
+
 def test_plan_next_action_does_not_turn_region_move_into_sort_when_sort_field_is_spurious():
     with patch(
         "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
@@ -687,6 +708,46 @@ def test_plan_next_action_recovers_missing_high_tuition_issue_for_remove_preview
     assert data["stage"] == "preview"
     assert data["requires_confirmation"] is True
     assert data["missing_inputs"] == []
+
+
+def test_plan_next_action_recovers_high_tuition_remove_when_model_chooses_compensation_preview():
+    with patch(
+        "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
+        new=AsyncMock(
+            return_value=_context_inputs(
+                summary="阶段=reviewed；方案=30/30；风险=0；提醒=3",
+                draft_count=30,
+                ordered_count=30,
+                review_issues=[
+                    {
+                        "code": "high_tuition",
+                        "label": "高收费",
+                        "scope_kind": "item_removal",
+                        "default_action_family": "remove_units",
+                        "affected_unit_count": 13,
+                        "affected_volunteer_count": 44,
+                        "scope_fingerprint": "issue-high-1",
+                    }
+                ],
+            )
+        ),
+    ):
+        result = asyncio.run(
+            plan_next_action(
+                _ctx(),
+                user_goal="把太贵的那几个先去掉看看",
+                action_family="preview_compensation",
+                user_confirmed=False,
+            )
+        )
+
+    data = json.loads(result)
+    assert data["action_family"] == "remove_units"
+    assert data["stage"] == "preview"
+    assert data["requires_confirmation"] is True
+    assert data["missing_inputs"] == []
+    assert data["atomic_actions"][0]["review_issue_target"]["code"] == "high_tuition"
+    assert "整批高收费项" in data["preview_summary"]
     assert data["atomic_actions"][0]["review_issue_target"]["code"] == "high_tuition"
     assert data["atomic_actions"][0]["review_issue_target"]["scope_mode"] == "full_issue"
 

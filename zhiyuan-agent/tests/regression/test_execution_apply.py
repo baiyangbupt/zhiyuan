@@ -35,11 +35,12 @@ from tests.factories import (
 # ---------------------------------------------------------------------------
 
 def _confirmed_ctx(*, volunteer_model: str = "major", action_family: str = "add_units"):
-    """构造已确认的 RunContext（pending 匹配 + 短确认文本）。"""
+    """构造已确认的 RunContext（pending 匹配 + 卡片确认上下文）。"""
     return make_run_context(
         volunteer_model=volunteer_model,
         pending_plan_action={"action_family": action_family},
-        chat_history=[{"role": "user", "content": "确认"}],
+        chat_history=[],
+        confirmed_via_card=True,
     )
 
 

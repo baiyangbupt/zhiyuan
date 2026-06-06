@@ -9,6 +9,7 @@ import pytest
 
 from app.agent.context import PlanningSummary, RequestContext
 from app.tools.planning_workflow_tool import (
+    _build_plan_status_overview_facts,
     analyze_planning_plan_adjustment,
     apply_planning_compensation,
     ban_planning_draft_items,
@@ -623,6 +624,40 @@ def test_query_planning_plan_overview_includes_target_gap_when_total_insufficien
 
     assert "24/30个志愿" in result
     assert "当前志愿数量不足，还差 6 个" in result
+
+
+def test_build_plan_status_overview_facts_includes_candidate_supply_shortage():
+    planning_state = {
+        "volunteerModel": "major",
+        "candidatePoolState": {
+            "requiredCount": 80,
+            "requiredTierCounts": {"冲": 24, "稳": 24, "保": 32},
+            "summary": {
+                "total": 4235,
+                "tierCounts": {"冲": 4235, "稳": 0, "保": 0},
+            },
+        },
+        "orderedPlanState": {
+            "summary": {
+                "total": 80,
+                "targetCount": 80,
+                "tierCounts": {"冲": 80, "稳": 0, "保": 0},
+            },
+            "items": [],
+        },
+        "reviewState": {"summary": {"riskCount": 0, "warnCount": 0}},
+    }
+
+    facts = _build_plan_status_overview_facts(
+        planning_state,
+        ordered_state=planning_state["orderedPlanState"],
+    )
+
+    supply = facts["candidate_supply"]
+    assert supply["candidate_total"] == 4235
+    assert supply["candidate_tier_counts"] == {"冲": 4235, "稳": 0, "保": 0}
+    assert supply["missing_supply_tiers"] == ["稳", "保"]
+    assert "当前没有可直接补入的稳、保区候选" in supply["summary"]
 
 
 def test_preview_planning_compensation_uses_session_and_formats_result():

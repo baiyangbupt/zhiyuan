@@ -2,6 +2,8 @@
 
 本文是 `case` 级评估的结果记录模板，配合 `release-3.0.3-agent-case-evaluation-framework.md` 使用。
 
+发布收口说明：本文仍作为 case 级报告模板使用；发布范围、最终回归结果和升级计划见 `docs/release-3.0.3-summary-and-upgrade-plan.md`。
+
 评估报告不能只输出“通过 / 不通过”，需要同时保留回复原文、质量评分、链路证据、延迟和人工判断。
 
 ## 1. 批量汇总

@@ -55,7 +55,6 @@ _QUERY_VOLUNTEER_PLAN_FAIL_STATUSES = {
     "candidate_query_failed_after_plan_miss",
 }
 
-
 @dataclass(frozen=True)
 class ToolReplyDecision:
     strategy: ReplyStrategy = "continue_model"
@@ -96,7 +95,10 @@ def decide_tool_reply(
             strategy="continue_model",
             reason="explicit_continue_model",
         )
-    if explicit_strategy in {"direct_reply", "direct_blocking", "preview_wait_confirm"}:
+    if (
+        explicit_strategy in {"direct_reply", "direct_blocking", "preview_wait_confirm"}
+        and _trust_explicit_reply_strategy(tool_name, payload, explicit_strategy)
+    ):
         reply = _payload_reply(payload) or raw_text
         return ToolReplyDecision(
             strategy=explicit_strategy,  # type: ignore[arg-type]
@@ -112,13 +114,6 @@ def decide_tool_reply(
             reason="intent_preview_tool",
         )
 
-    if tool_name == "query_volunteer_plan" and raw_text and "按当前方案里的院校简称" in raw_text:
-        return ToolReplyDecision(
-            strategy="direct_reply",
-            reply=raw_text,
-            reason="plan_query_alias_match_result",
-        )
-
     if tool_name == "query_volunteer_plan" and _plan_query_needs_model_synthesis(raw_text, deps):
         return ToolReplyDecision(reason="read_only_plan_query_empty_or_failed_needs_model_synthesis")
 
@@ -131,11 +126,7 @@ def decide_tool_reply(
         return ToolReplyDecision(reason="read_only_plan_query_needs_model_synthesis_after_prior_tools")
 
     if tool_name == "query_volunteer_plan" and raw_text and not _query_result_should_continue(raw_text):
-        return ToolReplyDecision(
-            strategy="direct_reply",
-            reply=raw_text,
-            reason="read_only_plan_query_result",
-        )
+        return ToolReplyDecision(reason="read_only_plan_query_result_needs_model_synthesis")
 
     if tool_name in READONLY_EXPLORE_TOOL_NAMES:
         if _readonly_explore_reply(payload, raw_text):
@@ -277,6 +268,24 @@ def _normalize_reply_strategy(value: Any) -> str:
     if text in {"direct_reply", "direct_blocking", "preview_wait_confirm", "continue_model"}:
         return text
     return ""
+
+
+def _trust_explicit_reply_strategy(tool_name: str, payload: dict[str, Any], strategy: str) -> bool:
+    """Only trust explicit strategies for protocol-level tool results.
+
+    Read-only tools may return useful facts or a draft summary, but they should
+    still go back to the model so mixed user questions are answered in full.
+    `execute_plan_action` direct replies are handled by structured result_kind /
+    reply_focus checks below, except for blocking errors where bypassing another
+    model turn prevents accidental retry or hallucinated execution.
+    """
+    if not payload:
+        return False
+    if tool_name in INTENT_PREVIEW_TOOL_NAMES and strategy == "preview_wait_confirm":
+        return True
+    if tool_name == "execute_plan_action" and strategy == "direct_blocking":
+        return bool(_payload_reply(payload))
+    return False
 
 
 def _has_prior_synthesis_facts(deps: Any | None, *, current_tool_names: list[str]) -> bool:

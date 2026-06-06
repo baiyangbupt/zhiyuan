@@ -186,6 +186,7 @@ public class PlanningStateService {
         res.setVersion(state.getVersion());
         res.setPhase(state.getPhase());
         res.setStaleFlags(state.getStaleFlags());
+        res.setConstraintState(state.getConstraintState());
         res.setPlanGenerationState(state.getPlanGenerationState());
         res.setCandidatePoolState(buildWorkspaceCandidatePoolState(state));
         res.setCandidateViewState(state.getCandidateViewState());
@@ -645,6 +646,129 @@ public class PlanningStateService {
             explicitProfile.setStrengthSubjects(defaultList(req.getStrengthSubjects()));
         }
         return touchAndSavePreference(chatSessionId, state);
+    }
+
+    public PlanningStateVersionDTO updateConstraintState(Long chatSessionId, UpdateConstraintStateReq req) {
+        PlanningStateDTO state = loadPlanningState(chatSessionId);
+        if (state.getConstraintState() == null) {
+            state.setConstraintState(new ConstraintStateDTO());
+        }
+        ConstraintStateDTO constraintState = state.getConstraintState();
+        if (constraintState.getHardConstraints() == null) {
+            constraintState.setHardConstraints(new HardConstraintsDTO());
+        }
+        if (constraintState.getSoftPreferences() == null) {
+            constraintState.setSoftPreferences(new SoftPreferencesDTO());
+        }
+        HardConstraintsDTO hard = constraintState.getHardConstraints();
+        SoftPreferencesDTO soft = constraintState.getSoftPreferences();
+        normalizeConstraintStateLists(hard, soft);
+        boolean hardMode = req != null && "constraint".equalsIgnoreCase(req.getIntentMode());
+
+        if (req != null && req.getMajorPreferences() != null) {
+            mergeIntentStrengthGroup(
+                    req.getMajorPreferences(),
+                    soft.getPreferMajors(),
+                    soft.getAvoidMajors(),
+                    hard.getMustIncludeMajors(),
+                    hard.getMustExcludeMajors(),
+                    hardMode
+            );
+        }
+        if (req != null && req.getSchoolPreferences() != null) {
+            mergeIntentStrengthGroup(
+                    req.getSchoolPreferences(),
+                    soft.getPreferSchools(),
+                    soft.getAvoidSchools(),
+                    hard.getMustIncludeSchools(),
+                    hard.getMustExcludeSchools(),
+                    hardMode
+            );
+        }
+        if (req != null && req.getRegionPreferences() != null) {
+            mergeIntentStrengthGroup(
+                    req.getRegionPreferences(),
+                    soft.getPreferRegions(),
+                    soft.getAvoidRegions(),
+                    hard.getMustIncludeRegions(),
+                    hard.getMustExcludeRegions(),
+                    hardMode
+            );
+        }
+
+        return hardMode ? touchAndSaveConstraint(chatSessionId, state) : touchAndSavePreference(chatSessionId, state);
+    }
+
+    private void normalizeConstraintStateLists(HardConstraintsDTO hard, SoftPreferencesDTO soft) {
+        hard.setMustIncludeRegions(defaultList(hard.getMustIncludeRegions()));
+        hard.setMustExcludeRegions(defaultList(hard.getMustExcludeRegions()));
+        hard.setMustIncludeMajors(defaultList(hard.getMustIncludeMajors()));
+        hard.setMustExcludeMajors(defaultList(hard.getMustExcludeMajors()));
+        hard.setMustIncludeSchools(defaultList(hard.getMustIncludeSchools()));
+        hard.setMustExcludeSchools(defaultList(hard.getMustExcludeSchools()));
+        soft.setPreferRegions(defaultList(soft.getPreferRegions()));
+        soft.setPreferMajors(defaultList(soft.getPreferMajors()));
+        soft.setPreferSchools(defaultList(soft.getPreferSchools()));
+        soft.setAvoidRegions(defaultList(soft.getAvoidRegions()));
+        soft.setAvoidMajors(defaultList(soft.getAvoidMajors()));
+        soft.setAvoidSchools(defaultList(soft.getAvoidSchools()));
+    }
+
+    private void mergeIntentStrengthGroup(UpdateConstraintStateReq.PreferenceGroup group,
+                                          List<String> softPositive,
+                                          List<String> softNegative,
+                                          List<String> hardPositive,
+                                          List<String> hardNegative,
+                                          boolean hardMode) {
+        List<String> positive = normalizeIntentStateValues(group.getPositive());
+        List<String> negative = normalizeIntentStateValues(group.getNegative());
+        if (hardMode) {
+            addUniqueValues(hardPositive, positive);
+            addUniqueValues(hardNegative, negative);
+            removeValues(hardNegative, positive);
+            removeValues(hardPositive, negative);
+            removeValues(softPositive, positive);
+            removeValues(softPositive, negative);
+            removeValues(softNegative, positive);
+            removeValues(softNegative, negative);
+            return;
+        }
+        List<String> softPositiveToAdd = positive.stream()
+                .filter(value -> !hardPositive.contains(value))
+                .collect(Collectors.toList());
+        List<String> softNegativeToAdd = negative.stream()
+                .filter(value -> !hardNegative.contains(value))
+                .collect(Collectors.toList());
+        addUniqueValues(softPositive, softPositiveToAdd);
+        addUniqueValues(softNegative, softNegativeToAdd);
+        removeValues(softNegative, positive);
+        removeValues(softPositive, negative);
+        removeValues(hardNegative, positive);
+        removeValues(hardPositive, negative);
+    }
+
+    private List<String> normalizeIntentStateValues(List<String> values) {
+        return defaultList(values).stream()
+                .filter(Objects::nonNull)
+                .map(String::trim)
+                .filter(value -> !value.isEmpty())
+                .distinct()
+                .collect(Collectors.toList());
+    }
+
+    private void addUniqueValues(List<String> target, List<String> values) {
+        for (String value : values) {
+            if (!target.contains(value)) {
+                target.add(value);
+            }
+        }
+    }
+
+    private void removeValues(List<String> target, List<String> values) {
+        if (values.isEmpty()) {
+            return;
+        }
+        target.removeIf(values::contains);
     }
 
     public PlanningStateVersionDTO updateLatentProfile(Long chatSessionId, UpdateLatentProfileReq req) {

@@ -11,8 +11,15 @@ from typing import Any
 from pydantic_ai import RunContext
 
 from app.agent.context import RequestContext, resolve_pending_confirmation
-from app.domain.major_entity_resolver import major_alias_variants_for_name
-from app.domain.school_entity_resolver import school_alias_variants
+from app.domain.major_entity_resolver import (
+    canonicalize_major_intent_payload,
+    major_alias_variants_for_name,
+    major_name_sets_for_batch,
+    major_parent_mappings_for_batch,
+    resolve_major_entity,
+)
+from app.domain.region_entity_resolver import normalize_region_names
+from app.domain.school_entity_resolver import resolve_school_entity, school_alias_variants
 from app.domain.school_major_ref_resolver import resolve_school_major_ref
 from app.sync.state_sync import PlanningStateSync
 from app.tools.plan_orchestration_models import (
@@ -88,6 +95,21 @@ _READONLY_HANDLER_ACTION_FAMILIES = {
 }
 _RECENT_PLAN_EXECUTION_TTL_SECONDS = 180.0
 _RECENT_PLAN_EXECUTION_RESULTS: dict[tuple[str, str], dict[str, Any]] = {}
+_PLAN_MAJOR_SCOPE_FILTER_KEYS = (
+    "major_keyword",
+    "major_tags",
+    "major_level3",
+    "major_level2",
+    "major_level1",
+    "negative_level3",
+    "negative_level2",
+    "negative_level1",
+)
+_PLAN_MAJOR_LEVEL_FILTER_KEYS = {
+    "negative_level1": "major_level1",
+    "negative_level2": "major_level2",
+    "negative_level3": "major_level3",
+}
 
 
 def _append_missing_json_closers(raw: str) -> str | None:
@@ -273,6 +295,61 @@ def _extract_unit_source_positions(plan_model: PlanActionPlan) -> list[int]:
     return positions
 
 
+def _ordered_visible_unit_id_for_item(item: dict[str, Any] | None) -> str:
+    item = item or {}
+    return str(
+        item.get("unitId")
+        or item.get("id")
+        or item.get("volunteerId")
+        or item.get("schoolName")
+        or ""
+    ).strip()
+
+
+def _ordered_visible_units(ordered_state: dict[str, Any], volunteer_model: str = "") -> list[dict[str, Any]]:
+    raw_units = ordered_state.get("units") or []
+    units = [unit for unit in raw_units if isinstance(unit, dict)] if isinstance(raw_units, list) else []
+    if units:
+        return units
+    raw_items = ordered_state.get("items") or []
+    items = [item for item in raw_items if isinstance(item, dict)] if isinstance(raw_items, list) else []
+    if volunteer_model == "majorGroup":
+        grouped: dict[str, dict[str, Any]] = {}
+        for item in items:
+            unit_id = _ordered_unit_id_for_item(item)
+            if not unit_id:
+                continue
+            unit = grouped.setdefault(
+                unit_id,
+                {
+                    "unitId": unit_id,
+                    "schoolName": item.get("schoolName") or item.get("school_name") or "",
+                    "name": item.get("schoolName") or item.get("school_name") or unit_id,
+                    "position": item.get("position"),
+                    "majorItems": [],
+                    "unitKind": "专业组",
+                },
+            )
+            unit["majorItems"].append(item)
+        return list(grouped.values())
+    visible_units: list[dict[str, Any]] = []
+    for item in items:
+        unit_id = _ordered_visible_unit_id_for_item(item)
+        if not unit_id:
+            continue
+        visible_units.append(
+            {
+                "unitId": unit_id,
+                "schoolName": item.get("schoolName") or item.get("school_name") or "",
+                "name": item.get("schoolName") or item.get("school_name") or "",
+                "position": item.get("position"),
+                "majorItems": [item],
+                "unitKind": "志愿",
+            }
+        )
+    return visible_units
+
+
 async def _resolve_ordered_unit_ids(ctx: RunContext[RequestContext], plan_model: PlanActionPlan) -> list[str]:
     explicit = _extract_unit_ids(plan_model)
     if explicit:
@@ -284,8 +361,7 @@ async def _resolve_ordered_unit_ids(ctx: RunContext[RequestContext], plan_model:
         state_resp = await _get_planning_state_request(ctx.deps.sessionid)
         state = (state_resp or {}).get("data") or {}
         ordered_state = state.get("orderedPlanState") or {}
-        raw_units = ordered_state.get("units") or []
-        units = raw_units if isinstance(raw_units, list) else []
+        units = _ordered_visible_units(ordered_state, str(state.get("volunteerModel") or state.get("volunteer_model") or ""))
         resolved: list[str] = []
         for position in positions:
             index = position - 1
@@ -330,8 +406,18 @@ def _unit_major_items(unit: dict[str, Any] | None) -> list[dict[str, Any]]:
     return [item for item in majors if isinstance(item, dict)] if isinstance(majors, list) else []
 
 
+def _unit_volunteer_id(unit: dict[str, Any] | None) -> str:
+    majors = _unit_major_items(unit)
+    if not majors:
+        return ""
+    return str((majors[0] or {}).get("volunteerId") or "").strip()
+
+
 def _unit_kind_label(unit: dict[str, Any] | None) -> str:
     unit = unit or {}
+    explicit_kind = str(unit.get("unitKind") or unit.get("unit_kind") or "").strip()
+    if explicit_kind in {"志愿", "专业组"}:
+        return explicit_kind
     majors = _unit_major_items(unit)
     if len(majors) > 1:
         return "专业组"
@@ -369,8 +455,7 @@ async def _build_move_ordered_unit_preview_summary(
         state_resp = await _get_planning_state_request(ctx.deps.sessionid)
         state = (state_resp or {}).get("data") or {}
         ordered_state = state.get("orderedPlanState") or {}
-        raw_units = ordered_state.get("units") or []
-        units = raw_units if isinstance(raw_units, list) else []
+        units = _ordered_visible_units(ordered_state, str(state.get("volunteerModel") or state.get("volunteer_model") or ""))
         unit_ids = _extract_unit_ids(plan_model)
         position_refs = _extract_unit_source_positions(plan_model)
         source_position = position_refs[0] if position_refs else None
@@ -399,6 +484,7 @@ async def _build_move_ordered_unit_preview_summary(
         label = _unit_kind_label(source_unit)
         unit_name = _unit_display_name(source_unit)
         major_count = _unit_major_count(source_unit)
+        source_volunteer_id = _unit_volunteer_id(source_unit)
         count_text = f"，组内共 {major_count} 个专业" if label == "专业组" and major_count > 0 else ""
         source_text = f"第 {source_position} 个{label}" if source_position else f"当前定位到的{label}"
         target_text = f"第 {int(target_position)} 个{label}位置"
@@ -418,6 +504,20 @@ async def _build_move_ordered_unit_preview_summary(
             "source_unit_major_count": major_count,
             "unit_kind": label,
             "position_semantics": _unit_position_semantics(source_unit),
+            "resolved_apply_payload": (
+                _build_resolved_apply_payload(
+                    plan_model,
+                    volunteer_ids=[source_volunteer_id],
+                    action_family="move_unit",
+                )
+                if label == "志愿" and source_volunteer_id
+                else _build_resolved_apply_payload(
+                    plan_model,
+                    unit_ids=[source_unit_id],
+                )
+                if source_unit_id
+                else {}
+            ),
         }
     except Exception:
         logger.exception("_build_move_ordered_unit_preview_summary failed: session_id=%s", ctx.deps.sessionid)
@@ -432,8 +532,7 @@ async def _build_remove_ordered_unit_preview_summary(
         state_resp = await _get_planning_state_request(ctx.deps.sessionid)
         state = (state_resp or {}).get("data") or {}
         ordered_state = state.get("orderedPlanState") or {}
-        raw_units = ordered_state.get("units") or []
-        units = raw_units if isinstance(raw_units, list) else []
+        units = _ordered_visible_units(ordered_state, str(state.get("volunteerModel") or state.get("volunteer_model") or ""))
         unit_ids = _extract_unit_ids(plan_model)
         position_refs = _extract_unit_source_positions(plan_model)
         source_position = position_refs[0] if position_refs else None
@@ -462,6 +561,7 @@ async def _build_remove_ordered_unit_preview_summary(
         label = _unit_kind_label(source_unit)
         unit_name = _unit_display_name(source_unit)
         major_count = _unit_major_count(source_unit)
+        source_volunteer_id = _unit_volunteer_id(source_unit)
         count_text = f"，组内共 {major_count} 个专业" if label == "专业组" and major_count > 0 else ""
         source_text = f"第 {source_position} 个{label}" if source_position else f"当前定位到的{label}"
         if label == "专业组" and major_count > 0:
@@ -483,6 +583,20 @@ async def _build_remove_ordered_unit_preview_summary(
             "source_unit_major_count": major_count,
             "unit_kind": label,
             "position_semantics": _unit_position_semantics(source_unit),
+            "resolved_apply_payload": (
+                _build_resolved_apply_payload(
+                    plan_model,
+                    volunteer_ids=[source_volunteer_id],
+                    action_family="remove_units",
+                )
+                if label == "志愿" and source_volunteer_id
+                else _build_resolved_apply_payload(
+                    plan_model,
+                    unit_ids=[source_unit_id],
+                )
+                if source_unit_id
+                else {}
+            ),
         }
     except Exception:
         logger.exception("_build_remove_ordered_unit_preview_summary failed: session_id=%s", ctx.deps.sessionid)
@@ -530,8 +644,10 @@ def _allows_mutating_apply(ctx: RunContext[RequestContext], plan_model: PlanActi
         if pending is not None and pending.kind == "plan_mutation"
         else ""
     )
-    latest_user_text = _latest_user_text(ctx)
-    if pending_action_family == plan_model.action_family and _is_short_plan_confirmation(latest_user_text):
+    if pending_action_family == plan_model.action_family and (
+        bool(getattr(ctx.deps, "confirmed_via_pending", False))
+        or bool(getattr(ctx.deps, "confirmed_via_card", False))
+    ):
         return True
     return False
 
@@ -637,6 +753,93 @@ def _parse_filter_list(value: Any) -> list[str]:
     if isinstance(parsed, list):
         return [str(item or "").strip() for item in parsed if str(item or "").strip()]
     return [text]
+
+
+def _collect_action_major_scope_payload(action: PlanAtomicAction | None) -> dict[str, list[str]] | None:
+    if action is None:
+        return None
+    payload: dict[str, list[str]] = {}
+
+    def extend(key: str, values: list[str]) -> None:
+        bucket = payload.setdefault(key, [])
+        for value in values:
+            name = _major_base_name(value)
+            if name and name not in bucket:
+                bucket.append(name)
+
+    extend("negative_level3", list(getattr(action, "source_major_names", []) or []))
+    filters = action.filters or {}
+    extend("negative_level3", _parse_filter_list(filters.get("major_keyword")))
+    extend("negative_level3", _parse_filter_list(filters.get("major_tags")))
+    extend("negative_level3", _parse_filter_list(filters.get("major_level3")))
+    extend("negative_level2", _parse_filter_list(filters.get("major_level2")))
+    extend("negative_level1", _parse_filter_list(filters.get("major_level1")))
+    extend("negative_level3", _parse_filter_list(filters.get("negative_level3")))
+    extend("negative_level2", _parse_filter_list(filters.get("negative_level2")))
+    extend("negative_level1", _parse_filter_list(filters.get("negative_level1")))
+    return {key: values for key, values in payload.items() if values} or None
+
+
+def _canonical_major_scope_names(scope_payload: dict[str, list[str]] | None) -> list[str]:
+    if not scope_payload:
+        return []
+    ordered_keys = ("negative_level3", "negative_level2", "negative_level1")
+    names: list[str] = []
+    for key in ordered_keys:
+        for value in scope_payload.get(key, []):
+            name = _major_base_name(value)
+            if name and name not in names:
+                names.append(name)
+    return names
+
+
+def _canonicalize_major_scope_action(
+    action: PlanAtomicAction,
+    *,
+    latest_utterance: str,
+    batch: str | None,
+) -> PlanAtomicAction:
+    scope_payload = _collect_action_major_scope_payload(action)
+    canonical_payload = canonicalize_major_intent_payload(scope_payload, latest_utterance, batch)
+    if not canonical_payload:
+        return action
+
+    filters = dict(action.filters or {})
+    for key in _PLAN_MAJOR_SCOPE_FILTER_KEYS:
+        filters.pop(key, None)
+    for payload_key, filter_key in _PLAN_MAJOR_LEVEL_FILTER_KEYS.items():
+        values = canonical_payload.get(payload_key) or []
+        if values:
+            filters[filter_key] = list(values)
+
+    canonical_source_names = _canonical_major_scope_names(canonical_payload)
+    return action.model_copy(
+        update={
+            "source_major_names": canonical_source_names,
+            "filters": filters,
+        }
+    )
+
+
+def _canonicalize_plan_major_scopes(
+    ctx: RunContext[RequestContext],
+    plan_model: PlanActionPlan,
+) -> PlanActionPlan:
+    if plan_model.action_family != "remove_units" or not plan_model.atomic_actions:
+        return plan_model
+    latest_utterance = _latest_user_text(ctx)
+    batch = getattr(ctx.deps, "batch", None) or "01"
+    updated_actions = [
+        _canonicalize_major_scope_action(
+            action,
+            latest_utterance=latest_utterance,
+            batch=batch,
+        )
+        for action in plan_model.atomic_actions
+    ]
+    if updated_actions == list(plan_model.atomic_actions):
+        return plan_model
+    return plan_model.model_copy(update={"atomic_actions": updated_actions})
 
 
 def _derive_candidate_major_keywords(
@@ -923,6 +1126,427 @@ def _ordered_item_display_name(item: dict[str, Any]) -> str:
     return school_name or major_name or str(item.get("displayName") or item.get("name") or item.get("title") or "该志愿").strip()
 
 
+def _compact_match_contains(haystack: Any, needle: Any) -> bool:
+    haystack_text = _compact_ref_text(haystack)
+    needle_text = _compact_ref_text(needle)
+    if not haystack_text or not needle_text:
+        return False
+    return needle_text in haystack_text or haystack_text in needle_text
+
+
+def _major_scope_matches(item_major: Any, target: Any, batch: str | None = "01") -> bool:
+    target_base = _major_base_name(target)
+    item_base = _major_base_name(item_major)
+    if not target_base or not item_base:
+        return False
+    target_tokens = [target_base, *major_alias_variants_for_name(target_base, batch), _major_target_token(target_base)]
+    item_tokens = [item_base, *major_alias_variants_for_name(item_base, batch), _major_target_token(item_base)]
+    for target_token in target_tokens:
+        for item_token in item_tokens:
+            if _compact_match_contains(item_token, target_token):
+                return True
+    return False
+
+
+def _major_scope_exact_name_matches(item_major: Any, target: Any, batch: str | None = "01") -> bool:
+    target_base = _major_base_name(target)
+    item_base = _major_base_name(item_major)
+    if not target_base or not item_base:
+        return False
+    if _compact_ref_text(item_base) == _compact_ref_text(target_base):
+        return True
+    try:
+        resolved = resolve_major_entity(item_base, _major_scope_batch(batch))
+    except Exception:
+        resolved = None
+    if resolved is not None:
+        candidates = [
+            candidate
+            for candidate in resolved.candidates
+            if candidate.level == "level3" and str(candidate.canonical_name or "").strip()
+        ]
+        if len(candidates) == 1 and candidates[0].canonical_name == target_base:
+            return True
+        if candidates:
+            return False
+    target_alias_tokens = {
+        _compact_ref_text(value)
+        for value in major_alias_variants_for_name(target_base, batch)
+        if _compact_ref_text(value)
+    }
+    return _compact_ref_text(item_base) in target_alias_tokens
+
+
+_MAJOR_SCOPE_NAME_KEYS = (
+    "majorName",
+    "major_name",
+    "majorItemName",
+    "major_item_name",
+    "majorUnitName",
+    "major_unit_name",
+    "unitName",
+    "unit_name",
+)
+_MAJOR_SCOPE_LEVEL2_KEYS = (
+    "majorCategory",
+    "major_category",
+    "majorCategoryName",
+    "major_category_name",
+    "subCategoryName",
+    "sub_category_name",
+)
+_MAJOR_SCOPE_LEVEL1_KEYS = (
+    "majorDiscipline",
+    "major_discipline",
+    "majorDisciplineName",
+    "major_discipline_name",
+    "categoryName",
+    "category_name",
+)
+_MAJOR_SCOPE_NESTED_KEYS = (
+    "majorItems",
+    "major_items",
+    "majors",
+    "majorList",
+    "major_list",
+    "majorVOList",
+    "major_vo_list",
+)
+
+
+def _major_scope_batch(batch: str | None) -> str:
+    return batch or "01"
+
+
+def _major_scope_target_candidates(target: Any, batch: str | None = "01") -> list[tuple[str, str]]:
+    target_base = _major_base_name(target)
+    if not target_base:
+        return []
+    available = major_name_sets_for_batch(_major_scope_batch(batch))
+    for level in ("level3", "level2", "level1"):
+        if target_base in available.get(level, set()):
+            return [(level, target_base)]
+    try:
+        resolved = resolve_major_entity(target_base, _major_scope_batch(batch))
+    except Exception:
+        return []
+    candidates = [
+        (str(candidate.level or ""), str(candidate.canonical_name or "").strip())
+        for candidate in resolved.candidates
+        if str(candidate.level or "") in {"level1", "level2", "level3"} and str(candidate.canonical_name or "").strip()
+    ]
+    unique = list(dict.fromkeys(candidates))
+    return unique if len(unique) == 1 else []
+
+
+def _major_scope_values(record: dict[str, Any], keys: tuple[str, ...]) -> list[str]:
+    values: list[str] = []
+    for key in keys:
+        value = record.get(key)
+        if isinstance(value, str) and value.strip():
+            values.append(value.strip())
+    return list(dict.fromkeys(values))
+
+
+def _has_major_scope_fields(record: dict[str, Any]) -> bool:
+    return any(record.get(key) for key in (_MAJOR_SCOPE_NAME_KEYS + _MAJOR_SCOPE_LEVEL2_KEYS + _MAJOR_SCOPE_LEVEL1_KEYS))
+
+
+def _iter_major_scope_records(value: Any):
+    if isinstance(value, str) and value.strip():
+        yield {"majorName": value.strip()}
+        return
+    if isinstance(value, list):
+        for child in value:
+            yield from _iter_major_scope_records(child)
+        return
+    if not isinstance(value, dict):
+        return
+    if _has_major_scope_fields(value):
+        yield value
+    for key in _MAJOR_SCOPE_NESTED_KEYS:
+        if key in value:
+            yield from _iter_major_scope_records(value.get(key))
+
+
+def _major_record_matches_scope(record: dict[str, Any], target: Any, batch: str | None = "01") -> bool:
+    target_candidates = _major_scope_target_candidates(target, batch)
+    name_values = _major_scope_values(record, _MAJOR_SCOPE_NAME_KEYS)
+    level2_values = _major_scope_values(record, _MAJOR_SCOPE_LEVEL2_KEYS)
+    level1_values = _major_scope_values(record, _MAJOR_SCOPE_LEVEL1_KEYS)
+    if not target_candidates:
+        return any(_major_scope_matches(name, target, batch) for name in name_values)
+
+    mappings = major_parent_mappings_for_batch(_major_scope_batch(batch))
+    level3_to_level2 = mappings.get("level3_to_level2", {})
+    level2_to_level1 = mappings.get("level2_to_level1", {})
+
+    for target_level, target_name in target_candidates:
+        if target_level == "level3":
+            if any(_major_scope_exact_name_matches(name, target_name, batch) for name in name_values):
+                return True
+            continue
+        if target_level == "level2":
+            if any(_major_scope_matches(category, target_name, batch) for category in level2_values):
+                return True
+            if any(level3_to_level2.get(_major_base_name(name)) == target_name for name in name_values):
+                return True
+            continue
+        if target_level == "level1":
+            if any(_major_scope_matches(discipline, target_name, batch) for discipline in level1_values):
+                return True
+            if any(level2_to_level1.get(_major_base_name(category)) == target_name for category in level2_values):
+                return True
+            for name in name_values:
+                parent_level2 = level3_to_level2.get(_major_base_name(name))
+                if parent_level2 and level2_to_level1.get(parent_level2) == target_name:
+                    return True
+    return False
+
+
+def _matching_major_scope_records(
+    item: dict[str, Any],
+    targets: list[str],
+    batch: str | None = "01",
+) -> list[dict[str, Any]]:
+    records = [record for record in _iter_major_scope_records(item) if isinstance(record, dict)]
+    if not records:
+        return []
+    matched: list[dict[str, Any]] = []
+    for record in records:
+        if any(_major_record_matches_scope(record, target, batch) for target in targets):
+            matched.append(record)
+    return matched
+
+
+def _filter_scope_values(action: PlanAtomicAction | None, *keys: str) -> list[str]:
+    if action is None:
+        return []
+    filters = action.filters or {}
+    values: list[str] = []
+    for key in keys:
+        values.extend(_parse_filter_list(filters.get(key)))
+    return list(dict.fromkeys(value for value in values if value))
+
+
+def _remove_scope_major_names(action: PlanAtomicAction | None, batch: str | None = "01") -> list[str]:
+    names_by_level = _remove_scope_major_names_by_level(action, batch)
+    return list(
+        dict.fromkeys(
+            [
+                *names_by_level.get("negative_level3", []),
+                *names_by_level.get("negative_level2", []),
+                *names_by_level.get("negative_level1", []),
+            ]
+        )
+    )
+
+
+def _remove_scope_major_names_by_level(action: PlanAtomicAction | None, batch: str | None = "01") -> dict[str, list[str]]:
+    scope_payload = _collect_action_major_scope_payload(action)
+    canonical_payload = canonicalize_major_intent_payload(scope_payload, "", batch)
+    if not canonical_payload:
+        return {}
+    return {
+        key: list(dict.fromkeys(_major_base_name(value) for value in values if _major_base_name(value)))
+        for key, values in canonical_payload.items()
+        if key in {"negative_level1", "negative_level2", "negative_level3"} and values
+    }
+
+
+def _normalize_school_scope_names(values: list[str], batch: str | None = "01") -> list[str]:
+    normalized: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        try:
+            resolved = resolve_school_entity(text, batch)
+            name = resolved.best.canonical_name if resolved.best else text
+        except Exception:
+            name = text
+        if name and name not in normalized:
+            normalized.append(name)
+    return normalized
+
+
+def _remove_scope_school_names(action: PlanAtomicAction | None, batch: str | None = "01") -> list[str]:
+    return _normalize_school_scope_names(_filter_scope_values(action, "school_keyword", "school_tags"), batch)
+
+
+def _remove_scope_region_names(action: PlanAtomicAction | None) -> list[str]:
+    names_by_level = _remove_scope_region_names_by_level(action)
+    return list(dict.fromkeys([*names_by_level.get("province", []), *names_by_level.get("city", [])]))
+
+
+def _remove_scope_region_names_by_level(action: PlanAtomicAction | None) -> dict[str, list[str]]:
+    province_targets = normalize_region_names(
+        _filter_scope_values(action, "province_keyword", "province"),
+        expected_level="province",
+    )
+    city_targets = normalize_region_names(
+        _filter_scope_values(action, "city_keyword", "city"),
+        expected_level="city",
+    )
+    return {
+        "province": list(dict.fromkeys(province_targets)),
+        "city": list(dict.fromkeys(city_targets)),
+    }
+
+
+def _has_structured_remove_scope(action: PlanAtomicAction | None, batch: str | None = "01") -> bool:
+    return bool(
+        _remove_scope_major_names(action, batch)
+        or _remove_scope_school_names(action, batch)
+        or _remove_scope_region_names(action)
+    )
+
+
+def _ordered_item_matches_remove_scope(
+    item: dict[str, Any],
+    action: PlanAtomicAction | None,
+    batch: str | None = "01",
+) -> bool:
+    if action is None:
+        return False
+    major_targets = _remove_scope_major_names(action, batch)
+    school_targets = _remove_scope_school_names(action, batch)
+    region_targets = _remove_scope_region_names(action)
+    tier_values = _filter_scope_values(action, "tier")
+    if tier_values:
+        item_tier = str(item.get("tier") or "").strip()
+        if item_tier not in set(tier_values):
+            return False
+    if major_targets and not _matching_major_scope_records(item, major_targets, batch):
+        return False
+    if school_targets and not any(_compact_match_contains(item.get("schoolName"), target) for target in school_targets):
+        return False
+    if region_targets:
+        region_fields = [
+            item.get("province"),
+            item.get("provinceName"),
+            item.get("city"),
+            item.get("cityName"),
+            item.get("schoolProvince"),
+            item.get("schoolCity"),
+            item.get("schoolName"),
+        ]
+        if not any(
+            _compact_match_contains(field, target)
+            for target in region_targets
+            for field in region_fields
+        ):
+            return False
+    return bool(major_targets or school_targets or region_targets or tier_values)
+
+
+def _ordered_item_scope_volunteer_ids(
+    item: dict[str, Any],
+    action: PlanAtomicAction | None,
+    batch: str | None = "01",
+) -> list[str]:
+    major_targets = _remove_scope_major_names(action, batch)
+    records = _matching_major_scope_records(item, major_targets, batch) if major_targets else []
+    ids: list[str] = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        record_id = str(record.get("volunteerId") or record.get("id") or "").strip()
+        if record_id and record_id not in ids:
+            ids.append(record_id)
+    if ids:
+        return ids
+    volunteer_id = str(item.get("volunteerId") or "").strip()
+    if volunteer_id:
+        return [volunteer_id]
+    return ids
+
+
+def _resolve_ordered_ids_by_remove_scope(
+    items: list[dict[str, Any]],
+    action: PlanAtomicAction | None,
+    batch: str | None = "01",
+) -> tuple[list[str], list[dict[str, Any]]]:
+    matched_items: list[dict[str, Any]] = []
+    ids: list[str] = []
+    for item in items:
+        if not _ordered_item_matches_remove_scope(item, action, batch):
+            continue
+        matched_ids = _ordered_item_scope_volunteer_ids(item, action, batch)
+        if not matched_ids:
+            continue
+        matched_items.append(item)
+        for volunteer_id in matched_ids:
+            if volunteer_id not in ids:
+                ids.append(volunteer_id)
+    return ids, matched_items
+
+
+def _remove_scope_label(action: PlanAtomicAction | None, batch: str | None = "01") -> str:
+    parts: list[str] = []
+    major_names_by_level = _remove_scope_major_names_by_level(action, batch)
+    school_names = _remove_scope_school_names(action, batch)
+    region_names = _remove_scope_region_names(action)
+    if major_names_by_level.get("negative_level3"):
+        parts.append("具体专业：" + "、".join(major_names_by_level["negative_level3"][:3]))
+    if major_names_by_level.get("negative_level2"):
+        parts.append("专业类：" + "、".join(major_names_by_level["negative_level2"][:3]))
+    if major_names_by_level.get("negative_level1"):
+        parts.append("专业门类：" + "、".join(major_names_by_level["negative_level1"][:3]))
+    if school_names:
+        parts.append("院校：" + "、".join(school_names[:3]))
+    if region_names:
+        parts.append("地域：" + "、".join(region_names[:3]))
+    return "；".join(parts) or "指定范围"
+
+
+def _build_constraint_intent_update_from_remove_scope(
+    action: PlanAtomicAction | None,
+    batch: str | None = "01",
+) -> dict[str, Any]:
+    selected: list[dict[str, Any]] = []
+    major_names_by_level = _remove_scope_major_names_by_level(action, batch)
+    school_names = _remove_scope_school_names(action, batch)
+    region_names_by_level = _remove_scope_region_names_by_level(action)
+    if major_names_by_level:
+        selected.append({"major_intents": major_names_by_level})
+    if school_names:
+        selected.append({"school_intents": {"negative_colleges": school_names}})
+    city_intents: dict[str, list[str]] = {}
+    if region_names_by_level.get("province"):
+        city_intents["negative_province"] = region_names_by_level["province"]
+    if region_names_by_level.get("city"):
+        city_intents["negative_city"] = region_names_by_level["city"]
+    if city_intents:
+        selected.append({"city_intents": city_intents})
+    if not selected:
+        return {}
+    return {
+        "selected": selected,
+        "intentMode": "constraint",
+        "summary": _remove_scope_label(action, batch),
+    }
+
+
+def _build_remove_units_preview_summary_from_scope(
+    items: list[dict[str, Any]],
+    matched_items: list[dict[str, Any]],
+    volunteer_ids: list[str],
+    action: PlanAtomicAction | None,
+    batch: str | None = "01",
+) -> str:
+    scope_label = _remove_scope_label(action, batch)
+    unit_count = _count_ordered_units_for_ids(items, volunteer_ids)
+    examples = "；".join(_ordered_item_display_name(item) for item in matched_items[:5])
+    example_text = f"示例：{examples}。" if examples else ""
+    return (
+        f"已在当前方案里定位到“{scope_label}”相关的 {len(volunteer_ids)} 条志愿"
+        f"（约 {unit_count} 个专业组）。{example_text}"
+        "确认后会把这些志愿移出当前方案，同时把这条要求写入后续报考参考，用于刷新推荐系数和专家优选；"
+        "执行后会重新审查方案。"
+    )
+
+
 def _build_move_unit_preview_summary_from_items(
     items: list[dict[str, Any]],
     volunteer_ids: list[str],
@@ -966,6 +1590,7 @@ def _build_resolved_apply_payload(
     *,
     volunteer_ids: list[str] | None = None,
     unit_ids: list[str] | None = None,
+    action_family: str | None = None,
 ) -> dict[str, Any]:
     """Keep preview-resolved execution targets stable for the confirm turn."""
     if not plan_model.atomic_actions:
@@ -974,12 +1599,17 @@ def _build_resolved_apply_payload(
     for index, action in enumerate(plan_model.atomic_actions):
         action_data = action.model_dump()
         if index == 0:
+            if action_family:
+                action_data["action_type"] = action_family
             if volunteer_ids is not None:
                 action_data["volunteer_ids"] = [str(item) for item in volunteer_ids if str(item or "").strip()]
             if unit_ids is not None:
                 action_data["unit_ids"] = [str(item) for item in unit_ids if str(item or "").strip()]
         resolved_actions.append(action_data)
-    return {"atomic_actions": resolved_actions} if resolved_actions else {}
+    payload = {"atomic_actions": resolved_actions} if resolved_actions else {}
+    if action_family:
+        payload["action_family"] = action_family
+    return payload
 
 
 def _candidate_ref_resolution_message(missing_text: str) -> str:
@@ -1789,6 +2419,25 @@ _SORT_FIELD_DIRECTIONS = {
     "schoolRank": "升序（院校排名/层次更靠前的机会优先）",
     "finalScore": "降序（系统综合推荐系数更高的机会优先）",
 }
+_EXPLICIT_SORT_FIELD_TEXT_MARKERS: dict[str, tuple[str, ...]] = {
+    "admissionRatio": ("录取率", "录取概率"),
+    "schoolRank": ("院校层次", "学校层次", "院校排名", "学校排名"),
+    "finalScore": ("推荐系数", "推荐分", "推荐度", "推荐排序", "综合推荐"),
+}
+
+
+def _compact_sort_text(value: Any) -> str:
+    return "".join(str(value or "").strip().split()).lower()
+
+
+def _infer_sort_field_from_explicit_text(*values: Any) -> str | None:
+    text = "\n".join(_compact_sort_text(value) for value in values if str(value or "").strip())
+    if not text:
+        return None
+    for field, markers in _EXPLICIT_SORT_FIELD_TEXT_MARKERS.items():
+        if any(_compact_sort_text(marker) in text for marker in markers if marker):
+            return field
+    return None
 
 
 def _infer_ordered_sort_field(plan_model: PlanActionPlan) -> str:
@@ -1798,6 +2447,12 @@ def _infer_ordered_sort_field(plan_model: PlanActionPlan) -> str:
             raw_value = str((atomic.filters or {}).get(key) or "").strip()
             if raw_value in _SORT_FIELD_ALIASES:
                 return _SORT_FIELD_ALIASES[raw_value]
+    inferred = _infer_sort_field_from_explicit_text(
+        getattr(plan_model, "user_goal", ""),
+        getattr(plan_model, "preview_summary", ""),
+    )
+    if inferred:
+        return inferred
     return "admissionRatio"
 
 
@@ -2389,6 +3044,74 @@ async def _execute_plan_action_model(
         atomic = plan_model.atomic_actions[0] if plan_model.atomic_actions else None
         refs = list(atomic.volunteer_ids or []) if atomic else []
         review_issue_target = getattr(atomic, "review_issue_target", None) if atomic else None
+        batch = getattr(ctx.deps, "batch", None) or "01"
+        if not refs and review_issue_target is None and _has_structured_remove_scope(atomic, batch):
+            ordered_items = await _load_ordered_items(ctx)
+            scoped_ids, matched_items = _resolve_ordered_ids_by_remove_scope(
+                ordered_items,
+                atomic,
+                batch,
+            )
+            scope_label = _remove_scope_label(atomic, batch)
+            if not scoped_ids:
+                summary = (
+                    f"当前方案里暂时没有匹配“{scope_label}”的志愿，所以这次不需要从方案中移除。"
+                    "如果这是后续必须避开的要求，可以继续说明，我会整理成确认卡片写入后续报考参考。"
+                )
+                return PlanExecutionResult(
+                    applied=False,
+                    action_family=plan_model.action_family,
+                    stage=plan_model.stage,
+                    result_kind="no_change",
+                    context_summary=plan_model.context_summary,
+                    summary=summary,
+                    state_summary=summary,
+                    reply_focus=["no_matching_ordered_items"],
+                    reply_strategy="direct_reply",
+                    next_step_hints=["当前方案没有命中结构化移除范围；不要声称已经移除。"],
+                    facts=_facts_with_planning_version(
+                        {"remove_scope": scope_label, "matched_count": 0},
+                        ctx,
+                    ),
+                )
+            preview_summary = _build_remove_units_preview_summary_from_scope(
+                ordered_items,
+                matched_items,
+                scoped_ids,
+                atomic,
+                batch,
+            )
+            return PlanExecutionResult(
+                applied=False,
+                action_family=plan_model.action_family,
+                stage=plan_model.stage,
+                result_kind="preview_only",
+                context_summary=plan_model.context_summary,
+                summary=_with_confirmation_hint(preview_summary),
+                reply_focus=["preview_only", "confirmation_required", "constraint_plan_removal"],
+                next_step_hints=[
+                    "只说明当前方案命中的移除范围、确认后会移除并更新后续报考参考；不要重复生成单独意向确认卡。"
+                ],
+                facts=_facts_with_planning_version(
+                    {
+                        "resolved_apply_payload": _build_resolved_apply_payload(
+                            plan_model,
+                            volunteer_ids=scoped_ids,
+                        ),
+                        "intent_update": _build_constraint_intent_update_from_remove_scope(
+                            atomic,
+                            getattr(ctx.deps, "batch", None) or "01",
+                        ),
+                        "remove_scope": scope_label,
+                        "matched_count": len(scoped_ids),
+                        "matched_examples": [
+                            _ordered_item_display_name(item)
+                            for item in matched_items[:5]
+                        ],
+                    },
+                    ctx,
+                ),
+            )
         if refs or review_issue_target is not None:
             resolved_ids, missing_refs = await _resolve_ordered_volunteer_refs(ctx, refs)
             resolved_apply_payload = _build_resolved_apply_payload(plan_model, volunteer_ids=resolved_ids) if resolved_ids else {}
@@ -2641,7 +3364,14 @@ async def execute_plan_action(
     ctx: RunContext[RequestContext],
     plan_payload: str,
 ) -> str:
-    """执行受控 PlanActionPlan。"""
+    """执行受控 PlanActionPlan。
+
+    For clear read-only plan actions the caller may pass a minimal JSON
+    PlanActionPlan directly, for example:
+    {"stage":"apply","action_family":"query_state","user_goal":"用户原话","requires_confirmation":false}
+    {"stage":"review","action_family":"review_plan","user_goal":"用户原话","requires_confirmation":false}
+    Mutating actions still require preview/confirmation and are guarded here.
+    """
     started_at = time.monotonic()
     logger.info("execute_plan_action: session_id=%s", ctx.deps.sessionid)
     try:
@@ -2704,6 +3434,8 @@ async def execute_plan_action(
             errorType="invalid_plan_model",
         )
         return json.dumps(result_data, ensure_ascii=False)
+    plan_model = _canonicalize_plan_major_scopes(ctx, plan_model)
+    data = normalize_plan_action_payload(plan_model.model_dump())
     if plan_model.stage == "apply" and plan_model.action_family in _MUTATING_ACTION_FAMILIES and not _allows_mutating_apply(ctx, plan_model):
         plan_model = plan_model.model_copy(
             update={
@@ -2714,6 +3446,7 @@ async def execute_plan_action(
                 },
             }
         )
+        data = normalize_plan_action_payload(plan_model.model_dump())
     guard_result: PlanExecutionResult | None = None
     if plan_model.stage == "apply" and plan_model.action_family in _MUTATING_ACTION_FAMILIES:
         phase = getattr(ctx.deps, "conversation_phase", None)

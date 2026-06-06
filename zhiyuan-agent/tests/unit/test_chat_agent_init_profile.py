@@ -105,8 +105,9 @@ def test_build_instructions_includes_plan_orchestration_boundaries():
 
     instructions = _build_instructions(ctx)
 
-    assert "统一优先走 Plan 编排工具" in instructions
-    assert "直接调用 `plan_next_action(action_family=\"query_state\")`" in instructions
+    assert "只读动作可以直接执行，高副作用动作必须先编排预览" in instructions
+    assert '"action_family":"query_state"' in instructions
+    assert '"action_family":"review_plan"' in instructions
     assert "不要先单独调用 `collect_plan_context_inputs`" in instructions
     assert "`query_volunteer_plan` 只用于局部命中查询" in instructions
     assert "还差几个怎么补" in instructions
@@ -149,7 +150,7 @@ def test_build_instructions_includes_plan_orchestration_boundaries():
     assert "不要自动规划删除、替换或补偿" in instructions
     assert "本轮审查结果是风险与提醒数量的权威事实" in instructions
     assert "不要再拿历史上下文里的旧方案概览" in instructions
-    assert "单纯方案审查 `review_plan` 不要先调用 `collect_plan_context_inputs`" in instructions
+    assert "单纯方案审查 `review_plan` 不要先调用 `collect_plan_context_inputs` 或 `plan_next_action`" in instructions
 
 
 def test_build_instructions_includes_pending_plan_action_confirmation_payload():
@@ -194,7 +195,8 @@ def test_build_instructions_includes_explore_first_direction_fit_guidance():
     assert "`preview_current_school_intent_confirmation`" in instructions
     assert "`preview_current_region_intent_confirmation`" in instructions
     assert "`preview_current_career_intent_confirmation`" in instructions
-    assert "不要在同一轮里先调 preview 又立刻调 `update_volunteer_intent_state(action=\"confirm\")`" in instructions
+    assert "正式生效必须走服务端 active pending 确认" in instructions
+    assert "短文本确认只作为 active pending 的兜底入口" in instructions
     assert "电子信息工程适合我吗" in instructions
     assert "先看学生本人适配度，再看方向/对象特点，再看当前方案承接" in instructions
     assert "用户意向与方向探索不要混在一起" in instructions

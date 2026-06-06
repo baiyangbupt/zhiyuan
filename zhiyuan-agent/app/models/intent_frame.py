@@ -197,5 +197,5 @@ class IntentFrame(BaseModel):
     raw_utterance: str = ""
 
     # 历史字段，仅用于兼容旧样本；自然语言 frame 不再承载确认执行。
-    # 确认/取消必须通过 pendingConfirmation 卡片入口。
+    # 确认/取消必须通过 service-level pendingConfirmation 入口处理。
     is_confirmation_of_previous: bool = False

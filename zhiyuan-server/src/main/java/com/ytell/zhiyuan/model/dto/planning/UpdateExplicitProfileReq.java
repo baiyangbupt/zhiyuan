@@ -1,20 +1,19 @@
 package com.ytell.zhiyuan.model.dto.planning;
 
-import com.google.common.collect.Lists;
 import lombok.Data;
 
 import java.util.List;
 
 @Data
 public class UpdateExplicitProfileReq {
-    private PreferenceGroup majorPreferences = new PreferenceGroup();
-    private PreferenceGroup schoolPreferences = new PreferenceGroup();
-    private PreferenceGroup regionPreferences = new PreferenceGroup();
-    private List<String> strengthSubjects = Lists.newArrayList();
+    private PreferenceGroup majorPreferences;
+    private PreferenceGroup schoolPreferences;
+    private PreferenceGroup regionPreferences;
+    private List<String> strengthSubjects;
 
     @Data
     public static class PreferenceGroup {
-        private List<String> positive = Lists.newArrayList();
-        private List<String> negative = Lists.newArrayList();
+        private List<String> positive;
+        private List<String> negative;
     }
 }

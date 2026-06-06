@@ -64,6 +64,16 @@ public class PlanningStateController {
         return BaseResponse.success(planningStateService.getConstraintState(chatSessionId));
     }
 
+    @PatchMapping("/session/constraints")
+    @ApiOperation("更新规划约束和软偏好")
+    public BaseResponse<PlanningStateVersionDTO> updateConstraintState(@PathVariable("tenantId") Long tenantId,
+                                                                       @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId,
+                                                                       @RequestBody UpdateConstraintStateReq req) {
+        log.info("updateConstraintState: tenantId={}, chatSessionId={}, intentMode={}",
+                tenantId, chatSessionId, req == null ? null : req.getIntentMode());
+        return BaseResponse.success(planningStateService.updateConstraintState(chatSessionId, req));
+    }
+
     @PatchMapping("/session/profile/explicit")
     @ApiOperation("更新显式画像")
     public BaseResponse<PlanningStateVersionDTO> updateExplicitProfile(@PathVariable("tenantId") Long tenantId,

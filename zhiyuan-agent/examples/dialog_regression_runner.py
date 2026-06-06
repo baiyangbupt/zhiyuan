@@ -107,6 +107,64 @@ ROUTING_PATH_BY_TOOL_CALL_ID_PREFIX = (
     ("direct-pending-intent-confirmation", "direct_pending_intent_confirm"),
 )
 
+STRUCTURED_FOLLOWUP_TYPES = {
+    "planningWorkspaceAction",
+    "pendingConfirmationCard",
+    "interestAnalysisPopup",
+    "planEditSelectPopup",
+    "intentDetectSelectPopup",
+    "intentConfirmPopup",
+}
+
+FOLLOWUP_USER_TEXT_FIELDS = (
+    "title",
+    "summary",
+    "content",
+    "impactTitle",
+    "impact",
+    "actionText",
+    "confirmText",
+    "cancelText",
+)
+
+
+def _is_structured_followup_message(message: dict[str, Any]) -> bool:
+    message_type = str(message.get("type") or "").strip()
+    if message_type in STRUCTURED_FOLLOWUP_TYPES:
+        return True
+    content = message.get("content")
+    if isinstance(content, dict):
+        content_type = str(content.get("type") or "").strip()
+        if content_type in STRUCTURED_FOLLOWUP_TYPES:
+            return True
+    return False
+
+
+def _is_silent_workspace_action_message(message: dict[str, Any]) -> bool:
+    message_type = str(message.get("type") or "").strip()
+    content = message.get("content")
+    content_obj = content if isinstance(content, dict) else {}
+    content_type = str(content_obj.get("type") or "").strip()
+    return (
+        (message_type == "planningWorkspaceAction" or content_type == "planningWorkspaceAction")
+        and bool(content_obj.get("silent"))
+    )
+
+
+def _split_primary_and_followup_messages(
+    messages: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    primary: list[dict[str, Any]] = []
+    followups: list[dict[str, Any]] = []
+    for message in messages:
+        if _is_silent_workspace_action_message(message):
+            continue
+        if _is_structured_followup_message(message):
+            followups.append(message)
+        else:
+            primary.append(message)
+    return primary, followups
+
 
 async def _ask_once(
     url: str,
@@ -128,25 +186,29 @@ async def _ask_once(
     final_message_at: float | None = None
     async with websockets.connect(url, max_size=2**22, open_timeout=open_timeout) as ws:
         await ws.send(json.dumps(payload, ensure_ascii=False))
-        primary: list[dict[str, Any]] = []
+        streamed_messages: list[dict[str, Any]] = []
         while True:
             raw = await asyncio.wait_for(ws.recv(), timeout=response_timeout)
             now = time.perf_counter()
             if first_message_at is None:
                 first_message_at = now
             message = json.loads(raw)
-            primary.append(message)
+            streamed_messages.append(message)
             if message.get("end") is True:
                 final_message_at = now
                 break
 
-        followups: list[dict[str, Any]] = []
+        primary, streamed_followups = _split_primary_and_followup_messages(streamed_messages)
+        followups: list[dict[str, Any]] = list(streamed_followups)
         while True:
             try:
                 raw = await asyncio.wait_for(ws.recv(), timeout=2)
             except asyncio.TimeoutError:
                 break
-            followups.append(json.loads(raw))
+            followup_message = json.loads(raw)
+            if _is_silent_workspace_action_message(followup_message):
+                continue
+            followups.append(followup_message)
 
     timing = {
         "firstMessageMs": int(((first_message_at or final_message_at or time.perf_counter()) - started_at) * 1000),
@@ -493,6 +555,8 @@ def _followup_summary(followups: list[dict[str, Any]]) -> tuple[list[str], list[
     refreshes: list[bool] = []
     types: list[str] = []
     for item in followups:
+        if _is_silent_workspace_action_message(item):
+            continue
         item_type = str(item.get("type") or "").strip()
         if item_type and item_type not in types:
             types.append(item_type)
@@ -536,6 +600,22 @@ def _extract_thinking(messages: list[dict[str, Any]]) -> str:
     return "\n".join(str(m.get("content", "")) for m in messages if m.get("type") == "thinking").strip()
 
 
+def _extract_followup_user_text(followups: list[dict[str, Any]]) -> str:
+    parts: list[str] = []
+    for item in followups:
+        if _is_silent_workspace_action_message(item):
+            continue
+        content = item.get("content")
+        if isinstance(content, dict):
+            for field in FOLLOWUP_USER_TEXT_FIELDS:
+                value = content.get(field)
+                if isinstance(value, str) and value.strip():
+                    parts.append(value.strip())
+        elif isinstance(content, str) and content.strip():
+            parts.append(content.strip())
+    return "\n".join(parts).strip()
+
+
 def _check_plan_reply_style(text: str) -> list[str]:
     violations: list[str] = []
     for value in PLAN_STYLE_BANNED_SUBSTRINGS:
@@ -570,8 +650,13 @@ def _check_content_assertions(
     assert_followup_type = step.get("assertFollowupType")
     assert_followup_count = step.get("assertFollowupCount")
     assert_no_followups = bool(step.get("assertNoFollowups"))
+    visible_followups = [
+        item for item in followups if not _is_silent_workspace_action_message(item)
+    ]
 
-    combined_text = text.lower()
+    followup_user_text = _extract_followup_user_text(visible_followups)
+    searchable_text = "\n".join(part for part in (text, followup_user_text) if part).strip()
+    combined_text = searchable_text.lower()
     combined_thinking = thinking_text.lower()
     for expected in assert_contains:
         if expected.lower() not in combined_text:
@@ -610,7 +695,7 @@ def _check_content_assertions(
     if assert_followup_target:
         found_target = any(
             f.get("content", {}).get("targetView") == assert_followup_target
-            for f in followups
+            for f in visible_followups
         )
         if not found_target:
             violations.append(
@@ -620,7 +705,7 @@ def _check_content_assertions(
     if assert_followup_refresh is not None:
         found_refresh = any(
             f.get("content", {}).get("refresh") == assert_followup_refresh
-            for f in followups
+            for f in visible_followups
         )
         if not found_refresh:
             violations.append(
@@ -628,7 +713,7 @@ def _check_content_assertions(
                 f"assertFollowupRefresh FAILED — expected refresh={assert_followup_refresh} not in followups"
             )
     if assert_followup_type:
-        _, _, followup_types = _followup_summary(followups)
+        _, _, followup_types = _followup_summary(visible_followups)
         if str(assert_followup_type) not in followup_types:
             violations.append(
                 f"{case_name} session={session_id} prompt={prompt_label}: "
@@ -639,15 +724,15 @@ def _check_content_assertions(
             expected_count = int(assert_followup_count)
         except (TypeError, ValueError):
             expected_count = None
-        if expected_count is not None and len(followups) != expected_count:
+        if expected_count is not None and len(visible_followups) != expected_count:
             violations.append(
                 f"{case_name} session={session_id} prompt={prompt_label}: "
-                f"assertFollowupCount FAILED — expected {expected_count} followups but got {len(followups)}"
+                f"assertFollowupCount FAILED — expected {expected_count} followups but got {len(visible_followups)}"
             )
-    if assert_no_followups and followups:
+    if assert_no_followups and visible_followups:
         violations.append(
             f"{case_name} session={session_id} prompt={prompt_label}: "
-            f"assertNoFollowups FAILED — expected no followups but got {len(followups)}"
+            f"assertNoFollowups FAILED — expected no followups but got {len(visible_followups)}"
         )
     return violations
 

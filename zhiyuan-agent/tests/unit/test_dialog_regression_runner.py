@@ -569,6 +569,15 @@ def test_followup_summary_extracts_targets_and_refresh_flags():
         {"content": {"targetView": "ordered", "refresh": True}},
         {"content": {"targetView": "review", "refresh": False}},
         {"content": {"targetView": "ordered", "refresh": True}},
+        {
+            "type": "planningWorkspaceAction",
+            "content": {
+                "type": "planningWorkspaceAction",
+                "targetView": "ordered",
+                "refresh": True,
+                "silent": True,
+            },
+        },
         {"type": "pendingConfirmationCard", "content": {"type": "pendingConfirmationCard"}},
     ]
 
@@ -577,6 +586,52 @@ def test_followup_summary_extracts_targets_and_refresh_flags():
     assert targets == ["ordered", "review"]
     assert refreshes == [True, False, True]
     assert types == ["pendingConfirmationCard"]
+
+
+def test_streamed_pending_card_is_classified_as_followup():
+    primary, followups = runner._split_primary_and_followup_messages(
+        [
+            {"type": "pendingConfirmationCard", "content": {"type": "pendingConfirmationCard"}, "end": True},
+        ]
+    )
+
+    assert primary == []
+    assert len(followups) == 1
+    assert followups[0]["type"] == "pendingConfirmationCard"
+
+
+def test_streamed_thinking_and_pending_card_are_split():
+    primary, followups = runner._split_primary_and_followup_messages(
+        [
+            {"type": "thinking", "content": "正在生成这次调整的影响预览...", "end": False},
+            {"type": "pendingConfirmationCard", "content": {"type": "pendingConfirmationCard"}, "end": True},
+        ]
+    )
+
+    assert runner._extract_thinking(primary) == "正在生成这次调整的影响预览..."
+    assert runner._extract_text(primary) == ""
+    assert [item["type"] for item in followups] == ["pendingConfirmationCard"]
+
+
+def test_streamed_silent_workspace_action_is_not_user_visible_followup():
+    primary, followups = runner._split_primary_and_followup_messages(
+        [
+            {"type": "thinking", "content": "正在刷新工作台...", "end": False},
+            {
+                "type": "planningWorkspaceAction",
+                "content": {
+                    "type": "planningWorkspaceAction",
+                    "targetView": "ordered",
+                    "refresh": True,
+                    "silent": True,
+                },
+                "end": True,
+            },
+        ]
+    )
+
+    assert runner._extract_thinking(primary) == "正在刷新工作台..."
+    assert followups == []
 
 
 def test_content_assertions_reject_followups_when_disallowed():
@@ -591,6 +646,28 @@ def test_content_assertions_reject_followups_when_disallowed():
     assert any("assertNoFollowups FAILED" in item for item in violations)
 
 
+def test_content_assertions_ignore_silent_workspace_refresh_when_followups_disallowed():
+    violations = runner._check_content_assertions(
+        "已将该专业组移动到第 2 位，方案顺序已更新。",
+        [
+            {
+                "type": "planningWorkspaceAction",
+                "content": {
+                    "type": "planningWorkspaceAction",
+                    "targetView": "ordered",
+                    "refresh": True,
+                    "silent": True,
+                },
+            }
+        ],
+        {"prompt": "确认", "assertNoFollowups": True},
+        "case-a",
+        "17",
+    )
+
+    assert violations == []
+
+
 def test_content_assertions_support_followup_type_and_count():
     violations = runner._check_content_assertions(
         "需要你确认后才会执行。",
@@ -599,6 +676,35 @@ def test_content_assertions_support_followup_type_and_count():
             "prompt": "按院校层次排序",
             "assertFollowupType": "pendingConfirmationCard",
             "assertFollowupCount": 1,
+        },
+        "case-a",
+        "17",
+    )
+
+    assert violations == []
+
+
+def test_content_assertions_search_user_visible_followup_text():
+    violations = runner._check_content_assertions(
+        "",
+        [
+            {
+                "type": "pendingConfirmationCard",
+                "content": {
+                    "type": "pendingConfirmationCard",
+                    "pendingId": "pending-1",
+                    "actionFamily": "sort_ordered_plan",
+                    "title": "确认方案排序",
+                    "summary": "会按推荐系数重新排序当前方案，需要你确认后才会执行。",
+                    "confirmText": "确认执行",
+                },
+            }
+        ],
+        {
+            "prompt": "这版按推荐系数重新排一下",
+            "assertContains": ["排序", "确认"],
+            "assertContainsAny": ["推荐系数", "导出顺序"],
+            "assertNotContains": ["actionFamily"],
         },
         "case-a",
         "17",

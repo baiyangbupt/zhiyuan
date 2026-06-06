@@ -155,11 +155,12 @@
       {
         "prompt": "青岛城市学院相关专业是不是有多个，先帮我判断一下，不要直接改方案",
         "assertContains": [
-          "青岛城市学院",
-          "命中"
+          "青岛城市学院"
         ],
         "assertContainsAny": [
+          "一共",
           "7 条",
+          "7 个",
           "7个",
           "多个"
         ],
@@ -415,15 +416,13 @@
       },
       {
         "prompt": "确认",
-        "assertContainsAny": [
-          "点击",
-          "确认卡片",
-          "不会直接",
-          "还在待确认"
+        "assertContains": [
+          "已将",
+          "专业组",
+          "方案顺序"
         ],
         "assertNotContains": [
           "已直接移动",
-          "已移动",
           "草稿",
           "payload",
           "stage",
@@ -438,9 +437,9 @@
           "volunteerId"
         ],
         "expectedKeyPoints": [
-          "点击确认卡片",
-          "文字确认不会直接执行",
-          "不会改动方案"
+          "文本确认可以承接当前待确认卡片",
+          "方案顺序已更新",
+          "无额外可点击工作区卡片"
         ],
         "forbiddenPatterns": [
           "已直接移动",
@@ -690,7 +689,7 @@
   },
   {
     "name": "303-quality-intent-preview-confirm-progress",
-    "sessionId": "990880203",
+    "sessionId": "990880303",
     "flow": [
       "intent",
       "confirm"

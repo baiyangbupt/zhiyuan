@@ -150,6 +150,16 @@ COMMON_MAJOR_ALIAS_TABLE: dict[str, dict[str, tuple[str, ...]]] = {
     },
 }
 
+# These aliases are usually spoken as broad category directions rather than a
+# single concrete major. Keep the list explicit so concrete aliases such as
+# "土木" and "会计" are not broadened by suffix heuristics.
+CATEGORY_PREFERRED_MAJOR_ALIASES = frozenset(
+    {
+        "计算机",
+        "电子信息",
+    }
+)
+
 
 def _compact_alias_text(value: str | None) -> str:
     return "".join(str(value or "").split()).lower()

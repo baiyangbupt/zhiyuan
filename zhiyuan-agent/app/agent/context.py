@@ -40,6 +40,7 @@ class PlanningSummary:
     sample_schools: list[str] = field(default_factory=list)
     positive_regions: list[str] = field(default_factory=list)
     positive_majors: list[str] = field(default_factory=list)
+    constraint_state: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_backend_state(cls, data: dict | None) -> "PlanningSummary | None":
@@ -112,6 +113,7 @@ class PlanningSummary:
             sample_schools=seen_schools,
             positive_regions=positive_regions[:5],
             positive_majors=positive_majors[:5],
+            constraint_state=data.get("constraintState") or {},
         )
 
 
@@ -134,6 +136,10 @@ class RequestContext:
     enable_intent_side_effect_arbitration: bool = False  # 主链路用于拦截误触发的意向待确认副作用
     recent_intent_analysis: dict[str, Any] | None = None  # 最近一次 Intent 工具结构化结果，供指代追问恢复上下文
     agent_observability: dict[str, Any] = field(default_factory=dict)  # 本轮 Agent 节点耗时与失败定位信息
+    confirmed_via_card: bool = False  # 服务端确认卡片点击链路，方案 apply 只能由该结构化上下文放行
+    confirmed_via_pending: bool = False  # 服务端统一 pending 确认链路，包含卡片点击和短文本兜底
+    confirmation_entry: str = ""  # "card" | "short_text"，仅用于审计和执行链路观测
+    stale_pending_notice: str = ""  # 本轮开始时失效的待确认操作提示，供模型重新生成预览而不是复述旧确认
 
 
 def resolve_pending_confirmation(deps: Any) -> "PendingConfirmation | None":

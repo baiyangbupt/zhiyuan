@@ -20,6 +20,12 @@
 
 ### Fixed
 
+- 工具直返策略继续收紧：`reply_strategy=direct_reply` 不再被全局信任，Policy / 适配匹配 / 局部方案查询等只读工具即使返回摘要，也默认交回主模型综合；保留直返的只剩意向确认预览、受控阻断、无变化和方案变更预览等协议级结果，避免工具片段截断多意图问题或把偏好表达误答成命中列表。
+- 方案高副作用 apply 门禁改为只认服务端 pending confirmation 上下文：卡片点击会带 `confirmed_via_card=true`，active pending 短文本兜底会带 `confirmation_entry=short_text`，两者都必须通过 pending 状态和 action family 校验；无 active pending 的自然语言“确认 / 好的 / 执行吧”不会作为执行层放行条件。
+- `query_state` 的院校局部查询重定向不再携带 `direct_reply`，只保留 `local_plan_query` 事实，由主模型结合原问题判断是列表查询、院校取舍还是方案风险解释，避免类似“不太想去江苏”这类表达被局部命中结果截断。
+- 统一 Explore 兴趣分析卡片的确认入口：`interestAnalysisPopup` 的候选查询和方案分析快捷动作保持只读，`prefer_confirm / constrain_confirm` 不再只返回旧 follow-up 文本，而是二次生成 `pendingConfirmationCard`；点击新确认卡前不会写入后续报考参考。生成新的意向 pending 时同步清理旧 `planEditCache`，卡片点击后的意向落库直接走内部 `apply_selected_intents -> _apply_intents`，不再通过旧 `update_volunteer_intent_state` 工具名转发。
+- 意向影响说明展示收口：`impactAnalysis` 仍保留当前方案命中、冲突和候选机会等结构化事实，但用户可见文案只展示“影响”下最多两条具体事实；通用 `summaryTitle / nextActionHints` 和“现在比较贴近 / 还可以再看 / 下一步建议”等模板分组不再进入卡片展示。没有真实方案或候选影响时直接省略影响区块，意向确认卡片正文只保留“点击采纳后生效”的待确认内容。
+- 软偏好与硬要求路由补强：`不太想去江苏` 这类表达明确走地域 Intent 预览，按 `intentMode=preference + negative_province` 形成待确认卡片；`不要江苏 / 必须排除江苏` 才按 `constraint` 处理。`query_volunteer_plan` 的局部命中结果不再直接作为最终回复，必须回到模型综合，避免地域、专业或院校偏好表达被截断成“当前方案命中 N 条”的查询结果。
 - 调稳/别冒险类方案请求的工具调度边界收口：用户只是问“哪里不稳/怎么优化”时仍走 `analyze_adjustment`；用户明确要“先给我看会怎么动/给一版预览/确认后再执行”时优先规划可确认预览，整体调稳场景优先 `preview_compensation`，没有可执行补齐动作时再说明只能先分析并引导替换、重排或放宽筛选。
 - 3.0.3 open-quality 全量收口：百家 `kimi-k2.6` 下 `examples/dialog_regression_303_open_quality_cases.json` 复跑 `23/23` steps 通过；修复明确职业方向被泛方向吞掉的问题，`读研 vs 稳定就业` 会优先保留具体方向 slot 后再分析，不再退化成泛方向回复。
 - Agent 多工具回复合成边界补强：同一轮已收集 Explore/专业对比/专业介绍等事实时，后续可直返工具不会覆盖前序事实，而是交回主模型统一合成，避免职业方向 + 方案审查、专业对比 + 专业介绍等多意图场景只回答最后一个工具结果。
@@ -564,15 +570,15 @@
 - websocket compat 出站链路补充多 follow-up 回归测试，确认主文本回复后会继续逐条发送 `planningWorkspaceAction`，前端可分别刷新 `ordered / review / draft` 等目标视图。
 - `Plan` 原子动作继续补齐：`replace_units` 现已从“schema 有但执行层未接入”改为可用的组合动作，确认后按“移出旧志愿 -> 按筛选条件补入候选 -> 重排/复审”执行；`pin_unit / unpin_unit` 也接入执行层，避免模型选中已暴露 action_family 后落到“暂未接入执行层”。
 - `plan_next_action` 的缺参判断修正：`limit` 不再被当作有效补入范围，`add_units` 无 volunteerIds 且无地域/院校/专业/标签范围时会停在 `analyze` 要求补齐信息；`replace_units` 同时要求待替换 volunteerIds 与补入范围。
-- Plan 确认链路新增轻量 pending action 注入：`ChatService` 会从历史里最近一次 `execute_plan_action` 的 `preview_only` 结果提取待确认动作，并在下一轮 `RequestContext.pending_plan_action` 中提供确认后 `apply` payload；用户回复“确认”时，主模型可直接调用 `execute_plan_action` 执行上一轮预览动作，不需要重新猜参数。
+- Plan 确认链路新增轻量 pending action 注入：`ChatService` 会从历史里最近一次 `execute_plan_action` 的 `preview_only` 结果提取待确认动作，并在下一轮 `RequestContext.pending_plan_action` 中提供确认后 `apply` payload；正式执行由确认卡片点击入口触发，不再依赖用户自然语言“确认”让主模型重猜参数。
 - 工作台刷新判断收紧为优先只看本轮 `new_messages`，避免历史里的 preview 工具调用被误判成本轮执行动作，导致未真正执行时也触发右侧工作台刷新。
-- Plan 确认链路继续补齐：`ChatService` 对明确短确认语会直接执行历史 pending `plan_payload`，并按 `execute_plan_action` 的 tool-call / tool-return 结构写回历史，同时根据 `workspace_refresh_targets` 追加多目标工作台刷新，避免确认轮再次依赖模型重猜动作参数。
+- Plan 确认链路继续补齐：`ChatService` 对确认卡片点击会直接执行历史 pending `plan_payload`，并按 `execute_plan_action` 的 tool-call / tool-return 结构写回历史，同时根据 `workspace_refresh_targets` 追加多目标工作台刷新；自然语言短确认仅在 active pending 存在且一致性校验通过时消费同一 pending payload。
 - `plan_next_action(query_candidates)` 修正筛选透传：候选查询也会生成 `PlanAtomicAction.filters`，执行层可稳定拿到地域、院校、专业、标签、档位和 limit，不再退化成空条件候选查询。
 - WebSocket compat 出站发送增加关闭态保护：主回复、thinking 和 follow-up 在客户端断开或连接已关闭时不再抛 ASGI `RuntimeError`，而是记录日志并停止当前连接处理。
-- Plan pending 提取补充 `plan_next_action(stage=preview)` 兜底：如果模型预览轮只规划了高副作用动作但没有继续调用 `execute_plan_action` 生成 `preview_only`，下一轮用户回复“确认”仍可复用该 preview plan 生成 apply payload 直接执行。
+- Plan pending 提取补充 `plan_next_action(stage=preview)` 兜底：如果模型预览轮只规划了高副作用动作但没有继续调用 `execute_plan_action` 生成 `preview_only`，服务层仍可生成待确认卡片；后续只有用户点击该卡片才会复用 preview plan 生成 apply payload 执行。
 - Plan 真实回归话术改为更贴近用户表达：用“还差的几个怎么补 / 帮我补几个更稳的 / 怎么把方案补满一点”覆盖 `preview_compensation`，并要求最终回复避免直接暴露“补偿预览”这类内部动作名。
 - Plan 局部查询边界继续收紧：“还差几个怎么补 / 补几个更稳的 / 怎么补满”属于数量缺口与方案增补，不属于 `query_volunteer_plan` 的局部命中查询，模型应走 Plan 主链路规划 `preview_compensation` 或 `add_units`。
-- `execute_plan_action` 增加高副作用 apply 硬门禁：没有 pending 确认上下文或明确短确认语时，`generate/add/remove/move/replace/regenerate/apply_compensation` 等动作即使被模型直接构造为 `apply`，也会退回 `preview_only`，避免“帮我补几个更稳的”被未确认直接改方案。
+- `execute_plan_action` 增加高副作用 apply 硬门禁：没有服务端卡片确认上下文时，`generate/add/remove/move/replace/regenerate/apply_compensation` 等动作即使被模型直接构造为 `apply`，也会退回 `preview_only`，避免“帮我补几个更稳的”被未确认直接改方案。
 - 按筛选补入候选后的执行摘要修正为对比执行前后方案数量：如果后端返回匹配到候选但排序方案数量没有增加，不再宣称“已加入 N 个”，而是提示当前方案数量未变化，避免“已加入 5 个但仍是 93/96”的矛盾回复。
 - `query_volunteer_plan` 增加工具级边界保护：遇到“补几个 / 补满 / 还差 / 加入方案”等方案动作诉求时，不再继续做局部方案查询，直接提示应走 Plan 动作预览与确认链。
 - Plan 回复样式 guard 覆盖范围从 `execute_plan_action` 扩展到整条主链 `collect_plan_context_inputs / plan_next_action / execute_plan_action`，避免只规划未执行时漏出 markdown、emoji 或菜单式回复。
@@ -600,3 +606,10 @@
 - Intent 预览影响说明补充临时占位清理：当方案/候选事实不可用且只剩“我先帮你看看 / 继续看看方案匹配 / 直接让我给你调整建议”等泛化句时，回落到“待确认、确认前不生效、不改方案”的边界说明；真实复测同一混合专业意向 case 为 strong、无质量违规，工具节点约 `8ms`，剩余耗时主要在首轮模型请求约 `40.7s`。
 - `preview_compensation` 补齐预览为空时增加只读调整分析兜底：会补读 `plan-adjustment/analyze` 并将调序、替换等可行动建议作为 `adjustment_fallback` 返回，避免“调稳点、先看会怎么动”只得到“没有可补齐候选”的单薄回复；该链路仍不自动改动方案。
 - 费用/预算/中外合作/高收费类风险解释问题的 Plan 调度边界收口为优先 `review_plan`，避免只返回普通方案概览；职业方向承接回复的代表样本改为专业主干短名，去掉长招生说明，提升扫读性。
+- session 129 人工走查反馈修复：软负向表达（如“不太想去江苏 / 不太想学秘书”）在模型未显式传 `intentMode` 时兜底为偏好，卡片使用“不优先”语义；硬负向（如“不去北京”）仍保持约束语义。
+- 软负向偏好若当前画像和当前方案均未命中，不再生成无意义确认卡片；若当前方案有命中，仍生成 `pendingConfirmationCard`，点击前不生效。
+- `pendingConfirmationCard` 点击确认/取消/失效后会回写原 CARD 消息为不可点击状态，避免刷新后旧卡片仍能重复点击；前端消息列表隐藏 `planningWorkspaceAction` 历史卡片，保留其工作区刷新语义。
+- Intent 影响说明继续收敛：去掉空泛的“候选里暂时没有明显补位机会”，卡片影响说明固定为软偏好/硬要求机制 + 最多两条当前方案事实。
+- 待确认卡片改为 card-only 承接：意向/要求变更和方案调整预览成功生成 `pendingConfirmationCard` 后，不再额外发送重复文本气泡；WebSocket v3 / compat 会跳过空 primary，直接发送/保存 follow-up 卡片。专业组移动/删除的关键位置说明迁移到卡片 content，避免去掉文本后信息量下降。
+- 本轮补充回归：`tests/unit/test_chat_service_history_persistence.py -q` 通过 `160 passed`，`tests/unit/test_ws_compat.py -q` 通过 `20 passed`。
+- 本轮回归：`tests/unit/test_intent_state_tool.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_tool_reply_policy.py tests/unit/test_ws_compat.py tests/unit/test_plan_execution_tool.py tests/regression/test_execution_apply.py tests/regression/test_pending_protocol.py -q` 通过 `634 passed`。

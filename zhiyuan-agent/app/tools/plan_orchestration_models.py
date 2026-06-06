@@ -154,6 +154,17 @@ def normalize_plan_action_payload(payload: dict[str, Any] | None) -> dict[str, A
     target_position = normalized.get("target_position")
     source_position = normalized.get("source_position")
     review_issue_target = normalized.get("review_issue_target")
+    if not isinstance(review_issue_target, dict):
+        review_issue_code = str(normalized.get("review_issue_code") or "").strip()
+        if review_issue_code:
+            review_issue_target = {
+                "code": review_issue_code,
+                "scope_mode": str(normalized.get("review_issue_scope_mode") or "full_issue").strip() or "full_issue",
+                "scope_fingerprint": str(normalized.get("review_issue_scope_fingerprint") or "").strip(),
+                "label": str(normalized.get("review_issue_label") or "").strip(),
+                "scope_kind": str(normalized.get("review_issue_scope_kind") or "").strip(),
+                "default_action_family": str(normalized.get("review_issue_default_action_family") or "").strip(),
+            }
     has_atomic_shape = (
         bool(volunteer_ids)
         or bool(unit_ids)

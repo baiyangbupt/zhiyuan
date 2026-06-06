@@ -1,8 +1,9 @@
 """对话阶段状态机 + 统一待确认协议。
 
-3.0.3 起主状态源是后端 ``pendingConfirmation``，用户必须点击确认卡片
-才能执行意向或方案更新。旧 ``pending_plan_action`` 与 ``planEditCache``
-只作为历史会话 adapter，不能再作为新链路的确认主源。
+3.0.3 起主状态源是后端 ``pendingConfirmation``。卡片确认是主入口；
+短文本确认只作为 active pending 的兜底入口，必须经过服务端 pending
+状态、类型和版本校验后才能执行意向或方案更新。旧 ``pending_plan_action``
+与 ``planEditCache`` 只作为历史会话 adapter，不能再作为新链路的确认主源。
 """
 
 from __future__ import annotations

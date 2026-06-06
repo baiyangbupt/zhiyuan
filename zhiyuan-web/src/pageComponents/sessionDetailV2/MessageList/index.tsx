@@ -32,6 +32,30 @@ marked.use({ gfm: true, breaks: true });
 
 const renderMarkdown = (content: string) => marked.parse(content) as string;
 
+const OPTIMISTIC_MESSAGE_ID_BASE = 1_000_000_000_000;
+
+interface IOptimisticMessage extends IMessage {
+  optimistic?: boolean;
+  optimisticAfterId?: number;
+}
+
+const isOptimisticUserMessage = (record: IMessage): record is IOptimisticMessage =>
+  record.messageFrom === '1' &&
+  record.contentType === 'TEXT' &&
+  (record.id >= OPTIMISTIC_MESSAGE_ID_BASE || Boolean((record as IOptimisticMessage).optimistic));
+
+const hasMatchingRealUserMessage = (optimistic: IOptimisticMessage, records: IMessage[]) => {
+  const afterId = optimistic.optimisticAfterId ?? 0;
+  return records.some(
+    record =>
+      record.id < OPTIMISTIC_MESSAGE_ID_BASE &&
+      record.id > afterId &&
+      record.messageFrom === '1' &&
+      record.contentType === 'TEXT' &&
+      (record.content || '') === (optimistic.content || '')
+  );
+};
+
 interface IQuickReplyAction {
   label: string;
   icon: React.ReactNode;
@@ -74,6 +98,7 @@ interface IIntentCardItem {
 }
 
 interface IIntentAnalysisContent {
+  stage?: string;
   summaryTitle?: string;
   currentPlanFit?: string[];
   currentPlanConflict?: string[];
@@ -104,6 +129,8 @@ interface IIntentCardContent {
   targetView?: PlanningWorkspaceIntent['targetView'];
   volunteerIds?: string[];
   refresh?: boolean;
+  preserveView?: boolean;
+  silent?: boolean;
   candidateFilters?: PlanningWorkspaceIntent['candidateFilters'];
   kind?: 'intent_change' | 'plan_mutation';
   actionFamily?: string;
@@ -119,14 +146,17 @@ const isIntentConfirmCard = (contentObj?: IIntentCardContent | null) =>
   contentObj?.type === 'intentDetectSelectPopup' ||
   contentObj?.type === 'intentConfirmPopup';
 
-const isInterestAnalysisCard = (contentObj?: IIntentCardContent | null) =>
+const isInterestAnalysisOnlyCard = (contentObj?: IIntentCardContent | null) =>
   contentObj?.type === 'interestAnalysisPopup';
 
 const isPendingConfirmationCard = (contentObj?: IIntentCardContent | null) =>
   contentObj?.type === 'pendingConfirmationCard';
 
+const isWorkspaceActionCard = (contentObj?: IIntentCardContent | null) =>
+  contentObj?.type === 'planningWorkspaceAction';
+
 const isIntentAnalysisCard = (contentObj?: IIntentCardContent | null) =>
-  isIntentConfirmCard(contentObj) || isInterestAnalysisCard(contentObj);
+  isIntentConfirmCard(contentObj) || isInterestAnalysisOnlyCard(contentObj);
 
 const supportedWorkspaceTargetViews = new Set(['candidate', 'ordered']);
 
@@ -196,6 +226,8 @@ const parseWorkspaceIntentPayload = (
     targetView,
     volunteerIds: Array.isArray(contentObj.volunteerIds) ? contentObj.volunteerIds : [],
     refresh: Boolean(contentObj.refresh),
+    preserveView: Boolean(contentObj.preserveView),
+    silent: Boolean(contentObj.silent),
     candidateFilters: contentObj.candidateFilters,
   };
 };
@@ -255,6 +287,7 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
   const prevMessageListRef = useRef<IMessage[]>([]);
   const pageRef = useRef(1);
   const fetchQueueRef = useRef<{ enqueue: (page?: number) => Promise<void> } | null>(null);
+  const optimisticMessageSeqRef = useRef(0);
 
   const [checkedMap, setCheckedMap] = useState<Record<number, boolean[]>>({});
 
@@ -334,7 +367,12 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
                 contentSegments: record.contentSegments,
               }));
               setMessageList(prevList => {
-                const merged = [...dealReverseList, ...prevList]
+                const prevWithoutMatchedOptimistic = prevList.filter(
+                  record =>
+                    !isOptimisticUserMessage(record) ||
+                    !hasMatchingRealUserMessage(record, dealReverseList)
+                );
+                const merged = [...dealReverseList, ...prevWithoutMatchedOptimistic]
                   .reduce((acc: IMessage[], current: IMessage) => {
                     if (!acc.some(item => item.id === current.id)) {
                       acc.push(current);
@@ -374,6 +412,8 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
     },
     [autoScroll, routerParams.chatSessionId, routerParams.tenantId]
   );
+
+  const fetchLatestMessageList = useCallback(() => fetchMessageList(1), [fetchMessageList]);
 
   // 是否到达容器底部
   const isContainerAtBottom = (el: any) => {
@@ -422,6 +462,34 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
     }
   }, []);
 
+  const appendOptimisticUserMessage = useCallback(
+    (content: string) => {
+      optimisticMessageSeqRef.current += 1;
+      const optimisticId = OPTIMISTIC_MESSAGE_ID_BASE + Date.now() + optimisticMessageSeqRef.current;
+      setMessageList(prevList => {
+        const optimisticAfterId = prevList.reduce((maxId, record) => {
+          if (isOptimisticUserMessage(record)) {
+            return maxId;
+          }
+          return Math.max(maxId, record.id || 0);
+        }, 0);
+        const optimisticMessage: IOptimisticMessage = {
+          id: optimisticId,
+          chatSessionId: +routerParams.chatSessionId,
+          messageFrom: '1',
+          contentType: 'TEXT',
+          content,
+          nerList: [],
+          contentSegments: [{ type: 'text', content }],
+          optimistic: true,
+          optimisticAfterId,
+        };
+        return [...prevList, optimisticMessage].sort((a: IMessage, b: IMessage) => a.id - b.id);
+      });
+    },
+    [routerParams.chatSessionId]
+  );
+
   // 重置回答加载状态
   const resetAnswerLoading = useCallback(() => {
     setAnswerLoading(false);
@@ -466,7 +534,7 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
       }
 
       // 其他消息才需要重新拉取消息列表和更新加载状态
-      fetchMessageList();
+      fetchLatestMessageList();
       resetAnswerLoading();
     },
     onClose(event) {
@@ -643,15 +711,16 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
       message.warning('正在生成中，请稍后再试');
       return;
     }
-    if (userInput) {
+    const sentText = userInput?.trim();
+    if (sentText) {
+      appendOptimisticUserMessage(sentText);
       sendMessage?.({
         sessionId: routerParams.chatSessionId,
         userId: routerParams.userId || '',
-        content: userInput,
+        content: sentText,
         inputType: 'text',
       });
       setUserInput('');
-      await fetchMessageList();
 
       setAnswerLoading(true);
       setIsTimeout(false); // 重置超时状态
@@ -667,6 +736,8 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
         setIsTimeout(true);
         message.warning('等待回复超时，您可以继续等待或放弃等待');
       }, ANSWER_TIMEOUT);
+
+      await fetchLatestMessageList();
 
       // 使用 scrollToBottom 替代 scrollIntoView，避免移动端 overflow 容器内滚动失效
       scrollToBottom();
@@ -689,14 +760,15 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
       message.warning('正在生成中，请稍后再试');
       return;
     }
+    const sentText = preset.trim();
+    appendOptimisticUserMessage(sentText);
     sendMessage?.({
       sessionId: routerParams.chatSessionId,
       userId: routerParams.userId || '',
-      content: preset,
+      content: sentText,
       inputType: 'text',
     });
     setUserInput('');
-    await fetchMessageList();
 
     setAnswerLoading(true);
     setIsTimeout(false);
@@ -707,6 +779,7 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
       setIsTimeout(true);
       message.warning('等待回复超时，您可以继续等待或放弃等待');
     }, ANSWER_TIMEOUT);
+    await fetchLatestMessageList();
     scrollToBottom();
   };
 
@@ -746,6 +819,12 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
     });
   }, [messageList]);
 
+  useEffect(() => {
+    if (answerLoading) {
+      scrollToBottom();
+    }
+  }, [answerLoading, thinkingHints.length, isTimeout]);
+
   const handleGenerateClick = async (msg?: IMessage) => {
     try {
       const contentObj = msg ? parseCardContent(msg.content) : null;
@@ -777,6 +856,7 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
         setIsTimeout(true);
         message.warning('等待回复超时，您可以继续等待或放弃等待');
       }, ANSWER_TIMEOUT);
+      scrollToBottom();
 
       await sendMessage?.({
         sessionId: routerParams.chatSessionId,
@@ -799,12 +879,8 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
         markIntentCardHandled(msg.id, selectedIndexes, selected.length > 0);
       }
 
-      // 如果是意向确认卡片且 selected 为空，则不刷新右侧
-      if (isIntentConfirmCard(contentObj) && selected.length === 0) {
-        return;
-      }
-
-      setFetchFlag(prev => prev + 1);
+      // 新确认协议下，卡片点击只创建/触发待确认动作；工作区刷新由后端
+      // planningWorkspaceAction 统一驱动，避免本地抢先刷新造成重复跳转。
     } catch (err) {
       resetAnswerLoading();
       console.error('消息发送失败', err);
@@ -915,52 +991,80 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
     );
   };
 
-  const renderAnalysisSection = (title: string, items?: string[]) => {
-    if (!Array.isArray(items) || items.length === 0) {
-      return null;
+  const genericIntentAnalysisItems = new Set([
+    '这轮会重点看当前方案里是否存在需要避开的内容，以及候选里是否还有可替换机会。',
+    '这轮会重点看当前方案里是否已有贴近方向，以及候选里还有哪些值得继续关注的机会。',
+    '方案外如果还有更贴近这个方向的候选机会，也会一起作为补充参考。',
+    '这类想法不会立刻改动候选结果，但会影响我后面怎么帮你分析和给建议。',
+    '如果你确定这是硬要求，我可以继续帮你找出方案里还需要避开的地方。',
+    '你也可以先去工作台候选区看看，按这个要求筛完之后还剩哪些机会。',
+    '如果你愿意把它当成偏好，我可以继续帮你看现在的方案哪里比较贴近、哪里还能补强。',
+    '如果你现在只是先了解，也可以继续问我这个方向适不适合你。',
+    '下一步可以先定位方案里不符合这条要求的志愿，再决定是否替换或移除。',
+    '下一步可以继续看这份方案和你的想法有多匹配，或者让我给出具体调整建议。',
+  ]);
+
+  const normalizeIntentAnalysisItem = (item?: string) => {
+    const text = `${item || ''}`.trim().replace(/^-+\s*/, '').trim();
+    if (!text || genericIntentAnalysisItems.has(text)) {
+      return '';
     }
-    return (
-      <div className={style.analysisTextSection}>
-        <div className={style.analysisTextSectionTitle}>{title}</div>
-        <div className={style.analysisTextList}>
-          {items.map((item, index) => (
-            <div key={`${title}-${index}`} className={style.analysisTextListItem}>
-              <span className={style.analysisTextBullet}>-</span>
-              <span className={style.analysisTextListItemContent}>{item}</span>
-            </div>
-          ))}
-        </div>
-      </div>
-    );
+    if (text.startsWith('**') && text.endsWith('**')) {
+      return '';
+    }
+    return text;
+  };
+
+  const collectCompactIntentAnalysisItems = (analysis?: IIntentAnalysisContent) => {
+    if (!analysis) {
+      return [];
+    }
+    const result: string[] = [];
+    const seen = new Set<string>();
+    const groups = [
+      analysis.currentPlanConflict,
+      analysis.currentPlanFit,
+      analysis.candidateOpportunity,
+    ];
+    groups.forEach(group => {
+      if (!Array.isArray(group)) {
+        return;
+      }
+      group.forEach(rawItem => {
+        if (result.length >= 2) {
+          return;
+        }
+        const item = normalizeIntentAnalysisItem(rawItem);
+        if (!item || seen.has(item)) {
+          return;
+        }
+        result.push(item);
+        seen.add(item);
+      });
+    });
+    return result;
   };
 
   const renderIntentAnalysisBlock = (
     analysis?: IIntentAnalysisContent,
-    impactTitle?: string
+    _impactTitle?: string
   ) => {
-    const hasAnalysis =
-      analysis &&
-      [
-        analysis.currentPlanFit,
-        analysis.currentPlanConflict,
-        analysis.candidateOpportunity,
-        analysis.nextActionHints,
-      ].some(items => Array.isArray(items) && items.length > 0);
-
-    if (!hasAnalysis) {
+    const compactItems = collectCompactIntentAnalysisItems(analysis);
+    if (compactItems.length === 0) {
       return null;
     }
 
     return (
       <div className={style.analysisTextBlock}>
-        <div className={style.analysisTextTitle}>{impactTitle || '方案关联分析'}</div>
-        {analysis?.summaryTitle ? (
-          <div className={style.analysisTextSummary}>{analysis.summaryTitle}</div>
-        ) : null}
-        {renderAnalysisSection('现在比较贴近的部分', analysis?.currentPlanFit)}
-        {renderAnalysisSection('现在需要留意的部分', analysis?.currentPlanConflict)}
-        {renderAnalysisSection('还可以再看看的机会', analysis?.candidateOpportunity)}
-        {renderAnalysisSection('下一步建议', analysis?.nextActionHints)}
+        <div className={style.analysisTextTitle}>影响</div>
+        <div className={style.analysisTextList}>
+          {compactItems.map((item, index) => (
+            <div key={`${item}-${index}`} className={style.analysisTextListItem}>
+              <span className={style.analysisTextBullet}>-</span>
+              <span className={style.analysisTextListItemContent}>{item}</span>
+            </div>
+          ))}
+        </div>
       </div>
     );
   };
@@ -979,6 +1083,7 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
         setIsTimeout(true);
         message.warning('等待回复超时，您可以继续等待或放弃等待');
       }, ANSWER_TIMEOUT);
+      scrollToBottom();
 
       await sendMessage?.({
         sessionId: routerParams.chatSessionId,
@@ -990,7 +1095,7 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
         },
         inputType: 'intentSelect',
       });
-      await fetchMessageList();
+      await fetchLatestMessageList();
     } catch (error) {
       resetAnswerLoading();
       console.error('兴趣分析动作发送失败', error);
@@ -1007,6 +1112,8 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
       targetView,
       volunteerIds: contentObj.volunteerIds || [],
       refresh: contentObj.refresh,
+      preserveView: contentObj.preserveView,
+      silent: contentObj.silent,
       candidateFilters: contentObj.candidateFilters,
     });
   };
@@ -1030,6 +1137,7 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
         setIsTimeout(true);
         message.warning('等待回复超时，您可以继续等待或放弃等待');
       }, ANSWER_TIMEOUT);
+      scrollToBottom();
 
       await sendMessage?.({
         sessionId: routerParams.chatSessionId,
@@ -1043,9 +1151,6 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
         inputType: 'pendingConfirmation',
       });
       markPendingConfirmationCardHandled(msg.id, action === 'confirm' ? 'applied' : 'cancelled');
-      if (action === 'confirm') {
-        setFetchFlag(prev => prev + 1);
-      }
     } catch (error) {
       resetAnswerLoading();
       console.error('待确认卡片操作失败', error);
@@ -1069,9 +1174,15 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
     console.log('消息反馈', feedback, newFeedback);
   };
 
-  const displayMessageList = messageList.filter(
-    (record, index, records) => !isLegacyAutoPlanPrompt(record, index, records)
-  );
+  const displayMessageList = messageList.filter((record, index, records) => {
+    if (isLegacyAutoPlanPrompt(record, index, records)) {
+      return false;
+    }
+    if (record.messageFrom === '0' && record.contentType === 'CARD') {
+      return !isWorkspaceActionCard(parseCardContent(record.content));
+    }
+    return true;
+  });
   const activePendingCardMessageId = displayMessageList.reduce<number | null>((latestId, record) => {
     if (record.messageFrom !== '0' || record.contentType !== 'CARD') {
       return latestId;
@@ -1206,6 +1317,9 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
                                 }
                                 if (contentObj.type === 'planningWorkspaceAction') {
                                   if (!normalizeWorkspaceTargetView(contentObj.targetView)) {
+                                    return null;
+                                  }
+                                  if (contentObj.silent) {
                                     return null;
                                   }
                                   const fallbackCopy = workspaceActionFallbackCopy(contentObj);
@@ -1388,7 +1502,7 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
                                       >
                                         {buttonText}
                                       </Button>
-                                    ) : isInterestAnalysisCard(contentObj) &&
+                                    ) : isInterestAnalysisOnlyCard(contentObj) &&
                                       Array.isArray(contentObj?.actions) &&
                                       contentObj.actions.length > 0 ? (
                                       <div className={style.interestActionRow}>
@@ -1434,40 +1548,26 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
             ))}
           {answerLoading && (
             <div className={style.thinkingContainer}>
-              <div
-                className={style.thinkingContent}
-                style={{ paddingRight: isTimeout ? '120px' : '0' }}
-              >
+              <div className={style.thinkingContent}>
                 <div className={style.thinkingLabel}>正在分析</div>
                 <div className={style.thinkingCurrentHint}>
-                  <TypingAnimation text={thinkingHints[thinkingHints.length - 1] || '思考中'} />
+                  <TypingAnimation text={thinkingHints[thinkingHints.length - 1] || '正在处理你的问题'} />
                 </div>
               </div>
               {isTimeout && (
-                <Button
-                  type="primary"
-                  danger
-                  size="small"
-                  icon={<CloseCircleOutlined />}
-                  onClick={handleCancelWaiting}
-                  style={{
-                    position: 'absolute',
-                    right: '40px',
-                    top: '50%',
-                    transform: 'translateY(-50%)',
-                    height: '36px',
-                    borderRadius: '18px',
-                    fontWeight: 500,
-                    boxShadow: '0 2px 8px rgba(255, 68, 61, 0.3)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '4px',
-                    padding: '0 16px',
-                  }}
-                  title="放弃等待"
-                >
-                  放弃等待
-                </Button>
+                <div className={style.thinkingTimeoutRow}>
+                  <span className={style.thinkingTimeoutText}>等待时间较长，可以继续等待。</span>
+                  <Button
+                    danger
+                    size="small"
+                    icon={<CloseCircleOutlined />}
+                    onClick={handleCancelWaiting}
+                    className={style.thinkingTimeoutButton}
+                    title="放弃等待"
+                  >
+                    放弃等待
+                  </Button>
+                </div>
               )}
             </div>
           )}

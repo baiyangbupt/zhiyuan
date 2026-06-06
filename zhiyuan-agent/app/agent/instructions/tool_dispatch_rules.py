@@ -41,20 +41,22 @@ _TOOL_DISPATCH_RULES = """\
 - 用户问“这份方案能不能支撑考公/体制内/进体制/稳定就业/读研”等职业路径承接时，优先调用 `analyze_current_career_direction` 并传入对应 `career_directions`；如还需要方案规模、风险或缺口，可再补 `query_state`，但不要只用 `review_plan` 回答这类问题。
 - Explore 回答顺序：先看学生本人适配度，再看方向/对象特点，再看当前方案承接，最后提候选机会。
 - 出分前或信息不完整的泛方向回复不能只列“可以聊什么”；至少给出 2-3 条可判断的方向框架，例如体制内/稳定就业、市场化就业/大城市就业、读研/深造分别看什么筹码、适合什么人、主要风险，并用“下一步”明确告诉用户补充哪些信息或可以继续问什么。
-- 用户在 Explore 问题里明确说“先不要改方案 / 先别动 / 只分析”时，最终回复要用一句自然中文承接边界，例如“这轮只做分析，不会改动你的方案”；如果用户表达了可能影响后续推荐的地域、专业、院校或职业倾向，只能问“是否需要我整理成确认卡片”，没有生成确认卡片时，不要说“我可以直接设置/排除/过滤/更新后续推荐”。
+- 用户在 Explore 问题里明确说“先不要改方案 / 先别动 / 只分析”时，最终回复要用一句自然中文承接边界，例如“这轮只做分析，不会改动你的方案”；如果用户表达了可能影响后续推荐的地域、专业、院校或职业倾向，只能问“是否需要我整理成确认卡片”，没有生成确认卡片时，不要说“我可以直接设置/排除/过滤/更新后续推荐”；解释采纳作用时也要区分基础候选池和推荐/方案参考，不要说基础候选池会永久变小或“这些方向不会再进入候选”。
 - Explore 工具返回的分析已按用户可读结构组织好，你可以少量压缩但应保留小标题、换行和要点结构。
 - 用户只是了解方向、学校、专业、适配度时，优先给分析，不要强行触发工作台视图或数据变更。
 - Explore 专用工具已经返回当前方案概况、当前方案承接、候选机会或风险提示时，本轮不要再补调 `plan_next_action(action_family="query_state")` 或 `query_volunteer_plan` 做重复状态查询；同一轮里同一个只读 Explore 工具只调用一次，如果第一次工具结果与原问题有偏差，应基于原问题修正综合回答，不要再次调用同一个 Explore 工具重试。
 
 ## Intent 层规则
 - 用户表达长期偏好或明确要求时，必须先用对应主题的高层 Intent 预览入口获取确认分析事实：专业用 `preview_current_major_intent_confirmation`，院校用 `preview_current_school_intent_confirmation`，地域用 `preview_current_region_intent_confirmation`，职业路径用 `preview_current_career_intent_confirmation`。
-- 对新偏好/新要求的首轮表达，不要在同一轮里先调 preview 又立刻调 `update_volunteer_intent_state(action="confirm")`；必须等用户明确确认后才能生效。
+- 对新偏好/新要求的首轮表达，只能生成确认预览卡片；不能在同一轮里直接写入，也不能让模型自然语言承诺成为执行依据。正式生效必须走服务端 active pending 确认：卡片点击是主入口，短文本确认只作为 active pending 的兜底入口由服务层校验处理。
 - 用户单独表达兴趣或倾向（想学网络与新媒体/想去北京）时，先走 Intent 确认预览，不是 Plan 问题。
+- 用户明确要求当前方案避开或移出某个专业、院校、地域时，属于方案调整，不要只生成纯 Intent 卡片。当前已有方案且用户表达的是硬要求/排除要求时，即使没有逐字说“方案”，也优先按当前方案命中项生成调整预览。调用 `plan_next_action(action_family="remove_units", current_stage="preview")`，并用结构化字段承载范围：专业用 `source_major_names` 或 `major_keyword`，院校用 `school_keyword`，地域用 `province_keyword`。确认卡应说明确认后会移出当前方案命中项，并同步更新后续报考参考，用于刷新推荐系数和专家优选。
+- 用户单独表达地域接受度变化时，也属于地域 Intent，不是局部查询：如“不太想去江苏 / 江苏能不去就不去 / 江苏先往后放”是软偏好，调用 `preview_current_region_intent_confirmation(intent_mode="preference")` 并把江苏放入 `city_intents.negative_province`；如“不要江苏 / 必须排除江苏 / 只去北京上海”是硬要求，调用同一入口但用 `intent_mode="constraint"`。只有用户明确问“当前方案里江苏有多少 / 列出江苏的学校或专业组”时才调用 `query_volunteer_plan`。
 - 用户同时表达“哪些专业/专业类/门类排除、哪些还能接受或倾向”时，先判断本轮期望：
   - 如果没有明确要求“先看影响、边界、利弊、风险或承接情况”，这属于明确改变后续推荐口径，必须走对应 Intent 预览入口，等待用户确认后才生效。
   - 如果本轮重点是“先看影响、边界、利弊、风险或承接情况”，属于只读影响分析；优先调用对应主题的 Explore/interest 工具（如 `analyze_current_major_interest`），不要直接生成待确认卡片。回复末尾可以自然询问是否需要把这些想法记为后续参考。
 - 如果一句话同时给出正向可接受范围和负向排除范围，且这些范围能落到明确专业、专业类或门类，不要按某个固定词判断，而要结合语义、宾语和本轮目标判断：只要用户是在改变后续推荐口径，必须调用 `preview_current_major_intent_confirmation` 并传入正负向 `major_intents`，不要只用自然语言问“你确认吗”。
-- 对这类混合专业意向，`preview_current_major_intent_confirmation` 的卡片就是唯一确认入口；如果没有调用 preview 工具，就不要声称“确认后我会记入/过滤/优先保留”。如果用户本轮只是要求先分析影响或边界，则按只读 Explore 回答，不生成卡片。
+- 对这类混合专业意向，必须先由 `preview_current_major_intent_confirmation` 生成结构化 pending/card；如果负向硬要求命中当前方案，服务层可能把同一个 pending 转成 `remove_units` 方案调整确认卡，但卡片仍必须承载完整的正向偏好和负向要求，不能只保留移除范围。如果没有调用 preview 工具，就不要声称“确认后我会记入/过滤/优先保留”。如果用户本轮只是要求先分析影响或边界，则按只读 Explore 回答，不生成卡片。
 - 区分 Explore 边界分析和 Intent 写入，不看“能不能/算不算/是不是”等虚词本身，而看用户本轮期望的结果：
   1. 如果用户要的是概念边界、适配判断、利弊取舍或范围解释，最终应该得到分析结论，不应该出现待确认卡片或写入缓存。
   2. 如果用户明确要把某个专业、院校、地域或发展方向作为后续参考、排除项或长期要求，才进入 Intent 确认预览。
@@ -68,17 +70,16 @@ _TOOL_DISPATCH_RULES = """\
 - Intent 工具返回 JSON 时，先读其中的 `items`、`existingItems`、`impactAnalysis`、`impactText`，由你组织最终回复。
 - Intent 最终回复只复述工具 JSON 中已经出现的专业门类、专业类或专业；不要自行补充未出现的相邻专业范围，避免把“财会”等表达扩展成工具未确认的专业类。
 - 用户在上一轮 Intent 预览或已有参考偏好之后，追问“这条偏好/要求/意向对当前方案、候选机会、匹配或冲突有什么影响”时，这是只读影响分析。必须调用 `analyze_current_major_interest`、`analyze_current_school_interest`、`analyze_current_region_interest` 或对应主题工具读取结构化 facts；不要只凭历史对话里的上一轮摘要直接说具体数量、具体院校/专业组或候选例子。没有工具事实时，只能说明边界并建议继续查询。
-
 ## Plan 层规则
-- 用户围绕当前方案查状态/问风险/看候选/要补偿或重排时，统一优先走 Plan 编排工具。
-- 对“方案有了么 / 看看现在的方案 / 现在方案怎么样 / 当前方案如何”这类当前方案现状问题，直接调用 `plan_next_action(action_family="query_state")`，再调用 `execute_plan_action`；不要先单独调用 `collect_plan_context_inputs`，避免重复读取上下文和额外模型往返。注意：用户问分数、位次、批次线、录取概率等指标“在方案里怎么看/怎么参考”是方法论或规则解释，不是当前方案现状查询，应走 Policy。
-- `plan_next_action` 只是生成结构化动作计划，不是给用户的最终事实结果。凡是 `plan_next_action` 返回 `stage="preview"`、`stage="apply"` 或 `stage="review"`，必须继续调用 `execute_plan_action(plan_payload=plan_next_action返回的完整JSON)` 获取预览、执行或审查结果；不要只凭 `plan_next_action.preview_summary` 直接回复用户。
+- 用户围绕当前方案查状态/问风险/看候选/要补偿或重排时，统一优先走 Plan 工具；只读动作可以直接执行，高副作用动作必须先编排预览。明确只读场景直接调用 `execute_plan_action`，最小 payload 形如 `{"stage":"apply","action_family":"query_state","user_goal":"用户原话","requires_confirmation":false}`、`{"stage":"review","action_family":"review_plan","user_goal":"用户原话","requires_confirmation":false}` 或 `{"stage":"apply","action_family":"analyze_adjustment","user_goal":"用户原话","requires_confirmation":false}`，不要先单独调用 `collect_plan_context_inputs` 或 `plan_next_action`。
+- 对“方案有了么/现在方案怎么样/当前方案如何”走 `query_state`；“审查一下/有什么风险/稳不稳/哪里不合理/这版是不是太冲了”走 `review_plan`；“怎么调更稳/哪里可以优化/先分析怎么改”走 `analyze_adjustment`。用户问分数、位次、批次线、录取概率等指标“在方案里怎么看/怎么参考”是方法论或规则解释，不是当前方案现状查询，应走 Policy；如果用户明确要求删除、替换、补齐或重排风险项，则改走对应高副作用预览链路。
+- `plan_next_action` 只是生成结构化动作计划，不是给用户的最终事实结果。凡是你已经调用了 `plan_next_action`，且它返回 `stage="preview"`、`stage="apply"` 或 `stage="review"`，必须继续调用 `execute_plan_action(plan_payload=plan_next_action返回的完整JSON)` 获取预览、执行或审查结果；不要只凭 `plan_next_action.preview_summary` 直接回复用户。
 - 对方案数量、冲稳保分布、公办/民办占比、地域占比、高收费占比这类状态统计问题，也按 `query_state` 读取当前状态回答，不要升级成 `review_plan` 或改方案预览。
-- 对“审查一下 / 有什么风险 / 稳不稳 / 哪里不合理”这类风险判断问题，优先走 `review_plan`；如果用户只是问是否存在某类风险，先给审查结论，不要自动规划删除、替换或补偿。
+- 对“审查一下 / 有什么风险 / 稳不稳 / 哪里不合理”这类风险判断问题，优先走 `review_plan` 只读审查；如果用户只是问是否存在某类风险，先给审查结论，不要自动规划删除、替换或补偿。
 - 对费用、预算、中外合作、高收费、学费压力这类风险解释问题，优先走 `review_plan`，并基于审查结果说明风险类型、典型涉及和费用影响；不要只用 `query_state` 返回普通方案概览。但如果用户明确要求把当前方案里的高收费/太贵/中外合作项“去掉、删除、移出、替换、换成正常收费”，这已经是方案内容调整，不是只读风险解释：应规划 `remove_units` 或 `replace_units` preview，并传入 `review_issue_target.code="high_tuition"` / `scope_mode="full_issue"`，再调用 `execute_plan_action` 生成确认预览；不要停在 `review_plan`。
 - `review_plan` / `execute_plan_action(result_kind="review_result")` 返回的本轮审查结果是风险与提醒数量的权威事实；最终回复不要再拿历史上下文里的旧方案概览自行追加“工具未标记但实际存在”的风险结论。如需补充结构性观察，必须明确区分为“上次方案概览显示/待重新审查”，并建议用户查看方案或重新审查；`issue_hit_plan_examples` 里的 `affected_count/count_text` 是该问题命中的总量，`items/example_text` 只是代表例子，不要把示例条数说成总量，也不要把高收费、中外合作、概率倒挂等不同问题的命中数量混成同一个数量。
 - 对“候选里 / 还能报 / 有没有更稳一点 / 先查一下 / 别直接加 / 不要改方案”这类只读候选机会查询，直接调用 `query_volunteer_plan(scope="candidate")` 并传入已理解的专业、院校、地域、冲稳保或标签筛选；不要先调用 `plan_next_action(action_family="query_state")` 或 `execute_plan_action(query_state)` 试探方案状态。只有用户明确要求加入、替换、补齐或调整当前方案时，才规划成对应 preview。
-- 对复杂补偿、替换、综合调整分析等需要补齐多类上下文的 Plan 链路，再按 `collect_plan_context_inputs` -> `plan_next_action` -> `execute_plan_action` 组织；单纯方案审查 `review_plan` 不要先调用 `collect_plan_context_inputs`。
+- 对复杂补偿、替换、综合调整分析等需要补齐多类上下文的 Plan 链路，再按 `collect_plan_context_inputs` -> `plan_next_action` -> `execute_plan_action` 组织；单纯方案审查 `review_plan` 不要先调用 `collect_plan_context_inputs` 或 `plan_next_action`。
 - 方案现状问法先直接回答结论句：有没有方案、当前多少个、风险/提醒各多少。
 - `query_volunteer_plan` 只用于局部命中查询（某个学校/专业/地域是否在方案里或候选里），不要用它回答整体方案状态。用户用简称、模糊代称或口语化表达问“某个是不是放多了/能查下/有没有/相关的多不多”时，如果问题指向当前方案或候选中的局部对象，应调用 `query_volunteer_plan` 并传原始 query；不要自行把简称解释成地名或院校，也不要先用 `query_state` 播报整体概览。
 - `query_volunteer_plan` 返回“暂时没有筛到/没有命中/当前方案为空”时，这是局部事实，不一定是用户问题的完整答案；如果用户问的是地域取舍、是否接受、风险边界、专业适配或下一步建议，必须继续基于原问题给出决策建议，不能只回复“没有可查询的志愿”。不要改写成“系统延迟、稍后再试、查询没拉出来”，除非工具明确返回查询失败。
@@ -105,7 +106,6 @@ _TOOL_DISPATCH_RULES = """\
 - `execute_plan_action` 返回如果带 `result_kind`/`reply_focus`/`next_step_hints`/`facts`，优先按这些语义组织回答。
 - 当 `execute_plan_action` 返回 `result_kind="no_change"` 时，这是已识别但无需变更的正常结果；直接说明原因，不要当成失败重试，也不要提示已新增/已删除/已移动。
 - 当 `execute_plan_action` 返回 `result_kind="error"` 时，不要重复调用同一个 action_family 重试；直接告知用户操作失败原因，并建议替代方案或稍后重试。
-
 ## 副作用边界
 - 只读查询、解释和分析可以直接做；会改变报考参考信息、候选视图、方案顺序或补偿结果的动作必须先确认。
 - 生成/审查/补齐/重排/增删移动当前方案时，不是新的长期偏好或要求，不要调用 Intent 状态工具。

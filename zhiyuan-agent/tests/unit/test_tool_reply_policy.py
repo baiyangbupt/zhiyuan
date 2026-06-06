@@ -125,7 +125,37 @@ def test_policy_keeps_delegated_major_compare_for_model_synthesis():
     assert decision.reason == "explicit_continue_model"
 
 
-def test_policy_direct_returns_explicit_strategy_from_any_tool():
+def test_policy_keeps_admission_policy_direct_payload_for_model_synthesis():
+    decision = decide_tool_reply(
+        ["answer_admission_policy_question"],
+        [
+            _tool_return(
+                "answer_admission_policy_question",
+                '{"reply_strategy":"direct_reply","summary":"这轮可以先按通用方法判断。"}',
+            )
+        ],
+    )
+
+    assert decision.strategy == "continue_model"
+    assert decision.should_return_directly is False
+
+
+def test_policy_keeps_admission_fit_match_direct_payload_for_model_synthesis():
+    decision = decide_tool_reply(
+        ["match_admission_rule_to_student"],
+        [
+            _tool_return(
+                "match_admission_rule_to_student",
+                '{"reply_strategy":"direct_reply","summary":"从已知规则看，目前还缺官方规则摘要。"}',
+            )
+        ],
+    )
+
+    assert decision.strategy == "continue_model"
+    assert decision.should_return_directly is False
+
+
+def test_policy_does_not_trust_explicit_direct_strategy_from_readonly_query_tool():
     decision = decide_tool_reply(
         ["query_volunteer_plan"],
         [
@@ -136,12 +166,12 @@ def test_policy_direct_returns_explicit_strategy_from_any_tool():
         ],
     )
 
-    assert decision.strategy == "direct_blocking"
-    assert decision.should_return_directly is True
-    assert decision.reply == "当前没有命中结果，请换个条件。"
+    assert decision.strategy == "continue_model"
+    assert decision.should_return_directly is False
+    assert decision.reply is None
 
 
-def test_policy_direct_returns_plan_query_alias_match_to_avoid_model_reinterpretation():
+def test_policy_keeps_plan_query_alias_match_for_model_synthesis():
     decision = decide_tool_reply(
         ["query_volunteer_plan"],
         [
@@ -152,10 +182,10 @@ def test_policy_direct_returns_plan_query_alias_match_to_avoid_model_reinterpret
         ],
     )
 
-    assert decision.strategy == "direct_reply"
-    assert decision.should_return_directly is True
-    assert decision.reason == "plan_query_alias_match_result"
-    assert "青岛城市学院" in (decision.reply or "")
+    assert decision.strategy == "continue_model"
+    assert decision.should_return_directly is False
+    assert decision.reason == "read_only_plan_query_result_needs_model_synthesis"
+    assert decision.reply is None
 
 
 def test_policy_keeps_plan_query_for_model_synthesis_after_prior_tools():
@@ -182,6 +212,37 @@ def test_policy_keeps_plan_query_for_model_synthesis_after_prior_tools():
     assert decision.strategy == "continue_model"
     assert decision.should_return_directly is False
     assert decision.reason == "read_only_plan_query_needs_model_synthesis_after_prior_tools"
+
+
+def test_policy_keeps_plan_query_for_model_synthesis_even_when_successful():
+    class Deps:
+        agent_observability = {
+            "toolInternalTimings": [
+                {
+                    "tool": "query_volunteer_plan",
+                    "requestedScope": "plan",
+                    "resolvedScope": "plan",
+                    "status": "success",
+                    "hasStructuredFilters": True,
+                    "filterKeys": ["province_names"],
+                }
+            ]
+        }
+
+    decision = decide_tool_reply(
+        ["query_volunteer_plan"],
+        [
+            _tool_return(
+                "query_volunteer_plan",
+                "当前方案里共命中了 20 条符合“省份:江苏”的志愿。下面仅展示前 5 条示例。",
+            )
+        ],
+        Deps(),
+    )
+
+    assert decision.strategy == "continue_model"
+    assert decision.should_return_directly is False
+    assert decision.reason == "read_only_plan_query_result_needs_model_synthesis"
 
 
 def test_policy_keeps_empty_plan_query_for_model_synthesis_when_candidate_fails():
@@ -304,6 +365,27 @@ def test_policy_keeps_structured_status_overview_for_model_synthesis():
     assert decision.should_return_directly is False
     assert decision.reason == "structured_status_overview_needs_model_synthesis"
     assert decision.reply is None
+
+
+def test_policy_keeps_status_overview_for_model_synthesis_even_with_legacy_direct_strategy():
+    decision = decide_tool_reply(
+        ["execute_plan_action"],
+        [
+            _tool_return(
+                "execute_plan_action",
+                (
+                    '{"action_family":"query_state","result_kind":"status_overview",'
+                    '"summary":"当前方案里共命中了 7 条和青岛城市学院相关的志愿。",'
+                    '"reply_focus":["local_plan_query","current_state"],'
+                    '"reply_strategy":"direct_reply"}'
+                ),
+            )
+        ],
+    )
+
+    assert decision.strategy == "continue_model"
+    assert decision.should_return_directly is False
+    assert decision.reason == "structured_status_overview_needs_model_synthesis"
 
 
 def test_policy_keeps_structured_review_result_for_model_synthesis():

@@ -586,6 +586,54 @@ def test_ws_compat_intent_select_constraint_returns_pending_confirmation_card_no
     assert mock_store.save_agent_message.await_args.kwargs["ws_type"] == "pendingConfirmationCard"
 
 
+def test_v3_ws_intent_select_routes_to_intent_select_handler(client):
+    card_payload = {
+        "type": "pendingConfirmationCard",
+        "kind": "intent_change",
+        "pendingId": "pending-intent-v3-1",
+        "title": "确认采纳这次偏好",
+        "summary": "偏好北京。",
+        "confirmText": "采纳",
+        "cancelText": "暂不采纳",
+        "clickable": True,
+    }
+
+    mock_service = AsyncMock()
+    client.app.state.chat_service = mock_service
+    mock_service.handle_message = AsyncMock()
+    mock_service.handle_intent_select = AsyncMock(return_value=WSResponse(
+        type="pendingConfirmationCard",
+        session_id="33",
+        content=json.dumps(card_payload, ensure_ascii=False),
+    ))
+
+    with client.websocket_connect("/ws/chat") as ws:
+        with patch("app.server.message_store") as mock_store:
+            mock_store.save_user_message = AsyncMock(return_value=1)
+            mock_store.save_agent_message = AsyncMock(return_value=992)
+
+            ws.send_json({
+                "session_id": "33",
+                "user_id": "user-intent-select",
+                "content": json.dumps(
+                    {
+                        "action": "采纳",
+                        "message_id": 3001,
+                        "selected": [{"city_intents": {"province": ["北京"]}}],
+                    },
+                    ensure_ascii=False,
+                ),
+                "type": "intentSelect",
+            })
+            resp = ws.receive_json()
+
+    assert resp["type"] == "pendingConfirmationCard"
+    assert json.loads(resp["content"])["pendingId"] == "pending-intent-v3-1"
+    mock_service.handle_intent_select.assert_awaited_once()
+    mock_service.handle_message.assert_not_awaited()
+    mock_store.save_user_message.assert_not_awaited()
+
+
 def test_ws_compat_intent_select_can_return_pending_confirmation_card(client):
     card_payload = {
         "type": "pendingConfirmationCard",
@@ -675,9 +723,10 @@ def test_ws_compat_multi_turn_constraint_preview_card_click_then_plan_query(clie
                 content=json.dumps(
                     {
                         "type": "planningWorkspaceAction",
-                        "targetView": "candidate",
+                        "targetView": "ordered",
                         "refresh": True,
-                        "candidateFilters": {"negativeProvinceNames": ["北京"]},
+                        "title": "请查看方案",
+                        "actionText": "查看方案",
                     },
                     ensure_ascii=False,
                 ),
@@ -727,7 +776,8 @@ def test_ws_compat_multi_turn_constraint_preview_card_click_then_plan_query(clie
     assert confirm_resp["type"] == "text"
     assert "已采纳" in confirm_resp["content"]
     assert workspace_resp["type"] == "planningWorkspaceAction"
-    assert workspace_resp["content"]["candidateFilters"]["negativeProvinceNames"] == ["北京"]
+    assert workspace_resp["content"]["targetView"] == "ordered"
+    assert "candidateFilters" not in workspace_resp["content"]
     assert plan_resp["type"] == "text"
     assert plan_resp["content"] == "已分析当前方案建议"
 

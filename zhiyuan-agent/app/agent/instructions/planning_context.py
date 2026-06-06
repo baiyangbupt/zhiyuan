@@ -55,6 +55,13 @@ def build_planning_context(deps: RequestContext) -> str:
     if planning.pending_action_count > 0 and planning.pending_action_summaries:
         lines.append(f"待处理建议：{'；'.join(planning.pending_action_summaries[:2])}。")
 
+    stale_notice = str(getattr(deps, "stale_pending_notice", "") or "").strip()
+    if stale_notice:
+        lines.append(
+            f"注意：{stale_notice}如果用户本轮仍要调整方案，必须重新调用方案预览工具生成新的确认卡片；"
+            "不要复述旧预览，也不要让用户用文字确认。"
+        )
+
     header = "当前会话已存在统一规划状态，用户的方案概况如下：\n"
     footer = (
         "\n请基于以上方案现状回答用户。"

@@ -4,8 +4,12 @@ import json
 from typing import Any
 from loguru import logger
 
+from app.domain.major_entity_resolver import (
+    canonicalize_major_intent_payload,
+    major_parent_mappings_for_batch,
+)
 from app.schemas.user_profile import UserProfile, SchoolIntent, MajorIntent, CityIntent
-from app.util.internal_client import get_user_profile, save_user_profile
+from app.util.internal_client import get_user_profile, save_user_profile, update_planning_explicit_profile
 from app.util.code_enrichment import add_codes_to_profile_async
 
 
@@ -124,6 +128,173 @@ def _resolve_conflicts(
     return positive_values, positive_emotions, filtered_neg_values, filtered_neg_emotions
 
 
+def _remove_conflicting_values(
+    existing_values: list[str] | None,
+    existing_emotions: list[str] | None,
+    values_to_remove: list[str] | None,
+    default_emotion: str = "Strong",
+) -> tuple[list[str], list[str]]:
+    existing_values = _normalize_string_list(existing_values)
+    existing_emotions = _normalize_string_list(existing_emotions)
+    values_to_remove = _normalize_string_list(values_to_remove)
+    if not existing_values:
+        return [], []
+    existing_emotions = existing_emotions or [default_emotion] * len(existing_values)
+    remove_set = set(values_to_remove)
+    kept_values: list[str] = []
+    kept_emotions: list[str] = []
+    for value, emotion in zip(existing_values, existing_emotions):
+        if value not in remove_set:
+            kept_values.append(value)
+            kept_emotions.append(emotion)
+    return kept_values, kept_emotions
+
+
+def _unique_texts(*groups: Any) -> list[str]:
+    values: list[str] = []
+    seen: set[str] = set()
+    for group in groups:
+        for value in _normalize_string_list(group):
+            if value not in seen:
+                values.append(value)
+                seen.add(value)
+    return values
+
+
+_MAJOR_PROFILE_KEYS = (
+    "level1",
+    "level2",
+    "level3",
+    "negative_level1",
+    "negative_level2",
+    "negative_level3",
+)
+
+
+def _major_payload_from_profile(major: MajorIntent) -> dict[str, list[str]]:
+    return {
+        key: _normalize_string_list(getattr(major, key, []))
+        for key in _MAJOR_PROFILE_KEYS
+    }
+
+
+def _assign_major_payload_to_profile(major: MajorIntent, payload: dict[str, Any] | None) -> None:
+    payload = payload or {}
+    for key in _MAJOR_PROFILE_KEYS:
+        values = _normalize_string_list(payload.get(key))
+        setattr(major, key, values)
+        setattr(major, f"{key}_emotion", ["Strong"] * len(values))
+
+
+def _normalize_major_profile_by_catalog(major: MajorIntent, batch: str) -> None:
+    payload = canonicalize_major_intent_payload(_major_payload_from_profile(major), "", batch) or {}
+    _assign_major_payload_to_profile(major, payload)
+
+
+def _filter_major_values(
+    values: list[str] | None,
+    emotions: list[str] | None,
+    should_remove,
+) -> tuple[list[str], list[str]]:
+    normalized_values = _normalize_string_list(values)
+    normalized_emotions = _normalize_string_list(emotions) or ["Strong"] * len(normalized_values)
+    kept_values: list[str] = []
+    kept_emotions: list[str] = []
+    for index, value in enumerate(normalized_values):
+        emotion = normalized_emotions[index] if index < len(normalized_emotions) else "Strong"
+        if should_remove(value):
+            continue
+        kept_values.append(value)
+        kept_emotions.append(emotion)
+    return kept_values, kept_emotions
+
+
+def _resolve_major_hierarchy_conflicts(
+    major: MajorIntent,
+    new_payload: dict[str, Any] | None,
+    batch: str,
+) -> None:
+    """Resolve positive/negative conflicts with official major hierarchy."""
+
+    if not new_payload:
+        return
+    _normalize_major_profile_by_catalog(major, batch)
+    mappings = major_parent_mappings_for_batch(batch)
+    level3_to_level2 = mappings.get("level3_to_level2", {})
+    level2_to_level1 = mappings.get("level2_to_level1", {})
+
+    new_level1 = set(_normalize_string_list(new_payload.get("level1")))
+    new_level2 = set(_normalize_string_list(new_payload.get("level2")))
+    new_level3 = set(_normalize_string_list(new_payload.get("level3")))
+    new_neg_level1 = set(_normalize_string_list(new_payload.get("negative_level1")))
+    new_neg_level2 = set(_normalize_string_list(new_payload.get("negative_level2")))
+    new_neg_level3 = set(_normalize_string_list(new_payload.get("negative_level3")))
+
+    def level2_parent(value: str) -> str | None:
+        return level2_to_level1.get(value)
+
+    def level3_parent2(value: str) -> str | None:
+        return level3_to_level2.get(value)
+
+    def level3_parent1(value: str) -> str | None:
+        parent2 = level3_parent2(value)
+        return level2_to_level1.get(parent2 or "")
+
+    new_level2_parents = {level2_parent(item) for item in new_level2}
+    new_level3_parent2 = {level3_parent2(item) for item in new_level3}
+    new_level3_parent1 = {level3_parent1(item) for item in new_level3}
+
+    if new_level1 or new_level2 or new_level3:
+        major.negative_level1, major.negative_level1_emotion = _filter_major_values(
+            major.negative_level1,
+            major.negative_level1_emotion,
+            lambda value: value in new_level1 or value in new_level2_parents or value in new_level3_parent1,
+        )
+        major.negative_level2, major.negative_level2_emotion = _filter_major_values(
+            major.negative_level2,
+            major.negative_level2_emotion,
+            lambda value: value in new_level2 or value in new_level3_parent2 or level2_parent(value) in new_level1,
+        )
+        major.negative_level3, major.negative_level3_emotion = _filter_major_values(
+            major.negative_level3,
+            major.negative_level3_emotion,
+            lambda value: value in new_level3 or level3_parent2(value) in new_level2 or level3_parent1(value) in new_level1,
+        )
+
+    if new_neg_level1 or new_neg_level2 or new_neg_level3:
+        major.level1, major.level1_emotion = _filter_major_values(
+            major.level1,
+            major.level1_emotion,
+            lambda value: value in new_neg_level1,
+        )
+        major.level2, major.level2_emotion = _filter_major_values(
+            major.level2,
+            major.level2_emotion,
+            lambda value: value in new_neg_level2 or level2_parent(value) in new_neg_level1,
+        )
+        major.level3, major.level3_emotion = _filter_major_values(
+            major.level3,
+            major.level3_emotion,
+            lambda value: value in new_neg_level3
+            or level3_parent2(value) in new_neg_level2
+            or level3_parent1(value) in new_neg_level1,
+        )
+
+
+def _major_explicit_values(level1: Any, level2: Any, level3: Any) -> list[str]:
+    return _unique_texts(level3, level2, level1)
+
+
+def _is_success_response(response: Any) -> bool:
+    if not isinstance(response, dict):
+        return True
+    if response.get("success") is False:
+        return False
+    if "code" in response:
+        return response.get("code") in {0, "0"}
+    return True
+
+
 class ProfileManager:
     """Manages incremental updates to user profile."""
 
@@ -147,7 +318,9 @@ class ProfileManager:
                     return UserProfile()
 
                 logger.info(f"解析用户画像数据: {profile_data}")
-                return UserProfile.from_backend_format(profile_data)
+                profile = UserProfile.from_backend_format(profile_data)
+                _normalize_major_profile_by_catalog(profile.major, self.batch)
+                return profile
             else:
                 logger.warning(f"获取用户画像失败: {response}")
                 return UserProfile()
@@ -167,6 +340,7 @@ class ProfileManager:
         """
         try:
             result = json.loads(extraction_result)
+            result = canonicalize_major_intent_payload(result, "", self.batch) or {}
 
             # Check if there's any valid data to update
             new_colleges = result.get("colleges", [])
@@ -210,7 +384,14 @@ class ProfileManager:
                     new_colleges,
                 )
 
-            await self._save_profile(profile)
+            if new_neg:
+                profile.school.colleges, profile.school.colleges_emotion = _remove_conflicting_values(
+                    profile.school.colleges,
+                    profile.school.colleges_emotion,
+                    new_neg,
+                )
+
+            await self._save_profile(profile, sync_school=True)
         except Exception as e:
             logger.error(f"Failed to update school intent: {e}")
             raise
@@ -314,6 +495,13 @@ class ProfileManager:
                     new_level1,
                 )
 
+            if new_neg_level1:
+                profile.major.level1, profile.major.level1_emotion = _remove_conflicting_values(
+                    profile.major.level1,
+                    profile.major.level1_emotion,
+                    new_neg_level1,
+                )
+
             # Resolve conflicts for level2 only if we have new positive data
             if new_level2:
                 (
@@ -327,6 +515,13 @@ class ProfileManager:
                     profile.major.negative_level2,
                     profile.major.negative_level2_emotion,
                     new_level2,
+                )
+
+            if new_neg_level2:
+                profile.major.level2, profile.major.level2_emotion = _remove_conflicting_values(
+                    profile.major.level2,
+                    profile.major.level2_emotion,
+                    new_neg_level2,
                 )
 
             # Resolve conflicts for level3 only if we have new positive data
@@ -344,7 +539,15 @@ class ProfileManager:
                     new_level3,
                 )
 
-            await self._save_profile(profile)
+            if new_neg_level3:
+                profile.major.level3, profile.major.level3_emotion = _remove_conflicting_values(
+                    profile.major.level3,
+                    profile.major.level3_emotion,
+                    new_neg_level3,
+                )
+
+            _resolve_major_hierarchy_conflicts(profile.major, result, self.batch)
+            await self._save_profile(profile, sync_major=True)
         except Exception as e:
             logger.error(f"Failed to update major intent: {e}")
             raise
@@ -445,6 +648,13 @@ class ProfileManager:
                     new_province,
                 )
 
+            if neg_province:
+                profile.city.province, profile.city.province_emotion = _remove_conflicting_values(
+                    profile.city.province,
+                    profile.city.province_emotion,
+                    neg_province,
+                )
+
             # Resolve conflicts for city only if we have new positive data
             if new_city:
                 (
@@ -460,14 +670,61 @@ class ProfileManager:
                     new_city,
                 )
 
-            await self._save_profile(profile)
+            if neg_city:
+                profile.city.city, profile.city.city_emotion = _remove_conflicting_values(
+                    profile.city.city,
+                    profile.city.city_emotion,
+                    neg_city,
+                )
+
+            await self._save_profile(profile, sync_region=True)
         except Exception:
             logger.exception("Failed to update city intent")
             raise
 
-    async def _save_profile(self, profile: UserProfile) -> None:
+    async def _save_profile(
+        self,
+        profile: UserProfile,
+        *,
+        sync_major: bool = False,
+        sync_school: bool = False,
+        sync_region: bool = False,
+        sync_strength: bool = False,
+    ) -> None:
         """Save profile to backend with code enrichment."""
         profile_dict = profile.to_backend_format()
         enriched = await add_codes_to_profile_async(profile_dict, self.batch)
-        await save_user_profile(self.chat_session_id, enriched)
+        save_resp = await save_user_profile(self.chat_session_id, enriched)
+        if not _is_success_response(save_resp):
+            raise RuntimeError(f"save user profile failed: {save_resp}")
+        explicit_payload: dict[str, Any] = {}
+        if sync_major:
+            explicit_payload["major_preferences"] = {
+                "positive": _major_explicit_values(
+                    profile.major.level1,
+                    profile.major.level2,
+                    profile.major.level3,
+                ),
+                "negative": _major_explicit_values(
+                    profile.major.negative_level1,
+                    profile.major.negative_level2,
+                    profile.major.negative_level3,
+                ),
+            }
+        if sync_school:
+            explicit_payload["school_preferences"] = {
+                "positive": _unique_texts(profile.school.colleges),
+                "negative": _unique_texts(profile.school.negative_colleges),
+            }
+        if sync_region:
+            explicit_payload["region_preferences"] = {
+                "positive": _unique_texts(profile.city.province, profile.city.city),
+                "negative": _unique_texts(profile.city.negative_province, profile.city.negative_city),
+            }
+        if sync_strength:
+            explicit_payload["strength_subjects"] = _unique_texts(profile.strength_subjects)
+        if explicit_payload:
+            planning_resp = await update_planning_explicit_profile(self.chat_session_id, **explicit_payload)
+            if not _is_success_response(planning_resp):
+                raise RuntimeError(f"sync planning explicit profile failed: {planning_resp}")
         logger.info(f"Profile saved for session {self.chat_session_id}")

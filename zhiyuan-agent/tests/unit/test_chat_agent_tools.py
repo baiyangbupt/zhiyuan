@@ -69,6 +69,56 @@ class TestChatAgentToolRegistration:
 
         assert agent.get_progress_hint_for_tool_call(tool_call) == "正在生成这次调整的影响预览..."
 
+    def test_chat_agent_corrects_tiny_model_tool_name_typo_before_execution(self):
+        with patch("app.agent.base_agent.Agent", return_value=MagicMock()):
+            from pydantic_ai.messages import ToolCallPart
+
+            from app.agent.chat_agent import ChatAgent
+            from app.llm.client import LLMClient
+
+            client = MagicMock(spec=LLMClient)
+            client.model = TestModel()
+            client.model_settings = {}
+            agent = ChatAgent(client)
+
+        tool_call = ToolCallPart(
+            tool_name="analyze_current_cereer_direction",
+            args={"career_directions": ["system_public_service"]},
+            tool_call_id="career-typo",
+        )
+        observability: dict[str, object] = {}
+
+        agent._normalize_tool_call_names([tool_call], observability)
+
+        assert tool_call.tool_name == "analyze_current_career_direction"
+        assert observability["normalizedToolNames"] == [
+            {"from": "analyze_current_cereer_direction", "to": "analyze_current_career_direction"}
+        ]
+
+    def test_chat_agent_does_not_correct_distant_model_tool_name(self):
+        with patch("app.agent.base_agent.Agent", return_value=MagicMock()):
+            from pydantic_ai.messages import ToolCallPart
+
+            from app.agent.chat_agent import ChatAgent
+            from app.llm.client import LLMClient
+
+            client = MagicMock(spec=LLMClient)
+            client.model = TestModel()
+            client.model_settings = {}
+            agent = ChatAgent(client)
+
+        tool_call = ToolCallPart(
+            tool_name="analyze_current_plan_direction",
+            args={},
+            tool_call_id="wrong-family",
+        )
+        observability: dict[str, object] = {}
+
+        agent._normalize_tool_call_names([tool_call], observability)
+
+        assert tool_call.tool_name == "analyze_current_plan_direction"
+        assert "normalizedToolNames" not in observability
+
     def test_intent_preview_tool_schema_exposes_closed_major_intent_keys(self):
         from app.tools.intent_preview_tool import preview_current_major_intent_confirmation
 
@@ -333,7 +383,6 @@ class TestChatAgentToolRegistration:
             client = LLMClient(config)
 
             from app.agent.chat_agent import ChatAgent
-            from app.tools.intent_state_tool import update_volunteer_intent_state
             from app.tools.intent_preview_tool import (
                 analyze_current_career_direction,
                 analyze_current_interest,
@@ -360,9 +409,9 @@ class TestChatAgentToolRegistration:
             assert preview_current_school_intent_confirmation in registered_tools
             assert preview_current_region_intent_confirmation in registered_tools
             assert preview_current_career_intent_confirmation in registered_tools
-            assert update_volunteer_intent_state in registered_tools
             registered_names = {tool.__name__ for tool in registered_tools}
             assert "analyze_volunteer_intent_change" not in registered_names
+            assert "update_volunteer_intent_state" not in registered_names
 
     def test_chat_agent_uses_tool_reply_policy_for_direct_returns(self):
         with patch("app.agent.base_agent.Agent", return_value=MagicMock()):
@@ -505,7 +554,7 @@ class TestChatAgentToolRegistration:
             == "会整体移动第 4 个专业组到第 2 个专业组位置。需要你确认后才会执行。"
         )
 
-    def test_chat_agent_direct_returns_read_only_plan_query_result(self):
+    def test_chat_agent_keeps_read_only_plan_query_result_for_model_synthesis(self):
         with patch("app.agent.base_agent.Agent", return_value=MagicMock()):
             from pydantic_ai.messages import ToolReturnPart
 
@@ -525,11 +574,8 @@ class TestChatAgentToolRegistration:
             )
         ]
 
-        assert agent.should_return_directly_from_tool(["query_volunteer_plan"], tool_returns, None) is True
-        assert (
-            agent.render_direct_tool_output(["query_volunteer_plan"], tool_returns, None)
-            == "候选里共命中了 5 条符合“稳 会计 审计”的机会。下面仅展示前 5 条示例：A大学-会计学（稳，录取率62%）"
-        )
+        assert agent.should_return_directly_from_tool(["query_volunteer_plan"], tool_returns, None) is False
+        assert agent.render_direct_tool_output(["query_volunteer_plan"], tool_returns, None) is None
 
     def test_chat_agent_keeps_read_only_explore_result_for_model_synthesis(self):
         with patch("app.agent.base_agent.Agent", return_value=MagicMock()):

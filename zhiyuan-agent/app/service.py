@@ -29,8 +29,11 @@ from app.config import HistoryConfig
 from app.data.history_store import ChatHistoryStore
 from app.data.message_utils import pydantic_ai_messages_to_dicts
 from app.domain.major_entity_resolver import resolve_major_mentions_from_text
+from app.domain.region_entity_resolver import normalize_region_names
+from app.domain.school_entity_resolver import resolve_school_entity
 from app.llm.client import LLMClient
 from app.schemas.user_profile import UserProfile
+from app.services.profile_manager import _normalize_batch
 from app.schemas.ws import WSResponse
 from app.sync.state_sync import PlanningStateSync
 from app.tools.explore_followup_tool import handle_interest_analysis_action_result
@@ -45,7 +48,6 @@ from app.tools.intent_state_tool import (
     apply_selected_intents as _apply_selected_intents,
     analyze_volunteer_intent_change,
     merge_selected_values,
-    update_volunteer_intent_state,
 )
 from app.tools.intent_response_tool import (
     parse_intent_analysis_payload,
@@ -54,6 +56,7 @@ from app.tools.intent_response_tool import (
     render_explore_followup_result,
     render_intent_state_update,
 )
+from app.tools.intent_relation_tool import compact_relation_impact_lines
 from app.util.internal_client import (
     get_message_by_id,
     get_pending_confirmation,
@@ -63,6 +66,7 @@ from app.util.internal_client import (
     get_user_score_detail,
     save_intent_change_cache,
     save_pending_confirmation,
+    update_message,
 )
 from app.util.structured_log import log_event
 
@@ -154,6 +158,11 @@ _READONLY_MUTATION_GUARD_REPLY = (
     "如果你想把某个候选真正加入方案，可以再明确说“加入方案”或指定要调整的位置，我会先给出可确认的调整预览。"
 )
 _UNBACKED_CONFIRM_SENTENCE_RE = re.compile(r"确认要我.*执行")
+_UNBACKED_PLAN_CONFIRMATION_REPLY = (
+    "这轮还没有生成可点击的方案确认卡片，所以不会改动当前方案。"
+    "如果你要继续调整，请再发一次具体要求，我会重新定位影响范围并生成确认卡片；"
+    "只有生成确认卡片并完成确认后才会执行。"
+)
 _ROUTE_OBSERVABILITY_MODEL_NAME = "route-observability"
 _INTENT_PREVIEW_TOOL_NAMES = {
     "analyze_volunteer_intent_change",
@@ -163,6 +172,17 @@ _INTENT_PREVIEW_TOOL_NAMES = {
     "preview_current_region_intent_confirmation",
     "preview_current_career_intent_confirmation",
 }
+_INTENT_INTEREST_ANALYSIS_TOOL_NAMES = {
+    "analyze_current_interest",
+    "analyze_current_school_interest",
+    "analyze_current_major_interest",
+    "analyze_current_region_interest",
+}
+_USER_REPLY_ENGLISH_WORD_REPLACEMENTS = (
+    (re.compile(r"\s*\bmostly\b\s*", re.IGNORECASE), "基本上"),
+    (re.compile(r"\s*\bincreasingly\b\s*", re.IGNORECASE), "越来越"),
+    (re.compile(r"\s*\bbaseline\b\s*", re.IGNORECASE), "基准"),
+)
 
 
 def _as_int(value: Any, default: int = 0) -> int:
@@ -174,6 +194,10 @@ def _as_int(value: Any, default: int = 0) -> int:
 
 def _log_conversation_turn_event(**fields: Any) -> None:
     log_event("conversation_turn_event", **fields)
+
+
+def _log_pending_confirmation_event(**fields: Any) -> None:
+    log_event("pending_confirmation_event", **fields)
 
 
 def _route_observability_message(turn_event: dict[str, Any] | None) -> ModelResponse | None:
@@ -275,6 +299,31 @@ def _iter_tool_return_parts(messages: list[Any] | None) -> list[ToolReturnPart]:
             if isinstance(part, ToolReturnPart):
                 parts.append(part)
     return parts
+
+
+def _select_current_tool_context_messages(
+    new_messages: list[Any] | None,
+    all_messages: list[Any] | None,
+    runtime_history: RuntimeHistoryView,
+) -> list[Any]:
+    """Pick the current-turn message slice that still contains tool calls/returns.
+
+    Pydantic direct-tool-return runs may expose only the synthesized direct text
+    in ``new_messages`` while the full current turn, including tool call/return
+    parts, is only visible in ``all_messages``. Pending-card creation must inspect
+    the full tool context, but it must not scan stale history from previous turns.
+    """
+    current = list(new_messages or [])
+    if _iter_tool_return_parts(current):
+        return current
+
+    runtime_len = len(runtime_history.model_history or [])
+    inferred: list[Any] = []
+    if all_messages and len(all_messages) >= runtime_len:
+        inferred = list(all_messages[runtime_len:])
+    if _iter_tool_return_parts(inferred):
+        return inferred
+    return current or inferred
 
 
 def _message_text_chars(messages: list[Any] | None) -> int:
@@ -461,7 +510,7 @@ def _dedupe_workspace_targets(targets: list[str]) -> list[str]:
 _WORKSPACE_ACTION_COPY = {
     "candidate": {
         "title": "查看候选库关联结果",
-        "content": "已为你刷新候选库，可以查看跟刚才偏好或排除要求相关的候选机会。",
+        "content": "可以查看当前查询相关的候选机会；这只是可见候选视图，不会改小基础候选池。",
         "actionText": "打开候选库",
     },
     "ordered": {
@@ -506,6 +555,25 @@ def _build_workspace_action_response(
     )
 
 
+def _build_silent_workspace_refresh_response(
+    session_id: str,
+    target: str,
+    *,
+    extra_payload: dict[str, Any] | None = None,
+) -> WSResponse:
+    payload = {
+        "silent": True,
+        "preserveView": True,
+        **(extra_payload or {}),
+    }
+    return _build_workspace_action_response(
+        session_id,
+        target,
+        refresh=True,
+        extra_payload=payload,
+    )
+
+
 def _extract_extra_data_value(response: dict[str, Any] | None, key: str) -> dict[str, Any] | None:
     data = (response or {}).get("data")
     if not isinstance(data, dict):
@@ -530,6 +598,92 @@ async def _save_pending_confirmation_state(session_id: str, state: dict[str, Any
         await save_pending_confirmation(session_id, state)
     except Exception:
         logger.warning("Failed to save pending confirmation state: session_id=%s", session_id, exc_info=True)
+
+
+async def _mark_pending_confirmation_message_status(
+    session_id: str,
+    message_id: Any,
+    *,
+    pending_id: str,
+    status: str,
+) -> None:
+    message_id_text = str(message_id or "").strip()
+    if not message_id_text:
+        return
+    try:
+        msg_resp = await get_message_by_id(message_id_text)
+        msg_data = (msg_resp or {}).get("data") or {}
+        content_raw = msg_data.get("content", "")
+        try:
+            content_obj = json.loads(content_raw) if isinstance(content_raw, str) else content_raw
+        except (json.JSONDecodeError, TypeError):
+            content_obj = {}
+        if not isinstance(content_obj, dict) or content_obj.get("type") != "pendingConfirmationCard":
+            return
+        card_pending_id = str(content_obj.get("pendingId") or "").strip()
+        if card_pending_id and pending_id and card_pending_id != pending_id:
+            return
+        updated = {
+            **content_obj,
+            "clickable": False,
+            "clicked": status == "applied",
+            "status": status,
+        }
+        if status in {"applied", "cancelled"}:
+            updated["click_type"] = 1 if status == "applied" else 0
+        await update_message(
+            message_id=message_id_text,
+            chat_session_id=session_id,
+            content=updated,
+            message_from=0,
+            content_type="CARD",
+        )
+    except Exception:
+        logger.warning(
+            "Failed to update pending confirmation card message: session_id=%s message_id=%s status=%s",
+            session_id,
+            message_id_text,
+            status,
+            exc_info=True,
+        )
+
+
+async def _mark_pending_confirmation_failed(
+    session_id: str,
+    pending_state: dict[str, Any],
+    message_id: Any,
+    *,
+    pending_id: str,
+    result_code: str,
+) -> None:
+    failed_state = dict(pending_state)
+    failed_state["status"] = "expired"
+    failed_state["updatedAt"] = datetime.now(timezone.utc).isoformat()
+    failed_state["resultCode"] = result_code
+    await _save_pending_confirmation_state(session_id, failed_state)
+    await _mark_pending_confirmation_message_status(
+        session_id,
+        message_id,
+        pending_id=pending_id,
+        status="expired",
+    )
+
+
+async def _expire_active_pending_confirmation_state(
+    session_id: str,
+    *,
+    reason: str,
+) -> None:
+    pending_state = await _load_pending_confirmation_state(session_id)
+    if not isinstance(pending_state, dict):
+        return
+    if str(pending_state.get("status") or "").strip() != "active":
+        return
+    expired_state = dict(pending_state)
+    expired_state["status"] = "expired"
+    expired_state["updatedAt"] = datetime.now(timezone.utc).isoformat()
+    expired_state["expiredReason"] = reason
+    await _save_pending_confirmation_state(session_id, expired_state)
 
 
 async def _clear_legacy_plan_edit_cache_best_effort(session_id: str) -> None:
@@ -580,12 +734,29 @@ def _build_plan_pending_state(
         "updatedAt": now,
         "sourceBackendVersion": source_backend_version,
     }
+    intent_update = pending_plan_action.get("intent_update")
+    if isinstance(intent_update, dict) and intent_update.get("selected"):
+        state["executionPayload"]["intentPayload"] = intent_update
     if replaced_pending and replaced_pending.get("pendingId"):
         state["replacesPendingId"] = replaced_pending.get("pendingId")
     return state
 
 
-def _summarize_intent_values(merged: dict[str, Any]) -> str:
+def _soft_negative_label(label: str, *, intent_mode: str) -> str:
+    if intent_mode == "constraint":
+        return label
+    replacements = {
+        "排除专业": "不优先专业",
+        "排除专业类": "不优先专业类",
+        "排除专业门类": "不优先专业门类",
+        "排除院校": "不优先院校",
+        "排除地域": "不优先地域",
+        "排除方向": "不优先发展方向",
+    }
+    return replacements.get(label, label)
+
+
+def _summarize_intent_values(merged: dict[str, Any], *, intent_mode: str = "preference") -> str:
     parts: list[str] = []
     major_intents = merged.get("major_intents") if isinstance(merged.get("major_intents"), dict) else {}
     school_intents = merged.get("school_intents") if isinstance(merged.get("school_intents"), dict) else {}
@@ -601,21 +772,37 @@ def _summarize_intent_values(merged: dict[str, Any]) -> str:
     add("偏好专业", major_intents.get("level3"))
     add("偏好专业类", major_intents.get("level2"))
     add("偏好专业门类", major_intents.get("level1"))
-    add("排除专业", major_intents.get("negative_level3"))
-    add("排除专业类", major_intents.get("negative_level2"))
-    add("排除专业门类", major_intents.get("negative_level1"))
+    add(_soft_negative_label("排除专业", intent_mode=intent_mode), major_intents.get("negative_level3"))
+    add(_soft_negative_label("排除专业类", intent_mode=intent_mode), major_intents.get("negative_level2"))
+    add(_soft_negative_label("排除专业门类", intent_mode=intent_mode), major_intents.get("negative_level1"))
     add("偏好院校", school_intents.get("colleges"))
-    add("排除院校", school_intents.get("negative_colleges"))
+    add(_soft_negative_label("排除院校", intent_mode=intent_mode), school_intents.get("negative_colleges"))
     add("偏好地域", _as_text_list(city_intents.get("province")) + _as_text_list(city_intents.get("city")))
-    add("排除地域", _as_text_list(city_intents.get("negative_province")) + _as_text_list(city_intents.get("negative_city")))
+    add(
+        _soft_negative_label("排除地域", intent_mode=intent_mode),
+        _as_text_list(city_intents.get("negative_province")) + _as_text_list(city_intents.get("negative_city")),
+    )
     add("发展方向", career_intents.get("positive"))
-    add("排除方向", career_intents.get("negative"))
+    add(_soft_negative_label("排除方向", intent_mode=intent_mode), career_intents.get("negative"))
     return "；".join(parts)
 
 
 def _as_text_list(values: Any) -> list[str]:
     raw_values = values if isinstance(values, list) else [values] if values else []
     return [str(value or "").strip() for value in raw_values if str(value or "").strip()]
+
+
+def _normalize_school_intent_names(values: Any, batch: str | None = "01") -> list[str]:
+    normalized: list[str] = []
+    for value in _as_text_list(values):
+        try:
+            resolved = resolve_school_entity(value, batch)
+            name = resolved.best.canonical_name if resolved.best else value
+        except Exception:
+            name = value
+        if name and name not in normalized:
+            normalized.append(name)
+    return normalized
 
 
 def _merge_intent_preview_item_values(items: list[Any]) -> dict[str, Any]:
@@ -632,6 +819,48 @@ def _merge_intent_preview_item_values(items: list[Any]) -> dict[str, Any]:
         return {}
 
 
+def _positive_intent_payload_subset(payload: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    subset: dict[str, Any] = {}
+    for group_key, group_value in payload.items():
+        if not isinstance(group_value, dict):
+            continue
+        positive_group = {
+            key: value
+            for key, value in group_value.items()
+            if not str(key or "").startswith("negative_") and value
+        }
+        if positive_group:
+            subset[group_key] = positive_group
+    return subset
+
+
+def _selected_data_with_existing_positive_context(
+    selected_data: dict[str, Any],
+    existing_merged: dict[str, Any] | None,
+) -> dict[str, Any]:
+    existing_positive = _positive_intent_payload_subset(existing_merged)
+    if not existing_positive:
+        return selected_data
+    selected = [
+        item
+        for item in (selected_data.get("selected") if isinstance(selected_data, dict) else []) or []
+        if isinstance(item, dict)
+    ]
+    if not selected:
+        return selected_data
+    try:
+        selected_merged = merge_selected_values(selected)
+    except Exception:
+        selected_merged = {}
+    if _intent_payload_has_positive_value(selected_merged):
+        return selected_data
+    augmented = dict(selected_data)
+    augmented["selected"] = [*selected, existing_positive]
+    return augmented
+
+
 def _format_intent_card_content(summary: str, *, existing_summary: str = "") -> str:
     lines: list[str] = []
     summary_parts = [part.strip() for part in str(summary or "").split("；") if part.strip()]
@@ -645,6 +874,145 @@ def _format_intent_card_content(summary: str, *, existing_summary: str = "") -> 
         lines.append("当前已记录的报考参考：")
         lines.extend(f"- {part}" for part in existing_parts)
     return "\n".join(lines).strip() or summary
+
+
+def _merge_selected_intent_payload(intent_payload: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(intent_payload, dict):
+        return {}
+    selected = intent_payload.get("selected")
+    if not isinstance(selected, list) or not selected:
+        return {}
+    try:
+        return merge_selected_values([item for item in selected if isinstance(item, dict)])
+    except Exception:
+        logger.warning("Failed to merge selected intent payload for card content", exc_info=True)
+        return {}
+
+
+def _summarize_selected_intent_payload(intent_payload: dict[str, Any] | None) -> str:
+    merged = _merge_selected_intent_payload(intent_payload)
+    if not merged:
+        return ""
+    intent_mode = str((intent_payload or {}).get("intentMode") or "preference").strip()
+    if intent_mode not in {"preference", "constraint"}:
+        intent_mode = "preference"
+    return _summarize_intent_values(merged, intent_mode=intent_mode)
+
+
+def _format_plan_card_intent_impact(intent_payload: dict[str, Any] | None) -> str:
+    merged = _merge_selected_intent_payload(intent_payload)
+    base = "完成确认前不会改动当前方案；点击卡片确认最清楚，直接回复“确认/执行”也会按当前有效卡片处理。"
+    if not merged:
+        return base
+    intent_mode = str((intent_payload or {}).get("intentMode") or "preference").strip()
+    has_positive = _intent_payload_has_positive_value(merged)
+    has_negative = _intent_payload_has_negative_value(merged)
+    if intent_mode == "constraint" and has_positive and has_negative:
+        return (
+            f"{base}确认后会执行本次方案调整，并同步更新后续报考参考："
+            "偏好方向会提高推荐优先级，排除要求会作为过滤和方案检查边界。"
+        )
+    if intent_mode == "constraint" and has_negative:
+        return (
+            f"{base}确认后会执行本次方案调整，并同步把这条要求写入后续报考参考，"
+            "用于过滤、排除和方案检查。"
+        )
+    if intent_mode == "constraint" and has_positive:
+        return (
+            f"{base}确认后会执行本次方案调整，并同步把这条要求写入后续报考参考，"
+            "后续推荐、方案检查和调整会围绕这些方向。"
+        )
+    if has_positive or has_negative:
+        return (
+            f"{base}确认后会执行本次方案调整，并同步更新后续报考参考，"
+            "用于刷新推荐系数和专家优选。"
+        )
+    return base
+
+
+def _intent_payload_has_any_value(payload: dict[str, Any] | None, paths: list[tuple[str, str]]) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    for group_key, value_key in paths:
+        group = payload.get(group_key)
+        if not isinstance(group, dict):
+            continue
+        if _as_text_list(group.get(value_key)):
+            return True
+    items = payload.get("items")
+    if isinstance(items, list):
+        for item in items:
+            if not isinstance(item, dict) or item.get("selected") is False:
+                continue
+            value = item.get("value")
+            if isinstance(value, dict) and _intent_payload_has_any_value(value, paths):
+                return True
+    return False
+
+
+def _intent_payload_has_positive_value(payload: dict[str, Any] | None) -> bool:
+    return _intent_payload_has_any_value(
+        payload,
+        [
+            ("major_intents", "level3"),
+            ("major_intents", "level2"),
+            ("major_intents", "level1"),
+            ("school_intents", "colleges"),
+            ("city_intents", "province"),
+            ("city_intents", "city"),
+            ("career_intents", "positive"),
+        ],
+    )
+
+
+def _intent_payload_has_negative_value(payload: dict[str, Any] | None) -> bool:
+    return _intent_payload_has_any_value(
+        payload,
+        [
+            ("major_intents", "negative_level3"),
+            ("major_intents", "negative_level2"),
+            ("major_intents", "negative_level1"),
+            ("school_intents", "negative_colleges"),
+            ("city_intents", "negative_province"),
+            ("city_intents", "negative_city"),
+            ("career_intents", "negative"),
+        ],
+    )
+
+
+def _intent_confirmation_mechanism_line(
+    intent_mode: str,
+    payload: dict[str, Any] | None = None,
+) -> str:
+    has_positive = _intent_payload_has_positive_value(payload)
+    has_negative = _intent_payload_has_negative_value(payload)
+    if intent_mode == "constraint" and has_positive and has_negative:
+        return "采纳后会同步更新后续报考参考：偏好方向会提高推荐优先级，排除要求会作为过滤、排除和方案检查边界；不会改小基础候选池，也不会直接删除当前方案。"
+    if intent_mode == "constraint" and has_positive:
+        return "采纳后会写入明确要求，后续推荐、方案检查和调整会围绕这些方向；不会改小基础候选池，也不会直接删除当前方案。"
+    if intent_mode == "constraint" and has_negative:
+        return "采纳后会写入明确要求，后续推荐、方案检查和调整会避开这些方向；不会改小基础候选池，也不会直接删除当前方案。"
+    if intent_mode == "constraint":
+        return "采纳后会写入明确要求，用于后续推荐、方案检查和调整；不会改小基础候选池，也不会直接删除当前方案。"
+    if has_positive and has_negative:
+        return "采纳后会影响推荐系数和专家优选推荐：优先关注偏好方向，同时降低不优先方向的排序权重；不会直接删除当前方案。"
+    if has_positive:
+        return "采纳后会影响推荐系数和专家优选推荐，后续看候选和方案会提高这些方向的优先级；不会直接删除当前方案。"
+    if has_negative:
+        return "采纳后会影响推荐系数和专家优选推荐，后续看候选和方案会降低这些方向的优先级；不会直接删除当前方案。"
+    return "采纳后会影响推荐系数和专家优选推荐，用于后续候选和方案建议；不会直接删除当前方案。"
+
+
+def _format_intent_card_impact(payload: dict[str, Any] | None, *, intent_mode: str) -> str:
+    analysis = payload.get("impactAnalysis") if isinstance(payload, dict) else None
+    impact_lines = compact_relation_impact_lines(
+        analysis if isinstance(analysis, dict) else None,
+        intent_mode=intent_mode,
+        limit=2,
+    )
+    lines = [_intent_confirmation_mechanism_line(intent_mode, payload)]
+    lines.extend(line for line in impact_lines if line and line not in lines)
+    return "\n".join(f"- {line}" for line in lines[:3])
 
 
 def _build_intent_pending_state(
@@ -682,6 +1050,130 @@ def _build_intent_pending_state(
     return state
 
 
+def _build_constraint_remove_units_preview_payload(
+    merged: dict[str, Any],
+    *,
+    summary: str,
+    batch: str | None = "01",
+) -> dict[str, Any] | None:
+    major_intents = merged.get("major_intents") if isinstance(merged.get("major_intents"), dict) else {}
+    school_intents = merged.get("school_intents") if isinstance(merged.get("school_intents"), dict) else {}
+    city_intents = merged.get("city_intents") if isinstance(merged.get("city_intents"), dict) else {}
+
+    negative_level3 = _as_text_list(major_intents.get("negative_level3"))
+    negative_level2 = _as_text_list(major_intents.get("negative_level2"))
+    negative_level1 = _as_text_list(major_intents.get("negative_level1"))
+    negative_schools = _normalize_school_intent_names(school_intents.get("negative_colleges"), batch)
+    negative_provinces = normalize_region_names(city_intents.get("negative_province"), expected_level="province")
+    negative_cities = normalize_region_names(city_intents.get("negative_city"), expected_level="city")
+
+    scope_family_count = sum(
+        bool(values)
+        for values in (
+            negative_level3 + negative_level2 + negative_level1,
+            negative_schools,
+            negative_provinces + negative_cities,
+        )
+    )
+    if scope_family_count != 1:
+        return None
+
+    filters: dict[str, Any] = {}
+    source_major_names: list[str] = []
+    if negative_level3 or negative_level2 or negative_level1:
+        source_major_names = [*negative_level3, *negative_level2, *negative_level1]
+        if negative_level3:
+            filters["major_level3"] = negative_level3
+        if negative_level2:
+            filters["major_level2"] = negative_level2
+        if negative_level1:
+            filters["major_level1"] = negative_level1
+    if negative_schools:
+        filters["school_keyword"] = negative_schools
+    if negative_provinces:
+        filters["province_keyword"] = negative_provinces
+    if negative_cities:
+        filters["city_keyword"] = negative_cities
+    if not source_major_names and not filters:
+        return None
+
+    return {
+        "stage": "preview",
+        "action_family": "remove_units",
+        "user_goal": summary,
+        "context_summary": "",
+        "preview_summary": "会先检查当前方案里是否有命中这条要求的志愿。",
+        "requires_confirmation": True,
+        "should_rerun_review": True,
+        "should_refresh_workspace": True,
+        "missing_inputs": [],
+        "intent_relation": "conflict",
+        "atomic_actions": [
+            {
+                "action_type": "remove_units",
+                "volunteer_ids": [],
+                "source_major_names": source_major_names,
+                "filters": filters,
+                "reason": summary,
+            }
+        ],
+    }
+
+
+async def _maybe_create_plan_removal_confirmation_from_constraint_preview(
+    session_id: str,
+    *,
+    selected_data: dict[str, Any],
+    merged: dict[str, Any],
+    batch: str,
+    summary: str,
+) -> WSResponse | None:
+    plan_payload = _build_constraint_remove_units_preview_payload(merged, summary=summary, batch=batch)
+    if not plan_payload:
+        return None
+    request_context = RequestContext(
+        userid="",
+        sessionid=session_id,
+        chat_history=[],
+        batch=batch,
+    )
+    try:
+        result_text = await execute_plan_action(
+            SimpleNamespace(deps=request_context),
+            json.dumps(plan_payload, ensure_ascii=False),
+        )
+    except Exception:
+        logger.warning(
+            "Failed to preview constraint plan removal: session_id=%s summary=%s",
+            session_id,
+            summary,
+            exc_info=True,
+        )
+        return None
+    result = _parse_tool_return_json(result_text)
+    if not isinstance(result, dict):
+        return None
+    facts = result.get("facts") if isinstance(result.get("facts"), dict) else {}
+    if result.get("result_kind") != "preview_only" or _as_int(facts.get("matched_count")) <= 0:
+        return None
+    result = dict(result)
+    facts = dict(facts)
+    facts["intent_update"] = selected_data
+    result["facts"] = facts
+    result["user_goal"] = plan_payload.get("user_goal") or summary
+    result["preview_summary"] = result.get("summary") or summary
+    pending_action = _build_pending_plan_action_from_payload(
+        result,
+        summary=str(result.get("summary") or summary),
+    )
+    if not pending_action:
+        return None
+    pending_action["intent_update"] = selected_data
+    pending_action["summary"] = str(result.get("summary") or pending_action.get("summary") or summary)
+    pending_action["user_goal"] = str(plan_payload.get("user_goal") or summary)
+    return await _create_pending_plan_confirmation_response(session_id, pending_action)
+
+
 async def _create_pending_intent_confirmation_response(
     session_id: str,
     *,
@@ -691,7 +1183,7 @@ async def _create_pending_intent_confirmation_response(
     batch: str,
 ) -> ChatServiceResponseEnvelope:
     replaced_pending = await _load_pending_confirmation_state(session_id)
-    summary = _summarize_intent_values(merged)
+    summary = _summarize_intent_values(merged, intent_mode=intent_mode)
     mode_text = "要求" if intent_mode == "constraint" else "偏好"
     if not summary:
         summary = f"本次选择的{mode_text}内容。"
@@ -705,6 +1197,7 @@ async def _create_pending_intent_confirmation_response(
         replaced_pending=replaced_pending if isinstance(replaced_pending, dict) else None,
     )
     await _save_pending_confirmation_state(session_id, pending_state)
+    await _clear_legacy_plan_edit_cache_best_effort(session_id)
     card_content = _format_intent_card_content(summary)
     payload = {
         "type": "pendingConfirmationCard",
@@ -714,16 +1207,15 @@ async def _create_pending_intent_confirmation_response(
         "title": f"确认采纳这次{mode_text}",
         "summary": summary,
         "content": card_content,
-        "impactTitle": "确认说明",
-        "impact": "点击采纳前不会写入后续报考参考；点击采纳后会按这次内容继续看候选和方案。",
         "clickable": True,
         "status": "active",
         "confirmText": "采纳",
         "cancelText": "暂不采纳",
+        "impactTitle": "采纳后的作用",
+        "impact": _format_intent_card_impact(merged, intent_mode=intent_mode),
     }
-    primary = f"我已把这次{mode_text}整理好了。请点击确认卡片采纳；点击前不会生效。"
     return ChatServiceResponseEnvelope(
-        primary=primary,
+        primary="",
         followups=[
             WSResponse(
                 type="pendingConfirmationCard",
@@ -740,12 +1232,35 @@ async def _resolve_session_batch(session_id: str, default: str = "01") -> str:
         if score_response.get("code") == 0:
             raw_data = score_response.get("data", {}).get("userScoreDetail", {})
             if isinstance(raw_data, dict):
-                batch = str(raw_data.get("batch") or "").strip()
+                batch = _normalize_batch(raw_data.get("batch"))
                 if batch:
                     return batch
     except Exception:
         logger.warning("Failed to resolve session batch: session_id=%s", session_id, exc_info=True)
     return default
+
+
+def _parse_score_detail_from_backend(raw_data: dict[str, Any]) -> ScoreDetail:
+    province_raw = raw_data.get("province")
+    province_name = (
+        province_raw.get("name", "")
+        if isinstance(province_raw, dict)
+        else str(province_raw or raw_data.get("provinceName") or "")
+    )
+    subject_list = [
+        item.get("name", "")
+        for item in raw_data.get("subjectList", [])
+        if isinstance(item, dict) and item.get("name")
+    ]
+    sex_raw = raw_data.get("sex")
+    sex_name = sex_raw.get("name", "") if isinstance(sex_raw, dict) else str(sex_raw or "")
+    return ScoreDetail(
+        province=province_name,
+        total_score=int(raw_data.get("totalScore") or raw_data.get("total_score") or 0),
+        subject_list=subject_list,
+        sex=sex_name,
+        volunteer_model=str(raw_data.get("volunteerModel") or raw_data.get("volunteer_model") or "major"),
+    )
 
 
 async def _create_pending_intent_confirmation_from_preview_payload(
@@ -781,11 +1296,11 @@ async def _create_pending_intent_confirmation_from_preview_payload(
         return None
     if not merged:
         return None
-    existing_merged = _merge_intent_preview_item_values(list(preview.existingItems))
-    existing_summary = _summarize_intent_values(existing_merged)
     intent_mode = str(preview.intentMode or "preference").strip()
     if intent_mode not in {"preference", "constraint"}:
         intent_mode = "preference"
+    existing_merged = _merge_intent_preview_item_values(list(preview.existingItems))
+    existing_summary = _summarize_intent_values(existing_merged, intent_mode=intent_mode)
     batch = await _resolve_session_batch(session_id)
     selected_data = {
         "selected": selected_values,
@@ -793,7 +1308,20 @@ async def _create_pending_intent_confirmation_from_preview_payload(
         "batch": batch,
     }
     replaced_pending = await _load_pending_confirmation_state(session_id)
-    summary = _summarize_intent_values(merged) or preview.title or "本次点击采纳后生效的内容。"
+    summary = _summarize_intent_values(merged, intent_mode=intent_mode) or preview.title or "本次点击采纳后生效的内容。"
+    if intent_mode == "constraint":
+        plan_removal_card = await _maybe_create_plan_removal_confirmation_from_constraint_preview(
+            session_id,
+            selected_data=_selected_data_with_existing_positive_context(
+                selected_data,
+                existing_merged,
+            ),
+            merged=merged,
+            batch=batch,
+            summary=summary,
+        )
+        if plan_removal_card is not None:
+            return plan_removal_card
     pending_state = _build_intent_pending_state(
         session_id,
         selected_data=selected_data,
@@ -807,7 +1335,7 @@ async def _create_pending_intent_confirmation_from_preview_payload(
     await _clear_legacy_plan_edit_cache_best_effort(session_id)
     mode_text = "要求" if intent_mode == "constraint" else "偏好"
     card_content = _format_intent_card_content(summary, existing_summary=existing_summary)
-    payload = {
+    card_payload = {
         "type": "pendingConfirmationCard",
         "pendingId": pending_state["pendingId"],
         "kind": "intent_change",
@@ -815,17 +1343,17 @@ async def _create_pending_intent_confirmation_from_preview_payload(
         "title": f"确认采纳这次{mode_text}",
         "summary": summary,
         "content": card_content,
-        "impactTitle": "确认说明",
-        "impact": "点击采纳前不会写入后续报考参考；点击采纳后会按这次内容继续看候选和方案。",
         "clickable": True,
         "status": "active",
         "confirmText": "采纳",
         "cancelText": "暂不采纳",
+        "impactTitle": "采纳后的作用",
+        "impact": _format_intent_card_impact(payload, intent_mode=intent_mode),
     }
     return WSResponse(
         type="pendingConfirmationCard",
         session_id=session_id,
-        content=json.dumps(payload, ensure_ascii=False),
+        content=json.dumps(card_payload, ensure_ascii=False),
     )
 
 
@@ -834,11 +1362,13 @@ async def _recover_unbacked_intent_confirmation(
     request_context: RequestContext,
     *,
     reply: str,
+    force: bool = False,
 ) -> WSResponse | None:
     """Recover a pending intent card when the model wrote a confirm prompt but skipped the intent tool."""
-    if not isinstance(reply, str) or not _reply_looks_like_unbacked_intent_preview(reply):
+    if not isinstance(reply, str) or (not force and not _reply_looks_like_unbacked_intent_preview(reply)):
         return None
     ctx = SimpleNamespace(deps=request_context)
+    recovery_scope = _intent_recovery_scope_from_pending_context(request_context) if force else "generic"
     try:
         payload_text = await analyze_volunteer_intent_change(
             ctx,
@@ -847,7 +1377,7 @@ async def _recover_unbacked_intent_confirmation(
             None,
             None,
             analysis_stage=ANALYSIS_STAGE_CONFIRMED,
-            recovery_scope="generic",
+            recovery_scope=recovery_scope,
             confirm_enabled=True,
             persist_cache=False,
         )
@@ -860,6 +1390,33 @@ async def _recover_unbacked_intent_confirmation(
         )
         return None
     return await _create_pending_intent_confirmation_from_preview_payload(session_id, preview_payload)
+
+
+def _intent_recovery_scope_from_pending_context(request_context: RequestContext) -> str:
+    pending = resolve_pending_confirmation(request_context)
+    if pending is None or getattr(pending, "kind", None) != "intent_change":
+        return "generic"
+    execution_payload = getattr(pending, "execution_payload", None)
+    payloads: list[dict[str, Any]] = []
+    if isinstance(execution_payload, dict):
+        merged = execution_payload.get("merged")
+        selected_data = execution_payload.get("selectedData")
+        if isinstance(merged, dict):
+            payloads.append(merged)
+        if isinstance(selected_data, dict):
+            for selected in selected_data.get("selected") or []:
+                if isinstance(selected, dict):
+                    payloads.append(selected)
+    summary = str(getattr(pending, "preview_summary", "") or "")
+    if any("city_intents" in payload for payload in payloads) or any(marker in summary for marker in ("地域", "城市", "省份", "地区")):
+        return "region"
+    if any("major_intents" in payload for payload in payloads) or "专业" in summary:
+        return "major"
+    if any("school_intents" in payload for payload in payloads) or any(marker in summary for marker in ("院校", "学校")):
+        return "school"
+    if any("career_intents" in payload for payload in payloads) or any(marker in summary for marker in ("职业", "就业", "发展方向")):
+        return "career_preference"
+    return "generic"
 
 
 async def _resolve_intent_mode_from_message(message_id: Any) -> str:
@@ -893,12 +1450,37 @@ async def _create_pending_plan_confirmation_response(
 
     action_family = str(pending_plan_action.get("action_family") or "").strip()
     summary = str(pending_plan_action.get("summary") or "").strip()
+    unit_kind = _pending_plan_unit_kind(pending_plan_action)
+    content = summary or "确认后会执行本次方案调整。"
+    is_ordered_group_action = action_family in {"move_ordered_unit", "remove_ordered_unit"} and unit_kind != "志愿"
+    if action_family == "move_ordered_unit" and is_ordered_group_action:
+        compact_content = _compact_plan_reply_text(content)
+        if "不是按单条志愿位置" not in compact_content and "按专业组顺序计算" not in compact_content:
+            content = (
+                content.rstrip()
+                + "\n\n位置说明：这里的“第几个”按专业组顺序计算，不是按单条志愿位置计算；组内专业会保持连续。"
+            )
+    if action_family == "remove_ordered_unit" and is_ordered_group_action:
+        compact_content = _compact_plan_reply_text(content)
+        if "组内专业" not in compact_content:
+            content = content.rstrip() + "\n\n执行后该专业组内的专业会一并移出，后续专业组会前移。"
+    execution_payload = pending_state.get("executionPayload")
+    intent_payload = execution_payload.get("intentPayload") if isinstance(execution_payload, dict) else None
+    intent_summary = _summarize_selected_intent_payload(intent_payload)
+    if intent_summary and intent_summary not in content:
+        intent_lines = [part.strip() for part in intent_summary.split("；") if part.strip()]
+        intent_content = "\n".join(f"- {part}" for part in intent_lines)
+        content = (
+            content.rstrip()
+            + "\n\n同时更新后续报考参考：\n"
+            + intent_content
+        )
     title_by_action = {
         "add_units": "确认加入方案",
         "remove_units": "确认移出志愿",
         "move_unit": "确认移动志愿",
-        "move_ordered_unit": "确认移动专业组",
-        "remove_ordered_unit": "确认移出专业组",
+        "move_ordered_unit": "确认移动志愿" if unit_kind == "志愿" else "确认移动专业组",
+        "remove_ordered_unit": "确认移出志愿" if unit_kind == "志愿" else "确认移出专业组",
         "replace_units": "确认替换志愿",
         "sort_ordered_plan": "确认方案排序",
         "regenerate_order": "确认重排方案",
@@ -912,19 +1494,36 @@ async def _create_pending_plan_confirmation_response(
         "actionFamily": action_family,
         "title": title_by_action.get(action_family) or "请确认本次方案调整",
         "summary": summary or "确认后会执行本次方案调整。",
-        "content": summary or "确认后会执行本次方案调整。",
+        "content": content,
         "impactTitle": "确认说明",
-        "impact": "点击确认前不会改动当前方案；如果继续对话但不点击卡片，本次调整不会执行。",
+        "impact": "完成确认前不会改动当前方案；点击卡片确认最清楚，直接回复“确认/执行”也会按当前有效卡片处理。",
         "clickable": True,
         "status": "active",
         "confirmText": "确认执行",
         "cancelText": "暂不执行",
     }
+    if isinstance(intent_payload, dict) and intent_payload.get("selected"):
+        payload["impact"] = _format_plan_card_intent_impact(intent_payload)
     return WSResponse(
         type="pendingConfirmationCard",
         session_id=session_id,
         content=json.dumps(payload, ensure_ascii=False),
     )
+
+
+def _pending_plan_unit_kind(pending_plan_action: dict[str, Any]) -> str:
+    plan_payload = pending_plan_action.get("plan_payload")
+    if not isinstance(plan_payload, str) or not plan_payload.strip():
+        return ""
+    try:
+        payload = json.loads(plan_payload)
+    except Exception:
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    facts = payload.get("facts") if isinstance(payload.get("facts"), dict) else {}
+    unit_kind = str(facts.get("unit_kind") or facts.get("unitKind") or "").strip()
+    return unit_kind if unit_kind in {"志愿", "专业组"} else ""
 
 
 _EXECUTE_PLAN_ACTION_REFRESH_FAMILIES = {
@@ -1060,6 +1659,59 @@ def _select_conversation_action_family(tool_returns: list[ToolReturnPart]) -> st
         if action_family not in _LOW_PRIORITY_LOG_ACTION_FAMILIES:
             return action_family
     return families[-1]
+
+
+def _latest_readonly_plan_execution_result(messages: list[Any] | None) -> dict[str, Any] | None:
+    readonly_pairs = {
+        ("review_plan", "review_result"),
+        ("analyze_adjustment", "adjustment_analysis"),
+        ("query_state", "status_overview"),
+    }
+    for part in reversed(_iter_tool_return_parts(messages)):
+        if part.tool_name != "execute_plan_action":
+            continue
+        data = _parse_tool_return_json(part.content)
+        if not data:
+            continue
+        action_family = str(data.get("action_family") or "").strip()
+        result_kind = str(data.get("result_kind") or "").strip()
+        if (action_family, result_kind) in readonly_pairs:
+            return data
+    return None
+
+
+def _latest_readonly_plan_query_reply(messages: list[Any] | None) -> str | None:
+    for part in reversed(_iter_tool_return_parts(messages)):
+        if part.tool_name != "query_volunteer_plan":
+            continue
+        data = _parse_tool_return_json(part.content)
+        if data:
+            for key in ("reply", "summary", "message"):
+                value = str(data.get(key) or "").strip()
+                if value:
+                    return _sanitize_reply_for_user(_normalize_user_facing_terms(value))
+            continue
+        text = str(part.content or "").strip()
+        if text:
+            return _sanitize_reply_for_user(_normalize_user_facing_terms(text))
+    return None
+
+
+def _reply_contains_readonly_plan_query_facts(reply: str) -> bool:
+    compact = _compact_plan_reply_text(reply)
+    if not compact:
+        return False
+    return any(
+        marker in compact
+        for marker in (
+            "当前方案里共命中",
+            "候选里共命中",
+            "当前方案里暂时没有命中",
+            "候选里暂时没有命中",
+            "下面仅展示",
+            "符合“",
+        )
+    )
 
 
 def _summarize_tool_calls_for_observability(
@@ -1272,12 +1924,12 @@ def _tool_calls_allow_unbacked_intent_recovery(messages: list[Any] | None) -> bo
     return all("intent" in name for name in tool_names if name)
 
 
-def _tool_returns_intent_existing_only(messages: list[Any] | None) -> bool:
+def _tool_returns_intent_non_pending(messages: list[Any] | None) -> bool:
     for part in _iter_tool_return_parts(messages):
         if part.tool_name not in _INTENT_PREVIEW_TOOL_NAMES:
             continue
         data = _parse_tool_return_json(part.content)
-        if str((data or {}).get("status") or "").strip() == "existing_only":
+        if str((data or {}).get("status") or "").strip() in {"existing_only", "empty"}:
             return True
         text = str(getattr(part, "content", "") or "")
         if _is_existing_only_intent_notice_text(text):
@@ -1285,8 +1937,23 @@ def _tool_returns_intent_existing_only(messages: list[Any] | None) -> bool:
     return False
 
 
+def _tool_returns_intent_confirm_required(messages: list[Any] | None) -> bool:
+    for part in _iter_tool_return_parts(messages):
+        if part.tool_name != "update_volunteer_intent_state":
+            continue
+        data = _parse_tool_return_json(part.content)
+        if str((data or {}).get("messageCode") or "").strip() == "confirm_required":
+            return True
+        text = str(getattr(part, "content", "") or "")
+        if "confirm_required" in text or "card_confirmation_required" in text:
+            return True
+    return False
+
+
 def _tool_returns_interest_stage_intent_analysis(messages: list[Any] | None) -> bool:
     for part in _iter_tool_return_parts(messages):
+        if part.tool_name in _INTENT_INTEREST_ANALYSIS_TOOL_NAMES:
+            return True
         if part.tool_name not in _INTENT_PREVIEW_TOOL_NAMES:
             continue
         data = _parse_tool_return_json(part.content)
@@ -1308,7 +1975,7 @@ def _normalize_pending_intent_reply(reply: str) -> str:
         ("好的，我已经记下了", "我先整理一下"),
         ("我已经按你的偏好记录下来", "我先把这个偏好整理出来，等你点击卡片采纳后再作为后续参考"),
         ("我已经记录下来", "我先把这个偏好整理出来，等你点击卡片采纳后再作为后续参考"),
-        ("我先把这个偏好整理成待确认参考，你确认后我再正式生效。", "我先把这个偏好整理成确认卡片，点击采纳前不会生效。"),
+        ("我先把这个偏好整理成待确认参考，你确认后我再正式生效。", "我先把这个偏好整理成确认卡片，采纳/确认前不会生效。"),
     )
     for source, target in replacements:
         normalized = normalized.replace(source, target)
@@ -1388,7 +2055,7 @@ def _normalize_general_confirmation_protocol_wording(reply: str) -> str:
         ),
         (
             "直接告诉我新的想法就行",
-            "可以直接告诉我新的想法，我会先整理成确认卡片，点击采纳前不会生效",
+            "可以直接告诉我新的想法，我会先整理成确认卡片，采纳/确认前不会生效",
         ),
         (
             "我就能按新的要求重新筛选",
@@ -1404,7 +2071,7 @@ def _normalize_general_confirmation_protocol_wording(reply: str) -> str:
         ),
         (
             "随时可以在对话里改",
-            "随时可以在对话里提出调整；我会先整理成确认卡片，点击采纳前不会生效",
+            "随时可以在对话里提出调整；我会先整理成确认卡片，采纳/确认前不会生效",
         ),
         (
             "在我们这里，随时能改",
@@ -1475,22 +2142,22 @@ def _normalize_general_confirmation_protocol_wording(reply: str) -> str:
         normalized = normalized.replace(source, target)
     normalized = re.sub(
         r"(?:有的话可以)?(?:直接)?告诉我[，,]?我帮你记成后续参考[。！？]?",
-        "如果要正式采用，我会先整理成确认卡片；点击采纳前不会生效。",
+        "如果要正式采用，我会先整理成确认卡片；采纳/确认前不会生效。",
         normalized,
     )
     normalized = re.sub(
         r"我(?:先|会先|可以先)?帮你记成后续参考[。！？]?",
-        "我会先整理成确认卡片；点击采纳前不会生效。",
+        "我会先整理成确认卡片；采纳/确认前不会生效。",
         normalized,
     )
     normalized = re.sub(
         r"我可以先整理成待确认(?:偏好|要求|意向|内容)[，,]?\s*确认后",
-        "我可以先整理成确认卡片；点击采纳前不会生效。点击采纳后",
+        "我可以先整理成确认卡片；采纳/确认前不会生效。点击采纳后",
         normalized,
     )
     normalized = re.sub(
         r"我可以把(?P<topic>[^。！？\n]{0,100}?)整理成待确认(?:偏好|要求|意向|内容)[，,]?\s*确认后(?P<verb>会|再)",
-        r"我可以把\g<topic>整理成确认卡片；点击采纳前不会生效，点击采纳后\g<verb>",
+        r"我可以把\g<topic>整理成确认卡片；采纳/确认前不会生效，点击采纳后\g<verb>",
         normalized,
     )
     normalized = normalized.replace("我可以先整理成待确认偏好", "我可以先整理成确认卡片")
@@ -1505,7 +2172,7 @@ def _normalize_general_confirmation_protocol_wording(reply: str) -> str:
     normalized = normalized.replace("待确认意向", "确认卡片")
     normalized = re.sub(
         r"我可以整理成确认(?:偏好|要求|内容)[。；;]?\s*你确认后[，,]",
-        "我可以整理成确认卡片；点击采纳前不会生效。点击采纳后，",
+        "我可以整理成确认卡片；采纳/确认前不会生效。点击采纳后，",
         normalized,
     )
     normalized = normalized.replace("我可以整理成确认偏好", "我可以整理成确认卡片")
@@ -1533,7 +2200,7 @@ def _normalize_general_confirmation_protocol_wording(reply: str) -> str:
     if "确认卡片" not in normalized and _reply_discusses_changeable_intent_or_plan(normalized):
         normalized = (
             normalized.rstrip()
-            + "\n\n如果要正式更新偏好、要求或方案，我会先整理成确认卡片或调整预览；点击采纳前不会生效。"
+            + "\n\n如果要正式更新偏好、要求或方案，我会先整理成确认卡片或调整预览；采纳/确认前不会生效。"
         )
     return normalized
 
@@ -1569,6 +2236,7 @@ def _reply_looks_like_unbacked_intent_preview(reply: str) -> bool:
     compact = _compact_plan_reply_text(reply)
     if not compact:
         return False
+    claimed_clickable_card = _reply_claims_clickable_intent_card(reply)
     has_pending_heading = "待确认内容" in compact or "整理成待确认" in compact
     has_specific_intent_items = any(
         marker in reply
@@ -1584,6 +2252,10 @@ def _reply_looks_like_unbacked_intent_preview(reply: str) -> bool:
             "偏好地域",
             "地域偏好",
             "院校偏好",
+            "排除省份",
+            "排除城市",
+            "排除地域",
+            "排除地区",
             "优先保留",
             "过滤掉",
         )
@@ -1604,11 +2276,48 @@ def _reply_looks_like_unbacked_intent_preview(reply: str) -> bool:
         any(marker in compact for marker in ("确认后", "如果你确认", "你确认", "确认要这样记"))
         and any(marker in compact for marker in ("后续参考", "偏好", "排除", "过滤", "优先保留", "记入", "记录"))
     )
+    if claimed_clickable_card:
+        return True
     if not has_pending_heading and not has_text_confirmation_request:
         return False
     if not has_pending_heading and not has_specific_intent_items:
         return False
     return has_text_confirmation_request or has_unbacked_confirm_effect
+
+
+def _reply_claims_clickable_intent_card(reply: str) -> bool:
+    compact = _compact_plan_reply_text(reply)
+    if "确认卡片" not in compact:
+        return False
+    has_card_created_claim = any(
+        marker in compact
+        for marker in (
+            "已经生成",
+            "已生成",
+            "生成了",
+            "已经为你生成",
+            "已为你生成",
+            "已经为你整理",
+            "已为你整理",
+            "已经整理",
+            "已整理",
+            "我已把",
+            "这张确认卡片",
+        )
+    )
+    has_click_effect = any(
+        marker in compact
+        for marker in (
+            "点击采纳",
+            "点击卡片",
+            "采纳后",
+            "才会生效",
+            "不会生效",
+            "写入后续",
+            "后续报考参考",
+        )
+    )
+    return has_card_created_claim and has_click_effect
 
 
 def _normalize_unbacked_intent_preview_reply(reply: str) -> str:
@@ -1624,8 +2333,8 @@ def _normalize_unbacked_intent_preview_reply(reply: str) -> str:
     normalized = re.sub(r"\*\*待确认内容\*\*", "**这轮先按咨询结论理解**", reply)
     normalized = re.sub(r"(?m)^我先把.*整理成待确认(?:偏好|要求|内容)[：:]?\s*$", "我先把这轮结论说明清楚：", normalized)
     replacements = (
-        ("回复\"确认\"就按上面执行；", "如果你想正式采用，我会先整理成确认卡片；点击采纳前不会生效。"),
-        ("回复“确认”就按上面执行；", "如果你想正式采用，我会先整理成确认卡片；点击采纳前不会生效。"),
+        ("回复\"确认\"就按上面执行；", "如果你想正式采用，我会先整理成确认卡片；采纳/确认前不会生效。"),
+        ("回复“确认”就按上面执行；", "如果你想正式采用，我会先整理成确认卡片；采纳/确认前不会生效。"),
         ("直接回复“确认”", "请点击确认卡片里的“采纳”"),
         ("直接回复\"确认\"", "请点击确认卡片里的“采纳”"),
         ("确认后，", "如果后续正式记成要求，"),
@@ -1657,16 +2366,32 @@ def _normalize_downgraded_intent_preview_reply(reply: str) -> str:
     if not isinstance(reply, str) or not reply.strip():
         return reply
     compact = _compact_plan_reply_text(reply)
-    if "整理成待确认" not in compact and not any(
+    has_fake_pending_claim = "整理成待确认" in compact or any(
         marker in compact for marker in ("待确认偏好", "待确认要求", "待确认意向", "待确认内容")
-    ):
+    )
+    has_no_card_effect_claim = any(
+        marker in compact
+        for marker in (
+            "点击卡片采纳后",
+            "点击采纳后",
+            "确认后会",
+            "确认后系统会",
+            "候选池会变小",
+            "不会再进入候选",
+            "不再进入候选",
+            "过滤掉",
+            "自动过滤",
+            "按这个口径来筛选",
+        )
+    )
+    if not has_fake_pending_claim and not has_no_card_effect_claim:
         return reply
 
     def _replace_claim(match: re.Match[str]) -> str:
         topic = str(match.group("topic") or "这个想法").strip(" ：:，,。")
         if not topic:
             topic = "这个想法"
-        return f"如果你想把{topic}作为后续参考，我可以整理成确认卡片；点击采纳前不会生效。"
+        return f"如果你想把{topic}作为后续参考，我可以整理成确认卡片；采纳/确认前不会生效。"
 
     normalized = _DOWNGRADED_INTENT_PENDING_CLAIM_RE.sub(_replace_claim, reply)
 
@@ -1675,27 +2400,52 @@ def _normalize_downgraded_intent_preview_reply(reply: str) -> str:
         target = str(match.group("target") or "后续参考").strip()
         if not topic:
             topic = "这个想法"
-        return f"如果你想把{topic}作为{target}，我会先整理成确认卡片；点击采纳前不会生效。"
+        return f"如果你想把{topic}作为{target}，我会先整理成确认卡片；采纳/确认前不会生效。"
 
     normalized = _DOWNGRADED_INTENT_DIRECT_CONFIRM_RE.sub(_replace_direct_confirm, normalized)
+    normalized = normalized.replace("点击卡片采纳后会一并过滤掉", "如果后续整理成确认卡片并采纳，会把这些方向作为排除参考")
+    normalized = normalized.replace("点击采纳后会一并过滤掉", "如果后续整理成确认卡片并采纳，会把这些方向作为排除参考")
+    normalized = normalized.replace("点击卡片采纳后会", "如果后续整理成确认卡片并采纳，会")
+    normalized = normalized.replace("点击采纳后会", "如果后续整理成确认卡片并采纳，会")
+    normalized = normalized.replace("后续生成方案时，系统会按这个口径来筛选。", "后续生成或调整方案时，会把这个口径作为推荐和检查参考；基础候选池不会因此变小。")
+    normalized = normalized.replace("后续生成方案时，系统会按这个口径来筛选", "后续生成或调整方案时，会把这个口径作为推荐和检查参考；基础候选池不会因此变小")
+    normalized = normalized.replace("这些方向都不会再进入候选", "后续推荐和方案检查会把这些方向作为排除参考，基础候选池不会因此变小")
+    normalized = normalized.replace("会收窄候选范围", "不会改小基础候选池；会作为后续推荐、方案检查和方案调整参考")
+    normalized = normalized.replace("收窄候选范围", "不会改小基础候选池；会作为后续推荐、方案检查和方案调整参考")
+    normalized = normalized.replace("候选池会变小", "基础候选池不会因此变小")
+    normalized = normalized.replace("不会再进入候选", "会作为排除参考")
+    normalized = normalized.replace("不再进入候选", "会作为排除参考")
+    normalized = normalized.replace("自动过滤后续推荐", "作为后续推荐和方案检查的排除参考")
+    normalized = re.sub(
+        r"自动过滤(?P<target>[^。！？\n]{1,50}?(?:相关选项|相关方向|相关志愿|选项|方向|志愿))",
+        r"把\g<target>作为后续推荐、方案检查和方案调整的排除参考",
+        normalized,
+    )
+    normalized = normalized.replace("自动过滤", "作为后续推荐、方案检查和方案调整的排除参考")
+    normalized = normalized.replace("过滤掉", "作为排除参考")
     normalized = normalized.replace("你确认后我再作为后续参考去筛方案", "点击采纳后，我再作为后续参考去看候选和方案")
     normalized = normalized.replace("你确认后我再作为后续参考", "点击采纳后，我再作为后续参考")
     normalized = re.sub(
-        r"你确认要把(?P<topic>[^。！？\n]{0,80}?)作为后续参考吗？点击采纳前不会生效。",
-        r"如果你想把\g<topic>作为后续参考，我会先整理成确认卡片；点击采纳前不会生效。",
+        r"你确认要把(?P<topic>[^。！？\n]{0,80}?)作为后续参考吗？采纳/确认前不会生效。",
+        r"如果你想把\g<topic>作为后续参考，我会先整理成确认卡片；采纳/确认前不会生效。",
         normalized,
     )
     normalized = re.sub(
         r"(?:要不要|需要不需要)(?:我)?先整理成[^。！？\n？?]{0,40}(?:要求|偏好|排除条件)[？?]\s*确认后[，,]",
-        "如果要正式采用，我会先整理成确认卡片；点击采纳前不会生效。点击采纳后，",
+        "如果要正式采用，我会先整理成确认卡片；采纳/确认前不会生效。如果后续整理成确认卡片并采纳，",
         normalized,
     )
-    normalized = normalized.replace("确认后，我会", "点击卡片采纳后，我会")
-    normalized = normalized.replace("告诉我，我帮你记成后续参考。", "如果要正式采用，我会先整理成确认卡片；点击采纳前不会生效。")
-    normalized = normalized.replace("直接告诉我，我帮你记成后续参考。", "如果要正式采用，我会先整理成确认卡片；点击采纳前不会生效。")
+    normalized = normalized.replace("确认后，我会", "如果后续整理成确认卡片并采纳，我会")
+    normalized = normalized.replace("确认后会", "如果后续整理成确认卡片并采纳，会")
+    normalized = normalized.replace("点击采纳后，我再作为后续参考去看候选和方案", "如果后续整理成确认卡片并采纳，我再作为后续参考去看候选和方案")
+    normalized = normalized.replace("点击采纳后，我再作为后续参考", "如果后续整理成确认卡片并采纳，我再作为后续参考")
+    normalized = normalized.replace("告诉我，我帮你记成后续参考。", "如果要正式采用，我会先整理成确认卡片；采纳/确认前不会生效。")
+    normalized = normalized.replace("直接告诉我，我帮你记成后续参考。", "如果要正式采用，我会先整理成确认卡片；采纳/确认前不会生效。")
     normalized = normalized.replace("整理成待确认偏好", "整理成确认卡片")
     normalized = normalized.replace("整理成待确认要求", "整理成确认卡片")
     normalized = normalized.replace("整理成待确认意向", "整理成确认卡片")
+    if "基础候选池" not in normalized and any(marker in normalized for marker in ("排除参考", "筛选", "过滤")):
+        normalized = normalized.rstrip() + "\n\n补充说明：基础候选池不会因为偏好或要求采纳而永久变小；采纳后只是作为后续推荐、方案检查和方案调整的参考。"
     return normalized
 
 
@@ -1764,6 +2514,79 @@ def _is_pending_intent_followup_turn(content: str, reply: str) -> bool:
     )
 
 
+_PENDING_READONLY_IMPACT_USER_TOKENS = (
+    "先不确认",
+    "不确认",
+    "暂不确认",
+    "还没确认",
+    "先别执行",
+    "先不执行",
+    "看看影响",
+    "看影响",
+    "有什么影响",
+    "会不会影响",
+    "影响当前方案",
+    "影响方案",
+    "当前方案吗",
+    "当前方案么",
+    "先看看",
+)
+
+
+def _is_pending_readonly_impact_question(content: str) -> bool:
+    """Detect read-only follow-up about an active pending card, not user intent routing."""
+    compact = _compact_plan_reply_text(content)
+    if not compact:
+        return False
+    if _is_pending_plan_short_text_confirmation(content) or _is_pending_intent_short_text_confirmation(content):
+        return False
+    has_readonly_marker = any(token in compact for token in _PENDING_READONLY_IMPACT_USER_TOKENS)
+    has_impact_marker = any(token in compact for token in ("影响", "当前方案", "候选", "承接", "匹配", "冲突"))
+    return has_readonly_marker and has_impact_marker
+
+
+def _build_pending_readonly_impact_reply(pending_state: dict[str, Any]) -> str:
+    kind = str((pending_state or {}).get("kind") or "").strip()
+    action_family = str((pending_state or {}).get("actionFamily") or "").strip()
+    summary = str((pending_state or {}).get("summary") or "").strip()
+    execution_payload = pending_state.get("executionPayload") if isinstance(pending_state, dict) else None
+    intent_payload = execution_payload.get("intentPayload") if isinstance(execution_payload, dict) else None
+    intent_summary = _summarize_selected_intent_payload(intent_payload) if isinstance(intent_payload, dict) else ""
+
+    if kind == "plan_mutation":
+        lines = [
+            "当前有一张待确认的方案调整卡片，还没有执行。",
+            "",
+            "**对当前方案的影响**",
+        ]
+        lines.append(f"- {summary}" if summary else "- 完成确认前不会改动当前方案；确认后才会执行这次方案调整。")
+        if intent_summary:
+            lines.append(f"- 同时会更新后续报考参考：{intent_summary}。")
+        lines.extend(
+            [
+                "",
+                "**现在的状态**",
+                "- 你还没有确认时，当前方案不会移出、加入、移动或重排任何志愿。",
+                "- 可以继续只看影响或让我解释范围；这不会让待确认动作自动生效。",
+            ]
+        )
+        return "\n".join(lines)
+
+    if kind == "intent_change":
+        lines = [
+            "当前有一张待确认的偏好/要求卡片，还没有采纳。",
+            "",
+            "**对当前方案的影响**",
+            "- 点击采纳前不会写入后续报考参考，也不会改动当前方案。",
+        ]
+        if summary:
+            lines.append(f"- 待采纳内容：{summary}。")
+        lines.append("- 采纳后才会作为后续推荐、方案检查和方案调整的参考；基础候选池不会因此永久变小。")
+        return "\n".join(lines)
+
+    return "当前有一张待确认卡片，还没有生效。完成确认前不会改动当前方案。"
+
+
 def _last_user_visible_text_response(messages: list[Any] | None) -> ModelResponse | None:
     for message in reversed(messages or []):
         if not isinstance(message, ModelResponse) or _is_route_observability_message(message):
@@ -1781,6 +2604,119 @@ def _message_text_content(message: Any) -> str:
             if text:
                 parts.append(text)
     return "\n".join(parts)
+
+
+def _short_assistant_confirmation_summary(text: str, limit: int = 160) -> str:
+    normalized = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: limit - 1].rstrip() + "…"
+
+
+def _pending_confirmation_card_metadata_from_text(text: str) -> dict[str, Any]:
+    text = str(text or "").strip()
+    if not text:
+        return {}
+    try:
+        data = json.loads(text)
+    except Exception:
+        return {}
+    if not isinstance(data, dict) or data.get("type") != "pendingConfirmationCard":
+        return {}
+    return data
+
+
+def _assistant_confirmation_kind_from_text(text: str) -> str | None:
+    card = _pending_confirmation_card_metadata_from_text(text)
+    if card:
+        kind = str(card.get("kind") or "").strip()
+        if kind in {"intent_change", "plan_mutation"}:
+            return kind
+
+    compact = _compact_plan_reply_text(text)
+    if not compact:
+        return None
+    intent_title_markers = (
+        "确认采纳这次偏好",
+        "确认采纳这次要求",
+        "确认采纳这次意向",
+    )
+    plan_title_markers = (
+        "确认加入方案",
+        "确认移出志愿",
+        "确认移动志愿",
+        "确认移动专业组",
+        "确认移出专业组",
+        "确认替换志愿",
+        "确认方案排序",
+        "确认重排方案",
+        "确认补齐方案",
+        "确认生成方案",
+        "请确认本次方案调整",
+    )
+    has_intent_title = any(_compact_plan_reply_text(marker) in compact for marker in intent_title_markers)
+    has_plan_title = any(_compact_plan_reply_text(marker) in compact for marker in plan_title_markers)
+    if has_intent_title and not has_plan_title:
+        return "intent_change"
+    if has_plan_title and not has_intent_title:
+        return "plan_mutation"
+    return None
+
+
+def _pending_summary_overlaps_assistant_text(pending_summary: str, assistant_text: str) -> bool:
+    compact_text = _compact_plan_reply_text(assistant_text)
+    if not compact_text:
+        return False
+    compact_summary = _compact_plan_reply_text(pending_summary)
+    if compact_summary and compact_summary in compact_text:
+        return True
+    for part in re.split(r"[\n；;。.!！?？,，]+", str(pending_summary or "")):
+        compact_part = _compact_plan_reply_text(part)
+        if len(compact_part) >= 6 and compact_part in compact_text:
+            return True
+    return False
+
+
+def _evaluate_short_text_pending_consistency(
+    pending_state: dict[str, Any],
+    history: list[Any] | None,
+) -> tuple[str, str | None, str]:
+    """Check only assistant-generated confirmation artifacts, not user intent."""
+    pending_id = str(pending_state.get("pendingId") or "").strip()
+    latest_response = _last_user_visible_text_response(history)
+    latest_text = _message_text_content(latest_response) if latest_response is not None else ""
+    assistant_summary = _short_assistant_confirmation_summary(latest_text)
+    if not latest_text:
+        return "unknown", None, ""
+    latest_model_name = str(getattr(latest_response, "model_name", "") or "")
+    blocked_prefix = "pending-confirmation-consistency-blocked"
+    if latest_model_name == blocked_prefix or latest_model_name.startswith(f"{blocked_prefix}:"):
+        blocked_pending_id = latest_model_name.split(":", 1)[1].strip() if ":" in latest_model_name else ""
+        if not blocked_pending_id or blocked_pending_id == pending_id:
+            return "conflict", "previous_consistency_blocked", assistant_summary
+
+    pending_kind = str(pending_state.get("kind") or "").strip()
+    card = _pending_confirmation_card_metadata_from_text(latest_text)
+    if card:
+        card_pending_id = str(card.get("pendingId") or "").strip()
+        card_kind = str(card.get("kind") or "").strip()
+        if card_pending_id and pending_id and card_pending_id != pending_id:
+            return "conflict", "assistant_confirmation_pending_id_conflict", assistant_summary
+        if card_kind in {"intent_change", "plan_mutation"}:
+            if card_kind == pending_kind:
+                return "matched", None, assistant_summary
+            return "conflict", "assistant_confirmation_type_conflict", assistant_summary
+
+    assistant_kind = _assistant_confirmation_kind_from_text(latest_text)
+    if assistant_kind is None:
+        return "unknown", None, assistant_summary
+    if assistant_kind == pending_kind:
+        return (
+            "matched" if _pending_summary_overlaps_assistant_text(str(pending_state.get("summary") or ""), latest_text) else "unknown",
+            None,
+            assistant_summary,
+        )
+    return "conflict", "assistant_confirmation_type_conflict", assistant_summary
 
 
 def _messages_after_index(messages: list[Any] | None, index: int | None) -> list[Any]:
@@ -1894,10 +2830,18 @@ def _no_pending_intent_confirmation_guard_reply() -> str:
 
 def _pending_requires_card_click_reply(kind: str | None = None) -> str:
     if kind == "plan_mutation":
-        return "这次方案调整还在待确认状态。请点击上方卡片里的确认按钮后，我再执行；只在对话里回复确认不会直接改动方案。"
+        return "这次方案调整还在待确认状态。请以最新确认卡片为准；确认前不会改动方案。如果卡片已失效，可以重新说明要调整的内容，我会重新生成确认卡片。"
     if kind == "intent_change":
-        return "这次偏好或要求已经整理成确认卡片，正在等待采纳。请点击卡片里的采纳按钮后，我再更新后续报考参考；只在对话里回复确认不会直接生效。"
-    return "这次更新还在待确认状态。请点击上方卡片里的确认按钮后，我再执行；只在对话里回复确认不会直接生效。"
+        return "这次偏好或要求已经整理成确认卡片，正在等待采纳。请以最新采纳卡片为准；采纳前不会写入后续报考参考。如果卡片已失效，可以重新说明你的想法。"
+    return "这次更新还在待确认状态。请以最新确认卡片为准；确认前不会生效。如果卡片已失效，可以重新说明要更新的内容。"
+
+
+def _pending_confirmation_type_mismatch_reply(active_kind: str, requested_kind: str) -> str:
+    if active_kind == "plan_mutation" and requested_kind == "intent_change":
+        return "当前等待确认的是方案调整，不是偏好或要求更新。如果要确认方案调整，可以点击卡片或只回复“确认”；如果要更新偏好，请重新说明具体想法。"
+    if active_kind == "intent_change" and requested_kind == "plan_mutation":
+        return "当前等待确认的是偏好或要求更新，不是方案调整。如果要采纳这条偏好或要求，可以点击卡片或只回复“确认”；如果要调整方案，请重新说明具体动作。"
+    return "当前待确认内容和这次确认的对象不一致，请点击最新卡片或重新说明要确认的内容。"
 
 
 def _pending_plan_card_applied_reply(action_family: str, result: dict[str, Any]) -> str:
@@ -2008,6 +2952,9 @@ def _build_pending_plan_action_from_payload(payload: dict[str, Any], summary: st
     resolved_payload = facts.get("resolved_apply_payload") if isinstance(facts, dict) else None
     if isinstance(resolved_payload, dict):
         apply_payload.update(resolved_payload)
+    resolved_action_family = str(apply_payload.get("action_family") or "").strip()
+    if resolved_action_family in _PENDING_PLAN_ACTION_FAMILIES:
+        action_family = resolved_action_family
     apply_payload["action_family"] = action_family
     apply_payload["stage"] = "apply"
     apply_payload["requires_confirmation"] = False
@@ -2021,6 +2968,9 @@ def _build_pending_plan_action_from_payload(payload: dict[str, Any], summary: st
         "summary": summary or payload.get("preview_summary") or "",
         "plan_payload": json.dumps(apply_payload, ensure_ascii=False),
     }
+    intent_update = facts.get("intent_update") if isinstance(facts, dict) else None
+    if isinstance(intent_update, dict) and intent_update.get("selected"):
+        pending["intent_update"] = intent_update
     if source_backend_version > 0:
         pending["source_backend_version"] = source_backend_version
         pending["planning_version"] = source_backend_version
@@ -2337,6 +3287,17 @@ def _is_explicit_pending_intent_confirmation(content: str) -> bool:
     }
 
 
+def _is_pending_plan_short_text_confirmation(content: str) -> bool:
+    normalized = _normalize_confirmation_only_text(content)
+    if not normalized or _is_explicit_pending_intent_confirmation(content):
+        return False
+    return normalized in _PLAN_ACTION_CONFIRM_PHRASES
+
+
+def _is_pending_intent_short_text_confirmation(content: str) -> bool:
+    return _is_pending_intent_confirmation(content)
+
+
 async def _save_direct_guard_history(
     history_store: ChatHistoryStore,
     session_id: str,
@@ -2374,6 +3335,37 @@ async def _early_confirmation_guard_reply(
     if _is_readonly_closure_ack(content) and _latest_turn_looks_readonly(history):
         return None
     started_at = time.monotonic()
+    pending_state = await _load_pending_confirmation_state(session_id)
+    pending_kind = str((pending_state or {}).get("kind") or "").strip()
+    pending_status = str((pending_state or {}).get("status") or "").strip()
+    if pending_status == "active" and pending_kind in {"plan_mutation", "intent_change"}:
+        if pending_kind == "plan_mutation" and _is_pending_plan_short_text_confirmation(content):
+            return None
+        if pending_kind == "intent_change" and _is_pending_intent_short_text_confirmation(content):
+            return None
+        if pending_kind == "plan_mutation" and is_explicit_intent_confirm:
+            reply = _pending_confirmation_type_mismatch_reply("plan_mutation", "intent_change")
+            await _save_direct_guard_history(
+                history_store,
+                session_id,
+                history,
+                content,
+                reply,
+                model_name="pending-confirmation-kind-mismatch",
+            )
+            _log_conversation_turn_event(
+                sessionId=session_id,
+                userId=user_id,
+                scene="plan",
+                routingPath="pending_confirmation_kind_mismatch",
+                pendingType="plan",
+                actionFamily=str(pending_state.get("actionFamily") or "") or None,
+                totalDurationMs=int((time.monotonic() - started_at) * 1000),
+                status="blocked",
+                errorType="pending_kind_mismatch",
+            )
+            return reply
+
     if _extract_pending_plan_action(history) is not None and is_plan_confirm:
         reply = _pending_requires_card_click_reply("plan_mutation")
         await _save_direct_guard_history(
@@ -2396,55 +3388,6 @@ async def _early_confirmation_guard_reply(
             errorType="card_confirmation_required",
         )
         return reply
-
-    pending_state = await _load_pending_confirmation_state(session_id)
-    pending_kind = str((pending_state or {}).get("kind") or "").strip()
-    pending_status = str((pending_state or {}).get("status") or "").strip()
-    if pending_status == "active" and pending_kind in {"plan_mutation", "intent_change"}:
-        if pending_kind == "plan_mutation" and is_plan_confirm:
-            reply = _pending_requires_card_click_reply("plan_mutation")
-            await _save_direct_guard_history(
-                history_store,
-                session_id,
-                history,
-                content,
-                reply,
-                model_name="pending-plan-card-required",
-            )
-            _log_conversation_turn_event(
-                sessionId=session_id,
-                userId=user_id,
-                scene="plan",
-                routingPath="pending_plan_card_required",
-                pendingType="plan",
-                actionFamily=str(pending_state.get("actionFamily") or "") or None,
-                totalDurationMs=int((time.monotonic() - started_at) * 1000),
-                status="blocked",
-                errorType="card_confirmation_required",
-            )
-            return reply
-        if pending_kind == "intent_change" and is_intent_confirm:
-            reply = _pending_requires_card_click_reply("intent_change")
-            await _save_direct_guard_history(
-                history_store,
-                session_id,
-                history,
-                content,
-                reply,
-                model_name="pending-intent-card-required",
-            )
-            _log_conversation_turn_event(
-                sessionId=session_id,
-                userId=user_id,
-                scene="intent",
-                routingPath="pending_intent_card_required",
-                pendingType="intent",
-                actionFamily=None,
-                totalDurationMs=int((time.monotonic() - started_at) * 1000),
-                status="blocked",
-                errorType="card_confirmation_required",
-            )
-            return reply
 
     if is_explicit_intent_confirm:
         reply = _no_pending_intent_confirmation_guard_reply()
@@ -2521,10 +3464,97 @@ async def _early_confirmation_guard_reply(
 def _sanitize_reply_for_user(reply: str) -> str:
     """清理回复中不应暴露给用户的内部标记。"""
     import re
+    original_reply = reply
+    for pattern, replacement in _USER_REPLY_ENGLISH_WORD_REPLACEMENTS:
+        reply = pattern.sub(replacement, reply)
     # 移除 [LLM_INTERNAL] 开头的整行
     reply = re.sub(r'\n?\[LLM_INTERNAL\][^\n]*', '', reply)
     # 移除行内的 [LLM_INTERNAL] 标记
     reply = re.sub(r'\[LLM_INTERNAL\]\s*', '', reply)
+    # 3.0.3 确认协议下，采纳偏好/要求不会把基础候选池永久改小。
+    # 旧兼容路径或模型复述里可能残留“按要求过滤后候选还剩多少”的句子，
+    # 这类统计只允许出现在显式候选查询结果里，不应作为采纳确认后的后续使用说明。
+    reply = re.sub(
+        r'(?m)^\s*[-*]?\s*后续使用[：:][^\n]*(?:按这条要求过滤后|候选大约|整体候选)[^\n]*(?:\n|$)',
+        '',
+        reply,
+    )
+    reply = re.sub(
+        r'(?m)^\s*[^\n]*(?:按这条要求过滤后)[^\n]*(?:候选大约|整体候选)[^\n]*(?:\n|$)',
+        '',
+        reply,
+    )
+    compact = _compact_plan_reply_text(reply)
+    candidate_pool_semantics_claim = any(
+        marker in compact
+        for marker in (
+            "收窄候选范围",
+            "候选池会收窄",
+            "候选池会大幅收窄",
+            "候选池会变小",
+            "这些方向都不会再进入候选",
+            "不再进入候选",
+            "自动过滤",
+        )
+    )
+    if any(
+        marker in compact
+        for marker in (
+            "偏好",
+            "要求",
+            "意向",
+            "采纳",
+            "确认",
+            "后续推荐",
+            "后续生成方案",
+            "影响分析",
+            "先看影响",
+            "作为后续参考",
+        )
+    ) or ("影响" in compact and candidate_pool_semantics_claim):
+        before_candidate_pool_semantics = reply
+        reply = re.sub(
+            r"(?:你的)?候选池会(?:大幅|明显|显著)?(?:收窄|变窄)",
+            "基础候选池不会因此变小",
+            reply,
+        )
+        reply = reply.replace("会收窄候选范围", "不会改小基础候选池；会作为后续推荐、方案检查和方案调整参考")
+        reply = reply.replace("收窄候选范围", "不会改小基础候选池；会作为后续推荐、方案检查和方案调整参考")
+        reply = reply.replace("候选池会变小", "基础候选池不会因此变小")
+        reply = reply.replace("这些方向都不会再进入候选", "后续推荐和方案检查会把这些方向作为排除参考，基础候选池不会因此变小")
+        reply = reply.replace("不再进入候选", "会作为排除参考")
+        reply = re.sub(
+            r"自动过滤(?P<target>[^。！？\n]{1,50}?(?:相关选项|相关方向|相关志愿|选项|方向|志愿))",
+            r"把\g<target>作为后续推荐、方案检查和方案调整的排除参考",
+            reply,
+        )
+        reply = reply.replace("自动过滤后续推荐", "作为后续推荐和方案检查的排除参考")
+        reply = reply.replace("自动过滤", "作为后续推荐、方案检查和方案调整的排除参考")
+        reply = reply.replace("偏好卡片", "确认卡片")
+        reply = reply.replace("要求卡片", "确认卡片")
+        reply = re.sub(
+            r"确认后我可以把(?P<topic>[^。！？\n]{0,80}?)整理成确认卡片[，,]?(?P<tail>[^。！？\n]{0,80})[。！？]?",
+            r"如果你想正式采用，我可以把\g<topic>整理成确认卡片；采纳前不会生效。",
+            reply,
+        )
+        if "整理成确认卡片" in reply:
+            reply = reply.replace("确认后，后续", "卡片采纳后，后续")
+            reply = reply.replace("确认后,后续", "卡片采纳后，后续")
+            reply = reply.replace("确认后才会生效", "卡片采纳后才会生效")
+            reply = reply.replace("确认后才正式生效", "卡片采纳后才正式生效")
+            reply = reply.replace("要不要先确认这些方向？", "要不要我先整理成确认卡片？")
+        if (
+            reply != before_candidate_pool_semantics
+            and "基础候选池" not in reply
+            and any(marker in reply for marker in ("排除参考", "方案检查", "方案调整参考"))
+        ):
+            reply = (
+                reply.rstrip()
+                + "\n\n补充说明：基础候选池不会因为偏好或要求采纳而永久变小；"
+                "采纳后只是作为后续推荐、方案检查和方案调整的参考。"
+            )
+    if reply != original_reply:
+        reply = reply.strip()
     return reply.strip()
 
 
@@ -2868,6 +3898,10 @@ def _normalize_user_facing_terms(reply: str) -> str:
         ("用户画像", "报考参考信息"),
         ("学生画像", "学生报考参考信息"),
         ("画像", "报考参考信息"),
+        ("工具识别时", "这里需要注意的是"),
+        ("工具识别", "这里"),
+        ("工具返回", "查询结果"),
+        ("工具调用", "处理过程"),
         ("草稿方案", "方案"),
         ("方案草稿", "方案"),
         ("草稿", "方案"),
@@ -2875,6 +3909,7 @@ def _normalize_user_facing_terms(reply: str) -> str:
     normalized = reply
     for source, target in replacements:
         normalized = normalized.replace(source, target)
+    normalized = normalized.replace("报考参考信息信息", "报考参考信息")
     if any(token in normalized for token in ("方案", "志愿", "候选")):
         plan_add_replacements = (
             ("添加预览", "加入方案预览"),
@@ -2977,7 +4012,8 @@ def _append_plan_preview_confirmation_boundary(
     action_family = str(pending_action.get("action_family") or "")
     if action_family not in _PENDING_PLAN_ACTION_FAMILIES:
         return reply
-    if action_family in {"move_ordered_unit", "remove_ordered_unit"}:
+    unit_kind = _pending_action_unit_kind(pending_action)
+    if action_family in {"move_ordered_unit", "remove_ordered_unit"} and unit_kind != "志愿":
         compact_reply = _compact_plan_reply_text(reply)
         if "不是按单条志愿位置" not in compact_reply and "按专业组顺序计算" not in compact_reply:
             reply = (
@@ -2989,6 +4025,23 @@ def _append_plan_preview_confirmation_boundary(
     if asks_confirmation:
         return reply
     return reply.rstrip() + "\n\n如果你确认要这样做，我再执行；现在还不会改动方案。"
+
+
+def _pending_action_unit_kind(pending_action: dict[str, Any] | None) -> str:
+    if not isinstance(pending_action, dict):
+        return ""
+    payload = pending_action.get("plan_payload")
+    if not isinstance(payload, str) or not payload.strip():
+        return ""
+    try:
+        data = json.loads(payload)
+    except Exception:
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    facts = data.get("facts") if isinstance(data.get("facts"), dict) else {}
+    unit_kind = str(facts.get("unit_kind") or facts.get("unitKind") or "").strip()
+    return unit_kind if unit_kind in {"志愿", "专业组"} else ""
 
 
 def _compact_plan_reply_text(reply: str) -> str:
@@ -3080,6 +4133,37 @@ def _remove_current_turn_mutating_plan_preview(messages: list[Any] | None) -> No
         part.content = json.dumps(data, ensure_ascii=False)
 
 
+def _line_looks_like_unbacked_plan_confirmation(compact: str) -> bool:
+    if "确认" not in compact:
+        return False
+    normalized = _compact_plan_reply_text(compact)
+    if normalized.strip("*#：:？?") in {"确认替换吗", "确认执行吗", "确认修改吗", "确认改动吗"}:
+        return True
+    if "确认" in normalized and any(
+        keyword in normalized
+        for keyword in ("即可执行", "就执行", "立即执行", "执行替换", "执行修改", "执行改动")
+    ):
+        return True
+    return any(
+        marker in normalized
+        for marker in (
+            "确认后会执行",
+            "确认后执行",
+            "点击确认后生效",
+            "确认后生效",
+            "确认即可执行",
+            "回复确认即可",
+            "回复确认后",
+            "确认要删除吗",
+            "确认要移除吗",
+            "确认要去掉吗",
+            "确认要调整吗",
+            "确认要这样",
+            "确认要我",
+        )
+    )
+
+
 def _remove_unbacked_plan_confirmation_copy(reply: str) -> str:
     """Remove apply-confirmation copy when no reusable Plan preview payload exists."""
     if not isinstance(reply, str) or not reply.strip():
@@ -3095,7 +4179,7 @@ def _remove_unbacked_plan_confirmation_copy(reply: str) -> str:
         if stripped == "**":
             continue
         compact = re.sub(r"\s+", "", stripped)
-        if "确认" in compact and compact.strip("*#：:？?") in {"确认替换吗", "确认执行吗", "确认修改吗", "确认改动吗"}:
+        if _line_looks_like_unbacked_plan_confirmation(compact):
             continue
         if _UNBACKED_CONFIRM_SENTENCE_RE.search(compact):
             continue
@@ -3106,7 +4190,7 @@ def _remove_unbacked_plan_confirmation_copy(reply: str) -> str:
         kept_parts = []
         for part in sentence_parts:
             compact_part = re.sub(r"\s+", "", part)
-            if "确认" in compact_part and any(keyword in compact_part for keyword in ("即可执行", "就执行", "立即执行", "执行替换", "执行修改", "执行改动")):
+            if _line_looks_like_unbacked_plan_confirmation(compact_part):
                 continue
             if _UNBACKED_CONFIRM_SENTENCE_RE.search(compact_part):
                 continue
@@ -3121,7 +4205,66 @@ def _remove_unbacked_plan_confirmation_copy(reply: str) -> str:
         normalized_lines.pop(0)
     while normalized_lines and normalized_lines[-1] == "":
         normalized_lines.pop()
-    return "\n".join(normalized_lines) if normalized_lines else reply
+    return "\n".join(normalized_lines)
+
+
+def _reply_looks_like_unbacked_plan_confirmation(reply: str) -> bool:
+    """Detect model-written Plan confirmation copy that has no card payload.
+
+    This is a protocol safety check on the final reply, not a user-intent
+    router. It only fires after the model has already produced text that asks
+    the user to confirm a plan mutation without a pending card.
+    """
+    if not isinstance(reply, str) or not _reply_has_plan_confirmation_request(reply):
+        return False
+    compact = _compact_plan_reply_text(reply)
+    if not compact:
+        return False
+    if any(marker in compact for marker in ("确认卡片", "点击卡片", "没有生成可点击", "不会改动当前方案")):
+        return False
+    has_plan_subject = any(
+        marker in compact
+        for marker in (
+            "方案",
+            "志愿",
+            "专业组",
+            "候选",
+            "当前方案",
+        )
+    )
+    has_mutation_effect = any(
+        marker in compact
+        for marker in (
+            "删除",
+            "删掉",
+            "去掉",
+            "移除",
+            "移出",
+            "加入",
+            "添加",
+            "替换",
+            "换成",
+            "移动",
+            "挪到",
+            "排序",
+            "重排",
+            "调整",
+            "执行",
+            "生效",
+            "写入后续报考参考",
+        )
+    )
+    return has_plan_subject and has_mutation_effect
+
+
+def _guard_unbacked_plan_confirmation_reply(reply: str) -> str:
+    """Replace unsupported Plan confirmation copy with an explicit no-card boundary."""
+    if not _reply_looks_like_unbacked_plan_confirmation(reply):
+        return reply
+    stripped = _remove_unbacked_plan_confirmation_copy(reply).strip()
+    if not stripped or _reply_has_plan_confirmation_request(stripped):
+        return _UNBACKED_PLAN_CONFIRMATION_REPLY
+    return f"{stripped}\n\n{_UNBACKED_PLAN_CONFIRMATION_REPLY}"
 
 
 def _build_plan_timeout_fallback_reply(result: dict[str, Any]) -> str | None:
@@ -3278,7 +4421,7 @@ def build_timeout_fallback_from_recent_plan_execution(
         return ChatServiceResponseEnvelope(
             primary=reply,
             followups=[
-                _build_workspace_action_response(session_id, target)
+                _build_silent_workspace_refresh_response(session_id, target)
                 for target in workspace_refresh_targets
             ],
         )
@@ -3305,7 +4448,7 @@ async def build_interruption_fallback_from_recent_plan_execution(
         )
         if pending_action is not None:
             return ChatServiceResponseEnvelope(
-                primary=_sanitize_reply_for_user(_build_pending_plan_preview_reply(pending_action)),
+                primary="",
                 followups=[
                     await _create_pending_plan_confirmation_response(session_id, pending_action)
                 ],
@@ -3318,7 +4461,7 @@ async def build_interruption_fallback_from_recent_plan_execution(
         [str(target) for target in (result.get("workspace_refresh_targets") or [])]
     )
     followups = [
-        _build_workspace_action_response(session_id, target)
+        _build_silent_workspace_refresh_response(session_id, target)
         for target in workspace_refresh_targets
     ]
     return ChatServiceResponseEnvelope(primary=reply, followups=followups)
@@ -3466,24 +4609,13 @@ class ChatService:
                 if score_response.get("code") == 0:
                     raw_data = score_response.get("data", {}).get("userScoreDetail", {})
                     if raw_data:
-                        province_name = raw_data.get("province", {}).get("name", "")
-                        total_score = raw_data.get("totalScore", 0)
-                        subject_list = [
-                            item.get("name", "")
-                            for item in raw_data.get("subjectList", [])
-                        ]
-                        sex_name = raw_data.get("sex", {}).get("name", "")
-                        volunteer_model = raw_data.get("volunteerModel", "major")
-                        parsed_score_detail = ScoreDetail(
-                            province=province_name,
-                            total_score=total_score,
-                            subject_list=subject_list,
-                            sex=sex_name,
-                            volunteer_model=volunteer_model,
-                        )
+                        parsed_score_detail = _parse_score_detail_from_backend(raw_data)
                         logger.info(
                             "Fetched score_detail: province=%s total_score=%d subjects=%s sex=%s",
-                            province_name, total_score, subject_list, sex_name,
+                            parsed_score_detail.province,
+                            parsed_score_detail.total_score,
+                            parsed_score_detail.subject_list,
+                            parsed_score_detail.sex,
                         )
             except Exception as e:
                 logger.warning("Failed to fetch user score detail: %s", e)
@@ -3538,6 +4670,7 @@ class ChatService:
             turn_count=past_turn_count,
         )
         conversation_phase.turn_count = current_turn
+        stale_pending_notice = ""
         state_sync = PlanningStateSync()
         version_result = state_sync.check_version(conversation_phase, parsed_planning_summary)
         if not version_result.is_current:
@@ -3560,6 +4693,11 @@ class ChatService:
                     session_id,
                     getattr(stale_event.cause, "value", None),
                     stale_event.message,
+                )
+                stale_pending_notice = stale_event.message or "上一轮方案预览已经失效。"
+                await _expire_active_pending_confirmation_state(
+                    session_id,
+                    reason=str(getattr(stale_event.cause, "value", None) or "stale_pending"),
                 )
                 conversation_phase.clear_pending()
 
@@ -3585,13 +4723,75 @@ class ChatService:
             allow_explore_inner_llm=False,
             enable_intent_side_effect_arbitration=True,
             recent_intent_analysis=recent_intent_analysis,
+            stale_pending_notice=stale_pending_notice,
         )
         active_pending = resolve_pending_confirmation(request_context)
         active_pending_kind = str(getattr(active_pending, "kind", "") or "").strip()
         active_plan_payload_text = resolve_pending_plan_payload_text(request_context)
         turn_started_at = time.monotonic()
 
-        if active_pending_kind == "plan_mutation" and _is_plan_action_confirmation(content):
+        backend_pending_state = await _load_pending_confirmation_state(session_id)
+        backend_pending_id = str((backend_pending_state or {}).get("pendingId") or "").strip()
+        backend_pending_kind = str((backend_pending_state or {}).get("kind") or "").strip()
+        backend_pending_status = str((backend_pending_state or {}).get("status") or "").strip()
+        if backend_pending_id and backend_pending_status == "active":
+            if backend_pending_kind == "plan_mutation" and _is_pending_plan_short_text_confirmation(content):
+                return await self.handle_pending_confirmation(
+                    session_id,
+                    user_id,
+                    json.dumps(
+                        {
+                            "action": "confirm",
+                            "kind": "plan_mutation",
+                            "pendingId": backend_pending_id,
+                        },
+                        ensure_ascii=False,
+                    ),
+                    confirmation_entry="short_text",
+                    user_prompt_content=content,
+                )
+            if backend_pending_kind == "intent_change" and _is_pending_intent_short_text_confirmation(content):
+                return await self.handle_pending_confirmation(
+                    session_id,
+                    user_id,
+                    json.dumps(
+                        {
+                            "action": "confirm",
+                            "kind": "intent_change",
+                            "pendingId": backend_pending_id,
+                        },
+                        ensure_ascii=False,
+                    ),
+                    confirmation_entry="short_text",
+                    user_prompt_content=content,
+                )
+            if _is_pending_readonly_impact_question(content):
+                if on_progress is not None:
+                    with contextlib.suppress(Exception):
+                        await on_progress(self._INITIAL_PROGRESS_HINT)
+                reply = _build_pending_readonly_impact_reply(backend_pending_state or {})
+                await _save_direct_guard_history(
+                    self.history_store,
+                    session_id,
+                    history,
+                    content,
+                    reply,
+                    model_name="pending-readonly-impact",
+                )
+                _log_conversation_turn_event(
+                    sessionId=session_id,
+                    userId=user_id,
+                    scene="plan" if backend_pending_kind == "plan_mutation" else "intent",
+                    routingPath="pending_readonly_impact",
+                    pendingType="plan" if backend_pending_kind == "plan_mutation" else "intent",
+                    actionFamily=str((backend_pending_state or {}).get("actionFamily") or "") or None,
+                    totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
+                    status="success",
+                    errorType=None,
+                )
+                return reply
+
+        if active_pending_kind == "plan_mutation" and _is_pending_plan_short_text_confirmation(content):
             action_family = str(getattr(active_pending, "action_family", "") or "").strip()
             reply = _pending_requires_card_click_reply("plan_mutation")
             new_messages = [
@@ -3617,7 +4817,7 @@ class ChatService:
             )
             return reply
 
-        if active_pending_kind == "intent_change" and _is_pending_intent_confirmation(content):
+        if active_pending_kind == "intent_change" and _is_pending_intent_short_text_confirmation(content):
             reply = _pending_requires_card_click_reply("intent_change")
             new_messages = [
                 ModelRequest(parts=[UserPromptPart(content=content)]),
@@ -3891,27 +5091,26 @@ class ChatService:
         if tracker.turn_count % self._LOG_INTERVAL == 0:
             logger.info("Token usage [session cumulative]: %s", tracker.summary())
 
-        plan_chain_used = _tool_calls_include_plan_chain(new_messages)
-        if not new_messages:
-            plan_chain_used = _tool_calls_include_plan_chain(all_messages)
+        tool_context_messages = _select_current_tool_context_messages(
+            new_messages,
+            all_messages,
+            runtime_history,
+        )
 
-        intent_preview_used_current_turn = _tool_calls_include_intent_preview(new_messages)
+        plan_chain_used = _tool_calls_include_plan_chain(tool_context_messages)
+
+        intent_preview_used_current_turn = _tool_calls_include_intent_preview(tool_context_messages)
         intent_preview_used = intent_preview_used_current_turn
-        if not new_messages:
-            intent_preview_used = _tool_calls_include_intent_preview(all_messages)
-        intent_existing_only = _tool_returns_intent_existing_only(new_messages)
-        if not new_messages:
-            intent_existing_only = _tool_returns_intent_existing_only(all_messages)
+        intent_non_pending = _tool_returns_intent_non_pending(tool_context_messages)
         intent_side_effect_decision = request_context.agent_observability.get("intentSideEffectDecision")
-        intent_interest_stage_result = _tool_returns_interest_stage_intent_analysis(new_messages)
-        if not new_messages:
-            intent_interest_stage_result = _tool_returns_interest_stage_intent_analysis(all_messages)
+        intent_interest_stage_result = _tool_returns_interest_stage_intent_analysis(tool_context_messages)
         intent_preview_downgraded = (
             intent_interest_stage_result
             or (
                 isinstance(intent_side_effect_decision, dict)
                 and str(intent_side_effect_decision.get("decision") or "").strip() in {"analysis_only", "mixed_answer_then_ask"}
                 and float(intent_side_effect_decision.get("confidence") or 0.0) >= 0.7
+                and intent_side_effect_decision.get("honored") is not False
             )
         )
         if intent_preview_downgraded and getattr(request_context, "conversation_phase", None) is not None:
@@ -3920,7 +5119,7 @@ class ChatService:
             active_pending_kind = ""
         readonly_prompt = _prompt_explicitly_readonly(content)
         readonly_mutation_preview_guarded = False
-        if readonly_prompt and _tool_returns_mutating_plan_preview(new_messages):
+        if readonly_prompt and _tool_returns_mutating_plan_preview(tool_context_messages):
             _remove_current_turn_mutating_plan_preview(new_messages)
             _remove_current_turn_mutating_plan_preview(all_messages)
             if isinstance(reply, str) and _reply_has_plan_confirmation_request(reply):
@@ -3942,7 +5141,7 @@ class ChatService:
             reply = normalized_reply
 
         if plan_chain_used and isinstance(reply, str) and not readonly_mutation_preview_guarded:
-            bounded_reply = _append_plan_preview_confirmation_boundary(reply, new_messages)
+            bounded_reply = _append_plan_preview_confirmation_boundary(reply, tool_context_messages)
             if bounded_reply != reply:
                 _replace_text_reply(new_messages, reply, bounded_reply)
                 _replace_text_reply(all_messages, reply, bounded_reply)
@@ -3983,7 +5182,7 @@ class ChatService:
                 _replace_text_reply(all_messages, reply, user_facing_reply)
                 reply = user_facing_reply
 
-        latest_turn_readonly = _latest_turn_looks_readonly(new_messages if new_messages else all_messages)
+        latest_turn_readonly = _latest_turn_looks_readonly(tool_context_messages)
         has_pending_intent_context = (intent_preview_used and not intent_preview_downgraded) or (
             active_pending_kind == "intent_change"
             and not latest_turn_readonly
@@ -3991,17 +5190,26 @@ class ChatService:
             and not _is_plan_action_confirmation(content)
             and _is_pending_intent_followup_turn(content, reply)
         )
-        if isinstance(reply, str) and _reply_is_existing_only_intent_notice(reply):
+        if isinstance(reply, str) and (_reply_is_existing_only_intent_notice(reply) or intent_non_pending):
             has_pending_intent_context = False
         allow_unbacked_intent_recovery = _tool_calls_allow_unbacked_intent_recovery(
-            new_messages if new_messages else all_messages
+            tool_context_messages
+        )
+        legacy_intent_confirm_required = _tool_returns_intent_confirm_required(
+            tool_context_messages
         )
         unbacked_intent_preview_detected = (
             isinstance(reply, str)
             and not intent_preview_used
-            and not has_pending_intent_context
+            and (not has_pending_intent_context or _reply_claims_clickable_intent_card(reply))
             and allow_unbacked_intent_recovery
             and _reply_looks_like_unbacked_intent_preview(reply)
+        ) or (
+            isinstance(reply, str)
+            and not intent_preview_used
+            and allow_unbacked_intent_recovery
+            and legacy_intent_confirm_required
+            and not latest_turn_readonly
         )
         unbacked_intent_preview_source_reply = reply if unbacked_intent_preview_detected and isinstance(reply, str) else ""
         if isinstance(reply, str) and not intent_preview_used and not has_pending_intent_context and allow_unbacked_intent_recovery:
@@ -4016,7 +5224,7 @@ class ChatService:
                 _replace_text_reply(all_messages, reply, unbacked_recorded_reply)
                 reply = unbacked_recorded_reply
 
-        if isinstance(reply, str) and has_pending_intent_context and not intent_existing_only:
+        if isinstance(reply, str) and has_pending_intent_context and not intent_non_pending:
             bounded_intent_reply = _append_pending_intent_boundary(
                 reply,
                 has_pending_intent=has_pending_intent_context,
@@ -4026,9 +5234,7 @@ class ChatService:
                 _replace_text_reply(all_messages, reply, bounded_intent_reply)
                 reply = bounded_intent_reply
 
-        workspace_refresh_targets = _tool_calls_include_plan_workspace_refresh(new_messages)
-        if not new_messages:
-            workspace_refresh_targets = _tool_calls_include_plan_workspace_refresh(all_messages)
+        workspace_refresh_targets = _tool_calls_include_plan_workspace_refresh(tool_context_messages)
         workspace_refresh_targets = _strip_workspace_targets_for_readonly_prompt(workspace_refresh_targets, content)
         # Intent preview only prepares a pending preference/constraint. Do not
         # refresh the workspace until the user confirms or explicitly selects
@@ -4036,12 +5242,11 @@ class ChatService:
         # has already changed candidate results.
 
         workspace_view_targets = _tool_calls_include_plan_view_targets(
-            new_messages if new_messages else all_messages
+            tool_context_messages
         )
         workspace_view_targets = _strip_workspace_targets_for_readonly_prompt(workspace_view_targets, content)
-        tool_messages = new_messages if new_messages else all_messages
-        tool_calls = _iter_tool_call_parts(tool_messages)
-        tool_returns = _iter_tool_return_parts(tool_messages)
+        tool_calls = _iter_tool_call_parts(tool_context_messages)
+        tool_returns = _iter_tool_return_parts(tool_context_messages)
         called_tool_names = [part.tool_name for part in tool_calls]
         observed_tool_calls = _summarize_tool_calls_for_observability(tool_calls, tool_returns)
         full_agent_tool_trial = _summarize_full_agent_tool_trial(called_tool_names)
@@ -4060,12 +5265,62 @@ class ChatService:
                 session_id,
                 request_context,
                 reply=unbacked_intent_preview_source_reply,
+                force=legacy_intent_confirm_required,
             )
             if recovered_pending_intent_card is not None:
-                recovered_reply = "我已把这次偏好和排除要求整理成确认卡片。点击采纳前不会写入后续报考参考。"
-                _replace_text_reply(new_messages, reply, recovered_reply)
-                _replace_text_reply(all_messages, reply, recovered_reply)
-                reply = recovered_reply
+                _replace_text_reply(new_messages, reply, "")
+                _replace_text_reply(all_messages, reply, "")
+                reply = ""
+        pending_plan_card: WSResponse | None = None
+        pending_confirmation_action = _extract_pending_plan_action(tool_context_messages)
+        plan_card_includes_intent_update = False
+        if pending_confirmation_action is None and isinstance(reply, str):
+            guarded_reply = _guard_unbacked_plan_confirmation_reply(reply)
+            if guarded_reply != reply:
+                readonly_plan_result = _latest_readonly_plan_execution_result(tool_context_messages)
+                if readonly_plan_result is not None:
+                    guarded_reply = _build_plan_timeout_fallback_reply(readonly_plan_result) or guarded_reply
+                else:
+                    readonly_query_reply = _latest_readonly_plan_query_reply(tool_context_messages)
+                    if readonly_query_reply:
+                        stripped_reply = _remove_unbacked_plan_confirmation_copy(reply).strip()
+                        if (
+                            stripped_reply
+                            and not _reply_has_plan_confirmation_request(stripped_reply)
+                            and _reply_contains_readonly_plan_query_facts(stripped_reply)
+                        ):
+                            guarded_reply = stripped_reply
+                        else:
+                            guarded_reply = readonly_query_reply
+                _replace_text_reply(new_messages, reply, guarded_reply)
+                _replace_text_reply(all_messages, reply, guarded_reply)
+                reply = guarded_reply
+        if pending_confirmation_action:
+            plan_card_includes_intent_update = bool(
+                isinstance(pending_confirmation_action.get("intent_update"), dict)
+                and pending_confirmation_action.get("intent_update", {}).get("selected")
+            )
+            pending_plan_card = await _create_pending_plan_confirmation_response(
+                session_id,
+                pending_confirmation_action,
+            )
+            if isinstance(reply, str):
+                _replace_text_reply(new_messages, reply, "")
+                _replace_text_reply(all_messages, reply, "")
+                reply = ""
+        pending_intent_card: WSResponse | None = None
+        if intent_preview_used and not intent_preview_downgraded and not plan_card_includes_intent_update:
+            preview_payload = _extract_recent_intent_analysis_payload(tool_context_messages)
+            if not preview_payload:
+                preview_payload = _extract_recent_intent_analysis_payload(all_messages)
+            pending_intent_card = await _create_pending_intent_confirmation_from_preview_payload(
+                session_id,
+                preview_payload,
+            )
+            if pending_intent_card is not None and isinstance(reply, str):
+                _replace_text_reply(new_messages, reply, "")
+                _replace_text_reply(all_messages, reply, "")
+                reply = ""
         pending_type = "plan" if active_pending_kind == "plan_mutation" else "intent" if active_pending_kind == "intent_change" else None
         turn_event = {
             "sessionId": session_id,
@@ -4141,7 +5396,7 @@ class ChatService:
                 workspace_refresh_targets,
             )
             followups.extend(
-                _build_workspace_action_response(session_id, target)
+                _build_silent_workspace_refresh_response(session_id, target)
                 for target in workspace_refresh_targets
             )
         if workspace_view_targets:
@@ -4151,18 +5406,10 @@ class ChatService:
                     followups.append(
                         _build_workspace_action_response(session_id, target, refresh=False)
                     )
-        pending_confirmation_action = _extract_pending_plan_action(new_messages)
-        if pending_confirmation_action:
-            followups.append(
-                await _create_pending_plan_confirmation_response(session_id, pending_confirmation_action)
-            )
-        if intent_preview_used and not intent_preview_downgraded:
-            preview_payload = _extract_recent_intent_analysis_payload(new_messages)
-            if not preview_payload:
-                preview_payload = _extract_recent_intent_analysis_payload(all_messages)
-            pending_intent_card = await _create_pending_intent_confirmation_from_preview_payload(session_id, preview_payload)
-            if pending_intent_card is not None:
-                followups.append(pending_intent_card)
+        if pending_plan_card is not None:
+            followups.append(pending_plan_card)
+        if pending_intent_card is not None:
+            followups.append(pending_intent_card)
         elif recovered_pending_intent_card is not None:
             followups.append(recovered_pending_intent_card)
         if isinstance(reply, str):
@@ -4192,7 +5439,7 @@ class ChatService:
                 if score_response.get("code") == 0:
                     raw_data = score_response.get("data", {}).get("userScoreDetail", {})
                     if raw_data:
-                        batch = raw_data.get("batch", "01")
+                        batch = _normalize_batch(raw_data.get("batch", "01"))
             except Exception:
                 logger.warning("Failed to fetch batch for intent selection: session_id=%s", session_id)
 
@@ -4218,6 +5465,16 @@ class ChatService:
                     exc_info=True,
                 )
                 return "处理这一步时发生错误，请稍后重试。"
+            if action_type in {"prefer_confirm", "constrain_confirm"} and followup_result.analysisPayload:
+                pending_card = await _create_pending_intent_confirmation_from_preview_payload(
+                    session_id,
+                    followup_result.analysisPayload,
+                )
+                if pending_card is not None:
+                    return ChatServiceResponseEnvelope(
+                        primary="",
+                        followups=[pending_card],
+                    )
             return render_explore_followup_result(followup_result)
 
         selected_values = selected_data.get("selected", [])
@@ -4242,6 +5499,9 @@ class ChatService:
         session_id: str,
         user_id: str,
         content: str,
+        *,
+        confirmation_entry: str = "card",
+        user_prompt_content: str | None = None,
     ) -> str | ChatServiceResponseEnvelope:
         """Handle explicit confirmation-card actions.
 
@@ -4259,14 +5519,28 @@ class ChatService:
         action = str(selected_data.get("action") or "").strip().lower()
         kind = str(selected_data.get("kind") or "").strip()
         pending_id = str(selected_data.get("pendingId") or selected_data.get("pending_id") or "").strip()
+        message_id = selected_data.get("message_id")
+        confirmation_entry = "short_text" if confirmation_entry == "short_text" else "card"
         pending_state = await _load_pending_confirmation_state(session_id)
         active_pending_id = str((pending_state or {}).get("pendingId") or "").strip()
         active_status = str((pending_state or {}).get("status") or "").strip()
         if not pending_id:
             return "这张确认卡片缺少校验信息，请重新生成预览后再确认。"
         if not pending_state or active_status != "active" or active_pending_id != pending_id:
+            await _mark_pending_confirmation_message_status(
+                session_id,
+                message_id,
+                pending_id=pending_id,
+                status="expired",
+            )
             return "这张确认卡片已经失效。请按最新卡片操作，或重新说明想怎么调整。"
         if kind and kind != str(pending_state.get("kind") or ""):
+            await _mark_pending_confirmation_message_status(
+                session_id,
+                message_id,
+                pending_id=pending_id,
+                status="expired",
+            )
             return "这张确认卡片和当前待确认操作不一致，请按最新卡片操作。"
 
         if action in {"cancel", "reject"}:
@@ -4274,10 +5548,62 @@ class ChatService:
             cancelled_state["status"] = "cancelled"
             cancelled_state["updatedAt"] = datetime.now(timezone.utc).isoformat()
             await _save_pending_confirmation_state(session_id, cancelled_state)
+            await _mark_pending_confirmation_message_status(
+                session_id,
+                message_id,
+                pending_id=pending_id,
+                status="cancelled",
+            )
             return "已取消本次待确认操作。你可以继续说明想怎么调整，我会重新给出预览。"
         if action not in {"confirm", "accept", "apply"}:
             return "这张确认卡片的操作类型不完整，请刷新后重试。"
         active_kind = str(pending_state.get("kind") or "").strip()
+        consistency_status = "not_checked"
+        assistant_confirmation_summary = ""
+        blocked_reason = None
+        confirmation_history: list[Any] | None = None
+
+        def emit_pending_event(*, result: str, result_code: str | None = None) -> None:
+            _log_pending_confirmation_event(
+                eventType="pending_confirmation_apply",
+                sessionId=session_id,
+                userId=user_id,
+                pendingId=pending_id,
+                kind=active_kind,
+                actionFamily=str(pending_state.get("actionFamily") or "").strip() or None,
+                confirmationEntry=confirmation_entry,
+                pendingSummary=str(pending_state.get("summary") or "").strip(),
+                assistantConfirmationSummary=assistant_confirmation_summary,
+                consistencyStatus=consistency_status,
+                blockedReason=blocked_reason,
+                sourceBackendVersion=pending_state.get("sourceBackendVersion"),
+                result=result,
+                resultCode=result_code,
+            )
+
+        if confirmation_entry == "short_text":
+            try:
+                confirmation_history = await self.history_store.load(session_id) or []
+            except Exception:
+                logger.exception("Failed to load history for pending confirmation consistency check: session_id=%s", session_id)
+                confirmation_history = []
+            consistency_status, blocked_reason, assistant_confirmation_summary = _evaluate_short_text_pending_consistency(
+                pending_state,
+                confirmation_history,
+            )
+            if blocked_reason:
+                reply = "为避免确认错内容，请点击最新确认卡片，或重新说明要确认的内容，我会重新整理确认卡片。"
+                await _save_direct_guard_history(
+                    self.history_store,
+                    session_id,
+                    confirmation_history,
+                    user_prompt_content or content,
+                    reply,
+                    model_name=f"pending-confirmation-consistency-blocked:{pending_id}",
+                )
+                emit_pending_event(result="blocked", result_code=blocked_reason)
+                return reply
+
         if active_kind == "intent_change":
             execution_payload = pending_state.get("executionPayload")
             if not isinstance(execution_payload, dict):
@@ -4302,18 +5628,32 @@ class ChatService:
             applied_state["updatedAt"] = datetime.now(timezone.utc).isoformat()
             applied_state["resultCode"] = getattr(state_result, "messageCode", None) if state_result else None
             await _save_pending_confirmation_state(session_id, applied_state)
+            await _mark_pending_confirmation_message_status(
+                session_id,
+                message_id,
+                pending_id=pending_id,
+                status="applied",
+            )
+            emit_pending_event(
+                result="applied",
+                result_code=getattr(state_result, "messageCode", None) if state_result else None,
+            )
+            if confirmation_entry == "short_text":
+                new_messages = [
+                    ModelRequest(parts=[UserPromptPart(content=user_prompt_content or content)]),
+                    ModelResponse(parts=[TextPart(content=reply)], model_name="pending-intent-short-text-confirm"),
+                ]
+                try:
+                    history = confirmation_history if confirmation_history is not None else await self.history_store.load(session_id) or []
+                    history_to_save = list(history)
+                    history_to_save.extend(new_messages)
+                    await self.history_store.save(session_id, history_to_save)
+                except Exception:
+                    logger.exception("Failed to save short-text pending intent confirmation history: session_id=%s", session_id)
             if state_result and state_result.intentMode == "constraint":
                 followups: list[WSResponse] = []
-                if state_result.candidateFilters:
-                    followups.append(
-                        _build_workspace_action_response(
-                            session_id,
-                            "candidate",
-                            extra_payload={"candidateFilters": state_result.candidateFilters},
-                        )
-                    )
                 followups.append(
-                    _build_workspace_action_response(
+                    _build_silent_workspace_refresh_response(
                         session_id,
                         "ordered",
                         extra_payload={
@@ -4327,6 +5667,22 @@ class ChatService:
                     primary=reply,
                     followups=followups,
                 )
+            if state_result and state_result.intentMode == "preference":
+                return ChatServiceResponseEnvelope(
+                    primary=reply,
+                    followups=[
+                        _build_silent_workspace_refresh_response(
+                            session_id,
+                            "candidate",
+                            extra_payload={
+                                "preserveView": True,
+                                "title": "候选推荐已更新",
+                                "content": "这次偏好已采纳，候选和推荐信息会按新的偏好刷新。",
+                                "actionText": "查看候选",
+                            },
+                        )
+                    ],
+                )
             return reply
         if active_kind != "plan_mutation":
             return "这类确认卡片暂时还不能在这里处理，请刷新后重试。"
@@ -4338,13 +5694,14 @@ class ChatService:
         plan_payload = execution_payload.get("planPayload")
         if not isinstance(plan_payload, str) or not plan_payload.strip():
             return "这张方案调整卡片缺少可执行内容，请重新生成预览。"
+        intent_payload = execution_payload.get("intentPayload")
         pending_plan_action = {
             "action_family": action_family,
             "summary": pending_state.get("summary") or "",
             "user_goal": pending_state.get("userGoal") or "",
             "plan_payload": plan_payload,
         }
-        history = await self.history_store.load(session_id) or []
+        history = confirmation_history if confirmation_history is not None else await self.history_store.load(session_id) or []
 
         parsed_score_detail = None
         parsed_init_profile = None
@@ -4355,8 +5712,8 @@ class ChatService:
             if score_response.get("code") == 0:
                 raw_data = score_response.get("data", {}).get("userScoreDetail", {})
                 if raw_data:
-                    parsed_score_detail = ScoreDetail.from_api_response(raw_data)
-                    batch = raw_data.get("batch") or batch
+                    parsed_score_detail = _parse_score_detail_from_backend(raw_data)
+                    batch = _normalize_batch(raw_data.get("batch") or batch)
         except Exception:
             logger.warning("Failed to fetch score detail for pending confirmation: session_id=%s", session_id, exc_info=True)
         try:
@@ -4364,13 +5721,13 @@ class ChatService:
             if profile_response.get("code") == 0:
                 raw_profile = profile_response.get("data", {})
                 if raw_profile:
-                    parsed_init_profile = UserProfile.from_api_response(raw_profile)
+                    parsed_init_profile = UserProfile.from_backend_format(raw_profile)
         except Exception:
             logger.warning("Failed to fetch init profile for pending confirmation: session_id=%s", session_id, exc_info=True)
         try:
-            workspace_response = await get_planning_workspace_state(int(session_id))
+            workspace_response = await get_planning_workspace_state(session_id)
             if workspace_response.get("code") == 0:
-                parsed_planning_summary = PlanningSummary.from_workspace_response(workspace_response)
+                parsed_planning_summary = PlanningSummary.from_backend_state(workspace_response.get("data", {}))
         except Exception:
             logger.warning("Failed to fetch planning workspace for pending confirmation: session_id=%s", session_id, exc_info=True)
 
@@ -4390,40 +5747,92 @@ class ChatService:
             pending_intent_change=False,
             conversation_phase=conversation_phase,
             allow_explore_inner_llm=False,
+            confirmed_via_card=confirmation_entry == "card",
+            confirmed_via_pending=True,
+            confirmation_entry=confirmation_entry,
         )
 
         started_at = time.monotonic()
+        intent_state_result = None
+        intent_apply_note = ""
+        if isinstance(intent_payload, dict) and intent_payload.get("selected"):
+            effective_batch = _normalize_batch(batch or intent_payload.get("batch") or "01")
+            selected_data_for_apply = {
+                "selected": intent_payload.get("selected") or [],
+                "intentMode": str(intent_payload.get("intentMode") or "constraint").strip() or "constraint",
+                "batch": effective_batch,
+            }
+            result_json = await _apply_selected_intents(
+                session_id=session_id,
+                batch=effective_batch,
+                selected_data=selected_data_for_apply,
+            )
+            try:
+                intent_state_result = parse_intent_state_update_result(result_json)
+            except Exception:
+                logger.warning(
+                    "Failed to parse combined plan/intent confirmation result: session_id=%s",
+                    session_id,
+                    exc_info=True,
+                )
+                await _mark_pending_confirmation_failed(
+                    session_id,
+                    pending_state,
+                    message_id,
+                    pending_id=pending_id,
+                    result_code="intent_apply_parse_failed",
+                )
+                return "这次要求没有写入成功，方案暂不调整。请稍后重试，或重新生成确认卡片。"
+            if not getattr(intent_state_result, "applied", False):
+                await _mark_pending_confirmation_failed(
+                    session_id,
+                    pending_state,
+                    message_id,
+                    pending_id=pending_id,
+                    result_code=str(getattr(intent_state_result, "messageCode", None) or "intent_apply_failed"),
+                )
+                return "这次要求没有写入成功，方案暂不调整。请稍后重试，或重新生成确认卡片。"
+            intent_apply_note = "后续报考参考已同步更新，推荐系数和专家优选会按这条要求重新考虑。"
+
         result_text = await execute_plan_action(SimpleNamespace(deps=request_context), plan_payload)
         result = _parse_tool_return_json(result_text) or {}
         reply = _pending_plan_card_applied_reply(action_family, result)
+        if intent_apply_note and result.get("result_kind") != "error":
+            reply = f"{reply}\n\n{intent_apply_note}"
         applied_state = dict(pending_state)
         applied_state["status"] = "applied"
         applied_state["updatedAt"] = datetime.now(timezone.utc).isoformat()
         applied_state["resultKind"] = result.get("result_kind")
         await _save_pending_confirmation_state(session_id, applied_state)
+        await _mark_pending_confirmation_message_status(
+            session_id,
+            message_id,
+            pending_id=pending_id,
+            status="applied",
+        )
 
         new_messages = [
-            ModelRequest(parts=[UserPromptPart(content="[确认卡片]")]),
+            ModelRequest(parts=[UserPromptPart(content=user_prompt_content or "[确认卡片]")]),
             ModelResponse(
                 parts=[
                     ToolCallPart(
                         tool_name="execute_plan_action",
                         args={"plan_payload": plan_payload},
-                        tool_call_id=f"card-{action_family or 'plan'}-confirmation",
+                        tool_call_id=f"{confirmation_entry}-{action_family or 'plan'}-confirmation",
                     )
                 ],
-                model_name="pending-confirmation-card",
+                model_name=f"pending-confirmation-{confirmation_entry}",
             ),
             ModelRequest(
                 parts=[
                     ToolReturnPart(
                         tool_name="execute_plan_action",
                         content=result_text,
-                        tool_call_id=f"card-{action_family or 'plan'}-confirmation",
+                        tool_call_id=f"{confirmation_entry}-{action_family or 'plan'}-confirmation",
                     )
                 ]
             ),
-            ModelResponse(parts=[TextPart(content=reply)], model_name="pending-confirmation-card"),
+            ModelResponse(parts=[TextPart(content=reply)], model_name=f"pending-confirmation-{confirmation_entry}"),
         ]
         try:
             history_to_save = list(history)
@@ -4437,21 +5846,27 @@ class ChatService:
             sessionId=session_id,
             userId=user_id,
             scene="plan",
-            routingPath="pending_plan_card_confirm",
+            routingPath="pending_plan_short_text_confirm" if confirmation_entry == "short_text" else "pending_plan_card_confirm",
             pendingType="plan",
             actionFamily=action_family or result.get("action_family"),
             totalDurationMs=int((time.monotonic() - started_at) * 1000),
             status="success" if tool_success else "error",
             errorType=result.get("result_kind") if result.get("result_kind") == "error" else None,
         )
+        emit_pending_event(
+            result="applied" if tool_success else "failed",
+            result_code=str(result.get("result_kind") or "") or None,
+        )
         workspace_refresh_targets = _dedupe_workspace_targets(
             [str(target) for target in (result.get("workspace_refresh_targets") or [])]
         )
+        if isinstance(intent_payload, dict) and intent_payload.get("selected"):
+            workspace_refresh_targets = [target for target in workspace_refresh_targets if target != "candidate"]
         if workspace_refresh_targets:
             return ChatServiceResponseEnvelope(
                 primary=reply,
                 followups=[
-                    _build_workspace_action_response(session_id, target)
+                    _build_silent_workspace_refresh_response(session_id, target)
                     for target in workspace_refresh_targets
                 ],
             )

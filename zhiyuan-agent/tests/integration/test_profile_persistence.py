@@ -10,7 +10,8 @@ from app.schemas.user_profile import UserProfile
 async def test_school_intent_conflict_resolution():
     """Test that adding a school to positive removes it from negative."""
     with patch("app.services.profile_manager.get_user_profile", new_callable=AsyncMock) as mock_get, \
-         patch("app.services.profile_manager.save_user_profile", new_callable=AsyncMock) as mock_save:
+         patch("app.services.profile_manager.save_user_profile", new_callable=AsyncMock) as mock_save, \
+         patch("app.services.profile_manager.update_planning_explicit_profile", new_callable=AsyncMock):
 
         # Existing profile has 清华大学 in negative
         mock_get.return_value = {
@@ -43,7 +44,8 @@ async def test_school_intent_conflict_resolution():
 async def test_major_intent_incremental_update():
     """Test incremental updates preserve existing data."""
     with patch("app.services.profile_manager.get_user_profile", new_callable=AsyncMock) as mock_get, \
-         patch("app.services.profile_manager.save_user_profile", new_callable=AsyncMock) as mock_save:
+         patch("app.services.profile_manager.save_user_profile", new_callable=AsyncMock) as mock_save, \
+         patch("app.services.profile_manager.update_planning_explicit_profile", new_callable=AsyncMock):
 
         mock_get.return_value = {
             "data": {
@@ -76,7 +78,8 @@ async def test_major_intent_incremental_update():
 async def test_city_intent_with_emotions():
     """Test city intent preserves emotion pairing."""
     with patch("app.services.profile_manager.get_user_profile", new_callable=AsyncMock) as mock_get, \
-         patch("app.services.profile_manager.save_user_profile", new_callable=AsyncMock) as mock_save:
+         patch("app.services.profile_manager.save_user_profile", new_callable=AsyncMock) as mock_save, \
+         patch("app.services.profile_manager.update_planning_explicit_profile", new_callable=AsyncMock):
 
         mock_get.return_value = {"data": {"dataValue": {}}}
 
@@ -98,7 +101,8 @@ async def test_city_intent_with_emotions():
 async def test_profile_enrichment_with_codes():
     """Test that profile is enriched with codes before saving."""
     with patch("app.services.profile_manager.get_user_profile", new_callable=AsyncMock) as mock_get, \
-         patch("app.services.profile_manager.save_user_profile", new_callable=AsyncMock) as mock_save:
+         patch("app.services.profile_manager.save_user_profile", new_callable=AsyncMock) as mock_save, \
+         patch("app.services.profile_manager.update_planning_explicit_profile", new_callable=AsyncMock):
 
         mock_get.return_value = {"data": {"dataValue": {}}}
 

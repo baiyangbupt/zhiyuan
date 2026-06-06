@@ -45,6 +45,34 @@ _SKILL_SUMMARY_INSTRUCTION_TEMPLATE = """\
 """
 
 
+def _bounded_levenshtein_distance(left: str, right: str, *, max_distance: int) -> int:
+    """Return edit distance up to max_distance + 1 for tight typo checks."""
+    if left == right:
+        return 0
+    if abs(len(left) - len(right)) > max_distance:
+        return max_distance + 1
+    if len(left) > len(right):
+        left, right = right, left
+
+    previous = list(range(len(left) + 1))
+    for right_index, right_char in enumerate(right, start=1):
+        current = [right_index]
+        row_min = current[0]
+        for left_index, left_char in enumerate(left, start=1):
+            cost = 0 if left_char == right_char else 1
+            value = min(
+                previous[left_index] + 1,
+                current[left_index - 1] + 1,
+                previous[left_index - 1] + cost,
+            )
+            current.append(value)
+            row_min = min(row_min, value)
+        if row_min > max_distance:
+            return max_distance + 1
+        previous = current
+    return previous[-1]
+
+
 class BaseAgent(Generic[T]):
     """While 循环 Agent 基类，支持 tools + skills。"""
 
@@ -60,6 +88,7 @@ class BaseAgent(Generic[T]):
     ):
         self.llm_client = llm_client
         self.skills_toolset: AbstractToolset | None = None
+        self._registered_tool_names = self._collect_registered_tool_names(tools or [])
 
         toolsets: list[AbstractToolset] = []
         if skill_dirs and SkillsToolset is not None:
@@ -186,6 +215,8 @@ class BaseAgent(Generic[T]):
 
                 # 工具调用前推送进度提示
                 tool_names: list[str] = []
+                if isinstance(node, CallToolsNode):
+                    self._normalize_tool_call_names(node.model_response.parts, observability)
                 if on_progress and isinstance(node, CallToolsNode):
                     sent_hints: set[str] = set()
                     for part in node.model_response.parts:
@@ -458,6 +489,62 @@ class BaseAgent(Generic[T]):
                 observability["guardedToolCount"] = current_count
                 return self.render_tool_loop_guard_output(tool_name, current_count)
         return None
+
+    @staticmethod
+    def _collect_registered_tool_names(tools: list[Any]) -> set[str]:
+        names: set[str] = set()
+        for tool in tools:
+            name = getattr(tool, "__name__", None) or getattr(tool, "name", None)
+            if not name:
+                function = getattr(tool, "function", None)
+                name = getattr(function, "__name__", None) or getattr(function, "name", None)
+            if name:
+                names.add(str(name))
+        return names
+
+    def _normalize_tool_call_names(self, parts: list[Any], observability: dict[str, Any]) -> None:
+        """Correct obvious model-side typos in tool names before execution.
+
+        This is not user-language routing. It only applies when the model emits
+        an invalid function name that is within a tiny edit distance of exactly
+        one registered tool in the same leading family.
+        """
+        if not self._registered_tool_names:
+            return
+
+        normalized: list[dict[str, str]] = []
+        for part in parts:
+            if not isinstance(part, ToolCallPart):
+                continue
+            raw_name = str(part.tool_name or "").strip()
+            corrected_name = self._resolve_near_registered_tool_name(raw_name)
+            if not corrected_name:
+                continue
+            part.tool_name = corrected_name
+            normalized.append({"from": raw_name, "to": corrected_name})
+            logger.warning("Corrected model tool name typo: %s -> %s", raw_name, corrected_name)
+
+        if normalized:
+            existing = observability.setdefault("normalizedToolNames", [])
+            if isinstance(existing, list):
+                existing.extend(normalized)
+
+    def _resolve_near_registered_tool_name(self, raw_name: str) -> str | None:
+        if not raw_name or raw_name in self._registered_tool_names:
+            return None
+        raw_family = raw_name.split("_", 1)[0]
+        if not raw_family:
+            return None
+        matches = [
+            candidate
+            for candidate in self._registered_tool_names
+            if candidate.split("_", 1)[0] == raw_family
+            and abs(len(candidate) - len(raw_name)) <= 2
+            and _bounded_levenshtein_distance(raw_name, candidate, max_distance=2) <= 2
+        ]
+        if len(matches) != 1:
+            return None
+        return matches[0]
 
     def render_tool_loop_guard_output(self, tool_name: str, count: int) -> str:
         if tool_name == "query_volunteer_plan":

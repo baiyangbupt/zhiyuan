@@ -15,9 +15,6 @@ from app.tools.major_info_tool import get_major_introduction, get_major_introduc
 from app.tools.major_recommend_tool import get_major_recommendations, get_major_recommendations_adhoc
 from app.tools.admission_fit_match_tool import match_admission_rule_to_student
 from app.tools.official_source_search_tool import search_official_admission_sources
-from app.tools.intent_state_tool import (
-    update_volunteer_intent_state,
-)
 from app.tools.admission_policy_tool import answer_admission_policy_question
 from app.tools.intent_preview_tool import (
     analyze_current_career_direction,
@@ -65,12 +62,11 @@ _TOOL_PROGRESS_HINTS: dict[str, str] = {
     "analyze_current_major_interest":   "正在看这个专业方向是否适合你...",
     "analyze_current_region_interest":  "正在看这个地域选择对方案的影响...",
     "analyze_current_career_direction": "正在看这条方向和当前方案的承接情况...",
-    "preview_current_intent_confirmation": "正在把你的想法整理成确认卡片...",
+    "preview_current_intent_confirmation": "正在整理你的想法和影响...",
     "preview_current_major_intent_confirmation": "正在整理这个专业想法的影响和边界...",
-    "preview_current_school_intent_confirmation": "正在把你的院校想法整理成确认卡片...",
-    "preview_current_region_intent_confirmation": "正在把你的地域想法整理成确认卡片...",
-    "preview_current_career_intent_confirmation": "正在把你的发展方向整理成确认卡片...",
-    "update_volunteer_intent_state":    "正在按你的确认更新后续参考偏好...",
+    "preview_current_school_intent_confirmation": "正在整理这个院校想法的影响和边界...",
+    "preview_current_region_intent_confirmation": "正在整理这个地域想法的影响和边界...",
+    "preview_current_career_intent_confirmation": "正在整理这个发展方向的影响和边界...",
     "collect_plan_context_inputs":      "正在读取你的方案、偏好和审查结果...",
     "plan_next_action":                 "正在读取当前方案并整理这次请求...",
     "execute_plan_action":              "正在处理你的方案，请稍等...",
@@ -121,7 +117,6 @@ class ChatAgent(BaseAgent[str]):
                 preview_current_school_intent_confirmation,
                 preview_current_region_intent_confirmation,
                 preview_current_career_intent_confirmation,
-                update_volunteer_intent_state,
                 query_admission_score,
                 query_score_line,
             ],

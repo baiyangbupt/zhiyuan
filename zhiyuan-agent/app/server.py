@@ -37,6 +37,12 @@ _NON_PERSISTENT_USER_MESSAGE_TYPES = {"planEditSelect", "intentSelect", "pending
 _CHAT_SERVICE_TIMEOUT_SECONDS = 180
 
 
+def _has_primary_reply_content(reply: object) -> bool:
+    if isinstance(reply, WSResponse):
+        return bool(str(reply.content or "").strip())
+    return bool(str(reply or "").strip())
+
+
 def _build_timeout_reply(user_prompt: str | None = None) -> str:
     prompt = str(user_prompt or "").strip()
     subject = f"你刚才问的是“{prompt[:60]}”。" if prompt else "你刚才的问题还没有处理完。"
@@ -151,8 +157,9 @@ async def _handle_ws_loop(ws: WebSocket, service: ChatService):
                 )
 
         followup_responses: list[WSResponse] = []
+        resp: WSResponse | None = None
         try:
-            if msg.type == "planEditSelect":
+            if msg.type in {"planEditSelect", "intentSelect"}:
                 reply = await service.handle_intent_select(
                     session_id=msg.session_id,
                     user_id=msg.user_id,
@@ -184,19 +191,20 @@ async def _handle_ws_loop(ws: WebSocket, service: ChatService):
                 followup_responses = list(reply.followups or [])
                 reply = reply.primary
 
-            # 如果 reply 已经是 WSResponse（如 card 类型），直接使用
-            if isinstance(reply, WSResponse):
-                resp = reply
-            else:
-                resp = WSResponse(
-                    type="reply",
-                    session_id=msg.session_id,
-                    content=reply,
+            if _has_primary_reply_content(reply):
+                # 如果 reply 已经是 WSResponse（如 card 类型），直接使用
+                if isinstance(reply, WSResponse):
+                    resp = reply
+                else:
+                    resp = WSResponse(
+                        type="reply",
+                        session_id=msg.session_id,
+                        content=reply,
+                    )
+                logger.info(
+                    "Sending reply: session_id=%s type=%s content_len=%d",
+                    msg.session_id, resp.type, len(resp.content),
                 )
-            logger.info(
-                "Sending reply: session_id=%s type=%s content_len=%d",
-                msg.session_id, resp.type, len(resp.content),
-            )
         except asyncio.TimeoutError:
             logger.exception(
                 "handle_message timed out: session_id=%s timeout_seconds=%s",
@@ -231,21 +239,22 @@ async def _handle_ws_loop(ws: WebSocket, service: ChatService):
                 session_id=msg.session_id,
                 content="处理消息时出错，请稍后重试",
             )
-        if not await _safe_send_text(ws, resp.model_dump_json(), context="v3.reply"):
-            return
-        if resp.type != "error":
-            try:
-                await message_store.save_agent_message(
-                    chat_session_id=resp.session_id,
-                    ws_type=resp.type,
-                    content=resp.content,
-                )
-            except Exception:
-                logger.exception(
-                    "Failed to persist outbound websocket message: session_id=%s type=%s",
-                    resp.session_id,
-                    resp.type,
-                )
+        if resp is not None:
+            if not await _safe_send_text(ws, resp.model_dump_json(), context="v3.reply"):
+                return
+            if resp.type != "error":
+                try:
+                    await message_store.save_agent_message(
+                        chat_session_id=resp.session_id,
+                        ws_type=resp.type,
+                        content=resp.content,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to persist outbound websocket message: session_id=%s type=%s",
+                        resp.session_id,
+                        resp.type,
+                    )
 
         for followup in followup_responses:
             if followup.type not in {"planningWorkspaceAction", "pendingConfirmationCard"}:
@@ -283,7 +292,7 @@ async def ws_chat(ws: WebSocket):
 
 # ── 兼容 agent-plus 前端协议 ──────────────────────────────────────
 # 前端连接路径: /gaotu-assistant-agent/plus/chat/{tenantId}/bot/{botId}/do
-# 入站格式:  {"sessionId": "...", "userId": "...", "content": "...", "inputType": "text|ping|planEditSelect|intentDetectSelect|pendingConfirmation"}
+# 入站格式:  {"sessionId": "...", "userId": "...", "content": "...", "inputType": "text|ping|planEditSelect|intentDetectSelect|intentSelect|pendingConfirmation"}
 # 出站格式:  前端 onMessage 只检查 type!="pong" 后触发 fetchMessageList，
 #           实际渲染走消息存储，所以响应格式不关键。
 
@@ -358,6 +367,8 @@ async def ws_chat_compat(ws: WebSocket, tenant_id: str, bot_id: str):
                     logger.exception("Failed to persist inbound compat message: session_id=%s", msg.session_id)
 
             followup_responses: list[WSResponse] = []
+            resp_data: dict | None = None
+            already_saved = False
             try:
                 if msg.type in {"planEditSelect", "intentSelect"}:
                     reply = await service.handle_intent_select(
@@ -393,7 +404,10 @@ async def ws_chat_compat(ws: WebSocket, tenant_id: str, bot_id: str):
                     followup_responses = list(reply.followups or [])
                     reply = reply.primary
 
-                if isinstance(reply, WSResponse):
+                if not _has_primary_reply_content(reply):
+                    resp_data = None
+                    already_saved = True
+                elif isinstance(reply, WSResponse):
                     # 转换为前端期望的格式(类似2.0版本)
                     resp_type = reply.type
                     if resp_type in {
@@ -454,10 +468,17 @@ async def ws_chat_compat(ws: WebSocket, tenant_id: str, bot_id: str):
                     resp_data = {"type": "text", "content": reply, "end": True}
                     already_saved = False
 
-                logger.info(
-                    "Sending compat reply: session_id=%s type=%s",
-                    msg.session_id, resp_data.get("type"),
-                )
+                if resp_data is not None:
+                    logger.info(
+                        "Sending compat reply: session_id=%s type=%s",
+                        msg.session_id, resp_data.get("type"),
+                    )
+                else:
+                    logger.info(
+                        "Skipping empty compat primary reply: session_id=%s followups=%d",
+                        msg.session_id,
+                        len(followup_responses),
+                    )
             except asyncio.TimeoutError:
                 logger.exception(
                     "handle_message timed out (compat): session_id=%s timeout_seconds=%s",
@@ -483,7 +504,7 @@ async def ws_chat_compat(ws: WebSocket, tenant_id: str, bot_id: str):
                 resp_data = {"type": "error", "content": "处理消息时出错，请稍后重试", "end": True}
                 already_saved = False
 
-            if resp_data.get("type") != "error" and not already_saved:
+            if resp_data is not None and resp_data.get("type") != "error" and not already_saved:
                 try:
                     ws_type = resp_data.get("type", "reply")
                     content_val = resp_data.get("content", "")
@@ -503,8 +524,9 @@ async def ws_chat_compat(ws: WebSocket, tenant_id: str, bot_id: str):
                         msg.session_id,
                     )
 
-            if not await _safe_send_json(ws, resp_data, context="compat.reply"):
-                return
+            if resp_data is not None:
+                if not await _safe_send_json(ws, resp_data, context="compat.reply"):
+                    return
 
             for followup in followup_responses:
                 if followup.type not in {"planningWorkspaceAction", "pendingConfirmationCard"}:

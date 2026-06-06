@@ -62,6 +62,9 @@ def make_request_context(
     pending_plan_action: dict | None = None,
     pending_intent_change: bool = False,
     init_profile: UserProfile | None = None,
+    confirmed_via_card: bool = False,
+    confirmed_via_pending: bool = False,
+    confirmation_entry: str = "",
 ) -> RequestContext:
     score = make_score_detail(volunteer_model=volunteer_model)
     planning_summary = None
@@ -83,6 +86,9 @@ def make_request_context(
         planning_summary=planning_summary,
         pending_plan_action=pending_plan_action,
         pending_intent_change=pending_intent_change,
+        confirmed_via_card=confirmed_via_card,
+        confirmed_via_pending=confirmed_via_pending,
+        confirmation_entry=confirmation_entry,
     )
 
 

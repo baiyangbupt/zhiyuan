@@ -1008,30 +1008,46 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   ]);
 
   const filteredAttributeFilterOptions = useMemo(() => {
-    const keyword = filterSearchKeyword.trim().toLowerCase();
+    const normalizeSearchText = (text?: string) =>
+      `${text || ''}`.trim().toLowerCase().replace(/学校/g, '院校');
+    const buildOptionSearchText = (option?: FilterPanelOption) => {
+      if (!option) {
+        return '';
+      }
+      return [
+        option.label,
+        option.title,
+        option.value,
+        FILTER_FIELD_META[option.field]?.label,
+      ].join(' ');
+    };
+    const keyword = normalizeSearchText(filterSearchKeyword);
     if (!keyword) {
       return attributeFilterOptions;
     }
     const filterGroup = (group: FilterPanelGroup): FilterPanelGroup | null => {
-      const groupMatched = group.label.toLowerCase().includes(keyword);
-      const options = groupMatched
-        ? group.options
-        : group.options?.filter(
-            option =>
-              option.title.toLowerCase().includes(keyword) ||
-              option.label.toLowerCase().includes(keyword)
-          );
-      const children = groupMatched
-        ? group.children
-        : group.children
-            ?.map(filterGroup)
-            .filter(Boolean) as FilterPanelGroup[] | undefined;
+      const groupSearchText = normalizeSearchText([
+        group.label,
+        buildOptionSearchText(group.option),
+      ].join(' '));
+      const groupMatched = groupSearchText.includes(keyword);
+      const options = group.options?.filter(option =>
+        normalizeSearchText(buildOptionSearchText(option)).includes(keyword)
+      );
+      const children = group.children
+        ?.map(filterGroup)
+        .filter(Boolean) as FilterPanelGroup[] | undefined;
+      const matchedOption = groupMatched ? group.option : undefined;
       const nextGroup = {
         ...group,
+        option: matchedOption,
         options,
         children,
       };
-      return hasFilterPanelOptions(nextGroup) ? nextGroup : null;
+      if (groupMatched || hasFilterPanelOptions(nextGroup)) {
+        return nextGroup;
+      }
+      return null;
     };
     return attributeFilterOptions.map(filterGroup).filter(Boolean) as FilterPanelGroup[];
   }, [attributeFilterOptions, filterSearchKeyword]);
@@ -2020,7 +2036,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     setFocusVolunteerIds([]);
     setExpandedSchoolMetaKeys([]);
     setDraftExpanded(false);
-  }, [routerParams.chatSessionId, fetchFlag]);
+  }, [routerParams.chatSessionId]);
 
   useEffect(() => {
     ensureInitialPlanReady();
@@ -2276,31 +2292,34 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       return;
     }
     const nextView = workspaceIntent.targetView === 'ordered' ? 'ordered' : 'candidate';
-    if (nextView === 'ordered') {
-      setActiveView('ordered');
-    } else {
-      setActiveView('candidate');
-      if (workspaceIntent.candidateFilters) {
-        setFilters(prev => ({
-          ...prev,
-          tier: (workspaceIntent.candidateFilters?.tiers?.[0] as CandidateTier) || '',
-          provinceNames: workspaceIntent.candidateFilters?.provinceNames || [],
-          negativeProvinceNames: workspaceIntent.candidateFilters?.negativeProvinceNames || [],
-          cityNames: workspaceIntent.candidateFilters?.cityNames || [],
-          negativeCityNames: workspaceIntent.candidateFilters?.negativeCityNames || [],
-          schoolKeywords: workspaceIntent.candidateFilters?.schoolKeywords || [],
-          negativeSchoolKeywords: workspaceIntent.candidateFilters?.negativeSchoolKeywords || [],
-          majorKeywords: workspaceIntent.candidateFilters?.majorKeywords || [],
-          negativeMajorKeywords: workspaceIntent.candidateFilters?.negativeMajorKeywords || [],
-          schoolTags: workspaceIntent.candidateFilters?.schoolTags || [],
-          negativeSchoolTags: workspaceIntent.candidateFilters?.negativeSchoolTags || [],
-          majorTags: workspaceIntent.candidateFilters?.majorTags || [],
-          negativeMajorTags: workspaceIntent.candidateFilters?.negativeMajorTags || [],
-        }));
+    const preserveView = Boolean(workspaceIntent.preserveView);
+    if (!preserveView) {
+      if (nextView === 'ordered') {
+        setActiveView('ordered');
+      } else {
+        setActiveView('candidate');
+        if (workspaceIntent.candidateFilters) {
+          setFilters(prev => ({
+            ...prev,
+            tier: (workspaceIntent.candidateFilters?.tiers?.[0] as CandidateTier) || '',
+            provinceNames: workspaceIntent.candidateFilters?.provinceNames || [],
+            negativeProvinceNames: workspaceIntent.candidateFilters?.negativeProvinceNames || [],
+            cityNames: workspaceIntent.candidateFilters?.cityNames || [],
+            negativeCityNames: workspaceIntent.candidateFilters?.negativeCityNames || [],
+            schoolKeywords: workspaceIntent.candidateFilters?.schoolKeywords || [],
+            negativeSchoolKeywords: workspaceIntent.candidateFilters?.negativeSchoolKeywords || [],
+            majorKeywords: workspaceIntent.candidateFilters?.majorKeywords || [],
+            negativeMajorKeywords: workspaceIntent.candidateFilters?.negativeMajorKeywords || [],
+            schoolTags: workspaceIntent.candidateFilters?.schoolTags || [],
+            negativeSchoolTags: workspaceIntent.candidateFilters?.negativeSchoolTags || [],
+            majorTags: workspaceIntent.candidateFilters?.majorTags || [],
+            negativeMajorTags: workspaceIntent.candidateFilters?.negativeMajorTags || [],
+          }));
+        }
+        window.requestAnimationFrame(() => {
+          candidateSummaryRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        });
       }
-      window.requestAnimationFrame(() => {
-        candidateSummaryRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      });
     }
     setFocusVolunteerIds(workspaceIntent.volunteerIds || []);
     if (workspaceIntent.refresh) {

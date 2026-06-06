@@ -410,6 +410,71 @@ def _format_candidate_brief(item: dict[str, Any], intent_values: list[str] | Non
     return f"{school_name}-{major_name}（{tier}{f'/{province_name}' if province_name else ''}）"
 
 
+def _tier_distribution_text(items: list[dict[str, Any]]) -> str:
+    counts = {"冲": 0, "稳": 0, "保": 0}
+    for item in items:
+        tier = _field_value(item, _TIER_KEYS)
+        if tier in counts:
+            counts[tier] += 1
+    parts = [f"{tier}{count}" for tier, count in counts.items() if count > 0]
+    return " / ".join(parts)
+
+
+def _intent_scope_text(values: list[str]) -> str:
+    if not values:
+        return "这个方向"
+    text = "、".join(values[:3])
+    if len(values) > 3:
+        text += f"等 {len(values)} 项"
+    return text
+
+
+def _matches_positive_intent(
+    item: dict[str, Any],
+    intent_labels: dict[str, list[str]],
+    career_intents: dict | None,
+) -> bool:
+    positive_match = _item_matches_any_intent(item, intent_labels["positive"])
+    career_positive_match, _ = _item_matches_career_intents(item, career_intents)
+    return bool(positive_match or career_positive_match)
+
+
+def _matches_negative_intent(
+    item: dict[str, Any],
+    intent_labels: dict[str, list[str]],
+    career_intents: dict | None,
+) -> bool:
+    negative_match = _item_matches_any_intent(item, intent_labels["negative"], negative=True)
+    _, career_negative_match = _item_matches_career_intents(item, career_intents)
+    return bool(negative_match or career_negative_match)
+
+
+_GENERIC_RELATION_PLACEHOLDERS = {
+    "这轮会重点看当前方案里是否存在需要避开的内容，以及候选里是否还有可替换机会。",
+    "这轮会重点看当前方案里是否已有贴近方向，以及候选里还有哪些值得继续关注的机会。",
+    "方案外如果还有更贴近这个方向的候选机会，也会一起作为补充参考。",
+    "这类想法不会立刻改动候选结果，但会影响我后面怎么帮你分析和给建议。",
+    "如果你确定这是硬要求，我可以继续帮你找出方案里还需要避开的地方。",
+    "你也可以先去工作台候选区看看，按这个要求筛完之后还剩哪些机会。",
+    "如果你愿意把它当成偏好，我可以继续帮你看现在的方案哪里比较贴近、哪里还能补强。",
+    "如果你现在只是先了解，也可以继续问我这个方向适不适合你。",
+    "下一步可以先定位方案里不符合这条要求的志愿，再决定是否替换或移除。",
+    "下一步可以继续看这份方案和你的想法有多匹配，或者让我给出具体调整建议。",
+}
+
+
+def _drop_generic_relation_placeholders(analysis: dict[str, Any]) -> None:
+    for key in ("currentPlanFit", "currentPlanConflict", "candidateOpportunity", "nextActionHints"):
+        items = analysis.get(key)
+        if not isinstance(items, list):
+            continue
+        analysis[key] = [
+            item
+            for item in items
+            if str(item or "").strip() not in _GENERIC_RELATION_PLACEHOLDERS
+        ]
+
+
 def _collect_intent_labels(
     major_intents: dict | None,
     school_intents: dict | None,
@@ -527,12 +592,9 @@ async def enrich_plan_relation_analysis_from_state(
 
         for ordered_item in ordered_items:
             match_item = candidate_by_id.get(ordered_item.get("volunteerId")) or ordered_item
-            positive_match = _item_matches_any_intent(match_item, intent_labels["positive"])
-            career_positive_match, career_negative_match = _item_matches_career_intents(match_item, career_intents)
-            if positive_match or career_positive_match:
+            if _matches_positive_intent(match_item, intent_labels, career_intents):
                 fit_items.append(match_item)
-            negative_match = _item_matches_any_intent(match_item, intent_labels["negative"], negative=True)
-            if negative_match or career_negative_match:
+            if _matches_negative_intent(match_item, intent_labels, career_intents):
                 conflict_items.append(match_item)
 
         if fit_items:
@@ -541,6 +603,9 @@ async def enrich_plan_relation_analysis_from_state(
                 for item in _sort_relation_examples(fit_items, display_preferences, positive=True)
             ]
             base_analysis["currentPlanFit"].insert(0, f"现在这份方案里，比较贴近你这个想法的有：{'、'.join(fit_examples[:5])}")
+        elif intent_labels["positive"] and ordered_items:
+            scope_text = _intent_scope_text(intent_labels["positive"])
+            base_analysis["currentPlanFit"].insert(0, f"现在这份方案里暂时没有直接贴近 {scope_text} 的志愿。")
         if conflict_items:
             conflict_examples = [
                 _format_candidate_brief(item, intent_labels["negative"] if _item_matches_any_intent(item, intent_labels["negative"], negative=True) else None)
@@ -550,50 +615,108 @@ async def enrich_plan_relation_analysis_from_state(
                 base_analysis["currentPlanConflict"].insert(0, f"现在这份方案里，还需要你特别留意的有：{'、'.join(conflict_examples[:5])}")
             else:
                 base_analysis["currentPlanConflict"].insert(0, f"现在这份方案里，和你这个想法不太一致的有：{'、'.join(conflict_examples[:5])}")
+        elif intent_labels["negative"] and ordered_items:
+            scope_text = _intent_scope_text(intent_labels["negative"])
+            base_analysis["currentPlanConflict"].insert(0, f"现在这份方案里暂时没有直接命中 {scope_text} 的志愿，这条要求对当前方案影响不大。")
 
         opportunity_items = []
         for item in candidate_items:
             volunteer_id = item.get("volunteerId")
             if not volunteer_id or volunteer_id in ordered_volunteer_ids:
                 continue
-            positive_match = _item_matches_any_intent(item, intent_labels["positive"])
-            career_positive_match, _ = _item_matches_career_intents(item, career_intents)
-            if positive_match or career_positive_match:
+            if _matches_positive_intent(item, intent_labels, career_intents):
                 opportunity_items.append(item)
         if opportunity_items:
             sorted_opportunities = _sort_relation_examples(opportunity_items, display_preferences, positive=True)
             base_analysis["candidateOpportunity"].insert(0, f"候选里还有一些可以顺手看看、但暂时没放进方案的机会：{'、'.join(_format_candidate_brief(item, intent_labels['positive']) for item in sorted_opportunities[:3])}")
-            base_analysis["candidateOpportunity"].append(f"和这个方向比较相关、但还没放进方案里的机会，大约还有 {len(opportunity_items)} 个。")
+            tier_text = _tier_distribution_text(opportunity_items)
+            if tier_text:
+                base_analysis["candidateOpportunity"].append(f"和这个方向比较相关、但还没放进方案里的机会，大约还有 {len(opportunity_items)} 个，分布是 {tier_text}。")
+                if all(_field_value(item, _TIER_KEYS) == "冲" for item in opportunity_items):
+                    base_analysis["candidateOpportunity"].append("这些机会都在冲档层，只能提升方向匹配度，不能解决稳/保缺口。")
+            else:
+                base_analysis["candidateOpportunity"].append(f"和这个方向比较相关、但还没放进方案里的机会，大约还有 {len(opportunity_items)} 个。")
         elif candidate_items:
-            base_analysis["candidateOpportunity"].append("候选里暂时没看到特别明显更合适的补位机会，可以先围绕现在这份方案继续看。")
+            negative_opportunities = [
+                item
+                for item in candidate_items
+                if _matches_negative_intent(item, intent_labels, career_intents)
+            ]
+            if intent_labels["negative"] and not negative_opportunities:
+                scope_text = _intent_scope_text(intent_labels["negative"])
+                base_analysis["candidateOpportunity"].append(f"候选里也暂时没有直接命中 {scope_text} 的机会。")
+        _drop_generic_relation_placeholders(base_analysis)
     except Exception:
         logger.warning("Enrich plan relation analysis from planning state failed: session_id=%s", session_id, exc_info=True)
     return base_analysis
 
 
-def build_impact_preview_from_analysis(analysis: dict[str, Any]) -> str:
-    lines: list[str] = [f"**{analysis.get('summaryTitle', '结合当前方案给你的提醒')}**"]
-    analysis_stage = analysis.get("stage")
+def _clean_relation_impact_item(item: Any) -> str:
+    text = str(item or "").strip().lstrip("-").strip()
+    if not text:
+        return ""
+    if text.startswith("**") and text.endswith("**"):
+        return ""
+    if text in _GENERIC_RELATION_PLACEHOLDERS:
+        return ""
+    return text
 
-    if analysis_stage == ANALYSIS_STAGE_INTEREST:
-        section_map = (
-            ("currentPlanFit", "初步判断"),
-            ("currentPlanConflict", "需要补充留意"),
-            ("candidateOpportunity", "可以继续展开看的方向"),
-            ("nextActionHints", "如果继续了解"),
-        )
-    else:
-        section_map = (
-            ("currentPlanFit", "现在比较贴近的部分"),
-            ("currentPlanConflict", "现在需要留意的部分"),
-            ("candidateOpportunity", "还可以再看看的机会"),
-            ("nextActionHints", "下一步建议"),
-        )
-    for key, title in section_map:
-        items = analysis.get(key) or []
-        if not items:
-            continue
-        lines.append(f"\n**{title}**")
-        for item in items:
-            lines.append(f"- {item}")
-    return "\n".join(lines)
+
+def _relation_items(analysis: dict[str, Any], keys: tuple[str, ...]) -> list[str]:
+    items: list[str] = []
+    seen: set[str] = set()
+    for key in keys:
+        raw_values = analysis.get(key)
+        values = raw_values if isinstance(raw_values, list) else [raw_values] if raw_values else []
+        for raw_item in values:
+            item = _clean_relation_impact_item(raw_item)
+            if not item or item in seen:
+                continue
+            items.append(item)
+            seen.add(item)
+    return items
+
+
+def compact_relation_impact_lines(
+    analysis: dict[str, Any] | None,
+    *,
+    intent_mode: str | None = None,
+    limit: int = 2,
+) -> list[str]:
+    """Return concise user-facing impact facts from structured relation analysis.
+
+    The structured analysis keeps separate buckets for model/tool consumption. For
+    cards and chat text we only expose concrete current-plan/candidate facts, and
+    intentionally omit generic next-step hints to avoid stacked UX headings.
+    """
+    if not isinstance(analysis, dict):
+        return []
+    resolved_mode = str(intent_mode or "").strip()
+    if not resolved_mode:
+        resolved_mode = INTENT_MODE_CONSTRAINT if analysis.get("intentMode") == INTENT_MODE_CONSTRAINT else ""
+
+    current_keys = (
+        ("currentPlanConflict", "currentPlanFit")
+        if resolved_mode == INTENT_MODE_CONSTRAINT
+        else ("currentPlanFit", "currentPlanConflict")
+    )
+    current_items = _relation_items(analysis, current_keys)
+    opportunity_items = _relation_items(analysis, ("candidateOpportunity",))
+
+    result: list[str] = []
+    if current_items:
+        result.append(current_items[0])
+    if opportunity_items and len(result) < limit:
+        result.append(opportunity_items[0])
+    for item in current_items[1:] + opportunity_items[1:]:
+        if len(result) >= limit:
+            break
+        result.append(item)
+    return result
+
+
+def build_impact_preview_from_analysis(analysis: dict[str, Any]) -> str:
+    impact_lines = compact_relation_impact_lines(analysis)
+    if not impact_lines:
+        return ""
+    return "**影响**\n" + "\n".join(f"- {item}" for item in impact_lines)

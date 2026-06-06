@@ -219,6 +219,23 @@ def _has_school_nature_metadata(items: list[dict[str, Any]] | None) -> bool:
     return False
 
 
+def _candidate_supply_line(facts: dict[str, Any]) -> str:
+    supply = facts.get("candidate_supply") if isinstance(facts.get("candidate_supply"), dict) else {}
+    if not supply:
+        return ""
+    summary = str(supply.get("summary") or "").strip()
+    shortages = [
+        str(item or "").strip()
+        for item in (supply.get("tier_shortages") or [])
+        if str(item or "").strip()
+    ]
+    if summary:
+        return summary
+    if shortages:
+        return "；".join(shortages[:2])
+    return ""
+
+
 def _build_status_overview_summary(facts: dict[str, Any]) -> tuple[str, list[str], list[str]]:
     current_total = int(facts.get("current_total") or 0)
     target_total = int(facts.get("target_total") or 0)
@@ -232,6 +249,7 @@ def _build_status_overview_summary(facts: dict[str, Any]) -> tuple[str, list[str
     top_items = facts.get("top_items") or []
     intent_relation = facts.get("intent_relation") or {}
     school_nature_distribution = facts.get("school_nature_distribution") or {}
+    candidate_supply_text = _candidate_supply_line(facts)
 
     lines: list[str] = []
     if current_total >= target_total and target_total > 0:
@@ -261,6 +279,8 @@ def _build_status_overview_summary(facts: dict[str, Any]) -> tuple[str, list[str
         lines.append(f"- 数量缺口：{gap_hint}")
     if reminder_text:
         lines.append(f"- 需要关注：{reminder_text}。")
+    if candidate_supply_text:
+        lines.append(f"- 候选供给：{candidate_supply_text}。")
     if pending_count > 0 and pending_text:
         lines.append(f"- 待处理建议：{pending_count} 项，主要是{pending_text}。")
 
@@ -306,6 +326,8 @@ def _build_status_overview_summary(facts: dict[str, Any]) -> tuple[str, list[str
         reply_focus.append("count_gap")
     if pending_count > 0:
         reply_focus.append("pending_actions")
+    if candidate_supply_text:
+        reply_focus.append("candidate_supply")
 
     next_step_hints: list[str] = []
     if risk_count > 0 or warn_count > 0:
@@ -314,6 +336,16 @@ def _build_status_overview_summary(facts: dict[str, Any]) -> tuple[str, list[str
         next_step_hints.append("如果用户关心数量是否够用，先解释当前目标数量与缺口。")
     if pending_count > 0:
         next_step_hints.append("如果用户想继续优化，可先解释待处理建议，再决定是否补偿或重排。")
+    missing_supply_tiers = []
+    supply = facts.get("candidate_supply") if isinstance(facts.get("candidate_supply"), dict) else {}
+    if supply:
+        missing_supply_tiers = [
+            str(item or "").strip()
+            for item in (supply.get("missing_supply_tiers") or [])
+            if str(item or "").strip()
+        ]
+    if any(tier in missing_supply_tiers for tier in ("稳", "保")):
+        next_step_hints.append("如果用户想补稳或保，先说明当前候选池没有对应供给，不要承诺能直接补入。")
     if current_total > 0:
         lines.append("你可以继续看审查详情，或者告诉我想按地域、专业、稳妥程度怎么调。")
     return "\n".join(line for line in lines if line), reply_focus, next_step_hints
@@ -348,7 +380,6 @@ async def handle_query_state(
             state_summary=state_summary,
             summary=state_summary,
             reply_focus=["local_plan_query", "current_state"],
-            reply_strategy="direct_reply",
             facts={
                 "query_redirect": "local_plan_query",
                 "query_filters": {"school_keywords": school_keywords},

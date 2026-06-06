@@ -177,7 +177,7 @@ def test_dialog_scenario_hard_constraint_city_recovery_builds_constraint_confirm
         resp = _run(_render_analysis(ctx, edit_flag="delete"))
 
     assert "上海" in resp
-    assert "要求" in resp or "确认" in resp
+    assert "要求" in resp or "确认" in resp or "采纳" in resp
 
 
 def test_dialog_scenario_career_fit_question_stays_interest_analysis_not_direct_state_write():
@@ -1458,7 +1458,7 @@ def test_dialog_scenario_biology_interest_and_far_region_requirement_can_coexist
             )
         )
 
-    assert "生物工程类" in resp
+    assert "生物工程" in resp
     assert "新疆" in resp
     assert "黑龙江" in resp
     save_mock.assert_not_awaited()

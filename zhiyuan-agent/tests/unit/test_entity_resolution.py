@@ -7,6 +7,7 @@ from app.domain.major_entity_resolver import (
     resolve_major_entity,
     resolve_major_mentions_from_text,
 )
+from app.domain.region_entity_resolver import contains_concrete_region_mention, resolve_region_entity
 from app.domain.school_entity_resolver import resolve_school_entity
 from app.domain.school_major_ref_resolver import resolve_school_major_ref
 
@@ -18,6 +19,20 @@ def test_resolve_major_entity_handles_common_single_alias():
     assert result.best.level == "level3"
     assert result.best.canonical_name == "计算机科学与技术"
     assert result.best.source == "alias"
+
+
+def test_resolve_major_mentions_keeps_category_token_alias_broad():
+    mentions = resolve_major_mentions_from_text("后面想重点看看计算机和电子信息方向", "01")
+
+    assert [mention.canonical_name for mention in mentions] == ["计算机类", "电子信息类"]
+    assert [mention.level for mention in mentions] == ["level2", "level2"]
+
+
+def test_resolve_major_mentions_keeps_specific_alias_concrete():
+    mentions = resolve_major_mentions_from_text("计科和会计也可以看看", "01")
+
+    assert [mention.canonical_name for mention in mentions] == ["计算机科学与技术", "会计学"]
+    assert [mention.level for mention in mentions] == ["level3", "level3"]
 
 
 def test_resolve_major_entity_keeps_broad_alias_as_candidates():
@@ -92,6 +107,20 @@ def test_resolve_school_entity_marks_ambiguous_short_alias():
     assert result.ambiguous is True
     assert "湖北工程学院" in result.canonical_names
     assert "湖北工业大学" in result.canonical_names
+
+
+def test_resolve_region_entity_handles_common_province_alias():
+    result = resolve_region_entity("内蒙", expected_level="province")
+
+    assert result.best is not None
+    assert result.best.canonical_name == "内蒙古"
+    assert result.best.level == "province"
+    assert result.best.source == "alias"
+
+
+def test_contains_concrete_region_mention_distinguishes_abstract_region_language():
+    assert contains_concrete_region_mention("广西贵州内蒙这些要不要放") is True
+    assert contains_concrete_region_mention("省外可以，但太偏的地方不想去") is False
 
 
 def test_resolve_school_major_ref_handles_attached_short_names():

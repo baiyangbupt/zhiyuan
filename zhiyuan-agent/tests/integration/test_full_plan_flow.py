@@ -131,13 +131,9 @@ class TestFullLifecycle:
         phase.set_pending(pending)
         assert phase.state == PhaseState.PLAN_PREVIEWING
 
-        # Step 3: 用户确认
-        frame_confirm = IntentFrame(
-            task_layer="plan",
-            topic="general",
-            verb="confirm",
-            is_confirmation_of_previous=True,
-        )
+        # Step 3: 用户确认。
+        # 3.0.3 起确认/取消不再作为 IntentFrame verb 进入 ActionResolver，
+        # 而是由 service-level pendingConfirmation 入口消费 active pending。
         cleared = phase.clear_pending()
         assert cleared is not None
         assert cleared.action_family == "generate_plan"
@@ -598,7 +594,7 @@ class TestInstructionsIntegration:
             ordered_total=30,
         )
         instructions = build_instructions(ctx)
-        assert "待确认" not in instructions or "pending" not in instructions.lower()
+        assert "当前存在上一轮待确认的方案动作" not in instructions
 
     def test_instructions_with_conversation_phase_pending(self, volunteer_model):
         """使用新 ConversationPhase.pending 构建指令。"""
@@ -721,10 +717,6 @@ class TestRegistryResolverIntegration:
                 task_layer="plan", topic="general", verb="move",
                 target=TargetSpec(volunteer_refs=["@1"], position=3),
             ),
-            IntentFrame(task_layer="plan", topic="general", verb="pin",
-                target=TargetSpec(volunteer_refs=["@1"])),
-            IntentFrame(task_layer="plan", topic="general", verb="unpin",
-                target=TargetSpec(volunteer_refs=["@1"])),
             IntentFrame(task_layer="plan", topic="general", verb="reorder"),
             IntentFrame(task_layer="plan", topic="general", verb="generate"),
         ]

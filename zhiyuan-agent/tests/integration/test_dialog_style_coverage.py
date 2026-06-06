@@ -176,7 +176,7 @@ class TestFullInstructionsCoverage:
         """Intent 阶段的"还没有真正生效"约束。"""
         ctx = _make_full_ctx()
         instructions = build_instructions(ctx)
-        assert "还没有真正生效" in instructions
+        assert "采纳/确认前不会生效" in instructions
 
     def test_full_instructions_contain_profile_wording_ban(self):
         """禁止说"加入画像"。"""

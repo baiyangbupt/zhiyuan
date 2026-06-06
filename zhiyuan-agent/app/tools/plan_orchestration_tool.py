@@ -139,6 +139,11 @@ _SORT_FIELD_TEXT_MARKERS: dict[str, tuple[str, ...]] = {
     "schoolRank": ("院校层次", "学校层次", "院校排名", "学校排名", "好学校", "学校好", "层次"),
     "finalScore": ("推荐系数", "推荐分", "推荐度", "推荐排序", "综合推荐"),
 }
+_EXPLICIT_SORT_FIELD_TEXT_MARKERS: dict[str, tuple[str, ...]] = {
+    "admissionRatio": ("录取率", "录取概率"),
+    "schoolRank": ("院校层次", "学校层次", "院校排名", "学校排名"),
+    "finalScore": ("推荐系数", "推荐分", "推荐度", "推荐排序", "综合推荐"),
+}
 _RANGE_MOVE_MARKERS = (
     "往前",
     "前挪",
@@ -235,7 +240,7 @@ def _recover_missing_review_issue_mutation(
 ) -> tuple[str, str | None]:
     if review_issue_code:
         return action_family, review_issue_code
-    if action_family not in {"review_plan", "remove_units", "replace_units"}:
+    if action_family not in {"review_plan", "preview_compensation", "remove_units", "replace_units"}:
         return action_family, review_issue_code
     mutation_action = _infer_review_issue_mutation_action(user_goal)
     if mutation_action is None:
@@ -255,6 +260,16 @@ def _sort_field_supported_by_goal(sort_field: str | None, user_goal: str) -> boo
         return True
     markers = _SORT_FIELD_TEXT_MARKERS.get(field, ())
     return any(_compact_user_goal_text(marker) in text for marker in markers if marker)
+
+
+def _infer_explicit_sort_field_from_goal(user_goal: str) -> str | None:
+    text = _compact_user_goal_text(user_goal)
+    if not text:
+        return None
+    for field, markers in _EXPLICIT_SORT_FIELD_TEXT_MARKERS.items():
+        if any(_compact_user_goal_text(marker) in text for marker in markers if marker):
+            return field
+    return None
 
 
 def _looks_like_range_move_goal_without_sort_basis(user_goal: str) -> bool:
@@ -332,6 +347,7 @@ def _build_missing_inputs(
     action_family: str,
     volunteer_ids: list[str] | None,
     unit_ids: list[str] | None,
+    source_major_names: list[str] | None,
     source_position: int | None,
     target_position: int | None,
     filters: dict[str, str],
@@ -339,7 +355,13 @@ def _build_missing_inputs(
     user_goal: str = "",
 ) -> list[str]:
     missing: list[str] = []
-    if action_family == "remove_units" and not volunteer_ids and review_issue_target is None:
+    if (
+        action_family == "remove_units"
+        and not volunteer_ids
+        and not source_major_names
+        and not _has_selection_scope(filters)
+        and review_issue_target is None
+    ):
         missing.append("volunteer_ids")
     if action_family == "move_unit":
         if not volunteer_ids and source_position is None:
@@ -477,6 +499,7 @@ async def _plan_next_action_model(
     }
     if preserve_count:
         base_filters["preserve_count"] = "true"
+    sort_field = sort_field or _infer_explicit_sort_field_from_goal(user_goal)
     if action_family == "sort_ordered_plan" and sort_field:
         base_filters["sort_field"] = sort_field
     filters = dict(base_filters)
@@ -488,6 +511,8 @@ async def _plan_next_action_model(
     )
     if action_family != "sort_ordered_plan":
         filters.pop("sort_field", None)
+    elif sort_field:
+        filters["sort_field"] = sort_field
     recovered_action_family, recovered_review_issue_code = _recover_missing_review_issue_mutation(
         action_family=action_family,
         review_issue_code=review_issue_code,
@@ -556,6 +581,7 @@ async def _plan_next_action_model(
         action_family,
         volunteer_ids,
         unit_ids,
+        source_major_names,
         source_position,
         target_position,
         filters,
@@ -742,6 +768,13 @@ async def plan_next_action(
 ) -> str:
     """根据用户目标和现有状态输入生成 Plan 动作计划。
 
+    明确只读的当前方案状态查询、方案审查和调整分析不要调用本工具；
+    直接调用 execute_plan_action，并传最小 PlanActionPlan JSON：
+    {"stage":"apply","action_family":"query_state","user_goal":"用户原话","requires_confirmation":false}
+    {"stage":"review","action_family":"review_plan","user_goal":"用户原话","requires_confirmation":false}
+    {"stage":"apply","action_family":"analyze_adjustment","user_goal":"用户原话","requires_confirmation":false}
+    本工具主要用于高副作用 preview、补偿/替换等复杂编排，或需要把自然语言位置/范围整理成结构化动作计划的场景。
+
     对移动/删除/加入学校+专业这类变更请求，不需要先查询真实 volunteerId。
     `volunteer_ids` 可以直接填写用户原始引用（如“青岛电影学院的新闻学”、
     “湖北工程学院.计算机科学与技术”、“广西师大统计”），后续执行层会解析真实 ID；
@@ -762,9 +795,11 @@ async def plan_next_action(
     `sort_field`：录取率=`admissionRatio`，院校层次=`schoolRank`，推荐系数=`finalScore`。
     替换操作如果要求“替换后数量不能减少/保持总数”，必须显式填写
     `preserve_count=True`，执行层才会先做候选容量预检。
-    替换操作如果用户要按源专业整体替换（例如把当前方案里所有会计、审计
-    方向都替换掉），必须显式填写 `source_major_names=["会计学", "审计学"]`；
-    不要只把源范围写进 `user_goal`。
+    删除或替换操作如果用户要按源专业整体处理（例如“删掉方案里的汉语言文学”、
+    “不想学会计/审计，把这些从方案里去掉”），必须显式填写
+    `source_major_names=["汉语言文学"]` 或对应专业名列表；不要只把源范围写进
+    `user_goal`。如果用户要按院校、地域或候选范围处理当前方案，使用结构化
+    `school_keyword`、`province_keyword`、`major_keyword` 等字段承载范围。
     """
     model = await _plan_next_action_model(
         ctx,

@@ -91,7 +91,7 @@ skill 不直接执行状态，也不应该替代 tool 的安全边界。
 
 - `skills/career_path_chat/SKILL.md` 是 `Explore + career` 的语义说明层。
 - 职业路径探索的运行时主入口是 `analyze_current_career_direction`。
-- 职业路径偏好写入必须先走 `preview_current_career_intent_confirmation`，再等用户确认后由 `update_volunteer_intent_state` 生效。
+- 职业路径偏好写入必须先走 `preview_current_career_intent_confirmation` 生成统一 `pendingConfirmationCard`，再等用户点击卡片采纳后由 `apply_selected_intents` 生效。
 
 ### 3.3 Tool 层
 
@@ -121,12 +121,13 @@ skill 不直接执行状态，也不应该替代 tool 的安全边界。
 - `preview_current_school_intent_confirmation`
 - `preview_current_region_intent_confirmation`
 - `preview_current_career_intent_confirmation`
-- `update_volunteer_intent_state`
+- `apply_selected_intents`（仅卡片点击确认后由 Service 调用）
 
 其中：
 
 - `preview_current_*_intent_confirmation` 是主 agent 可见的高层语义入口
 - `analyze_volunteer_intent_change` 继续保留为内部低层分析能力，由 wrapper 调用
+- `update_volunteer_intent_state` 仅保留为旧会话/旧工具返回兼容 wrapper，不再作为主 agent 可调用工具
 
 #### Plan
 

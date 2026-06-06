@@ -30,11 +30,15 @@ from app.domain.career_slots import (
 )
 from app.domain.major_entity_resolver import (
     append_major_mentions_to_payload,
+    dedupe_major_intent_payload_across_levels,
     major_parent_mappings_for_batch,
     major_name_sets_for_batch,
+    normalize_major_intent_payload_by_catalog,
+    refine_major_intent_payload_by_explicit_mentions,
     resolve_major_mentions_from_text,
 )
-from app.services.profile_manager import ProfileManager
+from app.domain.region_entity_resolver import contains_concrete_region_mention
+from app.services.profile_manager import ProfileManager, _normalize_batch
 from app.tools.intent_relation_tool import (
     build_impact_preview_from_analysis as _build_impact_preview_from_analysis,
     build_plan_relation_analysis as _build_plan_relation_analysis,
@@ -55,7 +59,6 @@ from app.util.code_enrichment import (
     add_codes_to_profile,
     get_major_codes,
     get_major_codes_async,
-    normalize_candidate_filters_async,
     resolve_major_names_async,
 )
 from app.util.internal_client import (
@@ -65,6 +68,7 @@ from app.util.internal_client import (
     get_message_by_id,
     query_planning_candidate_pool,
     save_intent_change_cache,
+    update_planning_constraint_state,
     update_planning_latent_profile,
     update_message,
 )
@@ -441,6 +445,145 @@ def _is_negative_key(sub_key: str) -> bool:
     return sub_key.startswith("negative_")
 
 
+def _label_for_intent_mode(label: str, *, intent_mode: str) -> str:
+    if intent_mode == INTENT_MODE_CONSTRAINT:
+        return label
+    replacements = {
+        "排除专业门类": "不优先专业门类",
+        "排除专业类": "不优先专业类",
+        "排除具体专业": "不优先具体专业",
+        "排除学校": "不优先学校",
+        "排除省份": "不优先省份",
+        "排除城市": "不优先城市",
+        "排除就业导向": "不优先就业导向",
+    }
+    return replacements.get(label, label)
+
+
+def _plain_intent_scope_label(label: str) -> str:
+    return (
+        label.replace("排除", "")
+        .replace("不优先", "")
+        .replace("偏好", "")
+        .strip()
+        or "内容"
+    )
+
+
+def _constraint_state_section(constraint_state: dict[str, Any] | None, section: str) -> dict[str, Any]:
+    if not isinstance(constraint_state, dict):
+        return {}
+    value = constraint_state.get(section)
+    return value if isinstance(value, dict) else {}
+
+
+def _constraint_state_values(
+    constraint_state: dict[str, Any] | None,
+    *,
+    domain: str,
+    polarity: str,
+    intent_mode: str,
+) -> list[str]:
+    hard = _constraint_state_section(constraint_state, "hardConstraints")
+    soft = _constraint_state_section(constraint_state, "softPreferences")
+    key_map = {
+        (INTENT_MODE_CONSTRAINT, "major", "positive"): "mustIncludeMajors",
+        (INTENT_MODE_CONSTRAINT, "major", "negative"): "mustExcludeMajors",
+        (INTENT_MODE_CONSTRAINT, "school", "positive"): "mustIncludeSchools",
+        (INTENT_MODE_CONSTRAINT, "school", "negative"): "mustExcludeSchools",
+        (INTENT_MODE_CONSTRAINT, "region", "positive"): "mustIncludeRegions",
+        (INTENT_MODE_CONSTRAINT, "region", "negative"): "mustExcludeRegions",
+        (INTENT_MODE_PREFERENCE, "major", "positive"): "preferMajors",
+        (INTENT_MODE_PREFERENCE, "major", "negative"): "avoidMajors",
+        (INTENT_MODE_PREFERENCE, "school", "positive"): "preferSchools",
+        (INTENT_MODE_PREFERENCE, "school", "negative"): "avoidSchools",
+        (INTENT_MODE_PREFERENCE, "region", "positive"): "preferRegions",
+        (INTENT_MODE_PREFERENCE, "region", "negative"): "avoidRegions",
+    }
+    key = key_map.get((intent_mode, domain, polarity))
+    if not key:
+        return []
+    source = hard if intent_mode == INTENT_MODE_CONSTRAINT else soft
+    return _as_string_list(source.get(key))
+
+
+def _major_negative_state_contains(values: list[str], *, key: str, name: str, batch: str) -> bool:
+    """Hard/soft negative parent major states cover their child major names."""
+    state_values = set(values)
+    if name in state_values:
+        return True
+    mappings = major_parent_mappings_for_batch(batch)
+    level2_to_level1 = mappings.get("level2_to_level1", {})
+    level3_to_level2 = mappings.get("level3_to_level2", {})
+    parent2 = level3_to_level2.get(name)
+    parent1 = level2_to_level1.get(parent2 or "") if parent2 else level2_to_level1.get(name)
+    if key == "negative_level3":
+        return bool((parent2 and parent2 in state_values) or (parent1 and parent1 in state_values))
+    if key == "negative_level2":
+        return bool(parent1 and parent1 in state_values)
+    return False
+
+
+def _constraint_state_contains(
+    constraint_state: dict[str, Any] | None,
+    *,
+    domain: str,
+    polarity: str,
+    intent_mode: str,
+    value: str,
+    key: str = "",
+    batch: str = "01",
+) -> bool:
+    values = _constraint_state_values(
+        constraint_state,
+        domain=domain,
+        polarity=polarity,
+        intent_mode=intent_mode,
+    )
+    if domain == "major" and polarity == "negative":
+        return _major_negative_state_contains(values, key=key, name=value, batch=batch)
+    return value in set(values)
+
+
+def _existing_item_content(label: str, name: str, *, intent_mode: str, polarity: str) -> str:
+    if intent_mode == INTENT_MODE_CONSTRAINT:
+        scope = _plain_intent_scope_label(label)
+        if polarity == "negative":
+            return f"当前已记录的明确排除{scope}要求：{name}"
+        return f"当前已记录的明确要满足{scope}要求：{name}"
+    prefix = "偏好" if polarity == "positive" else ""
+    return f"当前已记录的报考参考{prefix}{label}：{name}"
+
+
+def _positive_select_item_content(
+    name: str,
+    label: str,
+    *,
+    intent_mode: str,
+    already: bool = False,
+    has_opposite_conflict: bool = False,
+) -> str:
+    scope = _plain_intent_scope_label(label)
+    if intent_mode == INTENT_MODE_CONSTRAINT:
+        if has_opposite_conflict:
+            return f"将{name}从不优先或排除范围里重新纳入，并作为明确要满足的{scope}要求。"
+        if already:
+            return f"将{name}从普通偏好升级为明确要满足的{scope}要求，后面看候选和方案时会按这个范围来。"
+        return f"把{name}记成明确要满足的{scope}要求，后面看候选和方案时会按这个范围来。"
+    if has_opposite_conflict:
+        return f"将{name}从不优先或排除范围里重新纳入，后续专家推荐会更优先考虑它。"
+    return f"将{name}更新为偏好{scope}，后续专家推荐会更优先考虑它。"
+
+
+def _negative_select_item_content(name: str, label: str, *, intent_mode: str, already: bool = False) -> str:
+    scope = _plain_intent_scope_label(label)
+    if intent_mode == INTENT_MODE_CONSTRAINT:
+        if already:
+            return f"将{name}从不优先升级为明确不考虑的{scope}要求，后面看候选和方案时都会按这个要求来。"
+        return f"把{name}记成明确不考虑的{scope}要求，后面看候选和方案时都会按这个要求来。"
+    return f"将{name}设为不优先{scope}，后续专家推荐会降低它的优先级。"
+
+
 def _interest_stage_item_content(value: dict[str, Any] | None, intent_mode: str) -> str | None:
     """Render analysis-only intent items without implying the preference was saved."""
     if not isinstance(value, dict):
@@ -524,6 +667,54 @@ def _neutralize_interest_stage_items(
     return neutralized
 
 
+def _major_profile_has_opposite_conflict(
+    major_profile: Any,
+    *,
+    key: str,
+    name: str,
+    batch: str,
+) -> bool:
+    mappings = major_parent_mappings_for_batch(batch)
+    level3_to_level2 = mappings.get("level3_to_level2", {})
+    level2_to_level1 = mappings.get("level2_to_level1", {})
+
+    level1 = set(_as_string_list(getattr(major_profile, "level1", [])))
+    level2 = set(_as_string_list(getattr(major_profile, "level2", [])))
+    level3 = set(_as_string_list(getattr(major_profile, "level3", [])))
+    negative_level1 = set(_as_string_list(getattr(major_profile, "negative_level1", [])))
+    negative_level2 = set(_as_string_list(getattr(major_profile, "negative_level2", [])))
+    negative_level3 = set(_as_string_list(getattr(major_profile, "negative_level3", [])))
+
+    parent2 = level3_to_level2.get(name)
+    parent1 = level2_to_level1.get(parent2 or "") if parent2 else level2_to_level1.get(name)
+
+    if key == "level1":
+        return (
+            name in negative_level1
+            or any(level2_to_level1.get(value) == name for value in negative_level2)
+            or any(level2_to_level1.get(level3_to_level2.get(value) or "") == name for value in negative_level3)
+        )
+    if key == "level2":
+        return (
+            name in negative_level2
+            or parent1 in negative_level1
+            or any(level3_to_level2.get(value) == name for value in negative_level3)
+        )
+    if key == "level3":
+        return name in negative_level3 or parent2 in negative_level2 or parent1 in negative_level1
+    if key == "negative_level1":
+        return (
+            name in level1
+            or any(level2_to_level1.get(value) == name for value in level2)
+            or any(level2_to_level1.get(level3_to_level2.get(value) or "") == name for value in level3)
+        )
+    if key == "negative_level2":
+        return name in level2 or any(level3_to_level2.get(value) == name for value in level3)
+    if key == "negative_level3":
+        return name in level3
+    return False
+
+
 def _build_select_items(
     current_profile: Any,
     major_intents: dict | None,
@@ -533,6 +724,8 @@ def _build_select_items(
     *,
     intent_mode: str = INTENT_MODE_PREFERENCE,
     analysis_stage: str = ANALYSIS_STAGE_CONFIRMED,
+    batch: str = "01",
+    constraint_state: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Generate structured items for selective adoption popup.
 
@@ -544,6 +737,12 @@ def _build_select_items(
     items: list[dict[str, Any]] = []
     existing_items: list[dict[str, Any]] = []
     major_intents = _dedupe_major_intent_payload_across_levels(major_intents)
+    positive_intent_mode = (
+        INTENT_MODE_CONSTRAINT
+        if intent_mode == INTENT_MODE_CONSTRAINT
+        and not _has_negative_intents(major_intents, school_intents, city_intents, career_intents)
+        else INTENT_MODE_PREFERENCE
+    )
 
     # --- Major intents ---
     if major_intents:
@@ -555,14 +754,49 @@ def _build_select_items(
             for name in names:
                 _, already = _diff_list(existing, [name])
                 label = _LABEL_MAP[f"major_intents.{level}"]
-                if already:
+                hard_existing = _constraint_state_contains(
+                    constraint_state,
+                    domain="major",
+                    polarity="positive",
+                    intent_mode=INTENT_MODE_CONSTRAINT,
+                    value=name,
+                    key=level,
+                    batch=batch,
+                )
+                soft_existing = _constraint_state_contains(
+                    constraint_state,
+                    domain="major",
+                    polarity="positive",
+                    intent_mode=INTENT_MODE_PREFERENCE,
+                    value=name,
+                    key=level,
+                    batch=batch,
+                )
+                has_opposite_conflict = _major_profile_has_opposite_conflict(
+                    current_profile.major,
+                    key=level,
+                    name=name,
+                    batch=batch,
+                )
+                if hard_existing and positive_intent_mode == INTENT_MODE_CONSTRAINT:
                     existing_items.append(_existing_intent_item(
-                        f"当前已记录的报考参考偏好{label}：{name}",
+                        _existing_item_content(label, name, intent_mode=INTENT_MODE_CONSTRAINT, polarity="positive"),
+                        {"major_intents": {level: [name]}},
+                    ))
+                elif (already or soft_existing or hard_existing) and not has_opposite_conflict and positive_intent_mode != INTENT_MODE_CONSTRAINT:
+                    existing_items.append(_existing_intent_item(
+                        _existing_item_content(label, name, intent_mode=INTENT_MODE_PREFERENCE, polarity="positive"),
                         {"major_intents": {level: [name]}},
                     ))
                 else:
                     items.append({
-                        "content": f"将{name}更新为偏好方向，后续专家推荐会更优先考虑它。",
+                        "content": _positive_select_item_content(
+                            name,
+                            label,
+                            intent_mode=positive_intent_mode,
+                            already=bool(already),
+                            has_opposite_conflict=has_opposite_conflict,
+                        ),
                         "value": {"major_intents": {level: [name]}},
                         "selected": True,
                     })
@@ -574,18 +808,48 @@ def _build_select_items(
             existing = getattr(current_profile.major, level, [])
             for name in names:
                 _, already = _diff_list(existing, [name])
-                label = _LABEL_MAP[f"major_intents.{level}"]
-                if already:
+                label = _label_for_intent_mode(_LABEL_MAP[f"major_intents.{level}"], intent_mode=intent_mode)
+                hard_existing = _constraint_state_contains(
+                    constraint_state,
+                    domain="major",
+                    polarity="negative",
+                    intent_mode=INTENT_MODE_CONSTRAINT,
+                    value=name,
+                    key=level,
+                    batch=batch,
+                )
+                soft_existing = _constraint_state_contains(
+                    constraint_state,
+                    domain="major",
+                    polarity="negative",
+                    intent_mode=INTENT_MODE_PREFERENCE,
+                    value=name,
+                    key=level,
+                    batch=batch,
+                )
+                has_opposite_conflict = _major_profile_has_opposite_conflict(
+                    current_profile.major,
+                    key=level,
+                    name=name,
+                    batch=batch,
+                )
+                if hard_existing and intent_mode == INTENT_MODE_CONSTRAINT:
                     existing_items.append(_existing_intent_item(
-                        f"当前已记录的报考参考{label}：{name}",
+                        _existing_item_content(_LABEL_MAP[f"major_intents.{level}"], name, intent_mode=INTENT_MODE_CONSTRAINT, polarity="negative"),
+                        {"major_intents": {level: [name]}},
+                    ))
+                elif (already or soft_existing or hard_existing) and not has_opposite_conflict and intent_mode != INTENT_MODE_CONSTRAINT:
+                    existing_items.append(_existing_intent_item(
+                        _existing_item_content(label, name, intent_mode=INTENT_MODE_PREFERENCE, polarity="negative"),
                         {"major_intents": {level: [name]}},
                     ))
                 else:
                     items.append({
-                        "content": (
-                            f"将{name}设为排除方向，后续专家推荐会降低它的优先级。"
-                            if intent_mode == INTENT_MODE_PREFERENCE
-                            else f"把{name}记成明确不考虑的内容，后面看候选和方案时都会按这个要求来。"
+                        "content": _negative_select_item_content(
+                            name,
+                            label,
+                            intent_mode=intent_mode,
+                            already=bool(already),
                         ),
                         "value": {"major_intents": {level: [name]}},
                         "selected": True,
@@ -601,14 +865,42 @@ def _build_select_items(
             for name in names:
                 _, already = _diff_list(existing, [name])
                 label = _LABEL_MAP[f"school_intents.{sub_key}"]
-                if already:
+                hard_existing = _constraint_state_contains(
+                    constraint_state,
+                    domain="school",
+                    polarity="positive",
+                    intent_mode=INTENT_MODE_CONSTRAINT,
+                    value=name,
+                    key=sub_key,
+                    batch=batch,
+                )
+                soft_existing = _constraint_state_contains(
+                    constraint_state,
+                    domain="school",
+                    polarity="positive",
+                    intent_mode=INTENT_MODE_PREFERENCE,
+                    value=name,
+                    key=sub_key,
+                    batch=batch,
+                )
+                if hard_existing and positive_intent_mode == INTENT_MODE_CONSTRAINT:
                     existing_items.append(_existing_intent_item(
-                        f"当前已记录的报考参考偏好{label}：{name}",
+                        _existing_item_content(label, name, intent_mode=INTENT_MODE_CONSTRAINT, polarity="positive"),
+                        {"school_intents": {sub_key: [name]}},
+                    ))
+                elif (already or soft_existing or hard_existing) and positive_intent_mode != INTENT_MODE_CONSTRAINT:
+                    existing_items.append(_existing_intent_item(
+                        _existing_item_content(label, name, intent_mode=INTENT_MODE_PREFERENCE, polarity="positive"),
                         {"school_intents": {sub_key: [name]}},
                     ))
                 else:
                     items.append({
-                        "content": f"将{name}更新为偏好院校，后续专家推荐会更优先考虑它。",
+                        "content": _positive_select_item_content(
+                            name,
+                            label,
+                            intent_mode=positive_intent_mode,
+                            already=bool(already),
+                        ),
                         "value": {"school_intents": {sub_key: [name]}},
                         "selected": True,
                     })
@@ -620,18 +912,42 @@ def _build_select_items(
             existing = getattr(current_profile.school, sub_key, [])
             for name in names:
                 _, already = _diff_list(existing, [name])
-                label = _LABEL_MAP[f"school_intents.{sub_key}"]
-                if already:
+                label = _label_for_intent_mode(_LABEL_MAP[f"school_intents.{sub_key}"], intent_mode=intent_mode)
+                hard_existing = _constraint_state_contains(
+                    constraint_state,
+                    domain="school",
+                    polarity="negative",
+                    intent_mode=INTENT_MODE_CONSTRAINT,
+                    value=name,
+                    key=sub_key,
+                    batch=batch,
+                )
+                soft_existing = _constraint_state_contains(
+                    constraint_state,
+                    domain="school",
+                    polarity="negative",
+                    intent_mode=INTENT_MODE_PREFERENCE,
+                    value=name,
+                    key=sub_key,
+                    batch=batch,
+                )
+                if hard_existing and intent_mode == INTENT_MODE_CONSTRAINT:
                     existing_items.append(_existing_intent_item(
-                        f"当前已记录的报考参考{label}：{name}",
+                        _existing_item_content(_LABEL_MAP[f"school_intents.{sub_key}"], name, intent_mode=INTENT_MODE_CONSTRAINT, polarity="negative"),
+                        {"school_intents": {sub_key: [name]}},
+                    ))
+                elif (already or soft_existing or hard_existing) and intent_mode != INTENT_MODE_CONSTRAINT:
+                    existing_items.append(_existing_intent_item(
+                        _existing_item_content(label, name, intent_mode=INTENT_MODE_PREFERENCE, polarity="negative"),
                         {"school_intents": {sub_key: [name]}},
                     ))
                 else:
                     items.append({
-                        "content": (
-                            f"将{name}设为排除院校，后续专家推荐会降低它的优先级。"
-                            if intent_mode == INTENT_MODE_PREFERENCE
-                            else f"把{name}记成明确不考虑的院校，后面看候选和方案时都会按这个要求来。"
+                        "content": _negative_select_item_content(
+                            name,
+                            label,
+                            intent_mode=intent_mode,
+                            already=bool(already),
                         ),
                         "value": {"school_intents": {sub_key: [name]}},
                         "selected": True,
@@ -647,14 +963,42 @@ def _build_select_items(
             for name in names:
                 _, already = _diff_list(existing, [name])
                 label = _LABEL_MAP[f"city_intents.{sub_key}"]
-                if already:
+                hard_existing = _constraint_state_contains(
+                    constraint_state,
+                    domain="region",
+                    polarity="positive",
+                    intent_mode=INTENT_MODE_CONSTRAINT,
+                    value=name,
+                    key=sub_key,
+                    batch=batch,
+                )
+                soft_existing = _constraint_state_contains(
+                    constraint_state,
+                    domain="region",
+                    polarity="positive",
+                    intent_mode=INTENT_MODE_PREFERENCE,
+                    value=name,
+                    key=sub_key,
+                    batch=batch,
+                )
+                if hard_existing and positive_intent_mode == INTENT_MODE_CONSTRAINT:
                     existing_items.append(_existing_intent_item(
-                        f"当前已记录的报考参考偏好{label}：{name}",
+                        _existing_item_content(label, name, intent_mode=INTENT_MODE_CONSTRAINT, polarity="positive"),
+                        {"city_intents": {sub_key: [name]}},
+                    ))
+                elif (already or soft_existing or hard_existing) and positive_intent_mode != INTENT_MODE_CONSTRAINT:
+                    existing_items.append(_existing_intent_item(
+                        _existing_item_content(label, name, intent_mode=INTENT_MODE_PREFERENCE, polarity="positive"),
                         {"city_intents": {sub_key: [name]}},
                     ))
                 else:
                     items.append({
-                        "content": f"将{name}更新为偏好地域，后续专家推荐会更优先考虑它。",
+                        "content": _positive_select_item_content(
+                            name,
+                            label,
+                            intent_mode=positive_intent_mode,
+                            already=bool(already),
+                        ),
                         "value": {"city_intents": {sub_key: [name]}},
                         "selected": True,
                     })
@@ -666,18 +1010,42 @@ def _build_select_items(
             existing = getattr(current_profile.city, sub_key, [])
             for name in names:
                 _, already = _diff_list(existing, [name])
-                label = _LABEL_MAP[f"city_intents.{sub_key}"]
-                if already:
+                label = _label_for_intent_mode(_LABEL_MAP[f"city_intents.{sub_key}"], intent_mode=intent_mode)
+                hard_existing = _constraint_state_contains(
+                    constraint_state,
+                    domain="region",
+                    polarity="negative",
+                    intent_mode=INTENT_MODE_CONSTRAINT,
+                    value=name,
+                    key=sub_key,
+                    batch=batch,
+                )
+                soft_existing = _constraint_state_contains(
+                    constraint_state,
+                    domain="region",
+                    polarity="negative",
+                    intent_mode=INTENT_MODE_PREFERENCE,
+                    value=name,
+                    key=sub_key,
+                    batch=batch,
+                )
+                if hard_existing and intent_mode == INTENT_MODE_CONSTRAINT:
                     existing_items.append(_existing_intent_item(
-                        f"当前已记录的报考参考{label}：{name}",
+                        _existing_item_content(_LABEL_MAP[f"city_intents.{sub_key}"], name, intent_mode=INTENT_MODE_CONSTRAINT, polarity="negative"),
+                        {"city_intents": {sub_key: [name]}},
+                    ))
+                elif (already or soft_existing or hard_existing) and intent_mode != INTENT_MODE_CONSTRAINT:
+                    existing_items.append(_existing_intent_item(
+                        _existing_item_content(label, name, intent_mode=INTENT_MODE_PREFERENCE, polarity="negative"),
                         {"city_intents": {sub_key: [name]}},
                     ))
                 else:
                     items.append({
-                        "content": (
-                            f"先把{name}记成你暂时不太想去的地区，后面给你看方案时会尽量往后放。"
-                            if intent_mode == INTENT_MODE_PREFERENCE
-                            else f"把{name}记成明确不考虑的地区，后面看候选和方案时都会按这个要求来。"
+                        "content": _negative_select_item_content(
+                            name,
+                            label,
+                            intent_mode=intent_mode,
+                            already=bool(already),
                         ),
                         "value": {"city_intents": {sub_key: [name]}},
                         "selected": True,
@@ -715,6 +1083,128 @@ def _build_select_items(
             analysis_stage=analysis_stage,
         ),
         existing_items,
+    )
+
+
+def _negative_values_overlap_positive_profile(
+    current_profile: Any,
+    *,
+    major_intents: dict | None,
+    school_intents: dict | None,
+    city_intents: dict | None,
+    career_intents: dict | None = None,
+) -> bool:
+    major_profile = getattr(current_profile, "major", None)
+    school_profile = getattr(current_profile, "school", None)
+    city_profile = getattr(current_profile, "city", None)
+
+    for negative_key, positive_key in (
+        ("negative_level1", "level1"),
+        ("negative_level2", "level2"),
+        ("negative_level3", "level3"),
+    ):
+        negative_values = set(_as_string_list((major_intents or {}).get(negative_key)))
+        positive_values = set(_as_string_list(getattr(major_profile, positive_key, [])))
+        if negative_values & positive_values:
+            return True
+
+    negative_schools = set(_as_string_list((school_intents or {}).get("negative_colleges")))
+    positive_schools = set(_as_string_list(getattr(school_profile, "colleges", [])))
+    if negative_schools & positive_schools:
+        return True
+
+    for negative_key, positive_key in (
+        ("negative_province", "province"),
+        ("negative_city", "city"),
+    ):
+        negative_values = set(_as_string_list((city_intents or {}).get(negative_key)))
+        positive_values = set(_as_string_list(getattr(city_profile, positive_key, [])))
+        if negative_values & positive_values:
+            return True
+
+    # Career preferences are stored in planning latent profile rather than
+    # UserProfile; keep them confirmable unless a later backend API exposes the
+    # same positive/negative split here.
+    if career_intents:
+        return True
+    return False
+
+
+def _has_concrete_current_conflict(impact_analysis: dict[str, Any] | None) -> bool:
+    if not isinstance(impact_analysis, dict):
+        return False
+    for raw_item in impact_analysis.get("currentPlanConflict") or []:
+        text = str(raw_item or "").strip()
+        if not text:
+            continue
+        if "暂时没有直接命中" in text:
+            continue
+        if "影响不大" in text:
+            continue
+        return True
+    return False
+
+
+def _negative_preference_scope_text(
+    major_intents: dict | None,
+    school_intents: dict | None,
+    city_intents: dict | None,
+    career_intents: dict | None = None,
+) -> str:
+    values: list[str] = []
+    for payload, keys in (
+        (major_intents, ("negative_level3", "negative_level2", "negative_level1")),
+        (school_intents, ("negative_colleges",)),
+        (city_intents, ("negative_province", "negative_city")),
+        (career_intents, ("negative",)),
+    ):
+        if not isinstance(payload, dict):
+            continue
+        for key in keys:
+            for value in _as_string_list(payload.get(key)):
+                if value not in values:
+                    values.append(value)
+    if not values:
+        return "这个方向"
+    visible = "、".join(values[:3])
+    return visible + (f"等{len(values)}项" if len(values) > 3 else "")
+
+
+def _build_no_effect_negative_preference_message(
+    current_profile: Any,
+    *,
+    major_intents: dict | None,
+    school_intents: dict | None,
+    city_intents: dict | None,
+    career_intents: dict | None = None,
+    intent_mode: str,
+    analysis_stage: str,
+    impact_analysis: dict[str, Any] | None,
+) -> str | None:
+    if analysis_stage != ANALYSIS_STAGE_CONFIRMED:
+        return None
+    if not _is_negative_only_preference(
+        intent_mode=intent_mode,
+        major_intents=major_intents,
+        school_intents=school_intents,
+        city_intents=city_intents,
+        career_intents=career_intents,
+    ):
+        return None
+    if _negative_values_overlap_positive_profile(
+        current_profile,
+        major_intents=major_intents,
+        school_intents=school_intents,
+        city_intents=city_intents,
+        career_intents=career_intents,
+    ):
+        return None
+    if _has_concrete_current_conflict(impact_analysis):
+        return None
+    scope_text = _negative_preference_scope_text(major_intents, school_intents, city_intents, career_intents)
+    return (
+        f"当前已记录的偏好和这份方案里暂时没有明显命中“{scope_text}”，"
+        "这次不需要额外采纳。后续如果这是必须避开的硬性要求，可以直接说明，我会再整理成确认卡片。"
     )
 
 
@@ -848,6 +1338,63 @@ def _has_negative_intents(
     return payload_has_negative or career_has_negative
 
 
+def _has_positive_intents(
+    major_intents: dict | None,
+    school_intents: dict | None,
+    city_intents: dict | None,
+    career_intents: dict | None = None,
+) -> bool:
+    payload_has_positive = any(
+        payload and any(
+            not key.startswith("negative_") and values
+            for key, values in payload.items()
+        )
+        for payload in (major_intents, school_intents, city_intents)
+    )
+    career_has_positive = bool(career_intents and career_intents.get("positive"))
+    return payload_has_positive or career_has_positive
+
+
+def _is_negative_only_preference(
+    *,
+    intent_mode: str,
+    major_intents: dict | None,
+    school_intents: dict | None,
+    city_intents: dict | None,
+    career_intents: dict | None = None,
+) -> bool:
+    return (
+        intent_mode == INTENT_MODE_PREFERENCE
+        and _has_negative_intents(major_intents, school_intents, city_intents, career_intents)
+        and not _has_positive_intents(major_intents, school_intents, city_intents, career_intents)
+    )
+
+
+_SOFT_NEGATIVE_PREFERENCE_MARKERS = (
+    "不太想",
+    "不是很想",
+    "不太考虑",
+    "不是很考虑",
+    "不太接受",
+    "不是很接受",
+    "有点排斥",
+    "有些排斥",
+    "稍微排斥",
+    "尽量不",
+    "暂时不",
+    "先不",
+    "不优先",
+    "往后放",
+)
+
+
+def _latest_utterance_indicates_soft_negative_preference(text: str) -> bool:
+    compact = re.sub(r"\s+", "", str(text or ""))
+    if not compact:
+        return False
+    return any(marker in compact for marker in _SOFT_NEGATIVE_PREFERENCE_MARKERS)
+
+
 def _classify_intent_mode(
     major_intents: dict | None,
     school_intents: dict | None,
@@ -856,10 +1403,18 @@ def _classify_intent_mode(
     *,
     edit_flag: str | None = None,
     explicit_intent_mode: str | None = None,
+    latest_utterance: str = "",
 ) -> str:
-    if explicit_intent_mode in {INTENT_MODE_PREFERENCE, INTENT_MODE_CONSTRAINT}:
-        return explicit_intent_mode
+    if explicit_intent_mode == INTENT_MODE_CONSTRAINT:
+        return INTENT_MODE_CONSTRAINT
     if not _has_negative_intents(major_intents, school_intents, city_intents, career_intents):
+        return INTENT_MODE_PREFERENCE
+    if explicit_intent_mode == INTENT_MODE_PREFERENCE and _latest_utterance_indicates_soft_negative_preference(latest_utterance):
+        return INTENT_MODE_PREFERENCE
+    if (
+        not _has_positive_intents(major_intents, school_intents, city_intents, career_intents)
+        and _latest_utterance_indicates_soft_negative_preference(latest_utterance)
+    ):
         return INTENT_MODE_PREFERENCE
 
     return INTENT_MODE_CONSTRAINT
@@ -953,6 +1508,39 @@ async def _maybe_downgrade_intent_preview_by_semantics(
         observability["intentSideEffectDecision"] = decision.model_dump()
 
     if decision.decision in {"analysis_only", "mixed_answer_then_ask"} and decision.confidence >= 0.7:
+        if decision.decision == "mixed_answer_then_ask":
+            logger.info(
+                "Intent preview downgraded to mixed answer by semantic arbitration: session_id=%s decision=%s confidence=%s reason=%s",
+                getattr(ctx.deps, "sessionid", ""),
+                decision.decision,
+                decision.confidence,
+                decision.reason,
+            )
+            if isinstance(observability, dict) and isinstance(observability.get("intentSideEffectDecision"), dict):
+                observability["intentSideEffectDecision"]["honored"] = True
+            return ANALYSIS_STAGE_INTEREST, False, False, decision
+        if city_intents and not any((major_intents, school_intents, career_intents)) and not contains_concrete_region_mention(latest_utterance):
+            logger.info(
+                "Intent preview downgraded to abstract region analysis by semantic arbitration: session_id=%s decision=%s confidence=%s reason=%s",
+                getattr(ctx.deps, "sessionid", ""),
+                decision.decision,
+                decision.confidence,
+                decision.reason,
+            )
+            if isinstance(observability, dict) and isinstance(observability.get("intentSideEffectDecision"), dict):
+                observability["intentSideEffectDecision"]["honored"] = True
+            return ANALYSIS_STAGE_INTEREST, False, False, decision
+        if not _latest_utterance_allows_intent_downgrade(latest_utterance):
+            if isinstance(observability, dict) and isinstance(observability.get("intentSideEffectDecision"), dict):
+                observability["intentSideEffectDecision"]["honored"] = False
+            logger.info(
+                "Intent side-effect arbitration downgrade ignored for explicit update wording: session_id=%s decision=%s confidence=%s reason=%s",
+                getattr(ctx.deps, "sessionid", ""),
+                decision.decision,
+                decision.confidence,
+                decision.reason,
+            )
+            return analysis_stage, confirm_enabled, persist_cache, decision
         logger.info(
             "Intent preview downgraded to interest analysis by semantic arbitration: session_id=%s decision=%s confidence=%s reason=%s",
             getattr(ctx.deps, "sessionid", ""),
@@ -960,9 +1548,65 @@ async def _maybe_downgrade_intent_preview_by_semantics(
             decision.confidence,
             decision.reason,
         )
+        if isinstance(observability, dict) and isinstance(observability.get("intentSideEffectDecision"), dict):
+            observability["intentSideEffectDecision"]["honored"] = True
         return ANALYSIS_STAGE_INTEREST, False, False, decision
 
     return analysis_stage, confirm_enabled, persist_cache, decision
+
+
+def _latest_utterance_allows_intent_downgrade(text: str) -> bool:
+    """Only honor semantic downgrade when the user is asking to analyze first."""
+    compact = re.sub(r"\s+", "", str(text or ""))
+    if not compact:
+        return False
+    analysis_markers = (
+        "先看看",
+        "先看",
+        "看看影响",
+        "看影响",
+        "影响",
+        "边界",
+        "要不要",
+        "是不是",
+        "适合",
+        "适不适合",
+        "算不算",
+        "能不能",
+        "该不该",
+        "值不值得",
+    )
+    return any(marker in compact for marker in analysis_markers)
+
+
+def _should_return_abstract_region_interest_payload(
+    *,
+    latest_utterance: str,
+    recovery_scope: str | None,
+    had_explicit_intent_payload: bool,
+    analysis_stage: str,
+    semantic_decision: IntentSideEffectDecision | None,
+) -> bool:
+    if recovery_scope != "region":
+        return False
+    if had_explicit_intent_payload:
+        return False
+    if analysis_stage != ANALYSIS_STAGE_INTEREST:
+        return False
+    if semantic_decision is None or semantic_decision.decision not in {"analysis_only", "mixed_answer_then_ask"}:
+        return False
+    if semantic_decision.confidence < 0.7:
+        return False
+    return not contains_concrete_region_mention(latest_utterance)
+
+
+def _abstract_region_interest_message() -> str:
+    return (
+        "你这句话是在描述地域边界，但“省外”“偏远”这类说法还不能稳定落到具体省市。"
+        "我先不生成采纳卡片，也不会改动方案。\n\n"
+        "可以先按这几个口径确认：哪些省份算太偏、是否排除偏远省份、"
+        "省会/沿海城市是否保留机会。等范围说清楚后，我再整理成确认卡片。"
+    )
 
 
 def _impact_title(intent_mode: str) -> str:
@@ -1083,46 +1727,7 @@ def _normalize_intent_payload(
 
 
 def _dedupe_major_intent_payload_across_levels(payload: dict[str, Any] | None) -> dict[str, list[str]] | None:
-    """Remove same-name duplicates across major hierarchy levels.
-
-    Names such as "法学" and "经济学" can exist both as a discipline and as a
-    concrete major. If the model and local recovery both hit different levels,
-    showing both to users looks like duplicate intent. Keep the most specific
-    level when the same name appears under the same polarity.
-    """
-    if not payload:
-        return None
-
-    result: dict[str, list[str]] = {}
-    polarity_groups = (
-        ("level3", "level2", "level1"),
-        ("negative_level3", "negative_level2", "negative_level1"),
-    )
-    consumed_keys: set[str] = set()
-    for group in polarity_groups:
-        seen_names: set[str] = set()
-        for key in group:
-            consumed_keys.add(key)
-            values = _as_string_list(payload.get(key))
-            if not values:
-                continue
-            bucket: list[str] = []
-            for value in values:
-                name = str(value or "").strip()
-                if not name or name in seen_names:
-                    continue
-                bucket.append(name)
-                seen_names.add(name)
-            if bucket:
-                result[key] = bucket
-
-    for key, values in payload.items():
-        if key in consumed_keys:
-            continue
-        normalized_values = list(dict.fromkeys(_as_string_list(values)))
-        if normalized_values:
-            result[key] = normalized_values
-    return result or None
+    return dedupe_major_intent_payload_across_levels(payload)
 
 
 def _major_mentions_by_level(text: str, batch: str) -> dict[str, set[str]]:
@@ -1141,68 +1746,11 @@ def _refine_major_intents_by_explicit_mentions(
     latest_utterance: str,
     batch: str,
 ) -> dict[str, Any] | None:
-    """Avoid widening a named concrete major into its parent category.
-
-    Model extraction can occasionally infer both "土木工程" and its parent "土木类"
-    from a sentence that only explicitly names the concrete major. That changes
-    the user's requirement from "do not choose this major" to "avoid the whole
-    category". Keep the broader level only when it is explicitly mentioned by
-    the user or there are no concrete children under the same parent.
-    """
-    payload = _dedupe_major_intent_payload_across_levels(major_intents)
-    if not payload or not str(latest_utterance or "").strip():
-        return payload
-
-    mentions = _major_mentions_by_level(latest_utterance, batch)
-    mappings = major_parent_mappings_for_batch(batch)
-    level3_to_level2 = mappings.get("level3_to_level2", {})
-    level2_to_level1 = mappings.get("level2_to_level1", {})
-    refined = {key: list(values) for key, values in payload.items()}
-
-    for level2_key, level3_key in (("level2", "level3"), ("negative_level2", "negative_level3")):
-        level2_values = _as_string_list(refined.get(level2_key))
-        level3_values = _as_string_list(refined.get(level3_key))
-        if not level2_values or not level3_values:
-            continue
-        explicit_level2 = mentions["level2"]
-        child_parent_values = {level3_to_level2.get(name) for name in level3_values}
-        kept = [
-            name
-            for name in level2_values
-            if name in explicit_level2 or name not in child_parent_values
-        ]
-        if kept:
-            refined[level2_key] = kept
-        else:
-            refined.pop(level2_key, None)
-
-    for level1_key, level2_key, level3_key in (
-        ("level1", "level2", "level3"),
-        ("negative_level1", "negative_level2", "negative_level3"),
-    ):
-        level1_values = _as_string_list(refined.get(level1_key))
-        if not level1_values:
-            continue
-        explicit_level1 = mentions["level1"]
-        child_parent_values: set[str | None] = {
-            level2_to_level1.get(name)
-            for name in _as_string_list(payload.get(level2_key))
-        }
-        child_parent_values.update(
-            level2_to_level1.get(level3_to_level2.get(name) or "")
-            for name in _as_string_list(payload.get(level3_key))
-        )
-        kept = [
-            name
-            for name in level1_values
-            if name in explicit_level1 or name not in child_parent_values
-        ]
-        if kept:
-            refined[level1_key] = kept
-        else:
-            refined.pop(level1_key, None)
-
-    return _dedupe_major_intent_payload_across_levels(refined)
+    return refine_major_intent_payload_by_explicit_mentions(
+        major_intents,
+        latest_utterance=latest_utterance,
+        batch=batch,
+    )
 
 
 def _normalize_intent_inputs(
@@ -1344,7 +1892,7 @@ async def _normalize_major_intent_names_for_batch(
             logger.warning("Normalize major intent names failed: key=%s names=%s batch=%s", key, names, batch, exc_info=True)
             resolved_names = names
         normalized[key] = list(dict.fromkeys(resolved_names or names))
-    return _dedupe_major_intent_payload_across_levels(normalized)
+    return normalize_major_intent_payload_by_catalog(normalized, batch)
 
 
 def _should_use_direction_interest_analysis(
@@ -1395,6 +1943,7 @@ _LOCAL_MAJOR_POSITIVE_PATTERNS = (
 )
 _LOCAL_MAJOR_NEGATIVE_PATTERNS = (
     r"^(?:我)?(?:现在)?不想学(?P<target>.+)$",
+    r"^(?:我)?(?:现在)?不学(?P<target>.+)$",
     r"^(?:我)?(?:现在)?不考虑(?P<target>.+)$",
     r"^(?:我)?(?:现在)?不要(?P<target>.+)$",
 )
@@ -1445,9 +1994,15 @@ _LOCAL_MAJOR_NEGATIVE_MARKERS = (
     "别选",
     "不要",
     "不考虑",
+    "不太考虑",
     "不想学",
+    "不太想学",
+    "不是很想学",
     "不想读",
+    "不太想读",
+    "不学",
     "不接受",
+    "不太接受",
     "不感兴趣",
     "排除",
     "去掉",
@@ -1925,61 +2480,6 @@ async def _recover_intents_from_context(
     return major, school, city, career
 
 
-def _build_candidate_filters_from_intents(merged: dict[str, Any]) -> dict[str, Any]:
-    city_intents = merged.get("city_intents") or {}
-    school_intents = merged.get("school_intents") or {}
-    major_intents = merged.get("major_intents") or {}
-    major_categories = list(dict.fromkeys(major_intents.get("level2", []) or []))
-    negative_major_categories = list(dict.fromkeys(major_intents.get("negative_level2", []) or []))
-    # `majorKeywords` 当前兼容承接 `major.category`。
-    # 对具体专业（level3）仅在没有 level2 时兜底复用，避免继续把三个层级混入同一字段。
-    if not major_categories:
-        major_categories = list(dict.fromkeys(major_intents.get("level3", []) or []))
-    if not negative_major_categories:
-        negative_major_categories = list(dict.fromkeys(major_intents.get("negative_level3", []) or []))
-    return {
-        "provinceNames": city_intents.get("province", []),
-        "negativeProvinceNames": city_intents.get("negative_province", []),
-        "cityNames": city_intents.get("city", []),
-        "negativeCityNames": city_intents.get("negative_city", []),
-        "schoolKeywords": school_intents.get("colleges", []),
-        "negativeSchoolKeywords": school_intents.get("negative_colleges", []),
-        "majorKeywords": major_categories,
-        "negativeMajorKeywords": negative_major_categories,
-        "schoolTags": [],
-        "negativeSchoolTags": [],
-        "majorTags": major_intents.get("level1", []),
-        "negativeMajorTags": major_intents.get("negative_level1", []),
-    }
-
-
-async def _query_candidate_total(session_id: str, candidate_filters: dict[str, Any]) -> int | None:
-    try:
-        resp = await query_planning_candidate_pool(
-            1,
-            int(session_id),
-            tiers=candidate_filters.get("tiers"),
-            province_names=candidate_filters.get("provinceNames"),
-            negative_province_names=candidate_filters.get("negativeProvinceNames"),
-            city_names=candidate_filters.get("cityNames"),
-            negative_city_names=candidate_filters.get("negativeCityNames"),
-            school_keywords=candidate_filters.get("schoolKeywords"),
-            negative_school_keywords=candidate_filters.get("negativeSchoolKeywords"),
-            major_keywords=candidate_filters.get("majorKeywords"),
-            negative_major_keywords=candidate_filters.get("negativeMajorKeywords"),
-            school_tags=candidate_filters.get("schoolTags"),
-            negative_school_tags=candidate_filters.get("negativeSchoolTags"),
-            major_tags=candidate_filters.get("majorTags"),
-            negative_major_tags=candidate_filters.get("negativeMajorTags"),
-            page=1,
-            page_size=1,
-        )
-        return (resp or {}).get("data", {}).get("total")
-    except Exception:
-        logger.warning("Query filtered candidate total failed: session_id=%s", session_id, exc_info=True)
-        return None
-
-
 async def _refresh_recommendation_overlay_best_effort(session_id: str) -> bool:
     """Trigger backend recommendation overlay refresh after intent changes.
 
@@ -2037,28 +2537,6 @@ async def _mark_intent_change_stale_best_effort(session_id: str, intent_mode: st
         return False
 
 
-async def _query_candidate_base_total(session_id: str) -> int | None:
-    try:
-        planning_state = await get_planning_state(int(session_id))
-        return (((planning_state or {}).get("data") or {}).get("candidatePoolState") or {}).get("summary", {}).get("total")
-    except Exception:
-        logger.warning("Query candidate base total failed: session_id=%s", session_id, exc_info=True)
-        return None
-
-
-def _build_minimal_request_context(session_id: str, batch: str) -> RunContext[RequestContext]:
-    request_context = RequestContext(
-        userid="",
-        sessionid=session_id,
-        chat_history=[],
-        batch=batch,
-        score_detail=None,
-        init_profile=None,
-        planning_summary=None,
-    )
-    return SimpleNamespace(deps=request_context)
-
-
 async def _load_cached_intents(session_id: str) -> tuple[dict[str, Any], str]:
     cache_result = await get_intent_change_cache(session_id)
     cache_data = (cache_result or {}).get("data", {}).get("planEditCache") or {}
@@ -2070,6 +2548,127 @@ async def _load_cached_intents(session_id: str) -> tuple[dict[str, Any], str]:
     }
     intent_mode = cache_data.get("intent_mode") or INTENT_MODE_PREFERENCE
     return merged, intent_mode
+
+
+def _constraint_state_preference_payloads(
+    merged: dict[str, Any],
+) -> tuple[dict[str, list[str]] | None, dict[str, list[str]] | None, dict[str, list[str]] | None]:
+    major_intents = merged.get("major_intents") if isinstance(merged.get("major_intents"), dict) else {}
+    school_intents = merged.get("school_intents") if isinstance(merged.get("school_intents"), dict) else {}
+    city_intents = merged.get("city_intents") if isinstance(merged.get("city_intents"), dict) else {}
+
+    major_positive = _as_string_list(major_intents.get("level1")) + _as_string_list(major_intents.get("level2")) + _as_string_list(major_intents.get("level3"))
+    major_negative = _as_string_list(major_intents.get("negative_level1")) + _as_string_list(major_intents.get("negative_level2")) + _as_string_list(major_intents.get("negative_level3"))
+    school_positive = _as_string_list(school_intents.get("colleges"))
+    school_negative = _as_string_list(school_intents.get("negative_colleges"))
+    region_positive = _as_string_list(city_intents.get("province")) + _as_string_list(city_intents.get("city"))
+    region_negative = _as_string_list(city_intents.get("negative_province")) + _as_string_list(city_intents.get("negative_city"))
+
+    def group(positive: list[str], negative: list[str]) -> dict[str, list[str]] | None:
+        payload = {
+            "positive": list(dict.fromkeys(value for value in positive if value)),
+            "negative": list(dict.fromkeys(value for value in negative if value)),
+        }
+        return payload if payload["positive"] or payload["negative"] else None
+
+    return (
+        group(major_positive, major_negative),
+        group(school_positive, school_negative),
+        group(region_positive, region_negative),
+    )
+
+
+def _split_constraint_state_payload_by_polarity(
+    merged: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Split one mixed intent payload into positive and negative planning-state payloads."""
+
+    positive: dict[str, Any] = {}
+    negative: dict[str, Any] = {}
+
+    def put(target: dict[str, Any], section: str, key: str, values: Any) -> None:
+        normalized = _as_string_list(values)
+        if not normalized:
+            return
+        bucket = target.setdefault(section, {})
+        bucket[key] = normalized
+
+    major_intents = merged.get("major_intents") if isinstance(merged.get("major_intents"), dict) else {}
+    for key in ("level1", "level2", "level3"):
+        put(positive, "major_intents", key, major_intents.get(key))
+    for key in ("negative_level1", "negative_level2", "negative_level3"):
+        put(negative, "major_intents", key, major_intents.get(key))
+
+    school_intents = merged.get("school_intents") if isinstance(merged.get("school_intents"), dict) else {}
+    put(positive, "school_intents", "colleges", school_intents.get("colleges"))
+    put(negative, "school_intents", "negative_colleges", school_intents.get("negative_colleges"))
+
+    city_intents = merged.get("city_intents") if isinstance(merged.get("city_intents"), dict) else {}
+    for key in ("province", "city", "area"):
+        put(positive, "city_intents", key, city_intents.get(key))
+    for key in ("negative_province", "negative_city", "negative_area"):
+        put(negative, "city_intents", key, city_intents.get(key))
+
+    return positive, negative
+
+
+async def _sync_constraint_state_best_effort(
+    *,
+    session_id: str,
+    merged: dict[str, Any],
+    intent_mode: str,
+) -> bool:
+    payloads_by_mode: list[tuple[str, dict[str, Any]]] = []
+    if (
+        intent_mode == INTENT_MODE_CONSTRAINT
+        and _has_positive_intents(
+            merged.get("major_intents"),
+            merged.get("school_intents"),
+            merged.get("city_intents"),
+            merged.get("career_intents"),
+        )
+        and _has_negative_intents(
+            merged.get("major_intents"),
+            merged.get("school_intents"),
+            merged.get("city_intents"),
+            merged.get("career_intents"),
+        )
+    ):
+        positive_payload, negative_payload = _split_constraint_state_payload_by_polarity(merged)
+        if positive_payload:
+            payloads_by_mode.append((INTENT_MODE_PREFERENCE, positive_payload))
+        if negative_payload:
+            payloads_by_mode.append((INTENT_MODE_CONSTRAINT, negative_payload))
+    else:
+        payloads_by_mode.append((intent_mode, merged))
+
+    success = True
+    synced_any = False
+    for sync_mode, sync_payload in payloads_by_mode:
+        major_preferences, school_preferences, region_preferences = _constraint_state_preference_payloads(sync_payload)
+        if not any((major_preferences, school_preferences, region_preferences)):
+            continue
+        synced_any = True
+        try:
+            resp = await update_planning_constraint_state(
+                session_id,
+                intent_mode=sync_mode,
+                major_preferences=major_preferences,
+                school_preferences=school_preferences,
+                region_preferences=region_preferences,
+            )
+            success = success and isinstance(resp, dict) and (resp.get("code") in {0, "0"} or resp.get("success") is True)
+        except Exception:
+            success = False
+            logger.warning(
+                "Intent constraint state sync failed: session_id=%s intent_mode=%s",
+                session_id,
+                sync_mode,
+                exc_info=True,
+            )
+    if not synced_any:
+        return True
+    return success
 
 
 async def _apply_intents(
@@ -2119,15 +2718,14 @@ async def _apply_intents(
         future_development["careerTypes"] = merged_career_types
         await update_planning_latent_profile(int(session_id), future_development=future_development)
 
+    constraint_state_sync_success = await _sync_constraint_state_best_effort(
+        session_id=session_id,
+        merged=merged,
+        intent_mode=intent_mode,
+    )
     await save_intent_change_cache(int(session_id), {})
 
     if intent_mode == INTENT_MODE_CONSTRAINT:
-        candidate_filters = await normalize_candidate_filters_async(
-            _build_candidate_filters_from_intents(merged),
-            batch,
-        )
-        base_total = await _query_candidate_base_total(session_id)
-        filtered_total = await _query_candidate_total(session_id, candidate_filters)
         stale_mark_success = await _mark_intent_change_stale_best_effort(session_id, intent_mode)
         recommendation_refresh_success = await _refresh_recommendation_overlay_best_effort(session_id)
         logger.info("Constraint intents applied without regenerating candidate pool: session_id=%s", session_id)
@@ -2138,14 +2736,12 @@ async def _apply_intents(
             applied=True,
             messageCode="constraint_applied",
             merged=merged,
-            candidateFilters=candidate_filters,
-            filteredTotal=filtered_total,
-            baseTotal=base_total,
             recommendationRefresh={
                 "triggered": True,
                 "success": recommendation_refresh_success,
                 "mode": "overlay_best_effort",
                 "staleMarked": stale_mark_success,
+                "constraintStateSynced": constraint_state_sync_success,
             },
         )
         result.message = render_intent_state_update(result)
@@ -2166,6 +2762,7 @@ async def _apply_intents(
             "success": recommendation_refresh_success,
             "mode": "overlay_best_effort",
             "staleMarked": stale_mark_success,
+            "constraintStateSynced": constraint_state_sync_success,
         },
     )
     result.message = render_intent_state_update(result)
@@ -2231,8 +2828,9 @@ async def analyze_volunteer_intent_change(
         latest_utterance=latest_utterance,
         batch=batch,
     )
+    had_explicit_intent_payload = _has_any_intent_payload(major_intents, school_intents, city_intents, career_intents)
 
-    if not _has_any_intent_payload(major_intents, school_intents, city_intents, career_intents) and _should_attempt_intent_recovery(
+    if not had_explicit_intent_payload and _should_attempt_intent_recovery(
         analysis_stage=analysis_stage,
         confirm_enabled=confirm_enabled,
         recovery_scope=recovery_scope,
@@ -2260,6 +2858,17 @@ async def analyze_volunteer_intent_change(
         )
 
     if not _has_any_intent_payload(major_intents, school_intents, city_intents, career_intents):
+        if recovery_scope == "region" and not contains_concrete_region_mention(latest_utterance):
+            return serialize_intent_analysis_payload(
+                IntentAnalysisPayload(
+                    status="empty",
+                    sessionId=session_id,
+                    title="先确认地域边界",
+                    intentMode=INTENT_MODE_PREFERENCE,
+                    analysisStage=ANALYSIS_STAGE_INTEREST,
+                    message=_abstract_region_interest_message(),
+                )
+            )
         return serialize_intent_analysis_payload(
             IntentAnalysisPayload(
                 status="empty",
@@ -2276,8 +2885,9 @@ async def analyze_volunteer_intent_change(
         career_intents,
         edit_flag=edit_flag,
         explicit_intent_mode=intent_mode,
+        latest_utterance=latest_utterance,
     )
-    analysis_stage, confirm_enabled, persist_cache, _ = await _maybe_downgrade_intent_preview_by_semantics(
+    analysis_stage, confirm_enabled, persist_cache, semantic_decision = await _maybe_downgrade_intent_preview_by_semantics(
         ctx,
         latest_utterance=latest_utterance,
         major_intents=major_intents,
@@ -2289,9 +2899,29 @@ async def analyze_volunteer_intent_change(
         confirm_enabled=confirm_enabled,
         persist_cache=persist_cache,
     )
+    if _should_return_abstract_region_interest_payload(
+        latest_utterance=latest_utterance,
+        recovery_scope=recovery_scope,
+        had_explicit_intent_payload=had_explicit_intent_payload,
+        analysis_stage=analysis_stage,
+        semantic_decision=semantic_decision,
+    ):
+        return serialize_intent_analysis_payload(
+            IntentAnalysisPayload(
+                status="empty",
+                sessionId=session_id,
+                title="先确认地域边界",
+                intentMode=resolved_intent_mode,
+                analysisStage=analysis_stage,
+                editFlag=edit_flag,
+                message=_abstract_region_interest_message(),
+            )
+        )
 
     pm = ProfileManager(int(session_id), batch)
     current_profile = await pm.get_current_profile()
+    planning_summary = getattr(ctx.deps, "planning_summary", None)
+    constraint_state = getattr(planning_summary, "constraint_state", None) if planning_summary is not None else None
 
     items_raw, existing_items_raw = _build_select_items(
         current_profile,
@@ -2301,6 +2931,8 @@ async def analyze_volunteer_intent_change(
         career_intents,
         intent_mode=resolved_intent_mode,
         analysis_stage=analysis_stage,
+        batch=batch,
+        constraint_state=constraint_state,
     )
     items = [IntentPreviewItem.model_validate(item) for item in items_raw]
     existing_items = [IntentPreviewItem.model_validate(item) for item in existing_items_raw]
@@ -2325,6 +2957,31 @@ async def analyze_volunteer_intent_change(
     if latest_relation_notes:
         relation_text = "\n".join(f"- {note}" for note in latest_relation_notes)
         impact_text = f"{relation_text}\n{impact_text}" if impact_text else relation_text
+
+    no_effect_message = _build_no_effect_negative_preference_message(
+        current_profile,
+        major_intents=major_intents,
+        school_intents=school_intents,
+        city_intents=city_intents,
+        career_intents=career_intents,
+        intent_mode=resolved_intent_mode,
+        analysis_stage=analysis_stage,
+        impact_analysis=impact_analysis,
+    )
+    if no_effect_message:
+        return serialize_intent_analysis_payload(
+            IntentAnalysisPayload(
+                status="empty",
+                sessionId=session_id,
+                title=_build_preview_title(edit_flag, resolved_intent_mode, analysis_stage),
+                intentMode=resolved_intent_mode,
+                analysisStage=analysis_stage,
+                editFlag=edit_flag,
+                impactText=impact_text,
+                impactAnalysis=impact_analysis,
+                message=no_effect_message,
+            )
+        )
 
     cache_data = _build_cache_data(major_intents, school_intents, city_intents, career_intents, resolved_intent_mode)
     status = "existing_only" if not items else "ready"
@@ -2373,7 +3030,7 @@ async def apply_selected_intents(
     Returns:
         Serialized IntentStateUpdateResult JSON.
     """
-    batch = batch or "01"
+    batch = _normalize_batch(batch)
     selected_values: list[dict[str, Any]] = selected_data.get("selected", [])
     message_id = selected_data.get("message_id")
 
@@ -2457,7 +3114,8 @@ async def apply_selected_intents(
                 session_id, message_id, exc_info=True,
             )
 
-    intent_mode = INTENT_MODE_PREFERENCE
+    explicit_intent_mode = str(selected_data.get("intentMode") or selected_data.get("intent_mode") or "").strip()
+    intent_mode = explicit_intent_mode if explicit_intent_mode in {INTENT_MODE_PREFERENCE, INTENT_MODE_CONSTRAINT} else INTENT_MODE_PREFERENCE
     if message_id:
         try:
             msg_resp = await get_message_by_id(message_id)
@@ -2465,20 +3123,44 @@ async def apply_selected_intents(
             content_raw = msg_data.get("content", "")
             content_obj = json.loads(content_raw) if isinstance(content_raw, str) else content_raw
             if isinstance(content_obj, dict):
-                intent_mode = content_obj.get("intentMode") or INTENT_MODE_PREFERENCE
+                card_intent_mode = str(content_obj.get("intentMode") or "").strip()
+                if card_intent_mode in {INTENT_MODE_PREFERENCE, INTENT_MODE_CONSTRAINT}:
+                    intent_mode = card_intent_mode
         except Exception:
             logger.warning("读取意向确认卡片模式失败，默认按偏好处理: session_id=%s", session_id, exc_info=True)
 
+    started_at = time.monotonic()
     try:
-        result = await update_volunteer_intent_state(
-            _build_minimal_request_context(session_id, batch),
-            action="apply_selected",
+        result = await _apply_intents(
+            session_id=session_id,
+            batch=batch,
             merged=merged,
             intent_mode=intent_mode,
         )
-        return result
+        result.action = "apply_selected"
+        log_event(
+            "intent_state_event",
+            sessionId=session_id,
+            action="apply_selected",
+            applied=bool(result.applied),
+            messageCode=result.messageCode,
+            intentMode=result.intentMode,
+            durationMs=int((time.monotonic() - started_at) * 1000),
+            status="success" if result.applied else "error",
+        )
+        return serialize_intent_state_update_result(result)
     except Exception:
         logger.exception("Applying selected intent changes failed: session_id=%s", session_id)
+        log_event(
+            "intent_state_event",
+            sessionId=session_id,
+            action="apply_selected",
+            applied=False,
+            messageCode="apply_failed",
+            durationMs=int((time.monotonic() - started_at) * 1000),
+            status="error",
+            errorType="apply_failed",
+        )
         return serialize_intent_state_update_result(
             IntentStateUpdateResult(
                 action="apply_selected",
@@ -2486,13 +3168,19 @@ async def apply_selected_intents(
                 messageCode="apply_failed",
             )
         )
+
+
 async def update_volunteer_intent_state(
     ctx: RunContext[RequestContext],
     action: str = "confirm",
     merged: dict[str, Any] | None = None,
     intent_mode: str | None = None,
 ) -> str:
-    """Manage intent state updates and return structured execution facts as JSON."""
+    """Legacy compatibility wrapper for intent state updates.
+
+    Main chat no longer exposes this as a model-callable tool. New sessions use
+    ``pendingConfirmationCard`` clicks and ``apply_selected_intents`` for apply.
+    """
     session_id = ctx.deps.sessionid
     batch = getattr(ctx.deps, "batch", None) or "01"
     normalized_action = (action or "confirm").strip().lower()

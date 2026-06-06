@@ -149,12 +149,37 @@ class TestAllowsMutatingApply:
 
     @pytest.mark.parametrize("confirm_text", ["确认", "确认执行", "好的", "执行吧", "就这样吧"])
     @pytest.mark.parametrize("volunteer_model", ["major", "majorGroup"])
-    def test_mutating_pending_match_with_confirm_allows(self, confirm_text: str, volunteer_model: str):
-        """mutating + apply + pending 匹配 + 短确认 → 允许。"""
+    def test_mutating_pending_match_with_text_confirm_blocks(self, confirm_text: str, volunteer_model: str):
+        """mutating + apply + pending 匹配 + 自然语言确认 → 仍不允许。"""
         ctx = make_run_context(
             volunteer_model=volunteer_model,
             pending_plan_action={"action_family": "add_units"},
             chat_history=[{"role": "user", "content": confirm_text}],
+        )
+        plan = make_plan_action_plan(action_family="add_units", stage="apply")
+        assert _allows_mutating_apply(ctx, plan) is False
+
+    @pytest.mark.parametrize("volunteer_model", ["major", "majorGroup"])
+    def test_mutating_pending_match_with_card_confirmation_allows(self, volunteer_model: str):
+        """mutating + apply + pending 匹配 + 服务端卡片确认上下文 → 允许。"""
+        ctx = make_run_context(
+            volunteer_model=volunteer_model,
+            pending_plan_action={"action_family": "add_units"},
+            chat_history=[],
+            confirmed_via_card=True,
+        )
+        plan = make_plan_action_plan(action_family="add_units", stage="apply")
+        assert _allows_mutating_apply(ctx, plan) is True
+
+    @pytest.mark.parametrize("volunteer_model", ["major", "majorGroup"])
+    def test_mutating_pending_match_with_server_pending_confirmation_allows(self, volunteer_model: str):
+        """mutating + apply + pending 匹配 + 服务端统一 pending 确认上下文 → 允许。"""
+        ctx = make_run_context(
+            volunteer_model=volunteer_model,
+            pending_plan_action={"action_family": "add_units"},
+            chat_history=[],
+            confirmed_via_pending=True,
+            confirmation_entry="short_text",
         )
         plan = make_plan_action_plan(action_family="add_units", stage="apply")
         assert _allows_mutating_apply(ctx, plan) is True

@@ -5,30 +5,30 @@
     "flow": [
       "intent",
       "plan",
-      "readonly"
+      "confirmation"
     ],
     "coverage": [
       "release_3_0_3",
       "open_quality",
       "existing_intent",
-      "impact_followup",
+      "plan_hit_confirm",
       "majorGroup_model",
-      "readonly_no_workspace_card"
+      "pending_confirmation_card"
     ],
     "assertPlanStyle": true,
     "prompts": [
       {
         "prompt": "我倾向会计学和审计学，但土木工程不要",
         "assertContains": [
+          "确认移出志愿",
           "会计学",
           "审计学",
           "土木工程"
         ],
         "assertContainsAny": [
-          "已经在后续报考参考",
-          "已在后续报考参考",
-          "不会重复新增",
-          "当前已有参考偏好"
+          "确认后会把这些志愿移出当前方案",
+          "完成确认前不会改动当前方案",
+          "确认后会执行本次方案调整"
         ],
         "assertThinkingContainsAny": [
           "正在把你的专业想法整理成待确认偏好",
@@ -51,18 +51,20 @@
           "草稿"
         ],
         "expectedKeyPoints": [
-          "已有偏好不重复新增",
+          "确认卡片",
+          "当前方案命中土木工程",
           "会计学",
           "审计学",
           "土木工程",
-          "后续参考"
+          "点击确认前不生效"
         ],
         "forbiddenPatterns": [
           "候选结果收紧",
           "专家推荐",
           "已直接记录"
         ],
-        "assertNoFollowups": true,
+        "assertFollowupType": "pendingConfirmationCard",
+        "assertFollowupCount": 1,
         "warnElapsedSeconds": 20
       },
       {
@@ -476,7 +478,8 @@
         ],
         "minTextLengthWarn": 180,
         "assertThinkingContainsAny": [
-          "正在对比这几个专业的差异"
+          "正在对比这几个专业的差异",
+          "正在对照这些专业的学习内容和就业情况"
         ]
       }
     ]

@@ -2,8 +2,11 @@
 
 本文记录 `3.0.3` 针对 Agent 效果和性能的专项分析、优化设计、实施记录和回归结果。
 
+发布收口说明：3.0.3 当前功能范围、最终回归结论、遗留优化和 3.0.2 -> 3.0.3 升级准备，以 `docs/release-3.0.3-summary-and-upgrade-plan.md` 为主入口；本文保留 deep-dive 过程和详细证据。
+
 关联文档：
 
+- `docs/release-3.0.3-summary-and-upgrade-plan.md`
 - `docs/release-3.0.2-routing-preview-action-review.md`
 - `docs/release-3.0.2-implementation-design.md`
 - `docs/release-3.0.1-agent-optimization-design.md`
@@ -1818,7 +1821,7 @@ Phase 2 首轮复测记录：
 本轮回复质量评审后的 P1 修复范围：
 
 - Intent preview 不再向用户暴露 `level1/level2/level3` 等专业目录层级字段。
-- Intent confirm 不再笼统说“候选结果收紧”，改为“已记录为后续筛选和方案调整参考”。
+- Intent confirm 不再笼统说“候选结果收紧”，改为“已记录为后续报考参考”，不返回候选过滤后数量。
 - 职业方向承接分析需要先回答当前方案承接强弱，再展开候选机会和下一步。
 - 专业对比缺少量化权重时，仍应使用本轮用户输入里的“普通家庭 / 女生”等事实，不能误报用户没有提供性别。
 - 3.0.3 quality 主 case 补充方案审查，避免审查只靠 full journey / correctness 旧集合间接覆盖。
@@ -2464,7 +2467,7 @@ L3 full_agent fallback
 
 修复：
 
-- 意向预览阶段不再自动追加候选库刷新卡片；只有用户确认/勾选后真正采纳约束，才继续通过 `candidateFilters` 联动候选栏。
+- 意向预览阶段不再自动追加候选库刷新卡片；用户确认/勾选后真正采纳约束，也不再返回隐藏 `candidateFilters` 联动候选栏，只返回方案查看引导。
 - 对存在待确认意向的只读追问，后处理兜底追加用户可见边界：“待确认内容 / 尚未确认 / 确认前不会写入后续参考”。
 - 该边界限定为意向场景：如果本轮已经走 `plan_next_action -> execute_plan_action` 的方案链路，不把意向 pending 尾巴追加到排序、审查、移动、删除等方案回复里。
 - `sort_ordered_plan` 预览阶段补充结构化事实：排序字段、自然排序方向、当前数量、冲稳保分布和排序后前几项示例；确认前不执行后端排序。
@@ -2483,7 +2486,7 @@ L3 full_agent fallback
 
 验证：
 
-- 聚焦单测：意向预览不刷新候选、待确认追问补边界、约束采纳后仍可联动候选、排序预览有分布与示例，`6 passed`。
+- 聚焦单测：意向预览不刷新候选、待确认追问补边界、约束采纳后不再联动候选筛选、排序预览有分布与示例，`6 passed`。
 - 相关回归：`tests/unit/test_chat_service_history_persistence.py`、排序预览相关 `test_plan_execution_tool`、`test_dialog_scenario_stability.py`，`137 passed`。
 
 遗留：
@@ -3175,7 +3178,7 @@ L3 full_agent fallback
 - 复现场景：用户说 `候选里还有没有更稳一点的会计审计，别直接加`，系统虽然文本是只读分析，但附带 `planningWorkspaceAction(candidate)`。
 - 根因：`execute_plan_action(query_candidates)` 的 read-only result 里带了 `workspace_refresh_targets=["candidate"]`，服务层把它转换成 view followup；另一种错误路径是模型先把“别直接加”的只读诉求误规划成 `add_units preview`，服务层会把它当作可确认 pending。
 - 修复：`query_candidates` 不再通过 `_extract_execute_plan_action_view_targets` 产生工作区联动卡片；同时增加显式只读副作用护栏：当用户明确表达“只查/只看/别直接加/不要改方案”时，如果当前轮工具误产生 add/remove/move/sort 等修改预览，服务层会把该结果改写为只读结果、清空 workspace targets，并移除确认文案，避免下一轮“确认”误执行。
-- 影响边界：这是副作用安全边界，不是业务快路由；真实修改请求仍必须走 `preview -> confirm -> apply`，确认/勾选后的约束采纳仍走 `candidateFilters`，方案修改仍走 ordered/review 刷新。
+- 影响边界：这是副作用安全边界，不是业务快路由；真实修改请求仍必须走 `preview -> confirm -> apply`，确认/勾选后的约束采纳不再返回隐藏 `candidateFilters`，方案修改仍走 ordered/review 刷新。
 
 验证：
 
@@ -4190,6 +4193,8 @@ cd zhiyuan-agent
 
 本节先统一产品预期，不直接继续补自然语言判断。
 
+更新说明：本节最初记录的是“只认卡片”的阶段性安全口径。后续人工验证发现，模型偶发自然语言承接无法完全避免，且用户看到卡片后只回复“确认/可以”属于合理交互。因此最终协议调整为：卡片是主确认入口；短文本确认是 active `pendingConfirmation` 的受控兜底；模型自然语言、历史文本和旧 cache 都不能单独触发执行。
+
 问题背景：
 
 - 当前更新链路里同时存在后端 `planEditCache`、运行时 `conversation_phase.pending`、旧 `pending_intent_change`、旧 `pending_plan_action`、从 history 扫描恢复 pending、服务层短确认判断和卡片/文本确认等多种入口。
@@ -4199,12 +4204,12 @@ cd zhiyuan-agent
 
 统一预期：
 
-1. 所有会改变长期意向、偏好、硬要求或后续推荐口径的动作，都必须先生成待确认卡片。
-2. 待确认卡片是用户侧唯一确认入口，卡片必须披露本次将更新什么、属于偏好还是要求、确认前是否生效、可能影响哪些后续推荐或候选解释。
+1. 所有会改变长期意向、偏好、硬要求或后续推荐口径的动作，都必须先生成结构化 pending 和待确认卡片。
+2. 待确认卡片是用户侧主确认入口，卡片必须披露本次将更新什么、属于偏好还是要求、确认前是否生效、可能影响哪些后续推荐或候选解释。
 3. 用户不点击确认卡片，只继续对话时，pending 状态保持为“未采纳”。只读追问可以分析影响，但不能写入偏好、不能刷新候选筛选、不能让方案动作自动生效。
 4. 用户过一会儿再点击同一张卡片确认时，应按卡片披露内容执行，除非 pending 已过期、被新卡片覆盖或后端状态版本失效。
-5. 对话里的“确认 / 好的 / 就这样”不能触发任何意向、要求或方案更新。文本确认最多用于提示“请点击确认卡片完成采纳”或重新展示待确认卡片。
-6. 所有更新动作都必须由前端卡片按钮携带 `pending_id` 调用确认接口触发，后端按 `pending_id` 校验并执行。
+5. 对话里的“确认 / 好的 / 就这样”不能作为独立执行入口；只有 active pending 存在、文本不带新增范围/条件/对象且一致性校验通过时，才可作为短文本兜底消费该 pending。
+6. 所有更新动作都必须由结构化 pending 承载；卡片点击和短文本兜底都按 `pending_id` 校验并进入同一个服务端 apply 方法。
 7. Intent 更新和 Plan 更新使用同一套 pending/card/confirm 协议，只是 `kind/action_family/payload` 不同，不再保留两套确认系统。
 
 目标状态模型：
@@ -4212,7 +4217,7 @@ cd zhiyuan-agent
 ```text
 MutationCandidateCreated
   -> pending_card(created, pending_id, payload, summary, expires_at/version)
-  -> user_click_confirm_card
+  -> user_click_confirm_card OR short_text_confirm_with_active_pending
       -> apply_update(pending_id)
       -> pending_card(applied/cleared)
   -> user_click_cancel_card / new_pending_replaces_old / expired
@@ -4227,7 +4232,7 @@ MutationCandidateCreated
 - `pending_id` 必须成为卡片、后端缓存、Agent runtime context 和确认接口之间的关联键。
 - 只读影响分析工具如果基于某个 pending 做解释，应返回或记录 `related_pending_id`，但不能消费 pending。
 - 确认接口应按 `pending_id` 执行，不能只按“当前 session 有一个 planEditCache”执行。
-- 确认接口只能被确认卡片按钮触发。对话文本、模型工具调用或短确认 guard 不允许直接执行更新。
+- 确认接口的执行凭证只能来自 active pending。卡片按钮是主入口；短确认 guard 只能在 active pending 存在且文本没有新增条件时转入同一确认接口。
 - 同一 session 同一时刻原则上只允许一个 active pending；新待确认卡片生成时，应明确覆盖旧 pending，或者前端让用户先处理旧卡片。
 - pending 的可确认性由结构化状态判断：`active + same pending_id + not expired + version valid`。不应通过“用户上一句话是否包含某些词”判断。
 
@@ -4258,10 +4263,10 @@ MutationCandidateCreated
 
 统一确认接口：
 
-- `POST /.../pending-confirmations/{pendingId}/confirm`：只允许卡片按钮调用，确认后执行 `payload`。
+- `POST /.../pending-confirmations/{pendingId}/confirm`：卡片按钮调用；短文本兜底先由服务端解析 active pending，再进入同一确认方法，确认后执行 `payload`。
 - `POST /.../pending-confirmations/{pendingId}/cancel`：卡片取消或暂不采纳。
 - `GET /.../pending-confirmations/active?sessionId=...`：前端重连或刷新后恢复待确认卡片。
-- WebSocket 对话里生成 pending 时，只返回卡片消息和文本说明；不提供可直接执行的文本确认入口。
+- WebSocket 对话里生成 pending 时，返回卡片消息和文本说明；短文本确认不暴露为独立业务入口，只能通过 active pending 兜底。
 
 新老路径收口：
 
@@ -4272,16 +4277,16 @@ MutationCandidateCreated
 | `pending_plan_action` | 迁移为 `pending_confirmation(kind=plan_mutation)` | 不再从 history 扫描推导为主路径 |
 | `conversation_phase.pending` | 运行时镜像，从 active `pending_confirmation` 恢复 | 不是独立状态源，不与后端 pending 分叉 |
 | history 扫描恢复 pending | 降级为迁移工具或一次性恢复脚本 | 新会话禁止依赖历史文本/工具返回推导状态 |
-| 服务层短确认直执行 | 禁用直接 apply | 有 active pending 时提示点击卡片或重发卡片 |
+| 服务层短确认直执行 | 禁用 history/cache 直 apply | 有 active pending 且一致性通过时走统一 short_text apply；否则提示重新生成/点击最新卡片 |
 | 模型调用 `update_volunteer_intent_state(confirm)` | 禁止作为主链路 | 更新必须由卡片确认接口触发 |
-| 方案 `execute_plan_action(apply)` | 禁止由文本确认直接触发 | 只允许卡片确认接口验证 pending 后执行 |
+| 方案 `execute_plan_action(apply)` | 禁止由自然语言直接构造 apply | 只允许 pending 确认服务验证 active pending 后执行；卡片是主入口，短文本是兜底入口 |
 
 清理顺序：
 
 1. 新增统一 `pending_confirmation` 模型和卡片确认接口，先覆盖新会话。
 2. Intent preview 和 Plan preview 都只写统一 pending，并返回确认卡片。
 3. 前端卡片点击统一携带 `pending_id` 调确认/取消接口。
-4. 服务层文本“确认”改为提示或重发 active pending 卡片，不再执行更新。
+4. 服务层文本“确认”改为 active pending 兜底；不再基于 history/cache 或模型自然语言直执行。
 5. 把 `planEditCache`、`pending_intent_change`、`pending_plan_action` 转成 adapter；确认新会话不再写旧字段。
 6. 跑完旧会话迁移和回归后删除 adapter、history 扫描、短确认直执行分支。
 
@@ -4295,7 +4300,7 @@ MutationCandidateCreated
 | 用户只问影响 | 只读分析，不生成生效动作；如果已有 pending，保持 pending |
 | 用户不点卡片、继续聊天 | pending 保持 active，直到过期、覆盖、取消或点击确认 |
 | 用户回头点击卡片确认 | 按 `pending_id` 应用披露内容 |
-| 用户在对话里说“确认” | 不执行更新；提示点击卡片或重展示卡片 |
+| 用户在对话里说“确认” | 有 active pending 且文本无新增条件时执行同一 pending；否则提示点击卡片或重展示卡片 |
 | 新卡片覆盖旧卡片 | 旧 pending 显式变为 replaced，前端不能再确认旧卡片 |
 | pending 过期 | 点击确认时提示已失效，需要重新生成 |
 
@@ -4311,11 +4316,11 @@ MutationCandidateCreated
 - 不再通过新增用户话术字符串来判断“这次是不是仍然确认之前 pending”。
 - 不再让模型凭历史自然语言或历史 tool JSON 判断 pending 是否可确认。
 - 不再让未确认 Intent preview 刷新候选/方案工作区，避免用户误解为已采纳。
-- 不再通过对话短确认直接执行任何更新；所有更新必须通过确认卡片按钮携带 `pending_id` 发起。
+- 不再通过对话短确认直接解析和执行业务动作；短文本只允许在 active pending 已经存在时消费同一个 `pending_id`。
 
 #### 12.4.30 当前确认链路实现 Review
 
-本节记录代码层面对当前实现的事实核对，作为后续改造前的基线。
+本节记录代码层面对当时实现的事实核对，作为后续改造前的基线；其中“只认卡片”的目标描述已被后续“卡片主入口 + active pending 短文本兜底”协议覆盖。
 
 当前 Plan 方案变更链路：
 
@@ -4335,7 +4340,7 @@ MutationCandidateCreated
 - Agent 服务端收到 `intentSelect` 后调用 `apply_selected_intents`，再调用 `update_volunteer_intent_state(action="apply_selected")` 写入正式意向。
 - 同时，服务层仍保留自然语言确认：如果当前 session 有 `planEditCache` / `conversation_phase.pending(kind=intent_change)`，用户输入“确认”等短文本时，会走 `direct_pending_intent_confirm`，调用 `update_volunteer_intent_state(action="confirm")` 并写入正式意向。
 
-结论：Intent / 要求 / 约束当前已经有卡片采纳入口，但仍保留自然语言确认直写入口；状态来源也同时存在 `planEditCache`、`conversation_phase.pending` 和旧 `pending_intent_change`。这同样不符合“所有更新都由卡片点击触发”的新预期。
+结论：Intent / 要求 / 约束当前已经有卡片采纳入口，但仍保留自然语言确认直写入口；状态来源也同时存在 `planEditCache`、`conversation_phase.pending` 和旧 `pending_intent_change`。这同样不符合“所有更新都由结构化 pending 承载”的新预期。
 
 当前前端卡片类型：
 
@@ -4358,7 +4363,7 @@ MutationCandidateCreated
 - 新链路必须先落统一 pending 存储和卡片模型，再禁用短确认直执行。
 - Plan preview 不再只返回文本确认提示，需要生成统一确认卡片。
 - Intent preview 不再直接依赖匿名 `planEditCache`，需要生成带 `pending_id` 的统一确认卡片。
-- 文本“确认”只允许返回提示或重发 active pending card，不允许执行更新。
+- 文本“确认”只允许在 active pending 存在且一致性校验通过时进入同一 pending apply；无 active pending 时只返回提示或重发 active pending card。
 - `planningWorkspaceAction` 保持工作区联动用途，不能承载确认语义。
 - 旧路径只允许作为迁移 adapter，明确删除计划和回归边界。
 
@@ -4367,8 +4372,8 @@ MutationCandidateCreated
 目标：
 
 - 所有会改变系统状态的动作统一为：`生成 pending -> 展示确认卡片 -> 用户点击确认/取消 -> 后端按 pending_id 执行/取消`。
-- Agent 负责识别用户意图、生成预览 facts 和 pending payload；不负责通过自然语言确认执行更新。
-- 前端负责展示确认卡片并携带 `pending_id` 调用确认/取消接口；普通聊天文本不能触发状态更新。
+- Agent 负责识别用户意图、生成预览 facts 和 pending payload；不负责通过自然语言直接构造执行 payload。
+- 前端负责展示确认卡片并携带 `pending_id` 调用确认/取消接口；普通聊天文本只有在 active pending 已存在且只表达确认时，才能作为兜底入口进入同一确认方法。
 - 后端负责持久化 pending、校验状态、执行 payload、记录行为事件和返回工作区刷新目标。
 
 统一对象：
@@ -4450,7 +4455,7 @@ Plan 卡片示例：
 | --- | --- | --- |
 | `POST /inner/pending-confirmations` | 创建 pending | Agent preview 工具调用；返回 pending 和卡片内容 |
 | `GET /inner/pending-confirmations/active?sessionId=...` | 查询 active pending | 页面刷新、重连、文本确认提示时用于恢复卡片 |
-| `POST /pending-confirmations/{pendingId}/confirm` | 确认执行 | 前端卡片按钮调用；后端校验 pending 状态后执行 payload |
+| `POST /pending-confirmations/{pendingId}/confirm` | 确认执行 | 前端卡片按钮调用；短文本兜底由服务端先定位 active pending 后进入同一方法；后端校验 pending 状态后执行 payload |
 | `POST /pending-confirmations/{pendingId}/cancel` | 取消 pending | 前端卡片按钮调用；状态改为 cancelled |
 | `POST /inner/pending-confirmations/{pendingId}/expire` | 过期/覆盖 | 新 pending 覆盖旧 pending 或后台清理使用 |
 
@@ -4476,9 +4481,9 @@ Agent 改造：
    - `planningWorkspaceAction` 只在 apply 成功后作为 followup 发送；preview 阶段不发送刷新卡片。
 
 3. 文本确认：
-   - `direct_pending_plan_confirm` 删除或改为“请点击卡片确认”。
-   - `direct_pending_intent_confirm` 删除或改为“请点击卡片采纳”。
-   - 如果存在 active pending，文本“确认”可返回 active card；如果没有 active pending，返回 no-pending guard。
+   - `direct_pending_plan_confirm` 删除 history/cache 直执行能力。
+   - `direct_pending_intent_confirm` 删除 history/cache 直执行能力。
+   - 如果存在 active pending 且用户文本只表达确认，文本“确认”可走统一 pending apply；如果没有 active pending，返回 no-pending guard。
 
 4. 只读追问：
    - 如果追问关联 active pending，工具使用 `related_pending_id` 读取 disclosure/payload 做影响分析。
@@ -4497,8 +4502,8 @@ Agent 改造：
 
 | 旧逻辑 | 处理 |
 | --- | --- |
-| `direct_pending_plan_confirm` | 删除直接执行；改为重发 active card 或提示点击卡片 |
-| `direct_pending_intent_confirm` | 删除直接执行；改为重发 active card 或提示点击卡片 |
+| `direct_pending_plan_confirm` | 删除 history/cache 直执行；active pending 下走统一 short_text apply |
+| `direct_pending_intent_confirm` | 删除 history/cache 直执行；active pending 下走统一 short_text apply |
 | `_is_plan_action_confirmation` / `_is_pending_intent_confirmation` | 只保留 no-pending/重发卡片提示，不参与 apply |
 | `_extract_pending_plan_action` history 扫描 | 新链路不再使用；迁移期只读恢复旧会话，完成后删除 |
 | `pending_plan_action` | 迁移为 `pending_confirmation(kind=plan_mutation)` 后删除 |
@@ -4513,7 +4518,7 @@ Agent 改造：
 1. **模型和接口先落地**：新增 `PendingConfirmation` 持久化模型、创建/查询/确认/取消接口，不切主链路。
 2. **Plan preview 接入新 pending**：保留旧文本确认作为临时兼容，但同时生成新确认卡片，验证卡片确认能执行。
 3. **Intent preview 接入新 pending**：旧 Intent 卡片改用 `pending_id`，卡片确认走新接口。
-4. **禁用文本执行**：把 Plan/Intent 文本确认改为重发 active card，不再执行更新。
+4. **禁用旧文本直执行**：把 Plan/Intent 的 history/cache 文本确认改为 active pending 兜底；无 active pending 时重发/提示确认卡片。
 5. **删除旁路**：删除旧 pending 扫描、短确认直执行、匿名 cache confirm、模型 apply 工具暴露。
 6. **回归和清理**：确认新会话、旧会话迁移样本、前端刷新重连、移动端卡片显示都通过后，清理 adapter。
 
@@ -4523,7 +4528,7 @@ Agent 改造：
 | --- | --- |
 | Intent | 专业偏好、专业排除、院校偏好、地域要求、职业方向、软硬混合 |
 | Plan | 加入候选、删除志愿、移动单条、移动专业组、排序、替换、补齐 |
-| 对话边界 | 用户说“确认”不执行、说“先不确认”不取消、只读追问保持 pending |
+| 对话边界 | 用户说“确认”仅在 active pending 下执行同一 pending、说“先不确认”不取消、只读追问保持 pending |
 | 卡片状态 | 确认、取消、重复点击、过期点击、被新 pending 覆盖 |
 | 工作区 | preview 不刷新，apply 成功后刷新 ordered/candidate/review |
 | 历史兼容 | 旧 `planEditCache`、旧 `pending_plan_action` 只迁移或提示，不直接执行 |
@@ -4531,8 +4536,8 @@ Agent 改造：
 
 验收标准：
 
-- 任意更新动作在用户点击确认卡片前不会改变意向、要求、方案、审查状态或工作区数据。
-- 任意文本“确认/好的/可以/就这样”不会触发更新。
+- 任意更新动作在 pending 生成前不会改变意向、要求、方案、审查状态或工作区数据。
+- 任意无 active pending 的文本“确认/好的/可以/就这样”不会触发更新；有 active pending 时只作为受控兜底进入同一 pending apply。
 - 卡片披露内容、后端执行 payload 和实际更新结果一致。
 - 任何时刻 active pending 来源唯一，可通过 `pending_id` 追踪。
 - 旧旁路不再参与新会话业务判断。
@@ -4558,7 +4563,7 @@ Agent 改造：
 - Intent preview payload、卡片内容和后端缓存里都会带 `intentMode/intent_mode`。
 - 确认应用时，两类行为不同：
   - `preference`：写入 profile/latent profile，作为后续分析参考；一般不刷新候选筛选。
-  - `constraint`：写入 profile，同时会根据本次要求构建 candidate filters，返回候选收紧后的数量和 candidate 工作区刷新意图。
+  - `constraint`：写入 profile 和 planning 显式画像，标记候选/推荐/方案需要复看；不返回候选收紧数量，也不自动刷新候选工作区。
 - 卡片文案也有区分：
   - `constraint` 文案使用“要求”“候选结果会按这个要求一起收紧”。
   - `preference` 文案使用“想法/偏好”“按这个思路继续帮你看方案和给建议”。
@@ -4855,7 +4860,7 @@ Runner 本身没有连接错误或运行时崩溃，88 个 step 都拿到用户�
    - `dialog_regression_303_dialogue_derived_cases.json`
    - `dialog_regression_303_open_quality_cases.json`
    - `dialog_regression_303_effect_perf_cases.json`
-   - 相关 unit/regression/e2e，确认意向/方案变更仍然只能通过确认卡片生效。
+   - 相关 unit/regression/e2e，确认意向/方案变更仍然只能通过结构化 pending 确认生效；卡片是主入口，短文本只作为 active pending 兜底。
 
 ## 38. 报考政策/流程/学校规则咨询链路修复设计
 
@@ -5320,7 +5325,7 @@ cd zhiyuan-agent
   - 没有“待确认内容/整理成待确认”结构时，必须同时出现具体意向条目线索（如“倾向：”“排除：”“偏好专业”）才视为伪待确认预览。
   - 通用解释“偏好可以改，采纳后再作为参考”不再被替换成 fallback。
 - `_normalize_general_confirmation_protocol_wording` 补充确认协议安全网：
-  - 当回复在讲偏好、排除项或方案内容可以调整时，若缺少确认卡片边界，补充“正式更新前会先给确认卡片或调整预览，点击采纳前不会生效”。
+  - 当回复在讲偏好、排除项或方案内容可以调整时，若缺少确认卡片边界，补充“正式更新前会先给确认卡片或调整预览，采纳/确认前不会生效”。
   - 把“立刻调整方案 / 改完立刻生效 / 系统会重新筛选”等自动生效语气改成“采纳后再调整”。
 
 验证：
@@ -5910,7 +5915,7 @@ cd zhiyuan-agent
 - 明确“这轮只做分析，不会直接写入排除条件或改动方案”。
 - 说明降低广西、贵州、内蒙古优先级的收益与代价：尊重就读体验、但可选院校和保底空间可能变少。
 - 建议分数紧张时不要一刀切，先区分省会/核心城市、院校层次和专业匹配度。
-- 如需作为后续参考，只能先整理确认卡片，点击采纳前不会生效。
+- 如需作为后续参考，只能先整理确认卡片，采纳/确认前不会生效。
 
 验证：
 
@@ -5974,7 +5979,7 @@ cd zhiyuan-agent
 - `tool_reply_policy` 删除只读意向分析的 direct-return 分支。
 - `analyze_current_interest` / `analyze_current_school_interest` / `analyze_current_major_interest` / `analyze_current_region_interest` 统一作为 Explore 事实进入主模型综合。
 - 保留方案变更预览、Intent 确认卡片、阻断错误等结构化 direct-return；排序、加入、删除、移动等仍必须先出确认卡片，点击前不执行。
-- `style_rules` 补充只读收尾约束：没有生成确认卡片时，不说“确认把 X 作为偏好/要求”；如果用户可能想用于后续推荐，只能说“我可以整理成确认卡片，点击采纳前不会生效”。
+- `style_rules` 补充只读收尾约束：没有生成确认卡片时，不说“确认把 X 作为偏好/要求”；如果用户可能想用于后续推荐，只能说“我可以整理成确认卡片，采纳/确认前不会生效”。
 - 中断兜底修复：地域分析中断时不再用专业目录解析用户原话，避免把“城市机会”误写成“城市管理”专业。
 - 回归 case `303-dialogue-followup-readonly-boundary` 的断言补充 `只看/不改`，避免“这轮只看不改”这类合格回复被误判。
 
@@ -6084,5 +6089,484 @@ cd zhiyuan-agent
 影响边界：
 
 - 本轮优先恢复开放咨询质量，接受只读 Explore 多一次主模型综合带来的时延增加。
-- 确认协议不变：意向/要求/方案更新仍必须通过确认卡片点击触发；自然语言确认不作为更新入口。
+- 确认协议不变：意向/要求/方案更新仍必须先形成服务端 pending；确认卡片点击是主入口，active pending 下的短文本确认是兜底入口，不能用模型自然语言或历史文本直接执行。
 - 后续性能优化不能再通过把 Explore 工具粗暴 direct-return 来压缩时延；应考虑专门的结构化 answer renderer、工具事实压缩、上下文裁剪或更稳定的前端 thinking hint。
+
+#### 39.9 session 129 人工走查：意向确认卡片与软负向语义修复
+
+人工在本地 session 128/129 继续走查时发现几类体验问题：
+
+| 问题 | 根因 | 修复 |
+| --- | --- | --- |
+| `不太想去江苏` 被回复成方案查询结果，且负向项显示为“排除” | 软负向意图在局部链路里被当成硬约束或只读查询 | 软负向表达兜底为 `preference`，卡片 summary/content 使用“不优先”语义 |
+| 当前没有命中的负向偏好也反复弹无意义卡片 | 负向偏好没有结合当前画像和方案命中情况 | 软负向且无当前命中时返回 no-op 文案，不生成 pending |
+| `不太想学秘书` 被语义仲裁误降级或转成正向关注 | 仲裁结果缺少“用户明确更新表达”的二次保护 | 明确负向更新表达会忽略 `analysis_only` 降级，并记录 `honored=false` |
+| 点击移除/采纳后旧确认卡片刷新后仍可点 | 后端只更新 `pendingConfirmation`，没有回写原 CARD 消息 | 点击确认/取消/失效时同步更新原消息为 `clickable=false/status=...` |
+| 执行后出现“打开排序方案”老卡片 | `planningWorkspaceAction` 既用于刷新工作台又被历史消息渲染 | 前端消息列表过滤该类 CARD，仅保留工作区联动语义 |
+| 意向影响说明层级过多且泛化 | relation fallback 输出了空泛候选补位句 | 去掉“候选里暂时没有明显补位机会”等泛化句，卡片影响说明收敛为软/硬机制 + 最多两条当前方案事实 |
+
+本轮没有改变确认协议：
+
+- 意向、要求、方案更新仍必须先形成 `pendingConfirmationCard` / active pending。
+- 卡片点击是主入口；自然语言“确认/好的/执行吧”只在 active pending 存在且一致性校验通过时作为短文本兜底执行。
+- 软偏好采纳后影响推荐系数和专家优选推荐，不直接删除或移动当前方案。
+- 硬要求采纳后作为后续推荐、排除边界和方案检查依据，当前方案里的志愿仍需再走方案调整确认卡片。
+
+验证：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest \
+  tests/unit/test_intent_state_tool.py \
+  tests/unit/test_chat_service_history_persistence.py \
+  tests/unit/test_tool_reply_policy.py \
+  tests/unit/test_ws_compat.py \
+  -q
+```
+
+结果：`354 passed`。
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest \
+  tests/unit/test_intent_state_tool.py \
+  tests/unit/test_chat_service_history_persistence.py \
+  tests/unit/test_tool_reply_policy.py \
+  tests/unit/test_ws_compat.py \
+  tests/unit/test_plan_execution_tool.py \
+  tests/regression/test_execution_apply.py \
+  tests/regression/test_pending_protocol.py \
+  -q
+```
+
+结果：`634 passed`。
+
+#### 39.10 待确认卡片直出：去掉重复文本但保留卡片信息量
+
+session 129 继续走查发现：`不太想学秘书` 这类 Intent preview 会先输出一段主文本：
+
+```text
+点击采纳后生效
+不优先专业：秘书学
+影响
+现在这份方案里，和你这个想法不太一致的有：江苏第二师范学院第101组-秘书学（冲/江苏）
+```
+
+随后又发送 `pendingConfirmationCard`，卡片里重复展示“不优先专业：秘书学”和同一条当前方案命中事实。
+
+修复：
+
+- 确认卡片生成成功后，`ChatServiceResponseEnvelope.primary` 置空。
+- WebSocket v3 / compat 如果 primary 为空且有 follow-up，则不发送空文本，直接发送 follow-up 卡片。
+- 意向确认、旧 Intent 选择转确认、Explore 后续确认、方案调整预览确认均采用同一 card-only 协议。
+- 只读分析、查询、执行完成结果不受影响，仍保留文本回复。
+- 专业组移动/删除的关键位置说明从主文本迁移到卡片 content，避免去掉文本导致信息丢失。
+
+验证：
+
+- 新增 `test_chat_service_intent_preview_card_drops_duplicate_primary_text` 覆盖“秘书学”重复场景。
+- `test_chat_service_appends_unit_position_note_for_ordered_unit_preview` 改为断言专业组位置说明保留在卡片 content。
+- `tests/unit/test_chat_service_history_persistence.py -q`：`160 passed`。
+- `tests/unit/test_ws_compat.py -q`：`20 passed`。
+
+#### 39.11 只读方案直接执行与 open-quality 回归修复
+
+本轮继续压缩方案只读审查链路的无效编排，但不增加用户话术字符串快路由：
+
+- `review_plan / analyze_adjustment / query_state` 这类明确只读 Plan 动作允许模型直接调用 `execute_plan_action`，不再必须先走 `plan_next_action`。
+- 高副作用动作仍保持 `plan_next_action -> execute_plan_action(preview) -> pendingConfirmationCard -> confirm -> apply`。
+- 只读 Explore 不恢复粗暴 direct-return；专业对比、职业方向等仍保留主模型综合，优先保证回复质量。
+
+回归中发现并修复两个边界：
+
+| 问题 | 根因 | 修复 |
+| --- | --- | --- |
+| `方案里中外合作是不是有点多...先别动` 偶发被替换成“没有确认卡片，不会改动当前方案” | 只读 `review_plan` 已返回结构化审查结果，但模型最终写了类似“确认后调整”的文本，协议兜底把整段回复替换成无卡片边界，丢掉审查摘要 | `_guard_unbacked_plan_confirmation_reply` 触发时，如果本轮存在只读 `execute_plan_action` 结果，优先用 `_build_plan_timeout_fallback_reply` 还原审查/分析摘要 |
+| `我倾向会计学和审计学，但土木工程不要` 偶发生成方案移除卡片时只披露“排除土木工程” | 当前方案只命中负向约束，方案移除卡片的 `intentPayload` 只带 selected 负向项；正向偏好在 `existingItems` 中，没有被带入方案确认卡片 | 当 selected 只有负向项且 `existingItems` 存在正向偏好时，补入正向上下文，卡片 content 和 pending state 一起披露 |
+
+状态机影响：
+
+- 不改变确认协议。只读工具结果不会生成 pending；高副作用方案动作仍必须确认卡片。
+- 不把模型自然语言作为执行依据。兜底只是在“模型已经越界写了确认文案”时，用后端工具事实修正最终回复。
+- 混合意向命中方案调整时，确认卡片里的 `intentPayload` 更完整；确认后仍按同一个 pending payload 执行。
+
+验证：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m py_compile app/service.py
+.venv/bin/python -m pytest tests/unit/test_chat_service_history_persistence.py -q
+.venv/bin/python -m pytest tests/unit/test_tool_reply_policy.py tests/unit/test_plan_execution_tool.py -q
+.venv/bin/python -m pytest tests/regression/test_execution_apply.py tests/regression/test_pending_protocol.py -q
+.venv/bin/python -m pytest tests/unit/test_instructions.py tests/unit/test_chat_agent_init_profile.py tests/unit/test_plan_orchestration_tool.py -q
+```
+
+结果：
+
+- `test_chat_service_history_persistence.py`：`178 passed`
+- `test_tool_reply_policy.py + test_plan_execution_tool.py`：`158 passed`
+- `test_execution_apply.py + test_pending_protocol.py`：`166 passed`
+- `test_instructions.py + test_chat_agent_init_profile.py + test_plan_orchestration_tool.py`：`86 passed`
+
+关键 live case：
+
+| case | 结果 |
+| --- | --- |
+| `方案里中外合作是不是有点多，家里预算一般，帮我用大白话看下风险，先别动` | 直接 `execute_plan_action(review_plan)`，无确认卡片；回复覆盖 76 条高收费、保区 0、排序倒挂、候选池保区不足 |
+| `我倾向会计学和审计学，但土木工程不要` | 健康路径返回已有报考参考，会计学/审计学/土木工程三项均披露；单测覆盖偶发方案移除卡片时正向偏好不丢失 |
+
+open-quality 全量复跑：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python examples/dialog_regression_runner.py \
+  --url ws://127.0.0.1:8037/gaotu-assistant-agent/plus/chat/1/bot/1/do \
+  --cases examples/dialog_regression_303_open_quality_cases.json \
+  --response-timeout 180 \
+  --keep-response-text \
+  --assert-plan-style \
+  --metrics-output /private/tmp/zhiyuan_303_open_quality_live_after_readonly_guard_intent_fix.json \
+  --clear-history-per-case \
+  --clear-backend-pending-per-case \
+  --internal-service-url http://127.0.0.1:8080
+```
+
+结果：
+
+| 指标 | 本轮 | 上一轮参考 |
+| --- | ---: | ---: |
+| steps | 23 | 23 |
+| failures | 0 | 2 |
+| median | 17.673s | 25.655s |
+| p95 | 30.535s | 57.269s |
+| max | 35.742s | 67.023s |
+
+最慢 case：
+
+| case | elapsed | 说明 |
+| --- | ---: | --- |
+| `以后想考公但也怕太卷，这方案有支撑吗，先看看` | 35.742s | 模型先试错拼错工具名，再补调用职业方向和方案状态；功能正确但仍是慢点 |
+| `法学和财政学哪个更适合普通家庭女生，先只分析不要记偏好` | 30.535s | 专业对比质量较完整，慢在最终模型综合 |
+| `法学会不会太卷啊，跟财政比哪个普通家庭更扛得住，先别记` | 26.613s | 专业对比 + 专业介绍后主模型组织 |
+| `候选里还有没有更稳一点的会计审计，别直接加` | 25.580s | 只读候选查询，无加入卡片；慢在候选过滤抽取和最终总结 |
+| `方案里中外合作是不是有点多...先别动` | 23.787s | 只读方案审查，质量恢复 |
+
+后续观察：
+
+- `303-open-quality-candidate-colloquial-query-readonly` 回复里出现了疑似 profile 口径不一致的“450分、山东物史地”描述，需要后续回看 session 数据和工具摘要来源。
+- `303-open-quality-civil-service-plan-support-lazy` 出现一次 `analyze_current_cereer_direction` 拼错工具名后再修正调用，说明模型自由试工具仍有长尾；暂不通过字符串路由修复。
+- 当前性能改善主要来自明确只读 Plan 直接执行；后续若继续压缩延迟，应优先做工具 schema 收敛、工具名可选集约束、结构化事实压缩和 thinking hint，而不是牺牲回复内容。
+
+#### 39.12 待确认意向只读追问与候选池语义收口
+
+本轮继续围绕 3.0.3 的 full Agent 主路径做质量回归，不启用字符串 fast route。重点验证：
+
+- 已有 active pending 后，用户继续问“这个偏好会影响当前方案吗”时，只做影响解释，不消费 pending、不执行方案。
+- 方案候选不足时，回复要感知“候选池里没有保区机会”，不能继续空泛建议调整冲稳保比例。
+- 意向只读分析里不能暗示基础候选池会被采纳动作永久缩小。
+
+全量 open-quality 回归：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python examples/dialog_regression_runner.py \
+  --url ws://127.0.0.1:8037/gaotu-assistant-agent/plus/chat/1/bot/1/do \
+  --cases examples/dialog_regression_303_open_quality_cases.json \
+  --response-timeout 180 \
+  --keep-response-text \
+  --assert-plan-style \
+  --metrics-output /private/tmp/zhiyuan_303_open_quality_live_after_pending_impact_guard_final.json \
+  --clear-history-per-case \
+  --clear-backend-pending-per-case \
+  --internal-service-url http://127.0.0.1:8080
+```
+
+结果：
+
+| 指标 | 本轮 |
+| --- | ---: |
+| steps | 23 |
+| failedSteps | 0 |
+| median | 17.846s |
+| p95 | 24.187s |
+| max | 25.548s |
+
+最慢 case：
+
+| case | elapsed | 说明 |
+| --- | ---: | --- |
+| `303-open-quality-civil-service-plan-support-lazy` | 25.548s | 职业方向 + 方案支撑分析，模型最终整合偏慢 |
+| `303-open-quality-budget-risk-colloquial-readonly` | 24.187s | 费用风险分析，回复已明确高收费数量、保区 0 和补不了的原因 |
+| `303-open-quality-career-parent-colloquial-readonly` | 23.759s | 体制内稳定方向承接分析 |
+| `303-open-quality-plan-make-safer-preview` | 23.427s | 调稳预览，无可补保底时不直接改方案 |
+| `303-open-quality-major-compare-with-context` | 22.586s | 专业对比信息量完整，慢在主模型总结 |
+
+全量回归后继续发现一个文案边界：`医学护理这些别碰，财会还能接受，先看看影响` 的只读分析有时会出现“自动过滤”“不再进入候选”“候选池会大幅收窄”等表达。这些说法会误导用户以为采纳偏好/要求会物理缩小基础候选池。
+
+修复：
+
+- 在出站回复清洗层统一处理意向/影响语境下的候选池误导表达：
+  - “自动过滤相关选项” -> “作为后续推荐、方案检查和方案调整的排除参考”。
+  - “不再进入候选 / 候选池会大幅收窄 / 候选池会变小” -> 明确“基础候选池不会因此缩小”。
+  - 无确认卡片时的“确认后才会生效 / 要不要先确认这些方向” -> “是否整理成确认卡片 / 卡片采纳后才会生效”。
+- 这层只清洗用户可见回复，不改变候选查询、方案筛选和 pending 执行状态。
+
+验证：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest \
+  tests/unit/test_chat_service_history_persistence.py \
+  tests/unit/test_intent_state_tool.py \
+  tests/unit/test_planning_intent_scenarios_sync.py \
+  tests/unit/test_tool_reply_policy.py \
+  tests/unit/test_dialog_regression_runner.py -q
+```
+
+结果：`425 passed`。
+
+最终 targeted live：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python examples/dialog_regression_runner.py \
+  --url ws://127.0.0.1:8037/gaotu-assistant-agent/plus/chat/1/bot/1/do \
+  --session 880718 \
+  --prompts 医学护理这些别碰，财会还能接受，先看看影响 \
+  --response-timeout 180 \
+  --keep-response-text \
+  --assert-plan-style \
+  --metrics-output /private/tmp/zhiyuan_303_intent_candidate_pool_semantics_live_final2.json \
+  --clear-history-per-case \
+  --clear-backend-pending-per-case \
+  --internal-service-url http://127.0.0.1:8080
+```
+
+结果：`successfulSteps=1`，耗时 `13.752s`。用户侧回复保留“医学/护理排除范围、财会方向承接、医学门类边界”信息，同时明确“基础候选池本身不会因此缩小”，并只询问是否整理确认卡片，未生成 pending、未刷新工作台。
+
+补充最终全量 pass：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python examples/dialog_regression_runner.py \
+  --url ws://127.0.0.1:8037/gaotu-assistant-agent/plus/chat/1/bot/1/do \
+  --cases examples/dialog_regression_303_open_quality_cases.json \
+  --response-timeout 180 \
+  --keep-response-text \
+  --assert-plan-style \
+  --metrics-output /private/tmp/zhiyuan_303_open_quality_live_after_candidate_pool_semantics_final_pass.json \
+  --clear-history-per-case \
+  --clear-backend-pending-per-case \
+  --internal-service-url http://127.0.0.1:8080
+```
+
+结果：
+
+| 指标 | 最终 pass |
+| --- | ---: |
+| steps | 23 |
+| successfulSteps | 23 |
+| failedSteps | 0 |
+| median | 17.350s |
+| p95 | 28.323s |
+| max | 33.794s |
+
+最终剩余 warning 均为延迟告警：
+
+| case | elapsed | 说明 |
+| --- | ---: | --- |
+| `303-open-quality-major-compare-with-context` | 33.794s | 法学/财政学对比，信息量完整，最终模型总结偏慢 |
+| `303-open-quality-major-compare-colloquial-pressure` | 28.323s | 模型额外调用一次只读专业分析后再对比，属工具选择长尾 |
+| `303-open-quality-accounting-audit-civil-service-lazy` | 26.328s | 会计/审计对比，三轮模型整合偏慢 |
+
+同步调整：
+
+- `303-open-quality-major-compare-non-law-context` 的 thinking 断言从单一“正在对比这几个专业的差异”放宽为也接受“正在对照这些专业的学习内容和就业情况”。这是测试期望修正，不改变产品逻辑。
+- 单 case 复验：`/private/tmp/zhiyuan_303_one_case_major_compare_non_law_after_assert_fix.json`，`failedSteps=0`。
+
+## 26. 2026-06-06 高收费删除预览修复后 88 Case 全量回归
+
+### 26.1 修复背景
+
+上一轮 88 case 回归时，`303-dialogue-operation-remove-expensive-preview` 暴露了一个方案动作预览风险：
+
+- 用户输入：`把太贵的那几个先去掉看看`。
+- 预期：这是明确方案调整请求，但仍应只生成删除预览确认卡片，点击前不执行。
+- 问题：模型偶发把该请求绕到 `preview_compensation` 或泛化审查链路，pending 提取可能拿到弱摘要，曾出现 `actionFamily=unknown` 或额外审查回复。
+
+这次修复保持“只读问题不生成删除卡片、明确操作才生成预览”的边界，不增加用户话术关键词快路由：
+
+- `plan_next_action` 对当前审查命中的高收费问题增加结构化恢复：当用户明确要求处理当前审查项，即使模型选择 `preview_compensation`，也恢复为 `remove_units` 预览。
+- `normalize_plan_action_payload` 将顶层 `review_issue_code/review_issue_scope_mode` 归一到 `review_issue_target`，让预览执行和 pending 持久化走同一结构化路径。
+
+### 26.2 验证
+
+聚焦单测：
+
+```bash
+.venv/bin/python -m pytest \
+  tests/unit/test_plan_orchestration_tool.py \
+  tests/unit/test_plan_execution_tool.py \
+  tests/unit/test_chat_service_history_persistence.py \
+  tests/unit/test_tool_reply_policy.py \
+  tests/regression/test_execution_preview.py \
+  tests/regression/test_pending_protocol.py -q
+```
+
+结果：`617 passed`。
+
+高收费删除 targeted live：
+
+- 输出：`/private/tmp/zhiyuan_303_targeted_remove_expensive_after_fix2.json`
+- 结果：`successfulSteps=1`。
+- 链路：`plan_next_action -> execute_plan_action`。
+- 动作：`actionFamily=remove_units`，`resultKind=preview_only`，`applied=false`。
+- 卡片：`pendingConfirmationCard`，内容明确“当前审查命中的高收费：30 个专业组，76 条志愿”，没有 `unknown`，也没有额外 `review_plan`。
+
+专项资格 targeted rerun：
+
+- 输出：`/private/tmp/zhiyuan_303_targeted_special_policy_rerun.json`
+- 结果：`successfulSteps=1`，耗时约 `10.287s`。
+- 说明：此前 `四川那种专项批，如果没资格是不是就不能放` 的 `180s` 超时属于模型供应商首轮请求长尾，本次复跑正常走政策问答和官方来源检索。
+
+### 26.3 88 Case 全量回归
+
+命令：
+
+```bash
+.venv/bin/python examples/dialog_regression_runner.py \
+  --url ws://127.0.0.1:8037/gaotu-assistant-agent/plus/chat/1/bot/1/do \
+  --cases examples/dialog_regression_303_dialogue_derived_cases.json \
+  --response-timeout 180 \
+  --keep-response-text \
+  --assert-plan-style \
+  --metrics-output /private/tmp/zhiyuan_303_dialogue_derived_after_remove_issue_fix.json \
+  --clear-history-per-case \
+  --clear-backend-pending-per-case \
+  --internal-service-url http://127.0.0.1:8080
+```
+
+结果：
+
+| 指标 | 本轮 |
+| --- | ---: |
+| steps | 88 |
+| successfulSteps | 88 |
+| failedSteps | 0 |
+| median | 12.877s |
+| p95 | 24.372s |
+| max | 40.408s |
+
+最慢 case：
+
+| case | elapsed | 说明 |
+| --- | ---: | --- |
+| `303-dialogue-followup-save-thinking-no-auto-change` | 40.408s | 无工具调用，主模型单轮长尾；回复正确说明不会自动写入。 |
+| `303-dialogue-followup-weak-closure` | 34.819s | 弱收尾闲聊，无工具调用，主模型单轮长尾。 |
+| `303-dialogue-plan-review-obvious-pit` | 31.394s | 方案审查，回复覆盖冲稳保、保区 0、高收费和排序风险。 |
+| `303-dialogue-career-transfer-major-space` | 27.511s | 转专业政策类，出现两次官方来源检索，属于重复工具调用效率问题。 |
+| `303-dialogue-budget-high-fee-safety` | 24.372s | 高收费与保底安全分析，回复能说明候选池保区为 0。 |
+
+通过项复核：
+
+- `把太贵的那几个先去掉看看` 稳定返回 `remove_units` 预览确认卡片，确认前不执行。
+- `一年学费最多两三万，方案里高收费多吗`、`有没有高收费风险` 保持只读审查，不误生成删除卡片。
+- 排序、移动预览均返回 `pendingConfirmationCard`，`preview_only` 且不应用。
+- `确认` 在无 active pending 时走 `plan_confirmation_guard_no_pending`，不执行历史动作。
+- `先别改，我就是问问`、`省外可以，但太偏的地方不想去` 等边界问题保持只读分析，不写偏好或方案。
+- 方案风险类回复能感知 `保区候选=0`，没有继续空泛要求“补保底”。
+
+剩余观察：
+
+- 当前全量功能回归通过，主要问题转为延迟和少量文案质量：
+  - 弱收尾/保存思路等无工具场景仍可能有 `30-40s` 主模型长尾。
+  - 转专业政策 case 存在重复官方来源检索。
+  - 个别边界解释会问“是否需要整理确认卡片”，语义正确但还可更口语化。
+- 本轮仍坚持不恢复字符串 fast route；后续若优化性能，应优先收敛工具事实、减少重复工具调用、优化 thinking hint，而不是降低回复信息量。
+
+## 27. 2026-06-06 develop 合并后 88 Case 与模块回归
+
+### 27.1 合并和测试清理
+
+合并 `origin/develop` 后，确认“非 SUPER_VIP 全局开关”不进入 3.0.3：
+
+- 保留 `prepareType=VOLUNTEER` 非 SUPER_VIP 每日 2 次限制。
+- 不恢复 `volunteer-super-vip-only` 全局开关。
+
+Agent 全量测试首次复跑时发现 7 个失败，均为旧测试协议未同步：
+
+- `confirm` 已不再是 `IntentFrame.verb`，确认/取消统一由 service-level `pendingConfirmation` 入口处理。
+- `pin/unpin` 已从结构化 verb 中移除，不再作为“兼容但 blocked”的 ActionResolver 输出验证。
+- “无 pending 指令不能包含 pending 字样”的断言过窄；当前 instructions 会包含通用协议说明，但不应注入动态“当前存在上一轮待确认的方案动作”块。
+
+测试修正后：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest tests -q
+```
+
+结果：`2367 passed, 8 skipped`。
+
+### 27.2 88 Case 全量回归
+
+命令：
+
+```bash
+.venv/bin/python examples/dialog_regression_runner.py \
+  --url ws://127.0.0.1:8000/gaotu-assistant-agent/plus/chat/1/bot/1/do \
+  --cases examples/dialog_regression_303_dialogue_derived_cases.json \
+  --response-timeout 180 \
+  --keep-response-text \
+  --assert-plan-style \
+  --metrics-output /private/tmp/zhiyuan_303_dialogue_derived_after_develop_merge.json \
+  --clear-history-per-case \
+  --clear-backend-pending-per-case \
+  --internal-service-url http://127.0.0.1:8080
+```
+
+结果：
+
+| 指标 | 本轮 |
+| --- | ---: |
+| steps | 88 |
+| successfulSteps | 88 |
+| failedSteps | 0 |
+| median | 16.911s |
+| p95 | 65.123s |
+| max | 182.723s |
+
+功能结论：
+
+- 88 个功能步骤均通过，没有方案样式断言失败。
+- 方案风险类回复能持续感知 `保区=0` 和候选池无保区，不再空泛要求补保底。
+- 高收费/中外合作风险能区分只读审查与删除预览。
+- 方案查询、财会承接、医学护理混入、省外比例、公办占比等方案内查询链路正常。
+- 意向/方案确认卡片仍保持 `pendingConfirmationCard` 主协议，确认前不执行。
+
+性能问题：
+
+| case | elapsed | 归因 |
+| --- | ---: | --- |
+| `303-dialogue-region-developed-city-opportunity` | 182.723s | 地域机会只读分析，模型整合阶段长尾后安全兜底 |
+| `303-dialogue-extra-points-need-record` | 182.649s | 加分项政策/信息补充问题，首轮模型请求长尾后安全兜底 |
+| `303-dialogue-region-lanzhou-yinchuan-backup` | 182.257s | 兰州/银川兜底分析，地域分析工具或模型等待长尾后安全兜底 |
+| `303-dialogue-region-outside-ok-not-remote` | 68.677s | 地域硬要求预览，重复地域预览/长耗时工具 |
+| `303-dialogue-archive-library-cold-major` | 65.123s | 冷门专业分析，三轮模型整合偏慢 |
+
+结论：
+
+- 本轮功能质量优先策略有效，方案分析和风险审查信息量明显好于薄回复。
+- 性能仍不是发布完全达标状态；3 个 case 超过 `100s` 最大耗时阈值，runner 因性能失败非零退出。
+- 后续优化应优先解决地域/政策类工具耗时、重复工具调用、模型供应商长尾和前端 thinking/progress hint，而不是恢复字符串快路由或降低回复质量。
+
+### 27.3 模块自身回归
+
+| 模块 | 命令 | 结果 |
+| --- | --- | --- |
+| Agent | `.venv/bin/python -m pytest tests -q` | `2367 passed, 8 skipped` |
+| Server targeted | `mvn -Dtest=UserBizServiceTest,ChatSessionBizServiceTest test` | `16 tests, 0 failures, 0 errors` |
+| Server full | `mvn test` | sandbox 内 `231 tests, 0 failures, 1 error, 3 skipped`；唯一错误为 `InitialPlanEvaluationP0ReportTest` 连接本地 MySQL 被 sandbox 拦截 |
+| Server failing test rerun | `mvn -Dtest=InitialPlanEvaluationP0ReportTest test` 非 sandbox | `1 test, 0 failures, 0 errors` |
+| Rank | `.venv/bin/python -m unittest discover -s tests -v` | `11 tests, OK` |
+| Web | `./node_modules/.bin/tsc --noEmit --pretty false` | 未通过，报错集中在既有 TS 债务文件：`ModalForm/index.tsx`、`userCenter/index.tsx`、`service/index.ts`、`service/request/index.ts` |

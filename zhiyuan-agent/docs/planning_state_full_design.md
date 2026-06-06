@@ -541,7 +541,8 @@ Core 层只负责业务事实和状态执行，不负责最终面向用户的话
 当前核心入口：
 
 - `analyze_volunteer_intent_change`
-- `update_volunteer_intent_state`
+- `apply_selected_intents`（仅由统一 pending confirmation 触发：卡片点击为主入口，active pending 短文本确认为兜底入口）
+- `update_volunteer_intent_state`（legacy wrapper，仅用于历史兼容，不再暴露给主 Agent）
 
 约束：
 
@@ -627,7 +628,7 @@ Response 层负责响应模型、兼容序列化和必要的文本渲染收口�
 - Agent 先判断用户当前更像 `Explore / Intent / Plan` 哪一层
 - 如果只是探索某个方向是否适合、值不值得继续看，优先调用 Preview 层工具
 - 如果已经拿到了结构化偏好 / 要求，或需要更完整的确认事实，优先调用 Core 层的 `analyze_volunteer_intent_change`
-- 如果用户已经确认执行，才调用 `update_volunteer_intent_state`
+- 如果用户点击了统一确认卡，或短文本确认通过 active pending 校验，Service 才调用 `apply_selected_intents` 执行写入；没有 active pending 的自然语言“确认”不触发写入
 - 最终发给用户的自然中文回复，由模型结合工具结果自行组织
 
 换句话说：
@@ -645,14 +646,19 @@ Response 层负责响应模型、兼容序列化和必要的文本渲染收口�
 - `intent_state_tool` 不再反向依赖 `explore_followup_tool`
 - Service 层新增 `handle_intent_select` 作为新的选择类入站入口，旧 `handle_plan_edit_select` 仅保留兼容
 - Core 层新增 `apply_selected_intents` 作为“局部采纳后执行状态更新”的结构化入口，返回 `IntentStateUpdateResult` JSON；旧 `handle_plan_edit_select` 仅作为文本渲染兼容别名
+- `interestAnalysisPopup` 的 `prefer_confirm / constrain_confirm` 快捷动作已经收口为二次生成 `pendingConfirmationCard`，不直接写入后续报考参考
 - Service 不再通过中文回复文本判断是否刷新候选，而是读取 `IntentStateUpdateResult.intentMode` 与 `candidateFilters` 后触发候选视图动作
 - Explore / Intent 的预览 wrapper 已迁移到 `intent_preview_tool`
 - 职业方向识别与方向适配分析统一收敛到 `explore_direction_tool`，`intent_state_tool` 不再保留重复的方向匹配 / 方向分析实现
 - `explore_direction_tool` 的方向相关性判断已集中为“方向证据”计算，当前仍是启发式事实层，不作为对话路由；后续可替换为统一标签体系评分或模型评估
 - Explore follow-up 新增结构化入口 `handle_interest_analysis_action_result`，Service 主链路已直接消费 `ExploreFollowupResult`；旧 `handle_interest_analysis_action` 仅作为文本渲染兼容包装
 - 响应模型与文本渲染已迁移到 `intent_response_tool`
+- `impactAnalysis` 只作为结构化事实源保存当前方案命中 / 冲突、候选机会和工具侧下一步建议；用户可见层统一由紧凑 formatter 抽取最多两条具体影响事实，不再把 `summaryTitle` 和四段分组标题逐层展示。没有真实影响事实时，确认卡片或分析卡片不显示影响区。
+- 地域意向按软硬语义分别处理：软偏好用 `intentMode=preference`，例如“不太想去江苏”会写入待确认的 `negative_province=江苏`，代表降低优先级或后续分析参考；硬要求用 `intentMode=constraint`，例如“不要江苏 / 必须排除江苏”才作为排他约束。当前方案或候选的局部命中查询只是证据，不能替代 Intent 预览或确认卡片；`query_volunteer_plan` 成功结果默认交回主模型综合，避免任何专业、院校、地域偏好表达被局部列表截断。
+- Tool Reply Policy 不再全局信任工具返回的 `reply_strategy=direct_reply`：Policy、适配匹配、方案/候选局部查询等只读结果都必须回到主模型综合；只有确认预览、受控阻断、无变化和方案变更预览等协议级结构化结果可以直返。
+- Plan apply 只认服务端 pending 确认上下文：`RequestContext.confirmed_via_pending=true` 且 pending 类型与 action family 匹配时，`execute_plan_action` 才允许高副作用动作执行；卡片点击会带 `confirmed_via_card=true`，短文本兜底会带 `confirmation_entry=short_text`。自然语言“确认 / 执行 / 好的”本身不是确认凭证，只能在 active pending 校验通过后由服务层转换为 pending 确认。
 - `ChatAgent` 已按新分层挂载：
-  - Core：`analyze_volunteer_intent_change`、`update_volunteer_intent_state`
+  - Core：`analyze_volunteer_intent_change`、`apply_selected_intents`（Service 内部确认后调用）
   - Preview：`analyze_current_interest`、`analyze_current_career_direction`、`preview_current_intent_confirmation`
 
 ### F. 后续继续收敛的方向
@@ -971,6 +977,7 @@ Explore 阶段回答完之后，不应停留在“分析结束”这一层，而
   - `prefer_confirm`
   - `constrain_confirm`
 - `candidate_query` 当前只返回候选数量与筛选事实给对话回复使用，不自动触发右侧候选视图刷新；只有用户明确采纳“要求”后，才由 `planningWorkspaceAction.candidateFilters` 联动候选筛选栏
+- `prefer_confirm / constrain_confirm` 当前先生成统一 `pendingConfirmationCard`；用户点击卡片采纳前不会写入后续报考参考，也不会刷新候选或方案
 - 这样按钮点击不再依赖一条模糊自然语言去猜路由，同时也没有引入新的 websocket 协议分支
 - 后续更换文案时，不会影响动作编排逻辑
 

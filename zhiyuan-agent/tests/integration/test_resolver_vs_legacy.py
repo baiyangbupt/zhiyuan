@@ -257,13 +257,12 @@ def test_compensation_normalization_uses_structured_context_and_scope(volunteer_
 
 
 @pytest.mark.parametrize("volunteer_model", ["major", "majorGroup"])
-def test_pin_unpin_are_compatible_but_not_executable(volunteer_model: str):
-    for verb, family in [("pin", "pin_unit"), ("unpin", "unpin_unit")]:
-        result = resolver.resolve(_frame(verb, volunteer_refs=["v1"]), HAS_PLAN)
-        assert result.action_family == family
-        assert result.stage == "blocked"
-        assert result.requires_confirmation is False
-        assert family not in HANDLER_REGISTRY
+def test_pin_unpin_are_removed_from_structured_intent_frame(volunteer_model: str):
+    for verb in ("pin", "unpin"):
+        with pytest.raises(ValueError):
+            _frame(verb, volunteer_refs=["v1"])
+    assert "pin_unit" not in HANDLER_REGISTRY
+    assert "unpin_unit" not in HANDLER_REGISTRY
 
 
 @pytest.mark.parametrize("volunteer_model", ["major", "majorGroup"])

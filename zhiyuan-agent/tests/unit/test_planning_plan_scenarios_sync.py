@@ -35,8 +35,9 @@ def _ctx_with_pending(action_family: str, session_id: str = "900") -> SimpleName
         deps=RequestContext(
             userid="u1",
             sessionid=session_id,
-            chat_history=[{"role": "user", "content": "确认"}],
+            chat_history=[],
             pending_plan_action={"action_family": action_family},
+            confirmed_via_card=True,
         )
     )
 
@@ -782,6 +783,37 @@ def test_plan_next_action_accepts_structured_major_group_position_ref():
     assert payload["missing_inputs"] == []
     assert payload["atomic_actions"][0]["source_position"] == 4
     assert payload["atomic_actions"][0]["target_position"] == 2
+    assert payload["requires_confirmation"] is True
+
+
+def test_plan_next_action_accepts_source_major_names_for_remove_units():
+    with patch(
+        "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
+        new=AsyncMock(
+            return_value=SimpleNamespace(
+                summary="阶段=ordered；方案=45/45；专业+大学模式",
+                draft_count=0,
+                ordered_count=45,
+                target_count=45,
+                relation_lines=[],
+                review_issues=[],
+            )
+        ),
+    ):
+        resp = asyncio.run(
+            plan_next_action(
+                _ctx("916"),
+                user_goal="删掉方案里面的汉语言文学",
+                action_family="remove_units",
+                source_major_names=["汉语言文学"],
+            )
+        )
+
+    payload = json.loads(resp)
+    assert payload["stage"] == "preview"
+    assert payload["action_family"] == "remove_units"
+    assert payload["missing_inputs"] == []
+    assert payload["atomic_actions"][0]["source_major_names"] == ["汉语言文学"]
     assert payload["requires_confirmation"] is True
 
 

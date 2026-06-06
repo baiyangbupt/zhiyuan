@@ -2,6 +2,8 @@
 
 本文记录 `3.0.3` Agent 回复质量的文本级评审。重点不是只看“快不快”或“短不短”，而是看用户是否拿到了可理解、可决策、边界清楚的回复。
 
+发布收口说明：本文件是早期回复质量样例和评审记录，不代表当前最终运行时。当前发布范围、最终回归和升级口径以 `docs/release-3.0.3-summary-and-upgrade-plan.md` 为准。
+
 状态说明：本文件基于 2026-05-25 的 3.0.3 快路径试验输出，适合作为“回复质量目标”和“历史改进样例”参考；它不代表 2026-05-29 重置到 `prod-3.0.2` 后的当前运行时代码表现。当前 full agent 基线和后续优化结论，以 `docs/release-3.0.3-agent-effect-performance-deep-dive.md` 的 `4.9 full agent 88 case 基线复盘` 为准。
 
 ## 1. 评审输入
@@ -59,7 +61,7 @@
 看看现在的方案，给我一个结构化一点的结论
 ```
 
-实际回复：
+旧版本实际回复：
 
 ```text
 方案已经有了，目前有 94/96 个志愿。
@@ -414,10 +416,11 @@
 - “把候选结果收紧了”可能说得过满：如果后端只是记录偏好并刷新候选展示条件，这句话会让用户理解为候选池已经被永久缩小。
 - 回复没有复述已确认的偏好和排除项，用户难以核对刚刚生效的内容。
 
-建议：
+当前修复口径：
 
-- 改成“已记录为后续筛选和方案调整参考”，并复述本次确认项。
-- 如果会触发候选刷新，再说“候选展示会按这条偏好更新”。
+- 改成“已确认，这条要求会作为后续报考参考”，并复述本次确认项。
+- 不再返回候选过滤后数量，不再说候选池已经收紧。
+- 如果当前方案需要调整，继续通过单独的方案调整确认卡片处理。
 
 ### 3.13 无 pending 确认保护
 
@@ -495,7 +498,7 @@
 
 4. Intent 确认“候选结果收紧”语义偏强。
    - 影响：可能把“记录偏好/刷新展示”误解成候选池被永久改变。
-   - 建议：改为“已记录为参考，候选展示会按偏好更新”。
+   - 建议：改为“已记录为后续报考参考”，不返回候选过滤后数量；候选面板只有用户主动查询时才展示可见筛选结果。
 
 ### P2 可排期优化
 
@@ -539,7 +542,7 @@
 | 问题 | 修复入口 | 设计 |
 | --- | --- | --- |
 | Intent preview 暴露 `level3` | `ChatService._normalize_pending_intent_reply` / `_normalize_user_facing_terms` / `intent_state_tool._LABEL_MAP` | 在用户可见回复里清理目录层级字段，把“待确认偏好专业（level3）”改成“待确认偏好专业/专业类/具体专业”等用户语言，保留具体专业名和确认边界 |
-| Intent confirm “候选结果收紧”语义偏强 | `intent_response_tool.render_intent_state_update` | 确认后表达为“已记录为后续筛选和方案调整参考”，候选数量只作为展示更新说明，不暗示候选池被永久改变 |
+| Intent confirm “候选结果收紧”语义偏强 | `intent_response_tool.render_intent_state_update` | 确认后表达为“已记录为后续报考参考”，不返回候选过滤后数量，不暗示候选池被永久改变 |
 | 职业方向承接没有直接回答方案承接 | `explore_direction_tool.preview_direction_comparison_from_request` | 多方向比较先给“当前方案承接强弱”结论，再列方案内承接数量、示例和候选机会；只读场景仍不改方案、不写 pending |
 | 专业对比忽略本轮用户事实 | `major_compare_reply_renderer.render_missing_weight_major_compare_reply` | 会话画像缺失时仍读取本轮用户话术里的“普通家庭/女生”等约束，避免说“缺少性别信息” |
 | 方案审查未进入 3.0.3 quality 主 case | `dialog_regression_303_effect_perf_cases.json` | 增加“帮我审查一下当前方案”审查 case，校验审查回复、review 工作台刷新和内部字段屏蔽 |
@@ -572,7 +575,7 @@
 已完成：
 
 - Intent preview 回复清理 `level1/level2/level3`，用户侧统一展示为“待确认偏好专业 / 待确认排除专业”等用户语言。
-- Intent confirm 回复保留“确认后已记下”的语义，但不再说“候选结果收紧”，改成“作为后续筛选和方案调整参考”。
+- Intent confirm 回复保留“确认后已记下”的语义，但不再说“候选结果收紧”，改成“作为后续报考参考”；不返回候选过滤后数量。
 - 职业方向多方向承接分析补上结论先行：先说当前方案整体承接强弱、方案内相关志愿数量和示例，再说候选机会。
 - 专业对比缺少量化评分时，能使用本轮用户输入里的“普通家庭 / 女生”等约束，不再误报“缺少性别信息”。
 - 方案局部查询与候选查询补充轻量下一步引导：命中结果后会补一句“下一步如果要处理这些志愿/机会，可以怎么继续”，但不改变只读边界，也不自动进入待确认动作。
@@ -583,7 +586,7 @@
 - 无 pending 的“确认”保护补充上下文文案：职业方向只读后会提示可继续展开具体方向，专业对比只读后会提示可记成偏好或看对方案影响，局部查询后会提示可移动/删除/加入/排序；全部保持不执行、不联动。
 - 无 pending 的“确认”保护继续补强：除工具调用记录外，也会从上一轮 assistant 文本识别职业方向分析、专业对比和局部查询，避免快路径或降级场景只保存文本时退回泛化提示。
 - Intent 确认回复补充“本次确认内容”：专业、院校、地域和发展方向的偏好/排除项会被复述给用户，避免只说“已记录为参考”但用户无法核对。
-- Intent 确认回复继续结构化：确认后改成“记录结果 / 本次确认内容 / 后续使用 / 候选结果 / 下一步”的短要点，保留用户可核对内容，同时避免“候选展示会按要求更新”这种过度确定表达。
+- Intent 确认回复继续结构化：确认后改成“确认结果 / 本次确认内容 / 后续使用 / 下一步”的短要点，保留用户可核对内容，同时避免“候选展示会按要求更新”这种过度确定表达。
 - 专业对比 fallback 改成结构化分段输出：保留通用比较逻辑，但把会话参考、两个专业画像、选择建议和下一步拆开，减少一整段平铺文字带来的“太薄”感。
 - 专业对比 fallback 文案去系统化：不再出现“个性化量化评分 / 系统分数 / 系统评分”，改成“还没有完整结合分数、省份、选科和方案位置，先给方向判断”。
 - 新会话补充验证 `880403`：`山东450分、物理历史地理 -> 网络与新媒体 vs 跨境电商 -> 偏好确认` 三步通过；专业对比和 Intent 预览都能正确承接上下文并输出更具体的专业类画像。
@@ -1988,7 +1991,7 @@ dialogue-derived 的 32 条慢链路分布：
 
 - `constraint_applied` 和 `preference_applied` 统一输出为“确认结果 / 本次确认内容 / 后续使用 / 下一步”。
 - “本次确认内容”从 `merged` 中提取专业、院校、地域、职业方向的正负向项；专业项按 `level3 -> level2 -> level1` 展示，避免内部层级术语和同名重复。
-- 无候选数量事实时仍明确“不会直接改动当前方案顺序”；有候选数量事实时继续保留候选总数/过滤后数量说明。
+- 确认回复明确“不会直接改动当前方案顺序”，并且不再保留候选总数/过滤后数量说明；候选数量只出现在用户主动候选查询的只读回复中。
 
 验证：
 
@@ -2316,25 +2319,25 @@ case 2：
 
 ##### 14.12.14 显式确认协议收口后的回归记录
 
-本轮继续收敛 3.0.3 的确认协议，重点确认“自然语言确认”不会重新绕过卡片执行。
+本轮继续收敛 3.0.3 的确认协议，重点确认“自然语言确认”不会绕过服务端 pending 执行；active pending 存在且短文本确认无新增条件时，可作为兜底入口消费同一 pending payload。
 
 代码层结论：
 
 - 旧 `intentSelect/planEditSelect` 只作为兼容 adapter：旧卡片点击后生成新的 `pendingConfirmationCard`，不会直接写入偏好、要求或方案状态。
 - `update_volunteer_intent_state(action="confirm")` 不再读取 `planEditCache` 或 `conversation_phase.pending` 执行写入，只返回需要点击确认卡片。
 - `IntentFrame` 不再暴露 `confirm/reject/pin/unpin` 作为自然语言结构化动作；`ActionResolver` 中不可达的确认 apply 分支已清理。
-- 方案调整 preview 返回 `ChatServiceResponseEnvelope + pendingConfirmationCard` 是正确行为；用户只在对话里说“确认”会被提示点击卡片，不会执行 apply。
-- 真正执行仍只走 `inputType=pendingConfirmation`，并校验 `pendingId/status/kind`。
+- 方案调整 preview 返回 `ChatServiceResponseEnvelope + pendingConfirmationCard` 是正确行为；卡片点击是主入口，短文本确认只在 active pending 下通过统一 pending apply 执行。
+- 真正执行仍只认服务端 pending payload，并校验 `pendingId/status/kind`、版本和一致性。
 
 本轮测试修正：
 
 - `test_mainline_dialog_negative_accounting_then_confirm_plan_adjustment_uses_model_reply` 已按新协议调整：
   - 方案替换预览必须带 `pendingConfirmationCard`。
-  - 文本“确认”不执行方案修改。
-  - 模拟卡片点击后才调用 `execute_plan_action(apply)` 并返回工作区刷新。
+  - 文本“确认”在 active pending 下可作为短文本兜底执行同一方案修改。
+  - 卡片点击路径由专门 pending confirmation 用例覆盖。
 - `examples/dialog_regression_runner.py` 当前只发送 `inputType=text`，不模拟前端 `pendingConfirmation` 卡片点击。因此 3.0.3 JSON 场景只用于验证：
   - 高副作用动作会停在 preview / pending 边界。
-  - 用户只在对话里输入“确认”不会执行写入或方案调整。
+  - 用户只在对话里输入“确认”时，只有该 case 自己生成了 active pending 才可能执行；无 pending 或确认内容冲突必须阻断。
   - 真实卡片点击后的 apply 链路由 service / regression 单测覆盖。
 - `dialog_regression_303_effect_perf_cases.json` 中专业组移动的第二轮“确认”已从旧版“文字确认执行并刷新方案”改为新协议的“提示点击确认卡片、无 followup 刷新”。
 - 3.0.3 文档中部分历史试验记录提到 `tests/unit/test_fast_route_arbitrator.py`，但当前代码树没有该测试文件；这些记录保留为历史上下文，不作为当前验证命令。当前有效回归入口以现存测试文件为准。
@@ -2679,7 +2682,7 @@ cd zhiyuan-agent
 
 - 原表现：`有没有高收费风险` 有时由模型传入 `remove_units/replace_units + high_tuition`，工具层会按审查项默认动作生成删除预览。
 - 修复后：这类问法稳定走 `review_plan`，回复给出高收费样例、费用风险说明和当前方案其他审查问题，不生成确认卡片。
-- 用户侧样例：回复列出青岛理工大学建筑学中外合作、贵州财经大学市场营销中外合作、青海民族大学土地资源管理中外合作，并提示“如果要正式更新偏好、要求或方案，会先整理成确认卡片或调整预览，点击采纳前不会生效”。
+- 用户侧样例：回复列出青岛理工大学建筑学中外合作、贵州财经大学市场营销中外合作、青海民族大学土地资源管理中外合作，并提示“如果要正式更新偏好、要求或方案，会先整理成确认卡片或调整预览，采纳/确认前不会生效”。
 
 问题 2：排序预览样例指标显示为 `-`。
 
@@ -2773,3 +2776,51 @@ live 单 case 复测：
 - followup：1 张 `pendingConfirmationCard`，`status=active`，`confirmText=采纳`。
 - 可观测：`toolNameCounts={"preview_current_major_intent_confirmation": 1}`，`hasRepeatedToolCalls=false`。
 - 结论：入参容错消除了 schema retry；用户侧确认卡片协议不变。
+
+##### 14.12.24 pending 影响追问与候选池语义质量复核
+
+本轮继续按“回复质量优先，不用字符串 fast route 抢路由”的口径复核 open-quality 全量。
+
+关键质量改进：
+
+- 已有待确认意向后，用户问“先不确认，看看这个偏好会影响当前方案吗”，回复直接解释当前 pending 的影响：
+  - 当前方案里命中 `土木工程` 的 3 条志愿；
+  - 采纳后会移出这些志愿，并同步把 `会计学/审计学` 作为偏好、`土木工程` 作为排除要求；
+  - 不点击确认时不会移出、加入、移动或重排任何志愿。
+- 预算风险/调稳场景能感知候选不足：
+  - 回复说明当前方案 `冲66 / 稳28 / 保0`、高收费 `76` 条；
+  - 明确“保区候选为 0，所以系统想补保底也补不了”，不再空泛建议调整比例。
+- 专业对比保持信息量：
+  - `计科和软工哪个更稳一点，孩子数学还行但不想太累` 能对比理论压力、项目压力、就业/读研适配。
+  - `会计和审计哪个更稳，考公也能用点的` 能区分会计就业面、审计对口度和考公岗位基数。
+
+发现并修复的回复质量问题：
+
+- 只读意向分析曾出现“自动过滤医学/护理相关选项”“不再进入候选”“候选池会大幅收窄”等措辞。
+- 这些话会让用户误以为偏好/要求一经采纳就会物理缩小基础候选池，与 3.0.3 确认协议不一致。
+- 修复后，用户侧统一表达为“基础候选池本身不会因此缩小；采纳后作为后续推荐、方案检查和方案调整的参考”。
+- 没有生成确认卡片时，不再说“确认后才会生效 / 要不要先确认这些方向”，改为“是否需要整理成确认卡片；采纳/确认前不会生效”。
+
+验证：
+
+- open-quality 全量：`/private/tmp/zhiyuan_303_open_quality_live_after_pending_impact_guard_final.json`，`23/23` 成功，`failedSteps=0`，median `17.846s`，p95 `24.187s`。
+- 相关单测回归：`425 passed`。
+- targeted live：`/private/tmp/zhiyuan_303_intent_candidate_pool_semantics_live_final2.json`，`successfulSteps=1`，回复无“自动过滤/候选池收窄/不再进入候选”残留。
+
+剩余观察：
+
+- 部分 full-agent 场景仍在 `20-25s`，但回复内容完整；当前不为了降延迟削弱信息量。
+- 后续性能优化应优先看工具事实压缩、工具 schema 收敛和 thinking hint，而不是通过用户话术关键词做快路径。
+
+最终全量 pass：
+
+- open-quality：`/private/tmp/zhiyuan_303_open_quality_live_after_candidate_pool_semantics_final_pass.json`
+- `steps=23`，`successfulSteps=23`，`failedSteps=0`
+- median `17.350s`，p95 `28.323s`，max `33.794s`
+- 剩余 warning 全部是延迟：法学/财政学、法学卷度 vs 财政学、会计 vs 审计三个专业对比类场景。
+
+质量判断：
+
+- 候选池语义已收口：最终医学/护理 + 财会影响分析回复明确“基础候选池不会变小”，没有“自动过滤/不再进入候选/候选池收窄”残留。
+- 非固定专业对比 case `网络与新媒体 vs 跨境电子商务` 已通过，回复能覆盖数学依赖、表达能力发挥、课程压力、就业方向和只读边界。
+- 当前主要优化空间不是内容质量，而是 full Agent 在专业对比类场景里偶发多工具调用和最终模型总结较慢。

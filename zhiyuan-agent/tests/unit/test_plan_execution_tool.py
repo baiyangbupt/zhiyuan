@@ -28,6 +28,7 @@ def _ctx_with_history(
     pending_plan_action: dict | None = None,
     conversation_phase: ConversationPhase | None = None,
     planning_summary: object | None = None,
+    confirmed_via_card: bool = False,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         deps=RequestContext(
@@ -37,6 +38,7 @@ def _ctx_with_history(
             pending_plan_action=pending_plan_action,
             conversation_phase=conversation_phase,
             planning_summary=planning_summary,
+            confirmed_via_card=confirmed_via_card,
         )
     )
 
@@ -44,8 +46,9 @@ def _ctx_with_history(
 def _ctx_with_pending(action_family: str, session_id: str = "exec-1") -> SimpleNamespace:
     return _ctx_with_history(
         session_id=session_id,
-        chat_history=[{"role": "user", "content": "确认"}],
+        chat_history=[],
         pending_plan_action={"action_family": action_family},
+        confirmed_via_card=True,
     )
 
 
@@ -270,6 +273,147 @@ def test_execute_plan_action_remove_ordered_unit_preview_uses_unit_position_lang
     mock_remove.assert_not_awaited()
 
 
+def test_execute_plan_action_move_ordered_unit_preview_derives_single_volunteer_units_from_items():
+    payload = {
+        "stage": "preview",
+        "action_family": "move_ordered_unit",
+        "user_goal": "把第5个挪到第2个",
+        "context_summary": "阶段=ordered；方案=80/80",
+        "preview_summary": "会移动当前方案排序区里的指定项。",
+        "missing_inputs": [],
+        "atomic_actions": [
+            {
+                "action_type": "move_ordered_unit",
+                "unit_ids": [],
+                "source_position": 5,
+                "target_position": 2,
+                "filters": {},
+                "reason": "把第5个挪到第2个",
+            }
+        ],
+    }
+    state = {
+        "orderedPlanState": {
+            "units": [],
+            "items": [
+                {"volunteerId": "v1", "schoolName": "A大学", "majorName": "英语", "position": 1},
+                {"volunteerId": "v2", "schoolName": "B大学", "majorName": "计算机", "position": 2},
+                {"volunteerId": "v3", "schoolName": "C大学", "majorName": "会计学", "position": 3},
+                {"volunteerId": "v4", "schoolName": "D大学", "majorName": "电气工程", "position": 4},
+                {"volunteerId": "v5", "schoolName": "哈尔滨理工大学", "majorName": "人力资源管理", "position": 5},
+            ],
+        }
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_state_request",
+        new=AsyncMock(return_value={"code": 0, "data": state}),
+    ):
+        result = asyncio.run(execute_plan_action(_ctx(), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert "第 5 个志愿" in data["summary"]
+    assert "第 2 个志愿位置" in data["summary"]
+    assert "不是按单条志愿位置计算" not in data["summary"]
+    assert data["facts"]["unit_kind"] == "志愿"
+    assert data["facts"]["source_unit_id"] == "v5"
+    assert data["facts"]["resolved_apply_payload"]["action_family"] == "move_unit"
+    action = data["facts"]["resolved_apply_payload"]["atomic_actions"][0]
+    assert action["action_type"] == "move_unit"
+    assert action["volunteer_ids"] == ["v5"]
+
+
+def test_execute_plan_action_remove_ordered_unit_preview_derives_single_volunteer_units_from_items():
+    payload = {
+        "stage": "preview",
+        "action_family": "remove_ordered_unit",
+        "user_goal": "把第一个志愿删掉",
+        "context_summary": "阶段=ordered；方案=80/80",
+        "preview_summary": "会删除当前方案排序区里的指定项。",
+        "missing_inputs": [],
+        "atomic_actions": [
+            {
+                "action_type": "remove_ordered_unit",
+                "unit_ids": [],
+                "source_position": 1,
+                "target_position": None,
+                "filters": {},
+                "reason": "把第一个志愿删掉",
+            }
+        ],
+    }
+    state = {
+        "orderedPlanState": {
+            "units": [],
+            "items": [
+                {"volunteerId": "v1", "schoolName": "浙江工商大学", "majorName": "法学", "position": 1},
+                {"volunteerId": "v2", "schoolName": "B大学", "majorName": "计算机", "position": 2},
+            ],
+        }
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_state_request",
+        new=AsyncMock(return_value={"code": 0, "data": state}),
+    ):
+        result = asyncio.run(execute_plan_action(_ctx(), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert "第 1 个志愿" in data["summary"]
+    assert "浙江工商大学 · 法学" in data["summary"]
+    assert "专业组" not in data["summary"]
+    assert data["facts"]["unit_kind"] == "志愿"
+    assert data["facts"]["resolved_apply_payload"]["action_family"] == "remove_units"
+    action = data["facts"]["resolved_apply_payload"]["atomic_actions"][0]
+    assert action["action_type"] == "remove_units"
+    assert action["volunteer_ids"] == ["v1"]
+
+
+def test_execute_plan_action_remove_ordered_unit_preview_groups_items_for_major_group_mode_without_units():
+    payload = {
+        "stage": "preview",
+        "action_family": "remove_ordered_unit",
+        "user_goal": "删除第1个专业组",
+        "context_summary": "阶段=ordered；方案=45/45",
+        "preview_summary": "会删除当前方案排序区里的指定专业组。",
+        "missing_inputs": [],
+        "atomic_actions": [
+            {
+                "action_type": "remove_ordered_unit",
+                "unit_ids": [],
+                "source_position": 1,
+                "target_position": None,
+                "filters": {},
+                "reason": "删除第1个专业组",
+            }
+        ],
+    }
+    state = {
+        "volunteerModel": "majorGroup",
+        "orderedPlanState": {
+            "units": [],
+            "items": [
+                {"volunteerId": "u1_m1", "schoolName": "天津财经大学珠江学院(01)专业组", "majorName": "会计学", "position": 1},
+                {"volunteerId": "u1_m2", "schoolName": "天津财经大学珠江学院(01)专业组", "majorName": "财务管理", "position": 2},
+                {"volunteerId": "u2_m1", "schoolName": "B大学(02)专业组", "majorName": "计算机", "position": 3},
+            ],
+        },
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_state_request",
+        new=AsyncMock(return_value={"code": 0, "data": state}),
+    ):
+        result = asyncio.run(execute_plan_action(_ctx(), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert "第 1 个专业组" in data["summary"]
+    assert "组内共 2 个专业" in data["summary"]
+    assert data["facts"]["unit_kind"] == "专业组"
+    assert data["facts"]["resolved_apply_payload"].get("action_family") is None
+    assert data["facts"]["resolved_apply_payload"]["atomic_actions"][0]["unit_ids"] == ["u1"]
+
+
 def test_execute_plan_action_regenerate_order_does_not_infer_structural_rebalance_from_text():
     payload = {
         "stage": "preview",
@@ -342,6 +486,49 @@ def test_execute_plan_action_sort_preview_includes_distribution_and_examples():
     assert data["facts"]["sort_field"] == "finalScore"
     assert data["facts"]["top_examples"][0].startswith("B大学-审计学")
     mock_state.assert_awaited_once()
+    mock_sort.assert_not_awaited()
+
+
+def test_execute_plan_action_sort_preview_infers_sort_field_from_user_goal_when_filters_missing():
+    payload = {
+        "stage": "preview",
+        "action_family": "sort_ordered_plan",
+        "user_goal": "这版按推荐系数重新排一下，先给我看会怎么动",
+        "context_summary": "阶段=ordered；方案=3/3",
+        "preview_summary": "会重新排序当前方案。",
+        "missing_inputs": [],
+        "atomic_actions": [
+            {
+                "action_type": "sort_ordered_plan",
+                "filters": {},
+            }
+        ],
+    }
+    state = {
+        "orderedPlanState": {
+            "summary": {"unitTotal": 3, "targetUnitCount": 3},
+            "items": [
+                {"schoolName": "A大学", "majorName": "会计学", "tier": "稳", "position": 1, "admissionRatio": 66, "finalScore": 83},
+                {"schoolName": "B大学", "majorName": "审计学", "tier": "冲", "position": 2, "admissionRatio": 48, "finalScore": 91},
+                {"schoolName": "C大学", "majorName": "财务管理", "tier": "保", "position": 3, "admissionRatio": 88, "finalScore": 77},
+            ],
+        }
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_state_request",
+        new=AsyncMock(return_value={"code": 0, "data": state}),
+    ), patch(
+        "app.tools.plan_execution_tool._sort_planning_ordered_plan_request",
+        new=AsyncMock(),
+    ) as mock_sort:
+        result = asyncio.run(execute_plan_action(_ctx(), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert "推荐系数" in data["summary"]
+    assert "录取率重新排序" not in data["summary"]
+    assert data["facts"]["sort_field"] == "finalScore"
+    assert data["facts"]["top_examples"][0].startswith("B大学-审计学")
     mock_sort.assert_not_awaited()
 
 
@@ -2519,13 +2706,14 @@ def test_execute_plan_action_allows_mutating_apply_with_pending_context():
         new=AsyncMock(return_value="add ok"),
     ) as mock_select:
         result = asyncio.run(
-            execute_plan_action(
-                _ctx_with_history(
-                    chat_history=[{"role": "user", "content": "确认"}],
-                    pending_plan_action={"action_family": "add_units"},
-                ),
-                json.dumps(payload, ensure_ascii=False),
-            )
+                execute_plan_action(
+                    _ctx_with_history(
+                        chat_history=[],
+                        pending_plan_action={"action_family": "add_units"},
+                        confirmed_via_card=True,
+                    ),
+                    json.dumps(payload, ensure_ascii=False),
+                )
         )
 
     data = json.loads(result)
@@ -2619,14 +2807,15 @@ def test_execute_plan_action_blocks_stale_pending_apply_when_planning_version_ha
         new=AsyncMock(return_value="should not execute"),
     ) as mock_select:
         result = asyncio.run(
-            execute_plan_action(
-                _ctx_with_history(
-                    chat_history=[{"role": "user", "content": "确认"}],
-                    conversation_phase=phase,
-                    planning_summary=SimpleNamespace(version=5),
-                ),
-                json.dumps(payload, ensure_ascii=False),
-            )
+                execute_plan_action(
+                    _ctx_with_history(
+                        chat_history=[],
+                        conversation_phase=phase,
+                        planning_summary=SimpleNamespace(version=5),
+                        confirmed_via_card=True,
+                    ),
+                    json.dumps(payload, ensure_ascii=False),
+                )
         )
 
     data = json.loads(result)
@@ -2782,7 +2971,7 @@ def test_execute_plan_action_redirects_school_status_query_to_local_plan_lookup(
     assert data["result_kind"] == "status_overview"
     assert data["summary"] == "当前排序方案里共命中了 7 条和“青岛城市学院”相关的志愿。"
     assert "local_plan_query" in data["reply_focus"]
-    assert data["reply_strategy"] == "direct_reply"
+    assert data["reply_strategy"] is None
     mock_query.assert_awaited_once()
     assert mock_query.await_args.kwargs["scope"] == "plan"
     assert mock_query.await_args.kwargs["school_keywords"] == ["青岛城市学院"]
@@ -4111,6 +4300,52 @@ def test_execute_plan_action_replace_high_tuition_preview_counts_only_filtered_c
     assert "只找到 1 个可补入候选" in data["summary"]
 
 
+def test_execute_plan_action_remove_preview_accepts_flat_review_issue_code():
+    payload = {
+        "stage": "preview",
+        "action_family": "remove_units",
+        "user_goal": "把太贵的那几个先去掉看看",
+        "context_summary": "阶段=reviewed；方案=30/30",
+        "missing_inputs": [],
+        "review_issue_code": "high_tuition",
+        "review_issue_scope_mode": "full_issue",
+    }
+    ordered_items = [
+        {"position": 1, "volunteerId": "u1_a", "schoolName": "A大学(01)", "majorName": "电子信息工程(21000元)", "tier": "稳"},
+        {"position": 2, "volunteerId": "u1_b", "schoolName": "A大学(01)", "majorName": "自动化(21000元)", "tier": "稳"},
+        {"position": 3, "volunteerId": "u2_a", "schoolName": "B大学(02)", "majorName": "机器人工程(22000元)", "tier": "稳"},
+    ]
+    planning_state = {
+        "reviewState": {
+            "checks": [
+                {
+                    "code": "high_tuition",
+                    "passed": False,
+                    "summary": "当前方案包含高收费专业",
+                    "affectedVolunteerIds": ["u1_a", "u1_b", "u2_a"],
+                }
+            ]
+        }
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
+        new=AsyncMock(return_value={"code": 0, "data": {"items": ordered_items}}),
+    ), patch(
+        "app.tools.plan_execution_tool._get_planning_state_request",
+        new=AsyncMock(return_value={"code": 0, "data": planning_state}),
+    ):
+        result = asyncio.run(execute_plan_action(_ctx(), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["applied"] is False
+    assert data["action_family"] == "remove_units"
+    assert data["stage"] == "preview"
+    assert data["result_kind"] == "preview_only"
+    assert "当前审查命中的高收费" in data["summary"]
+    assert "涉及 3 条志愿" in data["summary"]
+
+
 def test_execute_plan_action_replace_expands_broad_major_targets_to_all_matching_ordered_items():
     payload = {
         "stage": "apply",
@@ -4577,6 +4812,514 @@ def test_execute_plan_action_remove_resolves_major_ref_without_trailing_fee_suff
     assert data["affected_volunteer_ids"] == ["wclg-23"]
     mock_remove.assert_awaited_once()
     assert mock_remove.await_args.args[1] == ["wclg-23"]
+
+
+def test_execute_plan_action_remove_preview_resolves_source_major_scope_and_intent_update():
+    payload = {
+        "stage": "preview",
+        "action_family": "remove_units",
+        "context_summary": "阶段=reviewed；方案=30/30",
+        "preview_summary": "会从当前方案移出指定志愿。",
+        "missing_inputs": [],
+        "should_rerun_review": True,
+        "intent_relation": "unknown",
+        "atomic_actions": [
+            {
+                "action_type": "remove_units",
+                "volunteer_ids": [],
+                "source_major_names": ["汉语言文学"],
+                "target_position": None,
+                "filters": {},
+                "reason": "删掉方案里面的汉语言文学",
+            }
+        ],
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
+        new=AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "items": [
+                        {
+                            "position": 1,
+                            "volunteerId": "hywx-1",
+                            "schoolName": "江苏第二师范学院第101组",
+                            "majorName": "汉语言文学(师范)",
+                            "tier": "冲",
+                        },
+                        {
+                            "position": 2,
+                            "volunteerId": "hywx-2",
+                            "schoolName": "苏州工学院第104组",
+                            "majorName": "汉语言文学",
+                            "tier": "稳",
+                        },
+                        {
+                            "position": 3,
+                            "volunteerId": "news-1",
+                            "schoolName": "青岛电影学院",
+                            "majorName": "新闻学",
+                            "tier": "保",
+                        },
+                    ]
+                },
+            }
+        ),
+    ):
+        result = asyncio.run(execute_plan_action(_ctx(), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    facts = data["facts"]
+    assert data["applied"] is False
+    assert data["result_kind"] == "preview_only"
+    assert "汉语言文学" in data["summary"]
+    assert "后续报考参考" in data["summary"]
+    assert facts["resolved_apply_payload"]["atomic_actions"][0]["volunteer_ids"] == ["hywx-1", "hywx-2"]
+    assert facts["intent_update"]["intentMode"] == "constraint"
+    assert facts["intent_update"]["selected"] == [
+        {"major_intents": {"negative_level3": ["汉语言文学"]}}
+    ]
+
+
+def test_execute_plan_action_remove_preview_matches_exact_level3_major_without_widening():
+    payload = {
+        "stage": "preview",
+        "action_family": "remove_units",
+        "context_summary": "阶段=reviewed；方案=30/30",
+        "preview_summary": "会从当前方案移出指定志愿。",
+        "missing_inputs": [],
+        "should_rerun_review": True,
+        "intent_relation": "unknown",
+        "atomic_actions": [
+            {
+                "action_type": "remove_units",
+                "volunteer_ids": [],
+                "source_major_names": ["经济与金融"],
+                "filters": {"major_level3": ["经济与金融"]},
+                "reason": "不学经济与金融",
+            }
+        ],
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
+        new=AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "items": [
+                        {
+                            "position": 1,
+                            "volunteerId": "econ-finance-1",
+                            "schoolName": "南宁学院第01组",
+                            "majorName": "经济与金融",
+                            "majorCategory": "金融学类",
+                            "majorDiscipline": "经济学",
+                            "tier": "冲",
+                        },
+                        {
+                            "position": 2,
+                            "volunteerId": "finance-1",
+                            "schoolName": "南宁学院第01组",
+                            "majorName": "金融学",
+                            "majorCategory": "金融学类",
+                            "majorDiscipline": "经济学",
+                            "tier": "稳",
+                        },
+                    ]
+                },
+            }
+        ),
+    ):
+        result = asyncio.run(execute_plan_action(_ctx(), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    facts = data["facts"]
+    assert data["result_kind"] == "preview_only"
+    assert facts["resolved_apply_payload"]["atomic_actions"][0]["volunteer_ids"] == ["econ-finance-1"]
+    assert facts["intent_update"]["selected"] == [
+        {"major_intents": {"negative_level3": ["经济与金融"]}}
+    ]
+
+
+def test_execute_plan_action_remove_preview_narrows_model_parent_to_explicit_concrete_major():
+    payload = {
+        "stage": "preview",
+        "action_family": "remove_units",
+        "context_summary": "阶段=reviewed；方案=30/30",
+        "preview_summary": "会从当前方案移出指定志愿。",
+        "missing_inputs": [],
+        "should_rerun_review": True,
+        "intent_relation": "unknown",
+        "atomic_actions": [
+            {
+                "action_type": "remove_units",
+                "volunteer_ids": [],
+                "source_major_names": ["工商管理类"],
+                "filters": {"major_level2": ["工商管理类"]},
+                "reason": "不想学工商管理",
+            }
+        ],
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
+        new=AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "items": [
+                        {
+                            "position": 1,
+                            "volunteerId": "business-admin-1",
+                            "schoolName": "A大学第01组",
+                            "majorName": "工商管理",
+                            "majorCategory": "工商管理类",
+                            "majorDiscipline": "管理学",
+                            "tier": "稳",
+                        },
+                        {
+                            "position": 2,
+                            "volunteerId": "accounting-1",
+                            "schoolName": "B大学第01组",
+                            "majorName": "会计学",
+                            "majorCategory": "工商管理类",
+                            "majorDiscipline": "管理学",
+                            "tier": "稳",
+                        },
+                        {
+                            "position": 3,
+                            "volunteerId": "admission-display-1",
+                            "schoolName": "湖南大学第110组",
+                            "majorName": "工商管理类(包含专业:工商管理、市场营销、人力资源管理)",
+                            "tier": "稳",
+                        },
+                    ]
+                },
+            }
+        ),
+    ):
+        result = asyncio.run(
+            execute_plan_action(
+                _ctx_with_history(chat_history=[{"role": "user", "content": "不想学工商管理"}]),
+                json.dumps(payload, ensure_ascii=False),
+            )
+        )
+
+    data = json.loads(result)
+    facts = data["facts"]
+    action = facts["resolved_apply_payload"]["atomic_actions"][0]
+    assert data["result_kind"] == "preview_only"
+    assert action["volunteer_ids"] == ["business-admin-1"]
+    assert action["source_major_names"] == ["工商管理"]
+    assert action["filters"]["major_level3"] == ["工商管理"]
+    assert "major_level2" not in action["filters"]
+    assert facts["intent_update"]["selected"] == [
+        {"major_intents": {"negative_level3": ["工商管理"]}}
+    ]
+    assert "具体专业：工商管理" in data["summary"]
+    assert "专业类：工商管理类" not in data["summary"]
+
+
+def test_execute_plan_action_remove_preview_keeps_explicit_major_category_scope():
+    payload = {
+        "stage": "preview",
+        "action_family": "remove_units",
+        "context_summary": "阶段=reviewed；方案=30/30",
+        "preview_summary": "会从当前方案移出指定志愿。",
+        "missing_inputs": [],
+        "should_rerun_review": True,
+        "intent_relation": "unknown",
+        "atomic_actions": [
+            {
+                "action_type": "remove_units",
+                "volunteer_ids": [],
+                "source_major_names": ["工商管理类"],
+                "filters": {"major_level2": ["工商管理类"]},
+                "reason": "不想学工商管理类",
+            }
+        ],
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
+        new=AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "items": [
+                        {
+                            "position": 1,
+                            "volunteerId": "business-admin-1",
+                            "schoolName": "A大学第01组",
+                            "majorName": "工商管理",
+                            "majorCategory": "工商管理类",
+                            "majorDiscipline": "管理学",
+                            "tier": "稳",
+                        },
+                        {
+                            "position": 2,
+                            "volunteerId": "accounting-1",
+                            "schoolName": "B大学第01组",
+                            "majorName": "会计学",
+                            "majorCategory": "工商管理类",
+                            "majorDiscipline": "管理学",
+                            "tier": "稳",
+                        },
+                    ]
+                },
+            }
+        ),
+    ):
+        result = asyncio.run(
+            execute_plan_action(
+                _ctx_with_history(chat_history=[{"role": "user", "content": "不想学工商管理类"}]),
+                json.dumps(payload, ensure_ascii=False),
+            )
+        )
+
+    data = json.loads(result)
+    facts = data["facts"]
+    action = facts["resolved_apply_payload"]["atomic_actions"][0]
+    assert data["result_kind"] == "preview_only"
+    assert action["volunteer_ids"] == ["business-admin-1", "accounting-1"]
+    assert action["filters"]["major_level2"] == ["工商管理类"]
+    assert facts["intent_update"]["selected"] == [
+        {"major_intents": {"negative_level2": ["工商管理类"]}}
+    ]
+    assert "专业类：工商管理类" in data["summary"]
+
+
+def test_execute_plan_action_remove_preview_matches_major_group_nested_major_id():
+    payload = {
+        "stage": "preview",
+        "action_family": "remove_units",
+        "context_summary": "阶段=reviewed；方案=30/30",
+        "preview_summary": "会从当前方案移出指定志愿。",
+        "missing_inputs": [],
+        "should_rerun_review": True,
+        "intent_relation": "unknown",
+        "atomic_actions": [
+            {
+                "action_type": "remove_units",
+                "volunteer_ids": [],
+                "source_major_names": ["经济与金融"],
+                "filters": {"major_level3": ["经济与金融"]},
+                "reason": "不学经济与金融",
+            }
+        ],
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
+        new=AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "items": [
+                        {
+                            "position": 1,
+                            "unitId": "group-1",
+                            "schoolName": "天津财经大学珠江学院(01)专业组",
+                            "majorItems": [
+                                {
+                                    "volunteerId": "group-1-econ-finance",
+                                    "majorName": "经济与金融",
+                                    "majorCategory": "金融学类",
+                                    "majorDiscipline": "经济学",
+                                },
+                                {
+                                    "volunteerId": "group-1-finance",
+                                    "majorName": "金融学",
+                                    "majorCategory": "金融学类",
+                                    "majorDiscipline": "经济学",
+                                },
+                            ],
+                        }
+                    ]
+                },
+            }
+        ),
+    ):
+        result = asyncio.run(execute_plan_action(_ctx(), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["result_kind"] == "preview_only"
+    assert data["facts"]["resolved_apply_payload"]["atomic_actions"][0]["volunteer_ids"] == [
+        "group-1-econ-finance"
+    ]
+
+
+def test_execute_plan_action_remove_preview_matches_region_alias():
+    payload = {
+        "stage": "preview",
+        "action_family": "remove_units",
+        "context_summary": "阶段=reviewed；方案=30/30",
+        "preview_summary": "会从当前方案移出指定地域的志愿。",
+        "missing_inputs": [],
+        "should_rerun_review": True,
+        "intent_relation": "unknown",
+        "atomic_actions": [
+            {
+                "action_type": "remove_units",
+                "volunteer_ids": [],
+                "source_major_names": [],
+                "filters": {"province_keyword": ["内蒙"]},
+                "reason": "不要内蒙",
+            }
+        ],
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
+        new=AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "items": [
+                        {
+                            "position": 1,
+                            "volunteerId": "inner-mongolia-1",
+                            "schoolName": "内蒙古财经大学",
+                            "majorName": "会计学",
+                            "provinceName": "内蒙古",
+                            "cityName": "呼和浩特",
+                            "tier": "稳",
+                        },
+                        {
+                            "position": 2,
+                            "volunteerId": "tianjin-1",
+                            "schoolName": "天津财经大学",
+                            "majorName": "会计学",
+                            "provinceName": "天津",
+                            "tier": "稳",
+                        },
+                    ]
+                },
+            }
+        ),
+    ):
+        result = asyncio.run(execute_plan_action(_ctx(), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["result_kind"] == "preview_only"
+    assert data["facts"]["resolved_apply_payload"]["atomic_actions"][0]["volunteer_ids"] == [
+        "inner-mongolia-1"
+    ]
+    assert data["facts"]["intent_update"]["selected"] == [
+        {"city_intents": {"negative_province": ["内蒙古"]}}
+    ]
+
+
+def test_execute_plan_action_remove_preview_keeps_city_scope_in_intent_update():
+    payload = {
+        "stage": "preview",
+        "action_family": "remove_units",
+        "context_summary": "阶段=reviewed；方案=30/30",
+        "preview_summary": "会从当前方案移出指定城市的志愿。",
+        "missing_inputs": [],
+        "should_rerun_review": True,
+        "intent_relation": "unknown",
+        "atomic_actions": [
+            {
+                "action_type": "remove_units",
+                "volunteer_ids": [],
+                "source_major_names": [],
+                "filters": {"city_keyword": ["上海"]},
+                "reason": "不要上海",
+            }
+        ],
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
+        new=AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "items": [
+                        {
+                            "position": 1,
+                            "volunteerId": "shanghai-1",
+                            "schoolName": "上海立信会计金融学院",
+                            "majorName": "会计学",
+                            "provinceName": "上海",
+                            "cityName": "上海",
+                            "tier": "稳",
+                        },
+                    ]
+                },
+            }
+        ),
+    ):
+        result = asyncio.run(execute_plan_action(_ctx(), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["result_kind"] == "preview_only"
+    assert data["facts"]["resolved_apply_payload"]["atomic_actions"][0]["volunteer_ids"] == ["shanghai-1"]
+    assert data["facts"]["intent_update"]["selected"] == [
+        {"city_intents": {"negative_city": ["上海"]}}
+    ]
+
+
+def test_execute_plan_action_remove_preview_matches_school_alias():
+    payload = {
+        "stage": "preview",
+        "action_family": "remove_units",
+        "context_summary": "阶段=reviewed；方案=30/30",
+        "preview_summary": "会从当前方案移出指定院校的志愿。",
+        "missing_inputs": [],
+        "should_rerun_review": True,
+        "intent_relation": "unknown",
+        "atomic_actions": [
+            {
+                "action_type": "remove_units",
+                "volunteer_ids": [],
+                "source_major_names": [],
+                "filters": {"school_keyword": ["广西师大"]},
+                "reason": "不要广西师大",
+            }
+        ],
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
+        new=AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "items": [
+                        {
+                            "position": 1,
+                            "volunteerId": "gxnu-1",
+                            "schoolName": "广西师范大学",
+                            "majorName": "统计学",
+                            "provinceName": "广西",
+                            "tier": "稳",
+                        },
+                        {
+                            "position": 2,
+                            "volunteerId": "gxust-1",
+                            "schoolName": "广西科技大学",
+                            "majorName": "统计学",
+                            "provinceName": "广西",
+                            "tier": "保",
+                        },
+                    ]
+                },
+            }
+        ),
+    ):
+        result = asyncio.run(execute_plan_action(_ctx(), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["result_kind"] == "preview_only"
+    assert data["facts"]["resolved_apply_payload"]["atomic_actions"][0]["volunteer_ids"] == ["gxnu-1"]
+    assert data["facts"]["intent_update"]["selected"] == [
+        {"school_intents": {"negative_colleges": ["广西师范大学"]}}
+    ]
 
 
 def test_execute_plan_action_replace_resolves_position_ref():

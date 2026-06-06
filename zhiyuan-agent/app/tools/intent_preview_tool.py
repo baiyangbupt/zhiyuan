@@ -120,8 +120,6 @@ def _render_structured_preview_tool_payload(payload_text: str) -> str:
         payload = parse_intent_analysis_payload(payload_text)
     except Exception:
         return rendered
-    if payload.status == "empty":
-        return rendered
     data = payload.model_dump()
     data["reply_strategy"] = "continue_model" if payload.analysisStage == ANALYSIS_STAGE_INTEREST else "preview_wait_confirm"
     data["message"] = rendered

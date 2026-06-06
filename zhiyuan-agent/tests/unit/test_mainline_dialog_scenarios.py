@@ -640,33 +640,21 @@ def test_mainline_dialog_negative_accounting_then_confirm_plan_adjustment_uses_m
         text_confirm_reply = _run(service.handle_message("session-mainline-adjust", "user-57", "确认"))
         pending = pending_state["value"]
         assert isinstance(pending, dict)
-        apply_reply = _run(
-            service.handle_pending_confirmation(
-                "session-mainline-adjust",
-                "user-57",
-                json.dumps(
-                    {
-                        "action": "confirm",
-                        "kind": "plan_mutation",
-                        "pendingId": pending["pendingId"],
-                    },
-                    ensure_ascii=False,
-                ),
-            )
-        )
 
     assert isinstance(intent_reply, str)
     assert "待确认排除要求" in intent_reply
     assert isinstance(preview_reply, ChatServiceResponseEnvelope)
-    assert "确认后才会改动当前方案" in preview_reply.primary
+    assert preview_reply.primary == ""
     pending_cards = [item for item in preview_reply.followups if item.type == "pendingConfirmationCard"]
     assert pending_cards
-    assert "请点击" in text_confirm_reply
+    pending_card_payload = json.loads(pending_cards[0].content)
+    assert "确认前不会改动当前方案" in pending_card_payload["impact"]
+    assert "会计" in pending_card_payload["content"]
+    assert isinstance(text_confirm_reply, ChatServiceResponseEnvelope)
+    assert text_confirm_reply.primary.startswith("已移出不匹配志愿")
+    assert "跨境电子商务" in text_confirm_reply.primary
     assert execute_mock.await_count == 1
-    assert isinstance(apply_reply, ChatServiceResponseEnvelope)
-    assert apply_reply.primary.startswith("已移出不匹配志愿")
-    assert "跨境电子商务" in apply_reply.primary
-    assert _workspace_targets(apply_reply) == ["ordered"]
+    assert _workspace_targets(text_confirm_reply) == ["ordered"]
     assert len(agent.calls) == 2
     assert agent.calls[1]["pending_plan_action"] is None
 

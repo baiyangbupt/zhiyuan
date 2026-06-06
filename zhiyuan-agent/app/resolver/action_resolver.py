@@ -207,8 +207,9 @@ class ActionResolver:
         # Step 5: missing inputs
         missing_inputs = self._check_missing_inputs(action_family, frame, context)
 
-        # Step 6: determine stage. Natural-language frames never execute
-        # pending confirmations; card clicks enter the pendingConfirmation path.
+        # Step 6: determine stage. Natural-language action frames never execute
+        # mutations. Card clicks and short-text fallback enter the service-level
+        # pendingConfirmation path before apply.
         user_confirmed = False
         stage = self._determine_stage(
             action_family,
@@ -266,7 +267,8 @@ class ActionResolver:
         """IntentFrame.verb → action_family。
 
         query verb 需要由 topic 细分。
-        确认/取消不走自然语言 frame；统一由 pendingConfirmation 卡片入口处理。
+        确认/取消不走自然语言 action frame；卡片点击和短文本兜底都统一由
+        service-level pendingConfirmation 入口处理。
         """
         if frame.verb == "query":
             return self._resolve_query_family(frame)

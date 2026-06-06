@@ -18,6 +18,8 @@ export interface PlanningWorkspaceIntent {
   targetView?: 'candidate' | 'ordered';
   volunteerIds?: string[];
   refresh?: boolean;
+  preserveView?: boolean;
+  silent?: boolean;
   candidateFilters?: {
     tiers?: string[];
     provinceNames?: string[];

@@ -92,7 +92,8 @@ def test_intent_scenario_interest_stage_preference_returns_interest_text_with_ne
             )
         )
 
-    assert "初步判断" in resp
+    assert "先看影响" in resp
+    assert "初步判断" not in resp
     assert "下一步" in resp
 
 
@@ -119,7 +120,8 @@ def test_intent_scenario_interest_stage_major_preference_also_returns_interest_t
             )
         )
 
-    assert "初步判断" in resp
+    assert "先看影响" in resp
+    assert "初步判断" not in resp
     assert "计算机类" in resp
 
 
@@ -204,15 +206,16 @@ def test_intent_scenario_confirmed_career_negative_preference_removes_latent_pro
     )
 
 
-def test_intent_scenario_confirmed_constraint_returns_candidate_text():
+def test_intent_scenario_confirmed_constraint_returns_plan_check_text():
     with (
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
         patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
-        patch("app.tools.intent_state_tool.query_planning_candidate_pool", new=AsyncMock(return_value={"data": {"total": 64}})),
+        patch("app.tools.intent_state_tool.query_planning_candidate_pool", new=AsyncMock(return_value={"data": {"total": 64}})) as query_mock,
         patch(
             "app.tools.intent_state_tool.get_planning_state",
             new=AsyncMock(return_value={"data": {"candidatePoolState": {"summary": {"total": 3200}}}}),
-        ),
+        ) as state_mock,
+        patch("app.tools.intent_state_tool.mark_planning_intent_change_stale", new=AsyncMock(return_value={"code": 0})),
     ):
         mock_pm = mock_pm_cls.return_value
         mock_pm.update_city_intent = AsyncMock()
@@ -228,8 +231,14 @@ def test_intent_scenario_confirmed_constraint_returns_candidate_text():
             )
         )
 
-    assert resp.filteredTotal == 64
-    assert resp.baseTotal == 3200
+    query_mock.assert_awaited_once()
+    assert query_mock.await_args.kwargs["sort_field"] == "finalScore"
+    state_mock.assert_not_awaited()
+    assert resp.filteredTotal is None
+    assert resp.baseTotal is None
+    assert resp.candidateFilters is None
+    assert "过滤后" not in resp.message
+    assert "查看当前方案" in resp.message or "检查当前方案" in resp.message
 
 
 def test_intent_scenario_interest_followup_candidate_query_with_city_preference_returns_text():
@@ -298,6 +307,7 @@ def test_intent_scenario_handle_select_prefer_confirm_returns_confirm_text():
     }
 
     with (
+        patch("app.tools.explore_followup_tool.get_pending_confirmation", new=AsyncMock(return_value={"data": {"pendingConfirmation": {}}})),
         patch("app.tools.explore_followup_tool.get_intent_change_cache", new=AsyncMock(return_value=cache_payload)),
         patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
         patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
@@ -316,8 +326,8 @@ def test_intent_scenario_handle_select_prefer_confirm_returns_confirm_text():
             )
         )
 
-    assert "待确认内容" in resp
-    assert "点击卡片采纳" in resp
+    assert "点击采纳后生效" in resp
+    assert "点击卡片采纳" not in resp
 
 
 def test_intent_scenario_handle_select_constraint_returns_candidate_query_text():
@@ -348,7 +358,10 @@ def test_intent_scenario_handle_select_constraint_returns_candidate_query_text()
         mock_pm.update_school_intent = AsyncMock()
         resp = asyncio.run(_render_apply_selected(session_id="1007", batch="01", selected_data=selected_data))
 
-    assert "128" in resp
+    assert "128" not in resp
+    assert "候选大约" not in resp
+    assert "排除地域：上海" in resp
+    assert "后续报考参考" in resp
 
 
 def test_intent_scenario_handle_select_on_already_clicked_message_short_circuits():

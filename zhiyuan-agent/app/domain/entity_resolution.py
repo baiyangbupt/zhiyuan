@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 
-EntityType = Literal["major", "school", "school_major_ref"]
+EntityType = Literal["major", "school", "region", "school_major_ref"]
 EntitySource = Literal["exact", "alias", "auto_alias", "catalog", "extractor", "item_match"]
 EntityConfidence = Literal["high", "medium", "low"]
 
@@ -38,4 +38,3 @@ class EntityResolutionResult:
     @property
     def canonical_names(self) -> list[str]:
         return [candidate.canonical_name for candidate in self.candidates]
-

@@ -11,6 +11,7 @@ public class PlanningWorkspaceStateRes {
     private Integer version;
     private String phase;
     private StaleFlagsDTO staleFlags = new StaleFlagsDTO();
+    private ConstraintStateDTO constraintState = new ConstraintStateDTO();
     private PlanGenerationStateDTO planGenerationState = new PlanGenerationStateDTO();
     private CandidatePoolStateDTO candidatePoolState = new CandidatePoolStateDTO();
     private CandidateViewStateDTO candidateViewState;

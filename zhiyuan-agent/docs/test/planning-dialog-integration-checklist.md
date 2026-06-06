@@ -524,5 +524,5 @@
 - Plan 状态查询主链：`query_state` 默认执行读取 planningState，不再停在 analyze/preview 空结果
 - Plan 候选查询主链：`query_candidates` 会把地域 / 院校 / 专业 / 标签 / 档位筛选透传到执行层，不再丢成空条件查询
 - Plan 执行后工作台联动：`execute_plan_action.workspace_refresh_targets` 支持多目标 follow-up，已覆盖 `ordered + review` 同步刷新
-- Plan 确认链路：上一轮 preview-only 或 `plan_next_action(stage=preview)` 的高副作用动作会作为 pending action 注入下一轮上下文，用户回复“确认”时直接复用 pending apply payload 执行，不重新猜参数
+- Plan 确认链路：上一轮 preview-only 或 `plan_next_action(stage=preview)` 的高副作用动作会生成 pending confirmation card。卡片点击是主入口；用户短文本“确认/可以/好的”只在当前 active pending 存在、没有新增条件且一致性校验通过时，才复用同一 pending apply payload 执行。没有 active pending 或存在确认内容冲突时，必须阻断并要求重新生成/点击最新卡片。
 - Plan 原子动作：`add_units / remove_units / move_unit / replace_units / pin_unit / unpin_unit / regenerate_order / apply_compensation` 均有执行层或门禁覆盖，`replace_units` 已按 remove + add + review 组合实现

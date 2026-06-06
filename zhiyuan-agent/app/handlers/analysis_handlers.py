@@ -103,6 +103,31 @@ def _adjustment_first_step_hint(facts: dict[str, Any]) -> str:
     return ""
 
 
+def _candidate_supply_line(facts: dict[str, Any]) -> str:
+    supply = facts.get("candidate_supply") if isinstance(facts.get("candidate_supply"), dict) else {}
+    if not supply:
+        return ""
+    summary = str(supply.get("summary") or "").strip()
+    if summary:
+        return summary
+    shortages = [
+        str(item or "").strip()
+        for item in (supply.get("tier_shortages") or [])
+        if str(item or "").strip()
+    ]
+    return "；".join(shortages[:2])
+
+
+def _candidate_supply_missing_stable_or_protect(facts: dict[str, Any]) -> bool:
+    supply = facts.get("candidate_supply") if isinstance(facts.get("candidate_supply"), dict) else {}
+    missing = {
+        str(item or "").strip()
+        for item in (supply.get("missing_supply_tiers") or [])
+        if str(item or "").strip()
+    }
+    return bool({"稳", "保"} & missing)
+
+
 async def _fetch_ordered_or_draft(
     planning_state: dict[str, Any], session_id: str
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
@@ -133,12 +158,16 @@ def _build_review_summary(facts: dict[str, Any]) -> tuple[str, list[str], list[s
     issue_examples_text = _issue_hit_plan_examples_text(facts.get("issue_hit_plan_examples"))
     compensation_count = int(facts.get("compensation_action_count") or 0)
     compensation_text = _compact_list_text(facts.get("compensation_summaries"))
+    candidate_supply_text = _candidate_supply_line(facts)
+    missing_stable_or_protect = _candidate_supply_missing_stable_or_protect(facts)
 
     parts = [f"已完成方案审查，风险 {risk_count} 项，提醒 {warn_count} 项"]
     if problems_text:
         parts.append(f"主要问题是 {problems_text}")
     if issue_examples_text:
         parts.append(f"典型涉及 {issue_examples_text}")
+    if candidate_supply_text:
+        parts.append(f"候选供给：{candidate_supply_text}")
     if compensation_count > 0 and compensation_text:
         parts.append(f"当前还有 {compensation_count} 项可补偿动作，主要是 {compensation_text}")
 
@@ -149,8 +178,12 @@ def _build_review_summary(facts: dict[str, Any]) -> tuple[str, list[str], list[s
         reply_focus.append("issue_hit_plan_examples")
     if compensation_count > 0:
         reply_focus.append("compensation_options")
+    if candidate_supply_text:
+        reply_focus.append("candidate_supply")
 
     next_step_hints: list[str] = []
+    if missing_stable_or_protect:
+        next_step_hints.append("如果用户想补稳或保，先说明当前候选池没有对应供给，不要承诺能直接补入。")
     if compensation_count > 0:
         next_step_hints.append("如果用户想继续处理，可以先看看怎么补，再决定是否应用。")
     if risk_count == 0 and warn_count == 0:
@@ -232,12 +265,20 @@ def _build_review_direct_reply(facts: dict[str, Any]) -> str:
         if conflict_examples:
             lines.append(f"- {conflict_examples}")
 
+    candidate_supply_text = _candidate_supply_line(facts)
+    if candidate_supply_text:
+        lines.append("")
+        lines.append("### 候选供给")
+        lines.append(f"- {candidate_supply_text}。")
+
     compensation_count = int(facts.get("compensation_action_count") or 0)
     compensation_text = _compact_list_text(facts.get("compensation_summaries"))
     lines.append("")
     lines.append("### 下一步")
     if compensation_count > 0 and compensation_text:
         lines.append(f"- 可以先看补齐建议：{compensation_text}。我会先给预览，确认后再应用。")
+    elif _candidate_supply_missing_stable_or_protect(facts):
+        lines.append("- 当前候选池没有可直接补入的稳/保候选，不能只靠调整比例解决；更适合先说明风险，再看是否放宽条件或接受偏冲结构。")
     elif risk_count > 0 or warn_count > 0:
         lines.append("- 建议先处理上面的高风险项；如果要调整方案，我会先给预览，确认后再执行。")
     else:
@@ -281,6 +322,8 @@ def _build_adjustment_summary(facts: dict[str, Any]) -> tuple[str, list[str], li
         facts.get("review_issue_hit_plan_examples")
     )
     first_step_hint = _adjustment_first_step_hint(facts)
+    candidate_supply_text = _candidate_supply_line(facts)
+    missing_stable_or_protect = _candidate_supply_missing_stable_or_protect(facts)
 
     parts: list[str] = []
     if summary_text:
@@ -308,6 +351,10 @@ def _build_adjustment_summary(facts: dict[str, Any]) -> tuple[str, list[str], li
         parts.append(f"可以优先关注：{'；'.join(example_summaries[:2])}")
     if not example_summaries and review_issue_hit_plan_examples_text:
         parts.append(f"如果先从减法入手，可优先查看：{review_issue_hit_plan_examples_text}")
+    if candidate_supply_text:
+        parts.append(f"候选供给：{candidate_supply_text}")
+    if missing_stable_or_protect:
+        parts.append("当前不能直接承诺补稳或补保，需要先看是否放宽筛选条件、降低地域/专业限制，或接受这份方案整体偏冲的风险")
     if not has_actionable_suggestions and first_step_hint:
         parts.append(first_step_hint)
 
@@ -318,8 +365,12 @@ def _build_adjustment_summary(facts: dict[str, Any]) -> tuple[str, list[str], li
         reply_focus.append("example_suggestions")
     if not example_summaries and review_issue_hit_plan_examples_text:
         reply_focus.append("review_issue_hit_plan_examples")
+    if candidate_supply_text:
+        reply_focus.append("candidate_supply")
 
     next_step_hints: list[str] = []
+    if missing_stable_or_protect:
+        next_step_hints.append("用户问补稳/保时，必须先说明候选池缺少对应供给，不要口头承诺可直接补入稳/保志愿。")
     if has_actionable_suggestions:
         next_step_hints.append(
             "如果用户想继续改方案，先把主要问题和建议方向讲清楚，再确认是否执行具体动作。"

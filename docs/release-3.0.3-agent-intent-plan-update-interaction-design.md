@@ -1,5 +1,11 @@
 # Release 3.0.3 Agent 意向与方案更新交互设计
 
+> 本文件保留 3.0.3 前期阶段性设计和落地记录。后续关于意图、意向/要求、方案更新、确认卡片、短文本确认兜底和旧链路清理的最终汇总口径，以 `docs/release-3.0.3-agent-intent-plan-mutation-confirmation-design.md` 为准。
+>
+> 3.0.3 发布范围、最终回归和升级准备以 `docs/release-3.0.3-summary-and-upgrade-plan.md` 为主入口。
+
+最终口径说明：3.0.3 前期曾采用“只认卡片点击”的阶段性约束；后续验证发现模型小概率自然语言承接无法完全避免，且用户看到卡片后只回复“确认/可以”是合理交互。因此最终协议调整为：`pendingConfirmationCard` 是主入口；短文本确认是兜底入口，但只能消费服务端已有的 active `pendingConfirmation`，并必须通过 pendingId/status/kind/版本和最近可见确认内容一致性校验。模型自然语言本身、旧 `planEditCache` 或历史文本都不能作为执行依据。
+
 ## 1. 背景
 
 3.0.3 的 Agent 优化过程中暴露了一个核心问题：意向更新、硬要求更新和方案调整虽然都已有“预览后再确认”的概念，但确认入口和状态来源没有统一。
@@ -17,17 +23,18 @@
 
 这些路径在功能上大多没有坏，但会造成用户预期不一致：用户看到的是一张待确认卡片，系统内部却可能因为后续自然语言、历史 pending 或旧缓存而决定是否执行更新。
 
-本设计目标是把所有会改变长期意向、硬要求、候选收紧逻辑或方案内容/顺序的动作，统一收口到一套显式确认卡片协议。
+本设计目标是把所有会改变长期意向、硬要求、推荐排序参考或方案内容/顺序的动作，统一收口到一套显式确认卡片协议。候选池筛选只作为用户主动查看候选时的可见视图条件，不再作为意向采纳后的隐藏联动。
 
 ## 2. 产品原则
 
-1. 所有状态更新都必须先生成待确认卡片。
-2. 用户点击卡片按钮是唯一确认入口。
-3. 普通对话文本不能触发意向、要求或方案更新。
-4. 卡片必须披露本次会更新什么、属于偏好还是要求、确认前是否生效、确认后影响哪些后续行为。
-5. 用户不点击卡片而继续对话时，pending 保持未采纳；只读追问可以分析影响，但不能消费 pending。
-6. 用户回头点击同一张卡片时，应按卡片披露内容执行，除非 pending 已过期、被覆盖、已取消或后端版本已失效。
-7. Intent 更新和 Plan 更新使用同一套 `pending -> card -> confirm/cancel -> apply` 协议。
+1. 所有状态更新都必须先生成结构化待确认内容和待确认卡片。
+2. 用户点击卡片按钮是主确认入口，也是最清晰的用户交互。
+3. 短文本确认只作为兜底入口：只有当前会话存在 active `pendingConfirmation`，且用户本轮只表达确认、没有新增范围/条件/对象时，才允许消费该 pending。
+4. 没有 active pending、只有模型自然语言承诺、只有历史文本或只有旧 `planEditCache` 时，普通对话文本不能触发意向、要求或方案更新。
+5. 卡片必须披露本次会更新什么、属于偏好还是要求、确认前是否生效、确认后影响哪些后续行为。
+6. 用户不确认而继续对话时，pending 保持未采纳；只读追问可以分析影响，但不能消费 pending。
+7. 用户回头点击同一张卡片时，应按卡片披露内容执行，除非 pending 已过期、被覆盖、已取消或后端版本已失效。
+8. Intent 更新和 Plan 更新使用同一套 `pending -> card -> confirm/cancel -> apply` 协议；卡片确认和短文本兜底必须进入同一个服务端 apply 方法。
 
 ## 3. 软意向与硬要求
 
@@ -36,7 +43,7 @@
 | 类型 | 含义 | 示例 | 确认后行为 |
 | --- | --- | --- | --- |
 | 软意向 `preference` | 非排他偏好，作为后续推荐、解释、方案分析的参考 | 想去北京；更倾向财经；体制内方向可以优先看看 | 写入参考偏好，不直接收紧候选 |
-| 硬要求 `constraint` | 排他或强限制条件，会影响候选范围和方案检查边界 | 就去北京；只看北京；不去上海；护理不要 | 写入要求，并用于 candidate filters / 方案检查 |
+| 硬要求 `constraint` | 排他或强限制条件，会影响后续候选查看、方案检查和调整边界 | 就去北京；只看北京；不去上海；护理不要 | 写入要求，用于推荐参考和方案检查；不直接改小候选池 |
 
 ### 3.2 当前保留情况
 
@@ -44,7 +51,7 @@
 
 - Intent preview payload、卡片内容和 `planEditCache` 中都会带 `intentMode/intent_mode`。
 - `preference` 确认后主要写入 profile / latent profile，作为后续分析参考。
-- `constraint` 确认后会构建 candidate filters，返回候选收紧数量和 candidate 工作区刷新意图。
+- `constraint` 确认后写入旧用户画像和 planning 显式画像，标记推荐/候选/方案相关状态需要复看；当前实现不再构建隐藏 `candidateFilters`，也不返回候选收紧数量。
 - 前端 Intent 卡片已有“采纳”按钮，但主要靠标题和文案区分偏好/要求。
 
 ### 3.3 当前缺口
@@ -70,8 +77,8 @@
 确认后的目标链路：
 
 1. 写入新的偏好/要求。
-2. 调用后端候选池/专家优选推荐更新链路，基于最新画像重新生成或刷新专家优选结果。
-3. 返回工作区刷新目标，让前端刷新候选和专家优选推荐。
+2. 调用后端专家优选推荐或 recommendation overlay 刷新链路，基于最新画像刷新推荐参考。
+3. 返回方案查看引导；候选面板不自动套用隐藏筛选条件。
 4. 如果当前排序方案里已有用户手动调整过的志愿，不因为意向变更自动覆盖当前排序方案。
 5. 如果新要求和当前排序方案冲突，应标记方案需要重新检查，并提示用户“可以查看方案里哪些志愿不符合新要求”，而不是静默删除或重排。
 
@@ -83,7 +90,9 @@
 
 这里的原则是：意向确认会更新专家优选推荐和候选展示，但不会自动改动用户已经在排序区里的方案。方案变更仍然必须再走方案调整确认卡片。
 
-## 4. 当前链路 Review
+## 4. 阶段性链路 Review
+
+本节记录的是 3.0.3 前期发现问题时的链路现状，不代表最终协议。当前实现和验收以本文开头的最终口径，以及 `release-3.0.3-agent-intent-plan-mutation-confirmation-design.md` 为准。
 
 ### 4.1 Plan 方案更新
 
@@ -338,18 +347,18 @@ PendingConfirmation(active)
 | --- | --- | --- |
 | `POST /inner/pending-confirmations` | 创建 pending，并返回卡片 disclosure | Agent preview 工具 |
 | `GET /inner/pending-confirmations/active?sessionId=...` | 查询当前 active pending | Agent / 前端重连 |
-| `POST /pending-confirmations/{pendingId}/confirm` | 确认并执行 pending payload | 前端卡片按钮 |
+| `POST /pending-confirmations/{pendingId}/confirm` | 确认并执行 pending payload | 前端卡片按钮；短文本兜底由服务端先定位 active pending 后进入同一方法 |
 | `POST /pending-confirmations/{pendingId}/cancel` | 取消 pending | 前端卡片按钮 |
 | `POST /inner/pending-confirmations/{pendingId}/expire` | 主动过期 pending | 后端/清理任务 |
 
 执行规则：
 
-- `confirm` 不接受自然语言内容作为确认依据。
+- `confirm` 不接受自然语言内容作为执行依据；短文本确认只能用于定位并消费当前 active pending，执行内容仍以 pending payload 为准。
 - `confirm` 必须校验 session、用户权限、pending 状态、过期时间和后端版本。
 - `plan_mutation` 确认成功后执行原 `execute_plan_action(apply)` handler，但入口是确认服务内部。
 - `intent_change` 确认成功后执行原 `apply_selected_intents` / `update_volunteer_intent_state` 合并写入逻辑，但入口是确认服务内部。
-- `intent_change` 确认成功后必须触发专家优选推荐更新。对于偏好，刷新推荐排序和匹配解释；对于要求，刷新可选志愿、专家优选推荐和冲突提示。
-- 专家优选推荐更新采用异步完成。确认接口先返回“已采纳，正在重新看看推荐”，推荐刷新完成后再通知或触发前端刷新候选/专家优选区域。
+- `intent_change` 确认成功后必须触发专家优选推荐更新。对于偏好，刷新推荐排序和匹配解释；对于要求，刷新推荐参考并标记方案需要复看。
+- 专家优选推荐更新采用异步完成。确认接口先返回“已采纳，正在重新看看推荐”；刷新完成后更新推荐参考，但不自动给候选面板追加隐藏筛选。
 - 执行成功后返回用户可见摘要和 `workspaceRefreshTargets`。
 - 执行失败时，如果可重试，pending 保持 `active`；如果不可重试，pending 标记为 `expired` 或 `cancelled` 并返回原因。
 
@@ -373,8 +382,8 @@ PendingConfirmation(active)
 
 确认后的刷新要求：
 
-- `preference` 确认后：更新画像，重新计算专家优选推荐，刷新候选/专家优选展示；不直接改排序方案。
-- `constraint` 确认后：更新画像和筛选边界，重新计算候选池和专家优选推荐；如当前方案存在不符合要求的志愿，提示用户查看方案风险或发起方案调整确认。
+- `preference` 确认后：更新画像，刷新专家优选推荐参考；不直接改排序方案。
+- `constraint` 确认后：更新画像和要求边界，标记候选/方案需要复看并刷新专家优选推荐参考；如当前方案存在不符合要求的志愿，提示用户查看方案风险或发起方案调整确认。当前采纳响应不返回过滤后候选数量，也不自动过滤候选面板。
 - 专家优选推荐刷新异步完成，不阻塞用户采纳偏好/要求。
 - 如果 rank 或推荐更新失败，不能把意向写入回滚成不确定状态；应明确提示“偏好已采纳，但推荐刷新失败，可稍后重试刷新”，并保留可重试的刷新动作。
 - 异步刷新结果必须带上画像版本/推荐版本，不能让旧刷新结果覆盖新偏好或新要求。
@@ -397,11 +406,12 @@ PendingConfirmation(active)
 
 ### 9.3 文本确认
 
-文本“确认 / 好的 / 可以 / 就这样”统一处理：
+文本“确认 / 好的 / 可以 / 就这样”统一处理为 active pending 的兜底确认，而不是独立业务入口：
 
-- 有 active pending：提示“请点击上方卡片确认”，必要时重发 active card。
+- 有 active pending，且用户文本只表达确认、没有新增范围/条件/对象：进入统一 `apply_pending_confirmation(confirmation_entry=short_text)`。
+- 有 active pending，但文本里带了新的范围、条件、对象，或最近可见确认内容与 active pending 有冲突：不消费旧 pending，要求重新生成或点击最新卡片。
 - 无 active pending：返回 no-pending guard。
-- 不执行任何更新。
+- 旧 `planEditCache`、历史工具返回或模型自然语言承诺都不能单独支撑文本确认执行。
 
 ### 9.4 只读追问
 
@@ -572,7 +582,7 @@ PendingConfirmation(active)
 | 未确认但 payload 完整的旧 Intent 卡片 | 有条件兼容 | 后端重新创建新 pending card；原旧卡片不可直接点击 |
 | 未确认但 payload 完整且版本有效的旧 Plan preview | 有条件兼容 | 后端重新创建新 pending card；原旧 preview 不可直接点击 |
 | 只有自然语言、无 payload 或版本不可信的旧卡片 | 不兼容执行 | 标记为已失效 |
-| 旧文本确认入口 | 不兼容执行 | 提示点击卡片或重新生成 |
+| 旧文本确认入口 | 不兼容独立执行 | 只有恢复成 active `pendingConfirmation` 后，才可走短文本兜底；否则提示重新生成/点击最新卡片 |
 
 原则上，旧对话内容本身继续展示；旧 pending 是否还能执行，必须看能否转换成带 `pending_id`、payload 和版本校验的新 pending。不能转换的，不做模糊兼容，直接标记失效。
 
@@ -587,8 +597,8 @@ PendingConfirmation(active)
 
 | 旧逻辑 | 新处理 |
 | --- | --- |
-| `direct_pending_plan_confirm` | 删除直接执行；改为提示点击卡片/重发 active card |
-| `direct_pending_intent_confirm` | 删除直接执行；改为提示点击卡片/重发 active card |
+| `direct_pending_plan_confirm` | 删除 history/cache 直执行；active pending 下改走统一 short_text apply |
+| `direct_pending_intent_confirm` | 删除 history/cache 直执行；active pending 下改走统一 short_text apply |
 | `_is_plan_action_confirmation` | 只保留 no-pending guard，不参与 apply |
 | `_is_pending_intent_confirmation` | 只保留 no-pending guard，不参与 apply |
 | `_extract_pending_plan_action` history 扫描 | 迁移期 adapter；新会话不依赖 |
@@ -605,7 +615,7 @@ PendingConfirmation(active)
 3. Intent preview 接入新 pending；旧 Intent 卡片 adapter 保留。
 4. Plan preview 接入新 pending；生成 Plan 确认卡片。
 5. Intent confirm 接入异步专家优选推荐刷新，确认先返回，刷新完成后更新候选/专家优选区域。
-6. 文本确认改为提示/重发卡片，不再执行更新。
+6. 文本确认从旧 history/cache 直执行改为 active pending 兜底；无 active pending 时只提示重新生成/点击最新卡片。
 7. 接入旧会话兼容检查，能迁移的转新 pending，不能迁移的标记失效。
 8. 删除旧短确认直执行、匿名 cache confirm 和 history 扫描主路径。
 9. 补齐 pending 行为事件：创建、确认、取消、替代、过期、推荐刷新开始/完成/失败。
@@ -629,12 +639,12 @@ PendingConfirmation(active)
 | 类型 | Case | 预期 |
 | --- | --- | --- |
 | 软意向 | 想去北京 | 生成偏好卡片，未点击不生效 |
-| 硬要求 | 只看北京 | 生成要求卡片，确认后收紧候选 |
+| 硬要求 | 只看北京 | 生成要求卡片，确认后写入要求并标记推荐/方案复看；不直接改小基础候选池 |
 | 负向要求 | 护理不要 | 生成要求卡片，确认后作为排除条件 |
 | 软硬混合 | 北京优先但上海不要 | 同一卡片披露偏好和要求 |
 | 只读追问 | 这个偏好会影响方案吗 | 分析影响，不消费 pending |
 | 只读追问 | 采纳后专家优选会变吗 | 说明会重新看推荐，但不实际刷新 |
-| 文本确认 | 用户只说“确认” | 不执行，提示点击卡片 |
+| 文本确认 | 用户只说“确认” | 有 active pending 且无新增条件时消费 pending；无 active pending 或确认内容冲突时阻断并要求重新生成/点击最新卡片 |
 | Plan 排序 | 按录取率排序 | 生成方案调整卡片 |
 | Plan 移动 | 把第 3 个专业组移到第 5 位 | 生成方案调整卡片 |
 | Plan 删除 | 删除某学校某专业 | 生成方案调整卡片，无法唯一定位则澄清 |
@@ -652,7 +662,7 @@ PendingConfirmation(active)
 | 前端刷新 | active pending 存在 | 恢复卡片 |
 | 工作区联动 | apply 成功后 | 发送 `planningWorkspaceAction` 刷新 |
 | 意向确认刷新 | 采纳地域/专业偏好 | 更新专家优选推荐，不自动覆盖当前排序方案 |
-| 要求确认刷新 | 采纳排除护理/只看北京 | 更新可选志愿和专家优选推荐，并提示当前方案冲突 |
+| 要求确认刷新 | 采纳排除护理/只看北京 | 写入要求、刷新专家优选推荐参考，并提示当前方案冲突；基础候选池不在采纳瞬间隐藏过滤 |
 | 异步刷新失败 | 采纳偏好后 rank 失败 | 偏好保持已采纳，提示推荐刷新失败，可重试 |
 | 新 pending 替代 | 旧卡片未处理又生成新卡片 | 旧卡片置灰，新卡片 active |
 | 版本校验 | 旧 plan pending 确认时方案已变化 | 不执行旧调整，旧卡片失效 |
@@ -662,7 +672,7 @@ PendingConfirmation(active)
 ## 15. 验收标准
 
 - 任意更新动作在用户点击确认卡片前不会改变意向、要求、候选筛选、方案顺序、方案内容或审查状态。
-- 任意文本“确认/好的/可以/就这样”不会触发更新。
+- 任意无 active pending 的文本“确认/好的/可以/就这样”不会触发更新；有 active pending 时仅作为短文本兜底，经一致性校验后消费 pending。
 - 卡片披露内容、后端 payload 和实际执行结果一致。
 - 每个 active pending 都有唯一 `pending_id`，可追踪创建、确认、取消、过期和执行日志。
 - 旧会话中不可可靠执行的旧卡片会明确置灰并标记失效。
@@ -673,16 +683,18 @@ PendingConfirmation(active)
 
 ## 16. 2026-06-02 第一阶段落地记录
 
+注意：本节记录的是 3.0.3 第一阶段“只认卡片”的临时安全口径，后续已被 `agent-intent-plan-mutation-confirmation-design.md` 的最终协议覆盖。当前实现和验收以“卡片主入口 + active pending 短文本兜底”为准。
+
 本阶段先关闭最高风险的“文本确认直执行”旁路，保持现有旧 Intent 卡片点击采纳链路可用。
 
 已完成：
 
-- `service.py` 中有 active plan pending 时，用户只发“确认/执行/就按这个来”等文本，不再调用 `execute_plan_action(apply)`，只提示点击卡片确认。
-- `service.py` 中有 active intent pending 时，用户只发“确认”等文本，不再调用 `update_volunteer_intent_state(confirm)`，只提示点击卡片采纳。
+- 第一阶段曾让 active plan pending 的短文本确认只提示点击卡片；最终口径改为短文本可在 active pending 下进入统一 pending apply。
+- 第一阶段曾让 active intent pending 的短文本确认只提示点击卡片；最终口径改为短文本可在 active pending 下进入统一 pending apply。
 - 删除服务层已无引用的 direct pending 执行辅助函数，避免后续误用。
 - `pending_context.py` 不再指导模型在用户文本确认时直接调用 apply payload，改为提示点击确认卡片。
 - Intent 预览和边界文案从“回复确认”改为“点击卡片采纳”。
-- 单测覆盖文本确认不执行工具、不调用模型、只返回卡片确认提示。
+- 第一阶段单测曾覆盖文本确认不执行工具、不调用模型、只返回卡片确认提示；后续最终回归已改为 active pending 可短文本兜底执行，无 active pending 仍阻断。
 
 仍未完成：
 
@@ -866,8 +878,9 @@ cd zhiyuan-agent
   - 写入用户偏好后触发推荐叠加层刷新。
   - 不刷新候选筛选条件，不改变当前方案。
 - 硬要求采纳：
-  - 继续返回候选筛选 `candidateFilters`，用于前端打开候选区。
+  - 不再返回候选筛选 `candidateFilters`，不自动打开候选区。
   - 同时触发推荐叠加层刷新，后续候选推荐分和优选解释可按新要求更新。
+  - 返回“请查看方案”引导，提醒当前方案可能需要复看或另行生成方案调整确认卡片。
 - 专业简称/宽泛表达补充：
   - 常用专业简称表新增 `土木建筑 -> 土木类/建筑类 + 土木工程/建筑学`。
   - 修复“土木建筑那种别碰”被过度收缩成只排除 `土木工程` 的问题。
@@ -994,7 +1007,7 @@ cd ../zhiyuan-agent
 含义：
 
 - 偏好变化会影响推荐解释、推荐叠加层、方案与审查有效性，但不必重建全量候选池。
-- 硬要求变化可能改变候选可选范围，因此同时标记候选池过期。
+- 硬要求变化可能影响后续候选推荐和检查，因此同时标记候选池需要复看；这不是本次采纳立即过滤或重建基础候选池。
 - 两者都不自动覆盖当前方案；当前方案只是进入需要复看/复审的状态。
 
 ### 22.2 硬要求采纳后的工作区引导
@@ -1002,8 +1015,8 @@ cd ../zhiyuan-agent
 已完成：
 
 - `handle_pending_confirmation(kind=intent_change)` 在硬要求采纳成功后返回工作区引导：
-  - 如果有 `candidateFilters`，返回候选区刷新卡片。
-  - 同时返回“请查看方案”卡片，打开方案区。
+  - 不返回 `candidateFilters`，不返回候选区刷新卡片。
+  - 返回“请查看方案”卡片，打开方案区。
 - “请查看方案”卡片文案：
   - 标题：`请查看方案`
   - 内容：`这次要求已采纳，当前方案可能需要重新审查或调整。`
@@ -1056,9 +1069,9 @@ cd ../zhiyuan-agent
 - `analyze_volunteer_intent_change()` 默认不再写匿名 `planEditCache`。
 - 新 `pendingConfirmation` 保存后会 best-effort 清空旧 `planEditCache`，避免历史残留污染后续追问。
 - 待确认意向后的只读追问优先读取 `pendingConfirmation(kind=intent_change,status=active)`；旧 `planEditCache` 仅作为历史 fallback。
-- 对话轮次开始时的“文本确认必须点卡片”拦截也优先读取 active `pendingConfirmation`；旧 `planEditCache` 只作为兼容 fallback。
-- 文本“确认/可以/好的”仍只提示用户点击卡片，不执行更新。
-- 点击卡片后才调用 `apply_selected_intents`，执行成功后把 pending 状态更新为 `applied`。
+- 对话轮次开始时的短文本确认兜底优先读取 active `pendingConfirmation`；旧 `planEditCache` 只作为兼容 fallback，不能直接执行。
+- 文本“确认/可以/好的”在 active pending 存在、无新增条件且一致性校验通过时，可进入统一 pending apply；否则阻断并要求重新生成/点击最新卡片。
+- 点击卡片或短文本兜底确认后才调用 `apply_selected_intents`，执行成功后把 pending 状态更新为 `applied`。
 
 验证结果：
 
@@ -1159,26 +1172,26 @@ npx tsc --noEmit
 
 背景问题：
 
-- 服务层已经拦截用户在对话里回复“确认/可以/好的”，并要求点击确认卡片。
+- 服务层只允许短文本确认消费当前 active `pendingConfirmation`；没有 active pending 或只有旧 `planEditCache` 时，仍要求重新生成确认卡片。
 - 但 Agent 模型仍可能在非卡片点击路径误调用 `update_volunteer_intent_state(action="confirm")`。
 - 旧工具实现会从 `conversation_phase.pending` 或 `planEditCache` 读取待确认内容并直接写入偏好/要求，形成绕过前端确认卡片的旁路。
 
 本次调整：
 
 - `update_volunteer_intent_state(action="confirm")` 统一返回 `messageCode=confirm_required`，不再读取 `planEditCache` 或 `conversation_phase.pending` 执行写入。
-- 真正采纳意向/要求只保留一个执行入口：
-  - 前端点击 `pendingConfirmationCard`。
-  - WebSocket 发送 `inputType=pendingConfirmation`。
-  - 服务端校验 `pendingId/status/kind`。
+- 真正采纳意向/要求只保留统一 pending 执行入口：
+  - 主路径：前端点击 `pendingConfirmationCard`，WebSocket 发送 `inputType=pendingConfirmation`。
+  - 兜底路径：用户短文本“确认/可以/好的”仅在当前存在 active pending 且本轮没有新增条件时可消费该 pending。
+  - 服务端统一校验 `pendingId/status/kind`、版本和一致性。
   - 通过 `apply_selected_intents()` 执行写入。
-- `apply_selected_intents()` 保留为内部执行函数，用于卡片确认后的实际落库、推荐刷新、候选筛选信息生成。
+- `apply_selected_intents()` 保留为内部执行函数，用于卡片确认后的实际落库、planning 显式画像同步和推荐刷新；不再负责生成采纳后的候选筛选信息。
 - `reject` 仍只用于清空旧缓存/取消语义，不会写入偏好或要求。
 
 影响：
 
 - 模型误调用 confirm 工具时，不会改变用户偏好、硬要求、候选筛选、方案状态或推荐 overlay。
 - 旧会话中仅有 `planEditCache` 而没有新 `pendingConfirmationCard` 的情况下，不能再通过自然语言确认直接生效；需要重新生成新的确认卡片。
-- 旧单测中直接调用工具 confirm 并期待写入的用例已调整为验证“不执行、提示点击确认卡片”。
+- 旧单测中直接调用工具 confirm 并期待写入的用例已调整为验证“不执行、要求走统一 pending confirmation”；短文本兜底不读取工具 confirm，也不读取旧缓存。
 
 验证补充：
 
@@ -1224,13 +1237,13 @@ cd zhiyuan-agent
 背景问题：
 
 - `IntentFrame` 原本还暴露 `confirm/reject` verb，`ActionResolver` 可把 `confirm + is_confirmation_of_previous=true` 映射到 `apply_compensation`。
-- 当前服务层已经规定：方案和意向更新都必须由前端确认卡片发送 `inputType=pendingConfirmation` 后执行。
-- 如果后续 semantic frame/ActionResolver 接入主链路，保留 `confirm` verb 会重新形成“自然语言确认 -> apply”的旁路风险。
+- 当前服务层已经规定：方案和意向更新都必须先形成服务端 `pendingConfirmation`，再由卡片确认或短文本兜底进入统一 pending apply。
+- 如果后续 semantic frame/ActionResolver 接入主链路，保留 `confirm` verb 会重新形成“无 pending 的自然语言确认 -> apply”的旁路风险。
 
 本次调整：
 
 - 从 `IntentFrame.Verb` 中移除 `confirm/reject`。
-- `is_confirmation_of_previous` 保留为历史字段，但自然语言 frame 不再承载确认执行。
+- `is_confirmation_of_previous` 保留为历史字段，但自然语言 frame 不再承载确认执行；短文本确认只由服务层基于 active pending 处理。
 - `ActionResolver` 中不可达的 `confirm/reject` 映射和 `user_confirmed` apply 分支已清理，避免后续误以为自然语言 frame 可以消费 pending。
 - `apply_compensation` 作为执行层 action 仍保留，只能由已经校验过的 pending confirmation / 内部 apply payload 调用。
 - `ActionResolver` 测试改为验证 `confirm/reject` 不在公开 verb 列表中。
@@ -1384,10 +1397,10 @@ cd zhiyuan-agent
 
 行为：
 
-1. 服务层不执行写入，也不把用户自然语言“确认”当作确认。
+1. 服务层不基于模型自然语言直接写入；只有恢复出结构化 pending 后，卡片点击或符合条件的短文本确认才可能执行。
 2. 服务层调用现有结构化 Intent 分析工具恢复标准 intent payload。
 3. 成功后创建 `pendingConfirmation(kind=intent_change)`，返回 `pendingConfirmationCard`。
-4. 用户必须点击卡片采纳后才会写入偏好或要求。
+4. 用户点击卡片采纳，或在 active pending 存在且短文本确认通过一致性校验后，才会写入偏好或要求。
 
 明确不触发：
 
@@ -1396,4 +1409,265 @@ cd zhiyuan-agent
 - 专业对比和专业介绍。
 - 任意已经正确调用 Intent preview 工具的轮次。
 
-该兜底不是最终确认协议，只是避免“模型口头让用户确认，但没有真实卡片”的错位。最终目标仍然是所有更新由工具主动创建结构化 pending，前端只通过确认卡片按钮携带 `pendingId` 执行确认，服务层文本“确认/好的/就这样”不执行任何状态更新。
+该兜底不是最终确认协议，只是避免“模型口头让用户确认，但没有真实 pending”的错位。最终目标仍然是所有更新由工具主动创建结构化 pending；卡片点击是主入口，服务层短文本确认只作为 active pending 的兜底消费方式，执行内容以 pending payload 为准。
+
+### 35.7 session 129 人工走查后的确认状态与软硬语义收口
+
+本阶段针对前端人工走查暴露的几类问题做收口：
+
+- 软负向表达（如“不太想去江苏”“不太想学秘书”“有点排斥内蒙”）如果模型未显式传 `intentMode=preference`，服务端会按软偏好兜底，不再默认变成硬约束。
+- 硬负向表达（如“不去北京”“只看北京”“护理不要”“排除某专业”）仍保持硬要求语义，采纳后作为筛选、排除和方案检查依据。
+- 软负向偏好如果当前画像和当前方案都没有命中，不再生成无意义确认卡片；直接提示“本轮不需要额外采纳，如需硬性避开再说明”。
+- 软负向偏好如果当前方案有命中，仍生成确认卡片，但卡片文案使用“不优先”语义，不使用“排除/明确不考虑”。
+- 意向卡片的影响说明简化为“采纳后的作用”：
+  - 软偏好：影响推荐系数和专家优选推荐，不直接删除当前方案。
+  - 硬要求：作为过滤或排除参考，当前方案里的志愿仍需另行确认后才会移除或替换。
+- 用户点击 `pendingConfirmationCard` 后，后端会同步把原 CARD 消息更新为 `clickable=false/status=applied|cancelled|expired`，避免刷新后旧卡片仍可点。
+- `planningWorkspaceAction` 继续保留工作区刷新语义，但不再作为聊天列表里的可点击卡片展示，避免出现“打开排序方案”这类老逻辑卡片误导用户。
+
+影响边界：
+
+- 不改变 Plan 方案调整必须先 `preview -> pendingConfirmationCard/pendingConfirmation -> apply` 的协议。
+- 不恢复无 pending 的自然语言确认；“确认/好的/执行吧”只有在当前 active pending 存在、无新增条件且一致性校验通过时，才作为短文本兜底执行。
+- 不改变推荐刷新方式；软偏好/硬要求采纳后仍走 best-effort 推荐覆盖层刷新，当前排序方案不会被自动重排。
+
+验证：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest \
+  tests/unit/test_intent_state_tool.py \
+  tests/unit/test_chat_service_history_persistence.py \
+  tests/unit/test_tool_reply_policy.py \
+  tests/unit/test_ws_compat.py \
+  tests/unit/test_plan_execution_tool.py \
+  tests/regression/test_execution_apply.py \
+  tests/regression/test_pending_protocol.py \
+  -q
+```
+
+结果：`634 passed`。
+
+### 35.8 待确认卡片直出与回复质量边界
+
+session 129 继续走查发现：Intent preview 已生成确认卡片时，左侧主文本仍展示“点击采纳后生效 / 影响”等完整内容，随后卡片又展示同一组 summary 和 impact，形成重复。
+
+本阶段调整为：
+
+- `pendingConfirmationCard` 已成功生成时，左侧不再额外发送主文本气泡，直接由卡片承接。
+- 适用范围：
+  - 意向/要求变更确认卡片。
+  - 方案生成、排序、移动、删除、替换、补齐等方案调整确认卡片。
+  - 旧 Intent 选择入口或 Explore 后续动作转成的新确认卡片。
+- 不适用范围：
+  - 只读分析、候选查询、方案审查结果、执行完成结果、错误和澄清。
+  - 没有成功生成确认卡片的兜底回复。
+
+质量边界：
+
+- 去掉的是重复主文本，不是信息本身。
+- 卡片必须保留：
+  - 本次采纳/确认后生效的内容。
+  - 采纳后的作用或确认说明。
+  - 当前方案命中、影响事实等必要上下文。
+- 专业组移动/删除等容易误解的方案动作，卡片 content 会补充“按专业组顺序计算、不是按单条志愿位置计算、组内专业保持连续/一并移出”等说明。
+
+实现：
+
+- `ChatServiceResponseEnvelope.primary=""` 表示本轮没有需要展示的主文本。
+- WebSocket v3 和 compat 出站层遇到空 primary 且存在 follow-up 时跳过 text 消息，直接发送/保存 `pendingConfirmationCard`。
+- ChatService 在创建待确认卡片前完成 pending 状态保存，确保卡片点击仍按 `pendingId` 执行。
+
+验证：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest tests/unit/test_chat_service_history_persistence.py tests/unit/test_ws_compat.py -q
+```
+
+结果：`160 passed` + `20 passed`。
+
+### 35.9 软偏好到硬要求的状态转换补充
+
+session 129 继续人工走查发现：
+
+- 用户先表达“不太想去江苏”，采纳后作为软负向偏好写入报考参考。
+- 后续用户再表达“不去江苏”时，本轮语义已经从“不优先”升级为“明确不考虑”。
+- 旧逻辑只按 profile 里的 `negative_province=["江苏"]` 判断同值已存在，直接返回 existing-only，并且通用回复里出现“升级为只保留这个方向”的错误提示。
+
+本轮修复：
+
+- `existing-only` 不再使用“只保留这个方向、其他方向都不要”的通用话术；该说法只适用于正向排他要求，不能用于负向排除。
+- 对专业、院校、地域三类实体统一补齐状态转换：
+  - 已有软负向偏好，本轮是硬负向要求：生成确认卡，文案表达为“从不优先升级为明确不考虑”。
+  - 已有正向偏好，本轮是正向硬要求且本轮没有负向项：生成确认卡，文案表达为“从普通偏好升级为明确要满足”。
+  - 同一轮既有正向偏好又有负向要求时，正向仍按偏好处理，避免“倾向会计学，但土木工程不要”把会计学误升级为硬要求。
+  - 已有同向偏好且本轮仍是偏好：继续 existing-only，不重复生成确认卡。
+- 职业方向当前不依赖 profile 同值 existing 判断，仍由 career intent/pending 链路独立处理。
+
+当前数据结构边界：
+
+- 旧 profile 和 planning `explicitProfile` 只保存正负向值，不保存单条意向的“软/硬强度”。
+- 因此本轮修复先保证“不漏卡”：硬要求不会再被已有软偏好吞掉。
+- 如果要完全区分“硬要求已经采纳后再次表达”与“软偏好升级硬要求”，不能复用历史 `*_emotion` 字段；该能力已在 35.10 中统一落到 planning `constraintState`。
+
+验证：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m py_compile app/tools/intent_state_tool.py app/tools/intent_response_tool.py
+.venv/bin/python -m pytest tests/unit/test_intent_state_tool.py -q
+.venv/bin/python -m pytest tests/regression/test_pending_protocol.py tests/unit/test_chat_service_history_persistence.py tests/unit/test_intent_state_tool.py -q
+```
+
+结果：`149 passed`；`448 passed`。
+
+### 35.10 constraintState 作为软/硬意向权威状态
+
+进一步 review 后确认：`constraintState` 在后端 planningState 中已经存在，但此前主要用于初始化、查询 `/session/constraints` 和派生摘要；Agent 主路径在用户点击确认卡片后只写旧 `UserProfile` 与 planning `explicitProfile`，没有把 `intentMode=preference|constraint` 的强度状态同步进去。因此 35.9 的“不漏卡”修复仍然依赖旧 profile 兼容判断，不能可靠区分“软偏好已存在”和“硬要求已采纳”。
+
+本轮统一口径：
+
+- `constraintState` 是软偏好/硬要求的权威状态源。
+- `explicitProfile` 和旧 `UserProfile` 暂时保留为兼容投影，继续服务 rank、候选、方案分析、历史画像接口和旧测试链路。
+- Agent 判断是否重复、是否需要从软偏好升级为硬要求时，优先读取 `planningSummary.constraint_state`，不再用旧 `*_emotion` 判断强度。
+- 老会话如果没有 `constraintState`，仍按旧 profile 兼容为普通偏好；不能证明是硬要求的，不默认当硬约束。
+
+后端落地：
+
+- `PlanningWorkspaceStateRes` 增加 `constraintState`，让 Agent 初始化时通过轻量 workspace-state 拿到已确认软/硬状态。
+- 新增 `PATCH /gaotu-assistant-bot/inner/planning/{tenantId}/session/constraints?chatSessionId=...`。
+- `UpdateConstraintStateReq` 支持 `intentMode` 与专业、院校、地域三组 `positive/negative`。
+- `HardConstraintsDTO` 补齐 `mustIncludeSchools/mustExcludeSchools`。
+- `SoftPreferencesDTO` 补齐 `avoidRegions/avoidMajors/avoidSchools`。
+- 写入规则：
+  - `constraint`：写入 `mustInclude*/mustExclude*`，并清理同值 soft 与相反 hard/soft。
+  - `preference`：写入 `prefer*/avoid*`，但不覆盖已经存在的同向 hard；同时清理相反方向冲突。
+
+Agent 落地：
+
+- 确认卡片采纳后，`_apply_intents()` 在更新旧 profile 后 best-effort 同步 `constraintState`。
+- `analyze_volunteer_intent_change()` 从 `ctx.deps.planning_summary.constraint_state` 读取新状态，不额外发起完整 planningState 查询。
+- `_build_select_items()` 对专业、院校、地域统一处理：
+  - hard 已存在，本轮同向 hard：existing-only，不重复弹卡。
+  - soft 已存在，本轮 hard：生成升级确认卡。
+  - hard 已存在，本轮 soft：existing-only，不把硬要求降级成普通偏好。
+  - 专业负向支持父类覆盖子专业，例如“已排除法学类”后再次“不学法学”不重复弹卡。
+
+不直接删除旧结构的原因：
+
+- 当前 `constraintState` 仍是扁平列表，旧 profile 还保留专业层级、省市、学校/专业 code 和历史兼容字段。
+- rank、方案影响分析、候选查询和部分前端/历史接口仍消费旧投影。
+- 老会话没有可靠软/硬强度历史，只能按兼容策略迁移，不能直接硬切。
+
+验证：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m py_compile app/tools/intent_state_tool.py app/util/internal_client.py app/agent/context.py
+.venv/bin/python -m pytest tests/unit/test_intent_state_tool.py -q
+.venv/bin/python -m pytest tests/regression/test_pending_protocol.py tests/unit/test_chat_service_history_persistence.py -q
+.venv/bin/python -m pytest tests/unit/test_plan_execution_tool.py tests/regression/test_execution_apply.py tests/unit/test_planning_workflow_tool.py -q
+.venv/bin/python -m pytest tests/unit/test_plan_orchestration_tool.py tests/regression/test_normalize_action.py tests/regression/test_keyword_matchers.py tests/regression/test_execution_preview.py -q
+cd ../zhiyuan-server
+mvn -q -DskipTests compile
+```
+
+结果：
+
+- `tests/unit/test_intent_state_tool.py`：`153 passed`。
+- `tests/regression/test_pending_protocol.py tests/unit/test_chat_service_history_persistence.py`：`299 passed`。
+- 方案执行/移动/删除/工作流：`193 passed`。
+- 排序路由、排序字段、预览 normalize：`194 passed`。
+- 后端 compile：通过。
+
+### 35.11 偏好采纳后的候选/推荐静默刷新
+
+session 131 前端走查发现：用户采纳“偏好专业：传播学”后，后端已经写入画像、同步 `constraintState`，并触发推荐 overlay 刷新；但前端只收到普通文本回复，没有收到工作台刷新事件，所以候选和推荐视图不会主动更新。另一方面，偏好采纳不能强制把用户从当前方案 tab 切到候选 tab。
+
+本轮补齐协议：
+
+- `intent_change` 确认成功且 `intentMode=preference` 时，Agent 返回文本结果，并追加 `planningWorkspaceAction` follow-up。
+- 该 follow-up 使用：
+  - `targetView: "candidate"`
+  - `refresh: true`
+  - `preserveView: true`
+- 前端收到后：
+  - 触发 `fetchFlag` 刷新工作台状态和筛选项。
+  - `WorkspacePanel` 调用候选刷新/查询，更新候选和专家优选推荐展示。
+  - 不切换当前 tab，不滚动到候选区。
+  - 移动端不自动打开工作台抽屉。
+- 老的候选/方案查看卡片不带 `preserveView`，仍保持原来的“打开对应区域”行为。
+
+同时修复会话 131 “卡片已经保存但前端看不到”的消息刷新问题：
+
+- WebSocket 收到普通回复或 follow-up 后，消息列表强制拉取最新第一页并合并到当前列表。
+- 用户上拉历史页时仍按指定页加载，不受影响。
+- 这样可以覆盖“当前停留在历史 page=2，最新 pendingConfirmationCard 在 page=1”的场景。
+
+筛选搜索补充：
+
+- 候选筛选项后端已提供三级专业和院校名称，例如 `传播学` 位于 `专业 -> 文学 -> 新闻传播类 -> 传播学`。
+- 前端筛选搜索从只匹配当前 label/title，扩展为匹配“属性名 + 值 + 层级路径”。
+- 兼容“学校/院校”叫法差异，避免用户输入“学校名称”时搜不到“院校名称”。
+
+验证：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest tests/unit/test_chat_service_history_persistence.py::test_chat_service_pending_preference_confirmation_does_not_force_plan_review tests/unit/test_chat_service_history_persistence.py::test_chat_service_pending_intent_confirmation_applies_and_prompts_plan_check -q
+```
+
+结果：`2 passed`。
+
+前端 dev server 热更新通过；全量 `tsc --noEmit` 仍有既有 unrelated 类型问题，集中在 `session/ModalForm`、`userCenter`、`service`，本次改动文件未新增类型错误。
+
+### 35.12 候选筛选搜索与方案对话链路复查
+
+session 131 前端继续走查发现：候选区“筛选 / 排除标签”弹层里的“搜索标签”输入框，输入任意内容后会把候选筛选树从“院校地域”开始几乎全量展开。预期是只展示命中检索词的标签/属性项，以及它们所在的父级路径。
+
+根因：
+
+- 搜索过滤逻辑在分组标题命中时直接保留该分组下全部 `options/children`。
+- 更关键的是，叶子节点的 `option` 在未命中时仍被原样保留；`hasFilterPanelOptions()` 看到 `option` 就认为该节点有内容，导致没有匹配的叶子也被保留下来。
+- 渲染层在搜索态会自动展开保留下来的节点，于是表现为“搜什么都展开全部”。
+
+修复：
+
+- 搜索时父级命中只保留父级路径，不再直接携带全量子树。
+- 每个节点都递归过滤子节点和 options。
+- 未命中的 `group.option` 会被清空，只有命中的叶子才保留筛选/排除按钮。
+- 搜索文本继续匹配“属性名 + 值 + 层级路径”，并保留“学校/院校”叫法兼容。
+
+方案对话链路复查：
+
+- 方案分析、方案审查、补偿预览、方案调整预览统一走 `execute_plan_action`。
+- 只读类：
+  - `review_plan`、`query_state`、`analyze_adjustment` 等只返回分析/审查结果和必要的工作区查看事件，不写方案。
+- 高副作用类：
+  - 加入、移除、移动、替换、排序、重排、生成、补齐等动作属于 mutating family。
+  - 如果模型误给 `stage=apply` 但没有服务端确认上下文，执行层会降级为 `stage=preview`。
+  - preview 结果由服务层生成 `pendingConfirmationCard`，主文本置空，卡片是主确认入口。
+  - 点击卡片或符合条件的短文本确认都会进入统一 pending apply，并根据结果刷新 ordered/review/candidate。
+- 补偿：
+  - `preview_compensation` 没有可执行建议时不会生成可执行 pending。
+  - `apply_compensation` 会校验方案容量和可补齐数量，避免满方案或无候选时误执行。
+- 审查：
+  - 方案变更后如 `should_rerun_review=true`，执行层会复审并把 review 加入工作区刷新目标。
+  - 单纯 `review_plan` 不重复触发复审后处理。
+- 文本确认：
+  - “确认/好的/执行吧”不会绕过服务端 pending 直接执行方案调整。
+  - active pending 存在且用户本轮只是短确认时，可作为兜底确认进入统一 pending apply。
+  - 用户继续补充新范围、条件或对象时，不消费旧 pending，应重新生成确认卡片。
+
+验证：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest tests/regression/test_execution_preview.py tests/regression/test_execution_apply.py tests/regression/test_pending_protocol.py tests/unit/test_planning_plan_scenarios_sync.py tests/unit/test_plan_execution_tool.py -q
+.venv/bin/python -m pytest tests/unit/test_chat_agent_tools.py tests/unit/test_tool_reply_policy.py tests/unit/test_chat_service_history_persistence.py::test_chat_service_text_confirm_workspace_actions_require_card_click tests/unit/test_chat_service_history_persistence.py::test_chat_service_pending_plan_confirmation_applies_intent_payload_before_plan tests/unit/test_chat_service_history_persistence.py::test_chat_service_pending_intent_confirmation_applies_and_prompts_plan_check -q
+```
+
+结果：`420 passed`；`78 passed`。
+
+前端 dev server 热更新通过；全量 `tsc --noEmit` 仍有既有 unrelated 类型问题，集中在 `session/ModalForm`、`userCenter`、`service`。

@@ -213,7 +213,7 @@ class TestStyleRules:
         assert len(result) > 100
         assert "回复风格" in result
         assert "不要夹杂不必要的英文词" in result
-        assert "点击采纳/确认前不会生效" in result
+        assert "采纳/确认前不会生效" in result
         assert "首轮或干净上下文不要以“抱歉，刚才...”开头" in result
 
 
@@ -306,7 +306,7 @@ class TestToolDispatchRules:
         assert 'result_kind="review_result"' in result
         assert "本轮审查结果是风险与提醒数量的权威事实" in result
         assert "不要再拿历史上下文里的旧方案概览" in result
-        assert "单纯方案审查 `review_plan` 不要先调用 `collect_plan_context_inputs`" in result
+        assert "单纯方案审查 `review_plan` 不要先调用 `collect_plan_context_inputs` 或 `plan_next_action`" in result
 
     def test_plan_region_move_should_not_be_generic_sort(self):
         result = build_tool_dispatch_rules()

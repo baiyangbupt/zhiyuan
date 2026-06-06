@@ -132,7 +132,7 @@ const SessionDetailV2 = () => {
   }, [isInitialized, tenantId, chatSessionId]);
 
   const handleWorkspaceIntent = (intent: Omit<PlanningWorkspaceIntent, 'nonce'>) => {
-    if (isMobile) {
+    if (isMobile && !intent.preserveView) {
       setWorkspaceDrawerVisible(true);
     }
     setWorkspaceIntent({

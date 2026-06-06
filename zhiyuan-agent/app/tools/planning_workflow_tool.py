@@ -110,6 +110,124 @@ def _build_count_gap_hint(current: int, target: int, unit_label: str = "志愿")
     return None
 
 
+def _coerce_non_negative_int(value: Any) -> int:
+    try:
+        parsed = int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+    return parsed if parsed > 0 else 0
+
+
+def _normalize_tier_count_map(value: Any) -> dict[str, int]:
+    data = value if isinstance(value, dict) else {}
+    return {
+        "冲": _coerce_non_negative_int(data.get("冲", data.get("sprint", 0))),
+        "稳": _coerce_non_negative_int(data.get("稳", data.get("safe", 0))),
+        "保": _coerce_non_negative_int(data.get("保", data.get("protect", 0))),
+    }
+
+
+def _candidate_pool_total(candidate_state: dict[str, Any]) -> int:
+    summary = candidate_state.get("summary") or {}
+    for value in (
+        summary.get("unitTotal"),
+        summary.get("total"),
+        candidate_state.get("unitTotal"),
+        candidate_state.get("total"),
+    ):
+        total = _coerce_non_negative_int(value)
+        if total:
+            return total
+    items = candidate_state.get("items") or []
+    return len(items) if isinstance(items, list) else 0
+
+
+def _candidate_tier_counts(candidate_state: dict[str, Any], volunteer_model: str) -> dict[str, int]:
+    summary = candidate_state.get("summary") or {}
+    preferred_keys = (
+        ("unitTierCounts", "tierCounts", "entryTierCounts")
+        if volunteer_model == "majorGroup"
+        else ("tierCounts", "entryTierCounts", "unitTierCounts")
+    )
+    for key in preferred_keys:
+        counts = _normalize_tier_count_map(summary.get(key) or candidate_state.get(key))
+        if any(counts.values()):
+            return counts
+    items = candidate_state.get("items") or []
+    counts = {"冲": 0, "稳": 0, "保": 0}
+    if isinstance(items, list):
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            tier = str(item.get("tier") or item.get("level") or "").strip()
+            if tier in counts:
+                counts[tier] += 1
+    return counts
+
+
+def _build_candidate_supply_facts(planning_state: dict[str, Any] | None) -> dict[str, Any]:
+    state = planning_state or {}
+    candidate_state = state.get("candidatePoolState") or {}
+    if not isinstance(candidate_state, dict):
+        return {}
+    summary = candidate_state.get("summary") or {}
+    volunteer_model = str(
+        state.get("volunteerModel")
+        or state.get("volunteer_model")
+        or summary.get("volunteerModel")
+        or summary.get("volunteer_model")
+        or ""
+    ).strip()
+    required_count = _coerce_non_negative_int(
+        candidate_state.get("requiredCount")
+        or summary.get("requiredCount")
+        or summary.get("targetUnitCount")
+        or summary.get("targetCount")
+    )
+    required_tier_counts = _normalize_tier_count_map(
+        candidate_state.get("requiredTierCounts")
+        or summary.get("requiredTierCounts")
+        or summary.get("targetTierCounts")
+    )
+    candidate_tier_counts = _candidate_tier_counts(candidate_state, volunteer_model)
+    candidate_total = _candidate_pool_total(candidate_state)
+    shortages: list[str] = []
+    missing_supply_tiers: list[str] = []
+    for tier in ("冲", "稳", "保"):
+        required = required_tier_counts.get(tier, 0)
+        available = candidate_tier_counts.get(tier, 0)
+        if required > available:
+            shortages.append(f"{tier}区候选不足：当前 {available} 个，目标 {required} 个")
+        if required > 0 and available <= 0:
+            missing_supply_tiers.append(tier)
+    risk_hints = [
+        str(item or "").strip()
+        for item in (candidate_state.get("riskHints") or summary.get("riskHints") or [])
+        if str(item or "").strip()
+    ]
+    tier_text = _format_tier_counts(candidate_tier_counts)
+    summary_text = f"候选池共 {candidate_total} 个，{tier_text}"
+    if any(tier in missing_supply_tiers for tier in ("稳", "保")):
+        missing_text = "、".join(tier for tier in ("稳", "保") if tier in missing_supply_tiers)
+        summary_text += f"；当前没有可直接补入的{missing_text}区候选"
+    elif shortages:
+        summary_text += f"；{shortages[0]}"
+    return {
+        "status_code": str(candidate_state.get("statusCode") or summary.get("statusCode") or "").strip(),
+        "status_message": str(candidate_state.get("statusMessage") or summary.get("statusMessage") or "").strip(),
+        "risk_hints": risk_hints,
+        "volunteer_model": volunteer_model,
+        "required_count": required_count,
+        "required_tier_counts": required_tier_counts,
+        "candidate_total": candidate_total,
+        "candidate_tier_counts": candidate_tier_counts,
+        "tier_shortages": shortages,
+        "missing_supply_tiers": missing_supply_tiers,
+        "has_stable_or_protect_supply": bool(candidate_tier_counts.get("稳", 0) > 0 or candidate_tier_counts.get("保", 0) > 0),
+        "summary": summary_text,
+    }
+
+
 def _format_ratio(value: Any) -> str | None:
     if value is None:
         return None
@@ -755,6 +873,7 @@ def _build_review_result_facts(
             plan_summary=plan_summary,
             include_position=True,
         ),
+        "candidate_supply": _build_candidate_supply_facts(planning_state),
     }
 
 
@@ -849,6 +968,7 @@ def _build_plan_adjustment_facts(
             plan_summary=plan_summary,
             include_position=True,
         ),
+        "candidate_supply": _build_candidate_supply_facts(planning_state),
     }
 
 
@@ -952,6 +1072,7 @@ def _build_plan_status_overview_facts(
             plan_summary=active_summary,
             include_position=bool(ordered_state),
         ),
+        "candidate_supply": _build_candidate_supply_facts(planning_state),
     }
 
 

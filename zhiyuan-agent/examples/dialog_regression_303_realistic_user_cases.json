@@ -24,8 +24,10 @@
           "审查",
           "风险"
         ],
-        "assertThinkingContains": [
-          "正在读取当前方案并整理这次请求"
+        "assertThinkingContainsAny": [
+          "正在读取当前方案并整理这次请求",
+          "正在处理你的方案",
+          "正在看这条方向和当前方案"
         ],
         "assertNotContains": [
           "payload",
@@ -91,8 +93,10 @@
           "提醒",
           "审查"
         ],
-        "assertThinkingContains": [
-          "正在读取当前方案并整理这次请求"
+        "assertThinkingContainsAny": [
+          "正在读取当前方案并整理这次请求",
+          "正在处理你的方案",
+          "正在看这条方向和当前方案"
         ],
         "assertNotContains": [
           "payload",

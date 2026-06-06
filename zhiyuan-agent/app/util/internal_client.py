@@ -482,6 +482,52 @@ async def get_planning_workspace_state(thread_id: Union[str, int]) -> Dict[str, 
     )
 
 
+async def update_planning_explicit_profile(
+    thread_id: Union[str, int],
+    major_preferences: Optional[Dict[str, list[str]]] = None,
+    school_preferences: Optional[Dict[str, list[str]]] = None,
+    region_preferences: Optional[Dict[str, list[str]]] = None,
+    strength_subjects: Optional[list[str]] = None,
+) -> Dict[str, Any]:
+    """更新 planning 显式画像。"""
+    payload: Dict[str, Any] = {}
+    if major_preferences is not None:
+        payload["majorPreferences"] = major_preferences
+    if school_preferences is not None:
+        payload["schoolPreferences"] = school_preferences
+    if region_preferences is not None:
+        payload["regionPreferences"] = region_preferences
+    if strength_subjects is not None:
+        payload["strengthSubjects"] = strength_subjects
+    return await http_client.patch(
+        endpoint=f"/gaotu-assistant-bot/inner/planning/1/session/profile/explicit?chatSessionId={thread_id}",
+        json_data=payload,
+        error_msg="更新 planning 显式画像失败",
+    )
+
+
+async def update_planning_constraint_state(
+    thread_id: Union[str, int],
+    intent_mode: str = "preference",
+    major_preferences: Optional[Dict[str, list[str]]] = None,
+    school_preferences: Optional[Dict[str, list[str]]] = None,
+    region_preferences: Optional[Dict[str, list[str]]] = None,
+) -> Dict[str, Any]:
+    """更新 planning 软偏好/硬约束状态。"""
+    payload: Dict[str, Any] = {"intentMode": intent_mode or "preference"}
+    if major_preferences is not None:
+        payload["majorPreferences"] = major_preferences
+    if school_preferences is not None:
+        payload["schoolPreferences"] = school_preferences
+    if region_preferences is not None:
+        payload["regionPreferences"] = region_preferences
+    return await http_client.patch(
+        endpoint=f"/gaotu-assistant-bot/inner/planning/1/session/constraints?chatSessionId={thread_id}",
+        json_data=payload,
+        error_msg="更新 planning 约束状态失败",
+    )
+
+
 async def update_planning_latent_profile(
     thread_id: Union[str, int],
     future_development: Optional[Dict[str, Any]] = None,
