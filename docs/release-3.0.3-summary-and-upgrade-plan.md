@@ -212,7 +212,7 @@ docs/release-3.0.3-production-upgrade-plan.md
 - Agent 镜像：image `sha256:0d038dc02e4f9bee2e3026851377a37f717cfac94859d67d76a8fbeee86a9e8f`；tar `sha256:129de22376ad80c4ad0c1df19a9574e0f1f83bf85298e73e19ab0569cfb53fa5`
 - Release 包：`/tmp/zhiyuan-release-3.0.3-f7dd564.tar.gz`，`sha256:be407c727c8cb93ba01083017a55744f99cad4adc7adea344ba0a8d3d4080992`
 
-待补：`prod-3.0.3` tag、本地类生产演练记录。
+`prod-3.0.3` tag 已创建；待补本地类生产演练记录。
 
 ## 5. 遗留问题和后续优化
 
