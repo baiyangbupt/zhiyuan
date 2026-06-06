@@ -350,6 +350,66 @@ docker build --platform linux/amd64 \
   zhiyuan-web
 ```
 
+### 7.4 本地类生产演练记录
+
+执行时间：2026-06-06。
+
+本机类生产对象：
+
+| 模块 | 对象 | 端口 | 结果 |
+| --- | --- | --- | --- |
+| Backend | `zhiyuan-server/target/zhiyuan-server.jar`，local profile | `8090` | 启动成功；Flyway 校验本地 schema version `5`，无新增 migration |
+| Web | `zhiyuan-web:prod-3.0.3` | `18088 -> 28688` | 启动成功；`/assistant-pc/session` 返回 `200` |
+| Agent | `zhiyuan-agent:prod-3.0.3` | `18091 -> 8009` | 启动成功；`/health` 返回 `200` |
+| Rank | `zhiyuan-rank:prod-3.0.0` | `18092 -> 5001` | 启动成功；本轮不升级 Rank |
+
+基础健康检查：
+
+```text
+ZHIYUAN_WEB_PORT=18088 \
+ZHIYUAN_WEB_HEALTH_PATH=/assistant-pc/session \
+ZHIYUAN_SERVER_PORT=8090 \
+ZHIYUAN_AGENT_PORT=18091 \
+ZHIYUAN_RANK_PORT=18092 \
+bash ops/healthcheck.sh --local
+```
+
+结果：
+
+```text
+web local    PASS
+server local PASS
+agent local  PASS
+rank local   PASS
+failures=0
+```
+
+macOS 本机没有 systemd/nginx，`systemd server` 和 `nginx config` 为 `SKIP`，不影响本地类生产验证结论。
+
+业务 smoke：
+
+| 检查项 | 结果 |
+| --- | --- |
+| Backend `/gaotu-assistant-bot/base-data/province-city` | `200`，约 `0.797s` |
+| Web `/assistant-pc/session` | `200`，约 `0.625s` |
+| Agent `/health` | `200`，约 `0.475s` |
+| `workspace-state?chatSessionId=16` | `200`，约 `3.828s`，`697026` bytes |
+| `workspace-state?chatSessionId=17` | `200`，约 `3.828s`，`338214` bytes |
+| `candidate-pool/filter-options?chatSessionId=17` | `200`，约 `3.137s`，`21125` bytes；包含 `schoolKeywords` |
+| `ordered-plan/export?chatSessionId=17` | `200`，约 `5.132s`，`17305` bytes；文件识别为 Microsoft OOXML |
+
+结构检查：
+
+- `workspace-state` 返回包含 `constraintState`、`staleFlags`、`orderedPlanState`、`candidatePoolState`。
+- Web 正式镜像检查通过：不包含 `ws://localhost:8000`，`routes-manifest.json` 包含 `basePath=/assistant-pc`。
+- Agent 镜像 import 检查通过：`agent_import_ok`。
+
+注意：
+
+- 正式 `prod-3.0.3` Web 镜像 rewrite 指向 `https://www.gaotuzhiyuan.com`，因此本地业务接口 smoke 使用 `8090` 直连 Backend。
+- 首次在 sandbox 内启动 Backend JAR 失败，原因是 sandbox 禁止 Java 连接本机 MySQL/Redis，错误为 `java.net.SocketException: Operation not permitted`；提升权限后同一 JAR 启动成功。
+- Agent Docker 构建阶段现场拉取未锁依赖，受网络影响耗时较长；生产部署应使用已导出的 release 镜像 tar，不在生产机现场构建。
+
 ## 8. 生产发布顺序
 
 建议低峰期执行，按 Backend -> Agent -> Web 的顺序切换。Rank 不动。
