@@ -233,7 +233,7 @@ docker save zhiyuan-agent:prod-3.0.3 zhiyuan-agent:3.0.3-amd64 \
 | 后端 JAR | `zhiyuan-server/target/zhiyuan-server.jar` | `linux/amd64` | `sha256:822908fcd0876eb9ca83be21ade6040600716cfd26f9be4ee3c47f56d2bbe726` |
 | Web 镜像 | `zhiyuan-web:prod-3.0.3` / `zhiyuan-web:3.0.3-amd64` | `linux/amd64` | image `sha256:ef5142e0b9b0d80f5ca037a5790c3f95b2ed063efc7fe1d21b529c62aa7a02af`; tar `sha256:fded71e883499cfe519383ed5db3071d29c2949e574696d63c3556682bef0808` |
 | Agent 镜像 | `zhiyuan-agent:prod-3.0.3` / `zhiyuan-agent:3.0.3-amd64` | `linux/amd64` | image `sha256:0d038dc02e4f9bee2e3026851377a37f717cfac94859d67d76a8fbeee86a9e8f`; tar `sha256:129de22376ad80c4ad0c1df19a9574e0f1f83bf85298e73e19ab0569cfb53fa5` |
-| Release 包 | `/tmp/zhiyuan-release-3.0.3-f7dd564.tar.gz` | - | `sha256:5c7988852e383381684d04d329d2d2205be6e5c54a3acce70f569b78ef9fca6a` |
+| Release 包 | `/tmp/zhiyuan-release-3.0.3-f7dd564.tar.gz` | - | `sha256:be407c727c8cb93ba01083017a55744f99cad4adc7adea344ba0a8d3d4080992` |
 
 记录命令：
 
