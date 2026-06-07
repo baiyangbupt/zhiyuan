@@ -23,6 +23,7 @@
 - 不改 Rank 镜像。
 - 不切换生产部署架构。
 - 不配置 `gaotu.zhiyuan.volunteer-super-vip-only`；该全局开关已经废弃，不能进入 3.0.3 生产配置。
+- 不在本轮迁移 Docker root 目录；`/var/lib/docker` 仍在根盘，迁移需要单独维护窗口停 Docker。
 
 ## 2. 发布标识
 
@@ -52,7 +53,7 @@ git rev-parse HEAD
 
 - 构建使用的代码必须是已提交 commit。
 - `git status --short` 不应包含未提交运行时代码；上线执行记录类文档可在构建后补写 hash。
-- 当前发布 tag 已复核为 `prod-3.0.3 -> 15c11ebf27b56daf76c4b7fa2f2b8b5a48b46c23`；运行时代码构建源为 `f7dd564177e16c793d55e8179b46e00a114145b2`，后续文档和演练记录提交不改变运行时代码产物。
+- 当前发布 tag 最终以远端 `prod-3.0.3` 为准；生产实际初始构建 commit 为 `15c11ebf27b56daf76c4b7fa2f2b8b5a48b46c23`，运行时代码构建源为 `f7dd564177e16c793d55e8179b46e00a114145b2`。后续文档、env 模板和线上日志配置修复会继续进入 `prod-3.0.3`，但不改变 Agent/Web 核心运行代码。
 
 ## 3. 当前 3.0.2 回滚点
 
@@ -86,7 +87,9 @@ git rev-parse HEAD
 
 ## 5. 构建产物
 
-生产机不做编译构建。建议在本地或构建机生成以下产物并复制到生产机。
+常规建议是在本地或构建机生成以下产物并复制到生产机。
+
+本次生产实际部署中，Docker Hub 官方基础镜像拉取失败，未在生产机重新拉基础镜像。生产机完成了一次受控现场构建：Backend 直接 Maven 构建；Web/Agent 因依赖文件相对 `prod-3.0.2` 未变化，采用离线方式基于生产机已有 `prod-3.0.2` 镜像替换 3.0.3 源码并重新构建/校验。该构建方式不切换服务、不重启线上容器，服务切换仍按 Backend -> Agent -> Web 执行。
 
 ### 5.1 Backend
 
@@ -97,11 +100,13 @@ cd zhiyuan-server
 mvn clean package -DskipTests
 ```
 
-建议部署目录：
+生产运行目录使用稳定路径，不在路径中暴露版本号：
 
 ```text
-/root/work/zhiyuan-server-3.0.3
+/apps/zhiyuan-server-prod
 ```
+
+版本号记录在 release 目录、备份目录、systemd 描述和镜像 tag 中。后续小版本升级优先替换稳定运行目录内的 jar/config，减少 systemd 路径变更。
 
 目录内容：
 
@@ -112,7 +117,9 @@ logback-spring.xml
 logs/
 ```
 
-配置从 `3.0.2` 复制后复核，只调整目录和 app name，不改生产连接信息。
+配置从 `3.0.2` 复制后复核，只调整目录、app name 和日志输出口径，不改生产连接信息。
+
+生产机实际大盘挂载在 `/apps`，根盘空间较小。后端稳定运行目录、应用日志、GC 日志和 release/backup 产物都应落在 `/apps`，不要继续新增到 `/root/work`、`/tmp` 或根盘下的临时目录。
 
 建议 systemd service：
 
@@ -125,11 +132,18 @@ zhiyuan-server-3.0.3-prod.service
 ```text
 -Dapp_name=zhiyuan-server-3.0.3
 -Dspring.profiles.active=online
--Dspring.config.location=/root/work/zhiyuan-server-3.0.3/application-online.yml
--Dlogging.config=/root/work/zhiyuan-server-3.0.3/logback-spring.xml
--jar /root/work/zhiyuan-server-3.0.3/zhiyuan-server.jar
+-Dspring.config.location=/apps/zhiyuan-server-prod/application-online.yml
+-Dlogging.config=/apps/zhiyuan-server-prod/logback-spring.xml
+-Xloggc:/apps/zhiyuan-server-prod/logs/zhiyuan-server-3.0.3-gc.log
+-jar /apps/zhiyuan-server-prod/zhiyuan-server.jar
 --spring.flyway.enabled=false
 ```
+
+日志配置要求：
+
+- `logback-spring.xml` 的 `LOG_HOME` 需要指向 `/apps/zhiyuan-server-prod/logs`，或通过 `WorkingDirectory=/apps/zhiyuan-server-prod` 保证 `./logs` 落在 `/apps`。
+- 生产外部配置 `application-online.yml` 不使用 `mybatis-plus.configuration.log-impl: org.apache.ibatis.logging.stdout.StdOutImpl`。该配置会把 SQL 明细打到 stdout，并进入 `/var/log/messages`，生产根盘已经出现 `messages` 单文件数 GB 的风险。
+- 生产外部配置必须改为 `org.apache.ibatis.logging.slf4j.Slf4jImpl`，并在切换前执行 `grep -n "log-impl" /apps/zhiyuan-server-prod/application-online.yml` 复核。仓库不提交含明文连接信息的 online 配置；如需临时排查 SQL，必须限定窗口并在排查后恢复，不能把 SQL 明细长期打到 stdout。
 
 ### 5.2 Web
 
@@ -237,11 +251,21 @@ docker save zhiyuan-agent:prod-3.0.3 zhiyuan-agent:3.0.3-amd64 \
 | 资产 | 标签/路径 | 架构 | Hash / Digest |
 | --- | --- | --- | --- |
 | Git build source | `f7dd564177e16c793d55e8179b46e00a114145b2` | - | 运行时代码构建源 |
-| Git tag | `prod-3.0.3` | - | `15c11ebf27b56daf76c4b7fa2f2b8b5a48b46c23` |
+| Git docs/rehearsal commit | `15c11ebf27b56daf76c4b7fa2f2b8b5a48b46c23` | - | 本地类生产演练和生产初始构建记录 |
 | 后端 JAR | `zhiyuan-server/target/zhiyuan-server.jar` | `linux/amd64` | `sha256:822908fcd0876eb9ca83be21ade6040600716cfd26f9be4ee3c47f56d2bbe726` |
 | Web 镜像 | `zhiyuan-web:prod-3.0.3` / `zhiyuan-web:3.0.3-amd64` | `linux/amd64` | image `sha256:ef5142e0b9b0d80f5ca037a5790c3f95b2ed063efc7fe1d21b529c62aa7a02af`; tar `sha256:fded71e883499cfe519383ed5db3071d29c2949e574696d63c3556682bef0808` |
 | Agent 镜像 | `zhiyuan-agent:prod-3.0.3` / `zhiyuan-agent:3.0.3-amd64` | `linux/amd64` | image `sha256:0d038dc02e4f9bee2e3026851377a37f717cfac94859d67d76a8fbeee86a9e8f`; tar `sha256:129de22376ad80c4ad0c1df19a9574e0f1f83bf85298e73e19ab0569cfb53fa5` |
 | Release 包 | `/tmp/zhiyuan-release-3.0.3-f7dd564.tar.gz` | - | 压缩包自身 hash 以仓库主发布文档或外部传输记录为准；包内组件 hash 见 `MANIFEST.txt` |
+
+生产实际部署资产记录：
+
+| 资产 | 标签/路径 | 架构 | Hash / Digest |
+| --- | --- | --- | --- |
+| Git commit | `15c11ebf27b56daf76c4b7fa2f2b8b5a48b46c23` | - | 生产机实际构建；后续 `5888826` 为文档和 env 模板补充，不改变运行时代码 |
+| 后端 JAR | `zhiyuan-server/target/zhiyuan-server.jar` | `linux/amd64` | `sha256:6df5a3671f9447105202bc514c51e253fb5128adf48bcbff33695faa43cd5ed6` |
+| Web 镜像 | `zhiyuan-web:prod-3.0.3` / `zhiyuan-web:3.0.3-amd64` | `linux/amd64` | image `sha256:5b7b6e932c5476ea4bb25a4b7bd59d868bf7e6fef9f82c35e9d83454f11e0b12` |
+| Agent 镜像 | `zhiyuan-agent:prod-3.0.3` / `zhiyuan-agent:3.0.3-amd64` | `linux/amd64` | image `sha256:be4619a1bbf8892463b264d3b94eea473bad5437d8711d6ef6247484be1de5ed` |
+| Release 包 | 不导出整包 tar | - | 本次生产机直接使用本地 JAR 和本地 Docker 镜像；如需跨机器迁移再导出 `/apps/releases/zhiyuan/<version>/images` |
 
 记录命令：
 
@@ -442,7 +466,7 @@ curl -sS http://127.0.0.1:8092/health
 至少备份：
 
 ```bash
-BACKUP_DIR=/root/backup/zhiyuan-prod-3.0.2-$(date +%Y%m%d-%H%M%S)
+BACKUP_DIR=/apps/upgrade-backup/zhiyuan/prod-3.0.2-$(date +%Y%m%d-%H%M%S)
 mkdir -p "$BACKUP_DIR"
 
 systemctl cat zhiyuan-server-3.0.2-prod.service \
@@ -459,26 +483,33 @@ docker inspect zhiyuan-agent-3.0.2-prod \
 
 ### 8.3 上传和加载产物
 
-生产机加载镜像：
+如果从 release tar 部署，生产机加载镜像：
 
 ```bash
 docker load -i /root/release/prod-3.0.3/images/zhiyuan-web-prod-3.0.3-amd64.tar
 docker load -i /root/release/prod-3.0.3/images/zhiyuan-agent-prod-3.0.3-amd64.tar
 ```
 
+本次生产机实际已存在本地 3.0.3 镜像，不再导出或加载 tar：
+
+```bash
+docker image inspect zhiyuan-web:prod-3.0.3 --format '{{.Id}} {{.Architecture}}/{{.Os}}'
+docker image inspect zhiyuan-agent:prod-3.0.3 --format '{{.Id}} {{.Architecture}}/{{.Os}}'
+```
+
 部署后端目录：
 
 ```bash
-mkdir -p /root/work/zhiyuan-server-3.0.3/logs
-cp /root/release/prod-3.0.3/server/zhiyuan-server.jar /root/work/zhiyuan-server-3.0.3/
-cp /root/work/zhiyuan-server-3.0.2/application-online.yml /root/work/zhiyuan-server-3.0.3/
-cp /root/work/zhiyuan-server-3.0.2/logback-spring.xml /root/work/zhiyuan-server-3.0.3/
+mkdir -p /apps/zhiyuan-server-prod/logs
+cp /apps/releases/zhiyuan/3.0.3/server/zhiyuan-server.jar /apps/zhiyuan-server-prod/
+cp /root/work/zhiyuan-server-3.0.2/application-online.yml /apps/zhiyuan-server-prod/
+cp /root/work/zhiyuan-server-3.0.2/logback-spring.xml /apps/zhiyuan-server-prod/
 ```
 
 复核：
 
 ```bash
-shasum -a 256 /root/work/zhiyuan-server-3.0.3/zhiyuan-server.jar
+shasum -a 256 /apps/zhiyuan-server-prod/zhiyuan-server.jar
 docker image inspect zhiyuan-web:prod-3.0.3 --format '{{.Id}} {{.Architecture}}/{{.Os}}'
 docker image inspect zhiyuan-agent:prod-3.0.3 --format '{{.Id}} {{.Architecture}}/{{.Os}}'
 ```
@@ -704,17 +735,17 @@ curl -I http://127.0.0.1:88/assistant-pc/session
 
 | 项目 | 结果 |
 | --- | --- |
-| 执行时间 | 待补 |
-| 执行人 | 待补 |
-| Git commit | 待补 |
+| 执行时间 | 2026-06-06 21:58-22:13 CST |
+| 执行人 | production server assisted deployment |
+| Git commit | `15c11ebf27b56daf76c4b7fa2f2b8b5a48b46c23` |
 | Git tag | `prod-3.0.3` |
-| 后端 JAR sha256 | 待补 |
-| Web image digest | 待补 |
-| Agent image digest | 待补 |
-| Release 包 sha256 | 待补 |
-| Backend 切换时间 | 待补 |
-| Agent 切换时间 | 待补 |
-| Web 切换时间 | 待补 |
-| smoke 结果 | 待补 |
-| 是否回滚 | 待补 |
-| 遗留观察项 | 待补 |
+| 后端 JAR sha256 | `6df5a3671f9447105202bc514c51e253fb5128adf48bcbff33695faa43cd5ed6` |
+| Web image digest | `sha256:5b7b6e932c5476ea4bb25a4b7bd59d868bf7e6fef9f82c35e9d83454f11e0b12` |
+| Agent image digest | `sha256:be4619a1bbf8892463b264d3b94eea473bad5437d8711d6ef6247484be1de5ed` |
+| Release 包 sha256 | 不导出 release tar，直接使用本地 JAR 和本地镜像 |
+| Backend 切换时间 | 2026-06-06 22:00 CST |
+| Agent 切换时间 | 2026-06-06 22:09 CST；首次因 env-file 漏 `LLM_*` 回滚到 3.0.2，补齐 LLM/Bocha 后成功 |
+| Web 切换时间 | 2026-06-06 22:11 CST |
+| smoke 结果 | Backend 200、Agent health 200、Web 本地与域名入口 200、workspace-state 200 |
+| 是否回滚 | 未整体回滚；Agent 首次启动失败后临时恢复 3.0.2，再成功切 3.0.3 |
+| 遗留观察项 | 继续观察 Agent 长尾、Bocha web search 实际调用、Backend Druid idle WARN；保留 stopped 3.0.2 容器用于快速回滚 |

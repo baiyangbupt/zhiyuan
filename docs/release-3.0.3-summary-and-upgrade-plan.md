@@ -186,6 +186,8 @@ mvn -Dtest=UserBizServiceTest,ChatSessionBizServiceTest test
 - 保留 3.0.2 已验证的 `prepareType` 默认补齐和日限逻辑。
 - Agent 模型配置以当前线上主模型为准；回复质量优先，不为了延迟切低质量模型；仓库只记录 `LLM_` 配置变量名和脱敏占位，真实 `LLM_API_KEY` 只放运行环境。
 - 如果启用官方来源检索，需要确认 `BOCHA_API_KEY`、`BOCHA_BASE_URL`、`BOCHA_TIMEOUT_SECONDS` 已在运行环境配置；仓库只记录变量名和脱敏占位，未配置 key 时会降级为通用判断框架和官方核验提醒。
+- Backend 生产外部配置不使用 MyBatis `StdOutImpl`，必须改为 `Slf4jImpl`，避免 SQL 明细进入 stdout 并扩大 `/var/log/messages`；仓库不提交含明文连接信息的 online 配置，只记录检查要求。
+- 生产机大盘挂载在 `/apps`，后端运行目录、release/backup 目录、应用日志和 GC 日志应落在 `/apps`；本轮不迁移 Docker root 目录。
 - Web 生产构建仍需确认 `/assistant-pc` basePath 和生产 rewrite 指向线上域名；本地功能验证必须使用 local-api 构建或本地 dev server，避免误请求线上接口。
 
 ### 4.3 生产升级执行入口
@@ -210,9 +212,19 @@ docs/release-3.0.3-production-upgrade-plan.md
 - 后端 JAR：`sha256:822908fcd0876eb9ca83be21ade6040600716cfd26f9be4ee3c47f56d2bbe726`
 - Web 镜像：image `sha256:ef5142e0b9b0d80f5ca037a5790c3f95b2ed063efc7fe1d21b529c62aa7a02af`；tar `sha256:fded71e883499cfe519383ed5db3071d29c2949e574696d63c3556682bef0808`
 - Agent 镜像：image `sha256:0d038dc02e4f9bee2e3026851377a37f717cfac94859d67d76a8fbeee86a9e8f`；tar `sha256:129de22376ad80c4ad0c1df19a9574e0f1f83bf85298e73e19ab0569cfb53fa5`
-- Release 包：`/tmp/zhiyuan-release-3.0.3-f7dd564.tar.gz`，`sha256:00591deca182da8b45bf203d4fef7ce3df3c27e596073fda263ff52f022a1607`
+- Release 包：`/tmp/zhiyuan-release-3.0.3-f7dd564.tar.gz`，`sha256:234fce098cd68e7405f4abce1706da0a7da321623c642d43a36921a2de568b8a`
 
 `prod-3.0.3` tag 已创建；本地类生产演练已完成，结果见 `docs/release-3.0.3-production-upgrade-plan.md` 的 `7.4 本地类生产演练记录`。压缩包内不记录自身 hash，避免自引用导致 hash 反复变化；生产传输校验以本节记录为准。
+
+生产实际部署记录已同步到 `docs/release-3.0.3-production-upgrade-plan.md` 的 `13. 上线后执行记录`：
+
+- 执行时间：2026-06-06 21:58-22:13 CST。
+- 实际构建 commit：`15c11ebf27b56daf76c4b7fa2f2b8b5a48b46c23`；后续 `5888826` 为文档和 env 模板补充，不改变运行时代码。
+- 后端 JAR：`sha256:6df5a3671f9447105202bc514c51e253fb5128adf48bcbff33695faa43cd5ed6`。
+- Web 镜像：`sha256:5b7b6e932c5476ea4bb25a4b7bd59d868bf7e6fef9f82c35e9d83454f11e0b12`。
+- Agent 镜像：`sha256:be4619a1bbf8892463b264d3b94eea473bad5437d8711d6ef6247484be1de5ed`。
+- 首次 Agent 因 env-file 缺 `LLM_*` 启动失败，临时恢复 3.0.2；补齐 LLM/Bocha 后成功切到 3.0.3。
+- smoke 结果：Backend 200、Agent health 200、Web 本地与域名入口 200、workspace-state 200。
 
 ## 5. 遗留问题和后续优化
 
