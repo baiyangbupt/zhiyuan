@@ -17,7 +17,9 @@ import {
   SafetyCertificateOutlined,
 } from '@ant-design/icons';
 import {
+  applyPlanningFixProposalApi,
   exportPlanningOrderedPlanApi,
+  generatePlanningFixProposalsApi,
   getPlanningCandidateFilterOptionsApi,
   generatePlanningCandidatePoolApi,
   generatePlanningInitialPlanApi,
@@ -25,10 +27,10 @@ import {
   movePlanningOrderedItemApi,
   movePlanningOrderedUnitApi,
   queryPlanningCandidatePoolApi,
-  removePlanningDraftItemsApi,
+  removePlanningWorkingPlanItemsApi,
   removePlanningOrderedUnitApi,
-  runPlanningReviewApi,
-  selectPlanningDraftItemsApi,
+  runPlanningReviewWorkflowApi,
+  selectPlanningWorkingPlanItemsApi,
   sortPlanningOrderedPlanApi,
   updatePlanningCandidateViewStateApi,
 } from '@/service/apis/sessionDetail';
@@ -38,13 +40,16 @@ import {
   PlanningCandidateItem,
   PlanningCandidatePoolQueryRes,
   PlanningCandidateViewState,
-  PlanningDraftItem,
-  PlanningDraftUnit,
+  PlanningFixProposal,
+  PlanningFixProposalState,
+  PlanningRepairReport,
   PlanningOrderedItem,
   PlanningOrderedUnit,
   PlanningOrderedSortField,
   PlanningReviewCheck,
   PlanningStateRes,
+  PlanningWorkingPlanItem,
+  PlanningWorkingPlanUnit,
   PlanningWorkspaceIntent,
 } from '@/interface/api/volunteer';
 import style from './style.module.scss';
@@ -82,6 +87,10 @@ type ActiveFilterChipField =
   | 'majorTags'
   | 'expertPreferredOnly';
 type ActiveFilterChipPolarity = 'positive' | 'negative';
+type FixProposalShortage = NonNullable<PlanningFixProposal['candidateShortages']>[number];
+type FixProposalReplacementPair = NonNullable<
+  NonNullable<PlanningFixProposal['actions']>[number]['replacementPairs']
+>[number];
 
 interface CandidateGroup {
   key: string;
@@ -118,13 +127,13 @@ interface OrderedGroup {
   }>;
 }
 
-interface DraftGroup {
+interface WorkingPlanGroup {
   key: string;
   tier: string;
   schoolName: string;
   source?: string;
   items: Array<{
-    draftItem: PlanningDraftItem;
+    draftItem: PlanningWorkingPlanItem;
     candidateItem: PlanningCandidateItem | null;
   }>;
 }
@@ -338,7 +347,7 @@ const getVolunteerLegacyPrefix = (volunteerId?: string) => {
 
 const buildCandidateIdentityKeys = (
   item?: Pick<PlanningCandidateItem, 'volunteerId' | 'schoolName' | 'majorName'>
-    | Pick<PlanningDraftItem, 'volunteerId' | 'schoolName' | 'majorName'>
+    | Pick<PlanningWorkingPlanItem, 'volunteerId' | 'schoolName' | 'majorName'>
     | Pick<PlanningOrderedItem, 'volunteerId' | 'schoolName' | 'majorName'>
 ) => {
   if (!item) {
@@ -488,8 +497,13 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const [planningState, setPlanningState] = useState<PlanningStateRes | null>(null);
   const [planningLoading, setPlanningLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState<
-    'candidate' | 'draft' | 'ordered' | 'review' | null
+    'candidate' | 'workingPlan' | 'ordered' | 'review' | null
   >(null);
+  const [fixProposalModalOpen, setFixProposalModalOpen] = useState(false);
+  const [fixProposalState, setFixProposalState] = useState<PlanningFixProposalState | null>(null);
+  const [fixProposalLoading, setFixProposalLoading] = useState(false);
+  const [fixProposalApplyingId, setFixProposalApplyingId] = useState<string | null>(null);
+  const [lastRepairReport, setLastRepairReport] = useState<PlanningRepairReport | null>(null);
   const [orderedActionVolunteerId, setOrderedActionVolunteerId] = useState<string | null>(null);
   const [exportLoading, setExportLoading] = useState(false);
   const [activeView, setActiveView] = useState<WorkspaceView>(initialActiveView);
@@ -520,6 +534,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const [filterPanelOpen, setFilterPanelOpen] = useState(false);
   const [filterSearchKeyword, setFilterSearchKeyword] = useState('');
   const [expandedFilterGroupKeys, setExpandedFilterGroupKeys] = useState<string[]>([]);
+  const [expandedReviewIssueKeys, setExpandedReviewIssueKeys] = useState<string[]>([]);
   const [collapsedOrderedGroupKeys, setCollapsedOrderedGroupKeys] = useState<string[]>([]);
   const [candidateFilterOptions, setCandidateFilterOptions] = useState<PlanningCandidateFilterOptionsRes>({
     ...EMPTY_CANDIDATE_FILTER_OPTIONS,
@@ -547,14 +562,15 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const orderedCollapseInitializedRef = useRef(false);
   const previousOrderedCollapseKeysRef = useRef<string[]>([]);
 
-  const draftItems = planningState?.draftPlanState?.items || [];
+  const workingPlanState = planningState?.workingPlanState || planningState?.draftPlanState;
+  const workingPlanItems = workingPlanState?.items || [];
   const orderedItems = planningState?.orderedPlanState?.items || [];
   const reviewChecks = planningState?.reviewState?.checks || [];
   const pendingActions = planningState?.pendingActions || [];
   const reviewCompensationPreview = planningState?.reviewState?.compensationPreview;
   const summary = planningState?.candidatePoolState?.summary;
   const requiredTierCounts = planningState?.candidatePoolState?.requiredTierCounts || {};
-  const draftSummary = planningState?.draftPlanState?.summary;
+  const workingPlanSummary = workingPlanState?.summary;
   const orderedSummary = planningState?.orderedPlanState?.summary;
   const reviewSummary = planningState?.reviewState?.summary;
   const workflowStatus = planningState?.workflowStatus;
@@ -563,9 +579,9 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const selectedCandidateIdentitySet = useMemo(
     () =>
       new Set(
-        [...draftItems, ...orderedItems].flatMap(item => buildCandidateIdentityKeys(item))
+        [...workingPlanItems, ...orderedItems].flatMap(item => buildCandidateIdentityKeys(item))
       ),
-    [draftItems, orderedItems]
+    [workingPlanItems, orderedItems]
   );
   const isCandidateSelected = (candidate?: PlanningCandidateItem) =>
     buildCandidateIdentityKeys(candidate).some(key => selectedCandidateIdentitySet.has(key));
@@ -1385,19 +1401,33 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     }
   };
 
+  const normalizePlanningState = (data: PlanningStateRes): PlanningStateRes => {
+    const normalizedWorkingPlanState = data.workingPlanState || data.draftPlanState;
+    if (!normalizedWorkingPlanState) {
+      return data;
+    }
+    return {
+      ...data,
+      workingPlanState: normalizedWorkingPlanState,
+      draftPlanState: data.draftPlanState || normalizedWorkingPlanState,
+    };
+  };
+
   const applyPlanningState = (data: PlanningStateRes) => {
-    mergeCandidateItemsToCache(data.candidatePoolState?.items);
-    setPlanningState(data);
+    const normalizedData = normalizePlanningState(data);
+    mergeCandidateItemsToCache(normalizedData.candidatePoolState?.items);
+    setPlanningState(normalizedData);
   };
 
   const mergeWorkspaceState = (data: PlanningStateRes) => {
-    mergeCandidateItemsToCache(data.candidatePoolState?.items);
+    const normalizedData = normalizePlanningState(data);
+    mergeCandidateItemsToCache(normalizedData.candidatePoolState?.items);
     setPlanningState(prev => ({
       ...(prev || {}),
-      ...data,
+      ...normalizedData,
       candidatePoolState: {
         ...(prev?.candidatePoolState || {}),
-        ...(data.candidatePoolState || {}),
+        ...(normalizedData.candidatePoolState || {}),
         items: [],
       },
     }));
@@ -1431,7 +1461,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     if (!planningState) {
       return;
     }
-    if ((planningState.draftPlanState?.items || []).length > 0) {
+    if ((workingPlanState?.items || []).length > 0) {
       return;
     }
     if ((planningState.orderedPlanState?.items || []).length > 0) {
@@ -1569,6 +1599,13 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
             totalUnitCount: data.totalUnitCount ?? prev.totalUnitCount ?? 0,
             loadedEntryCount: mergedItems.length,
             loadedUnitCount,
+            viewSummary: data.viewSummary
+              ? {
+                ...data.viewSummary,
+                loadedEntryCount: mergedItems.length,
+                loadedUnitCount,
+              }
+              : undefined,
           };
         });
       } else {
@@ -1589,13 +1626,13 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     }
   };
 
-  const handleAddCandidateToDraft = async (volunteerId?: string) => {
+  const handleAddCandidateToWorkingPlan = async (volunteerId?: string) => {
     if (!volunteerId || actionLoading) {
       return;
     }
-    setActionLoading('draft');
+    setActionLoading('workingPlan');
     try {
-      const { data, code } = await selectPlanningDraftItemsApi(
+      const { data, code } = await selectPlanningWorkingPlanItemsApi(
         routerParams.tenantId,
         routerParams.chatSessionId,
         [volunteerId],
@@ -1620,13 +1657,13 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     setActionLoading(null);
   };
 
-  const handleRemoveDraftItem = async (volunteerId?: string) => {
+  const handleRemoveWorkingPlanItem = async (volunteerId?: string) => {
     if (!volunteerId || actionLoading) {
       return;
     }
-    setActionLoading('draft');
+    setActionLoading('workingPlan');
     try {
-      const { data, code } = await removePlanningDraftItemsApi(
+      const { data, code } = await removePlanningWorkingPlanItemsApi(
         routerParams.tenantId,
         routerParams.chatSessionId,
         [volunteerId]
@@ -1647,16 +1684,16 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     setActionLoading(null);
   };
 
-  const handleRemoveDraftGroup = async (group: DraftGroup) => {
+  const handleRemoveWorkingPlanGroup = async (group: WorkingPlanGroup) => {
     const volunteerIds = group.items
       .map(item => item.draftItem.volunteerId || '')
       .filter(Boolean);
     if (!volunteerIds.length || actionLoading) {
       return;
     }
-    setActionLoading('draft');
+    setActionLoading('workingPlan');
     try {
-      const { data, code } = await removePlanningDraftItemsApi(
+      const { data, code } = await removePlanningWorkingPlanItemsApi(
         routerParams.tenantId,
         routerParams.chatSessionId,
         volunteerIds
@@ -1947,23 +1984,108 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     }
   };
 
-  const handleRunReview = async () => {
-    if (!routerParams?.tenantId || !routerParams?.chatSessionId || actionLoading || !orderedItems.length) {
+  const loadFixProposals = async () => {
+    if (!routerParams?.tenantId || !routerParams?.chatSessionId || !orderedItems.length) {
       return;
     }
-    setActionLoading('review');
+    setFixProposalLoading(true);
     try {
-      const { code } = await runPlanningReviewApi(routerParams.tenantId, routerParams.chatSessionId);
+      const { code, data, msg } = await generatePlanningFixProposalsApi(
+        routerParams.tenantId,
+        routerParams.chatSessionId
+      );
       if (code === 0) {
-        message.success('审查完成');
-        await fetchWorkspaceState();
+        setFixProposalState(data || null);
       } else {
-        message.error('审查失败');
+        message.error(msg || '生成处理建议失败');
       }
     } catch (error) {
-      message.error('审查异常，请稍后重试');
+      message.error('生成处理建议异常，请稍后重试');
+    } finally {
+      setFixProposalLoading(false);
     }
-    setActionLoading(null);
+  };
+
+  const handleOpenReviewWorkflowModal = async (forceRunReview: boolean = false) => {
+    if (!routerParams?.tenantId || !routerParams?.chatSessionId || !orderedItems.length) {
+      return;
+    }
+    setFixProposalModalOpen(true);
+    setLastRepairReport(null);
+    if (forceRunReview || !reviewSummary || isReviewStale) {
+      if (actionLoading) {
+        return;
+      }
+      setActionLoading('review');
+      setFixProposalLoading(true);
+      try {
+        const { code, data, msg } = await runPlanningReviewWorkflowApi(
+          routerParams.tenantId,
+          routerParams.chatSessionId
+        );
+        if (code === 0) {
+          setFixProposalState(data?.fixProposalState || null);
+          if (data?.workspaceState) {
+            mergeWorkspaceState(data.workspaceState);
+          } else {
+            await fetchWorkspaceState();
+          }
+          message.success('审查完成');
+        } else {
+          message.error(msg || '审查失败');
+        }
+      } catch (error) {
+        message.error('审查异常，请稍后重试');
+      } finally {
+        setFixProposalLoading(false);
+        setActionLoading(null);
+      }
+      return;
+    }
+    await loadFixProposals();
+  };
+
+  const handleOpenReviewDetailsModal = async () => {
+    if (!routerParams?.tenantId || !routerParams?.chatSessionId || !orderedItems.length) {
+      return;
+    }
+    setFixProposalModalOpen(true);
+    await loadFixProposals();
+  };
+
+  const handleApplyFixProposal = async (proposal: PlanningFixProposal) => {
+    if (!routerParams?.tenantId || !routerParams?.chatSessionId || !proposal.proposalId) {
+      return;
+    }
+    if (proposal.sourceVersionGuard === undefined || proposal.sourceVersionGuard === null) {
+      message.warning('这条处理建议已经过期，请重新审查');
+      return;
+    }
+    setFixProposalApplyingId(proposal.proposalId);
+    try {
+      const { code, data, msg } = await applyPlanningFixProposalApi(
+        routerParams.tenantId,
+        routerParams.chatSessionId,
+        {
+          proposalId: proposal.proposalId,
+          sourceVersionGuard: proposal.sourceVersionGuard,
+          regenerateOrderedPlan: true,
+          rerunReview: true,
+        }
+      );
+      if (code === 0) {
+        message.success('已完成处理');
+        setLastRepairReport(data?.repairReport || null);
+        await fetchWorkspaceState();
+        await loadFixProposals();
+      } else {
+        message.error(msg || '处理建议应用失败');
+      }
+    } catch (error) {
+      message.error('处理建议应用异常，请稍后重试');
+    } finally {
+      setFixProposalApplyingId(null);
+    }
   };
 
   const handleSortOrderedPlan = async () => {
@@ -2040,7 +2162,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
 
   useEffect(() => {
     ensureInitialPlanReady();
-  }, [planningState?.sessionId, draftItems.length, orderedItems.length]);
+  }, [planningState?.sessionId, workingPlanItems.length, orderedItems.length]);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -2347,7 +2469,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       });
     });
     return () => window.cancelAnimationFrame(nextAnimationFrame);
-  }, [activeView, draftExpanded, focusVolunteerIds, candidatePoolResult.items, orderedItems.length, draftItems.length]);
+  }, [activeView, draftExpanded, focusVolunteerIds, candidatePoolResult.items, orderedItems.length, workingPlanItems.length]);
 
   useEffect(() => {
     if (!draftExpanded) {
@@ -2396,9 +2518,14 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       case 'probability_gap':
         return '梯度断层';
       case 'count_validation':
+        if (check.reasonCode === 'count_over_limit') {
+          return '数量超出';
+        }
         return '数量不足';
       case 'unit_major_count_validation':
         return '组内数量待补';
+      case 'group_inner_safety_guard':
+        return '组内兜底不足';
       case 'high_tuition':
         return '高收费提醒';
       case 'admission_limit':
@@ -2410,12 +2537,505 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       case 'cooperative_program':
         return '中外合作提醒';
       default:
-        return check.summary || '待处理提醒';
+        return normalizePlanActionTextForUser(check.summary) || '待关注提醒';
     }
   };
 
   const getReviewTooltipText = (check: PlanningReviewCheck) => {
-    return check.suggestedAction || check.detail || check.summary || '';
+    return normalizePlanActionTextForUser(check.detail || check.summary || '');
+  };
+
+  const getFixProposalStatusLabel = (status?: string) => {
+    switch (status) {
+      case 'ready':
+        return '';
+      case 'preview_only':
+        return '先看预览';
+      case 'blocked':
+        return '需人工判断';
+      case 'info':
+        return '提醒';
+      default:
+        return '待处理';
+    }
+  };
+
+  const getFixProposalStatusColor = (status?: string) => {
+    switch (status) {
+      case 'ready':
+        return 'green';
+      case 'preview_only':
+        return 'blue';
+      case 'blocked':
+        return 'red';
+      case 'info':
+        return 'default';
+      default:
+        return 'default';
+    }
+  };
+
+  const getFixProposalStrategyLabel = (strategy?: string) => {
+    switch (strategy) {
+      case 'fill_missing_count':
+        return '补足数量';
+      case 'sort_by_probability':
+        return '按录取率重排';
+      case 'remove_risk_items':
+        return '移除风险项';
+      case 'adjust_major_group_inner_safety':
+        return '补组内兜底专业';
+      case 'replace_risk_items':
+        return '替换风险项';
+      case 'rebalance_tier_ratio':
+        return '调整冲稳保结构';
+      case 'fill_probability_gap':
+        return '补梯度断层';
+      case 'add_safety_items':
+        return '补安全垫';
+      default:
+        return strategy || '';
+    }
+  };
+
+  const getShortageScopeLabel = (scope?: string) => {
+    switch (scope) {
+      case 'candidate_pool':
+        return '当前规划候选池不足';
+      case 'current_plan':
+        return '当前方案需要调整';
+      case 'current_view':
+        return '当前筛选视图不足';
+      case 'hard_constraints':
+        return '已确认筛选条件收窄范围';
+      case 'policy_or_profile_constraints':
+        return '政策或个人条件限制';
+      case 'capacity_or_replacement':
+        return '缺少合适替换方案';
+      case 'objective_validation':
+        return '调整收益不明显';
+      case 'soft_preference':
+        return '偏好只影响排序';
+      case 'unknown':
+        return '原因待确认';
+      default:
+        return scope || '候选不足';
+    }
+  };
+
+  const getShortageReasonLabel = (reasonCode?: string) => {
+    switch (reasonCode) {
+      case 'NO_CANDIDATE':
+      case 'no_candidate':
+        return '没有可用候选';
+      case 'INSUFFICIENT_CANDIDATE':
+      case 'insufficient_candidate':
+        return '可用候选不足';
+      case 'INSUFFICIENT_REPLACEMENT_PAIR':
+      case 'insufficient_replacement_pair':
+        return '替换配对不足';
+      case 'HARD_CONSTRAINT_FILTERED':
+      case 'hard_constraint_filtered':
+        return '已确认筛选后不足';
+      case 'OBJECTIVE_NOT_IMPROVED':
+      case 'objective_not_improved':
+        return '调整后改善不明显';
+      case 'DRY_RUN_FAILED':
+      case 'dry_run_failed':
+        return '调整效果不确定';
+      case 'candidate_pool_insufficient':
+        return '候选池数量不足';
+      case 'count_over_limit':
+        return '方案数量超出';
+      case 'safety_candidate_insufficient':
+        return '安全垫候选不足';
+      case 'tier_candidate_insufficient':
+        return '目标层级候选不足';
+      case 'probability_gap_candidate_insufficient':
+        return '断层区间候选不足';
+      case 'major_group_safety_candidate_insufficient':
+      case 'partial_major_group_safety_candidate_missing':
+        return '组内兜底专业不足';
+      case 'safe_replacement_candidate_insufficient':
+      case 'risk_item_unresolved_or_replacement_missing':
+        return '安全替换候选不足';
+      case 'replacement_pair_missing':
+      case 'no_sort_or_replacement_candidate':
+        return '缺少完整替换配对';
+      case 'objective_validation_not_improved':
+        return '调整后改善不明显';
+      default:
+        return reasonCode || '';
+    }
+  };
+
+  const getShortageSectionTitle = (shortages: FixProposalShortage[]) => {
+    const hasNonCandidateShortage = shortages.some(
+      shortage =>
+        shortage.scope &&
+        !['candidate_pool', 'current_view', 'hard_constraints', 'policy_or_profile_constraints'].includes(
+          shortage.scope
+        )
+    );
+    return hasNonCandidateShortage ? '处理说明' : '候选情况';
+  };
+
+  const buildFixProposalShortageLine = (shortage: FixProposalShortage) => {
+    const parts = [
+      getShortageScopeLabel(shortage.scope),
+      getShortageReasonLabel(shortage.reasonCode),
+      formatShortageCountText(shortage),
+    ].filter(Boolean);
+    return parts.join('，');
+  };
+
+  const normalizePlanActionTextForUser = (text?: string) => {
+    return (text || '')
+      .replace(/预览验证未通过/g, '调整后效果不理想')
+      .replace(/不能直接应用/g, '不建议直接执行')
+      .replace(/暂不能自动修复/g, '暂时不建议自动处理')
+      .replace(/暂不可用/g, '需人工判断')
+      .replace(/硬约束|硬性要求|硬要求/g, '已确认的筛选条件或报考要求')
+      .replace(/草稿/g, '方案')
+      .replace(/组内安全垫专业/g, '组内兜底专业')
+      .replace(/组内安全垫/g, '组内兜底')
+      .replace(/修复建议/g, '处理建议')
+      .replace(/修复已应用并完成复验/g, '调整已完成，并已重新检查方案')
+      .replace(/修复已应用/g, '调整已完成')
+      .replace(/修复/g, '处理')
+      .replace(/dry[- ]?run/gi, '预览')
+      .trim();
+  };
+
+  const isLowValueSystemText = (text?: string) => {
+    const normalized = (text || '').trim();
+    if (!normalized) {
+      return true;
+    }
+    return /(预览验证|dry[- ]?run|objective|validation|sourceVersion|versionGuard|不可应用|不能直接应用)/i.test(
+      normalized
+    );
+  };
+
+  const getFixProposalDisplayTitle = (proposal: PlanningFixProposal) => {
+    const strategyLabel = getFixProposalStrategyLabel(proposal.strategy);
+    if (proposal.status === 'blocked') {
+      return strategyLabel ? `${strategyLabel}建议` : '处理建议';
+    }
+    return normalizePlanActionTextForUser(proposal.title) || strategyLabel || '处理建议';
+  };
+
+  const getCompactFixProposalDisplayTitle = (proposal: PlanningFixProposal) => {
+    if (proposal.status === 'blocked') {
+      return getBlockedProposalTitle(proposal);
+    }
+    const strategyLabel = getFixProposalStrategyLabel(proposal.strategy);
+    return strategyLabel || '推荐处理方式';
+  };
+
+  const getBlockedProposalUserMessage = (proposal: PlanningFixProposal) => {
+    const shortages = proposal.candidateShortages || [];
+    const firstShortage = shortages[0];
+    const scope = firstShortage?.scope || '';
+    const reasonCode = firstShortage?.reasonCode || proposal.blockingReasonCodes?.[0] || '';
+    const sourceCheckCode = firstShortage?.sourceCheckCode || proposal.sourceCheckCodes?.[0] || '';
+    const shortageMessage = normalizePlanActionTextForUser(firstShortage?.message);
+    const blockingReason = normalizePlanActionTextForUser(proposal.blockingReason);
+    if (scope === 'current_plan' || reasonCode === 'count_over_limit') {
+      const currentCount = firstShortage?.currentCount;
+      const requiredCount = firstShortage?.requiredCount;
+      if (typeof currentCount === 'number' && typeof requiredCount === 'number') {
+        return `当前方案数量 ${currentCount} 条，高于要求数量 ${requiredCount} 条。建议先精简相对不想保留的志愿，再重新审查。`;
+      }
+      return '当前方案数量高于要求数量。建议先精简相对不想保留的志愿，再重新审查。';
+    }
+    if (scope === 'candidate_pool') {
+      if (sourceCheckCode === 'ratio_distribution' || reasonCode === 'tier_candidate_insufficient') {
+        const detail = shortageMessage && !isLowValueSystemText(shortageMessage)
+          ? shortageMessage
+          : '当前没有形成可直接补入或替换的目标冲稳保区间方案。';
+        return `${detail} 可以先保留这个提醒，或手动减少冲区、补充稳区/保区后重新审查。`;
+      }
+      if (reasonCode === 'probability_gap_candidate_insufficient') {
+        const detail = shortageMessage && !isLowValueSystemText(shortageMessage)
+          ? shortageMessage
+          : '当前没有找到适合补在断层区间里的候选。';
+        return `${detail} 可以先保留当前梯度，或手动查看相邻录取率区间的候选后重新审查。`;
+      }
+      if (reasonCode === 'candidate_pool_insufficient' && firstShortage?.currentCount && firstShortage?.requiredCount) {
+        if (firstShortage.currentCount > firstShortage.requiredCount) {
+          return `当前方案数量 ${firstShortage.currentCount} 条，高于要求数量 ${firstShortage.requiredCount} 条。建议先人工精简相对不想保留的志愿，再重新审查。`;
+        }
+      }
+      if (reasonCode === 'partial_major_group_safety_candidate_missing') {
+        return '部分专业组找到了可补入的安全垫专业，但仍有专业组没有合适补位。建议先查看已找到的方案，再决定是否手动调整剩余专业组。';
+      }
+      if (shortageMessage && !isLowValueSystemText(shortageMessage)) {
+        return `${shortageMessage} 可以先保留这个提醒，或调整筛选条件后重新审查。`;
+      }
+      if (blockingReason && !isLowValueSystemText(blockingReason)) {
+        return blockingReason;
+      }
+      return '当前可用于规划的候选里，暂时没有足够合适的补位选择。建议先保留这个提醒，或放宽地域、专业、院校等条件后重新审查。';
+    }
+    if (scope === 'hard_constraints') {
+      return '已确认的筛选条件或报考要求让可选范围变窄。如果要处理这个问题，建议先调整筛选或报考要求，再重新审查。';
+    }
+    if (scope === 'capacity_or_replacement') {
+      return '当前方案里没有找到合适的一进一出替换方案。直接处理可能会牺牲较多院校、专业或录取稳定性，建议先查看受影响志愿。';
+    }
+    if (scope === 'objective_validation') {
+      return '暂时没有找到能明显改善这个问题的自动调整方案。建议先查看受影响志愿，再决定是否手动调整。';
+    }
+    if (shortageMessage && !isLowValueSystemText(shortageMessage)) {
+      return shortageMessage;
+    }
+    if (blockingReason && !isLowValueSystemText(blockingReason)) {
+      return blockingReason;
+    }
+    return '这个问题当前更适合先人工确认，再决定是否调整方案。';
+  };
+
+  const toggleReviewIssueProposals = (issueKey: string) => {
+    setExpandedReviewIssueKeys(prev =>
+      prev.includes(issueKey) ? prev.filter(key => key !== issueKey) : [...prev, issueKey]
+    );
+  };
+
+  const getBlockedProposalTitle = (proposal: PlanningFixProposal) => {
+    switch (proposal.strategy) {
+      case 'replace_risk_items':
+        return '建议先人工确认替换取舍';
+      case 'rebalance_tier_ratio':
+      case 'fill_probability_gap':
+        return '结构调整需要先看取舍';
+      case 'adjust_major_group_inner_safety':
+        return '组内专业需要先人工确认';
+      default:
+        return '建议先确认取舍';
+    }
+  };
+
+  const formatShortageCountText = (shortage: FixProposalShortage) => {
+    const parts = [
+      shortage.targetTier ? `目标层级 ${shortage.targetTier}` : '',
+      typeof shortage.requiredCount === 'number' ? `需要 ${shortage.requiredCount}` : '',
+      typeof shortage.currentCount === 'number' ? `当前 ${shortage.currentCount}` : '',
+      typeof shortage.shortageCount === 'number' ? `缺口 ${shortage.shortageCount}` : '',
+      typeof shortage.availableCount === 'number' ? `可用 ${shortage.availableCount}` : '',
+    ].filter(Boolean);
+    return parts.join('，');
+  };
+
+  const resolveVolunteerDisplayInfo = (volunteerId?: string) => {
+    const candidate = resolveCandidateItemForPlan(volunteerId);
+    const orderedItem = volunteerId
+      ? orderedItems.find(item => item.volunteerId === volunteerId)
+      : null;
+    const workingItem = volunteerId
+      ? workingPlanItems.find(item => item.volunteerId === volunteerId)
+      : null;
+    const allUnits = [
+      ...(planningState?.orderedPlanState?.units || []),
+      ...(workingPlanState?.units || []),
+    ];
+    const unit = volunteerId
+      ? allUnits.find(item =>
+        (item.majorItems || []).some(major => major.volunteerId === volunteerId)
+      )
+      : null;
+    const unitMajor = volunteerId
+      ? unit?.majorItems?.find(major => major.volunteerId === volunteerId)
+      : null;
+    const schoolName =
+      candidate?.schoolName ||
+      orderedItem?.schoolName ||
+      workingItem?.schoolName ||
+      unit?.schoolName ||
+      '';
+    const majorName =
+      candidate?.majorName ||
+      orderedItem?.majorName ||
+      workingItem?.majorName ||
+      unitMajor?.majorName ||
+      '';
+    return {
+      schoolName,
+      majorName,
+      resolved: Boolean(candidate || orderedItem || workingItem || unitMajor || unit),
+      label: [schoolName, majorName].filter(Boolean).join('-') || volunteerId || '',
+    };
+  };
+
+  const formatVolunteerBrief = (volunteerId?: string, requireResolved: boolean = false) => {
+    const info = resolveVolunteerDisplayInfo(volunteerId);
+    if (requireResolved && !info.resolved) {
+      return '';
+    }
+    return info.label;
+  };
+
+  const formatReplacementPairReadableText = (pair: FixProposalReplacementPair) => {
+    const fromText = formatVolunteerBrief(pair.fromVolunteerId, true);
+    const toText = formatVolunteerBrief(pair.toVolunteerId, true);
+    if (!fromText || !toText) {
+      return '';
+    }
+    return `${fromText} 替换为 ${toText}`;
+  };
+
+  const formatVolunteerListBrief = (volunteerIds?: string[], limit: number = 3) => {
+    const labels = uniqueStrings((volunteerIds || []).map(volunteerId => formatVolunteerBrief(volunteerId))).filter(Boolean);
+    if (labels.length === 0) {
+      return '';
+    }
+    const visibleText = labels.slice(0, limit).join('；');
+    const remainCount = labels.length - limit;
+    return remainCount > 0 ? `${visibleText}；另有 ${remainCount} 项未展开` : visibleText;
+  };
+
+  const formatUnitListBrief = (unitIds?: string[], limit: number = 3) => {
+    const allUnits = [
+      ...(planningState?.orderedPlanState?.units || []),
+      ...(workingPlanState?.units || []),
+    ];
+    const labels = uniqueStrings((unitIds || []).map(unitId => {
+      const unit = allUnits.find(item => item.unitId === unitId);
+      return unit?.schoolName || unitId || '';
+    })).filter(Boolean);
+    if (labels.length === 0) {
+      return '';
+    }
+    const visibleText = labels.slice(0, limit).join('；');
+    const remainCount = labels.length - limit;
+    return remainCount > 0 ? `${visibleText}；另有 ${remainCount} 项未展开` : visibleText;
+  };
+
+  const resolveFixActionUnitName = (action: NonNullable<PlanningFixProposal['actions']>[number]) => {
+    const unitId = [
+      ...(action.unitIds || []),
+      ...(action.candidateUnitIds || []),
+      ...((action.replacementPairs || []).flatMap(pair => [pair.toUnitId, pair.fromUnitId])),
+    ].find(Boolean);
+    const allUnits = [
+      ...(planningState?.orderedPlanState?.units || []),
+      ...(workingPlanState?.units || []),
+    ];
+    const unit = unitId ? allUnits.find(item => item.unitId === unitId) : null;
+    if (unit?.schoolName) {
+      return unit.schoolName;
+    }
+    const firstVolunteerId =
+      action.candidateVolunteerIds?.[0] ||
+      action.volunteerIds?.[0] ||
+      action.removeVolunteerIds?.[0] ||
+      action.replacementPairs?.[0]?.toVolunteerId ||
+      action.replacementPairs?.[0]?.fromVolunteerId;
+    return resolveVolunteerDisplayInfo(firstVolunteerId).schoolName;
+  };
+
+  const formatFixProposalActionDetail = (action: NonNullable<PlanningFixProposal['actions']>[number]) => {
+    const fallback = normalizePlanActionTextForUser(action.detail || action.summary);
+    if (action.actionType === 'replace_volunteers' && (action.replacementPairs || []).length > 0) {
+      const pairTexts = (action.replacementPairs || [])
+        .slice(0, 3)
+        .map(pair => {
+          const fromText = formatVolunteerBrief(pair.fromVolunteerId, true);
+          const toText = formatVolunteerBrief(pair.toVolunteerId, true);
+          if (fromText && toText) {
+            return `${fromText} 替换为 ${toText}`;
+          }
+          return '';
+        })
+        .filter(Boolean);
+      const visiblePairCount = Math.min((action.replacementPairs || []).length, 3);
+      if (pairTexts.length === visiblePairCount && pairTexts.length > 0) {
+        const remainCount = (action.replacementPairs || []).length - pairTexts.length;
+        return `建议替换：${pairTexts.join('；')}${remainCount > 0 ? `；另有 ${remainCount} 组未展开` : ''}。`;
+      }
+    }
+    if (action.actionType === 'remove_volunteers') {
+      const removeText = formatVolunteerListBrief(action.removeVolunteerIds || action.volunteerIds);
+      if (removeText) {
+        return `建议移出：${removeText}。`;
+      }
+    }
+    if (['fill_total_count', 'add_local_protect', 'rebalance_protect_ratio', 'fill_probability_gap'].includes(action.actionType || '')) {
+      const unitText = formatUnitListBrief(action.candidateUnitIds || action.unitIds);
+      const volunteerText = formatVolunteerListBrief(action.candidateVolunteerIds || action.volunteerIds);
+      const targetText = unitText || volunteerText;
+      if (targetText) {
+        if (action.actionType === 'add_local_protect') {
+          return `建议补入保底候选：${targetText}。`;
+        }
+        if (action.actionType === 'rebalance_protect_ratio') {
+          return `建议补入保区候选，改善冲稳保结构：${targetText}。`;
+        }
+        if (action.actionType === 'fill_probability_gap') {
+          return `建议补入中间梯度候选：${targetText}。`;
+        }
+        return `建议补足方案数量：${targetText}。`;
+      }
+    }
+    if (action.actionType === 'sort_by_probability') {
+      return '建议按录取率重新整理当前方案顺序。';
+    }
+    if (action.actionType === 'adjust_major_group_inner_safety') {
+      const candidateVolunteerId = action.candidateVolunteerIds?.[0] || action.volunteerIds?.[0];
+      const removeVolunteerId = action.removeVolunteerIds?.[0];
+      const candidateInfo = resolveVolunteerDisplayInfo(candidateVolunteerId);
+      const removeInfo = resolveVolunteerDisplayInfo(removeVolunteerId);
+      const unitName = resolveFixActionUnitName(action) || candidateInfo.schoolName;
+      if (unitName && candidateInfo.majorName && removeInfo.majorName) {
+        return `${unitName}：用 ${candidateInfo.majorName} 替换 ${removeInfo.majorName}，补足组内兜底。`;
+      }
+      if (unitName && candidateInfo.majorName) {
+        return `${unitName}：补入 ${candidateInfo.majorName}，增强组内兜底。`;
+      }
+    }
+    return fallback;
+  };
+
+  const formatDryRunMetricValue = (value?: number) => {
+    return typeof value === 'number' && Number.isFinite(value) ? value.toFixed(1) : '';
+  };
+
+  const formatDryRunMetricChange = (label: string, before?: number, after?: number) => {
+    const beforeText = formatDryRunMetricValue(before);
+    const afterText = formatDryRunMetricValue(after);
+    if (!beforeText || !afterText || beforeText === afterText) {
+      return '';
+    }
+    return `${label} ${beforeText}->${afterText}`;
+  };
+
+  const formatFixProposalDryRun = (proposal: PlanningFixProposal) => {
+    const dryRun = proposal.dryRunResult || {};
+    const tierBefore = volunteerModel === 'majorGroup'
+      ? dryRun.beforeUnitTierCounts
+      : dryRun.beforeVolunteerTierCounts;
+    const tierAfter = volunteerModel === 'majorGroup'
+      ? dryRun.afterUnitTierCounts
+      : dryRun.afterVolunteerTierCounts;
+    const tierChangeText = ['冲', '稳', '保']
+      .map(tier => {
+        const before = tierBefore?.[tier] || 0;
+        const after = tierAfter?.[tier] || 0;
+        return before !== after ? `${tier}${before}->${after}` : '';
+      })
+      .filter(Boolean)
+      .join('，');
+    const parts = [
+      dryRun.removeUnitCount ? `移出 ${dryRun.removeUnitCount} 组` : '',
+      dryRun.removeVolunteerCount ? `移出 ${dryRun.removeVolunteerCount} 条` : '',
+      dryRun.addUnitCount ? `补入 ${dryRun.addUnitCount} 组` : '',
+      dryRun.addVolunteerCount ? `补入 ${dryRun.addVolunteerCount} 条` : '',
+      tierChangeText ? `结构 ${tierChangeText}` : '',
+      formatDryRunMetricChange('推荐系数', dryRun.beforeAverageFinalScore, dryRun.afterAverageFinalScore),
+      formatDryRunMetricChange('专业热度', dryRun.beforeAverageHotIndex, dryRun.afterAverageHotIndex),
+      formatDryRunMetricChange('院校排名', dryRun.beforeAverageSchoolRank, dryRun.afterAverageSchoolRank),
+    ].filter(Boolean);
+    return parts.join('，');
   };
 
   const getCandidateTargetHint = () => {
@@ -2637,25 +3257,456 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
           <div key={`${check.code || check.summary || 'review'}-${index}`} className={style.reviewTooltipItem}>
             <div className={style.reviewTooltipItemTitle}>{getReviewCheckDisplayLabel(check)}</div>
             <div className={style.reviewTooltipItemDetail}>
-              {getReviewTooltipText(check) || check.summary || '请留意当前方案中的对应问题'}
+              {getReviewTooltipText(check) || '请留意当前方案中的对应问题'}
             </div>
           </div>
         ))}
         {actions.slice(0, Math.max(0, 8 - checks.length)).map((action, index) => (
           <div key={`${action.type || action.summary || 'pending'}-${index}`} className={style.reviewTooltipItem}>
-            <div className={style.reviewTooltipItemTitle}>{action.summary || '待处理建议'}</div>
+            <div className={style.reviewTooltipItemTitle}>
+              {normalizePlanActionTextForUser(action.summary) || '其他提醒'}
+            </div>
             <div className={style.reviewTooltipItemDetail}>
-              {action.detail || '可结合当前方案情况继续查看或确认是否处理'}
+              {normalizePlanActionTextForUser(action.detail) || '可结合当前方案情况继续查看'}
             </div>
           </div>
         ))}
+        <a
+          href="#"
+          className={style.reviewTooltipDetailLink}
+          onClick={event => {
+            event.preventDefault();
+            event.stopPropagation();
+            handleOpenReviewDetailsModal();
+          }}
+        >
+          查看详情
+        </a>
+      </div>
+    );
+  };
+
+  const renderRepairReportSummary = () => {
+    if (!lastRepairReport) {
+      return null;
+    }
+    const actionTexts = (lastRepairReport.actionDetails || [])
+      .map(action => formatFixProposalActionDetail(action))
+      .filter(item => item && !isLowValueSystemText(item))
+      .slice(0, 3);
+    const resultMessage = normalizePlanActionTextForUser(
+      lastRepairReport.messages?.[0] ||
+        (lastRepairReport.postValidationPassed
+          ? '调整已完成，并已重新检查方案'
+          : '调整已完成，请继续关注审查结果')
+    );
+    const proposalTexts = [
+      lastRepairReport.proposalTitle ? `处理方式：${lastRepairReport.proposalTitle}` : '',
+      lastRepairReport.proposalSummary ? `对应问题：${lastRepairReport.proposalSummary}` : '',
+      lastRepairReport.proposalImpact ? `影响范围：${lastRepairReport.proposalImpact}` : '',
+      lastRepairReport.dryRunMessage ? `应用前预览：${lastRepairReport.dryRunMessage}` : '',
+    ].map(normalizePlanActionTextForUser).filter(Boolean);
+    const countTexts = [
+      (lastRepairReport.addedUnitCount || 0) > 0 ? `新增${lastRepairReport.addedUnitCount}组` : '',
+      (lastRepairReport.addedVolunteerCount || 0) > 0 ? `新增${lastRepairReport.addedVolunteerCount}条` : '',
+      (lastRepairReport.removedUnitCount || 0) > 0 ? `移除${lastRepairReport.removedUnitCount}组` : '',
+      (lastRepairReport.removedVolunteerCount || 0) > 0 ? `移除${lastRepairReport.removedVolunteerCount}条` : '',
+      `风险${lastRepairReport.beforeRiskCount ?? 0}->${lastRepairReport.afterRiskCount ?? 0}`,
+      `提醒${lastRepairReport.beforeWarnCount ?? 0}->${lastRepairReport.afterWarnCount ?? 0}`,
+      ].filter(Boolean);
+    return (
+      <div className={style.repairReportSummary}>
+        <div className={style.repairReportTitle}>最近一次处理结果</div>
+        <div className={style.repairReportMessage}>{resultMessage}</div>
+        {proposalTexts.length > 0 ? (
+          <div className={style.repairReportDetails}>
+            {proposalTexts.map((item, index) => (
+              <div key={`${item}-${index}`}>{item}</div>
+            ))}
+          </div>
+        ) : null}
+        <div className={style.repairReportMeta}>
+          {countTexts.map(item => (
+            <Tag key={item} bordered={false}>
+              {item}
+            </Tag>
+          ))}
+        </div>
+        {actionTexts.length > 0 ? (
+          <div className={style.repairReportActions}>
+            {actionTexts.map((item, index) => (
+              <div key={`${item}-${index}`}>{item}</div>
+            ))}
+          </div>
+        ) : null}
+        {(lastRepairReport.warnings || [])
+          .map(normalizePlanActionTextForUser)
+          .filter(item => item && !isLowValueSystemText(item)).length > 0 ? (
+          <div className={style.repairReportWarning}>
+            {(lastRepairReport.warnings || [])
+              .map(normalizePlanActionTextForUser)
+              .filter(item => item && !isLowValueSystemText(item))
+              .slice(0, 2)
+              .join('；')}
+          </div>
+        ) : null}
+      </div>
+    );
+  };
+
+  const renderFixProposalCard = (
+    proposal: PlanningFixProposal,
+    index: number,
+    compact: boolean = false
+  ) => {
+    const isBlocked = proposal.status === 'blocked';
+    const dryRunText = isBlocked ? '' : formatFixProposalDryRun(proposal);
+    const dryRun = proposal.dryRunResult || {};
+    const warnings = dryRun.warnings || [];
+    const actionDetails = (isBlocked ? [] : proposal.actions || [])
+      .map(action => formatFixProposalActionDetail(action))
+      .filter(Boolean);
+    const replacementPairTexts = uniqueStrings(
+      (isBlocked ? [] : proposal.actions || [])
+        .flatMap(action => action.replacementPairs || [])
+        .map(formatReplacementPairReadableText)
+        .filter(Boolean)
+    );
+    const shouldShowReplacementPairs = replacementPairTexts.length > 0 && actionDetails.length === 0;
+    const shortages = proposal.candidateShortages || [];
+    const visibleShortages = isBlocked ? shortages.slice(0, 1) : shortages.slice(0, 4);
+    const canApply =
+      proposal.status === 'ready' &&
+      proposal.requiresConfirmation !== false &&
+      Boolean(proposal.proposalId);
+    const blockedUserMessage = isBlocked ? getBlockedProposalUserMessage(proposal) : '';
+    const noticeItems = shortages.length > 0
+      ? (proposal.status === 'blocked' ? [] : warnings)
+      : [
+        normalizePlanActionTextForUser(proposal.blockingReason),
+        proposal.status === 'ready' ? '' : normalizePlanActionTextForUser(dryRun.message),
+        ...warnings,
+      ].filter(item => item && !isLowValueSystemText(item));
+    const cardClassName = compact
+      ? `${style.fixProposalCard} ${style.fixProposalNestedCard}`
+      : style.fixProposalCard;
+    const displayTitle = compact
+      ? getCompactFixProposalDisplayTitle(proposal)
+      : getFixProposalDisplayTitle(proposal);
+    const strategyLabel = getFixProposalStrategyLabel(proposal.strategy);
+    const shouldShowStrategyTag =
+      !compact &&
+      Boolean(proposal.strategy) &&
+      proposal.status !== 'blocked' &&
+      Boolean(strategyLabel) &&
+      strategyLabel !== displayTitle;
+    const applyButton = canApply ? (
+      <div className={style.fixProposalApplyRow}>
+        <Button
+          size="small"
+          disabled={fixProposalLoading}
+          loading={fixProposalApplyingId === proposal.proposalId}
+          onClick={() => handleApplyFixProposal(proposal)}
+        >
+          立即执行
+        </Button>
+      </div>
+    ) : null;
+    if (isBlocked) {
+      return (
+        <div key={proposal.proposalId || `${proposal.strategy}-${index}`} className={style.fixProposalBlockedNote}>
+          <div className={style.fixProposalBlockedTitle}>{getBlockedProposalTitle(proposal)}</div>
+          {blockedUserMessage ? (
+            <div className={style.fixProposalBlockedText}>{blockedUserMessage}</div>
+          ) : null}
+        </div>
+      );
+    }
+    return (
+      <div key={proposal.proposalId || `${proposal.strategy}-${index}`} className={cardClassName}>
+        <div className={style.fixProposalHeader}>
+          <div className={style.fixProposalTitleBlock}>
+            <div className={style.fixProposalTitle}>{displayTitle}</div>
+            <div className={style.fixProposalTags}>
+              {proposal.status && proposal.status !== 'ready' ? (
+                <Tag color={getFixProposalStatusColor(proposal.status)}>
+                {getFixProposalStatusLabel(proposal.status)}
+                </Tag>
+              ) : null}
+              {shouldShowStrategyTag ? (
+                <Tag bordered={false}>{strategyLabel}</Tag>
+              ) : null}
+            </div>
+          </div>
+        </div>
+        {!isBlocked && proposal.summary ? (
+          <div className={style.fixProposalText}>{normalizePlanActionTextForUser(proposal.summary)}</div>
+        ) : null}
+        {!isBlocked && (dryRunText || actionDetails.length > 0) ? (
+          <div className={style.fixProposalMeta}>
+            <div className={style.fixProposalPreviewTitle}>调整预览</div>
+            {dryRunText ? (
+              <div className={style.fixProposalPreviewText}>{dryRunText}</div>
+            ) : null}
+            {actionDetails.length > 0 ? (
+              <div className={style.fixProposalPreviewDetails}>
+                {actionDetails.slice(0, 5).map((detail, detailIndex) => (
+                  <div key={`${proposal.proposalId || index}-action-${detailIndex}`}>
+                    {detail}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {canApply ? applyButton : null}
+          </div>
+        ) : null}
+        {shouldShowReplacementPairs ? (
+          <div className={style.fixProposalPairList}>
+            <div className={style.fixProposalSectionTitle}>可能的替换方式</div>
+            {replacementPairTexts.slice(0, 5).map((pairText, pairIndex) => (
+              <div
+                key={`${proposal.proposalId || index}-pair-${pairIndex}`}
+                className={style.fixProposalPairItem}
+              >
+                <span>{pairText}</span>
+              </div>
+            ))}
+            {replacementPairTexts.length > 5 ? (
+              <div className={style.fixProposalMoreText}>还有 {replacementPairTexts.length - 5} 个替换配对未展开</div>
+            ) : null}
+          </div>
+        ) : null}
+        {!isBlocked && visibleShortages.length > 0 ? (
+          <div className={style.fixProposalShortageList}>
+            <div className={style.fixProposalSectionTitle}>{getShortageSectionTitle(shortages)}</div>
+            {visibleShortages.map((shortage, shortageIndex) => {
+              const shortageLine = buildFixProposalShortageLine(shortage);
+              const shortageMessage = normalizePlanActionTextForUser(shortage.message);
+              return (
+                <div
+                  key={`${proposal.proposalId || index}-shortage-${shortageIndex}`}
+                  className={style.fixProposalShortageItem}
+                >
+                  {shortageLine ? <div>{shortageLine}</div> : null}
+                  {shortageMessage && !isLowValueSystemText(shortageMessage) ? <div>{shortageMessage}</div> : null}
+                </div>
+              );
+            })}
+            {shortages.length > visibleShortages.length ? (
+              <div className={style.fixProposalMoreText}>
+                还有 {shortages.length - visibleShortages.length} 条说明未展开
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+        {noticeItems.length > 0 ? (
+          <div className={style.fixProposalNotice}>
+            {noticeItems.slice(0, 3).join('；')}
+          </div>
+        ) : null}
+        {canApply && !dryRunText && actionDetails.length === 0 ? applyButton : null}
+      </div>
+    );
+  };
+
+  const renderReviewIssueCard = (
+    check: PlanningReviewCheck,
+    proposals: PlanningFixProposal[],
+    index: number
+  ) => {
+    const issueKey = check.code || `${check.summary || 'review'}-${index}`;
+    const proposalsExpanded = expandedReviewIssueKeys.includes(issueKey);
+    const hasHandlingAdvice = proposals.length > 0 || Boolean(check.suggestedAction);
+    const affectedCount =
+      (check.affectedVolunteerIds || []).length ||
+      (check.suggestedCompensations || []).reduce(
+        (sum, action) => sum + (action.volunteerIds || []).length + (action.unitIds || []).length,
+        0
+      );
+    return (
+      <div key={issueKey} className={style.reviewIssueCard}>
+        <div className={style.reviewIssueHeader}>
+          <div className={style.reviewIssueTitleBlock}>
+            <div className={style.reviewIssueTitle}>{getReviewCheckDisplayLabel(check)}</div>
+            <div className={style.reviewIssueTags}>
+              <Tag color={check.level === 'risk' ? 'red' : 'orange'}>
+                {check.level === 'risk' ? '风险' : '提醒'}
+              </Tag>
+              {affectedCount > 0 ? <Tag bordered={false}>影响 {affectedCount} 项</Tag> : null}
+            </div>
+          </div>
+        </div>
+        {check.summary ? (
+          <div className={style.reviewIssueSummary}>{normalizePlanActionTextForUser(check.summary)}</div>
+        ) : null}
+        {check.detail ? (
+          <div className={style.reviewIssueDetail}>{normalizePlanActionTextForUser(check.detail)}</div>
+        ) : null}
+        {hasHandlingAdvice ? (
+          <div className={style.reviewIssueProposalList}>
+            <Button
+              size="small"
+              type="link"
+              className={style.reviewIssueProposalToggle}
+              onClick={() => toggleReviewIssueProposals(issueKey)}
+            >
+              {proposalsExpanded ? '收起处理建议' : '查看处理建议'}
+            </Button>
+            {proposalsExpanded ? (
+              <div className={style.reviewIssueHandlingPanel}>
+                {check.suggestedAction ? (
+                  <div className={style.reviewIssueHandlingSection}>
+                    <div className={style.reviewIssueProposalSectionTitle}>处理方向</div>
+                    <div className={style.reviewIssueSuggestion}>
+                      {normalizePlanActionTextForUser(check.suggestedAction)}
+                    </div>
+                  </div>
+                ) : null}
+                {proposals.length > 0 ? (
+                  <div className={style.reviewIssueHandlingSection}>
+                    <div className={style.reviewIssueProposalSectionTitle}>处理方式</div>
+                    <div className={style.reviewIssueProposalStack}>
+                      {proposals.map((proposal, proposalIndex) =>
+                        renderFixProposalCard(proposal, proposalIndex, true)
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <div className={style.reviewIssueNoProposal}>
+                    当前没有合适的一键处理方案。可以先查看受影响志愿，或调整筛选条件后重新审查。
+                  </div>
+                )}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+    );
+  };
+
+  const renderPendingReviewActionCard = (
+    action: NonNullable<PlanningStateRes['pendingActions']>[number],
+    index: number
+  ) => {
+    const affectedCount = (action.volunteerIds || []).length;
+    return (
+      <div key={`${action.type || action.summary || 'pending'}-${index}`} className={style.reviewIssueCard}>
+        <div className={style.reviewIssueHeader}>
+          <div className={style.reviewIssueTitleBlock}>
+            <div className={style.reviewIssueTitle}>
+              {normalizePlanActionTextForUser(action.summary) || '其他提醒'}
+            </div>
+            <div className={style.reviewIssueTags}>
+              <Tag color={action.level === 'risk' ? 'red' : 'orange'}>
+                {action.level === 'risk' ? '风险' : '提醒'}
+              </Tag>
+              {affectedCount > 0 ? <Tag bordered={false}>影响 {affectedCount} 项</Tag> : null}
+            </div>
+          </div>
+        </div>
+        {action.detail ? (
+          <div className={style.reviewIssueDetail}>{normalizePlanActionTextForUser(action.detail)}</div>
+        ) : null}
+      </div>
+    );
+  };
+
+  const renderUnmatchedProposalIssueCard = (proposals: PlanningFixProposal[]) => {
+    const issueKey = '__unmatched_fix_proposals__';
+    const proposalsExpanded = expandedReviewIssueKeys.includes(issueKey);
+    return (
+      <div className={style.reviewIssueCard}>
+        <div className={style.reviewIssueHeader}>
+          <div className={style.reviewIssueTitleBlock}>
+            <div className={style.reviewIssueTitle}>其他需要关注的问题</div>
+            <div className={style.reviewIssueTags}>
+              <Tag color="orange">提醒</Tag>
+              <Tag bordered={false}>影响 {proposals.length} 项</Tag>
+            </div>
+          </div>
+        </div>
+        <div className={style.reviewIssueDetail}>
+          这些内容没有挂到具体审查项上，建议先查看说明，再决定是否处理。
+        </div>
+        <div className={style.reviewIssueProposalList}>
+          <Button
+            size="small"
+            type="link"
+            className={style.reviewIssueProposalToggle}
+            onClick={() => toggleReviewIssueProposals(issueKey)}
+          >
+            {proposalsExpanded ? '收起处理建议' : '查看处理建议'}
+          </Button>
+          {proposalsExpanded ? (
+            <div className={style.reviewIssueHandlingPanel}>
+              <div className={style.reviewIssueHandlingSection}>
+                <div className={style.reviewIssueProposalSectionTitle}>处理方式</div>
+                <div className={style.reviewIssueProposalStack}>
+                  {proposals.map((proposal, index) => renderFixProposalCard(proposal, index, true))}
+                </div>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    );
+  };
+
+  const renderFixProposalModalBody = () => {
+    const proposals = fixProposalState?.proposals || [];
+    const issueChecks = actionableReviewChecks;
+    if (fixProposalLoading && !fixProposalState && !reviewSummary) {
+      return (
+        <div className={style.fixProposalLoading}>
+          <Spin />
+        </div>
+      );
+    }
+    const matchedProposalIds = new Set<string>();
+    const issueNodes = issueChecks.map((check, index) => {
+      const relatedProposals = proposals.filter(proposal => {
+        const matched = Boolean(check.code && (proposal.sourceCheckCodes || []).includes(check.code));
+        if (matched && proposal.proposalId) {
+          matchedProposalIds.add(proposal.proposalId);
+        }
+        return matched;
+      });
+      return renderReviewIssueCard(check, relatedProposals, index);
+    });
+    const pendingActionNodes = actionablePendingActions.map(renderPendingReviewActionCard);
+    const unmatchedProposals = proposals.filter(proposal => {
+      if (proposal.proposalId) {
+        return !matchedProposalIds.has(proposal.proposalId);
+      }
+      return !(proposal.sourceCheckCodes || []).some(code =>
+        issueChecks.some(check => check.code && check.code === code)
+      );
+    });
+    const hasContent =
+      issueNodes.length > 0 ||
+      pendingActionNodes.length > 0 ||
+      unmatchedProposals.length > 0 ||
+      Boolean(lastRepairReport);
+    if (!hasContent) {
+      return (
+        <div className={style.fixProposalEmpty}>
+          <Empty description="当前审查没有需要处理的问题" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+        </div>
+      );
+    }
+    return (
+      <div className={style.fixProposalList}>
+        {renderRepairReportSummary()}
+        {issueNodes}
+        {pendingActionNodes}
+        {unmatchedProposals.length > 0 ? renderUnmatchedProposalIssueCard(unmatchedProposals) : null}
       </div>
     );
   };
 
   const orderedToolbarHint = orderedItems.some(item => item.orderedBy === 'user')
-    ? '你已手动调整过方案，继续上移、下移或固定志愿来优化。'
-    : '当前顺序是系统初排结果，你可以上移、下移、固定或删除来调整。';
+    ? '你已手动调整过方案，可以继续上移、下移、排序或删除来优化。'
+    : '当前顺序是系统初排结果，你可以上移、下移、排序或删除来调整。';
 
   const renderMajorName = (majorName?: string) => {
     const trimmed = (majorName || '').trim();
@@ -3084,14 +4135,14 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     previousOrderedCollapseKeysRef.current = nextKeys;
   }, [orderedCollapseSignature]);
 
-  const groupedDraftList = useMemo<DraftGroup[]>(() => {
+  const groupedWorkingPlanList = useMemo<WorkingPlanGroup[]>(() => {
     if (!isMajorGroupMode) {
       return [];
     }
 
-    const draftUnits = planningState?.draftPlanState?.units || [];
-    if (draftUnits.length > 0) {
-      return draftUnits.map((unit: PlanningDraftUnit, index) => ({
+    const workingPlanUnits = workingPlanState?.units || [];
+    if (workingPlanUnits.length > 0) {
+      return workingPlanUnits.map((unit: PlanningWorkingPlanUnit, index) => ({
         key: unit.unitId || unit.schoolName || `draft-unit-${index}`,
         tier: unit.tier || '',
         schoolName: unit.schoolName || '未知院校',
@@ -3099,7 +4150,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         items: (unit.majorItems || []).map(major => {
           const volunteerId = major.volunteerId;
           const draftItem =
-            draftItems.find(item => item.volunteerId === volunteerId) || {
+            workingPlanItems.find(item => item.volunteerId === volunteerId) || {
               volunteerId,
               tier: major.tier || unit.tier,
               schoolName: unit.schoolName,
@@ -3118,8 +4169,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       }));
     }
 
-    const grouped = new Map<string, DraftGroup>();
-    draftItems.forEach((item, index) => {
+    const grouped = new Map<string, WorkingPlanGroup>();
+    workingPlanItems.forEach((item, index) => {
       const candidateItem = resolveCandidateItemForPlan(
         item.volunteerId,
         item.schoolName,
@@ -3149,17 +4200,17 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     candidateItemMap,
     candidateLegacyPrefixMap,
     candidateSchoolMajorMap,
-    draftItems,
+    workingPlanItems,
     isMajorGroupMode,
-    planningState?.draftPlanState?.units,
+    workingPlanState?.units,
   ]);
 
-  const basketDraftGroups = useMemo<DraftGroup[]>(() => {
+  const basketWorkingPlanGroups = useMemo<WorkingPlanGroup[]>(() => {
     if (!isMajorGroupMode) {
       return [];
     }
     if (orderedItems.length <= 0) {
-      return groupedDraftList;
+      return groupedWorkingPlanList;
     }
     return groupedOrderedList.map(group => ({
       key: group.key,
@@ -3177,8 +4228,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         candidateItem: entry.candidateItem,
       })),
     }));
-  }, [groupedDraftList, groupedOrderedList, isMajorGroupMode, orderedItems.length]);
-  const basketItems = orderedItems.length > 0 ? orderedItems : draftItems;
+  }, [groupedWorkingPlanList, groupedOrderedList, isMajorGroupMode, orderedItems.length]);
+  const basketItems = orderedItems.length > 0 ? orderedItems : workingPlanItems;
 
   const candidatePoolUnitFallbackTotal = useMemo(() => {
     if (!isMajorGroupMode) {
@@ -3239,18 +4290,18 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     isMajorGroupMode ? groupedOrderedList.length : orderedItems.length
   );
   const orderedTargetTotal = firstPositiveNumber(orderedSummary?.targetUnitCount, orderedSummary?.targetCount);
-  const draftDisplayTotal = firstPositiveNumber(
-    isMajorGroupMode ? draftSummary?.unitTotal : draftSummary?.total,
-    draftSummary?.unitTotal,
-    draftSummary?.total,
-    isMajorGroupMode ? groupedDraftList.length : draftItems.length
+  const workingPlanDisplayTotal = firstPositiveNumber(
+    isMajorGroupMode ? workingPlanSummary?.unitTotal : workingPlanSummary?.total,
+    workingPlanSummary?.unitTotal,
+    workingPlanSummary?.total,
+    isMajorGroupMode ? groupedWorkingPlanList.length : workingPlanItems.length
   );
-  const draftTierCounts = draftSummary?.unitTierCounts ?? draftSummary?.tierCounts ?? {};
-  const planDisplayTotal = orderedDisplayTotal || draftDisplayTotal;
+  const workingPlanTierCounts = workingPlanSummary?.unitTierCounts ?? workingPlanSummary?.tierCounts ?? {};
+  const planDisplayTotal = orderedDisplayTotal || workingPlanDisplayTotal;
   const planTargetTotal =
     orderedTargetTotal ||
-    draftSummary?.targetUnitCount ||
-    draftSummary?.targetCount ||
+    workingPlanSummary?.targetUnitCount ||
+    workingPlanSummary?.targetCount ||
     planningState?.candidatePoolState?.requiredUnitCount ||
     planningState?.candidatePoolState?.requiredCount ||
     0;
@@ -3259,7 +4310,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       ? orderedSummary?.unitTierCounts
       : Object.values(orderedSummary?.tierCounts || {}).some(value => value > 0)
         ? orderedSummary?.tierCounts
-        : draftTierCounts;
+        : workingPlanTierCounts;
   const candidateFilteredUnitTotal = candidatePoolResult.totalUnitCount ?? candidateGroupedDisplayTotal ?? 0;
   const candidateLoadedDisplayTotal = isMajorGroupMode
     ? groupedCandidateList.length
@@ -3267,20 +4318,43 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const candidateLoadedEntryTotal = candidatePoolResult.items?.length || 0;
   const reviewPassedRuleCount = reviewSummary?.passedRuleCount ?? reviewSummary?.passedCount ?? 0;
   const reviewTotalRuleCount = reviewSummary?.totalRuleCount ?? reviewSummary?.total ?? 0;
-  const reviewRiskRuleCount = reviewSummary?.riskRuleCount ?? reviewSummary?.riskCount ?? 0;
-  const reviewWarnRuleCount = reviewSummary?.warnRuleCount ?? reviewSummary?.warnCount ?? 0;
   const reviewOverviewLabel =
     workflowStatus?.reviewStatus === 'has_risk'
-      ? '有风险，请查看方案'
+      ? '方案有风险'
       : workflowStatus?.reviewStatus === 'has_warning'
-        ? '有提醒，请查看方案'
+        ? '方案有提醒'
         : workflowStatus?.reviewStatus === 'stale'
           ? '待重新审查'
           : workflowStatus?.reviewStatus === 'passed'
-            ? '通过'
+            ? '方案通过审查'
             : workflowStatus?.reviewStatus === 'failed'
-              ? '失败'
-              : '未审查';
+              ? '审查失败'
+          : '未审查';
+  const reviewActionLabel = reviewSummary ? '重新审查' : '审查';
+  const reviewOverviewReason =
+    workflowStatus?.reviewStatus === 'stale'
+      ? workflowStatus?.reviewReasonMessage ||
+        workflowStatus?.reviewMessage ||
+        planningState?.staleFlags?.message ||
+        ''
+      : '';
+  const initialStrategyReport = planningState?.initialRecommendationState?.strategyReport;
+  const initialStrategyUnresolved = initialStrategyReport?.unresolvedRisks || [];
+  const initialStrategyShortages = initialStrategyReport?.candidateShortages || [];
+  const initialStrategyTradeoffs = initialStrategyReport?.tradeoffs || [];
+  const initialStrategyRepairCount = initialStrategyReport?.appliedRepairs?.length || 0;
+  const initialStrategyTradeoffSummary =
+    initialStrategyTradeoffs.find(item => Boolean((item?.summary || '').trim()))?.summary ||
+    initialStrategyReport?.appliedRepairs?.find(item => Boolean((item?.tradeoffSummary || '').trim()))?.tradeoffSummary ||
+    '';
+  const initialStrategyNotice =
+    initialStrategyShortages.length > 0
+      ? `${initialStrategyShortages.length}类生成阶段候选不足：${initialStrategyShortages[0]?.message || '建议结合审查结果继续确认'}`
+      : initialStrategyUnresolved.length > 0
+      ? `${initialStrategyUnresolved.length}类生成阶段风险待关注：${initialStrategyUnresolved[0]?.detail || '建议结合审查结果继续确认'}`
+      : initialStrategyRepairCount > 0
+        ? `生成初始推荐时已为降低结构风险调整 ${initialStrategyRepairCount} 个候选${initialStrategyTradeoffSummary ? `：${initialStrategyTradeoffSummary}` : ''}`
+        : '';
   const candidateDetailMessages = [
     planningState?.candidatePoolState?.statusMessage,
     ...candidateRiskHints,
@@ -3291,15 +4365,12 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       : '';
   const candidateEmptyDescription =
     workflowStatus?.candidateStatus === 'empty'
-      ? candidateDetailMessages.join('；') || '当前条件下没有可用志愿候选'
+      ? candidateDetailMessages.join('；') || '当前可用于规划的候选池暂无可用志愿'
       : activeFilterChips.length > 0 && candidateFilteredUnitTotal === 0
         ? '当前筛选结果为空'
       : '暂无候选志愿';
 
   const getOrderedItemStatusLabel = (item: PlanningOrderedItem) => {
-    if (item.pinned) {
-      return '已固定';
-    }
     if (item.orderReason === 'append_new_draft') {
       return '新增';
     }
@@ -3531,12 +4602,23 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
             </div>
             <div className={style.metricLabel}>审查</div>
             <div className={style.metricMeta}>{reviewOverviewLabel}</div>
+            {reviewOverviewReason && (
+              <div className={style.metricHint} title={reviewOverviewReason}>
+                {reviewOverviewReason}
+              </div>
+            )}
           </div>
         </div>
 
         {isLegacySubmittedPlan && !overviewCollapsed && (
           <div className={style.legacySubmittedNotice}>
             历史已提交方案，建议只读查看；如需调整，请先复制或重新生成方案。
+          </div>
+        )}
+
+        {initialStrategyNotice && !overviewCollapsed && (
+          <div className={style.initialStrategyNotice} title={initialStrategyNotice}>
+            {initialStrategyNotice}
           </div>
         )}
 
@@ -4019,8 +5101,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                         type={isSelected ? 'default' : 'primary'}
                                         icon={<PlusOutlined />}
                                         disabled={isSelected || !item.volunteerId}
-                                        loading={actionLoading === 'draft' && !isSelected}
-                                        onClick={() => handleAddCandidateToDraft(item.volunteerId)}
+                                        loading={actionLoading === 'workingPlan' && !isSelected}
+                                        onClick={() => handleAddCandidateToWorkingPlan(item.volunteerId)}
                                       >
                                         {isSelected ? '已加入方案' : '加入方案'}
                                       </Button>
@@ -4064,6 +5146,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                             type="button"
                             className={style.reviewAlertButton}
                             aria-label="查看方案警示"
+                            onClick={handleOpenReviewDetailsModal}
                           >
                             <ExclamationCircleOutlined />
                           </button>
@@ -4074,10 +5157,10 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                         size="small"
                         icon={<SafetyCertificateOutlined />}
                         loading={actionLoading === 'review'}
-                        onClick={handleRunReview}
+                        onClick={() => handleOpenReviewWorkflowModal(true)}
                         disabled={!orderedItems.length}
                       >
-                        审查
+                        {reviewActionLabel}
                       </Button>
                       <Button
                         className={style.reviewActionButton}
@@ -4243,8 +5326,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                         <Button
                                           danger
                                           icon={<DeleteOutlined />}
-                                          loading={actionLoading === 'draft' || actionLoading === 'ordered'}
-                                          onClick={() => handleRemoveDraftItem(item.volunteerId)}
+                                          loading={actionLoading === 'workingPlan' || actionLoading === 'ordered'}
+                                          onClick={() => handleRemoveWorkingPlanItem(item.volunteerId)}
                                         />
                                       </Tooltip>
                                     </div>
@@ -4319,8 +5402,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                 <Button
                                   danger
                                   icon={<DeleteOutlined />}
-                                  loading={actionLoading === 'draft' || actionLoading === 'ordered'}
-                                  onClick={() => handleRemoveDraftItem(item.volunteerId)}
+                                  loading={actionLoading === 'workingPlan' || actionLoading === 'ordered'}
+                                  onClick={() => handleRemoveWorkingPlanItem(item.volunteerId)}
                                 />
                               </Tooltip>
                             </div>
@@ -4432,6 +5515,27 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       ) : null}
 
       <Modal
+        title="方案审查结果"
+        open={fixProposalModalOpen}
+        width={720}
+        onCancel={() => setFixProposalModalOpen(false)}
+        footer={[
+          <Button key="close" onClick={() => setFixProposalModalOpen(false)}>
+            关闭
+          </Button>,
+          <Button
+            key="refresh"
+            loading={fixProposalLoading || actionLoading === 'review'}
+            onClick={() => handleOpenReviewWorkflowModal(true)}
+          >
+            重新审查
+          </Button>,
+        ]}
+      >
+        <div className={style.fixProposalModalBody}>{renderFixProposalModalBody()}</div>
+      </Modal>
+
+      <Modal
         title="排序方案"
         open={sortModalOpen}
         okText="确认排序"
@@ -4442,7 +5546,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       >
         <div className={style.sortModalBody}>
           <div className={style.sortModalHint}>
-            排序会改变当前方案顺序，固定的志愿会保留在原位置，确认后仍可继续手动调整。
+            排序会改变当前方案顺序，确认后仍可继续手动调整。
           </div>
           <div className={style.sortOptionList}>
             {ORDERED_SORT_OPTIONS.map(option => (
@@ -4579,7 +5683,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
               <div className={style.draftList}>
                 {basketItems.length > 0 ? (
                   isMajorGroupMode ? (
-                    basketDraftGroups.map(group => (
+                    basketWorkingPlanGroups.map(group => (
                       <div key={group.key} className={style.draftGroup}>
                         <div className={style.draftGroupHeader}>
                           <div className={style.draftGroupHeaderMain}>
@@ -4596,7 +5700,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                               size="small"
                               danger
                               icon={<DeleteOutlined />}
-                              onClick={() => handleRemoveDraftGroup(group)}
+                              onClick={() => handleRemoveWorkingPlanGroup(group)}
                             />
                           </Tooltip>
                         </div>
@@ -4624,7 +5728,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                   size="small"
                                   danger
                                   icon={<DeleteOutlined />}
-                                  onClick={() => handleRemoveDraftItem(draftItem.volunteerId)}
+                                  onClick={() => handleRemoveWorkingPlanItem(draftItem.volunteerId)}
                                 />
                               </Tooltip>
                             </div>
@@ -4661,7 +5765,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                               size="small"
                               danger
                               icon={<DeleteOutlined />}
-                              onClick={() => handleRemoveDraftItem(item.volunteerId)}
+                              onClick={() => handleRemoveWorkingPlanItem(item.volunteerId)}
                             />
                           </Tooltip>
                         </div>

@@ -389,7 +389,7 @@ def test_planning_scenario_add_units_by_filters_updates_plan_wording():
         "app.tools.plan_execution_tool._query_planning_candidate_pool_request",
         AsyncMock(return_value={"code": 0, "data": {"items": [{"volunteerId": "v1"}, {"volunteerId": "v2"}]}}),
     ), patch(
-        "app.tools.plan_execution_tool._select_planning_draft_items_request",
+        "app.tools.plan_execution_tool._select_working_plan_items_request",
         AsyncMock(return_value={"code": 0, "data": {"draftPlanState": {"summary": {"unitTotal": 30}}}}),
     ), patch(
         "app.tools.plan_execution_tool._generate_planning_ordered_plan_request",
@@ -553,7 +553,7 @@ def test_planning_scenario_remove_units_reply_includes_removed_added_and_review_
         "app.tools.planning_workflow_tool._get_planning_ordered_plan_request",
         AsyncMock(return_value={"code": 0, "data": {"items": before_items}}),
     ), patch(
-        "app.tools.planning_workflow_tool._remove_planning_draft_items_request",
+        "app.tools.planning_workflow_tool._remove_working_plan_items_request",
         AsyncMock(return_value={"code": 0, "data": {}}),
     ), patch(
         "app.tools.planning_workflow_tool._generate_planning_ordered_plan_request",

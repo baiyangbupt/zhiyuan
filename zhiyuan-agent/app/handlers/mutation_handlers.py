@@ -72,7 +72,7 @@ async def handle_add_units(
     ctx: RunContext[RequestContext], plan: PlanActionPlan
 ) -> PlanExecutionResult:
     reply_focus = ["mutation_result", "plan_update"]
-    next_step_hints = ["优先说明这次加入是否已同步到草稿/方案，再根据需要补充复审影响。"]
+    next_step_hints = ["优先说明这次加入是否已同步到当前方案，再根据需要补充复审影响。"]
     atomic = plan.atomic_actions[0] if plan.atomic_actions else None
     ids = atomic.volunteer_ids if atomic else []
     affected_volunteer_ids: list[str] = []

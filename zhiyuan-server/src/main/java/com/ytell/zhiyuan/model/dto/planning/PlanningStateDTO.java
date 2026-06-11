@@ -18,10 +18,30 @@ public class PlanningStateDTO {
     private InitialRecommendationStateDTO initialRecommendationState = new InitialRecommendationStateDTO();
     private RecommendationOverlayStateDTO recommendationOverlayState = new RecommendationOverlayStateDTO();
     private PlanGenerationStateDTO planGenerationState = new PlanGenerationStateDTO();
-    private DraftPlanStateDTO draftPlanState = new DraftPlanStateDTO();
+    private DraftPlanStateDTO workingPlanState = new DraftPlanStateDTO();
     private OrderedPlanStateDTO orderedPlanState = new OrderedPlanStateDTO();
     private PlanAdjustmentStateDTO planAdjustmentState = new PlanAdjustmentStateDTO();
     private ReviewStateDTO reviewState = new ReviewStateDTO();
     private List<CompensationActionDTO> pendingActions = Lists.newArrayList();
     private List<OperationLogDTO> operationLogs = Lists.newArrayList();
+
+    /**
+     * Backward-compatible alias for persisted 3.0.x planning state and older agent/frontend callers.
+     * New code should use workingPlanState.
+     */
+    @Deprecated
+    public DraftPlanStateDTO getDraftPlanState() {
+        return workingPlanState;
+    }
+
+    /**
+     * Backward-compatible alias for persisted 3.0.x planning state and older agent/frontend callers.
+     * New code should use workingPlanState.
+     */
+    @Deprecated
+    public void setDraftPlanState(DraftPlanStateDTO draftPlanState) {
+        if (draftPlanState != null || this.workingPlanState == null) {
+            this.workingPlanState = draftPlanState;
+        }
+    }
 }

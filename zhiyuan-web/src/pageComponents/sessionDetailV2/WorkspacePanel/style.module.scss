@@ -60,6 +60,17 @@
   color: #9b8379;
 }
 
+.metricHint {
+  margin-top: 4px;
+  min-width: 0;
+  color: #7a665e;
+  font-size: 11px;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .legacySubmittedNotice {
   margin-bottom: 12px;
   padding: 10px 12px;
@@ -70,6 +81,20 @@
   font-size: 13px;
   font-weight: 600;
   line-height: 1.45;
+}
+
+.initialStrategyNotice {
+  margin: -4px 0 12px;
+  padding: 9px 12px;
+  border: 1px solid #eadbd6;
+  border-radius: 10px;
+  background: #fffaf7;
+  color: #6f5b53;
+  font-size: 12px;
+  line-height: 1.45;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .stageToolbar {
@@ -1212,7 +1237,10 @@
   flex: 1;
   min-width: 0;
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 2px;
 }
 
 .reviewSummaryHint {
@@ -1375,6 +1403,388 @@
 .reviewTooltipEmpty {
   font-size: 12px;
   line-height: 1.5;
+}
+
+.reviewTooltipDetailLink {
+  align-self: flex-start;
+  margin-top: 2px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: #fff7e6;
+  font-size: 12px;
+  line-height: 1.5;
+  font-weight: 600;
+  cursor: pointer;
+
+  &:hover {
+    color: #ffffff;
+    text-decoration: underline;
+  }
+}
+
+.fixProposalModalBody {
+  max-height: 62vh;
+  overflow-y: auto;
+}
+
+.fixProposalLoading,
+.fixProposalEmpty {
+  min-height: 160px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.fixProposalList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.fixProposalCard {
+  padding: 12px 14px;
+  border: 1px solid #f0dfd8;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.fixProposalNestedCard {
+  padding: 10px 12px;
+  border-color: #eee4df;
+  background: #fff;
+  box-shadow: none;
+}
+
+.fixProposalBlockedNote {
+  padding: 10px 12px;
+  border: 1px solid #eee4df;
+  border-radius: 8px;
+  background: #fff;
+  color: #6f5b53;
+}
+
+.fixProposalBlockedTitle {
+  color: #5f473d;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.45;
+}
+
+.fixProposalBlockedText {
+  margin-top: 4px;
+  color: #7b655c;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.reviewIssueCard {
+  padding: 12px 14px;
+  border: 1px solid #edd9d0;
+  border-radius: 8px;
+  background: #fffaf7;
+}
+
+.reviewIssueHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.reviewIssueTitleBlock {
+  min-width: 0;
+}
+
+.reviewIssueTitle {
+  color: #362621;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.45;
+}
+
+.reviewIssueTags {
+  margin-top: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+
+  :global(.ant-tag) {
+    margin-inline-end: 0;
+  }
+}
+
+.reviewIssueSummary,
+.reviewIssueDetail,
+.reviewIssueSuggestion,
+.reviewIssueNoProposal {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.reviewIssueSummary {
+  color: #4a332b;
+}
+
+.reviewIssueDetail {
+  color: #6f554b;
+}
+
+.reviewIssueSuggestion {
+  margin-top: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #fff8f4;
+  color: #6f554b;
+}
+
+.reviewIssueHandlingPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid #f0e2db;
+  border-radius: 8px;
+  background: #fffdfb;
+}
+
+.reviewIssueHandlingSection {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.reviewIssueProposalStack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.reviewIssueProposalList {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.reviewIssueProposalToggle {
+  align-self: flex-start;
+  height: auto;
+  padding: 0;
+  color: #c8522d;
+  font-size: 12px;
+  line-height: 1.5;
+
+  &:hover,
+  &:focus {
+    color: #a33e20;
+  }
+}
+
+.reviewIssueProposalSectionTitle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #5f473d;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.4;
+
+  &::before {
+    content: '';
+    display: block;
+    width: 3px;
+    height: 12px;
+    border-radius: 999px;
+    background: #d66f46;
+  }
+}
+
+.reviewIssueNoProposal {
+  margin-top: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #fff8f4;
+  color: #7b655c;
+}
+
+.repairReportSummary {
+  padding: 12px 14px;
+  border: 1px solid #dfece5;
+  border-radius: 8px;
+  background: #f8fffb;
+}
+
+.repairReportTitle {
+  color: #285b3c;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.repairReportMessage {
+  margin-top: 6px;
+  color: #4d6255;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.repairReportDetails {
+  margin-top: 8px;
+  color: #53665c;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.repairReportMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.repairReportActions {
+  margin-top: 8px;
+  color: #617268;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.repairReportWarning {
+  margin-top: 8px;
+  color: #8a5c12;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.fixProposalHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.fixProposalTitleBlock {
+  min-width: 0;
+}
+
+.fixProposalTitle {
+  color: #362621;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.45;
+}
+
+.fixProposalTags {
+  margin-top: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+
+  :global(.ant-tag) {
+    margin-inline-end: 0;
+  }
+}
+
+.fixProposalApplyRow {
+  display: flex;
+  justify-content: flex-start;
+  margin-top: 6px;
+
+  :global(.ant-btn) {
+    height: 24px;
+    padding: 0 8px;
+    font-size: 12px;
+    line-height: 22px;
+  }
+}
+
+.fixProposalText,
+.fixProposalMeta,
+.fixProposalActionList,
+.fixProposalPairList,
+.fixProposalShortageList,
+.fixProposalNotice {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.fixProposalText {
+  color: #4a332b;
+}
+
+.fixProposalMeta {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #fbf7f5;
+  color: #5d443a;
+}
+
+.fixProposalPreviewTitle {
+  color: #7b5142;
+  font-weight: 700;
+}
+
+.fixProposalPreviewText {
+  margin-top: 4px;
+}
+
+.fixProposalPreviewDetails {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid #eee0da;
+  color: #6b5147;
+}
+
+.fixProposalPreviewDetails > div + div {
+  margin-top: 3px;
+}
+
+.fixProposalActionList {
+  padding-left: 10px;
+  border-left: 2px solid #f3ddd5;
+  color: #5d443a;
+}
+
+.fixProposalPairList,
+.fixProposalShortageList {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #fbf7f5;
+  color: #5d443a;
+}
+
+.fixProposalSectionTitle {
+  margin-bottom: 6px;
+  color: #7b5142;
+  font-weight: 700;
+}
+
+.fixProposalPairItem,
+.fixProposalShortageItem {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.fixProposalPairItem + .fixProposalPairItem,
+.fixProposalShortageItem + .fixProposalShortageItem {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid #eee0da;
+}
+
+.fixProposalReasonCodes,
+.fixProposalMoreText {
+  color: #8c746b;
+}
+
+.fixProposalNotice {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #fff7f3;
+  color: #8d5b45;
 }
 
 .orderedStatusTag {
@@ -1790,10 +2200,20 @@
     line-height: 1.35;
   }
 
+  .metricHint {
+    font-size: 10px;
+  }
+
   .legacySubmittedNotice {
     margin-bottom: 10px;
     padding: 9px 10px;
     font-size: 12px;
+  }
+
+  .initialStrategyNotice {
+    margin: -2px 0 10px;
+    padding: 8px 10px;
+    font-size: 11px;
   }
 
   .stageToolbar {

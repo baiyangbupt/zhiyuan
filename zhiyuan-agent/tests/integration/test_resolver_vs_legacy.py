@@ -190,7 +190,7 @@ def test_review_issue_action_uses_structured_issue_code(volunteer_model: str):
         _frame("remove", review_issue_code="probability_inversion"),
         HAS_PLAN,
     )
-    assert structural.action_family == "analyze_adjustment"
+    assert structural.action_family == "sort_ordered_plan"
     assert structural.review_issue_override is True
 
 

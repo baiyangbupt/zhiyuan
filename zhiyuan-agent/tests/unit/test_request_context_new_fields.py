@@ -143,3 +143,20 @@ class TestRequestContextNewFields:
         assert summary.draft_target_total == 30
         assert summary.ordered_total == 24
         assert summary.ordered_target_total == 30
+
+    def test_planning_summary_reads_working_plan_state(self):
+        """Test parsing planning summary from the new workingPlanState field."""
+        raw_state = {
+            "phase": "selected",
+            "version": 7,
+            "candidatePoolState": {"requiredCount": 45},
+            "workingPlanState": {"summary": {"unitTotal": 18, "targetUnitCount": 45, "total": 36}},
+            "orderedPlanState": {"summary": {}},
+            "reviewState": {"summary": {}},
+        }
+
+        summary = PlanningSummary.from_backend_state(raw_state)
+
+        assert summary is not None
+        assert summary.draft_total == 18
+        assert summary.draft_target_total == 45

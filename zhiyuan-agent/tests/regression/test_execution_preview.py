@@ -157,6 +157,15 @@ class TestMutatingApplyGuard:
             action_family=action_family,
             stage="apply",
             preview_summary="将要执行某操作。",
+            atomic_actions=[
+                {
+                    "action_type": "add_units",
+                    "volunteer_ids": ["cand-1"],
+                    "filters": {},
+                }
+            ]
+            if action_family == "add_units"
+            else None,
         )
         result = await _execute_plan_action_model(ctx, plan)
         assert result.applied is False
@@ -203,26 +212,20 @@ class TestGenericPreviewAnalyzeFallback:
             action_family=action_family,
             stage=stage,
             preview_summary="测试预览摘要。",
+            atomic_actions=[
+                {
+                    "action_type": "add_units",
+                    "volunteer_ids": ["cand-1"],
+                    "filters": {},
+                }
+            ]
+            if action_family == "add_units"
+            else None,
         )
         result = await _execute_plan_action_model(ctx, plan)
         assert result.applied is False
         assert result.result_kind == "preview_only"
         assert "preview_only" in result.reply_focus
-
-    @pytest.mark.parametrize("action_family", ["pin_unit", "unpin_unit"])
-    @pytest.mark.parametrize("stage", ["preview", "analyze"])
-    @pytest.mark.parametrize("volunteer_model", ["major", "majorGroup"])
-    async def test_pin_unpin_disabled(self, action_family: str, stage: str, volunteer_model: str):
-        ctx = _run_ctx(volunteer_model=volunteer_model)
-        plan = make_plan_action_plan(
-            action_family=action_family,
-            stage=stage,
-            preview_summary="测试预览摘要。",
-        )
-        result = await _execute_plan_action_model(ctx, plan)
-        assert result.applied is False
-        assert result.result_kind == "error"
-        assert "pin_disabled" in result.reply_focus
 
     @pytest.mark.parametrize("volunteer_model", ["major", "majorGroup"])
     async def test_preview_mutating_gets_confirmation_hint(self, volunteer_model: str):
@@ -232,6 +235,13 @@ class TestGenericPreviewAnalyzeFallback:
             action_family="add_units",
             stage="preview",
             preview_summary="即将添加3个志愿。",
+            atomic_actions=[
+                {
+                    "action_type": "add_units",
+                    "volunteer_ids": ["cand-1"],
+                    "filters": {},
+                }
+            ],
         )
         result = await _execute_plan_action_model(ctx, plan)
         assert "确认" in result.summary

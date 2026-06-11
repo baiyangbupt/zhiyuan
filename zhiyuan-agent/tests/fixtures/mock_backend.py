@@ -39,8 +39,6 @@ _PLANNING_ENDPOINTS = [
     "lock_planning_draft_items",
     "ban_planning_draft_items",
     "move_planning_ordered_item",
-    "pin_planning_ordered_item",
-    "unpin_planning_ordered_item",
     "analyze_planning_plan_adjustment",
 ]
 
@@ -64,7 +62,7 @@ _EXECUTION_TOOL_ALIASES: dict[str, str] = {
     "generate_planning_ordered_plan": "_generate_planning_ordered_plan_request",
     "generate_planning_candidate_pool": "_generate_planning_candidate_pool_request",
     "get_planning_state": "_get_planning_state_request",
-    "get_planning_draft": "_get_planning_draft_request",
+    "get_planning_draft": "_get_working_plan_request",
     "get_planning_ordered_plan": "_get_planning_ordered_plan_request",
     "get_user_profile": "_get_user_profile_request",
     "run_planning_review": "_run_planning_review_request",
@@ -72,21 +70,21 @@ _EXECUTION_TOOL_ALIASES: dict[str, str] = {
     "apply_planning_compensation": "_apply_planning_compensation_request",
     "analyze_planning_plan_adjustment": "_analyze_planning_plan_adjustment_request",
     "query_planning_candidate_pool": "_query_planning_candidate_pool_request",
-    "select_planning_draft_items": "_select_planning_draft_items_request",
+    "select_planning_draft_items": "_select_working_plan_items_request",
 }
 
 # handler 模块通过 `from app.util.internal_client import X as _X_request` 导入，
 # 需要在 handler 模块上也 patch 绑定引用。
 _QUERY_HANDLER_ALIASES: dict[str, str] = {
     "get_planning_state": "_get_planning_state_request",
-    "get_planning_draft": "_get_planning_draft_request",
+    "get_planning_draft": "_get_working_plan_request",
     "get_planning_ordered_plan": "_get_planning_ordered_plan_request",
     "get_user_profile": "_get_user_profile_request",
 }
 
 _ANALYSIS_HANDLER_ALIASES: dict[str, str] = {
     "get_planning_ordered_plan": "_get_planning_ordered_plan_request",
-    "get_planning_draft": "_get_planning_draft_request",
+    "get_planning_draft": "_get_working_plan_request",
     "run_planning_review": "_run_planning_review_request",
     "analyze_planning_plan_adjustment": "_analyze_planning_plan_adjustment_request",
 }

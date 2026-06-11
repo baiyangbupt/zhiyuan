@@ -97,16 +97,16 @@ class InitialPlanEvaluationP0ReportTest {
                 sessionId,
                 state,
                 false);
-        invokeVoid("replaceDraftWithInitialRecommendation",
+        invokeVoid("replaceWorkingPlanWithInitialRecommendation",
                 new Class[]{PlanningStateDTO.class, List.class},
                 state,
                 effectiveCandidates);
-        invokeVoid("recalculateDraftSummary",
+        invokeVoid("recalculateWorkingPlanSummary",
                 new Class[]{state.getDraftPlanState().getClass(), state.getCandidatePoolState().getClass()},
                 state.getDraftPlanState(),
                 state.getCandidatePoolState());
 
-        List<OrderedItemDTO> orderedItems = invoke("buildOrderedItemsFromDraft",
+        List<OrderedItemDTO> orderedItems = invoke("buildOrderedItemsFromWorkingPlan",
                 new Class[]{state.getDraftPlanState().getClass(), state.getCandidatePoolState().getClass(), List.class, Map.class, boolean.class},
                 state.getDraftPlanState(),
                 state.getCandidatePoolState(),

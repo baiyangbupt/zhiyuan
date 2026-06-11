@@ -113,7 +113,7 @@ class QueryStateAction(_ActionBase):
 
 
 class QueryDraftAction(_ActionBase):
-    """查询草稿。"""
+    """Legacy action name for querying the current working plan."""
     action_type: Literal["query_draft"] = "query_draft"
 
 

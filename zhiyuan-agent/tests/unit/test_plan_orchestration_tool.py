@@ -135,7 +135,7 @@ def test_plan_next_action_requires_sort_field_for_sort_ordered_plan():
     assert data["atomic_actions"][0]["filters"].get("sort_field") is None
 
 
-def test_plan_next_action_infers_explicit_sort_field_from_goal():
+def test_plan_next_action_does_not_infer_sort_field_from_goal_text():
     with patch(
         "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
         new=AsyncMock(return_value=_context_inputs(summary="阶段=ordered；方案=48/48")),
@@ -150,13 +150,13 @@ def test_plan_next_action_infers_explicit_sort_field_from_goal():
         )
 
     data = json.loads(result)
-    assert data["stage"] == "preview"
-    assert data["missing_inputs"] == []
-    assert data["atomic_actions"][0]["filters"]["sort_field"] == "finalScore"
-    assert "推荐系数" in data["preview_summary"]
+    assert data["stage"] == "analyze"
+    assert data["requires_confirmation"] is False
+    assert "sort_field" in data["missing_inputs"]
+    assert data["atomic_actions"][0]["filters"].get("sort_field") is None
 
 
-def test_plan_next_action_does_not_turn_region_move_into_sort_when_sort_field_is_spurious():
+def test_plan_next_action_downgrades_scoped_sort_to_query_ordered():
     with patch(
         "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
         new=AsyncMock(return_value=_context_inputs(summary="阶段=ordered；方案=48/48")),
@@ -167,6 +167,7 @@ def test_plan_next_action_does_not_turn_region_move_into_sort_when_sort_field_is
                 user_goal="把北京的志愿往前挪一些可以吗",
                 action_family="sort_ordered_plan",
                 sort_field="finalScore",
+                province_keyword="北京",
                 user_confirmed=False,
             )
         )
@@ -177,7 +178,7 @@ def test_plan_next_action_does_not_turn_region_move_into_sort_when_sort_field_is
     assert data["requires_confirmation"] is False
     assert not data["should_rerun_review"]
     assert data["atomic_actions"] == []
-    assert any("不是指定排序维度" in line for line in data["rationale"])
+    assert any("局部筛选范围" in line for line in data["rationale"])
 
 
 def test_plan_next_action_requires_add_units_selection_scope_when_no_ids():
@@ -203,7 +204,7 @@ def test_plan_next_action_requires_add_units_selection_scope_when_no_ids():
     assert data["missing_inputs"] == ["selection_scope"]
 
 
-def test_plan_next_action_infers_add_units_school_major_ref_from_goal():
+def test_plan_next_action_does_not_infer_add_units_school_major_ref_from_goal():
     with patch(
         "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
         new=AsyncMock(return_value=_context_inputs(summary="阶段=ordered；方案=20/30")),
@@ -218,10 +219,10 @@ def test_plan_next_action_infers_add_units_school_major_ref_from_goal():
         )
 
     data = json.loads(result)
-    assert data["stage"] == "preview"
-    assert data["requires_confirmation"] is True
-    assert data["missing_inputs"] == []
-    assert data["atomic_actions"][0]["volunteer_ids"] == ["河南农业大学的建筑类"]
+    assert data["stage"] == "analyze"
+    assert data["requires_confirmation"] is False
+    assert data["missing_inputs"] == ["selection_scope"]
+    assert data["atomic_actions"][0]["volunteer_ids"] == []
 
 
 def test_plan_next_action_requires_missing_inputs_for_move():
@@ -544,7 +545,7 @@ def test_plan_next_action_passes_structured_replace_source_major_names():
     assert data["atomic_actions"][0]["filters"]["major_keyword"] == "网络与新媒体"
 
 
-def test_plan_next_action_coerces_broad_item_removal_issue_to_remove_units():
+def test_plan_next_action_keeps_broad_replacement_first_issue_as_review_plan():
     with patch(
         "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
         new=AsyncMock(
@@ -556,8 +557,8 @@ def test_plan_next_action_coerces_broad_item_removal_issue_to_remove_units():
                     {
                         "code": "high_tuition",
                         "label": "高收费",
-                        "scope_kind": "item_removal",
-                        "default_action_family": "remove_units",
+                        "scope_kind": "item_replacement",
+                        "default_action_family": "review_plan",
                         "affected_unit_count": 13,
                         "affected_volunteer_count": 44,
                         "scope_fingerprint": "issue-high-1",
@@ -577,15 +578,14 @@ def test_plan_next_action_coerces_broad_item_removal_issue_to_remove_units():
         )
 
     data = json.loads(result)
-    assert data["action_family"] == "remove_units"
-    assert data["stage"] == "preview"
+    assert data["action_family"] == "review_plan"
+    assert data["stage"] == "review"
+    assert data["requires_confirmation"] is False
     assert data["missing_inputs"] == []
-    assert data["atomic_actions"][0]["review_issue_target"]["code"] == "high_tuition"
-    assert data["atomic_actions"][0]["review_issue_target"]["scope_mode"] == "full_issue"
-    assert "整批高收费项" in data["preview_summary"]
+    assert data["atomic_actions"] == []
 
 
-def test_plan_next_action_keeps_high_tuition_question_read_only_when_model_requests_remove():
+def test_plan_next_action_respects_structured_high_tuition_remove_request():
     with patch(
         "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
         new=AsyncMock(
@@ -597,8 +597,8 @@ def test_plan_next_action_keeps_high_tuition_question_read_only_when_model_reque
                     {
                         "code": "high_tuition",
                         "label": "高收费",
-                        "scope_kind": "item_removal",
-                        "default_action_family": "remove_units",
+                        "scope_kind": "item_replacement",
+                        "default_action_family": "review_plan",
                         "affected_unit_count": 13,
                         "affected_volunteer_count": 44,
                         "scope_fingerprint": "issue-high-1",
@@ -618,13 +618,13 @@ def test_plan_next_action_keeps_high_tuition_question_read_only_when_model_reque
         )
 
     data = json.loads(result)
-    assert data["action_family"] == "review_plan"
-    assert data["stage"] == "review"
-    assert data["requires_confirmation"] is False
-    assert data["atomic_actions"] == []
+    assert data["action_family"] == "remove_units"
+    assert data["stage"] == "preview"
+    assert data["requires_confirmation"] is True
+    assert data["atomic_actions"][0]["review_issue_target"]["code"] == "high_tuition"
 
 
-def test_plan_next_action_keeps_high_tuition_question_read_only_when_model_requests_replace():
+def test_plan_next_action_downgrades_unscoped_high_tuition_replace_to_review():
     with patch(
         "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
         new=AsyncMock(
@@ -636,8 +636,8 @@ def test_plan_next_action_keeps_high_tuition_question_read_only_when_model_reque
                     {
                         "code": "high_tuition",
                         "label": "高收费",
-                        "scope_kind": "item_removal",
-                        "default_action_family": "remove_units",
+                        "scope_kind": "item_replacement",
+                        "default_action_family": "review_plan",
                         "affected_unit_count": 13,
                         "affected_volunteer_count": 44,
                         "scope_fingerprint": "issue-high-1",
@@ -663,7 +663,7 @@ def test_plan_next_action_keeps_high_tuition_question_read_only_when_model_reque
     assert data["atomic_actions"] == []
 
 
-def test_plan_next_action_recovers_missing_high_tuition_issue_for_remove_preview():
+def test_plan_next_action_does_not_recover_missing_high_tuition_issue_from_goal_text():
     with patch(
         "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
         new=AsyncMock(
@@ -704,13 +704,14 @@ def test_plan_next_action_recovers_missing_high_tuition_issue_for_remove_preview
         )
 
     data = json.loads(result)
-    assert data["action_family"] == "remove_units"
-    assert data["stage"] == "preview"
-    assert data["requires_confirmation"] is True
+    assert data["action_family"] == "review_plan"
+    assert data["stage"] == "review"
+    assert data["requires_confirmation"] is False
     assert data["missing_inputs"] == []
+    assert data["atomic_actions"] == []
 
 
-def test_plan_next_action_recovers_high_tuition_remove_when_model_chooses_compensation_preview():
+def test_plan_next_action_does_not_recover_review_issue_when_model_chooses_compensation_preview_without_code():
     with patch(
         "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
         new=AsyncMock(
@@ -742,17 +743,14 @@ def test_plan_next_action_recovers_high_tuition_remove_when_model_chooses_compen
         )
 
     data = json.loads(result)
-    assert data["action_family"] == "remove_units"
-    assert data["stage"] == "preview"
-    assert data["requires_confirmation"] is True
+    assert data["action_family"] == "preview_compensation"
+    assert data["stage"] == "apply"
+    assert data["requires_confirmation"] is False
     assert data["missing_inputs"] == []
-    assert data["atomic_actions"][0]["review_issue_target"]["code"] == "high_tuition"
-    assert "整批高收费项" in data["preview_summary"]
-    assert data["atomic_actions"][0]["review_issue_target"]["code"] == "high_tuition"
-    assert data["atomic_actions"][0]["review_issue_target"]["scope_mode"] == "full_issue"
+    assert data["atomic_actions"] == []
 
 
-def test_plan_next_action_recovers_high_tuition_when_model_starts_with_replace_action():
+def test_plan_next_action_does_not_recover_high_tuition_when_replace_lacks_issue_code():
     with patch(
         "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
         new=AsyncMock(
@@ -784,15 +782,14 @@ def test_plan_next_action_recovers_high_tuition_when_model_starts_with_replace_a
         )
 
     data = json.loads(result)
-    assert data["action_family"] == "remove_units"
-    assert data["stage"] == "preview"
-    assert data["requires_confirmation"] is True
-    assert data["missing_inputs"] == []
-    assert data["atomic_actions"][0]["review_issue_target"]["code"] == "high_tuition"
-    assert data["atomic_actions"][0]["review_issue_target"]["scope_mode"] == "full_issue"
+    assert data["action_family"] == "replace_units"
+    assert data["stage"] == "analyze"
+    assert data["requires_confirmation"] is False
+    assert "volunteer_ids" in data["missing_inputs"]
+    assert "replacement_scope" in data["missing_inputs"]
 
 
-def test_plan_next_action_recovers_registered_issue_when_current_review_is_empty():
+def test_plan_next_action_does_not_recover_registered_issue_from_goal_text():
     with patch(
         "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
         new=AsyncMock(
@@ -814,16 +811,13 @@ def test_plan_next_action_recovers_registered_issue_when_current_review_is_empty
         )
 
     data = json.loads(result)
-    assert data["action_family"] == "remove_units"
-    assert data["stage"] == "preview"
-    assert data["requires_confirmation"] is True
-    target = data["atomic_actions"][0]["review_issue_target"]
-    assert target["code"] == "high_tuition"
-    assert target["label"] == "高收费"
-    assert target["scope_mode"] == "full_issue"
+    assert data["action_family"] == "review_plan"
+    assert data["stage"] == "review"
+    assert data["requires_confirmation"] is False
+    assert data["atomic_actions"] == []
 
 
-def test_plan_next_action_recovers_high_tuition_from_model_rewritten_goal():
+def test_plan_next_action_does_not_recover_high_tuition_from_model_rewritten_goal():
     with patch(
         "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
         new=AsyncMock(
@@ -862,9 +856,9 @@ def test_plan_next_action_recovers_high_tuition_from_model_rewritten_goal():
         )
 
     data = json.loads(result)
-    assert data["action_family"] == "remove_units"
-    assert data["stage"] == "preview"
-    assert data["atomic_actions"][0]["review_issue_target"]["code"] == "high_tuition"
+    assert data["action_family"] == "review_plan"
+    assert data["stage"] == "review"
+    assert data["atomic_actions"] == []
 
 
 def test_plan_next_action_keeps_fee_question_as_review_when_user_says_do_not_change_plan():
@@ -905,7 +899,7 @@ def test_plan_next_action_keeps_fee_question_as_review_when_user_says_do_not_cha
     assert data["atomic_actions"] == []
 
 
-def test_plan_next_action_recovers_cooperative_program_issue_without_confusing_high_tuition():
+def test_plan_next_action_does_not_recover_cooperative_program_issue_from_goal_text():
     with patch(
         "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
         new=AsyncMock(
@@ -946,9 +940,9 @@ def test_plan_next_action_recovers_cooperative_program_issue_without_confusing_h
         )
 
     data = json.loads(result)
-    assert data["action_family"] == "remove_units"
-    assert data["stage"] == "preview"
-    assert data["atomic_actions"][0]["review_issue_target"]["code"] == "cooperative_program"
+    assert data["action_family"] == "review_plan"
+    assert data["stage"] == "review"
+    assert data["atomic_actions"] == []
 
 
 def test_plan_next_action_coerces_structural_review_issue_to_default_action():

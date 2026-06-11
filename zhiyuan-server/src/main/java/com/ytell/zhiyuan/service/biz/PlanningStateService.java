@@ -162,6 +162,9 @@ public class PlanningStateService {
     public PlanningStateDTO getPlanningState(Long chatSessionId) {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
         state.setSessionId(chatSessionId);
+        enrichReviewMetadata(state.getReviewState());
+        normalizeReviewReasonCodes(buildReviewReasonAnalysisState(state), state.getReviewState());
+        enrichPlanAdjustmentMetadata(state.getPlanAdjustmentState());
         return state;
     }
 
@@ -188,14 +191,15 @@ public class PlanningStateService {
         res.setStaleFlags(state.getStaleFlags());
         res.setConstraintState(state.getConstraintState());
         res.setPlanGenerationState(state.getPlanGenerationState());
+        res.setInitialRecommendationState(state.getInitialRecommendationState());
         res.setCandidatePoolState(buildWorkspaceCandidatePoolState(state));
         res.setCandidateViewState(state.getCandidateViewState());
-        res.setDraftPlanState(state.getDraftPlanState());
+        res.setWorkingPlanState(state.getWorkingPlanState());
         res.setOrderedPlanState(state.getOrderedPlanState());
         res.setReviewState(state.getReviewState());
         res.setPendingActions(state.getPendingActions());
         res.setOperationLogs(state.getOperationLogs());
-        res.setWorkflowStatus(buildWorkflowStatus(state));
+        res.setWorkflowStatus(PlanningWorkflowStatusBuilder.build(state, findLatestExportBehaviorEvent(state)));
         return res;
     }
 
@@ -218,6 +222,7 @@ public class PlanningStateService {
         target.setBatchScore(source.getBatchScore());
         target.setSourceProvinceName(source.getSourceProvinceName());
         target.setVolunteerModel(source.getVolunteerModel());
+        target.setSourceSummary(source.getSourceSummary());
         target.setSummary(source.getSummary());
         List<WorkspaceCandidateRef> workspaceRefs = collectWorkspaceCandidateRefs(state);
         if (!workspaceRefs.isEmpty()) {
@@ -242,138 +247,6 @@ public class PlanningStateService {
         CandidateItemDTO copy = JSONObject.parseObject(JSONObject.toJSONString(candidate), CandidateItemDTO.class);
         copy.setVolunteerId(volunteerId);
         return copy;
-    }
-
-    private PlanningWorkflowStatusDTO buildWorkflowStatus(PlanningStateDTO state) {
-        PlanningWorkflowStatusDTO status = new PlanningWorkflowStatusDTO();
-        CandidatePoolStateDTO candidatePoolState = state == null ? null : state.getCandidatePoolState();
-        String candidateStatus = candidatePoolState == null ? null : candidatePoolState.getStatusCode();
-        if (Strings.isNullOrEmpty(candidateStatus) || "not_generated".equals(candidateStatus)) {
-            boolean hasGeneratedAt = candidatePoolState != null && !Strings.isNullOrEmpty(candidatePoolState.getGeneratedAt());
-            boolean hasSummary = candidatePoolState != null && candidatePoolState.getSummary() != null
-                    && valueOrZero(candidatePoolState.getSummary().getTotal()) > 0;
-            candidateStatus = hasGeneratedAt || hasSummary ? resolveCandidatePoolStatus(candidatePoolState) : "not_generated";
-        }
-        applyCandidateWorkflowStatus(status, candidateStatus, candidatePoolState);
-        applyPlanWorkflowStatus(status, state);
-        applyReviewWorkflowStatus(status, state);
-        applyExportWorkflowStatus(status, state);
-        return status;
-    }
-
-    private void applyCandidateWorkflowStatus(PlanningWorkflowStatusDTO status,
-                                              String candidateStatus,
-                                              CandidatePoolStateDTO candidatePoolState) {
-        status.setCandidateStatus(candidateStatus);
-        if ("empty".equals(candidateStatus)) {
-            status.setCandidateMessage("当前条件下没有可用志愿候选，请检查专项资格、批次、分数线或硬性限制");
-        } else if ("low_count".equals(candidateStatus)) {
-            status.setCandidateMessage("当前条件下可用候选偏少，方案选择空间有限");
-        } else if ("failed".equals(candidateStatus)) {
-            status.setCandidateMessage("候选生成失败，请稍后重试");
-        } else if ("ready".equals(candidateStatus)) {
-            status.setCandidateMessage("候选池已生成");
-        } else {
-            status.setCandidateStatus("not_generated");
-            status.setCandidateMessage("候选池尚未生成");
-        }
-        if (candidatePoolState != null && !Strings.isNullOrEmpty(candidatePoolState.getStatusMessage())
-                && !"not_generated".equals(candidatePoolState.getStatusCode())) {
-            status.setCandidateMessage(candidatePoolState.getStatusMessage());
-        }
-    }
-
-    private void applyPlanWorkflowStatus(PlanningWorkflowStatusDTO status, PlanningStateDTO state) {
-        DraftPlanStateDTO draft = state == null ? null : state.getDraftPlanState();
-        OrderedPlanStateDTO ordered = state == null ? null : state.getOrderedPlanState();
-        boolean hasDraft = draft != null && draft.getItems() != null && !draft.getItems().isEmpty();
-        boolean hasOrdered = ordered != null && ordered.getItems() != null && !ordered.getItems().isEmpty();
-        if (ordered != null && "legacy_submitted".equalsIgnoreCase(ordered.getGenerationMode())) {
-            status.setPlanStatus("legacy_readonly");
-            status.setPlanMessage("历史已确认方案，建议只读查看");
-            status.setLegacySubmitted(true);
-            status.setLegacyMessage("历史已确认方案，建议只读查看");
-            return;
-        }
-        if (!hasDraft && !hasOrdered) {
-            status.setPlanStatus("empty");
-            status.setPlanMessage("当前方案为空");
-            return;
-        }
-        if (state != null && state.getStaleFlags() != null && Boolean.TRUE.equals(state.getStaleFlags().getOrderedPlan())) {
-            status.setPlanStatus("dirty");
-            status.setPlanMessage("方案有待更新调整");
-            return;
-        }
-        if (!hasOrdered) {
-            status.setPlanStatus("selected");
-            status.setPlanMessage("已加入方案，待生成顺序");
-            return;
-        }
-        if (state != null && state.getStaleFlags() != null && Boolean.TRUE.equals(state.getStaleFlags().getReview())) {
-            status.setPlanStatus("pending_review");
-            status.setPlanMessage("方案已生成，待审查");
-            return;
-        }
-        ReviewStateDTO review = state == null ? null : state.getReviewState();
-        if (review == null || Strings.isNullOrEmpty(review.getReviewedAt())) {
-            status.setPlanStatus("pending_review");
-            status.setPlanMessage("方案已生成，待审查");
-            return;
-        }
-        status.setPlanStatus("ready");
-        status.setPlanMessage("方案已生成");
-    }
-
-    private void applyReviewWorkflowStatus(PlanningWorkflowStatusDTO status, PlanningStateDTO state) {
-        ReviewStateDTO review = state == null ? null : state.getReviewState();
-        if (state != null && state.getStaleFlags() != null && Boolean.TRUE.equals(state.getStaleFlags().getReview())
-                && review != null && !Strings.isNullOrEmpty(review.getReviewedAt())) {
-            status.setReviewStatus("stale");
-            status.setReviewMessage("方案已调整，建议重新审查");
-            return;
-        }
-        if (review == null || Strings.isNullOrEmpty(review.getReviewedAt())) {
-            status.setReviewStatus("not_reviewed");
-            status.setReviewMessage("方案尚未审查");
-            return;
-        }
-        if ("failed".equalsIgnoreCase(review.getStatus())) {
-            status.setReviewStatus("failed");
-            status.setReviewMessage("审查暂未完成，请稍后重试");
-            return;
-        }
-        int riskCount = review.getSummary() == null ? 0 : valueOrZero(review.getSummary().getRiskCount());
-        int warnCount = review.getSummary() == null ? 0 : valueOrZero(review.getSummary().getWarnCount());
-        if (riskCount > 0) {
-            status.setReviewStatus("has_risk");
-            status.setReviewMessage("审查发现风险，需要查看");
-        } else if (warnCount > 0) {
-            status.setReviewStatus("has_warning");
-            status.setReviewMessage("审查有提醒，建议查看");
-        } else {
-            status.setReviewStatus("passed");
-            status.setReviewMessage("审查通过，暂无明显风险");
-        }
-    }
-
-    private void applyExportWorkflowStatus(PlanningWorkflowStatusDTO status, PlanningStateDTO state) {
-        PlanningBehaviorEventDTO latestExport = findLatestExportBehaviorEvent(state);
-        if (latestExport == null) {
-            status.setExportStatus("not_exported");
-            status.setExportMessage("方案尚未导出");
-            return;
-        }
-        status.setLastExportedAt(latestExport.getCreatedAt());
-        Integer exportVersion = latestExport.getPlanVersion();
-        Integer currentVersion = state == null ? null : state.getVersion();
-        if (exportVersion != null && currentVersion != null && exportVersion < currentVersion) {
-            status.setExportStatus("stale");
-            status.setExportMessage("方案已调整，建议重新导出");
-        } else {
-            status.setExportStatus("exported");
-            status.setExportMessage("方案已导出");
-        }
     }
 
     private List<WorkspaceCandidateRef> collectWorkspaceCandidateRefs(PlanningStateDTO state) {
@@ -450,8 +323,7 @@ public class PlanningStateService {
     public PlanningStateDTO updateCandidateViewState(Long chatSessionId, CandidateViewStateDTO req) {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
         state.setCandidateViewState(normalizeCandidateViewState(req));
-        state.getStaleFlags().setInitialRecommendation(true);
-        state.getStaleFlags().setPlanAdjustment(true);
+        ReviewInvalidationPolicy.markCandidateViewStale(state);
         state.setSessionId(chatSessionId);
         state.setVersion((state.getVersion() == null ? 0 : state.getVersion()) + 1);
         savePlanningState(chatSessionId, state);
@@ -500,23 +372,23 @@ public class PlanningStateService {
     public PlanningStateDTO applyPlanAdjustment(Long tenantId,
                                                 Long chatSessionId,
                                                 PlanAdjustmentApplyReq req) {
-        PlanningStateDTO state = loadPlanningState(chatSessionId);
-        if (state.getPlanAdjustmentState() == null) {
-            state.setPlanAdjustmentState(new PlanAdjustmentStateDTO());
-        }
-        state.getPlanAdjustmentState().setStatus("pending_apply");
-        state.setSessionId(chatSessionId);
-        state.setVersion((state.getVersion() == null ? 0 : state.getVersion()) + 1);
-        savePlanningState(chatSessionId, state);
-        return state;
+        throw new BusinessException(410, "方案调整应用入口已废弃，请使用 fix-proposals/apply 生成并应用可验证的修复建议");
     }
 
     public ConstraintStateDTO getConstraintState(Long chatSessionId) {
         return getPlanningState(chatSessionId).getConstraintState();
     }
 
+    public DraftPlanStateDTO getWorkingPlanState(Long chatSessionId) {
+        return getPlanningState(chatSessionId).getWorkingPlanState();
+    }
+
+    /**
+     * @deprecated use {@link #getWorkingPlanState(Long)}
+     */
+    @Deprecated
     public DraftPlanStateDTO getDraftState(Long chatSessionId) {
-        return getPlanningState(chatSessionId).getDraftPlanState();
+        return getWorkingPlanState(chatSessionId);
     }
 
     public OrderedPlanStateDTO getOrderedPlanState(Long chatSessionId) {
@@ -551,6 +423,144 @@ public class PlanningStateService {
 
     public ReviewStateDTO getReviewState(Long chatSessionId) {
         return getPlanningState(chatSessionId).getReviewState();
+    }
+
+    public List<ReviewRuleMetadataDTO> listReviewRuleMetadata() {
+        return ReviewRuleRegistry.list();
+    }
+
+    public FixProposalStateDTO generateFixProposals(Long tenantId, Long chatSessionId) {
+        PlanningStateDTO state = loadPlanningState(chatSessionId);
+        ReviewStateDTO reviewState = state.getReviewState();
+        if (reviewState == null || reviewState.getChecks() == null || reviewState.getChecks().isEmpty()
+                || Boolean.TRUE.equals(state.getStaleFlags().getReview())) {
+            reviewState = runReview(tenantId, chatSessionId);
+            state = loadPlanningState(chatSessionId);
+        }
+        enrichReviewMetadata(reviewState);
+        PlanningStateDTO proposalAnalysisState = buildReviewReasonAnalysisState(state);
+        normalizeReviewReasonCodes(proposalAnalysisState, reviewState);
+        List<CandidateItemDTO> effectiveCandidates = resolveEffectiveCandidates(tenantId, chatSessionId, state, true);
+        CompensationPreviewDTO compensationPreview = buildCompensationPreview(proposalAnalysisState, effectiveCandidates);
+        FixProposalStateDTO proposalState = buildFixProposalState(proposalAnalysisState, reviewState, compensationPreview);
+        return proposalState;
+    }
+
+    public ReviewWorkflowRunRes runReviewWorkflow(Long tenantId, Long chatSessionId) {
+        ReviewStateDTO reviewState = runReview(tenantId, chatSessionId);
+        FixProposalStateDTO fixProposalState = generateFixProposals(tenantId, chatSessionId);
+        PlanningWorkspaceStateRes workspaceState = getPlanningWorkspaceState(chatSessionId);
+
+        ReviewWorkflowRunRes res = new ReviewWorkflowRunRes();
+        res.setStatus(ReviewWorkflowStatusResolver.resolveRunStatus(reviewState, fixProposalState));
+        res.setSessionId(chatSessionId);
+        res.setSourceVersion(workspaceState.getVersion());
+        res.setReviewState(reviewState);
+        res.setFixProposalState(fixProposalState);
+        res.setWorkflowStatus(workspaceState.getWorkflowStatus());
+        res.setWorkspaceState(workspaceState);
+        return res;
+    }
+
+    public FixProposalApplyRes applyFixProposal(Long tenantId, Long chatSessionId, FixProposalApplyReq req) {
+        FixProposalApplyReq safeReq = RepairProposalApplyPolicy.safeRequest(req);
+        RepairProposalApplyPolicy.validateRequest(safeReq);
+        PlanningStateDTO state = loadPlanningState(chatSessionId);
+        RepairProposalApplyPolicy.validateStateVersionGuard(safeReq, state);
+        RepairProposalApplyPolicy.ensureReviewReady(state);
+        FixProposalStateDTO proposalState = generateFixProposals(tenantId, chatSessionId);
+        FixProposalDTO proposal = RepairProposalStateBuilder.findProposal(proposalState, safeReq.getProposalId());
+        if (proposal == null) {
+            throw new BusinessException(404, "修复建议不存在或已失效");
+        }
+        RepairProposalApplyPolicy.validateProposalForApply(safeReq, proposal);
+
+        state = loadPlanningState(chatSessionId);
+        ReviewSummaryDTO beforeReviewSummary = state.getReviewState() == null ? null : state.getReviewState().getSummary();
+        state = applySupportedFixProposalStrategy(tenantId, chatSessionId, safeReq, proposal, state);
+
+        FixProposalApplyRes res = new FixProposalApplyRes();
+        res.setStatus("applied");
+        res.setMessage("已应用修复建议，并刷新当前方案状态");
+        res.setProposal(proposal);
+        res.setRepairReport(RepairReportBuilder.build(proposal, beforeReviewSummary, state));
+        res.setState(state);
+        return res;
+    }
+
+    private PlanningStateDTO applySupportedFixProposalStrategy(Long tenantId,
+                                                               Long chatSessionId,
+                                                               FixProposalApplyReq req,
+                                                               FixProposalDTO proposal,
+                                                               PlanningStateDTO state) {
+        if ("sort_by_probability".equals(proposal.getStrategy())) {
+            OrderedPlanSortReq sortReq = new OrderedPlanSortReq();
+            sortReq.setSortField("admissionRatio");
+            state = sortOrderedPlan(chatSessionId, sortReq);
+            return rerunReviewAfterFixApplyIfRequested(tenantId, chatSessionId, req, state);
+        }
+        if ("remove_risk_items".equals(proposal.getStrategy())) {
+            List<CandidateItemDTO> effectiveCandidates = resolveEffectiveCandidates(tenantId, chatSessionId, state, true);
+            RepairApplyMutationBuilder.applyRemoveRiskItems(state, effectiveCandidates, proposal);
+            return saveAndRefreshAfterFixApply(tenantId, chatSessionId, req, state);
+        }
+        if ("replace_risk_items".equals(proposal.getStrategy())) {
+            List<CandidateItemDTO> effectiveCandidates = resolveEffectiveCandidates(tenantId, chatSessionId, state, true);
+            RepairApplyMutationBuilder.MutationResult result =
+                    RepairApplyMutationBuilder.applyReplaceVolunteers(state, effectiveCandidates, proposal);
+            ensureFixMutationApplied(result);
+            return saveAndRefreshAfterFixApply(tenantId, chatSessionId, req, state);
+        }
+        if ("adjust_major_group_inner_safety".equals(proposal.getStrategy())) {
+            List<CandidateItemDTO> effectiveCandidates = resolveEffectiveCandidates(tenantId, chatSessionId, state, true);
+            RepairApplyMutationBuilder.applyMajorGroupInnerSafety(state, effectiveCandidates, proposal);
+            return saveAndRefreshAfterFixApply(tenantId, chatSessionId, req, state);
+        }
+        if ("fill_missing_count".equals(proposal.getStrategy())) {
+            List<CandidateItemDTO> effectiveCandidates = resolveEffectiveCandidates(tenantId, chatSessionId, state, true);
+            RepairApplyMutationBuilder.applyFixProposalCompensationActions(state, effectiveCandidates, proposal);
+            return saveAndRefreshAfterFixApply(tenantId, chatSessionId, req, state);
+        }
+        throw new BusinessException(400, "当前修复建议暂不支持自动应用");
+    }
+
+    private void ensureFixMutationApplied(RepairApplyMutationBuilder.MutationResult result) {
+        if (result == null) {
+            throw new BusinessException(400, "修复建议没有可执行动作");
+        }
+        if ("blocked".equals(result.getStatus())) {
+            throw new BusinessException(409, Strings.isNullOrEmpty(result.getBlockingReason())
+                    ? "修复建议已失效，请重新生成" : result.getBlockingReason());
+        }
+        if (result.getRemovedVolunteerIds().isEmpty() && result.getAddedVolunteerIds().isEmpty()) {
+            throw new BusinessException(400, "修复建议没有可执行动作");
+        }
+    }
+
+    private PlanningStateDTO saveAndRefreshAfterFixApply(Long tenantId,
+                                                         Long chatSessionId,
+                                                         FixProposalApplyReq req,
+                                                         PlanningStateDTO state) {
+        state = saveWorkingPlanState(chatSessionId, state);
+
+        if (Boolean.TRUE.equals(req.getRegenerateOrderedPlan())) {
+            OrderedPlanGenerateReq generateReq = new OrderedPlanGenerateReq();
+            generateReq.setForceRegenerate(true);
+            generateReq.setRegroupByTier(true);
+            state = generateOrderedPlan(tenantId, chatSessionId, generateReq);
+        }
+        return rerunReviewAfterFixApplyIfRequested(tenantId, chatSessionId, req, state);
+    }
+
+    private PlanningStateDTO rerunReviewAfterFixApplyIfRequested(Long tenantId,
+                                                                 Long chatSessionId,
+                                                                 FixProposalApplyReq req,
+                                                                 PlanningStateDTO state) {
+        if (Boolean.TRUE.equals(req.getRerunReview())) {
+            runReview(tenantId, chatSessionId);
+            state = getPlanningState(chatSessionId);
+        }
+        return state;
     }
 
     public static class ExcelExportResult {
@@ -859,10 +869,12 @@ public class PlanningStateService {
         items.addAll(flattenCandidates(response.getSprints(), "冲"));
         items.addAll(flattenCandidates(response.getSafes(), "稳"));
         items.addAll(flattenCandidates(response.getProtects(), "保"));
-        candidatePoolState.setItems(normalizeCandidateIdentities(candidatePoolState, items));
+        List<CandidateItemDTO> normalizedItems = normalizeCandidateIdentities(candidatePoolState, items);
+        candidatePoolState.setItems(normalizedItems);
         recalculateCandidatePoolSummary(candidatePoolState);
+        populateCandidatePoolSourceSummary(candidatePoolState, items, normalizedItems);
         normalizeRequiredTierCountsByAvailableCapacity(candidatePoolState);
-        applyCandidatePoolQualityStatus(state, candidatePoolState);
+        CandidatePoolQualityStatusBuilder.apply(state, candidatePoolState);
 
         state.setCandidatePoolState(candidatePoolState);
         state.setRecommendationOverlayState(buildRecommendationOverlayState(candidatePoolState, state.getVersion()));
@@ -870,99 +882,10 @@ public class PlanningStateService {
         state.setVersion((state.getVersion() == null ? 0 : state.getVersion()) + 1);
         state.getStaleFlags().setCandidatePool(false);
         state.getStaleFlags().setRecommendationOverlay(false);
-        state.getStaleFlags().setInitialRecommendation(true);
-        state.getStaleFlags().setOrderedPlan(true);
-        state.getStaleFlags().setPlanAdjustment(true);
-        state.getStaleFlags().setReview(true);
+        ReviewInvalidationPolicy.markCandidatePoolDependentsStale(state);
         savePlanningState(chatSessionId, state);
         state.setSessionId(chatSessionId);
         return state;
-    }
-
-    private void applyCandidatePoolQualityStatus(PlanningStateDTO state, CandidatePoolStateDTO candidatePoolState) {
-        if (candidatePoolState == null) {
-            return;
-        }
-        String statusCode = resolveCandidatePoolStatus(candidatePoolState);
-        candidatePoolState.setStatusCode(statusCode);
-        candidatePoolState.setRiskHints(Lists.newArrayList());
-        if ("empty".equals(statusCode)) {
-            candidatePoolState.setStatusMessage("当前条件下没有可用志愿候选，请检查专项资格、批次、分数线或硬性限制");
-            candidatePoolState.getRiskHints().addAll(buildCandidatePoolRiskHints(state, candidatePoolState, true));
-        } else if ("low_count".equals(statusCode)) {
-            candidatePoolState.setStatusMessage("当前条件下可用候选偏少，方案选择空间有限");
-            candidatePoolState.getRiskHints().addAll(buildCandidatePoolRiskHints(state, candidatePoolState, false));
-        } else {
-            candidatePoolState.setStatusCode("ready");
-            candidatePoolState.setStatusMessage("候选池已生成");
-        }
-    }
-
-    private List<String> buildCandidatePoolRiskHints(PlanningStateDTO state,
-                                                     CandidatePoolStateDTO candidatePoolState,
-                                                     boolean emptyPool) {
-        List<String> hints = Lists.newArrayList();
-        int required = resolveRequiredCandidateCount(candidatePoolState);
-        int available = isMajorGroupMode(candidatePoolState)
-                ? valueOrZero(candidatePoolState.getSummary() == null ? null : candidatePoolState.getSummary().getUnitTotal())
-                : valueOrZero(candidatePoolState.getSummary() == null ? null : candidatePoolState.getSummary().getTotal());
-        if (required > 0) {
-            hints.add(String.format("当前可用候选 %d 个，目标需要 %d 个", available, required));
-        }
-        appendTierShortageHints(hints, candidatePoolState);
-        appendScoreBoundaryHint(hints, candidatePoolState);
-        appendHardConstraintHints(hints, state);
-        if (hints.isEmpty()) {
-            hints.add(emptyPool
-                    ? "当前批次、分数线、选科、专项资格或身体限报等硬条件可能导致无可用候选"
-                    : "候选不足更可能来自批次、分数线、选科、专项资格或身体限报等硬条件");
-        }
-        return hints;
-    }
-
-    private void appendTierShortageHints(List<String> hints, CandidatePoolStateDTO candidatePoolState) {
-        if (candidatePoolState == null || candidatePoolState.getRequiredTierCounts() == null || candidatePoolState.getRequiredTierCounts().isEmpty()
-                || candidatePoolState.getSummary() == null) {
-            return;
-        }
-        Map<String, Integer> availableTierCounts = isMajorGroupMode(candidatePoolState)
-                ? candidatePoolState.getSummary().getUnitTierCounts()
-                : candidatePoolState.getSummary().getTierCounts();
-        for (String tier : Lists.newArrayList("冲", "稳", "保")) {
-            int required = valueOrZero(candidatePoolState.getRequiredTierCounts().get(tier));
-            int available = valueOrZero(availableTierCounts == null ? null : availableTierCounts.get(tier));
-            if (required > 0 && available < required) {
-                hints.add(String.format("%s区候选不足：当前 %d 个，目标 %d 个", tier, available, required));
-            }
-        }
-    }
-
-    private void appendScoreBoundaryHint(List<String> hints, CandidatePoolStateDTO candidatePoolState) {
-        if (candidatePoolState == null || candidatePoolState.getUserScore() == null || candidatePoolState.getBatchScore() == null) {
-            return;
-        }
-        int diff = candidatePoolState.getUserScore() - candidatePoolState.getBatchScore();
-        if (diff >= 0 && diff <= 30) {
-            hints.add(String.format("当前分数距离批次线 %d 分，可选空间可能偏窄", diff));
-        }
-    }
-
-    private void appendHardConstraintHints(List<String> hints, PlanningStateDTO state) {
-        PhysicalConstraintsDTO physicalConstraints = state == null || state.getProfileState() == null
-                ? null : state.getProfileState().getPhysicalConstraints();
-        if (physicalConstraints == null) {
-            return;
-        }
-        if (!defaultList(physicalConstraints.getColorVision()).isEmpty()
-                || !Strings.isNullOrEmpty(physicalConstraints.getHeight())
-                || physicalConstraints.getVision() != null
-                && (!Strings.isNullOrEmpty(physicalConstraints.getVision().getLeft())
-                || !Strings.isNullOrEmpty(physicalConstraints.getVision().getRight()))) {
-            hints.add("已按身体条件和限报要求过滤候选");
-        }
-        if (!defaultList(physicalConstraints.getSpecialLimits()).isEmpty()) {
-            hints.add("已按专项、民族、外方院校等资格条件过滤候选");
-        }
     }
 
     private void fillRequiredTierCounts(Long chatSessionId,
@@ -1256,6 +1179,14 @@ public class PlanningStateService {
         res.setTotalUnitCount(countCandidateUnits(filtered));
         res.setLoadedEntryCount(pagedItems.size());
         res.setLoadedUnitCount(countCandidateUnits(pagedItems));
+        CandidatePoolQueryRes.ViewSummary viewSummary = new CandidatePoolQueryRes.ViewSummary();
+        viewSummary.setPoolEntryTotal(items.size());
+        viewSummary.setPoolUnitTotal(countCandidateUnits(items));
+        viewSummary.setViewEntryTotal(filtered.size());
+        viewSummary.setViewUnitTotal(countCandidateUnits(filtered));
+        viewSummary.setLoadedEntryCount(pagedItems.size());
+        viewSummary.setLoadedUnitCount(countCandidateUnits(pagedItems));
+        res.setViewSummary(viewSummary);
         return res;
     }
 
@@ -1331,38 +1262,46 @@ public class PlanningStateService {
     }
 
     @Transactional(rollbackFor = Exception.class)
+    public PlanningStateDTO selectWorkingPlanItems(Long chatSessionId, DraftSelectReq req) {
+        return selectDraftItems(chatSessionId, req);
+    }
+
+    /**
+     * @deprecated use {@link #selectWorkingPlanItems(Long, DraftSelectReq)}
+     */
+    @Deprecated
+    @Transactional(rollbackFor = Exception.class)
     public PlanningStateDTO selectDraftItems(Long chatSessionId, DraftSelectReq req) {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
         DraftPlanStateDTO draft = state.getDraftPlanState();
         List<CandidateItemDTO> candidates = resolveEffectiveCandidates(null, chatSessionId, state, false);
         List<String> selectedVolunteerIds = Lists.newArrayList();
         for (String volunteerId : defaultList(req == null ? null : req.getVolunteerIds())) {
-            if (containsDraftItem(draft, volunteerId) || containsVolunteerId(draft.getBannedVolunteerIds(), volunteerId)) {
-                continue;
-            }
             CandidateItemDTO candidate = findCandidate(candidates, volunteerId);
-            if (candidate == null) {
+            if (!WorkingPlanMutationSupport.addWorkingPlanItemIfAllowed(draft, candidate, req == null ? null : req.getSource())) {
                 continue;
             }
-            DraftItemDTO item = new DraftItemDTO();
-            item.setVolunteerId(candidate.getVolunteerId());
-            item.setTier(candidate.getTier());
-            item.setSchoolName(candidate.getSchoolName());
-            item.setMajorName(candidate.getMajorName());
-            item.setSource(req == null ? null : req.getSource());
-            draft.getItems().add(item);
             selectedVolunteerIds.add(candidate.getVolunteerId());
         }
         if (selectedVolunteerIds.isEmpty()) {
             state.setSessionId(chatSessionId);
             return state;
         }
-        syncDraftUnitsWithItems(draft, candidates, state.getCandidatePoolState());
-        recalculateDraftSummary(draft, state.getCandidatePoolState());
+        syncWorkingPlanUnitsWithItems(draft, candidates, state.getCandidatePoolState());
+        recalculateWorkingPlanSummary(draft, state.getCandidatePoolState());
         appendPlanItemsBehaviorEvent(state, null, chatSessionId, "plan_add", selectedVolunteerIds, false, candidates);
-        return saveDraftState(chatSessionId, state);
+        return saveWorkingPlanState(chatSessionId, state);
     }
 
+    @Transactional(rollbackFor = Exception.class)
+    public PlanningStateDTO removeWorkingPlanItems(Long chatSessionId, DraftRemoveReq req) {
+        return removeDraftItems(chatSessionId, req);
+    }
+
+    /**
+     * @deprecated use {@link #removeWorkingPlanItems(Long, DraftRemoveReq)}
+     */
+    @Deprecated
     @Transactional(rollbackFor = Exception.class)
     public PlanningStateDTO removeDraftItems(Long chatSessionId, DraftRemoveReq req) {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
@@ -1381,12 +1320,20 @@ public class PlanningStateService {
         draft.setItems(draft.getItems().stream()
                 .filter(item -> !containsVolunteerId(requestedVolunteerIds, item.getVolunteerId()))
                 .collect(Collectors.toList()));
-        syncDraftUnitsWithItems(draft, candidates, state.getCandidatePoolState());
-        recalculateDraftSummary(draft, state.getCandidatePoolState());
+        syncWorkingPlanUnitsWithItems(draft, candidates, state.getCandidatePoolState());
+        recalculateWorkingPlanSummary(draft, state.getCandidatePoolState());
         appendPlanItemsBehaviorEvent(state, null, chatSessionId, "plan_remove", removedVolunteerIds, false, candidates);
-        return saveDraftState(chatSessionId, state);
+        return saveWorkingPlanState(chatSessionId, state);
     }
 
+    public PlanningStateDTO lockWorkingPlanItems(Long chatSessionId, DraftLockReq req) {
+        return lockDraftItems(chatSessionId, req);
+    }
+
+    /**
+     * @deprecated use {@link #lockWorkingPlanItems(Long, DraftLockReq)}
+     */
+    @Deprecated
     public PlanningStateDTO lockDraftItems(Long chatSessionId, DraftLockReq req) {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
         DraftPlanStateDTO draft = state.getDraftPlanState();
@@ -1395,11 +1342,19 @@ public class PlanningStateService {
                 item.setLocked(req.getLocked());
             }
         }
-        syncDraftUnitsWithItems(draft, resolveEffectiveCandidates(null, chatSessionId, state, false), state.getCandidatePoolState());
-        recalculateDraftSummary(draft, state.getCandidatePoolState());
-        return saveDraftState(chatSessionId, state);
+        syncWorkingPlanUnitsWithItems(draft, resolveEffectiveCandidates(null, chatSessionId, state, false), state.getCandidatePoolState());
+        recalculateWorkingPlanSummary(draft, state.getCandidatePoolState());
+        return saveWorkingPlanState(chatSessionId, state);
     }
 
+    public PlanningStateDTO banWorkingPlanItems(Long chatSessionId, DraftBanReq req) {
+        return banDraftItems(chatSessionId, req);
+    }
+
+    /**
+     * @deprecated use {@link #banWorkingPlanItems(Long, DraftBanReq)}
+     */
+    @Deprecated
     public PlanningStateDTO banDraftItems(Long chatSessionId, DraftBanReq req) {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
         DraftPlanStateDTO draft = state.getDraftPlanState();
@@ -1411,9 +1366,9 @@ public class PlanningStateService {
         draft.setItems(draft.getItems().stream()
                 .filter(item -> !containsVolunteerId(draft.getBannedVolunteerIds(), item.getVolunteerId()))
                 .collect(Collectors.toList()));
-        syncDraftUnitsWithItems(draft, resolveEffectiveCandidates(null, chatSessionId, state, false), state.getCandidatePoolState());
-        recalculateDraftSummary(draft, state.getCandidatePoolState());
-        return saveDraftState(chatSessionId, state);
+        syncWorkingPlanUnitsWithItems(draft, resolveEffectiveCandidates(null, chatSessionId, state, false), state.getCandidatePoolState());
+        recalculateWorkingPlanSummary(draft, state.getCandidatePoolState());
+        return saveWorkingPlanState(chatSessionId, state);
     }
 
     public PlanningStateDTO generateOrderedPlan(Long tenantId, Long chatSessionId, OrderedPlanGenerateReq req) {
@@ -1431,7 +1386,7 @@ public class PlanningStateService {
         Map<String, OrderedItemDTO> existing = orderedPlanState.getItems().stream()
                 .collect(Collectors.toMap(OrderedItemDTO::getVolunteerId, item -> item, (left, right) -> left, LinkedHashMap::new));
         List<CandidateItemDTO> effectiveCandidates = resolveEffectiveCandidates(tenantId, chatSessionId, state, true);
-        List<OrderedItemDTO> items = buildOrderedItemsFromDraft(state.getDraftPlanState(), state.getCandidatePoolState(), effectiveCandidates, existing,
+        List<OrderedItemDTO> items = buildOrderedItemsFromWorkingPlan(state.getDraftPlanState(), state.getCandidatePoolState(), effectiveCandidates, existing,
                 Boolean.TRUE.equals(safeReq.getRegroupByTier()));
         orderedPlanState.setItems(items);
         if (isMajorGroupMode(state.getCandidatePoolState())) {
@@ -1479,20 +1434,28 @@ public class PlanningStateService {
         }
 
         List<CandidateItemDTO> effectiveCandidates = resolveEffectiveCandidates(tenantId, chatSessionId, state, true);
-        replaceDraftWithInitialRecommendation(state, effectiveCandidates);
-        recalculateDraftSummary(state.getDraftPlanState(), state.getCandidatePoolState());
-        state = saveDraftState(chatSessionId, state);
-        return reorderDraftPlanInternal(tenantId, chatSessionId, buildDraftPlanReorderReq(safeReq), "initial_auto");
+        replaceWorkingPlanWithInitialRecommendation(state, effectiveCandidates);
+        recalculateWorkingPlanSummary(state.getDraftPlanState(), state.getCandidatePoolState());
+        state = saveWorkingPlanState(chatSessionId, state);
+        return reorderWorkingPlanInternal(tenantId, chatSessionId, buildDraftPlanReorderReq(safeReq), "initial_auto");
     }
 
+    public PlanningStateDTO reorderWorkingPlan(Long tenantId, Long chatSessionId, DraftPlanReorderReq req) {
+        return reorderWorkingPlanInternal(tenantId, chatSessionId, req, "draft_reorder");
+    }
+
+    /**
+     * @deprecated use {@link #reorderWorkingPlan(Long, Long, DraftPlanReorderReq)}
+     */
+    @Deprecated
     public PlanningStateDTO reorderDraftPlan(Long tenantId, Long chatSessionId, DraftPlanReorderReq req) {
-        return reorderDraftPlanInternal(tenantId, chatSessionId, req, "draft_reorder");
+        return reorderWorkingPlan(tenantId, chatSessionId, req);
     }
 
-    private PlanningStateDTO reorderDraftPlanInternal(Long tenantId,
-                                                      Long chatSessionId,
-                                                      DraftPlanReorderReq req,
-                                                      String mode) {
+    private PlanningStateDTO reorderWorkingPlanInternal(Long tenantId,
+                                                        Long chatSessionId,
+                                                        DraftPlanReorderReq req,
+                                                        String mode) {
         DraftPlanReorderReq safeReq = req == null ? new DraftPlanReorderReq() : req;
         PlanningStateDTO state = loadPlanningState(chatSessionId);
         if (state.getDraftPlanState() == null || state.getDraftPlanState().getItems().isEmpty()) {
@@ -1506,7 +1469,7 @@ public class PlanningStateService {
         applyPlanGenerationMetadata(state,
                 mode,
                 Boolean.TRUE.equals(safeReq.getAllowAutoComplete()),
-                countPinnedOrderedItems(state.getOrderedPlanState()),
+                0,
                 countManualOrderedItems(state.getOrderedPlanState()));
         if (state.getOrderedPlanState() != null
                 && state.getOrderedPlanState().getItems() != null
@@ -1530,24 +1493,18 @@ public class PlanningStateService {
             return state;
         }
         int currentIndex = current.indexOf(target);
-        int targetIndex = resolveMovableTargetIndex(current, currentIndex, req.getTargetPosition());
+        int targetIndex = OrderedPlanPositioningSupport.resolveMovableTargetIndex(current, currentIndex, req.getTargetPosition());
         if (targetIndex == currentIndex) {
             state.setSessionId(chatSessionId);
             return state;
         }
-        current = moveWithinUnlockedSlots(current, currentIndex, targetIndex);
+        current = OrderedPlanPositioningSupport.moveWithinUnlockedSlots(current, currentIndex, targetIndex);
         target.setOrderedBy("user");
-        if (Boolean.TRUE.equals(target.getPinned())) {
-            target.setPinnedPosition(targetIndex + 1);
-            target.setOrderReason("user_move_pinned");
-        } else {
-            target.setOrderReason("user_move");
-        }
-        orderedPlanState.setItems(rebuildOrderedItems(current));
+        target.setOrderReason("user_move");
+        orderedPlanState.setItems(OrderedPlanPositioningSupport.rebuildItems(current));
         recalculateOrderedSummary(orderedPlanState, state.getCandidatePoolState());
         state.setOrderedPlanState(orderedPlanState);
-        state.getStaleFlags().setReview(true);
-        state.getStaleFlags().setPlanAdjustment(true);
+        ReviewInvalidationPolicy.markPlanStructureStale(state);
         Map<String, Integer> beforePositions = new HashMap<String, Integer>();
         beforePositions.put(req.getVolunteerId(), currentIndex + 1);
         Map<String, Integer> afterPositions = new HashMap<String, Integer>();
@@ -1577,7 +1534,7 @@ public class PlanningStateService {
         }
         List<String> orderedUnitIds = buildOrderedUnitIds(current);
         int currentUnitIndex = orderedUnitIds.indexOf(unitId);
-        int targetUnitIndex = normalizeIndex(req.getTargetPosition(), orderedUnitIds.size());
+        int targetUnitIndex = OrderedPlanPositioningSupport.normalizeIndex(req.getTargetPosition(), orderedUnitIds.size());
         if (currentUnitIndex < 0 || targetUnitIndex == currentUnitIndex) {
             state.setSessionId(chatSessionId);
             return state;
@@ -1599,12 +1556,11 @@ public class PlanningStateService {
             item.setOrderReason("user_unit_move");
         }
         List<CandidateItemDTO> candidates = resolveEffectiveCandidates(null, chatSessionId, state, false);
-        orderedPlanState.setItems(rebuildOrderedItems(moved));
+        orderedPlanState.setItems(OrderedPlanPositioningSupport.rebuildItems(moved));
         orderedPlanState.setUnits(buildOrderedUnitsFromOrderedItems(orderedPlanState.getItems(), state.getDraftPlanState(), candidates));
         recalculateOrderedSummary(orderedPlanState, state.getCandidatePoolState());
         state.setOrderedPlanState(orderedPlanState);
-        state.getStaleFlags().setReview(true);
-        state.getStaleFlags().setPlanAdjustment(true);
+        ReviewInvalidationPolicy.markPlanStructureStale(state);
         Map<String, Integer> beforePositions = new HashMap<String, Integer>();
         beforePositions.put(unitId, currentUnitIndex + 1);
         Map<String, Integer> afterPositions = new HashMap<String, Integer>();
@@ -1629,7 +1585,7 @@ public class PlanningStateService {
             state.setSessionId(chatSessionId);
             return state;
         }
-        orderedPlanState.setItems(rebuildOrderedItems(defaultOrderedItems(orderedPlanState.getItems()).stream()
+        orderedPlanState.setItems(OrderedPlanPositioningSupport.rebuildItems(defaultOrderedItems(orderedPlanState.getItems()).stream()
                 .filter(item -> !unitIds.contains(resolveDraftOrOrderedUnitId(item)))
                 .collect(Collectors.toList())));
         DraftPlanStateDTO draft = state.getDraftPlanState();
@@ -1637,14 +1593,13 @@ public class PlanningStateService {
                 .filter(item -> !unitIds.contains(resolveDraftOrOrderedUnitId(item)))
                 .collect(Collectors.toList()));
         List<CandidateItemDTO> candidates = resolveEffectiveCandidates(null, chatSessionId, state, false);
-        syncDraftUnitsWithItems(draft, candidates, state.getCandidatePoolState());
-        recalculateDraftSummary(draft, state.getCandidatePoolState());
+        syncWorkingPlanUnitsWithItems(draft, candidates, state.getCandidatePoolState());
+        recalculateWorkingPlanSummary(draft, state.getCandidatePoolState());
         orderedPlanState.setUnits(buildOrderedUnitsFromOrderedItems(orderedPlanState.getItems(), draft, candidates));
         recalculateOrderedSummary(orderedPlanState, state.getCandidatePoolState());
-        state.setDraftPlanState(draft);
+        state.setWorkingPlanState(draft);
         state.setOrderedPlanState(orderedPlanState);
-        state.getStaleFlags().setReview(true);
-        state.getStaleFlags().setPlanAdjustment(true);
+        ReviewInvalidationPolicy.markPlanStructureStale(state);
         for (String unitId : unitIds) {
             List<OrderedItemDTO> removedUnitItems = removedItems.stream()
                     .filter(item -> unitId.equals(resolveDraftOrOrderedUnitId(item)))
@@ -1671,50 +1626,13 @@ public class PlanningStateService {
         List<OrderedItemDTO> sorted = isMajorGroupMode(state.getCandidatePoolState())
                 ? sortOrderedPlanByUnit(current, orderedPlanState, state.getDraftPlanState(), candidates, sortField)
                 : sortOrderedPlanItems(current, candidates, sortField);
-        orderedPlanState.setItems(rebuildOrderedItems(sorted));
+        orderedPlanState.setItems(OrderedPlanPositioningSupport.rebuildItems(sorted));
         orderedPlanState.setUnits(buildOrderedUnitsFromOrderedItems(orderedPlanState.getItems(), state.getDraftPlanState(), candidates));
         recalculateOrderedSummary(orderedPlanState, state.getCandidatePoolState());
         state.setOrderedPlanState(orderedPlanState);
         markOrderedItemsSortedByUser(orderedPlanState, sortField);
-        state.getStaleFlags().setReview(true);
-        state.getStaleFlags().setPlanAdjustment(true);
+        ReviewInvalidationPolicy.markPlanStructureStale(state);
         appendPlanSortApplyEvent(state, chatSessionId, sortField, beforePositions, orderedPlanState, candidates);
-        return saveOrderedState(chatSessionId, state);
-    }
-
-    public PlanningStateDTO pinOrderedItem(Long chatSessionId, OrderedPinReq req) {
-        PlanningStateDTO state = loadPlanningState(chatSessionId);
-        OrderedPlanStateDTO orderedPlanState = ensureOrderedPlanState(state);
-        OrderedItemDTO target = findOrderedItem(orderedPlanState.getItems(), req.getVolunteerId());
-        if (target == null) {
-            state.setSessionId(chatSessionId);
-            return state;
-        }
-        target.setPinned(true);
-        target.setPinnedPosition(normalizePosition(req.getTargetPosition(), orderedPlanState.getItems().size()));
-        target.setOrderedBy("user");
-        target.setOrderReason("user_pin");
-        orderedPlanState.setItems(rebuildOrderedItems(orderedPlanState.getItems()));
-        recalculateOrderedSummary(orderedPlanState, state.getCandidatePoolState());
-        state.setOrderedPlanState(orderedPlanState);
-        return saveOrderedState(chatSessionId, state);
-    }
-
-    public PlanningStateDTO unpinOrderedItem(Long chatSessionId, OrderedPinReq req) {
-        PlanningStateDTO state = loadPlanningState(chatSessionId);
-        OrderedPlanStateDTO orderedPlanState = ensureOrderedPlanState(state);
-        OrderedItemDTO target = findOrderedItem(orderedPlanState.getItems(), req.getVolunteerId());
-        if (target == null) {
-            state.setSessionId(chatSessionId);
-            return state;
-        }
-        target.setPinned(false);
-        target.setPinnedPosition(null);
-        target.setOrderedBy("user");
-        target.setOrderReason("user_unpin");
-        orderedPlanState.setItems(rebuildOrderedItems(orderedPlanState.getItems()));
-        recalculateOrderedSummary(orderedPlanState, state.getCandidatePoolState());
-        state.setOrderedPlanState(orderedPlanState);
         return saveOrderedState(chatSessionId, state);
     }
 
@@ -1753,6 +1671,7 @@ public class PlanningStateService {
         checks.add(reviewSpecialEnrollment(state, effectiveCandidates));
         checks.add(reviewEdgeScore(state));
         checks.add(reviewCooperativeProgram(state, effectiveCandidates));
+        checks.add(reviewGroupInnerSafetyGuard(state, effectiveCandidates));
         checks.add(reviewMajorGroupSafetyIntentAlignment(state));
         checks.add(buildFixedNoticeCheck("plan_update_notice", "info", "招生计划代码可能动态更新",
                 "填报期间可能存在官方招生计划代码更新，建议同步查阅教育考试院官网。"));
@@ -1762,6 +1681,8 @@ public class PlanningStateService {
         CompensationPreviewDTO compensationPreview = buildCompensationPreview(structuralState, effectiveCandidates);
         reviewState.setCompensationPreview(compensationPreview);
         attachCompensationsToReviewChecks(reviewState, compensationPreview);
+        enrichReviewMetadata(reviewState);
+        normalizeReviewReasonCodes(structuralState, reviewState);
         recalculateReviewSummary(reviewState);
 
         state.setReviewState(reviewState);
@@ -1774,6 +1695,11 @@ public class PlanningStateService {
         return reviewState;
     }
 
+    /**
+     * @deprecated compatibility path for low-risk compensation apply only.
+     * Use {@link #applyFixProposal(Long, Long, FixProposalApplyReq)} for review repair mutations.
+     */
+    @Deprecated
     public PlanningStateDTO applyCompensation(Long tenantId, Long chatSessionId, CompensationApplyReq req) {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
         List<CandidateItemDTO> effectiveCandidates = resolveEffectiveCandidates(tenantId, chatSessionId, state, true);
@@ -1788,37 +1714,16 @@ public class PlanningStateService {
             savePlanningState(chatSessionId, state);
             return state;
         }
-        DraftPlanStateDTO draft = state.getDraftPlanState();
         List<CandidateItemDTO> candidates = effectiveCandidates;
-        List<CompensationActionDTO> appliedActions = Lists.newArrayList();
-
-        for (CompensationActionDTO action : preview.getActions()) {
-            boolean applied = false;
-            for (String volunteerId : defaultList(action.getVolunteerIds())) {
-                if (containsDraftItem(draft, volunteerId) || containsVolunteerId(draft.getBannedVolunteerIds(), volunteerId)) {
-                    continue;
-                }
-                CandidateItemDTO candidate = findCandidate(candidates, volunteerId);
-                if (candidate == null) {
-                    continue;
-                }
-                DraftItemDTO item = new DraftItemDTO();
-                item.setVolunteerId(candidate.getVolunteerId());
-                item.setTier(candidate.getTier());
-                item.setSchoolName(candidate.getSchoolName());
-                item.setMajorName(candidate.getMajorName());
-                item.setSource("compensation");
-                draft.getItems().add(item);
-                applied = true;
-            }
-            if (applied) {
-                appliedActions.add(action);
-            }
+        List<CompensationActionDTO> executableActions = buildExecutableCompensationActionsForApply(state,
+                preview.getActions(), candidates);
+        if (executableActions.isEmpty()) {
+            state.setSessionId(chatSessionId);
+            savePlanningState(chatSessionId, state);
+            return state;
         }
-        syncDraftUnitsWithItems(draft, candidates, state.getCandidatePoolState());
-        recalculateDraftSummary(draft, state.getCandidatePoolState());
-        appendOperationLogs(state, appliedActions);
-        state = saveDraftState(chatSessionId, state);
+        applyCompensationActionsToWorkingPlan(state, candidates, executableActions);
+        state = saveWorkingPlanState(chatSessionId, state);
 
         CompensationApplyReq safeReq = req == null ? new CompensationApplyReq() : req;
         if (Boolean.TRUE.equals(safeReq.getRegenerateOrderedPlan())) {
@@ -1834,15 +1739,36 @@ public class PlanningStateService {
         return state;
     }
 
+    private List<CompensationActionDTO> buildExecutableCompensationActionsForApply(PlanningStateDTO state,
+                                                                                  List<CompensationActionDTO> actions,
+                                                                                  List<CandidateItemDTO> candidates) {
+        if (actions == null || actions.isEmpty()) {
+            return Lists.newArrayList();
+        }
+        CompensationPreviewDTO executablePreview = new CompensationPreviewDTO();
+        executablePreview.setActions(actions.stream()
+                .map(this::copyCompensationAction)
+                .collect(Collectors.toList()));
+        List<PlanningUnitDTO> availableUnits = state != null && isMajorGroupMode(state.getCandidatePoolState())
+                ? buildAvailableCompensationUnits(state, candidates)
+                : null;
+        trimCompensationActionsForRemainingCapacity(state, executablePreview, availableUnits, false);
+        removeEmptyCompensationActions(executablePreview);
+        return executablePreview.getActions();
+    }
+
+    private List<CompensationActionDTO> applyCompensationActionsToWorkingPlan(PlanningStateDTO state,
+                                                                              List<CandidateItemDTO> candidates,
+                                                                              List<CompensationActionDTO> actions) {
+        return RepairApplyMutationBuilder.applyCompensationActions(state, candidates, actions)
+                .getAppliedCompensationActions();
+    }
+
     private PlanningStateVersionDTO touchAndSavePreference(Long chatSessionId, PlanningStateDTO state) {
         state.setSessionId(chatSessionId);
         state.setVersion((state.getVersion() == null ? 0 : state.getVersion()) + 1);
         state.setPhase("profile_ready");
-        state.getStaleFlags().setRecommendationOverlay(true);
-        state.getStaleFlags().setInitialRecommendation(true);
-        state.getStaleFlags().setOrderedPlan(true);
-        state.getStaleFlags().setPlanAdjustment(true);
-        state.getStaleFlags().setReview(true);
+        ReviewInvalidationPolicy.markPreferenceIntentStale(state);
         savePlanningState(chatSessionId, state);
 
         PlanningStateVersionDTO versionDTO = new PlanningStateVersionDTO();
@@ -1855,12 +1781,7 @@ public class PlanningStateService {
         state.setSessionId(chatSessionId);
         state.setVersion((state.getVersion() == null ? 0 : state.getVersion()) + 1);
         state.setPhase("profile_ready");
-        state.getStaleFlags().setCandidatePool(true);
-        state.getStaleFlags().setRecommendationOverlay(true);
-        state.getStaleFlags().setInitialRecommendation(true);
-        state.getStaleFlags().setOrderedPlan(true);
-        state.getStaleFlags().setPlanAdjustment(true);
-        state.getStaleFlags().setReview(true);
+        ReviewInvalidationPolicy.markConstraintIntentStale(state);
         savePlanningState(chatSessionId, state);
 
         PlanningStateVersionDTO versionDTO = new PlanningStateVersionDTO();
@@ -1945,6 +1866,9 @@ public class PlanningStateService {
         recommendationState.getSummary().setUnitCompletionCount(selectionState.unitCompletionCount);
         recommendationState.getSummary().setAppliedRepairCount(selectionState.appliedRepairCount);
         recommendationState.getSummary().setUnresolvedRuleCodes(Lists.newArrayList(selectionState.unresolvedRuleCodes));
+        recommendationState.setStrategyReport(buildInitialPlanStrategyReport(selectionState,
+                selectionState.selected.size(),
+                selectionState.unresolvedRuleCodes));
         for (CandidateItemDTO candidate : selectionState.selected) {
             InitialRecommendationItemDTO item = new InitialRecommendationItemDTO();
             item.setVolunteerId(candidate.getVolunteerId());
@@ -1987,6 +1911,9 @@ public class PlanningStateService {
         recommendationState.getSummary().setUnitCompletionCount(selection.selectedUnits.size());
         recommendationState.getSummary().setAppliedRepairCount(selection.groupSelectionState.appliedRepairCount + selection.majorSelectionRepairCount);
         recommendationState.getSummary().setUnresolvedRuleCodes(Lists.newArrayList(selection.unresolvedRuleCodes));
+        recommendationState.setStrategyReport(buildInitialPlanStrategyReport(selection.groupSelectionState,
+                selection.selectedUnits.size(),
+                selection.unresolvedRuleCodes));
         recommendationState.getSummary().setExpertPreferredCount(selection.selectedUnits.size());
         Map<String, Integer> tierCounts = countUnitTierCounts(selection.selectedUnits);
         for (Map.Entry<String, Integer> entry : tierCounts.entrySet()) {
@@ -2007,6 +1934,320 @@ public class PlanningStateService {
             }
         }
         return recommendationState;
+    }
+
+    private InitialPlanStrategyReportDTO buildInitialPlanStrategyReport(InitialRecommendationSelectionState selectionState,
+                                                                        int selectedCount,
+                                                                        List<String> unresolvedRuleCodes) {
+        InitialPlanStrategyReportDTO report = new InitialPlanStrategyReportDTO();
+        if (selectionState == null) {
+            return report;
+        }
+        report.getTargetProfile().setTargetCount(selectionState.targetCount);
+        report.getTargetProfile().setTargetTierCounts(new LinkedHashMap<String, Integer>(selectionState.targetTierCounts));
+        report.getTargetProfile().setSourceProvinceName(selectionState.sourceProvinceName);
+        report.getTargetProfile().setVolunteerModel(selectionState.volunteerModel);
+        report.getTargetProfile().setRequiredMajorCount(selectionState.requiredMajorCount);
+        report.setObjectiveWeights(buildInitialPlanObjectiveWeights(selectionState));
+        report.setSelectedCount(selectedCount);
+        report.setAppliedRepairs(Lists.newArrayList(selectionState.appliedRepairs));
+        report.setActions(Lists.newArrayList(selectionState.actions));
+        report.setTradeoffs(Lists.newArrayList(selectionState.tradeoffs));
+        report.setCandidateShortages(buildInitialPlanCandidateShortages(selectionState,
+                selectedCount,
+                unresolvedRuleCodes));
+
+        for (String ruleCode : defaultList(unresolvedRuleCodes)) {
+            InitialPlanStrategyReportDTO.UnresolvedRisk risk = new InitialPlanStrategyReportDTO.UnresolvedRisk();
+            risk.setRuleCode(ruleCode);
+            risk.setDetail(resolveInitialPlanUnresolvedRiskDetail(ruleCode));
+            report.getUnresolvedRisks().add(risk);
+        }
+        if (!report.getAppliedRepairs().isEmpty()) {
+            report.getUserAttentionMessages().add(String.format("生成初始推荐时已为降低结构风险调整 %d 个候选。",
+                    report.getAppliedRepairs().size()));
+        }
+        if (!report.getUnresolvedRisks().isEmpty()) {
+            report.getUserAttentionMessages().add(String.format("仍有 %d 类风险需要结合审查结果继续关注。",
+                    report.getUnresolvedRisks().size()));
+        }
+        if (report.getAppliedRepairs().isEmpty() && report.getUnresolvedRisks().isEmpty()) {
+            report.getUserAttentionMessages().add("初始推荐已按目标数量、冲稳保和基础安全性完成校验。");
+        }
+        return report;
+    }
+
+    private List<InitialPlanStrategyReportDTO.ObjectiveWeight> buildInitialPlanObjectiveWeights(InitialRecommendationSelectionState selectionState) {
+        List<InitialPlanStrategyReportDTO.ObjectiveWeight> weights = Lists.newArrayList();
+        addInitialPlanObjectiveWeight(weights,
+                "tier_structure",
+                "冲稳保结构",
+                0.24D,
+                1,
+                "先按目标冲稳保数量分桶选择，并在生成阶段尝试补齐结构缺口。");
+        addInitialPlanObjectiveWeight(weights,
+                "preference_match",
+                "偏好和专家优选",
+                0.18D,
+                2,
+                "同层候选优先保留已确认偏好或专家优选命中的方向。");
+        addInitialPlanObjectiveWeight(weights,
+                "admission_safety",
+                "录取安全和梯度",
+                0.18D,
+                3,
+                "生成后会尝试修复录取率倒挂和录取率梯度断层。");
+        addInitialPlanObjectiveWeight(weights,
+                "future_development",
+                "发展前景",
+                0.14D,
+                4,
+                "同层候选排序会参考专业未来发展分。");
+        addInitialPlanObjectiveWeight(weights,
+                "recommend_score",
+                "推荐系数",
+                0.14D,
+                5,
+                "同层候选排序会参考综合推荐分，但不会单独压过安全结构。");
+        addInitialPlanObjectiveWeight(weights,
+                "local_safety",
+                "本省和保底安全垫",
+                0.07D,
+                6,
+                "低分段会额外关注本省或保底候选数量。");
+        if (selectionState != null && "majorGroup".equalsIgnoreCase(selectionState.volunteerModel)) {
+            addInitialPlanObjectiveWeight(weights,
+                    "major_group_inner_safety",
+                    "专业组内安全专业",
+                    0.05D,
+                    7,
+                    "专业组模式下会关注组内是否有录取率不低于组整体录取率的专业。");
+        }
+        return weights;
+    }
+
+    private void addInitialPlanObjectiveWeight(List<InitialPlanStrategyReportDTO.ObjectiveWeight> weights,
+                                               String code,
+                                               String label,
+                                               Double relativeWeight,
+                                               Integer priority,
+                                               String description) {
+        InitialPlanStrategyReportDTO.ObjectiveWeight weight = new InitialPlanStrategyReportDTO.ObjectiveWeight();
+        weight.setCode(code);
+        weight.setLabel(label);
+        weight.setRelativeWeight(relativeWeight);
+        weight.setPriority(priority);
+        weight.setDescription(description);
+        weights.add(weight);
+    }
+
+    private List<CandidateShortageDTO> buildInitialPlanCandidateShortages(InitialRecommendationSelectionState selectionState,
+                                                                          int selectedCount,
+                                                                          List<String> unresolvedRuleCodes) {
+        List<CandidateShortageDTO> shortages = Lists.newArrayList();
+        if (selectionState == null || unresolvedRuleCodes == null || unresolvedRuleCodes.isEmpty()) {
+            return shortages;
+        }
+        for (String ruleCode : defaultList(unresolvedRuleCodes)) {
+            if ("count_validation".equals(ruleCode)) {
+                addInitialPlanCountShortage(shortages, selectionState, selectedCount);
+            } else if ("safety_guard".equals(ruleCode)) {
+                addInitialPlanSafetyShortage(shortages, selectionState);
+            } else if ("ratio_distribution".equals(ruleCode)) {
+                addInitialPlanTierShortages(shortages, selectionState);
+            } else if ("probability_gap".equals(ruleCode)) {
+                addInitialPlanProbabilityGapShortage(shortages, selectionState);
+            } else if ("probability_inversion".equals(ruleCode)) {
+                addInitialPlanShortage(shortages,
+                        "probability_inversion",
+                        "capacity_or_replacement",
+                        "no_sort_or_replacement_candidate",
+                        null,
+                        null,
+                        null,
+                        null,
+                        countInitialPlanAvailableCandidates(selectionState),
+                        "初始推荐仍有录取率倒挂，当前缺少可安全替换或重排的候选。");
+            } else if ("group_inner_safety_guard".equals(ruleCode)) {
+                addInitialPlanShortage(shortages,
+                        "group_inner_safety_guard",
+                        "candidate_pool",
+                        "major_group_safety_candidate_insufficient",
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        "部分专业组内缺少录取率不低于专业组整体录取率的安全专业。");
+            }
+        }
+        return shortages;
+    }
+
+    private void addInitialPlanCountShortage(List<CandidateShortageDTO> shortages,
+                                             InitialRecommendationSelectionState selectionState,
+                                             int selectedCount) {
+        int required = Math.max(0, selectionState.targetCount);
+        int shortageCount = Math.max(0, required - selectedCount);
+        if (shortageCount <= 0) {
+            return;
+        }
+        addInitialPlanShortage(shortages,
+                "count_validation",
+                "candidate_pool",
+                "candidate_pool_insufficient",
+                null,
+                required,
+                selectedCount,
+                shortageCount,
+                countInitialPlanAvailableCandidates(selectionState),
+                "当前可用于规划的候选池里，初始方案目标数量暂时补不齐。");
+    }
+
+    private void addInitialPlanSafetyShortage(List<CandidateShortageDTO> shortages,
+                                              InitialRecommendationSelectionState selectionState) {
+        if (selectionState.userScore != null && selectionState.userScore >= 580) {
+            return;
+        }
+        if (Strings.isNullOrEmpty(selectionState.sourceProvinceName)) {
+            return;
+        }
+        int required = 2;
+        int current = countLocalProtectCandidates(selectionState.selected, selectionState.sourceProvinceName);
+        int shortageCount = Math.max(0, required - current);
+        if (shortageCount <= 0) {
+            return;
+        }
+        int available = (int) defaultCandidates(selectionState.selected).stream()
+                .filter(candidate -> isLocalProtectCandidate(candidate, selectionState.sourceProvinceName))
+                .count()
+                + (int) defaultCandidates(selectionState.remaining).stream()
+                .filter(candidate -> isLocalProtectCandidate(candidate, selectionState.sourceProvinceName))
+                .count();
+        addInitialPlanShortage(shortages,
+                "safety_guard",
+                "candidate_pool",
+                "safety_candidate_insufficient",
+                "保",
+                required,
+                current,
+                shortageCount,
+                available,
+                "当前可用于规划的候选池里，本省或保底安全垫候选不足。");
+    }
+
+    private void addInitialPlanTierShortages(List<CandidateShortageDTO> shortages,
+                                             InitialRecommendationSelectionState selectionState) {
+        Map<String, Integer> currentCounts = countInitialRecommendationTiers(selectionState.selected);
+        List<CandidateItemDTO> availableCandidates = Lists.newArrayList();
+        availableCandidates.addAll(defaultCandidates(selectionState.selected));
+        availableCandidates.addAll(defaultCandidates(selectionState.remaining));
+        for (String tier : Lists.newArrayList("冲", "稳", "保")) {
+            int required = selectionState.targetTierCounts.getOrDefault(tier, 0);
+            int current = currentCounts.getOrDefault(tier, 0);
+            int shortageCount = Math.max(0, required - current);
+            if (shortageCount <= 0) {
+                continue;
+            }
+            int available = (int) availableCandidates.stream()
+                    .filter(candidate -> tier.equals(candidate == null || Strings.isNullOrEmpty(candidate.getTier())
+                            ? "保" : candidate.getTier()))
+                    .count();
+            addInitialPlanShortage(shortages,
+                    "ratio_distribution",
+                    "candidate_pool",
+                    "tier_candidate_insufficient",
+                    tier,
+                    required,
+                    current,
+                    shortageCount,
+                    available,
+                    "当前可用于规划的候选池里，目标" + tier + "区候选不足。");
+        }
+    }
+
+    private void addInitialPlanProbabilityGapShortage(List<CandidateShortageDTO> shortages,
+                                                      InitialRecommendationSelectionState selectionState) {
+        int required = selectionState.unresolvedGapCount > 0 ? selectionState.unresolvedGapCount : 1;
+        int available = countInitialPlanGapFillCandidates(selectionState);
+        String scope = available > 0 ? "capacity_or_replacement" : "candidate_pool";
+        String reasonCode = available > 0 ? "replacement_pair_missing" : "probability_gap_candidate_insufficient";
+        String message = available > 0
+                ? "当前不是单纯缺候选，而是初始推荐缺少可安全一进一出的梯度修复配对。"
+                : "当前可用于规划的候选池里，断层中间录取率候选不足。";
+        addInitialPlanShortage(shortages,
+                "probability_gap",
+                scope,
+                reasonCode,
+                null,
+                required,
+                0,
+                required,
+                available,
+                message);
+    }
+
+    private int countInitialPlanGapFillCandidates(InitialRecommendationSelectionState selectionState) {
+        if (selectionState == null) {
+            return 0;
+        }
+        List<InitialRecommendationGap> gaps = findInitialRecommendationGaps(selectionState.selected);
+        if (gaps.isEmpty()) {
+            return 0;
+        }
+        return (int) defaultCandidates(selectionState.remaining).stream()
+                .filter(candidate -> findCoveringInitialRecommendationGap(gaps, candidate) != null)
+                .count();
+    }
+
+    private int countInitialPlanAvailableCandidates(InitialRecommendationSelectionState selectionState) {
+        if (selectionState == null) {
+            return 0;
+        }
+        return defaultCandidates(selectionState.selected).size() + defaultCandidates(selectionState.remaining).size();
+    }
+
+    private void addInitialPlanShortage(List<CandidateShortageDTO> shortages,
+                                        String sourceCheckCode,
+                                        String scope,
+                                        String reasonCode,
+                                        String targetTier,
+                                        Integer requiredCount,
+                                        Integer currentCount,
+                                        Integer shortageCount,
+                                        Integer availableCount,
+                                        String message) {
+        CandidateShortageDTO shortage = new CandidateShortageDTO();
+        shortage.setStrategy("initial_plan_generation");
+        shortage.setSourceCheckCode(sourceCheckCode);
+        shortage.setScope(scope);
+        shortage.setReasonCode(reasonCode);
+        shortage.setTargetTier(targetTier);
+        shortage.setRequiredCount(requiredCount);
+        shortage.setCurrentCount(currentCount);
+        shortage.setShortageCount(shortageCount);
+        shortage.setAvailableCount(availableCount);
+        shortage.setMessage(message);
+        shortages.add(shortage);
+    }
+
+    private String resolveInitialPlanUnresolvedRiskDetail(String ruleCode) {
+        if ("safety_guard".equals(ruleCode)) {
+            return "当前候选中本省或保底候选不足，初始推荐无法完全补足安全垫。";
+        }
+        if ("probability_inversion".equals(ruleCode)) {
+            return "当前候选录取率排序仍存在倒挂，需要后续审查或排序继续处理。";
+        }
+        if ("probability_gap".equals(ruleCode)) {
+            return "当前候选录取率梯度仍有断层，可替换的中间候选不足。";
+        }
+        if ("ratio_distribution".equals(ruleCode)) {
+            return "当前候选无法完全满足目标冲稳保比例。";
+        }
+        if ("group_inner_safety_guard".equals(ruleCode)) {
+            return "部分专业组内缺少录取率不低于专业组整体录取率的安全专业。";
+        }
+        return "初始推荐阶段仍有该规则相关风险未完全解决。";
     }
 
     private InitialRecommendationSelectionState buildInitialRecommendationSelectionState(PlanningStateDTO state,
@@ -2589,6 +2830,252 @@ public class PlanningStateService {
         selectionState.selectedIds.add(add.getVolunteerId());
         selectionState.selectionReasons.put(add.getVolunteerId(), Lists.newArrayList(reasonCode));
         selectionState.appliedRepairCount++;
+        InitialPlanStrategyReportDTO.Tradeoff tradeoff = buildInitialPlanTradeoff(remove, add, reasonCode);
+        selectionState.appliedRepairs.add(buildInitialPlanAppliedRepair(remove, add, reasonCode, tradeoff));
+        selectionState.actions.add(buildInitialPlanReplacementAction(remove, add, reasonCode, tradeoff));
+        selectionState.tradeoffs.add(tradeoff);
+    }
+
+    private FixProposalActionDTO buildInitialPlanReplacementAction(CandidateItemDTO remove,
+                                                                   CandidateItemDTO add,
+                                                                   String reasonCode,
+                                                                   InitialPlanStrategyReportDTO.Tradeoff tradeoff) {
+        String ruleCode = resolveInitialPlanRepairRuleCode(reasonCode);
+        FixProposalActionDTO action = new FixProposalActionDTO();
+        action.setActionType("replace_volunteers");
+        action.setLevel("info");
+        action.setSourceCheckCode(ruleCode);
+        action.setSummary(resolveInitialPlanRepairDetail(reasonCode));
+        action.setDetail(tradeoff == null ? resolveInitialPlanRepairDetail(reasonCode) : tradeoff.getSummary());
+        if (remove != null && !Strings.isNullOrEmpty(remove.getVolunteerId())) {
+            action.getRemoveVolunteerIds().add(remove.getVolunteerId());
+        }
+        if (add != null && !Strings.isNullOrEmpty(add.getVolunteerId())) {
+            action.getCandidateVolunteerIds().add(add.getVolunteerId());
+        }
+        String removeUnitId = resolveInitialRecommendationUnitId(remove);
+        if (!Strings.isNullOrEmpty(removeUnitId)) {
+            action.getRemoveUnitIds().add(removeUnitId);
+        }
+        String addUnitId = resolveInitialRecommendationUnitId(add);
+        if (!Strings.isNullOrEmpty(addUnitId)) {
+            action.getCandidateUnitIds().add(addUnitId);
+        }
+        ReplacementPairDTO pair = new ReplacementPairDTO();
+        pair.setFromUnitId(removeUnitId);
+        pair.setFromVolunteerId(remove == null ? null : remove.getVolunteerId());
+        pair.setToUnitId(addUnitId);
+        pair.setToVolunteerId(add == null ? null : add.getVolunteerId());
+        pair.getReasonCodes().add(reasonCode);
+        if (!Strings.isNullOrEmpty(ruleCode)) {
+            pair.getReasonCodes().add(ruleCode);
+        }
+        action.getReplacementPairs().add(pair);
+        return action;
+    }
+
+    private InitialPlanStrategyReportDTO.AppliedRepair buildInitialPlanAppliedRepair(CandidateItemDTO remove,
+                                                                                     CandidateItemDTO add,
+                                                                                     String reasonCode,
+                                                                                     InitialPlanStrategyReportDTO.Tradeoff tradeoff) {
+        InitialPlanStrategyReportDTO.AppliedRepair repair = new InitialPlanStrategyReportDTO.AppliedRepair();
+        repair.setReasonCode(reasonCode);
+        repair.setRuleCode(resolveInitialPlanRepairRuleCode(reasonCode));
+        repair.setActionType("replace_candidate");
+        repair.setFromVolunteerId(remove == null ? null : remove.getVolunteerId());
+        repair.setFromLabel(formatInitialPlanCandidateLabel(remove));
+        repair.setToVolunteerId(add == null ? null : add.getVolunteerId());
+        repair.setToLabel(formatInitialPlanCandidateLabel(add));
+        repair.setDetail(resolveInitialPlanRepairDetail(reasonCode));
+        repair.setTradeoffSummary(tradeoff == null ? null : tradeoff.getSummary());
+        return repair;
+    }
+
+    private InitialPlanStrategyReportDTO.Tradeoff buildInitialPlanTradeoff(CandidateItemDTO remove,
+                                                                           CandidateItemDTO add,
+                                                                           String reasonCode) {
+        InitialPlanStrategyReportDTO.Tradeoff tradeoff = new InitialPlanStrategyReportDTO.Tradeoff();
+        tradeoff.setReasonCode(reasonCode);
+        tradeoff.setRuleCode(resolveInitialPlanRepairRuleCode(reasonCode));
+        tradeoff.setActionType("replace_candidate");
+        tradeoff.setFromVolunteerId(remove == null ? null : remove.getVolunteerId());
+        tradeoff.setFromLabel(formatInitialPlanCandidateLabel(remove));
+        tradeoff.setToVolunteerId(add == null ? null : add.getVolunteerId());
+        tradeoff.setToLabel(formatInitialPlanCandidateLabel(add));
+        tradeoff.setFinalScoreDelta(roundOneDecimal(delta(add == null ? null : add.getFinalScore(),
+                remove == null ? null : remove.getFinalScore())));
+        tradeoff.setAdmissionRatioDelta(roundOneDecimal(delta(add == null ? null : add.getAdmissionRatio(),
+                remove == null ? null : remove.getAdmissionRatio())));
+        tradeoff.setHotIndexDelta(roundOneDecimal(delta(add == null ? null : add.getHotIndex(),
+                remove == null ? null : remove.getHotIndex())));
+        tradeoff.setSchoolRankDelta(delta(add == null ? null : add.getSchoolRank(),
+                remove == null ? null : remove.getSchoolRank()));
+        tradeoff.setPreferredDowngraded(Boolean.TRUE.equals(remove == null ? null : remove.getPreferred())
+                && !Boolean.TRUE.equals(add == null ? null : add.getPreferred()));
+        tradeoff.setPreferredUpgraded(!Boolean.TRUE.equals(remove == null ? null : remove.getPreferred())
+                && Boolean.TRUE.equals(add == null ? null : add.getPreferred()));
+        populateInitialPlanTradeoffGainsAndCosts(tradeoff, reasonCode);
+        tradeoff.setSummary(buildInitialPlanTradeoffSummary(tradeoff));
+        return tradeoff;
+    }
+
+    private void populateInitialPlanTradeoffGainsAndCosts(InitialPlanStrategyReportDTO.Tradeoff tradeoff,
+                                                          String reasonCode) {
+        if (tradeoff == null) {
+            return;
+        }
+        String reasonGain = resolveInitialPlanTradeoffGain(reasonCode);
+        if (!Strings.isNullOrEmpty(reasonGain)) {
+            tradeoff.getGains().add(reasonGain);
+        }
+        if (tradeoff.getAdmissionRatioDelta() != null) {
+            if (tradeoff.getAdmissionRatioDelta() > 0D) {
+                tradeoff.getGains().add("录取率提高" + formatPositiveNumber(tradeoff.getAdmissionRatioDelta()) + "个百分点");
+            } else if (tradeoff.getAdmissionRatioDelta() < 0D) {
+                tradeoff.getCosts().add("录取率下降" + formatPositiveNumber(Math.abs(tradeoff.getAdmissionRatioDelta())) + "个百分点");
+            }
+        }
+        if (tradeoff.getFinalScoreDelta() != null) {
+            if (tradeoff.getFinalScoreDelta() > 0D) {
+                tradeoff.getGains().add("推荐分提高" + formatPositiveNumber(tradeoff.getFinalScoreDelta()));
+            } else if (tradeoff.getFinalScoreDelta() < 0D) {
+                tradeoff.getCosts().add("推荐分下降" + formatPositiveNumber(Math.abs(tradeoff.getFinalScoreDelta())));
+            }
+        }
+        if (tradeoff.getHotIndexDelta() != null) {
+            if (tradeoff.getHotIndexDelta() > 0D) {
+                tradeoff.getGains().add("专业热度提高" + formatPositiveNumber(tradeoff.getHotIndexDelta()));
+            } else if (tradeoff.getHotIndexDelta() < 0D) {
+                tradeoff.getCosts().add("专业热度下降" + formatPositiveNumber(Math.abs(tradeoff.getHotIndexDelta())));
+            }
+        }
+        if (tradeoff.getSchoolRankDelta() != null) {
+            if (tradeoff.getSchoolRankDelta() < 0) {
+                tradeoff.getGains().add("院校排名序号前移" + Math.abs(tradeoff.getSchoolRankDelta()) + "位");
+            } else if (tradeoff.getSchoolRankDelta() > 0) {
+                tradeoff.getCosts().add("院校排名序号后移" + tradeoff.getSchoolRankDelta() + "位");
+            }
+        }
+        if (Boolean.TRUE.equals(tradeoff.getPreferredUpgraded())) {
+            tradeoff.getGains().add("更匹配已确认偏好或专家优选");
+        }
+        if (Boolean.TRUE.equals(tradeoff.getPreferredDowngraded())) {
+            tradeoff.getCosts().add("从偏好命中候选换出");
+        }
+    }
+
+    private String resolveInitialPlanTradeoffGain(String reasonCode) {
+        if ("selected_by_local_protect".equals(reasonCode)) {
+            return "补足本省或保底安全垫";
+        }
+        if ("selected_by_gap_fill".equals(reasonCode)) {
+            return "缓解录取率梯度断层";
+        }
+        if ("selected_by_inversion_repair".equals(reasonCode)) {
+            return "缓解录取率倒挂";
+        }
+        if ("selected_by_unit_repair".equals(reasonCode)) {
+            return "提升专业组内安全性";
+        }
+        if ("selected_by_tier_target".equals(reasonCode)) {
+            return "贴近目标冲稳保比例";
+        }
+        return "降低初始方案结构风险";
+    }
+
+    private String buildInitialPlanTradeoffSummary(InitialPlanStrategyReportDTO.Tradeoff tradeoff) {
+        if (tradeoff == null) {
+            return null;
+        }
+        String gains = tradeoff.getGains().isEmpty() ? "结构风险降低" : String.join("、", tradeoff.getGains());
+        String costs = tradeoff.getCosts().isEmpty() ? "未发现明显推荐指标损失" : String.join("、", tradeoff.getCosts());
+        return "收益：" + gains + "；取舍：" + costs;
+    }
+
+    private Double delta(Double next, Double previous) {
+        if (next == null || previous == null) {
+            return null;
+        }
+        return next - previous;
+    }
+
+    private Integer delta(Integer next, Integer previous) {
+        if (next == null || previous == null) {
+            return null;
+        }
+        return next - previous;
+    }
+
+    private Double roundOneDecimal(Double value) {
+        if (value == null) {
+            return null;
+        }
+        return Math.round(value * 10D) / 10D;
+    }
+
+    private String formatPositiveNumber(Double value) {
+        if (value == null) {
+            return "0";
+        }
+        double abs = Math.abs(value);
+        if (Math.abs(abs - Math.rint(abs)) < 0.000001D) {
+            return String.valueOf((int) Math.rint(abs));
+        }
+        return String.format(Locale.ROOT, "%.1f", abs);
+    }
+
+    private String resolveInitialPlanRepairRuleCode(String reasonCode) {
+        if ("selected_by_local_protect".equals(reasonCode)) {
+            return "safety_guard";
+        }
+        if ("selected_by_gap_fill".equals(reasonCode)) {
+            return "probability_gap";
+        }
+        if ("selected_by_inversion_repair".equals(reasonCode)) {
+            return "probability_inversion";
+        }
+        if ("selected_by_unit_repair".equals(reasonCode)) {
+            return "group_inner_safety_guard";
+        }
+        if ("selected_by_tier_target".equals(reasonCode)) {
+            return "ratio_distribution";
+        }
+        return "initial_plan_strategy";
+    }
+
+    private String resolveInitialPlanRepairDetail(String reasonCode) {
+        if ("selected_by_local_protect".equals(reasonCode)) {
+            return "为补足本省或保底安全垫，替换了一个候选。";
+        }
+        if ("selected_by_gap_fill".equals(reasonCode)) {
+            return "为缓解录取率梯度断层，替换了一个候选。";
+        }
+        if ("selected_by_inversion_repair".equals(reasonCode)) {
+            return "为缓解录取率倒挂，替换了一个候选。";
+        }
+        if ("selected_by_unit_repair".equals(reasonCode)) {
+            return "为提升专业组内安全性，替换了一个专业组候选。";
+        }
+        if ("selected_by_tier_target".equals(reasonCode)) {
+            return "为尽量贴近目标冲稳保比例，替换了一个候选。";
+        }
+        return "初始推荐阶段执行了一次结构性调整。";
+    }
+
+    private String formatInitialPlanCandidateLabel(CandidateItemDTO candidate) {
+        if (candidate == null) {
+            return null;
+        }
+        if (!Strings.isNullOrEmpty(candidate.getSchoolName()) && !Strings.isNullOrEmpty(candidate.getMajorName())) {
+            return candidate.getSchoolName() + "-" + candidate.getMajorName();
+        }
+        if (!Strings.isNullOrEmpty(candidate.getSchoolName())) {
+            return candidate.getSchoolName();
+        }
+        if (!Strings.isNullOrEmpty(candidate.getMajorName())) {
+            return candidate.getMajorName();
+        }
+        return candidate.getVolunteerId();
     }
 
     private InitialRecommendationGap findInitialRecommendationGap(List<CandidateItemDTO> ordered) {
@@ -2733,6 +3220,11 @@ public class PlanningStateService {
         if (compare != 0) {
             return compare;
         }
+        compare = compareInitialRecommendationReplacementTradeoff(left.removable, left.filler,
+                right.removable, right.filler);
+        if (compare != 0) {
+            return compare;
+        }
         compare = buildInitialRecommendationCandidateComparator().compare(left.filler, right.filler);
         if (compare != 0) {
             return compare;
@@ -2828,11 +3320,23 @@ public class PlanningStateService {
         if (compare != 0) {
             return compare;
         }
+        compare = compareInitialRecommendationReplacementTradeoff(left.removable, left.filler,
+                right.removable, right.filler);
+        if (compare != 0) {
+            return compare;
+        }
         compare = buildInitialRecommendationRemovableComparator(null).compare(left.removable, right.removable);
         if (compare != 0) {
             return compare;
         }
         return buildInitialRecommendationCandidateComparator().compare(left.filler, right.filler);
+    }
+
+    private int compareInitialRecommendationReplacementTradeoff(CandidateItemDTO leftRemove,
+                                                                CandidateItemDTO leftAdd,
+                                                                CandidateItemDTO rightRemove,
+                                                                CandidateItemDTO rightAdd) {
+        return RepairReplacementTradeoffSupport.compareTradeoff(leftRemove, leftAdd, rightRemove, rightAdd);
     }
 
     private double distanceToGapMidpoint(CandidateItemDTO filler, InitialRecommendationGap gap) {
@@ -3323,6 +3827,9 @@ public class PlanningStateService {
         private final Map<String, Integer> targetTierCounts = new LinkedHashMap<String, Integer>();
         private final Map<String, List<String>> selectionReasons = new LinkedHashMap<String, List<String>>();
         private final List<String> unresolvedRuleCodes = Lists.newArrayList();
+        private final List<InitialPlanStrategyReportDTO.AppliedRepair> appliedRepairs = Lists.newArrayList();
+        private final List<FixProposalActionDTO> actions = Lists.newArrayList();
+        private final List<InitialPlanStrategyReportDTO.Tradeoff> tradeoffs = Lists.newArrayList();
         private int targetCount;
         private String sourceProvinceName;
         private Integer userScore;
@@ -3430,6 +3937,7 @@ public class PlanningStateService {
         List<String> hitSummaries = Lists.newArrayList();
         for (ReviewCheckDTO check : checks) {
             List<CompensationActionDTO> linkedActions = compensationMap.get(check.getCode());
+            enrichReviewMetadata(check);
             adjustmentState.getAnalysis().getRules().add(buildPlanAdjustmentRuleResult(check, linkedActions));
             if (Boolean.FALSE.equals(check.getPassed()) && !Strings.isNullOrEmpty(check.getSummary())) {
                 hitSummaries.add(check.getSummary());
@@ -3439,7 +3947,8 @@ public class PlanningStateService {
                     linkedActions,
                     effectiveCandidates,
                     target,
-                    analysisOrderedState);
+                    analysisOrderedState,
+                    analysisState);
         }
 
         if (hitSummaries.isEmpty()) {
@@ -3476,7 +3985,7 @@ public class PlanningStateService {
                             this::copyOrderedItem,
                             (left, right) -> left,
                             LinkedHashMap::new));
-            snapshot.setItems(buildOrderedItemsFromDraft(state.getDraftPlanState(),
+            snapshot.setItems(buildOrderedItemsFromWorkingPlan(state.getDraftPlanState(),
                     state.getCandidatePoolState(),
                     candidates,
                     existing,
@@ -3561,7 +4070,7 @@ public class PlanningStateService {
             structuralItem.setSource(unit.getSource());
             groupedItems.put(unit.getUnitId(), structuralItem);
         }
-        snapshot.setItems(rebuildOrderedItems(Lists.newArrayList(groupedItems.values())));
+        snapshot.setItems(OrderedPlanPositioningSupport.rebuildItems(Lists.newArrayList(groupedItems.values())));
         snapshot.setUnits(units);
         snapshot.setGenerationMode(flatOrderedState.getGenerationMode());
         snapshot.setAutoCompleted(flatOrderedState.getAutoCompleted());
@@ -3578,7 +4087,8 @@ public class PlanningStateService {
         analysisState.setSessionId(state.getSessionId());
         analysisState.setVersion(state.getVersion());
         analysisState.setCandidatePoolState(state.getCandidatePoolState());
-        analysisState.setDraftPlanState(state.getDraftPlanState());
+        analysisState.setConstraintState(state.getConstraintState());
+        analysisState.setWorkingPlanState(state.getWorkingPlanState());
         analysisState.setOrderedPlanState(analysisOrderedState);
         return analysisState;
     }
@@ -3587,8 +4097,15 @@ public class PlanningStateService {
                                                                       List<CompensationActionDTO> linkedActions) {
         PlanAdjustmentRuleResultDTO result = new PlanAdjustmentRuleResultDTO();
         result.setRuleCode(check.getCode());
+        result.setLabel(check.getLabel());
+        result.setCategory(check.getCategory());
+        result.setScopeKind(check.getScopeKind());
+        result.setFixability(check.getFixability());
+        result.setSupportedFixStrategies(defaultList(check.getSupportedFixStrategies()));
+        result.setDefaultFixStrategy(check.getDefaultFixStrategy());
         result.setSeverity(normalizePlanAdjustmentSeverity(check.getLevel()));
         result.setHit(Boolean.FALSE.equals(check.getPassed()));
+        result.setReasonCode(check.getReasonCode());
         result.setSummary(check.getSummary());
         result.setAffectedUnitIds(defaultList(check.getAffectedUnitIds()));
         result.setAffectedVolunteerIds(defaultList(check.getAffectedVolunteerIds()));
@@ -3619,7 +4136,7 @@ public class PlanningStateService {
             suggestionTypes.add("replace");
         }
         if ("ratio_distribution".equals(check.getCode())) {
-            if (containsAny(check.getSummary(), "冲区占比偏低", "保区占比过低")) {
+            if (isRatioDistributionAddSuggestion(check)) {
                 suggestionTypes.add("add");
             } else {
                 suggestionTypes.add("replace");
@@ -3636,7 +4153,8 @@ public class PlanningStateService {
                                                  List<CompensationActionDTO> linkedActions,
                                                  List<CandidateItemDTO> candidates,
                                                  String target,
-                                                 OrderedPlanStateDTO analysisOrderedState) {
+                                                 OrderedPlanStateDTO analysisOrderedState,
+                                                 PlanningStateDTO analysisState) {
         if (linkedActions != null && !linkedActions.isEmpty()) {
             for (CompensationActionDTO action : linkedActions) {
                 adjustmentState.getSuggestions().getAddSuggestions().add(
@@ -3646,7 +4164,7 @@ public class PlanningStateService {
         if (!Boolean.FALSE.equals(check.getPassed())) {
             return;
         }
-        if ("ratio_distribution".equals(check.getCode()) && containsAny(check.getSummary(), "冲区占比偏低", "保区占比过低")) {
+        if ("ratio_distribution".equals(check.getCode()) && isRatioDistributionAddSuggestion(check)) {
             adjustmentState.getSuggestions().getAddSuggestions().add(
                     buildGenericAddSuggestion(check, target, "补充缺失区间志愿", "append_only"));
         }
@@ -3668,7 +4186,7 @@ public class PlanningStateService {
             }
             return;
         }
-        if ("ratio_distribution".equals(check.getCode()) && containsAny(check.getSummary(), "冲区占比过高")) {
+        if ("ratio_distribution".equals(check.getCode()) && isRatioDistributionReplaceSuggestion(check, analysisOrderedState, linkedActions, analysisState)) {
             ReplaceSuggestionDTO suggestion = buildRatioDistributionReplaceSuggestion(check, target, linkedActions, analysisOrderedState, candidates);
             if (suggestion != null) {
                 adjustmentState.getSuggestions().getReplaceSuggestions().add(suggestion);
@@ -4165,7 +4683,7 @@ public class PlanningStateService {
             state.setInitialRecommendationState(new InitialRecommendationStateDTO());
         }
         if (state.getDraftPlanState() == null) {
-            state.setDraftPlanState(new DraftPlanStateDTO());
+        state.setWorkingPlanState(new DraftPlanStateDTO());
         }
         if (state.getOrderedPlanState() == null) {
             state.setOrderedPlanState(new OrderedPlanStateDTO());
@@ -4270,7 +4788,7 @@ public class PlanningStateService {
         DraftPlanStateDTO draftPlanState = buildLegacyDraftPlanState(preferredCandidates, candidatePoolState, legacyPlanSource.submitted);
         OrderedPlanStateDTO orderedPlanState = buildLegacyOrderedPlanState(draftPlanState, candidatePoolState, candidates, legacyPlanSource);
 
-        state.setDraftPlanState(draftPlanState);
+        state.setWorkingPlanState(draftPlanState);
         state.setOrderedPlanState(orderedPlanState);
         state.setCandidateViewState(buildDefaultCandidateViewState(state.getProfileState()));
         state.setPhase(preferredCandidates.isEmpty() ? "candidate_generated" : "ordered");
@@ -4278,8 +4796,7 @@ public class PlanningStateService {
         state.getStaleFlags().setRecommendationOverlay(false);
         state.getStaleFlags().setInitialRecommendation(false);
         state.getStaleFlags().setOrderedPlan(false);
-        state.getStaleFlags().setPlanAdjustment(true);
-        state.getStaleFlags().setReview(true);
+        ReviewInvalidationPolicy.markPlanStructureStale(state);
         appendLegacyImportLog(state, legacyPlanSource, preferredCandidates);
         return state;
     }
@@ -4306,8 +4823,10 @@ public class PlanningStateService {
         items.addAll(flattenCandidates(response.getSprints(), "冲"));
         items.addAll(flattenCandidates(response.getSafes(), "稳"));
         items.addAll(flattenCandidates(response.getProtects(), "保"));
-        candidatePoolState.setItems(normalizeCandidateIdentities(candidatePoolState, items));
+        List<CandidateItemDTO> normalizedItems = normalizeCandidateIdentities(candidatePoolState, items);
+        candidatePoolState.setItems(normalizedItems);
         recalculateCandidatePoolSummary(candidatePoolState);
+        populateCandidatePoolSourceSummary(candidatePoolState, items, normalizedItems);
         normalizeRequiredTierCountsByAvailableCapacity(candidatePoolState);
         return candidatePoolState;
     }
@@ -4412,17 +4931,11 @@ public class PlanningStateService {
                                                         boolean submitted) {
         DraftPlanStateDTO draftPlanState = new DraftPlanStateDTO();
         for (CandidateItemDTO candidate : defaultCandidates(preferredCandidates)) {
-            DraftItemDTO item = new DraftItemDTO();
-            item.setVolunteerId(candidate.getVolunteerId());
-            item.setTier(candidate.getTier());
-            item.setSchoolName(candidate.getSchoolName());
-            item.setMajorName(candidate.getMajorName());
-            item.setLocked(submitted);
-            item.setSource("legacy_preferred");
+            DraftItemDTO item = WorkingPlanMutationSupport.buildWorkingPlanItem(candidate, "legacy_preferred", submitted);
             draftPlanState.getItems().add(item);
         }
-        syncDraftUnitsWithItems(draftPlanState, preferredCandidates, candidatePoolState);
-        recalculateDraftSummary(draftPlanState, candidatePoolState);
+        syncWorkingPlanUnitsWithItems(draftPlanState, preferredCandidates, candidatePoolState);
+        recalculateWorkingPlanSummary(draftPlanState, candidatePoolState);
         return draftPlanState;
     }
 
@@ -4431,7 +4944,7 @@ public class PlanningStateService {
                                                             List<CandidateItemDTO> candidates,
                                                             LegacyPlanSource legacyPlanSource) {
         OrderedPlanStateDTO orderedPlanState = new OrderedPlanStateDTO();
-        List<OrderedItemDTO> orderedItems = buildOrderedItemsFromDraft(
+        List<OrderedItemDTO> orderedItems = buildOrderedItemsFromWorkingPlan(
                 draftPlanState,
                 candidatePoolState,
                 candidates,
@@ -4535,41 +5048,6 @@ public class PlanningStateService {
 
     private int valueOrZero(Integer value) {
         return value == null ? 0 : value;
-    }
-
-    private String resolveCandidatePoolStatus(CandidatePoolStateDTO candidatePoolState) {
-        if (candidatePoolState == null) {
-            return "not_generated";
-        }
-        int effectiveTotal = candidatePoolState.getSummary() == null ? 0 : valueOrZero(candidatePoolState.getSummary().getTotal());
-        int effectiveUnitTotal = candidatePoolState.getSummary() == null ? 0 : valueOrZero(candidatePoolState.getSummary().getUnitTotal());
-        int required = resolveRequiredCandidateCount(candidatePoolState);
-        if (effectiveTotal <= 0 && effectiveUnitTotal <= 0) {
-            return "empty";
-        }
-        if (required > 0) {
-            int effective = isMajorGroupMode(candidatePoolState) ? effectiveUnitTotal : effectiveTotal;
-            if (effective > 0 && effective < required) {
-                return "low_count";
-            }
-        }
-        return "ready";
-    }
-
-    private int resolveRequiredCandidateCount(CandidatePoolStateDTO candidatePoolState) {
-        if (candidatePoolState == null) {
-            return 0;
-        }
-        if (isMajorGroupMode(candidatePoolState) && candidatePoolState.getRequiredUnitCount() != null) {
-            return candidatePoolState.getRequiredUnitCount();
-        }
-        if (candidatePoolState.getRequiredCount() != null) {
-            return candidatePoolState.getRequiredCount();
-        }
-        if (candidatePoolState.getRequiredUnitCount() != null) {
-            return candidatePoolState.getRequiredUnitCount();
-        }
-        return 0;
     }
 
     private List<String> collectOrderedVolunteerIds(PlanningStateDTO state) {
@@ -6335,34 +6813,19 @@ public class PlanningStateService {
         return Math.max(0D, 100D - rankInTier);
     }
 
-    private boolean containsDraftItem(DraftPlanStateDTO draft, String volunteerId) {
-        return defaultDraftItems(draft == null ? null : draft.getItems()).stream()
-                .anyMatch(item -> sameVolunteerIdentity(volunteerId, item.getVolunteerId()));
+    private boolean containsWorkingPlanItem(DraftPlanStateDTO draft, String volunteerId) {
+        return WorkingPlanMutationSupport.containsWorkingPlanItem(draft, volunteerId);
     }
 
     private boolean containsVolunteerId(List<String> volunteerIds, String volunteerId) {
-        return defaultList(volunteerIds).stream()
-                .anyMatch(item -> sameVolunteerIdentity(volunteerId, item));
-    }
-
-    private boolean sameVolunteerIdentity(String left, String right) {
-        if (Strings.isNullOrEmpty(left) || Strings.isNullOrEmpty(right)) {
-            return false;
-        }
-        if (left.equals(right)) {
-            return true;
-        }
-        String leftLegacyPrefix = CandidateResolver.legacyVolunteerPrefix(left);
-        String rightLegacyPrefix = CandidateResolver.legacyVolunteerPrefix(right);
-        return !Strings.isNullOrEmpty(leftLegacyPrefix)
-                && leftLegacyPrefix.equals(rightLegacyPrefix);
+        return WorkingPlanMutationSupport.containsVolunteerId(volunteerIds, volunteerId);
     }
 
     private OrderedPlanStateDTO ensureOrderedPlanState(PlanningStateDTO state) {
         OrderedPlanStateDTO orderedPlanState = state.getOrderedPlanState();
         if (orderedPlanState.getItems().isEmpty() && !state.getDraftPlanState().getItems().isEmpty()) {
             List<CandidateItemDTO> effectiveCandidates = resolveEffectiveCandidates(null, state.getSessionId(), state, false);
-            orderedPlanState.setItems(buildOrderedItemsFromDraft(
+            orderedPlanState.setItems(buildOrderedItemsFromWorkingPlan(
                     state.getDraftPlanState(),
                     state.getCandidatePoolState(),
                     effectiveCandidates,
@@ -6407,10 +6870,12 @@ public class PlanningStateService {
                     .filter(unit -> "保".equals(unit.getTier()))
                     .count();
         } else {
-            sprintCount = state.getOrderedPlanState().getSummary().getTierCounts().get("冲") == null ? 0
-                    : state.getOrderedPlanState().getSummary().getTierCounts().get("冲");
-            protectCount = state.getOrderedPlanState().getSummary().getTierCounts().get("保") == null ? 0
-                    : state.getOrderedPlanState().getSummary().getTierCounts().get("保");
+            sprintCount = (int) state.getOrderedPlanState().getItems().stream()
+                    .filter(item -> "冲".equals(item.getTier()))
+                    .count();
+            protectCount = (int) state.getOrderedPlanState().getItems().stream()
+                    .filter(item -> "保".equals(item.getTier()))
+                    .count();
         }
         double sprintRatio = sprintCount * 1D / total;
         double protectRatio = protectCount * 1D / total;
@@ -6423,6 +6888,7 @@ public class PlanningStateService {
         if (sprintRatio > 0.4D && protectRatio < 0.2D && !protectMeetsExpected) {
             check.setPassed(false);
             check.setLevel("risk");
+            check.setReasonCode("protect_tier_missing");
             check.setSummary("冲区占比过高且保区占比过低");
             check.setDetail("冲区占比超过40%，且保区占比低于20%。");
             check.setSuggestedAction("建议减少冲区志愿并补充保区志愿，优先调整到接近3:3:4。");
@@ -6431,6 +6897,7 @@ public class PlanningStateService {
         if (sprintRatio > 0.4D && !sprintWithinExpected) {
             check.setPassed(false);
             check.setLevel("risk");
+            check.setReasonCode("sprint_tier_over_limit");
             check.setSummary("冲区占比过高");
             check.setDetail("冲区占比超过40%。");
             check.setSuggestedAction("建议适当减少冲区志愿，补充稳区或保区志愿。");
@@ -6439,6 +6906,7 @@ public class PlanningStateService {
         if (sprintRatio < 0.2D && !sprintMeetsExpected) {
             check.setPassed(false);
             check.setLevel("warn");
+            check.setReasonCode("sprint_tier_missing");
             check.setSummary("冲区占比偏低");
             check.setDetail("冲区占比低于20%。");
             check.setSuggestedAction("建议适当增加冲区志愿，提高分数利用率。");
@@ -6447,6 +6915,7 @@ public class PlanningStateService {
         if (protectRatio < 0.2D && !protectMeetsExpected) {
             check.setPassed(false);
             check.setLevel("risk");
+            check.setReasonCode("protect_tier_missing");
             check.setSummary("保区占比过低");
             check.setDetail("保区占比低于20%。");
             check.setSuggestedAction("建议补充保区志愿，降低滑档风险。");
@@ -6663,6 +7132,7 @@ public class PlanningStateService {
         if (currentCount < requiredCount) {
             check.setPassed(false);
             check.setLevel("risk");
+            check.setReasonCode("count_missing");
             check.setSummary("当前志愿数量少于官方要求");
             check.setDetail(String.format("当前数量 %d，小于要求数量 %d。", currentCount, requiredCount));
             check.setSuggestedAction("建议通过补偿或手动补选将志愿数量补足。");
@@ -6671,6 +7141,7 @@ public class PlanningStateService {
         if (currentCount > requiredCount) {
             check.setPassed(false);
             check.setLevel("warn");
+            check.setReasonCode("count_over_limit");
             check.setSummary("当前志愿数量多于官方要求");
             check.setDetail(String.format("当前数量 %d，大于要求数量 %d。", currentCount, requiredCount));
             check.setSuggestedAction("建议精简志愿数量，避免最终填报时临时删改。");
@@ -6720,6 +7191,9 @@ public class PlanningStateService {
             }
             if (!orderedItems.isEmpty()) {
                 missingSafetyUnits.add(orderedItems.get(0).getSchoolName());
+                if (!Strings.isNullOrEmpty(entry.getKey()) && !check.getAffectedUnitIds().contains(entry.getKey())) {
+                    check.getAffectedUnitIds().add(entry.getKey());
+                }
                 orderedItems.stream()
                         .map(OrderedItemDTO::getVolunteerId)
                         .forEach(check.getAffectedVolunteerIds()::add);
@@ -6760,6 +7234,7 @@ public class PlanningStateService {
         check.setSuggestedAction("建议结合家庭经济状况确认是否保留相关志愿。");
         for (CandidateItemDTO item : highTuitionItems) {
             check.getAffectedVolunteerIds().add(item.getVolunteerId());
+            addAffectedUnitId(check, item);
         }
         return check;
     }
@@ -6782,6 +7257,7 @@ public class PlanningStateService {
                 if (containsAny(tag, "色盲", "色弱", "单科", "性别", "语种")) {
                     matchedTags.add(tag);
                     check.getAffectedVolunteerIds().add(orderedItem.getVolunteerId());
+                    addAffectedUnitId(check, candidateItem);
                 }
             }
         }
@@ -6814,6 +7290,7 @@ public class PlanningStateService {
                 if (containsAny(tag, "专项", "公费", "定向", "免费医学生", "强基", "国家计划", "地方专项", "高校专项")) {
                     matchedTags.add(tag);
                     check.getAffectedVolunteerIds().add(orderedItem.getVolunteerId());
+                    addAffectedUnitId(check, candidateItem);
                 }
             }
         }
@@ -6874,11 +7351,22 @@ public class PlanningStateService {
                 check.setLevel("warn");
                 check.setSummary("当前方案包含中外合作办学项目");
                 check.setDetail("请仔细核对中外合作办学的学校和专业，确认自己是否能够接受。");
-                check.setSuggestedAction("若不接受中外合作办学，可将相关志愿移出草稿或加入硬约束。");
+                check.setSuggestedAction("若不接受中外合作办学，可将相关志愿移出方案或加入硬约束。");
                 check.getAffectedVolunteerIds().add(orderedItem.getVolunteerId());
+                addAffectedUnitId(check, candidateItem);
             }
         }
         return check;
+    }
+
+    private void addAffectedUnitId(ReviewCheckDTO check, CandidateItemDTO candidateItem) {
+        if (check == null || candidateItem == null) {
+            return;
+        }
+        String unitId = resolveInitialRecommendationUnitId(candidateItem);
+        if (!Strings.isNullOrEmpty(unitId) && !check.getAffectedUnitIds().contains(unitId)) {
+            check.getAffectedUnitIds().add(unitId);
+        }
     }
 
     private ReviewCheckDTO reviewMajorGroupSafetyIntentAlignment(PlanningStateDTO state) {
@@ -6995,6 +7483,19 @@ public class PlanningStateService {
         preview.setStatus("ready");
         preview.setSourceVersion(state.getVersion());
 
+        Integer requiredCount = state.getCandidatePoolState() == null ? null : state.getCandidatePoolState().getRequiredCount();
+        if (requiredCount != null && requiredCount > 0) {
+            boolean majorGroupMode = isMajorGroupMode(state.getCandidatePoolState());
+            int currentCount = majorGroupMode
+                    ? currentOrderedOrDraftUnitCount(state)
+                    : currentOrderedOrDraftItemCount(state);
+            if (currentCount > requiredCount) {
+                preview.setStatus("empty");
+                preview.setTotalActions(0);
+                return preview;
+            }
+        }
+
         if (isMajorGroupMode(state.getCandidatePoolState())) {
             List<PlanningUnitDTO> availableUnits = buildAvailableCompensationUnits(state, candidates);
             CompensationActionDTO totalCountAction = buildTotalCountCompensationForUnits(state, availableUnits);
@@ -7017,7 +7518,6 @@ public class PlanningStateService {
                 preview.getActions().add(gradientAction);
             }
 
-            trimCompensationActionsForRemainingCapacity(state, preview, availableUnits);
             removeEmptyCompensationActions(preview);
             if (preview.getActions().isEmpty()) {
                 preview.setStatus("empty");
@@ -7048,7 +7548,6 @@ public class PlanningStateService {
             preview.getActions().add(gradientAction);
         }
 
-        trimCompensationActionsForRemainingCapacity(state, preview, null);
         removeEmptyCompensationActions(preview);
         if (preview.getActions().isEmpty()) {
             preview.setStatus("empty");
@@ -7070,6 +7569,13 @@ public class PlanningStateService {
     private void trimCompensationActionsForRemainingCapacity(PlanningStateDTO state,
                                                              CompensationPreviewDTO preview,
                                                              List<PlanningUnitDTO> availableUnits) {
+        trimCompensationActionsForRemainingCapacity(state, preview, availableUnits, true);
+    }
+
+    private void trimCompensationActionsForRemainingCapacity(PlanningStateDTO state,
+                                                             CompensationPreviewDTO preview,
+                                                             List<PlanningUnitDTO> availableUnits,
+                                                             boolean keepReplacementActionsWhenFull) {
         if (preview == null || preview.getActions() == null || preview.getActions().isEmpty()
                 || state == null || state.getCandidatePoolState() == null) {
             return;
@@ -7094,30 +7600,32 @@ public class PlanningStateService {
                 .collect(Collectors.toMap(PlanningUnitDTO::getUnitId, unit -> unit, (left, right) -> left, LinkedHashMap::new))
                 : new LinkedHashMap<>();
 
+        int remainingBudget = remainingCapacity;
+        boolean preserveReplacementPreviewWhenFull = keepReplacementActionsWhenFull && remainingCapacity <= 0;
+        Set<String> plannedUnitIds = new LinkedHashSet<String>();
+        Set<String> plannedVolunteerIds = new LinkedHashSet<String>();
         for (CompensationActionDTO action : preview.getActions()) {
             if (action == null) {
                 continue;
             }
             boolean replacementAction = isReplacementCompensationAction(action);
-            if (remainingCapacity > 0 && replacementAction) {
+            if (remainingBudget <= 0) {
+                if (!preserveReplacementPreviewWhenFull || !replacementAction) {
+                    action.setUnitIds(Lists.newArrayList());
+                    action.setVolunteerIds(Lists.newArrayList());
+                }
+                continue;
+            }
+            if (remainingBudget <= 1 && isLimitedCapacityOptionalAddAction(action)) {
                 action.setUnitIds(Lists.newArrayList());
                 action.setVolunteerIds(Lists.newArrayList());
                 continue;
             }
-            if (remainingCapacity <= 1 && isLimitedCapacityOptionalAddAction(action)) {
-                action.setUnitIds(Lists.newArrayList());
-                action.setVolunteerIds(Lists.newArrayList());
-                continue;
-            }
-            if (remainingCapacity == 0 && !replacementAction) {
-                action.setUnitIds(Lists.newArrayList());
-                action.setVolunteerIds(Lists.newArrayList());
-                continue;
-            }
-            int actionLimit = replacementAction ? Integer.MAX_VALUE : Math.max(remainingCapacity, 0);
+            int actionLimit = Math.max(remainingBudget, 0);
             if (majorGroupMode) {
                 List<String> keptUnitIds = defaultList(action.getUnitIds()).stream()
                         .filter(id -> !Strings.isNullOrEmpty(id))
+                        .filter(id -> !plannedUnitIds.contains(id))
                         .limit(actionLimit)
                         .collect(Collectors.toList());
                 action.setUnitIds(keptUnitIds);
@@ -7129,14 +7637,20 @@ public class PlanningStateService {
                         .filter(id -> !Strings.isNullOrEmpty(id))
                         .collect(Collectors.toList());
                 action.setVolunteerIds(volunteerIds);
+                plannedUnitIds.addAll(keptUnitIds);
+                plannedVolunteerIds.addAll(volunteerIds);
+                remainingBudget -= keptUnitIds.size();
                 continue;
             }
 
             List<String> keptVolunteerIds = defaultList(action.getVolunteerIds()).stream()
                     .filter(id -> !Strings.isNullOrEmpty(id))
+                    .filter(id -> !plannedVolunteerIds.contains(id))
                     .limit(actionLimit)
                     .collect(Collectors.toList());
             action.setVolunteerIds(keptVolunteerIds);
+            plannedVolunteerIds.addAll(keptVolunteerIds);
+            remainingBudget -= keptVolunteerIds.size();
         }
     }
 
@@ -7145,7 +7659,7 @@ public class PlanningStateService {
             return false;
         }
         return "rebalance_protect_ratio".equals(action.getType())
-                || "replace_probability_gap".equals(action.getType());
+                || "fill_probability_gap".equals(action.getType());
     }
 
     private boolean isLimitedCapacityOptionalAddAction(CompensationActionDTO action) {
@@ -7177,7 +7691,10 @@ public class PlanningStateService {
                     .filter(id -> !Strings.isNullOrEmpty(id))
                     .collect(Collectors.toCollection(LinkedHashSet::new)));
         }
-        return groupCandidatesToPlanningUnits(candidates, requiredMajorCount).stream()
+        List<CandidateItemDTO> eligibleCandidates = defaultCandidates(candidates).stream()
+                .filter(candidate -> RepairCandidateEligibility.isEligibleForConfirmedHardConstraints(candidate, state))
+                .collect(Collectors.toList());
+        return groupCandidatesToPlanningUnits(eligibleCandidates, requiredMajorCount).stream()
                 .filter(unit -> unit != null && !Strings.isNullOrEmpty(unit.getUnitId()))
                 .filter(unit -> !selectedUnitIds.contains(unit.getUnitId()))
                 .filter(this::isCompensationSafeUnit)
@@ -7188,10 +7705,11 @@ public class PlanningStateService {
     private List<CandidateItemDTO> buildAvailableCompensationCandidates(PlanningStateDTO state,
                                                                         List<CandidateItemDTO> candidates) {
         if (!isMajorGroupMode(state.getCandidatePoolState())) {
-            return candidates.stream()
-                    .filter(item -> !containsDraftItem(state.getDraftPlanState(), item.getVolunteerId()))
+            return defaultCandidates(candidates).stream()
+                    .filter(item -> !containsWorkingPlanItem(state.getDraftPlanState(), item.getVolunteerId()))
                     .filter(item -> !containsVolunteerId(state.getDraftPlanState().getBannedVolunteerIds(), item.getVolunteerId()))
                     .filter(this::isCompensationSafeCandidate)
+                    .filter(item -> RepairCandidateEligibility.isEligibleForConfirmedHardConstraints(item, state))
                     .collect(Collectors.toList());
         }
         Set<String> selectedUnitIds = state.getDraftPlanState().getItems().stream()
@@ -7201,6 +7719,7 @@ public class PlanningStateService {
         return groupCandidatesByUnit(candidates).values().stream()
                 .map(unitCandidates -> unitCandidates.stream()
                         .filter(this::isCompensationSafeCandidate)
+                        .filter(item -> RepairCandidateEligibility.isEligibleForConfirmedHardConstraints(item, state))
                         .sorted(buildMajorGroupInnerCandidateComparator())
                         .collect(Collectors.toList()))
                 .filter(unitCandidates -> !unitCandidates.isEmpty())
@@ -7241,19 +7760,368 @@ public class PlanningStateService {
         }
     }
 
-    private CompensationActionDTO buildTotalCountCompensation(PlanningStateDTO state, List<CandidateItemDTO> availableCandidates) {
-        Integer requiredCount = state.getCandidatePoolState().getRequiredCount();
-        int currentCount = state.getOrderedPlanState().getItems().isEmpty()
-                ? state.getDraftPlanState().getItems().size() : state.getOrderedPlanState().getItems().size();
-        if (requiredCount == null || requiredCount <= currentCount) {
+    private void enrichReviewMetadata(ReviewStateDTO reviewState) {
+        if (reviewState == null || reviewState.getChecks() == null) {
+            return;
+        }
+        for (ReviewCheckDTO check : reviewState.getChecks()) {
+            enrichReviewMetadata(check);
+        }
+    }
+
+    private void enrichReviewMetadata(ReviewCheckDTO check) {
+        if (check == null || Strings.isNullOrEmpty(check.getCode())) {
+            return;
+        }
+        ReviewRuleMetadataDTO metadata = ReviewRuleRegistry.get(check.getCode());
+        if (metadata == null) {
+            return;
+        }
+        check.setLabel(metadata.getLabel());
+        check.setCategory(metadata.getCategory());
+        check.setSeverityDefault(metadata.getSeverityDefault());
+        check.setTargetModes(defaultList(metadata.getTargetModes()));
+        check.setScopeKind(metadata.getScopeKind());
+        check.setFixability(metadata.getFixability());
+        check.setSupportedFixStrategies(defaultList(metadata.getSupportedFixStrategies()));
+        check.setDefaultFixStrategy(metadata.getDefaultFixStrategy());
+        check.setRequiresConfirmation(metadata.getRequiresConfirmation());
+        check.setEvidenceSchema(metadata.getEvidenceSchema());
+        check.setPostApplyValidationRule(metadata.getPostApplyValidationRule());
+    }
+
+    private void normalizeReviewReasonCodes(PlanningStateDTO state, ReviewStateDTO reviewState) {
+        if (reviewState == null || reviewState.getChecks() == null) {
+            return;
+        }
+        for (ReviewCheckDTO check : reviewState.getChecks()) {
+            normalizeReviewReasonCode(state, check);
+        }
+    }
+
+    private void normalizeReviewReasonCode(PlanningStateDTO state, ReviewCheckDTO check) {
+        if (check == null || !Boolean.FALSE.equals(check.getPassed()) || !Strings.isNullOrEmpty(check.getReasonCode())) {
+            return;
+        }
+        if ("count_validation".equals(check.getCode())) {
+            check.setReasonCode(resolveCountValidationReasonCode(state));
+            return;
+        }
+        if ("ratio_distribution".equals(check.getCode())) {
+            check.setReasonCode(resolveRatioDistributionReasonCode(state));
+        }
+    }
+
+    private PlanningStateDTO buildReviewReasonAnalysisState(PlanningStateDTO state) {
+        if (state == null || state.getOrderedPlanState() == null || state.getCandidatePoolState() == null) {
+            return state;
+        }
+        if (!isMajorGroupMode(state.getCandidatePoolState())
+                || !defaultOrderedUnits(state.getOrderedPlanState().getUnits()).isEmpty()
+                || defaultOrderedItems(state.getOrderedPlanState().getItems()).isEmpty()) {
+            return state;
+        }
+        OrderedPlanStateDTO structuralOrderedState = buildStructuralOrderedSnapshot(
+                state.getCandidatePoolState(),
+                state.getOrderedPlanState(),
+                state.getCandidatePoolState().getItems());
+        return buildPlanAdjustmentAnalysisState(state, structuralOrderedState);
+    }
+
+    private String resolveCountValidationReasonCode(PlanningStateDTO state) {
+        CandidatePoolStateDTO candidatePoolState = state == null ? null : state.getCandidatePoolState();
+        Integer requiredCount = candidatePoolState == null ? null : candidatePoolState.getRequiredCount();
+        if (requiredCount == null || requiredCount <= 0) {
             return null;
         }
-        int gap = requiredCount - currentCount;
-        List<String> volunteerIds = availableCandidates.stream()
-                .sorted(Comparator.comparing(item -> item.getFinalScore() == null ? 0D : item.getFinalScore(), Comparator.reverseOrder()))
-                .limit(gap)
-                .map(CandidateItemDTO::getVolunteerId)
+        int currentCount = isMajorGroupMode(candidatePoolState)
+                ? defaultOrderedUnits(state == null || state.getOrderedPlanState() == null
+                ? null : state.getOrderedPlanState().getUnits()).size()
+                : defaultOrderedItems(state == null || state.getOrderedPlanState() == null
+                ? null : state.getOrderedPlanState().getItems()).size();
+        if (currentCount < requiredCount) {
+            return "count_missing";
+        }
+        if (currentCount > requiredCount) {
+            return "count_over_limit";
+        }
+        return null;
+    }
+
+    private String resolveRatioDistributionReasonCode(PlanningStateDTO state) {
+        CandidatePoolStateDTO candidatePoolState = state == null ? null : state.getCandidatePoolState();
+        if (candidatePoolState == null) {
+            return null;
+        }
+        boolean majorGroupMode = isMajorGroupMode(candidatePoolState);
+        int total = majorGroupMode
+                ? defaultOrderedUnits(state == null || state.getOrderedPlanState() == null
+                ? null : state.getOrderedPlanState().getUnits()).size()
+                : defaultOrderedItems(state == null || state.getOrderedPlanState() == null
+                ? null : state.getOrderedPlanState().getItems()).size();
+        if (total <= 0) {
+            return null;
+        }
+        int sprintCount = countOrderedTier(state, "冲", majorGroupMode);
+        int protectCount = countOrderedTier(state, "保", majorGroupMode);
+        double sprintRatio = sprintCount * 1D / total;
+        double protectRatio = protectCount * 1D / total;
+        Integer expectedSprintCount = expectedTierCount(candidatePoolState, "冲");
+        Integer expectedProtectCount = expectedTierCount(candidatePoolState, "保");
+        boolean sprintMeetsExpected = expectedSprintCount != null && sprintCount >= expectedSprintCount;
+        boolean protectMeetsExpected = expectedProtectCount != null && protectCount >= expectedProtectCount;
+        boolean sprintWithinExpected = expectedSprintCount != null && sprintCount <= expectedSprintCount;
+
+        if (sprintRatio > 0.4D && protectRatio < 0.2D && !protectMeetsExpected) {
+            return "protect_tier_missing";
+        }
+        if (sprintRatio > 0.4D && !sprintWithinExpected) {
+            return "sprint_tier_over_limit";
+        }
+        if (sprintRatio < 0.2D && !sprintMeetsExpected) {
+            return "sprint_tier_missing";
+        }
+        if (protectRatio < 0.2D && !protectMeetsExpected) {
+            return "protect_tier_missing";
+        }
+        return null;
+    }
+
+    private int countOrderedTier(PlanningStateDTO state, String tier, boolean majorGroupMode) {
+        if (majorGroupMode) {
+            return (int) defaultOrderedUnits(state == null || state.getOrderedPlanState() == null
+                    ? null : state.getOrderedPlanState().getUnits()).stream()
+                    .filter(unit -> unit != null && tier.equals(unit.getTier()))
+                    .count();
+        }
+        return (int) defaultOrderedItems(state == null || state.getOrderedPlanState() == null
+                ? null : state.getOrderedPlanState().getItems()).stream()
+                .filter(item -> item != null && tier.equals(item.getTier()))
+                .count();
+    }
+
+    private boolean isRatioDistributionAddSuggestion(ReviewCheckDTO check) {
+        if (check == null) {
+            return false;
+        }
+        String reasonCode = check.getReasonCode();
+        return "sprint_tier_missing".equals(reasonCode)
+                || "protect_tier_missing".equals(reasonCode);
+    }
+
+    private boolean isRatioDistributionReplaceSuggestion(ReviewCheckDTO check,
+                                                         OrderedPlanStateDTO analysisOrderedState,
+                                                         List<CompensationActionDTO> linkedActions,
+                                                         PlanningStateDTO analysisState) {
+        if (check == null) {
+            return false;
+        }
+        if ("sprint_tier_over_limit".equals(check.getReasonCode())
+                || Strings.isNullOrEmpty(check.getReasonCode())) {
+            return true;
+        }
+        if (!isPlanAtOrAboveRequiredCount(analysisOrderedState, analysisState)) {
+            return false;
+        }
+        return linkedActions != null && linkedActions.stream()
+                .anyMatch(action -> action != null
+                        && "rebalance_protect_ratio".equals(action.getType())
+                        && (!defaultList(action.getVolunteerIds()).isEmpty()
+                        || !defaultList(action.getUnitIds()).isEmpty()));
+    }
+
+    private boolean isPlanAtOrAboveRequiredCount(OrderedPlanStateDTO analysisOrderedState,
+                                                PlanningStateDTO analysisState) {
+        CandidatePoolStateDTO candidatePoolState = analysisState == null ? null : analysisState.getCandidatePoolState();
+        Integer requiredCount = candidatePoolState == null ? null : candidatePoolState.getRequiredCount();
+        if (requiredCount == null || requiredCount <= 0 || analysisOrderedState == null) {
+            return false;
+        }
+        int currentCount = !defaultOrderedUnits(analysisOrderedState.getUnits()).isEmpty()
+                ? defaultOrderedUnits(analysisOrderedState.getUnits()).size()
+                : defaultOrderedItems(analysisOrderedState.getItems()).size();
+        return currentCount >= requiredCount;
+    }
+
+    private void enrichPlanAdjustmentMetadata(PlanAdjustmentStateDTO adjustmentState) {
+        if (adjustmentState == null || adjustmentState.getAnalysis() == null
+                || adjustmentState.getAnalysis().getRules() == null) {
+            return;
+        }
+        for (PlanAdjustmentRuleResultDTO rule : adjustmentState.getAnalysis().getRules()) {
+            enrichPlanAdjustmentMetadata(rule);
+        }
+    }
+
+    private void enrichPlanAdjustmentMetadata(PlanAdjustmentRuleResultDTO rule) {
+        if (rule == null || Strings.isNullOrEmpty(rule.getRuleCode())) {
+            return;
+        }
+        ReviewRuleMetadataDTO metadata = ReviewRuleRegistry.get(rule.getRuleCode());
+        if (metadata == null) {
+            return;
+        }
+        rule.setLabel(metadata.getLabel());
+        rule.setCategory(metadata.getCategory());
+        rule.setScopeKind(metadata.getScopeKind());
+        rule.setFixability(metadata.getFixability());
+        rule.setSupportedFixStrategies(defaultList(metadata.getSupportedFixStrategies()));
+        rule.setDefaultFixStrategy(metadata.getDefaultFixStrategy());
+    }
+
+    private FixProposalStateDTO buildFixProposalState(PlanningStateDTO state,
+                                                      ReviewStateDTO reviewState,
+                                                      CompensationPreviewDTO compensationPreview) {
+        FixProposalStateDTO proposalState = RepairProposalStateBuilder.newState(state, reviewState);
+        Map<String, List<CompensationActionDTO>> compensationByCheck =
+                RepairProposalStateBuilder.groupCompensationActionsByCheck(compensationPreview);
+        List<ReviewCheckDTO> checks = reviewState == null || reviewState.getChecks() == null
+                ? Lists.newArrayList()
+                : reviewState.getChecks();
+        for (ReviewCheckDTO check : checks) {
+            if (!Boolean.FALSE.equals(check.getPassed())) {
+                continue;
+            }
+            enrichReviewMetadata(check);
+            FixProposalDTO proposal = buildFixProposalForReviewCheck(
+                    state,
+                    check,
+                    compensationByCheck.get(check.getCode()),
+                    reviewState.getSourceVersion());
+            if (proposal != null) {
+                proposalState.getProposals().add(proposal);
+            }
+        }
+        proposalState.setTotal(proposalState.getProposals().size());
+        proposalState.setStatus(RepairProposalStateBuilder.resolveStateStatus(proposalState.getProposals()));
+        return proposalState;
+    }
+
+    private FixProposalDTO buildFixProposalForReviewCheck(PlanningStateDTO state,
+                                                          ReviewCheckDTO check,
+                                                          List<CompensationActionDTO> compensationActions,
+                                                          Integer sourceReviewVersion) {
+        if (check == null || Strings.isNullOrEmpty(check.getCode())) {
+            return null;
+        }
+        FixProposalDTO proposal = RepairProposalStateBuilder.buildBaseProposal(state, check, compensationActions, sourceReviewVersion);
+        if (proposal == null) {
+            return null;
+        }
+        RepairRiskActionBuilder.populateRemoveRiskItemActions(proposal, check, compensationActions,
+                removedVolunteerIds -> buildTotalCountCompensationForRemoveRiskItems(state, removedVolunteerIds));
+        RepairRiskActionBuilder.populateReplaceRiskItemActions(state, check, proposal);
+        RepairReplacementActionBuilder.populateStructuralReplacementActions(state, check, proposal, compensationActions);
+        RepairMajorGroupInnerSafetyActionBuilder.populateActions(state, check, proposal);
+        if ("blocked".equals(proposal.getStatus())) {
+            proposal.setRequiresConfirmation(false);
+        } else if ("cannot_satisfy".equals(proposal.getStrategy())) {
+            proposal.setStatus("blocked");
+            proposal.setRequiresConfirmation(false);
+            RepairProposalStateBuilder.addBlockingReasonCode(proposal,
+                    RepairProposalStateBuilder.resolveBlockingReasonCode(check));
+        } else if ("no_op".equals(proposal.getStrategy())) {
+            proposal.setStatus("info");
+            proposal.setRequiresConfirmation(false);
+        } else if (!RepairProposalApplyPolicy.isSupportedStrategy(proposal.getStrategy())) {
+            proposal.setStatus("preview_only");
+        }
+        RepairDryRunSimulator.populate(state, proposal, check);
+        if ("cannot_satisfy".equals(proposal.getStrategy())) {
+            proposal.setBlockingReason(proposal.getDryRunResult().getMessage());
+            RepairProposalStateBuilder.addBlockingReasonCode(proposal,
+                    RepairProposalStateBuilder.resolveBlockingReasonCode(check));
+        }
+        RepairProposalStateBuilder.suppressInvalidBlockedActionPreview(proposal);
+        RepairProposalStateBuilder.populateCandidateShortages(state, check, proposal);
+        return proposal;
+    }
+
+    private CompensationActionDTO buildTotalCountCompensationForRemoveRiskItems(PlanningStateDTO state,
+                                                                               List<String> removedVolunteerIds) {
+        if (state == null || state.getCandidatePoolState() == null || removedVolunteerIds == null || removedVolunteerIds.isEmpty()) {
+            return null;
+        }
+        int requiredCount = state.getCandidatePoolState().getRequiredCount() == null
+                ? 0 : state.getCandidatePoolState().getRequiredCount();
+        if (requiredCount <= 0) {
+            return null;
+        }
+        List<CandidateItemDTO> candidates = defaultCandidates(state.getCandidatePoolState().getItems());
+        Set<String> removedSet = new LinkedHashSet<String>(removedVolunteerIds);
+        List<DraftItemDTO> remainingDraftItems = defaultDraftItems(state.getDraftPlanState() == null ? null : state.getDraftPlanState().getItems()).stream()
+                .filter(item -> item != null && !removedSet.contains(item.getVolunteerId()))
                 .collect(Collectors.toList());
+        boolean majorGroupMode = isMajorGroupMode(state.getCandidatePoolState());
+        int currentCount = countWorkingPlanSummaryTotal(remainingDraftItems, majorGroupMode);
+        int gap = requiredCount - currentCount;
+        if (gap <= 0) {
+            return null;
+        }
+        Set<String> currentIds = remainingDraftItems.stream()
+                .map(DraftItemDTO::getVolunteerId)
+                .filter(value -> !Strings.isNullOrEmpty(value))
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        List<CandidateItemDTO> availableCandidates = candidates.stream()
+                .filter(this::isCompensationSafeCandidate)
+                .filter(candidate -> RepairCandidateEligibility.isEligibleForConfirmedHardConstraints(candidate, state))
+                .filter(candidate -> !Strings.isNullOrEmpty(candidate.getVolunteerId()))
+                .filter(candidate -> !currentIds.contains(candidate.getVolunteerId()))
+                .filter(candidate -> !removedSet.contains(candidate.getVolunteerId()))
+                .filter(candidate -> !majorGroupMode || !currentDraftContainsUnit(remainingDraftItems, candidate))
+                .collect(Collectors.toList());
+        RepairCandidateSelector.Selection selection = RepairCandidateSelector.selectTotalCountVolunteerAdditions(
+                state,
+                availableCandidates,
+                gap,
+                resolveCompensationShortageTierFromDraftItems(state, remainingDraftItems, majorGroupMode));
+        List<String> volunteerIds = selection.getCandidateVolunteerIds();
+        if (volunteerIds.isEmpty()) {
+            return null;
+        }
+        CompensationActionDTO action = new CompensationActionDTO();
+        action.setType("fill_total_count");
+        action.setLevel("warn");
+        action.setSourceCheckCode("count_validation");
+        action.setSummary("移除风险项后补足志愿数量");
+        action.setDetail(String.format("移除风险志愿后，建议补充 %d 个候选。", volunteerIds.size()));
+        action.setVolunteerIds(volunteerIds);
+        return action;
+    }
+
+    private boolean currentDraftContainsUnit(List<DraftItemDTO> items, CandidateItemDTO candidate) {
+        String unitId = resolveInitialRecommendationUnitId(candidate);
+        if (Strings.isNullOrEmpty(unitId)) {
+            unitId = candidate == null ? null : candidate.getPlanSchoolDataId();
+        }
+        if (Strings.isNullOrEmpty(unitId)) {
+            return false;
+        }
+        String targetUnitId = unitId;
+        return defaultDraftItems(items).stream()
+                .map(this::resolveDraftOrOrderedUnitId)
+                .anyMatch(targetUnitId::equals);
+    }
+
+    private CompensationActionDTO copyCompensationAction(CompensationActionDTO action) {
+        CompensationActionDTO target = new CompensationActionDTO();
+        target.setType(action.getType());
+        target.setLevel(action.getLevel());
+        target.setSourceCheckCode(action.getSourceCheckCode());
+        target.setSummary(action.getSummary());
+        target.setDetail(action.getDetail());
+        target.setUnitIds(defaultList(action.getUnitIds()));
+        target.setVolunteerIds(defaultList(action.getVolunteerIds()));
+        return target;
+    }
+
+    private List<CompensationActionDTO> defaultCompensationActions(List<CompensationActionDTO> values) {
+        return values == null ? Lists.newArrayList() : values;
+    }
+
+    private CompensationActionDTO buildTotalCountCompensation(PlanningStateDTO state, List<CandidateItemDTO> availableCandidates) {
+        RepairCandidateSelector.Selection selection = RepairCandidateSelector.selectTotalCountVolunteerAdditions(state, availableCandidates);
+        List<String> volunteerIds = selection.getCandidateVolunteerIds();
         if (volunteerIds.isEmpty()) {
             return null;
         }
@@ -7263,23 +8131,15 @@ public class PlanningStateService {
         action.setLevel("risk");
         action.setSourceCheckCode("count_validation");
         action.setSummary("补足志愿总数量");
-        action.setDetail(String.format("当前志愿数量不足，建议补充 %d 个候选。", gap));
+        action.setDetail(String.format("当前志愿数量不足，建议补充 %d 个候选。", volunteerIds.size()));
         action.setVolunteerIds(volunteerIds);
         return action;
     }
 
     private CompensationActionDTO buildTotalCountCompensationForUnits(PlanningStateDTO state,
                                                                       List<PlanningUnitDTO> availableUnits) {
-        Integer requiredCount = state.getCandidatePoolState().getRequiredCount();
-        int currentCount = !defaultOrderedUnits(state.getOrderedPlanState().getUnits()).isEmpty()
-                ? defaultOrderedUnits(state.getOrderedPlanState().getUnits()).size()
-                : defaultDraftUnits(state.getDraftPlanState().getUnits()).size();
-        if (requiredCount == null || requiredCount <= currentCount) {
-            return null;
-        }
-        int gap = requiredCount - currentCount;
-        List<PlanningUnitDTO> selectedUnits = availableUnits.stream().limit(gap).collect(Collectors.toList());
-        if (selectedUnits.isEmpty()) {
+        RepairCandidateSelector.Selection selection = RepairCandidateSelector.selectTotalCountUnitAdditions(state, availableUnits);
+        if (selection.getCandidateUnitIds().isEmpty()) {
             return null;
         }
         CompensationActionDTO action = new CompensationActionDTO();
@@ -7287,45 +8147,58 @@ public class PlanningStateService {
         action.setLevel("risk");
         action.setSourceCheckCode("count_validation");
         action.setSummary("补足志愿总数量");
-        action.setDetail(String.format("当前志愿数量不足，建议补充 %d 个专业组。", gap));
-        action.setUnitIds(selectedUnits.stream().map(PlanningUnitDTO::getUnitId).collect(Collectors.toList()));
-        action.setVolunteerIds(flattenPlanningUnitVolunteerIds(selectedUnits));
+        action.setDetail(String.format("当前志愿数量不足，建议补充 %d 个专业组。", selection.getCandidateUnitIds().size()));
+        action.setUnitIds(selection.getCandidateUnitIds());
+        action.setVolunteerIds(selection.getCandidateVolunteerIds());
         return action;
+    }
+
+    private String resolveCompensationShortageTierFromDraftItems(PlanningStateDTO state,
+                                                                 List<DraftItemDTO> draftItems,
+                                                                 boolean majorGroupMode) {
+        if (state == null || state.getCandidatePoolState() == null
+                || state.getCandidatePoolState().getRequiredTierCounts() == null
+                || state.getCandidatePoolState().getRequiredTierCounts().isEmpty()) {
+            return null;
+        }
+        Map<String, Integer> currentCounts = new LinkedHashMap<String, Integer>();
+        if (majorGroupMode) {
+            Map<String, String> unitTierMap = new LinkedHashMap<String, String>();
+            for (DraftItemDTO item : defaultDraftItems(draftItems)) {
+                String unitId = resolveDraftOrOrderedUnitId(item);
+                if (!Strings.isNullOrEmpty(unitId) && !unitTierMap.containsKey(unitId)) {
+                    unitTierMap.put(unitId, item.getTier());
+                }
+            }
+            for (String tier : unitTierMap.values()) {
+                currentCounts.merge(Strings.isNullOrEmpty(tier) ? "保" : tier, 1, Integer::sum);
+            }
+        } else {
+            for (DraftItemDTO item : defaultDraftItems(draftItems)) {
+                String tier = item == null || Strings.isNullOrEmpty(item.getTier()) ? "保" : item.getTier();
+                currentCounts.merge(tier, 1, Integer::sum);
+            }
+        }
+        String shortageTier = null;
+        int maxDeficit = 0;
+        for (String tier : Lists.newArrayList("保", "稳", "冲")) {
+            int target = positiveCount(state.getCandidatePoolState().getRequiredTierCounts().get(tier));
+            int current = currentCounts.getOrDefault(tier, 0);
+            int deficit = target - current;
+            if (deficit > maxDeficit) {
+                maxDeficit = deficit;
+                shortageTier = tier;
+            }
+        }
+        return shortageTier;
     }
 
     private CompensationActionDTO buildSafetyCompensation(PlanningStateDTO state,
                                                           List<CandidateItemDTO> candidates,
                                                           List<CandidateItemDTO> availableCandidates) {
-        String sourceProvinceName = state.getCandidatePoolState().getSourceProvinceName();
-        Integer userScore = state.getCandidatePoolState().getUserScore();
-        if (userScore != null && userScore >= 580) {
-            return null;
-        }
-        if (Strings.isNullOrEmpty(sourceProvinceName)) {
-            return null;
-        }
-
-        int localProtectCount = 0;
-        for (OrderedItemDTO orderedItem : state.getOrderedPlanState().getItems()) {
-            if (!"保".equals(orderedItem.getTier())) {
-                continue;
-            }
-            CandidateItemDTO candidateItem = findCandidate(candidates, orderedItem.getVolunteerId());
-            if (candidateItem != null && containsIgnoreCase(candidateItem.getProvinceName(), sourceProvinceName)) {
-                localProtectCount++;
-            }
-        }
-        if (localProtectCount >= 2) {
-            return null;
-        }
-
-        int need = 2 - localProtectCount;
-        List<String> volunteerIds = availableCandidates.stream()
-                .filter(item -> "保".equals(item.getTier()))
-                .filter(item -> containsIgnoreCase(item.getProvinceName(), sourceProvinceName))
-                .limit(need)
-                .map(CandidateItemDTO::getVolunteerId)
-                .collect(Collectors.toList());
+        RepairCandidateSelector.Selection selection = RepairCandidateSelector.selectLocalProtectVolunteerAdditions(
+                state, candidates, availableCandidates);
+        List<String> volunteerIds = selection.getCandidateVolunteerIds();
         if (volunteerIds.isEmpty()) {
             return null;
         }
@@ -7342,30 +8215,8 @@ public class PlanningStateService {
 
     private CompensationActionDTO buildSafetyCompensationForUnits(PlanningStateDTO state,
                                                                   List<PlanningUnitDTO> availableUnits) {
-        String sourceProvinceName = state.getCandidatePoolState().getSourceProvinceName();
-        Integer userScore = state.getCandidatePoolState().getUserScore();
-        if (userScore != null && userScore >= 580) {
-            return null;
-        }
-        if (Strings.isNullOrEmpty(sourceProvinceName)) {
-            return null;
-        }
-
-        int localProtectCount = (int) defaultOrderedUnits(state.getOrderedPlanState().getUnits()).stream()
-                .filter(unit -> "保".equals(unit.getTier()))
-                .filter(unit -> containsIgnoreCase(unit.getProvinceName(), sourceProvinceName))
-                .count();
-        if (localProtectCount >= 2) {
-            return null;
-        }
-
-        int need = 2 - localProtectCount;
-        List<PlanningUnitDTO> selectedUnits = availableUnits.stream()
-                .filter(unit -> "保".equals(unit.getTier()))
-                .filter(unit -> containsIgnoreCase(unit.getProvinceName(), sourceProvinceName))
-                .limit(need)
-                .collect(Collectors.toList());
-        if (selectedUnits.isEmpty()) {
+        RepairCandidateSelector.Selection selection = RepairCandidateSelector.selectLocalProtectUnitAdditions(state, availableUnits);
+        if (selection.getCandidateUnitIds().isEmpty()) {
             return null;
         }
 
@@ -7375,30 +8226,14 @@ public class PlanningStateService {
         action.setSourceCheckCode("safety_guard");
         action.setSummary("补充本省保底志愿");
         action.setDetail("当前本省保底专业组不足，建议优先补充本省保区专业组。");
-        action.setUnitIds(selectedUnits.stream().map(PlanningUnitDTO::getUnitId).collect(Collectors.toList()));
-        action.setVolunteerIds(flattenPlanningUnitVolunteerIds(selectedUnits));
+        action.setUnitIds(selection.getCandidateUnitIds());
+        action.setVolunteerIds(selection.getCandidateVolunteerIds());
         return action;
     }
 
     private CompensationActionDTO buildRatioCompensation(PlanningStateDTO state, List<CandidateItemDTO> availableCandidates) {
-        int total = state.getOrderedPlanState().getItems().isEmpty()
-                ? state.getDraftPlanState().getItems().size() : state.getOrderedPlanState().getItems().size();
-        if (total <= 0) {
-            return null;
-        }
-        int protectCount = state.getOrderedPlanState().getSummary().getTierCounts().get("保") == null ? 0
-                : state.getOrderedPlanState().getSummary().getTierCounts().get("保");
-        double protectRatio = protectCount * 1D / total;
-        if (protectRatio >= 0.2D) {
-            return null;
-        }
-
-        int need = Math.max(1, (int) Math.ceil(total * 0.2D) - protectCount);
-        List<String> volunteerIds = availableCandidates.stream()
-                .filter(item -> "保".equals(item.getTier()))
-                .limit(need)
-                .map(CandidateItemDTO::getVolunteerId)
-                .collect(Collectors.toList());
+        RepairCandidateSelector.Selection selection = RepairCandidateSelector.selectProtectRatioVolunteerAdditions(state, availableCandidates);
+        List<String> volunteerIds = selection.getCandidateVolunteerIds();
         if (volunteerIds.isEmpty()) {
             return null;
         }
@@ -7415,26 +8250,8 @@ public class PlanningStateService {
 
     private CompensationActionDTO buildRatioCompensationForUnits(PlanningStateDTO state,
                                                                  List<PlanningUnitDTO> availableUnits) {
-        int total = defaultOrderedUnits(state.getOrderedPlanState().getUnits()).isEmpty()
-                ? defaultDraftUnits(state.getDraftPlanState().getUnits()).size()
-                : defaultOrderedUnits(state.getOrderedPlanState().getUnits()).size();
-        if (total <= 0) {
-            return null;
-        }
-        int protectCount = (int) defaultOrderedUnits(state.getOrderedPlanState().getUnits()).stream()
-                .filter(unit -> "保".equals(unit.getTier()))
-                .count();
-        double protectRatio = protectCount * 1D / total;
-        if (protectRatio >= 0.2D) {
-            return null;
-        }
-
-        int need = Math.max(1, (int) Math.ceil(total * 0.2D) - protectCount);
-        List<PlanningUnitDTO> selectedUnits = availableUnits.stream()
-                .filter(unit -> "保".equals(unit.getTier()))
-                .limit(need)
-                .collect(Collectors.toList());
-        if (selectedUnits.isEmpty()) {
+        RepairCandidateSelector.Selection selection = RepairCandidateSelector.selectProtectRatioUnitAdditions(state, availableUnits);
+        if (selection.getCandidateUnitIds().isEmpty()) {
             return null;
         }
 
@@ -7444,90 +8261,79 @@ public class PlanningStateService {
         action.setSourceCheckCode("ratio_distribution");
         action.setSummary("补充保区志愿以平衡区间");
         action.setDetail("当前保区专业组占比偏低，建议补充保区专业组以改善冲稳保配比。");
-        action.setUnitIds(selectedUnits.stream().map(PlanningUnitDTO::getUnitId).collect(Collectors.toList()));
-        action.setVolunteerIds(flattenPlanningUnitVolunteerIds(selectedUnits));
+        action.setUnitIds(selection.getCandidateUnitIds());
+        action.setVolunteerIds(selection.getCandidateVolunteerIds());
         return action;
+    }
+
+    private int currentOrderedOrDraftTierCount(PlanningStateDTO state, String tier) {
+        if (state == null) {
+            return 0;
+        }
+        if (state.getOrderedPlanState() != null
+                && state.getOrderedPlanState().getItems() != null
+                && !state.getOrderedPlanState().getItems().isEmpty()) {
+            return (int) state.getOrderedPlanState().getItems().stream()
+                    .filter(item -> tier.equals(item.getTier()))
+                    .count();
+        }
+        return (int) defaultDraftItems(state.getDraftPlanState() == null ? null : state.getDraftPlanState().getItems()).stream()
+                .filter(item -> tier.equals(item.getTier()))
+                .count();
+    }
+
+    private int currentOrderedOrDraftUnitTierCount(PlanningStateDTO state, String tier) {
+        if (state == null) {
+            return 0;
+        }
+        if (state.getOrderedPlanState() != null
+                && !defaultOrderedUnits(state.getOrderedPlanState().getUnits()).isEmpty()) {
+            return (int) defaultOrderedUnits(state.getOrderedPlanState().getUnits()).stream()
+                    .filter(unit -> tier.equals(unit.getTier()))
+                    .count();
+        }
+        return (int) defaultDraftUnits(state.getDraftPlanState() == null ? null : state.getDraftPlanState().getUnits()).stream()
+                .filter(unit -> tier.equals(unit.getTier()))
+                .count();
     }
 
     private CompensationActionDTO buildGradientCompensation(PlanningStateDTO state,
                                                             List<CandidateItemDTO> candidates,
                                                             List<CandidateItemDTO> availableCandidates) {
-        List<OrderedItemDTO> orderedItems = state.getOrderedPlanState().getItems();
-        if (orderedItems.size() <= 1) {
+        RepairCandidateSelector.Selection selection = RepairCandidateSelector.selectProbabilityGapVolunteerAdditions(
+                state, candidates, availableCandidates);
+        if (selection.getCandidateVolunteerIds().isEmpty()) {
             return null;
         }
-        for (int i = 1; i < orderedItems.size(); i++) {
-            OrderedItemDTO previous = orderedItems.get(i - 1);
-            OrderedItemDTO current = orderedItems.get(i);
-            Double previousRatio = admissionRatioOf(candidates, previous.getVolunteerId());
-            Double currentRatio = admissionRatioOf(candidates, current.getVolunteerId());
-            if (previousRatio == null || currentRatio == null || Math.abs(currentRatio - previousRatio) <= 8D) {
-                continue;
-            }
-            double min = Math.min(previousRatio, currentRatio);
-            double max = Math.max(previousRatio, currentRatio);
-            double midpoint = (min + max) / 2D;
-            List<String> volunteerIds = availableCandidates.stream()
-                    .filter(item -> item.getAdmissionRatio() != null)
-                    .filter(item -> item.getAdmissionRatio() > min && item.getAdmissionRatio() < max)
-                    .sorted(Comparator.comparingDouble(item -> Math.abs(item.getAdmissionRatio() - midpoint)))
-                    .limit(2)
-                    .map(CandidateItemDTO::getVolunteerId)
-                    .collect(Collectors.toList());
-            if (volunteerIds.isEmpty()) {
-                continue;
-            }
 
-            CompensationActionDTO action = new CompensationActionDTO();
-            action.setType("fill_probability_gap");
-            action.setLevel("warn");
-            action.setSourceCheckCode("probability_gap");
-            action.setSummary("补充梯度断层区间的候选");
-            action.setDetail(String.format("当前 %.1f 到 %.1f 的录取概率区间存在断层，建议补充中间梯度候选。", min, max));
-            action.setVolunteerIds(volunteerIds);
-            return action;
-        }
-        return null;
+        CompensationActionDTO action = new CompensationActionDTO();
+        action.setType("fill_probability_gap");
+        action.setLevel("warn");
+        action.setSourceCheckCode("probability_gap");
+        action.setSummary("补充梯度断层区间的候选");
+        action.setDetail(String.format("当前 %.1f 到 %.1f 的录取概率区间存在断层，建议补充中间梯度候选。",
+                selection.getRangeMin(), selection.getRangeMax()));
+        action.setVolunteerIds(selection.getCandidateVolunteerIds());
+        return action;
     }
 
     private CompensationActionDTO buildGradientCompensationForUnits(PlanningStateDTO state,
                                                                     List<PlanningUnitDTO> availableUnits) {
-        List<OrderedUnitDTO> orderedUnits = defaultOrderedUnits(state.getOrderedPlanState().getUnits());
-        if (orderedUnits.size() <= 1) {
+        RepairCandidateSelector.Selection selection = RepairCandidateSelector.selectProbabilityGapUnitAdditions(state, availableUnits);
+        if (selection.getCandidateUnitIds().isEmpty()) {
             return null;
         }
-        for (int i = 1; i < orderedUnits.size(); i++) {
-            OrderedUnitDTO previous = orderedUnits.get(i - 1);
-            OrderedUnitDTO current = orderedUnits.get(i);
-            Double previousRatio = previous.getAdmissionRatio();
-            Double currentRatio = current.getAdmissionRatio();
-            if (previousRatio == null || currentRatio == null || Math.abs(currentRatio - previousRatio) <= 8D) {
-                continue;
-            }
-            double min = Math.min(previousRatio, currentRatio);
-            double max = Math.max(previousRatio, currentRatio);
-            double midpoint = (min + max) / 2D;
-            List<PlanningUnitDTO> selectedUnits = availableUnits.stream()
-                    .filter(unit -> unit.getAdmissionRatio() != null)
-                    .filter(unit -> unit.getAdmissionRatio() > min && unit.getAdmissionRatio() < max)
-                    .sorted(Comparator.comparingDouble(unit -> Math.abs(unit.getAdmissionRatio() - midpoint)))
-                    .limit(2)
-                    .collect(Collectors.toList());
-            if (selectedUnits.isEmpty()) {
-                continue;
-            }
 
-            CompensationActionDTO action = new CompensationActionDTO();
-            action.setType("fill_probability_gap");
-            action.setLevel("warn");
-            action.setSourceCheckCode("probability_gap");
-            action.setSummary("补充梯度断层区间的候选");
-            action.setDetail(String.format("当前 %.1f 到 %.1f 的录取概率区间存在断层，建议补充中间梯度专业组。", min, max));
-            action.setUnitIds(selectedUnits.stream().map(PlanningUnitDTO::getUnitId).collect(Collectors.toList()));
-            action.setVolunteerIds(flattenPlanningUnitVolunteerIds(selectedUnits));
-            return action;
-        }
-        return null;
+        CompensationActionDTO action = new CompensationActionDTO();
+        action.setType("fill_probability_gap");
+        action.setLevel("warn");
+        action.setSourceCheckCode("probability_gap");
+        action.setSummary("补充梯度断层区间的候选");
+        action.setDetail(String.format("当前 %.1f 到 %.1f 的录取概率区间存在断层，建议补充中间梯度专业组。",
+                selection.getRangeMin(), selection.getRangeMax()));
+        action.setUnitIds(selection.getCandidateUnitIds());
+        action.setVolunteerIds(selection.getCandidateVolunteerIds());
+        return action;
     }
 
     private boolean isCompensationSafeUnit(PlanningUnitDTO unit) {
@@ -7546,43 +8352,8 @@ public class PlanningStateService {
         });
     }
 
-    private List<String> flattenPlanningUnitVolunteerIds(List<PlanningUnitDTO> units) {
-        return (units == null ? Lists.<PlanningUnitDTO>newArrayList() : units).stream()
-                .flatMap(unit -> defaultPlanningUnitMajors(unit.getSelectedMajors()).stream())
-                .map(PlanningUnitMajorDTO::getVolunteerId)
-                .filter(id -> !Strings.isNullOrEmpty(id))
-                .collect(Collectors.toList());
-    }
-
     private boolean isCompensationSafeCandidate(CandidateItemDTO item) {
-        if (item == null) {
-            return false;
-        }
-        if (item.getTuitionPerYear() != null && item.getTuitionPerYear() > 20000) {
-            return false;
-        }
-        if (containsAny(item.getSchoolName(), "中外合作") || containsAny(item.getMajorName(), "中外合作")) {
-            return false;
-        }
-        if (item.getReasonCodes().stream().anyMatch(tag -> containsAny(tag, "中外合作", "专项", "公费", "定向", "强基", "高校专项", "地方专项"))) {
-            return false;
-        }
-        if (item.getMustSubjects().stream().anyMatch(tag -> containsAny(tag, "单科", "语种", "性别"))) {
-            return false;
-        }
-        return item.getRiskFlags().stream().noneMatch(tag -> containsAny(tag, "special", "foreign", "limited"));
-    }
-
-    private void appendOperationLogs(PlanningStateDTO state, List<CompensationActionDTO> actions) {
-        for (CompensationActionDTO action : actions) {
-            OperationLogDTO logItem = new OperationLogDTO();
-            logItem.setType("compensation_apply");
-            logItem.setOperator("system");
-            logItem.setCreatedAt(OffsetDateTime.now().toString());
-            logItem.setDetail(action.getType() + ":" + action.getSummary());
-            logItem.setVolunteerIds(new ArrayList<String>(action.getVolunteerIds()));
-            state.getOperationLogs().add(logItem);
-        }
+        return RepairCandidateSelector.isCompensationSafeCandidate(item);
     }
 
     private void recalculateReviewSummary(ReviewStateDTO reviewState) {
@@ -7628,11 +8399,11 @@ public class PlanningStateService {
         return false;
     }
 
-    private List<OrderedItemDTO> buildOrderedItemsFromDraft(DraftPlanStateDTO draft,
-                                                            CandidatePoolStateDTO candidatePoolState,
-                                                            List<CandidateItemDTO> candidates,
-                                                            Map<String, OrderedItemDTO> existingItems,
-                                                            boolean regroupByTier) {
+    private List<OrderedItemDTO> buildOrderedItemsFromWorkingPlan(DraftPlanStateDTO draft,
+                                                                  CandidatePoolStateDTO candidatePoolState,
+                                                                  List<CandidateItemDTO> candidates,
+                                                                  Map<String, OrderedItemDTO> existingItems,
+                                                                  boolean regroupByTier) {
         List<DraftItemDTO> draftItems = new ArrayList<DraftItemDTO>(draft.getItems());
         Map<String, CandidateItemDTO> candidateMap = candidates == null
                 ? new LinkedHashMap<String, CandidateItemDTO>()
@@ -7661,8 +8432,6 @@ public class PlanningStateService {
 
             OrderedItemDTO existing = existingItems.get(draftItem.getVolunteerId());
             if (existing != null) {
-                orderedItem.setPinned(existing.getPinned());
-                orderedItem.setPinnedPosition(existing.getPinnedPosition());
                 if (!Strings.isNullOrEmpty(existing.getOrderedBy())) {
                     orderedItem.setOrderedBy(existing.getOrderedBy());
                 }
@@ -7672,10 +8441,10 @@ public class PlanningStateService {
             }
             items.add(orderedItem);
         }
-        return rebuildOrderedItems(items);
+        return OrderedPlanPositioningSupport.rebuildItems(items);
     }
 
-    private void replaceDraftWithInitialRecommendation(PlanningStateDTO state, List<CandidateItemDTO> candidates) {
+    private void replaceWorkingPlanWithInitialRecommendation(PlanningStateDTO state, List<CandidateItemDTO> candidates) {
         DraftPlanStateDTO draft = state.getDraftPlanState();
         draft.setItems(Lists.newArrayList());
         draft.setUnits(Lists.newArrayList());
@@ -7769,14 +8538,7 @@ public class PlanningStateService {
     }
 
     private DraftItemDTO toAutoDraftItem(CandidateItemDTO candidate) {
-        DraftItemDTO item = new DraftItemDTO();
-        item.setVolunteerId(candidate.getVolunteerId());
-        item.setTier(candidate.getTier());
-        item.setSchoolName(candidate.getSchoolName());
-        item.setMajorName(candidate.getMajorName());
-        item.setSource("initial_auto");
-        item.setLocked(false);
-        return item;
+        return WorkingPlanMutationSupport.buildWorkingPlanItem(candidate, "initial_auto");
     }
 
     private List<DraftUnitDTO> defaultDraftUnits(List<DraftUnitDTO> units) {
@@ -7798,61 +8560,10 @@ public class PlanningStateService {
         return result;
     }
 
-    private void syncDraftUnitsWithItems(DraftPlanStateDTO draft,
+    private void syncWorkingPlanUnitsWithItems(DraftPlanStateDTO draft,
                                          List<CandidateItemDTO> candidates,
                                          CandidatePoolStateDTO candidatePoolState) {
-        if (draft == null) {
-            return;
-        }
-        if (!isMajorGroupMode(candidatePoolState)) {
-            draft.setUnits(Lists.newArrayList());
-            return;
-        }
-        Map<String, CandidateItemDTO> candidateMap = candidates == null
-                ? new LinkedHashMap<String, CandidateItemDTO>()
-                : candidates.stream()
-                .filter(candidate -> !Strings.isNullOrEmpty(candidate.getVolunteerId()))
-                .collect(Collectors.toMap(CandidateItemDTO::getVolunteerId, candidate -> candidate, (left, right) -> left, LinkedHashMap::new));
-        Map<String, DraftUnitDTO> unitMap = new LinkedHashMap<String, DraftUnitDTO>();
-        for (DraftItemDTO item : defaultDraftItems(draft.getItems())) {
-            CandidateItemDTO candidate = candidateMap.get(item.getVolunteerId());
-            String unitId = candidate == null ? resolveDraftOrOrderedUnitId(item) : resolveInitialRecommendationUnitId(candidate);
-            DraftUnitDTO unit = unitMap.computeIfAbsent(unitId, key -> {
-                DraftUnitDTO dto = new DraftUnitDTO();
-                dto.setUnitId(key);
-                dto.setTier(candidate == null ? item.getTier() : candidate.getTier());
-                dto.setSchoolName(candidate == null ? item.getSchoolName() : candidate.getSchoolName());
-                dto.setSource(item.getSource());
-                dto.setLocked(item.getLocked());
-                return dto;
-            });
-            PlanningUnitMajorDTO major = new PlanningUnitMajorDTO();
-            major.setVolunteerId(item.getVolunteerId());
-            major.setMajorName(item.getMajorName());
-            major.setTier(item.getTier());
-            major.setSelected(true);
-            if (candidate != null) {
-                major.setMajorId(candidate.getMajorId());
-                major.setMajorCode(candidate.getMajorCode());
-                major.setMajorCategoryId(candidate.getMajorCategoryId());
-                major.setMajorSubCategoryId(candidate.getMajorSubCategoryId());
-                major.setAdmissionRatio(candidate.getAdmissionRatio());
-                major.setFinalScore(candidate.getFinalScore());
-                major.setIntentScore(candidate.getIntentScore());
-                major.setPreferred(candidate.getPreferred());
-                major.setSafetyMajor(candidate.getAdmissionRatio() != null
-                        && candidate.getSchoolEnrollRatio() != null
-                        && isSafetyMajorRatio(candidate.getAdmissionRatio(), candidate.getSchoolEnrollRatio()));
-                major.setTuitionPerYear(candidate.getTuitionPerYear());
-                major.setRankInTier(candidate.getRankInTier());
-            }
-            unit.getMajorItems().add(major);
-            unit.setLocked(Boolean.TRUE.equals(unit.getLocked()) || Boolean.TRUE.equals(item.getLocked()));
-        }
-        for (DraftUnitDTO unit : unitMap.values()) {
-            unit.setMajorItems(sortSelectedMajorsForDisplay(unit.getMajorItems()));
-        }
-        draft.setUnits(Lists.newArrayList(unitMap.values()));
+        WorkingPlanMutationSupport.syncWorkingPlanUnitsWithItems(draft, candidates, candidatePoolState);
     }
 
     private List<OrderedUnitDTO> buildOrderedUnitsFromOrderedItems(List<OrderedItemDTO> items,
@@ -7882,8 +8593,6 @@ public class PlanningStateService {
                 dto.setSchoolName(item.getSchoolName());
                 dto.setSource(item.getSource());
                 dto.setLocked(item.getLocked());
-                dto.setPinned(item.getPinned());
-                dto.setPinnedPosition(item.getPinnedPosition());
                 dto.setOrderedBy(item.getOrderedBy());
                 dto.setOrderReason(item.getOrderReason());
                 dto.setPosition(item.getPosition());
@@ -7923,12 +8632,6 @@ public class PlanningStateService {
             }
             if (unit.getPosition() == null || (item.getPosition() != null && item.getPosition() < unit.getPosition())) {
                 unit.setPosition(item.getPosition());
-            }
-            if (Boolean.TRUE.equals(item.getPinned())) {
-                unit.setPinned(true);
-                if (unit.getPinnedPosition() == null || (item.getPinnedPosition() != null && item.getPinnedPosition() < unit.getPinnedPosition())) {
-                    unit.setPinnedPosition(item.getPinnedPosition());
-                }
             }
         }
         for (OrderedUnitDTO unit : unitMap.values()) {
@@ -8017,61 +8720,13 @@ public class PlanningStateService {
         return containsIgnoreCase(candidateItem.getProvinceName(), sourceProvinceName) ? 0 : 1;
     }
 
-    private List<OrderedItemDTO> rebuildOrderedItems(List<OrderedItemDTO> items) {
-        List<OrderedItemDTO> ordered = new ArrayList<OrderedItemDTO>(items);
-        List<OrderedItemDTO> pinnedItems = ordered.stream()
-                .filter(item -> Boolean.TRUE.equals(item.getPinned()) && item.getPinnedPosition() != null)
-                .sorted(Comparator.comparingInt(item -> normalizePosition(item.getPinnedPosition(), ordered.size())))
-                .collect(Collectors.toList());
-        List<OrderedItemDTO> floatingItems = ordered.stream()
-                .filter(item -> !Boolean.TRUE.equals(item.getPinned()) || item.getPinnedPosition() == null)
-                .collect(Collectors.toList());
-
-        List<OrderedItemDTO> result = new ArrayList<OrderedItemDTO>();
-        for (int i = 0; i < ordered.size(); i++) {
-            result.add(null);
-        }
-        for (OrderedItemDTO pinnedItem : pinnedItems) {
-            int index = normalizeIndex(pinnedItem.getPinnedPosition(), ordered.size());
-            while (index < result.size() && result.get(index) != null) {
-                index++;
-            }
-            if (index >= result.size()) {
-                index = findLastEmptyIndex(result);
-            }
-            result.set(index, pinnedItem);
-        }
-        int floatingIndex = 0;
-        for (int i = 0; i < result.size(); i++) {
-            if (result.get(i) != null) {
-                continue;
-            }
-            result.set(i, floatingItems.get(floatingIndex++));
-        }
-        for (int i = 0; i < result.size(); i++) {
-            result.get(i).setPosition(i + 1);
-        }
-        return result;
-    }
-
     private List<OrderedItemDTO> sortOrderedPlanItems(List<OrderedItemDTO> items,
                                                       List<CandidateItemDTO> candidates,
                                                       String sortField) {
         CandidateResolver candidateResolver = new CandidateResolver(candidates);
-        List<OrderedItemDTO> floatingItems = defaultOrderedItems(items).stream()
-                .filter(item -> !Boolean.TRUE.equals(item.getPinned()) || item.getPinnedPosition() == null)
+        return defaultOrderedItems(items).stream()
                 .sorted(buildOrderedItemSortComparator(candidateResolver, sortField))
                 .collect(Collectors.toList());
-        List<OrderedItemDTO> result = Lists.newArrayList();
-        int floatingIndex = 0;
-        for (OrderedItemDTO item : defaultOrderedItems(items)) {
-            if (Boolean.TRUE.equals(item.getPinned()) && item.getPinnedPosition() != null) {
-                result.add(item);
-            } else {
-                result.add(floatingItems.get(floatingIndex++));
-            }
-        }
-        return result;
     }
 
     private List<OrderedItemDTO> sortOrderedPlanByUnit(List<OrderedItemDTO> items,
@@ -8086,19 +8741,9 @@ public class PlanningStateService {
         Map<String, List<OrderedItemDTO>> itemGroups = defaultOrderedItems(items).stream()
                 .collect(Collectors.groupingBy(this::resolveDraftOrOrderedUnitId, LinkedHashMap::new, Collectors.toList()));
         CandidateResolver candidateResolver = new CandidateResolver(candidates);
-        List<OrderedUnitDTO> floatingUnits = units.stream()
-                .filter(unit -> !Boolean.TRUE.equals(unit.getPinned()) || unit.getPinnedPosition() == null)
+        List<OrderedUnitDTO> sortedUnits = units.stream()
                 .sorted(buildOrderedUnitSortComparator(candidateResolver, sortField))
                 .collect(Collectors.toList());
-        List<OrderedUnitDTO> sortedUnits = Lists.newArrayList();
-        int floatingIndex = 0;
-        for (OrderedUnitDTO unit : units) {
-            if (Boolean.TRUE.equals(unit.getPinned()) && unit.getPinnedPosition() != null) {
-                sortedUnits.add(unit);
-            } else {
-                sortedUnits.add(floatingUnits.get(floatingIndex++));
-            }
-        }
         List<OrderedItemDTO> result = Lists.newArrayList();
         for (OrderedUnitDTO unit : sortedUnits) {
             result.addAll(itemGroups.getOrDefault(unit.getUnitId(), Lists.newArrayList()));
@@ -8378,16 +9023,12 @@ public class PlanningStateService {
 
     private void markOrderedItemsSortedByUser(OrderedPlanStateDTO orderedPlanState, String sortField) {
         for (OrderedItemDTO item : defaultOrderedItems(orderedPlanState == null ? null : orderedPlanState.getItems())) {
-            if (!Boolean.TRUE.equals(item.getPinned())) {
-                item.setOrderedBy("user");
-                item.setOrderReason("user_sort_" + sortField);
-            }
+            item.setOrderedBy("user");
+            item.setOrderReason("user_sort_" + sortField);
         }
         for (OrderedUnitDTO unit : defaultOrderedUnits(orderedPlanState == null ? null : orderedPlanState.getUnits())) {
-            if (!Boolean.TRUE.equals(unit.getPinned())) {
-                unit.setOrderedBy("user");
-                unit.setOrderReason("user_sort_" + sortField);
-            }
+            unit.setOrderedBy("user");
+            unit.setOrderReason("user_sort_" + sortField);
         }
     }
 
@@ -8412,64 +9053,8 @@ public class PlanningStateService {
         return unitIds;
     }
 
-    private int resolveMovableTargetIndex(List<OrderedItemDTO> items, int currentIndex, Integer requestedPosition) {
-        if (items == null || items.isEmpty() || currentIndex < 0 || currentIndex >= items.size()) {
-            return currentIndex;
-        }
-        int requestedIndex = normalizeIndex(requestedPosition, items.size());
-        if (requestedIndex == currentIndex) {
-            return currentIndex;
-        }
-        int direction = requestedIndex > currentIndex ? 1 : -1;
-        int targetIndex = requestedIndex;
-        while (targetIndex >= 0 && targetIndex < items.size()) {
-            OrderedItemDTO candidate = items.get(targetIndex);
-            if (!Boolean.TRUE.equals(candidate.getPinned()) || targetIndex == currentIndex) {
-                return targetIndex;
-            }
-            targetIndex += direction;
-        }
-        return currentIndex;
-    }
-
-    private List<OrderedItemDTO> moveWithinUnlockedSlots(List<OrderedItemDTO> items, int fromIndex, int toIndex) {
-        if (items == null || items.isEmpty() || fromIndex == toIndex) {
-            return items;
-        }
-        List<OrderedItemDTO> reordered = new ArrayList<OrderedItemDTO>(items);
-        OrderedItemDTO target = reordered.remove(fromIndex);
-        reordered.add(toIndex, target);
-        return reordered;
-    }
-
-    private int findLastEmptyIndex(List<OrderedItemDTO> result) {
-        for (int i = result.size() - 1; i >= 0; i--) {
-            if (result.get(i) == null) {
-                return i;
-            }
-        }
-        return Math.max(0, result.size() - 1);
-    }
-
     private OrderedItemDTO findOrderedItem(List<OrderedItemDTO> items, String volunteerId) {
         return items.stream().filter(item -> volunteerId.equals(item.getVolunteerId())).findFirst().orElse(null);
-    }
-
-    private int normalizeIndex(Integer position, int size) {
-        if (size <= 0) {
-            return 0;
-        }
-        return Math.max(0, Math.min(size - 1, normalizePosition(position, size) - 1));
-    }
-
-    private int normalizePosition(Integer position, int size) {
-        if (size <= 0) {
-            return 1;
-        }
-        if (position == null || position <= 0) {
-            return 1;
-        }
-        return Math.min(position, size);
     }
 
     private int tierOrder(String tier) {
@@ -8522,27 +9107,11 @@ public class PlanningStateService {
     }
 
     private CandidateItemDTO findCandidate(List<CandidateItemDTO> items, String volunteerId) {
-        return new CandidateResolver(items).resolve(volunteerId);
+        return WorkingPlanMutationSupport.findCandidate(items, volunteerId);
     }
 
-    private void recalculateDraftSummary(DraftPlanStateDTO draft, CandidatePoolStateDTO candidatePoolState) {
-        boolean majorGroupMode = isMajorGroupMode(candidatePoolState);
-        int unitTotal = countDraftSummaryTotal(draft.getItems(), majorGroupMode);
-        int targetUnitCount = candidatePoolState != null && candidatePoolState.getRequiredCount() != null
-                ? candidatePoolState.getRequiredCount() : 0;
-        int sprintUnits = countDraftTier(draft.getItems(), "冲", majorGroupMode);
-        int safeUnits = countDraftTier(draft.getItems(), "稳", majorGroupMode);
-        int protectUnits = countDraftTier(draft.getItems(), "保", majorGroupMode);
-        draft.getSummary().setUnitTotal(unitTotal);
-        draft.getSummary().setTargetUnitCount(targetUnitCount);
-        draft.getSummary().setTotal(unitTotal);
-        draft.getSummary().setTargetCount(targetUnitCount);
-        draft.getSummary().getUnitTierCounts().put("冲", sprintUnits);
-        draft.getSummary().getUnitTierCounts().put("稳", safeUnits);
-        draft.getSummary().getUnitTierCounts().put("保", protectUnits);
-        draft.getSummary().getTierCounts().put("冲", sprintUnits);
-        draft.getSummary().getTierCounts().put("稳", safeUnits);
-        draft.getSummary().getTierCounts().put("保", protectUnits);
+    private void recalculateWorkingPlanSummary(DraftPlanStateDTO draft, CandidatePoolStateDTO candidatePoolState) {
+        WorkingPlanMutationSupport.recalculateWorkingPlanSummary(draft, candidatePoolState);
     }
 
     private void recalculateCandidatePoolSummary(CandidatePoolStateDTO candidatePoolState) {
@@ -8572,23 +9141,51 @@ public class PlanningStateService {
         candidatePoolState.getSummary().getTierCounts().put("保", protectEntryCount);
     }
 
-    private int countDraftSummaryTotal(List<DraftItemDTO> items, boolean majorGroupMode) {
+    private void populateCandidatePoolSourceSummary(CandidatePoolStateDTO candidatePoolState,
+                                                    List<CandidateItemDTO> externalItems,
+                                                    List<CandidateItemDTO> normalizedItems) {
+        if (candidatePoolState == null) {
+            return;
+        }
+        CandidatePoolStateDTO.SourceSummary sourceSummary = candidatePoolState.getSourceSummary();
+        if (sourceSummary == null) {
+            sourceSummary = new CandidatePoolStateDTO.SourceSummary();
+            candidatePoolState.setSourceSummary(sourceSummary);
+        }
+
+        List<CandidateItemDTO> external = defaultCandidates(externalItems);
+        List<CandidateItemDTO> normalized = defaultCandidates(normalizedItems);
+        sourceSummary.setExternalEntryTotal(external.size());
+        sourceSummary.setExternalUnitTotal(countCandidateUnits(external));
+        sourceSummary.setExternalEntryTierCounts(buildCandidateEntryTierCounts(external));
+        sourceSummary.setExternalUnitTierCounts(buildCandidateUnitTierCounts(external));
+        sourceSummary.setNormalizedEntryTotal(normalized.size());
+        sourceSummary.setNormalizedUnitTotal(countCandidateUnits(normalized));
+        sourceSummary.setNormalizedEntryTierCounts(buildCandidateEntryTierCounts(normalized));
+        sourceSummary.setNormalizedUnitTierCounts(buildCandidateUnitTierCounts(normalized));
+    }
+
+    private Map<String, Integer> buildCandidateEntryTierCounts(List<CandidateItemDTO> items) {
+        Map<String, Integer> counts = new LinkedHashMap<String, Integer>();
+        for (String tier : Lists.newArrayList("冲", "稳", "保")) {
+            counts.put(tier, countByTier(defaultCandidates(items), tier));
+        }
+        return counts;
+    }
+
+    private Map<String, Integer> buildCandidateUnitTierCounts(List<CandidateItemDTO> items) {
+        Map<String, Integer> counts = new LinkedHashMap<String, Integer>();
+        for (String tier : Lists.newArrayList("冲", "稳", "保")) {
+            counts.put(tier, countCandidateUnitsByTier(defaultCandidates(items), tier));
+        }
+        return counts;
+    }
+
+    private int countWorkingPlanSummaryTotal(List<DraftItemDTO> items, boolean majorGroupMode) {
         if (!majorGroupMode) {
             return items == null ? 0 : items.size();
         }
         return (int) defaultDraftItems(items).stream()
-                .map(this::resolveDraftOrOrderedUnitId)
-                .filter(Objects::nonNull)
-                .distinct()
-                .count();
-    }
-
-    private int countDraftTier(List<DraftItemDTO> items, String tier, boolean majorGroupMode) {
-        if (!majorGroupMode) {
-            return (int) defaultDraftItems(items).stream().filter(item -> tier.equals(item.getTier())).count();
-        }
-        return (int) defaultDraftItems(items).stream()
-                .filter(item -> tier.equals(item.getTier()))
                 .map(this::resolveDraftOrOrderedUnitId)
                 .filter(Objects::nonNull)
                 .distinct()
@@ -8655,14 +9252,13 @@ public class PlanningStateService {
         return schoolName;
     }
 
-    private PlanningStateDTO saveDraftState(Long chatSessionId, PlanningStateDTO state) {
+    private PlanningStateDTO saveWorkingPlanState(Long chatSessionId, PlanningStateDTO state) {
         state.setSessionId(chatSessionId);
         state.setVersion((state.getVersion() == null ? 0 : state.getVersion()) + 1);
         state.setPhase("drafting");
         boolean orderedSynced = syncOrderedPlanWithDraft(state);
         state.getStaleFlags().setOrderedPlan(!orderedSynced);
-        state.getStaleFlags().setPlanAdjustment(true);
-        state.getStaleFlags().setReview(true);
+        ReviewInvalidationPolicy.markPlanStructureStale(state);
         savePlanningState(chatSessionId, state);
         return state;
     }
@@ -8672,8 +9268,7 @@ public class PlanningStateService {
         state.setVersion((state.getVersion() == null ? 0 : state.getVersion()) + 1);
         state.setPhase("ordered");
         state.getStaleFlags().setOrderedPlan(false);
-        state.getStaleFlags().setPlanAdjustment(true);
-        state.getStaleFlags().setReview(true);
+        ReviewInvalidationPolicy.markPlanStructureStale(state);
         savePlanningState(chatSessionId, state);
         return state;
     }
@@ -8703,11 +9298,6 @@ public class PlanningStateService {
         orderedPlanState.setPreservedManualOrderCount(preservedManualOrderCount);
     }
 
-    private int countPinnedOrderedItems(OrderedPlanStateDTO orderedPlanState) {
-        return orderedPlanState == null || orderedPlanState.getItems() == null ? 0
-                : (int) orderedPlanState.getItems().stream().filter(item -> Boolean.TRUE.equals(item.getPinned())).count();
-    }
-
     private int countManualOrderedItems(OrderedPlanStateDTO orderedPlanState) {
         return orderedPlanState == null || orderedPlanState.getItems() == null ? 0
                 : (int) orderedPlanState.getItems().stream().filter(item -> "user".equals(item.getOrderedBy())).count();
@@ -8724,7 +9314,7 @@ public class PlanningStateService {
                 return false;
             }
             List<CandidateItemDTO> effectiveCandidates = resolveEffectiveCandidates(null, state.getSessionId(), state, false);
-            orderedPlanState.setItems(buildOrderedItemsFromDraft(
+            orderedPlanState.setItems(buildOrderedItemsFromWorkingPlan(
                     state.getDraftPlanState(),
                     state.getCandidatePoolState(),
                     effectiveCandidates,
@@ -8753,8 +9343,6 @@ public class PlanningStateService {
             updated.setMajorName(draftItem.getMajorName());
             updated.setLocked(draftItem.getLocked());
             updated.setSource(draftItem.getSource());
-            updated.setPinned(orderedItem.getPinned());
-            updated.setPinnedPosition(orderedItem.getPinnedPosition());
             updated.setOrderedBy(Strings.isNullOrEmpty(orderedItem.getOrderedBy()) ? "user" : orderedItem.getOrderedBy());
             updated.setOrderReason(Strings.isNullOrEmpty(orderedItem.getOrderReason()) ? "draft_sync" : orderedItem.getOrderReason());
             synced.add(updated);
@@ -8777,7 +9365,7 @@ public class PlanningStateService {
             synced.add(appended);
         }
 
-        orderedPlanState.setItems(rebuildOrderedItems(synced));
+        orderedPlanState.setItems(OrderedPlanPositioningSupport.rebuildItems(synced));
         if (isMajorGroupMode(state.getCandidatePoolState())) {
             List<CandidateItemDTO> effectiveCandidates = resolveEffectiveCandidates(null, state.getSessionId(), state, false);
             orderedPlanState.setUnits(buildOrderedUnitsFromOrderedItems(orderedPlanState.getItems(), state.getDraftPlanState(), effectiveCandidates));

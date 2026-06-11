@@ -16,6 +16,7 @@ from app.tools.planning_workflow_tool import (
     _normalize_career_labels,
     merge_planning_state_with_user_profile,
 )
+from app.util.planning_state_compat import get_working_plan_items, get_working_plan_summary
 from app.util.internal_client import get_planning_state, get_user_profile
 
 logger = logging.getLogger(__name__)
@@ -53,14 +54,14 @@ async def _collect_plan_context_inputs_model(
         user_profile = (((profile_result or {}).get("data") or {}).get("userprofile") or {})
     planning_state = merge_planning_state_with_user_profile(planning_state, user_profile)
 
-    draft_summary = ((planning_state.get("draftPlanState") or {}).get("summary") or {})
+    draft_summary = get_working_plan_summary(planning_state)
     ordered_summary = ((planning_state.get("orderedPlanState") or {}).get("summary") or {})
     review_summary = ((planning_state.get("reviewState") or {}).get("summary") or {})
     review_checks = ((planning_state.get("reviewState") or {}).get("checks") or [])
     candidate_required = ((planning_state.get("candidatePoolState") or {}).get("requiredCount") or 0)
 
     ordered_items = ((planning_state.get("orderedPlanState") or {}).get("items") or [])
-    draft_items = ((planning_state.get("draftPlanState") or {}).get("items") or [])
+    draft_items = get_working_plan_items(planning_state)
     plan_items = ordered_items or draft_items
     plan_summary = ordered_summary if ordered_items else draft_summary
     intent_state = _extract_plan_intent_state(planning_state)

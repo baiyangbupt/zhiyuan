@@ -38,6 +38,11 @@ def test_collect_plan_context_inputs_reads_existing_planning_state():
                 "checks": [
                     {
                         "code": "high_tuition",
+                        "label": "高收费",
+                        "scopeKind": "item",
+                        "fixability": "preview_fixable",
+                        "supportedFixStrategies": ["replace_risk_items", "remove_risk_items"],
+                        "defaultFixStrategy": "replace_risk_items",
                         "passed": False,
                         "summary": "当前方案包含高收费专业",
                         "affectedVolunteerIds": ["v1"],
@@ -64,7 +69,11 @@ def test_collect_plan_context_inputs_reads_existing_planning_state():
     assert data["positive_majors"] == ["计算机类"]
     assert data["career_types"] == ["体制内/考公导向"]
     assert data["review_issues"][0]["code"] == "high_tuition"
-    assert data["review_issues"][0]["default_action_family"] == "remove_units"
+    assert data["review_issues"][0]["scope_kind"] == "item_replacement"
+    assert data["review_issues"][0]["default_action_family"] == "review_plan"
+    assert data["review_issues"][0]["backend_scope_kind"] == "item"
+    assert data["review_issues"][0]["default_fix_strategy"] == "replace_risk_items"
+    assert data["review_issues"][0]["supported_action_families"] == ["review_plan", "remove_units", "replace_units"]
     assert data["review_issue_summary_lines"] == ["高收费(1u/1v)"]
     assert "已有 20 个志愿（目标 30 个）" in data["summary"]
     assert "审查问题：高收费(1u/1v)" in data["summary"]

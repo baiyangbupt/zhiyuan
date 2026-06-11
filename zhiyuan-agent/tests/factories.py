@@ -291,8 +291,8 @@ def make_review_issue(
     *,
     code: str = "high_tuition",
     label: str = "高收费",
-    scope_kind: str = "item_removal",
-    default_action_family: str = "remove_units",
+    scope_kind: str = "item_replacement",
+    default_action_family: str = "review_plan",
     affected_unit_count: int = 5,
     affected_volunteer_count: int = 15,
     scope_fingerprint: str = "",
@@ -324,21 +324,23 @@ def make_planning_state_response(
     pending_actions: list[dict] | None = None,
 ) -> dict[str, Any]:
     """构造 backend get_planning_state 返回的 data 部分。"""
+    working_plan_state = {
+        "summary": {
+            "unitTotal": draft_total,
+            "total": draft_total,
+            "targetUnitCount": candidate_required,
+            "targetCount": candidate_required,
+        },
+        "items": [],
+    }
     return {
         "phase": phase,
         "version": 1,
         "candidatePoolState": {
             "requiredCount": candidate_required,
         },
-        "draftPlanState": {
-            "summary": {
-                "unitTotal": draft_total,
-                "total": draft_total,
-                "targetUnitCount": candidate_required,
-                "targetCount": candidate_required,
-            },
-            "items": [],
-        },
+        "workingPlanState": working_plan_state,
+        "draftPlanState": working_plan_state,
         "orderedPlanState": {
             "summary": {
                 "unitTotal": ordered_total,

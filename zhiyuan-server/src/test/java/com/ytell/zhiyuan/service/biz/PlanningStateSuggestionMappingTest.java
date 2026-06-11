@@ -87,6 +87,18 @@ public class PlanningStateSuggestionMappingTest {
         analyzeReq.setTarget("draft");
         PlanAdjustmentStateDTO adjustmentState = planningStateService.analyzePlanAdjustment(1L, 1L, analyzeReq);
 
+        com.ytell.zhiyuan.model.dto.planning.PlanAdjustmentRuleResultDTO gapRule = adjustmentState.getAnalysis().getRules().stream()
+                .filter(item -> "probability_gap".equals(item.getRuleCode()))
+                .findFirst()
+                .orElse(null);
+        assertNotNull(gapRule);
+        assertEquals("录取率梯度断层", gapRule.getLabel());
+        assertEquals("structure_risk", gapRule.getCategory());
+        assertEquals("structure", gapRule.getScopeKind());
+        assertEquals("preview_fixable", gapRule.getFixability());
+        assertEquals("fill_probability_gap", gapRule.getDefaultFixStrategy());
+        assertTrue(gapRule.getSupportedFixStrategies().contains("fill_probability_gap"));
+
         assertTrue(adjustmentState.getSuggestions().getAddSuggestions().stream()
                 .anyMatch(item -> "count_validation".equals(item.getRuleCode()) && !item.getCandidateVolunteerIds().isEmpty()));
         assertTrue(adjustmentState.getSuggestions().getAddSuggestions().stream()
@@ -385,7 +397,7 @@ public class PlanningStateSuggestionMappingTest {
         assertNotNull(replaceSuggestion);
         assertFalse(replaceSuggestion.getAffectedUnitIds().isEmpty());
         assertFalse(replaceSuggestion.getRemoveUnitIds().isEmpty());
-        assertTrue(replaceSuggestion.getCandidateUnitIds().contains("ps6"));
+        assertTrue(replaceSuggestion.getCandidateUnitIds().contains("ps7"));
         assertTrue(replaceSuggestion.getReplacementPairs().stream().anyMatch(pair ->
                 pair.getFromUnitId() != null
                         && pair.getToUnitId() != null
@@ -616,7 +628,10 @@ public class PlanningStateSuggestionMappingTest {
 
         assertTrue(sorted.getStaleFlags().getReview());
         assertEquals("stale", workspaceState.getWorkflowStatus().getReviewStatus());
-        assertEquals("方案已调整，建议重新审查", workspaceState.getWorkflowStatus().getReviewMessage());
+        assertEquals("plan_structure_changed", workspaceState.getWorkflowStatus().getReviewReasonCode());
+        assertEquals("方案内容或顺序已调整，需要重新审查。", workspaceState.getWorkflowStatus().getReviewMessage());
+        assertEquals("方案内容或顺序已调整，需要重新审查。", workspaceState.getWorkflowStatus().getReviewReasonMessage());
+        assertTrue(workspaceState.getWorkflowStatus().getAffectedReviewCodes().contains("probability_inversion"));
     }
 
     @Test

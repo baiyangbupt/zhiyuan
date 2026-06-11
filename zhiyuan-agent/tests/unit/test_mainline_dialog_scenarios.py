@@ -18,6 +18,7 @@ FULL_JOURNEY_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "di
 RELEASE_302_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_302_agent_cases.json"
 RELEASE_302_EXPLORE_INTENT_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_302_explore_intent_cases.json"
 RELEASE_302_READONLY_REAL_SESSION_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_302_readonly_real_session_cases.json"
+RELEASE_310_REVIEW_REPAIR_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_310_review_repair_cases.json"
 
 
 def _run(coro):
@@ -101,6 +102,37 @@ def _load_release_302_explore_intent_cases() -> list[dict]:
 
 def _load_release_302_readonly_real_session_cases() -> list[dict]:
     return json.loads(RELEASE_302_READONLY_REAL_SESSION_CASES_PATH.read_text(encoding="utf-8"))
+
+
+def _load_release_310_review_repair_payload() -> dict:
+    return json.loads(RELEASE_310_REVIEW_REPAIR_CASES_PATH.read_text(encoding="utf-8"))
+
+
+def _load_release_310_review_repair_cases() -> list[dict]:
+    payload = _load_release_310_review_repair_payload()
+    defaults = payload.get("defaults") or {}
+    prompt_defaults = defaults.get("promptDefaults") or {}
+    case_defaults = {key: value for key, value in defaults.items() if key != "promptDefaults"}
+    expanded_cases = []
+    for case in payload["cases"]:
+        merged = {**case_defaults, **case}
+        for key in ("flow", "coverage"):
+            merged[key] = list(dict.fromkeys([*(case_defaults.get(key) or []), *(case.get(key) or [])]))
+        merged["prompts"] = [
+            {
+                **prompt_defaults,
+                **step,
+                "assertNotContains": list(
+                    dict.fromkeys([*(prompt_defaults.get("assertNotContains") or []), *(step.get("assertNotContains") or [])])
+                ),
+                "qualityFocus": list(
+                    dict.fromkeys([*(prompt_defaults.get("qualityFocus") or []), *(step.get("qualityFocus") or [])])
+                ),
+            }
+            for step in case["prompts"]
+        ]
+        expanded_cases.append(merged)
+    return expanded_cases
 
 
 def test_mainline_dialog_case_catalog_has_current_explore_intent_plan_scenarios():
@@ -450,6 +482,70 @@ def test_release_302_readonly_real_session_cases_cover_no_workspace_card_smoke()
     prompts = "\n".join(step["prompt"] for step in all_steps)
     assert "体制内稳定就业" in prompts
     assert "分数刚好压线" in prompts
+
+
+def test_release_310_review_repair_case_catalog_covers_review_and_repair_boundaries():
+    payload = _load_release_310_review_repair_payload()
+    cases = _load_release_310_review_repair_cases()
+
+    assert payload["metadata"]["release"] == "3.1.0"
+    assert len(cases) >= 7
+    assert len({case["name"] for case in cases}) == len(cases)
+
+    coverage = {tag for case in cases for tag in case["coverage"]}
+    required_tags = {
+        "release_3_1_0",
+        "review_repair",
+        "review_workspace",
+        "review_then_fix",
+        "candidate_shortage",
+        "honest_shortage_boundary",
+        "preview_confirm_apply",
+        "candidate_selection_reason",
+        "majorGroup_model",
+        "major_group_inner_safety",
+        "professional_mode",
+        "excel_export",
+        "review_stale",
+    }
+    assert required_tags.issubset(coverage)
+
+    banned_terms = {
+        "payload",
+        "stage",
+        "action_family",
+        "volunteerId",
+        "pending_plan_action",
+        "pending_intent_change",
+        "level1",
+        "level2",
+        "level3",
+        "硬约束",
+        "修复建议",
+        "暂不可用",
+        "预览验证未通过",
+        "不能直接应用",
+        "草稿",
+    }
+    all_steps = [step for case in cases for step in case["prompts"]]
+    for case in cases:
+        assert case["assertPlanStyle"] is True
+        assert set(case["flow"]).issubset({"plan", "review"})
+        assert case["coverage"]
+        assert case["prompts"]
+        for step in case["prompts"]:
+            assert isinstance(step, dict)
+            assert step.get("prompt")
+            assert step.get("assertContains") or step.get("assertContainsAny")
+            assert banned_terms.issubset(set(step.get("assertNotContains") or []))
+
+    prompts = "\n".join(step["prompt"] for step in all_steps)
+    assert "候选不够" in prompts
+    assert "别直接动" in prompts
+    assert "专业模式导出" in prompts
+    assert "手动移动过志愿" in prompts
+    assert any(step.get("assertFollowupType") == "pendingConfirmationCard" for step in all_steps)
+    assert any(step.get("expectedActionFamily") == "review_plan" for step in all_steps)
 
 
 def test_mainline_dialog_intent_preview_then_plan_status_does_not_reopen_candidate_workspace(tmp_path):

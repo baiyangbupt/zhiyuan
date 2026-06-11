@@ -19,24 +19,26 @@ from pydantic_ai import RunContext
 from app.agent.context import PlanningSummary, RequestContext
 from app.domain.career_slots import CAREER_LABEL_MAP
 from app.tools.explore_direction_tool import _item_matches_direction_slot
+from app.util.planning_state_compat import get_working_plan_items, get_working_plan_state, get_working_plan_summary
 from app.util.internal_client import (
     analyze_planning_plan_adjustment as _analyze_planning_plan_adjustment_request,
+    apply_planning_fix_proposal as _apply_planning_fix_proposal_request,
     apply_planning_compensation as _apply_planning_compensation_request,
-    ban_planning_draft_items as _ban_planning_draft_items_request,
+    ban_working_plan_items as _ban_working_plan_items_request,
+    generate_planning_fix_proposals as _generate_planning_fix_proposals_request,
     generate_planning_candidate_pool as _generate_planning_candidate_pool_request,
     generate_planning_initial_plan as _generate_planning_initial_plan_request,
     generate_planning_ordered_plan as _generate_planning_ordered_plan_request,
     query_planning_candidate_pool as _query_planning_candidate_pool_request,
     get_planning_state as _get_planning_state_request,
     get_user_profile as _get_user_profile_request,
-    get_planning_draft as _get_planning_draft_request,
     get_planning_ordered_plan as _get_planning_ordered_plan_request,
-    lock_planning_draft_items as _lock_planning_draft_items_request,
+    get_working_plan as _get_working_plan_request,
     move_planning_ordered_item as _move_planning_ordered_item_request,
     preview_planning_compensation as _preview_planning_compensation_request,
-    remove_planning_draft_items as _remove_planning_draft_items_request,
+    remove_working_plan_items as _remove_working_plan_items_request,
     run_planning_review as _run_planning_review_request,
-    select_planning_draft_items as _select_planning_draft_items_request,
+    select_working_plan_items as _select_working_plan_items_request,
 )
 
 logger = logging.getLogger(__name__)
@@ -260,8 +262,6 @@ def _format_plan_items(items: list[dict[str, Any]], include_position: bool = Fal
             suffix_parts.append(f"录取率{ratio_text}")
         if include_position and item.get("position") is not None:
             suffix_parts.append(f"@{item.get('position')}")
-        if item.get("pinned") is True:
-            suffix_parts.append("[固定]")
         if item.get("locked") is True:
             suffix_parts.append("[锁定]")
         snippets.append("".join(suffix_parts))
@@ -355,6 +355,64 @@ def _normalize_text_list(values: Any) -> list[str]:
         return result
     text = str(values).strip()
     return [text] if text else []
+
+
+def _normalize_candidate_shortages(values: Any) -> list[dict[str, Any]]:
+    if not isinstance(values, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for item in values:
+        if not isinstance(item, dict):
+            continue
+        normalized = {
+            "strategy": str(item.get("strategy") or "").strip(),
+            "source_check_code": str(item.get("sourceCheckCode") or "").strip(),
+            "scope": str(item.get("scope") or "").strip(),
+            "reason_code": str(item.get("reasonCode") or "").strip(),
+            "target_tier": str(item.get("targetTier") or "").strip(),
+            "required_count": _coerce_non_negative_int(item.get("requiredCount")),
+            "current_count": _coerce_non_negative_int(item.get("currentCount")),
+            "shortage_count": _coerce_non_negative_int(item.get("shortageCount")),
+            "available_count": _coerce_non_negative_int(item.get("availableCount")),
+            "message": str(item.get("message") or "").strip(),
+        }
+        if any(normalized.values()):
+            result.append(normalized)
+    return result
+
+
+def _format_candidate_shortage(shortage: dict[str, Any]) -> str:
+    message = str(shortage.get("message") or "").strip()
+    if not message:
+        scope = str(shortage.get("scope") or "").strip()
+        if scope == "capacity_or_replacement":
+            message = "当前不是单纯缺候选，而是缺少完整的一进一出替换配对"
+        elif scope == "objective_validation":
+            message = "已有预览没有让本次审查目标变好"
+        elif scope == "hard_constraints":
+            message = "已确认的硬性要求收窄了可选范围，当前可用于补位的候选不足"
+        else:
+            message = "当前可用于规划的候选池里目标候选不足"
+    details: list[str] = []
+    target_tier = str(shortage.get("target_tier") or "").strip()
+    if target_tier:
+        details.append(f"目标{target_tier}区")
+    required_count = _coerce_non_negative_int(shortage.get("required_count"))
+    current_count = _coerce_non_negative_int(shortage.get("current_count"))
+    shortage_count = _coerce_non_negative_int(shortage.get("shortage_count"))
+    available_count = _coerce_non_negative_int(shortage.get("available_count"))
+    if required_count:
+        if current_count:
+            details.append(f"当前{current_count}/目标{required_count}")
+        else:
+            details.append(f"目标{required_count}")
+    if shortage_count:
+        details.append(f"缺口{shortage_count}")
+    if available_count:
+        details.append(f"可用{available_count}")
+    if details:
+        return f"{message}（{'，'.join(details)}）"
+    return message
 
 
 def _normalize_major_match_text(value: Any) -> str:
@@ -762,7 +820,7 @@ def _pick_relation_plan_items(
         return list(draft_state.get("items") or [])
     return list(
         ((planning_state or {}).get("orderedPlanState") or {}).get("items")
-        or (((planning_state or {}).get("draftPlanState") or {}).get("items") or [])
+        or get_working_plan_items(planning_state)
     )
 
 
@@ -779,7 +837,7 @@ def _pick_relation_plan_summary(
     ordered_summary = ((planning_state or {}).get("orderedPlanState") or {}).get("summary") or {}
     if ordered_summary:
         return ordered_summary
-    return (((planning_state or {}).get("draftPlanState") or {}).get("summary") or {})
+    return get_working_plan_summary(planning_state)
 
 
 def _collect_issue_hit_plan_examples(
@@ -874,6 +932,78 @@ def _build_review_result_facts(
             include_position=True,
         ),
         "candidate_supply": _build_candidate_supply_facts(planning_state),
+    }
+
+
+def _fix_proposal_facts(proposal_state: dict[str, Any] | None) -> dict[str, Any]:
+    state = proposal_state if isinstance(proposal_state, dict) else {}
+    proposals = state.get("proposals") or []
+    if not isinstance(proposals, list):
+        proposals = []
+
+    normalized: list[dict[str, Any]] = []
+    status_counts: dict[str, int] = {}
+    strategy_counts: dict[str, int] = {}
+    for proposal in proposals:
+        if not isinstance(proposal, dict):
+            continue
+        status = str(proposal.get("status") or "").strip()
+        strategy = str(proposal.get("strategy") or "").strip()
+        title = str(proposal.get("title") or strategy or "修复建议").strip()
+        dry_run = proposal.get("dryRunResult") or {}
+        if not isinstance(dry_run, dict):
+            dry_run = {}
+        warnings = [
+            str(item or "").strip()
+            for item in (dry_run.get("warnings") or [])
+            if str(item or "").strip()
+        ]
+        actions = proposal.get("actions") or []
+        if not isinstance(actions, list):
+            actions = []
+        item = {
+            "proposal_id": str(proposal.get("proposalId") or "").strip(),
+            "title": title,
+            "status": status,
+            "strategy": strategy,
+            "source_check_codes": [
+                str(code or "").strip()
+                for code in (proposal.get("sourceCheckCodes") or [])
+                if str(code or "").strip()
+            ],
+            "requires_confirmation": bool(proposal.get("requiresConfirmation")),
+            "summary": str(proposal.get("summary") or "").strip(),
+            "impact": str(proposal.get("impact") or "").strip(),
+            "blocking_reason": str(proposal.get("blockingReason") or "").strip(),
+            "blocking_reason_codes": _normalize_text_list(proposal.get("blockingReasonCodes")),
+            "candidate_shortages": _normalize_candidate_shortages(proposal.get("candidateShortages")),
+            "action_summaries": [
+                _fix_proposal_action_summary(action)
+                for action in actions[:3]
+                if isinstance(action, dict)
+            ],
+            "remove_volunteer_count": _coerce_non_negative_int(dry_run.get("removeVolunteerCount")),
+            "add_volunteer_count": _coerce_non_negative_int(dry_run.get("addVolunteerCount")),
+            "remove_unit_count": _coerce_non_negative_int(dry_run.get("removeUnitCount")),
+            "add_unit_count": _coerce_non_negative_int(dry_run.get("addUnitCount")),
+            "warnings": warnings[:3],
+        }
+        normalized.append(item)
+        if status:
+            status_counts[status] = status_counts.get(status, 0) + 1
+        if strategy:
+            strategy_counts[strategy] = strategy_counts.get(strategy, 0) + 1
+
+    return {
+        "status": str(state.get("status") or "").strip(),
+        "source_version_guard": _coerce_non_negative_int(state.get("sourceVersionGuard")),
+        "total": _coerce_non_negative_int(state.get("total") or len(normalized)),
+        "status_counts": status_counts,
+        "strategy_counts": strategy_counts,
+        "proposals": normalized,
+        "ready_count": status_counts.get("ready", 0),
+        "preview_only_count": status_counts.get("preview_only", 0),
+        "blocked_count": status_counts.get("blocked", 0),
     }
 
 
@@ -1091,7 +1221,7 @@ async def _load_visible_plan_states(
         if ordered_result.get("code") == 0:
             ordered_state = ordered_result.get("data") or {}
     elif summary.draft_total > 0:
-        draft_result = await _get_planning_draft_request(session_id)
+        draft_result = await _get_working_plan_request(session_id)
         if draft_result.get("code") == 0:
             draft_state = draft_result.get("data") or {}
     return ordered_state, draft_state
@@ -1263,6 +1393,168 @@ def _format_compensation_preview(preview: dict[str, Any]) -> str:
     lines.append(f"- 主要补偿：{'；'.join(_collect_action_summaries(actions))}")
     lines.append(f"- 预计补入候选：{_sum_compensation_fill_count(actions)}个")
     lines.append("如果你明确确认执行，我可以继续应用这些补偿，并在执行后重新审查。")
+    return "\n".join(lines)
+
+
+def _fix_proposal_action_summary(action: dict[str, Any]) -> str:
+    summary = str(action.get("summary") or "").strip()
+    if summary:
+        return summary
+    action_type = str(action.get("actionType") or "").strip()
+    if action_type == "replace_volunteers":
+        pairs = action.get("replacementPairs") or []
+        if pairs:
+            return f"替换{len(pairs)}条风险志愿"
+        return "替换风险志愿"
+    if action_type == "remove_volunteers":
+        count = len(action.get("volunteerIds") or action.get("removeVolunteerIds") or [])
+        return f"移除{count}条风险志愿" if count else "移除风险志愿"
+    if action_type == "fill_total_count":
+        count = len(action.get("volunteerIds") or action.get("candidateVolunteerIds") or [])
+        return f"补足{count}条志愿" if count else "补足志愿数量"
+    return action_type or "修复动作"
+
+
+_FIX_PROPOSAL_BLOCKING_GUIDANCE = {
+    "candidate_pool_insufficient": "当前可用于规划的候选池里没有足够可补项，下一步只能先放宽条件或接受当前数量风险",
+    "safety_candidate_insufficient": "当前可用于规划的候选池里缺少可用保底/安全垫候选，不能直接补强安全垫",
+    "tier_candidate_insufficient": "当前可用于规划的候选池里目标冲稳保区间候选不足，暂时不能把比例直接调到目标",
+    "probability_gap_candidate_insufficient": "当前可用于规划的候选池里断层中间录取率候选不足，暂时不能补齐录取率梯度",
+    "no_sort_or_replacement_candidate": "当前缺少可重排或可替换项，不能自动修复倒挂",
+    "major_group_safety_candidate_insufficient": "专业组内缺少合适安全垫专业，不能直接移除托底项",
+    "risk_item_unresolved_or_replacement_missing": "风险条目缺少可定位明细或替换候选，需要先缩小范围",
+    "replacement_pair_missing": "当前方案已满，但没有明确一进一出的替换配对，不能只追加候选",
+    "volunteer_model_mismatch": "当前填报模式不支持这类组内修复",
+    "risk_unit_unresolved": "风险专业组没有定位清楚，需要先确认具体专业组",
+    "partial_major_group_safety_candidate_missing": "只有部分专业组找到安全垫，不能把本轮当作完整修复",
+    "risk_item_unresolved": "风险志愿明细没有定位清楚，需要先确认具体志愿",
+    "safe_replacement_candidate_insufficient": "暂时没有同层次且风险更低的替换项",
+    "objective_validation_not_improved": "预览没有让本次审查目标变好，暂不应该确认应用",
+}
+
+
+def _fix_proposal_blocking_guidance(proposal: dict[str, Any]) -> list[str]:
+    prioritized: list[str] = []
+    fallback: list[str] = []
+    candidate_shortages = _normalize_candidate_shortages(
+        proposal.get("candidateShortages") or proposal.get("candidate_shortages")
+    )
+    for shortage in candidate_shortages:
+        message = str(shortage.get("message") or "").strip()
+        scope = str(shortage.get("scope") or "").strip()
+        if not message:
+            if scope == "capacity_or_replacement":
+                message = "当前不是单纯缺候选，而是缺少完整的一进一出替换配对"
+            elif scope == "objective_validation":
+                message = "已有预览没有让本次审查目标变好，暂不应该确认应用"
+            elif scope == "hard_constraints":
+                message = "已确认的硬性要求收窄了可选范围，当前可用于补位的候选不足"
+            else:
+                message = "当前可用于规划的候选池里目标候选不足"
+        if not message:
+            continue
+        target = prioritized if scope in {"hard_constraints", "capacity_or_replacement", "objective_validation"} else fallback
+        if message not in target:
+            target.append(message)
+
+    result: list[str] = []
+    for item in prioritized:
+        if item not in result:
+            result.append(item)
+    for code in _normalize_text_list(proposal.get("blockingReasonCodes") or proposal.get("blocking_reason_codes")):
+        text = _FIX_PROPOSAL_BLOCKING_GUIDANCE.get(code)
+        if text and text not in result:
+            result.append(text)
+    for item in fallback:
+        if item not in result:
+            result.append(item)
+    return result
+
+
+def _format_fix_proposal_preview(proposal_state: dict[str, Any]) -> str:
+    proposals = proposal_state.get("proposals") or []
+    if not proposals:
+        return "已检查当前方案的修复建议。当前没有需要自动修复的风险建议，可以继续查看审查明细。"
+
+    lines = ["已生成当前方案的修复建议预览。"]
+    lines.append(f"- 建议数量：{len(proposals)}项")
+    for proposal in proposals[:3]:
+        title = str(proposal.get("title") or proposal.get("strategy") or "修复建议").strip()
+        status = str(proposal.get("status") or "").strip()
+        dry_run = proposal.get("dryRunResult") or {}
+        remove_count = int(dry_run.get("removeVolunteerCount") or 0)
+        add_count = int(dry_run.get("addVolunteerCount") or 0)
+        impact = str(proposal.get("impact") or "").strip()
+        action_text = "；".join(
+            _fix_proposal_action_summary(action)
+            for action in (proposal.get("actions") or [])[:2]
+        )
+        detail_parts = []
+        if status:
+            detail_parts.append(status)
+        if remove_count or add_count:
+            detail_parts.append(f"预计移除{remove_count}条、补入{add_count}条")
+        if action_text:
+            detail_parts.append(action_text)
+        if impact:
+            detail_parts.append(impact)
+        line = f"- {title}"
+        if detail_parts:
+            line += f"：{'；'.join(detail_parts)}"
+        lines.append(line)
+        warnings = dry_run.get("warnings") or []
+        if warnings:
+            lines.append(f"  需注意：{'；'.join(str(item) for item in warnings[:2] if item)}")
+        blocking_reason = str(proposal.get("blockingReason") or "").strip()
+        if blocking_reason:
+            lines.append(f"  暂不能自动处理：{blocking_reason}")
+        candidate_shortages = _normalize_candidate_shortages(proposal.get("candidateShortages"))
+        if candidate_shortages:
+            lines.append(f"  候选边界：{_format_candidate_shortage(candidate_shortages[0])}。")
+        blocking_guidance = _fix_proposal_blocking_guidance(proposal)
+        if blocking_guidance:
+            lines.append(f"  处理边界：{blocking_guidance[0]}。")
+
+    lines.append("这些只是预览，真正应用前需要用户确认；标记为 preview_only 或 blocked 的建议不会被自动执行。")
+    return "\n".join(lines)
+
+
+def _format_fix_proposal_apply_result(result: dict[str, Any]) -> str:
+    status = str(result.get("status") or "").strip()
+    report = result.get("repairReport") or {}
+    if status != "applied":
+        message = str(result.get("message") or "").strip()
+        return message or "这次修复建议没有应用成功，请重新生成修复建议后再试。"
+    strategy = str(report.get("strategy") or "").strip()
+    title = str(report.get("proposalTitle") or "").strip()
+    summary = str(report.get("proposalSummary") or "").strip()
+    impact = str(report.get("proposalImpact") or "").strip()
+    dry_run_message = str(report.get("dryRunMessage") or "").strip()
+    added = int(report.get("addedVolunteerCount") or 0)
+    removed = int(report.get("removedVolunteerCount") or 0)
+    post_passed = report.get("postValidationPassed")
+    lines = ["已应用修复建议，并刷新当前方案状态。"]
+    if title:
+        lines.append(f"- 修复建议：{title}")
+    if summary:
+        lines.append(f"- 对应问题：{summary}")
+    if strategy:
+        lines.append(f"- 修复类型：{strategy}")
+    lines.append(f"- 调整结果：移除{removed}条，补入{added}条")
+    if impact:
+        lines.append(f"- 影响范围：{impact}")
+    if post_passed is True:
+        lines.append("- 复验结果：本次对应问题已通过复验。")
+    elif post_passed is False:
+        lines.append("- 复验结果：仍需要继续检查相关风险。")
+    if dry_run_message:
+        lines.append(f"- 应用前预览：{dry_run_message}")
+    messages = [str(item).strip() for item in (report.get("messages") or []) if str(item).strip()]
+    if messages:
+        lines.append(f"- 说明：{'；'.join(messages[:2])}")
+    warnings = [str(item).strip() for item in (report.get("warnings") or []) if str(item).strip()]
+    if warnings:
+        lines.append(f"- 需注意：{'；'.join(warnings[:2])}")
     return "\n".join(lines)
 
 
@@ -1461,7 +1753,7 @@ def _format_draft_result(draft_state: dict[str, Any]) -> str:
 
 
 def _format_draft_state_with_prefix(prefix: str, planning_state: dict[str, Any]) -> str:
-    draft_state = (planning_state.get("draftPlanState") or {}) if planning_state else {}
+    draft_state = get_working_plan_state(planning_state)
     if not draft_state:
         return prefix
     return prefix + "\n" + _format_draft_result(draft_state)
@@ -1520,7 +1812,7 @@ def _format_plan_status_overview(
         )
     elif summary.draft_total > 0:
         lines.append(
-            f"- 当前已有草稿方案：{_format_total_with_target(summary.draft_total, summary.draft_target_total)}个志愿，尚未形成最终排序"
+            f"- 当前已加入方案：{_format_total_with_target(summary.draft_total, summary.draft_target_total)}个志愿，尚未形成最终排序"
         )
     else:
         lines.append("- 当前还没有形成方案")
@@ -1555,7 +1847,7 @@ def _format_plan_status_overview(
 
     item_text = _format_plan_items(active_plan_state.get("items") or [], include_position=bool(ordered_state), limit=5)
     if item_text:
-        prefix = "方案前列" if ordered_state else "草稿前列"
+        prefix = "方案前列" if ordered_state else "已加入方案示例"
         lines.append(f"- {prefix}：{item_text}")
 
     if summary.pending_action_count > 0:
@@ -1580,9 +1872,20 @@ def _format_candidate_pool_result(query_result: dict[str, Any]) -> str:
     total = query_result.get("total") or 0
     page = query_result.get("page") or 1
     page_size = query_result.get("pageSize") or len(items)
+    view_summary = query_result.get("viewSummary") or {}
 
     lines = ["候选志愿查询结果："]
     lines.append(f"- 命中数量：{total}")
+    if view_summary:
+        view_entries = _coerce_non_negative_int(view_summary.get("viewEntryTotal"))
+        view_units = _coerce_non_negative_int(view_summary.get("viewUnitTotal"))
+        pool_entries = _coerce_non_negative_int(view_summary.get("poolEntryTotal"))
+        pool_units = _coerce_non_negative_int(view_summary.get("poolUnitTotal"))
+        lines.append(
+            "- 当前筛选视图："
+            f"{view_entries}条 / {view_units}个志愿单元；"
+            f"完整候选池：{pool_entries}条 / {pool_units}个志愿单元"
+        )
     lines.append(f"- 当前页：第{page}页，每页{page_size}条")
     item_text = _format_candidate_items(items)
     if item_text:
@@ -1629,7 +1932,7 @@ async def query_planning_state(ctx: RunContext[RequestContext]) -> str:
 
 
 async def query_planning_plan_overview(ctx: RunContext[RequestContext]) -> str:
-    """读取当前方案状态，并补充排序/草稿前列内容，供“方案有了么”类问法使用。"""
+    """读取当前方案状态，并补充排序/已加入方案前列内容，供“方案有了么”类问法使用。"""
     session_id = ctx.deps.sessionid
     logger.info("query_planning_plan_overview called: session_id=%s", session_id)
 
@@ -1650,13 +1953,13 @@ async def query_planning_plan_overview(ctx: RunContext[RequestContext]) -> str:
 
 
 async def query_planning_draft(ctx: RunContext[RequestContext]) -> str:
-    """读取当前会话的草稿方案摘要。"""
+    """Legacy tool name for querying the current working plan."""
     session_id = ctx.deps.sessionid
     logger.info("query_planning_draft called: session_id=%s", session_id)
 
-    result = await _get_planning_draft_request(session_id)
+    result = await _get_working_plan_request(session_id)
     if result.get("code") != 0:
-        return "获取草稿方案失败，请稍后重试。"
+        return "获取当前方案失败，请稍后重试。"
     return _format_draft_result(result.get("data") or {})
 
 
@@ -1717,7 +2020,7 @@ async def select_planning_draft_items(
     volunteer_ids: list[str],
     source: str = "user_agent",
 ) -> str:
-    """将候选项加入当前方案选择。"""
+    """Legacy tool name for adding candidates to the current working plan."""
     session_id = ctx.deps.sessionid
     logger.info(
         "select_planning_draft_items called: session_id=%s volunteer_ids=%s source=%s",
@@ -1726,7 +2029,7 @@ async def select_planning_draft_items(
         source,
     )
 
-    result = await _select_planning_draft_items_request(
+    result = await _select_working_plan_items_request(
         _DEFAULT_TENANT_ID,
         session_id,
         volunteer_ids,
@@ -1756,7 +2059,7 @@ async def select_planning_ordered_items(
         regroup_by_tier,
     )
 
-    select_result = await _select_planning_draft_items_request(
+    select_result = await _select_working_plan_items_request(
         _DEFAULT_TENANT_ID,
         session_id,
         volunteer_ids,
@@ -1786,7 +2089,7 @@ async def remove_planning_draft_items(
     ctx: RunContext[RequestContext],
     volunteer_ids: list[str],
 ) -> str:
-    """将指定志愿移出当前方案选择。"""
+    """Legacy tool name for removing items from the current working plan."""
     session_id = ctx.deps.sessionid
     logger.info(
         "remove_planning_draft_items called: session_id=%s volunteer_ids=%s",
@@ -1794,7 +2097,7 @@ async def remove_planning_draft_items(
         volunteer_ids,
     )
 
-    result = await _remove_planning_draft_items_request(session_id, volunteer_ids)
+    result = await _remove_working_plan_items_request(session_id, volunteer_ids)
     if result.get("code") != 0:
         return "移出方案失败，请稍后重试。"
     return _format_draft_state_with_prefix(
@@ -1825,7 +2128,7 @@ async def remove_planning_ordered_items(
     except Exception:
         logger.warning("fetch ordered plan before removal failed: session_id=%s", session_id, exc_info=True)
 
-    remove_result = await _remove_planning_draft_items_request(session_id, volunteer_ids)
+    remove_result = await _remove_working_plan_items_request(session_id, volunteer_ids)
     if remove_result.get("code") != 0:
         return "从当前方案移除志愿失败，请稍后重试。"
 
@@ -1836,7 +2139,7 @@ async def remove_planning_ordered_items(
         regroup_by_tier=regroup_by_tier,
     )
     if ordered_result.get("code") != 0:
-        return "已从草稿移除对应志愿，但刷新排序方案失败，请稍后重试。"
+        return "已从当前方案移除对应志愿，但刷新排序方案失败，请稍后重试。"
 
     refreshed_state = await _rerun_review_and_fetch_state(session_id)
     ordered_state = ((refreshed_state or {}).get("orderedPlanState") or {}) or ((ordered_result.get("data") or {}).get("orderedPlanState") or {})
@@ -1852,7 +2155,7 @@ async def remove_planning_ordered_items(
             session_id,
             lingering_ids,
         )
-        ban_result = await _ban_planning_draft_items_request(session_id, lingering_ids)
+        ban_result = await _ban_working_plan_items_request(session_id, lingering_ids)
         if ban_result.get("code") == 0:
             ban_fallback_used = True
             ordered_result = await _generate_planning_ordered_plan_request(
@@ -1916,7 +2219,7 @@ async def lock_planning_draft_items(
     volunteer_ids: list[str],
     locked: bool = True,
 ) -> str:
-    """兼容旧接口：新版工作台不再提供用户侧锁定入口。"""
+    """Legacy tool name: the new workspace no longer exposes user-side locking."""
     session_id = ctx.deps.sessionid
     logger.info(
         "lock_planning_draft_items called: session_id=%s volunteer_ids=%s locked=%s",
@@ -1932,7 +2235,7 @@ async def ban_planning_draft_items(
     ctx: RunContext[RequestContext],
     volunteer_ids: list[str],
 ) -> str:
-    """禁用候选项并从草稿中移除。"""
+    """Legacy tool name for banning candidates and removing them from the working plan."""
     session_id = ctx.deps.sessionid
     logger.info(
         "ban_planning_draft_items called: session_id=%s volunteer_ids=%s",
@@ -1940,11 +2243,11 @@ async def ban_planning_draft_items(
         volunteer_ids,
     )
 
-    result = await _ban_planning_draft_items_request(session_id, volunteer_ids)
+    result = await _ban_working_plan_items_request(session_id, volunteer_ids)
     if result.get("code") != 0:
         return "禁用候选项失败，请稍后重试。"
     return _format_draft_state_with_prefix(
-        f"已禁用{len(volunteer_ids)}个候选志愿，并同步更新草稿。",
+        f"已禁用{len(volunteer_ids)}个候选志愿，并同步更新当前方案。",
         result.get("data") or {},
     )
 
@@ -2071,38 +2374,6 @@ async def move_planning_ordered_item(
     return f"已将志愿移动到第{target_position}位。\n" + _format_ordered_result(ordered_state)
 
 
-async def pin_planning_ordered_item(
-    ctx: RunContext[RequestContext],
-    volunteer_id: str,
-    target_position: int,
-) -> str:
-    """兼容旧接口：新版工作台不再提供用户侧固定入口。"""
-    session_id = ctx.deps.sessionid
-    logger.info(
-        "pin_planning_ordered_item disabled: session_id=%s volunteer_id=%s target_position=%s",
-        session_id,
-        volunteer_id,
-        target_position,
-    )
-
-    return "新版工作台暂不提供固定/锁定志愿入口。可以改用移动到指定位置或方案排序。"
-
-
-async def unpin_planning_ordered_item(
-    ctx: RunContext[RequestContext],
-    volunteer_id: str,
-) -> str:
-    """兼容旧接口：新版工作台不再提供用户侧取消固定入口。"""
-    session_id = ctx.deps.sessionid
-    logger.info(
-        "unpin_planning_ordered_item disabled: session_id=%s volunteer_id=%s",
-        session_id,
-        volunteer_id,
-    )
-
-    return "新版工作台暂不提供固定/锁定志愿入口。当前无需取消固定。"
-
-
 async def run_planning_review(ctx: RunContext[RequestContext]) -> str:
     """执行当前会话方案审查，返回简洁的风险摘要与下一步建议。"""
     session_id = ctx.deps.sessionid
@@ -2148,6 +2419,52 @@ async def preview_planning_compensation(ctx: RunContext[RequestContext]) -> str:
     if result.get("code") != 0:
         return "预览补偿建议失败，请稍后重试。"
     return _format_compensation_preview(result.get("data") or {})
+
+
+async def generate_planning_fix_proposals(ctx: RunContext[RequestContext]) -> str:
+    """生成当前方案的统一修复建议预览，不直接改动方案。"""
+    session_id = ctx.deps.sessionid
+    logger.info("generate_planning_fix_proposals called: session_id=%s", session_id)
+
+    result = await _generate_planning_fix_proposals_request(_DEFAULT_TENANT_ID, session_id)
+    if result.get("code") != 0:
+        return "生成修复建议失败，请稍后重试。"
+    return _format_fix_proposal_preview(result.get("data") or {})
+
+
+async def apply_planning_fix_proposal(
+    ctx: RunContext[RequestContext],
+    proposal_id: str,
+    source_version_guard: int,
+    user_confirmed: bool = False,
+    regenerate_ordered_plan: bool = True,
+    rerun_review: bool = True,
+) -> str:
+    """在用户明确确认后应用某个统一修复建议。"""
+    session_id = ctx.deps.sessionid
+    logger.info(
+        "apply_planning_fix_proposal called: session_id=%s proposal_id=%s confirmed=%s",
+        session_id,
+        proposal_id,
+        user_confirmed,
+    )
+
+    if not user_confirmed:
+        return "这是会改动当前方案的修复操作。请先让用户确认具体修复建议，再调用该工具。"
+    if not proposal_id or not source_version_guard:
+        return "缺少修复建议ID或版本信息，请先重新生成修复建议。"
+
+    result = await _apply_planning_fix_proposal_request(
+        _DEFAULT_TENANT_ID,
+        session_id,
+        proposal_id=proposal_id,
+        source_version_guard=source_version_guard,
+        regenerate_ordered_plan=regenerate_ordered_plan,
+        rerun_review=rerun_review,
+    )
+    if result.get("code") != 0:
+        return str(result.get("msg") or "应用修复建议失败，请重新生成修复建议后再试。")
+    return _format_fix_proposal_apply_result(result.get("data") or {})
 
 
 async def apply_planning_compensation(

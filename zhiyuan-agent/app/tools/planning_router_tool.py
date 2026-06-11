@@ -95,6 +95,8 @@ async def _run_planned_request(
                 return "删除志愿需要先确认要删除哪一条，请先查询当前方案。"
             if action_family == "move_unit":
                 return "调整排序需要确认想移动哪个志愿、移到第几位，请先查看当前方案。"
+            if action_family == "add_units":
+                return "补入志愿需要先明确要加入哪些候选，或提供地域、院校、专业等筛选范围。"
             return f"还缺必要信息，请补充后重试。{plan.context_summary}"
         return plan.context_summary
     if plan.stage == "preview":
@@ -149,7 +151,8 @@ async def handle_planning_request(
     使用建议：
     - 如果用户是在干预“当前方案”，优先调用本工具，而不是直接走画像更新。
     - 需要改动方案的整体动作，如 `ordered_regenerate`、`compensation_apply`，仅在用户明确确认后传 `user_confirmed=True`。
-    - `candidate_select` 优先使用 `volunteer_ids`；若用户只给了筛选条件，也可直接通过关键词从候选池选入草稿。
+    - `candidate_select` 优先使用 `volunteer_ids`；若只给筛选条件，必须由上游明确传入结构化地域/院校/专业/标签字段。
+    - `draft_*` request_type 是历史兼容枚举，实际语义均为当前方案；新增场景不要继续扩展 draft 命名。
     """
     normalized_type = _normalize_request_type(request_type)
     logger.info(
@@ -225,25 +228,25 @@ async def handle_planning_request(
     if normalized_type == "draft_remove":
         ensured_ids = _ensure_volunteer_ids(volunteer_ids, normalized_type)
         if not ensured_ids:
-            return "移出草稿需要先确认要移除哪些志愿，请先查询草稿或候选列表。"
+            return "移出当前方案需要先确认要移除哪些志愿，请先查询当前方案或候选列表。"
         return await remove_planning_draft_items(ctx, ensured_ids)
 
     if normalized_type == "draft_lock":
         ensured_ids = _ensure_volunteer_ids(volunteer_ids, normalized_type)
         if not ensured_ids:
-            return "锁定草稿需要先确认要锁定哪些志愿，请先查询草稿。"
+            return "锁定当前方案需要先确认要锁定哪些志愿，请先查询当前方案。"
         return await lock_planning_draft_items(ctx, ensured_ids, locked=True)
 
     if normalized_type == "draft_unlock":
         ensured_ids = _ensure_volunteer_ids(volunteer_ids, normalized_type)
         if not ensured_ids:
-            return "解除锁定需要先确认要解锁哪些志愿，请先查询草稿。"
+            return "解除锁定需要先确认要解锁哪些志愿，请先查询当前方案。"
         return await lock_planning_draft_items(ctx, ensured_ids, locked=False)
 
     if normalized_type == "draft_ban":
         ensured_ids = _ensure_volunteer_ids(volunteer_ids, normalized_type)
         if not ensured_ids:
-            return "禁用志愿需要先确认要禁用哪些，请先查询草稿或候选列表。"
+            return "禁用志愿需要先确认要禁用哪些，请先查询当前方案或候选列表。"
         return await ban_planning_draft_items(ctx, ensured_ids)
 
     if normalized_type == "ordered_regenerate":
@@ -282,12 +285,6 @@ async def handle_planning_request(
             volunteer_ids=ensured_ids,
             user_confirmed=user_confirmed,
         )
-
-    if normalized_type == "ordered_pin":
-        return "新版工作台暂不提供固定/锁定志愿入口。可以改用移动到指定位置或方案排序。"
-
-    if normalized_type == "ordered_unpin":
-        return "新版工作台暂不提供固定/锁定志愿入口。当前无需取消固定，可以改用移动到指定位置或方案排序。"
 
     if normalized_type == "review":
         return await _run_planned_request(

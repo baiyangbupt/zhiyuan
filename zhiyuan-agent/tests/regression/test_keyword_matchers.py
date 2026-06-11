@@ -85,10 +85,12 @@ def test_action_decision_comes_from_structured_verb_and_scope(
 @pytest.mark.parametrize(
     "code,expected_label,expected_kind,expected_default,expected_supported",
     [
-        ("high_tuition", "高收费", "item_removal", "remove_units", ["remove_units", "replace_units"]),
-        ("cooperative_program", "中外合作", "item_removal", "remove_units", ["remove_units", "replace_units"]),
-        ("probability_gap", "梯度断层", "structural", "analyze_adjustment", ["analyze_adjustment"]),
+        ("high_tuition", "高收费", "item_replacement", "review_plan", ["replace_units", "remove_units"]),
+        ("cooperative_program", "中外合作", "item_replacement", "review_plan", ["replace_units", "remove_units"]),
+        ("probability_inversion", "概率倒挂", "structural", "sort_ordered_plan", ["sort_ordered_plan"]),
+        ("probability_gap", "梯度断层", "structural", "preview_compensation", ["preview_compensation"]),
         ("count_validation", "数量缺口", "structural", "preview_compensation", ["preview_compensation"]),
+        ("edge_score", "边缘分", "structural", "preview_compensation", ["preview_compensation"]),
         ("plan_update_notice", "招生计划更新提示", "informational", None, []),
     ],
 )
@@ -126,7 +128,7 @@ def test_item_removal_issue_requires_structured_review_issue_code(volunteer_mode
         _frame("query", review_issue_code="high_tuition", raw_utterance="处理高收费"),
         HAS_PLAN,
     )
-    assert query_with_code.action_family == "remove_units"
+    assert query_with_code.action_family == "review_plan"
     assert query_with_code.review_issue_override is True
 
 

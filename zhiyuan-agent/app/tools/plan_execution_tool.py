@@ -48,20 +48,21 @@ from app.tools.planning_workflow_tool import (
     run_planning_review,
     select_planning_ordered_items,
 )
+from app.util.planning_state_compat import get_working_plan_items, get_working_plan_state, get_working_plan_summary
 from app.util.internal_client import (
     apply_planning_compensation as _apply_planning_compensation_request,
     analyze_planning_plan_adjustment as _analyze_planning_plan_adjustment_request,
     generate_planning_candidate_pool as _generate_planning_candidate_pool_request,
     generate_planning_initial_plan as _generate_planning_initial_plan_request,
     generate_planning_ordered_plan as _generate_planning_ordered_plan_request,
-    get_planning_draft as _get_planning_draft_request,
     get_planning_ordered_plan as _get_planning_ordered_plan_request,
     get_planning_state as _get_planning_state_request,
     get_user_profile as _get_user_profile_request,
+    get_working_plan as _get_working_plan_request,
     preview_planning_compensation as _preview_planning_compensation_request,
     query_planning_candidate_pool as _query_planning_candidate_pool_request,
     run_planning_review as _run_planning_review_request,
-    select_planning_draft_items as _select_planning_draft_items_request,
+    select_working_plan_items as _select_working_plan_items_request,
     sort_planning_ordered_plan as _sort_planning_ordered_plan_request,
     move_planning_ordered_plan_unit as _move_planning_ordered_plan_unit_request,
     remove_planning_ordered_plan_units as _remove_planning_ordered_plan_units_request,
@@ -192,15 +193,6 @@ def _latest_user_text(ctx: RunContext[RequestContext]) -> str:
 
 def _contains_natural_ref_text(refs: list[str]) -> bool:
     return any(any(ord(char) > 127 for char in str(ref or "")) for ref in refs)
-
-
-def _infer_school_major_refs_from_text(ctx: RunContext[RequestContext], text: str) -> list[str]:
-    resolution = resolve_school_major_ref(text, getattr(ctx.deps, "batch", None) or "01")
-    if not resolution.can_query or resolution.ambiguous:
-        return []
-    school = resolution.school_keywords[0]
-    major = resolution.major_keywords[0]
-    return [f"{school} {major}"] if school and major else []
 
 
 def _normalize_prompt_key(text: str | None) -> str:
@@ -664,6 +656,15 @@ def _has_filter_selection_scope(filters: dict[str, Any]) -> bool:
 
 
 def _execution_missing_inputs(plan_model: PlanActionPlan) -> list[str]:
+    if plan_model.action_family == "add_units":
+        if plan_model.stage not in {"preview", "apply"}:
+            return []
+        if not plan_model.atomic_actions:
+            return ["selection_scope"]
+        atomic = plan_model.atomic_actions[0]
+        if not atomic.volunteer_ids and not _has_filter_selection_scope(atomic.filters):
+            return ["selection_scope"]
+        return []
     if plan_model.action_family != "replace_units":
         return []
     if plan_model.stage not in {"preview", "apply"}:
@@ -681,6 +682,11 @@ def _execution_missing_inputs(plan_model: PlanActionPlan) -> list[str]:
 
 def _execution_missing_inputs_message(plan_model: PlanActionPlan, missing_inputs: list[str]) -> str:
     missing = {str(item or "").strip() for item in missing_inputs if str(item or "").strip()}
+    if plan_model.action_family == "add_units" and "selection_scope" in missing:
+        return (
+            "这次还没定位到要加入方案的候选志愿。"
+            "请补充学校、专业、地域等筛选范围，或先在候选列表里点选要加入的志愿，我会先给你确认预览。"
+        )
     if plan_model.action_family == "replace_units":
         if {"volunteer_ids", "replacement_scope"}.issubset(missing):
             return (
@@ -1812,7 +1818,7 @@ async def _load_current_review_issue_scopes(
     if not ordered_items:
         ordered_items = ((planning_state.get("orderedPlanState") or {}).get("items") or [])
     if not ordered_items:
-        ordered_items = ((planning_state.get("draftPlanState") or {}).get("items") or [])
+        ordered_items = get_working_plan_items(planning_state)
     review_checks = (((planning_state.get("reviewState") or {}).get("checks") or []))
     review_issues = build_review_issue_scopes(
         review_checks,
@@ -1933,6 +1939,17 @@ def _structural_review_issue_guidance(issue: dict[str, Any]) -> tuple[str, list[
         )
 
 
+def _is_item_review_issue(issue: dict[str, Any] | None) -> bool:
+    return str((issue or {}).get("scope_kind") or "").strip() in {
+        "item_removal",
+        "item_replacement",
+    }
+
+
+def _is_replacement_first_review_issue(issue: dict[str, Any] | None) -> bool:
+    return str((issue or {}).get("scope_kind") or "").strip() == "item_replacement"
+
+
 def _summary_total(summary: dict[str, Any] | None) -> int:
     summary = summary or {}
     return summary.get("unitTotal") or summary.get("total") or 0
@@ -1962,7 +1979,7 @@ def _internal_mutation_ok(result: Any) -> bool:
 
 def _append_intent_relation_summary(base_text: str, planning_state: dict[str, Any] | None) -> str:
     ordered_state = (planning_state or {}).get("orderedPlanState") or {}
-    draft_state = (planning_state or {}).get("draftPlanState") or {}
+    draft_state = get_working_plan_state(planning_state)
     ordered_items = ordered_state.get("items") or []
     draft_items = draft_state.get("items") or []
     plan_items = ordered_items or draft_items
@@ -2180,7 +2197,7 @@ async def _query_candidate_pool_selection(
     page = 1
 
     if exclude_current_units:
-        for loader in (_get_planning_ordered_plan_request, _get_planning_draft_request):
+        for loader in (_get_planning_ordered_plan_request, _get_working_plan_request):
             try:
                 result = await loader(session_id)
             except Exception:
@@ -2269,11 +2286,11 @@ async def _apply_candidate_volunteer_ids_into_plan(
             before_state_result = await _get_planning_state_request(session_id)
             before_state = before_state_result.get("data") or {} if before_state_result.get("code") == 0 else {}
             before_ordered_total = _summary_total(((before_state.get("orderedPlanState") or {}).get("summary") or {}))
-            before_draft_total = _summary_total(((before_state.get("draftPlanState") or {}).get("summary") or {}))
+            before_draft_total = _summary_total(get_working_plan_summary(before_state))
         except Exception:
             logger.warning("failed to read planning totals before selecting candidates: session_id=%s", session_id, exc_info=True)
 
-        select_result = await _select_planning_draft_items_request(
+        select_result = await _select_working_plan_items_request(
             _DEFAULT_TENANT_ID,
             session_id,
             volunteer_ids,
@@ -2292,7 +2309,7 @@ async def _apply_candidate_volunteer_ids_into_plan(
 
         latest_state = await _refresh_review_and_state(session_id) or (ordered_result.get("data") or {})
         ordered_summary = ((latest_state.get("orderedPlanState") or {}).get("summary") or {})
-        draft_summary = ((latest_state.get("draftPlanState") or {}).get("summary") or {})
+        draft_summary = get_working_plan_summary(latest_state)
         current_total = _summary_total(ordered_summary)
         draft_total = _summary_total(draft_summary)
         target_total = ordered_summary.get("targetUnitCount") or ordered_summary.get("targetCount") or 0
@@ -2419,26 +2436,6 @@ _SORT_FIELD_DIRECTIONS = {
     "schoolRank": "升序（院校排名/层次更靠前的机会优先）",
     "finalScore": "降序（系统综合推荐系数更高的机会优先）",
 }
-_EXPLICIT_SORT_FIELD_TEXT_MARKERS: dict[str, tuple[str, ...]] = {
-    "admissionRatio": ("录取率", "录取概率"),
-    "schoolRank": ("院校层次", "学校层次", "院校排名", "学校排名"),
-    "finalScore": ("推荐系数", "推荐分", "推荐度", "推荐排序", "综合推荐"),
-}
-
-
-def _compact_sort_text(value: Any) -> str:
-    return "".join(str(value or "").strip().split()).lower()
-
-
-def _infer_sort_field_from_explicit_text(*values: Any) -> str | None:
-    text = "\n".join(_compact_sort_text(value) for value in values if str(value or "").strip())
-    if not text:
-        return None
-    for field, markers in _EXPLICIT_SORT_FIELD_TEXT_MARKERS.items():
-        if any(_compact_sort_text(marker) in text for marker in markers if marker):
-            return field
-    return None
-
 
 def _infer_ordered_sort_field(plan_model: PlanActionPlan) -> str:
     atomic = plan_model.atomic_actions[0] if plan_model.atomic_actions else None
@@ -2447,12 +2444,6 @@ def _infer_ordered_sort_field(plan_model: PlanActionPlan) -> str:
             raw_value = str((atomic.filters or {}).get(key) or "").strip()
             if raw_value in _SORT_FIELD_ALIASES:
                 return _SORT_FIELD_ALIASES[raw_value]
-    inferred = _infer_sort_field_from_explicit_text(
-        getattr(plan_model, "user_goal", ""),
-        getattr(plan_model, "preview_summary", ""),
-    )
-    if inferred:
-        return inferred
     return "admissionRatio"
 
 
@@ -2871,21 +2862,6 @@ async def _execute_plan_action_model(
 ) -> PlanExecutionResult:
     _hydrate_replace_filters_from_profile(ctx, plan_model)
 
-    if plan_model.action_family in {"pin_unit", "unpin_unit"}:
-        return PlanExecutionResult(
-            applied=False,
-            action_family=plan_model.action_family,
-            stage=plan_model.stage,
-            result_kind="error",
-            context_summary=plan_model.context_summary,
-            summary=(
-                "新版工作台暂不提供固定/锁定志愿入口，我不会通过对话单独改这个状态。"
-                "如果你想稳定某条志愿的位置，可以告诉我把它移动到第几位，或先按录取率、院校层次、推荐系数排序后再微调。"
-            ),
-            reply_focus=["unsupported_action", "pin_disabled"],
-            next_step_hints=["引导用户使用移动到指定位置或方案排序，不要继续执行 pin/unpin。"],
-        )
-
     missing_inputs = list(plan_model.missing_inputs or [])
     for item in _execution_missing_inputs(plan_model):
         if item not in missing_inputs:
@@ -2982,13 +2958,33 @@ async def _execute_plan_action_model(
             )
         if (
             review_issue
-            and str(review_issue.get("scope_kind") or "").strip() == "item_removal"
+            and _is_item_review_issue(review_issue)
             and review_issue_target is not None
             and atomic is not None
             and not _has_filter_selection_scope(atomic.filters)
         ):
             unit_count = _count_ordered_units_for_ids(ordered_items, effective_ids)
             issue_label = str(review_issue.get("label") or review_issue.get("code") or "问题项").strip()
+            if _is_replacement_first_review_issue(review_issue):
+                preview_summary = (
+                    f"已定位到当前方案里当前审查命中的{issue_label}："
+                    f"共 {unit_count} 个专业组，涉及 {len(effective_ids)} 条志愿。"
+                    "这类问题更适合先看替换预览，而不是直接整批删除。"
+                    "请补充你希望换成的地域、专业、院校层次或冲稳保范围；"
+                    "我会先生成可确认的替换预览，确认前不会改动方案。"
+                )
+                return PlanExecutionResult(
+                    applied=False,
+                    action_family=plan_model.action_family,
+                    stage="analyze",
+                    result_kind="error",
+                    context_summary=plan_model.context_summary,
+                    summary=preview_summary,
+                    reply_focus=["replacement_scope_required", "review_issue_batch_scope"],
+                    reply_strategy="direct_blocking",
+                    next_step_hints=["先让用户补充替换范围；不要把替换优先风险自动改成整批删除。"],
+                    facts=_facts_with_planning_version({}, ctx),
+                )
             preview_summary = (
                 f"已定位到当前方案里当前审查命中的{issue_label}："
                 f"共 {unit_count} 个专业组，涉及 {len(effective_ids)} 条志愿。"
@@ -3136,13 +3132,21 @@ async def _execute_plan_action_model(
             if review_issue and expanded_ids:
                 unit_count = _count_ordered_units_for_ids(ordered_items, expanded_ids)
                 issue_label = str(review_issue.get("label") or review_issue.get("code") or "问题项").strip()
-                preview_summary = (
-                    f"已定位到当前方案里当前审查命中的{issue_label}："
-                    f"共 {unit_count} 个专业组，涉及 {len(expanded_ids)} 条志愿。"
-                    "这次确认会按整批问题项处理，不只是示例里的个别志愿。"
-                    "如果你只想处理某个学校、专业组或位置，请直接告诉我。"
-                    "确认后我会先移出这些项，并在执行后重新审查。"
-                )
+                if _is_replacement_first_review_issue(review_issue):
+                    preview_summary = (
+                        f"已定位到当前方案里当前审查命中的{issue_label}："
+                        f"共 {unit_count} 个专业组，涉及 {len(expanded_ids)} 条志愿。"
+                        "这类问题默认优先做替换预览；如果你确实要直接移除整批，也可以确认这次按删除处理。"
+                        "确认后我会移出这些项，并在执行后重新审查。"
+                    )
+                else:
+                    preview_summary = (
+                        f"已定位到当前方案里当前审查命中的{issue_label}："
+                        f"共 {unit_count} 个专业组，涉及 {len(expanded_ids)} 条志愿。"
+                        "这次确认会按整批问题项处理，不只是示例里的个别志愿。"
+                        "如果你只想处理某个学校、专业组或位置，请直接告诉我。"
+                        "确认后我会先移出这些项，并在执行后重新审查。"
+                    )
                 return PlanExecutionResult(
                     applied=False,
                     action_family=plan_model.action_family,
@@ -3213,17 +3217,6 @@ async def _execute_plan_action_model(
     if plan_model.stage == "preview" and plan_model.action_family == "add_units":
         atomic = plan_model.atomic_actions[0] if plan_model.atomic_actions else None
         refs = list(atomic.volunteer_ids or []) if atomic else []
-        if not refs:
-            inferred_refs = _infer_school_major_refs_from_text(ctx, plan_model.user_goal)
-            if inferred_refs:
-                action_data = atomic.model_dump() if atomic is not None else {"action_type": "add_units"}
-                action_data["volunteer_ids"] = inferred_refs
-                action_data.setdefault("reason", plan_model.user_goal)
-                plan_model = plan_model.model_copy(
-                    update={"atomic_actions": [PlanAtomicAction(**action_data)]}
-                )
-                atomic = plan_model.atomic_actions[0]
-                refs = inferred_refs
         if refs:
             existing_ids: list[str] = []
             if _contains_natural_ref_text(refs):

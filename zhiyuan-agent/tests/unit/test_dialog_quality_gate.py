@@ -29,7 +29,24 @@ def test_gate_plan_covers_release_and_historical_dialog_cases(tmp_path):
     assert "examples/dialog_regression_303_dialogue_derived_cases.json" in live_case_args
     assert "examples/dialog_regression_plan_correctness_cases.json" in live_case_args
     assert "examples/dialog_regression_comprehensive_cases.json" in live_case_args
+    assert "examples/dialog_regression_310_review_repair_cases.json" in live_case_args
     assert len(live_case_args) >= 20
+
+
+def test_gate_plan_covers_310_review_repair_live_report_and_semantic(tmp_path):
+    commands = gate.build_gate_plan(metrics_dir=tmp_path)
+    expected_stem = "dialog_regression_310_review_repair_cases"
+    command_by_name = {command.name: command for command in commands}
+
+    live = command_by_name[f"live-{expected_stem}"]
+    report = command_by_name[f"report-{expected_stem}"]
+    semantic = command_by_name[f"semantic-frame-{expected_stem}"]
+
+    assert live.command[live.command.index("--cases") + 1] == f"examples/{expected_stem}.json"
+    assert "--keep-response-text" in live.command
+    assert "--assert-plan-style" in live.command
+    assert report.depends_on == [f"live-{expected_stem}"]
+    assert semantic.depends_on == [f"live-{expected_stem}"]
 
 
 def test_dialogue_derived_gate_uses_per_case_history_clear(tmp_path):

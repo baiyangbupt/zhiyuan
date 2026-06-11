@@ -21,6 +21,7 @@ from app.tools.planning_workflow_tool import (
     _build_plan_adjustment_facts,
     _build_plan_intent_relation_lines,
 )
+from app.util.planning_state_compat import get_working_plan_state, get_working_plan_summary
 from app.util.internal_client import (
     apply_planning_compensation as _apply_planning_compensation_request,
     analyze_planning_plan_adjustment as _analyze_planning_plan_adjustment_request,
@@ -123,7 +124,7 @@ async def _build_adjustment_fallback_facts(session_id: str) -> dict[str, Any]:
             return {}
         planning_state = await _get_planning_state_with_latest_profile(session_id)
         ordered_state = (planning_state.get("orderedPlanState") or {}) if planning_state else {}
-        draft_state = (planning_state.get("draftPlanState") or {}) if planning_state else {}
+        draft_state = get_working_plan_state(planning_state)
         return _build_plan_adjustment_facts(
             adjustment_result.get("data") or {},
             planning_state=planning_state,
@@ -137,7 +138,7 @@ async def _build_adjustment_fallback_facts(session_id: str) -> dict[str, Any]:
 
 def _append_intent_relation_summary(base_text: str, planning_state: dict[str, Any] | None) -> str:
     ordered_state = (planning_state or {}).get("orderedPlanState") or {}
-    draft_state = (planning_state or {}).get("draftPlanState") or {}
+    draft_state = get_working_plan_state(planning_state)
     ordered_items = ordered_state.get("items") or []
     draft_items = draft_state.get("items") or []
     plan_items = ordered_items or draft_items
@@ -158,7 +159,7 @@ async def _compensation_apply_blocker(ctx: RunContext[RequestContext]) -> str | 
     try:
         state_result = await _get_planning_state_request(session_id)
         planning_state = state_result.get("data") or {} if state_result.get("code") == 0 else {}
-        draft_summary = ((planning_state.get("draftPlanState") or {}).get("summary") or {})
+        draft_summary = get_working_plan_summary(planning_state)
         ordered_summary = ((planning_state.get("orderedPlanState") or {}).get("summary") or {})
         current_total = max(summary_total(draft_summary), summary_total(ordered_summary))
         target_total = (
@@ -208,11 +209,7 @@ async def _apply_compensation_to_plan(ctx: RunContext[RequestContext]) -> str:
         result = await _apply_planning_compensation_request(_DEFAULT_TENANT_ID, session_id, True, True)
         if result.get("code") != 0:
             return "应用补偿失败，请稍后重试。"
-        draft_summary = (
-            result.get("data", {})
-            .get("draftPlanState", {})
-            .get("summary", {})
-        )
+        draft_summary = get_working_plan_summary(result.get("data") or {})
         draft_total = summary_total(draft_summary)
         latest_state = await _refresh_review_and_state(session_id) or (result.get("data") or {})
         base_text = (

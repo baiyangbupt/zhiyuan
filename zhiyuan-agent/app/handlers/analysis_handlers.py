@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import re
+import asyncio
 from typing import Any
 
 from pydantic_ai import RunContext
@@ -24,11 +25,14 @@ from app.tools.plan_orchestration_models import PlanActionPlan, PlanExecutionRes
 from app.tools.planning_workflow_tool import (
     _build_plan_adjustment_facts,
     _build_review_result_facts,
+    _fix_proposal_facts,
 )
+from app.util.planning_state_compat import get_working_plan_summary
 from app.util.internal_client import (
     analyze_planning_plan_adjustment as _analyze_planning_plan_adjustment_request,
-    get_planning_draft as _get_planning_draft_request,
+    generate_planning_fix_proposals as _generate_planning_fix_proposals_request,
     get_planning_ordered_plan as _get_planning_ordered_plan_request,
+    get_working_plan as _get_working_plan_request,
     run_planning_review as _run_planning_review_request,
 )
 
@@ -128,10 +132,168 @@ def _candidate_supply_missing_stable_or_protect(facts: dict[str, Any]) -> bool:
     return bool({"稳", "保"} & missing)
 
 
+async def _fetch_fix_proposal_facts(session_id: str) -> dict[str, Any]:
+    try:
+        proposal_result = await _generate_planning_fix_proposals_request(
+            _DEFAULT_TENANT_ID, session_id
+        )
+        if proposal_result.get("code") != 0:
+            return {}
+        return _fix_proposal_facts(proposal_result.get("data") or {})
+    except Exception:
+        logger.warning("fetch fix proposal facts failed: session_id=%s", session_id, exc_info=True)
+        return {}
+
+
+_FIX_PROPOSAL_STATUS_LABELS = {
+    "ready": "可确认后执行",
+    "preview_only": "已有预览，暂不自动执行",
+    "blocked": "暂不能自动处理",
+    "info": "仅提醒",
+}
+
+_FIX_PROPOSAL_STRATEGY_LABELS = {
+    "replace_risk_items": "优先看替换",
+    "remove_risk_items": "移除风险项",
+    "fill_missing_count": "补足数量",
+    "sort_by_probability": "按录取率重排",
+    "rebalance_tier_ratio": "调整冲稳保结构",
+    "fill_probability_gap": "补梯度断层",
+    "add_safety_items": "补安全垫",
+    "adjust_major_group_inner_safety": "调整组内安全垫",
+}
+
+_FIX_PROPOSAL_BLOCKING_GUIDANCE = {
+    "candidate_pool_insufficient": "处理边界：当前可用于规划的候选池里没有足够可补项，下一步只能先放宽条件或接受当前数量风险",
+    "safety_candidate_insufficient": "处理边界：当前可用于规划的候选池里缺少可用保底/安全垫候选，不能直接承诺补强安全垫",
+    "tier_candidate_insufficient": "处理边界：当前可用于规划的候选池里目标冲稳保区间候选不足，暂时不能把比例直接调到目标",
+    "probability_gap_candidate_insufficient": "处理边界：当前可用于规划的候选池里断层中间录取率候选不足，暂时不能补齐录取率梯度",
+    "no_sort_or_replacement_candidate": "处理边界：当前缺少可重排或可替换项，不能承诺自动修复倒挂",
+    "major_group_safety_candidate_insufficient": "处理边界：专业组内缺少合适安全垫专业，不能直接移除托底项",
+    "risk_item_unresolved_or_replacement_missing": "处理边界：风险条目缺少可定位明细或替换候选，需要先缩小范围",
+    "replacement_pair_missing": "处理边界：当前方案已满，但没有明确一进一出的替换配对，不能只追加候选",
+    "volunteer_model_mismatch": "处理边界：当前填报模式不支持这类组内修复",
+    "risk_unit_unresolved": "处理边界：风险专业组没有定位清楚，需要先确认具体专业组",
+    "partial_major_group_safety_candidate_missing": "处理边界：只有部分专业组找到安全垫，不能把本轮当作完整修复",
+    "risk_item_unresolved": "处理边界：风险志愿明细没有定位清楚，需要先确认具体志愿",
+    "safe_replacement_candidate_insufficient": "处理边界：暂时没有同层次且风险更低的替换项",
+    "objective_validation_not_improved": "处理边界：预览没有让本次审查目标变好，暂不应该确认应用",
+}
+
+
+def _normalize_text_items(values: Any) -> list[str]:
+    if isinstance(values, str):
+        value = values.strip()
+        return [value] if value else []
+    if not isinstance(values, list):
+        return []
+    result: list[str] = []
+    for item in values:
+        value = str(item or "").strip()
+        if value and value not in result:
+            result.append(value)
+    return result
+
+
+def _fix_proposal_blocking_guidance(proposal: dict[str, Any]) -> list[str]:
+    codes = _normalize_text_items(proposal.get("blocking_reason_codes"))
+    result: list[str] = []
+    for shortage in proposal.get("candidate_shortages") or []:
+        if not isinstance(shortage, dict):
+            continue
+        message = str(shortage.get("message") or "").strip()
+        scope = str(shortage.get("scope") or "").strip()
+        if not message:
+            if scope == "capacity_or_replacement":
+                message = "处理边界：当前不是单纯缺候选，而是缺少完整一进一出的替换配对"
+            elif scope == "objective_validation":
+                message = "处理边界：预览没有让本次审查目标变好，暂不应该确认应用"
+            elif scope == "hard_constraints":
+                message = "处理边界：已确认的硬性要求收窄了可选范围，当前可用于补位的候选不足"
+            else:
+                message = "处理边界：当前可用于规划的候选池里目标候选不足"
+        if message and not message.startswith("处理边界："):
+            message = f"处理边界：{message}"
+        if message and message not in result:
+            result.append(message)
+    for code in codes:
+        text = _FIX_PROPOSAL_BLOCKING_GUIDANCE.get(code)
+        if text and text not in result:
+            result.append(text)
+    return result
+
+
+def _fix_proposal_blocking_hint(facts: dict[str, Any]) -> str:
+    proposal_facts = facts.get("fix_proposals") if isinstance(facts.get("fix_proposals"), dict) else {}
+    proposals = proposal_facts.get("proposals") or []
+    for proposal in proposals:
+        if not isinstance(proposal, dict):
+            continue
+        if str(proposal.get("status") or "").strip() != "blocked":
+            continue
+        guidance = _fix_proposal_blocking_guidance(proposal)
+        if guidance:
+            return "遇到 blocked 修复建议时，要先解释系统不能直接执行的边界；不要把它说成已经能自动补齐或自动替换。"
+    return ""
+
+
+def _fix_proposal_lines(facts: dict[str, Any], *, limit: int = 3) -> list[str]:
+    proposal_facts = facts.get("fix_proposals") if isinstance(facts.get("fix_proposals"), dict) else {}
+    proposals = proposal_facts.get("proposals") or []
+    if not proposals:
+        return []
+
+    lines: list[str] = []
+    for proposal in proposals[:limit]:
+        if not isinstance(proposal, dict):
+            continue
+        title = str(proposal.get("title") or "修复建议").strip()
+        status = str(proposal.get("status") or "").strip()
+        strategy = str(proposal.get("strategy") or "").strip()
+        status_label = _FIX_PROPOSAL_STATUS_LABELS.get(status, status or "待确认")
+        strategy_label = _FIX_PROPOSAL_STRATEGY_LABELS.get(strategy, strategy)
+        remove_count = int(proposal.get("remove_volunteer_count") or 0)
+        add_count = int(proposal.get("add_volunteer_count") or 0)
+        parts = [status_label]
+        if strategy_label:
+            parts.append(strategy_label)
+        if remove_count or add_count:
+            parts.append(f"预计移出 {remove_count} 条、补入 {add_count} 条")
+        action_summaries = [
+            str(item or "").strip()
+            for item in (proposal.get("action_summaries") or [])
+            if str(item or "").strip()
+        ]
+        if action_summaries:
+            parts.append("；".join(action_summaries[:2]))
+        blocking_reason = str(proposal.get("blocking_reason") or "").strip()
+        if blocking_reason:
+            parts.append(blocking_reason)
+        guidance = _fix_proposal_blocking_guidance(proposal)
+        if guidance:
+            parts.append(guidance[0])
+        warnings = [
+            str(item or "").strip()
+            for item in (proposal.get("warnings") or [])
+            if str(item or "").strip()
+        ]
+        if warnings:
+            parts.append(warnings[0])
+        lines.append(f"{title}：{'；'.join(parts)}")
+    return lines
+
+
+def _fix_proposal_summary_text(facts: dict[str, Any], *, limit: int = 2) -> str:
+    lines = _fix_proposal_lines(facts, limit=limit)
+    if not lines:
+        return ""
+    return "；".join(lines)
+
+
 async def _fetch_ordered_or_draft(
     planning_state: dict[str, Any], session_id: str
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
-    """根据 planning_state 按优先级获取 ordered 或 draft 详情。"""
+    """根据 planning_state 按优先级获取 ordered 或已加入方案详情。"""
     ordered_state: dict[str, Any] | None = None
     draft_state: dict[str, Any] | None = None
 
@@ -139,8 +301,8 @@ async def _fetch_ordered_or_draft(
         ordered_result = await _get_planning_ordered_plan_request(session_id)
         if ordered_result.get("code") == 0:
             ordered_state = ordered_result.get("data") or {}
-    elif ((planning_state.get("draftPlanState") or {}).get("summary") or {}).get("total"):
-        draft_result = await _get_planning_draft_request(session_id)
+    elif summary_total(get_working_plan_summary(planning_state)):
+        draft_result = await _get_working_plan_request(session_id)
         if draft_result.get("code") == 0:
             draft_state = draft_result.get("data") or {}
 
@@ -170,6 +332,9 @@ def _build_review_summary(facts: dict[str, Any]) -> tuple[str, list[str], list[s
         parts.append(f"候选供给：{candidate_supply_text}")
     if compensation_count > 0 and compensation_text:
         parts.append(f"当前还有 {compensation_count} 项可补偿动作，主要是 {compensation_text}")
+    fix_proposal_text = _fix_proposal_summary_text(facts)
+    if fix_proposal_text:
+        parts.append(f"修复建议：{fix_proposal_text}")
 
     reply_focus = ["review_result", "risk_warning"]
     if problems_text:
@@ -180,6 +345,8 @@ def _build_review_summary(facts: dict[str, Any]) -> tuple[str, list[str], list[s
         reply_focus.append("compensation_options")
     if candidate_supply_text:
         reply_focus.append("candidate_supply")
+    if fix_proposal_text:
+        reply_focus.append("fix_proposals")
 
     next_step_hints: list[str] = []
     if missing_stable_or_protect:
@@ -188,6 +355,11 @@ def _build_review_summary(facts: dict[str, Any]) -> tuple[str, list[str], list[s
         next_step_hints.append("如果用户想继续处理，可以先看看怎么补，再决定是否应用。")
     if risk_count == 0 and warn_count == 0:
         next_step_hints.append("如果用户只是确认当前是否稳定，可以明确说明目前没有明显风险或提醒。")
+    if fix_proposal_text:
+        next_step_hints.append("涉及方案修复时，以 fix_proposals 为后端权威修复方向；preview_only 或 blocked 不要承诺自动执行。")
+    blocking_hint = _fix_proposal_blocking_hint(facts)
+    if blocking_hint:
+        next_step_hints.append(blocking_hint)
     return "；".join(parts) + "。", reply_focus, next_step_hints
 
 
@@ -271,12 +443,21 @@ def _build_review_direct_reply(facts: dict[str, Any]) -> str:
         lines.append("### 候选供给")
         lines.append(f"- {candidate_supply_text}。")
 
+    fix_proposal_lines = _fix_proposal_lines(facts)
+    if fix_proposal_lines:
+        lines.append("")
+        lines.append("### 可处理方向")
+        for item in fix_proposal_lines[:3]:
+            lines.append(f"- {item}。")
+
     compensation_count = int(facts.get("compensation_action_count") or 0)
     compensation_text = _compact_list_text(facts.get("compensation_summaries"))
     lines.append("")
     lines.append("### 下一步")
     if compensation_count > 0 and compensation_text:
         lines.append(f"- 可以先看补齐建议：{compensation_text}。我会先给预览，确认后再应用。")
+    elif fix_proposal_lines:
+        lines.append("- 如果要正式调整方案，我会先按上面的修复方向给确认预览；只有确认后才会执行。")
     elif _candidate_supply_missing_stable_or_protect(facts):
         lines.append("- 当前候选池没有可直接补入的稳/保候选，不能只靠调整比例解决；更适合先说明风险，再看是否放宽条件或接受偏冲结构。")
     elif risk_count > 0 or warn_count > 0:
@@ -357,6 +538,9 @@ def _build_adjustment_summary(facts: dict[str, Any]) -> tuple[str, list[str], li
         parts.append("当前不能直接承诺补稳或补保，需要先看是否放宽筛选条件、降低地域/专业限制，或接受这份方案整体偏冲的风险")
     if not has_actionable_suggestions and first_step_hint:
         parts.append(first_step_hint)
+    fix_proposal_text = _fix_proposal_summary_text(facts)
+    if fix_proposal_text:
+        parts.append(f"后端修复建议：{fix_proposal_text}")
 
     reply_focus = ["adjustment_analysis", "suggestion_counts"]
     if summary_text or rule_summaries:
@@ -367,6 +551,8 @@ def _build_adjustment_summary(facts: dict[str, Any]) -> tuple[str, list[str], li
         reply_focus.append("review_issue_hit_plan_examples")
     if candidate_supply_text:
         reply_focus.append("candidate_supply")
+    if fix_proposal_text:
+        reply_focus.append("fix_proposals")
 
     next_step_hints: list[str] = []
     if missing_stable_or_protect:
@@ -383,6 +569,11 @@ def _build_adjustment_summary(facts: dict[str, Any]) -> tuple[str, list[str], li
             next_step_hints.append(
                 "优先把用户引到当前系统已经能稳定执行的第一步动作，不要口头承诺整套更稳方案已经可直接执行。"
             )
+    if fix_proposal_text:
+        next_step_hints.append("优先按 fix_proposals 解释可处理方向；preview_only/blocked 只说明预览或阻塞原因，不要承诺应用。")
+    blocking_hint = _fix_proposal_blocking_hint(facts)
+    if blocking_hint:
+        next_step_hints.append(blocking_hint)
     return "；".join(parts) + "。", reply_focus, next_step_hints
 
 
@@ -397,6 +588,7 @@ async def handle_review_plan(
 ) -> PlanExecutionResult:
     session_id = ctx.deps.sessionid
     review_result = await _run_planning_review_request(_DEFAULT_TENANT_ID, session_id)
+    fix_proposals = await _fetch_fix_proposal_facts(session_id)
     planning_state = await _get_planning_state_with_latest_profile(session_id)
 
     ordered_state, draft_state = await _fetch_ordered_or_draft(planning_state, session_id)
@@ -416,6 +608,8 @@ async def handle_review_plan(
     facts["plan_total"] = summary_total(active_summary)
     facts["target_total"] = summary_target_total(active_summary)
     facts["tier_counts"] = active_summary.get("unitTierCounts") or active_summary.get("tierCounts") or {}
+    if fix_proposals:
+        facts["fix_proposals"] = fix_proposals
     review_summary, reply_focus, next_step_hints = _build_review_summary(facts)
     direct_reply = _build_review_direct_reply(facts)
     if "direct_review_reply" not in reply_focus:
@@ -443,8 +637,9 @@ async def handle_analyze_adjustment(
     ctx: RunContext[RequestContext], plan: PlanActionPlan
 ) -> PlanExecutionResult:
     session_id = ctx.deps.sessionid
-    adjustment_result = await _analyze_planning_plan_adjustment_request(
-        _DEFAULT_TENANT_ID, session_id
+    adjustment_result, fix_proposals = await asyncio.gather(
+        _analyze_planning_plan_adjustment_request(_DEFAULT_TENANT_ID, session_id),
+        _fetch_fix_proposal_facts(session_id),
     )
     planning_state = await _get_planning_state_with_latest_profile(session_id)
 
@@ -459,6 +654,8 @@ async def handle_analyze_adjustment(
         ordered_state=ordered_state,
         draft_state=draft_state,
     )
+    if fix_proposals:
+        facts["fix_proposals"] = fix_proposals
     state_summary, reply_focus, next_step_hints = _build_adjustment_summary(facts)
 
     return PlanExecutionResult(

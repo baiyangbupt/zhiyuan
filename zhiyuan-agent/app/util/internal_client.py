@@ -561,12 +561,11 @@ async def mark_planning_intent_change_stale(
     )
 
 
-async def run_planning_review(thread_id: Union[str, int]) -> Dict[str, Any]:
-    """执行统一规划方案审查。"""
-    return await http_client.post(
-        endpoint=f"/gaotu-assistant-bot/inner/planning/1/session/review/run?chatSessionId={thread_id}",
-        json_data={},
-        error_msg="执行规划审查失败",
+async def list_planning_review_rules(tenant_id: Union[str, int] = 1) -> Dict[str, Any]:
+    """获取后端权威审查规则元数据。"""
+    return await http_client.get(
+        endpoint=f"/gaotu-assistant-bot/inner/planning/{tenant_id}/review/rules",
+        error_msg="获取规划审查规则失败",
     )
 
 
@@ -579,29 +578,57 @@ async def preview_planning_compensation(thread_id: Union[str, int]) -> Dict[str,
     )
 
 
-async def apply_planning_compensation(
-    thread_id: Union[str, int],
+async def generate_planning_fix_proposals(
+    tenant_id: Union[str, int],
+    chat_session_id: Union[str, int],
+) -> Dict[str, Any]:
+    """生成后端统一风险修复建议。"""
+    return await http_client.post(
+        endpoint=(
+            f"/gaotu-assistant-bot/inner/planning/{tenant_id}/session/fix-proposals/generate"
+            f"?chatSessionId={chat_session_id}"
+        ),
+        json_data={},
+        error_msg="生成规划修复建议失败",
+    )
+
+
+async def apply_planning_fix_proposal(
+    tenant_id: Union[str, int],
+    chat_session_id: Union[str, int],
+    proposal_id: str,
+    source_version_guard: int,
     regenerate_ordered_plan: bool = True,
     rerun_review: bool = True,
 ) -> Dict[str, Any]:
-    """应用统一规划补偿建议。"""
+    """应用后端统一风险修复建议。"""
     return await http_client.post(
-        endpoint=f"/gaotu-assistant-bot/inner/planning/1/session/compensation/apply?chatSessionId={thread_id}",
+        endpoint=(
+            f"/gaotu-assistant-bot/inner/planning/{tenant_id}/session/fix-proposals/apply"
+            f"?chatSessionId={chat_session_id}"
+        ),
         json_data={
+            "proposalId": proposal_id,
+            "sourceVersionGuard": source_version_guard,
             "regenerateOrderedPlan": regenerate_ordered_plan,
             "rerunReview": rerun_review,
         },
-        error_msg="应用规划补偿失败",
+        error_msg="应用规划修复建议失败",
+    )
+
+
+async def get_working_plan(thread_id: Union[str, int]) -> Dict[str, Any]:
+    """获取当前统一规划方案。"""
+    return await http_client.get(
+        endpoint="/gaotu-assistant-bot/inner/planning/1/session/working-plan",
+        params={"chatSessionId": thread_id},
+        error_msg="获取方案失败",
     )
 
 
 async def get_planning_draft(thread_id: Union[str, int]) -> Dict[str, Any]:
-    """获取当前统一规划草稿方案。"""
-    return await http_client.get(
-        endpoint="/gaotu-assistant-bot/inner/planning/1/session/draft",
-        params={"chatSessionId": thread_id},
-        error_msg="获取草稿方案失败",
-    )
+    """Deprecated compatibility alias. New code should use get_working_plan."""
+    return await get_working_plan(thread_id)
 
 
 async def get_planning_ordered_plan(thread_id: Union[str, int]) -> Dict[str, Any]:
@@ -610,22 +637,6 @@ async def get_planning_ordered_plan(thread_id: Union[str, int]) -> Dict[str, Any
         endpoint="/gaotu-assistant-bot/inner/planning/1/session/ordered-plan",
         params={"chatSessionId": thread_id},
         error_msg="获取排序方案失败",
-    )
-
-
-async def generate_planning_ordered_plan(
-    thread_id: Union[str, int],
-    force_regenerate: bool = False,
-    regroup_by_tier: bool = False,
-) -> Dict[str, Any]:
-    """生成或刷新统一规划排序方案。"""
-    return await http_client.post(
-        endpoint=f"/gaotu-assistant-bot/inner/planning/1/session/ordered-plan/generate?chatSessionId={thread_id}",
-        json_data={
-            "forceRegenerate": force_regenerate,
-            "regroupByTier": regroup_by_tier,
-        },
-        error_msg="生成排序方案失败",
     )
 
 
@@ -645,35 +656,15 @@ async def move_planning_ordered_item(
     )
 
 
-async def pin_planning_ordered_item(
+async def remove_working_plan_items(
     thread_id: Union[str, int],
-    volunteer_id: str,
-    target_position: int,
+    volunteer_ids: list[str],
 ) -> Dict[str, Any]:
-    """固定统一规划排序项。"""
+    """将志愿移出统一规划方案。"""
     return await http_client.post(
-        endpoint=f"/gaotu-assistant-bot/inner/planning/1/session/ordered-plan/pin?chatSessionId={thread_id}",
-        json_data={
-            "volunteerId": volunteer_id,
-            "targetPosition": target_position,
-        },
-        error_msg="固定排序项失败",
-    )
-
-
-async def unpin_planning_ordered_item(
-    thread_id: Union[str, int],
-    volunteer_id: str,
-    target_position: int = 1,
-) -> Dict[str, Any]:
-    """取消固定统一规划排序项。"""
-    return await http_client.post(
-        endpoint=f"/gaotu-assistant-bot/inner/planning/1/session/ordered-plan/unpin?chatSessionId={thread_id}",
-        json_data={
-            "volunteerId": volunteer_id,
-            "targetPosition": target_position,
-        },
-        error_msg="取消固定排序项失败",
+        endpoint=f"/gaotu-assistant-bot/inner/planning/1/session/working-plan/remove?chatSessionId={thread_id}",
+        json_data={"volunteerIds": volunteer_ids},
+        error_msg="移出方案失败",
     )
 
 
@@ -681,11 +672,23 @@ async def remove_planning_draft_items(
     thread_id: Union[str, int],
     volunteer_ids: list[str],
 ) -> Dict[str, Any]:
-    """将志愿移出统一规划草稿。"""
+    """Deprecated compatibility alias. New code should use remove_working_plan_items."""
+    return await remove_working_plan_items(thread_id, volunteer_ids)
+
+
+async def lock_working_plan_items(
+    thread_id: Union[str, int],
+    volunteer_ids: list[str],
+    locked: bool = True,
+) -> Dict[str, Any]:
+    """锁定或解锁统一规划方案项。"""
     return await http_client.post(
-        endpoint=f"/gaotu-assistant-bot/inner/planning/1/session/draft/remove?chatSessionId={thread_id}",
-        json_data={"volunteerIds": volunteer_ids},
-        error_msg="移出草稿方案失败",
+        endpoint=f"/gaotu-assistant-bot/inner/planning/1/session/working-plan/lock?chatSessionId={thread_id}",
+        json_data={
+            "volunteerIds": volunteer_ids,
+            "locked": locked,
+        },
+        error_msg="锁定方案失败",
     )
 
 
@@ -694,14 +697,19 @@ async def lock_planning_draft_items(
     volunteer_ids: list[str],
     locked: bool = True,
 ) -> Dict[str, Any]:
-    """锁定或解锁统一规划草稿项。"""
+    """Deprecated compatibility alias. New code should use lock_working_plan_items."""
+    return await lock_working_plan_items(thread_id, volunteer_ids, locked=locked)
+
+
+async def ban_working_plan_items(
+    thread_id: Union[str, int],
+    volunteer_ids: list[str],
+) -> Dict[str, Any]:
+    """禁用统一规划候选项并同步移出方案。"""
     return await http_client.post(
-        endpoint=f"/gaotu-assistant-bot/inner/planning/1/session/draft/lock?chatSessionId={thread_id}",
-        json_data={
-            "volunteerIds": volunteer_ids,
-            "locked": locked,
-        },
-        error_msg="锁定草稿方案失败",
+        endpoint=f"/gaotu-assistant-bot/inner/planning/1/session/working-plan/ban?chatSessionId={thread_id}",
+        json_data={"volunteerIds": volunteer_ids},
+        error_msg="禁用方案候选失败",
     )
 
 
@@ -709,12 +717,8 @@ async def ban_planning_draft_items(
     thread_id: Union[str, int],
     volunteer_ids: list[str],
 ) -> Dict[str, Any]:
-    """禁用统一规划候选项并同步移出草稿。"""
-    return await http_client.post(
-        endpoint=f"/gaotu-assistant-bot/inner/planning/1/session/draft/ban?chatSessionId={thread_id}",
-        json_data={"volunteerIds": volunteer_ids},
-        error_msg="禁用草稿候选失败",
-    )
+    """Deprecated compatibility alias. New code should use ban_working_plan_items."""
+    return await ban_working_plan_items(thread_id, volunteer_ids)
 
 
 # ── 对话状态 ──────────────────────────────────────────────────────
@@ -1275,7 +1279,7 @@ async def query_planning_candidate_pool(
     )
 
 
-async def select_planning_draft_items(
+async def select_working_plan_items(
     tenant_id: Union[str, int],
     chat_session_id: Union[str, int],
     volunteer_ids: List[str],
@@ -1283,12 +1287,22 @@ async def select_planning_draft_items(
 ) -> Dict[str, Any]:
     return await http_client.post(
         endpoint=(
-            f"/gaotu-assistant-bot/inner/planning/{tenant_id}/session/draft/select"
+            f"/gaotu-assistant-bot/inner/planning/{tenant_id}/session/working-plan/select"
             f"?chatSessionId={chat_session_id}"
         ),
         json_data={"volunteerIds": volunteer_ids, "source": source},
         error_msg="加入方案失败",
     )
+
+
+async def select_planning_draft_items(
+    tenant_id: Union[str, int],
+    chat_session_id: Union[str, int],
+    volunteer_ids: List[str],
+    source: str = "agent_planning_action",
+) -> Dict[str, Any]:
+    """Deprecated compatibility alias. New code should use select_working_plan_items."""
+    return await select_working_plan_items(tenant_id, chat_session_id, volunteer_ids, source=source)
 
 
 async def generate_planning_ordered_plan(
@@ -1297,6 +1311,7 @@ async def generate_planning_ordered_plan(
     force_regenerate: bool = True,
     regroup_by_tier: bool = True,
 ) -> Dict[str, Any]:
+    """生成或刷新统一规划排序方案。"""
     return await http_client.post(
         endpoint=(
             f"/gaotu-assistant-bot/inner/planning/{tenant_id}/session/ordered-plan/generate"
@@ -1381,6 +1396,7 @@ async def run_planning_review(
     tenant_id: Union[str, int],
     chat_session_id: Union[str, int],
 ) -> Dict[str, Any]:
+    """执行统一规划方案审查。"""
     return await http_client.post(
         endpoint=(
             f"/gaotu-assistant-bot/inner/planning/{tenant_id}/session/review/run"
@@ -1411,6 +1427,7 @@ async def apply_planning_compensation(
     regenerate_ordered_plan: bool = True,
     rerun_review: bool = True,
 ) -> Dict[str, Any]:
+    """兼容应用低风险补偿建议；结构修复统一走 fix-proposals/apply。"""
     return await http_client.post(
         endpoint=(
             f"/gaotu-assistant-bot/inner/planning/{tenant_id}/session/compensation/apply"

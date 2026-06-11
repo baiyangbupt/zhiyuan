@@ -15,6 +15,8 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.List;
+
 @RestController
 @RequestMapping("/gaotu-assistant-bot/inner/planning/{tenantId}")
 @Slf4j
@@ -210,12 +212,14 @@ public class PlanningStateController {
                 req == null ? new PlanAdjustmentApplyReq() : req));
     }
 
-    @GetMapping("/session/draft")
-    @ApiOperation("获取草稿方案")
-    public BaseResponse<DraftPlanStateDTO> getDraft(@PathVariable("tenantId") Long tenantId,
-                                                    @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId) {
-        log.info("getDraftState: tenantId={}, chatSessionId={}", tenantId, chatSessionId);
-        return BaseResponse.success(planningStateService.getDraftState(chatSessionId));
+    // Deprecated route alias: /session/draft is retained only for 3.0.x and external compatibility.
+    // New callers must use /session/working-plan.
+    @GetMapping({"/session/working-plan", "/session/draft"})
+    @ApiOperation("获取工作台方案")
+    public BaseResponse<DraftPlanStateDTO> getWorkingPlan(@PathVariable("tenantId") Long tenantId,
+                                                          @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId) {
+        log.info("getWorkingPlanState: tenantId={}, chatSessionId={}", tenantId, chatSessionId);
+        return BaseResponse.success(planningStateService.getWorkingPlanState(chatSessionId));
     }
 
     @GetMapping("/session/ordered-plan")
@@ -234,40 +238,55 @@ public class PlanningStateController {
         return BaseResponse.success(planningStateService.getReviewState(chatSessionId));
     }
 
-    @PostMapping("/session/draft/select")
-    @ApiOperation("加入草稿方案")
-    public BaseResponse<PlanningStateDTO> selectDraft(@PathVariable("tenantId") Long tenantId,
-                                                      @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId,
-                                                      @RequestBody DraftSelectReq req) {
-        log.info("selectDraft: tenantId={}, chatSessionId={}", tenantId, chatSessionId);
-        return BaseResponse.success(planningStateService.selectDraftItems(chatSessionId, req));
+    @GetMapping("/review/rules")
+    @ApiOperation("获取审查规则元数据")
+    public BaseResponse<List<ReviewRuleMetadataDTO>> listReviewRules(@PathVariable("tenantId") Long tenantId) {
+        log.info("listReviewRules: tenantId={}", tenantId);
+        return BaseResponse.success(planningStateService.listReviewRuleMetadata());
     }
 
-    @PostMapping("/session/draft/remove")
-    @ApiOperation("移出草稿方案")
-    public BaseResponse<PlanningStateDTO> removeDraft(@PathVariable("tenantId") Long tenantId,
-                                                      @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId,
-                                                      @RequestBody DraftRemoveReq req) {
-        log.info("removeDraft: tenantId={}, chatSessionId={}", tenantId, chatSessionId);
-        return BaseResponse.success(planningStateService.removeDraftItems(chatSessionId, req));
+    // Deprecated route alias: /session/draft/select is retained only for 3.0.x and external compatibility.
+    // New callers must use /session/working-plan/select.
+    @PostMapping({"/session/working-plan/select", "/session/draft/select"})
+    @ApiOperation("加入工作台方案")
+    public BaseResponse<PlanningStateDTO> selectWorkingPlan(@PathVariable("tenantId") Long tenantId,
+                                                            @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId,
+                                                            @RequestBody DraftSelectReq req) {
+        log.info("selectWorkingPlan: tenantId={}, chatSessionId={}", tenantId, chatSessionId);
+        return BaseResponse.success(planningStateService.selectWorkingPlanItems(chatSessionId, req));
     }
 
-    @PostMapping("/session/draft/lock")
-    @ApiOperation("锁定草稿项")
-    public BaseResponse<PlanningStateDTO> lockDraft(@PathVariable("tenantId") Long tenantId,
-                                                    @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId,
-                                                    @RequestBody DraftLockReq req) {
-        log.info("lockDraft: tenantId={}, chatSessionId={}", tenantId, chatSessionId);
-        return BaseResponse.success(planningStateService.lockDraftItems(chatSessionId, req));
+    // Deprecated route alias: /session/draft/remove is retained only for 3.0.x and external compatibility.
+    // New callers must use /session/working-plan/remove.
+    @PostMapping({"/session/working-plan/remove", "/session/draft/remove"})
+    @ApiOperation("移出工作台方案")
+    public BaseResponse<PlanningStateDTO> removeWorkingPlan(@PathVariable("tenantId") Long tenantId,
+                                                            @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId,
+                                                            @RequestBody DraftRemoveReq req) {
+        log.info("removeWorkingPlan: tenantId={}, chatSessionId={}", tenantId, chatSessionId);
+        return BaseResponse.success(planningStateService.removeWorkingPlanItems(chatSessionId, req));
     }
 
-    @PostMapping("/session/draft/ban")
+    // Deprecated route alias: /session/draft/lock is retained only for 3.0.x and external compatibility.
+    // New callers must use /session/working-plan/lock.
+    @PostMapping({"/session/working-plan/lock", "/session/draft/lock"})
+    @ApiOperation("锁定工作台方案项")
+    public BaseResponse<PlanningStateDTO> lockWorkingPlan(@PathVariable("tenantId") Long tenantId,
+                                                          @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId,
+                                                          @RequestBody DraftLockReq req) {
+        log.info("lockWorkingPlan: tenantId={}, chatSessionId={}", tenantId, chatSessionId);
+        return BaseResponse.success(planningStateService.lockWorkingPlanItems(chatSessionId, req));
+    }
+
+    // Deprecated route alias: /session/draft/ban is retained only for 3.0.x and external compatibility.
+    // New callers must use /session/working-plan/ban.
+    @PostMapping({"/session/working-plan/ban", "/session/draft/ban"})
     @ApiOperation("禁用候选项")
-    public BaseResponse<PlanningStateDTO> banDraft(@PathVariable("tenantId") Long tenantId,
-                                                   @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId,
-                                                   @RequestBody DraftBanReq req) {
-        log.info("banDraft: tenantId={}, chatSessionId={}", tenantId, chatSessionId);
-        return BaseResponse.success(planningStateService.banDraftItems(chatSessionId, req));
+    public BaseResponse<PlanningStateDTO> banWorkingPlan(@PathVariable("tenantId") Long tenantId,
+                                                         @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId,
+                                                         @RequestBody DraftBanReq req) {
+        log.info("banWorkingPlan: tenantId={}, chatSessionId={}", tenantId, chatSessionId);
+        return BaseResponse.success(planningStateService.banWorkingPlanItems(chatSessionId, req));
     }
 
     @PostMapping("/session/ordered-plan/generate")
@@ -290,13 +309,15 @@ public class PlanningStateController {
                 req == null ? new InitialPlanGenerateReq() : req));
     }
 
-    @PostMapping("/session/draft/reorder")
-    @ApiOperation("对当前草稿生成建议排序")
-    public BaseResponse<PlanningStateDTO> reorderDraftPlan(@PathVariable("tenantId") Long tenantId,
-                                                           @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId,
-                                                           @RequestBody(required = false) DraftPlanReorderReq req) {
-        log.info("reorderDraftPlan: tenantId={}, chatSessionId={}", tenantId, chatSessionId);
-        return BaseResponse.success(planningStateService.reorderDraftPlan(tenantId, chatSessionId,
+    // Deprecated route alias: /session/draft/reorder is retained only for 3.0.x and external compatibility.
+    // New callers must use /session/working-plan/reorder.
+    @PostMapping({"/session/working-plan/reorder", "/session/draft/reorder"})
+    @ApiOperation("对当前工作台方案生成建议排序")
+    public BaseResponse<PlanningStateDTO> reorderWorkingPlan(@PathVariable("tenantId") Long tenantId,
+                                                             @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId,
+                                                             @RequestBody(required = false) DraftPlanReorderReq req) {
+        log.info("reorderWorkingPlan: tenantId={}, chatSessionId={}", tenantId, chatSessionId);
+        return BaseResponse.success(planningStateService.reorderWorkingPlan(tenantId, chatSessionId,
                 req == null ? new DraftPlanReorderReq() : req));
     }
 
@@ -343,26 +364,6 @@ public class PlanningStateController {
                 planningStateService.sortOrderedPlan(chatSessionId, req)));
     }
 
-    @PostMapping("/session/ordered-plan/pin")
-    @ApiOperation("固定排序位置")
-    public BaseResponse<OrderedPlanActionRes> pinOrderedPlan(@PathVariable("tenantId") Long tenantId,
-                                                             @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId,
-                                                             @RequestBody OrderedPinReq req) {
-        log.info("pinOrderedPlan: tenantId={}, chatSessionId={}", tenantId, chatSessionId);
-        return BaseResponse.success(planningStateService.buildOrderedPlanActionRes(
-                planningStateService.pinOrderedItem(chatSessionId, req)));
-    }
-
-    @PostMapping("/session/ordered-plan/unpin")
-    @ApiOperation("取消固定排序位置")
-    public BaseResponse<OrderedPlanActionRes> unpinOrderedPlan(@PathVariable("tenantId") Long tenantId,
-                                                               @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId,
-                                                               @RequestBody OrderedPinReq req) {
-        log.info("unpinOrderedPlan: tenantId={}, chatSessionId={}", tenantId, chatSessionId);
-        return BaseResponse.success(planningStateService.buildOrderedPlanActionRes(
-                planningStateService.unpinOrderedItem(chatSessionId, req)));
-    }
-
     @PostMapping("/session/ordered-plan/export")
     @ApiOperation("导出当前排序方案")
     public ResponseEntity<ByteArrayResource> exportOrderedPlan(@PathVariable("tenantId") Long tenantId,
@@ -398,6 +399,14 @@ public class PlanningStateController {
         return BaseResponse.success(planningStateService.runReview(tenantId, chatSessionId));
     }
 
+    @PostMapping("/session/review-workflow/run")
+    @ApiOperation("执行方案审查并生成修复建议")
+    public BaseResponse<ReviewWorkflowRunRes> runReviewWorkflow(@PathVariable("tenantId") Long tenantId,
+                                                                @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId) {
+        log.info("runReviewWorkflow: tenantId={}, chatSessionId={}", tenantId, chatSessionId);
+        return BaseResponse.success(planningStateService.runReviewWorkflow(tenantId, chatSessionId));
+    }
+
     @PostMapping("/session/compensation/preview")
     @ApiOperation("预览补偿建议")
     public BaseResponse<CompensationPreviewDTO> previewCompensation(@PathVariable("tenantId") Long tenantId,
@@ -406,8 +415,26 @@ public class PlanningStateController {
         return BaseResponse.success(planningStateService.previewCompensation(tenantId, chatSessionId));
     }
 
+    @PostMapping("/session/fix-proposals/generate")
+    @ApiOperation("生成风险修复建议")
+    public BaseResponse<FixProposalStateDTO> generateFixProposals(@PathVariable("tenantId") Long tenantId,
+                                                                  @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId) {
+        log.info("generateFixProposals: tenantId={}, chatSessionId={}", tenantId, chatSessionId);
+        return BaseResponse.success(planningStateService.generateFixProposals(tenantId, chatSessionId));
+    }
+
+    @PostMapping("/session/fix-proposals/apply")
+    @ApiOperation("应用风险修复建议")
+    public BaseResponse<FixProposalApplyRes> applyFixProposal(@PathVariable("tenantId") Long tenantId,
+                                                              @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId,
+                                                              @RequestBody(required = false) FixProposalApplyReq req) {
+        log.info("applyFixProposal: tenantId={}, chatSessionId={}, proposalId={}",
+                tenantId, chatSessionId, req == null ? null : req.getProposalId());
+        return BaseResponse.success(planningStateService.applyFixProposal(tenantId, chatSessionId, req));
+    }
+
     @PostMapping("/session/compensation/apply")
-    @ApiOperation("应用补偿建议")
+    @ApiOperation("兼容应用低风险补偿建议，结构修复请使用 fix-proposals/apply")
     public BaseResponse<PlanningStateDTO> applyCompensation(@PathVariable("tenantId") Long tenantId,
                                                             @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId,
                                                             @RequestBody(required = false) CompensationApplyReq req) {

@@ -135,6 +135,7 @@ export interface PlanningCompensationAction {
   summary?: string;
   detail?: string;
   sourceCheckCode?: string;
+  unitIds?: string[];
   volunteerIds?: string[];
 }
 
@@ -143,6 +144,170 @@ export interface PlanningCompensationPreview {
   sourceVersion?: number;
   totalActions?: number;
   actions?: PlanningCompensationAction[];
+}
+
+export interface PlanningReplacementPair {
+  fromUnitId?: string;
+  fromVolunteerId?: string;
+  toUnitId?: string;
+  toVolunteerId?: string;
+  reasonCodes?: string[];
+}
+
+export interface PlanningFixProposalAction {
+  actionType?: string;
+  level?: string;
+  sourceCheckCode?: string;
+  summary?: string;
+  detail?: string;
+  unitIds?: string[];
+  volunteerIds?: string[];
+  removeUnitIds?: string[];
+  removeVolunteerIds?: string[];
+  candidateUnitIds?: string[];
+  candidateVolunteerIds?: string[];
+  replacementPairs?: PlanningReplacementPair[];
+}
+
+export interface PlanningCandidateShortage {
+  strategy?: string;
+  sourceCheckCode?: string;
+  scope?: string;
+  reasonCode?: string;
+  targetTier?: string;
+  requiredCount?: number;
+  currentCount?: number;
+  shortageCount?: number;
+  availableCount?: number;
+  message?: string;
+}
+
+export interface PlanningFixProposalDryRunResult {
+  status?: string;
+  message?: string;
+  beforeUnitTotal?: number;
+  afterUnitTotal?: number;
+  beforeVolunteerTotal?: number;
+  afterVolunteerTotal?: number;
+  beforeUnitTierCounts?: Record<string, number>;
+  afterUnitTierCounts?: Record<string, number>;
+  beforeVolunteerTierCounts?: Record<string, number>;
+  afterVolunteerTierCounts?: Record<string, number>;
+  beforeUnitIds?: string[];
+  afterUnitIds?: string[];
+  beforeVolunteerIds?: string[];
+  afterVolunteerIds?: string[];
+  beforeAverageFinalScore?: number;
+  afterAverageFinalScore?: number;
+  beforeAverageHotIndex?: number;
+  afterAverageHotIndex?: number;
+  beforeAverageSchoolRank?: number;
+  afterAverageSchoolRank?: number;
+  affectedUnitCount?: number;
+  affectedVolunteerCount?: number;
+  addUnitCount?: number;
+  addVolunteerCount?: number;
+  removeUnitCount?: number;
+  removeVolunteerCount?: number;
+  warnings?: string[];
+}
+
+export interface PlanningFixProposal {
+  proposalId?: string;
+  sourceVersion?: number;
+  sourceReviewVersion?: number;
+  sourceVersionGuard?: number;
+  status?: string;
+  strategy?: string;
+  title?: string;
+  summary?: string;
+  impact?: string;
+  blockingReason?: string;
+  blockingReasonCodes?: string[];
+  candidateShortages?: PlanningCandidateShortage[];
+  requiresConfirmation?: boolean;
+  sourceCheckCodes?: string[];
+  affectedUnitIds?: string[];
+  affectedVolunteerIds?: string[];
+  actions?: PlanningFixProposalAction[];
+  dryRunResult?: PlanningFixProposalDryRunResult;
+}
+
+export interface PlanningFixProposalState {
+  status?: string;
+  sourceVersion?: number;
+  sourceReviewVersion?: number;
+  sourceVersionGuard?: number;
+  total?: number;
+  proposals?: PlanningFixProposal[];
+}
+
+export interface PlanningFixProposalApplyReq {
+  proposalId: string;
+  sourceVersionGuard: number;
+  regenerateOrderedPlan?: boolean;
+  rerunReview?: boolean;
+}
+
+export interface PlanningRepairReport {
+  status?: string;
+  proposalId?: string;
+  strategy?: string;
+  proposalTitle?: string;
+  proposalSummary?: string;
+  proposalImpact?: string;
+  sourceVersion?: number;
+  resultVersion?: number;
+  sourceReviewVersion?: number;
+  resultReviewVersion?: number;
+  dryRunStatus?: string;
+  dryRunMessage?: string;
+  sourceCheckCodes?: string[];
+  appliedActionCount?: number;
+  affectedUnitCount?: number;
+  affectedVolunteerCount?: number;
+  addedUnitCount?: number;
+  addedVolunteerCount?: number;
+  removedUnitCount?: number;
+  removedVolunteerCount?: number;
+  beforeRiskCount?: number;
+  afterRiskCount?: number;
+  beforeWarnCount?: number;
+  afterWarnCount?: number;
+  postValidationPassed?: boolean;
+  actionDetails?: Array<{
+    actionType?: string;
+    sourceCheckCode?: string;
+    summary?: string;
+    detail?: string;
+    unitIds?: string[];
+    volunteerIds?: string[];
+    removeUnitIds?: string[];
+    removeVolunteerIds?: string[];
+    candidateUnitIds?: string[];
+    candidateVolunteerIds?: string[];
+    replacementPairs?: PlanningReplacementPair[];
+  }>;
+  messages?: string[];
+  warnings?: string[];
+}
+
+export interface PlanningFixProposalApplyRes {
+  status?: string;
+  message?: string;
+  proposal?: PlanningFixProposal;
+  repairReport?: PlanningRepairReport;
+  state?: PlanningStateRes;
+}
+
+export interface PlanningReviewWorkflowRunRes {
+  status?: string;
+  sessionId?: number;
+  sourceVersion?: number;
+  reviewState?: PlanningStateRes['reviewState'];
+  fixProposalState?: PlanningFixProposalState;
+  workflowStatus?: PlanningStateRes['workflowStatus'];
+  workspaceState?: PlanningWorkspaceStateRes;
 }
 
 export interface PlanningPlanGenerationState {
@@ -155,10 +320,65 @@ export interface PlanningPlanGenerationState {
   preservedManualOrderCount?: number;
 }
 
+export interface PlanningInitialPlanStrategyReport {
+  targetProfile?: {
+    targetCount?: number;
+    targetTierCounts?: Record<string, number>;
+    sourceProvinceName?: string;
+    volunteerModel?: string;
+    requiredMajorCount?: number;
+  };
+  objectiveWeights?: Array<{
+    code?: string;
+    label?: string;
+    relativeWeight?: number;
+    priority?: number;
+    description?: string;
+  }>;
+  selectedCount?: number;
+  appliedRepairs?: Array<{
+    ruleCode?: string;
+    actionType?: string;
+    reasonCode?: string;
+    fromVolunteerId?: string;
+    fromLabel?: string;
+    toVolunteerId?: string;
+    toLabel?: string;
+    detail?: string;
+    tradeoffSummary?: string;
+  }>;
+  actions?: PlanningFixProposalAction[];
+  tradeoffs?: Array<{
+    ruleCode?: string;
+    actionType?: string;
+    reasonCode?: string;
+    fromVolunteerId?: string;
+    fromLabel?: string;
+    toVolunteerId?: string;
+    toLabel?: string;
+    finalScoreDelta?: number;
+    admissionRatioDelta?: number;
+    hotIndexDelta?: number;
+    schoolRankDelta?: number;
+    preferredDowngraded?: boolean;
+    preferredUpgraded?: boolean;
+    gains?: string[];
+    costs?: string[];
+    summary?: string;
+  }>;
+  unresolvedRisks?: Array<{
+    ruleCode?: string;
+    detail?: string;
+  }>;
+  candidateShortages?: PlanningCandidateShortage[];
+  userAttentionMessages?: string[];
+}
+
 export interface PlanningReviewCheck {
   code?: string;
   level?: string;
   passed?: boolean;
+  reasonCode?: string;
   summary?: string;
   detail?: string;
   suggestedAction?: string;
@@ -166,7 +386,7 @@ export interface PlanningReviewCheck {
   suggestedCompensations?: PlanningCompensationAction[];
 }
 
-export interface PlanningDraftItem {
+export interface PlanningWorkingPlanItem {
   volunteerId?: string;
   tier?: string;
   schoolName?: string;
@@ -174,6 +394,8 @@ export interface PlanningDraftItem {
   locked?: boolean;
   source?: string;
 }
+
+export type PlanningDraftItem = PlanningWorkingPlanItem;
 
 export interface PlanningCandidateItem {
   volunteerId?: string;
@@ -256,6 +478,14 @@ export interface PlanningCandidatePoolQueryRes {
   totalUnitCount?: number;
   loadedEntryCount?: number;
   loadedUnitCount?: number;
+  viewSummary?: {
+    poolEntryTotal?: number;
+    poolUnitTotal?: number;
+    viewEntryTotal?: number;
+    viewUnitTotal?: number;
+    loadedEntryCount?: number;
+    loadedUnitCount?: number;
+  };
 }
 
 export interface PlanningCandidateFilterOptionsRes {
@@ -339,13 +569,29 @@ export interface PlanningUnitMajorItem {
   rankInTier?: number;
 }
 
-export interface PlanningDraftUnit {
+export interface PlanningWorkingPlanUnit {
   unitId?: string;
   tier?: string;
   schoolName?: string;
   source?: string;
   locked?: boolean;
   majorItems?: PlanningUnitMajorItem[];
+}
+
+export type PlanningDraftUnit = PlanningWorkingPlanUnit;
+
+export interface PlanningWorkingPlanState {
+  items?: PlanningWorkingPlanItem[];
+  units?: PlanningWorkingPlanUnit[];
+  bannedVolunteerIds?: string[];
+  summary?: {
+    unitTotal?: number;
+    targetUnitCount?: number;
+    total?: number;
+    targetCount?: number;
+    unitTierCounts?: Record<string, number>;
+    tierCounts?: Record<string, number>;
+  };
 }
 
 export interface PlanningOrderedUnit {
@@ -398,10 +644,34 @@ export interface PlanningStateRes {
   operationLogs?: Array<Record<string, unknown>>;
   staleFlags?: {
     candidatePool?: boolean;
+    recommendationOverlay?: boolean;
+    initialRecommendation?: boolean;
     orderedPlan?: boolean;
+    planAdjustment?: boolean;
     review?: boolean;
+    reasonCode?: string;
+    message?: string;
+    affectedReviewCodes?: string[];
   };
   planGenerationState?: PlanningPlanGenerationState;
+  initialRecommendationState?: {
+    generatedAt?: string;
+    sourceVersion?: number;
+    candidateViewVersion?: number;
+    profileVersion?: number;
+    strategyReport?: PlanningInitialPlanStrategyReport;
+    summary?: {
+      total?: number;
+      expertPreferredCount?: number;
+      tierCounts?: Record<string, number>;
+      localProtectCount?: number;
+      gapFixCount?: number;
+      unresolvedGapCount?: number;
+      unitCompletionCount?: number;
+      appliedRepairCount?: number;
+      unresolvedRuleCodes?: string[];
+    };
+  };
   candidatePoolState?: {
     generatedAt?: string;
     sourceVersion?: number;
@@ -417,6 +687,16 @@ export interface PlanningStateRes {
     sourceProvinceName?: string;
     volunteerModel?: string;
     items?: PlanningCandidateItem[];
+    sourceSummary?: {
+      externalEntryTotal?: number;
+      externalUnitTotal?: number;
+      externalEntryTierCounts?: Record<string, number>;
+      externalUnitTierCounts?: Record<string, number>;
+      normalizedEntryTotal?: number;
+      normalizedUnitTotal?: number;
+      normalizedEntryTierCounts?: Record<string, number>;
+      normalizedUnitTierCounts?: Record<string, number>;
+    };
     summary?: {
       entryTotal?: number;
       unitTotal?: number;
@@ -427,19 +707,8 @@ export interface PlanningStateRes {
     };
   };
   candidateViewState?: PlanningCandidateViewState;
-  draftPlanState?: {
-    items?: PlanningDraftItem[];
-    units?: PlanningDraftUnit[];
-    bannedVolunteerIds?: string[];
-    summary?: {
-      unitTotal?: number;
-      targetUnitCount?: number;
-      total?: number;
-      targetCount?: number;
-      unitTierCounts?: Record<string, number>;
-      tierCounts?: Record<string, number>;
-    };
-  };
+  workingPlanState?: PlanningWorkingPlanState;
+  draftPlanState?: PlanningWorkingPlanState;
   orderedPlanState?: {
     items?: PlanningOrderedItem[];
     units?: PlanningOrderedUnit[];
@@ -487,6 +756,9 @@ export interface PlanningStateRes {
     legacyMessage?: string;
     reviewStatus?: string;
     reviewMessage?: string;
+    reviewReasonCode?: string;
+    reviewReasonMessage?: string;
+    affectedReviewCodes?: string[];
     exportStatus?: string;
     exportMessage?: string;
     lastExportedAt?: string;
@@ -505,8 +777,10 @@ export type PlanningWorkspaceStateRes = Pick<
   | 'phase'
   | 'staleFlags'
   | 'planGenerationState'
+  | 'initialRecommendationState'
   | 'candidatePoolState'
   | 'candidateViewState'
+  | 'workingPlanState'
   | 'draftPlanState'
   | 'orderedPlanState'
   | 'reviewState'

@@ -9,15 +9,17 @@ import pytest
 
 from app.agent.context import PlanningSummary, RequestContext
 from app.tools.planning_workflow_tool import (
+    _fix_proposal_facts,
     _build_plan_status_overview_facts,
     analyze_planning_plan_adjustment,
+    apply_planning_fix_proposal,
     apply_planning_compensation,
     ban_planning_draft_items,
+    generate_planning_fix_proposals,
     generate_planning_initial_plan,
     generate_planning_ordered_plan,
     lock_planning_draft_items,
     move_planning_ordered_item,
-    pin_planning_ordered_item,
     preview_planning_compensation,
     query_planning_candidate_pool,
     query_planning_draft,
@@ -29,7 +31,6 @@ from app.tools.planning_workflow_tool import (
     run_planning_review,
     select_planning_draft_items,
     select_planning_ordered_items,
-    unpin_planning_ordered_item,
 )
 
 
@@ -574,14 +575,14 @@ def test_query_planning_plan_overview_falls_back_to_draft_when_no_ordered_plan()
 
     with (
         patch("app.tools.planning_workflow_tool._get_planning_state_request", AsyncMock(return_value=state_response)) as mock_state,
-        patch("app.tools.planning_workflow_tool._get_planning_draft_request", AsyncMock(return_value=draft_response)) as mock_draft,
+        patch("app.tools.planning_workflow_tool._get_working_plan_request", AsyncMock(return_value=draft_response)) as mock_draft,
     ):
         result = asyncio.run(query_planning_plan_overview(ctx))
 
     mock_state.assert_awaited_once_with("overview-draft-session")
     mock_draft.assert_awaited_once_with("overview-draft-session")
-    assert "当前已有草稿方案：12个志愿，尚未形成最终排序" in result
-    assert "草稿前列：北京联合大学-电气工程及其自动化(稳)[锁定]" in result
+    assert "当前已加入方案：12个志愿，尚未形成最终排序" in result
+    assert "已加入方案示例：北京联合大学-电气工程及其自动化(稳)[锁定]" in result
     assert "待刷新状态" not in result
 
 
@@ -728,7 +729,7 @@ def test_query_planning_draft_uses_session_and_formats_result():
     }
 
     with patch(
-        "app.tools.planning_workflow_tool._get_planning_draft_request",
+        "app.tools.planning_workflow_tool._get_working_plan_request",
         AsyncMock(return_value=response),
     ) as mock_request:
         result = asyncio.run(query_planning_draft(ctx))
@@ -757,7 +758,7 @@ def test_query_planning_draft_prefers_unit_summary_in_major_group_mode():
     }
 
     with patch(
-        "app.tools.planning_workflow_tool._get_planning_draft_request",
+        "app.tools.planning_workflow_tool._get_working_plan_request",
         AsyncMock(return_value=response),
     ) as mock_request:
         result = asyncio.run(query_planning_draft(ctx))
@@ -796,6 +797,14 @@ def test_query_planning_candidate_pool_uses_filters_and_formats_result():
             "page": 1,
             "pageSize": 10,
             "total": 2,
+            "viewSummary": {
+                "poolEntryTotal": 20,
+                "poolUnitTotal": 15,
+                "viewEntryTotal": 2,
+                "viewUnitTotal": 2,
+                "loadedEntryCount": 2,
+                "loadedUnitCount": 2,
+            },
         },
     }
 
@@ -833,6 +842,7 @@ def test_query_planning_candidate_pool_uses_filters_and_formats_result():
     )
     assert "候选志愿查询结果：" in result
     assert "命中数量：2" in result
+    assert "当前筛选视图：2条 / 2个志愿单元；完整候选池：20条 / 15个志愿单元" in result
     assert "北京大学-经济学(sprint/北京/录取率35%/公办/学费5000元/年) 分值95.5" in result
     assert "id=v101" not in result
     assert "volunteerId" not in result
@@ -857,10 +867,9 @@ def test_select_remove_lock_and_ban_planning_draft_items_use_session():
     }
 
     with (
-        patch("app.tools.planning_workflow_tool._select_planning_draft_items_request", AsyncMock(return_value=response)) as mock_select,
-        patch("app.tools.planning_workflow_tool._remove_planning_draft_items_request", AsyncMock(return_value=response)) as mock_remove,
-        patch("app.tools.planning_workflow_tool._lock_planning_draft_items_request", AsyncMock(return_value=response)) as mock_lock,
-        patch("app.tools.planning_workflow_tool._ban_planning_draft_items_request", AsyncMock(return_value=response)) as mock_ban,
+        patch("app.tools.planning_workflow_tool._select_working_plan_items_request", AsyncMock(return_value=response)) as mock_select,
+        patch("app.tools.planning_workflow_tool._remove_working_plan_items_request", AsyncMock(return_value=response)) as mock_remove,
+        patch("app.tools.planning_workflow_tool._ban_working_plan_items_request", AsyncMock(return_value=response)) as mock_ban,
     ):
         select_result = asyncio.run(select_planning_draft_items(ctx, ["v1", "v2"]))
         remove_result = asyncio.run(remove_planning_draft_items(ctx, ["v1"]))
@@ -869,12 +878,11 @@ def test_select_remove_lock_and_ban_planning_draft_items_use_session():
 
     mock_select.assert_awaited_once_with(1, "draft-edit-session", ["v1", "v2"], source="user_agent")
     mock_remove.assert_awaited_once_with("draft-edit-session", ["v1"])
-    mock_lock.assert_not_awaited()
     mock_ban.assert_awaited_once_with("draft-edit-session", ["v3"])
     assert "已加入2个志愿到方案。" in select_result
     assert "已从方案移出1个志愿。" in remove_result
     assert "新版工作台暂不提供固定/锁定志愿入口" in lock_result
-    assert "已禁用1个候选志愿，并同步更新草稿。" in ban_result
+    assert "已禁用1个候选志愿，并同步更新当前方案。" in ban_result
 
 
 def test_query_planning_ordered_plan_uses_session_and_formats_result():
@@ -906,7 +914,8 @@ def test_query_planning_ordered_plan_uses_session_and_formats_result():
     assert "排序总数：2" in result
     assert "录取率梯度是否达标：是" in result
     assert "保底是否达标：否" in result
-    assert "北京大学-法学(sprint)@1[固定]" in result
+    assert "北京大学-法学(sprint)@1" in result
+    assert "[固定]" not in result
 
 
 def test_generate_planning_ordered_plan_requires_confirmation():
@@ -1013,7 +1022,7 @@ def test_remove_planning_ordered_items_refreshes_ordered_state():
             AsyncMock(return_value=before_ordered_response),
         ) as mock_before,
         patch(
-            "app.tools.planning_workflow_tool._remove_planning_draft_items_request",
+            "app.tools.planning_workflow_tool._remove_working_plan_items_request",
             AsyncMock(return_value=remove_response),
         ) as mock_remove,
         patch(
@@ -1102,11 +1111,11 @@ def test_remove_planning_ordered_items_falls_back_to_ban_when_target_still_remai
             AsyncMock(return_value=before_ordered_response),
         ),
         patch(
-            "app.tools.planning_workflow_tool._remove_planning_draft_items_request",
+            "app.tools.planning_workflow_tool._remove_working_plan_items_request",
             AsyncMock(return_value=remove_response),
         ) as mock_remove,
         patch(
-            "app.tools.planning_workflow_tool._ban_planning_draft_items_request",
+            "app.tools.planning_workflow_tool._ban_working_plan_items_request",
             AsyncMock(return_value=ban_response),
         ) as mock_ban,
         patch(
@@ -1192,11 +1201,11 @@ def test_remove_planning_ordered_items_reports_lingering_target_after_ban_fallba
             AsyncMock(return_value=before_ordered_response),
         ),
         patch(
-            "app.tools.planning_workflow_tool._remove_planning_draft_items_request",
+            "app.tools.planning_workflow_tool._remove_working_plan_items_request",
             AsyncMock(return_value=remove_response),
         ),
         patch(
-            "app.tools.planning_workflow_tool._ban_planning_draft_items_request",
+            "app.tools.planning_workflow_tool._ban_working_plan_items_request",
             AsyncMock(return_value=ban_response),
         ) as mock_ban,
         patch(
@@ -1262,7 +1271,7 @@ def test_select_planning_ordered_items_refreshes_ordered_state():
 
     with (
         patch(
-            "app.tools.planning_workflow_tool._select_planning_draft_items_request",
+            "app.tools.planning_workflow_tool._select_working_plan_items_request",
             AsyncMock(return_value=select_response),
         ) as mock_select,
         patch(
@@ -1291,7 +1300,7 @@ def test_select_planning_ordered_items_refreshes_ordered_state():
     assert "排序总数：1" in result
 
 
-def test_move_keeps_ordered_backend_and_pin_unpin_are_disabled():
+def test_move_keeps_ordered_backend():
     ctx = _make_ctx("move-session")
     response = {
         "code": 0,
@@ -1314,13 +1323,9 @@ def test_move_keeps_ordered_backend_and_pin_unpin_are_disabled():
         patch("app.tools.planning_workflow_tool._get_planning_state_request", AsyncMock(return_value={"code": 0, "data": response["data"]})),
     ):
         move_result = asyncio.run(move_planning_ordered_item(ctx, "v1", 3))
-        pin_result = asyncio.run(pin_planning_ordered_item(ctx, "v1", 3))
-        unpin_result = asyncio.run(unpin_planning_ordered_item(ctx, "v1"))
 
     mock_move.assert_awaited_once_with("move-session", "v1", 3)
     assert "已将志愿移动到第3位。" in move_result
-    assert "暂不提供固定/锁定志愿入口" in pin_result
-    assert "暂不提供固定/锁定志愿入口" in unpin_result
 
 
 def test_apply_planning_compensation_requires_confirmation():
@@ -1334,6 +1339,194 @@ def test_apply_planning_compensation_requires_confirmation():
 
     mock_request.assert_not_awaited()
     assert "请先在对话中获得用户明确确认" in result
+
+
+def test_generate_planning_fix_proposals_formats_status_and_warnings():
+    ctx = _make_ctx("fix-preview-session")
+    response = {
+        "code": 0,
+        "data": {
+            "proposals": [
+                {
+                    "title": "修复高收费",
+                    "status": "preview_only",
+                    "strategy": "replace_risk_items",
+                    "impact": "当前问题涉及 1 个专业组、1 条志愿。",
+                    "actions": [
+                        {
+                            "actionType": "replace_volunteers",
+                            "summary": "替换风险志愿",
+                            "replacementPairs": [{"fromVolunteerId": "v1", "toVolunteerId": "v2"}],
+                        }
+                    ],
+                    "dryRunResult": {
+                        "removeVolunteerCount": 1,
+                        "addVolunteerCount": 1,
+                        "warnings": ["当前只支持预览，不会自动执行。"],
+                    },
+                },
+                {
+                    "title": "修复数量缺口",
+                    "status": "ready",
+                    "strategy": "fill_missing_count",
+                    "actions": [{"actionType": "fill_total_count", "summary": "补足志愿总数量"}],
+                    "dryRunResult": {"addVolunteerCount": 2},
+                },
+                {
+                    "title": "修复录取率梯度断层",
+                    "status": "blocked",
+                    "strategy": "fill_probability_gap",
+                    "blockingReason": "当前候选不足。",
+                    "blockingReasonCodes": ["probability_gap_candidate_insufficient"],
+                    "candidateShortages": [
+                        {
+                            "strategy": "fill_probability_gap",
+                            "sourceCheckCode": "probability_gap",
+                            "scope": "candidate_pool",
+                            "reasonCode": "probability_gap_candidate_insufficient",
+                            "requiredCount": 1,
+                            "availableCount": 0,
+                            "message": "当前可用于规划的候选池里，断层中间录取率候选不足。",
+                        }
+                    ],
+                    "actions": [],
+                    "dryRunResult": {"warnings": []},
+                },
+            ]
+        },
+    }
+
+    with patch(
+        "app.tools.planning_workflow_tool._generate_planning_fix_proposals_request",
+        AsyncMock(return_value=response),
+    ) as mock_request:
+        result = asyncio.run(generate_planning_fix_proposals(ctx))
+
+    mock_request.assert_awaited_once_with(1, "fix-preview-session")
+    assert "已生成当前方案的修复建议预览。" in result
+    assert "修复高收费：preview_only" in result
+    assert "预计移除1条、补入1条" in result
+    assert "修复数量缺口：ready" in result
+    assert "暂不能自动处理：当前候选不足。" in result
+    assert "候选边界：当前可用于规划的候选池里，断层中间录取率候选不足。" in result
+    assert "处理边界：当前可用于规划的候选池里断层中间录取率候选不足，暂时不能补齐录取率梯度。" in result
+    assert "preview_only 或 blocked 的建议不会被自动执行" in result
+
+    facts = _fix_proposal_facts(response["data"])
+    assert facts["proposals"][2]["blocking_reason_codes"] == ["probability_gap_candidate_insufficient"]
+    assert facts["proposals"][2]["candidate_shortages"][0]["scope"] == "candidate_pool"
+    assert facts["proposals"][2]["candidate_shortages"][0]["reason_code"] == "probability_gap_candidate_insufficient"
+
+
+def test_generate_planning_fix_proposals_prefers_hard_constraint_shortage_guidance():
+    ctx = _make_ctx("fix-hard-constraint-session")
+    response = {
+        "code": 0,
+        "data": {
+            "proposals": [
+                {
+                    "title": "修复冲稳保结构",
+                    "status": "blocked",
+                    "strategy": "rebalance_tier_ratio",
+                    "blockingReason": "当前候选不足。",
+                    "blockingReasonCodes": ["tier_candidate_insufficient"],
+                    "candidateShortages": [
+                        {
+                            "strategy": "rebalance_tier_ratio",
+                            "sourceCheckCode": "ratio_distribution",
+                            "scope": "hard_constraints",
+                            "reasonCode": "tier_candidate_insufficient",
+                            "targetTier": "保",
+                        }
+                    ],
+                    "actions": [],
+                    "dryRunResult": {"warnings": []},
+                }
+            ]
+        },
+    }
+
+    with patch(
+        "app.tools.planning_workflow_tool._generate_planning_fix_proposals_request",
+        AsyncMock(return_value=response),
+    ):
+        result = asyncio.run(generate_planning_fix_proposals(ctx))
+
+    assert "候选边界：已确认的硬性要求收窄了可选范围，当前可用于补位的候选不足" in result
+    assert "处理边界：已确认的硬性要求收窄了可选范围，当前可用于补位的候选不足" in result
+    assert "处理边界：当前可用于规划的候选池里目标冲稳保区间候选不足" not in result
+
+
+def test_apply_planning_fix_proposal_requires_confirmation():
+    ctx = _make_ctx("fix-apply-session")
+
+    with patch(
+        "app.tools.planning_workflow_tool._apply_planning_fix_proposal_request",
+        AsyncMock(),
+    ) as mock_request:
+        result = asyncio.run(
+            apply_planning_fix_proposal(
+                ctx,
+                proposal_id="fp_1",
+                source_version_guard=12,
+            )
+        )
+
+    mock_request.assert_not_awaited()
+    assert "请先让用户确认具体修复建议" in result
+
+
+def test_apply_planning_fix_proposal_formats_repair_report():
+    ctx = _make_ctx("fix-apply-session")
+    response = {
+        "code": 0,
+        "data": {
+            "status": "applied",
+            "repairReport": {
+                "strategy": "fill_missing_count",
+                "proposalTitle": "补齐志愿数量",
+                "proposalSummary": "当前方案数量不足，需要补充志愿。",
+                "proposalImpact": "预计补充 2 条志愿。",
+                "dryRunMessage": "补入 2 条，不移除现有志愿。",
+                "addedVolunteerCount": 2,
+                "removedVolunteerCount": 0,
+                "postValidationPassed": True,
+                "messages": ["已补充 2 条志愿。"],
+            },
+        },
+    }
+
+    with patch(
+        "app.tools.planning_workflow_tool._apply_planning_fix_proposal_request",
+        AsyncMock(return_value=response),
+    ) as mock_request:
+        result = asyncio.run(
+            apply_planning_fix_proposal(
+                ctx,
+                proposal_id="fp_1",
+                source_version_guard=12,
+                user_confirmed=True,
+                regenerate_ordered_plan=False,
+                rerun_review=True,
+            )
+        )
+
+    mock_request.assert_awaited_once_with(
+        1,
+        "fix-apply-session",
+        proposal_id="fp_1",
+        source_version_guard=12,
+        regenerate_ordered_plan=False,
+        rerun_review=True,
+    )
+    assert "已应用修复建议" in result
+    assert "修复建议：补齐志愿数量" in result
+    assert "对应问题：当前方案数量不足，需要补充志愿。" in result
+    assert "修复类型：fill_missing_count" in result
+    assert "移除0条，补入2条" in result
+    assert "影响范围：预计补充 2 条志愿。" in result
+    assert "应用前预览：补入 2 条，不移除现有志愿。" in result
+    assert "本次对应问题已通过复验" in result
 
 
 def test_apply_planning_compensation_uses_session_and_formats_state():

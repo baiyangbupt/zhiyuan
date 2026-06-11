@@ -4,6 +4,8 @@ import json
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
+from app.util.planning_state_compat import get_working_plan_summary
+
 if TYPE_CHECKING:
     from app.models.conversation_phase import ConversationPhase, PendingConfirmation
     from app.schemas.user_profile import UserProfile
@@ -88,15 +90,16 @@ class PlanningSummary:
         positive_regions = explicit.get("positiveRegions") or []
         positive_majors = explicit.get("positiveMajors") or []
 
+        working_plan_summary = get_working_plan_summary(data)
         return cls(
             phase=data.get("phase") or "",
             version=data.get("version") or 0,
             candidate_target_total=((data.get("candidatePoolState") or {}).get("requiredCount") or 0),
-            draft_total=((data.get("draftPlanState") or {}).get("summary") or {}).get("unitTotal")
-            or ((data.get("draftPlanState") or {}).get("summary") or {}).get("total")
+            draft_total=working_plan_summary.get("unitTotal")
+            or working_plan_summary.get("total")
             or 0,
-            draft_target_total=((data.get("draftPlanState") or {}).get("summary") or {}).get("targetUnitCount")
-            or ((data.get("draftPlanState") or {}).get("summary") or {}).get("targetCount")
+            draft_target_total=working_plan_summary.get("targetUnitCount")
+            or working_plan_summary.get("targetCount")
             or ((data.get("candidatePoolState") or {}).get("requiredCount") or 0),
             ordered_total=((data.get("orderedPlanState") or {}).get("summary") or {}).get("unitTotal")
             or ((data.get("orderedPlanState") or {}).get("summary") or {}).get("total")

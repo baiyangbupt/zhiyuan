@@ -114,6 +114,25 @@ async def test_handle_planning_request_routes_candidate_select_by_filters_after_
 
 
 @pytest.mark.asyncio
+async def test_handle_planning_request_candidate_select_requires_ids_or_structured_filters():
+    with patch(
+        "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
+        new=AsyncMock(
+            return_value=SimpleNamespace(
+                summary="阶段=ordered；方案=20/30",
+                draft_count=20,
+                ordered_count=30,
+                relation_lines=[],
+                review_issues=[],
+            )
+        ),
+    ):
+        result = await handle_planning_request(_ctx(), request_type="candidate_select")
+
+    assert "补入志愿需要先明确要加入哪些候选" in result
+
+
+@pytest.mark.asyncio
 async def test_handle_planning_request_returns_text_for_draft_query():
     with patch(
         "app.tools.planning_router_tool._run_planned_request",

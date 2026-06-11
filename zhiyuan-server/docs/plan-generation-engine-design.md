@@ -488,19 +488,18 @@
 
 ### `POST /inner/planning/{tenantId}/session/plan-adjustment/apply`
 
-输入建议：
+状态：
 
-- `chatSessionId`
-- `suggestionIds`
-- `applyMode`
-  - `reorder_only`
-  - `append_only`
-  - `replace_and_reorder`
+- 该入口已废弃。
+- 服务端返回 410，不再写入 `pending_apply` 这类半成品状态。
 
-职责：
+后续真实应用方案调整统一走 review repair workflow：
 
-- 仅在用户显式确认后执行建议
-- 回写草稿、排序以及操作日志
+- `runReview`
+- `generateFixProposals`
+- 用户或外部确认
+- `applyFixProposal`
+- `RepairReport`
 
 ## 8. 打脏规则建议
 
@@ -2027,7 +2026,7 @@ V2 不应直接用“新生成算法规则”覆盖现有审查规则，而应�
 - `probability_inversion` 当前已补入第一版建议映射：默认产出局部 `reorderSuggestion`；若同 tier 内存在可替补候选，还会补充第一版 `replaceSuggestion`，用于提示“换掉倒挂边界项后再维持区间骨架”
 - `probability_gap` 当前除了补充型 `addSuggestion` 外，也会产出第一版 `replaceSuggestion`，用于提示“拿哪个中间梯度候选替掉当前断层边界项”
 - `ratio_distribution` 当前在“冲区占比过高”场景下，已补入第一版 `replaceSuggestion`，用于提示“换出部分冲区条目并补入保区候选”；若只是区间缺口，则仍以 `addSuggestion` 为主
-- `group_inner_safety_guard` 当前先产出 `addSuggestion`，提示补入组内安全垫专业；`apply` 仍未自动执行
+- `group_inner_safety_guard` 在旧 `planAdjustment/analyze` 中仍只产出分析/建议；正式修复已切到 `fix-proposals/apply`，支持在同一专业组内补入安全垫专业，满 `requiredMajorCount` 时优先同组替换非安全专业
 - 其余只产出分析结论、不强行生成不稳定的替换/删除建议，后续再补强
 
 当前 `review` 全量规则与 `planAdjustment/analyze` 的覆盖边界如下：

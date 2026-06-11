@@ -207,8 +207,6 @@ class PlanActionPlan(BaseModel):
         "remove_units",
         "move_unit",
         "move_ordered_unit",
-        "pin_unit",
-        "unpin_unit",
         "replace_units",
         "remove_ordered_unit",
         "sort_ordered_plan",

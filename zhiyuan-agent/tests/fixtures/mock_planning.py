@@ -36,8 +36,6 @@ _WORKFLOW_FUNCTIONS = [
     "generate_planning_ordered_plan",
     "generate_planning_initial_plan",
     "move_planning_ordered_item",
-    "pin_planning_ordered_item",
-    "unpin_planning_ordered_item",
     "run_planning_review",
     "analyze_planning_plan_adjustment",
     "preview_planning_compensation",

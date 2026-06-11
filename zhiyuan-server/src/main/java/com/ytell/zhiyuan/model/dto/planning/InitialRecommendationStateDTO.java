@@ -14,6 +14,7 @@ public class InitialRecommendationStateDTO {
     private Integer candidateViewVersion = 0;
     private Integer profileVersion = 0;
     private Summary summary = new Summary();
+    private InitialPlanStrategyReportDTO strategyReport = new InitialPlanStrategyReportDTO();
     private List<InitialRecommendationItemDTO> items = Lists.newArrayList();
     private List<PlanningUnitDTO> units = Lists.newArrayList();
 

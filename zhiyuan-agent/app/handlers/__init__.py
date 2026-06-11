@@ -4,7 +4,6 @@
 拆分为独立 handler 模块，通过 HANDLER_REGISTRY 注册。
 
 当前阶段：Plan 主路径 action 已迁入 handler registry。
-pin_unit/unpin_unit 仅作为历史兼容 action 解析，执行层统一返回不支持。
 
 设计原则：
 - handler 接口统一：async def handle(ctx, plan) -> PlanExecutionResult

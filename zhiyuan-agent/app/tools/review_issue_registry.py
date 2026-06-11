@@ -4,7 +4,27 @@ import hashlib
 from dataclasses import dataclass
 from typing import Any, Literal
 
-ReviewIssueScopeKind = Literal["item_removal", "structural", "informational"]
+ReviewIssueScopeKind = Literal["item_removal", "item_replacement", "structural", "informational"]
+
+_BACKEND_SCOPE_KIND_MAP = {
+    "structure": "structural",
+    "item": "item_removal",
+    "major_group_inner": "structural",
+    "informational": "informational",
+}
+
+_BACKEND_STRATEGY_DEFAULT_ACTION_MAP = {
+    "add_safety_items": "preview_compensation",
+    "adjust_major_group_inner_safety": "analyze_adjustment",
+    "fill_missing_count": "preview_compensation",
+    "fill_probability_gap": "preview_compensation",
+    "rebalance_tier_ratio": "analyze_adjustment",
+    "regenerate_plan_with_constraints": "generate_plan",
+    "regenerate_order": "regenerate_order",
+    "remove_risk_items": "remove_units",
+    "replace_risk_items": "review_plan",
+    "sort_by_probability": "sort_ordered_plan",
+}
 
 
 @dataclass(frozen=True)
@@ -19,14 +39,14 @@ _REVIEW_ISSUE_RULES: dict[str, ReviewIssueRule] = {
     "high_tuition": ReviewIssueRule(
         code="high_tuition",
         label="高收费",
-        scope_kind="item_removal",
-        default_action_family="remove_units",
+        scope_kind="item_replacement",
+        default_action_family="review_plan",
     ),
     "cooperative_program": ReviewIssueRule(
         code="cooperative_program",
         label="中外合作",
-        scope_kind="item_removal",
-        default_action_family="remove_units",
+        scope_kind="item_replacement",
+        default_action_family="review_plan",
     ),
     "admission_limit": ReviewIssueRule(
         code="admission_limit",
@@ -44,13 +64,13 @@ _REVIEW_ISSUE_RULES: dict[str, ReviewIssueRule] = {
         code="probability_inversion",
         label="概率倒挂",
         scope_kind="structural",
-        default_action_family="analyze_adjustment",
+        default_action_family="sort_ordered_plan",
     ),
     "probability_gap": ReviewIssueRule(
         code="probability_gap",
         label="梯度断层",
         scope_kind="structural",
-        default_action_family="analyze_adjustment",
+        default_action_family="preview_compensation",
     ),
     "ratio_distribution": ReviewIssueRule(
         code="ratio_distribution",
@@ -74,7 +94,7 @@ _REVIEW_ISSUE_RULES: dict[str, ReviewIssueRule] = {
         code="edge_score",
         label="边缘分",
         scope_kind="structural",
-        default_action_family="analyze_adjustment",
+        default_action_family="preview_compensation",
     ),
     "major_group_safety_intent_alignment": ReviewIssueRule(
         code="major_group_safety_intent_alignment",
@@ -129,12 +149,70 @@ def review_issue_default_action_family(code: str | None) -> str | None:
 
 def review_issue_supported_action_families(code: str | None) -> list[str]:
     scope_kind = review_issue_scope_kind(code)
+    if scope_kind == "item_replacement":
+        return ["replace_units", "remove_units"]
     if scope_kind == "item_removal":
         return ["remove_units", "replace_units"]
     if scope_kind == "structural":
         default_action = review_issue_default_action_family(code)
         return [default_action] if default_action else ["analyze_adjustment"]
     return []
+
+
+def normalize_review_issue_scope_kind(
+    code: str | None,
+    backend_scope_kind: str | None = None,
+    backend_default_fix_strategy: str | None = None,
+) -> ReviewIssueScopeKind:
+    """Normalize backend review metadata, with local registry as old-state fallback."""
+    scope = str(backend_scope_kind or "").strip()
+    strategy = str(backend_default_fix_strategy or "").strip()
+    if scope == "item" and strategy == "replace_risk_items":
+        return "item_replacement"
+    if scope in _BACKEND_SCOPE_KIND_MAP:
+        return _BACKEND_SCOPE_KIND_MAP[scope]  # type: ignore[return-value]
+    return review_issue_scope_kind(code)
+
+
+def normalize_review_issue_default_action_family(
+    code: str | None,
+    backend_default_fix_strategy: str | None = None,
+) -> str | None:
+    """Map backend fix strategy to Agent action family, with local fallback."""
+    strategy = str(backend_default_fix_strategy or "").strip()
+    if strategy in _BACKEND_STRATEGY_DEFAULT_ACTION_MAP:
+        return _BACKEND_STRATEGY_DEFAULT_ACTION_MAP[strategy]
+    return review_issue_default_action_family(code)
+
+
+def normalize_review_issue_supported_action_families(
+    code: str | None,
+    scope_kind: str | None = None,
+    backend_supported_fix_strategies: list[Any] | None = None,
+) -> list[str]:
+    supported: list[str] = []
+    for strategy in backend_supported_fix_strategies or []:
+        action = _BACKEND_STRATEGY_DEFAULT_ACTION_MAP.get(str(strategy or "").strip())
+        if action and action not in supported:
+            supported.append(action)
+    if supported:
+        normalized_scope = str(scope_kind or "").strip()
+        if normalized_scope == "item_replacement":
+            for action in ("replace_units", "remove_units"):
+                if action not in supported:
+                    supported.append(action)
+        return supported
+    if scope_kind:
+        if scope_kind == "item_replacement":
+            return ["replace_units", "remove_units"]
+        if scope_kind == "item_removal":
+            return ["remove_units", "replace_units"]
+        if scope_kind == "structural":
+            default_action = normalize_review_issue_default_action_family(code)
+            return [default_action] if default_action else ["analyze_adjustment"]
+        if scope_kind == "informational":
+            return []
+    return review_issue_supported_action_families(code)
 
 
 def _ordered_unit_id_for_item(item: dict[str, Any]) -> str:
@@ -189,6 +267,20 @@ def build_review_issue_scopes(
             continue
         if not summary:
             summary = review_issue_label(code)
+        scope_kind = normalize_review_issue_scope_kind(
+            code,
+            check.get("scopeKind"),
+            check.get("defaultFixStrategy"),
+        )
+        default_action_family = normalize_review_issue_default_action_family(
+            code,
+            check.get("defaultFixStrategy"),
+        )
+        supported_action_families = normalize_review_issue_supported_action_families(
+            code,
+            scope_kind,
+            check.get("supportedFixStrategies") if isinstance(check.get("supportedFixStrategies"), list) else None,
+        )
         affected_volunteer_ids = []
         seen_volunteer_ids: set[str] = set()
         for volunteer_id in (check.get("affectedVolunteerIds") or []):
@@ -225,12 +317,23 @@ def build_review_issue_scopes(
                 break
         scope = {
             "code": code,
-            "label": review_issue_label(code, summary),
+            "label": str(check.get("label") or "").strip() or review_issue_label(code, summary),
             "summary": summary,
             "level": str(check.get("level") or "").strip(),
-            "scope_kind": review_issue_scope_kind(code),
-            "default_action_family": review_issue_default_action_family(code),
-            "supported_action_families": review_issue_supported_action_families(code),
+            "category": str(check.get("category") or "").strip(),
+            "severity_default": str(check.get("severityDefault") or "").strip(),
+            "fixability": str(check.get("fixability") or "").strip(),
+            "backend_scope_kind": str(check.get("scopeKind") or "").strip(),
+            "default_fix_strategy": str(check.get("defaultFixStrategy") or "").strip(),
+            "supported_fix_strategies": list(check.get("supportedFixStrategies") or [])
+            if isinstance(check.get("supportedFixStrategies"), list)
+            else [],
+            "requires_confirmation": check.get("requiresConfirmation"),
+            "evidence_schema": str(check.get("evidenceSchema") or "").strip(),
+            "post_apply_validation_rule": str(check.get("postApplyValidationRule") or "").strip(),
+            "scope_kind": scope_kind,
+            "default_action_family": default_action_family,
+            "supported_action_families": supported_action_families,
             "affected_unit_count": len(affected_unit_ids),
             "affected_volunteer_count": len(affected_volunteer_ids),
             "sample_items": sample_items,

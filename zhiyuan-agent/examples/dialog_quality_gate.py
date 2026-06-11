@@ -69,6 +69,7 @@ PINNED_LIVE_CASE_FILES = [
     "dialog_regression_science_cases.json",
     "dialog_regression_special_cases.json",
     "dialog_regression_comprehensive_cases.json",
+    "dialog_regression_310_review_repair_cases.json",
 ]
 
 MODEL_PROVIDER_CASE_FILES = [

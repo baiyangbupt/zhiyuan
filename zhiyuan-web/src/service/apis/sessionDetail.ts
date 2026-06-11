@@ -27,7 +27,10 @@ import {
   PlanningCandidatePoolQueryReq,
   PlanningCandidatePoolQueryRes,
   PlanningCandidateViewState,
-  PlanningCompensationPreview,
+  PlanningFixProposalApplyReq,
+  PlanningFixProposalApplyRes,
+  PlanningFixProposalState,
+  PlanningReviewWorkflowRunRes,
   OrderedPlanActionRes,
   PlanningStateRes,
   PlanningWorkspaceStateRes,
@@ -304,6 +307,31 @@ export const runPlanningReviewApi = (tenantId: string, chatSessionId: string) =>
     data: {},
   });
 
+export const runPlanningReviewWorkflowApi = (tenantId: string, chatSessionId: string) =>
+  request<{}, PlanningReviewWorkflowRunRes>({
+    url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/review-workflow/run?chatSessionId=${chatSessionId}`,
+    method: 'post',
+    data: {},
+  });
+
+export const generatePlanningFixProposalsApi = (tenantId: string, chatSessionId: string) =>
+  request<{}, PlanningFixProposalState>({
+    url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/fix-proposals/generate?chatSessionId=${chatSessionId}`,
+    method: 'post',
+    data: {},
+  });
+
+export const applyPlanningFixProposalApi = (
+  tenantId: string,
+  chatSessionId: string,
+  data: PlanningFixProposalApplyReq
+) =>
+  request<PlanningFixProposalApplyReq, PlanningFixProposalApplyRes>({
+    url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/fix-proposals/apply?chatSessionId=${chatSessionId}`,
+    method: 'post',
+    data,
+  });
+
 export const generatePlanningCandidatePoolApi = (
   tenantId: string,
   chatSessionId: string,
@@ -372,14 +400,14 @@ export const updatePlanningCandidateViewStateApi = (
     data,
   });
 
-export const selectPlanningDraftItemsApi = (
+export const selectPlanningWorkingPlanItemsApi = (
   tenantId: string,
   chatSessionId: string,
   volunteerIds: string[],
   source: string = 'manual_workspace'
 ) =>
   request<{ volunteerIds: string[]; source: string }, PlanningStateRes>({
-    url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/draft/select?chatSessionId=${chatSessionId}`,
+    url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/working-plan/select?chatSessionId=${chatSessionId}`,
     method: 'post',
     data: {
       volunteerIds,
@@ -387,49 +415,31 @@ export const selectPlanningDraftItemsApi = (
     },
   });
 
-export const previewPlanningCompensationApi = (tenantId: string, chatSessionId: string) =>
-  request<{}, PlanningCompensationPreview>({
-    url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/compensation/preview?chatSessionId=${chatSessionId}`,
-    method: 'post',
-    data: {},
-  });
+export const selectPlanningDraftItemsApi = selectPlanningWorkingPlanItemsApi;
 
-export const applyPlanningCompensationApi = (
-  tenantId: string,
-  chatSessionId: string,
-  regenerateOrderedPlan: boolean = true,
-  rerunReview: boolean = true
-) =>
-  request<{ regenerateOrderedPlan: boolean; rerunReview: boolean }, PlanningStateRes>({
-    url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/compensation/apply?chatSessionId=${chatSessionId}`,
-    method: 'post',
-    data: {
-      regenerateOrderedPlan,
-      rerunReview,
-    },
-  });
-
-export const removePlanningDraftItemsApi = (
+export const removePlanningWorkingPlanItemsApi = (
   tenantId: string,
   chatSessionId: string,
   volunteerIds: string[]
 ) =>
   request<{ volunteerIds: string[] }, PlanningStateRes>({
-    url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/draft/remove?chatSessionId=${chatSessionId}`,
+    url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/working-plan/remove?chatSessionId=${chatSessionId}`,
     method: 'post',
     data: {
       volunteerIds,
     },
   });
 
-export const lockPlanningDraftItemsApi = (
+export const removePlanningDraftItemsApi = removePlanningWorkingPlanItemsApi;
+
+export const lockPlanningWorkingPlanItemsApi = (
   tenantId: string,
   chatSessionId: string,
   volunteerIds: string[],
   locked: boolean
 ) =>
   request<{ volunteerIds: string[]; locked: boolean }, PlanningStateRes>({
-    url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/draft/lock?chatSessionId=${chatSessionId}`,
+    url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/working-plan/lock?chatSessionId=${chatSessionId}`,
     method: 'post',
     data: {
       volunteerIds,
@@ -437,18 +447,22 @@ export const lockPlanningDraftItemsApi = (
     },
   });
 
-export const banPlanningDraftItemsApi = (
+export const lockPlanningDraftItemsApi = lockPlanningWorkingPlanItemsApi;
+
+export const banPlanningWorkingPlanItemsApi = (
   tenantId: string,
   chatSessionId: string,
   volunteerIds: string[]
 ) =>
   request<{ volunteerIds: string[] }, PlanningStateRes>({
-    url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/draft/ban?chatSessionId=${chatSessionId}`,
+    url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/working-plan/ban?chatSessionId=${chatSessionId}`,
     method: 'post',
     data: {
       volunteerIds,
     },
   });
+
+export const banPlanningDraftItemsApi = banPlanningWorkingPlanItemsApi;
 
 export const generatePlanningOrderedPlanApi = (
   tenantId: string,
@@ -462,21 +476,6 @@ export const generatePlanningOrderedPlanApi = (
     data: {
       forceRegenerate,
       regroupByTier,
-    },
-  });
-
-export const pinPlanningOrderedItemApi = (
-  tenantId: string,
-  chatSessionId: string,
-  volunteerId: string,
-  targetPosition: number
-) =>
-  request<{ volunteerId: string; targetPosition: number }, OrderedPlanActionRes>({
-    url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/ordered-plan/pin?chatSessionId=${chatSessionId}`,
-    method: 'post',
-    data: {
-      volunteerId,
-      targetPosition,
     },
   });
 
@@ -536,20 +535,6 @@ export const sortPlanningOrderedPlanApi = (
     },
   });
 
-export const unpinPlanningOrderedItemApi = (
-  tenantId: string,
-  chatSessionId: string,
-  volunteerId: string,
-  targetPosition: number = 1
-) =>
-  request<{ volunteerId: string; targetPosition: number }, OrderedPlanActionRes>({
-    url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/ordered-plan/unpin?chatSessionId=${chatSessionId}`,
-    method: 'post',
-    data: {
-      volunteerId,
-      targetPosition,
-    },
-  });
 // 消息反馈接口
 export const getFeedbackApi = (tenantId: string, data: { feedback: number; messageId: number }) =>
   request<{}, any>({

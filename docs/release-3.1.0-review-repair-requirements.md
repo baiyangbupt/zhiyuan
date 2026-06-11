@@ -1,0 +1,3260 @@
+# Release 3.1.0 Review And Repair Requirements
+
+更新时间：2026-06-10
+
+本文先聚焦 3.1.0 中「方案审查」和「审查后修复」能力的需求调研。目标不是马上改代码，而是把 3.0.3 已有能力、遗留不足、3.1.0 需要补齐的工作流和外部触发协议先定义清楚。
+
+## 1. 背景
+
+3.0.3 已经完成了 Agent 对话质量、确认协议、方案操作预览和 pending confirmation 的主链路收口：
+
+- 高副作用方案动作统一为 `preview -> pendingConfirmation -> confirm -> apply`。
+- 方案操作覆盖添加、删除、替换、移动、排序、补偿、审查等能力。
+- 审查问题已经能够在对话里被解释，并能触发部分删除/替换/补偿预览。
+- 前端已有轻量审查入口和审查风险提示。
+
+但审查与修复还没有成为完整的一等工作流。当前能力能「发现问题」和「局部补偿/局部删除」，但还不能稳定表达：
+
+- 每类审查问题的定义、适用范围、严重等级和证据。
+- 哪些问题可以自动修复，哪些只能提示，哪些需要人工决策。
+- 修复前如何生成可验证的 proposal。
+- 修复后如何自动复审并判断是否真的解决。
+- 外部系统如何触发审查、获取修复建议、确认应用、追踪结果。
+
+3.1.0 需要把这部分从「分散工具能力」提升为「审查问题 -> 修复方案 -> 用户/外部确认 -> 应用 -> 复审验证」的统一协议。
+
+## 2. 当前实现梳理
+
+### 2.1 后端审查
+
+当前主要入口在 `PlanningStateController`：
+
+- `GET /session/review`：获取审查结果。
+- `POST /session/review/run`：执行方案审查。
+- `POST /session/plan-adjustment/analyze`：分析方案调整建议。
+- `POST /session/plan-adjustment/apply`：旧半成品入口已废弃，当前返回 410；真实应用修复应走 `fix-proposals/apply`。
+- `POST /session/compensation/preview`：预览补偿建议。
+- `POST /session/compensation/apply`：应用补偿建议。
+
+`PlanningStateService.runReview()` 当前会生成 `ReviewStateDTO`，并执行以下审查规则：
+
+- `ratio_distribution`：冲稳保比例。
+- `safety_guard`：本省/安全垫。
+- `probability_inversion`：录取率倒挂。
+- `probability_gap`：录取率梯度断层。
+- `count_validation`：数量缺口。
+- `high_tuition`：高收费。
+- `admission_limit`：限报条件。
+- `special_enrollment`：特殊类型招生。
+- `edge_score`：边缘分。
+- `cooperative_program`：中外合作。
+- `major_group_safety_intent_alignment`：专业组安全专业与意向不一致。
+- `group_inner_safety_guard`：专业组内安全垫不足。
+- `plan_update_notice`：招生计划更新提示。
+- `adjustment_notice`：调剂风险提示。
+
+`group_inner_safety_guard` 已在 3.1.0 接入正式 `runReview()`，用于识别专业组内缺少录取率不低于组整体录取率的安全垫专业；修复提案支持在同一专业组内补入安全专业，若组内主选专业已达到 `requiredMajorCount`，则优先用安全专业替换一个非安全专业，避免把组内专业数误当成专业组数。
+
+### 2.2 后端修复能力
+
+当前后端修复能力分成两套：
+
+第一套是 `plan-adjustment/analyze`：
+
+- 基于部分审查规则生成 `PlanAdjustmentStateDTO`。
+- 规则范围包括数量、比例、概率倒挂、梯度断层、安全垫、专业组安全专业意向对齐。
+- 会生成 `AddSuggestionDTO`、`RemoveSuggestionDTO`、`ReplaceSuggestionDTO`、`ReorderSuggestionDTO` 等建议。
+- `applyPlanAdjustment()` 不再保留半实现语义，当前直接返回 410，避免外部误以为建议已应用。
+
+第二套是 `compensation/preview` 和 `compensation/apply`：
+
+- 能针对数量缺口、安全垫不足、比例失衡、梯度断层生成补偿动作。
+- 专业组模式和专业模式分别处理。
+- `applyCompensation()` 会把补偿候选加入工作台方案（旧 draft 状态），必要时重新生成排序方案并复审。
+- 这不是通用修复引擎，只覆盖「补入/补稳/补数量」类问题，不负责删除、替换、重排、不能满足解释等完整策略。
+
+### 2.3 审查结果对象
+
+当前 `ReviewCheckDTO` 包含：
+
+- `code`
+- `level`
+- `passed`
+- `summary`
+- `detail`
+- `suggestedAction`
+- `affectedUnitIds`
+- `affectedVolunteerIds`
+- `suggestedCompensations`
+
+这个结构已经具备「审查问题对象」雏形，但还缺少 3.1.0 需要的一些关键元数据：
+
+- `scopeKind`：条目问题、结构问题、信息提示、政策风险等。
+- `fixability`：可自动修复、可预览修复、需人工判断、不可修复。
+- `supportedFixStrategies`：删除、替换、补齐、重排、重新生成、只提示等。
+- `evidence`：规则命中的核心证据，而不是只靠摘要文本。
+- `candidateCapacity`：当前候选池是否有足够替代项。
+- `postApplyValidation`：修复后如何验证该问题是否消失或缓解。
+
+### 2.4 Agent 侧审查和修复
+
+Agent 当前通过 `plan_next_action -> execute_plan_action` 串起方案动作。相关 action 包括：
+
+- `review_plan`
+- `analyze_adjustment`
+- `preview_compensation`
+- `apply_compensation`
+- `remove_units`
+- `replace_units`
+- `sort_ordered_plan`
+- `move_ordered_unit`
+- `remove_ordered_unit`
+
+`review_issue_registry.py` 已经把审查问题分为四类：
+
+- `item_replacement`：高收费、中外合作，属于用户权衡类条目风险，默认先走只读审查和后端 `FixProposal`，由 `replace_risk_items` 披露替换预览；用户明确要求删除时才走删除预览。
+- `item_removal`：限报条件、特殊类型招生，默认可删除/替换。
+- `structural`：概率倒挂、梯度断层、冲稳保配比、安全垫、数量缺口、边缘分、非意向托底、组内安全垫，默认分析或补偿。
+- `informational`：招生计划更新、调剂风险，默认只提示。
+
+这说明 Agent 侧已经有「review issue 一等对象」的雏形，但仍不是完整主协议：
+
+- 后端规则目录与 Agent registry 仍各自维护，存在漂移风险；当前已先把高收费/中外合作从“默认删除”纠偏为“审查 + 替换优先”。
+- review issue 到 fix proposal 的生成不统一。
+- 一部分修复靠 compensation，一部分靠 plan execution 的删除/替换预览，一部分停留在 analyze 建议。
+- 结构性问题经常只能分析，不能形成一套可验证的修复 proposal。
+- 对「候选不足，不能补」的情况没有统一结果类型，容易变成空泛建议。
+
+### 2.5 前端审查展示
+
+前端工作台当前支持：
+
+- 手动点击「审查」。
+- 展示审查通过/风险/提醒数量。
+- 在 tooltip 中展示风险检查和 pending actions。
+
+但目前不是完整的审查修复工作台：
+
+- 用户看不到每个问题的证据、影响范围、修复能力和修复预览。
+- `pendingActions` 只是提示，不是明确的「可确认修复任务」。
+- 审查和对话 pending confirmation 没有形成统一的前端交互模型。
+- 外部系统触发的审查/修复任务也没有对应状态展示。
+
+## 3. 当前核心问题
+
+### 3.1 审查规则没有中心化目录
+
+当前后端规则实现、Agent `review_issue_registry`、前端展示 label 分散维护。新增规则时，容易出现：
+
+- 后端能审查，但 Agent 不知道怎么解释或修复。
+- Agent 有 registry，但后端没有返回足够证据。
+- 前端展示不认识新 code。
+
+3.1.0 需要后端提供权威 `ReviewRuleRegistry`，Agent 和前端消费该目录或消费后端扩展后的审查结果。
+
+### 3.2 审查与修复没有统一模型
+
+当前 `ReviewCheckDTO` 能表达问题，`CompensationActionDTO` 能表达补偿动作，`PlanAdjustmentStateDTO` 能表达调整建议，但缺少统一的 `FixProposal`。
+
+导致问题：
+
+- 「这个问题能不能修」没有标准字段。
+- 「修复会动哪些志愿」没有标准 proposal。
+- 「修复后需要怎么验证」没有标准结果。
+- 「不能修」和「没有候选可补」没有统一表达。
+
+### 3.3 `plan-adjustment/apply` 已明确退场
+
+`analyzePlanAdjustment()` 能分析并生成建议，但旧 `applyPlanAdjustment()` 曾经只是标记 `pending_apply`，没有真实执行建议。如果前端或外部系统以为它能执行，会造成预期不一致。
+
+3.1.0 当前处理：
+
+- `plan-adjustment/analyze` 暂保留为只读分析。
+- `plan-adjustment/apply` 服务端返回 410，不再写状态。
+- 后续真实应用统一进入 `review -> fix proposal -> apply -> repair report` 链路。
+
+### 3.4 补偿不是完整修复
+
+`applyCompensation()` 只负责补候选，不负责：
+
+- 删除明显冲突项。
+- 替换高收费/中外合作/限报等条目。
+- 重新排序修复倒挂。
+- 处理结构性风险的多策略权衡。
+- 候选不足时给出明确不能满足原因。
+
+因此 3.1.0 不能把 compensation 当作 repair 的全部实现，只能作为 repair strategy 之一。
+
+### 3.5 结构性问题缺少可执行策略
+
+例如：
+
+- 冲稳保比例失衡。
+- 概率倒挂。
+- 梯度断层。
+- 保底不足。
+- 专业组内安全垫不足。
+
+这些问题不能简单删除 affected ids。它们需要策略规划：
+
+- 保持总数不变，替换多少冲/稳/保。
+- 是否允许降低学校层次换安全性。
+- 是否放宽地域/专业/院校标签。
+- 候选不够时如何说明「无法补」。
+- 应用后是否真的改善比例或梯度。
+
+当前系统对这类问题更多是分析或补偿，不是完整自动修复。
+
+### 3.6 外部触发缺少工作流协议
+
+当前外部可以分别调用审查、补偿预览、补偿应用等低层接口，但没有一个稳定流程：
+
+```text
+run review -> generate repair proposal -> confirm/apply proposal -> rerun review -> get repair report
+```
+
+外部系统无法稳定知道：
+
+- 审查是否基于最新方案版本。
+- 哪些问题已经生成修复 proposal。
+- proposal 是否过期。
+- 是否需要用户确认。
+- 应用后是否成功修复。
+- 修复失败或候选不足的原因。
+
+### 3.7 前端缺少完整审查修复 UX
+
+当前前端是轻量 tooltip，适合快速提醒，不适合承接 3.1.0 的修复流程。后续需要支持：
+
+- 问题列表。
+- 每个问题的证据和影响范围。
+- 可修复/不可修复状态。
+- 修复 proposal 预览。
+- 用户确认/拒绝/重新生成。
+- 应用后复审结果。
+
+## 4. 3.1.0 目标状态
+
+3.1.0 的目标链路：
+
+```text
+方案状态变更 / 用户发起 / 外部触发
+  -> runReview
+  -> ReviewResult(问题、证据、作用范围、可修复性)
+  -> generateFixProposal
+  -> dryRunValidation
+  -> pendingConfirmationCard / external confirmation
+  -> applyFixProposal
+  -> postApplyValidation
+  -> rerunReview
+  -> repairReport
+```
+
+核心原则：
+
+- 审查负责发现问题，不直接改方案。
+- 修复 proposal 必须是结构化、可验证、可过期的。
+- 高副作用修复必须确认后应用。
+- 修复后必须复审或至少执行目标规则验证。
+- 候选不足、规则冲突、用户约束冲突要作为一等结果返回。
+- 专业模式和专业组模式必须统一支持，不能混淆单条志愿和专业组。
+- 老版本和过渡代码只保留明确迁移窗口；统一入口切换完成后，删除旧接口、旧 registry、旧状态字段和旧前端入口，避免长期维护多版本和中间层。
+
+### 4.1 旧链路退场原则
+
+3.1.0 的设计不能在现有 `review/analyze/compensation/agent registry/frontend tooltip` 外再叠一套长期并存的中间层。迁移原则：
+
+- 新协议成为主入口：外部、Agent、前端都应逐步切到 review workflow / fix proposal。
+- 旧接口只做短期 adapter：用于兼容未迁移调用方，不新增能力。
+- 不在旧链路继续补复杂逻辑：新的修复策略、报告、验证和外部协议只进入新链路。
+- 每个旧入口必须有退场条件：调用方清零、测试覆盖迁移、线上观察无依赖。
+- 退场后删除代码：包括旧 DTO adapter、Agent 侧重复 registry、前端旧 tooltip 操作分支、`plan-adjustment/apply` 这类半实现入口。
+- 文档标记状态：`active`、`adapter`、`deprecated`、`removed`，避免不知道哪套是准的。
+
+建议迁移节奏：
+
+| 阶段 | 目标 | 旧链路处理 |
+| --- | --- | --- |
+| Phase 1 | 新增 registry/result/proposal/report，但保留旧接口 | 旧接口内部可转调新服务 |
+| Phase 2 | Agent 和前端主入口切新 workflow | 旧接口仅兼容外部或历史入口 |
+| Phase 3 | 外部接口迁移完成并观察稳定 | 标记旧接口 deprecated |
+| Phase 4 | 删除旧 adapter 和无调用代码 | 测试只保留新链路和必要历史数据兼容 |
+
+验收标准：
+
+- 同一个 review code 只有一个权威定义。
+- 同一个修复策略只有一个生成入口。
+- Agent 不再维护独立审查问题分类表。
+- 前端不再从 `pendingActions` 和 review checks 里自行拼修复行为。
+- `plan-adjustment/apply` 不再以半实现接口暴露。
+
+### 4.2 当前调用链与落盘边界
+
+当前 3.1.0 的审查修复链路已经拆成「审查」「建议生成」「确认应用」「复审报告」四段。各段职责如下：
+
+| 阶段 | 入口/模块 | 主要做什么 | 是否落盘 | 当前边界 |
+| --- | --- | --- | --- | --- |
+| 审查 | `POST /session/review/run` -> `PlanningStateService.runReview()` | 基于当前方案生成 `ReviewStateDTO`，补齐 `ReviewRuleRegistry` 元数据，并挂载补偿预览到审查问题上 | 会保存 review state、version 和 stale 状态 | 只发现问题，不直接修复方案 |
+| 聚合审查 | `POST /session/review-workflow/run` -> `runReviewWorkflow()` | 顺序执行 `runReview()`、`generateFixProposals()`，并返回工作台状态 | 只保存审查结果，不应用 proposal | 给外部和后续前端完整工作流入口；不绕过 apply 白名单 |
+| 修复建议生成 | `POST /session/fix-proposals/generate` -> `generateFixProposals()` | 基于 review checks 和 compensation preview 生成 `FixProposalStateDTO`，执行 dry-run，给出 `ready/preview_only/blocked/info` | 不落盘方案内容 | `rebalance_tier_ratio`、`fill_probability_gap` 当前只生成结构替换预览，仍是 `preview_only` |
+| 修复确认应用 | `POST /session/fix-proposals/apply` -> `applyFixProposal()` | 校验 `proposalId/sourceVersionGuard/review stale/status/strategy`，通过后执行 mutation、保存、可选重排、可选复审、返回 `RepairReportDTO` | 会改工作台方案，可能重建 ordered plan | 唯一正式高副作用修复入口；必须通过 `RepairProposalApplyPolicy` |
+| 旧补偿预览 | `POST /session/compensation/preview` -> `previewCompensation()` | 生成旧 `CompensationPreviewDTO`，用于补数量、补保底、补梯度等方向说明 | 不落盘 | 仍作为 proposal 生成和兼容展示的数据来源之一 |
+| 旧补偿应用 | `POST /session/compensation/apply` -> `applyCompensation()` | 兼容低风险补数量/有剩余容量时补候选；执行前重新裁剪剩余容量 | 会改工作台方案 | 不再承接满方案结构替换；满方案下 `rebalance_protect_ratio` / `fill_probability_gap` 不会按 add-only 直接追加 |
+| 旧调整分析 | `POST /session/plan-adjustment/analyze` | 只读分析方案结构问题和调整方向 | 不落盘 | 逐步迁移到 review + fix proposal 展示 |
+| 旧调整应用 | `POST /session/plan-adjustment/apply` | 已废弃 | 不落盘 | 返回 410，避免半实现入口继续被误用 |
+
+这里需要严格区分三类名字：
+
+- `strategy`：规则层或 proposal 层的修复策略，例如 `rebalance_tier_ratio`、`fill_probability_gap`、`remove_risk_items`。
+- `action`：本次 proposal 中具体要怎么改，例如 `replace_volunteers`、`remove_volunteers`、`fill_total_count`。
+- `apply policy`：是否允许进入真实落盘。当前只有 `fill_missing_count`、`sort_by_probability`、`remove_risk_items`、`adjust_major_group_inner_safety` 在白名单中。
+
+因此 `rebalance_tier_ratio` / `fill_probability_gap` 不是“自动 apply 的 action”。它们当前是结构性修复策略：可以生成 `replace_volunteers` 预览、dry-run 和影响说明，但不会通过 `fix-proposals/apply` 自动落盘，也不能通过旧 `applyCompensation()` 以追加候选的方式绕过容量保护。
+
+### 4.2.1 候选不足的产品判定协议
+
+当前系统里的“候选不足”不是单一含义，必须先标记不足发生在哪一层，再决定是否能修、能说什么、是否需要用户确认。默认定义如下：
+
+1. 外部候选池边界：`volunteerBizService.recommendVolunteerList()` 从高途返回的候选，本身已经按用户分数、批次、位次、选科和上下浮动范围取过一段可选空间。这是“当前可规划候选范围”，不是全国全量，也不是所有可能院校专业。
+2. 基础硬条件过滤：高途接口和服务端候选构建过程中会受到批次、分数线、选科、身体限报、专项资格、政策风险等硬条件影响。当前 `CandidatePoolQualityStatusBuilder.riskHints` 已能提示身体条件、专项资格、接近批次线、冲稳保分布不足等风险，但还不能给出每个候选被过滤的明细计数。
+3. 规划候选池：`candidatePoolState.items/summary/requiredTierCounts` 是初始推荐、补偿预览和审查修复的主要数据源。这里不足时，只能表述为“当前系统可用于规划的候选池不足”。
+4. 面板/上下文筛选：`candidateViewState.filters` 是候选面板展示筛选和用户当前查看条件。它影响用户看到的候选列表，但默认不改变完整规划候选池，也不直接影响审查修复 selector；只有 proposal 明确 `selectionScope=current_view` 时，才能说“当前筛选视图下不足”。
+5. 已确认硬要求：`constraintState.hardConstraints` 才可能收窄候选或阻止某个补位/替换。未确认的自然语言表达不能直接作为硬过滤依据。
+6. 软偏好：`constraintState.softPreferences` 只影响推荐系数、优先级和专家优选排序。软偏好不能被解释为候选被筛掉，也不能作为 `cannot_satisfy` 的主因。
+
+不足归因需要按以下口径落地：
+
+| scope | 含义 | 可面向用户说明 | 不允许说明 |
+| --- | --- | --- | --- |
+| `candidate_pool` | 当前规划候选池内目标候选不足 | 当前可用于规划的候选池里，目标层级/区间候选不足 | 高途全量没有、全国没有、这个方向不存在 |
+| `policy_or_profile_constraints` | 选科、身体、专项、批次线等硬条件可能限制候选 | 可能和选科、身体条件、专项资格或分数段边界有关，需要核验或放宽条件 | 在没有过滤明细时断言就是某一项导致 |
+| `current_view` | 当前面板筛选或用户明确要求的筛选范围下不足 | 当前筛选视图下不足，取消筛选后结果可能不同 | 把当前视图不足说成完整候选池不足 |
+| `hard_constraints` | 已确认硬要求收窄了候选 | 已确认要求收窄了范围，如需补齐需要调整要求并重新确认 | 把未确认对话或软偏好当作硬过滤 |
+| `soft_preference` | 只是偏好导致优先级变化，不是候选不足 | 这会影响推荐系数和优先级，不会直接筛掉候选 | 说候选被偏好过滤掉 |
+| `capacity_or_replacement` | 方案已满或找不到完整一进一出 pair | 当前不是没有候选，而是缺少可安全替换的配对 | 承诺可以直接补入或自动替换 |
+| `objective_validation` | 有候选但 dry-run 后目标没有改善 | 预览后没有让目标指标变好，所以不能作为修复 | 把无改善说成已修复 |
+
+默认产品边界：
+
+- 初始生成、审查修复、结构补偿默认使用完整规划候选池和已确认硬要求，不使用当前候选面板筛选条件。
+- 用户说“按当前筛选结果补”“只从这个列表里选”时，proposal 才能显式进入 `selectionScope=current_view`。
+- 用户表达偏好时，只影响推荐系数和优先级；只有表达排他要求并通过确认卡片/文本确认进入 `hardConstraints` 后，才能作为硬过滤。
+- 当前没有全量外部检索证据时，所有候选不足都必须带上范围限定，不能做全局断言。
+- 如果候选池本身确实不足，系统应解释边界和可选下一步，而不是继续建议“再补几个稳/保”这种无法执行的动作。
+
+当前 3.1.0 候选不足归因开放边界：
+
+- 已开放确定性归因：`candidate_pool`、`hard_constraints`、`capacity_or_replacement`、`objective_validation`。
+- 暂不开放 `current_view`：候选面板筛选当前只存储在 `candidateViewState.filters`，查询接口能按筛选返回当前视图，但修复 selector 默认不消费这些筛选条件，也没有 proposal 级 `selectionScope=current_view`。因此不能因为用户界面上筛了某个条件，就把审查修复不足说成“当前筛选视图不足”。后续只有当用户明确说“按当前筛选结果补/只从这个列表里选”，并且 proposal 记录了 `selectionScope=current_view` 和完整候选池总量/当前视图命中量，才允许输出该 scope。
+- 暂不开放 `policy_or_profile_constraints`：高途返回前和服务端候选构建中确实会受到选科、身体、专项、批次线、分数段边界等影响，但当前只有 `riskHints` 和候选最终结果，没有每类政策/画像过滤前后的明细计数。系统可以提示“可能和这些条件有关，需要核验”，但不能断言就是某一项导致候选不足。2026-06-10 已将候选池质量文案统一为“可能限制/需要核验”的保守口径，并补测试确认这些风险提示不会升级成 `candidateShortages.scope=policy_or_profile_constraints`。后续必须补候选来源统计和过滤摘要后再开放。
+- `soft_preference` 不是 shortage scope：软偏好不会减少基础候选池，也不参与修复 selector 过滤；它只能解释推荐系数、优先级或专家优选排序变化，不能用来解释“为什么候选不足”。
+
+### 4.2.2 `rebalance_tier_ratio` / `fill_probability_gap` 产品边界
+
+这两类都是结构性修复策略，不能只看“候选池里有没有某个候选”，还必须看来源边界、容量、替换代价和用户预期：
+
+- `rebalance_tier_ratio`：目标是让冲稳保结构更接近 `requiredTierCounts`。如果缺保或缺稳，候选来自当前候选池中的对应 tier；满容量时必须形成一进一出的 replacement pair。它可能牺牲院校层次、专业匹配、地域偏好或推荐系数，因此必须先预览。
+- `fill_probability_gap`：目标是缩小录取率梯度断层。候选必须落在断层两端录取率之间，且 dry-run 后断层数量或最大断层确实改善。满容量时不能只追加，必须替换断层边界中相对低性价比的项。
+- 两者当前保持 `preview_only` 是正确边界：候选不足来源还没有结构化分层，替换代价也没有完整产品披露，不能贸然开放自动 apply。
+- 它们不能被包装成“系统一定会帮你补齐”。当目标 tier、录取率区间或 replacement pair 不足时，正确输出是“当前候选池范围内暂不能满足这个结构目标”，并给出下一步选择。
+- 结构性替换不是专业等价替换，不能简单套用“同专业类”硬门槛；否则会把本来用于修冲稳保结构或录取率断层的候选全部挡掉。当前策略是保持只预览，并在预览中披露换出/换入对象、冲稳保区间、录取率、推荐系数、院校排名等关键变化，让用户判断取舍。
+- 后续如果开放 apply，必须先满足：
+  - proposal 明确使用完整 `replacementPairs`，不能 partial 自动应用；
+  - dry-run 证明目标改善；
+  - 不能破坏硬要求；
+  - 必须披露牺牲项：推荐系数、院校层次、专业热度、地域/专业偏好；
+  - `candidateShortages` 或同等结构能说明不足来源是候选池边界、硬条件过滤、当前视图筛选还是用户硬要求；
+  - 前端确认卡片能让用户看懂“为什么换、换掉什么、补进什么、还有哪些风险没解决”。
+
+3.1.0 当前结论：`rebalance_tier_ratio` / `fill_probability_gap` 不开放自动 apply；继续作为结构性预览和解释能力。下一步优先补 `candidateShortages` / `shortageAttribution` 结构，再考虑是否开放其中低风险、完整 replacement pair 的子场景。
+
+2026-06-11 补充实现：`RepairReplacementActionBuilder` 在生成满容量结构 replacement action 时，会把最多 3 条具体配对写入 action detail，例如“换出 A -> 换入 B（录取率、推荐系数、院校排名变化）”。该改动不改变 `preview_only` 边界、不把结构替换加入 apply 白名单，只解决用户看不到替换代价的问题。
+
+2026-06-11 进一步补充：结构性修复的候选选择和配对排序已补齐显式质量因子：
+
+- `fill_probability_gap` 的补入候选不再只按“离断层中点最近”排序；同等接近时继续看推荐系数、意向分、院校排名和录取率，避免补入信息量相近但整体质量更差的候选。
+- `rebalance_tier_ratio` / `fill_probability_gap` 满容量转 replacement preview 时，会按换出项和候选项的替换成本重排 candidate 侧：优先专业相似度，再看院校排名下降代价、推荐系数损失、意向分损失、候选本身推荐系数/录取率/意向分和院校排名。
+- 专业组模式下，如果 compensation action 只有组内 `volunteerIds`、没有显式 `unitIds`，结构替换 builder 会先从候选明细反解 `unitId`，再生成 unit 级 replacement pair，避免满容量专业组断层修复因为 `unitIds` 为空被错误阻断。
+- 这仍不是自动 apply。排序和配对只提升结构性预览的合理性和可解释性；`RepairProposalApplyPolicy` 仍不允许 `rebalance_tier_ratio` / `fill_probability_gap` 落盘。
+
+结果矩阵：
+
+| 场景 | `rebalance_tier_ratio` | `fill_probability_gap` | 用户侧表达 |
+| --- | --- | --- | --- |
+| 候选充分且有剩余容量 | 可展示补入方向，但 3.1.0 不作为自动 apply；如果本质是数量缺口，应转由 `fill_missing_count` 或 `add_safety_items` 承接 | 可展示中间录取率候选，但不直接自动补入 | “可以看到一些改善方向，仍需你确认是否接受结构调整” |
+| 方案已满且有完整 replacement pair | 生成 `replace_volunteers` 预览，说明换出/换入和取舍 | 生成断层中间候选替换预览，说明断层是否缩小 | “这是结构调整预览，不会自动生效” |
+| 只找到部分候选或部分 pair | `preview_only` 或 `blocked`，披露未覆盖缺口 | `preview_only` 或 `blocked`，披露未覆盖断层 | “只能覆盖一部分，不能说已经修完” |
+| 找不到目标候选 | `blocked/cannot_satisfy`，scope 默认 `candidate_pool` 或更具体归因 | `blocked/cannot_satisfy`，scope 默认 `candidate_pool` | “当前可用于规划的候选池里暂时不足” |
+| 找不到可替换来源 | `blocked/capacity_or_replacement` | `blocked/capacity_or_replacement` | “不是没有候选，而是当前方案已满且缺少合适的一进一出替换” |
+| dry-run 后目标没改善 | `blocked/objective_validation` 或保持只读预览 warning | `blocked/objective_validation` 或保持只读预览 warning | “预览后没有让结构指标变好，所以不建议执行” |
+
+这两类策略在产品上解决的是“结构是否更合理”，不是“用户明确要加/删某个志愿”的直接操作。用户明确说“删掉某个学校/专业”“加进某个候选”“把某个志愿移到第 N 位”时，应走对应的明确方案操作链路，不应借 `rebalance_tier_ratio` 或 `fill_probability_gap` 解释。
+
+3.1.0 对这两类策略的最终产品口径：
+
+- 允许生成结构修复方向和 replacement preview，用于解释“如果要修，可能需要换掉什么、补进什么”。
+- 不允许自动 apply。即使有完整 `replace_volunteers` pair，也仍是 `preview_only`，除非后续版本明确开放高副作用结构替换。
+- 如果候选不足，先按确定性 scope 解释：硬要求导致的说硬要求，满容量缺 pair 说配对不足，dry-run 无改善说目标没变好，其余只说当前可用于规划的候选池不足。
+- 不允许承诺“系统可以直接补稳/补保/补梯度”。当当前候选池没有对应供给时，正确建议是“接受当前结构风险、调整硬要求后重新确认、重新生成候选/方案，或人工查看是否放宽方向”。
+
+### 4.2.3 专业组模式下条目风险替换边界
+
+2026-06-10 使用本地会话 132 验证高收费和中外合作修复时，发现两个容易误判的问题：
+
+- 真实候选并不为空。`replace_risk_items` 已经能为高收费生成 9 个替换配对、为中外合作生成 10 个替换配对。
+- 这些 proposal 仍为 `blocked` 是当前产品边界导致的：在专业组模式下，条目级风险命中的是组内专业，但当前替换候选来自其他专业组；如果直接替换单个专业，会改变专业组数量和组内专业结构，因此 dry-run 阶段阻断，返回 `scope=objective_validation`，具体原因是“替换预览会改变专业组数量，暂不允许确认应用”。
+
+本次修正和确认：
+
+- `RepairCandidateSelector.isCompensationSafeCandidate()` 不再把 `special_score:0`、`degree_score:0`、`evaluate_score:0` 这类算法评分标签当作特殊招生/限报风险；只有明确风险标记才会阻断候选。
+- `PlanningStateService` 复用同一套安全候选判断，避免补偿和修复候选选择出现两套风险解释。
+- `RepairDryRunSimulator` 的新增候选风险提示同样只消费明确风险标记，避免前端出现 `特殊类型招生:special_score:0` 这种拼接文本。
+- `candidateShortages` 在 `objective_validation` 场景下优先使用具体 `blockingReason`，不再只显示泛化的“目标未改善”。
+- 对 `objective_validation` 未通过的 blocked proposal，后端不再把 dry-run 过程中产生的临时替换动作作为 `actions` 返回，避免外部或前端把“未通过验证的候选尝试”理解为可采纳修复建议。
+- 前端修复弹窗对非候选不足的 blocked proposal 显示为“暂不能自动修复的原因”；blocked 状态下不展示 dry-run 的移出/补入统计和替换预览，避免把不可应用结果展示成可执行方案。
+
+2026-06-11 本地复验会话 132：
+
+- `修复高收费`：`status=blocked`，`actionCount=0`，`pairCount=0`，阻断原因为“替换预览会改变专业组数量，暂不允许确认应用”。
+- `修复中外合作`：`status=blocked`，`actionCount=0`，`pairCount=0`，阻断原因同上。
+- `修复非意向托底`：`status=blocked`，`actionCount=0`，原因是当前专业组缺少可补入的组内安全垫专业。
+
+这说明最新链路已把“找到了但不可应用的候选尝试”从用户可见修复建议中剔除，只保留可解释的阻断原因；同时也确认当前还没有开放专业组整组替换或同组内风险专业替换。
+
+后续如果要让会话 132 这类高收费/中外合作自动修复真正可应用，需要补齐以下策略之一：
+
+- 同组内替换：只在同一专业组内寻找低风险可替代专业，不改变专业组数量和组结构。
+- 整组替换：把风险专业所在专业组作为整体替换对象，候选选择需要比较专业组录取率、组内可选专业、托底专业、冲稳保层级、推荐系数、硬要求和新增风险。
+- 人工确认保留：当替换代价过高或没有安全替换时，保留风险项但明确提示高收费/中外合作/限报等风险。
+
+在上述策略没有补齐前，“暂不可用”是正确状态；但展示必须说明这是专业组替换边界，不应再表述成“没有安全候选”或输出多层重复的候选不足文案。
+
+### 4.2.4 当前替换逻辑 review 结论
+
+当前替换能力需要区分三类：
+
+- 条目风险替换：`replace_risk_items`，用于高收费、中外合作、限报、特殊招生等落在具体志愿上的风险。
+- 结构性替换：`rebalance_tier_ratio`、`fill_probability_gap`，用于方案满容量时的一进一出结构预览。
+- 组内安全垫调整：`adjust_major_group_inner_safety`，用于专业组内部补入或替换安全专业。
+
+2026-06-10 review 发现的问题：
+
+- `replace_risk_items` 当前已增加第一阶段质量门禁：候选必须同 tier、风险更低、当前方案未选中、满足已确认硬要求，并且专业至少同专业类或同专业子类，院校排名不能出现严重退化；排序优先专业相似度，再看院校层次代价、推荐系数、录取率和意向分。它仍未完成专业组整组替换、地域/层次取舍披露和更细的相似度评分。
+- 专业组模式下，条目风险通常命中组内专业，但外部候选替换往往来自另一个专业组。直接替换单个专业会改变专业组数量，因此必须 blocked，不能展示成可执行修复。
+- 会话 132 曾出现会计/金融类中外合作被替换成法学的候选尝试；第一阶段门禁已阻止这类跨专业类替换继续作为候选对外展示，但专业组模式下仍需要同组内替换或整组替换策略才能真正开放自动修复。
+- 风险替换排序曾在 `finalScore` 相同后按录取率升序，语义上会偏向更低录取率候选。已修正为录取率降序，再按意向分降序。
+- 2026-06-11 重点回归确认：质量门禁会阻断跨专业类替换和严重院校层次下降；原有“多条风险完整替换”和“部分替换只预览”场景在补齐同专业类 fixture 后仍通过，说明门禁没有破坏完整 replacement pair / partial preview 的状态语义。
+
+当前产品口径：
+
+- `objective_validation` 未通过的 blocked proposal 不返回 `actions`，前端也不展示替换预览或 dry-run 移出/补入统计。
+- 条目风险替换只有在 proposal 通过 dry-run、目标验证和 apply policy 后，才允许作为用户可确认修复展示。
+- 专业组模式下，高收费/中外合作这类风险的自动修复暂不开放；后续要补同组内替换或整组替换策略。
+
+后续替换策略仍要补的质量约束：
+
+- 专业相似度：当前已阻断跨专业类替换；后续还要细化同专业、同专业子类、同专业类之间的差异和代价披露。
+- 院校层次和地域代价：披露学校层次、地域、推荐系数、专业热度的变化。
+- 专业组整体质量：整组替换时要比较专业组录取率、组内可选专业、托底专业、硬要求和新增风险。
+- 用户意向：软偏好影响优先级，硬要求必须过滤；替换建议需要说明是否牺牲了偏好。
+- 结果验证：替换后必须证明原风险减少，且不引入更高等级风险、数量缺口或结构退化。
+
+后续落地项：
+
+1. `CandidatePoolStateDTO` 增加候选来源/过滤摘要：
+   - 外部返回总量、冲稳保返回量、服务端规范化后总量。
+   - 可观测硬条件提示：分数边界、批次线、身体限报、专项资格。
+   - 不要求第一期记录每个候选被过滤原因，但要能说明“当前候选池本身偏窄”。
+   - 2026-06-10 已完成第一阶段候选来源计数：新增 `candidatePoolState.sourceSummary`，记录外部返回 entry/unit 总量、外部返回冲稳保 entry/unit 计数、服务端规范化后 entry/unit 总量和冲稳保 entry/unit 计数。该字段只用于解释和观测，不参与候选选择、修复 proposal、dry-run、apply、保存或审查编排。
+   - 第一阶段 `sourceSummary` 只说明“当前规划候选池来源规模”和“专业模式规范化前后规模”，不做每条候选被政策/画像/筛选过滤的归因。因此仍不能把 `policy_or_profile_constraints` 或 `current_view` 作为精确 shortage scope；后续需要补齐过滤前后计数和 proposal 级 `selectionScope` 后再开放。
+2. `CandidateViewStateDTO` 或查询结果增加当前筛选命中统计：
+   - 完整候选池总量 vs 当前筛选后总量。
+   - 如果用户要求“按当前筛选范围调整”，proposal 需要记录 `selectionScope=current_view`；否则默认 selector 不受面板筛选影响。
+   - 2026-06-10 已完成第一阶段查询观测：`CandidatePoolQueryRes.viewSummary` 返回完整候选池 entry/unit 总量、当前筛选视图 entry/unit 总量和当前页加载 entry/unit 数。该字段只用于前端/Agent 区分“候选池本身不足”和“当前筛选视图命中少”，不参与修复候选选择、proposal 归因、dry-run、apply 或审查编排。
+   - 前端工作台查询候选时会保留 `viewSummary`，其中本地累计加载数会按已合并分页重新计算；Agent 候选查询摘要会展示“当前筛选视图 / 完整候选池”的只读对照，帮助后续回复避免把筛选视图命中少误说成候选池本身不足。
+   - 第一阶段仍不开放 `candidateShortages.scope=current_view`：即使查询结果能看到当前筛选视图命中少，修复 selector 默认仍基于完整规划候选池和已确认硬要求；只有后续 proposal 明确 `selectionScope=current_view` 时，才能把不足归因为当前筛选视图。
+3. `FixProposalDTO` 增加 `candidateShortages` 或 `shortageAttribution`：
+   - `strategy`、`targetTier`、`requiredCount`、`availableCount`、`scope`。
+   - `scope` 可先枚举：`candidate_pool`、`current_view`、`hard_constraints`、`policy_or_profile_constraints`、`capacity_or_replacement`、`objective_validation`、`unknown`。
+   - `message` 只做展示，不参与逻辑判断。
+   - 2026-06-10 已完成第一阶段落地：新增 `CandidateShortageDTO` 并挂到 `FixProposalDTO.candidateShortages`；当前由 `RepairProposalStateBuilder.populateCandidateShortages()` 在 proposal 最终状态和 dry-run 后统一从 `blockingReasonCodes + state/check` 生成。该字段只做解释和观测，不参与 selector、dry-run 状态判断、apply 白名单、保存、ordered regenerate 或复审编排。
+   - 第一阶段已覆盖确定性 scope：`candidate_pool`、`hard_constraints`、`capacity_or_replacement`、`objective_validation`、`unknown`。`current_view`、`policy_or_profile_constraints` 仍需要后续在候选来源、视图筛选和政策/画像过滤链路上补充更精确归因后再开放，避免伪精确。
+   - 第一阶段计数字段保守生成：数量缺口会填 `requiredCount/currentCount/shortageCount/availableCount`；冲稳保缺口会在能确定 `targetTier` 时填层级计数；梯度断层会只统计当前候选池中断层区间可用候选；无法可靠计算时字段留空或只给 `scope/message`。
+   - 2026-06-10 已完成已确认硬要求的最小闭环：新增 `RepairCandidateEligibility`，修复候选选择会在补齐数量、补保底、补梯度、风险替换和专业组内安全垫补入时过滤 `constraintState.hardConstraints`；`constraintState.softPreferences` 仍只影响推荐系数/排序，不参与过滤。专业组模式下，候选 item 会先按硬要求过滤再成组；unit 级准入优先按实际会选入方案的 `selectedMajors` 判断，只有 selected 为空时才用 `allMajors` 兜底，避免因为同一专业组里未选中的专业误伤整组补位。`candidateShortages` 会比较“应用硬要求前后”的可用候选数，只有在原候选足够而硬要求过滤后不足时输出 `scope=hard_constraints`。
+4. `RepairCandidateSelector` 返回统一 selection result：
+   - 不只返回候选 id，也返回 `shortageReasons`。
+   - 每个 strategy 都能说明是“目标 tier 不足”“断层区间不足”“无可替换来源”“只找到 partial pair”。
+   - 2026-06-10 已完成第一阶段内部诊断字段：`RepairCandidateSelector.Selection` 现在会保留 `targetTier/requiredCount/selectedCount/shortageCount/availableCount/availableCountWithoutHardConstraints/shortageCausedByConfirmedHardConstraints`。当前这组字段先用于 selector 层回归和后续收口，不改变 `FixProposalDTO.candidateShortages` 的权威输出，也不参与 apply 白名单、dry-run 状态或保存编排。
+   - 第一阶段已覆盖 `fill_missing_count`、`add_safety_items`、`rebalance_tier_ratio` 的补入候选选择，以及 `fill_probability_gap` 的断层区间补入候选选择。风险替换和满容量 replacement source 仍保留现有 pair/missing 计数，后续再统一成同一套 selection diagnostic，避免一次改变高副作用替换语义。
+5. Agent 回复规则：
+   - 若 scope=`candidate_pool`，说“当前可用于规划的候选池不足”。
+   - 若 scope=`current_view`，说“当前筛选视图下不足，可尝试取消筛选”。
+   - 若 scope=`hard_constraints`，说“硬性要求收窄了可选范围，若要补齐需要调整要求并重新确认”。
+   - 若只是软偏好，不说“筛掉”，只说“优先级降低/推荐系数变化”。
+6. 回归：
+   - 专业模式/专业组模式各覆盖候选池不足、当前筛选不足、硬要求导致不足、软偏好不减少候选。
+   - `rebalance_tier_ratio` 和 `fill_probability_gap` 各覆盖完整 pair preview、partial pair blocked/preview_only、无候选 blocked、dry-run 无改善 blocked。
+
+当前真实 apply 编排位置：
+
+```text
+applyFixProposal
+  -> RepairProposalApplyPolicy.validate*
+  -> generateFixProposals / findProposal
+  -> applySupportedFixProposalStrategy
+     -> RepairApplyMutationBuilder(纯内存增删/替换)
+     -> saveWorkingPlanState
+     -> generateOrderedPlan(可选)
+     -> runReview(可选)
+  -> RepairReportBuilder.build
+```
+
+这个编排保持在 `PlanningStateService` 内，是因为保存、ordered plan 重建和复审都属于高副作用流程；已经抽出去的 builder/policy/selector 只承担纯内存、纯校验或纯组装职责。
+
+## 5. 需求拆解
+
+### 5.1 ReviewRuleRegistry
+
+后端提供权威审查规则目录，每条规则包含：
+
+- `code`
+- `label`
+- `description`
+- `category`
+- `severityDefault`
+- `scopeKind`
+- `targetMode`：专业模式、专业组模式、两者都支持。
+- `fixability`
+- `supportedFixStrategies`
+- `evidenceSchema`
+- `postApplyValidationRule`
+
+初始分类建议：
+
+| 类型 | 说明 | 示例 |
+| --- | --- | --- |
+| `item_risk` | 风险落在具体条目上，可删除/替换 | 高收费、中外合作、限报、特殊类型 |
+| `structure_risk` | 结构失衡，需要补齐/替换/重排 | 冲稳保比例、数量缺口、梯度断层 |
+| `ordering_risk` | 顺序不合理，需要重排 | 概率倒挂 |
+| `major_group_risk` | 专业组内部风险 | 非意向托底、组内安全垫不足 |
+| `policy_notice` | 信息提示或外部核验 | 招生计划更新、调剂风险 |
+
+### 5.2 ReviewResult 扩展
+
+审查结果需要从「摘要」升级为「可解释、可修复」对象。
+
+建议字段：
+
+- `code`
+- `level`
+- `passed`
+- `summary`
+- `userMessage`
+- `evidence`
+- `affectedTargets`
+- `sampleTargets`
+- `scopeKind`
+- `fixability`
+- `supportedFixStrategies`
+- `recommendedStrategy`
+- `blockingReason`
+- `sourceVersion`
+- `ruleVersion`
+
+`affectedTargets` 要明确区分：
+
+- `volunteerIds`
+- `unitIds`
+- `majorIds`
+- `schoolIds`
+- `positions`
+
+专业组模式下，必须清楚说明动作粒度是专业组、组内专业，还是单个专业。
+
+### 5.3 FixProposal
+
+新增统一修复 proposal 模型，用于替代当前散落的 compensation action、adjustment suggestion 和 agent 临时 action scope。
+
+建议字段：
+
+- `proposalId`
+- `sourceReviewId`
+- `sourceCheckCodes`
+- `sourceVersion`
+- `status`
+- `strategy`
+- `summary`
+- `impact`
+- `actions`
+- `dryRunResult`
+- `requiresConfirmation`
+- `expiresAt` 或 `sourceVersionGuard`
+- `postApplyValidationPlan`
+
+支持 strategy：
+
+- `remove_risk_items`
+- `replace_risk_items`
+- `fill_missing_count`
+- `fill_probability_gap`
+- `rebalance_tier_ratio`
+- `add_safety_items`
+- `sort_by_probability`
+- `regenerate_order`
+- `regenerate_plan_with_constraints`
+- `no_op`
+- `cannot_satisfy`
+
+`cannot_satisfy` 是必要的一等状态，避免候选不足时继续空泛建议。
+
+`replace_risk_items` 的 action 需要能表达 remove + candidate 的配对关系，至少包含：
+
+- `removeUnitIds`
+- `removeVolunteerIds`
+- `candidateUnitIds`
+- `candidateVolunteerIds`
+- `replacementPairs`
+
+其中 `replacementPairs` 用于前端披露“用谁替换谁”和原因，避免只给出一组候选列表但无法解释替换关系。专业组模式下，pair 需要同时保留专业组粒度和组内专业粒度，不能把组内专业数误当成专业组数。
+
+### 5.3.1 风险后的修复策略矩阵
+
+风险后的修复不能只有一个「补偿」动作，也不能简单把命中的条目删掉。3.1.0 需要按风险类型选择不同策略，并且每个策略都要经过 dry run 和确认。
+
+通用决策顺序：
+
+1. 判断风险类型：条目风险、结构风险、排序风险、专业组内部风险、政策/提示风险。
+2. 判断用户目标：只读询问、要求修复、要求删除、要求替换、要求调稳、要求保留某些偏好。
+3. 生成一个或多个 `FixProposal`。
+4. dry run 验证：数量、冲稳保、硬要求、软偏好、候选容量、是否引入新风险。
+5. 给用户确认；高副作用动作不直接应用。
+6. 应用后重新验证 source check，必要时 full review。
+
+策略矩阵：
+
+| 风险类型 | 典型 code | 默认策略 | 备选策略 | 不能修时的返回 |
+| --- | --- | --- | --- | --- |
+| 条目风险 | `high_tuition`、`cooperative_program`、`admission_limit`、`special_enrollment` | `replace_risk_items`，优先同层次/同 tier 替换 | `remove_risk_items`、保留但标记提醒 | 候选不足、删除会导致数量不足、替代项引入更大风险 |
+| 数量缺口 | `count_validation` | `fill_missing_count` | 放宽软偏好后补齐、提示无法达标 | 候选池不足或硬约束过强 |
+| 安全垫不足 | `safety_guard` | `add_safety_items` 或替换部分高风险项 | 增加本省/高录取率保底，降低院校层次换安全 | 没有足够保底候选，需要说明是候选池限制 |
+| 冲稳保比例失衡 | `ratio_distribution` | `rebalance_tier_ratio` | 替换 surplus tier 到 shortage tier、重新生成局部方案 | 调整会显著损失用户偏好或候选不足 |
+| 概率倒挂 | `probability_inversion` | 先 `sort_by_probability`；若排序不能解决，再替换异常项 | 局部重排、替换倒挂边界项 | 倒挂由用户强制保留或数据缺失导致 |
+| 梯度断层 | `probability_gap` | `fill_probability_gap` 或替换断层两侧低性价比项 | 引入中间录取率候选、局部重排 | 没有中间概率候选，保留断层并提示 |
+| 边缘分风险 | `edge_score` | 增加稳/保候选或降低冲项占比 | 保留高价值冲项但提示风险 | 分数段导致安全空间不足 |
+| 专业组内安全垫 | `group_inner_safety_guard` | 优先补选组内安全专业 | 替换整个专业组、标记调剂风险 | 该组没有安全专业或组内专业选择受限 |
+| 专业组安全专业与意向不一致 | `major_group_safety_intent_alignment` | 在安全专业中优先选择更贴近意向的专业 | 替换专业组、保留但提示托底专业不理想 | 安全专业和意向天然冲突 |
+| 政策/信息提醒 | `plan_update_notice`、`adjustment_notice` | 不自动改方案，只提示核验 | 用户明确要求时转为条目/结构修复 | 需要外部官方信息或人工判断 |
+
+条目风险的默认策略建议优先「替换」而不是直接「删除」：
+
+- 如果直接删除会导致数量不足，必须优先找替代项。
+- 如果替代项会显著变差，需要披露 tradeoff。
+- 如果用户明确说「先删掉」，可以生成删除 proposal，但 dry run 里必须提示数量和结构影响。
+
+结构风险的修复不能直接操作 `affectedVolunteerIds`：
+
+- `affectedVolunteerIds` 只是风险证据或上下文，不等于应删除范围。
+- 结构风险需要按目标函数规划：保数量、保安全、保偏好、保层次之间做权衡。
+- 如果无候选可补，必须返回 `cannot_satisfy`，而不是建议用户继续补稳。
+
+专业组模式必须明确动作粒度：
+
+- 组内专业问题，先在组内专业层面修。
+- 专业组整体风险，才替换或删除专业组。
+- 专业组整体录取率和组内专业录取率要分别校验。
+
+修复后的用户说明应包含：
+
+- 本次修复针对哪个风险。
+- 将会动多少个志愿/专业组/组内专业。
+- 修复后哪些指标预计改善。
+- 会牺牲什么，例如推荐系数、院校层次、地域偏好或专业匹配。
+- 哪些风险仍无法解决，以及原因。
+
+### 5.3.2 候选选择策略层
+
+当前初始化推荐、补偿预览、审查修复、用户手动加入方案都可能从候选池读取候选，但它们的责任不同：
+
+- 用户手动加入方案：用户已经指定 `volunteerIds`，系统只负责校验已选、禁选和候选存在性，不重新替用户排序选择。
+- 初始方案生成：系统可在授权范围内自动选择和替换候选，目标是生成一版结构尽量合理的初始方案。
+- 审查后修复：系统只能先生成可解释、可确认、可回滚理解的 `FixProposal`；高副作用动作必须用户确认。
+- 只读分析/审查：只能披露候选空间和可修复性，不能直接改变方案。
+
+因此 3.1.0 需要把「如何从候选中选」抽象成统一策略层，而不是继续让每个 action 自己临时 `filter + limit`。
+
+建议统一模块：
+
+- `CandidateSourceResolver`：统一返回合并 overlay 后的有效候选，并保证专业模式、专业组模式 ID 规范一致。
+- `CandidateEligibilityFilter`：统一过滤已选、禁选、硬要求不满足、明显高风险候选；不同策略可以声明是否允许保留某类风险。
+- `CandidateScoringPolicy`：按策略输出显式 comparator，避免依赖上游列表顺序。
+- `ReplacementPlanner`：满容量或需要替换时生成 remove/add pair，而不是只给新增候选。
+- `CapacityGuard`：统一判断当前数量、目标数量、剩余容量和是否允许替换。
+- `DryRunEvaluator`：对候选选择结果做数量、冲稳保、录取率梯度、硬要求、软偏好、风险引入校验。
+- `FixActionBuilder`：把选择结果转成 `FixProposalActionDTO`，并保留 `replacementPairs`、原因、取舍说明。
+
+候选选择通用顺序：
+
+1. 确定动作粒度：专业模式按单条志愿；专业组模式先判断是专业组整体问题还是组内专业问题。
+2. 确定目标数量：优先使用 `CandidatePoolState.requiredTierCounts` 和省份/模式的目标数量；没有目标时才使用经验比例兜底。
+3. 计算当前状态：以 ordered 为准；ordered 为空时用工作台方案（旧 draft 状态）快照，但不能把工作台方案总量和 ordered summary 混用。
+4. 构建可用候选：排除已选、禁选、缺少 ID、硬要求冲突、明显风险候选；专业组模式还要排除已选 unit。
+5. 显式排序：按该策略的目标函数排序，而不是依赖 rank 返回顺序。
+6. 处理容量：有剩余容量时生成 add；满容量时必须生成 replacement pair；如果找不到可替换项，返回 `cannot_satisfy`。
+7. dry run：只要指标没有改善或引入更大风险，就不能给出 `ready` 状态。
+
+策略级选择规则：
+
+| strategy | 选择对象 | 目标数量 | 候选排序策略 | 满容量处理 | 不能满足时 |
+| --- | --- | --- | --- | --- | --- |
+| `fill_missing_count` | 缺口志愿/专业组 | `requiredCount - currentCount` | 低风险前提下优先 `finalScore desc`、意向匹配、同 tier 目标缺口 | 不应触发，数量缺口天然有容量 | 返回候选不足，说明缺口数和可补数 |
+| `add_safety_items` | 本省/保底候选 | 本省保底至少 2 个，或规则目标数 | `tier=保`、本省、低风险、录取率高、推荐系数高 | 替换非本省保底或低分高风险项 | 返回保底候选不足，不建议空泛“继续补保” |
+| `rebalance_tier_ratio` | 缺口 tier 候选 | 优先 `requiredTierCounts[tier] - currentTierCount`，否则经验比例兜底 | 缺口 tier、低风险、录取率/推荐系数/意向综合；保区不足时安全性权重更高 | 从 surplus tier 中移除非锁定、非本省保底、低意向/低推荐项，形成 pair | 返回目标 tier 候选不足或无可替换项 |
+| `fill_probability_gap` | 断层区间候选 | 默认 1-2 个，或按断层数量限制 | 录取率位于断层区间，优先接近中点，再看推荐系数、意向、院校排名和录取率 | 替换断层两侧低性价比项，不能只追加；配对时按专业相似、院校层次代价、推荐/意向损失排序 | 返回中间录取率候选不足 |
+| `replace_risk_items` | 风险项替代候选 | 每个风险项一个替代项 | 同 tier/相近层次、低风险、硬要求满足；推荐系数和安全性同时不能明显变差 | 天然 pair 替换 | 返回未匹配风险项数量和缺少替代原因 |
+| `remove_risk_items` | 风险项本身 | 命中的风险项 | 不选候选；如果删除导致数量不足，串联 `fill_missing_count` | 删除后补齐，或提示数量不足 | 返回删除影响和补齐不足 |
+| `adjust_major_group_inner_safety` | 同专业组内专业 | 每个命中专业组至少 1 个安全专业 | 同 unit、未选、未禁选、专业录取率不低于组录取率；优先兼顾安全和意向 | 如果组内专业数已满，替换非安全、低意向、低推荐的组内专业 | 返回该组没有安全专业或组内均被锁定 |
+| `sort_by_probability` | 已有方案顺序 | 不新增候选 | 不选候选，只按录取率/院校层次/推荐系数排序 | 不涉及容量 | 如果用户锁定或数据缺失导致不能改善，返回说明 |
+
+这里的 `strategy` 不是最终落盘 action，而是审查问题对应的修复策略。当前实现需要区分四层：
+
+1. `ReviewRuleRegistry.supportedFixStrategies/defaultFixStrategy`：规则层描述“这个问题可以怎么修”，例如 `ratio_distribution -> rebalance_tier_ratio`、`probability_gap -> fill_probability_gap`。
+2. `CompensationPreviewDTO.actions`：候选补偿层描述“可以补哪些候选”，例如 `rebalance_protect_ratio`、`fill_probability_gap`、`fill_total_count`。
+3. `FixProposalDTO.actions`：确认卡片层描述“本次建议具体怎么改”，例如满容量结构修复会把 add-only 补偿动作转换为 `replace_volunteers`，并携带 `replacementPairs/removeVolunteerIds/candidateVolunteerIds`。
+4. `RepairProposalApplyPolicy.isSupportedStrategy()`：高副作用 apply 白名单。只有 `status=ready` 且策略在白名单内，才允许进入 `applyFixProposal()`；进入后再由 `RepairApplyMutationBuilder` 执行内存 mutation，`PlanningStateService` 负责保存、可选重新生成 ordered plan、可选复审和报告。
+
+因此，“自动 apply `rebalance_tier_ratio` / `fill_probability_gap`”不是直接执行这两个名字的 action，而是指是否允许这两类结构修复 proposal 通过 apply 白名单。当前它们即使已经生成 `replace_volunteers` pair，也仍保持 `preview_only`，只披露修复方向和 dry-run 影响，不进入自动落盘。
+
+专业组模式的特殊约束：
+
+- `requiredCount` 表示专业组数量时，不能把组内专业数量算成专业组数量。
+- `requiredMajorCount` 只约束每个专业组内保留几个专业。
+- 专业组整体补齐使用 unit 级选择；组内安全垫使用同 unit 内专业选择。
+- unit 的代表录取率应使用专业组整体录取率；组内专业录取率只用于组内安全和专业展示。
+- replacement pair 要同时表达 `fromUnitId/toUnitId` 和 `fromVolunteerId/toVolunteerId`，避免前端无法说明“换的是专业组还是组内专业”。
+
+当前代码与目标策略层的差距：
+
+- `buildInitialRecommendationState` 已经有较完整的选择和替换逻辑，但还没有沉淀为可复用 selector。
+- `buildCompensationPreview` 的 add 侧候选选择已迁入 `RepairCandidateSelector` 并补充显式排序；仍需继续把初始方案生成和事后修复的权重配置统一。
+- `rebalance_tier_ratio` 已优先使用 `requiredTierCounts`，没有明确目标时才回退经验比例。
+- `rebalance_tier_ratio` / `fill_probability_gap` 在满容量时已能生成完整 `replace_volunteers` pair；当前仍保持 `preview_only`，不开放自动 apply。
+- 候选不足已能通过 `cannot_satisfy` / `blocked` 输出规则级原因，并通过 `CandidateShortageDTO` 暴露 proposal 级解释；selector 层已开始携带内部诊断字段，但还没有把所有风险替换/满容量替换统一迁移到同一结果模型。
+- 初始生成和事后修复对风险过滤、排序权重、取舍披露还不一致。
+
+### 5.4 Dry Run Validation
+
+所有修复 proposal 在给用户确认前，需要执行 dry run。
+
+校验维度：
+
+- 方案数量是否达标。
+- 冲稳保比例是否变好或不恶化。
+- 硬要求是否满足。
+- 软偏好是否尽量保留。
+- 专业组模式下组内专业数量和托底专业是否合理。
+- 候选是否足够。
+- 是否引入新的高收费/限报/中外合作等风险。
+- 是否与当前方案版本一致。
+
+dry run 输出不能只说「可以修」，要说明：
+
+- 会删除/替换/新增多少项。
+- 典型影响项是什么。
+- 哪些风险会改善。
+- 哪些风险仍保留。
+- 如果不能修，原因是什么。
+
+### 5.5 Apply And Post-Apply Review
+
+应用 proposal 后，需要统一执行：
+
+1. 检查 proposal 是否仍然有效。
+2. 执行 actions。
+3. 写入行为事件和操作日志。
+4. 刷新 ordered/working-plan/recommendation overlay。
+5. 对 source check 做目标规则验证。
+6. 必要时 rerun full review。
+7. 生成 `RepairReport`。
+
+`RepairReport` 建议包含：
+
+- `applied`
+- `appliedActions`
+- `changedTargets`
+- `resolvedChecks`
+- `remainingChecks`
+- `newChecks`
+- `warnings`
+- `candidateShortage`
+- `nextSuggestions`
+
+用户侧表达要避免系统术语，重点说：
+
+- 刚才改了什么。
+- 原来哪个问题改善了。
+- 还有什么需要注意。
+
+### 5.6 外部触发协议
+
+3.1.0 需要提供稳定外部接口，而不是让外部系统拼低层接口。
+
+建议新增或收口接口：
+
+```text
+POST /session/review-workflow/run
+POST /session/review-workflow/proposals
+GET  /session/review-workflow/proposals/{proposalId}
+POST /session/review-workflow/proposals/{proposalId}/apply
+GET  /session/review-workflow/reports/{reportId}
+```
+
+也可以保留当前低层接口，但文档中明确：
+
+- 低层接口用于内部和兼容。
+- 新工作流接口用于外部稳定对接。
+
+外部触发需要支持：
+
+- `triggerSource`：user、agent、frontend、external、scheduled。
+- `reviewScope`：full、changedOnly、specificChecks。
+- `proposalMode`：none、previewOnly、autoGenerate。
+- `confirmationMode`：userRequired、externalConfirmed、systemAllowed。
+- `async`：是否异步执行。
+- `sourceVersion`：版本保护。
+
+### 5.7 前端交互
+
+3.1.0 前端需要从「轻量审查提示」升级到「审查修复入口」，但不一定一开始做重型页面。建议分两层：
+
+轻量层：
+
+- 保留顶部审查按钮和风险提示。
+- Tooltip 中只展示摘要和入口。
+
+详情层：
+
+- 展示问题列表。
+- 每个问题展示证据、影响范围、严重程度。
+- 可修复问题展示「查看修复建议」。
+- 修复 proposal 以确认卡形式展示。
+- 应用后展示复审结果。
+
+对话层：
+
+- 用户说「帮我审查」「这版太冲了」「太贵的去掉」「帮我修最严重的问题」时，进入同一套 review workflow。
+- 对话只负责解释和确认，不绕过后端 proposal。
+
+2026-06-11 前端工作台交互收口设计：
+
+- PC 工作台不再把「审查」和「修复建议」作为两个平级按钮。主入口统一为审查按钮：
+  - 没有审查结果时显示「审查」，点击触发 `review-workflow/run`。
+  - 审查结果过期时显示「重新审查」，点击重新执行 `review-workflow/run`。
+  - 已有有效审查结果时显示「查看审查结果」，点击打开同一个审查结果弹窗，并按需调用 `fix-proposals/generate` 刷新建议。
+- 风险提示图标保留为快捷入口。hover 继续展示轻量摘要，点击打开同一个「方案审查结果」弹窗，不再停留在只读 tooltip。
+- 方案顺序栏只保留当前顺序说明和审查入口，不再在「当前顺序」提示下额外展示“方案有提醒 / 风险 N / 提醒 N”摘要。用户需要查看审查细节时，通过审查按钮或风险提示图标进入弹窗。
+- 弹窗以审查问题为主线，而不是先列一组孤立修复按钮：
+  - 每个 `ReviewCheck` 独立展示问题名称、风险/提醒等级、摘要、明细和影响项数量；默认不直接展示处理动作，避免把每个提醒都表达成必须处理。
+  - 与该问题关联的 `FixProposal.sourceCheckCodes` 作为二级内容收在「查看处理建议」下，用户主动点开后才展示。
+  - 展开后的信息分两层：`ReviewCheck.suggestedAction` 作为「处理方向」，说明用户可以从哪类取舍入手；`FixProposal` 作为「处理方式」，只展示系统已经形成的可预览或可确认实施方案。
+  - `ready` proposal 在二级内容中显示「确认处理」，点击后仍走 `fix-proposals/apply` 的版本、stale、status、strategy 白名单校验。
+  - `preview_only` 在二级内容中只展示预览和取舍，不提供落盘入口。
+  - `blocked/info` 在二级内容中不展示 `blocked`、dry-run、验证失败、版本保护等系统状态；只转译成用户能理解的影响和下一步，例如“当前没有合适的一进一出替换方案，建议先看受影响志愿再手动调整”。
+  - 没有关联 proposal 的问题默认只展示审查发现；如果有 `suggestedAction`，也放在「查看处理建议」下。
+  - 没有挂到具体审查项的 proposal 统一收在「其他需要关注的问题」下，并同样通过「查看处理建议」二级展开，不直接铺开处理卡。
+- `pendingActions` 在弹窗中只作为「其他提醒/待处理建议」展示，不再由前端基于它自行拼修复行为。正式修复入口必须来自后端 `FixProposal`。
+- 弹窗底部「重新审查」始终重新执行 `review-workflow/run`，不会只重新生成修复建议，避免用户以为审查结果也刷新了。
+- 应用修复后弹窗展示最近一次 `RepairReport`，并重新拉取工作台状态和 proposal，确保前端审查结果、工作台方案和修复状态同步。
+- 用户侧措辞统一为“处理建议”“处理方式”“确认处理”“最近一次处理结果”。前端不直接展示“硬约束”“修复建议”“暂不可用”“预览验证未通过”“不能直接应用”等系统化语言；`hard_constraints` 这类内部 scope 在用户侧转译为“已确认的筛选条件或报考要求让范围变窄”，引导用户调整筛选或报考要求后重新审查。
+- 候选不足不再使用单一泛化文案。前端按 `candidateShortages.scope/reasonCode/sourceCheckCode` 转译：冲稳保配比不足说明目标区间候选或可替换方案不足；梯度断层说明缺少断层中间候选；数量多于要求时提示精简；部分专业组安全垫不足时说明哪些可处理、哪些仍需人工判断。
+- 审查结果新增 `ReviewCheck.reasonCode`，用于表达审查命中的结构化原因，不从中文 `summary/detail` 反推。当前覆盖：
+  - 数量校验：`count_missing`、`count_over_limit`。`count_over_limit` 会在 fix proposal 中映射为 `candidateShortages.scope=current_plan/reasonCode=count_over_limit`，前端展示为“当前方案数量高于要求，需要精简”，不再误说成候选池不足。
+  - 冲稳保配比：`protect_tier_missing`、`sprint_tier_missing`、`sprint_tier_over_limit`。修复建议按 reasonCode 决定目标区间和建议类型，避免继续通过“冲区占比过高/保区占比过低”等中文文案判断。
+- `count_validation` 规则 label 改为中性的“数量校验”。“数量不足/数量超出”由 `ReviewCheck.reasonCode` 和 `summary/detail` 展示，避免数量超出时仍显示“数量缺口”。
+
+当前产品边界：
+
+- 修复入口必须挂在具体审查问题或后端 proposal 下，不能再独立放一个不知道针对什么问题的「修复建议」按钮。
+- 结构性策略 `rebalance_tier_ratio`、`fill_probability_gap` 仍保持只读预览；前端只披露换出/换入和取舍，不提供确认修复。
+- 专业模式和专业组模式都只消费后端返回的 unit/volunteer 计数与 pair，不在前端自行推断“换的是专业组还是组内专业”。
+- 前端不调用旧 `compensation/preview` / `compensation/apply`，旧补偿入口只作为 Agent/后端兼容路径保留。
+
+### 5.8 初始方案生成阶段的结构性规划
+
+当前初始化方案生成不是简单按推荐系数取前 N 个。后端已经在 `buildInitialRecommendationState` 内做了一些局部结构修复：
+
+- 按目标冲/稳/保数量从候选池选取。
+- 对数量缺口做补齐。
+- 对低分段或安全垫不足做本省保底修复。
+- 对录取率倒挂做替换修复。
+- 对录取率梯度断层做 gap fill 修复。
+- 对冲稳保比例做 rebalance。
+- 专业组模式下会评估专业组代表项质量，并关注组内是否有安全专业。
+
+但这套逻辑目前仍是初始化推荐内部的选择策略，不是统一的 review/repair 协议：
+
+- 结构修复规则没有和 `runReview()` 的规则目录完全统一。
+- 修复动作只记录为 reason code、repair count、unresolved rule code，不形成可解释的 tradeoff report。
+- 用户看不到为了降低风险移除了哪些高推荐系数、强意向或高层次机会。
+- 结构性修复失败时，只能通过 unresolved rule code 间接体现，不能清楚说明是候选不足、约束太强，还是策略选择不允许牺牲某些维度。
+
+3.1.0 需要把「初始生成」纳入同一套规划框架，而不是只在生成后做事后审查。
+
+建议新增 `InitialPlanStrategyReport`：
+
+- `targetProfile`：目标数量、冲稳保目标、本省保底目标、专业组内安全目标。
+- `objectiveWeights`：推荐系数、录取安全、意向匹配、院校层次、专业热度、地域/费用约束等权重。
+- `selectedSummary`：最终选入项统计。
+- `tradeoffs`：为了修复某个风险，替换/放弃了哪些高分项或意向命中项。
+- `appliedStructuralRepairs`：生成阶段已经处理的问题。
+- `unresolvedRisks`：生成阶段无法解决的问题。
+- `candidateShortages`：候选不足或约束冲突。
+- `needsUserAttention`：需要用户关注的问题，用于概览和对话解释。
+
+2026-06-10 第一阶段已落地：
+
+- 后端新增 `InitialPlanStrategyReportDTO.candidateShortages`，复用 `CandidateShortageDTO` 结构描述初始生成阶段未解决的数量缺口、冲稳保缺口、本省/保底安全垫不足、录取率断层、录取率倒挂和专业组内安全垫不足。
+- 后端新增 `InitialPlanStrategyReportDTO.tradeoffs`，并在 `AppliedRepair.tradeoffSummary` 中同步一条面向用户的取舍摘要。当前先覆盖生成阶段自动替换类修复，例如为了缓解录取率梯度断层，把高风险/低改善价值候选替换成中间录取率候选时，会记录换出、换入、收益、代价和指标变化。
+- 后端新增 `InitialPlanStrategyReportDTO.objectiveWeights`，用于披露初始生成阶段当前实际平衡的目标：冲稳保结构、偏好/专家优选、录取安全和梯度、发展前景、推荐系数、本省保底，以及专业组模式下的组内安全专业。该字段是相对目标优先级说明，不是新的数学打分权重。
+- 后端新增 `InitialPlanStrategyReportDTO.actions`，复用 `FixProposalActionDTO` 的只读动作结构表达生成阶段已经发生的替换，例如 `replace_volunteers + replacementPairs`。这不是可确认、可 apply 的 proposal，只用于让初始生成和审查修复在动作描述层复用同一套字段。
+- 该字段只做解释和观测，不参与初始候选选择、排序、review、fix proposal、dry-run 或 apply。
+- `tradeoffs` 和 `tradeoffSummary` 同样是只读解释字段，不参与初始候选选择、排序、review、fix proposal、dry-run、apply 或保存编排。
+- `objectiveWeights` 同样是只读解释字段，不参与初始候选选择、排序、review、fix proposal、dry-run、apply 或保存编排。
+- `actions` 同样是只读解释字段，不参与初始候选选择、排序、review、fix proposal、dry-run、apply 或保存编排。
+- 当前 scope 仍按确定性边界保守输出：缺目标候选时使用 `candidate_pool`，有候选但缺少安全一进一出配对时使用 `capacity_or_replacement`，不输出 `current_view` 或 `policy_or_profile_constraints`。
+- PC 概览已优先展示生成阶段结构化候选不足说明；没有结构化不足时才回退到未解决风险 detail、第一条取舍摘要或已应用结构修复数量。
+
+生成阶段的目标不是消灭所有风险，而是明确表达权衡：
+
+- 如果降低风险会损失推荐系数，需要让用户知道。
+- 如果保底不足是候选池客观不足，需要明确说明不能硬补。
+- 如果为了满足硬要求导致冲稳保结构变差，需要在概览中提示。
+- 如果保留了高风险但高匹配项，需要说明这是推荐收益和风险之间的选择。
+
+这部分应与 5.3 的 `FixProposal` 共用底层动作模型。区别只是：
+
+- 初始生成阶段可以在系统授权范围内自动应用部分低风险结构修复。
+- 高争议 tradeoff 不应静默处理，需要形成提醒或可选 proposal。
+
+### 5.9 概览风险提醒和 stale 触发时机
+
+当前前端概览里的风险提醒主要来自后端 `workflowStatus.reviewStatus` 和 `staleFlags.review`：
+
+- `not_reviewed`：方案尚未审查。
+- `stale`：已有审查结果，但方案后来发生变化。
+- `has_risk`：审查发现风险。
+- `has_warning`：审查有提醒。
+- `passed`：审查通过。
+
+后端当前在多数方案变更动作后会设置 `staleFlags.review=true`。本轮已先把重复赋值收口到 `ReviewInvalidationPolicy`，避免继续在每个变更方法里散落维护：
+
+- `markPlanStructureStale()`：方案内容或排序变化后，统一标记 `planAdjustment/review` 过期。
+- `markCandidatePoolDependentsStale()`：候选池刷新后，统一标记初始推荐、排序方案、调整建议和审查需要重算。
+- `markPreferenceIntentStale()`：软偏好采纳后，统一标记推荐覆盖、初始推荐、排序方案、调整建议和审查需要重算。
+- `markConstraintIntentStale()`：硬要求采纳后，额外标记候选池过期。
+- `markCandidateViewStale()`：候选筛选视图变化后，只标记初始推荐和调整建议过期，不把审查结果标记为过期。
+
+当前已覆盖的动作包括：
+
+- 工作台方案保存或同步。
+- 生成候选池。
+- 更新候选筛选视图。
+- 移动志愿。
+- 移动专业组。
+- 删除专业组。
+- 排序方案。
+- 保存 ordered state。
+- 补偿应用后重新生成或复审。
+
+当前需要特别区分两类容易混淆的状态变化：
+
+- 候选筛选视图变化：只代表用户当前在候选面板里看哪个范围，例如筛地域、专业、标签。它会让初始推荐和调整建议待更新，但不改变当前方案事实，也不应让已经审查过的方案显示为“审查待更新”。服务级回归已锁定：`updateCandidateViewState()` 后 `staleFlags.review=false`，工作台 `reviewStatus` 仍按原审查结论显示。
+- 方案内容/顺序变化：包括加入、删除、移动、排序、专业组整体移动、专业组删除、工作台方案保存同步等。这些动作会改变审查基准，必须让已有审查结果进入 `reviewStatus=stale` 或待审查状态。服务级回归已锁定：已审查方案执行 `moveOrderedItem()` 后，工作台 `planStatus=pending_review`、`reviewStatus=stale`，原因是 `plan_structure_changed`。
+
+但 3.1.0 仍需要把「为什么需要重新审查」继续细化成可展示、可审计的 reason。当前 `ReviewInvalidationPolicy` 已经统一 stale flags 的触发语义，并在 `StaleFlagsDTO` / `PlanningWorkflowStatusDTO` 输出基础 `reasonCode/message/affectedReviewCodes`；后续还需要继续补全事件模型和精确 affected review codes。
+
+当前 `staleFlags.reasonCode/message` 仍是多个待更新状态共享的原因字段，不是单独的审查原因字段。前端和 Agent 在展示审查 stale 时必须以 `workflowStatus.reviewStatus=stale` 或 `staleFlags.review=true` 为准，再读取 reason；不能只因为 `reasonCode=candidate_view_changed` 就把审查提示成待更新。后续如果要同时展示“推荐待更新原因”和“审查待更新原因”，需要拆分为更细的 `reviewReason`、`planAdjustmentReason`、`recommendationReason` 或引入 `PlanningMutationEvent` 事件模型。
+
+当前 `ReviewInvalidationPolicy` 的目标规则：
+
+| 变更类型 | 是否 stale review | 原因 |
+| --- | --- | --- |
+| 新生成候选池 | 是 | 候选基础变了，所有审查需重算 |
+| 初始方案生成 | 是，随后可自动 runReview | 方案内容新生成 |
+| 添加/删除/替换志愿 | 是 | 数量、结构、风险项可能变化 |
+| 移动/排序志愿 | 是 | 倒挂、梯度、顺序风险可能变化 |
+| 专业组内专业调整 | 是 | 组内安全垫和意向匹配可能变化 |
+| 只改展开/折叠/UI 状态 | 否 | 不影响方案事实 |
+| 导出 | 否 | 只记录行为，不改变方案 |
+| 意向/要求采纳 | 是，至少 planAdjustment/recommendation stale | 推荐系数和方案检查参考变化 |
+| 政策/说明类对话 | 否 | 不改变方案事实 |
+
+同时要明确概览显示策略：
+
+- 如果 `reviewStatus=stale`，概览不能继续强调旧风险结论是当前事实，只能提示「方案已调整，建议重新审查」。
+- 如果刚生成方案后自动复审成功，概览显示最新风险/提醒。
+- 如果自动复审失败，概览显示「审查暂未完成」，并保留重新审查入口。
+- 如果有 `InitialPlanStrategyReport.unresolvedRisks`，即使还没 full review，也应在概览中展示为「生成阶段需要关注的问题」，但要区分它不是完整审查结果。
+
+3.1.0 还需要统一前端刷新行为：
+
+- 用户手动移动/删除/排序后，工作台应立即看到 `reviewStatus=stale` 或相应 pending review 状态。
+- 点击「审查」后刷新为最新 `has_risk/has_warning/passed`。
+- 对话侧应用方案动作后，也应刷新同一份 workspace state，不能有对话显示已复审、工作台仍显示旧提醒的情况。
+
+## 6. 典型场景
+
+### 6.1 只读审查
+
+用户：这份方案稳不稳？
+
+预期：
+
+- 运行审查。
+- 返回风险数量、核心问题和代表例子。
+- 不自动改方案。
+- 如果有可修复项，提示可以查看修复建议。
+
+### 6.2 处理条目型风险
+
+用户：太贵的先去掉。
+
+预期：
+
+- 定位 `high_tuition` 审查问题。
+- 生成 `remove_risk_items` 或 `replace_risk_items` proposal。
+- 披露命中总量和代表项。
+- 用户确认后执行。
+- 执行后复审高收费问题是否消失或减少。
+
+### 6.3 结构性调稳
+
+用户：这版太冲了，帮我调稳点。
+
+预期：
+
+- 运行或读取最新审查。
+- 命中 `ratio_distribution`、`safety_guard`、`probability_gap` 等结构问题。
+- 生成综合 proposal：减少高风险项、补稳/保项、必要时重排。
+- dry run 说明候选是否足够。
+- 若候选不足，返回 `cannot_satisfy`，说明是分数段/候选池限制，不空泛承诺。
+
+### 6.4 专业组组内风险
+
+用户：专业组里托底专业合理吗？
+
+预期：
+
+- 运行专业组内部审查，包括 `group_inner_safety_guard`。
+- 区分专业组整体录取率和组内专业录取率。
+- 如果只是问情况，返回分析。
+- 如果要求调整，生成组内专业层面的 proposal，不能误删整个专业组。
+
+### 6.5 外部系统触发
+
+外部系统：用户完成一次自动生成方案后，触发审查和修复建议生成。
+
+预期：
+
+- 外部调用 workflow run。
+- 系统返回 reviewId 和 proposal 列表。
+- 外部可以展示给用户确认，或在授权范围内调用 apply。
+- 应用后可拉取 repair report。
+
+### 6.6 初始方案生成后的取舍说明
+
+用户：生成一版方案。
+
+预期：
+
+- 生成候选池和初始方案。
+- 同步生成 `InitialPlanStrategyReport`。
+- 告诉用户这版方案大体满足哪些目标，例如数量、冲稳保、保底、本省安全垫。
+- 如果系统为了降低风险替换了高推荐项，需要说明「为了补保底/拉平梯度，牺牲了部分推荐系数或院校层次」。
+- 如果仍有风险未解决，需要以「需要关注」形式披露，而不是让用户误以为初始方案天然无风险。
+
+### 6.7 人工移动后概览风险变 stale
+
+用户在工作台把第 20 个志愿移到第 3 位。
+
+预期：
+
+- 后端将 `staleFlags.review=true`。
+- 前端概览风险提醒切换为「方案已调整，建议重新审查」。
+- 旧审查问题可以保留在详情里，但需要标记为基于旧版本。
+- 用户点击审查后重新计算概率倒挂、梯度断层和结构风险。
+
+## 7. 与 3.0.3 的关系
+
+3.0.3 保留：
+
+- pending confirmation 主协议。
+- 高副作用动作 preview/confirm/apply。
+- 软偏好和硬要求区分。
+- Agent 质量评估和对话回归框架。
+- 现有审查、补偿、方案动作能力。
+
+3.1.0 新增/升级：
+
+- 后端权威审查规则目录。
+- ReviewResult 可修复性和证据模型。
+- 统一 FixProposal / RepairReport。
+- 初始方案生成阶段的结构性规划报告。
+- plan adjustment apply 的重新定义或废弃。
+- compensation 纳入 repair strategy。
+- 统一 ReviewInvalidationPolicy 和概览风险 stale 语义。
+- 外部稳定 review workflow 接口。
+- 前端审查修复交互。
+- 审查后修复的端到端回归用例。
+
+## 8. P0 / P1 建议
+
+### P0
+
+- 定义 `ReviewRuleRegistry` 和审查问题分类。
+- 扩展 review result，至少补齐 `scopeKind/fixability/supportedFixStrategies/evidence/sampleTargets`。
+- 定义统一 `FixProposal`。
+- 定义 `InitialPlanStrategyReport`，披露生成阶段已处理和未解决的结构风险。
+- 定义 `ReviewInvalidationPolicy`，统一方案变化后的审查 stale 行为。
+- 将 `compensation`、条目删除/替换、重排纳入 proposal。
+- `plan-adjustment/apply` 已按废弃处理；后续只清理残留文档和潜在外部调用。
+- `group_inner_safety_guard` 已进入正式 `runReview()`；旧 `analyzePlanAdjustment()` 暂不扩大暴露面。
+- 新增外部 workflow 最小接口：run review + generate proposals + apply proposal + report。
+- 增加端到端回归：专业模式、专业组模式、条目风险、结构风险、初始生成 tradeoff、review stale、候选不足、外部触发。
+
+### P1
+
+- 前端审查修复详情面板。
+- 修复 proposal 多方案比较。
+- 异步任务和进度事件。
+- 官方政策/招生章程风险与审查规则结合。
+- 审查规则配置化和版本化。
+- 外部系统 webhook/callback。
+
+## 9. 落地模块设计
+
+### 9.1 Backend: ReviewRuleRegistry
+
+后端需要成为审查规则和修复能力的 source of truth。建议新增 `ReviewRuleRegistry`，先用代码内 registry 起步，后续再考虑配置化。
+
+规则定义建议：
+
+```json
+{
+  "code": "probability_gap",
+  "label": "录取率梯度断层",
+  "category": "structure_risk",
+  "severityDefault": "warn",
+  "targetModes": ["major", "major_group"],
+  "scopeKind": "structure",
+  "fixability": "preview_fixable",
+  "supportedFixStrategies": ["fill_probability_gap", "replace_risk_items", "rebalance_tier_ratio"],
+  "defaultFixStrategy": "fill_probability_gap",
+  "requiresConfirmation": true,
+  "evidenceSchema": "probability_gap_v1",
+  "postApplyValidationRule": "probability_gap"
+}
+```
+
+迁移方式：
+
+- 第一阶段：保留现有 `reviewXXX` 方法，把 code/label/category/fixability 从 registry 读取。
+- 第二阶段：`ReviewCheckDTO` 增加 registry 派生字段，Agent 和前端不再各自维护 label 和分类。
+- 第三阶段：新增规则必须先注册，再接入 `runReview()` 和 proposal 生成。
+
+### 9.2 Backend: InitialPlanStrategyReport
+
+初始方案生成需要输出结构化策略报告，避免用户只看到结果但不知道系统做了什么取舍。
+
+建议挂在 `PlanningStateDTO.initialRecommendationState.strategyReport` 或独立 `initialPlanStrategyState` 下。
+
+核心字段：
+
+- `targetProfile`：目标数量、冲稳保目标、本省保底目标、专业组内安全目标。
+- `objectiveWeights`：推荐系数、安全性、意向匹配、院校层次、专业热度、地域/费用等权重。
+- `appliedRepairs`：生成阶段实际执行的结构修复。
+- `tradeoffs`：被替换/放弃的高分项和原因。
+- `unresolvedRisks`：生成阶段无法解决的规则。
+- `candidateShortages`：候选不足或约束冲突说明。
+- `userAttentionMessages`：概览和对话可直接使用的用户侧提醒。
+
+当前已有的 `gapFixCount/unresolvedGapCount/appliedRepairCount/unresolvedRuleCodes/reasonCodes` 可以作为迁移起点，但需要补足被替换对象、替换原因和影响指标。
+
+2026-06-10 进展：
+
+- `InitialPlanStrategyReportDTO` 已挂在 `InitialRecommendationStateDTO.strategyReport`，并随 `PlanningWorkspaceStateRes.initialRecommendationState` 返回。
+- `objectiveWeights` 已补第一阶段目标说明，按当前规则优先级输出 `code/label/relativeWeight/priority/description`。由于初始推荐当前不是加权求和算法，`relativeWeight` 只用于解释相对关注度，不作为排序输入。
+- `appliedRepairs` 已记录生成阶段执行的结构替换，包括 `ruleCode/actionType/reasonCode/from/to/detail`。
+- `actions` 已复用 `FixProposalActionDTO` 结构描述生成阶段已执行替换，当前主要输出 `replace_volunteers`、`removeVolunteerIds`、`candidateVolunteerIds`、`removeUnitIds`、`candidateUnitIds` 和 `replacementPairs`。该列表只读返回，不生成 `FixProposalDTO`，也不能进入 `fix-proposals/apply`。
+- `tradeoffs` 已记录生成阶段替换产生的取舍，包括 `ruleCode/actionType/reasonCode/from/to`、推荐系数/录取率/热度/院校排名变化、偏好升级或降级、`gains/costs` 和用户侧 `summary`。
+- `appliedRepairs.tradeoffSummary` 会复用同一条取舍摘要，便于前端在轻量概览里展示，不需要自行拼接 from/to 和指标变化。
+- `candidateShortages` 已补齐第一阶段结构化不足说明，来源于初始生成确定性状态和未解决规则，不从模型或用户自然语言猜测。
+- 前端类型 `PlanningInitialPlanStrategyReport` 已补 `objectiveWeights`、`actions`、`candidateShortages?: PlanningCandidateShortage[]` 和 `tradeoffs`，工作台概览优先使用候选不足，其次使用未解决风险或取舍摘要。
+- 当前 tradeoff 仍只覆盖初始生成阶段已发生的自动替换，不改变选择结果，也不和后续 `FixProposal` 共享 action model。
+- 尚未完成：真正的多目标权重配置化、更多非替换类取舍量化，以及与后续 `FixProposal` 的统一 action model 复用。
+
+### 9.3 Backend: FixProposal
+
+新增统一 proposal 生成服务：
+
+```text
+ReviewState + PlanningState + CandidatePool + UserIntent/Constraints
+  -> FixProposalService.generate(...)
+  -> FixProposal[]
+```
+
+proposal 类型：
+
+- `remove_risk_items`
+- `replace_risk_items`
+- `fill_missing_count`
+- `add_safety_items`
+- `rebalance_tier_ratio`
+- `fill_probability_gap`
+- `sort_by_probability`
+- `adjust_major_group_inner_safety`
+- `regenerate_plan_with_constraints`
+- `cannot_satisfy`
+- `no_op`
+
+每个 proposal 必须包含：
+
+- source review version。
+- source check codes。
+- 具体 actions。
+- dry run result。
+- 影响范围。
+- 预计改善。
+- 预计损失。
+- 是否需要确认。
+
+现有 `CompensationActionDTO` 和 `PlanAdjustmentSuggestionDTO` 不直接删除，先作为 proposal action 的来源之一；但新接口不再让外部直接拼这些低层对象。
+
+### 9.4 Backend: Repair Apply And Report
+
+新增统一 apply 服务：
+
+```text
+FixProposal -> version guard -> apply actions -> refresh state -> validate -> RepairReport
+```
+
+必须处理：
+
+- proposal 过期。
+- 当前方案已变更。
+- 候选已失效。
+- 应用过程中部分成功/失败。
+- 应用后产生新风险。
+- 专业模式和专业组模式不同粒度。
+
+`RepairReport` 要成为外部系统和前端共同消费的结果对象，而不是只靠聊天回复。
+
+### 9.5 Backend: ReviewInvalidationPolicy
+
+把 `staleFlags.review=true` 从分散赋值升级为显式策略服务：
+
+```text
+PlanningMutationEvent -> ReviewInvalidationPolicy.evaluate(...) -> stale flags + reason
+```
+
+输出建议：
+
+- `reviewStale`
+- `planAdjustmentStale`
+- `recommendationOverlayStale`
+- `reasonCode`
+- `message`
+- `affectedReviewCodes`
+
+这样前端概览能解释为什么需要重新审查，而不只是显示一个状态。
+
+### 9.6 Agent Integration
+
+Agent 不应自己发明审查问题分类。3.1.0 后：
+
+- `review_plan` 读取后端增强后的 review result。
+- `analyze_adjustment` 逐步迁移到 `generateFixProposal`。
+- `preview_compensation` 成为 `FixProposal` 的一种策略，不再是独立主语义。
+- 用户说「修最严重的问题」「太贵的去掉」「调稳」时，Agent 调 workflow proposal，而不是自己拼 action。
+- 对话回复只做解释、澄清和确认，不绕开 proposal apply。
+
+当前代码接入状态：
+
+- `review_plan` handler 当前会先调用 `/session/review/run`，再调用 `/session/fix-proposals/generate`，把 proposal 的 `status/strategy/impact/candidateShortages/blockingReason` 归一进回复 facts。
+- `analyze_adjustment` handler 当前仍调用旧 `/session/plan-adjustment/analyze` 做只读分析，但也会补充读取 `fix-proposals/generate`，用于解释哪些方向已有后端 proposal、哪些只是分析建议。
+- `generate_planning_fix_proposals` 和 `apply_planning_fix_proposal` 已在 Agent workflow tool / internal client 中存在；`apply_planning_fix_proposal` 受 `user_confirmed` 保护，并最终由后端 `RepairProposalApplyPolicy` 做版本、stale、status、strategy 白名单校验。
+- ChatAgent 主工具列表当前仍未直接开放 `apply_planning_fix_proposal`，因为对话侧还没有稳定保存 proposal_id/sourceVersionGuard 的确认卡状态，也没有在对话里完整展示 RepairReport 的前端状态同步。
+- `preview_compensation` / `apply_compensation` 仍是兼容能力：
+  - 可用于已有“补几个稳/保”这类低风险补齐语义。
+  - 不能承接条目风险替换、结构性满容量调整、复审报告和候选不足归因。
+  - 后续应迁移为 `FixProposal` 的 `fill_missing_count/add_safety_items` strategy，再从 action family 中退场。
+- Agent 本地 `review_issue_registry.py` 当前只应作为后端元数据缺失、老会话和测试 fixture 的兜底；主路径优先消费后端 `ReviewCheck` metadata 或 `FixProposal`。
+
+因此，对话侧目前是“只读解释已接入 FixProposal，正式修复 apply 尚未作为主路径开放”。这与前端工作台的统一审查弹窗互补：现阶段用户在对话里看到处理方向，真正确认修复优先在工作台审查结果弹窗中完成。
+
+### 9.7 Frontend Integration
+
+前端至少需要支持：
+
+- 概览风险状态：not reviewed / stale / risk / warning / passed。
+- 审查详情入口。
+- proposal 列表。
+- proposal 确认卡。
+- repair report 展示。
+- stale 旧审查结果标记。
+
+第一期可以不做复杂大面板，但不能只停留在 tooltip；至少要能让用户看到「这个风险怎么修、修了会损失什么」。
+
+2026-06-11 第一阶段已落地为轻量弹窗：
+
+- 主审查按钮统一承接审查、重新审查、查看审查结果。
+- 风险提示图标点击进入同一弹窗，hover 保留摘要。
+- 弹窗按 `ReviewCheck -> FixProposal` 分组展示；修复动作不再作为独立入口悬浮在审查结果之外。
+- `pendingActions` 只读展示，不再由前端自行生成修复行为。
+- 应用 proposal 后展示 `RepairReport` 并刷新工作台状态。
+
+## 10. 完整测试保障
+
+3.1.0 这块需要按层次建立测试保障，避免再次出现「某个 case 修了，别的链路退化」。
+
+### 10.1 后端单元测试
+
+覆盖对象：
+
+- `ReviewRuleRegistry`
+- 每个 `reviewXXX` 规则。
+- `FixProposalService`
+- `ReviewInvalidationPolicy`
+- `InitialPlanStrategyReport` 生成。
+- `RepairApplyService`
+
+最低要求：
+
+- 每个 review code 至少 1 个 passed case、1 个 failed case。
+- 每个 fix strategy 至少 1 个成功 proposal、1 个 `cannot_satisfy`。
+- 专业模式和专业组模式分别覆盖。
+- 结构风险不能把 `affectedVolunteerIds` 直接当删除范围。
+- 条目风险删除/替换后数量和冲稳保不应异常退化。
+
+### 10.2 后端集成测试
+
+按真实 workflow 测：
+
+```text
+generate candidate pool
+-> generate initial plan
+-> run review
+-> generate fix proposal
+-> apply proposal
+-> rerun review
+-> assert repair report
+```
+
+必须覆盖：
+
+- 高收费替换。
+- 中外合作移除/替换。
+- 数量不足补齐。
+- 保底不足但候选足够。
+- 保底不足且候选不足。
+- 概率倒挂重排。
+- 梯度断层补中间项。
+- 冲稳保比例调整。
+- 专业组组内安全垫。
+- 意向/硬要求导致无法满足。
+
+### 10.3 初始方案生成回归
+
+专门验证生成阶段权衡：
+
+- 高推荐系数优先时结构是否失衡。
+- 结构修复是否替换了部分高分候选。
+- 替换是否记录 tradeoff。
+- `unresolvedRisks` 是否和后续 review 结果一致。
+- 专业组内安全专业是否被选入。
+- 候选不足时是否给出明确 shortage。
+
+这组测试要比较：
+
+- 生成前候选池分布。
+- 初始选择。
+- 被替换/放弃项。
+- 最终风险。
+- 用户可见提醒。
+
+### 10.4 前端状态测试
+
+覆盖：
+
+- 初始未审查。
+- 审查通过。
+- 审查有风险。
+- 人工移动后 stale。
+- 点击重新审查后状态恢复。
+- proposal pending。
+- proposal applied。
+- proposal expired。
+- repair report 展示。
+
+重点验证概览不要显示旧风险为当前事实。
+
+### 10.5 Agent 对话 E2E
+
+新增 3.1.0 场景集，至少覆盖：
+
+- 「这版稳不稳」
+- 「太贵的去掉」
+- 「中外合作不要」
+- 「这版太冲了，调稳」
+- 「保底够不够，不够帮我补」
+- 「为什么这几个推荐系数高的没进方案」
+- 「生成方案后有什么需要注意」
+- 「把最严重的问题修一下」
+- 「这个专业组里面托底专业合适吗」
+- 「候选不够还能怎么弄」
+
+每个 case 断言：
+
+- 是否调用正确 workflow。
+- 是否生成 proposal 或只读 review。
+- 是否需要确认。
+- 回复是否披露影响和 tradeoff。
+- 不能修时是否明确说明原因。
+- 不出现空泛建议。
+
+### 10.6 外部接口契约测试
+
+为外部 workflow 接口补契约测试：
+
+- request/response schema。
+- version guard。
+- proposal 过期。
+- external confirmed apply。
+- user required confirmation。
+- async job 状态。
+- report 可追踪。
+
+### 10.7 回归数据集
+
+建议沉淀固定测试数据：
+
+- 专业模式高分段。
+- 专业模式低分段候选不足。
+- 专业组模式普通组。
+- 专业组模式组内安全专业不足。
+- 高收费/中外合作密集。
+- 强硬地域/专业约束导致候选不足。
+- 历史老会话导入。
+
+这批数据需要进入 repo 中的脱敏 fixture，避免只依赖临时 session。
+
+### 10.8 质量门禁
+
+进入 3.1.0 发布前最低门禁：
+
+- 后端 review/repair 单测全通过。
+- review workflow 集成测试全通过。
+- Agent 3.1.0 review-repair e2e 全通过。
+- 旧 3.0.3 对话回归不能退化。
+- 前端状态测试覆盖 stale 和 proposal。
+- 专业模式、专业组模式至少各完成一轮本地人工走查。
+- 外部接口有完整文档和契约测试。
+
+## 11. 待进一步确认的问题
+
+- 哪些审查问题允许系统在用户授权下自动修复，哪些必须人工确认？
+- 条目型风险默认是删除，还是优先替换？
+- 结构性问题是否允许重新生成整份方案，还是只在现有方案内局部调整？
+- 候选不足时，是否允许放宽用户软偏好？是否必须再次确认？
+- 是否仍有外部系统调用旧 `plan-adjustment/apply`？当前代码搜索未发现前端或 Agent 主路径依赖，若线上网关日志发现调用，需要迁移到 `fix-proposals/apply`。
+- 审查规则是否需要面向运营配置，还是先代码内 registry？
+- 外部触发是否需要异步 job 和回调，还是 3.1.0 先同步接口？
+- 初始生成阶段哪些结构修复可以静默应用，哪些 tradeoff 必须给用户披露？
+- 人工移动/排序后是否立即自动复审，还是只标记 stale 并由用户手动触发？
+
+## 12. 当前落地进展
+
+### 12.1 已完成：ReviewRuleRegistry Phase 1
+
+完成时间：2026-06-08
+
+本阶段只做低风险语义统一，不改变现有审查判定、补偿、调整分析和方案操作行为。
+
+已完成内容：
+
+- 新增后端权威 `ReviewRuleRegistry`。
+- 新增 `ReviewRuleMetadataDTO`。
+- `ReviewCheckDTO` 增加规则元数据字段：
+  - `label`
+  - `category`
+  - `severityDefault`
+  - `targetModes`
+  - `scopeKind`
+  - `fixability`
+  - `supportedFixStrategies`
+  - `defaultFixStrategy`
+  - `requiresConfirmation`
+  - `evidenceSchema`
+  - `postApplyValidationRule`
+- `PlanAdjustmentRuleResultDTO` 增加规则元数据字段，便于调整分析结果和审查结果使用同一套语义。
+- `PlanningStateService.runReview()` 生成审查结果时自动补齐 metadata。
+- `PlanningStateService.analyzePlanAdjustment()` 生成 rule result 时自动补齐 metadata。
+- `PlanningStateService.getPlanningState()` 读取旧状态时也会补齐 review/adjustment metadata，降低旧会话迁移成本。
+
+当前 registry 已覆盖：
+
+- `ratio_distribution`
+- `safety_guard`
+- `probability_inversion`
+- `probability_gap`
+- `count_validation`
+- `high_tuition`
+- `admission_limit`
+- `special_enrollment`
+- `edge_score`
+- `cooperative_program`
+- `major_group_safety_intent_alignment`
+- `group_inner_safety_guard`
+- `plan_update_notice`
+- `adjustment_notice`
+
+### 12.2 验证结果
+
+已跑后端目标测试：
+
+```bash
+cd zhiyuan-server
+mvn -Dtest=ReviewRuleRegistryTest,PlanningStateServiceTest,PlanningStateSuggestionMappingTest test
+```
+
+结果：
+
+- `Tests run: 130`
+- `Failures: 0`
+- `Errors: 0`
+- `Skipped: 3`
+
+补充测试：
+
+- `ReviewRuleRegistryTest` 验证结构风险、信息提示、registry defensive copy。
+- `PlanningStateServiceTest` 验证 `runReview()` 输出带 `probability_gap` metadata。
+- `PlanningStateServiceTest` 验证 `generateFixProposals()` 能从 `count_validation` 补偿动作生成只读 `fill_missing_count` proposal。
+- `PlanningStateServiceTest` 验证条目型风险能从已有 review state 生成 `replace_risk_items` proposal。
+- `PlanningStateServiceTest` 验证完整配对的 `replace_risk_items` 可通过 version guard 应用，部分配对仍保持 `preview_only`。
+- `PlanningStateServiceTest` 验证 `fill_missing_count` proposal 可通过 version guard 应用。
+- `PlanningStateServiceTest` 验证过期 proposal apply 会被 409 拒绝。
+- `PlanningStateServiceTest` 验证旧 `plan-adjustment/apply` 返回 410 且不再写入 `pending_apply`。
+- `PlanningStateServiceTest` 验证 `remove_risk_items` 在专业组模式下按专业组计数补位，不把组内专业数误当专业组数。
+- `PlanningStateSuggestionMappingTest` 验证 `analyzePlanAdjustment()` 输出 rule metadata。
+
+### 12.3 已完成：FixProposal 只读生成 Phase 2
+
+完成时间：2026-06-08
+
+本阶段先打通统一修复 proposal 的只读生成，不执行 apply，不改变现有方案、候选、补偿、审查和调整分析行为。
+
+已完成内容：
+
+- 新增 `FixProposalDTO`、`FixProposalActionDTO`、`FixProposalDryRunResultDTO`、`FixProposalStateDTO`。
+- 新增后端内部接口：
+
+```http
+POST /gaotu-assistant-bot/inner/planning/{tenantId}/session/fix-proposals/generate?chatSessionId={chatSessionId}
+```
+
+- `generateFixProposals()` 会在 review 缺失或 stale 时先触发 `runReview()`，再基于 review checks 和 compensation preview 生成 proposal。
+- 当前 proposal 只读返回：
+  - `sourceVersion`
+  - `sourceReviewVersion`
+  - `sourceVersionGuard`
+  - `sourceCheckCodes`
+  - `strategy`
+  - `affectedUnitIds`
+  - `affectedVolunteerIds`
+  - `actions`
+  - `dryRunResult`
+  - `requiresConfirmation`
+- 已覆盖的可执行映射：
+  - `count_validation` + `fill_total_count` action -> `fill_missing_count`
+  - `safety_guard` + `add_local_protect` action -> `add_safety_items`
+  - `ratio_distribution` + `rebalance_protect_ratio` action -> `rebalance_tier_ratio`
+  - `probability_gap` + `fill_probability_gap` action -> `fill_probability_gap`
+- 已覆盖的非直接补偿映射：
+  - 条目型风险存在 affected ids 时 -> `replace_risk_items`
+  - 信息提示型规则 -> `no_op`
+  - 没有候选或没有可执行动作 -> `cannot_satisfy`
+
+边界说明：
+
+- 当前 `FixProposal` 生成复用已有 `buildCompensationPreview()`，因此会继承旧补偿容量保护。
+- `sourceReviewVersion` 表示审查证据基于哪个方案版本；`sourceVersionGuard` 表示后续 apply 前必须匹配的当前状态版本。
+- 例如 `probability_gap` 在方案已满、或剩余容量被数量补齐动作占用时，不会硬生成新增补位动作；这时会返回 blocked/cannot_satisfy，避免向用户承诺无法执行的补位。
+- `probability_gap` 的“替换断层边界项”后续需要统一 action 模型支持 remove + add + reorder 的组合动作，放入后续 Phase 3。
+- Phase 3 已补充最小 apply 入口，当前支持 `fill_missing_count`、`sort_by_probability` 和受限 `remove_risk_items`；前端和 Agent 仍不应把该接口当作完整风险修复入口。
+
+### 12.4 已完成：FixProposal 最小应用 Phase 3
+
+完成时间：2026-06-08
+
+本阶段先打通低风险、可复验的执行链路。目标是验证新 proposal 协议的版本保护、动作应用和 RepairReport 闭环，不把所有旧补偿/调整能力一次性迁移。
+
+新增内部接口：
+
+```http
+POST /gaotu-assistant-bot/inner/planning/{tenantId}/session/fix-proposals/apply?chatSessionId={chatSessionId}
+```
+
+请求体：
+
+```json
+{
+  "proposalId": "fp_xxx",
+  "sourceVersionGuard": 12,
+  "regenerateOrderedPlan": true,
+  "rerunReview": true
+}
+```
+
+当前行为：
+
+- 必须提供 `proposalId`。
+- 必须提供并命中当前 `state.version` 的 `sourceVersionGuard`。
+- 当前 review 必须存在且未 stale；执行入口不会在用户点击确认后隐式刷新审查证据。
+- 服务端会重新生成当前 proposal 列表，并确认 `proposalId` 仍存在。
+- 只允许已接入的 `status=ready` proposal 自动应用。
+- 未接入自动应用的策略保留 proposal 信息，但标记为 `status=preview_only` / `dryRunResult.status=preview_only`，用于解释方向，不允许误点击应用。
+- 当前已接入自动应用的策略：
+  - `fill_missing_count`：复用旧 `applyCompensation` 的工作台方案添加逻辑。
+  - `sort_by_probability`：复用现有 `sortOrderedPlan(admissionRatio)`，保留专业模式/专业组模式、行为事件和 stale 标记语义。
+  - `remove_risk_items`：第一期只支持 registry 默认策略为 remove 的条目型风险，例如 `admission_limit`、`special_enrollment`；执行时先移除命中志愿，再按当前模式补足数量并复验。
+  - `adjust_major_group_inner_safety`：专业组模式专用；在同一专业组内补入或替换安全垫专业，执行后重排并复审 `group_inner_safety_guard`。
+- apply 返回中新增 `repairReport`：
+  - 记录 proposal / strategy / sourceVersion / resultVersion。
+  - 记录动作数量、影响专业组/志愿数量、新增/删除数量。
+  - 记录执行前后 review risk/warn 数。
+  - 记录 `postValidationPassed`，用于判断源审查问题是否已被复验通过。
+  - `fill_missing_count`、`sort_by_probability`、`remove_risk_items`、`adjust_major_group_inner_safety` 已有 report/复验测试覆盖。
+- 应用动作复用旧 `applyCompensation` 的工作台方案添加逻辑，避免并行维护两套添加规则。
+- 其他 strategy 暂时返回明确错误，不做半自动处理。
+- 旧 `plan-adjustment/apply` 已明确退场：服务端返回 410，不再写入 `pending_apply`，避免调用方误以为已真实应用调整。`plan-adjustment/analyze` 暂保留为只读分析能力。
+
+错误边界：
+
+- `sourceVersionGuard` 不匹配：409，提示重新生成修复建议。
+- review 缺失或 stale：409，提示重新生成修复建议。
+- proposal 不存在或已失效：404。
+- proposal 非 ready：400。
+- strategy 暂不支持：400。
+
+仍未完成：
+
+- `replace_risk_items`、`rebalance_tier_ratio`、`fill_probability_gap` 等复合 apply。
+- apply 后按 `postApplyValidationRule` 定向复验。
+- 独立 `RepairApplyService` 抽取。
+
+条目型风险 apply 边界：
+
+- 旧 `applyPlanAdjustment()` 曾经只把调整状态置为 `pending_apply`，并没有真实执行 remove/replace；当前已改为返回 410，因此新链路不复用该空壳。
+- `remove_risk_items` 已完成第一期受限支持：仅处理默认策略就是 remove 的规则；移除后会尝试使用安全候选补足数量。
+- 条目型审查会补齐 `affectedVolunteerIds` 和 `affectedUnitIds`，保证 proposal、RepairReport 和前端展示能区分影响志愿数与影响专业组数。
+- 默认替换类条目风险已接入受控 apply：只有全部风险志愿都有完整 from/to replacement pair，且 dry-run 复验确认风险志愿全部移除、志愿数量保持不变时，proposal 才保持 `ready` 并允许用户确认应用。
+- `replace_risk_items` 当前支持生成多条替换配对：每个风险志愿优先找同层次、风险更低、专业相近、院校层次代价可接受且当前方案未选中的候选；专业组模式还会避免重复引入当前已选专业组。
+- 如果只找到部分替换项，proposal 保持 `preview_only`，并在 `dryRunResult.warnings` 中说明未覆盖条目；如果完全找不到替换项，proposal 为 `blocked` 且 `requiresConfirmation=false`。
+- 专业模式按志愿条数补位；专业组模式按专业组数量补位，避免把组内专业数量误当成专业组数量。
+- 专业组模式回归边界：
+  - 删除组内一个风险专业但该专业组仍有其他专业时，不补新专业组。
+  - 删除风险专业后导致整个专业组消失时，才按专业组缺口补一个安全候选组。
+- `replace_risk_items` 在专业组模式下不会把条目风险的 unit 字段当成整组替换执行语义；unit 信息只用于披露。若替换单个风险专业会导致专业组数量变化，dry-run 会阻断应用，等待后续更完整的整组替换 selector。
+- 如果候选不足，`repairReport` 会保留执行结果和复验状态，后续仍需通过审查结果提示用户。
+- 高收费、中外合作等默认 replace/用户权衡类风险仍不自动删除，避免把可接受但需确认的志愿误删。
+
+### 12.5 已完成：replace_risk_items 预览配对 Phase 4
+
+完成时间：2026-06-08
+
+本阶段只强化替换类风险的 dry run，不开放自动应用。
+
+已完成：
+
+- `FixProposalActionDTO` 新增替换动作字段：`removeUnitIds`、`removeVolunteerIds`、`candidateUnitIds`、`candidateVolunteerIds`、`replacementPairs`。
+- `high_tuition`、`cooperative_program` 等默认替换类风险会生成 `replace_volunteers` action，披露 from/to 配对。
+- 多个风险志愿会生成多条配对预览，并避免复用同一个替代志愿；专业组模式会避免复用同一个候选专业组。
+- 找不到替换项时保持 `blocked`，不会被后续“未支持自动应用”逻辑覆盖成 `preview_only`。
+- 部分可替换、部分不可替换时，通过 `dryRunResult.warnings` 披露未覆盖范围。
+
+验证：
+
+```bash
+mvn -Dtest=ReviewRuleRegistryTest,PlanningStateServiceTest,PlanningStateSuggestionMappingTest test
+```
+
+结果：`Tests run: 132, Failures: 0, Errors: 0, Skipped: 3`。
+
+### 12.6 已完成：后端规则目录接口 Phase 5
+
+完成时间：2026-06-08
+
+背景：
+
+- Agent 本地 `review_issue_registry.py` 仍维护一份规则目录。
+- 这份本地目录已经与后端新 `ReviewRuleRegistry` 出现策略冲突：例如 `high_tuition`、`cooperative_program` 在后端是默认 `replace_risk_items`，属于需要用户权衡的替换/提醒类风险；Agent 本地仍默认映射到 `remove_units`，容易把“处理风险”引导成直接删除。
+- 按 3.1.0 原则，规则语义应由后端统一维护，Agent 和前端只消费 metadata 或 `FixProposal`。
+
+已完成：
+
+- 新增只读接口：
+
+```http
+GET /gaotu-assistant-bot/inner/planning/{tenantId}/review/rules
+```
+
+- 返回 `List<ReviewRuleMetadataDTO>`，包含 `code`、`label`、`category`、`scopeKind`、`fixability`、`supportedFixStrategies`、`defaultFixStrategy`、`requiresConfirmation`、`evidenceSchema`、`postApplyValidationRule`。
+- Agent internal client 新增 `list_planning_review_rules()`，作为后续迁移前置能力。
+- `ReviewRuleRegistryTest` 增加 list 验证，锁定高收费默认策略为 `replace_risk_items`。
+
+当前边界：
+
+- 本阶段没有切换 Agent resolver 主路径，避免在未完成对话回归前改变所有审查修复路由。
+- 后续迁移时，Agent 不应继续从本地 registry 推断默认 action，而应优先读取后端 metadata 或直接调用 `fix-proposals/generate`。
+
+### 12.7 已完成：Agent FixProposal 消费前置能力 Phase 6
+
+完成时间：2026-06-08
+
+已完成：
+
+- Agent internal client 新增：
+  - `generate_planning_fix_proposals(tenant_id, chat_session_id)`
+  - `apply_planning_fix_proposal(tenant_id, chat_session_id, proposal_id, source_version_guard, regenerate_ordered_plan, rerun_review)`
+- Agent workflow tool 新增只读预览包装：
+  - `generate_planning_fix_proposals(ctx)`
+  - 会展示 proposal 数量、状态、预计移除/补入数量、warnings、blocked reason。
+- Agent workflow tool 新增受确认保护的应用包装：
+  - `apply_planning_fix_proposal(ctx, proposal_id, source_version_guard, user_confirmed, ...)`
+  - 未确认时不会调用后端。
+  - 成功后格式化 `RepairReport`，披露新增/删除数量和复验结果。
+
+验证：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest tests/unit/test_planning_workflow_tool.py -q
+```
+
+结果：`32 passed`。
+
+当前边界：
+
+- 这一步仍未把 ChatAgent 主工具列表或 resolver 主路径切到 `FixProposal`，避免未回归的大范围对话行为变化。
+- 旧 `preview_compensation`、`analyze_adjustment`、Agent 本地 `review_issue_registry.py` 仍在主路径中，下一阶段需要按场景迁移：
+  - 审查问题修复：优先 `fix-proposals/generate`。
+  - 可直接应用的低风险修复：走 `fix-proposals/apply`。
+  - 只读分析：保留 `plan-adjustment/analyze` 或迁移为 `FixProposal + ReviewState` 的展示层。
+  - 纯补齐：最终也应收敛到 `fill_missing_count` proposal，旧 `compensation/apply` 退为内部实现。
+
+### 12.8 已完成：Agent 审查/调整只读主路径消费 FixProposal Phase 7
+
+完成时间：2026-06-08
+
+背景：
+
+- Phase 6 只新增了 Agent 调用 `fix-proposals/generate/apply` 的工具包装，ChatAgent 主路径仍主要依赖 `review_plan`、`analyze_adjustment`、`preview_compensation` 和本地 `review_issue_registry.py`。
+- 本地 registry 旧语义曾把 `high_tuition`、`cooperative_program` 映射为 `remove_units`，会把“处理高收费/中外合作”误导为整批删除。
+- 这类风险本质上是用户权衡类风险：可能需要替换、保留提醒或明确删除，不应默认删除。
+
+已完成：
+
+- Agent `review_plan` 和 `analyze_adjustment` handler 已读取后端 `fix-proposals/generate`，并把归一化后的 `fix_proposals` 写入 `facts`。
+- 只读审查回复新增“可处理方向”，披露 proposal 的 `status`、`strategy`、预计移出/补入数量、warnings、blocking reason。
+- `review_plan` / `analyze_adjustment` 的 `reply_focus` 增加 `fix_proposals`，提示最终回复优先按后端修复建议解释，不再只靠本地旧规则。
+- Agent 本地 `review_issue_registry.py` 纠偏：
+  - 新增 `item_replacement` scope。
+  - `high_tuition`、`cooperative_program` 改为 `item_replacement`。
+  - 本地默认 action 从 `remove_units` 改为 `review_plan`，真正替换策略由后端 `replace_risk_items` proposal 披露。
+  - 支持动作顺序保留为 `replace_units`、`remove_units`，但只有用户明确要求替换/删除时才进入具体动作预览。
+- `plan_next_action` 对 `item_replacement` 的处理：
+  - “处理/解决高收费”这类泛化请求不再默认删除，回到 `review_plan`。
+  - “去掉/删除/移出高收费”仍可生成 `remove_units` 预览。
+  - “替换/换成正常收费”仍可生成 `replace_units` 预览，但需要明确替换范围或后端 proposal 支撑。
+- `execute_plan_action` 增加替换优先保护：
+  - 对 `item_replacement` 的无范围替换请求，不再自动降级为整批删除。
+  - 回复会提示先补充替换范围或查看修复预览，确认前不改动方案。
+
+验证：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest tests/unit/test_plan_execution_tool.py tests/unit/test_plan_context_tool.py tests/unit/test_action_resolver.py tests/regression/test_keyword_matchers.py tests/unit/test_plan_orchestration_tool.py tests/integration/test_full_plan_flow.py -q
+```
+
+结果：`355 passed`。
+
+当前边界：
+
+- ChatAgent 工具列表仍未直接开放 `apply_planning_fix_proposal` 主链路；避免没有前端 proposal 确认卡和 proposal_id 状态管理时误触发自动修复。
+- 本地 `review_issue_registry.py` 仍作为兼容层存在；后续应继续收敛到后端 `/review/rules` metadata 或 `fix-proposals/generate`。
+- `replace_risk_items` 后端完整配对场景已可由 `fix-proposals/apply` 应用；Agent 侧仍不直接绕过前端确认卡触发 apply。
+- 旧 `planAdjustment/analyze` 仍只做分析；`group_inner_safety_guard` 的正式应用已收敛到 `fix-proposals/apply`。
+
+### 12.9 当前剩余边界
+
+以下仍是后续阶段，不属于本次已落地范围：
+
+- 独立 `FixProposalService` 抽取：当前先落在 `PlanningStateService`，后续应迁出，避免继续扩大单类复杂度。
+- `RepairApplyService`
+- `RepairReport` 完整化：当前已具备最小执行报告，后续需要补齐更细的 tradeoff、失败分项和审查规则级复验。
+- `InitialPlanStrategyReport`
+- Agent 从本地 `review_issue_registry.py` 彻底迁移到后端 metadata 或 `FixProposal`：当前已优先消费后端元数据，但本地 registry 仍作为老会话、测试 fixture 和后端缺字段时的兼容兜底。
+- 前端审查修复详情和 proposal 确认入口。
+- 外部 review workflow 接口。
+
+### 12.10 已完成：Agent 审查问题元数据优先后端 Phase 8
+
+完成时间：2026-06-08
+
+背景：
+
+- Phase 7 已让 `review_plan` / `analyze_adjustment` 读取后端 `fix-proposals/generate`，但 Agent `PlanContextInputs.review_issues` 和 `ActionResolver` 仍可能从本地 `review_issue_registry.py` 解释审查 code。
+- 这会造成两类风险：
+  - 后端新增或调整规则后，Agent 仍按旧本地分类决定 action。
+  - 同一个 code 在审查回复、plan_next_action 和 execute_plan_action 中被不同来源解释。
+
+已完成：
+
+- `ReviewCheckDTO` 已返回的后端元数据成为 Agent 审查问题分类的优先来源：
+  - `scopeKind`
+  - `fixability`
+  - `supportedFixStrategies`
+  - `defaultFixStrategy`
+  - `requiresConfirmation`
+  - `evidenceSchema`
+  - `postApplyValidationRule`
+- `build_review_issue_scopes()` 现在会把后端元数据归一为 Agent 侧 action 语义：
+  - `scopeKind=item + defaultFixStrategy=replace_risk_items` -> `item_replacement`
+  - `replace_risk_items` -> 默认 `review_plan`，由 FixProposal 披露替换预览。
+  - `remove_risk_items` -> `remove_units`
+  - `fill_missing_count` / `add_safety_items` / `fill_probability_gap` -> `preview_compensation`
+  - `sort_by_probability` -> `sort_ordered_plan`
+  - `rebalance_tier_ratio` / `adjust_major_group_inner_safety` -> `analyze_adjustment`
+- `ActionResolver` 在已有 `review_issue_code` 时，优先读取 `PlanContextInputs.review_issues` 中的后端元数据，再决定是否覆盖 action。
+- 本地 `review_issue_registry.py` 仍保留，但定位降级为老会话缺字段、测试 fixture、后端元数据缺失时的兼容兜底。
+- 没有把自然语言关键词匹配作为主路径；本阶段只处理已经结构化出来的 `review_issue_code`。
+
+验证：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest tests/unit/test_instructions.py tests/unit/test_chat_agent_init_profile.py tests/unit/test_planning_workflow_tool.py tests/e2e/test_internal_client.py tests/unit/test_config.py tests/unit/test_plan_execution_tool.py tests/unit/test_plan_context_tool.py tests/unit/test_action_resolver.py tests/regression/test_keyword_matchers.py tests/unit/test_plan_orchestration_tool.py tests/integration/test_full_plan_flow.py -q
+```
+
+结果：`445 passed, 2 skipped`。
+
+当前边界：
+
+- `review_issue_registry.py` 尚未删除，因为老会话缺少后端元数据、部分测试 fixture 和无后端上下文的 resolver 单测仍需要兜底。
+- ChatAgent 主路径仍不直接开放 `fix-proposals/apply`；应用 proposal 仍需要后续前端确认卡、proposal_id 状态管理和 apply 后复验展示。
+- `preview_compensation` / `apply_compensation` 仍保留为现有内部能力；后续应逐步收敛为 FixProposal strategy 的实现细节。
+
+旧补偿链路当前状态：
+
+| 能力 | 当前入口 | 仍保留的原因 | 不能再承接的能力 | 退场方向 |
+| --- | --- | --- | --- | --- |
+| 补偿预览 | Agent `preview_compensation` -> `/session/compensation/preview` | 对“补几个更稳的”“还差几个怎么补”仍能快速披露可补候选；`generateFixProposals()` 当前也会复用 compensation preview 作为部分 proposal 的候选来源 | 不应被当作完整审查修复协议；不能单独表达删除、替换、复审报告和不可满足原因 | 纯补齐迁移为 `fill_missing_count` proposal；结构问题迁移为 `FixProposal` |
+| 补偿应用 | Agent `apply_compensation` -> `/session/compensation/apply` | 兼容已经确认的低风险补数量/有剩余容量补候选 | 不允许满方案时把 `rebalance_tier_ratio` / `fill_probability_gap` 等结构性建议按 add-only 落盘；不承担高收费、中外合作、限报等条目风险修复 | 最终退为内部 helper 或删除外部可触发 action，统一走 `fix-proposals/apply` |
+| 调整分析 | Agent `analyze_adjustment` -> `/session/plan-adjustment/analyze` | 仍可作为只读结构分析兜底，尤其在 proposal 还没有可执行策略时给用户解释问题 | 不落盘、不生成可确认修复任务、不替代 dry-run | 展示层逐步改为消费 `ReviewState + FixProposalState` |
+
+这意味着 Agent 当前仍可能规划 `preview_compensation` / `apply_compensation`，但它们必须受两层保护：
+
+- 对话层：仍按高副作用协议，`apply_compensation` 必须先有 preview 和用户确认。
+- 服务端：`applyCompensation()` 执行前按剩余容量重新裁剪动作；满方案下结构性补偿不会绕过 `FixProposal` 的 `preview_only` 白名单控制。
+- 前端层：PC 工作台不再调用旧 `compensation/preview` / `compensation/apply`，修复建议弹窗统一走 `fix-proposals/generate` 和 `fix-proposals/apply`。
+
+后续迁移时，应优先把“补齐数量/补保底”的用户话术从旧 `apply_compensation` 转成 `generateFixProposals()` 返回的 `fill_missing_count` / `add_safety_items` proposal；等前端或对话卡片具备 proposal_id 状态管理后，再把 `apply_compensation` 从 Agent action family 中移除。
+
+Agent 本地审查 issue fallback 对齐：
+
+- 背景：正常链路应优先消费后端 `ReviewCheckDTO` 的 `scopeKind/defaultFixStrategy/supportedFixStrategies`；但老会话、测试 fixture 或后端缺字段时，Agent 仍会回退到本地 `review_issue_registry.py`。
+- 本轮把 fallback 默认动作对齐到后端 `ReviewRuleRegistry`：
+  - `probability_inversion`：`sort_by_probability` -> `sort_ordered_plan`，仍然是需要确认的排序预览，不会直接落盘。
+  - `probability_gap`：`fill_probability_gap` -> `preview_compensation`，满方案时仍会被 resolver 降级为只读分析，旧 `applyCompensation()` 也有容量保护。
+  - `edge_score`：`add_safety_items` -> `preview_compensation`。
+  - `high_tuition/cooperative_program`：继续保持 `item_replacement -> review_plan`，由后端 `replace_risk_items` proposal 披露替换预览，避免默认删除。
+- 这不是用户话术字符串匹配，只是结构化 review code 到 action family 的兼容映射；目的是让“有后端 metadata”和“缺 metadata fallback”两条路径语义一致。
+
+本轮验证：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest tests/regression/test_keyword_matchers.py tests/unit/test_action_resolver.py tests/integration/test_resolver_vs_legacy.py -q
+.venv/bin/python -m pytest tests/unit/test_plan_orchestration_tool.py tests/unit/test_plan_execution_tool.py tests/regression/test_execution_preview.py tests/regression/test_execution_apply.py -q
+.venv/bin/python -m pytest tests/unit/test_plan_context_tool.py tests/unit/test_planning_workflow_tool.py tests/unit/test_planning_plan_scenarios_sync.py -q
+.venv/bin/python -m pytest tests/unit/test_planning_workflow_tool.py::test_apply_planning_fix_proposal_requires_confirmation tests/unit/test_planning_workflow_tool.py::test_apply_planning_fix_proposal_formats_repair_report tests/unit/test_planning_workflow_tool.py::test_apply_planning_compensation_requires_confirmation -q
+```
+
+结果：分别通过 `177 passed`、`296 passed`、`67 passed`、`3 passed`。覆盖结构化 review issue fallback、resolver 高副作用确认边界、plan_next_action/execute_plan_action 主链路、补偿预览/应用、FixProposal 应用文案和旧补偿确认保护。
+
+前端旧 compensation API wrapper 清理：
+
+- `zhiyuan-web/src/service/apis/sessionDetail.ts` 删除未被调用的 `previewPlanningCompensationApi` / `applyPlanningCompensationApi`，避免 PC 工作台继续暴露旧补偿低层入口。
+- `PlanningCompensationPreview` 类型保留，因为 `PlanningState.reviewState.compensationPreview` 仍作为审查结果的一部分被工作台状态消费。
+- 后端 `/session/compensation/preview` / `/session/compensation/apply` 和 Agent `preview_compensation` / `apply_compensation` 暂时保留，定位为兼容和低风险补齐路径，不是完整修复主协议。
+- 前端检索确认 `previewPlanningCompensationApi` / `applyPlanningCompensationApi` 已无调用方；PC 工作台修复建议弹窗只调用 `fix-proposals/generate` / `fix-proposals/apply`。
+- 修复建议弹窗中只有 `ready` proposal 展示「确认修复」按钮；`preview_only`、`blocked`、`info` 改为右侧只读状态文本，避免用户把不可应用建议理解为禁用但可操作的按钮。
+- 2026-06-11 补充：`blocked` proposal 展示进一步收敛，只保留 summary 和一条主要“暂不能自动修复的原因”；不再展示 dry-run 影响、临时替换预览或多条候选不足堆叠。`ready` / `preview_only` 仍保留影响、处理预览和替换配对，便于用户确认或人工判断取舍。
+- 前端 `tsc --noEmit --pretty false` 仍未通过，但错误集中在既有 `session/ModalForm`、`pages/userCenter`、`service/index`、`service/request`；本轮清理的 `sessionDetail.ts` 未出现在错误列表中。
+
+### 12.11 已完成：审查 stale 触发点收口 Phase 9
+
+完成时间：2026-06-08
+
+背景：
+
+- 方案移动、删除、排序、候选池刷新、偏好/约束采纳都会影响已有审查结果。
+- 3.0.x 代码里 `staleFlags.review=true` 和 `staleFlags.planAdjustment=true` 分散在多个方法里，后续扩展初始生成权衡和 FixProposal apply 时容易漏标。
+
+已完成：
+
+- 新增 `ReviewInvalidationPolicy`，集中维护方案变化后的 stale flags：
+  - `markPlanStructureStale()`
+  - `markCandidatePoolDependentsStale()`
+  - `markPreferenceIntentStale()`
+  - `markConstraintIntentStale()`
+  - `markCandidateViewStale()`
+- `PlanningStateService` 内不再直接散落维护 `staleFlags.review=true` / `staleFlags.planAdjustment=true`，`saveWorkingPlanState()` / `saveOrderedState()` / 手动移动 / 专业组移动 / 删除专业组 / 排序 / 候选池生成 / 老方案导入已统一调用 `ReviewInvalidationPolicy`。
+- 语义保持不变：
+  - 方案事实变化 -> `planAdjustment=true`、`review=true`。
+  - 候选池刷新 -> 初始推荐、排序方案、调整建议、审查都需要重算。
+  - 软偏好变化不强制候选池 stale。
+  - 硬要求变化会标记候选池 stale。
+  - candidate view 这类筛选展示状态只影响初始推荐和调整建议，不把 review 标记为 stale。
+
+验证：
+
+```bash
+cd zhiyuan-server
+mvn -Dtest=ReviewRuleRegistryTest,PlanningStateServiceTest,PlanningStateSuggestionMappingTest test
+```
+
+结果：`Tests run: 133, Failures: 0, Errors: 0, Skipped: 3`。
+
+补充验证：
+
+```bash
+cd zhiyuan-server
+mvn -Dtest=ReviewRuleRegistryTest,ReviewInvalidationPolicyTest,PlanningStateServiceTest,PlanningStateSuggestionMappingTest test
+```
+
+结果：`Tests run: 139, Failures: 0, Errors: 0, Skipped: 3`。
+
+当前边界：
+
+- 当前 `ReviewInvalidationPolicy` 已负责修改 `StaleFlagsDTO`，并写入 `reasonCode/message/affectedReviewCodes`。
+- `PlanningWorkflowStatusDTO` 在 `reviewStatus=stale` 时透出 `reviewReasonCode/reviewReasonMessage/affectedReviewCodes`；老前端不消费也不影响兼容。
+- 工作台概览的审查指标已在 `reviewStatus=stale` 时展示一行简短原因，用户能看到为什么需要重新审查。
+- 当前 reason 和 `affectedReviewCodes` 是按变更类型给出的保守解释，还不是完整 `PlanningMutationEvent -> evaluate -> stale flags + reason` 事件评估模型。
+- `markPlanStructureStale()` 当前同时服务移动、删除、排序、工作台方案保存等动作，因此 `affectedReviewCodes` 会覆盖结构、排序、条目和专业组内主要审查项；后续需要拆成更细的 mutation event，避免“排序”这类动作披露过宽。
+
+### 12.12 已完成：专业组内安全垫修复闭环 Phase 10
+
+完成时间：2026-06-08
+
+背景：
+
+- 3.0.x 已经确认初始生成会尽量带入专业组内托底专业，但历史方案、手动删除、旧工作台方案状态重建排序方案时，仍可能出现已选专业组内没有安全垫专业。
+- 过去 `group_inner_safety_guard` 只能在调整分析里提示，不能形成可确认、可复验的修复动作。
+- 专业组模式下必须避免把“补一个组内专业”误算成“新增一个专业组”。
+
+已完成：
+
+- `runReview()` 已返回 `group_inner_safety_guard` 的 `affectedUnitIds`，让风险能准确定位到专业组。
+- `generateFixProposals()` 针对 `group_inner_safety_guard` 生成 `adjust_major_group_inner_safety` proposal。
+- 当已选专业数低于 `requiredMajorCount` 时，proposal 会在同一专业组内补入安全专业。
+- 当已选专业数已达到 `requiredMajorCount` 时，proposal 会优先用安全专业替换一个非安全、未锁定的组内专业，不增加专业组数量。
+- `applyFixProposal()` 已支持 `adjust_major_group_inner_safety`，执行后同步工作台方案、重建排序方案并复审。
+- dry-run 统计将该动作计为组内专业增删，不计为新增专业组。
+
+验证：
+
+```bash
+cd zhiyuan-server
+mvn -Dtest=PlanningStateServiceTest#shouldApplyMajorGroupInnerSafetyFixProposalWithinSameUnit test
+mvn -Dtest=ReviewRuleRegistryTest,ReviewInvalidationPolicyTest,PlanningStateServiceTest,PlanningStateSuggestionMappingTest test
+```
+
+结果：单测通过；目标后端回归结果为 `Tests run: 141, Failures: 0, Errors: 0, Skipped: 3`。
+
+当前边界：
+
+- 该策略只适用于 `majorGroup` 模式；普通专业模式不会生成或应用该 proposal。
+- 如果部分专业组找不到可补入的安全专业，proposal 会整体标记为 `blocked`，不做部分自动应用。
+- 如果涉及用户偏好权衡更强的替换，例如高收费、中外合作，不复用组内安全垫路径；只走 `replace_risk_items` 自己的完整配对和 dry-run 复验边界。
+
+### 12.13 已完成：前端轻量 FixProposal 确认入口 Phase 11
+
+完成时间：2026-06-08
+
+背景：
+
+- 后端已经具备 `fix-proposals/generate/apply`，但工作台前端仍只展示审查 tooltip 和旧 `pendingActions`，用户无法从方案页直接查看可确认修复建议。
+- 完整审查修复工作台还需要问题列表、证据、外部 workflow 状态和更细交互设计；当前阶段只补最小可用确认入口，不扩大 UI 面。
+
+已完成：
+
+- 前端新增 `PlanningFixProposal*` 类型，覆盖 proposal、action、dry-run、repair report。
+- API 封装新增：
+  - `generatePlanningFixProposalsApi`
+  - `applyPlanningFixProposalApi`
+- 工作台方案工具条新增「修复」入口：
+  - 点击后调用 `fix-proposals/generate`，在弹窗中展示 proposal 列表。
+  - `ready` proposal 展示「确认修复」按钮，点击后走 `fix-proposals/apply`，并携带 `proposalId/sourceVersionGuard/regenerateOrderedPlan/rerunReview`。
+  - `preview_only`、`blocked`、`info` 只展示状态、影响、阻塞原因或 warning，不允许点击应用。
+  - 应用成功后刷新工作台状态，并重新生成 proposal 列表。
+
+2026-06-10 补充：
+
+- 工作台修复弹窗已消费 `candidateShortages`，按 scope/reason/count/message 展示候选不足说明。当前用于解释“当前规划候选池不足、硬要求收窄、容量或替换配对不足、dry-run 后目标未改善”等边界，不参与前端业务判断。
+- 工作台修复弹窗会消费 `replacementPairs` 辅助生成替换说明，但用户可见内容必须优先来自已解析的学校/专业名称或后端 `action.detail`。如果前端无法把 pair 中的 ID 解析成可读名称，不展示原始 ID，不再把 `4302026...` 这类执行字段暴露给用户。
+- 「确认修复」按钮增加 `requiresConfirmation !== false` 条件。`ready + proposalId + requiresConfirmation` 才允许用户点击；`preview_only/blocked/info` 或明确不需要确认的 proposal 都保持只读。
+- `rebalance_tier_ratio`、`fill_probability_gap` 即使生成 replacement pair，也仍按 `preview_only` 只展示预览、候选不足和 dry-run 影响，不展示确认修复按钮。
+
+2026-06-11 前端交互补充：
+
+- 审查入口集中在「方案审查结果」弹窗，审查问题下先展示「处理方向」，用户点击「查看处理建议」后再展开后端 `FixProposal`。
+- 可执行 proposal 的按钮文案统一为「立即执行」，放在「调整预览」内容下方，使用小型普通按钮样式；不再展示“可处理”“暂不可用”“预览验证未通过”等系统状态。
+- 「调整预览」只保留一层标题，下面展示 dry-run 量化变化和最多 5 条可读动作明细；blocked proposal 不展示临时动作和增删统计。
+- `replace_risk_items` 的替换说明在专业模式和专业组模式下都必须展示为“学校/专业 A 替换为 学校/专业 B”或后端可读 detail；如果只剩结构化 ID，则跳过该明细。
+- 用户侧展示继续屏蔽历史/系统词：后端仍可能因为兼容字段输出“草稿”“硬约束”“修复”等旧概念，前端展示层统一转译为“方案”“已确认的筛选条件或报考要求”“处理”，避免用户在审查处理建议里看到内部实现语言。
+
+验证：
+
+```bash
+cd zhiyuan-web
+./node_modules/.bin/tsc --noEmit --pretty false
+```
+
+结果：前端全量 typecheck 被既有错误挡住，错误集中在 `src/pageComponents/session/ModalForm/index.tsx`、`src/pages/userCenter/index.tsx`、`src/service/index.ts`、`src/service/request/index.ts`；本次新增的 WorkspacePanel / API / 类型文件未出现在错误列表。
+
+补充验证：
+
+```bash
+git diff --check
+```
+
+结果：通过。
+
+当前边界：
+
+- 这不是完整审查修复工作台，只是把后端已支持的 proposal 确认链路暴露给 PC 工作台。
+- 对话主路径仍不直接开放 `fix-proposals/apply`，避免没有前端状态卡时误触发高副作用修复。
+- `replace_risk_items` 完整配对场景可通过前端确认入口应用；不会由对话主路径或前端入口自动静默应用。
+- 前端当前只做结构化字段展示，不基于 `candidateShortages` 或 `replacementPairs` 自行推导可执行性；可执行性仍以服务端 `proposal.status/requiresConfirmation/sourceVersionGuard` 和 apply policy 为准。
+
+人工前端验收点：
+
+- 完整 `replace_risk_items`：弹窗展示替换配对，且只有 `ready` 卡片可点击确认；点击后刷新工作台、重新生成 proposal，并显示最近一次修复报告。
+- 部分 `replace_risk_items`：卡片保持 `preview_only`，展示未覆盖 warning 和候选不足/配对不足说明，不出现确认修复按钮。
+- 无替换候选：卡片为 `blocked`，展示 `candidateShortages` 和阻断原因，不出现确认修复按钮。
+- 结构修复 `rebalance_tier_ratio` / `fill_probability_gap`：能看到 dry-run 影响、替换配对或候选不足说明，但不允许自动应用。
+- 专业模式和专业组模式都要确认展示粒度没有混淆：专业组整体替换看 unit，单专业/组内专业问题看 volunteer，同时不得把组内专业数当作专业组数。
+
+2026-06-11 本地验证补充：
+
+```bash
+curl -sS --output /private/tmp/session128_review_workflow.json \
+  'http://127.0.0.1:8080/gaotu-assistant-bot/inner/planning/1/session/review-workflow/run?chatSessionId=128' -X POST
+
+curl -sS --output /private/tmp/session130_fix_proposals.json \
+  'http://127.0.0.1:8080/gaotu-assistant-bot/inner/planning/1/session/fix-proposals/generate?chatSessionId=130' -X POST
+
+cd zhiyuan-web
+./node_modules/.bin/tsc --noEmit --pretty false 2>&1 | rg "WorkspacePanel|volunteer.ts|sessionDetail.ts"
+
+cd ../zhiyuan-server
+mvn -Dtest=RepairApplyMutationBuilderTest,RepairDryRunSimulatorTest,RepairRiskActionBuilderTest,RepairReplacementActionBuilderTest,RepairMajorGroupInnerSafetyActionBuilderTest,RepairProposalApplyPolicyTest,RepairReportBuilderTest test
+
+cd ..
+git diff --check
+```
+
+结果：
+
+- 专业模式 session 128：`replace_risk_items` 生成的 action detail 为可读学校/专业名称；高收费因部分风险未覆盖保持 `preview_only`，中外合作完整覆盖为 `ready`。
+- 专业组模式 session 130：`replace_risk_items` 的高收费/中外合作均生成可读 action detail；`replacementPairs` 仍保留执行 ID，但前端不会把这些 ID 作为用户可见替换文案。
+- 前端目标类型检查无 `WorkspacePanel`、`volunteer.ts`、`sessionDetail.ts` 相关错误；全量 typecheck 的既有错误仍在 `session/ModalForm`、`userCenter`、`service/index`、`service/request`。
+- 后端目标修复回归通过：`Tests run: 55, Failures: 0, Errors: 0, Skipped: 0`。
+- `git diff --check` 通过。
+
+### 12.14 已完成：审查-修复聚合入口 Phase 12
+
+完成时间：2026-06-08
+
+背景：
+
+- 外部触发或后续 Agent 编排如果分别调用 `runReview()`、`generateFixProposals()`、`workspace/state`，容易出现状态读取不一致，也会让调用方自行理解多个状态结构。
+- 3.1.0 需要一个稳定的“审查 -> 生成修复建议 -> 返回工作台状态”的聚合入口，但不应在这里新增另一套修复逻辑。
+
+已完成：
+
+- 后端新增 `ReviewWorkflowRunRes`，统一返回：
+  - `status`：聚合后的本次 workflow 状态。
+  - `sessionId`、`sourceVersion`：当前会话与方案版本。
+  - `reviewState`：审查结果。
+  - `fixProposalState`：修复建议结果。
+  - `workflowStatus`：工作台已有 workflow 摘要状态。
+  - `workspaceState`：当前工作台状态。
+- `PlanningStateService.runReviewWorkflow()` 只做顺序编排：
+  - 先调用现有 `runReview()`。
+  - 再调用现有 `generateFixProposals()`。
+  - 最后读取 `getWorkspaceState()`。
+- `ReviewWorkflowStatusResolver` 已承接本次 workflow status 的纯映射：
+  - review 未完成或失败 -> `review_failed`。
+  - 没有修复建议 -> `review_passed_or_no_fix`。
+  - 有 `ready` proposal -> `ready_to_confirm`。
+  - 无 ready 但有 `preview_only` -> `preview_only`。
+  - 其余 blocked/info -> `blocked_or_info`。
+- 新增内部接口：
+
+```http
+POST /gaotu-assistant-bot/inner/planning/{tenantId}/session/review-workflow/run?chatSessionId={chatSessionId}
+```
+
+- 当前 `status` 语义：
+  - `review_failed`：审查未完成或失败。
+  - `review_passed_or_no_fix`：审查通过，或没有可展示修复建议。
+  - `ready_to_confirm`：存在可直接确认的修复建议。
+  - `preview_only`：只存在预览类建议，需要用户理解后再通过其他路径处理。
+  - `blocked_or_info`：只存在阻塞或说明类建议。
+- 前端 API 层新增 `runPlanningReviewWorkflowApi` 和 `PlanningReviewWorkflowRunRes` 类型，暂不接 UI 行为。
+
+验证：
+
+```bash
+cd zhiyuan-server
+mvn -q -Dtest=ReviewWorkflowStatusResolverTest,PlanningStateServiceTest#shouldRunReviewWorkflowAndReturnFixProposalsWithWorkspaceStatus test
+mvn -q -Dtest=PlanningStateDTOCompatibilityTest,ReviewRuleRegistryTest,ReviewInvalidationPolicyTest,ReviewWorkflowStatusResolverTest,RepairApplyMutationBuilderTest,RepairProposalApplyPolicyTest,RepairReplacementActionBuilderTest,WorkingPlanMutationSupportTest,RepairCandidateSelectorTest,RepairRiskActionBuilderTest,RepairMajorGroupInnerSafetyActionBuilderTest,RepairDryRunSimulatorTest,RepairReportBuilderTest,PlanningStateServiceTest,PlanningStateSuggestionMappingTest test
+```
+
+结果：通过。新增 `ReviewWorkflowStatusResolverTest` 直接覆盖 `review_failed`、`review_passed_or_no_fix`、`ready_to_confirm`、`preview_only`、`blocked_or_info` 映射；服务级用例继续覆盖 `runReviewWorkflow()` 聚合入口返回 `ready_to_confirm` 和工作台状态。核心回归结果为 `Tests run: 202, Failures: 0, Errors: 0, Skipped: 3`。
+
+当前边界：
+
+- 该入口不绕过 `FixProposal` 的 `sourceVersionGuard`，真正应用修复仍必须走 `fix-proposals/apply`。
+- 该入口不把 `preview_only` 建议升级为可应用建议；例如高收费、中外合作替换仍只披露预览。
+- 当前前端工作台仍使用轻量「修复」弹窗分别拉取和应用 proposal；后续如果要做完整审查修复工作台，可以改为先调用该聚合入口。
+
+### 12.15 已完成：初始推荐策略报告 Phase 13
+
+完成时间：2026-06-08
+
+背景：
+
+- 初始推荐生成阶段已经会尝试处理数量、冲稳保、安全垫、录取率倒挂、梯度断层和专业组内安全垫等结构问题。
+- 过去这些处理只压缩在 `summary.gapFixCount/appliedRepairCount/unresolvedRuleCodes` 和 item `reasonCodes` 中，用户或外部系统很难知道系统为了降低风险做了哪些取舍，以及还有哪些问题没有解决。
+
+已完成：
+
+- 后端新增 `InitialPlanStrategyReportDTO`，挂载在 `InitialRecommendationStateDTO.strategyReport`。
+- 报告当前包含：
+  - `targetProfile`：目标数量、目标冲稳保分布、生源省份、志愿模式、专业组内目标专业数。
+  - `objectiveWeights`：当前初始生成的相对目标说明，包含目标 code、展示名、相对权重、优先级和说明。
+  - `selectedCount`：初始推荐最终选择数量。
+  - `appliedRepairs`：生成阶段执行的候选替换动作，包含规则、from/to 志愿、展示 label 和原因。
+  - `actions`：复用 `FixProposalActionDTO` 的只读动作明细，当前覆盖已执行替换的 `replace_volunteers` 和 `replacementPairs`。
+  - `tradeoffs`：生成阶段自动替换产生的取舍明细，包含换出/换入、推荐系数/录取率/热度/院校排名变化、收益、代价和用户侧摘要。
+  - `unresolvedRisks`：生成阶段仍未解决的审查规则及用户可读说明。
+  - `candidateShortages`：生成阶段未解决的候选不足或约束冲突说明。
+  - `userAttentionMessages`：可用于概览或对话的简短提醒。
+- `AppliedRepair.tradeoffSummary` 已复用第一条对应取舍摘要，方便轻量入口直接说明“为什么换、收益是什么、代价是什么”。
+- 当前不改初始推荐选择算法，只把已有目标优先级、修复动作、取舍、不足和未解决规则结构化输出。
+- `PlanningWorkspaceStateRes` 已返回 `initialRecommendationState`，前端类型补充 `PlanningInitialPlanStrategyReport`、`objectiveWeights`、`actions`、`tradeoffs` 和 `initialRecommendationState.strategyReport`。
+- PC 工作台概览已接入轻量提示：
+  - 有生成阶段候选不足时，优先展示不足说明。
+  - 有未解决生成阶段风险时，展示风险数量和第一条风险说明。
+  - 没有候选不足和未解决风险，但生成阶段做过结构性替换时，优先展示取舍摘要；没有摘要时再展示本次调整候选数量。
+  - 概览折叠后不展示该提示，避免占用高频操作区。
+
+验证：
+
+```bash
+cd zhiyuan-server
+mvn -Dtest=PlanningStateServiceTest#shouldRepairInitialRecommendationProbabilityGap test
+mvn -Dtest=ReviewRuleRegistryTest,ReviewInvalidationPolicyTest,PlanningStateServiceTest,PlanningStateSuggestionMappingTest test
+mvn -q -Dtest=PlanningStateServiceTest#shouldRepairInitialRecommendationProbabilityGap+shouldFullyRepairInitialRecommendationProbabilityGapWhenCandidateWindowIsEnough+shouldRepairInitialPlanMajorGroupIssuesBeforePlanAdjustmentAnalysis test
+```
+
+结果：单测通过；目标后端回归结果为 `Tests run: 142, Failures: 0, Errors: 0, Skipped: 3`。2026-06-10 补充验证通过，覆盖 `objectiveWeights`、`actions`、`tradeoffs` 和 `AppliedRepair.tradeoffSummary` 的生成，确认这些解释字段只随初始推荐报告返回，不改变候选选择和修复应用路径。
+
+当前边界：
+
+- 报告当前记录的是初始推荐阶段实际发生的候选替换和未解决规则，不包含完整目标函数权重。
+- `objectiveWeights` 当前是对现有规则优先级的只读说明，不是实际参与排序的加权求和参数；后续如果要做真正可配置目标函数，需要另起算法设计和回归。
+- `actions` 只是生成阶段已发生动作的结构化说明，不代表用户可再次确认或外部可 apply；如果后续要把初始生成修复转成可选 proposal，需要明确区分“已执行的生成动作”和“待确认的修复建议”。
+- `tradeoffs` 已补第一阶段指标变化，但仍是轻量解释：院校层次暂用排名差异近似，专业热度和推荐系数依赖候选字段质量；完整目标函数权重和多方案比较仍需后续补充。
+- PC 工作台当前只展示一行轻量提示；完整的取舍明细、from/to 列表和指标损失仍留给后续审查修复详情面板。
+
+### 12.16 已完成：修复报告动作明细 Phase 14
+
+完成时间：2026-06-09
+
+背景：
+
+- `RepairReport` 已经能返回修复状态、数量变化和修复前后风险数量，但前端或外部系统只能看到汇总结果，无法直接知道本次修复具体执行了哪些动作。
+- `FixProposal` 本身已有 action 结构，报告层可以复用该结构，不需要改变 apply 执行逻辑。
+
+已完成：
+
+- `RepairReportDTO` 新增 `actionDetails`：
+  - `actionType`
+  - `sourceCheckCode`
+  - `summary/detail`
+  - `unitIds/volunteerIds`
+  - `removeUnitIds/removeVolunteerIds`
+  - `candidateUnitIds/candidateVolunteerIds`
+  - `replacementPairs`
+- `buildRepairReport()` 会把 proposal actions 复制到 `actionDetails`，保留原有计数、消息和复验状态。
+- 前端 `PlanningRepairReport` 类型同步补充 `actionDetails`。
+- 前端修复建议弹窗会在用户确认修复后展示“最近一次修复结果”，包括：
+  - 修复结果消息。
+  - 新增/移除数量。
+  - 风险和提醒数量前后变化。
+  - 前几条动作明细和 warning。
+
+验证：
+
+```bash
+cd zhiyuan-server
+mvn -Dtest=PlanningStateServiceTest#shouldApplyFillMissingCountFixProposalWithVersionGuard test
+mvn -Dtest=ReviewRuleRegistryTest,ReviewInvalidationPolicyTest,PlanningStateServiceTest,PlanningStateSuggestionMappingTest test
+```
+
+结果：单测通过；目标后端回归结果为 `Tests run: 142, Failures: 0, Errors: 0, Skipped: 3`。
+
+当前边界：
+
+- `actionDetails` 当前反映 proposal 计划执行动作，不记录每个 action 的实际成功/失败分项；后续如支持部分成功，需要扩展 `applied/failed/skipped` 明细。
+- 暂未持久化 `RepairReport`，目前主要通过 `fix-proposals/apply` 响应返回。
+- 前端当前只展示最近一次 apply 的报告摘要；关闭弹窗后不保留历史修复报告。
+
+### 12.17 已补充设计：候选选择策略层 Phase 15
+
+完成时间：2026-06-09
+
+背景：
+
+- 当前涉及候选选择的路径包括初始方案生成、候选手动加入方案、补偿预览、审查后修复、专业组内安全专业补齐。
+- 初始方案生成内部已经具备目标冲稳保、数量补齐、安全垫、倒挂、梯度和专业组安全专业等规划动作。
+- 但事后修复仍主要由 `buildCompensationPreview` 生成 action，部分策略依赖候选池原顺序或只给新增候选，没有完整替换 pair。
+
+本轮文档补充：
+
+- 在 5.3.2 中新增统一候选选择策略层设计。
+- 明确候选选择应拆成：
+  - 候选来源解析。
+  - 可用性过滤。
+  - 策略排序。
+  - 容量判断。
+  - 替换配对。
+  - dry run 验证。
+  - action 构建。
+- 明确每个 strategy 的目标数量、候选排序、满容量处理和不能满足返回。
+- 明确专业组模式下 unit 粒度和组内专业粒度不能混用。
+- 明确 `rebalance_tier_ratio`、`fill_probability_gap` 等结构修复在满容量时必须生成 remove/add pair，不能只追加候选。
+
+当前进展判断：
+
+- 已完成基础审查规则目录、stale 策略、FixProposal 模型、部分 apply、ReviewWorkflow 聚合入口、InitialPlanStrategyReport、RepairReport actionDetails 和前端轻量修复弹窗。
+- 已完成 `RepairCandidateSelector` 第一阶段抽取：覆盖事后修复里满容量结构替换的来源选择，以及补偿预览中的 add 候选选择，包括 `fill_missing_count`、`add_safety_items`、`rebalance_tier_ratio` 和 `fill_probability_gap`。
+- 已完成 `RepairReplacementActionBuilder` 第一阶段抽取：`rebalance_tier_ratio` / `fill_probability_gap` 的满容量 `replace_volunteers` action、remove/add pair、专业组 unit 粒度和专业 volunteer 粒度组装已从 `PlanningStateService` 迁出；满方案结构建议入口、add-only 结构动作删除和 replacement pair 为空时 blocked 保护也已迁入 builder。服务层继续负责 proposal 汇总、dry run 和 apply。
+- 已完成 `RepairDryRunSimulator` 第一阶段抽取：dry-run action 计数、before/after 快照模拟、冲稳保分布和状态文案已从 `PlanningStateService` 迁出。服务层继续负责 proposal 汇总和 apply。
+- 已完成 `RepairReportBuilder` 第一阶段抽取：`FixProposal` 应用后的 `RepairReportDTO` 构建、actionDetails、复验结果、风险数量对比和面向用户的结果消息已从 `PlanningStateService` 迁出。服务层继续负责 apply 编排、保存、重新生成 ordered plan 和重跑审查。
+- 已完成 `WorkingPlanMutationSupport` 第一阶段抽取：工作台方案的 volunteer identity 判断、专业组 unit 同步和 summary 重算已迁出为共享纯内存辅助；服务层委托方法已改成 working-plan 命名，底层 DTO 名保留兼容。
+- 已完成 `WorkingPlanMutationSupport` 第二阶段抽取：新增 `buildWorkingPlanItem(candidate, source[, locked])` 和 `addWorkingPlanItemIfAllowed(...)`，统一候选转工作台方案项、重复 volunteer、禁用 volunteer 的纯内存判断。手动加入、补偿加入和 fix proposal 组内安全垫补专业已共用该能力；老方案导入和初始自动生成只共用 item 构造，不共用 allowed 判断，因为这两条路径原本不跳过历史已选/禁用项，语义不同。
+- 已完成 `RepairApplyMutationBuilder` 第一阶段抽取：`fill_missing_count`、`remove_risk_items`、`adjust_major_group_inner_safety` 和旧 compensation apply 的工作台方案内存 mutation 已从 `PlanningStateService` 迁出。builder 只做内存增删、summary/unit 同步和操作日志构造；sourceVersion guard、保存、ordered plan 重新生成、复审和报告仍留在服务层。
+- 已完成 `CandidatePoolStatusResolver` 第一阶段抽取：候选池 `not_generated/empty/low_count/ready` 和目标数量口径从 `PlanningStateService` 迁出，专业模式按 `requiredCount/summary.total` 判断，专业组模式优先按 `requiredUnitCount/summary.unitTotal` 判断，避免把组内专业数当成专业组数。
+- 已完成 `CandidatePoolQualityStatusBuilder` 第一阶段抽取：候选池 `statusCode/statusMessage/riskHints` 展示构造从 `PlanningStateService` 迁出，复用统一候选池状态口径。builder 只负责状态文案和风险提示构造，不保存、不排序、不生成或修复方案。
+- 已完成 `PlanningWorkflowStatusBuilder` 第一阶段抽取：工作台响应中的候选池状态、方案状态、审查状态和导出状态从 `PlanningStateService` 迁出为纯状态构建器。builder 不读写服务、不保存、不触发修复；导出态只消费服务层传入的 latest export event。
+- 已完成 `InitialPlanStrategyReport` 解释增强第一阶段：初始生成报告新增 `objectiveWeights`、`actions`、`tradeoffs` 和 `AppliedRepair.tradeoffSummary`。其中 `actions` 复用 `FixProposalActionDTO` 只读表达已执行替换的 `replace_volunteers/replacementPairs`，但不生成可 apply 的 `FixProposalDTO`，也不进入 dry-run 或 apply 白名单。
+- `replace_risk_items` 已能生成替换预览，但尚未进入可自动 apply 策略。
+- `rebalance_tier_ratio` / `fill_probability_gap` 在满容量时已能生成 `replace_volunteers` 预览 pair，但仍保持 `preview_only`，不开放自动 apply。
+
+## 13. 接下来计划
+
+### 13.1 短期必须收口
+
+1. 收口旧 `applyCompensation` 的高风险 action。
+   - `rebalance_tier_ratio`、`fill_probability_gap` 如果没有 replacement pair，不能通过旧 compensation 直接追加导致超量。
+   - 旧 compensation 可继续保留 `fill_total_count` 这类纯补数量动作，但结构性替换要迁移到 `FixProposal`。
+   - 2026-06-09 已完成旧 compensation 容量裁剪收口：多个 action 共享剩余额度，方案已满时不会把保区重平衡按 add-only 执行；FixProposal 满容量结构建议已改为 replacement pair 预览。
+
+2. 实现统一 `RepairCandidateSelector` 的最小版本。
+   - 先覆盖 `fill_missing_count`、`add_safety_items`、`rebalance_tier_ratio`、`fill_probability_gap`。
+   - 输出统一的 selection result：`addCandidates`、`removeCandidates`、`replacementPairs`、`shortageReasons`。
+   - 所有策略必须显式 comparator，不再依赖候选池原顺序。
+   - 2026-06-09 已先在现有 compensation 内补齐缺口 tier 优先选择和保区候选显式排序，完整 selector 抽取仍待做。
+   - 2026-06-09 已完成第一步最小抽取：新增 `RepairCandidateSelector`，把 `rebalance_tier_ratio` / `fill_probability_gap` 的 remove source 选择、专业组/专业模式分支和显式 comparator 从 `PlanningStateService` 迁出。
+   - 2026-06-09 已继续完成 add 侧选择迁移：`fill_total_count`、`add_local_protect`、`rebalance_protect_ratio`、`fill_probability_gap` 的 volunteer/unit 候选选择由 selector 输出，`PlanningStateService` 只保留 action type、summary、detail、dry run 和 apply 语义。
+   - 2026-06-09 已继续完成结构替换 action 组装迁移：新增 `RepairReplacementActionBuilder`，负责 `replace_volunteers`、`replacementPairs`、`candidate/remove UnitIds` 和 `candidate/remove VolunteerIds` 的组装；后续又把满方案结构建议入口判断迁入该 builder，`PlanningStateService` 不再直接拼结构替换 pair 或处理 add-only 结构动作 blocked。
+   - 2026-06-09 已继续完成 dry-run 模拟迁移：新增 `RepairDryRunSimulator`，负责 action 计数、before/after total、冲稳保分布快照和 dry-run 状态文案；同时修正专业模式下 replacement 删除 volunteer 后派生 unit 未清理导致 `afterUnitTotal` 虚增的问题。专业组显式 unit 会被保留，不影响组内专业替换。
+   - 2026-06-09 已继续完成修复报告构建迁移：新增 `RepairReportBuilder`，负责应用后的报告字段、动作明细、复验状态和结果消息；`PlanningStateService` 不再直接拼 `RepairReportDTO`。
+   - 2026-06-09 已继续完成 working plan mutation 共享辅助抽取：新增 `WorkingPlanMutationSupport`，承接 `containsWorkingPlanItem`、`containsVolunteerId`、`syncWorkingPlanUnitsWithItems` 和 `recalculateWorkingPlanSummary` 的实现。抽取时回归发现 legacy volunteer prefix 不能按第一段截断，必须与原 `CandidateResolver` 一致取前两段，避免 `ps1_m1` / `ps1_m2` 被误判为同一专业。
+   - 2026-06-09 已继续完成 working plan item 增加逻辑抽取：`buildWorkingPlanItem()` 统一候选字段映射，`addWorkingPlanItemIfAllowed()` 统一跳过重复/禁用项。当前迁移范围限定在手动加入、补偿加入和 fix proposal 安全垫补专业，避免把老方案导入、初始自动生成这两条不同语义路径误改成跳过逻辑。
+
+3. 修复 `rebalance_tier_ratio`。
+   - 目标数优先使用 `requiredTierCounts`。
+   - 当前数量以 ordered 为准，ordered 为空才用工作台方案状态，不能混用 working-plan total 和 ordered summary。
+   - 有容量时 add；满容量时从 surplus tier 中找可替换项。
+   - 找不到候选或替换项时返回 `cannot_satisfy`，说明缺口和原因。
+   - 2026-06-09 已完成目标数优先使用 `requiredTierCounts["保"]`，并修复 ordered/draft 计数混用；满容量时已能从 surplus tier 中选择替换来源并输出 replacement pair 预览，自动 apply 仍未开放。
+
+4. 补充 dry run。
+   - 对每个 proposal 输出修复前后数量、冲稳保分布、风险数量、是否引入高收费/限报/中外合作。
+   - dry run 不改善目标规则时，proposal 不能标记为 `ready`。
+
+5. 增加回归测试。
+   - 专业模式：数量补齐、本省保底、保区不足、梯度断层、候选不足。
+   - 专业组模式：专业组数量补齐、组内安全垫、满容量替换、不把组内专业数当专业组数。
+   - 旧 compensation apply：结构性 replacement action 不允许 add-only 超量。
+
+### 13.2 中期完善
+
+1. 将初始方案生成复用选择策略层。
+   - 保留初始生成可自动应用低风险结构修复的能力。
+   - 把自动替换产生的 tradeoff 统一进入 `InitialPlanStrategyReport`。
+   - 2026-06-10 已完成解释层第一阶段：初始生成自动替换已经进入 `InitialPlanStrategyReport.tradeoffs`，并用 `InitialPlanStrategyReport.actions` 复用 `FixProposalActionDTO` 的只读动作结构。尚未完成的是让初始生成真实复用 `RepairCandidateSelector`、`ReplacementPlanner` 和 dry-run 评价；这一部分涉及选择算法行为，后续需要单独设计和更强回归。
+
+2. 支持 `replace_risk_items` 正式 apply。
+   - 2026-06-10 已完成当前阶段：完整 replacement pair 可原子执行 remove + add，部分替换保持 `preview_only`，无替换项保持 `blocked`。
+   - apply 前继续要求 `sourceVersionGuard`、review 未 stale、proposal `ready` 和 dry-run 目标复验通过。
+   - 专业组模式下如果条目风险替换会改变专业组数量，暂时阻断，后续再设计整组替换 selector。
+   - 应用后可按请求触发复审对应风险项。
+
+3. 完整审查修复工作台。
+   - 当前前端轻量弹窗只承接最低可用流程。
+   - 后续需要展示规则证据、候选不足原因、替换 pair、修复前后指标和历史修复报告。
+
+4. 更精细的 stale reason。
+   - 当前 `ReviewInvalidationPolicy` 已统一触发点，但 affected review codes 仍偏粗。
+   - 后续按移动、删除、组内专业调整、偏好变更、硬要求变更进一步缩小影响范围。
+
+### 13.3 后续增强
+
+1. 候选选择的权重可配置化。
+   - 把推荐系数、安全性、意向匹配、院校层次、专业热度、地域、费用等权重纳入策略配置。
+   - 支持按用户策略类型或省份规则调整。
+
+2. 候选不足的一等解释。
+   - 候选池本身不足、硬约束过强、用户偏好冲突、容量已满且无可替换项，应分别输出。
+   - Agent 和前端都只消费结构化原因，不再拼空泛建议。
+
+3. 外部触发协议稳定化。
+   - `review-workflow/run` 继续作为聚合入口。
+   - `proposals/apply` 作为唯一高副作用应用入口。
+   - 旧低层 compensation 接口逐步退场或限制为兼容只读/低风险动作。
+
+### 13.4 apply 编排边界
+
+当前 `FixProposal` 应用链路可以分成三层：
+
+1. 纯内存 mutation。
+   - `fill_missing_count`：把候选 volunteer 加入工作台方案。
+   - `remove_risk_items`：从工作台方案删除风险 volunteer，再按补数量 action 补充。
+   - `adjust_major_group_inner_safety`：专业组内删除/补充专业。
+   - 这层需要统一处理 banned volunteer、重复 volunteer、候选缺失、专业组 unit 同步和 summary 重算。
+
+2. 持久化和 ordered plan 编排。
+   - mutation 完成后调用 `saveWorkingPlanState()` 保存工作台方案。
+   - 用户要求时调用 `generateOrderedPlan(forceRegenerate=true, regroupByTier=true)`。
+   - 这里属于高副作用路径，必须保留 sourceVersion guard 和用户确认。
+
+3. 复审和报告。
+   - 用户要求时调用 `runReview()`，然后刷新 state。
+   - `RepairReportBuilder` 根据 proposal、修复前 summary 和修复后 state 生成 `RepairReportDTO`。
+
+当前不直接抽 `RepairApplyService` 的原因：
+
+- mutation 层依赖工作台方案的 unit 同步和 summary 重算，这两个能力同时服务手动编辑、补偿、初始推荐和专业组/专业双模式，直接搬迁容易复制出第二套 summary 同步逻辑。
+- apply 编排涉及保存、重新生成 ordered plan、复审，属于高副作用路径；在没有更完整的 apply 级回归前，不应一次性迁移。
+- 已先把候选选择、结构替换 action、dry-run 和 report builder 迁出，服务层剩余职责更集中，后续可以围绕 mutation 层单独设计。
+
+后续拆分建议：
+
+1. 继续完善 `WorkingPlanMutationSupport`。
+   - 已承接 `containsWorkingPlanItem`、`containsVolunteerId`、专业组 unit 同步、summary 重算等纯内存辅助。
+   - 后续继续承接按候选构造 `DraftItemDTO`、工作台方案增删 mutation result 和 applied actions 记录。
+   - 该类服务手动编辑和 fix apply，避免 fix apply 单独复制一套。
+
+2. 再抽 `RepairApplyMutationBuilder`。
+   - 输入 `state + candidates + proposal`，输出 mutation result 和 applied actions。
+   - 不保存、不生成 ordered plan、不复审。
+   - 先覆盖 `fill_missing_count`、`remove_risk_items`、`adjust_major_group_inner_safety`。
+   - 2026-06-09 已完成第一阶段：新增 `RepairApplyMutationBuilder`，承接 fix proposal compensation action、风险项删除后补数量、专业组内安全垫替换和旧 compensation apply 的内存 mutation；`PlanningStateService` 仅保留高副作用编排。
+
+3. 最后再考虑 `RepairApplyService`。
+   - 只负责编排 apply、save、ordered regenerate、rerun review 和 report。
+   - sourceVersion guard、review stale、proposal 状态和可自动应用策略白名单已先抽到 `RepairProposalApplyPolicy`，后续 service 拆分时继续复用同一入口校验。
+   - 保持 `proposals/apply` 为唯一高副作用入口。
+   - 在 `replace_volunteers` 从 preview-only 进入可 apply 前，必须补齐原子 remove/add、容量不变、复审改善和硬约束不破坏测试。
+
+### 13.5 最新实现记录
+
+2026-06-09 补偿策略收口：
+
+- `buildCompensationPreview()` 保留补偿候选和结构性建议，用于审查解释、方案分析和后续 replacement pair 迁移，不再把 preview 当成唯一可执行动作列表提前裁剪。
+- `applyCompensation()` 新增执行侧 action 副本裁剪：按 action 顺序消费同一份剩余额度，避免多个补偿动作各自使用完整剩余额度导致超量；没有 replacement pair 的结构性建议不会以 add-only 方式直接追加到满方案里。
+- `fill_total_count` 补数量时优先选择当前目标缺口最大的 tier；如果缺口是保区，会优先本省保底候选，再按推荐系数、录取率、意向分排序。
+- `rebalance_protect_ratio` 目标数优先来自 `requiredTierCounts["保"]`；没有明确目标时才回退到 20% 经验值。该策略用于补安全垫，保区候选排序为本省优先、录取率优先、推荐系数、意向分。
+- `FixProposal` 生成阶段新增满容量结构替换预览：`rebalance_tier_ratio` 会从 surplus tier 中选择非锁定的低性价比来源，`fill_probability_gap` 会从断层边界中选择可替换来源，统一输出 `replace_volunteers`、`candidateVolunteerIds/removeVolunteerIds` 和 `replacementPairs`。历史 `pinned/pinnedPosition` 只保留兼容字段，不再作为替换来源约束。
+- 专业组模式下同样使用 unit 粒度计算目标和当前数量，避免把组内专业数量当成专业组数量。
+- 旧的梯度断层结构动作名已收口到当前 `fill_probability_gap`，执行侧容量保护不再识别已废弃的 `replace_probability_gap`，避免新旧动作名并存造成结构性建议被误当普通追加动作。
+- `FixProposalDryRunResultDTO` 新增 `before/after` 总量、冲稳保分布、ID 快照和质量取舍快照：`beforeUnitTotal/afterUnitTotal`、`beforeVolunteerTotal/afterVolunteerTotal`、`beforeUnitTierCounts/afterUnitTierCounts`、`beforeVolunteerTierCounts/afterVolunteerTierCounts`、`before/afterUnitIds`、`before/afterVolunteerIds`，以及 `before/afterAverageFinalScore`、`before/afterAverageHotIndex`、`before/afterAverageSchoolRank`。当前先做轻量动作模拟，用于披露结构修复改善方向和可能牺牲的推荐系数/专业热度/院校排名，不把 dry run 结果当真实方案状态。
+- `RepairDryRunSimulator` 新增硬要求/软偏好/新增风险/质量下降 warning：新增候选如果命中硬性排除或负偏好、或不满足硬性限定，会追加 dry-run warning；新增候选如果带来高收费、限报标签、中外合作或特殊类型招生，也会提示；替换/移除如果会移除硬性限定命中项或正向偏好命中项，也会提示；修复后平均推荐系数、专业热度或院校排名明显变差时也会提示。该增强只增加披露信息，不改变 proposal status，也不把 `preview_only` 升级为可应用。
+- `RepairDryRunSimulator` 新增目标改善校验：`count_validation` 必须让当前数量更接近 `requiredCount`；条目风险修复必须减少本次审查命中的 affected 志愿/专业组；`group_inner_safety_guard` / `major_group_safety_intent_alignment` 必须让目标专业组 dry-run 后出现录取率不低于组整体录取率的安全垫专业；`sort_by_probability` 必须在 dry-run 顺序模拟后减少录取率倒挂；`fill_probability_gap` 会按录取率序列比较修复前后的断层数量和最大断层，未缩小时追加 warning；`rebalance_tier_ratio` 会在存在 `requiredTierCounts` 时比较修复前后冲稳保计数与目标计数的距离，未更接近目标时追加 warning。校验失败时同步把 `proposal.status` 和 `dryRun.status` 标为 `blocked`，避免前端或外部系统把无改善提案当作可确认修复；`rebalance_tier_ratio` / `fill_probability_gap` 当前仍保持 `preview_only`，因此只披露无改善 warning，不开放自动应用。
+- `FixProposalStateDTO.status` 汇总逻辑已从固定 `ready` 改为按子 proposal 状态计算：有 `ready` 才返回 `ready`；没有 ready 但有 `preview_only` 返回 `preview_only`；全是 blocked/info 时返回 `blocked_or_info`；空列表返回 `empty`。这样单个 proposal 被 dry-run 阻断后，聚合入口和外部系统不会继续误判为可确认修复。
+- `RepairProposalStateBuilder` 第一阶段抽取已完成：服务层调用 `newState()`、`groupCompensationActionsByCheck()`、`buildBaseProposal()`、`resolveStateStatus()` 和 `findProposal()` 处理 FixProposal 外壳、compensation 分组、基础 proposal 字段、状态汇总和 proposal 查找。builder 只承接纯组装逻辑，service 仍负责具体 action builder、dry-run、保存、重排和复审这些带副作用或需要上下文判断的编排。
+- `RepairProposalStateBuilder` 已补充 `cannot_satisfy` 的规则级原因：数量缺口、保底不足、冲稳保配比、录取率断层、录取率倒挂、专业组内安全垫、条目风险等场景会分别输出更具体的 `summary/blockingReason`；`RepairDryRunSimulator` 的 blocked message 复用该原因。`cannot_satisfy` 作为不可执行状态会统一设置 `requiresConfirmation=false`，服务层 `generateFixProposals()` 已覆盖真实入口下的候选不足 blocked 场景，避免前端或 Agent 把不可执行建议展示成可确认动作。该增强不扩展 DTO、不开放任何新的自动 apply 策略，只让前端和 Agent 在候选不足时不再只能拿到“缺少可执行动作”的泛化文案。
+- 前端轻量修复建议弹窗已消费 dry run 冲稳保分布变化：专业组模式展示专业组粒度结构变化，专业模式展示单条志愿粒度结构变化，避免把组内专业数误展示成专业组数。
+- `RepairCandidateSelector` 第一阶段抽取已完成：服务层调用 `selectTierRatioReplacementSources()` 和 `selectProbabilityGapReplacementSources()` 获取可替换来源；调用 `selectTotalCount...Additions()`、`selectLocalProtect...Additions()`、`selectProtectRatio...Additions()`、`selectProbabilityGap...Additions()` 获取补充候选。selector 内部按 volunteerModel 区分专业组 unit 粒度和专业 volunteer 粒度，并保留原有 candidate legacy prefix 解析，避免老数据 ID 影响替换来源定位；当前方案是否已达到目标数也统一通过 `isCurrentPlanAtOrAboveTargetCount()` 判断，供结构 replacement 入口复用同一套专业/专业组计数。
+- `replace_risk_items` 的替代候选选择已迁入 `RepairCandidateSelector.selectRiskItemReplacements()`：服务层只负责按 selector 结果组装 proposal/action/warning，不再内联 same-tier、安全候选过滤、当前方案去重和专业组 unit 去重。selector 当前保持既有策略：每个风险志愿优先找同 tier、低风险、当前工作台未选、未在本次 proposal 重复使用的候选；专业组模式还会避免引入当前已选专业组或同一 proposal 内重复引入同一个专业组。新增回归覆盖了同层次安全替换排序、专业组当前/已用 unit 去重，以及候选不足时 partial 仍保持 `preview_only`。
+- `RepairRiskActionBuilder` 第一阶段抽取已完成：服务层调用 `populateRemoveRiskItemActions()` 和 `populateReplaceRiskItemActions()` 组装条目型风险 action。builder 内部统一处理 `remove_risk_items` 的去重 affected ids、删除 action、删除后补数量 fallback action，以及 `replace_risk_items` 的 replacement pair、missing source/no replacement warning 和 partial replacement warning。服务层仍保留删除后补足数量所需的上下文计算，不把候选选择和工作台容量判断隐藏到 action builder 里。
+- `RepairMajorGroupInnerSafetyActionBuilder` 第一阶段抽取已完成：服务层调用 `populateActions()` 组装专业组内安全垫修复 action。builder 内部统一处理目标专业组定位、已选/禁用专业排除、安全垫专业选择、组内已满时的替换源选择、partial unresolved blocked/warning，以及 `adjust_major_group_inner_safety` action/replacement pair 字段。builder 复用 `WorkingPlanMutationSupport.findCandidate()` 的候选解析和 `RepairCandidateSelector.isCompensationSafeCandidate()` 的安全候选过滤，避免老 ID 兼容和风险过滤规则再分叉。
+- `RepairReplacementActionBuilder` 第一阶段抽取已完成：服务层调用 `populateStructuralReplacementActions()` 处理满容量结构建议，builder 内部再按策略调用 `buildTierRatioReplacementAction()` 和 `buildProbabilityGapReplacementAction()` 生成结构替换 action。builder 统一处理已达目标数判断、add-only 结构动作删除、replacement pair 为空时 blocked、pair 数量裁剪、专业组 unit 到组内专业 volunteer 的映射、`replacementPairs.reasonCodes` 和 remove/add 字段填充，避免 `PlanningStateService` 继续堆叠结构 replacement 入口和 pair 组装细节。
+- `RepairDryRunSimulator` 第一阶段抽取已完成：服务层调用 `populate()` 填充 `FixProposalDryRunResultDTO`。simulator 内部区分显式 unit 和由 volunteer 推导的 unit：专业模式 replacement 删除旧 volunteer 后不再保留无引用的派生 unit，专业组模式 ordered/working-plan/action 明确携带的 unit 仍作为显式 unit 保留，避免组内专业调整误改专业组总数。
+- `RepairDryRunSimulator` 已补充 `sort_by_probability` 结果模拟：dry-run 快照现在保留 before/after 的 ordered id 顺序，排序模拟按专业模式 `admissionRatio` 升序、专业组模式 unit `schoolEnrollRatio/admissionRatio` 升序处理，并忽略历史 `pinned/pinnedPosition` 兼容字段。该增强只用于验证 proposal 是否真正减少倒挂，不改变真实排序 apply、保存、行为事件和复审编排。
+- `RepairDryRunSimulator` 已补充 `fill_probability_gap` 预览质量校验：按修复前后候选录取率序列计算断层数量和最大断层，补入中间录取率候选会被识别为改善；补入断层外候选或 replacement 后仍未缩小断层时，会在 dry-run warning 中提示“没有缩小录取率梯度断层”。该增强只提升预览可信度，不改变 `preview_only` 状态和真实 apply 白名单。
+- `RepairDryRunSimulator` 已补充 `rebalance_tier_ratio` 预览质量校验：当候选池存在 `requiredTierCounts` 时，按专业模式 volunteer 粒度、专业组模式 unit 粒度比较修复前后与目标冲稳保数量的距离；如果 replacement/add 预览没有让结构更接近目标，会在 dry-run warning 中提示“没有让冲稳保配比更接近目标”。没有明确目标数量时不使用经验比例强行判断，避免误伤只读预览。
+- `RepairReportBuilder` 第一阶段抽取已完成：服务层调用 `build()` 生成 `FixProposalApplyRes.repairReport`。builder 内部统一复制 action detail、dry-run 增删计数、修复前后 review summary、source check 复验结果和结果文案，避免 apply 编排里继续堆叠展示/报告逻辑。
+- `WorkingPlanMutationSupport` 第一阶段抽取已完成：服务层委托方法已改为 working-plan 命名，实际实现已由 support 统一处理。该 support 使用与原 `CandidateResolver` 一致的 legacy volunteer prefix 规则，避免专业组下多个专业被误判为同一 volunteer；同时统一专业组 unit 同步、组内专业展示排序、安全垫标记和 summary 按 unit/volunteer 双模式计数。
+- `WorkingPlanMutationSupport` 继续承接纯内存构造能力：新增 `buildWorkingPlanItem(candidate, source[, locked])`，统一候选转工作台方案项的字段映射。当前已替换手动加入、补偿加入、修复组内安全垫、老方案导入和初始自动生成里的等价手写构造；未迁移保存、重新生成 ordered plan、复审和报告这些高副作用编排。
+- `WorkingPlanMutationSupport` 继续承接受控新增能力：新增 `addWorkingPlanItemIfAllowed(draft, candidate, source[, locked])`，内部统一处理空候选、空 volunteerId、已选重复和 banned volunteer 跳过，并使用 legacy volunteer prefix 兼容老数据。当前已替换手动加入、补偿加入、fix proposal 安全垫补专业三处同构逻辑；老方案导入和初始自动生成仍只调用 `buildWorkingPlanItem()`，不调用 allowed helper，避免改变老方案恢复和初始推荐的既有生成语义。
+- `WorkingPlanMutationSupport` 新增共享候选解析：`findCandidate(candidates, volunteerId)` 按精确 volunteerId 优先，legacy volunteer prefix 只在唯一时兼容匹配，重复 prefix 时不猜测。`PlanningStateService` 和 `RepairApplyMutationBuilder` 共用该规则，避免 fix apply、补偿 apply、手动编辑各自维护一套老 ID 兼容逻辑。
+- `PlanningStateService` 中抽取后遗留的未使用工作台 tier 计数私有方法已删除；仍保留的 `countWorkingPlanSummaryTotal()` 是删除风险后计算补足数量所需，不属于重复 summary 实现。
+- `PlanningStateService` 补偿应用私有入口已从 `applyCompensationActionsToDraft()` 改名为 `applyCompensationActionsToWorkingPlan()`，继续委托 `RepairApplyMutationBuilder`，只清理旧 draft 语义命名，不改变执行逻辑。
+- `RepairApplyMutationBuilder` 第一阶段抽取已完成：服务层调用 `applyFixProposalCompensationActions()`、`applyRemoveRiskItems()`、`applyMajorGroupInnerSafety()` 和 `applyCompensationActions()` 完成内存变更。builder 内部统一复用 `WorkingPlanMutationSupport.addWorkingPlanItemIfAllowed()`、工作台 unit 同步、summary 重算和操作日志构造；服务层不再直接拼 `compensation_apply`、`fix_remove_risk_items`、`fix_major_group_inner_safety` 操作日志。
+- `RepairApplyMutationBuilder` 已补齐 `replace_volunteers` 原子内存替换能力：先在临时工作台方案上校验替换动作必须具备完整 remove/add 配对，待移除项必须存在于当前方案，待加入候选必须存在、未被禁用且不会与未移除项重复，校验失败则返回 `blocked` 且不改原方案、不写 operation log；校验通过后一次性 remove + add，并重新同步专业组 unit 和 summary。该能力已接入 `replace_risk_items` 完整配对 apply；结构 replacement 仍未进入 `RepairProposalApplyPolicy.isSupportedStrategy()` 白名单，所以 `rebalance_tier_ratio` / `fill_probability_gap` 仍保持 `preview_only`。
+- `RepairProposalApplyPolicy` 第一阶段抽取已完成：服务层调用 `safeRequest()`、`validateRequest()`、`validateStateVersionGuard()`、`ensureReviewReady()`、`validateProposalForApply()` 和 `isSupportedStrategy()` 统一处理 apply 前纯校验与自动应用策略白名单。该类不保存、不变更方案、不生成 ordered plan、不复审；只是把缺少 proposalId、方案版本变化、审查过期、proposal 版本变化、非 ready、preview-only/unsupported 策略这些保护条件从 `PlanningStateService` 迁出，避免 proposal 生成和 apply 校验两边维护不同白名单。
+- `PlanningStateService` 内的 fix proposal apply 收尾逻辑已做服务内收口：`saveAndRefreshAfterFixApply()` 统一处理工作台方案保存、可选 ordered plan 重生成；`rerunReviewAfterFixApplyIfRequested()` 统一处理可选复审。该调整只减少 `fill_missing_count`、`remove_risk_items`、`adjust_major_group_inner_safety` 三条分支的重复尾段，`sort_by_probability` 仍复用现有排序入口，不把高副作用编排迁出服务层。
+- `ReviewWorkflowStatusResolver` 第一阶段抽取已完成：`runReviewWorkflow()` 的聚合状态映射从 `PlanningStateService` 迁出，复用 `RepairProposalStateBuilder.resolveStateStatus()` 的 proposal 状态汇总。resolver 不读写方案、不生成 proposal、不应用修复，只保证外部 workflow status 和 proposal 聚合状态保持一致。
+- `CandidatePoolStatusResolver` 第一阶段抽取已完成：服务层生成候选池、工作台状态展示和候选不足提示共用同一套候选池状态判断。专业组模式优先使用 `requiredUnitCount` 和 `summary.unitTotal`；专业模式使用 `requiredCount` 和 `summary.total`；`requiredCount` 缺失时才回退 `requiredUnitCount`，避免不同入口自己复制数量口径。
+- `CandidatePoolQualityStatusBuilder` 第一阶段抽取已完成：服务层生成候选池后调用 builder 统一填充 `statusCode/statusMessage/riskHints`。空候选和低数量候选继续披露目标数量、冲稳保短缺、接近批次线、身体限报和专项资格等风险提示；ready 状态会清空旧提示，避免工作台展示历史脏提示。2026-06-10 已将身体/专项类提示从“已按某条件过滤候选”收口为“可能限制可用候选，需要核验”，避免在没有过滤前后计数时形成伪精确归因。该 builder 只做展示状态构造，不读取外部服务、不改变候选、不影响后续排序和修复 apply。
+- `PlanningWorkflowStatusBuilder` 第一阶段抽取已完成：服务层调用 `PlanningWorkflowStatusBuilder.build(state, latestExport)` 生成 `PlanningWorkflowStatusDTO`，并删除旧的 `buildWorkflowStatus/apply*WorkflowStatus` 私有方法。builder 覆盖候选池、方案、审查、导出四段展示状态，其中审查 stale 会保留 `reasonCode/reasonMessage/affectedReviewCodes`，导出 stale 按 latest export 的 `planVersion` 与当前 state version 比较。
+- `replace_risk_items` 当前已补齐四类边界回归：全部风险条目有替换项时生成完整 replacement pair 并可应用；部分风险条目有替换项时保留 `preview_only` 并披露 warning，未配对风险仍留在 after 快照；完全没有替换项时进入 `blocked` 且不展示可确认动作；专业组模式下如果单专业替换会改变专业组数量，dry-run 会阻断应用。partial 语义继续保持为不可自动应用，避免用户以为全部风险已修完。
+- 结构替换类 proposal 继续锁定为只预览：`rebalance_tier_ratio`、`fill_probability_gap` 在专业模式和专业组模式下即使生成完整 `replace_volunteers` pair，也会被 `applyFixProposal()` 的策略白名单拒绝，不会绕过用户权衡和复审保障直接落盘。
+
+验证：
+
+```bash
+cd zhiyuan-server
+mvn -Dtest=PlanningStateServiceTest#shouldPreviewAndApplyCompensation,PlanningStateServiceTest#shouldAvoidRiskyCandidatesAndFillProbabilityGapDuringCompensation,PlanningStateServiceTest#shouldCapCompensationActionsByRemainingGapBeforeApply,PlanningStateServiceTest#shouldFillMissingCountByRequiredTierShortage,PlanningStateServiceTest#shouldNotApplyProtectRatioRebalanceAsAddOnlyWhenPlanIsFull test
+```
+
+结果：通过，`Tests run: 5, Failures: 0, Errors: 0, Skipped: 0`。后续补充回归验证时，需要同时覆盖“预览保留建议”和“apply 不超量”两个断言。
+
+Dry-run 目标改善阻断验证：
+
+```bash
+cd zhiyuan-server
+mvn -q -Dtest=RepairDryRunSimulatorTest test
+mvn -q -Dtest=WorkingPlanMutationSupportTest,RepairCandidateSelectorTest,RepairDryRunSimulatorTest,RepairReportBuilderTest,PlanningStateServiceTest test
+mvn -q -Dtest=PlanningStateDTOCompatibilityTest,ReviewRuleRegistryTest,ReviewInvalidationPolicyTest,RepairDryRunSimulatorTest,RepairReportBuilderTest,PlanningStateSuggestionMappingTest test
+```
+
+结果：通过。覆盖数量缺口修复无改善阻断、条目风险未减少阻断、专业组组内安全垫未补成阻断，以及对应成功路径。
+
+Sort by probability dry-run 结果校验目标回归：
+
+```bash
+cd zhiyuan-server
+mvn -q -Dtest=RepairDryRunSimulatorTest,PlanningStateServiceTest#shouldApplySortByProbabilityFixProposalAndRerunReview test
+```
+
+结果：通过，`RepairDryRunSimulatorTest` 为 `Tests run: 18, Failures: 0, Errors: 0, Skipped: 0`，并通过服务层 `shouldApplySortByProbabilityFixProposalAndRerunReview`。覆盖专业模式排序后倒挂减少、历史 pinned 不再阻断排序模拟、专业组模式 unit 录取率排序模拟，以及真实 apply 后复审通过。
+
+Probability gap dry-run 预览质量回归：
+
+```bash
+cd zhiyuan-server
+mvn -q -Dtest=RepairDryRunSimulatorTest test
+```
+
+结果：通过，`RepairDryRunSimulatorTest` 为 `Tests run: 18, Failures: 0, Errors: 0, Skipped: 0`。新增覆盖 `fill_probability_gap` 在 `preview_only` 状态下的专业模式和专业组模式预览质量：补入断层中间候选/专业组时保持预览且不追加断层 warning；补入断层外候选/专业组时保持 `preview_only`，但 dry-run warning 会提示没有缩小录取率梯度断层。
+
+Tier ratio dry-run 预览质量回归：
+
+```bash
+cd zhiyuan-server
+mvn -q -Dtest=RepairDryRunSimulatorTest test
+```
+
+结果：通过，`RepairDryRunSimulatorTest` 为 `Tests run: 18, Failures: 0, Errors: 0, Skipped: 0`。新增覆盖 `rebalance_tier_ratio` 在 `preview_only` 状态下的专业模式和专业组模式预览质量：有 `requiredTierCounts` 时，修复后更接近目标配比不追加 warning；没有让目标配比更接近时保持 `preview_only`，但 dry-run warning 会提示冲稳保配比没有改善。
+
+结构替换策略 apply 白名单边界回归：
+
+```bash
+cd zhiyuan-server
+mvn -q -Dtest=RepairProposalApplyPolicyTest,RepairDryRunSimulatorTest,PlanningStateServiceTest#shouldApplySortByProbabilityFixProposalAndRerunReview test
+```
+
+结果：通过。新增 `RepairProposalApplyPolicyTest#shouldRejectStructuralReplacementStrategiesUntilExplicitlyAllowlisted`，明确锁定 `rebalance_tier_ratio` / `fill_probability_gap` 即使误生成 `ready` proposal，也不能绕过 apply policy 自动应用；这两类满容量结构 replacement pair 仍只做 `preview_only` 披露。
+
+聚合状态回归：
+
+```bash
+cd zhiyuan-server
+mvn -q -Dtest=PlanningStateServiceTest#shouldResolveFixProposalStateStatusFromProposalStatuses,PlanningStateServiceTest#shouldRunReviewWorkflowAndReturnFixProposalsWithWorkspaceStatus,RepairDryRunSimulatorTest test
+mvn -q -Dtest=WorkingPlanMutationSupportTest,RepairCandidateSelectorTest,RepairDryRunSimulatorTest,RepairReportBuilderTest,PlanningStateServiceTest test
+```
+
+结果：通过。覆盖 proposal state 的 empty / ready / preview_only / blocked_or_info 汇总，以及 review workflow 聚合入口仍按 ready proposal 返回 `ready_to_confirm`。
+
+Working-plan item 构造抽取回归：
+
+```bash
+cd zhiyuan-server
+mvn -q -Dtest=WorkingPlanMutationSupportTest,PlanningStateServiceTest#shouldApplyFillMissingCountFixProposalWithVersionGuard,PlanningStateServiceTest#shouldApplyRemoveRiskItemsFixProposalAndFillMissingCount,PlanningStateServiceTest#shouldApplyMajorGroupInnerSafetyFixProposalWithinSameUnit test
+mvn -q -Dtest=WorkingPlanMutationSupportTest,RepairCandidateSelectorTest,RepairDryRunSimulatorTest,RepairReportBuilderTest,PlanningStateServiceTest test
+```
+
+结果：通过。覆盖候选转工作台项字段映射、重复/禁用 volunteer 跳过，以及手动/补偿/fix apply 依赖的工作台方案同步和应用路径未回退。
+
+Repair apply mutation builder 抽取目标回归：
+
+```bash
+cd zhiyuan-server
+mvn -q -Dtest=RepairApplyMutationBuilderTest,WorkingPlanMutationSupportTest,PlanningStateServiceTest#shouldApplyFillMissingCountFixProposalWithVersionGuard,PlanningStateServiceTest#shouldApplyRemoveRiskItemsFixProposalAndFillMissingCount,PlanningStateServiceTest#shouldApplyMajorGroupInnerSafetyFixProposalWithinSameUnit test
+```
+
+结果：通过。覆盖 builder 直接处理旧 ID 候选解析、banned volunteer 跳过、风险项删除后补数量、专业组内安全垫替换、`replace_volunteers` 专业模式/专业组模式原子替换和 blocked 不改原方案、working plan summary/unit 同步，以及服务层 fix apply 主路径未回退。
+
+```bash
+cd zhiyuan-web
+./node_modules/.bin/tsc --noEmit --pretty false
+```
+
+结果：未通过，仍为既有 `src/pageComponents/session/ModalForm/index.tsx`、`src/pages/userCenter/index.tsx`、`src/service/index.ts`、`src/service/request/index.ts` 类型错误；本轮修改的 `volunteer.ts`、`WorkspacePanel/index.tsx` 未出现在错误列表中。
+
+结构替换预览验证：
+
+```bash
+cd zhiyuan-server
+mvn -Dtest=PlanningStateServiceTest#shouldGenerateTierRatioFixProposalWithReplacementPairsFromFullPoolWhenCandidateViewFiltersOutTargetTier,PlanningStateServiceTest#shouldGenerateProbabilityGapFixProposalWithReplacementPairsFromFullPoolWhenCandidateViewFiltersOutMiddleCandidate test
+```
+
+结果：通过，`Tests run: 2, Failures: 0, Errors: 0, Skipped: 0`。
+
+Selector 抽取前保护测试：
+
+```bash
+cd zhiyuan-server
+mvn -Dtest=PlanningStateServiceTest#shouldGenerateTierRatioFixProposalWithReplacementPairsFromFullPoolWhenCandidateViewFiltersOutTargetTier,PlanningStateServiceTest#shouldGenerateProbabilityGapFixProposalWithReplacementPairsFromFullPoolWhenCandidateViewFiltersOutMiddleCandidate,PlanningStateServiceTest#shouldGenerateTierRatioFixProposalWithUnitReplacementPairsWhenMajorGroupPlanIsFull,PlanningStateServiceTest#shouldBlockTierRatioFixProposalWhenAllSurplusSourcesAreLocked test
+```
+
+结果：通过，`Tests run: 4, Failures: 0, Errors: 0, Skipped: 0`。覆盖专业模式满容量 replacement pair、专业组模式 unit 级 replacement pair、dry run 前后分布，以及 surplus 来源被锁定时不能退回 add-only。
+
+核心回归：
+
+```bash
+cd zhiyuan-server
+mvn -Dtest=ReviewRuleRegistryTest,ReviewInvalidationPolicyTest,PlanningStateServiceTest,PlanningStateSuggestionMappingTest test
+```
+
+结果：通过，`Tests run: 148, Failures: 0, Errors: 0, Skipped: 3`。
+
+Selector 抽取后回归：
+
+```bash
+cd zhiyuan-server
+mvn -Dtest=PlanningStateServiceTest#shouldGenerateTierRatioFixProposalWithReplacementPairsFromFullPoolWhenCandidateViewFiltersOutTargetTier,PlanningStateServiceTest#shouldGenerateProbabilityGapFixProposalWithReplacementPairsFromFullPoolWhenCandidateViewFiltersOutMiddleCandidate,PlanningStateServiceTest#shouldGenerateTierRatioFixProposalWithUnitReplacementPairsWhenMajorGroupPlanIsFull,PlanningStateServiceTest#shouldBlockTierRatioFixProposalWhenAllSurplusSourcesAreLocked test
+```
+
+结果：通过，`Tests run: 4, Failures: 0, Errors: 0, Skipped: 0`。
+
+抽取后核心回归：
+
+```bash
+cd zhiyuan-server
+mvn -Dtest=ReviewRuleRegistryTest,ReviewInvalidationPolicyTest,PlanningStateServiceTest,PlanningStateSuggestionMappingTest test
+```
+
+结果：通过，`Tests run: 148, Failures: 0, Errors: 0, Skipped: 3`。
+
+Selector add 侧迁移后补偿目标测试：
+
+```bash
+cd zhiyuan-server
+mvn -Dtest=PlanningStateServiceTest#shouldPreviewAndApplyCompensation,PlanningStateServiceTest#shouldAvoidRiskyCandidatesAndFillProbabilityGapDuringCompensation,PlanningStateServiceTest#shouldCapCompensationActionsByRemainingGapBeforeApply,PlanningStateServiceTest#shouldFillMissingCountByRequiredTierShortage,PlanningStateServiceTest#shouldNotApplyProtectRatioRebalanceAsAddOnlyWhenPlanIsFull test
+```
+
+结果：通过，`Tests run: 5, Failures: 0, Errors: 0, Skipped: 0`。
+
+Selector add 侧迁移后核心回归：
+
+```bash
+cd zhiyuan-server
+mvn -Dtest=ReviewRuleRegistryTest,ReviewInvalidationPolicyTest,PlanningStateServiceTest,PlanningStateSuggestionMappingTest test
+```
+
+结果：通过，`Tests run: 148, Failures: 0, Errors: 0, Skipped: 3`。
+
+Selector 直接单测：
+
+```bash
+cd zhiyuan-server
+mvn -Dtest=RepairCandidateSelectorTest test
+```
+
+结果：通过，`Tests run: 5, Failures: 0, Errors: 0, Skipped: 0`。覆盖补数量候选、本省保底优先、专业组保区补充、断层补候选、锁定来源跳过和专业组 unit 级替换来源。
+
+包含 selector 单测后的核心回归：
+
+```bash
+cd zhiyuan-server
+mvn -Dtest=ReviewRuleRegistryTest,ReviewInvalidationPolicyTest,RepairCandidateSelectorTest,PlanningStateServiceTest,PlanningStateSuggestionMappingTest test
+```
+
+结果：通过，`Tests run: 153, Failures: 0, Errors: 0, Skipped: 3`。
+
+Replacement action builder 抽取后目标回归：
+
+```bash
+cd zhiyuan-server
+mvn -Dtest=RepairCandidateSelectorTest,PlanningStateServiceTest#shouldGenerateTierRatioFixProposalWithReplacementPairsFromFullPoolWhenCandidateViewFiltersOutTargetTier,PlanningStateServiceTest#shouldGenerateProbabilityGapFixProposalWithReplacementPairsFromFullPoolWhenCandidateViewFiltersOutMiddleCandidate,PlanningStateServiceTest#shouldGenerateTierRatioFixProposalWithUnitReplacementPairsWhenMajorGroupPlanIsFull,PlanningStateServiceTest#shouldBlockTierRatioFixProposalWhenAllSurplusSourcesAreLocked test
+```
+
+结果：通过，`Tests run: 9, Failures: 0, Errors: 0, Skipped: 0`。覆盖 selector 直接策略、专业模式满容量替换、专业组 unit 级替换、锁定来源跳过和结构建议不退回 add-only。
+
+Replacement action builder 抽取后核心回归：
+
+```bash
+cd zhiyuan-server
+mvn -Dtest=ReviewRuleRegistryTest,ReviewInvalidationPolicyTest,RepairCandidateSelectorTest,PlanningStateServiceTest,PlanningStateSuggestionMappingTest test
+```
+
+结果：通过，`Tests run: 153, Failures: 0, Errors: 0, Skipped: 3`。
+
+Dry-run simulator 抽取后目标回归：
+
+```bash
+cd zhiyuan-server
+mvn -Dtest=RepairDryRunSimulatorTest,RepairCandidateSelectorTest,PlanningStateServiceTest#shouldGenerateTierRatioFixProposalWithReplacementPairsFromFullPoolWhenCandidateViewFiltersOutTargetTier,PlanningStateServiceTest#shouldGenerateProbabilityGapFixProposalWithReplacementPairsFromFullPoolWhenCandidateViewFiltersOutMiddleCandidate,PlanningStateServiceTest#shouldGenerateTierRatioFixProposalWithUnitReplacementPairsWhenMajorGroupPlanIsFull,PlanningStateServiceTest#shouldBlockTierRatioFixProposalWhenAllSurplusSourcesAreLocked test
+```
+
+结果：通过，`Tests run: 11, Failures: 0, Errors: 0, Skipped: 0`。覆盖专业模式 replacement dry-run、专业组组内专业替换 dry-run、selector 直接策略和满容量结构替换建议。
+
+Dry-run simulator 抽取后核心回归：
+
+```bash
+cd zhiyuan-server
+mvn -Dtest=ReviewRuleRegistryTest,ReviewInvalidationPolicyTest,RepairCandidateSelectorTest,RepairDryRunSimulatorTest,PlanningStateServiceTest,PlanningStateSuggestionMappingTest test
+```
+
+结果：通过，`Tests run: 155, Failures: 0, Errors: 0, Skipped: 3`。
+
+Repair report builder 抽取后直接验证：
+
+```bash
+cd zhiyuan-server
+mvn -Dtest=RepairReportBuilderTest,RepairDryRunSimulatorTest,PlanningStateServiceTest#shouldApplyFixProposalAndReturnRepairReport,PlanningStateServiceTest#shouldApplySortFixProposalAndReturnRepairReport,PlanningStateServiceTest#shouldApplyRemoveRiskItemsFixProposal,PlanningStateServiceTest#shouldApplyMajorGroupInnerSafetyFixProposal test
+```
+
+结果：通过，`Tests run: 3, Failures: 0, Errors: 0, Skipped: 0`。其中直接验证覆盖 report builder；服务层 apply report 场景继续由完整 `PlanningStateServiceTest` 回归覆盖。
+
+Repair report builder 抽取后核心回归：
+
+```bash
+cd zhiyuan-server
+mvn -Dtest=ReviewRuleRegistryTest,ReviewInvalidationPolicyTest,RepairCandidateSelectorTest,RepairDryRunSimulatorTest,RepairReportBuilderTest,PlanningStateServiceTest,PlanningStateSuggestionMappingTest test
+```
+
+结果：通过，`Tests run: 156, Failures: 0, Errors: 0, Skipped: 3`。
+
+### 方案工作台状态命名收敛
+
+3.0.x 里用户侧已经取消“草稿”概念，但后端规划状态仍使用 `draftPlanState`、`/session/draft/*` 等历史命名，3.1.0 早期抽取的内部 helper 也曾沿用 `DraftPlanMutationSupport`。3.1.0 起把这层语义收敛为“工作台方案”：
+
+- 新主字段：`workingPlanState`，表示工作台里当前已加入/可编辑的方案状态。
+- 旧兼容字段：`draftPlanState` 继续返回并可反序列化，用于老会话、3.0.x 前端、历史脚本和未迁移外部调用兜底；它与 `workingPlanState` 指向同一份状态，不允许双写出不同内容。
+- 新主路由：`/session/working-plan/*`。
+- 旧兼容路由：`/session/draft/*` 暂时保留并委托同一方法，后续 agent 和外部调用全部迁移后再删除。
+- 前端工作台优先读取 `workingPlanState`，旧服务只返回 `draftPlanState` 时 fallback；前端请求已切到 `working-plan` 路由。
+- Agent 主路径已切到 `workingPlanState` 兼容 helper 和 `/session/working-plan/*` 内部 client。运行代码中不再直接读取 `draftPlanState`，只有 helper 保留旧字段 fallback；查询解析中仍允许识别用户说“草稿里”这类历史表达，但回复和工具文案统一说“方案/已加入方案”。
+- 创建会话断点续填里的 `customerDetailDraft` 是表单缓存，不属于方案状态，本轮不改。
+- 已标记旧入口：`PlanningStateDTO` / `PlanningWorkspaceStateRes` 的 `draftPlanState` getter/setter、`PlanningStateService` 旧 `*Draft*` public 方法加 `@Deprecated` 和替代入口说明；`PlanningStateController` 的 `/session/draft/*` 路由加兼容注释；Agent `get_planning_draft`、`select_planning_draft_items`、`query_planning_draft` 等旧函数名加 legacy/compatibility docstring。后续新增代码不得再扩展 draft 命名。
+
+当前没有直接重命名 `DraftPlanStateDTO`、`DraftItemDTO`、`DraftUnitDTO`、`DraftSelectReq` 等老 DTO，因为它们仍被服务层和持久化兼容链路大量引用。验证中直接把 Java 主字段类型切成 `WorkingPlanStateDTO extends DraftPlanStateDTO` 会触发 FastJSON 在新旧别名同时存在时把旧结构解析成 `DraftPlanStateDTO` 后再 cast 到子类，导致老状态加载失败；因此本轮只更正 JSON/API/前端/agent 主命名，底层 DTO 名称留在兼容层。后续清理顺序应是：服务层 public 方法和 DTO 更名 -> 停返/停收 `draftPlanState` -> 删除 `/session/draft/*`。
+
+本轮 agent/server 命名收敛增量验证：
+
+```bash
+cd zhiyuan-agent
+./.venv/bin/python -m pytest tests/unit/test_request_context_new_fields.py tests/unit/test_planning_workflow_tool.py tests/unit/test_planning_plan_scenarios_sync.py -q
+./.venv/bin/python -m pytest tests/unit/test_plan_context_tool.py tests/unit/test_plan_execution_tool.py -q
+
+cd ../zhiyuan-server
+mvn -q -DskipTests compile
+mvn -q -Dtest=PlanningStateDTOCompatibilityTest test
+```
+
+结果：agent 两组分别通过 `72 passed`、`132 passed`；server 编译和 DTO 兼容性测试通过。
+
+Working plan mutation support 抽取后目标回归：
+
+```bash
+cd zhiyuan-server
+mvn -Dtest=PlanningStateDTOCompatibilityTest,WorkingPlanMutationSupportTest,RepairDryRunSimulatorTest,RepairReportBuilderTest,PlanningStateServiceTest test
+```
+
+结果：通过，`Tests run: 131, Failures: 0, Errors: 0, Skipped: 3`。覆盖 DTO 新旧字段兼容、空旧别名不清空新字段、手动选择专业组、组内托底审查、修复 apply、legacy volunteer identity 和 working plan summary 同步。
+
+Working plan mutation support 抽取后核心回归：
+
+```bash
+cd zhiyuan-server
+mvn -q -Dtest=PlanningStateDTOCompatibilityTest,ReviewRuleRegistryTest,ReviewInvalidationPolicyTest,RepairApplyMutationBuilderTest,WorkingPlanMutationSupportTest,RepairCandidateSelectorTest,RepairRiskActionBuilderTest,RepairMajorGroupInnerSafetyActionBuilderTest,RepairDryRunSimulatorTest,RepairReportBuilderTest,PlanningStateServiceTest,PlanningStateSuggestionMappingTest test
+```
+
+结果：通过，`Tests run: 185, Failures: 0, Errors: 0, Skipped: 3`。本轮在原有 DTO 兼容、审查规则、stale 策略、selector、dry-run、report builder、服务层回归基础上，补充覆盖 `RepairApplyMutationBuilder` 的内存 mutation 行为，包括专业模式替换、专业组 unit 替换，以及候选被禁用时 blocked 且原方案不变；同时锁定 `replace_risk_items` 部分配对时只能保持预览态并提示未覆盖风险，结构替换类 proposal 在专业/专业组模式下仍不能通过 apply 入口自动落盘。新增 selector 回归覆盖条目风险替代候选选择的 same-tier、安全过滤、排序和专业组 unit 去重；新增 risk action builder 回归覆盖删除风险 action + fallback 补数量动作，以及部分替换 warning；新增 major-group inner safety builder 回归覆盖组内已满时安全专业替换，以及只有部分专业组可修复时 blocked/warning；proposal 基础字段、strategy、状态汇总和 proposal 查找已迁入 `RepairProposalStateBuilder`，由既有 proposal service 回归覆盖。
+
+Repair proposal apply policy 抽取后目标回归：
+
+```bash
+cd zhiyuan-server
+mvn -q -Dtest=RepairProposalApplyPolicyTest,PlanningStateServiceTest#shouldRejectExpiredFixProposalApply,PlanningStateServiceTest#shouldRejectFixProposalApplyWhenReviewIsStale,PlanningStateServiceTest#shouldApplyReplaceRiskItemsFixProposalWithVersionGuard,PlanningStateServiceTest#shouldApplyFillMissingCountFixProposalWithVersionGuard test
+```
+
+结果：通过。覆盖 apply 请求缺 proposalId、sourceVersion guard 缺失/不匹配、review stale、无审查结果、preview-only unsupported、非 ready、proposal 版本变化、ready unsupported，以及当前允许自动应用的策略。
+
+Repair proposal apply policy 抽取后核心回归：
+
+```bash
+cd zhiyuan-server
+mvn -q -Dtest=PlanningStateDTOCompatibilityTest,ReviewRuleRegistryTest,ReviewInvalidationPolicyTest,ReviewWorkflowStatusResolverTest,RepairApplyMutationBuilderTest,RepairProposalApplyPolicyTest,RepairReplacementActionBuilderTest,WorkingPlanMutationSupportTest,RepairCandidateSelectorTest,RepairRiskActionBuilderTest,RepairMajorGroupInnerSafetyActionBuilderTest,RepairDryRunSimulatorTest,RepairReportBuilderTest,PlanningStateServiceTest,PlanningStateSuggestionMappingTest test
+```
+
+结果：通过，`Tests run: 202, Failures: 0, Errors: 0, Skipped: 3`。新增 `RepairProposalApplyPolicyTest` 直接锁定 apply 入口保护条件和自动应用策略白名单；新增 `RepairReplacementActionBuilderTest` 直接锁定满方案结构建议从 add-only 转 replacement pair、无可替换来源时 blocked 且不保留 add-only 动作；新增 `ReviewWorkflowStatusResolverTest` 直接锁定 workflow 聚合状态映射；服务层回归继续覆盖真实 `applyFixProposal()` 对版本保护、过期审查、unsupported strategy 和补数量落盘路径的行为。
+
+Structural replacement action builder 入口迁移后回归：
+
+```bash
+cd zhiyuan-server
+mvn -q -Dtest=RepairReplacementActionBuilderTest,RepairCandidateSelectorTest,PlanningStateServiceTest#shouldGenerateTierRatioFixProposalWithReplacementPairsFromFullPoolWhenCandidateViewFiltersOutTargetTier,PlanningStateServiceTest#shouldGenerateProbabilityGapFixProposalWithReplacementPairsFromFullPoolWhenCandidateViewFiltersOutMiddleCandidate,PlanningStateServiceTest#shouldGenerateTierRatioFixProposalWithUnitReplacementPairsWhenMajorGroupPlanIsFull,PlanningStateServiceTest#shouldBlockTierRatioFixProposalWhenAllSurplusSourcesAreLocked test
+mvn -q -Dtest=PlanningStateDTOCompatibilityTest,ReviewRuleRegistryTest,ReviewInvalidationPolicyTest,ReviewWorkflowStatusResolverTest,RepairApplyMutationBuilderTest,RepairProposalApplyPolicyTest,RepairReplacementActionBuilderTest,WorkingPlanMutationSupportTest,RepairCandidateSelectorTest,RepairRiskActionBuilderTest,RepairMajorGroupInnerSafetyActionBuilderTest,RepairDryRunSimulatorTest,RepairReportBuilderTest,PlanningStateServiceTest,PlanningStateSuggestionMappingTest test
+```
+
+结果：通过，核心回归为 `Tests run: 202, Failures: 0, Errors: 0, Skipped: 3`。本轮只迁移结构 replacement action 的入口判断和满方案 blocked 保护，不改变 `rebalance_tier_ratio` / `fill_probability_gap` 的 preview-only 状态，也不改变 apply 保存、重排和复审编排。
+
+Workflow status builder 抽取后目标回归：
+
+```bash
+cd zhiyuan-server
+mvn -q -Dtest=CandidatePoolStatusResolverTest,CandidatePoolQualityStatusBuilderTest,PlanningWorkflowStatusBuilderTest,PlanningStateServiceTest#shouldRunReviewWorkflowAndReturnFixProposalsWithWorkspaceStatus test
+```
+
+结果：通过。新增 `CandidatePoolStatusResolverTest` 直接覆盖未生成、空候选、专业模式低数量、专业组模式按 unitTotal 低数量、数量足够和 requiredUnitCount fallback；新增 `CandidatePoolQualityStatusBuilderTest` 直接覆盖空候选 fallback 提示、专业组低数量按 unit 计数、冲稳保短缺、接近批次线、身体限报/专项资格提示和 ready 清理旧提示；新增 `PlanningWorkflowStatusBuilderTest` 直接覆盖候选状态 fallback、方案 empty/selected/dirty/pending_review/ready/legacy_readonly、审查 stale/failed/risk/warning/passed 和导出 not_exported/exported/stale。
+
+Workflow status builder 抽取后核心回归：
+
+```bash
+cd zhiyuan-server
+mvn -q -Dtest=PlanningStateDTOCompatibilityTest,ReviewRuleRegistryTest,ReviewInvalidationPolicyTest,ReviewWorkflowStatusResolverTest,CandidatePoolStatusResolverTest,CandidatePoolQualityStatusBuilderTest,PlanningWorkflowStatusBuilderTest,RepairApplyMutationBuilderTest,RepairProposalApplyPolicyTest,RepairReplacementActionBuilderTest,WorkingPlanMutationSupportTest,RepairCandidateSelectorTest,RepairRiskActionBuilderTest,RepairMajorGroupInnerSafetyActionBuilderTest,RepairDryRunSimulatorTest,RepairReportBuilderTest,PlanningStateServiceTest,PlanningStateSuggestionMappingTest test
+```
+
+结果：通过，核心回归为 `Tests run: 217, Failures: 0, Errors: 0, Skipped: 3`。本轮只迁移候选池质量提示和工作台展示状态计算，不改变候选生成、方案排序、修复 proposal 生成、apply 保存、ordered regenerate 或复审编排。
+
+Ordered plan positioning support 抽取和 pin 功能清理：
+
+- `OrderedPlanPositioningSupport` 承接纯内存的排序方案位置计算：`rebuildItems`、`resolveMovableTargetIndex`、`moveWithinUnlockedSlots`、`normalizeIndex`、`normalizePosition`。该 helper 不保存状态、不发事件、不触发审查、不改变排序策略，只让 `PlanningStateService` 内部的移动、删除、排序、聚合重建复用同一套位置规则。
+- 已删除 ordered pin/unpin 的用户可触发入口：后端 `/session/ordered-plan/pin`、`/session/ordered-plan/unpin` 和 `OrderedPinReq`；前端 `pinPlanningOrderedItemApi` / `unpinPlanningOrderedItemApi`；agent internal client `pin_planning_ordered_item` / `unpin_planning_ordered_item`；workflow mock/no-op helper；以及 `PlanActionPlan`、ActionResolver、execution 层里的 `pin_unit` / `unpin_unit` 可执行动作分支。
+- 前端工作台文案不再提示“固定志愿”是可用操作，排序弹窗也不再把固定位置作为当前交互能力披露。
+- `pinned` / `pinnedPosition` 字段暂时保留为历史数据兼容和老 `_final` 导入标记：当前移动、排序、修复 dry-run、工作台展示和 agent 回复都不再把它作为位置约束，也不会由当前前端或 agent 创建。老字段只用于历史 JSON/DTO 兼容，后续若确认无外部消费，可单独安排字段退场。
+- `working-plan/lock` 属于另一条工作方案兼容接口，本轮不随 ordered pin 一起删除；后续若要退场，应单独按 working-plan legacy 清理，先确认外部兼容窗口。
+
+目标回归：
+
+```bash
+cd zhiyuan-server
+mvn -q -Dtest=OrderedPlanPositioningSupportTest,PlanningStateServiceTest#shouldGenerateAndMoveOrderedPlan,PlanningStateServiceTest#shouldAllowMoveLockedOrderedItems,PlanningStateServiceTest#shouldMoveAcrossDraftLockedItemsWithoutTreatingThemAsPinned,PlanningStateServiceTest#shouldIgnoreHistoricalPinnedOrderedItemsWhenMoving,PlanningStateServiceTest#shouldSortMajorPlanByAdmissionRatioAndIgnoreHistoricalPinnedPosition,PlanningStateServiceTest#shouldSortMajorGroupPlanByFinalScoreWithoutBreakingGroupMajors test
+
+cd ../zhiyuan-agent
+./.venv/bin/python -m pytest tests/regression/test_execution_preview.py::TestGenericPreviewAnalyzeFallback tests/regression/test_determine_stage.py tests/regression/test_execution_apply.py tests/unit/test_plan_orchestration_tool.py::test_plan_next_action_public_actions_do_not_expose_pin_unpin tests/integration/test_resolver_vs_legacy.py::test_pin_unpin_are_removed_from_structured_intent_frame tests/unit/test_chat_agent_tools.py::TestChatAgentToolRegistration::test_chat_agent_does_not_register_redundant_planning_action_tools -q
+./.venv/bin/python -m pytest tests/unit/test_plan_execution_tool.py::test_execute_plan_action_runs_move_unit_after_resolving_position_ref tests/unit/test_plan_execution_tool.py::test_execute_plan_action_moves_major_group_unit_by_position_ref tests/integration/test_full_plan_flow.py::TestPendingExpiry::test_custom_max_age tests/unit/test_handler_registry.py tests/unit/test_chat_agent_tools.py::TestChatAgentToolRegistration::test_chat_agent_does_not_register_redundant_planning_action_tools -q
+```
+
+结果：server 目标回归通过；agent 两组分别通过 `194 passed`、`22 passed`。覆盖 ordered 位置重建、历史 pinned 仅兼容不约束、锁定项移动保护、专业/专业组排序不回退，以及 pin/unpin 不再暴露为工具 action、handler 或执行分支。
+
+2026-06-10 增量校验：
+
+```bash
+cd zhiyuan-server
+mvn -q -Dtest=OrderedPlanPositioningSupportTest,RepairDryRunSimulatorTest,PlanningStateServiceTest#shouldGenerateAndMoveOrderedPlan,PlanningStateServiceTest#shouldAllowMoveLockedOrderedItems,PlanningStateServiceTest#shouldMoveAcrossDraftLockedItemsWithoutTreatingThemAsPinned,PlanningStateServiceTest#shouldIgnoreHistoricalPinnedOrderedItemsWhenMoving,PlanningStateServiceTest#shouldSortMajorPlanByAdmissionRatioAndIgnoreHistoricalPinnedPosition,PlanningStateServiceTest#shouldSortMajorGroupPlanByFinalScoreWithoutBreakingGroupMajors test
+
+cd ../zhiyuan-agent
+.venv/bin/python -m pytest tests/unit/test_planning_workflow_tool.py -q
+
+cd ..
+git diff --check
+```
+
+结果：通过。server 覆盖 historical `pinned/pinnedPosition` 不再阻断移动、排序和 `sort_by_probability` dry-run；agent `planning_workflow_tool` 为 `32 passed`，确认排序方案查询不再输出 `[固定]`；`git diff --check` 无空白错误。
+
+包含 ordered positioning 后的 server 核心回归：
+
+```bash
+cd zhiyuan-server
+mvn -q -Dtest=PlanningStateDTOCompatibilityTest,ReviewRuleRegistryTest,ReviewInvalidationPolicyTest,ReviewWorkflowStatusResolverTest,CandidatePoolStatusResolverTest,CandidatePoolQualityStatusBuilderTest,PlanningWorkflowStatusBuilderTest,OrderedPlanPositioningSupportTest,RepairApplyMutationBuilderTest,RepairProposalApplyPolicyTest,RepairReplacementActionBuilderTest,WorkingPlanMutationSupportTest,RepairCandidateSelectorTest,RepairRiskActionBuilderTest,RepairMajorGroupInnerSafetyActionBuilderTest,RepairDryRunSimulatorTest,RepairReportBuilderTest,PlanningStateServiceTest,PlanningStateSuggestionMappingTest test
+```
+
+结果：通过，核心回归为 `Tests run: 222, Failures: 0, Errors: 0, Skipped: 3`。本轮没有改动候选生成、方案生成、导出、修复 apply 保存、ordered regenerate 或复审编排。
+
+Strategy / action / apply 编排边界复核：
+
+```bash
+cd zhiyuan-server
+mvn -q -Dtest=RepairProposalApplyPolicyTest,RepairReplacementActionBuilderTest,RepairDryRunSimulatorTest,PlanningStateServiceTest#shouldGenerateTierRatioFixProposalWithReplacementPairsFromFullPoolWhenCandidateViewFiltersOutTargetTier,PlanningStateServiceTest#shouldGenerateProbabilityGapFixProposalWithReplacementPairsFromFullPoolWhenCandidateViewFiltersOutMiddleCandidate,PlanningStateServiceTest#shouldGenerateTierRatioFixProposalWithUnitReplacementPairsWhenMajorGroupPlanIsFull test
+```
+
+结果：通过。该回归确认 `rebalance_tier_ratio` / `fill_probability_gap` 是审查修复 strategy，不是最终直接执行的落盘 action；满容量时可以由 `RepairReplacementActionBuilder` 转成 `replace_volunteers` pair 用于预览，但最终 proposal 仍保持 `preview_only`，且 `RepairProposalApplyPolicy` 会拒绝这两类结构策略进入自动 apply 白名单。当前允许自动 apply 的仍只有 `fill_missing_count`、`sort_by_probability`、`remove_risk_items`、`adjust_major_group_inner_safety`。
+
+2026-06-10 增量复核：
+
+```bash
+cd zhiyuan-server
+mvn -q -Dtest=RepairProposalApplyPolicyTest,RepairReplacementActionBuilderTest,RepairCandidateSelectorTest,RepairDryRunSimulatorTest,RepairApplyMutationBuilderTest,PlanningStateServiceTest#shouldGenerateTierRatioFixProposalWithReplacementPairsFromFullPoolWhenCandidateViewFiltersOutTargetTier,PlanningStateServiceTest#shouldGenerateProbabilityGapFixProposalWithReplacementPairsFromFullPoolWhenCandidateViewFiltersOutMiddleCandidate,PlanningStateServiceTest#shouldGenerateTierRatioFixProposalWithUnitReplacementPairsWhenMajorGroupPlanIsFull,PlanningStateServiceTest#shouldNotApplyProbabilityGapAsAddOnlyWhenPlanIsFull,PlanningStateServiceTest#shouldNotApplyProtectRatioRebalanceAsAddOnlyWhenPlanIsFull test
+```
+
+结果：通过。该复核确认当前链路分层仍一致：`ReviewRuleRegistry` 定义规则级 `defaultFixStrategy`；`RepairProposalStateBuilder` 把审查问题和补偿动作组装成 `FixProposalDTO.strategy`；`RepairReplacementActionBuilder` 只在满容量结构建议中把 add-only 补偿动作转换成 `FixProposalActionDTO.actionType=replace_volunteers` 预览；`RepairProposalApplyPolicy` 决定哪些 strategy 可以进入高副作用 apply；`RepairApplyMutationBuilder.applyReplaceVolunteers()` 已作为 `replace_risk_items` 的原子执行能力接入，结构 replacement 仍未接入自动 apply 白名单。
+
+旧补偿 apply 旁路保护复核：
+
+```bash
+cd zhiyuan-server
+mvn -q -Dtest=PlanningStateServiceTest#shouldNotApplyProbabilityGapAsAddOnlyWhenPlanIsFull,PlanningStateServiceTest#shouldNotApplyProtectRatioRebalanceAsAddOnlyWhenPlanIsFull test
+```
+
+结果：通过。该回归确认旧 `applyCompensation()` 在执行侧会用 `keepReplacementActionsWhenFull=false` 重新裁剪 preview actions：满方案时 `rebalance_protect_ratio` 和 `fill_probability_gap` 可以在 preview 中披露候选补位方向，但不会绕过 `FixProposal` 的 `preview_only` 边界按 add-only 直接追加到工作台方案。旧补偿入口继续只承担低风险补数量/有剩余额度时的补候选语义；结构性替换仍必须走 `FixProposal` 预览和后续白名单控制。
+
+`cannot_satisfy` 解释增强回归：
+
+```bash
+cd zhiyuan-server
+mvn -q -Dtest=RepairProposalStateBuilderTest,RepairDryRunSimulatorTest,PlanningStateServiceTest#shouldGenerateFixProposalFromCountCompensation,PlanningStateServiceTest#shouldBlockCountFixProposalWhenNoCandidateCanSatisfyShortage,PlanningStateServiceTest#shouldBlockTierRatioFixProposalWhenAllSurplusSourcesAreLocked test
+```
+
+结果：通过。新增 `RepairProposalStateBuilderTest#shouldExplainCannotSatisfyReasonByReviewRule`，锁定结构风险在没有补偿候选时会生成具体的候选不足原因且不可确认；新增 `RepairDryRunSimulatorTest#shouldUseCannotSatisfyBlockingReasonAsDryRunMessage`，锁定 dry-run 展示消息复用同一条规则级 blocking reason，避免退回泛化文案；新增 `PlanningStateServiceTest#shouldBlockCountFixProposalWhenNoCandidateCanSatisfyShortage`，覆盖真实 `generateFixProposals()` 入口在数量缺口且候选池没有可补项时返回 `cannot_satisfy/blocked`、不生成空动作、不允许确认。
+
+`cannot_satisfy` / `blocked` 原因结构化：
+
+- `FixProposalDTO` 新增 `blockingReasonCodes`。`blockingReason` 继续作为面向用户的可读说明保留；`blockingReasonCodes` 只用于前端、Agent、回归测试和后续观测区分阻断类型，不参与候选选择、dry-run 状态判断、apply 白名单、保存、ordered regenerate 或复审编排。
+- 这些结构化字段不是从用户自然语言或模型回复里猜出来的。来源分两类：用户动作参数仍由 LLM/tool schema 抽取后交给代码校验；修复阻断原因由 server 根据审查规则、候选选择、replacement pair 构造和 dry-run 目标校验阶段确定性生成。
+- `RepairProposalStateBuilder` 统一提供 `markBlocked()` / `addBlockingReasonCode()` / `resolveBlockingReasonCode()`，各修复 builder 不再只散落设置中文 `blockingReason`。当前覆盖：
+  - 规则级候选不足：`candidate_pool_insufficient`、`safety_candidate_insufficient`、`tier_candidate_insufficient`、`probability_gap_candidate_insufficient`、`no_sort_or_replacement_candidate`、`major_group_safety_candidate_insufficient`、`risk_item_unresolved_or_replacement_missing`。
+  - 执行阶段阻断：`replacement_pair_missing`、`volunteer_model_mismatch`、`risk_unit_unresolved`、`partial_major_group_safety_candidate_missing`、`risk_item_unresolved`、`safe_replacement_candidate_insufficient`。
+  - dry-run 目标校验阻断：`objective_validation_not_improved`。
+- `CandidateShortageDTO` 已作为第一阶段一等候选不足结构加入 `FixProposalDTO.candidateShortages`，字段包括 `strategy/sourceCheckCode/scope/reasonCode/targetTier/requiredCount/currentCount/shortageCount/availableCount/message`。生成来源是后端确定性状态和阻断原因，不从用户自然语言或模型回复中猜测。
+- `ReviewCheckDTO.reasonCode` 已作为审查命中原因加入，并由 `PlanningStateService` 在 review 阶段写入；`generateFixProposals()` 会对历史缺失 reasonCode 的旧 review state 做一次结构化补全，仅根据当前 state 的目标数量、当前数量和冲稳保计数推导，不读取中文展示文案。这样老会话打开修复建议时也不会把“数量超出”误归因为“候选池不足”。
+- `RepairCandidateEligibility` 已成为修复候选准入的统一保护层：只有已确认写入 `constraintState.hardConstraints` 的排除/限定地域、院校、专业会收窄修复候选；未确认对话和 `softPreferences` 不会减少候选池。该过滤只作用于修复候选补入/替换，不改变候选池展示、面板筛选、推荐 overlay 或软偏好排序。专业组模式下，候选 item 会先过滤再成组；unit 级补位按 `selectedMajors` 判断实际选入专业，只有 selected 为空时才回退 `allMajors`，避免把未选中的同组专业当成整组不可用。
+- `candidateShortages.scope=hard_constraints` 采用双口径比较生成：如果不应用硬要求时可用候选足够、应用已确认硬要求后不足，才归因为硬要求收窄；否则仍保持 `candidate_pool`、`capacity_or_replacement` 或 `objective_validation` 等范围，避免把候选池本身不足误说成用户要求导致。
+- Agent `_fix_proposal_facts()` 已透传 `candidate_shortages`，`generate_planning_fix_proposals` 工具直出和 `analysis_handlers` 审查回复会优先展示结构化候选边界，例如“当前可用于规划的候选池里，断层中间录取率候选不足”。旧 `blockingReasonCodes` 仍作为兼容兜底。
+- Agent `_fix_proposal_facts()` 已透传 `blocking_reason_codes`；PC 前端接口类型 `PlanningFixProposal` 已补 `blockingReasonCodes?: string[]`。当前 UI 仍以服务端 status/blockingReason 为主，不基于 code 自行判断可执行性。
+- PC 前端接口类型已补 `PlanningCandidateShortage` 和 `PlanningFixProposal.candidateShortages?: PlanningCandidateShortage[]`。2026-06-10 起工作台修复弹窗已结构化展示候选不足说明，继续保持只读解释语义，不改变 selector、dry-run 状态判断、apply 白名单或保存编排。
+- 这次增强解决的是“为什么修不了/为什么不能确认”的一等可观测性问题，不改变“能不能自动修、选哪个候选、能否落盘”的业务判断。
+
+结构化阻断原因目标回归：
+
+```bash
+cd zhiyuan-server
+mvn -q -Dtest=RepairProposalStateBuilderTest,RepairReplacementActionBuilderTest,RepairMajorGroupInnerSafetyActionBuilderTest,RepairDryRunSimulatorTest,PlanningStateServiceTest#shouldBlockCountFixProposalWhenNoCandidateCanSatisfyShortage test
+
+cd ../zhiyuan-agent
+.venv/bin/python -m pytest tests/unit/test_planning_workflow_tool.py::test_generate_planning_fix_proposals_formats_status_and_warnings -q
+```
+
+结果：通过。server 覆盖规则级 `cannot_satisfy`、满方案 replacement pair 缺失、专业组内安全垫部分可修复、dry-run 目标未改善和真实 `generateFixProposals()` 入口；Agent 覆盖 `blockingReasonCodes` 到 `blocking_reason_codes` 的透传。
+
+2026-06-10 `candidateShortages` 边界回归：
+
+```bash
+cd zhiyuan-server
+mvn -q -Dtest=RepairDryRunSimulatorTest#shouldBlockCountValidationWhenPreviewDoesNotMoveTowardRequiredCount,PlanningStateServiceTest#shouldBlockTierRatioFixProposalWhenAllSurplusSourcesAreLocked+shouldExplainTierRatioShortageAsCandidatePoolScopeWhenNoTargetTierCandidateExists+shouldExplainProbabilityGapShortageAsCandidatePoolScopeWhenNoMiddleCandidateExists test
+
+cd ../zhiyuan-agent
+.venv/bin/python -m pytest tests/unit/test_planning_workflow_tool.py::test_generate_planning_fix_proposals_formats_status_and_warnings tests/unit/test_plan_execution_tool.py::test_execute_plan_action_review_reply_includes_backend_fix_proposals -q
+```
+
+结果：通过。新增确认五类用户侧容易混淆的边界：数量缺口没有可补项时输出 `scope=candidate_pool`；`rebalance_tier_ratio` 缺目标 tier 候选时输出 `scope=candidate_pool` 且明确 target tier；`fill_probability_gap` 缺断层中间候选时输出 `scope=candidate_pool`；方案已满但缺少一进一出配对时输出 `scope=capacity_or_replacement`，不说成候选池全量不足；dry-run 后目标没有改善时输出 `scope=objective_validation`，不把无改善预览当成可执行修复。Agent 侧旧 `blockingReasonCodes` 兜底文案也统一限定为“当前可用于规划的候选池”，避免表达成全国或高途全量没有。
+
+2026-06-10 候选来源摘要观测回归：
+
+```bash
+cd zhiyuan-server
+mvn -q -Dtest=RepairCandidateSelectorTest,PlanningStateServiceTest test
+```
+
+结果：通过。`CandidatePoolStateDTO.sourceSummary` 已在候选池生成和 legacy 候选池构建中填充，workspace 响应会透传原候选池来源摘要。新增回归锁定专业组/专业模式下 entry 和 unit 统计口径：外部返回 entry/unit、服务端规范化后 entry/unit、冲稳保 entry/unit 计数均按现有 `resolveInitialRecommendationUnitId` 口径计算。该字段只做来源规模观测，不参与 selector、proposal、dry-run、apply、保存、ordered regenerate 或审查编排。
+
+2026-06-10 候选筛选视图统计回归：
+
+```bash
+cd zhiyuan-server
+mvn -q -Dtest=PlanningStateServiceTest#shouldExcludeCandidatePoolItemsByNegativeFilters test
+```
+
+结果：通过。`CandidatePoolQueryRes.viewSummary` 已返回完整候选池 entry/unit 总量、当前筛选视图 entry/unit 总量和分页加载 entry/unit 数；原有 top-level `total/totalUnitCount/loadedEntryCount/loadedUnitCount` 仍保持当前筛选视图口径。该字段只做查询观测，暂不参与 `candidateShortages.scope=current_view`、修复候选选择、proposal、dry-run 或 apply。
+
+2026-06-10 当前筛选视图不参与结构修复 selector 回归：
+
+```bash
+cd zhiyuan-server
+mvn -q -Dtest=PlanningStateServiceTest#shouldGenerateTierRatioFixProposalWithReplacementPairsFromFullPoolWhenCandidateViewFiltersOutTargetTier+shouldGenerateProbabilityGapFixProposalWithReplacementPairsFromFullPoolWhenCandidateViewFiltersOutMiddleCandidate test
+```
+
+结果：通过。新增确认两类结构策略的边界：候选面板当前筛选视图可以命中 0 条，但 `generateFixProposals()` 默认仍基于完整规划候选池和已确认硬要求；`rebalance_tier_ratio` 仍可从完整候选池找到保区 replacement pair，`fill_probability_gap` 仍可从完整候选池找到断层中间录取率 replacement pair；两者都不会输出 `candidateShortages.scope=current_view`，避免把用户当前筛选视图不足误归因为审查修复候选不足。
+
+2026-06-10 已确认硬要求过滤回归：
+
+```bash
+cd zhiyuan-server
+mvn -q -Dtest=RepairCandidateSelectorTest,PlanningStateServiceTest#shouldAttributeFixProposalShortageToConfirmedHardConstraints+shouldAttributeTierRatioShortageToConfirmedHardConstraints+shouldAttributeProbabilityGapShortageToConfirmedHardConstraints test
+```
+
+结果：通过。新增确认修复候选选择层会过滤已确认硬排除地域/专业；软偏好不参与过滤；专业组 unit 级补位优先看 `selectedMajors`，仅在 selected 为空时用 `allMajors` 兜底；真实 `generateFixProposals()` 入口在“候选池原本有可补项，但已确认硬要求过滤后不可用”时输出 `candidateShortages.scope=hard_constraints`。服务级回归同时覆盖数量缺口、`rebalance_tier_ratio` 缺目标 tier 候选、`fill_probability_gap` 缺断层中间候选三类场景，确认硬要求归因不是只在补数量路径成立。该改动仍不开放 `rebalance_tier_ratio` / `fill_probability_gap` 自动 apply。
+
+Agent 审查/调整回复消费结构化阻断原因：
+
+- `analysis_handlers._fix_proposal_lines()` 已读取 `blocking_reason_codes` 并映射为用户可理解的处理边界，例如候选池不足、断层中间录取率候选不足、方案已满但缺少一进一出替换配对、专业组内缺少安全垫专业、预览没有让审查目标变好等。
+- 该映射只发生在回复汇总层，不参与路由、候选选择、proposal 状态计算、dry-run、apply 白名单或保存。这样可以提升用户侧解释质量，同时不把高副作用决策下放给文案。
+- `next_step_hints` 也会在存在 blocked proposal 时提醒最终回复不要承诺自动补齐或自动替换，而是先解释系统不能直接执行的边界。
+- `planning_workflow_tool._fix_proposal_blocking_guidance()` 已同步优先消费 `candidateShortages`。`hard_constraints`、`capacity_or_replacement`、`objective_validation` 这类结构化 scope 会优先展示；普通 `candidate_pool` 不压掉更具体的 `blockingReasonCodes` 文案，继续保留“断层中间录取率候选不足/目标冲稳保区间候选不足”等细粒度说明。
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest tests/unit/test_planning_workflow_tool.py::test_generate_planning_fix_proposals_formats_status_and_warnings tests/unit/test_planning_workflow_tool.py::test_generate_planning_fix_proposals_prefers_hard_constraint_shortage_guidance tests/unit/test_plan_execution_tool.py::test_execute_plan_action_review_reply_includes_backend_fix_proposals -q
+```
+
+结果：通过。新增确认 Agent 工具直出在 `candidateShortages.scope=hard_constraints` 时展示“已确认的硬性要求收窄了可选范围”，不会再被旧 `blockingReasonCodes=tier_candidate_insufficient` 泛化成普通候选池不足；同时原有 `candidate_pool` 断层不足仍保留更具体的梯度文案。
+- 新增 Agent 回归覆盖 `review_plan` 直接回复包含后端 `fix_proposals` 时，会同时展示 `preview_only` 的可处理方向和 `blocked` 的结构化边界说明，避免只显示“暂不能自动处理”的泛化状态。
+- `generate_planning_fix_proposals` 工具直出也已消费 `blockingReasonCodes`，在 `blockingReason` 之后追加“处理边界”说明。这样用户通过审查 handler 或直接生成修复建议两条路径看到的 blocked 解释保持一致。
+
+目标回归：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest tests/unit/test_plan_execution_tool.py::test_execute_plan_action_review_reply_includes_backend_fix_proposals tests/unit/test_planning_workflow_tool.py::test_generate_planning_fix_proposals_formats_status_and_warnings -q
+```
+
+结果：通过，`2 passed`。
+
+包含 `cannot_satisfy` 解释增强后的 server 核心回归：
+
+```bash
+cd zhiyuan-server
+mvn -q -Dtest=PlanningStateDTOCompatibilityTest,ReviewRuleRegistryTest,ReviewInvalidationPolicyTest,ReviewWorkflowStatusResolverTest,CandidatePoolStatusResolverTest,CandidatePoolQualityStatusBuilderTest,PlanningWorkflowStatusBuilderTest,OrderedPlanPositioningSupportTest,RepairApplyMutationBuilderTest,RepairProposalApplyPolicyTest,RepairProposalStateBuilderTest,RepairReplacementActionBuilderTest,WorkingPlanMutationSupportTest,RepairCandidateSelectorTest,RepairRiskActionBuilderTest,RepairMajorGroupInnerSafetyActionBuilderTest,RepairDryRunSimulatorTest,RepairReportBuilderTest,PlanningStateServiceTest,PlanningStateSuggestionMappingTest test
+```
+
+结果：通过，核心回归为 `Tests run: 235, Failures: 0, Errors: 0, Skipped: 3`。本轮只增强无法修复时的说明文案和 blocking reason，不改变 selector、dry-run 状态机、apply 白名单、保存、ordered regenerate 或复审编排。
+
+修复报告解释字段贯通：
+
+- `RepairReportDTO` 已透传本次应用的 `proposalTitle`、`proposalSummary`、`proposalImpact`、`dryRunStatus`、`dryRunMessage`，用于解释“修的是哪条建议、对应什么问题、影响范围和应用前预览”。
+- `RepairReportBuilder` 从已确认应用的 `FixProposal` 和 dry-run 结果中填充这些字段；字段只读，不参与候选选择、dry-run 状态判断、apply 白名单、保存或复审编排。
+- Agent `apply_planning_fix_proposal` 的返回文案同步展示修复建议、对应问题、影响范围和应用前预览，避免只返回泛化的“已应用修复建议”。
+- PC 工作台“方案修复建议”弹窗中的最近一次修复结果同步展示这些解释字段，同时保留新增/移除数量、风险提醒前后变化、动作明细和 warning。
+
+目标回归：
+
+```bash
+cd zhiyuan-server
+mvn -q -Dtest=RepairReportBuilderTest test
+
+cd ../zhiyuan-agent
+.venv/bin/python -m pytest tests/unit/test_planning_workflow_tool.py::test_apply_planning_fix_proposal_formats_repair_report -q
+```
+
+结果：通过。server 覆盖报告字段、dry-run message、动作明细、复验结果和 warning；agent 覆盖修复结果文案会输出修复建议、对应问题、影响范围、应用前预览、数量变化和复验状态。
+
+包含旧补偿 apply 旁路保护和修复报告解释字段后的 server 核心回归：
+
+```bash
+cd zhiyuan-server
+mvn -q -Dtest=PlanningStateDTOCompatibilityTest,ReviewRuleRegistryTest,ReviewInvalidationPolicyTest,ReviewWorkflowStatusResolverTest,CandidatePoolStatusResolverTest,CandidatePoolQualityStatusBuilderTest,PlanningWorkflowStatusBuilderTest,OrderedPlanPositioningSupportTest,RepairApplyMutationBuilderTest,RepairProposalApplyPolicyTest,RepairProposalStateBuilderTest,RepairReplacementActionBuilderTest,WorkingPlanMutationSupportTest,RepairCandidateSelectorTest,RepairRiskActionBuilderTest,RepairMajorGroupInnerSafetyActionBuilderTest,RepairDryRunSimulatorTest,RepairReportBuilderTest,PlanningStateServiceTest,PlanningStateSuggestionMappingTest test
+```
+
+结果：通过，核心回归为 `Tests run: 236, Failures: 0, Errors: 0, Skipped: 3`。新增的旁路保护只覆盖旧 `applyCompensation()` 满方案时不执行 `fill_probability_gap` add-only，不改变 `FixProposal` 生成、replacement pair 预览、apply 白名单、保存、ordered regenerate 或复审编排。
+
+前端类型检查：
+
+```bash
+cd zhiyuan-web
+./node_modules/.bin/tsc --noEmit --pretty false
+```
+
+结果：未通过，错误集中在既有 `src/pageComponents/session/ModalForm/index.tsx`、`src/pages/userCenter/index.tsx`、`src/service/index.ts`、`src/service/request/index.ts`，本轮修改的 `WorkspacePanel/index.tsx`、`volunteer.ts` 和 `sessionDetail.ts` 未出现在错误列表中。
+
+剩余边界：
+
+- `rebalance_tier_ratio` / `fill_probability_gap` 满容量 replacement pair 目前只作为 `preview_only` 披露，尚未进入自动 apply。底层 `replace_volunteers` 原子内存替换已具备，但还未接入高副作用 apply 入口。
+- `RepairCandidateSelector` 当前已覆盖事后结构修复的 remove source 选择、补偿预览 add 候选选择和当前方案目标数判断；`RepairReplacementActionBuilder` 已覆盖满容量结构 replacement pair 组装和结构建议入口保护；`RepairDryRunSimulator` 已覆盖 dry-run 计数和快照模拟；`RepairReportBuilder` 已覆盖应用后报告构建；`WorkingPlanMutationSupport` 已覆盖 legacy volunteer identity、unit 同步和 summary 重算；`RepairApplyMutationBuilder` 已覆盖当前可 apply 策略的工作台方案内存 mutation；`RepairProposalApplyPolicy` 已覆盖 apply 入口纯校验和策略白名单；`ReviewWorkflowStatusResolver` 已覆盖 review workflow 聚合状态映射；`CandidatePoolStatusResolver` 已覆盖候选池状态和专业/专业组数量口径；`CandidatePoolQualityStatusBuilder` 已覆盖候选池质量提示展示；`PlanningWorkflowStatusBuilder` 已覆盖工作台展示状态。自动 apply 的保存、ordered regenerate、rerun review、response report 编排仍在 `PlanningStateService`，后续再逐步迁出，避免同时改变高副作用执行语义。
+- dry run 已输出修复前后总量、冲稳保分布、ID 快照和质量取舍快照，并补充硬要求/软偏好、新增风险、质量下降 warning；数量、条目风险、专业组组内安全垫、录取率倒挂排序已具备目标改善阻断。冲稳保重平衡、梯度断层已具备 preview 质量校验和无改善 warning，但 `rebalance_tier_ratio` / `fill_probability_gap` 仍保持 `preview_only`，暂不作为自动 apply 白名单策略。
+
+当前最终边界：
+
+- `pin/unpin` 已从用户可触发能力中退场。前端、Agent、后端 controller 不再暴露 pin/unpin 操作；`pinned/pinnedPosition` 仅作为历史 JSON/DTO 兼容字段保留，不参与移动、排序、dry-run、候选替换来源选择、工作台展示或 Agent 回复。
+- 审查修复链路以 `review -> fix-proposals -> apply -> repair-report` 为主路径。`applyFixProposal()` 仍是唯一正式高副作用修复入口，必须通过 `RepairProposalApplyPolicy` 的版本、stale、proposal status 和 strategy 白名单校验。
+- `applyFixProposal()` 的真实执行分支只显式支持 `fill_missing_count`、`sort_by_probability`、`remove_risk_items`、`replace_risk_items`、`adjust_major_group_inner_safety`；没有默认“按补偿动作落盘”的兜底分支。后续如果扩展白名单，必须同步补执行分支和回归测试，否则服务端仍会拒绝应用。
+- `rebalance_tier_ratio` / `fill_probability_gap` 当前是结构性修复 strategy，不是可直接落盘 action。即使已经生成 `replace_volunteers` replacement pair，也只用于 `preview_only` 披露和 dry-run 说明，不进入自动 apply。
+- `replace_volunteers` 已具备底层原子内存替换能力，并作为 `replace_risk_items` 的执行动作接入白名单。当前底层已锁定完整配对保护：remove/add 必须数量一致且非空，replacement pair 不能缺 from/to，待移除项必须在当前方案中，待补入候选必须存在且未被禁用/重复；任何校验失败都会 `blocked` 且不改原方案、不写 operation log。
+- `replace_volunteers` 的 dry-run 与真实 apply 已按场景对齐字段语义：条目风险 `scopeKind=item` 只把 volunteer pair 当成执行语义，unit 字段只用于披露；结构替换仍把显式 unit pair 纳入计数、before/after 快照和 warning 候选解析。这样避免专业组条目风险在预览中被误当成整组替换。
+- 旧 `applyCompensation()` 只保留低风险补数量/有剩余容量补候选的兼容语义。满方案结构调整不能通过旧补偿入口按 add-only 绕过 `FixProposal` 的 `preview_only` 边界。
+
+当前最终边界回归：
+
+```bash
+cd zhiyuan-server
+mvn -q -Dtest=PlanningStateDTOCompatibilityTest,ReviewRuleRegistryTest,ReviewInvalidationPolicyTest,ReviewWorkflowStatusResolverTest,CandidatePoolStatusResolverTest,CandidatePoolQualityStatusBuilderTest,PlanningWorkflowStatusBuilderTest,OrderedPlanPositioningSupportTest,RepairApplyMutationBuilderTest,RepairProposalApplyPolicyTest,RepairProposalStateBuilderTest,RepairReplacementActionBuilderTest,WorkingPlanMutationSupportTest,RepairCandidateSelectorTest,RepairRiskActionBuilderTest,RepairMajorGroupInnerSafetyActionBuilderTest,RepairDryRunSimulatorTest,RepairReportBuilderTest,PlanningStateServiceTest,PlanningStateSuggestionMappingTest test
+
+cd ../zhiyuan-agent
+.venv/bin/python -m pytest tests/unit/test_planning_workflow_tool.py -q
+```
+
+结果：通过。server 当前核心回归为 `Tests run: 245, Failures: 0, Errors: 0, Skipped: 3`；agent `planning_workflow_tool` 为 `32 passed`。覆盖 `pin/unpin` 用户入口退场、历史 `pinned/pinnedPosition` 不再作为约束、审查/fix proposal/apply/report 主链路、apply 白名单、满容量结构替换只预览、旧补偿入口容量保护、`replace_volunteers` 底层原子保护、专业/专业组双模式 dry-run 和 report 展示。
+
+后续退场方向：
+
+- `POST /session/compensation/apply` 仍是兼容入口，但不再作为新的高副作用修复路径扩展。当前已在服务层 `applyCompensation()`、controller API 描述和 Agent internal client 注释中标记为低风险补偿兼容入口；后续前端和 Agent 稳定切到 `fix-proposals/apply` 后，再删除外部 controller 暴露，只保留内部 helper 或直接合并进 `FixProposal` 主路径。
+- `PlanningStateService` 仍承接保存、ordered regenerate、rerun review 和 response report 编排。短期不再继续拆高副作用 service，避免在结构修复自动 apply 尚未开放前扩大行为面；当前 `replace_risk_items` 已在完整配对、dry-run 复验通过时接入 apply 白名单，结构替换仍保持预览。后续重点转为前端/Agent 场景验证，以及在产品明确允许后再设计 `rebalance_tier_ratio`、`fill_probability_gap` 等结构替换进入白名单的完整复验标准。
+
+兼容补偿入口退场标记回归：
+
+```bash
+cd zhiyuan-server
+mvn -q -Dtest=RepairProposalApplyPolicyTest,PlanningStateServiceTest#shouldNotApplyProbabilityGapAsAddOnlyWhenPlanIsFull,PlanningStateServiceTest#shouldNotApplyProtectRatioRebalanceAsAddOnlyWhenPlanIsFull test
+
+cd ../zhiyuan-agent
+.venv/bin/python -m pytest tests/regression/test_execution_apply.py tests/unit/test_plan_execution_tool.py::test_execute_plan_action_blocks_compensation_apply_when_plan_is_already_full tests/unit/test_plan_execution_tool.py::test_execute_plan_action_allows_major_group_compensation_apply_when_unit_gap_matches tests/unit/test_planning_workflow_tool.py -q
+
+cd ..
+git diff --check
+```
+
+结果：通过。server 目标回归为 `RepairProposalApplyPolicyTest: 11 passed`、`PlanningStateServiceTest: 2 passed`；agent 目标回归为 `70 passed`；`git diff --check` 无空白错误。该变更只标记旧补偿入口的兼容定位，不改变补偿 apply 执行、FixProposal apply 白名单、结构替换 preview-only 边界或 Agent 高副作用确认协议。
+
+`replace_volunteers` 底层原子保护回归：
+
+```bash
+cd zhiyuan-server
+mvn -q -Dtest=RepairApplyMutationBuilderTest,RepairProposalApplyPolicyTest test
+```
+
+结果：通过，`RepairApplyMutationBuilderTest: 10 passed`、`RepairProposalApplyPolicyTest: 11 passed`。新增覆盖缺少待移除项、补入候选不存在、remove/add 数量不一致、replacement pair 缺 from/to 时均 `blocked`，且原工作台方案和 operation log 不变化；同时继续确认 `RepairProposalApplyPolicy` 未把结构替换策略加入自动 apply 白名单。
+
+`replace_volunteers` 自动应用前置保护补充回归：
+
+```bash
+cd zhiyuan-server
+mvn -q -Dtest=RepairApplyMutationBuilderTest,RepairDryRunSimulatorTest,RepairProposalApplyPolicyTest test
+```
+
+结果：通过，`Tests run: 45, Failures: 0, Errors: 0, Skipped: 0`。新增覆盖只携带 `replacementPairs` 的专业模式替换、只携带 `replacementPairs` 的专业组模式替换，以及补入项仍留在当前方案中时必须 `blocked` 且不改原方案、不写 operation log。该回归只补自动应用前置安全网，不把 `replace_volunteers` 加入 `RepairProposalApplyPolicy` 白名单。
+
+`replace_volunteers` dry-run / apply 字段语义对齐回归：
+
+```bash
+cd zhiyuan-server
+mvn -q -Dtest=RepairDryRunSimulatorTest,RepairApplyMutationBuilderTest,RepairProposalApplyPolicyTest test
+```
+
+结果：通过，`Tests run: 45, Failures: 0, Errors: 0, Skipped: 0`。新增覆盖专业模式和专业组模式下只携带 `replacementPairs`、不携带显式 remove/add 列表的 `replace_volunteers` action，确认 dry-run 的增删数量、before/after volunteer ids、before/after unit ids 和冲稳保分布都能正确变化；同时复跑真实 apply mutation 和 apply policy，确认该语义对齐不改变自动 apply 白名单。
+
+`replace_risk_items` 服务级自动应用边界回归：
+
+```bash
+cd zhiyuan-server
+mvn -q -Dtest=PlanningStateServiceTest#shouldGenerateReadyReplaceRiskProposalForMultipleRiskItems,PlanningStateServiceTest#shouldKeepPartialReplaceRiskProposalPreviewOnlyWithWarning,PlanningStateServiceTest#shouldApplyReplaceRiskItemsFixProposalWithVersionGuard test
+```
+
+结果：通过。服务级断言覆盖完整多条替换、部分替换预览和真实 apply 三种情况：完整 `replace_risk_items` 生成 `replace_volunteers` pair 后可通过 `applyFixProposal()` 落盘；部分替换仍保持 `preview_only`，不能应用。该回归锁定“完整覆盖 + version guard + dry-run 复验”才是可执行修复，避免后续误把部分替换或结构替换绕过用户权衡、版本保护和复验机制。
+
+`applyFixProposal()` 执行侧无默认兜底回归：
+
+```bash
+cd zhiyuan-server
+mvn -q -Dtest=RepairProposalApplyPolicyTest,PlanningStateServiceTest#shouldApplyReplaceRiskItemsFixProposalWithVersionGuard,PlanningStateServiceTest#shouldApplyFillMissingCountFixProposalWithVersionGuard,PlanningStateServiceTest#shouldApplySortByProbabilityFixProposalAndRerunReview,PlanningStateServiceTest#shouldApplyRemoveRiskItemsFixProposalAndFillMissingCount,PlanningStateServiceTest#shouldApplyMajorGroupRemoveRiskItemsWithoutFillingWhenUnitCountIsKept,PlanningStateServiceTest#shouldApplyMajorGroupRemoveRiskItemsAndFillOnlyWhenUnitCountDrops,PlanningStateServiceTest#shouldApplyMajorGroupInnerSafetyFixProposalWithinSameUnit test
+```
+
+结果：通过。覆盖当前可应用策略仍可正常保存、排序、复审或报告；同时确认结构替换等未支持 strategy 不会落入旧补偿兜底。
+
+Agent internal client 兼容入口清理：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m py_compile app/util/internal_client.py
+rg -o "^async def [A-Za-z0-9_]+" app/util/internal_client.py | sed 's/^async def //' | sort | uniq -d
+.venv/bin/python -m pytest tests/unit/test_planning_workflow_tool.py::test_apply_planning_fix_proposal_requires_confirmation tests/unit/test_planning_workflow_tool.py::test_apply_planning_fix_proposal_formats_repair_report tests/unit/test_planning_workflow_tool.py::test_apply_planning_compensation_requires_confirmation tests/unit/test_planning_workflow_tool.py::test_apply_planning_compensation_uses_session_and_formats_state tests/unit/test_planning_workflow_tool.py::test_generate_planning_ordered_plan_requires_confirmation tests/unit/test_planning_workflow_tool.py::test_generate_planning_ordered_plan_formats_ordered_state tests/unit/test_planning_plan_scenarios_sync.py::test_planning_scenario_apply_compensation_requires_confirmation_in_workflow tests/unit/test_planning_plan_scenarios_sync.py::test_planning_scenario_apply_compensation_prefers_unit_total_and_mentions_plan tests/unit/test_planning_plan_scenarios_sync.py::test_planning_scenario_generate_ordered_plan_requires_confirmation_in_workflow -q
+```
+
+结果：通过。`internal_client.py` 中被后续同名多租户函数覆盖的旧单租户 `run_planning_review`、`apply_planning_compensation`、`generate_planning_ordered_plan` 已清理；保留的多租户函数补充了审查、排序和低风险补偿兼容说明。重复 async 函数扫描无输出，`py_compile` 通过，Agent 目标回归 `9 passed`。该清理不改变运行时行为，因为旧定义此前已被 Python 后续同名定义覆盖；主要目的是降低新旧入口混杂导致的维护误判。
+
+结构替换自动应用开放前置条件：
+
+- 只允许完整 replacement：所有风险项或结构缺口必须有明确 from/to 配对，partial replacement 继续保持 `preview_only` 或 `blocked`。
+- apply 前必须重新生成 proposal，并用 `sourceVersionGuard`、proposal `sourceVersionGuard`、review stale 状态共同校验，避免用户基于旧方案确认。
+- mutation 必须保持容量不变：专业模式保持志愿数不变，专业组模式保持 unit 数不变；组内专业替换则保持目标 unit 不丢失。
+- dry-run 后必须证明目标改善：条目风险命中减少、冲稳保配比更接近目标、梯度断层缩小或概率倒挂减少；无改善时不得 apply。
+- 硬要求和负偏好不能被新候选破坏；如果替换会引入高收费、限报、中外合作、特殊类型招生或明显质量下降，需要继续作为 warning 披露，必要时保持只预览。
+- apply 后必须保存、可选 regenerate ordered plan、可选 rerun review，并在 `RepairReportDTO` 中展示修复前后变化、未覆盖风险和 warning。
+
+Agent Plan 编排层去字符串兜底：
+
+背景：
+
+- 3.0.3 到 3.1.0 的路由原则已经明确：用户自然语言由模型理解并产出结构化动作，后续编排层只消费结构化字段，不再靠零散中文关键词补丁继续猜路由。
+- 本轮检查发现 `plan_next_action` 中仍保留几类历史兼容逻辑：
+  - 从 `user_goal` 里的“高收费/中外合作/太贵/去掉/替换”等片段恢复 `review_issue_code` 和动作族。
+  - 从 `user_goal` 或 `preview_summary` 里的“推荐系数/院校层次/录取率”推断 `sort_field`。
+  - 从 `user_goal` 的“往前/前挪”等片段判断是不是范围移动，进而纠正误传的 `sort_ordered_plan`。
+- 这些逻辑能兜住少量 case，但维护成本高，且容易在口语化表达变化时误触发；更重要的是，它会让“模型结构化输出”和“编排层字符串补丁”两套判断长期并存。
+
+本轮已完成：
+
+- 删除 `plan_next_action` 中基于 `user_goal` 的审查问题恢复逻辑：
+  - 缺少 `review_issue_code` 时，不再从中文片段猜 `high_tuition`、`cooperative_program`、`admission_limit` 或 `special_enrollment`。
+  - 用户确实要按审查问题整批处理时，上游必须显式传 `review_issue_code` 和必要的 `review_issue_scope_mode`；否则会停留在只读审查、补偿预览或缺参分析，不会误生成整批删除/替换预览。
+- 删除 `plan_next_action` 中基于原话推断排序字段的逻辑：
+  - `sort_ordered_plan` 必须显式传 `sort_field`。
+  - 缺 `sort_field` 时返回缺参分析，不生成排序预览。
+- 删除执行层从 `user_goal` / `preview_summary` 推断排序字段的兜底：
+  - `execute_plan_action` 只读取 `atomic.filters.sort_field/sortField/field`。
+  - 如果历史 payload 没有排序字段，执行层按安全默认 `admissionRatio` 处理，不再从自然语言里猜。
+- 新增结构化范围保护：
+  - 如果 `sort_ordered_plan` 同时携带 `province_keyword`、`school_keyword`、`major_keyword`、`school_tags`、`major_tags` 等局部筛选范围，说明它不是全方案排序请求。
+  - 编排层会降级为 `query_ordered`，先查看当前方案命中范围，避免把“把北京/某专业方向往前挪”误执行成全方案排序。
+- 保留实体解析能力，但限定为“对象解析”而不是“路由判断”：
+  - 加入、移动、删除时，`volunteer_ids` 可以继续携带用户原始学校+专业引用，执行层通过 `resolve_school_major_ref` 去唯一定位真实候选或方案项。
+  - 这类解析只负责定位对象；不负责决定动作族、审查问题 code、排序字段或是否应用高副作用动作。
+- 补齐 `add_units` 的结构化缺参保护：
+  - `add_units` 必须显式携带 `volunteer_ids`，或携带 `province_keyword` / `school_keyword` / `major_keyword` / 标签等结构化筛选范围。
+  - 如果模型只给了 `user_goal`，没有把候选目标或筛选范围结构化出来，编排层返回 `selection_scope` 缺参，执行层也会阻断，不再从整句自然语言里反推“学校+专业”引用。
+  - 已经传入 `volunteer_ids` 的自然语言引用仍可被解析成真实候选 ID；这是对象定位，不是动作参数补全。
+
+当前行为边界：
+
+- 结构化字段来源：
+  - 主来源是模型按 tool schema 输出的字段，例如 `action_family`、`volunteer_ids`、`source_position`、`target_position`、`review_issue_code`、`sort_field`、`filters.major_keyword` 等。
+  - 只读查询类工具可以使用上游结构化抽取工具输出的 filters；但落到方案增删改排序时，执行层仍按结构化字段校验。
+  - 代码层只做字段归一、对象唯一性解析和安全校验，不再从整句 `user_goal` 里补动作参数。
+- 路由/动作族、审查问题、排序字段、位置语义必须来自结构化字段。
+- 如果模型没有把用户意图结构化完整，系统应返回缺参、只读审查或查询范围，不再通过字符串兜底自动升级为方案修改。
+- ChatAgent 主工具列表仍未开放 `apply_planning_fix_proposal`，不会让模型直接调用 `fix-proposals/apply`；前端工作台仍是当前轻量确认入口。
+- `apply_planning_fix_proposal` 底层工具继续保留 `user_confirmed` 防护，并由后端 `RepairProposalApplyPolicy` 进行版本、stale、status 和 strategy 白名单校验。
+
+本轮验证：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest tests/unit/test_plan_orchestration_tool.py tests/unit/test_plan_execution_tool.py::test_execute_plan_action_sort_preview_includes_distribution_and_examples tests/unit/test_plan_execution_tool.py::test_execute_plan_action_sort_preview_defaults_to_admission_ratio_when_filters_missing tests/unit/test_plan_execution_tool.py::test_execute_plan_action_sort_preview_uses_candidate_facts_for_flat_items -q
+.venv/bin/python -m py_compile app/tools/plan_orchestration_tool.py app/tools/plan_execution_tool.py
+.venv/bin/python -m pytest tests/regression/test_keyword_matchers.py tests/integration/test_resolver_vs_legacy.py tests/unit/test_action_resolver.py -q
+.venv/bin/python -m pytest tests/unit/test_plan_execution_tool.py tests/regression/test_execution_preview.py tests/regression/test_execution_apply.py -q
+```
+
+结果：通过。目标编排/排序回归 `47 passed`；结构化 resolver 回归 `177 passed`；执行层 preview/apply 回归 `252 passed`。该变更收掉的是 Plan 编排层的字符串路由兜底，不改变候选实体解析、已确认 pending 执行、FixProposal apply 白名单、旧补偿容量保护或前端 `ready/preview_only` 展示边界。
+
+`add_units` 结构化缺参保护补充回归：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest tests/unit/test_plan_orchestration_tool.py tests/unit/test_plan_execution_tool.py tests/regression/test_execution_preview.py -q
+.venv/bin/python -m pytest tests/unit/test_planning_router_tool.py tests/unit/test_planning_plan_scenarios_sync.py -q
+```
+
+结果：通过，主链路 `260 passed`，兼容单步入口 `48 passed`。新增边界确认：模型漏传 `volunteer_ids` 且没有结构化筛选范围时，`plan_next_action`、`execute_plan_action` 和历史兼容 `handle_planning_request(candidate_select)` 都会以缺少 `selection_scope` / 缺少候选范围阻断；显式传入 `volunteer_ids` 的候选引用仍可解析为真实候选 ID 并生成确认预览。
+
+初始推荐取舍说明补充回归：
+
+```bash
+cd zhiyuan-server
+mvn -q -Dtest=PlanningStateServiceTest#shouldRepairInitialRecommendationProbabilityGap+shouldFullyRepairInitialRecommendationProbabilityGapWhenCandidateWindowIsEnough+shouldRepairInitialPlanMajorGroupIssuesBeforePlanAdjustmentAnalysis test
+mvn -q -Dtest=PlanningStateDTOCompatibilityTest,ReviewRuleRegistryTest,ReviewInvalidationPolicyTest,ReviewWorkflowStatusResolverTest,CandidatePoolStatusResolverTest,CandidatePoolQualityStatusBuilderTest,PlanningWorkflowStatusBuilderTest,OrderedPlanPositioningSupportTest,RepairApplyMutationBuilderTest,RepairProposalApplyPolicyTest,RepairProposalStateBuilderTest,RepairReplacementActionBuilderTest,WorkingPlanMutationSupportTest,RepairCandidateSelectorTest,RepairRiskActionBuilderTest,RepairMajorGroupInnerSafetyActionBuilderTest,RepairDryRunSimulatorTest,RepairReportBuilderTest,PlanningStateServiceTest,PlanningStateSuggestionMappingTest test
+
+cd ..
+git diff --check
+```
+
+结果：通过。新增断言覆盖 `InitialPlanStrategyReportDTO.objectiveWeights`、`actions`、`tradeoffs` 和 `AppliedRepair.tradeoffSummary`，确认生成阶段会披露相对目标优先级、只读 `replace_volunteers` 动作、自动替换收益、取舍和 from/to 信息；同时回归审查、修复 proposal、候选不足、stale、working plan 兼容和 initial recommendation 主链路。这些字段只用于解释和前端轻量展示，不改变候选选择、排序、dry-run、FixProposal apply 白名单或保存编排。
+
+综合回归补充：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest tests/unit/test_instructions.py tests/unit/test_planning_workflow_tool.py tests/unit/test_plan_execution_tool.py tests/unit/test_plan_orchestration_tool.py tests/unit/test_planning_router_tool.py tests/unit/test_planning_plan_scenarios_sync.py tests/unit/test_action_resolver.py tests/regression/test_keyword_matchers.py tests/regression/test_execution_apply.py tests/regression/test_execution_preview.py tests/integration/test_resolver_vs_legacy.py -q
+
+cd ../zhiyuan-server
+mvn -q -Dtest=PlanningStateDTOCompatibilityTest,ReviewRuleRegistryTest,ReviewInvalidationPolicyTest,ReviewWorkflowStatusResolverTest,CandidatePoolStatusResolverTest,CandidatePoolQualityStatusBuilderTest,PlanningWorkflowStatusBuilderTest,OrderedPlanPositioningSupportTest,RepairApplyMutationBuilderTest,RepairProposalApplyPolicyTest,RepairProposalStateBuilderTest,RepairReplacementActionBuilderTest,WorkingPlanMutationSupportTest,RepairCandidateSelectorTest,RepairRiskActionBuilderTest,RepairMajorGroupInnerSafetyActionBuilderTest,RepairDryRunSimulatorTest,RepairReportBuilderTest,PlanningStateServiceTest,PlanningStateSuggestionMappingTest test
+
+cd ../zhiyuan-web
+./node_modules/.bin/tsc --noEmit --pretty false
+
+cd ..
+git diff --check
+```
+
+结果：
+
+- Agent planning/路由/执行相关回归通过：`590 passed`。
+- Server 方案审查/修复核心回归通过：`Tests run: 247, Failures: 0, Errors: 0, Skipped: 3`。
+- `git diff --check` 通过。
+- 前端全量 typecheck 仍未通过，但错误集中在既有 `src/pageComponents/session/ModalForm/index.tsx`、`src/pages/userCenter/index.tsx`、`src/service/index.ts`、`src/service/request/index.ts`；本轮涉及的 `WorkspacePanel/index.tsx`、`volunteer.ts`、`sessionDetail.ts` 未出现在错误列表中。
+
+`replace_risk_items` apply 开放补充回归：
+
+```bash
+cd zhiyuan-server
+mvn -q -Dtest=RepairProposalApplyPolicyTest,RepairDryRunSimulatorTest,RepairRiskActionBuilderTest,RepairApplyMutationBuilderTest,PlanningStateServiceTest#shouldApplyReplaceRiskItemsFixProposalWithVersionGuard+shouldGenerateItemRiskFixProposalFromExistingReview+shouldGenerateReadyReplaceRiskProposalForMultipleRiskItems+shouldKeepPartialReplaceRiskProposalPreviewOnlyWithWarning+shouldKeepReplaceRiskProposalBlockedWhenNoReplacementExists test
+mvn -q -Dtest=PlanningStateDTOCompatibilityTest,ReviewRuleRegistryTest,ReviewInvalidationPolicyTest,ReviewWorkflowStatusResolverTest,CandidatePoolStatusResolverTest,CandidatePoolQualityStatusBuilderTest,PlanningWorkflowStatusBuilderTest,OrderedPlanPositioningSupportTest,RepairApplyMutationBuilderTest,RepairProposalApplyPolicyTest,RepairProposalStateBuilderTest,RepairReplacementActionBuilderTest,WorkingPlanMutationSupportTest,RepairCandidateSelectorTest,RepairRiskActionBuilderTest,RepairMajorGroupInnerSafetyActionBuilderTest,RepairDryRunSimulatorTest,RepairReportBuilderTest,PlanningStateServiceTest,PlanningStateSuggestionMappingTest test
+
+cd ..
+git diff --check
+```
+
+结果：通过。当前 `replace_risk_items` 已从只读预览推进到受控 apply：完整 replacement pair、sourceVersion guard、review 未 stale、proposal ready、dry-run 目标复验全部通过后，才能通过 `fix-proposals/apply` 原子执行 remove + add。部分替换继续保持 `preview_only`，无替换候选保持 `blocked`；专业组模式下如果条目风险的单专业替换会改变专业组数量，dry-run 会阻断，等待后续整组替换 selector 设计。结构性 `rebalance_tier_ratio` / `fill_probability_gap` 仍保持只读预览。
+
+结构性替换预览说明补充回归：
+
+```bash
+cd zhiyuan-server
+mvn -q -Dtest=RepairReplacementActionBuilderTest,RepairCandidateSelectorTest,RepairDryRunSimulatorTest test
+mvn -q -Dtest=RepairReplacementActionBuilderTest,RepairCandidateSelectorTest,RepairRiskActionBuilderTest,RepairProposalStateBuilderTest,RepairDryRunSimulatorTest,PlanningStateServiceTest test
+```
+
+结果：通过。`RepairReplacementActionBuilder` 现在会在结构性 replacement action 的 `detail` 中披露“只做结构调整预览、不会自动应用”，并列出最多 3 条换出/换入配对及录取率、推荐系数、院校排名变化。该改动不改变候选选择、不改变 `RepairProposalApplyPolicy` 白名单，也不开放 `rebalance_tier_ratio` / `fill_probability_gap` 自动应用。
+
+结构性候选排序和配对策略补充回归：
+
+```bash
+cd zhiyuan-server
+mvn -q -Dtest=RepairCandidateSelectorTest,RepairReplacementActionBuilderTest test
+mvn -q -Dtest=RepairReplacementActionBuilderTest,RepairCandidateSelectorTest,RepairRiskActionBuilderTest,RepairProposalStateBuilderTest,RepairDryRunSimulatorTest,PlanningStateServiceTest test
+```
+
+结果：通过。新增覆盖断层候选同等接近中点时按推荐系数/意向/院校排名择优、结构性 replacement pair 先匹配专业相似和院校层次代价更低的候选、专业组结构修复 action 只有 `volunteerIds` 时也能反解 `unitId` 生成 unit 级 pair。该变更只影响 `preview_only` 结构建议的候选顺序和配对解释，不改变 `FixProposal` 状态机、自动 apply 白名单、旧补偿入口容量保护或 blocked proposal 展示边界。
+
+初始方案结构修复候选排序补充回归：
+
+```bash
+cd zhiyuan-server
+mvn -q -Dtest=PlanningStateServiceTest#shouldPreferLowerTradeoffCandidateWhenRepairingInitialRecommendationProbabilityGap+shouldRepairInitialRecommendationProbabilityGap+shouldFullyRepairInitialRecommendationProbabilityGapWhenCandidateWindowIsEnough+shouldRepairInitialRecommendationProbabilityInversion+shouldKeepTierTargetsStableAfterInitialRecommendationRepairs test
+mvn -q -Dtest=RepairReplacementActionBuilderTest,RepairCandidateSelectorTest,RepairRiskActionBuilderTest,RepairProposalStateBuilderTest,RepairDryRunSimulatorTest,PlanningStateServiceTest test
+mvn -q -Dtest=PlanningStateDTOCompatibilityTest,ReviewRuleRegistryTest,ReviewInvalidationPolicyTest,ReviewWorkflowStatusResolverTest,CandidatePoolStatusResolverTest,CandidatePoolQualityStatusBuilderTest,PlanningWorkflowStatusBuilderTest,OrderedPlanPositioningSupportTest,RepairApplyMutationBuilderTest,RepairProposalApplyPolicyTest,RepairProposalStateBuilderTest,RepairReplacementActionBuilderTest,WorkingPlanMutationSupportTest,RepairCandidateSelectorTest,RepairRiskActionBuilderTest,RepairMajorGroupInnerSafetyActionBuilderTest,RepairDryRunSimulatorTest,RepairReportBuilderTest,PlanningStateServiceTest,PlanningStateSuggestionMappingTest test
+```
+
+结果：通过。初始推荐阶段的 `probability_gap` / `probability_inversion` 自动替换不再只看是否能降低断层或倒挂；在结构指标改善相同或接近时，会继续比较专业相似度、院校排名下降代价、推荐系数损失、意向分损失，再看补入候选自身推荐系数、录取率、意向分和院校排名。新增回归确认：当两个候选都能修同一个录取率断层时，系统优先选择专业更相近且院校层次代价更低的候选。
+
+实现上，`RepairReplacementTradeoffSupport` 统一承接“专业相似度、院校排名下降、推荐/意向分损失、候选质量”的比较口径；`RepairCandidateSelector` 的结构修复预览和 `PlanningStateService` 的初始推荐自动修复都复用该口径，避免两条链路后续漂移。该改动只影响候选取舍顺序，不改变候选池来源、不改变工作台审查修复 apply 白名单，也不开放结构性 `rebalance_tier_ratio` / `fill_probability_gap` 自动落盘。
+
+本地会话 132 复验：
+
+```bash
+curl --noproxy '*' -s -X POST \
+  'http://127.0.0.1:8080/gaotu-assistant-bot/inner/planning/1/session/fix-proposals/generate?chatSessionId=132' \
+  -H 'Content-Type: application/json' -d '{}'
+```
+
+结果：`修复高收费`、`修复中外合作` 均为 `blocked`，`actionCount=0`、`pairCount=0`，阻断原因仍为“替换预览会改变专业组数量，暂不允许确认应用”；`修复非意向托底` 也为 `blocked`，原因是缺少可补入的组内安全垫专业。说明不可应用的专业组条目替换尝试没有重新暴露给前端。

@@ -44,7 +44,7 @@ from pydantic import BaseModel, Field
 
 Verb = Literal[
     # === Plan 操作 ===
-    "query",          # 查询方案/草稿/排序/候选
+    "query",          # 查询当前方案/排序/候选；query_draft 仅为历史 action 名
     "analyze",        # 分析调整建议
     "review",         # 审查方案
     "generate",       # 生成方案

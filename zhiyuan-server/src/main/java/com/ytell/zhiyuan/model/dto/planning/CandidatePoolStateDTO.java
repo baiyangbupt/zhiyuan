@@ -23,7 +23,20 @@ public class CandidatePoolStateDTO {
     private String sourceProvinceName;
     private String volunteerModel;
     private List<CandidateItemDTO> items = Lists.newArrayList();
+    private SourceSummary sourceSummary = new SourceSummary();
     private Summary summary = new Summary();
+
+    @Data
+    public static class SourceSummary {
+        private Integer externalEntryTotal = 0;
+        private Integer externalUnitTotal = 0;
+        private Map<String, Integer> externalEntryTierCounts = new HashMap<String, Integer>();
+        private Map<String, Integer> externalUnitTierCounts = new HashMap<String, Integer>();
+        private Integer normalizedEntryTotal = 0;
+        private Integer normalizedUnitTotal = 0;
+        private Map<String, Integer> normalizedEntryTierCounts = new HashMap<String, Integer>();
+        private Map<String, Integer> normalizedUnitTierCounts = new HashMap<String, Integer>();
+    }
 
     @Data
     public static class Summary {

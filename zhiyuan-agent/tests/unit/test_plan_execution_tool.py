@@ -489,7 +489,7 @@ def test_execute_plan_action_sort_preview_includes_distribution_and_examples():
     mock_sort.assert_not_awaited()
 
 
-def test_execute_plan_action_sort_preview_infers_sort_field_from_user_goal_when_filters_missing():
+def test_execute_plan_action_sort_preview_defaults_to_admission_ratio_when_filters_missing():
     payload = {
         "stage": "preview",
         "action_family": "sort_ordered_plan",
@@ -525,9 +525,9 @@ def test_execute_plan_action_sort_preview_infers_sort_field_from_user_goal_when_
         result = asyncio.run(execute_plan_action(_ctx(), json.dumps(payload, ensure_ascii=False)))
 
     data = json.loads(result)
-    assert "推荐系数" in data["summary"]
-    assert "录取率重新排序" not in data["summary"]
-    assert data["facts"]["sort_field"] == "finalScore"
+    assert "录取率" in data["summary"]
+    assert "推荐系数重新排序" not in data["summary"]
+    assert data["facts"]["sort_field"] == "admissionRatio"
     assert data["facts"]["top_examples"][0].startswith("B大学-审计学")
     mock_sort.assert_not_awaited()
 
@@ -829,7 +829,7 @@ def test_execute_plan_action_remove_preview_expands_broad_high_tuition_issue_sco
     assert data["applied"] is False
     assert data["result_kind"] == "preview_only"
     assert "共 2 个专业组，涉及 6 条志愿" in data["summary"]
-    assert "整批问题项处理" in data["summary"]
+    assert "默认优先做替换预览" in data["summary"]
     assert "review_issue_batch_scope" in data["reply_focus"]
 
 
@@ -1609,7 +1609,7 @@ def test_execute_plan_action_replace_apply_blocks_manual_batch_replace_when_cand
         "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
         new=AsyncMock(return_value={"code": 0, "data": {"items": ordered_items}}),
     ), patch(
-        "app.tools.plan_execution_tool._get_planning_draft_request",
+        "app.tools.plan_execution_tool._get_working_plan_request",
         new=AsyncMock(return_value={"code": 0, "data": {"items": []}}),
     ), patch(
         "app.handlers.generate_handler._generate_planning_candidate_pool_request",
@@ -2109,7 +2109,7 @@ def test_execute_plan_action_add_units_preview_resolves_candidate_ref_without_ap
     mock_select.assert_not_awaited()
 
 
-def test_execute_plan_action_add_units_preview_infers_ref_from_user_goal_when_model_omits_refs():
+def test_execute_plan_action_add_units_preview_blocks_when_model_omits_refs_and_filters():
     payload = {
         "stage": "preview",
         "action_family": "add_units",
@@ -2121,30 +2121,23 @@ def test_execute_plan_action_add_units_preview_infers_ref_from_user_goal_when_mo
         "intent_relation": "support",
         "atomic_actions": [],
     }
-    candidate_items = [
-        {
-            "volunteerId": "cand-hnny-arch",
-            "schoolName": "河南农业大学",
-            "majorName": "建筑类(城乡规划、风景园林)",
-        }
-    ]
 
     with patch(
         "app.tools.plan_execution_tool._get_planning_state_request",
         new=AsyncMock(return_value={"code": 0, "data": {"candidatePoolState": {"items": []}}}),
     ), patch(
         "app.tools.plan_execution_tool._query_planning_candidate_pool_request",
-        new=AsyncMock(return_value={"code": 0, "data": {"items": candidate_items}}),
-    ):
+        new=AsyncMock(return_value={"code": 0, "data": {"items": []}}),
+    ) as mock_query:
         result = asyncio.run(execute_plan_action(_ctx_with_pending("add_units"), json.dumps(payload, ensure_ascii=False)))
 
     data = json.loads(result)
     assert data["applied"] is False
-    assert data["result_kind"] == "preview_only"
-    assert "河南农业大学 建筑类" in data["summary"]
-    assert "确认后会加入当前方案" in data["summary"]
-    assert data["facts"]["resolved_candidate_ids"] == ["cand-hnny-arch"]
-    assert data["facts"]["resolved_apply_payload"]["atomic_actions"][0]["volunteer_ids"] == ["cand-hnny-arch"]
+    assert data["result_kind"] == "error"
+    assert "missing_inputs" in data["reply_focus"]
+    assert "候选志愿" in data["summary"]
+    assert "学校、专业、地域" in data["summary"]
+    mock_query.assert_not_awaited()
 
 
 def test_execute_plan_action_add_units_resolves_candidate_school_major_alias_ref():
@@ -2459,7 +2452,7 @@ def test_select_candidates_by_filters_uses_major_tags_as_candidate_major_keyword
         "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
         new=AsyncMock(return_value={"code": 0, "data": {"items": []}}),
     ), patch(
-        "app.tools.plan_execution_tool._get_planning_draft_request",
+        "app.tools.plan_execution_tool._get_working_plan_request",
         new=AsyncMock(return_value={"code": 0, "data": {"items": []}}),
     ), patch(
         "app.handlers.generate_handler._generate_planning_candidate_pool_request",
@@ -2504,7 +2497,7 @@ def test_select_candidates_by_filters_prefers_unique_candidate_units_in_major_gr
         "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
         new=AsyncMock(return_value={"code": 0, "data": {"items": []}}),
     ), patch(
-        "app.tools.plan_execution_tool._get_planning_draft_request",
+        "app.tools.plan_execution_tool._get_working_plan_request",
         new=AsyncMock(return_value={"code": 0, "data": {"items": []}}),
     ), patch(
         "app.tools.plan_execution_tool._query_planning_candidate_pool_request",
@@ -2524,7 +2517,7 @@ def test_select_candidates_by_filters_prefers_unique_candidate_units_in_major_gr
             }
         ),
     ) as mock_query, patch(
-        "app.tools.plan_execution_tool._select_planning_draft_items_request",
+        "app.tools.plan_execution_tool._select_working_plan_items_request",
         new=AsyncMock(return_value={"code": 0, "data": {"draftPlanState": {"summary": {"unitTotal": 19}}}}),
     ) as mock_select, patch(
         "app.tools.plan_execution_tool._generate_planning_ordered_plan_request",
@@ -2569,7 +2562,7 @@ def test_select_candidates_by_filters_skips_high_tuition_candidates_for_high_tui
         "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
         new=AsyncMock(return_value={"code": 0, "data": {"items": []}}),
     ), patch(
-        "app.tools.plan_execution_tool._get_planning_draft_request",
+        "app.tools.plan_execution_tool._get_working_plan_request",
         new=AsyncMock(return_value={"code": 0, "data": {"items": []}}),
     ), patch(
         "app.tools.plan_execution_tool._query_planning_candidate_pool_request",
@@ -2588,7 +2581,7 @@ def test_select_candidates_by_filters_skips_high_tuition_candidates_for_high_tui
             }
         ),
     ) as mock_query, patch(
-        "app.tools.plan_execution_tool._select_planning_draft_items_request",
+        "app.tools.plan_execution_tool._select_working_plan_items_request",
         new=AsyncMock(return_value={"code": 0, "data": {"draftPlanState": {"summary": {"unitTotal": 19}}}}),
     ) as mock_select, patch(
         "app.tools.plan_execution_tool._generate_planning_ordered_plan_request",
@@ -2858,7 +2851,7 @@ def test_select_candidates_summary_does_not_claim_added_when_ordered_count_uncha
             }
         ),
     ), patch(
-        "app.tools.plan_execution_tool._select_planning_draft_items_request",
+        "app.tools.plan_execution_tool._select_working_plan_items_request",
         new=AsyncMock(return_value={"code": 0, "data": {}}),
     ), patch(
         "app.tools.plan_execution_tool._generate_planning_ordered_plan_request",
@@ -2905,7 +2898,7 @@ def test_select_candidates_summary_reports_ordered_count_increase():
             }
         ),
     ), patch(
-        "app.tools.plan_execution_tool._select_planning_draft_items_request",
+        "app.tools.plan_execution_tool._select_working_plan_items_request",
         new=AsyncMock(return_value={"code": 0, "data": {}}),
     ), patch(
         "app.tools.plan_execution_tool._generate_planning_ordered_plan_request",
@@ -4055,6 +4048,139 @@ def test_execute_plan_action_review_reply_explains_cost_risks():
     assert "中外合作项目还要额外看培养模式" in data["summary"]
     assert "替换成正常收费或更稳的志愿" in data["summary"]
     assert "direct_review_reply" in data["reply_focus"]
+
+
+def test_execute_plan_action_review_reply_includes_backend_fix_proposals():
+    payload = {
+        "stage": "review",
+        "action_family": "review_plan",
+        "context_summary": "阶段=reviewed；方案=45/45",
+        "preview_summary": "",
+        "missing_inputs": [],
+        "should_rerun_review": False,
+        "intent_relation": "unknown",
+        "atomic_actions": [],
+    }
+    ordered_items = [
+        {
+            "position": 1,
+            "volunteerId": "v-cost-1",
+            "tier": "冲",
+            "schoolName": "青岛理工大学",
+            "majorName": "建筑学(中外合作办学)(40000元)",
+        },
+    ]
+
+    with patch(
+        "app.handlers.analysis_handlers._run_planning_review_request",
+        new=AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "summary": {"riskCount": 1, "warnCount": 1, "passedCount": 7},
+                    "checks": [
+                        {
+                            "code": "high_tuition",
+                            "passed": False,
+                            "summary": "当前方案包含高收费专业",
+                            "affectedVolunteerIds": ["v-cost-1"],
+                        },
+                    ],
+                },
+            }
+        ),
+    ), patch(
+        "app.handlers.analysis_handlers._generate_planning_fix_proposals_request",
+        new=AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "status": "ready",
+                    "sourceVersionGuard": 12,
+                    "total": 1,
+                    "proposals": [
+                        {
+                            "proposalId": "fp_high",
+                            "title": "修复高收费",
+                            "status": "preview_only",
+                            "strategy": "replace_risk_items",
+                            "sourceCheckCodes": ["high_tuition"],
+                            "requiresConfirmation": True,
+                            "summary": "建议优先替换高收费志愿。",
+                            "impact": "当前问题涉及 1 个专业组、1 条志愿。",
+                            "actions": [
+                                {
+                                    "actionType": "replace_volunteers",
+                                    "summary": "替换风险志愿",
+                                    "replacementPairs": [{"fromVolunteerId": "v-cost-1", "toVolunteerId": "v-safe-1"}],
+                                }
+                            ],
+                            "dryRunResult": {
+                                "removeVolunteerCount": 1,
+                                "addVolunteerCount": 1,
+                                "warnings": ["该策略暂不自动应用。"],
+                            },
+                        },
+                        {
+                            "proposalId": "fp_gap",
+                            "title": "修复录取率梯度断层",
+                            "status": "blocked",
+                            "strategy": "fill_probability_gap",
+                            "sourceCheckCodes": ["probability_gap"],
+                            "requiresConfirmation": False,
+                            "summary": "当前方案录取率梯度存在断层。",
+                            "blockingReason": "当前候选里缺少断层区间的可用志愿，暂时无法补齐录取率梯度。",
+                            "blockingReasonCodes": ["probability_gap_candidate_insufficient"],
+                            "candidateShortages": [
+                                {
+                                    "strategy": "fill_probability_gap",
+                                    "sourceCheckCode": "probability_gap",
+                                    "scope": "candidate_pool",
+                                    "reasonCode": "probability_gap_candidate_insufficient",
+                                    "requiredCount": 1,
+                                    "availableCount": 0,
+                                    "message": "当前可用于规划的候选池里，断层中间录取率候选不足。",
+                                }
+                            ],
+                            "actions": [],
+                            "dryRunResult": {"warnings": []},
+                        }
+                    ],
+                },
+            }
+        ),
+    ), patch(
+        "app.handlers.analysis_handlers._get_planning_state_with_latest_profile",
+        new=AsyncMock(
+            return_value={
+                "orderedPlanState": {
+                    "summary": {"unitTotal": 45, "targetUnitCount": 45},
+                    "items": ordered_items,
+                },
+                "draftPlanState": {"items": []},
+            }
+        ),
+    ), patch(
+        "app.handlers.analysis_handlers._get_planning_ordered_plan_request",
+        new=AsyncMock(return_value={"code": 0, "data": {"summary": {}, "items": ordered_items}}),
+    ):
+        result = asyncio.run(execute_plan_action(_ctx_with_pending("review_plan"), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["result_kind"] == "review_result"
+    assert "### 可处理方向" in data["summary"]
+    assert "修复高收费" in data["summary"]
+    assert "已有预览，暂不自动执行" in data["summary"]
+    assert "优先看替换" in data["summary"]
+    assert "当前可用于规划的候选池里" in data["summary"]
+    assert "断层中间录取率候选不足" in data["summary"]
+    assert "暂时无法补齐录取率梯度" in data["summary"]
+    assert "fix_proposals" in data["reply_focus"]
+    assert data["facts"]["fix_proposals"]["proposals"][0]["strategy"] == "replace_risk_items"
+    assert data["facts"]["fix_proposals"]["proposals"][1]["blocking_reason_codes"] == [
+        "probability_gap_candidate_insufficient"
+    ]
+    assert data["facts"]["fix_proposals"]["proposals"][1]["candidate_shortages"][0]["scope"] == "candidate_pool"
 
 
 def test_execute_plan_action_remembers_recent_result_for_timeout_fallback():
@@ -5443,41 +5569,6 @@ def test_execute_plan_action_replace_resolves_verbose_ref_with_tier_and_position
     mock_add.assert_awaited_once()
 
 
-def test_execute_plan_action_blocks_pin_unit_in_301_workspace():
-    payload = {
-        "stage": "apply",
-        "action_family": "pin_unit",
-        "context_summary": "阶段=ordered；方案=30/30",
-        "preview_summary": "",
-        "missing_inputs": [],
-        "should_rerun_review": True,
-        "intent_relation": "unknown",
-        "atomic_actions": [
-            {
-                "action_type": "pin_unit",
-                "volunteer_ids": ["v1"],
-                "target_position": 3,
-                "filters": {},
-                "reason": "固定到第三位",
-            }
-        ],
-    }
-
-    with patch(
-        "app.tools.plan_execution_tool.run_planning_review",
-        new=AsyncMock(return_value="review after pin ok"),
-    ) as mock_review:
-        result = asyncio.run(execute_plan_action(_ctx_with_pending("pin_unit"), json.dumps(payload, ensure_ascii=False)))
-
-    data = json.loads(result)
-    assert data["applied"] is False
-    assert data["result_kind"] == "error"
-    assert data["workspace_refresh_targets"] == []
-    assert "pin_disabled" in data["reply_focus"]
-    assert "暂不提供固定/锁定志愿入口" in data["summary"]
-    mock_review.assert_not_awaited()
-
-
 def test_execute_plan_action_runs_move_unit_after_resolving_position_ref():
     payload = {
         "stage": "apply",
@@ -6296,78 +6387,6 @@ def test_execute_plan_action_does_not_guess_ambiguous_school_major_alias_ref():
     assert "湖工计科" in data["summary"]
     assert "needs_volunteer_selection" in data["reply_focus"]
     mock_move.assert_not_awaited()
-
-
-def test_execute_plan_action_blocks_pin_unit_without_resolving_position_ref():
-    payload = {
-        "stage": "apply",
-        "action_family": "pin_unit",
-        "context_summary": "阶段=ordered；方案=30/30",
-        "preview_summary": "",
-        "missing_inputs": [],
-        "should_rerun_review": True,
-        "intent_relation": "unknown",
-        "atomic_actions": [
-            {
-                "action_type": "pin_unit",
-                "volunteer_ids": ["第3位"],
-                "target_position": 3,
-                "filters": {},
-                "reason": "固定第3位",
-            }
-        ],
-    }
-
-    with patch(
-        "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
-        new=AsyncMock(),
-    ) as mock_get_ordered, patch(
-        "app.tools.plan_execution_tool.run_planning_review",
-        new=AsyncMock(return_value="review after pin ok"),
-    ) as mock_review:
-        result = asyncio.run(execute_plan_action(_ctx_with_pending("pin_unit"), json.dumps(payload, ensure_ascii=False)))
-
-    data = json.loads(result)
-    assert data["applied"] is False
-    assert data["result_kind"] == "error"
-    assert "暂不提供固定/锁定志愿入口" in data["summary"]
-    mock_get_ordered.assert_not_awaited()
-    mock_review.assert_not_awaited()
-
-
-def test_execute_plan_action_blocks_unpin_unit_in_301_workspace():
-    payload = {
-        "stage": "apply",
-        "action_family": "unpin_unit",
-        "context_summary": "阶段=ordered；方案=30/30",
-        "preview_summary": "",
-        "missing_inputs": [],
-        "should_rerun_review": True,
-        "intent_relation": "unknown",
-        "atomic_actions": [
-            {
-                "action_type": "unpin_unit",
-                "volunteer_ids": ["v1"],
-                "target_position": None,
-                "filters": {},
-                "reason": "取消固定",
-            }
-        ],
-    }
-
-    with patch(
-        "app.tools.plan_execution_tool.run_planning_review",
-        new=AsyncMock(return_value="review after unpin ok"),
-    ) as mock_review:
-        result = asyncio.run(execute_plan_action(_ctx_with_pending("unpin_unit"), json.dumps(payload, ensure_ascii=False)))
-
-    data = json.loads(result)
-    assert data["applied"] is False
-    assert data["result_kind"] == "error"
-    assert data["workspace_refresh_targets"] == []
-    assert "pin_disabled" in data["reply_focus"]
-    assert "暂不提供固定/锁定志愿入口" in data["summary"]
-    mock_review.assert_not_awaited()
 
 
 def test_execute_plan_action_replace_missing_refs_message_stays_generic():

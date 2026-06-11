@@ -177,34 +177,52 @@ class TestQueryVerbDisambiguation:
 class TestReviewIssueOverride:
     """review_issue_code 对 action_family 的覆盖逻辑。"""
 
-    def test_item_removal_default_to_remove(self, resolver):
-        """item_removal 类型（如 high_tuition）→ remove_units。"""
+    def test_item_replacement_default_to_review(self, resolver):
+        """item_replacement 类型（如 high_tuition）默认只读审查，由 FixProposal 披露替换建议。"""
         frame = _frame(verb="query", review_issue_code="high_tuition")
         ctx = _ctx(ordered_count=30)
         result = resolver.resolve(frame, ctx)
-        assert result.action_family == "remove_units"
+        assert result.action_family == "review_plan"
         assert result.review_issue_override is True
 
-    def test_item_removal_keeps_replace_with_intent(self, resolver):
-        """item_removal 类型 + 用户有替换意图 → 保留 replace_units。"""
+    def test_review_issue_override_prefers_backend_metadata(self, resolver):
+        """同一 code 优先按后端审查元数据解释，避免 Agent 本地 registry 漂移。"""
+        frame = _frame(verb="query", review_issue_code="unknown_backend_rule")
+        ctx = _ctx(
+            ordered_count=30,
+            review_issues=[
+                {
+                    "code": "unknown_backend_rule",
+                    "label": "后端新增条目风险",
+                    "backend_scope_kind": "item",
+                    "default_fix_strategy": "replace_risk_items",
+                }
+            ],
+        )
+        result = resolver.resolve(frame, ctx)
+        assert result.action_family == "review_plan"
+        assert result.review_issue_override is True
+
+    def test_item_replacement_keeps_replace_with_intent(self, resolver):
+        """item_replacement 类型 + 用户有替换意图 → 保留 replace_units。"""
         frame = _frame(verb="replace", review_issue_code="high_tuition", tier="稳")
         ctx = _ctx(ordered_count=30)
         result = resolver.resolve(frame, ctx)
         assert result.action_family == "replace_units"
 
-    def test_item_removal_replace_without_intent_becomes_remove(self, resolver):
-        """item_removal + replace 但无筛选条件 → remove_units。"""
+    def test_item_replacement_replace_without_scope_stays_replace(self, resolver):
+        """item_replacement + replace 即使暂缺替换条件，也不自动降级为删除。"""
         frame = _frame(verb="replace", review_issue_code="cooperative_program")
         ctx = _ctx(ordered_count=30)
         result = resolver.resolve(frame, ctx)
-        assert result.action_family == "remove_units"
+        assert result.action_family == "replace_units"
 
     def test_structural_override_mutations(self, resolver):
         """structural 类型覆盖掉直接增删。"""
         frame = _frame(verb="remove", review_issue_code="probability_inversion")
         ctx = _ctx(ordered_count=30)
         result = resolver.resolve(frame, ctx)
-        assert result.action_family == "analyze_adjustment"
+        assert result.action_family == "sort_ordered_plan"
         assert result.review_issue_override is True
 
     def test_structural_preserves_non_mutation(self, resolver):
@@ -337,7 +355,7 @@ class TestMissingInputs:
         frame = _frame(verb="remove", review_issue_code="high_tuition")
         ctx = _ctx(ordered_count=30)
         result = resolver.resolve(frame, ctx)
-        # review_issue_code → item_removal → 覆盖为 remove_units + has target
+        # review_issue_code → item_replacement，但显式 remove 仍保留 remove_units + has target
         assert "volunteer_ids" not in result.missing_inputs
 
     def test_move_needs_ref_and_position(self, resolver):
@@ -706,7 +724,7 @@ class TestEndToEndScenarios:
         assert result.normalization_applied == "preview_compensation → add_units"
 
     def test_scenario_remove_high_tuition(self, resolver):
-        """"把高收费的都去掉" → remove_units (review issue override)。"""
+        """"把高收费的都去掉" → remove_units (显式删除仍保留)。"""
         frame = _frame(
             verb="remove",
             review_issue_code="high_tuition",
@@ -770,7 +788,7 @@ class TestEndToEndScenarios:
         assert result.stage == "analyze"
 
     def test_scenario_structural_issue_blocks_direct_delete(self, resolver):
-        """概率倒挂（structural）+ remove → analyze_adjustment。"""
+        """概率倒挂（structural）+ remove → sort_ordered_plan preview。"""
         frame = _frame(
             verb="remove",
             review_issue_code="probability_inversion",
@@ -778,5 +796,7 @@ class TestEndToEndScenarios:
         )
         ctx = _ctx(ordered_count=50)
         result = resolver.resolve(frame, ctx)
-        assert result.action_family == "analyze_adjustment"
+        assert result.action_family == "sort_ordered_plan"
         assert result.review_issue_override is True
+        assert result.stage == "preview"
+        assert result.requires_confirmation is True

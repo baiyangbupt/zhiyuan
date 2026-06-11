@@ -459,7 +459,7 @@ class TestPendingExpiry:
             version=5,
             pending=PendingConfirmation(
                 kind="plan_mutation",
-                action_family="pin_unit",
+                action_family="move_unit",
                 created_turn=3,
             ),
         )
@@ -486,13 +486,13 @@ class TestResolverPhaseIntegration:
             review_issues=[
                 make_review_issue(
                     code="high_tuition",
-                    scope_kind="item_removal",
-                    default_action_family="remove_units",
+                    scope_kind="item_replacement",
+                    default_action_family="review_plan",
                 ),
             ],
         )
 
-        # 用户说"处理高收费" → remove_units
+        # 显式 remove 高收费 → remove_units；泛化处理应先走 review/FixProposal。
         frame = IntentFrame(
             task_layer="plan",
             topic="general",

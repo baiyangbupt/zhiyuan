@@ -16,6 +16,7 @@ from app.handlers.registry import register_handler
 from app.handlers.query_handlers import _get_planning_state_with_latest_profile, _build_status_overview_summary
 from app.tools.plan_orchestration_models import PlanActionPlan, PlanExecutionResult
 from app.tools.planning_workflow_tool import _build_plan_status_overview_facts
+from app.util.planning_state_compat import get_working_plan_state
 from app.util.internal_client import (
     generate_planning_candidate_pool as _generate_planning_candidate_pool_request,
     generate_planning_initial_plan as _generate_planning_initial_plan_request,
@@ -120,7 +121,7 @@ async def handle_generate_plan(
     facts = _build_plan_status_overview_facts(
         latest_state,
         ordered_state=(latest_state.get("orderedPlanState") or {}),
-        draft_state=(latest_state.get("draftPlanState") or {}),
+        draft_state=get_working_plan_state(latest_state),
     )
     state_summary, reply_focus, next_step_hints = _build_status_overview_summary(facts)
     state_summary = f"已生成一版方案。{state_summary}"

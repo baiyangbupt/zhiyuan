@@ -43,9 +43,8 @@ from app.models.typed_actions import (
 )
 from app.tools.plan_orchestration_models import PlanContextInputs
 from app.tools.review_issue_registry import (
-    get_review_issue_rule,
-    review_issue_default_action_family,
-    review_issue_scope_kind,
+    normalize_review_issue_default_action_family,
+    normalize_review_issue_scope_kind,
 )
 
 
@@ -167,28 +166,11 @@ class ActionResolver:
                 blocked_reason=f"task_layer={frame.task_layer}, 应由对应的 {frame.task_layer} 工具处理",
             )
 
-        if action_family in {"pin_unit", "unpin_unit"}:
-            return ActionResolution(
-                action_family=action_family,
-                stage="blocked",
-                requires_confirmation=False,
-                blocked_reason=(
-                    "3.0.1 新版工作台不提供固定/锁定志愿入口；"
-                    "建议改用移动到指定位置或方案排序。"
-                ),
-                reply_guidance={
-                    "user_message": (
-                        "当前新版工作台暂不提供固定/锁定志愿入口，"
-                        "可以改为移动到指定位置，或使用方案排序后再人工微调。"
-                    )
-                },
-            )
-
         # Step 2: review issue override
         review_issue_override = False
         if frame.target.review_issue_code:
             new_family = self._apply_review_issue_override(
-                action_family, frame.target.review_issue_code, frame
+                action_family, frame.target.review_issue_code, frame, context
             )
             if new_family != action_family:
                 review_issue_override = True
@@ -306,19 +288,35 @@ class ActionResolver:
     # ------------------------------------------------------------------
 
     def _apply_review_issue_override(
-        self, action_family: str, review_issue_code: str, frame: IntentFrame
+        self,
+        action_family: str,
+        review_issue_code: str,
+        frame: IntentFrame,
+        context: PlanContextInputs,
     ) -> str:
         """根据 review issue 的 scope_kind 覆盖 action_family。
 
         对应旧逻辑中 matched_review_issue 的 scope_kind 分支：
+        - item_replacement: 默认 review_plan，由后端 FixProposal 披露替换建议；保留显式 remove/replace
         - item_removal: 默认 remove_units，有替换意图时保留 replace_units
         - structural: 强制覆盖为 default_action_family（覆盖掉直接增删移动）
         - informational: 如果是 remove/replace 则覆盖为 review_plan
         """
-        scope_kind = review_issue_scope_kind(review_issue_code)
-        default_action = review_issue_default_action_family(review_issue_code)
+        issue = self._find_context_review_issue(context, review_issue_code)
+        scope_kind = normalize_review_issue_scope_kind(
+            review_issue_code,
+            issue.get("backend_scope_kind") or issue.get("scopeKind") if issue else None,
+            issue.get("default_fix_strategy") or issue.get("defaultFixStrategy") if issue else None,
+        )
+        default_action = normalize_review_issue_default_action_family(
+            review_issue_code,
+            issue.get("default_fix_strategy") or issue.get("defaultFixStrategy") if issue else None,
+        )
 
-        if scope_kind == "item_removal":
+        if scope_kind == "item_replacement":
+            if action_family not in {"remove_units", "replace_units"} and default_action:
+                return default_action
+        elif scope_kind == "item_removal":
             # 必须有实际筛选条件才算有替换意图；verb=replace 但无条件视为误分类。
             has_replacement_intent = frame.scope.has_filters
             if action_family == "replace_units" and not has_replacement_intent:
@@ -597,6 +595,16 @@ class ActionResolver:
     @staticmethod
     def _has_existing_plan(context: PlanContextInputs) -> bool:
         return (context.draft_count > 0) or (context.ordered_count > 0)
+
+    @staticmethod
+    def _find_context_review_issue(context: PlanContextInputs, code: str) -> dict[str, Any] | None:
+        normalized = str(code or "").strip()
+        if not normalized:
+            return None
+        for issue in context.review_issues or []:
+            if str(issue.get("code") or "").strip() == normalized:
+                return issue
+        return None
 
     @staticmethod
     def _is_plan_filled(context: PlanContextInputs) -> bool:

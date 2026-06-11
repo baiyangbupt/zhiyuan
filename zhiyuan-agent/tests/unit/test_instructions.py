@@ -315,12 +315,15 @@ class TestToolDispatchRules:
         assert "不要把它规划成 `sort_ordered_plan`" in result
         assert "目标位置" in result
 
-    def test_plan_tuition_removal_request_should_preview_mutation(self):
+    def test_plan_tuition_mutation_request_should_preview_only_when_explicit(self):
         result = build_tool_dispatch_rules()
-        assert "高收费/太贵/中外合作项" in result
-        assert "`remove_units` 或 `replace_units` preview" in result
+        assert "fix_proposals" in result
+        assert "不要默认删除" in result
+        assert "只有用户明确要求" in result
+        assert "才规划 `remove_units` preview" in result
+        assert "才规划 `replace_units` preview" in result
         assert 'review_issue_target.code="high_tuition"' in result
-        assert "不要停在 `review_plan`" in result
+        assert "不要停留在 `plan_next_action` 的 preview_summary" in result
 
     def test_policy_metric_explanation_should_not_be_plan_state_query(self):
         result = build_tool_dispatch_rules()

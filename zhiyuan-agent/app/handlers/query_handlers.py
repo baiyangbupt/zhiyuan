@@ -30,11 +30,12 @@ from app.tools.planning_workflow_tool import (
     query_planning_ordered_plan,
 )
 from app.tools.plan_query_tool import _enrich_plan_items_with_candidate_metadata, query_volunteer_plan
+from app.util.planning_state_compat import get_working_plan_summary
 from app.util.internal_client import (
-    get_planning_draft as _get_planning_draft_request,
     get_planning_ordered_plan as _get_planning_ordered_plan_request,
     get_planning_state as _get_planning_state_request,
     get_user_profile as _get_user_profile_request,
+    get_working_plan as _get_working_plan_request,
 )
 
 from app.handlers.shared import summary_total
@@ -393,9 +394,7 @@ async def handle_query_state(
     ordered_total = summary_total(
         ((planning_state.get("orderedPlanState") or {}).get("summary") or {})
     )
-    draft_total = summary_total(
-        ((planning_state.get("draftPlanState") or {}).get("summary") or {})
-    )
+    draft_total = summary_total(get_working_plan_summary(planning_state))
     if ordered_total > 0:
         ordered_result = await _get_planning_ordered_plan_request(session_id)
         if ordered_result.get("code") == 0:
@@ -405,7 +404,7 @@ async def handle_query_state(
                 ordered_state = dict(ordered_state)
                 ordered_state["items"] = await _enrich_plan_items_with_candidate_metadata(session_id, ordered_items)
     elif draft_total > 0:
-        draft_result = await _get_planning_draft_request(session_id)
+        draft_result = await _get_working_plan_request(session_id)
         if draft_result.get("code") == 0:
             draft_state = draft_result.get("data") or {}
             draft_items = draft_state.get("items") or []

@@ -7,6 +7,10 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * Internal legacy DTO name kept for persisted-state compatibility.
+ * Public JSON/API naming should use workingPlanState; draftPlanState is only a legacy alias.
+ */
 @Data
 public class DraftPlanStateDTO {
     private List<DraftItemDTO> items = Lists.newArrayList();
