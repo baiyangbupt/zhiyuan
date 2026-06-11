@@ -184,6 +184,7 @@ interface WorkspacePanelProps {
   examYear?: number | string | null;
   workspaceIntent?: PlanningWorkspaceIntent | null;
   onWorkspaceIntentConsumed?: () => void;
+  onPlanningStateChange?: (state: PlanningStateRes | null) => void;
 }
 
 const getWorkspaceViewStorageKey = (chatSessionId?: string) =>
@@ -481,6 +482,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   examYear,
   workspaceIntent,
   onWorkspaceIntentConsumed,
+  onPlanningStateChange,
 }) => {
   const initialActiveView = (() => {
     if (typeof window === 'undefined') {
@@ -576,6 +578,11 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const workflowStatus = planningState?.workflowStatus;
   const candidateRiskHints = planningState?.candidatePoolState?.riskHints || [];
   const isLegacySubmittedPlan = planningState?.orderedPlanState?.generationMode === 'legacy_submitted';
+
+  useEffect(() => {
+    onPlanningStateChange?.(planningState);
+  }, [planningState, onPlanningStateChange]);
+
   const selectedCandidateIdentitySet = useMemo(
     () =>
       new Set(
@@ -1541,7 +1548,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       const { data, code } = await generatePlanningCandidatePoolApi(
         routerParams.tenantId,
         routerParams.chatSessionId,
-        true
+        forceRegenerate
       );
       if (code === 0 && data) {
         applyPlanningState(data);

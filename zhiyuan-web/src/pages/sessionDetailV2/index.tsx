@@ -1,10 +1,11 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import Head from 'next/head';
 import { Button, Drawer, Spin, message } from 'antd';
 import {
   AuditOutlined,
   ArrowLeftOutlined,
   CompassOutlined,
+  DownOutlined,
   MessageOutlined,
   OrderedListOutlined,
   QuestionCircleOutlined,
@@ -14,14 +15,50 @@ import WorkspacePanel from '@/pageComponents/sessionDetailV2/WorkspacePanel';
 import SessionListDrawer from '@/pageComponents/customer/SessionListDrawer';
 import CustomerDetailFlow from '@/pageComponents/customerDetail/CustomerDetailFlow';
 import { IDialogueResData, IUserInfoParams } from '@/interface/api/sessionDetail';
-import { PlanningWorkspaceIntent } from '@/interface/api/volunteer';
-import { getSessionDetailApi } from '@/service/apis/sessionDetail';
+import { PlanningStateRes, PlanningWorkspaceIntent } from '@/interface/api/volunteer';
+import { getPlanningWorkspaceStateApi, getSessionDetailApi } from '@/service/apis/sessionDetail';
 import { checkUserRightsApi } from '@/service/apis/user';
 import { getStorage, getValueFromUrlBykey } from '@/utils/tool';
 import { navigateTo } from '@/utils/router';
 import useAuthParams from '@/hooks/useAuthParams';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
 import style from './style.module.scss';
+
+const uniqueStrings = (values: Array<string | null | undefined>) =>
+  Array.from(new Set(values.map(item => (item || '').trim()).filter(Boolean)));
+
+const toDisplayString = (value: unknown): string => {
+  if (value === null || value === undefined) {
+    return '';
+  }
+  if (typeof value === 'string' || typeof value === 'number') {
+    return String(value).trim();
+  }
+  if (typeof value === 'object') {
+    const item = value as Record<string, unknown>;
+    return toDisplayString(
+      item.name ||
+        item.label ||
+        item.value ||
+        item.desc ||
+        item.data ||
+        item.subjectName ||
+        item.provinceName ||
+        item.majorName ||
+        item.majorSubName ||
+        item.schoolName
+    );
+  }
+  return '';
+};
+
+const toDisplayStrings = (value: unknown): string[] => {
+  if (Array.isArray(value)) {
+    return uniqueStrings(value.map(toDisplayString));
+  }
+  const text = toDisplayString(value);
+  return text ? [text] : [];
+};
 
 const SessionDetailV2 = () => {
   const isMobile = useMediaQuery(768);
@@ -48,6 +85,8 @@ const SessionDetailV2 = () => {
     stepTitle: '高考信息',
   });
   const [workspaceIntent, setWorkspaceIntent] = useState<PlanningWorkspaceIntent | null>(null);
+  const [planningWorkspaceState, setPlanningWorkspaceState] = useState<PlanningStateRes | null>(null);
+  const [intentExpanded, setIntentExpanded] = useState(false);
   const [fetchFlag, setFetchFlag] = useState(1);
 
   useEffect(() => {
@@ -75,6 +114,173 @@ const SessionDetailV2 = () => {
     userId,
   };
 
+  const studentSummary = planningWorkspaceState?.studentSummary;
+  const studentInfoText = useMemo(() => {
+    const scoreText =
+      studentSummary?.score !== undefined && studentSummary?.score !== null
+        ? `${studentSummary.score}分`
+        : '';
+    const rankText =
+      studentSummary?.rank !== undefined && studentSummary?.rank !== null
+        ? `${studentSummary.rank}位次`
+        : '';
+    const batchName = studentSummary?.batchName || '';
+    const batchScore = studentSummary?.batchScore;
+    const batchText = batchName
+      ? `${batchName}${
+          batchScore !== undefined && batchScore !== null && !batchName.includes('批次线')
+            ? `(批次线${batchScore}分)`
+            : ''
+        }`
+      : '';
+    return [
+      studentSummary?.sex,
+      scoreText,
+      rankText,
+      batchText,
+      studentSummary?.provinceName,
+      (studentSummary?.subjects || []).join('.'),
+      (studentSummary?.strengthSubjects || []).length
+        ? `优势学科${(studentSummary?.strengthSubjects || []).join('、')}`
+        : '',
+    ]
+      .filter(Boolean)
+      .join('/');
+  }, [studentSummary]);
+
+  const intentTags = useMemo(() => {
+    const constraintState = planningWorkspaceState?.constraintState || {};
+    const hard = (constraintState.hardConstraints || {}) as Record<string, unknown>;
+    const soft = (constraintState.softPreferences || {}) as Record<string, unknown>;
+    const explicit = planningWorkspaceState?.profileState?.explicitProfile || {};
+    const groups: Array<{
+      label: string;
+      values: string[];
+      type: 'positive' | 'negative' | 'required' | 'excluded';
+    }> = [
+      {
+        label: '优先地域',
+        values: uniqueStrings([
+          ...toDisplayStrings(soft.preferRegions),
+          ...toDisplayStrings(explicit.positiveRegions),
+        ]),
+        type: 'positive',
+      },
+      {
+        label: '优先专业',
+        values: uniqueStrings([
+          ...toDisplayStrings(soft.preferMajors),
+          ...toDisplayStrings(explicit.positiveMajors),
+        ]),
+        type: 'positive',
+      },
+      {
+        label: '优先院校',
+        values: uniqueStrings([
+          ...toDisplayStrings(soft.preferSchools),
+          ...toDisplayStrings(explicit.positiveSchools),
+        ]),
+        type: 'positive',
+      },
+      {
+        label: '不优先地域',
+        values: uniqueStrings([
+          ...toDisplayStrings(soft.avoidRegions),
+          ...toDisplayStrings(explicit.negativeRegions),
+        ]),
+        type: 'negative',
+      },
+      {
+        label: '不优先专业',
+        values: uniqueStrings([
+          ...toDisplayStrings(soft.avoidMajors),
+          ...toDisplayStrings(explicit.negativeMajors),
+        ]),
+        type: 'negative',
+      },
+      {
+        label: '不优先院校',
+        values: uniqueStrings([
+          ...toDisplayStrings(soft.avoidSchools),
+          ...toDisplayStrings(explicit.negativeSchools),
+        ]),
+        type: 'negative',
+      },
+      {
+        label: '只看地域',
+        values: toDisplayStrings(hard.mustIncludeRegions),
+        type: 'required',
+      },
+      {
+        label: '只看专业',
+        values: toDisplayStrings(hard.mustIncludeMajors),
+        type: 'required',
+      },
+      {
+        label: '只看院校',
+        values: toDisplayStrings(hard.mustIncludeSchools),
+        type: 'required',
+      },
+      {
+        label: '避开地域',
+        values: toDisplayStrings(hard.mustExcludeRegions),
+        type: 'excluded',
+      },
+      {
+        label: '避开专业',
+        values: toDisplayStrings(hard.mustExcludeMajors),
+        type: 'excluded',
+      },
+      {
+        label: '避开院校',
+        values: toDisplayStrings(hard.mustExcludeSchools),
+        type: 'excluded',
+      },
+    ];
+    return groups.flatMap(group =>
+      group.values.map(value => ({
+        key: `${group.label}-${value}`,
+        text: `${group.label}: ${value}`,
+        type: group.type,
+      }))
+    );
+  }, [planningWorkspaceState]);
+
+  const handlePlanningStateChange = useCallback((nextState: PlanningStateRes | null) => {
+    setPlanningWorkspaceState(prev => {
+      if (!nextState) {
+        return prev;
+      }
+      return {
+        ...(prev || {}),
+        ...nextState,
+        studentSummary: nextState.studentSummary || prev?.studentSummary,
+        profileState: nextState.profileState || prev?.profileState,
+        constraintState: nextState.constraintState || prev?.constraintState,
+      };
+    });
+  }, []);
+
+  const fetchPlanningHeaderState = async () => {
+    if (!tenantId || !chatSessionId) {
+      return;
+    }
+    try {
+      const { code, data } = await getPlanningWorkspaceStateApi(tenantId, chatSessionId);
+      if (code === 0 && data) {
+        setPlanningWorkspaceState(prev => ({
+          ...(prev || {}),
+          ...data,
+          studentSummary: data.studentSummary || prev?.studentSummary,
+          profileState: data.profileState || prev?.profileState,
+          constraintState: data.constraintState || prev?.constraintState,
+        }));
+      }
+    } catch (error) {
+      console.warn('获取工作台标题信息失败', error);
+    }
+  };
+
   const fetchSessionDetail = async () => {
     if (!tenantId || !chatSessionId) {
       return;
@@ -88,6 +294,12 @@ const SessionDetailV2 = () => {
         setStudentName(String(data.userName || '').trim());
         setPrepareTypeDesc(data.prepareType?.desc || '');
         setExamYear(data.examYear || null);
+        if (data.studentSummary) {
+          setPlanningWorkspaceState(prev => ({
+            ...(prev || {}),
+            studentSummary: data.studentSummary,
+          }));
+        }
       } else {
         message.error(msg || '获取会话详情失败');
       }
@@ -102,6 +314,7 @@ const SessionDetailV2 = () => {
       return;
     }
     fetchSessionDetail();
+    fetchPlanningHeaderState();
   }, [isInitialized, tenantId, chatSessionId]);
 
   useEffect(() => {
@@ -224,6 +437,7 @@ const SessionDetailV2 = () => {
         examYear={examYear}
         workspaceIntent={workspaceIntent}
         onWorkspaceIntentConsumed={() => setWorkspaceIntent(null)}
+        onPlanningStateChange={handlePlanningStateChange}
       />
     </div>
   );
@@ -235,36 +449,75 @@ const SessionDetailV2 = () => {
       </Head>
       <Spin spinning={isLoading}>
         <header className={style.header}>
-          <div className={style.headerMain}>
-            <div className={style.titleBlock}>
-              <div className={style.titleLine}>
-                {studentName ? <span className={style.studentNameInline}>{studentName}的</span> : null}
-                <span className={style.title}>志愿规划工作台</span>
+          <div className={style.headerContent}>
+            <div className={style.headerTopRow}>
+              <div className={style.headerMain}>
+                <div className={style.titleBlock}>
+                  <div className={style.titleLine}>
+                    {studentName ? <span className={style.studentNameInline}>{studentName}的</span> : null}
+                    <span className={style.title}>志愿规划工作台</span>
+                  </div>
+                  <div className={style.profileLine}>
+                    <div className={style.summary} title={studentInfoText || infoSummary}>
+                      {studentInfoText || infoSummary || '正在读取会话信息'}
+                    </div>
+                    <button
+                      type="button"
+                      className={style.intentToggleButton}
+                      onClick={() => setIntentExpanded(prev => !prev)}
+                      aria-expanded={intentExpanded}
+                    >
+                      查看意向
+                      <DownOutlined
+                        className={`${style.intentToggleIcon} ${
+                          intentExpanded ? style.intentToggleIconExpanded : ''
+                        }`}
+                      />
+                    </button>
+                  </div>
+                </div>
+                <div className={style.headerMeta}>
+                  {prepareTypeDesc && <span className={style.metaBadge}>{prepareTypeDesc}</span>}
+                  {sessionStatus && (
+                    <span
+                      className={`${style.metaBadge} ${
+                        sessionStatus === 'GOING' ? style.metaBadgeActive : ''
+                      }`}
+                    >
+                      {({ GOING: '进行中', FINISHED: '已完成', WAIT: '等待中', CLOSE: '已关闭' } as Record<string, string>)[sessionStatus] || sessionStatus}
+                    </span>
+                  )}
+                </div>
               </div>
-              <div className={style.summary}>{infoSummary || '正在读取会话信息'}</div>
-            </div>
-            <div className={style.headerMeta}>
-              {prepareTypeDesc && <span className={style.metaBadge}>{prepareTypeDesc}</span>}
-              {sessionStatus && (
-                <span
-                  className={`${style.metaBadge} ${
-                    sessionStatus === 'GOING' ? style.metaBadgeActive : ''
-                  }`}
+              <div className={style.headerActions}>
+                <Button
+                  className={style.sessionListButton}
+                  type="primary"
+                  icon={<ArrowLeftOutlined />}
+                  onClick={handleOpenSessionList}
                 >
-                  {({ GOING: '进行中', FINISHED: '已完成', WAIT: '等待中', CLOSE: '已关闭' } as Record<string, string>)[sessionStatus] || sessionStatus}
-                </span>
-              )}
+                  {isMobile ? '会话列表' : '返回会话列表'}
+                </Button>
+              </div>
             </div>
-          </div>
-          <div className={style.headerActions}>
-            <Button
-              className={style.sessionListButton}
-              type="primary"
-              icon={<ArrowLeftOutlined />}
-              onClick={handleOpenSessionList}
-            >
-              {isMobile ? '会话列表' : '返回会话列表'}
-            </Button>
+            {intentExpanded ? (
+              <div className={style.intentSummaryRow}>
+                {intentTags.length > 0 ? (
+                  intentTags.map(tag => (
+                    <span
+                      key={tag.key}
+                      className={`${style.intentSummaryTag} ${
+                        style[`intentSummaryTag_${tag.type}`] || ''
+                      }`}
+                    >
+                      {tag.text}
+                    </span>
+                  ))
+                ) : (
+                  <span className={style.intentSummaryEmpty}>暂无已记录意向</span>
+                )}
+              </div>
+            ) : null}
           </div>
         </header>
 

@@ -81,6 +81,9 @@ INTENT_CONFIRM_POPUP_TYPE = "intentConfirmPopup"
 INTEREST_ANALYSIS_POPUP_TYPE = "interestAnalysisPopup"
 INTENT_MODE_PREFERENCE = "preference"
 INTENT_MODE_CONSTRAINT = "constraint"
+CONSTRAINT_INTENT_DEFAULT = "default"
+CONSTRAINT_INTENT_ONLY_KEEP = "only_keep"
+CONSTRAINT_INTENT_MUST_HAVE = "must_have"
 ANALYSIS_STAGE_INTEREST = "interest"
 ANALYSIS_STAGE_CONFIRMED = "confirmed"
 _intent_side_effect_llm_client: LLMClient | None = None
@@ -126,13 +129,13 @@ def _get_intent_side_effect_agent() -> Agent[None, str]:
                 "判断维度：1 用户期望的结果是解释边界/利弊/适配，还是让系统以后记住；"
                 "2 用户是否要求改变候选、方案或后续推荐口径；"
                 "3 当前结构化意向是否只是为了回答分类归属、风险边界或取舍问题；"
-                "4 如果直接出现待确认卡片，用户是否会误以为系统已经替他做了结论。"
+                "4 如果直接出现待采纳内容，用户是否会误以为系统已经替他做了结论。"
                 "如果用户已经表达若干偏好/排除想法，但本轮明确要先看影响、边界、利弊、风险或承接情况，"
-                "应判为 mixed_answer_then_ask 或 analysis_only；先回答影响，再自然询问是否需要记录，不能直接出待确认卡片。"
+                "应判为 mixed_answer_then_ask 或 analysis_only；先回答影响，再自然询问是否需要记录，不能直接出待采纳内容。"
                 "如果用户是在要求系统以后对某个具体专业、院校、地域或方向多看、多关注、优先看、后续多给机会，"
                 "这属于改变后续推荐口径，应判为 intent_preview；不要因为句子里有征询语气就降级。"
                 "decision 只能是 intent_preview、analysis_only、mixed_answer_then_ask。"
-                "intent_preview 表示可以生成待确认卡片；analysis_only 表示只应回答分析；"
+                "intent_preview 表示可以生成待采纳内容；analysis_only 表示只应回答分析；"
                 "mixed_answer_then_ask 表示先解释边界，再自然询问是否需要记录，不能直接写待确认。"
                 "输出 JSON：decision, confidence, reason。"
             ),
@@ -186,6 +189,7 @@ def _build_cache_data(
     city_intents: dict | None,
     career_intents: dict | None = None,
     intent_mode: str = INTENT_MODE_PREFERENCE,
+    constraint_intent_type: str | None = None,
 ) -> dict[str, Any]:
     """Build the cache payload from intent dicts."""
     cache: dict[str, Any] = {}
@@ -198,6 +202,9 @@ def _build_cache_data(
     if career_intents:
         cache["career_intents"] = career_intents
     cache["intent_mode"] = intent_mode
+    normalized_constraint_type = _normalize_constraint_intent_type(constraint_intent_type)
+    if normalized_constraint_type != CONSTRAINT_INTENT_DEFAULT:
+        cache["constraint_intent_type"] = normalized_constraint_type
     return cache
 
 
@@ -253,6 +260,15 @@ def _merge_list(existing: list[str] | None, new: list[str]) -> list[str]:
     return result
 
 
+def _normalize_constraint_intent_type(value: str | None) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {CONSTRAINT_INTENT_ONLY_KEEP, "only", "keep_only", "exclusive"}:
+        return CONSTRAINT_INTENT_ONLY_KEEP
+    if normalized in {CONSTRAINT_INTENT_MUST_HAVE, "required_presence", "at_least_one", "include_at_least_one"}:
+        return CONSTRAINT_INTENT_MUST_HAVE
+    return CONSTRAINT_INTENT_DEFAULT
+
+
 def _merge_intent_payload_dict(existing: dict[str, Any] | None, current: dict[str, Any] | None) -> dict[str, Any] | None:
     merged: dict[str, list[str]] = {}
     for payload in (existing or {}, current or {}):
@@ -293,6 +309,7 @@ async def _merge_cache_data_with_existing_pending(session_id: str, current_cache
         merged_city,
         merged_career,
         merged_mode,
+        current_cache.get("constraint_intent_type"),
     )
 
 
@@ -1204,7 +1221,7 @@ def _build_no_effect_negative_preference_message(
     scope_text = _negative_preference_scope_text(major_intents, school_intents, city_intents, career_intents)
     return (
         f"当前已记录的偏好和这份方案里暂时没有明显命中“{scope_text}”，"
-        "这次不需要额外采纳。后续如果这是必须避开的硬性要求，可以直接说明，我会再整理成确认卡片。"
+        "这次不需要额外采纳。后续如果这是必须避开的报考条件，可以直接说明，我会再列出来让你采纳。"
     )
 
 
@@ -1603,9 +1620,9 @@ def _should_return_abstract_region_interest_payload(
 def _abstract_region_interest_message() -> str:
     return (
         "你这句话是在描述地域边界，但“省外”“偏远”这类说法还不能稳定落到具体省市。"
-        "我先不生成采纳卡片，也不会改动方案。\n\n"
+        "我先不生成待采纳内容，也不会改动方案。\n\n"
         "可以先按这几个口径确认：哪些省份算太偏、是否排除偏远省份、"
-        "省会/沿海城市是否保留机会。等范围说清楚后，我再整理成确认卡片。"
+        "省会/沿海城市是否保留机会。等范围说清楚后，我再列出来让你采纳。"
     )
 
 
@@ -2677,6 +2694,7 @@ async def _apply_intents(
     batch: str,
     merged: dict[str, Any],
     intent_mode: str,
+    constraint_intent_type: str = CONSTRAINT_INTENT_DEFAULT,
 ) -> IntentStateUpdateResult:
     pm = ProfileManager(int(session_id), batch)
 
@@ -2733,6 +2751,7 @@ async def _apply_intents(
             action="apply",
             sessionId=session_id,
             intentMode=intent_mode,
+            constraintIntentType=constraint_intent_type,
             applied=True,
             messageCode="constraint_applied",
             merged=merged,
@@ -2754,6 +2773,7 @@ async def _apply_intents(
         action="apply",
         sessionId=session_id,
         intentMode=intent_mode,
+        constraintIntentType=constraint_intent_type,
         applied=True,
         messageCode="preference_applied",
         merged=merged,
@@ -2780,6 +2800,7 @@ async def analyze_volunteer_intent_change(
     recovery_scope: str | None = None,
     confirm_enabled: bool = True,
     intent_mode: str | None = None,
+    constraint_intent_type: str | None = None,
     persist_cache: bool | None = None,
 ) -> str:
     """Analyze intent changes and return structured facts as JSON.
@@ -2792,6 +2813,7 @@ async def analyze_volunteer_intent_change(
     """
     session_id = ctx.deps.sessionid
     batch = ctx.deps.batch or "01"
+    resolved_constraint_intent_type = _normalize_constraint_intent_type(constraint_intent_type)
     logger.info(
         "analyze_volunteer_intent_change: session_id=%s, majors=%s, schools=%s, cities=%s, edit_flag=%s, recovery_scope=%s",
         session_id, major_intents, school_intents, city_intents, edit_flag, recovery_scope,
@@ -2983,7 +3005,14 @@ async def analyze_volunteer_intent_change(
             )
         )
 
-    cache_data = _build_cache_data(major_intents, school_intents, city_intents, career_intents, resolved_intent_mode)
+    cache_data = _build_cache_data(
+        major_intents,
+        school_intents,
+        city_intents,
+        career_intents,
+        resolved_intent_mode,
+        resolved_constraint_intent_type,
+    )
     status = "existing_only" if not items else "ready"
     # 3.0.3 后，新待确认意向以 pendingConfirmation 为主状态源。
     # planEditCache 仅保留为旧会话 adapter，除非调用方显式要求兼容写入。
@@ -3005,6 +3034,7 @@ async def analyze_volunteer_intent_change(
         sessionId=session_id,
         title=_build_preview_title(edit_flag, resolved_intent_mode, analysis_stage),
         intentMode=resolved_intent_mode,
+        constraintIntentType=resolved_constraint_intent_type,
         analysisStage=analysis_stage,
         editFlag=edit_flag,
         items=items,
@@ -3116,6 +3146,9 @@ async def apply_selected_intents(
 
     explicit_intent_mode = str(selected_data.get("intentMode") or selected_data.get("intent_mode") or "").strip()
     intent_mode = explicit_intent_mode if explicit_intent_mode in {INTENT_MODE_PREFERENCE, INTENT_MODE_CONSTRAINT} else INTENT_MODE_PREFERENCE
+    constraint_intent_type = _normalize_constraint_intent_type(
+        selected_data.get("constraintIntentType") or selected_data.get("constraint_intent_type")
+    )
     if message_id:
         try:
             msg_resp = await get_message_by_id(message_id)
@@ -3126,6 +3159,11 @@ async def apply_selected_intents(
                 card_intent_mode = str(content_obj.get("intentMode") or "").strip()
                 if card_intent_mode in {INTENT_MODE_PREFERENCE, INTENT_MODE_CONSTRAINT}:
                     intent_mode = card_intent_mode
+                card_constraint_type = _normalize_constraint_intent_type(
+                    content_obj.get("constraintIntentType") or content_obj.get("constraint_intent_type")
+                )
+                if card_constraint_type != CONSTRAINT_INTENT_DEFAULT:
+                    constraint_intent_type = card_constraint_type
         except Exception:
             logger.warning("读取意向确认卡片模式失败，默认按偏好处理: session_id=%s", session_id, exc_info=True)
 
@@ -3136,6 +3174,7 @@ async def apply_selected_intents(
             batch=batch,
             merged=merged,
             intent_mode=intent_mode,
+            constraint_intent_type=constraint_intent_type,
         )
         result.action = "apply_selected"
         log_event(
@@ -3145,6 +3184,7 @@ async def apply_selected_intents(
             applied=bool(result.applied),
             messageCode=result.messageCode,
             intentMode=result.intentMode,
+            constraintIntentType=result.constraintIntentType,
             durationMs=int((time.monotonic() - started_at) * 1000),
             status="success" if result.applied else "error",
         )

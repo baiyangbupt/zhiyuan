@@ -28,6 +28,7 @@ import com.ytell.zhiyuan.model.dto.gaotu.req.ProgramPageReq;
 import com.ytell.zhiyuan.model.dto.gaotu.req.RecommendNumReq;
 import com.ytell.zhiyuan.model.dto.inner.ChatSessionExtraDataReq;
 import com.ytell.zhiyuan.model.dto.inner.VolunteerDataDTO;
+import com.ytell.zhiyuan.model.dto.planning.StudentPlanningSummaryDTO;
 import com.ytell.zhiyuan.model.dto.volunteer.VolunteerSchoolGroup;
 import com.ytell.zhiyuan.model.entity.biz.ChatSession;
 import com.ytell.zhiyuan.model.entity.biz.ChatSessionExtraData;
@@ -52,7 +53,9 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.Date;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.stream.Collectors;
 
 /**
@@ -178,7 +181,76 @@ public class ChatSessionBizService {
         CreateSessionReq.PrepareType prepareType = scoreDetail != null ? scoreDetail.getPrepareType() : null;
         ChatSessionVo vo = ChatSessionVo.fromEntity(chatSession, botVo, getSessionExtraSummaryData(chatSession), prepareType);
         vo.setExamYear(scoreDetail != null ? scoreDetail.getExamYear() : null);
+        vo.setStudentSummary(buildStudentPlanningSummary(scoreDetail));
         return vo;
+    }
+
+    private StudentPlanningSummaryDTO buildStudentPlanningSummary(CreateSessionReq scoreDetail) {
+        StudentPlanningSummaryDTO summary = new StudentPlanningSummaryDTO();
+        if (scoreDetail == null) {
+            return summary;
+        }
+        summary.setSex(formatSex(scoreDetail.getSex()));
+        summary.setScore(scoreDetail.getTotalScore());
+        summary.setRank(scoreDetail.getTotalScorePos());
+        if (scoreDetail.getBatch() != null) {
+            summary.setBatchName(defaultString(scoreDetail.getBatch().getName()));
+            if (scoreDetail.getBatch().getScore() != null) {
+                summary.setBatchScore(Math.round(scoreDetail.getBatch().getScore()));
+            }
+        }
+        if (scoreDetail.getProvince() != null) {
+            summary.setProvinceName(defaultString(scoreDetail.getProvince().getName()));
+        }
+        summary.setSubjects(resolveSubjectNames(scoreDetail.getSubjectList()));
+        summary.setStrengthSubjects(resolveStrengthSubjects(scoreDetail));
+        return summary;
+    }
+
+    private String formatSex(CreateSessionReq.Sex sex) {
+        if (sex == null) {
+            return "";
+        }
+        String name = defaultString(sex.getName());
+        if (!Strings.isNullOrEmpty(name)) {
+            return name;
+        }
+        String code = defaultString(sex.getCode()).toLowerCase(Locale.ROOT);
+        if ("male".equals(code) || "m".equals(code) || "1".equals(code) || "男".equals(code)) {
+            return "男";
+        }
+        if ("female".equals(code) || "f".equals(code) || "2".equals(code) || "女".equals(code)) {
+            return "女";
+        }
+        return defaultString(sex.getCode());
+    }
+
+    private String defaultString(String value) {
+        return value == null ? "" : value;
+    }
+
+    private List<String> resolveSubjectNames(List<CreateSessionReq.SubjectItem> subjectList) {
+        if (subjectList == null) {
+            return Lists.newArrayList();
+        }
+        return subjectList.stream()
+                .filter(Objects::nonNull)
+                .map(CreateSessionReq.SubjectItem::getName)
+                .filter(name -> !Strings.isNullOrEmpty(name))
+                .distinct()
+                .collect(Collectors.toList());
+    }
+
+    private List<String> resolveStrengthSubjects(CreateSessionReq scoreDetail) {
+        if (scoreDetail == null || scoreDetail.getStrengthSubjectList() == null) {
+            return Lists.newArrayList();
+        }
+        return scoreDetail.getStrengthSubjectList().stream()
+                .filter(Objects::nonNull)
+                .map(CreateSessionReq.SubjectScore::getSubjectName)
+                .filter(name -> !Strings.isNullOrEmpty(name))
+                .distinct()
+                .collect(Collectors.toList());
     }
 
     /**
@@ -333,6 +405,7 @@ public class ChatSessionBizService {
                 tenantId, chatSession.getId(), System.currentTimeMillis() - requestStart);
         ChatSessionVo vo = ChatSessionVo.fromEntity(chatSession, botVo, getSessionExtraSummaryData(chatSession), prepareType);
         vo.setExamYear(createSessionReq.getExamYear());
+        vo.setStudentSummary(buildStudentPlanningSummary(createSessionReq));
         return vo;
     }
 

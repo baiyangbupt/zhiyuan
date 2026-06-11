@@ -11,6 +11,8 @@ public class PlanningWorkspaceStateRes {
     private Integer version;
     private String phase;
     private StaleFlagsDTO staleFlags = new StaleFlagsDTO();
+    private StudentPlanningSummaryDTO studentSummary = new StudentPlanningSummaryDTO();
+    private ProfileStateDTO profileState = new ProfileStateDTO();
     private ConstraintStateDTO constraintState = new ConstraintStateDTO();
     private PlanGenerationStateDTO planGenerationState = new PlanGenerationStateDTO();
     private InitialRecommendationStateDTO initialRecommendationState = new InitialRecommendationStateDTO();

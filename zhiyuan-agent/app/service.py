@@ -41,6 +41,7 @@ from app.tools.plan_execution_tool import (
     clear_recent_plan_execution_result,
     consume_recent_plan_execution_result,
     execute_plan_action,
+    _matching_major_scope_records,
 )
 from app.tools.plan_orchestration_models import normalize_plan_action_payload
 from app.tools.intent_state_tool import (
@@ -159,9 +160,9 @@ _READONLY_MUTATION_GUARD_REPLY = (
 )
 _UNBACKED_CONFIRM_SENTENCE_RE = re.compile(r"确认要我.*执行")
 _UNBACKED_PLAN_CONFIRMATION_REPLY = (
-    "这轮还没有生成可点击的方案确认卡片，所以不会改动当前方案。"
-    "如果你要继续调整，请再发一次具体要求，我会重新定位影响范围并生成确认卡片；"
-    "只有生成确认卡片并完成确认后才会执行。"
+    "这轮还没有生成可执行的调整内容，所以不会改动当前方案。"
+    "如果你要继续调整，请再发一次具体要求，我会重新定位影响范围并列出调整预览；"
+    "只有你点“确认执行”或直接确认当前有效预览后才会执行。"
 )
 _ROUTE_OBSERVABILITY_MODEL_NAME = "route-observability"
 _INTENT_PREVIEW_TOOL_NAMES = {
@@ -865,14 +866,17 @@ def _format_intent_card_content(summary: str, *, existing_summary: str = "") -> 
     lines: list[str] = []
     summary_parts = [part.strip() for part in str(summary or "").split("；") if part.strip()]
     if summary_parts:
-        lines.append("点击采纳后生效：")
-        lines.extend(f"- {part}" for part in summary_parts)
+        lines.extend(f"- {part}" for part in summary_parts[:3])
+        if len(summary_parts) > 3:
+            lines.append(f"- 另有 {len(summary_parts) - 3} 条，采纳后会一并作为后续参考")
     existing_parts = [part.strip() for part in str(existing_summary or "").split("；") if part.strip()]
     if existing_parts:
         if lines:
             lines.append("")
-        lines.append("当前已记录的报考参考：")
-        lines.extend(f"- {part}" for part in existing_parts)
+        lines.append("当前已有参考：")
+        lines.extend(f"- {part}" for part in existing_parts[:3])
+        if len(existing_parts) > 3:
+            lines.append(f"- 另有 {len(existing_parts) - 3} 条，可在页面顶部“查看意向”里查看")
     return "\n".join(lines).strip() or summary
 
 
@@ -901,32 +905,22 @@ def _summarize_selected_intent_payload(intent_payload: dict[str, Any] | None) ->
 
 def _format_plan_card_intent_impact(intent_payload: dict[str, Any] | None) -> str:
     merged = _merge_selected_intent_payload(intent_payload)
-    base = "完成确认前不会改动当前方案；点击卡片确认最清楚，直接回复“确认/执行”也会按当前有效卡片处理。"
+    base = "确认前不会改动当前方案。"
     if not merged:
         return base
     intent_mode = str((intent_payload or {}).get("intentMode") or "preference").strip()
     has_positive = _intent_payload_has_positive_value(merged)
     has_negative = _intent_payload_has_negative_value(merged)
     if intent_mode == "constraint" and has_positive and has_negative:
-        return (
-            f"{base}确认后会执行本次方案调整，并同步更新后续报考参考："
-            "偏好方向会提高推荐优先级，排除要求会作为过滤和方案检查边界。"
-        )
+        return f"{base}确认后会执行本次调整；优先方向会作为后续推荐参考，避开的方向会用于后续检查。"
     if intent_mode == "constraint" and has_negative:
-        return (
-            f"{base}确认后会执行本次方案调整，并同步把这条要求写入后续报考参考，"
-            "用于过滤、排除和方案检查。"
-        )
+        return f"{base}确认后会执行本次调整，并把这条避开条件作为后续参考。"
     if intent_mode == "constraint" and has_positive:
-        return (
-            f"{base}确认后会执行本次方案调整，并同步把这条要求写入后续报考参考，"
-            "后续推荐、方案检查和调整会围绕这些方向。"
-        )
+        return f"{base}确认后会执行本次调整，并把这条保留条件作为后续参考。"
+    if has_positive and has_negative:
+        return f"{base}确认后会执行本次调整；优先方向会作为后续推荐参考，不优先方向会适当靠后。"
     if has_positive or has_negative:
-        return (
-            f"{base}确认后会执行本次方案调整，并同步更新后续报考参考，"
-            "用于刷新推荐系数和专家优选。"
-        )
+        return f"{base}确认后会执行本次调整，并同步后续报考参考。"
     return base
 
 
@@ -986,21 +980,26 @@ def _intent_confirmation_mechanism_line(
 ) -> str:
     has_positive = _intent_payload_has_positive_value(payload)
     has_negative = _intent_payload_has_negative_value(payload)
+    constraint_intent_type = str((payload or {}).get("constraintIntentType") or (payload or {}).get("constraint_intent_type") or "default").strip()
+    if intent_mode == "constraint" and constraint_intent_type == "only_keep":
+        return "采纳后只保留这个范围；方案需要改动时会先给你看预览。"
+    if intent_mode == "constraint" and constraint_intent_type == "must_have":
+        return "采纳后至少保留这个方向；方案需要补入时会先给你看预览。"
     if intent_mode == "constraint" and has_positive and has_negative:
-        return "采纳后会同步更新后续报考参考：偏好方向会提高推荐优先级，排除要求会作为过滤、排除和方案检查边界；不会改小基础候选池，也不会直接删除当前方案。"
+        return "采纳后优先方向会排得更靠前，避开的方向会用于后续检查。"
     if intent_mode == "constraint" and has_positive:
-        return "采纳后会写入明确要求，后续推荐、方案检查和调整会围绕这些方向；不会改小基础候选池，也不会直接删除当前方案。"
+        return "采纳后会优先满足这些方向，并用于后续检查。"
     if intent_mode == "constraint" and has_negative:
-        return "采纳后会写入明确要求，后续推荐、方案检查和调整会避开这些方向；不会改小基础候选池，也不会直接删除当前方案。"
+        return "采纳后会避开这些方向，并用于后续检查。"
     if intent_mode == "constraint":
-        return "采纳后会写入明确要求，用于后续推荐、方案检查和调整；不会改小基础候选池，也不会直接删除当前方案。"
+        return "采纳后会作为后续推荐和方案检查依据。"
     if has_positive and has_negative:
-        return "采纳后会影响推荐系数和专家优选推荐：优先关注偏好方向，同时降低不优先方向的排序权重；不会直接删除当前方案。"
+        return "采纳后优先方向会排得更靠前，不优先方向会适当靠后。"
     if has_positive:
-        return "采纳后会影响推荐系数和专家优选推荐，后续看候选和方案会提高这些方向的优先级；不会直接删除当前方案。"
+        return "采纳后这些方向会排得更靠前。"
     if has_negative:
-        return "采纳后会影响推荐系数和专家优选推荐，后续看候选和方案会降低这些方向的优先级；不会直接删除当前方案。"
-    return "采纳后会影响推荐系数和专家优选推荐，用于后续候选和方案建议；不会直接删除当前方案。"
+        return "采纳后这些方向会适当靠后。"
+    return "采纳后会作为后续推荐参考。"
 
 
 def _format_intent_card_impact(payload: dict[str, Any] | None, *, intent_mode: str) -> str:
@@ -1012,7 +1011,7 @@ def _format_intent_card_impact(payload: dict[str, Any] | None, *, intent_mode: s
     )
     lines = [_intent_confirmation_mechanism_line(intent_mode, payload)]
     lines.extend(line for line in impact_lines if line and line not in lines)
-    return "\n".join(f"- {line}" for line in lines[:3])
+    return "\n".join(f"- {line}" for line in lines[:2])
 
 
 def _build_intent_pending_state(
@@ -1023,6 +1022,7 @@ def _build_intent_pending_state(
     intent_mode: str,
     batch: str,
     summary: str,
+    constraint_intent_type: str = "default",
     replaced_pending: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     pending_id = str(uuid.uuid4())
@@ -1040,6 +1040,7 @@ def _build_intent_pending_state(
             "selectedData": selected_data,
             "merged": merged,
             "intentMode": intent_mode,
+            "constraintIntentType": constraint_intent_type,
             "batch": batch,
         },
         "createdAt": now,
@@ -1047,6 +1048,8 @@ def _build_intent_pending_state(
     }
     if replaced_pending and replaced_pending.get("pendingId"):
         state["replacesPendingId"] = replaced_pending.get("pendingId")
+    if constraint_intent_type and constraint_intent_type != "default":
+        state["constraintIntentType"] = constraint_intent_type
     return state
 
 
@@ -1120,15 +1123,279 @@ def _build_constraint_remove_units_preview_payload(
     }
 
 
-async def _maybe_create_plan_removal_confirmation_from_constraint_preview(
+def _major_values_from_positive_intents(major_intents: dict[str, Any]) -> list[str]:
+    values: list[str] = []
+    for key in ("level3", "level2", "level1"):
+        for value in _as_text_list(major_intents.get(key)):
+            if value and value not in values:
+                values.append(value)
+    return values
+
+
+def _ordered_item_major_names(item: dict[str, Any]) -> list[str]:
+    names: list[str] = []
+
+    def add(value: Any) -> None:
+        text = str(value or "").strip()
+        if text and text not in names:
+            names.append(text)
+
+    add(item.get("majorName"))
+    add(item.get("majorCategory"))
+    add(item.get("majorSubCategory"))
+    for major in item.get("majorItems") or item.get("majors") or []:
+        if not isinstance(major, dict):
+            continue
+        add(major.get("majorName"))
+        add(major.get("majorCategory"))
+        add(major.get("majorSubCategory"))
+    return names
+
+
+def _ordered_item_volunteer_ids(item: dict[str, Any]) -> list[str]:
+    ids: list[str] = []
+
+    def add(value: Any) -> None:
+        text = str(value or "").strip()
+        if text and text not in ids:
+            ids.append(text)
+
+    add(item.get("volunteerId"))
+    for major in item.get("majorItems") or item.get("majors") or []:
+        if isinstance(major, dict):
+            add(major.get("volunteerId"))
+    return ids
+
+
+def _text_scope_match(value: Any, target: str) -> bool:
+    text = re.sub(r"\s+", "", str(value or ""))
+    normalized_target = re.sub(r"\s+", "", str(target or ""))
+    return bool(text and normalized_target and (normalized_target in text or text in normalized_target))
+
+
+def _ordered_item_matches_keep_scope(
+    item: dict[str, Any],
+    *,
+    major_targets: list[str],
+    school_targets: list[str],
+    region_targets: list[str],
+    batch: str | None = "01",
+) -> bool:
+    if major_targets:
+        if _matching_major_scope_records(item, major_targets, batch):
+            return True
+    if school_targets:
+        if any(_text_scope_match(item.get("schoolName"), target) for target in school_targets):
+            return True
+    if region_targets:
+        region_fields = [
+            item.get("province"),
+            item.get("provinceName"),
+            item.get("city"),
+            item.get("cityName"),
+            item.get("schoolProvince"),
+            item.get("schoolCity"),
+            item.get("schoolName"),
+        ]
+        if any(_text_scope_match(field, target) for field in region_fields for target in region_targets):
+            return True
+    return False
+
+
+def _positive_scope_label(merged: dict[str, Any], batch: str | None = "01") -> str:
+    major_intents = merged.get("major_intents") if isinstance(merged.get("major_intents"), dict) else {}
+    school_intents = merged.get("school_intents") if isinstance(merged.get("school_intents"), dict) else {}
+    city_intents = merged.get("city_intents") if isinstance(merged.get("city_intents"), dict) else {}
+    parts: list[str] = []
+    major_targets = _major_values_from_positive_intents(major_intents)
+    school_targets = _normalize_school_intent_names(school_intents.get("colleges"), batch)
+    region_targets = (
+        normalize_region_names(city_intents.get("province"), expected_level="province")
+        + normalize_region_names(city_intents.get("city"), expected_level="city")
+    )
+    if major_targets:
+        parts.append("专业：" + "、".join(major_targets[:3]))
+    if school_targets:
+        parts.append("院校：" + "、".join(school_targets[:3]))
+    if region_targets:
+        parts.append("地域：" + "、".join(region_targets[:3]))
+    return "；".join(parts) or "指定范围"
+
+
+async def _build_only_keep_remove_preview_payload(
+    session_id: str,
+    merged: dict[str, Any],
+    *,
+    summary: str,
+    batch: str | None = "01",
+) -> dict[str, Any] | None:
+    major_intents = merged.get("major_intents") if isinstance(merged.get("major_intents"), dict) else {}
+    school_intents = merged.get("school_intents") if isinstance(merged.get("school_intents"), dict) else {}
+    city_intents = merged.get("city_intents") if isinstance(merged.get("city_intents"), dict) else {}
+    major_targets = _major_values_from_positive_intents(major_intents)
+    school_targets = _normalize_school_intent_names(school_intents.get("colleges"), batch)
+    region_targets = (
+        normalize_region_names(city_intents.get("province"), expected_level="province")
+        + normalize_region_names(city_intents.get("city"), expected_level="city")
+    )
+    if not any((major_targets, school_targets, region_targets)):
+        return None
+    try:
+        workspace_resp = await get_planning_workspace_state(session_id)
+    except Exception:
+        logger.warning("Failed to load workspace state for only-keep preview: session_id=%s", session_id, exc_info=True)
+        return None
+    workspace = (workspace_resp or {}).get("data") or {}
+    ordered_state = workspace.get("orderedPlanState") or {}
+    ordered_items = ordered_state.get("items") or []
+    if not isinstance(ordered_items, list) or not ordered_items:
+        return None
+    remove_ids: list[str] = []
+    keep_count = 0
+    for item in ordered_items:
+        if not isinstance(item, dict):
+            continue
+        if _ordered_item_matches_keep_scope(
+            item,
+            major_targets=major_targets,
+            school_targets=school_targets,
+            region_targets=region_targets,
+            batch=batch,
+        ):
+            keep_count += len(_ordered_item_volunteer_ids(item)) or 1
+            continue
+        for volunteer_id in _ordered_item_volunteer_ids(item):
+            if volunteer_id not in remove_ids:
+                remove_ids.append(volunteer_id)
+    if not remove_ids:
+        return None
+    scope_label = _positive_scope_label(merged, batch)
+    preview_summary = (
+        f"我理解为只保留“{scope_label}”相关志愿。当前方案里已有 {keep_count} 条相关志愿；"
+        f"若执行，会移出其他方向的 {len(remove_ids)} 条志愿，并在执行后重新审查。"
+    )
+    return {
+        "stage": "preview",
+        "action_family": "remove_units",
+        "user_goal": summary,
+        "context_summary": "",
+        "preview_summary": preview_summary,
+        "requires_confirmation": True,
+        "should_rerun_review": True,
+        "should_refresh_workspace": True,
+        "missing_inputs": [],
+        "intent_relation": "only_keep",
+        "atomic_actions": [
+            {
+                "action_type": "remove_units",
+                "volunteer_ids": remove_ids,
+                "reason": summary,
+            }
+        ],
+    }
+
+
+async def _build_must_have_add_preview_payload(
+    session_id: str,
+    merged: dict[str, Any],
+    *,
+    summary: str,
+    batch: str | None = "01",
+) -> dict[str, Any] | None:
+    major_intents = merged.get("major_intents") if isinstance(merged.get("major_intents"), dict) else {}
+    school_intents = merged.get("school_intents") if isinstance(merged.get("school_intents"), dict) else {}
+    city_intents = merged.get("city_intents") if isinstance(merged.get("city_intents"), dict) else {}
+    major_targets = _major_values_from_positive_intents(major_intents)
+    school_targets = _normalize_school_intent_names(school_intents.get("colleges"), batch)
+    province_targets = normalize_region_names(city_intents.get("province"), expected_level="province")
+    city_targets = normalize_region_names(city_intents.get("city"), expected_level="city")
+    region_targets = province_targets + city_targets
+    if not any((major_targets, school_targets, region_targets)):
+        return None
+    try:
+        workspace_resp = await get_planning_workspace_state(session_id)
+    except Exception:
+        logger.warning("Failed to load workspace state for must-have preview: session_id=%s", session_id, exc_info=True)
+        return None
+    workspace = (workspace_resp or {}).get("data") or {}
+    ordered_state = workspace.get("orderedPlanState") or {}
+    ordered_items = ordered_state.get("items") or []
+    if isinstance(ordered_items, list):
+        for item in ordered_items:
+            if not isinstance(item, dict):
+                continue
+            if _ordered_item_matches_keep_scope(
+                item,
+                major_targets=major_targets,
+                school_targets=school_targets,
+                region_targets=region_targets,
+                batch=batch,
+            ):
+                return None
+    filters: dict[str, Any] = {
+        "limit": "1",
+        "school_tags": "[]",
+        "major_tags": "[]",
+    }
+    if major_targets:
+        filters["major_keyword"] = major_targets[0]
+    if school_targets:
+        filters["school_keyword"] = school_targets[0]
+    if province_targets:
+        filters["province_keyword"] = province_targets[0]
+    if city_targets:
+        filters["city_keyword"] = city_targets[0]
+    scope_label = _positive_scope_label(merged, batch)
+    return {
+        "stage": "preview",
+        "action_family": "add_units",
+        "user_goal": summary,
+        "context_summary": "",
+        "preview_summary": (
+            f"我理解为当前方案至少要有“{scope_label}”相关志愿。"
+            "当前方案里暂时没看到这个方向；我会先找 1 个候选补入，执行前需要你确认。"
+        ),
+        "requires_confirmation": True,
+        "should_rerun_review": True,
+        "should_refresh_workspace": True,
+        "missing_inputs": [],
+        "intent_relation": "must_have",
+        "atomic_actions": [
+            {
+                "action_type": "add_units",
+                "volunteer_ids": [],
+                "filters": filters,
+                "reason": summary,
+            }
+        ],
+    }
+
+
+async def _maybe_create_plan_confirmation_from_constraint_preview(
     session_id: str,
     *,
     selected_data: dict[str, Any],
     merged: dict[str, Any],
     batch: str,
     summary: str,
+    constraint_intent_type: str = "default",
 ) -> WSResponse | None:
-    plan_payload = _build_constraint_remove_units_preview_payload(merged, summary=summary, batch=batch)
+    if constraint_intent_type == "must_have":
+        plan_payload = await _build_must_have_add_preview_payload(
+            session_id,
+            merged,
+            summary=summary,
+            batch=batch,
+        )
+    elif constraint_intent_type == "only_keep":
+        plan_payload = await _build_only_keep_remove_preview_payload(
+            session_id,
+            merged,
+            summary=summary,
+            batch=batch,
+        )
+    else:
+        plan_payload = _build_constraint_remove_units_preview_payload(merged, summary=summary, batch=batch)
     if not plan_payload:
         return None
     request_context = RequestContext(
@@ -1154,7 +1421,10 @@ async def _maybe_create_plan_removal_confirmation_from_constraint_preview(
     if not isinstance(result, dict):
         return None
     facts = result.get("facts") if isinstance(result.get("facts"), dict) else {}
-    if result.get("result_kind") != "preview_only" or _as_int(facts.get("matched_count")) <= 0:
+    result_action_family = str(result.get("action_family") or plan_payload.get("action_family") or "").strip()
+    if result.get("result_kind") != "preview_only":
+        return None
+    if result_action_family == "remove_units" and _as_int(facts.get("matched_count")) <= 0:
         return None
     result = dict(result)
     facts = dict(facts)
@@ -1185,6 +1455,7 @@ async def _create_pending_intent_confirmation_response(
     replaced_pending = await _load_pending_confirmation_state(session_id)
     summary = _summarize_intent_values(merged, intent_mode=intent_mode)
     mode_text = "要求" if intent_mode == "constraint" else "偏好"
+    constraint_intent_type = str(selected_data.get("constraintIntentType") or selected_data.get("constraint_intent_type") or "default").strip() or "default"
     if not summary:
         summary = f"本次选择的{mode_text}内容。"
     pending_state = _build_intent_pending_state(
@@ -1194,6 +1465,7 @@ async def _create_pending_intent_confirmation_response(
         intent_mode=intent_mode,
         batch=batch,
         summary=summary,
+        constraint_intent_type=constraint_intent_type,
         replaced_pending=replaced_pending if isinstance(replaced_pending, dict) else None,
     )
     await _save_pending_confirmation_state(session_id, pending_state)
@@ -1204,15 +1476,22 @@ async def _create_pending_intent_confirmation_response(
         "pendingId": pending_state["pendingId"],
         "kind": "intent_change",
         "actionFamily": "apply_selected_intents",
-        "title": f"确认采纳这次{mode_text}",
+        "title": "采纳这次报考条件" if intent_mode == "constraint" else "采纳这次报考想法",
         "summary": summary,
         "content": card_content,
+        "constraintIntentType": constraint_intent_type,
         "clickable": True,
         "status": "active",
         "confirmText": "采纳",
         "cancelText": "暂不采纳",
         "impactTitle": "采纳后的作用",
-        "impact": _format_intent_card_impact(merged, intent_mode=intent_mode),
+        "impact": _format_intent_card_impact(
+            {
+                **merged,
+                "constraintIntentType": constraint_intent_type,
+            },
+            intent_mode=intent_mode,
+        ),
     }
     return ChatServiceResponseEnvelope(
         primary="",
@@ -1299,18 +1578,20 @@ async def _create_pending_intent_confirmation_from_preview_payload(
     intent_mode = str(preview.intentMode or "preference").strip()
     if intent_mode not in {"preference", "constraint"}:
         intent_mode = "preference"
+    constraint_intent_type = str(getattr(preview, "constraintIntentType", "default") or "default").strip() or "default"
     existing_merged = _merge_intent_preview_item_values(list(preview.existingItems))
     existing_summary = _summarize_intent_values(existing_merged, intent_mode=intent_mode)
     batch = await _resolve_session_batch(session_id)
     selected_data = {
         "selected": selected_values,
         "intentMode": intent_mode,
+        "constraintIntentType": constraint_intent_type,
         "batch": batch,
     }
     replaced_pending = await _load_pending_confirmation_state(session_id)
     summary = _summarize_intent_values(merged, intent_mode=intent_mode) or preview.title or "本次点击采纳后生效的内容。"
     if intent_mode == "constraint":
-        plan_removal_card = await _maybe_create_plan_removal_confirmation_from_constraint_preview(
+        plan_confirmation_card = await _maybe_create_plan_confirmation_from_constraint_preview(
             session_id,
             selected_data=_selected_data_with_existing_positive_context(
                 selected_data,
@@ -1319,9 +1600,10 @@ async def _create_pending_intent_confirmation_from_preview_payload(
             merged=merged,
             batch=batch,
             summary=summary,
+            constraint_intent_type=constraint_intent_type,
         )
-        if plan_removal_card is not None:
-            return plan_removal_card
+        if plan_confirmation_card is not None:
+            return plan_confirmation_card
     pending_state = _build_intent_pending_state(
         session_id,
         selected_data=selected_data,
@@ -1329,20 +1611,21 @@ async def _create_pending_intent_confirmation_from_preview_payload(
         intent_mode=intent_mode,
         batch=batch,
         summary=summary,
+        constraint_intent_type=constraint_intent_type,
         replaced_pending=replaced_pending if isinstance(replaced_pending, dict) else None,
     )
     await _save_pending_confirmation_state(session_id, pending_state)
     await _clear_legacy_plan_edit_cache_best_effort(session_id)
-    mode_text = "要求" if intent_mode == "constraint" else "偏好"
     card_content = _format_intent_card_content(summary, existing_summary=existing_summary)
     card_payload = {
         "type": "pendingConfirmationCard",
         "pendingId": pending_state["pendingId"],
         "kind": "intent_change",
         "actionFamily": "apply_selected_intents",
-        "title": f"确认采纳这次{mode_text}",
+        "title": "采纳这次报考条件" if intent_mode == "constraint" else "采纳这次报考想法",
         "summary": summary,
         "content": card_content,
+        "constraintIntentType": constraint_intent_type,
         "clickable": True,
         "status": "active",
         "confirmText": "采纳",
@@ -1496,7 +1779,7 @@ async def _create_pending_plan_confirmation_response(
         "summary": summary or "确认后会执行本次方案调整。",
         "content": content,
         "impactTitle": "确认说明",
-        "impact": "完成确认前不会改动当前方案；点击卡片确认最清楚，直接回复“确认/执行”也会按当前有效卡片处理。",
+        "impact": "完成确认前不会改动当前方案；点“确认执行”最清楚，直接回复“确认/执行”也会按当前有效预览处理。",
         "clickable": True,
         "status": "active",
         "confirmText": "确认执行",
@@ -1973,14 +2256,14 @@ def _normalize_pending_intent_reply(reply: str) -> str:
         ("我已经记下了你对", "我先把你对"),
         ("好的，我记下了", "我先整理一下"),
         ("好的，我已经记下了", "我先整理一下"),
-        ("我已经按你的偏好记录下来", "我先把这个偏好整理出来，等你点击卡片采纳后再作为后续参考"),
-        ("我已经记录下来", "我先把这个偏好整理出来，等你点击卡片采纳后再作为后续参考"),
-        ("我先把这个偏好整理成待确认参考，你确认后我再正式生效。", "我先把这个偏好整理成确认卡片，采纳/确认前不会生效。"),
+        ("我已经按你的偏好记录下来", "我先把这个想法整理出来，等你点“采纳”后再作为后续参考"),
+        ("我已经记录下来", "我先把这个想法整理出来，等你点“采纳”后再作为后续参考"),
+        ("我先把这个偏好整理成待确认参考，你确认后我再正式生效。", "我先把这个想法列出来，点“采纳”前不会生效。"),
     )
     for source, target in replacements:
         normalized = normalized.replace(source, target)
     if normalized != reply and "确认" not in normalized:
-        normalized = normalized.rstrip("。") + "。如果要按这个方向作为后续参考，请点击卡片采纳。"
+        normalized = normalized.rstrip("。") + "。如果要按这个方向作为后续参考，请点“采纳”。"
     return normalized
 
 
@@ -2043,35 +2326,35 @@ def _normalize_general_confirmation_protocol_wording(reply: str) -> str:
     if not isinstance(reply, str) or not reply.strip():
         return reply
     normalized = reply
-    confirmation_boundary = "我会先整理成确认卡片，点击采纳前不会覆盖偏好，也不会自动改候选或方案"
+    confirmation_boundary = "我会先把要采用的内容列出来，点“采纳”前不会覆盖原来的想法，也不会自动改候选或方案"
     replacements = (
         (
             "直接告诉我就行",
-            "直接告诉我，我会先整理成确认卡片，等你点击采纳后再生效",
+            "直接告诉我，我会先把要采用的内容列出来，等你点“采纳”后再生效",
         ),
         (
             "你直接告诉我新的想法就行",
-            "你可以直接告诉我新的想法，我会先整理成确认卡片，等你点击采纳后再生效",
+            "你可以直接告诉我新的想法，我会先把要采用的内容列出来，等你点“采纳”后再生效",
         ),
         (
             "直接告诉我新的想法就行",
-            "可以直接告诉我新的想法，我会先整理成确认卡片，采纳/确认前不会生效",
+            "可以直接告诉我新的想法，我会先把要采用的内容列出来，点“采纳”前不会生效",
         ),
         (
             "我就能按新的要求重新筛选",
-            "点击采纳前不会自动改候选或方案；采纳后我再按新的要求继续看候选和方案",
+            "点“采纳”前不会自动改候选或方案；采纳后我再按新的要求继续看候选和方案",
         ),
         (
             "我就能重新调整推荐口径和候选志愿",
-            "我会先整理成确认卡片；采纳后再调整推荐口径和候选志愿",
+            "我会先把要采用的内容列出来；采纳后再调整推荐口径和候选志愿",
         ),
         (
             "我会重新整理，不会锁定之前的偏好",
-            "我会先重新整理成确认卡片；点击采纳前不会覆盖之前的偏好，也不会自动改候选或方案",
+            "我会先重新列出要采用的内容；点“采纳”前不会覆盖之前的想法，也不会自动改候选或方案",
         ),
         (
             "随时可以在对话里改",
-            "随时可以在对话里提出调整；我会先整理成确认卡片，采纳/确认前不会生效",
+            "随时可以在对话里提出调整；我会先把要采用的内容列出来，点“采纳”前不会生效",
         ),
         (
             "在我们这里，随时能改",
@@ -2091,11 +2374,11 @@ def _normalize_general_confirmation_protocol_wording(reply: str) -> str:
         ),
         (
             "调整偏好后，系统会重新筛选符合条件的院校和专业",
-            "如果要正式更新偏好，我会先整理成确认卡片；点击采纳后，再按新偏好重新筛选符合条件的院校和专业",
+            "如果要正式更新这个想法，我会先列出来让你采纳；采纳后，再按新的想法重新筛选符合条件的院校和专业",
         ),
         (
             "调整后会重新匹配候选机会，已生成的方案也可以同步更新",
-            "如果要正式调整，我会先整理成确认卡片；采纳后再重新匹配候选机会，已生成的方案也会按确认后的动作更新",
+            "如果要正式调整，我会先列出调整内容；采纳后再重新匹配候选机会，已生成的方案也会按确认后的动作更新",
         ),
         (
             "修改偏好后可以重新生成或局部调整",
@@ -2115,94 +2398,96 @@ def _normalize_general_confirmation_protocol_wording(reply: str) -> str:
         ),
         (
             "再决定是否更新到后续推荐中",
-            "再决定是否整理成确认卡片；点击采纳前不会更新到后续推荐中",
+            "再决定是否列出来让你采纳；点“采纳”前不会更新到后续推荐中",
         ),
         (
             "我先帮你整理成待确认偏好",
-            "我可以先帮你整理成确认卡片，点击采纳前不会写入后续报考参考",
+            "我可以先把这个想法列出来，点“采纳”前不会写入后续报考参考",
         ),
         (
             "先帮你整理成待确认偏好",
-            "先帮你整理成确认卡片，点击采纳前不会写入后续报考参考",
+            "先把这个想法列出来，点“采纳”前不会写入后续报考参考",
         ),
         (
             "把这个偏好先记下来",
-            "把这个想法整理成确认卡片，点击采纳前不会作为后续参考",
+            "把这个想法列出来，点“采纳”前不会作为后续参考",
         ),
         (
             "把偏好先记下来",
-            "把想法整理成确认卡片，点击采纳前不会作为后续参考",
+            "把想法列出来，点“采纳”前不会作为后续参考",
         ),
         (
             "先保存这个思路",
-            "先把这个思路整理成确认卡片",
+            "先把这个思路列出来让你采纳",
         ),
     )
     for source, target in replacements:
         normalized = normalized.replace(source, target)
     normalized = re.sub(
         r"(?:有的话可以)?(?:直接)?告诉我[，,]?我帮你记成后续参考[。！？]?",
-        "如果要正式采用，我会先整理成确认卡片；采纳/确认前不会生效。",
+        "如果要正式采用，我会先把要采用的内容列出来；点“采纳”前不会生效。",
         normalized,
     )
     normalized = re.sub(
         r"我(?:先|会先|可以先)?帮你记成后续参考[。！？]?",
-        "我会先整理成确认卡片；采纳/确认前不会生效。",
+        "我会先把要采用的内容列出来；点“采纳”前不会生效。",
         normalized,
     )
     normalized = re.sub(
         r"我可以先整理成待确认(?:偏好|要求|意向|内容)[，,]?\s*确认后",
-        "我可以先整理成确认卡片；采纳/确认前不会生效。点击采纳后",
+        "我可以先把要采用的内容列出来；点“采纳”前不会生效。采纳后",
         normalized,
     )
     normalized = re.sub(
         r"我可以把(?P<topic>[^。！？\n]{0,100}?)整理成待确认(?:偏好|要求|意向|内容)[，,]?\s*确认后(?P<verb>会|再)",
-        r"我可以把\g<topic>整理成确认卡片；采纳/确认前不会生效，点击采纳后\g<verb>",
+        r"我可以先把\g<topic>列出来；点“采纳”前不会生效，采纳后\g<verb>",
         normalized,
     )
-    normalized = normalized.replace("我可以先整理成待确认偏好", "我可以先整理成确认卡片")
-    normalized = normalized.replace("我可以先整理成待确认要求", "我可以先整理成确认卡片")
-    normalized = normalized.replace("我可以先整理成待确认意向", "我可以先整理成确认卡片")
-    normalized = normalized.replace("我可以先整理成待确认内容", "我可以先整理成确认卡片")
-    normalized = normalized.replace("我先帮你整理成待确认偏好", "我先帮你整理成确认卡片")
-    normalized = normalized.replace("我先帮你整理成待确认要求", "我先帮你整理成确认卡片")
-    normalized = normalized.replace("我先帮你整理成待确认内容", "我先帮你整理成确认卡片")
-    normalized = normalized.replace("待确认偏好", "确认卡片")
-    normalized = normalized.replace("待确认要求", "确认卡片")
-    normalized = normalized.replace("待确认意向", "确认卡片")
+    normalized = normalized.replace("我可以先整理成待确认偏好", "我可以先把这个想法列出来")
+    normalized = normalized.replace("我可以先整理成待确认要求", "我可以先把这个报考条件列出来")
+    normalized = normalized.replace("我可以先整理成待确认意向", "我可以先把这个想法列出来")
+    normalized = normalized.replace("我可以先整理成待确认内容", "我可以先把要采用的内容列出来")
+    normalized = normalized.replace("我先帮你整理成待确认偏好", "我先把这个想法列出来")
+    normalized = normalized.replace("我先帮你整理成待确认要求", "我先把这个报考条件列出来")
+    normalized = normalized.replace("我先帮你整理成待确认内容", "我先把要采用的内容列出来")
+    normalized = normalized.replace("待确认偏好", "待采纳想法")
+    normalized = normalized.replace("待确认要求", "待采纳报考条件")
+    normalized = normalized.replace("待确认意向", "待采纳想法")
     normalized = re.sub(
         r"我可以整理成确认(?:偏好|要求|内容)[。；;]?\s*你确认后[，,]",
-        "我可以整理成确认卡片；采纳/确认前不会生效。点击采纳后，",
+        "我可以先把要采用的内容列出来；点“采纳”前不会生效。采纳后，",
         normalized,
     )
-    normalized = normalized.replace("我可以整理成确认偏好", "我可以整理成确认卡片")
-    normalized = normalized.replace("我可以整理成确认要求", "我可以整理成确认卡片")
-    normalized = normalized.replace("我可以整理成确认内容", "我可以整理成确认卡片")
-    normalized = normalized.replace("确认卡片，采纳后", "确认卡片；点击采纳后")
+    normalized = normalized.replace("我可以整理成确认偏好", "我可以先把这个想法列出来")
+    normalized = normalized.replace("我可以整理成确认要求", "我可以先把这个报考条件列出来")
+    normalized = normalized.replace("我可以整理成确认内容", "我可以先把要采用的内容列出来")
+    normalized = normalized.replace("确认卡片，采纳后", "待采纳内容；采纳后")
     normalized = normalized.replace("不会生效。，采纳后", "不会生效；点击采纳后")
     normalized = normalized.replace("不会生效。，点击采纳后", "不会生效；点击采纳后")
-    if "确认卡片" in normalized:
+    if any(marker in normalized for marker in ("确认卡片", "待采纳内容", "列出来让你采纳", "要采用的内容列出来")):
         consistency_replacements = (
             ("，改完立刻生效", ""),
             ("改完立刻生效", "采纳后生效"),
-            ("你确认后，我会", "点击卡片采纳后，我会"),
-            ("确认后，我会", "点击卡片采纳后，我会"),
-            ("你确认后再", "点击卡片采纳后再"),
-            ("确认后再", "点击卡片采纳后再"),
-            ("确认后会", "点击卡片采纳后会"),
-            ("我立刻帮你调整方案", "我会先整理成确认卡片，采纳后再调整方案"),
-            ("立刻帮你调整方案", "先整理成确认卡片，采纳后再调整方案"),
-            ("我直接帮你调整方案", "我会先整理成确认卡片，采纳后再调整方案"),
-            ("直接帮你调整方案", "先整理成确认卡片，采纳后再调整方案"),
+            ("你确认后，我会", "采纳后，我会"),
+            ("确认后，我会", "采纳后，我会"),
+            ("你确认后再", "采纳后再"),
+            ("确认后再", "采纳后再"),
+            ("确认后会", "采纳后会"),
+            ("如果孩子现在就有新想法，直接告诉我，我立刻帮你调整方案。", "如果孩子现在有新想法，我会先列出要采用的内容或调整预览；点“采纳”前不会改候选或方案。"),
+            ("我立刻帮你调整方案", "我会先列出调整内容，采纳后再调整方案"),
+            ("立刻帮你调整方案", "先列出调整内容，采纳后再调整方案"),
+            ("我直接帮你调整方案", "我会先列出调整内容，采纳后再调整方案"),
+            ("直接帮你调整方案", "先列出调整内容，采纳后再调整方案"),
+            ("确认前", "采纳前"),
         )
         for source, target in consistency_replacements:
             normalized = normalized.replace(source, target)
     if "确认卡片" not in normalized and _reply_discusses_changeable_intent_or_plan(normalized):
         normalized = (
             normalized.rstrip()
-            + "\n\n如果要正式更新偏好、要求或方案，我会先整理成确认卡片或调整预览；采纳/确认前不会生效。"
+            + "\n\n如果要正式更新想法、报考条件或方案，我会先列出要采用的内容或调整预览；采纳/确认前不会生效。"
         )
-    return normalized
+    return _normalize_user_facing_terms(normalized)
 
 
 def _reply_discusses_changeable_intent_or_plan(reply: str) -> bool:
@@ -2287,7 +2572,7 @@ def _reply_looks_like_unbacked_intent_preview(reply: str) -> bool:
 
 def _reply_claims_clickable_intent_card(reply: str) -> bool:
     compact = _compact_plan_reply_text(reply)
-    if "确认卡片" not in compact:
+    if not any(marker in compact for marker in ("确认卡片", "待采纳内容")):
         return False
     has_card_created_claim = any(
         marker in compact
@@ -2303,6 +2588,11 @@ def _reply_claims_clickable_intent_card(reply: str) -> bool:
             "已整理",
             "我已把",
             "这张确认卡片",
+            "已经列出",
+            "已列出",
+            "已经为你列出",
+            "已为你列出",
+            "这次待采纳内容",
         )
     )
     has_click_effect = any(
@@ -2326,17 +2616,17 @@ def _normalize_unbacked_intent_preview_reply(reply: str) -> str:
         return reply
     if "待确认内容" not in _compact_plan_reply_text(reply):
         return (
-            "这轮我还没有生成可点击的确认卡片，所以不会把这些内容写入后续报考参考。"
-            "如果你想正式采用，请直接说“把这个偏好和排除要求整理成确认卡片”，"
-            "我会先列清楚要采纳的内容，等你点击卡片后再生效。"
+            "这轮我还没有列出可采纳的内容，所以不会把这些想法写入后续报考参考。"
+            "如果你想正式采用，请直接说明要保留或避开的方向，"
+            "我会先列清楚要采纳的内容，等你点“采纳”后再生效。"
         )
     normalized = re.sub(r"\*\*待确认内容\*\*", "**这轮先按咨询结论理解**", reply)
     normalized = re.sub(r"(?m)^我先把.*整理成待确认(?:偏好|要求|内容)[：:]?\s*$", "我先把这轮结论说明清楚：", normalized)
     replacements = (
-        ("回复\"确认\"就按上面执行；", "如果你想正式采用，我会先整理成确认卡片；采纳/确认前不会生效。"),
-        ("回复“确认”就按上面执行；", "如果你想正式采用，我会先整理成确认卡片；采纳/确认前不会生效。"),
-        ("直接回复“确认”", "请点击确认卡片里的“采纳”"),
-        ("直接回复\"确认\"", "请点击确认卡片里的“采纳”"),
+        ("回复\"确认\"就按上面执行；", "如果你想正式采用，我会先把要采用的内容列出来；采纳前不会生效。"),
+        ("回复“确认”就按上面执行；", "如果你想正式采用，我会先把要采用的内容列出来；采纳前不会生效。"),
+        ("直接回复“确认”", "请点“采纳”"),
+        ("直接回复\"确认\"", "请点“采纳”"),
         ("确认后，", "如果后续正式记成要求，"),
     )
     for source, target in replacements:
@@ -2344,10 +2634,10 @@ def _normalize_unbacked_intent_preview_reply(reply: str) -> str:
     if "这轮没有生成可点击的确认卡片" not in normalized:
         normalized = (
             normalized.rstrip()
-            + "\n\n补充说明：这轮没有生成可点击的确认卡片，也不会写入后续参考或改动方案；"
-            "如果要正式采用，我会先整理成确认卡片，点击采纳后才会生效。"
+            + "\n\n补充说明：这轮还没有列出可采纳的内容，也不会写入后续参考或改动方案；"
+            "如果要正式采用，我会先把要采用的内容列出来，点“采纳”后才会生效。"
         )
-    return normalized
+    return _normalize_user_facing_terms(normalized)
 
 
 _DOWNGRADED_INTENT_PENDING_CLAIM_RE = re.compile(
@@ -2391,7 +2681,7 @@ def _normalize_downgraded_intent_preview_reply(reply: str) -> str:
         topic = str(match.group("topic") or "这个想法").strip(" ：:，,。")
         if not topic:
             topic = "这个想法"
-        return f"如果你想把{topic}作为后续参考，我可以整理成确认卡片；采纳/确认前不会生效。"
+        return f"如果你想把{topic}作为后续参考，我可以先列出来让你采纳；采纳前不会生效。"
 
     normalized = _DOWNGRADED_INTENT_PENDING_CLAIM_RE.sub(_replace_claim, reply)
 
@@ -2400,13 +2690,13 @@ def _normalize_downgraded_intent_preview_reply(reply: str) -> str:
         target = str(match.group("target") or "后续参考").strip()
         if not topic:
             topic = "这个想法"
-        return f"如果你想把{topic}作为{target}，我会先整理成确认卡片；采纳/确认前不会生效。"
+        return f"如果你想把{topic}作为{target}，我会先列出来让你采纳；采纳前不会生效。"
 
     normalized = _DOWNGRADED_INTENT_DIRECT_CONFIRM_RE.sub(_replace_direct_confirm, normalized)
-    normalized = normalized.replace("点击卡片采纳后会一并过滤掉", "如果后续整理成确认卡片并采纳，会把这些方向作为排除参考")
-    normalized = normalized.replace("点击采纳后会一并过滤掉", "如果后续整理成确认卡片并采纳，会把这些方向作为排除参考")
-    normalized = normalized.replace("点击卡片采纳后会", "如果后续整理成确认卡片并采纳，会")
-    normalized = normalized.replace("点击采纳后会", "如果后续整理成确认卡片并采纳，会")
+    normalized = normalized.replace("点击卡片采纳后会一并过滤掉", "如果后续采纳，会把这些方向作为排除参考")
+    normalized = normalized.replace("点击采纳后会一并过滤掉", "如果后续采纳，会把这些方向作为排除参考")
+    normalized = normalized.replace("点击卡片采纳后会", "如果后续采纳，会")
+    normalized = normalized.replace("点击采纳后会", "如果后续采纳，会")
     normalized = normalized.replace("后续生成方案时，系统会按这个口径来筛选。", "后续生成或调整方案时，会把这个口径作为推荐和检查参考；基础候选池不会因此变小。")
     normalized = normalized.replace("后续生成方案时，系统会按这个口径来筛选", "后续生成或调整方案时，会把这个口径作为推荐和检查参考；基础候选池不会因此变小")
     normalized = normalized.replace("这些方向都不会再进入候选", "后续推荐和方案检查会把这些方向作为排除参考，基础候选池不会因此变小")
@@ -2427,26 +2717,26 @@ def _normalize_downgraded_intent_preview_reply(reply: str) -> str:
     normalized = normalized.replace("你确认后我再作为后续参考", "点击采纳后，我再作为后续参考")
     normalized = re.sub(
         r"你确认要把(?P<topic>[^。！？\n]{0,80}?)作为后续参考吗？采纳/确认前不会生效。",
-        r"如果你想把\g<topic>作为后续参考，我会先整理成确认卡片；采纳/确认前不会生效。",
+        r"如果你想把\g<topic>作为后续参考，我会先列出来让你采纳；采纳前不会生效。",
         normalized,
     )
     normalized = re.sub(
         r"(?:要不要|需要不需要)(?:我)?先整理成[^。！？\n？?]{0,40}(?:要求|偏好|排除条件)[？?]\s*确认后[，,]",
-        "如果要正式采用，我会先整理成确认卡片；采纳/确认前不会生效。如果后续整理成确认卡片并采纳，",
+        "如果要正式采用，我会先把要采用的内容列出来；采纳前不会生效。如果后续采纳，",
         normalized,
     )
-    normalized = normalized.replace("确认后，我会", "如果后续整理成确认卡片并采纳，我会")
-    normalized = normalized.replace("确认后会", "如果后续整理成确认卡片并采纳，会")
-    normalized = normalized.replace("点击采纳后，我再作为后续参考去看候选和方案", "如果后续整理成确认卡片并采纳，我再作为后续参考去看候选和方案")
-    normalized = normalized.replace("点击采纳后，我再作为后续参考", "如果后续整理成确认卡片并采纳，我再作为后续参考")
-    normalized = normalized.replace("告诉我，我帮你记成后续参考。", "如果要正式采用，我会先整理成确认卡片；采纳/确认前不会生效。")
-    normalized = normalized.replace("直接告诉我，我帮你记成后续参考。", "如果要正式采用，我会先整理成确认卡片；采纳/确认前不会生效。")
-    normalized = normalized.replace("整理成待确认偏好", "整理成确认卡片")
-    normalized = normalized.replace("整理成待确认要求", "整理成确认卡片")
-    normalized = normalized.replace("整理成待确认意向", "整理成确认卡片")
+    normalized = normalized.replace("确认后，我会", "如果后续采纳，我会")
+    normalized = normalized.replace("确认后会", "如果后续采纳，会")
+    normalized = normalized.replace("点击采纳后，我再作为后续参考去看候选和方案", "如果后续采纳，我再作为后续参考去看候选和方案")
+    normalized = normalized.replace("点击采纳后，我再作为后续参考", "如果后续采纳，我再作为后续参考")
+    normalized = normalized.replace("告诉我，我帮你记成后续参考。", "如果要正式采用，我会先把要采用的内容列出来；采纳前不会生效。")
+    normalized = normalized.replace("直接告诉我，我帮你记成后续参考。", "如果要正式采用，我会先把要采用的内容列出来；采纳前不会生效。")
+    normalized = normalized.replace("整理成待确认偏好", "列出来让你采纳")
+    normalized = normalized.replace("整理成待确认要求", "列出来让你采纳")
+    normalized = normalized.replace("整理成待确认意向", "列出来让你采纳")
     if "基础候选池" not in normalized and any(marker in normalized for marker in ("排除参考", "筛选", "过滤")):
         normalized = normalized.rstrip() + "\n\n补充说明：基础候选池不会因为偏好或要求采纳而永久变小；采纳后只是作为后续推荐、方案检查和方案调整的参考。"
-    return normalized
+    return _normalize_user_facing_terms(normalized)
 
 
 def _append_pending_intent_boundary(reply: str, *, has_pending_intent: bool) -> str:
@@ -2460,8 +2750,8 @@ def _append_pending_intent_boundary(reply: str, *, has_pending_intent: bool) -> 
         return reply
     return (
         reply.rstrip()
-        + "\n\n补充说明：这张确认卡片还没有采纳，点击采纳前不会写入后续报考参考；"
-        "如果要正式采用，请点击卡片里的“采纳”。"
+        + "\n\n补充说明：这次内容还没有采纳，点“采纳”前不会写入后续报考参考；"
+        "如果要正式采用，请点击“采纳”。"
     )
 
 
@@ -2555,7 +2845,7 @@ def _build_pending_readonly_impact_reply(pending_state: dict[str, Any]) -> str:
 
     if kind == "plan_mutation":
         lines = [
-            "当前有一张待确认的方案调整卡片，还没有执行。",
+            "当前有一项方案调整还没有执行。",
             "",
             "**对当前方案的影响**",
         ]
@@ -2574,7 +2864,7 @@ def _build_pending_readonly_impact_reply(pending_state: dict[str, Any]) -> str:
 
     if kind == "intent_change":
         lines = [
-            "当前有一张待确认的偏好/要求卡片，还没有采纳。",
+            "当前有一项待采纳的想法或报考条件，还没有采纳。",
             "",
             "**对当前方案的影响**",
             "- 点击采纳前不会写入后续报考参考，也不会改动当前方案。",
@@ -2584,7 +2874,7 @@ def _build_pending_readonly_impact_reply(pending_state: dict[str, Any]) -> str:
         lines.append("- 采纳后才会作为后续推荐、方案检查和方案调整的参考；基础候选池不会因此永久变小。")
         return "\n".join(lines)
 
-    return "当前有一张待确认卡片，还没有生效。完成确认前不会改动当前方案。"
+    return "当前有一项待采纳内容还没有生效。完成确认前不会改动当前方案。"
 
 
 def _last_user_visible_text_response(messages: list[Any] | None) -> ModelResponse | None:
@@ -2825,23 +3115,23 @@ def _latest_turn_is_readonly_interruption_fallback(messages: list[Any] | None) -
 
 
 def _no_pending_intent_confirmation_guard_reply() -> str:
-    return "我这边没有找到上一轮仍在等待采纳的确认卡片。你可以直接说想保留、排除或重点关注的方向，我会先整理成确认卡片。"
+    return "我这边没有找到上一轮仍在等待采纳的内容。你可以直接说想保留、排除或重点关注的方向，我会先列出来让你采纳。"
 
 
 def _pending_requires_card_click_reply(kind: str | None = None) -> str:
     if kind == "plan_mutation":
-        return "这次方案调整还在待确认状态。请以最新确认卡片为准；确认前不会改动方案。如果卡片已失效，可以重新说明要调整的内容，我会重新生成确认卡片。"
+        return "这次方案调整还没有执行。请以最新内容为准；确认前不会改动方案。如果内容已失效，可以重新说明要调整的内容，我会重新给出预览。"
     if kind == "intent_change":
-        return "这次偏好或要求已经整理成确认卡片，正在等待采纳。请以最新采纳卡片为准；采纳前不会写入后续报考参考。如果卡片已失效，可以重新说明你的想法。"
-    return "这次更新还在待确认状态。请以最新确认卡片为准；确认前不会生效。如果卡片已失效，可以重新说明要更新的内容。"
+        return "这次想法或报考条件已经列出来，正在等待采纳。请以最新内容为准；采纳前不会写入后续报考参考。如果内容已失效，可以重新说明你的想法。"
+    return "这次更新还没有生效。请以最新内容为准；确认前不会生效。如果内容已失效，可以重新说明要更新的内容。"
 
 
 def _pending_confirmation_type_mismatch_reply(active_kind: str, requested_kind: str) -> str:
     if active_kind == "plan_mutation" and requested_kind == "intent_change":
-        return "当前等待确认的是方案调整，不是偏好或要求更新。如果要确认方案调整，可以点击卡片或只回复“确认”；如果要更新偏好，请重新说明具体想法。"
+        return "当前等待确认的是方案调整，不是想法或报考条件更新。如果要确认方案调整，可以点“确认执行”或只回复“确认”；如果要更新想法，请重新说明具体内容。"
     if active_kind == "intent_change" and requested_kind == "plan_mutation":
-        return "当前等待确认的是偏好或要求更新，不是方案调整。如果要采纳这条偏好或要求，可以点击卡片或只回复“确认”；如果要调整方案，请重新说明具体动作。"
-    return "当前待确认内容和这次确认的对象不一致，请点击最新卡片或重新说明要确认的内容。"
+        return "当前等待确认的是想法或报考条件更新，不是方案调整。如果要采纳这次内容，可以点“采纳”或只回复“确认”；如果要调整方案，请重新说明具体动作。"
+    return "当前等待确认的内容和这次确认的对象不一致，请点最新内容里的按钮，或重新说明要确认的内容。"
 
 
 def _pending_plan_card_applied_reply(action_family: str, result: dict[str, Any]) -> str:
@@ -3530,19 +3820,21 @@ def _sanitize_reply_for_user(reply: str) -> str:
         )
         reply = reply.replace("自动过滤后续推荐", "作为后续推荐和方案检查的排除参考")
         reply = reply.replace("自动过滤", "作为后续推荐、方案检查和方案调整的排除参考")
-        reply = reply.replace("偏好卡片", "确认卡片")
-        reply = reply.replace("要求卡片", "确认卡片")
+        reply = reply.replace("偏好卡片", "待采纳内容")
+        reply = reply.replace("要求卡片", "待采纳内容")
         reply = re.sub(
             r"确认后我可以把(?P<topic>[^。！？\n]{0,80}?)整理成确认卡片[，,]?(?P<tail>[^。！？\n]{0,80})[。！？]?",
-            r"如果你想正式采用，我可以把\g<topic>整理成确认卡片；采纳前不会生效。",
+            r"如果你想正式采用，我可以先把\g<topic>列出来；采纳前不会生效。",
             reply,
         )
-        if "整理成确认卡片" in reply:
-            reply = reply.replace("确认后，后续", "卡片采纳后，后续")
-            reply = reply.replace("确认后,后续", "卡片采纳后，后续")
-            reply = reply.replace("确认后才会生效", "卡片采纳后才会生效")
-            reply = reply.replace("确认后才正式生效", "卡片采纳后才正式生效")
-            reply = reply.replace("要不要先确认这些方向？", "要不要我先整理成确认卡片？")
+        if any(marker in reply for marker in ("整理成确认卡片", "整理成待采纳内容", "整理成待采纳报考条件", "列出来让你采纳")):
+            reply = reply.replace("确认后，后续", "采纳后，后续")
+            reply = reply.replace("确认后,后续", "采纳后，后续")
+            reply = reply.replace("确认后再", "采纳后再")
+            reply = reply.replace("确认后会", "采纳后会")
+            reply = reply.replace("确认后才会生效", "采纳后才会生效")
+            reply = reply.replace("确认后才正式生效", "采纳后才正式生效")
+            reply = reply.replace("要不要先确认这些方向？", "要不要我先列出来让你采纳？")
         if (
             reply != before_candidate_pool_semantics
             and "基础候选池" not in reply
@@ -3553,6 +3845,7 @@ def _sanitize_reply_for_user(reply: str) -> str:
                 + "\n\n补充说明：基础候选池不会因为偏好或要求采纳而永久变小；"
                 "采纳后只是作为后续推荐、方案检查和方案调整的参考。"
             )
+    reply = _normalize_user_facing_terms(reply)
     if reply != original_reply:
         reply = reply.strip()
     return reply.strip()
@@ -3885,6 +4178,36 @@ def _normalize_user_facing_terms(reply: str) -> str:
     if not isinstance(reply, str):
         return reply
     replacements = (
+        ("待确认卡片", "待采纳内容"),
+        ("采纳卡片", "待采纳内容"),
+        ("方案确认卡片", "方案调整预览"),
+        ("确认卡片缺少校验信息", "这次操作缺少校验信息"),
+        ("这张确认卡片缺少校验信息", "这次操作缺少校验信息"),
+        ("这张确认卡片已经失效", "这次待采纳内容已经失效"),
+        ("这张确认卡片和当前待确认操作不一致", "这次操作和当前待采纳内容不一致"),
+        ("这张确认卡片的操作类型不完整", "这次操作类型不完整"),
+        ("这张确认卡片缺少可执行内容", "这次待采纳内容缺少可执行内容"),
+        ("确认卡片还没有采纳", "这次内容还没有采纳"),
+        ("这张确认卡片还没有采纳", "这次内容还没有采纳"),
+        ("确认卡片里的“采纳”", "“采纳”"),
+        ("点击卡片里的“采纳”", "点击“采纳”"),
+        ("点击最新确认卡片", "点最新内容里的“采纳”"),
+        ("最新确认卡片", "最新待采纳内容"),
+        ("最新采纳卡片", "最新待采纳内容"),
+        ("重新生成确认卡片", "重新列出待采纳内容"),
+        ("生成确认卡片", "列出待采纳内容"),
+        ("整理成确认卡片", "列出来让你采纳"),
+        ("确认卡片", "待采纳内容"),
+        ("点击卡片采纳", "点“采纳”"),
+        ("点击卡片确认", "点“确认执行”"),
+        ("点击卡片", "点“采纳”"),
+        ("卡片采纳后", "采纳后"),
+        ("卡片确认", "确认"),
+        ("硬性要求", "必须满足或必须避开的报考条件"),
+        ("硬要求", "必须满足或必须避开的报考条件"),
+        ("硬约束", "必须满足或必须避开的报考条件"),
+        ("软偏好", "优先考虑的方向"),
+        ("软意向", "优先考虑的方向"),
         ("志愿组", "专业组"),
         ("加入画像", "记成后续报考参考"),
         ("纳入画像", "纳入后续报考参考"),
@@ -3909,6 +4232,13 @@ def _normalize_user_facing_terms(reply: str) -> str:
     normalized = reply
     for source, target in replacements:
         normalized = normalized.replace(source, target)
+    normalized = normalized.replace("待采纳内容采纳", "采纳")
+    normalized = normalized.replace("点“采纳”里的“采纳”", "点“采纳”")
+    normalized = normalized.replace("点击“采纳”里的“采纳”", "点击“采纳”")
+    normalized = normalized.replace("请按最新待采纳内容操作", "请以最新内容为准操作")
+    normalized = normalized.replace("以最新待采纳内容为准", "以最新内容为准")
+    normalized = normalized.replace("必须满足或必须避开的报考条件过滤", "按已确认的报考条件过滤")
+    normalized = normalized.replace("必须满足或必须避开的报考条件命中项", "已确认报考条件命中的志愿")
     normalized = normalized.replace("报考参考信息信息", "报考参考信息")
     if any(token in normalized for token in ("方案", "志愿", "候选")):
         plan_add_replacements = (
@@ -4791,57 +5121,6 @@ class ChatService:
                 )
                 return reply
 
-        if active_pending_kind == "plan_mutation" and _is_pending_plan_short_text_confirmation(content):
-            action_family = str(getattr(active_pending, "action_family", "") or "").strip()
-            reply = _pending_requires_card_click_reply("plan_mutation")
-            new_messages = [
-                ModelRequest(parts=[UserPromptPart(content=content)]),
-                ModelResponse(parts=[TextPart(content=reply)], model_name="pending-plan-card-required"),
-            ]
-            try:
-                history_to_save = list(history or [])
-                history_to_save.extend(new_messages)
-                await self.history_store.save(session_id, history_to_save)
-            except Exception:
-                logger.exception("Failed to save pending plan card-required guard history: session_id=%s", session_id)
-            _log_conversation_turn_event(
-                sessionId=session_id,
-                userId=user_id,
-                scene="plan",
-                routingPath="pending_plan_card_required",
-                pendingType="plan",
-                actionFamily=action_family or None,
-                totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
-                status="blocked",
-                errorType="card_confirmation_required",
-            )
-            return reply
-
-        if active_pending_kind == "intent_change" and _is_pending_intent_short_text_confirmation(content):
-            reply = _pending_requires_card_click_reply("intent_change")
-            new_messages = [
-                ModelRequest(parts=[UserPromptPart(content=content)]),
-                ModelResponse(parts=[TextPart(content=reply)], model_name="pending-intent-card-required"),
-            ]
-            try:
-                history_to_save = list(history or [])
-                history_to_save.extend(new_messages)
-                await self.history_store.save(session_id, history_to_save)
-            except Exception:
-                logger.exception("Failed to save pending intent card-required guard history: session_id=%s", session_id)
-            _log_conversation_turn_event(
-                sessionId=session_id,
-                userId=user_id,
-                scene="intent",
-                routingPath="pending_intent_card_required",
-                pendingType="intent",
-                actionFamily=None,
-                totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
-                status="blocked",
-                errorType="card_confirmation_required",
-            )
-            return reply
-
         if active_pending is None and _is_explicit_pending_intent_confirmation(content):
             reply = _no_pending_intent_confirmation_guard_reply()
             new_messages = [
@@ -5525,7 +5804,7 @@ class ChatService:
         active_pending_id = str((pending_state or {}).get("pendingId") or "").strip()
         active_status = str((pending_state or {}).get("status") or "").strip()
         if not pending_id:
-            return "这张确认卡片缺少校验信息，请重新生成预览后再确认。"
+            return "这次操作缺少校验信息，请重新生成预览后再确认。"
         if not pending_state or active_status != "active" or active_pending_id != pending_id:
             await _mark_pending_confirmation_message_status(
                 session_id,
@@ -5533,7 +5812,7 @@ class ChatService:
                 pending_id=pending_id,
                 status="expired",
             )
-            return "这张确认卡片已经失效。请按最新卡片操作，或重新说明想怎么调整。"
+            return "这次待采纳内容已经失效。请以最新内容为准，或重新说明想怎么调整。"
         if kind and kind != str(pending_state.get("kind") or ""):
             await _mark_pending_confirmation_message_status(
                 session_id,
@@ -5541,7 +5820,7 @@ class ChatService:
                 pending_id=pending_id,
                 status="expired",
             )
-            return "这张确认卡片和当前待确认操作不一致，请按最新卡片操作。"
+            return "这次操作和当前等待采纳的内容不一致，请以最新内容为准。"
 
         if action in {"cancel", "reject"}:
             cancelled_state = dict(pending_state)
@@ -5554,9 +5833,9 @@ class ChatService:
                 pending_id=pending_id,
                 status="cancelled",
             )
-            return "已取消本次待确认操作。你可以继续说明想怎么调整，我会重新给出预览。"
+            return "已取消本次待采纳内容。你可以继续说明想怎么调整，我会重新给出预览。"
         if action not in {"confirm", "accept", "apply"}:
-            return "这张确认卡片的操作类型不完整，请刷新后重试。"
+            return "这次操作类型不完整，请刷新后重试。"
         active_kind = str(pending_state.get("kind") or "").strip()
         consistency_status = "not_checked"
         assistant_confirmation_summary = ""
@@ -5592,7 +5871,7 @@ class ChatService:
                 confirmation_history,
             )
             if blocked_reason:
-                reply = "为避免确认错内容，请点击最新确认卡片，或重新说明要确认的内容，我会重新整理确认卡片。"
+                reply = "为避免确认错内容，请点最新内容里的“采纳”，或重新说明要确认的内容，我会重新列出待采纳内容。"
                 await _save_direct_guard_history(
                     self.history_store,
                     session_id,
@@ -5607,10 +5886,10 @@ class ChatService:
         if active_kind == "intent_change":
             execution_payload = pending_state.get("executionPayload")
             if not isinstance(execution_payload, dict):
-                return "这张确认卡片缺少可执行内容，请重新生成。"
+                return "这次待采纳内容缺少可执行内容，请重新生成。"
             selected_data = execution_payload.get("selectedData")
             if not isinstance(selected_data, dict):
-                return "这张确认卡片缺少可执行内容，请重新生成。"
+                return "这次待采纳内容缺少可执行内容，请重新生成。"
             result_json = await _apply_selected_intents(
                 session_id=session_id,
                 batch=str(execution_payload.get("batch") or "01"),
@@ -5685,15 +5964,15 @@ class ChatService:
                 )
             return reply
         if active_kind != "plan_mutation":
-            return "这类确认卡片暂时还不能在这里处理，请刷新后重试。"
+            return "这类待采纳内容暂时还不能在这里处理，请刷新后重试。"
 
         execution_payload = pending_state.get("executionPayload")
         if not isinstance(execution_payload, dict):
-            return "这张方案调整卡片缺少可执行内容，请重新生成预览。"
+            return "这次方案调整缺少可执行内容，请重新生成预览。"
         action_family = str(pending_state.get("actionFamily") or "").strip()
         plan_payload = execution_payload.get("planPayload")
         if not isinstance(plan_payload, str) or not plan_payload.strip():
-            return "这张方案调整卡片缺少可执行内容，请重新生成预览。"
+            return "这次方案调整缺少可执行内容，请重新生成预览。"
         intent_payload = execution_payload.get("intentPayload")
         pending_plan_action = {
             "action_family": action_family,
@@ -5760,6 +6039,11 @@ class ChatService:
             selected_data_for_apply = {
                 "selected": intent_payload.get("selected") or [],
                 "intentMode": str(intent_payload.get("intentMode") or "constraint").strip() or "constraint",
+                "constraintIntentType": str(
+                    intent_payload.get("constraintIntentType")
+                    or intent_payload.get("constraint_intent_type")
+                    or "default"
+                ).strip() or "default",
                 "batch": effective_batch,
             }
             result_json = await _apply_selected_intents(
@@ -5782,7 +6066,7 @@ class ChatService:
                     pending_id=pending_id,
                     result_code="intent_apply_parse_failed",
                 )
-                return "这次要求没有写入成功，方案暂不调整。请稍后重试，或重新生成确认卡片。"
+                return "这次报考条件没有写入成功，方案暂不调整。请稍后重试，或重新列出待采纳内容。"
             if not getattr(intent_state_result, "applied", False):
                 await _mark_pending_confirmation_failed(
                     session_id,
@@ -5791,7 +6075,7 @@ class ChatService:
                     pending_id=pending_id,
                     result_code=str(getattr(intent_state_result, "messageCode", None) or "intent_apply_failed"),
                 )
-                return "这次要求没有写入成功，方案暂不调整。请稍后重试，或重新生成确认卡片。"
+                return "这次报考条件没有写入成功，方案暂不调整。请稍后重试，或重新列出待采纳内容。"
             intent_apply_note = "后续报考参考已同步更新，推荐系数和专家优选会按这条要求重新考虑。"
 
         result_text = await execute_plan_action(SimpleNamespace(deps=request_context), plan_payload)
@@ -5812,7 +6096,7 @@ class ChatService:
         )
 
         new_messages = [
-            ModelRequest(parts=[UserPromptPart(content=user_prompt_content or "[确认卡片]")]),
+            ModelRequest(parts=[UserPromptPart(content=user_prompt_content or "[待采纳内容]")]),
             ModelResponse(
                 parts=[
                     ToolCallPart(
@@ -5863,6 +6147,7 @@ class ChatService:
         if isinstance(intent_payload, dict) and intent_payload.get("selected"):
             workspace_refresh_targets = [target for target in workspace_refresh_targets if target != "candidate"]
         if workspace_refresh_targets:
+            reply = _sanitize_reply_for_user(reply)
             return ChatServiceResponseEnvelope(
                 primary=reply,
                 followups=[
@@ -5870,4 +6155,4 @@ class ChatService:
                     for target in workspace_refresh_targets
                 ],
             )
-        return reply
+        return _sanitize_reply_for_user(reply)

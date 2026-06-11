@@ -26,7 +26,7 @@ def build_pending_context(deps: RequestContext) -> str:
         f"- 动作类型：{pending.action_family}\n"
         f"- 预览摘要：{pending.preview_summary}\n"
         f"- 影响范围：{pending.affected_scope}\n"
-        f"- 卡片确认后执行 payload：{plan_payload}\n"
+        f"- 用户确认后执行 payload：{plan_payload}\n"
         "如果用户只在对话里说确认、执行、就按这个来，不要直接调用 `execute_plan_action`。"
-        "必须提示用户点击上一轮确认卡片；只有卡片点击确认链路才能执行该 payload。"
+        "必须提示用户按上一轮预览里的按钮确认；只有统一确认链路才能执行该 payload。"
     )

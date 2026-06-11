@@ -1,6 +1,7 @@
 package com.ytell.zhiyuan.model.vo;
 
 import com.ytell.zhiyuan.model.dto.CreateSessionReq;
+import com.ytell.zhiyuan.model.dto.planning.StudentPlanningSummaryDTO;
 import com.ytell.zhiyuan.model.entity.biz.ChatSession;
 import com.ytell.zhiyuan.model.enums.SessionStatus;
 import lombok.AllArgsConstructor;
@@ -29,6 +30,7 @@ public class ChatSessionVo {
     private Date updateTime;
     private CreateSessionReq.PrepareType prepareType;
     private Integer examYear;
+    private StudentPlanningSummaryDTO studentSummary;
 
     public static ChatSessionVo fromEntity(ChatSession chatSession, BotVo botVo, String infoSummary) {
         ChatSessionVo vo = new ChatSessionVo();

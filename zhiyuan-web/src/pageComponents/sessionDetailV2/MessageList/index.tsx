@@ -996,7 +996,7 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
     '这轮会重点看当前方案里是否已有贴近方向，以及候选里还有哪些值得继续关注的机会。',
     '方案外如果还有更贴近这个方向的候选机会，也会一起作为补充参考。',
     '这类想法不会立刻改动候选结果，但会影响我后面怎么帮你分析和给建议。',
-    '如果你确定这是硬要求，我可以继续帮你找出方案里还需要避开的地方。',
+    '如果这是必须避开的报考条件，我可以继续帮你找出方案里还需要避开的地方。',
     '你也可以先去工作台候选区看看，按这个要求筛完之后还剩哪些机会。',
     '如果你愿意把它当成偏好，我可以继续帮你看现在的方案哪里比较贴近、哪里还能补强。',
     '如果你现在只是先了解，也可以继续问我这个方向适不适合你。',
@@ -1153,7 +1153,7 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
       markPendingConfirmationCardHandled(msg.id, action === 'confirm' ? 'applied' : 'cancelled');
     } catch (error) {
       resetAnswerLoading();
-      console.error('待确认卡片操作失败', error);
+      console.error('待采纳内容操作失败', error);
     }
   };
 

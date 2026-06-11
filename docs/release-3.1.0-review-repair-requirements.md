@@ -3280,3 +3280,10 @@ cd ../zhiyuan-web
 - 短期方案：`CandidateItemDTO` 新增 `displaySchoolName`，语义为“纯院校名称”。生成候选池时优先通过 `schoolId -> SchoolManager.getSchoolById()` 取标准院校名，取不到时 fallback 到上游 `school_name`。
 - 使用边界：`schoolName` 继续保留现有展示/分组语义，不改专业组标题、方案分组、导出、排序和已有志愿定位；“院校名称”筛选选项和 `schoolKeywords/negativeSchoolKeywords` 匹配优先使用 `displaySchoolName`，并兼容匹配旧 `schoolName`。
 - 长期方向：后续再系统拆分 `schoolDisplayName` / `unitDisplayName` / `volunteerDisplayName`，避免院校实体、专业组单元和完整志愿展示名继续混用。
+
+推荐系数与候选池重算边界补充：
+
+- `finalScore / rankInTier / preferred` 依赖 `VolunteerBizService.recommendVolunteerList()` 返回结果；该链路会经过 `VolunteerSorterAndMerger -> VolunteerRankClient.getRecommendVolunteer()` 调用 rank 服务。
+- 软偏好变化只应标记 `staleFlags.recommendationOverlay=true`，通过 `refreshRecommendationOverlay()` 重新调用 rank 并把新的 `finalScore / rankInTier / preferred` 按 `volunteerId` 覆盖到现有候选池交集上；它不应物理重建 `candidatePoolState.items`，也不能对用户表达成“基础候选池变小”。
+- 完整候选池重算只在首次生成、显式强制刷新、或 `staleFlags.candidatePool=true` 时触发。普通进入候选面板、查询筛选项、分页查看候选不应传 `forceRegenerate=true`，否则本地 rank 未启动或线上 rank 长尾都会被误放大为“刷新候选池异常”。
+- 2026-06-11 已补前端保护：工作台 `ensureCandidatePoolReady(false)` 会按实际 `forceRegenerate` 传参，`generatePlanningCandidatePoolApi` 默认值改为 `false`；后端新增回归确认“已有候选池 + 非强制 + candidatePool 未 stale”不会调用 `recommendVolunteerList()`。

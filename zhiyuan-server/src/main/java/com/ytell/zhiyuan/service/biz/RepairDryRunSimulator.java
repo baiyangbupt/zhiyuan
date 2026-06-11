@@ -183,7 +183,7 @@ final class RepairDryRunSimulator {
         for (CandidateItemDTO candidate : addedCandidates) {
             String hardIssue = hardConstraintIssueForAdded(candidate, hard);
             if (!Strings.isNullOrEmpty(hardIssue)) {
-                addDryRunWarning(dryRun, "新增项可能不符合硬性要求：" + formatCandidateBrief(candidate) + "（" + hardIssue + "）");
+                addDryRunWarning(dryRun, "新增项可能不符合已确认的报考条件：" + formatCandidateBrief(candidate) + "（" + hardIssue + "）");
             }
             String softIssue = softAvoidIssue(candidate, soft);
             if (!Strings.isNullOrEmpty(softIssue)) {
@@ -200,7 +200,7 @@ final class RepairDryRunSimulator {
         for (CandidateItemDTO candidate : removedCandidates) {
             String hardHit = hardIncludeHit(candidate, hard);
             if (!Strings.isNullOrEmpty(hardHit)) {
-                addDryRunWarning(dryRun, "本次会移除硬性要求命中项：" + formatCandidateBrief(candidate) + "（" + hardHit + "）");
+                addDryRunWarning(dryRun, "本次会移除已确认报考条件命中的志愿：" + formatCandidateBrief(candidate) + "（" + hardHit + "）");
             }
             String softHit = softPreferHit(candidate, soft);
             if (!Strings.isNullOrEmpty(softHit)) {

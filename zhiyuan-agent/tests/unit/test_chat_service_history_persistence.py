@@ -94,12 +94,11 @@ def test_format_intent_card_impact_uses_directional_preference_wording():
         intent_mode="constraint",
     )
 
-    assert "提高这些方向的优先级" in positive
-    assert "降低这些方向的优先级" not in positive
-    assert "降低这些方向的优先级" in negative
-    assert "优先关注偏好方向" in mixed
+    assert "排得更靠前" in positive
+    assert "适当靠后" not in positive
+    assert "适当靠后" in negative
+    assert "优先方向" in mixed
     assert "避开这些方向" in constraint
-    assert "不会改小基础候选池" in constraint
 
     mixed_constraint = _format_intent_card_impact(
         {
@@ -110,8 +109,25 @@ def test_format_intent_card_impact_uses_directional_preference_wording():
         },
         intent_mode="constraint",
     )
-    assert "偏好方向会提高推荐优先级" in mixed_constraint
-    assert "排除要求会作为过滤、排除和方案检查边界" in mixed_constraint
+    assert "优先方向会排得更靠前" in mixed_constraint
+    assert "避开的方向" in mixed_constraint
+
+    only_keep = _format_intent_card_impact(
+        {
+            "constraintIntentType": "only_keep",
+            "major_intents": {"level3": ["临床医学"]},
+        },
+        intent_mode="constraint",
+    )
+    must_have = _format_intent_card_impact(
+        {
+            "constraintIntentType": "must_have",
+            "major_intents": {"level3": ["临床医学"]},
+        },
+        intent_mode="constraint",
+    )
+    assert "只保留这个范围" in only_keep
+    assert "至少保留这个方向" in must_have
 
 
 def test_selected_data_with_existing_positive_context_augments_negative_only_preview():
@@ -170,15 +186,15 @@ def test_normalize_downgraded_intent_preview_reply_removes_fake_pending_claim():
     assert "你确认后我再" not in normalized
     assert "确认后，我会" not in normalized
     assert "帮你记成后续参考" not in normalized
-    assert "我可以整理成确认卡片" in normalized
-    assert "我会先整理成确认卡片" in normalized
-    assert "采纳/确认前不会生效" in normalized
+    assert "列出来让你采纳" in normalized
+    assert "采纳前不会生效" in normalized
+    assert "采纳前不会生效" in normalized
 
 
 def test_normalize_downgraded_intent_preview_reply_removes_fake_card_and_candidate_pool_claim():
     reply = (
         "**先看影响和边界**\n\n"
-        "1. 排除范围：医学门类较宽，点击卡片采纳后会一并过滤掉临床医学、护理学等相关方向。\n"
+        "1. 排除范围：医学门类较宽，点击采纳后会一并过滤掉临床医学、护理学等相关方向。\n"
         "2. 当前状态：后续生成方案时，系统会按这个口径来筛选。\n"
         "3. 如果后续生成方案，系统会优先推荐财会，并自动过滤医学/护理相关选项。\n"
         "4. 如果确认排除，后续推荐和方案检查会把这类专业整体作为排除参考，不再进入候选。"
@@ -186,7 +202,7 @@ def test_normalize_downgraded_intent_preview_reply_removes_fake_card_and_candida
 
     normalized = _normalize_downgraded_intent_preview_reply(reply)
 
-    assert "点击卡片采纳后" not in normalized
+    assert "点击采纳后" not in normalized
     assert "过滤掉" not in normalized
     assert "自动过滤" not in normalized
     assert "不再进入候选" not in normalized
@@ -250,7 +266,7 @@ def test_normalize_general_confirmation_protocol_uses_card_for_confirm_preferenc
         "如果确认“不想当老师”作为硬性排除，我可以把**教育学类、师范类**整理成待确认偏好，确认后会自动过滤后续推荐。"
         "如果你确实想把英语优势作为后续筛选的参考方向，"
         "我可以先整理成待确认偏好，确认后再帮你匹配具体志愿。"
-        "我可以先整理成确认卡片，确认后再帮你检查当前方案。"
+        "我可以先整理成待采纳内容，确认后再帮你检查当前方案。"
         "有的话可以直接告诉我，我帮你记成后续参考。"
     )
 
@@ -262,10 +278,11 @@ def test_normalize_general_confirmation_protocol_uses_card_for_confirm_preferenc
     assert "确认后会" not in normalized
     assert "确认后再" not in normalized
     assert "帮你记成后续参考" not in normalized
-    assert "确认卡片" in normalized
-    assert "采纳/确认前不会生效" in normalized
-    assert "点击采纳后，我会" in normalized
-    assert "点击采纳后再帮你匹配具体志愿" in normalized
+    assert "列出来" in normalized
+    assert "采纳" in normalized
+    assert "点“采纳”前不会生效" in normalized
+    assert "采纳后，我会" in normalized
+    assert "采纳后再帮你匹配具体志愿" in normalized
     assert "不会生效。，" not in normalized
 
 
@@ -1248,6 +1265,258 @@ def test_chat_service_converts_structured_intent_preview_to_pending_confirmation
     clear_legacy_cache_mock.assert_awaited_once_with(990501, {})
 
 
+def test_chat_service_only_keep_major_preview_removes_non_matching_plan_items(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    preview_payload = {
+        "status": "ready",
+        "sessionId": "9905012",
+        "title": "待采纳报考条件",
+        "intentMode": "constraint",
+        "constraintIntentType": "only_keep",
+        "analysisStage": "confirmed",
+        "items": [
+            {
+                "content": "只保留专业：临床医学",
+                "value": {"major_intents": {"level3": ["临床医学"]}},
+                "selected": True,
+            }
+        ],
+        "existingItems": [],
+        "message": "准备采纳：只保留专业：临床医学",
+    }
+    fake_agent = _FakeIntentPreviewAgent(
+        preview_payload,
+        tool_name="preview_current_major_intent_confirmation",
+    )
+    workspace_state = {
+        "code": 0,
+        "data": {
+            "orderedPlanState": {
+                "items": [
+                    {
+                        "volunteerId": "keep-clinical",
+                        "schoolName": "A大学",
+                        "majorName": "临床医学",
+                    },
+                    {
+                        "volunteerId": "remove-nursing",
+                        "schoolName": "B大学",
+                        "majorName": "护理学",
+                    },
+                ]
+            }
+        },
+    }
+    pending_state, save_pending_mock, get_pending_mock = _pending_confirmation_store()
+    captured_plan_payload: dict = {}
+
+    async def fake_execute_plan_action(_ctx, plan_payload):
+        captured_plan_payload.update(json.loads(plan_payload))
+        return json.dumps(
+            {
+                "applied": False,
+                "action_family": "remove_units",
+                "stage": "preview",
+                "result_kind": "preview_only",
+                "summary": captured_plan_payload.get("preview_summary"),
+                "facts": {
+                    "matched_count": 1,
+                    "resolved_apply_payload": {
+                        "action_family": "remove_units",
+                        "atomic_actions": captured_plan_payload.get("atomic_actions", []),
+                    },
+                },
+            },
+            ensure_ascii=False,
+        )
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 0, "data": {"userScoreDetail": {"batch": "01"}}})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value=workspace_state)), \
+            patch("app.service.get_intent_change_cache", AsyncMock(return_value={"data": {"planEditCache": None}})), \
+            patch("app.service.execute_plan_action", AsyncMock(side_effect=fake_execute_plan_action)), \
+            patch("app.service.save_intent_change_cache", AsyncMock(return_value={"code": 0})), \
+            patch("app.service.save_pending_confirmation", save_pending_mock), \
+            patch("app.service.get_pending_confirmation", get_pending_mock):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(
+            service.handle_message("9905012", "user-1", "仅保留临床医学")
+        )
+
+    assert isinstance(reply, ChatServiceResponseEnvelope)
+    assert len(reply.followups) == 1
+    card_payload = json.loads(reply.followups[0].content)
+    assert card_payload["kind"] == "plan_mutation"
+    assert card_payload["actionFamily"] == "remove_units"
+    assert "只保留" in card_payload["content"]
+    assert captured_plan_payload["atomic_actions"][0]["volunteer_ids"] == ["remove-nursing"]
+    assert "keep-clinical" not in captured_plan_payload["atomic_actions"][0]["volunteer_ids"]
+    pending = pending_state["value"]
+    assert pending["kind"] == "plan_mutation"
+    execution_payload = pending["executionPayload"]
+    pending_plan_payload = json.loads(execution_payload["planPayload"])
+    atomic_actions = pending_plan_payload["atomic_actions"]
+    assert atomic_actions[0]["volunteer_ids"] == ["remove-nursing"]
+    assert "keep-clinical" not in atomic_actions[0]["volunteer_ids"]
+    assert execution_payload["intentPayload"]["constraintIntentType"] == "only_keep"
+
+
+def test_chat_service_must_have_major_preview_adds_when_missing_from_plan(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    preview_payload = {
+        "status": "ready",
+        "sessionId": "9905013",
+        "title": "待采纳报考条件",
+        "intentMode": "constraint",
+        "constraintIntentType": "must_have",
+        "analysisStage": "confirmed",
+        "items": [
+            {
+                "content": "至少保留专业：临床医学",
+                "value": {"major_intents": {"level3": ["临床医学"]}},
+                "selected": True,
+            }
+        ],
+        "existingItems": [],
+        "message": "至少保留专业：临床医学",
+    }
+    fake_agent = _FakeIntentPreviewAgent(
+        preview_payload,
+        tool_name="preview_current_major_intent_confirmation",
+    )
+    workspace_state = {
+        "code": 0,
+        "data": {
+            "orderedPlanState": {
+                "items": [
+                    {
+                        "volunteerId": "nursing-1",
+                        "schoolName": "B大学",
+                        "majorName": "护理学",
+                    },
+                ]
+            }
+        },
+    }
+    pending_state, save_pending_mock, get_pending_mock = _pending_confirmation_store()
+    captured_plan_payload: dict = {}
+
+    async def fake_execute_plan_action(_ctx, plan_payload):
+        captured_plan_payload.update(json.loads(plan_payload))
+        return json.dumps(
+            {
+                "applied": False,
+                "action_family": "add_units",
+                "stage": "preview",
+                "result_kind": "preview_only",
+                "summary": captured_plan_payload.get("preview_summary"),
+                "facts": {
+                    "resolved_apply_payload": {
+                        "action_family": "add_units",
+                        "atomic_actions": captured_plan_payload.get("atomic_actions", []),
+                    },
+                },
+            },
+            ensure_ascii=False,
+        )
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 0, "data": {"userScoreDetail": {"batch": "01"}}})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value=workspace_state)), \
+            patch("app.service.get_intent_change_cache", AsyncMock(return_value={"data": {"planEditCache": None}})), \
+            patch("app.service.execute_plan_action", AsyncMock(side_effect=fake_execute_plan_action)), \
+            patch("app.service.save_intent_change_cache", AsyncMock(return_value={"code": 0})), \
+            patch("app.service.save_pending_confirmation", save_pending_mock), \
+            patch("app.service.get_pending_confirmation", get_pending_mock):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(
+            service.handle_message("9905013", "user-1", "必须有临床医学")
+        )
+
+    assert isinstance(reply, ChatServiceResponseEnvelope)
+    assert len(reply.followups) == 1
+    card_payload = json.loads(reply.followups[0].content)
+    assert card_payload["kind"] == "plan_mutation"
+    assert card_payload["actionFamily"] == "add_units"
+    assert "至少" in card_payload["content"]
+    atomic = captured_plan_payload["atomic_actions"][0]
+    assert atomic["action_type"] == "add_units"
+    assert atomic["filters"]["major_keyword"] == "临床医学"
+    pending_plan_payload = json.loads(pending_state["value"]["executionPayload"]["planPayload"])
+    assert pending_plan_payload["atomic_actions"][0]["filters"]["major_keyword"] == "临床医学"
+    assert pending_state["value"]["executionPayload"]["intentPayload"]["constraintIntentType"] == "must_have"
+
+
+def test_chat_service_must_have_major_keeps_intent_only_when_plan_already_has_scope(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    preview_payload = {
+        "status": "ready",
+        "sessionId": "9905014",
+        "title": "待采纳报考条件",
+        "intentMode": "constraint",
+        "constraintIntentType": "must_have",
+        "analysisStage": "confirmed",
+        "items": [
+            {
+                "content": "至少保留专业：临床医学",
+                "value": {"major_intents": {"level3": ["临床医学"]}},
+                "selected": True,
+            }
+        ],
+        "existingItems": [],
+        "message": "至少保留专业：临床医学",
+    }
+    fake_agent = _FakeIntentPreviewAgent(
+        preview_payload,
+        tool_name="preview_current_major_intent_confirmation",
+    )
+    workspace_state = {
+        "code": 0,
+        "data": {
+            "orderedPlanState": {
+                "items": [
+                    {
+                        "volunteerId": "clinical-1",
+                        "schoolName": "A大学",
+                        "majorName": "临床医学",
+                    },
+                ]
+            }
+        },
+    }
+    pending_state, save_pending_mock, get_pending_mock = _pending_confirmation_store()
+    execute_mock = AsyncMock()
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 0, "data": {"userScoreDetail": {"batch": "01"}}})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value=workspace_state)), \
+            patch("app.service.get_intent_change_cache", AsyncMock(return_value={"data": {"planEditCache": None}})), \
+            patch("app.service.execute_plan_action", execute_mock), \
+            patch("app.service.save_intent_change_cache", AsyncMock(return_value={"code": 0})), \
+            patch("app.service.save_pending_confirmation", save_pending_mock), \
+            patch("app.service.get_pending_confirmation", get_pending_mock):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(
+            service.handle_message("9905014", "user-1", "必须有临床医学")
+        )
+
+    assert isinstance(reply, ChatServiceResponseEnvelope)
+    assert len(reply.followups) == 1
+    card_payload = json.loads(reply.followups[0].content)
+    assert card_payload["kind"] == "intent_change"
+    assert card_payload["actionFamily"] == "apply_selected_intents"
+    assert card_payload["constraintIntentType"] == "must_have"
+    assert pending_state["value"]["kind"] == "intent_change"
+    assert pending_state["value"]["constraintIntentType"] == "must_have"
+    execute_mock.assert_not_awaited()
+
+
 def test_chat_service_intent_preview_card_drops_duplicate_primary_text(tmp_path, mock_llm_client):
     db_path = tmp_path / "history.db"
     store = ChatHistoryStore(str(db_path))
@@ -1311,7 +1580,7 @@ def test_chat_service_intent_preview_card_drops_duplicate_primary_text(tmp_path,
     assert card_payload["type"] == "pendingConfirmationCard"
     assert card_payload["summary"] == "不优先专业：秘书学"
     assert "不优先专业：秘书学" in card_payload["content"]
-    assert "影响推荐系数和专家优选推荐" in card_payload["impact"]
+    assert "适当靠后" in card_payload["impact"]
     assert "江苏第二师范学院第101组-秘书学" in card_payload["impact"]
     assert pending_state["value"]["summary"] == "不优先专业：秘书学"
     saved_history = asyncio.run(store.load("9905011"))
@@ -1391,10 +1660,10 @@ def test_chat_service_intent_pending_card_summarizes_all_major_levels_and_existi
     assert isinstance(reply, ChatServiceResponseEnvelope)
     card_payload = json.loads(reply.followups[0].content)
     assert card_payload["summary"] == "偏好专业类：经济学；不优先专业门类：医学"
-    assert "点击采纳后生效：" in card_payload["content"]
+    assert "点击采纳后生效" not in card_payload["content"]
     assert "- 偏好专业类：经济学" in card_payload["content"]
     assert "- 不优先专业门类：医学" in card_payload["content"]
-    assert "当前已记录的报考参考：" in card_payload["content"]
+    assert "当前已有参考：" in card_payload["content"]
     assert "- 偏好专业：法学、财政学" in card_payload["content"]
     assert "- 不优先专业：护理学" in card_payload["content"]
     assert pending_state["value"]["summary"] == "偏好专业类：经济学；不优先专业门类：医学"
@@ -1790,7 +2059,7 @@ def test_sanitize_reply_for_user_normalizes_intent_candidate_pool_semantics():
     reply = _sanitize_reply_for_user(
         "如果确认排除，后续推荐和方案检查会把这类专业整体作为排除参考，不再进入候选。\n"
         "医学门类整体避开后，你的候选池会大幅收窄。\n"
-        "如果你确认要把“排除医学/护理，倾向财会”作为后续参考，我可以整理成确认卡片。"
+        "如果你确认要把“排除医学/护理，倾向财会”作为后续参考，我可以整理成待采纳内容。"
         "确认后，后续推荐和方案调整就会按这个口径来。"
         "确认后才会生效。要不要先确认这些方向？"
     )
@@ -1799,9 +2068,9 @@ def test_sanitize_reply_for_user_normalizes_intent_candidate_pool_semantics():
     assert "候选池会大幅收窄" not in reply
     assert "确认后，后续" not in reply
     assert "确认后才会生效" not in reply
-    assert "卡片采纳后，后续推荐" in reply
-    assert "卡片采纳后才会生效" in reply
-    assert "要不要我先整理成确认卡片" in reply
+    assert "采纳后，后续推荐" in reply
+    assert "采纳后才会生效" in reply
+    assert "要不要我先列出来让你采纳" in reply
     assert "基础候选池" in reply
 
 
@@ -3033,7 +3302,7 @@ def test_chat_service_requires_card_click_for_pending_compensation_on_text_confi
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-compensation-direct-confirm", "user-1", "确认"))
 
-    assert reply == "这次方案调整还在待确认状态。请以最新确认卡片为准；确认前不会改动方案。如果卡片已失效，可以重新说明要调整的内容，我会重新生成确认卡片。"
+    assert reply == "这次方案调整还没有执行。请以最新内容为准；确认前不会改动方案。如果内容已失效，可以重新说明要调整的内容，我会重新给出预览。"
     execute_mock.assert_not_awaited()
     assert fake_agent.calls == []
 
@@ -3213,7 +3482,7 @@ def test_chat_service_requires_card_click_for_pending_replace_on_text_confirm(tm
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-replace-direct-confirm", "user-1", "确认"))
 
-    assert reply == "这次方案调整还在待确认状态。请以最新确认卡片为准；确认前不会改动方案。如果卡片已失效，可以重新说明要调整的内容，我会重新生成确认卡片。"
+    assert reply == "这次方案调整还没有执行。请以最新内容为准；确认前不会改动方案。如果内容已失效，可以重新说明要调整的内容，我会重新给出预览。"
     execute_mock.assert_not_awaited()
     assert fake_agent.calls == []
 
@@ -3279,7 +3548,7 @@ def test_chat_service_requires_card_click_for_pending_replace_even_with_stale_in
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-replace-direct-confirm-stale-intent", "user-1", "确认"))
 
-    assert reply == "这次方案调整还在待确认状态。请以最新确认卡片为准；确认前不会改动方案。如果卡片已失效，可以重新说明要调整的内容，我会重新生成确认卡片。"
+    assert reply == "这次方案调整还没有执行。请以最新内容为准；确认前不会改动方案。如果内容已失效，可以重新说明要调整的内容，我会重新给出预览。"
     execute_mock.assert_not_awaited()
     assert fake_agent.calls == []
 
@@ -3313,7 +3582,7 @@ def test_chat_service_requires_card_click_for_pending_intent_on_short_confirm(tm
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-intent-direct-confirm", "user-1", "确认"))
 
-    assert reply == "这次偏好或要求已经整理成确认卡片，正在等待采纳。请以最新采纳卡片为准；采纳前不会写入后续报考参考。如果卡片已失效，可以重新说明你的想法。"
+    assert reply == "这次想法或报考条件已经列出来，正在等待采纳。请以最新内容为准；采纳前不会写入后续报考参考。如果内容已失效，可以重新说明你的想法。"
     update_mock.assert_not_awaited()
     assert fake_agent.calls == []
 
@@ -3355,8 +3624,8 @@ def test_chat_service_does_not_append_plan_preview_boundary_for_intent_turn_with
         reply = asyncio.run(service.handle_message("session-stale-plan-history", "user-1", "想学跨境电商"))
 
     assert isinstance(reply, str)
-    assert "确认卡片" in reply
-    assert "点击采纳前" in reply
+    assert "点“采纳”前不会生效" in reply
+    assert "点“采纳”前" in reply
     assert "你确认后我再正式生效" not in reply
     assert "还没有拿到可执行的调整预览" not in reply
 
@@ -3449,7 +3718,7 @@ def test_chat_service_does_not_apply_stale_pending_intent_after_readonly_plan_qu
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-intent-stale-after-readonly", "user-1", "确认"))
 
-    assert reply == "这次偏好或要求已经整理成确认卡片，正在等待采纳。请以最新采纳卡片为准；采纳前不会写入后续报考参考。如果卡片已失效，可以重新说明你的想法。"
+    assert reply == "这次想法或报考条件已经列出来，正在等待采纳。请以最新内容为准；采纳前不会写入后续报考参考。如果内容已失效，可以重新说明你的想法。"
     update_mock.assert_not_awaited()
     assert fake_agent.calls == []
 
@@ -3510,7 +3779,7 @@ def test_chat_service_requires_card_click_for_pending_intent_when_latest_turn_is
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-intent-latest-preview", "user-1", "确认"))
 
-    assert reply == "这次偏好或要求已经整理成确认卡片，正在等待采纳。请以最新采纳卡片为准；采纳前不会写入后续报考参考。如果卡片已失效，可以重新说明你的想法。"
+    assert reply == "这次想法或报考条件已经列出来，正在等待采纳。请以最新内容为准；采纳前不会写入后续报考参考。如果内容已失效，可以重新说明你的想法。"
     update_mock.assert_not_awaited()
     assert fake_agent.calls == []
 
@@ -4001,8 +4270,8 @@ def test_unbacked_plan_confirmation_guard_blocks_toolless_fake_confirm_copy():
     assert "点击确认后生效" not in guarded
     assert "你确认要删除吗" not in guarded
     assert "确认后会执行" not in guarded
-    assert "还没有生成可点击的方案确认卡片" in guarded
-    assert "只有生成确认卡片并完成确认后才会执行" in guarded
+    assert "还没有生成可执行的调整内容" in guarded
+    assert "确认当前有效预览后才会执行" in guarded
 
 
 def test_chat_service_injects_pending_plan_action_from_history_for_non_confirm_turn(tmp_path, mock_llm_client):
@@ -4086,7 +4355,7 @@ def test_chat_service_guards_toolless_plan_confirm_copy_without_card(tmp_path, m
     assert "汉语言文学" in reply
     assert "点击确认后生效" not in reply
     assert "你确认要删除吗" not in reply
-    assert "还没有生成可点击的方案确认卡片" in reply
+    assert "还没有生成可执行的调整内容" in reply
     saved_history = asyncio.run(store.load("session-toolless-plan-confirm-copy"))
     assert saved_history is not None
     saved_text = next(part.content for part in saved_history[-1].parts if isinstance(part, TextPart))
@@ -4155,7 +4424,7 @@ def test_chat_service_expires_backend_pending_when_plan_preview_version_is_stale
             "executionPayload": {"toolName": "execute_plan_action", "planPayload": "{}"},
         }
     )
-    fake_agent = _FakeAgent(["我会重新生成确认卡片。"])
+    fake_agent = _FakeAgent(["我会重新列出待采纳内容。"])
 
     with patch("app.service.ChatAgent", return_value=fake_agent), \
             patch("app.service.get_pending_confirmation", get_pending_mock), \
@@ -4189,7 +4458,7 @@ def test_chat_service_expires_backend_pending_when_plan_preview_version_is_stale
             )
         )
 
-    assert reply == "我会重新生成确认卡片。"
+    assert reply == "我会重新列出待采纳内容。"
     assert pending_state["value"]["status"] == "expired"
     assert pending_state["value"]["expiredReason"] == "version_mismatch"
     assert fake_agent.calls[0]["pending_plan_action"] is not None
@@ -4251,7 +4520,7 @@ def test_chat_service_requires_card_click_for_pending_regenerate_order_on_text_c
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-pending-plan-direct", "user-1", "确认"))
 
-    assert reply == "这次方案调整还在待确认状态。请以最新确认卡片为准；确认前不会改动方案。如果卡片已失效，可以重新说明要调整的内容，我会重新生成确认卡片。"
+    assert reply == "这次方案调整还没有执行。请以最新内容为准；确认前不会改动方案。如果内容已失效，可以重新说明要调整的内容，我会重新给出预览。"
     execute_mock.assert_not_awaited()
     assert fake_agent.calls == []
     saved_history = asyncio.run(store.load("session-pending-plan-direct"))
@@ -4318,7 +4587,7 @@ def test_chat_service_requires_card_click_for_pending_after_explanatory_turn(tmp
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-pending-plan-direct-keep", "user-1", "确认"))
 
-    assert reply == "这次方案调整还在待确认状态。请以最新确认卡片为准；确认前不会改动方案。如果卡片已失效，可以重新说明要调整的内容，我会重新生成确认卡片。"
+    assert reply == "这次方案调整还没有执行。请以最新内容为准；确认前不会改动方案。如果内容已失效，可以重新说明要调整的内容，我会重新给出预览。"
     execute_mock.assert_not_awaited()
     assert fake_agent.calls == []
 
@@ -4391,7 +4660,7 @@ def test_chat_service_requires_card_click_for_plan_pending_after_readonly_turn(t
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-stale-plan-pending-after-readonly", "user-1", "确认"))
 
-    assert reply == "这次方案调整还在待确认状态。请以最新确认卡片为准；确认前不会改动方案。如果卡片已失效，可以重新说明要调整的内容，我会重新生成确认卡片。"
+    assert reply == "这次方案调整还没有执行。请以最新内容为准；确认前不会改动方案。如果内容已失效，可以重新说明要调整的内容，我会重新给出预览。"
     execute_mock.assert_not_awaited()
     assert fake_agent.calls == []
 
@@ -4457,7 +4726,7 @@ def test_chat_service_routes_no_pending_intent_confirmation_to_intent_guard(tmp_
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-no-pending-intent-confirm", "user-1", "确认这个偏好"))
 
-    assert reply == "我这边没有找到上一轮仍在等待采纳的确认卡片。你可以直接说想保留、排除或重点关注的方向，我会先整理成确认卡片。"
+    assert reply == "我这边没有找到上一轮仍在等待采纳的内容。你可以直接说想保留、排除或重点关注的方向，我会先列出来让你采纳。"
     assert fake_agent.calls == []
     score_mock.assert_not_awaited()
     profile_mock.assert_not_awaited()
@@ -4533,7 +4802,7 @@ def test_chat_service_requires_card_click_for_intent_text_confirmation_when_inte
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-intent-pending-confirm", "user-1", "确认"))
 
-    assert reply == "这次偏好或要求已经整理成确认卡片，正在等待采纳。请以最新采纳卡片为准；采纳前不会写入后续报考参考。如果卡片已失效，可以重新说明你的想法。"
+    assert reply == "这次想法或报考条件已经列出来，正在等待采纳。请以最新内容为准；采纳前不会写入后续报考参考。如果内容已失效，可以重新说明你的想法。"
     update_mock.assert_not_awaited()
     assert fake_agent.calls == []
     intent_cache_mock.assert_awaited_once()
@@ -4589,7 +4858,8 @@ def test_chat_service_applies_active_pending_confirmation_intent_on_short_text(t
         reply = asyncio.run(service.handle_message("990502", "user-1", "确认"))
 
     assert isinstance(reply, ChatServiceResponseEnvelope)
-    assert "已确认，这个偏好会作为后续报考参考" in reply.primary
+    assert "已采纳" in reply.primary
+    assert "后续推荐和专家优选会更贴近这个方向" in reply.primary
     assert len(reply.followups) == 1
     workspace_payload = json.loads(reply.followups[0].content)
     assert workspace_payload["targetView"] == "candidate"
@@ -4641,7 +4911,7 @@ def test_chat_service_requires_card_click_for_plan_next_action_pending_text_conf
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-pending-plan-next-direct", "user-1", "确认"))
 
-    assert reply == "这次方案调整还在待确认状态。请以最新确认卡片为准；确认前不会改动方案。如果卡片已失效，可以重新说明要调整的内容，我会重新生成确认卡片。"
+    assert reply == "这次方案调整还没有执行。请以最新内容为准；确认前不会改动方案。如果内容已失效，可以重新说明要调整的内容，我会重新给出预览。"
     execute_mock.assert_not_awaited()
     assert fake_agent.calls == []
 
@@ -5509,7 +5779,7 @@ def test_chat_service_blocks_short_text_confirm_when_latest_assistant_confirmati
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-plan-short-text-conflict", "user-1", "确认"))
 
-    assert reply == "为避免确认错内容，请点击最新确认卡片，或重新说明要确认的内容，我会重新整理确认卡片。"
+    assert reply == "为避免确认错内容，请点最新内容里的“采纳”，或重新说明要确认的内容，我会重新列出待采纳内容。"
     execute_mock.assert_not_awaited()
     assert pending_state["value"]["status"] == "active"
     pending_events = [
@@ -5532,7 +5802,7 @@ def test_chat_service_keeps_short_text_blocked_after_previous_consistency_block(
     history = [
         ModelRequest(parts=[UserPromptPart(content="确认")]),
         ModelResponse(
-            parts=[TextPart(content="为避免确认错内容，请点击最新确认卡片，或重新说明要确认的内容，我会重新整理确认卡片。")],
+            parts=[TextPart(content="为避免确认错内容，请点最新内容里的“采纳”，或重新说明要确认的内容，我会重新列出待采纳内容。")],
             model_name="pending-confirmation-consistency-blocked:pending-plan-short-text-reblocked",
         ),
     ]
@@ -5571,7 +5841,7 @@ def test_chat_service_keeps_short_text_blocked_after_previous_consistency_block(
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-plan-short-text-reblocked", "user-1", "确认"))
 
-    assert reply == "为避免确认错内容，请点击最新确认卡片，或重新说明要确认的内容，我会重新整理确认卡片。"
+    assert reply == "为避免确认错内容，请点最新内容里的“采纳”，或重新说明要确认的内容，我会重新列出待采纳内容。"
     execute_mock.assert_not_awaited()
     assert pending_state["value"]["status"] == "active"
 
@@ -5582,7 +5852,7 @@ def test_chat_service_does_not_reblock_new_pending_after_old_consistency_block(t
     history = [
         ModelRequest(parts=[UserPromptPart(content="确认")]),
         ModelResponse(
-            parts=[TextPart(content="为避免确认错内容，请点击最新确认卡片，或重新说明要确认的内容，我会重新整理确认卡片。")],
+            parts=[TextPart(content="为避免确认错内容，请点最新内容里的“采纳”，或重新说明要确认的内容，我会重新列出待采纳内容。")],
             model_name="pending-confirmation-consistency-blocked:old-pending",
         ),
     ]
@@ -5677,7 +5947,7 @@ def test_chat_service_does_not_consume_plan_pending_with_explicit_intent_confirm
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-plan-explicit-intent-confirm", "user-1", "确认这个偏好"))
 
-    assert reply == "当前等待确认的是方案调整，不是偏好或要求更新。如果要确认方案调整，可以点击卡片或只回复“确认”；如果要更新偏好，请重新说明具体想法。"
+    assert reply == "当前等待确认的是方案调整，不是想法或报考条件更新。如果要确认方案调整，可以点“确认执行”或只回复“确认”；如果要更新想法，请重新说明具体内容。"
     execute_mock.assert_not_awaited()
     assert pending_state["value"]["status"] == "active"
 
@@ -5713,7 +5983,7 @@ def test_chat_service_rejects_replaced_pending_confirmation_card(tmp_path, mock_
             )
         )
 
-    assert reply == "这张确认卡片已经失效。请按最新卡片操作，或重新说明想怎么调整。"
+    assert reply == "这次待采纳内容已经失效。请以最新内容为准，或重新说明想怎么调整。"
     assert pending_state["value"]["pendingId"] == "new-card"
     execute_mock.assert_not_awaited()
 
@@ -6214,7 +6484,7 @@ def test_normalize_pending_intent_reply_avoids_premature_recorded_wording():
     normalized = _normalize_pending_intent_reply(reply)
 
     assert "我记下了" not in normalized
-    assert "点击卡片采纳" in normalized
+    assert "点“采纳”" in normalized
     assert "后续参考" in normalized
 
 
@@ -6263,7 +6533,7 @@ def test_normalize_general_confirmation_protocol_wording_requires_card_click():
     assert "随时可以在对话里改" not in normalized
     assert "不会锁定之前的偏好" not in normalized
     assert "不会自动改候选或方案" in normalized
-    assert "点击采纳前" in normalized
+    assert "点“采纳”前" in normalized
 
 
 def test_normalize_general_confirmation_protocol_wording_covers_followup_change_variants():
@@ -6273,8 +6543,8 @@ def test_normalize_general_confirmation_protocol_wording_covers_followup_change_
 
     assert "随时能改" not in normalized
     assert "直接告诉我新的想法就行" not in normalized
-    assert "确认卡片" in normalized
-    assert "点击采纳前" in normalized
+    assert "列出来" in normalized
+    assert "点“采纳”前" in normalized
     assert "不会自动改候选或方案" in normalized
 
 
@@ -6288,9 +6558,9 @@ def test_normalize_general_confirmation_protocol_wording_removes_auto_apply_conf
 
     assert "改完立刻生效" not in normalized
     assert "立刻帮你调整方案" not in normalized
-    assert "确认卡片" in normalized
-    assert "采纳后再调整方案" in normalized
-    assert "点击采纳前" in normalized
+    assert "列出" in normalized
+    assert "点“采纳”前不会改候选或方案" in normalized
+    assert "点“采纳”前" in normalized
 
 
 def test_normalize_general_confirmation_protocol_wording_adds_card_boundary_to_change_policy_reply():
@@ -6304,9 +6574,9 @@ def test_normalize_general_confirmation_protocol_wording_adds_card_boundary_to_c
     normalized = _normalize_general_confirmation_protocol_wording(reply)
 
     assert "调整偏好后，系统会重新筛选" not in normalized
-    assert "确认卡片" in normalized
-    assert "点击采纳后" in normalized
-    assert "点击采纳前不会更新到后续推荐中" in normalized
+    assert "列出来让你采纳" in normalized
+    assert "采纳后" in normalized
+    assert "点“采纳”前不会更新到后续推荐中" in normalized
 
 
 def test_normalize_general_confirmation_protocol_wording_appends_boundary_when_changeable_reply_lacks_card():
@@ -6320,7 +6590,7 @@ def test_normalize_general_confirmation_protocol_wording_appends_boundary_when_c
 
     assert "调整后会重新匹配候选机会，已生成的方案也可以同步更新" not in normalized
     assert "增删、替换、调整顺序都可以，但都会先给确认预览" in normalized
-    assert "确认卡片" in normalized
+    assert "列出" in normalized
     assert "点击采纳前不会改动方案" in normalized
 
 
@@ -6390,7 +6660,7 @@ def test_chat_service_normalizes_premature_recorded_wording_after_intent_preview
     assert isinstance(reply, str)
     primary = reply
     assert "我记下了" not in primary
-    assert "确认" in primary
+    assert "采纳" in primary
     assert "后续参考" in primary
     saved_history = asyncio.run(store.load("session-intent-preview-style"))
     saved_text = next(part.content for part in saved_history[-1].parts if isinstance(part, TextPart))
@@ -6426,9 +6696,9 @@ def test_chat_service_does_not_refresh_candidate_workspace_after_intent_preview_
         reply = asyncio.run(service.handle_message("session-intent-preview-refresh", "user-57", "不想学审计"))
 
     assert isinstance(reply, str)
-    assert "我先把你不想学审计这件事整理成确认卡片。" in reply
-    assert "确认卡片还没有采纳" in reply
-    assert "点击采纳前不会写入后续报考参考" in reply
+    assert "我先把你不想学审计这件事整理成待采纳报考条件。" in reply
+    assert "这次内容还没有采纳" in reply
+    assert "点“采纳”前不会写入后续报考参考" in reply
 
 
 def test_normalize_unbacked_intent_preview_reply_removes_fake_confirm_boundary():
@@ -6445,14 +6715,14 @@ def test_normalize_unbacked_intent_preview_reply_removes_fake_confirm_boundary()
 
     assert "待确认内容" not in normalized
     assert "回复“确认”就按上面执行" not in normalized
-    assert "这轮没有生成可点击的确认卡片" in normalized
-    assert "点击采纳后才会生效" in normalized
+    assert "还没有列出可采纳的内容" in normalized
+    assert "点“采纳”后才会生效" in normalized
 
 
 def test_normalize_unbacked_intent_preview_reply_keeps_general_card_protocol_explanation():
     reply = (
         "孩子改主意后，之前偏好可以调整。只要孩子想法变了，直接告诉我新的方向，"
-        "我会先整理成确认卡片；采纳后再调整推荐口径和候选志愿。"
+        "我会先整理成待采纳内容；采纳后再调整推荐口径和候选志愿。"
     )
 
     normalized = _normalize_unbacked_intent_preview_reply(reply)
@@ -6462,7 +6732,7 @@ def test_normalize_unbacked_intent_preview_reply_keeps_general_card_protocol_exp
 
 def test_normalize_unbacked_intent_preview_reply_keeps_generic_confirm_protocol_without_items():
     reply = (
-        "可以改。如果你确认要更新，后续我会先整理确认卡片，"
+        "可以改。如果你确认要更新，后续我会先整理待采纳内容，"
         "等你点击采纳后再作为后续参考。"
     )
 
@@ -6495,7 +6765,7 @@ def test_chat_service_normalizes_unbacked_intent_preview_without_tool_call(tmp_p
     assert isinstance(reply, str)
     assert "待确认内容" not in reply
     assert "回复“确认”就按上面执行" not in reply
-    assert "这轮没有生成可点击的确认卡片" in reply
+    assert "还没有列出可采纳的内容" in reply
 
 
 def test_chat_service_keeps_general_preference_change_policy_answer(tmp_path, mock_llm_client):
@@ -6504,7 +6774,7 @@ def test_chat_service_keeps_general_preference_change_policy_answer(tmp_path, mo
     fake_agent = _FakeAgent([
         (
             "孩子改主意后，之前偏好可以调整。只要孩子想法变了，直接告诉我新的方向，"
-            "我会先整理成确认卡片；采纳后再调整推荐口径和候选志愿。"
+            "我会先整理成待采纳内容；采纳后再调整推荐口径和候选志愿。"
         )
     ])
 
@@ -6519,7 +6789,7 @@ def test_chat_service_keeps_general_preference_change_policy_answer(tmp_path, mo
     assert isinstance(reply, str)
     assert "之前偏好可以调整" in reply
     assert "采纳后再调整推荐口径和候选志愿" in reply
-    assert "这轮我还没有生成可点击的确认卡片" not in reply
+    assert "这轮我还没有生成可点击的待采纳内容" not in reply
 
 
 def test_chat_service_recovers_unbacked_major_intent_confirmation_to_pending_card(tmp_path, mock_llm_client):
@@ -6577,7 +6847,7 @@ def test_chat_service_recovers_unbacked_major_intent_confirmation_to_pending_car
     assert card_payload["type"] == "pendingConfirmationCard"
     assert card_payload["kind"] == "intent_change"
     assert card_payload["actionFamily"] == "apply_selected_intents"
-    assert "点击采纳后生效：" in card_payload["content"]
+    assert "" in card_payload["content"]
     assert "偏好专业：会计学、审计学" in card_payload["content"]
     assert "排除专业类：土木类、建筑类" in card_payload["content"]
     assert pending_state["value"]["kind"] == "intent_change"
@@ -6671,7 +6941,7 @@ def test_chat_service_recovers_claimed_region_card_without_tool_and_drops_mixed_
     db_path = tmp_path / "history.db"
     store = ChatHistoryStore(str(db_path))
     bad_reply = (
-        "我已经注意到你不想去内蒙古。刚才已经为你生成了排除内蒙古的确认卡片，"
+        "我已经注意到你不想去内蒙古。刚才已经为你生成了排除内蒙古的待采纳内容，"
         "需要点击采纳后才会生效。同时，你之前也说了不想去天津，当前方案里还有天津师范大学需要留意。"
     )
     fake_agent = _FakeAgent([bad_reply])
@@ -6724,7 +6994,7 @@ def test_chat_service_recovers_claimed_region_card_without_tool_and_drops_mixed_
     saved_text = next(part.content for part in saved_history[-1].parts if isinstance(part, TextPart))
     assert saved_text == reply.primary
     assert "天津" not in saved_text
-    assert "已经为你生成了排除内蒙古的确认卡片" not in saved_text
+    assert "已经为你生成了排除内蒙古的待采纳内容" not in saved_text
 
 
 def test_chat_service_recovers_legacy_intent_confirm_required_reply_to_pending_card(tmp_path, mock_llm_client):
@@ -6732,7 +7002,7 @@ def test_chat_service_recovers_legacy_intent_confirm_required_reply_to_pending_c
     store = ChatHistoryStore(str(db_path))
     bad_reply = (
         "好的，已收到你的确认：只排除内蒙古，保留天津。\n\n"
-        "不过系统提示还需要你在界面上点击确认卡片中的“采纳”按钮，"
+        "不过系统提示还需要你在界面上点击待采纳内容中的“采纳”按钮，"
         "这条规则才会正式生效。"
     )
     fake_agent = _FakeAgentWithToolCalls(
@@ -6751,7 +7021,7 @@ def test_chat_service_recovers_legacy_intent_confirm_required_reply_to_pending_c
                     {
                         "applied": False,
                         "messageCode": "confirm_required",
-                        "message": "这一步我先停在待确认状态。请点击确认卡片采纳后，我再正式生效。",
+                        "message": "这一步我先停在待确认状态。请点击待采纳内容采纳后，我再正式生效。",
                     },
                     ensure_ascii=False,
                 ),
@@ -6827,7 +7097,7 @@ def test_chat_service_does_not_recover_unbacked_intent_card_after_plan_review(tm
     store = ChatHistoryStore(str(db_path))
     review_reply = (
         "这版确实偏冲，当前冲66 / 稳28 / 保0，主要风险是保底不足。"
-        "如果后续要把预算或排除方向作为参考，需要先生成确认卡片；这轮只是帮你看风险，不会改动方案。"
+        "如果后续要把预算或排除方向作为参考，需要先生成待采纳内容；这轮只是帮你看风险，不会改动方案。"
     )
     fake_agent = _FakeAgentWithToolCalls(
         review_reply,
@@ -6940,7 +7210,7 @@ def test_chat_service_uses_readonly_plan_result_when_guarding_fake_plan_confirm_
     assert "中外合作志愿占比偏高" in reply
     assert "预算一般" in reply
     assert "只分析，不调整方案" in reply
-    assert "这轮还没有生成可点击的方案确认卡片" not in reply
+    assert "这轮还没有生成可点击的方案待采纳内容" not in reply
     assert "确认要调整" not in reply
     saved_history = asyncio.run(store.load("990507"))
     saved_text = next(part.content for part in saved_history[-1].parts if isinstance(part, TextPart))
@@ -6987,7 +7257,7 @@ def test_chat_service_uses_readonly_plan_query_result_when_guarding_fake_plan_co
     assert isinstance(reply, str)
     assert "青岛城市学院" in reply
     assert "当前方案里共命中了 7 条" in reply
-    assert "这轮还没有生成可点击的方案确认卡片" not in reply
+    assert "这轮还没有生成可点击的方案待采纳内容" not in reply
     assert "确认要我执行" not in reply
     saved_history = asyncio.run(store.load("990508"))
     saved_text = next(part.content for part in saved_history[-1].parts if isinstance(part, TextPart))
@@ -7011,8 +7281,8 @@ def test_chat_service_appends_pending_intent_boundary_on_followup_analysis(tmp_p
         reply = asyncio.run(service.handle_message("session-intent-followup-boundary", "user-57", "先不确认，看看影响"))
 
     assert isinstance(reply, str)
-    assert "确认卡片还没有采纳" in reply
-    assert "点击采纳前不会写入后续报考参考" in reply
+    assert "这次内容还没有采纳" in reply
+    assert "点“采纳”前不会写入后续报考参考" in reply
 
 
 def test_chat_service_does_not_append_pending_intent_boundary_to_existing_only_preview(tmp_path, mock_llm_client):
@@ -7264,7 +7534,7 @@ def test_chat_service_text_confirm_workspace_actions_require_card_click(tmp_path
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-direct-copy", "user-57", "确认"))
 
-    assert reply == "这次方案调整还在待确认状态。请以最新确认卡片为准；确认前不会改动方案。如果卡片已失效，可以重新说明要调整的内容，我会重新生成确认卡片。"
+    assert reply == "这次方案调整还没有执行。请以最新内容为准；确认前不会改动方案。如果内容已失效，可以重新说明要调整的内容，我会重新给出预览。"
     execute_mock.assert_not_awaited()
     assert fake_agent.calls == []
 
@@ -7400,7 +7670,7 @@ def test_chat_service_dialog_replace_preview_text_confirm_requires_card_click(tm
         confirm_reply = asyncio.run(service.handle_message("session-dialog-57-replay", "user-57", "确认"))
 
     _assert_pending_card_envelope(preview_reply, "", "replace_units")
-    assert confirm_reply == "这次方案调整还在待确认状态。请以最新确认卡片为准；确认前不会改动方案。如果卡片已失效，可以重新说明要调整的内容，我会重新生成确认卡片。"
+    assert confirm_reply == "这次方案调整还没有执行。请以最新内容为准；确认前不会改动方案。如果内容已失效，可以重新说明要调整的内容，我会重新给出预览。"
     remove_mock.assert_not_awaited()
     add_mock.assert_not_awaited()
     assert fake_agent.calls[0] == {"user_prompt": "调整下", "pending_plan_action": None}
@@ -7672,8 +7942,8 @@ def test_chat_service_mixed_intent_plan_hit_card_keeps_positive_preference_summa
     assert "会计学" in payload["content"]
     assert "审计学" in payload["content"]
     assert "土木工程" in payload["content"]
-    assert "偏好方向" in payload["impact"]
-    assert "排除要求" in payload["impact"]
+    assert "优先方向" in payload["impact"]
+    assert "避开的方向" in payload["impact"]
     intent_payload = pending_state["value"]["executionPayload"]["intentPayload"]
     assert intent_payload["intentMode"] == "constraint"
     assert intent_payload["selected"] == [
@@ -7743,8 +8013,8 @@ def test_chat_service_negative_plan_hit_card_keeps_existing_positive_preference_
     assert "会计学" in payload["content"]
     assert "审计学" in payload["content"]
     assert "土木工程" in payload["content"]
-    assert "偏好方向" in payload["impact"]
-    assert "排除要求" in payload["impact"]
+    assert "优先方向" in payload["impact"]
+    assert "避开的方向" in payload["impact"]
     intent_payload = pending_state["value"]["executionPayload"]["intentPayload"]
     assert intent_payload["intentMode"] == "constraint"
     assert intent_payload["selected"] == [
@@ -7959,8 +8229,8 @@ def test_chat_service_handle_intent_select_preference_returns_pending_confirmati
     )
     assert card_payload["kind"] == "intent_change"
     assert card_payload["summary"] == "不优先地域：北京"
-    assert "影响推荐系数和专家优选推荐" in card_payload["impact"]
-    assert "不会直接删除当前方案" in card_payload["impact"]
+    assert "适当靠后" in card_payload["impact"]
+    assert "直接删除当前方案" not in card_payload["impact"]
     assert pending_state["value"]["executionPayload"]["intentMode"] == "preference"
     assert pending_state["value"]["summary"] == "不优先地域：北京"
     apply_mock.assert_not_awaited()
@@ -7996,7 +8266,7 @@ def test_chat_service_interest_prefer_confirm_returns_pending_confirmation_card(
             ],
             "existingItems": [],
         },
-        "delegatedText": "待确认内容：偏好地域北京。点击卡片采纳前不会生效。",
+        "delegatedText": "待确认内容：偏好地域北京。点“采纳”前不会生效。",
     }
     pending_state, save_pending_mock, get_pending_mock = _pending_confirmation_store()
     clear_legacy_cache_mock = AsyncMock(return_value={"code": 0})

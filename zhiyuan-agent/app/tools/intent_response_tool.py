@@ -23,6 +23,7 @@ class IntentAnalysisPayload(BaseModel):
     sessionId: str
     title: str = ""
     intentMode: str = "preference"
+    constraintIntentType: str = "default"
     analysisStage: str = "confirmed"
     editFlag: str | None = None
     items: list[IntentPreviewItem] = Field(default_factory=list)
@@ -36,6 +37,7 @@ class IntentStateUpdateResult(BaseModel):
     action: str
     sessionId: str
     intentMode: str = "preference"
+    constraintIntentType: str = "default"
     applied: bool = False
     messageCode: str = ""
     message: str = ""
@@ -182,10 +184,10 @@ def _format_intent_state_update_with_summary(
     lines = [base]
     summary = _format_confirmed_intent_summary(result.merged, intent_mode=intent_mode or result.intentMode)
     if summary:
-        lines.append(f"- 本次确认内容：{'；'.join(summary)}。")
+        lines.append(f"本次内容：{'；'.join(summary)}。")
     if usage_text:
-        lines.append(f"- 后续使用：{usage_text}")
-    lines.append(f"- 下一步：{next_step}")
+        lines.append(usage_text)
+    lines.append(f"下一步可以{next_step}")
     return "\n".join(lines)
 
 
@@ -195,28 +197,33 @@ def render_intent_state_update(result: IntentStateUpdateResult) -> str:
 
     code = result.messageCode
     if code == "constraint_applied":
-        base = "已确认，这条要求会作为后续报考参考。"
-        usage_text = "后续推荐和方案检查会按这条要求避开；当前方案不会自动删除志愿，如需移除或替换，我会先给方案调整确认卡。"
+        base = "已采纳。"
+        if result.constraintIntentType == "only_keep":
+            usage_text = "后续会只按这个范围看；如果当前方案里还有其他方向，会先给你看调整预览再改。"
+        elif result.constraintIntentType == "must_have":
+            usage_text = "后续会确保这个方向至少保留；如果当前方案缺少，会先给你看补入预览再改。"
+        else:
+            usage_text = "后续推荐、方案检查和调整会按这个条件处理；需要改当前方案时，会先给你看预览。"
         return _format_intent_state_update_with_summary(
             base=base,
             result=result,
             usage_text=usage_text,
-            next_step="可以让我检查当前方案里有没有不符合这条要求的志愿。",
+            next_step="让我检查当前方案里有没有不符合这条条件的志愿。",
             intent_mode="constraint",
         )
     if code == "preference_applied":
         return _format_intent_state_update_with_summary(
-            base="已确认，这个偏好会作为后续报考参考。",
+            base="已采纳。",
             result=result,
-            usage_text="后续会影响推荐系数和专家优选推荐；当前方案不会自动删除志愿，如需调整我会先给预览再等你确认。",
-            next_step="可以继续让我看看现在这份方案哪些地方比较贴近你的想法、哪些地方还可以再优化。",
+            usage_text="后续推荐和专家优选会更贴近这个方向；当前方案如需改动，会先给你看调整预览。",
+            next_step="继续让我看看现在这份方案哪些地方贴近你的想法、哪些地方还可以优化。",
         )
     if code == "reject_success":
         return "已取消本次意向调整。你可以重新说明想保留、排除或更偏好的方向，或者继续其他咨询。"
     if code == "no_pending":
         return "当前没有待确认的意向调整。"
     if code == "confirm_required":
-        return "这一步我先停在待确认状态。请点击确认卡片采纳后，我再正式生效。"
+        return "这一步还没有正式生效。请点“采纳”后，我再作为后续参考。"
     if code == "empty_update":
         return "没有可执行的意向更新内容。"
     if code == "apply_failed":
@@ -737,7 +744,7 @@ def render_intent_analysis_text(
 
     if items:
         next_steps = [
-            "如果要把这些想法作为后续参考，我可以先整理成确认卡片；采纳/确认前不会生效。",
+            "如果要把这些想法作为后续参考，我可以先列出来让你采纳；采纳前不会生效。",
         ]
     else:
         next_steps = [

@@ -58,7 +58,7 @@ def build_planning_context(deps: RequestContext) -> str:
     stale_notice = str(getattr(deps, "stale_pending_notice", "") or "").strip()
     if stale_notice:
         lines.append(
-            f"注意：{stale_notice}如果用户本轮仍要调整方案，必须重新调用方案预览工具生成新的确认卡片；"
+            f"注意：{stale_notice}如果用户本轮仍要调整方案，必须重新调用方案预览工具生成新的可确认预览；"
             "不要复述旧预览，也不要让用户用文字确认。"
         )
 

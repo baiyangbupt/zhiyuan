@@ -335,7 +335,7 @@ export const applyPlanningFixProposalApi = (
 export const generatePlanningCandidatePoolApi = (
   tenantId: string,
   chatSessionId: string,
-  forceRegenerate: boolean = true
+  forceRegenerate: boolean = false
 ) =>
   request<{ forceRegenerate: boolean }, PlanningStateRes>({
     url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/candidate-pool/generate?chatSessionId=${chatSessionId}`,

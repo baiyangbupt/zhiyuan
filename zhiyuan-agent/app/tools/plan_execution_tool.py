@@ -3052,7 +3052,7 @@ async def _execute_plan_action_model(
             if not scoped_ids:
                 summary = (
                     f"当前方案里暂时没有匹配“{scope_label}”的志愿，所以这次不需要从方案中移除。"
-                    "如果这是后续必须避开的要求，可以继续说明，我会整理成确认卡片写入后续报考参考。"
+                    "如果后续也必须避开这个方向，可以继续说明，我会先列出来让你采纳，再写入后续报考参考。"
                 )
                 return PlanExecutionResult(
                     applied=False,

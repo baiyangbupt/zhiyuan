@@ -194,6 +194,8 @@ public class PlanningStateService {
         res.setVersion(state.getVersion());
         res.setPhase(state.getPhase());
         res.setStaleFlags(state.getStaleFlags());
+        res.setStudentSummary(buildStudentPlanningSummary(state));
+        res.setProfileState(state.getProfileState());
         res.setConstraintState(state.getConstraintState());
         res.setPlanGenerationState(state.getPlanGenerationState());
         res.setInitialRecommendationState(state.getInitialRecommendationState());
@@ -206,6 +208,87 @@ public class PlanningStateService {
         res.setOperationLogs(state.getOperationLogs());
         res.setWorkflowStatus(PlanningWorkflowStatusBuilder.build(state, findLatestExportBehaviorEvent(state)));
         return res;
+    }
+
+    private StudentPlanningSummaryDTO buildStudentPlanningSummary(PlanningStateDTO state) {
+        StudentPlanningSummaryDTO summary = new StudentPlanningSummaryDTO();
+        CreateSessionReq scoreDetail = loadScoreDetail(state.getSessionId());
+        if (scoreDetail == null) {
+            CandidatePoolStateDTO candidatePoolState = state.getCandidatePoolState();
+            if (candidatePoolState != null) {
+                summary.setScore(candidatePoolState.getUserScore());
+                summary.setBatchScore(candidatePoolState.getBatchScore());
+                summary.setProvinceName(candidatePoolState.getSourceProvinceName());
+            }
+            summary.setStrengthSubjects(resolveStrengthSubjects(state, null));
+            return summary;
+        }
+        summary.setSex(formatSex(scoreDetail.getSex()));
+        summary.setScore(scoreDetail.getTotalScore());
+        summary.setRank(scoreDetail.getTotalScorePos());
+        if (scoreDetail.getBatch() != null) {
+            summary.setBatchName(defaultString(scoreDetail.getBatch().getName()));
+            if (scoreDetail.getBatch().getScore() != null) {
+                summary.setBatchScore(Math.round(scoreDetail.getBatch().getScore()));
+            }
+        }
+        if (scoreDetail.getProvince() != null) {
+            summary.setProvinceName(defaultString(scoreDetail.getProvince().getName()));
+        }
+        summary.setSubjects(resolveSubjectNames(scoreDetail.getSubjectList()));
+        summary.setStrengthSubjects(resolveStrengthSubjects(state, scoreDetail));
+        return summary;
+    }
+
+    private String formatSex(CreateSessionReq.Sex sex) {
+        if (sex == null) {
+            return "";
+        }
+        String name = defaultString(sex.getName());
+        if (!Strings.isNullOrEmpty(name)) {
+            return name;
+        }
+        String code = defaultString(sex.getCode()).toLowerCase(Locale.ROOT);
+        if ("male".equals(code) || "m".equals(code) || "1".equals(code) || "男".equals(code)) {
+            return "男";
+        }
+        if ("female".equals(code) || "f".equals(code) || "2".equals(code) || "女".equals(code)) {
+            return "女";
+        }
+        return defaultString(sex.getCode());
+    }
+
+    private List<String> resolveSubjectNames(List<CreateSessionReq.SubjectItem> subjectList) {
+        if (subjectList == null) {
+            return Lists.newArrayList();
+        }
+        return subjectList.stream()
+                .filter(Objects::nonNull)
+                .map(CreateSessionReq.SubjectItem::getName)
+                .filter(name -> !Strings.isNullOrEmpty(name))
+                .distinct()
+                .collect(Collectors.toList());
+    }
+
+    private List<String> resolveStrengthSubjects(PlanningStateDTO state, CreateSessionReq scoreDetail) {
+        List<String> subjects = Lists.newArrayList();
+        if (state != null
+                && state.getProfileState() != null
+                && state.getProfileState().getExplicitProfile() != null
+                && state.getProfileState().getExplicitProfile().getStrengthSubjects() != null) {
+            subjects.addAll(state.getProfileState().getExplicitProfile().getStrengthSubjects());
+        }
+        if (subjects.isEmpty() && scoreDetail != null && scoreDetail.getStrengthSubjectList() != null) {
+            for (CreateSessionReq.SubjectScore subjectScore : scoreDetail.getStrengthSubjectList()) {
+                if (subjectScore != null && !Strings.isNullOrEmpty(subjectScore.getSubjectName())) {
+                    subjects.add(subjectScore.getSubjectName());
+                }
+            }
+        }
+        return subjects.stream()
+                .filter(name -> !Strings.isNullOrEmpty(name))
+                .distinct()
+                .collect(Collectors.toList());
     }
 
     private CandidatePoolStateDTO buildWorkspaceCandidatePoolState(PlanningStateDTO state) {
@@ -6234,6 +6317,12 @@ public class PlanningStateService {
         if (!Strings.isNullOrEmpty(item.getDisplaySchoolName())) {
             return item.getDisplaySchoolName();
         }
+        if (schoolManager != null && !Strings.isNullOrEmpty(item.getSchoolId())) {
+            SchoolVO schoolVO = schoolManager.getSchoolById(item.getSchoolId());
+            if (schoolVO != null && !Strings.isNullOrEmpty(schoolVO.getSchoolName())) {
+                return schoolVO.getSchoolName();
+            }
+        }
         return item.getSchoolName();
     }
 
@@ -7386,7 +7475,7 @@ public class PlanningStateService {
                 check.setLevel("warn");
                 check.setSummary("当前方案包含中外合作办学项目");
                 check.setDetail("请仔细核对中外合作办学的学校和专业，确认自己是否能够接受。");
-                check.setSuggestedAction("若不接受中外合作办学，可将相关志愿移出方案或加入硬约束。");
+                check.setSuggestedAction("若不接受中外合作办学，可将相关志愿移出方案，或把它作为后续必须避开的报考条件。");
                 check.getAffectedVolunteerIds().add(orderedItem.getVolunteerId());
                 addAffectedUnitId(check, candidateItem);
             }

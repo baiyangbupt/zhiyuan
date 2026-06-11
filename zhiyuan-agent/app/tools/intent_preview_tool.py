@@ -39,6 +39,7 @@ from app.tools.major_compare_tool import compare_majors
 
 logger = logging.getLogger(__name__)
 IntentMode = Literal["preference", "constraint"]
+ConstraintIntentType = Literal["default", "only_keep", "must_have"]
 
 
 def _session_id(request_context: RequestContext) -> str:
@@ -364,6 +365,7 @@ async def preview_current_intent_confirmation(
     city_intents: CityIntentPreviewInput | None = None,
     career_intents: CareerIntentPreviewInput | None = None,
     intent_mode: IntentMode | None = None,
+    constraint_intent_type: ConstraintIntentType | None = None,
     recovery_scope: str | None = None,
 ) -> str:
     """High-level Intent preview from the current utterance.
@@ -386,6 +388,7 @@ async def preview_current_intent_confirmation(
             recovery_scope=recovery_scope,
             confirm_enabled=True,
             intent_mode=intent_mode,
+            constraint_intent_type=constraint_intent_type,
         )
     )
 
@@ -394,6 +397,7 @@ async def preview_current_major_intent_confirmation(
     ctx: RunContext[RequestContext],
     major_intents: MajorIntentPreviewInput | None = None,
     intent_mode: IntentMode | None = None,
+    constraint_intent_type: ConstraintIntentType | None = None,
 ) -> str:
     """Intent preview for explicit major / major-category preference or constraint.
 
@@ -412,6 +416,7 @@ async def preview_current_major_intent_confirmation(
         ctx,
         major_intents=major_intents,
         intent_mode=intent_mode,
+        constraint_intent_type=constraint_intent_type,
         recovery_scope="major",
     )
 
@@ -420,12 +425,14 @@ async def preview_current_school_intent_confirmation(
     ctx: RunContext[RequestContext],
     school_intents: SchoolIntentPreviewInput | None = None,
     intent_mode: IntentMode | None = None,
+    constraint_intent_type: ConstraintIntentType | None = None,
 ) -> str:
     """Intent preview for explicit school preference or exclusion."""
     return await preview_current_intent_confirmation(
         ctx,
         school_intents=school_intents,
         intent_mode=intent_mode,
+        constraint_intent_type=constraint_intent_type,
         recovery_scope="school",
     )
 
@@ -434,12 +441,14 @@ async def preview_current_region_intent_confirmation(
     ctx: RunContext[RequestContext],
     city_intents: CityIntentPreviewInput | None = None,
     intent_mode: IntentMode | None = None,
+    constraint_intent_type: ConstraintIntentType | None = None,
 ) -> str:
     """Intent preview for explicit region / city preference or exclusion."""
     return await preview_current_intent_confirmation(
         ctx,
         city_intents=city_intents,
         intent_mode=intent_mode,
+        constraint_intent_type=constraint_intent_type,
         recovery_scope="region",
     )
 

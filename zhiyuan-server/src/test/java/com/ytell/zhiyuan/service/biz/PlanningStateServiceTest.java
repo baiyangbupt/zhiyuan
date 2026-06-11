@@ -93,6 +93,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.never;
@@ -1454,6 +1455,53 @@ public class PlanningStateServiceTest {
     }
 
     @Test
+    void shouldExposeStudentSummaryAndIntentStateForWorkspaceHeader() {
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+        state.getProfileState().getExplicitProfile().getStrengthSubjects().add("物理");
+        state.getProfileState().getExplicitProfile().getPositiveRegions().add("北京");
+        state.getConstraintState().getSoftPreferences().getPreferMajors().add("计算机");
+        state.getConstraintState().getHardConstraints().getMustExcludeRegions().add("天津");
+
+        CreateSessionReq scoreDetail = new CreateSessionReq();
+        CreateSessionReq.Sex sex = new CreateSessionReq.Sex();
+        sex.setCode("male");
+        scoreDetail.setSex(sex);
+        scoreDetail.setTotalScore(537);
+        scoreDetail.setTotalScorePos(11278);
+        CreateSessionReq.Batch batch = new CreateSessionReq.Batch();
+        batch.setName("本科批");
+        batch.setScore(446F);
+        scoreDetail.setBatch(batch);
+        CreateSessionReq.Province province = new CreateSessionReq.Province();
+        province.setName("湖南");
+        scoreDetail.setProvince(province);
+        scoreDetail.setSubjectList(java.util.Arrays.asList(
+                new CreateSessionReq.SubjectItem(1, "首选", "history", "历史"),
+                new CreateSessionReq.SubjectItem(0, "再选", "biology", "生物"),
+                new CreateSessionReq.SubjectItem(0, "再选", "politics", "政治")));
+        ChatSessionExtraData scoreData = new ChatSessionExtraData();
+        scoreData.setDataKey(ChatSessionExtraDataConstants.USER_SCORE_KEY);
+        scoreData.setDataValue(com.alibaba.fastjson.JSONObject.toJSONString(scoreDetail));
+        when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.USER_SCORE_KEY)))
+                .thenReturn(scoreData);
+
+        PlanningWorkspaceStateRes workspaceState = planningStateService.buildPlanningWorkspaceStateRes(state);
+
+        assertEquals("男", workspaceState.getStudentSummary().getSex());
+        assertEquals(Integer.valueOf(537), workspaceState.getStudentSummary().getScore());
+        assertEquals(Integer.valueOf(11278), workspaceState.getStudentSummary().getRank());
+        assertEquals("本科批", workspaceState.getStudentSummary().getBatchName());
+        assertEquals(Integer.valueOf(446), workspaceState.getStudentSummary().getBatchScore());
+        assertEquals("湖南", workspaceState.getStudentSummary().getProvinceName());
+        assertEquals(java.util.Arrays.asList("历史", "生物", "政治"), workspaceState.getStudentSummary().getSubjects());
+        assertEquals(java.util.Arrays.asList("物理"), workspaceState.getStudentSummary().getStrengthSubjects());
+        assertEquals(java.util.Arrays.asList("北京"), workspaceState.getProfileState().getExplicitProfile().getPositiveRegions());
+        assertEquals(java.util.Arrays.asList("计算机"), workspaceState.getConstraintState().getSoftPreferences().getPreferMajors());
+        assertEquals(java.util.Arrays.asList("天津"), workspaceState.getConstraintState().getHardConstraints().getMustExcludeRegions());
+    }
+
+    @Test
     void shouldInitializeProfileStateFromSessionData() {
         when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
                 .thenReturn(null);
@@ -2613,7 +2661,7 @@ public class PlanningStateServiceTest {
         assertEquals(1, proposal.getCandidateShortages().size());
         assertEquals("hard_constraints", proposal.getCandidateShortages().get(0).getScope());
         assertEquals(Integer.valueOf(0), proposal.getCandidateShortages().get(0).getAvailableCount());
-        assertTrue(proposal.getCandidateShortages().get(0).getMessage().contains("硬性要求过滤后数量不足"));
+        assertTrue(proposal.getCandidateShortages().get(0).getMessage().contains("报考条件过滤后数量不足"));
     }
 
     @Test
@@ -2664,7 +2712,7 @@ public class PlanningStateServiceTest {
         assertEquals("hard_constraints", proposal.getCandidateShortages().get(0).getScope());
         assertEquals("保", proposal.getCandidateShortages().get(0).getTargetTier());
         assertEquals(Integer.valueOf(0), proposal.getCandidateShortages().get(0).getAvailableCount());
-        assertTrue(proposal.getCandidateShortages().get(0).getMessage().contains("硬性要求过滤后数量不足"));
+        assertTrue(proposal.getCandidateShortages().get(0).getMessage().contains("报考条件过滤后数量不足"));
     }
 
     @Test
@@ -2703,7 +2751,7 @@ public class PlanningStateServiceTest {
         assertEquals(1, proposal.getCandidateShortages().size());
         assertEquals("hard_constraints", proposal.getCandidateShortages().get(0).getScope());
         assertEquals(Integer.valueOf(0), proposal.getCandidateShortages().get(0).getAvailableCount());
-        assertTrue(proposal.getCandidateShortages().get(0).getMessage().contains("硬性要求过滤后数量不足"));
+        assertTrue(proposal.getCandidateShortages().get(0).getMessage().contains("报考条件过滤后数量不足"));
     }
 
     @Test
@@ -4690,6 +4738,70 @@ public class PlanningStateServiceTest {
         CandidatePoolQueryRes excludeRes = planningStateService.queryCandidatePool(1L, 1L, excludeReq);
         assertEquals(Integer.valueOf(1), excludeRes.getTotal());
         assertEquals("上海财经大学(02)专业组", excludeRes.getItems().get(0).getSchoolName());
+    }
+
+    @Test
+    void shouldResolveDisplaySchoolNameForLegacyCandidatePoolWithoutStoredField() {
+        bindPlanningStateStore();
+
+        SchoolVO standardSchool = new SchoolVO();
+        standardSchool.setSchoolId("s1");
+        standardSchool.setSchoolName("天津财经大学珠江学院");
+        when(schoolManager.getSchoolById("s1")).thenReturn(standardSchool);
+
+        PlanningStateDTO state = planningStateService.getPlanningState(1L);
+        CandidateItemDTO legacy = new CandidateItemDTO();
+        legacy.setVolunteerId("ps1_m1");
+        legacy.setPlanSchoolDataId("ps1");
+        legacy.setSchoolId("s1");
+        legacy.setSchoolName("天津财经大学珠江学院(01)专业组");
+        legacy.setProvinceName("天津");
+        legacy.setCityName("天津");
+        legacy.setMajorId("m1");
+        legacy.setMajorName("金融学");
+        legacy.setTier("稳");
+        legacy.setAdmissionRatio(55D);
+        state.getCandidatePoolState().setItems(java.util.Collections.singletonList(legacy));
+        state.getCandidatePoolState().setGeneratedAt("2026-06-11T10:00:00+08:00");
+        state.getCandidatePoolState().setStatusCode("sufficient");
+        saveStateToStore(1L, state);
+
+        CandidateFilterOptionsDTO options = planningStateService.getCandidateFilterOptions(1L, 1L);
+        assertTrue(options.getSchoolKeywords().contains("天津财经大学珠江学院"));
+        assertFalse(options.getSchoolKeywords().contains("天津财经大学珠江学院(01)专业组"));
+
+        CandidatePoolQueryReq includeReq = new CandidatePoolQueryReq();
+        includeReq.getFilters().setSchoolKeywords(java.util.Arrays.asList("天津财经大学珠江学院"));
+        CandidatePoolQueryRes includeRes = planningStateService.queryCandidatePool(1L, 1L, includeReq);
+        assertEquals(Integer.valueOf(1), includeRes.getTotal());
+        assertEquals("天津财经大学珠江学院(01)专业组", includeRes.getItems().get(0).getSchoolName());
+    }
+
+    @Test
+    void shouldReuseExistingCandidatePoolWithoutRankWhenNotForcedAndNotStale() {
+        bindPlanningStateStore();
+
+        PlanningStateDTO state = planningStateService.getPlanningState(1L);
+        CandidateItemDTO cached = new CandidateItemDTO();
+        cached.setVolunteerId("ps1_m1");
+        cached.setPlanSchoolDataId("ps1");
+        cached.setSchoolName("北京工业大学");
+        cached.setMajorId("m1");
+        cached.setMajorName("自动化");
+        cached.setTier("稳");
+        cached.setFinalScore(88D);
+        state.getCandidatePoolState().setItems(java.util.Collections.singletonList(cached));
+        state.getCandidatePoolState().setGeneratedAt("2026-06-11T10:00:00+08:00");
+        state.getStaleFlags().setCandidatePool(false);
+        saveStateToStore(1L, state);
+
+        CandidatePoolGenerateReq req = new CandidatePoolGenerateReq();
+        req.setForceRegenerate(false);
+        PlanningStateDTO result = planningStateService.generateCandidatePool(1L, 1L, req);
+
+        assertEquals(1, result.getCandidatePoolState().getItems().size());
+        assertEquals("ps1_m1", result.getCandidatePoolState().getItems().get(0).getVolunteerId());
+        verify(volunteerBizService, never()).recommendVolunteerList(any(), any(), anyBoolean(), anyBoolean());
     }
 
     @Test

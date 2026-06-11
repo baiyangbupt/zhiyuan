@@ -390,7 +390,7 @@ def _format_candidate_shortage(shortage: dict[str, Any]) -> str:
         elif scope == "objective_validation":
             message = "已有预览没有让本次审查目标变好"
         elif scope == "hard_constraints":
-            message = "已确认的硬性要求收窄了可选范围，当前可用于补位的候选不足"
+            message = "已确认的报考条件收窄了可选范围，当前可用于补位的候选不足"
         else:
             message = "当前可用于规划的候选池里目标候选不足"
     details: list[str] = []
@@ -1448,7 +1448,7 @@ def _fix_proposal_blocking_guidance(proposal: dict[str, Any]) -> list[str]:
             elif scope == "objective_validation":
                 message = "已有预览没有让本次审查目标变好，暂不应该确认应用"
             elif scope == "hard_constraints":
-                message = "已确认的硬性要求收窄了可选范围，当前可用于补位的候选不足"
+                message = "已确认的报考条件收窄了可选范围，当前可用于补位的候选不足"
             else:
                 message = "当前可用于规划的候选池里目标候选不足"
         if not message:

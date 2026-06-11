@@ -315,7 +315,7 @@ final class RepairProposalStateBuilder {
                     : proposal.getBlockingReason();
         }
         if ("hard_constraints".equals(scope)) {
-            return "候选池里有可用于这个目标的候选，但按已确认的硬性要求过滤后数量不足。";
+            return "候选池里有可用于这个目标的候选，但按已确认的报考条件过滤后数量不足。";
         }
         if ("tier_candidate_insufficient".equals(reasonCode)) {
             return "当前可用于规划的候选池里，目标冲稳保区间候选不足。";

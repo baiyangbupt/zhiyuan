@@ -209,7 +209,7 @@ def _fix_proposal_blocking_guidance(proposal: dict[str, Any]) -> list[str]:
             elif scope == "objective_validation":
                 message = "处理边界：预览没有让本次审查目标变好，暂不应该确认应用"
             elif scope == "hard_constraints":
-                message = "处理边界：已确认的硬性要求收窄了可选范围，当前可用于补位的候选不足"
+                message = "处理边界：已确认的报考条件收窄了可选范围，当前可用于补位的候选不足"
             else:
                 message = "处理边界：当前可用于规划的候选池里目标候选不足"
         if message and not message.startswith("处理边界："):

@@ -624,6 +624,16 @@ export interface PlanningStateRes {
   sessionId?: number;
   version?: number;
   phase?: string;
+  studentSummary?: {
+    sex?: string;
+    score?: number;
+    rank?: number;
+    batchName?: string;
+    batchScore?: number;
+    provinceName?: string;
+    subjects?: string[];
+    strengthSubjects?: string[];
+  };
   profileState?: {
     explicitProfile?: {
       positiveMajors?: string[];
@@ -776,6 +786,9 @@ export type PlanningWorkspaceStateRes = Pick<
   | 'sessionId'
   | 'version'
   | 'phase'
+  | 'studentSummary'
+  | 'profileState'
+  | 'constraintState'
   | 'staleFlags'
   | 'planGenerationState'
   | 'initialRecommendationState'
