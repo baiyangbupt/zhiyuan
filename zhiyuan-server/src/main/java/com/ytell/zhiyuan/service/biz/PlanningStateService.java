@@ -7,6 +7,7 @@ import com.ytell.zhiyuan.common.constants.ChatSessionExtraDataConstants;
 import com.ytell.zhiyuan.common.exception.BusinessException;
 import com.ytell.zhiyuan.common.util.ExcelUtil;
 import com.ytell.zhiyuan.manager.MajorExtraDataManager;
+import com.ytell.zhiyuan.manager.SchoolManager;
 import com.ytell.zhiyuan.model.dto.CreateSessionReq;
 import com.ytell.zhiyuan.model.dto.UserProfileData;
 import com.ytell.zhiyuan.model.dto.inner.VolunteerRecommendListResponse;
@@ -14,6 +15,7 @@ import com.ytell.zhiyuan.model.dto.planning.*;
 import com.ytell.zhiyuan.model.entity.biz.ChatSessionExtraData;
 import com.ytell.zhiyuan.model.enums.DataType;
 import com.ytell.zhiyuan.model.vo.MajorExtraDataVO;
+import com.ytell.zhiyuan.model.vo.SchoolVO;
 import com.ytell.zhiyuan.service.shared.PlanningBehaviorEventSharedService;
 import com.ytell.zhiyuan.service.shared.ChatSessionExtraDataSharedService;
 import com.ytell.zhiyuan.service.volunteer.VolunteerIntervalService;
@@ -158,6 +160,9 @@ public class PlanningStateService {
 
     @Autowired
     private MajorExtraDataManager majorExtraDataManager;
+
+    @Autowired(required = false)
+    private SchoolManager schoolManager;
 
     public PlanningStateDTO getPlanningState(Long chatSessionId) {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
@@ -1210,7 +1215,7 @@ public class PlanningStateService {
                 .sorted()
                 .collect(Collectors.toList());
         List<String> schoolKeywords = items.stream()
-                .map(CandidateItemDTO::getSchoolName)
+                .map(this::resolveDisplaySchoolName)
                 .map(this::normalizeKeywordFilterOption)
                 .filter(Objects::nonNull)
                 .distinct()
@@ -6060,6 +6065,7 @@ public class PlanningStateService {
         target.setSchoolId(source.getSchoolId());
         target.setSchoolUnitCode(source.getSchoolUnitCode());
         target.setSchoolName(source.getSchoolName());
+        target.setDisplaySchoolName(source.getDisplaySchoolName());
         target.setProvinceName(source.getProvinceName());
         target.setCityName(source.getCityName());
         target.setSchoolBatch(source.getSchoolBatch());
@@ -6140,6 +6146,7 @@ public class PlanningStateService {
         item.setSchoolId(school.getSchoolId());
         item.setSchoolUnitCode(school.getSchoolUnitCode());
         item.setSchoolName(school.getSchool_name());
+        item.setDisplaySchoolName(resolveDisplaySchoolName(school));
         item.setProvinceName(school.getProvince_name());
         item.setCityName(school.getCity_name());
         item.setSchoolBatch(school.getSchool_batch());
@@ -6209,10 +6216,38 @@ public class PlanningStateService {
         List<String> keywords = req.getFilters() != null ? req.getFilters().getSchoolKeywords() : null;
         List<String> negativeKeywords = req.getFilters() != null ? req.getFilters().getNegativeSchoolKeywords() : null;
         boolean positiveMatched = keywords == null || keywords.isEmpty()
-                || keywords.stream().anyMatch(k -> containsIgnoreCase(item.getSchoolName(), k));
+                || keywords.stream().anyMatch(k -> matchesSchoolKeywordValue(item, k));
         boolean negativeMatched = negativeKeywords != null && !negativeKeywords.isEmpty()
-                && negativeKeywords.stream().anyMatch(k -> containsIgnoreCase(item.getSchoolName(), k));
+                && negativeKeywords.stream().anyMatch(k -> matchesSchoolKeywordValue(item, k));
         return positiveMatched && !negativeMatched;
+    }
+
+    private boolean matchesSchoolKeywordValue(CandidateItemDTO item, String keyword) {
+        return containsIgnoreCase(resolveDisplaySchoolName(item), keyword)
+                || containsIgnoreCase(item.getSchoolName(), keyword);
+    }
+
+    private String resolveDisplaySchoolName(CandidateItemDTO item) {
+        if (item == null) {
+            return null;
+        }
+        if (!Strings.isNullOrEmpty(item.getDisplaySchoolName())) {
+            return item.getDisplaySchoolName();
+        }
+        return item.getSchoolName();
+    }
+
+    private String resolveDisplaySchoolName(VolunteerRecommendListResponse.VolunteerSchool school) {
+        if (school == null) {
+            return null;
+        }
+        if (schoolManager != null && !Strings.isNullOrEmpty(school.getSchoolId())) {
+            SchoolVO schoolVO = schoolManager.getSchoolById(school.getSchoolId());
+            if (schoolVO != null && !Strings.isNullOrEmpty(schoolVO.getSchoolName())) {
+                return schoolVO.getSchoolName();
+            }
+        }
+        return school.getSchool_name();
     }
 
     private boolean matchesMajorKeyword(CandidateItemDTO item, CandidatePoolQueryReq req) {

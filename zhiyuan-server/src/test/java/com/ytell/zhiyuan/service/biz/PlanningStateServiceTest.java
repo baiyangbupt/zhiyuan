@@ -5,6 +5,7 @@ import com.alibaba.fastjson.JSONObject;
 import com.ytell.zhiyuan.common.constants.ChatSessionExtraDataConstants;
 import com.ytell.zhiyuan.common.exception.BusinessException;
 import com.ytell.zhiyuan.manager.MajorExtraDataManager;
+import com.ytell.zhiyuan.manager.SchoolManager;
 import com.ytell.zhiyuan.model.dto.CreateSessionReq;
 import com.ytell.zhiyuan.model.dto.UserProfileData;
 import com.ytell.zhiyuan.model.dto.inner.VolunteerRecommendListResponse;
@@ -62,6 +63,7 @@ import com.ytell.zhiyuan.model.dto.planning.MarkPlanningIntentStaleReq;
 import com.ytell.zhiyuan.model.dto.planning.PlanningBehaviorEventDTO;
 import com.ytell.zhiyuan.model.entity.biz.ChatSessionExtraData;
 import com.ytell.zhiyuan.model.enums.VolunteerModel;
+import com.ytell.zhiyuan.model.vo.SchoolVO;
 import com.ytell.zhiyuan.service.shared.ChatSessionExtraDataSharedService;
 import com.ytell.zhiyuan.service.shared.PlanningBehaviorEventSharedService;
 import com.ytell.zhiyuan.service.volunteer.VolunteerIntervalService;
@@ -107,6 +109,7 @@ public class PlanningStateServiceTest {
     private VolunteerDataProvider volunteerDataProvider;
     private PlanningExcelExportBuilder planningExcelExportBuilder;
     private VolunteerBizService volunteerBizService;
+    private SchoolManager schoolManager;
 
     @BeforeEach
     void setUp() {
@@ -116,6 +119,7 @@ public class PlanningStateServiceTest {
         volunteerDataProvider = Mockito.mock(VolunteerDataProvider.class);
         planningExcelExportBuilder = new PlanningExcelExportBuilder();
         volunteerBizService = Mockito.mock(VolunteerBizService.class);
+        schoolManager = Mockito.mock(SchoolManager.class);
         MajorExtraDataManager majorExtraDataManager = new MajorExtraDataManager();
         majorExtraDataManager.init();
         ReflectionTestUtils.setField(planningStateService, "chatSessionExtraDataSharedService", chatSessionExtraDataSharedService);
@@ -125,6 +129,7 @@ public class PlanningStateServiceTest {
         ReflectionTestUtils.setField(planningStateService, "volunteerBizService", volunteerBizService);
         ReflectionTestUtils.setField(planningStateService, "volunteerIntervalService", new VolunteerIntervalService());
         ReflectionTestUtils.setField(planningStateService, "majorExtraDataManager", majorExtraDataManager);
+        ReflectionTestUtils.setField(planningStateService, "schoolManager", schoolManager);
     }
 
     @Test
@@ -4632,6 +4637,59 @@ public class PlanningStateServiceTest {
         CandidatePoolQueryRes excludeRes = planningStateService.queryCandidatePool(1L, 1L, excludeReq);
         assertEquals(Integer.valueOf(1), excludeRes.getTotal());
         assertEquals("上海财经大学", excludeRes.getItems().get(0).getSchoolName());
+    }
+
+    @Test
+    void shouldUseDisplaySchoolNameForMajorGroupSchoolNameFilter() {
+        when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
+                .thenReturn(null);
+
+        SchoolVO standardSchool = new SchoolVO();
+        standardSchool.setSchoolId("s1");
+        standardSchool.setSchoolName("天津财经大学珠江学院");
+        when(schoolManager.getSchoolById("s1")).thenReturn(standardSchool);
+
+        VolunteerRecommendListResponse response = new VolunteerRecommendListResponse();
+        VolunteerRecommendListResponse.VolunteerSchool group = buildSchool(
+                "ps1",
+                "s1",
+                "天津财经大学珠江学院(01)专业组",
+                "天津",
+                1,
+                buildMajor("m1", "金融学"));
+        VolunteerRecommendListResponse.VolunteerSchool other = buildSchool(
+                "ps2",
+                "s2",
+                "上海财经大学(02)专业组",
+                "上海",
+                2,
+                buildMajor("m2", "会计学"));
+        response.setSafes(java.util.Arrays.asList(group, other));
+        response.setSprints(java.util.Collections.emptyList());
+        response.setProtects(java.util.Collections.emptyList());
+        when(volunteerBizService.recommendVolunteerList(1L, 1L, false, false)).thenReturn(response);
+
+        planningStateService.generateCandidatePool(1L, 1L, new CandidatePoolGenerateReq());
+        ChatSessionExtraData stored = latestStoredStateFromSave();
+        when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
+                .thenReturn(stored);
+
+        CandidateFilterOptionsDTO options = planningStateService.getCandidateFilterOptions(1L, 1L);
+        assertTrue(options.getSchoolKeywords().contains("天津财经大学珠江学院"));
+        assertFalse(options.getSchoolKeywords().contains("天津财经大学珠江学院(01)专业组"));
+
+        CandidatePoolQueryReq includeReq = new CandidatePoolQueryReq();
+        includeReq.getFilters().setSchoolKeywords(java.util.Arrays.asList("天津财经大学珠江学院"));
+        CandidatePoolQueryRes includeRes = planningStateService.queryCandidatePool(1L, 1L, includeReq);
+        assertEquals(Integer.valueOf(1), includeRes.getTotal());
+        assertEquals("天津财经大学珠江学院(01)专业组", includeRes.getItems().get(0).getSchoolName());
+        assertEquals("天津财经大学珠江学院", includeRes.getItems().get(0).getDisplaySchoolName());
+
+        CandidatePoolQueryReq excludeReq = new CandidatePoolQueryReq();
+        excludeReq.getFilters().setNegativeSchoolKeywords(java.util.Arrays.asList("天津财经大学珠江学院"));
+        CandidatePoolQueryRes excludeRes = planningStateService.queryCandidatePool(1L, 1L, excludeReq);
+        assertEquals(Integer.valueOf(1), excludeRes.getTotal());
+        assertEquals("上海财经大学(02)专业组", excludeRes.getItems().get(0).getSchoolName());
     }
 
     @Test

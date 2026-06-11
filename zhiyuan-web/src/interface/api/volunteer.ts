@@ -404,6 +404,7 @@ export interface PlanningCandidateItem {
   planSchoolDataId?: string;
   schoolId?: string;
   schoolName?: string;
+  displaySchoolName?: string;
   provinceName?: string;
   cityName?: string;
   schoolBatch?: string;

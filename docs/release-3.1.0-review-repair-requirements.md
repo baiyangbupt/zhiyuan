@@ -3273,3 +3273,10 @@ cd ../zhiyuan-web
 ```
 
 结果：Agent 非 e2e 全量回归通过，`2354 passed`；Server 默认全量测试通过。`InitialPlanEvaluationP0ReportTest` 是真实会话 P0 报告型用例，会拉起 local profile 并连接真实 MySQL，已改为需要显式设置 `-DRUN_P0_REAL_SESSION_REPORT=true` 才运行，避免默认回归依赖本地数据库。前端全量 typecheck 仍失败在既有 `ModalForm`、`userCenter`、`service/index`、`service/request` 类型问题；本轮涉及的 `WorkspacePanel/index.tsx`、`volunteer.ts`、`sessionDetail.ts` 无相关新增错误。
+
+专业组模式院校名称筛选补充：
+
+- 背景：上游 `school_name` 在专业组模式下可能是专业组展示名，例如“天津财经大学珠江学院(01)专业组”。工作区“院校名称”筛选如果直接使用 `schoolName`，会把专业组名当成院校名展示和匹配。
+- 短期方案：`CandidateItemDTO` 新增 `displaySchoolName`，语义为“纯院校名称”。生成候选池时优先通过 `schoolId -> SchoolManager.getSchoolById()` 取标准院校名，取不到时 fallback 到上游 `school_name`。
+- 使用边界：`schoolName` 继续保留现有展示/分组语义，不改专业组标题、方案分组、导出、排序和已有志愿定位；“院校名称”筛选选项和 `schoolKeywords/negativeSchoolKeywords` 匹配优先使用 `displaySchoolName`，并兼容匹配旧 `schoolName`。
+- 长期方向：后续再系统拆分 `schoolDisplayName` / `unitDisplayName` / `volunteerDisplayName`，避免院校实体、专业组单元和完整志愿展示名继续混用。

@@ -14,6 +14,7 @@ public class CandidateItemDTO {
     private String schoolId;
     private String schoolUnitCode;
     private String schoolName;
+    private String displaySchoolName;
     private String provinceName;
     private String cityName;
     private String schoolBatch;
