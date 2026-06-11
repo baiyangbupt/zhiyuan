@@ -19,6 +19,7 @@ RELEASE_302_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dia
 RELEASE_302_EXPLORE_INTENT_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_302_explore_intent_cases.json"
 RELEASE_302_READONLY_REAL_SESSION_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_302_readonly_real_session_cases.json"
 RELEASE_310_REVIEW_REPAIR_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_310_review_repair_cases.json"
+RELEASE_310_PRODUCTION_ABSTRACTED_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_310_production_abstracted_cases.json"
 
 
 def _run(coro):
@@ -108,8 +109,7 @@ def _load_release_310_review_repair_payload() -> dict:
     return json.loads(RELEASE_310_REVIEW_REPAIR_CASES_PATH.read_text(encoding="utf-8"))
 
 
-def _load_release_310_review_repair_cases() -> list[dict]:
-    payload = _load_release_310_review_repair_payload()
+def _expand_case_payload(payload: dict) -> list[dict]:
     defaults = payload.get("defaults") or {}
     prompt_defaults = defaults.get("promptDefaults") or {}
     case_defaults = {key: value for key, value in defaults.items() if key != "promptDefaults"}
@@ -133,6 +133,19 @@ def _load_release_310_review_repair_cases() -> list[dict]:
         ]
         expanded_cases.append(merged)
     return expanded_cases
+
+
+def _load_release_310_review_repair_cases() -> list[dict]:
+    payload = _load_release_310_review_repair_payload()
+    return _expand_case_payload(payload)
+
+
+def _load_release_310_production_abstracted_payload() -> dict:
+    return json.loads(RELEASE_310_PRODUCTION_ABSTRACTED_CASES_PATH.read_text(encoding="utf-8"))
+
+
+def _load_release_310_production_abstracted_cases() -> list[dict]:
+    return _expand_case_payload(_load_release_310_production_abstracted_payload())
 
 
 def test_mainline_dialog_case_catalog_has_current_explore_intent_plan_scenarios():
@@ -548,6 +561,77 @@ def test_release_310_review_repair_case_catalog_covers_review_and_repair_boundar
     assert any(step.get("expectedActionFamily") == "review_plan" for step in all_steps)
 
 
+def test_release_310_production_abstracted_cases_cover_real_dialogue_framework_risks():
+    payload = _load_release_310_production_abstracted_payload()
+    cases = _load_release_310_production_abstracted_cases()
+
+    assert payload["metadata"]["release"] == "3.1.0"
+    assert len(cases) >= 15
+    assert len({case["name"] for case in cases}) == len(cases)
+
+    allowed_flow = {"explore", "intent", "plan", "review"}
+    coverage = {tag for case in cases for tag in case["coverage"]}
+    required_tags = {
+        "release_3_1_0",
+        "production_dialogue_abstracted",
+        "only_keep_constraint",
+        "must_have_constraint",
+        "negative_constraint",
+        "preference_vs_constraint",
+        "plan_operations",
+        "plan_review_strategy",
+        "policy_and_requirement",
+        "school_compare",
+        "open_explore",
+        "score_profile",
+        "candidate_shortage",
+        "majorGroup_model",
+    }
+    assert required_tags.issubset(coverage)
+
+    banned_user_terms = {
+        "payload",
+        "stage",
+        "action_family",
+        "volunteerId",
+        "level1",
+        "level2",
+        "level3",
+        "确认卡片",
+        "硬要求",
+        "硬约束",
+        "软偏好",
+        "候选池会变小",
+        "不会再进入候选",
+        "草稿",
+    }
+    all_steps = [step for case in cases for step in case["prompts"]]
+    for case in cases:
+        assert case["assertPlanStyle"] is True
+        assert set(case["flow"]).issubset(allowed_flow)
+        assert case["coverage"]
+        assert case["prompts"]
+        for step in case["prompts"]:
+            assert isinstance(step, dict)
+            assert step.get("prompt")
+            assert step.get("assertContains") or step.get("assertContainsAny")
+            assert banned_user_terms.issubset(set(step.get("assertNotContains") or []))
+
+    prompts = "\n".join(step["prompt"] for step in all_steps)
+    assert "我只想学临床医学" in prompts
+    assert "不考虑工科，只考虑医学类" in prompts
+    assert "只要电气和气象" in prompts
+    assert "必须有临床医学" in prompts
+    assert "仅保留江苏" in prompts
+    assert "不要医学类" in prompts
+    assert "预算上限20000" in prompts
+    assert "淘汰掉不能要的专业" in prompts
+    assert "高校专项" in prompts
+    assert "方案的科学性" in prompts
+    assert "航天、能源、心理学" in prompts
+    assert "超过6个专业的专业组" in prompts
+
+
 def test_mainline_dialog_intent_preview_then_plan_status_does_not_reopen_candidate_workspace(tmp_path):
     agent = _ScenarioAgent(
         [
@@ -598,8 +682,9 @@ def test_mainline_dialog_intent_preview_then_plan_status_does_not_reopen_candida
         second = _run(service.handle_message("session-mainline-57", "user-57", "现在方案怎么样"))
 
     assert isinstance(first, str)
-    assert "确认卡片" in first
-    assert "点击采纳前" in first
+    assert "待采纳" in first
+    assert "采纳" in first
+    assert "不会写入后续报考参考" in first
     assert not isinstance(second, ChatServiceResponseEnvelope)
     assert "45/45" in second
     assert "冲8 / 稳18 / 保19" in second
@@ -738,7 +823,8 @@ def test_mainline_dialog_negative_accounting_then_confirm_plan_adjustment_uses_m
         assert isinstance(pending, dict)
 
     assert isinstance(intent_reply, str)
-    assert "待确认排除要求" in intent_reply
+    assert "这轮还没有生成可执行的调整内容" in intent_reply
+    assert "待确认排除要求" not in intent_reply
     assert isinstance(preview_reply, ChatServiceResponseEnvelope)
     assert preview_reply.primary == ""
     pending_cards = [item for item in preview_reply.followups if item.type == "pendingConfirmationCard"]

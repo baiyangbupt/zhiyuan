@@ -30,6 +30,7 @@ def test_gate_plan_covers_release_and_historical_dialog_cases(tmp_path):
     assert "examples/dialog_regression_plan_correctness_cases.json" in live_case_args
     assert "examples/dialog_regression_comprehensive_cases.json" in live_case_args
     assert "examples/dialog_regression_310_review_repair_cases.json" in live_case_args
+    assert "examples/dialog_regression_310_production_abstracted_cases.json" in live_case_args
     assert len(live_case_args) >= 20
 
 

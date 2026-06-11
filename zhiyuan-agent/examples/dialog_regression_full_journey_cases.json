@@ -37,8 +37,8 @@
         "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
       },
       {
-        "prompt": "但会计审计不要，算硬性排除",
-        "assertContainsAny": ["确认", "会计", "审计", "排除"],
+        "prompt": "但会计审计不要，必须避开",
+        "assertContainsAny": ["确认", "会计", "审计", "排除", "报考条件"],
         "assertNotContains": ["已直接调整", "payload", "stage", "action_family", "volunteerId", "草稿"]
       },
       {
@@ -225,7 +225,7 @@
         "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
       },
       {
-        "prompt": "金融可以作为软偏好，但护理和中医学不要",
+        "prompt": "金融可以优先考虑，但护理和中医学不要",
         "assertContainsAny": ["确认", "金融", "护理", "中医学"],
         "assertNotContains": ["已直接调整", "payload", "stage", "action_family", "volunteerId", "草稿"]
       },
@@ -501,8 +501,8 @@
         "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
       },
       {
-        "prompt": "东北西北都不要，这是硬性要求",
-        "assertContainsAny": ["确认", "东北", "西北", "硬性"],
+        "prompt": "东北西北都不要，必须避开",
+        "assertContainsAny": ["确认", "东北", "西北", "报考条件", "排除"],
         "assertNotContains": ["已直接调整", "payload", "stage", "action_family", "volunteerId", "草稿"]
       },
       {
