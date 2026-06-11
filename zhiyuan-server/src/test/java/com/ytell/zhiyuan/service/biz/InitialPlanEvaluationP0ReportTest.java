@@ -10,6 +10,7 @@ import com.ytell.zhiyuan.model.dto.planning.PlanningStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.RecommendationOverlayStateDTO;
 import com.ytell.zhiyuan.model.dto.inner.VolunteerRecommendListResponse;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
@@ -29,6 +30,7 @@ import java.util.stream.Collectors;
 @SpringBootTest(classes = Application.class)
 @ActiveProfiles("local")
 @Transactional
+@EnabledIfSystemProperty(named = "RUN_P0_REAL_SESSION_REPORT", matches = "true")
 class InitialPlanEvaluationP0ReportTest {
 
     @Autowired

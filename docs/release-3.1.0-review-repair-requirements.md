@@ -3258,3 +3258,18 @@ curl --noproxy '*' -s -X POST \
 ```
 
 结果：`修复高收费`、`修复中外合作` 均为 `blocked`，`actionCount=0`、`pairCount=0`，阻断原因仍为“替换预览会改变专业组数量，暂不允许确认应用”；`修复非意向托底` 也为 `blocked`，原因是缺少可补入的组内安全垫专业。说明不可应用的专业组条目替换尝试没有重新暴露给前端。
+
+默认全量回归补充：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest tests/unit tests/regression tests/integration -q
+
+cd ../zhiyuan-server
+mvn -q test
+
+cd ../zhiyuan-web
+./node_modules/.bin/tsc --noEmit --pretty false
+```
+
+结果：Agent 非 e2e 全量回归通过，`2354 passed`；Server 默认全量测试通过。`InitialPlanEvaluationP0ReportTest` 是真实会话 P0 报告型用例，会拉起 local profile 并连接真实 MySQL，已改为需要显式设置 `-DRUN_P0_REAL_SESSION_REPORT=true` 才运行，避免默认回归依赖本地数据库。前端全量 typecheck 仍失败在既有 `ModalForm`、`userCenter`、`service/index`、`service/request` 类型问题；本轮涉及的 `WorkspacePanel/index.tsx`、`volunteer.ts`、`sessionDetail.ts` 无相关新增错误。
