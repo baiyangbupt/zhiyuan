@@ -1,0 +1,1731 @@
+{
+  "metadata": {
+    "release": "3.1.0",
+    "purpose": "Production dialogue derived candidate cases selected from 30 days of online sessions for manual review and future regression optimization.",
+    "source": "/tmp/production-dialogue-candidate-30d.json generated from zhiyuan-agent production logs and backend message list API",
+    "sourceWindow": "last 30 days from zhiyuan-agent-3.0.3-prod docker logs",
+    "sourceCandidateCount": 58,
+    "selectedCount": 27,
+    "privacy": "Automatically redacted. Do not promote to stable regression cases before manual review and abstraction.",
+    "selectionPolicy": "Keep sessions with meaningful user intent and coverage value; skip empty, welcome-only, single generic status prompts, and sessions with obvious personal identifiers that need manual abstraction first."
+  },
+  "defaults": {
+    "coverage": [
+      "release_3_1_0",
+      "production_dialogue_30d_candidate",
+      "needs_manual_review"
+    ],
+    "assertPlanStyle": true,
+    "promptDefaults": {
+      "assertNotContains": [
+        "payload",
+        "action_family",
+        "volunteerId",
+        "level1",
+        "level2",
+        "level3"
+      ],
+      "assertThinkingNotContains": [
+        "payload",
+        "action_family",
+        "volunteerId",
+        "level1",
+        "level2",
+        "level3"
+      ],
+      "forbiddenPatterns": [
+        "已直接删除",
+        "已直接调整",
+        "已直接记录",
+        "payload",
+        "action_family"
+      ],
+      "qualityFocus": [
+        "real_user_language",
+        "actionable_next_step"
+      ],
+      "warnElapsedSeconds": 45,
+      "maxElapsedSeconds": 100
+    }
+  },
+  "cases": [
+    {
+      "name": "310-production-dialogue-2752",
+      "sessionId": "2752",
+      "sourceSessionId": "2752",
+      "source": "production_message_list",
+      "needsReview": true,
+      "flow": [
+        "production_dialogue"
+      ],
+      "coverage": [
+        "release_3_1_0",
+        "production_dialogue_30d_candidate",
+        "production_dialogue_source",
+        "plan",
+        "major_preference",
+        "hard_constraint"
+      ],
+      "prompts": [
+        {
+          "prompt": "高校专项招生的计划有吗",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "中国海洋大学 第005组 是不是高校专项",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "退浆方案 还有那些是高校专项",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "说下这个方案的科学性",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "我只想学临床医学专业",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "选择A",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "选项A：严格只保留临床医学，我帮你重新规划一版方案预览。 用这个策略",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        }
+      ],
+      "reviewNotes": "只保留临床医学导致反向删除，keep_only 硬约束核心回归。"
+    },
+    {
+      "name": "310-production-dialogue-2838",
+      "sessionId": "2838",
+      "sourceSessionId": "2838",
+      "source": "production_message_list",
+      "needsReview": true,
+      "flow": [
+        "production_dialogue"
+      ],
+      "coverage": [
+        "release_3_1_0",
+        "production_dialogue_30d_candidate",
+        "production_dialogue_source",
+        "major_preference",
+        "plan",
+        "hard_constraint"
+      ],
+      "prompts": [
+        {
+          "prompt": "不考虑工科，只考虑医学类",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "做一个只要医学类方案吧，重新做48个志愿",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "这个方案还是不行，只要医学",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        }
+      ],
+      "reviewNotes": "只考虑/只要医学类，多轮要求重做方案。"
+    },
+    {
+      "name": "310-production-dialogue-2582",
+      "sessionId": "2582",
+      "sourceSessionId": "2582",
+      "source": "production_message_list",
+      "needsReview": true,
+      "flow": [
+        "production_dialogue"
+      ],
+      "coverage": [
+        "release_3_1_0",
+        "production_dialogue_30d_candidate",
+        "production_dialogue_source",
+        "major_preference",
+        "plan",
+        "confirmation_followup",
+        "hard_constraint"
+      ],
+      "prompts": [
+        {
+          "prompt": "河海大学电气工程及其自动化专业",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "南京工程学校",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "找一些电气强校",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "没什么想问的然后我该怎么做",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "生成方案",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "就电气或者南京信息工程大学的气象学",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "可以",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "只要电气和气象",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "嗯",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        }
+      ],
+      "reviewNotes": "只要电气和气象，多专业 keep_only。"
+    },
+    {
+      "name": "310-production-dialogue-2797",
+      "sessionId": "2797",
+      "sourceSessionId": "2797",
+      "source": "production_message_list",
+      "needsReview": true,
+      "flow": [
+        "production_dialogue"
+      ],
+      "coverage": [
+        "release_3_1_0",
+        "production_dialogue_30d_candidate",
+        "production_dialogue_source",
+        "plan",
+        "hard_constraint"
+      ],
+      "prompts": [
+        {
+          "prompt": "公办",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "不选择民办",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "仅保留江苏的学校",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        }
+      ],
+      "reviewNotes": "仅保留江苏学校，地域 keep_only。"
+    },
+    {
+      "name": "310-production-dialogue-2811",
+      "sessionId": "2811",
+      "sourceSessionId": "2811",
+      "source": "production_message_list",
+      "needsReview": true,
+      "flow": [
+        "production_dialogue"
+      ],
+      "coverage": [
+        "release_3_1_0",
+        "production_dialogue_30d_candidate",
+        "production_dialogue_source",
+        "major_preference",
+        "hard_constraint",
+        "plan"
+      ],
+      "prompts": [
+        {
+          "prompt": "不要医学类的",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "从候选中选择7所放入方案中",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "先补齐志愿数量",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        }
+      ],
+      "reviewNotes": "不要医学类后从候选中补齐，exclude 后补齐链路。"
+    },
+    {
+      "name": "310-production-dialogue-2769",
+      "sessionId": "2769",
+      "sourceSessionId": "2769",
+      "source": "production_message_list",
+      "needsReview": true,
+      "flow": [
+        "production_dialogue"
+      ],
+      "coverage": [
+        "release_3_1_0",
+        "production_dialogue_30d_candidate",
+        "production_dialogue_source",
+        "plan",
+        "hard_constraint"
+      ],
+      "prompts": [
+        {
+          "prompt": "生成方案",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "排除民办",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "排除民办重新生成一份方案",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        }
+      ],
+      "reviewNotes": "排除民办后重新生成方案。"
+    },
+    {
+      "name": "310-production-dialogue-2483",
+      "sessionId": "2483",
+      "sourceSessionId": "2483",
+      "source": "production_message_list",
+      "needsReview": true,
+      "flow": [
+        "production_dialogue"
+      ],
+      "coverage": [
+        "release_3_1_0",
+        "production_dialogue_30d_candidate",
+        "production_dialogue_source",
+        "plan",
+        "major_preference",
+        "career_direction",
+        "region_preference",
+        "confirmation_followup",
+        "hard_constraint"
+      ],
+      "prompts": [
+        {
+          "prompt": "我从志愿系统里找出了保的40多所学校想让你给我把把关排一排序",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "1",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "坚决不学医护类的专业专科吗重技术好就业的",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "苏州工业职业技术学院人工智能技术应用75%汽车检测与维修技术30%长春金融高等专科学校金融服务与管理75%大数据技术64%大数据与会计1%上海出版印刷高等专科学校物联网应用技术83%数字印刷技术百分",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "汽车检测与维修技术女生可以干吗",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "那既然这样这个学校就不用选了不要了不是换哪个汽车专业的问题而是我透过学校来筛选哪个专业可以不可以哪个学校要不要的问题",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "金融服务与管理是干什么的孩子数学不好能学吗",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "金融服务与管理这个专业彻底不要了那只保留一个大数据技术不怕调剂到金融富裕管理吗这个学校还能要吗",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "我不是要挑我唯一想要的专业而是必须要淘汰掉我不能要的专业",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "那你认为如何选学校和专业呢",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "太好了，这样一说，我思路清晰，好多了",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "山西管理职业学院大数据与会计83%。陕西交通职业学院交通运营管理83%，现代物流管理83%，大数据与财务管理83%，电子商务80%，城市轨道交通信号技术60%，汽车智能技术57%，人工智能技术应用57%，城市轨道交通运营管理54%，铁道信号自动控制34%，铁道交通运营管理6%，智能机器人技术1%，新能源汽车技术2%",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        }
+      ],
+      "reviewNotes": "专科场景，用户强调不是唯一专业而是淘汰不能要的专业。"
+    },
+    {
+      "name": "310-production-dialogue-2633",
+      "sessionId": "2633",
+      "sourceSessionId": "2633",
+      "source": "production_message_list",
+      "needsReview": true,
+      "flow": [
+        "production_dialogue"
+      ],
+      "coverage": [
+        "release_3_1_0",
+        "production_dialogue_30d_candidate",
+        "production_dialogue_source",
+        "plan",
+        "major_preference",
+        "budget_tuition"
+      ],
+      "prompts": [
+        {
+          "prompt": "删除女性学专业",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "取消学费超过20000元的志愿",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "预算上限20000元",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "先移除再补充",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "先移除再补充",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        }
+      ],
+      "reviewNotes": "女性学删除、学费上限和先移除再补充。"
+    },
+    {
+      "name": "310-production-dialogue-1936",
+      "sessionId": "1936",
+      "sourceSessionId": "1936",
+      "source": "production_message_list",
+      "needsReview": true,
+      "flow": [
+        "production_dialogue"
+      ],
+      "coverage": [
+        "release_3_1_0",
+        "production_dialogue_30d_candidate",
+        "production_dialogue_source",
+        "major_preference",
+        "region_preference",
+        "confirmation_followup",
+        "hard_constraint",
+        "plan",
+        "budget_tuition"
+      ],
+      "prompts": [
+        {
+          "prompt": "[分数]，想读医学类的专业，地域不限最好能推荐公办类的本科院校",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "候选区里还有哪些公办的临床医学",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "医学影像学和麻醉学都可以",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "1",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "我希望增加会计学专业",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "以医学为主要专业，会计学为补充，会计学的专业组要干净一点的，不要有其它太多专业。",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "会计学与财务管理的区别在哪里",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "A. 保留会计学方向，我帮你找更干净的会计学志愿组替换现有方案里的",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "中外合作的去掉",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "同意",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "确定",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "这些院校专业组还有其它专业吧？是干净，",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        }
+      ],
+      "reviewNotes": "医学主专业、会计补充、专业组干净度和中外合作排除。"
+    },
+    {
+      "name": "310-production-dialogue-2098",
+      "sessionId": "2098",
+      "sourceSessionId": "2098",
+      "source": "production_message_list",
+      "needsReview": true,
+      "flow": [
+        "production_dialogue"
+      ],
+      "coverage": [
+        "release_3_1_0",
+        "production_dialogue_30d_candidate",
+        "production_dialogue_source",
+        "major_preference",
+        "career_direction",
+        "region_preference",
+        "confirmation_followup",
+        "plan"
+      ],
+      "prompts": [
+        {
+          "prompt": "说实话，我对医学有些排斥，但我对航天非常感兴趣，我希望我未来所做的工作是有时代性的，但我希望自由一点的工作，我觉得近几年，能源是否比较好，也希望工资能高一些，我是[姓名]-T人格，也希望能干一些有意义的活，我对心理学也比较感兴趣",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "那你先跟据我的情况先刷新，偶对了，我不太擅长沟通和交流",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "你好",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "你好",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "有没有南京的，和航空航天，能源，大气科学，地球物理，航海沾边的专业，工作高薪，和人交流少",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "少交流，高薪是我的偏好，我是[姓名]，我对西安也可以，不是特别想去东南等高温城市，我对航海感兴趣，但不知道有没有能力",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "我不太敢认为我数学物理好，因为我2027年高考，所以我填的都是理想成绩，事实上我数学只有56分",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "我对设计是有些兴趣的，但不好就业吧，最近我期中英语100分语文107物理70分化学60生物60，但是生物近期开展一轮复习，我练习全错",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "按610，450，550各生成一份综合的方案，除了我感兴趣的外，还有没有我没提及，但适合我的",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "按450生成主方案，以550生成短期努力目标的，我能不能做到26届高考完两个月就到550我需要做什么，对于一个极度拖延，没有高中学习方法的人，心存幻想",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "确认",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "确认改为总分为450",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        }
+      ],
+      "reviewNotes": "真实长输入，航天能源心理、高薪少交流、理想成绩和现实成绩冲突。"
+    },
+    {
+      "name": "310-production-dialogue-2529",
+      "sessionId": "2529",
+      "sourceSessionId": "2529",
+      "source": "production_message_list",
+      "needsReview": true,
+      "flow": [
+        "production_dialogue"
+      ],
+      "coverage": [
+        "release_3_1_0",
+        "production_dialogue_30d_candidate",
+        "production_dialogue_source",
+        "confirmation_followup",
+        "major_preference",
+        "region_preference",
+        "budget_tuition"
+      ],
+      "prompts": [
+        {
+          "prompt": "我适合什么方向",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "当前我提升多少可以上升一个等级？",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "医学专业适不适合我？",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "你觉得以我现在的分数能不能考个警官学校？",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "我想考内蒙古以外的大学，你帮我看看哪个大学和专业更适合我？我比较喜欢钱，身高174，女生，喜欢挑战，喜欢气候适宜的城市，例如浙江，南京，西安，大连这些地方，",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "我愿意先积累经验再涨薪，我可以接受学费较高的学校",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "我的市排名在7000多左右",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "我不想考学院，想考大学！！！",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "如果我的总分为484，请再给我分析一下",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "我如果再提升70分呢？选择会有什么变化",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "不想考了，太难了",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "我现在是偏科太严重，没找对理科学习方法",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        }
+      ],
+      "reviewNotes": "方向探索、警官学校、地域、涨分变化和学习焦虑。"
+    },
+    {
+      "name": "310-production-dialogue-2916",
+      "sessionId": "2916",
+      "sourceSessionId": "2916",
+      "source": "production_message_list",
+      "needsReview": true,
+      "flow": [
+        "production_dialogue"
+      ],
+      "coverage": [
+        "release_3_1_0",
+        "production_dialogue_30d_candidate",
+        "production_dialogue_source",
+        "plan",
+        "major_preference"
+      ],
+      "prompts": [
+        {
+          "prompt": "方案哪里要注意",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "超过6个专业的专业组",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        }
+      ],
+      "reviewNotes": "方案注意点与超过6个专业的专业组风险。"
+    },
+    {
+      "name": "310-production-dialogue-2947",
+      "sessionId": "2947",
+      "sourceSessionId": "2947",
+      "source": "production_message_list",
+      "needsReview": true,
+      "flow": [
+        "production_dialogue"
+      ],
+      "coverage": [
+        "release_3_1_0",
+        "production_dialogue_30d_candidate",
+        "production_dialogue_source",
+        "region_preference"
+      ],
+      "prompts": [
+        {
+          "prompt": "地点进线北上广深",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "去掉非北上广地区的院校",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        }
+      ],
+      "reviewNotes": "去掉非北上广地区院校，地域反向过滤。"
+    },
+    {
+      "name": "310-production-dialogue-2936",
+      "sessionId": "2936",
+      "sourceSessionId": "2936",
+      "source": "production_message_list",
+      "needsReview": true,
+      "flow": [
+        "production_dialogue"
+      ],
+      "coverage": [
+        "release_3_1_0",
+        "production_dialogue_30d_candidate",
+        "production_dialogue_source",
+        "major_preference",
+        "career_direction",
+        "confirmation_followup",
+        "plan"
+      ],
+      "prompts": [
+        {
+          "prompt": "电气专业和计算机优先",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "体制内",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "体制内优选",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "优先国家电网",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "可以了",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "直接生成方案",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        }
+      ],
+      "reviewNotes": "电气/计算机、体制内、国家电网到方案生成。"
+    },
+    {
+      "name": "310-production-dialogue-1238",
+      "sessionId": "1238",
+      "sourceSessionId": "1238",
+      "source": "production_message_list",
+      "needsReview": true,
+      "flow": [
+        "production_dialogue"
+      ],
+      "coverage": [
+        "release_3_1_0",
+        "production_dialogue_30d_candidate",
+        "production_dialogue_source",
+        "plan",
+        "region_preference",
+        "career_direction"
+      ],
+      "prompts": [
+        {
+          "prompt": "河南工程学院怎么样",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "按照冲稳保的的比例给我一份完整的方案",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "华北水利水电和河南理工哪一个更好",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "河南工业大学和河南农业大学哪一个更好",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "河南工业大学和郑州轻工业大学哪一个 更好",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "河南省师范类院校哪个相对不太好",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "商丘师范和安阳师范周口师范哪个好？",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "济源职业和商丘职业哪个更好",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "商丘师范和郑州师范哪一个好一点",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        }
+      ],
+      "reviewNotes": "连续院校对比和方案请求。"
+    },
+    {
+      "name": "310-production-dialogue-2915",
+      "sessionId": "2915",
+      "sourceSessionId": "2915",
+      "source": "production_message_list",
+      "needsReview": true,
+      "flow": [
+        "production_dialogue"
+      ],
+      "coverage": [
+        "release_3_1_0",
+        "production_dialogue_30d_candidate",
+        "production_dialogue_source",
+        "major_preference",
+        "plan"
+      ],
+      "prompts": [
+        {
+          "prompt": "你好，想选公办本科",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "想报师范里的数学、数学应用、英语等专业，",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "还有统计学、应急学、低空经济",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "最好是保研的学校",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        }
+      ],
+      "reviewNotes": "公办本科、师范数学英语、统计/应急/低空经济、保研混合偏好。"
+    },
+    {
+      "name": "310-production-dialogue-2079",
+      "sessionId": "2079",
+      "sourceSessionId": "2079",
+      "source": "production_message_list",
+      "needsReview": true,
+      "flow": [
+        "production_dialogue"
+      ],
+      "coverage": [
+        "release_3_1_0",
+        "production_dialogue_30d_candidate",
+        "production_dialogue_source",
+        "confirmation_followup",
+        "plan"
+      ],
+      "prompts": [
+        {
+          "prompt": "优先选择北上广深高校，推荐哪几所学校",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "分数修改成[分数]",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "确认执行",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "确认执行",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "第一种",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "确定按照[分数]规划，帮我生成完整方案",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "方案A",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "清除当前方案，重新录入分数",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "更新分数后再重新生成",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "高考总分[分数]，选物理化学生物",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "确认执行",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "执行",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        }
+      ],
+      "reviewNotes": "分数重录、重复确认、清除方案和重新生成。"
+    },
+    {
+      "name": "310-production-dialogue-2100",
+      "sessionId": "2100",
+      "sourceSessionId": "2100",
+      "source": "production_message_list",
+      "needsReview": true,
+      "flow": [
+        "production_dialogue"
+      ],
+      "coverage": [
+        "release_3_1_0",
+        "production_dialogue_30d_candidate",
+        "production_dialogue_source",
+        "plan"
+      ],
+      "prompts": [
+        {
+          "prompt": "看看现在的方案",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "删掉几个",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "删掉几个保的学校",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "删掉第40位之后的几个保的",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        }
+      ],
+      "reviewNotes": "删除保区学校和位置范围删除。"
+    },
+    {
+      "name": "310-production-dialogue-2771",
+      "sessionId": "2771",
+      "sourceSessionId": "2771",
+      "source": "production_message_list",
+      "needsReview": true,
+      "flow": [
+        "production_dialogue"
+      ],
+      "coverage": [
+        "release_3_1_0",
+        "production_dialogue_30d_candidate",
+        "production_dialogue_source",
+        "plan"
+      ],
+      "prompts": [
+        {
+          "prompt": "我现在的成绩能上个大专",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "加入的16个志愿是本科啊，你搞错了吧我",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        }
+      ],
+      "reviewNotes": "大专诉求下混入本科志愿的纠错场景。"
+    },
+    {
+      "name": "310-production-dialogue-2778",
+      "sessionId": "2778",
+      "sourceSessionId": "2778",
+      "source": "production_message_list",
+      "needsReview": true,
+      "flow": [
+        "production_dialogue"
+      ],
+      "coverage": [
+        "release_3_1_0",
+        "production_dialogue_30d_candidate",
+        "production_dialogue_source",
+        "plan"
+      ],
+      "prompts": [
+        {
+          "prompt": "你好",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "你好",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "看看方案",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "哪些高收费的",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        }
+      ],
+      "reviewNotes": "高收费志愿查询。"
+    },
+    {
+      "name": "310-production-dialogue-2784",
+      "sessionId": "2784",
+      "sourceSessionId": "2784",
+      "source": "production_message_list",
+      "needsReview": true,
+      "flow": [
+        "production_dialogue"
+      ],
+      "coverage": [
+        "release_3_1_0",
+        "production_dialogue_30d_candidate",
+        "production_dialogue_source",
+        "hard_constraint"
+      ],
+      "prompts": [
+        {
+          "prompt": "南京理工不要",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        }
+      ],
+      "reviewNotes": "单校硬排除：南京理工不要。"
+    },
+    {
+      "name": "310-production-dialogue-2873",
+      "sessionId": "2873",
+      "sourceSessionId": "2873",
+      "source": "production_message_list",
+      "needsReview": true,
+      "flow": [
+        "production_dialogue"
+      ],
+      "coverage": [
+        "release_3_1_0",
+        "production_dialogue_30d_candidate",
+        "production_dialogue_source"
+      ],
+      "prompts": [
+        {
+          "prompt": "薪酬指数是什么",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "怎么看呢",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "28.1是多少",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "天津农学院如何",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        }
+      ],
+      "reviewNotes": "薪酬指数解释和院校单点查询。"
+    },
+    {
+      "name": "310-production-dialogue-2800",
+      "sessionId": "2800",
+      "sourceSessionId": "2800",
+      "source": "production_message_list",
+      "needsReview": true,
+      "flow": [
+        "production_dialogue"
+      ],
+      "coverage": [
+        "release_3_1_0",
+        "production_dialogue_30d_candidate",
+        "production_dialogue_source"
+      ],
+      "prompts": [
+        {
+          "prompt": "长春理工大学和重庆理工大学哪个更好",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        }
+      ],
+      "reviewNotes": "两所理工大学对比。"
+    },
+    {
+      "name": "310-production-dialogue-2793",
+      "sessionId": "2793",
+      "sourceSessionId": "2793",
+      "source": "production_message_list",
+      "needsReview": true,
+      "flow": [
+        "production_dialogue"
+      ],
+      "coverage": [
+        "release_3_1_0",
+        "production_dialogue_30d_candidate",
+        "production_dialogue_source"
+      ],
+      "prompts": [
+        {
+          "prompt": "考什么大学合适?",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "推荐几所我能上的大学。",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        }
+      ],
+      "reviewNotes": "泛化问法：考什么大学合适/推荐能上的大学。"
+    },
+    {
+      "name": "310-production-dialogue-2776",
+      "sessionId": "2776",
+      "sourceSessionId": "2776",
+      "source": "production_message_list",
+      "needsReview": true,
+      "flow": [
+        "production_dialogue"
+      ],
+      "coverage": [
+        "release_3_1_0",
+        "production_dialogue_30d_candidate",
+        "production_dialogue_source",
+        "plan",
+        "major_preference"
+      ],
+      "prompts": [
+        {
+          "prompt": "有哪些机会可看",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "天津院校",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "保的天津院校专业",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        }
+      ],
+      "reviewNotes": "机会查询、天津院校、保区天津院校专业。"
+    },
+    {
+      "name": "310-production-dialogue-2574",
+      "sessionId": "2574",
+      "sourceSessionId": "2574",
+      "source": "production_message_list",
+      "needsReview": true,
+      "flow": [
+        "production_dialogue"
+      ],
+      "coverage": [
+        "release_3_1_0",
+        "production_dialogue_30d_candidate",
+        "production_dialogue_source",
+        "major_preference",
+        "plan"
+      ],
+      "prompts": [
+        {
+          "prompt": "老师，我孩子是广西物化生，男孩。大概470-490份，想学工科类专业。",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "能做一份模拟填报志愿吗",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        }
+      ],
+      "reviewNotes": "家长口吻，广西物化生男孩、工科、模拟填报。"
+    },
+    {
+      "name": "310-production-dialogue-2909",
+      "sessionId": "2909",
+      "sourceSessionId": "2909",
+      "source": "production_message_list",
+      "needsReview": true,
+      "flow": [
+        "production_dialogue"
+      ],
+      "coverage": [
+        "release_3_1_0",
+        "production_dialogue_30d_candidate",
+        "production_dialogue_source",
+        "major_preference"
+      ],
+      "prompts": [
+        {
+          "prompt": "推荐山东公办院校",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        },
+        {
+          "prompt": "扩大专业范围，山东和辽宁公办",
+          "qualityFocus": [
+            "real_user_language",
+            "actionable_next_step"
+          ],
+          "minTextLengthWarn": 80
+        }
+      ],
+      "reviewNotes": "山东公办院校，扩大到山东辽宁公办和专业范围。"
+    }
+  ]
+}

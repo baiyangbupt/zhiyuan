@@ -1,0 +1,125 @@
+# 3.1.0 生产真实对话 Case 汇总方案
+
+## 目标
+
+把线上真实对话定期汇总成可复盘、可筛选、可回归的 case 候选集，用于后续优化 Agent 对话效果、路由边界、确认卡片和方案调整能力。
+
+## 工具
+
+新增脚本：
+
+```bash
+cd /root/dev/zhiyuan/zhiyuan-agent
+python examples/export_production_dialogue_cases.py \
+  --base-url http://127.0.0.1:8090 \
+  --discover-sessions \
+  --max-sessions 50 \
+  --output examples/production_dialogue_case_candidates.json
+```
+
+也可以只导出指定会话：
+
+```bash
+python examples/export_production_dialogue_cases.py \
+  --base-url http://127.0.0.1:8090 \
+  --sessions 2752 2936 \
+  --output /tmp/production-dialogue-selected-cases.json
+```
+
+## 数据来源
+
+- 会话发现：`POST /gaotu-assistant-bot/chat/{tenantId}/session/page`
+- 消息拉取：`GET /gaotu-assistant-bot/inner/chat/{tenantId}/message/list-all?chatSessionId=...`
+- 脚本只读，不写生产库，不触发 Agent 对话。
+
+## 隐私边界
+
+脚本会自动脱敏明显的手机号、token、长数字 ID、分数和位次，并把输出标记为 `needsReview=true`。这些自动导出的 case 只能作为候选集，进入稳定回归集前必须人工复核，避免保留真实姓名、联系方式、精确成绩、精确排名或家庭身份信息。
+
+## 推荐流程
+
+1. 每天低峰期导出最近 50 到 100 个会话到 `/tmp` 或 `examples/production_dialogue_case_candidates.json`。
+2. 人工筛选其中有代表性的用户表达，抽象成稳定 case，合入 `dialog_regression_303_dialogue_derived_cases.json` 或新建 3.1.0 case 集。
+3. 用现有 runner 回归：
+
+```bash
+PYTHONPATH=. ./.venv/bin/python examples/dialog_regression_runner.py \
+  --cases examples/production_dialogue_case_candidates.json \
+  --keep-response-text \
+  --assert-plan-style
+```
+
+4. 用 `dialog_case_evaluation_report.py` 汇总质量问题，按空回复、误触发方案调整、确认卡片错误、过度承诺、路由不稳等类型归档。
+
+## 定期执行建议
+
+先不要直接自动提交导出文件。建议 cron 输出到日期文件，由人工挑选：
+
+```bash
+15 3 * * * cd /root/dev/zhiyuan/zhiyuan-agent && python examples/export_production_dialogue_cases.py --base-url http://127.0.0.1:8090 --discover-sessions --max-sessions 100 --output /tmp/zhiyuan-prod-dialogue-cases-$(date +\%F).json
+```
+
+后续如果需要更精确的时间窗口，可以在后端补一个内部只读接口，按 `assistant_chat_session.update_time/create_time` 和消息数量筛选活跃会话，避免分页扫描最近会话后再逐个拉取消息。
+
+
+
+## 2026-06-11 近 30 天历史对话筛选
+
+本轮按要求重新从近 30 天 `zhiyuan-agent-3.0.3-prod` 日志解析活跃 `sessionId`，再通过后端消息接口拉取前端可见消息。自动导出候选 58 个会话，其中很多是空会话、只有“生成方案/看看现在的方案”的单句会话、欢迎语后无继续对话或纯确认短句，暂不进入典型场景集合。
+
+已更新候选文件：
+
+```text
+zhiyuan-agent/examples/dialog_regression_310_production_dialogue_candidates.json
+```
+
+本轮入选 27 个会话，均标记 `needsReview=true`，只作为人工复核和后续抽象素材。
+
+### 入选场景
+
+| sessionId | 典型价值 | 关注点 |
+| --- | --- | --- |
+| 2752 | 只保留临床医学导致反向删除 | `keep_only` 硬约束、方案调整安全护栏 |
+| 2838 | 只考虑/只要医学类，多轮要求重做方案 | 正向排他硬要求、方案重生成边界 |
+| 2582 | 只要电气和气象 | 多专业 keep-only、意向到方案生成 |
+| 2797 | 仅保留江苏学校 | 地域 keep-only、非匹配项移除 |
+| 2811 | 不要医学类后从候选中补齐 | exclude 后补齐链路 |
+| 2769 | 排除民办后重新生成方案 | 院校性质硬排除、重新生成 |
+| 2483 | 专科场景下淘汰不能要的专业 | 用户不是选唯一专业，而是排除不可接受专业 |
+| 2633 | 删除女性学、学费上限、先移除再补充 | 预算硬约束、移除后补齐链路 |
+| 1936 | 医学主专业+会计补充+中外合作去掉 | 复合偏好、专业组干净度、预算/中外合作排除 |
+| 2098 | 航天/能源/心理/少交流/高薪等开放长输入 | 复杂画像探索、长期目标和现实成绩落差 |
+| 2529 | 适合方向、警官学校、地域、涨分影响 | 开放咨询、多轮追问和分数变化分析 |
+| 2916 | 方案注意点、超过6个专业的专业组 | 方案审查和专业组风险说明 |
+| 2947 | 去掉非北上广地区院校 | 地域负向/反向筛选执行边界 |
+| 2936 | 电气/计算机、体制内、国家电网后生成方案 | 职业目标到专业/方案生成 |
+| 1238 | 多个院校对比 | 院校比较、连续短问稳定性 |
+| 2915 | 公办本科、师范数学英语、统计/应急/低空经济、保研 | 多偏好混合探索 |
+| 2079 | 分数重录、重复确认、清除方案和重新生成 | 多轮确认、分数变更、方案重建 |
+| 2100 | 删除保区学校和位置范围删除 | 方案位置范围删除、保区调整 |
+| 2771 | 大专诉求下混入本科志愿的纠错 | 层级误判纠错、本专科边界 |
+| 2778 | 哪些高收费的 | 高收费/预算风险查询 |
+| 2784 | 南京理工不要 | 单校硬排除 |
+| 2873 | 薪酬指数是什么、天津农学院如何 | 指标解释和院校单点查询 |
+| 2800 | 长春理工大学和重庆理工大学哪个更好 | 双院校对比 |
+| 2793 | 考什么大学合适、推荐能上的大学 | 泛化择校问法 |
+| 2776 | 天津院校、保的天津院校专业 | 机会查询、地域+保区约束 |
+| 2574 | 家长口吻，广西物化生男孩、工科、模拟填报 | 家长真实表达、模拟填报入口 |
+| 2909 | 山东公办院校，扩大专业范围到山东辽宁公办 | 地域+院校性质+专业范围扩大 |
+
+### 暂时剔除的类型
+
+- 空输入或“无”。
+- 只有“生成方案 / 看看现在的方案 / 现有方案”的单轮泛化请求。
+- 只有“确认 / 可以 / 1 / 要”的短确认，缺少上一轮上下文时不可独立复跑。
+- 明显含个人识别信息且自动脱敏后语义损失较大的内容。
+- 只有单一实体词、缺少用户真实目标的问题，例如只说一个学校或一个地区但没有上下文。
+
+### 后续处理建议
+
+1. 对入选候选逐条人工复核，把真实表达进一步抽象，避免保留可识别信息。
+2. 将 2752、2838、2582、2797 单独归入 `keep_only` 修复回归集。
+3. 将 2811、2769、2483、2633、1936 归入方案调整和硬约束组合回归集。
+4. 将 2098、2529、2915、2574 归入开放质量和真实用户长输入回归集。
+5. 将 1238、2800、2873 归入院校对比/指标解释回归集。
+6. 将 2079、2100、2771、2778、2947 保留为多轮确认、范围删除、层级纠错、预算风险和地域调整边界场景。
