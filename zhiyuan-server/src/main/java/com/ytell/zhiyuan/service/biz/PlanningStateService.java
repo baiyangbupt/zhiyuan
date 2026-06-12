@@ -5072,7 +5072,7 @@ public class PlanningStateService {
         String now = OffsetDateTime.now().toString();
         freshness.setLastCheckedAt(now);
         String incomingHash = normalizeText(safeReq.getDataHash());
-        String currentHash = normalizeText(freshness.getDataHash());
+        String currentHash = normalizeCurrentCandidateDataHash(state, freshness);
         boolean hasExternalSnapshot = !Strings.isNullOrEmpty(incomingHash);
         boolean hashChanged = hasExternalSnapshot && !incomingHash.equals(currentHash);
         if (!hasExternalSnapshot) {
@@ -5160,11 +5160,22 @@ public class PlanningStateService {
         }
     }
 
+    private String normalizeCurrentCandidateDataHash(PlanningStateDTO state, DataFreshnessStateDTO freshness) {
+        CandidatePoolStateDTO candidatePoolState = state == null ? null : state.getCandidatePoolState();
+        if (candidatePoolState != null && !defaultCandidates(candidatePoolState.getItems()).isEmpty()) {
+            return normalizeText(buildCandidateDataHash(candidatePoolState));
+        }
+        return normalizeText(freshness == null ? null : freshness.getDataHash());
+    }
+
     private void markDataFreshnessCurrent(DataFreshnessStateDTO freshness,
                                           String latestHash,
                                           DataFreshnessCheckReq req) {
         freshness.setStatusCode("current");
         freshness.setChangeLevel("none");
+        if (!Strings.isNullOrEmpty(latestHash)) {
+            freshness.setDataHash(latestHash);
+        }
         freshness.setLatestDataHash(Strings.isNullOrEmpty(latestHash) ? freshness.getDataHash() : latestHash);
         freshness.setLatestDataVersion(normalizeText(req.getDataVersion()));
         freshness.setShouldNotify(false);
@@ -5476,20 +5487,82 @@ public class PlanningStateService {
         Map<String, Object> row = new LinkedHashMap<String, Object>();
         row.put("volunteerId", item == null ? null : item.getVolunteerId());
         row.put("unitId", item == null ? null : resolveInitialRecommendationUnitId(item));
+        row.put("tier", item == null ? null : item.getTier());
+        row.put("subTier", item == null ? null : item.getSubTier());
+        row.put("rankInTier", item == null ? null : item.getRankInTier());
+
+        row.put("planSchoolDataId", item == null ? null : item.getPlanSchoolDataId());
         row.put("schoolId", item == null ? null : item.getSchoolId());
+        row.put("schoolUnitCode", item == null ? null : item.getSchoolUnitCode());
         row.put("schoolName", item == null ? null : item.getSchoolName());
+        row.put("provinceName", item == null ? null : item.getProvinceName());
+        row.put("cityName", item == null ? null : item.getCityName());
+        row.put("schoolBatch", item == null ? null : item.getSchoolBatch());
+        row.put("schoolLevel", item == null ? null : item.getSchoolLevel());
+        row.put("schoolNature", item == null ? null : item.getSchoolNature());
+        row.put("schoolCategory", item == null ? null : item.getSchoolCategory());
+        row.put("schoolRank", item == null ? null : item.getSchoolRank());
+        row.put("schoolEnrollRatio", item == null ? null : item.getSchoolEnrollRatio());
+        row.put("baoyanRatio", item == null ? null : item.getBaoyanRatio());
+        row.put("upgradeRatio", item == null ? null : item.getUpgradeRatio());
+        row.put("masterCount", item == null ? null : item.getMasterCount());
+        row.put("doctorCount", item == null ? null : item.getDoctorCount());
+        row.put("schoolRankTags", item == null ? null : normalizeHashList(item.getSchoolRankTags()));
+        row.put("schoolBasicTags", item == null ? null : normalizeHashList(item.getSchoolBasicTags()));
+        row.put("schoolPopupTags", item == null ? null : normalizeHashList(item.getSchoolPopupTags()));
+        row.put("schoolHistoryScores", item == null ? null : buildHistoryScoreHashRows(item.getSchoolHistoryScores()));
+
         row.put("majorId", item == null ? null : item.getMajorId());
         row.put("majorName", item == null ? null : item.getMajorName());
         row.put("majorCode", item == null ? null : item.getMajorCode());
-        row.put("tier", item == null ? null : item.getTier());
+        row.put("majorCategoryId", item == null ? null : item.getMajorCategoryId());
+        row.put("majorSubCategoryId", item == null ? null : item.getMajorSubCategoryId());
+        row.put("majorLevel", item == null ? null : item.getMajorLevel());
+        row.put("majorDiscipline", item == null ? null : item.getMajorDiscipline());
+        row.put("majorCategory", item == null ? null : item.getMajorCategory());
+        row.put("majorTier", item == null ? null : item.getMajorTier());
         row.put("planNum", item == null ? null : item.getPlanNum());
-        row.put("admissionRatio", item == null ? null : item.getAdmissionRatio());
-        row.put("schoolEnrollRatio", item == null ? null : item.getSchoolEnrollRatio());
-        row.put("finalScore", item == null ? null : item.getFinalScore());
-        row.put("rankInTier", item == null ? null : item.getRankInTier());
+        row.put("duration", item == null ? null : item.getDuration());
         row.put("tuitionPerYear", item == null ? null : item.getTuitionPerYear());
-        row.put("mustSubjects", item == null ? null : item.getMustSubjects());
+        row.put("admissionRatio", item == null ? null : item.getAdmissionRatio());
+        row.put("mustSubjects", item == null ? null : normalizeHashList(item.getMustSubjects()));
+        row.put("majorRankTags", item == null ? null : normalizeHashList(item.getMajorRankTags()));
+        row.put("majorPlanTags", item == null ? null : normalizeHashList(item.getMajorPlanTags()));
+        row.put("majorHistoryScores", item == null ? null : buildHistoryScoreHashRows(item.getMajorHistoryScores()));
+
+        row.put("baseScore", item == null ? null : item.getBaseScore());
+        row.put("intentScore", item == null ? null : item.getIntentScore());
+        row.put("finalScore", item == null ? null : item.getFinalScore());
+        row.put("futureDevelopmentScore", item == null ? null : item.getFutureDevelopmentScore());
+        row.put("hotIndex", item == null ? null : item.getHotIndex());
+        row.put("salaryAvg", item == null ? null : item.getSalaryAvg());
+        row.put("reasonCodes", item == null ? null : normalizeHashList(item.getReasonCodes()));
+        row.put("riskFlags", item == null ? null : normalizeHashList(item.getRiskFlags()));
         return row;
+    }
+
+    private List<String> normalizeHashList(List<String> values) {
+        return defaultStringList(values).stream()
+                .map(this::normalizeText)
+                .filter(value -> !Strings.isNullOrEmpty(value))
+                .distinct()
+                .sorted()
+                .collect(Collectors.toList());
+    }
+
+    private List<Map<String, Object>> buildHistoryScoreHashRows(List<CandidateItemDTO.HistoryScoreItem> historyScores) {
+        return (historyScores == null ? Lists.<CandidateItemDTO.HistoryScoreItem>newArrayList() : historyScores).stream()
+                .sorted(Comparator.comparing((CandidateItemDTO.HistoryScoreItem item) -> item == null ? null : item.getYear(), Comparator.nullsLast(Integer::compareTo)))
+                .map(item -> {
+                    Map<String, Object> row = new LinkedHashMap<String, Object>();
+                    row.put("year", item == null ? null : item.getYear());
+                    row.put("score", item == null ? null : item.getScore());
+                    row.put("pos", item == null ? null : item.getPos());
+                    row.put("planNum", item == null ? null : item.getPlanNum());
+                    row.put("enrollNum", item == null ? null : item.getEnrollNum());
+                    return row;
+                })
+                .collect(Collectors.toList());
     }
 
     private List<String> dataFreshnessAffectedReviewCodes() {

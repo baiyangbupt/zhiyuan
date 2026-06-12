@@ -191,6 +191,11 @@ interface WorkspacePanelProps {
 const getWorkspaceViewStorageKey = (chatSessionId?: string) =>
   `session_detail_v2_active_view_${chatSessionId || 'default'}`;
 
+const DATA_FRESHNESS_AUTO_CHECK_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+const DATA_FRESHNESS_AUTO_CHECK_DELAY_MS = 1600;
+const getDataFreshnessAutoCheckStorageKey = (chatSessionId?: string) =>
+  `session_detail_v2_data_freshness_checked_at_${chatSessionId || 'default'}`;
+
 const EMPTY_CANDIDATE_FILTER_OPTIONS: PlanningCandidateFilterOptionsRes = {
   provinceNames: [],
   cityNames: [],
@@ -498,6 +503,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   })();
   const [planningState, setPlanningState] = useState<PlanningStateRes | null>(null);
   const [planningLoading, setPlanningLoading] = useState(false);
+  const [dataFreshnessChecking, setDataFreshnessChecking] = useState(false);
   const [actionLoading, setActionLoading] = useState<
     'candidate' | 'workingPlan' | 'ordered' | 'review' | null
   >(null);
@@ -557,6 +563,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const overviewRevealReadyRef = useRef(false);
   const overviewRevealReadyTimerRef = useRef<number | null>(null);
   const candidateItemCacheRef = useRef<Record<string, PlanningCandidateItem>>({});
+  const dataFreshnessCheckInFlightRef = useRef(false);
   const initialFiltersAppliedRef = useRef(false);
   const candidateViewStateHydratedRef = useRef(false);
   const lastSavedCandidateViewStateRef = useRef('');
@@ -1456,11 +1463,16 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     }));
   };
 
-  const handleCheckDataFreshness = async () => {
-    if (planningLoading) {
-      return;
+  const runDataFreshnessCheck = async (silent: boolean = false) => {
+    if (dataFreshnessCheckInFlightRef.current || (!silent && planningLoading)) {
+      return false;
     }
-    setPlanningLoading(true);
+    dataFreshnessCheckInFlightRef.current = true;
+    if (silent) {
+      setDataFreshnessChecking(true);
+    } else {
+      setPlanningLoading(true);
+    }
     try {
       const { data, code } = await checkPlanningDataFreshnessApi(
         routerParams.tenantId,
@@ -1473,14 +1485,31 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         } else if (data.dataFreshnessState) {
           setPlanningState(prev => prev ? ({ ...prev, dataFreshnessState: data.dataFreshnessState }) : prev);
         }
-        message.success(data.dataFreshnessState?.summary || '已完成招生计划数据检查');
-      } else {
+        if (!silent) {
+          message.success(data.dataFreshnessState?.summary || '已完成招生计划数据检查');
+        }
+        return true;
+      }
+      if (!silent) {
         message.error('检查招生计划更新失败');
       }
     } catch (error) {
-      message.error('检查招生计划更新异常，请稍后重试');
+      if (!silent) {
+        message.error('检查招生计划更新异常，请稍后重试');
+      }
+    } finally {
+      dataFreshnessCheckInFlightRef.current = false;
+      if (silent) {
+        setDataFreshnessChecking(false);
+      } else {
+        setPlanningLoading(false);
+      }
     }
-    setPlanningLoading(false);
+    return false;
+  };
+
+  const handleCheckDataFreshness = () => {
+    runDataFreshnessCheck(false);
   };
 
   const fetchWorkspaceState = async () => {
@@ -2178,6 +2207,33 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     fetchWorkspaceState();
     fetchCandidateFilterOptions();
   }, [routerParams.tenantId, routerParams.chatSessionId, fetchFlag]);
+
+  useEffect(() => {
+    if (!routerParams.tenantId || !routerParams.chatSessionId || !planningState?.candidatePoolState?.summary?.total) {
+      return;
+    }
+    if (showDataFreshnessNotice) {
+      return;
+    }
+    if (typeof window === 'undefined') {
+      return;
+    }
+    const storageKey = getDataFreshnessAutoCheckStorageKey(routerParams.chatSessionId);
+    const lastCheckedAt = Number(window.sessionStorage.getItem(storageKey) || 0);
+    if (lastCheckedAt && Date.now() - lastCheckedAt < DATA_FRESHNESS_AUTO_CHECK_COOLDOWN_MS) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      window.sessionStorage.setItem(storageKey, String(Date.now()));
+      runDataFreshnessCheck(true);
+    }, DATA_FRESHNESS_AUTO_CHECK_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [
+    routerParams.tenantId,
+    routerParams.chatSessionId,
+    planningState?.candidatePoolState?.summary?.total,
+    showDataFreshnessNotice,
+  ]);
 
   useEffect(() => {
     initialFiltersAppliedRef.current = false;
@@ -4691,7 +4747,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
               <Button
                 size="small"
                 icon={<SyncOutlined />}
-                loading={planningLoading}
+                loading={planningLoading || dataFreshnessChecking}
                 onClick={handleCheckDataFreshness}
               >
                 检查更新

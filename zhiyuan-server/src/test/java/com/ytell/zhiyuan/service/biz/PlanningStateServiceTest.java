@@ -290,6 +290,54 @@ public class PlanningStateServiceTest {
     }
 
     @Test
+    void shouldDetectSchoolAttributeChangesInVolunteerDataHash() {
+        bindPlanningStateStore();
+        PlanningStateDTO initial = new PlanningStateDTO();
+        CandidateItemDTO item = new CandidateItemDTO();
+        item.setVolunteerId("school-1_major-1");
+        item.setPlanSchoolDataId("school-1");
+        item.setSchoolId("school-1");
+        item.setSchoolName("学校A");
+        item.setSchoolRank(80);
+        item.setSchoolNature("民办");
+        item.setSchoolLevel("普通本科");
+        item.setBaoyanRatio(0.05D);
+        item.setMasterCount(12);
+        item.setDoctorCount(3);
+        item.setMajorId("major-1");
+        item.setMajorName("专业A");
+        item.setTier("稳");
+        item.setPlanNum(10);
+        item.setAdmissionRatio(80D);
+        initial.getCandidatePoolState().getItems().add(item);
+        saveStateToStore(1L, initial);
+
+        VolunteerRecommendListResponse latest = buildLatestVolunteerResponse("school-1", "major-1", "专业A", 10);
+        latest.getSafes().get(0).setSchool_rank(60);
+        latest.getSafes().get(0).setSchool_nature("公办");
+        latest.getSafes().get(0).setSchool_level("省重点");
+        latest.getSafes().get(0).setBaoyan_ratio(0.12D);
+        latest.getSafes().get(0).setMaster_count(20);
+        latest.getSafes().get(0).setDoctor_count(8);
+
+        VolunteerSourceDataSnapshot snapshot = new VolunteerSourceDataSnapshot();
+        snapshot.setSourceDataHash("source-school-attrs-v2");
+        snapshot.setVolunteerData(new com.ytell.zhiyuan.model.dto.inner.VolunteerDataDTO());
+        when(volunteerSourceDataSyncService.fetchLatestSourceData(eq(1L), eq(1L), eq(false))).thenReturn(snapshot);
+        when(volunteerBizService.recommendVolunteerListWithSourceData(eq(1L), eq(1L), eq(false), any()))
+                .thenReturn(latest);
+
+        DataFreshnessCheckReq req = new DataFreshnessCheckReq();
+        req.setFetchLatest(true);
+        DataFreshnessCheckRes res = planningStateService.checkDataFreshness(1L, 1L, req);
+
+        assertEquals("changed", res.getDataFreshnessState().getStatusCode());
+        assertEquals(Integer.valueOf(1), res.getDataFreshnessState().getUpdatedCount());
+        assertTrue(res.getDataFreshnessState().getAffectedVolunteerIds().contains("school-1_major-1"));
+        assertTrue(staleCandidatePool(res.getStaleFlags()));
+    }
+
+    @Test
     void shouldImportSubmittedLegacyPlanWhenPlanningStateMissing() {
         bindPlanningStateStore();
         VolunteerRecommendListResponse legacy = new VolunteerRecommendListResponse();

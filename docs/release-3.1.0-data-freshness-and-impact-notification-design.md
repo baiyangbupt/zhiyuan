@@ -380,3 +380,54 @@ Agent 影响：
 - 更细粒度 diff：院校/专业组下线、计划数变化、录取率变化、选科/体检/批次变化分别对应不同通知文案和操作建议。
 - 工作区变化明细抽屉和受影响条目高亮。
 - 刷新候选后的“旧方案受影响项”可视化审查，供复合 action plan 生成可确认的多步骤处理预览。
+
+### 15.2 高频变化字段与开销边界补充
+
+本次将高频变化字段纳入候选数据指纹，覆盖常见的院校属性、专业属性和招生计划变化。
+
+纳入 `dataHash` 的主要字段：
+
+- 志愿身份与单元：`volunteerId`、`unitId`、`tier`、`subTier`、`rankInTier`。
+- 院校/专业组信息：`planSchoolDataId`、`schoolId`、`schoolUnitCode`、`schoolName`、`provinceName`、`cityName`、`schoolBatch`、`schoolLevel`、`schoolNature`、`schoolCategory`。
+- 院校属性：`schoolRank`、`schoolEnrollRatio`、`baoyanRatio`、`upgradeRatio`、`masterCount`、`doctorCount`。
+- 院校标签与历史分数摘要：`schoolRankTags`、`schoolBasicTags`、`schoolPopupTags`、`schoolHistoryScores(year/score/pos/planNum/enrollNum)`。
+- 专业信息：`majorId`、`majorName`、`majorCode`、`majorCategoryId`、`majorSubCategoryId`、`majorLevel`、`majorDiscipline`、`majorCategory`、`majorTier`。
+- 招生计划与专业属性：`planNum`、`duration`、`tuitionPerYear`、`admissionRatio`、`mustSubjects`。
+- 专业标签与历史分数摘要：`majorRankTags`、`majorPlanTags`、`majorHistoryScores(year/score/pos/planNum/enrollNum)`。
+- 排序/推荐相关轻量字段：`baseScore`、`intentScore`、`finalScore`、`futureDevelopmentScore`、`hotIndex`、`salaryAvg`、`reasonCodes`、`riskFlags`。
+
+兼容策略：
+
+- 历史会话中已有的 `dataHash` 可能由旧字段集生成。检查时会优先用当前候选池按最新字段集重新计算基线 hash，避免字段集扩展导致老会话第一次检查时误报变化。
+- 无变化时会把 `dataFreshnessState.dataHash` 迁移为最新字段集 hash。
+- 不把高途原始大对象整体放入 hash，只使用候选条目上的轻量字段和历史分数摘要。
+
+开销边界：
+
+- 字段扩展本身只增加候选条目遍历时的 `row.put` 和 JSON 序列化长度，通常不是主要开销。
+- 当前链路的主要开销仍是：重拉高途全量招生计划、JSON 清洗、推荐过滤排序流水线、候选池重新生成。
+- 该机制保持惰性：只有用户点击「检查更新」或「刷新候选」时触发，不在后台持续占用 CPU/网络。
+- 后续如果接入定时任务，应限制活跃会话范围、并发数、超时时间和重试次数，避免与线上主链路争抢资源。
+
+### 15.3 更新触发策略补充
+
+仅靠用户主动点击「检查更新」不够，因为用户通常不知道高途招生计划是否已经变化。本阶段补充页面级静默探测策略：
+
+- 会话工作区加载并已有候选池后，前端延迟触发一次静默 `data-freshness/check`，请求体为 `{ fetchLatest: true }`。
+- 静默检查不弹成功/失败 toast，不占用全局工作区 loading，只更新 `dataFreshnessState` 和 stale flags。
+- 每个会话使用 `sessionStorage` 做 6 小时冷却，避免用户频繁进出页面导致反复重拉高途数据。
+- 同一页面实例内使用 in-flight 标记防止重复并发检查。
+- 检查到变化后只展示工作区通知条，提示用户「刷新候选」；真正同步源数据和重新生成候选池仍由用户点击确认。
+
+当前仍不做：
+
+- 后台全量扫描历史会话。
+- 自动刷新候选池、自动重排或自动修改方案。
+- 页面打开时无候选池的会话自动拉高途数据检查。
+
+后续如果升级为服务端定时巡检，应增加：
+
+- 活跃会话范围筛选，例如最近 7 天打开或近期有方案操作的会话。
+- 单机/集群并发上限、租户维度限流、高途接口超时和失败熔断。
+- 单 session 分布式锁，避免多端同时打开同一会话时重复重拉。
+- 变化等级分流：只对 medium/major 主动通知，minor 可在用户进入工作区时提示。
