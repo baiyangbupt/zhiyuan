@@ -19,6 +19,16 @@ public class DataFreshnessStateDTO {
     private String requestHash;
     private String dataHash;
     private String dataVersion;
+    private String sourceDataHash;
+    private String latestSourceDataHash;
+    private String nextCheckAt;
+    private Integer checkIntervalMinutes;
+    private String checkSource;
+    private String lastCheckSource;
+    private String lastCheckStatus;
+    private Integer failCount = 0;
+    private String lastError;
+    private String lastFailedAt;
     private String latestDataHash;
     private String latestDataVersion;
     private String statusCode = "unknown";

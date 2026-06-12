@@ -632,6 +632,16 @@ export interface PlanningDataFreshnessState {
   requestHash?: string;
   dataHash?: string;
   dataVersion?: string;
+  sourceDataHash?: string;
+  latestSourceDataHash?: string;
+  nextCheckAt?: string;
+  checkIntervalMinutes?: number;
+  checkSource?: string;
+  lastCheckSource?: string;
+  lastCheckStatus?: string;
+  failCount?: number;
+  lastError?: string;
+  lastFailedAt?: string;
   latestDataHash?: string;
   latestDataVersion?: string;
   statusCode?: string;
@@ -656,6 +666,7 @@ export interface PlanningDataFreshnessCheckReq {
   requestHash?: string;
   dataHash?: string;
   dataVersion?: string;
+  sourceDataHash?: string;
   changeLevel?: string;
   summary?: string;
   detail?: string;
@@ -676,6 +687,29 @@ export interface PlanningDataFreshnessCheckRes {
   staleFlags?: PlanningStateRes['staleFlags'];
   dataFreshnessState?: PlanningDataFreshnessState;
   workspaceState?: PlanningWorkspaceStateRes;
+}
+
+export interface PlanningDataFreshnessScheduleState {
+  chatSessionId?: number;
+  tenantId?: number;
+  prepareType?: string;
+  provinceCode?: string;
+  provinceName?: string;
+  examYear?: number;
+  sessionStatus?: string;
+  createTime?: string;
+  lastAccessedAt?: string;
+  lastCheckedAt?: string;
+  nextCheckAt?: string;
+  checkIntervalMinutes?: number;
+  lastCheckSource?: string;
+  lastCheckStatus?: string;
+  sourceDataHash?: string;
+  latestSourceDataHash?: string;
+  failCount?: number;
+  lastError?: string;
+  lastFailedAt?: string;
+  enabled?: boolean;
 }
 
 export interface PlanningStateRes {

@@ -11,6 +11,7 @@ public class DataFreshnessCheckReq {
     private String requestHash;
     private String dataHash;
     private String dataVersion;
+    private String sourceDataHash;
     private String changeLevel;
     private String summary;
     private String detail;

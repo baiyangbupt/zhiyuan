@@ -105,6 +105,23 @@ public class VolunteerSourceDataSyncService {
         return snapshot;
     }
 
+    public String loadLocalSourceDataHash(Long chatSessionId) {
+        if (chatSessionId == null) {
+            return null;
+        }
+        String localFilePath = volunteerFilePathUtil.getLocalFilePath(chatSessionId, VolunteerFileType.ORIGINAL);
+        try {
+            File file = new File(localFilePath);
+            if (!file.exists() || !file.isFile()) {
+                return null;
+            }
+            return buildDigest(FileUtils.readFileToString(file, StandardCharsets.UTF_8));
+        } catch (IOException e) {
+            log.warn("读取本地志愿源数据摘要失败，chatSessionId={}, localFilePath={}", chatSessionId, localFilePath, e);
+            return null;
+        }
+    }
+
     private CreateSessionReq loadSessionScoreDetail(Long chatSessionId) {
         ChatSessionExtraData extraData = chatSessionExtraDataSharedService.getBySessionIdAndDataKey(
                 chatSessionId,

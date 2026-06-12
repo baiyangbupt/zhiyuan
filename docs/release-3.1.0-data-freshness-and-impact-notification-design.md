@@ -43,28 +43,38 @@
 - `requestHash`
 - `dataHash`
 - `dataVersion`
+- `sourceDataHash`
+- `latestSourceDataHash`
+- `lastCheckedAt`
+- `nextCheckAt`
+- `checkIntervalMinutes`
+- `checkSource`：scheduler / open_session / manual
 
 其中：
 
 - `requestHash` 用于标识“请求参数是否相同”。
-- `dataHash` 用于标识“清洗后的志愿数据是否变化”。
-- `dataVersion` 用于保留历史版本。
+- `dataHash` 用于标识“候选池可见字段是否变化”。
+- `sourceDataHash` 用于标识“高途清洗后原始招生计划快照是否变化”。
+- `latestSourceDataHash` 记录最近一次检查到的上游源数据摘要。
+- `dataVersion` 用于兼容历史版本，后续不再作为唯一变化判断依据。
+- `nextCheckAt/checkIntervalMinutes` 用于后台巡检调度和对外可观测。
 
-如果上游没有版本号，就以 `dataHash` 作为变化判断主依据。
+如果上游没有独立版本号，就以 `sourceDataHash` 作为后台轻量检查主依据，以 `dataHash` 作为手动完整影响分析依据。
 
 ## 5. 刷新触发
 
 建议支持三种触发方式：
 
-1. 打开会话详情或工作区时触发异步检查。
-2. 用户手动点击“刷新招生计划”。
-3. 定时任务仅刷新活跃会话。
+1. 后台定时巡检：主触发方式，按省份和会话创建时间分散执行，单会话最长 5 小时内完成一次检查。
+2. 打开会话详情或工作区时触发兜底异步检查：仅当该会话超过允许检查间隔时入队，不做页面高频轮询。
+3. 用户手动点击“检查更新 / 刷新候选”：手动触发完整影响分析或确认后同步数据。
 
 刷新原则：
 
-- 只刷新 `GOING`、近期开启或正在编辑的会话。
+- 只刷新 `prepareType=VOLUNTEER` 的智能填报会话。
+- 优先刷新 `GOING`、近期开启或正在编辑的会话；已完成或明显过期会话只在用户访问时兜底。
 - 对同一 `chatSessionId` 做互斥锁，避免重复刷新。
-- 新数据只更新快照，不直接覆盖方案结果。
+- 后台检查只更新快照和通知状态，不直接覆盖候选池、排序方案或用户确认结果。
 
 ## 6. 变化影响分析
 
@@ -405,29 +415,154 @@ Agent 影响：
 开销边界：
 
 - 字段扩展本身只增加候选条目遍历时的 `row.put` 和 JSON 序列化长度，通常不是主要开销。
-- 当前链路的主要开销仍是：重拉高途全量招生计划、JSON 清洗、推荐过滤排序流水线、候选池重新生成。
-- 该机制保持惰性：只有用户点击「检查更新」或「刷新候选」时触发，不在后台持续占用 CPU/网络。
-- 后续如果接入定时任务，应限制活跃会话范围、并发数、超时时间和重试次数，避免与线上主链路争抢资源。
+- 当前链路的主要开销分两类：后台检查侧的高途全量招生计划拉取、JSON 清洗和 `sourceDataHash` 计算；用户确认刷新侧的推荐过滤排序流水线和候选池重新生成。
+- 后台巡检只能做源数据 hash 级检查、状态更新和通知标记，不执行推荐流水线，不生成候选池，不改动方案。
+- 完整影响分析、候选池重新生成、排序和审查仍由用户点击「检查更新 / 刷新候选 / 重新审查」或明确指令触发。
+- 定时任务必须限制会话范围、批量大小、并发数、超时时间和重试次数，避免与线上主链路争抢 CPU、网络和高途接口额度。
 
-### 15.3 更新触发策略补充
+### 15.3 更新触发策略补充：后台巡检优先，5 小时封顶
 
-仅靠用户主动点击「检查更新」不够，因为用户通常不知道高途招生计划是否已经变化。本阶段补充页面级静默探测策略：
+仅靠用户主动点击「检查更新」不够；但当前“轻量检查”仍需要调用高途全量招生计划接口并计算 `sourceDataHash`，网络 IO 不适合在用户打开页面后高频轮询。本阶段触发策略调整为后台巡检优先，页面访问只做兜底。
 
-- 会话工作区加载并已有候选池后，前端延迟触发一次静默 `data-freshness/check`，请求体为 `{ fetchLatest: true }`。
-- 静默检查不弹成功/失败 toast，不占用全局工作区 loading，只更新 `dataFreshnessState` 和 stale flags。
-- 每个会话使用 `sessionStorage` 做 6 小时冷却，避免用户频繁进出页面导致反复重拉高途数据。
-- 同一页面实例内使用 in-flight 标记防止重复并发检查。
-- 检查到变化后只展示工作区通知条，提示用户「刷新候选」；真正同步源数据和重新生成候选池仍由用户点击确认。
+后台巡检目标：
 
-当前仍不做：
+- 只处理 `prepareType=VOLUNTEER` 的智能填报会话。
+- 单会话最长检查间隔不超过 5 小时，即任一纳入巡检范围的会话在 5 小时内必须完成一次源数据检查。
+- 可以做阶梯调度，但 `checkIntervalMinutes` 必须小于等于 300。
+- 后台检查只做源数据 hash 级变化感知，不自动刷新候选池、不自动重排、不自动修改方案。
 
-- 后台全量扫描历史会话。
-- 自动刷新候选池、自动重排或自动修改方案。
-- 页面打开时无候选池的会话自动拉高途数据检查。
+建议调度阶梯：
 
-后续如果升级为服务端定时巡检，应增加：
+- 创建 24 小时内或最近 24 小时访问过：2 小时检查一次。
+- 创建 1-7 天且仍为 `GOING`：3 小时检查一次。
+- 创建 7 天以上但仍在智能填报范围内：5 小时检查一次。
+- 已完成、已归档或超过业务保留期的会话：默认不进入后台巡检，仅在用户访问时按兜底策略检查。
 
-- 活跃会话范围筛选，例如最近 7 天打开或近期有方案操作的会话。
-- 单机/集群并发上限、租户维度限流、高途接口超时和失败熔断。
-- 单 session 分布式锁，避免多端同时打开同一会话时重复重拉。
-- 变化等级分流：只对 medium/major 主动通知，minor 可在用户进入工作区时提示。
+负载均衡策略：
+
+- 按 `provinceCode + createTime` 分片取任务，避免同一省份、同一时间段集中请求高途。
+- 单批只取少量会话，例如 5-10 个；单机并发建议 1-2。
+- 高途请求失败时记录 `failCount/lastError/lastFailedAt`，按失败次数退避，但不能让仍有效的会话永久超过 5 小时未检查；达到熔断阈值时应暴露巡检异常状态。
+- 同一 `chatSessionId` 加互斥锁，避免后台巡检、用户打开兜底和手动检查同时重拉。
+- 后台任务不使用调度线程池直接大并发打高途，应使用独立小线程池或令牌桶限流。
+
+页面访问兜底：
+
+- 工作区加载时优先读取 `dataFreshnessState` 和巡检状态，不做页面高频轮询。
+- 如果 `nextCheckAt` 已过期或 `lastCheckedAt` 距今超过 5 小时，可以异步入队一次轻量检查。页面先返回已有状态，不阻塞首屏。
+- 同一浏览器会话仍可保留短暂冷却，避免用户频繁进出同一页面造成重复入队；冷却时间必须服从后台 5 小时封顶策略。
+
+### 15.4 巡检状态查询接口
+
+需要提供接口让运维或前端查看每个会话的检查间隔和调度状态。建议新增：
+
+- `GET /gaotu-assistant-bot/inner/planning/{tenantId}/session/data-freshness/schedule?chatSessionId={chatSessionId}`
+- 返回单会话巡检状态：`chatSessionId`、`prepareType`、`provinceCode`、`provinceName`、`createTime`、`lastCheckedAt`、`nextCheckAt`、`checkIntervalMinutes`、`lastCheckSource`、`lastCheckStatus`、`lastSourceDataHash`、`latestSourceDataHash`、`failCount`、`lastError`。
+- 管理侧后续可补列表接口：按 `provinceCode/status/nextCheckAt` 分页查看巡检积压和失败情况。
+
+接口语义：
+
+- `lastCheckStatus=current`：最近一次源数据 hash 未变化。
+- `lastCheckStatus=changed`：源数据 hash 已变化，已通知用户，但尚未确认刷新候选。
+- `lastCheckStatus=failed`：最近一次后台检查失败，需要重试或人工排查。
+- `nextCheckAt` 是调度计划时间，不代表一定精确执行；但有效会话的实际检查完成时间不得晚于上一次成功检查后的 5 小时窗口。
+
+数据落地建议：
+
+- 短期可以复用 `dataFreshnessState` 保存单会话检查时间、源 hash 和状态。
+- 为避免批量扫描解析大 JSON，建议新增轻量索引表或 extra-data 索引记录：`chatSessionId/tenantId/prepareType/provinceCode/createTime/lastCheckedAt/nextCheckAt/checkIntervalMinutes/status/failCount`。
+- 索引在创建会话、刷新候选、后台检查完成时同步更新。
+
+### 15.5 实施拆分与验收标准
+
+建议把后台数据更新感知拆成以下实施单元：
+
+1. 巡检状态模型：补齐 `lastCheckedAt`、`nextCheckAt`、`checkIntervalMinutes`、`lastCheckSource`、`lastCheckStatus`、`failCount`、`lastError`、`sourceDataHash`、`latestSourceDataHash`。
+2. 轻量索引：为后台任务提供可分页扫描的索引，避免每轮巡检解析所有会话的大 JSON。
+3. 调度器：定期扫描到期的 `VOLUNTEER` 会话，按 `provinceCode + createTime` 分散取数，单批 5-10 个，单机并发 1-2。
+4. 间隔计算：按会话创建时间、最近访问时间、状态计算 2 小时、3 小时、5 小时阶梯，但最终写入的 `checkIntervalMinutes` 不得超过 300。
+5. 执行锁与限流：同一 `chatSessionId` 同时只允许一个检查任务；后台巡检、打开会话兜底、手动检查共享互斥和限流。
+6. 检查执行：只重拉并清洗高途源数据，计算 `sourceDataHash`，记录是否变化；不刷新候选池、不重排、不修改方案。
+7. 通知写入：源数据变化时更新 `dataFreshnessState` 和工作区通知状态，由用户决定是否刷新候选或重新审查。
+8. 查询接口：提供单会话巡检状态查询，后续再补管理侧列表查询。
+
+验收标准：
+
+- 正常情况下，任一纳入巡检范围的 `VOLUNTEER` 会话距离上次成功检查不超过 5 小时。
+- 后台巡检不会触发候选池重建、推荐系数重算、方案排序、方案删除或方案替换。
+- 页面打开只读取状态并在过期时异步入队，不做高频同步轮询，不阻塞工作区首屏。
+- 巡检状态接口能看到当前会话的 `lastCheckedAt`、`nextCheckAt`、`checkIntervalMinutes`、检查来源、检查结果和失败原因。
+- 当高途源数据变化时，对话层和工作区只提示变化范围和建议动作，用户确认前不自动覆盖任何已生成方案。
+- 高途接口失败、超时或熔断时记录失败状态，并在状态接口中可见；恢复后按调度策略继续检查。
+
+### 15.6 2026-06-12 实现补充：后台巡检索引与默认关闭开关
+
+本次在设计基础上补齐后台巡检的代码骨架，保持生产风险可控：
+
+- 新增轻量索引表 `assistant_planning_data_freshness_schedule`，用 `chatSessionId` 唯一索引保存巡检状态，避免后台任务扫描和解析完整 `planningState` 大 JSON。
+- 新增巡检状态接口：`GET /gaotu-assistant-bot/inner/planning/{tenantId}/session/data-freshness/schedule?chatSessionId={chatSessionId}`。
+- 工作区状态返回时会合并轻量索引中的 `changed/failed/nextCheckAt/checkIntervalMinutes`，让前端能展示后台巡检发现的变化。
+- 后台巡检任务默认关闭：`planning.data-freshness.schedule.enabled=false`。上线后需要明确开启配置才会开始请求高途。
+- 后台任务每轮先小批量补建索引，再按 `nextCheckAt/lastCheckedAt` 取到期会话执行轻量检查；单轮执行量由 `batch-size` 和 `max-consecutive-tasks` 控制。
+- 轻量检查只重拉并清洗高途源数据，计算 `sourceDataHash` 并写入索引；不生成候选池、不重新排序、不覆盖用户方案。
+- 前端取消工作区打开后的自动静默检查，保留用户手动「检查更新」入口。
+
+生产部署注意：
+
+- 生产长期关闭 Flyway 时，需要在升级前手动执行 `V6__add_planning_data_freshness_schedule.sql`。
+- 首次打开后台巡检建议保守配置：`batch-size=5`、`max-consecutive-tasks=1`、`fixed-delay-ms=300000`，观察高途接口耗时、失败率和机器负载后再调整。
+- 如果短期只需要状态可查但不希望后台自动打高途，保持 `enabled=false`，接口仍可查看/补建单会话索引。
+
+### 15.7 待验证项与投产前检查清单
+
+本阶段代码已完成后台巡检骨架，但生产启用前仍需要按以下清单逐项验证，避免对线上高途接口、数据库和用户工作区产生额外影响。
+
+数据库与开关：
+
+- 确认生产库已执行 `V6__add_planning_data_freshness_schedule.sql`，并检查 `assistant_planning_data_freshness_schedule` 表、`uk_chat_session_id` 唯一索引、`idx_enabled_next_check` 和 `idx_status_next_check` 索引存在。
+- 先以 `planning.data-freshness.schedule.enabled=false` 部署，确认服务启动后没有后台巡检日志、没有新增高途全量方案拉取请求。
+- 确认 Flyway 关闭的生产环境不会因为新增 migration 文件影响启动；如果生产 Flyway 仍关闭，以手工 SQL 为准。
+
+单会话接口：
+
+- 用已知 `VOLUNTEER` 会话调用 `GET /gaotu-assistant-bot/inner/planning/{tenantId}/session/data-freshness/schedule?chatSessionId={chatSessionId}`，确认返回 `prepareType=VOLUNTEER`、`provinceCode`、`enabled=true`、`checkIntervalMinutes<=300`、`nextCheckAt`。
+- 用 `PREDICT` 或已结束会话调用同一接口，确认不会被纳入后台巡检，`enabled=false` 或无有效 `nextCheckAt`。
+- 对不存在或无工作区数据的会话调用接口，确认返回可理解的错误或空状态，不触发异常堆栈和重复重试。
+
+工作区展示：
+
+- 在巡检索引中模拟 `lastCheckStatus=changed`，打开工作区确认会展示数据更新提示，但不会自动刷新候选池、不会修改方案、不会重新排序。
+- 在巡检索引中模拟 `lastCheckStatus=failed`，确认工作区能展示检查失败或稍后重试提示，不阻塞用户继续查看和编辑方案。
+- 确认前端打开工作区时只读取状态，不再发起自动静默全量检查。
+
+手动刷新链路：
+
+- 点击「检查更新」验证仍走完整影响分析，能展示变化范围，并由用户确认是否刷新候选或重新审查。
+- 用户确认刷新前，候选池、排序区、方案区和导出结果不应被后台巡检改写。
+- 用户确认刷新后，巡检索引中的 `lastSourceDataHash/latestSourceDataHash/lastCheckedAt/nextCheckAt` 应随刷新结果同步更新。
+
+后台巡检小流量验证：
+
+- 只在 SQL、接口和默认关闭验证通过后开启后台巡检。
+- 首次启用建议配置 `batch-size=5`、`max-consecutive-tasks=1`、`fixed-delay-ms=300000`，观察至少一个调度周期。
+- 观察 CPU、内存、数据库慢查询、高途接口耗时和失败率，确认没有影响创建会话、工作区加载、对话发送等主链路。
+- 抽查到期会话被处理后，`lastCheckedAt` 更新，`nextCheckAt` 后移，`checkIntervalMinutes` 不超过 300 分钟。
+
+5 小时封顶与失败退避：
+
+- 人工构造 `next_check_at` 已过期的 `VOLUNTEER` 会话，确认下一轮调度会优先处理。
+- 人工构造创建时间不同的会话，确认阶梯间隔符合 2 小时、3 小时、5 小时策略，且最终不会超过 300 分钟。
+- 模拟高途接口失败，确认 `lastCheckStatus=failed`、`failCount`、`lastError`、`lastFailedAt` 被记录，下一次重试时间仍在 5 小时封顶范围内。
+- 连续失败时确认任务不会无限密集重试，也不会阻塞其他省份或其他会话的检查。
+
+无副作用确认：
+
+- 后台巡检只允许写巡检索引和工作区数据更新状态，不允许触发候选池重建、推荐系数重算、方案排序、方案删除、方案替换或导出数据改写。
+- 抽查巡检前后的方案版本、志愿单元数量、专业组内专业数量、排序区顺序和用户已编辑内容，确认保持不变。
+- 确认专业模式和专业组模式都只产生通知状态，不产生结构变更。
+
+回滚方式：
+
+- 如发现负载异常或高途接口异常，第一时间将 `planning.data-freshness.schedule.enabled=false` 并重启新版本服务或热更新配置。
+- 回滚不需要删除 `assistant_planning_data_freshness_schedule` 表；保留索引数据便于后续排查。
+- 如需完全停止影响，除关闭开关外，应确认没有人工或定时任务继续调用手动「检查更新」批量接口。

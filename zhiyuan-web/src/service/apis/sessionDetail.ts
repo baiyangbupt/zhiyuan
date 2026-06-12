@@ -33,6 +33,7 @@ import {
   PlanningReviewWorkflowRunRes,
   PlanningDataFreshnessCheckReq,
   PlanningDataFreshnessCheckRes,
+  PlanningDataFreshnessScheduleState,
   OrderedPlanActionRes,
   PlanningStateRes,
   PlanningWorkspaceStateRes,
@@ -311,6 +312,12 @@ export const checkPlanningDataFreshnessApi = (
     url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/data-freshness/check?chatSessionId=${chatSessionId}`,
     method: 'post',
     data,
+  });
+
+export const getPlanningDataFreshnessScheduleApi = (tenantId: string, chatSessionId: string) =>
+  request<{}, PlanningDataFreshnessScheduleState>({
+    url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/data-freshness/schedule?chatSessionId=${chatSessionId}`,
+    method: 'get',
   });
 
 export const runPlanningReviewApi = (tenantId: string, chatSessionId: string) =>

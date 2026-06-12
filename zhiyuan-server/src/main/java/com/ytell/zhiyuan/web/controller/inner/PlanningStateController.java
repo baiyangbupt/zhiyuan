@@ -39,7 +39,7 @@ public class PlanningStateController {
     public BaseResponse<PlanningWorkspaceStateRes> getWorkspaceState(@PathVariable("tenantId") Long tenantId,
                                                                      @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId) {
         log.info("getPlanningWorkspaceState: tenantId={}, chatSessionId={}", tenantId, chatSessionId);
-        return BaseResponse.success(planningStateService.getPlanningWorkspaceState(chatSessionId));
+        return BaseResponse.success(planningStateService.getPlanningWorkspaceState(tenantId, chatSessionId));
     }
 
     @GetMapping("/session/summary")
@@ -153,7 +153,16 @@ public class PlanningStateController {
     public BaseResponse<DataFreshnessStateDTO> getDataFreshness(@PathVariable("tenantId") Long tenantId,
                                                                 @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId) {
         log.info("getDataFreshness: tenantId={}, chatSessionId={}", tenantId, chatSessionId);
-        return BaseResponse.success(planningStateService.getPlanningState(chatSessionId).getDataFreshnessState());
+        return BaseResponse.success(planningStateService.getDataFreshnessState(tenantId, chatSessionId));
+    }
+
+
+    @GetMapping("/session/data-freshness/schedule")
+    @ApiOperation("获取招生计划数据新鲜度后台巡检状态")
+    public BaseResponse<DataFreshnessScheduleDTO> getDataFreshnessSchedule(@PathVariable("tenantId") Long tenantId,
+                                                                           @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId) {
+        log.info("getDataFreshnessSchedule: tenantId={}, chatSessionId={}", tenantId, chatSessionId);
+        return BaseResponse.success(planningStateService.getDataFreshnessSchedule(tenantId, chatSessionId));
     }
 
     @PostMapping("/session/data-freshness/check")

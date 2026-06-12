@@ -12,11 +12,15 @@ import com.ytell.zhiyuan.model.dto.UserProfileData;
 import com.ytell.zhiyuan.model.dto.inner.VolunteerRecommendListResponse;
 import com.ytell.zhiyuan.model.dto.inner.VolunteerSourceDataSnapshot;
 import com.ytell.zhiyuan.model.dto.planning.*;
+import com.ytell.zhiyuan.model.entity.biz.ChatSession;
 import com.ytell.zhiyuan.model.entity.biz.ChatSessionExtraData;
+import com.ytell.zhiyuan.model.entity.biz.PlanningDataFreshnessScheduleEntity;
 import com.ytell.zhiyuan.model.enums.DataType;
 import com.ytell.zhiyuan.model.vo.MajorExtraDataVO;
 import com.ytell.zhiyuan.service.shared.PlanningBehaviorEventSharedService;
+import com.ytell.zhiyuan.service.shared.PlanningDataFreshnessScheduleSharedService;
 import com.ytell.zhiyuan.service.shared.ChatSessionExtraDataSharedService;
+import com.ytell.zhiyuan.service.shared.ChatSessionSharedService;
 import com.ytell.zhiyuan.service.volunteer.VolunteerIntervalService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -24,9 +28,11 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.OffsetDateTime;
+import java.time.ZoneId;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -143,7 +149,13 @@ public class PlanningStateService {
     private ChatSessionExtraDataSharedService chatSessionExtraDataSharedService;
 
     @Autowired
+    private ChatSessionSharedService chatSessionSharedService;
+
+    @Autowired
     private PlanningBehaviorEventSharedService planningBehaviorEventSharedService;
+
+    @Autowired
+    private PlanningDataFreshnessScheduleSharedService planningDataFreshnessScheduleSharedService;
 
     @Autowired
     private VolunteerBizService volunteerBizService;
@@ -187,14 +199,24 @@ public class PlanningStateService {
         return buildPlanningWorkspaceStateRes(state);
     }
 
+    public PlanningWorkspaceStateRes getPlanningWorkspaceState(Long tenantId, Long chatSessionId) {
+        PlanningStateDTO state = getPlanningState(chatSessionId);
+        touchDataFreshnessSchedule(tenantId, chatSessionId, state, true, false);
+        return buildPlanningWorkspaceStateRes(tenantId, state);
+    }
+
     public PlanningWorkspaceStateRes buildPlanningWorkspaceStateRes(PlanningStateDTO state) {
+        return buildPlanningWorkspaceStateRes(null, state);
+    }
+
+    public PlanningWorkspaceStateRes buildPlanningWorkspaceStateRes(Long tenantId, PlanningStateDTO state) {
         PlanningWorkspaceStateRes res = new PlanningWorkspaceStateRes();
         res.setSessionId(state.getSessionId());
         res.setVersion(state.getVersion());
         res.setPhase(state.getPhase());
         res.setStaleFlags(state.getStaleFlags());
         res.setConstraintState(state.getConstraintState());
-        res.setDataFreshnessState(state.getDataFreshnessState());
+        res.setDataFreshnessState(mergeScheduleDataFreshnessState(tenantId, state));
         res.setPlanGenerationState(state.getPlanGenerationState());
         res.setInitialRecommendationState(state.getInitialRecommendationState());
         res.setCandidatePoolState(buildWorkspaceCandidatePoolState(state));
@@ -849,13 +871,15 @@ public class PlanningStateService {
                 && state.getCandidatePoolState() != null && state.getCandidatePoolState().getItems() != null
                 && !state.getCandidatePoolState().getItems().isEmpty()) {
             state.setSessionId(chatSessionId);
+            touchDataFreshnessSchedule(tenantId, chatSessionId, state, true, false);
             return state;
         }
 
         VolunteerRecommendListResponse response;
+        VolunteerSourceDataSnapshot sourceSnapshot = null;
         if (Boolean.TRUE.equals(req.getRefreshSourceData())) {
-            VolunteerSourceDataSnapshot snapshot = volunteerSourceDataSyncService.fetchLatestSourceData(tenantId, chatSessionId, true);
-            response = volunteerBizService.recommendVolunteerListWithSourceData(tenantId, chatSessionId, false, snapshot.getVolunteerData());
+            sourceSnapshot = volunteerSourceDataSyncService.fetchLatestSourceData(tenantId, chatSessionId, true);
+            response = volunteerBizService.recommendVolunteerListWithSourceData(tenantId, chatSessionId, false, sourceSnapshot.getVolunteerData());
         } else {
             response = volunteerBizService.recommendVolunteerList(tenantId, chatSessionId, false, false);
         }
@@ -863,6 +887,10 @@ public class PlanningStateService {
 
         state.setCandidatePoolState(candidatePoolState);
         refreshDataFreshnessSnapshot(chatSessionId, state, candidatePoolState);
+        if (sourceSnapshot != null && !Strings.isNullOrEmpty(sourceSnapshot.getSourceDataHash())) {
+            state.getDataFreshnessState().setSourceDataHash(sourceSnapshot.getSourceDataHash());
+            state.getDataFreshnessState().setLatestSourceDataHash(sourceSnapshot.getSourceDataHash());
+        }
         state.setRecommendationOverlayState(buildRecommendationOverlayState(candidatePoolState, state.getVersion()));
         state.setPhase("candidate_generated");
         state.setVersion((state.getVersion() == null ? 0 : state.getVersion()) + 1);
@@ -871,6 +899,7 @@ public class PlanningStateService {
         ReviewInvalidationPolicy.markCandidatePoolDependentsStale(state);
         savePlanningState(chatSessionId, state);
         state.setSessionId(chatSessionId);
+        touchDataFreshnessSchedule(tenantId, chatSessionId, state, true, Boolean.TRUE.equals(req.getRefreshSourceData()));
         return state;
     }
 
@@ -5098,11 +5127,12 @@ public class PlanningStateService {
             savePlanningState(chatSessionId, state);
         }
         state.setSessionId(chatSessionId);
+        touchDataFreshnessSchedule(tenantId, chatSessionId, state, true, true);
         DataFreshnessCheckRes res = new DataFreshnessCheckRes();
         res.setVersion(state.getVersion());
         res.setStaleFlags(state.getStaleFlags());
         res.setDataFreshnessState(state.getDataFreshnessState());
-        res.setWorkspaceState(buildPlanningWorkspaceStateRes(state));
+        res.setWorkspaceState(buildPlanningWorkspaceStateRes(tenantId, state));
         return res;
     }
 
@@ -5128,6 +5158,7 @@ public class PlanningStateService {
         DataFreshnessChangeSummary summary = buildDataFreshnessChangeSummary(state.getCandidatePoolState(), latestCandidatePool);
         req.setDataHash(buildCandidateDataHash(latestCandidatePool));
         req.setDataVersion(snapshot.getSourceDataHash());
+        req.setSourceDataHash(snapshot.getSourceDataHash());
         if (Strings.isNullOrEmpty(req.getChangeLevel())) {
             req.setChangeLevel(summary.changeLevel);
         }
@@ -5168,6 +5199,18 @@ public class PlanningStateService {
         return normalizeText(freshness == null ? null : freshness.getDataHash());
     }
 
+    private String normalizeCurrentSourceDataHash(Long chatSessionId, DataFreshnessStateDTO freshness) {
+        String sourceHash = normalizeText(freshness == null ? null : freshness.getSourceDataHash());
+        if (!Strings.isNullOrEmpty(sourceHash)) {
+            return sourceHash;
+        }
+        String latestSourceHash = normalizeText(freshness == null ? null : freshness.getLatestSourceDataHash());
+        if (!Strings.isNullOrEmpty(latestSourceHash)) {
+            return latestSourceHash;
+        }
+        return normalizeText(volunteerSourceDataSyncService.loadLocalSourceDataHash(chatSessionId));
+    }
+
     private void markDataFreshnessCurrent(DataFreshnessStateDTO freshness,
                                           String latestHash,
                                           DataFreshnessCheckReq req) {
@@ -5178,6 +5221,11 @@ public class PlanningStateService {
         }
         freshness.setLatestDataHash(Strings.isNullOrEmpty(latestHash) ? freshness.getDataHash() : latestHash);
         freshness.setLatestDataVersion(normalizeText(req.getDataVersion()));
+        String sourceHash = normalizeText(req.getSourceDataHash());
+        if (!Strings.isNullOrEmpty(sourceHash)) {
+            freshness.setSourceDataHash(sourceHash);
+            freshness.setLatestSourceDataHash(sourceHash);
+        }
         freshness.setShouldNotify(false);
         freshness.setRequiresCandidateRefresh(false);
         freshness.setRequiresReview(false);
@@ -5383,6 +5431,9 @@ public class PlanningStateService {
         freshness.setDataVersion(candidatePoolState == null || candidatePoolState.getSourceVersion() == null
                 ? null : String.valueOf(candidatePoolState.getSourceVersion()));
         freshness.setLatestDataHash(freshness.getDataHash());
+        String sourceDataHash = normalizeText(volunteerSourceDataSyncService.loadLocalSourceDataHash(chatSessionId));
+        freshness.setSourceDataHash(sourceDataHash);
+        freshness.setLatestSourceDataHash(sourceDataHash);
         freshness.setLatestDataVersion(freshness.getDataVersion());
         freshness.setStatusCode("current");
         freshness.setChangeLevel("none");
@@ -5418,9 +5469,37 @@ public class PlanningStateService {
         freshness.setRemovedCount(defaultInteger(req.getRemovedCount()));
         freshness.setUpdatedCount(defaultInteger(req.getUpdatedCount()));
         freshness.setInvalidCount(defaultInteger(req.getInvalidCount()));
+        String sourceHash = normalizeText(req.getSourceDataHash());
+        if (!Strings.isNullOrEmpty(sourceHash)) {
+            freshness.setLatestSourceDataHash(sourceHash);
+        }
         freshness.setAffectedVolunteerIds(defaultStringList(req.getAffectedVolunteerIds()));
         freshness.setAffectedUnitIds(defaultStringList(req.getAffectedUnitIds()));
         freshness.setAffectedReviewCodes("minor".equals(level) ? Lists.newArrayList() : dataFreshnessAffectedReviewCodes());
+    }
+
+    private void markDataFreshnessSourceChanged(PlanningStateDTO state,
+                                                DataFreshnessStateDTO freshness,
+                                                String latestSourceHash,
+                                                String checkedAt) {
+        freshness.setStatusCode("changed");
+        freshness.setChangeLevel("minor");
+        freshness.setLatestSourceDataHash(latestSourceHash);
+        freshness.setLatestDataVersion(latestSourceHash);
+        freshness.setLastCheckedAt(checkedAt);
+        freshness.setShouldNotify(true);
+        freshness.setRequiresCandidateRefresh(true);
+        freshness.setRequiresReview(false);
+        freshness.setSummary("检测到高途招生计划源数据有更新，建议点击检查更新确认影响范围，或刷新候选后继续填报。");
+        freshness.setDetail("本次为轻量版本检查，尚未执行候选级影响分析。");
+        freshness.setChangedCount(0);
+        freshness.setAddedCount(0);
+        freshness.setRemovedCount(0);
+        freshness.setUpdatedCount(0);
+        freshness.setInvalidCount(0);
+        freshness.setAffectedVolunteerIds(Lists.newArrayList());
+        freshness.setAffectedUnitIds(Lists.newArrayList());
+        freshness.setAffectedReviewCodes(Lists.newArrayList());
     }
 
     private void markDataFreshnessStale(PlanningStateDTO state, DataFreshnessStateDTO freshness) {
@@ -5611,6 +5690,11 @@ public class PlanningStateService {
         return value == null ? "" : value.trim();
     }
 
+    private String blankToNull(String value) {
+        String normalized = normalizeText(value);
+        return Strings.isNullOrEmpty(normalized) ? null : normalized;
+    }
+
     private Integer defaultInteger(Integer value) {
         return value == null ? 0 : value;
     }
@@ -5619,6 +5703,211 @@ public class PlanningStateService {
         return values == null ? Lists.newArrayList() : Lists.newArrayList(values.stream()
                 .filter(value -> !Strings.isNullOrEmpty(value))
                 .collect(Collectors.toList()));
+    }
+
+
+    public DataFreshnessStateDTO getDataFreshnessState(Long tenantId, Long chatSessionId) {
+        PlanningStateDTO state = getPlanningState(chatSessionId);
+        touchDataFreshnessSchedule(tenantId, chatSessionId, state, true, false);
+        return mergeScheduleDataFreshnessState(tenantId, state);
+    }
+
+    public DataFreshnessScheduleDTO getDataFreshnessSchedule(Long tenantId, Long chatSessionId) {
+        PlanningStateDTO state = getPlanningState(chatSessionId);
+        PlanningDataFreshnessScheduleEntity entity = touchDataFreshnessSchedule(tenantId, chatSessionId, state, true, false);
+        return planningDataFreshnessScheduleSharedService.toDto(entity);
+    }
+
+    public DataFreshnessScheduleDTO ensureDataFreshnessScheduleIndex(Long tenantId, Long chatSessionId) {
+        PlanningDataFreshnessScheduleEntity entity = touchDataFreshnessSchedule(tenantId, chatSessionId, null, false, false);
+        return planningDataFreshnessScheduleSharedService.toDto(entity);
+    }
+
+    public DataFreshnessScheduleDTO checkDataFreshnessLightweightForSchedule(Long tenantId,
+                                                                              Long chatSessionId,
+                                                                              String source) {
+        PlanningDataFreshnessScheduleEntity schedule = planningDataFreshnessScheduleSharedService.getByChatSessionId(chatSessionId);
+        if (schedule == null) {
+            schedule = touchDataFreshnessSchedule(tenantId, chatSessionId, null, false, false);
+        }
+        if (schedule == null || !Boolean.TRUE.equals(schedule.getEnabled())) {
+            return planningDataFreshnessScheduleSharedService.toDto(schedule);
+        }
+        String checkSource = Strings.isNullOrEmpty(source) ? "scheduler" : source;
+        planningDataFreshnessScheduleSharedService.markChecking(chatSessionId);
+        try {
+            VolunteerSourceDataSnapshot snapshot = volunteerSourceDataSyncService.fetchLatestSourceData(tenantId, chatSessionId, false);
+            String latestSourceHash = normalizeText(snapshot == null ? null : snapshot.getSourceDataHash());
+            String currentSourceHash = normalizeText(schedule.getSourceDataHash());
+            if (Strings.isNullOrEmpty(currentSourceHash)) {
+                currentSourceHash = normalizeText(volunteerSourceDataSyncService.loadLocalSourceDataHash(chatSessionId));
+            }
+            String status = (!Strings.isNullOrEmpty(currentSourceHash)
+                    && !Strings.isNullOrEmpty(latestSourceHash)
+                    && !latestSourceHash.equals(currentSourceHash)) ? "changed" : "current";
+            planningDataFreshnessScheduleSharedService.markSuccess(chatSessionId, checkSource, status, currentSourceHash, latestSourceHash, new Date());
+            return planningDataFreshnessScheduleSharedService.toDto(
+                    planningDataFreshnessScheduleSharedService.getByChatSessionId(chatSessionId));
+        } catch (Exception ex) {
+            log.warn("dataFreshnessSchedule lightweight check failed tenantId={} chatSessionId={} source={}",
+                    tenantId, chatSessionId, checkSource, ex);
+            planningDataFreshnessScheduleSharedService.markFailure(chatSessionId, checkSource, ex.getMessage(), new Date());
+            return planningDataFreshnessScheduleSharedService.toDto(
+                    planningDataFreshnessScheduleSharedService.getByChatSessionId(chatSessionId));
+        }
+    }
+
+    private PlanningDataFreshnessScheduleEntity touchDataFreshnessSchedule(Long tenantId,
+                                                                            Long chatSessionId,
+                                                                            PlanningStateDTO state,
+                                                                            boolean markAccess,
+                                                                            boolean syncFreshnessState) {
+        if (chatSessionId == null) {
+            return null;
+        }
+        ChatSession session = chatSessionSharedService.getById(chatSessionId);
+        CreateSessionReq scoreDetail = loadCreateSessionReq(chatSessionId);
+        DataFreshnessStateDTO freshness = state == null ? null : state.getDataFreshnessState();
+        PlanningDataFreshnessScheduleEntity entity = buildDataFreshnessScheduleEntity(tenantId, chatSessionId, session,
+                scoreDetail, freshness, markAccess, syncFreshnessState);
+        return planningDataFreshnessScheduleSharedService.saveOrUpdateSchedule(entity);
+    }
+
+    private PlanningDataFreshnessScheduleEntity buildDataFreshnessScheduleEntity(Long tenantId,
+                                                                                  Long chatSessionId,
+                                                                                  ChatSession session,
+                                                                                  CreateSessionReq scoreDetail,
+                                                                                  DataFreshnessStateDTO freshness,
+                                                                                  boolean markAccess,
+                                                                                  boolean syncFreshnessState) {
+        PlanningDataFreshnessScheduleEntity entity = new PlanningDataFreshnessScheduleEntity();
+        entity.setChatSessionId(chatSessionId);
+        entity.setTenantId(tenantId != null ? tenantId : (session == null ? null : session.getTenantId()));
+        entity.setSessionStatus(session == null || session.getSessionStatus() == null ? null : session.getSessionStatus().name());
+        entity.setSessionCreateTime(session == null ? null : session.getCreateTime());
+        if (markAccess) {
+            entity.setLastAccessedAt(new Date());
+        }
+        String prepareType = scoreDetail == null || scoreDetail.getPrepareType() == null ? null : scoreDetail.getPrepareType().getCode();
+        entity.setPrepareType(prepareType);
+        if (scoreDetail != null && scoreDetail.getProvince() != null) {
+            entity.setProvinceCode(scoreDetail.getProvince().getCode());
+            entity.setProvinceName(scoreDetail.getProvince().getName());
+        }
+        entity.setExamYear(scoreDetail == null ? null : scoreDetail.getExamYear());
+        entity.setEnabled(DataFreshnessSchedulePolicy.isBackgroundEligible(prepareType, entity.getSessionStatus()));
+        String sourceDataHash = syncFreshnessState ? blankToNull(freshness == null ? null : freshness.getSourceDataHash()) : null;
+        if (syncFreshnessState && Strings.isNullOrEmpty(sourceDataHash)) {
+            sourceDataHash = blankToNull(volunteerSourceDataSyncService.loadLocalSourceDataHash(chatSessionId));
+        }
+        entity.setSourceDataHash(sourceDataHash);
+        if (syncFreshnessState) {
+            entity.setLatestSourceDataHash(blankToNull(freshness == null ? null : freshness.getLatestSourceDataHash()));
+            entity.setLastCheckedAt(parseDate(freshness == null ? null : freshness.getLastCheckedAt()));
+            String lastCheckSource = blankToNull(freshness == null ? null : freshness.getLastCheckSource());
+            if (Strings.isNullOrEmpty(lastCheckSource)) {
+                lastCheckSource = blankToNull(freshness == null ? null : freshness.getCheckSource());
+            }
+            entity.setLastCheckSource(lastCheckSource);
+            String lastCheckStatus = blankToNull(freshness == null ? null : freshness.getLastCheckStatus());
+            if (Strings.isNullOrEmpty(lastCheckStatus)) {
+                lastCheckStatus = blankToNull(freshness == null ? null : freshness.getStatusCode());
+            }
+            entity.setLastCheckStatus(lastCheckStatus);
+            entity.setFailCount(freshness == null ? null : freshness.getFailCount());
+            entity.setLastError(blankToNull(freshness == null ? null : freshness.getLastError()));
+            entity.setLastFailedAt(parseDate(freshness == null ? null : freshness.getLastFailedAt()));
+        }
+        return entity;
+    }
+
+    private DataFreshnessStateDTO mergeScheduleDataFreshnessState(Long tenantId, PlanningStateDTO state) {
+        DataFreshnessStateDTO base = state == null ? null : state.getDataFreshnessState();
+        DataFreshnessStateDTO merged = cloneDataFreshnessState(base);
+        Long chatSessionId = state == null ? null : state.getSessionId();
+        if (chatSessionId == null) {
+            return merged;
+        }
+        PlanningDataFreshnessScheduleEntity schedule = planningDataFreshnessScheduleSharedService.getByChatSessionId(chatSessionId);
+        if (schedule == null) {
+            return merged;
+        }
+        applyScheduleToFreshnessState(merged, schedule);
+        return merged;
+    }
+
+    private DataFreshnessStateDTO cloneDataFreshnessState(DataFreshnessStateDTO source) {
+        if (source == null) {
+            return new DataFreshnessStateDTO();
+        }
+        return JSONObject.parseObject(JSONObject.toJSONString(source), DataFreshnessStateDTO.class);
+    }
+
+    private void applyScheduleToFreshnessState(DataFreshnessStateDTO target, PlanningDataFreshnessScheduleEntity schedule) {
+        if (target == null || schedule == null) {
+            return;
+        }
+        target.setLastCheckedAt(formatDate(schedule.getLastCheckedAt()));
+        target.setNextCheckAt(formatDate(schedule.getNextCheckAt()));
+        target.setCheckIntervalMinutes(schedule.getCheckIntervalMinutes());
+        target.setLastCheckSource(schedule.getLastCheckSource());
+        target.setCheckSource(schedule.getLastCheckSource());
+        target.setLastCheckStatus(schedule.getLastCheckStatus());
+        target.setSourceDataHash(schedule.getSourceDataHash());
+        target.setLatestSourceDataHash(schedule.getLatestSourceDataHash());
+        target.setFailCount(schedule.getFailCount());
+        target.setLastError(schedule.getLastError());
+        target.setLastFailedAt(formatDate(schedule.getLastFailedAt()));
+        if ("changed".equals(schedule.getLastCheckStatus())) {
+            target.setStatusCode("changed");
+            target.setChangeLevel("minor");
+            target.setShouldNotify(true);
+            target.setRequiresCandidateRefresh(true);
+            target.setRequiresReview(false);
+            if (Strings.isNullOrEmpty(target.getSummary())) {
+                target.setSummary("检测到高途招生计划源数据有更新，建议点击检查更新确认影响范围，或刷新候选后继续填报。");
+            }
+            if (Strings.isNullOrEmpty(target.getDetail())) {
+                target.setDetail("本次为后台轻量版本检查，尚未执行候选级影响分析。");
+            }
+        } else if ("failed".equals(schedule.getLastCheckStatus())) {
+            target.setLastCheckStatus("failed");
+            if (Strings.isNullOrEmpty(target.getSummary())) {
+                target.setSummary("招生计划后台检查暂时失败，系统会继续重试。");
+            }
+        }
+    }
+
+    private CreateSessionReq loadCreateSessionReq(Long chatSessionId) {
+        ChatSessionExtraData scoreData = chatSessionExtraDataSharedService.getBySessionIdAndDataKey(
+                chatSessionId, ChatSessionExtraDataConstants.USER_SCORE_KEY);
+        if (scoreData == null || Strings.isNullOrEmpty(scoreData.getDataValue())) {
+            return null;
+        }
+        try {
+            return JSONObject.parseObject(scoreData.getDataValue(), CreateSessionReq.class);
+        } catch (Exception ex) {
+            log.warn("loadCreateSessionReq failed chatSessionId={}", chatSessionId, ex);
+            return null;
+        }
+    }
+
+    private Date parseDate(String value) {
+        if (Strings.isNullOrEmpty(value)) {
+            return null;
+        }
+        try {
+            return Date.from(OffsetDateTime.parse(value).toInstant());
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private String formatDate(Date date) {
+        if (date == null) {
+            return null;
+        }
+        return OffsetDateTime.ofInstant(date.toInstant(), ZoneId.systemDefault()).toString();
     }
 
     private void savePlanningState(Long chatSessionId, PlanningStateDTO state) {

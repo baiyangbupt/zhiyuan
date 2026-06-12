@@ -10,3 +10,12 @@ spring:
     url: ${spring.datasource.dynamic.datasource.master.url}
     user: ${spring.datasource.dynamic.datasource.master.username}
     password: ${spring.datasource.dynamic.datasource.master.password}
+
+planning:
+  data-freshness:
+    schedule:
+      enabled: false
+      fixed-delay-ms: 300000
+      batch-size: 5
+      seed-batch-size: 10
+      max-consecutive-tasks: 2
