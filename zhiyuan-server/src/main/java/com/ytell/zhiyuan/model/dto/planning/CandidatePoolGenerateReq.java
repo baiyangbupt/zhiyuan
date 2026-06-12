@@ -5,4 +5,5 @@ import lombok.Data;
 @Data
 public class CandidatePoolGenerateReq {
     private Boolean forceRegenerate = false;
+    private Boolean refreshSourceData = false;
 }

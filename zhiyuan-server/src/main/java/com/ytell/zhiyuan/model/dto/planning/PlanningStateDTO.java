@@ -13,6 +13,7 @@ public class PlanningStateDTO {
     private StaleFlagsDTO staleFlags = new StaleFlagsDTO();
     private ProfileStateDTO profileState = new ProfileStateDTO();
     private ConstraintStateDTO constraintState = new ConstraintStateDTO();
+    private DataFreshnessStateDTO dataFreshnessState = new DataFreshnessStateDTO();
     private CandidatePoolStateDTO candidatePoolState = new CandidatePoolStateDTO();
     private CandidateViewStateDTO candidateViewState;
     private InitialRecommendationStateDTO initialRecommendationState = new InitialRecommendationStateDTO();

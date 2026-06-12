@@ -15,12 +15,14 @@ import {
   ExclamationCircleOutlined,
   DownloadOutlined,
   SafetyCertificateOutlined,
+  SyncOutlined,
 } from '@ant-design/icons';
 import {
   applyPlanningFixProposalApi,
   exportPlanningOrderedPlanApi,
   generatePlanningFixProposalsApi,
   getPlanningCandidateFilterOptionsApi,
+  checkPlanningDataFreshnessApi,
   generatePlanningCandidatePoolApi,
   generatePlanningInitialPlanApi,
   getPlanningWorkspaceStateApi,
@@ -574,6 +576,27 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const orderedSummary = planningState?.orderedPlanState?.summary;
   const reviewSummary = planningState?.reviewState?.summary;
   const workflowStatus = planningState?.workflowStatus;
+  const dataFreshnessState = planningState?.dataFreshnessState;
+  const dataFreshnessLevel = dataFreshnessState?.changeLevel || 'none';
+  const showDataFreshnessNotice = Boolean(
+    dataFreshnessState?.shouldNotify ||
+    dataFreshnessState?.statusCode === 'changed' ||
+    planningState?.staleFlags?.reasonCode?.startsWith('volunteer_data')
+  );
+  const dataFreshnessLevelLabel =
+    dataFreshnessLevel === 'major'
+      ? '重要更新'
+      : dataFreshnessLevel === 'medium'
+        ? '建议复核'
+        : dataFreshnessLevel === 'minor'
+          ? '轻微更新'
+          : '已检查';
+  const dataFreshnessChangeCount =
+    dataFreshnessState?.changedCount ||
+    dataFreshnessState?.updatedCount ||
+    dataFreshnessState?.affectedVolunteerIds?.length ||
+    dataFreshnessState?.affectedUnitIds?.length ||
+    0;
   const candidateRiskHints = planningState?.candidatePoolState?.riskHints || [];
   const isLegacySubmittedPlan = planningState?.orderedPlanState?.generationMode === 'legacy_submitted';
   const selectedCandidateIdentitySet = useMemo(
@@ -1433,6 +1456,33 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     }));
   };
 
+  const handleCheckDataFreshness = async () => {
+    if (planningLoading) {
+      return;
+    }
+    setPlanningLoading(true);
+    try {
+      const { data, code } = await checkPlanningDataFreshnessApi(
+        routerParams.tenantId,
+        routerParams.chatSessionId,
+        { fetchLatest: true }
+      );
+      if (code === 0 && data) {
+        if (data.workspaceState) {
+          mergeWorkspaceState(data.workspaceState);
+        } else if (data.dataFreshnessState) {
+          setPlanningState(prev => prev ? ({ ...prev, dataFreshnessState: data.dataFreshnessState }) : prev);
+        }
+        message.success(data.dataFreshnessState?.summary || '已完成招生计划数据检查');
+      } else {
+        message.error('检查招生计划更新失败');
+      }
+    } catch (error) {
+      message.error('检查招生计划更新异常，请稍后重试');
+    }
+    setPlanningLoading(false);
+  };
+
   const fetchWorkspaceState = async () => {
     if (planningLoading) {
       return;
@@ -1527,7 +1577,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     );
   }, [candidateFilterOptions]);
 
-  const ensureCandidatePoolReady = async (forceRegenerate: boolean = false) => {
+  const ensureCandidatePoolReady = async (forceRegenerate: boolean = false, refreshSourceData: boolean = false) => {
     const shouldGenerate =
       forceRegenerate ||
       Boolean(planningState?.staleFlags?.candidatePool) ||
@@ -1541,7 +1591,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       const { data, code } = await generatePlanningCandidatePoolApi(
         routerParams.tenantId,
         routerParams.chatSessionId,
-        true
+        true,
+        refreshSourceData
       );
       if (code === 0 && data) {
         applyPlanningState(data);
@@ -1619,8 +1670,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     }
   };
 
-  const refreshCandidatePool = async (forceRegenerate: boolean = false) => {
-    const ready = await ensureCandidatePoolReady(forceRegenerate);
+  const refreshCandidatePool = async (forceRegenerate: boolean = false, refreshSourceData: boolean = false) => {
+    const ready = await ensureCandidatePoolReady(forceRegenerate, refreshSourceData);
     if (ready) {
       queryCandidatePool(1);
     }
@@ -4619,6 +4670,53 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         {initialStrategyNotice && !overviewCollapsed && (
           <div className={style.initialStrategyNotice} title={initialStrategyNotice}>
             {initialStrategyNotice}
+          </div>
+        )}
+
+        {showDataFreshnessNotice && !overviewCollapsed && (
+          <div className={style.dataFreshnessNotice}>
+            <div className={style.dataFreshnessMain}>
+              <span className={style.dataFreshnessBadge}>{dataFreshnessLevelLabel}</span>
+              <span className={style.dataFreshnessText}>
+                {dataFreshnessState?.summary || planningState?.staleFlags?.message || '招生计划数据有更新，建议复核当前工作区。'}
+              </span>
+              {dataFreshnessChangeCount ? (
+                <span className={style.dataFreshnessMeta}>影响 {dataFreshnessChangeCount} 项</span>
+              ) : null}
+              {dataFreshnessState?.lastCheckedAt ? (
+                <span className={style.dataFreshnessMeta}>检查于 {dataFreshnessState.lastCheckedAt.slice(0, 16).replace('T', ' ')}</span>
+              ) : null}
+            </div>
+            <div className={style.dataFreshnessActions}>
+              <Button
+                size="small"
+                icon={<SyncOutlined />}
+                loading={planningLoading}
+                onClick={handleCheckDataFreshness}
+              >
+                检查更新
+              </Button>
+              {dataFreshnessState?.requiresCandidateRefresh ? (
+                <Button
+                  size="small"
+                  loading={candidatePoolLoading}
+                  onClick={() => refreshCandidatePool(true, true)}
+                >
+                  刷新候选
+                </Button>
+              ) : null}
+              {dataFreshnessState?.requiresReview ? (
+                <Button
+                  size="small"
+                  type="primary"
+                  loading={actionLoading === 'review'}
+                  onClick={() => handleOpenReviewWorkflowModal(true)}
+                  disabled={!orderedItems.length}
+                >
+                  重新审查
+                </Button>
+              ) : null}
+            </div>
           </div>
         )}
 

@@ -8,6 +8,7 @@ import com.ytell.zhiyuan.manager.MajorExtraDataManager;
 import com.ytell.zhiyuan.model.dto.CreateSessionReq;
 import com.ytell.zhiyuan.model.dto.UserProfileData;
 import com.ytell.zhiyuan.model.dto.inner.VolunteerRecommendListResponse;
+import com.ytell.zhiyuan.model.dto.inner.VolunteerSourceDataSnapshot;
 import com.ytell.zhiyuan.model.dto.planning.CandidatePoolGenerateReq;
 import com.ytell.zhiyuan.model.dto.planning.CandidatePoolStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.CandidateFilterOptionsDTO;
@@ -17,6 +18,8 @@ import com.ytell.zhiyuan.model.dto.planning.CandidateViewStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.CompensationApplyReq;
 import com.ytell.zhiyuan.model.dto.planning.CompensationActionDTO;
 import com.ytell.zhiyuan.model.dto.planning.CompensationPreviewDTO;
+import com.ytell.zhiyuan.model.dto.planning.DataFreshnessCheckReq;
+import com.ytell.zhiyuan.model.dto.planning.DataFreshnessCheckRes;
 import com.ytell.zhiyuan.model.dto.planning.ConstraintDeriveRes;
 import com.ytell.zhiyuan.model.dto.planning.CandidateItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.DraftPlanReorderReq;
@@ -107,6 +110,7 @@ public class PlanningStateServiceTest {
     private VolunteerDataProvider volunteerDataProvider;
     private PlanningExcelExportBuilder planningExcelExportBuilder;
     private VolunteerBizService volunteerBizService;
+    private VolunteerSourceDataSyncService volunteerSourceDataSyncService;
 
     @BeforeEach
     void setUp() {
@@ -116,6 +120,7 @@ public class PlanningStateServiceTest {
         volunteerDataProvider = Mockito.mock(VolunteerDataProvider.class);
         planningExcelExportBuilder = new PlanningExcelExportBuilder();
         volunteerBizService = Mockito.mock(VolunteerBizService.class);
+        volunteerSourceDataSyncService = Mockito.mock(VolunteerSourceDataSyncService.class);
         MajorExtraDataManager majorExtraDataManager = new MajorExtraDataManager();
         majorExtraDataManager.init();
         ReflectionTestUtils.setField(planningStateService, "chatSessionExtraDataSharedService", chatSessionExtraDataSharedService);
@@ -123,6 +128,7 @@ public class PlanningStateServiceTest {
         ReflectionTestUtils.setField(planningStateService, "volunteerDataProvider", volunteerDataProvider);
         ReflectionTestUtils.setField(planningStateService, "planningExcelExportBuilder", planningExcelExportBuilder);
         ReflectionTestUtils.setField(planningStateService, "volunteerBizService", volunteerBizService);
+        ReflectionTestUtils.setField(planningStateService, "volunteerSourceDataSyncService", volunteerSourceDataSyncService);
         ReflectionTestUtils.setField(planningStateService, "volunteerIntervalService", new VolunteerIntervalService());
         ReflectionTestUtils.setField(planningStateService, "majorExtraDataManager", majorExtraDataManager);
     }
@@ -189,6 +195,98 @@ public class PlanningStateServiceTest {
         assertTrue(stalePlanAdjustment(version.getStaleFlags()));
         assertTrue(staleReview(version.getStaleFlags()));
         assertEquals("constraint_intent_changed", version.getStaleFlags().getReasonCode());
+    }
+
+    @Test
+    void shouldBackfillDataFreshnessSnapshotWithoutNotification() {
+        bindPlanningStateStore();
+        PlanningStateDTO initial = new PlanningStateDTO();
+        CandidateItemDTO item = new CandidateItemDTO();
+        item.setVolunteerId("v1");
+        item.setPlanSchoolDataId("u1");
+        item.setSchoolName("学校A");
+        item.setMajorName("专业A");
+        item.setTier("稳");
+        initial.getCandidatePoolState().getItems().add(item);
+        saveStateToStore(1L, initial);
+
+        DataFreshnessCheckRes res = planningStateService.checkDataFreshness(1L, new DataFreshnessCheckReq());
+
+        assertEquals("current", res.getDataFreshnessState().getStatusCode());
+        assertEquals("none", res.getDataFreshnessState().getChangeLevel());
+        assertFalse(Boolean.TRUE.equals(res.getDataFreshnessState().getShouldNotify()));
+        assertNotNull(res.getDataFreshnessState().getDataHash());
+        assertFalse(staleCandidatePool(res.getStaleFlags()));
+        assertFalse(staleReview(res.getStaleFlags()));
+    }
+
+    @Test
+    void shouldMarkPlanningStateStaleWhenVolunteerDataHashChanges() {
+        bindPlanningStateStore();
+        PlanningStateDTO initial = new PlanningStateDTO();
+        CandidateItemDTO item = new CandidateItemDTO();
+        item.setVolunteerId("v1");
+        item.setPlanSchoolDataId("u1");
+        item.setSchoolName("学校A");
+        item.setMajorName("专业A");
+        item.setTier("稳");
+        initial.getCandidatePoolState().getItems().add(item);
+        saveStateToStore(1L, initial);
+
+        DataFreshnessCheckReq req = new DataFreshnessCheckReq();
+        req.setDataHash("new-data-hash");
+        req.setDataVersion("upstream-v2");
+        req.setChangeLevel("major");
+        req.setChangedCount(2);
+        req.setAffectedVolunteerIds(java.util.Arrays.asList("v1"));
+        DataFreshnessCheckRes res = planningStateService.checkDataFreshness(1L, req);
+
+        assertEquals(Integer.valueOf(1), res.getVersion());
+        assertEquals("changed", res.getDataFreshnessState().getStatusCode());
+        assertEquals("major", res.getDataFreshnessState().getChangeLevel());
+        assertEquals("new-data-hash", res.getDataFreshnessState().getLatestDataHash());
+        assertTrue(Boolean.TRUE.equals(res.getDataFreshnessState().getShouldNotify()));
+        assertTrue(Boolean.TRUE.equals(res.getDataFreshnessState().getRequiresCandidateRefresh()));
+        assertTrue(Boolean.TRUE.equals(res.getDataFreshnessState().getRequiresReview()));
+        assertTrue(staleCandidatePool(res.getStaleFlags()));
+        assertTrue(staleReview(res.getStaleFlags()));
+        assertEquals("volunteer_data_changed", res.getStaleFlags().getReasonCode());
+    }
+
+    @Test
+    void shouldFetchLatestVolunteerDataAndMarkChangedWithoutPersistingPlan() {
+        bindPlanningStateStore();
+        PlanningStateDTO initial = new PlanningStateDTO();
+        CandidateItemDTO item = new CandidateItemDTO();
+        item.setVolunteerId("school-1_major-1");
+        item.setPlanSchoolDataId("school-1");
+        item.setSchoolName("学校A");
+        item.setMajorName("专业A");
+        item.setTier("稳");
+        item.setPlanNum(10);
+        initial.getCandidatePoolState().getItems().add(item);
+        saveStateToStore(1L, initial);
+
+        VolunteerSourceDataSnapshot snapshot = new VolunteerSourceDataSnapshot();
+        snapshot.setSourceDataHash("source-v2");
+        snapshot.setVolunteerData(new com.ytell.zhiyuan.model.dto.inner.VolunteerDataDTO());
+        when(volunteerSourceDataSyncService.fetchLatestSourceData(eq(1L), eq(1L), eq(false))).thenReturn(snapshot);
+        when(volunteerBizService.recommendVolunteerListWithSourceData(eq(1L), eq(1L), eq(false), any()))
+                .thenReturn(buildLatestVolunteerResponse("school-1", "major-1", "专业A", 12));
+
+        DataFreshnessCheckReq req = new DataFreshnessCheckReq();
+        req.setFetchLatest(true);
+        DataFreshnessCheckRes res = planningStateService.checkDataFreshness(1L, 1L, req);
+
+        assertEquals("changed", res.getDataFreshnessState().getStatusCode());
+        assertEquals("minor", res.getDataFreshnessState().getChangeLevel());
+        assertEquals(Integer.valueOf(1), res.getDataFreshnessState().getChangedCount());
+        assertEquals(Integer.valueOf(1), res.getDataFreshnessState().getUpdatedCount());
+        assertEquals("source-v2", res.getDataFreshnessState().getLatestDataVersion());
+        assertTrue(Boolean.TRUE.equals(res.getDataFreshnessState().getRequiresCandidateRefresh()));
+        assertFalse(Boolean.TRUE.equals(res.getDataFreshnessState().getRequiresReview()));
+        assertTrue(staleCandidatePool(res.getStaleFlags()));
+        assertEquals("volunteer_data_minor_changed", res.getStaleFlags().getReasonCode());
     }
 
     @Test
@@ -6679,6 +6777,37 @@ public class PlanningStateServiceTest {
         data.setDataKey(ChatSessionExtraDataConstants.PLANNING_STATE_KEY);
         data.setDataValue(stateJson);
         chatSessionExtraDataSharedService.save(data);
+    }
+
+    private VolunteerRecommendListResponse buildLatestVolunteerResponse(String schoolId,
+                                                                          String majorId,
+                                                                          String majorName,
+                                                                          Integer planNum) {
+        VolunteerRecommendListResponse response = new VolunteerRecommendListResponse();
+        VolunteerRecommendListResponse.BaseData baseData = new VolunteerRecommendListResponse.BaseData();
+        baseData.setNeed_count(1);
+        CreateSessionReq.VolunteerCount volunteerCount = new CreateSessionReq.VolunteerCount();
+        volunteerCount.setSchoolCount(1);
+        volunteerCount.setMajorCount(1);
+        baseData.setVolunteerCount(volunteerCount);
+        baseData.setVolunteerModel(VolunteerModel.major);
+        response.setBaseData(baseData);
+
+        VolunteerRecommendListResponse.VolunteerSchool school = new VolunteerRecommendListResponse.VolunteerSchool();
+        school.setPlanSchoolDataId(schoolId);
+        school.setSchoolId(schoolId);
+        school.setSchool_name("学校A");
+        school.setRank_in_tier(1);
+        school.setEnroll_ratio("80%");
+        VolunteerRecommendListResponse.VolunteerMajor major = new VolunteerRecommendListResponse.VolunteerMajor();
+        major.setPlanMajorDataId(majorId);
+        major.setMajorId(majorId);
+        major.setMajor_name(majorName);
+        major.setPlanNum(planNum);
+        major.setEnroll_ratio("80%");
+        school.setMajors(java.util.Arrays.asList(major));
+        response.setSafes(java.util.Arrays.asList(school));
+        return response;
     }
 
     private boolean staleCandidatePool(StaleFlagsDTO flags) {

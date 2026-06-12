@@ -133,6 +133,17 @@ public class VolunteerBizService {
         return response;
     }
 
+    public VolunteerRecommendListResponse recommendVolunteerListWithSourceData(Long tenantId,
+                                                                               Long chatSessionId,
+                                                                               boolean split,
+                                                                               VolunteerDataDTO sourceData) {
+        ChatSession chatSession = dataProvider.getChatSession(chatSessionId);
+        if (SessionStatus.FINISHED.equals(chatSession.getSessionStatus())) {
+            return this.loadFinalSubmitVolunteerData(chatSession.getId());
+        }
+        return doRecommendVolunteerList(tenantId, chatSessionId, split, sourceData);
+    }
+
     /**
      * 准备志愿数据 - 提取公共逻辑
      *
@@ -140,6 +151,10 @@ public class VolunteerBizService {
      * @return 志愿处理上下文
      */
     private VolunteerProcessContext prepareVolunteerData(Long chatSessionId) {
+        return prepareVolunteerData(chatSessionId, null);
+    }
+
+    private VolunteerProcessContext prepareVolunteerData(Long chatSessionId, VolunteerDataDTO sourceData) {
         VolunteerProcessContext context = new VolunteerProcessContext();
 
         // 1. 获取用户数据
@@ -152,7 +167,7 @@ public class VolunteerBizService {
         log.info("prepareVolunteerData:userFinalProfileData:{}", userFinalProfileData);
 
         // 3. 获取志愿数据
-        VolunteerDataDTO volunteerDataDTO = dataProvider.getVolunteerDataDTO(chatSessionId);
+        VolunteerDataDTO volunteerDataDTO = sourceData == null ? dataProvider.getVolunteerDataDTO(chatSessionId) : sourceData;
         List<VolunteerSchoolGroup> volunteerFullData = dataProvider.transformToVolunteerSchoolGroups(volunteerDataDTO);
         String applyType = dataProvider.getApplyTypeCode(volunteerDataDTO);
 
@@ -179,10 +194,17 @@ public class VolunteerBizService {
      * 执行志愿推荐列表
      */
     public VolunteerRecommendListResponse doRecommendVolunteerList(Long tenantId, Long chatSessionId, Boolean split) {
+        return doRecommendVolunteerList(tenantId, chatSessionId, split, null);
+    }
+
+    public VolunteerRecommendListResponse doRecommendVolunteerList(Long tenantId,
+                                                                   Long chatSessionId,
+                                                                   Boolean split,
+                                                                   VolunteerDataDTO sourceData) {
         log.info("getVolunteerRecommendList: tenantId={}, chatSessionId={}, split={}", tenantId, chatSessionId, split);
 
         // 获取处理后的志愿数据
-        VolunteerProcessContext context = prepareVolunteerData(chatSessionId);
+        VolunteerProcessContext context = prepareVolunteerData(chatSessionId, sourceData);
 
         // 排序和截断
         Map<String, List<VolunteerSchoolGroup>> sortedIntervalData = sorterAndMerger.sortAndSplitByInterval(context.getVolunteerAfterFilterData(), context.getUserScoreDetail(), context.getUserFinalProfileData(), context.getApplyType(), split, context.getThreeTargetCountMap());

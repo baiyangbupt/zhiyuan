@@ -321,3 +321,62 @@
 - 当前生产快照中是否存在可回填真实院校名的字段。
 - 是否需要在 3.1.0 同时提供“专业组名称”独立筛选，还是本期只修正“院校名称”筛选语义。
 
+
+## 15. 2026-06-12 落地记录：数据新鲜度最小闭环
+
+本阶段先落「状态感知与通知」闭环，不把数据刷新改造成实时查询，也不自动改方案。
+
+已实现范围：
+
+- 后端 `PlanningStateDTO` / `PlanningWorkspaceStateRes` 增加 `dataFreshnessState`。
+- 候选池生成和历史方案导入时，基于候选池稳定字段生成 `requestHash` / `dataHash` 快照。
+- 新增 `POST /gaotu-assistant-bot/inner/planning/{tenantId}/session/data-freshness/check`：
+  - 不传外部 hash 时，只回填/检查当前会话快照。
+  - 传入外部 `dataHash/dataVersion/changeLevel` 且与当前快照不同，则标记数据变化。
+  - `minor` 变化只提示刷新候选池，不强制审查 stale。
+  - `medium/major` 变化会标记候选、推荐、方案调整和审查 stale。
+- 前端工作区增加招生计划更新提示条，展示变化级别、影响数量、检查时间，并提供「检查更新」「刷新候选」「重新审查」入口。
+- Agent `query_state` 状态概览会读取 `dataFreshnessState`，只做摘要提示和下一步建议，不自动触发方案调整。
+
+与复合 action plan 的关系：
+
+- 数据新鲜度状态只作为外部事实输入，不作为复合 action plan 的一个执行步骤。
+- 当前不自动生成“刷新候选 -> 重排 -> 审查 -> 替换失效项”的多动作事务。
+- 后续复合 action plan 稳定后，可以把 `dataFreshnessState.requiresCandidateRefresh/requiresReview/affectedVolunteerIds` 作为 planner 输入，生成可确认的多步骤处理预览。
+- 在此之前，刷新候选池和重新审查仍由用户点击或明确指令触发，避免外部数据变化直接改动用户方案。
+
+### 15.1 2026-06-12 补充：手动重拉与确认后同步
+
+本次在最小闭环基础上补齐“能感知最新高途数据、并在用户确认后使用新数据刷新候选”的链路。
+
+后端实现：
+
+- 新增 `VolunteerSourceDataSyncService`，复用建会话时的 `queryAllProgramData -> cleanJsonDataWithStringProcessing -> session_volunteer` 规则，保证重拉数据结构与初始会话一致。
+- `DataFreshnessCheckReq` 增加 `fetchLatest` / `syncSourceData`：
+  - `fetchLatest=true`：按当前会话成绩、批次、选科、年份、prepareType 重新请求高途全量招生计划，只做内存态比对。
+  - `syncSourceData=true`：在重拉后覆盖本机 `session_volunteer` 原始文件，并异步上传 OSS；该开关只在用户确认刷新候选时使用。
+- `checkDataFreshness(tenantId, chatSessionId, req)` 在 `fetchLatest=true` 时会用最新源数据重新跑推荐流水线，但不保存候选池、不重排方案、不修改用户方案。
+- 比对维度基于候选志愿稳定 key 和候选核心字段，输出 `addedCount/removedCount/updatedCount/invalidCount/affectedVolunteerIds/affectedUnitIds/changeLevel`。
+- 数据变化后：
+  - `minor`：标记候选池、初始推荐、方案调整 stale，不强制审查 stale。
+  - `medium/major`：标记候选池、推荐 overlay、初始推荐、排序方案、方案调整、审查 stale。
+- `CandidatePoolGenerateReq` 增加 `refreshSourceData`。用户点击工作区「刷新候选」时传 `refreshSourceData=true`，先同步最新 `session_volunteer`，再重新生成候选池。
+- 空请求且没有外部 hash 时不会清除已有 `changed` 提示，避免前端误把未检查当作已恢复。
+
+前端实现：
+
+- 工作区「检查更新」调用 `data-freshness/check` 时传 `{ fetchLatest: true }`，展示最新比对结果。
+- 数据更新提示条中的「刷新候选」调用候选池生成接口时传 `refreshSourceData=true`，确保后续候选池使用最新高途数据。
+- 普通候选池刷新和其他历史入口不传 `refreshSourceData`，保持原行为。
+
+Agent 影响：
+
+- Agent 仅读取 `dataFreshnessState` 作为状态事实，回复中解释“外部招生计划数据变化、当前不自动改方案、建议刷新候选或重新审查”。
+- 复合 action plan 后续可以消费 `requiresCandidateRefresh/requiresReview/affectedVolunteerIds`，但本次不把源数据同步变成自动执行步骤。
+
+后续待接入：
+
+- 定时任务或会话打开时异步检查活跃会话，避免完全依赖用户手动点击。
+- 更细粒度 diff：院校/专业组下线、计划数变化、录取率变化、选科/体检/批次变化分别对应不同通知文案和操作建议。
+- 工作区变化明细抽屉和受影响条目高亮。
+- 刷新候选后的“旧方案受影响项”可视化审查，供复合 action plan 生成可确认的多步骤处理预览。

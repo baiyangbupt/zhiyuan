@@ -619,6 +619,65 @@ export interface PlanningOrderedSortReq {
   sortField: PlanningOrderedSortField;
 }
 
+export interface PlanningDataFreshnessState {
+  source?: string;
+  fetchTime?: string;
+  lastCheckedAt?: string;
+  examYear?: string;
+  prepareType?: string;
+  province?: string;
+  batch?: string;
+  subjectType?: string;
+  score?: number;
+  requestHash?: string;
+  dataHash?: string;
+  dataVersion?: string;
+  latestDataHash?: string;
+  latestDataVersion?: string;
+  statusCode?: string;
+  changeLevel?: 'none' | 'minor' | 'medium' | 'major' | string;
+  shouldNotify?: boolean;
+  requiresCandidateRefresh?: boolean;
+  requiresReview?: boolean;
+  summary?: string;
+  detail?: string;
+  changedCount?: number;
+  addedCount?: number;
+  removedCount?: number;
+  updatedCount?: number;
+  invalidCount?: number;
+  affectedVolunteerIds?: string[];
+  affectedUnitIds?: string[];
+  affectedReviewCodes?: string[];
+}
+
+export interface PlanningDataFreshnessCheckReq {
+  source?: string;
+  requestHash?: string;
+  dataHash?: string;
+  dataVersion?: string;
+  changeLevel?: string;
+  summary?: string;
+  detail?: string;
+  changedCount?: number;
+  addedCount?: number;
+  removedCount?: number;
+  updatedCount?: number;
+  invalidCount?: number;
+  affectedVolunteerIds?: string[];
+  affectedUnitIds?: string[];
+  markStale?: boolean;
+  fetchLatest?: boolean;
+  syncSourceData?: boolean;
+}
+
+export interface PlanningDataFreshnessCheckRes {
+  version?: number;
+  staleFlags?: PlanningStateRes['staleFlags'];
+  dataFreshnessState?: PlanningDataFreshnessState;
+  workspaceState?: PlanningWorkspaceStateRes;
+}
+
 export interface PlanningStateRes {
   sessionId?: number;
   version?: number;
@@ -642,6 +701,7 @@ export interface PlanningStateRes {
     derivedPreferences?: Record<string, unknown>;
   };
   operationLogs?: Array<Record<string, unknown>>;
+  dataFreshnessState?: PlanningDataFreshnessState;
   staleFlags?: {
     candidatePool?: boolean;
     recommendationOverlay?: boolean;
@@ -778,6 +838,7 @@ export type PlanningWorkspaceStateRes = Pick<
   | 'staleFlags'
   | 'planGenerationState'
   | 'initialRecommendationState'
+  | 'dataFreshnessState'
   | 'candidatePoolState'
   | 'candidateViewState'
   | 'workingPlanState'

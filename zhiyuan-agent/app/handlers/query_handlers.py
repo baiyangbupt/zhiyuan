@@ -251,6 +251,7 @@ def _build_status_overview_summary(facts: dict[str, Any]) -> tuple[str, list[str
     intent_relation = facts.get("intent_relation") or {}
     school_nature_distribution = facts.get("school_nature_distribution") or {}
     candidate_supply_text = _candidate_supply_line(facts)
+    data_freshness = facts.get("data_freshness") if isinstance(facts.get("data_freshness"), dict) else {}
 
     lines: list[str] = []
     if current_total >= target_total and target_total > 0:
@@ -282,6 +283,12 @@ def _build_status_overview_summary(facts: dict[str, Any]) -> tuple[str, list[str
         lines.append(f"- 需要关注：{reminder_text}。")
     if candidate_supply_text:
         lines.append(f"- 候选供给：{candidate_supply_text}。")
+    if data_freshness:
+        freshness_summary = str(data_freshness.get("summary") or "招生计划数据有更新").strip()
+        freshness_count = int(data_freshness.get("changed_count") or data_freshness.get("affected_volunteer_count") or data_freshness.get("affected_unit_count") or 0)
+        count_text = f"，影响约 {freshness_count} 项" if freshness_count > 0 else ""
+        action_text = "建议先刷新候选池并重新审查。" if data_freshness.get("requires_review") else "建议先刷新候选池。"
+        lines.append(f"- 数据更新：{freshness_summary}{count_text}，{action_text}")
     if pending_count > 0 and pending_text:
         lines.append(f"- 待处理建议：{pending_count} 项，主要是{pending_text}。")
 
@@ -329,6 +336,8 @@ def _build_status_overview_summary(facts: dict[str, Any]) -> tuple[str, list[str
         reply_focus.append("pending_actions")
     if candidate_supply_text:
         reply_focus.append("candidate_supply")
+    if data_freshness:
+        reply_focus.append("data_freshness")
 
     next_step_hints: list[str] = []
     if risk_count > 0 or warn_count > 0:
@@ -337,6 +346,8 @@ def _build_status_overview_summary(facts: dict[str, Any]) -> tuple[str, list[str
         next_step_hints.append("如果用户关心数量是否够用，先解释当前目标数量与缺口。")
     if pending_count > 0:
         next_step_hints.append("如果用户想继续优化，可先解释待处理建议，再决定是否补偿或重排。")
+    if data_freshness:
+        next_step_hints.append("如果用户问数据更新影响，先说明这是外部招生计划数据变化提示；当前不自动改方案，建议刷新候选池或重新审查。")
     missing_supply_tiers = []
     supply = facts.get("candidate_supply") if isinstance(facts.get("candidate_supply"), dict) else {}
     if supply:
