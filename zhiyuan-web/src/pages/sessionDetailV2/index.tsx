@@ -430,13 +430,22 @@ const SessionDetailV2 = () => {
   }, [isInitialized, tenantId, chatSessionId]);
 
   const handleWorkspaceIntent = (intent: Omit<PlanningWorkspaceIntent, 'nonce'>) => {
-    if (isMobile && !intent.preserveView) {
+    const shouldRefreshWorkspace = Boolean(
+      intent.refresh && (
+        !intent.targetView ||
+        intent.refreshTargets?.some(target => ['review', 'draft', 'workingPlan'].includes(target))
+      )
+    );
+    if (isMobile && !intent.preserveView && intent.targetView) {
       setWorkspaceDrawerVisible(true);
     }
     setWorkspaceIntent({
       ...intent,
       nonce: Date.now(),
     });
+    if (shouldRefreshWorkspace) {
+      setFetchFlag(prev => prev + 1);
+    }
   };
 
   const handleOpenSessionList = () => {
