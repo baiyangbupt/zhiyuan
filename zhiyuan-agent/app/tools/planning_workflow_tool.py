@@ -949,6 +949,7 @@ def _build_review_result_facts(
             include_position=True,
         ),
         "candidate_supply": _build_candidate_supply_facts(planning_state),
+        "data_freshness": _build_data_freshness_facts(planning_state),
     }
 
 
@@ -1121,6 +1122,7 @@ def _build_plan_adjustment_facts(
             include_position=True,
         ),
         "candidate_supply": _build_candidate_supply_facts(planning_state),
+        "data_freshness": _build_data_freshness_facts(planning_state),
     }
 
 
@@ -1179,6 +1181,27 @@ def _build_school_nature_distribution(items: list[dict[str, Any]] | None) -> dic
     }
 
 
+def _build_data_freshness_facts(planning_state: dict[str, Any] | None) -> dict[str, Any]:
+    state = (planning_state or {}).get("dataFreshnessState") or {}
+    if not isinstance(state, dict):
+        return {}
+    should_notify = bool(state.get("shouldNotify")) or str(state.get("statusCode") or "").strip() == "changed"
+    if not should_notify:
+        return {}
+    return {
+        "status_code": str(state.get("statusCode") or "").strip(),
+        "change_level": str(state.get("changeLevel") or "").strip(),
+        "summary": str(state.get("summary") or "").strip(),
+        "detail": str(state.get("detail") or "").strip(),
+        "last_checked_at": str(state.get("lastCheckedAt") or "").strip(),
+        "changed_count": int(state.get("changedCount") or 0),
+        "affected_volunteer_count": len(state.get("affectedVolunteerIds") or []),
+        "affected_unit_count": len(state.get("affectedUnitIds") or []),
+        "requires_candidate_refresh": bool(state.get("requiresCandidateRefresh")),
+        "requires_review": bool(state.get("requiresReview")),
+    }
+
+
 def _build_plan_status_overview_facts(
     planning_state: dict[str, Any],
     ordered_state: dict[str, Any] | None = None,
@@ -1225,6 +1248,7 @@ def _build_plan_status_overview_facts(
             include_position=bool(ordered_state),
         ),
         "candidate_supply": _build_candidate_supply_facts(planning_state),
+        "data_freshness": _build_data_freshness_facts(planning_state),
     }
 
 

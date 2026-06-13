@@ -14,6 +14,7 @@ public class PlanningWorkspaceStateRes {
     private StudentPlanningSummaryDTO studentSummary = new StudentPlanningSummaryDTO();
     private ProfileStateDTO profileState = new ProfileStateDTO();
     private ConstraintStateDTO constraintState = new ConstraintStateDTO();
+    private DataFreshnessStateDTO dataFreshnessState = new DataFreshnessStateDTO();
     private PlanGenerationStateDTO planGenerationState = new PlanGenerationStateDTO();
     private InitialRecommendationStateDTO initialRecommendationState = new InitialRecommendationStateDTO();
     private CandidatePoolStateDTO candidatePoolState = new CandidatePoolStateDTO();

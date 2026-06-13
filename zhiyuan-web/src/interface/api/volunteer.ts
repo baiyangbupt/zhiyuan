@@ -403,6 +403,7 @@ export interface PlanningCandidateItem {
   subTier?: string;
   planSchoolDataId?: string;
   schoolId?: string;
+  schoolUnitCode?: string;
   schoolName?: string;
   displaySchoolName?: string;
   provinceName?: string;
@@ -597,6 +598,9 @@ export interface PlanningWorkingPlanState {
 
 export interface PlanningOrderedUnit {
   unitId?: string;
+  planSchoolDataId?: string;
+  schoolId?: string;
+  schoolUnitCode?: string;
   tier?: string;
   schoolName?: string;
   source?: string;
@@ -611,6 +615,10 @@ export interface PlanningOrderedUnit {
   admissionRatio?: number;
   finalScore?: number;
   schoolEnrollRatio?: number;
+  requiredMajorCount?: number;
+  selectedMajorCount?: number;
+  totalMajorCount?: number;
+  allMajors?: PlanningUnitMajorItem[];
   majorItems?: PlanningUnitMajorItem[];
 }
 
@@ -618,6 +626,99 @@ export type PlanningOrderedSortField = 'admissionRatio' | 'schoolRank' | 'finalS
 
 export interface PlanningOrderedSortReq {
   sortField: PlanningOrderedSortField;
+}
+
+export interface PlanningDataFreshnessState {
+  source?: string;
+  fetchTime?: string;
+  lastCheckedAt?: string;
+  examYear?: string;
+  prepareType?: string;
+  province?: string;
+  batch?: string;
+  subjectType?: string;
+  score?: number;
+  requestHash?: string;
+  dataHash?: string;
+  dataVersion?: string;
+  sourceDataHash?: string;
+  latestSourceDataHash?: string;
+  nextCheckAt?: string;
+  checkIntervalMinutes?: number;
+  checkSource?: string;
+  lastCheckSource?: string;
+  lastCheckStatus?: string;
+  failCount?: number;
+  lastError?: string;
+  lastFailedAt?: string;
+  latestDataHash?: string;
+  latestDataVersion?: string;
+  statusCode?: string;
+  changeLevel?: 'none' | 'minor' | 'medium' | 'major' | string;
+  shouldNotify?: boolean;
+  requiresCandidateRefresh?: boolean;
+  requiresReview?: boolean;
+  summary?: string;
+  detail?: string;
+  changedCount?: number;
+  addedCount?: number;
+  removedCount?: number;
+  updatedCount?: number;
+  invalidCount?: number;
+  affectedVolunteerIds?: string[];
+  affectedUnitIds?: string[];
+  affectedReviewCodes?: string[];
+}
+
+export interface PlanningDataFreshnessCheckReq {
+  source?: string;
+  requestHash?: string;
+  dataHash?: string;
+  dataVersion?: string;
+  sourceDataHash?: string;
+  changeLevel?: string;
+  summary?: string;
+  detail?: string;
+  changedCount?: number;
+  addedCount?: number;
+  removedCount?: number;
+  updatedCount?: number;
+  invalidCount?: number;
+  affectedVolunteerIds?: string[];
+  affectedUnitIds?: string[];
+  markStale?: boolean;
+  fetchLatest?: boolean;
+  syncSourceData?: boolean;
+}
+
+export interface PlanningDataFreshnessCheckRes {
+  version?: number;
+  staleFlags?: PlanningStateRes['staleFlags'];
+  dataFreshnessState?: PlanningDataFreshnessState;
+  workspaceState?: PlanningWorkspaceStateRes;
+}
+
+export interface PlanningDataFreshnessScheduleState {
+  chatSessionId?: number;
+  tenantId?: number;
+  prepareType?: string;
+  provinceCode?: string;
+  provinceName?: string;
+  examYear?: number;
+  sessionStatus?: string;
+  createTime?: string;
+  lastAccessedAt?: string;
+  lastCheckedAt?: string;
+  nextCheckAt?: string;
+  checkIntervalMinutes?: number;
+  lastCheckSource?: string;
+  lastCheckStatus?: string;
+  sourceDataHash?: string;
+  latestSourceDataHash?: string;
+  failCount?: number;
+  lastError?: string;
+  lastFailedAt?: string;
+  enabled?: boolean;
 }
 
 export interface PlanningStateRes {
@@ -653,6 +754,7 @@ export interface PlanningStateRes {
     derivedPreferences?: Record<string, unknown>;
   };
   operationLogs?: Array<Record<string, unknown>>;
+  dataFreshnessState?: PlanningDataFreshnessState;
   staleFlags?: {
     candidatePool?: boolean;
     recommendationOverlay?: boolean;
@@ -792,6 +894,7 @@ export type PlanningWorkspaceStateRes = Pick<
   | 'staleFlags'
   | 'planGenerationState'
   | 'initialRecommendationState'
+  | 'dataFreshnessState'
   | 'candidatePoolState'
   | 'candidateViewState'
   | 'workingPlanState'

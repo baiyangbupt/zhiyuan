@@ -1,11 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import Head from 'next/head';
-import { Button, Drawer, Spin, message } from 'antd';
+import { Button, Drawer, Spin, Tooltip, message } from 'antd';
 import {
   AuditOutlined,
   ArrowLeftOutlined,
   CompassOutlined,
   DownOutlined,
+  InfoCircleOutlined,
   MessageOutlined,
   OrderedListOutlined,
   QuestionCircleOutlined,
@@ -15,7 +16,11 @@ import WorkspacePanel from '@/pageComponents/sessionDetailV2/WorkspacePanel';
 import SessionListDrawer from '@/pageComponents/customer/SessionListDrawer';
 import CustomerDetailFlow from '@/pageComponents/customerDetail/CustomerDetailFlow';
 import { IDialogueResData, IUserInfoParams } from '@/interface/api/sessionDetail';
-import { PlanningStateRes, PlanningWorkspaceIntent } from '@/interface/api/volunteer';
+import {
+  PlanningDataFreshnessState,
+  PlanningStateRes,
+  PlanningWorkspaceIntent,
+} from '@/interface/api/volunteer';
 import { getPlanningWorkspaceStateApi, getSessionDetailApi } from '@/service/apis/sessionDetail';
 import { checkUserRightsApi } from '@/service/apis/user';
 import { getStorage, getValueFromUrlBykey } from '@/utils/tool';
@@ -60,6 +65,84 @@ const toDisplayStrings = (value: unknown): string[] => {
   return text ? [text] : [];
 };
 
+const formatFreshnessTime = (value?: string) => {
+  if (!value) {
+    return '';
+  }
+  return value.slice(0, 16).replace('T', ' ');
+};
+
+const buildDataFreshnessTip = (
+  state: PlanningDataFreshnessState | null,
+  checking: boolean
+) => {
+  if (checking) {
+    return '志愿数据同步中';
+  }
+  const hasChanged = Boolean(state?.shouldNotify || state?.statusCode === 'changed');
+  if (hasChanged) {
+    const actions = [
+      state?.requiresCandidateRefresh ? '刷新候选' : '',
+      state?.requiresReview ? '重新审查' : '',
+    ].filter(Boolean);
+    return actions.length
+      ? `志愿数据有更新，可${actions.join('或')}`
+      : '志愿数据有更新，建议复核方案';
+  }
+  const checkedAt = formatFreshnessTime(state?.lastCheckedAt);
+  return checkedAt ? `志愿数据最后更新 ${checkedAt}` : '';
+};
+
+const buildDataFreshnessTooltipLines = (
+  state: PlanningDataFreshnessState | null,
+  checking: boolean
+) => {
+  const lines: string[] = [];
+  if (checking) {
+    lines.push('正在检查最新志愿数据');
+  }
+  const checkedAt = formatFreshnessTime(state?.lastCheckedAt);
+  if (checkedAt) {
+    lines.push(`最新同步时间：${checkedAt}`);
+  }
+  const nextCheckAt = formatFreshnessTime(state?.nextCheckAt);
+  if (nextCheckAt) {
+    lines.push(`预计下次同步：${nextCheckAt}`);
+  }
+  if (state?.statusCode === 'changed' || state?.shouldNotify) {
+    lines.push(state.summary || '检测到招生计划数据有更新');
+    if (state.detail && state.detail !== state.summary) {
+      lines.push(state.detail);
+    }
+    const changedCount =
+      state.changedCount ||
+      state.updatedCount ||
+      state.affectedVolunteerIds?.length ||
+      state.affectedUnitIds?.length ||
+      0;
+    if (changedCount > 0) {
+      lines.push(`影响 ${changedCount} 项`);
+    }
+    const changeParts = [
+      state.addedCount ? `新增 ${state.addedCount}` : '',
+      state.removedCount ? `下线 ${state.removedCount}` : '',
+      state.updatedCount ? `更新 ${state.updatedCount}` : '',
+      state.invalidCount ? `失效 ${state.invalidCount}` : '',
+    ].filter(Boolean);
+    if (changeParts.length > 0) {
+      lines.push(changeParts.join(' / '));
+    }
+  } else if (state?.lastCheckStatus === 'failed') {
+    lines.push(state.summary || '招生计划检查暂时失败，系统会继续重试');
+    if (state.lastError) {
+      lines.push(state.lastError);
+    }
+  } else if (state?.lastCheckedAt) {
+    lines.push('暂未检测到招生计划变化');
+  }
+  return lines.filter(Boolean);
+};
+
 const SessionDetailV2 = () => {
   const isMobile = useMediaQuery(768);
   const { botId, tenantId } = useAuthParams();
@@ -87,6 +170,8 @@ const SessionDetailV2 = () => {
   const [workspaceIntent, setWorkspaceIntent] = useState<PlanningWorkspaceIntent | null>(null);
   const [planningWorkspaceState, setPlanningWorkspaceState] = useState<PlanningStateRes | null>(null);
   const [intentExpanded, setIntentExpanded] = useState(false);
+  const [dataFreshnessState, setDataFreshnessState] = useState<PlanningDataFreshnessState | null>(null);
+  const [dataFreshnessChecking, setDataFreshnessChecking] = useState(false);
   const [fetchFlag, setFetchFlag] = useState(1);
 
   useEffect(() => {
@@ -435,11 +520,22 @@ const SessionDetailV2 = () => {
         routerParams={routerParams}
         fetchFlag={fetchFlag}
         examYear={examYear}
+        prepareTypeDesc={prepareTypeDesc}
         workspaceIntent={workspaceIntent}
         onWorkspaceIntentConsumed={() => setWorkspaceIntent(null)}
         onPlanningStateChange={handlePlanningStateChange}
+        onDataFreshnessStateChange={(state, checking) => {
+          setDataFreshnessState(state);
+          setDataFreshnessChecking(checking);
+        }}
       />
     </div>
+  );
+
+  const dataFreshnessTip = buildDataFreshnessTip(dataFreshnessState, dataFreshnessChecking);
+  const dataFreshnessTooltipLines = buildDataFreshnessTooltipLines(
+    dataFreshnessState,
+    dataFreshnessChecking
   );
 
   return (
@@ -490,6 +586,30 @@ const SessionDetailV2 = () => {
                 </div>
               </div>
               <div className={style.headerActions}>
+                {dataFreshnessTip ? (
+                  <span
+                    className={`${style.dataFreshnessTip} ${
+                      dataFreshnessChecking ? style.dataFreshnessTipSyncing : ''
+                    } ${
+                      dataFreshnessState?.statusCode === 'changed' ? style.dataFreshnessTipChanged : ''
+                    }`}
+                  >
+                    <span className={style.dataFreshnessTipText}>{dataFreshnessTip}</span>
+                    {dataFreshnessTooltipLines.length > 0 ? (
+                      <Tooltip
+                        title={
+                          <div className={style.dataFreshnessTooltip}>
+                            {dataFreshnessTooltipLines.map((line, index) => (
+                              <div key={`${line}-${index}`}>{line}</div>
+                            ))}
+                          </div>
+                        }
+                      >
+                        <InfoCircleOutlined className={style.dataFreshnessInfoIcon} />
+                      </Tooltip>
+                    ) : null}
+                  </span>
+                ) : null}
                 <Button
                   className={style.sessionListButton}
                   type="primary"

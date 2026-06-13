@@ -11,13 +11,18 @@ import com.ytell.zhiyuan.manager.SchoolManager;
 import com.ytell.zhiyuan.model.dto.CreateSessionReq;
 import com.ytell.zhiyuan.model.dto.UserProfileData;
 import com.ytell.zhiyuan.model.dto.inner.VolunteerRecommendListResponse;
+import com.ytell.zhiyuan.model.dto.inner.VolunteerSourceDataSnapshot;
 import com.ytell.zhiyuan.model.dto.planning.*;
+import com.ytell.zhiyuan.model.entity.biz.ChatSession;
 import com.ytell.zhiyuan.model.entity.biz.ChatSessionExtraData;
+import com.ytell.zhiyuan.model.entity.biz.PlanningDataFreshnessScheduleEntity;
 import com.ytell.zhiyuan.model.enums.DataType;
 import com.ytell.zhiyuan.model.vo.MajorExtraDataVO;
 import com.ytell.zhiyuan.model.vo.SchoolVO;
 import com.ytell.zhiyuan.service.shared.PlanningBehaviorEventSharedService;
+import com.ytell.zhiyuan.service.shared.PlanningDataFreshnessScheduleSharedService;
 import com.ytell.zhiyuan.service.shared.ChatSessionExtraDataSharedService;
+import com.ytell.zhiyuan.service.shared.ChatSessionSharedService;
 import com.ytell.zhiyuan.service.volunteer.VolunteerIntervalService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -25,9 +30,11 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.OffsetDateTime;
+import java.time.ZoneId;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -144,10 +151,19 @@ public class PlanningStateService {
     private ChatSessionExtraDataSharedService chatSessionExtraDataSharedService;
 
     @Autowired
+    private ChatSessionSharedService chatSessionSharedService;
+
+    @Autowired
     private PlanningBehaviorEventSharedService planningBehaviorEventSharedService;
 
     @Autowired
+    private PlanningDataFreshnessScheduleSharedService planningDataFreshnessScheduleSharedService;
+
+    @Autowired
     private VolunteerBizService volunteerBizService;
+
+    @Autowired
+    private VolunteerSourceDataSyncService volunteerSourceDataSyncService;
 
     @Autowired
     private VolunteerDataProvider volunteerDataProvider;
@@ -167,6 +183,7 @@ public class PlanningStateService {
     public PlanningStateDTO getPlanningState(Long chatSessionId) {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
         state.setSessionId(chatSessionId);
+        normalizeMajorGroupUnitMetadata(state);
         enrichReviewMetadata(state.getReviewState());
         normalizeReviewReasonCodes(buildReviewReasonAnalysisState(state), state.getReviewState());
         enrichPlanAdjustmentMetadata(state.getPlanAdjustmentState());
@@ -188,7 +205,17 @@ public class PlanningStateService {
         return buildPlanningWorkspaceStateRes(state);
     }
 
+    public PlanningWorkspaceStateRes getPlanningWorkspaceState(Long tenantId, Long chatSessionId) {
+        PlanningStateDTO state = getPlanningState(chatSessionId);
+        touchDataFreshnessSchedule(tenantId, chatSessionId, state, true, false);
+        return buildPlanningWorkspaceStateRes(tenantId, state);
+    }
+
     public PlanningWorkspaceStateRes buildPlanningWorkspaceStateRes(PlanningStateDTO state) {
+        return buildPlanningWorkspaceStateRes(null, state);
+    }
+
+    public PlanningWorkspaceStateRes buildPlanningWorkspaceStateRes(Long tenantId, PlanningStateDTO state) {
         PlanningWorkspaceStateRes res = new PlanningWorkspaceStateRes();
         res.setSessionId(state.getSessionId());
         res.setVersion(state.getVersion());
@@ -197,6 +224,7 @@ public class PlanningStateService {
         res.setStudentSummary(buildStudentPlanningSummary(state));
         res.setProfileState(state.getProfileState());
         res.setConstraintState(state.getConstraintState());
+        res.setDataFreshnessState(mergeScheduleDataFreshnessState(tenantId, state));
         res.setPlanGenerationState(state.getPlanGenerationState());
         res.setInitialRecommendationState(state.getInitialRecommendationState());
         res.setCandidatePoolState(buildWorkspaceCandidatePoolState(state));
@@ -938,10 +966,41 @@ public class PlanningStateService {
                 && state.getCandidatePoolState() != null && state.getCandidatePoolState().getItems() != null
                 && !state.getCandidatePoolState().getItems().isEmpty()) {
             state.setSessionId(chatSessionId);
+            touchDataFreshnessSchedule(tenantId, chatSessionId, state, true, false);
             return state;
         }
 
-        VolunteerRecommendListResponse response = volunteerBizService.recommendVolunteerList(tenantId, chatSessionId, false, false);
+        VolunteerRecommendListResponse response;
+        VolunteerSourceDataSnapshot sourceSnapshot = null;
+        if (Boolean.TRUE.equals(req.getRefreshSourceData())) {
+            sourceSnapshot = volunteerSourceDataSyncService.fetchLatestSourceData(tenantId, chatSessionId, true);
+            response = volunteerBizService.recommendVolunteerListWithSourceData(tenantId, chatSessionId, false, sourceSnapshot.getVolunteerData());
+        } else {
+            response = volunteerBizService.recommendVolunteerList(tenantId, chatSessionId, false, false);
+        }
+        CandidatePoolStateDTO candidatePoolState = buildCandidatePoolStateFromResponse(chatSessionId, state, response);
+
+        state.setCandidatePoolState(candidatePoolState);
+        refreshDataFreshnessSnapshot(chatSessionId, state, candidatePoolState);
+        if (sourceSnapshot != null && !Strings.isNullOrEmpty(sourceSnapshot.getSourceDataHash())) {
+            state.getDataFreshnessState().setSourceDataHash(sourceSnapshot.getSourceDataHash());
+            state.getDataFreshnessState().setLatestSourceDataHash(sourceSnapshot.getSourceDataHash());
+        }
+        state.setRecommendationOverlayState(buildRecommendationOverlayState(candidatePoolState, state.getVersion()));
+        state.setPhase("candidate_generated");
+        state.setVersion((state.getVersion() == null ? 0 : state.getVersion()) + 1);
+        state.getStaleFlags().setCandidatePool(false);
+        state.getStaleFlags().setRecommendationOverlay(false);
+        ReviewInvalidationPolicy.markCandidatePoolDependentsStale(state);
+        savePlanningState(chatSessionId, state);
+        state.setSessionId(chatSessionId);
+        touchDataFreshnessSchedule(tenantId, chatSessionId, state, true, Boolean.TRUE.equals(req.getRefreshSourceData()));
+        return state;
+    }
+
+    private CandidatePoolStateDTO buildCandidatePoolStateFromResponse(Long chatSessionId,
+                                                                       PlanningStateDTO state,
+                                                                       VolunteerRecommendListResponse response) {
         CandidatePoolStateDTO candidatePoolState = new CandidatePoolStateDTO();
         candidatePoolState.setGeneratedAt(OffsetDateTime.now().toString());
         candidatePoolState.setSourceVersion((state.getVersion() == null ? 0 : state.getVersion()) + 1);
@@ -969,17 +1028,7 @@ public class PlanningStateService {
         populateCandidatePoolSourceSummary(candidatePoolState, items, normalizedItems);
         normalizeRequiredTierCountsByAvailableCapacity(candidatePoolState);
         CandidatePoolQualityStatusBuilder.apply(state, candidatePoolState);
-
-        state.setCandidatePoolState(candidatePoolState);
-        state.setRecommendationOverlayState(buildRecommendationOverlayState(candidatePoolState, state.getVersion()));
-        state.setPhase("candidate_generated");
-        state.setVersion((state.getVersion() == null ? 0 : state.getVersion()) + 1);
-        state.getStaleFlags().setCandidatePool(false);
-        state.getStaleFlags().setRecommendationOverlay(false);
-        ReviewInvalidationPolicy.markCandidatePoolDependentsStale(state);
-        savePlanningState(chatSessionId, state);
-        state.setSessionId(chatSessionId);
-        return state;
+        return candidatePoolState;
     }
 
     private void fillRequiredTierCounts(Long chatSessionId,
@@ -4112,6 +4161,9 @@ public class PlanningStateService {
         OrderedUnitDTO copy = new OrderedUnitDTO();
         copy.setPosition(source.getPosition());
         copy.setUnitId(source.getUnitId());
+        copy.setPlanSchoolDataId(source.getPlanSchoolDataId());
+        copy.setSchoolId(source.getSchoolId());
+        copy.setSchoolUnitCode(source.getSchoolUnitCode());
         copy.setTier(source.getTier());
         copy.setSchoolName(source.getSchoolName());
         copy.setProvinceName(source.getProvinceName());
@@ -4125,6 +4177,7 @@ public class PlanningStateService {
         copy.setAdmissionRatio(source.getAdmissionRatio());
         copy.setFinalScore(source.getFinalScore());
         copy.setSchoolEnrollRatio(source.getSchoolEnrollRatio());
+        copy.setTotalMajorCount(source.getTotalMajorCount());
         copy.setMajorItems(Lists.newArrayList(defaultPlanningUnitMajors(source.getMajorItems())));
         return copy;
     }
@@ -4773,6 +4826,9 @@ public class PlanningStateService {
         if (state.getConstraintState() == null) {
             state.setConstraintState(new ConstraintStateDTO());
         }
+        if (state.getDataFreshnessState() == null) {
+            state.setDataFreshnessState(new DataFreshnessStateDTO());
+        }
         if (state.getCandidatePoolState() == null) {
             state.setCandidatePoolState(new CandidatePoolStateDTO());
         }
@@ -4799,8 +4855,9 @@ public class PlanningStateService {
         }
         backfillLegacyProfileState(chatSessionId, state);
         boolean planEditCacheNoticeAdded = appendPlanEditCacheNotice(chatSessionId, state);
+        boolean dataFreshnessBackfilled = backfillDataFreshnessState(chatSessionId, state);
         backfillLegacySummaryFields(state);
-        if (planEditCacheNoticeAdded) {
+        if (planEditCacheNoticeAdded || dataFreshnessBackfilled) {
             savePlanningState(chatSessionId, state);
         }
         return state;
@@ -4878,6 +4935,7 @@ public class PlanningStateService {
         hydrateProfileState(state.getProfileState(), response.getUserScoreDetail(), response.getUserFinalProfileData());
         CandidatePoolStateDTO candidatePoolState = buildLegacyCandidatePoolState(chatSessionId, response);
         state.setCandidatePoolState(candidatePoolState);
+        refreshDataFreshnessSnapshot(chatSessionId, state, candidatePoolState);
 
         List<CandidateItemDTO> candidates = defaultCandidates(candidatePoolState.getItems());
         List<CandidateItemDTO> preferredCandidates = selectLegacyPreferredCandidates(candidates, candidatePoolState, legacyPlanSource);
@@ -5118,6 +5176,850 @@ public class PlanningStateService {
             this.source = source;
             this.submitted = submitted;
         }
+    }
+
+
+    public DataFreshnessCheckRes checkDataFreshness(Long chatSessionId, DataFreshnessCheckReq req) {
+        return checkDataFreshness(null, chatSessionId, req);
+    }
+
+    public DataFreshnessCheckRes checkDataFreshness(Long tenantId, Long chatSessionId, DataFreshnessCheckReq req) {
+        PlanningStateDTO state = loadPlanningState(chatSessionId);
+        boolean changed = false;
+        if (backfillDataFreshnessState(chatSessionId, state)) {
+            changed = true;
+        }
+        DataFreshnessStateDTO freshness = state.getDataFreshnessState();
+        if (freshness == null) {
+            freshness = new DataFreshnessStateDTO();
+            state.setDataFreshnessState(freshness);
+            changed = true;
+        }
+        DataFreshnessCheckReq safeReq = req == null ? new DataFreshnessCheckReq() : req;
+        if (Boolean.TRUE.equals(safeReq.getFetchLatest())) {
+            populateLatestDataFreshnessRequest(tenantId, chatSessionId, state, safeReq);
+        }
+
+        String now = OffsetDateTime.now().toString();
+        freshness.setLastCheckedAt(now);
+        String incomingHash = normalizeText(safeReq.getDataHash());
+        String currentHash = normalizeCurrentCandidateDataHash(state, freshness);
+        boolean hasExternalSnapshot = !Strings.isNullOrEmpty(incomingHash);
+        boolean hashChanged = hasExternalSnapshot && !incomingHash.equals(currentHash);
+        if (!hasExternalSnapshot) {
+            if (!"changed".equals(freshness.getStatusCode())) {
+                markDataFreshnessCurrent(freshness, currentHash, safeReq);
+                freshness.setSummary("未提供最新招生计划快照，已保留当前本地数据状态。");
+            }
+            changed = true;
+        } else if (!hashChanged) {
+            markDataFreshnessCurrent(freshness, incomingHash, safeReq);
+            clearDataFreshnessStaleFlags(state);
+            changed = true;
+        } else {
+            applyDataFreshnessChange(state, freshness, safeReq, incomingHash, now);
+            if (Boolean.TRUE.equals(safeReq.getMarkStale())) {
+                markDataFreshnessStale(state, freshness);
+            }
+            appendDataFreshnessOperationLog(state, freshness);
+            state.setVersion((state.getVersion() == null ? 0 : state.getVersion()) + 1);
+            changed = true;
+        }
+        if (changed) {
+            savePlanningState(chatSessionId, state);
+        }
+        state.setSessionId(chatSessionId);
+        touchDataFreshnessSchedule(tenantId, chatSessionId, state, true, true);
+        DataFreshnessCheckRes res = new DataFreshnessCheckRes();
+        res.setVersion(state.getVersion());
+        res.setStaleFlags(state.getStaleFlags());
+        res.setDataFreshnessState(state.getDataFreshnessState());
+        res.setWorkspaceState(buildPlanningWorkspaceStateRes(tenantId, state));
+        return res;
+    }
+
+    private void populateLatestDataFreshnessRequest(Long tenantId,
+                                                    Long chatSessionId,
+                                                    PlanningStateDTO state,
+                                                    DataFreshnessCheckReq req) {
+        if (tenantId == null) {
+            throw new BusinessException(110, "检查最新招生计划需要租户信息");
+        }
+        VolunteerSourceDataSnapshot snapshot = volunteerSourceDataSyncService.fetchLatestSourceData(
+                tenantId,
+                chatSessionId,
+                Boolean.TRUE.equals(req.getSyncSourceData())
+        );
+        VolunteerRecommendListResponse latestResponse = volunteerBizService.recommendVolunteerListWithSourceData(
+                tenantId,
+                chatSessionId,
+                false,
+                snapshot.getVolunteerData()
+        );
+        CandidatePoolStateDTO latestCandidatePool = buildCandidatePoolStateFromResponse(chatSessionId, state, latestResponse);
+        DataFreshnessChangeSummary summary = buildDataFreshnessChangeSummary(state.getCandidatePoolState(), latestCandidatePool);
+        req.setDataHash(buildCandidateDataHash(latestCandidatePool));
+        req.setDataVersion(snapshot.getSourceDataHash());
+        req.setSourceDataHash(snapshot.getSourceDataHash());
+        if (Strings.isNullOrEmpty(req.getChangeLevel())) {
+            req.setChangeLevel(summary.changeLevel);
+        }
+        if (req.getChangedCount() == null) {
+            req.setChangedCount(summary.changedCount());
+        }
+        if (req.getAddedCount() == null) {
+            req.setAddedCount(summary.addedCount);
+        }
+        if (req.getRemovedCount() == null) {
+            req.setRemovedCount(summary.removedCount);
+        }
+        if (req.getUpdatedCount() == null) {
+            req.setUpdatedCount(summary.updatedCount);
+        }
+        if (req.getInvalidCount() == null) {
+            req.setInvalidCount(summary.removedCount);
+        }
+        if (req.getAffectedVolunteerIds() == null || req.getAffectedVolunteerIds().isEmpty()) {
+            req.setAffectedVolunteerIds(summary.affectedVolunteerIds);
+        }
+        if (req.getAffectedUnitIds() == null || req.getAffectedUnitIds().isEmpty()) {
+            req.setAffectedUnitIds(summary.affectedUnitIds);
+        }
+        if (Strings.isNullOrEmpty(req.getSummary()) && summary.changedCount() > 0) {
+            req.setSummary(summary.summaryText());
+        }
+        if (Strings.isNullOrEmpty(req.getSummary()) && summary.changedCount() == 0) {
+            req.setSummary("最新招生计划与当前工作区快照一致。");
+        }
+    }
+
+    private String normalizeCurrentCandidateDataHash(PlanningStateDTO state, DataFreshnessStateDTO freshness) {
+        CandidatePoolStateDTO candidatePoolState = state == null ? null : state.getCandidatePoolState();
+        if (candidatePoolState != null && !defaultCandidates(candidatePoolState.getItems()).isEmpty()) {
+            return normalizeText(buildCandidateDataHash(candidatePoolState));
+        }
+        return normalizeText(freshness == null ? null : freshness.getDataHash());
+    }
+
+    private String normalizeCurrentSourceDataHash(Long chatSessionId, DataFreshnessStateDTO freshness) {
+        String sourceHash = normalizeText(freshness == null ? null : freshness.getSourceDataHash());
+        if (!Strings.isNullOrEmpty(sourceHash)) {
+            return sourceHash;
+        }
+        String latestSourceHash = normalizeText(freshness == null ? null : freshness.getLatestSourceDataHash());
+        if (!Strings.isNullOrEmpty(latestSourceHash)) {
+            return latestSourceHash;
+        }
+        return normalizeText(volunteerSourceDataSyncService.loadLocalSourceDataHash(chatSessionId));
+    }
+
+    private void markDataFreshnessCurrent(DataFreshnessStateDTO freshness,
+                                          String latestHash,
+                                          DataFreshnessCheckReq req) {
+        freshness.setStatusCode("current");
+        freshness.setChangeLevel("none");
+        if (!Strings.isNullOrEmpty(latestHash)) {
+            freshness.setDataHash(latestHash);
+        }
+        freshness.setLatestDataHash(Strings.isNullOrEmpty(latestHash) ? freshness.getDataHash() : latestHash);
+        freshness.setLatestDataVersion(normalizeText(req.getDataVersion()));
+        String sourceHash = normalizeText(req.getSourceDataHash());
+        if (!Strings.isNullOrEmpty(sourceHash)) {
+            freshness.setSourceDataHash(sourceHash);
+            freshness.setLatestSourceDataHash(sourceHash);
+        }
+        freshness.setShouldNotify(false);
+        freshness.setRequiresCandidateRefresh(false);
+        freshness.setRequiresReview(false);
+        freshness.setSummary(Strings.isNullOrEmpty(req.getSummary()) ? "招生计划数据未发现变化。" : req.getSummary());
+        freshness.setDetail(null);
+        freshness.setChangedCount(0);
+        freshness.setAddedCount(0);
+        freshness.setRemovedCount(0);
+        freshness.setUpdatedCount(0);
+        freshness.setInvalidCount(0);
+        freshness.setAffectedVolunteerIds(Lists.newArrayList());
+        freshness.setAffectedUnitIds(Lists.newArrayList());
+        freshness.setAffectedReviewCodes(Lists.newArrayList());
+    }
+
+    private void clearDataFreshnessStaleFlags(PlanningStateDTO state) {
+        if (state == null || state.getStaleFlags() == null) {
+            return;
+        }
+        String reasonCode = normalizeText(state.getStaleFlags().getReasonCode());
+        if (!reasonCode.startsWith("volunteer_data")) {
+            return;
+        }
+        state.getStaleFlags().setCandidatePool(false);
+        state.getStaleFlags().setRecommendationOverlay(false);
+        state.getStaleFlags().setInitialRecommendation(false);
+        state.getStaleFlags().setOrderedPlan(false);
+        state.getStaleFlags().setPlanAdjustment(false);
+        state.getStaleFlags().setReview(false);
+        state.getStaleFlags().setReasonCode(null);
+        state.getStaleFlags().setMessage(null);
+        state.getStaleFlags().setAffectedReviewCodes(Lists.newArrayList());
+    }
+
+    private DataFreshnessChangeSummary buildDataFreshnessChangeSummary(CandidatePoolStateDTO current,
+                                                                       CandidatePoolStateDTO latest) {
+        Map<String, String> currentRows = buildCandidateFreshnessRowMap(current);
+        Map<String, String> latestRows = buildCandidateFreshnessRowMap(latest);
+        Map<String, String> latestUnits = buildCandidateFreshnessUnitMap(latest);
+        DataFreshnessChangeSummary summary = new DataFreshnessChangeSummary();
+        Set<String> affectedIds = new LinkedHashSet<String>();
+        Set<String> affectedUnitIds = new LinkedHashSet<String>();
+        for (Map.Entry<String, String> entry : latestRows.entrySet()) {
+            String key = entry.getKey();
+            if (!currentRows.containsKey(key)) {
+                summary.addedCount++;
+                affectedIds.add(key);
+                addIfNotEmpty(affectedUnitIds, latestUnits.get(key));
+            } else if (!Objects.equals(entry.getValue(), currentRows.get(key))) {
+                summary.updatedCount++;
+                affectedIds.add(key);
+                addIfNotEmpty(affectedUnitIds, latestUnits.get(key));
+            }
+        }
+        for (String key : currentRows.keySet()) {
+            if (!latestRows.containsKey(key)) {
+                summary.removedCount++;
+                affectedIds.add(key);
+            }
+        }
+        summary.affectedVolunteerIds = Lists.newArrayList(affectedIds);
+        summary.affectedUnitIds = Lists.newArrayList(affectedUnitIds);
+        summary.changeLevel = deriveDataFreshnessChangeLevel(summary);
+        return summary;
+    }
+
+    private Map<String, String> buildCandidateFreshnessRowMap(CandidatePoolStateDTO candidatePoolState) {
+        Map<String, String> rows = new LinkedHashMap<String, String>();
+        for (CandidateItemDTO item : defaultCandidates(candidatePoolState == null ? null : candidatePoolState.getItems())) {
+            String key = resolveCandidateFreshnessKey(item);
+            if (Strings.isNullOrEmpty(key)) {
+                continue;
+            }
+            rows.put(key, buildPayloadDigest(JSONObject.toJSONString(buildCandidateDataHashRow(item))));
+        }
+        return rows;
+    }
+
+    private Map<String, String> buildCandidateFreshnessUnitMap(CandidatePoolStateDTO candidatePoolState) {
+        Map<String, String> rows = new LinkedHashMap<String, String>();
+        for (CandidateItemDTO item : defaultCandidates(candidatePoolState == null ? null : candidatePoolState.getItems())) {
+            String key = resolveCandidateFreshnessKey(item);
+            if (Strings.isNullOrEmpty(key)) {
+                continue;
+            }
+            rows.put(key, resolveInitialRecommendationUnitId(item));
+        }
+        return rows;
+    }
+
+    private String resolveCandidateFreshnessKey(CandidateItemDTO item) {
+        if (item == null) {
+            return null;
+        }
+        if (!Strings.isNullOrEmpty(item.getVolunteerId())) {
+            return item.getVolunteerId();
+        }
+        return buildCandidateFreshnessFallbackKey(item.getSchoolName(), item.getMajorName());
+    }
+
+    private String buildCandidateFreshnessFallbackKey(String schoolName, String majorName) {
+        String normalizedSchool = normalizeText(schoolName);
+        String normalizedMajor = normalizeText(majorName);
+        if (Strings.isNullOrEmpty(normalizedSchool) && Strings.isNullOrEmpty(normalizedMajor)) {
+            return null;
+        }
+        return normalizedSchool + "::" + normalizedMajor;
+    }
+
+    private void addIfNotEmpty(Set<String> values, String value) {
+        if (values != null && !Strings.isNullOrEmpty(value)) {
+            values.add(value);
+        }
+    }
+
+    private String deriveDataFreshnessChangeLevel(DataFreshnessChangeSummary summary) {
+        int changedCount = summary.changedCount();
+        if (changedCount == 0) {
+            return "none";
+        }
+        if (summary.removedCount > 0 || changedCount >= 50) {
+            return "major";
+        }
+        if (changedCount >= 10) {
+            return "medium";
+        }
+        return "minor";
+    }
+
+    private static class DataFreshnessChangeSummary {
+        private int addedCount;
+        private int removedCount;
+        private int updatedCount;
+        private String changeLevel = "none";
+        private List<String> affectedVolunteerIds = Lists.newArrayList();
+        private List<String> affectedUnitIds = Lists.newArrayList();
+
+        private int changedCount() {
+            return addedCount + removedCount + updatedCount;
+        }
+
+        private String summaryText() {
+            List<String> parts = Lists.newArrayList();
+            if (addedCount > 0) {
+                parts.add("新增 " + addedCount + " 项");
+            }
+            if (updatedCount > 0) {
+                parts.add("更新 " + updatedCount + " 项");
+            }
+            if (removedCount > 0) {
+                parts.add("失效 " + removedCount + " 项");
+            }
+            return "招生计划数据已变化：" + String.join("，", parts) + "。";
+        }
+    }
+
+    private boolean backfillDataFreshnessState(Long chatSessionId, PlanningStateDTO state) {
+        if (state == null) {
+            return false;
+        }
+        if (state.getDataFreshnessState() == null) {
+            state.setDataFreshnessState(new DataFreshnessStateDTO());
+        }
+        DataFreshnessStateDTO freshness = state.getDataFreshnessState();
+        CandidatePoolStateDTO candidatePoolState = state.getCandidatePoolState();
+        if (candidatePoolState == null || defaultCandidates(candidatePoolState.getItems()).isEmpty()) {
+            return false;
+        }
+        if (!Strings.isNullOrEmpty(freshness.getDataHash())) {
+            return false;
+        }
+        refreshDataFreshnessSnapshot(chatSessionId, state, candidatePoolState);
+        return true;
+    }
+
+    private void refreshDataFreshnessSnapshot(Long chatSessionId,
+                                              PlanningStateDTO state,
+                                              CandidatePoolStateDTO candidatePoolState) {
+        if (state == null) {
+            return;
+        }
+        DataFreshnessStateDTO freshness = buildDataFreshnessSnapshot(chatSessionId, state, candidatePoolState);
+        state.setDataFreshnessState(freshness);
+    }
+
+    private DataFreshnessStateDTO buildDataFreshnessSnapshot(Long chatSessionId,
+                                                             PlanningStateDTO state,
+                                                             CandidatePoolStateDTO candidatePoolState) {
+        DataFreshnessStateDTO freshness = new DataFreshnessStateDTO();
+        freshness.setSource("gaotu");
+        String now = OffsetDateTime.now().toString();
+        freshness.setFetchTime(candidatePoolState == null || Strings.isNullOrEmpty(candidatePoolState.getGeneratedAt())
+                ? now : candidatePoolState.getGeneratedAt());
+        freshness.setLastCheckedAt(now);
+        freshness.setExamYear(null);
+        freshness.setPrepareType(null);
+        freshness.setProvince(candidatePoolState == null ? null : candidatePoolState.getSourceProvinceName());
+        freshness.setBatch(null);
+        freshness.setSubjectType(null);
+        freshness.setScore(candidatePoolState == null ? null : candidatePoolState.getUserScore());
+        freshness.setRequestHash(buildCandidateRequestHash(chatSessionId, candidatePoolState));
+        freshness.setDataHash(buildCandidateDataHash(candidatePoolState));
+        freshness.setDataVersion(candidatePoolState == null || candidatePoolState.getSourceVersion() == null
+                ? null : String.valueOf(candidatePoolState.getSourceVersion()));
+        freshness.setLatestDataHash(freshness.getDataHash());
+        String sourceDataHash = normalizeText(volunteerSourceDataSyncService.loadLocalSourceDataHash(chatSessionId));
+        freshness.setSourceDataHash(sourceDataHash);
+        freshness.setLatestSourceDataHash(sourceDataHash);
+        freshness.setLatestDataVersion(freshness.getDataVersion());
+        freshness.setStatusCode("current");
+        freshness.setChangeLevel("none");
+        freshness.setShouldNotify(false);
+        freshness.setRequiresCandidateRefresh(false);
+        freshness.setRequiresReview(false);
+        freshness.setSummary("已记录当前招生计划快照。");
+        freshness.setChangedCount(0);
+        freshness.setAffectedVolunteerIds(Lists.newArrayList());
+        freshness.setAffectedUnitIds(Lists.newArrayList());
+        freshness.setAffectedReviewCodes(Lists.newArrayList());
+        return freshness;
+    }
+
+    private void applyDataFreshnessChange(PlanningStateDTO state,
+                                          DataFreshnessStateDTO freshness,
+                                          DataFreshnessCheckReq req,
+                                          String incomingHash,
+                                          String checkedAt) {
+        String level = normalizeChangeLevel(req.getChangeLevel());
+        freshness.setStatusCode("changed");
+        freshness.setChangeLevel(level);
+        freshness.setLatestDataHash(incomingHash);
+        freshness.setLatestDataVersion(normalizeText(req.getDataVersion()));
+        freshness.setLastCheckedAt(checkedAt);
+        freshness.setShouldNotify(true);
+        freshness.setRequiresCandidateRefresh(true);
+        freshness.setRequiresReview(!"minor".equals(level));
+        freshness.setSummary(Strings.isNullOrEmpty(req.getSummary()) ? defaultDataFreshnessSummary(level) : req.getSummary());
+        freshness.setDetail(req.getDetail());
+        freshness.setChangedCount(defaultInteger(req.getChangedCount()));
+        freshness.setAddedCount(defaultInteger(req.getAddedCount()));
+        freshness.setRemovedCount(defaultInteger(req.getRemovedCount()));
+        freshness.setUpdatedCount(defaultInteger(req.getUpdatedCount()));
+        freshness.setInvalidCount(defaultInteger(req.getInvalidCount()));
+        String sourceHash = normalizeText(req.getSourceDataHash());
+        if (!Strings.isNullOrEmpty(sourceHash)) {
+            freshness.setLatestSourceDataHash(sourceHash);
+        }
+        freshness.setAffectedVolunteerIds(defaultStringList(req.getAffectedVolunteerIds()));
+        freshness.setAffectedUnitIds(defaultStringList(req.getAffectedUnitIds()));
+        freshness.setAffectedReviewCodes("minor".equals(level) ? Lists.newArrayList() : dataFreshnessAffectedReviewCodes());
+    }
+
+    private void markDataFreshnessSourceChanged(PlanningStateDTO state,
+                                                DataFreshnessStateDTO freshness,
+                                                String latestSourceHash,
+                                                String checkedAt) {
+        freshness.setStatusCode("changed");
+        freshness.setChangeLevel("minor");
+        freshness.setLatestSourceDataHash(latestSourceHash);
+        freshness.setLatestDataVersion(latestSourceHash);
+        freshness.setLastCheckedAt(checkedAt);
+        freshness.setShouldNotify(true);
+        freshness.setRequiresCandidateRefresh(true);
+        freshness.setRequiresReview(false);
+        freshness.setSummary("检测到高途招生计划源数据有更新，建议点击检查更新确认影响范围，或刷新候选后继续填报。");
+        freshness.setDetail("本次为轻量版本检查，尚未执行候选级影响分析。");
+        freshness.setChangedCount(0);
+        freshness.setAddedCount(0);
+        freshness.setRemovedCount(0);
+        freshness.setUpdatedCount(0);
+        freshness.setInvalidCount(0);
+        freshness.setAffectedVolunteerIds(Lists.newArrayList());
+        freshness.setAffectedUnitIds(Lists.newArrayList());
+        freshness.setAffectedReviewCodes(Lists.newArrayList());
+    }
+
+    private void markDataFreshnessStale(PlanningStateDTO state, DataFreshnessStateDTO freshness) {
+        if (state == null || state.getStaleFlags() == null || freshness == null) {
+            return;
+        }
+        String level = normalizeChangeLevel(freshness.getChangeLevel());
+        if ("minor".equals(level)) {
+            state.getStaleFlags().setCandidatePool(true);
+            state.getStaleFlags().setInitialRecommendation(true);
+            state.getStaleFlags().setPlanAdjustment(true);
+            state.getStaleFlags().setReasonCode("volunteer_data_minor_changed");
+            state.getStaleFlags().setMessage("招生计划数据有轻微更新，建议刷新候选池后继续查看。");
+            state.getStaleFlags().setAffectedReviewCodes(Lists.newArrayList());
+            return;
+        }
+        state.getStaleFlags().setCandidatePool(true);
+        state.getStaleFlags().setRecommendationOverlay(true);
+        ReviewInvalidationPolicy.markCandidatePoolDependentsStale(state);
+        state.getStaleFlags().setReasonCode("volunteer_data_changed");
+        state.getStaleFlags().setMessage("招生计划数据已更新，候选池、方案和审查建议需要重新确认。");
+        state.getStaleFlags().setAffectedReviewCodes(dataFreshnessAffectedReviewCodes());
+    }
+
+    private void appendDataFreshnessOperationLog(PlanningStateDTO state, DataFreshnessStateDTO freshness) {
+        if (state == null || freshness == null) {
+            return;
+        }
+        if (state.getOperationLogs() == null) {
+            state.setOperationLogs(Lists.newArrayList());
+        }
+        OperationLogDTO logItem = new OperationLogDTO();
+        logItem.setType("volunteer_data_change_detected");
+        logItem.setOperator("system");
+        logItem.setCreatedAt(OffsetDateTime.now().toString());
+        logItem.setDetail(freshness.getSummary());
+        logItem.setVolunteerIds(defaultStringList(freshness.getAffectedVolunteerIds()));
+        state.getOperationLogs().add(logItem);
+    }
+
+    private String buildCandidateRequestHash(Long chatSessionId, CandidatePoolStateDTO candidatePoolState) {
+        Map<String, Object> payload = new LinkedHashMap<String, Object>();
+        payload.put("chatSessionId", chatSessionId);
+        payload.put("province", candidatePoolState == null ? null : candidatePoolState.getSourceProvinceName());
+        payload.put("volunteerModel", candidatePoolState == null ? null : candidatePoolState.getVolunteerModel());
+        payload.put("userScore", candidatePoolState == null ? null : candidatePoolState.getUserScore());
+        payload.put("batchScore", candidatePoolState == null ? null : candidatePoolState.getBatchScore());
+        payload.put("requiredCount", candidatePoolState == null ? null : candidatePoolState.getRequiredCount());
+        payload.put("requiredUnitCount", candidatePoolState == null ? null : candidatePoolState.getRequiredUnitCount());
+        payload.put("requiredMajorCount", candidatePoolState == null ? null : candidatePoolState.getRequiredMajorCount());
+        return buildPayloadDigest(JSONObject.toJSONString(payload));
+    }
+
+    private String buildCandidateDataHash(CandidatePoolStateDTO candidatePoolState) {
+        List<Map<String, Object>> rows = defaultCandidates(candidatePoolState == null ? null : candidatePoolState.getItems()).stream()
+                .sorted(Comparator.comparing((CandidateItemDTO item) -> normalizeText(item.getVolunteerId()))
+                        .thenComparing(item -> normalizeText(resolveInitialRecommendationUnitId(item))))
+                .map(this::buildCandidateDataHashRow)
+                .collect(Collectors.toList());
+        return buildPayloadDigest(JSONObject.toJSONString(rows));
+    }
+
+    private Map<String, Object> buildCandidateDataHashRow(CandidateItemDTO item) {
+        Map<String, Object> row = new LinkedHashMap<String, Object>();
+        row.put("volunteerId", item == null ? null : item.getVolunteerId());
+        row.put("unitId", item == null ? null : resolveInitialRecommendationUnitId(item));
+        row.put("tier", item == null ? null : item.getTier());
+        row.put("subTier", item == null ? null : item.getSubTier());
+        row.put("rankInTier", item == null ? null : item.getRankInTier());
+
+        row.put("planSchoolDataId", item == null ? null : item.getPlanSchoolDataId());
+        row.put("schoolId", item == null ? null : item.getSchoolId());
+        row.put("schoolUnitCode", item == null ? null : item.getSchoolUnitCode());
+        row.put("schoolName", item == null ? null : item.getSchoolName());
+        row.put("provinceName", item == null ? null : item.getProvinceName());
+        row.put("cityName", item == null ? null : item.getCityName());
+        row.put("schoolBatch", item == null ? null : item.getSchoolBatch());
+        row.put("schoolLevel", item == null ? null : item.getSchoolLevel());
+        row.put("schoolNature", item == null ? null : item.getSchoolNature());
+        row.put("schoolCategory", item == null ? null : item.getSchoolCategory());
+        row.put("schoolRank", item == null ? null : item.getSchoolRank());
+        row.put("schoolEnrollRatio", item == null ? null : item.getSchoolEnrollRatio());
+        row.put("baoyanRatio", item == null ? null : item.getBaoyanRatio());
+        row.put("upgradeRatio", item == null ? null : item.getUpgradeRatio());
+        row.put("masterCount", item == null ? null : item.getMasterCount());
+        row.put("doctorCount", item == null ? null : item.getDoctorCount());
+        row.put("schoolRankTags", item == null ? null : normalizeHashList(item.getSchoolRankTags()));
+        row.put("schoolBasicTags", item == null ? null : normalizeHashList(item.getSchoolBasicTags()));
+        row.put("schoolPopupTags", item == null ? null : normalizeHashList(item.getSchoolPopupTags()));
+        row.put("schoolHistoryScores", item == null ? null : buildHistoryScoreHashRows(item.getSchoolHistoryScores()));
+
+        row.put("majorId", item == null ? null : item.getMajorId());
+        row.put("majorName", item == null ? null : item.getMajorName());
+        row.put("majorCode", item == null ? null : item.getMajorCode());
+        row.put("majorCategoryId", item == null ? null : item.getMajorCategoryId());
+        row.put("majorSubCategoryId", item == null ? null : item.getMajorSubCategoryId());
+        row.put("majorLevel", item == null ? null : item.getMajorLevel());
+        row.put("majorDiscipline", item == null ? null : item.getMajorDiscipline());
+        row.put("majorCategory", item == null ? null : item.getMajorCategory());
+        row.put("majorTier", item == null ? null : item.getMajorTier());
+        row.put("planNum", item == null ? null : item.getPlanNum());
+        row.put("duration", item == null ? null : item.getDuration());
+        row.put("tuitionPerYear", item == null ? null : item.getTuitionPerYear());
+        row.put("admissionRatio", item == null ? null : item.getAdmissionRatio());
+        row.put("mustSubjects", item == null ? null : normalizeHashList(item.getMustSubjects()));
+        row.put("majorRankTags", item == null ? null : normalizeHashList(item.getMajorRankTags()));
+        row.put("majorPlanTags", item == null ? null : normalizeHashList(item.getMajorPlanTags()));
+        row.put("majorHistoryScores", item == null ? null : buildHistoryScoreHashRows(item.getMajorHistoryScores()));
+
+        row.put("baseScore", item == null ? null : item.getBaseScore());
+        row.put("intentScore", item == null ? null : item.getIntentScore());
+        row.put("finalScore", item == null ? null : item.getFinalScore());
+        row.put("futureDevelopmentScore", item == null ? null : item.getFutureDevelopmentScore());
+        row.put("hotIndex", item == null ? null : item.getHotIndex());
+        row.put("salaryAvg", item == null ? null : item.getSalaryAvg());
+        row.put("reasonCodes", item == null ? null : normalizeHashList(item.getReasonCodes()));
+        row.put("riskFlags", item == null ? null : normalizeHashList(item.getRiskFlags()));
+        return row;
+    }
+
+    private List<String> normalizeHashList(List<String> values) {
+        return defaultStringList(values).stream()
+                .map(this::normalizeText)
+                .filter(value -> !Strings.isNullOrEmpty(value))
+                .distinct()
+                .sorted()
+                .collect(Collectors.toList());
+    }
+
+    private List<Map<String, Object>> buildHistoryScoreHashRows(List<CandidateItemDTO.HistoryScoreItem> historyScores) {
+        return (historyScores == null ? Lists.<CandidateItemDTO.HistoryScoreItem>newArrayList() : historyScores).stream()
+                .sorted(Comparator.comparing((CandidateItemDTO.HistoryScoreItem item) -> item == null ? null : item.getYear(), Comparator.nullsLast(Integer::compareTo)))
+                .map(item -> {
+                    Map<String, Object> row = new LinkedHashMap<String, Object>();
+                    row.put("year", item == null ? null : item.getYear());
+                    row.put("score", item == null ? null : item.getScore());
+                    row.put("pos", item == null ? null : item.getPos());
+                    row.put("planNum", item == null ? null : item.getPlanNum());
+                    row.put("enrollNum", item == null ? null : item.getEnrollNum());
+                    return row;
+                })
+                .collect(Collectors.toList());
+    }
+
+    private List<String> dataFreshnessAffectedReviewCodes() {
+        return Lists.newArrayList(
+                "ratio_distribution",
+                "safety_guard",
+                "probability_inversion",
+                "probability_gap",
+                "count_validation",
+                "high_tuition",
+                "admission_limit",
+                "special_enrollment",
+                "edge_score",
+                "cooperative_program",
+                "major_group_safety_intent_alignment",
+                "group_inner_safety_guard",
+                "plan_update_notice"
+        );
+    }
+
+    private String defaultDataFreshnessSummary(String level) {
+        if ("major".equals(level)) {
+            return "招生计划数据出现重要变化，当前方案需要尽快重新核验。";
+        }
+        if ("medium".equals(level)) {
+            return "部分院校或专业组数据已更新，建议重新审查当前方案。";
+        }
+        return "招生计划数据有轻微更新，当前方案未发现明确结构性影响。";
+    }
+
+    private String normalizeChangeLevel(String value) {
+        String normalized = normalizeText(value).toLowerCase(Locale.ROOT);
+        if ("major".equals(normalized) || "critical".equals(normalized) || "high".equals(normalized)) {
+            return "major";
+        }
+        if ("medium".equals(normalized) || "moderate".equals(normalized)) {
+            return "medium";
+        }
+        if ("minor".equals(normalized) || "low".equals(normalized)) {
+            return "minor";
+        }
+        return "medium";
+    }
+
+    private String normalizeText(String value) {
+        return value == null ? "" : value.trim();
+    }
+
+    private String blankToNull(String value) {
+        String normalized = normalizeText(value);
+        return Strings.isNullOrEmpty(normalized) ? null : normalized;
+    }
+
+    private Integer defaultInteger(Integer value) {
+        return value == null ? 0 : value;
+    }
+
+    private List<String> defaultStringList(List<String> values) {
+        return values == null ? Lists.newArrayList() : Lists.newArrayList(values.stream()
+                .filter(value -> !Strings.isNullOrEmpty(value))
+                .collect(Collectors.toList()));
+    }
+
+
+    public DataFreshnessStateDTO getDataFreshnessState(Long tenantId, Long chatSessionId) {
+        PlanningStateDTO state = getPlanningState(chatSessionId);
+        touchDataFreshnessSchedule(tenantId, chatSessionId, state, true, false);
+        return mergeScheduleDataFreshnessState(tenantId, state);
+    }
+
+    public DataFreshnessScheduleDTO getDataFreshnessSchedule(Long tenantId, Long chatSessionId) {
+        PlanningStateDTO state = getPlanningState(chatSessionId);
+        PlanningDataFreshnessScheduleEntity entity = touchDataFreshnessSchedule(tenantId, chatSessionId, state, true, false);
+        return planningDataFreshnessScheduleSharedService.toDto(entity);
+    }
+
+    public DataFreshnessScheduleDTO ensureDataFreshnessScheduleIndex(Long tenantId, Long chatSessionId) {
+        PlanningDataFreshnessScheduleEntity entity = touchDataFreshnessSchedule(tenantId, chatSessionId, null, false, false);
+        return planningDataFreshnessScheduleSharedService.toDto(entity);
+    }
+
+    public DataFreshnessScheduleDTO checkDataFreshnessLightweightForSchedule(Long tenantId,
+                                                                              Long chatSessionId,
+                                                                              String source) {
+        PlanningDataFreshnessScheduleEntity schedule = planningDataFreshnessScheduleSharedService.getByChatSessionId(chatSessionId);
+        if (schedule == null) {
+            schedule = touchDataFreshnessSchedule(tenantId, chatSessionId, null, false, false);
+        }
+        if (schedule == null || !Boolean.TRUE.equals(schedule.getEnabled())) {
+            return planningDataFreshnessScheduleSharedService.toDto(schedule);
+        }
+        String checkSource = Strings.isNullOrEmpty(source) ? "scheduler" : source;
+        planningDataFreshnessScheduleSharedService.markChecking(chatSessionId);
+        try {
+            VolunteerSourceDataSnapshot snapshot = volunteerSourceDataSyncService.fetchLatestSourceData(tenantId, chatSessionId, false);
+            String latestSourceHash = normalizeText(snapshot == null ? null : snapshot.getSourceDataHash());
+            String currentSourceHash = normalizeText(schedule.getSourceDataHash());
+            if (Strings.isNullOrEmpty(currentSourceHash)) {
+                currentSourceHash = normalizeText(volunteerSourceDataSyncService.loadLocalSourceDataHash(chatSessionId));
+            }
+            String status = (!Strings.isNullOrEmpty(currentSourceHash)
+                    && !Strings.isNullOrEmpty(latestSourceHash)
+                    && !latestSourceHash.equals(currentSourceHash)) ? "changed" : "current";
+            planningDataFreshnessScheduleSharedService.markSuccess(chatSessionId, checkSource, status, currentSourceHash, latestSourceHash, new Date());
+            return planningDataFreshnessScheduleSharedService.toDto(
+                    planningDataFreshnessScheduleSharedService.getByChatSessionId(chatSessionId));
+        } catch (Exception ex) {
+            log.warn("dataFreshnessSchedule lightweight check failed tenantId={} chatSessionId={} source={}",
+                    tenantId, chatSessionId, checkSource, ex);
+            planningDataFreshnessScheduleSharedService.markFailure(chatSessionId, checkSource, ex.getMessage(), new Date());
+            return planningDataFreshnessScheduleSharedService.toDto(
+                    planningDataFreshnessScheduleSharedService.getByChatSessionId(chatSessionId));
+        }
+    }
+
+    private PlanningDataFreshnessScheduleEntity touchDataFreshnessSchedule(Long tenantId,
+                                                                            Long chatSessionId,
+                                                                            PlanningStateDTO state,
+                                                                            boolean markAccess,
+                                                                            boolean syncFreshnessState) {
+        if (chatSessionId == null) {
+            return null;
+        }
+        ChatSession session = chatSessionSharedService.getById(chatSessionId);
+        CreateSessionReq scoreDetail = loadCreateSessionReq(chatSessionId);
+        DataFreshnessStateDTO freshness = state == null ? null : state.getDataFreshnessState();
+        PlanningDataFreshnessScheduleEntity entity = buildDataFreshnessScheduleEntity(tenantId, chatSessionId, session,
+                scoreDetail, freshness, markAccess, syncFreshnessState);
+        return planningDataFreshnessScheduleSharedService.saveOrUpdateSchedule(entity);
+    }
+
+    private PlanningDataFreshnessScheduleEntity buildDataFreshnessScheduleEntity(Long tenantId,
+                                                                                  Long chatSessionId,
+                                                                                  ChatSession session,
+                                                                                  CreateSessionReq scoreDetail,
+                                                                                  DataFreshnessStateDTO freshness,
+                                                                                  boolean markAccess,
+                                                                                  boolean syncFreshnessState) {
+        PlanningDataFreshnessScheduleEntity entity = new PlanningDataFreshnessScheduleEntity();
+        entity.setChatSessionId(chatSessionId);
+        entity.setTenantId(tenantId != null ? tenantId : (session == null ? null : session.getTenantId()));
+        entity.setSessionStatus(session == null || session.getSessionStatus() == null ? null : session.getSessionStatus().name());
+        entity.setSessionCreateTime(session == null ? null : session.getCreateTime());
+        if (markAccess) {
+            entity.setLastAccessedAt(new Date());
+        }
+        String prepareType = scoreDetail == null || scoreDetail.getPrepareType() == null ? null : scoreDetail.getPrepareType().getCode();
+        entity.setPrepareType(prepareType);
+        if (scoreDetail != null && scoreDetail.getProvince() != null) {
+            entity.setProvinceCode(scoreDetail.getProvince().getCode());
+            entity.setProvinceName(scoreDetail.getProvince().getName());
+        }
+        entity.setExamYear(scoreDetail == null ? null : scoreDetail.getExamYear());
+        entity.setEnabled(DataFreshnessSchedulePolicy.isBackgroundEligible(prepareType, entity.getSessionStatus()));
+        String sourceDataHash = syncFreshnessState ? blankToNull(freshness == null ? null : freshness.getSourceDataHash()) : null;
+        if (syncFreshnessState && Strings.isNullOrEmpty(sourceDataHash)) {
+            sourceDataHash = blankToNull(volunteerSourceDataSyncService.loadLocalSourceDataHash(chatSessionId));
+        }
+        entity.setSourceDataHash(sourceDataHash);
+        if (syncFreshnessState) {
+            entity.setLatestSourceDataHash(blankToNull(freshness == null ? null : freshness.getLatestSourceDataHash()));
+            entity.setLastCheckedAt(parseDate(freshness == null ? null : freshness.getLastCheckedAt()));
+            String lastCheckSource = blankToNull(freshness == null ? null : freshness.getLastCheckSource());
+            if (Strings.isNullOrEmpty(lastCheckSource)) {
+                lastCheckSource = blankToNull(freshness == null ? null : freshness.getCheckSource());
+            }
+            entity.setLastCheckSource(lastCheckSource);
+            String lastCheckStatus = blankToNull(freshness == null ? null : freshness.getLastCheckStatus());
+            if (Strings.isNullOrEmpty(lastCheckStatus)) {
+                lastCheckStatus = blankToNull(freshness == null ? null : freshness.getStatusCode());
+            }
+            entity.setLastCheckStatus(lastCheckStatus);
+            entity.setFailCount(freshness == null ? null : freshness.getFailCount());
+            entity.setLastError(blankToNull(freshness == null ? null : freshness.getLastError()));
+            entity.setLastFailedAt(parseDate(freshness == null ? null : freshness.getLastFailedAt()));
+        }
+        return entity;
+    }
+
+    private DataFreshnessStateDTO mergeScheduleDataFreshnessState(Long tenantId, PlanningStateDTO state) {
+        DataFreshnessStateDTO base = state == null ? null : state.getDataFreshnessState();
+        DataFreshnessStateDTO merged = cloneDataFreshnessState(base);
+        Long chatSessionId = state == null ? null : state.getSessionId();
+        if (chatSessionId == null) {
+            return merged;
+        }
+        PlanningDataFreshnessScheduleEntity schedule = planningDataFreshnessScheduleSharedService.getByChatSessionId(chatSessionId);
+        if (schedule == null) {
+            return merged;
+        }
+        applyScheduleToFreshnessState(merged, schedule);
+        return merged;
+    }
+
+    private DataFreshnessStateDTO cloneDataFreshnessState(DataFreshnessStateDTO source) {
+        if (source == null) {
+            return new DataFreshnessStateDTO();
+        }
+        return JSONObject.parseObject(JSONObject.toJSONString(source), DataFreshnessStateDTO.class);
+    }
+
+    private void applyScheduleToFreshnessState(DataFreshnessStateDTO target, PlanningDataFreshnessScheduleEntity schedule) {
+        if (target == null || schedule == null) {
+            return;
+        }
+        target.setLastCheckedAt(formatDate(schedule.getLastCheckedAt()));
+        target.setNextCheckAt(formatDate(schedule.getNextCheckAt()));
+        target.setCheckIntervalMinutes(schedule.getCheckIntervalMinutes());
+        target.setLastCheckSource(schedule.getLastCheckSource());
+        target.setCheckSource(schedule.getLastCheckSource());
+        target.setLastCheckStatus(schedule.getLastCheckStatus());
+        target.setSourceDataHash(schedule.getSourceDataHash());
+        target.setLatestSourceDataHash(schedule.getLatestSourceDataHash());
+        target.setFailCount(schedule.getFailCount());
+        target.setLastError(schedule.getLastError());
+        target.setLastFailedAt(formatDate(schedule.getLastFailedAt()));
+        if ("changed".equals(schedule.getLastCheckStatus())) {
+            if (hasDetailedDataFreshnessChange(target)) {
+                return;
+            }
+            target.setStatusCode("changed");
+            target.setChangeLevel("minor");
+            target.setShouldNotify(true);
+            target.setRequiresCandidateRefresh(true);
+            target.setRequiresReview(false);
+            if (Strings.isNullOrEmpty(target.getSummary())) {
+                target.setSummary("检测到高途招生计划源数据有更新，建议点击检查更新确认影响范围，或刷新候选后继续填报。");
+            }
+            if (Strings.isNullOrEmpty(target.getDetail())) {
+                target.setDetail("本次为后台轻量版本检查，尚未执行候选级影响分析。");
+            }
+        } else if ("failed".equals(schedule.getLastCheckStatus())) {
+            target.setLastCheckStatus("failed");
+            if (Strings.isNullOrEmpty(target.getSummary())) {
+                target.setSummary("招生计划后台检查暂时失败，系统会继续重试。");
+            }
+        }
+    }
+
+    private boolean hasDetailedDataFreshnessChange(DataFreshnessStateDTO target) {
+        return target != null
+                && "changed".equals(target.getStatusCode())
+                && !Strings.isNullOrEmpty(target.getChangeLevel())
+                && !"none".equals(target.getChangeLevel());
+    }
+
+    private CreateSessionReq loadCreateSessionReq(Long chatSessionId) {
+        ChatSessionExtraData scoreData = chatSessionExtraDataSharedService.getBySessionIdAndDataKey(
+                chatSessionId, ChatSessionExtraDataConstants.USER_SCORE_KEY);
+        if (scoreData == null || Strings.isNullOrEmpty(scoreData.getDataValue())) {
+            return null;
+        }
+        try {
+            return JSONObject.parseObject(scoreData.getDataValue(), CreateSessionReq.class);
+        } catch (Exception ex) {
+            log.warn("loadCreateSessionReq failed chatSessionId={}", chatSessionId, ex);
+            return null;
+        }
+    }
+
+    private Date parseDate(String value) {
+        if (Strings.isNullOrEmpty(value)) {
+            return null;
+        }
+        try {
+            return Date.from(OffsetDateTime.parse(value).toInstant());
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private String formatDate(Date date) {
+        if (date == null) {
+            return null;
+        }
+        return OffsetDateTime.ofInstant(date.toInstant(), ZoneId.systemDefault()).toString();
     }
 
     private void savePlanningState(Long chatSessionId, PlanningStateDTO state) {
@@ -8709,6 +9611,8 @@ public class PlanningStateService {
                 : candidates.stream()
                 .filter(candidate -> !Strings.isNullOrEmpty(candidate.getVolunteerId()))
                 .collect(Collectors.toMap(CandidateItemDTO::getVolunteerId, candidate -> candidate, (left, right) -> left, LinkedHashMap::new));
+        CandidateResolver candidateResolver = new CandidateResolver(candidates);
+        Map<String, Integer> unitMajorCountMap = buildMajorGroupTotalMajorCountMap(candidates);
         for (DraftUnitDTO draftUnit : defaultDraftUnits(draftPlanState == null ? null : draftPlanState.getUnits())) {
             for (PlanningUnitMajorDTO major : defaultPlanningUnitMajors(draftUnit.getMajorItems())) {
                 if (!Strings.isNullOrEmpty(major.getVolunteerId())) {
@@ -8720,6 +9624,7 @@ public class PlanningStateService {
         Map<String, OrderedUnitDTO> unitMap = new LinkedHashMap<String, OrderedUnitDTO>();
         for (OrderedItemDTO item : defaultOrderedItems(items)) {
             String unitId = resolveDraftOrOrderedUnitId(item);
+            CandidateItemDTO resolvedCandidate = candidateResolver.resolve(item);
             OrderedUnitDTO unit = unitMap.computeIfAbsent(unitId, key -> {
                 OrderedUnitDTO dto = new OrderedUnitDTO();
                 dto.setUnitId(key);
@@ -8730,10 +9635,15 @@ public class PlanningStateService {
                 dto.setOrderedBy(item.getOrderedBy());
                 dto.setOrderReason(item.getOrderReason());
                 dto.setPosition(item.getPosition());
+                fillOrderedUnitGroupFields(dto, resolvedCandidate, unitMajorCountMap);
                 return dto;
             });
+            CandidateItemDTO candidate = resolvedCandidate;
+            fillOrderedUnitGroupFields(unit, candidate, unitMajorCountMap);
             PlanningUnitMajorDTO major = majorMap.get(item.getVolunteerId());
-            CandidateItemDTO candidate = candidateMap.get(item.getVolunteerId());
+            if (candidate == null) {
+                candidate = candidateMap.get(item.getVolunteerId());
+            }
             if (major == null) {
                 major = new PlanningUnitMajorDTO();
                 major.setVolunteerId(item.getVolunteerId());
@@ -8770,8 +9680,174 @@ public class PlanningStateService {
         }
         for (OrderedUnitDTO unit : unitMap.values()) {
             unit.setMajorItems(sortSelectedMajorsForDisplay(unit.getMajorItems()));
+            if (unit.getTotalMajorCount() == null || unit.getTotalMajorCount() <= 0) {
+                unit.setTotalMajorCount(defaultPlanningUnitMajors(unit.getMajorItems()).size());
+            }
         }
         return Lists.newArrayList(unitMap.values());
+    }
+
+    private void fillOrderedUnitGroupFields(OrderedUnitDTO unit,
+                                            CandidateItemDTO candidate,
+                                            Map<String, Integer> unitMajorCountMap) {
+        if (unit == null || candidate == null) {
+            return;
+        }
+        if (Strings.isNullOrEmpty(unit.getPlanSchoolDataId())) {
+            unit.setPlanSchoolDataId(candidate.getPlanSchoolDataId());
+        }
+        if (Strings.isNullOrEmpty(unit.getSchoolId())) {
+            unit.setSchoolId(candidate.getSchoolId());
+        }
+        if (Strings.isNullOrEmpty(unit.getSchoolUnitCode())) {
+            unit.setSchoolUnitCode(candidate.getSchoolUnitCode());
+        }
+        Integer totalMajorCount = resolveMajorGroupTotalMajorCount(candidate, unitMajorCountMap);
+        if (totalMajorCount != null && totalMajorCount > 0
+                && (unit.getTotalMajorCount() == null || totalMajorCount > unit.getTotalMajorCount())) {
+            unit.setTotalMajorCount(totalMajorCount);
+        }
+    }
+
+    private Map<String, Integer> buildMajorGroupTotalMajorCountMap(List<CandidateItemDTO> candidates) {
+        Map<String, Integer> result = new LinkedHashMap<String, Integer>();
+        for (CandidateItemDTO candidate : defaultCandidates(candidates)) {
+            Set<String> keys = resolveMajorGroupIdentityKeys(candidate);
+            for (String key : keys) {
+                result.put(key, result.getOrDefault(key, 0) + 1);
+            }
+        }
+        return result;
+    }
+
+    private Integer resolveMajorGroupTotalMajorCount(CandidateItemDTO candidate,
+                                                     Map<String, Integer> unitMajorCountMap) {
+        for (String key : resolveMajorGroupIdentityKeys(candidate)) {
+            Integer count = unitMajorCountMap.get(key);
+            if (count != null && count > 0) {
+                return count;
+            }
+        }
+        return null;
+    }
+
+    private Set<String> resolveMajorGroupIdentityKeys(CandidateItemDTO candidate) {
+        Set<String> keys = new LinkedHashSet<String>();
+        if (candidate == null) {
+            return keys;
+        }
+        addMajorGroupIdentityKey(keys, "planSchoolDataId", candidate.getPlanSchoolDataId());
+        addMajorGroupIdentityKey(keys, "schoolUnitCode", candidate.getSchoolUnitCode());
+        addMajorGroupIdentityKey(keys, "legacyPrefix", CandidateResolver.legacyVolunteerPrefix(candidate.getVolunteerId()));
+        addMajorGroupIdentityKey(keys, "schoolName", candidate.getSchoolName());
+        return keys;
+    }
+
+    private void addMajorGroupIdentityKey(Set<String> keys, String type, String value) {
+        if (!Strings.isNullOrEmpty(value)) {
+            keys.add(type + ":" + value.trim());
+        }
+    }
+
+    private void normalizeMajorGroupUnitMetadata(PlanningStateDTO state) {
+        if (state == null || !isMajorGroupMode(state.getCandidatePoolState())) {
+            return;
+        }
+        Map<String, PlanningUnitDTO> initialUnitMap = buildInitialRecommendationUnitMap(
+                state.getInitialRecommendationState() == null ? null : state.getInitialRecommendationState().getUnits());
+        List<CandidateItemDTO> candidates = defaultCandidates(state.getCandidatePoolState() == null ? null : state.getCandidatePoolState().getItems());
+        CandidateResolver candidateResolver = new CandidateResolver(candidates);
+        Map<String, Integer> unitMajorCountMap = buildMajorGroupTotalMajorCountMap(candidates);
+        normalizeOrderedUnitMetadata(state.getOrderedPlanState(), initialUnitMap, candidateResolver, unitMajorCountMap);
+    }
+
+    private Map<String, PlanningUnitDTO> buildInitialRecommendationUnitMap(List<PlanningUnitDTO> units) {
+        Map<String, PlanningUnitDTO> result = new LinkedHashMap<String, PlanningUnitDTO>();
+        for (PlanningUnitDTO unit : units == null ? Lists.<PlanningUnitDTO>newArrayList() : units) {
+            putInitialRecommendationUnit(result, unit == null ? null : unit.getUnitId(), unit);
+            putInitialRecommendationUnit(result, unit == null ? null : unit.getPlanSchoolDataId(), unit);
+            putInitialRecommendationUnit(result, unit == null ? null : unit.getSchoolName(), unit);
+        }
+        return result;
+    }
+
+    private void putInitialRecommendationUnit(Map<String, PlanningUnitDTO> target,
+                                              String key,
+                                              PlanningUnitDTO unit) {
+        if (!Strings.isNullOrEmpty(key) && unit != null && !target.containsKey(key)) {
+            target.put(key, unit);
+        }
+    }
+
+    private void normalizeOrderedUnitMetadata(OrderedPlanStateDTO orderedPlanState,
+                                              Map<String, PlanningUnitDTO> initialUnitMap,
+                                              CandidateResolver candidateResolver,
+                                              Map<String, Integer> unitMajorCountMap) {
+        if (orderedPlanState == null) {
+            return;
+        }
+        for (OrderedUnitDTO unit : defaultOrderedUnits(orderedPlanState.getUnits())) {
+            if (unit == null) {
+                continue;
+            }
+            PlanningUnitDTO initialUnit = resolveInitialRecommendationUnit(unit, initialUnitMap);
+            fillOrderedUnitGroupFieldsFromInitialUnit(unit, initialUnit);
+            for (PlanningUnitMajorDTO major : defaultPlanningUnitMajors(unit.getMajorItems())) {
+                CandidateItemDTO candidate = candidateResolver.resolve(major == null ? null : major.getVolunteerId());
+                if (candidate != null) {
+                    fillOrderedUnitGroupFields(unit, candidate, unitMajorCountMap);
+                    break;
+                }
+            }
+            if (unit.getTotalMajorCount() == null || unit.getTotalMajorCount() <= 0) {
+                unit.setTotalMajorCount(defaultPlanningUnitMajors(unit.getMajorItems()).size());
+            }
+        }
+    }
+
+    private PlanningUnitDTO resolveInitialRecommendationUnit(OrderedUnitDTO unit,
+                                                             Map<String, PlanningUnitDTO> initialUnitMap) {
+        if (unit == null || initialUnitMap == null || initialUnitMap.isEmpty()) {
+            return null;
+        }
+        for (String key : Lists.newArrayList(unit.getPlanSchoolDataId(), unit.getUnitId(), unit.getSchoolName())) {
+            if (!Strings.isNullOrEmpty(key) && initialUnitMap.containsKey(key)) {
+                return initialUnitMap.get(key);
+            }
+        }
+        return null;
+    }
+
+    private void fillOrderedUnitGroupFieldsFromInitialUnit(OrderedUnitDTO unit,
+                                                           PlanningUnitDTO initialUnit) {
+        if (unit == null || initialUnit == null) {
+            return;
+        }
+        if (Strings.isNullOrEmpty(unit.getPlanSchoolDataId())) {
+            unit.setPlanSchoolDataId(initialUnit.getPlanSchoolDataId());
+        }
+        if (Strings.isNullOrEmpty(unit.getSchoolId())) {
+            unit.setSchoolId(initialUnit.getSchoolId());
+        }
+        if (Strings.isNullOrEmpty(unit.getProvinceName())) {
+            unit.setProvinceName(initialUnit.getProvinceName());
+        }
+        if (Strings.isNullOrEmpty(unit.getCityName())) {
+            unit.setCityName(initialUnit.getCityName());
+        }
+        if (unit.getSchoolEnrollRatio() == null) {
+            unit.setSchoolEnrollRatio(initialUnit.getSchoolEnrollRatio());
+        }
+        if (unit.getAdmissionRatio() == null) {
+            unit.setAdmissionRatio(initialUnit.getAdmissionRatio());
+        }
+        if (unit.getFinalScore() == null) {
+            unit.setFinalScore(initialUnit.getFinalScore());
+        }
+        if (initialUnit.getTotalMajorCount() != null && initialUnit.getTotalMajorCount() > 0
+                && (unit.getTotalMajorCount() == null || initialUnit.getTotalMajorCount() > unit.getTotalMajorCount())) {
+            unit.setTotalMajorCount(initialUnit.getTotalMajorCount());
+        }
     }
 
     private int autoProtectPriority(CandidateItemDTO item, String sourceProvinceName) {

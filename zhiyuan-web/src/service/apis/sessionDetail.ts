@@ -31,6 +31,9 @@ import {
   PlanningFixProposalApplyRes,
   PlanningFixProposalState,
   PlanningReviewWorkflowRunRes,
+  PlanningDataFreshnessCheckReq,
+  PlanningDataFreshnessCheckRes,
+  PlanningDataFreshnessScheduleState,
   OrderedPlanActionRes,
   PlanningStateRes,
   PlanningWorkspaceStateRes,
@@ -300,6 +303,23 @@ export const getPlanningWorkspaceStateApi = (tenantId: string, chatSessionId: st
     method: 'get',
   });
 
+export const checkPlanningDataFreshnessApi = (
+  tenantId: string,
+  chatSessionId: string,
+  data: PlanningDataFreshnessCheckReq = {}
+) =>
+  request<PlanningDataFreshnessCheckReq, PlanningDataFreshnessCheckRes>({
+    url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/data-freshness/check?chatSessionId=${chatSessionId}`,
+    method: 'post',
+    data,
+  });
+
+export const getPlanningDataFreshnessScheduleApi = (tenantId: string, chatSessionId: string) =>
+  request<{}, PlanningDataFreshnessScheduleState>({
+    url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/data-freshness/schedule?chatSessionId=${chatSessionId}`,
+    method: 'get',
+  });
+
 export const runPlanningReviewApi = (tenantId: string, chatSessionId: string) =>
   request<{}, any>({
     url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/review/run?chatSessionId=${chatSessionId}`,
@@ -335,13 +355,15 @@ export const applyPlanningFixProposalApi = (
 export const generatePlanningCandidatePoolApi = (
   tenantId: string,
   chatSessionId: string,
-  forceRegenerate: boolean = false
+  forceRegenerate: boolean = true,
+  refreshSourceData: boolean = false
 ) =>
-  request<{ forceRegenerate: boolean }, PlanningStateRes>({
+  request<{ forceRegenerate: boolean; refreshSourceData: boolean }, PlanningStateRes>({
     url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/candidate-pool/generate?chatSessionId=${chatSessionId}`,
     method: 'post',
     data: {
       forceRegenerate,
+      refreshSourceData,
     },
   });
 

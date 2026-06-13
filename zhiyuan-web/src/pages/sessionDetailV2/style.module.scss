@@ -205,6 +205,44 @@
   font-weight: 600;
 }
 
+.dataFreshnessTip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 280px;
+  color: #9a8379;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.dataFreshnessTipText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dataFreshnessInfoIcon {
+  flex: 0 0 auto;
+  color: #b5a199;
+  font-size: 12px;
+  cursor: help;
+}
+
+.dataFreshnessTooltip {
+  max-width: 320px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.dataFreshnessTipChanged {
+  color: #7a5a25;
+}
+
+.dataFreshnessTipSyncing {
+  color: #6f7d90;
+}
+
 .metaBadgeActive {
   background: #ecfbf2;
   color: #1f8d52;

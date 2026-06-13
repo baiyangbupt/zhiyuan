@@ -21,6 +21,7 @@ import {
   exportPlanningOrderedPlanApi,
   generatePlanningFixProposalsApi,
   getPlanningCandidateFilterOptionsApi,
+  checkPlanningDataFreshnessApi,
   generatePlanningCandidatePoolApi,
   generatePlanningInitialPlanApi,
   getPlanningWorkspaceStateApi,
@@ -40,6 +41,7 @@ import {
   PlanningCandidateItem,
   PlanningCandidatePoolQueryRes,
   PlanningCandidateViewState,
+  PlanningDataFreshnessState,
   PlanningFixProposal,
   PlanningFixProposalState,
   PlanningRepairReport,
@@ -121,6 +123,8 @@ interface OrderedGroup {
   schoolPopupTags: string[];
   topScore?: number;
   topItem: PlanningCandidateItem | null;
+  totalMajorCount?: number;
+  matchKeys: string[];
   orderedItems: Array<{
     orderedItem: PlanningOrderedItem;
     candidateItem: PlanningCandidateItem | null;
@@ -182,13 +186,44 @@ interface WorkspacePanelProps {
   routerParams: IUserInfoParams;
   fetchFlag: number;
   examYear?: number | string | null;
+  prepareTypeDesc?: string;
   workspaceIntent?: PlanningWorkspaceIntent | null;
   onWorkspaceIntentConsumed?: () => void;
   onPlanningStateChange?: (state: PlanningStateRes | null) => void;
+  onDataFreshnessStateChange?: (
+    state: PlanningDataFreshnessState | null,
+    checking: boolean
+  ) => void;
 }
 
 const getWorkspaceViewStorageKey = (chatSessionId?: string) =>
   `session_detail_v2_active_view_${chatSessionId || 'default'}`;
+
+const DATA_FRESHNESS_AUTO_CHECK_INTERVAL_MS = 60 * 60 * 1000;
+
+const parseDateTimeValue = (value?: string) => {
+  if (!value) {
+    return 0;
+  }
+  const normalizedValue = value.includes('T') ? value : value.replace(' ', 'T');
+  const time = new Date(normalizedValue).getTime();
+  return Number.isNaN(time) ? 0 : time;
+};
+
+const isVolunteerPrepareType = (state?: PlanningDataFreshnessState, prepareTypeDesc?: string) => {
+  const prepareType = `${state?.prepareType || ''} ${prepareTypeDesc || ''}`.toUpperCase();
+  return prepareType.includes('VOLUNTEER') || prepareType.includes('智能填报');
+};
+
+const shouldAutoCheckDataFreshness = (state?: PlanningDataFreshnessState) => {
+  const now = Date.now();
+  const nextCheckTime = parseDateTimeValue(state?.nextCheckAt);
+  if (nextCheckTime > 0) {
+    return now >= nextCheckTime;
+  }
+  const lastCheckedTime = parseDateTimeValue(state?.lastCheckedAt);
+  return !lastCheckedTime || now - lastCheckedTime >= DATA_FRESHNESS_AUTO_CHECK_INTERVAL_MS;
+};
 
 const EMPTY_CANDIDATE_FILTER_OPTIONS: PlanningCandidateFilterOptionsRes = {
   provinceNames: [],
@@ -346,6 +381,24 @@ const getVolunteerLegacyPrefix = (volunteerId?: string) => {
   return parts.length >= 3 ? `${parts[0]}_${parts[1]}` : '';
 };
 
+const buildMajorGroupMatchKeys = (
+  item?: Pick<PlanningCandidateItem, 'planSchoolDataId' | 'schoolUnitCode' | 'volunteerId' | 'schoolName'>
+    | Pick<PlanningOrderedUnit, 'unitId' | 'planSchoolDataId' | 'schoolUnitCode' | 'schoolName'>
+) => {
+  if (!item) {
+    return [];
+  }
+  const volunteerId = 'volunteerId' in item ? item.volunteerId : undefined;
+  const unitId = 'unitId' in item ? item.unitId : undefined;
+  return uniqueStrings([
+    item.planSchoolDataId ? `planSchoolDataId:${item.planSchoolDataId}` : '',
+    item.schoolUnitCode ? `schoolUnitCode:${item.schoolUnitCode}` : '',
+    getVolunteerLegacyPrefix(volunteerId) ? `legacyPrefix:${getVolunteerLegacyPrefix(volunteerId)}` : '',
+    unitId ? `legacyPrefix:${unitId}` : '',
+    item.schoolName ? `schoolName:${item.schoolName}` : '',
+  ]);
+};
+
 const buildCandidateIdentityKeys = (
   item?: Pick<PlanningCandidateItem, 'volunteerId' | 'schoolName' | 'majorName'>
     | Pick<PlanningWorkingPlanItem, 'volunteerId' | 'schoolName' | 'majorName'>
@@ -480,9 +533,11 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   routerParams,
   fetchFlag,
   examYear,
+  prepareTypeDesc,
   workspaceIntent,
   onWorkspaceIntentConsumed,
   onPlanningStateChange,
+  onDataFreshnessStateChange,
 }) => {
   const initialActiveView = (() => {
     if (typeof window === 'undefined') {
@@ -498,6 +553,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   })();
   const [planningState, setPlanningState] = useState<PlanningStateRes | null>(null);
   const [planningLoading, setPlanningLoading] = useState(false);
+  const [dataFreshnessChecking, setDataFreshnessChecking] = useState(false);
   const [actionLoading, setActionLoading] = useState<
     'candidate' | 'workingPlan' | 'ordered' | 'review' | null
   >(null);
@@ -557,6 +613,9 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const overviewRevealReadyRef = useRef(false);
   const overviewRevealReadyTimerRef = useRef<number | null>(null);
   const candidateItemCacheRef = useRef<Record<string, PlanningCandidateItem>>({});
+  const dataFreshnessCheckInFlightRef = useRef(false);
+  const dataFreshnessAutoCheckKeyRef = useRef('');
+  const candidateSourceRefreshKeyRef = useRef('');
   const initialFiltersAppliedRef = useRef(false);
   const candidateViewStateHydratedRef = useRef(false);
   const lastSavedCandidateViewStateRef = useRef('');
@@ -576,6 +635,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const orderedSummary = planningState?.orderedPlanState?.summary;
   const reviewSummary = planningState?.reviewState?.summary;
   const workflowStatus = planningState?.workflowStatus;
+  const dataFreshnessState = planningState?.dataFreshnessState;
   const candidateRiskHints = planningState?.candidatePoolState?.riskHints || [];
   const isLegacySubmittedPlan = planningState?.orderedPlanState?.generationMode === 'legacy_submitted';
 
@@ -1440,6 +1500,57 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     }));
   };
 
+  const runDataFreshnessCheck = async () => {
+    if (dataFreshnessCheckInFlightRef.current) {
+      return false;
+    }
+    dataFreshnessCheckInFlightRef.current = true;
+    setDataFreshnessChecking(true);
+    try {
+      const { data, code } = await checkPlanningDataFreshnessApi(
+        routerParams.tenantId,
+        routerParams.chatSessionId,
+        { fetchLatest: true }
+      );
+      if (code === 0 && data) {
+        if (data.workspaceState) {
+          mergeWorkspaceState(data.workspaceState);
+        } else if (data.dataFreshnessState) {
+          setPlanningState(prev => prev ? ({ ...prev, dataFreshnessState: data.dataFreshnessState }) : prev);
+        }
+        return true;
+      }
+    } catch (error) {
+      console.warn('静默检查招生计划更新失败', error);
+    } finally {
+      dataFreshnessCheckInFlightRef.current = false;
+      setDataFreshnessChecking(false);
+    }
+    return false;
+  };
+
+  const shouldRefreshLatestCandidateOnEnter = () => {
+    return Boolean(
+      dataFreshnessState?.requiresCandidateRefresh ||
+      (
+        planningState?.staleFlags?.candidatePool &&
+        planningState?.staleFlags?.reasonCode?.startsWith('volunteer_data')
+      )
+    );
+  };
+
+  const getCandidateSourceRefreshKey = () => {
+    return [
+      routerParams.chatSessionId,
+      dataFreshnessState?.latestSourceDataHash || '',
+      dataFreshnessState?.sourceDataHash || '',
+      dataFreshnessState?.dataHash || '',
+      dataFreshnessState?.lastCheckedAt || '',
+      dataFreshnessState?.statusCode || '',
+      planningState?.version || '',
+    ].join(':');
+  };
+
   const fetchWorkspaceState = async () => {
     if (planningLoading) {
       return;
@@ -1534,10 +1645,11 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     );
   }, [candidateFilterOptions]);
 
-  const ensureCandidatePoolReady = async (forceRegenerate: boolean = false) => {
+  const ensureCandidatePoolReady = async (forceRegenerate: boolean = false, refreshSourceData: boolean = false) => {
+    const isVolunteerDataStale = planningState?.staleFlags?.reasonCode?.startsWith('volunteer_data');
     const shouldGenerate =
       forceRegenerate ||
-      Boolean(planningState?.staleFlags?.candidatePool) ||
+      (Boolean(planningState?.staleFlags?.candidatePool) && !isVolunteerDataStale) ||
       !planningState?.candidatePoolState?.summary?.total;
     if (!shouldGenerate) {
       return true;
@@ -1545,16 +1657,17 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
 
     setCandidatePoolLoading(true);
     try {
-      const { data, code } = await generatePlanningCandidatePoolApi(
+      const { data, code, msg } = await generatePlanningCandidatePoolApi(
         routerParams.tenantId,
         routerParams.chatSessionId,
-        forceRegenerate
+        forceRegenerate,
+        refreshSourceData
       );
       if (code === 0 && data) {
         applyPlanningState(data);
         return true;
       }
-      message.error('刷新候选池失败');
+      message.error(msg || '刷新候选池失败');
     } catch (error) {
       message.error('刷新候选池异常，请稍后重试');
     }
@@ -1626,8 +1739,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     }
   };
 
-  const refreshCandidatePool = async (forceRegenerate: boolean = false) => {
-    const ready = await ensureCandidatePoolReady(forceRegenerate);
+  const refreshCandidatePool = async (forceRegenerate: boolean = false, refreshSourceData: boolean = false) => {
+    const ready = await ensureCandidatePoolReady(forceRegenerate, refreshSourceData);
     if (ready) {
       queryCandidatePool(1);
     }
@@ -2139,6 +2252,36 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   }, [routerParams.tenantId, routerParams.chatSessionId, fetchFlag]);
 
   useEffect(() => {
+    onDataFreshnessStateChange?.(dataFreshnessState || null, dataFreshnessChecking);
+  }, [dataFreshnessState, dataFreshnessChecking, onDataFreshnessStateChange]);
+
+  useEffect(() => {
+    if (!routerParams.tenantId || !routerParams.chatSessionId || !planningState?.sessionId) {
+      return;
+    }
+    if (!isVolunteerPrepareType(dataFreshnessState, prepareTypeDesc)) {
+      return;
+    }
+    if (!shouldAutoCheckDataFreshness(dataFreshnessState)) {
+      return;
+    }
+    const autoCheckKey = `${routerParams.chatSessionId}:${dataFreshnessState?.lastCheckedAt || 'never'}:${dataFreshnessState?.nextCheckAt || 'none'}`;
+    if (dataFreshnessAutoCheckKeyRef.current === autoCheckKey) {
+      return;
+    }
+    dataFreshnessAutoCheckKeyRef.current = autoCheckKey;
+    runDataFreshnessCheck();
+  }, [
+    routerParams.tenantId,
+    routerParams.chatSessionId,
+    planningState?.sessionId,
+    dataFreshnessState?.prepareType,
+    dataFreshnessState?.lastCheckedAt,
+    dataFreshnessState?.nextCheckAt,
+    prepareTypeDesc,
+  ]);
+
+  useEffect(() => {
     initialFiltersAppliedRef.current = false;
     candidateViewStateHydratedRef.current = false;
     lastSavedCandidateViewStateRef.current = '';
@@ -2147,6 +2290,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     previousOrderedCollapseKeysRef.current = [];
     candidateQueryInFlightPagesRef.current.clear();
     candidateItemCacheRef.current = {};
+    dataFreshnessAutoCheckKeyRef.current = '';
+    candidateSourceRefreshKeyRef.current = '';
     setCandidateCacheVersion(version => version + 1);
     setPlanningState(null);
     setCandidatePoolResult({
@@ -2200,11 +2345,32 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
 
   useEffect(() => {
     if (activeView === 'candidate') {
-      refreshCandidatePool(false);
+      if (shouldRefreshLatestCandidateOnEnter()) {
+        const refreshKey = getCandidateSourceRefreshKey();
+        if (candidateSourceRefreshKeyRef.current !== refreshKey) {
+          candidateSourceRefreshKeyRef.current = refreshKey;
+          refreshCandidatePool(true, true);
+        } else {
+          queryCandidatePool(1);
+        }
+      } else {
+        refreshCandidatePool(false);
+      }
     }
     workspaceBodyRef.current?.scrollTo({ top: 0 });
     setShowBackTop(false);
-  }, [activeView]);
+  }, [
+    activeView,
+    dataFreshnessState?.requiresCandidateRefresh,
+    dataFreshnessState?.latestSourceDataHash,
+    dataFreshnessState?.sourceDataHash,
+    dataFreshnessState?.dataHash,
+    dataFreshnessState?.lastCheckedAt,
+    dataFreshnessState?.statusCode,
+    planningState?.staleFlags?.candidatePool,
+    planningState?.staleFlags?.reasonCode,
+    planningState?.version,
+  ]);
 
   useEffect(() => {
     if (!routerParams.tenantId || !routerParams.chatSessionId) {
@@ -2456,7 +2622,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     setFocusVolunteerIds(workspaceIntent.volunteerIds || []);
     if (workspaceIntent.refresh) {
       if (nextView === 'candidate') {
-        refreshCandidatePool(false);
+        refreshCandidatePool(shouldRefreshLatestCandidateOnEnter(), shouldRefreshLatestCandidateOnEnter());
       }
     }
     onWorkspaceIntentConsumed?.();
@@ -3959,6 +4125,28 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     return (tags || []).filter(tag => tag.includes('院校排名'));
   };
 
+  const resolveMajorGroupTotalCount = (
+    unit: PlanningOrderedUnit,
+    matchKeys: string[],
+    entriesLength: number
+  ) => {
+    if (unit.totalMajorCount !== undefined && unit.totalMajorCount !== null && unit.totalMajorCount > 0) {
+      return unit.totalMajorCount;
+    }
+    if (unit.allMajors && unit.allMajors.length > 0) {
+      return unit.allMajors.length;
+    }
+    return resolveFallbackMajorGroupTotalCount(matchKeys, entriesLength);
+  };
+
+  const resolveFallbackMajorGroupTotalCount = (matchKeys: string[], entriesLength: number) => {
+    const matchKeySet = new Set(matchKeys);
+    const candidateCount = (planningState?.candidatePoolState?.items || []).filter(item => (
+      buildMajorGroupMatchKeys(item).some(key => matchKeySet.has(key))
+    )).length;
+    return candidateCount > 0 ? candidateCount : entriesLength;
+  };
+
   const getSchoolMetaItems = (item?: PlanningCandidateItem | null) => {
     if (!item) {
       return [];
@@ -3995,7 +4183,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
 
       return (orderedUnits as PlanningOrderedUnit[]).map((unit, unitIndex) => {
         const unitMajorItems = unit.majorItems || [];
-        const groupKey = unit.unitId || unit.schoolName || `ordered-unit-${unitIndex}`;
+        const groupKey = unit.unitId || unit.planSchoolDataId || unit.schoolUnitCode || unit.schoolName || `ordered-unit-${unitIndex}`;
+        const unitMatchKeys = buildMajorGroupMatchKeys(unit);
         const entries = unitMajorItems.map((major, majorIndex) => {
           const candidateItem = resolveCandidateItemForPlan(
             major.volunteerId,
@@ -4019,6 +4208,9 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
             schoolName: unit.schoolName || orderedItem.schoolName,
             provinceName: unit.provinceName,
             cityName: unit.cityName,
+            planSchoolDataId: unit.planSchoolDataId,
+            schoolId: unit.schoolId,
+            schoolUnitCode: unit.schoolUnitCode,
             schoolEnrollRatio: unit.schoolEnrollRatio ?? unit.admissionRatio,
             majorId: major.majorId,
             majorName: major.majorName || orderedItem.majorName,
@@ -4057,6 +4249,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
           schoolPopupTags: topCandidate?.schoolPopupTags || [],
           topScore: topCandidate?.finalScore ?? unit.finalScore,
           topItem: topCandidate,
+          totalMajorCount: resolveMajorGroupTotalCount(unit, unitMatchKeys, entries.length),
+          matchKeys: unitMatchKeys,
           orderedItems: entries,
         };
       });
@@ -4068,15 +4262,20 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       const schoolName = candidateItem?.schoolName || item.schoolName || '未知院校';
       const key =
         candidateItem?.planSchoolDataId ||
-        candidateItem?.schoolId ||
+        candidateItem?.schoolUnitCode ||
         getVolunteerLegacyPrefix(item.volunteerId) ||
         schoolName;
+      const matchKeys = buildMajorGroupMatchKeys(candidateItem || item);
       const existing = grouped.get(key);
       if (existing) {
         existing.orderedItems.push({
           orderedItem: item,
           candidateItem,
         });
+        existing.totalMajorCount = Math.max(
+          existing.totalMajorCount || 0,
+          resolveFallbackMajorGroupTotalCount(existing.matchKeys, existing.orderedItems.length)
+        );
         return;
       }
       grouped.set(key, {
@@ -4095,6 +4294,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         schoolPopupTags: candidateItem?.schoolPopupTags || [],
         topScore: candidateItem?.finalScore,
         topItem: candidateItem,
+        totalMajorCount: resolveFallbackMajorGroupTotalCount(matchKeys, 1),
+        matchKeys,
         orderedItems: [
           {
             orderedItem: item,
@@ -4110,6 +4311,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     candidateSchoolMajorMap,
     isMajorGroupMode,
     orderedItems,
+    planningState?.candidatePoolState?.items,
     planningState?.orderedPlanState?.units,
   ]);
 
@@ -4356,23 +4558,6 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         planningState?.staleFlags?.message ||
         ''
       : '';
-  const initialStrategyReport = planningState?.initialRecommendationState?.strategyReport;
-  const initialStrategyUnresolved = initialStrategyReport?.unresolvedRisks || [];
-  const initialStrategyShortages = initialStrategyReport?.candidateShortages || [];
-  const initialStrategyTradeoffs = initialStrategyReport?.tradeoffs || [];
-  const initialStrategyRepairCount = initialStrategyReport?.appliedRepairs?.length || 0;
-  const initialStrategyTradeoffSummary =
-    initialStrategyTradeoffs.find(item => Boolean((item?.summary || '').trim()))?.summary ||
-    initialStrategyReport?.appliedRepairs?.find(item => Boolean((item?.tradeoffSummary || '').trim()))?.tradeoffSummary ||
-    '';
-  const initialStrategyNotice =
-    initialStrategyShortages.length > 0
-      ? `${initialStrategyShortages.length}类生成阶段候选不足：${initialStrategyShortages[0]?.message || '建议结合审查结果继续确认'}`
-      : initialStrategyUnresolved.length > 0
-      ? `${initialStrategyUnresolved.length}类生成阶段风险待关注：${initialStrategyUnresolved[0]?.detail || '建议结合审查结果继续确认'}`
-      : initialStrategyRepairCount > 0
-        ? `生成初始推荐时已为降低结构风险调整 ${initialStrategyRepairCount} 个候选${initialStrategyTradeoffSummary ? `：${initialStrategyTradeoffSummary}` : ''}`
-        : '';
   const candidateDetailMessages = [
     planningState?.candidatePoolState?.statusMessage,
     ...candidateRiskHints,
@@ -4634,11 +4819,6 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
           </div>
         )}
 
-        {initialStrategyNotice && !overviewCollapsed && (
-          <div className={style.initialStrategyNotice} title={initialStrategyNotice}>
-            {initialStrategyNotice}
-          </div>
-        )}
 
         <div className={style.stageToolbar}>
           <div className={style.viewTabs}>
@@ -5244,6 +5424,9 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                         录取率 {formatPercent(group.schoolEnrollRatio)}
                                       </Tag>
                                     ) : null}
+                                    <Tag bordered={false} className={style.orderedMajorTotalTag} key={`${group.key}-major-total-count`}>
+                                      该组总共{group.totalMajorCount || group.orderedItems.length}个专业
+                                    </Tag>
                                   </div>
                                   {metaItems.length > 0 ? (
                                     <div className={style.cardSubtitle}>

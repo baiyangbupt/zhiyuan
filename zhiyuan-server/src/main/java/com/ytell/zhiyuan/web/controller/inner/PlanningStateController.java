@@ -39,7 +39,7 @@ public class PlanningStateController {
     public BaseResponse<PlanningWorkspaceStateRes> getWorkspaceState(@PathVariable("tenantId") Long tenantId,
                                                                      @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId) {
         log.info("getPlanningWorkspaceState: tenantId={}, chatSessionId={}", tenantId, chatSessionId);
-        return BaseResponse.success(planningStateService.getPlanningWorkspaceState(chatSessionId));
+        return BaseResponse.success(planningStateService.getPlanningWorkspaceState(tenantId, chatSessionId));
     }
 
     @GetMapping("/session/summary")
@@ -146,6 +146,34 @@ public class PlanningStateController {
                                                                              @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId) {
         log.info("getCandidateFilterOptions: tenantId={}, chatSessionId={}", tenantId, chatSessionId);
         return BaseResponse.success(planningStateService.getCandidateFilterOptions(tenantId, chatSessionId));
+    }
+
+    @GetMapping("/session/data-freshness")
+    @ApiOperation("获取招生计划数据新鲜度状态")
+    public BaseResponse<DataFreshnessStateDTO> getDataFreshness(@PathVariable("tenantId") Long tenantId,
+                                                                @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId) {
+        log.info("getDataFreshness: tenantId={}, chatSessionId={}", tenantId, chatSessionId);
+        return BaseResponse.success(planningStateService.getDataFreshnessState(tenantId, chatSessionId));
+    }
+
+
+    @GetMapping("/session/data-freshness/schedule")
+    @ApiOperation("获取招生计划数据新鲜度后台巡检状态")
+    public BaseResponse<DataFreshnessScheduleDTO> getDataFreshnessSchedule(@PathVariable("tenantId") Long tenantId,
+                                                                           @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId) {
+        log.info("getDataFreshnessSchedule: tenantId={}, chatSessionId={}", tenantId, chatSessionId);
+        return BaseResponse.success(planningStateService.getDataFreshnessSchedule(tenantId, chatSessionId));
+    }
+
+    @PostMapping("/session/data-freshness/check")
+    @ApiOperation("检查并标记招生计划数据更新")
+    public BaseResponse<DataFreshnessCheckRes> checkDataFreshness(@PathVariable("tenantId") Long tenantId,
+                                                                  @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId,
+                                                                  @RequestBody(required = false) DataFreshnessCheckReq req) {
+        log.info("checkDataFreshness: tenantId={}, chatSessionId={}, changeLevel={}",
+                tenantId, chatSessionId, req == null ? null : req.getChangeLevel());
+        return BaseResponse.success(planningStateService.checkDataFreshness(tenantId, chatSessionId,
+                req == null ? new DataFreshnessCheckReq() : req));
     }
 
     @GetMapping("/session/candidate-view-state")
