@@ -64,9 +64,12 @@ import com.ytell.zhiyuan.model.dto.planning.InitialRecommendationGenerateReq;
 import com.ytell.zhiyuan.model.dto.planning.MarkPlanningIntentStaleReq;
 import com.ytell.zhiyuan.model.dto.planning.PlanningBehaviorEventDTO;
 import com.ytell.zhiyuan.model.entity.biz.ChatSessionExtraData;
+import com.ytell.zhiyuan.model.entity.biz.PlanningDataFreshnessScheduleEntity;
 import com.ytell.zhiyuan.model.enums.VolunteerModel;
 import com.ytell.zhiyuan.service.shared.ChatSessionExtraDataSharedService;
+import com.ytell.zhiyuan.service.shared.ChatSessionSharedService;
 import com.ytell.zhiyuan.service.shared.PlanningBehaviorEventSharedService;
+import com.ytell.zhiyuan.service.shared.PlanningDataFreshnessScheduleSharedService;
 import com.ytell.zhiyuan.service.volunteer.VolunteerIntervalService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Assumptions;
@@ -106,29 +109,37 @@ public class PlanningStateServiceTest {
 
     private PlanningStateService planningStateService;
     private ChatSessionExtraDataSharedService chatSessionExtraDataSharedService;
+    private ChatSessionSharedService chatSessionSharedService;
     private PlanningBehaviorEventSharedService planningBehaviorEventSharedService;
     private VolunteerDataProvider volunteerDataProvider;
     private PlanningExcelExportBuilder planningExcelExportBuilder;
     private VolunteerBizService volunteerBizService;
     private VolunteerSourceDataSyncService volunteerSourceDataSyncService;
+    private PlanningDataFreshnessScheduleSharedService planningDataFreshnessScheduleSharedService;
 
     @BeforeEach
     void setUp() {
         planningStateService = new PlanningStateService();
         chatSessionExtraDataSharedService = Mockito.mock(ChatSessionExtraDataSharedService.class);
+        chatSessionSharedService = Mockito.mock(ChatSessionSharedService.class);
         planningBehaviorEventSharedService = Mockito.mock(PlanningBehaviorEventSharedService.class);
         volunteerDataProvider = Mockito.mock(VolunteerDataProvider.class);
         planningExcelExportBuilder = new PlanningExcelExportBuilder();
         volunteerBizService = Mockito.mock(VolunteerBizService.class);
         volunteerSourceDataSyncService = Mockito.mock(VolunteerSourceDataSyncService.class);
+        planningDataFreshnessScheduleSharedService = Mockito.mock(PlanningDataFreshnessScheduleSharedService.class);
+        when(planningDataFreshnessScheduleSharedService.saveOrUpdateSchedule(any(PlanningDataFreshnessScheduleEntity.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
         MajorExtraDataManager majorExtraDataManager = new MajorExtraDataManager();
         majorExtraDataManager.init();
         ReflectionTestUtils.setField(planningStateService, "chatSessionExtraDataSharedService", chatSessionExtraDataSharedService);
+        ReflectionTestUtils.setField(planningStateService, "chatSessionSharedService", chatSessionSharedService);
         ReflectionTestUtils.setField(planningStateService, "planningBehaviorEventSharedService", planningBehaviorEventSharedService);
         ReflectionTestUtils.setField(planningStateService, "volunteerDataProvider", volunteerDataProvider);
         ReflectionTestUtils.setField(planningStateService, "planningExcelExportBuilder", planningExcelExportBuilder);
         ReflectionTestUtils.setField(planningStateService, "volunteerBizService", volunteerBizService);
         ReflectionTestUtils.setField(planningStateService, "volunteerSourceDataSyncService", volunteerSourceDataSyncService);
+        ReflectionTestUtils.setField(planningStateService, "planningDataFreshnessScheduleSharedService", planningDataFreshnessScheduleSharedService);
         ReflectionTestUtils.setField(planningStateService, "volunteerIntervalService", new VolunteerIntervalService());
         ReflectionTestUtils.setField(planningStateService, "majorExtraDataManager", majorExtraDataManager);
     }
@@ -335,6 +346,39 @@ public class PlanningStateServiceTest {
         assertEquals(Integer.valueOf(1), res.getDataFreshnessState().getUpdatedCount());
         assertTrue(res.getDataFreshnessState().getAffectedVolunteerIds().contains("school-1_major-1"));
         assertTrue(staleCandidatePool(res.getStaleFlags()));
+    }
+
+
+    @Test
+    void shouldNotDowngradeDetailedDataFreshnessChangeWhenMergingScheduleState() {
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+        state.getDataFreshnessState().setStatusCode("changed");
+        state.getDataFreshnessState().setChangeLevel("medium");
+        state.getDataFreshnessState().setShouldNotify(true);
+        state.getDataFreshnessState().setRequiresCandidateRefresh(true);
+        state.getDataFreshnessState().setRequiresReview(true);
+        state.getDataFreshnessState().setSummary("候选级影响分析：中等变化");
+        state.getDataFreshnessState().setChangedCount(12);
+        state.getDataFreshnessState().setUpdatedCount(9);
+        state.getDataFreshnessState().setLatestDataHash("candidate-hash-v2");
+
+        PlanningDataFreshnessScheduleEntity schedule = new PlanningDataFreshnessScheduleEntity();
+        schedule.setChatSessionId(1L);
+        schedule.setLastCheckStatus("changed");
+        schedule.setLatestSourceDataHash("source-hash-v2");
+        schedule.setCheckIntervalMinutes(120);
+        when(planningDataFreshnessScheduleSharedService.getByChatSessionId(1L)).thenReturn(schedule);
+
+        PlanningWorkspaceStateRes workspaceState = planningStateService.buildPlanningWorkspaceStateRes(1L, state);
+
+        assertEquals("changed", workspaceState.getDataFreshnessState().getStatusCode());
+        assertEquals("medium", workspaceState.getDataFreshnessState().getChangeLevel());
+        assertTrue(Boolean.TRUE.equals(workspaceState.getDataFreshnessState().getRequiresReview()));
+        assertEquals(Integer.valueOf(12), workspaceState.getDataFreshnessState().getChangedCount());
+        assertEquals(Integer.valueOf(9), workspaceState.getDataFreshnessState().getUpdatedCount());
+        assertEquals("候选级影响分析：中等变化", workspaceState.getDataFreshnessState().getSummary());
+        assertEquals("source-hash-v2", workspaceState.getDataFreshnessState().getLatestSourceDataHash());
     }
 
     @Test
@@ -5406,6 +5450,74 @@ public class PlanningStateServiceTest {
         assertEquals(Double.valueOf(60D), sortItems.getJSONObject(0).getDouble("finalScore"));
         assertEquals(Integer.valueOf(1), sortItems.getJSONObject(0).getInteger("position"));
         assertTrue(sorted.getStaleFlags().getReview());
+    }
+
+    @Test
+    void shouldExposeOrderedUnitTotalMajorCountFromFullMajorGroup() {
+        CandidatePoolStateDTO candidatePoolState = new CandidatePoolStateDTO();
+        candidatePoolState.setVolunteerModel(VolunteerModel.majorGroup.name());
+        CandidateItemDTO majorA = buildCandidateItem("ps1_m1", "ps1", "s1", "学校A第01组", "冲", "专业A1", 35D, 60D, 35D, false);
+        majorA.setSchoolUnitCode("001");
+        CandidateItemDTO majorB = buildCandidateItem("ps1_m2", "ps1", "s1", "学校A第01组", "冲", "专业A2", 33D, 58D, 35D, false);
+        majorB.setSchoolUnitCode("001");
+        CandidateItemDTO majorC = buildCandidateItem("ps1_m3", "ps1", "s1", "学校A第01组", "冲", "专业A3", 31D, 56D, 35D, false);
+        majorC.setSchoolUnitCode("001");
+        candidatePoolState.getItems().add(majorA);
+        candidatePoolState.getItems().add(majorB);
+        candidatePoolState.getItems().add(majorC);
+
+        OrderedPlanStateDTO orderedPlanState = new OrderedPlanStateDTO();
+        orderedPlanState.getItems().add(buildOrderedItem("ps1_m1", "学校A第01组", "专业A1", "冲", 1));
+        orderedPlanState.getItems().add(buildOrderedItem("ps1_m2", "学校A第01组", "专业A2", "冲", 2));
+        orderedPlanState.setUnits(ReflectionTestUtils.invokeMethod(planningStateService,
+                "buildOrderedUnitsFromOrderedItems", orderedPlanState.getItems(), null, candidatePoolState.getItems()));
+
+        assertEquals(1, orderedPlanState.getUnits().size());
+        OrderedUnitDTO unit = orderedPlanState.getUnits().get(0);
+        assertEquals("ps1", unit.getUnitId());
+        assertEquals("ps1", unit.getPlanSchoolDataId());
+        assertEquals("s1", unit.getSchoolId());
+        assertEquals("001", unit.getSchoolUnitCode());
+        assertEquals(2, unit.getMajorItems().size());
+        assertEquals(Integer.valueOf(3), unit.getTotalMajorCount());
+    }
+
+    @Test
+    void shouldBackfillOrderedUnitTotalMajorCountFromInitialUnitsForLegacyWorkspace() {
+        PlanningStateDTO state = new PlanningStateDTO();
+        CandidatePoolStateDTO candidatePoolState = new CandidatePoolStateDTO();
+        candidatePoolState.setVolunteerModel(VolunteerModel.majorGroup.name());
+        candidatePoolState.getItems().add(buildCandidateItem("ps1_m1", "ps1", "s1", "学校A第01组", "冲", "专业A1", 35D, 60D, 35D, false));
+        candidatePoolState.getItems().add(buildCandidateItem("ps1_m2", "ps1", "s1", "学校A第01组", "冲", "专业A2", 33D, 58D, 35D, false));
+        state.setCandidatePoolState(candidatePoolState);
+
+        PlanningUnitDTO initialUnit = new PlanningUnitDTO();
+        initialUnit.setUnitId("ps1");
+        initialUnit.setPlanSchoolDataId("ps1");
+        initialUnit.setSchoolId("s1");
+        initialUnit.setSchoolName("学校A第01组");
+        initialUnit.setTotalMajorCount(3);
+        state.getInitialRecommendationState().getUnits().add(initialUnit);
+
+        OrderedUnitDTO orderedUnit = new OrderedUnitDTO();
+        orderedUnit.setUnitId("ps1");
+        orderedUnit.setSchoolName("学校A第01组");
+        PlanningUnitMajorDTO majorA = new PlanningUnitMajorDTO();
+        majorA.setVolunteerId("ps1_m1");
+        majorA.setMajorName("专业A1");
+        PlanningUnitMajorDTO majorB = new PlanningUnitMajorDTO();
+        majorB.setVolunteerId("ps1_m2");
+        majorB.setMajorName("专业A2");
+        orderedUnit.setMajorItems(java.util.Arrays.asList(majorA, majorB));
+        state.getOrderedPlanState().getUnits().add(orderedUnit);
+
+        ReflectionTestUtils.invokeMethod(planningStateService, "normalizeMajorGroupUnitMetadata", state);
+
+        OrderedUnitDTO normalized = state.getOrderedPlanState().getUnits().get(0);
+        assertEquals("ps1", normalized.getPlanSchoolDataId());
+        assertEquals("s1", normalized.getSchoolId());
+        assertEquals(2, normalized.getMajorItems().size());
+        assertEquals(Integer.valueOf(3), normalized.getTotalMajorCount());
     }
 
     @Test

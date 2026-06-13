@@ -178,6 +178,7 @@ public class PlanningStateService {
     public PlanningStateDTO getPlanningState(Long chatSessionId) {
         PlanningStateDTO state = loadPlanningState(chatSessionId);
         state.setSessionId(chatSessionId);
+        normalizeMajorGroupUnitMetadata(state);
         enrichReviewMetadata(state.getReviewState());
         normalizeReviewReasonCodes(buildReviewReasonAnalysisState(state), state.getReviewState());
         enrichPlanAdjustmentMetadata(state.getPlanAdjustmentState());
@@ -4066,6 +4067,9 @@ public class PlanningStateService {
         OrderedUnitDTO copy = new OrderedUnitDTO();
         copy.setPosition(source.getPosition());
         copy.setUnitId(source.getUnitId());
+        copy.setPlanSchoolDataId(source.getPlanSchoolDataId());
+        copy.setSchoolId(source.getSchoolId());
+        copy.setSchoolUnitCode(source.getSchoolUnitCode());
         copy.setTier(source.getTier());
         copy.setSchoolName(source.getSchoolName());
         copy.setProvinceName(source.getProvinceName());
@@ -4079,6 +4083,7 @@ public class PlanningStateService {
         copy.setAdmissionRatio(source.getAdmissionRatio());
         copy.setFinalScore(source.getFinalScore());
         copy.setSchoolEnrollRatio(source.getSchoolEnrollRatio());
+        copy.setTotalMajorCount(source.getTotalMajorCount());
         copy.setMajorItems(Lists.newArrayList(defaultPlanningUnitMajors(source.getMajorItems())));
         return copy;
     }
@@ -5859,6 +5864,9 @@ public class PlanningStateService {
         target.setLastError(schedule.getLastError());
         target.setLastFailedAt(formatDate(schedule.getLastFailedAt()));
         if ("changed".equals(schedule.getLastCheckStatus())) {
+            if (hasDetailedDataFreshnessChange(target)) {
+                return;
+            }
             target.setStatusCode("changed");
             target.setChangeLevel("minor");
             target.setShouldNotify(true);
@@ -5876,6 +5884,13 @@ public class PlanningStateService {
                 target.setSummary("招生计划后台检查暂时失败，系统会继续重试。");
             }
         }
+    }
+
+    private boolean hasDetailedDataFreshnessChange(DataFreshnessStateDTO target) {
+        return target != null
+                && "changed".equals(target.getStatusCode())
+                && !Strings.isNullOrEmpty(target.getChangeLevel())
+                && !"none".equals(target.getChangeLevel());
     }
 
     private CreateSessionReq loadCreateSessionReq(Long chatSessionId) {
@@ -9462,6 +9477,8 @@ public class PlanningStateService {
                 : candidates.stream()
                 .filter(candidate -> !Strings.isNullOrEmpty(candidate.getVolunteerId()))
                 .collect(Collectors.toMap(CandidateItemDTO::getVolunteerId, candidate -> candidate, (left, right) -> left, LinkedHashMap::new));
+        CandidateResolver candidateResolver = new CandidateResolver(candidates);
+        Map<String, Integer> unitMajorCountMap = buildMajorGroupTotalMajorCountMap(candidates);
         for (DraftUnitDTO draftUnit : defaultDraftUnits(draftPlanState == null ? null : draftPlanState.getUnits())) {
             for (PlanningUnitMajorDTO major : defaultPlanningUnitMajors(draftUnit.getMajorItems())) {
                 if (!Strings.isNullOrEmpty(major.getVolunteerId())) {
@@ -9473,6 +9490,7 @@ public class PlanningStateService {
         Map<String, OrderedUnitDTO> unitMap = new LinkedHashMap<String, OrderedUnitDTO>();
         for (OrderedItemDTO item : defaultOrderedItems(items)) {
             String unitId = resolveDraftOrOrderedUnitId(item);
+            CandidateItemDTO resolvedCandidate = candidateResolver.resolve(item);
             OrderedUnitDTO unit = unitMap.computeIfAbsent(unitId, key -> {
                 OrderedUnitDTO dto = new OrderedUnitDTO();
                 dto.setUnitId(key);
@@ -9483,10 +9501,15 @@ public class PlanningStateService {
                 dto.setOrderedBy(item.getOrderedBy());
                 dto.setOrderReason(item.getOrderReason());
                 dto.setPosition(item.getPosition());
+                fillOrderedUnitGroupFields(dto, resolvedCandidate, unitMajorCountMap);
                 return dto;
             });
+            CandidateItemDTO candidate = resolvedCandidate;
+            fillOrderedUnitGroupFields(unit, candidate, unitMajorCountMap);
             PlanningUnitMajorDTO major = majorMap.get(item.getVolunteerId());
-            CandidateItemDTO candidate = candidateMap.get(item.getVolunteerId());
+            if (candidate == null) {
+                candidate = candidateMap.get(item.getVolunteerId());
+            }
             if (major == null) {
                 major = new PlanningUnitMajorDTO();
                 major.setVolunteerId(item.getVolunteerId());
@@ -9523,8 +9546,174 @@ public class PlanningStateService {
         }
         for (OrderedUnitDTO unit : unitMap.values()) {
             unit.setMajorItems(sortSelectedMajorsForDisplay(unit.getMajorItems()));
+            if (unit.getTotalMajorCount() == null || unit.getTotalMajorCount() <= 0) {
+                unit.setTotalMajorCount(defaultPlanningUnitMajors(unit.getMajorItems()).size());
+            }
         }
         return Lists.newArrayList(unitMap.values());
+    }
+
+    private void fillOrderedUnitGroupFields(OrderedUnitDTO unit,
+                                            CandidateItemDTO candidate,
+                                            Map<String, Integer> unitMajorCountMap) {
+        if (unit == null || candidate == null) {
+            return;
+        }
+        if (Strings.isNullOrEmpty(unit.getPlanSchoolDataId())) {
+            unit.setPlanSchoolDataId(candidate.getPlanSchoolDataId());
+        }
+        if (Strings.isNullOrEmpty(unit.getSchoolId())) {
+            unit.setSchoolId(candidate.getSchoolId());
+        }
+        if (Strings.isNullOrEmpty(unit.getSchoolUnitCode())) {
+            unit.setSchoolUnitCode(candidate.getSchoolUnitCode());
+        }
+        Integer totalMajorCount = resolveMajorGroupTotalMajorCount(candidate, unitMajorCountMap);
+        if (totalMajorCount != null && totalMajorCount > 0
+                && (unit.getTotalMajorCount() == null || totalMajorCount > unit.getTotalMajorCount())) {
+            unit.setTotalMajorCount(totalMajorCount);
+        }
+    }
+
+    private Map<String, Integer> buildMajorGroupTotalMajorCountMap(List<CandidateItemDTO> candidates) {
+        Map<String, Integer> result = new LinkedHashMap<String, Integer>();
+        for (CandidateItemDTO candidate : defaultCandidates(candidates)) {
+            Set<String> keys = resolveMajorGroupIdentityKeys(candidate);
+            for (String key : keys) {
+                result.put(key, result.getOrDefault(key, 0) + 1);
+            }
+        }
+        return result;
+    }
+
+    private Integer resolveMajorGroupTotalMajorCount(CandidateItemDTO candidate,
+                                                     Map<String, Integer> unitMajorCountMap) {
+        for (String key : resolveMajorGroupIdentityKeys(candidate)) {
+            Integer count = unitMajorCountMap.get(key);
+            if (count != null && count > 0) {
+                return count;
+            }
+        }
+        return null;
+    }
+
+    private Set<String> resolveMajorGroupIdentityKeys(CandidateItemDTO candidate) {
+        Set<String> keys = new LinkedHashSet<String>();
+        if (candidate == null) {
+            return keys;
+        }
+        addMajorGroupIdentityKey(keys, "planSchoolDataId", candidate.getPlanSchoolDataId());
+        addMajorGroupIdentityKey(keys, "schoolUnitCode", candidate.getSchoolUnitCode());
+        addMajorGroupIdentityKey(keys, "legacyPrefix", CandidateResolver.legacyVolunteerPrefix(candidate.getVolunteerId()));
+        addMajorGroupIdentityKey(keys, "schoolName", candidate.getSchoolName());
+        return keys;
+    }
+
+    private void addMajorGroupIdentityKey(Set<String> keys, String type, String value) {
+        if (!Strings.isNullOrEmpty(value)) {
+            keys.add(type + ":" + value.trim());
+        }
+    }
+
+    private void normalizeMajorGroupUnitMetadata(PlanningStateDTO state) {
+        if (state == null || !isMajorGroupMode(state.getCandidatePoolState())) {
+            return;
+        }
+        Map<String, PlanningUnitDTO> initialUnitMap = buildInitialRecommendationUnitMap(
+                state.getInitialRecommendationState() == null ? null : state.getInitialRecommendationState().getUnits());
+        List<CandidateItemDTO> candidates = defaultCandidates(state.getCandidatePoolState() == null ? null : state.getCandidatePoolState().getItems());
+        CandidateResolver candidateResolver = new CandidateResolver(candidates);
+        Map<String, Integer> unitMajorCountMap = buildMajorGroupTotalMajorCountMap(candidates);
+        normalizeOrderedUnitMetadata(state.getOrderedPlanState(), initialUnitMap, candidateResolver, unitMajorCountMap);
+    }
+
+    private Map<String, PlanningUnitDTO> buildInitialRecommendationUnitMap(List<PlanningUnitDTO> units) {
+        Map<String, PlanningUnitDTO> result = new LinkedHashMap<String, PlanningUnitDTO>();
+        for (PlanningUnitDTO unit : units == null ? Lists.<PlanningUnitDTO>newArrayList() : units) {
+            putInitialRecommendationUnit(result, unit == null ? null : unit.getUnitId(), unit);
+            putInitialRecommendationUnit(result, unit == null ? null : unit.getPlanSchoolDataId(), unit);
+            putInitialRecommendationUnit(result, unit == null ? null : unit.getSchoolName(), unit);
+        }
+        return result;
+    }
+
+    private void putInitialRecommendationUnit(Map<String, PlanningUnitDTO> target,
+                                              String key,
+                                              PlanningUnitDTO unit) {
+        if (!Strings.isNullOrEmpty(key) && unit != null && !target.containsKey(key)) {
+            target.put(key, unit);
+        }
+    }
+
+    private void normalizeOrderedUnitMetadata(OrderedPlanStateDTO orderedPlanState,
+                                              Map<String, PlanningUnitDTO> initialUnitMap,
+                                              CandidateResolver candidateResolver,
+                                              Map<String, Integer> unitMajorCountMap) {
+        if (orderedPlanState == null) {
+            return;
+        }
+        for (OrderedUnitDTO unit : defaultOrderedUnits(orderedPlanState.getUnits())) {
+            if (unit == null) {
+                continue;
+            }
+            PlanningUnitDTO initialUnit = resolveInitialRecommendationUnit(unit, initialUnitMap);
+            fillOrderedUnitGroupFieldsFromInitialUnit(unit, initialUnit);
+            for (PlanningUnitMajorDTO major : defaultPlanningUnitMajors(unit.getMajorItems())) {
+                CandidateItemDTO candidate = candidateResolver.resolve(major == null ? null : major.getVolunteerId());
+                if (candidate != null) {
+                    fillOrderedUnitGroupFields(unit, candidate, unitMajorCountMap);
+                    break;
+                }
+            }
+            if (unit.getTotalMajorCount() == null || unit.getTotalMajorCount() <= 0) {
+                unit.setTotalMajorCount(defaultPlanningUnitMajors(unit.getMajorItems()).size());
+            }
+        }
+    }
+
+    private PlanningUnitDTO resolveInitialRecommendationUnit(OrderedUnitDTO unit,
+                                                             Map<String, PlanningUnitDTO> initialUnitMap) {
+        if (unit == null || initialUnitMap == null || initialUnitMap.isEmpty()) {
+            return null;
+        }
+        for (String key : Lists.newArrayList(unit.getPlanSchoolDataId(), unit.getUnitId(), unit.getSchoolName())) {
+            if (!Strings.isNullOrEmpty(key) && initialUnitMap.containsKey(key)) {
+                return initialUnitMap.get(key);
+            }
+        }
+        return null;
+    }
+
+    private void fillOrderedUnitGroupFieldsFromInitialUnit(OrderedUnitDTO unit,
+                                                           PlanningUnitDTO initialUnit) {
+        if (unit == null || initialUnit == null) {
+            return;
+        }
+        if (Strings.isNullOrEmpty(unit.getPlanSchoolDataId())) {
+            unit.setPlanSchoolDataId(initialUnit.getPlanSchoolDataId());
+        }
+        if (Strings.isNullOrEmpty(unit.getSchoolId())) {
+            unit.setSchoolId(initialUnit.getSchoolId());
+        }
+        if (Strings.isNullOrEmpty(unit.getProvinceName())) {
+            unit.setProvinceName(initialUnit.getProvinceName());
+        }
+        if (Strings.isNullOrEmpty(unit.getCityName())) {
+            unit.setCityName(initialUnit.getCityName());
+        }
+        if (unit.getSchoolEnrollRatio() == null) {
+            unit.setSchoolEnrollRatio(initialUnit.getSchoolEnrollRatio());
+        }
+        if (unit.getAdmissionRatio() == null) {
+            unit.setAdmissionRatio(initialUnit.getAdmissionRatio());
+        }
+        if (unit.getFinalScore() == null) {
+            unit.setFinalScore(initialUnit.getFinalScore());
+        }
+        if (initialUnit.getTotalMajorCount() != null && initialUnit.getTotalMajorCount() > 0
+                && (unit.getTotalMajorCount() == null || initialUnit.getTotalMajorCount() > unit.getTotalMajorCount())) {
+            unit.setTotalMajorCount(initialUnit.getTotalMajorCount());
+        }
     }
 
     private int autoProtectPriority(CandidateItemDTO item, String sourceProvinceName) {

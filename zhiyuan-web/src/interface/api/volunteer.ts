@@ -403,6 +403,7 @@ export interface PlanningCandidateItem {
   subTier?: string;
   planSchoolDataId?: string;
   schoolId?: string;
+  schoolUnitCode?: string;
   schoolName?: string;
   provinceName?: string;
   cityName?: string;
@@ -596,6 +597,9 @@ export interface PlanningWorkingPlanState {
 
 export interface PlanningOrderedUnit {
   unitId?: string;
+  planSchoolDataId?: string;
+  schoolId?: string;
+  schoolUnitCode?: string;
   tier?: string;
   schoolName?: string;
   source?: string;
@@ -610,6 +614,10 @@ export interface PlanningOrderedUnit {
   admissionRatio?: number;
   finalScore?: number;
   schoolEnrollRatio?: number;
+  requiredMajorCount?: number;
+  selectedMajorCount?: number;
+  totalMajorCount?: number;
+  allMajors?: PlanningUnitMajorItem[];
   majorItems?: PlanningUnitMajorItem[];
 }
 

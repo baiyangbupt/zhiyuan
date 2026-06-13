@@ -67,7 +67,7 @@
 
 1. 后台定时巡检：主触发方式，按省份和会话创建时间分散执行，单会话最长 5 小时内完成一次检查。
 2. 打开会话详情或工作区时触发兜底异步检查：仅当该会话超过允许检查间隔时入队，不做页面高频轮询。
-3. 用户手动点击“检查更新 / 刷新候选”：手动触发完整影响分析或确认后同步数据。
+3. 页面兜底静默检查 / 用户进入候选区：静默触发完整影响分析；需要使用最新数据时，进入候选区自动同步并刷新候选。
 
 刷新原则：
 
@@ -198,9 +198,10 @@
 建议前端至少增加：
 
 - 会话详情顶部提示条。
-- 工作区通知区。
-- 变化明细弹层或抽屉。
-- 重新审查按钮。
+- 顶部弱提示区，放在填报类型标签左侧。
+- 用户进入候选区时自动刷新最新候选，不额外展示刷新按钮。
+- 方案区重新审查按钮。
+- 变化明细弹层或抽屉作为后续增强，不进入当前强展示。
 
 ## 11. 3.1.0 推荐实施顺序
 
@@ -345,7 +346,7 @@
   - 传入外部 `dataHash/dataVersion/changeLevel` 且与当前快照不同，则标记数据变化。
   - `minor` 变化只提示刷新候选池，不强制审查 stale。
   - `medium/major` 变化会标记候选、推荐、方案调整和审查 stale。
-- 前端工作区增加招生计划更新提示条，展示变化级别、影响数量、检查时间，并提供「检查更新」「刷新候选」「重新审查」入口。
+- 前端取消工作区内强提示条和手动「检查更新」入口；会话详情顶部在「智能/模拟填报」标签左侧展示弱提示：最后检查时间、同步中状态或有更新后的动作引导。
 - Agent `query_state` 状态概览会读取 `dataFreshnessState`，只做摘要提示和下一步建议，不自动触发方案调整。
 
 与复合 action plan 的关系：
@@ -370,14 +371,22 @@
 - 数据变化后：
   - `minor`：标记候选池、初始推荐、方案调整 stale，不强制审查 stale。
   - `medium/major`：标记候选池、推荐 overlay、初始推荐、排序方案、方案调整、审查 stale。
-- `CandidatePoolGenerateReq` 增加 `refreshSourceData`。用户点击工作区「刷新候选」时传 `refreshSourceData=true`，先同步最新 `session_volunteer`，再重新生成候选池。
+- `CandidatePoolGenerateReq` 增加 `refreshSourceData`。用户在数据更新后进入候选区时自动传 `refreshSourceData=true`，先同步最新 `session_volunteer`，再重新生成候选池。
 - 空请求且没有外部 hash 时不会清除已有 `changed` 提示，避免前端误把未检查当作已恢复。
 
 前端实现：
 
-- 工作区「检查更新」调用 `data-freshness/check` 时传 `{ fetchLatest: true }`，展示最新比对结果。
-- 数据更新提示条中的「刷新候选」调用候选池生成接口时传 `refreshSourceData=true`，确保后续候选池使用最新高途数据。
-- 普通候选池刷新和其他历史入口不传 `refreshSourceData`，保持原行为。
+- 工作区打开后对 `VOLUNTEER` 会话按 `nextCheckAt/lastCheckedAt` 进行节流式静默检查，调用 `data-freshness/check` 时传 `{ fetchLatest: true }`；检查过程只在顶部弱提示中显示「志愿数据同步中」，不弹 toast，不暴露完整 diff。
+- 顶部弱提示仅给出引导动作，例如「志愿数据有更新，可刷新候选或重新审查」；不展示候选级影响数量、变化明细或初始推荐内部修复说明。
+- 需要使用最新源数据时，用户进入候选区自动触发候选池生成接口并传 `refreshSourceData=true`；不额外展示刷新按钮，审查仍由方案区「审查/重新审查」按钮触发。
+- 普通候选池查询和其他历史入口不传 `refreshSourceData`，保持原行为。
+
+用户界面边界：
+
+- 初始方案生成阶段的结构修复、候选替换和取舍说明属于内部策略报告，暂不在用户界面展示，避免和数据更新提醒混在一起。
+- 数据更新提醒不放在工作台卡片区，不使用强提示条；统一放在会话详情顶部 meta 区，位置在「智能/模拟填报」标签左侧，样式弱化。
+- 顶部弱提示只承载三类状态：最新同步时间、同步中、有更新后的下一步动作引导；更新时间旁保留弱化 info icon，hover 时展示最新同步时间、预计下次同步时间、更新摘要、变化数量和详细说明；当 `statusCode=changed/shouldNotify=true` 时提示常驻，直到候选自动刷新或后续检查确认状态恢复。
+- 候选刷新由进入候选区自动承接，审查由方案区「审查/重新审查」按钮承接；数据检查本身不需要用户感知为一个可点击动作。
 
 Agent 影响：
 
@@ -386,7 +395,7 @@ Agent 影响：
 
 后续待接入：
 
-- 定时任务或会话打开时异步检查活跃会话，避免完全依赖用户手动点击。
+- 后台巡检继续作为生产主路径；页面打开的静默检查只作为单会话兜底，并受 `nextCheckAt/lastCheckedAt` 节流控制。
 - 更细粒度 diff：院校/专业组下线、计划数变化、录取率变化、选科/体检/批次变化分别对应不同通知文案和操作建议。
 - 工作区变化明细抽屉和受影响条目高亮。
 - 刷新候选后的“旧方案受影响项”可视化审查，供复合 action plan 生成可确认的多步骤处理预览。
@@ -417,12 +426,12 @@ Agent 影响：
 - 字段扩展本身只增加候选条目遍历时的 `row.put` 和 JSON 序列化长度，通常不是主要开销。
 - 当前链路的主要开销分两类：后台检查侧的高途全量招生计划拉取、JSON 清洗和 `sourceDataHash` 计算；用户确认刷新侧的推荐过滤排序流水线和候选池重新生成。
 - 后台巡检只能做源数据 hash 级检查、状态更新和通知标记，不执行推荐流水线，不生成候选池，不改动方案。
-- 完整影响分析、候选池重新生成、排序和审查仍由用户点击「检查更新 / 刷新候选 / 重新审查」或明确指令触发。
+- 完整影响分析由页面兜底静默检查或后台巡检触发；候选池重新生成由用户进入候选区自动触发，审查仍由用户点击「重新审查」或明确指令触发。
 - 定时任务必须限制会话范围、批量大小、并发数、超时时间和重试次数，避免与线上主链路争抢 CPU、网络和高途接口额度。
 
 ### 15.3 更新触发策略补充：后台巡检优先，5 小时封顶
 
-仅靠用户主动点击「检查更新」不够；但当前“轻量检查”仍需要调用高途全量招生计划接口并计算 `sourceDataHash`，网络 IO 不适合在用户打开页面后高频轮询。本阶段触发策略调整为后台巡检优先，页面访问只做兜底。
+仅靠用户主动刷新候选不够；但当前“轻量检查”仍需要调用高途全量招生计划接口并计算 `sourceDataHash`，网络 IO 不适合在用户打开页面后高频轮询。本阶段触发策略调整为后台巡检优先，页面访问只做节流兜底。
 
 后台巡检目标：
 
@@ -505,7 +514,7 @@ Agent 影响：
 - 后台巡检任务默认关闭：`planning.data-freshness.schedule.enabled=false`。上线后需要明确开启配置才会开始请求高途。
 - 后台任务每轮先小批量补建索引，再按 `nextCheckAt/lastCheckedAt` 取到期会话执行轻量检查；单轮执行量由 `batch-size` 和 `max-consecutive-tasks` 控制。
 - 轻量检查只重拉并清洗高途源数据，计算 `sourceDataHash` 并写入索引；不生成候选池、不重新排序、不覆盖用户方案。
-- 前端取消工作区打开后的自动静默检查，保留用户手动「检查更新」入口。
+- 前端取消工作区内强提示条和手动「检查更新」入口；工作区打开后只对 `VOLUNTEER` 会话按 `nextCheckAt/lastCheckedAt` 节流触发静默检查。
 
 生产部署注意：
 
@@ -513,7 +522,34 @@ Agent 影响：
 - 首次打开后台巡检建议保守配置：`batch-size=5`、`max-consecutive-tasks=1`、`fixed-delay-ms=300000`，观察高途接口耗时、失败率和机器负载后再调整。
 - 如果短期只需要状态可查但不希望后台自动打高途，保持 `enabled=false`，接口仍可查看/补建单会话索引。
 
-### 15.7 待验证项与投产前检查清单
+### 15.7 测试环境升级验证背景
+
+当前本机测试环境不是全新空环境，而是用于承接主站联调的标准测试环境。验证背景如下：
+
+- 当前测试环境基线版本按 3.0.2 处理，已复用测试库、Redis、LLM、Rank、Agent 等外部依赖。
+- 本次验证目标是把该测试环境升级到当前 3.1.0 代码，验证从既有 3.0.2 环境升级后的兼容性、数据迁移、前后端联调和主站入口链路。
+- 生产升级路径还需要覆盖 3.0.3 到 3.1.0 的兼容性，因为 3.1.0 已包含 3.0.3 小修复和本期新增能力。
+- 验证范围不能只看新建会话；必须覆盖旧会话打开、候选池刷新、方案区展示、专业组模式、数据新鲜度检查、短信/主站登录态进入等历史链路。
+- 本机测试环境必须保持生产相同行为，不再保留研发期鉴权绕过、内置超管或临时权益兜底逻辑。
+- 数据库升级必须确认 `V6__add_planning_data_freshness_schedule.sql` 已执行，避免 3.1.0 工作区加载和数据新鲜度状态查询在旧库结构上报错。
+- 主站联调入口按 `test-www.gaotuzhiyuan.com/assistant-pc` 进入，前端、后端、Agent、Rank 的路由和反向代理需要按标准环境验证，而不是只验证本机直连地址。
+
+本节后续清单均基于上述升级背景执行：先确认 3.0.2 基线环境可运行，再升级到 3.1.0，最后验证数据更新、专业组展示和主站联调链路。
+
+
+#### 15.7.1 2026-06-13 本机升级执行记录
+
+本机标准测试环境已从 `.local-prod-3.0.2` 运行目录切换到 `/root/dev/zhiyuan` 当前 `develop` 代码运行，端口和主站联调入口保持不变：
+
+- 后端：`18090`，进程命令为 `java -jar /root/dev/zhiyuan/zhiyuan-server/target/zhiyuan-server.jar --spring.profiles.active=localtest`。
+- 前端：`3001`，进程命令为 `next start -H 0.0.0.0 -p 3001`，使用 `/assistant-pc` basePath。
+- Agent：继续使用标准测试容器 `18091`，健康检查返回 `UP`。
+- Rank：继续使用标准测试容器 `18092`，健康检查返回 `healthy`。
+- 数据库：连接测试库 `hl_zhiyuan`，Flyway 已确认从版本 5 升到版本 6，`assistant_planning_data_freshness_schedule` 对应迁移已生效。
+- 验证：`/assistant-pc/sessionDetailV2`、`/assistant-pc/session`、`/session/data-freshness/schedule`、`/session/workspace-state` 已通过本机 HTTP 检查。
+- 运行约束：本机私有 `.env.standardtest`、pid 文件和 `.local-prod-3.0.2` 目录已加入忽略范围，不作为 3.1.0 代码提交内容。
+
+### 15.8 待验证项与投产前检查清单
 
 本阶段代码已完成后台巡检骨架，但生产启用前仍需要按以下清单逐项验证，避免对线上高途接口、数据库和用户工作区产生额外影响。
 
@@ -531,13 +567,13 @@ Agent 影响：
 
 工作区展示：
 
-- 在巡检索引中模拟 `lastCheckStatus=changed`，打开工作区确认会展示数据更新提示，但不会自动刷新候选池、不会修改方案、不会重新排序。
+- 在巡检索引中模拟 `lastCheckStatus=changed`，打开工作区确认会在顶部弱提示中给出动作引导，但不会自动刷新候选池、不会修改方案、不会重新排序。
 - 在巡检索引中模拟 `lastCheckStatus=failed`，确认工作区能展示检查失败或稍后重试提示，不阻塞用户继续查看和编辑方案。
-- 确认前端打开工作区时只读取状态，不再发起自动静默全量检查。
+- 确认前端打开工作区时只对 `VOLUNTEER` 会话按 `nextCheckAt/lastCheckedAt` 节流发起静默检查；`PREDICT` 会话不触发真实高途重拉。
 
 手动刷新链路：
 
-- 点击「检查更新」验证仍走完整影响分析，能展示变化范围，并由用户确认是否刷新候选或重新审查。
+- 静默检查验证仍走完整影响分析，但前端只展示弱提示和动作引导；候选刷新由进入候选区自动承接，重新审查由方案区入口承接。
 - 用户确认刷新前，候选池、排序区、方案区和导出结果不应被后台巡检改写。
 - 用户确认刷新后，巡检索引中的 `lastSourceDataHash/latestSourceDataHash/lastCheckedAt/nextCheckAt` 应随刷新结果同步更新。
 
@@ -565,4 +601,188 @@ Agent 影响：
 
 - 如发现负载异常或高途接口异常，第一时间将 `planning.data-freshness.schedule.enabled=false` 并重启新版本服务或热更新配置。
 - 回滚不需要删除 `assistant_planning_data_freshness_schedule` 表；保留索引数据便于后续排查。
-- 如需完全停止影响，除关闭开关外，应确认没有人工或定时任务继续调用手动「检查更新」批量接口。
+- 如需完全停止影响，除关闭开关外，应确认没有人工、页面兜底或定时任务继续批量调用数据新鲜度检查接口。
+
+### 15.9 本地 mock 数据更新验证方案
+
+为了在高途真实数据尚未发生变化、或不希望频繁打高途接口时验证完整提示链路，本地测试环境先采用“接口级 mock”，不新增业务代码，不替换高途数据源。
+
+验证目标：
+
+- 验证 `dataFreshnessState` 能从 `current` 变为 `changed`。
+- 验证 `minor/medium/major` 不同变化级别对 stale 标记、提示文案、工作区按钮的影响。
+- 验证用户确认前不会自动刷新候选池、不会重排、不会删除或替换方案。
+- 验证数据更新后进入候选区才会进入 `refreshSourceData=true` 的候选池刷新链路。
+- 验证点击「重新审查」时才触发审查链路，后台巡检和 mock 标记本身不自动审查。
+
+接口级 mock 请求示例：
+
+```bash
+curl -X POST 'http://127.0.0.1:18090/gaotu-assistant-bot/inner/planning/{tenantId}/session/data-freshness/check?chatSessionId={chatSessionId}' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "source": "gaotu",
+    "dataHash": "mock-data-hash-20260613-001",
+    "sourceDataHash": "mock-source-hash-20260613-001",
+    "changeLevel": "medium",
+    "summary": "本地模拟：部分院校/专业组招生计划发生变化。",
+    "detail": "用于验证 3.1.0 数据更新提示、候选刷新和重新审查链路。",
+    "changedCount": 12,
+    "addedCount": 2,
+    "removedCount": 1,
+    "updatedCount": 9,
+    "invalidCount": 1,
+    "affectedVolunteerIds": ["mock-volunteer-1", "mock-volunteer-2"],
+    "affectedUnitIds": ["mock-unit-1"],
+    "markStale": true,
+    "fetchLatest": false,
+    "syncSourceData": false
+  }'
+```
+
+关键约束：
+
+- `fetchLatest=false`：不重拉高途，不跑最新推荐流水线，只模拟外部数据摘要变化。
+- `syncSourceData=false`：不覆盖本地 `session_volunteer` 原始文件，不上传 OSS。
+- `dataHash` 必须与当前 `dataFreshnessState.dataHash` 不同，否则接口会判定无变化。
+- `markStale=true` 时才会把候选池、推荐、方案调整或审查标记为 stale；如果只验证通知展示，可以显式传 `markStale=false`。
+
+不同变化级别期望：
+
+- `minor`：`statusCode=changed`，`requiresCandidateRefresh=true`，`requiresReview=false`；候选池、初始推荐、方案调整 stale，但不强制审查 stale。
+- `medium`：`statusCode=changed`，`requiresCandidateRefresh=true`，`requiresReview=true`；候选池、推荐 overlay、初始推荐、排序方案、方案调整、审查均 stale。
+- `major`：语义同 `medium`，前端文案和审查优先级按重大变化处理；适合模拟下线、计划为 0 或关键约束变化。
+
+前端验收点：
+
+- 打开工作区后，顶部「智能/模拟填报」标签左侧能看到弱提示；有更新时只展示动作引导，不展示变化级别、变化数量和详细摘要。
+- `VOLUNTEER` 会话打开后，如果已到 `nextCheckAt` 或超过兜底检查间隔，会静默调用 `{ fetchLatest: true }` 进入真实高途重拉和候选级影响分析；检查中只显示「志愿数据同步中」。
+- 数据更新后进入候选区会自动调用候选池生成接口，并传 `refreshSourceData=true`，此时才允许覆盖本地源数据并重建候选池。
+- 点击「重新审查」只基于当前候选池/方案状态运行审查，不应由 mock 请求自动触发。
+- mock 标记后，在用户进入候选区或点击方案区审查前，方案条目数量、排序、专业组内专业数量和用户编辑内容必须保持不变。
+
+后端验收点：
+
+- `POST /session/data-freshness/check` 返回 `dataFreshnessState.statusCode=changed`。
+- 返回的 `workspaceState.dataFreshnessState` 与工作区展示一致。
+- `operationLogs` 增加 `volunteer_data_change_detected` 记录。
+- `GET /session/data-freshness/schedule` 可看到 `latestSourceDataHash` 或检查状态已同步到巡检索引。
+- 日志中不应出现 `fetchLatestVolunteerSourceData step=queryAllProgramData`，除非本次请求显式传了 `fetchLatest=true`。
+
+恢复当前状态的验证方式：
+
+- 调用 `{ fetchLatest: true }` 做真实检查；如果高途数据与当前快照一致，状态会回到 `current`。
+- 或在刷新候选后重新生成快照，`dataFreshnessState.dataHash/sourceDataHash` 会更新为当前候选池和源数据摘要。
+- 不建议直接手工清空 `planningState` 中的 `dataFreshnessState`，避免绕过真实迁移和兼容逻辑。
+
+
+#### 15.9.1 2026-06-13 本机 VOLUNTEER mock 验证记录
+
+本机测试库当前没有可直接用于数据更新验证的 `VOLUNTEER` 会话，因此按只新增不修改原会话的方式复制了会话 `114`，生成会话 `115`：
+
+- 原会话 `114` 保持 `prepareType=PREDICT` 不变，仅作为复制源。
+- 新会话 `115` 的 `userScoreDetail.prepareType` 改为 `VOLUNTEER/智能填报`，`planningState.sessionId` 同步改为 `115`。
+- 新会话 `115` 的候选池、排序方案、审查和用户编辑状态保持与源会话一致，用于隔离验证数据新鲜度链路。
+- `GET /session/data-freshness/schedule?chatSessionId=115` 返回 `prepareType=VOLUNTEER`、`enabled=true`、`sessionStatus=GOING`。
+
+接口级 mock 验证结果：
+
+- 请求端口使用当前标准测试后端 `18090`，不是旧后端 `8090`。
+- 请求参数为 `fetchLatest=false`、`syncSourceData=false`、`markStale=true`，日志未出现 `fetchLatestVolunteerSourceData step=queryAllProgramData`，确认未触发真实高途全量拉取。
+- `dataFreshnessState` 从 `current/none` 变为 `changed/medium`。
+- `requiresCandidateRefresh=true`、`requiresReview=true`。
+- `staleFlags.candidatePool/recommendationOverlay/initialRecommendation/orderedPlan/planAdjustment/review` 均为 `true`，`reasonCode=volunteer_data_changed`。
+- `operationLogs` 追加 `volunteer_data_change_detected`。
+- mock 前后候选池和方案未自动变化：候选 `175`，排序方案 `40` 组，方案内专业 `175`。
+
+验证中发现并修复的问题：
+
+- 问题：`POST /session/data-freshness/check` 返回的 `medium/requiresReview=true` 正确，但再次打开工作区时，`mergeScheduleDataFreshnessState` 会根据巡检索引 `lastCheckStatus=changed` 把状态覆盖成后台轻量检查语义的 `minor/requiresReview=false`。
+- 修复：当工作区已持久化明确的 `statusCode=changed` 且 `changeLevel!=none` 时，巡检索引只合并 `lastCheckedAt/nextCheckAt/sourceDataHash/latestSourceDataHash/failCount/lastError` 等后台元数据，不再覆盖候选级影响分析结果。
+- 回归测试：`PlanningStateServiceTest#shouldNotDowngradeDetailedDataFreshnessChangeWhenMergingScheduleState`。
+
+### 15.10 源数据级 mock 方案边界
+
+如果后续需要完整验证“高途返回变化 -> 清洗 -> sourceDataHash 变化 -> 候选级 diff -> 刷新候选”的全链路，可以再做源数据级 mock，但该能力必须受本地环境开关控制，不能进入默认生产路径。
+
+推荐设计：
+
+- 增加 `localtest` 或明确的 `planning.data-freshness.mock-source.enabled=true` 开关。
+- 只在本地测试 profile 生效，生产、预发、标准测试默认关闭。
+- mock 数据从固定 JSON 文件读取，结构必须与 `queryAllProgramData` 清洗后的 `VolunteerDataDTO` 兼容。
+- mock provider 只替换 `VolunteerSourceDataSyncService.fetchLatestSourceData` 的上游数据来源，不改变后续清洗、hash、推荐和 diff 逻辑。
+- mock 文件需要提供至少三组样例：无变化、轻微计划数变化、重大下线/失效变化。
+
+暂不直接实现源数据级 mock 的原因：
+
+- 当前接口级 mock 已能覆盖通知、stale、前端按钮和无副作用验证。
+- 源数据级 mock 会引入新的 profile、配置和测试数据维护成本。
+- 如果 mock provider 控制不严，存在误接入标准测试或生产路径的风险。
+- 高途真实联调开始后，优先用真实 `fetchLatest=true` 验证数据结构兼容，再决定是否补本地 mock provider。
+
+源数据级 mock 的实施条件：
+
+- 高途测试数据不可控，无法稳定制造新增、更新、下线三类变化。
+- 需要 CI 或本机自动化长期回归数据更新链路。
+- 需要验证候选级 diff 的精确受影响条目，而不是只验证工作区通知状态。
+
+### 15.11 本机 3.1.0 标准测试环境升级验证清单
+
+本机测试环境升级到 3.1.0 后，必须按标准环境方式验证，而不是只确认进程启动。
+
+升级前确认：
+
+- 当前运行基线记录为 3.0.2，保留旧会话用于升级兼容验证。
+- 后端、前端、Agent、Rank 当前端口和 nginx 路由记录清楚，避免新旧服务混跑。
+- 测试库、Redis、LLM、Rank、Agent 依赖继续使用标准测试环境配置，不切回生产库或研发临时库。
+- 清理研发期临时鉴权绕过、内置超管、临时权益兜底和调试前端入口。
+
+数据库：
+
+- 执行或确认已执行 `V6__add_planning_data_freshness_schedule.sql`。
+- 检查 `assistant_planning_data_freshness_schedule` 表和关键索引存在。
+- 打开旧会话时不应因为巡检索引缺失、`dataFreshnessState` 缺失或旧字段集 hash 变化导致 500。
+
+后端：
+
+- 使用当前 3.1.0 代码构建并启动标准后端服务。
+- 验证 `/gaotu-assistant-bot/inner/planning/{tenantId}/session/workspace-state` 可打开旧会话和新会话。
+- 验证 `/session/data-freshness/schedule` 对旧会话可补建索引。
+- 默认保持 `planning.data-freshness.schedule.enabled=false`，确认启动后没有自动批量请求高途。
+
+前端：
+
+- 构建 `/assistant-pc` base path 的 3.1.0 前端。
+- 通过主站入口 `test-www.gaotuzhiyuan.com/assistant-pc` 进入，不以本机直连地址作为最终验收。
+- 验证 PC 端会话列表不是移动端抽屉布局，移动端仍保持移动端布局。
+- 验证方案侧专业组标题末尾展示弱化标签“该组总共XX个专业”，数量取专业组全量专业数，不取当前方案已选入专业数；候选区原有专业组数量提示不变。
+
+Agent 与 Rank：
+
+- Rank 保持标准容器或服务方式运行，确认候选池生成能返回结果。
+- Agent 保持标准容器或服务方式运行，确认 websocket/对话入口可用。
+- 对话侧能读取 `dataFreshnessState` 并给出摘要建议，但不会自动刷新候选或改方案。
+
+主站联调：
+
+- nginx 路由应保持三段：`/assistant-pc/` 到前端，`/gaotu-assistant-bot/` 到 3.1.0 后端，`/gaotu-assistant-agent/` 到 Agent websocket 服务。
+- 主站进入后使用 gaotu channel 用户鉴权逻辑，不使用本地 bypass。
+- 手机号短信登录、主站登录态透传、用户权益识别和 `VOLUNTEER` 创建限制均按真实逻辑验证。
+- 非 `SUPER_VIP` 用户创建 `VOLUNTEER` 会话每天最多 2 个；`SUPER_VIP` 用户不受该限制。
+
+数据更新验证顺序：
+
+1. 先用旧会话打开工作区，确认 3.1.0 兼容旧状态。
+2. 调用接口级 mock 标记 `minor`，确认顶部弱提示引导刷新候选，不强制审查。
+3. 调用接口级 mock 标记 `medium`，确认顶部弱提示引导刷新候选或重新审查且方案不自动变化。
+4. 切换进入候选区，确认自动请求携带 `refreshSourceData=true`，候选池重新生成后状态更新。
+5. 在方案区点击「重新审查」，确认审查结果基于刷新后的候选池和当前方案。
+6. 需要真实验证时，使用 `VOLUNTEER` 会话等待或构造到期 `nextCheckAt` 触发静默 `{ fetchLatest: true }`，观察高途接口耗时和返回结构。
+
+验收完成标准：
+
+- 旧会话和新会话都能从主站入口进入并完成工作区加载。
+- 候选池、方案区、专业组模式、数据新鲜度提示、刷新候选、重新审查、对话入口都可用。
+- 后台巡检默认关闭时不会产生额外高途全量请求。
+- mock 数据更新不会自动改写用户方案；所有高副作用动作都需要用户点击或确认。
+- 前后端接口路径与后续提供给主站的 nginx 配置一致。

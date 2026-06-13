@@ -11,26 +11,32 @@ Thumbs.db
 zhiyuan-web/node_modules/
 zhiyuan-web/.next/
 zhiyuan-web/logs/
+.local-prod-3.0.2/
 
 # Backend
 zhiyuan-server/target/
 zhiyuan-server/logs/
+.local-prod-3.0.2/
 zhiyuan-server/*.log
+zhiyuan-server/data/tmp/session_volunteer_*.json
 
 # Agent
 zhiyuan-agent/.venv/
 zhiyuan-agent/__pycache__/
 zhiyuan-agent/*.egg-info/
 zhiyuan-agent/logs/
+.local-prod-3.0.2/
 zhiyuan-agent/data/chat_history.db
 
 # Rank
 zhiyuan-rank/.venv/
 zhiyuan-rank/__pycache__/
 zhiyuan-rank/logs/
+.local-prod-3.0.2/
 
 # Environment files with secrets
 *.env.local
+zhiyuan-web/.env.standardtest
 zhiyuan-agent/.env
 
 # Production configs with credentials
@@ -38,4 +44,6 @@ zhiyuan-server/src/main/resources/application-online.yml
 
 # Local scripts runtime
 .pids/
+.pids-*.pid
 logs/
+.local-prod-3.0.2/
