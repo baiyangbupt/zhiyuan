@@ -4199,6 +4199,38 @@ def test_execute_plan_action_replace_broad_high_tuition_without_scope_does_not_c
     assert "系统阻塞" not in data["summary"]
 
 
+def test_execute_plan_action_replace_protection_flags_do_not_count_as_replacement_scope():
+    payload = {
+        "stage": "preview",
+        "action_family": "replace_units",
+        "user_goal": "把高收费的换掉",
+        "context_summary": "阶段=reviewed；方案=45/45",
+        "missing_inputs": [],
+        "atomic_actions": [
+            {
+                "action_type": "replace_units",
+                "volunteer_ids": ["cost-1"],
+                "filters": {
+                    "limit": "5",
+                    "school_tags": "[]",
+                    "major_tags": "[]",
+                    "preserve_count": True,
+                    "requireCapacityCheck": True,
+                },
+                "reason": "替换高收费",
+            }
+        ],
+    }
+
+    result = asyncio.run(execute_plan_action(_ctx(), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["applied"] is False
+    assert data["result_kind"] == "error"
+    assert data["reply_focus"] == ["missing_inputs"]
+    assert "缺少新志愿的筛选方向" in data["summary"]
+
+
 def test_execute_plan_action_remove_preview_accepts_flat_review_issue_code():
     payload = {
         "stage": "preview",

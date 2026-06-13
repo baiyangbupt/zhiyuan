@@ -4064,7 +4064,7 @@ def _plan_action_has_filter_selection_scope(filters: Any) -> bool:
     if not isinstance(filters, dict):
         return False
     for key, value in filters.items():
-        if key == "limit":
+        if key in {"limit", "preserve_count", "preserveCount", "require_capacity_check", "requireCapacityCheck"}:
             continue
         if key in {"school_tags", "major_tags"} and str(value or "").strip() == "[]":
             continue

@@ -641,7 +641,7 @@ def _allows_mutating_apply(ctx: RunContext[RequestContext], plan_model: PlanActi
 
 def _has_filter_selection_scope(filters: dict[str, Any]) -> bool:
     for key, value in (filters or {}).items():
-        if key == "limit":
+        if key in {"limit", "preserve_count", "preserveCount", "require_capacity_check", "requireCapacityCheck"}:
             continue
         if key in {"school_tags", "major_tags"} and str(value or "").strip() == "[]":
             continue

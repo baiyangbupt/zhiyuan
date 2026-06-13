@@ -4329,6 +4329,64 @@ def test_extract_pending_plan_action_rejects_replace_preview_without_replacement
     assert _extract_pending_plan_action(messages) is None
 
 
+def test_extract_pending_plan_action_rejects_replace_preview_with_only_protection_flags():
+    payload = {
+        "stage": "preview",
+        "action_family": "replace_units",
+        "user_goal": "高收费的换掉",
+        "missing_inputs": [],
+        "atomic_actions": [
+            {
+                "action_type": "replace_units",
+                "volunteer_ids": ["u-cost-1"],
+                "filters": {
+                    "limit": "5",
+                    "school_tags": "[]",
+                    "major_tags": "[]",
+                    "preserve_count": True,
+                    "requireCapacityCheck": True,
+                },
+                "reason": "替换高收费",
+            }
+        ],
+        "preview_summary": "会把高收费志愿替换掉。",
+    }
+    messages = [
+        ModelRequest(parts=[UserPromptPart(content="高收费的换掉")]),
+        ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="execute_plan_action",
+                    args={"plan_payload": json.dumps(payload, ensure_ascii=False)},
+                    tool_call_id="protected-replace-preview",
+                )
+            ],
+            model_name="test-model",
+        ),
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="execute_plan_action",
+                    content=json.dumps(
+                        {
+                            "applied": False,
+                            "action_family": "replace_units",
+                            "stage": "preview",
+                            "result_kind": "preview_only",
+                            "summary": "会把高收费志愿替换掉。需要你确认后才会执行。",
+                            "facts": {},
+                        },
+                        ensure_ascii=False,
+                    ),
+                    tool_call_id="protected-replace-preview",
+                )
+            ]
+        ),
+    ]
+
+    assert _extract_pending_plan_action(messages) is None
+
+
 def test_extract_pending_plan_action_keeps_replace_preview_with_replacement_scope():
     payload = {
         "stage": "preview",

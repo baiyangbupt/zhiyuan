@@ -58,7 +58,7 @@ def _contains_natural_ref_text(refs: list[str]) -> bool:
 
 def _has_replacement_scope(filters: dict[str, Any] | None) -> bool:
     for key, value in (filters or {}).items():
-        if key == "limit":
+        if key in {"limit", "preserve_count", "preserveCount", "require_capacity_check", "requireCapacityCheck"}:
             continue
         if key in {"school_tags", "major_tags"} and str(value or "").strip() == "[]":
             continue
