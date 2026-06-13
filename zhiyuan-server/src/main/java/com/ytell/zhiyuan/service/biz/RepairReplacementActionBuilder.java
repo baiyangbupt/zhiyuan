@@ -25,16 +25,15 @@ final class RepairReplacementActionBuilder {
                                                      FixProposalDTO proposal,
                                                      List<CompensationActionDTO> compensationActions) {
         if (proposal == null
-                || (!"rebalance_tier_ratio".equals(proposal.getStrategy())
-                && !"fill_probability_gap".equals(proposal.getStrategy()))) {
+                || !RepairProposalTaxonomy.isStructuralPreviewStrategy(proposal.getStrategy())) {
             return;
         }
         if (state == null || state.getCandidatePoolState() == null
                 || !RepairCandidateSelector.isCurrentPlanAtOrAboveTargetCount(state)) {
             return;
         }
-        String compensationActionType = "rebalance_tier_ratio".equals(proposal.getStrategy())
-                ? "rebalance_protect_ratio" : "fill_probability_gap";
+        String compensationActionType = RepairProposalTaxonomy.compensationActionTypeForStructuralStrategy(
+                proposal.getStrategy());
         CompensationActionDTO compensationAction = defaultList(compensationActions).stream()
                 .filter(action -> action != null && compensationActionType.equals(action.getType()))
                 .findFirst()
@@ -42,7 +41,8 @@ final class RepairReplacementActionBuilder {
         if (compensationAction == null) {
             return;
         }
-        FixProposalActionDTO replacementAction = "rebalance_tier_ratio".equals(proposal.getStrategy())
+        FixProposalActionDTO replacementAction = RepairProposalTaxonomy.Strategy.REBALANCE_TIER_RATIO.equals(
+                RepairProposalTaxonomy.normalizeStrategy(proposal.getStrategy()))
                 ? buildTierRatioReplacementAction(state, check, compensationAction)
                 : buildProbabilityGapReplacementAction(state, check, compensationAction);
         proposal.getActions().removeIf(action -> action != null && compensationActionType.equals(action.getActionType()));
@@ -99,7 +99,8 @@ final class RepairReplacementActionBuilder {
                 Strings.isNullOrEmpty(targetTier) ? "目标区间" : targetTier + "区",
                 Strings.isNullOrEmpty(removeTier) ? "当前方案" : removeTier + "区");
         populateReplacementPairs(action, candidates, selection, candidateVolunteerIds, candidateUnitIds,
-                pairCount, majorGroupMode, check.getCode(), "rebalance_protect_ratio");
+                pairCount, majorGroupMode, check.getCode(),
+                RepairProposalTaxonomy.CompensationActionType.REBALANCE_PROTECT_RATIO);
         action.setDetail(buildReplacementPreviewDetail(action, candidates, baseDetail));
         return action;
     }
@@ -143,14 +144,15 @@ final class RepairReplacementActionBuilder {
         action.setSummary("替换断层边界志愿");
         String baseDetail = "当前方案已满，该策略只是结构调整预览，不会自动应用；建议用中间录取率候选替换断层边界中相对低性价比的志愿。";
         populateReplacementPairs(action, candidates, selection, candidateVolunteerIds, candidateUnitIds,
-                pairCount, majorGroupMode, check.getCode(), "fill_probability_gap");
+                pairCount, majorGroupMode, check.getCode(),
+                RepairProposalTaxonomy.CompensationActionType.FILL_PROBABILITY_GAP);
         action.setDetail(buildReplacementPreviewDetail(action, candidates, baseDetail));
         return action;
     }
 
     private static FixProposalActionDTO newBaseReplacementAction(ReviewCheckDTO check) {
         FixProposalActionDTO action = new FixProposalActionDTO();
-        action.setActionType("replace_volunteers");
+        action.setActionType(RepairProposalTaxonomy.ActionType.REPLACE_VOLUNTEERS);
         action.setLevel(check.getLevel());
         action.setSourceCheckCode(check.getCode());
         return action;

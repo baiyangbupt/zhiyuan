@@ -109,6 +109,10 @@ class PendingConfirmation(BaseModel):
     # 生成 preview 时的后端 planningState 版本，用于确认前版本漂移校验
     source_backend_version: int = 0
 
+    # 复合目标/动作编排的解释性元信息。
+    # 它只用于运行态上下文、预览说明和审计，不参与实际 apply 权限判断。
+    composite_proposal: dict[str, Any] = Field(default_factory=dict)
+
     @classmethod
     def from_legacy_plan_action(cls, legacy: dict) -> PendingConfirmation | None:
         """从旧格式 pending_plan_action dict 转换。
@@ -120,6 +124,28 @@ class PendingConfirmation(BaseModel):
         action_family = legacy.get("action_family", "")
         if not action_family:
             return None
+        if action_family == "apply_fix_proposal":
+            raw_payload = legacy.get("execution_payload") or legacy.get("executionPayload") or legacy
+            execution_payload = raw_payload if isinstance(raw_payload, dict) else {}
+            created_turn = _as_int(legacy.get("created_turn"))
+            source_backend_version = _as_int(
+                legacy.get("source_backend_version")
+                or legacy.get("planning_version")
+                or execution_payload.get("sourceVersionGuard")
+                or execution_payload.get("source_version_guard")
+            )
+            raw_composite = legacy.get("composite_proposal") or legacy.get("compositeProposal")
+            composite_proposal = raw_composite if isinstance(raw_composite, dict) else {}
+            return cls(
+                kind="plan_mutation",
+                action_family=action_family,
+                preview_summary=legacy.get("summary", ""),
+                execution_payload=execution_payload,
+                affected_scope=legacy.get("affected_scope", ""),
+                created_turn=created_turn,
+                source_backend_version=source_backend_version,
+                composite_proposal=composite_proposal,
+            )
         raw_payload = legacy.get("plan_payload", {})
         if isinstance(raw_payload, str):
             import json
@@ -134,6 +160,15 @@ class PendingConfirmation(BaseModel):
             or legacy.get("planning_version")
             or payload_version
         )
+        composite_proposal: dict[str, Any] = {}
+        if isinstance(raw_payload, dict):
+            raw_composite = raw_payload.get("composite_proposal") or raw_payload.get("compositeProposal")
+            if isinstance(raw_composite, dict):
+                composite_proposal = raw_composite
+        if not composite_proposal:
+            raw_composite = legacy.get("composite_proposal") or legacy.get("compositeProposal")
+            if isinstance(raw_composite, dict):
+                composite_proposal = raw_composite
         return cls(
             kind="plan_mutation",
             action_family=action_family,
@@ -142,6 +177,7 @@ class PendingConfirmation(BaseModel):
             affected_scope=legacy.get("affected_scope", ""),
             created_turn=created_turn,
             source_backend_version=source_backend_version,
+            composite_proposal=composite_proposal,
         )
 
     @classmethod
@@ -153,23 +189,30 @@ class PendingConfirmation(BaseModel):
         """从旧格式 intent change cache 转换。"""
         if not intent_cache:
             return None
+        raw_composite = intent_cache.get("composite_proposal") or intent_cache.get("compositeProposal")
+        composite_proposal = raw_composite if isinstance(raw_composite, dict) else {}
         return cls(
             kind="intent_change",
             action_family=action_family,
             preview_summary=intent_cache.get("summary", ""),
             execution_payload=intent_cache,
+            composite_proposal=composite_proposal,
         )
 
     def to_legacy_plan_action(self) -> dict:
         """转回旧格式，兼容现有消费方。"""
-        return {
+        legacy = {
             "action_family": self.action_family,
             "summary": self.preview_summary,
             "plan_payload": self.execution_payload,
+            "execution_payload": self.execution_payload,
             "affected_scope": self.affected_scope,
             "created_turn": self.created_turn,
             "source_backend_version": self.source_backend_version,
         }
+        if self.composite_proposal:
+            legacy["composite_proposal"] = self.composite_proposal
+        return legacy
 
 
 class ConversationPhase(BaseModel):

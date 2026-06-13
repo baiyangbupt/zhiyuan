@@ -534,6 +534,11 @@ public class PlanningStateService {
         return proposalState;
     }
 
+    public FixProposalStateDTO generateUserGoalFixProposals(Long chatSessionId, UserGoalFixProposalReq req) {
+        PlanningStateDTO state = loadPlanningState(chatSessionId);
+        return UserGoalProposalBuilder.build(state, req);
+    }
+
     public ReviewWorkflowRunRes runReviewWorkflow(Long tenantId, Long chatSessionId) {
         ReviewStateDTO reviewState = runReview(tenantId, chatSessionId);
         FixProposalStateDTO fixProposalState = generateFixProposals(tenantId, chatSessionId);
@@ -581,30 +586,31 @@ public class PlanningStateService {
                                                                FixProposalApplyReq req,
                                                                FixProposalDTO proposal,
                                                                PlanningStateDTO state) {
-        if ("sort_by_probability".equals(proposal.getStrategy())) {
+        String strategy = RepairProposalTaxonomy.normalizeStrategy(proposal.getStrategy());
+        if (RepairProposalTaxonomy.Strategy.SORT_BY_PROBABILITY.equals(strategy)) {
             OrderedPlanSortReq sortReq = new OrderedPlanSortReq();
             sortReq.setSortField("admissionRatio");
             state = sortOrderedPlan(chatSessionId, sortReq);
             return rerunReviewAfterFixApplyIfRequested(tenantId, chatSessionId, req, state);
         }
-        if ("remove_risk_items".equals(proposal.getStrategy())) {
+        if (RepairProposalTaxonomy.Strategy.REMOVE_RISK_ITEMS.equals(strategy)) {
             List<CandidateItemDTO> effectiveCandidates = resolveEffectiveCandidates(tenantId, chatSessionId, state, true);
             RepairApplyMutationBuilder.applyRemoveRiskItems(state, effectiveCandidates, proposal);
             return saveAndRefreshAfterFixApply(tenantId, chatSessionId, req, state);
         }
-        if ("replace_risk_items".equals(proposal.getStrategy())) {
+        if (RepairProposalTaxonomy.Strategy.REPLACE_RISK_ITEMS.equals(strategy)) {
             List<CandidateItemDTO> effectiveCandidates = resolveEffectiveCandidates(tenantId, chatSessionId, state, true);
             RepairApplyMutationBuilder.MutationResult result =
                     RepairApplyMutationBuilder.applyReplaceVolunteers(state, effectiveCandidates, proposal);
             ensureFixMutationApplied(result);
             return saveAndRefreshAfterFixApply(tenantId, chatSessionId, req, state);
         }
-        if ("adjust_major_group_inner_safety".equals(proposal.getStrategy())) {
+        if (RepairProposalTaxonomy.Strategy.ADJUST_MAJOR_GROUP_INNER_SAFETY.equals(strategy)) {
             List<CandidateItemDTO> effectiveCandidates = resolveEffectiveCandidates(tenantId, chatSessionId, state, true);
             RepairApplyMutationBuilder.applyMajorGroupInnerSafety(state, effectiveCandidates, proposal);
             return saveAndRefreshAfterFixApply(tenantId, chatSessionId, req, state);
         }
-        if ("fill_missing_count".equals(proposal.getStrategy())) {
+        if (RepairProposalTaxonomy.Strategy.FILL_MISSING_COUNT.equals(strategy)) {
             List<CandidateItemDTO> effectiveCandidates = resolveEffectiveCandidates(tenantId, chatSessionId, state, true);
             RepairApplyMutationBuilder.applyFixProposalCompensationActions(state, effectiveCandidates, proposal);
             return saveAndRefreshAfterFixApply(tenantId, chatSessionId, req, state);
@@ -616,7 +622,7 @@ public class PlanningStateService {
         if (result == null) {
             throw new BusinessException(400, "修复建议没有可执行动作");
         }
-        if ("blocked".equals(result.getStatus())) {
+        if (RepairProposalTaxonomy.isBlockedStatus(result.getStatus())) {
             throw new BusinessException(409, Strings.isNullOrEmpty(result.getBlockingReason())
                     ? "修复建议已失效，请重新生成" : result.getBlockingReason());
         }
@@ -2930,7 +2936,7 @@ public class PlanningStateService {
                                                                    InitialPlanStrategyReportDTO.Tradeoff tradeoff) {
         String ruleCode = resolveInitialPlanRepairRuleCode(reasonCode);
         FixProposalActionDTO action = new FixProposalActionDTO();
-        action.setActionType("replace_volunteers");
+        action.setActionType(RepairProposalTaxonomy.ActionType.REPLACE_VOLUNTEERS);
         action.setLevel("info");
         action.setSourceCheckCode(ruleCode);
         action.setSummary(resolveInitialPlanRepairDetail(reasonCode));
@@ -4447,7 +4453,8 @@ public class PlanningStateService {
                 pair.setToUnitId(resolveUnitId(candidateVolunteerId, candidates));
             }
             pair.setToVolunteerId(candidateVolunteerId);
-            pair.setReasonCodes(Lists.newArrayList(check.getCode(), "fill_probability_gap"));
+            pair.setReasonCodes(Lists.newArrayList(check.getCode(),
+                    RepairProposalTaxonomy.CompensationActionType.FILL_PROBABILITY_GAP));
             suggestion.getReplacementPairs().add(pair);
         }
         suggestion.setPreferredApplyMode("replace_and_reorder");
@@ -4616,7 +4623,8 @@ public class PlanningStateService {
             suggestion.setAffectedUnitIds(resolveUnitIdsFromVolunteerIds(removeVolunteerIds, candidates));
         }
         suggestion.setAffectedVolunteerIds(Lists.newArrayList(removeVolunteerIds));
-        suggestion.setReasonCodes(Lists.newArrayList(check.getCode(), "rebalance_protect_ratio"));
+        suggestion.setReasonCodes(Lists.newArrayList(check.getCode(),
+                RepairProposalTaxonomy.CompensationActionType.REBALANCE_PROTECT_RATIO));
         if (!defaultList(action.getUnitIds()).isEmpty()) {
             suggestion.setRemoveUnitIds(resolveUnitIdsFromVolunteerIds(removeVolunteerIds, candidates));
         }
@@ -4632,7 +4640,8 @@ public class PlanningStateService {
             pair.setFromVolunteerId(removeVolunteerIds.get(i));
             pair.setToUnitId(i < suggestion.getCandidateUnitIds().size() ? suggestion.getCandidateUnitIds().get(i) : null);
             pair.setToVolunteerId(action.getVolunteerIds().get(i));
-            pair.setReasonCodes(Lists.newArrayList(check.getCode(), "rebalance_protect_ratio"));
+            pair.setReasonCodes(Lists.newArrayList(check.getCode(),
+                    RepairProposalTaxonomy.CompensationActionType.REBALANCE_PROTECT_RATIO));
             suggestion.getReplacementPairs().add(pair);
         }
         suggestion.setPreferredApplyMode("replace_and_reorder");
@@ -7782,12 +7791,13 @@ public class PlanningStateService {
         if (action == null || Strings.isNullOrEmpty(action.getType())) {
             return false;
         }
-        return "rebalance_protect_ratio".equals(action.getType())
-                || "fill_probability_gap".equals(action.getType());
+        return RepairProposalTaxonomy.CompensationActionType.REBALANCE_PROTECT_RATIO.equals(action.getType())
+                || RepairProposalTaxonomy.CompensationActionType.FILL_PROBABILITY_GAP.equals(action.getType());
     }
 
     private boolean isLimitedCapacityOptionalAddAction(CompensationActionDTO action) {
-        return action != null && "fill_probability_gap".equals(action.getType());
+        return action != null
+                && RepairProposalTaxonomy.CompensationActionType.FILL_PROBABILITY_GAP.equals(action.getType());
     }
 
     private int currentOrderedOrDraftItemCount(PlanningStateDTO state) {
@@ -8049,7 +8059,7 @@ public class PlanningStateService {
         }
         return linkedActions != null && linkedActions.stream()
                 .anyMatch(action -> action != null
-                        && "rebalance_protect_ratio".equals(action.getType())
+                        && RepairProposalTaxonomy.CompensationActionType.REBALANCE_PROTECT_RATIO.equals(action.getType())
                         && (!defaultList(action.getVolunteerIds()).isEmpty()
                         || !defaultList(action.getUnitIds()).isEmpty()));
     }
@@ -8137,21 +8147,21 @@ public class PlanningStateService {
         RepairRiskActionBuilder.populateReplaceRiskItemActions(state, check, proposal);
         RepairReplacementActionBuilder.populateStructuralReplacementActions(state, check, proposal, compensationActions);
         RepairMajorGroupInnerSafetyActionBuilder.populateActions(state, check, proposal);
-        if ("blocked".equals(proposal.getStatus())) {
+        if (RepairProposalTaxonomy.isBlockedStatus(proposal.getStatus())) {
             proposal.setRequiresConfirmation(false);
-        } else if ("cannot_satisfy".equals(proposal.getStrategy())) {
-            proposal.setStatus("blocked");
+        } else if (RepairProposalTaxonomy.isCannotSatisfyStrategy(proposal.getStrategy())) {
+            proposal.setStatus(RepairProposalTaxonomy.Status.BLOCKED);
             proposal.setRequiresConfirmation(false);
             RepairProposalStateBuilder.addBlockingReasonCode(proposal,
                     RepairProposalStateBuilder.resolveBlockingReasonCode(check));
-        } else if ("no_op".equals(proposal.getStrategy())) {
-            proposal.setStatus("info");
+        } else if (RepairProposalTaxonomy.isNoOpStrategy(proposal.getStrategy())) {
+            proposal.setStatus(RepairProposalTaxonomy.Status.INFO);
             proposal.setRequiresConfirmation(false);
         } else if (!RepairProposalApplyPolicy.isSupportedStrategy(proposal.getStrategy())) {
-            proposal.setStatus("preview_only");
+            proposal.setStatus(RepairProposalTaxonomy.Status.PREVIEW_ONLY);
         }
         RepairDryRunSimulator.populate(state, proposal, check);
-        if ("cannot_satisfy".equals(proposal.getStrategy())) {
+        if (RepairProposalTaxonomy.isCannotSatisfyStrategy(proposal.getStrategy())) {
             proposal.setBlockingReason(proposal.getDryRunResult().getMessage());
             RepairProposalStateBuilder.addBlockingReasonCode(proposal,
                     RepairProposalStateBuilder.resolveBlockingReasonCode(check));
@@ -8204,7 +8214,7 @@ public class PlanningStateService {
             return null;
         }
         CompensationActionDTO action = new CompensationActionDTO();
-        action.setType("fill_total_count");
+        action.setType(RepairProposalTaxonomy.CompensationActionType.FILL_TOTAL_COUNT);
         action.setLevel("warn");
         action.setSourceCheckCode("count_validation");
         action.setSummary("移除风险项后补足志愿数量");
@@ -8251,7 +8261,7 @@ public class PlanningStateService {
         }
 
         CompensationActionDTO action = new CompensationActionDTO();
-        action.setType("fill_total_count");
+        action.setType(RepairProposalTaxonomy.CompensationActionType.FILL_TOTAL_COUNT);
         action.setLevel("risk");
         action.setSourceCheckCode("count_validation");
         action.setSummary("补足志愿总数量");
@@ -8267,7 +8277,7 @@ public class PlanningStateService {
             return null;
         }
         CompensationActionDTO action = new CompensationActionDTO();
-        action.setType("fill_total_count");
+        action.setType(RepairProposalTaxonomy.CompensationActionType.FILL_TOTAL_COUNT);
         action.setLevel("risk");
         action.setSourceCheckCode("count_validation");
         action.setSummary("补足志愿总数量");
@@ -8328,7 +8338,7 @@ public class PlanningStateService {
         }
 
         CompensationActionDTO action = new CompensationActionDTO();
-        action.setType("add_local_protect");
+        action.setType(RepairProposalTaxonomy.CompensationActionType.ADD_LOCAL_PROTECT);
         action.setLevel("risk");
         action.setSourceCheckCode("safety_guard");
         action.setSummary("补充本省保底志愿");
@@ -8345,7 +8355,7 @@ public class PlanningStateService {
         }
 
         CompensationActionDTO action = new CompensationActionDTO();
-        action.setType("add_local_protect");
+        action.setType(RepairProposalTaxonomy.CompensationActionType.ADD_LOCAL_PROTECT);
         action.setLevel("risk");
         action.setSourceCheckCode("safety_guard");
         action.setSummary("补充本省保底志愿");
@@ -8363,7 +8373,7 @@ public class PlanningStateService {
         }
 
         CompensationActionDTO action = new CompensationActionDTO();
-        action.setType("rebalance_protect_ratio");
+        action.setType(RepairProposalTaxonomy.CompensationActionType.REBALANCE_PROTECT_RATIO);
         action.setLevel("warn");
         action.setSourceCheckCode("ratio_distribution");
         action.setSummary("补充保区志愿以平衡区间");
@@ -8380,7 +8390,7 @@ public class PlanningStateService {
         }
 
         CompensationActionDTO action = new CompensationActionDTO();
-        action.setType("rebalance_protect_ratio");
+        action.setType(RepairProposalTaxonomy.CompensationActionType.REBALANCE_PROTECT_RATIO);
         action.setLevel("warn");
         action.setSourceCheckCode("ratio_distribution");
         action.setSummary("补充保区志愿以平衡区间");
@@ -8431,7 +8441,7 @@ public class PlanningStateService {
         }
 
         CompensationActionDTO action = new CompensationActionDTO();
-        action.setType("fill_probability_gap");
+        action.setType(RepairProposalTaxonomy.CompensationActionType.FILL_PROBABILITY_GAP);
         action.setLevel("warn");
         action.setSourceCheckCode("probability_gap");
         action.setSummary("补充梯度断层区间的候选");
@@ -8449,7 +8459,7 @@ public class PlanningStateService {
         }
 
         CompensationActionDTO action = new CompensationActionDTO();
-        action.setType("fill_probability_gap");
+        action.setType(RepairProposalTaxonomy.CompensationActionType.FILL_PROBABILITY_GAP);
         action.setLevel("warn");
         action.setSourceCheckCode("probability_gap");
         action.setSummary("补充梯度断层区间的候选");

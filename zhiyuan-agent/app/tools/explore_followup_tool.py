@@ -101,6 +101,12 @@ async def _query_candidate_base_total(session_id: str) -> int | None:
 
 
 async def _load_cached_intents(session_id: str) -> tuple[dict[str, Any], str]:
+    """Load the intent payload for legacy explore follow-up actions.
+
+    Active pendingConfirmation is authoritative. planEditCache is only a
+    fallback for older explore action cards that were created before the unified
+    pending card protocol.
+    """
     try:
         pending_result = await get_pending_confirmation(session_id)
         pending_data = (pending_result or {}).get("data", {}).get("pendingConfirmation") or {}

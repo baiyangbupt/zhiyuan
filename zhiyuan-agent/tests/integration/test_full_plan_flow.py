@@ -112,7 +112,7 @@ class TestFullLifecycle:
             verb="generate",
             raw_utterance="帮我生成一个方案",
         )
-        resolution = resolver.resolve(frame, context, phase)
+        resolution = resolver.resolve(frame, context)
         assert resolution.action_family == "generate_plan"
         assert resolution.stage == "preview"
 
@@ -153,7 +153,7 @@ class TestFullLifecycle:
             topic="general",
             verb="review",
         )
-        resolution = resolver.resolve(frame_review, context_with_plan, phase)
+        resolution = resolver.resolve(frame_review, context_with_plan)
         assert resolution.action_family == "review_plan"
         assert resolution.stage == "review"
 
@@ -167,8 +167,8 @@ class TestFullLifecycle:
             topic="general",
             verb="compensate",
         )
-        resolution = resolver.resolve(frame_comp, context_unfilled, phase)
-        assert resolution.action_family == "preview_compensation"
+        resolution = resolver.resolve(frame_comp, context_unfilled)
+        assert resolution.action_family == "preview_fix_proposal"
 
     def test_lifecycle_version_tracking(self, volunteer_model, sync):
         """验证版本号在流程中的正确追踪。"""
@@ -209,7 +209,7 @@ class TestStageChaining:
             verb="query",
             raw_utterance="当前方案什么状态",
         )
-        resolution = resolver.resolve(frame_explore, context, phase)
+        resolution = resolver.resolve(frame_explore, context)
         assert resolution.action_family == "query_state"
 
         # Step 2: Intent — 设置偏好
@@ -220,7 +220,7 @@ class TestStageChaining:
             verb="set_preference",
             target=TargetSpec(major_names=["计算机科学与技术"]),
         )
-        resolution = resolver.resolve(frame_intent, context, phase)
+        resolution = resolver.resolve(frame_intent, context)
         assert resolution.stage == "blocked"
 
         # Intent 工具处理后 → 设置 pending
@@ -244,7 +244,7 @@ class TestStageChaining:
             topic="general",
             verb="generate",
         )
-        resolution = resolver.resolve(frame_gen, context, phase)
+        resolution = resolver.resolve(frame_gen, context)
         assert resolution.action_family == "generate_plan"
 
     def test_explore_direct_to_plan(self, volunteer_model, resolver):
@@ -255,7 +255,7 @@ class TestStageChaining:
         phase.transition_to(PhaseState.PLAN_IDLE)
         context = make_plan_context_inputs(phase="initial", ordered_count=0)
         frame = IntentFrame(task_layer="plan", topic="general", verb="generate")
-        resolution = resolver.resolve(frame, context, phase)
+        resolution = resolver.resolve(frame, context)
         assert resolution.action_family == "generate_plan"
 
 
@@ -470,16 +470,15 @@ class TestPendingExpiry:
 
 
 # ---------------------------------------------------------------------------
-# 场景 6: ActionResolver + ConversationPhase 联动
+# 场景 6: ActionResolver 结构化映射
 # ---------------------------------------------------------------------------
 
 
-class TestResolverPhaseIntegration:
-    """ActionResolver 与 ConversationPhase 的联动。"""
+class TestResolverStructuredMapping:
+    """ActionResolver 不读取 ConversationPhase，只基于结构化 frame 和上下文映射动作。"""
 
     def test_resolver_with_review_issues(self, volunteer_model, resolver):
         """包含 review issues 的场景解析。"""
-        phase = _make_phase(state=PhaseState.PLAN_IDLE)
         context = make_plan_context_inputs(
             phase="ordered",
             ordered_count=30,
@@ -499,12 +498,11 @@ class TestResolverPhaseIntegration:
             verb="remove",
             target=TargetSpec(review_issue_code="high_tuition"),
         )
-        resolution = resolver.resolve(frame, context, phase)
+        resolution = resolver.resolve(frame, context)
         assert resolution.action_family == "remove_units"
 
     def test_resolver_add_without_filters_goes_to_analyze(self, volunteer_model, resolver):
         """添加操作缺少筛选条件时进入 analyze 阶段（提示补充输入）。"""
-        phase = _make_phase(state=PhaseState.PLAN_IDLE)
         context = make_plan_context_inputs(phase="ordered", ordered_count=10)
 
         frame = IntentFrame(
@@ -512,7 +510,7 @@ class TestResolverPhaseIntegration:
             topic="general",
             verb="add",
         )
-        resolution = resolver.resolve(frame, context, phase)
+        resolution = resolver.resolve(frame, context)
         assert resolution.stage == "analyze"
         assert "selection_scope" in resolution.missing_inputs
 
@@ -520,7 +518,6 @@ class TestResolverPhaseIntegration:
         self, volunteer_model, resolver
     ):
         """已有方案时 verb=generate 仍保持 generate_plan（用户明确要重建）。"""
-        phase = _make_phase(state=PhaseState.PLAN_IDLE)
         context = make_plan_context_inputs(phase="ordered", ordered_count=30)
 
         frame = IntentFrame(
@@ -528,14 +525,13 @@ class TestResolverPhaseIntegration:
             topic="general",
             verb="generate",
         )
-        resolution = resolver.resolve(frame, context, phase)
+        resolution = resolver.resolve(frame, context)
         assert resolution.action_family == "generate_plan"
 
     def test_resolver_analyze_verb_on_existing_plan(
         self, volunteer_model, resolver
     ):
         """verb=analyze 时直接映射到 analyze_adjustment。"""
-        phase = _make_phase(state=PhaseState.PLAN_IDLE)
         context = make_plan_context_inputs(phase="ordered", ordered_count=30)
 
         frame = IntentFrame(
@@ -543,12 +539,11 @@ class TestResolverPhaseIntegration:
             topic="general",
             verb="analyze",
         )
-        resolution = resolver.resolve(frame, context, phase)
+        resolution = resolver.resolve(frame, context)
         assert resolution.action_family == "analyze_adjustment"
 
     def test_resolver_move_with_target(self, volunteer_model, resolver):
         """移动操作指定了目标位置。"""
-        phase = _make_phase(state=PhaseState.PLAN_IDLE)
         context = make_plan_context_inputs(phase="ordered", ordered_count=30)
 
         frame = IntentFrame(
@@ -557,7 +552,7 @@ class TestResolverPhaseIntegration:
             verb="move",
             target=TargetSpec(volunteer_refs=["@5"], position=3),
         )
-        resolution = resolver.resolve(frame, context, phase)
+        resolution = resolver.resolve(frame, context)
         assert resolution.action_family == "move_unit"
         assert resolution.stage == "preview"
 
@@ -721,7 +716,7 @@ class TestRegistryResolverIntegration:
             IntentFrame(task_layer="plan", topic="general", verb="generate"),
         ]
         for frame in test_frames:
-            resolution = resolver.resolve(frame, context, phase)
+            resolution = resolver.resolve(frame, context)
             if resolution.stage != "blocked":
                 assert resolution.action_family in known_families or resolution.action_family in {
                     "set_preference", "remove_preference",

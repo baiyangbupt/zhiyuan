@@ -23,7 +23,6 @@ from app.tools.intent_state_tool import (
     _apply_intents,
     analyze_volunteer_intent_change,
     apply_selected_intents,
-    update_volunteer_intent_state,
 )
 
 
@@ -153,8 +152,8 @@ def test_intent_scenario_confirmed_preference_returns_text_without_candidate_req
     state_mock.assert_not_awaited()
     latent_mock.assert_not_awaited()
     assert resp.applied is True
-    assert "已确认" in resp.message
-    assert "后续报考参考" in resp.message
+    assert "已采纳" in resp.message
+    assert "后续推荐和专家优选" in resp.message
     assert "现在这份方案" in resp.message
 
 
@@ -195,8 +194,8 @@ def test_intent_scenario_confirmed_career_negative_preference_removes_latent_pro
         )
 
     assert resp.applied is True
-    assert "已确认" in resp.message
-    assert "后续报考参考" in resp.message
+    assert "已采纳" in resp.message
+    assert "后续推荐和专家优选" in resp.message
     query_mock.assert_awaited_once()
     assert query_mock.await_args.kwargs["sort_field"] == "finalScore"
     state_mock.assert_awaited_once()
@@ -239,6 +238,39 @@ def test_intent_scenario_confirmed_constraint_returns_plan_check_text():
     assert resp.candidateFilters is None
     assert "过滤后" not in resp.message
     assert "查看当前方案" in resp.message or "检查当前方案" in resp.message
+
+
+def test_negative_constraint_ignores_positive_only_constraint_type():
+    with (
+        patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
+        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
+        patch("app.tools.intent_state_tool.query_planning_candidate_pool", new=AsyncMock(return_value={"code": 0})) as query_mock,
+        patch("app.tools.intent_state_tool.get_planning_state", new=AsyncMock()) as state_mock,
+        patch("app.tools.intent_state_tool.mark_planning_intent_change_stale", new=AsyncMock(return_value={"code": 0})),
+        patch("app.tools.intent_state_tool.update_planning_constraint_state", new=AsyncMock(return_value={"code": 0})),
+    ):
+        mock_pm = mock_pm_cls.return_value
+        mock_pm.update_city_intent = AsyncMock()
+        mock_pm.update_major_intent = AsyncMock()
+        mock_pm.update_school_intent = AsyncMock()
+
+        resp = asyncio.run(
+            _apply_intents(
+                session_id="1005",
+                batch="01",
+                merged={"major_intents": {"negative_level1": ["医学"]}},
+                intent_mode=INTENT_MODE_CONSTRAINT,
+                constraint_intent_type="only_keep",
+            )
+        )
+
+    query_mock.assert_awaited_once()
+    state_mock.assert_not_awaited()
+    assert resp.applied is True
+    assert resp.constraintIntentType == "default"
+    assert "只按这个范围看" not in resp.message
+    assert "排除专业" in resp.message
+    assert "医学" in resp.message
 
 
 def test_intent_scenario_interest_followup_candidate_query_with_city_preference_returns_text():
@@ -361,7 +393,7 @@ def test_intent_scenario_handle_select_constraint_returns_candidate_query_text()
     assert "128" not in resp
     assert "候选大约" not in resp
     assert "排除地域：上海" in resp
-    assert "后续报考参考" in resp
+    assert "后续推荐、方案检查和调整" in resp
 
 
 def test_intent_scenario_handle_select_on_already_clicked_message_short_circuits():
@@ -390,44 +422,3 @@ def test_intent_scenario_handle_select_on_already_clicked_message_short_circuits
         resp = asyncio.run(_render_apply_selected(session_id="1007", batch="01", selected_data=selected_data))
 
     assert resp == "该消息不可再点击。"
-
-
-def test_intent_scenario_confirm_tool_requires_card_click_for_career_preference():
-    ctx = SimpleNamespace(deps=SimpleNamespace(sessionid="1008", batch="01", pending_intent_change=True))
-
-    with (
-        patch(
-            "app.tools.intent_state_tool.get_intent_change_cache",
-            new=AsyncMock(
-                return_value={
-                    "data": {
-                        "planEditCache": {
-                            "intent_mode": INTENT_MODE_PREFERENCE,
-                            "career_intents": {"positive": ["system_public_service"]},
-                        }
-                    }
-                }
-            ),
-        ),
-        patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch(
-            "app.tools.intent_state_tool.get_planning_state",
-            new=AsyncMock(return_value={"data": {"profileState": {"latentProfile": {"futureDevelopment": {"careerTypes": ["读研"]}}}}}),
-        ) as state_mock,
-        patch("app.tools.intent_state_tool.update_planning_latent_profile", new=AsyncMock()) as latent_mock,
-        patch("app.tools.intent_state_tool.query_planning_candidate_pool", new=AsyncMock()) as query_mock,
-        patch("app.tools.intent_state_tool.mark_planning_intent_change_stale", new=AsyncMock(return_value={"code": 0})),
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
-    ):
-        mock_pm = mock_pm_cls.return_value
-        mock_pm.update_city_intent = AsyncMock()
-        mock_pm.update_major_intent = AsyncMock()
-        mock_pm.update_school_intent = AsyncMock()
-        resp = json.loads(asyncio.run(update_volunteer_intent_state(ctx, action="confirm")))
-
-    assert resp["applied"] is False
-    assert resp["messageCode"] == "confirm_required"
-    assert "确认卡片" in resp["message"]
-    query_mock.assert_not_awaited()
-    state_mock.assert_not_awaited()
-    latent_mock.assert_not_awaited()

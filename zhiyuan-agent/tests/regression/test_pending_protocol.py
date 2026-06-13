@@ -112,7 +112,7 @@ class TestAllowsMutatingApply:
 
     @pytest.mark.parametrize("action_family", [
         "add_units", "remove_units", "generate_plan",
-        "replace_units", "regenerate_order", "apply_compensation",
+        "replace_units", "regenerate_order",
     ])
     @pytest.mark.parametrize("volunteer_model", ["major", "majorGroup"])
     def test_mutating_no_pending_blocks(self, action_family: str, volunteer_model: str):

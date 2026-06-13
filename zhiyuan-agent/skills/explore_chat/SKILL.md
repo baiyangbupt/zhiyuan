@@ -86,12 +86,9 @@ Explore 阶段先判断任务层，再判断主题层。
 - 录取/分数主题内部能力：`query_admission_score`、`query_score_line`
 
 ### 当前规划状态相关
-- `query_planning_state`
-- `query_planning_candidate_pool`
-- `query_planning_draft`
-- `query_planning_ordered_plan`
-- `analyze_planning_plan_adjustment`
-- `run_planning_review`
+- `collect_plan_context_inputs`
+- `plan_next_action`
+- `execute_plan_action`
 - `analyze_current_career_direction`
 - `analyze_current_major_interest`
 - `analyze_current_school_interest`
@@ -183,7 +180,7 @@ Explore 专用工具返回里通常已经包含“当前方案是否承接、候
 
 当用户已经从探索转为明确态度时：
 - 进入偏好或要求：调用 `analyze_volunteer_intent_change` 或 `preview_current_intent_confirmation`
-- 进入当前方案动作：调用 `handle_planning_request` 或对应 planning 工具
+- 进入当前方案动作：按 `collect_plan_context_inputs -> plan_next_action -> execute_plan_action` 主链推进
 
 如果当前问题本质上是在问：
 

@@ -14,10 +14,10 @@ _BACKEND_SCOPE_KIND_MAP = {
 }
 
 _BACKEND_STRATEGY_DEFAULT_ACTION_MAP = {
-    "add_safety_items": "preview_compensation",
-    "adjust_major_group_inner_safety": "analyze_adjustment",
-    "fill_missing_count": "preview_compensation",
-    "fill_probability_gap": "preview_compensation",
+    "add_safety_items": "preview_fix_proposal",
+    "adjust_major_group_inner_safety": "preview_fix_proposal",
+    "fill_missing_count": "preview_fix_proposal",
+    "fill_probability_gap": "preview_fix_proposal",
     "rebalance_tier_ratio": "analyze_adjustment",
     "regenerate_plan_with_constraints": "generate_plan",
     "regenerate_order": "regenerate_order",
@@ -70,7 +70,7 @@ _REVIEW_ISSUE_RULES: dict[str, ReviewIssueRule] = {
         code="probability_gap",
         label="梯度断层",
         scope_kind="structural",
-        default_action_family="preview_compensation",
+        default_action_family="preview_fix_proposal",
     ),
     "ratio_distribution": ReviewIssueRule(
         code="ratio_distribution",
@@ -82,19 +82,19 @@ _REVIEW_ISSUE_RULES: dict[str, ReviewIssueRule] = {
         code="safety_guard",
         label="本省保底不足",
         scope_kind="structural",
-        default_action_family="preview_compensation",
+        default_action_family="preview_fix_proposal",
     ),
     "count_validation": ReviewIssueRule(
         code="count_validation",
         label="数量缺口",
         scope_kind="structural",
-        default_action_family="preview_compensation",
+        default_action_family="preview_fix_proposal",
     ),
     "edge_score": ReviewIssueRule(
         code="edge_score",
         label="边缘分",
         scope_kind="structural",
-        default_action_family="preview_compensation",
+        default_action_family="preview_fix_proposal",
     ),
     "major_group_safety_intent_alignment": ReviewIssueRule(
         code="major_group_safety_intent_alignment",
@@ -106,7 +106,7 @@ _REVIEW_ISSUE_RULES: dict[str, ReviewIssueRule] = {
         code="group_inner_safety_guard",
         label="组内安全垫不足",
         scope_kind="structural",
-        default_action_family="analyze_adjustment",
+        default_action_family="preview_fix_proposal",
     ),
     "plan_update_notice": ReviewIssueRule(
         code="plan_update_notice",

@@ -8,6 +8,7 @@ import java.util.List;
 @Data
 public class FixProposalDTO {
     private String proposalId;
+    private String proposalSource = "review_check";
     private Integer sourceVersion;
     private Integer sourceReviewVersion;
     private Integer sourceVersionGuard;

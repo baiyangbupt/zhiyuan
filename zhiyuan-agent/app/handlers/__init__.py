@@ -16,7 +16,7 @@ from app.handlers.registry import HANDLER_REGISTRY, HandlerFunc
 # 导入 handler 模块以触发 @register_handler 注册
 import app.handlers.query_handlers  # noqa: F401
 import app.handlers.analysis_handlers  # noqa: F401
-import app.handlers.compensation_handlers  # noqa: F401
+import app.handlers.fix_proposal_handlers  # noqa: F401
 import app.handlers.generate_handler  # noqa: F401
 import app.handlers.mutation_handlers  # noqa: F401
 

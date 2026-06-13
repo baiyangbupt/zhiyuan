@@ -71,7 +71,7 @@
     ]
   },
   {
-    "name": "full-journey-career-soft-region-hard-compensation",
+    "name": "full-journey-career-soft-region-hard-fix-proposal",
     "sessionId": "5742",
     "flow": ["start", "explore", "intent", "plan", "review"],
     "coverage": [
@@ -81,7 +81,8 @@
       "soft_region_intent",
       "hard_region_constraint",
       "candidate_match",
-      "compensation_preview",
+      "fix_proposal_preview",
+      "fix_proposal_apply",
       "preview_confirm_apply",
       "review_workspace"
     ],
@@ -247,7 +248,7 @@
     ]
   },
   {
-    "name": "full-journey-career-stable-region-adjust-boundary",
+    "name": "full-journey-career-stable-region-fix-boundary",
     "sessionId": "5745",
     "flow": ["start", "explore", "intent", "plan", "review"],
     "coverage": [
@@ -258,7 +259,7 @@
       "no_premature_plan_apply",
       "plan_query",
       "candidate_match",
-      "compensation_preview",
+      "fix_proposal_preview",
       "review_workspace"
     ],
     "assertPlanStyle": true,
@@ -380,7 +381,7 @@
       "candidate_view_state",
       "candidate_school_major_ref",
       "candidate_search_add",
-      "compensation_apply",
+      "fix_proposal_apply",
       "preview_confirm_apply",
       "review_workspace"
     ],
@@ -426,7 +427,8 @@
       "review_then_fix",
       "move_operation",
       "remove_then_add",
-      "compensation_preview",
+      "fix_proposal_preview",
+      "fix_proposal_apply",
       "preview_confirm_apply",
       "review_workspace"
     ],

@@ -113,6 +113,7 @@ def make_run_context(
 
 def make_plan_context_inputs(
     *,
+    batch: str = "01",
     phase: str = "ordered",
     target_count: int = 30,
     draft_count: int = 20,
@@ -134,6 +135,7 @@ def make_plan_context_inputs(
     """构建 PlanContextInputs，自动拼接默认 summary。"""
     actual_summary = summary or f"阶段={phase}；方案={ordered_count}/{target_count}"
     return PlanContextInputs(
+        batch=batch,
         phase=phase,
         target_count=target_count,
         draft_count=draft_count,

@@ -202,8 +202,8 @@
 | `probability_inversion` | 概率倒挂 | `structural` | `analyze_adjustment` |
 | `probability_gap` | 梯度断层 | `structural` | `analyze_adjustment` |
 | `ratio_distribution` | 冲稳保配比问题 | `structural` | `analyze_adjustment` |
-| `safety_guard` | 本省保底不足 | `structural` | `preview_compensation` |
-| `count_validation` | 数量缺口 | `structural` | `preview_compensation` |
+| `safety_guard` | 本省保底不足 | `structural` | `preview_fix_proposal` |
+| `count_validation` | 数量缺口 | `structural` | `preview_fix_proposal` |
 | `edge_score` | 边缘分风险 | `structural` | `analyze_adjustment` |
 | `major_group_safety_intent_alignment` | 非意向托底 | `structural` | `analyze_adjustment` |
 | `group_inner_safety_guard` | 组内安全垫不足 | `structural` | `analyze_adjustment` |
@@ -413,7 +413,7 @@ skill 层不负责做 scope 计算，但要明确告诉模型：
 
 执行层遇到这类 issue 时应：
 
-- 优先转到 `analyze_adjustment` 或 `preview_compensation`
+- 优先转到 `analyze_adjustment` 或 `preview_fix_proposal`
 - 或返回明确 preview，说明这是结构问题，不是直接删除清单
 
 ### 6.9 service pending confirm
@@ -527,7 +527,7 @@ apply 用 payload 里的 `review_issue_target` 解 scope。
 否则就算执行后会出现数量缺口，也应该走：
 
 - 先移出
-- 再根据新状态进入 `preview_compensation` 或后续替换
+- 再根据新状态进入 `preview_fix_proposal` 或后续替换
 
 ## 9. 样例字段的定位
 

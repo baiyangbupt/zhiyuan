@@ -347,6 +347,8 @@ def _get_direction_analysis_agent() -> Agent[None, str]:
                 "不要把回答写成技术状态说明，不要复述系统字段名，不要输出代码块。"
                 "可以引用给定的学校/专业样本，但不能编造未提供的样本。"
                 "如果信息不足，要明确说明只是初步判断。"
+                "方向匹配数量只是基于院校性质、专业名称和标签等宽口径线索的粗筛结果，不是精确适配或互斥统计；"
+                "如果同时存在冲突或风险项，要说明这些是需要进一步取舍的内容，不要写成几乎所有志愿都严格合适。"
                 "输出 JSON，字段固定为：summaryTitle, currentPlanFit, currentPlanConflict, candidateOpportunity, nextActionHints。"
                 "每个列表控制在 1 到 3 条，每条一句自然中文。"
             ),
@@ -663,8 +665,10 @@ def _direction_plan_fit_lines(direction_fact: dict[str, Any]) -> list[str]:
     if count <= 0:
         return [f"如果只看当前方案，“{label}”的直接承接还不明显，后续若要强化这条路，需要从候选里再补贴近项。"]
     if examples:
-        return [f"如果只看当前方案，和“{label}”更贴近的大约有 {count} 个志愿，代表样本有：{examples}。"]
-    return [f"如果只看当前方案，和“{label}”更贴近的大约有 {count} 个志愿。"]
+        return [
+            f"按院校性质、专业名称和标签等宽口径线索看，当前方案里和“{label}”有承接关系的大约有 {count} 个志愿，代表样本有：{examples}；这不等于每个都严格适合，仍要结合风险和个人接受度再取舍。"
+        ]
+    return [f"按院校性质、专业名称和标签等宽口径线索看，当前方案里和“{label}”有承接关系的大约有 {count} 个志愿；这不等于每个都严格适合，仍要结合风险和个人接受度再取舍。"]
 
 
 def _direction_candidate_opportunity_lines(direction_fact: dict[str, Any]) -> list[str]:
@@ -941,7 +945,7 @@ def _build_direction_interest_analysis(
     if ordered_total <= 0:
         fit_points.append("你现在还没有成型的排序方案，所以这一步更适合先看方向本身，再决定要不要往这个方向收口。")
     elif ordered_match_count > 0:
-        fit_points.append(f"当前方案里已经有一部分内容能承接这条方向，大约有 {ordered_match_count} 个志愿相对更贴近。")
+        fit_points.append(f"当前方案里已经有一部分内容能承接这条方向，按宽口径线索大约有 {ordered_match_count} 个志愿相关；后续还要结合风险和个人接受度再筛。")
     else:
         conflict_points.append("当前方案里直接贴近这条方向的承接还不算明显，如果后面真要往这边收口，可能还需要继续补看。")
 
@@ -1007,6 +1011,7 @@ async def _generate_direction_analysis_content(
             "最后再点到候选里的潜在机会。"
             "不要只盯着方案和学校名单。"
             "如果是多方向，允许比较多个方向，不要默认只有两个。"
+            "方向事实里的匹配数量是宽口径粗筛，不是精确适配或互斥统计；不能把它写成所有志愿都严格适合，也不能和冲突项做简单加减。"
         ),
     ]
     result = await _get_direction_analysis_agent().run(

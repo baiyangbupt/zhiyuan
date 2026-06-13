@@ -160,10 +160,10 @@
     "prompts": ["想学网络与新媒体", "先不确认，当前方案里有没有相关专业"]
   },
   {
-    "name": "confirmed-intent-then-compensation-preview",
+    "name": "confirmed-intent-then-fix-proposal-preview",
     "sessionId": "5718",
     "flow": ["intent", "plan"],
-    "coverage": ["positive_major_intent", "compensation_preview", "confirmation_boundary"],
+    "coverage": ["positive_major_intent", "fix_proposal_preview", "confirmation_boundary"],
     "assertPlanStyle": true,
     "prompts": ["想学网络与新媒体", "确认", "还差几个怎么补更贴合这个方向"]
   },
@@ -224,12 +224,12 @@
     "prompts": ["给我列出建议移除的志愿名称", "先处理高收费和中外合作", "确认", "调整后帮我再审查一下"]
   },
   {
-    "name": "compensation-preview-apply-post-review",
+    "name": "fix-proposal-preview-apply-post-review",
     "sessionId": "5726",
     "flow": ["intent", "plan"],
-    "coverage": ["positive_major_intent", "compensation_preview", "compensation_apply", "plan_apply", "plan_review"],
+    "coverage": ["positive_major_intent", "fix_proposal_preview", "fix_proposal_apply", "plan_apply", "plan_review"],
     "assertPlanStyle": true,
-    "prompts": ["想学网络与新媒体", "确认", "还差几个怎么补更贴合这个方向", "确认", "补完后帮我再审查一下"]
+    "prompts": ["想学网络与新媒体", "确认", "帮我看看审查里能自动处理的提醒，先给预览", "确认", "处理完帮我再审查一下"]
   },
   {
     "name": "ordered-move-preview-apply",
@@ -304,10 +304,10 @@
     "prompts": ["当前方案里广西师范大学006专业组有哪些专业", "把广西师范大学的统计学换成计算机类", "确认"]
   },
   {
-    "name": "colloquial-review-remove-compensation-mainline",
+    "name": "colloquial-review-remove-fix-proposal-mainline",
     "sessionId": "5730",
     "flow": ["plan"],
-    "coverage": ["plan_generate", "plan_review", "risk_followup", "remove_units", "plan_preview", "plan_apply", "compensation_preview", "review_workspace"],
+    "coverage": ["plan_generate", "plan_review", "risk_followup", "remove_units", "plan_preview", "plan_apply", "fix_proposal_preview", "review_workspace"],
     "assertPlanStyle": true,
     "prompts": ["直接给我弄一版", "确认", "这版有啥问题", "贵的先去掉", "确认", "现在少的这些咋补"]
   },

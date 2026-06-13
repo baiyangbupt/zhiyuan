@@ -3,6 +3,7 @@ from __future__ import annotations
 from app.domain.major_entity_resolver import (
     append_major_mentions_to_payload,
     build_major_relation_notes,
+    refine_major_intent_payload_by_explicit_mentions,
     major_alias_variants_for_name,
     resolve_major_entity,
     resolve_major_mentions_from_text,
@@ -58,6 +59,26 @@ def test_resolve_major_mentions_supports_mixed_positive_negative_sentence():
         "level3": ["会计学", "审计学"],
         "negative_level3": ["土木工程"],
     }
+
+
+def test_refine_major_intent_does_not_expand_concrete_major_to_parent_discipline():
+    refined = refine_major_intent_payload_by_explicit_mentions(
+        {"level1": ["医学"], "level3": ["临床医学"]},
+        "我只想学临床医学，其他专业先不要",
+        "01",
+    )
+
+    assert refined == {"level3": ["临床医学"]}
+
+
+def test_refine_major_intent_keeps_explicit_parent_discipline():
+    refined = refine_major_intent_payload_by_explicit_mentions(
+        {"level1": ["医学"], "negative_level1": ["工学"]},
+        "不考虑工科，只考虑医学类",
+        "01",
+    )
+
+    assert refined == {"level1": ["医学"], "negative_level1": ["工学"]}
 
 
 def test_resolve_major_mentions_prefers_common_alias_over_auto_alias():
@@ -118,9 +139,22 @@ def test_resolve_region_entity_handles_common_province_alias():
     assert result.best.source == "alias"
 
 
+def test_resolve_region_entity_handles_area_aliases():
+    south = resolve_region_entity("南方")
+    north = resolve_region_entity("北方地区")
+
+    assert south.best is not None
+    assert south.best.canonical_name == "南方"
+    assert south.best.level == "area"
+    assert north.best is not None
+    assert north.best.canonical_name == "北方"
+    assert north.best.level == "area"
+
+
 def test_contains_concrete_region_mention_distinguishes_abstract_region_language():
     assert contains_concrete_region_mention("广西贵州内蒙这些要不要放") is True
     assert contains_concrete_region_mention("省外可以，但太偏的地方不想去") is False
+    assert contains_concrete_region_mention("南方可以，北方先别考虑") is True
 
 
 def test_resolve_school_major_ref_handles_attached_short_names():

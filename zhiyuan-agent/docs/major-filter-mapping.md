@@ -97,8 +97,10 @@
   - 学校 / 专业 / 省份补码改走异步链路
 - `app/tools/plan_validation_tool.py`
   - 学校 / 专业 / 省市补码改走异步链路
-- `app/tools/planning_router_tool.py`
-  - 直接面向用户的 `candidate_query` 入参，在发给 backend 前也会做一次 catalog 归一化
+- `app/tools/plan_context_tool.py` / `app/tools/plan_orchestration_tool.py`
+  - 方案主链路在收集上下文和生成动作计划时统一承接结构化学校、专业、地域和标签条件
+- `app/tools/plan_query_tool.py`
+  - 局部查询当前方案或候选时，在发给 backend 前继续复用 catalog 归一化结果
 
 当前策略：
 

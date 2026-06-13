@@ -147,16 +147,11 @@ class ReviewPlanAction(_ActionBase):
     action_type: Literal["review_plan"] = "review_plan"
 
 
-# === 补偿类 ===
+# === 修复预览类 ===
 
-class PreviewCompensationAction(_ActionBase):
-    """预览补偿/补稳方案。"""
-    action_type: Literal["preview_compensation"] = "preview_compensation"
-
-
-class ApplyCompensationAction(_ActionBase):
-    """应用补偿方案。"""
-    action_type: Literal["apply_compensation"] = "apply_compensation"
+class PreviewFixProposalAction(_ActionBase):
+    """预览统一修复建议。"""
+    action_type: Literal["preview_fix_proposal"] = "preview_fix_proposal"
 
 
 # === 志愿增删改类 ===
@@ -255,8 +250,7 @@ PlanAction = Annotated[
         GeneratePlanAction,
         AnalyzeAdjustmentAction,
         ReviewPlanAction,
-        PreviewCompensationAction,
-        ApplyCompensationAction,
+        PreviewFixProposalAction,
         AddUnitsAction,
         RemoveUnitsAction,
         MoveUnitAction,
@@ -268,7 +262,7 @@ PlanAction = Annotated[
     ],
     Field(discriminator="action_type"),
 ]
-"""16 种 action_family 的类型化联合体。
+"""15 种 action_family 的类型化联合体。
 
 使用 discriminator 自动分发：
 ```python
@@ -289,8 +283,7 @@ ACTION_TYPE_TO_FAMILY: dict[str, str] = {
     "generate_plan": "generate_plan",
     "analyze_adjustment": "analyze_adjustment",
     "review_plan": "review_plan",
-    "preview_compensation": "preview_compensation",
-    "apply_compensation": "apply_compensation",
+    "preview_fix_proposal": "preview_fix_proposal",
     "add_units": "add_units",
     "remove_units": "remove_units",
     "move_unit": "move_unit",

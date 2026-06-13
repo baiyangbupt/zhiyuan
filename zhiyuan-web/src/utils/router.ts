@@ -3,7 +3,7 @@
  * 统一处理 basePath 的路由跳转
  */
 
-import { getStorage, EStorageKey } from '@/utils/tool';
+import { getUa, getValueFromUrlBykey } from '@/utils/tool';
 
 // 是否为浏览器环境
 const isClient = typeof window !== 'undefined';
@@ -30,8 +30,10 @@ export const buildPath = (path: string): string => {
  */
 const getStoredSource = (): string | null => {
     if (!isClient) return null;
-    const val = getStorage(EStorageKey.SOURCE);
-    return (val as string) || null;
+    if (getValueFromUrlBykey('source') === 'minip' || getUa().isWechatMP) {
+        return 'minip';
+    }
+    return null;
 };
 
 /**

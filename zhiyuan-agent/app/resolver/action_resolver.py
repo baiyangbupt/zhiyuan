@@ -1,6 +1,6 @@
 """确定性动作映射层。
 
-用 IntentFrame + PlanContextInputs + ConversationPhase → ActionResolution
+用 IntentFrame + PlanContextInputs → ActionResolution
 的确定性规则，替代 plan_orchestration_tool 中 8 个 _goal_requests_* 关键词匹配函数。
 
 设计原则：
@@ -17,17 +17,14 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from app.models.conversation_phase import ConversationPhase, PhaseState
 from app.models.intent_frame import IntentFrame
 from app.models.typed_actions import (
     AddUnitsAction,
     AnalyzeAdjustmentAction,
-    ApplyCompensationAction,
     GeneratePlanAction,
     MoveOrderedUnitAction,
     MoveUnitAction,
-    PlanAction,
-    PreviewCompensationAction,
+    PreviewFixProposalAction,
     QueryCandidatesAction,
     QueryDraftAction,
     QueryOrderedAction,
@@ -63,6 +60,9 @@ class ActionResolution(BaseModel):
     - blocked_reason: 如果 stage=blocked 的原因
     - missing_inputs: 缺少的必要参数
     - reply_guidance: 回复生成的辅助信息
+
+    复合目标和待写入意向不放在 resolver 输出里；它们统一由
+    plan_next_action 的 composite_proposal 承载，避免两处状态不同步。
     """
 
     action_family: str
@@ -80,21 +80,10 @@ class ActionResolution(BaseModel):
     should_refresh_workspace: bool = False
 
 
-# ---------------------------------------------------------------------------
-# 不需要现有方案就能执行的动作
-# ---------------------------------------------------------------------------
-
-_PLAN_INDEPENDENT_ACTIONS = {
-    "query_state",
-    "query_draft",
-    "query_ordered",
-    "query_candidates",
-    "generate_plan",
-}
-
+# 依赖已有方案的动作；方案为空时不能直接进入预览/执行。
 _PLAN_DEPENDENT_ACTIONS = {
     "analyze_adjustment",
-    "preview_compensation",
+    "preview_fix_proposal",
     "add_units",
     "remove_units",
     "move_unit",
@@ -103,7 +92,6 @@ _PLAN_DEPENDENT_ACTIONS = {
     "remove_ordered_unit",
     "sort_ordered_plan",
     "regenerate_order",
-    "apply_compensation",
     "review_plan",
 }
 
@@ -114,7 +102,7 @@ _NO_CONFIRMATION_ACTIONS = {
     "query_ordered",
     "query_candidates",
     "analyze_adjustment",
-    "preview_compensation",
+    "preview_fix_proposal",
     "review_plan",
 }
 
@@ -123,7 +111,6 @@ _ALWAYS_CONFIRM_ACTIONS = {
     "generate_plan",
     "sort_ordered_plan",
     "regenerate_order",
-    "apply_compensation",
     "replace_units",
     "move_ordered_unit",
     "remove_ordered_unit",
@@ -151,7 +138,6 @@ class ActionResolver:
         self,
         frame: IntentFrame,
         context: PlanContextInputs,
-        phase: ConversationPhase | None = None,
     ) -> ActionResolution:
         """将 IntentFrame 映射为 ActionResolution。"""
         # Step 1: verb → initial action_family
@@ -213,7 +199,6 @@ class ActionResolver:
             "remove_ordered_unit",
             "sort_ordered_plan",
             "regenerate_order",
-            "apply_compensation",
         }
         should_refresh_workspace = stage in {"apply", "review"}
 
@@ -242,7 +227,7 @@ class ActionResolver:
         "move": "move_unit",
         "replace": "replace_units",
         "reorder": "regenerate_order",
-        "compensate": "preview_compensation",
+        "compensate": "preview_fix_proposal",
     }
 
     def _verb_to_action_family(self, frame: IntentFrame) -> str:
@@ -348,11 +333,11 @@ class ActionResolver:
 
         规则 1: generate_plan → analyze_adjustment
             条件: 已有方案 + 不是显式要求重新生成 + verb 实际是 analyze
-        规则 2: preview_compensation → add_units
+        规则 2: preview_fix_proposal → add_units
             条件: 方案未满额 + 有稳定性补入意图（scope.tier in {稳, 保}）
         规则 3: regenerate_order → replace_units
             条件: 有结构再平衡意图（scope.tier + 无明确 reorder verb）
-        规则 4: preview_compensation → analyze_adjustment
+        规则 4: preview_fix_proposal → analyze_adjustment
             条件: 方案已满额
         规则 5: regenerate_order → analyze_adjustment
             条件: 没有明确 reorder verb + 有 analyze 意图
@@ -370,7 +355,7 @@ class ActionResolver:
 
         # Rule 2: compensation → add_units (未满额 + 稳保方向)
         if (
-            action_family == "preview_compensation"
+            action_family == "preview_fix_proposal"
             and not self._is_plan_filled(context)
             and frame.scope.tier in {"稳", "保"}
         ):
@@ -385,7 +370,7 @@ class ActionResolver:
             return "replace_units"
 
         # Rule 4: compensation → analyze (方案已满)
-        if action_family == "preview_compensation" and self._is_plan_filled(context):
+        if action_family == "preview_fix_proposal" and self._is_plan_filled(context):
             return "analyze_adjustment"
 
         # Rule 5: regenerate_order → analyze (非明确 reorder + 是 analyze)
@@ -426,10 +411,7 @@ class ActionResolver:
                 reason=frame.raw_utterance,
             ),
             "review_plan": lambda: ReviewPlanAction(reason=frame.raw_utterance),
-            "preview_compensation": lambda: PreviewCompensationAction(
-                reason=frame.raw_utterance,
-            ),
-            "apply_compensation": lambda: ApplyCompensationAction(
+            "preview_fix_proposal": lambda: PreviewFixProposalAction(
                 reason=frame.raw_utterance,
             ),
             "add_units": lambda: AddUnitsAction(
@@ -554,7 +536,7 @@ class ActionResolver:
         # 只读动作直接 apply
         if action_family in {
             "query_state", "query_draft", "query_ordered", "query_candidates",
-            "analyze_adjustment", "preview_compensation",
+            "analyze_adjustment", "preview_fix_proposal",
         }:
             return "apply"
 

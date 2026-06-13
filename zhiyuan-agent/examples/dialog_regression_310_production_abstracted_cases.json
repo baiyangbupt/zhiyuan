@@ -77,7 +77,13 @@
     "open_explore": 3,
     "score_profile": 1,
     "candidate_shortage": 2,
-    "majorGroup_model": 1
+    "majorGroup_model": 1,
+    "high_level_scenario": 1,
+    "scenario_to_goal_layering": 1,
+    "career_plan_scenario": 1,
+    "plan_strategy": 1,
+    "public_service_orientation": 1,
+    "no_direct_mutation": 1
   },
   "cases": [
     {
@@ -127,7 +133,7 @@
         {
           "prompt": "这个方案还是不行，只要医学",
           "assertContainsAny": ["医学", "只保留", "方案", "预览", "采纳"],
-          "assertNotContains": ["已直接重做", "已直接删除"],
+          "assertNotContains": ["已直接重做", "已直接删除", "其他专业类将不再进入你的候选范围", "请点\"采纳\"", "请点“采纳”"],
           "expectedKeyPoints": ["只保留医学", "当前方案", "确认前不改"]
         }
       ]
@@ -146,7 +152,7 @@
         {
           "prompt": "只要电气和气象，其他方向都不要",
           "assertContainsAny": ["电气", "气象", "只保留", "采纳"],
-          "assertNotContains": ["排除电气", "排除气象"],
+          "assertNotContains": ["排除电气", "排除气象", "排除专业门类：哲学", "排除专业门类：工学", "哲学、经济学、法学", "医学、管理学、艺术学"],
           "expectedKeyPoints": ["电气", "气象", "只保留", "采纳前不生效"]
         }
       ]
@@ -316,6 +322,37 @@
           "expectedKeyPoints": ["兴趣方向", "就业路径", "学习要求", "下一步"],
           "qualityFocus": ["rich_decision_basis", "career_path", "user_language"],
           "minTextLengthWarn": 220
+        }
+      ]
+    },
+    {
+      "name": "310-prod-scenario-public-service-oriented-plan",
+      "sessionId": "5917",
+      "flow": ["explore", "plan"],
+      "coverage": [
+        "high_level_scenario",
+        "scenario_to_goal_layering",
+        "career_plan_scenario",
+        "public_service_orientation",
+        "plan_strategy",
+        "plan_operations",
+        "no_direct_mutation"
+      ],
+      "prompts": [
+        {
+          "prompt": "我想让这版方案整体更偏体制内和考公考编，先看看应该怎么调整，不要直接改",
+          "assertContainsAny": ["体制内", "考公", "考编", "方案", "院校层次", "专业方向", "预览", "不会直接改"],
+          "assertNotContains": ["删除所有非体制", "已直接调整", "已直接删除", "已直接记录"],
+          "expectedKeyPoints": ["高层情景", "当前方案承接", "取舍依据", "确认前不改"],
+          "qualityFocus": ["scenario_layering", "rich_decision_basis", "preview_confirm_boundary"],
+          "minTextLengthWarn": 180
+        },
+        {
+          "prompt": "具体一点，先把第8个志愿移到第12位，只给我预览",
+          "assertContainsAny": ["第8", "第12", "移动", "预览", "确认"],
+          "assertNotContains": ["已直接移动", "已直接调整"],
+          "expectedKeyPoints": ["具体原子动作", "移动预览", "确认前不改"],
+          "qualityFocus": ["scenario_layering", "preview_confirm_boundary"]
         }
       ]
     },

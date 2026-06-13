@@ -576,36 +576,35 @@ def test_policy_direct_returns_volunteer_position_preview():
     assert decision.reason == "structured_position_preview"
 
 
-def test_policy_direct_returns_compensation_preview():
+def test_policy_keeps_fix_proposal_preview_for_model_summary():
     decision = decide_tool_reply(
         ["execute_plan_action"],
         [
             _tool_return(
                 "execute_plan_action",
                 (
-                    '{"result_kind":"compensation_preview",'
-                    '"summary":"当前可先看的补齐建议共有 1 项动作，预计补入 2 个志愿。",'
-                    '"reply_focus":["compensation_preview"]}'
+                    '{"result_kind":"fix_proposal_preview",'
+                    '"summary":"已生成当前方案的调整预览：可确认后执行 1 项。",'
+                    '"reply_focus":["fix_proposal_preview"]}'
                 ),
             )
         ],
     )
 
-    assert decision.strategy == "preview_wait_confirm"
-    assert decision.should_return_directly is True
-    assert decision.reason == "structured_compensation_preview"
+    assert decision.strategy == "continue_model"
+    assert decision.should_return_directly is False
 
 
-def test_policy_keeps_empty_compensation_preview_for_model_summary():
+def test_policy_keeps_empty_fix_proposal_preview_for_model_summary():
     decision = decide_tool_reply(
         ["execute_plan_action"],
         [
             _tool_return(
                 "execute_plan_action",
                 (
-                    '{"result_kind":"compensation_preview",'
-                    '"summary":"这轮没有拿到可直接执行的调稳补齐预览。",'
-                    '"reply_focus":["compensation_preview","empty_compensation_preview"]}'
+                    '{"result_kind":"fix_proposal_preview",'
+                    '"summary":"已查看当前方案的可处理建议，暂时没有需要自动处理的项目。",'
+                    '"reply_focus":["fix_proposal_preview","empty_fix_proposal_preview"]}'
                 ),
             )
         ],

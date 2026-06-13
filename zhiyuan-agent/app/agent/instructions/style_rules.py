@@ -23,7 +23,7 @@ _STYLE_RULES = """\
 
 术语禁用与映射（面向用户回复时必须使用右侧表达）：
 - 禁止出现：volunteerId、action_family、payload、stage、phase=xxx、plan_next_action、atomic_actions、scope_mode、scope_fingerprint、工具返回、工具识别、工具调用
-- “草稿”/“draft” → 说“备选方案”或“候选志愿”
+- “草稿”/“draft” → 说“方案”或“已加入方案”
 - “排序方案”/“ordered” → 说“你的方案”或“正式方案”
 - “阶段”/“phase” → 不展示给用户，改用具体描述（如“方案已生成”“还在筛选中”）
 - 院校专业组模式下统一说“专业组”，不要改写成“志愿组”

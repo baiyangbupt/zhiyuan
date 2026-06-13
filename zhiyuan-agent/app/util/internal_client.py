@@ -569,15 +569,6 @@ async def list_planning_review_rules(tenant_id: Union[str, int] = 1) -> Dict[str
     )
 
 
-async def preview_planning_compensation(thread_id: Union[str, int]) -> Dict[str, Any]:
-    """预览统一规划补偿建议。"""
-    return await http_client.post(
-        endpoint=f"/gaotu-assistant-bot/inner/planning/1/session/compensation/preview?chatSessionId={thread_id}",
-        json_data={},
-        error_msg="预览规划补偿失败",
-    )
-
-
 async def generate_planning_fix_proposals(
     tenant_id: Union[str, int],
     chat_session_id: Union[str, int],
@@ -590,6 +581,22 @@ async def generate_planning_fix_proposals(
         ),
         json_data={},
         error_msg="生成规划修复建议失败",
+    )
+
+
+async def generate_user_goal_planning_fix_proposals(
+    tenant_id: Union[str, int],
+    chat_session_id: Union[str, int],
+    payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    """按结构化用户复合目标生成只读方案调整预览。"""
+    return await http_client.post(
+        endpoint=(
+            f"/gaotu-assistant-bot/inner/planning/{tenant_id}/session/fix-proposals/user-goal/generate"
+            f"?chatSessionId={chat_session_id}"
+        ),
+        json_data=payload or {},
+        error_msg="生成用户目标方案调整预览失败",
     )
 
 
@@ -1418,26 +1425,6 @@ async def analyze_planning_plan_adjustment(
         ),
         json_data={},
         error_msg="分析方案调整建议失败",
-    )
-
-
-async def apply_planning_compensation(
-    tenant_id: Union[str, int],
-    chat_session_id: Union[str, int],
-    regenerate_ordered_plan: bool = True,
-    rerun_review: bool = True,
-) -> Dict[str, Any]:
-    """兼容应用低风险补偿建议；结构修复统一走 fix-proposals/apply。"""
-    return await http_client.post(
-        endpoint=(
-            f"/gaotu-assistant-bot/inner/planning/{tenant_id}/session/compensation/apply"
-            f"?chatSessionId={chat_session_id}"
-        ),
-        json_data={
-            "regenerateOrderedPlan": regenerate_ordered_plan,
-            "rerunReview": rerun_review,
-        },
-        error_msg="应用补偿失败",
     )
 
 

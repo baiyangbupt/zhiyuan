@@ -4,15 +4,14 @@
 1. query_state, query_draft, query_ordered, query_candidates → 只读查询
 2. generate_plan → 生成方案
 3. analyze_adjustment → 分析调整
-4. preview_compensation → 补偿预览
-5. apply_compensation → 应用补偿（含 blocker）
-6. review_plan → 审查
-7. add_units → 添加（by id / by filter）
-8. remove_units → 移除（含 review issue 分支）
-9. move_unit → 移动
-10. regenerate_order → 整体重排
-11. replace_units → 替换（含 review issue 分支）
-12. regenerate_order → 重排
+4. preview_fix_proposal → 修复建议预览
+5. review_plan → 审查
+6. add_units → 添加（by id / by filter）
+7. remove_units → 移除（含 review issue 分支）
+8. move_unit → 移动
+9. regenerate_order → 整体重排
+10. replace_units → 替换（含 review issue 分支）
+11. regenerate_order → 重排
 """
 
 from __future__ import annotations
@@ -172,53 +171,19 @@ class TestAnalyzeAdjustmentApply:
 
 
 # ---------------------------------------------------------------------------
-# preview_compensation
+# preview_fix_proposal
 # ---------------------------------------------------------------------------
 
-class TestPreviewCompensationApply:
+class TestPreviewFixProposalApply:
     @pytest.mark.parametrize("volunteer_model", ["major", "majorGroup"])
-    async def test_preview_compensation_basic(self, volunteer_model: str, patch_backend, patch_planning):
-        patch_backend.preview_planning_compensation.return_value = {"code": 0, "data": {}}
-        ctx = _confirmed_ctx(volunteer_model=volunteer_model, action_family="preview_compensation")
-        plan = make_plan_action_plan(action_family="preview_compensation", stage="apply")
+    async def test_preview_fix_proposal_basic(self, volunteer_model: str, patch_backend, patch_planning):
+        patch_backend.generate_planning_fix_proposals.return_value = {"code": 0, "data": {}}
+        ctx = _confirmed_ctx(volunteer_model=volunteer_model, action_family="preview_fix_proposal")
+        plan = make_plan_action_plan(action_family="preview_fix_proposal", stage="apply")
         result = await _execute_plan_action_model(ctx, plan)
-        # preview_compensation 在 apply 阶段 applied=False（特殊例外）
+        # preview_fix_proposal 是只读修复预览，不直接修改方案
         assert result.applied is False
-        assert result.result_kind == "compensation_preview"
-
-
-# ---------------------------------------------------------------------------
-# apply_compensation
-# ---------------------------------------------------------------------------
-
-class TestApplyCompensationApply:
-    @pytest.mark.parametrize("volunteer_model", ["major", "majorGroup"])
-    async def test_apply_compensation_success(self, volunteer_model: str, patch_backend, patch_planning):
-        # 无 blocker → 正常 apply
-        # State: ordered 20 / target 30 → gap = 10
-        patch_backend.get_planning_state.return_value = {
-            "code": 0,
-            "data": make_planning_state_response(ordered_total=20),
-        }
-        # Preview must return actions with estimated fill count <= gap
-        patch_backend.preview_planning_compensation.return_value = {
-            "code": 0,
-            "data": {
-                "actions": [
-                    {
-                        "actionType": "add",
-                        "summary": "补入5个志愿",
-                        "fillCount": 5,
-                        "volunteerIds": ["v1", "v2", "v3", "v4", "v5"],
-                    },
-                ],
-            },
-        }
-        patch_planning.apply_planning_compensation.return_value = "已应用补偿。"
-        ctx = _confirmed_ctx(volunteer_model=volunteer_model, action_family="apply_compensation")
-        plan = make_plan_action_plan(action_family="apply_compensation", stage="apply")
-        result = await _execute_plan_action_model(ctx, plan)
-        assert result.applied is True
+        assert result.result_kind == "fix_proposal_preview"
 
 
 # ---------------------------------------------------------------------------

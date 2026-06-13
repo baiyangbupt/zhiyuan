@@ -33,7 +33,7 @@ from pydantic import BaseModel, Field
 # | move        | move_unit                 |                     |
 # | replace     | replace_units             |                     |
 # | reorder     | sort_ordered_plan / regenerate_order | scope.sort_field 决定 |
-# | compensate  | preview_compensation / apply_compensation |       |
+# | compensate  | preview_fix_proposal     |                     |
 # | compare     | —                         | Explore 比较        |
 # | recommend   | —                         | Explore 推荐        |
 # | explain     | —                         | Explore 解释        |
@@ -82,6 +82,22 @@ TaskLayer = Literal[
     "intent",     # 偏好/约束 管理
     "plan",       # 方案编辑操作
 ]
+
+PlanGoalType = Literal[
+    "query_state",
+    "only_keep_scope",
+    "must_include_scope",
+    "exclude_scope",
+    "prefer_scope",
+    "rebalance_structure",
+    "reduce_risk",
+    "mixed_adjustment",
+    "clarify",
+]
+
+ConstraintIntentType = Literal["default", "only_keep", "must_have"]
+
+PlanGoalConfidence = Literal["high", "medium", "low"]
 
 
 class TargetSpec(BaseModel):
@@ -199,3 +215,14 @@ class IntentFrame(BaseModel):
     # 历史字段，仅用于兼容旧样本；自然语言 frame 不再承载确认执行。
     # 确认/取消必须通过 service-level pendingConfirmation 入口处理。
     is_confirmation_of_previous: bool = False
+
+    # 复合方案目标的结构化入口。该字段表达“用户想达成什么”，不是
+    # 底层可执行 action；ActionResolver 只把它转成 PlanGoal 元数据，
+    # 具体拆解、预览和确认仍由 Plan 编排/执行层完成。
+    plan_goal_type: PlanGoalType | None = None
+    plan_goal_confidence: PlanGoalConfidence = "medium"
+
+    # Intent 工具已有的正向约束细分：only_keep=只保留这个范围，
+    # must_have=至少保留这个方向。这里作为 PlanGoal 的兼容输入，
+    # 不直接触发状态写入。
+    constraint_intent_type: ConstraintIntentType = "default"

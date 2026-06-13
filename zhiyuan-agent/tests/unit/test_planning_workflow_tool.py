@@ -9,18 +9,17 @@ import pytest
 
 from app.agent.context import PlanningSummary, RequestContext
 from app.tools.planning_workflow_tool import (
+    _build_compensation_preview_facts,
     _fix_proposal_facts,
     _build_plan_status_overview_facts,
     analyze_planning_plan_adjustment,
     apply_planning_fix_proposal,
-    apply_planning_compensation,
     ban_planning_draft_items,
     generate_planning_fix_proposals,
     generate_planning_initial_plan,
     generate_planning_ordered_plan,
     lock_planning_draft_items,
     move_planning_ordered_item,
-    preview_planning_compensation,
     query_planning_candidate_pool,
     query_planning_draft,
     query_planning_ordered_plan,
@@ -261,7 +260,7 @@ def test_query_planning_state_matches_level2_major_preferences_against_concrete_
         result = asyncio.run(query_planning_state(ctx))
 
     assert "当前偏好/要求：偏好专业=计算机类,自动化类,电子信息类" in result
-    assert "当前方案里较贴近的有3个，明显冲突的有0个" in result
+    assert "当前方案里较贴近的有3个，没有看到明显冲突" in result
     assert "北京石油化工学院(03)-计算机科学与技术(4600元)(冲)@1（匹配偏好专业:计算机类）" in result
     assert "湖北工程学院(01)-自动化(4000元)(冲)@2（匹配偏好专业:自动化类）" in result
 
@@ -313,7 +312,7 @@ def test_run_planning_review_aggregates_major_group_relation_counts_by_unit():
     mock_state.assert_awaited_once_with("review-session-major-group")
     mock_ordered.assert_awaited_once_with("review-session-major-group")
     assert "当前偏好/要求：偏好专业=计算机类,自动化类" in result
-    assert "当前方案里较贴近的有2个，明显冲突的有0个" in result
+    assert "当前方案里较贴近的有2个，没有看到明显冲突" in result
     assert "北京石油化工学院(03)-计算机科学与技术(4600元)(冲)@1（匹配偏好专业:计算机类）" in result
     assert "湖北工程学院(01)-自动化(4000元)(稳)@3（匹配偏好专业:自动化类）" in result
     assert "软件工程" not in result
@@ -483,7 +482,7 @@ def test_run_planning_review_prefers_latest_user_profile_over_stale_explicit_pro
     mock_profile.assert_awaited_once_with("review-session-latest")
     mock_ordered.assert_awaited_once_with("review-session-latest")
     assert "当前偏好/要求：偏好专业=网络与新媒体,跨境电子商务" in result
-    assert "当前方案里较贴近的有1个，明显冲突的有0个" in result
+    assert "当前方案里较贴近的有1个，没有看到明显冲突" in result
 
 
 def test_analyze_planning_plan_adjustment_includes_intent_relation_summary():
@@ -661,54 +660,25 @@ def test_build_plan_status_overview_facts_includes_candidate_supply_shortage():
     assert "当前没有可直接补入的稳、保区候选" in supply["summary"]
 
 
-def test_preview_planning_compensation_uses_session_and_formats_result():
-    ctx = _make_ctx("preview-session")
-    response = {
-        "code": 0,
-        "data": {
+def test_compensation_preview_facts_separate_legacy_add_from_structural_actions():
+    facts = _build_compensation_preview_facts(
+        {
             "actions": [
-                {"summary": "补充保区志愿", "volunteerIds": ["v1", "v2"]},
-                {"summary": "补足志愿总数量", "volunteerIds": ["v3"]},
-            ]
-        },
-    }
-
-    with patch(
-        "app.tools.planning_workflow_tool._preview_planning_compensation_request",
-        AsyncMock(return_value=response),
-    ) as mock_request:
-        result = asyncio.run(preview_planning_compensation(ctx))
-
-    mock_request.assert_awaited_once_with("preview-session")
-    assert "已生成补偿预览。" in result
-    assert "待执行动作：2项" in result
-    assert "预计补入候选：3个" in result
-
-
-def test_preview_planning_compensation_prefers_unit_count_in_major_group_mode():
-    ctx = _make_ctx("preview-session-major-group")
-    response = {
-        "code": 0,
-        "data": {
-            "actions": [
+                {"summary": "补足志愿总数量", "volunteerIds": ["v1", "v2"], "actionType": "add"},
                 {
-                    "summary": "补足志愿总数量",
-                    "unitIds": ["u1", "u2"],
-                    "volunteerIds": ["u1_m1", "u2_m1", "u2_m2"],
+                    "summary": "替换高收费志愿",
+                    "removeVolunteerIds": ["old-1"],
+                    "candidateVolunteerIds": ["new-1"],
+                    "actionType": "replace",
                 },
             ]
-        },
-    }
+        }
+    )
 
-    with patch(
-        "app.tools.planning_workflow_tool._preview_planning_compensation_request",
-        AsyncMock(return_value=response),
-    ) as mock_request:
-        result = asyncio.run(preview_planning_compensation(ctx))
-
-    mock_request.assert_awaited_once_with("preview-session-major-group")
-    assert "待执行动作：1项" in result
-    assert "预计补入候选：2个" in result
+    assert facts["action_count"] == 2
+    assert facts["estimated_fill_count"] == 2
+    assert facts["legacy_add_action_count"] == 1
+    assert facts["legacy_add_estimated_fill_count"] == 2
 
 
 def test_query_planning_draft_uses_session_and_formats_result():
@@ -1328,26 +1298,15 @@ def test_move_keeps_ordered_backend():
     assert "已将志愿移动到第3位。" in move_result
 
 
-def test_apply_planning_compensation_requires_confirmation():
-    ctx = _make_ctx("apply-session")
-
-    with patch(
-        "app.tools.planning_workflow_tool._apply_planning_compensation_request",
-        AsyncMock(),
-    ) as mock_request:
-        result = asyncio.run(apply_planning_compensation(ctx))
-
-    mock_request.assert_not_awaited()
-    assert "请先在对话中获得用户明确确认" in result
-
-
 def test_generate_planning_fix_proposals_formats_status_and_warnings():
     ctx = _make_ctx("fix-preview-session")
     response = {
         "code": 0,
         "data": {
+            "proposalSource": "review_check",
             "proposals": [
                 {
+                    "proposalSource": "review_check",
                     "title": "修复高收费",
                     "status": "preview_only",
                     "strategy": "replace_risk_items",
@@ -1370,7 +1329,7 @@ def test_generate_planning_fix_proposals_formats_status_and_warnings():
                     "status": "ready",
                     "strategy": "fill_missing_count",
                     "actions": [{"actionType": "fill_total_count", "summary": "补足志愿总数量"}],
-                    "dryRunResult": {"addVolunteerCount": 2},
+                    "dryRunResult": {"removeVolunteerCount": 0, "addVolunteerCount": 2},
                 },
                 {
                     "title": "修复录取率梯度断层",
@@ -1403,16 +1362,21 @@ def test_generate_planning_fix_proposals_formats_status_and_warnings():
         result = asyncio.run(generate_planning_fix_proposals(ctx))
 
     mock_request.assert_awaited_once_with(1, "fix-preview-session")
-    assert "已生成当前方案的修复建议预览。" in result
-    assert "修复高收费：preview_only" in result
+    assert "已生成当前方案的处理建议预览。" in result
+    assert "处理高收费：仅供参考，需要进一步确认取舍" in result
     assert "预计移除1条、补入1条" in result
-    assert "修复数量缺口：ready" in result
-    assert "暂不能自动处理：当前候选不足。" in result
-    assert "候选边界：当前可用于规划的候选池里，断层中间录取率候选不足。" in result
-    assert "处理边界：当前可用于规划的候选池里断层中间录取率候选不足，暂时不能补齐录取率梯度。" in result
-    assert "preview_only 或 blocked 的建议不会被自动执行" in result
+    assert "处理数量缺口：可确认后执行" in result
+    assert "预计补入2条" in result
+    assert "移除0" not in result
+    assert "需要注意：当前候选不足；当前可用于规划的可选范围里，断层中间录取率候选不足" in result
+    assert "候选边界" not in result
+    assert "处理边界" not in result
+    assert "暂不能自动处理" not in result
+    assert "需要进一步取舍的建议不会直接执行" in result
 
     facts = _fix_proposal_facts(response["data"])
+    assert facts["proposal_source"] == "review_check"
+    assert facts["proposals"][0]["proposal_source"] == "review_check"
     assert facts["proposals"][2]["blocking_reason_codes"] == ["probability_gap_candidate_insufficient"]
     assert facts["proposals"][2]["candidate_shortages"][0]["scope"] == "candidate_pool"
     assert facts["proposals"][2]["candidate_shortages"][0]["reason_code"] == "probability_gap_candidate_insufficient"
@@ -1452,8 +1416,8 @@ def test_generate_planning_fix_proposals_prefers_hard_constraint_shortage_guidan
     ):
         result = asyncio.run(generate_planning_fix_proposals(ctx))
 
-    assert "候选边界：已确认的硬性要求收窄了可选范围，当前可用于补位的候选不足" in result
-    assert "处理边界：已确认的硬性要求收窄了可选范围，当前可用于补位的候选不足" in result
+    assert "需要注意：当前候选不足；已确认的报考条件收窄了可选范围，当前可用于补位的候选不足" in result
+    assert "硬性要求" not in result
     assert "处理边界：当前可用于规划的候选池里目标冲稳保区间候选不足" not in result
 
 
@@ -1473,7 +1437,7 @@ def test_apply_planning_fix_proposal_requires_confirmation():
         )
 
     mock_request.assert_not_awaited()
-    assert "请先让用户确认具体修复建议" in result
+    assert "请先让用户确认具体处理建议" in result
 
 
 def test_apply_planning_fix_proposal_formats_repair_report():
@@ -1519,62 +1483,12 @@ def test_apply_planning_fix_proposal_formats_repair_report():
         regenerate_ordered_plan=False,
         rerun_review=True,
     )
-    assert "已应用修复建议" in result
-    assert "修复建议：补齐志愿数量" in result
+    assert "已按处理建议更新方案" in result
+    assert "处理内容：补齐志愿数量" in result
     assert "对应问题：当前方案数量不足，需要补充志愿。" in result
-    assert "修复类型：fill_missing_count" in result
-    assert "移除0条，补入2条" in result
+    assert "处理方式：fill_missing_count" in result
+    assert "调整结果：补入2条" in result
+    assert "移除0条" not in result
     assert "影响范围：预计补充 2 条志愿。" in result
-    assert "应用前预览：补入 2 条，不移除现有志愿。" in result
-    assert "本次对应问题已通过复验" in result
-
-
-def test_apply_planning_compensation_uses_session_and_formats_state():
-    ctx = _make_ctx("apply-session")
-    response = {
-        "code": 0,
-        "data": {
-            "phase": "reviewed",
-            "version": 11,
-            "draftPlanState": {"summary": {"total": 28}},
-            "orderedPlanState": {"summary": {"total": 24}},
-            "reviewState": {
-                "summary": {"warnCount": 1, "riskCount": 0},
-                "checks": [],
-            },
-            "pendingActions": [],
-        },
-    }
-    ordered_response = {
-        "code": 0,
-        "data": {
-            "items": [
-                {"position": 1, "schoolName": "北京联合大学", "majorName": "计算机科学与技术", "tier": "稳"},
-            ],
-            "summary": {"total": 24},
-        },
-    }
-
-    with (
-        patch("app.tools.planning_workflow_tool._apply_planning_compensation_request", AsyncMock(return_value=response)) as mock_request,
-        patch("app.tools.planning_workflow_tool._get_planning_ordered_plan_request", AsyncMock(return_value=ordered_response)) as mock_ordered,
-    ):
-        result = asyncio.run(
-            apply_planning_compensation(
-                ctx,
-                user_confirmed=True,
-                regenerate_ordered_plan=False,
-                rerun_review=True,
-            )
-        )
-
-    mock_request.assert_awaited_once_with(
-        1,
-        "apply-session",
-        regenerate_ordered_plan=False,
-        rerun_review=True,
-    )
-    mock_ordered.assert_awaited_once_with("apply-session")
-    assert "已应用补偿并刷新当前方案。" in result
-    assert "已加入方案数：28" in result
-    assert "当前待处理建议：0项" in result
+    assert "处理前预览：补入 2 条，不移除现有志愿。" in result
+    assert "这次对应的问题已通过检查" in result

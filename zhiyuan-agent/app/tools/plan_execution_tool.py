@@ -29,9 +29,8 @@ from app.tools.plan_orchestration_models import (
     PlanReviewIssueTarget,
     normalize_plan_action_payload,
 )
-from app.tools.review_issue_registry import build_review_issue_scopes
+from app.tools.review_issue_registry import build_review_issue_scopes, get_review_issue_rule
 from app.tools.planning_workflow_tool import (
-    _build_compensation_preview_facts,
     _build_plan_adjustment_facts,
     _build_plan_intent_relation_lines,
     _build_plan_status_overview_facts,
@@ -39,7 +38,6 @@ from app.tools.planning_workflow_tool import (
     analyze_planning_plan_adjustment,
     merge_planning_state_with_user_profile,
     move_planning_ordered_item,
-    preview_planning_compensation,
     query_planning_candidate_pool,
     query_planning_draft,
     query_planning_ordered_plan,
@@ -50,7 +48,6 @@ from app.tools.planning_workflow_tool import (
 )
 from app.util.planning_state_compat import get_working_plan_items, get_working_plan_state, get_working_plan_summary
 from app.util.internal_client import (
-    apply_planning_compensation as _apply_planning_compensation_request,
     analyze_planning_plan_adjustment as _analyze_planning_plan_adjustment_request,
     generate_planning_candidate_pool as _generate_planning_candidate_pool_request,
     generate_planning_initial_plan as _generate_planning_initial_plan_request,
@@ -59,7 +56,6 @@ from app.util.internal_client import (
     get_planning_state as _get_planning_state_request,
     get_user_profile as _get_user_profile_request,
     get_working_plan as _get_working_plan_request,
-    preview_planning_compensation as _preview_planning_compensation_request,
     query_planning_candidate_pool as _query_planning_candidate_pool_request,
     run_planning_review as _run_planning_review_request,
     select_working_plan_items as _select_working_plan_items_request,
@@ -83,7 +79,6 @@ _MUTATING_ACTION_FAMILIES = {
     "remove_ordered_unit",
     "sort_ordered_plan",
     "regenerate_order",
-    "apply_compensation",
 }
 _READONLY_HANDLER_ACTION_FAMILIES = {
     "query_state",
@@ -91,7 +86,7 @@ _READONLY_HANDLER_ACTION_FAMILIES = {
     "query_ordered",
     "query_candidates",
     "analyze_adjustment",
-    "preview_compensation",
+    "preview_fix_proposal",
     "review_plan",
 }
 _RECENT_PLAN_EXECUTION_TTL_SECONDS = 180.0
@@ -680,6 +675,19 @@ def _execution_missing_inputs(plan_model: PlanActionPlan) -> list[str]:
     return missing
 
 
+def _review_issue_replacement_scope_guidance(
+    issue_label: str,
+    unit_count: int,
+    volunteer_count: int,
+) -> str:
+    return (
+        f"我先定位了当前方案里的{issue_label}：共 {unit_count} 个专业组，涉及 {volunteer_count} 条志愿。"
+        "这类内容不建议直接整批替换，因为需要在学费、院校层次、专业方向和录取稳定性之间做取舍。"
+        "可以先打开审查结果里的处理建议，看哪些能一进一出替换；"
+        "如果你有明确方向，也可以直接说想换成正常收费、同专业、同层次或更稳的志愿，我再给你一版调整预览。"
+    )
+
+
 def _execution_missing_inputs_message(plan_model: PlanActionPlan, missing_inputs: list[str]) -> str:
     missing = {str(item or "").strip() for item in missing_inputs if str(item or "").strip()}
     if plan_model.action_family == "add_units" and "selection_scope" in missing:
@@ -714,6 +722,8 @@ def _hydrate_replace_filters_from_profile(
         return
     atomic = plan_model.atomic_actions[0]
     if _has_filter_selection_scope(atomic.filters):
+        return
+    if getattr(atomic, "review_issue_target", None) is not None:
         return
     profile = getattr(ctx.deps, "init_profile", None)
     if profile is None:
@@ -1920,7 +1930,17 @@ async def _resolve_review_issue_action_scope(
                 exc_info=True,
             )
     if issue is None:
-        return resolved_ids, ordered_items, review_issue_target, None
+        rule = get_review_issue_rule(getattr(review_issue_target, "code", None))
+        if rule is not None:
+            issue = {
+                "code": rule.code,
+                "label": rule.label,
+                "scope_kind": rule.scope_kind,
+                "default_action_family": rule.default_action_family,
+                "affected_volunteer_ids": resolved_ids,
+            }
+        else:
+            return resolved_ids, ordered_items, review_issue_target, None
     effective_ids = _resolve_review_issue_scope_ids(issue, ordered_items, resolved_ids, review_issue_target)
     return effective_ids or resolved_ids, ordered_items, review_issue_target, issue
 
@@ -1928,10 +1948,10 @@ async def _resolve_review_issue_action_scope(
 def _structural_review_issue_guidance(issue: dict[str, Any]) -> tuple[str, list[str]]:
     label = str(issue.get("label") or issue.get("code") or "当前问题").strip()
     default_action_family = str(issue.get("default_action_family") or "").strip()
-    if default_action_family == "preview_compensation":
+    if default_action_family == "preview_fix_proposal":
         return (
-            f"{label}属于结构性问题，不适合直接按样例删志愿。更合适的是先看补齐/补稳建议，再决定是否应用。",
-            ["如果用户想继续处理，先预览补齐建议，再确认是否执行。"],
+            f"{label}属于结构性问题，不适合直接按样例删志愿。更合适的是先看调整预览，再决定是否应用。",
+            ["如果用户想继续处理，先看后端统一修复预览，再确认是否执行。"],
         )
     return (
         f"{label}属于结构性问题，受影响条目主要用于定位上下文，不应直接当作删除清单。更合适的是先看调整建议。",
@@ -1948,6 +1968,78 @@ def _is_item_review_issue(issue: dict[str, Any] | None) -> bool:
 
 def _is_replacement_first_review_issue(issue: dict[str, Any] | None) -> bool:
     return str((issue or {}).get("scope_kind") or "").strip() == "item_replacement"
+
+
+async def _build_broad_replace_review_issue_preview(
+    ctx: RunContext[RequestContext],
+    plan_model: PlanActionPlan,
+) -> PlanExecutionResult | None:
+    if plan_model.stage not in {"analyze", "preview"} or plan_model.action_family != "replace_units":
+        return None
+    atomic = plan_model.atomic_actions[0] if plan_model.atomic_actions else None
+    if atomic is None or _has_filter_selection_scope(atomic.filters):
+        return None
+    refs = list(atomic.volunteer_ids or [])
+    resolved_ids, _ = await _resolve_ordered_volunteer_refs(ctx, refs)
+    effective_ids, ordered_items, review_issue_target, review_issue = await _resolve_review_issue_action_scope(
+        ctx,
+        plan_model,
+        resolved_ids,
+    )
+    if review_issue is None or review_issue_target is None or not _is_item_review_issue(review_issue):
+        return None
+
+    unit_count = _count_ordered_units_for_ids(ordered_items, effective_ids)
+    issue_label = str(review_issue.get("label") or review_issue.get("code") or "这类问题").strip()
+    if _is_replacement_first_review_issue(review_issue):
+        summary = _review_issue_replacement_scope_guidance(issue_label, unit_count, len(effective_ids))
+        return PlanExecutionResult(
+            applied=False,
+            action_family=plan_model.action_family,
+            stage="analyze",
+            result_kind="preview_only",
+            context_summary=plan_model.context_summary,
+            summary=summary,
+            reply_focus=["review_issue_guidance", "replacement_scope_required"],
+            reply_strategy="continue_model",
+            next_step_hints=[
+                "面向用户说明影响范围和下一步选择，不要生成可执行确认内容。",
+                "不要使用内部状态词；说明需要先看处理建议或补充替换方向。",
+            ],
+            facts=_facts_with_planning_version(
+                {
+                    "review_issue_code": getattr(review_issue_target, "code", None),
+                    "review_issue_label": issue_label,
+                    "affected_unit_count": unit_count,
+                    "affected_volunteer_count": len(effective_ids),
+                },
+                ctx,
+            ),
+        )
+
+    summary = (
+        f"我先定位了当前方案里的{issue_label}：共 {unit_count} 个专业组，涉及 {len(effective_ids)} 条志愿。"
+        "如果你确认要处理，可以先按这一批问题项生成移出预览；如果只想处理某个学校、专业组或位置，也可以直接说明范围。"
+    )
+    return PlanExecutionResult(
+        applied=False,
+        action_family=plan_model.action_family,
+        stage=plan_model.stage,
+        result_kind="preview_only",
+        context_summary=plan_model.context_summary,
+        summary=_with_confirmation_hint(summary),
+        reply_focus=["preview_only", "review_issue_batch_scope"],
+        next_step_hints=["只说明影响范围和确认边界；不要生成空替换预览。"],
+        facts=_facts_with_planning_version(
+            {
+                "review_issue_code": getattr(review_issue_target, "code", None),
+                "review_issue_label": issue_label,
+                "affected_unit_count": unit_count,
+                "affected_volunteer_count": len(effective_ids),
+            },
+            ctx,
+        ),
+    )
 
 
 def _summary_total(summary: dict[str, Any] | None) -> int:
@@ -2803,7 +2895,7 @@ async def _post_process_handler_result(
         result.result_kind != "error"
         and result.applied
         and plan_model.should_rerun_review
-        and plan_model.action_family not in {"review_plan", "preview_compensation"}
+        and plan_model.action_family != "review_plan"
     ):
         review_summary = await run_planning_review(ctx)
         review_rerun = True
@@ -2861,6 +2953,10 @@ async def _execute_plan_action_model(
     plan_model: PlanActionPlan,
 ) -> PlanExecutionResult:
     _hydrate_replace_filters_from_profile(ctx, plan_model)
+
+    broad_replace_review_issue_preview = await _build_broad_replace_review_issue_preview(ctx, plan_model)
+    if broad_replace_review_issue_preview is not None:
+        return broad_replace_review_issue_preview
 
     missing_inputs = list(plan_model.missing_inputs or [])
     for item in _execution_missing_inputs(plan_model):
@@ -3275,7 +3371,9 @@ async def _execute_plan_action_model(
             )
 
     if plan_model.stage in {"analyze", "preview"}:
-        preview_summary = plan_model.preview_summary or "当前阶段仅分析或预览，不执行实际改动。"
+        preview_summary = plan_model.preview_summary or (
+            "这轮我先把影响范围和可选方向说明清楚，不会直接改动当前方案。"
+        )
         preview_facts: dict[str, Any] = {}
         if plan_model.stage == "preview" and plan_model.action_family == "move_ordered_unit":
             resolved_summary, resolved_facts = await _build_move_ordered_unit_preview_summary(ctx, plan_model)
@@ -3491,16 +3589,11 @@ async def execute_plan_action(
     result = guard_result or await _execute_plan_action_model(ctx, plan_model)
     result_data = result.model_dump()
     cached_result_data = copy.deepcopy(result_data)
-    effective_action_family = (
-        "apply_compensation"
-        if str(result_data.get("action_family") or "").strip() == "preview_compensation"
-        else str(result_data.get("action_family") or "").strip()
-    )
+    effective_action_family = str(result_data.get("action_family") or "").strip()
     if (
         effective_action_family in _MUTATING_ACTION_FAMILIES
         and (
             str(result_data.get("stage") or "").strip() == "preview"
-            or str(result_data.get("result_kind") or "").strip() == "compensation_preview"
         )
     ):
         pending_source_payload = normalize_plan_action_payload(copy.deepcopy(data))

@@ -2017,14 +2017,14 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     if (!routerParams?.tenantId || !routerParams?.chatSessionId || !orderedItems.length) {
       return;
     }
-    setFixProposalModalOpen(true);
-    setLastRepairReport(null);
     if (forceRunReview || !reviewSummary || isReviewStale) {
       if (actionLoading) {
         return;
       }
       setActionLoading('review');
       setFixProposalLoading(true);
+      setFixProposalModalOpen(true);
+      setLastRepairReport(null);
       try {
         const { code, data, msg } = await runPlanningReviewWorkflowApi(
           routerParams.tenantId,
@@ -2049,6 +2049,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       }
       return;
     }
+    setFixProposalModalOpen(true);
+    setLastRepairReport(null);
     await loadFixProposals();
   };
 
@@ -2056,6 +2058,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     if (!routerParams?.tenantId || !routerParams?.chatSessionId || !orderedItems.length) {
       return;
     }
+    setFixProposalLoading(true);
     setFixProposalModalOpen(true);
     await loadFixProposals();
   };
@@ -2532,7 +2535,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       case 'unit_major_count_validation':
         return '组内数量待补';
       case 'group_inner_safety_guard':
-        return '组内兜底不足';
+        return '组内稳妥性不足';
       case 'high_tuition':
         return '高收费提醒';
       case 'admission_limit':
@@ -2552,36 +2555,6 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     return normalizePlanActionTextForUser(check.detail || check.summary || '');
   };
 
-  const getFixProposalStatusLabel = (status?: string) => {
-    switch (status) {
-      case 'ready':
-        return '';
-      case 'preview_only':
-        return '先看预览';
-      case 'blocked':
-        return '需人工判断';
-      case 'info':
-        return '提醒';
-      default:
-        return '待处理';
-    }
-  };
-
-  const getFixProposalStatusColor = (status?: string) => {
-    switch (status) {
-      case 'ready':
-        return 'green';
-      case 'preview_only':
-        return 'blue';
-      case 'blocked':
-        return 'red';
-      case 'info':
-        return 'default';
-      default:
-        return 'default';
-    }
-  };
-
   const getFixProposalStrategyLabel = (strategy?: string) => {
     switch (strategy) {
       case 'fill_missing_count':
@@ -2591,7 +2564,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       case 'remove_risk_items':
         return '移除风险项';
       case 'adjust_major_group_inner_safety':
-        return '补组内兜底专业';
+        return '补更稳的组内专业';
       case 'replace_risk_items':
         return '替换风险项';
       case 'rebalance_tier_ratio':
@@ -2600,6 +2573,16 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         return '补梯度断层';
       case 'add_safety_items':
         return '补安全垫';
+      case 'only_keep_scope':
+        return '只保留目标范围';
+      case 'must_include_scope':
+        return '至少保留目标范围';
+      case 'exclude_scope':
+        return '避开目标范围';
+      case 'no_op':
+        return '仅需关注';
+      case 'cannot_satisfy':
+        return '暂不处理';
       default:
         return strategy || '';
     }
@@ -2662,7 +2645,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         return '断层区间候选不足';
       case 'major_group_safety_candidate_insufficient':
       case 'partial_major_group_safety_candidate_missing':
-        return '组内兜底专业不足';
+        return '组内更稳专业不足';
       case 'safe_replacement_candidate_insufficient':
       case 'risk_item_unresolved_or_replacement_missing':
         return '安全替换候选不足';
@@ -2701,11 +2684,11 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       .replace(/预览验证未通过/g, '调整后效果不理想')
       .replace(/不能直接应用/g, '不建议直接执行')
       .replace(/暂不能自动修复/g, '暂时不建议自动处理')
-      .replace(/暂不可用/g, '需人工判断')
+      .replace(/暂不可用/g, '暂时不建议直接处理')
       .replace(/硬约束|硬性要求|硬要求/g, '已确认的筛选条件或报考要求')
       .replace(/草稿/g, '方案')
-      .replace(/组内安全垫专业/g, '组内兜底专业')
-      .replace(/组内安全垫/g, '组内兜底')
+      .replace(/组内安全垫专业/g, '组内更稳的专业')
+      .replace(/组内安全垫/g, '组内稳妥性')
       .replace(/修复建议/g, '处理建议')
       .replace(/修复已应用并完成复验/g, '调整已完成，并已重新检查方案')
       .replace(/修复已应用/g, '调整已完成')
@@ -2740,6 +2723,19 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     return strategyLabel || '推荐处理方式';
   };
 
+  const getFixProposalStatusDescription = (proposal: PlanningFixProposal) => {
+    switch (proposal.status) {
+      case 'preview_only':
+        return '这类调整涉及取舍，可以先参考预览；如果要继续处理，建议先明确要保留或替换的方向。';
+      case 'info':
+        return normalizePlanActionTextForUser(proposal.summary || proposal.impact) || '这项主要是提醒或核验，不会直接调整方案。';
+      case 'blocked':
+        return getBlockedProposalUserMessage(proposal);
+      default:
+        return '';
+    }
+  };
+
   const getBlockedProposalUserMessage = (proposal: PlanningFixProposal) => {
     const shortages = proposal.candidateShortages || [];
     const firstShortage = shortages[0];
@@ -2761,7 +2757,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         const detail = shortageMessage && !isLowValueSystemText(shortageMessage)
           ? shortageMessage
           : '当前没有形成可直接补入或替换的目标冲稳保区间方案。';
-        return `${detail} 可以先保留这个提醒，或手动减少冲区、补充稳区/保区后重新审查。`;
+        return `${detail} 现在不建议直接自动调整。可以先减少偏冲的志愿，或手动补充更稳的志愿后再重新审查。`;
       }
       if (reasonCode === 'probability_gap_candidate_insufficient') {
         const detail = shortageMessage && !isLowValueSystemText(shortageMessage)
@@ -2775,15 +2771,24 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         }
       }
       if (reasonCode === 'partial_major_group_safety_candidate_missing') {
-        return '部分专业组找到了可补入的安全垫专业，但仍有专业组没有合适补位。建议先查看已找到的方案，再决定是否手动调整剩余专业组。';
+        const unresolvedCount =
+          typeof firstShortage?.shortageCount === 'number' && firstShortage.shortageCount > 0
+            ? firstShortage.shortageCount
+            : null;
+        return unresolvedCount
+          ? `有些专业组可以补入更稳的组内专业，但还有 ${unresolvedCount} 个专业组没有合适补位。为了避免只处理一部分后误以为已经全部解决，暂不直接执行；可以先查看这些专业组，再决定是否保留或手动调整。`
+          : '有些专业组可以补入更稳的组内专业，但仍有专业组没有合适补位。为了避免只处理一部分后误以为已经全部解决，暂不直接执行；可以先查看这些专业组，再决定是否保留或手动调整。';
+      }
+      if (reasonCode === 'major_group_safety_candidate_insufficient') {
+        return '这些专业组里缺少相对更稳的组内专业，当前候选里也没有找到合适的同组补位。可以先保留提醒，或手动查看这些专业组是否仍要放在当前方案里。';
       }
       if (shortageMessage && !isLowValueSystemText(shortageMessage)) {
-        return `${shortageMessage} 可以先保留这个提醒，或调整筛选条件后重新审查。`;
+        return `${shortageMessage} 现在不建议直接自动调整。可以先放宽地域、专业或院校条件，再重新审查。`;
       }
       if (blockingReason && !isLowValueSystemText(blockingReason)) {
         return blockingReason;
       }
-      return '当前可用于规划的候选里，暂时没有足够合适的补位选择。建议先保留这个提醒，或放宽地域、专业、院校等条件后重新审查。';
+      return '当前可用于规划的候选里，暂时没有足够合适的补位选择。可以先放宽地域、专业或院校条件，再重新审查。';
     }
     if (scope === 'hard_constraints') {
       return '已确认的筛选条件或报考要求让可选范围变窄。如果要处理这个问题，建议先调整筛选或报考要求，再重新审查。';
@@ -2800,7 +2805,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     if (blockingReason && !isLowValueSystemText(blockingReason)) {
       return blockingReason;
     }
-    return '这个问题当前更适合先人工确认，再决定是否调整方案。';
+    return '这个问题会涉及志愿取舍，当前不建议直接自动调整。可以先查看受影响志愿，再决定是否保留或手动调整。';
   };
 
   const toggleReviewIssueProposals = (issueKey: string) => {
@@ -2812,14 +2817,14 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const getBlockedProposalTitle = (proposal: PlanningFixProposal) => {
     switch (proposal.strategy) {
       case 'replace_risk_items':
-        return '建议先人工确认替换取舍';
+        return '暂时没有合适替换项';
       case 'rebalance_tier_ratio':
       case 'fill_probability_gap':
-        return '结构调整需要先看取舍';
+        return '结构调整还需要取舍';
       case 'adjust_major_group_inner_safety':
-        return '组内专业需要先人工确认';
+        return '部分专业组缺少更稳的组内专业';
       default:
-        return '建议先确认取舍';
+        return '暂时没有稳妥的处理方案';
     }
   };
 
@@ -2994,10 +2999,10 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       const removeInfo = resolveVolunteerDisplayInfo(removeVolunteerId);
       const unitName = resolveFixActionUnitName(action) || candidateInfo.schoolName;
       if (unitName && candidateInfo.majorName && removeInfo.majorName) {
-        return `${unitName}：用 ${candidateInfo.majorName} 替换 ${removeInfo.majorName}，补足组内兜底。`;
+        return `${unitName}：用 ${candidateInfo.majorName} 替换 ${removeInfo.majorName}，增强组内稳妥性。`;
       }
       if (unitName && candidateInfo.majorName) {
-        return `${unitName}：补入 ${candidateInfo.majorName}，增强组内兜底。`;
+        return `${unitName}：补入 ${candidateInfo.majorName}，增强组内稳妥性。`;
       }
     }
     return fallback;
@@ -3367,6 +3372,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     compact: boolean = false
   ) => {
     const isBlocked = proposal.status === 'blocked';
+    const isInfo = proposal.status === 'info';
     const dryRunText = isBlocked ? '' : formatFixProposalDryRun(proposal);
     const dryRun = proposal.dryRunResult || {};
     const warnings = dryRun.warnings || [];
@@ -3386,7 +3392,6 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       proposal.status === 'ready' &&
       proposal.requiresConfirmation !== false &&
       Boolean(proposal.proposalId);
-    const blockedUserMessage = isBlocked ? getBlockedProposalUserMessage(proposal) : '';
     const noticeItems = shortages.length > 0
       ? (proposal.status === 'blocked' ? [] : warnings)
       : [
@@ -3401,6 +3406,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       ? getCompactFixProposalDisplayTitle(proposal)
       : getFixProposalDisplayTitle(proposal);
     const strategyLabel = getFixProposalStrategyLabel(proposal.strategy);
+    const statusDescription = getFixProposalStatusDescription(proposal);
     const shouldShowStrategyTag =
       !compact &&
       Boolean(proposal.strategy) &&
@@ -3419,39 +3425,29 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         </Button>
       </div>
     ) : null;
-    if (isBlocked) {
-      return (
-        <div key={proposal.proposalId || `${proposal.strategy}-${index}`} className={style.fixProposalBlockedNote}>
-          <div className={style.fixProposalBlockedTitle}>{getBlockedProposalTitle(proposal)}</div>
-          {blockedUserMessage ? (
-            <div className={style.fixProposalBlockedText}>{blockedUserMessage}</div>
-          ) : null}
-        </div>
-      );
-    }
     return (
       <div key={proposal.proposalId || `${proposal.strategy}-${index}`} className={cardClassName}>
         <div className={style.fixProposalHeader}>
           <div className={style.fixProposalTitleBlock}>
             <div className={style.fixProposalTitle}>{displayTitle}</div>
             <div className={style.fixProposalTags}>
-              {proposal.status && proposal.status !== 'ready' ? (
-                <Tag color={getFixProposalStatusColor(proposal.status)}>
-                {getFixProposalStatusLabel(proposal.status)}
-                </Tag>
-              ) : null}
               {shouldShowStrategyTag ? (
                 <Tag bordered={false}>{strategyLabel}</Tag>
               ) : null}
             </div>
           </div>
         </div>
-        {!isBlocked && proposal.summary ? (
+        {statusDescription ? (
+          <div className={isBlocked ? style.fixProposalBlockedText : style.fixProposalStatusText}>
+            {statusDescription}
+          </div>
+        ) : null}
+        {!isBlocked && !isInfo && proposal.summary ? (
           <div className={style.fixProposalText}>{normalizePlanActionTextForUser(proposal.summary)}</div>
         ) : null}
-        {!isBlocked && (dryRunText || actionDetails.length > 0) ? (
+        {!isBlocked && !isInfo && (dryRunText || actionDetails.length > 0) ? (
           <div className={style.fixProposalMeta}>
-            <div className={style.fixProposalPreviewTitle}>调整预览</div>
+            <div className={style.fixProposalPreviewTitle}>处理前预览</div>
             {dryRunText ? (
               <div className={style.fixProposalPreviewText}>{dryRunText}</div>
             ) : null}
@@ -3467,7 +3463,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
             {canApply ? applyButton : null}
           </div>
         ) : null}
-        {shouldShowReplacementPairs ? (
+        {!isBlocked && !isInfo && shouldShowReplacementPairs ? (
           <div className={style.fixProposalPairList}>
             <div className={style.fixProposalSectionTitle}>可能的替换方式</div>
             {replacementPairTexts.slice(0, 5).map((pairText, pairIndex) => (
@@ -3506,7 +3502,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
             ) : null}
           </div>
         ) : null}
-        {noticeItems.length > 0 ? (
+        {!isBlocked && noticeItems.length > 0 ? (
           <div className={style.fixProposalNotice}>
             {noticeItems.slice(0, 3).join('；')}
           </div>
@@ -3571,7 +3567,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                 ) : null}
                 {proposals.length > 0 ? (
                   <div className={style.reviewIssueHandlingSection}>
-                    <div className={style.reviewIssueProposalSectionTitle}>处理方式</div>
+                    <div className={style.reviewIssueProposalSectionTitle}>可选处理</div>
                     <div className={style.reviewIssueProposalStack}>
                       {proposals.map((proposal, proposalIndex) =>
                         renderFixProposalCard(proposal, proposalIndex, true)
@@ -3647,7 +3643,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
           {proposalsExpanded ? (
             <div className={style.reviewIssueHandlingPanel}>
               <div className={style.reviewIssueHandlingSection}>
-                <div className={style.reviewIssueProposalSectionTitle}>处理方式</div>
+                <div className={style.reviewIssueProposalSectionTitle}>可选处理</div>
                 <div className={style.reviewIssueProposalStack}>
                   {proposals.map((proposal, index) => renderFixProposalCard(proposal, index, true))}
                 </div>
@@ -3662,10 +3658,17 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const renderFixProposalModalBody = () => {
     const proposals = fixProposalState?.proposals || [];
     const issueChecks = actionableReviewChecks;
-    if (fixProposalLoading && !fixProposalState && !reviewSummary) {
+    if (actionLoading === 'review') {
       return (
         <div className={style.fixProposalLoading}>
-          <Spin />
+          <Spin tip="正在审查当前方案，请稍候..." />
+        </div>
+      );
+    }
+    if (fixProposalLoading) {
+      return (
+        <div className={style.fixProposalLoading}>
+          <Spin tip="正在整理处理建议，请稍候..." />
         </div>
       );
     }
@@ -4337,7 +4340,15 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
             : workflowStatus?.reviewStatus === 'failed'
               ? '审查失败'
           : '未审查';
-  const reviewActionLabel = reviewSummary ? '重新审查' : '审查';
+  const hasReviewResult =
+    reviewTotalRuleCount > 0 ||
+    (
+      Boolean(planningState?.reviewState?.reviewedAt) &&
+      ['has_risk', 'has_warning', 'passed', 'failed', 'stale'].includes(
+        workflowStatus?.reviewStatus || ''
+      )
+    );
+  const reviewActionLabel = hasReviewResult ? '重新审查' : '审查';
   const reviewOverviewReason =
     workflowStatus?.reviewStatus === 'stale'
       ? workflowStatus?.reviewReasonMessage ||
@@ -5535,7 +5546,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
             loading={fixProposalLoading || actionLoading === 'review'}
             onClick={() => handleOpenReviewWorkflowModal(true)}
           >
-            重新审查
+            {reviewActionLabel}
           </Button>,
         ]}
       >

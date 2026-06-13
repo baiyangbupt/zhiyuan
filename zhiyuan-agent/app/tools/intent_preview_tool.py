@@ -155,6 +155,22 @@ async def analyze_current_interest(
     )
 
 
+async def analyze_current_interest_profile(
+    ctx: RunContext[RequestContext],
+) -> str:
+    """Read-only integrated Explore analysis for broad student profile questions.
+
+    Use this when the user describes several interests, disliked directions, job
+    preferences, income/stability/communication expectations, or a loose career
+    picture in one turn. This tool is meant to gather one comprehensive analysis
+    instead of repeatedly calling career and major Explore tools. After this
+    tool returns, synthesize the final answer from its result; do not call
+    another Explore tool in the same turn unless the user asks a separate,
+    narrowly scoped follow-up.
+    """
+    return await _preview_generic_direction_analysis_from_request(ctx.deps)
+
+
 async def analyze_current_school_interest(
     ctx: RunContext[RequestContext],
     intent_mode: str = INTENT_MODE_PREFERENCE,
@@ -401,7 +417,11 @@ async def preview_current_major_intent_confirmation(
 ) -> str:
     """Intent preview for explicit major / major-category preference or constraint.
 
-    Examples: “想学网络与新媒体”, “不想学审计”, “以后优先看电子信息类”.
+    Examples: “想学网络与新媒体”, “不想学审计”, “医学类的不要”,
+    “护理别要”, “以后优先看电子信息类”.
+    Short colloquial exclusions that clearly name a major, major category, or
+    discipline should still use this tool and pass the corresponding negative
+    major intent field; do not answer them as free-form chat.
     For mixed explicit input like “医学护理这些别碰，财会还能接受”, pass
     `major_intents` directly with positive and negative fields instead of
     calling this tool repeatedly without arguments.

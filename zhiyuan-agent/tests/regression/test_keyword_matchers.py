@@ -88,9 +88,9 @@ def test_action_decision_comes_from_structured_verb_and_scope(
         ("high_tuition", "高收费", "item_replacement", "review_plan", ["replace_units", "remove_units"]),
         ("cooperative_program", "中外合作", "item_replacement", "review_plan", ["replace_units", "remove_units"]),
         ("probability_inversion", "概率倒挂", "structural", "sort_ordered_plan", ["sort_ordered_plan"]),
-        ("probability_gap", "梯度断层", "structural", "preview_compensation", ["preview_compensation"]),
-        ("count_validation", "数量缺口", "structural", "preview_compensation", ["preview_compensation"]),
-        ("edge_score", "边缘分", "structural", "preview_compensation", ["preview_compensation"]),
+        ("probability_gap", "梯度断层", "structural", "preview_fix_proposal", ["preview_fix_proposal"]),
+        ("count_validation", "数量缺口", "structural", "preview_fix_proposal", ["preview_fix_proposal"]),
+        ("edge_score", "边缘分", "structural", "preview_fix_proposal", ["preview_fix_proposal"]),
         ("plan_update_notice", "招生计划更新提示", "informational", None, []),
     ],
 )

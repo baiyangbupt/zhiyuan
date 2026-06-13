@@ -22,8 +22,8 @@ HAS_PLAN = make_plan_context_inputs(draft_count=30, ordered_count=30, target_cou
     [
         ("generate_plan", "怎么优化当前方案"),
         ("generate_plan", "更稳一点"),
-        ("preview_compensation", "补几个更稳的"),
-        ("preview_compensation", "先给我一版"),
+        ("preview_fix_proposal", "补几个更稳的"),
+        ("preview_fix_proposal", "先给我一版"),
         ("regenerate_order", "保持总数不变，把保区提上来"),
         ("regenerate_order", "怎么优化方案"),
         ("regenerate_order", "重新排一下"),

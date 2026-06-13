@@ -287,7 +287,7 @@ _ACTION_TOOL_ALIASES: dict[str, tuple[str, ...]] = {
     "analyze_current_career_direction": ("analyze_current_career_direction",),
     "compare_majors": ("compare_majors", "compare_majors_adhoc", "compare_major_options"),
     "preview_major_intent": ("preview_current_major_intent_confirmation",),
-    "update_volunteer_intent_state": ("update_volunteer_intent_state",),
+    "apply_selected_intents": ("apply_selected_intents",),
     "query_volunteer_plan": ("query_volunteer_plan",),
 }
 
@@ -703,7 +703,7 @@ def _expected_action_from_metadata(step_coverage: list[str], prompt_text: str) -
     if prompt_text in {"确认这个偏好", "确认这个要求"} and (
         "soft_major_intent" in step_coverage or "hard_major_constraint" in step_coverage
     ):
-        return "update_volunteer_intent_state"
+        return "apply_selected_intents"
     if prompt_text == "确认" and "no_pending_guard" in step_coverage:
         return None
     return _first_tag_mapping(step_coverage, _EXPECTED_ACTIONS_BY_COVERAGE)

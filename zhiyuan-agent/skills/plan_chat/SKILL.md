@@ -14,7 +14,7 @@ version: 1.0.0
 - 生成初始方案
 - 调整方案
 - 重排方案
-- 查看候选、草稿、排序、审查、补偿
+- 查看候选、已加入方案、排序、审查、补齐建议
 
 典型问题：
 - “给我出一版方案”
@@ -88,14 +88,14 @@ version: 1.0.0
 
 ### 3. 查看、分析、执行要区分
 
-- 查看型：先读状态、候选、草稿、排序
+- 查看型：先读状态、候选、已加入方案、排序
 - 分析型：先给建议或风险，不急着执行改动
 - 执行型：会改方案的动作必须确认后再做
 
 如果用户在方案语境里顺带表达长期偏好或明确要求，不要直接在本技能里替用户落画像。
 这种情况应切回意向链路：
 - 先用 `preview_current_intent_confirmation` 或 `analyze_volunteer_intent_change` 做确认分析
-- 用户确认后再由 `update_volunteer_intent_state` 生效
+- 用户点击待采纳内容里的【采纳】，或短文本确认通过 active pending 校验后，由服务端 `pendingConfirmation(kind=intent_change) -> apply_selected_intents` 生效
 
 但生成、查看、审查、补齐、重排、增删移动当前方案，本身不是新的长期偏好或要求。
 除非用户明确说“以后都按这个偏好/要求来”“帮我记住这个要求”，否则不要为了处理 Plan 动作去调用意向缓存或画像更新工具。
@@ -242,7 +242,7 @@ version: 1.0.0
 - `add_units` 必须有明确 volunteerIds 或筛选范围
 - `remove_units` 必须有要删除的 volunteerIds
 - `move_unit` 必须有要移动的志愿引用和目标位置；如果用户按位置说“第20个挪到第3个”，可以直接把 `@20` 这类位置引用作为 `volunteer_ids`
-- `pin_unit / unpin_unit` 也可以直接使用 `@3`、`第3位`、`学校名+专业名`、`专业组+专业名` 这类当前方案引用，不要因为没有先拿到真实 volunteerId 就停下来追问
+- `move_ordered_unit / remove_ordered_unit` 可以使用 `@3`、`第3位`、`学校名+专业名`、`专业组+专业名` 这类当前方案引用，不要因为没有先拿到真实 volunteerId 就停下来追问；`pin_unit / unpin_unit` 已退场，不能再生成
 - `replace_units` 必须同时有要替换掉的 volunteerIds 和补入范围
 - 这些动作在确认前也要通过 `execute_plan_action` 返回 preview-only，不要只生成口头确认问题
 - 执行后说明方案已更新，并结合 `workspace_refresh_targets` 让工作台刷新方案和审查

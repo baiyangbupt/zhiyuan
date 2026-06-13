@@ -19,7 +19,7 @@ _INTERNAL_CLIENT_MODULE = "app.util.internal_client"
 _EXECUTION_TOOL_MODULE = "app.tools.plan_execution_tool"
 _QUERY_HANDLER_MODULE = "app.handlers.query_handlers"
 _ANALYSIS_HANDLER_MODULE = "app.handlers.analysis_handlers"
-_COMPENSATION_HANDLER_MODULE = "app.handlers.compensation_handlers"
+_FIX_PROPOSAL_HANDLER_MODULE = "app.handlers.fix_proposal_handlers"
 _GENERATE_HANDLER_MODULE = "app.handlers.generate_handler"
 
 # 需要 patch 的 planning 相关异步函数
@@ -28,8 +28,6 @@ _PLANNING_ENDPOINTS = [
     "get_planning_draft",
     "get_planning_ordered_plan",
     "run_planning_review",
-    "preview_planning_compensation",
-    "apply_planning_compensation",
     "generate_planning_ordered_plan",
     "generate_planning_initial_plan",
     "generate_planning_candidate_pool",
@@ -40,6 +38,7 @@ _PLANNING_ENDPOINTS = [
     "ban_planning_draft_items",
     "move_planning_ordered_item",
     "analyze_planning_plan_adjustment",
+    "generate_planning_fix_proposals",
 ]
 
 # 需要 patch 的 profile / 其他端点
@@ -66,8 +65,6 @@ _EXECUTION_TOOL_ALIASES: dict[str, str] = {
     "get_planning_ordered_plan": "_get_planning_ordered_plan_request",
     "get_user_profile": "_get_user_profile_request",
     "run_planning_review": "_run_planning_review_request",
-    "preview_planning_compensation": "_preview_planning_compensation_request",
-    "apply_planning_compensation": "_apply_planning_compensation_request",
     "analyze_planning_plan_adjustment": "_analyze_planning_plan_adjustment_request",
     "query_planning_candidate_pool": "_query_planning_candidate_pool_request",
     "select_planning_draft_items": "_select_working_plan_items_request",
@@ -87,13 +84,11 @@ _ANALYSIS_HANDLER_ALIASES: dict[str, str] = {
     "get_planning_draft": "_get_working_plan_request",
     "run_planning_review": "_run_planning_review_request",
     "analyze_planning_plan_adjustment": "_analyze_planning_plan_adjustment_request",
+    "generate_planning_fix_proposals": "_generate_planning_fix_proposals_request",
 }
 
-_COMPENSATION_HANDLER_ALIASES: dict[str, str] = {
-    "apply_planning_compensation": "_apply_planning_compensation_request",
-    "get_planning_state": "_get_planning_state_request",
-    "preview_planning_compensation": "_preview_planning_compensation_request",
-    "run_planning_review": "_run_planning_review_request",
+_FIX_PROPOSAL_HANDLER_ALIASES: dict[str, str] = {
+    "generate_planning_fix_proposals": "_generate_planning_fix_proposals_request",
 }
 
 _GENERATE_HANDLER_ALIASES: dict[str, str] = {
@@ -169,9 +164,9 @@ def patch_backend():
             alias = _ANALYSIS_HANDLER_ALIASES[name]
             patchers.append(patch(f"{_ANALYSIS_HANDLER_MODULE}.{alias}", mock))
 
-        if name in _COMPENSATION_HANDLER_ALIASES:
-            alias = _COMPENSATION_HANDLER_ALIASES[name]
-            patchers.append(patch(f"{_COMPENSATION_HANDLER_MODULE}.{alias}", mock))
+        if name in _FIX_PROPOSAL_HANDLER_ALIASES:
+            alias = _FIX_PROPOSAL_HANDLER_ALIASES[name]
+            patchers.append(patch(f"{_FIX_PROPOSAL_HANDLER_MODULE}.{alias}", mock))
 
         if name in _GENERATE_HANDLER_ALIASES:
             alias = _GENERATE_HANDLER_ALIASES[name]

@@ -584,8 +584,8 @@ def test_followup_summary_extracts_targets_and_refresh_flags():
     targets, refreshes, types = runner._followup_summary(followups)
 
     assert targets == ["ordered", "review"]
-    assert refreshes == [True, False, True]
-    assert types == ["pendingConfirmationCard"]
+    assert refreshes == [True, False, True, True]
+    assert types == ["planningWorkspaceAction", "pendingConfirmationCard"]
 
 
 def test_streamed_pending_card_is_classified_as_followup():
@@ -613,7 +613,7 @@ def test_streamed_thinking_and_pending_card_are_split():
     assert [item["type"] for item in followups] == ["pendingConfirmationCard"]
 
 
-def test_streamed_silent_workspace_action_is_not_user_visible_followup():
+def test_streamed_silent_workspace_action_is_action_followup_but_not_user_text():
     primary, followups = runner._split_primary_and_followup_messages(
         [
             {"type": "thinking", "content": "正在刷新工作台...", "end": False},
@@ -631,7 +631,9 @@ def test_streamed_silent_workspace_action_is_not_user_visible_followup():
     )
 
     assert runner._extract_thinking(primary) == "正在刷新工作台..."
-    assert followups == []
+    assert len(followups) == 1
+    assert followups[0]["type"] == "planningWorkspaceAction"
+    assert runner._extract_followup_user_text(followups) == ""
 
 
 def test_content_assertions_reject_followups_when_disallowed():

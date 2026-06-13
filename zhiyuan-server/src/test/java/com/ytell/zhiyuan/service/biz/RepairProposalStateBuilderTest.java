@@ -2,6 +2,7 @@ package com.ytell.zhiyuan.service.biz;
 
 import com.ytell.zhiyuan.model.dto.planning.FixProposalDTO;
 import com.ytell.zhiyuan.model.dto.planning.FixProposalActionDTO;
+import com.ytell.zhiyuan.model.dto.planning.FixProposalStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.OrderedItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.ReviewCheckDTO;
@@ -33,6 +34,21 @@ public class RepairProposalStateBuilderTest {
         assertEquals(proposal.getSummary(), proposal.getBlockingReason());
         assertEquals(Collections.singletonList("probability_gap_candidate_insufficient"), proposal.getBlockingReasonCodes());
         assertFalse(proposal.getRequiresConfirmation());
+        assertEquals("review_check", proposal.getProposalSource());
+    }
+
+    @Test
+    void shouldBuildUserGoalProposalStateWithoutReviewApplySemantics() {
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setVersion(12);
+
+        FixProposalStateDTO proposalState = RepairProposalStateBuilder.newUserGoalState(state);
+
+        assertEquals("user_goal", proposalState.getProposalSource());
+        assertEquals("empty", proposalState.getStatus());
+        assertEquals(Integer.valueOf(12), proposalState.getSourceVersion());
+        assertEquals(Integer.valueOf(12), proposalState.getSourceVersionGuard());
+        assertTrue(proposalState.getProposals().isEmpty());
     }
 
     @Test

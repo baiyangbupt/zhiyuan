@@ -78,6 +78,7 @@ async def _collect_plan_context_inputs_model(
     ]
 
     model = PlanContextInputs(
+        batch=ctx.deps.batch or "01",
         phase=str(planning_state.get("phase") or ""),
         target_count=_summary_target(ordered_summary, fallback=candidate_required),
         draft_count=_summary_total(draft_summary),

@@ -63,10 +63,11 @@ final class RepairDryRunSimulator {
     private static ActionCount countActions(List<FixProposalActionDTO> actions) {
         ActionCount count = new ActionCount();
         for (FixProposalActionDTO action : defaultList(actions)) {
-            if ("remove_volunteers".equals(action.getActionType())) {
+            String actionType = RepairProposalTaxonomy.normalizeActionType(action.getActionType());
+            if (RepairProposalTaxonomy.ActionType.REMOVE_VOLUNTEERS.equals(actionType)) {
                 count.removeUnitCount += defaultList(action.getUnitIds()).size();
                 count.removeVolunteerCount += defaultList(action.getVolunteerIds()).size();
-            } else if ("replace_volunteers".equals(action.getActionType())) {
+            } else if (RepairProposalTaxonomy.ActionType.REPLACE_VOLUNTEERS.equals(actionType)) {
                 Set<String> removeVolunteerIds = new LinkedHashSet<String>();
                 Set<String> removeUnitIds = new LinkedHashSet<String>();
                 Set<String> candidateVolunteerIds = new LinkedHashSet<String>();
@@ -77,7 +78,7 @@ final class RepairDryRunSimulator {
                 count.removeVolunteerCount += removeVolunteerIds.size();
                 count.addUnitCount += candidateUnitIds.size();
                 count.addVolunteerCount += candidateVolunteerIds.size();
-            } else if ("adjust_major_group_inner_safety".equals(action.getActionType())) {
+            } else if (RepairProposalTaxonomy.ActionType.ADJUST_MAJOR_GROUP_INNER_SAFETY.equals(actionType)) {
                 count.removeVolunteerCount += defaultList(action.getRemoveVolunteerIds()).size();
                 count.addVolunteerCount += !defaultList(action.getCandidateVolunteerIds()).isEmpty()
                         ? defaultList(action.getCandidateVolunteerIds()).size()
@@ -91,24 +92,24 @@ final class RepairDryRunSimulator {
     }
 
     private static void populateStatus(FixProposalDTO proposal, FixProposalDryRunResultDTO dryRun) {
-        if ("cannot_satisfy".equals(proposal.getStrategy())) {
-            dryRun.setStatus("blocked");
+        if (RepairProposalTaxonomy.isCannotSatisfyStrategy(proposal.getStrategy())) {
+            dryRun.setStatus(RepairProposalTaxonomy.Status.BLOCKED);
             dryRun.setMessage(Strings.isNullOrEmpty(proposal.getBlockingReason())
                     ? "当前候选不足或缺少可执行动作，暂时不能自动修复该风险。"
                     : proposal.getBlockingReason());
             dryRun.getWarnings().add("需要放宽约束、补充候选，或改为人工调整。");
-        } else if ("blocked".equals(proposal.getStatus())) {
-            dryRun.setStatus("blocked");
+        } else if (RepairProposalTaxonomy.isBlockedStatus(proposal.getStatus())) {
+            dryRun.setStatus(RepairProposalTaxonomy.Status.BLOCKED);
             dryRun.setMessage(Strings.isNullOrEmpty(proposal.getBlockingReason())
                     ? "当前风险缺少可执行动作，暂时不能自动修复。" : proposal.getBlockingReason());
-        } else if ("no_op".equals(proposal.getStrategy())) {
-            dryRun.setStatus("info");
+        } else if (RepairProposalTaxonomy.isNoOpStrategy(proposal.getStrategy())) {
+            dryRun.setStatus(RepairProposalTaxonomy.Status.INFO);
             dryRun.setMessage("该问题默认只提醒，不需要生成方案调整动作。");
-        } else if ("preview_only".equals(proposal.getStatus())) {
-            dryRun.setStatus("preview_only");
+        } else if (RepairProposalTaxonomy.isPreviewOnlyStatus(proposal.getStatus())) {
+            dryRun.setStatus(RepairProposalTaxonomy.Status.PREVIEW_ONLY);
             dryRun.setMessage("已生成修复方向预览，但该策略暂不支持自动应用。");
         } else {
-            dryRun.setStatus("ready");
+            dryRun.setStatus(RepairProposalTaxonomy.Status.READY);
             dryRun.setMessage("已生成可预览的修复方案，应用前仍需要用户确认。");
         }
     }
@@ -218,9 +219,10 @@ final class RepairDryRunSimulator {
             return;
         }
         addDryRunWarning(dryRun, validation.message);
-        if ("ready".equals(proposal.getStatus()) && "ready".equals(dryRun.getStatus())) {
+        if (RepairProposalTaxonomy.isReadyStatus(proposal.getStatus())
+                && RepairProposalTaxonomy.isReadyStatus(dryRun.getStatus())) {
             RepairProposalStateBuilder.markBlocked(proposal, validation.message, "objective_validation_not_improved");
-            dryRun.setStatus("blocked");
+            dryRun.setStatus(RepairProposalTaxonomy.Status.BLOCKED);
             dryRun.setMessage(validation.message);
         }
     }
@@ -232,27 +234,28 @@ final class RepairDryRunSimulator {
         if (state == null || proposal == null || check == null || dryRun == null) {
             return null;
         }
-        if ("fill_missing_count".equals(proposal.getStrategy()) || "count_validation".equals(check.getCode())) {
+        String strategy = RepairProposalTaxonomy.normalizeStrategy(proposal.getStrategy());
+        if (RepairProposalTaxonomy.Strategy.FILL_MISSING_COUNT.equals(strategy) || "count_validation".equals(check.getCode())) {
             return validateCountObjective(state.getCandidatePoolState(), dryRun);
         }
-        if ("replace_risk_items".equals(proposal.getStrategy())) {
+        if (RepairProposalTaxonomy.Strategy.REPLACE_RISK_ITEMS.equals(strategy)) {
             return validateRiskReplacementObjective(state, check, dryRun);
         }
-        if ("remove_risk_items".equals(proposal.getStrategy()) || "item".equals(check.getScopeKind())) {
+        if (RepairProposalTaxonomy.Strategy.REMOVE_RISK_ITEMS.equals(strategy) || "item".equals(check.getScopeKind())) {
             return validateAffectedItemRemoval(check, dryRun);
         }
-        if ("adjust_major_group_inner_safety".equals(proposal.getStrategy())
+        if (RepairProposalTaxonomy.Strategy.ADJUST_MAJOR_GROUP_INNER_SAFETY.equals(strategy)
                 || "group_inner_safety_guard".equals(check.getCode())
                 || "major_group_safety_intent_alignment".equals(check.getCode())) {
             return validateMajorGroupInnerSafetyObjective(state, check, dryRun);
         }
-        if ("rebalance_tier_ratio".equals(proposal.getStrategy()) || "ratio_distribution".equals(check.getCode())) {
+        if (RepairProposalTaxonomy.Strategy.REBALANCE_TIER_RATIO.equals(strategy) || "ratio_distribution".equals(check.getCode())) {
             return validateTierRatioObjective(state.getCandidatePoolState(), dryRun);
         }
-        if ("fill_probability_gap".equals(proposal.getStrategy()) || "probability_gap".equals(check.getCode())) {
+        if (RepairProposalTaxonomy.Strategy.FILL_PROBABILITY_GAP.equals(strategy) || "probability_gap".equals(check.getCode())) {
             return validateProbabilityGapObjective(state, dryRun);
         }
-        if ("sort_by_probability".equals(proposal.getStrategy()) || "probability_inversion".equals(check.getCode())) {
+        if (RepairProposalTaxonomy.Strategy.SORT_BY_PROBABILITY.equals(strategy) || "probability_inversion".equals(check.getCode())) {
             return validateProbabilityInversionObjective(state, dryRun);
         }
         return null;
@@ -560,10 +563,11 @@ final class RepairDryRunSimulator {
                                         Set<String> volunteerIds,
                                         Set<String> unitIds,
                                         boolean includeReplaceUnitScope) {
-        if ("remove_volunteers".equals(action.getActionType())) {
+        String actionType = RepairProposalTaxonomy.normalizeActionType(action.getActionType());
+        if (RepairProposalTaxonomy.ActionType.REMOVE_VOLUNTEERS.equals(actionType)) {
             return;
         }
-        if ("replace_volunteers".equals(action.getActionType())) {
+        if (RepairProposalTaxonomy.ActionType.REPLACE_VOLUNTEERS.equals(actionType)) {
             addAllNonBlank(volunteerIds, action.getCandidateVolunteerIds());
             if (includeReplaceUnitScope) {
                 addAllNonBlank(unitIds, action.getCandidateUnitIds());
@@ -579,7 +583,7 @@ final class RepairDryRunSimulator {
             }
             return;
         }
-        if ("adjust_major_group_inner_safety".equals(action.getActionType())) {
+        if (RepairProposalTaxonomy.ActionType.ADJUST_MAJOR_GROUP_INNER_SAFETY.equals(actionType)) {
             List<String> candidateVolunteerIds = defaultList(action.getCandidateVolunteerIds());
             addAllNonBlank(volunteerIds, candidateVolunteerIds.isEmpty() ? action.getVolunteerIds() : candidateVolunteerIds);
             addAllNonBlank(unitIds, action.getCandidateUnitIds());
@@ -597,7 +601,8 @@ final class RepairDryRunSimulator {
                                           Set<String> volunteerIds,
                                           Set<String> unitIds,
                                           boolean includeReplaceUnitScope) {
-        if ("replace_volunteers".equals(action.getActionType())) {
+        String actionType = RepairProposalTaxonomy.normalizeActionType(action.getActionType());
+        if (RepairProposalTaxonomy.ActionType.REPLACE_VOLUNTEERS.equals(actionType)) {
             addAllNonBlank(volunteerIds, action.getRemoveVolunteerIds());
             if (includeReplaceUnitScope) {
                 addAllNonBlank(unitIds, action.getRemoveUnitIds());
@@ -613,20 +618,26 @@ final class RepairDryRunSimulator {
             }
             return;
         }
-        if ("remove_volunteers".equals(action.getActionType())) {
+        if (RepairProposalTaxonomy.ActionType.REMOVE_VOLUNTEERS.equals(actionType)) {
             addAllNonBlank(volunteerIds, action.getVolunteerIds());
             addAllNonBlank(unitIds, action.getUnitIds());
             return;
         }
-        if ("adjust_major_group_inner_safety".equals(action.getActionType())) {
+        if (RepairProposalTaxonomy.ActionType.ADJUST_MAJOR_GROUP_INNER_SAFETY.equals(actionType)) {
             addAllNonBlank(volunteerIds, action.getRemoveVolunteerIds());
             addAllNonBlank(unitIds, action.getRemoveUnitIds());
         }
     }
 
     private static boolean shouldUseUnitScopeForReplace(FixProposalActionDTO action) {
-        if (action == null || !"replace_volunteers".equals(action.getActionType())) {
+        if (action == null
+                || !RepairProposalTaxonomy.ActionType.REPLACE_VOLUNTEERS.equals(
+                RepairProposalTaxonomy.normalizeActionType(action.getActionType()))) {
             return true;
+        }
+        if (!defaultList(action.getRemoveVolunteerIds()).isEmpty()
+                || !defaultList(action.getCandidateVolunteerIds()).isEmpty()) {
+            return false;
         }
         ReviewRuleMetadataDTO metadata = ReviewRuleRegistry.get(action.getSourceCheckCode());
         return metadata == null || !"item".equals(metadata.getScopeKind());
@@ -855,7 +866,9 @@ final class RepairDryRunSimulator {
                                                 FixProposalDTO proposal,
                                                 PlanningStateDTO state,
                                                 List<CandidateItemDTO> candidates) {
-        if (snapshot == null || proposal == null || !"sort_by_probability".equals(proposal.getStrategy())) {
+        if (snapshot == null || proposal == null
+                || !RepairProposalTaxonomy.Strategy.SORT_BY_PROBABILITY.equals(
+                RepairProposalTaxonomy.normalizeStrategy(proposal.getStrategy()))) {
             return;
         }
         if (state != null && isMajorGroupMode(state.getCandidatePoolState())) {
@@ -1002,12 +1015,13 @@ final class RepairDryRunSimulator {
         if (snapshot == null || action == null) {
             return;
         }
-        if ("remove_volunteers".equals(action.getActionType())) {
+        String actionType = RepairProposalTaxonomy.normalizeActionType(action.getActionType());
+        if (RepairProposalTaxonomy.ActionType.REMOVE_VOLUNTEERS.equals(actionType)) {
             removeUnits(snapshot, defaultList(action.getUnitIds()));
             removeVolunteers(snapshot, defaultList(action.getVolunteerIds()));
             return;
         }
-        if ("replace_volunteers".equals(action.getActionType())) {
+        if (RepairProposalTaxonomy.ActionType.REPLACE_VOLUNTEERS.equals(actionType)) {
             Set<String> removeVolunteerIds = new LinkedHashSet<String>();
             Set<String> removeUnitIds = new LinkedHashSet<String>();
             Set<String> candidateVolunteerIds = new LinkedHashSet<String>();
@@ -1020,7 +1034,7 @@ final class RepairDryRunSimulator {
             addVolunteers(snapshot, Lists.newArrayList(candidateVolunteerIds), candidates);
             return;
         }
-        if ("adjust_major_group_inner_safety".equals(action.getActionType())) {
+        if (RepairProposalTaxonomy.ActionType.ADJUST_MAJOR_GROUP_INNER_SAFETY.equals(actionType)) {
             removeVolunteers(snapshot, defaultList(action.getRemoveVolunteerIds()));
             List<String> addVolunteerIds = !defaultList(action.getCandidateVolunteerIds()).isEmpty()
                     ? action.getCandidateVolunteerIds() : action.getVolunteerIds();

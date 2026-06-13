@@ -35,53 +35,70 @@ public final class ReviewRuleRegistry {
         Map<String, ReviewRuleMetadataDTO> rules = new LinkedHashMap<String, ReviewRuleMetadataDTO>();
         register(rules, rule("ratio_distribution", "冲稳保配比", "structure_risk", "warn",
                 bothModes(), "structure", "preview_fixable",
-                strategies("rebalance_tier_ratio", "replace_risk_items", "regenerate_plan_with_constraints"),
-                "rebalance_tier_ratio", true, "tier_ratio_v1", "ratio_distribution"));
+                strategies(RepairProposalTaxonomy.Strategy.REBALANCE_TIER_RATIO,
+                        RepairProposalTaxonomy.Strategy.REPLACE_RISK_ITEMS,
+                        "regenerate_plan_with_constraints"),
+                RepairProposalTaxonomy.Strategy.REBALANCE_TIER_RATIO, true, "tier_ratio_v1", "ratio_distribution"));
         register(rules, rule("safety_guard", "本省保底不足", "structure_risk", "risk",
                 bothModes(), "structure", "preview_fixable",
-                strategies("add_safety_items", "replace_risk_items", "fill_missing_count"),
-                "add_safety_items", true, "safety_guard_v1", "safety_guard"));
+                strategies(RepairProposalTaxonomy.Strategy.ADD_SAFETY_ITEMS,
+                        RepairProposalTaxonomy.Strategy.REPLACE_RISK_ITEMS,
+                        RepairProposalTaxonomy.Strategy.FILL_MISSING_COUNT),
+                RepairProposalTaxonomy.Strategy.ADD_SAFETY_ITEMS, true, "safety_guard_v1", "safety_guard"));
         register(rules, rule("probability_inversion", "录取率倒挂", "ordering_risk", "warn",
                 bothModes(), "structure", "preview_fixable",
-                strategies("sort_by_probability", "replace_risk_items", "regenerate_order"),
-                "sort_by_probability", true, "probability_inversion_v1", "probability_inversion"));
+                strategies(RepairProposalTaxonomy.Strategy.SORT_BY_PROBABILITY,
+                        RepairProposalTaxonomy.Strategy.REPLACE_RISK_ITEMS,
+                        "regenerate_order"),
+                RepairProposalTaxonomy.Strategy.SORT_BY_PROBABILITY, true, "probability_inversion_v1", "probability_inversion"));
         register(rules, rule("probability_gap", "录取率梯度断层", "structure_risk", "warn",
                 bothModes(), "structure", "preview_fixable",
-                strategies("fill_probability_gap", "replace_risk_items", "rebalance_tier_ratio"),
-                "fill_probability_gap", true, "probability_gap_v1", "probability_gap"));
+                strategies(RepairProposalTaxonomy.Strategy.FILL_PROBABILITY_GAP,
+                        RepairProposalTaxonomy.Strategy.REPLACE_RISK_ITEMS,
+                        RepairProposalTaxonomy.Strategy.REBALANCE_TIER_RATIO),
+                RepairProposalTaxonomy.Strategy.FILL_PROBABILITY_GAP, true, "probability_gap_v1", "probability_gap"));
         register(rules, rule("count_validation", "数量校验", "structure_risk", "risk",
                 bothModes(), "structure", "preview_fixable",
-                strategies("fill_missing_count", "regenerate_plan_with_constraints"),
-                "fill_missing_count", true, "count_validation_v1", "count_validation"));
+                strategies(RepairProposalTaxonomy.Strategy.FILL_MISSING_COUNT,
+                        "regenerate_plan_with_constraints"),
+                RepairProposalTaxonomy.Strategy.FILL_MISSING_COUNT, true, "count_validation_v1", "count_validation"));
         register(rules, rule("high_tuition", "高收费", "item_risk", "warn",
                 bothModes(), "item", "preview_fixable",
-                strategies("replace_risk_items", "remove_risk_items"),
-                "replace_risk_items", true, "high_tuition_v1", "high_tuition"));
+                strategies(RepairProposalTaxonomy.Strategy.REPLACE_RISK_ITEMS,
+                        RepairProposalTaxonomy.Strategy.REMOVE_RISK_ITEMS),
+                RepairProposalTaxonomy.Strategy.REPLACE_RISK_ITEMS, true, "high_tuition_v1", "high_tuition"));
         register(rules, rule("admission_limit", "限报条件", "item_risk", "risk",
                 bothModes(), "item", "preview_fixable",
-                strategies("remove_risk_items", "replace_risk_items"),
-                "remove_risk_items", true, "admission_limit_v1", "admission_limit"));
+                strategies(RepairProposalTaxonomy.Strategy.REMOVE_RISK_ITEMS,
+                        RepairProposalTaxonomy.Strategy.REPLACE_RISK_ITEMS),
+                RepairProposalTaxonomy.Strategy.REMOVE_RISK_ITEMS, true, "admission_limit_v1", "admission_limit"));
         register(rules, rule("special_enrollment", "特殊类型招生", "item_risk", "warn",
                 bothModes(), "item", "preview_fixable",
-                strategies("remove_risk_items", "replace_risk_items"),
-                "remove_risk_items", true, "special_enrollment_v1", "special_enrollment"));
+                strategies(RepairProposalTaxonomy.Strategy.REMOVE_RISK_ITEMS,
+                        RepairProposalTaxonomy.Strategy.REPLACE_RISK_ITEMS),
+                RepairProposalTaxonomy.Strategy.REMOVE_RISK_ITEMS, true, "special_enrollment_v1", "special_enrollment"));
         register(rules, rule("edge_score", "边缘分风险", "structure_risk", "warn",
                 bothModes(), "structure", "preview_fixable",
-                strategies("add_safety_items", "rebalance_tier_ratio", "replace_risk_items"),
-                "add_safety_items", true, "edge_score_v1", "edge_score"));
+                strategies(RepairProposalTaxonomy.Strategy.ADD_SAFETY_ITEMS,
+                        RepairProposalTaxonomy.Strategy.REBALANCE_TIER_RATIO,
+                        RepairProposalTaxonomy.Strategy.REPLACE_RISK_ITEMS),
+                RepairProposalTaxonomy.Strategy.ADD_SAFETY_ITEMS, true, "edge_score_v1", "edge_score"));
         register(rules, rule("cooperative_program", "中外合作", "item_risk", "warn",
                 bothModes(), "item", "preview_fixable",
-                strategies("replace_risk_items", "remove_risk_items"),
-                "replace_risk_items", true, "cooperative_program_v1", "cooperative_program"));
+                strategies(RepairProposalTaxonomy.Strategy.REPLACE_RISK_ITEMS,
+                        RepairProposalTaxonomy.Strategy.REMOVE_RISK_ITEMS),
+                RepairProposalTaxonomy.Strategy.REPLACE_RISK_ITEMS, true, "cooperative_program_v1", "cooperative_program"));
         register(rules, rule("major_group_safety_intent_alignment", "非意向托底", "major_group_risk", "warn",
                 majorGroupOnly(), "major_group_inner", "preview_fixable",
-                strategies("adjust_major_group_inner_safety", "replace_risk_items"),
-                "adjust_major_group_inner_safety", true, "major_group_safety_intent_alignment_v1",
+                strategies(RepairProposalTaxonomy.Strategy.ADJUST_MAJOR_GROUP_INNER_SAFETY,
+                        RepairProposalTaxonomy.Strategy.REPLACE_RISK_ITEMS),
+                RepairProposalTaxonomy.Strategy.ADJUST_MAJOR_GROUP_INNER_SAFETY, true, "major_group_safety_intent_alignment_v1",
                 "major_group_safety_intent_alignment"));
         register(rules, rule("group_inner_safety_guard", "组内安全垫不足", "major_group_risk", "risk",
                 majorGroupOnly(), "major_group_inner", "preview_fixable",
-                strategies("adjust_major_group_inner_safety", "replace_risk_items"),
-                "adjust_major_group_inner_safety", true, "group_inner_safety_guard_v1",
+                strategies(RepairProposalTaxonomy.Strategy.ADJUST_MAJOR_GROUP_INNER_SAFETY,
+                        RepairProposalTaxonomy.Strategy.REPLACE_RISK_ITEMS),
+                RepairProposalTaxonomy.Strategy.ADJUST_MAJOR_GROUP_INNER_SAFETY, true, "group_inner_safety_guard_v1",
                 "group_inner_safety_guard"));
         register(rules, rule("plan_update_notice", "招生计划更新提示", "policy_notice", "info",
                 bothModes(), "informational", "not_fixable",

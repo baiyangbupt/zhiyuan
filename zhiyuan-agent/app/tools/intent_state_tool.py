@@ -37,7 +37,12 @@ from app.domain.major_entity_resolver import (
     refine_major_intent_payload_by_explicit_mentions,
     resolve_major_mentions_from_text,
 )
-from app.domain.region_entity_resolver import contains_concrete_region_mention
+from app.domain.region_entity_resolver import (
+    REGION_AREA_PROVINCES,
+    compact_region_text,
+    contains_concrete_region_mention,
+    resolve_region_entity,
+)
 from app.services.profile_manager import ProfileManager, _normalize_batch
 from app.tools.intent_relation_tool import (
     build_impact_preview_from_analysis as _build_impact_preview_from_analysis,
@@ -132,6 +137,9 @@ def _get_intent_side_effect_agent() -> Agent[None, str]:
                 "4 如果直接出现待采纳内容，用户是否会误以为系统已经替他做了结论。"
                 "如果用户已经表达若干偏好/排除想法，但本轮明确要先看影响、边界、利弊、风险或承接情况，"
                 "应判为 mixed_answer_then_ask 或 analysis_only；先回答影响，再自然询问是否需要记录，不能直接出待采纳内容。"
+                "如果用户是在描述自己的兴趣画像、多个可选方向、职业期待或工作特征，例如高薪、稳定、少沟通、读研、体制内等，"
+                "且没有明确说以后按此筛、记下来、只保留、必须有或排除当前方案，默认先判为 analysis_only 或 mixed_answer_then_ask；"
+                "这类话术通常需要先做适配分析和取舍澄清，不能把所有兴趣陈述都当作写入请求。"
                 "如果用户是在要求系统以后对某个具体专业、院校、地域或方向多看、多关注、优先看、后续多给机会，"
                 "这属于改变后续推荐口径，应判为 intent_preview；不要因为句子里有征询语气就降级。"
                 "decision 只能是 intent_preview、analysis_only、mixed_answer_then_ask。"
@@ -240,8 +248,10 @@ def _collect_intent_labels(
     if city_intents:
         _extend(city_intents.get("province"))
         _extend(city_intents.get("city"))
+        _extend(city_intents.get("area"))
         _extend(city_intents.get("negative_province"), negative=True)
         _extend(city_intents.get("negative_city"), negative=True)
+        _extend(city_intents.get("negative_area"), negative=True)
     if career_intents:
         _extend(to_career_labels(career_intents.get("positive")))
         _extend(to_career_labels(career_intents.get("negative")), negative=True)
@@ -267,6 +277,79 @@ def _normalize_constraint_intent_type(value: str | None) -> str:
     if normalized in {CONSTRAINT_INTENT_MUST_HAVE, "required_presence", "at_least_one", "include_at_least_one"}:
         return CONSTRAINT_INTENT_MUST_HAVE
     return CONSTRAINT_INTENT_DEFAULT
+
+
+def _has_positive_values_in_payload(merged: dict[str, Any] | None) -> bool:
+    if not isinstance(merged, dict):
+        return False
+    return _has_positive_intents(
+        merged.get("major_intents") if isinstance(merged.get("major_intents"), dict) else None,
+        merged.get("school_intents") if isinstance(merged.get("school_intents"), dict) else None,
+        merged.get("city_intents") if isinstance(merged.get("city_intents"), dict) else None,
+        merged.get("career_intents") if isinstance(merged.get("career_intents"), dict) else None,
+    )
+
+
+def _normalize_constraint_type_for_payload(value: str | None, merged: dict[str, Any] | None) -> str:
+    """Positive-only constraint types should not leak onto pure exclusion payloads."""
+    normalized = _normalize_constraint_intent_type(value)
+    if normalized in {CONSTRAINT_INTENT_ONLY_KEEP, CONSTRAINT_INTENT_MUST_HAVE} and not _has_positive_values_in_payload(merged):
+        return CONSTRAINT_INTENT_DEFAULT
+    return normalized
+
+
+def _prune_generated_negative_complements_for_only_keep(
+    payload: dict[str, Any] | None,
+    *,
+    latest_utterance: str,
+    batch: str,
+) -> dict[str, Any] | None:
+    """Remove model-invented broad exclusions from only-keep intent payloads.
+
+    "只要电气和气象，其他方向都不要" means the positive scope is exclusive.
+    The model sometimes expands "其他方向" into every other discipline, which is
+    both noisy and can contradict the positive scope. Keep only negative major
+    values that are explicitly mentioned in the user utterance, such as "不考虑工科".
+    """
+
+    if not isinstance(payload, dict) or not payload:
+        return payload
+    if not _has_positive_major_values(payload) or not _has_negative_major_values(payload):
+        return payload
+
+    explicit_mentions: dict[str, set[str]] = {"level1": set(), "level2": set(), "level3": set()}
+    for mention in resolve_major_mentions_from_text(latest_utterance, batch):
+        level = str(mention.level or "")
+        name = str(mention.canonical_name or "").strip()
+        if level in explicit_mentions and name:
+            explicit_mentions[level].add(name)
+    explicit_negative_keys = {
+        "negative_level1": explicit_mentions["level1"],
+        "negative_level2": explicit_mentions["level2"],
+        "negative_level3": explicit_mentions["level3"],
+    }
+    if not any(explicit_negative_keys.values()):
+        return {key: value for key, value in payload.items() if not str(key).startswith("negative_")}
+
+    pruned: dict[str, Any] = {}
+    changed = False
+    for key, values in payload.items():
+        if key not in explicit_negative_keys:
+            pruned[key] = values
+            continue
+        kept = [value for value in _as_string_list(values) if value in explicit_negative_keys[key]]
+        if kept:
+            pruned[key] = kept
+        if kept != _as_string_list(values):
+            changed = True
+    if changed:
+        logger.info(
+            "Pruned generated only-keep negative major complement: latest=%s before=%s after=%s",
+            latest_utterance,
+            payload,
+            pruned,
+        )
+    return pruned or None
 
 
 def _merge_intent_payload_dict(existing: dict[str, Any] | None, current: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -431,8 +514,8 @@ _MAJOR_POSITIVE_KEYS = ("level1", "level2", "level3")
 _MAJOR_NEGATIVE_KEYS = ("negative_level1", "negative_level2", "negative_level3")
 _SCHOOL_POSITIVE_KEYS = ("colleges",)
 _SCHOOL_NEGATIVE_KEYS = ("negative_colleges",)
-_CITY_POSITIVE_KEYS = ("province", "city")
-_CITY_NEGATIVE_KEYS = ("negative_province", "negative_city")
+_CITY_POSITIVE_KEYS = ("province", "city", "area")
+_CITY_NEGATIVE_KEYS = ("negative_province", "negative_city", "negative_area")
 _CAREER_POSITIVE_KEYS = ("positive",)
 _CAREER_NEGATIVE_KEYS = ("negative",)
 
@@ -451,8 +534,10 @@ _LABEL_MAP: dict[str, str] = {
     # city
     "city_intents.province": "省份",
     "city_intents.city": "城市",
+    "city_intents.area": "地域",
     "city_intents.negative_province": "排除省份",
     "city_intents.negative_city": "排除城市",
+    "city_intents.negative_area": "排除地域",
     "career_intents.positive": "就业导向偏好",
     "career_intents.negative": "排除就业导向",
 }
@@ -1133,6 +1218,7 @@ def _negative_values_overlap_positive_profile(
     for negative_key, positive_key in (
         ("negative_province", "province"),
         ("negative_city", "city"),
+        ("negative_area", "area"),
     ):
         negative_values = set(_as_string_list((city_intents or {}).get(negative_key)))
         positive_values = set(_as_string_list(getattr(city_profile, positive_key, [])))
@@ -1172,7 +1258,7 @@ def _negative_preference_scope_text(
     for payload, keys in (
         (major_intents, ("negative_level3", "negative_level2", "negative_level1")),
         (school_intents, ("negative_colleges",)),
-        (city_intents, ("negative_province", "negative_city")),
+        (city_intents, ("negative_province", "negative_city", "negative_area")),
         (career_intents, ("negative",)),
     ):
         if not isinstance(payload, dict):
@@ -1288,8 +1374,8 @@ def _build_preview_title(
         if flags:
             flags_desc = "、".join(flags)
             return (
-                f"目前，系统暂不支持直接对志愿列表进行{flags_desc}操作。"
-                f"不过，我先帮你把相关的{('要求' if intent_mode == INTENT_MODE_CONSTRAINT else '想法')}整理出来了。{suffix}"
+                f"这类{flags_desc}需要先看清楚会影响哪些志愿，不能直接替你改。"
+                f"我先把相关的{('要求' if intent_mode == INTENT_MODE_CONSTRAINT else '想法')}整理出来。{suffix}"
             )
     return f"好的，我先把这次你提到的{('要求' if intent_mode == INTENT_MODE_CONSTRAINT else '想法')}整理一下。{suffix}"
 
@@ -2376,6 +2462,130 @@ async def _recover_major_intent_from_recent_context(
     return None
 
 
+def _move_region_like_school_values_to_city_intents(
+    school_payload: dict[str, Any],
+    city_payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Move province/city names accidentally extracted as schools into region intents."""
+
+    cleaned_school: dict[str, list[str]] = {}
+    for school_key, negative in (("colleges", False), ("negative_colleges", True)):
+        kept: list[str] = []
+        for value in _as_string_list(school_payload.get(school_key)):
+            resolved = resolve_region_entity(value)
+            region = resolved.best
+            if region and region.level in {"province", "city"}:
+                target_key = f"{'negative_' if negative else ''}{region.level}"
+                bucket = city_payload.setdefault(target_key, [])
+                if region.canonical_name not in bucket:
+                    bucket.append(region.canonical_name)
+                continue
+            kept.append(value)
+        if kept:
+            cleaned_school[school_key] = kept
+    return cleaned_school
+
+
+def _merge_city_intent_payloads(
+    base: dict[str, Any] | None,
+    supplement: dict[str, Any] | None,
+) -> dict[str, list[str]] | None:
+    merged: dict[str, list[str]] = {}
+    for payload in (base or {}, supplement or {}):
+        for key, values in payload.items():
+            normalized_values = _as_string_list(values)
+            if not normalized_values:
+                continue
+            bucket = merged.setdefault(key, [])
+            for value in normalized_values:
+                if value not in bucket:
+                    bucket.append(value)
+    return merged or None
+
+
+def _drop_provinces_implied_by_area_alias(
+    city_payload: dict[str, Any],
+    *,
+    local_area_payload: dict[str, list[str]],
+    latest_utterance: str,
+) -> dict[str, Any]:
+    if not local_area_payload:
+        return city_payload
+    cleaned = {key: list(_as_string_list(value)) for key, value in city_payload.items()}
+    compact_utterance = compact_region_text(latest_utterance)
+    for area_key, province_key in (("area", "province"), ("negative_area", "negative_province")):
+        areas = _as_string_list(local_area_payload.get(area_key))
+        if not areas:
+            continue
+        implied = {
+            province
+            for area in areas
+            for province in REGION_AREA_PROVINCES.get(area, ())
+            if compact_region_text(province) not in compact_utterance
+        }
+        if implied and cleaned.get(province_key):
+            cleaned[province_key] = [
+                province for province in cleaned[province_key] if province not in implied
+            ]
+            if not cleaned[province_key]:
+                cleaned.pop(province_key, None)
+    return cleaned
+
+
+def _normalize_region_area_values_from_extractor(
+    payload: dict[str, Any] | None,
+) -> dict[str, list[str]]:
+    """Normalize extractor-decided region polarity without re-inferring intent.
+
+    The model/extractor owns whether a region mention is positive or negative.
+    This helper only canonicalizes abstract region groups such as 南方/北方 into
+    area fields, so cards remain readable and do not list many implied provinces.
+    """
+
+    normalized: dict[str, list[str]] = {}
+    for key, values in (payload or {}).items():
+        for value in _as_string_list(values):
+            resolved = resolve_region_entity(value)
+            region = resolved.best
+            target_key = key
+            target_value = value
+            if region and region.level == "area":
+                target_key = "area" if not str(key).startswith("negative_") else "negative_area"
+                target_value = region.canonical_name
+            bucket = normalized.setdefault(target_key, [])
+            if target_value not in bucket:
+                bucket.append(target_value)
+    return normalized
+
+
+def _normalize_region_area_polarity_payloads(
+    positive_payload: dict[str, Any],
+    negative_payload: dict[str, Any],
+    *,
+    latest_utterance: str,
+) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+    positive = _normalize_region_area_values_from_extractor(positive_payload)
+    negative = _normalize_region_area_values_from_extractor(
+        {f"negative_{key}" if not str(key).startswith("negative_") else key: value for key, value in negative_payload.items()}
+    )
+    area_payload = {
+        "area": positive.get("area", []),
+        "negative_area": negative.get("negative_area", []),
+    }
+    if area_payload["area"] or area_payload["negative_area"]:
+        positive = _drop_provinces_implied_by_area_alias(
+            positive,
+            local_area_payload={"area": area_payload["area"]},
+            latest_utterance=latest_utterance,
+        )
+        negative = _drop_provinces_implied_by_area_alias(
+            negative,
+            local_area_payload={"negative_area": area_payload["negative_area"]},
+            latest_utterance=latest_utterance,
+        )
+    return positive, negative
+
+
 async def _recover_intents_from_context(
     ctx: RunContext[RequestContext],
     recovery_scope: str | None = None,
@@ -2401,6 +2611,8 @@ async def _recover_intents_from_context(
     recovery_ctx = _build_single_turn_recovery_context(ctx)
     normalized_scope = (recovery_scope or "generic").strip().lower()
     batch = ctx.deps.batch or "01"
+    latest_utterance = _latest_user_utterance(ctx)
+    school_scope = normalized_scope in {"school", "college"}
 
     if normalized_scope == "career_preference":
         extracted_career = json.loads(await extract_career_intent(recovery_ctx))
@@ -2408,7 +2620,23 @@ async def _recover_intents_from_context(
             recovered_career.update(extracted_career)
         return None, None, None, _drop_empty_entries(recovered_career)
 
-    if normalized_scope in {"generic", "region", "city"}:
+    if school_scope:
+        try:
+            school = json.loads(await extract_school_intent(recovery_ctx))
+            if school.get("colleges"):
+                recovered_school["colleges"] = school["colleges"]
+            if school.get("negative_colleges"):
+                recovered_school["negative_colleges"] = school["negative_colleges"]
+            recovered_school = _move_region_like_school_values_to_city_intents(
+                recovered_school,
+                recovered_city,
+            )
+        except Exception:
+            logger.warning("Fallback school intent extraction failed: session_id=%s", ctx.deps.sessionid, exc_info=True)
+
+    if normalized_scope in {"generic", "region", "city"} or (
+        school_scope and not recovered_school and not recovered_city and contains_concrete_region_mention(latest_utterance)
+    ):
         try:
             try:
                 city_polarity = json.loads(await extract_city_intents_with_polarity(recovery_ctx))
@@ -2422,12 +2650,17 @@ async def _recover_intents_from_context(
                 )
                 positive_city = json.loads(await extract_city_intent(recovery_ctx))
                 negative_city = json.loads(await extract_negative_city_intent(recovery_ctx))
+            positive_city, negative_city = _normalize_region_area_polarity_payloads(
+                positive_city,
+                negative_city,
+                latest_utterance=latest_utterance,
+            )
             for key in ("province", "city", "area"):
                 values = positive_city.get(key, [])
                 if values:
                     recovered_city[key] = values
             for key in ("province", "city", "area"):
-                values = negative_city.get(key, [])
+                values = negative_city.get(f"negative_{key}") or negative_city.get(key, [])
                 if values:
                     recovered_city[f"negative_{key}"] = values
         except Exception:
@@ -2464,13 +2697,17 @@ async def _recover_intents_from_context(
         except Exception:
             logger.warning("Fallback major intent extraction failed: session_id=%s", ctx.deps.sessionid, exc_info=True)
 
-    if normalized_scope in {"generic", "school"}:
+    if normalized_scope == "generic" and not recovered_school:
         try:
             school = json.loads(await extract_school_intent(recovery_ctx))
             if school.get("colleges"):
                 recovered_school["colleges"] = school["colleges"]
             if school.get("negative_colleges"):
                 recovered_school["negative_colleges"] = school["negative_colleges"]
+            recovered_school = _move_region_like_school_values_to_city_intents(
+                recovered_school,
+                recovered_city,
+            )
         except Exception:
             logger.warning("Fallback school intent extraction failed: session_id=%s", ctx.deps.sessionid, exc_info=True)
 
@@ -2578,8 +2815,16 @@ def _constraint_state_preference_payloads(
     major_negative = _as_string_list(major_intents.get("negative_level1")) + _as_string_list(major_intents.get("negative_level2")) + _as_string_list(major_intents.get("negative_level3"))
     school_positive = _as_string_list(school_intents.get("colleges"))
     school_negative = _as_string_list(school_intents.get("negative_colleges"))
-    region_positive = _as_string_list(city_intents.get("province")) + _as_string_list(city_intents.get("city"))
-    region_negative = _as_string_list(city_intents.get("negative_province")) + _as_string_list(city_intents.get("negative_city"))
+    region_positive = (
+        _as_string_list(city_intents.get("province"))
+        + _as_string_list(city_intents.get("city"))
+        + _as_string_list(city_intents.get("area"))
+    )
+    region_negative = (
+        _as_string_list(city_intents.get("negative_province"))
+        + _as_string_list(city_intents.get("negative_city"))
+        + _as_string_list(city_intents.get("negative_area"))
+    )
 
     def group(positive: list[str], negative: list[str]) -> dict[str, list[str]] | None:
         payload = {
@@ -2696,6 +2941,7 @@ async def _apply_intents(
     intent_mode: str,
     constraint_intent_type: str = CONSTRAINT_INTENT_DEFAULT,
 ) -> IntentStateUpdateResult:
+    constraint_intent_type = _normalize_constraint_type_for_payload(constraint_intent_type, merged)
     pm = ProfileManager(int(session_id), batch)
 
     major_intents = merged.get("major_intents")
@@ -2850,6 +3096,12 @@ async def analyze_volunteer_intent_change(
         latest_utterance=latest_utterance,
         batch=batch,
     )
+    if resolved_constraint_intent_type == CONSTRAINT_INTENT_ONLY_KEEP:
+        major_intents = _prune_generated_negative_complements_for_only_keep(
+            major_intents,
+            latest_utterance=latest_utterance,
+            batch=batch,
+        )
     had_explicit_intent_payload = _has_any_intent_payload(major_intents, school_intents, city_intents, career_intents)
 
     if not had_explicit_intent_payload and _should_attempt_intent_recovery(
@@ -2878,6 +3130,12 @@ async def analyze_volunteer_intent_change(
             latest_utterance=latest_utterance,
             batch=batch,
         )
+        if resolved_constraint_intent_type == CONSTRAINT_INTENT_ONLY_KEEP:
+            major_intents = _prune_generated_negative_complements_for_only_keep(
+                major_intents,
+                latest_utterance=latest_utterance,
+                batch=batch,
+            )
 
     if not _has_any_intent_payload(major_intents, school_intents, city_intents, career_intents):
         if recovery_scope == "region" and not contains_concrete_region_mention(latest_utterance):
@@ -3004,6 +3262,17 @@ async def analyze_volunteer_intent_change(
                 message=no_effect_message,
             )
         )
+
+    merged_for_constraint_type = {
+        "major_intents": major_intents or {},
+        "school_intents": school_intents or {},
+        "city_intents": city_intents or {},
+        "career_intents": career_intents or {},
+    }
+    resolved_constraint_intent_type = _normalize_constraint_type_for_payload(
+        resolved_constraint_intent_type,
+        merged_for_constraint_type,
+    )
 
     cache_data = _build_cache_data(
         major_intents,
@@ -3146,8 +3415,9 @@ async def apply_selected_intents(
 
     explicit_intent_mode = str(selected_data.get("intentMode") or selected_data.get("intent_mode") or "").strip()
     intent_mode = explicit_intent_mode if explicit_intent_mode in {INTENT_MODE_PREFERENCE, INTENT_MODE_CONSTRAINT} else INTENT_MODE_PREFERENCE
-    constraint_intent_type = _normalize_constraint_intent_type(
-        selected_data.get("constraintIntentType") or selected_data.get("constraint_intent_type")
+    constraint_intent_type = _normalize_constraint_type_for_payload(
+        selected_data.get("constraintIntentType") or selected_data.get("constraint_intent_type"),
+        merged,
     )
     if message_id:
         try:
@@ -3159,8 +3429,9 @@ async def apply_selected_intents(
                 card_intent_mode = str(content_obj.get("intentMode") or "").strip()
                 if card_intent_mode in {INTENT_MODE_PREFERENCE, INTENT_MODE_CONSTRAINT}:
                     intent_mode = card_intent_mode
-                card_constraint_type = _normalize_constraint_intent_type(
-                    content_obj.get("constraintIntentType") or content_obj.get("constraint_intent_type")
+                card_constraint_type = _normalize_constraint_type_for_payload(
+                    content_obj.get("constraintIntentType") or content_obj.get("constraint_intent_type"),
+                    merged,
                 )
                 if card_constraint_type != CONSTRAINT_INTENT_DEFAULT:
                     constraint_intent_type = card_constraint_type
@@ -3206,125 +3477,5 @@ async def apply_selected_intents(
                 action="apply_selected",
                 sessionId=session_id,
                 messageCode="apply_failed",
-            )
-        )
-
-
-async def update_volunteer_intent_state(
-    ctx: RunContext[RequestContext],
-    action: str = "confirm",
-    merged: dict[str, Any] | None = None,
-    intent_mode: str | None = None,
-) -> str:
-    """Legacy compatibility wrapper for intent state updates.
-
-    Main chat no longer exposes this as a model-callable tool. New sessions use
-    ``pendingConfirmationCard`` clicks and ``apply_selected_intents`` for apply.
-    """
-    session_id = ctx.deps.sessionid
-    batch = getattr(ctx.deps, "batch", None) or "01"
-    normalized_action = (action or "confirm").strip().lower()
-    started_at = time.monotonic()
-    logger.info("update_volunteer_intent_state: session_id=%s action=%s", session_id, normalized_action)
-
-    try:
-        if normalized_action == "reject":
-            await save_intent_change_cache(int(session_id), {})
-            result = IntentStateUpdateResult(
-                action="reject",
-                sessionId=session_id,
-                applied=False,
-                messageCode="reject_success",
-            )
-            log_event(
-                "intent_state_event",
-                sessionId=session_id,
-                action="reject",
-                applied=False,
-                messageCode="reject_success",
-                durationMs=int((time.monotonic() - started_at) * 1000),
-                status="success",
-            )
-            return serialize_intent_state_update_result(result)
-
-        resolved_merged = merged
-        resolved_mode = intent_mode or INTENT_MODE_PREFERENCE
-        if normalized_action == "confirm":
-            result = IntentStateUpdateResult(
-                action="confirm",
-                sessionId=session_id,
-                intentMode=resolved_mode,
-                applied=False,
-                messageCode="confirm_required",
-            )
-            log_event(
-                "intent_state_event",
-                sessionId=session_id,
-                action="confirm",
-                applied=False,
-                messageCode="confirm_required",
-                durationMs=int((time.monotonic() - started_at) * 1000),
-                status="blocked",
-                errorType="card_confirmation_required",
-            )
-            return serialize_intent_state_update_result(result)
-
-        if not resolved_merged:
-            result = IntentStateUpdateResult(
-                action=normalized_action,
-                sessionId=session_id,
-                intentMode=resolved_mode,
-                applied=False,
-                messageCode="empty_update",
-            )
-            log_event(
-                "intent_state_event",
-                sessionId=session_id,
-                action=normalized_action,
-                applied=False,
-                messageCode="empty_update",
-                durationMs=int((time.monotonic() - started_at) * 1000),
-                status="error",
-            )
-            return serialize_intent_state_update_result(result)
-
-        result = await _apply_intents(
-            session_id=session_id,
-            batch=batch,
-            merged=resolved_merged,
-            intent_mode=resolved_mode,
-        )
-        result.action = normalized_action
-        log_event(
-            "intent_state_event",
-            sessionId=session_id,
-            action=normalized_action,
-            applied=bool(result.applied),
-            messageCode=result.messageCode,
-            intentMode=result.intentMode,
-            durationMs=int((time.monotonic() - started_at) * 1000),
-            status="success" if result.applied else "error",
-        )
-        return serialize_intent_state_update_result(result)
-    except Exception:
-        logger.exception("update_volunteer_intent_state failed: session_id=%s action=%s", session_id, normalized_action)
-        message_code = "apply_failed" if normalized_action != "reject" else "reject_failed"
-        log_event(
-            "intent_state_event",
-            sessionId=session_id,
-            action=normalized_action,
-            applied=False,
-            messageCode=message_code,
-            durationMs=int((time.monotonic() - started_at) * 1000),
-            status="error",
-            errorType=message_code,
-        )
-        return serialize_intent_state_update_result(
-            IntentStateUpdateResult(
-                action=normalized_action,
-                sessionId=session_id,
-                intentMode=intent_mode or INTENT_MODE_PREFERENCE,
-                applied=False,
-                messageCode=message_code,
             )
         )

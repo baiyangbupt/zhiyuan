@@ -200,7 +200,6 @@ class PlanningStateSync:
             "replace_units",
             "sort_ordered_plan",
             "regenerate_order",
-            "apply_compensation",
         }
 
         if action_family not in _MUTATING_FAMILIES:

@@ -144,7 +144,6 @@ class TestMutatingApplyGuard:
         # replace_units excluded: with no atomic_actions it hits _execution_missing_inputs
         # early exit before reaching the mutating apply guard.
         "regenerate_order",
-        "apply_compensation",
     ])
     @pytest.mark.parametrize("volunteer_model", ["major", "majorGroup"])
     async def test_no_confirmation_falls_to_preview(self, action_family: str, volunteer_model: str):
@@ -202,7 +201,6 @@ class TestGenericPreviewAnalyzeFallback:
         "move_unit",
         "generate_plan",
         "regenerate_order",
-        "apply_compensation",
     ])
     @pytest.mark.parametrize("stage", ["preview", "analyze"])
     @pytest.mark.parametrize("volunteer_model", ["major", "majorGroup"])
@@ -266,7 +264,7 @@ class TestGenericPreviewAnalyzeFallback:
         ("query_candidates", "candidate_snapshot"),
         ("review_plan", "review_result"),
         ("analyze_adjustment", "adjustment_analysis"),
-        ("preview_compensation", "compensation_preview"),
+        ("preview_fix_proposal", "fix_proposal_preview"),
     ])
     @pytest.mark.parametrize("volunteer_model", ["major", "majorGroup"])
     async def test_non_mutating_preview_routes_to_registered_handler_without_confirmation_hint(
@@ -350,15 +348,16 @@ class TestAppliedComputation:
         assert result.applied is True
 
     @pytest.mark.parametrize("volunteer_model", ["major", "majorGroup"])
-    async def test_preview_compensation_not_applied(self, volunteer_model: str, patch_backend, patch_planning):
-        """preview_compensation 在 apply 阶段 → applied=False（特殊例外）。"""
+    async def test_preview_fix_proposal_not_applied(self, volunteer_model: str, patch_backend, patch_planning):
+        """preview_fix_proposal 在 apply 阶段 → applied=False（只读修复预览）。"""
         ctx = _run_ctx(
             volunteer_model=volunteer_model,
-            chat_history=[{"role": "user", "content": "看看补偿"}],
+            chat_history=[{"role": "user", "content": "看看修复建议"}],
         )
         plan = make_plan_action_plan(
-            action_family="preview_compensation",
+            action_family="preview_fix_proposal",
             stage="apply",
         )
         result = await _execute_plan_action_model(ctx, plan)
         assert result.applied is False
+        assert result.result_kind == "fix_proposal_preview"

@@ -169,11 +169,11 @@ def test_mainline_dialog_case_catalog_covers_session57_risks_and_plan_boundaries
     coverage = {tag for case in cases for tag in case["coverage"]}
     required_case_names = {
         "risk-followup-remove-preview-apply-review",
-        "compensation-preview-apply-post-review",
+        "fix-proposal-preview-apply-post-review",
         "ordered-move-preview-apply",
         "pin-unpin-after-review",
         "school-major-group-query-then-replace",
-        "colloquial-review-remove-compensation-mainline",
+        "colloquial-review-remove-fix-proposal-mainline",
         "colloquial-adjustment-then-reorder-mainline",
     }
     required_tags = {
@@ -195,7 +195,7 @@ def test_mainline_dialog_case_catalog_covers_session57_risks_and_plan_boundaries
         "plan_review",
         "risk_followup",
         "remove_units",
-        "compensation_apply",
+        "fix_proposal_apply",
         "move_unit",
             "no_pin_user_entry",
             "no_legacy_lock",
@@ -304,10 +304,10 @@ def test_full_journey_dialog_case_catalog_covers_start_explore_intent_plan_adjus
         "candidate_results",
         "candidate_view_state",
         "candidate_school_major_ref",
-        "candidate_search_add",
-        "compensation_apply",
-        "replace_units",
-        "compensation_preview",
+            "candidate_search_add",
+            "fix_proposal_apply",
+            "replace_units",
+            "fix_proposal_preview",
         "move_ordered_unit",
         "remove_ordered_unit",
         "remove_then_add",
@@ -586,6 +586,12 @@ def test_release_310_production_abstracted_cases_cover_real_dialogue_framework_r
         "score_profile",
         "candidate_shortage",
         "majorGroup_model",
+        "high_level_scenario",
+        "scenario_to_goal_layering",
+        "career_plan_scenario",
+        "plan_strategy",
+        "public_service_orientation",
+        "no_direct_mutation",
     }
     assert required_tags.issubset(coverage)
 
@@ -629,6 +635,8 @@ def test_release_310_production_abstracted_cases_cover_real_dialogue_framework_r
     assert "高校专项" in prompts
     assert "方案的科学性" in prompts
     assert "航天、能源、心理学" in prompts
+    assert "整体更偏体制内" in prompts
+    assert "第8个志愿移到第12位" in prompts
     assert "超过6个专业的专业组" in prompts
 
 

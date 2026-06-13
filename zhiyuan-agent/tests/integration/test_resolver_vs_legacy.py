@@ -80,7 +80,7 @@ def _frame(
     "action_family,user_goal",
     [
         ("generate_plan", "怎么优化当前方案"),
-        ("preview_compensation", "补几个更稳的"),
+        ("preview_fix_proposal", "补几个更稳的"),
         ("regenerate_order", "保持总数不变，把保区提上来"),
         ("regenerate_order", "按院校层次排"),
         ("remove_units", "删掉高收费"),
@@ -218,7 +218,7 @@ def test_replacement_capacity_preflight_requires_structured_preserve_count(volun
         ("review", "review_plan"),
         ("generate", "generate_plan"),
         ("analyze", "analyze_adjustment"),
-        ("compensate", "preview_compensation"),
+        ("compensate", "preview_fix_proposal"),
         ("add", "add_units"),
         ("remove", "remove_units"),
         ("move", "move_unit"),
@@ -249,11 +249,11 @@ def test_direct_structured_verb_mapping(verb: str, expected_family: str, volunte
 def test_compensation_normalization_uses_structured_context_and_scope(volunteer_model: str):
     unfilled_stable = resolver.resolve(_frame("compensate", tier="保"), NOT_FILLED)
     assert unfilled_stable.action_family == "add_units"
-    assert unfilled_stable.normalization_applied == "preview_compensation → add_units"
+    assert unfilled_stable.normalization_applied == "preview_fix_proposal → add_units"
 
     filled = resolver.resolve(_frame("compensate"), FILLED)
     assert filled.action_family == "analyze_adjustment"
-    assert filled.normalization_applied == "preview_compensation → analyze_adjustment"
+    assert filled.normalization_applied == "preview_fix_proposal → analyze_adjustment"
 
 
 @pytest.mark.parametrize("volunteer_model", ["major", "majorGroup"])

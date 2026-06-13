@@ -1456,24 +1456,22 @@
   box-shadow: none;
 }
 
-.fixProposalBlockedNote {
-  padding: 10px 12px;
-  border: 1px solid #eee4df;
-  border-radius: 8px;
-  background: #fff;
-  color: #6f5b53;
-}
-
-.fixProposalBlockedTitle {
-  color: #5f473d;
-  font-size: 12px;
-  font-weight: 700;
-  line-height: 1.45;
-}
-
 .fixProposalBlockedText {
-  margin-top: 4px;
+  margin-top: 8px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  background: #fff8f4;
   color: #7b655c;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.fixProposalStatusText {
+  margin-top: 8px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  background: #fff8f4;
+  color: #6f554b;
   font-size: 12px;
   line-height: 1.55;
 }

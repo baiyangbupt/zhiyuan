@@ -2,7 +2,10 @@ package com.ytell.zhiyuan.service.biz;
 
 import com.ytell.zhiyuan.common.constants.ChatSessionExtraDataConstants;
 import com.ytell.zhiyuan.common.exception.BusinessException;
+import com.ytell.zhiyuan.manager.rank.VolunteerRankClient;
 import com.ytell.zhiyuan.model.dto.CreateSessionReq;
+import com.ytell.zhiyuan.model.dto.RecommendSubMajorRequest;
+import com.ytell.zhiyuan.model.dto.RecommendSubMajorResponse;
 import com.ytell.zhiyuan.model.dto.UserProfileData;
 import com.ytell.zhiyuan.model.dto.inner.ChatSessionExtraDataReq;
 import com.ytell.zhiyuan.model.entity.biz.ChatSessionExtraData;
@@ -12,6 +15,9 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.springframework.test.util.ReflectionTestUtils;
+
+import java.util.ArrayList;
+import java.util.List;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -28,6 +34,7 @@ public class ChatSessionBizServiceTest {
     private ChatSessionExtraDataSharedService chatSessionExtraDataSharedService;
     private PlanningStateService planningStateService;
     private VolunteerDataProvider volunteerDataProvider;
+    private VolunteerRankClient volunteerRankClient;
 
     @BeforeEach
     void setUp() {
@@ -35,10 +42,12 @@ public class ChatSessionBizServiceTest {
         chatSessionExtraDataSharedService = Mockito.mock(ChatSessionExtraDataSharedService.class);
         planningStateService = Mockito.mock(PlanningStateService.class);
         volunteerDataProvider = Mockito.mock(VolunteerDataProvider.class);
+        volunteerRankClient = Mockito.mock(VolunteerRankClient.class);
 
         ReflectionTestUtils.setField(chatSessionBizService, "chatSessionExtraDataSharedService", chatSessionExtraDataSharedService);
         ReflectionTestUtils.setField(chatSessionBizService, "planningStateService", planningStateService);
         ReflectionTestUtils.setField(chatSessionBizService, "volunteerDataProvider", volunteerDataProvider);
+        ReflectionTestUtils.setField(chatSessionBizService, "volunteerRankClient", volunteerRankClient);
     }
 
     @Test
@@ -118,5 +127,36 @@ public class ChatSessionBizServiceTest {
         assertNotNull(req.getStrategyType());
         assertEquals("cautious", req.getStrategyType().getCode());
         assertEquals("稳妥型", req.getStrategyType().getName());
+    }
+
+    @Test
+    void shouldReturnEmptyMajorRecommendWhenRankUnavailable() {
+        when(volunteerRankClient.getRecommendSubMajor(any(RecommendSubMajorRequest.class)))
+                .thenThrow(new RuntimeException("rank unavailable"));
+
+        List<RecommendSubMajorResponse.MajorRecommendItem> result = chatSessionBizService.recommendMajor(new CreateSessionReq());
+
+        assertNotNull(result);
+        assertEquals(0, result.size());
+    }
+
+    @Test
+    void shouldLimitMajorRecommendToEightItems() {
+        RecommendSubMajorResponse response = new RecommendSubMajorResponse();
+        List<RecommendSubMajorResponse.MajorRecommendItem> items = new ArrayList<>();
+        for (int i = 0; i < 10; i++) {
+            RecommendSubMajorResponse.MajorRecommendItem item = new RecommendSubMajorResponse.MajorRecommendItem();
+            item.setMajorId(String.valueOf(i));
+            item.setMajor("专业" + i);
+            items.add(item);
+        }
+        response.setReconmandlist(items);
+        when(volunteerRankClient.getRecommendSubMajor(any(RecommendSubMajorRequest.class))).thenReturn(response);
+
+        List<RecommendSubMajorResponse.MajorRecommendItem> result = chatSessionBizService.recommendMajor(new CreateSessionReq());
+
+        assertEquals(8, result.size());
+        assertEquals("专业0", result.get(0).getMajor());
+        assertEquals("专业7", result.get(7).getMajor());
     }
 }

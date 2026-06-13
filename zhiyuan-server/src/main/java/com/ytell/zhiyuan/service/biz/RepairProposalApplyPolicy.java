@@ -38,10 +38,14 @@ final class RepairProposalApplyPolicy {
     }
 
     static void validateProposalForApply(FixProposalApplyReq req, FixProposalDTO proposal) {
-        if ("preview_only".equals(proposal.getStatus()) && !isSupportedStrategy(proposal.getStrategy())) {
+        if (!RepairProposalTaxonomy.isReviewCheckSource(proposal.getProposalSource())) {
+            throw new BusinessException(400, "当前处理建议暂不支持在此入口应用");
+        }
+        if (RepairProposalTaxonomy.isPreviewOnlyStatus(proposal.getStatus())
+                && !isSupportedStrategy(proposal.getStrategy())) {
             throw new BusinessException(400, "当前修复建议暂不支持自动应用");
         }
-        if (!"ready".equals(proposal.getStatus())) {
+        if (!RepairProposalTaxonomy.isReadyStatus(proposal.getStatus())) {
             throw new BusinessException(400, "当前修复建议不可应用");
         }
         Integer sourceVersionGuard = req == null ? null : req.getSourceVersionGuard();
@@ -54,10 +58,6 @@ final class RepairProposalApplyPolicy {
     }
 
     static boolean isSupportedStrategy(String strategy) {
-        return "fill_missing_count".equals(strategy)
-                || "sort_by_probability".equals(strategy)
-                || "remove_risk_items".equals(strategy)
-                || "replace_risk_items".equals(strategy)
-                || "adjust_major_group_inner_safety".equals(strategy);
+        return RepairProposalTaxonomy.isApplyableStrategy(strategy);
     }
 }

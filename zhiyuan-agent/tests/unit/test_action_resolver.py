@@ -15,9 +15,8 @@
 import pytest
 from typing import get_args
 
-from app.models.conversation_phase import ConversationPhase, PhaseState
 from app.models.intent_frame import IntentFrame, ScopeSpec, TargetSpec, Verb
-from app.resolver.action_resolver import ActionResolution, ActionResolver
+from app.resolver.action_resolver import ActionResolver
 from app.tools.plan_orchestration_models import PlanContextInputs
 
 
@@ -28,6 +27,7 @@ def resolver():
 
 def _ctx(
     *,
+    batch: str = "01",
     draft_count: int = 0,
     ordered_count: int = 0,
     target_count: int = 96,
@@ -35,6 +35,7 @@ def _ctx(
 ) -> PlanContextInputs:
     """快捷构造 PlanContextInputs。"""
     return PlanContextInputs(
+        batch=batch,
         phase="ordered" if ordered_count > 0 else ("draft" if draft_count > 0 else "empty"),
         target_count=target_count,
         draft_count=draft_count,
@@ -55,7 +56,8 @@ def _frame(
     frame_fields = {}
 
     target_keys = {"volunteer_refs", "school_names", "major_names", "region_names",
-                   "career_types", "review_issue_code", "position"}
+                   "career_types", "review_issue_code", "unit_refs",
+                   "source_position", "position"}
     scope_keys = {"tier", "province", "school_tags", "major_tags",
                   "school_keyword", "major_keyword", "limit", "is_review_issue_batch",
                   "sort_field"}
@@ -94,7 +96,7 @@ class TestVerbToActionFamily:
         ("move", "move_unit"),
         ("replace", "replace_units"),
         ("reorder", "regenerate_order"),
-        ("compensate", "preview_compensation"),
+        ("compensate", "preview_fix_proposal"),
     ])
     def test_direct_verb_mapping(self, resolver, verb, expected_family):
         frame = _frame(verb=verb)
@@ -247,20 +249,20 @@ class TestReviewIssueOverride:
         assert result.action_family == "review_plan"
 
     def test_safety_guard_default_action(self, resolver):
-        """safety_guard → preview_compensation。"""
+        """safety_guard → preview_fix_proposal。"""
         frame = _frame(verb="add", review_issue_code="safety_guard")
         ctx = _ctx(ordered_count=30)
         result = resolver.resolve(frame, ctx)
         # add_units 不在 structural mutation 列表里，但 safety_guard 是 structural
         # 实际 add_units 在 mutation_actions 列表里，所以会被覆盖
-        assert result.action_family == "preview_compensation"
+        assert result.action_family == "preview_fix_proposal"
 
     def test_count_validation_default_action(self, resolver):
-        """count_validation → preview_compensation。"""
+        """count_validation → preview_fix_proposal。"""
         frame = _frame(verb="add", review_issue_code="count_validation")
         ctx = _ctx(ordered_count=30)
         result = resolver.resolve(frame, ctx)
-        assert result.action_family == "preview_compensation"
+        assert result.action_family == "preview_fix_proposal"
 
 
 # ---------------------------------------------------------------------------
@@ -284,7 +286,7 @@ class TestNormalization:
         ctx = _ctx(ordered_count=50, target_count=96)
         result = resolver.resolve(frame, ctx)
         assert result.action_family == "add_units"
-        assert "preview_compensation → add_units" in result.normalization_applied
+        assert "preview_fix_proposal → add_units" in result.normalization_applied
 
     def test_rule2_no_trigger_when_plan_full(self, resolver):
         """规则2: 方案已满时不触发。"""
@@ -299,7 +301,7 @@ class TestNormalization:
         frame = _frame(verb="compensate")
         ctx = _ctx(ordered_count=50, target_count=96)
         result = resolver.resolve(frame, ctx)
-        assert result.action_family == "preview_compensation"
+        assert result.action_family == "preview_fix_proposal"
 
     def test_rule3_reorder_to_replace(self, resolver):
         """规则3: regenerate_order + 有 tier + 非明确 reorder → replace_units。"""
@@ -321,7 +323,7 @@ class TestNormalization:
         ctx = _ctx(ordered_count=96, target_count=96)
         result = resolver.resolve(frame, ctx)
         assert result.action_family == "analyze_adjustment"
-        assert "preview_compensation → analyze_adjustment" in result.normalization_applied
+        assert "preview_fix_proposal → analyze_adjustment" in result.normalization_applied
 
     def test_rule5_no_trigger_when_explicit_reorder(self, resolver):
         """规则5: 明确 reorder verb 时不降级。"""
@@ -433,7 +435,7 @@ class TestStageDetermination:
 
     @pytest.mark.parametrize("family", [
         "query_state", "query_draft", "query_ordered", "query_candidates",
-        "analyze_adjustment", "preview_compensation",
+        "analyze_adjustment", "preview_fix_proposal",
     ])
     def test_readonly_actions_direct_apply(self, resolver, family):
         """只读动作直接 apply。"""
@@ -443,7 +445,7 @@ class TestStageDetermination:
             "query_ordered": ("query", "school"),
             "query_candidates": ("query", "region"),
             "analyze_adjustment": ("analyze", "general"),
-            "preview_compensation": ("compensate", "general"),
+            "preview_fix_proposal": ("compensate", "general"),
         }
         verb, topic = verb_map[family]
         extra = {}
@@ -492,7 +494,7 @@ class TestConfirmationFlag:
 
     @pytest.mark.parametrize("family", [
         "query_state", "query_draft", "query_ordered", "query_candidates",
-        "analyze_adjustment", "preview_compensation", "review_plan",
+        "analyze_adjustment", "preview_fix_proposal", "review_plan",
     ])
     def test_no_confirmation_for_readonly(self, resolver, family):
         """只读动作不需要确认。"""
@@ -502,7 +504,7 @@ class TestConfirmationFlag:
             "query_ordered": "query",
             "query_candidates": "query",
             "analyze_adjustment": "analyze",
-            "preview_compensation": "compensate",
+            "preview_fix_proposal": "compensate",
             "review_plan": "review",
         }
         extra = {}
@@ -588,6 +590,93 @@ class TestWorkspaceFlags:
         ctx = _ctx(ordered_count=30)
         result = resolver.resolve(frame, ctx)
         assert result.should_refresh_workspace is True
+
+
+# ---------------------------------------------------------------------------
+# PlanGoal 元数据
+# ---------------------------------------------------------------------------
+
+class TestCompositeGoalBoundary:
+    """复合目标不在 ActionResolver 输出中重复承载。"""
+
+    def test_raw_utterance_alone_does_not_change_atomic_action_boundary(self, resolver):
+        frame = _frame(
+            verb="replace",
+            topic="major",
+            raw_utterance="只保留临床医学，其他不要",
+            major_names=["临床医学"],
+        )
+        ctx = _ctx(ordered_count=30)
+        result = resolver.resolve(frame, ctx)
+        assert result.action_family == "replace_units"
+        assert result.stage == "analyze"
+        assert result.missing_inputs == ["volunteer_ids", "replacement_scope"]
+        assert "plan_goal" not in result.model_dump()
+        assert "intent_updates" not in result.model_dump()
+
+    def test_structured_plan_goal_fields_do_not_create_resolver_state_mirror(self, resolver):
+        frame = _frame(
+            verb="replace",
+            topic="major",
+            raw_utterance="只保留临床医学，其他不要",
+            plan_goal_type="only_keep_scope",
+            major_names=["临床医学"],
+            tier="稳",
+        )
+        ctx = _ctx(ordered_count=30)
+        result = resolver.resolve(frame, ctx)
+        assert result.action_family == "replace_units"
+        assert result.stage == "analyze"
+        assert result.missing_inputs == ["volunteer_ids"]
+        assert "plan_goal" not in result.model_dump()
+        assert "intent_updates" not in result.model_dump()
+
+    def test_constraint_intent_type_does_not_bypass_action_confirmation_boundary(self, resolver):
+        frame = _frame(
+            verb="add",
+            topic="major",
+            raw_utterance="方案里必须有临床医学",
+            constraint_intent_type="must_have",
+            major_names=["临床医学"],
+            tier="稳",
+        )
+        ctx = _ctx(ordered_count=30)
+        result = resolver.resolve(frame, ctx)
+        assert result.action_family == "add_units"
+        assert result.stage == "preview"
+        assert result.requires_confirmation is True
+        assert "plan_goal" not in result.model_dump()
+        assert "intent_updates" not in result.model_dump()
+
+    def test_exclude_goal_type_does_not_turn_into_plan_mutation_without_refs(self, resolver):
+        frame = _frame(
+            verb="remove",
+            topic="region",
+            raw_utterance="不要江苏",
+            plan_goal_type="exclude_scope",
+            region_names=["江苏"],
+        )
+        ctx = _ctx(ordered_count=30)
+        result = resolver.resolve(frame, ctx)
+        assert result.action_family == "remove_units"
+        assert result.stage == "analyze"
+        assert result.missing_inputs == ["volunteer_ids"]
+        assert "plan_goal" not in result.model_dump()
+        assert "intent_updates" not in result.model_dump()
+
+    def test_non_plan_layer_with_goal_metadata_remains_blocked_without_state_mirror(self, resolver):
+        frame = _frame(
+            verb="set_constraint",
+            task_layer="intent",
+            topic="major",
+            constraint_intent_type="only_keep",
+            major_names=["临床医学"],
+        )
+        result = resolver.resolve(frame, _ctx())
+        assert result.stage == "blocked"
+        assert "intent" in result.blocked_reason
+        assert "plan_goal" not in result.model_dump()
+        assert "intent_updates" not in result.model_dump()
 
 
 # ---------------------------------------------------------------------------
@@ -721,7 +810,7 @@ class TestEndToEndScenarios:
         ctx = _ctx(ordered_count=50, target_count=96)
         result = resolver.resolve(frame, ctx)
         assert result.action_family == "add_units"
-        assert result.normalization_applied == "preview_compensation → add_units"
+        assert result.normalization_applied == "preview_fix_proposal → add_units"
 
     def test_scenario_remove_high_tuition(self, resolver):
         """"把高收费的都去掉" → remove_units (显式删除仍保留)。"""

@@ -1652,7 +1652,7 @@ def test_execute_plan_action_remove_preview_returns_guidance_for_structural_issu
                     "scope_fingerprint": "issue-gap-1",
                     "label": "数量缺口",
                     "scope_kind": "structural",
-                    "default_action_family": "preview_compensation",
+                    "default_action_family": "preview_fix_proposal",
                 },
             }
         ],
@@ -2446,7 +2446,7 @@ def test_execute_plan_action_add_units_does_not_guess_ambiguous_candidate_alias_
 
 def test_select_candidates_by_filters_uses_major_tags_as_candidate_major_keywords_when_major_keyword_missing():
     with patch(
-        "app.handlers.compensation_handlers._get_planning_state_request",
+        "app.tools.plan_execution_tool._get_planning_state_request",
         new=AsyncMock(return_value={"code": 0, "data": {"orderedPlanState": {"summary": {}}, "draftPlanState": {"summary": {}}}}),
     ), patch(
         "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
@@ -3334,181 +3334,23 @@ def test_execute_plan_action_adjustment_analysis_uses_review_issue_examples_when
     mock_state.assert_awaited_once()
 
 
-def test_execute_plan_action_runs_compensation_preview_with_structured_facts():
+def test_execute_plan_action_rejects_legacy_compensation_action_family():
     payload = {
         "stage": "apply",
         "action_family": "preview_compensation",
         "context_summary": "阶段=reviewed；方案=45/45",
         "preview_summary": "",
         "missing_inputs": [],
-        "should_rerun_review": False,
-        "intent_relation": "unknown",
         "atomic_actions": [],
     }
 
-    with patch(
-        "app.handlers.compensation_handlers._preview_planning_compensation_request",
-        new=AsyncMock(
-            return_value={
-                "code": 0,
-                "data": {
-                    "actions": [
-                        {"summary": "补 2 个保底志愿", "volunteerIds": ["v1", "v2"]},
-                        {"summary": "替换 1 个高收费志愿", "volunteerIds": ["v3"]},
-                    ]
-                },
-            }
-        ),
-    ) as mock_preview:
-        result = asyncio.run(execute_plan_action(_ctx_with_pending("regenerate_order"), json.dumps(payload, ensure_ascii=False)))
+    result = asyncio.run(execute_plan_action(_ctx(), json.dumps(payload, ensure_ascii=False)))
 
     data = json.loads(result)
     assert data["applied"] is False
-    assert data["result_kind"] == "compensation_preview"
-    assert data["workspace_refresh_targets"] == []
-    assert data["review_rerun"] is False
-    assert "当前可先看的补齐建议共有 2 项动作，预计补入 3 个志愿" in data["summary"]
-    assert data["facts"]["action_count"] == 2
-    assert data["facts"]["estimated_fill_count"] == 3
-    assert data["facts"]["estimated_volunteer_count"] == 3
-    assert data["facts"]["action_summaries"] == ["补 2 个保底志愿", "替换 1 个高收费志愿"]
-    assert data["next_step_hints"]
-    mock_preview.assert_awaited_once()
-
-
-def test_execute_plan_action_routes_preview_stage_compensation_to_handler_without_stage_rewrite():
-    payload = {
-        "stage": "preview",
-        "action_family": "preview_compensation",
-        "context_summary": "阶段=reviewed；方案=45/45",
-        "preview_summary": "先看调稳补齐建议",
-        "missing_inputs": [],
-        "should_rerun_review": False,
-        "intent_relation": "unknown",
-        "atomic_actions": [],
-    }
-
-    with patch(
-        "app.handlers.compensation_handlers._preview_planning_compensation_request",
-        new=AsyncMock(
-            return_value={
-                "code": 0,
-                "data": {
-                    "actions": [
-                        {"summary": "补 2 个保底志愿", "volunteerIds": ["v1", "v2"]},
-                    ]
-                },
-            }
-        ),
-    ) as mock_preview:
-        result = asyncio.run(execute_plan_action(_ctx_with_pending("regenerate_order"), json.dumps(payload, ensure_ascii=False)))
-
-    data = json.loads(result)
-    assert data["stage"] == "preview"
-    assert data["result_kind"] == "compensation_preview"
     assert data["action_family"] == "preview_compensation"
-    assert "当前可先看的补齐建议共有 1 项动作" in data["summary"]
-    mock_preview.assert_awaited_once()
-
-
-def test_execute_plan_action_empty_compensation_preview_explains_no_actionable_preview():
-    payload = {
-        "stage": "preview",
-        "action_family": "preview_compensation",
-        "context_summary": "阶段=reviewed；方案=94/96",
-        "preview_summary": "调稳一点",
-        "missing_inputs": [],
-        "should_rerun_review": False,
-        "intent_relation": "unknown",
-        "atomic_actions": [],
-    }
-
-    with patch(
-        "app.handlers.compensation_handlers._preview_planning_compensation_request",
-        new=AsyncMock(return_value={"code": 0, "data": {"actions": []}}),
-    ) as mock_preview:
-        result = asyncio.run(execute_plan_action(_ctx_with_pending("regenerate_order"), json.dumps(payload, ensure_ascii=False)))
-
-    data = json.loads(result)
-    assert data["result_kind"] == "compensation_preview"
-    assert "没有拿到可直接执行的调稳补齐预览" in data["summary"]
-    assert "不会改动方案" in data["summary"]
-    assert "替换高风险志愿" in data["summary"]
-    assert "empty_compensation_preview" in data["reply_focus"]
-    assert data["facts"]["action_count"] == 0
-    mock_preview.assert_awaited_once()
-
-
-def test_execute_plan_action_empty_compensation_preview_includes_adjustment_fallback():
-    payload = {
-        "stage": "preview",
-        "action_family": "preview_compensation",
-        "context_summary": "阶段=reviewed；方案=94/96",
-        "preview_summary": "调稳一点",
-        "missing_inputs": [],
-        "should_rerun_review": False,
-        "intent_relation": "unknown",
-        "atomic_actions": [],
-    }
-
-    with patch(
-        "app.handlers.compensation_handlers._preview_planning_compensation_request",
-        new=AsyncMock(return_value={"code": 0, "data": {"actions": []}}),
-    ) as mock_preview, patch(
-        "app.handlers.compensation_handlers._analyze_planning_plan_adjustment_request",
-        new=AsyncMock(
-            return_value={
-                "code": 0,
-                "data": {
-                    "analysis": {
-                        "summaryText": "当前排序存在录取概率倒挂；当前录取概率梯度存在断层",
-                        "rules": [
-                            {
-                                "hit": True,
-                                "summary": "当前排序存在录取概率倒挂",
-                                "suggestionTypes": ["reorder"],
-                            },
-                        ],
-                    },
-                    "suggestions": {
-                        "addSuggestions": [],
-                        "reorderSuggestions": [
-                            {
-                                "title": "调整相邻志愿顺序",
-                                "description": "建议检查相邻志愿顺序，确认是否符合个人真实意向。",
-                                "orderedVolunteerIds": ["v2", "v1"],
-                            }
-                        ],
-                        "replaceSuggestions": [
-                            {
-                                "title": "替换断层边界志愿",
-                                "description": "当前录取概率梯度存在断层",
-                                "removeVolunteerIds": ["v1"],
-                                "candidateVolunteerIds": ["v3"],
-                            }
-                        ],
-                        "removeSuggestions": [],
-                    },
-                },
-            }
-        ),
-    ) as mock_adjust, patch(
-        "app.handlers.compensation_handlers._get_planning_state_with_latest_profile",
-        new=AsyncMock(return_value={"orderedPlanState": {"items": []}, "draftPlanState": {"items": []}}),
-    ) as mock_state:
-        result = asyncio.run(execute_plan_action(_ctx_with_pending("regenerate_order"), json.dumps(payload, ensure_ascii=False)))
-
-    data = json.loads(result)
-    assert data["result_kind"] == "compensation_preview"
-    assert "没有拿到可直接补入的志愿" in data["summary"]
-    assert "当前排序存在录取概率倒挂" in data["summary"]
-    assert "调序 1 条" in data["summary"]
-    assert "替换 1 条" in data["summary"]
-    assert "adjustment_fallback" in data["reply_focus"]
-    assert data["facts"]["adjustment_fallback"]["has_actionable_suggestions"] is True
-    mock_preview.assert_awaited_once()
-    mock_adjust.assert_awaited_once()
-    mock_state.assert_awaited_once()
+    assert data["result_kind"] == "error"
+    assert "missing_plan_payload" in data["reply_focus"]
 
 
 def test_execute_plan_action_routes_preview_stage_adjustment_analysis_to_handler():
@@ -3557,216 +3399,23 @@ def test_execute_plan_action_routes_preview_stage_adjustment_analysis_to_handler
     mock_state.assert_awaited_once()
 
 
-def test_execute_plan_action_runs_compensation_preview_counts_major_group_units():
-    payload = {
-        "stage": "apply",
-        "action_family": "preview_compensation",
-        "context_summary": "阶段=reviewed；方案=28/30",
-        "preview_summary": "",
-        "missing_inputs": [],
-        "should_rerun_review": False,
-        "intent_relation": "unknown",
-        "atomic_actions": [],
-    }
-
-    with patch(
-        "app.handlers.compensation_handlers._preview_planning_compensation_request",
-        new=AsyncMock(
-            return_value={
-                "code": 0,
-                "data": {
-                    "actions": [
-                        {
-                            "summary": "补足志愿总数量",
-                            "unitIds": ["u1", "u2"],
-                            "volunteerIds": ["u1_m1", "u2_m1", "u2_m2"],
-                        }
-                    ]
-                },
-            }
-        ),
-    ) as mock_preview:
-        result = asyncio.run(execute_plan_action(_ctx_with_pending("apply_compensation"), json.dumps(payload, ensure_ascii=False)))
-
-    data = json.loads(result)
-    assert data["result_kind"] == "compensation_preview"
-    assert "当前可先看的补齐建议共有 1 项动作，预计补入 2 个志愿" in data["summary"]
-    assert data["facts"]["estimated_fill_count"] == 2
-    assert data["facts"]["estimated_volunteer_count"] == 3
-    mock_preview.assert_awaited_once()
-
-
-def test_execute_plan_action_blocks_compensation_apply_when_plan_is_already_full():
-    payload = {
-        "stage": "apply",
-        "action_family": "apply_compensation",
-        "context_summary": "阶段=reviewed；方案=45/45",
-        "preview_summary": "",
-        "missing_inputs": [],
-        "should_rerun_review": True,
-        "intent_relation": "mixed",
-        "atomic_actions": [],
-    }
-
-    with patch(
-        "app.handlers.compensation_handlers._get_planning_state_request",
-        new=AsyncMock(
-            return_value={
-                "code": 0,
-                "data": {
-                    "draftPlanState": {"summary": {"unitTotal": 45, "targetUnitCount": 45}},
-                    "orderedPlanState": {"summary": {"unitTotal": 45, "targetUnitCount": 45}},
-                },
-            }
-        ),
-    ), patch(
-        "app.handlers.compensation_handlers._preview_planning_compensation_request",
-        new=AsyncMock(
-            return_value={
-                "code": 0,
-                "data": {"actions": [{"summary": "补充梯度断层区间的候选", "volunteerIds": ["v1", "v2"]}]},
-            }
-        ),
-    ), patch(
-        "app.handlers.compensation_handlers._apply_planning_compensation_request",
-        new=AsyncMock(return_value={"code": 0, "data": {}}),
-    ) as mock_apply, patch(
-        "app.tools.plan_execution_tool.run_planning_review",
-        new=AsyncMock(return_value="should not review"),
-    ) as mock_review:
-        result = asyncio.run(execute_plan_action(_ctx_with_pending("apply_compensation"), json.dumps(payload, ensure_ascii=False)))
-
-    data = json.loads(result)
-    assert data["applied"] is False
-    assert data["result_kind"] == "error"
-    assert data["workspace_refresh_targets"] == []
-    assert "已经达到目标数量 45/45" in data["summary"]
-    assert "直接应用会超过目标数量" in data["summary"]
-    assert "blocked_over_target" in data["reply_focus"]
-    mock_apply.assert_not_awaited()
-    mock_review.assert_not_awaited()
-
-
-def test_execute_plan_action_blocks_compensation_apply_when_estimated_fill_exceeds_remaining_gap():
-    payload = {
-        "stage": "apply",
-        "action_family": "apply_compensation",
-        "context_summary": "阶段=reviewed；方案=44/45",
-        "preview_summary": "",
-        "missing_inputs": [],
-        "should_rerun_review": True,
-        "intent_relation": "mixed",
-        "atomic_actions": [],
-    }
-
-    with patch(
-        "app.handlers.compensation_handlers._get_planning_state_request",
-        new=AsyncMock(
-            return_value={
-                "code": 0,
-                "data": {
-                    "draftPlanState": {"summary": {"unitTotal": 44, "targetUnitCount": 45}},
-                    "orderedPlanState": {"summary": {"unitTotal": 44, "targetUnitCount": 45}},
-                },
-            }
-        ),
-    ), patch(
-        "app.handlers.compensation_handlers._preview_planning_compensation_request",
-        new=AsyncMock(
-            return_value={
-                "code": 0,
-                "data": {"actions": [
-                    {"summary": "补足志愿总数量", "volunteerIds": ["v1"]},
-                    {"summary": "补充梯度断层区间的候选", "volunteerIds": ["v2", "v3", "v4"]},
-                ]},
-            }
-        ),
-    ), patch(
-        "app.handlers.compensation_handlers._apply_planning_compensation_request",
-        new=AsyncMock(return_value={"code": 0, "data": {}}),
-    ) as mock_apply:
-        result = asyncio.run(execute_plan_action(_ctx_with_pending("apply_compensation"), json.dumps(payload, ensure_ascii=False)))
-
-    data = json.loads(result)
-    assert data["applied"] is False
-    assert data["result_kind"] == "error"
-    assert "距离目标数量还差 1 个" in data["summary"]
-    assert "预计会再补入 4 个志愿" in data["summary"]
-    assert "直接应用会超过目标数量" in data["summary"]
-    mock_apply.assert_not_awaited()
-
-
-def test_execute_plan_action_allows_major_group_compensation_apply_when_unit_gap_matches():
+def test_execute_plan_action_rejects_legacy_compensation_apply_action_family():
     payload = {
         "stage": "apply",
         "action_family": "apply_compensation",
         "context_summary": "阶段=reviewed；方案=28/30",
         "preview_summary": "",
         "missing_inputs": [],
-        "should_rerun_review": True,
-        "intent_relation": "mixed",
         "atomic_actions": [],
     }
 
-    with patch(
-        "app.handlers.compensation_handlers._get_planning_state_request",
-        new=AsyncMock(
-            return_value={
-                "code": 0,
-                "data": {
-                    "draftPlanState": {"summary": {"unitTotal": 28, "targetUnitCount": 30}},
-                    "orderedPlanState": {"summary": {"unitTotal": 28, "targetUnitCount": 30}},
-                },
-            }
-        ),
-    ), patch(
-        "app.handlers.compensation_handlers._preview_planning_compensation_request",
-        new=AsyncMock(
-            return_value={
-                "code": 0,
-                "data": {
-                    "actions": [
-                        {
-                            "summary": "补足志愿总数量",
-                            "unitIds": ["u1", "u2"],
-                            "volunteerIds": ["u1_m1", "u2_m1", "u2_m2"],
-                        }
-                    ]
-                },
-            }
-        ),
-    ), patch(
-        "app.handlers.compensation_handlers._apply_planning_compensation_request",
-        new=AsyncMock(
-            return_value={
-                "code": 0,
-                "data": {
-                    "draftPlanState": {"summary": {"unitTotal": 30, "targetUnitCount": 30}},
-                },
-            }
-        ),
-    ) as mock_apply, patch(
-        "app.tools.plan_execution_tool._refresh_review_and_state",
-        new=AsyncMock(
-            return_value={
-                "orderedPlanState": {
-                    "summary": {"unitTotal": 30, "targetUnitCount": 30},
-                    "items": [
-                        {"position": 1, "schoolName": "A组", "majorName": "专业1", "tier": "冲"},
-                    ],
-                },
-                "draftPlanState": {"summary": {"unitTotal": 30, "targetUnitCount": 30}},
-                "profileState": {"explicitProfile": {"positiveMajors": ["计算机类"]}},
-            }
-        ),
-    ):
-        result = asyncio.run(execute_plan_action(_ctx_with_pending("apply_compensation"), json.dumps(payload, ensure_ascii=False)))
+    result = asyncio.run(execute_plan_action(_ctx_with_pending("apply_compensation"), json.dumps(payload, ensure_ascii=False)))
 
     data = json.loads(result)
-    assert data["applied"] is True
-    assert data["result_kind"] == "mutation_result"
-    assert "系统已完成当前可安全补偿的志愿补入" in data["summary"]
-    mock_apply.assert_awaited_once()
+    assert data["applied"] is False
+    assert data["action_family"] == "apply_compensation"
+    assert data["result_kind"] == "error"
+    assert "missing_plan_payload" in data["reply_focus"]
 
 
 def test_append_intent_relation_summary_uses_major_group_unit_count():
@@ -3807,86 +3456,7 @@ def test_append_intent_relation_summary_uses_major_group_unit_count():
         },
     )
 
-    assert "当前方案里较贴近的有2个，明显冲突的有0个" in text
-
-
-def test_execute_plan_action_blocks_compensation_apply_when_preview_has_no_actionable_candidates():
-    payload = {
-        "stage": "apply",
-        "action_family": "apply_compensation",
-        "context_summary": "阶段=reviewed；方案=47/45",
-        "preview_summary": "",
-        "missing_inputs": [],
-        "should_rerun_review": True,
-        "intent_relation": "mixed",
-        "atomic_actions": [],
-    }
-
-    with patch(
-        "app.handlers.compensation_handlers._get_planning_state_request",
-        new=AsyncMock(
-            return_value={
-                "code": 0,
-                "data": {
-                    "draftPlanState": {"summary": {"unitTotal": 47, "targetUnitCount": 45}},
-                    "orderedPlanState": {"summary": {"unitTotal": 47, "targetUnitCount": 45}},
-                },
-            }
-        ),
-    ), patch(
-        "app.handlers.compensation_handlers._preview_planning_compensation_request",
-        new=AsyncMock(return_value={"code": 0, "data": {"actions": []}}),
-    ), patch(
-        "app.handlers.compensation_handlers._apply_planning_compensation_request",
-        new=AsyncMock(return_value={"code": 0, "data": {}}),
-    ) as mock_apply:
-        result = asyncio.run(execute_plan_action(_ctx_with_pending("apply_compensation"), json.dumps(payload, ensure_ascii=False)))
-
-    data = json.loads(result)
-    assert data["applied"] is False
-    assert data["result_kind"] == "error"
-    assert "没有可安全补入的候选志愿" in data["summary"]
-    mock_apply.assert_not_awaited()
-
-
-def test_execute_plan_action_blocks_compensation_apply_when_plan_is_full_and_preview_has_no_actionable_candidates():
-    payload = {
-        "stage": "apply",
-        "action_family": "apply_compensation",
-        "context_summary": "阶段=reviewed；方案=30/30",
-        "preview_summary": "",
-        "missing_inputs": [],
-        "should_rerun_review": True,
-        "intent_relation": "mixed",
-        "atomic_actions": [],
-    }
-
-    with patch(
-        "app.handlers.compensation_handlers._get_planning_state_request",
-        new=AsyncMock(
-            return_value={
-                "code": 0,
-                "data": {
-                    "draftPlanState": {"summary": {"unitTotal": 30, "targetUnitCount": 30}},
-                    "orderedPlanState": {"summary": {"unitTotal": 30, "targetUnitCount": 30}},
-                },
-            }
-        ),
-    ), patch(
-        "app.handlers.compensation_handlers._preview_planning_compensation_request",
-        new=AsyncMock(return_value={"code": 0, "data": {"actions": []}}),
-    ), patch(
-        "app.handlers.compensation_handlers._apply_planning_compensation_request",
-        new=AsyncMock(return_value={"code": 0, "data": {}}),
-    ) as mock_apply:
-        result = asyncio.run(execute_plan_action(_ctx_with_pending("apply_compensation"), json.dumps(payload, ensure_ascii=False)))
-
-    data = json.loads(result)
-    assert data["applied"] is False
-    assert data["result_kind"] == "error"
-    assert "没有可安全补入的候选志愿" in data["summary"]
-    assert "超量志愿" not in data["summary"]
-    mock_apply.assert_not_awaited()
+    assert "当前方案里较贴近的有2个，没有看到明显冲突" in text
 
 
 def test_execute_plan_action_runs_review_without_duplicate_rerun():
@@ -4169,10 +3739,11 @@ def test_execute_plan_action_review_reply_includes_backend_fix_proposals():
     data = json.loads(result)
     assert data["result_kind"] == "review_result"
     assert "### 可处理方向" in data["summary"]
-    assert "修复高收费" in data["summary"]
-    assert "已有预览，暂不自动执行" in data["summary"]
+    assert "处理高收费" in data["summary"]
+    assert "先作为处理方向参考" in data["summary"]
+    assert "暂不能自动处理" not in data["summary"]
     assert "优先看替换" in data["summary"]
-    assert "当前可用于规划的候选池里" in data["summary"]
+    assert "当前可用于规划的可选范围里" in data["summary"]
     assert "断层中间录取率候选不足" in data["summary"]
     assert "暂时无法补齐录取率梯度" in data["summary"]
     assert "fix_proposals" in data["reply_focus"]
@@ -4181,6 +3752,150 @@ def test_execute_plan_action_review_reply_includes_backend_fix_proposals():
         "probability_gap_candidate_insufficient"
     ]
     assert data["facts"]["fix_proposals"]["proposals"][1]["candidate_shortages"][0]["scope"] == "candidate_pool"
+
+
+def test_execute_plan_action_review_plan_does_not_apply_ready_fix_proposal():
+    payload = {
+        "stage": "review",
+        "action_family": "review_plan",
+        "context_summary": "阶段=reviewed；方案=45/45",
+        "preview_summary": "",
+        "missing_inputs": [],
+        "atomic_actions": [],
+    }
+
+    with patch(
+        "app.handlers.analysis_handlers._run_planning_review_request",
+        new=AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "summary": {"riskCount": 1, "warnCount": 0, "passedCount": 8},
+                    "checks": [
+                        {
+                            "code": "high_tuition",
+                            "passed": False,
+                            "summary": "当前方案包含高收费专业",
+                            "affectedVolunteerIds": ["v-cost-1"],
+                        },
+                    ],
+                },
+            }
+        ),
+    ) as mock_review, patch(
+        "app.handlers.analysis_handlers._generate_planning_fix_proposals_request",
+        new=AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "status": "ready",
+                    "sourceVersionGuard": 12,
+                    "total": 1,
+                    "proposals": [
+                        {
+                            "proposalId": "fp_ready",
+                            "title": "处理高收费",
+                            "status": "ready",
+                            "strategy": "replace_risk_items",
+                            "sourceCheckCodes": ["high_tuition"],
+                            "requiresConfirmation": True,
+                            "summary": "建议替换高收费志愿。",
+                            "actions": [
+                                {
+                                    "actionType": "replace_volunteers",
+                                    "summary": "替换高收费志愿",
+                                    "replacementPairs": [
+                                        {"fromVolunteerId": "v-cost-1", "toVolunteerId": "v-safe-1"}
+                                    ],
+                                }
+                            ],
+                            "dryRunResult": {"removeVolunteerCount": 1, "addVolunteerCount": 1},
+                        }
+                    ],
+                },
+            }
+        ),
+    ) as mock_generate, patch(
+        "app.handlers.analysis_handlers._get_planning_state_with_latest_profile",
+        new=AsyncMock(
+            return_value={
+                "orderedPlanState": {"summary": {"unitTotal": 45, "targetUnitCount": 45}, "items": []},
+                "draftPlanState": {"items": []},
+            }
+        ),
+    ), patch(
+        "app.handlers.analysis_handlers._get_planning_ordered_plan_request",
+        new=AsyncMock(return_value={"code": 0, "data": {"summary": {}, "items": []}}),
+    ):
+        result = asyncio.run(execute_plan_action(_ctx_with_pending("review_plan"), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["result_kind"] == "review_result"
+    assert data["applied"] is True
+    assert data["workspace_refresh_targets"] == ["review"]
+    assert "fix_proposals" in data["facts"]
+    assert data["facts"]["fix_proposals"]["proposals"][0]["status"] == "ready"
+    assert "repair_report" not in data["facts"]
+    assert data["executed_actions"] == [{"action": "review_plan"}]
+    mock_review.assert_awaited_once()
+    mock_generate.assert_awaited_once()
+
+
+def test_execute_plan_action_runs_fix_proposal_preview():
+    payload = {
+        "stage": "apply",
+        "action_family": "preview_fix_proposal",
+        "context_summary": "阶段=reviewed；方案=45/45",
+        "preview_summary": "",
+        "missing_inputs": [],
+        "atomic_actions": [],
+    }
+
+    with patch(
+        "app.handlers.fix_proposal_handlers._generate_planning_fix_proposals_request",
+        new=AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "status": "ready",
+                    "sourceVersionGuard": 12,
+                    "total": 1,
+                    "proposals": [
+                        {
+                            "proposalId": "fp_ready",
+                            "title": "处理高收费",
+                            "status": "ready",
+                            "strategy": "replace_risk_items",
+                            "sourceCheckCodes": ["high_tuition"],
+                            "requiresConfirmation": True,
+                            "summary": "建议替换高收费志愿。",
+                            "actions": [
+                                {
+                                    "actionType": "replace_volunteers",
+                                    "summary": "替换高收费志愿",
+                                    "replacementPairs": [
+                                        {"fromVolunteerId": "v-cost-1", "toVolunteerId": "v-safe-1"}
+                                    ],
+                                }
+                            ],
+                            "dryRunResult": {"removeVolunteerCount": 1, "addVolunteerCount": 1},
+                        }
+                    ],
+                },
+            }
+        ),
+    ) as mock_fix:
+        result = asyncio.run(execute_plan_action(_ctx(), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["applied"] is False
+    assert data["action_family"] == "preview_fix_proposal"
+    assert data["result_kind"] == "fix_proposal_preview"
+    assert "fix_proposal_preview" in data["reply_focus"]
+    assert "ready_fix_proposals" in data["reply_focus"]
+    assert data["facts"]["fix_proposals"]["proposals"][0]["proposal_id"] == "fp_ready"
+    assert "处理高收费" in data["summary"]
+    mock_fix.assert_awaited_once()
 
 
 def test_execute_plan_action_remembers_recent_result_for_timeout_fallback():
@@ -4424,6 +4139,64 @@ def test_execute_plan_action_replace_high_tuition_preview_counts_only_filtered_c
     assert data["applied"] is False
     assert data["result_kind"] == "error"
     assert "只找到 1 个可补入候选" in data["summary"]
+
+
+def test_execute_plan_action_replace_broad_high_tuition_without_scope_does_not_create_empty_preview():
+    payload = {
+        "stage": "analyze",
+        "action_family": "replace_units",
+        "user_goal": "把高收费的都换掉",
+        "context_summary": "阶段=reviewed；方案=45/45",
+        "missing_inputs": ["replacement_scope"],
+        "review_issue_code": "high_tuition",
+        "review_issue_scope_mode": "full_issue",
+        "atomic_actions": [
+            {
+                "action_type": "replace_units",
+                "volunteer_ids": [],
+                "filters": {},
+                "reason": "把高收费的都换掉",
+                "review_issue_target": {
+                    "code": "high_tuition",
+                    "scope_mode": "full_issue",
+                },
+            }
+        ],
+    }
+    ordered_items = [
+        {"position": 1, "volunteerId": "u1_a", "schoolName": "A大学(01)", "majorName": "会计学(中外合作办学)", "tier": "稳"},
+        {"position": 2, "volunteerId": "u1_b", "schoolName": "A大学(01)", "majorName": "金融学(国际班)", "tier": "稳"},
+    ]
+    planning_state = {
+        "reviewState": {
+            "checks": [
+                {
+                    "code": "high_tuition",
+                    "passed": False,
+                    "summary": "当前方案包含高收费专业",
+                    "affectedVolunteerIds": ["u1_a", "u1_b"],
+                }
+            ]
+        }
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
+        new=AsyncMock(return_value={"code": 0, "data": {"items": ordered_items}}),
+    ), patch(
+        "app.tools.plan_execution_tool._get_planning_state_request",
+        new=AsyncMock(return_value={"code": 0, "data": planning_state}),
+    ):
+        result = asyncio.run(execute_plan_action(_ctx(), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["applied"] is False
+    assert data["result_kind"] == "preview_only"
+    assert data["reply_strategy"] == "continue_model"
+    assert "review_issue_guidance" in data["reply_focus"]
+    assert "共 1 个专业组，涉及 2 条志愿" in data["summary"]
+    assert "当前阶段仅分析或预览" not in data["summary"]
+    assert "系统阻塞" not in data["summary"]
 
 
 def test_execute_plan_action_remove_preview_accepts_flat_review_issue_code():

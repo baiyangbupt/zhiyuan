@@ -359,7 +359,7 @@ public class RepairDryRunSimulatorTest {
         RepairDryRunSimulator.populate(state, proposal, new ReviewCheckDTO());
 
         assertTrue(proposal.getDryRunResult().getWarnings().stream()
-                .anyMatch(warning -> warning.contains("硬性要求") && warning.contains("江苏")));
+                .anyMatch(warning -> warning.contains("已确认的报考条件") && warning.contains("江苏")));
         assertTrue(proposal.getDryRunResult().getWarnings().stream()
                 .anyMatch(warning -> warning.contains("不优先方向") && warning.contains("会计")));
     }
@@ -388,7 +388,7 @@ public class RepairDryRunSimulatorTest {
         RepairDryRunSimulator.populate(state, proposal, new ReviewCheckDTO());
 
         assertTrue(proposal.getDryRunResult().getWarnings().stream()
-                .anyMatch(warning -> warning.contains("硬性要求命中项") && warning.contains("南京大学")));
+                .anyMatch(warning -> warning.contains("已确认报考条件命中") && warning.contains("南京大学")));
         assertTrue(proposal.getDryRunResult().getWarnings().stream()
                 .anyMatch(warning -> warning.contains("偏好命中项") && warning.contains("法学")));
     }

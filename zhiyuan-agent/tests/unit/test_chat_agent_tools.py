@@ -46,6 +46,34 @@ class TestChatAgentToolRegistration:
         assert agent.get_progress_hint("search_official_admission_sources") == "正在检索官方报考政策和招生信息..."
         assert agent.get_progress_hint("match_admission_rule_to_student") == "正在把招生规则和学生情况逐项匹配..."
 
+    def test_integrated_interest_profile_progress_hint_is_registered(self):
+        agent_mock = MagicMock()
+        with patch("app.llm.client.OpenAIChatModel", return_value=MagicMock()), patch(
+            "app.llm.client.OpenAIProvider", return_value=MagicMock()
+        ), patch("app.agent.base_agent.Agent", return_value=agent_mock):
+            from app.config import LLMConfig
+            from app.llm.client import LLMClient
+            from app.agent.chat_agent import ChatAgent
+
+            config = LLMConfig(provider="openai", api_key="sk-test")
+            client = LLMClient(config)
+            agent = ChatAgent(client)
+
+        assert agent.get_progress_hint("analyze_current_interest_profile") == "正在综合你的兴趣和职业期待做分析..."
+
+    def test_chat_agent_exposes_fix_proposal_preview_but_not_apply_tool(self):
+        with patch("app.agent.base_agent.Agent", return_value=MagicMock()):
+            from app.agent.chat_agent import ChatAgent
+            from app.llm.client import LLMClient
+
+            client = MagicMock(spec=LLMClient)
+            client.model = TestModel()
+            client.model_settings = {}
+            agent = ChatAgent(client)
+
+        assert "generate_planning_fix_proposals" in agent._registered_tool_names
+        assert "apply_planning_fix_proposal" not in agent._registered_tool_names
+
     def test_execute_plan_action_progress_hint_uses_structured_preview_args(self):
         agent_mock = MagicMock()
         with patch("app.llm.client.OpenAIChatModel", return_value=MagicMock()), patch(
@@ -146,6 +174,13 @@ class TestChatAgentToolRegistration:
         assert "major_intents" in schema["properties"]
         major_ref = schema["properties"]["major_intents"]["anyOf"][0]["$ref"]
         assert major_ref.endswith("MajorIntentPreviewInput")
+
+    def test_integrated_interest_profile_tool_schema_is_argument_free(self):
+        from app.tools.intent_preview_tool import analyze_current_interest_profile
+
+        schema = Tool(analyze_current_interest_profile).function_schema.json_schema
+
+        assert schema["properties"] == {}
 
     def test_career_direction_tool_schema_exposes_direction_slot_enum(self):
         from app.tools.intent_preview_tool import analyze_current_career_direction
@@ -622,7 +657,7 @@ class TestChatAgentToolRegistration:
 
         assert agent.should_return_directly_from_tool(["query_volunteer_plan"], tool_returns, None) is False
 
-    def test_chat_agent_direct_returns_compensation_preview(self):
+    def test_chat_agent_keeps_fix_proposal_preview_for_model_summary(self):
         with patch("app.agent.base_agent.Agent", return_value=MagicMock()):
             from pydantic_ai.messages import ToolReturnPart
 
@@ -638,19 +673,15 @@ class TestChatAgentToolRegistration:
             ToolReturnPart(
                 tool_name="execute_plan_action",
                 content=(
-                    '{"result_kind":"compensation_preview",'
-                    '"summary":"当前可先看的补齐建议共有 1 项动作，预计补入 2 个志愿。",'
-                    '"reply_focus":["compensation_preview"]}'
+                    '{"action_family":"preview_fix_proposal","result_kind":"fix_proposal_preview",'
+                    '"summary":"已生成当前方案的调整预览：可确认后执行 1 项。",'
+                    '"reply_focus":["fix_proposal_preview","ready_fix_proposals"]}'
                 ),
-                tool_call_id="compensation-preview-direct",
+                tool_call_id="fix-proposal-preview-direct",
             )
         ]
 
-        assert agent.should_return_directly_from_tool(["execute_plan_action"], tool_returns, None) is True
-        assert (
-            agent.render_direct_tool_output(["execute_plan_action"], tool_returns, None)
-            == "当前可先看的补齐建议共有 1 项动作，预计补入 2 个志愿。"
-        )
+        assert agent.should_return_directly_from_tool(["execute_plan_action"], tool_returns, None) is False
 
     def test_chat_agent_direct_returns_sort_ordered_plan_preview(self):
         with patch("app.agent.base_agent.Agent", return_value=MagicMock()):
@@ -682,7 +713,7 @@ class TestChatAgentToolRegistration:
             == "会按推荐系数重新排序当前方案，推荐系数高的排在前面。需要你确认后才会执行。"
         )
 
-    def test_chat_agent_keeps_empty_compensation_preview_for_model_summary(self):
+    def test_chat_agent_keeps_empty_fix_proposal_preview_for_model_summary(self):
         with patch("app.agent.base_agent.Agent", return_value=MagicMock()):
             from pydantic_ai.messages import ToolReturnPart
 
@@ -698,11 +729,11 @@ class TestChatAgentToolRegistration:
             ToolReturnPart(
                 tool_name="execute_plan_action",
                 content=(
-                    '{"result_kind":"compensation_preview",'
-                    '"summary":"这轮没有拿到可直接执行的调稳补齐预览。",'
-                    '"reply_focus":["compensation_preview","empty_compensation_preview"]}'
+                    '{"action_family":"preview_fix_proposal","result_kind":"fix_proposal_preview",'
+                    '"summary":"已查看当前方案的可处理建议，暂时没有需要自动处理的项目。",'
+                    '"reply_focus":["fix_proposal_preview","empty_fix_proposal_preview"]}'
                 ),
-                tool_call_id="empty-compensation-preview",
+                tool_call_id="empty-fix-proposal-preview",
             )
         ]
 
@@ -1492,66 +1523,6 @@ class TestChatAgentToolRegistration:
         assert "会计学" in result
         assert "土木工程" in result
         assert recorded == ["preview_current_major_intent_confirmation"]
-
-    def test_chat_agent_intent_confirmation_updates_state_without_repreviewing_intent(self):
-        recorded: list[str] = []
-
-        async def fake_update_volunteer_intent_state(
-            ctx: RunContext,
-            action: str,
-        ) -> str:
-            recorded.append(f"update_volunteer_intent_state:{action}:{ctx.deps.sessionid}")
-            return '{"status":"updated","message":"好的，我已经把网络与新媒体记成后续偏好。"}'
-
-        async def fake_analyze_volunteer_intent_change(
-            ctx: RunContext,
-            major_intents=None,
-            school_intents=None,
-            city_intents=None,
-            edit_flag=None,
-            analysis_stage="confirmed",
-            career_intents=None,
-            recovery_scope=None,
-            confirm_enabled=True,
-            intent_mode=None,
-        ) -> str:
-            recorded.append("analyze_volunteer_intent_change")
-            return "should not be called"
-
-        with patch("app.agent.base_agent.SkillsToolset", None):
-            from app.agent.base_agent import BaseAgent
-            from app.agent.context import RequestContext
-            from app.agent.instructions.assembler import build_instructions as _build_instructions
-            from app.llm.client import LLMClient
-
-            client = LLMClient.__new__(LLMClient)
-            client.model = TestModel(call_tools=["fake_update_volunteer_intent_state"])
-            client.model_settings = {}
-            client.model.gen_tool_args = MagicMock(return_value={"action": "confirm"})
-
-            agent = BaseAgent(
-                llm_client=client,
-                instructions=_build_instructions,
-                output_type=str,
-                tools=[fake_update_volunteer_intent_state, fake_analyze_volunteer_intent_change],
-                deps_type=RequestContext,
-            )
-            result = asyncio.run(
-                agent.run(
-                    "确认",
-                    deps=RequestContext(
-                        userid="u1",
-                        sessionid="intent-confirm-1",
-                        chat_history=[
-                            {"role": "user", "content": "那就把网络与新媒体记成偏好"},
-                            {"role": "assistant", "content": "可以，我会先等你确认是否把它纳入后续偏好。"},
-                        ],
-                    ),
-                )
-            )
-
-        assert "网络与新媒体" in result
-        assert recorded == ["update_volunteer_intent_state:confirm:intent-confirm-1"]
 
     def test_chat_agent_confirmed_negative_career_followup_conflict_question_uses_plan_chain(self):
         recorded: list[str] = []

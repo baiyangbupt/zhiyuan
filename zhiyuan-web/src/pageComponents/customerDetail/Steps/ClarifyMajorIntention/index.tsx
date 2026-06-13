@@ -291,26 +291,30 @@ const ClarifyMajorIntention = (props: ICollectflowProps) => {
       subjectType,
       batch,
     };
-    const res = await getMajorRecommendApi(tenantId, params);
-    if (res.code === 0 && res.data?.length) {
-      const field = stepsData?.subSteps
-        .find(item => item.subStepId === 'major_preference_step1')
-        ?.formConfig?.fields?.find(item => item.fieldId === 'preferredMajors');
-      const rawData = (getMajorsByBatchLevel(field) || []) as any[];
-      const initialSelected = mapSelectedMajors(rawData, res.data);
-      
-      // 保存系统推荐的快照（深拷贝）
-      const snapshot = JSON.parse(JSON.stringify(initialSelected));
-      setRecommendedMajorsSnapshot(snapshot);
+    try {
+      const res = await getMajorRecommendApi(tenantId, params);
+      if (res.code === 0 && res.data?.length) {
+        const field = stepsData?.subSteps
+          .find(item => item.subStepId === 'major_preference_step1')
+          ?.formConfig?.fields?.find(item => item.fieldId === 'preferredMajors');
+        const rawData = (getMajorsByBatchLevel(field) || []) as any[];
+        const initialSelected = mapSelectedMajors(rawData, res.data);
 
-      if (!hasSavedPreferredMajors) {
-        setSelectedMajors(initialSelected);
-        setIsRecommendationApplied(true);
+        // 保存系统推荐的快照（深拷贝）
+        const snapshot = JSON.parse(JSON.stringify(initialSelected));
+        setRecommendedMajorsSnapshot(snapshot);
 
-        // ✅ 同步禁用非意向专业选项
-        const allSelected = Object.values(initialSelected).flat();
-        setDisabledUnacceptableMajors(allSelected.map(m => m.majorSubId));
+        if (!hasSavedPreferredMajors) {
+          setSelectedMajors(initialSelected);
+          setIsRecommendationApplied(true);
+
+          // ✅ 同步禁用非意向专业选项
+          const allSelected = Object.values(initialSelected).flat();
+          setDisabledUnacceptableMajors(allSelected.map(m => m.majorSubId));
+        }
       }
+    } catch (error) {
+      return;
     }
   };
 

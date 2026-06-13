@@ -60,8 +60,7 @@ class TestRegistry:
             "query_candidates",
             "review_plan",
             "analyze_adjustment",
-            "preview_compensation",
-            "apply_compensation",
+            "preview_fix_proposal",
             "generate_plan",
             "add_units",
             "remove_units",
@@ -86,8 +85,8 @@ class TestHandlerPackageImports:
     def test_import_analysis_handlers(self):
         import app.handlers.analysis_handlers  # noqa: F401
 
-    def test_import_compensation_handlers(self):
-        import app.handlers.compensation_handlers  # noqa: F401
+    def test_import_fix_proposal_handlers(self):
+        import app.handlers.fix_proposal_handlers  # noqa: F401
 
     def test_import_generate_handler(self):
         import app.handlers.generate_handler  # noqa: F401

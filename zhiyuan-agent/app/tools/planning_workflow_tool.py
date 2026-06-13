@@ -1,6 +1,6 @@
 """Planning workflow tools.
 
-按需读取 backend 的 planning review / compensation 结果，避免将完整状态长期注入主 prompt。
+按需读取 backend 的 planning review / fix proposal 结果，避免将完整状态长期注入主 prompt。
 """
 
 from __future__ import annotations
@@ -23,7 +23,6 @@ from app.util.planning_state_compat import get_working_plan_items, get_working_p
 from app.util.internal_client import (
     analyze_planning_plan_adjustment as _analyze_planning_plan_adjustment_request,
     apply_planning_fix_proposal as _apply_planning_fix_proposal_request,
-    apply_planning_compensation as _apply_planning_compensation_request,
     ban_working_plan_items as _ban_working_plan_items_request,
     generate_planning_fix_proposals as _generate_planning_fix_proposals_request,
     generate_planning_candidate_pool as _generate_planning_candidate_pool_request,
@@ -35,7 +34,6 @@ from app.util.internal_client import (
     get_planning_ordered_plan as _get_planning_ordered_plan_request,
     get_working_plan as _get_working_plan_request,
     move_planning_ordered_item as _move_planning_ordered_item_request,
-    preview_planning_compensation as _preview_planning_compensation_request,
     remove_working_plan_items as _remove_working_plan_items_request,
     run_planning_review as _run_planning_review_request,
     select_working_plan_items as _select_working_plan_items_request,
@@ -85,6 +83,25 @@ def _sum_compensation_fill_count(actions: list[dict[str, Any]]) -> int:
             continue
         total += len(action.get("volunteerIds") or [])
     return total
+
+
+def _compensation_action_is_legacy_add(action: dict[str, Any]) -> bool:
+    if not isinstance(action, dict):
+        return False
+    if action.get("removeVolunteerIds") or action.get("removeUnitIds"):
+        return False
+    if action.get("candidateVolunteerIds") or action.get("candidateUnitIds"):
+        return False
+    if action.get("replacementPairs") or action.get("orderedVolunteerIds") or action.get("orderedUnitIds"):
+        return False
+    action_type = str(action.get("actionType") or action.get("type") or "").strip().lower()
+    if action_type and action_type not in {"add", "fill", "fill_total_count", "add_volunteers", "compensation_add"}:
+        return False
+    return bool(action.get("unitIds") or action.get("volunteerIds") or action.get("fillCount"))
+
+
+def _legacy_add_compensation_actions(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [action for action in actions if _compensation_action_is_legacy_add(action)]
 
 
 def _format_tier_counts(tier_counts: dict[str, Any]) -> str:
@@ -963,6 +980,7 @@ def _fix_proposal_facts(proposal_state: dict[str, Any] | None) -> dict[str, Any]
             actions = []
         item = {
             "proposal_id": str(proposal.get("proposalId") or "").strip(),
+            "proposal_source": str(proposal.get("proposalSource") or state.get("proposalSource") or "review_check").strip(),
             "title": title,
             "status": status,
             "strategy": strategy,
@@ -996,6 +1014,7 @@ def _fix_proposal_facts(proposal_state: dict[str, Any] | None) -> dict[str, Any]
 
     return {
         "status": str(state.get("status") or "").strip(),
+        "proposal_source": str(state.get("proposalSource") or "review_check").strip(),
         "source_version_guard": _coerce_non_negative_int(state.get("sourceVersionGuard")),
         "total": _coerce_non_negative_int(state.get("total") or len(normalized)),
         "status_counts": status_counts,
@@ -1009,11 +1028,14 @@ def _fix_proposal_facts(proposal_state: dict[str, Any] | None) -> dict[str, Any]
 
 def _build_compensation_preview_facts(preview: dict[str, Any]) -> dict[str, Any]:
     actions = preview.get("actions") or []
+    add_actions = _legacy_add_compensation_actions(actions)
     return {
         "action_count": len(actions),
         "action_summaries": _collect_action_summaries(actions),
         "estimated_fill_count": _sum_compensation_fill_count(actions),
         "estimated_volunteer_count": _sum_volunteer_ids(actions),
+        "legacy_add_action_count": len(add_actions),
+        "legacy_add_estimated_fill_count": _sum_compensation_fill_count(add_actions),
     }
 
 
@@ -1329,7 +1351,12 @@ def _build_plan_intent_relation_lines(
                 if aggregate_by_unit:
                     conflict_example_units.add(unit_id)
 
-    lines.append(f"- 承接情况：当前方案里较贴近的有{aligned_count}个，明显冲突的有{conflict_count}个。")
+    if conflict_count > 0:
+        lines.append(f"- 承接情况：当前方案里较贴近的有{aligned_count}个，明显冲突的有{conflict_count}个。")
+    elif aligned_count > 0:
+        lines.append(f"- 承接情况：当前方案里较贴近的有{aligned_count}个，没有看到明显冲突。")
+    else:
+        lines.append("- 承接情况：当前方案里暂时没看到特别贴近的志愿，也没有看到明显冲突。")
     if aligned_examples:
         lines.append(f"- 贴近偏好：{'；'.join(aligned_examples)}")
     if conflict_examples:
@@ -1376,23 +1403,10 @@ def _format_review_result(
     preview_actions = compensation_preview.get("actions") or []
     if preview_actions:
         lines.append(
-            f"- 可用补偿：{len(preview_actions)}项，主要为{'；'.join(_collect_action_summaries(preview_actions))}"
+            f"- 可参考补齐方向：{len(preview_actions)}项，主要为{'；'.join(_collect_action_summaries(preview_actions))}"
         )
 
-    lines.append("如果你想继续处理，我可以先预览补偿建议，再确认是否应用。")
-    return "\n".join(lines)
-
-
-def _format_compensation_preview(preview: dict[str, Any]) -> str:
-    actions = preview.get("actions") or []
-    if not actions:
-        return "已预览补偿建议。当前没有可安全自动补偿的候选，建议先检查现有排序或手动补充志愿。"
-
-    lines = ["已生成补偿预览。"]
-    lines.append(f"- 待执行动作：{len(actions)}项")
-    lines.append(f"- 主要补偿：{'；'.join(_collect_action_summaries(actions))}")
-    lines.append(f"- 预计补入候选：{_sum_compensation_fill_count(actions)}个")
-    lines.append("如果你明确确认执行，我可以继续应用这些补偿，并在执行后重新审查。")
+    lines.append("如果你想继续处理，我会优先按后端修复建议给出调整预览，确认前不会改动方案。")
     return "\n".join(lines)
 
 
@@ -1416,20 +1430,20 @@ def _fix_proposal_action_summary(action: dict[str, Any]) -> str:
 
 
 _FIX_PROPOSAL_BLOCKING_GUIDANCE = {
-    "candidate_pool_insufficient": "当前可用于规划的候选池里没有足够可补项，下一步只能先放宽条件或接受当前数量风险",
-    "safety_candidate_insufficient": "当前可用于规划的候选池里缺少可用保底/安全垫候选，不能直接补强安全垫",
-    "tier_candidate_insufficient": "当前可用于规划的候选池里目标冲稳保区间候选不足，暂时不能把比例直接调到目标",
-    "probability_gap_candidate_insufficient": "当前可用于规划的候选池里断层中间录取率候选不足，暂时不能补齐录取率梯度",
-    "no_sort_or_replacement_candidate": "当前缺少可重排或可替换项，不能自动修复倒挂",
-    "major_group_safety_candidate_insufficient": "专业组内缺少合适安全垫专业，不能直接移除托底项",
-    "risk_item_unresolved_or_replacement_missing": "风险条目缺少可定位明细或替换候选，需要先缩小范围",
-    "replacement_pair_missing": "当前方案已满，但没有明确一进一出的替换配对，不能只追加候选",
-    "volunteer_model_mismatch": "当前填报模式不支持这类组内修复",
-    "risk_unit_unresolved": "风险专业组没有定位清楚，需要先确认具体专业组",
-    "partial_major_group_safety_candidate_missing": "只有部分专业组找到安全垫，不能把本轮当作完整修复",
-    "risk_item_unresolved": "风险志愿明细没有定位清楚，需要先确认具体志愿",
+    "candidate_pool_insufficient": "当前可用于规划的候选里没有足够可补项，建议先放宽条件，或接受当前数量风险",
+    "safety_candidate_insufficient": "当前候选里缺少更稳的可补项，暂时不建议直接补安全垫",
+    "tier_candidate_insufficient": "当前候选里目标冲稳保区间不足，暂时不建议直接把比例调到目标",
+    "probability_gap_candidate_insufficient": "当前候选里缺少适合补在断层区间的志愿，暂时不建议直接补梯度",
+    "no_sort_or_replacement_candidate": "当前缺少更合适的重排或替换对象，建议先查看受影响志愿",
+    "major_group_safety_candidate_insufficient": "专业组内缺少更稳的可替换专业，建议先确认这些托底专业是否能接受",
+    "risk_item_unresolved_or_replacement_missing": "这类志愿还没有完整的一进一出替换方案，建议先缩小处理范围",
+    "replacement_pair_missing": "当前方案已满，但没有明确的一进一出替换配对，不建议只追加候选",
+    "volunteer_model_mismatch": "当前填报模式不支持这类组内处理",
+    "risk_unit_unresolved": "需要先确认具体专业组，再决定怎么处理",
+    "partial_major_group_safety_candidate_missing": "只有部分专业组找到了更稳的补位，不建议当作全部问题都已解决",
+    "risk_item_unresolved": "需要先确认具体志愿，再决定怎么处理",
     "safe_replacement_candidate_insufficient": "暂时没有同层次且风险更低的替换项",
-    "objective_validation_not_improved": "预览没有让本次审查目标变好，暂不应该确认应用",
+    "objective_validation_not_improved": "预览后的改善不明显，暂时不建议直接执行",
 }
 
 
@@ -1446,11 +1460,11 @@ def _fix_proposal_blocking_guidance(proposal: dict[str, Any]) -> list[str]:
             if scope == "capacity_or_replacement":
                 message = "当前不是单纯缺候选，而是缺少完整的一进一出替换配对"
             elif scope == "objective_validation":
-                message = "已有预览没有让本次审查目标变好，暂不应该确认应用"
+                message = "已有预览对这个问题改善不明显，暂时不建议直接执行"
             elif scope == "hard_constraints":
                 message = "已确认的报考条件收窄了可选范围，当前可用于补位的候选不足"
             else:
-                message = "当前可用于规划的候选池里目标候选不足"
+                message = "当前可用于规划的候选里目标候选不足"
         if not message:
             continue
         target = prioritized if scope in {"hard_constraints", "capacity_or_replacement", "objective_validation"} else fallback
@@ -1471,15 +1485,69 @@ def _fix_proposal_blocking_guidance(proposal: dict[str, Any]) -> list[str]:
     return result
 
 
+def _format_change_count_parts(remove_count: int, add_count: int) -> str:
+    parts: list[str] = []
+    if remove_count > 0:
+        parts.append(f"移除{remove_count}条")
+    if add_count > 0:
+        parts.append(f"补入{add_count}条")
+    return "、".join(parts)
+
+
+def _normalize_fix_proposal_user_line(text: str) -> str:
+    value = str(text or "").strip()
+    if not value:
+        return ""
+    return (
+        value
+        .replace("修复建议", "处理建议")
+        .replace("修复预览", "处理预览")
+        .replace("修复方案", "处理方案")
+        .replace("自动修复", "自动处理")
+        .replace("修复", "处理")
+        .replace("暂不允许确认应用", "需要你先取舍后再处理")
+        .replace("暂不能自动处理", "建议你先人工查看或放宽条件后再试")
+        .replace("候选池", "可选范围")
+        .rstrip("。；;，,")
+        .strip()
+    )
+
+
+def _dedupe_user_lines(values: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        item = _normalize_fix_proposal_user_line(raw)
+        if not item:
+            continue
+        key = re.sub(r"[，,。；;\s]+", "", item)
+        key = key.replace("处理预览会改变专业组数量需要你先取舍后再处理", "替换改变专业组数量")
+        key = key.replace("替换预览会改变专业组数量需要你先取舍后再处理", "替换改变专业组数量")
+        key = key.replace("当前可用于规划的可选范围里部分专业组缺少可补入的组内安全垫专业", "缺少组内安全垫专业")
+        key = key.replace("处理预览没有为目标专业组补足组内安全垫专业需要你先取舍后再处理", "缺少组内安全垫专业")
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(item)
+    return result
+
+
 def _format_fix_proposal_preview(proposal_state: dict[str, Any]) -> str:
     proposals = proposal_state.get("proposals") or []
     if not proposals:
-        return "已检查当前方案的修复建议。当前没有需要自动修复的风险建议，可以继续查看审查明细。"
+        return "已检查当前方案的处理建议。当前没有需要自动处理的风险建议，可以继续查看审查明细。"
 
-    lines = ["已生成当前方案的修复建议预览。"]
+    lines = ["已生成当前方案的处理建议预览。"]
     lines.append(f"- 建议数量：{len(proposals)}项")
+    status_labels = {
+        "ready": "可确认后执行",
+        "preview_only": "仅供参考，需要进一步确认取舍",
+        "blocked": "需要你先取舍或放宽条件",
+        "info": "仅提醒",
+    }
     for proposal in proposals[:3]:
-        title = str(proposal.get("title") or proposal.get("strategy") or "修复建议").strip()
+        title = str(proposal.get("title") or proposal.get("strategy") or "处理建议").strip()
+        title = title.replace("修复建议", "处理建议").replace("修复", "处理")
         status = str(proposal.get("status") or "").strip()
         dry_run = proposal.get("dryRunResult") or {}
         remove_count = int(dry_run.get("removeVolunteerCount") or 0)
@@ -1491,31 +1559,36 @@ def _format_fix_proposal_preview(proposal_state: dict[str, Any]) -> str:
         )
         detail_parts = []
         if status:
-            detail_parts.append(status)
-        if remove_count or add_count:
-            detail_parts.append(f"预计移除{remove_count}条、补入{add_count}条")
+            detail_parts.append(status_labels.get(status, status))
+        change_counts = _format_change_count_parts(remove_count, add_count)
+        if change_counts:
+            detail_parts.append(f"预计{change_counts}")
         if action_text:
             detail_parts.append(action_text)
         if impact:
             detail_parts.append(impact)
         line = f"- {title}"
         if detail_parts:
-            line += f"：{'；'.join(detail_parts)}"
+            line += f"：{'；'.join(_dedupe_user_lines(detail_parts))}"
         lines.append(line)
         warnings = dry_run.get("warnings") or []
+        extra_notes = []
         if warnings:
-            lines.append(f"  需注意：{'；'.join(str(item) for item in warnings[:2] if item)}")
+            extra_notes.extend(str(item) for item in warnings[:2] if item)
         blocking_reason = str(proposal.get("blockingReason") or "").strip()
         if blocking_reason:
-            lines.append(f"  暂不能自动处理：{blocking_reason}")
+            extra_notes.append(blocking_reason)
         candidate_shortages = _normalize_candidate_shortages(proposal.get("candidateShortages"))
         if candidate_shortages:
-            lines.append(f"  候选边界：{_format_candidate_shortage(candidate_shortages[0])}。")
+            extra_notes.append(_format_candidate_shortage(candidate_shortages[0]))
         blocking_guidance = _fix_proposal_blocking_guidance(proposal)
         if blocking_guidance:
-            lines.append(f"  处理边界：{blocking_guidance[0]}。")
+            extra_notes.append(blocking_guidance[0])
+        extra_notes = _dedupe_user_lines(extra_notes)
+        if extra_notes:
+            lines.append(f"  需要注意：{'；'.join(extra_notes[:2])}。")
 
-    lines.append("这些只是预览，真正应用前需要用户确认；标记为 preview_only 或 blocked 的建议不会被自动执行。")
+    lines.append("这些只是预览，正式调整前需要你确认；需要进一步取舍的建议不会直接执行。")
     return "\n".join(lines)
 
 
@@ -1524,31 +1597,41 @@ def _format_fix_proposal_apply_result(result: dict[str, Any]) -> str:
     report = result.get("repairReport") or {}
     if status != "applied":
         message = str(result.get("message") or "").strip()
-        return message or "这次修复建议没有应用成功，请重新生成修复建议后再试。"
+        return message or "这次处理建议没有执行成功，请重新查看方案审查结果后再试。"
     strategy = str(report.get("strategy") or "").strip()
     title = str(report.get("proposalTitle") or "").strip()
+    title = title.replace("修复建议", "处理建议").replace("修复", "处理")
     summary = str(report.get("proposalSummary") or "").strip()
     impact = str(report.get("proposalImpact") or "").strip()
     dry_run_message = str(report.get("dryRunMessage") or "").strip()
+    dry_run_message = (
+        dry_run_message
+        .replace("修复建议", "处理建议")
+        .replace("修复方案", "处理方案")
+        .replace("修复", "处理")
+        .replace("应用前", "正式处理前")
+    )
     added = int(report.get("addedVolunteerCount") or 0)
     removed = int(report.get("removedVolunteerCount") or 0)
     post_passed = report.get("postValidationPassed")
-    lines = ["已应用修复建议，并刷新当前方案状态。"]
+    lines = ["已按处理建议更新方案，并刷新当前方案状态。"]
     if title:
-        lines.append(f"- 修复建议：{title}")
+        lines.append(f"- 处理内容：{title}")
     if summary:
         lines.append(f"- 对应问题：{summary}")
     if strategy:
-        lines.append(f"- 修复类型：{strategy}")
-    lines.append(f"- 调整结果：移除{removed}条，补入{added}条")
+        lines.append(f"- 处理方式：{strategy}")
+    change_counts = _format_change_count_parts(removed, added)
+    if change_counts:
+        lines.append(f"- 调整结果：{change_counts}")
     if impact:
         lines.append(f"- 影响范围：{impact}")
     if post_passed is True:
-        lines.append("- 复验结果：本次对应问题已通过复验。")
+        lines.append("- 检查结果：这次对应的问题已通过检查。")
     elif post_passed is False:
-        lines.append("- 复验结果：仍需要继续检查相关风险。")
+        lines.append("- 检查结果：还需要继续关注相关风险。")
     if dry_run_message:
-        lines.append(f"- 应用前预览：{dry_run_message}")
+        lines.append(f"- 处理前预览：{dry_run_message}")
     messages = [str(item).strip() for item in (report.get("messages") or []) if str(item).strip()]
     if messages:
         lines.append(f"- 说明：{'；'.join(messages[:2])}")
@@ -1632,49 +1715,6 @@ def _format_plan_adjustment_result(
         lines.append("如果你想继续，我可以按某一类建议继续细化，例如只看补哪些更稳、哪些需要调顺序，或者先挑一条建议展开。")
     else:
         lines.append("如果你担心某一块，比如保底、梯度或者顺序，我也可以只针对那一部分继续细看。")
-    return "\n".join(lines)
-
-
-def _format_apply_result(
-    planning_state: dict[str, Any],
-    *,
-    ordered_state: dict[str, Any] | None = None,
-    draft_state: dict[str, Any] | None = None,
-) -> str:
-    summary = PlanningSummary.from_backend_state(planning_state)
-    if summary is None:
-        return "已应用补偿，但未拿到最新规划摘要，建议立即再执行一次审查确认结果。"
-
-    lines = ["已应用补偿并刷新当前方案。"]
-    lines.append(f"- 当前阶段：{summary.phase}")
-    lines.append(f"- 已加入方案数：{_format_total_with_target(summary.draft_total, summary.draft_target_total)}")
-    lines.append(f"- 当前方案数：{_format_total_with_target(summary.ordered_total, summary.ordered_target_total)}")
-    count_gap_hint = _build_count_gap_hint(summary.ordered_total, summary.ordered_target_total)
-    if count_gap_hint:
-        lines.append(f"- 数量检查：{count_gap_hint}")
-    lines.append(f"- 当前风险：{summary.review_risk_count}项，提醒{summary.review_warn_count}项")
-    if summary.pending_action_count > 0:
-        lines.append(
-            f"- 剩余待处理建议：{summary.pending_action_count}项，主要为{'；'.join(summary.pending_action_summaries)}"
-        )
-    else:
-        lines.append("- 当前待处理建议：0项")
-    lines.extend(
-        _build_plan_intent_relation_lines(
-            planning_state,
-            _pick_relation_plan_items(
-                planning_state,
-                ordered_state=ordered_state,
-                draft_state=draft_state,
-            ),
-            plan_summary=_pick_relation_plan_summary(
-                planning_state,
-                ordered_state=ordered_state,
-                draft_state=draft_state,
-            ),
-            include_position=True,
-        )
-    )
     return "\n".join(lines)
 
 
@@ -2410,17 +2450,6 @@ async def analyze_planning_plan_adjustment(ctx: RunContext[RequestContext]) -> s
     )
 
 
-async def preview_planning_compensation(ctx: RunContext[RequestContext]) -> str:
-    """预览当前会话的自动补偿建议，不直接改动方案。"""
-    session_id = ctx.deps.sessionid
-    logger.info("preview_planning_compensation called: session_id=%s", session_id)
-
-    result = await _preview_planning_compensation_request(session_id)
-    if result.get("code") != 0:
-        return "预览补偿建议失败，请稍后重试。"
-    return _format_compensation_preview(result.get("data") or {})
-
-
 async def generate_planning_fix_proposals(ctx: RunContext[RequestContext]) -> str:
     """生成当前方案的统一修复建议预览，不直接改动方案。"""
     session_id = ctx.deps.sessionid
@@ -2428,7 +2457,7 @@ async def generate_planning_fix_proposals(ctx: RunContext[RequestContext]) -> st
 
     result = await _generate_planning_fix_proposals_request(_DEFAULT_TENANT_ID, session_id)
     if result.get("code") != 0:
-        return "生成修复建议失败，请稍后重试。"
+        return "生成处理建议失败，请稍后重试。"
     return _format_fix_proposal_preview(result.get("data") or {})
 
 
@@ -2450,9 +2479,9 @@ async def apply_planning_fix_proposal(
     )
 
     if not user_confirmed:
-        return "这是会改动当前方案的修复操作。请先让用户确认具体修复建议，再调用该工具。"
+        return "这是会改动当前方案的处理操作。请先让用户确认具体处理建议，再调用该工具。"
     if not proposal_id or not source_version_guard:
-        return "缺少修复建议ID或版本信息，请先重新生成修复建议。"
+        return "缺少处理建议ID或版本信息，请先重新生成处理建议。"
 
     result = await _apply_planning_fix_proposal_request(
         _DEFAULT_TENANT_ID,
@@ -2463,41 +2492,5 @@ async def apply_planning_fix_proposal(
         rerun_review=rerun_review,
     )
     if result.get("code") != 0:
-        return str(result.get("msg") or "应用修复建议失败，请重新生成修复建议后再试。")
+        return str(result.get("msg") or "应用处理建议失败，请重新生成处理建议后再试。")
     return _format_fix_proposal_apply_result(result.get("data") or {})
-
-
-async def apply_planning_compensation(
-    ctx: RunContext[RequestContext],
-    user_confirmed: bool = False,
-    regenerate_ordered_plan: bool = True,
-    rerun_review: bool = True,
-) -> str:
-    """在用户明确确认后应用自动补偿，并可选择是否重排和复审。"""
-    session_id = ctx.deps.sessionid
-    logger.info(
-        "apply_planning_compensation called: session_id=%s user_confirmed=%s regenerate=%s rerun_review=%s",
-        session_id,
-        user_confirmed,
-        regenerate_ordered_plan,
-        rerun_review,
-    )
-
-    if not user_confirmed:
-        return "这是直接改动当前方案的操作。请先在对话中获得用户明确确认，再调用该工具。"
-
-    result = await _apply_planning_compensation_request(
-        _DEFAULT_TENANT_ID,
-        session_id,
-        regenerate_ordered_plan=regenerate_ordered_plan,
-        rerun_review=rerun_review,
-    )
-    if result.get("code") != 0:
-        return "应用补偿建议失败，请稍后重试。"
-    latest_state = result.get("data") or {}
-    ordered_state, draft_state = await _load_visible_plan_states(session_id, latest_state)
-    return _format_apply_result(
-        latest_state,
-        ordered_state=ordered_state,
-        draft_state=draft_state,
-    )

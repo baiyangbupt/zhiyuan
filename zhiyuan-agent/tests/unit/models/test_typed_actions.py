@@ -7,12 +7,11 @@ from app.models.typed_actions import (
     ACTION_TYPE_TO_FAMILY,
     AddUnitsAction,
     AnalyzeAdjustmentAction,
-    ApplyCompensationAction,
     GeneratePlanAction,
     MoveOrderedUnitAction,
     MoveUnitAction,
     PlanAction,
-    PreviewCompensationAction,
+    PreviewFixProposalAction,
     QueryCandidatesAction,
     QueryDraftAction,
     QueryOrderedAction,
@@ -170,16 +169,12 @@ class TestGenerateAnalyzeActions:
         assert a.action_type == "review_plan"
 
 
-class TestCompensationActions:
-    """补偿类动作。"""
+class TestFixProposalActions:
+    """修复预览类动作。"""
 
-    def test_preview_compensation(self):
-        a = PreviewCompensationAction()
-        assert a.action_type == "preview_compensation"
-
-    def test_apply_compensation(self):
-        a = ApplyCompensationAction(reason="用户确认补偿")
-        assert a.action_type == "apply_compensation"
+    def test_preview_fix_proposal(self):
+        a = PreviewFixProposalAction()
+        assert a.action_type == "preview_fix_proposal"
 
 
 class TestMutationActions:
@@ -278,8 +273,7 @@ class TestPlanActionUnion:
         ("generate_plan", GeneratePlanAction),
         ("analyze_adjustment", AnalyzeAdjustmentAction),
         ("review_plan", ReviewPlanAction),
-        ("preview_compensation", PreviewCompensationAction),
-        ("apply_compensation", ApplyCompensationAction),
+        ("preview_fix_proposal", PreviewFixProposalAction),
         ("add_units", AddUnitsAction),
         ("remove_units", RemoveUnitsAction),
         ("move_unit", MoveUnitAction),
@@ -336,8 +330,8 @@ class TestPlanActionUnion:
 class TestActionTypeToFamily:
     """ACTION_TYPE_TO_FAMILY 映射表。"""
 
-    def test_all_17_families_present(self):
-        assert len(ACTION_TYPE_TO_FAMILY) == 17
+    def test_all_16_families_present(self):
+        assert len(ACTION_TYPE_TO_FAMILY) == 16
 
     def test_current_1to1_mapping(self):
         """当前 action_type 与 action_family 一一对应。"""
@@ -349,7 +343,7 @@ class TestActionTypeToFamily:
     @pytest.mark.parametrize("action_type", [
         "query_state", "query_draft", "query_ordered", "query_candidates",
         "generate_plan", "analyze_adjustment", "review_plan",
-        "preview_compensation", "apply_compensation",
+        "preview_fix_proposal",
         "add_units", "remove_units", "move_unit",
         "move_ordered_unit", "remove_ordered_unit",
         "replace_units",

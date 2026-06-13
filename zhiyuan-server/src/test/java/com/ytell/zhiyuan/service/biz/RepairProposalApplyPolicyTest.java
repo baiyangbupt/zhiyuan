@@ -74,6 +74,16 @@ public class RepairProposalApplyPolicyTest {
     }
 
     @Test
+    void shouldRejectUserGoalProposalFromReviewApplyEntry() {
+        FixProposalApplyReq req = request("proposal_1", 7);
+        FixProposalDTO proposal = proposal("ready", "replace_risk_items", 7);
+        proposal.setProposalSource("user_goal");
+
+        assertBusinessException(400, "当前处理建议暂不支持在此入口应用",
+                () -> RepairProposalApplyPolicy.validateProposalForApply(req, proposal));
+    }
+
+    @Test
     void shouldRejectNonReadyProposalBeforeStrategyCheck() {
         FixProposalApplyReq req = request("proposal_1", 7);
         FixProposalDTO proposal = proposal("blocked", "fill_missing_count", 7);

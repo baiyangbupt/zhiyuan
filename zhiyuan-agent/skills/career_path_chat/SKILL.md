@@ -47,10 +47,9 @@ version: 1.0.0
 ## 可用能力
 
 - `analyze_current_career_direction`
-- `query_planning_state`
-- `query_planning_candidate_pool`
-- `query_planning_ordered_plan`
-- `query_planning_plan_overview`
+- `collect_plan_context_inputs`
+- `plan_next_action`
+- `execute_plan_action`
 
 必要时可组合只读主题工具：
 

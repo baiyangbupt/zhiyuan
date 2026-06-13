@@ -926,7 +926,7 @@ def test_case_definitions_infer_confirm_routes_from_prompt_and_coverage(tmp_path
     definitions = report._merge_case_definition_indexes([str(case_file)])
 
     assert definitions["intent-confirm#1"]["expectedRoutingPath"] == "direct_pending_intent_confirm"
-    assert definitions["intent-confirm#1"]["expectedActionFamily"] == "update_volunteer_intent_state"
+    assert definitions["intent-confirm#1"]["expectedActionFamily"] == "apply_selected_intents"
     assert definitions["no-pending#1"]["expectedRoutingPath"] == "plan_confirmation_guard_no_pending"
     assert "expectedActionFamily" not in definitions["no-pending#1"]
     assert definitions["no-pending#1"]["expectedNoAction"] is True

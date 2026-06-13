@@ -26,7 +26,7 @@ from app.tools.explore_direction_tool import (
     resolve_career_direction_slots,
     should_use_generic_direction_analysis,
 )
-from app.tools.intent_preview_tool import analyze_current_career_direction
+from app.tools.intent_preview_tool import analyze_current_career_direction, analyze_current_interest_profile
 from app.tools.explore_direction_tool import preview_generic_direction_analysis_from_request
 
 
@@ -272,7 +272,9 @@ def test_direction_explore_public_service_uses_student_plan_candidate_facts_and_
     assert "保底数量还可以继续补强" in resp
     assert "北京师范大学-法学" in resp
     assert "中国政法大学-行政管理" in resp
+    assert "宽口径线索" in resp
     assert "代表样本有：北京师范大学-法学" in resp
+    assert "不等于每个都严格适合" in resp
     assert "下一步" in resp
     assert "记成后续偏好" in resp
 
@@ -290,7 +292,6 @@ def test_direction_explore_public_service_uses_student_plan_candidate_facts_and_
     assert '"targetTotal": 3' in prompt
     assert "evidenceExamples" in prompt
     assert "schoolCategory:师范" in prompt or "schoolCategory:政法" in prompt
-
 
 def test_direction_examples_rank_stronger_evidence_before_broad_category_tags():
     request_context = _request_context(session_id="401-rank", text="体制内和读研分别有哪些支撑")
@@ -328,6 +329,7 @@ def test_direction_explore_skips_inner_llm_when_chat_service_disables_it():
     assert "当前方案已有 2/3 个志愿" in resp
     assert "你的当前选科是物理、化学、生物" in resp
     assert "当前方案里已经有一部分内容能承接这条方向" in resp
+    assert "按宽口径线索大约有 1 个志愿相关" in resp
     assert "代表样本有：北京师范大学-法学" in resp
     assert "下一步" in resp
 
@@ -393,9 +395,9 @@ def test_direction_explore_comparison_supports_three_directions_with_distinct_fa
     assert "冲稳保分布：冲1 / 稳1 / 保0" in resp
     assert "三个方向可以一起比较" in resp
     assert "深造看院校平台" in resp
-    assert "和“体制内/考公导向”更贴近的大约有 1 个志愿" in resp
+    assert "和“体制内/考公导向”有承接关系的大约有 1 个志愿" in resp
     assert "北京师范大学-法学" in resp
-    assert "和“深造发展导向”更贴近的大约有 2 个志愿" in resp
+    assert "和“深造发展导向”有承接关系的大约有 2 个志愿" in resp
     assert "北京工业大学" in resp
     assert "先选一个主方向" in resp
 
@@ -406,6 +408,7 @@ def test_direction_explore_comparison_supports_three_directions_with_distinct_fa
     assert "体制内/考公导向" in prompt
     assert prompt.count('"slot"') >= 6
     assert "如果是多方向，允许比较多个方向，不要默认只有两个" in prompt
+    assert "匹配数量是宽口径粗筛" in prompt
 
 
 def test_direction_explore_comparison_skips_inner_llm_when_chat_service_disables_it():
@@ -427,7 +430,7 @@ def test_direction_explore_comparison_skips_inner_llm_when_chat_service_disables
     assert "方向判断" in resp
     assert "当前方案已有 2/3 个志愿" in resp
     assert "这类问题更适合先看你本人更适合哪条路径" in resp
-    assert "和“体制内/考公导向”更贴近的大约有 1 个志愿" in resp
+    assert "和“体制内/考公导向”有承接关系的大约有 1 个志愿" in resp
     assert "代表样本有：北京师范大学-法学" in resp
     assert "候选里和“体制内/考公导向”更相关" in resp
 
@@ -567,6 +570,24 @@ def test_direction_explore_uses_explicit_generic_flag_after_no_concrete_slots():
     generic_mock.assert_awaited_once_with(ctx.deps)
     comparison_mock.assert_not_awaited()
     single_mock.assert_not_awaited()
+
+
+def test_integrated_interest_profile_uses_generic_direction_preview_directly():
+    ctx = SimpleNamespace(
+        deps=_request_context(
+            session_id="404-profile",
+            text="我对医学有些排斥，但对航天、能源、心理学都感兴趣，想要工资高一点、交流少一点",
+        )
+    )
+
+    with patch(
+        "app.tools.intent_preview_tool._preview_generic_direction_analysis_from_request",
+        new=AsyncMock(return_value="综合画像分析结果"),
+    ) as generic_mock:
+        resp = _run(analyze_current_interest_profile(ctx))
+
+    assert resp == "综合画像分析结果"
+    generic_mock.assert_awaited_once_with(ctx.deps)
 
 
 def test_direction_explore_generic_flag_preserves_resolved_concrete_slots():

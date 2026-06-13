@@ -27,6 +27,8 @@ def build_pending_context(deps: RequestContext) -> str:
         f"- 预览摘要：{pending.preview_summary}\n"
         f"- 影响范围：{pending.affected_scope}\n"
         f"- 用户确认后执行 payload：{plan_payload}\n"
-        "如果用户只在对话里说确认、执行、就按这个来，不要直接调用 `execute_plan_action`。"
-        "必须提示用户按上一轮预览里的按钮确认；只有统一确认链路才能执行该 payload。"
+        "不要在模型回复里自行调用 `execute_plan_action` 执行这个 payload。"
+        "明确的短文本确认会由服务端统一 pendingConfirmation 链路校验并执行；"
+        "如果本轮仍进入模型，说明当前表达没有安全命中确认兜底，"
+        "应提示用户点击当前预览里的确认按钮，或重新说明要确认的内容以便重新生成预览。"
     )

@@ -164,9 +164,14 @@ public class UnacceptableMajorManager {
 
 
     public  List<UnacceptableMajorVO> getByReq(UnAcceptableMajorsReq req){
-        List<CreateSessionReq.SubjectItem> subjectList=req.getSubjectList();
+        if (req == null) {
+            return this.getBySubjectTypeAndEducationLevel(null, "WL");
+        }
+        List<CreateSessionReq.SubjectItem> subjectList = req.getSubjectList() == null
+                ? Collections.emptyList()
+                : req.getSubjectList();
         String subjectType=req.getSubjectType();
-        if("N".equals(subjectType)){
+        if("N".equals(subjectType) && !subjectList.isEmpty()){
             List<CreateSessionReq.SubjectItem>  filterSubjects= subjectList.stream().filter(one->{
                 String subjectName=one.getName();
                 if(subjectName!=null&&(subjectName.contains("物理")||subjectName.contains("化学"))){

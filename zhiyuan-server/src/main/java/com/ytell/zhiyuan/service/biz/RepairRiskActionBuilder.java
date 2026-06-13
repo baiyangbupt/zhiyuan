@@ -23,7 +23,9 @@ final class RepairRiskActionBuilder {
                                               ReviewCheckDTO check,
                                               List<CompensationActionDTO> compensationActions,
                                               Function<List<String>, CompensationActionDTO> fallbackFillActionFactory) {
-        if (proposal == null || !"remove_risk_items".equals(proposal.getStrategy())) {
+        if (proposal == null
+                || !RepairProposalTaxonomy.Strategy.REMOVE_RISK_ITEMS.equals(
+                RepairProposalTaxonomy.normalizeStrategy(proposal.getStrategy()))) {
             return;
         }
         List<String> affectedVolunteerIds = defaultList(check == null ? null : check.getAffectedVolunteerIds()).stream()
@@ -37,7 +39,7 @@ final class RepairRiskActionBuilder {
             return;
         }
         FixProposalActionDTO removeAction = new FixProposalActionDTO();
-        removeAction.setActionType("remove_volunteers");
+        removeAction.setActionType(RepairProposalTaxonomy.ActionType.REMOVE_VOLUNTEERS);
         removeAction.setLevel(check.getLevel());
         removeAction.setSourceCheckCode(check.getCode());
         removeAction.setSummary("移除风险志愿");
@@ -59,7 +61,9 @@ final class RepairRiskActionBuilder {
     static void populateReplaceRiskItemActions(PlanningStateDTO state,
                                                ReviewCheckDTO check,
                                                FixProposalDTO proposal) {
-        if (proposal == null || !"replace_risk_items".equals(proposal.getStrategy())) {
+        if (proposal == null
+                || !RepairProposalTaxonomy.Strategy.REPLACE_RISK_ITEMS.equals(
+                RepairProposalTaxonomy.normalizeStrategy(proposal.getStrategy()))) {
             return;
         }
         List<String> affectedVolunteerIds = defaultList(check == null ? null : check.getAffectedVolunteerIds()).stream()
@@ -79,7 +83,7 @@ final class RepairRiskActionBuilder {
             proposal.getActions().add(buildReplaceRiskItemAction(check, pair.getSource(), pair.getReplacement()));
         }
         int replacementCount = proposal.getActions().stream()
-                .filter(action -> "replace_volunteers".equals(action.getActionType()))
+                .filter(action -> RepairProposalTaxonomy.ActionType.REPLACE_VOLUNTEERS.equals(action.getActionType()))
                 .mapToInt(action -> action.getReplacementPairs() == null ? 0 : action.getReplacementPairs().size())
                 .sum();
         if (selection.getMissingSourceCount() > 0) {
@@ -95,7 +99,7 @@ final class RepairRiskActionBuilder {
                     "当前候选不足，暂时没有同时满足同层次、风险更低、专业相近且院校层次代价可接受的替换项。",
                     "safe_replacement_candidate_insufficient");
         } else if (replacementCount < affectedVolunteerIds.size()) {
-            proposal.setStatus("preview_only");
+            proposal.setStatus(RepairProposalTaxonomy.Status.PREVIEW_ONLY);
             proposal.getDryRunResult().getWarnings().add("当前只找到部分风险志愿的替换预览，未覆盖的条目需要人工调整或放宽候选范围。");
         }
     }
@@ -104,7 +108,7 @@ final class RepairRiskActionBuilder {
                                                                    CandidateItemDTO source,
                                                                    CandidateItemDTO replacement) {
         FixProposalActionDTO action = new FixProposalActionDTO();
-        action.setActionType("replace_volunteers");
+        action.setActionType(RepairProposalTaxonomy.ActionType.REPLACE_VOLUNTEERS);
         action.setLevel(check.getLevel());
         action.setSourceCheckCode(check.getCode());
         action.setSummary("替换风险志愿");

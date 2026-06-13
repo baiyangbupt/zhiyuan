@@ -39,6 +39,9 @@ COMMON_MAJOR_ALIAS_TABLE: dict[str, dict[str, tuple[str, ...]]] = {
         "level2": ("电气类",),
         "level3": ("电气工程及其自动化",),
     },
+    "工科": {
+        "level1": ("工学",),
+    },
     "电信": {
         "level2": ("电子信息类",),
         "level3": ("电子信息工程", "通信工程"),
@@ -130,6 +133,10 @@ COMMON_MAJOR_ALIAS_TABLE: dict[str, dict[str, tuple[str, ...]]] = {
     "电气": {
         "level2": ("电气类",),
         "level3": ("电气工程及其自动化",),
+    },
+    "气象": {
+        "level2": ("大气科学类",),
+        "level3": ("大气科学",),
     },
     "电子信息": {
         "level2": ("电子信息类",),

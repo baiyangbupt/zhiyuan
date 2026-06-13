@@ -542,7 +542,7 @@ Core 层只负责业务事实和状态执行，不负责最终面向用户的话
 
 - `analyze_volunteer_intent_change`
 - `apply_selected_intents`（仅由统一 pending confirmation 触发：卡片点击为主入口，active pending 短文本确认为兜底入口）
-- `update_volunteer_intent_state`（legacy wrapper，仅用于历史兼容，不再暴露给主 Agent）
+- `apply_selected_intents`（当前意向确认执行入口；旧 `update_volunteer_intent_state` wrapper 已删除）
 
 约束：
 
@@ -644,8 +644,8 @@ Response 层负责响应模型、兼容序列化和必要的文本渲染收口�
 
 - `intent_state_tool` 不再同时承载 Explore wrapper、最终文案拼接和核心状态执行三类职责
 - `intent_state_tool` 不再反向依赖 `explore_followup_tool`
-- Service 层新增 `handle_intent_select` 作为新的选择类入站入口，旧 `handle_plan_edit_select` 仅保留兼容
-- Core 层新增 `apply_selected_intents` 作为“局部采纳后执行状态更新”的结构化入口，返回 `IntentStateUpdateResult` JSON；旧 `handle_plan_edit_select` 仅作为文本渲染兼容别名
+- Service 层统一使用 `handle_intent_select` 处理意向选择类入站消息；前端历史 `planEditSelect` 消息类型只在 WebSocket 协议层映射到该入口，不再保留单独业务分支
+- Core 层新增 `apply_selected_intents` 作为“局部采纳后执行状态更新”的结构化入口，返回 `IntentStateUpdateResult` JSON；旧 `update_volunteer_intent_state` wrapper 已删除
 - `interestAnalysisPopup` 的 `prefer_confirm / constrain_confirm` 快捷动作已经收口为二次生成 `pendingConfirmationCard`，不直接写入后续报考参考
 - Service 不再通过中文回复文本判断是否刷新候选，而是读取 `IntentStateUpdateResult.intentMode` 与 `candidateFilters` 后触发候选视图动作
 - Explore / Intent 的预览 wrapper 已迁移到 `intent_preview_tool`

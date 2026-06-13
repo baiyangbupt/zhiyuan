@@ -58,6 +58,7 @@ import com.ytell.zhiyuan.model.dto.planning.ReviewStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.ReviewWorkflowRunRes;
 import com.ytell.zhiyuan.model.dto.planning.StaleFlagsDTO;
 import com.ytell.zhiyuan.model.dto.planning.UpdateLatentProfileReq;
+import com.ytell.zhiyuan.model.dto.planning.UserGoalFixProposalReq;
 import com.ytell.zhiyuan.model.dto.planning.InitialRecommendationGenerateReq;
 import com.ytell.zhiyuan.model.dto.planning.MarkPlanningIntentStaleReq;
 import com.ytell.zhiyuan.model.dto.planning.PlanningBehaviorEventDTO;
@@ -2540,6 +2541,44 @@ public class PlanningStateServiceTest {
         assertEquals(Integer.valueOf(1), proposal.getCandidateShortages().get(0).getCurrentCount());
         assertEquals(Integer.valueOf(1), proposal.getCandidateShortages().get(0).getShortageCount());
         assertTrue(proposal.getDryRunResult().getMessage().contains("无法补齐目标志愿数量"));
+    }
+
+    @Test
+    void shouldGenerateUserGoalFixProposalThroughServiceWithoutApplying() {
+        bindPlanningStateStore();
+
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+        state.setVersion(9);
+        state.getCandidatePoolState().setVolunteerModel(VolunteerModel.major.name());
+        state.getCandidatePoolState().getItems().add(buildCandidateItem(
+                "ps1_m1", "ps1", "s1", "学校A", "稳", "临床医学", 55D, 80D, 55D, false));
+        state.getCandidatePoolState().getItems().add(buildCandidateItem(
+                "ps2_m2", "ps2", "s2", "学校B", "稳", "汉语言文学", 60D, 70D, 60D, false));
+        state.getOrderedPlanState().getItems().add(buildOrderedItem("ps1_m1", "学校A", "临床医学", "稳", 1));
+        state.getOrderedPlanState().getItems().add(buildOrderedItem("ps2_m2", "学校B", "汉语言文学", "稳", 2));
+        saveStateToStore(1L, state);
+
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("only_keep_scope");
+        req.setSourceVersionGuard(9);
+        UserGoalFixProposalReq.ScopeDTO scope = new UserGoalFixProposalReq.ScopeDTO();
+        scope.setEntityType("major");
+        scope.setNormalizedName("临床医学");
+        req.getTargetScopes().add(scope);
+
+        FixProposalStateDTO proposalState = planningStateService.generateUserGoalFixProposals(1L, req);
+
+        assertEquals("user_goal", proposalState.getProposalSource());
+        assertEquals("preview_only", proposalState.getStatus());
+        FixProposalDTO proposal = proposalState.getProposals().get(0);
+        assertEquals("user_goal", proposal.getProposalSource());
+        assertEquals("only_keep_scope", proposal.getStrategy());
+        assertEquals("preview_only", proposal.getStatus());
+        assertFalse(proposal.getRequiresConfirmation());
+        assertEquals("ps2_m2", proposal.getActions().get(0).getRemoveVolunteerIds().get(0));
+        verify(chatSessionExtraDataSharedService, times(1)).save(any(ChatSessionExtraData.class));
+        verify(chatSessionExtraDataSharedService, never()).updateById(any(ChatSessionExtraData.class));
     }
 
     @Test

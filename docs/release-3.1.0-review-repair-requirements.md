@@ -1,6 +1,6 @@
 # Release 3.1.0 Review And Repair Requirements
 
-更新时间：2026-06-10
+更新时间：2026-06-12
 
 本文先聚焦 3.1.0 中「方案审查」和「审查后修复」能力的需求调研。目标不是马上改代码，而是把 3.0.3 已有能力、遗留不足、3.1.0 需要补齐的工作流和外部触发协议先定义清楚。
 
@@ -12,6 +12,15 @@
 - 方案操作覆盖添加、删除、替换、移动、排序、补偿、审查等能力。
 - 审查问题已经能够在对话里被解释，并能触发部分删除/替换/补偿预览。
 - 前端已有轻量审查入口和审查风险提示。
+
+当前 Agent 方案更新链路的统一口径：
+
+- ChatAgent 主工具链为 `collect_plan_context_inputs -> plan_next_action -> execute_plan_action`；历史 `planning_router_tool.handle_planning_request` 已删除，新增能力不再接入旧 `request_type` router。
+- `PlanActionPlan` 顶层只作为动作 envelope，承接 `stage`、`action_family`、`atomic_actions`、缺参、确认和刷新标志；复合目标、待写入意向、复合动作、可行性、取舍依据和实体歧义统一放在 `composite_proposal`。
+- 新待采纳状态以后端 `pendingConfirmation` 为唯一主状态源，运行时通过 `conversation_phase.pending` 投影到 Agent 上下文。
+- 卡片点击是确认主入口；短文本“确认/就按这个来/执行”只作为 active pending 的兜底入口，仍由服务端按 `pendingId / kind / status / version` 校验后执行。
+- `pending_plan_action`、history preview 提取和 `planEditCache` 只作为历史对话、模型中断 fallback 或未迁移调用点的兼容 adapter，不作为新会话主状态源。生成新 pending 或采纳后会清理旧意向缓存，避免新旧状态并存。
+- `pin/unpin` 已从用户可触发能力退场；历史 `pinned/pinnedPosition` 只保留 DTO/JSON 兼容，不参与当前移动、排序、修复或 Agent 回复。
 
 但审查与修复还没有成为完整的一等工作流。当前能力能「发现问题」和「局部补偿/局部删除」，但还不能稳定表达：
 
@@ -102,8 +111,7 @@ Agent 当前通过 `plan_next_action -> execute_plan_action` 串起方案动作�
 
 - `review_plan`
 - `analyze_adjustment`
-- `preview_compensation`
-- `apply_compensation`
+- `preview_fix_proposal`
 - `remove_units`
 - `replace_units`
 - `sort_ordered_plan`
@@ -307,9 +315,135 @@ run review -> generate repair proposal -> confirm/apply proposal -> rerun review
 
 - `strategy`：规则层或 proposal 层的修复策略，例如 `rebalance_tier_ratio`、`fill_probability_gap`、`remove_risk_items`。
 - `action`：本次 proposal 中具体要怎么改，例如 `replace_volunteers`、`remove_volunteers`、`fill_total_count`。
-- `apply policy`：是否允许进入真实落盘。当前只有 `fill_missing_count`、`sort_by_probability`、`remove_risk_items`、`adjust_major_group_inner_safety` 在白名单中。
+- `apply policy`：是否允许进入真实落盘。当前只有 `fill_missing_count`、`sort_by_probability`、`remove_risk_items`、`replace_risk_items`、`adjust_major_group_inner_safety` 在白名单中。
 
 因此 `rebalance_tier_ratio` / `fill_probability_gap` 不是“自动 apply 的 action”。它们当前是结构性修复策略：可以生成 `replace_volunteers` 预览、dry-run 和影响说明，但不会通过 `fix-proposals/apply` 自动落盘，也不能通过旧 `applyCompensation()` 以追加候选的方式绕过容量保护。
+
+#### 跨 Java / Python / Web 的统一协议
+
+3.1.0 的审查修复和复合方案调整不能在 Java Server、Python Agent、Web 前端各维护一套原子动作语义。统一边界如下：
+
+- Java Server 是 `ReviewCheck -> FixProposal -> AtomicAction -> DryRun -> ApplyPolicy -> Mutation -> RepairReport` 的权威实现。审查规则、修复策略、候选选择、替换配对、候选不足归因、dry-run、apply 白名单、真实落盘和复审报告都以 Java 返回为准。
+- Python Agent 负责用户自然语言理解、场景归类、`PlanGoal` 提取、实体歧义提示、只读解释和确认引导。Python 可以把用户目标、范围、取舍边界和来源审查问题传给 Java，但不能自己生成最终可执行的 `removeVolunteerIds`、`candidateVolunteerIds`、`replacementPairs`、`dryRunResult` 或 `applyable` 结论。
+- Web 前端负责展示、用户确认和状态刷新。Web 不根据中文摘要自行拼修复动作，不从 `pendingActions` 或 review 文案反推出可执行按钮；所有可执行修复入口必须来自 Java 返回的 `FixProposal.status/strategy/actions/sourceVersionGuard`。
+- Agent 和 Web 消费同一套 `fix-proposals/generate` 与 `fix-proposals/apply` 协议。当前 `FixProposal` 可视为第一阶段的 `PlanChangeProposal`：`source=review_check` 时由审查问题触发；`source=user_goal` 时由用户复合目标触发。`user_goal` 已先接入 Java proposal engine 的只读事实预览，不在 Python 再实现一套候选选择和原子动作生成。
+- Python 侧 `LinkedRepairProposal`、`LinkedRepairAction`、`RepairStrategyValue`、`RepairActionTypeValue` 只是后端 DTO 的镜像和提示承载，用于把 Java proposal 挂接到 `CompositePlanProposal`。它们不替代 Java `FixProposalDTO`，也不授予 apply 权限。
+- ChatAgent 当前只开放 `generate_planning_fix_proposals` 作为只读解释入口，不开放 `apply_planning_fix_proposal` 给模型自由调用。对话侧正式应用已经改为 service active pending 桥：`ready` proposal 保存 `proposalId/sourceVersionGuard` 到 `pendingConfirmation(kind=plan_mutation, actionFamily=apply_fix_proposal)`，用户点击卡片或短文本确认后由 `ChatService` 内部调用 Java apply，并把 `RepairReport` 转成用户回复和工作台刷新事件。
+- 简单直接编辑仍可由 Agent 生成 action envelope，例如移动第 N 个、删除用户明确点名的志愿、按录取率排序；但最终执行仍走受控 Java 接口和版本/确认门禁。涉及候选选择、替换权衡、风险修复、结构调稳、只保留/必须有等复杂目标时，Agent 只能生成 `PlanGoal` 或请求 Java proposal，不能自行拼可落盘动作。
+
+这条边界的目的不是把 Agent 弱化成转发器，而是避免同一个业务策略在 Python 和 Java 两边各自实现：Agent 做理解和沟通，Java 做可验证的方案变更，Web 做用户确认和结果展示。
+
+Repair 与复合方案调整框架的关系：
+
+- Repair 不是 Plan 之外的另一套系统，而是“审查问题触发的复合计划”已经落地的一条链路。
+- `ReviewCheck` 在这条链路里相当于系统发现的目标来源：例如高收费、数量缺口、比例失衡、梯度断层。
+- `FixProposal.strategy` 相当于策略层：描述本次要按什么方法修，例如替换风险项、补齐数量、重排、补断层、调冲稳保。
+- `FixProposal.actions` 相当于动作计划层：把策略落成具体可预览动作，例如 `replace_volunteers`、`remove_volunteers`、`fill_total_count`。
+- `RepairDryRunSimulator` 相当于预执行验证层：判断数量、冲稳保、风险、硬要求、软偏好、推荐系数、院校层次等是否改善或恶化。
+- `RepairProposalApplyPolicy` 相当于执行门禁层：判断这个策略和状态是否允许真实落盘。
+- `RepairReport` 相当于执行闭环：说明改了什么、复审后结果如何、还有什么没解决。
+
+但需要分清层级：用户自然语言触发的是更上层的「情景/目标」，不是直接触发 repair strategy。Repair 提供的是已落地的底层策略实践和执行保护，而不是高层场景分类本身。
+
+统一分层应是：
+
+```text
+Scenario（用户/系统情景）
+  -> PlanGoal / ReviewCheck（目标或问题）
+  -> Strategy（处理方法）
+  -> Proposal（可解释预览）
+  -> Action（原子动作）
+  -> DryRun / ApplyPolicy / Report（验证、门禁、闭环）
+```
+
+因此后续用户自然语言触发的 `Scenario -> PlanGoal -> CompositePlanProposal` 不应重新发明一套底层策略和动作模型。合理方向是：
+
+1. 用户表达本身不要求分层。用户可能说“整体更偏体制内”这种宽泛情景，也可能说“把第 8 个志愿移到第 12 位”这种接近原子动作的具体诉求；系统不能要求用户按内部枚举表达。
+2. 分层发生在系统理解和路由之后：宽泛表达先落到 `Scenario -> PlanGoal`，再选择 strategy；具体表达可以直接靠近 `PlanAtomicAction`，但仍要经过同一套预览、确认、版本和 dry-run 门禁。
+3. 用户触发的复合调整和系统审查触发的 repair 都进入同一套 `Goal/Check -> Strategy -> Proposal -> Action -> DryRun -> ApplyPolicy -> Report` 抽象。
+4. 高层情景先拆成一个或多个 `PlanGoal`，再选择可用底层 strategy。例如“整体更偏体制内”先拆成发展导向、院校层次、专业方向、地域/稳定性和风险边界，再决定是否链接候选查询、排序、替换、补稳或只读分析。
+5. 已实现的 Repair 策略优先复用为复合计划的底层子策略，例如 `reduce_risk` 可链接 `replace_risk_items/remove_risk_items`，`rebalance_structure` 可链接 `rebalance_tier_ratio/fill_probability_gap/add_safety_items/fill_missing_count`。
+6. `CompositePlanProposal.linkedFixProposals` 用于串联已经生成的 `FixProposal`，不要把 repair 结果重新翻译成一套新的临时 action。
+7. 当前不开放自动 apply 的 repair 策略，在用户复合计划里也不能绕过白名单；只能作为预览和取舍说明。
+8. 随着框架收口，旧 compensation、旧 adjustment suggestion、Agent 临时 action scope 都应逐步退到 adapter 或删除，避免同一策略多处实现。
+
+高层情景与底层能力复用关系：
+
+| 高层情景 | 目标拆解 | 可复用的底层能力 | 边界 |
+| --- | --- | --- | --- |
+| 整体更偏体制内/考公考编 | 发展导向偏体制内；院校层次、专业公共属性、地域稳定性、读研/资格路径、风险控制 | `analyze_current_career_direction`、候选/当前方案承接分析、必要时 `sort_by_probability`、`replace_risk_items`、结构调稳类 preview | 本期不动态改 rank 权重；不能把“体制内”直接翻译成删除所有非体制专业；应先给分析和可确认预览 |
+| 更稳一点/保底多一点 | `rebalance_structure`、安全垫、本省/保区、数量缺口 | `add_safety_items`、`fill_missing_count`、`rebalance_tier_ratio`、`fill_probability_gap`、dry-run | 结构替换当前只预览；候选不足要说明范围，不空泛承诺补齐 |
+| 处理高收费/中外合作/限报 | `reduce_risk` | `replace_risk_items`、`remove_risk_items`、dry-run、apply policy | 高收费/中外合作默认替换优先；用户明确删除时才生成删除预览；完整替换配对才可受控 apply |
+| 只保留某方向 | `only_keep_scope` | 目标/非目标识别、候选补位、风险处理、dry-run、必要时 linked fix proposal | 不能直接展开成所有其他专业负向项；需要当前方案反向校验后才可能形成复合 proposal |
+| 至少要有某方向 | `must_include_scope` | 候选补入、满容量 replacement planner、dry-run | 不删除其他方向；如果当前方案已有目标范围，不应重复调整 |
+| 避开某专业/院校/地域 | `exclude_scope` | 当前方案命中项预览、`remove_units`、删除后补数量策略 | 同步写入后续报考参考；无命中项时不应伪造删除动作 |
+| 多目标组合调整 | `mixed_adjustment` | 多个 goal + 多个 proposal 的组合 | 必须披露部分可处理和不可处理项，不能承诺一次性全部修好 |
+
+2026-06-12 第一阶段落地状态：
+
+- `UserGoalFixProposalReq` 已作为 Java 侧复合目标输入协议，消费 `goalType`、`targetScopes/negativeScopes`、`sourceVersionGuard`、`qualityGuards/tradeoffGuards` 等结构化字段。Java 不从用户整句自然语言里猜专业、院校或地域。
+- `UserGoalProposalBuilder` 已能为 `only_keep_scope`、`must_include_scope`、`exclude_scope` 生成 `proposalSource=user_goal` 的只读 proposal：识别当前方案命中项、可移出项、候选池中可承接项，并输出 `FixProposalActionDTO(remove_volunteers/add_volunteers)` 作为预览事实。
+- `only_keep_scope` 如果当前方案已经全部落在目标范围内，会返回 `info`；`must_include_scope` 如果当前方案已经有目标范围，会返回 `info`；`exclude_scope` 如果当前方案没有命中避开范围，也返回 `info`。这类结果只表示“当前不用动方案”，不代表后续推荐权重或报考参考已经写入。
+- 如果 `targetScopes/negativeScopes` 缺少明确 `entityType/scopeType`，或携带 `resolutionStatus=unknown/multiple_match/needs_clarification/ambiguous`，Java 只返回 `blocked` 澄清，不生成移出或补入动作。实体消歧仍由 Agent/语义层完成，Java 只消费明确结构化范围。
+- `user_goal` proposal 的策略名统一进入 `RepairProposalTaxonomy`：`only_keep_scope`、`must_include_scope`、`exclude_scope` 均为 `preview_only` 策略，不在 `RepairProposalApplyPolicy` 自动应用白名单内；即使状态被误置为 `ready`，现有 review apply 入口也会因 `proposalSource=user_goal` 拒绝应用。
+- `PlanningStateService.generateUserGoalFixProposals()` 已作为内部只读入口读取当前 planning state 并调用 Java proposal engine，并通过内部 controller `POST /session/fix-proposals/user-goal/generate` 暴露给 Agent/内部调用。该入口不运行审查、不保存方案、不应用 mutation；不注册 ChatAgent apply，不写入 active pending，也不生成最终 replacement pairs 或真实 mutation。
+
+回归验证也要按层级覆盖，而不是只测底层 action：同一批用例需要同时包含“整体更偏体制内/考公考编”这类高层情景、“只保留/必须有/避开”这类复合 goal，以及“移动第 N 个、删除某个志愿”这类原子动作。预期不是让用户话术固定，而是确认系统能把不同粒度的输入路由到正确承接链路，并且不暴露 `stage/action_family/payload` 等内部协议。
+
+#### 当前未安全落地项与推进节奏
+
+截至 2026-06-12，框架层已经完成了“统一分层”和“安全边界”的主要收口，但仍有几处不能算完整落地：
+
+| 范围 | 当前状态 | 未安全落地部分 | 下一步 |
+| --- | --- | --- | --- |
+| 对话触发审查 | `review_plan` 已能触发后端审查并读取 `fix-proposals/generate`，回复里可解释处理方向；`preview_fix_proposal` 的 `ready` proposal 已能生成 active pending 确认卡，确认后由 service 内部调用 Java apply 并返回 `RepairReport` | ChatAgent 仍不能直接调用 apply；`blocked/preview_only` 只读；`source=user_goal` proposal 不进入 apply 白名单；live WebSocket 和前端卡片状态仍需继续走查 | 继续验证 `preview -> pending card -> confirm -> RepairReport -> workspace refresh`，再评估 user-goal proposal 是否具备可应用产品边界 |
+| 工作台审查修复 | 前端轻量弹窗已消费 Java `FixProposal`，`ready` proposal 可确认应用 | 仍不是完整审查工作台；历史报告、规则证据、多方案比较和 blocked/preview-only 的用户解释还需完善 | 保持 Web 使用 Java proposal 协议；继续优化问题详情、处理建议和执行后报告 |
+| 复合用户目标 | `PlanGoal`、实体消歧、`CompositePlanProposal` 模型、`decisionReferences` 已落地；Java `FixProposal/FixProposalState` 与 Agent `LinkedRepairProposal` 已补 `proposalSource`；`UserGoalFixProposalReq` 已作为输入协议；`UserGoalProposalBuilder` 已能为 `only_keep_scope/must_include_scope/exclude_scope` 生成只读事实预览；内部只读 controller 已开放 | `source=user_goal` 还没有生成最终 replacement pair、完整 dry-run 目标复验、可执行 action 或 pending/apply/report 闭环；Python service 仍有 `only_keep / must_have / exclude` 过渡闭环 | 把候选补足、专业组粒度、招生计划展示名歧义和 apply 后复验迁入 Java proposal engine，再补 active pending 桥和前端/对话 RepairReport 展示 |
+| `only_keep / must_have / exclude` 方案联动 | 已能基于当前方案生成安全的待确认 `plan_mutation`，避免“只保留 X 却误删 X” | `only_keep` 还缺完整候选补足、dry-run、结构复验和统一 RepairReport；大区范围只记录目标，不自动反向删除 | 先补专业/院校/省份级闭环，再开放大区/复合范围；所有动作必须有命中披露和不可满足说明 |
+| Repair 与复合计划统一 | Repair 已作为 `ReviewCheck -> FixProposal -> Action -> DryRun -> ApplyPolicy -> Report` 的落地实践 | 高层用户情景还不能直接复用同一 proposal engine；Agent 不能自己拼 `replacementPairs` 或 applyable | 以 Java strategy/action taxonomy 为底层唯一来源；Agent 只传 `Scenario/PlanGoal/targetScopes/tradeoffGuards` |
+| 旧链路退场 | 旧 router 已删除，`plan-adjustment/apply` 已废弃，前端旧 compensation API wrapper 已清理，Agent action family 已移除 `preview_compensation/apply_compensation` | `review_issue_registry.py`、旧 `plan-adjustment/analyze` 仍作为兼容/兜底存在；Java reviewState 仍保留 `compensationPreview` 作为 FixProposal 内部候选素材和旧状态字段 | 后续继续用后端 metadata 替代本地 registry，并把只读调整分析逐步收敛到 `ReviewState + FixProposalState` |
+
+对话侧开放修复 apply 的必要门禁：
+
+1. 对话生成的修复建议必须保存为 active `pendingConfirmation`，并包含 `proposalId`、`sourceVersionGuard`、`proposalSource`、用户可读摘要和 `RepairReport` 展示目标。
+2. 用户点击卡片或短文本确认时，只能消费当前 active pending；不能让模型根据自然语言重新猜 proposal 或修复范围。
+3. apply 前必须重新校验当前 planning version、review stale、proposal status、strategy 白名单和 dry-run 目标复验。
+4. apply 后必须刷新工作台方案、审查状态、proposal 列表，并把 `RepairReport` 回传给对话和前端。
+5. 如果 proposal 已过期、只可预览、阻塞或部分不可处理，只能给出解释和重新审查/重新生成建议入口，不能降级成普通 `remove_units` 或 `replace_units` 绕过 apply policy。
+
+补充确认语义：
+
+- `review_plan` 或 `analyze_adjustment` 只给出处理方向、并询问用户是否继续看调整预览时，系统还没有 active pending，也没有可执行 apply payload。用户回复“可以/确认/要看”只能被理解为“继续生成预览”，应回到 Agent 结合上一轮结构化审查结果继续规划 `preview_fix_proposal` 或澄清范围；不能返回“没有上一轮待确认动作”，也不能直接应用方案。
+- 只有已经生成 active `pendingConfirmation` 的场景，短文本“确认/执行/就按这个来”才可以作为按钮点击之外的兜底确认入口，并且必须经过 `pendingId/kind/status/version` 校验。
+- 没有 active pending、上一轮也不是结构化审查/调整建议的裸“确认/执行”，仍保留 no-pending guard，防止把历史文本或模型自然语言误当成可执行动作。
+
+推进节奏按风险从低到高：
+
+1. **先固化只读审查**：补测试确认“帮我审查/看看怎么修”只触发 review + proposal facts，不修改方案；`blocked/preview_only` 不生成执行卡。
+2. **定义 Java `source=user_goal` proposal 协议**：已完成第一阶段，包括 `proposalSource`、`UserGoalFixProposalReq`、Agent proposal_source 镜像、现有 review apply 入口拒绝 `user_goal` 来源，以及 `only_keep_scope/must_include_scope/exclude_scope` 的只读事实预览。下一步把候选补足、replacement pair、专业/专业组粒度复验和不可满足原因继续迁入 Java proposal engine。
+3. **迁移过渡复合闭环**：把 service 里的 `only_keep / must_have / exclude` 当前方案联动迁到 proposal engine，补齐候选补足、专业/专业组粒度、招生计划展示名歧义和 apply 后复验。
+4. **补对话 pending 桥**：review_check 来源的 `ready` 修复建议已落成 active pending；卡片点击和短文本确认共用 `handle_pending_confirmation`，不会让模型重新猜 proposal 参数。
+5. **对话修复 apply 只在 service 内部开放**：不把 `apply_planning_fix_proposal` 暴露给 ChatAgent 主路径；后续扩大修复范围时只扩 Java apply policy 和 service pending bridge。
+6. **最后清理兼容层**：移除旧 compensation 主路径、旧本地 review registry fallback 和旧分析入口中不再需要的部分，避免长期双轨维护。
+
+2026-06-12 本地 focused live 验证补充：
+
+- 问题复现：会话 130 输入“我想让这版方案整体更偏体制内和考公考编，先看看应该怎么调整，不要直接改”时，旧回复曾优先走普通方案审查，最终内容被风险/提醒报告主导，没有真正回答“发展方向导向下怎么调整”。
+- 修复边界：这类请求按高层发展导向情景处理，不新增固定话术匹配。调度规则明确先走 `analyze_current_career_direction`，必要时补 `query_state`；只有用户明确要审查风险时才走 `review_plan`，且最终回复必须围绕当前承接、短板、取舍和是否生成调整预览组织。
+- 方向事实口径：`analyze_current_career_direction` 中的方案匹配数量是基于院校性质、专业名称和标签的宽口径承接线索，不是精确适配或互斥统计；回复不能把它写成“几乎全部严格合适”，也不能和风险/冲突项做简单加减。
+- 验证结果：`/private/tmp/dialog_regression_310_public_service_existing_plan_cases.json` 复跑通过。第一轮工具链为 `analyze_current_career_direction`，未调用 `review_plan`，回复给出体制内/考公方向的当前承接、专业结构、院校性质、地域取舍和后续预览入口；第二轮“把第8个志愿移到第12位”仍生成 `move_ordered_unit` 确认预览，未直接修改方案。
+- 性能记录：早期复跑输出 `/private/tmp/zhiyuan_310_public_service_existing_plan_live_after_wording_fix.json`，两轮耗时约 15.9s / 8.7s。后续在清理历史后复跑暴露出两个边界：一是模型可能在只读 Explore 后写出无依据的“确认后调整”话术，服务层安全兜底会把它剥离；二是如果剥离后正文为空，必须回退展示只读 Explore 工具返回的分析正文，而不是只剩“本轮不改方案”的边界句。已补服务层兜底和回归测试，focused live `/private/tmp/zhiyuan_310_public_service_existing_plan_live_after_explore_fallback_fix.json` 确认第一轮保留完整分析，第二轮仍生成 `move_ordered_unit` 确认预览。
+
+2026-06-12 生产抽象对话集回归补充：
+
+- 首轮用固定 session 复跑时出现 2 个失败：`5901` 的“临床医学”已存在于本地旧报考参考，导致后续“确认”无 pending；`5905` 的“不要医学类的”没有调用专业意向预览工具。
+- 处理结果：
+  - `5901` 用 `--session-offset 200000` 的干净 session 复跑后正常生成待采纳内容，后续“确认”正常采纳，确认该失败是本地状态污染，不是协议回退。
+  - `5905` 已修复为“明确排除专业/专业类/门类的短口语表达必须进入专业意向预览”。focused live `/private/tmp/zhiyuan_310_negative_major_short_live_after_fix.json` 通过，工具链为 `preview_current_major_intent_confirmation`，返回“排除专业门类：医学”的待采纳内容。
+- offset 全量回归通过：`/private/tmp/zhiyuan_310_production_abstracted_live_after_negative_major_fix_offset.json` 覆盖 17 个 case / 22 步，内容断言失败 0，耗时 median 约 10.6s，p95 约 30.3s，max 约 33.5s。
+- 补充优化：新增只读综合画像工具 `analyze_current_interest_profile`，用于一次性承接“多个兴趣方向 + 排斥方向 + 薪资/稳定/沟通强度”等复杂画像问题，避免模型在 `analyze_current_career_direction` 与 `analyze_current_major_interest` 之间来回试探。focused live `/private/tmp/zhiyuan_310_interest_profile_live_after_generic_profile_tool.json` 确认该工具被命中，复杂画像回复覆盖航天、能源、心理学、薪资、人际沟通、读研必要性和下一步。
+- 遗留优化：`310-prod-open-career-long-input` 已从重复同名 Explore 下降为综合画像 + 额外一次职业方向工具，耗时约 25s，质量可接受但仍偏慢；`310-prod-scenario-public-service-existing-plan` 在模型选择补 `analyze_adjustment` 时仍可能到 30s 级。后续方向应是同轮只读事实复用/去重与模型综合链路收敛，而不是用用户话术关键词做快路由。
+- 协议边界：本轮新增的少量文本标记只用于模型输出安全检查，例如识别“模型声称已经列出待采纳内容/点击采纳”但本轮没有真实 pending/card 的情况；它不用于解释用户自然语言，也不决定 `Intent` 或 `Plan` 路由。真正的业务动作仍以工具返回的结构化 pending、`PlanActionPlan` 和服务端确认状态为准。
 
 ### 4.2.1 候选不足的产品判定协议
 
@@ -591,21 +725,73 @@ applyFixProposal
 - `expiresAt` 或 `sourceVersionGuard`
 - `postApplyValidationPlan`
 
-支持 strategy：
+#### 5.3.1 全局 Repair Strategy / Action Taxonomy
 
-- `remove_risk_items`
-- `replace_risk_items`
-- `fill_missing_count`
-- `fill_probability_gap`
-- `rebalance_tier_ratio`
-- `add_safety_items`
-- `sort_by_probability`
-- `regenerate_order`
-- `regenerate_plan_with_constraints`
-- `no_op`
-- `cannot_satisfy`
+3.1.0 起，Repair 相关策略和动作按三层统一定义，避免后端、Agent、前端继续各自维护字符串：
 
-`cannot_satisfy` 是必要的一等状态，避免候选不足时继续空泛建议。
+1. `RepairStrategy`：表示“这个问题准备用什么策略处理”，是 Review/Repair/CompositeProposal 共享的策略层。
+2. `RepairActionType`：表示“这个 proposal 具体会怎么动”，复用后端 `FixProposalActionDTO.actionType`。
+3. `PlanActionPlan.action_family`：表示 Agent 当前调用的方案工具动作 envelope，不能与 Repair strategy 混用。
+
+当前全局 `RepairStrategy`：
+
+| Strategy | 语义 | 当前 apply 边界 |
+| --- | --- | --- |
+| `fill_missing_count` | 补齐方案数量缺口 | `ready` 时可 apply |
+| `add_safety_items` | 补保底/安全垫候选 | 当前默认 preview only |
+| `rebalance_tier_ratio` | 调整冲稳保比例 | 当前 preview only，即使有 replacement pair 也不自动落盘 |
+| `fill_probability_gap` | 补录取率梯度断层 | 当前 preview only，即使有 replacement pair 也不自动落盘 |
+| `sort_by_probability` | 按录取率/风险梯度重排 | `ready` 时可 apply |
+| `remove_risk_items` | 移出高收费、限报等具体风险项 | `ready` 时可 apply |
+| `replace_risk_items` | 用低风险候选替换具体风险项 | `ready` 且 pair 完整时可 apply |
+| `adjust_major_group_inner_safety` | 专业组内补入/替换安全专业 | `ready` 时可 apply |
+| `no_op` | 仅提示，不需要处理 | 不可 apply |
+| `cannot_satisfy` | 当前候选或约束下无法满足 | 不可 apply |
+
+当前全局 `RepairActionType`：
+
+| ActionType | 语义 | 常见来源 |
+| --- | --- | --- |
+| `fill_total_count` | 补足缺口数量 | `fill_missing_count` |
+| `add_volunteers` | 补入候选，但不一定补总数 | `add_safety_items` |
+| `remove_volunteers` | 移出具体风险项 | `remove_risk_items` |
+| `replace_volunteers` | 一进一出替换，必须带 replacementPairs 或等价 remove/candidate 列表 | `replace_risk_items`、结构性 preview |
+| `reorder_volunteers` | 调整现有顺序，不新增候选 | `sort_by_probability` |
+| `adjust_major_group_inner_safety` | 专业组内补入/替换安全专业 | `adjust_major_group_inner_safety` |
+| `no_op` | 无动作，仅提示 | `no_op`、`cannot_satisfy` |
+
+历史/补偿层别名统一映射：
+
+| 旧/上游字符串 | 统一到 |
+| --- | --- |
+| `fill_total_count` strategy | `fill_missing_count` |
+| `add_local_protect` | `add_safety_items` |
+| `rebalance_protect_ratio` | `rebalance_tier_ratio` |
+| `sort_ordered_plan` repair action | `reorder_volunteers` |
+| `add_units` repair action | `add_volunteers` |
+| `remove_units` repair action | `remove_volunteers` |
+| `replace_units` repair action | `replace_volunteers` |
+| `blocked` status/strategy alias | `cannot_satisfy` |
+| `info` status/strategy alias | `no_op` |
+
+`cannot_satisfy` 是必要的一等状态，避免候选不足时继续空泛建议。`no_op` 和 `cannot_satisfy` 都不生成可确认动作。
+
+Agent 侧对应模型已经落地为：
+
+- `RepairStrategyValue`
+- `RepairActionTypeValue`
+- `LinkedRepairAction`
+- `LinkedRepairProposal`
+- `CompositePlanProposal.linked_fix_proposals`
+
+这些模型只承载 Repair proposal 元信息，不替代后端 `FixProposalDTO`，也不绕过 `RepairProposalApplyPolicy`。
+
+后端 Java 侧已补充 `RepairProposalTaxonomy` 作为运行期统一定义：
+
+- `RepairProposalTaxonomy.Strategy` 是后端 proposal 生成、dry-run、apply policy、action builder、report 的统一 strategy 来源。
+- `RepairProposalTaxonomy.ActionType` 是后端 action 计数、dry-run 模拟、mutation apply 的统一 actionType 来源。
+- `RepairProposalTaxonomy.CompensationActionType` 承接旧补偿层 action type，例如 `add_local_protect`、`rebalance_protect_ratio`；这些旧值仍可出现在 compensation preview 中，但进入 repair 层会统一映射到 `RepairStrategy`。
+- `RepairProposalTaxonomy.isApplyableStrategy()` 和 `isPreviewOnlyStrategy()` 是后端 apply 边界的唯一判断来源。`rebalance_tier_ratio` / `fill_probability_gap` 即使有 `replace_volunteers` 预览，也仍不能绕过 apply policy 自动落盘。
 
 `replace_risk_items` 的 action 需要能表达 remove + candidate 的配对关系，至少包含：
 
@@ -616,6 +802,196 @@ applyFixProposal
 - `replacementPairs`
 
 其中 `replacementPairs` 用于前端披露“用谁替换谁”和原因，避免只给出一组候选列表但无法解释替换关系。专业组模式下，pair 需要同时保留专业组粒度和组内专业粒度，不能把组内专业数误当成专业组数。
+
+### 5.3.0 用户复合方案调整计划
+
+3.1.0 不能继续把用户的方案调整诉求压成少数几个特例。`only_keep`、`must_have` 只是常见表达，真实用户还会把多个目标混在一句话里：
+
+- “只保留临床医学，其他都不要。”
+- “方案里至少有一个临床医学，但别把稳的都删了。”
+- “不要中外合作，省内优先，保底多一点。”
+- “我不想学工商管理，金融可以保留，学校层次别降太多。”
+- “这版太冲了，专业尽量别偏离孩子想学的方向。”
+
+这类诉求的合理处理方式不是继续加字符串分支，而是引入一层 `PlanGoal -> CompositePlanProposal`：
+
+```text
+用户自然语言
+  -> Agent 理解为 PlanGoal
+  -> 实体解析与歧义识别
+  -> 候选/当前方案/已确认偏好与要求读取
+  -> 拆解为原子动作计划
+  -> dry run / 可行性验证
+  -> 复合操作预览
+  -> PendingConfirmation
+  -> 用户确认后执行
+  -> 复审和 RepairReport
+```
+
+这里的 `PlanGoal` 是系统理解后的结构，不是对用户表达的限制。用户可以宽泛地说“整体更偏体制内、稳一点”，也可以具体到“删掉第 40 位之后几个保的学校”或“把第 8 个志愿移到第 12 位”。系统需要先判断这句话落在高层情景、复合目标还是原子动作附近；越宽泛越需要补充目标拆解和取舍依据，越具体越可以直接进入对应原子动作预览，但所有会改变意向或方案的结果都必须保持确认和验证门禁。
+
+#### 5.3.0.1 `PlanGoal`
+
+`PlanGoal` 表达用户到底想达成什么，不直接等于底层 action。
+
+建议字段：
+
+```json
+{
+  "goalType": "only_keep_scope | must_include_scope | exclude_scope | prefer_scope | rebalance_structure | reduce_risk | mixed_adjustment | clarify",
+  "targetScopes": [],
+  "negativeScopes": [],
+  "structureTargets": [],
+  "qualityGuards": [],
+  "userOriginalText": "",
+  "confidence": "high | medium | low",
+  "needsClarification": false,
+  "clarificationQuestions": []
+}
+```
+
+字段边界：
+
+- `goalType` 由模型基于上下文理解，不靠“想去/不想去/只要/必须”等少数词硬匹配。
+- `targetScopes` 表示用户希望保留、补入或优先考虑的范围。
+- `negativeScopes` 表示用户明确排除或降低优先级的范围。
+- `structureTargets` 表示冲稳保、保底、数量、录取率梯度、排序等结构目标。
+- `qualityGuards` 表示用户不希望牺牲的边界，例如院校层次别降太多、专业别偏太远、别增加高收费。
+- `confidence=low` 或存在关键歧义时，不生成可执行 proposal，只生成澄清问题或只读分析。
+
+当前实现状态：
+
+- 后端模型层已落地 `PlanGoal`、`PlanEntityResolution` 和 `CompositePlanProposal`。`PlanActionPlan` 顶层只保留当前动作 envelope：`stage`、`action_family`、`atomic_actions`、缺参、确认和刷新标志；复合目标、待写入意向、复合动作、取舍依据、可行性和歧义说明统一放在 `composite_proposal` 内。
+- `IntentFrame` 已增加 `plan_goal_type` / `constraint_intent_type` / `plan_goal_confidence`，用于接收上游模型明确输出的复合目标类型。
+- `ActionResolver` 只负责把结构化 `IntentFrame` 映射成动作族、阶段、缺参、确认门禁和类型化原子 action；它不再输出 `plan_goal` / `intent_updates` 镜像，避免复合目标在 resolver 和 plan envelope 两处不同步。
+- `plan_next_action` 已能接收 `plan_goal_type`、`constraint_intent_type`、`goal_target_scopes`、`goal_negative_scopes`，并在 `PlanActionPlan.composite_proposal` 中输出 `goal`、`intent_updates`、`plan_actions`、`decision_references`、`feasibility`、`impact_summary` 和 `tradeoffs`。这一步仍是元数据和预览协议铺底，不直接写入用户意向，也不直接执行方案修改。
+- `plan_next_action` 已对模型传入的结构化 scope 做实体消歧：专业复用 `major_entity_resolver`，地域复用 `region_entity_resolver`，院校复用 `school_entity_resolver`。解析结果写入 `PlanGoal.entity_resolutions` 和 `CompositePlanProposal.entityResolutions/impactSummary`；无歧义时，`PlanGoal.targetScopes/negativeScopes` 与待确认的 `intent_updates` 使用标准名，用户原话保留在 `rawText`；多解或未知实体会让复合 proposal 进入 `needs_clarification`，不生成可采纳的 `intent_updates`。
+- `plan_next_action` 已开始输出保守的复合动作拆解：`exclude_scope` 可生成结构化 `remove_units` 计划，`must_include_scope` 可生成结构化 `add_units` 计划；`only_keep_scope` 在 `plan_next_action` 本身仍不凭空生成“删除所有非目标范围”的反向动作，必须先拿到当前方案事实再计算。
+- 当前服务层已针对确认后的 `only_keep / must_have / exclude` 约束补了一段过渡闭环：从已确认的 intent preview 读取结构化范围，查询当前 ordered plan，生成 `plan_mutation` 待确认卡，并把本次 intent 更新作为同一个 pending 的 `intentPayload` 一起保存。它解决线上“仅保留临床医学却误删临床医学”的问题，但还没有完全迁入 `PlanGoal -> CompositePlanProposal`；后续新增复合场景不要继续在 service helper 里扩分支，应迁到统一复合计划链路。
+- `CompositePlanProposal` 已落地为模型层和工具输出字段，用于把目标、意向更新、方案动作、可行性、影响说明、执行后验证计划聚合为一个预览单元。它不是新的 apply 接口，不绕过 `PlanActionPlan.stage`、缺参检查、pending confirmation 或 review stale 保护。
+- 旧的 `PlanActionPlan.goal` / `intent_updates` / `plan_actions` / `feasibility` 等顶层复合字段已经退场。历史 payload 如果带这些字段，执行 envelope 不再读取；需要进入复合计划的内容必须放在 `composite_proposal`，避免同一事实在两处不同步。
+- 约束兼容映射已统一：`constraint_intent_type=only_keep` 对应 `goalType=only_keep_scope`；`constraint_intent_type=must_have` 对应 `goalType=must_include_scope`。普通 `default` 不会自动推断复合目标。
+- 明确禁止仅凭 `userGoal` / `rawUtterance` 里的中文短语推断 `goalType`。如果模型没有输出结构化字段，系统按普通原子 action 处理或要求补充信息。
+
+典型 goal 映射：
+
+| 用户诉求 | goalType | 预期拆解 |
+| --- | --- | --- |
+| 只保留临床医学 | `only_keep_scope` | 识别临床医学范围；保留命中项；移出非命中项；如数量不足，尝试从候选补入临床医学；不能满足时说明边界 |
+| 方案里必须有临床医学 | `must_include_scope` | 检查当前方案是否已有；没有则从候选补入或替换；不删除其他方向 |
+| 不要中外合作 | `reduce_risk` 或 `exclude_scope` | 命中当前方案中外合作项；优先替换，必要时删除；同步披露数量/结构影响 |
+| 省内优先，保底多一点 | `mixed_adjustment` | 写入或引用地域偏好；调整保底/安全垫；生成结构预览 |
+| 只要电气和气象，其他方向都不要 | `only_keep_scope` | 只把电气/气象作为正向范围；不得把“其他方向”展开为全部专业门类负向项 |
+
+当前拆解边界：
+
+- `exclude_scope`：如果 scope 是专业/院校/地域，可生成 `remove_units` 计划，执行层再读取当前方案并定位命中项。
+- `must_include_scope`：如果 scope 是专业/院校/地域，可生成 `add_units` 计划，执行层再查候选并生成补入预览。
+- `only_keep_scope`：不能仅凭自然语言或目标实体直接生成反向删除计划。当前过渡实现已在 intent 确认后读取当前方案并计算目标命中项与非目标项，再生成待确认的移出预览；仍缺“候选补足目标范围、dry-run 结构校验、统一 CompositePlanProposal apply/report”这几步，因此后续要迁入复合计划链路，而不是继续扩 service 旁路。
+
+#### 5.3.0.2 实体解析与歧义消除
+
+复合计划必须把“用户说了什么”和“系统能执行什么范围”分开。专业、院校、地域都需要结构化 entity resolution，特别是专业：
+
+| 实体类型 | 示例 | 风险 | 处理 |
+| --- | --- | --- | --- |
+| 标准具体专业 | 工商管理、临床医学、经济与金融 | 可能被模型扩大成专业类 | 默认按具体专业理解 |
+| 标准专业类 | 工商管理类、临床医学类 | 可能被用户当成泛称 | 若用户明确说“类/方向/这一类”，按专业类 |
+| 标准门类 | 工学、医学 | 范围很大 | 必须在预览中披露范围较宽 |
+| 招生计划展示专业类 | 工商管理类（含工商管理、市场营销、人力资源管理） | 不是标准目录意义上的唯一专业类，可能包含多个专业 | 预览中披露“当前方案里有专业类包含该专业，是否也一起处理” |
+| 用户简称/俗称 | 计科、财会、气象、工科 | 需要映射到标准实体 | 先走公共别名/目录解析，不能由 action 层临时猜 |
+
+专业歧义处理原则：
+
+- 用户说具体专业时，不默认扩大到整个专业类。
+- 当前方案中如果只有“包含该专业的招生计划专业类”，必须在预览里注明。
+- 如果一个词可能是具体专业、专业类、职业方向或招生计划描述，且处理结果差异大，先澄清。
+- 如果用户明确说“这一类都不要”“相关方向都不考虑”，可以扩大到专业类，但仍需披露范围。
+- 后端规范化只做目录和候选事实校验，不重新推断用户正负向。
+
+当前实现状态：
+
+- 已完成：结构化 scope 的目录级消歧，覆盖专业、院校、地域。示例：`计科 -> 计算机科学与技术`、`内蒙 -> 内蒙古`、`广西师大 -> 广西师范大学`。无歧义对象会用标准名进入待采纳更新，避免把简称写入长期报考参考。
+- 已完成：宽泛或多解实体阻断确认。示例：`财会` 会披露可能对应工商管理类、会计学、财务管理、审计学等，不直接生成可采纳更新。
+- 待补齐：把当前方案和候选中的招生计划展示名接入消歧证据，用于识别“具体专业 vs 招生计划专业类（含若干专业）”这类执行范围差异。
+
+用户侧披露示例：
+
+> 我先按“具体专业工商管理”理解。当前方案里还有一些“工商管理类”专业组，里面可能包含工商管理、市场营销、人力资源管理等方向；这类是否也一起避开，需要你确认。
+
+#### 5.3.0.3 `CompositePlanProposal`
+
+`CompositePlanProposal` 是面向用户确认的复合预览，不替代 `FixProposal`，而是把多个 intent 更新、plan mutation 和 review/fix proposal 组合成一个确认单元。
+
+建议字段：
+
+```json
+{
+  "proposalId": "uuid",
+  "sourceVersion": 12,
+  "goal": {},
+  "entityResolutions": [],
+  "intentUpdates": [],
+  "planActions": [],
+  "linkedFixProposals": [],
+  "decisionReferences": [],
+  "dryRunResult": {},
+  "feasibility": "ready | preview_only | blocked | needs_clarification",
+  "impactSummary": [],
+  "tradeoffs": [],
+  "requiresConfirmation": true,
+  "postApplyValidationPlan": []
+}
+```
+
+组合规则：
+
+- `intentUpdates` 只负责写入后续偏好或要求，例如把“只保留临床医学”记为已确认报考要求。
+- `planActions` 只负责当前方案内容变化，例如移出非临床医学、补入临床医学。
+- `linkedFixProposals` 复用 3.1.0 审查修复提案，例如高收费替换、数量补齐、排序修复。
+- `decisionReferences` 负责记录本次比较和取舍的依据，既包括用户显式说出的目标/要求，也包括系统隐式使用的推荐系数、录取率、冲稳保层级、院校层次、专业热度、意向匹配、审查风险和候选容量。
+- 一个复合预览可以包含多个原子动作，但必须作为一个 pending 确认，确认前不执行。
+- 如果一部分可执行、一部分不可执行，不能包装成“已完整处理”；应显示为部分可处理，并说明剩余问题。
+
+`decisionReferences` 的定位：
+
+- 用户显式意图是高优先级输入。用户确认后的硬性报考条件优先于推荐系数；软偏好只影响优先级和推荐系数，不直接过滤基础候选池。
+- 系统隐式参考是比较和排序输入。推荐系数、录取率、冲稳保、院校层次、专业热度、意向分等用于判断“保留谁、移出谁、补谁、替换谁更合适”，也用于解释为什么某个高推荐项被保留或被牺牲。
+- 审查风险和候选容量是安全输入。高收费、中外合作、限报、候选不足、结构风险等不能被推荐系数覆盖，必须在 dry run 或预览里披露。
+- 这些参考点只提供证据，不是 apply 权限。是否能执行仍由 stage、缺参检查、pending confirmation、版本保护、dry run 和 apply 白名单共同决定。
+
+复合计划在涉及对比时的基本比较顺序：
+
+1. 先校验硬条件：已确认必须满足/必须避开的范围、政策限制、禁选、版本有效性。
+2. 再处理用户本轮显式目标：例如 only_keep 的目标范围、must_have 的至少保留范围、exclude 的移出范围、quality guard。
+3. 再比较系统参考：推荐系数、录取率、冲稳保、院校层次、专业热度、意向匹配、风险标签、候选容量。
+4. 最后形成 tradeoff：如果为了用户目标或风险修复牺牲了高推荐系数、强意向、院校层次或安全性，必须在预览里说明。
+
+典型例子：
+
+- `only_keep_scope`：如果非目标志愿推荐系数很高，也不能静默保留；但预览必须提示“这些高推荐项会因只保留 X 被移出”，让用户知道代价。
+- `must_include_scope`：只要求至少有 X，不应删除其他高推荐项；如果需要腾位置，应优先选择低推荐、低意向或风险较高的项，并披露代价。
+- `exclude_scope`：若当前方案命中排除范围，优先生成移出/替换预览；若移出会导致数量不足，要同步说明补位能力。
+- 结构修复：保数量、保安全、保偏好、保院校层次之间需要比较，不能只按某一个指标排序。
+
+#### 5.3.0.4 与现有框架的统一关系
+
+这层不是新旁路，应复用现有主链：
+
+- 对话确认继续复用 3.0.3 `PendingConfirmation` 协议，卡片是主入口，短文本确认只消费 active pending。
+- 当前方案修改继续通过 `plan_next_action -> execute_plan_action` 或后端 `fix-proposals/apply` 受控执行。
+- 审查问题修复继续以 `ReviewCheck -> FixProposal -> dryRun -> apply -> RepairReport` 为准。
+- 推荐系数、候选/方案刷新沿用当前 stale 和 refresh 逻辑，不在复合计划里重新定义。
+- `only_keep` / `must_have` 不再作为零散特殊路径扩展，而是 `PlanGoal.goalType` 的两个子类。
+
+#### 5.3.0.5 不允许的实现方式
+
+- 不允许用固定话术或少数关键词决定 `goalType`。
+- 不允许模型直接输出“已删除/已加入/已生效”。
+- 不允许把“其他方向都不要”展开成用户没有点名的全部负向专业门类。
+- 不允许因用户说“只保留 X”而删除 X。
+- 不允许跳过实体歧义披露，直接把具体专业扩大到专业类。
+- 不允许在没有 active pending 的情况下，靠模型自然语言里的“请确认”触发执行。
 
 ### 5.3.1 风险后的修复策略矩阵
 
@@ -852,20 +1228,24 @@ GET  /session/review-workflow/reports/{reportId}
   - 主按钮不承载「查看审查结果」，避免用户把查看详情和重新审查混成同一个动作。
 - 风险提示图标保留为快捷入口。hover 继续展示轻量摘要，tooltip 底部提供「查看详情」文字链；点击风险提示图标或「查看详情」文字链都打开同一个「方案审查结果」弹窗，并按需调用 `fix-proposals/generate` 刷新建议。
 - 方案顺序栏只保留当前顺序说明和审查入口，不再在「当前顺序」提示下额外展示“方案有提醒 / 风险 N / 提醒 N”摘要。用户需要查看审查细节时，通过风险提示图标或 tooltip 内「查看详情」进入弹窗。
+- 审查请求进行中时，弹窗内容区展示「正在审查当前方案」，不能落入“当前审查没有需要处理的问题”的空态；只有审查完成且确实没有风险/提醒/处理建议时才展示空态。
 - 弹窗以审查问题为主线，而不是先列一组孤立修复按钮：
   - 每个 `ReviewCheck` 独立展示问题名称、风险/提醒等级、摘要、明细和影响项数量；默认不直接展示处理动作，避免把每个提醒都表达成必须处理。
   - 与该问题关联的 `FixProposal.sourceCheckCodes` 作为二级内容收在「查看处理建议」下，用户主动点开后才展示。
-  - 展开后的信息分两层：`ReviewCheck.suggestedAction` 作为「处理方向」，说明用户可以从哪类取舍入手；`FixProposal` 作为「处理方式」，只展示系统已经形成的可预览或可确认实施方案。
-  - `ready` proposal 在二级内容中显示「确认处理」，点击后仍走 `fix-proposals/apply` 的版本、stale、status、strategy 白名单校验。
-  - `preview_only` 在二级内容中只展示预览和取舍，不提供落盘入口。
-  - `blocked/info` 在二级内容中不展示 `blocked`、dry-run、验证失败、版本保护等系统状态；只转译成用户能理解的影响和下一步，例如“当前没有合适的一进一出替换方案，建议先看受影响志愿再手动调整”。
+  - 展开后的信息分两层：`ReviewCheck.suggestedAction` 作为「处理方向」，说明用户可以从哪类取舍入手；`FixProposal` 作为「可选处理」，只展示系统已经形成的可预览或可确认实施方案。
+  - 前端不展示 `ready/preview_only/blocked/info/empty` 这类 proposal 状态标签。可执行项靠「处理前预览」和「立即执行」按钮表达；不能直接执行的项只说明影响、取舍和下一步，不额外贴“需要判断/仅供参考”等状态。
+  - `ready` proposal 在二级内容中显示「处理前预览」和「立即执行」，点击后仍走 `fix-proposals/apply` 的版本、stale、status、strategy 白名单校验。
+  - `preview_only` 只展示预览、取舍和影响，不提供落盘入口。
+  - `blocked` 不展示 `blocked`、dry-run、验证失败、版本保护等系统状态；只转译成用户能理解的影响和下一步，例如“当前没有合适的一进一出替换方案，建议先看受影响志愿再手动调整”。
+  - `info` 只展示提醒内容，不提供执行按钮。
   - 没有关联 proposal 的问题默认只展示审查发现；如果有 `suggestedAction`，也放在「查看处理建议」下。
   - 没有挂到具体审查项的 proposal 统一收在「其他需要关注的问题」下，并同样通过「查看处理建议」二级展开，不直接铺开处理卡。
 - `pendingActions` 在弹窗中只作为「其他提醒/待处理建议」展示，不再由前端基于它自行拼修复行为。正式修复入口必须来自后端 `FixProposal`。
 - 弹窗底部「重新审查」始终重新执行 `review-workflow/run`，不会只重新生成修复建议，避免用户以为审查结果也刷新了。
 - 应用修复后弹窗展示最近一次 `RepairReport`，并重新拉取工作台状态和 proposal，确保前端审查结果、工作台方案和修复状态同步。
-- 用户侧措辞统一为“处理建议”“处理方式”“确认处理”“最近一次处理结果”。前端不直接展示“硬约束”“修复建议”“暂不可用”“预览验证未通过”“不能直接应用”等系统化语言；`hard_constraints` 这类内部 scope 在用户侧转译为“已确认的筛选条件或报考要求让范围变窄”，引导用户调整筛选或报考要求后重新审查。
-- 候选不足不再使用单一泛化文案。前端按 `candidateShortages.scope/reasonCode/sourceCheckCode` 转译：冲稳保配比不足说明目标区间候选或可替换方案不足；梯度断层说明缺少断层中间候选；数量多于要求时提示精简；部分专业组安全垫不足时说明哪些可处理、哪些仍需人工判断。
+- 用户侧措辞统一为“处理建议”“可选处理”“处理前预览”“立即执行”“最近一次处理结果”。前端不直接展示“硬约束”“修复建议”“暂不可用”“预览验证未通过”“不能直接应用”等系统化语言；`hard_constraints` 这类内部 scope 在用户侧转译为“已确认的筛选条件或报考要求让范围变窄”，引导用户调整筛选或报考要求后重新审查。
+- 用户侧最终只展示几类结果，不展示内部状态名：审查进行中、当前没有需要处理的问题、可立即执行的处理建议、有预览但暂不直接执行的取舍建议、暂时没有稳妥处理方案的原因说明、只读提醒、最近一次处理结果。
+- 候选不足不再使用单一泛化文案。前端按 `candidateShortages.scope/reasonCode/sourceCheckCode` 转译：冲稳保配比不足说明目标区间候选或可替换方案不足；梯度断层说明缺少断层中间候选；数量多于要求时提示精简；部分专业组内稳妥性不足时说明哪些可处理、哪些暂时没有合适补位，不再展示“人工确认”“组内安全垫”等系统化说法。
 - 审查结果新增 `ReviewCheck.reasonCode`，用于表达审查命中的结构化原因，不从中文 `summary/detail` 反推。当前覆盖：
   - 数量校验：`count_missing`、`count_over_limit`。`count_over_limit` 会在 fix proposal 中映射为 `candidateShortages.scope=current_plan/reasonCode=count_over_limit`，前端展示为“当前方案数量高于要求，需要精简”，不再误说成候选池不足。
   - 冲稳保配比：`protect_tier_missing`、`sprint_tier_missing`、`sprint_tier_over_limit`。修复建议按 reasonCode 决定目标区间和建议类型，避免继续通过“冲区占比过高/保区占比过低”等中文文案判断。
@@ -1083,6 +1463,53 @@ GET  /session/review-workflow/reports/{reportId}
 - 旧审查问题可以保留在详情里，但需要标记为基于旧版本。
 - 用户点击审查后重新计算概率倒挂、梯度断层和结构风险。
 
+### 6.8 复合方案调整
+
+用户：只保留临床医学，其他专业先不要。
+
+预期：
+
+- Agent 输出 `PlanGoal(goalType=only_keep_scope)`，正向范围是临床医学。
+- 系统先解析实体，确认是标准具体专业、专业类还是招生计划展示专业。
+- 当前方案中命中临床医学的项不能被移除。
+- 当前方案中非临床医学项可以进入移出预览。
+- 如果移出后数量不足，系统从候选池查找临床医学补入项；没有候选时说明当前候选池范围内不足。
+- 预览中明确“确认前不会改方案”。
+- 用户确认后，写入报考要求，并执行当前方案变更；执行后复审。
+
+用户：方案里必须有临床医学，其他先保留。
+
+预期：
+
+- Agent 输出 `PlanGoal(goalType=must_include_scope)`。
+- 当前方案已有临床医学时，只写入报考要求，不生成删除其他方向的动作。
+- 当前方案没有临床医学时，生成补入或替换预览。
+- 候选不足时返回无法满足原因，不误删其他专业。
+
+用户：不要中外合作，省内优先，保底多一点。
+
+预期：
+
+- Agent 输出 `PlanGoal(goalType=mixed_adjustment)`。
+- 拆成风险处理、地域偏好/要求承接、结构调稳三个子目标。
+- 风险处理优先复用 `replace_risk_items/remove_risk_items`。
+- 结构调稳复用 `rebalance_tier_ratio/add_safety_items/fill_missing_count`，但当前未开放自动 apply 的结构策略只给预览。
+- 预览披露取舍，不承诺一次性全部修好。
+
+### 6.9 专业实体歧义
+
+用户：不想学工商管理。
+
+预期：
+
+- 系统默认按标准具体专业“工商管理”理解。
+- 如果当前方案中有“工商管理类（含工商管理、市场营销、人力资源管理）”这类招生计划展示专业类，必须在预览中说明：
+  - 确定命中的具体专业有哪些。
+  - 哪些是包含工商管理的专业类。
+  - 是否要把这些专业类也一起处理，需要用户确认。
+- 不能静默扩大为排除整个工商管理类。
+- 如果用户明确补充“这一类都不要”，才扩大到专业类。
+
 ## 7. 与 3.0.3 的关系
 
 3.0.3 保留：
@@ -1104,7 +1531,30 @@ GET  /session/review-workflow/reports/{reportId}
 - 统一 ReviewInvalidationPolicy 和概览风险 stale 语义。
 - 外部稳定 review workflow 接口。
 - 前端审查修复交互。
+- 用户复合方案调整计划：`PlanGoal -> CompositePlanProposal -> PendingConfirmation -> Apply -> Review`。
+- 专业实体歧义披露，特别是具体专业、专业类、门类和招生计划展示专业类的边界。
 - 审查后修复的端到端回归用例。
+
+### 7.1 与当前实现框架的整合边界
+
+复合方案调整不新增一套独立执行链。统一整合如下：
+
+| 层 | 现有机制 | 复合计划如何接入 |
+| --- | --- | --- |
+| Agent 理解 | `collect_plan_context_inputs -> plan_next_action` | `plan_next_action` 输出 `PlanGoal`、实体解析、原子动作计划和可行性 |
+| 方案预览 | `execute_plan_action(stage=preview)`、`FixProposal` dry-run | 复合计划先执行 dry-run，不落盘 |
+| 确认协议 | 3.0.3 `PendingConfirmation` | 复合计划作为一个 pending 确认单元，短文本确认仍只消费 active pending |
+| 方案执行 | `execute_plan_action(stage=apply)`、`fix-proposals/apply` | 原子动作按白名单和版本保护执行 |
+| 意向/要求写入 | `apply_selected_intents`、`constraintState` | 复合计划中的 `intentUpdates` 确认后同步写入 |
+| 审查复验 | `runReview`、`RepairReport` | 执行后必须复审或执行 source check 验证 |
+| 刷新联动 | 现有 stale / refresh 逻辑 | 不重新定义刷新；沿用当前方案、推荐系数和工作台刷新规则 |
+
+不做的事：
+
+- 不在旧 `plan-adjustment/apply`、旧 `compensation/apply` 或旧 Agent registry 中继续扩展复合逻辑。
+- 不让前端根据文案自行拼复合动作。
+- 不把模型自然语言回复作为执行依据。
+- 不把 `only_keep` / `must_have` 写成独立旁路。
 
 ## 8. P0 / P1 建议
 
@@ -1119,7 +1569,10 @@ GET  /session/review-workflow/reports/{reportId}
 - `plan-adjustment/apply` 已按废弃处理；后续只清理残留文档和潜在外部调用。
 - `group_inner_safety_guard` 已进入正式 `runReview()`；旧 `analyzePlanAdjustment()` 暂不扩大暴露面。
 - 新增外部 workflow 最小接口：run review + generate proposals + apply proposal + report。
+- 定义 `PlanGoal` / `CompositePlanProposal` schema 和复合预览确认协议。
+- 补齐专业实体消歧协议，至少覆盖具体专业、专业类、门类、招生计划展示专业类。
 - 增加端到端回归：专业模式、专业组模式、条目风险、结构风险、初始生成 tradeoff、review stale、候选不足、外部触发。
+- 增加复合方案调整回归：`only_keep_scope`、`must_include_scope`、`exclude_scope`、`mixed_adjustment`。
 
 ### P1
 
@@ -1129,6 +1582,7 @@ GET  /session/review-workflow/reports/{reportId}
 - 官方政策/招生章程风险与审查规则结合。
 - 审查规则配置化和版本化。
 - 外部系统 webhook/callback。
+- 更丰富的模型结构化评估集，覆盖真实用户口语化、多目标、简称、反复修正和歧义确认。
 
 ## 9. 落地模块设计
 
@@ -1273,7 +1727,7 @@ Agent 不应自己发明审查问题分类。3.1.0 后：
 
 - `review_plan` 读取后端增强后的 review result。
 - `analyze_adjustment` 逐步迁移到 `generateFixProposal`。
-- `preview_compensation` 成为 `FixProposal` 的一种策略，不再是独立主语义。
+- `preview_fix_proposal` 是 Agent 侧统一修复预览入口；旧 compensation 不再是独立 action family。
 - 用户说「修最严重的问题」「太贵的去掉」「调稳」时，Agent 调 workflow proposal，而不是自己拼 action。
 - 对话回复只做解释、澄清和确认，不绕开 proposal apply。
 
@@ -1282,14 +1736,12 @@ Agent 不应自己发明审查问题分类。3.1.0 后：
 - `review_plan` handler 当前会先调用 `/session/review/run`，再调用 `/session/fix-proposals/generate`，把 proposal 的 `status/strategy/impact/candidateShortages/blockingReason` 归一进回复 facts。
 - `analyze_adjustment` handler 当前仍调用旧 `/session/plan-adjustment/analyze` 做只读分析，但也会补充读取 `fix-proposals/generate`，用于解释哪些方向已有后端 proposal、哪些只是分析建议。
 - `generate_planning_fix_proposals` 和 `apply_planning_fix_proposal` 已在 Agent workflow tool / internal client 中存在；`apply_planning_fix_proposal` 受 `user_confirmed` 保护，并最终由后端 `RepairProposalApplyPolicy` 做版本、stale、status、strategy 白名单校验。
-- ChatAgent 主工具列表当前仍未直接开放 `apply_planning_fix_proposal`，因为对话侧还没有稳定保存 proposal_id/sourceVersionGuard 的确认卡状态，也没有在对话里完整展示 RepairReport 的前端状态同步。
-- `preview_compensation` / `apply_compensation` 仍是兼容能力：
-  - 可用于已有“补几个稳/保”这类低风险补齐语义。
-  - 不能承接条目风险替换、结构性满容量调整、复审报告和候选不足归因。
-  - 后续应迁移为 `FixProposal` 的 `fill_missing_count/add_safety_items` strategy，再从 action family 中退场。
+- ChatAgent 主工具列表当前仍不直接开放 `apply_planning_fix_proposal`；对话侧已通过 `pendingConfirmation(actionFamily=apply_fix_proposal)` 稳定保存 `proposalId/sourceVersionGuard`，确认后由 `ChatService` 内部调用 apply，并在回复中展示 `RepairReport` 的标题、对应问题、增删数量、影响范围和复验结果。
+- Agent Python 侧已删除 `preview_planning_compensation/apply_planning_compensation` wrapper，`PlanActionPlan.action_family` 也不再接受 `preview_compensation/apply_compensation`。历史消息里出现旧 action 时只能作为 legacy fallback 被忽略或拒绝，不能生成新的 pending。
+- Java 侧仍保留 `compensationPreview` 和 `/session/compensation/*` 兼容接口，定位为 FixProposal 内部候选/动作素材和旧状态字段，不作为 Agent 主路径。
 - Agent 本地 `review_issue_registry.py` 当前只应作为后端元数据缺失、老会话和测试 fixture 的兜底；主路径优先消费后端 `ReviewCheck` metadata 或 `FixProposal`。
 
-因此，对话侧目前是“只读解释已接入 FixProposal，正式修复 apply 尚未作为主路径开放”。这与前端工作台的统一审查弹窗互补：现阶段用户在对话里看到处理方向，真正确认修复优先在工作台审查结果弹窗中完成。
+因此，对话侧目前是“模型只读预览，service 受控确认应用”：用户可以在对话里看到处理方向；如果后端 proposal 为 `ready`，会收到确认卡，确认后由 service 应用并刷新工作台。工作台审查结果弹窗仍是同一套 Java proposal 协议的前端入口，两边共享 apply policy。
 
 ### 9.7 Frontend Integration
 
@@ -1744,12 +2196,9 @@ cd zhiyuan-agent
 
 当前边界：
 
-- 这一步仍未把 ChatAgent 主工具列表或 resolver 主路径切到 `FixProposal`，避免未回归的大范围对话行为变化。
-- 旧 `preview_compensation`、`analyze_adjustment`、Agent 本地 `review_issue_registry.py` 仍在主路径中，下一阶段需要按场景迁移：
-  - 审查问题修复：优先 `fix-proposals/generate`。
-  - 可直接应用的低风险修复：走 `fix-proposals/apply`。
-  - 只读分析：保留 `plan-adjustment/analyze` 或迁移为 `FixProposal + ReviewState` 的展示层。
-  - 纯补齐：最终也应收敛到 `fill_missing_count` proposal，旧 `compensation/apply` 退为内部实现。
+- 后续阶段已把 ChatAgent 只读修复预览切到 `preview_fix_proposal` / `fix-proposals/generate`。
+- `preview_compensation/apply_compensation` 已从 Agent action family 和 Python wrapper 中退场；纯补齐、补保底、梯度断层等诉求统一由后端 `FixProposal` strategy 披露。
+- `analyze_adjustment` 仍作为只读结构分析兜底；Agent 本地 `review_issue_registry.py` 仍用于老会话、测试 fixture 或后端元数据缺失时的降级。
 
 ### 12.8 已完成：Agent 审查/调整只读主路径消费 FixProposal Phase 7
 
@@ -1757,7 +2206,7 @@ cd zhiyuan-agent
 
 背景：
 
-- Phase 6 只新增了 Agent 调用 `fix-proposals/generate/apply` 的工具包装，ChatAgent 主路径仍主要依赖 `review_plan`、`analyze_adjustment`、`preview_compensation` 和本地 `review_issue_registry.py`。
+- Phase 6 只新增了 Agent 调用 `fix-proposals/generate/apply` 的工具包装；后续 Phase 已把 ChatAgent 只读修复预览收口到 `review_plan`、`analyze_adjustment`、`preview_fix_proposal` 和后端 `FixProposal` facts。
 - 本地 registry 旧语义曾把 `high_tuition`、`cooperative_program` 映射为 `remove_units`，会把“处理高收费/中外合作”误导为整批删除。
 - 这类风险本质上是用户权衡类风险：可能需要替换、保留提醒或明确删除，不应默认删除。
 
@@ -1832,7 +2281,7 @@ cd zhiyuan-agent
   - `scopeKind=item + defaultFixStrategy=replace_risk_items` -> `item_replacement`
   - `replace_risk_items` -> 默认 `review_plan`，由 FixProposal 披露替换预览。
   - `remove_risk_items` -> `remove_units`
-  - `fill_missing_count` / `add_safety_items` / `fill_probability_gap` -> `preview_compensation`
+  - `fill_missing_count` / `add_safety_items` / `fill_probability_gap` -> `preview_fix_proposal`
   - `sort_by_probability` -> `sort_ordered_plan`
   - `rebalance_tier_ratio` / `adjust_major_group_inner_safety` -> `analyze_adjustment`
 - `ActionResolver` 在已有 `review_issue_code` 时，优先读取 `PlanContextInputs.review_issues` 中的后端元数据，再决定是否覆盖 action。
@@ -1852,31 +2301,25 @@ cd zhiyuan-agent
 
 - `review_issue_registry.py` 尚未删除，因为老会话缺少后端元数据、部分测试 fixture 和无后端上下文的 resolver 单测仍需要兜底。
 - ChatAgent 主路径仍不直接开放 `fix-proposals/apply`；应用 proposal 仍需要后续前端确认卡、proposal_id 状态管理和 apply 后复验展示。
-- `preview_compensation` / `apply_compensation` 仍保留为现有内部能力；后续应逐步收敛为 FixProposal strategy 的实现细节。
+- Agent action family 已移除 `preview_compensation/apply_compensation`；Java `compensationPreview` 只作为 reviewState/FixProposal 内部素材和旧状态兼容字段保留。
 
 旧补偿链路当前状态：
 
 | 能力 | 当前入口 | 仍保留的原因 | 不能再承接的能力 | 退场方向 |
 | --- | --- | --- | --- | --- |
-| 补偿预览 | Agent `preview_compensation` -> `/session/compensation/preview` | 对“补几个更稳的”“还差几个怎么补”仍能快速披露可补候选；`generateFixProposals()` 当前也会复用 compensation preview 作为部分 proposal 的候选来源 | 不应被当作完整审查修复协议；不能单独表达删除、替换、复审报告和不可满足原因 | 纯补齐迁移为 `fill_missing_count` proposal；结构问题迁移为 `FixProposal` |
-| 补偿应用 | Agent `apply_compensation` -> `/session/compensation/apply` | 兼容已经确认的低风险补数量/有剩余容量补候选 | 不允许满方案时把 `rebalance_tier_ratio` / `fill_probability_gap` 等结构性建议按 add-only 落盘；不承担高收费、中外合作、限报等条目风险修复 | 最终退为内部 helper 或删除外部可触发 action，统一走 `fix-proposals/apply` |
+| 补偿预览 | Java reviewState `compensationPreview` / 后端兼容 `/session/compensation/preview` | `generateFixProposals()` 内部仍会复用补齐候选和结构动作素材；旧状态也可能携带该字段 | Agent 不再直接规划或调用；不能作为完整审查修复协议，也不能生成 pending | 保留为 Java 内部 helper/旧字段；用户侧统一通过 `preview_fix_proposal` / `fix-proposals/generate` 看处理建议 |
+| 补偿应用 | 后端兼容 `/session/compensation/apply` | 历史后端兼容接口，当前 Python Agent 不再封装或调用 | 不允许绕过 `RepairProposalApplyPolicy`；不承担条目风险替换、结构性满容量调整、复审报告 | 继续退为内部兼容接口；对话和前端统一走 `fix-proposals/apply` |
 | 调整分析 | Agent `analyze_adjustment` -> `/session/plan-adjustment/analyze` | 仍可作为只读结构分析兜底，尤其在 proposal 还没有可执行策略时给用户解释问题 | 不落盘、不生成可确认修复任务、不替代 dry-run | 展示层逐步改为消费 `ReviewState + FixProposalState` |
 
-这意味着 Agent 当前仍可能规划 `preview_compensation` / `apply_compensation`，但它们必须受两层保护：
-
-- 对话层：仍按高副作用协议，`apply_compensation` 必须先有 preview 和用户确认。
-- 服务端：`applyCompensation()` 执行前按剩余容量重新裁剪动作；满方案下结构性补偿不会绕过 `FixProposal` 的 `preview_only` 白名单控制。
-- 前端层：PC 工作台不再调用旧 `compensation/preview` / `compensation/apply`，修复建议弹窗统一走 `fix-proposals/generate` 和 `fix-proposals/apply`。
-
-后续迁移时，应优先把“补齐数量/补保底”的用户话术从旧 `apply_compensation` 转成 `generateFixProposals()` 返回的 `fill_missing_count` / `add_safety_items` proposal；等前端或对话卡片具备 proposal_id 状态管理后，再把 `apply_compensation` 从 Agent action family 中移除。
+这意味着 Agent 当前不会再规划 `preview_compensation` / `apply_compensation`。补齐数量、补保底、梯度断层、安全垫等诉求统一进入 `preview_fix_proposal`，由后端 `FixProposal` 披露 `fill_missing_count/add_safety_items/fill_probability_gap` 等 strategy 的可处理性、候选不足和阻塞原因。
 
 Agent 本地审查 issue fallback 对齐：
 
 - 背景：正常链路应优先消费后端 `ReviewCheckDTO` 的 `scopeKind/defaultFixStrategy/supportedFixStrategies`；但老会话、测试 fixture 或后端缺字段时，Agent 仍会回退到本地 `review_issue_registry.py`。
 - 本轮把 fallback 默认动作对齐到后端 `ReviewRuleRegistry`：
   - `probability_inversion`：`sort_by_probability` -> `sort_ordered_plan`，仍然是需要确认的排序预览，不会直接落盘。
-  - `probability_gap`：`fill_probability_gap` -> `preview_compensation`，满方案时仍会被 resolver 降级为只读分析，旧 `applyCompensation()` 也有容量保护。
-  - `edge_score`：`add_safety_items` -> `preview_compensation`。
+  - `probability_gap`：`fill_probability_gap` -> `preview_fix_proposal`。
+  - `edge_score`：`add_safety_items` -> `preview_fix_proposal`。
   - `high_tuition/cooperative_program`：继续保持 `item_replacement -> review_plan`，由后端 `replace_risk_items` proposal 披露替换预览，避免默认删除。
 - 这不是用户话术字符串匹配，只是结构化 review code 到 action family 的兼容映射；目的是让“有后端 metadata”和“缺 metadata fallback”两条路径语义一致。
 
@@ -1887,7 +2330,7 @@ cd zhiyuan-agent
 .venv/bin/python -m pytest tests/regression/test_keyword_matchers.py tests/unit/test_action_resolver.py tests/integration/test_resolver_vs_legacy.py -q
 .venv/bin/python -m pytest tests/unit/test_plan_orchestration_tool.py tests/unit/test_plan_execution_tool.py tests/regression/test_execution_preview.py tests/regression/test_execution_apply.py -q
 .venv/bin/python -m pytest tests/unit/test_plan_context_tool.py tests/unit/test_planning_workflow_tool.py tests/unit/test_planning_plan_scenarios_sync.py -q
-.venv/bin/python -m pytest tests/unit/test_planning_workflow_tool.py::test_apply_planning_fix_proposal_requires_confirmation tests/unit/test_planning_workflow_tool.py::test_apply_planning_fix_proposal_formats_repair_report tests/unit/test_planning_workflow_tool.py::test_apply_planning_compensation_requires_confirmation -q
+.venv/bin/python -m pytest tests/unit/test_planning_workflow_tool.py::test_apply_planning_fix_proposal_requires_confirmation tests/unit/test_planning_workflow_tool.py::test_apply_planning_fix_proposal_formats_repair_report -q
 ```
 
 结果：分别通过 `177 passed`、`296 passed`、`67 passed`、`3 passed`。覆盖结构化 review issue fallback、resolver 高副作用确认边界、plan_next_action/execute_plan_action 主链路、补偿预览/应用、FixProposal 应用文案和旧补偿确认保护。
@@ -1896,7 +2339,9 @@ cd zhiyuan-agent
 
 - `zhiyuan-web/src/service/apis/sessionDetail.ts` 删除未被调用的 `previewPlanningCompensationApi` / `applyPlanningCompensationApi`，避免 PC 工作台继续暴露旧补偿低层入口。
 - `PlanningCompensationPreview` 类型保留，因为 `PlanningState.reviewState.compensationPreview` 仍作为审查结果的一部分被工作台状态消费。
-- 后端 `/session/compensation/preview` / `/session/compensation/apply` 和 Agent `preview_compensation` / `apply_compensation` 暂时保留，定位为兼容和低风险补齐路径，不是完整修复主协议。
+- 后端 `/session/compensation/preview` / `/session/compensation/apply` 暂时保留，定位为 Java 内部兼容和低风险补齐素材，不是 Agent/前端完整修复主协议。
+- 2026-06-13 已进一步退场：Agent Python 侧删除 `preview_planning_compensation/apply_planning_compensation` wrapper，`PlanActionPlan` 不再接受 `preview_compensation/apply_compensation`。旧历史消息中的相关 action 只能被忽略或拒绝，不能再生成新的补偿 pending。
+- `_build_compensation_preview_facts` 会同时输出总 action 数和 `legacy_add_action_count / legacy_add_estimated_fill_count`。pending 提取只看后者，避免“替换高收费”“调整梯度断层”等结构建议绕过 Java `FixProposal` 和 `RepairProposalApplyPolicy`。
 - 前端检索确认 `previewPlanningCompensationApi` / `applyPlanningCompensationApi` 已无调用方；PC 工作台修复建议弹窗只调用 `fix-proposals/generate` / `fix-proposals/apply`。
 - 修复建议弹窗中只有 `ready` proposal 展示「确认修复」按钮；`preview_only`、`blocked`、`info` 改为右侧只读状态文本，避免用户把不可应用建议理解为禁用但可操作的按钮。
 - 2026-06-11 补充：`blocked` proposal 展示进一步收敛，只保留 summary 和一条主要“暂不能自动修复的原因”；不再展示 dry-run 影响、临时替换预览或多条候选不足堆叠。`ready` / `preview_only` 仍保留影响、处理预览和替换配对，便于用户确认或人工判断取舍。
@@ -2273,7 +2718,7 @@ mvn -Dtest=ReviewRuleRegistryTest,ReviewInvalidationPolicyTest,PlanningStateServ
 - 已完成 `CandidatePoolQualityStatusBuilder` 第一阶段抽取：候选池 `statusCode/statusMessage/riskHints` 展示构造从 `PlanningStateService` 迁出，复用统一候选池状态口径。builder 只负责状态文案和风险提示构造，不保存、不排序、不生成或修复方案。
 - 已完成 `PlanningWorkflowStatusBuilder` 第一阶段抽取：工作台响应中的候选池状态、方案状态、审查状态和导出状态从 `PlanningStateService` 迁出为纯状态构建器。builder 不读写服务、不保存、不触发修复；导出态只消费服务层传入的 latest export event。
 - 已完成 `InitialPlanStrategyReport` 解释增强第一阶段：初始生成报告新增 `objectiveWeights`、`actions`、`tradeoffs` 和 `AppliedRepair.tradeoffSummary`。其中 `actions` 复用 `FixProposalActionDTO` 只读表达已执行替换的 `replace_volunteers/replacementPairs`，但不生成可 apply 的 `FixProposalDTO`，也不进入 dry-run 或 apply 白名单。
-- `replace_risk_items` 已能生成替换预览，但尚未进入可自动 apply 策略。
+- `replace_risk_items` 已能生成替换预览；后续已推进到受控 apply：只有完整 replacement pair、sourceVersion guard、审查未过期、proposal ready、dry-run 复验通过时，才允许通过 `fix-proposals/apply` 落盘。
 - `rebalance_tier_ratio` / `fill_probability_gap` 在满容量时已能生成 `replace_volunteers` 预览 pair，但仍保持 `preview_only`，不开放自动 apply。
 
 ## 13. 接下来计划
@@ -2811,7 +3256,7 @@ cd zhiyuan-server
 mvn -q -Dtest=RepairProposalApplyPolicyTest,RepairReplacementActionBuilderTest,RepairDryRunSimulatorTest,PlanningStateServiceTest#shouldGenerateTierRatioFixProposalWithReplacementPairsFromFullPoolWhenCandidateViewFiltersOutTargetTier,PlanningStateServiceTest#shouldGenerateProbabilityGapFixProposalWithReplacementPairsFromFullPoolWhenCandidateViewFiltersOutMiddleCandidate,PlanningStateServiceTest#shouldGenerateTierRatioFixProposalWithUnitReplacementPairsWhenMajorGroupPlanIsFull test
 ```
 
-结果：通过。该回归确认 `rebalance_tier_ratio` / `fill_probability_gap` 是审查修复 strategy，不是最终直接执行的落盘 action；满容量时可以由 `RepairReplacementActionBuilder` 转成 `replace_volunteers` pair 用于预览，但最终 proposal 仍保持 `preview_only`，且 `RepairProposalApplyPolicy` 会拒绝这两类结构策略进入自动 apply 白名单。当前允许自动 apply 的仍只有 `fill_missing_count`、`sort_by_probability`、`remove_risk_items`、`adjust_major_group_inner_safety`。
+结果：通过。该回归确认 `rebalance_tier_ratio` / `fill_probability_gap` 是审查修复 strategy，不是最终直接执行的落盘 action；满容量时可以由 `RepairReplacementActionBuilder` 转成 `replace_volunteers` pair 用于预览，但最终 proposal 仍保持 `preview_only`，且 `RepairProposalApplyPolicy` 会拒绝这两类结构策略进入自动 apply 白名单。当前允许自动 apply 的是 `fill_missing_count`、`sort_by_probability`、`remove_risk_items`、`replace_risk_items`、`adjust_major_group_inner_safety`。
 
 2026-06-10 增量复核：
 
@@ -3087,10 +3532,10 @@ Agent internal client 兼容入口清理：
 cd zhiyuan-agent
 .venv/bin/python -m py_compile app/util/internal_client.py
 rg -o "^async def [A-Za-z0-9_]+" app/util/internal_client.py | sed 's/^async def //' | sort | uniq -d
-.venv/bin/python -m pytest tests/unit/test_planning_workflow_tool.py::test_apply_planning_fix_proposal_requires_confirmation tests/unit/test_planning_workflow_tool.py::test_apply_planning_fix_proposal_formats_repair_report tests/unit/test_planning_workflow_tool.py::test_apply_planning_compensation_requires_confirmation tests/unit/test_planning_workflow_tool.py::test_apply_planning_compensation_uses_session_and_formats_state tests/unit/test_planning_workflow_tool.py::test_generate_planning_ordered_plan_requires_confirmation tests/unit/test_planning_workflow_tool.py::test_generate_planning_ordered_plan_formats_ordered_state tests/unit/test_planning_plan_scenarios_sync.py::test_planning_scenario_apply_compensation_requires_confirmation_in_workflow tests/unit/test_planning_plan_scenarios_sync.py::test_planning_scenario_apply_compensation_prefers_unit_total_and_mentions_plan tests/unit/test_planning_plan_scenarios_sync.py::test_planning_scenario_generate_ordered_plan_requires_confirmation_in_workflow -q
+.venv/bin/python -m pytest tests/unit/test_planning_workflow_tool.py::test_apply_planning_fix_proposal_requires_confirmation tests/unit/test_planning_workflow_tool.py::test_apply_planning_fix_proposal_formats_repair_report tests/unit/test_planning_workflow_tool.py::test_generate_planning_ordered_plan_requires_confirmation tests/unit/test_planning_workflow_tool.py::test_generate_planning_ordered_plan_formats_ordered_state tests/unit/test_planning_plan_scenarios_sync.py::test_planning_scenario_rejects_legacy_apply_compensation_action_family tests/unit/test_planning_plan_scenarios_sync.py::test_planning_scenario_generate_ordered_plan_requires_confirmation_in_workflow -q
 ```
 
-结果：通过。`internal_client.py` 中被后续同名多租户函数覆盖的旧单租户 `run_planning_review`、`apply_planning_compensation`、`generate_planning_ordered_plan` 已清理；保留的多租户函数补充了审查、排序和低风险补偿兼容说明。重复 async 函数扫描无输出，`py_compile` 通过，Agent 目标回归 `9 passed`。该清理不改变运行时行为，因为旧定义此前已被 Python 后续同名定义覆盖；主要目的是降低新旧入口混杂导致的维护误判。
+结果：通过。`internal_client.py` 中被后续同名多租户函数覆盖的旧单租户 `run_planning_review`、`generate_planning_ordered_plan` 已清理；后续又删除了 Agent Python 侧 `preview_planning_compensation/apply_planning_compensation` wrapper。重复 async 函数扫描无输出，`py_compile` 通过，目标回归覆盖 FixProposal apply 防护、排序生成确认和旧 `apply_compensation` payload 拒绝。该清理降低新旧入口混杂导致的维护误判。
 
 结构替换自动应用开放前置条件：
 
@@ -3162,10 +3607,10 @@ cd zhiyuan-agent
 ```bash
 cd zhiyuan-agent
 .venv/bin/python -m pytest tests/unit/test_plan_orchestration_tool.py tests/unit/test_plan_execution_tool.py tests/regression/test_execution_preview.py -q
-.venv/bin/python -m pytest tests/unit/test_planning_router_tool.py tests/unit/test_planning_plan_scenarios_sync.py -q
+.venv/bin/python -m pytest tests/unit/test_planning_plan_scenarios_sync.py -q
 ```
 
-结果：通过，主链路 `260 passed`，兼容单步入口 `48 passed`。新增边界确认：模型漏传 `volunteer_ids` 且没有结构化筛选范围时，`plan_next_action`、`execute_plan_action` 和历史兼容 `handle_planning_request(candidate_select)` 都会以缺少 `selection_scope` / 缺少候选范围阻断；显式传入 `volunteer_ids` 的候选引用仍可解析为真实候选 ID 并生成确认预览。
+结果：通过。新增边界确认：模型漏传 `volunteer_ids` 且没有结构化筛选范围时，`plan_next_action` 和 `execute_plan_action` 都会以缺少 `selection_scope` / 缺少候选范围阻断；显式传入 `volunteer_ids` 的候选引用仍可解析为真实候选 ID 并生成确认预览。旧 `handle_planning_request(candidate_select)` 已删除，不再作为兼容验证入口。
 
 初始推荐取舍说明补充回归：
 
@@ -3184,7 +3629,7 @@ git diff --check
 
 ```bash
 cd zhiyuan-agent
-.venv/bin/python -m pytest tests/unit/test_instructions.py tests/unit/test_planning_workflow_tool.py tests/unit/test_plan_execution_tool.py tests/unit/test_plan_orchestration_tool.py tests/unit/test_planning_router_tool.py tests/unit/test_planning_plan_scenarios_sync.py tests/unit/test_action_resolver.py tests/regression/test_keyword_matchers.py tests/regression/test_execution_apply.py tests/regression/test_execution_preview.py tests/integration/test_resolver_vs_legacy.py -q
+.venv/bin/python -m pytest tests/unit/test_instructions.py tests/unit/test_planning_workflow_tool.py tests/unit/test_plan_execution_tool.py tests/unit/test_plan_orchestration_tool.py tests/unit/test_planning_plan_scenarios_sync.py tests/unit/test_action_resolver.py tests/regression/test_keyword_matchers.py tests/regression/test_execution_apply.py tests/regression/test_execution_preview.py tests/integration/test_resolver_vs_legacy.py -q
 
 cd ../zhiyuan-server
 mvn -q -Dtest=PlanningStateDTOCompatibilityTest,ReviewRuleRegistryTest,ReviewInvalidationPolicyTest,ReviewWorkflowStatusResolverTest,CandidatePoolStatusResolverTest,CandidatePoolQualityStatusBuilderTest,PlanningWorkflowStatusBuilderTest,OrderedPlanPositioningSupportTest,RepairApplyMutationBuilderTest,RepairProposalApplyPolicyTest,RepairProposalStateBuilderTest,RepairReplacementActionBuilderTest,WorkingPlanMutationSupportTest,RepairCandidateSelectorTest,RepairRiskActionBuilderTest,RepairMajorGroupInnerSafetyActionBuilderTest,RepairDryRunSimulatorTest,RepairReportBuilderTest,PlanningStateServiceTest,PlanningStateSuggestionMappingTest test
@@ -3287,3 +3732,220 @@ cd ../zhiyuan-web
 - 软偏好变化只应标记 `staleFlags.recommendationOverlay=true`，通过 `refreshRecommendationOverlay()` 重新调用 rank 并把新的 `finalScore / rankInTier / preferred` 按 `volunteerId` 覆盖到现有候选池交集上；它不应物理重建 `candidatePoolState.items`，也不能对用户表达成“基础候选池变小”。
 - 完整候选池重算只在首次生成、显式强制刷新、或 `staleFlags.candidatePool=true` 时触发。普通进入候选面板、查询筛选项、分页查看候选不应传 `forceRegenerate=true`，否则本地 rank 未启动或线上 rank 长尾都会被误放大为“刷新候选池异常”。
 - 2026-06-11 已补前端保护：工作台 `ensureCandidatePoolReady(false)` 会按实际 `forceRegenerate` 传参，`generatePlanningCandidatePoolApi` 默认值改为 `false`；后端新增回归确认“已有候选池 + 非强制 + candidatePool 未 stale”不会调用 `recommendVolunteerList()`。
+
+Agent 方案更新链路收口补充：
+
+- 2026-06-12 已同步 `plan_action_orchestration_design.md`：`PlanActionPlan` 顶层只保留动作 envelope，复合目标统一进入 `CompositePlanProposal`；旧顶层 `goal / intent_updates / plan_actions / feasibility` 镜像不再被执行 envelope 消费。
+- `ActionResolver` 职责已收口为 `IntentFrame + PlanContextInputs -> ActionResolution`，不再接收 `ConversationPhase`，也不输出 `plan_goal / intent_updates` 镜像。phase/pending 相关状态只在 service、`ConversationPhase` 和 `pendingConfirmation` 链路处理。
+- `pending_context` 指令已对齐当前确认协议：模型不能自行调用 `execute_plan_action` 执行上一轮 pending payload；明确短文本确认由服务端 active `pendingConfirmation` 兜底链路校验处理。如果本轮仍进入模型，说明没有安全命中兜底，应引导用户点击当前预览或重新说明。
+- `planEditCache` 当前只作为旧 explore follow-up action 的 fallback；如果已有 active `pendingConfirmation(kind=intent_change)`，优先读取 active pending，不再读取旧缓存。新会话生成待采纳内容或采纳后会清理旧缓存。
+- `planning_router_tool.handle_planning_request` 已从运行时代码和专用测试中删除；ChatAgent 主路径只保留 Plan 三段主链，新增能力不得恢复旧 router。
+- `pin_unit / unpin_unit` 不在 `PlanActionPlan.action_family`、ActionResolver、ChatAgent 工具或执行分支中；文档中只保留退场说明，避免后续误作为新能力扩展。
+- 意向确认旧 wrapper 已退场：`update_volunteer_intent_state` 不再作为代码入口保留；当前只走 `pendingConfirmation(kind=intent_change) -> apply_selected_intents`。用户侧文案继续屏蔽内部术语，只提示点“采纳”后生效。
+
+本轮验证：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest tests/unit/test_intent_state_tool.py::test_handle_intent_select_interest_candidate_query_prefers_pending_confirmation tests/unit/test_intent_state_tool.py::test_handle_intent_select_interest_prefer_confirm_returns_confirm_preview tests/unit/test_chat_service_history_persistence.py::test_chat_service_interest_prefer_confirm_returns_pending_confirmation_card tests/unit/test_planning_intent_scenarios_sync.py::test_intent_scenario_handle_select_prefer_confirm_returns_confirm_text tests/unit/test_instructions.py tests/unit/test_chat_agent_tools.py tests/unit/models/test_plan_orchestration_models.py tests/unit/test_plan_orchestration_tool.py tests/unit/models/test_conversation_phase.py tests/unit/test_chat_service_history_persistence.py::test_chat_service_applies_active_plan_pending_on_short_text_confirm tests/unit/test_chat_service_history_persistence.py::test_chat_service_applies_active_pending_confirmation_intent_on_short_text tests/unit/test_chat_service_history_persistence.py::test_chat_service_blocks_short_text_confirm_when_latest_assistant_confirmation_type_conflicts -q
+.venv/bin/python -m pytest tests/unit/test_instructions.py tests/unit/test_planning_workflow_tool.py tests/unit/test_plan_execution_tool.py tests/unit/test_plan_orchestration_tool.py tests/unit/models/test_plan_orchestration_models.py tests/unit/test_action_resolver.py tests/regression/test_keyword_matchers.py tests/regression/test_execution_apply.py tests/regression/test_execution_preview.py tests/integration/test_resolver_vs_legacy.py tests/integration/test_full_plan_flow.py tests/unit/test_intent_state_tool.py tests/unit/test_planning_intent_scenarios_sync.py tests/unit/test_dialog_scenario_stability.py tests/unit/test_chat_agent_tools.py tests/unit/test_dialog_case_evaluation_report.py -q
+cd ..
+git diff --check
+```
+
+结果：目标确认/指令回归 `203 passed`；Agent planning/路由/执行综合回归 `614 passed`；删除 resolver 复合镜像和 phase 入参后，focused resolver/plan 回归 `246 passed`、resolver/full-flow 回归 `237 passed`、综合 Agent/Plan/Intent 回归 `880 passed`；`git diff --check` 通过。综合回归中同步把一处旧断言从“硬性要求”改为用户可理解的“已确认的报考条件”，防止后续文案退回系统术语。
+
+约束意向与方案调整 pending 元数据收口：
+
+- `only_keep / must_have / exclude` 这类约束触发方案调整时，service 仍复用现有安全路径：先基于当前方案生成 `remove_units / add_units` 预览，再写入 `pendingConfirmation(kind=plan_mutation)`，真正执行仍只消费 `executionPayload.planPayload`，不绕过版本校验、确认态和 `execute_plan_action` 门禁。
+- 本轮新增统一元数据：约束触发的方案调整卡片会在 `planPayload.composite_proposal` 和后端 `pendingConfirmation.compositeProposal` 中保存 `PlanGoal / intent_updates / plan_actions / decision_references`。这让“用户目标、后续报考参考更新、方案动作、执行后复验计划”有同一结构化承载，不再只散落在 `intentPayload` 和临时 preview summary 中。
+- `PendingConfirmation` 运行态模型已显式承载 `composite_proposal`，并兼容后端 `compositeProposal`。普通模型上下文、历史 pending 转换和卡片确认桥接都能保留这份元信息；它只用于解释、审计和后续上下文承接，不参与 apply 放行。
+- `conversation_phase.pending` 的主源已进一步收口：普通对话启动时先读取后端 active `pendingConfirmation`，只有后端没有 active pending 时才从历史 preview 提取旧 `pending_plan_action`。当后端 pending 与历史 preview 不一致时，以后端 pending 为准，避免旧历史工具返回抢占当前待采纳状态。
+- 如果约束只形成报考条件、暂时不能安全生成方案动作，也会在 `pendingConfirmation(kind=intent_change)` 中保存同样的 `compositeProposal`。例如“只保留南方”会记录为 `goal_type=only_keep_scope`、`target_scopes=[region: 南方]`，但当前不会自动反向删除所有非南方方案项；大区到省份集合的方案级调整需要后续在执行层补完整展开、命中披露和确认预览后再开放。
+- 这次只统一元数据，不改变 apply 路径、候选选择策略、方案修复白名单、工作区刷新目标或用户确认协议。
+
+本轮补充验证：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest tests/unit/test_chat_service_history_persistence.py::test_chat_service_only_keep_major_preview_removes_non_matching_plan_items tests/unit/test_chat_service_history_persistence.py::test_chat_service_must_have_major_preview_adds_when_missing_from_plan tests/unit/test_chat_service_history_persistence.py::test_chat_service_must_have_major_keeps_intent_only_when_plan_already_has_scope tests/unit/test_chat_service_history_persistence.py::test_chat_service_only_keep_region_area_preview_keeps_area_scope_metadata tests/unit/test_chat_service_history_persistence.py::test_chat_service_constraint_preview_with_plan_hit_becomes_plan_mutation_card -q
+.venv/bin/python -m pytest tests/unit/test_chat_service_history_persistence.py::test_chat_service_only_keep_major_preview_removes_non_matching_plan_items tests/unit/test_chat_service_history_persistence.py::test_chat_service_must_have_major_preview_adds_when_missing_from_plan tests/unit/test_chat_service_history_persistence.py::test_chat_service_constraint_preview_with_plan_hit_becomes_plan_mutation_card tests/unit/models/test_plan_orchestration_models.py tests/unit/test_plan_orchestration_tool.py -q
+.venv/bin/python -m py_compile app/service.py
+```
+
+结果：约束方案联动与编排模型 focused 回归 `67 passed`；新增大区 only_keep 边界 targeted 回归 `5 passed`；`service.py` 编译通过。
+
+用户侧“草稿”话术继续收口：
+
+- `plan_chat` skill 中的查看范围从“候选、草稿、排序、审查、补偿”改为“候选、已加入方案、排序、审查、补齐建议”，避免模型从技能提示里继续学习旧“草稿”概念。
+- 全局 style rules 的术语映射从“草稿/draft -> 备选方案或候选志愿”调整为“草稿/draft -> 方案或已加入方案”。“备选方案”容易和候选机会混淆，不适合作为当前工作台方案的统一用户侧表达。
+- 底层 `query_draft / draftPlanState` 仍保留为兼容字段和内部 fallback，本轮不改执行模型和后端状态结构。
+
+验证：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest tests/unit/test_instructions.py tests/unit/test_chat_agent_tools.py -q
+```
+
+结果：`83 passed`。
+
+`source=user_goal` 复合目标 proposal 第一阶段落地：
+
+- 后端新增 `UserGoalFixProposalReq`，作为 Agent/外部把自然语言理解后的 `goalType / targetScopes / negativeScopes / qualityGuards / tradeoffGuards / sourceVersionGuard` 传给 Java proposal engine 的结构化输入。Java 侧只消费结构化范围，不从用户原句中反推实体或动作参数。
+- `FixProposalDTO / FixProposalStateDTO` 已保留 `proposalSource`，`RepairProposalTaxonomy` 明确定义 `review_check` 和 `user_goal` 两类来源。`RepairProposalApplyPolicy` 继续拒绝 `proposalSource=user_goal`，避免用户复合目标绕过 pending、dry-run 和 apply 白名单。
+- `UserGoalProposalBuilder` 已支持 `only_keep_scope / must_include_scope / exclude_scope` 三类只读 proposal：
+  - `only_keep_scope`：识别当前方案中目标范围和非目标范围；候选池有目标范围候选时生成 `replace_volunteers` 配对预览，候选不足时保留 `remove_volunteers` 只读提示。
+  - `must_include_scope`：当前方案已有目标范围时返回 `info`；当前缺少且方案未满时返回 `add_volunteers` 预览；当前已满时生成一进一出的 `replace_volunteers` 配对预览。
+  - `exclude_scope`：当前方案无命中时返回 `info`；有命中时优先生成非命中候选的 `replace_volunteers` 配对预览，候选不足时保留 `remove_volunteers` 只读提示。
+- Agent 和 service 调用 `UserGoalFixProposalReq` 时会把一个 scope 中的多个值展开成多个 `ScopeDTO`，例如“会计学、审计学”会形成两个 major scope。Java matcher 按单实体 scope 工作，不从 `evidence.values` 里反推额外范围。
+- 专业模式和专业组模式都走同一 `FixProposalActionDTO` 协议。专业组模式下 `replacementPairs` 会携带 `fromUnitId / toUnitId`，并跳过已经在当前方案里的同组候选，避免把同一专业组内部专业误当成新增专业组。
+- 配对排序复用 `RepairReplacementTradeoffSupport` 的口径：优先专业相似度、院校排名下降代价、推荐系数损失、意向分损失，再看补入候选自身推荐系数、录取率、意向分和院校排名。该逻辑只影响只读预览的候选解释顺序，不改变候选池来源、不开放自动落盘。
+- `PlanningStateService.generateUserGoalFixProposals()` 已通过 `POST /session/fix-proposals/user-goal/generate` 提供只读生成入口；该接口不保存 pending，不触发 review，不修改方案。Agent internal client 已能调用该入口，并把返回的 `FixProposal` 映射为 `CompositePlanProposal.linked_fix_proposals`，用于回复和后续预览承接。ChatAgent 主工具列表仍未注册 `apply_planning_fix_proposal`，`user_goal` proposal 继续不能 apply。
+
+本轮验证：
+
+```bash
+cd zhiyuan-server
+mvn -q -Dtest=PlanningStateServiceTest#shouldGenerateUserGoalFixProposalThroughServiceWithoutApplying,UserGoalProposalBuilderTest,RepairProposalTaxonomyTest,RepairProposalApplyPolicyTest,RepairProposalStateBuilderTest test
+
+cd ../zhiyuan-agent
+.venv/bin/python -m pytest tests/unit/models/test_plan_orchestration_models.py tests/unit/test_planning_workflow_tool.py::test_generate_planning_fix_proposals_formats_status_and_warnings tests/unit/test_plan_execution_tool.py::test_execute_plan_action_review_plan_does_not_apply_ready_fix_proposal -q
+```
+
+结果：后端 focused 回归通过；Agent mirror 回归 `15 passed`。新增覆盖包括专业模式 `only_keep/must_include/exclude` 的替换/补入/移出预览、专业组 replacement pair unitId、专业组候选跳过当前同组、scope 缺失/歧义/version guard 阻断，以及 `user_goal` proposal 不能被 apply policy 放行。
+
+`user_goal` proposal 接入 Agent 复合预览补充：
+
+- `plan_next_action` 在存在结构化 `PlanGoal`、实体无歧义且当前已有方案时，会调用后端只读 `fix-proposals/user-goal/generate`，并将返回 proposal 转为 `LinkedRepairProposal` 挂入 `CompositePlanProposal.linked_fix_proposals`。
+- 该接入只用于预览事实承接：`LinkedRepairProposal.proposal_source=user_goal` 会强制 `applyable=false`，不会生成 pending，不调用 `apply_planning_fix_proposal`，也不会把后端 `preview_only` proposal 翻译成普通 `replace_units/remove_units` 绕过 apply policy。`CompositePlanProposal.has_plan_mutation` 也只把显式 `plan_actions` 或 applyable linked proposal 视为可执行变更，单纯的 user-goal 只读 proposal 不算可执行 mutation。
+- 如果只读 proposal 接口失败，`plan_next_action` 只在 rationale 中补充“暂时没有拿到后端调整预览”，原结构化目标和现有编排仍保留，不阻断基础对话。
+
+`user_goal` proposal 接入 service 约束确认过渡链路：
+
+- service 里的 `only_keep / must_have / exclude` 过渡链路仍保留原安全执行方式：先由现有 `execute_plan_action` 生成 `plan_mutation` 待确认卡，点击后只执行 `executionPayload.planPayload`。这保证当前人工已验收的“只保留/必须有/排除”方案联动不回退。
+- 在 `execute_plan_action` 返回当前方案版本后，service 会用同一 `CompositePlanProposal.goal` 构造 `UserGoalFixProposalReq`，调用 Java 只读 `fix-proposals/user-goal/generate`，并把返回的 `LinkedRepairProposal` 挂入 `pendingConfirmation.compositeProposal.linked_fix_proposals`。
+- 多实体目标会按实体拆分后传给 Java，例如“排除会计学、审计学”会传两个 negative scope，避免只读 proposal 只覆盖第一个专业。
+- Agent `plan_next_action` 和 service 过渡确认链路复用同一个 `plan_user_goal_fix_proposal` 映射 helper：它只负责 `PlanGoal/scope -> UserGoalFixProposalReq` 与 Java `FixProposalDTO -> LinkedRepairProposal` 的结构转换，不参与意图判断、候选选择或 apply 放行。
+- 这一步只用于把候选选择、替换配对、专业组 unit pair、候选不足等事实交给 Java 统一判断和解释；不会保存 Java proposal，不会触发 review，不会新增可点击 apply 入口，也不会改变现有 `planPayload` 的执行结果。
+- 后端只读 proposal 失败时，service 只在 `tradeoffs` 留下非阻断提示，原可执行调整卡片仍继续生成。下一阶段如果要真正 apply `source=user_goal` proposal，必须先补 pending bridge、前端展示、version guard、apply policy 和 `RepairReport` 闭环。
+
+旧补偿 apply 旁路继续收紧：
+
+- Agent 不再生成 `preview_compensation/apply_compensation` pending；历史会话中遗留的旧 compensation preview/apply 只作为 legacy 输入被忽略或拒绝，不能触发落盘。
+- `review_issue_registry` 对数量缺口、安全垫、梯度断层等结构问题统一映射到 `preview_fix_proposal`。没有明确结构化 `review_issue_code` 时，Agent 不从用户自然语言里恢复整批审查问题，也不把 `preview_only/blocked` repair 翻译成普通 `remove_units/replace_units/apply_compensation`。
+- 该保护不改变 Java `FixProposal` apply 白名单，也不开放 `source=user_goal` apply；它只防止旧 compensation 入口绕过后端 proposal/dry-run/apply policy。
+
+验证：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest tests/unit/models/test_plan_orchestration_models.py tests/unit/test_plan_orchestration_tool.py tests/unit/test_planning_workflow_tool.py::test_generate_planning_fix_proposals_formats_status_and_warnings tests/unit/test_plan_execution_tool.py::test_execute_plan_action_review_plan_does_not_apply_ready_fix_proposal -q
+.venv/bin/python -m pytest tests/unit/test_chat_service_history_persistence.py::test_chat_service_only_keep_major_preview_removes_non_matching_plan_items tests/unit/test_chat_service_history_persistence.py::test_chat_service_must_have_major_preview_adds_when_missing_from_plan tests/unit/test_chat_service_history_persistence.py::test_chat_service_must_have_major_keeps_intent_only_when_plan_already_has_scope tests/unit/test_chat_service_history_persistence.py::test_chat_service_only_keep_region_area_preview_keeps_area_scope_metadata tests/unit/test_chat_service_history_persistence.py::test_chat_service_constraint_preview_with_plan_hit_becomes_plan_mutation_card tests/unit/test_chat_service_history_persistence.py::test_chat_service_constraint_preview_attaches_backend_user_goal_fix_proposal tests/unit/test_chat_service_history_persistence.py::test_chat_service_mixed_intent_plan_hit_card_keeps_positive_preference_summary tests/unit/test_chat_service_history_persistence.py::test_chat_service_negative_plan_hit_card_keeps_existing_positive_preference_summary -q
+.venv/bin/python -m pytest tests/unit/test_plan_orchestration_tool.py::test_plan_next_action_expands_multi_value_scope_for_user_goal_fix_preview tests/unit/test_chat_service_history_persistence.py::test_chat_service_constraint_backend_preview_expands_multi_value_scope -q
+.venv/bin/python -m pytest tests/unit/test_plan_execution_tool.py::test_execute_plan_action_blocks_compensation_apply_when_preview_contains_structural_actions tests/unit/test_plan_execution_tool.py::test_execute_plan_action_blocks_compensation_apply_when_estimated_fill_exceeds_remaining_gap tests/unit/test_plan_execution_tool.py::test_execute_plan_action_allows_major_group_compensation_apply_when_unit_gap_matches -q
+```
+
+结果：Agent 复合预览 `75 passed`；service 约束确认过渡链路 `8 passed`；多实体 scope 展开 targeted 回归 `2 passed`。新增确认 `only_keep_scope` 能挂接后端 `replace_volunteers` 配对预览，`proposal_source=user_goal` 仍不可应用；service 层生成的方案调整卡片仍是 `plan_mutation`，同时会把后端只读 proposal 挂入 `compositeProposal.linked_fix_proposals`，且后端只读预览异常不阻断现有卡片。
+
+方案更新/审查/修复中等范围回归：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest tests/unit/test_instructions.py tests/unit/test_chat_agent_tools.py tests/unit/test_action_resolver.py tests/unit/test_plan_orchestration_tool.py tests/unit/test_plan_execution_tool.py tests/unit/test_planning_workflow_tool.py tests/regression/test_pending_protocol.py tests/regression/test_execution_preview.py tests/regression/test_execution_apply.py tests/regression/test_keyword_matchers.py -q
+.venv/bin/python -m pytest tests/unit/test_chat_service_history_persistence.py::test_extract_pending_plan_action_maps_compensation_preview_to_apply_payload tests/unit/test_chat_service_history_persistence.py::test_extract_pending_plan_action_ignores_compensation_preview_without_legacy_add_action tests/unit/test_chat_service_history_persistence.py::test_extract_pending_plan_action_ignores_compensation_preview_without_actionable_suggestions tests/unit/test_chat_service_history_persistence.py::test_chat_service_constraint_preview_attaches_backend_user_goal_fix_proposal tests/unit/test_chat_service_history_persistence.py::test_chat_service_constraint_backend_preview_expands_multi_value_scope tests/unit/test_chat_service_history_persistence.py::test_chat_service_requires_card_click_for_pending_compensation_on_text_confirm tests/integration/test_full_plan_flow.py tests/integration/test_resolver_vs_legacy.py -q
+
+cd ../zhiyuan-server
+mvn -q -Dtest=RepairProposalApplyPolicyTest,RepairProposalStateBuilderTest,RepairDryRunSimulatorTest,PlanningStateServiceTest#shouldGenerateUserGoalFixProposalThroughServiceWithoutApplying,UserGoalProposalBuilderTest,RepairProposalTaxonomyTest test
+```
+
+结果：Agent 主链路回归 `691 passed`；service/integration 回归 `109 passed`；server FixProposal focused 回归通过。覆盖 ChatAgent 工具注册、ActionResolver、Plan 编排、执行门禁、旧补偿预览/应用保护、pending 协议、复合目标只读 proposal 挂接、router 退场和 legacy resolver 对照。
+
+本地综合门禁补充：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python examples/dialog_quality_gate.py --execute --metrics-dir /private/tmp/zhiyuan-agent-dialog-quality-gate-310
+.venv/bin/python -m pytest tests/unit/test_dialog_scenario_stability.py tests/unit/test_planning_intent_scenarios_sync.py tests/unit/test_planning_plan_scenarios_sync.py tests/unit/test_explore_direction_scenarios_sync.py tests/unit/test_tool_reply_policy.py tests/unit/test_entity_resolution.py -q
+.venv/bin/python -m pytest tests/unit tests/integration tests/regression -q
+
+cd ../zhiyuan-server
+mvn -q test
+
+cd ..
+git diff --check
+```
+
+结果：对话质量门禁 `1140 passed`；场景同步和回复策略 focused 回归 `138 passed`；Agent 非 e2e 全量回归 `2397 passed`；Server 默认全量测试通过；`git diff --check` 无空白错误。
+
+本地 live WebSocket 回归暂未执行：当前 `scripts/status.sh` 显示 web/server/agent/rank 均未运行，MySQL/Redis 未启动，且本机 Docker daemon 不可用；因此这轮只能确认静态、单元、集成、回归和质量门禁通过，不能把真实服务链路视为已验证。后续启动本地服务后，需要继续执行 `examples/dialog_regression_runner.py --cases examples/dialog_regression_310_review_repair_cases.json` 覆盖真实 WebSocket 对话。
+
+Agent 旧补偿 wrapper 退场最终收口：
+
+- Python Agent 侧已删除 `preview_planning_compensation/apply_planning_compensation` wrapper、对应 internal client 调用和 mock endpoint；ChatAgent 工具注册测试锁定这两个工具不会出现在模型可调用列表。
+- `PlanActionPlan.action_family` 不再接受 `preview_compensation/apply_compensation`；旧 payload 只能在历史兼容测试中被拒绝或忽略，不能创建新的 `pendingConfirmation`，也不能被短文本“确认”触发执行。
+- `ChatService` 只保留一个 legacy safety boundary：历史消息里出现旧 `compensation_preview` 时，会清掉同轮不可靠 pending，并把“可确认应用”的话术改成“没有形成可执行调整预览”。新的修复应用只允许通过 active `pendingConfirmation(actionFamily=apply_fix_proposal)` 调用 `apply_planning_fix_proposal`，不是模型或旧补偿旁路。
+- `planning_workflow_tool` 仍保留 `_build_compensation_preview_facts`，用于读取 Java `reviewState.compensationPreview` 的 legacy facts；但用户侧 review 文案不再说“预览补偿/应用补偿”，统一引导到 `preview_fix_proposal` 和后端 `FixProposal`。
+- Java `previewCompensation/applyCompensation` 仍按兼容入口保留，定位为内部补齐素材和低风险老接口；满方案结构修复、风险替换、用户复合目标仍必须走 `FixProposal`、dry-run 和 apply policy。
+
+追加验证：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest tests/unit/test_chat_service_history_persistence.py -q
+.venv/bin/python -m pytest tests/unit/test_planning_workflow_tool.py tests/unit/test_planning_plan_scenarios_sync.py tests/unit/test_chat_agent_tools.py tests/unit/test_plan_execution_tool.py tests/unit/test_chat_service_history_persistence.py -q
+.venv/bin/python -m pytest tests/integration tests/regression -q
+.venv/bin/python -m py_compile app/service.py app/handlers/analysis_handlers.py app/tools/planning_workflow_tool.py app/util/internal_client.py
+
+cd ../zhiyuan-server
+mvn -q -Dtest=PlanningStateServiceTest,RepairDryRunSimulatorTest,RepairProposalApplyPolicyTest,RepairProposalStateBuilderTest,RepairProposalTaxonomyTest,UserGoalProposalBuilderTest test
+
+cd ..
+git diff --check
+```
+
+结果：Agent history `199 passed`，Agent 关键 unit `409 passed`，Agent integration/regression `587 passed`，Python 编译通过；Server 修复/审查 focused 回归通过；`git diff --check` 通过。剩余 `preview_planning_compensation/apply_planning_compensation` 文本只在“不注册”测试断言中出现，剩余 `preview_compensation/apply_compensation` 只在 legacy 拒绝/历史兼容测试、service legacy boundary 和 Java 兼容入口中出现。
+
+对话侧 FixProposal pending/apply 桥补充：
+
+- `ChatService` 不再依赖 recent cache 消费修复预览，而是直接读取本轮 `execute_plan_action` 的 `ToolReturnPart`，避免超时兜底或其他读取提前消费。
+- `fix_proposal_preview` 可以直接生成确认卡；`review_result` 只有在用户明确表达“先看怎么处理/怎么调整、别直接动”这类处理预览诉求时，才允许从其中携带的 ready proposal 生成确认卡。普通“只审查/先不要改”的 `review_result` 只展示审查结果，不生成执行入口。
+- 只有 `facts.fix_proposals.proposals[]` 中 `status=ready`、有 `proposal_id`、来源不是 `user_goal`，并且 `source_version_guard > 0`，才生成 `pendingConfirmationCard(actionFamily=apply_fix_proposal)`。
+- `blocked` / `preview_only` proposal 只保留在回复事实里，不生成确认卡，也不能降级成普通 `remove_units/replace_units/apply_compensation`。
+- 用户点击卡片或短文本确认时，`handle_pending_confirmation` 按 `pendingId/kind/status` 校验 active pending，再从 `executionPayload` 读取 `proposalId/sourceVersionGuard/regenerateOrderedPlan/rerunReview`，调用 Java `fix-proposals/apply`。
+- apply 成功后 pending 置为 `applied`，卡片状态同步更新，历史中记录内部 `apply_planning_fix_proposal` tool call/return，回复展示 `RepairReport`，并返回 `ordered` 静默刷新事件。
+- apply 失败、版本缺失或 proposal 过期时 pending/card 置为失效，提示重新查看审查结果，不允许重复点击旧卡片。
+
+追加验证：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m py_compile app/service.py app/models/conversation_phase.py
+.venv/bin/python -m pytest tests/unit/test_chat_service_history_persistence.py -q
+.venv/bin/python -m pytest tests/unit/test_chat_agent_tools.py -q -k "fix_proposal or apply_tool"
+.venv/bin/python -m pytest tests/unit/test_planning_workflow_tool.py -q -k "fix_proposal"
+.venv/bin/python -m pytest tests/unit/test_plan_execution_tool.py -q -k "fix_proposal"
+.venv/bin/python -m pytest tests/unit tests/regression -q
+
+cd ../zhiyuan-server
+mvn -q -Dtest=PlanningStateServiceTest,RepairDryRunSimulatorTest,RepairProposalApplyPolicyTest,RepairProposalStateBuilderTest,RepairProposalTaxonomyTest,UserGoalProposalBuilderTest test
+
+cd ..
+git diff --check
+```
+
+结果：新增对话侧修复确认桥 targeted 回归 `7 passed`，`test_chat_service_history_persistence.py` 全量 `205 passed`；其中覆盖 `fix_proposal_preview` 出卡、`review_result` 在“先看怎么处理”场景出卡、普通只审查不出卡、blocked/user_goal proposal 不出卡、确认后 service 内部 apply。后续补充 `planning_workflow_tool` focused 回归后，对话侧处理建议相关 targeted 回归为 `11 passed`。Agent `unit + regression` 全量 `2200 passed`，`git diff --check` 通过。ChatAgent 工具注册仍确认 `apply_planning_fix_proposal` 不暴露给模型；场景目录同步把旧 `compensation_apply` 覆盖口径迁到 `fix_proposal_preview/fix_proposal_apply`，保留 `pin/unpin` 退场验证。
+
+本地 live WebSocket 补充：
+
+- 首次在 session 130 的有风险方案状态下跑通 `/private/tmp/zhiyuan_310_review_fix_preview_apply_final2.json`：第一轮 `review_plan -> review_result` 携带 ready proposal，service 生成 `pendingConfirmationCard(actionFamily=apply_fix_proposal)`；第二轮短文本“确认”命中 active pending，service 内部调用 `apply_planning_fix_proposal`，返回处理结果并发送 `planningWorkspaceAction(targetView=ordered, refresh=true)`。
+- 本轮同时修正回归 runner：`planningWorkspaceAction(silent=true)` 不再作为用户可见文案参与质量断言，但必须保留为动作 followup，用于校验工作台刷新。
+- 该 live case 是有副作用的状态依赖测试：确认执行后会真实修改 session 130 的方案。后续重复跑同一会话时，高收费/中外合作项可能已被替换，后端不再返回同一个 ready proposal；使用 `--session-offset` 也不一定可行，因为偏移会话可能没有正式方案。后续要把这类 e2e 稳定化，需要准备“可重置方案状态”的后端 fixture 或专用会话池，跑前恢复 ordered/review/fixProposal 初始状态，再执行 preview -> pending -> apply -> refresh 链路。
+- 用户侧文案已收口：对话回复、确认卡和 apply 结果统一使用“处理建议/处理内容/检查结果/处理前预览”，避免暴露“修复建议、复验结果、preview_only、blocked、action_family”等内部术语。
+
+本地采集链路补充：
+
+- 切换省份后进入专业意向页仍出现“系统错误”的当前根因不是草稿恢复，也不是负意向专业接口空选科问题；日志显示 `base-data/unacceptable-majors` 已返回 200，失败发生在 `chat/{tenantId}/major-recommend` 调用 rank `127.0.0.1:5001/gaokao-volunteer-rank/recommend_submajor` 时连接失败。
+- `major-recommend` 只用于专业意向页的默认推荐勾选，不应阻塞用户继续手动选择专业；因此后端在该接口 rank 不可用或返回空时降级为空列表，前端同样捕获该默认推荐请求失败并保持页面可继续填写。
+- 初始方案生成、候选排序、推荐系数刷新仍依赖 rank 的排序能力，不在这次降级范围内；本地如果需要验证方案生成和排序，仍必须启动 rank 服务，否则应明确暴露排序服务不可用，而不是静默生成不可靠方案。
+- focused 验证：`cd zhiyuan-server && mvn -q -Dtest=ChatSessionBizServiceTest test` 通过，覆盖 rank 不可用返回空推荐、正常返回超过 8 个专业时仍截断为 8 个。

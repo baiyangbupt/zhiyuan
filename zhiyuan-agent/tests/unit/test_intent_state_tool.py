@@ -45,6 +45,8 @@ from app.tools.intent_state_tool import (
     _build_proposed_profile,
     IntentSideEffectDecision,
     _major_relation_notes_from_latest_utterance,
+    _normalize_region_area_polarity_payloads,
+    _prune_generated_negative_complements_for_only_keep,
     _recover_polarity_major_intent_locally_from_latest_utterance,
     _recover_intents_from_context,
     _refine_major_boundary_mentions,
@@ -58,7 +60,6 @@ from app.tools.intent_state_tool import (
     analyze_volunteer_intent_change,
     apply_selected_intents,
     merge_selected_values,
-    update_volunteer_intent_state,
 )
 from app.tools.intent_response_tool import (
     parse_explore_followup_result,
@@ -99,10 +100,6 @@ async def _render_analysis(ctx, *args, **kwargs):
         )
 
     return render_intent_analysis_payload(await analyze_volunteer_intent_change(ctx, *args, **kwargs))
-
-
-async def _confirm_update(ctx):
-    return json.loads(await update_volunteer_intent_state(ctx, action="confirm"))
 
 
 async def _render_followup(*, session_id: str, batch: str, action_type: str) -> str:
@@ -574,6 +571,7 @@ async def test_analyze_intent_change_recovers_empty_args_via_fallback_extraction
         patch("app.tools.city_intent_tool.extract_city_intents_with_polarity", new=AsyncMock(return_value='{"positive": {"province": [], "city": [], "area": []}, "negative": {"province": ["上海"], "city": []}}')),
         patch("app.tools.major_intent_tool.extract_major_intents_with_polarity", new=AsyncMock(return_value='{"positive": {"level1": [], "level2": [], "level3": []}, "negative": {"level1": [], "level2": [], "level3": []}}')),
         patch("app.tools.school_intent_tool.extract_school_intent", new=AsyncMock(return_value='{"colleges": [], "negative_colleges": []}')),
+        patch("app.tools.career_intent_tool.extract_career_intent", new=AsyncMock(return_value='{"positive": [], "negative": []}')),
     ):
         mock_pm = mock_pm_cls.return_value
         mock_pm.get_current_profile = AsyncMock(return_value=empty_profile)
@@ -685,7 +683,7 @@ async def test_analyze_intent_change_soft_negative_without_hit_returns_no_effect
     payload = json.loads(payload_text)
     assert payload["status"] == "empty"
     assert "不需要额外采纳" in payload["message"]
-    assert "必须避开的硬性要求" in payload["message"]
+    assert "必须避开的报考条件" in payload["message"]
     save_cache_mock.assert_not_awaited()
 
 
@@ -1547,8 +1545,8 @@ async def test_region_intent_downgrade_keeps_preview_language_read_only(empty_pr
     assert "记成" not in payload_text_for_model
     assert "已经记录" not in payload_text_for_model
     assert "后面给你看方案时会尽量往后放" not in payload_text_for_model
-    assert "确认卡片" in rendered
-    assert "采纳/确认前不会生效" in rendered
+    assert "列出来让你采纳" in rendered
+    assert "采纳前不会生效" in rendered
     save_mock.assert_not_awaited()
 
 
@@ -1599,7 +1597,7 @@ async def test_region_intent_downgrade_ignores_recovered_entity_for_abstract_reg
     assert payload["items"] == []
     assert "江苏" not in rendered
     assert "不会改动方案" in rendered
-    assert "确认卡片" in rendered
+    assert "列出来让你采纳" in rendered
     assert ctx.deps.agent_observability["intentSideEffectDecision"]["honored"] is True
     recover_mock.assert_awaited_once()
     save_mock.assert_not_awaited()
@@ -1749,6 +1747,7 @@ def test_preview_current_intent_confirmation_wrapper_delegates_to_confirm_stage(
         recovery_scope="generic",
         confirm_enabled=True,
         intent_mode=INTENT_MODE_CONSTRAINT,
+        constraint_intent_type=None,
     )
 
 
@@ -1781,6 +1780,7 @@ def test_preview_current_major_intent_confirmation_wrapper_uses_major_scope():
         recovery_scope="major",
         confirm_enabled=True,
         intent_mode=None,
+        constraint_intent_type=None,
     )
 
 
@@ -1818,6 +1818,7 @@ def test_preview_current_major_intent_confirmation_wrapper_passes_explicit_major
         recovery_scope="major",
         confirm_enabled=True,
         intent_mode=None,
+        constraint_intent_type=None,
     )
 
 
@@ -1858,6 +1859,7 @@ def test_preview_current_major_intent_confirmation_wrapper_accepts_positive_leve
         recovery_scope="major",
         confirm_enabled=True,
         intent_mode=None,
+        constraint_intent_type=None,
     )
 
 
@@ -2355,6 +2357,7 @@ def test_preview_current_school_intent_confirmation_wrapper_uses_school_scope():
         recovery_scope="school",
         confirm_enabled=True,
         intent_mode=None,
+        constraint_intent_type=None,
     )
 
 
@@ -2387,6 +2390,7 @@ def test_preview_current_region_intent_confirmation_wrapper_uses_region_scope():
         recovery_scope="region",
         confirm_enabled=True,
         intent_mode=None,
+        constraint_intent_type=None,
     )
 
 
@@ -2419,6 +2423,7 @@ def test_preview_current_career_intent_confirmation_wrapper_uses_career_scope():
         recovery_scope="career_preference",
         confirm_enabled=True,
         intent_mode=None,
+        constraint_intent_type=None,
     )
 
 
@@ -2499,109 +2504,6 @@ async def test_analyze_volunteer_intent_change_returns_structured_payload(empty_
     assert payload["intentMode"] == INTENT_MODE_PREFERENCE
     assert payload["items"]
     assert payload["items"][0]["value"] == {"city_intents": {"province": ["北京"]}}
-
-
-@pytest.mark.asyncio
-async def test_update_volunteer_intent_state_confirm_requires_card_click_even_with_legacy_cache():
-    ctx = SimpleNamespace(
-        deps=SimpleNamespace(
-            sessionid="5002",
-            batch="01",
-            pending_intent_change=True,
-        )
-    )
-
-    with (
-        patch("app.tools.intent_state_tool.get_intent_change_cache", new=AsyncMock(return_value={"data": {"planEditCache": {"city_intents": {"province": ["北京"]}, "intent_mode": INTENT_MODE_PREFERENCE}}})),
-        patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
-        patch("app.tools.intent_state_tool.get_planning_state", new=AsyncMock()) as state_mock,
-        patch("app.tools.intent_state_tool.mark_planning_intent_change_stale", new=AsyncMock(return_value={"code": 0})) as stale_mock,
-        patch("app.tools.intent_state_tool.query_planning_candidate_pool", new=AsyncMock(return_value={"code": 0, "data": {"total": 1}})) as query_mock,
-        patch("app.tools.intent_state_tool.update_planning_latent_profile", new=AsyncMock()) as latent_mock,
-    ):
-        mock_pm = mock_pm_cls.return_value
-        mock_pm.update_city_intent = AsyncMock()
-        mock_pm.update_major_intent = AsyncMock()
-        mock_pm.update_school_intent = AsyncMock()
-        result = json.loads(await update_volunteer_intent_state(ctx, action="confirm"))
-
-    query_mock.assert_not_awaited()
-    stale_mock.assert_not_awaited()
-    state_mock.assert_not_awaited()
-    latent_mock.assert_not_awaited()
-    assert result["action"] == "confirm"
-    assert result["applied"] is False
-    assert result["intentMode"] == INTENT_MODE_PREFERENCE
-    assert result["messageCode"] == "confirm_required"
-    assert "确认卡片" in result["message"]
-
-
-@pytest.mark.asyncio
-async def test_update_volunteer_intent_state_confirm_does_not_apply_phase_pending():
-    from app.models.conversation_phase import ConversationPhase, PendingConfirmation, PhaseState
-
-    ctx = SimpleNamespace(
-        deps=SimpleNamespace(
-            sessionid="5004",
-            batch="01",
-            conversation_phase=ConversationPhase(
-                state=PhaseState.INTENT_PREVIEWING,
-                pending=PendingConfirmation(
-                    kind="intent_change",
-                    action_family="set_preference",
-                    preview_summary="设置地域偏好",
-                    execution_payload={
-                        "city_intents": {"province": ["北京"]},
-                        "intent_mode": INTENT_MODE_PREFERENCE,
-                    },
-                ),
-            ),
-        )
-    )
-
-    with (
-        patch("app.tools.intent_state_tool.get_intent_change_cache", new=AsyncMock(return_value={"data": {"planEditCache": {"city_intents": {"province": ["上海"]}, "intent_mode": INTENT_MODE_PREFERENCE}}})),
-        patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()) as save_mock,
-        patch("app.tools.intent_state_tool.get_planning_state", new=AsyncMock()) as state_mock,
-        patch("app.tools.intent_state_tool.mark_planning_intent_change_stale", new=AsyncMock(return_value={"code": 0})) as stale_mock,
-        patch("app.tools.intent_state_tool.query_planning_candidate_pool", new=AsyncMock(return_value={"code": 0, "data": {"total": 1}})) as query_mock,
-        patch("app.tools.intent_state_tool.update_planning_latent_profile", new=AsyncMock()) as latent_mock,
-    ):
-        mock_pm = mock_pm_cls.return_value
-        mock_pm.update_city_intent = AsyncMock()
-        mock_pm.update_major_intent = AsyncMock()
-        mock_pm.update_school_intent = AsyncMock()
-        result = json.loads(await update_volunteer_intent_state(ctx, action="confirm"))
-
-    assert result["applied"] is False
-    assert result["intentMode"] == INTENT_MODE_PREFERENCE
-    assert result["messageCode"] == "confirm_required"
-    mock_pm.update_city_intent.assert_not_awaited()
-    save_mock.assert_not_awaited()
-    stale_mock.assert_not_awaited()
-    query_mock.assert_not_awaited()
-    state_mock.assert_not_awaited()
-    latent_mock.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_update_volunteer_intent_state_confirm_requires_explicit_confirmation_utterance():
-    ctx = SimpleNamespace(
-        deps=SimpleNamespace(
-            sessionid="5003",
-            batch="01",
-            chat_history=[{"role": "user", "content": "想学网络与新媒体"}],
-        )
-    )
-
-    result = json.loads(await update_volunteer_intent_state(ctx, action="confirm"))
-
-    assert result["action"] == "confirm"
-    assert result["applied"] is False
-    assert result["messageCode"] == "confirm_required"
-    assert "待确认状态" in result["message"]
 
 
 @pytest.mark.asyncio
@@ -3413,8 +3315,8 @@ def test_render_intent_interest_text_explains_region_tradeoff_boundary():
     assert "就读体验和家庭距离顾虑" in text
     assert "保底空间可能变少" in text
     assert "不要一刀切" in text
-    assert "确认卡片" in text
-    assert "采纳/确认前不会生效" in text
+    assert "列出来让你采纳" in text
+    assert "采纳前不会生效" in text
     assert "待确认内容" not in text
     assert "当前情况" not in text
 
@@ -3529,7 +3431,7 @@ def test_intent_candidate_messages_do_not_use_left_right_layout_wording():
     assert "右侧" not in combined
     assert "左侧" not in combined
     assert "候选结果" in followup_text
-    assert "后续报考参考" in update_text
+    assert "后续推荐、方案检查和调整" in update_text
     assert "128" not in update_text
     assert "3200" not in update_text
     assert preview_text == ""
@@ -3551,10 +3453,9 @@ def test_render_intent_state_update_summarizes_confirmed_major_intents():
         )
     )
 
-    assert "本次确认内容：偏好专业：法学、财政学；排除专业：护理学" in text
+    assert "本次内容：偏好专业：法学、财政学；排除专业：护理学" in text
     assert "偏好专业门类：法学" not in text
-    assert "当前方案不会自动删除志愿" in text
-    assert "方案调整确认卡" in text
+    assert "需要改当前方案时，会先给你看预览" in text
 
 
 def test_build_impact_preview_uses_interest_stage_summary_when_requested():
@@ -4431,6 +4332,57 @@ async def test_recover_intents_from_context_school_scope_only_uses_school_extrac
 
 
 @pytest.mark.asyncio
+async def test_recover_intents_from_context_school_scope_redirects_region_like_school_value():
+    ctx = SimpleNamespace(
+        deps=SimpleNamespace(
+            userid="u1",
+            sessionid="s1",
+            chat_history=[{"role": "user", "content": "仅保留江苏的学校"}],
+            batch="01",
+            score_detail=None,
+            init_profile=None,
+            planning_summary=None,
+        )
+    )
+
+    with (
+        patch("app.tools.school_intent_tool.extract_school_intent", new=AsyncMock(return_value=json.dumps({"colleges": ["江苏"], "negative_colleges": []}, ensure_ascii=False))) as school_mock,
+        patch(
+            "app.tools.city_intent_tool.extract_city_intents_with_polarity",
+            new=AsyncMock(
+                return_value=json.dumps(
+                    {
+                        "positive": {"province": ["江苏"], "city": [], "area": []},
+                        "negative": {"province": [], "city": []},
+                    },
+                    ensure_ascii=False,
+                )
+            ),
+        ) as city_polarity_mock,
+        patch("app.tools.city_intent_tool.extract_city_intent", new=AsyncMock()) as city_mock,
+        patch("app.tools.city_intent_tool.extract_negative_city_intent", new=AsyncMock()) as negative_city_mock,
+        patch("app.tools.major_intent_tool.extract_major_intents_with_polarity", new=AsyncMock()) as major_polarity_mock,
+        patch("app.tools.major_intent_tool.extract_major_intent", new=AsyncMock()) as major_mock,
+        patch("app.tools.major_intent_tool.extract_negative_major_intent", new=AsyncMock()) as negative_major_mock,
+        patch("app.tools.career_intent_tool.extract_career_intent", new=AsyncMock()) as career_mock,
+    ):
+        major, school, city, career = await _recover_intents_from_context(ctx, recovery_scope="school")
+
+    school_mock.assert_awaited_once()
+    city_polarity_mock.assert_not_awaited()
+    city_mock.assert_not_awaited()
+    negative_city_mock.assert_not_awaited()
+    major_polarity_mock.assert_not_awaited()
+    major_mock.assert_not_awaited()
+    negative_major_mock.assert_not_awaited()
+    career_mock.assert_not_awaited()
+    assert major is None
+    assert school is None
+    assert city == {"province": ["江苏"]}
+    assert career is None
+
+
+@pytest.mark.asyncio
 async def test_recover_intents_from_context_major_scope_only_uses_major_extractors():
     ctx = SimpleNamespace(
         deps=SimpleNamespace(
@@ -4700,7 +4652,7 @@ async def test_handle_intent_select_constraint_applies_without_candidate_filters
 
         resp = (await _apply_selected("7", "01", selected_data))["message"]
 
-    assert "已确认" in resp
+    assert "已采纳" in resp
     assert "排除地域：上海" in resp
     assert "128" not in resp
     assert "候选大约" not in resp
@@ -4753,7 +4705,7 @@ async def test_apply_constraint_intents_marks_stale_without_candidate_filtering(
     assert resp.baseTotal is None
     assert resp.candidateFilters is None
     assert "专家优选组合" not in resp.message
-    assert "不符合这条要求的志愿" in resp.message
+    assert "不符合这条条件的志愿" in resp.message
 
 
 @pytest.mark.asyncio
@@ -4848,8 +4800,8 @@ async def test_apply_preference_intents_refreshes_recommendation_overlay_without
         "staleMarked": True,
         "constraintStateSynced": True,
     }
-    assert "已确认" in resp.message
-    assert "后续报考参考" in resp.message
+    assert "已采纳" in resp.message
+    assert "后续推荐和专家优选" in resp.message
     assert "现在这份方案" in resp.message
     assert "专家优选组合" not in resp.message
 
@@ -4887,8 +4839,8 @@ async def test_apply_preference_career_intent_updates_planning_latent_profile():
         future_development={"careerTypes": ["读研", "体制内/考公导向"]},
     )
     assert resp.applied is True
-    assert "已确认" in resp.message
-    assert "后续报考参考" in resp.message
+    assert "已采纳" in resp.message
+    assert "后续推荐和专家优选" in resp.message
 
 
 def test_career_relation_matching_uses_each_direction_slot_not_only_public_service():
@@ -5058,56 +5010,6 @@ async def test_analyze_intent_change_interest_stage_without_scope_does_not_trigg
 
 
 @pytest.mark.asyncio
-async def test_confirm_intent_change_with_career_intent_requires_card_click():
-    ctx = SimpleNamespace(
-        deps=SimpleNamespace(
-            sessionid="31",
-            batch="01",
-            pending_intent_change=True,
-        )
-    )
-
-    with (
-        patch(
-            "app.tools.intent_state_tool.get_intent_change_cache",
-            new=AsyncMock(
-                return_value={
-                    "data": {
-                        "planEditCache": {
-                            "intent_mode": INTENT_MODE_PREFERENCE,
-                            "career_intents": {"positive": ["system_public_service"]},
-                        }
-                    }
-                }
-            ),
-        ),
-        patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch(
-            "app.tools.intent_state_tool.get_planning_state",
-            new=AsyncMock(return_value={"data": {"profileState": {"latentProfile": {"futureDevelopment": {"careerTypes": ["读研"]}}}}}),
-        ) as state_mock,
-        patch("app.tools.intent_state_tool.update_planning_latent_profile", new=AsyncMock()) as latent_mock,
-        patch("app.tools.intent_state_tool.mark_planning_intent_change_stale", new=AsyncMock(return_value={"code": 0})) as stale_mock,
-        patch("app.tools.intent_state_tool.query_planning_candidate_pool", new=AsyncMock(return_value={"code": 0, "data": {"total": 1}})) as query_mock,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
-    ):
-        mock_pm = mock_pm_cls.return_value
-        mock_pm.update_city_intent = AsyncMock()
-        mock_pm.update_major_intent = AsyncMock()
-        mock_pm.update_school_intent = AsyncMock()
-
-        resp = await _confirm_update(ctx)
-
-    assert resp["applied"] is False
-    assert resp["messageCode"] == "confirm_required"
-    assert "确认卡片" in resp["message"]
-    query_mock.assert_not_awaited()
-    stale_mock.assert_not_awaited()
-    state_mock.assert_not_awaited()
-    latent_mock.assert_not_awaited()
-
-
-@pytest.mark.asyncio
 async def test_handle_intent_select_preference_does_not_regenerate_candidate_pool():
     selected_data = {
         "message_id": 1002,
@@ -5137,8 +5039,8 @@ async def test_handle_intent_select_preference_does_not_regenerate_candidate_poo
         resp = (await _apply_selected("7", "01", selected_data))["message"]
 
     assert isinstance(resp, str)
-    assert "已确认" in resp
-    assert "后续报考参考" in resp
+    assert "已采纳" in resp
+    assert "后续推荐和专家优选" in resp
     stale_mock.assert_awaited_once_with(7, INTENT_MODE_PREFERENCE)
     constraint_state_mock.assert_awaited_once_with(
         "7",
@@ -5148,3 +5050,48 @@ async def test_handle_intent_select_preference_does_not_regenerate_candidate_poo
         region_preferences={"positive": [], "negative": ["上海"]},
     )
     query_mock.assert_awaited_once()
+
+
+def test_only_keep_major_payload_prunes_model_generated_negative_complement():
+    pruned = _prune_generated_negative_complements_for_only_keep(
+        {
+            "level3": ["电气工程及其自动化", "大气科学"],
+            "negative_level1": ["哲学", "经济学", "工学", "医学"],
+        },
+        latest_utterance="只要电气和气象，其他方向都不要",
+        batch="01",
+    )
+
+    assert pruned == {"level3": ["电气工程及其自动化", "大气科学"]}
+
+
+def test_only_keep_major_payload_keeps_explicit_negative_scope():
+    pruned = _prune_generated_negative_complements_for_only_keep(
+        {
+            "level1": ["医学"],
+            "negative_level1": ["工学", "理学"],
+        },
+        latest_utterance="不考虑工科，只考虑医学类",
+        batch="01",
+    )
+
+    assert pruned == {"level1": ["医学"], "negative_level1": ["工学"]}
+
+
+def test_region_area_normalization_uses_extractor_polarity_not_user_phrase_rules():
+    positive, negative = _normalize_region_area_polarity_payloads(
+        {
+            "province": ["浙江", "上海", "湖南", "湖北", "江西", "福建", "云南", "贵州", "四川", "重庆", "广东", "广西", "海南", "江苏", "安徽"],
+            "city": [],
+            "area": ["南方"],
+        },
+        {
+            "province": ["黑龙江", "吉林", "辽宁", "内蒙古", "新疆", "西藏", "青海", "甘肃", "宁夏", "陕西", "山西", "山东", "河北", "北京", "天津"],
+            "city": [],
+            "area": ["北方"],
+        },
+        latest_utterance="孩子就想去南方，北方先别考虑",
+    )
+
+    assert positive == {"area": ["南方"]}
+    assert negative == {"negative_area": ["北方"]}

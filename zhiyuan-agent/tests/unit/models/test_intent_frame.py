@@ -125,6 +125,8 @@ class TestIntentFrame:
         assert frame.topic == "general"
         assert not frame.is_confirmation_of_previous
         assert frame.raw_utterance == ""
+        assert frame.plan_goal_type is None
+        assert frame.constraint_intent_type == "default"
 
     def test_full_construction(self):
         frame = IntentFrame(
@@ -177,6 +179,52 @@ class TestIntentFrame:
     def test_invalid_verb(self):
         with pytest.raises(ValidationError):
             IntentFrame(task_layer="plan", verb="invalid_verb")
+
+    @pytest.mark.parametrize("plan_goal_type", [
+        "query_state",
+        "only_keep_scope",
+        "must_include_scope",
+        "exclude_scope",
+        "prefer_scope",
+        "rebalance_structure",
+        "reduce_risk",
+        "mixed_adjustment",
+        "clarify",
+    ])
+    def test_valid_plan_goal_types(self, plan_goal_type):
+        frame = IntentFrame(
+            task_layer="plan",
+            verb="replace",
+            plan_goal_type=plan_goal_type,
+        )
+        assert frame.plan_goal_type == plan_goal_type
+
+    def test_invalid_plan_goal_type(self):
+        with pytest.raises(ValidationError):
+            IntentFrame(
+                task_layer="plan",
+                verb="replace",
+                plan_goal_type="only_keep",
+            )
+
+    @pytest.mark.parametrize("constraint_intent_type", [
+        "default", "only_keep", "must_have",
+    ])
+    def test_valid_constraint_intent_type(self, constraint_intent_type):
+        frame = IntentFrame(
+            task_layer="plan",
+            verb="replace",
+            constraint_intent_type=constraint_intent_type,
+        )
+        assert frame.constraint_intent_type == constraint_intent_type
+
+    def test_invalid_constraint_intent_type(self):
+        with pytest.raises(ValidationError):
+            IntentFrame(
+                task_layer="plan",
+                verb="replace",
+                constraint_intent_type="exclusive",
+            )
 
     @pytest.mark.parametrize("verb", ["confirm", "reject", "pin", "unpin"])
     def test_removed_verbs_are_not_public_frame_actions(self, verb):

@@ -38,8 +38,6 @@ _WORKFLOW_FUNCTIONS = [
     "move_planning_ordered_item",
     "run_planning_review",
     "analyze_planning_plan_adjustment",
-    "preview_planning_compensation",
-    "apply_planning_compensation",
 ]
 
 _EXECUTION_TOOL_ALIASES = {
@@ -52,7 +50,6 @@ _EXECUTION_TOOL_ALIASES = {
     "move_planning_ordered_item",
     "run_planning_review",
     "analyze_planning_plan_adjustment",
-    "preview_planning_compensation",
 }
 
 _MUTATION_HANDLER_ALIASES = {

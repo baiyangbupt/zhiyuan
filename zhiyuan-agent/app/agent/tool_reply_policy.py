@@ -23,6 +23,7 @@ INTENT_PREVIEW_TOOL_NAMES = {
 
 READONLY_EXPLORE_TOOL_NAMES = {
     "analyze_current_interest",
+    "analyze_current_interest_profile",
     "analyze_current_school_interest",
     "analyze_current_major_interest",
     "analyze_current_region_interest",
@@ -203,17 +204,6 @@ def decide_tool_reply(
                 strategy="preview_wait_confirm",
                 reply=reply,
                 reason="structured_review_issue_batch_preview",
-            )
-        if (
-            tool_name == "execute_plan_action"
-            and result_kind == "compensation_preview"
-            and "empty_compensation_preview" not in reply_focus
-            and reply
-        ):
-            return ToolReplyDecision(
-                strategy="preview_wait_confirm",
-                reply=reply,
-                reason="structured_compensation_preview",
             )
         if result_kind in DIRECT_REPLY_RESULT_KINDS and reply:
             return ToolReplyDecision(

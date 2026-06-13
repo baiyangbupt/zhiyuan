@@ -127,7 +127,7 @@ skill 不直接执行状态，也不应该替代 tool 的安全边界。
 
 - `preview_current_*_intent_confirmation` 是主 agent 可见的高层语义入口
 - `analyze_volunteer_intent_change` 继续保留为内部低层分析能力，由 wrapper 调用
-- `update_volunteer_intent_state` 仅保留为旧会话/旧工具返回兼容 wrapper，不再作为主 agent 可调用工具
+- `update_volunteer_intent_state` 旧 wrapper 已删除；当前意向确认只走 `pendingConfirmation(kind=intent_change) -> apply_selected_intents`
 
 #### Plan
 

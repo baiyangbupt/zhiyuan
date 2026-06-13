@@ -6,14 +6,32 @@ from typing import Any, Literal
 from pydantic_ai import RunContext
 
 from app.agent.context import RequestContext
+from app.models.intent_frame import ConstraintIntentType, PlanGoalConfidence, PlanGoalType
 from app.tools.plan_context_tool import _collect_plan_context_inputs_model
-from app.tools.plan_orchestration_models import PlanActionPlan, PlanAtomicAction, PlanReviewIssueTarget
+from app.tools.plan_goal_resolution import attach_goal_entity_resolutions, scope_entity_type, scope_value_list
+from app.tools.plan_orchestration_models import (
+    CompositePlanProposal,
+    LinkedRepairProposal,
+    PlanActionPlan,
+    PlanAtomicAction,
+    PlanDecisionReference,
+    PlanGoal,
+    PlanReviewIssueTarget,
+    build_plan_goal_intent_updates,
+    plan_goal_requires_scope,
+    resolve_plan_goal_type,
+)
+from app.tools.plan_user_goal_fix_proposal import (
+    build_user_goal_fix_proposal_req_from_plan_goal,
+    linked_repair_proposal_from_backend,
+)
 from app.tools.review_issue_registry import get_review_issue_rule
+from app.util.internal_client import generate_user_goal_planning_fix_proposals as _generate_user_goal_fix_proposals_request
 
 
 _PLAN_DEPENDENT_ACTIONS = {
     "analyze_adjustment",
-    "preview_compensation",
+    "preview_fix_proposal",
     "add_units",
     "remove_units",
     "move_unit",
@@ -22,7 +40,6 @@ _PLAN_DEPENDENT_ACTIONS = {
     "remove_ordered_unit",
     "sort_ordered_plan",
     "regenerate_order",
-    "apply_compensation",
     "review_plan",
 }
 
@@ -36,7 +53,6 @@ _MUTATING_ACTION_FAMILIES = {
     "remove_ordered_unit",
     "sort_ordered_plan",
     "regenerate_order",
-    "apply_compensation",
 }
 
 def _has_selection_scope(filters: dict[str, str]) -> bool:
@@ -79,6 +95,431 @@ def _infer_intent_relation(summary: str) -> Literal["support", "conflict", "mixe
     if "命中偏好" in summary or "贴近" in summary or "发展方向" in summary:
         return "support"
     return "unknown"
+
+
+def _normalize_scope_values(values: Any) -> list[str]:
+    if isinstance(values, list):
+        return [str(item or "").strip() for item in values if str(item or "").strip()]
+    value = str(values or "").strip()
+    return [value] if value else []
+
+
+def _append_goal_scope(scopes: list[dict[str, Any]], entity_type: str, values: Any) -> None:
+    normalized_values = _normalize_scope_values(values)
+    if not normalized_values:
+        return
+    scopes.append({"entity_type": entity_type, "values": normalized_values})
+
+
+def _derive_goal_scopes_from_structured_args(
+    *,
+    source_major_names: list[str] | None,
+    province_keyword: str | None,
+    school_keyword: str | None,
+    major_keyword: str | None,
+    school_tags: list[str] | None,
+    major_tags: list[str] | None,
+    review_issue_code: str | None,
+) -> list[dict[str, Any]]:
+    scopes: list[dict[str, Any]] = []
+    _append_goal_scope(scopes, "major", source_major_names)
+    _append_goal_scope(scopes, "major", major_keyword)
+    _append_goal_scope(scopes, "major_tag", major_tags)
+    _append_goal_scope(scopes, "school", school_keyword)
+    _append_goal_scope(scopes, "school_tag", school_tags)
+    _append_goal_scope(scopes, "region", province_keyword)
+    _append_goal_scope(scopes, "risk", review_issue_code)
+    return scopes
+
+
+def _build_plan_goal_metadata(
+    *,
+    user_goal: str,
+    plan_goal_type: PlanGoalType | None,
+    constraint_intent_type: ConstraintIntentType,
+    plan_goal_confidence: PlanGoalConfidence,
+    goal_target_scopes: list[dict[str, Any]] | None,
+    goal_negative_scopes: list[dict[str, Any]] | None,
+    source_major_names: list[str] | None,
+    province_keyword: str | None,
+    school_keyword: str | None,
+    major_keyword: str | None,
+    school_tags: list[str] | None,
+    major_tags: list[str] | None,
+    review_issue_code: str | None,
+    batch: str | None,
+) -> tuple[PlanGoal | None, list[dict[str, Any]]]:
+    goal_type = resolve_plan_goal_type(plan_goal_type, constraint_intent_type)
+    if goal_type is None:
+        return None, []
+
+    derived_scopes = _derive_goal_scopes_from_structured_args(
+        source_major_names=source_major_names,
+        province_keyword=province_keyword,
+        school_keyword=school_keyword,
+        major_keyword=major_keyword,
+        school_tags=school_tags,
+        major_tags=major_tags,
+        review_issue_code=review_issue_code,
+    )
+    target_scopes = list(goal_target_scopes or [])
+    negative_scopes = list(goal_negative_scopes or [])
+    if not target_scopes and not negative_scopes:
+        if goal_type == "exclude_scope":
+            negative_scopes = derived_scopes
+        else:
+            target_scopes = derived_scopes
+
+    has_scope = bool(target_scopes or negative_scopes)
+    needs_clarification = plan_goal_requires_scope(goal_type) and not has_scope
+    clarification_questions = (
+        ["请补充要调整的专业、院校、地域或风险范围。"]
+        if needs_clarification
+        else []
+    )
+    plan_goal = PlanGoal(
+        goal_type=goal_type,
+        user_original_text=user_goal,
+        target_scopes=target_scopes,
+        negative_scopes=negative_scopes,
+        confidence=plan_goal_confidence,
+        needs_clarification=needs_clarification,
+        clarification_questions=clarification_questions,
+    )
+    attach_goal_entity_resolutions(plan_goal, batch)
+    return plan_goal, build_plan_goal_intent_updates(plan_goal)
+
+
+def _scope_values_for_action(
+    scopes: list[dict[str, Any]],
+) -> dict[str, list[str]]:
+    values_by_type: dict[str, list[str]] = {}
+    for scope in scopes:
+        if not isinstance(scope, dict):
+            continue
+        entity_type = scope_entity_type(scope)
+        bucket = values_by_type.setdefault(entity_type, [])
+        for value in scope_value_list(scope):
+            if value and value not in bucket:
+                bucket.append(value)
+    return values_by_type
+
+
+def _filters_from_scope_values(values_by_type: dict[str, list[str]], *, limit: int) -> dict[str, Any]:
+    filters: dict[str, Any] = {"limit": str(limit)}
+    if values_by_type.get("major"):
+        filters["major_keyword"] = values_by_type["major"][0]
+    if values_by_type.get("school"):
+        filters["school_keyword"] = values_by_type["school"][0]
+    if values_by_type.get("region"):
+        filters["province_keyword"] = values_by_type["region"][0]
+    if values_by_type.get("tag"):
+        filters["major_tags"] = list(values_by_type["tag"])
+    return filters
+
+
+def _build_remove_action_from_scope(
+    *,
+    scopes: list[dict[str, Any]],
+    user_goal: str,
+    limit: int,
+) -> PlanAtomicAction | None:
+    values_by_type = _scope_values_for_action(scopes)
+    filters = _filters_from_scope_values(values_by_type, limit=limit)
+    source_major_names = list(values_by_type.get("major") or [])
+    if not source_major_names and not any(key in filters for key in ("school_keyword", "province_keyword", "major_tags")):
+        return None
+    return PlanAtomicAction(
+        action_type="remove_units",
+        source_major_names=source_major_names,
+        filters=filters,
+        reason=user_goal,
+    )
+
+
+def _build_add_action_from_scope(
+    *,
+    scopes: list[dict[str, Any]],
+    user_goal: str,
+    limit: int,
+) -> PlanAtomicAction | None:
+    values_by_type = _scope_values_for_action(scopes)
+    filters = _filters_from_scope_values(values_by_type, limit=max(1, limit))
+    if not any(key in filters for key in ("major_keyword", "school_keyword", "province_keyword", "major_tags")):
+        return None
+    return PlanAtomicAction(
+        action_type="add_units",
+        filters=filters,
+        reason=user_goal,
+    )
+
+
+def _build_composite_plan_actions(
+    *,
+    plan_goal: PlanGoal | None,
+    user_goal: str,
+    limit: int,
+) -> tuple[list[PlanAtomicAction], list[str]]:
+    if plan_goal is None or plan_goal.needs_clarification:
+        return [], []
+    if plan_goal.goal_type == "exclude_scope":
+        action = _build_remove_action_from_scope(
+            scopes=plan_goal.negative_scopes,
+            user_goal=user_goal,
+            limit=limit,
+        )
+        return ([action] if action else []), []
+    if plan_goal.goal_type == "must_include_scope":
+        action = _build_add_action_from_scope(
+            scopes=plan_goal.target_scopes,
+            user_goal=user_goal,
+            limit=1,
+        )
+        return ([action] if action else []), []
+    if plan_goal.goal_type == "only_keep_scope":
+        return [], [
+            "当前已能把“只保留”的范围写入待确认要求；但自动移出所有非目标范围还需要先读取当前方案并做反向范围校验，本轮不直接生成可执行删除动作。",
+        ]
+    return [], []
+
+
+def _scope_reference_payload(scope: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "entity_type": scope_entity_type(scope),
+        "values": scope_value_list(scope),
+    }
+
+
+def _append_scope_decision_references(
+    references: list[PlanDecisionReference],
+    *,
+    scopes: list[dict[str, Any]],
+    dimension: str,
+    label: str,
+    weight_hint: Literal["hard", "high", "medium", "low", "context"],
+) -> None:
+    for scope in scopes:
+        if not isinstance(scope, dict):
+            continue
+        payload = _scope_reference_payload(scope)
+        if not payload["values"]:
+            continue
+        references.append(
+            PlanDecisionReference(
+                source="explicit_user_goal",
+                dimension=dimension,
+                label=label,
+                value=payload,
+                weight_hint=weight_hint,
+                applies_to=list(payload["values"]),
+            )
+        )
+
+
+def _build_decision_references(
+    *,
+    plan_goal: PlanGoal | None,
+    intent_updates: list[dict[str, Any]],
+    context_inputs: object,
+) -> list[PlanDecisionReference]:
+    """Build structured comparison signals for composite plan previews.
+
+    The references intentionally describe evidence only. Selection, preview and
+    apply permissions remain in execution and confirmation layers.
+    """
+    references: list[PlanDecisionReference] = []
+    if plan_goal is not None:
+        positive_weight: Literal["hard", "high", "medium", "low", "context"] = (
+            "hard"
+            if plan_goal.goal_type in {"only_keep_scope", "must_include_scope"}
+            else "medium"
+        )
+        negative_weight: Literal["hard", "high", "medium", "low", "context"] = (
+            "hard" if plan_goal.goal_type == "exclude_scope" else "medium"
+        )
+        _append_scope_decision_references(
+            references,
+            scopes=plan_goal.target_scopes,
+            dimension="target_scope",
+            label="用户明确想保留或补入的范围",
+            weight_hint=positive_weight,
+        )
+        _append_scope_decision_references(
+            references,
+            scopes=plan_goal.negative_scopes,
+            dimension="negative_scope",
+            label="用户明确想避开或降低优先级的范围",
+            weight_hint=negative_weight,
+        )
+        _append_scope_decision_references(
+            references,
+            scopes=plan_goal.structure_targets,
+            dimension="structure_target",
+            label="用户明确提出的结构目标",
+            weight_hint="high",
+        )
+        _append_scope_decision_references(
+            references,
+            scopes=plan_goal.quality_guards,
+            dimension="quality_guard",
+            label="用户不希望明显牺牲的边界",
+            weight_hint="high",
+        )
+    if intent_updates:
+        references.append(
+            PlanDecisionReference(
+                source="confirmed_intent",
+                dimension="pending_intent_update",
+                label="确认后会写入后续报考参考的内容",
+                value=intent_updates,
+                weight_hint="hard",
+            )
+        )
+
+    relation_lines = [
+        str(line or "").strip()
+        for line in (getattr(context_inputs, "relation_lines", []) or [])
+        if str(line or "").strip()
+    ]
+    if relation_lines:
+        references.append(
+            PlanDecisionReference(
+                source="current_plan",
+                dimension="intent_relation",
+                label="当前方案与已记录偏好/要求的关系",
+                value=relation_lines[:5],
+                weight_hint="context",
+            )
+        )
+    review_lines = [
+        str(line or "").strip()
+        for line in (getattr(context_inputs, "review_issue_summary_lines", []) or [])
+        if str(line or "").strip()
+    ]
+    if review_lines:
+        references.append(
+            PlanDecisionReference(
+                source="review_rule",
+                dimension="risk_or_warning",
+                label="当前审查发现的风险或提醒",
+                value=review_lines[:5],
+                weight_hint="high",
+            )
+        )
+
+    references.append(
+        PlanDecisionReference(
+            source="system_recommendation",
+            dimension="priority_metrics",
+            label="系统用于比较志愿优先级的参考指标",
+            value=[
+                "推荐系数",
+                "录取率",
+                "冲稳保层级",
+                "院校层次",
+                "专业热度",
+                "意向匹配",
+            ],
+            weight_hint="context",
+            evidence={
+                "note": "这些指标用于排序、替换和取舍说明；已确认的报考条件仍优先于推荐系数。",
+            },
+        )
+    )
+    return references
+
+
+def _build_composite_proposal(
+    *,
+    plan_goal: PlanGoal | None,
+    intent_updates: list[dict[str, Any]],
+    plan_actions: list[PlanAtomicAction],
+    linked_fix_proposals: list[Any] | None,
+    decision_references: list[PlanDecisionReference],
+    feasibility: str,
+    requires_confirmation: bool,
+    planning_version: int,
+    impact_summary: list[str],
+    tradeoffs: list[str],
+    missing_inputs: list[str],
+) -> CompositePlanProposal | None:
+    if plan_goal is None:
+        return None
+    normalized_feasibility = feasibility
+    if plan_goal.needs_clarification:
+        normalized_feasibility = "needs_clarification"
+    elif missing_inputs:
+        normalized_feasibility = "preview_only"
+    elif requires_confirmation:
+        normalized_feasibility = "ready"
+    proposal = CompositePlanProposal(
+        source_version=planning_version,
+        goal=plan_goal,
+        intent_updates=intent_updates,
+        plan_actions=plan_actions,
+        linked_fix_proposals=list(linked_fix_proposals or []),
+        decision_references=decision_references,
+        feasibility=normalized_feasibility,
+        impact_summary=impact_summary,
+        tradeoffs=tradeoffs,
+        requires_confirmation=requires_confirmation and normalized_feasibility == "ready",
+        post_apply_validation_plan=[
+            "执行后重新读取当前方案",
+            "执行后重新审查风险和提醒",
+        ] if requires_confirmation and normalized_feasibility == "ready" else [],
+    )
+    return proposal
+
+
+async def _generate_linked_user_goal_fix_proposals(
+    ctx: RunContext[RequestContext],
+    plan_goal: PlanGoal | None,
+    planning_version: int,
+) -> tuple[list[LinkedRepairProposal], list[str]]:
+    if plan_goal is None or plan_goal.needs_clarification:
+        return [], []
+    if plan_goal.goal_type not in {"only_keep_scope", "must_include_scope", "exclude_scope"}:
+        return [], []
+    payload = build_user_goal_fix_proposal_req_from_plan_goal(
+        plan_goal,
+        planning_version,
+        context={
+            "entityResolutions": [
+                item.model_dump()
+                for item in plan_goal.entity_resolutions
+            ],
+        },
+        evidence_source="plan_goal",
+    )
+    if not payload:
+        return [], []
+    try:
+        result = await _generate_user_goal_fix_proposals_request(
+            1,
+            ctx.deps.sessionid,
+            payload,
+        )
+    except Exception:
+        return [], ["暂时没有拿到后端调整预览，先保留结构化目标，不自动修改方案。"]
+    if result.get("code") != 0:
+        return [], ["暂时没有拿到后端调整预览，先保留结构化目标，不自动修改方案。"]
+    data = result.get("data") or {}
+    if not isinstance(data, dict):
+        return [], ["后端调整预览格式异常，先保留结构化目标，不自动修改方案。"]
+    proposals = [
+        proposal
+        for proposal in (
+            linked_repair_proposal_from_backend(
+                item,
+                default_source=str(data.get("proposalSource") or "user_goal"),
+                default_source_version_guard=int(data.get("sourceVersionGuard") or planning_version or 0),
+            )
+            for item in (data.get("proposals") or [])
+            if isinstance(item, dict)
+        )
+        if proposal is not None
+    ]
+    return proposals, []
 
 
 def _context_review_issues(context_inputs: object) -> list[dict[str, Any]]:
@@ -215,6 +656,16 @@ def _infer_replace_filters_from_profile(ctx: RunContext[RequestContext], filters
     return inferred
 
 
+def _should_infer_replace_filters_from_profile(
+    review_issue_target: PlanReviewIssueTarget | None,
+) -> bool:
+    # A full review issue such as "高收费/中外合作" needs an explicit
+    # replacement direction from the user or backend fix proposals. Reusing
+    # historical preferences here makes the preview look confirmed while the
+    # actual replacement boundary was never stated.
+    return review_issue_target is None
+
+
 def _determine_stage(
     action_family: str,
     *,
@@ -228,7 +679,7 @@ def _determine_stage(
         return current_stage
     if action_family == "query_state":
         return "apply"
-    if action_family in {"query_draft", "query_ordered", "query_candidates", "analyze_adjustment", "preview_compensation"}:
+    if action_family in {"query_draft", "query_ordered", "query_candidates", "analyze_adjustment", "preview_fix_proposal"}:
         return "apply"
     if missing_inputs:
         return "analyze"
@@ -250,7 +701,7 @@ async def _plan_next_action_model(
         "query_candidates",
         "generate_plan",
         "analyze_adjustment",
-        "preview_compensation",
+        "preview_fix_proposal",
         "add_units",
         "remove_units",
         "move_unit",
@@ -259,7 +710,6 @@ async def _plan_next_action_model(
         "remove_ordered_unit",
         "sort_ordered_plan",
         "regenerate_order",
-        "apply_compensation",
         "review_plan",
     ] = "query_state",
     current_stage: str | None = None,
@@ -280,6 +730,11 @@ async def _plan_next_action_model(
     preserve_count: bool = False,
     limit: int = 5,
     user_confirmed: bool = False,
+    plan_goal_type: PlanGoalType | None = None,
+    constraint_intent_type: ConstraintIntentType = "default",
+    plan_goal_confidence: PlanGoalConfidence = "medium",
+    goal_target_scopes: list[dict[str, Any]] | None = None,
+    goal_negative_scopes: list[dict[str, Any]] | None = None,
 ) -> PlanActionPlan:
     context_inputs = await _collect_plan_context_inputs_model(ctx)
     planning_summary = getattr(ctx.deps, "planning_summary", None)
@@ -363,7 +818,11 @@ async def _plan_next_action_model(
         unit_ids=unit_ids,
         source_position=source_position,
     )
-    if action_family == "replace_units" and (volunteer_ids or review_issue_target is not None):
+    if (
+        action_family == "replace_units"
+        and volunteer_ids
+        and _should_infer_replace_filters_from_profile(review_issue_target)
+    ):
         filters = _infer_replace_filters_from_profile(ctx, filters)
     missing_inputs = _build_missing_inputs(
         action_family,
@@ -390,10 +849,10 @@ async def _plan_next_action_model(
         "query_ordered",
         "query_candidates",
         "analyze_adjustment",
-        "preview_compensation",
+        "preview_fix_proposal",
         "review_plan",
     }
-    if action_family in {"generate_plan", "sort_ordered_plan", "regenerate_order", "apply_compensation", "replace_units"}:
+    if action_family in {"generate_plan", "sort_ordered_plan", "regenerate_order", "replace_units"}:
         requires_confirmation = True
     if stage == "analyze":
         requires_confirmation = False
@@ -407,7 +866,6 @@ async def _plan_next_action_model(
         "remove_ordered_unit",
         "sort_ordered_plan",
         "regenerate_order",
-        "apply_compensation",
     }
     should_refresh_workspace = stage in {"apply", "review"}
     atomic_actions: list[PlanAtomicAction] = []
@@ -467,8 +925,6 @@ async def _plan_next_action_model(
                 preview_summary = f"会优先按当前审查命中的整批{review_issue_target.label}项生成替换预览，并在执行后重新审查整体结构。"
             else:
                 preview_summary = "会先移出指定志愿，再按新的筛选条件补入候选，并在执行后重新审查整体结构。"
-        elif action_family == "apply_compensation":
-            preview_summary = "会应用当前补偿建议，并同步刷新排序与审查结果。"
     rationale = [f"当前上下文：{context_inputs.summary}"]
     if matched_review_issue:
         label = str(matched_review_issue.get("label") or matched_review_issue.get("code") or "审查问题").strip()
@@ -496,6 +952,67 @@ async def _plan_next_action_model(
             rationale.append("未显式指定替换范围，默认按当前已记录的专业意向补入候选。")
         elif inferred_major_keyword:
             rationale.append("未显式指定替换范围，默认按当前已记录的专业方向补入候选。")
+    plan_goal, intent_updates = _build_plan_goal_metadata(
+        user_goal=user_goal,
+        plan_goal_type=plan_goal_type,
+        constraint_intent_type=constraint_intent_type,
+        plan_goal_confidence=plan_goal_confidence,
+        goal_target_scopes=goal_target_scopes,
+        goal_negative_scopes=goal_negative_scopes,
+        source_major_names=source_major_names,
+        province_keyword=province_keyword,
+        school_keyword=school_keyword,
+        major_keyword=major_keyword,
+        school_tags=school_tags,
+        major_tags=major_tags,
+        review_issue_code=review_issue_code,
+        batch=getattr(ctx.deps, "batch", None),
+    )
+    if plan_goal and plan_goal.needs_clarification:
+        rationale.extend(plan_goal.clarification_questions)
+    composite_plan_actions, composite_tradeoffs = _build_composite_plan_actions(
+        plan_goal=plan_goal,
+        user_goal=user_goal,
+        limit=limit,
+    )
+    linked_fix_proposals: list[LinkedRepairProposal] = []
+    if plan_goal and not plan_goal.needs_clarification and _has_existing_plan(context_inputs):
+        linked_fix_proposals, linked_warnings = await _generate_linked_user_goal_fix_proposals(
+            ctx,
+            plan_goal,
+            planning_version,
+        )
+        rationale.extend(linked_warnings)
+        if linked_fix_proposals:
+            composite_tradeoffs.append("已基于当前方案和候选生成后端只读调整预览；这份预览不会自动执行。")
+    decision_references = _build_decision_references(
+        plan_goal=plan_goal,
+        intent_updates=intent_updates,
+        context_inputs=context_inputs,
+    )
+    feasibility = "needs_clarification" if plan_goal and plan_goal.needs_clarification else "preview_only"
+    impact_summary = [
+        line
+        for line in [preview_summary, *getattr(plan_goal, "user_visible_entity_notes", [])]
+        if str(line or "").strip()
+    ]
+    composite_proposal = _build_composite_proposal(
+        plan_goal=plan_goal,
+        intent_updates=intent_updates,
+        plan_actions=composite_plan_actions,
+        linked_fix_proposals=linked_fix_proposals,
+        decision_references=decision_references,
+        feasibility=feasibility,
+        requires_confirmation=requires_confirmation and not missing_inputs,
+        planning_version=planning_version,
+        impact_summary=impact_summary,
+        tradeoffs=composite_tradeoffs,
+        missing_inputs=missing_inputs,
+    )
+    if composite_proposal and composite_proposal.feasibility == "needs_clarification":
+        feasibility = "needs_clarification"
+    elif composite_proposal and composite_proposal.feasibility == "ready":
+        feasibility = "ready"
     return PlanActionPlan(
         stage=stage,  # type: ignore[arg-type]
         action_family=action_family,
@@ -509,6 +1026,7 @@ async def _plan_next_action_model(
         missing_inputs=missing_inputs,
         rationale=rationale,
         atomic_actions=atomic_actions,
+        composite_proposal=composite_proposal,
         preview_summary=preview_summary,
     )
 
@@ -523,7 +1041,7 @@ async def plan_next_action(
         "query_candidates",
         "generate_plan",
         "analyze_adjustment",
-        "preview_compensation",
+        "preview_fix_proposal",
         "add_units",
         "remove_units",
         "move_unit",
@@ -532,7 +1050,6 @@ async def plan_next_action(
         "remove_ordered_unit",
         "sort_ordered_plan",
         "regenerate_order",
-        "apply_compensation",
         "review_plan",
     ] = "query_state",
     current_stage: str | None = None,
@@ -553,6 +1070,11 @@ async def plan_next_action(
     preserve_count: bool = False,
     limit: int = 5,
     user_confirmed: bool = False,
+    plan_goal_type: PlanGoalType | None = None,
+    constraint_intent_type: ConstraintIntentType = "default",
+    plan_goal_confidence: PlanGoalConfidence = "medium",
+    goal_target_scopes: list[dict[str, Any]] | None = None,
+    goal_negative_scopes: list[dict[str, Any]] | None = None,
 ) -> str:
     """根据用户目标和现有状态输入生成 Plan 动作计划。
 
@@ -588,6 +1110,12 @@ async def plan_next_action(
     `source_major_names=["汉语言文学"]` 或对应专业名列表；不要只把源范围写进
     `user_goal`。如果用户要按院校、地域或候选范围处理当前方案，使用结构化
     `school_keyword`、`province_keyword`、`major_keyword` 等字段承载范围。
+
+    对复合目标不要靠 user_goal 文本推断。用户表达“只保留/至少要有/排除/优先”
+    这类会同时影响方案和后续报考参考的诉求时，必须显式传
+    `plan_goal_type` 或 `constraint_intent_type`，并用 `goal_target_scopes` /
+    `goal_negative_scopes` 或已有结构化范围字段承载目标对象。本工具只把它们写入
+    PlanGoal / intent_updates 预览元数据，不会直接写状态或执行 apply。
     """
     model = await _plan_next_action_model(
         ctx,
@@ -611,5 +1139,10 @@ async def plan_next_action(
         preserve_count=preserve_count,
         limit=limit,
         user_confirmed=user_confirmed,
+        plan_goal_type=plan_goal_type,
+        constraint_intent_type=constraint_intent_type,
+        plan_goal_confidence=plan_goal_confidence,
+        goal_target_scopes=goal_target_scopes,
+        goal_negative_scopes=goal_negative_scopes,
     )
     return json.dumps(model.model_dump(), ensure_ascii=False)

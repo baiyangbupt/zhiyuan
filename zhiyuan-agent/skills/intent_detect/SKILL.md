@@ -67,13 +67,13 @@ description: 处理用户对志愿方案的调整意向，包括增加/排除学
 
 **方式A：通过前端已有交互勾选（推荐）**
 - 用户在 `intentDetectSelectPopup / intentConfirmPopup` 卡片中勾选想要的项目，点击【采纳】
-- 前端发送结构化确认消息，系统自动处理选中的子集
-- 无需 Agent 参与，直接更新画像
+- 前端发送结构化确认消息，服务端生成统一待采纳内容
+- 用户再点击统一待采纳内容里的【采纳】后，服务端应用选中的子集
 
 **方式B：通过对话确认**
 - 用户在对话中回复确认或拒绝
-- 用户确认（如"确认"、"好的"、"可以"） → 调用 `update_volunteer_intent_state(action="confirm")`
-- 用户拒绝（如"不要"、"取消"、"算了"） → 调用 `update_volunteer_intent_state(action="reject")`
+- 只有当前会话存在 active `pendingConfirmation(kind=intent_change)`，且服务端校验与最近待采纳内容一致时，短文本确认才会被转换为采纳
+- Agent 不要调用状态更新工具去猜测用户是否确认；没有 active pending 时，应该重新生成预览或继续解释
 
 ## 可用工具
 
@@ -101,13 +101,10 @@ description: 处理用户对志愿方案的调整意向，包括增加/排除学
   - `intent_mode`（可选）: `preference | constraint`
 - **返回**：JSON 字符串，包含识别项、已有项、关联分析、阶段、偏好/要求模式等事实数据
 
-### update_volunteer_intent_state
-- **用途**：统一管理意向状态更新动作
-- **参数**：
-  - `action`: `confirm | reject | apply_selected`
-  - `merged`（可选）: 已合并的意向结构，`apply_selected` 时使用
-  - `intent_mode`（可选）: `preference | constraint`
-- **返回**：JSON 字符串，包含是否生效、候选过滤信息、数量信息、消息码与兼容消息等
+### apply_selected_intents
+- **用途**：服务端确认后应用用户采纳的意向子集
+- **调用方**：仅由 `pendingConfirmation(kind=intent_change)` 的确认链路调用，Agent 不直接调用
+- **返回**：JSON 字符串，包含是否生效、推荐刷新状态、消息码与结构化结果
 
 ### preview_current_intent_confirmation
 - **用途**：直接基于当前这句话生成确认预览

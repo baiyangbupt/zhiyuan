@@ -19,6 +19,7 @@ from app.tools.admission_policy_tool import answer_admission_policy_question
 from app.tools.intent_preview_tool import (
     analyze_current_career_direction,
     analyze_current_interest,
+    analyze_current_interest_profile,
     analyze_current_major_interest,
     analyze_current_region_interest,
     analyze_current_school_interest,
@@ -32,6 +33,7 @@ from app.tools.plan_context_tool import collect_plan_context_inputs
 from app.tools.plan_execution_tool import execute_plan_action
 from app.tools.plan_orchestration_tool import plan_next_action
 from app.tools.plan_query_tool import query_volunteer_plan
+from app.tools.planning_workflow_tool import generate_planning_fix_proposals
 from app.tools.plan_validation_tool import validate_major_subjects, validate_plan_params
 from app.tools.school_compare_tool import compare_schools, compare_schools_adhoc
 from app.tools.school_info_tool import get_school_introduction
@@ -58,6 +60,7 @@ _TOOL_PROGRESS_HINTS: dict[str, str] = {
     "search_official_admission_sources": "正在检索官方报考政策和招生信息...",
     "match_admission_rule_to_student":   "正在把招生规则和学生情况逐项匹配...",
     "analyze_current_interest":         "正在结合你的问题做初步分析...",
+    "analyze_current_interest_profile": "正在综合你的兴趣和职业期待做分析...",
     "analyze_current_school_interest":  "正在看这个院校方向是否适合你...",
     "analyze_current_major_interest":   "正在看这个专业方向是否适合你...",
     "analyze_current_region_interest":  "正在看这个地域选择对方案的影响...",
@@ -70,6 +73,7 @@ _TOOL_PROGRESS_HINTS: dict[str, str] = {
     "collect_plan_context_inputs":      "正在读取你的方案、偏好和审查结果...",
     "plan_next_action":                 "正在读取当前方案并整理这次请求...",
     "execute_plan_action":              "正在处理你的方案，请稍等...",
+    "generate_planning_fix_proposals":  "正在根据审查结果整理可处理的调整建议...",
     "validate_major_subjects":          "正在检查专业对选科有没有要求...",
     "validate_plan_params":             "正在检查生成方案需要的信息是否完整...",
 }
@@ -105,10 +109,12 @@ class ChatAgent(BaseAgent[str]):
                 collect_plan_context_inputs,
                 plan_next_action,
                 execute_plan_action,
+                generate_planning_fix_proposals,
                 validate_major_subjects,
                 validate_plan_params,
                 analyze_current_career_direction,
                 analyze_current_interest,
+                analyze_current_interest_profile,
                 analyze_current_major_interest,
                 analyze_current_region_interest,
                 analyze_current_school_interest,
@@ -135,7 +141,7 @@ class ChatAgent(BaseAgent[str]):
 
         if tool_name == "execute_plan_action":
             if stage == "preview" or action_family in {
-                "preview_compensation",
+                "preview_fix_proposal",
                 "analyze_adjustment",
                 "sort_ordered_plan",
                 "add_units",

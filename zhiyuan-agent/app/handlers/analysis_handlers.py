@@ -147,9 +147,9 @@ async def _fetch_fix_proposal_facts(session_id: str) -> dict[str, Any]:
 
 _FIX_PROPOSAL_STATUS_LABELS = {
     "ready": "可确认后执行",
-    "preview_only": "已有预览，暂不自动执行",
-    "blocked": "暂不能自动处理",
-    "info": "仅提醒",
+    "preview_only": "先作为处理方向参考",
+    "blocked": "需要你先取舍或放宽条件",
+    "info": "只需要重点关注",
 }
 
 _FIX_PROPOSAL_STRATEGY_LABELS = {
@@ -164,21 +164,77 @@ _FIX_PROPOSAL_STRATEGY_LABELS = {
 }
 
 _FIX_PROPOSAL_BLOCKING_GUIDANCE = {
-    "candidate_pool_insufficient": "处理边界：当前可用于规划的候选池里没有足够可补项，下一步只能先放宽条件或接受当前数量风险",
-    "safety_candidate_insufficient": "处理边界：当前可用于规划的候选池里缺少可用保底/安全垫候选，不能直接承诺补强安全垫",
-    "tier_candidate_insufficient": "处理边界：当前可用于规划的候选池里目标冲稳保区间候选不足，暂时不能把比例直接调到目标",
-    "probability_gap_candidate_insufficient": "处理边界：当前可用于规划的候选池里断层中间录取率候选不足，暂时不能补齐录取率梯度",
-    "no_sort_or_replacement_candidate": "处理边界：当前缺少可重排或可替换项，不能承诺自动修复倒挂",
-    "major_group_safety_candidate_insufficient": "处理边界：专业组内缺少合适安全垫专业，不能直接移除托底项",
-    "risk_item_unresolved_or_replacement_missing": "处理边界：风险条目缺少可定位明细或替换候选，需要先缩小范围",
-    "replacement_pair_missing": "处理边界：当前方案已满，但没有明确一进一出的替换配对，不能只追加候选",
-    "volunteer_model_mismatch": "处理边界：当前填报模式不支持这类组内修复",
-    "risk_unit_unresolved": "处理边界：风险专业组没有定位清楚，需要先确认具体专业组",
-    "partial_major_group_safety_candidate_missing": "处理边界：只有部分专业组找到安全垫，不能把本轮当作完整修复",
-    "risk_item_unresolved": "处理边界：风险志愿明细没有定位清楚，需要先确认具体志愿",
-    "safe_replacement_candidate_insufficient": "处理边界：暂时没有同层次且风险更低的替换项",
-    "objective_validation_not_improved": "处理边界：预览没有让本次审查目标变好，暂不应该确认应用",
+    "candidate_pool_insufficient": "当前可选范围里没有足够合适的补位项，建议先放宽地域、专业或院校条件，或者接受当前数量风险",
+    "safety_candidate_insufficient": "当前可选范围里缺少合适的保底选择，建议先放宽条件后重新审查，或手动保留现有提醒",
+    "tier_candidate_insufficient": "目标冲稳保区间的可选项不足，建议先放宽筛选条件，再重新看比例是否能调整",
+    "probability_gap_candidate_insufficient": "录取率断层中间缺少合适候选，建议先放宽条件，或手动检查相邻志愿顺序",
+    "no_sort_or_replacement_candidate": "当前缺少可重排或可替换项，建议先人工查看相关志愿，再决定是否手动调整",
+    "major_group_safety_candidate_insufficient": "专业组内缺少更稳的可补专业，建议你先人工确认是否保留这个专业组，或放宽专业范围后再试",
+    "risk_item_unresolved_or_replacement_missing": "还没定位到明确的替换范围，建议先缩小到具体学校、专业组或志愿后再处理",
+    "replacement_pair_missing": "当前方案已满，但还没有明确一进一出的替换配对",
+    "volunteer_model_mismatch": "当前填报模式不适合这类组内处理",
+    "risk_unit_unresolved": "还没定位到具体专业组，建议先点开审查详情确认是哪一组",
+    "partial_major_group_safety_candidate_missing": "只有部分专业组找到了可补选择，其余部分建议你人工取舍或放宽专业范围后再试",
+    "risk_item_unresolved": "还没定位到具体志愿，建议先在审查详情里确认对应条目",
+    "safe_replacement_candidate_insufficient": "暂时没有同层次且风险更低的替换项，建议先人工查看是否接受降层次或放宽范围",
+    "objective_validation_not_improved": "调整预览没有让本次关注的问题变好，不建议直接执行",
 }
+
+
+def _normalize_fix_proposal_title_for_user(title: str) -> str:
+    value = str(title or "").strip()
+    if not value:
+        return "处理建议"
+    return value.replace("修复建议", "处理建议").replace("修复", "处理")
+
+
+def _normalize_fix_proposal_line_for_user(text: str) -> str:
+    value = str(text or "").strip()
+    if not value:
+        return ""
+    normalized = (
+        value
+        .replace("修复建议", "处理建议")
+        .replace("修复预览", "处理预览")
+        .replace("修复方案", "处理方案")
+        .replace("自动修复", "自动处理")
+        .replace("完整修复", "完整处理")
+        .replace("组内修复", "组内处理")
+        .replace("修复", "处理")
+        .replace("暂不允许确认应用", "需要你先取舍后再处理")
+        .replace("暂时无法自动修复", "建议你先人工查看或放宽条件后再试")
+        .replace("暂不能自动处理", "建议你先人工查看或放宽条件后再试")
+        .replace("候选池", "可选范围")
+    )
+    return normalized.rstrip("。；;，,").strip()
+
+
+def _dedupe_fix_proposal_parts(parts: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for raw in parts:
+        item = _normalize_fix_proposal_line_for_user(raw)
+        if not item:
+            continue
+        key = re.sub(r"[，,。；;\s]+", "", item)
+        key = key.replace("处理预览会改变专业组数量需要先人工确认取舍", "替换改变专业组数量")
+        key = key.replace("替换预览会改变专业组数量需要先人工确认取舍", "替换改变专业组数量")
+        key = key.replace("当前可用于规划的可选范围里部分专业组缺少可补入的组内安全垫专业", "缺少组内安全垫专业")
+        key = key.replace("处理预览没有为目标专业组补足组内安全垫专业需要先人工确认取舍", "缺少组内安全垫专业")
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(item)
+    return result
+
+
+def _format_fix_proposal_change_counts(remove_count: int, add_count: int) -> str:
+    parts: list[str] = []
+    if remove_count > 0:
+        parts.append(f"预计移出 {remove_count} 条")
+    if add_count > 0:
+        parts.append(f"补入 {add_count} 条")
+    return "、".join(parts)
 
 
 def _normalize_text_items(values: Any) -> list[str]:
@@ -205,15 +261,15 @@ def _fix_proposal_blocking_guidance(proposal: dict[str, Any]) -> list[str]:
         scope = str(shortage.get("scope") or "").strip()
         if not message:
             if scope == "capacity_or_replacement":
-                message = "处理边界：当前不是单纯缺候选，而是缺少完整一进一出的替换配对"
+                message = "当前不是单纯缺候选，而是缺少完整一进一出的替换配对"
             elif scope == "objective_validation":
-                message = "处理边界：预览没有让本次审查目标变好，暂不应该确认应用"
+                message = "调整预览没有让本次关注的问题变好，不建议直接执行"
             elif scope == "hard_constraints":
-                message = "处理边界：已确认的报考条件收窄了可选范围，当前可用于补位的候选不足"
+                message = "已确认的报考条件收窄了可选范围，当前可用于补位的候选不足"
             else:
-                message = "处理边界：当前可用于规划的候选池里目标候选不足"
-        if message and not message.startswith("处理边界："):
-            message = f"处理边界：{message}"
+                message = "当前可用于规划的候选里目标候选不足"
+        if message.startswith("处理边界："):
+            message = message.removeprefix("处理边界：")
         if message and message not in result:
             result.append(message)
     for code in codes:
@@ -233,7 +289,7 @@ def _fix_proposal_blocking_hint(facts: dict[str, Any]) -> str:
             continue
         guidance = _fix_proposal_blocking_guidance(proposal)
         if guidance:
-            return "遇到 blocked 修复建议时，要先解释系统不能直接执行的边界；不要把它说成已经能自动补齐或自动替换。"
+            return "遇到需要人工取舍或候选不足的处理建议时，要先用用户能理解的话说明为什么不能直接处理；不要承诺已经能自动补齐或自动替换。"
     return ""
 
 
@@ -247,7 +303,7 @@ def _fix_proposal_lines(facts: dict[str, Any], *, limit: int = 3) -> list[str]:
     for proposal in proposals[:limit]:
         if not isinstance(proposal, dict):
             continue
-        title = str(proposal.get("title") or "修复建议").strip()
+        title = _normalize_fix_proposal_title_for_user(str(proposal.get("title") or "处理建议").strip())
         status = str(proposal.get("status") or "").strip()
         strategy = str(proposal.get("strategy") or "").strip()
         status_label = _FIX_PROPOSAL_STATUS_LABELS.get(status, status or "待确认")
@@ -257,29 +313,30 @@ def _fix_proposal_lines(facts: dict[str, Any], *, limit: int = 3) -> list[str]:
         parts = [status_label]
         if strategy_label:
             parts.append(strategy_label)
-        if remove_count or add_count:
-            parts.append(f"预计移出 {remove_count} 条、补入 {add_count} 条")
+        change_counts = _format_fix_proposal_change_counts(remove_count, add_count)
+        if change_counts:
+            parts.append(change_counts)
         action_summaries = [
             str(item or "").strip()
             for item in (proposal.get("action_summaries") or [])
             if str(item or "").strip()
         ]
         if action_summaries:
-            parts.append("；".join(action_summaries[:2]))
+            parts.append(_normalize_fix_proposal_line_for_user("；".join(action_summaries[:2])))
         blocking_reason = str(proposal.get("blocking_reason") or "").strip()
         if blocking_reason:
-            parts.append(blocking_reason)
+            parts.append(_normalize_fix_proposal_line_for_user(blocking_reason))
         guidance = _fix_proposal_blocking_guidance(proposal)
         if guidance:
-            parts.append(guidance[0])
+            parts.append(_normalize_fix_proposal_line_for_user(guidance[0]))
         warnings = [
             str(item or "").strip()
             for item in (proposal.get("warnings") or [])
             if str(item or "").strip()
         ]
         if warnings:
-            parts.append(warnings[0])
-        lines.append(f"{title}：{'；'.join(parts)}")
+            parts.append(_normalize_fix_proposal_line_for_user(warnings[0]))
+        lines.append(f"{title}：{'；'.join(_dedupe_fix_proposal_parts(parts))}")
     return lines
 
 
@@ -330,19 +387,19 @@ def _build_review_summary(facts: dict[str, Any]) -> tuple[str, list[str], list[s
         parts.append(f"典型涉及 {issue_examples_text}")
     if candidate_supply_text:
         parts.append(f"候选供给：{candidate_supply_text}")
-    if compensation_count > 0 and compensation_text:
-        parts.append(f"当前还有 {compensation_count} 项可补偿动作，主要是 {compensation_text}")
     fix_proposal_text = _fix_proposal_summary_text(facts)
     if fix_proposal_text:
-        parts.append(f"修复建议：{fix_proposal_text}")
+        parts.append(f"处理建议：{fix_proposal_text}")
+    elif compensation_count > 0 and compensation_text:
+        parts.append(f"后端给出了 {compensation_count} 项可参考的补齐方向，主要是 {compensation_text}")
 
     reply_focus = ["review_result", "risk_warning"]
     if problems_text:
         reply_focus.append("main_problems")
     if issue_examples_text:
         reply_focus.append("issue_hit_plan_examples")
-    if compensation_count > 0:
-        reply_focus.append("compensation_options")
+    if compensation_count > 0 and not fix_proposal_text:
+        reply_focus.append("legacy_compensation_material")
     if candidate_supply_text:
         reply_focus.append("candidate_supply")
     if fix_proposal_text:
@@ -351,12 +408,12 @@ def _build_review_summary(facts: dict[str, Any]) -> tuple[str, list[str], list[s
     next_step_hints: list[str] = []
     if missing_stable_or_protect:
         next_step_hints.append("如果用户想补稳或保，先说明当前候选池没有对应供给，不要承诺能直接补入。")
-    if compensation_count > 0:
-        next_step_hints.append("如果用户想继续处理，可以先看看怎么补，再决定是否应用。")
+    if compensation_count > 0 and not fix_proposal_text:
+        next_step_hints.append("这些补齐方向只是后端旧状态素材；如果用户想继续处理，应优先走处理预览，不要承诺直接应用旧补齐动作。")
     if risk_count == 0 and warn_count == 0:
         next_step_hints.append("如果用户只是确认当前是否稳定，可以明确说明目前没有明显风险或提醒。")
     if fix_proposal_text:
-        next_step_hints.append("涉及方案修复时，以 fix_proposals 为后端权威修复方向；preview_only 或 blocked 不要承诺自动执行。")
+        next_step_hints.append("涉及方案处理时，以 fix_proposals 为后端权威处理方向；需要人工取舍或仅供参考的建议不要承诺自动执行。")
     blocking_hint = _fix_proposal_blocking_hint(facts)
     if blocking_hint:
         next_step_hints.append(blocking_hint)
@@ -457,7 +514,7 @@ def _build_review_direct_reply(facts: dict[str, Any]) -> str:
     if compensation_count > 0 and compensation_text:
         lines.append(f"- 可以先看补齐建议：{compensation_text}。我会先给预览，确认后再应用。")
     elif fix_proposal_lines:
-        lines.append("- 如果要正式调整方案，我会先按上面的修复方向给确认预览；只有确认后才会执行。")
+        lines.append("- 如果要正式调整方案，我会先按上面的处理方向给确认预览；只有确认后才会执行。")
     elif _candidate_supply_missing_stable_or_protect(facts):
         lines.append("- 当前候选池没有可直接补入的稳/保候选，不能只靠调整比例解决；更适合先说明风险，再看是否放宽条件或接受偏冲结构。")
     elif risk_count > 0 or warn_count > 0:
@@ -540,7 +597,7 @@ def _build_adjustment_summary(facts: dict[str, Any]) -> tuple[str, list[str], li
         parts.append(first_step_hint)
     fix_proposal_text = _fix_proposal_summary_text(facts)
     if fix_proposal_text:
-        parts.append(f"后端修复建议：{fix_proposal_text}")
+        parts.append(f"处理建议：{fix_proposal_text}")
 
     reply_focus = ["adjustment_analysis", "suggestion_counts"]
     if summary_text or rule_summaries:
@@ -570,7 +627,7 @@ def _build_adjustment_summary(facts: dict[str, Any]) -> tuple[str, list[str], li
                 "优先把用户引到当前系统已经能稳定执行的第一步动作，不要口头承诺整套更稳方案已经可直接执行。"
             )
     if fix_proposal_text:
-        next_step_hints.append("优先按 fix_proposals 解释可处理方向；preview_only/blocked 只说明预览或阻塞原因，不要承诺应用。")
+        next_step_hints.append("优先按 fix_proposals 解释可处理方向；需要人工取舍或仅供参考的建议只说明原因和下一步选择，不要承诺应用。")
     blocking_hint = _fix_proposal_blocking_hint(facts)
     if blocking_hint:
         next_step_hints.append(blocking_hint)

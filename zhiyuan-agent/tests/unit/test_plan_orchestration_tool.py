@@ -39,6 +39,18 @@ def _context_inputs(
     )
 
 
+def _proposal(data: dict) -> dict:
+    proposal = data.get("composite_proposal")
+    assert isinstance(proposal, dict)
+    return proposal
+
+
+def _proposal_goal(data: dict) -> dict:
+    goal = _proposal(data).get("goal")
+    assert isinstance(goal, dict)
+    return goal
+
+
 def test_plan_next_action_builds_preview_for_add_units_without_confirmation():
     with patch(
         "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
@@ -515,6 +527,485 @@ def test_plan_next_action_builds_preview_for_replace_units_without_confirmation(
     assert "移出指定志愿" in data["preview_summary"]
 
 
+def test_plan_next_action_does_not_infer_plan_goal_from_user_goal_text():
+    with patch(
+        "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
+        new=AsyncMock(return_value=_context_inputs(summary="阶段=ordered；方案=30/30")),
+    ):
+        result = asyncio.run(
+            plan_next_action(
+                _ctx(),
+                user_goal="只保留临床医学，其他都不要",
+                action_family="replace_units",
+                major_keyword="临床医学",
+                tier="稳",
+            )
+        )
+
+    data = json.loads(result)
+    assert "goal" not in data
+    assert "intent_updates" not in data
+    assert "plan_actions" not in data
+    assert data["composite_proposal"] is None
+    assert data["action_family"] == "replace_units"
+
+
+def test_plan_next_action_outputs_only_keep_plan_goal_metadata():
+    with patch(
+        "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
+        new=AsyncMock(return_value=_context_inputs(summary="阶段=ordered；方案=30/30")),
+    ), patch(
+        "app.tools.plan_orchestration_tool._generate_user_goal_fix_proposals_request",
+        new=AsyncMock(return_value={"code": 0, "data": {"proposals": []}}),
+    ):
+        result = asyncio.run(
+            plan_next_action(
+                _ctx(),
+                user_goal="只保留临床医学，其他都不要",
+                action_family="replace_units",
+                plan_goal_type="only_keep_scope",
+                major_keyword="临床医学",
+                tier="稳",
+            )
+        )
+
+    data = json.loads(result)
+    proposal = _proposal(data)
+    goal = _proposal_goal(data)
+    assert "goal" not in data
+    assert "intent_updates" not in data
+    assert "plan_actions" not in data
+    assert goal["goal_type"] == "only_keep_scope"
+    assert goal["target_scopes"] == [
+        {"entity_type": "major", "values": ["临床医学"]}
+    ]
+    assert proposal["intent_updates"] == [
+        {
+            "intentMode": "constraint",
+            "constraintIntentType": "only_keep",
+            "targetScopes": [{"entity_type": "major", "values": ["临床医学"]}],
+        }
+    ]
+    assert proposal["plan_actions"] == []
+    reference_sources = {item["source"] for item in proposal["decision_references"]}
+    assert {"explicit_user_goal", "confirmed_intent", "system_recommendation"}.issubset(reference_sources)
+    explicit_ref = next(item for item in proposal["decision_references"] if item["source"] == "explicit_user_goal")
+    assert explicit_ref["dimension"] == "target_scope"
+    assert explicit_ref["weight_hint"] == "hard"
+    assert explicit_ref["value"] == {"entity_type": "major", "values": ["临床医学"]}
+    assert proposal["requires_confirmation"] is False
+    assert data["stage"] == "analyze"
+
+
+def test_plan_next_action_links_user_goal_fix_proposal_preview():
+    backend_response = {
+        "code": 0,
+        "data": {
+            "proposalSource": "user_goal",
+            "sourceVersionGuard": 7,
+            "proposals": [
+                {
+                    "proposalId": "ugp-1",
+                    "proposalSource": "user_goal",
+                    "sourceVersion": 7,
+                    "sourceVersionGuard": 7,
+                    "status": "preview_only",
+                    "strategy": "only_keep_scope",
+                    "title": "只保留临床医学的调整预览",
+                    "summary": "已形成 1 组可参考替换。",
+                    "actions": [
+                        {
+                            "actionType": "replace_volunteers",
+                            "summary": "用目标范围候选替换其他志愿",
+                            "removeVolunteerIds": ["old-1"],
+                            "candidateVolunteerIds": ["new-1"],
+                            "replacementPairs": [
+                                {"fromVolunteerId": "old-1", "toVolunteerId": "new-1"}
+                            ],
+                        }
+                    ],
+                    "dryRunResult": {
+                        "status": "preview_only",
+                        "removeVolunteerCount": 1,
+                        "addVolunteerCount": 1,
+                    },
+                }
+            ],
+        },
+    }
+    context = _context_inputs(summary="阶段=ordered；方案=30/30")
+    ctx = _ctx()
+    ctx.deps.planning_summary = SimpleNamespace(version=7)
+    with patch(
+        "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
+        new=AsyncMock(return_value=context),
+    ), patch(
+        "app.tools.plan_orchestration_tool._generate_user_goal_fix_proposals_request",
+        new=AsyncMock(return_value=backend_response),
+    ) as mock_request:
+        result = asyncio.run(
+            plan_next_action(
+                ctx,
+                user_goal="只保留临床医学，其他都不要",
+                action_family="replace_units",
+                plan_goal_type="only_keep_scope",
+                major_keyword="临床医学",
+            )
+        )
+
+    mock_request.assert_awaited_once()
+    payload = mock_request.await_args.args[2]
+    assert payload["goalType"] == "only_keep_scope"
+    assert payload["sourceVersionGuard"] == 7
+    assert payload["targetScopes"][0]["normalizedName"] == "临床医学"
+
+    data = json.loads(result)
+    proposal = _proposal(data)
+    linked = proposal["linked_fix_proposals"][0]
+    assert linked["proposal_source"] == "user_goal"
+    assert linked["strategy"] == "only_keep_scope"
+    assert linked["applyable"] is False
+    assert linked["actions"][0]["action_type"] == "replace_volunteers"
+    assert linked["actions"][0]["replacement_pairs"][0]["toVolunteerId"] == "new-1"
+    assert any("后端只读调整预览" in line for line in proposal["tradeoffs"])
+
+
+def test_plan_next_action_expands_multi_value_scope_for_user_goal_fix_preview():
+    context = _context_inputs(summary="阶段=ordered；方案=30/30")
+    ctx = _ctx()
+    ctx.deps.planning_summary = SimpleNamespace(version=8)
+    with patch(
+        "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
+        new=AsyncMock(return_value=context),
+    ), patch(
+        "app.tools.plan_orchestration_tool._generate_user_goal_fix_proposals_request",
+        new=AsyncMock(return_value={"code": 0, "data": {"proposalSource": "user_goal", "proposals": []}}),
+    ) as mock_request:
+        asyncio.run(
+            plan_next_action(
+                ctx,
+                user_goal="不要会计和审计",
+                action_family="remove_units",
+                plan_goal_type="exclude_scope",
+                goal_negative_scopes=[{"entity_type": "major", "values": ["会计学", "审计学"]}],
+            )
+        )
+
+    payload = mock_request.await_args.args[2]
+    assert [scope["normalizedName"] for scope in payload["negativeScopes"]] == ["会计学", "审计学"]
+    assert all(scope["entityType"] == "major" for scope in payload["negativeScopes"])
+
+
+def test_plan_next_action_keeps_composite_goal_when_user_goal_fix_preview_fails():
+    context = _context_inputs(summary="阶段=ordered；方案=30/30")
+    with patch(
+        "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
+        new=AsyncMock(return_value=context),
+    ), patch(
+        "app.tools.plan_orchestration_tool._generate_user_goal_fix_proposals_request",
+        new=AsyncMock(side_effect=RuntimeError("backend unavailable")),
+    ):
+        result = asyncio.run(
+            plan_next_action(
+                _ctx(),
+                user_goal="不要江苏",
+                action_family="remove_units",
+                plan_goal_type="exclude_scope",
+                province_keyword="江苏",
+            )
+        )
+
+    data = json.loads(result)
+    proposal = _proposal(data)
+    assert proposal["goal"]["goal_type"] == "exclude_scope"
+    assert proposal["linked_fix_proposals"] == []
+    assert any("暂时没有拿到后端调整预览" in line for line in data["rationale"])
+    assert data["stage"] == "preview"
+
+
+def test_plan_next_action_resolves_structured_major_scope_alias():
+    with patch(
+        "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
+        new=AsyncMock(return_value=_context_inputs(summary="阶段=ordered；方案=30/30")),
+    ), patch(
+        "app.tools.plan_orchestration_tool._generate_user_goal_fix_proposals_request",
+        new=AsyncMock(return_value={"code": 0, "data": {"proposals": []}}),
+    ):
+        result = asyncio.run(
+            plan_next_action(
+                _ctx(),
+                user_goal="只保留计科",
+                action_family="replace_units",
+                plan_goal_type="only_keep_scope",
+                major_keyword="计科",
+                tier="稳",
+            )
+        )
+
+    data = json.loads(result)
+    proposal = _proposal(data)
+    goal = _proposal_goal(data)
+    resolution = goal["entity_resolutions"][0]
+    assert resolution["raw_text"] == "计科"
+    assert resolution["entity_type"] == "major"
+    assert resolution["canonical_name"] == "计算机科学与技术"
+    assert resolution["canonical_level"] == "level3"
+    assert resolution["ambiguity"] == "none"
+    assert goal["target_scopes"] == [
+        {"entity_type": "major", "values": ["计算机科学与技术"]}
+    ]
+    assert proposal["intent_updates"][0]["targetScopes"] == [
+        {"entity_type": "major", "values": ["计算机科学与技术"]}
+    ]
+    assert proposal["intent_updates"][0]["constraintIntentType"] == "only_keep"
+
+
+def test_plan_next_action_blocks_ambiguous_major_scope_before_intent_update():
+    with patch(
+        "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
+        new=AsyncMock(return_value=_context_inputs(summary="阶段=ordered；方案=30/30")),
+    ):
+        result = asyncio.run(
+            plan_next_action(
+                _ctx(),
+                user_goal="只保留财会",
+                action_family="replace_units",
+                plan_goal_type="only_keep_scope",
+                major_keyword="财会",
+                tier="稳",
+            )
+        )
+
+    data = json.loads(result)
+    proposal = _proposal(data)
+    goal = _proposal_goal(data)
+    resolution = goal["entity_resolutions"][0]
+    names = {item["canonical_name"] for item in resolution["matched_candidate_items"]}
+    assert resolution["ambiguity"] == "multiple_match"
+    assert {"工商管理类", "会计学", "财务管理", "审计学"}.issubset(names)
+    assert goal["needs_clarification"] is True
+    assert proposal["intent_updates"] == []
+    assert proposal["feasibility"] == "needs_clarification"
+    assert proposal["requires_confirmation"] is False
+    assert any("财会" in line and "需要先确认" in line for line in proposal["impact_summary"])
+
+
+def test_plan_next_action_resolves_structured_region_scope_alias():
+    with patch(
+        "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
+        new=AsyncMock(return_value=_context_inputs(summary="阶段=ordered；方案=30/30")),
+    ):
+        result = asyncio.run(
+            plan_next_action(
+                _ctx(),
+                user_goal="不要内蒙",
+                action_family="remove_units",
+                plan_goal_type="exclude_scope",
+                province_keyword="内蒙",
+            )
+        )
+
+    data = json.loads(result)
+    proposal = _proposal(data)
+    goal = _proposal_goal(data)
+    resolution = goal["entity_resolutions"][0]
+    assert resolution["entity_type"] == "region"
+    assert resolution["canonical_name"] == "内蒙古"
+    assert resolution["canonical_level"] == "province"
+    assert resolution["ambiguity"] == "none"
+    assert proposal["intent_updates"][0]["negativeScopes"] == [
+        {"entity_type": "region", "values": ["内蒙古"]}
+    ]
+
+
+def test_plan_next_action_resolves_structured_school_scope_alias():
+    with patch(
+        "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
+        new=AsyncMock(return_value=_context_inputs(summary="阶段=ordered；方案=30/30")),
+    ):
+        result = asyncio.run(
+            plan_next_action(
+                _ctx(),
+                user_goal="优先广西师大",
+                action_family="query_ordered",
+                plan_goal_type="prefer_scope",
+                school_keyword="广西师大",
+            )
+        )
+
+    data = json.loads(result)
+    proposal = _proposal(data)
+    goal = _proposal_goal(data)
+    resolution = goal["entity_resolutions"][0]
+    assert resolution["entity_type"] == "school"
+    assert resolution["canonical_name"] == "广西师范大学"
+    assert resolution["ambiguity"] == "none"
+    assert proposal["intent_updates"][0]["targetScopes"] == [
+        {"entity_type": "school", "values": ["广西师范大学"]}
+    ]
+    assert proposal["intent_updates"][0]["intentMode"] == "preference"
+
+
+def test_plan_next_action_constraint_type_maps_to_must_include_goal():
+    with patch(
+        "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
+        new=AsyncMock(return_value=_context_inputs(summary="阶段=ordered；方案=30/30")),
+    ):
+        result = asyncio.run(
+            plan_next_action(
+                _ctx(),
+                user_goal="方案里必须有临床医学",
+                action_family="add_units",
+                constraint_intent_type="must_have",
+                major_keyword="临床医学",
+                tier="稳",
+            )
+        )
+
+    data = json.loads(result)
+    proposal = _proposal(data)
+    assert _proposal_goal(data)["goal_type"] == "must_include_scope"
+    assert proposal["intent_updates"][0]["constraintIntentType"] == "must_have"
+    assert proposal["feasibility"] == "ready"
+    assert proposal["requires_confirmation"] is True
+    assert proposal["post_apply_validation_plan"]
+    assert data["stage"] == "preview"
+    assert data["action_family"] == "add_units"
+
+
+def test_plan_next_action_builds_composite_add_action_for_must_include_goal():
+    with patch(
+        "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
+        new=AsyncMock(return_value=_context_inputs(summary="阶段=ordered；方案=30/30")),
+    ):
+        result = asyncio.run(
+            plan_next_action(
+                _ctx(),
+                user_goal="方案里必须有计科",
+                action_family="analyze_adjustment",
+                constraint_intent_type="must_have",
+                major_keyword="计科",
+            )
+        )
+
+    data = json.loads(result)
+    proposal = _proposal(data)
+    goal = _proposal_goal(data)
+    assert goal["goal_type"] == "must_include_scope"
+    assert goal["target_scopes"] == [
+        {"entity_type": "major", "values": ["计算机科学与技术"]}
+    ]
+    assert data["atomic_actions"] == []
+    assert proposal["plan_actions"][0]["action_type"] == "add_units"
+    assert proposal["plan_actions"][0]["filters"]["major_keyword"] == "计算机科学与技术"
+    assert proposal["plan_actions"][0]["filters"]["limit"] == "1"
+
+
+def test_plan_next_action_marks_plan_goal_needing_clarification_without_intent_update():
+    with patch(
+        "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
+        new=AsyncMock(return_value=_context_inputs(summary="阶段=ordered；方案=30/30")),
+    ):
+        result = asyncio.run(
+            plan_next_action(
+                _ctx(),
+                user_goal="只保留这些方向",
+                action_family="replace_units",
+                plan_goal_type="only_keep_scope",
+                tier="稳",
+            )
+        )
+
+    data = json.loads(result)
+    proposal = _proposal(data)
+    goal = _proposal_goal(data)
+    assert goal["goal_type"] == "only_keep_scope"
+    assert goal["needs_clarification"] is True
+    assert proposal["intent_updates"] == []
+    assert proposal["feasibility"] == "needs_clarification"
+    assert proposal["requires_confirmation"] is False
+    assert any("请补充要调整的专业" in line for line in data["rationale"])
+
+
+def test_plan_next_action_outputs_exclude_scope_composite_proposal():
+    with patch(
+        "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
+        new=AsyncMock(return_value=_context_inputs(summary="阶段=ordered；方案=30/30")),
+    ):
+        result = asyncio.run(
+            plan_next_action(
+                _ctx(),
+                user_goal="不要江苏",
+                action_family="remove_units",
+                plan_goal_type="exclude_scope",
+                province_keyword="江苏",
+            )
+        )
+
+    data = json.loads(result)
+    proposal = _proposal(data)
+    goal = _proposal_goal(data)
+    assert goal["goal_type"] == "exclude_scope"
+    assert goal["negative_scopes"] == [
+        {"entity_type": "region", "values": ["江苏"]}
+    ]
+    assert proposal["intent_updates"][0]["negativeScopes"] == [
+        {"entity_type": "region", "values": ["江苏"]}
+    ]
+    assert proposal["goal"]["negative_scopes"] == goal["negative_scopes"]
+
+
+def test_plan_next_action_builds_composite_remove_action_for_exclude_goal():
+    with patch(
+        "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
+        new=AsyncMock(return_value=_context_inputs(summary="阶段=ordered；方案=30/30")),
+    ):
+        result = asyncio.run(
+            plan_next_action(
+                _ctx(),
+                user_goal="不要内蒙",
+                action_family="analyze_adjustment",
+                plan_goal_type="exclude_scope",
+                province_keyword="内蒙",
+            )
+        )
+
+    data = json.loads(result)
+    proposal = _proposal(data)
+    goal = _proposal_goal(data)
+    assert goal["negative_scopes"] == [
+        {"entity_type": "region", "values": ["内蒙古"]}
+    ]
+    assert data["atomic_actions"] == []
+    assert proposal["plan_actions"][0]["action_type"] == "remove_units"
+    assert proposal["plan_actions"][0]["filters"]["province_keyword"] == "内蒙古"
+    assert proposal["plan_actions"][0]["filters"]["limit"] == "5"
+
+
+def test_plan_next_action_only_keep_does_not_generate_unvalidated_inverse_delete_action():
+    with patch(
+        "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
+        new=AsyncMock(return_value=_context_inputs(summary="阶段=ordered；方案=30/30")),
+    ):
+        result = asyncio.run(
+            plan_next_action(
+                _ctx(),
+                user_goal="只保留计科",
+                action_family="analyze_adjustment",
+                plan_goal_type="only_keep_scope",
+                major_keyword="计科",
+            )
+        )
+
+    data = json.loads(result)
+    proposal = _proposal(data)
+    assert _proposal_goal(data)["goal_type"] == "only_keep_scope"
+    assert proposal["intent_updates"][0]["constraintIntentType"] == "only_keep"
+    assert proposal["plan_actions"] == []
+    assert any("反向范围校验" in line for line in proposal["tradeoffs"])
+    assert proposal["requires_confirmation"] is False
+
+
 def test_plan_next_action_passes_structured_replace_source_major_names():
     with patch(
         "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
@@ -711,7 +1202,7 @@ def test_plan_next_action_does_not_recover_missing_high_tuition_issue_from_goal_
     assert data["atomic_actions"] == []
 
 
-def test_plan_next_action_does_not_recover_review_issue_when_model_chooses_compensation_preview_without_code():
+def test_plan_next_action_does_not_recover_review_issue_when_model_chooses_fix_proposal_preview_without_code():
     with patch(
         "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
         new=AsyncMock(
@@ -737,13 +1228,13 @@ def test_plan_next_action_does_not_recover_review_issue_when_model_chooses_compe
             plan_next_action(
                 _ctx(),
                 user_goal="把太贵的那几个先去掉看看",
-                action_family="preview_compensation",
+                action_family="preview_fix_proposal",
                 user_confirmed=False,
             )
         )
 
     data = json.loads(result)
-    assert data["action_family"] == "preview_compensation"
+    assert data["action_family"] == "preview_fix_proposal"
     assert data["stage"] == "apply"
     assert data["requires_confirmation"] is False
     assert data["missing_inputs"] == []
@@ -958,7 +1449,7 @@ def test_plan_next_action_coerces_structural_review_issue_to_default_action():
                         "code": "count_validation",
                         "label": "数量缺口",
                         "scope_kind": "structural",
-                        "default_action_family": "preview_compensation",
+                        "default_action_family": "preview_fix_proposal",
                         "affected_unit_count": 0,
                         "affected_volunteer_count": 0,
                         "scope_fingerprint": "issue-gap-1",
@@ -977,13 +1468,13 @@ def test_plan_next_action_coerces_structural_review_issue_to_default_action():
         )
 
     data = json.loads(result)
-    assert data["action_family"] == "preview_compensation"
+    assert data["action_family"] == "preview_fix_proposal"
     assert data["stage"] == "apply"
     assert data["requires_confirmation"] is False
     assert data["atomic_actions"] == []
 
 
-def test_plan_next_action_coerces_filled_safety_guard_compensation_request_to_adjustment_analysis():
+def test_plan_next_action_keeps_safety_guard_fix_proposal_preview_when_plan_is_filled():
     with patch(
         "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
         new=AsyncMock(
@@ -996,7 +1487,7 @@ def test_plan_next_action_coerces_filled_safety_guard_compensation_request_to_ad
                         "code": "safety_guard",
                         "label": "本省保底不足",
                         "scope_kind": "structural",
-                        "default_action_family": "preview_compensation",
+                        "default_action_family": "preview_fix_proposal",
                         "affected_unit_count": 0,
                         "affected_volunteer_count": 0,
                         "scope_fingerprint": "issue-safety-1",
@@ -1009,13 +1500,13 @@ def test_plan_next_action_coerces_filled_safety_guard_compensation_request_to_ad
             plan_next_action(
                 _ctx(),
                 user_goal="帮我补几个更稳的",
-                action_family="preview_compensation",
+                action_family="preview_fix_proposal",
                 review_issue_code="safety_guard",
             )
         )
 
     data = json.loads(result)
-    assert data["action_family"] == "preview_compensation"
+    assert data["action_family"] == "preview_fix_proposal"
     assert data["stage"] == "apply"
     assert data["requires_confirmation"] is False
     assert data["atomic_actions"] == []
@@ -1037,12 +1528,12 @@ def test_plan_next_action_does_not_patch_abstract_stability_wording_by_string():
             plan_next_action(
                 _ctx(),
                 user_goal="就按别太冒险的思路把这版调稳点，先给我看看会怎么动",
-                action_family="preview_compensation",
+                action_family="preview_fix_proposal",
             )
         )
 
     data = json.loads(result)
-    assert data["action_family"] == "preview_compensation"
+    assert data["action_family"] == "preview_fix_proposal"
     assert data["stage"] == "apply"
     assert data["requires_confirmation"] is False
     assert data["atomic_actions"] == []
@@ -1267,7 +1758,7 @@ def test_plan_next_action_keeps_compensation_preview_without_string_filter_infer
                             "code": "count_validation",
                             "label": "数量缺口",
                             "scope_kind": "structural",
-                        "default_action_family": "preview_compensation",
+                        "default_action_family": "preview_fix_proposal",
                         "affected_unit_count": 0,
                         "affected_volunteer_count": 0,
                         "scope_fingerprint": "issue-gap-2",
@@ -1280,13 +1771,13 @@ def test_plan_next_action_keeps_compensation_preview_without_string_filter_infer
             plan_next_action(
                 _ctx(init_profile=init_profile),
                 user_goal="先给我一版真正更稳的可确认预览",
-                action_family="preview_compensation",
+                action_family="preview_fix_proposal",
                 review_issue_code="count_validation",
             )
         )
 
     data = json.loads(result)
-    assert data["action_family"] == "preview_compensation"
+    assert data["action_family"] == "preview_fix_proposal"
     assert data["stage"] == "apply"
     assert data["requires_confirmation"] is False
     assert data["atomic_actions"] == []

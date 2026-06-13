@@ -35,28 +35,38 @@ final class RepairProposalStateBuilder {
 
     static FixProposalStateDTO newState(PlanningStateDTO state, ReviewStateDTO reviewState) {
         FixProposalStateDTO proposalState = new FixProposalStateDTO();
-        proposalState.setStatus("ready");
+        proposalState.setStatus(RepairProposalTaxonomy.Status.READY);
+        proposalState.setProposalSource(RepairProposalTaxonomy.ProposalSource.REVIEW_CHECK);
         proposalState.setSourceVersion(state == null ? null : state.getVersion());
         proposalState.setSourceReviewVersion(reviewState == null ? null : reviewState.getSourceVersion());
         proposalState.setSourceVersionGuard(state == null ? null : state.getVersion());
         return proposalState;
     }
 
+    static FixProposalStateDTO newUserGoalState(PlanningStateDTO state) {
+        FixProposalStateDTO proposalState = new FixProposalStateDTO();
+        proposalState.setStatus(RepairProposalTaxonomy.Status.EMPTY);
+        proposalState.setProposalSource(RepairProposalTaxonomy.ProposalSource.USER_GOAL);
+        proposalState.setSourceVersion(state == null ? null : state.getVersion());
+        proposalState.setSourceVersionGuard(state == null ? null : state.getVersion());
+        return proposalState;
+    }
+
     static String resolveStateStatus(List<FixProposalDTO> proposals) {
         if (proposals == null || proposals.isEmpty()) {
-            return "empty";
+            return RepairProposalTaxonomy.Status.EMPTY;
         }
         boolean hasReady = proposals.stream()
-                .anyMatch(proposal -> proposal != null && "ready".equals(proposal.getStatus()));
+                .anyMatch(proposal -> proposal != null && RepairProposalTaxonomy.isReadyStatus(proposal.getStatus()));
         if (hasReady) {
-            return "ready";
+            return RepairProposalTaxonomy.Status.READY;
         }
         boolean hasPreviewOnly = proposals.stream()
-                .anyMatch(proposal -> proposal != null && "preview_only".equals(proposal.getStatus()));
+                .anyMatch(proposal -> proposal != null && RepairProposalTaxonomy.isPreviewOnlyStatus(proposal.getStatus()));
         if (hasPreviewOnly) {
-            return "preview_only";
+            return RepairProposalTaxonomy.Status.PREVIEW_ONLY;
         }
-        return "blocked_or_info";
+        return RepairProposalTaxonomy.Status.BLOCKED_OR_INFO;
     }
 
     static Map<String, List<CompensationActionDTO>> groupCompensationActionsByCheck(CompensationPreviewDTO compensationPreview) {
@@ -93,6 +103,7 @@ final class RepairProposalStateBuilder {
         String strategy = resolveStrategy(check, compensationActions);
         FixProposalDTO proposal = new FixProposalDTO();
         proposal.setProposalId(buildProposalId(state, check, strategy));
+        proposal.setProposalSource(RepairProposalTaxonomy.ProposalSource.REVIEW_CHECK);
         proposal.setSourceVersion(state == null ? null : state.getVersion());
         proposal.setSourceReviewVersion(sourceReviewVersion);
         proposal.setSourceVersionGuard(state == null ? null : state.getVersion());
@@ -103,7 +114,7 @@ final class RepairProposalStateBuilder {
         proposal.setAffectedUnitIds(defaultList(check.getAffectedUnitIds()));
         proposal.setAffectedVolunteerIds(defaultList(check.getAffectedVolunteerIds()));
         proposal.setSummary(buildSummary(check, strategy));
-        if ("cannot_satisfy".equals(strategy)) {
+        if (RepairProposalTaxonomy.isCannotSatisfyStrategy(strategy)) {
             proposal.setBlockingReason(proposal.getSummary());
             addBlockingReasonCode(proposal, resolveBlockingReasonCode(check));
             proposal.setRequiresConfirmation(false);
@@ -117,39 +128,35 @@ final class RepairProposalStateBuilder {
 
     static String resolveStrategy(ReviewCheckDTO check, List<CompensationActionDTO> compensationActions) {
         if (check == null) {
-            return "no_op";
+            return RepairProposalTaxonomy.Strategy.NO_OP;
         }
         if (compensationActions != null && !compensationActions.isEmpty()) {
             String actionType = compensationActions.get(0).getType();
-            if ("fill_total_count".equals(actionType)) {
-                return "fill_missing_count";
-            }
-            if ("add_local_protect".equals(actionType)) {
-                return "add_safety_items";
-            }
-            if ("rebalance_protect_ratio".equals(actionType)) {
-                return "rebalance_tier_ratio";
-            }
-            if ("fill_probability_gap".equals(actionType)) {
-                return "fill_probability_gap";
+            String strategy = RepairProposalTaxonomy.strategyForCompensationActionType(actionType);
+            if (!Strings.isNullOrEmpty(strategy)) {
+                return strategy;
             }
         }
         if ("item".equals(check.getScopeKind())) {
             if (!defaultList(check.getAffectedVolunteerIds()).isEmpty() || !defaultList(check.getAffectedUnitIds()).isEmpty()) {
-                return Strings.isNullOrEmpty(check.getDefaultFixStrategy()) ? "replace_risk_items" : check.getDefaultFixStrategy();
+                return Strings.isNullOrEmpty(check.getDefaultFixStrategy())
+                        ? RepairProposalTaxonomy.Strategy.REPLACE_RISK_ITEMS
+                        : RepairProposalTaxonomy.normalizeStrategy(check.getDefaultFixStrategy());
             }
-            return "cannot_satisfy";
+            return RepairProposalTaxonomy.Strategy.CANNOT_SATISFY;
         }
         if ("informational".equals(check.getScopeKind())) {
-            return "no_op";
+            return RepairProposalTaxonomy.Strategy.NO_OP;
         }
         if ("ordering_risk".equals(check.getCategory())) {
-            return "sort_by_probability";
+            return RepairProposalTaxonomy.Strategy.SORT_BY_PROBABILITY;
         }
         if ("major_group_inner".equals(check.getScopeKind())) {
-            return Strings.isNullOrEmpty(check.getDefaultFixStrategy()) ? "adjust_major_group_inner_safety" : check.getDefaultFixStrategy();
+            return Strings.isNullOrEmpty(check.getDefaultFixStrategy())
+                    ? RepairProposalTaxonomy.Strategy.ADJUST_MAJOR_GROUP_INNER_SAFETY
+                    : RepairProposalTaxonomy.normalizeStrategy(check.getDefaultFixStrategy());
         }
-        return "cannot_satisfy";
+        return RepairProposalTaxonomy.Strategy.CANNOT_SATISFY;
     }
 
     private static String buildProposalId(PlanningStateDTO state, ReviewCheckDTO check, String strategy) {
@@ -165,20 +172,20 @@ final class RepairProposalStateBuilder {
 
     private static String buildTitle(ReviewCheckDTO check, String strategy) {
         String label = Strings.isNullOrEmpty(check.getLabel()) ? check.getSummary() : check.getLabel();
-        if ("cannot_satisfy".equals(strategy)) {
+        if (RepairProposalTaxonomy.isCannotSatisfyStrategy(strategy)) {
             return label + "暂时无法自动修复";
         }
-        if ("no_op".equals(strategy)) {
+        if (RepairProposalTaxonomy.isNoOpStrategy(strategy)) {
             return label + "仅需关注";
         }
         return "修复" + label;
     }
 
     private static String buildSummary(ReviewCheckDTO check, String strategy) {
-        if ("cannot_satisfy".equals(strategy)) {
+        if (RepairProposalTaxonomy.isCannotSatisfyStrategy(strategy)) {
             return buildCannotSatisfySummary(check);
         }
-        if ("no_op".equals(strategy)) {
+        if (RepairProposalTaxonomy.isNoOpStrategy(strategy)) {
             return "该问题属于提醒或核验项，默认不自动调整方案。";
         }
         if (!Strings.isNullOrEmpty(check.getSuggestedAction())) {
@@ -221,7 +228,7 @@ final class RepairProposalStateBuilder {
         if (proposal == null) {
             return;
         }
-        proposal.setStatus("blocked");
+        proposal.setStatus(RepairProposalTaxonomy.Status.BLOCKED);
         proposal.setBlockingReason(reason);
         proposal.setRequiresConfirmation(false);
         addBlockingReasonCode(proposal, reasonCode);
@@ -259,7 +266,7 @@ final class RepairProposalStateBuilder {
     }
 
     static void suppressInvalidBlockedActionPreview(FixProposalDTO proposal) {
-        if (proposal == null || !"blocked".equals(proposal.getStatus())) {
+        if (proposal == null || !RepairProposalTaxonomy.isBlockedStatus(proposal.getStatus())) {
             return;
         }
         if (!defaultList(proposal.getBlockingReasonCodes()).contains("objective_validation_not_improved")) {
@@ -408,7 +415,7 @@ final class RepairProposalStateBuilder {
         if ("major_group_safety_candidate_insufficient".equals(reasonCode)
                 || "partial_major_group_safety_candidate_missing".equals(reasonCode)) {
             int targetCount = defaultList(check == null ? null : check.getAffectedUnitIds()).size();
-            int actionCount = countProposalActions(proposal, "adjust_major_group_inner_safety");
+            int actionCount = countProposalActions(proposal, RepairProposalTaxonomy.ActionType.ADJUST_MAJOR_GROUP_INNER_SAFETY);
             shortage.setRequiredCount(targetCount > 0 ? targetCount : null);
             shortage.setCurrentCount(actionCount);
             shortage.setShortageCount(targetCount > actionCount ? targetCount - actionCount : null);
@@ -765,7 +772,8 @@ final class RepairProposalStateBuilder {
 
     private static int countReplacementPairs(FixProposalDTO proposal) {
         return defaultList(proposal == null ? null : proposal.getActions()).stream()
-                .filter(action -> action != null && "replace_volunteers".equals(action.getActionType()))
+                .filter(action -> action != null
+                        && RepairProposalTaxonomy.ActionType.REPLACE_VOLUNTEERS.equals(action.getActionType()))
                 .mapToInt(action -> defaultList(action.getReplacementPairs()).size())
                 .sum();
     }

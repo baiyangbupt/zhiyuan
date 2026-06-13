@@ -116,13 +116,14 @@ final class RepairReportBuilder {
     }
 
     private static String buildMessage(FixProposalDTO proposal, RepairReportDTO report) {
-        if ("sort_by_probability".equals(proposal.getStrategy())) {
+        String strategy = RepairProposalTaxonomy.normalizeStrategy(proposal.getStrategy());
+        if (RepairProposalTaxonomy.Strategy.SORT_BY_PROBABILITY.equals(strategy)) {
             return "已按录取率重新整理当前方案顺序，并完成复验。";
         }
-        if ("fill_missing_count".equals(proposal.getStrategy())) {
+        if (RepairProposalTaxonomy.Strategy.FILL_MISSING_COUNT.equals(strategy)) {
             return String.format("已补充 %d 条志愿，并刷新当前方案状态。", defaultInt(report.getAddedVolunteerCount()));
         }
-        if ("adjust_major_group_inner_safety".equals(proposal.getStrategy())) {
+        if (RepairProposalTaxonomy.Strategy.ADJUST_MAJOR_GROUP_INNER_SAFETY.equals(strategy)) {
             return String.format("已调整 %d 个组内专业，并刷新当前方案状态。",
                     defaultInt(report.getAddedVolunteerCount()) + defaultInt(report.getRemovedVolunteerCount()));
         }

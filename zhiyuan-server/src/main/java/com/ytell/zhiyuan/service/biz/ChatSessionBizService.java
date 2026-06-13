@@ -51,6 +51,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.Collections;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
@@ -462,13 +463,7 @@ public class ChatSessionBizService {
         RecommendSubMajorRequest recommendSubMajorRequest = new RecommendSubMajorRequest();
         recommendSubMajorRequest.setStudentinfo(sessionReq);
         recommendSubMajorRequest.setTopN(8);
-        RecommendSubMajorResponse recommendSubMajorResponse = volunteerRankClient.getRecommendSubMajor(recommendSubMajorRequest);
-        List<RecommendSubMajorResponse.MajorRecommendItem> majorRecommendItems = recommendSubMajorResponse.getReconmandlist();
-        if (majorRecommendItems.size() > 8) {
-            majorRecommendItems = majorRecommendItems.subList(0, 8);
-        }
-
-        return majorRecommendItems;
+        return callRecommendSubMajor(recommendSubMajorRequest);
     }
 
     public List<RecommendSubMajorResponse.MajorRecommendItem> recommendMajor(CreateSessionReq createSessionReq) {
@@ -478,13 +473,24 @@ public class ChatSessionBizService {
         RecommendSubMajorRequest recommendSubMajorRequest = new RecommendSubMajorRequest();
         recommendSubMajorRequest.setStudentinfo(createSessionReq);
         recommendSubMajorRequest.setTopN(8);
-        RecommendSubMajorResponse recommendSubMajorResponse = volunteerRankClient.getRecommendSubMajor(recommendSubMajorRequest);
-        List<RecommendSubMajorResponse.MajorRecommendItem> majorRecommendItems = recommendSubMajorResponse.getReconmandlist();
-        if (majorRecommendItems.size() > 8) {
-            majorRecommendItems = majorRecommendItems.subList(0, 8);
-        }
+        return callRecommendSubMajor(recommendSubMajorRequest);
+    }
 
-        return majorRecommendItems;
+    private List<RecommendSubMajorResponse.MajorRecommendItem> callRecommendSubMajor(RecommendSubMajorRequest recommendSubMajorRequest) {
+        try {
+            RecommendSubMajorResponse recommendSubMajorResponse = volunteerRankClient.getRecommendSubMajor(recommendSubMajorRequest);
+            if (recommendSubMajorResponse == null || CollectionUtil.isEmpty(recommendSubMajorResponse.getReconmandlist())) {
+                return Collections.emptyList();
+            }
+            List<RecommendSubMajorResponse.MajorRecommendItem> majorRecommendItems = recommendSubMajorResponse.getReconmandlist();
+            if (majorRecommendItems.size() > 8) {
+                majorRecommendItems = majorRecommendItems.subList(0, 8);
+            }
+            return majorRecommendItems;
+        } catch (RuntimeException e) {
+            log.warn("专业意向默认推荐暂不可用，降级为空列表，采集流程继续: cause={}, req={}", e.toString(), recommendSubMajorRequest);
+            return Collections.emptyList();
+        }
     }
 
 

@@ -597,7 +597,7 @@ def refine_major_intent_payload_by_explicit_mentions(
         )
         kept = []
         for name in level1_values:
-            if name in explicit_level1 or (name in available["level1"] and explicitly_mentions_name(name)):
+            if name in explicit_level1:
                 kept.append(name)
                 continue
             if name not in available["level1"] and (

@@ -423,6 +423,16 @@ public class PlanningStateController {
         return BaseResponse.success(planningStateService.generateFixProposals(tenantId, chatSessionId));
     }
 
+    @PostMapping("/session/fix-proposals/user-goal/generate")
+    @ApiOperation("按用户复合目标生成只读方案调整预览")
+    public BaseResponse<FixProposalStateDTO> generateUserGoalFixProposals(@PathVariable("tenantId") Long tenantId,
+                                                                          @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId,
+                                                                          @RequestBody(required = false) UserGoalFixProposalReq req) {
+        log.info("generateUserGoalFixProposals: tenantId={}, chatSessionId={}, goalType={}",
+                tenantId, chatSessionId, req == null ? null : req.getGoalType());
+        return BaseResponse.success(planningStateService.generateUserGoalFixProposals(chatSessionId, req));
+    }
+
     @PostMapping("/session/fix-proposals/apply")
     @ApiOperation("应用风险修复建议")
     public BaseResponse<FixProposalApplyRes> applyFixProposal(@PathVariable("tenantId") Long tenantId,

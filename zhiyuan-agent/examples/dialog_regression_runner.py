@@ -157,8 +157,6 @@ def _split_primary_and_followup_messages(
     primary: list[dict[str, Any]] = []
     followups: list[dict[str, Any]] = []
     for message in messages:
-        if _is_silent_workspace_action_message(message):
-            continue
         if _is_structured_followup_message(message):
             followups.append(message)
         else:
@@ -206,8 +204,6 @@ async def _ask_once(
             except asyncio.TimeoutError:
                 break
             followup_message = json.loads(raw)
-            if _is_silent_workspace_action_message(followup_message):
-                continue
             followups.append(followup_message)
 
     timing = {
@@ -555,8 +551,6 @@ def _followup_summary(followups: list[dict[str, Any]]) -> tuple[list[str], list[
     refreshes: list[bool] = []
     types: list[str] = []
     for item in followups:
-        if _is_silent_workspace_action_message(item):
-            continue
         item_type = str(item.get("type") or "").strip()
         if item_type and item_type not in types:
             types.append(item_type)
@@ -653,6 +647,7 @@ def _check_content_assertions(
     visible_followups = [
         item for item in followups if not _is_silent_workspace_action_message(item)
     ]
+    actionable_followups = followups
 
     followup_user_text = _extract_followup_user_text(visible_followups)
     searchable_text = "\n".join(part for part in (text, followup_user_text) if part).strip()
@@ -695,7 +690,7 @@ def _check_content_assertions(
     if assert_followup_target:
         found_target = any(
             f.get("content", {}).get("targetView") == assert_followup_target
-            for f in visible_followups
+            for f in actionable_followups
         )
         if not found_target:
             violations.append(
@@ -705,7 +700,7 @@ def _check_content_assertions(
     if assert_followup_refresh is not None:
         found_refresh = any(
             f.get("content", {}).get("refresh") == assert_followup_refresh
-            for f in visible_followups
+            for f in actionable_followups
         )
         if not found_refresh:
             violations.append(

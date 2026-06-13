@@ -2,7 +2,7 @@
 
 逻辑优先级：
 1. current_stage 已经是 analyze/preview/apply/review → 直接透传
-2. query_state / query_draft / query_ordered / query_candidates / analyze_adjustment / preview_compensation → apply
+2. query_state / query_draft / query_ordered / query_candidates / analyze_adjustment / preview_fix_proposal → apply
 3. missing_inputs → analyze
 4. review_plan → review
 5. user_confirmed → apply
@@ -49,7 +49,7 @@ class TestQueryActionsAlwaysApply:
         "query_ordered",
         "query_candidates",
         "analyze_adjustment",
-        "preview_compensation",
+        "preview_fix_proposal",
     ])
     @pytest.mark.parametrize("user_confirmed", [True, False])
     @pytest.mark.parametrize("volunteer_model", ["major", "majorGroup"])
@@ -65,7 +65,7 @@ class TestQueryActionsAlwaysApply:
     @pytest.mark.parametrize("action_family", [
         "query_state",
         "analyze_adjustment",
-        "preview_compensation",
+        "preview_fix_proposal",
     ])
     @pytest.mark.parametrize("volunteer_model", ["major", "majorGroup"])
     def test_query_actions_apply_even_with_missing(self, action_family: str, volunteer_model: str):

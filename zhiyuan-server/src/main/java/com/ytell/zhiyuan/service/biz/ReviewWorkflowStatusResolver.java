@@ -17,14 +17,14 @@ final class ReviewWorkflowStatusResolver {
         }
         List<FixProposalDTO> proposals = fixProposalState == null ? null : fixProposalState.getProposals();
         String proposalStatus = RepairProposalStateBuilder.resolveStateStatus(proposals);
-        if ("empty".equals(proposalStatus)) {
+        if (RepairProposalTaxonomy.Status.EMPTY.equals(proposalStatus)) {
             return "review_passed_or_no_fix";
         }
-        if ("ready".equals(proposalStatus)) {
+        if (RepairProposalTaxonomy.Status.READY.equals(proposalStatus)) {
             return "ready_to_confirm";
         }
-        if ("preview_only".equals(proposalStatus)) {
-            return "preview_only";
+        if (RepairProposalTaxonomy.Status.PREVIEW_ONLY.equals(proposalStatus)) {
+            return RepairProposalTaxonomy.Status.PREVIEW_ONLY;
         }
         return "blocked_or_info";
     }

@@ -24,6 +24,7 @@ import StepCurrentIcon from '@/images/icons/step-current.png';
 import Header from '@/pageComponents/customerDetail/Header';
 import { useRouter } from 'next/router';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
+import { useIsMinip } from '@/hooks/useIsMinip';
 import {
   clearCustomerDetailDraft,
   loadCustomerDetailDraft,
@@ -36,6 +37,7 @@ const STEP_SHORT_TITLES = ['高考信息', '个人信息', '专业意向', '区�
 
 const CustomerDetail: React.FC = () => {
   const isMobile = useMediaQuery(MOBILE_BREAKPOINT);
+  const isMinip = useIsMinip();
   const { botId, tenantId } = useAuthParams();
   const storedIsCustomer = getStorage(EStorageKey.ISCUSTOMER) as boolean;
   const storedUserInfo: any = getStorage('userInfo') || '{}';
@@ -95,8 +97,12 @@ const CustomerDetail: React.FC = () => {
         },
         onOk: () => {
           modalVisibleRef.current = false;
-          // 直接跳转到首页或其他安全页面，不调用 history.back()
-          router.push('/customer');
+          // 采集中途退出回到会话列表；小程序端仍打开移动端会话列表抽屉。
+          if (isMinip) {
+            router.push('/customer?source=minip&openSessionList=1');
+          } else {
+            router.push('/session');
+          }
         },
         onCancel: () => {
           modalVisibleRef.current = false;
@@ -116,7 +122,7 @@ const CustomerDetail: React.FC = () => {
       window.removeEventListener('beforeunload', handleBeforeUnload);
       window.removeEventListener('popstate', handlePopState);
     };
-  }, [currentStep, router]);
+  }, [currentStep, isMinip, router]);
 
   const items = [
     {

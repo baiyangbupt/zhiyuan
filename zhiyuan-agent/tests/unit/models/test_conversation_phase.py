@@ -81,6 +81,42 @@ class TestPendingConfirmation:
         assert pc.preview_summary == "将生成一版方案"
         assert pc.affected_scope == "涉及全部志愿"
 
+    def test_from_legacy_plan_action_preserves_composite_proposal(self):
+        composite = {
+            "goal": {"goal_type": "only_keep_scope"},
+            "plan_actions": [{"action_type": "remove_units"}],
+        }
+        legacy = {
+            "action_family": "remove_units",
+            "summary": "只保留临床医学",
+            "plan_payload": {
+                "action_family": "remove_units",
+                "stage": "apply",
+                "composite_proposal": composite,
+            },
+        }
+
+        pc = PendingConfirmation.from_legacy_plan_action(legacy)
+
+        assert pc is not None
+        assert pc.composite_proposal == composite
+        restored = pc.to_legacy_plan_action()
+        assert restored["composite_proposal"] == composite
+
+    def test_from_legacy_plan_action_preserves_external_composite_proposal(self):
+        composite = {"goal": {"goal_type": "must_include_scope"}}
+        legacy = {
+            "action_family": "add_units",
+            "summary": "至少保留临床医学",
+            "plan_payload": {"action_family": "add_units", "stage": "apply"},
+            "compositeProposal": composite,
+        }
+
+        pc = PendingConfirmation.from_legacy_plan_action(legacy)
+
+        assert pc is not None
+        assert pc.composite_proposal == composite
+
     def test_from_legacy_plan_action_empty(self):
         assert PendingConfirmation.from_legacy_plan_action({}) is None
         assert PendingConfirmation.from_legacy_plan_action(None) is None
@@ -92,12 +128,14 @@ class TestPendingConfirmation:
         cache = {
             "summary": "设置地域偏好",
             "cities": ["北京"],
+            "compositeProposal": {"goal": {"goal_type": "prefer_scope"}},
         }
         pc = PendingConfirmation.from_legacy_intent_change(cache, "set_preference")
         assert pc is not None
         assert pc.kind == "intent_change"
         assert pc.action_family == "set_preference"
         assert pc.execution_payload == cache
+        assert pc.composite_proposal == {"goal": {"goal_type": "prefer_scope"}}
 
     def test_from_legacy_intent_change_none(self):
         assert PendingConfirmation.from_legacy_intent_change(None) is None
@@ -406,6 +444,7 @@ class TestConversationPhaseSerialization:
                 preview_summary="替换志愿",
                 execution_payload={"ids": ["v1"]},
                 created_turn=3,
+                composite_proposal={"goal": {"goal_type": "reduce_risk"}},
             ),
             turn_count=5,
             last_backend_version=42,
@@ -414,6 +453,7 @@ class TestConversationPhaseSerialization:
         restored = ConversationPhase.model_validate(data)
         assert restored.state == PhaseState.PLAN_PREVIEWING
         assert restored.pending.action_family == "replace_units"
+        assert restored.pending.composite_proposal == {"goal": {"goal_type": "reduce_risk"}}
         assert restored.turn_count == 5
         assert restored.last_backend_version == 42
 

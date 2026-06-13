@@ -27,6 +27,52 @@ _PROVINCE_ALIASES = {
     "宁夏回族": "宁夏",
 }
 
+_AREA_ALIASES = {
+    "南方": "南方",
+    "南方地区": "南方",
+    "南边": "南方",
+    "北方": "北方",
+    "北方地区": "北方",
+    "北边": "北方",
+}
+
+REGION_AREA_PROVINCES = {
+    "南方": (
+        "浙江",
+        "上海",
+        "湖南",
+        "湖北",
+        "江西",
+        "福建",
+        "云南",
+        "贵州",
+        "四川",
+        "重庆",
+        "广东",
+        "广西",
+        "海南",
+        "江苏",
+        "安徽",
+    ),
+    "北方": (
+        "黑龙江",
+        "吉林",
+        "辽宁",
+        "内蒙古",
+        "新疆",
+        "西藏",
+        "青海",
+        "甘肃",
+        "宁夏",
+        "陕西",
+        "山西",
+        "山东",
+        "河北",
+        "北京",
+        "天津",
+    ),
+}
+
 
 def compact_region_text(value: Any) -> str:
     return "".join(str(value or "").split()).lower()
@@ -111,6 +157,10 @@ def resolve_region_entity(text: Any, expected_level: str | None = None) -> Entit
     if alias and alias in provinces:
         append("province", alias, "alias")
 
+    area_alias = _AREA_ALIASES.get(_strip_region_suffix(raw_text), "")
+    if area_alias:
+        append("area", area_alias, "alias")
+
     stripped = _strip_region_suffix(raw_text)
     for province in provinces:
         if compact_region_text(province) == compact or compact_region_text(province) == compact_region_text(stripped):
@@ -153,7 +203,8 @@ def contains_concrete_region_mention(text: Any) -> bool:
         return False
     provinces, cities = _province_city_name_sets()
     aliases = set(_PROVINCE_ALIASES)
-    for name in provinces | cities | aliases:
+    area_aliases = set(_AREA_ALIASES)
+    for name in provinces | cities | aliases | area_aliases:
         raw_name = str(name or "").strip()
         if not raw_name:
             continue

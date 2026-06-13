@@ -975,7 +975,7 @@ async def query_volunteer_plan(
     “会计审计还有吗”“北京那几个多不多”），也应把原始 query 传给本工具；工具会结合当前方案真实名称、
     候选筛选和别名变体做局部命中查询。不要把这类局部查看改成整体 `query_state` 概览，也不要自行猜测简称含义。
     不适合回答“还差几个怎么补、补几个更稳的、怎么补满、加入方案”这类会改变方案或规划补齐动作的问题；
-    这类问题应走 Plan 主链路规划 preview_compensation/add_units，并在用户确认后执行。
+    这类问题应走 Plan 主链路规划 preview_fix_proposal/add_units，并在用户确认后执行。
     也不适合在移动/删除前作为“定位 ID”的前置步骤；`move_unit/remove_units/add_units`
     的 `volunteer_ids` 可以直接填写用户原始学校+专业引用，执行层会解析真实 ID 并处理歧义。
 

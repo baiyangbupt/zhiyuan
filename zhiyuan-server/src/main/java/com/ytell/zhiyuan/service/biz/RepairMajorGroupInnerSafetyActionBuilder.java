@@ -26,7 +26,9 @@ final class RepairMajorGroupInnerSafetyActionBuilder {
     static void populateActions(PlanningStateDTO state,
                                 ReviewCheckDTO check,
                                 FixProposalDTO proposal) {
-        if (proposal == null || !"adjust_major_group_inner_safety".equals(proposal.getStrategy())) {
+        if (proposal == null
+                || !RepairProposalTaxonomy.Strategy.ADJUST_MAJOR_GROUP_INNER_SAFETY.equals(
+                RepairProposalTaxonomy.normalizeStrategy(proposal.getStrategy()))) {
             return;
         }
         if (state == null || state.getCandidatePoolState() == null
@@ -157,7 +159,7 @@ final class RepairMajorGroupInnerSafetyActionBuilder {
                                                     DraftItemDTO removeItem,
                                                     CandidateItemDTO safetyCandidate) {
         FixProposalActionDTO action = new FixProposalActionDTO();
-        action.setActionType("adjust_major_group_inner_safety");
+        action.setActionType(RepairProposalTaxonomy.ActionType.ADJUST_MAJOR_GROUP_INNER_SAFETY);
         action.setLevel("warn");
         action.setSourceCheckCode("group_inner_safety_guard");
         action.setSummary("补入组内安全垫专业");

@@ -208,7 +208,6 @@ class TestPreExecuteGuard:
         "replace_units",
         "sort_ordered_plan",
         "regenerate_order",
-        "apply_compensation",
     ])
     def test_mutating_action_blocked_on_version_drift(self, sync, action_family):
         phase = ConversationPhase(last_backend_version=3)

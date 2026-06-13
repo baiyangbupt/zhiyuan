@@ -368,7 +368,7 @@
 - `PlanningStateSync` 版本乐观锁管理器 (`app/sync/state_sync.py`)：`check_version`（比较 `last_backend_version` 与当前 `PlanningSummary.version`）、`invalidate_if_stale`（版本漂移或轮次超时导致 pending 失效）、`pre_execute_guard`（mutating action 执行前二次版本校验拦截）、`update_version`（同步本地版本号）。
 - `StateChangeEvent` / `VersionCheckResult` / `StaleCause` 状态变化事件模型，统一传递版本漂移和 pending 过期信息。
 - 38 条 `PlanningStateSync` 单元测试，覆盖版本检查、pending 失效、执行前 guard 和完整周期（正常流程 / 并发修改 / 超时过期）。
-- 55 条方案全流程集成测试 (`tests/integration/test_full_plan_flow.py`)，覆盖 10 个端到端场景：完整生命周期（Explore → generate → review → compensate）、阶段串联（Explore → Intent → Plan）、pending 确认/拒绝、前端并发修改导致 pending 失效、连续 3 轮未确认自动过期、ActionResolver + ConversationPhase 联动、Instructions assembler 集成、Legacy 兼容转换、Handler registry 合法性校验、非法状态转换拒绝。
+- 55 条方案全流程集成测试 (`tests/integration/test_full_plan_flow.py`)，覆盖 10 个端到端场景：完整生命周期（Explore → generate → review → compensate）、阶段串联（Explore → Intent → Plan）、pending 确认/拒绝、前端并发修改导致 pending 失效、连续 3 轮未确认自动过期、ActionResolver 结构化映射、Instructions assembler 集成、Legacy 兼容转换、Handler registry 合法性校验、非法状态转换拒绝。
 - 所有集成测试双模式 (`major` / `majorGroup`) 参数化覆盖。
 
 ### Changed (Pending 协议统一 — Phase 3 收尾)

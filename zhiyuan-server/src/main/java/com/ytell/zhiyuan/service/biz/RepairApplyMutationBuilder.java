@@ -42,7 +42,8 @@ final class RepairApplyMutationBuilder {
         }
         Set<String> removeIds = new LinkedHashSet<String>(defaultList(proposal.getAffectedVolunteerIds()));
         for (FixProposalActionDTO action : defaultFixProposalActions(proposal.getActions())) {
-            if ("remove_volunteers".equals(action.getActionType())) {
+            if (RepairProposalTaxonomy.ActionType.REMOVE_VOLUNTEERS.equals(
+                    RepairProposalTaxonomy.normalizeActionType(action.getActionType()))) {
                 removeIds.addAll(defaultList(action.getVolunteerIds()));
             }
         }
@@ -61,7 +62,8 @@ final class RepairApplyMutationBuilder {
         result.getRemovedVolunteerIds().addAll(removedVolunteerIds);
 
         List<CompensationActionDTO> addActions = defaultFixProposalActions(proposal.getActions()).stream()
-                .filter(action -> "fill_total_count".equals(action.getActionType()))
+                .filter(action -> RepairProposalTaxonomy.ActionType.FILL_TOTAL_COUNT.equals(
+                        RepairProposalTaxonomy.normalizeActionType(action.getActionType())))
                 .map(RepairApplyMutationBuilder::toCompensationAction)
                 .collect(Collectors.toList());
         MutationResult compensationResult = applyCompensationActions(state, candidates, addActions);
@@ -89,7 +91,8 @@ final class RepairApplyMutationBuilder {
         Set<String> removeIds = new LinkedHashSet<String>();
         Set<String> addIds = new LinkedHashSet<String>();
         for (FixProposalActionDTO action : defaultFixProposalActions(proposal.getActions())) {
-            if (!"adjust_major_group_inner_safety".equals(action.getActionType())) {
+            if (!RepairProposalTaxonomy.ActionType.ADJUST_MAJOR_GROUP_INNER_SAFETY.equals(
+                    RepairProposalTaxonomy.normalizeActionType(action.getActionType()))) {
                 continue;
             }
             removeIds.addAll(defaultList(action.getRemoveVolunteerIds()).stream()
@@ -143,7 +146,8 @@ final class RepairApplyMutationBuilder {
         Set<String> removeIds = new LinkedHashSet<String>();
         Set<String> addIds = new LinkedHashSet<String>();
         for (FixProposalActionDTO action : defaultFixProposalActions(proposal.getActions())) {
-            if (!"replace_volunteers".equals(action.getActionType())) {
+            if (!RepairProposalTaxonomy.ActionType.REPLACE_VOLUNTEERS.equals(
+                    RepairProposalTaxonomy.normalizeActionType(action.getActionType()))) {
                 continue;
             }
             if (hasIncompleteReplacementPair(action)) {
@@ -379,7 +383,7 @@ final class RepairApplyMutationBuilder {
         }
 
         private void block(String reason) {
-            status = "blocked";
+            status = RepairProposalTaxonomy.Status.BLOCKED;
             blockingReason = reason;
         }
 
@@ -391,7 +395,7 @@ final class RepairApplyMutationBuilder {
             removedVolunteerIds.addAll(other.getRemovedVolunteerIds());
             addedVolunteerIds.addAll(other.getAddedVolunteerIds());
             operationLogs.addAll(other.getOperationLogs());
-            if ("blocked".equals(other.getStatus())) {
+            if (RepairProposalTaxonomy.isBlockedStatus(other.getStatus())) {
                 block(other.getBlockingReason());
             }
         }

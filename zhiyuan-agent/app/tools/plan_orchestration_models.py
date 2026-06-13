@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 _INTENT_RELATION_ALIASES = {
@@ -25,6 +25,7 @@ _INTENT_RELATION_ALIASES = {
 
 
 class PlanContextInputs(BaseModel):
+    batch: str = "01"
     phase: str = ""
     target_count: int = 0
     draft_count: int = 0
@@ -75,6 +76,414 @@ class PlanAtomicAction(BaseModel):
         return value
 
 
+class PlanEntityResolution(BaseModel):
+    """Entity evidence for a user-facing plan goal.
+
+    This is not an executable scope. It records how the system understood a
+    school/major/region/risk mention so preview cards can disclose ambiguity
+    before any mutation is applied.
+    """
+
+    raw_text: str
+    entity_type: Literal["major", "school", "region", "career", "tag", "risk"]
+    canonical_name: str = ""
+    canonical_level: str = ""
+    matched_plan_items: list[dict[str, Any]] = Field(default_factory=list)
+    matched_candidate_items: list[dict[str, Any]] = Field(default_factory=list)
+    ambiguity: Literal[
+        "none",
+        "specific_vs_category",
+        "catalog_vs_admission_plan",
+        "multiple_match",
+        "unknown",
+    ] = "none"
+    user_visible_note: str = ""
+
+
+class PlanDecisionReference(BaseModel):
+    """Decision signal used when comparing plan alternatives.
+
+    These references are explanatory evidence for preview and dry-run decisions.
+    They do not grant execution permission and must not bypass confirmation.
+    """
+
+    source: Literal[
+        "explicit_user_goal",
+        "confirmed_intent",
+        "system_recommendation",
+        "current_plan",
+        "candidate_pool",
+        "review_rule",
+        "dry_run",
+    ]
+    dimension: str
+    label: str = ""
+    value: Any = None
+    weight_hint: Literal["hard", "high", "medium", "low", "context"] = "context"
+    applies_to: list[str] = Field(default_factory=list)
+    evidence: dict[str, Any] = Field(default_factory=dict)
+
+
+PlanGoalTypeValue = Literal[
+    "query_state",
+    "only_keep_scope",
+    "must_include_scope",
+    "exclude_scope",
+    "prefer_scope",
+    "rebalance_structure",
+    "reduce_risk",
+    "mixed_adjustment",
+    "clarify",
+]
+
+ConstraintIntentTypeValue = Literal["default", "only_keep", "must_have"]
+
+RepairStrategyValue = Literal[
+    "fill_missing_count",
+    "add_safety_items",
+    "rebalance_tier_ratio",
+    "fill_probability_gap",
+    "sort_by_probability",
+    "remove_risk_items",
+    "replace_risk_items",
+    "adjust_major_group_inner_safety",
+    "only_keep_scope",
+    "must_include_scope",
+    "exclude_scope",
+    "no_op",
+    "cannot_satisfy",
+]
+
+RepairActionTypeValue = Literal[
+    "fill_total_count",
+    "add_volunteers",
+    "remove_volunteers",
+    "replace_volunteers",
+    "reorder_volunteers",
+    "adjust_major_group_inner_safety",
+    "no_op",
+]
+
+APPLYABLE_REPAIR_STRATEGIES: set[str] = {
+    "fill_missing_count",
+    "sort_by_probability",
+    "remove_risk_items",
+    "replace_risk_items",
+    "adjust_major_group_inner_safety",
+}
+
+PREVIEW_ONLY_REPAIR_STRATEGIES: set[str] = {
+    "add_safety_items",
+    "rebalance_tier_ratio",
+    "fill_probability_gap",
+    "only_keep_scope",
+    "must_include_scope",
+    "exclude_scope",
+}
+
+REPAIR_STRATEGY_ACTIONS: dict[str, tuple[str, ...]] = {
+    "fill_missing_count": ("fill_total_count",),
+    "add_safety_items": ("add_volunteers", "replace_volunteers"),
+    "rebalance_tier_ratio": ("replace_volunteers",),
+    "fill_probability_gap": ("replace_volunteers",),
+    "sort_by_probability": ("reorder_volunteers",),
+    "remove_risk_items": ("remove_volunteers",),
+    "replace_risk_items": ("replace_volunteers",),
+    "adjust_major_group_inner_safety": ("adjust_major_group_inner_safety",),
+    "only_keep_scope": ("remove_volunteers", "add_volunteers", "replace_volunteers"),
+    "must_include_scope": ("add_volunteers", "replace_volunteers"),
+    "exclude_scope": ("remove_volunteers", "replace_volunteers"),
+    "no_op": ("no_op",),
+    "cannot_satisfy": ("no_op",),
+}
+
+_CONSTRAINT_TO_PLAN_GOAL: dict[str, PlanGoalTypeValue] = {
+    "only_keep": "only_keep_scope",
+    "must_have": "must_include_scope",
+}
+
+_SCOPE_REQUIRED_GOAL_TYPES = {
+    "only_keep_scope",
+    "must_include_scope",
+    "exclude_scope",
+    "prefer_scope",
+}
+
+
+def resolve_plan_goal_type(
+    plan_goal_type: str | None,
+    constraint_intent_type: str | None = None,
+) -> PlanGoalTypeValue | None:
+    """Normalize the high-level plan goal type from structured inputs only."""
+    normalized_goal = str(plan_goal_type or "").strip()
+    if normalized_goal:
+        return normalized_goal  # type: ignore[return-value]
+    normalized_constraint = str(constraint_intent_type or "").strip()
+    return _CONSTRAINT_TO_PLAN_GOAL.get(normalized_constraint)
+
+
+def plan_goal_requires_scope(goal_type: str | None) -> bool:
+    return str(goal_type or "").strip() in _SCOPE_REQUIRED_GOAL_TYPES
+
+
+class PlanGoal(BaseModel):
+    """Structured user goal above action_family.
+
+    PlanGoal describes what the user wants to accomplish. PlanActionPlan and
+    PlanAtomicAction describe how the system can preview or execute it.
+    """
+
+    goal_type: PlanGoalTypeValue
+    user_original_text: str = ""
+    target_scopes: list[dict[str, Any]] = Field(default_factory=list)
+    negative_scopes: list[dict[str, Any]] = Field(default_factory=list)
+    structure_targets: list[dict[str, Any]] = Field(default_factory=list)
+    quality_guards: list[dict[str, Any]] = Field(default_factory=list)
+    entity_resolutions: list[PlanEntityResolution] = Field(default_factory=list)
+    confidence: Literal["high", "medium", "low"] = "medium"
+    needs_clarification: bool = False
+    clarification_questions: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _clarification_required_for_clarify_goal(self) -> "PlanGoal":
+        if self.goal_type == "clarify":
+            self.needs_clarification = True
+        return self
+
+    @property
+    def has_entity_ambiguity(self) -> bool:
+        return any(item.ambiguity != "none" for item in self.entity_resolutions)
+
+    @property
+    def user_visible_entity_notes(self) -> list[str]:
+        notes: list[str] = []
+        for item in self.entity_resolutions:
+            note = str(item.user_visible_note or "").strip()
+            if note and note not in notes:
+                notes.append(note)
+        return notes
+
+
+def build_plan_goal_intent_updates(plan_goal: PlanGoal | None) -> list[dict[str, Any]]:
+    """Return pending intent update metadata derived from a confirmed PlanGoal.
+
+    This only builds preview/confirmation metadata. It does not write intent
+    state and it deliberately returns nothing when the goal still needs
+    clarification.
+    """
+    if plan_goal is None or plan_goal.needs_clarification:
+        return []
+    if plan_goal.goal_type == "only_keep_scope":
+        return [
+            {
+                "intentMode": "constraint",
+                "constraintIntentType": "only_keep",
+                "targetScopes": plan_goal.target_scopes,
+            }
+        ]
+    if plan_goal.goal_type == "must_include_scope":
+        return [
+            {
+                "intentMode": "constraint",
+                "constraintIntentType": "must_have",
+                "targetScopes": plan_goal.target_scopes,
+            }
+        ]
+    if plan_goal.goal_type == "exclude_scope":
+        return [
+            {
+                "intentMode": "constraint",
+                "constraintIntentType": "default",
+                "negativeScopes": plan_goal.negative_scopes,
+            }
+        ]
+    if plan_goal.goal_type == "prefer_scope":
+        return [
+            {
+                "intentMode": "preference",
+                "targetScopes": plan_goal.target_scopes,
+            }
+        ]
+    return []
+
+
+CompositeFeasibility = Literal["ready", "preview_only", "blocked", "needs_clarification"]
+
+
+class LinkedRepairAction(BaseModel):
+    """Repair action metadata linked into a composite plan proposal.
+
+    This mirrors backend ``FixProposalActionDTO`` at the planning level. It is
+    preview metadata only; the executable source remains the backend proposal.
+    """
+
+    action_type: RepairActionTypeValue
+    source_check_code: str = ""
+    summary: str = ""
+    detail: str = ""
+    unit_ids: list[str] = Field(default_factory=list)
+    volunteer_ids: list[str] = Field(default_factory=list)
+    remove_unit_ids: list[str] = Field(default_factory=list)
+    remove_volunteer_ids: list[str] = Field(default_factory=list)
+    candidate_unit_ids: list[str] = Field(default_factory=list)
+    candidate_volunteer_ids: list[str] = Field(default_factory=list)
+    replacement_pairs: list[dict[str, Any]] = Field(default_factory=list)
+
+    @field_validator("action_type", mode="before")
+    @classmethod
+    def _normalize_action_type(cls, value: Any) -> Any:
+        text = str(value or "").strip()
+        aliases = {
+            "sort_ordered_plan": "reorder_volunteers",
+            "fill_count": "fill_total_count",
+            "add_units": "add_volunteers",
+            "remove_units": "remove_volunteers",
+            "replace_units": "replace_volunteers",
+        }
+        return aliases.get(text, value)
+
+
+class LinkedRepairProposal(BaseModel):
+    """Backend repair proposal linked to a user-facing composite proposal."""
+
+    proposal_id: str = ""
+    proposal_source: Literal["review_check", "user_goal"] = "review_check"
+    source_version: int = 0
+    source_review_version: int = 0
+    source_version_guard: int = 0
+    source_check_codes: list[str] = Field(default_factory=list)
+    strategy: RepairStrategyValue
+    status: Literal["ready", "preview_only", "blocked", "info"] = "preview_only"
+    title: str = ""
+    summary: str = ""
+    impact: str = ""
+    blocking_reason: str = ""
+    candidate_shortages: list[dict[str, Any]] = Field(default_factory=list)
+    actions: list[LinkedRepairAction] = Field(default_factory=list)
+    dry_run_result: dict[str, Any] = Field(default_factory=dict)
+    requires_confirmation: bool = True
+    applyable: bool = False
+
+    @field_validator("proposal_source", mode="before")
+    @classmethod
+    def _normalize_proposal_source(cls, value: Any) -> Any:
+        text = str(value or "").strip()
+        if not text:
+            return "review_check"
+        if text in {"review", "reviewCheck", "review_check"}:
+            return "review_check"
+        if text in {"userGoal", "user_goal"}:
+            return "user_goal"
+        return text
+
+    @field_validator("strategy", mode="before")
+    @classmethod
+    def _normalize_strategy(cls, value: Any) -> Any:
+        text = str(value or "").strip()
+        aliases = {
+            "fill_total_count": "fill_missing_count",
+            "add_local_protect": "add_safety_items",
+            "rebalance_protect_ratio": "rebalance_tier_ratio",
+            "sort_ordered_plan": "sort_by_probability",
+            "remove_volunteers": "remove_risk_items",
+            "replace_volunteers": "replace_risk_items",
+            "blocked": "cannot_satisfy",
+            "info": "no_op",
+        }
+        return aliases.get(text, value)
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def _normalize_status(cls, value: Any) -> Any:
+        text = str(value or "").strip().lower()
+        aliases = {
+            "": "preview_only",
+            "cannot_satisfy": "blocked",
+            "no_op": "info",
+        }
+        return aliases.get(text, value)
+
+    @model_validator(mode="after")
+    def _sync_applyability_and_actions(self) -> "LinkedRepairProposal":
+        if self.strategy == "cannot_satisfy":
+            self.status = "blocked"
+        elif self.strategy == "no_op":
+            self.status = "info"
+        if self.status != "ready":
+            self.applyable = False
+        else:
+            self.applyable = self.strategy in APPLYABLE_REPAIR_STRATEGIES
+        if self.proposal_source != "review_check":
+            self.applyable = False
+        if self.strategy in PREVIEW_ONLY_REPAIR_STRATEGIES:
+            self.applyable = False
+        allowed_actions = set(REPAIR_STRATEGY_ACTIONS.get(self.strategy, ()))
+        if self.actions and allowed_actions:
+            self.actions = [
+                action
+                for action in self.actions
+                if action.action_type in allowed_actions
+            ]
+        if self.strategy in {"no_op", "cannot_satisfy"}:
+            self.requires_confirmation = False
+            self.applyable = False
+        return self
+
+
+class CompositePlanProposal(BaseModel):
+    """Preview container for a multi-step plan goal.
+
+    A composite proposal groups the user's high-level goal, pending intent
+    updates, plan actions and user-visible caveats into one confirmation unit.
+    It is not an apply API and does not bypass PlanActionPlan stage/confirmation
+    gates.
+    """
+
+    proposal_id: str = ""
+    source_version: int = 0
+    goal: PlanGoal | None = None
+    entity_resolutions: list[PlanEntityResolution] = Field(default_factory=list)
+    intent_updates: list[dict[str, Any]] = Field(default_factory=list)
+    plan_actions: list[PlanAtomicAction] = Field(default_factory=list)
+    linked_fix_proposals: list[LinkedRepairProposal] = Field(default_factory=list)
+    decision_references: list[PlanDecisionReference] = Field(default_factory=list)
+    dry_run_result: dict[str, Any] = Field(default_factory=dict)
+    feasibility: CompositeFeasibility = "preview_only"
+    impact_summary: list[str] = Field(default_factory=list)
+    tradeoffs: list[str] = Field(default_factory=list)
+    requires_confirmation: bool = True
+    post_apply_validation_plan: list[str] = Field(default_factory=list)
+
+    @field_validator("feasibility", mode="before")
+    @classmethod
+    def _normalize_feasibility(cls, value: Any) -> Any:
+        text = str(value or "").strip().lower()
+        aliases = {
+            "": "preview_only",
+            "preview": "preview_only",
+            "needs_clarify": "needs_clarification",
+            "clarify": "needs_clarification",
+            "cannot_satisfy": "blocked",
+        }
+        return aliases.get(text, value)
+
+    @model_validator(mode="after")
+    def _sync_goal_metadata(self) -> "CompositePlanProposal":
+        if self.goal is not None:
+            if not self.entity_resolutions:
+                self.entity_resolutions = list(self.goal.entity_resolutions)
+            if self.goal.needs_clarification:
+                self.feasibility = "needs_clarification"
+                self.requires_confirmation = False
+        if self.feasibility in {"blocked", "needs_clarification"}:
+            self.requires_confirmation = False
+        return self
+
+    @property
+    def has_plan_mutation(self) -> bool:
+        return bool(self.plan_actions or any(proposal.applyable for proposal in self.linked_fix_proposals))
+
+
 _TOP_LEVEL_ATOMIC_ACTION_FAMILIES = {
     "add_units",
     "remove_units",
@@ -95,7 +504,6 @@ _MUTATING_ACTION_FAMILIES = {
     "remove_ordered_unit",
     "sort_ordered_plan",
     "regenerate_order",
-    "apply_compensation",
 }
 
 
@@ -194,6 +602,14 @@ def normalize_plan_action_payload(payload: dict[str, Any] | None) -> dict[str, A
 
 
 class PlanActionPlan(BaseModel):
+    """Current plan action envelope.
+
+    Top-level fields describe the action currently being previewed or executed.
+    High-level compound goals live in ``composite_proposal`` so the plan goal,
+    pending intent updates, linked repair proposals and decision evidence have a
+    single structured home.
+    """
+
     stage: Literal["analyze", "preview", "apply", "review"]
     action_family: Literal[
         "query_state",
@@ -202,7 +618,7 @@ class PlanActionPlan(BaseModel):
         "query_candidates",
         "generate_plan",
         "analyze_adjustment",
-        "preview_compensation",
+        "preview_fix_proposal",
         "add_units",
         "remove_units",
         "move_unit",
@@ -211,7 +627,6 @@ class PlanActionPlan(BaseModel):
         "remove_ordered_unit",
         "sort_ordered_plan",
         "regenerate_order",
-        "apply_compensation",
         "review_plan",
     ]
     user_goal: str = ""
@@ -224,6 +639,7 @@ class PlanActionPlan(BaseModel):
     missing_inputs: list[str] = Field(default_factory=list)
     rationale: list[str] = Field(default_factory=list)
     atomic_actions: list[PlanAtomicAction] = Field(default_factory=list)
+    composite_proposal: CompositePlanProposal | None = None
     preview_summary: str = ""
 
     @field_validator("intent_relation", mode="before")
@@ -246,7 +662,7 @@ class PlanExecutionResult(BaseModel):
         "candidate_snapshot",
         "generation_result",
         "adjustment_analysis",
-        "compensation_preview",
+        "fix_proposal_preview",
         "mutation_result",
         "review_result",
         "preview_only",

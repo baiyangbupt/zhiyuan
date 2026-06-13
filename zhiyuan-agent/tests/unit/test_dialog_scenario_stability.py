@@ -30,7 +30,6 @@ from app.tools.intent_state_tool import (
     INTENT_MODE_CONSTRAINT,
     INTENT_MODE_PREFERENCE,
     analyze_volunteer_intent_change,
-    update_volunteer_intent_state,
 )
 
 
@@ -164,6 +163,18 @@ def test_dialog_scenario_hard_constraint_city_recovery_builds_constraint_confirm
         patch(
             "app.tools.intent_state_tool.get_planning_state",
             new=AsyncMock(return_value={"data": {"orderedPlanState": {"items": []}, "candidatePoolState": {"items": []}}}),
+        ),
+        patch(
+            "app.tools.city_intent_tool.extract_city_intents_with_polarity",
+            new=AsyncMock(
+                return_value='{"positive": {"province": [], "city": [], "area": []}, "negative": {"province": ["上海"], "city": [], "area": []}}'
+            ),
+        ),
+        patch(
+            "app.tools.major_intent_tool.extract_major_intents_with_polarity",
+            new=AsyncMock(
+                return_value='{"positive": {"level1": [], "level2": [], "level3": []}, "negative": {"level1": [], "level2": [], "level3": []}}'
+            ),
         ),
         patch("app.tools.city_intent_tool.extract_city_intent", new=AsyncMock(return_value='{"province": [], "city": [], "area": []}')),
         patch("app.tools.city_intent_tool.extract_negative_city_intent", new=AsyncMock(return_value='{"province": ["上海"], "city": [], "area": []}')),
@@ -472,52 +483,6 @@ def test_dialog_scenario_generic_direction_question_via_career_tool_falls_back_t
     preview_mock.assert_awaited_once_with(ctx.deps)
 
 
-def test_dialog_scenario_confirm_tool_requires_card_click_for_career_preference():
-    ctx = SimpleNamespace(
-        deps=SimpleNamespace(
-            sessionid="306",
-            batch="01",
-            pending_intent_change=True,
-        )
-    )
-
-    with (
-        patch(
-            "app.tools.intent_state_tool.get_intent_change_cache",
-            new=AsyncMock(
-                return_value={
-                    "data": {
-                        "planEditCache": {
-                            "intent_mode": INTENT_MODE_PREFERENCE,
-                            "career_intents": {"positive": ["system_public_service"]},
-                        }
-                    }
-                }
-            ),
-        ),
-        patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch(
-            "app.tools.intent_state_tool.get_planning_state",
-            new=AsyncMock(return_value={"data": {"profileState": {"latentProfile": {"futureDevelopment": {"careerTypes": ["读研"]}}}}}),
-        ) as state_mock,
-        patch("app.tools.intent_state_tool.update_planning_latent_profile", new=AsyncMock()) as latent_mock,
-        patch("app.tools.intent_state_tool.query_planning_candidate_pool", new=AsyncMock()) as query_mock,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
-    ):
-        mock_pm = mock_pm_cls.return_value
-        mock_pm.update_city_intent = AsyncMock()
-        mock_pm.update_major_intent = AsyncMock()
-        mock_pm.update_school_intent = AsyncMock()
-
-        resp = json.loads(_run(update_volunteer_intent_state(ctx, action="confirm")))["message"]
-
-    assert isinstance(resp, str)
-    assert "确认卡片" in resp
-    query_mock.assert_not_awaited()
-    state_mock.assert_not_awaited()
-    latent_mock.assert_not_awaited()
-
-
 def test_dialog_scenario_interest_followup_candidate_query_for_career_returns_text_not_workspace_action():
     from app.tools.explore_followup_tool import handle_interest_analysis_action_result
 
@@ -776,47 +741,6 @@ def test_dialog_scenario_after_plan_discussion_user_adds_preference_still_gets_p
     assert "北京" in resp
 
 
-def test_dialog_scenario_after_plan_discussion_user_adds_constraint_updates_candidate_view_only_after_confirm():
-    ctx = SimpleNamespace(
-        deps=SimpleNamespace(
-            sessionid="311",
-            batch="01",
-            pending_intent_change=True,
-        )
-    )
-
-    with (
-        patch(
-            "app.tools.intent_state_tool.get_intent_change_cache",
-            new=AsyncMock(
-                return_value={
-                    "data": {
-                        "planEditCache": {
-                            "intent_mode": INTENT_MODE_CONSTRAINT,
-                            "city_intents": {"negative_province": ["上海"]},
-                        }
-                    }
-                }
-            ),
-        ),
-        patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
-        patch(
-            "app.tools.intent_state_tool.get_planning_state",
-            new=AsyncMock(return_value={"data": {"candidatePoolState": {"summary": {"total": 3200}}}}),
-        ),
-        patch("app.tools.intent_state_tool.query_planning_candidate_pool", new=AsyncMock(return_value={"data": {"total": 128}})) as query_mock,
-    ):
-        mock_pm = mock_pm_cls.return_value
-        mock_pm.update_city_intent = AsyncMock()
-        mock_pm.update_major_intent = AsyncMock()
-        mock_pm.update_school_intent = AsyncMock()
-        resp = json.loads(_run(update_volunteer_intent_state(ctx, action="confirm")))["message"]
-
-    assert "确认卡片" in resp
-    query_mock.assert_not_awaited()
-
-
 def test_dialog_scenario_career_attitude_reversal_recovery_uses_latest_user_turn_only():
     from app.tools.intent_state_tool import _recover_intents_from_context
 
@@ -880,6 +804,24 @@ def test_dialog_scenario_city_attitude_reversal_recovery_uses_latest_user_turn_o
         return json.dumps({"province": ["上海"], "city": [], "area": []}, ensure_ascii=False)
 
     with (
+        patch(
+            "app.tools.city_intent_tool.extract_city_intents_with_polarity",
+            new=AsyncMock(
+                return_value=json.dumps(
+                    {"positive": {"province": [], "city": [], "area": []}, "negative": {"province": ["上海"], "city": [], "area": []}},
+                    ensure_ascii=False,
+                )
+            ),
+        ),
+        patch(
+            "app.tools.major_intent_tool.extract_major_intents_with_polarity",
+            new=AsyncMock(
+                return_value=json.dumps(
+                    {"positive": {"level1": [], "level2": [], "level3": []}, "negative": {"level1": [], "level2": [], "level3": []}},
+                    ensure_ascii=False,
+                )
+            ),
+        ),
         patch("app.tools.city_intent_tool.extract_city_intent", new=AsyncMock(return_value='{"province": [], "city": [], "area": []}')),
         patch("app.tools.city_intent_tool.extract_negative_city_intent", side_effect=_assert_negative_city),
         patch("app.tools.major_intent_tool.extract_major_intent", new=AsyncMock(return_value='{"level1": [], "level2": [], "level3": []}')),
@@ -963,46 +905,6 @@ def test_dialog_scenario_mixed_city_explore_and_constraint_keeps_constraint_conf
 
     assert "北京" in resp
     assert "上海" in resp
-
-
-def test_dialog_scenario_reject_intent_change_clears_pending_cache():
-    ctx = SimpleNamespace(
-        deps=SimpleNamespace(
-            sessionid="316",
-        )
-    )
-
-    with patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()) as cache_mock:
-        resp = json.loads(_run(update_volunteer_intent_state(ctx, action="reject")))["message"]
-
-    assert "已取消本次意向调整" in resp
-    cache_mock.assert_awaited_once_with(316, {})
-
-
-def test_dialog_scenario_reject_then_confirm_does_not_apply_anything():
-    ctx = SimpleNamespace(
-        deps=SimpleNamespace(
-            sessionid="317",
-            batch="01",
-            chat_history=[{"role": "user", "content": "确认"}],
-        )
-    )
-
-    with (
-        patch("app.tools.intent_state_tool.get_intent_change_cache", new=AsyncMock(return_value={"data": {"planEditCache": {}}})),
-        patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.update_planning_latent_profile", new=AsyncMock()) as latent_mock,
-        patch("app.tools.intent_state_tool.query_planning_candidate_pool", new=AsyncMock()) as query_mock,
-    ):
-        mock_pm = mock_pm_cls.return_value
-        mock_pm.update_city_intent = AsyncMock()
-        mock_pm.update_major_intent = AsyncMock()
-        mock_pm.update_school_intent = AsyncMock()
-        resp = json.loads(_run(update_volunteer_intent_state(ctx, action="confirm")))["message"]
-
-    assert "确认卡片" in resp
-    latent_mock.assert_not_awaited()
-    query_mock.assert_not_awaited()
 
 
 def test_dialog_scenario_hedged_soft_negative_city_stays_preference():
@@ -1118,46 +1020,6 @@ def test_dialog_scenario_second_confirm_preview_does_not_write_legacy_cache():
         _run(_render_analysis(ctx_second, edit_flag="delete"))
 
     assert save_mock.await_count == 0
-
-
-def test_dialog_scenario_confirm_tool_ignores_latest_legacy_cache():
-    ctx = SimpleNamespace(
-        deps=SimpleNamespace(
-            sessionid="321",
-            batch="01",
-            pending_intent_change=True,
-        )
-    )
-
-    with (
-        patch(
-            "app.tools.intent_state_tool.get_intent_change_cache",
-            new=AsyncMock(
-                return_value={
-                    "data": {
-                        "planEditCache": {
-                            "intent_mode": INTENT_MODE_CONSTRAINT,
-                            "city_intents": {"negative_province": ["上海"]},
-                        }
-                    }
-                }
-            ),
-        ),
-        patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
-        patch(
-            "app.tools.intent_state_tool.get_planning_state",
-            new=AsyncMock(return_value={"data": {"candidatePoolState": {"summary": {"total": 1000}}}}),
-        ),
-        patch("app.tools.intent_state_tool.query_planning_candidate_pool", new=AsyncMock(return_value={"data": {"total": 88}})),
-    ):
-        mock_pm = mock_pm_cls.return_value
-        mock_pm.update_city_intent = AsyncMock()
-        mock_pm.update_major_intent = AsyncMock()
-        mock_pm.update_school_intent = AsyncMock()
-        resp = json.loads(_run(update_volunteer_intent_state(ctx, action="confirm")))["message"]
-
-    assert "确认卡片" in resp
 
 
 def test_dialog_scenario_explicit_intent_mode_overrides_structural_fallback():
@@ -1381,49 +1243,6 @@ def test_dialog_scenario_interest_followup_candidate_query_with_major_category_r
     query_kwargs = query_mock.await_args.kwargs
     assert query_kwargs["major_tags"] == ["工学"]
     assert query_kwargs["major_keywords"] == ["计算机类"]
-
-
-def test_dialog_scenario_confirm_tool_does_not_output_negative_major_filters():
-    ctx = SimpleNamespace(
-        deps=SimpleNamespace(
-            sessionid="328",
-            batch="01",
-            pending_intent_change=True,
-        )
-    )
-
-    with (
-        patch(
-            "app.tools.intent_state_tool.get_intent_change_cache",
-            new=AsyncMock(
-                return_value={
-                    "data": {
-                        "planEditCache": {
-                            "intent_mode": INTENT_MODE_CONSTRAINT,
-                            "major_intents": {"negative_level1": ["医学"], "negative_level2": ["临床医学类"]},
-                        }
-                    }
-                }
-            ),
-        ),
-        patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
-        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
-        patch(
-            "app.tools.intent_state_tool.get_planning_state",
-            new=AsyncMock(return_value={"data": {"candidatePoolState": {"summary": {"total": 1800}}}}),
-        ),
-        patch("app.tools.intent_state_tool.query_planning_candidate_pool", new=AsyncMock(return_value={"data": {"total": 150}})) as query_mock,
-    ):
-        mock_pm = mock_pm_cls.return_value
-        mock_pm.update_city_intent = AsyncMock()
-        mock_pm.update_major_intent = AsyncMock()
-        mock_pm.update_school_intent = AsyncMock()
-        result = json.loads(_run(update_volunteer_intent_state(ctx, action="confirm")))
-
-    assert result["applied"] is False
-    assert result["messageCode"] == "confirm_required"
-    assert "确认卡片" in result["message"]
-    query_mock.assert_not_awaited()
 
 
 def test_dialog_scenario_biology_interest_and_far_region_requirement_can_coexist_in_preview():

@@ -213,8 +213,10 @@ class TestStyleRules:
         assert len(result) > 100
         assert "回复风格" in result
         assert "不要夹杂不必要的英文词" in result
-        assert "采纳/确认前不会生效" in result
+        assert "点‘采纳’前不会生效" in result
         assert "首轮或干净上下文不要以“抱歉，刚才...”开头" in result
+        assert "“草稿”/“draft” → 说“方案”或“已加入方案”" in result
+        assert "备选方案" not in result
 
 
 # ---------------------------------------------------------------------------
@@ -276,10 +278,24 @@ class TestToolDispatchRules:
         assert "`market_employment`" in result
         assert "先看大方向" in result
         assert "`analyze_current_career_direction(generic_direction=true)`" in result
+        assert "`analyze_current_interest_profile` 一次做综合分析" in result
+        assert "不要拆成 `analyze_current_career_direction` 与 `analyze_current_major_interest` 多轮试探" in result
+        assert "返回后，本轮直接基于其结果综合答复" in result
+        assert "不要再追加 career/major/region/school Explore 工具" in result
         assert "不能只列“可以聊什么”" in result
         assert "这轮只做分析，不会改动你的方案" in result
         assert "Explore 专用工具已经返回当前方案概况" in result
         assert "不要再补调 `plan_next_action(action_family=\"query_state\")`" in result
+
+    def test_career_oriented_plan_optimization_is_not_plain_review(self):
+        result = build_tool_dispatch_rules()
+        assert "发展导向的方案优化情景" in result
+        assert "先调用 `analyze_current_career_direction`" in result
+        assert "只有用户明确要求审查风险时" in result
+        assert "不能被审查报告淹没" in result
+        assert "当前承接、主要短板、调整取舍、下一步是否生成调整预览" in result
+        assert "绑定的是职业路径、升学路径、就业风格" in result
+        assert "不要先当作普通 `review_plan`" in result
 
     def test_intent_preview_tool_boundaries_stop_after_preview(self):
         result = build_tool_dispatch_rules()
@@ -293,6 +309,8 @@ class TestToolDispatchRules:
         assert "不要自行补充未出现的相邻专业范围" in result
         assert "师范、护理、土木" in result
         assert "不要调用 `preview_current_school_intent_confirmation`" in result
+        assert "句子很短或很口语化" in result
+        assert "`negative_level1` / `negative_level2` / `negative_level3`" in result
 
     def test_plan_tool_boundaries_do_not_upgrade_queries_to_mutations(self):
         result = build_tool_dispatch_rules()
@@ -350,15 +368,26 @@ class TestToolDispatchRules:
         assert '不要先调用 `plan_next_action(action_family="query_state")`' in result
         assert "只有用户明确要求加入、替换、补齐或调整当前方案时" in result
 
-    def test_plan_adjustment_preview_boundary_prefers_compensation_preview(self):
+    def test_plan_adjustment_preview_boundary_prefers_fix_proposal_preview(self):
         result = build_tool_dispatch_rules()
         assert "区分“调整分析”和“调整预览”" in result
         assert "用户只是问当前方案哪里不稳、怎么优化、是否太冒险时" in result
         assert "`analyze_adjustment`" in result
         assert "先给我看会怎么动" in result
         assert "整体调稳、补稳、降低冒险程度" in result
-        assert "`preview_compensation`" in result
-        assert "没有可执行补齐动作" in result
+        assert "`preview_fix_proposal`" in result
+        assert "没有可执行建议" in result or "没有可执行补齐动作" in result
+
+    def test_plan_composite_goal_requires_structured_goal_fields(self):
+        result = build_tool_dispatch_rules()
+        assert "复合方案调整" in result
+        assert 'plan_goal_type="only_keep_scope"' in result
+        assert 'constraint_intent_type="only_keep"' in result
+        assert 'constraint_intent_type="must_have"' in result
+        assert 'plan_goal_type="exclude_scope"' in result
+        assert "不要只把“只保留/必须有/不要”等写进 `user_goal`" in result
+        assert "不要把 `only_keep` 展开成未点名的负向专业" in result
+        assert "具体专业 vs 专业类" in result
 
     def test_plan_preview_should_not_query_state_again(self):
         result = build_tool_dispatch_rules()
@@ -373,7 +402,7 @@ class TestToolDispatchRules:
 
     def test_explore_readonly_should_not_promise_direct_intent_update(self):
         result = build_tool_dispatch_rules()
-        assert "是否需要我整理成确认卡片" in result
+        assert "是否需要我先列出来让你采纳" in result
         assert "不要说“我可以直接设置/排除/过滤/更新后续推荐”" in result
 
     def test_style_rules_hide_tool_internals_from_user(self):
@@ -383,7 +412,7 @@ class TestToolDispatchRules:
 
     def test_style_rules_require_card_for_confirmation_wording(self):
         result = build_style_rules()
-        assert "如果本轮没有生成确认卡片" in result
+        assert "如果本轮没有生成可采纳内容" in result
         assert "不能说“你确认后我会过滤/执行/更新”" in result
 
     def test_plan_tool_docs_say_refs_do_not_need_pre_query(self):
