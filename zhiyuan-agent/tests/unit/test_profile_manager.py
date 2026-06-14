@@ -180,3 +180,42 @@ async def test_update_major_intent_positive_reinclude_cleans_negative_parent_and
             "negative": [],
         },
     )
+
+
+@pytest.mark.asyncio
+async def test_replace_major_positive_intent_for_only_keep_removes_old_positive_scope():
+    with patch("app.services.profile_manager.get_user_profile", new_callable=AsyncMock) as mock_get, \
+         patch("app.services.profile_manager.save_user_profile", new_callable=AsyncMock) as mock_save, \
+         patch("app.services.profile_manager.update_planning_explicit_profile", new_callable=AsyncMock) as mock_update_explicit:
+
+        mock_get.return_value = {
+            "code": 0,
+            "data": {
+                "userprofile": {
+                    "major_intent": {
+                        "level2": ["外国语言文学类", "工商管理类"],
+                        "level2_emotion": ["Strong", "Strong"],
+                    },
+                    "negative_major_intent": {
+                        "level2": ["水利类"],
+                        "level2_emotion": ["Strong"],
+                    },
+                }
+            },
+        }
+
+        manager = ProfileManager(chat_session_id=140)
+        await manager.replace_major_positive_intent('{"level1": ["医学"]}')
+
+    saved_profile = mock_save.await_args.args[1]
+    assert saved_profile["major_intent"]["level1"] == ["医学"]
+    assert saved_profile["major_intent"]["level2"] == []
+    assert saved_profile["major_intent"]["level3"] == []
+    assert saved_profile["negative_major_intent"]["level2"] == ["水利类"]
+    mock_update_explicit.assert_awaited_once_with(
+        140,
+        major_preferences={
+            "positive": ["医学"],
+            "negative": ["水利类"],
+        },
+    )

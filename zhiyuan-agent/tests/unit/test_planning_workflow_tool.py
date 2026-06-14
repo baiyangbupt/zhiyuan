@@ -1363,15 +1363,19 @@ def test_generate_planning_fix_proposals_formats_status_and_warnings():
 
     mock_request.assert_awaited_once_with(1, "fix-preview-session")
     assert "已生成当前方案的处理建议预览。" in result
-    assert "处理高收费：仅供参考，需要进一步确认取舍" in result
+    assert "处理高收费：" in result
+    assert "仅供参考，需要进一步确认取舍" not in result
     assert "预计移除1条、补入1条" in result
-    assert "处理数量缺口：可确认后执行" in result
+    assert "处理数量缺口：" in result
+    assert "可确认后执行" not in result
     assert "预计补入2条" in result
     assert "移除0" not in result
     assert "需要注意：当前候选不足；当前可用于规划的可选范围里，断层中间录取率候选不足" in result
     assert "候选边界" not in result
     assert "处理边界" not in result
     assert "暂不能自动处理" not in result
+    assert "cannot_satisfy" not in result
+    assert "preview_only" not in result
     assert "需要进一步取舍的建议不会直接执行" in result
 
     facts = _fix_proposal_facts(response["data"])

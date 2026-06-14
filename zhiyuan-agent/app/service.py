@@ -3353,7 +3353,17 @@ def _normalize_general_confirmation_protocol_wording(reply: str) -> str:
         )
         for source, target in consistency_replacements:
             normalized = normalized.replace(source, target)
-    if "确认卡片" not in normalized and _reply_discusses_changeable_intent_or_plan(normalized):
+    has_confirmation_boundary = (
+        "采纳/确认前不会生效" in normalized
+        or "采纳前不会生效" in normalized
+        or "确认前不会生效" in normalized
+        or "采纳后再" in normalized
+    )
+    if (
+        "确认卡片" not in normalized
+        and not has_confirmation_boundary
+        and _reply_discusses_changeable_intent_or_plan(normalized)
+    ):
         normalized = (
             normalized.rstrip()
             + "\n\n如果要正式更新想法、报考条件或方案，我会先列出要采用的内容或调整预览；采纳/确认前不会生效。"
@@ -4907,6 +4917,21 @@ def _normalize_user_facing_terms(reply: str) -> str:
         ("工具识别", "这里"),
         ("工具返回", "查询结果"),
         ("工具调用", "处理过程"),
+        ("能否自动修复", "怎么处理"),
+        ("能否自动处理", "怎么处理"),
+        ("能自动处理吗", "可以怎么处理"),
+        ("系统尝试", "我查了一下"),
+        ("系统暂时无法", "当前暂时无法"),
+        ("系统无法", "当前还不能"),
+        ("自动修复", "直接处理"),
+        ("无法批量处理", "不能一次性处理完"),
+        ("暂时无法自动补强安全垫", "当前暂时缺少合适的补位选择"),
+        ("暂时无法自动补强", "当前暂时缺少合适的补位选择"),
+        ("放宽约束", "放宽报考条件"),
+        ("补充候选", "补充可选志愿"),
+        ("需要人工调整", "需要你先取舍或手动调整"),
+        ("人工调整", "手动调整"),
+        ("候选池", "可选范围"),
         ("系统阻塞", "需要你先取舍或放宽条件"),
         ("被系统阻塞", "需要你先取舍或放宽条件"),
         ("阻塞原因", "需要注意"),
@@ -4920,7 +4945,7 @@ def _normalize_user_facing_terms(reply: str) -> str:
         ("暂时不能直接处理", "建议你先人工查看或放宽条件后再试"),
         ("暂时不建议直接处理", "需要你先取舍或放宽条件"),
         ("blocked", "需要你先取舍或放宽条件"),
-        ("preview_only", "先作为处理方向参考"),
+        ("preview_only", "需要你先确认取舍方向"),
         ("草稿方案", "方案"),
         ("方案草稿", "方案"),
         ("草稿", "方案"),
@@ -4943,6 +4968,8 @@ def _normalize_user_facing_terms(reply: str) -> str:
     normalized = normalized.replace("必须满足或必须避开的报考条件过滤", "按已确认的报考条件过滤")
     normalized = normalized.replace("必须满足或必须避开的报考条件命中项", "已确认报考条件命中的志愿")
     normalized = normalized.replace("报考参考信息信息", "报考参考信息")
+    normalized = normalized.replace("当前当前", "当前")
+    normalized = normalized.replace("不足，当前暂时", "不足，暂时")
     if any(token in normalized for token in ("方案", "志愿", "候选")):
         plan_add_replacements = (
             ("添加预览", "加入方案预览"),

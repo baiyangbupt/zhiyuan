@@ -232,16 +232,19 @@ def render_intent_state_update(result: IntentStateUpdateResult) -> str:
     if code == "constraint_applied":
         base = "已采纳。"
         if result.constraintIntentType == "only_keep":
-            usage_text = "后续会只按这个范围看；如果当前方案里还有其他方向，会先给你看调整预览再改。"
+            usage_text = "后续会只按这个范围看。当前方案如果需要删减或替换，我会先给你看调整预览，确认后再改。"
+            next_step = "继续查看当前方案，或让我按这个范围整理一版调整预览。"
         elif result.constraintIntentType == "must_have":
             usage_text = "后续会确保这个方向至少保留；如果当前方案缺少，会先给你看补入预览再改。"
+            next_step = "继续查看当前方案，或让我按这个方向整理补入预览。"
         else:
             usage_text = "后续推荐、方案检查和调整会按这个条件处理；需要改当前方案时，会先给你看预览。"
+            next_step = "继续查看当前方案，或让我按这条条件整理调整预览。"
         return _format_intent_state_update_with_summary(
             base=base,
             result=result,
             usage_text=usage_text,
-            next_step="让我检查当前方案里有没有不符合这条条件的志愿。",
+            next_step=next_step,
             intent_mode="constraint",
         )
     if code == "preference_applied":

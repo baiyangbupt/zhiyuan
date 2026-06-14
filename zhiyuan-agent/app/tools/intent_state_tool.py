@@ -2970,7 +2970,10 @@ async def _apply_intents(
 
     major_intents = merged.get("major_intents")
     if major_intents:
-        await pm.update_major_intent(json.dumps(major_intents))
+        if intent_mode == INTENT_MODE_CONSTRAINT and constraint_intent_type == CONSTRAINT_INTENT_ONLY_KEEP:
+            await pm.replace_major_positive_intent(json.dumps(major_intents))
+        else:
+            await pm.update_major_intent(json.dumps(major_intents))
 
     school_intents = merged.get("school_intents")
     if school_intents:

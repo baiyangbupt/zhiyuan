@@ -4781,7 +4781,8 @@ async def test_apply_constraint_intents_marks_stale_without_candidate_filtering(
     assert resp.baseTotal is None
     assert resp.candidateFilters is None
     assert "专家优选组合" not in resp.message
-    assert "不符合这条条件的志愿" in resp.message
+    assert "不符合这条条件的志愿" not in resp.message
+    assert "整理调整预览" in resp.message
 
 
 @pytest.mark.asyncio

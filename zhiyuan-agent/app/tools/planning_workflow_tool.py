@@ -391,7 +391,7 @@ def _normalize_candidate_shortages(values: Any) -> list[dict[str, Any]]:
             "current_count": _coerce_non_negative_int(item.get("currentCount")),
             "shortage_count": _coerce_non_negative_int(item.get("shortageCount")),
             "available_count": _coerce_non_negative_int(item.get("availableCount")),
-            "message": str(item.get("message") or "").strip(),
+            "message": _normalize_fix_proposal_user_line(str(item.get("message") or "").strip()),
         }
         if any(normalized.values()):
             result.append(normalized)
@@ -972,9 +972,9 @@ def _fix_proposal_facts(proposal_state: dict[str, Any] | None) -> dict[str, Any]
         if not isinstance(dry_run, dict):
             dry_run = {}
         warnings = [
-            str(item or "").strip()
+            warning_text
             for item in (dry_run.get("warnings") or [])
-            if str(item or "").strip()
+            if (warning_text := _normalize_fix_proposal_user_line(str(item or "").strip()))
         ]
         actions = proposal.get("actions") or []
         if not isinstance(actions, list):
@@ -982,7 +982,7 @@ def _fix_proposal_facts(proposal_state: dict[str, Any] | None) -> dict[str, Any]
         item = {
             "proposal_id": str(proposal.get("proposalId") or "").strip(),
             "proposal_source": str(proposal.get("proposalSource") or state.get("proposalSource") or "review_check").strip(),
-            "title": title,
+            "title": _normalize_fix_proposal_user_line(title) or title,
             "status": status,
             "strategy": strategy,
             "source_check_codes": [
@@ -991,9 +991,9 @@ def _fix_proposal_facts(proposal_state: dict[str, Any] | None) -> dict[str, Any]
                 if str(code or "").strip()
             ],
             "requires_confirmation": bool(proposal.get("requiresConfirmation")),
-            "summary": str(proposal.get("summary") or "").strip(),
-            "impact": str(proposal.get("impact") or "").strip(),
-            "blocking_reason": str(proposal.get("blockingReason") or "").strip(),
+            "summary": _normalize_fix_proposal_user_line(str(proposal.get("summary") or "").strip()),
+            "impact": _normalize_fix_proposal_user_line(str(proposal.get("impact") or "").strip()),
+            "blocking_reason": _normalize_fix_proposal_user_line(str(proposal.get("blockingReason") or "").strip()),
             "blocking_reason_codes": _normalize_text_list(proposal.get("blockingReasonCodes")),
             "candidate_shortages": _normalize_candidate_shortages(proposal.get("candidateShortages")),
             "action_summaries": [
@@ -1522,7 +1522,7 @@ def _normalize_fix_proposal_user_line(text: str) -> str:
     value = str(text or "").strip()
     if not value:
         return ""
-    return (
+    normalized = (
         value
         .replace("修复建议", "处理建议")
         .replace("修复预览", "处理预览")
@@ -1532,9 +1532,16 @@ def _normalize_fix_proposal_user_line(text: str) -> str:
         .replace("暂不允许确认应用", "需要你先取舍后再处理")
         .replace("暂不能自动处理", "建议你先人工查看或放宽条件后再试")
         .replace("候选池", "可选范围")
-        .rstrip("。；;，,")
-        .strip()
+        .replace("放宽约束", "放宽报考条件")
+        .replace("补充候选", "补充可选志愿")
+        .replace("人工调整", "手动调整")
+        .replace("cannot_satisfy", "")
+        .replace("先作为处理方向参考", "")
+        .replace("当前当前", "当前")
     )
+    if normalized.strip() in {"blocked", "preview_only", "ready", "info"}:
+        return ""
+    return normalized.strip("。；;，, ：:").strip()
 
 
 def _dedupe_user_lines(values: list[str]) -> list[str]:
@@ -1564,10 +1571,10 @@ def _format_fix_proposal_preview(proposal_state: dict[str, Any]) -> str:
     lines = ["已生成当前方案的处理建议预览。"]
     lines.append(f"- 建议数量：{len(proposals)}项")
     status_labels = {
-        "ready": "可确认后执行",
-        "preview_only": "仅供参考，需要进一步确认取舍",
-        "blocked": "需要你先取舍或放宽条件",
-        "info": "仅提醒",
+        "ready": "",
+        "preview_only": "",
+        "blocked": "",
+        "info": "",
     }
     for proposal in proposals[:3]:
         title = str(proposal.get("title") or proposal.get("strategy") or "处理建议").strip()
@@ -1582,8 +1589,9 @@ def _format_fix_proposal_preview(proposal_state: dict[str, Any]) -> str:
             for action in (proposal.get("actions") or [])[:2]
         )
         detail_parts = []
-        if status:
-            detail_parts.append(status_labels.get(status, status))
+        status_label = status_labels.get(status, "")
+        if status_label:
+            detail_parts.append(status_label)
         change_counts = _format_change_count_parts(remove_count, add_count)
         if change_counts:
             detail_parts.append(f"预计{change_counts}")

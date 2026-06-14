@@ -146,10 +146,10 @@ async def _fetch_fix_proposal_facts(session_id: str) -> dict[str, Any]:
 
 
 _FIX_PROPOSAL_STATUS_LABELS = {
-    "ready": "可确认后执行",
-    "preview_only": "先作为处理方向参考",
-    "blocked": "需要你先取舍或放宽条件",
-    "info": "只需要重点关注",
+    "ready": "",
+    "preview_only": "",
+    "blocked": "",
+    "info": "",
 }
 
 _FIX_PROPOSAL_STRATEGY_LABELS = {
@@ -161,6 +161,7 @@ _FIX_PROPOSAL_STRATEGY_LABELS = {
     "fill_probability_gap": "补梯度断层",
     "add_safety_items": "补安全垫",
     "adjust_major_group_inner_safety": "调整组内安全垫",
+    "cannot_satisfy": "",
 }
 
 _FIX_PROPOSAL_BLOCKING_GUIDANCE = {
@@ -185,7 +186,16 @@ def _normalize_fix_proposal_title_for_user(title: str) -> str:
     value = str(title or "").strip()
     if not value:
         return "处理建议"
-    return value.replace("修复建议", "处理建议").replace("修复", "处理")
+    normalized = (
+        value
+        .replace("修复建议", "处理建议")
+        .replace("修复", "处理")
+        .replace("暂时无法自动处理", "")
+        .replace("无法自动处理", "")
+        .replace("暂不可用", "")
+        .replace("不可用", "")
+    )
+    return normalized.rstrip("：:。；;，,").strip() or "处理建议"
 
 
 def _normalize_fix_proposal_line_for_user(text: str) -> str:
@@ -205,8 +215,21 @@ def _normalize_fix_proposal_line_for_user(text: str) -> str:
         .replace("暂时无法自动修复", "建议你先人工查看或放宽条件后再试")
         .replace("暂不能自动处理", "建议你先人工查看或放宽条件后再试")
         .replace("候选池", "可选范围")
+        .replace("放宽约束", "放宽报考条件")
+        .replace("人工调整", "手动调整")
+        .replace("cannot_satisfy", "")
+        .replace("先作为处理方向参考", "")
     )
-    return normalized.rstrip("。；;，,").strip()
+    internal_markers = {
+        "cannot_satisfy",
+        "blocked",
+        "preview_only",
+        "ready",
+        "info",
+    }
+    if normalized in internal_markers:
+        return ""
+    return normalized.strip("。；;，, ：:").strip()
 
 
 def _dedupe_fix_proposal_parts(parts: list[str]) -> list[str]:
@@ -310,7 +333,7 @@ def _fix_proposal_lines(facts: dict[str, Any], *, limit: int = 3) -> list[str]:
         strategy_label = _FIX_PROPOSAL_STRATEGY_LABELS.get(strategy, strategy)
         remove_count = int(proposal.get("remove_volunteer_count") or 0)
         add_count = int(proposal.get("add_volunteer_count") or 0)
-        parts = [status_label]
+        parts = [status_label] if status_label else []
         if strategy_label:
             parts.append(strategy_label)
         change_counts = _format_fix_proposal_change_counts(remove_count, add_count)
@@ -336,7 +359,11 @@ def _fix_proposal_lines(facts: dict[str, Any], *, limit: int = 3) -> list[str]:
         ]
         if warnings:
             parts.append(_normalize_fix_proposal_line_for_user(warnings[0]))
-        lines.append(f"{title}：{'；'.join(_dedupe_fix_proposal_parts(parts))}")
+        details = _dedupe_fix_proposal_parts(parts)
+        if details:
+            lines.append(f"{title}：{'；'.join(details)}")
+        else:
+            lines.append(title)
     return lines
 
 
@@ -374,171 +401,45 @@ def _build_review_summary(facts: dict[str, Any]) -> tuple[str, list[str], list[s
         for item in (facts.get("main_problems") or [])
     ]
     problems_text = _compact_list_text(normalized_problems)
-    issue_examples_text = _issue_hit_plan_examples_text(facts.get("issue_hit_plan_examples"))
     compensation_count = int(facts.get("compensation_action_count") or 0)
-    compensation_text = _compact_list_text(facts.get("compensation_summaries"))
-    candidate_supply_text = _candidate_supply_line(facts)
     missing_stable_or_protect = _candidate_supply_missing_stable_or_protect(facts)
+    fix_proposal_facts = facts.get("fix_proposals") if isinstance(facts.get("fix_proposals"), dict) else {}
+    fix_proposals = fix_proposal_facts.get("proposals") if isinstance(fix_proposal_facts, dict) else []
+    fix_proposal_total = len(fix_proposals) if isinstance(fix_proposals, list) else int(fix_proposal_facts.get("total") or 0)
 
     parts = [f"已完成方案审查，风险 {risk_count} 项，提醒 {warn_count} 项"]
     if problems_text:
         parts.append(f"主要问题是 {problems_text}")
-    if issue_examples_text:
-        parts.append(f"典型涉及 {issue_examples_text}")
-    if candidate_supply_text:
-        parts.append(f"候选供给：{candidate_supply_text}")
-    fix_proposal_text = _fix_proposal_summary_text(facts)
-    if fix_proposal_text:
-        parts.append(f"处理建议：{fix_proposal_text}")
-    elif compensation_count > 0 and compensation_text:
-        parts.append(f"后端给出了 {compensation_count} 项可参考的补齐方向，主要是 {compensation_text}")
+    if fix_proposal_total > 0:
+        parts.append(f"已返回 {fix_proposal_total} 项处理建议事实")
+    elif compensation_count > 0:
+        parts.append(f"已返回 {compensation_count} 项补齐方向事实")
 
     reply_focus = ["review_result", "risk_warning"]
     if problems_text:
         reply_focus.append("main_problems")
-    if issue_examples_text:
+    if facts.get("issue_hit_plan_examples"):
         reply_focus.append("issue_hit_plan_examples")
-    if compensation_count > 0 and not fix_proposal_text:
+    if compensation_count > 0 and not fix_proposal_total:
         reply_focus.append("legacy_compensation_material")
-    if candidate_supply_text:
+    if facts.get("candidate_supply"):
         reply_focus.append("candidate_supply")
-    if fix_proposal_text:
+    if fix_proposal_total > 0:
         reply_focus.append("fix_proposals")
 
     next_step_hints: list[str] = []
     if missing_stable_or_protect:
         next_step_hints.append("如果用户想补稳或保，先说明当前候选池没有对应供给，不要承诺能直接补入。")
-    if compensation_count > 0 and not fix_proposal_text:
+    if compensation_count > 0 and not fix_proposal_total:
         next_step_hints.append("这些补齐方向只是后端旧状态素材；如果用户想继续处理，应优先走处理预览，不要承诺直接应用旧补齐动作。")
     if risk_count == 0 and warn_count == 0:
         next_step_hints.append("如果用户只是确认当前是否稳定，可以明确说明目前没有明显风险或提醒。")
-    if fix_proposal_text:
+    if fix_proposal_total > 0:
         next_step_hints.append("涉及方案处理时，以 fix_proposals 为后端权威处理方向；需要人工取舍或仅供参考的建议不要承诺自动执行。")
     blocking_hint = _fix_proposal_blocking_hint(facts)
     if blocking_hint:
         next_step_hints.append(blocking_hint)
     return "；".join(parts) + "。", reply_focus, next_step_hints
-
-
-def _clean_plan_position_text(text: str) -> str:
-    return re.sub(r"@(\d+)", r"第\1位", str(text or "").strip())
-
-
-def _build_review_direct_reply(facts: dict[str, Any]) -> str:
-    risk_count = int(facts.get("risk_count") or 0)
-    warn_count = int(facts.get("warn_count") or 0)
-    passed_count = int(facts.get("passed_count") or 0)
-    plan_total = int(facts.get("plan_total") or 0)
-    target_total = int(facts.get("target_total") or 0)
-    tier_text = _tier_counts_text(facts.get("tier_counts"))
-
-    lines = [f"已完成方案审查，当前共检出 **风险 {risk_count} 项、提醒 {warn_count} 项**。"]
-    if plan_total:
-        total_text = f"{plan_total}/{target_total}" if target_total else str(plan_total)
-        overview = f"- 方案规模：{total_text} 个志愿"
-        if tier_text:
-            overview += f"，冲稳保分布：{tier_text}"
-        overview += f"；已通过 {passed_count} 项检查。"
-        lines.append(overview)
-
-    problems = [
-        _normalize_review_summary_for_user(item)
-        for item in (facts.get("main_problems") or [])
-        if str(item or "").strip()
-    ]
-    if problems:
-        lines.append("")
-        lines.append("### 主要问题")
-        for index, item in enumerate(problems[:3], start=1):
-            lines.append(f"{index}. {item}")
-
-    issue_examples = facts.get("issue_hit_plan_examples") or []
-    if issue_examples:
-        lines.append("")
-        lines.append("### 典型涉及")
-        for item in issue_examples[:3]:
-            if not isinstance(item, dict):
-                continue
-            summary = _normalize_review_summary_for_user(str(item.get("summary") or ""))
-            count_text = str(item.get("count_text") or "").strip()
-            example_text = str(item.get("example_text") or "").strip()
-            affected_items = [
-                _clean_plan_position_text(str(name or ""))
-                for name in (item.get("items") or [])
-                if str(name or "").strip()
-            ]
-            if summary and affected_items:
-                head = summary
-                if count_text:
-                    head = f"{summary}（{count_text}）"
-                example_label = f"{example_text}：" if example_text else ""
-                lines.append(f"- {head}：{example_label}{'；'.join(affected_items[:2])}")
-
-    cost_risk_lines = _build_cost_risk_lines(issue_examples)
-    if cost_risk_lines:
-        lines.append("")
-        lines.append("### 费用风险")
-        lines.extend(cost_risk_lines)
-
-    relation = facts.get("intent_relation") if isinstance(facts.get("intent_relation"), dict) else {}
-    coverage = str(relation.get("coverage") or "").strip()
-    aligned_examples = str(relation.get("aligned_examples") or "").strip()
-    conflict_examples = str(relation.get("conflict_examples") or "").strip()
-    if coverage or aligned_examples or conflict_examples:
-        lines.append("")
-        lines.append("### 偏好承接")
-        if coverage:
-            lines.append(f"- {coverage}")
-        if aligned_examples:
-            lines.append(f"- {aligned_examples}")
-        if conflict_examples:
-            lines.append(f"- {conflict_examples}")
-
-    candidate_supply_text = _candidate_supply_line(facts)
-    if candidate_supply_text:
-        lines.append("")
-        lines.append("### 候选供给")
-        lines.append(f"- {candidate_supply_text}。")
-
-    fix_proposal_lines = _fix_proposal_lines(facts)
-    if fix_proposal_lines:
-        lines.append("")
-        lines.append("### 可处理方向")
-        for item in fix_proposal_lines[:3]:
-            lines.append(f"- {item}。")
-
-    compensation_count = int(facts.get("compensation_action_count") or 0)
-    compensation_text = _compact_list_text(facts.get("compensation_summaries"))
-    lines.append("")
-    lines.append("### 下一步")
-    if compensation_count > 0 and compensation_text:
-        lines.append(f"- 可以先看补齐建议：{compensation_text}。我会先给预览，确认后再应用。")
-    elif fix_proposal_lines:
-        lines.append("- 如果要正式调整方案，我会先按上面的处理方向给确认预览；只有确认后才会执行。")
-    elif _candidate_supply_missing_stable_or_protect(facts):
-        lines.append("- 当前候选池没有可直接补入的稳/保候选，不能只靠调整比例解决；更适合先说明风险，再看是否放宽条件或接受偏冲结构。")
-    elif risk_count > 0 or warn_count > 0:
-        lines.append("- 建议先处理上面的高风险项；如果要调整方案，我会先给预览，确认后再执行。")
-    else:
-        lines.append("- 当前没有明显风险；如果你想更稳，可以继续让我按地域、专业或录取率细看。")
-
-    return "\n".join(lines)
-
-
-def _build_cost_risk_lines(issue_examples: list[dict[str, Any]]) -> list[str]:
-    issue_codes = {
-        str(item.get("code") or "").strip()
-        for item in issue_examples
-        if isinstance(item, dict)
-    }
-    lines: list[str] = []
-    if "high_tuition" in issue_codes:
-        lines.append("- 家庭预算一般时，高收费专业要单独确认学费、住宿和四年总成本，不建议只看录取概率。")
-    if "cooperative_program" in issue_codes:
-        lines.append("- 中外合作项目还要额外看培养模式、外语要求、是否有出国阶段，以及境外阶段费用是否能接受。")
-    if lines:
-        lines.append("- 如果预算压力比较敏感，下一步更适合先把这些条目列出来，再看是否替换成正常收费或更稳的志愿。")
-    return lines
 
 
 def _build_adjustment_summary(facts: dict[str, Any]) -> tuple[str, list[str], list[str]]:
@@ -668,9 +569,6 @@ async def handle_review_plan(
     if fix_proposals:
         facts["fix_proposals"] = fix_proposals
     review_summary, reply_focus, next_step_hints = _build_review_summary(facts)
-    direct_reply = _build_review_direct_reply(facts)
-    if "direct_review_reply" not in reply_focus:
-        reply_focus.append("direct_review_reply")
 
     return PlanExecutionResult(
         applied=True,
@@ -681,8 +579,8 @@ async def handle_review_plan(
         workspace_refresh_targets=["review"],
         context_summary=plan.context_summary,
         review_summary=review_summary,
-        state_summary=direct_reply,
-        summary=direct_reply,
+        state_summary=review_summary,
+        summary=review_summary,
         reply_focus=reply_focus,
         next_step_hints=next_step_hints,
         facts=facts,

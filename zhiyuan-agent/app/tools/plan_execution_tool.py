@@ -2941,7 +2941,7 @@ async def _post_process_handler_result(
             workspace_targets.append("review")
 
     summary = result.state_summary or result.summary
-    if review_summary and review_summary != summary and "direct_review_reply" not in reply_focus:
+    if review_summary and review_summary != summary:
         summary = f"{summary}\n\n复审结果：\n{review_summary}"
 
     intent_effect = "unchanged" if plan_model.intent_relation == "unknown" else (

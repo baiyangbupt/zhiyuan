@@ -149,7 +149,6 @@ def decide_tool_reply(
             tool_name == "execute_plan_action"
             and action_family == "review_plan"
             and result_kind == "review_result"
-            and "direct_review_reply" in reply_focus
             and reply
         ):
             return ToolReplyDecision(reason="structured_review_result_needs_model_synthesis")

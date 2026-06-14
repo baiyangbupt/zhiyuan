@@ -43,8 +43,9 @@ def _build_fix_proposal_preview_summary(facts: dict[str, Any]) -> tuple[str, lis
     if blocked_count > 0:
         summary_parts.append(f"{blocked_count} 项需要先人工取舍或放宽条件")
     if preview_only_count > 0:
-        summary_parts.append(f"{preview_only_count} 项先作为处理方向参考")
-    parts = ["已生成当前方案的处理建议：" + "，".join(summary_parts)]
+        summary_parts.append(f"{preview_only_count} 项需要你先确认取舍方向")
+    state_text = "，".join(summary_parts) if summary_parts else "可以先查看下面的处理方向"
+    parts = ["已整理当前方案的处理建议：" + state_text]
     if lines:
         parts.append("重点可以先看：" + "；".join(lines[:2]))
     reply_focus = ["fix_proposal_preview"]

@@ -101,6 +101,33 @@ def _merge_with_emotion(
     return merged_values, merged_emotions
 
 
+def _replace_with_emotion(
+    new_values: list[str] | None,
+    new_emotions: list[str] | None = None,
+    default_emotion: str = "Strong",
+) -> tuple[list[str], list[str]]:
+    """Replace a value/emotion list while preserving order and de-duplicating."""
+    values = _normalize_string_list(new_values)
+    emotions = _normalize_string_list(new_emotions)
+    if not values:
+        return [], []
+    if not emotions:
+        emotions = [default_emotion] * len(values)
+    if len(emotions) < len(values):
+        emotions = [*emotions, *([default_emotion] * (len(values) - len(emotions)))]
+
+    result_values: list[str] = []
+    result_emotions: list[str] = []
+    seen: set[str] = set()
+    for value, emotion in zip(values, emotions):
+        if value in seen:
+            continue
+        seen.add(value)
+        result_values.append(value)
+        result_emotions.append(emotion or default_emotion)
+    return result_values, result_emotions
+
+
 def _resolve_conflicts(
     positive_values: list[str],
     positive_emotions: list[str],
@@ -550,6 +577,52 @@ class ProfileManager:
             await self._save_profile(profile, sync_major=True)
         except Exception as e:
             logger.error(f"Failed to update major intent: {e}")
+            raise
+
+    async def replace_major_positive_intent(self, extraction_result: str) -> None:
+        """Replace positive major intent with an exclusive selected scope.
+
+        This is used for confirmed ``only_keep`` constraints. It deliberately
+        does not merge with old positive major preferences; otherwise historical
+        soft preferences continue to affect recommendation and review after the
+        user has explicitly limited the scope.
+        """
+        try:
+            result = json.loads(extraction_result)
+            new_level1 = _normalize_string_list(result.get("level1", []))
+            new_level2 = _normalize_string_list(result.get("level2", []))
+            new_level3 = _normalize_string_list(result.get("level3", []))
+            if not any([new_level1, new_level2, new_level3]):
+                logger.info("No positive major intent data to replace, skipping")
+                return
+
+            profile = await self.get_current_profile()
+            profile.major.level1, profile.major.level1_emotion = _replace_with_emotion(new_level1)
+            profile.major.level2, profile.major.level2_emotion = _replace_with_emotion(new_level2)
+            profile.major.level3, profile.major.level3_emotion = _replace_with_emotion(new_level3)
+
+            all_positive = [*new_level1, *new_level2, *new_level3]
+            if all_positive:
+                profile.major.negative_level1, profile.major.negative_level1_emotion = _remove_conflicting_values(
+                    profile.major.negative_level1,
+                    profile.major.negative_level1_emotion,
+                    all_positive,
+                )
+                profile.major.negative_level2, profile.major.negative_level2_emotion = _remove_conflicting_values(
+                    profile.major.negative_level2,
+                    profile.major.negative_level2_emotion,
+                    all_positive,
+                )
+                profile.major.negative_level3, profile.major.negative_level3_emotion = _remove_conflicting_values(
+                    profile.major.negative_level3,
+                    profile.major.negative_level3_emotion,
+                    all_positive,
+                )
+
+            _resolve_major_hierarchy_conflicts(profile.major, result, self.batch)
+            await self._save_profile(profile, sync_major=True)
+        except Exception as e:
+            logger.error(f"Failed to replace major positive intent: {e}")
             raise
 
     async def update_city_intent(self, positive_result: str, negative_result: str) -> None:

@@ -3559,7 +3559,7 @@ def test_execute_plan_action_runs_review_without_duplicate_rerun():
     assert data["facts"]["issue_hit_plan_examples"][0]["example_text"] == "下面列 1 条代表例子，不代表全部"
     assert "武汉东湖学院第01组-网络与新媒体(稳)@39" in data["facts"]["issue_hit_plan_examples"][0]["items"][0]
     assert "网络与新媒体" in " ".join(data["facts"]["intent_relation"]["lines"])
-    assert "典型涉及" in data["summary"]
+    assert "典型涉及" not in data["summary"]
     assert "review_result" in data["reply_focus"]
     mock_review_request.assert_awaited_once()
     mock_state.assert_awaited_once()
@@ -3641,14 +3641,17 @@ def test_execute_plan_action_review_reply_explains_cost_risks():
 
     data = json.loads(result)
     assert data["result_kind"] == "review_result"
-    assert "### 费用风险" in data["summary"]
-    assert "共命中 1 条志愿" in data["summary"]
-    assert "共命中 2 条志愿" in data["summary"]
-    assert "代表例子" in data["summary"]
-    assert "高收费专业要单独确认学费" in data["summary"]
-    assert "中外合作项目还要额外看培养模式" in data["summary"]
-    assert "替换成正常收费或更稳的志愿" in data["summary"]
-    assert "direct_review_reply" in data["reply_focus"]
+    assert "### 费用风险" not in data["summary"]
+    assert "当前方案包含高收费专业" in data["summary"]
+    assert "当前方案包含中外合作办学项目" in data["summary"]
+    assert "direct_review_reply" not in data["reply_focus"]
+    issue_examples = data["facts"]["issue_hit_plan_examples"]
+    assert issue_examples[0]["code"] == "high_tuition"
+    assert issue_examples[0]["affected_count"] == 1
+    assert "青岛理工大学-建筑学" in issue_examples[0]["items"][0]
+    assert issue_examples[1]["code"] == "cooperative_program"
+    assert issue_examples[1]["affected_count"] == 2
+    assert "贵州财经大学-市场营销" in issue_examples[1]["items"][1]
 
 
 def test_execute_plan_action_review_reply_includes_backend_fix_proposals():
@@ -3769,20 +3772,151 @@ def test_execute_plan_action_review_reply_includes_backend_fix_proposals():
 
     data = json.loads(result)
     assert data["result_kind"] == "review_result"
-    assert "### 可处理方向" in data["summary"]
-    assert "处理高收费" in data["summary"]
-    assert "先作为处理方向参考" in data["summary"]
+    assert "### 可处理方向" not in data["summary"]
+    assert "已返回 2 项处理建议事实" in data["summary"]
+    assert "先作为处理方向参考" not in data["summary"]
+    assert "cannot_satisfy" not in data["summary"]
+    assert "preview_only" not in data["summary"]
+    assert "blocked" not in data["summary"]
     assert "暂不能自动处理" not in data["summary"]
-    assert "优先看替换" in data["summary"]
-    assert "当前可用于规划的可选范围里" in data["summary"]
-    assert "断层中间录取率候选不足" in data["summary"]
-    assert "暂时无法补齐录取率梯度" in data["summary"]
+    assert "优先看替换" not in data["summary"]
+    assert "当前可用于规划的可选范围里" not in data["summary"]
+    assert "断层中间录取率候选不足" not in data["summary"]
+    assert "暂时无法补齐录取率梯度" not in data["summary"]
     assert "fix_proposals" in data["reply_focus"]
     assert data["facts"]["fix_proposals"]["proposals"][0]["strategy"] == "replace_risk_items"
+    assert data["facts"]["fix_proposals"]["proposals"][0]["action_summaries"] == ["替换风险志愿"]
     assert data["facts"]["fix_proposals"]["proposals"][1]["blocking_reason_codes"] == [
         "probability_gap_candidate_insufficient"
     ]
     assert data["facts"]["fix_proposals"]["proposals"][1]["candidate_shortages"][0]["scope"] == "candidate_pool"
+    assert (
+        data["facts"]["fix_proposals"]["proposals"][1]["candidate_shortages"][0]["message"]
+        == "当前可用于规划的可选范围里，断层中间录取率候选不足"
+    )
+
+
+def test_execute_plan_action_review_reply_hides_internal_fix_proposal_markers():
+    payload = {
+        "stage": "review",
+        "action_family": "review_plan",
+        "context_summary": "阶段=reviewed；方案=45/45",
+        "preview_summary": "",
+        "missing_inputs": [],
+        "should_rerun_review": False,
+        "intent_relation": "unknown",
+        "atomic_actions": [],
+    }
+
+    with patch(
+        "app.handlers.analysis_handlers._run_planning_review_request",
+        new=AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "summary": {"riskCount": 1, "warnCount": 1, "passedCount": 7},
+                    "checks": [
+                        {
+                            "code": "high_tuition",
+                            "passed": False,
+                            "summary": "当前方案包含高收费专业",
+                            "affectedVolunteerIds": ["v-cost-1"],
+                        },
+                        {
+                            "code": "edge_score",
+                            "passed": False,
+                            "summary": "边缘分风险",
+                            "affectedVolunteerIds": ["v-edge-1"],
+                        },
+                    ],
+                },
+            }
+        ),
+    ), patch(
+        "app.handlers.analysis_handlers._generate_planning_fix_proposals_request",
+        new=AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "status": "ready",
+                    "sourceVersionGuard": 12,
+                    "total": 2,
+                    "proposals": [
+                        {
+                            "proposalId": "fp_high",
+                            "title": "处理高收费",
+                            "status": "preview_only",
+                            "strategy": "replace_risk_items",
+                            "summary": "建议优先替换高收费志愿。",
+                            "actions": [{"actionType": "replace_volunteers", "summary": "替换风险志愿"}],
+                            "dryRunResult": {
+                                "removeVolunteerCount": 1,
+                                "addVolunteerCount": 1,
+                                "warnings": [
+                                    "有 81 条风险志愿暂时没有同时满足同层次、风险更低、专业相近且院校层次代价可接受的替换项。"
+                                ],
+                            },
+                        },
+                        {
+                            "proposalId": "fp_edge",
+                            "title": "边缘分风险暂时无法自动处理",
+                            "status": "blocked",
+                            "strategy": "cannot_satisfy",
+                            "summary": "当前边缘分风险需要补安全垫。",
+                            "blockingReason": "cannot_satisfy",
+                            "blockingReasonCodes": ["safety_candidate_insufficient"],
+                            "candidateShortages": [
+                                {
+                                    "strategy": "cannot_satisfy",
+                                    "sourceCheckCode": "edge_score",
+                                    "scope": "candidate_pool",
+                                    "reasonCode": "safety_candidate_insufficient",
+                                    "message": "当前可用于规划的候选池里，可用保底或安全垫候选不足。",
+                                }
+                            ],
+                            "actions": [],
+                            "dryRunResult": {
+                                "warnings": ["需要放宽约束、补充候选，或改为人工调整。"],
+                            },
+                        },
+                    ],
+                },
+            }
+        ),
+    ), patch(
+        "app.handlers.analysis_handlers._get_planning_state_with_latest_profile",
+        new=AsyncMock(
+            return_value={
+                "orderedPlanState": {
+                    "summary": {"unitTotal": 45, "targetUnitCount": 45},
+                    "items": [{"volunteerId": "v-cost-1", "schoolName": "A大学", "majorName": "金融学"}],
+                },
+                "draftPlanState": {"items": []},
+            }
+        ),
+    ), patch(
+        "app.handlers.analysis_handlers._get_planning_ordered_plan_request",
+        new=AsyncMock(return_value={"code": 0, "data": {"summary": {}, "items": []}}),
+    ):
+        result = asyncio.run(execute_plan_action(_ctx_with_pending("review_plan"), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["result_kind"] == "review_result"
+    assert "已返回 2 项处理建议事实" in data["summary"]
+    assert "处理高收费：优先看替换；预计移出 1 条、补入 1 条；替换风险志愿" not in data["summary"]
+    assert "边缘分风险：当前可用于规划的可选范围里，可用保底或安全垫候选不足" not in data["summary"]
+    assert "cannot_satisfy" not in data["summary"]
+    assert "先作为处理方向参考" not in data["summary"]
+    assert "需要你先取舍或放宽条件；" not in data["summary"]
+    assert "暂时无法自动处理" not in data["summary"]
+    assert "放宽约束" not in data["summary"]
+    assert "人工调整" not in data["summary"]
+    assert data["facts"]["fix_proposals"]["proposals"][0]["strategy"] == "replace_risk_items"
+    assert data["facts"]["fix_proposals"]["proposals"][1]["strategy"] == "cannot_satisfy"
+    assert (
+        data["facts"]["fix_proposals"]["proposals"][1]["candidate_shortages"][0]["message"]
+        == "当前可用于规划的可选范围里，可用保底或安全垫候选不足"
+    )
 
 
 def test_execute_plan_action_review_plan_does_not_apply_ready_fix_proposal():

@@ -186,6 +186,8 @@ def test_render_intent_state_update_uses_constraint_specific_summary():
 
     assert "本次内容：只保留专业：临床医学" in rendered
     assert "本次内容：偏好专业：临床医学" not in rendered
+    assert "检查当前方案里有没有不符合这条条件" not in rendered
+    assert "整理一版调整预览" in rendered
 
 
 def test_build_pending_plan_action_rejects_unresolved_position_preview():
@@ -410,6 +412,32 @@ def test_normalize_user_facing_terms_removes_internal_review_repair_words():
     assert "需要注意" in normalized
     assert "需要你先取舍或放宽条件" in normalized
     assert "建议你先人工查看或放宽条件后再试" in normalized
+
+
+def test_normalize_user_facing_terms_softens_review_fix_proposal_language():
+    normalized = _normalize_user_facing_terms(
+        "能否自动修复：系统尝试替换，但当前候选池里暂时无法自动补强安全垫，"
+        "无法批量处理，需要人工调整。"
+    )
+
+    forbidden_terms = ("能否自动修复", "系统尝试", "候选池", "自动补强", "无法批量处理", "需要人工调整")
+    for term in forbidden_terms:
+        assert term not in normalized
+    assert "怎么处理" in normalized
+    assert "我查了一下替换" in normalized
+    assert "可选范围" in normalized
+    assert "当前暂时缺少合适的补位选择" in normalized
+    assert "不能一次性处理完" in normalized
+    assert "需要你先取舍或手动调整" in normalized
+
+
+def test_sanitize_reply_for_user_does_not_duplicate_confirmation_boundary():
+    reply = _sanitize_reply_for_user(
+        "可以调整当前方案。\n\n"
+        "如果要正式更新想法、报考条件或方案，我会先列出要采用的内容或调整预览；采纳/确认前不会生效。"
+    )
+
+    assert reply.count("采纳/确认前不会生效") == 1
 
 
 class _FakeAgent:

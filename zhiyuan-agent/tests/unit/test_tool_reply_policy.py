@@ -398,7 +398,7 @@ def test_policy_keeps_structured_review_result_for_model_synthesis():
                     '{"action_family":"review_plan","result_kind":"review_result",'
                     '"summary":"已完成方案审查，当前共检出 **风险 3 项、提醒 5 项**。\\n'
                     '### 主要问题\\n1. 冲区占比过高。",'
-                    '"reply_focus":["review_result","risk_warning","direct_review_reply"]}'
+                    '"reply_focus":["review_result","risk_warning"]}'
                 ),
             )
         ],
@@ -427,7 +427,7 @@ def test_policy_keeps_plan_result_for_model_synthesis_after_explore_tool():
                 (
                     '{"action_family":"review_plan","result_kind":"review_result",'
                     '"summary":"已完成方案审查，当前共检出 **风险 2 项、提醒 0 项**。",'
-                    '"reply_focus":["review_result","risk_warning","direct_review_reply"]}'
+                    '"reply_focus":["review_result","risk_warning"]}'
                 ),
             )
         ],
