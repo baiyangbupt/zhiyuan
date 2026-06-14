@@ -2411,9 +2411,13 @@ async def generate_planning_initial_plan(
         err = result.get("msg") or result.get("error") or "未知错误"
         logger.warning("generate_planning_initial_plan failed: session_id=%s code=%s msg=%s", session_id, result.get("code"), err)
         return f"生成方案失败（{err}），请稍后重试。"
-    planning_state = await _rerun_review_and_fetch_state(session_id) or (result.get("data") or {})
-    ordered_state = planning_state.get("orderedPlanState") or {}
-    return "已按当前条件生成一版方案。\n" + _format_ordered_result(ordered_state)
+    generated_state = result.get("data") or {}
+    planning_state = await _rerun_review_and_fetch_state(session_id)
+    ordered_state = (planning_state or {}).get("orderedPlanState") or {}
+    if not _coerce_non_negative_int((ordered_state.get("summary") or {}).get("unitTotal") or (ordered_state.get("summary") or {}).get("total")):
+        ordered_state = generated_state.get("orderedPlanState") or {}
+        planning_state = generated_state
+    return "已按当前条件生成一版方案。\n" + _format_ordered_result(ordered_state, planning_state=planning_state)
 
 
 async def move_planning_ordered_item(

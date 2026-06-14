@@ -141,6 +141,8 @@ class TestPendingContext:
         result = build_pending_context(deps)
         assert "generate_plan" in result
         assert "execute_plan_action" in result
+        assert "追问审查解释、处理分类、影响范围、候选不足原因或当前方案状态" in result
+        assert "按只读问题正常调用相应 Plan 工具或基于已知审查事实回答" in result
 
     def test_with_conversation_phase_pending(self):
         """新 conversation_phase.pending 优先于旧 pending_plan_action。"""
@@ -370,10 +372,12 @@ class TestToolDispatchRules:
 
     def test_plan_adjustment_preview_boundary_prefers_fix_proposal_preview(self):
         result = build_tool_dispatch_rules()
-        assert "区分“调整分析”和“调整预览”" in result
-        assert "用户只是问当前方案哪里不稳、怎么优化、是否太冒险时" in result
+        assert "区分“审查解释/调整分析”和“调整预览”" in result
+        assert "用户只是想看懂审查提醒、区分哪些需要关注、哪些可处理、为什么候选不足" in result
         assert "`analyze_adjustment`" in result
-        assert "先给我看会怎么动" in result
+        assert "不生成待确认调整" in result
+        assert "语义上要看到一版可确认的调整内容" in result
+        assert "不要把用户话术交给服务层兜底猜" in result
         assert "整体调稳、补稳、降低冒险程度" in result
         assert "`preview_fix_proposal`" in result
         assert "没有可执行建议" in result or "没有可执行补齐动作" in result

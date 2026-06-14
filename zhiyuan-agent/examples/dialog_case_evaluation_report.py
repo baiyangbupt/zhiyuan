@@ -267,7 +267,6 @@ _LEGACY_OPTIMIZATION_ROUTES = {
 }
 
 _EXPECTED_ROUTES_BY_COVERAGE: dict[str, str] = {
-    "no_pending_guard": "plan_confirmation_guard_no_pending",
     "readonly_closure_ack": "readonly_closure_ack",
 }
 
@@ -676,13 +675,6 @@ def _expected_route_from_metadata(step_coverage: list[str], prompt_text: str) ->
     if "readonly_closure_ack" in step_coverage:
         return "readonly_closure_ack"
     if prompt_text in {"确认", "确认执行", "确认这个偏好", "确认这个要求"}:
-        if (
-            "no_pending_guard" in step_coverage
-            or "no_pending_intent" in step_coverage
-            or "readonly_no_workspace_card" in step_coverage
-            or "readonly_no_pending_intent" in step_coverage
-        ):
-            return "plan_confirmation_guard_no_pending"
         if "soft_major_intent" in step_coverage or "hard_major_constraint" in step_coverage:
             return "direct_pending_intent_confirm"
         if "preview_confirm_boundary" in step_coverage or "preview_confirm_apply" in step_coverage:
@@ -889,8 +881,6 @@ def _semantic_mapped_route_from_frame(frame: dict[str, Any]) -> str | None:
     side_effect = _normalize_text(frame.get("sideEffect"))
 
     if layer == "general":
-        if verb in {"confirm", "reject"}:
-            return "plan_confirmation_guard_no_pending"
         return "full_agent"
 
     if side_effect == "apply" or verb == "confirm":
@@ -898,7 +888,7 @@ def _semantic_mapped_route_from_frame(frame: dict[str, Any]) -> str | None:
             return "direct_pending_intent_confirm"
         if layer == "plan":
             return "direct_pending_plan_confirm"
-        return "plan_confirmation_guard_no_pending"
+        return "full_agent"
 
     if layer == "intent":
         if side_effect == "readonly":

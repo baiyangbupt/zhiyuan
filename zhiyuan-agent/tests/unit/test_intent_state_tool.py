@@ -3014,6 +3014,82 @@ def test_intent_side_effect_decision_accepts_text_confidence():
     assert decision.confidence == 0.9
 
 
+def test_intent_side_effect_decision_normalizes_constraint_type():
+    decision = intent_state_tool_module._normalize_intent_side_effect_decision(
+        IntentSideEffectDecision.model_validate(
+            {
+                "decision": "intent_preview",
+                "confidence": "high",
+                "constraintIntentType": "keep_only",
+                "reason": "用户要求只保留这个方向。",
+            }
+        )
+    )
+
+    assert decision.constraintIntentType == "only_keep"
+
+
+@pytest.mark.asyncio
+async def test_semantic_constraint_type_upgrades_positive_constraint_preview(empty_profile):
+    ctx = SimpleNamespace(
+        deps=SimpleNamespace(
+            userid="u1",
+            sessionid="765",
+            batch="01",
+            chat_history=[{"role": "user", "content": "这个方案还是不行，只要医学"}],
+            enable_intent_side_effect_arbitration=True,
+            agent_observability={},
+        )
+    )
+
+    with (
+        patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
+        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()) as save_mock,
+        patch(
+            "app.tools.intent_state_tool._classify_intent_side_effect",
+            new=AsyncMock(
+                return_value=IntentSideEffectDecision(
+                    decision="intent_preview",
+                    confidence=0.92,
+                    constraintIntentType="only_keep",
+                    reason="用户明确要求只要医学。",
+                )
+            ),
+        ) as classifier_mock,
+        patch(
+            "app.tools.intent_state_tool._enrich_plan_relation_analysis_from_state",
+            new=AsyncMock(
+                return_value={
+                    "summaryTitle": "",
+                    "currentPlanFit": [],
+                    "currentPlanConflict": [],
+                    "candidateOpportunity": [],
+                    "nextActionHints": [],
+                }
+            ),
+        ),
+    ):
+        mock_pm = mock_pm_cls.return_value
+        mock_pm.get_current_profile = AsyncMock(return_value=empty_profile)
+
+        payload_text = await analyze_volunteer_intent_change(
+            ctx,
+            major_intents={"level1": ["医学"]},
+            intent_mode=INTENT_MODE_CONSTRAINT,
+            analysis_stage=ANALYSIS_STAGE_CONFIRMED,
+            recovery_scope="major",
+            confirm_enabled=True,
+            persist_cache=False,
+        )
+
+    payload = json.loads(payload_text)
+    assert payload["analysisStage"] == ANALYSIS_STAGE_CONFIRMED
+    assert payload["intentMode"] == INTENT_MODE_CONSTRAINT
+    assert payload["constraintIntentType"] == "only_keep"
+    classifier_mock.assert_awaited_once()
+    save_mock.assert_not_awaited()
+
+
 def test_refine_major_intents_supplements_model_omitted_major_alias():
     refined = _refine_major_intents_with_local_latest_utterance(
         {"level3": ["会计学"], "negative_level3": ["土木工程"]},

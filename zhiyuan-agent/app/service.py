@@ -31,6 +31,7 @@ from app.data.message_utils import pydantic_ai_messages_to_dicts
 from app.domain.major_entity_resolver import resolve_major_mentions_from_text
 from app.domain.region_entity_resolver import normalize_region_names
 from app.domain.school_entity_resolver import resolve_school_entity
+from app.domain.career_slots import to_career_labels
 from app.llm.client import LLMClient
 from app.schemas.user_profile import UserProfile
 from app.services.profile_manager import _normalize_batch
@@ -42,6 +43,10 @@ from app.tools.plan_execution_tool import (
     consume_recent_plan_execution_result,
     execute_plan_action,
     _matching_major_scope_records,
+)
+from app.tools.plan_semantic_action_tool import (
+    classify_pending_confirmation_action,
+    classify_plan_semantic_action,
 )
 from app.tools.planning_workflow_tool import _format_fix_proposal_apply_result
 from app.tools.plan_orchestration_models import (
@@ -76,7 +81,6 @@ from app.util.internal_client import (
     generate_user_goal_planning_fix_proposals,
     get_message_by_id,
     get_pending_confirmation,
-    get_intent_change_cache,
     get_planning_workspace_state,
     get_user_init_profile,
     get_user_score_detail,
@@ -199,6 +203,8 @@ _UNBACKED_PLAN_CONFIRMATION_REPLY = (
     "只有你点“确认执行”或直接确认当前有效预览后才会执行。"
 )
 _ROUTE_OBSERVABILITY_MODEL_NAME = "route-observability"
+_SEMANTIC_PLAN_ACTION_CONFIDENCE_THRESHOLD = 0.8
+_SEMANTIC_PENDING_CONFIRMATION_CONFIDENCE_THRESHOLD = 0.85
 _INTENT_PREVIEW_TOOL_NAMES = {
     "analyze_volunteer_intent_change",
     "preview_current_intent_confirmation",
@@ -870,7 +876,36 @@ def _soft_negative_label(label: str, *, intent_mode: str) -> str:
     return replacements.get(label, label)
 
 
-def _summarize_intent_values(merged: dict[str, Any], *, intent_mode: str = "preference") -> str:
+def _positive_intent_label(label: str, *, constraint_intent_type: str = "default") -> str:
+    if constraint_intent_type == "only_keep":
+        replacements = {
+            "偏好专业": "只保留专业",
+            "偏好专业类": "只保留专业类",
+            "偏好专业门类": "只保留专业门类",
+            "偏好院校": "只保留院校",
+            "偏好地域": "只保留地域",
+            "发展方向": "只保留发展方向",
+        }
+        return replacements.get(label, label)
+    if constraint_intent_type == "must_have":
+        replacements = {
+            "偏好专业": "至少保留专业",
+            "偏好专业类": "至少保留专业类",
+            "偏好专业门类": "至少保留专业门类",
+            "偏好院校": "至少保留院校",
+            "偏好地域": "至少保留地域",
+            "发展方向": "至少保留发展方向",
+        }
+        return replacements.get(label, label)
+    return label
+
+
+def _summarize_intent_values(
+    merged: dict[str, Any],
+    *,
+    intent_mode: str = "preference",
+    constraint_intent_type: str = "default",
+) -> str:
     parts: list[str] = []
     major_intents = merged.get("major_intents") if isinstance(merged.get("major_intents"), dict) else {}
     school_intents = merged.get("school_intents") if isinstance(merged.get("school_intents"), dict) else {}
@@ -883,16 +918,16 @@ def _summarize_intent_values(merged: dict[str, Any], *, intent_mode: str = "pref
         if texts:
             parts.append(f"{label}：{'、'.join(dict.fromkeys(texts))}")
 
-    add("偏好专业", major_intents.get("level3"))
-    add("偏好专业类", major_intents.get("level2"))
-    add("偏好专业门类", major_intents.get("level1"))
+    add(_positive_intent_label("偏好专业", constraint_intent_type=constraint_intent_type), major_intents.get("level3"))
+    add(_positive_intent_label("偏好专业类", constraint_intent_type=constraint_intent_type), major_intents.get("level2"))
+    add(_positive_intent_label("偏好专业门类", constraint_intent_type=constraint_intent_type), major_intents.get("level1"))
     add(_soft_negative_label("排除专业", intent_mode=intent_mode), major_intents.get("negative_level3"))
     add(_soft_negative_label("排除专业类", intent_mode=intent_mode), major_intents.get("negative_level2"))
     add(_soft_negative_label("排除专业门类", intent_mode=intent_mode), major_intents.get("negative_level1"))
-    add("偏好院校", school_intents.get("colleges"))
+    add(_positive_intent_label("偏好院校", constraint_intent_type=constraint_intent_type), school_intents.get("colleges"))
     add(_soft_negative_label("排除院校", intent_mode=intent_mode), school_intents.get("negative_colleges"))
     add(
-        "偏好地域",
+        _positive_intent_label("偏好地域", constraint_intent_type=constraint_intent_type),
         _as_text_list(city_intents.get("province"))
         + _as_text_list(city_intents.get("city"))
         + _as_text_list(city_intents.get("area")),
@@ -903,8 +938,14 @@ def _summarize_intent_values(merged: dict[str, Any], *, intent_mode: str = "pref
         + _as_text_list(city_intents.get("negative_city"))
         + _as_text_list(city_intents.get("negative_area")),
     )
-    add("发展方向", career_intents.get("positive"))
-    add(_soft_negative_label("排除方向", intent_mode=intent_mode), career_intents.get("negative"))
+    add(
+        _positive_intent_label("发展方向", constraint_intent_type=constraint_intent_type),
+        to_career_labels(career_intents.get("positive")),
+    )
+    add(
+        _soft_negative_label("排除方向", intent_mode=intent_mode),
+        to_career_labels(career_intents.get("negative")),
+    )
     return "；".join(parts)
 
 
@@ -1915,11 +1956,15 @@ async def _create_pending_intent_confirmation_response(
     batch: str,
 ) -> ChatServiceResponseEnvelope:
     replaced_pending = await _load_pending_confirmation_state(session_id)
-    summary = _summarize_intent_values(merged, intent_mode=intent_mode)
     mode_text = "要求" if intent_mode == "constraint" else "偏好"
     constraint_intent_type = _normalize_constraint_type_for_payload(
         selected_data.get("constraintIntentType") or selected_data.get("constraint_intent_type"),
         merged,
+    )
+    summary = _summarize_intent_values(
+        merged,
+        intent_mode=intent_mode,
+        constraint_intent_type=constraint_intent_type,
     )
     if not summary:
         summary = f"本次选择的{mode_text}内容。"
@@ -2057,7 +2102,15 @@ async def _create_pending_intent_confirmation_from_preview_payload(
         "batch": batch,
     }
     replaced_pending = await _load_pending_confirmation_state(session_id)
-    summary = _summarize_intent_values(merged, intent_mode=intent_mode) or preview.title or "本次点击采纳后生效的内容。"
+    summary = (
+        _summarize_intent_values(
+            merged,
+            intent_mode=intent_mode,
+            constraint_intent_type=constraint_intent_type,
+        )
+        or preview.title
+        or "本次点击采纳后生效的内容。"
+    )
     if intent_mode == "constraint":
         plan_confirmation_card = await _maybe_create_plan_confirmation_from_constraint_preview(
             session_id,
@@ -2261,16 +2314,17 @@ async def _create_pending_plan_confirmation_response(
     )
 
 
-def _first_ready_fix_proposal(facts: dict[str, Any] | None) -> dict[str, Any] | None:
+def _ready_fix_proposals(facts: dict[str, Any] | None) -> list[dict[str, Any]]:
     fix_proposals = facts.get("fix_proposals") if isinstance(facts, dict) else None
     proposals = fix_proposals.get("proposals") if isinstance(fix_proposals, dict) else None
     if not isinstance(proposals, list):
-        return None
+        return []
     source = str(
         fix_proposals.get("proposal_source")
         or fix_proposals.get("proposalSource")
         or ""
     ).strip()
+    ready: list[dict[str, Any]] = []
     for proposal in proposals:
         if not isinstance(proposal, dict):
             continue
@@ -2287,8 +2341,58 @@ def _first_ready_fix_proposal(facts: dict[str, Any] | None) -> dict[str, Any] | 
         proposal_id = str(proposal.get("proposal_id") or proposal.get("proposalId") or "").strip()
         if not proposal_id:
             continue
-        return proposal
-    return None
+        ready.append(proposal)
+    return ready
+
+
+def _selected_fix_proposal_id(source: dict[str, Any] | None, facts: dict[str, Any] | None) -> str:
+    candidates: list[Any] = []
+    if isinstance(source, dict):
+        candidates.extend(
+            [
+                source.get("selected_proposal_id"),
+                source.get("selectedProposalId"),
+                source.get("target_proposal_id"),
+                source.get("targetProposalId"),
+            ]
+        )
+    fix_proposals = facts.get("fix_proposals") if isinstance(facts, dict) else None
+    if isinstance(fix_proposals, dict):
+        candidates.extend(
+            [
+                fix_proposals.get("selected_proposal_id"),
+                fix_proposals.get("selectedProposalId"),
+                fix_proposals.get("target_proposal_id"),
+                fix_proposals.get("targetProposalId"),
+            ]
+        )
+    for candidate in candidates:
+        text = str(candidate or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _select_ready_fix_proposal(
+    facts: dict[str, Any] | None,
+    *,
+    selected_proposal_id: str = "",
+) -> dict[str, Any] | None:
+    ready = _ready_fix_proposals(facts)
+    if not ready:
+        return None
+    selected_id = str(selected_proposal_id or "").strip()
+    if selected_id:
+        for proposal in ready:
+            proposal_id = str(proposal.get("proposal_id") or proposal.get("proposalId") or "").strip()
+            if proposal_id == selected_id:
+                return proposal
+        return None
+    return ready[0]
+
+
+def _first_ready_fix_proposal(facts: dict[str, Any] | None) -> dict[str, Any] | None:
+    return _select_ready_fix_proposal(facts)
 
 
 def _build_fix_proposal_pending_state(
@@ -2835,85 +2939,9 @@ def _tool_returns_mutating_plan_preview(messages: list[Any] | None) -> bool:
     return _extract_pending_plan_action(messages) is not None
 
 
-def _prompt_requests_fix_proposal_preview_from_review(content: str | None) -> bool:
-    compact = re.sub(r"\s+", "", str(content or "").strip())
-    if not compact:
-        return False
-    explicit_preview_markers = (
-        "怎么处理",
-        "怎么修",
-        "怎么调",
-        "怎么改",
-        "如何处理",
-        "如何修",
-        "如何调",
-        "如何改",
-        "处理方案",
-        "调整方案",
-        "处理预览",
-        "调整预览",
-        "给一版预览",
-        "先看处理",
-        "先看看处理",
-        "先看怎么处理",
-        "先看看怎么处理",
-        "能怎么处理",
-        "能怎么调",
-        "能怎么改",
-        "怎么优化",
-        "如何优化",
-        "怎么解决",
-        "如何解决",
-    )
-    if any(marker in compact for marker in explicit_preview_markers):
-        return True
-    if any(
-        marker in compact
-        for marker in (
-            "只审查",
-            "只检查",
-            "只分析",
-            "先只审查",
-            "先只检查",
-            "先只分析",
-            "先不要处理",
-            "先别处理",
-            "不要处理",
-            "别处理",
-            "不用处理",
-            "暂不处理",
-            "先不要改",
-            "先别改",
-            "不要改",
-            "别改",
-        )
-    ):
-        return False
-    actionable_markers = (
-        "修复",
-        "处理",
-        "调整",
-        "替换",
-        "换掉",
-        "换成",
-        "去掉",
-        "删除",
-        "移出",
-        "补齐",
-        "补稳",
-        "补保",
-        "降低风险",
-        "优化方案",
-    )
-    return any(marker in compact for marker in actionable_markers)
-
-
 def _latest_fix_proposal_confirmation_source(
     messages: list[Any] | None,
-    content: str | None,
 ) -> dict[str, Any] | None:
-    if _prompt_rejects_current_plan_action(content):
-        return None
     latest: dict[str, Any] | None = None
     for part in _iter_tool_return_parts(messages):
         if part.tool_name != "execute_plan_action":
@@ -2922,17 +2950,12 @@ def _latest_fix_proposal_confirmation_source(
         if not data:
             continue
         facts = data.get("facts") if isinstance(data.get("facts"), dict) else {}
-        if _first_ready_fix_proposal(facts) is None:
+        selected_proposal_id = _selected_fix_proposal_id(data, facts)
+        if _select_ready_fix_proposal(facts, selected_proposal_id=selected_proposal_id) is None:
             continue
         result_kind = str(data.get("result_kind") or "").strip()
-        if result_kind == "fix_proposal_preview":
-            latest = data
-            continue
-        if (
-            result_kind == "review_result"
-            and str(data.get("action_family") or "").strip() == "review_plan"
-            and _prompt_requests_fix_proposal_preview_from_review(content)
-        ):
+        action_family = str(data.get("action_family") or "").strip()
+        if action_family == "preview_fix_proposal" and result_kind == "fix_proposal_preview":
             latest = data
     return latest
 
@@ -2972,6 +2995,79 @@ def _latest_turn_allows_plan_followup_confirmation(messages: list[Any] | None) -
         }:
             return True
     return False
+
+
+def _latest_plan_semantic_route_context(messages: list[Any] | None) -> dict[str, Any]:
+    """Return structured plan facts for semantic routing.
+
+    This intentionally uses only prior tool results and assistant-side state,
+    never raw user wording.  The semantic classifier may use these facts to
+    decide whether the next user turn asks for a repair preview.
+    """
+    for part in reversed(_iter_tool_return_parts(messages)):
+        if part.tool_name != "execute_plan_action":
+            continue
+        data = _parse_tool_return_json(part.content)
+        if not isinstance(data, dict):
+            continue
+        action_family = str(data.get("action_family") or "").strip()
+        result_kind = str(data.get("result_kind") or "").strip()
+        if action_family not in {"review_plan", "analyze_adjustment", "preview_fix_proposal", "query_state"}:
+            continue
+        facts = data.get("facts") if isinstance(data.get("facts"), dict) else {}
+        fix_facts = facts.get("fix_proposals") if isinstance(facts.get("fix_proposals"), dict) else {}
+        proposals = fix_facts.get("proposals") if isinstance(fix_facts.get("proposals"), list) else []
+        proposal_summaries: list[dict[str, Any]] = []
+        for proposal in proposals[:5]:
+            if not isinstance(proposal, dict):
+                continue
+            proposal_summaries.append(
+                {
+                    "proposalId": str(proposal.get("proposal_id") or proposal.get("proposalId") or "").strip(),
+                    "status": str(proposal.get("status") or "").strip(),
+                    "strategy": str(proposal.get("strategy") or "").strip(),
+                    "title": _normalize_fix_proposal_user_text(str(proposal.get("title") or "").strip()),
+                    "summary": _normalize_fix_proposal_user_text(str(proposal.get("summary") or "").strip()),
+                }
+            )
+        return {
+            "lastActionFamily": action_family,
+            "lastResultKind": result_kind,
+            "summary": _normalize_fix_proposal_user_text(str(data.get("summary") or data.get("state_summary") or "").strip()),
+            "replyFocus": data.get("reply_focus") if isinstance(data.get("reply_focus"), list) else [],
+            "fixProposals": {
+                "readyCount": _as_int(fix_facts.get("ready_count")),
+                "blockedCount": _as_int(fix_facts.get("blocked_count")),
+                "previewOnlyCount": _as_int(fix_facts.get("preview_only_count")),
+                "proposalSource": str(
+                    fix_facts.get("proposal_source")
+                    or fix_facts.get("proposalSource")
+                    or ""
+                ).strip(),
+                "proposals": proposal_summaries,
+            },
+        }
+    return {}
+
+
+def _has_plan_semantic_route_context(
+    planning_summary: PlanningSummary | None,
+    recent_plan_context: dict[str, Any] | None,
+) -> bool:
+    if planning_summary is None:
+        return False
+    if (
+        int(getattr(planning_summary, "ordered_total", 0) or 0) > 0
+        or int(getattr(planning_summary, "draft_total", 0) or 0) > 0
+        or int(getattr(planning_summary, "review_risk_count", 0) or 0) > 0
+        or int(getattr(planning_summary, "review_warn_count", 0) or 0) > 0
+    ):
+        return True
+    fix_facts = (recent_plan_context or {}).get("fixProposals")
+    return isinstance(fix_facts, dict) and any(
+        _as_int(fix_facts.get(key)) > 0
+        for key in ("readyCount", "blockedCount", "previewOnlyCount")
+    )
 
 
 def _tool_calls_include_plan_chain(messages: list[Any] | None) -> bool:
@@ -3667,8 +3763,6 @@ def _is_pending_readonly_impact_question(content: str) -> bool:
     compact = _compact_plan_reply_text(content)
     if not compact:
         return False
-    if _is_pending_plan_short_text_confirmation(content) or _is_pending_intent_short_text_confirmation(content):
-        return False
     has_readonly_marker = any(token in compact for token in _PENDING_READONLY_IMPACT_USER_TOKENS)
     has_impact_marker = any(token in compact for token in ("影响", "当前方案", "候选", "承接", "匹配", "冲突"))
     return has_readonly_marker and has_impact_marker
@@ -3980,10 +4074,6 @@ def _readonly_closure_ack_reply() -> str:
     return "先按刚才的分析结论理解。这轮没有待确认的偏好或方案动作，也不会改动方案；后面想继续看具体学校、专业或方案调整，随时告诉我。"
 
 
-def _no_pending_plan_confirmation_guard_reply() -> str:
-    return "我这边没有上一轮待确认的方案动作。你可以直接说想生成方案、审查方案或怎么调整，我会先说明影响，确认后再执行。"
-
-
 _PENDING_PLAN_ACTION_FAMILIES = {
     "generate_plan",
     "add_units",
@@ -4087,6 +4177,15 @@ def _replace_plan_payload_lacks_replacement_scope(payload: dict[str, Any]) -> bo
     return True
 
 
+def _plan_payload_lacks_position_target(payload: dict[str, Any]) -> bool:
+    if str(payload.get("action_family") or "").strip() not in {"move_ordered_unit", "remove_ordered_unit"}:
+        return False
+    facts = payload.get("facts") if isinstance(payload.get("facts"), dict) else {}
+    if str(facts.get("position_resolution") or "").strip() in {"empty_plan", "source_position_out_of_range"}:
+        return True
+    return False
+
+
 def _build_pending_plan_action_from_payload(payload: dict[str, Any], summary: str | None = None) -> dict[str, Any] | None:
     payload = normalize_plan_action_payload(payload)
     preview_action_family = str(payload.get("action_family") or "").strip()
@@ -4098,6 +4197,8 @@ def _build_pending_plan_action_from_payload(payload: dict[str, Any], summary: st
     if action_family == "replace_units" and not payload.get("atomic_actions"):
         return None
     if _replace_plan_payload_lacks_replacement_scope(payload):
+        return None
+    if _plan_payload_lacks_position_target(payload):
         return None
     apply_payload = dict(payload)
     facts = apply_payload.get("facts") if isinstance(apply_payload.get("facts"), dict) else {}
@@ -4303,56 +4404,6 @@ def _extract_pending_plan_action(messages: list[Any] | None) -> dict[str, Any] |
     return latest_pending
 
 
-_PLAN_ACTION_CONFIRM_PHRASES = {
-    "确认",
-    "确认执行",
-    "确定",
-    "可以",
-    "好",
-    "好的",
-    "行",
-    "没问题",
-    "执行",
-    "开始执行",
-    "执行吧",
-    "应用吧",
-    "直接应用吧",
-    "就按这个来",
-    "按这个来",
-    "按这个执行",
-    "按刚才的来",
-    "就按刚才的来",
-    "帮我执行",
-    "就这样",
-    "就这样吧",
-    "就这样执行",
-    "用这个",
-    "就用这个",
-}
-
-_INTENT_CONFIRM_PHRASES = {
-    "确认",
-    "确定",
-    "可以",
-    "好",
-    "好的",
-    "行",
-    "没问题",
-    "就按这个来",
-    "按这个来",
-    "就这样",
-    "就这样吧",
-    "确认这个偏好",
-    "确认偏好",
-    "确认这个要求",
-    "确认要求",
-    "确认这个意向",
-    "确认意向",
-    "确认这个参考",
-    "确认参考",
-}
-
-
 _READONLY_CLOSURE_ACK_PHRASES = {
     "嗯那就这样",
     "那就这样",
@@ -4371,49 +4422,15 @@ _READONLY_CLOSURE_ACK_PHRASES = {
 }
 
 
+def _pending_semantic_decision(action: str, confidence: float = 1.0, reason: str = "") -> SimpleNamespace:
+    return SimpleNamespace(action=action, confidence=confidence, reason=reason)
+
+
 def _normalize_confirmation_only_text(content: str, *, strip_fullwidth_question: bool = False) -> str:
     normalized = re.sub(r"\s+", "", (content or "").strip())
     punctuation = "。.!！?？" if strip_fullwidth_question else "。.!！?"
     normalized = normalized.strip(punctuation)
-    if not normalized:
-        return ""
-    for prefix in ("嗯嗯", "嗯"):
-        if not normalized.startswith(prefix) or len(normalized) <= len(prefix):
-            continue
-        candidate = normalized[len(prefix):]
-        if (
-            candidate in _PLAN_ACTION_CONFIRM_PHRASES
-            or candidate in _INTENT_CONFIRM_PHRASES
-            or candidate in {
-                "确认这个偏好",
-                "确认偏好",
-                "确认这个要求",
-                "确认要求",
-                "确认这个意向",
-                "确认意向",
-                "确认这个参考",
-                "确认参考",
-            }
-            or (candidate.startswith(("确认", "执行")) and len(candidate) <= 8)
-        ):
-            return candidate
     return normalized
-
-
-def _is_plan_action_confirmation(content: str) -> bool:
-    normalized = _normalize_confirmation_only_text(content)
-    if not normalized:
-        return False
-    if normalized in _PLAN_ACTION_CONFIRM_PHRASES:
-        return True
-    return normalized.startswith(("确认", "执行")) and len(normalized) <= 8
-
-
-def _is_pending_intent_confirmation(content: str) -> bool:
-    normalized = _normalize_confirmation_only_text(content)
-    if not normalized:
-        return False
-    return normalized in _INTENT_CONFIRM_PHRASES
 
 
 def _is_readonly_closure_ack(content: str) -> bool:
@@ -4421,40 +4438,6 @@ def _is_readonly_closure_ack(content: str) -> bool:
     if not normalized:
         return False
     return normalized in _READONLY_CLOSURE_ACK_PHRASES
-
-
-def _is_explicit_pending_intent_confirmation(content: str) -> bool:
-    normalized = _normalize_confirmation_only_text(content)
-    if not normalized:
-        return False
-    return normalized in {
-        "确认这个偏好",
-        "确认偏好",
-        "确认这个要求",
-        "确认要求",
-        "确认这个意向",
-        "确认意向",
-        "确认这个参考",
-        "确认参考",
-    }
-
-
-def _is_pending_plan_short_text_confirmation(content: str) -> bool:
-    normalized = _normalize_confirmation_only_text(content)
-    if not normalized or _is_explicit_pending_intent_confirmation(content):
-        return False
-    return normalized in _PLAN_ACTION_CONFIRM_PHRASES
-
-
-def _is_strict_no_pending_plan_confirmation(content: str) -> bool:
-    normalized = _normalize_confirmation_only_text(content)
-    if not normalized:
-        return False
-    return normalized in {"确认", "确认执行", "执行", "开始执行", "确认调整", "执行调整"}
-
-
-def _is_pending_intent_short_text_confirmation(content: str) -> bool:
-    return _is_pending_intent_confirmation(content)
 
 
 async def _save_direct_guard_history(
@@ -4476,152 +4459,6 @@ async def _save_direct_guard_history(
         await history_store.save(session_id, history_to_save)
     except Exception:
         logger.exception("Failed to save direct guard history: session_id=%s model=%s", session_id, model_name)
-
-
-async def _early_confirmation_guard_reply(
-    history_store: ChatHistoryStore,
-    session_id: str,
-    user_id: str,
-    content: str,
-    history: list[Any] | None,
-) -> str | None:
-    """Handle short confirmation-only turns before expensive context loading."""
-    is_plan_confirm = _is_plan_action_confirmation(content)
-    is_intent_confirm = _is_pending_intent_confirmation(content)
-    is_explicit_intent_confirm = _is_explicit_pending_intent_confirmation(content)
-    if not (is_plan_confirm or is_intent_confirm or is_explicit_intent_confirm):
-        return None
-    if _is_readonly_closure_ack(content) and _latest_turn_looks_readonly(history):
-        return None
-    started_at = time.monotonic()
-    pending_state = await _load_pending_confirmation_state(session_id)
-    pending_kind = str((pending_state or {}).get("kind") or "").strip()
-    pending_status = str((pending_state or {}).get("status") or "").strip()
-    if pending_status == "active" and pending_kind in {"plan_mutation", "intent_change"}:
-        if pending_kind == "plan_mutation" and _is_pending_plan_short_text_confirmation(content):
-            return None
-        if pending_kind == "intent_change" and _is_pending_intent_short_text_confirmation(content):
-            return None
-        if pending_kind == "plan_mutation" and is_explicit_intent_confirm:
-            reply = _pending_confirmation_type_mismatch_reply("plan_mutation", "intent_change")
-            await _save_direct_guard_history(
-                history_store,
-                session_id,
-                history,
-                content,
-                reply,
-                model_name="pending-confirmation-kind-mismatch",
-            )
-            _log_conversation_turn_event(
-                sessionId=session_id,
-                userId=user_id,
-                scene="plan",
-                routingPath="pending_confirmation_kind_mismatch",
-                pendingType="plan",
-                actionFamily=str(pending_state.get("actionFamily") or "") or None,
-                totalDurationMs=int((time.monotonic() - started_at) * 1000),
-                status="blocked",
-                errorType="pending_kind_mismatch",
-            )
-            return reply
-
-    if _extract_pending_plan_action(history) is not None and is_plan_confirm:
-        reply = _pending_requires_card_click_reply("plan_mutation")
-        await _save_direct_guard_history(
-            history_store,
-            session_id,
-            history,
-            content,
-            reply,
-            model_name="pending-plan-card-required",
-        )
-        _log_conversation_turn_event(
-            sessionId=session_id,
-            userId=user_id,
-            scene="plan",
-            routingPath="pending_plan_card_required",
-            pendingType="plan",
-            actionFamily=None,
-            totalDurationMs=int((time.monotonic() - started_at) * 1000),
-            status="blocked",
-            errorType="card_confirmation_required",
-        )
-        return reply
-
-    if is_explicit_intent_confirm:
-        reply = _no_pending_intent_confirmation_guard_reply()
-        await _save_direct_guard_history(
-            history_store,
-            session_id,
-            history,
-            content,
-            reply,
-            model_name="direct-intent-confirmation-guard",
-        )
-        _log_conversation_turn_event(
-            sessionId=session_id,
-            userId=user_id,
-            scene="intent",
-            routingPath="intent_confirmation_guard_no_pending",
-            pendingType=None,
-            actionFamily=None,
-            totalDurationMs=int((time.monotonic() - started_at) * 1000),
-            status="success",
-            errorType=None,
-        )
-        return reply
-
-    if (
-        is_plan_confirm
-        and _is_strict_no_pending_plan_confirmation(content)
-        and not _latest_turn_allows_plan_followup_confirmation(history)
-    ):
-        pending_intent_confirmation = await _load_pending_intent_confirmation(session_id)
-        if pending_intent_confirmation and is_intent_confirm:
-            reply = _pending_requires_card_click_reply("intent_change")
-            await _save_direct_guard_history(
-                history_store,
-                session_id,
-                history,
-                content,
-                reply,
-                model_name="pending-intent-card-required",
-            )
-            _log_conversation_turn_event(
-                sessionId=session_id,
-                userId=user_id,
-                scene="intent",
-                routingPath="pending_intent_card_required",
-                pendingType="intent",
-                actionFamily=None,
-                totalDurationMs=int((time.monotonic() - started_at) * 1000),
-                status="blocked",
-                errorType="card_confirmation_required",
-            )
-            return reply
-        reply = _no_pending_plan_confirmation_guard_reply()
-        await _save_direct_guard_history(
-            history_store,
-            session_id,
-            history,
-            content,
-            reply,
-            model_name="direct-plan-confirmation-guard",
-        )
-        _log_conversation_turn_event(
-            sessionId=session_id,
-            userId=user_id,
-            scene="plan",
-            routingPath="plan_confirmation_guard_no_pending",
-            pendingType=None,
-            actionFamily=None,
-            totalDurationMs=int((time.monotonic() - started_at) * 1000),
-            status="success",
-            errorType=None,
-        )
-        return reply
-
-    return None
 
 
 def _sanitize_reply_for_user(reply: str) -> str:
@@ -5012,28 +4849,6 @@ def _build_agent_interruption_fallback_reply(
         "你可以再发一次刚才的问题，我会继续按当前会话信息处理；"
         "如果涉及方案调整，我仍会先给预览，等你确认后再执行。"
     )
-
-
-async def _load_pending_intent_confirmation(session_id: str) -> PendingConfirmation | None:
-    try:
-        pending_result = await get_pending_confirmation(session_id)
-        pending_data = (pending_result or {}).get("data", {}).get("pendingConfirmation") or {}
-        pending = _pending_confirmation_from_state(pending_data)
-        if pending is not None and pending.kind == "intent_change":
-            return pending
-    except Exception:
-        logger.warning("Failed to load pendingConfirmation for phase bootstrap: session_id=%s", session_id, exc_info=True)
-
-    try:
-        cache_result = await get_intent_change_cache(session_id)
-    except Exception:
-        logger.warning("Failed to load intent change cache for phase bootstrap: session_id=%s", session_id, exc_info=True)
-        return None
-    raw_data = (cache_result or {}).get("data")
-    cache_data = raw_data.get("planEditCache") if isinstance(raw_data, dict) else None
-    if not cache_data:
-        return None
-    return PendingConfirmation.from_legacy_intent_change(cache_data)
 
 
 def _should_guard_plan_reply(content: str) -> bool:
@@ -5514,6 +5329,7 @@ def _build_plan_timeout_fallback_reply(result: dict[str, Any]) -> str | None:
     if result_kind not in {
         "review_result",
         "adjustment_analysis",
+        "fix_proposal_preview",
         "status_overview",
         "generation_result",
         "ordered_snapshot",
@@ -5536,6 +5352,7 @@ def _build_plan_timeout_fallback_reply(result: dict[str, Any]) -> str | None:
     lead_map = {
         "review_result": "我已经帮你检查了方案，主要情况如下：",
         "adjustment_analysis": "调整分析已完成，结果如下：",
+        "fix_proposal_preview": "我已经整理好当前方案的处理预览：",
         "status_overview": "方案情况如下：",
         "generation_result": "方案已经生成好了：",
         "ordered_snapshot": "你的方案情况如下：",
@@ -5720,6 +5537,40 @@ def _replace_text_reply(messages: list[Any] | None, old_reply: str, new_reply: s
                 part.content = new_reply
 
 
+def _build_direct_plan_action_messages(
+    user_prompt: str,
+    *,
+    tool_call_id: str,
+    plan_payload: dict[str, Any],
+    result_text: str,
+    reply: str,
+    model_name: str,
+) -> list[Any]:
+    return [
+        ModelRequest(parts=[UserPromptPart(content=user_prompt)]),
+        ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="execute_plan_action",
+                    args={"plan_payload": json.dumps(plan_payload, ensure_ascii=False)},
+                    tool_call_id=tool_call_id,
+                )
+            ],
+            model_name=model_name,
+        ),
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="execute_plan_action",
+                    content=result_text,
+                    tool_call_id=tool_call_id,
+                )
+            ]
+        ),
+        ModelResponse(parts=[TextPart(content=reply)], model_name=model_name),
+    ]
+
+
 class ChatService:
     """会话管理 + Agent 编排。SQLite 持久化会话历史。"""
 
@@ -5760,6 +5611,163 @@ class ChatService:
         """获取指定 session 的 UsageTracker 实例。"""
         return self._usage_trackers.get(session_id)
 
+    async def _maybe_handle_semantic_plan_action(
+        self,
+        *,
+        session_id: str,
+        user_id: str,
+        content: str,
+        history: list[Any] | None,
+        request_context: RequestContext,
+        turn_started_at: float,
+        on_progress: ProgressCallback | None,
+    ) -> ChatServiceResponseEnvelope | str | None:
+        active_pending = resolve_pending_confirmation(request_context)
+        if active_pending is not None:
+            return None
+        recent_plan_context = _latest_plan_semantic_route_context(history)
+        if not _has_plan_semantic_route_context(
+            getattr(request_context, "planning_summary", None),
+            recent_plan_context,
+        ):
+            return None
+
+        try:
+            decision = await classify_plan_semantic_action(
+                content,
+                request_context=request_context,
+                recent_plan_context=recent_plan_context,
+            )
+        except Exception:
+            logger.warning(
+                "Semantic plan action classification failed: session_id=%s",
+                session_id,
+                exc_info=True,
+            )
+            return None
+
+        action_family = str(getattr(decision, "actionFamily", "none") or "none")
+        confidence = float(getattr(decision, "confidence", 0.0) or 0.0)
+        if (
+            action_family != "preview_fix_proposal"
+            or confidence < _SEMANTIC_PLAN_ACTION_CONFIDENCE_THRESHOLD
+        ):
+            return None
+
+        if on_progress is not None:
+            with contextlib.suppress(Exception):
+                await on_progress("正在根据当前方案提醒整理调整预览...")
+
+        plan_payload = {
+            "stage": "apply",
+            "action_family": "preview_fix_proposal",
+            "user_goal": content,
+            "requires_confirmation": False,
+        }
+        if getattr(request_context, "planning_summary", None) is not None:
+            try:
+                plan_payload["planning_version"] = int(request_context.planning_summary.version or 0)
+            except (TypeError, ValueError):
+                pass
+
+        started_at = time.monotonic()
+        result_text = await execute_plan_action(
+            SimpleNamespace(deps=request_context),
+            json.dumps(plan_payload, ensure_ascii=False),
+        )
+        result = _parse_tool_return_json(result_text) or {}
+        reply = _build_plan_timeout_fallback_reply(result) or str(result.get("summary") or "").strip()
+        reply = _sanitize_reply_for_user(_normalize_user_facing_terms(reply or "已查看当前方案的处理建议。"))
+        tool_call_id = "semantic-preview-fix-proposal"
+        new_messages = _build_direct_plan_action_messages(
+            content,
+            tool_call_id=tool_call_id,
+            plan_payload=plan_payload,
+            result_text=result_text,
+            reply=reply,
+            model_name="semantic-plan-action",
+        )
+
+        pending_fix_proposal_card: WSResponse | None = None
+        latest_plan_result = _latest_fix_proposal_confirmation_source(new_messages)
+        if isinstance(latest_plan_result, dict):
+            facts = latest_plan_result.get("facts") if isinstance(latest_plan_result.get("facts"), dict) else {}
+            fix_facts = facts.get("fix_proposals") if isinstance(facts.get("fix_proposals"), dict) else {}
+            ready_proposal = _select_ready_fix_proposal(
+                facts,
+                selected_proposal_id=_selected_fix_proposal_id(latest_plan_result, facts),
+            )
+            source_version_guard = _as_int(
+                fix_facts.get("source_version_guard")
+                or latest_plan_result.get("source_backend_version")
+                or latest_plan_result.get("planning_version")
+            )
+            if ready_proposal is not None and source_version_guard > 0:
+                pending_fix_proposal_card = await _create_pending_fix_proposal_confirmation_response(
+                    session_id,
+                    ready_proposal,
+                    source_version_guard=source_version_guard,
+                )
+
+        action_family_result = str(result.get("action_family") or "preview_fix_proposal")
+        observed_tool_calls = _summarize_tool_calls_for_observability(
+            _iter_tool_call_parts(new_messages),
+            _iter_tool_return_parts(new_messages),
+        )
+        turn_event = {
+            "sessionId": session_id,
+            "userId": user_id,
+            "scene": "plan",
+            "routingPath": "semantic_plan_action",
+            "routeDecision": {
+                "source": "semantic_plan_action",
+                "matched": True,
+                "confidence": confidence,
+                "route": action_family,
+                "reason": str(getattr(decision, "reason", "") or ""),
+                "targetStrategies": list(getattr(decision, "targetStrategies", []) or []),
+                "recentPlanContext": recent_plan_context,
+            },
+            "pendingType": None,
+            "actionFamily": action_family_result,
+            "modelProvider": _llm_config_value(self.llm_client, "provider"),
+            "modelName": _llm_config_value(self.llm_client, "model_name"),
+            "llmRequests": None,
+            "inputTokens": None,
+            "outputTokens": None,
+            "totalTokens": None,
+            "toolCallCount": len(observed_tool_calls),
+            "totalDurationMs": int((time.monotonic() - turn_started_at) * 1000),
+            "llmDurationMs": None,
+            "toolDurationMs": int((time.monotonic() - started_at) * 1000),
+            "toolCalls": observed_tool_calls,
+            "postProcessingApplied": ["semantic_plan_action"],
+            "status": "success" if result.get("result_kind") != "error" else "error",
+            "errorType": result.get("result_kind") if result.get("result_kind") == "error" else None,
+        }
+        _log_conversation_turn_event(**turn_event)
+
+        try:
+            history_to_save = list(history or [])
+            history_to_save.extend(_append_route_observability_message(new_messages, turn_event))
+            await self.history_store.save(session_id, history_to_save)
+        except Exception:
+            logger.exception("Failed to save semantic plan action history: session_id=%s", session_id)
+
+        followups: list[WSResponse] = []
+        if pending_fix_proposal_card is not None:
+            followups.append(pending_fix_proposal_card)
+        workspace_refresh_targets = _dedupe_workspace_targets(
+            [str(target) for target in (result.get("workspace_refresh_targets") or [])]
+        )
+        followups.extend(
+            _build_silent_workspace_refresh_response(session_id, target)
+            for target in workspace_refresh_targets
+        )
+        if followups:
+            return ChatServiceResponseEnvelope(primary=reply, followups=followups)
+        return reply
+
     # ── 消息处理 ──────────────────────────────────────────────────
 
     async def handle_message(
@@ -5782,16 +5790,6 @@ class ChatService:
         )
         clear_recent_plan_execution_result(session_id, content)
 
-        early_guard_reply = await _early_confirmation_guard_reply(
-            self.history_store,
-            session_id,
-            user_id,
-            content,
-            history,
-        )
-        if early_guard_reply is not None:
-            return early_guard_reply
-
         past_turn_count = _count_user_turns(history)
         current_turn = past_turn_count + 1
         context_progress_sent = False
@@ -5812,7 +5810,7 @@ class ChatService:
             await emit_context_progress()
 
         context_progress_task: asyncio.Task[None] | None = None
-        if on_progress is not None and not _is_plan_action_confirmation(content):
+        if on_progress is not None:
             context_progress_task = asyncio.create_task(delayed_context_progress())
 
         # 打印原始 history 内容，便于调试格式
@@ -5824,9 +5822,7 @@ class ChatService:
         backend_pending_state = await _load_pending_confirmation_state(session_id)
         backend_pending = _pending_confirmation_from_state(backend_pending_state)
         pending_plan_action = None
-        if backend_pending is None:
-            pending_plan_action = _extract_pending_plan_action(history)
-        elif backend_pending.kind == "plan_mutation":
+        if backend_pending is not None and backend_pending.kind == "plan_mutation":
             pending_plan_action = backend_pending.to_legacy_plan_action()
             if isinstance(pending_plan_action.get("plan_payload"), dict):
                 pending_plan_action["plan_payload"] = json.dumps(
@@ -5916,8 +5912,6 @@ class ChatService:
             if backend_pending is not None and backend_pending.kind == "intent_change"
             else None
         )
-        if backend_pending is None:
-            pending_intent_confirmation = await _load_pending_intent_confirmation(session_id)
         pending_intent_change = bool(pending_intent_confirmation)
 
         # 构建统一的 ConversationPhase
@@ -5946,7 +5940,7 @@ class ChatService:
                 current_turn=current_turn,
                 planning_summary=parsed_planning_summary,
             )
-            if stale_event.should_clear_pending and not _is_plan_action_confirmation(content):
+            if stale_event.should_clear_pending:
                 logger.info(
                     "Clearing stale plan pending before model run: session_id=%s cause=%s message=%s",
                     session_id,
@@ -5960,6 +5954,8 @@ class ChatService:
                 )
                 conversation_phase.clear_pending()
                 pending_plan_action = None
+                backend_pending_state = None
+                backend_pending = None
 
         if context_progress_task is not None:
             if not context_progress_task.done():
@@ -5994,37 +5990,56 @@ class ChatService:
         backend_pending_kind = str((backend_pending_state or {}).get("kind") or "").strip()
         backend_pending_status = str((backend_pending_state or {}).get("status") or "").strip()
         if backend_pending_id and backend_pending_status == "active":
-            if backend_pending_kind == "plan_mutation" and _is_pending_plan_short_text_confirmation(content):
-                return await self.handle_pending_confirmation(
-                    session_id,
-                    user_id,
-                    json.dumps(
-                        {
-                            "action": "confirm",
-                            "kind": "plan_mutation",
-                            "pendingId": backend_pending_id,
-                        },
-                        ensure_ascii=False,
-                    ),
-                    confirmation_entry="short_text",
-                    user_prompt_content=content,
+            pending_route_decision = None
+            try:
+                pending_route_decision = await classify_pending_confirmation_action(
+                    content,
+                    pending_state=backend_pending_state,
+                    request_context=request_context,
                 )
-            if backend_pending_kind == "intent_change" and _is_pending_intent_short_text_confirmation(content):
-                return await self.handle_pending_confirmation(
+            except Exception:
+                logger.warning(
+                    "Semantic pending confirmation classification failed: session_id=%s",
                     session_id,
-                    user_id,
-                    json.dumps(
-                        {
-                            "action": "confirm",
-                            "kind": "intent_change",
-                            "pendingId": backend_pending_id,
-                        },
-                        ensure_ascii=False,
-                    ),
-                    confirmation_entry="short_text",
-                    user_prompt_content=content,
+                    exc_info=True,
                 )
-            if _is_pending_readonly_impact_question(content):
+            pending_route_action = str(getattr(pending_route_decision, "action", "none") or "none")
+            pending_route_confidence = float(getattr(pending_route_decision, "confidence", 0.0) or 0.0)
+            if pending_route_confidence >= _SEMANTIC_PENDING_CONFIRMATION_CONFIDENCE_THRESHOLD:
+                if pending_route_action == "confirm_pending":
+                    return await self.handle_pending_confirmation(
+                        session_id,
+                        user_id,
+                        json.dumps(
+                            {
+                                "action": "confirm",
+                                "kind": backend_pending_kind,
+                                "pendingId": backend_pending_id,
+                            },
+                            ensure_ascii=False,
+                        ),
+                        confirmation_entry="short_text",
+                        user_prompt_content=content,
+                    )
+                if pending_route_action == "reject_pending":
+                    return await self.handle_pending_confirmation(
+                        session_id,
+                        user_id,
+                        json.dumps(
+                            {
+                                "action": "cancel",
+                                "kind": backend_pending_kind,
+                                "pendingId": backend_pending_id,
+                            },
+                            ensure_ascii=False,
+                        ),
+                        confirmation_entry="short_text",
+                        user_prompt_content=content,
+                    )
+            if (
+                pending_route_action == "ask_pending_impact"
+                and pending_route_confidence >= _SEMANTIC_PENDING_CONFIRMATION_CONFIDENCE_THRESHOLD
+            ):
                 if on_progress is not None:
                     with contextlib.suppress(Exception):
                         await on_progress(self._INITIAL_PROGRESS_HINT)
@@ -6049,31 +6064,6 @@ class ChatService:
                     errorType=None,
                 )
                 return reply
-
-        if active_pending is None and _is_explicit_pending_intent_confirmation(content):
-            reply = _no_pending_intent_confirmation_guard_reply()
-            new_messages = [
-                ModelRequest(parts=[UserPromptPart(content=content)]),
-                ModelResponse(parts=[TextPart(content=reply)], model_name="direct-intent-confirmation-guard"),
-            ]
-            try:
-                history_to_save = list(history or [])
-                history_to_save.extend(new_messages)
-                await self.history_store.save(session_id, history_to_save)
-            except Exception:
-                logger.exception("Failed to save no-pending intent confirmation guard history: session_id=%s", session_id)
-            _log_conversation_turn_event(
-                sessionId=session_id,
-                userId=user_id,
-                scene="intent",
-                routingPath="intent_confirmation_guard_no_pending",
-                pendingType=None,
-                actionFamily=None,
-                totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
-                status="success",
-                errorType=None,
-            )
-            return reply
 
         if active_pending is None and _latest_turn_looks_readonly(history) and _is_readonly_closure_ack(content):
             reply = _readonly_closure_ack_reply()
@@ -6100,34 +6090,17 @@ class ChatService:
             )
             return reply
 
-        if (
-            active_pending is None
-            and _is_strict_no_pending_plan_confirmation(content)
-            and not _latest_turn_allows_plan_followup_confirmation(history)
-        ):
-            reply = "我这边没有上一轮待确认的方案动作。你可以直接说想生成方案、审查方案或怎么调整，我会先说明影响，确认后再执行。"
-            new_messages = [
-                ModelRequest(parts=[UserPromptPart(content=content)]),
-                ModelResponse(parts=[TextPart(content=reply)], model_name="direct-plan-confirmation-guard"),
-            ]
-            try:
-                history_to_save = list(history or [])
-                history_to_save.extend(new_messages)
-                await self.history_store.save(session_id, history_to_save)
-            except Exception:
-                logger.exception("Failed to save no-pending plan confirmation guard history: session_id=%s", session_id)
-            _log_conversation_turn_event(
-                sessionId=session_id,
-                userId=user_id,
-                scene="plan",
-                routingPath="plan_confirmation_guard_no_pending",
-                pendingType=None,
-                actionFamily=None,
-                totalDurationMs=int((time.monotonic() - turn_started_at) * 1000),
-                status="success",
-                errorType=None,
-            )
-            return reply
+        semantic_plan_action_reply = await self._maybe_handle_semantic_plan_action(
+            session_id=session_id,
+            user_id=user_id,
+            content=content,
+            history=history,
+            request_context=request_context,
+            turn_started_at=turn_started_at,
+            on_progress=on_progress,
+        )
+        if semantic_plan_action_reply is not None:
+            return semantic_plan_action_reply
 
         progress_sent = False
         tool_progress_sent = False
@@ -6400,7 +6373,6 @@ class ChatService:
             active_pending_kind == "intent_change"
             and not latest_turn_readonly
             and not plan_chain_used
-            and not _is_plan_action_confirmation(content)
             and _is_pending_intent_followup_turn(content, reply)
         )
         if isinstance(reply, str) and (_reply_is_existing_only_intent_notice(reply) or intent_non_pending):
@@ -6542,11 +6514,14 @@ class ChatService:
                 _replace_text_reply(all_messages, reply, guarded_reply)
                 reply = guarded_reply
         if pending_confirmation_action is None:
-            latest_plan_result = _latest_fix_proposal_confirmation_source(tool_context_messages, content)
+            latest_plan_result = _latest_fix_proposal_confirmation_source(tool_context_messages)
             if isinstance(latest_plan_result, dict):
                 facts = latest_plan_result.get("facts") if isinstance(latest_plan_result.get("facts"), dict) else {}
                 fix_facts = facts.get("fix_proposals") if isinstance(facts.get("fix_proposals"), dict) else {}
-                ready_proposal = _first_ready_fix_proposal(facts)
+                ready_proposal = _select_ready_fix_proposal(
+                    facts,
+                    selected_proposal_id=_selected_fix_proposal_id(latest_plan_result, facts),
+                )
                 source_version_guard = _as_int(
                     fix_facts.get("source_version_guard")
                     or latest_plan_result.get("source_backend_version")

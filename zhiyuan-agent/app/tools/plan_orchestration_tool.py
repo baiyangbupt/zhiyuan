@@ -55,6 +55,7 @@ _MUTATING_ACTION_FAMILIES = {
     "regenerate_order",
 }
 
+
 def _has_selection_scope(filters: dict[str, str]) -> bool:
     for key, value in filters.items():
         if key == "limit":

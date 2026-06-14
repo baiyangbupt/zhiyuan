@@ -19,7 +19,7 @@
 - `PlanActionPlan` 顶层只作为动作 envelope，承接 `stage`、`action_family`、`atomic_actions`、缺参、确认和刷新标志；复合目标、待写入意向、复合动作、可行性、取舍依据和实体歧义统一放在 `composite_proposal`。
 - 新待采纳状态以后端 `pendingConfirmation` 为唯一主状态源，运行时通过 `conversation_phase.pending` 投影到 Agent 上下文。
 - 卡片点击是确认主入口；短文本“确认/就按这个来/执行”只作为 active pending 的兜底入口，仍由服务端按 `pendingId / kind / status / version` 校验后执行。
-- `pending_plan_action`、history preview 提取和 `planEditCache` 只作为历史对话、模型中断 fallback 或未迁移调用点的兼容 adapter，不作为新会话主状态源。生成新 pending 或采纳后会清理旧意向缓存，避免新旧状态并存。
+- `pending_plan_action`、history preview 提取和 `planEditCache` 不再作为活动确认状态源。history preview 只用于当前轮卡片生成、上下文解释或模型中断 fallback；`planEditCache` 只作为旧 explore follow-up 的事实 fallback。生成新 pending 或采纳后会清理旧意向缓存，避免新旧状态并存。
 - `pin/unpin` 已从用户可触发能力退场；历史 `pinned/pinnedPosition` 只保留 DTO/JSON 兼容，不参与当前移动、排序、修复或 Agent 回复。
 
 但审查与修复还没有成为完整的一等工作流。当前能力能「发现问题」和「局部补偿/局部删除」，但还不能稳定表达：
@@ -415,7 +415,7 @@ Scenario（用户/系统情景）
 
 - `review_plan` 或 `analyze_adjustment` 只给出处理方向、并询问用户是否继续看调整预览时，系统还没有 active pending，也没有可执行 apply payload。用户回复“可以/确认/要看”只能被理解为“继续生成预览”，应回到 Agent 结合上一轮结构化审查结果继续规划 `preview_fix_proposal` 或澄清范围；不能返回“没有上一轮待确认动作”，也不能直接应用方案。
 - 只有已经生成 active `pendingConfirmation` 的场景，短文本“确认/执行/就按这个来”才可以作为按钮点击之外的兜底确认入口，并且必须经过 `pendingId/kind/status/version` 校验。
-- 没有 active pending、上一轮也不是结构化审查/调整建议的裸“确认/执行”，仍保留 no-pending guard，防止把历史文本或模型自然语言误当成可执行动作。
+- 没有 active pending、上一轮也不是结构化审查/调整建议的裸“确认/执行”，不能执行任何更新；本轮继续进入语义路由或 full Agent，执行层仍必须依赖 `confirmed_via_pending=true` 防止历史文本或模型自然语言被误当成可执行动作。
 
 推进节奏按风险从低到高：
 
@@ -3738,7 +3738,7 @@ Agent 方案更新链路收口补充：
 - 2026-06-12 已同步 `plan_action_orchestration_design.md`：`PlanActionPlan` 顶层只保留动作 envelope，复合目标统一进入 `CompositePlanProposal`；旧顶层 `goal / intent_updates / plan_actions / feasibility` 镜像不再被执行 envelope 消费。
 - `ActionResolver` 职责已收口为 `IntentFrame + PlanContextInputs -> ActionResolution`，不再接收 `ConversationPhase`，也不输出 `plan_goal / intent_updates` 镜像。phase/pending 相关状态只在 service、`ConversationPhase` 和 `pendingConfirmation` 链路处理。
 - `pending_context` 指令已对齐当前确认协议：模型不能自行调用 `execute_plan_action` 执行上一轮 pending payload；明确短文本确认由服务端 active `pendingConfirmation` 兜底链路校验处理。如果本轮仍进入模型，说明没有安全命中兜底，应引导用户点击当前预览或重新说明。
-- `planEditCache` 当前只作为旧 explore follow-up action 的 fallback；如果已有 active `pendingConfirmation(kind=intent_change)`，优先读取 active pending，不再读取旧缓存。新会话生成待采纳内容或采纳后会清理旧缓存。
+- `planEditCache` 当前只作为旧 explore follow-up action 的事实 fallback；不能恢复成 active `pendingConfirmation`。新会话生成待采纳内容或采纳后会清理旧缓存。
 - `planning_router_tool.handle_planning_request` 已从运行时代码和专用测试中删除；ChatAgent 主路径只保留 Plan 三段主链，新增能力不得恢复旧 router。
 - `pin_unit / unpin_unit` 不在 `PlanActionPlan.action_family`、ActionResolver、ChatAgent 工具或执行分支中；文档中只保留退场说明，避免后续误作为新能力扩展。
 - 意向确认旧 wrapper 已退场：`update_volunteer_intent_state` 不再作为代码入口保留；当前只走 `pendingConfirmation(kind=intent_change) -> apply_selected_intents`。用户侧文案继续屏蔽内部术语，只提示点“采纳”后生效。
@@ -3760,7 +3760,7 @@ git diff --check
 - `only_keep / must_have / exclude` 这类约束触发方案调整时，service 仍复用现有安全路径：先基于当前方案生成 `remove_units / add_units` 预览，再写入 `pendingConfirmation(kind=plan_mutation)`，真正执行仍只消费 `executionPayload.planPayload`，不绕过版本校验、确认态和 `execute_plan_action` 门禁。
 - 本轮新增统一元数据：约束触发的方案调整卡片会在 `planPayload.composite_proposal` 和后端 `pendingConfirmation.compositeProposal` 中保存 `PlanGoal / intent_updates / plan_actions / decision_references`。这让“用户目标、后续报考参考更新、方案动作、执行后复验计划”有同一结构化承载，不再只散落在 `intentPayload` 和临时 preview summary 中。
 - `PendingConfirmation` 运行态模型已显式承载 `composite_proposal`，并兼容后端 `compositeProposal`。普通模型上下文、历史 pending 转换和卡片确认桥接都能保留这份元信息；它只用于解释、审计和后续上下文承接，不参与 apply 放行。
-- `conversation_phase.pending` 的主源已进一步收口：普通对话启动时先读取后端 active `pendingConfirmation`，只有后端没有 active pending 时才从历史 preview 提取旧 `pending_plan_action`。当后端 pending 与历史 preview 不一致时，以后端 pending 为准，避免旧历史工具返回抢占当前待采纳状态。
+- `conversation_phase.pending` 的主源已进一步收口：普通对话启动时只读取后端 active `pendingConfirmation`。历史 preview 不再恢复为后续文本确认可消费的 active pending；当历史 preview 与后端 pending 不一致时，以后端 pending 为准，避免旧历史工具返回抢占当前待采纳状态。
 - 如果约束只形成报考条件、暂时不能安全生成方案动作，也会在 `pendingConfirmation(kind=intent_change)` 中保存同样的 `compositeProposal`。例如“只保留南方”会记录为 `goal_type=only_keep_scope`、`target_scopes=[region: 南方]`，但当前不会自动反向删除所有非南方方案项；大区到省份集合的方案级调整需要后续在执行层补完整展开、命中披露和确认预览后再开放。
 - 这次只统一元数据，不改变 apply 路径、候选选择策略、方案修复白名单、工作区刷新目标或用户确认协议。
 

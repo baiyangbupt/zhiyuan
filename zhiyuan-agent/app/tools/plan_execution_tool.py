@@ -443,6 +443,12 @@ async def _build_move_ordered_unit_preview_summary(
         state = (state_resp or {}).get("data") or {}
         ordered_state = state.get("orderedPlanState") or {}
         units = _ordered_visible_units(ordered_state, str(state.get("volunteerModel") or state.get("volunteer_model") or ""))
+        if not units:
+            return (
+                "当前方案里还没有可移动的志愿，所以不能预览“第8个移到第12位”这类排序调整。"
+                "需要先生成或加入志愿后，才能按位置移动。",
+                {"position_semantics": "ordered_unit_position", "position_resolution": "empty_plan"},
+            )
         unit_ids = _extract_unit_ids(plan_model)
         position_refs = _extract_unit_source_positions(plan_model)
         source_position = position_refs[0] if position_refs else None
@@ -462,6 +468,17 @@ async def _build_move_ordered_unit_preview_summary(
             source_unit_id = str(source_unit.get("unitId") or source_unit.get("id") or "").strip()
 
         if source_unit is None:
+            if source_position is not None:
+                return (
+                    f"当前方案只有 {len(units)} 个可排序项，找不到第 {source_position} 个，"
+                    "所以这次还不能生成移动预览。你可以先补齐方案，或重新指定当前方案里已有的位置。",
+                    {
+                        "position_semantics": "ordered_unit_position",
+                        "position_resolution": "source_position_out_of_range",
+                        "ordered_unit_count": len(units),
+                        "source_unit_position": source_position,
+                    },
+                )
             return (
                 "会移动当前方案排序区里的指定项，目标是移动到新的方案位置。"
                 "这里的“第几个”按当前方案展示顺序计算，确认后会影响方案顺序和导出顺序。",
@@ -520,6 +537,12 @@ async def _build_remove_ordered_unit_preview_summary(
         state = (state_resp or {}).get("data") or {}
         ordered_state = state.get("orderedPlanState") or {}
         units = _ordered_visible_units(ordered_state, str(state.get("volunteerModel") or state.get("volunteer_model") or ""))
+        if not units:
+            return (
+                "当前方案里还没有可删除的志愿，所以不能按位置删除。"
+                "需要先生成或加入志愿后，才能预览删除哪些内容。",
+                {"position_semantics": "ordered_unit_position", "position_resolution": "empty_plan"},
+            )
         unit_ids = _extract_unit_ids(plan_model)
         position_refs = _extract_unit_source_positions(plan_model)
         source_position = position_refs[0] if position_refs else None
@@ -539,6 +562,17 @@ async def _build_remove_ordered_unit_preview_summary(
             source_unit_id = str(source_unit.get("unitId") or source_unit.get("id") or "").strip()
 
         if source_unit is None:
+            if source_position is not None:
+                return (
+                    f"当前方案只有 {len(units)} 个可排序项，找不到第 {source_position} 个，"
+                    "所以这次还不能生成删除预览。你可以先补齐方案，或重新指定当前方案里已有的位置。",
+                    {
+                        "position_semantics": "ordered_unit_position",
+                        "position_resolution": "source_position_out_of_range",
+                        "ordered_unit_count": len(units),
+                        "source_unit_position": source_position,
+                    },
+                )
             return (
                 "会从当前方案排序区中删除指定项。"
                 "这里的“第几个”按当前方案展示顺序计算，确认后会影响方案顺序和导出顺序。",
@@ -3375,12 +3409,12 @@ async def _execute_plan_action_model(
             "这轮我先把影响范围和可选方向说明清楚，不会直接改动当前方案。"
         )
         preview_facts: dict[str, Any] = {}
-        if plan_model.stage == "preview" and plan_model.action_family == "move_ordered_unit":
+        if plan_model.action_family == "move_ordered_unit":
             resolved_summary, resolved_facts = await _build_move_ordered_unit_preview_summary(ctx, plan_model)
             if resolved_summary:
                 preview_summary = resolved_summary
                 preview_facts = resolved_facts
-        elif plan_model.stage == "preview" and plan_model.action_family == "remove_ordered_unit":
+        elif plan_model.action_family == "remove_ordered_unit":
             resolved_summary, resolved_facts = await _build_remove_ordered_unit_preview_summary(ctx, plan_model)
             if resolved_summary:
                 preview_summary = resolved_summary

@@ -182,14 +182,19 @@ preview/tool result
 apply_pending_confirmation(pendingId, confirmedVia=card)
 ```
 
-### 6.2 短文本确认兜底
+### 6.2 文本兜底确认
 
-短文本确认不是新的业务入口，只是 active pending 的备用确认方式。
+文本确认不是新的业务入口，只是 active pending 的备用确认方式。当前实现已经从“短语表/关键词判断”调整为语义分类：
+
+- 服务端先读取后端 `pendingConfirmation(status=active)`。
+- 只有存在 active pending 时，才调用 `classify_pending_confirmation_action` 判断本轮用户回复和当前待采纳内容的关系。
+- 语义分类只允许输出 `confirm_pending / reject_pending / ask_pending_impact / none`，且只在高置信时生效。
+- 分类器不生成执行 payload，不决定业务动作范围；真正执行仍只读取后端 pending 的 `executionPayload`。
 
 允许条件：
 
-- 当前会话存在且只存在一个 active pending。
-- 用户本轮内容是短确认，不包含新的学校、专业、地域、职业、排序方式、位置、删除范围、筛选条件等新增信息。
+- 当前会话存在 active pending。
+- 语义分类高置信判断用户是在确认当前待采纳内容。
 - pending 未过期、未被替代、未取消、未应用。
 - 方案类 pending 的版本仍有效。
 - 当前最近的用户可见确认内容与 active pending 不存在已知冲突。
@@ -197,27 +202,33 @@ apply_pending_confirmation(pendingId, confirmedVia=card)
 执行方式：
 
 ```text
-try_apply_active_pending_from_short_text(userText)
-  -> load active pending
-  -> validate short confirmation only
-  -> validate pending state and version
-  -> apply_pending_confirmation(pendingId, confirmedVia=short_text)
+try_apply_active_pending_from_text(userText)
+  -> load backend active pending
+  -> classify userText vs pendingState
+  -> if confirm_pending with high confidence
+       validate pendingId/status/kind/version
+       apply_pending_confirmation(pendingId, confirmedVia=short_text)
+  -> if reject_pending with high confidence
+       cancel pending
+  -> if ask_pending_impact with high confidence
+       explain impact without consuming pending
+  -> otherwise fall through to semantic plan route or full Agent
 ```
 
 禁止条件：
 
-- 没有 active pending。
-- 用户说“确认，但只排除江苏”这类带新范围的文本。
-- 用户说“可以，不过别动第一个”这类带附加条件的文本。
+- 没有后端 active pending。
+- 用户回复语义上带了新的范围、条件、对象或新任务。
+- 用户可能是在确认别的内容，或只是普通寒暄/承接。
 - 最近模型回复中出现了和 pending 不一致的自然语言确认承诺。
 - pending 已经被新卡片替代。
 
 用户侧反馈：
 
 - 允许执行：按卡片确认同样的结果回复。
-- 无 active pending：提示“当前没有可确认的调整，请先让我整理成确认卡片。”
-- 信息变更：提示“这次说法里带了新的条件，我会重新整理确认卡片。”
-- 可能不一致：提示“为避免确认错内容，请点击最新卡片或重新生成确认卡片。”
+- 信息变更：重新理解本轮表达，必要时重新生成待采纳内容。
+- 只读追问：只解释影响，不执行、不取消、不清空 pending。
+- 无 active pending：不执行任何更新；本轮继续进入语义方案路由或 full Agent。只有模型输出了无依据的“回复确认即可执行”时，才由输出保护改成“需要先生成可确认预览”。
 
 ### 6.3 自然语言模型回复不能直接执行
 
@@ -512,10 +523,10 @@ try_apply_active_pending_from_short_text(userText)
 | 旧逻辑 | 新口径 |
 | --- | --- |
 | `intentSelect` / `planEditSelect` | 旧卡片点击后只转换为新的 `pendingConfirmationCard` |
-| `planEditCache` | 只作为旧会话 fallback，不作为新 pending 主源 |
-| `pending_plan_action` | 迁移期 adapter，后续转为 `pendingConfirmation` |
-| `pending_intent_change` | 迁移期 adapter，后续转为 `pendingConfirmation` |
-| 历史工具返回恢复 pending | 只用于旧会话轻量恢复，不回到每轮主路径 |
+| `planEditCache` | 只作为旧 explore follow-up 的事实 fallback；不能恢复成 active pending |
+| `pending_plan_action` | 只作为运行态兼容投影或当前轮生成卡片的中间结构；不能覆盖后端 active pending |
+| `pending_intent_change` | 由后端 `pendingConfirmation(kind=intent_change)` 投影得到；不再从旧缓存单独恢复 |
+| 历史工具返回恢复 pending | 历史 preview 只作为上下文或中断 fallback；不能作为文本确认可消费的活动状态 |
 | `planningWorkspaceAction` | 只用于打开/刷新工作区，不承载确认语义 |
 
 ### 11.2 必须清理或限制的旁路
@@ -524,7 +535,7 @@ try_apply_active_pending_from_short_text(userText)
 | --- | --- |
 | 模型直接调用 `execute_plan_action(apply)` | 只允许在 `confirmed_via_pending=true` 的服务端确认上下文中执行 |
 | 模型直接调用 `update_volunteer_intent_state(confirm)` | 返回需要确认卡片，不写入 |
-| 无 pending 的自然语言确认 | 不执行，提示重新生成确认卡片 |
+| 无 pending 的自然语言确认 | 不执行更新；继续进入语义路由或 full Agent，必要时重新生成待采纳内容 |
 | 旧卡片直接写入偏好/要求 | 改为生成新 pending card |
 | 旧卡片刷新后仍可点 | 后端校验 pendingId，前端置灰 |
 
@@ -614,20 +625,29 @@ apply_pending_confirmation(
 
 ### 13.2 文本确认处理
 
-当前的 early confirmation guard 应从“统一提示点卡片”调整为：
+当前实现不再用固定短语表截获用户回复。服务端流程是：
 
 ```text
-if is_short_confirmation(userText):
-    if has_active_pending:
-        return try_apply_active_pending_from_short_text(userText)
-    return no_pending_guard
+backendPending = loadBackendActivePending(sessionId)
+
+if backendPending exists:
+    decision = classify_pending_confirmation_action(userText, backendPending)
+    if decision == confirm_pending and confidence >= threshold:
+        return handle_pending_confirmation(confirm, backendPending.pendingId, entry=short_text)
+    if decision == reject_pending and confidence >= threshold:
+        return handle_pending_confirmation(cancel, backendPending.pendingId, entry=short_text)
+    if decision == ask_pending_impact and confidence >= threshold:
+        return build_pending_readonly_impact_reply(backendPending)
+
+return semantic_plan_action_or_full_agent(userText)
 ```
 
 注意：
 
-- `is_short_confirmation` 只判断非常短的确认类表达。
-- 一旦文本里包含新对象或新条件，不能当确认，必须回到 Agent 理解。
-- 不做复杂自然语言动作解析。
+- 语义分类只判断“当前文本和当前 pending 的关系”，不负责业务路由和执行参数生成。
+- 无 active pending 时，不再返回固定 no-pending guard；普通“确认/可以/好的”会作为普通对话继续进入语义路由或 full Agent。
+- 无 active pending 时即使进入模型，也不能执行更新，因为执行层只认 `confirmed_via_pending=true`。
+- 一旦文本包含新对象、新条件或复合任务，分类应返回 `none` 或低置信，让 full Agent 重新理解并生成新的预览。
 
 ### 13.3 RequestContext 命名
 
@@ -672,7 +692,7 @@ confirmation_entry=card | short_text
 | 法学财政学优先，护理不要 | 同卡片披露偏好和要求 |
 | 用户点击采纳 | 写入并触发推荐 stale/刷新 |
 | 用户短文本“确认”且 active pending 存在 | 走统一 apply |
-| 用户短文本“确认”但无 pending | 不执行 |
+| 用户短文本“确认”但无 pending | 不执行；进入语义路由或 full Agent，不能凭历史 preview/旧缓存执行 |
 | 用户“确认，但只排除江苏” | 不消费旧 pending，重新理解 |
 
 ### 14.2 方案调整
@@ -717,7 +737,7 @@ confirmation_entry=card | short_text
 
 1. 统一服务端 `apply_pending_confirmation`，让卡片确认和短文本兜底共用。
 2. 将 `confirmed_via_card` 迁移为 `confirmed_via_pending`，保留短期兼容别名。
-3. 调整 early confirmation guard：active pending 下允许短文本兜底确认，无 pending 继续阻断。
+3. 调整 early confirmation guard：active pending 下走语义分类兜底确认；无 pending 时不做固定短语拦截，继续进入语义路由或 full Agent。
 4. 修复模型无 pending 假确认输出保护，只做窄口径防护。
 5. 更新原有“文本确认必须点击卡片”的测试，改为 active pending 可兜底执行。
 6. 增加冲突观测事件，记录 short_text 确认时的 pending 摘要和最近助手确认语义。
@@ -1221,5 +1241,53 @@ targeted live：
 
 - 输出文件：`/private/tmp/zhiyuan_303_open_quality_live_after_candidate_pool_semantics_final_pass.json`
 - 结果：`steps=23`，`successfulSteps=23`，`failedSteps=0`。
-- pending 影响追问、no-pending guard、只读候选查询、排序预览确认卡片、调稳预览、医学/护理影响分析均通过。
+- pending 影响追问、无 pending 确认不产生副作用、只读候选查询、排序预览确认卡片、调稳预览、医学/护理影响分析均通过。
 - 剩余问题仅为延迟 warning，集中在专业对比和职业方向 full Agent 总结；确认状态机和候选池语义没有新增失败。
+
+## 26. 2026-06-14 落地记录：语义 pending 兜底与旧活动状态退场
+
+本轮继续收口“用户文本确认”和“旧状态恢复”的边界，目标是避免再次出现多套 pending 并存、旧历史 preview 抢占当前确认状态、或用固定用户话术字符串判断确认的情况。
+
+已完成：
+
+- 普通对话启动时，活动待采纳状态只从后端 `pendingConfirmation(status=active)` 读取。
+- `conversation_phase.pending` 只作为运行时投影，来源是后端 active pending；如果后端没有 active pending，不再从旧 `planEditCache` 恢复 intent pending。
+- 删除 `ChatService` 中未使用的旧 `_load_pending_intent_confirmation()`，避免旧 `planEditCache -> PendingConfirmation` 逻辑继续误导后续维护。
+- 历史 `execute_plan_action` preview 只保留为上下文、输出保护或当前轮卡片生成依据；不能因为用户后续说“确认/可以”就直接应用历史 preview。
+- active pending 存在时，用户文本回复先交给 `classify_pending_confirmation_action` 判断它和当前待采纳内容的关系：
+  - `confirm_pending`：进入 `handle_pending_confirmation(confirm)`。
+  - `reject_pending`：进入 `handle_pending_confirmation(cancel)`。
+  - `ask_pending_impact`：只解释影响，不消费 pending。
+  - `none` 或低置信：继续进入语义方案路由或 full Agent。
+- 无 active pending 时，服务层不再用“确认/可以/好的”等固定短语返回 no-pending guard；本轮进入语义方案路由或 full Agent，但执行层仍不会允许任何状态更新，因为没有 `confirmed_via_pending=true`。
+- `preview_fix_proposal` 的语义快捷路径保持窄口径：只在高置信、已有方案上下文且无 active pending 时生成处理预览；它只创建/返回预览和 pending card，不直接落盘。
+
+当前统一链路：
+
+```text
+用户输入
+  -> load backend active pending
+  -> 有 active pending:
+       semantic pending classifier
+       -> confirm/cancel/impact/none
+       -> confirm/cancel 仍由 handle_pending_confirmation 校验 pendingId/status/kind/version
+  -> 无 active pending 或 classifier none:
+       semantic plan action preview shortcut only for high-confidence preview_fix_proposal
+       -> otherwise full Agent
+```
+
+设计边界：
+
+- 小模型分类器不是业务执行器，不生成 `planPayload`，不替代 `plan_next_action`。
+- 卡片点击仍是主入口；文本确认只是 active pending 的兜底入口。
+- 旧 `planEditCache` 可以继续服务旧 explore follow-up 的事实读取，但不能恢复成活动待采纳状态。
+- 历史 preview 可以帮助模型理解上下文，但不能成为文本确认的执行凭证。
+- 所有高副作用执行仍必须经过 `pendingConfirmation.executionPayload`、版本校验和执行层门禁。
+
+验证重点：
+
+- 无 active pending 时，“确认/可以”不能执行旧 preview 或旧意向缓存。
+- active intent pending 时，文本确认、取消、影响追问分别进入统一分支。
+- active plan pending 时，文本确认仍只消费当前 active pending。
+- 历史 preview + 新 active pending 不一致时，以后端 active pending 为准。
+- `preview_fix_proposal` 只返回预览和确认卡，不直接执行。

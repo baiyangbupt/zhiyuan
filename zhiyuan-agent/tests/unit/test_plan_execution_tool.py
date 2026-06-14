@@ -489,6 +489,37 @@ def test_execute_plan_action_sort_preview_includes_distribution_and_examples():
     mock_sort.assert_not_awaited()
 
 
+def test_execute_plan_action_move_ordered_unit_analyze_reports_empty_plan_without_confirmation():
+    payload = {
+        "stage": "analyze",
+        "action_family": "move_ordered_unit",
+        "user_goal": "把第8个志愿移到第12位，只给我预览",
+        "context_summary": "阶段=ordered；方案=0/45",
+        "missing_inputs": [],
+        "atomic_actions": [
+            {
+                "action_type": "move_ordered_unit",
+                "source_positions": [8],
+                "target_position": 12,
+            }
+        ],
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_state_request",
+        new=AsyncMock(return_value={"code": 0, "data": {"orderedPlanState": {"items": []}}}),
+    ):
+        result = asyncio.run(execute_plan_action(_ctx(), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["applied"] is False
+    assert data["result_kind"] == "preview_only"
+    assert "还没有可移动的志愿" in data["summary"]
+    assert "第8个移到第12位" in data["summary"]
+    assert data["facts"]["position_resolution"] == "empty_plan"
+    assert "confirmation_required" not in data["reply_focus"]
+
+
 def test_execute_plan_action_sort_preview_defaults_to_admission_ratio_when_filters_missing():
     payload = {
         "stage": "preview",

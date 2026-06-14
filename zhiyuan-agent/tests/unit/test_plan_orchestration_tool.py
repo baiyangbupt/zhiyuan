@@ -311,6 +311,27 @@ def test_plan_next_action_builds_preview_for_move_ordered_unit_position_ref():
     assert data["atomic_actions"][0]["target_position"] == 5
 
 
+def test_plan_next_action_requires_structured_ordered_position_pair_when_args_missing():
+    with patch(
+        "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
+        new=AsyncMock(return_value=_context_inputs(summary="阶段=ordered；方案=20/30")),
+    ):
+        result = asyncio.run(
+            plan_next_action(
+                _ctx(),
+                user_goal="具体一点，先把第8个志愿移到第12位，只给我预览",
+                action_family="move_ordered_unit",
+            )
+        )
+
+    data = json.loads(result)
+    assert data["stage"] == "analyze"
+    assert data["action_family"] == "move_ordered_unit"
+    assert set(data["missing_inputs"]) == {"unit_ids", "target_position"}
+    assert data["atomic_actions"][0]["source_position"] is None
+    assert data["atomic_actions"][0]["target_position"] is None
+
+
 def test_plan_next_action_requires_missing_inputs_for_move_ordered_unit():
     with patch(
         "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",

@@ -1286,8 +1286,8 @@ preview 必须基于当前 state 给出真正影响，而不是一句“会修�
   - `compositeProposal`（可选，仅用于复合目标解释、审计和后续上下文承接）
 - 卡片点击是主入口；服务端按 `pendingId / kind / status / planning version` 校验后执行。
 - 用户短文本回复“确认 / 就按这个来 / 执行”只作为 active pending 的兜底入口；仍进入同一个 `handle_pending_confirmation`，不让模型重新猜上一轮参数。
-- 旧 `pending_plan_action` 和 history preview 提取只在后端没有 active `pendingConfirmation` 时兜底，用于历史对话、模型中断 fallback 或旧调用点恢复 pending，不作为新会话主状态源。
-- `planEditCache` 只作为旧意向缓存 adapter；新意向待采纳以 `pendingConfirmation(kind=intent_change)` 为准，采纳或生成新 pending 后会清理旧缓存。
+- 旧 `pending_plan_action` 和 history preview 提取只用于当前轮从工具结果生成确认卡、模型中断 fallback 或上下文解释；不能作为后续文本确认可消费的 active pending 来源。
+- `planEditCache` 只作为旧 explore follow-up 的事实 fallback；新意向待采纳以 `pendingConfirmation(kind=intent_change)` 为准，不能从 `planEditCache` 恢复 active pending。
 
 这层是高副作用动作的稳定性兜底，不替代模型对其他普通对话的理解。
 

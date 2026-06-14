@@ -98,6 +98,7 @@ _intent_side_effect_agent: Agent[None, str] | None = None
 class IntentSideEffectDecision(BaseModel):
     decision: str = Field(default="intent_preview")
     confidence: float = Field(default=0.0)
+    constraintIntentType: str = Field(default=CONSTRAINT_INTENT_DEFAULT)
     reason: str = ""
 
     @field_validator("confidence", mode="before")
@@ -142,10 +143,13 @@ def _get_intent_side_effect_agent() -> Agent[None, str]:
                 "这类话术通常需要先做适配分析和取舍澄清，不能把所有兴趣陈述都当作写入请求。"
                 "如果用户是在要求系统以后对某个具体专业、院校、地域或方向多看、多关注、优先看、后续多给机会，"
                 "这属于改变后续推荐口径，应判为 intent_preview；不要因为句子里有征询语气就降级。"
+                "同时给出 constraintIntentType：only_keep 表示只保留/只要/限定在某个范围，其他不要；"
+                "must_have 表示方案里至少要有这个方向，但其他方向可以保留；"
+                "default 表示普通偏好或排除，不要猜测。只有用户语义明确时才输出 only_keep 或 must_have。"
                 "decision 只能是 intent_preview、analysis_only、mixed_answer_then_ask。"
                 "intent_preview 表示可以生成待采纳内容；analysis_only 表示只应回答分析；"
                 "mixed_answer_then_ask 表示先解释边界，再自然询问是否需要记录，不能直接写待确认。"
-                "输出 JSON：decision, confidence, reason。"
+                "输出 JSON：decision, confidence, constraintIntentType, reason。"
             ),
         )
     return _intent_side_effect_agent
@@ -156,7 +160,12 @@ def _normalize_intent_side_effect_decision(decision: IntentSideEffectDecision) -
     if normalized not in {"intent_preview", "analysis_only", "mixed_answer_then_ask"}:
         normalized = "intent_preview"
     confidence = max(0.0, min(1.0, float(decision.confidence or 0.0)))
-    return IntentSideEffectDecision(decision=normalized, confidence=confidence, reason=decision.reason)
+    return IntentSideEffectDecision(
+        decision=normalized,
+        confidence=confidence,
+        constraintIntentType=_normalize_constraint_intent_type(decision.constraintIntentType),
+        reason=decision.reason,
+    )
 _INTENT_CONFIRM_UTTERANCE_PHRASES = {
     "确认",
     "确定",
@@ -296,6 +305,19 @@ def _normalize_constraint_type_for_payload(value: str | None, merged: dict[str, 
     if normalized in {CONSTRAINT_INTENT_ONLY_KEEP, CONSTRAINT_INTENT_MUST_HAVE} and not _has_positive_values_in_payload(merged):
         return CONSTRAINT_INTENT_DEFAULT
     return normalized
+
+
+def _constraint_type_from_semantic_decision(
+    semantic_decision: IntentSideEffectDecision | None,
+    *,
+    merged: dict[str, Any] | None,
+) -> str:
+    """Use the semantic arbiter's structured constraint type only when confident."""
+    if semantic_decision is None:
+        return CONSTRAINT_INTENT_DEFAULT
+    if semantic_decision.decision != "intent_preview" or semantic_decision.confidence < 0.7:
+        return CONSTRAINT_INTENT_DEFAULT
+    return _normalize_constraint_type_for_payload(semantic_decision.constraintIntentType, merged)
 
 
 def _prune_generated_negative_complements_for_only_keep(
@@ -734,6 +756,8 @@ def _interest_stage_item_content(value: dict[str, Any] | None, intent_mode: str)
             continue
         for key, label, polarity in specs:
             names = _as_string_list(payload.get(key))
+            if category == "career_intents":
+                names = to_career_labels(names)
             if not names:
                 continue
             text = "、".join(names)
@@ -3273,6 +3297,16 @@ async def analyze_volunteer_intent_change(
         resolved_constraint_intent_type,
         merged_for_constraint_type,
     )
+    semantic_constraint_intent_type = _constraint_type_from_semantic_decision(
+        semantic_decision,
+        merged=merged_for_constraint_type,
+    )
+    if (
+        resolved_intent_mode == INTENT_MODE_CONSTRAINT
+        and resolved_constraint_intent_type == CONSTRAINT_INTENT_DEFAULT
+        and semantic_constraint_intent_type != CONSTRAINT_INTENT_DEFAULT
+    ):
+        resolved_constraint_intent_type = semantic_constraint_intent_type
 
     cache_data = _build_cache_data(
         major_intents,

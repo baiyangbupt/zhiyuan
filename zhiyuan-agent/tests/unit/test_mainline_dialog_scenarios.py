@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, ToolCallPart, ToolReturnPart, UserPromptPart
 
+import app.service as service_module
 from app.data.history_store import ChatHistoryStore
 from app.service import ChatService, ChatServiceResponseEnvelope
 
@@ -20,6 +21,11 @@ RELEASE_302_EXPLORE_INTENT_CASES_PATH = Path(__file__).resolve().parents[2] / "e
 RELEASE_302_READONLY_REAL_SESSION_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_302_readonly_real_session_cases.json"
 RELEASE_310_REVIEW_REPAIR_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_310_review_repair_cases.json"
 RELEASE_310_PRODUCTION_ABSTRACTED_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_310_production_abstracted_cases.json"
+
+# Service no longer imports the legacy planEditCache reader. Keep a test-only
+# placeholder for older scenario patches that assert it is not used.
+if not hasattr(service_module, "get_intent_change_cache"):
+    service_module.get_intent_change_cache = AsyncMock()
 
 
 def _run(coro):
@@ -70,6 +76,10 @@ def _tool_return(name: str, content: dict, call_id: str = "call-1") -> ToolRetur
 
 def _workspace_targets(reply: ChatServiceResponseEnvelope) -> list[str]:
     return [json.loads(item.content)["targetView"] for item in reply.followups]
+
+
+def _semantic_pending(action: str, confidence: float = 0.95, reason: str = "test"):
+    return MagicMock(action=action, confidence=confidence, reason=reason)
 
 
 def _build_service(tmp_path, agent: _ScenarioAgent) -> ChatService:
@@ -746,7 +756,13 @@ def test_mainline_dialog_negative_accounting_then_confirm_plan_adjustment_uses_m
         "action_family": "replace_units",
         "user_goal": "移出会计和审计相关志愿，补入跨境电子商务和网络与新媒体",
         "missing_inputs": [],
-        "atomic_actions": [{"action_type": "replace_units"}],
+        "atomic_actions": [
+            {
+                "action_type": "replace_units",
+                "filters": {"major_keyword": "跨境电子商务 网络与新媒体"},
+            }
+        ],
+        "planning_version": 18,
         "preview_summary": "会移出会计和审计相关志愿，再补入更匹配的新方向。",
     }
     agent = _ScenarioAgent(
@@ -786,6 +802,7 @@ def test_mainline_dialog_negative_accounting_then_confirm_plan_adjustment_uses_m
                             "stage": "preview",
                             "result_kind": "preview_only",
                             "summary": "会移出会计和审计相关志愿，再补入更匹配的新方向。",
+                            "planning_version": 18,
                         },
                         "preview-replace",
                     )
@@ -822,6 +839,7 @@ def test_mainline_dialog_negative_accounting_then_confirm_plan_adjustment_uses_m
         patch("app.service.get_intent_change_cache", AsyncMock(return_value={"data": {"planEditCache": None}})),
         patch("app.service.save_pending_confirmation", AsyncMock(side_effect=save_pending_mock)),
         patch("app.service.get_pending_confirmation", AsyncMock(side_effect=get_pending_mock)),
+        patch("app.service.classify_pending_confirmation_action", AsyncMock(return_value=_semantic_pending("confirm_pending"))),
         patch("app.service.execute_plan_action", AsyncMock(return_value=execution_result)) as execute_mock,
     ):
         intent_reply = _run(service.handle_message("session-mainline-adjust", "user-57", "不想学会计"))
@@ -844,7 +862,7 @@ def test_mainline_dialog_negative_accounting_then_confirm_plan_adjustment_uses_m
     assert text_confirm_reply.primary.startswith("已移出不匹配志愿")
     assert "跨境电子商务" in text_confirm_reply.primary
     assert execute_mock.await_count == 1
-    assert _workspace_targets(text_confirm_reply) == ["ordered"]
+    assert _workspace_targets(text_confirm_reply) == ["ordered", "review"]
     assert len(agent.calls) == 2
     assert agent.calls[1]["pending_plan_action"] is None
 
@@ -885,9 +903,10 @@ def test_mainline_dialog_review_result_keeps_informative_summary_and_review_work
     ):
         reply = _run(service.handle_message("session-mainline-review", "user-57", "帮我审查一下"))
 
-    assert isinstance(reply, str)
-    assert "45/45" in reply
-    assert "冲8 / 稳18 / 保19" in reply
-    assert "风险0项" in reply
-    assert "提醒" in reply
-    assert len(reply) > 60
+    assert isinstance(reply, ChatServiceResponseEnvelope)
+    assert "45/45" in reply.primary
+    assert "冲8 / 稳18 / 保19" in reply.primary
+    assert "风险0项" in reply.primary
+    assert "提醒" in reply.primary
+    assert len(reply.primary) > 60
+    assert _workspace_targets(reply) == ["review"]

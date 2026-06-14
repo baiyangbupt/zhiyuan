@@ -892,7 +892,6 @@ def test_case_definitions_infer_confirm_routes_from_prompt_and_coverage(tmp_path
                         {
                             "prompt": "确认",
                             "coverage": ["no_pending_guard"],
-                            "expectedRoutingPath": "plan_confirmation_guard_no_pending",
                             "expectedNoAction": True,
                         }
                     ],
@@ -927,13 +926,13 @@ def test_case_definitions_infer_confirm_routes_from_prompt_and_coverage(tmp_path
 
     assert definitions["intent-confirm#1"]["expectedRoutingPath"] == "direct_pending_intent_confirm"
     assert definitions["intent-confirm#1"]["expectedActionFamily"] == "apply_selected_intents"
-    assert definitions["no-pending#1"]["expectedRoutingPath"] == "plan_confirmation_guard_no_pending"
+    assert "expectedRoutingPath" not in definitions["no-pending#1"]
     assert "expectedActionFamily" not in definitions["no-pending#1"]
     assert definitions["no-pending#1"]["expectedNoAction"] is True
     assert definitions["readonly-closure#1"]["expectedRoutingPath"] == "readonly_closure_ack"
     assert "expectedActionFamily" not in definitions["readonly-closure#1"]
     assert definitions["readonly-closure#1"]["expectedNoAction"] is True
-    assert definitions["readonly-confirm#1"]["expectedRoutingPath"] == "plan_confirmation_guard_no_pending"
+    assert "expectedRoutingPath" not in definitions["readonly-confirm#1"]
     assert "expectedActionFamily" not in definitions["readonly-confirm#1"]
 
 
@@ -959,21 +958,20 @@ def test_score_case_treats_legacy_fast_route_mismatch_as_warning_not_quality_fai
     assert score["verdict"] == "fail"
 
 
-def test_score_case_flags_strict_route_mismatch():
+def test_score_case_allows_no_pending_confirm_to_flow_through_agent_when_no_action_expected():
     score = report._score_case(
         {
             "prompt": "确认",
             "responseText": "这轮没有待确认的偏好或方案动作，我不会改动方案。",
             "elapsedMs": 900,
-            "expectedRoutingPath": "plan_confirmation_guard_no_pending",
             "expectedNoAction": True,
             "routingPath": "full_agent",
             "turnObservability": {"actionFamilies": [], "toolCalls": []},
         }
     )
 
-    assert "route_mismatch:plan_confirmation_guard_no_pending!=full_agent" in score["qualityViolations"]
-    assert score["verdict"] == "fail"
+    assert not any(item.startswith("route_mismatch:") for item in score["qualityViolations"])
+    assert score["verdict"] != "fail"
 
 
 def test_score_case_flags_unexpected_action_when_none_expected():
@@ -982,9 +980,8 @@ def test_score_case_flags_unexpected_action_when_none_expected():
             "prompt": "嗯那就这样",
             "responseText": "这轮没有待确认的偏好或方案动作，我不会改动方案。",
             "elapsedMs": 900,
-            "expectedRoutingPath": "plan_confirmation_guard_no_pending",
             "expectedNoAction": True,
-            "routingPath": "plan_confirmation_guard_no_pending",
+            "routingPath": "full_agent",
             "turnObservability": {
                 "actionFamilies": ["compare_majors"],
                 "toolCalls": [{"name": "compare_majors", "actionFamily": "compare_majors"}],

@@ -130,7 +130,32 @@ def _negative_label(label: str, *, intent_mode: str) -> str:
     return replacements.get(label, label)
 
 
-def _format_confirmed_intent_summary(merged: dict[str, Any], *, intent_mode: str = "preference") -> list[str]:
+def _positive_label(label: str, *, constraint_intent_type: str = "default") -> str:
+    if constraint_intent_type == "only_keep":
+        replacements = {
+            "偏好专业": "只保留专业",
+            "偏好院校": "只保留院校",
+            "偏好地域": "只保留地域",
+            "偏好发展方向": "只保留发展方向",
+        }
+        return replacements.get(label, label)
+    if constraint_intent_type == "must_have":
+        replacements = {
+            "偏好专业": "至少保留专业",
+            "偏好院校": "至少保留院校",
+            "偏好地域": "至少保留地域",
+            "偏好发展方向": "至少保留发展方向",
+        }
+        return replacements.get(label, label)
+    return label
+
+
+def _format_confirmed_intent_summary(
+    merged: dict[str, Any],
+    *,
+    intent_mode: str = "preference",
+    constraint_intent_type: str = "default",
+) -> list[str]:
     summary: list[str] = []
     major_intents = merged.get("major_intents") or {}
     if isinstance(major_intents, dict):
@@ -140,7 +165,8 @@ def _format_confirmed_intent_summary(merged: dict[str, Any], *, intent_mode: str
             ("negative_level3", "negative_level2", "negative_level1"),
         )
         if positive:
-            summary.append(f"偏好专业：{'、'.join(positive)}")
+            label = _positive_label("偏好专业", constraint_intent_type=constraint_intent_type)
+            summary.append(f"{label}：{'、'.join(positive)}")
         if negative:
             summary.append(f"{_negative_label('排除专业', intent_mode=intent_mode)}：{'、'.join(negative)}")
 
@@ -149,7 +175,8 @@ def _format_confirmed_intent_summary(merged: dict[str, Any], *, intent_mode: str
         preferred_schools = _unique_text_values(school_intents.get("colleges"))
         negative_schools = _unique_text_values(school_intents.get("negative_colleges"))
         if preferred_schools:
-            summary.append(f"偏好院校：{'、'.join(preferred_schools)}")
+            label = _positive_label("偏好院校", constraint_intent_type=constraint_intent_type)
+            summary.append(f"{label}：{'、'.join(preferred_schools)}")
         if negative_schools:
             summary.append(f"{_negative_label('排除院校', intent_mode=intent_mode)}：{'、'.join(negative_schools)}")
 
@@ -158,7 +185,8 @@ def _format_confirmed_intent_summary(merged: dict[str, Any], *, intent_mode: str
         preferred_regions = _unique_text_values(city_intents.get("province")) + _unique_text_values(city_intents.get("city"))
         negative_regions = _unique_text_values(city_intents.get("negative_province")) + _unique_text_values(city_intents.get("negative_city"))
         if preferred_regions:
-            summary.append(f"偏好地域：{'、'.join(dict.fromkeys(preferred_regions))}")
+            label = _positive_label("偏好地域", constraint_intent_type=constraint_intent_type)
+            summary.append(f"{label}：{'、'.join(dict.fromkeys(preferred_regions))}")
         if negative_regions:
             summary.append(f"{_negative_label('排除地域', intent_mode=intent_mode)}：{'、'.join(dict.fromkeys(negative_regions))}")
 
@@ -167,7 +195,8 @@ def _format_confirmed_intent_summary(merged: dict[str, Any], *, intent_mode: str
         preferred_careers = _unique_text_values(to_career_labels(career_intents.get("positive")))
         negative_careers = _unique_text_values(to_career_labels(career_intents.get("negative")))
         if preferred_careers:
-            summary.append(f"偏好发展方向：{'、'.join(preferred_careers)}")
+            label = _positive_label("偏好发展方向", constraint_intent_type=constraint_intent_type)
+            summary.append(f"{label}：{'、'.join(preferred_careers)}")
         if negative_careers:
             summary.append(f"{_negative_label('排除发展方向', intent_mode=intent_mode)}：{'、'.join(negative_careers)}")
     return summary
@@ -182,7 +211,11 @@ def _format_intent_state_update_with_summary(
     intent_mode: str | None = None,
 ) -> str:
     lines = [base]
-    summary = _format_confirmed_intent_summary(result.merged, intent_mode=intent_mode or result.intentMode)
+    summary = _format_confirmed_intent_summary(
+        result.merged,
+        intent_mode=intent_mode or result.intentMode,
+        constraint_intent_type=result.constraintIntentType,
+    )
     if summary:
         lines.append(f"本次内容：{'；'.join(summary)}。")
     if usage_text:
@@ -508,9 +541,9 @@ def _render_intent_preview_item(item: dict[str, Any], *, intent_mode: str = "pre
             if city := _format_values(city_intents.get(key)):
                 return f"{label}：{city}"
         career_intents = value.get("career_intents") or {}
-        if career := _format_values(career_intents.get("positive")):
+        if career := _format_values(to_career_labels(career_intents.get("positive"))):
             return f"偏好发展方向：{career}"
-        if career := _format_values(career_intents.get("negative")):
+        if career := _format_values(to_career_labels(career_intents.get("negative"))):
             return f"{_negative_label('排除发展方向', intent_mode=intent_mode)}：{career}"
     return _sanitize_user_facing_intent_text(str(item.get("content") or "").strip())
 
