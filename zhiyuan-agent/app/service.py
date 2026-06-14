@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
 
+from pydantic_ai import Agent
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, ToolCallPart, ToolReturnPart, UserPromptPart
 
 from app.agent.base_agent import ProgressCallback
@@ -227,12 +228,146 @@ _USER_REPLY_ENGLISH_WORD_REPLACEMENTS = (
     (re.compile(r"\s*\bbaseline\b\s*", re.IGNORECASE), "基准"),
 )
 
+_PLAN_ACTION_REPLY_SYNTHESIS_INSTRUCTIONS = """\
+你负责把已经执行完成的志愿方案工具结果，整理成用户能看懂的一段中文回复。
+
+约束：
+- 只基于输入里的结构化事实回答，不新增数字、学校、专业、风险结论。
+- 不要说“工具、系统、action_family、payload、blocked、preview_only、cannot_satisfy、候选池、自动修复、自动处理、系统阻塞、预览验证未通过”。
+- 不要照抄 summary/state_summary；它们只是事实摘要。
+- 如果已有可确认的调整预览，说明“我已把可执行的处理内容列出来，确认前不会改方案”，并点出核心处理内容。
+- 如果某些建议暂时不能直接处理，用用户能理解的原因说清楚，例如“没有足够相近且风险更低的可替换志愿”“需要你先决定是否接受降层次或换专业范围”。
+- 回复可以结构化，但要简洁，优先用 2-4 个短要点；不要堆叠多层标题。
+"""
+
+_FIX_PROPOSAL_STRATEGY_TEXT = {
+    "replace_risk_items": "替换风险项",
+    "remove_risk_items": "移出风险项",
+    "fill_missing_count": "补足数量",
+    "sort_by_probability": "按录取率重排",
+    "rebalance_tier_ratio": "调整冲稳保结构",
+    "fill_probability_gap": "补梯度断层",
+    "add_safety_items": "补安全垫",
+    "adjust_major_group_inner_safety": "补兜底专业",
+}
+
+_FIX_PROPOSAL_STATUS_TEXT = {
+    "ready": "已生成可确认的处理预览",
+    "preview_only": "先作为处理方向参考，需要你决定取舍范围",
+    "blocked": "暂时不能直接处理，需要你先决定取舍范围或接受条件变化",
+    "info": "仅供参考",
+}
+
 
 def _as_int(value: Any, default: int = 0) -> int:
     try:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _compact_fix_proposal_for_reply_synthesis(proposal: dict[str, Any]) -> dict[str, Any]:
+    def clean_text(value: Any) -> str:
+        return _normalize_user_facing_terms(_normalize_fix_proposal_user_text(str(value or "").strip()))
+
+    status = str(proposal.get("status") or "").strip()
+    strategy = str(proposal.get("strategy") or "").strip()
+    action_summaries = [
+        clean_text(item)
+        for item in (proposal.get("action_summaries") or proposal.get("actionSummaries") or [])
+        if clean_text(item)
+    ][:4]
+    shortages: list[str] = []
+    for shortage in proposal.get("candidate_shortages") or proposal.get("candidateShortages") or []:
+        if not isinstance(shortage, dict):
+            continue
+        message = str(shortage.get("message") or "").strip()
+        if message:
+            shortages.append(clean_text(message))
+    warnings = [
+        clean_text(item)
+        for item in (proposal.get("warnings") or [])
+        if clean_text(item)
+    ][:3]
+    reason_parts = [
+        str(proposal.get("blocking_reason") or proposal.get("blockingReason") or "").strip(),
+        *shortages[:3],
+        *warnings,
+    ]
+    return {
+        "title": clean_text(proposal.get("title")),
+        "availability": _FIX_PROPOSAL_STATUS_TEXT.get(status, "需要结合审查结果进一步判断"),
+        "strategy": _FIX_PROPOSAL_STRATEGY_TEXT.get(strategy, strategy),
+        "summary": clean_text(proposal.get("summary")),
+        "impact": clean_text(proposal.get("impact")),
+        "action_summaries": action_summaries,
+        "change_counts": {
+            "remove_volunteers": _as_int(proposal.get("remove_volunteer_count") or proposal.get("removeVolunteerCount")),
+            "add_volunteers": _as_int(proposal.get("add_volunteer_count") or proposal.get("addVolunteerCount")),
+            "remove_units": _as_int(proposal.get("remove_unit_count") or proposal.get("removeUnitCount")),
+            "add_units": _as_int(proposal.get("add_unit_count") or proposal.get("addUnitCount")),
+        },
+        "reason": [
+            clean_text(part)
+            for part in reason_parts
+            if clean_text(part)
+        ][:4],
+    }
+
+
+def _compact_plan_action_result_for_reply_synthesis(result: dict[str, Any]) -> dict[str, Any]:
+    facts = result.get("facts") if isinstance(result.get("facts"), dict) else {}
+    fix_facts = facts.get("fix_proposals") if isinstance(facts.get("fix_proposals"), dict) else {}
+    proposals = [
+        _compact_fix_proposal_for_reply_synthesis(proposal)
+        for proposal in (fix_facts.get("proposals") or [])[:6]
+        if isinstance(proposal, dict)
+    ]
+    return {
+        "action_family": str(result.get("action_family") or "").strip(),
+        "result_kind": str(result.get("result_kind") or "").strip(),
+        "summary": _normalize_user_facing_terms(_normalize_fix_proposal_user_text(str(result.get("summary") or "").strip())),
+        "state_summary": _normalize_user_facing_terms(_normalize_fix_proposal_user_text(str(result.get("state_summary") or "").strip())),
+        "reply_focus": result.get("reply_focus") if isinstance(result.get("reply_focus"), list) else [],
+        "fix_proposals": {
+            "total": _as_int(fix_facts.get("total") or len(proposals)),
+            "ready_count": _as_int(fix_facts.get("ready_count")),
+            "needs_user_decision_count": _as_int(fix_facts.get("blocked_count")) + _as_int(fix_facts.get("preview_only_count")),
+            "proposals": proposals,
+        },
+    }
+
+
+async def _synthesize_semantic_plan_action_reply(
+    llm_client: LLMClient,
+    *,
+    user_prompt: str,
+    result: dict[str, Any],
+    recent_plan_context: dict[str, Any] | None = None,
+) -> tuple[str, Any | None]:
+    """Use a no-tool model pass to turn plan facts into user-facing prose."""
+
+    synthesis_agent = Agent(
+        model=llm_client.model,
+        output_type=str,
+        instructions=_PLAN_ACTION_REPLY_SYNTHESIS_INSTRUCTIONS,
+        tools=[],
+        model_settings=llm_client.model_settings,
+    )
+    prompt_payload = {
+        "user_prompt": user_prompt,
+        "recent_plan_context": recent_plan_context or {},
+        "tool_result_facts": _compact_plan_action_result_for_reply_synthesis(result),
+    }
+    run_result = await synthesis_agent.run(
+        json.dumps(prompt_payload, ensure_ascii=False, default=str),
+        model_settings=llm_client.model_settings,
+    )
+    reply = str(getattr(run_result, "output", "") or "").strip()
+    usage = None
+    with contextlib.suppress(Exception):
+        usage = run_result.usage()
+    return _sanitize_reply_for_user(_normalize_user_facing_terms(reply)), usage
 
 
 def _log_conversation_turn_event(**fields: Any) -> None:
@@ -4932,8 +5067,8 @@ def _normalize_user_facing_terms(reply: str) -> str:
         ("需要人工调整", "需要你先取舍或手动调整"),
         ("人工调整", "手动调整"),
         ("候选池", "可选范围"),
-        ("系统阻塞", "需要你先取舍或放宽条件"),
-        ("被系统阻塞", "需要你先取舍或放宽条件"),
+        ("系统阻塞", "需要你先决定是否接受调整范围变化"),
+        ("被系统阻塞", "需要你先决定是否接受调整范围变化"),
         ("阻塞原因", "需要注意"),
         ("无法生成确认卡片", "还不能直接执行"),
         ("不能生成确认卡片", "还不能直接执行"),
@@ -4941,11 +5076,11 @@ def _normalize_user_facing_terms(reply: str) -> str:
         ("不能生成确认", "还不能直接执行"),
         ("自动确认", "直接确认"),
         ("系统暂不支持", "当前不建议"),
-        ("暂不能自动处理", "建议你先人工查看或放宽条件后再试"),
-        ("暂时不能直接处理", "建议你先人工查看或放宽条件后再试"),
-        ("暂时不建议直接处理", "需要你先取舍或放宽条件"),
-        ("blocked", "需要你先取舍或放宽条件"),
-        ("preview_only", "需要你先确认取舍方向"),
+        ("暂不能自动处理", "建议你先查看具体影响，或调整筛选范围后再试"),
+        ("暂时不能直接处理", "建议你先查看具体影响，或调整筛选范围后再试"),
+        ("暂时不建议直接处理", "建议先看清影响后再决定"),
+        ("blocked", "需要你先决定是否接受调整范围变化"),
+        ("preview_only", "先作为处理方向参考"),
         ("草稿方案", "方案"),
         ("方案草稿", "方案"),
         ("草稿", "方案"),
@@ -5702,9 +5837,37 @@ class ChatService:
             SimpleNamespace(deps=request_context),
             json.dumps(plan_payload, ensure_ascii=False),
         )
+        tool_duration_ms = int((time.monotonic() - started_at) * 1000)
         result = _parse_tool_return_json(result_text) or {}
-        reply = _build_plan_timeout_fallback_reply(result) or str(result.get("summary") or "").strip()
-        reply = _sanitize_reply_for_user(_normalize_user_facing_terms(reply or "已查看当前方案的处理建议。"))
+        llm_started_at = time.monotonic()
+        synthesis_usage = None
+        synthesis_applied = False
+        try:
+            reply, synthesis_usage = await _synthesize_semantic_plan_action_reply(
+                self.llm_client,
+                user_prompt=content,
+                result=result,
+                recent_plan_context=recent_plan_context,
+            )
+            synthesis_applied = bool(reply)
+        except Exception:
+            logger.warning(
+                "Semantic plan action reply synthesis failed: session_id=%s",
+                session_id,
+                exc_info=True,
+            )
+            reply = ""
+        llm_duration_ms = int((time.monotonic() - llm_started_at) * 1000)
+        if not reply:
+            reply = _build_plan_timeout_fallback_reply(result) or str(result.get("summary") or "").strip()
+            reply = _sanitize_reply_for_user(_normalize_user_facing_terms(reply or "已查看当前方案的处理建议。"))
+        if synthesis_usage is not None:
+            tracker = self._usage_trackers.get(session_id)
+            if tracker is None:
+                tracker = UsageTracker(session_id=session_id)
+                self._usage_trackers[session_id] = tracker
+            with contextlib.suppress(Exception):
+                tracker.record(synthesis_usage)
         tool_call_id = "semantic-preview-fix-proposal"
         new_messages = _build_direct_plan_action_messages(
             content,
@@ -5712,7 +5875,7 @@ class ChatService:
             plan_payload=plan_payload,
             result_text=result_text,
             reply=reply,
-            model_name="semantic-plan-action",
+            model_name="semantic-plan-action-synthesis" if synthesis_applied else "semantic-plan-action-fallback",
         )
 
         pending_fix_proposal_card: WSResponse | None = None
@@ -5759,16 +5922,19 @@ class ChatService:
             "actionFamily": action_family_result,
             "modelProvider": _llm_config_value(self.llm_client, "provider"),
             "modelName": _llm_config_value(self.llm_client, "model_name"),
-            "llmRequests": None,
-            "inputTokens": None,
-            "outputTokens": None,
-            "totalTokens": None,
+            "llmRequests": getattr(synthesis_usage, "requests", None),
+            "inputTokens": getattr(synthesis_usage, "input_tokens", None),
+            "outputTokens": getattr(synthesis_usage, "output_tokens", None),
+            "totalTokens": getattr(synthesis_usage, "total_tokens", None),
             "toolCallCount": len(observed_tool_calls),
             "totalDurationMs": int((time.monotonic() - turn_started_at) * 1000),
-            "llmDurationMs": None,
-            "toolDurationMs": int((time.monotonic() - started_at) * 1000),
+            "llmDurationMs": llm_duration_ms if synthesis_applied else None,
+            "toolDurationMs": tool_duration_ms,
             "toolCalls": observed_tool_calls,
-            "postProcessingApplied": ["semantic_plan_action"],
+            "postProcessingApplied": [
+                "semantic_plan_action",
+                "llm_reply_synthesis" if synthesis_applied else "fallback_reply",
+            ],
             "status": "success" if result.get("result_kind") != "error" else "error",
             "errorType": result.get("result_kind") if result.get("result_kind") == "error" else None,
         }

@@ -41,9 +41,9 @@ def _build_fix_proposal_preview_summary(facts: dict[str, Any]) -> tuple[str, lis
     if ready_count > 0:
         summary_parts.append(f"{ready_count} 项可以先看预览后执行")
     if blocked_count > 0:
-        summary_parts.append(f"{blocked_count} 项需要先人工取舍或放宽条件")
+        summary_parts.append(f"{blocked_count} 项需要先决定取舍范围")
     if preview_only_count > 0:
-        summary_parts.append(f"{preview_only_count} 项需要你先确认取舍方向")
+        summary_parts.append(f"{preview_only_count} 项先作为处理方向参考")
     state_text = "，".join(summary_parts) if summary_parts else "可以先查看下面的处理方向"
     parts = ["已整理当前方案的处理建议：" + state_text]
     if lines:
@@ -57,7 +57,7 @@ def _build_fix_proposal_preview_summary(facts: dict[str, Any]) -> tuple[str, lis
         reply_focus.append("preview_only_fix_proposals")
     next_step_hints = [
         "这只是调整预览；只有已经给出明确处理动作的建议才可以进入确认执行。",
-        "遇到需要人工取舍或仅供参考的建议时，只说明可放宽方向，不要承诺直接执行。",
+        "遇到需要用户取舍或仅供参考的建议时，只说明原因和可选方向，不要承诺直接执行。",
     ]
     return "；".join(parts) + "。", reply_focus, next_step_hints
 

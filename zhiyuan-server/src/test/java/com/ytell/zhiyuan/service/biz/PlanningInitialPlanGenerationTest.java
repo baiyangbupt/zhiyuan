@@ -13,8 +13,11 @@ import com.ytell.zhiyuan.model.dto.planning.PlanningUnitDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.UpdateLatentProfileReq;
 import com.ytell.zhiyuan.model.entity.biz.ChatSessionExtraData;
+import com.ytell.zhiyuan.model.entity.biz.PlanningDataFreshnessScheduleEntity;
 import com.ytell.zhiyuan.model.enums.VolunteerModel;
 import com.ytell.zhiyuan.service.shared.ChatSessionExtraDataSharedService;
+import com.ytell.zhiyuan.service.shared.ChatSessionSharedService;
+import com.ytell.zhiyuan.service.shared.PlanningDataFreshnessScheduleSharedService;
 import com.ytell.zhiyuan.service.shared.PlanningBehaviorEventSharedService;
 import com.ytell.zhiyuan.service.volunteer.VolunteerIntervalService;
 import org.junit.jupiter.api.BeforeEach;
@@ -37,17 +40,28 @@ public class PlanningInitialPlanGenerationTest {
 
     private PlanningStateService planningStateService;
     private ChatSessionExtraDataSharedService chatSessionExtraDataSharedService;
+    private ChatSessionSharedService chatSessionSharedService;
     private PlanningBehaviorEventSharedService planningBehaviorEventSharedService;
+    private PlanningDataFreshnessScheduleSharedService planningDataFreshnessScheduleSharedService;
+    private VolunteerSourceDataSyncService volunteerSourceDataSyncService;
     private VolunteerBizService volunteerBizService;
 
     @BeforeEach
     void setUp() {
         planningStateService = new PlanningStateService();
         chatSessionExtraDataSharedService = Mockito.mock(ChatSessionExtraDataSharedService.class);
+        chatSessionSharedService = Mockito.mock(ChatSessionSharedService.class);
         planningBehaviorEventSharedService = Mockito.mock(PlanningBehaviorEventSharedService.class);
+        planningDataFreshnessScheduleSharedService = Mockito.mock(PlanningDataFreshnessScheduleSharedService.class);
+        volunteerSourceDataSyncService = Mockito.mock(VolunteerSourceDataSyncService.class);
         volunteerBizService = Mockito.mock(VolunteerBizService.class);
+        when(planningDataFreshnessScheduleSharedService.saveOrUpdateSchedule(any(PlanningDataFreshnessScheduleEntity.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
         ReflectionTestUtils.setField(planningStateService, "chatSessionExtraDataSharedService", chatSessionExtraDataSharedService);
+        ReflectionTestUtils.setField(planningStateService, "chatSessionSharedService", chatSessionSharedService);
         ReflectionTestUtils.setField(planningStateService, "planningBehaviorEventSharedService", planningBehaviorEventSharedService);
+        ReflectionTestUtils.setField(planningStateService, "planningDataFreshnessScheduleSharedService", planningDataFreshnessScheduleSharedService);
+        ReflectionTestUtils.setField(planningStateService, "volunteerSourceDataSyncService", volunteerSourceDataSyncService);
         ReflectionTestUtils.setField(planningStateService, "volunteerBizService", volunteerBizService);
         ReflectionTestUtils.setField(planningStateService, "volunteerIntervalService", new VolunteerIntervalService());
     }

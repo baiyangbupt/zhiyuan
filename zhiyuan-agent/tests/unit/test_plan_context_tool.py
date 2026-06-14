@@ -236,7 +236,7 @@ def test_collect_plan_context_inputs_aggregates_major_group_relation_counts_by_u
         result = asyncio.run(collect_plan_context_inputs(_ctx("ctx-3-major-group")))
 
     data = json.loads(result)
-    assert "当前方案里较贴近的有2个，明显冲突的有0个" in data["summary"]
+    assert "当前方案里较贴近的有2个，没有看到明显冲突" in data["summary"]
     assert any("北京石油化工学院(03)-计算机科学与技术(4600元)" in line for line in data["relation_lines"])
     assert any("湖北工程学院(01)-自动化(4000元)" in line for line in data["relation_lines"])
     assert not any("软件工程(4600元)" in line for line in data["relation_lines"])
@@ -302,4 +302,4 @@ def test_collect_plan_context_inputs_prefers_latest_user_profile_level3_over_sta
     data = json.loads(result)
     assert data["positive_majors"] == ["网络与新媒体", "跨境电子商务"]
     assert "偏好专业=网络与新媒体,跨境电子商务" in data["summary"]
-    assert "当前方案里较贴近的有2个，明显冲突的有0个" in data["summary"]
+    assert "当前方案里较贴近的有2个，没有看到明显冲突" in data["summary"]

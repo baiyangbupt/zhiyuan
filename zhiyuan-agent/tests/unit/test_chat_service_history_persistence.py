@@ -316,7 +316,7 @@ def test_normalize_downgraded_intent_preview_reply_removes_fake_card_and_candida
     assert "自动过滤" not in normalized
     assert "不再进入候选" not in normalized
     assert "按这个口径来筛选" not in normalized
-    assert "基础候选池不会因此变小" in normalized
+    assert "基础可选范围不会因此变小" in normalized
     assert "作为排除参考" in normalized
 
 
@@ -410,8 +410,8 @@ def test_normalize_user_facing_terms_removes_internal_review_repair_words():
     assert "无法生成确认" not in normalized
     assert "preview_only" not in normalized
     assert "需要注意" in normalized
-    assert "需要你先取舍或放宽条件" in normalized
-    assert "建议你先人工查看或放宽条件后再试" in normalized
+    assert "需要你先决定是否接受调整范围变化" in normalized
+    assert "建议你先查看具体影响，或调整筛选范围后再试" in normalized
 
 
 def test_normalize_user_facing_terms_softens_review_fix_proposal_language():
@@ -2304,7 +2304,7 @@ def test_sanitize_reply_for_user_normalizes_intent_candidate_pool_semantics():
     assert "采纳后，后续推荐" in reply
     assert "采纳后才会生效" in reply
     assert "要不要我先列出来让你采纳" in reply
-    assert "基础候选池" in reply
+    assert "基础可选范围" in reply
 
 
 def test_chat_service_appends_workspace_refresh_after_review_tool_call(tmp_path, mock_llm_client):
@@ -8342,7 +8342,7 @@ def test_chat_service_does_not_append_stale_pending_boundary_to_readonly_major_i
 
     assert isinstance(reply, str)
     assert "收窄候选范围" not in reply
-    assert "不会改小基础候选池" in reply
+    assert "不会改小基础可选范围" in reply
     assert "后续推荐、方案检查和方案调整参考" in reply
     assert "待确认内容" not in reply
     assert "尚未确认" not in reply
@@ -10038,7 +10038,7 @@ def test_chat_service_does_not_create_fix_proposal_card_for_review_user_goal_pro
     save_pending_mock.assert_not_awaited()
 
 
-def test_chat_service_semantic_plan_route_creates_fix_proposal_card(tmp_path, mock_llm_client):
+def test_chat_service_semantic_plan_route_synthesizes_reply_and_creates_fix_proposal_card(tmp_path, mock_llm_client):
     db_path = tmp_path / "history.db"
     store = ChatHistoryStore(str(db_path))
     review_history = [
@@ -10102,7 +10102,7 @@ def test_chat_service_semantic_plan_route_creates_fix_proposal_card(tmp_path, mo
         "action_family": "preview_fix_proposal",
         "stage": "apply",
         "result_kind": "fix_proposal_preview",
-        "summary": "已生成当前方案的处理预览：1 项可以确认后执行。",
+        "summary": "已整理当前方案的处理建议：1 项可以确认后执行；处理预览没有缩小录取率梯度断层，需要先人工取舍或放宽条件。",
         "facts": {
             "fix_proposals": {
                 "source_version_guard": 18,
@@ -10124,7 +10124,15 @@ def test_chat_service_semantic_plan_route_creates_fix_proposal_card(tmp_path, mo
         },
         "reply_focus": ["fix_proposal_preview", "ready_fix_proposals"],
     }
-    fake_agent = _FakeAgent(["不应该调用模型"])
+    fake_agent = _FakeAgent(["不应该进入完整 Agent"])
+    synthesis_usage = MagicMock(
+        input_tokens=10,
+        output_tokens=8,
+        total_tokens=18,
+        requests=1,
+        tool_calls=0,
+    )
+    synthesized_reply = "我已把可以执行的补充方案列出来了：这次重点是补 2 条本省保底志愿，确认前不会改动当前方案。"
     pending_state, save_pending_mock, get_pending_mock = _pending_confirmation_store()
 
     with patch("app.service.ChatAgent", return_value=fake_agent), \
@@ -10143,6 +10151,7 @@ def test_chat_service_semantic_plan_route_creates_fix_proposal_card(tmp_path, mo
             patch("app.service.get_intent_change_cache", AsyncMock(return_value={"data": {"planEditCache": None}})), \
             patch("app.service.classify_plan_semantic_action", AsyncMock(return_value=_semantic_plan("preview_fix_proposal"))), \
             patch("app.service.execute_plan_action", AsyncMock(return_value=json.dumps(preview_result, ensure_ascii=False))) as execute_mock, \
+            patch("app.service._synthesize_semantic_plan_action_reply", AsyncMock(return_value=(synthesized_reply, synthesis_usage))) as synthesize_mock, \
             patch("app.service.save_pending_confirmation", save_pending_mock), \
             patch("app.service.get_pending_confirmation", get_pending_mock):
         service = ChatService(mock_llm_client, store)
@@ -10155,13 +10164,19 @@ def test_chat_service_semantic_plan_route_creates_fix_proposal_card(tmp_path, mo
         )
 
     assert isinstance(reply, ChatServiceResponseEnvelope)
-    assert "处理预览" in reply.primary
+    assert reply.primary == synthesized_reply
+    assert "人工取舍" not in reply.primary
+    assert "放宽条件" not in reply.primary
+    assert "处理预览没有" not in reply.primary
+    assert "blocked" not in reply.primary
+    assert "preview_only" not in reply.primary
     card_payloads = [json.loads(item.content) for item in reply.followups if item.type == "pendingConfirmationCard"]
     assert len(card_payloads) == 1
     assert card_payloads[0]["actionFamily"] == "apply_fix_proposal"
     assert card_payloads[0]["proposalId"] == "fp_fill_1"
     assert pending_state["value"]["executionPayload"]["proposalId"] == "fp_fill_1"
     assert fake_agent.calls == []
+    synthesize_mock.assert_awaited_once()
     execute_mock.assert_awaited_once()
     payload = json.loads(execute_mock.await_args.args[1])
     assert payload["action_family"] == "preview_fix_proposal"
