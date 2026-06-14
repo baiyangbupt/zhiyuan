@@ -2589,9 +2589,9 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     if (!workspaceIntent) {
       return;
     }
-    const nextView = workspaceIntent.targetView === 'ordered' ? 'ordered' : 'candidate';
+    const nextView = workspaceIntent.targetView;
     const preserveView = Boolean(workspaceIntent.preserveView);
-    if (!preserveView) {
+    if (!preserveView && nextView) {
       if (nextView === 'ordered') {
         setActiveView('ordered');
       } else {
@@ -2620,10 +2620,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       }
     }
     setFocusVolunteerIds(workspaceIntent.volunteerIds || []);
-    if (workspaceIntent.refresh) {
-      if (nextView === 'candidate') {
-        refreshCandidatePool(shouldRefreshLatestCandidateOnEnter(), shouldRefreshLatestCandidateOnEnter());
-      }
+    if (workspaceIntent.refresh && nextView === 'candidate') {
+      refreshCandidatePool(shouldRefreshLatestCandidateOnEnter(), shouldRefreshLatestCandidateOnEnter());
     }
     onWorkspaceIntentConsumed?.();
   }, [workspaceIntent?.nonce]);

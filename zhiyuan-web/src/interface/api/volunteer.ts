@@ -12,10 +12,14 @@ export interface DialogueProps {
   onWorkspaceIntentConsumed?: () => void;
 }
 
+export type PlanningWorkspaceTargetView = 'candidate' | 'ordered';
+export type PlanningWorkspaceRefreshTarget = PlanningWorkspaceTargetView | 'review' | 'draft' | 'workingPlan';
+
 export interface PlanningWorkspaceIntent {
   nonce: number;
   targetTab?: 'volunteer';
-  targetView?: 'candidate' | 'ordered';
+  targetView?: PlanningWorkspaceTargetView;
+  refreshTargets?: PlanningWorkspaceRefreshTarget[];
   volunteerIds?: string[];
   refresh?: boolean;
   preserveView?: boolean;

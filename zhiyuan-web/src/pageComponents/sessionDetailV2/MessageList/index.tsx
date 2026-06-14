@@ -12,7 +12,7 @@ import {
   IWsMessage,
   IMessage,
 } from '@/interface/api/sessionDetail';
-import { PlanningWorkspaceIntent } from '@/interface/api/volunteer';
+import { PlanningWorkspaceIntent, PlanningWorkspaceRefreshTarget } from '@/interface/api/volunteer';
 import {
   getEntityPropertyAnalyzeApi,
   getMessageListApi,
@@ -126,7 +126,8 @@ interface IIntentCardContent {
   clickable?: boolean;
   clicked?: boolean;
   actionText?: string;
-  targetView?: PlanningWorkspaceIntent['targetView'];
+  targetView?: PlanningWorkspaceIntent['targetView'] | PlanningWorkspaceRefreshTarget;
+  refreshTargets?: PlanningWorkspaceRefreshTarget[];
   volunteerIds?: string[];
   refresh?: boolean;
   preserveView?: boolean;
@@ -159,6 +160,7 @@ const isIntentAnalysisCard = (contentObj?: IIntentCardContent | null) =>
   isIntentConfirmCard(contentObj) || isInterestAnalysisOnlyCard(contentObj);
 
 const supportedWorkspaceTargetViews = new Set(['candidate', 'ordered']);
+const supportedWorkspaceRefreshTargets = new Set(['candidate', 'ordered', 'review', 'draft', 'workingPlan']);
 
 const normalizeWorkspaceTargetView = (
   targetView: unknown
@@ -167,6 +169,21 @@ const normalizeWorkspaceTargetView = (
     return null;
   }
   return targetView as PlanningWorkspaceIntent['targetView'];
+};
+
+const normalizeWorkspaceRefreshTargets = (contentObj: Record<string, any>): PlanningWorkspaceRefreshTarget[] => {
+  const rawTargets = Array.isArray(contentObj.refreshTargets)
+    ? contentObj.refreshTargets
+    : Array.isArray(contentObj.workspaceRefreshTargets)
+      ? contentObj.workspaceRefreshTargets
+      : [];
+  const targets = rawTargets
+    .filter((target): target is string => typeof target === 'string')
+    .filter(target => supportedWorkspaceRefreshTargets.has(target)) as PlanningWorkspaceRefreshTarget[];
+  if (typeof contentObj.targetView === 'string' && supportedWorkspaceRefreshTargets.has(contentObj.targetView)) {
+    targets.push(contentObj.targetView as PlanningWorkspaceRefreshTarget);
+  }
+  return Array.from(new Set(targets));
 };
 
 const isStructuredIntentSelectEcho = (record: IMessage) => {
@@ -218,12 +235,14 @@ const parseWorkspaceIntentPayload = (
     return null;
   }
   const targetView = normalizeWorkspaceTargetView(contentObj.targetView);
-  if (!targetView) {
+  const refreshTargets = normalizeWorkspaceRefreshTargets(contentObj);
+  if (!targetView && refreshTargets.length === 0) {
     return null;
   }
   return {
     targetTab: 'volunteer',
-    targetView,
+    targetView: targetView || undefined,
+    refreshTargets,
     volunteerIds: Array.isArray(contentObj.volunteerIds) ? contentObj.volunteerIds : [],
     refresh: Boolean(contentObj.refresh),
     preserveView: Boolean(contentObj.preserveView),
@@ -1104,12 +1123,14 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
 
   const handleWorkspaceCardClick = (contentObj: IIntentCardContent) => {
     const targetView = normalizeWorkspaceTargetView(contentObj.targetView);
-    if (!targetView) {
+    const refreshTargets = normalizeWorkspaceRefreshTargets(contentObj as Record<string, any>);
+    if (!targetView && refreshTargets.length === 0) {
       return;
     }
     onWorkspaceIntent?.({
       targetTab: 'volunteer',
-      targetView,
+      targetView: targetView || undefined,
+      refreshTargets,
       volunteerIds: contentObj.volunteerIds || [],
       refresh: contentObj.refresh,
       preserveView: contentObj.preserveView,
