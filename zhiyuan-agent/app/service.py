@@ -233,7 +233,8 @@ _PLAN_ACTION_REPLY_SYNTHESIS_INSTRUCTIONS = """\
 
 约束：
 - 只基于输入里的结构化事实回答，不新增数字、学校、专业、风险结论。
-- 不要说“工具、系统、action_family、payload、blocked、preview_only、cannot_satisfy、候选池、自动修复、自动处理、系统阻塞、预览验证未通过”。
+- 不要说“工具、系统、action_family、payload、blocked、preview_only、cannot_satisfy、候选池、自动修复、自动处理、自动补齐、自动应用、系统阻塞、预览验证未通过、预览参考状态、被卡住”。
+- 统一用“你”，不要用“您”。
 - 不要照抄 summary/state_summary；它们只是事实摘要。
 - 如果已有可确认的调整预览，说明“我已把可执行的处理内容列出来，确认前不会改方案”，并点出核心处理内容。
 - 如果某些建议暂时不能直接处理，用用户能理解的原因说清楚，例如“没有足够相近且风险更低的可替换志愿”“需要你先决定是否接受降层次或换专业范围”。
@@ -5056,10 +5057,23 @@ def _normalize_user_facing_terms(reply: str) -> str:
         ("能否自动处理", "怎么处理"),
         ("能自动处理吗", "可以怎么处理"),
         ("系统尝试", "我查了一下"),
+        ("系统判断", "当前判断"),
+        ("系统凑不出", "当前凑不出"),
         ("系统暂时无法", "当前暂时无法"),
         ("系统无法", "当前还不能"),
+        ("自动补齐", "直接补齐"),
+        ("自动应用", "直接执行"),
         ("自动修复", "直接处理"),
+        ("自动处理", "直接处理"),
+        ("预览参考状态", "处理方向参考"),
+        ("被卡住了", "需要你先决定"),
+        ("被卡住", "需要你先决定"),
+        ("卡住了", "需要你先决定"),
+        ("卡住", "需要你先决定"),
         ("无法批量处理", "不能一次性处理完"),
+        ("组内安全垫专业", "兜底专业"),
+        ("组内安全垫", "兜底专业"),
+        ("安全垫专业", "兜底专业"),
         ("暂时无法自动补强安全垫", "当前暂时缺少合适的补位选择"),
         ("暂时无法自动补强", "当前暂时缺少合适的补位选择"),
         ("放宽约束", "放宽报考条件"),
@@ -5077,6 +5091,7 @@ def _normalize_user_facing_terms(reply: str) -> str:
         ("自动确认", "直接确认"),
         ("系统暂不支持", "当前不建议"),
         ("暂不能自动处理", "建议你先查看具体影响，或调整筛选范围后再试"),
+        ("暂不能直接处理", "建议你先查看具体影响，或调整筛选范围后再试"),
         ("暂时不能直接处理", "建议你先查看具体影响，或调整筛选范围后再试"),
         ("暂时不建议直接处理", "建议先看清影响后再决定"),
         ("blocked", "需要你先决定是否接受调整范围变化"),
@@ -5105,6 +5120,14 @@ def _normalize_user_facing_terms(reply: str) -> str:
     normalized = normalized.replace("报考参考信息信息", "报考参考信息")
     normalized = normalized.replace("当前当前", "当前")
     normalized = normalized.replace("不足，当前暂时", "不足，暂时")
+    normalized = normalized.replace("直接直接", "直接")
+    normalized = normalized.replace("所以 需要你先决定是否接受调整范围变化 了", "所以需要你先决定是否接受这类调整")
+    normalized = normalized.replace("需要你先决定是否接受调整范围变化 了", "需要你先决定是否接受这类调整")
+    normalized = normalized.replace("你现在的可选范围里", "当前候选志愿里")
+    normalized = normalized.replace("当前可用于规划的可选范围里", "当前候选志愿里")
+    normalized = normalized.replace("可选范围里", "候选志愿里")
+    normalized = re.sub(r"[✅⏳📝⚠️❗️⭐️]+", "", normalized)
+    normalized = normalized.replace("您", "你")
     if any(token in normalized for token in ("方案", "志愿", "候选")):
         plan_add_replacements = (
             ("添加预览", "加入方案预览"),
@@ -5486,6 +5509,124 @@ def _guard_unbacked_plan_confirmation_reply(reply: str) -> str:
     return f"{stripped}\n\n{_UNBACKED_PLAN_CONFIRMATION_REPLY}"
 
 
+def _clean_review_fallback_text(value: Any) -> str:
+    text = _normalize_user_facing_terms(_normalize_fix_proposal_user_text(str(value or "").strip()))
+    text = text.replace("暂时无法直接处理", "暂时不能直接处理")
+    return text.strip("。；;，, ：:").strip()
+
+
+def _review_fallback_problem_text(values: Any, *, limit: int = 3) -> str:
+    if not isinstance(values, list):
+        return ""
+    items: list[str] = []
+    for value in values:
+        text = _clean_review_fallback_text(value)
+        if text and text not in items:
+            items.append(text)
+        if len(items) >= limit:
+            break
+    return "；".join(items)
+
+
+def _review_fallback_examples_text(values: Any, *, limit: int = 2) -> str:
+    if not isinstance(values, list):
+        return ""
+    lines: list[str] = []
+    for item in values:
+        if not isinstance(item, dict):
+            continue
+        summary = _clean_review_fallback_text(item.get("summary"))
+        count_text = _clean_review_fallback_text(item.get("count_text"))
+        examples = [
+            _clean_review_fallback_text(example)
+            for example in (item.get("items") or [])[:2]
+            if _clean_review_fallback_text(example)
+        ]
+        parts = [part for part in (summary, count_text) if part]
+        if examples:
+            parts.append("例如：" + "；".join(examples))
+        if parts:
+            lines.append("，".join(parts))
+        if len(lines) >= limit:
+            break
+    return "；".join(lines)
+
+
+def _review_fallback_fix_proposal_lines(fix_facts: dict[str, Any], *, limit: int = 3) -> tuple[list[str], list[str]]:
+    ready: list[str] = []
+    needs_decision: list[str] = []
+    proposals = fix_facts.get("proposals") if isinstance(fix_facts.get("proposals"), list) else []
+    for proposal in proposals:
+        if not isinstance(proposal, dict):
+            continue
+        title = _clean_review_fallback_text(proposal.get("title")) or "处理方向"
+        status = str(proposal.get("status") or "").strip()
+        strategy = _FIX_PROPOSAL_STRATEGY_TEXT.get(str(proposal.get("strategy") or "").strip(), "")
+        summary = _clean_review_fallback_text(proposal.get("summary"))
+        reason = _clean_review_fallback_text(proposal.get("blocking_reason") or proposal.get("blockingReason"))
+        shortages = []
+        for shortage in proposal.get("candidate_shortages") or proposal.get("candidateShortages") or []:
+            if not isinstance(shortage, dict):
+                continue
+            message = _clean_review_fallback_text(shortage.get("message"))
+            if message and message not in shortages:
+                shortages.append(message)
+        detail_parts = [part for part in (strategy, summary, reason, *shortages[:1]) if part]
+        line = title
+        if detail_parts:
+            line += "：" + "；".join(detail_parts[:3])
+        if status == "ready":
+            if line not in ready:
+                ready.append(line)
+        elif line not in needs_decision:
+            needs_decision.append(line)
+        if len(ready) >= limit and len(needs_decision) >= limit:
+            break
+    return ready[:limit], needs_decision[:limit]
+
+
+def _build_review_result_fallback_lines(facts: dict[str, Any]) -> list[str]:
+    risk_count = _as_int(facts.get("risk_count"))
+    warn_count = _as_int(facts.get("warn_count"))
+    plan_total = _as_int(facts.get("plan_total"))
+    target_total = _as_int(facts.get("target_total"))
+    tier_text = _format_status_tier_counts(facts.get("tier_counts"))
+    lines = ["我已经重新看了当前方案，先说结论：", ""]
+    status_parts = [f"风险 {risk_count} 项", f"提醒 {warn_count} 项"]
+    if plan_total > 0:
+        target = target_total or plan_total
+        status_parts.insert(0, f"方案 {plan_total}/{target} 个志愿")
+    if tier_text:
+        status_parts.append(f"冲稳保 {tier_text}")
+    lines.append("- " + "，".join(status_parts) + "。")
+
+    problems = _review_fallback_problem_text(facts.get("main_problems"))
+    if problems:
+        lines.append(f"- 主要需要留意：{problems}。")
+
+    examples = _review_fallback_examples_text(facts.get("issue_hit_plan_examples"))
+    if examples:
+        lines.append(f"- 代表例子：{examples}。")
+
+    relation = facts.get("intent_relation") if isinstance(facts.get("intent_relation"), dict) else {}
+    conflict = _clean_review_fallback_text(str(relation.get("conflict_examples") or "").removeprefix("需关注冲突："))
+    if conflict:
+        lines.append(f"- 和已确认想法冲突的例子：{conflict}。")
+
+    fix_facts = facts.get("fix_proposals") if isinstance(facts.get("fix_proposals"), dict) else {}
+    ready_lines, needs_decision_lines = _review_fallback_fix_proposal_lines(fix_facts)
+    if ready_lines:
+        lines.append(f"- 可以先出调整预览的方向：{'；'.join(ready_lines)}。")
+    if needs_decision_lines:
+        lines.append(f"- 需要你先决定取舍的方向：{'；'.join(needs_decision_lines)}。")
+
+    lines.extend([
+        "",
+        "如果你想处理其中某一类，可以直接说“先处理高收费”“先补稳一点”或“把具体命中的志愿列出来”。确认前不会改动当前方案。",
+    ])
+    return lines
+
+
 def _build_plan_timeout_fallback_reply(result: dict[str, Any]) -> str | None:
     result_kind = str(result.get("result_kind") or "").strip()
     if result_kind not in {
@@ -5530,15 +5671,18 @@ def _build_plan_timeout_fallback_reply(result: dict[str, Any]) -> str | None:
     next_step_hints = result.get("next_step_hints") if isinstance(result.get("next_step_hints"), list) else []
 
     rendered_status_overview = result_kind == "status_overview" and bool(facts)
+    rendered_review_result = result_kind == "review_result" and bool(facts)
     if rendered_status_overview:
         lines = _build_status_overview_fallback_lines(facts)
+    elif rendered_review_result:
+        lines = _build_review_result_fallback_lines(facts)
     else:
         lines = [lead_map.get(result_kind, "这轮方案分析已经执行完了，我先把核心结果直接给你："), "", summary]
-    if coverage and not rendered_status_overview:
+    if coverage and not rendered_status_overview and not rendered_review_result:
         lines.append(f"- {coverage}")
-    if aligned_examples and not rendered_status_overview:
+    if aligned_examples and not rendered_status_overview and not rendered_review_result:
         lines.append(f"- {aligned_examples}")
-    if conflict_examples and not rendered_status_overview:
+    if conflict_examples and not rendered_status_overview and not rendered_review_result:
         lines.append(f"- {conflict_examples}")
     if next_step_hints:
         first_hint = str(next_step_hints[0] or "").strip()
@@ -5810,19 +5954,27 @@ class ChatService:
 
         action_family = str(getattr(decision, "actionFamily", "none") or "none")
         confidence = float(getattr(decision, "confidence", 0.0) or 0.0)
+        short_review_followup = (
+            action_family == "review_plan"
+            and bool(recent_plan_context)
+            and len(str(content or "").strip()) <= 12
+        )
         if (
             action_family != "preview_fix_proposal"
-            or confidence < _SEMANTIC_PLAN_ACTION_CONFIDENCE_THRESHOLD
-        ):
+            and not short_review_followup
+        ) or confidence < _SEMANTIC_PLAN_ACTION_CONFIDENCE_THRESHOLD:
             return None
 
         if on_progress is not None:
             with contextlib.suppress(Exception):
-                await on_progress("正在根据当前方案提醒整理调整预览...")
+                if action_family == "review_plan":
+                    await on_progress("正在重新检查当前方案...")
+                else:
+                    await on_progress("正在根据当前方案提醒整理调整预览...")
 
         plan_payload = {
-            "stage": "apply",
-            "action_family": "preview_fix_proposal",
+            "stage": "review" if action_family == "review_plan" else "apply",
+            "action_family": action_family,
             "user_goal": content,
             "requires_confirmation": False,
         }
@@ -5842,20 +5994,23 @@ class ChatService:
         llm_started_at = time.monotonic()
         synthesis_usage = None
         synthesis_applied = False
-        try:
-            reply, synthesis_usage = await _synthesize_semantic_plan_action_reply(
-                self.llm_client,
-                user_prompt=content,
-                result=result,
-                recent_plan_context=recent_plan_context,
-            )
-            synthesis_applied = bool(reply)
-        except Exception:
-            logger.warning(
-                "Semantic plan action reply synthesis failed: session_id=%s",
-                session_id,
-                exc_info=True,
-            )
+        if action_family == "preview_fix_proposal":
+            try:
+                reply, synthesis_usage = await _synthesize_semantic_plan_action_reply(
+                    self.llm_client,
+                    user_prompt=content,
+                    result=result,
+                    recent_plan_context=recent_plan_context,
+                )
+                synthesis_applied = bool(reply)
+            except Exception:
+                logger.warning(
+                    "Semantic plan action reply synthesis failed: session_id=%s",
+                    session_id,
+                    exc_info=True,
+                )
+                reply = ""
+        else:
             reply = ""
         llm_duration_ms = int((time.monotonic() - llm_started_at) * 1000)
         if not reply:
@@ -5868,7 +6023,7 @@ class ChatService:
                 self._usage_trackers[session_id] = tracker
             with contextlib.suppress(Exception):
                 tracker.record(synthesis_usage)
-        tool_call_id = "semantic-preview-fix-proposal"
+        tool_call_id = f"semantic-{action_family}"
         new_messages = _build_direct_plan_action_messages(
             content,
             tool_call_id=tool_call_id,
@@ -5880,7 +6035,7 @@ class ChatService:
 
         pending_fix_proposal_card: WSResponse | None = None
         latest_plan_result = _latest_fix_proposal_confirmation_source(new_messages)
-        if isinstance(latest_plan_result, dict):
+        if action_family == "preview_fix_proposal" and isinstance(latest_plan_result, dict):
             facts = latest_plan_result.get("facts") if isinstance(latest_plan_result.get("facts"), dict) else {}
             fix_facts = facts.get("fix_proposals") if isinstance(facts.get("fix_proposals"), dict) else {}
             ready_proposal = _select_ready_fix_proposal(

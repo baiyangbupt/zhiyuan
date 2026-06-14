@@ -312,7 +312,7 @@ def _fix_proposal_blocking_hint(facts: dict[str, Any]) -> str:
             continue
         guidance = _fix_proposal_blocking_guidance(proposal)
         if guidance:
-            return "遇到需要人工取舍或候选不足的处理建议时，要先用用户能理解的话说明为什么不能直接处理；不要承诺已经能自动补齐或自动替换。"
+            return "遇到需要用户取舍或可替换志愿不足的处理建议时，要先用用户能理解的话说明为什么不能直接处理；不要承诺已经能直接补齐或直接替换。"
     return ""
 
 
@@ -411,9 +411,9 @@ def _build_review_summary(facts: dict[str, Any]) -> tuple[str, list[str], list[s
     if problems_text:
         parts.append(f"主要问题是 {problems_text}")
     if fix_proposal_total > 0:
-        parts.append(f"已返回 {fix_proposal_total} 项处理建议事实")
+        parts.append(f"已整理 {fix_proposal_total} 个处理方向")
     elif compensation_count > 0:
-        parts.append(f"已返回 {compensation_count} 项补齐方向事实")
+        parts.append(f"已整理 {compensation_count} 个补齐方向")
 
     reply_focus = ["review_result", "risk_warning"]
     if problems_text:
@@ -429,13 +429,13 @@ def _build_review_summary(facts: dict[str, Any]) -> tuple[str, list[str], list[s
 
     next_step_hints: list[str] = []
     if missing_stable_or_protect:
-        next_step_hints.append("如果用户想补稳或保，先说明当前候选池没有对应供给，不要承诺能直接补入。")
+        next_step_hints.append("如果用户想补稳或保，先说明当前可用来补位的志愿不足，不要承诺能直接补入。")
     if compensation_count > 0 and not fix_proposal_total:
         next_step_hints.append("这些补齐方向只是后端旧状态素材；如果用户想继续处理，应优先走处理预览，不要承诺直接应用旧补齐动作。")
     if risk_count == 0 and warn_count == 0:
         next_step_hints.append("如果用户只是确认当前是否稳定，可以明确说明目前没有明显风险或提醒。")
     if fix_proposal_total > 0:
-        next_step_hints.append("涉及方案处理时，以 fix_proposals 为后端权威处理方向；需要人工取舍或仅供参考的建议不要承诺自动执行。")
+        next_step_hints.append("涉及方案处理时，以 fix_proposals 为后端权威处理方向；需要用户取舍或仅供参考的建议不要承诺直接执行。")
     blocking_hint = _fix_proposal_blocking_hint(facts)
     if blocking_hint:
         next_step_hints.append(blocking_hint)

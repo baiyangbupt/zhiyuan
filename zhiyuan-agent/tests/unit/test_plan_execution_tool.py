@@ -3773,7 +3773,9 @@ def test_execute_plan_action_review_reply_includes_backend_fix_proposals():
     data = json.loads(result)
     assert data["result_kind"] == "review_result"
     assert "### 可处理方向" not in data["summary"]
-    assert "已返回 2 项处理建议事实" in data["summary"]
+    assert "已整理 2 个处理方向" in data["summary"]
+    assert "已返回" not in data["summary"]
+    assert "处理建议事实" not in data["summary"]
     assert "先作为处理方向参考" not in data["summary"]
     assert "cannot_satisfy" not in data["summary"]
     assert "preview_only" not in data["summary"]
@@ -3902,7 +3904,9 @@ def test_execute_plan_action_review_reply_hides_internal_fix_proposal_markers():
 
     data = json.loads(result)
     assert data["result_kind"] == "review_result"
-    assert "已返回 2 项处理建议事实" in data["summary"]
+    assert "已整理 2 个处理方向" in data["summary"]
+    assert "已返回" not in data["summary"]
+    assert "处理建议事实" not in data["summary"]
     assert "处理高收费：优先看替换；预计移出 1 条、补入 1 条；替换风险志愿" not in data["summary"]
     assert "边缘分风险：当前可用于规划的可选范围里，可用保底或安全垫候选不足" not in data["summary"]
     assert "cannot_satisfy" not in data["summary"]

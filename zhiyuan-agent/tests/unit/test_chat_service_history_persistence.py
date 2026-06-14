@@ -425,10 +425,58 @@ def test_normalize_user_facing_terms_softens_review_fix_proposal_language():
         assert term not in normalized
     assert "怎么处理" in normalized
     assert "我查了一下替换" in normalized
-    assert "可选范围" in normalized
+    assert "候选志愿" in normalized
     assert "当前暂时缺少合适的补位选择" in normalized
     assert "不能一次性处理完" in normalized
     assert "需要你先取舍或手动调整" in normalized
+
+
+def test_review_fallback_uses_user_facing_facts_instead_of_raw_summary():
+    reply = _build_plan_timeout_fallback_reply(
+        {
+            "result_kind": "review_result",
+            "summary": "已完成方案审查，风险 1 项，提醒 7 项；已返回 8 项处理建议事实。",
+            "facts": {
+                "risk_count": 1,
+                "warn_count": 7,
+                "plan_total": 45,
+                "target_total": 45,
+                "tier_counts": {"冲": 20, "稳": 10, "保": 15},
+                "main_problems": ["冲区占比过高", "当前候选池缺少保底候选"],
+                "issue_hit_plan_examples": [
+                    {
+                        "summary": "当前排序存在录取概率倒挂",
+                        "count_text": "共命中 5 条志愿",
+                        "items": ["A大学第101组-法学(冲)@2"],
+                    }
+                ],
+                "fix_proposals": {
+                    "proposals": [
+                        {
+                            "title": "处理录取率倒挂",
+                            "status": "ready",
+                            "strategy": "sort_by_probability",
+                            "summary": "建议检查相邻专业组顺序",
+                        },
+                        {
+                            "title": "录取率梯度断层暂时无法自动处理",
+                            "status": "blocked",
+                            "strategy": "cannot_satisfy",
+                            "summary": "当前候选池里断层中间录取率候选不足",
+                        },
+                    ]
+                },
+            },
+        }
+    )
+
+    assert reply is not None
+    assert "方案 45/45 个志愿" in reply
+    assert "可以先出调整预览" in reply
+    assert "需要你先决定取舍" in reply
+    forbidden = ("已返回", "处理建议事实", "候选池", "自动处理", "blocked", "preview_only")
+    for term in forbidden:
+        assert term not in reply
 
 
 def test_sanitize_reply_for_user_does_not_duplicate_confirmation_boundary():
