@@ -47,6 +47,7 @@ from app.tools.intent_state_tool import (
     _major_relation_notes_from_latest_utterance,
     _normalize_region_area_polarity_payloads,
     _prune_generated_negative_complements_for_only_keep,
+    _remove_unstated_positive_major_conflicts,
     _recover_polarity_major_intent_locally_from_latest_utterance,
     _recover_intents_from_context,
     _refine_major_boundary_mentions,
@@ -2289,6 +2290,37 @@ def test_refine_major_intents_dedupes_same_name_across_levels():
     }
 
 
+def test_remove_unstated_positive_major_conflicts_prefers_negative_scope():
+    payload = _remove_unstated_positive_major_conflicts(
+        {
+            "level1": ["文学"],
+            "level2": ["外国语言文学类"],
+            "level3": ["英语"],
+            "negative_level3": ["英语", "商务英语", "翻译"],
+        },
+        latest_utterance="不要英语相关专业，当前方案里有的话也删掉",
+        batch="01",
+    )
+
+    assert payload == {"negative_level3": ["英语", "商务英语", "翻译"]}
+
+
+def test_remove_unstated_positive_major_conflicts_keeps_explicit_positive_scope():
+    payload = _remove_unstated_positive_major_conflicts(
+        {
+            "level3": ["会计学", "审计学"],
+            "negative_level3": ["土木工程"],
+        },
+        latest_utterance="我倾向会计学和审计学，但土木工程不要",
+        batch="01",
+    )
+
+    assert payload == {
+        "level3": ["会计学", "审计学"],
+        "negative_level3": ["土木工程"],
+    }
+
+
 def test_build_select_items_dedupes_same_major_name_across_levels():
     profile = SimpleNamespace(
         major=SimpleNamespace(
@@ -3220,6 +3252,77 @@ async def test_semantic_constraint_type_upgrades_positive_constraint_preview(emp
     assert payload["intentMode"] == INTENT_MODE_CONSTRAINT
     assert payload["constraintIntentType"] == "only_keep"
     classifier_mock.assert_awaited_once()
+    save_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_analyze_intent_change_downgrades_unstated_only_keep_for_negative_major(empty_profile):
+    ctx = SimpleNamespace(
+        deps=SimpleNamespace(
+            userid="u1",
+            sessionid="7651",
+            batch="01",
+            chat_history=[{"role": "user", "content": "不要英语相关专业，当前方案里有的话也删掉"}],
+            enable_intent_side_effect_arbitration=True,
+            agent_observability={},
+            planning_summary=SimpleNamespace(constraint_state={}),
+        )
+    )
+
+    with (
+        patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
+        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()) as save_mock,
+        patch(
+            "app.tools.intent_state_tool._classify_intent_side_effect",
+            new=AsyncMock(
+                return_value=IntentSideEffectDecision(
+                    decision="intent_preview",
+                    confidence=0.95,
+                    constraintIntentType="only_keep",
+                    reason="model supplied only_keep but the structured payload is exclusion-only after cleanup.",
+                )
+            ),
+        ),
+        patch(
+            "app.tools.intent_state_tool._enrich_plan_relation_analysis_from_state",
+            new=AsyncMock(
+                return_value={
+                    "summaryTitle": "",
+                    "currentPlanFit": [],
+                    "currentPlanConflict": [],
+                    "candidateOpportunity": [],
+                    "nextActionHints": [],
+                }
+            ),
+        ),
+    ):
+        mock_pm = mock_pm_cls.return_value
+        mock_pm.get_current_profile = AsyncMock(return_value=empty_profile)
+
+        payload_text = await analyze_volunteer_intent_change(
+            ctx,
+            major_intents={
+                "negative_level3": ["英语", "商务英语", "翻译"],
+                "level1": ["文学"],
+                "level2": ["外国语言文学类"],
+            },
+            intent_mode=INTENT_MODE_CONSTRAINT,
+            constraint_intent_type="only_keep",
+            analysis_stage=ANALYSIS_STAGE_CONFIRMED,
+            recovery_scope="major",
+            confirm_enabled=True,
+        )
+
+    payload = json.loads(payload_text)
+    assert payload["status"] == "ready"
+    assert payload["intentMode"] == INTENT_MODE_CONSTRAINT
+    assert payload["constraintIntentType"] == "default"
+    assert [item["value"] for item in payload["items"]] == [
+        {"major_intents": {"negative_level3": ["英语"]}},
+        {"major_intents": {"negative_level3": ["商务英语"]}},
+        {"major_intents": {"negative_level3": ["翻译"]}},
+    ]
+    assert "只保留专业" not in payload.get("message", "")
     save_mock.assert_not_awaited()
 
 

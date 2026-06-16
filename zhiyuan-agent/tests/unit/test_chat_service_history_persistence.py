@@ -2038,6 +2038,72 @@ def test_chat_service_only_keep_major_preview_removes_non_matching_plan_items(tm
     execute_mock.assert_not_awaited()
 
 
+def test_chat_service_recovers_only_keep_goal_when_agent_skips_tools(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    fake_agent = _FakeAgent([
+        "我先把你要采用的内容列出来，点“采纳”前不会生效。\n\n"
+        "你当前方案里没有临床医学。是否先确认把“临床医学”作为优先专业方向？"
+    ])
+    pending_state, save_pending_mock, get_pending_mock = _pending_confirmation_store()
+    backend_preview = _user_goal_fix_proposal_response(
+        proposal_id="ug-only-keep-no-tool-1",
+        strategy="only_keep_scope",
+        source_version=24,
+        title="只保留临床医学",
+        summary="当前方案会围绕临床医学调整。",
+        action_summaries=["移出不符合条件的志愿"],
+    )
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 0, "data": {"userScoreDetail": {"batch": "01"}}})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={
+                "code": 0,
+                "data": {
+                    "phase": "ordered",
+                    "version": 24,
+                    "draftPlanState": {"summary": {"total": 45}},
+                    "orderedPlanState": {"summary": {"total": 45}},
+                    "reviewState": {"summary": {"warnCount": 0, "riskCount": 0}, "checks": []},
+                },
+            })), \
+            patch("app.service.classify_composite_goal_action", AsyncMock(return_value=_semantic_composite_goal(
+                "only_keep_scope",
+                scope_type="major",
+                target_values=["临床医学"],
+                constraint_intent_type="only_keep",
+            ))) as classify_mock, \
+            patch("app.service.generate_user_goal_planning_fix_proposals", AsyncMock(return_value=backend_preview)) as proposal_mock, \
+            patch("app.service.save_pending_confirmation", save_pending_mock), \
+            patch("app.service.get_pending_confirmation", get_pending_mock):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(
+            service.handle_message("9905012-no-tool", "user-1", "我只想学临床医学，其他专业先不要")
+        )
+
+    assert isinstance(reply, ChatServiceResponseEnvelope)
+    assert "已按你的要求列出调整预览" in reply.primary
+    card_payload = _assert_pending_card_envelope(
+        reply,
+        "",
+        "apply_fix_proposal",
+    )
+    assert card_payload["kind"] == "plan_mutation"
+    assert card_payload["proposalId"] == "ug-only-keep-no-tool-1"
+    pending = pending_state["value"]
+    assert pending["kind"] == "plan_mutation"
+    execution_payload = pending["executionPayload"]
+    assert execution_payload["proposalSource"] == "user_goal"
+    assert execution_payload["userGoalRequest"]["goalType"] == "only_keep_scope"
+    assert execution_payload["userGoalRequest"]["targetScopes"][0]["normalizedName"] == "临床医学"
+    assert execution_payload["intentPayload"]["constraintIntentType"] == "only_keep"
+    classify_mock.assert_awaited_once()
+    classify_kwargs = classify_mock.await_args.kwargs
+    assert classify_kwargs["attempted_action_family"] == "no_tool_turn"
+    proposal_mock.assert_awaited_once()
+
+
 def test_chat_service_existing_only_only_keep_goal_still_builds_plan_preview(tmp_path, mock_llm_client):
     db_path = tmp_path / "history.db"
     store = ChatHistoryStore(str(db_path))
@@ -5085,6 +5151,93 @@ def test_extract_plan_confirmation_candidate_preserves_preview_resolved_apply_pa
     apply_payload = json.loads(pending["plan_payload"])
     assert apply_payload["stage"] == "apply"
     assert apply_payload["atomic_actions"][0]["volunteer_ids"] == ["hnny-arch-4"]
+
+
+def test_extract_plan_confirmation_candidate_accepts_incremental_resolved_apply_payload():
+    preview_payload = {
+        "stage": "preview",
+        "action_family": "remove_units",
+        "user_goal": "不要英语相关专业，当前方案里有的话也删掉",
+        "requires_confirmation": True,
+        "should_rerun_review": False,
+        "should_refresh_workspace": False,
+        "missing_inputs": [],
+        "atomic_actions": [
+            {
+                "action_type": "remove_units",
+                "volunteer_ids": [],
+                "source_major_names": ["英语", "商务英语", "翻译"],
+                "filters": {"school_tags": "[]", "major_tags": "[]", "limit": "5"},
+                "reason": "不要英语相关专业，当前方案里有的话也删掉",
+            }
+        ],
+        "preview_summary": "会从当前方案移出指定志愿。",
+    }
+    messages = [
+        ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="execute_plan_action",
+                    args={"plan_payload": json.dumps(preview_payload, ensure_ascii=False)},
+                    tool_call_id="preview-call-incremental-resolved-remove",
+                )
+            ],
+            model_name="test-model",
+        ),
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="execute_plan_action",
+                    content=json.dumps(
+                        {
+                            "applied": False,
+                            "action_family": "remove_units",
+                            "stage": "preview",
+                            "result_kind": "preview_only",
+                            "summary": "已在当前方案里定位到英语相关的 3 条志愿。",
+                            "facts": {
+                                "resolved_apply_payload": {
+                                    "atomic_actions": [
+                                        {
+                                            "action_type": "remove_units",
+                                            "volunteer_ids": ["english-1", "english-2", "english-3"],
+                                            "source_major_names": ["英语", "商务英语", "翻译"],
+                                            "filters": {"major_level3": ["英语", "商务英语", "翻译"]},
+                                            "reason": "不要英语相关专业，当前方案里有的话也删掉",
+                                        }
+                                    ]
+                                },
+                                "intent_update": {
+                                    "selected": [
+                                        {"major_intents": {"negative_level3": ["英语", "商务英语", "翻译"]}}
+                                    ],
+                                    "intentMode": "constraint",
+                                },
+                                "planning_version": 630,
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                    tool_call_id="preview-call-incremental-resolved-remove",
+                )
+            ]
+        ),
+    ]
+
+    pending = _extract_plan_confirmation_candidate(messages)
+
+    assert pending is not None
+    assert pending["action_family"] == "remove_units"
+    assert pending["source_backend_version"] == 630
+    assert pending["intent_update"]["selected"] == [
+        {"major_intents": {"negative_level3": ["英语", "商务英语", "翻译"]}}
+    ]
+    apply_payload = json.loads(pending["plan_payload"])
+    assert apply_payload["stage"] == "apply"
+    assert apply_payload["action_family"] == "remove_units"
+    assert apply_payload["planning_version"] == 630
+    assert apply_payload["atomic_actions"][0]["volunteer_ids"] == ["english-1", "english-2", "english-3"]
+    assert apply_payload["atomic_actions"][0]["filters"]["major_level3"] == ["英语", "商务英语", "翻译"]
 
 
 def test_extract_plan_confirmation_candidate_allows_resolved_action_family_for_major_mode_position_remove():

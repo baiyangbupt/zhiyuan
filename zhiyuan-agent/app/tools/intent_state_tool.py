@@ -380,6 +380,122 @@ def _prune_generated_negative_complements_for_only_keep(
     return pruned or None
 
 
+def _positive_major_covered_by_negative_scope(
+    *,
+    level: str,
+    name: str,
+    negative_level1: set[str],
+    negative_level2: set[str],
+    negative_level3: set[str],
+    level2_to_level1: dict[str, str],
+    level3_to_level2: dict[str, str],
+) -> bool:
+    if level == "level1":
+        if name in negative_level1:
+            return True
+        for level2 in negative_level2:
+            if level2_to_level1.get(level2) == name:
+                return True
+        for level3 in negative_level3:
+            parent_level2 = level3_to_level2.get(level3)
+            if level2_to_level1.get(parent_level2 or "") == name:
+                return True
+        return False
+    if level == "level2":
+        if name in negative_level2:
+            return True
+        parent_level1 = level2_to_level1.get(name)
+        if parent_level1 and parent_level1 in negative_level1:
+            return True
+        for level3 in negative_level3:
+            if level3_to_level2.get(level3) == name:
+                return True
+        return False
+    if level == "level3":
+        if name in negative_level3:
+            return True
+        parent_level2 = level3_to_level2.get(name)
+        parent_level1 = level2_to_level1.get(parent_level2 or "")
+        return bool(
+            (parent_level2 and parent_level2 in negative_level2)
+            or (parent_level1 and parent_level1 in negative_level1)
+        )
+    return False
+
+
+def _remove_unstated_positive_major_conflicts(
+    payload: dict[str, Any] | None,
+    *,
+    latest_utterance: str,
+    batch: str,
+) -> dict[str, Any] | None:
+    """Drop positive major scopes invented around an explicit exclusion.
+
+    LLM extraction can occasionally return a positive parent category together
+    with a negative child, for example "不要英语相关专业" -> positive
+    "外国语言文学类" plus negative "英语". That must not become an only-keep
+    action. Keep positive values only when the user explicitly mentioned that
+    positive scope.
+    """
+
+    if not isinstance(payload, dict) or not payload:
+        return payload
+    if not _has_positive_major_values(payload) or not _has_negative_major_values(payload):
+        return payload
+
+    polarity_mentions = _recover_polarity_major_intent_locally_from_latest_utterance(latest_utterance, batch) or {}
+    explicit_positive_mentions = {
+        "level1": set(_as_string_list(polarity_mentions.get("level1"))),
+        "level2": set(_as_string_list(polarity_mentions.get("level2"))),
+        "level3": set(_as_string_list(polarity_mentions.get("level3"))),
+    }
+    mappings = major_parent_mappings_for_batch(batch)
+    level2_to_level1 = mappings.get("level2_to_level1", {})
+    level3_to_level2 = mappings.get("level3_to_level2", {})
+    negative_level1 = set(_as_string_list(payload.get("negative_level1")))
+    negative_level2 = set(_as_string_list(payload.get("negative_level2")))
+    negative_level3 = set(_as_string_list(payload.get("negative_level3")))
+
+    cleaned: dict[str, Any] = {}
+    changed = False
+    for key, values in payload.items():
+        if key not in _MAJOR_POSITIVE_KEYS:
+            cleaned[key] = values
+            continue
+        level = key
+        explicit_positive = explicit_positive_mentions.get(level, set())
+        kept: list[str] = []
+        for name in _as_string_list(values):
+            if name in explicit_positive:
+                kept.append(name)
+                continue
+            if _positive_major_covered_by_negative_scope(
+                level=level,
+                name=name,
+                negative_level1=negative_level1,
+                negative_level2=negative_level2,
+                negative_level3=negative_level3,
+                level2_to_level1=level2_to_level1,
+                level3_to_level2=level3_to_level2,
+            ):
+                changed = True
+                continue
+            kept.append(name)
+        if kept:
+            cleaned[key] = kept
+        elif _as_string_list(values):
+            changed = True
+
+    if changed:
+        logger.info(
+            "Removed unstated positive major conflicts from exclusion payload: latest=%s before=%s after=%s",
+            latest_utterance,
+            payload,
+            cleaned,
+        )
+    return cleaned or None
+
+
 def _merge_intent_payload_dict(existing: dict[str, Any] | None, current: dict[str, Any] | None) -> dict[str, Any] | None:
     merged: dict[str, list[str]] = {}
     for payload in (existing or {}, current or {}):
@@ -3225,6 +3341,11 @@ async def analyze_volunteer_intent_change(
         latest_utterance=latest_utterance,
         batch=batch,
     )
+    major_intents = _remove_unstated_positive_major_conflicts(
+        major_intents,
+        latest_utterance=latest_utterance,
+        batch=batch,
+    )
     if resolved_constraint_intent_type == CONSTRAINT_INTENT_ONLY_KEEP:
         major_intents = _prune_generated_negative_complements_for_only_keep(
             major_intents,
@@ -3262,6 +3383,11 @@ async def analyze_volunteer_intent_change(
         )
         major_intents = await _normalize_major_intent_names_for_batch(major_intents, batch)
         major_intents = _refine_major_intents_by_explicit_mentions(
+            major_intents,
+            latest_utterance=latest_utterance,
+            batch=batch,
+        )
+        major_intents = _remove_unstated_positive_major_conflicts(
             major_intents,
             latest_utterance=latest_utterance,
             batch=batch,

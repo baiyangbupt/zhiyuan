@@ -5451,7 +5451,15 @@ def _plan_payload_has_executable_mutation_scope(payload: dict[str, Any]) -> bool
     facts = payload.get("facts") if isinstance(payload.get("facts"), dict) else {}
     resolved_payload = facts.get("resolved_apply_payload") if isinstance(facts, dict) else None
     if isinstance(resolved_payload, dict) and resolved_payload is not payload:
-        return _plan_payload_has_executable_mutation_scope(resolved_payload)
+        resolved_with_context = dict(payload)
+        resolved_with_context.update(resolved_payload)
+        resolved_facts = dict(facts)
+        resolved_facts.pop("resolved_apply_payload", None)
+        if resolved_facts:
+            resolved_with_context["facts"] = resolved_facts
+        else:
+            resolved_with_context.pop("facts", None)
+        return _plan_payload_has_executable_mutation_scope(resolved_with_context)
     return False
 
 
@@ -9078,6 +9086,64 @@ class ChatService:
             context_source="composite_goal_recovery_without_plan_attempt",
         )
 
+    async def _maybe_recover_unbacked_composite_goal_without_tools(
+        self,
+        *,
+        session_id: str,
+        content: str,
+        reply: str,
+        tool_context_messages: list[Any] | None,
+        request_context: RequestContext,
+    ) -> WSResponse | None:
+        """Recover high-side-effect user goals when the full agent skipped tools.
+
+        The main path is still explicit Intent/Plan tool use. This recovery is a
+        protocol guard for model turns that verbally promise a confirmation but
+        produced no active pending card. It relies on the semantic composite-goal
+        classifier and then re-enters the normal Java user-goal proposal path.
+        """
+        if resolve_pending_confirmation(request_context) is not None:
+            return None
+        if _extract_plan_confirmation_candidate(tool_context_messages) is not None:
+            return None
+        if list(_iter_tool_call_parts(tool_context_messages)):
+            return None
+        if not _plan_recovery_has_context(
+            request_context,
+            _latest_plan_semantic_route_context(getattr(request_context, "chat_history", None)),
+        ):
+            return None
+        try:
+            decision = await classify_composite_goal_action(
+                content,
+                request_context=request_context,
+                attempted_action_family="no_tool_turn",
+                attempted_result={
+                    "result_kind": "unbacked_no_tool_turn",
+                    "summary": reply,
+                },
+            )
+        except Exception:
+            logger.warning(
+                "No-tool composite goal recovery classification failed: session_id=%s",
+                session_id,
+                exc_info=True,
+            )
+            return None
+
+        card = await self._create_composite_goal_recovery_card(
+            session_id=session_id,
+            content=content,
+            request_context=request_context,
+            decision=decision,
+            attempted_action_family="no_tool_turn",
+            attempted_result={},
+            context_source="composite_goal_recovery_without_tools",
+        )
+        if _pending_card_kind(card) not in {"plan_mutation", "intent_change", "readonly_notice"}:
+            return None
+        return card
+
     async def _maybe_recover_existing_intent_composite_goal(
         self,
         *,
@@ -10361,6 +10427,63 @@ class ChatService:
                 action_family = _select_conversation_action_family(tool_returns)
                 plan_confirmation_candidate = _extract_plan_confirmation_candidate(tool_context_messages)
                 plan_action_recovery_route = recovered_plan_action.route_decision
+        if (
+            plan_action_recovery_route is None
+            and plan_confirmation_candidate is None
+            and pending_fix_proposal_card is None
+            and isinstance(reply, str)
+            and not composite_goal_clarification_reply
+            and not intent_preview_used_current_turn
+        ):
+            composite_goal_card = await self._maybe_recover_unbacked_composite_goal_without_tools(
+                session_id=session_id,
+                content=content,
+                reply=reply,
+                tool_context_messages=tool_context_messages,
+                request_context=request_context,
+            )
+            if composite_goal_card is not None:
+                composite_goal_card_kind = _pending_card_kind(composite_goal_card)
+                if composite_goal_card_kind == "readonly_notice":
+                    card_payload = _parse_tool_return_json(
+                        getattr(composite_goal_card, "content", "") or ""
+                    )
+                    readonly_reply = str((card_payload or {}).get("reply") or "").strip() if isinstance(card_payload, dict) else ""
+                    if readonly_reply:
+                        _replace_text_reply(new_messages, reply, readonly_reply)
+                        _replace_text_reply(all_messages, reply, readonly_reply)
+                        reply = readonly_reply
+                elif composite_goal_card_kind == "intent_change":
+                    recovered_pending_intent_card = composite_goal_card
+                    recovered_pending_intent_reply = _intent_card_primary_reply_from_card(composite_goal_card)
+                    if recovered_pending_intent_reply:
+                        _replace_text_reply(new_messages, reply, recovered_pending_intent_reply)
+                        _replace_text_reply(all_messages, reply, recovered_pending_intent_reply)
+                        reply = recovered_pending_intent_reply
+                else:
+                    pending_fix_proposal_card = composite_goal_card
+                    card_payload = _parse_tool_return_json(
+                        getattr(composite_goal_card, "content", "") or ""
+                    )
+                    card_summary = (
+                        str((card_payload or {}).get("summary") or "").strip()
+                        if isinstance(card_payload, dict)
+                        else ""
+                    )
+                    primary_goal_reply = "已按你的要求列出调整预览。"
+                    if card_summary:
+                        primary_goal_reply = f"已按你的要求列出调整预览：{card_summary}。"
+                    primary_goal_reply += "确认前不会改动当前方案；确认后会同步更新后续报考参考，并按预览调整当前方案。"
+                    primary_goal_reply = _sanitize_reply_for_user(primary_goal_reply)
+                    _replace_text_reply(new_messages, reply, primary_goal_reply)
+                    _replace_text_reply(all_messages, reply, primary_goal_reply)
+                    reply = primary_goal_reply
+                plan_action_recovery_route = {
+                    "source": "composite_goal_recovery_without_tools",
+                    "matched": True,
+                    "confidence": "semantic",
+                    "route": "user_goal_proposal",
+                }
         if (
             plan_action_recovery_route is None
             and plan_confirmation_candidate is None
