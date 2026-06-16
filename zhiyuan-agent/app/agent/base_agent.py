@@ -242,17 +242,28 @@ class BaseAgent(Generic[T]):
 
                 repeat_guard_output = self._guard_repeated_tool_calls(tool_names, observability)
                 if repeat_guard_output:
-                    output = repeat_guard_output
                     usage = agent_run.usage()
                     if hasattr(usage, "__await__"):
                         usage = await usage
+                    partial_messages = await self._resolve_messages(agent_run.all_messages())
+                    guarded_tool_name = str(observability.get("guardedToolName") or tool_names[0])
+                    guarded_tool_count = int(observability.get("guardedToolCount") or 0)
+                    recent_tool_output = self.render_tool_loop_guard_output_from_history(
+                        guarded_tool_name,
+                        guarded_tool_count,
+                        partial_messages,
+                    )
+                    if recent_tool_output:
+                        repeat_guard_output = recent_tool_output
+                        observability["guardUsedRecentToolReturn"] = True
+                        observability["guardRecentToolReturnLength"] = len(recent_tool_output)
+                    output = repeat_guard_output
                     observability["completed"] = True
                     observability["toolLoopGuarded"] = True
                     observability["totalDurationMs"] = int((time.monotonic() - run_started_at) * 1000)
                     observability["requests"] = usage.requests
                     observability["toolCalls"] = usage.tool_calls
 
-                    partial_messages = await self._resolve_messages(agent_run.all_messages())
                     guard_response = ModelResponse(
                         parts=[TextPart(content=repeat_guard_output)],
                         model_name="tool-loop-guard",
@@ -553,6 +564,53 @@ class BaseAgent(Generic[T]):
                 "你可以换一个更具体的条件，比如学校、专业、城市、冲稳保层级，或者让我直接基于当前方案给你做一次整体分析。"
             )
         return "这轮工具调用没有稳定收敛，我先停止重复查询。你可以换一个更具体的问题继续。"
+
+    def render_tool_loop_guard_output_from_history(
+        self,
+        tool_name: str,
+        count: int,
+        messages: list[Any],
+    ) -> str | None:
+        if tool_name != "query_volunteer_plan":
+            return None
+        recent_output = self._find_recent_tool_return_content(tool_name, messages)
+        if not recent_output:
+            return None
+        return (
+            "我已经查到当前方案里的相关信息，先按最近一次查询结果回答；这轮不会改动方案。\n\n"
+            f"{recent_output}"
+        )
+
+    def _find_recent_tool_return_content(self, tool_name: str, messages: list[Any]) -> str | None:
+        for message in reversed(messages or []):
+            parts = list(getattr(message, "parts", []) or [])
+            for part in reversed(parts):
+                if not isinstance(part, ToolReturnPart):
+                    continue
+                if str(getattr(part, "tool_name", "") or "") != tool_name:
+                    continue
+                content = part.content
+                if not isinstance(content, str):
+                    continue
+                text = content.strip()
+                if self._is_usable_tool_loop_guard_content(tool_name, text):
+                    return text
+        return None
+
+    @staticmethod
+    def _is_usable_tool_loop_guard_content(tool_name: str, text: str) -> bool:
+        if not text:
+            return False
+        if tool_name != "query_volunteer_plan":
+            return True
+        failure_markers = (
+            "查询失败",
+            "查询出错",
+            "暂时无法查询",
+            "接口返回异常",
+            "系统繁忙",
+        )
+        return not any(marker in text for marker in failure_markers)
 
     def _drop_trailing_tool_call_response(self, messages: list[Any], tool_names: list[str]) -> list[Any]:
         if not messages:

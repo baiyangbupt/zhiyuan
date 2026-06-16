@@ -13,7 +13,6 @@ from app.models.typed_actions import (
     PlanAction,
     PreviewFixProposalAction,
     QueryCandidatesAction,
-    QueryDraftAction,
     QueryOrderedAction,
     QueryStateAction,
     RegenerateOrderAction,
@@ -130,10 +129,6 @@ class TestQueryActions:
         a = QueryStateAction(reason="查看方案状态")
         assert a.action_type == "query_state"
         assert a.reason == "查看方案状态"
-
-    def test_query_draft(self):
-        a = QueryDraftAction()
-        assert a.action_type == "query_draft"
 
     def test_query_ordered(self):
         a = QueryOrderedAction(volunteer_refs=["@1", "@5"])
@@ -267,7 +262,6 @@ class TestPlanActionUnion:
 
     @pytest.mark.parametrize("action_type,expected_cls", [
         ("query_state", QueryStateAction),
-        ("query_draft", QueryDraftAction),
         ("query_ordered", QueryOrderedAction),
         ("query_candidates", QueryCandidatesAction),
         ("generate_plan", GeneratePlanAction),
@@ -292,6 +286,10 @@ class TestPlanActionUnion:
     def test_invalid_action_type(self):
         with pytest.raises(ValidationError):
             _plan_action_adapter.validate_python({"action_type": "nonexistent"})
+
+    def test_legacy_query_draft_rejected(self):
+        with pytest.raises(ValidationError):
+            _plan_action_adapter.validate_python({"action_type": "query_draft"})
 
     def test_missing_action_type(self):
         with pytest.raises(ValidationError):
@@ -330,8 +328,8 @@ class TestPlanActionUnion:
 class TestActionTypeToFamily:
     """ACTION_TYPE_TO_FAMILY 映射表。"""
 
-    def test_all_16_families_present(self):
-        assert len(ACTION_TYPE_TO_FAMILY) == 16
+    def test_all_15_families_present(self):
+        assert len(ACTION_TYPE_TO_FAMILY) == 15
 
     def test_current_1to1_mapping(self):
         """当前 action_type 与 action_family 一一对应。"""
@@ -341,7 +339,7 @@ class TestActionTypeToFamily:
             )
 
     @pytest.mark.parametrize("action_type", [
-        "query_state", "query_draft", "query_ordered", "query_candidates",
+        "query_state", "query_ordered", "query_candidates",
         "generate_plan", "analyze_adjustment", "review_plan",
         "preview_fix_proposal",
         "add_units", "remove_units", "move_unit",

@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import logging
 import re
-import asyncio
 from typing import Any
 
 from pydantic_ai import RunContext
@@ -18,18 +17,15 @@ from app.handlers.registry import register_handler
 from app.handlers.query_handlers import (
     _get_planning_state_with_latest_profile,
     _compact_list_text,
-    _tier_counts_text,
 )
 from app.handlers.shared import summary_target_total, summary_total
 from app.tools.plan_orchestration_models import PlanActionPlan, PlanExecutionResult
 from app.tools.planning_workflow_tool import (
-    _build_plan_adjustment_facts,
     _build_review_result_facts,
     _fix_proposal_facts,
 )
 from app.util.planning_state_compat import get_working_plan_summary
 from app.util.internal_client import (
-    analyze_planning_plan_adjustment as _analyze_planning_plan_adjustment_request,
     generate_planning_fix_proposals as _generate_planning_fix_proposals_request,
     get_planning_ordered_plan as _get_planning_ordered_plan_request,
     get_working_plan as _get_working_plan_request,
@@ -180,6 +176,191 @@ _FIX_PROPOSAL_BLOCKING_GUIDANCE = {
     "safe_replacement_candidate_insufficient": "暂时没有同层次且风险更低的替换项，建议先人工查看是否接受降层次或放宽范围",
     "objective_validation_not_improved": "调整预览没有让本次关注的问题变好，不建议直接执行",
 }
+
+
+_TARGET_STRATEGY_REVIEW_CODES = {
+    "replace_risk_items": {
+        "high_tuition",
+        "cooperative_program",
+        "admission_limit",
+        "special_enrollment",
+    },
+    "remove_risk_items": {
+        "high_tuition",
+        "cooperative_program",
+        "admission_limit",
+        "special_enrollment",
+    },
+    "sort_by_probability": {"probability_inversion"},
+    "adjust_major_group_inner_safety": {
+        "major_group_safety_intent_alignment",
+        "group_inner_safety_guard",
+    },
+    "fill_probability_gap": {"probability_gap"},
+    "rebalance_tier_ratio": {"tier_ratio"},
+    "add_safety_items": {"safety_guard", "edge_score"},
+    "fill_missing_count": {"count_validation"},
+}
+
+
+def _normalized_target_strategies(plan: PlanActionPlan) -> list[str]:
+    result: list[str] = []
+    for value in getattr(plan, "target_strategies", []) or []:
+        text = str(value or "").strip()
+        if text and text not in result:
+            result.append(text)
+    return result
+
+
+def _normalized_target_issue_codes(plan: PlanActionPlan) -> list[str]:
+    result: list[str] = []
+    for value in getattr(plan, "target_issue_codes", []) or []:
+        text = str(value or "").strip()
+        if text and text not in result:
+            result.append(text)
+    return result
+
+
+def _normalized_reply_focus(plan: PlanActionPlan) -> list[str]:
+    result: list[str] = []
+    for value in getattr(plan, "reply_focus", []) or []:
+        text = str(value or "").strip()
+        if text and text not in result:
+            result.append(text)
+    return result
+
+
+def _review_codes_for_target_strategies(target_strategies: list[str]) -> set[str]:
+    codes: set[str] = set()
+    for strategy in target_strategies:
+        codes.update(_TARGET_STRATEGY_REVIEW_CODES.get(strategy, set()))
+    return codes
+
+
+def _proposal_matches_target(
+    proposal: dict[str, Any],
+    *,
+    target_strategies: set[str],
+    target_issue_codes: set[str],
+) -> bool:
+    source_codes = {
+        str(code or "").strip()
+        for code in (proposal.get("source_check_codes") or proposal.get("sourceCheckCodes") or [])
+        if str(code or "").strip()
+    }
+    if target_issue_codes:
+        return bool(source_codes & target_issue_codes)
+    strategy = str(proposal.get("strategy") or "").strip()
+    return bool(strategy and strategy in target_strategies)
+
+
+def _recount_fix_proposals(proposals: list[dict[str, Any]]) -> dict[str, Any]:
+    status_counts: dict[str, int] = {}
+    strategy_counts: dict[str, int] = {}
+    for proposal in proposals:
+        status = str(proposal.get("status") or "").strip()
+        strategy = str(proposal.get("strategy") or "").strip()
+        if status:
+            status_counts[status] = status_counts.get(status, 0) + 1
+        if strategy:
+            strategy_counts[strategy] = strategy_counts.get(strategy, 0) + 1
+    return {
+        "status_counts": status_counts,
+        "strategy_counts": strategy_counts,
+        "ready_count": status_counts.get("ready", 0),
+        "preview_only_count": status_counts.get("preview_only", 0),
+        "blocked_count": status_counts.get("blocked", 0),
+        "total": len(proposals),
+    }
+
+
+def _filter_fix_proposal_facts_for_targets(
+    fix_proposals: dict[str, Any],
+    target_strategies: list[str],
+    target_issue_codes: list[str] | None = None,
+) -> dict[str, Any]:
+    if not target_strategies and not target_issue_codes:
+        return fix_proposals
+    proposals = [
+        proposal
+        for proposal in (fix_proposals.get("proposals") or [])
+        if isinstance(proposal, dict)
+    ]
+    target_strategy_set = set(target_strategies)
+    normalized_issue_codes = [
+        str(code or "").strip()
+        for code in (target_issue_codes or [])
+        if str(code or "").strip()
+    ]
+    target_issue_code_set = set(normalized_issue_codes) or _review_codes_for_target_strategies(target_strategies)
+    matched = [
+        proposal
+        for proposal in proposals
+        if _proposal_matches_target(
+            proposal,
+            target_strategies=target_strategy_set,
+            target_issue_codes=target_issue_code_set,
+        )
+    ]
+    if not matched:
+        filtered = dict(fix_proposals)
+        filtered["proposals"] = []
+        filtered.update(_recount_fix_proposals([]))
+        filtered["target_strategies"] = list(target_strategies)
+        filtered["target_issue_codes"] = list(normalized_issue_codes or target_issue_code_set)
+        filtered["target_match_empty"] = True
+        return filtered
+    filtered = dict(fix_proposals)
+    filtered["proposals"] = matched
+    filtered.update(_recount_fix_proposals(matched))
+    filtered["target_strategies"] = list(target_strategies)
+    filtered["target_issue_codes"] = list(normalized_issue_codes or target_issue_code_set)
+    return filtered
+
+
+def _filter_review_facts_for_targets(
+    facts: dict[str, Any],
+    target_strategies: list[str],
+    target_issue_codes: list[str] | None = None,
+) -> dict[str, Any]:
+    if not target_strategies and not target_issue_codes:
+        return facts
+    normalized_issue_codes = [
+        str(code or "").strip()
+        for code in (target_issue_codes or [])
+        if str(code or "").strip()
+    ]
+    target_review_codes = set(normalized_issue_codes) or _review_codes_for_target_strategies(target_strategies)
+    if not target_review_codes:
+        return facts
+    filtered = dict(facts)
+    examples = [
+        item
+        for item in (facts.get("issue_hit_plan_examples") or [])
+        if isinstance(item, dict) and str(item.get("code") or "").strip() in target_review_codes
+    ]
+    filtered["issue_hit_plan_examples"] = examples
+    if isinstance(facts.get("fix_proposals"), dict):
+        filtered["fix_proposals"] = _filter_fix_proposal_facts_for_targets(
+            facts["fix_proposals"],
+            target_strategies,
+            normalized_issue_codes,
+        )
+    filtered["main_problems"] = [
+        str(item.get("summary") or "").strip()
+        for item in examples
+        if isinstance(item, dict) and str(item.get("summary") or "").strip()
+    ]
+    filtered["hit_rules"] = [
+        {"summary": item, "suggestion_types": []}
+        for item in filtered["main_problems"]
+    ]
+    if not examples and normalized_issue_codes:
+        filtered["target_match_empty"] = True
+        filtered["summary_text"] = "当前审查里暂时没有看到你点名的这类提醒。"
+        filtered["review_issue_hit_plan_examples"] = []
+        filtered["candidate_supply"] = {}
+    return filtered
 
 
 def _normalize_fix_proposal_title_for_user(title: str) -> str:
@@ -374,23 +555,23 @@ def _fix_proposal_summary_text(facts: dict[str, Any], *, limit: int = 2) -> str:
     return "；".join(lines)
 
 
-async def _fetch_ordered_or_draft(
+async def _fetch_ordered_or_working(
     planning_state: dict[str, Any], session_id: str
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     """根据 planning_state 按优先级获取 ordered 或已加入方案详情。"""
     ordered_state: dict[str, Any] | None = None
-    draft_state: dict[str, Any] | None = None
+    working_state: dict[str, Any] | None = None
 
     if ((planning_state.get("orderedPlanState") or {}).get("summary") or {}).get("total"):
         ordered_result = await _get_planning_ordered_plan_request(session_id)
         if ordered_result.get("code") == 0:
             ordered_state = ordered_result.get("data") or {}
     elif summary_total(get_working_plan_summary(planning_state)):
-        draft_result = await _get_working_plan_request(session_id)
-        if draft_result.get("code") == 0:
-            draft_state = draft_result.get("data") or {}
+        working_result = await _get_working_plan_request(session_id)
+        if working_result.get("code") == 0:
+            working_state = working_result.get("data") or {}
 
-    return ordered_state, draft_state
+    return ordered_state, working_state
 
 
 def _build_review_summary(facts: dict[str, Any]) -> tuple[str, list[str], list[str]]:
@@ -401,7 +582,6 @@ def _build_review_summary(facts: dict[str, Any]) -> tuple[str, list[str], list[s
         for item in (facts.get("main_problems") or [])
     ]
     problems_text = _compact_list_text(normalized_problems)
-    compensation_count = int(facts.get("compensation_action_count") or 0)
     missing_stable_or_protect = _candidate_supply_missing_stable_or_protect(facts)
     fix_proposal_facts = facts.get("fix_proposals") if isinstance(facts.get("fix_proposals"), dict) else {}
     fix_proposals = fix_proposal_facts.get("proposals") if isinstance(fix_proposal_facts, dict) else []
@@ -412,16 +592,12 @@ def _build_review_summary(facts: dict[str, Any]) -> tuple[str, list[str], list[s
         parts.append(f"主要问题是 {problems_text}")
     if fix_proposal_total > 0:
         parts.append(f"已整理 {fix_proposal_total} 个处理方向")
-    elif compensation_count > 0:
-        parts.append(f"已整理 {compensation_count} 个补齐方向")
 
     reply_focus = ["review_result", "risk_warning"]
     if problems_text:
         reply_focus.append("main_problems")
     if facts.get("issue_hit_plan_examples"):
         reply_focus.append("issue_hit_plan_examples")
-    if compensation_count > 0 and not fix_proposal_total:
-        reply_focus.append("legacy_compensation_material")
     if facts.get("candidate_supply"):
         reply_focus.append("candidate_supply")
     if fix_proposal_total > 0:
@@ -430,8 +606,6 @@ def _build_review_summary(facts: dict[str, Any]) -> tuple[str, list[str], list[s
     next_step_hints: list[str] = []
     if missing_stable_or_protect:
         next_step_hints.append("如果用户想补稳或保，先说明当前可用来补位的志愿不足，不要承诺能直接补入。")
-    if compensation_count > 0 and not fix_proposal_total:
-        next_step_hints.append("这些补齐方向只是后端旧状态素材；如果用户想继续处理，应优先走处理预览，不要承诺直接应用旧补齐动作。")
     if risk_count == 0 and warn_count == 0:
         next_step_hints.append("如果用户只是确认当前是否稳定，可以明确说明目前没有明显风险或提醒。")
     if fix_proposal_total > 0:
@@ -443,6 +617,7 @@ def _build_review_summary(facts: dict[str, Any]) -> tuple[str, list[str], list[s
 
 
 def _build_adjustment_summary(facts: dict[str, Any]) -> tuple[str, list[str], list[str]]:
+    target_match_empty = bool(facts.get("target_match_empty"))
     summary_text = str(facts.get("summary_text") or "").strip()
     suggestion_counts = facts.get("suggestion_counts") or {}
     actionable_counts = facts.get("actionable_suggestion_counts") or {}
@@ -463,9 +638,12 @@ def _build_adjustment_summary(facts: dict[str, Any]) -> tuple[str, list[str], li
     first_step_hint = _adjustment_first_step_hint(facts)
     candidate_supply_text = _candidate_supply_line(facts)
     missing_stable_or_protect = _candidate_supply_missing_stable_or_protect(facts)
+    fix_proposal_text = _fix_proposal_summary_text(facts)
 
     parts: list[str] = []
-    if summary_text:
+    if target_match_empty:
+        parts.append(summary_text or "当前审查里暂时没有看到你点名的这类提醒。")
+    elif summary_text:
         parts.append(summary_text)
     elif rule_summaries:
         parts.append("；".join(rule_summaries[:2]))
@@ -478,6 +656,19 @@ def _build_adjustment_summary(facts: dict[str, Any]) -> tuple[str, list[str], li
             f"移除 {int(actionable_counts.get('remove') or 0)} 条"
         )
         parts.append(f"当前可执行建议概览：{counts_text}")
+    elif fix_proposal_text:
+        fix_facts = facts.get("fix_proposals") if isinstance(facts.get("fix_proposals"), dict) else {}
+        ready_count = int(fix_facts.get("ready_count") or 0)
+        blocked_count = int(fix_facts.get("blocked_count") or 0)
+        preview_only_count = int(fix_facts.get("preview_only_count") or 0)
+        proposal_parts: list[str] = []
+        if ready_count > 0:
+            proposal_parts.append(f"{ready_count} 个方向可以先看预览")
+        if blocked_count > 0:
+            proposal_parts.append(f"{blocked_count} 个方向需要你先取舍范围")
+        if preview_only_count > 0:
+            proposal_parts.append(f"{preview_only_count} 个方向先作为参考")
+        parts.append("我把可处理方向整理出来了" + (f"：{'，'.join(proposal_parts)}" if proposal_parts else "。"))
     else:
         counts_text = (
             f"补充建议 {int(suggestion_counts.get('add') or 0)} 条，"
@@ -490,15 +681,16 @@ def _build_adjustment_summary(facts: dict[str, Any]) -> tuple[str, list[str], li
         parts.append(f"可以优先关注：{'；'.join(example_summaries[:2])}")
     if not example_summaries and review_issue_hit_plan_examples_text:
         parts.append(f"如果先从减法入手，可优先查看：{review_issue_hit_plan_examples_text}")
-    if candidate_supply_text:
+    if candidate_supply_text and not target_match_empty:
         parts.append(f"候选供给：{candidate_supply_text}")
     if missing_stable_or_protect:
         parts.append("当前不能直接承诺补稳或补保，需要先看是否放宽筛选条件、降低地域/专业限制，或接受这份方案整体偏冲的风险")
-    if not has_actionable_suggestions and first_step_hint:
+    if not has_actionable_suggestions and first_step_hint and not target_match_empty:
         parts.append(first_step_hint)
-    fix_proposal_text = _fix_proposal_summary_text(facts)
     if fix_proposal_text:
         parts.append(f"处理建议：{fix_proposal_text}")
+    if target_match_empty:
+        parts.append("如果你想继续看其它风险，我可以再按当前审查结果逐项说明；如果你确认预算有限，也可以把高收费或中外合作作为后续排除条件重新看方案。")
 
     reply_focus = ["adjustment_analysis", "suggestion_counts"]
     if summary_text or rule_summaries:
@@ -513,6 +705,8 @@ def _build_adjustment_summary(facts: dict[str, Any]) -> tuple[str, list[str], li
         reply_focus.append("fix_proposals")
 
     next_step_hints: list[str] = []
+    if target_match_empty:
+        next_step_hints.append("用户点名的审查问题当前没有命中时，只说明没有看到这类提醒；不要转去解释其他审查问题。")
     if missing_stable_or_protect:
         next_step_hints.append("用户问补稳/保时，必须先说明候选池缺少对应供给，不要口头承诺可直接补入稳/保志愿。")
     if has_actionable_suggestions:
@@ -549,18 +743,18 @@ async def handle_review_plan(
     fix_proposals = await _fetch_fix_proposal_facts(session_id)
     planning_state = await _get_planning_state_with_latest_profile(session_id)
 
-    ordered_state, draft_state = await _fetch_ordered_or_draft(planning_state, session_id)
+    ordered_state, working_state = await _fetch_ordered_or_working(planning_state, session_id)
 
     review_state = review_result.get("data") or {} if review_result.get("code") == 0 else {}
     facts = _build_review_result_facts(
         review_state,
         planning_state=planning_state,
         ordered_state=ordered_state,
-        draft_state=draft_state,
+        working_state=working_state,
     )
     active_summary = (
         (ordered_state or {}).get("summary")
-        or (draft_state or {}).get("summary")
+        or (working_state or {}).get("summary")
         or {}
     )
     facts["plan_total"] = summary_total(active_summary)
@@ -568,6 +762,15 @@ async def handle_review_plan(
     facts["tier_counts"] = active_summary.get("unitTierCounts") or active_summary.get("tierCounts") or {}
     if fix_proposals:
         facts["fix_proposals"] = fix_proposals
+    target_strategies = _normalized_target_strategies(plan)
+    target_issue_codes = _normalized_target_issue_codes(plan)
+    requested_reply_focus = _normalized_reply_focus(plan)
+    if target_strategies or target_issue_codes:
+        facts = _filter_review_facts_for_targets(facts, target_strategies, target_issue_codes)
+        facts["target_strategies"] = target_strategies
+        facts["target_issue_codes"] = target_issue_codes
+    if requested_reply_focus:
+        facts["requested_reply_focus"] = requested_reply_focus
     review_summary, reply_focus, next_step_hints = _build_review_summary(facts)
 
     return PlanExecutionResult(
@@ -592,25 +795,53 @@ async def handle_analyze_adjustment(
     ctx: RunContext[RequestContext], plan: PlanActionPlan
 ) -> PlanExecutionResult:
     session_id = ctx.deps.sessionid
-    adjustment_result, fix_proposals = await asyncio.gather(
-        _analyze_planning_plan_adjustment_request(_DEFAULT_TENANT_ID, session_id),
-        _fetch_fix_proposal_facts(session_id),
-    )
+    review_result = await _run_planning_review_request(_DEFAULT_TENANT_ID, session_id)
+    fix_proposals = await _fetch_fix_proposal_facts(session_id)
     planning_state = await _get_planning_state_with_latest_profile(session_id)
 
-    ordered_state, draft_state = await _fetch_ordered_or_draft(planning_state, session_id)
+    ordered_state, working_state = await _fetch_ordered_or_working(planning_state, session_id)
 
-    adjustment_state = (
-        adjustment_result.get("data") or {} if adjustment_result.get("code") == 0 else {}
-    )
-    facts = _build_plan_adjustment_facts(
-        adjustment_state,
+    review_state = review_result.get("data") or {} if review_result.get("code") == 0 else {}
+    review_facts = _build_review_result_facts(
+        review_state,
         planning_state=planning_state,
         ordered_state=ordered_state,
-        draft_state=draft_state,
+        working_state=working_state,
     )
+    main_problems = [
+        _normalize_review_summary_for_user(item)
+        for item in (review_facts.get("main_problems") or [])
+        if str(item or "").strip()
+    ]
+    facts = {
+        "summary_text": "当前方案主要需要关注：" + "；".join(main_problems[:3]) if main_problems else "当前方案暂时没有明显风险或提醒。",
+        "hit_rules": [
+            {"summary": item, "suggestion_types": []}
+            for item in main_problems[:5]
+        ],
+        "suggestion_counts": {"add": 0, "reorder": 0, "replace": 0, "remove": 0},
+        "actionable_suggestion_counts": {"add": 0, "reorder": 0, "replace": 0, "remove": 0},
+        "has_actionable_suggestions": False,
+        "example_suggestions": [],
+        "review_issue_hit_plan_examples": review_facts.get("issue_hit_plan_examples") or [],
+        "intent_relation": review_facts.get("intent_relation") or {},
+        "candidate_supply": review_facts.get("candidate_supply") or {},
+        "data_freshness": review_facts.get("data_freshness") or {},
+        "main_problems": main_problems,
+        "risk_count": int(review_facts.get("risk_count") or 0),
+        "warn_count": int(review_facts.get("warn_count") or 0),
+    }
     if fix_proposals:
         facts["fix_proposals"] = fix_proposals
+    target_strategies = _normalized_target_strategies(plan)
+    target_issue_codes = _normalized_target_issue_codes(plan)
+    requested_reply_focus = _normalized_reply_focus(plan)
+    if target_strategies or target_issue_codes:
+        facts = _filter_review_facts_for_targets(facts, target_strategies, target_issue_codes)
+        facts["target_strategies"] = target_strategies
+        facts["target_issue_codes"] = target_issue_codes
+    if requested_reply_focus:
+        facts["requested_reply_focus"] = requested_reply_focus
     state_summary, reply_focus, next_step_hints = _build_adjustment_summary(facts)
 
     return PlanExecutionResult(

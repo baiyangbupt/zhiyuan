@@ -28,6 +28,7 @@ class PlanContextInputs(BaseModel):
     batch: str = "01"
     phase: str = ""
     target_count: int = 0
+    working_count: int = 0
     draft_count: int = 0
     ordered_count: int = 0
     risk_count: int = 0
@@ -43,6 +44,14 @@ class PlanContextInputs(BaseModel):
     review_issues: list[dict[str, Any]] = Field(default_factory=list)
     review_issue_summary_lines: list[str] = Field(default_factory=list)
     summary: str = ""
+
+    @model_validator(mode="after")
+    def _sync_working_count_alias(self) -> "PlanContextInputs":
+        if self.working_count <= 0 and self.draft_count > 0:
+            self.working_count = self.draft_count
+        elif self.draft_count <= 0 and self.working_count > 0:
+            self.draft_count = self.working_count
+        return self
 
 
 class PlanReviewIssueTarget(BaseModel):
@@ -85,7 +94,7 @@ class PlanEntityResolution(BaseModel):
     """
 
     raw_text: str
-    entity_type: Literal["major", "school", "region", "career", "tag", "risk"]
+    entity_type: Literal["major", "school", "region", "career", "tag", "risk", "program_type"]
     canonical_name: str = ""
     canonical_level: str = ""
     matched_plan_items: list[dict[str, Any]] = Field(default_factory=list)
@@ -129,6 +138,7 @@ PlanGoalTypeValue = Literal[
     "only_keep_scope",
     "must_include_scope",
     "exclude_scope",
+    "tuition_budget_scope",
     "prefer_scope",
     "rebalance_structure",
     "reduce_risk",
@@ -137,65 +147,6 @@ PlanGoalTypeValue = Literal[
 ]
 
 ConstraintIntentTypeValue = Literal["default", "only_keep", "must_have"]
-
-RepairStrategyValue = Literal[
-    "fill_missing_count",
-    "add_safety_items",
-    "rebalance_tier_ratio",
-    "fill_probability_gap",
-    "sort_by_probability",
-    "remove_risk_items",
-    "replace_risk_items",
-    "adjust_major_group_inner_safety",
-    "only_keep_scope",
-    "must_include_scope",
-    "exclude_scope",
-    "no_op",
-    "cannot_satisfy",
-]
-
-RepairActionTypeValue = Literal[
-    "fill_total_count",
-    "add_volunteers",
-    "remove_volunteers",
-    "replace_volunteers",
-    "reorder_volunteers",
-    "adjust_major_group_inner_safety",
-    "no_op",
-]
-
-APPLYABLE_REPAIR_STRATEGIES: set[str] = {
-    "fill_missing_count",
-    "sort_by_probability",
-    "remove_risk_items",
-    "replace_risk_items",
-    "adjust_major_group_inner_safety",
-}
-
-PREVIEW_ONLY_REPAIR_STRATEGIES: set[str] = {
-    "add_safety_items",
-    "rebalance_tier_ratio",
-    "fill_probability_gap",
-    "only_keep_scope",
-    "must_include_scope",
-    "exclude_scope",
-}
-
-REPAIR_STRATEGY_ACTIONS: dict[str, tuple[str, ...]] = {
-    "fill_missing_count": ("fill_total_count",),
-    "add_safety_items": ("add_volunteers", "replace_volunteers"),
-    "rebalance_tier_ratio": ("replace_volunteers",),
-    "fill_probability_gap": ("replace_volunteers",),
-    "sort_by_probability": ("reorder_volunteers",),
-    "remove_risk_items": ("remove_volunteers",),
-    "replace_risk_items": ("replace_volunteers",),
-    "adjust_major_group_inner_safety": ("adjust_major_group_inner_safety",),
-    "only_keep_scope": ("remove_volunteers", "add_volunteers", "replace_volunteers"),
-    "must_include_scope": ("add_volunteers", "replace_volunteers"),
-    "exclude_scope": ("remove_volunteers", "replace_volunteers"),
-    "no_op": ("no_op",),
-    "cannot_satisfy": ("no_op",),
-}
 
 _CONSTRAINT_TO_PLAN_GOAL: dict[str, PlanGoalTypeValue] = {
     "only_keep": "only_keep_scope",
@@ -239,6 +190,7 @@ class PlanGoal(BaseModel):
     negative_scopes: list[dict[str, Any]] = Field(default_factory=list)
     structure_targets: list[dict[str, Any]] = Field(default_factory=list)
     quality_guards: list[dict[str, Any]] = Field(default_factory=list)
+    max_tuition_per_year: int | None = None
     entity_resolutions: list[PlanEntityResolution] = Field(default_factory=list)
     confidence: Literal["high", "medium", "low"] = "medium"
     needs_clarification: bool = False
@@ -310,126 +262,6 @@ def build_plan_goal_intent_updates(plan_goal: PlanGoal | None) -> list[dict[str,
 CompositeFeasibility = Literal["ready", "preview_only", "blocked", "needs_clarification"]
 
 
-class LinkedRepairAction(BaseModel):
-    """Repair action metadata linked into a composite plan proposal.
-
-    This mirrors backend ``FixProposalActionDTO`` at the planning level. It is
-    preview metadata only; the executable source remains the backend proposal.
-    """
-
-    action_type: RepairActionTypeValue
-    source_check_code: str = ""
-    summary: str = ""
-    detail: str = ""
-    unit_ids: list[str] = Field(default_factory=list)
-    volunteer_ids: list[str] = Field(default_factory=list)
-    remove_unit_ids: list[str] = Field(default_factory=list)
-    remove_volunteer_ids: list[str] = Field(default_factory=list)
-    candidate_unit_ids: list[str] = Field(default_factory=list)
-    candidate_volunteer_ids: list[str] = Field(default_factory=list)
-    replacement_pairs: list[dict[str, Any]] = Field(default_factory=list)
-
-    @field_validator("action_type", mode="before")
-    @classmethod
-    def _normalize_action_type(cls, value: Any) -> Any:
-        text = str(value or "").strip()
-        aliases = {
-            "sort_ordered_plan": "reorder_volunteers",
-            "fill_count": "fill_total_count",
-            "add_units": "add_volunteers",
-            "remove_units": "remove_volunteers",
-            "replace_units": "replace_volunteers",
-        }
-        return aliases.get(text, value)
-
-
-class LinkedRepairProposal(BaseModel):
-    """Backend repair proposal linked to a user-facing composite proposal."""
-
-    proposal_id: str = ""
-    proposal_source: Literal["review_check", "user_goal"] = "review_check"
-    source_version: int = 0
-    source_review_version: int = 0
-    source_version_guard: int = 0
-    source_check_codes: list[str] = Field(default_factory=list)
-    strategy: RepairStrategyValue
-    status: Literal["ready", "preview_only", "blocked", "info"] = "preview_only"
-    title: str = ""
-    summary: str = ""
-    impact: str = ""
-    blocking_reason: str = ""
-    candidate_shortages: list[dict[str, Any]] = Field(default_factory=list)
-    actions: list[LinkedRepairAction] = Field(default_factory=list)
-    dry_run_result: dict[str, Any] = Field(default_factory=dict)
-    requires_confirmation: bool = True
-    applyable: bool = False
-
-    @field_validator("proposal_source", mode="before")
-    @classmethod
-    def _normalize_proposal_source(cls, value: Any) -> Any:
-        text = str(value or "").strip()
-        if not text:
-            return "review_check"
-        if text in {"review", "reviewCheck", "review_check"}:
-            return "review_check"
-        if text in {"userGoal", "user_goal"}:
-            return "user_goal"
-        return text
-
-    @field_validator("strategy", mode="before")
-    @classmethod
-    def _normalize_strategy(cls, value: Any) -> Any:
-        text = str(value or "").strip()
-        aliases = {
-            "fill_total_count": "fill_missing_count",
-            "add_local_protect": "add_safety_items",
-            "rebalance_protect_ratio": "rebalance_tier_ratio",
-            "sort_ordered_plan": "sort_by_probability",
-            "remove_volunteers": "remove_risk_items",
-            "replace_volunteers": "replace_risk_items",
-            "blocked": "cannot_satisfy",
-            "info": "no_op",
-        }
-        return aliases.get(text, value)
-
-    @field_validator("status", mode="before")
-    @classmethod
-    def _normalize_status(cls, value: Any) -> Any:
-        text = str(value or "").strip().lower()
-        aliases = {
-            "": "preview_only",
-            "cannot_satisfy": "blocked",
-            "no_op": "info",
-        }
-        return aliases.get(text, value)
-
-    @model_validator(mode="after")
-    def _sync_applyability_and_actions(self) -> "LinkedRepairProposal":
-        if self.strategy == "cannot_satisfy":
-            self.status = "blocked"
-        elif self.strategy == "no_op":
-            self.status = "info"
-        if self.status != "ready":
-            self.applyable = False
-        else:
-            self.applyable = self.strategy in APPLYABLE_REPAIR_STRATEGIES
-        if self.proposal_source != "review_check":
-            self.applyable = False
-        if self.strategy in PREVIEW_ONLY_REPAIR_STRATEGIES:
-            self.applyable = False
-        allowed_actions = set(REPAIR_STRATEGY_ACTIONS.get(self.strategy, ()))
-        if self.actions and allowed_actions:
-            self.actions = [
-                action
-                for action in self.actions
-                if action.action_type in allowed_actions
-            ]
-        if self.strategy in {"no_op", "cannot_satisfy"}:
-            self.requires_confirmation = False
-            self.applyable = False
-        return self
-
-
 class CompositePlanProposal(BaseModel):
     """Preview container for a multi-step plan goal.
 
@@ -445,7 +277,6 @@ class CompositePlanProposal(BaseModel):
     entity_resolutions: list[PlanEntityResolution] = Field(default_factory=list)
     intent_updates: list[dict[str, Any]] = Field(default_factory=list)
     plan_actions: list[PlanAtomicAction] = Field(default_factory=list)
-    linked_fix_proposals: list[LinkedRepairProposal] = Field(default_factory=list)
     decision_references: list[PlanDecisionReference] = Field(default_factory=list)
     dry_run_result: dict[str, Any] = Field(default_factory=dict)
     feasibility: CompositeFeasibility = "preview_only"
@@ -481,7 +312,7 @@ class CompositePlanProposal(BaseModel):
 
     @property
     def has_plan_mutation(self) -> bool:
-        return bool(self.plan_actions or any(proposal.applyable for proposal in self.linked_fix_proposals))
+        return bool(self.plan_actions)
 
 
 _TOP_LEVEL_ATOMIC_ACTION_FAMILIES = {
@@ -557,7 +388,13 @@ def normalize_plan_action_payload(payload: dict[str, Any] | None) -> dict[str, A
         source_major_names = [single_source_major_name] if single_source_major_name else []
 
     raw_filters = normalized.get("filters")
-    filters = raw_filters if isinstance(raw_filters, dict) else {}
+    filters = dict(raw_filters) if isinstance(raw_filters, dict) else {}
+    if action_family == "sort_ordered_plan":
+        for key in ("sort_field", "sortField", "field"):
+            raw_sort_field = str(normalized.get(key) or "").strip()
+            if raw_sort_field:
+                filters.setdefault("sort_field", raw_sort_field)
+                break
     reason = str(normalized.get("reason") or normalized.get("user_goal") or "").strip()
     target_position = normalized.get("target_position")
     source_position = normalized.get("source_position")
@@ -606,14 +443,14 @@ class PlanActionPlan(BaseModel):
 
     Top-level fields describe the action currently being previewed or executed.
     High-level compound goals live in ``composite_proposal`` so the plan goal,
-    pending intent updates, linked repair proposals and decision evidence have a
-    single structured home.
+    pending intent updates and decision evidence have a single structured home.
+    Review/repair proposal generation is owned by the backend proposal/apply
+    API instead of being mirrored in this Agent DTO.
     """
 
     stage: Literal["analyze", "preview", "apply", "review"]
     action_family: Literal[
         "query_state",
-        "query_draft",
         "query_ordered",
         "query_candidates",
         "generate_plan",
@@ -638,6 +475,9 @@ class PlanActionPlan(BaseModel):
     intent_relation: Literal["support", "conflict", "mixed", "unknown"] = "unknown"
     missing_inputs: list[str] = Field(default_factory=list)
     rationale: list[str] = Field(default_factory=list)
+    target_strategies: list[str] = Field(default_factory=list)
+    target_issue_codes: list[str] = Field(default_factory=list)
+    reply_focus: list[str] = Field(default_factory=list)
     atomic_actions: list[PlanAtomicAction] = Field(default_factory=list)
     composite_proposal: CompositePlanProposal | None = None
     preview_summary: str = ""
@@ -650,6 +490,64 @@ class PlanActionPlan(BaseModel):
             return "unknown"
         return _INTENT_RELATION_ALIASES.get(text, value)
 
+    @field_validator("target_strategies", mode="before")
+    @classmethod
+    def _normalize_target_strategies(cls, value: Any) -> list[str]:
+        if value is None:
+            return []
+        raw_values = value if isinstance(value, list) else [value]
+        result: list[str] = []
+        for item in raw_values:
+            text = str(item or "").strip()
+            if text and text not in result:
+                result.append(text)
+        return result
+
+    @field_validator("target_issue_codes", mode="before")
+    @classmethod
+    def _normalize_target_issue_codes(cls, value: Any) -> list[str]:
+        if value is None:
+            return []
+        raw_values = value if isinstance(value, list) else [value]
+        result: list[str] = []
+        for item in raw_values:
+            text = str(item or "").strip()
+            if text and text not in result:
+                result.append(text)
+        return result
+
+    @field_validator("reply_focus", mode="before")
+    @classmethod
+    def _normalize_reply_focus(cls, value: Any) -> list[str]:
+        if value is None:
+            return []
+        raw_values = value if isinstance(value, list) else [value]
+        result: list[str] = []
+        for item in raw_values:
+            text = str(item or "").strip()
+            if text and text not in result:
+                result.append(text)
+        return result
+
+    @model_validator(mode="before")
+    @classmethod
+    def _sync_target_strategies_alias(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        if (
+            ("target_strategies" not in data and "targetStrategies" in data)
+            or ("target_issue_codes" not in data and "targetIssueCodes" in data)
+            or ("reply_focus" not in data and "replyFocus" in data)
+        ):
+            data = dict(data)
+            if "target_strategies" not in data and "targetStrategies" in data:
+                data["target_strategies"] = data.get("targetStrategies")
+            if "target_issue_codes" not in data and "targetIssueCodes" in data:
+                data["target_issue_codes"] = data.get("targetIssueCodes")
+            if "reply_focus" not in data and "replyFocus" in data:
+                data["reply_focus"] = data.get("replyFocus")
+        return data
+
 
 class PlanExecutionResult(BaseModel):
     applied: bool
@@ -657,7 +555,6 @@ class PlanExecutionResult(BaseModel):
     stage: str
     result_kind: Literal[
         "status_overview",
-        "draft_snapshot",
         "ordered_snapshot",
         "candidate_snapshot",
         "generation_result",

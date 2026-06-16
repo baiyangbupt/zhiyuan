@@ -173,7 +173,24 @@ async def handle_remove_units(
     reply_focus: list[str] = ["mutation_result", "plan_update"]
     next_step_hints: list[str] = ["优先说明这次移除后的数量或风险影响，再决定是否建议复审或补位。"]
     result_kind = "mutation_result"
-    atomic = plan.atomic_actions[0]
+    atomic = plan.atomic_actions[0] if plan.atomic_actions else None
+    if atomic is None:
+        state_summary = "这次还没有定位到要移出的具体志愿。请说清楚要移出的学校、专业、位置，或先查看审查结果后再处理。"
+        return PlanExecutionResult(
+            applied=False,
+            action_family="remove_units",
+            stage=plan.stage,
+            result_kind="error",
+            executed_actions=[],
+            affected_volunteer_ids=[],
+            workspace_refresh_targets=[],
+            context_summary=plan.context_summary,
+            state_summary=state_summary,
+            summary=state_summary,
+            reply_focus=["missing_inputs", "needs_volunteer_selection"],
+            reply_strategy="direct_blocking",
+            next_step_hints=["先定位当前方案里的真实 volunteerId，再执行移除。"],
+        )
     resolved_ids, missing_refs = await _resolve_ordered_volunteer_refs(ctx, atomic.volunteer_ids)
     expanded_ids, _, review_issue_target, review_issue = await _resolve_review_issue_action_scope(
         ctx, plan, resolved_ids,

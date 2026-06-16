@@ -58,6 +58,9 @@ final class UserGoalProposalBuilder {
                 || RepairProposalTaxonomy.Strategy.EXCLUDE_SCOPE.equals(goalType)) {
             return buildScopeProposal(state, req, goalType);
         }
+        if (RepairProposalTaxonomy.Strategy.TUITION_BUDGET_SCOPE.equals(goalType)) {
+            return buildTuitionBudgetProposal(state, req);
+        }
         return buildBlockedProposal(state, req, goalType, REASON_ENGINE_NOT_READY);
     }
 
@@ -190,17 +193,90 @@ final class UserGoalProposalBuilder {
                 RepairProposalTaxonomy.Strategy.ONLY_KEEP_SCOPE);
         List<PlanVolunteer> remainingRemovable = remainingSources(removable, pairs);
         proposal.setSummary("当前方案中有 " + currentMatches.size() + " 条符合“" + scopeLabel + "”；如果只保留这个方向，另有 "
-                + removable.size() + " 条需要处理。已先形成 " + pairs.size() + " 组可参考替换。");
+                + removable.size() + " 条需要处理。本次能替换 " + pairs.size() + " 条。");
         proposal.setImpact(remainingRemovable.isEmpty()
-                ? "这是只读替换预览，正式处理前还需要完整校验数量、风险梯度和专业组结构。"
-                : "这是只读替换预览；仍有 " + remainingRemovable.size() + " 条暂时没有合适补位，需要后续结合候选充足度再处理。");
+                ? "确认前不会改动当前方案；确认后会按这次预览处理，并同步刷新方案。"
+                : "还有 " + remainingRemovable.size() + " 条暂时没有合适补位；本次会处理能替换或移出的部分，剩余部分需要放宽条件或后续再补。");
         if (!pairs.isEmpty()) {
             proposal.getActions().add(replaceAction("用保留范围内的候选替换其他志愿", pairs, majorGroupMode));
         }
         if (!remainingRemovable.isEmpty()) {
             proposal.getActions().add(removeAction("不在保留范围内且暂未找到补位的志愿", remainingRemovable));
         }
-        fillDryRun(proposal, current.size(), removable.size(), pairs.size(), "已生成只读替换预览，当前不会修改方案。");
+        markReadyIfActionable(proposal);
+        fillDryRun(proposal, current.size(), removable.size(), pairs.size(), "已生成调整预览，等待确认后再执行。");
+        return proposal;
+    }
+
+    private static FixProposalDTO buildTuitionBudgetProposal(PlanningStateDTO state,
+                                                             UserGoalFixProposalReq req) {
+        Integer maxTuition = maxTuitionFromRequest(req);
+        if (maxTuition == null || maxTuition <= 0) {
+            return buildScopeBlockedProposal(state, req, RepairProposalTaxonomy.Strategy.TUITION_BUDGET_SCOPE,
+                    REASON_GOAL_UNCLEAR, "这次学费上限还不够明确，需要先确认每年最多能接受多少学费。");
+        }
+
+        List<CandidateItemDTO> candidates = candidates(state);
+        List<PlanVolunteer> current = currentPlanVolunteers(state, candidates);
+        Set<String> selectedVolunteerIds = current.stream()
+                .map(PlanVolunteer::getVolunteerId)
+                .filter(value -> !Strings.isNullOrEmpty(value))
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        Set<String> selectedUnitIds = current.stream()
+                .map(PlanVolunteer::getUnitId)
+                .filter(value -> !Strings.isNullOrEmpty(value))
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+
+        List<PlanVolunteer> overBudget = current.stream()
+                .filter(item -> {
+                    Integer tuition = tuitionOf(item);
+                    return tuition != null && tuition > maxTuition;
+                })
+                .filter(item -> !item.isLocked())
+                .collect(Collectors.toList());
+        FixProposalDTO proposal = buildUserGoalPreviewBase(state, req, RepairProposalTaxonomy.Strategy.TUITION_BUDGET_SCOPE,
+                "控制学费上限的调整预览");
+        if (overBudget.isEmpty()) {
+            proposal.setStatus(RepairProposalTaxonomy.Status.INFO);
+            proposal.setSummary("当前方案里没有发现学费超过 " + maxTuition + " 元/年的志愿，本轮不需要为了这个预算调整方案。");
+            proposal.setImpact("这条预算可以作为后续报考参考，后续看候选和方案时会继续留意学费。");
+            proposal.setRequiresConfirmation(false);
+            fillDryRun(proposal, current.size(), 0, 0, "当前方案没有命中超过预算的志愿。");
+            return proposal;
+        }
+
+        List<CandidateItemDTO> affordableCandidates = candidates.stream()
+                .filter(candidate -> candidate != null && !Strings.isNullOrEmpty(candidate.getVolunteerId()))
+                .filter(candidate -> !selectedVolunteerIds.contains(candidate.getVolunteerId()))
+                .filter(candidate -> {
+                    Integer tuition = tuitionOf(candidate);
+                    return tuition == null || tuition <= maxTuition;
+                })
+                .filter(RepairCandidateSelector::isCompensationSafeCandidate)
+                .filter(candidate -> RepairCandidateEligibility.isEligibleForConfirmedHardConstraints(candidate, state))
+                .sorted(buildCandidatePreviewComparator())
+                .limit(PREVIEW_CANDIDATE_LIMIT)
+                .collect(Collectors.toList());
+
+        boolean majorGroupMode = isMajorGroupMode(state);
+        List<ReplacementPreviewPair> pairs = buildReplacementPreviewPairs(
+                overBudget, affordableCandidates, selectedUnitIds, majorGroupMode,
+                Math.min(overBudget.size(), affordableCandidates.size()),
+                RepairProposalTaxonomy.Strategy.TUITION_BUDGET_SCOPE);
+        List<PlanVolunteer> remaining = remainingSources(overBudget, pairs);
+        proposal.setSummary("当前方案里有 " + overBudget.size() + " 条学费超过 " + maxTuition + " 元/年；本次能替换 "
+                + pairs.size() + " 条。");
+        proposal.setImpact(remaining.isEmpty()
+                ? "确认前不会改动当前方案；确认后会按这次预览处理，并同步刷新方案。"
+                : "还有 " + remaining.size() + " 条暂时没有合适补位；本次会处理能替换或移出的部分，剩余部分需要放宽预算或后续再补。");
+        if (!pairs.isEmpty()) {
+            proposal.getActions().add(replaceAction("用不超过预算的候选替换超预算志愿", pairs, majorGroupMode));
+        }
+        if (!remaining.isEmpty()) {
+            proposal.getActions().add(removeAction("学费超过预算且暂未找到补位的志愿", remaining));
+        }
+        markReadyIfActionable(proposal);
+        fillDryRun(proposal, current.size(), overBudget.size(), pairs.size(), "已生成调整预览，等待确认后再执行。");
         return proposal;
     }
 
@@ -236,16 +312,18 @@ final class UserGoalProposalBuilder {
                     RepairProposalTaxonomy.Strategy.MUST_INCLUDE_SCOPE);
             if (!pairs.isEmpty()) {
                 proposal.setSummary("当前方案里还没有“" + scopeLabel + "”；方案数量已满，已先找到 1 组低优先级项替换预览。");
-                proposal.setImpact("这是只读替换预览，正式处理前还需要完整校验数量、风险梯度和专业组结构。");
+                proposal.setImpact("确认前不会改动当前方案；确认后会先替换一条低优先级选择，再同步刷新方案。");
                 proposal.getActions().add(replaceAction("补入这个方向并替换低优先级志愿", pairs, majorGroupMode));
-                fillDryRun(proposal, current.size(), pairs.size(), pairs.size(), "已生成只读替换预览，当前不会修改方案。");
+                markReadyIfActionable(proposal);
+                fillDryRun(proposal, current.size(), pairs.size(), pairs.size(), "已生成调整预览，等待确认后再执行。");
                 return proposal;
             }
         }
         proposal.setSummary("当前方案里还没有“" + scopeLabel + "”；候选池里找到可参考选择，后续可以生成补入预览。");
-        proposal.setImpact("这是候选承接预览，当前不会直接写入方案。");
+        proposal.setImpact("确认前不会改动当前方案；确认后会把这个方向补入方案，并同步刷新方案。");
         proposal.getActions().add(addAction("候选池中可补入的选择", Lists.newArrayList(candidateMatches.get(0))));
-        fillDryRun(proposal, current.size(), 0, 1, "已找到可承接候选，当前不会修改方案。");
+        markReadyIfActionable(proposal);
+        fillDryRun(proposal, current.size(), 0, 1, "已生成补入预览，等待确认后再执行。");
         return proposal;
     }
 
@@ -279,19 +357,28 @@ final class UserGoalProposalBuilder {
                 Math.min(removable.size(), candidateNonMatches.size()),
                 RepairProposalTaxonomy.Strategy.EXCLUDE_SCOPE);
         List<PlanVolunteer> remainingRemovable = remainingSources(removable, pairs);
-        proposal.setSummary("当前方案里有 " + currentMatches.size() + " 条命中“" + scopeLabel + "”；已先形成 "
-                + pairs.size() + " 组可参考替换。");
+        proposal.setSummary("当前方案里有 " + currentMatches.size() + " 条命中“" + scopeLabel + "”；本次能替换 "
+                + pairs.size() + " 条。");
         proposal.setImpact(remainingRemovable.isEmpty()
-                ? "这是只读替换预览，正式处理前还需要完整校验数量、风险梯度和专业组结构。"
-                : "这是只读调整预览；仍有 " + remainingRemovable.size() + " 条暂时没有合适补位，处理时可能需要减少数量或放宽条件。");
+                ? "确认前不会改动当前方案；确认后会按这次预览处理，并同步刷新方案。"
+                : "还有 " + remainingRemovable.size() + " 条暂时没有合适补位；本次会处理能替换或移出的部分，剩余部分需要放宽条件或后续再补。");
         if (!pairs.isEmpty()) {
             proposal.getActions().add(replaceAction("用其他候选替换需要避开的志愿", pairs, majorGroupMode));
         }
         if (!remainingRemovable.isEmpty()) {
             proposal.getActions().add(removeAction("命中避开范围且暂未找到补位的志愿", remainingRemovable));
         }
-        fillDryRun(proposal, current.size(), removable.size(), pairs.size(), "已生成只读替换预览，当前不会修改方案。");
+        markReadyIfActionable(proposal);
+        fillDryRun(proposal, current.size(), removable.size(), pairs.size(), "已生成调整预览，等待确认后再执行。");
         return proposal;
+    }
+
+    private static void markReadyIfActionable(FixProposalDTO proposal) {
+        if (proposal == null || defaultList(proposal.getActions()).isEmpty()) {
+            return;
+        }
+        proposal.setStatus(RepairProposalTaxonomy.Status.READY);
+        proposal.setRequiresConfirmation(true);
     }
 
     private static FixProposalDTO buildUserGoalPreviewBase(PlanningStateDTO state,
@@ -344,6 +431,8 @@ final class UserGoalProposalBuilder {
                 .collect(Collectors.toList()));
         action.setRemoveVolunteerIds(action.getVolunteerIds());
         action.setRemoveUnitIds(action.getUnitIds());
+        action.setCandidateVolunteerIds(Lists.newArrayList());
+        action.setCandidateUnitIds(Lists.newArrayList());
         return action;
     }
 
@@ -364,6 +453,8 @@ final class UserGoalProposalBuilder {
                 .collect(Collectors.toList()));
         action.setCandidateVolunteerIds(action.getVolunteerIds());
         action.setCandidateUnitIds(action.getUnitIds());
+        action.setRemoveVolunteerIds(Lists.newArrayList());
+        action.setRemoveUnitIds(Lists.newArrayList());
         return action;
     }
 
@@ -433,7 +524,6 @@ final class UserGoalProposalBuilder {
         proposal.getDryRunResult().setRemoveUnitCount(removeCount);
         proposal.getDryRunResult().setAddVolunteerCount(addPreviewCount);
         proposal.getDryRunResult().setAddUnitCount(addPreviewCount);
-        proposal.getDryRunResult().getWarnings().add("这是目标调整预览，当前不会直接修改方案。");
     }
 
     private static List<ReplacementPreviewPair> buildReplacementPreviewPairs(List<PlanVolunteer> sources,
@@ -544,6 +634,17 @@ final class UserGoalProposalBuilder {
         return mapper.apply(item.getCandidate());
     }
 
+    private static Integer tuitionOf(PlanVolunteer item) {
+        if (item == null || item.getCandidate() == null) {
+            return null;
+        }
+        return item.getCandidate().getTuitionPerYear();
+    }
+
+    private static Integer tuitionOf(CandidateItemDTO item) {
+        return item == null ? null : item.getTuitionPerYear();
+    }
+
     private static boolean isMajorGroupMode(PlanningStateDTO state) {
         CandidatePoolStateDTO candidatePoolState = state == null ? null : state.getCandidatePoolState();
         return candidatePoolState != null && "majorGroup".equalsIgnoreCase(candidatePoolState.getVolunteerModel());
@@ -629,6 +730,9 @@ final class UserGoalProposalBuilder {
         if ("mixed_adjustment".equals(goalType)) {
             return "复合方案调整暂不自动执行";
         }
+        if ("tuition_budget_scope".equals(goalType)) {
+            return "学费预算调整暂不自动执行";
+        }
         return "方案调整目标暂不自动执行";
     }
 
@@ -657,11 +761,49 @@ final class UserGoalProposalBuilder {
         if ("mixed_adjustment".equals(goalType)) {
             return "已识别为多目标方案调整，但需要先拆成可验证的保留、排除、补入、替换或重排动作；当前不会自动修改方案。";
         }
+        if ("tuition_budget_scope".equals(goalType)) {
+            return "已识别为学费预算调整，但需要先定位当前方案里超过预算的志愿，并判断是否有合适补位；当前不会自动修改方案。";
+        }
         return "复合方案调整需要先生成可验证的调整预览；当前不会自动修改方案。";
     }
 
     private static String normalizeGoalType(String goalType) {
         return Strings.nullToEmpty(goalType).trim();
+    }
+
+    private static Integer maxTuitionFromRequest(UserGoalFixProposalReq req) {
+        if (req == null) {
+            return null;
+        }
+        Integer fromContext = intFromObject(req.getContext() == null ? null : req.getContext().get("maxTuitionPerYear"));
+        if (fromContext != null) {
+            return fromContext;
+        }
+        for (UserGoalFixProposalReq.ScopeDTO scope : defaultList(req.getTargetScopes())) {
+            Integer value = intFromObject(scope == null || scope.getEvidence() == null ? null : scope.getEvidence().get("maxTuitionPerYear"));
+            if (value != null) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    private static Integer intFromObject(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Number) {
+            return ((Number) value).intValue();
+        }
+        String digits = Strings.nullToEmpty(String.valueOf(value)).replaceAll("[^0-9]", "");
+        if (Strings.isNullOrEmpty(digits)) {
+            return null;
+        }
+        try {
+            return Integer.parseInt(digits);
+        } catch (NumberFormatException ex) {
+            return null;
+        }
     }
 
     private static List<UserGoalFixProposalReq.ScopeDTO> scopesForGoal(UserGoalFixProposalReq req, String goalType) {

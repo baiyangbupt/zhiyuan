@@ -29,6 +29,11 @@ def scope_entity_type(scope: dict[str, Any]) -> str:
         "major_tag": "tag",
         "school_tag": "tag",
         "review_issue": "risk",
+        "project_type": "program_type",
+        "admission_type": "program_type",
+        "enrollment_type": "program_type",
+        "program": "program_type",
+        "project": "program_type",
     }
     return aliases.get(raw_type, raw_type)
 
@@ -78,6 +83,7 @@ def _resolution_note(
         "region": "地域",
         "tag": "标签",
         "risk": "审查问题",
+        "program_type": "项目类型",
     }.get(entity_type, "范围")
     if ambiguity == "unknown":
         return f"我还没能把“{raw_text}”对应到明确的{label}，需要先补充更准确的名称。"
@@ -128,7 +134,7 @@ def _entity_resolution_from_result(
 def _passthrough_entity_resolution(
     *,
     raw_text: str,
-    entity_type: Literal["tag", "risk"],
+    entity_type: Literal["tag", "risk", "program_type"],
 ) -> PlanEntityResolution:
     return PlanEntityResolution(
         raw_text=raw_text,
@@ -179,7 +185,7 @@ def build_goal_entity_resolutions(plan_goal: PlanGoal, batch: str | None) -> lis
                         result=resolve_region_entity(raw_text),
                     )
                 )
-            elif entity_type in {"tag", "risk"}:
+            elif entity_type in {"tag", "risk", "program_type"}:
                 resolutions.append(
                     _passthrough_entity_resolution(
                         raw_text=raw_text,

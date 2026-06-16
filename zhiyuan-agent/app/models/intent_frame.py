@@ -44,7 +44,7 @@ from pydantic import BaseModel, Field
 
 Verb = Literal[
     # === Plan 操作 ===
-    "query",          # 查询当前方案/排序/候选；query_draft 仅为历史 action 名
+    "query",          # 查询当前方案/排序/候选
     "analyze",        # 分析调整建议
     "review",         # 审查方案
     "generate",       # 生成方案
@@ -88,6 +88,7 @@ PlanGoalType = Literal[
     "only_keep_scope",
     "must_include_scope",
     "exclude_scope",
+    "tuition_budget_scope",
     "prefer_scope",
     "rebalance_structure",
     "reduce_risk",

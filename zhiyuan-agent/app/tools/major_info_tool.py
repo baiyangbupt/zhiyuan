@@ -23,7 +23,7 @@ from app.data.major_data import (
 from app.util.internal_client import (
     get_major_category_profile,
     get_major_profile,
-    get_planning_draft,
+    get_working_plan,
     get_planning_ordered_plan,
     query_planning_candidate_pool,
 )
@@ -451,10 +451,10 @@ async def _load_current_plan(session_id: str) -> tuple[str, list[dict[str, Any]]
     if ordered_result.get("code") == 0 and ordered_items:
         return "当前排序方案", ordered_items
 
-    draft_result = await get_planning_draft(session_id)
-    draft_items = _extract_plan_items(draft_result)
-    if draft_result.get("code") == 0 and draft_items:
-        return "当前已加入方案", draft_items
+    working_result = await get_working_plan(session_id)
+    working_items = _extract_plan_items(working_result)
+    if working_result.get("code") == 0 and working_items:
+        return "当前已加入方案", working_items
 
     return "当前方案", []
 

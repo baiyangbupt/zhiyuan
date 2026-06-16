@@ -58,7 +58,7 @@ async def test_get_major_introduction_level3_strips_profession_suffix_and_uses_v
             ),
         ) as profile_mock,
         patch("app.tools.major_info_tool.get_planning_ordered_plan", new=AsyncMock(return_value=ordered_result)),
-        patch("app.tools.major_info_tool.get_planning_draft", new=AsyncMock(return_value={"code": 0, "data": {"items": []}})),
+        patch("app.tools.major_info_tool.get_working_plan", new=AsyncMock(return_value={"code": 0, "data": {"items": []}})),
         patch("app.tools.major_info_tool.query_planning_candidate_pool", new=AsyncMock(return_value=candidate_result)),
     ):
         result = await get_major_introduction(_ctx(), "土木工程专业")
@@ -103,7 +103,7 @@ async def test_get_major_introduction_level2_uses_category_profile_and_fallback_
             ),
         ) as category_mock,
         patch("app.tools.major_info_tool.get_planning_ordered_plan", new=AsyncMock(return_value=empty_result)),
-        patch("app.tools.major_info_tool.get_planning_draft", new=AsyncMock(return_value=empty_result)),
+        patch("app.tools.major_info_tool.get_working_plan", new=AsyncMock(return_value=empty_result)),
         patch(
             "app.tools.major_info_tool.query_planning_candidate_pool",
             new=AsyncMock(side_effect=[empty_result, fallback_candidate]),
@@ -133,7 +133,7 @@ async def test_get_major_introductions_defaults_to_lightweight_facts_without_pla
     with (
         patch("app.tools.major_info_tool.get_major_profile", new=AsyncMock(side_effect=fake_profile)) as profile_mock,
         patch("app.tools.major_info_tool.get_planning_ordered_plan", new=AsyncMock()) as ordered_mock,
-        patch("app.tools.major_info_tool.get_planning_draft", new=AsyncMock()) as draft_mock,
+        patch("app.tools.major_info_tool.get_working_plan", new=AsyncMock()) as draft_mock,
         patch("app.tools.major_info_tool.query_planning_candidate_pool", new=AsyncMock()) as candidate_mock,
     ):
         result = await get_major_introductions(
@@ -205,7 +205,7 @@ async def test_get_major_introductions_can_include_plan_and_candidate_context_wh
     with (
         patch("app.tools.major_info_tool.get_major_profile", new=AsyncMock(side_effect=fake_profile)) as profile_mock,
         patch("app.tools.major_info_tool.get_planning_ordered_plan", new=AsyncMock(return_value=ordered_result)) as ordered_mock,
-        patch("app.tools.major_info_tool.get_planning_draft", new=AsyncMock(return_value={"code": 0, "data": {"items": []}})) as draft_mock,
+        patch("app.tools.major_info_tool.get_working_plan", new=AsyncMock(return_value={"code": 0, "data": {"items": []}})) as draft_mock,
         patch("app.tools.major_info_tool.query_planning_candidate_pool", new=AsyncMock(return_value=candidate_result)) as candidate_mock,
     ):
         result = await get_major_introductions(_ctx(), ["建筑学", "城乡规划"], include_plan_context=True)
@@ -246,7 +246,7 @@ async def test_get_major_introduction_level3_reports_candidate_failure_message()
             ),
         ),
         patch("app.tools.major_info_tool.get_planning_ordered_plan", new=AsyncMock(return_value=empty_result)),
-        patch("app.tools.major_info_tool.get_planning_draft", new=AsyncMock(return_value=empty_result)),
+        patch("app.tools.major_info_tool.get_working_plan", new=AsyncMock(return_value=empty_result)),
         patch("app.tools.major_info_tool.query_planning_candidate_pool", new=AsyncMock(return_value={"code": 500, "data": None})),
     ):
         result = await get_major_introduction(_ctx(), "生物工程")
@@ -271,7 +271,7 @@ async def test_get_major_introduction_uses_associate_mapping_for_non_bachelor_ba
             ),
         ),
         patch("app.tools.major_info_tool.get_planning_ordered_plan", new=AsyncMock(return_value=empty_result)),
-        patch("app.tools.major_info_tool.get_planning_draft", new=AsyncMock(return_value=empty_result)),
+        patch("app.tools.major_info_tool.get_working_plan", new=AsyncMock(return_value=empty_result)),
         patch("app.tools.major_info_tool.query_planning_candidate_pool", new=AsyncMock(return_value=empty_result)) as candidate_mock,
     ):
         result = await get_major_introduction(_ctx(batch="02"), "计算机类")
@@ -326,7 +326,7 @@ async def test_get_analysis_summary_uses_ordered_plan_and_candidate_pool():
 
     with (
         patch("app.tools.major_info_tool.get_planning_ordered_plan", new=AsyncMock(return_value=ordered_result)),
-        patch("app.tools.major_info_tool.get_planning_draft", new=AsyncMock(return_value={"code": 0, "data": {"items": []}})),
+        patch("app.tools.major_info_tool.get_working_plan", new=AsyncMock(return_value={"code": 0, "data": {"items": []}})),
         patch("app.tools.major_info_tool.query_planning_candidate_pool", new=AsyncMock(return_value=candidate_result)) as candidate_mock,
     ):
         result = await _get_analysis_summary("23", "701", 3, "土木工程")
@@ -366,7 +366,7 @@ async def test_get_analysis_summary_falls_back_to_draft_when_ordered_plan_empty(
 
     with (
         patch("app.tools.major_info_tool.get_planning_ordered_plan", new=AsyncMock(return_value=ordered_result)),
-        patch("app.tools.major_info_tool.get_planning_draft", new=AsyncMock(return_value=draft_result)),
+        patch("app.tools.major_info_tool.get_working_plan", new=AsyncMock(return_value=draft_result)),
         patch("app.tools.major_info_tool.query_planning_candidate_pool", new=AsyncMock(return_value=candidate_result)),
     ):
         result = await _get_analysis_summary("23", "801", 3, "生物工程")
@@ -399,7 +399,7 @@ async def test_get_analysis_summary_level2_uses_major_tags_then_fallback_keyword
 
     with (
         patch("app.tools.major_info_tool.get_planning_ordered_plan", new=AsyncMock(return_value=ordered_result)),
-        patch("app.tools.major_info_tool.get_planning_draft", new=AsyncMock(return_value=draft_result)),
+        patch("app.tools.major_info_tool.get_working_plan", new=AsyncMock(return_value=draft_result)),
         patch(
             "app.tools.major_info_tool.query_planning_candidate_pool",
             new=AsyncMock(side_effect=[empty_candidate, fallback_candidate]),

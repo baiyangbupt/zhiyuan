@@ -23,7 +23,6 @@ public class PlanningStateDTO {
     private OrderedPlanStateDTO orderedPlanState = new OrderedPlanStateDTO();
     private PlanAdjustmentStateDTO planAdjustmentState = new PlanAdjustmentStateDTO();
     private ReviewStateDTO reviewState = new ReviewStateDTO();
-    private List<CompensationActionDTO> pendingActions = Lists.newArrayList();
     private List<OperationLogDTO> operationLogs = Lists.newArrayList();
 
     /**

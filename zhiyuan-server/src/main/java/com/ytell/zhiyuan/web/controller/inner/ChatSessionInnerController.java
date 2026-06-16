@@ -7,6 +7,7 @@ import com.ytell.zhiyuan.model.dto.SaveMessageRes;
 import com.ytell.zhiyuan.model.dto.inner.ChatSessionExtraDataReq;
 import com.ytell.zhiyuan.model.dto.inner.MajorSubjectAvailReq;
 import com.ytell.zhiyuan.model.dto.inner.PlanParamAvailReq;
+import com.ytell.zhiyuan.model.req.UpdateTuitionRangeReq;
 import com.ytell.zhiyuan.model.dto.volunteer.VolunteerSchoolGroup;
 import com.ytell.zhiyuan.model.entity.biz.ChatSessionExtraData;
 import com.ytell.zhiyuan.model.vo.ChatSessionExtraDataVo;
@@ -74,6 +75,15 @@ public class ChatSessionInnerController {
                                                                   ChatSessionExtraDataReq extraDataReq) {
         log.info("addSessionExtraData:filterReq:{}", JSONObject.toJSONString(extraDataReq));
         return BaseResponse.success(chatSessionBizService.addOrUpdateSessionExtraData(tenantId, extraDataReq));
+    }
+
+    @PostMapping("/session/update-tuition-range")
+    @ApiOperation("内部更新会话学费区间")
+    public BaseResponse<Boolean> updateTuitionRange(@PathVariable("tenantId") Long tenantId,
+                                                    @RequestParam("chatSessionId") Long chatSessionId,
+                                                    @RequestBody UpdateTuitionRangeReq req) {
+        log.info("updateTuitionRange(inner): tenantId={}, chatSessionId={}, req={}", tenantId, chatSessionId, JSONObject.toJSONString(req));
+        return BaseResponse.success(chatSessionBizService.updateTuitionRange(tenantId, chatSessionId, req.getMin(), req.getMax()));
     }
 
     @GetMapping("/session/get-extra-data")

@@ -121,7 +121,7 @@ async def handle_generate_plan(
     facts = _build_plan_status_overview_facts(
         latest_state,
         ordered_state=(latest_state.get("orderedPlanState") or {}),
-        draft_state=get_working_plan_state(latest_state),
+        working_state=get_working_plan_state(latest_state),
     )
     state_summary, reply_focus, next_step_hints = _build_status_overview_summary(facts)
     state_summary = f"已生成一版方案。{state_summary}"

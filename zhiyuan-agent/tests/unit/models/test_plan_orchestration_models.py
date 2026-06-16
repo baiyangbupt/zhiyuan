@@ -5,8 +5,6 @@ from pydantic import ValidationError
 
 from app.tools.plan_orchestration_models import (
     CompositePlanProposal,
-    LinkedRepairAction,
-    LinkedRepairProposal,
     PlanActionPlan,
     PlanAtomicAction,
     PlanDecisionReference,
@@ -31,6 +29,20 @@ def test_plan_action_plan_defaults_keep_existing_single_action_shape():
 
     assert plan.composite_proposal is None
     assert plan.atomic_actions[0].source_major_names == ["法学"]
+
+
+def test_plan_action_plan_normalizes_reply_focus_alias():
+    plan = PlanActionPlan.model_validate(
+        {
+            "stage": "apply",
+            "action_family": "analyze_adjustment",
+            "user_goal": "这些处理不了的提醒怎么调",
+            "replyFocus": ["unavailable_guidance", "unavailable_guidance", "shortage_boundary"],
+        }
+    )
+
+    assert plan.action_family == "analyze_adjustment"
+    assert plan.reply_focus == ["unavailable_guidance", "shortage_boundary"]
 
 
 def test_plan_action_plan_keeps_compound_goal_inside_composite_proposal():
@@ -124,133 +136,20 @@ def test_composite_plan_proposal_groups_goal_intent_and_actions():
     assert proposal.decision_references[1].source == "system_recommendation"
 
 
-def test_linked_repair_proposal_normalizes_strategy_and_apply_policy():
-    proposal = LinkedRepairProposal(
-        proposal_id="fp-1",
-        strategy="rebalance_protect_ratio",
-        status="ready",
-        actions=[
-            LinkedRepairAction(
-                action_type="replace_volunteers",
-                remove_volunteer_ids=["old-1"],
-                candidate_volunteer_ids=["new-1"],
-            ),
-            LinkedRepairAction(action_type="remove_volunteers", volunteer_ids=["wrong"]),
-        ],
-    )
-
-    assert proposal.strategy == "rebalance_tier_ratio"
-    assert proposal.applyable is False
-    assert [action.action_type for action in proposal.actions] == ["replace_volunteers"]
-
-
-def test_linked_repair_proposal_marks_supported_ready_strategy_applyable():
-    proposal = LinkedRepairProposal(
-        proposal_id="fp-2",
-        strategy="replace_risk_items",
-        status="ready",
-        actions=[
-            LinkedRepairAction(action_type="replace_volunteers"),
-        ],
-    )
-
-    assert proposal.applyable is True
-    assert proposal.requires_confirmation is True
-
-
-def test_linked_repair_proposal_user_goal_source_is_not_applyable_until_bridge_exists():
-    proposal = LinkedRepairProposal(
-        proposal_id="fp-user-goal",
-        proposal_source="user_goal",
-        strategy="replace_risk_items",
-        status="ready",
-        actions=[LinkedRepairAction(action_type="replace_volunteers")],
-    )
-
-    assert proposal.proposal_source == "user_goal"
-    assert proposal.applyable is False
-    assert proposal.requires_confirmation is True
-
-
-def test_linked_repair_proposal_keeps_only_keep_replacement_preview_action():
-    proposal = LinkedRepairProposal(
-        proposal_id="fp-user-goal-only-keep",
-        proposal_source="user_goal",
-        strategy="only_keep_scope",
-        status="preview_only",
-        actions=[
-            LinkedRepairAction(action_type="replace_volunteers"),
-            LinkedRepairAction(action_type="remove_volunteers"),
-        ],
-    )
-
-    assert proposal.proposal_source == "user_goal"
-    assert proposal.applyable is False
-    assert [action.action_type for action in proposal.actions] == [
-        "replace_volunteers",
-        "remove_volunteers",
-    ]
-
-
-def test_linked_repair_proposal_blocks_noop_and_cannot_satisfy():
-    blocked = LinkedRepairProposal(
-        proposal_id="fp-3",
-        strategy="cannot_satisfy",
-        status="ready",
-        actions=[LinkedRepairAction(action_type="replace_volunteers")],
-    )
-    info = LinkedRepairProposal(
-        proposal_id="fp-4",
-        strategy="info",
-        status="ready",
-        actions=[LinkedRepairAction(action_type="sort_ordered_plan")],
-    )
-
-    assert blocked.status == "blocked"
-    assert blocked.applyable is False
-    assert blocked.requires_confirmation is False
-    assert blocked.actions == []
-    assert info.strategy == "no_op"
-    assert info.status == "info"
-    assert info.applyable is False
-    assert info.requires_confirmation is False
-    assert info.actions == []
-
-
-def test_composite_plan_proposal_accepts_linked_repair_proposals():
-    proposal = CompositePlanProposal(
-        linked_fix_proposals=[
-            {
-                "proposal_id": "fp-5",
-                "strategy": "fill_total_count",
-                "status": "ready",
-                "actions": [{"action_type": "fill_total_count"}],
-            }
+def test_composite_plan_proposal_mutation_comes_from_plan_actions_only():
+    read_only = CompositePlanProposal(feasibility="preview_only")
+    actionable = CompositePlanProposal(
+        plan_actions=[
+            PlanAtomicAction(
+                action_type="remove_units",
+                filters={"major_keyword": "法学"},
+            )
         ],
         feasibility="ready",
     )
 
-    assert proposal.linked_fix_proposals[0].strategy == "fill_missing_count"
-    assert proposal.linked_fix_proposals[0].applyable is True
-    assert proposal.has_plan_mutation is True
-
-
-def test_composite_plan_proposal_user_goal_preview_is_not_executable_mutation():
-    proposal = CompositePlanProposal(
-        linked_fix_proposals=[
-            {
-                "proposal_id": "ugp-1",
-                "proposal_source": "user_goal",
-                "strategy": "only_keep_scope",
-                "status": "preview_only",
-                "actions": [{"action_type": "replace_volunteers"}],
-            }
-        ],
-        feasibility="preview_only",
-    )
-
-    assert proposal.linked_fix_proposals[0].applyable is False
-    assert proposal.has_plan_mutation is False
+    assert read_only.has_plan_mutation is False
+    assert actionable.has_plan_mutation is True
 
 
 def test_composite_plan_proposal_clarification_is_not_confirmable():

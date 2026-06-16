@@ -67,7 +67,7 @@ class TestRegenerateOrderDoesNotInferStructuralRebalance:
         """不触发结构重平衡的 regenerate_order → 不走 early exit。"""
         ctx = _run_ctx(
             volunteer_model=volunteer_model,
-            pending_plan_action={"action_family": "regenerate_order"},
+            pending_action_family="regenerate_order",
             chat_history=[{"role": "user", "content": "确认"}],
         )
         plan = make_plan_action_plan(
@@ -259,7 +259,6 @@ class TestGenericPreviewAnalyzeFallback:
 
     @pytest.mark.parametrize("action_family,expected_kind", [
         ("query_state", "status_overview"),
-        ("query_draft", "draft_snapshot"),
         ("query_ordered", "ordered_snapshot"),
         ("query_candidates", "candidate_snapshot"),
         ("review_plan", "review_result"),
@@ -276,7 +275,6 @@ class TestGenericPreviewAnalyzeFallback:
         patch_planning,
     ):
         """只读 action 即使 stage=preview，也应走注册 handler，不落 generic preview fallback。"""
-        patch_planning.query_planning_draft.return_value = "草稿方案概览"
         patch_planning.query_planning_ordered_plan.return_value = "排序方案概览"
         patch_planning.query_planning_candidate_pool.return_value = "候选池概览"
         ctx = _run_ctx(volunteer_model=volunteer_model)
@@ -330,7 +328,6 @@ class TestAppliedComputation:
 
     @pytest.mark.parametrize("action_family", [
         "query_state",
-        "query_draft",
         "query_ordered",
     ])
     @pytest.mark.parametrize("volunteer_model", ["major", "majorGroup"])

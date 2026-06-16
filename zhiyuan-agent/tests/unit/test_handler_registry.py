@@ -55,7 +55,6 @@ class TestRegistry:
     def test_handler_registry_matches_active_plan_actions(self):
         expected = {
             "query_state",
-            "query_draft",
             "query_ordered",
             "query_candidates",
             "review_plan",
@@ -99,6 +98,167 @@ class TestHandlerPackageImports:
         assert callable(latest_user_text)
         assert callable(summary_total)
         assert callable(is_volunteer_id_like)
+
+
+class TestAnalysisHandlerTargetFiltering:
+    """Structured target strategy filtering for review/repair facts."""
+
+    def test_filter_fix_proposals_by_target_strategy_and_recounts(self):
+        from app.handlers.analysis_handlers import _filter_fix_proposal_facts_for_targets
+
+        facts = {
+            "ready_count": 1,
+            "blocked_count": 2,
+            "preview_only_count": 0,
+            "total": 3,
+            "proposals": [
+                {
+                    "proposal_id": "fp_sort",
+                    "status": "ready",
+                    "strategy": "sort_by_probability",
+                    "source_check_codes": ["probability_inversion"],
+                },
+                {
+                    "proposal_id": "fp_fee",
+                    "status": "blocked",
+                    "strategy": "replace_risk_items",
+                    "source_check_codes": ["high_tuition", "cooperative_program"],
+                },
+                {
+                    "proposal_id": "fp_gap",
+                    "status": "blocked",
+                    "strategy": "fill_probability_gap",
+                    "source_check_codes": ["probability_gap"],
+                },
+            ],
+        }
+
+        filtered = _filter_fix_proposal_facts_for_targets(facts, ["replace_risk_items"])
+
+        assert [item["proposal_id"] for item in filtered["proposals"]] == ["fp_fee"]
+        assert filtered["ready_count"] == 0
+        assert filtered["blocked_count"] == 1
+        assert filtered["total"] == 1
+
+    def test_filter_fix_proposals_prefers_target_issue_codes_over_broad_strategy(self):
+        from app.handlers.analysis_handlers import _filter_fix_proposal_facts_for_targets
+
+        facts = {
+            "ready_count": 1,
+            "blocked_count": 2,
+            "total": 3,
+            "proposals": [
+                {
+                    "proposal_id": "fp_gap",
+                    "status": "ready",
+                    "strategy": "replace_risk_items",
+                    "source_check_codes": ["probability_gap"],
+                },
+                {
+                    "proposal_id": "fp_safety",
+                    "status": "blocked",
+                    "strategy": "replace_risk_items",
+                    "source_check_codes": ["major_group_safety_intent_alignment"],
+                },
+                {
+                    "proposal_id": "fp_fee",
+                    "status": "blocked",
+                    "strategy": "replace_risk_items",
+                    "source_check_codes": ["high_tuition", "cooperative_program"],
+                },
+            ],
+        }
+
+        filtered = _filter_fix_proposal_facts_for_targets(
+            facts,
+            ["replace_risk_items"],
+            ["high_tuition", "cooperative_program"],
+        )
+
+        assert [item["proposal_id"] for item in filtered["proposals"]] == ["fp_fee"]
+        assert filtered["ready_count"] == 0
+        assert filtered["blocked_count"] == 1
+        assert filtered["total"] == 1
+
+    def test_filter_review_facts_keeps_matching_issue_examples(self):
+        from app.handlers.analysis_handlers import _filter_review_facts_for_targets
+
+        facts = {
+            "issue_hit_plan_examples": [
+                {"code": "probability_gap", "summary": "录取率梯度断层"},
+                {"code": "high_tuition", "summary": "高收费"},
+            ],
+            "fix_proposals": {
+                "proposals": [
+                    {
+                        "proposal_id": "fp_gap",
+                        "status": "blocked",
+                        "strategy": "fill_probability_gap",
+                        "source_check_codes": ["probability_gap"],
+                    },
+                    {
+                        "proposal_id": "fp_fee",
+                        "status": "blocked",
+                        "strategy": "replace_risk_items",
+                        "source_check_codes": ["high_tuition"],
+                    },
+                ],
+            },
+        }
+
+        filtered = _filter_review_facts_for_targets(facts, ["replace_risk_items"], ["high_tuition"])
+
+        assert [item["code"] for item in filtered["issue_hit_plan_examples"]] == ["high_tuition"]
+        assert [item["proposal_id"] for item in filtered["fix_proposals"]["proposals"]] == ["fp_fee"]
+
+    def test_filter_review_facts_empty_target_does_not_fall_back_to_other_issues(self):
+        from app.handlers.analysis_handlers import _filter_review_facts_for_targets
+
+        facts = {
+            "summary_text": "当前方案主要需要关注：录取率梯度断层；非意向托底",
+            "main_problems": ["录取率梯度断层", "非意向托底"],
+            "hit_rules": [
+                {"summary": "录取率梯度断层"},
+                {"summary": "非意向托底"},
+            ],
+            "issue_hit_plan_examples": [
+                {"code": "probability_gap", "summary": "录取率梯度断层"},
+                {"code": "major_group_safety_intent_alignment", "summary": "非意向托底"},
+            ],
+            "review_issue_hit_plan_examples": [
+                {"code": "probability_gap", "summary": "录取率梯度断层"},
+            ],
+            "candidate_supply": {"summary": "候选池共 402 个"},
+            "fix_proposals": {
+                "proposals": [
+                    {
+                        "proposal_id": "fp_gap",
+                        "status": "preview_only",
+                        "strategy": "fill_probability_gap",
+                        "source_check_codes": ["probability_gap"],
+                    },
+                    {
+                        "proposal_id": "fp_safety",
+                        "status": "blocked",
+                        "strategy": "adjust_major_group_inner_safety",
+                        "source_check_codes": ["major_group_safety_intent_alignment"],
+                    },
+                ],
+            },
+        }
+
+        filtered = _filter_review_facts_for_targets(
+            facts,
+            ["replace_risk_items"],
+            ["high_tuition", "cooperative_program"],
+        )
+
+        assert filtered["target_match_empty"] is True
+        assert filtered["issue_hit_plan_examples"] == []
+        assert filtered["review_issue_hit_plan_examples"] == []
+        assert filtered["candidate_supply"] == {}
+        assert filtered["main_problems"] == []
+        assert filtered["fix_proposals"]["proposals"] == []
 
 
 class TestSharedUtils:

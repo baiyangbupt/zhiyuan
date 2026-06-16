@@ -29,7 +29,7 @@ final class RepairApplyMutationBuilder {
         List<CompensationActionDTO> actions = defaultFixProposalActions(proposal == null ? null : proposal.getActions()).stream()
                 .map(RepairApplyMutationBuilder::toCompensationAction)
                 .collect(Collectors.toList());
-        return applyCompensationActions(state, candidates, actions);
+        return applyWorkingPlanAdditionActions(state, candidates, actions);
     }
 
     static MutationResult applyRemoveRiskItems(PlanningStateDTO state,
@@ -66,7 +66,7 @@ final class RepairApplyMutationBuilder {
                         RepairProposalTaxonomy.normalizeActionType(action.getActionType())))
                 .map(RepairApplyMutationBuilder::toCompensationAction)
                 .collect(Collectors.toList());
-        MutationResult compensationResult = applyCompensationActions(state, candidates, addActions);
+        MutationResult compensationResult = applyWorkingPlanAdditionActions(state, candidates, addActions);
         result.merge(compensationResult);
         syncWorkingPlan(state, candidates);
         if (!removedVolunteerIds.isEmpty()) {
@@ -138,6 +138,15 @@ final class RepairApplyMutationBuilder {
     static MutationResult applyReplaceVolunteers(PlanningStateDTO state,
                                                  List<CandidateItemDTO> candidates,
                                                  FixProposalDTO proposal) {
+        return applyReplaceVolunteers(state, candidates, proposal,
+                "fix_replace_volunteers", "replace_volunteers:");
+    }
+
+    private static MutationResult applyReplaceVolunteers(PlanningStateDTO state,
+                                                         List<CandidateItemDTO> candidates,
+                                                         FixProposalDTO proposal,
+                                                         String operationLogType,
+                                                         String operationLogDetailPrefix) {
         MutationResult result = new MutationResult();
         DraftPlanStateDTO draft = state == null ? null : state.getWorkingPlanState();
         if (draft == null || proposal == null) {
@@ -212,8 +221,8 @@ final class RepairApplyMutationBuilder {
             logVolunteerIds.addAll(removedVolunteerIds);
             logVolunteerIds.addAll(result.getAddedVolunteerIds());
             OperationLogDTO logItem = buildOperationLog(
-                    "fix_replace_volunteers",
-                    "replace_volunteers:" + proposal.getTitle(),
+                    operationLogType,
+                    operationLogDetailPrefix + proposal.getTitle(),
                     logVolunteerIds);
             appendOperationLog(state, logItem);
             result.getOperationLogs().add(logItem);
@@ -221,9 +230,90 @@ final class RepairApplyMutationBuilder {
         return result;
     }
 
-    static MutationResult applyCompensationActions(PlanningStateDTO state,
-                                                   List<CandidateItemDTO> candidates,
-                                                   List<CompensationActionDTO> actions) {
+    static MutationResult applyUserGoalActions(PlanningStateDTO state,
+                                               List<CandidateItemDTO> candidates,
+                                               FixProposalDTO proposal) {
+        MutationResult result = new MutationResult();
+        DraftPlanStateDTO draft = state == null ? null : state.getWorkingPlanState();
+        if (draft == null || proposal == null) {
+            return result;
+        }
+
+        boolean hasReplacement = defaultFixProposalActions(proposal.getActions()).stream()
+                .anyMatch(action -> RepairProposalTaxonomy.ActionType.REPLACE_VOLUNTEERS.equals(
+                        RepairProposalTaxonomy.normalizeActionType(action.getActionType())));
+        if (hasReplacement) {
+            result.merge(applyReplaceVolunteers(state, candidates, proposal,
+                    "user_goal_apply", proposal.getStrategy() + ":"));
+            if (RepairProposalTaxonomy.isBlockedStatus(result.getStatus())) {
+                return result;
+            }
+        }
+
+        Set<String> removeIds = new LinkedHashSet<String>();
+        Set<String> addIds = new LinkedHashSet<String>();
+        for (FixProposalActionDTO action : defaultFixProposalActions(proposal.getActions())) {
+            String actionType = RepairProposalTaxonomy.normalizeActionType(action.getActionType());
+            if (RepairProposalTaxonomy.ActionType.REMOVE_VOLUNTEERS.equals(actionType)) {
+                removeIds.addAll(defaultList(action.getRemoveVolunteerIds()).stream()
+                        .filter(value -> !Strings.isNullOrEmpty(value))
+                        .collect(Collectors.toList()));
+                removeIds.addAll(defaultList(action.getVolunteerIds()).stream()
+                        .filter(value -> !Strings.isNullOrEmpty(value))
+                        .collect(Collectors.toList()));
+            }
+            if (RepairProposalTaxonomy.ActionType.ADD_VOLUNTEERS.equals(actionType)) {
+                addIds.addAll(defaultList(action.getCandidateVolunteerIds()).stream()
+                        .filter(value -> !Strings.isNullOrEmpty(value))
+                        .collect(Collectors.toList()));
+                addIds.addAll(defaultList(action.getVolunteerIds()).stream()
+                        .filter(value -> !Strings.isNullOrEmpty(value))
+                        .collect(Collectors.toList()));
+            }
+        }
+
+        if (!removeIds.isEmpty()) {
+            List<String> removedVolunteerIds = defaultDraftItems(draft.getItems()).stream()
+                    .map(DraftItemDTO::getVolunteerId)
+                    .filter(removeIds::contains)
+                    .filter(value -> !Strings.isNullOrEmpty(value))
+                    .collect(Collectors.toList());
+            draft.setItems(defaultDraftItems(draft.getItems()).stream()
+                    .filter(item -> !removeIds.contains(item.getVolunteerId()))
+                    .collect(Collectors.toList()));
+            result.getRemovedVolunteerIds().addAll(removedVolunteerIds);
+        }
+
+        for (String volunteerId : addIds) {
+            CandidateItemDTO candidate = WorkingPlanMutationSupport.findCandidate(candidates, volunteerId);
+            if (candidate == null) {
+                result.block("补入候选缺少候选明细：" + volunteerId);
+                return result;
+            }
+            if (!WorkingPlanMutationSupport.addWorkingPlanItemIfAllowed(draft, candidate, "user_goal")) {
+                continue;
+            }
+            result.getAddedVolunteerIds().add(candidate.getVolunteerId());
+        }
+
+        syncWorkingPlan(state, candidates);
+        if (!removeIds.isEmpty() || !addIds.isEmpty()) {
+            List<String> logVolunteerIds = Lists.newArrayList();
+            logVolunteerIds.addAll(result.getRemovedVolunteerIds());
+            logVolunteerIds.addAll(result.getAddedVolunteerIds());
+            OperationLogDTO logItem = buildOperationLog(
+                    "user_goal_apply",
+                    proposal.getStrategy() + ":" + proposal.getTitle(),
+                    logVolunteerIds);
+            appendOperationLog(state, logItem);
+            result.getOperationLogs().add(logItem);
+        }
+        return result;
+    }
+
+    static MutationResult applyWorkingPlanAdditionActions(PlanningStateDTO state,
+                                                          List<CandidateItemDTO> candidates,
+                                                          List<CompensationActionDTO> actions) {
         MutationResult result = new MutationResult();
         DraftPlanStateDTO draft = state == null ? null : state.getWorkingPlanState();
         if (draft == null) {
@@ -244,7 +334,7 @@ final class RepairApplyMutationBuilder {
             }
         }
         syncWorkingPlan(state, candidates);
-        appendCompensationOperationLogs(state, result.getAppliedCompensationActions(), result);
+        appendWorkingPlanAdditionOperationLogs(state, result.getAppliedCompensationActions(), result);
         return result;
     }
 
@@ -301,12 +391,12 @@ final class RepairApplyMutationBuilder {
         return target;
     }
 
-    private static void appendCompensationOperationLogs(PlanningStateDTO state,
-                                                        List<CompensationActionDTO> actions,
-                                                        MutationResult result) {
+    private static void appendWorkingPlanAdditionOperationLogs(PlanningStateDTO state,
+                                                               List<CompensationActionDTO> actions,
+                                                               MutationResult result) {
         for (CompensationActionDTO action : actions) {
             OperationLogDTO logItem = buildOperationLog(
-                    "compensation_apply",
+                    "fix_add_items",
                     action.getType() + ":" + action.getSummary(),
                     new ArrayList<String>(defaultList(action.getVolunteerIds())));
             appendOperationLog(state, logItem);

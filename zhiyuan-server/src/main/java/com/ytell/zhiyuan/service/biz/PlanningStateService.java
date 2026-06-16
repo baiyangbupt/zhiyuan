@@ -232,7 +232,6 @@ public class PlanningStateService {
         res.setWorkingPlanState(state.getWorkingPlanState());
         res.setOrderedPlanState(state.getOrderedPlanState());
         res.setReviewState(state.getReviewState());
-        res.setPendingActions(state.getPendingActions());
         res.setOperationLogs(state.getOperationLogs());
         res.setWorkflowStatus(PlanningWorkflowStatusBuilder.build(state, findLatestExportBehaviorEvent(state)));
         return res;
@@ -586,6 +585,9 @@ public class PlanningStateService {
     public FixProposalApplyRes applyFixProposal(Long tenantId, Long chatSessionId, FixProposalApplyReq req) {
         FixProposalApplyReq safeReq = RepairProposalApplyPolicy.safeRequest(req);
         RepairProposalApplyPolicy.validateRequest(safeReq);
+        if (RepairProposalTaxonomy.isUserGoalSource(safeReq.getProposalSource())) {
+            return applyUserGoalFixProposal(tenantId, chatSessionId, safeReq);
+        }
         PlanningStateDTO state = loadPlanningState(chatSessionId);
         RepairProposalApplyPolicy.validateStateVersionGuard(safeReq, state);
         RepairProposalApplyPolicy.ensureReviewReady(state);
@@ -607,6 +609,51 @@ public class PlanningStateService {
         res.setRepairReport(RepairReportBuilder.build(proposal, beforeReviewSummary, state));
         res.setState(state);
         return res;
+    }
+
+    private FixProposalApplyRes applyUserGoalFixProposal(Long tenantId, Long chatSessionId, FixProposalApplyReq req) {
+        PlanningStateDTO state = loadPlanningState(chatSessionId);
+        RepairProposalApplyPolicy.validateStateVersionGuard(req, state);
+        UserGoalFixProposalReq userGoalRequest = req.getUserGoalRequest();
+        if (userGoalRequest == null) {
+            throw new BusinessException(400, "缺少用户目标调整请求");
+        }
+        userGoalRequest.setSourceVersionGuard(req.getSourceVersionGuard());
+        FixProposalStateDTO proposalState = generateUserGoalFixProposals(chatSessionId, userGoalRequest);
+        FixProposalDTO proposal = RepairProposalStateBuilder.findProposal(proposalState, req.getProposalId());
+        if (proposal == null) {
+            proposal = findReadyUserGoalProposalByStrategy(proposalState, userGoalRequest.getGoalType());
+        }
+        if (proposal == null) {
+            throw new BusinessException(404, "调整预览不存在或已失效");
+        }
+        RepairProposalApplyPolicy.validateProposalForApply(req, proposal);
+
+        state = loadPlanningState(chatSessionId);
+        ReviewSummaryDTO beforeReviewSummary = state.getReviewState() == null ? null : state.getReviewState().getSummary();
+        ensureWorkingPlanContainsOrderedPlanItems(state);
+        state = applySupportedFixProposalStrategy(tenantId, chatSessionId, req, proposal, state);
+
+        FixProposalApplyRes res = new FixProposalApplyRes();
+        res.setStatus("applied");
+        res.setMessage("已按这次目标调整当前方案，并刷新当前方案状态");
+        res.setProposal(proposal);
+        res.setRepairReport(RepairReportBuilder.build(proposal, beforeReviewSummary, state));
+        res.setState(state);
+        return res;
+    }
+
+    private FixProposalDTO findReadyUserGoalProposalByStrategy(FixProposalStateDTO proposalState, String goalType) {
+        if (proposalState == null || proposalState.getProposals() == null || Strings.isNullOrEmpty(goalType)) {
+            return null;
+        }
+        String targetStrategy = RepairProposalTaxonomy.normalizeStrategy(goalType);
+        return proposalState.getProposals().stream()
+                .filter(proposal -> RepairProposalTaxonomy.isUserGoalSource(proposal.getProposalSource()))
+                .filter(proposal -> RepairProposalTaxonomy.isReadyStatus(proposal.getStatus()))
+                .filter(proposal -> targetStrategy.equals(RepairProposalTaxonomy.normalizeStrategy(proposal.getStrategy())))
+                .findFirst()
+                .orElse(null);
     }
 
     private PlanningStateDTO applySupportedFixProposalStrategy(Long tenantId,
@@ -633,6 +680,16 @@ public class PlanningStateService {
             ensureFixMutationApplied(result);
             return saveAndRefreshAfterFixApply(tenantId, chatSessionId, req, state);
         }
+        if (RepairProposalTaxonomy.Strategy.ONLY_KEEP_SCOPE.equals(strategy)
+                || RepairProposalTaxonomy.Strategy.MUST_INCLUDE_SCOPE.equals(strategy)
+                || RepairProposalTaxonomy.Strategy.EXCLUDE_SCOPE.equals(strategy)
+                || RepairProposalTaxonomy.Strategy.TUITION_BUDGET_SCOPE.equals(strategy)) {
+            List<CandidateItemDTO> effectiveCandidates = resolveEffectiveCandidates(tenantId, chatSessionId, state, true);
+            RepairApplyMutationBuilder.MutationResult result =
+                    RepairApplyMutationBuilder.applyUserGoalActions(state, effectiveCandidates, proposal);
+            ensureFixMutationApplied(result);
+            return saveAndRefreshAfterFixApply(tenantId, chatSessionId, req, state);
+        }
         if (RepairProposalTaxonomy.Strategy.ADJUST_MAJOR_GROUP_INNER_SAFETY.equals(strategy)) {
             List<CandidateItemDTO> effectiveCandidates = resolveEffectiveCandidates(tenantId, chatSessionId, state, true);
             RepairApplyMutationBuilder.applyMajorGroupInnerSafety(state, effectiveCandidates, proposal);
@@ -644,6 +701,37 @@ public class PlanningStateService {
             return saveAndRefreshAfterFixApply(tenantId, chatSessionId, req, state);
         }
         throw new BusinessException(400, "当前修复建议暂不支持自动应用");
+    }
+
+    private void ensureWorkingPlanContainsOrderedPlanItems(PlanningStateDTO state) {
+        if (state == null || state.getOrderedPlanState() == null || state.getWorkingPlanState() == null) {
+            return;
+        }
+        if (defaultOrderedItems(state.getOrderedPlanState().getItems()).isEmpty()) {
+            return;
+        }
+        Set<String> draftIds = defaultDraftItems(state.getWorkingPlanState().getItems()).stream()
+                .map(DraftItemDTO::getVolunteerId)
+                .filter(value -> !Strings.isNullOrEmpty(value))
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        for (OrderedItemDTO orderedItem : defaultOrderedItems(state.getOrderedPlanState().getItems())) {
+            if (orderedItem == null || Strings.isNullOrEmpty(orderedItem.getVolunteerId())
+                    || draftIds.contains(orderedItem.getVolunteerId())) {
+                continue;
+            }
+            DraftItemDTO item = new DraftItemDTO();
+            item.setVolunteerId(orderedItem.getVolunteerId());
+            item.setTier(orderedItem.getTier());
+            item.setSchoolName(orderedItem.getSchoolName());
+            item.setMajorName(orderedItem.getMajorName());
+            item.setLocked(orderedItem.getLocked());
+            item.setSource(Strings.isNullOrEmpty(orderedItem.getSource()) ? "ordered_sync" : orderedItem.getSource());
+            state.getWorkingPlanState().getItems().add(item);
+            draftIds.add(item.getVolunteerId());
+        }
+        List<CandidateItemDTO> effectiveCandidates = resolveEffectiveCandidates(null, state.getSessionId(), state, false);
+        syncWorkingPlanUnitsWithItems(state.getWorkingPlanState(), effectiveCandidates, state.getCandidatePoolState());
+        recalculateWorkingPlanSummary(state.getWorkingPlanState(), state.getCandidatePoolState());
     }
 
     private void ensureFixMutationApplied(RepairApplyMutationBuilder.MutationResult result) {
@@ -739,24 +827,6 @@ public class PlanningStateService {
 
     private String defaultString(String value) {
         return value == null ? "" : value;
-    }
-
-    public CompensationPreviewDTO previewCompensation(Long tenantId, Long chatSessionId) {
-        PlanningStateDTO state = loadPlanningState(chatSessionId);
-        List<CandidateItemDTO> effectiveCandidates = resolveEffectiveCandidates(tenantId, chatSessionId, state, true);
-        OrderedPlanStateDTO structuralOrderedState = buildStructuralOrderedSnapshot(state.getCandidatePoolState(),
-                state.getOrderedPlanState(),
-                effectiveCandidates);
-        PlanningStateDTO structuralState = buildPlanAdjustmentAnalysisState(state, structuralOrderedState);
-        CompensationPreviewDTO preview = buildCompensationPreview(structuralState, effectiveCandidates);
-        state.setPendingActions(preview.getActions());
-        if (state.getReviewState() != null) {
-            state.getReviewState().setCompensationPreview(preview);
-            attachCompensationsToReviewChecks(state.getReviewState(), preview);
-        }
-        state.setSessionId(chatSessionId);
-        savePlanningState(chatSessionId, state);
-        return preview;
     }
 
     public PlanningStateVersionDTO updateExplicitProfile(Long chatSessionId, UpdateExplicitProfileReq req) {
@@ -1829,82 +1899,12 @@ public class PlanningStateService {
         recalculateReviewSummary(reviewState);
 
         state.setReviewState(reviewState);
-        state.setPendingActions(compensationPreview.getActions());
         state.setSessionId(chatSessionId);
         state.setVersion((state.getVersion() == null ? 0 : state.getVersion()) + 1);
         state.setPhase("reviewed");
         state.getStaleFlags().setReview(false);
         savePlanningState(chatSessionId, state);
         return reviewState;
-    }
-
-    /**
-     * @deprecated compatibility path for low-risk compensation apply only.
-     * Use {@link #applyFixProposal(Long, Long, FixProposalApplyReq)} for review repair mutations.
-     */
-    @Deprecated
-    public PlanningStateDTO applyCompensation(Long tenantId, Long chatSessionId, CompensationApplyReq req) {
-        PlanningStateDTO state = loadPlanningState(chatSessionId);
-        List<CandidateItemDTO> effectiveCandidates = resolveEffectiveCandidates(tenantId, chatSessionId, state, true);
-        CompensationPreviewDTO preview = buildCompensationPreview(state, effectiveCandidates);
-        state.setPendingActions(Lists.newArrayList());
-        if (state.getReviewState() != null) {
-            state.getReviewState().setCompensationPreview(preview);
-            attachCompensationsToReviewChecks(state.getReviewState(), preview);
-        }
-        if (preview.getActions().isEmpty()) {
-            state.setSessionId(chatSessionId);
-            savePlanningState(chatSessionId, state);
-            return state;
-        }
-        List<CandidateItemDTO> candidates = effectiveCandidates;
-        List<CompensationActionDTO> executableActions = buildExecutableCompensationActionsForApply(state,
-                preview.getActions(), candidates);
-        if (executableActions.isEmpty()) {
-            state.setSessionId(chatSessionId);
-            savePlanningState(chatSessionId, state);
-            return state;
-        }
-        applyCompensationActionsToWorkingPlan(state, candidates, executableActions);
-        state = saveWorkingPlanState(chatSessionId, state);
-
-        CompensationApplyReq safeReq = req == null ? new CompensationApplyReq() : req;
-        if (Boolean.TRUE.equals(safeReq.getRegenerateOrderedPlan())) {
-            OrderedPlanGenerateReq generateReq = new OrderedPlanGenerateReq();
-            generateReq.setForceRegenerate(true);
-            generateReq.setRegroupByTier(true);
-            state = generateOrderedPlan(tenantId, chatSessionId, generateReq);
-        }
-        if (Boolean.TRUE.equals(safeReq.getRerunReview())) {
-            runReview(tenantId, chatSessionId);
-            state = getPlanningState(chatSessionId);
-        }
-        return state;
-    }
-
-    private List<CompensationActionDTO> buildExecutableCompensationActionsForApply(PlanningStateDTO state,
-                                                                                  List<CompensationActionDTO> actions,
-                                                                                  List<CandidateItemDTO> candidates) {
-        if (actions == null || actions.isEmpty()) {
-            return Lists.newArrayList();
-        }
-        CompensationPreviewDTO executablePreview = new CompensationPreviewDTO();
-        executablePreview.setActions(actions.stream()
-                .map(this::copyCompensationAction)
-                .collect(Collectors.toList()));
-        List<PlanningUnitDTO> availableUnits = state != null && isMajorGroupMode(state.getCandidatePoolState())
-                ? buildAvailableCompensationUnits(state, candidates)
-                : null;
-        trimCompensationActionsForRemainingCapacity(state, executablePreview, availableUnits, false);
-        removeEmptyCompensationActions(executablePreview);
-        return executablePreview.getActions();
-    }
-
-    private List<CompensationActionDTO> applyCompensationActionsToWorkingPlan(PlanningStateDTO state,
-                                                                              List<CandidateItemDTO> candidates,
-                                                                              List<CompensationActionDTO> actions) {
-        return RepairApplyMutationBuilder.applyCompensationActions(state, candidates, actions)
-                .getAppliedCompensationActions();
     }
 
     private PlanningStateVersionDTO touchAndSavePreference(Long chatSessionId, PlanningStateDTO state) {
@@ -4846,9 +4846,6 @@ public class PlanningStateService {
         }
         if (state.getReviewState() == null) {
             state.setReviewState(new ReviewStateDTO());
-        }
-        if (state.getPendingActions() == null) {
-            state.setPendingActions(Lists.newArrayList());
         }
         if (state.getOperationLogs() == null) {
             state.setOperationLogs(Lists.newArrayList());
@@ -9137,18 +9134,6 @@ public class PlanningStateService {
         return defaultDraftItems(items).stream()
                 .map(this::resolveDraftOrOrderedUnitId)
                 .anyMatch(targetUnitId::equals);
-    }
-
-    private CompensationActionDTO copyCompensationAction(CompensationActionDTO action) {
-        CompensationActionDTO target = new CompensationActionDTO();
-        target.setType(action.getType());
-        target.setLevel(action.getLevel());
-        target.setSourceCheckCode(action.getSourceCheckCode());
-        target.setSummary(action.getSummary());
-        target.setDetail(action.getDetail());
-        target.setUnitIds(defaultList(action.getUnitIds()));
-        target.setVolunteerIds(defaultList(action.getVolunteerIds()));
-        return target;
     }
 
     private List<CompensationActionDTO> defaultCompensationActions(List<CompensationActionDTO> values) {

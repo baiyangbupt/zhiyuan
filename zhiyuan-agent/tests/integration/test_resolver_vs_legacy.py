@@ -246,14 +246,14 @@ def test_direct_structured_verb_mapping(verb: str, expected_family: str, volunte
 
 
 @pytest.mark.parametrize("volunteer_model", ["major", "majorGroup"])
-def test_compensation_normalization_uses_structured_context_and_scope(volunteer_model: str):
+def test_compensation_stays_on_fix_proposal_across_capacity_contexts(volunteer_model: str):
     unfilled_stable = resolver.resolve(_frame("compensate", tier="保"), NOT_FILLED)
-    assert unfilled_stable.action_family == "add_units"
-    assert unfilled_stable.normalization_applied == "preview_fix_proposal → add_units"
+    assert unfilled_stable.action_family == "preview_fix_proposal"
+    assert unfilled_stable.normalization_applied == ""
 
     filled = resolver.resolve(_frame("compensate"), FILLED)
-    assert filled.action_family == "analyze_adjustment"
-    assert filled.normalization_applied == "preview_fix_proposal → analyze_adjustment"
+    assert filled.action_family == "preview_fix_proposal"
+    assert filled.normalization_applied == ""
 
 
 @pytest.mark.parametrize("volunteer_model", ["major", "majorGroup"])

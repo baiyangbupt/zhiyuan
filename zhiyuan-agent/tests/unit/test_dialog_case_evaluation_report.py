@@ -545,7 +545,7 @@ def test_score_case_flags_internal_user_visible_terms():
     score = report._score_case(
         {
             "prompt": "确认这个偏好",
-            "responseText": "待确认偏好专业（level3）：法学。确认后写入 pending_intent_change。",
+            "responseText": "待确认偏好专业（level3）：法学。确认后写入 pendingConfirmation。",
             "elapsedMs": 800,
         }
     )

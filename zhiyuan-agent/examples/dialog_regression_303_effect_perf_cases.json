@@ -597,6 +597,7 @@
         "assertContainsAny": [
           "没有上一轮待确认的方案动作",
           "没有待执行的方案动作",
+          "没有上一轮正在等待采纳或执行的内容",
           "想生成方案、审查方案或怎么调整"
         ],
         "assertNotContains": [
@@ -608,6 +609,7 @@
         ],
         "expectedKeyPoints": [
           "没有上一轮待确认的方案动作",
+          "没有上一轮正在等待采纳或执行的内容",
           "下一步"
         ],
         "forbiddenPatterns": [
@@ -639,6 +641,7 @@
       "readonly_no_pending_intent"
     ],
     "assertPlanStyle": true,
+    "clearBackendPlanningIntentState": true,
     "prompts": [
       {
         "prompt": "法学和财政学哪个更适合普通家庭女生，先只分析不要记偏好",
@@ -767,7 +770,11 @@
         "assertContainsAny": [
           "点击上方卡片",
           "不会直接生效",
-          "参考"
+          "已采纳",
+          "已确认",
+          "参考",
+          "后续推荐",
+          "方案检查"
         ],
         "assertNotContains": [
           "候选结果收紧",
@@ -820,7 +827,8 @@
         "prompt": "确认",
         "assertContainsAny": [
           "没有上一轮待确认",
-          "没有待确认"
+          "没有待确认",
+          "没有上一轮正在等待采纳或执行的内容"
         ],
         "assertNotContains": [
           "payload",
@@ -831,6 +839,7 @@
         ],
         "expectedKeyPoints": [
           "没有上一轮待确认",
+          "没有上一轮正在等待采纳或执行的内容",
           "生成或查看方案",
           "审查当前方案",
           "调整方案"

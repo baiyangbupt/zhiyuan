@@ -37,6 +37,10 @@ async def test_agent_dialog_effect_and_performance_smoke():
     cases = runner._load_cases(str(cases_path))
     if os.getenv("AGENT_DIALOG_E2E_CLEAR_HISTORY", "1") != "0":
         runner._clear_history(DEFAULT_HISTORY_DB, runner._case_session_ids(cases))
+    clear_backend_pending_per_case = os.getenv("AGENT_DIALOG_E2E_CLEAR_BACKEND_PENDING_PER_CASE", "1") != "0"
+    clear_backend_planning_intent_per_case = (
+        os.getenv("AGENT_DIALOG_E2E_CLEAR_BACKEND_PLANNING_INTENT_PER_CASE", "1") != "0"
+    )
 
     await runner._run_cases(
         os.getenv("AGENT_DIALOG_E2E_URL") or runner.DEFAULT_URL,
@@ -47,4 +51,6 @@ async def test_agent_dialog_effect_and_performance_smoke():
         response_timeout=float(os.getenv("AGENT_DIALOG_E2E_RESPONSE_TIMEOUT", "180")),
         metrics_output=os.getenv("AGENT_DIALOG_E2E_METRICS_OUTPUT") or None,
         history_db=os.getenv("AGENT_DIALOG_E2E_HISTORY_DB") or str(DEFAULT_HISTORY_DB),
+        clear_backend_pending_per_case=clear_backend_pending_per_case,
+        clear_backend_planning_intent_per_case=clear_backend_planning_intent_per_case,
     )

@@ -60,8 +60,6 @@ def _make_full_ctx():
             review_risk_count=1,
             review_warn_count=2,
             risk_summaries=["高收费"],
-            pending_action_count=0,
-            pending_action_summaries=[],
         ),
         chat_history=[{"role": "user"}, {"role": "assistant"}],
     )

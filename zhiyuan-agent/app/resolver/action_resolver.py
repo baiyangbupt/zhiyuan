@@ -6,7 +6,7 @@
 设计原则：
 - 所有映射规则为数据表驱动，不依赖中文字符串匹配
 - IntentFrame.verb 直接对应 action_family（少数由 topic 细分）
-- 现有 _normalize_adjustment_action_family 的 5 条降级规则保留语义，改为结构化条件判断
+- 只保留结构化且不会绕过后端 proposal/apply policy 的归一化规则
 - review_issue_code 由 IntentFrame.target 直接携带，不再从 user_goal 关键词匹配
 - 缺参检测复用现有逻辑的语义，但基于 typed action 的字段做判断
 """
@@ -26,7 +26,6 @@ from app.models.typed_actions import (
     MoveUnitAction,
     PreviewFixProposalAction,
     QueryCandidatesAction,
-    QueryDraftAction,
     QueryOrderedAction,
     QueryStateAction,
     RegenerateOrderAction,
@@ -98,7 +97,6 @@ _PLAN_DEPENDENT_ACTIONS = {
 # 不需要用户确认即可执行的只读动作
 _NO_CONFIRMATION_ACTIONS = {
     "query_state",
-    "query_draft",
     "query_ordered",
     "query_candidates",
     "analyze_adjustment",
@@ -127,7 +125,7 @@ class ActionResolver:
     核心流程：
     1. verb_to_action_family: IntentFrame.verb → 初始 action_family
     2. apply_review_issue_override: review issue 的 scope_kind 覆盖规则
-    3. apply_normalization: 5 条降级规则（对应旧 _normalize_adjustment_action_family）
+    3. apply_normalization: 结构化归一化，不能把 review/repair proposal 改写成本地候选动作
     4. build_typed_action: 构造类型化 PlanAction
     5. check_missing_inputs: 缺参检测
     6. determine_stage: 决定 stage
@@ -162,7 +160,7 @@ class ActionResolver:
                 review_issue_override = True
                 action_family = new_family
 
-        # Step 3: normalization（5 条降级规则）
+        # Step 3: normalization（结构化、非旧补偿旁路）
         normalization_applied = ""
         original_family = action_family
         action_family = self._apply_normalization(action_family, frame, context)
@@ -323,24 +321,24 @@ class ActionResolver:
         return action_family
 
     # ------------------------------------------------------------------
-    # Step 3: normalization（5 条降级规则）
+    # Step 3: normalization（结构化、非旧补偿旁路）
     # ------------------------------------------------------------------
 
     def _apply_normalization(
         self, action_family: str, frame: IntentFrame, context: PlanContextInputs
     ) -> str:
-        """对应旧 _normalize_adjustment_action_family 的 5 条规则。
+        """结构化动作归一化。
 
         规则 1: generate_plan → analyze_adjustment
             条件: 已有方案 + 不是显式要求重新生成 + verb 实际是 analyze
-        规则 2: preview_fix_proposal → add_units
-            条件: 方案未满额 + 有稳定性补入意图（scope.tier in {稳, 保}）
-        规则 3: regenerate_order → replace_units
+        规则 2: regenerate_order → replace_units
             条件: 有结构再平衡意图（scope.tier + 无明确 reorder verb）
-        规则 4: preview_fix_proposal → analyze_adjustment
-            条件: 方案已满额
-        规则 5: regenerate_order → analyze_adjustment
+        规则 3: regenerate_order → analyze_adjustment
             条件: 没有明确 reorder verb + 有 analyze 意图
+
+        注意：preview_fix_proposal 不能按方案容量改写成 add_units 或
+        analyze_adjustment。补齐、补稳、安全垫、梯度断层等结构修复统一
+        交给后端 FixProposal 判断候选、容量、一进一出替换和不可处理原因。
         """
         has_plan = self._has_existing_plan(context)
 
@@ -353,15 +351,7 @@ class ActionResolver:
         ):
             return "analyze_adjustment"
 
-        # Rule 2: compensation → add_units (未满额 + 稳保方向)
-        if (
-            action_family == "preview_fix_proposal"
-            and not self._is_plan_filled(context)
-            and frame.scope.tier in {"稳", "保"}
-        ):
-            return "add_units"
-
-        # Rule 3: regenerate_order → replace_units (结构再平衡)
+        # Rule 2: regenerate_order → replace_units (结构再平衡)
         if (
             action_family == "regenerate_order"
             and frame.scope.tier
@@ -369,11 +359,7 @@ class ActionResolver:
         ):
             return "replace_units"
 
-        # Rule 4: compensation → analyze (方案已满)
-        if action_family == "preview_fix_proposal" and self._is_plan_filled(context):
-            return "analyze_adjustment"
-
-        # Rule 5: regenerate_order → analyze (非明确 reorder + 是 analyze)
+        # Rule 3: regenerate_order → analyze (非明确 reorder + 是 analyze)
         if (
             action_family == "regenerate_order"
             and frame.verb != "reorder"
@@ -394,7 +380,6 @@ class ActionResolver:
 
         builders: dict[str, Any] = {
             "query_state": lambda: QueryStateAction(reason=frame.raw_utterance),
-            "query_draft": lambda: QueryDraftAction(reason=frame.raw_utterance),
             "query_ordered": lambda: QueryOrderedAction(
                 volunteer_refs=frame.target.volunteer_refs,
                 reason=frame.raw_utterance,
@@ -535,7 +520,7 @@ class ActionResolver:
         """
         # 只读动作直接 apply
         if action_family in {
-            "query_state", "query_draft", "query_ordered", "query_candidates",
+            "query_state", "query_ordered", "query_candidates",
             "analyze_adjustment", "preview_fix_proposal",
         }:
             return "apply"
@@ -576,7 +561,7 @@ class ActionResolver:
 
     @staticmethod
     def _has_existing_plan(context: PlanContextInputs) -> bool:
-        return (context.draft_count > 0) or (context.ordered_count > 0)
+        return (context.working_count > 0) or (context.ordered_count > 0)
 
     @staticmethod
     def _find_context_review_issue(context: PlanContextInputs, code: str) -> dict[str, Any] | None:

@@ -75,6 +75,26 @@ def _render_followup_result(result_text: str) -> str:
     return render_explore_followup_result(parse_explore_followup_result(result_text))
 
 
+def _pending_intent_response(
+    merged: dict,
+    *,
+    intent_mode: str = INTENT_MODE_PREFERENCE,
+) -> dict:
+    return {
+        "data": {
+            "pendingConfirmation": {
+                "status": "active",
+                "kind": "intent_change",
+                "intentMode": intent_mode,
+                "executionPayload": {
+                    "intentMode": intent_mode,
+                    "merged": merged,
+                },
+            }
+        }
+    }
+
+
 def test_dialog_scenario_explore_query_does_not_silently_fallback_to_intent_recovery():
     ctx = SimpleNamespace(
         deps=SimpleNamespace(
@@ -487,16 +507,11 @@ def test_dialog_scenario_interest_followup_candidate_query_for_career_returns_te
     from app.tools.explore_followup_tool import handle_interest_analysis_action_result
 
     with patch(
-        "app.tools.explore_followup_tool.get_intent_change_cache",
+        "app.tools.explore_followup_tool.get_pending_confirmation",
         new=AsyncMock(
-            return_value={
-                "data": {
-                    "planEditCache": {
-                        "intent_mode": INTENT_MODE_PREFERENCE,
-                        "career_intents": {"positive": ["system_public_service"]},
-                    }
-                }
-            }
+            return_value=_pending_intent_response(
+                {"career_intents": {"positive": ["system_public_service"]}},
+            )
         ),
     ):
         resp = _run(
@@ -516,16 +531,11 @@ def test_dialog_scenario_interest_followup_candidate_query_has_structured_result
 
     with (
         patch(
-            "app.tools.explore_followup_tool.get_intent_change_cache",
+            "app.tools.explore_followup_tool.get_pending_confirmation",
             new=AsyncMock(
-                return_value={
-                    "data": {
-                        "planEditCache": {
-                            "intent_mode": INTENT_MODE_PREFERENCE,
-                            "city_intents": {"province": ["北京"]},
-                        }
-                    }
-                }
+                return_value=_pending_intent_response(
+                    {"city_intents": {"province": ["北京"]}},
+                )
             ),
         ),
         patch("app.tools.explore_followup_tool.get_planning_state", new=AsyncMock(return_value={"data": {"candidatePoolState": {"summary": {"total": 3000}}}})),
@@ -562,21 +572,16 @@ def test_dialog_scenario_interest_followup_candidate_query_has_structured_result
     assert result.baseTotal == 3000
 
 
-def test_dialog_scenario_interest_followup_plan_analyze_reuses_cached_intent_and_returns_confirmed_analysis():
+def test_dialog_scenario_interest_followup_plan_analyze_reuses_pending_intent_and_returns_confirmed_analysis():
     from app.tools.explore_followup_tool import handle_interest_analysis_action_result
 
     with (
         patch(
-            "app.tools.explore_followup_tool.get_intent_change_cache",
+            "app.tools.explore_followup_tool.get_pending_confirmation",
             new=AsyncMock(
-                return_value={
-                    "data": {
-                        "planEditCache": {
-                            "intent_mode": INTENT_MODE_PREFERENCE,
-                            "city_intents": {"province": ["北京"]},
-                        }
-                    }
-                }
+                return_value=_pending_intent_response(
+                    {"city_intents": {"province": ["北京"]}},
+                )
             ),
         ),
         patch("app.tools.explore_followup_tool.plan_next_action", new=AsyncMock(return_value='{"stage":"apply","action_family":"analyze_adjustment"}')) as plan_mock,
@@ -600,16 +605,11 @@ def test_dialog_scenario_major_preference_candidate_query_uses_major_keyword_fil
 
     with (
         patch(
-            "app.tools.explore_followup_tool.get_intent_change_cache",
+            "app.tools.explore_followup_tool.get_pending_confirmation",
             new=AsyncMock(
-                return_value={
-                    "data": {
-                        "planEditCache": {
-                            "intent_mode": INTENT_MODE_PREFERENCE,
-                            "major_intents": {"level3": ["网络与新媒体"]},
-                        }
-                    }
-                }
+                return_value=_pending_intent_response(
+                    {"major_intents": {"level3": ["网络与新媒体"]}},
+                )
             ),
         ),
         patch(
@@ -638,16 +638,11 @@ def test_dialog_scenario_major_preference_plan_analyze_reuses_plan_chain_not_int
 
     with (
         patch(
-            "app.tools.explore_followup_tool.get_intent_change_cache",
+            "app.tools.explore_followup_tool.get_pending_confirmation",
             new=AsyncMock(
-                return_value={
-                    "data": {
-                        "planEditCache": {
-                            "intent_mode": INTENT_MODE_PREFERENCE,
-                            "major_intents": {"level3": ["网络与新媒体"]},
-                        }
-                    }
-                }
+                return_value=_pending_intent_response(
+                    {"major_intents": {"level3": ["网络与新媒体"]}},
+                )
             ),
         ),
         patch("app.tools.explore_followup_tool.plan_next_action", new=AsyncMock(return_value='{"stage":"apply","action_family":"analyze_adjustment"}')) as plan_mock,
@@ -675,16 +670,11 @@ def test_dialog_scenario_interest_followup_prefer_confirm_goes_to_confirm_chain_
 
     with (
         patch(
-            "app.tools.explore_followup_tool.get_intent_change_cache",
+            "app.tools.explore_followup_tool.get_pending_confirmation",
             new=AsyncMock(
-                return_value={
-                    "data": {
-                        "planEditCache": {
-                            "intent_mode": INTENT_MODE_PREFERENCE,
-                            "career_intents": {"positive": ["system_public_service"]},
-                        }
-                    }
-                }
+                return_value=_pending_intent_response(
+                    {"career_intents": {"positive": ["system_public_service"]}},
+                )
             ),
         ),
         patch("app.tools.intent_state_tool.analyze_volunteer_intent_change", new=AsyncMock(return_value='{"status":"empty","sessionId":"309","message":"好的，我记下来了。"}')) as edit_mock,
@@ -1056,23 +1046,19 @@ def test_dialog_scenario_explicit_intent_mode_overrides_structural_fallback():
     assert "上海" in resp
 
 
-def test_dialog_scenario_interest_followup_constrain_confirm_passes_cached_intent_mode_downstream():
+def test_dialog_scenario_interest_followup_constrain_confirm_passes_pending_intent_mode_downstream():
     from app.tools.explore_followup_tool import handle_interest_analysis_action_result
 
     expected = "我已经按你的要求更新好了。"
 
     with (
         patch(
-            "app.tools.explore_followup_tool.get_intent_change_cache",
+            "app.tools.explore_followup_tool.get_pending_confirmation",
             new=AsyncMock(
-                return_value={
-                    "data": {
-                        "planEditCache": {
-                            "intent_mode": INTENT_MODE_CONSTRAINT,
-                            "city_intents": {"negative_province": ["上海"]},
-                        }
-                    }
-                }
+                return_value=_pending_intent_response(
+                    {"city_intents": {"negative_province": ["上海"]}},
+                    intent_mode=INTENT_MODE_CONSTRAINT,
+                )
             ),
         ),
         patch("app.tools.intent_state_tool.analyze_volunteer_intent_change", new=AsyncMock(return_value='{"status":"empty","sessionId":"323","message":"我已经按你的要求更新好了。"}')) as edit_mock,
@@ -1210,16 +1196,11 @@ def test_dialog_scenario_interest_followup_candidate_query_with_major_category_r
 
     with (
         patch(
-            "app.tools.explore_followup_tool.get_intent_change_cache",
+            "app.tools.explore_followup_tool.get_pending_confirmation",
             new=AsyncMock(
-                return_value={
-                    "data": {
-                        "planEditCache": {
-                            "intent_mode": INTENT_MODE_PREFERENCE,
-                            "major_intents": {"level1": ["工学"], "level2": ["计算机类"]},
-                        }
-                    }
-                }
+                return_value=_pending_intent_response(
+                    {"major_intents": {"level1": ["工学"], "level2": ["计算机类"]}},
+                )
             ),
         ),
         patch("app.tools.explore_followup_tool.get_planning_state", new=AsyncMock(return_value={"data": {"candidatePoolState": {"summary": {"total": 2400}}}})),

@@ -112,11 +112,6 @@ class QueryStateAction(_ActionBase):
     action_type: Literal["query_state"] = "query_state"
 
 
-class QueryDraftAction(_ActionBase):
-    """Legacy action name for querying the current working plan."""
-    action_type: Literal["query_draft"] = "query_draft"
-
-
 class QueryOrderedAction(_ActionBase):
     """查询已排序方案（支持局部查询）。"""
     action_type: Literal["query_ordered"] = "query_ordered"
@@ -244,7 +239,6 @@ class SortOrderedPlanAction(_ActionBase):
 PlanAction = Annotated[
     Union[
         QueryStateAction,
-        QueryDraftAction,
         QueryOrderedAction,
         QueryCandidatesAction,
         GeneratePlanAction,
@@ -277,7 +271,6 @@ assert isinstance(action, AddUnitsAction)
 
 ACTION_TYPE_TO_FAMILY: dict[str, str] = {
     "query_state": "query_state",
-    "query_draft": "query_draft",
     "query_ordered": "query_ordered",
     "query_candidates": "query_candidates",
     "generate_plan": "generate_plan",

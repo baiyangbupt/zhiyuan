@@ -9,28 +9,22 @@ import pytest
 
 from app.agent.context import PlanningSummary, RequestContext
 from app.tools.planning_workflow_tool import (
-    _build_compensation_preview_facts,
     _fix_proposal_facts,
     _build_plan_status_overview_facts,
-    analyze_planning_plan_adjustment,
     apply_planning_fix_proposal,
-    ban_planning_draft_items,
     generate_planning_fix_proposals,
     generate_planning_initial_plan,
     generate_planning_ordered_plan,
-    lock_planning_draft_items,
     move_planning_ordered_item,
     query_planning_candidate_pool,
-    query_planning_draft,
     query_planning_ordered_plan,
     query_planning_plan_overview,
     query_planning_state,
-    remove_planning_draft_items,
     remove_planning_ordered_items,
     run_planning_review,
-    select_planning_draft_items,
     select_planning_ordered_items,
 )
+import app.tools.planning_workflow_tool as planning_workflow_tool
 
 
 @pytest.fixture(autouse=True)
@@ -40,6 +34,17 @@ def _stub_user_profile_request():
         AsyncMock(return_value={"code": 1, "data": {}}),
     ):
         yield
+
+
+def test_legacy_plan_adjustment_analyze_wrapper_removed():
+    assert not hasattr(planning_workflow_tool, "analyze_planning_plan_adjustment")
+
+
+def test_legacy_draft_workflow_wrappers_removed():
+    assert not hasattr(planning_workflow_tool, "query_planning_draft")
+    assert not hasattr(planning_workflow_tool, "select_planning_draft_items")
+    assert not hasattr(planning_workflow_tool, "remove_planning_draft_items")
+    assert not hasattr(planning_workflow_tool, "ban_planning_draft_items")
 
 
 def _make_ctx(session_id: str = "session-123") -> MagicMock:
@@ -77,7 +82,7 @@ def test_run_planning_review_uses_session_and_formats_result():
     assert "已完成当前方案审查。" in result
     assert "风险2项，提醒1项，通过9项" in result
     assert "保区占比过低" in result
-    assert "补充保区志愿" in result
+    assert "补充保区志愿" not in result
 
 
 def test_generate_planning_initial_plan_requires_confirmation_when_existing_plan_present():
@@ -90,8 +95,6 @@ def test_generate_planning_initial_plan_requires_confirmation_when_existing_plan
         review_warn_count=0,
         review_risk_count=0,
         risk_summaries=[],
-        pending_action_count=0,
-        pending_action_summaries=[],
     )
 
     result = asyncio.run(generate_planning_initial_plan(ctx))
@@ -189,7 +192,6 @@ def test_query_planning_state_uses_session_and_formats_result():
                 "summary": {"warnCount": 2, "riskCount": 1},
                 "checks": [{"passed": False, "summary": "保区占比过低"}],
             },
-            "pendingActions": [{"summary": "补充保区志愿"}],
         },
     }
     ordered_response = {
@@ -242,7 +244,6 @@ def test_query_planning_state_matches_level2_major_preferences_against_concrete_
                 "summary": {"warnCount": 1, "riskCount": 0},
                 "checks": [{"passed": False, "summary": "冲区占比偏低"}],
             },
-            "pendingActions": [],
         },
     }
     ordered_response = {
@@ -338,7 +339,6 @@ def test_query_planning_plan_overview_reads_state_and_ordered_plan():
                 "summary": {"warnCount": 2, "riskCount": 0},
                 "checks": [{"passed": False, "summary": "冲区占比偏低"}],
             },
-            "pendingActions": [{"summary": "补充更稳的保底志愿"}],
         },
     }
     ordered_response = {
@@ -485,66 +485,6 @@ def test_run_planning_review_prefers_latest_user_profile_over_stale_explicit_pro
     assert "当前方案里较贴近的有1个，没有看到明显冲突" in result
 
 
-def test_analyze_planning_plan_adjustment_includes_intent_relation_summary():
-    ctx = _make_ctx("adjust-session")
-    adjustment_response = {
-        "code": 0,
-        "data": {
-            "analysis": {
-                "summaryText": "整体梯度还可以，但保底略弱。",
-                "rules": [{"hit": True, "summary": "保区占比偏低", "suggestionTypes": ["add"]}],
-            },
-            "suggestions": {
-                "addSuggestions": [{"title": "补充保底", "description": "补一些更稳的北京院校。"}],
-                "reorderSuggestions": [],
-                "replaceSuggestions": [],
-                "removeSuggestions": [],
-            },
-        },
-    }
-    state_response = {
-        "code": 0,
-        "data": {
-            "profileState": {
-                "explicitProfile": {
-                    "positiveRegions": ["北京"],
-                },
-                "latentProfile": {
-                    "futureDevelopment": {"careerTypes": ["体制内/考公导向"]},
-                },
-            },
-            "orderedPlanState": {
-                "summary": {"total": 2},
-                "items": [
-                    {"position": 1, "schoolName": "北京大学", "majorName": "法学", "provinceName": "北京", "schoolCategory": "政法", "tier": "冲"},
-                    {"position": 2, "schoolName": "武汉大学", "majorName": "计算机科学与技术", "provinceName": "湖北", "tier": "稳"},
-                ]
-            },
-        },
-    }
-    ordered_response = {
-        "code": 0,
-        "data": {
-            "items": state_response["data"]["orderedPlanState"]["items"],
-            "summary": {"total": 2},
-        },
-    }
-
-    with (
-        patch("app.tools.planning_workflow_tool._analyze_planning_plan_adjustment_request", AsyncMock(return_value=adjustment_response)) as mock_request,
-        patch("app.tools.planning_workflow_tool._get_planning_state_request", AsyncMock(return_value=state_response)) as mock_state,
-        patch("app.tools.planning_workflow_tool._get_planning_ordered_plan_request", AsyncMock(return_value=ordered_response)) as mock_ordered,
-    ):
-        result = asyncio.run(analyze_planning_plan_adjustment(ctx))
-
-    mock_request.assert_awaited_once_with(1, "adjust-session")
-    mock_state.assert_awaited_once_with("adjust-session")
-    mock_ordered.assert_awaited_once_with("adjust-session")
-    assert "总体判断：整体梯度还可以，但保底略弱。" in result
-    assert "当前偏好/要求：偏好地域=北京；发展方向=体制内/考公导向" in result
-    assert "贴近偏好：北京大学-法学(冲)@1" in result
-
-
 def test_query_planning_plan_overview_falls_back_to_draft_when_no_ordered_plan():
     ctx = _make_ctx("overview-draft-session")
     state_response = {
@@ -556,7 +496,6 @@ def test_query_planning_plan_overview_falls_back_to_draft_when_no_ordered_plan()
             "draftPlanState": {"summary": {"total": 12}},
             "orderedPlanState": {"summary": {"total": 0}},
             "reviewState": {"summary": {"warnCount": 0, "riskCount": 0}, "checks": []},
-            "pendingActions": [],
         },
     }
     draft_response = {
@@ -597,7 +536,6 @@ def test_query_planning_plan_overview_includes_target_gap_when_total_insufficien
             "draftPlanState": {"summary": {"unitTotal": 24, "targetUnitCount": 30}},
             "orderedPlanState": {"summary": {"unitTotal": 24, "targetUnitCount": 30}},
             "reviewState": {"summary": {"warnCount": 1, "riskCount": 1}, "checks": [{"passed": False, "summary": "当前志愿数量少于官方要求"}]},
-            "pendingActions": [{"summary": "补足志愿总数量"}],
         },
     }
     ordered_response = {
@@ -658,84 +596,6 @@ def test_build_plan_status_overview_facts_includes_candidate_supply_shortage():
     assert supply["candidate_tier_counts"] == {"冲": 4235, "稳": 0, "保": 0}
     assert supply["missing_supply_tiers"] == ["稳", "保"]
     assert "当前没有可直接补入的稳、保区候选" in supply["summary"]
-
-
-def test_compensation_preview_facts_separate_legacy_add_from_structural_actions():
-    facts = _build_compensation_preview_facts(
-        {
-            "actions": [
-                {"summary": "补足志愿总数量", "volunteerIds": ["v1", "v2"], "actionType": "add"},
-                {
-                    "summary": "替换高收费志愿",
-                    "removeVolunteerIds": ["old-1"],
-                    "candidateVolunteerIds": ["new-1"],
-                    "actionType": "replace",
-                },
-            ]
-        }
-    )
-
-    assert facts["action_count"] == 2
-    assert facts["estimated_fill_count"] == 2
-    assert facts["legacy_add_action_count"] == 1
-    assert facts["legacy_add_estimated_fill_count"] == 2
-
-
-def test_query_planning_draft_uses_session_and_formats_result():
-    ctx = _make_ctx("draft-session")
-    response = {
-        "code": 0,
-        "data": {
-            "items": [
-                {"schoolName": "北京大学", "majorName": "经济学", "tier": "sprint", "locked": True},
-                {"schoolName": "同济大学", "majorName": "建筑学", "tier": "safe"},
-            ],
-            "bannedVolunteerIds": ["v9"],
-            "summary": {
-                "total": 2,
-                "tierCounts": {"sprint": 1, "safe": 1, "protect": 0},
-            },
-        },
-    }
-
-    with patch(
-        "app.tools.planning_workflow_tool._get_working_plan_request",
-        AsyncMock(return_value=response),
-    ) as mock_request:
-        result = asyncio.run(query_planning_draft(ctx))
-
-    mock_request.assert_awaited_once_with("draft-session")
-    assert "已加入方案概况：" in result
-    assert "已加入方案数：2" in result
-    assert "区间分布：冲1 / 稳1 / 保0" in result
-    assert "北京大学-经济学(sprint)[锁定]" in result
-
-
-def test_query_planning_draft_prefers_unit_summary_in_major_group_mode():
-    ctx = _make_ctx("draft-session")
-    response = {
-        "code": 0,
-        "data": {
-            "items": [],
-            "bannedVolunteerIds": [],
-            "summary": {
-                "unitTotal": 24,
-                "total": 48,
-                "unitTierCounts": {"冲": 8, "稳": 8, "保": 8},
-                "tierCounts": {"冲": 16, "稳": 16, "保": 16},
-            },
-        },
-    }
-
-    with patch(
-        "app.tools.planning_workflow_tool._get_working_plan_request",
-        AsyncMock(return_value=response),
-    ) as mock_request:
-        result = asyncio.run(query_planning_draft(ctx))
-
-    mock_request.assert_awaited_once_with("draft-session")
-    assert "已加入方案数：24" in result
-    assert "区间分布：冲8 / 稳8 / 保8" in result
 
 
 def test_query_planning_candidate_pool_uses_filters_and_formats_result():
@@ -816,43 +676,6 @@ def test_query_planning_candidate_pool_uses_filters_and_formats_result():
     assert "北京大学-经济学(sprint/北京/录取率35%/公办/学费5000元/年) 分值95.5" in result
     assert "id=v101" not in result
     assert "volunteerId" not in result
-
-
-def test_select_remove_lock_and_ban_planning_draft_items_use_session():
-    ctx = _make_ctx("draft-edit-session")
-    response = {
-        "code": 0,
-        "data": {
-            "draftPlanState": {
-                "items": [
-                    {"schoolName": "北京大学", "majorName": "经济学", "tier": "sprint", "locked": True},
-                ],
-                "bannedVolunteerIds": ["v3"],
-                "summary": {
-                    "total": 1,
-                    "tierCounts": {"sprint": 1, "safe": 0, "protect": 0},
-                },
-            }
-        },
-    }
-
-    with (
-        patch("app.tools.planning_workflow_tool._select_working_plan_items_request", AsyncMock(return_value=response)) as mock_select,
-        patch("app.tools.planning_workflow_tool._remove_working_plan_items_request", AsyncMock(return_value=response)) as mock_remove,
-        patch("app.tools.planning_workflow_tool._ban_working_plan_items_request", AsyncMock(return_value=response)) as mock_ban,
-    ):
-        select_result = asyncio.run(select_planning_draft_items(ctx, ["v1", "v2"]))
-        remove_result = asyncio.run(remove_planning_draft_items(ctx, ["v1"]))
-        lock_result = asyncio.run(lock_planning_draft_items(ctx, ["v1"], locked=True))
-        ban_result = asyncio.run(ban_planning_draft_items(ctx, ["v3"]))
-
-    mock_select.assert_awaited_once_with(1, "draft-edit-session", ["v1", "v2"], source="user_agent")
-    mock_remove.assert_awaited_once_with("draft-edit-session", ["v1"])
-    mock_ban.assert_awaited_once_with("draft-edit-session", ["v3"])
-    assert "已加入2个志愿到方案。" in select_result
-    assert "已从方案移出1个志愿。" in remove_result
-    assert "新版工作台暂不提供固定/锁定志愿入口" in lock_result
-    assert "已禁用1个候选志愿，并同步更新当前方案。" in ban_result
 
 
 def test_query_planning_ordered_plan_uses_session_and_formats_result():
@@ -1486,13 +1309,64 @@ def test_apply_planning_fix_proposal_formats_repair_report():
         source_version_guard=12,
         regenerate_ordered_plan=False,
         rerun_review=True,
+        proposal_source="review_check",
+        user_goal_request=None,
     )
-    assert "已按处理建议更新方案" in result
+    assert "已更新方案，并刷新当前方案状态" in result
     assert "处理内容：补齐志愿数量" in result
-    assert "对应问题：当前方案数量不足，需要补充志愿。" in result
-    assert "处理方式：fill_missing_count" in result
+    assert "对应问题：当前方案数量不足，需要补充志愿" in result
+    assert "处理方式：fill_missing_count" not in result
     assert "调整结果：补入2条" in result
     assert "移除0条" not in result
-    assert "影响范围：预计补充 2 条志愿。" in result
-    assert "处理前预览：补入 2 条，不移除现有志愿。" in result
+    assert "影响范围：预计补充 2 条志愿" in result
+    assert "处理前预览" not in result
     assert "这次对应的问题已通过检查" in result
+
+
+def test_apply_planning_fix_proposal_filters_preview_boundary_notes():
+    ctx = _make_ctx("fix-apply-session")
+    response = {
+        "code": 0,
+        "data": {
+            "status": "applied",
+            "repairReport": {
+                "strategy": "only_keep_scope",
+                "proposalTitle": "只保留临床医学",
+                "proposalSummary": "当前方案已按这条条件同步调整。",
+                "proposalImpact": "这是只读替换预览，正式处理前还需要完整校验数量；仍有 1 条暂时没有合适补位。",
+                "addedVolunteerCount": 1,
+                "removedVolunteerCount": 2,
+                "postValidationPassed": False,
+                "messages": [
+                    "这是目标调整预览，当前不会直接修改方案。",
+                    "已按可处理部分完成调整。",
+                ],
+                "warnings": [
+                    "当前不会修改方案。",
+                    "还有 1 条需要后续再处理。",
+                ],
+            },
+        },
+    }
+
+    with patch(
+        "app.tools.planning_workflow_tool._apply_planning_fix_proposal_request",
+        AsyncMock(return_value=response),
+    ):
+        result = asyncio.run(
+            apply_planning_fix_proposal(
+                ctx,
+                proposal_id="fp_1",
+                source_version_guard=12,
+                user_confirmed=True,
+            )
+        )
+
+    assert "已更新方案，并刷新当前方案状态" in result
+    assert "已按可处理部分完成调整" in result
+    assert "还有 1 条需要后续再处理" in result
+    assert "只读替换预览" not in result
+    assert "只读调整预览" not in result
+    assert "目标调整预览" not in result
+    assert "当前不会直接修改方案" not in result
+    assert "当前不会修改方案" not in result

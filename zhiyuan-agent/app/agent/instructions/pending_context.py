@@ -13,8 +13,7 @@ if TYPE_CHECKING:
 def build_pending_context(deps: RequestContext) -> str:
     """将 pending plan action 注入到指令中。
 
-    新字段优先；当 conversation_phase 已注入时，只读取 conversation_phase.pending。
-    旧 pending_plan_action dict 仅用于尚未注入 phase 的兼容入口。
+    只读取后端 active pendingConfirmation 投影出的 conversation_phase.pending。
     """
     pending = resolve_pending_confirmation(deps)
     if pending is None or pending.kind != "plan_mutation":

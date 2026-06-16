@@ -24,6 +24,7 @@ from app.agent.instructions.tool_dispatch_rules import build_tool_dispatch_rules
 from app.tools.plan_orchestration_tool import plan_next_action
 from app.tools.plan_query_tool import query_volunteer_plan
 from app.agent.instructions.assembler import build_instructions
+from app.models.conversation_phase import ConversationPhase, PendingConfirmation, PhaseState
 
 
 def _make_deps(
@@ -31,7 +32,7 @@ def _make_deps(
     score: bool = False,
     profile: bool = False,
     planning: bool = False,
-    pending: dict | None = None,
+    pending: PendingConfirmation | None = None,
     history: list | None = None,
 ) -> RequestContext:
     """构造测试用 RequestContext。"""
@@ -61,8 +62,6 @@ def _make_deps(
             review_risk_count=2,
             review_warn_count=3,
             risk_summaries=["高收费志愿3项", "概率倒挂1项"],
-            pending_action_count=1,
-            pending_action_summaries=["建议移除高收费项"],
         )
 
     return RequestContext(
@@ -71,7 +70,14 @@ def _make_deps(
         score_detail=score_detail,
         init_profile=init_profile,
         planning_summary=planning_summary,
-        pending_plan_action=pending,
+        conversation_phase=(
+            ConversationPhase(
+                state=PhaseState.PLAN_PREVIEWING if pending.kind == "plan_mutation" else PhaseState.INTENT_PREVIEWING,
+                pending=pending,
+            )
+            if pending is not None
+            else None
+        ),
         chat_history=history,
     )
 
@@ -118,7 +124,7 @@ class TestPlanningContext:
         assert "50" in result
         assert "风险 2 项" in result
         assert "高收费" in result
-        assert "待处理建议" in result
+        assert "待处理建议" not in result
 
 
 # ---------------------------------------------------------------------------
@@ -130,13 +136,13 @@ class TestPendingContext:
         deps = _make_deps()
         assert build_pending_context(deps) == ""
 
-    def test_with_legacy_pending(self):
-        pending = {
-            "action_family": "generate_plan",
-            "user_goal": "生成方案",
-            "summary": "将生成一版方案",
-            "plan_payload": {"stage": "apply"},
-        }
+    def test_with_conversation_phase_pending(self):
+        pending = PendingConfirmation(
+            kind="plan_mutation",
+            action_family="generate_plan",
+            preview_summary="将生成一版方案",
+            execution_payload={"stage": "apply"},
+        )
         deps = _make_deps(pending=pending)
         result = build_pending_context(deps)
         assert "generate_plan" in result
@@ -144,34 +150,8 @@ class TestPendingContext:
         assert "追问审查解释、处理分类、影响范围、候选不足原因或当前方案状态" in result
         assert "按只读问题正常调用相应 Plan 工具或基于已知审查事实回答" in result
 
-    def test_with_conversation_phase_pending(self):
-        """新 conversation_phase.pending 优先于旧 pending_plan_action。"""
-        from app.models.conversation_phase import ConversationPhase, PendingConfirmation, PhaseState
-        deps = _make_deps(pending={"action_family": "old"})
-        deps.conversation_phase = ConversationPhase(
-            state=PhaseState.PLAN_PREVIEWING,
-            pending=PendingConfirmation(
-                kind="plan_mutation",
-                action_family="add_units",
-                preview_summary="将补入3个志愿",
-                affected_scope="涉及北京地区",
-            ),
-        )
-        result = build_pending_context(deps)
-        assert "add_units" in result
-        assert "将补入3个志愿" in result
-        assert "old" not in result  # 旧格式被覆盖
-
-    def test_conversation_phase_without_pending_blocks_legacy_fallback(self):
-        """一旦 phase 已注入，就只认 phase.pending，不再回退旧字段。"""
-        from app.models.conversation_phase import ConversationPhase, PhaseState
-
-        deps = _make_deps(pending={
-            "action_family": "generate_plan",
-            "summary": "旧格式待确认",
-            "plan_payload": {"stage": "apply"},
-        })
-        deps.pending_intent_change = True
+    def test_conversation_phase_without_pending_has_no_pending(self):
+        deps = _make_deps()
         deps.conversation_phase = ConversationPhase(state=PhaseState.PLAN_IDLE)
 
         assert resolve_pending_confirmation(deps) is None
@@ -179,17 +159,13 @@ class TestPendingContext:
         assert not has_pending_intent_confirmation(deps)
 
     def test_resolve_pending_confirmation_prefers_phase(self):
-        from app.models.conversation_phase import ConversationPhase, PendingConfirmation, PhaseState
-
-        deps = _make_deps(pending={"action_family": "old"})
-        deps.conversation_phase = ConversationPhase(
-            state=PhaseState.PLAN_PREVIEWING,
+        deps = _make_deps(
             pending=PendingConfirmation(
                 kind="plan_mutation",
                 action_family="remove_units",
                 preview_summary="删除2个志愿",
                 execution_payload={"stage": "apply", "action_family": "remove_units"},
-            ),
+            )
         )
 
         pending = resolve_pending_confirmation(deps)
@@ -198,9 +174,13 @@ class TestPendingContext:
         assert pending.action_family == "remove_units"
         assert json.loads(resolve_pending_plan_payload_text(deps))["action_family"] == "remove_units"
 
-    def test_has_pending_intent_confirmation_reads_legacy_flag(self):
-        deps = _make_deps()
-        deps.pending_intent_change = True
+    def test_has_pending_intent_confirmation_reads_phase(self):
+        deps = _make_deps(
+            pending=PendingConfirmation(
+                kind="intent_change",
+                action_family="apply_selected_intents",
+            )
+        )
 
         assert has_pending_intent_confirmation(deps)
 
@@ -245,6 +225,14 @@ class TestToolDispatchRules:
         assert "简称、模糊代称或口语化表达" in result
         assert "query_volunteer_plan" in result
         assert "不要自行把简称解释成地名或院校" in result
+
+    def test_product_export_format_is_not_admission_policy(self):
+        result = build_tool_dispatch_rules()
+        assert "系统工作台功能" in result
+        assert "不能调用 `answer_admission_policy_question`" in result
+        assert "专业+大学模式导出" in result
+        assert "学校 + 专业" in result
+        assert "不按学校聚合" in result
 
     def test_school_major_move_and_remove_refs_are_plan_mutations(self):
         result = build_tool_dispatch_rules()
@@ -444,12 +432,12 @@ class TestAssembler:
         assert "回复风格" in result
 
     def test_full_assembly(self):
-        pending = {
-            "action_family": "remove_units",
-            "user_goal": "删除高收费",
-            "summary": "将删除3个志愿",
-            "plan_payload": {"ids": ["v1"]},
-        }
+        pending = PendingConfirmation(
+            kind="plan_mutation",
+            action_family="remove_units",
+            preview_summary="将删除3个志愿",
+            execution_payload={"ids": ["v1"]},
+        )
         deps = _make_deps(score=True, profile=True, planning=True, pending=pending)
         ctx = self._make_ctx(deps)
         result = build_instructions(ctx)

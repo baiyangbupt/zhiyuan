@@ -61,7 +61,6 @@ class TestRequestContextNewFields:
             ordered_total=20,
             ordered_target_total=24,
             review_risk_count=2,
-            pending_action_count=1,
         )
         ctx = RequestContext(userid="u1", sessionid="s1", planning_summary=summary)
 
@@ -104,10 +103,6 @@ class TestRequestContextNewFields:
                     {"passed": True, "summary": "ignored"},
                 ],
             },
-            "pendingActions": [
-                {"summary": "补充保区志愿"},
-                {"summary": "补足志愿总数量"},
-            ],
         }
 
         summary = PlanningSummary.from_backend_state(raw_state)
@@ -121,9 +116,7 @@ class TestRequestContextNewFields:
         assert summary.ordered_total == 10
         assert summary.ordered_target_total == 30
         assert summary.review_risk_count == 2
-        assert summary.pending_action_count == 2
         assert summary.risk_summaries == ["保区占比过低", "本省保底志愿数量不足"]
-        assert summary.pending_action_summaries == ["补充保区志愿", "补足志愿总数量"]
 
     def test_planning_summary_prefers_unit_totals(self):
         """Test preferring unit total counts in majorGroup mode."""

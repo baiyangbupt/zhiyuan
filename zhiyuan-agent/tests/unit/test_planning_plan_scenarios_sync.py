@@ -12,10 +12,10 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from app.agent.context import PlanningSummary, RequestContext
+from app.models.conversation_phase import ConversationPhase, PendingConfirmation, PhaseState
 from app.tools.plan_execution_tool import execute_plan_action
 from app.tools.plan_orchestration_tool import plan_next_action
 from app.tools.planning_workflow_tool import (
-    analyze_planning_plan_adjustment,
     generate_planning_initial_plan,
     generate_planning_ordered_plan,
     query_planning_state,
@@ -33,7 +33,13 @@ def _ctx_with_pending(action_family: str, session_id: str = "900") -> SimpleName
             userid="u1",
             sessionid=session_id,
             chat_history=[],
-            pending_plan_action={"action_family": action_family},
+            conversation_phase=ConversationPhase(
+                state=PhaseState.PLAN_PREVIEWING,
+                pending=PendingConfirmation(
+                    kind="plan_mutation",
+                    action_family=action_family,
+                ),
+            ),
             confirmed_via_card=True,
         )
     )
@@ -64,8 +70,6 @@ def test_planning_scenario_existing_plan_blocks_initial_generate_without_confirm
         review_warn_count=1,
         review_risk_count=0,
         risk_summaries=[],
-        pending_action_count=0,
-        pending_action_summaries=[],
     )
 
     result = asyncio.run(generate_planning_initial_plan(ctx))
@@ -164,10 +168,6 @@ def test_planning_scenario_query_state_surfaces_risks_pending_and_stale_flags():
                     {"passed": False, "summary": "个别专业组缺少安全垫"},
                 ],
             },
-            "pendingActions": [
-                {"summary": "补 2 个保底专业组"},
-                {"summary": "微调 1 处相邻顺序"},
-            ],
         },
     }
 
@@ -181,42 +181,8 @@ def test_planning_scenario_query_state_surfaces_risks_pending_and_stale_flags():
     assert "已加入方案数：30" in result
     assert "当前方案数：28" in result
     assert "当前主要风险：梯度有断层；个别专业组缺少安全垫" in result
-    assert "当前待处理建议：2项，主要为补 2 个保底专业组；微调 1 处相邻顺序" in result
+    assert "当前待处理建议" not in result
     assert "待刷新状态：排序待刷新；审查结果待刷新" in result
-
-
-def test_planning_scenario_plan_adjustment_analysis_consumes_direct_state_payload():
-    ctx = _ctx("903c")
-    response = {
-        "code": 0,
-        "data": {
-            "status": "ready",
-            "analysis": {
-                "summaryText": "当前排序存在录取概率倒挂；当前录取概率梯度存在断层",
-                "rules": [
-                    {"ruleCode": "probability_inversion", "hit": True, "summary": "当前排序存在录取概率倒挂"},
-                    {"ruleCode": "probability_gap", "hit": True, "summary": "当前录取概率梯度存在断层"},
-                ],
-            },
-            "suggestions": {
-                "addSuggestions": [],
-                "reorderSuggestions": [{"id": "reorder_1"}],
-                "replaceSuggestions": [{"id": "replace_1"}],
-                "removeSuggestions": [],
-            },
-        },
-    }
-
-    with patch(
-        "app.tools.planning_workflow_tool._analyze_planning_plan_adjustment_request",
-        AsyncMock(return_value=response),
-    ):
-        result = asyncio.run(analyze_planning_plan_adjustment(ctx))
-
-    assert "录取概率倒挂" in result
-    assert "梯度存在断层" in result
-    assert "顺序调整 1 条" in result
-    assert "替换建议 1 条" in result
 
 
 def test_planning_scenario_add_units_by_filters_updates_plan_wording():

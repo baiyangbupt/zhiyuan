@@ -54,16 +54,16 @@ async def _collect_plan_context_inputs_model(
         user_profile = (((profile_result or {}).get("data") or {}).get("userprofile") or {})
     planning_state = merge_planning_state_with_user_profile(planning_state, user_profile)
 
-    draft_summary = get_working_plan_summary(planning_state)
+    working_summary = get_working_plan_summary(planning_state)
     ordered_summary = ((planning_state.get("orderedPlanState") or {}).get("summary") or {})
     review_summary = ((planning_state.get("reviewState") or {}).get("summary") or {})
     review_checks = ((planning_state.get("reviewState") or {}).get("checks") or [])
     candidate_required = ((planning_state.get("candidatePoolState") or {}).get("requiredCount") or 0)
 
     ordered_items = ((planning_state.get("orderedPlanState") or {}).get("items") or [])
-    draft_items = get_working_plan_items(planning_state)
-    plan_items = ordered_items or draft_items
-    plan_summary = ordered_summary if ordered_items else draft_summary
+    working_items = get_working_plan_items(planning_state)
+    plan_items = ordered_items or working_items
+    plan_summary = ordered_summary if ordered_items else working_summary
     intent_state = _extract_plan_intent_state(planning_state)
     relation_lines = _build_plan_intent_relation_lines(
         planning_state,
@@ -81,7 +81,7 @@ async def _collect_plan_context_inputs_model(
         batch=ctx.deps.batch or "01",
         phase=str(planning_state.get("phase") or ""),
         target_count=_summary_target(ordered_summary, fallback=candidate_required),
-        draft_count=_summary_total(draft_summary),
+        working_count=_summary_total(working_summary),
         ordered_count=_summary_total(ordered_summary),
         risk_count=int(review_summary.get("riskCount") or 0),
         warn_count=int(review_summary.get("warnCount") or 0),
@@ -100,8 +100,8 @@ async def _collect_plan_context_inputs_model(
     summary_parts = []
     if model.ordered_count > 0:
         summary_parts.append(f"已有 {model.ordered_count} 个志愿（目标 {model.target_count or model.ordered_count} 个）")
-    elif model.draft_count > 0:
-        summary_parts.append(f"已加入方案 {model.draft_count} 个志愿（目标 {model.target_count or model.draft_count} 个），尚未生成正式顺序")
+    elif model.working_count > 0:
+        summary_parts.append(f"已加入方案 {model.working_count} 个志愿（目标 {model.target_count or model.working_count} 个），尚未生成正式顺序")
     else:
         summary_parts.append("尚未生成方案")
     if model.risk_count > 0 or model.warn_count > 0:

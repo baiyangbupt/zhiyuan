@@ -6,6 +6,7 @@ import com.ytell.zhiyuan.model.dto.planning.FixProposalDTO;
 import com.ytell.zhiyuan.model.dto.planning.PlanningStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.ReviewCheckDTO;
 import com.ytell.zhiyuan.model.dto.planning.ReviewStateDTO;
+import com.ytell.zhiyuan.model.dto.planning.UserGoalFixProposalReq;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
@@ -74,12 +75,36 @@ public class RepairProposalApplyPolicyTest {
     }
 
     @Test
-    void shouldRejectUserGoalProposalFromReviewApplyEntry() {
+    void shouldRejectUserGoalProposalWithoutOriginalRequest() {
         FixProposalApplyReq req = request("proposal_1", 7);
-        FixProposalDTO proposal = proposal("ready", "replace_risk_items", 7);
+        req.setProposalSource("user_goal");
+        FixProposalDTO proposal = proposal("ready", "only_keep_scope", 7);
         proposal.setProposalSource("user_goal");
 
-        assertBusinessException(400, "当前处理建议暂不支持在此入口应用",
+        assertBusinessException(400, "缺少用户目标调整请求",
+                () -> RepairProposalApplyPolicy.validateProposalForApply(req, proposal));
+    }
+
+    @Test
+    void shouldAllowReadyUserGoalProposalWithOriginalRequest() {
+        FixProposalApplyReq req = request("proposal_1", 7);
+        req.setProposalSource("user_goal");
+        req.setUserGoalRequest(userGoalRequest("only_keep_scope", 7));
+        FixProposalDTO proposal = proposal("ready", "only_keep_scope", 7);
+        proposal.setProposalSource("user_goal");
+
+        assertDoesNotThrow(() -> RepairProposalApplyPolicy.validateProposalForApply(req, proposal));
+    }
+
+    @Test
+    void shouldRejectUnsupportedUserGoalStrategy() {
+        FixProposalApplyReq req = request("proposal_1", 7);
+        req.setProposalSource("user_goal");
+        req.setUserGoalRequest(userGoalRequest("mixed_adjustment", 7));
+        FixProposalDTO proposal = proposal("ready", "mixed_adjustment", 7);
+        proposal.setProposalSource("user_goal");
+
+        assertBusinessException(400, "当前调整预览暂不支持自动应用",
                 () -> RepairProposalApplyPolicy.validateProposalForApply(req, proposal));
     }
 
@@ -150,6 +175,13 @@ public class RepairProposalApplyPolicyTest {
         proposal.setStrategy(strategy);
         proposal.setSourceVersionGuard(sourceVersionGuard);
         return proposal;
+    }
+
+    private UserGoalFixProposalReq userGoalRequest(String goalType, Integer sourceVersionGuard) {
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType(goalType);
+        req.setSourceVersionGuard(sourceVersionGuard);
+        return req;
     }
 
     private PlanningStateDTO reviewedState() {

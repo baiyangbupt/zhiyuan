@@ -65,113 +65,6 @@ class TestPendingConfirmation:
                 action_family="add_units",
             )
 
-    # --- Legacy 转换 ---
-
-    def test_from_legacy_plan_action_valid(self):
-        legacy = {
-            "action_family": "generate_plan",
-            "summary": "将生成一版方案",
-            "plan_payload": {"action_family": "generate_plan", "stage": "apply"},
-            "affected_scope": "涉及全部志愿",
-        }
-        pc = PendingConfirmation.from_legacy_plan_action(legacy)
-        assert pc is not None
-        assert pc.kind == "plan_mutation"
-        assert pc.action_family == "generate_plan"
-        assert pc.preview_summary == "将生成一版方案"
-        assert pc.affected_scope == "涉及全部志愿"
-
-    def test_from_legacy_plan_action_preserves_composite_proposal(self):
-        composite = {
-            "goal": {"goal_type": "only_keep_scope"},
-            "plan_actions": [{"action_type": "remove_units"}],
-        }
-        legacy = {
-            "action_family": "remove_units",
-            "summary": "只保留临床医学",
-            "plan_payload": {
-                "action_family": "remove_units",
-                "stage": "apply",
-                "composite_proposal": composite,
-            },
-        }
-
-        pc = PendingConfirmation.from_legacy_plan_action(legacy)
-
-        assert pc is not None
-        assert pc.composite_proposal == composite
-        restored = pc.to_legacy_plan_action()
-        assert restored["composite_proposal"] == composite
-
-    def test_from_legacy_plan_action_preserves_external_composite_proposal(self):
-        composite = {"goal": {"goal_type": "must_include_scope"}}
-        legacy = {
-            "action_family": "add_units",
-            "summary": "至少保留临床医学",
-            "plan_payload": {"action_family": "add_units", "stage": "apply"},
-            "compositeProposal": composite,
-        }
-
-        pc = PendingConfirmation.from_legacy_plan_action(legacy)
-
-        assert pc is not None
-        assert pc.composite_proposal == composite
-
-    def test_from_legacy_plan_action_empty(self):
-        assert PendingConfirmation.from_legacy_plan_action({}) is None
-        assert PendingConfirmation.from_legacy_plan_action(None) is None
-
-    def test_from_legacy_plan_action_no_family(self):
-        assert PendingConfirmation.from_legacy_plan_action({"summary": "x"}) is None
-
-    def test_from_legacy_intent_change_valid(self):
-        cache = {
-            "summary": "设置地域偏好",
-            "cities": ["北京"],
-            "compositeProposal": {"goal": {"goal_type": "prefer_scope"}},
-        }
-        pc = PendingConfirmation.from_legacy_intent_change(cache, "set_preference")
-        assert pc is not None
-        assert pc.kind == "intent_change"
-        assert pc.action_family == "set_preference"
-        assert pc.execution_payload == cache
-        assert pc.composite_proposal == {"goal": {"goal_type": "prefer_scope"}}
-
-    def test_from_legacy_intent_change_none(self):
-        assert PendingConfirmation.from_legacy_intent_change(None) is None
-        assert PendingConfirmation.from_legacy_intent_change({}) is None
-
-    def test_to_legacy_plan_action(self):
-        pc = PendingConfirmation(
-            kind="plan_mutation",
-            action_family="remove_units",
-            preview_summary="将删除2个志愿",
-            execution_payload={"ids": ["v1", "v2"]},
-            affected_scope="涉及2个志愿",
-        )
-        legacy = pc.to_legacy_plan_action()
-        assert legacy["action_family"] == "remove_units"
-        assert legacy["summary"] == "将删除2个志愿"
-        assert legacy["plan_payload"] == {"ids": ["v1", "v2"]}
-        assert legacy["affected_scope"] == "涉及2个志愿"
-
-    def test_roundtrip_legacy_plan(self):
-        """Legacy → PendingConfirmation → Legacy 往返。"""
-        original = {
-            "action_family": "replace_units",
-            "summary": "替换高收费志愿",
-            "plan_payload": {"remove_ids": ["v1"], "filters": {"tier": "稳"}},
-            "affected_scope": "涉及1个高收费志愿",
-        }
-        pc = PendingConfirmation.from_legacy_plan_action(original)
-        assert pc is not None
-        restored = pc.to_legacy_plan_action()
-        assert restored["action_family"] == original["action_family"]
-        assert restored["summary"] == original["summary"]
-        assert restored["plan_payload"] == original["plan_payload"]
-        assert restored["affected_scope"] == original["affected_scope"]
-
-
 # ---------------------------------------------------------------------------
 # ConversationPhase — 状态转换
 # ---------------------------------------------------------------------------
@@ -230,7 +123,7 @@ class TestConversationPhasePending:
         assert phase.state == PhaseState.PLAN_PREVIEWING
         assert phase.pending is pending
 
-    def test_set_pending_intent_change(self):
+    def test_set_pending_intent_confirmation(self):
         phase = ConversationPhase(state=PhaseState.EXPLORE)
         pending = PendingConfirmation(
             kind="intent_change",
@@ -321,111 +214,68 @@ class TestConversationPhasePending:
 
 
 # ---------------------------------------------------------------------------
-# ConversationPhase — Legacy 转换
+# ConversationPhase — 统一 pendingConfirmation 入口
 # ---------------------------------------------------------------------------
 
-class TestConversationPhaseFromLegacy:
-    """从旧格式推断初始状态。"""
+class TestConversationPhaseFromPendingConfirmation:
+    """从后端 active pendingConfirmation 投影运行态。"""
 
-    def test_empty_legacy(self):
-        phase = ConversationPhase.from_legacy_context()
-        assert phase.state == PhaseState.EXPLORE
+    def test_without_pending_uses_planning_idle(self):
+        phase = ConversationPhase.from_pending_confirmation(
+            None,
+            planning_summary={"phase": "ordered", "version": 11},
+            turn_count=5,
+        )
+
+        assert phase.state == PhaseState.PLAN_IDLE
         assert phase.pending is None
+        assert phase.turn_count == 5
+        assert phase.last_backend_version == 11
 
-    def test_with_pending_plan_action(self):
-        legacy = {
-            "action_family": "generate_plan",
-            "summary": "生成方案",
-            "plan_payload": {},
-        }
-        phase = ConversationPhase.from_legacy_context(
-            pending_plan_action=legacy,
-            turn_count=3,
+    def test_plan_pending_uses_unified_pending_without_legacy_dict(self):
+        pending = PendingConfirmation(
+            kind="plan_mutation",
+            action_family="apply_fix_proposal",
+            preview_summary="处理高收费志愿",
+            execution_payload={"proposalId": "fp-1", "sourceVersionGuard": 12},
+            source_backend_version=12,
+            composite_proposal={"goal": {"goal_type": "reduce_risk"}},
         )
-        assert phase.state == PhaseState.PLAN_PREVIEWING
-        assert phase.pending is not None
-        assert phase.pending.kind == "plan_mutation"
-        assert phase.pending.action_family == "generate_plan"
-        assert phase.turn_count == 3
 
-    def test_with_pending_plan_action_source_version(self):
-        legacy = {
-            "action_family": "generate_plan",
-            "summary": "生成方案",
-            "plan_payload": {
-                "stage": "preview",
-                "planning_version": 7,
-            },
-        }
-        phase = ConversationPhase.from_legacy_context(
-            pending_plan_action=legacy,
-            planning_summary={"version": 3},
-            turn_count=3,
+        phase = ConversationPhase.from_pending_confirmation(
+            pending,
+            planning_summary={"phase": "reviewed", "version": 9},
+            turn_count=4,
         )
 
         assert phase.state == PhaseState.PLAN_PREVIEWING
         assert phase.pending is not None
-        assert phase.pending.source_backend_version == 7
-        assert phase.pending.created_turn == 3
-        assert phase.last_backend_version == 7
-        legacy_roundtrip = phase.pending.to_legacy_plan_action()
-        assert legacy_roundtrip["source_backend_version"] == 7
-        assert legacy_roundtrip["created_turn"] == 3
+        assert phase.pending is not pending
+        assert phase.pending.created_turn == 4
+        assert phase.pending.action_family == "apply_fix_proposal"
+        assert phase.pending.execution_payload["proposalId"] == "fp-1"
+        assert phase.pending.composite_proposal == {"goal": {"goal_type": "reduce_risk"}}
+        assert phase.last_backend_version == 12
 
-    def test_with_pending_intent_change(self):
-        phase = ConversationPhase.from_legacy_context(
-            pending_intent_change=True,
+    def test_intent_pending_uses_intent_previewing(self):
+        pending = PendingConfirmation(
+            kind="intent_change",
+            action_family="apply_selected_intents",
+            preview_summary="采纳地域想法",
+            execution_payload={"merged": {"city_intents": {"province": ["北京"]}}},
+        )
+
+        phase = ConversationPhase.from_pending_confirmation(
+            pending,
+            planning_summary={"phase": "ordered", "version": 8},
             turn_count=2,
         )
+
         assert phase.state == PhaseState.INTENT_PREVIEWING
         assert phase.pending is not None
         assert phase.pending.kind == "intent_change"
         assert phase.pending.created_turn == 2
-
-    def test_with_pending_intent_confirmation(self):
-        legacy_cache = {
-            "summary": "设置地域偏好",
-            "city_intents": {"province": ["北京"]},
-            "intent_mode": "preference",
-        }
-        phase = ConversationPhase.from_legacy_context(
-            pending_intent_confirmation=PendingConfirmation.from_legacy_intent_change(legacy_cache),
-            turn_count=4,
-        )
-        assert phase.state == PhaseState.INTENT_PREVIEWING
-        assert phase.pending is not None
-        assert phase.pending.kind == "intent_change"
-        assert phase.pending.execution_payload == legacy_cache
-        assert phase.pending.created_turn == 4
-
-    def test_with_planning_summary(self):
-        phase = ConversationPhase.from_legacy_context(
-            planning_summary={"phase": "ordered", "count": 30},
-        )
-        assert phase.state == PhaseState.PLAN_IDLE
-        assert phase.pending is None
-
-    def test_with_planning_summary_version(self):
-        phase = ConversationPhase.from_legacy_context(
-            planning_summary={"phase": "ordered", "count": 30, "version": 9},
-        )
-        assert phase.state == PhaseState.PLAN_IDLE
-        assert phase.pending is None
-        assert phase.last_backend_version == 9
-
-    def test_priority_plan_over_intent(self):
-        """pending_plan_action 优先于 pending_intent_change。"""
-        legacy = {
-            "action_family": "add_units",
-            "summary": "添加",
-            "plan_payload": {},
-        }
-        phase = ConversationPhase.from_legacy_context(
-            pending_plan_action=legacy,
-            pending_intent_change=True,
-        )
-        assert phase.state == PhaseState.PLAN_PREVIEWING
-        assert phase.pending.kind == "plan_mutation"
+        assert phase.last_backend_version == 8
 
 
 # ---------------------------------------------------------------------------

@@ -13,7 +13,12 @@ from typing import Any
 from pydantic_ai import RunContext
 
 from app.agent.context import RequestContext
-from app.handlers.analysis_handlers import _fix_proposal_lines
+from app.handlers.analysis_handlers import (
+    _filter_fix_proposal_facts_for_targets,
+    _fix_proposal_lines,
+    _normalized_target_issue_codes,
+    _normalized_target_strategies,
+)
 from app.handlers.registry import register_handler
 from app.tools.plan_orchestration_models import PlanActionPlan, PlanExecutionResult
 from app.tools.planning_workflow_tool import _fix_proposal_facts
@@ -97,6 +102,10 @@ async def handle_preview_fix_proposal(
         )
 
     facts = _fix_proposal_facts(result.get("data") or {})
+    target_strategies = _normalized_target_strategies(plan)
+    target_issue_codes = _normalized_target_issue_codes(plan)
+    if target_strategies or target_issue_codes:
+        facts = _filter_fix_proposal_facts_for_targets(facts, target_strategies, target_issue_codes)
     state_summary, reply_focus, next_step_hints = _build_fix_proposal_preview_summary(facts)
     return PlanExecutionResult(
         applied=False,

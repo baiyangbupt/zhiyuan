@@ -2,6 +2,7 @@ import importlib.util
 import asyncio
 import json
 import sqlite3
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -67,6 +68,59 @@ def test_apply_session_offset_maps_numeric_case_sessions_without_mutating_origin
     assert adjusted[1]["baseSessionId"] == "5740"
     assert cases[0]["sessionId"] == "5736"
     assert "baseSessionId" not in cases[0]
+
+
+def test_apply_session_offset_uses_source_session_as_backend_clone_source():
+    cases = [
+        {
+            "name": "production-case",
+            "sessionId": "2633",
+            "sourceSessionId": "2633",
+            "prompts": ["取消学费超过20000元的志愿"],
+        }
+    ]
+
+    adjusted = runner._apply_session_offset(cases, 200000)
+
+    assert adjusted[0]["sessionId"] == "202633"
+    assert adjusted[0]["baseSessionId"] == "2633"
+    assert adjusted[0]["cloneBackendStateFromSessionId"] == "2633"
+    assert "cloneBackendStateFromSessionId" not in cases[0]
+
+
+def test_apply_session_offset_keeps_explicit_backend_clone_source():
+    cases = [
+        {
+            "name": "manual-clone-case",
+            "sessionId": "5906",
+            "sourceSessionId": "5906",
+            "cloneBackendStateFromSessionId": "17",
+            "prompts": ["看看方案"],
+        }
+    ]
+
+    adjusted = runner._apply_session_offset(cases, 200000)
+
+    assert adjusted[0]["sessionId"] == "205906"
+    assert adjusted[0]["cloneBackendStateFromSessionId"] == "17"
+
+
+def test_filter_cases_by_name_keeps_requested_cases():
+    cases = [
+        {"name": "case-a", "sessionId": "1", "prompts": ["a"]},
+        {"name": "case-b", "sessionId": "2", "prompts": ["b"]},
+    ]
+
+    filtered = runner._filter_cases_by_name(cases, ["case-b"])
+
+    assert filtered == [cases[1]]
+
+
+def test_filter_cases_by_name_rejects_missing_case():
+    cases = [{"name": "case-a", "sessionId": "1", "prompts": ["a"]}]
+
+    with pytest.raises(ValueError, match="case-b"):
+        runner._filter_cases_by_name(cases, ["case-b"])
 
 
 def test_apply_session_offset_rejects_non_numeric_session_id():
@@ -164,6 +218,79 @@ def test_clear_history_deletes_only_requested_sessions(tmp_path):
 
 def test_clear_history_missing_db_is_noop(tmp_path):
     assert runner._clear_history(tmp_path / "missing.db", ["17"]) == 0
+
+
+def test_clone_backend_chat_session_row_uses_mysql_insert_select(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return subprocess.CompletedProcess(cmd, 0, stdout="1\n", stderr="")
+
+    monkeypatch.setattr(runner.subprocess, "run", fake_run)
+
+    result = runner._clone_backend_chat_session_row(
+        source_session_id="17",
+        target_session_id="9903101",
+        db_host="127.0.0.1",
+        db_port="3306",
+        db_user="root",
+        db_password="secret",
+        db_name="sales_bot",
+    )
+
+    assert result["ok"] is True
+    assert result["insertedRows"] == 1
+    cmd, kwargs = calls[0]
+    assert cmd[:4] == ["mysql", "-h127.0.0.1", "-P3306", "-uroot"]
+    assert kwargs["env"]["MYSQL_PWD"] == "secret"
+    assert "INSERT INTO assistant_chat_session" in cmd[-1]
+    assert "src.id = 17" in cmd[-1]
+    assert "dst.id = 9903101" in cmd[-1]
+
+
+def test_clone_backend_chat_session_row_rejects_non_numeric_ids():
+    result = runner._clone_backend_chat_session_row(
+        source_session_id="base",
+        target_session_id="9903101",
+        db_host="127.0.0.1",
+        db_port="3306",
+        db_user="root",
+        db_password="",
+        db_name="sales_bot",
+    )
+
+    assert result["ok"] is False
+    assert "numeric" in result["error"]
+
+
+def test_clone_backend_volunteer_data_files_copies_local_source_files(tmp_path):
+    (tmp_path / "session_volunteer_17.json").write_text('{"detailList":[]}', encoding="utf-8")
+    (tmp_path / "session_volunteer_17_temp.json").write_text('{"temp":true}', encoding="utf-8")
+
+    result = runner._clone_backend_volunteer_data_files(
+        source_session_id="17",
+        target_session_id="9903101",
+        data_dir=tmp_path,
+    )
+
+    assert result["ok"] is True
+    assert result["copiedFiles"] == 2
+    assert (tmp_path / "session_volunteer_9903101.json").read_text(encoding="utf-8") == '{"detailList":[]}'
+    assert (tmp_path / "session_volunteer_9903101_temp.json").read_text(encoding="utf-8") == '{"temp":true}'
+
+
+def test_clone_backend_volunteer_data_files_requires_original_source(tmp_path):
+    (tmp_path / "session_volunteer_17_temp.json").write_text('{"temp":true}', encoding="utf-8")
+
+    result = runner._clone_backend_volunteer_data_files(
+        source_session_id="17",
+        target_session_id="9903101",
+        data_dir=tmp_path,
+    )
+
+    assert result["ok"] is False
+    assert "original" in result["error"]
 
 
 def test_run_cases_supports_per_case_history_clear(monkeypatch, tmp_path):
@@ -670,6 +797,33 @@ def test_content_assertions_ignore_silent_workspace_refresh_when_followups_disal
     assert violations == []
 
 
+def test_content_assertions_ignore_thinking_messages_when_followups_disallowed():
+    violations = runner._check_content_assertions(
+        "我先看一下当前方案。",
+        [{"type": "thinking", "content": "正在整理当前方案...", "end": False}],
+        {"prompt": "确认", "assertNoFollowups": True},
+        "case-a",
+        "17",
+    )
+
+    assert violations == []
+
+
+def test_content_assertions_still_reject_visible_followups_after_ignoring_thinking():
+    violations = runner._check_content_assertions(
+        "我先看一下当前方案。",
+        [
+            {"type": "thinking", "content": "正在整理当前方案...", "end": False},
+            {"type": "planningWorkspaceAction", "content": {"targetView": "ordered", "refresh": True}},
+        ],
+        {"prompt": "确认", "assertNoFollowups": True},
+        "case-a",
+        "17",
+    )
+
+    assert any("assertNoFollowups FAILED" in item for item in violations)
+
+
 def test_content_assertions_support_followup_type_and_count():
     violations = runner._check_content_assertions(
         "需要你确认后才会执行。",
@@ -684,6 +838,62 @@ def test_content_assertions_support_followup_type_and_count():
     )
 
     assert violations == []
+
+
+def test_content_assertions_support_actionable_silent_workspace_refresh_assertions():
+    violations = runner._check_content_assertions(
+        "已采纳，后续会按这个范围看。",
+        [
+            {
+                "type": "planningWorkspaceAction",
+                "content": {
+                    "type": "planningWorkspaceAction",
+                    "targetView": "ordered",
+                    "refresh": True,
+                    "silent": True,
+                },
+            },
+            {
+                "type": "planningWorkspaceAction",
+                "content": {
+                    "type": "planningWorkspaceAction",
+                    "targetView": "candidate",
+                    "refresh": True,
+                    "silent": True,
+                },
+            },
+        ],
+        {
+            "prompt": "确认",
+            "assertNoFollowups": True,
+            "assertActionableFollowupTypes": ["planningWorkspaceAction"],
+            "assertActionableFollowupTargets": ["ordered", "candidate"],
+            "assertActionableFollowupCount": 2,
+        },
+        "case-a",
+        "17",
+    )
+
+    assert violations == []
+
+
+def test_content_assertions_report_missing_actionable_silent_workspace_refresh():
+    violations = runner._check_content_assertions(
+        "已采纳，后续会按这个范围看。",
+        [],
+        {
+            "prompt": "确认",
+            "assertActionableFollowupTypes": ["planningWorkspaceAction"],
+            "assertActionableFollowupTargets": ["ordered"],
+            "assertActionableFollowupCount": 1,
+        },
+        "case-a",
+        "17",
+    )
+
+    assert any("assertActionableFollowupTypes FAILED" in item for item in violations)
+    assert any("assertActionableFollowupTargets FAILED" in item for item in violations)
+    assert any("assertActionableFollowupCount FAILED" in item for item in violations)
 
 
 def test_content_assertions_search_user_visible_followup_text():

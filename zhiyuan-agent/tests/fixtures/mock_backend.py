@@ -25,19 +25,17 @@ _GENERATE_HANDLER_MODULE = "app.handlers.generate_handler"
 # 需要 patch 的 planning 相关异步函数
 _PLANNING_ENDPOINTS = [
     "get_planning_state",
-    "get_planning_draft",
+    "get_working_plan",
     "get_planning_ordered_plan",
     "run_planning_review",
     "generate_planning_ordered_plan",
     "generate_planning_initial_plan",
     "generate_planning_candidate_pool",
     "query_planning_candidate_pool",
-    "select_planning_draft_items",
-    "remove_planning_draft_items",
-    "lock_planning_draft_items",
-    "ban_planning_draft_items",
+    "select_working_plan_items",
+    "remove_working_plan_items",
+    "ban_working_plan_items",
     "move_planning_ordered_item",
-    "analyze_planning_plan_adjustment",
     "generate_planning_fix_proposals",
 ]
 
@@ -49,7 +47,6 @@ _OTHER_ENDPOINTS = [
     "save_user_profile",
     "update_planning_latent_profile",
     "save_intent_change_cache",
-    "get_intent_change_cache",
 ]
 
 _ALL_ENDPOINTS = _PLANNING_ENDPOINTS + _OTHER_ENDPOINTS
@@ -61,29 +58,27 @@ _EXECUTION_TOOL_ALIASES: dict[str, str] = {
     "generate_planning_ordered_plan": "_generate_planning_ordered_plan_request",
     "generate_planning_candidate_pool": "_generate_planning_candidate_pool_request",
     "get_planning_state": "_get_planning_state_request",
-    "get_planning_draft": "_get_working_plan_request",
+    "get_working_plan": "_get_working_plan_request",
     "get_planning_ordered_plan": "_get_planning_ordered_plan_request",
     "get_user_profile": "_get_user_profile_request",
     "run_planning_review": "_run_planning_review_request",
-    "analyze_planning_plan_adjustment": "_analyze_planning_plan_adjustment_request",
     "query_planning_candidate_pool": "_query_planning_candidate_pool_request",
-    "select_planning_draft_items": "_select_working_plan_items_request",
+    "select_working_plan_items": "_select_working_plan_items_request",
 }
 
 # handler 模块通过 `from app.util.internal_client import X as _X_request` 导入，
 # 需要在 handler 模块上也 patch 绑定引用。
 _QUERY_HANDLER_ALIASES: dict[str, str] = {
     "get_planning_state": "_get_planning_state_request",
-    "get_planning_draft": "_get_working_plan_request",
+    "get_working_plan": "_get_working_plan_request",
     "get_planning_ordered_plan": "_get_planning_ordered_plan_request",
     "get_user_profile": "_get_user_profile_request",
 }
 
 _ANALYSIS_HANDLER_ALIASES: dict[str, str] = {
     "get_planning_ordered_plan": "_get_planning_ordered_plan_request",
-    "get_planning_draft": "_get_working_plan_request",
+    "get_working_plan": "_get_working_plan_request",
     "run_planning_review": "_run_planning_review_request",
-    "analyze_planning_plan_adjustment": "_analyze_planning_plan_adjustment_request",
     "generate_planning_fix_proposals": "_generate_planning_fix_proposals_request",
 }
 
@@ -124,8 +119,8 @@ class BackendMocks:
     def set_default_ordered_plan(self, data: dict[str, Any]) -> None:
         self._mocks["get_planning_ordered_plan"].return_value = {"code": 0, "data": data}
 
-    def set_default_draft(self, data: dict[str, Any]) -> None:
-        self._mocks["get_planning_draft"].return_value = {"code": 0, "data": data}
+    def set_default_working_plan(self, data: dict[str, Any]) -> None:
+        self._mocks["get_working_plan"].return_value = {"code": 0, "data": data}
 
 
 def _make_default_return(endpoint: str) -> dict[str, Any]:

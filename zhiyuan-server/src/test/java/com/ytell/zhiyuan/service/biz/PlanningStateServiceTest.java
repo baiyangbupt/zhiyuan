@@ -16,7 +16,6 @@ import com.ytell.zhiyuan.model.dto.planning.CandidateFilterOptionsDTO;
 import com.ytell.zhiyuan.model.dto.planning.CandidatePoolQueryReq;
 import com.ytell.zhiyuan.model.dto.planning.CandidatePoolQueryRes;
 import com.ytell.zhiyuan.model.dto.planning.CandidateViewStateDTO;
-import com.ytell.zhiyuan.model.dto.planning.CompensationApplyReq;
 import com.ytell.zhiyuan.model.dto.planning.CompensationActionDTO;
 import com.ytell.zhiyuan.model.dto.planning.CompensationPreviewDTO;
 import com.ytell.zhiyuan.model.dto.planning.DataFreshnessCheckReq;
@@ -2584,7 +2583,7 @@ public class PlanningStateServiceTest {
         planningStateService.selectDraftItems(1L, selectReq);
         planningStateService.generateOrderedPlan(1L, 1L, new OrderedPlanGenerateReq());
 
-        CompensationPreviewDTO preview = planningStateService.previewCompensation(1L, 1L);
+        CompensationPreviewDTO preview = planningStateService.runReview(1L, 1L).getCompensationPreview();
 
         CompensationActionDTO countAction = preview.getActions().stream()
                 .filter(action -> "count_validation".equals(action.getSourceCheckCode()))
@@ -2734,7 +2733,7 @@ public class PlanningStateServiceTest {
     }
 
     @Test
-    void shouldGenerateUserGoalFixProposalThroughServiceWithoutApplying() {
+    void shouldGenerateReadyUserGoalFixProposalThroughServiceWithoutApplying() {
         AtomicReference<ChatSessionExtraData> planningStateRef = bindPlanningStateStore();
 
         PlanningStateDTO state = new PlanningStateDTO();
@@ -2760,12 +2759,12 @@ public class PlanningStateServiceTest {
         FixProposalStateDTO proposalState = planningStateService.generateUserGoalFixProposals(1L, req);
 
         assertEquals("user_goal", proposalState.getProposalSource());
-        assertEquals("preview_only", proposalState.getStatus());
+        assertEquals("ready", proposalState.getStatus());
         FixProposalDTO proposal = proposalState.getProposals().get(0);
         assertEquals("user_goal", proposal.getProposalSource());
         assertEquals("only_keep_scope", proposal.getStrategy());
-        assertEquals("preview_only", proposal.getStatus());
-        assertFalse(proposal.getRequiresConfirmation());
+        assertEquals("ready", proposal.getStatus());
+        assertTrue(proposal.getRequiresConfirmation());
         assertEquals("ps2_m2", proposal.getActions().get(0).getRemoveVolunteerIds().get(0));
         verify(chatSessionExtraDataSharedService, times(1)).save(any(ChatSessionExtraData.class));
         PlanningStateDTO storedState = JSONObject.parseObject(
@@ -2773,6 +2772,282 @@ public class PlanningStateServiceTest {
         assertEquals(2, storedState.getOrderedPlanState().getItems().size());
         assertEquals("ps1_m1", storedState.getOrderedPlanState().getItems().get(0).getVolunteerId());
         assertEquals("ps2_m2", storedState.getOrderedPlanState().getItems().get(1).getVolunteerId());
+    }
+
+    @Test
+    void shouldApplyUserGoalOnlyKeepProposalWithVersionGuard() {
+        bindPlanningStateStore();
+
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+        state.setVersion(9);
+        state.getCandidatePoolState().setVolunteerModel(VolunteerModel.major.name());
+        state.getCandidatePoolState().getItems().add(buildCandidateItem(
+                "ps1_m1", "ps1", "s1", "学校A", "稳", "临床医学", 55D, 80D, 55D, false));
+        state.getCandidatePoolState().getItems().add(buildCandidateItem(
+                "ps2_m2", "ps2", "s2", "学校B", "稳", "汉语言文学", 60D, 70D, 60D, false));
+        state.getCandidatePoolState().getItems().add(buildCandidateItem(
+                "ps3_m3", "ps3", "s3", "学校C", "稳", "临床医学", 58D, 75D, 58D, false));
+        state.getOrderedPlanState().getItems().add(buildOrderedItem("ps1_m1", "学校A", "临床医学", "稳", 1));
+        state.getOrderedPlanState().getItems().add(buildOrderedItem("ps2_m2", "学校B", "汉语言文学", "稳", 2));
+        saveStateToStore(1L, state);
+
+        UserGoalFixProposalReq req = userGoalReq("only_keep_scope", 9, userGoalScope("major", "临床医学"), false);
+        req.setUserOriginalText("只保留临床医学");
+        FixProposalDTO proposal = planningStateService.generateUserGoalFixProposals(1L, req).getProposals().get(0);
+        assertEquals("ready", proposal.getStatus());
+
+        FixProposalApplyReq applyReq = userGoalApplyReq(proposal, req);
+        applyReq.setRegenerateOrderedPlan(false);
+        applyReq.setRerunReview(false);
+        FixProposalApplyRes res = planningStateService.applyFixProposal(1L, 1L, applyReq);
+
+        assertEquals("applied", res.getStatus());
+        assertEquals("only_keep_scope", res.getRepairReport().getStrategy());
+        assertEquals(Integer.valueOf(1), res.getRepairReport().getRemovedVolunteerCount());
+        assertEquals(Integer.valueOf(1), res.getRepairReport().getAddedVolunteerCount());
+        Set<String> draftIds = res.getState().getDraftPlanState().getItems().stream()
+                .map(DraftItemDTO::getVolunteerId)
+                .collect(Collectors.toSet());
+        assertTrue(draftIds.contains("ps1_m1"));
+        assertTrue(draftIds.contains("ps3_m3"));
+        assertFalse(draftIds.contains("ps2_m2"));
+        assertTrue(res.getState().getOperationLogs().stream()
+                .anyMatch(log -> "user_goal_apply".equals(log.getType())));
+    }
+
+    @Test
+    void shouldApplyUserGoalProposalByStrategyWhenRegeneratedProposalIdChanges() {
+        bindPlanningStateStore();
+
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+        state.setVersion(9);
+        state.getCandidatePoolState().setVolunteerModel(VolunteerModel.major.name());
+        state.getCandidatePoolState().getItems().add(buildCandidateItem(
+                "ps1_m1", "ps1", "s1", "学校A", "稳", "临床医学", 55D, 80D, 55D, false));
+        state.getCandidatePoolState().getItems().add(buildCandidateItem(
+                "ps2_m2", "ps2", "s2", "学校B", "稳", "汉语言文学", 60D, 70D, 60D, false));
+        state.getCandidatePoolState().getItems().add(buildCandidateItem(
+                "ps3_m3", "ps3", "s3", "学校C", "稳", "临床医学", 58D, 75D, 58D, false));
+        state.getOrderedPlanState().getItems().add(buildOrderedItem("ps1_m1", "学校A", "临床医学", "稳", 1));
+        state.getOrderedPlanState().getItems().add(buildOrderedItem("ps2_m2", "学校B", "汉语言文学", "稳", 2));
+        saveStateToStore(1L, state);
+
+        UserGoalFixProposalReq req = userGoalReq("only_keep_scope", 9, userGoalScope("major", "临床医学"), false);
+        req.setUserOriginalText("只保留临床医学");
+        FixProposalDTO proposal = planningStateService.generateUserGoalFixProposals(1L, req).getProposals().get(0);
+        FixProposalApplyReq applyReq = userGoalApplyReq(proposal, req);
+        applyReq.setProposalId("ugp-stale-id-from-previous-preview");
+        applyReq.setRegenerateOrderedPlan(false);
+        applyReq.setRerunReview(false);
+
+        FixProposalApplyRes res = planningStateService.applyFixProposal(1L, 1L, applyReq);
+
+        assertEquals("applied", res.getStatus());
+        assertEquals("only_keep_scope", res.getProposal().getStrategy());
+        assertEquals(proposal.getProposalId(), res.getProposal().getProposalId());
+        Set<String> draftIds = res.getState().getDraftPlanState().getItems().stream()
+                .map(DraftItemDTO::getVolunteerId)
+                .collect(Collectors.toSet());
+        assertTrue(draftIds.contains("ps1_m1"));
+        assertTrue(draftIds.contains("ps3_m3"));
+        assertFalse(draftIds.contains("ps2_m2"));
+    }
+
+    @Test
+    void shouldApplyUserGoalMustIncludeProposal() {
+        bindPlanningStateStore();
+
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+        state.setVersion(5);
+        state.getCandidatePoolState().setVolunteerModel(VolunteerModel.major.name());
+        state.getCandidatePoolState().setRequiredCount(3);
+        state.getCandidatePoolState().getItems().add(buildCandidateItem(
+                "ps1_m1", "ps1", "s1", "学校A", "稳", "汉语言文学", 55D, 80D, 55D, false));
+        state.getCandidatePoolState().getItems().add(buildCandidateItem(
+                "ps2_m2", "ps2", "s2", "学校B", "稳", "临床医学", 60D, 90D, 60D, false));
+        state.getDraftPlanState().getItems().add(buildDraftItem("ps1_m1", "学校A", "汉语言文学", "稳"));
+        state.getOrderedPlanState().getItems().add(buildOrderedItem("ps1_m1", "学校A", "汉语言文学", "稳", 1));
+        saveStateToStore(1L, state);
+
+        UserGoalFixProposalReq req = userGoalReq("must_include_scope", 5, userGoalScope("major", "临床医学"), false);
+        req.setUserOriginalText("方案里必须有临床医学");
+        FixProposalDTO proposal = planningStateService.generateUserGoalFixProposals(1L, req).getProposals().get(0);
+        assertEquals("ready", proposal.getStatus());
+        assertEquals("add_volunteers", proposal.getActions().get(0).getActionType());
+
+        FixProposalApplyReq applyReq = userGoalApplyReq(proposal, req);
+        applyReq.setRegenerateOrderedPlan(false);
+        applyReq.setRerunReview(false);
+        FixProposalApplyRes res = planningStateService.applyFixProposal(1L, 1L, applyReq);
+
+        Set<String> draftIds = res.getState().getDraftPlanState().getItems().stream()
+                .map(DraftItemDTO::getVolunteerId)
+                .collect(Collectors.toSet());
+        assertTrue(draftIds.contains("ps1_m1"));
+        assertTrue(draftIds.contains("ps2_m2"));
+        assertEquals(Integer.valueOf(0), res.getRepairReport().getRemovedVolunteerCount());
+        assertEquals(Integer.valueOf(1), res.getRepairReport().getAddedVolunteerCount());
+    }
+
+    @Test
+    void shouldApplyUserGoalExcludeProposal() {
+        bindPlanningStateStore();
+
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+        state.setVersion(6);
+        state.getCandidatePoolState().setVolunteerModel(VolunteerModel.major.name());
+        state.getCandidatePoolState().getItems().add(buildCandidateItem(
+                "ps1_m1", "ps1", "s1", "学校A", "稳", "金融学", 55D, 80D, 55D, false));
+        state.getCandidatePoolState().getItems().add(buildCandidateItem(
+                "ps2_m2", "ps2", "s2", "学校B", "稳", "汉语言文学", 60D, 70D, 60D, false));
+        state.getCandidatePoolState().getItems().add(buildCandidateItem(
+                "ps3_m3", "ps3", "s3", "学校C", "稳", "法学", 58D, 75D, 58D, false));
+        state.getOrderedPlanState().getItems().add(buildOrderedItem("ps1_m1", "学校A", "金融学", "稳", 1));
+        state.getOrderedPlanState().getItems().add(buildOrderedItem("ps2_m2", "学校B", "汉语言文学", "稳", 2));
+        saveStateToStore(1L, state);
+
+        UserGoalFixProposalReq req = userGoalReq("exclude_scope", 6, userGoalScope("major", "金融学"), true);
+        req.setUserOriginalText("不学金融");
+        FixProposalDTO proposal = planningStateService.generateUserGoalFixProposals(1L, req).getProposals().get(0);
+        assertEquals("ready", proposal.getStatus());
+
+        FixProposalApplyReq applyReq = userGoalApplyReq(proposal, req);
+        applyReq.setRegenerateOrderedPlan(false);
+        applyReq.setRerunReview(false);
+        FixProposalApplyRes res = planningStateService.applyFixProposal(1L, 1L, applyReq);
+
+        Set<String> draftIds = res.getState().getDraftPlanState().getItems().stream()
+                .map(DraftItemDTO::getVolunteerId)
+                .collect(Collectors.toSet());
+        assertFalse(draftIds.contains("ps1_m1"));
+        assertTrue(draftIds.contains("ps2_m2"));
+        assertTrue(draftIds.contains("ps3_m3"));
+        assertEquals(Integer.valueOf(1), res.getRepairReport().getRemovedVolunteerCount());
+        assertEquals(Integer.valueOf(1), res.getRepairReport().getAddedVolunteerCount());
+    }
+
+    @Test
+    void shouldApplyUserGoalTuitionBudgetProposal() {
+        bindPlanningStateStore();
+
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+        state.setVersion(7);
+        state.getCandidatePoolState().setVolunteerModel(VolunteerModel.major.name());
+        CandidateItemDTO expensive = buildCandidateItem(
+                "ps1_m1", "ps1", "s1", "学校A", "稳", "金融学", 55D, 80D, 55D, false);
+        expensive.setTuitionPerYear(30000);
+        CandidateItemDTO kept = buildCandidateItem(
+                "ps2_m2", "ps2", "s2", "学校B", "稳", "汉语言文学", 60D, 70D, 60D, false);
+        kept.setTuitionPerYear(12000);
+        CandidateItemDTO affordable = buildCandidateItem(
+                "ps3_m3", "ps3", "s3", "学校C", "稳", "法学", 58D, 75D, 58D, false);
+        affordable.setTuitionPerYear(18000);
+        state.getCandidatePoolState().getItems().add(expensive);
+        state.getCandidatePoolState().getItems().add(kept);
+        state.getCandidatePoolState().getItems().add(affordable);
+        state.getOrderedPlanState().getItems().add(buildOrderedItem("ps1_m1", "学校A", "金融学", "稳", 1));
+        state.getOrderedPlanState().getItems().add(buildOrderedItem("ps2_m2", "学校B", "汉语言文学", "稳", 2));
+        saveStateToStore(1L, state);
+
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("tuition_budget_scope");
+        req.setSourceVersionGuard(7);
+        req.setUserOriginalText("学费最好控制在两万以内");
+        req.setContext(java.util.Collections.singletonMap("maxTuitionPerYear", 20000));
+        FixProposalDTO proposal = planningStateService.generateUserGoalFixProposals(1L, req).getProposals().get(0);
+        assertEquals("ready", proposal.getStatus());
+
+        FixProposalApplyReq applyReq = userGoalApplyReq(proposal, req);
+        applyReq.setRegenerateOrderedPlan(false);
+        applyReq.setRerunReview(false);
+        FixProposalApplyRes res = planningStateService.applyFixProposal(1L, 1L, applyReq);
+
+        assertEquals("applied", res.getStatus());
+        assertEquals("tuition_budget_scope", res.getRepairReport().getStrategy());
+        assertEquals(Integer.valueOf(1), res.getRepairReport().getRemovedVolunteerCount());
+        assertEquals(Integer.valueOf(1), res.getRepairReport().getAddedVolunteerCount());
+        Set<String> draftIds = res.getState().getDraftPlanState().getItems().stream()
+                .map(DraftItemDTO::getVolunteerId)
+                .collect(Collectors.toSet());
+        assertFalse(draftIds.contains("ps1_m1"));
+        assertTrue(draftIds.contains("ps2_m2"));
+        assertTrue(draftIds.contains("ps3_m3"));
+    }
+
+    @Test
+    void shouldApplyUserGoalOnlyKeepProposalInMajorGroupMode() {
+        bindPlanningStateStore();
+
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+        state.setVersion(8);
+        state.getCandidatePoolState().setVolunteerModel(VolunteerModel.majorGroup.name());
+        state.getCandidatePoolState().setRequiredCount(1);
+        CandidateItemDTO current = buildCandidateItem(
+                "ps1_m1", "ps1", "s1", "学校A第101组", "稳", "工商管理类", 55D, 80D, 55D, false);
+        CandidateItemDTO replacement = buildCandidateItem(
+                "ps2_m2", "ps2", "s2", "学校B第102组", "稳", "临床医学", 58D, 90D, 58D, false);
+        state.getCandidatePoolState().getItems().add(current);
+        state.getCandidatePoolState().getItems().add(replacement);
+        state.getOrderedPlanState().getItems().add(buildOrderedItem("ps1_m1", "学校A第101组", "工商管理类", "稳", 1));
+        OrderedUnitDTO unit = new OrderedUnitDTO();
+        unit.setUnitId("ps1");
+        unit.setSchoolName("学校A第101组");
+        PlanningUnitMajorDTO major = new PlanningUnitMajorDTO();
+        major.setVolunteerId("ps1_m1");
+        major.setMajorName("工商管理类");
+        unit.getMajorItems().add(major);
+        state.getOrderedPlanState().getUnits().add(unit);
+        saveStateToStore(1L, state);
+
+        UserGoalFixProposalReq req = userGoalReq("only_keep_scope", 8, userGoalScope("major", "临床医学"), false);
+        req.setUserOriginalText("只保留医学");
+        FixProposalDTO proposal = planningStateService.generateUserGoalFixProposals(1L, req).getProposals().get(0);
+        assertEquals("ready", proposal.getStatus());
+
+        FixProposalApplyReq applyReq = userGoalApplyReq(proposal, req);
+        applyReq.setRegenerateOrderedPlan(true);
+        applyReq.setRerunReview(false);
+        FixProposalApplyRes res = planningStateService.applyFixProposal(1L, 1L, applyReq);
+
+        Set<String> orderedIds = res.getState().getOrderedPlanState().getItems().stream()
+                .map(OrderedItemDTO::getVolunteerId)
+                .collect(Collectors.toSet());
+        assertFalse(orderedIds.contains("ps1_m1"));
+        assertTrue(orderedIds.contains("ps2_m2"));
+        assertEquals(1, res.getState().getOrderedPlanState().getUnits().size());
+        assertEquals("ps2", res.getState().getOrderedPlanState().getUnits().get(0).getUnitId());
+    }
+
+    @Test
+    void shouldRejectExpiredUserGoalFixProposalApply() {
+        bindPlanningStateStore();
+
+        PlanningStateDTO state = new PlanningStateDTO();
+        state.setSessionId(1L);
+        state.setVersion(9);
+        state.getCandidatePoolState().setVolunteerModel(VolunteerModel.major.name());
+        state.getCandidatePoolState().getItems().add(buildCandidateItem(
+                "ps1_m1", "ps1", "s1", "学校A", "稳", "临床医学", 55D, 80D, 55D, false));
+        state.getCandidatePoolState().getItems().add(buildCandidateItem(
+                "ps2_m2", "ps2", "s2", "学校B", "稳", "汉语言文学", 60D, 70D, 60D, false));
+        state.getOrderedPlanState().getItems().add(buildOrderedItem("ps1_m1", "学校A", "临床医学", "稳", 1));
+        state.getOrderedPlanState().getItems().add(buildOrderedItem("ps2_m2", "学校B", "汉语言文学", "稳", 2));
+        saveStateToStore(1L, state);
+
+        UserGoalFixProposalReq req = userGoalReq("only_keep_scope", 9, userGoalScope("major", "临床医学"), false);
+        FixProposalDTO proposal = planningStateService.generateUserGoalFixProposals(1L, req).getProposals().get(0);
+        FixProposalApplyReq applyReq = userGoalApplyReq(proposal, req);
+        applyReq.setSourceVersionGuard(8);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> planningStateService.applyFixProposal(1L, 1L, applyReq));
+        assertEquals(409, ex.getStatus());
     }
 
     @Test
@@ -6257,11 +6532,10 @@ public class PlanningStateServiceTest {
         PlanningStateDTO state = planningStateService.getPlanningState(1L);
         assertFalse(state.getStaleFlags().getReview());
         assertEquals("reviewed", state.getPhase());
-        assertTrue(state.getPendingActions().size() > 0);
     }
 
     @Test
-    void shouldPreviewAndApplyCompensation() {
+    void shouldExposeMissingCountCompensationThroughReviewAndFixProposal() {
         when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
                 .thenReturn(null);
 
@@ -6302,7 +6576,7 @@ public class PlanningStateServiceTest {
         when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
                 .thenReturn(stored);
 
-        CompensationPreviewDTO preview = planningStateService.previewCompensation(1L, 1L);
+        CompensationPreviewDTO preview = planningStateService.runReview(1L, 1L).getCompensationPreview();
         assertTrue(preview.getTotalActions() > 0);
         assertTrue(preview.getActions().stream().anyMatch(action -> "fill_total_count".equals(action.getType())));
         assertTrue(preview.getActions().stream()
@@ -6313,15 +6587,10 @@ public class PlanningStateServiceTest {
         when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
                 .thenReturn(stored);
 
-        CompensationApplyReq applyReq = new CompensationApplyReq();
-        applyReq.setRegenerateOrderedPlan(true);
-        applyReq.setRerunReview(false);
-        PlanningStateDTO compensated = planningStateService.applyCompensation(1L, 1L, applyReq);
-
-        assertTrue(compensated.getDraftPlanState().getSummary().getTotal() >= 4);
-        assertEquals("ordered", compensated.getPhase());
-        assertEquals(Integer.valueOf(0), Integer.valueOf(compensated.getPendingActions().size()));
-        assertTrue(compensated.getOperationLogs().stream().anyMatch(log -> "compensation_apply".equals(log.getType())));
+        FixProposalStateDTO proposalState = planningStateService.generateFixProposals(1L, 1L);
+        assertTrue(proposalState.getProposals().stream()
+                .anyMatch(proposal -> "fill_missing_count".equals(proposal.getStrategy())
+                        && "ready".equals(proposal.getStatus())));
     }
 
     @Test
@@ -6373,13 +6642,13 @@ public class PlanningStateServiceTest {
         when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
                 .thenReturn(stored);
 
-        CompensationPreviewDTO preview = planningStateService.previewCompensation(1L, 1L);
+        CompensationPreviewDTO preview = planningStateService.runReview(1L, 1L).getCompensationPreview();
         assertTrue(preview.getActions().stream().anyMatch(action -> "fill_total_count".equals(action.getType())));
         assertFalse(preview.getActions().stream().flatMap(action -> action.getVolunteerIds().stream()).anyMatch("ps6_m6"::equals));
     }
 
     @Test
-    void shouldCapCompensationActionsByRemainingGapBeforeApply() {
+    void shouldApplyFillMissingCountFixProposalWithoutExceedingTarget() {
         when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
                 .thenReturn(null);
 
@@ -6428,7 +6697,7 @@ public class PlanningStateServiceTest {
         when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
                 .thenReturn(stored);
 
-        CompensationPreviewDTO preview = planningStateService.previewCompensation(1L, 1L);
+        CompensationPreviewDTO preview = planningStateService.runReview(1L, 1L).getCompensationPreview();
         assertEquals("ready", preview.getStatus());
         assertTrue(preview.getTotalActions() > 0);
 
@@ -6436,14 +6705,24 @@ public class PlanningStateServiceTest {
         when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
                 .thenReturn(stored);
 
-        CompensationApplyReq applyReq = new CompensationApplyReq();
+        FixProposalStateDTO proposalState = planningStateService.generateFixProposals(1L, 1L);
+        FixProposalDTO proposal = proposalState.getProposals().stream()
+                .filter(item -> "fill_missing_count".equals(item.getStrategy()))
+                .findFirst()
+                .orElse(null);
+        assertNotNull(proposal);
+        assertEquals("ready", proposal.getStatus());
+
+        FixProposalApplyReq applyReq = new FixProposalApplyReq();
+        applyReq.setProposalId(proposal.getProposalId());
+        applyReq.setSourceVersionGuard(proposal.getSourceVersionGuard());
         applyReq.setRegenerateOrderedPlan(false);
         applyReq.setRerunReview(false);
-        PlanningStateDTO compensated = planningStateService.applyCompensation(1L, 1L, applyReq);
+        FixProposalApplyRes res = planningStateService.applyFixProposal(1L, 1L, applyReq);
+        PlanningStateDTO compensated = res.getState();
 
         assertEquals(Integer.valueOf(4), compensated.getDraftPlanState().getSummary().getTotal());
         assertEquals(Integer.valueOf(4), compensated.getOrderedPlanState().getSummary().getTotal());
-        assertEquals(Integer.valueOf(0), Integer.valueOf(compensated.getPendingActions().size()));
     }
 
     @Test
@@ -6495,7 +6774,7 @@ public class PlanningStateServiceTest {
         when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
                 .thenReturn(stored);
 
-        CompensationPreviewDTO preview = planningStateService.previewCompensation(1L, 1L);
+        CompensationPreviewDTO preview = planningStateService.runReview(1L, 1L).getCompensationPreview();
         CompensationActionDTO countAction = preview.getActions().stream()
                 .filter(action -> "fill_total_count".equals(action.getType()))
                 .findFirst()
@@ -6554,25 +6833,20 @@ public class PlanningStateServiceTest {
         when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
                 .thenReturn(stored);
 
-        CompensationPreviewDTO preview = planningStateService.previewCompensation(1L, 1L);
-        assertTrue(preview.getActions().stream().anyMatch(action -> "rebalance_protect_ratio".equals(action.getType())));
-        assertTrue(preview.getActions().stream()
-                .flatMap(action -> action.getVolunteerIds().stream())
+        FixProposalStateDTO proposalState = planningStateService.generateFixProposals(1L, 1L);
+        FixProposalDTO proposal = proposalState.getProposals().stream()
+                .filter(item -> "rebalance_tier_ratio".equals(item.getStrategy()))
+                .findFirst()
+                .orElse(null);
+        assertNotNull(proposal);
+        assertEquals("preview_only", proposal.getStatus());
+        assertFalse(proposal.getActions().stream()
+                .anyMatch(action -> "rebalance_protect_ratio".equals(action.getActionType())));
+        assertTrue(proposal.getActions().stream()
+                .filter(action -> "replace_volunteers".equals(action.getActionType()))
+                .flatMap(action -> action.getCandidateVolunteerIds().stream())
                 .anyMatch("ps5_m5"::equals));
-
-        stored = latestStoredStateFromUpdate();
-        when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
-                .thenReturn(stored);
-
-        CompensationApplyReq applyReq = new CompensationApplyReq();
-        applyReq.setRegenerateOrderedPlan(false);
-        applyReq.setRerunReview(false);
-        PlanningStateDTO compensated = planningStateService.applyCompensation(1L, 1L, applyReq);
-
-        assertEquals(Integer.valueOf(4), compensated.getDraftPlanState().getSummary().getTotal());
-        assertEquals(Integer.valueOf(4), compensated.getOrderedPlanState().getSummary().getTotal());
-        assertFalse(compensated.getDraftPlanState().getItems().stream()
-                .anyMatch(item -> "ps5_m5".equals(item.getVolunteerId())));
+        assertPreviewOnlyFixProposalCannotApply(proposal);
     }
 
     @Test
@@ -6600,20 +6874,20 @@ public class PlanningStateServiceTest {
         generateReq.setForceRegenerate(true);
         planningStateService.generateOrderedPlan(1L, 1L, generateReq);
 
-        CompensationPreviewDTO preview = planningStateService.previewCompensation(1L, 1L);
-        assertTrue(preview.getActions().stream()
-                .anyMatch(action -> "fill_probability_gap".equals(action.getType())
-                        && action.getVolunteerIds().contains("ps2_m2")));
-
-        CompensationApplyReq applyReq = new CompensationApplyReq();
-        applyReq.setRegenerateOrderedPlan(false);
-        applyReq.setRerunReview(false);
-        PlanningStateDTO compensated = planningStateService.applyCompensation(1L, 1L, applyReq);
-
-        assertEquals(Integer.valueOf(3), compensated.getDraftPlanState().getSummary().getTotal());
-        assertEquals(Integer.valueOf(3), compensated.getOrderedPlanState().getSummary().getTotal());
-        assertFalse(compensated.getDraftPlanState().getItems().stream()
-                .anyMatch(item -> "ps2_m2".equals(item.getVolunteerId())));
+        FixProposalStateDTO proposalState = planningStateService.generateFixProposals(1L, 1L);
+        FixProposalDTO proposal = proposalState.getProposals().stream()
+                .filter(item -> "fill_probability_gap".equals(item.getStrategy()))
+                .findFirst()
+                .orElse(null);
+        assertNotNull(proposal);
+        assertEquals("preview_only", proposal.getStatus());
+        assertFalse(proposal.getActions().stream()
+                .anyMatch(action -> "fill_probability_gap".equals(action.getActionType())));
+        assertTrue(proposal.getActions().stream()
+                .filter(action -> "replace_volunteers".equals(action.getActionType()))
+                .flatMap(action -> action.getCandidateVolunteerIds().stream())
+                .anyMatch("ps2_m2"::equals));
+        assertPreviewOnlyFixProposalCannotApply(proposal);
     }
 
     @Test
@@ -6666,7 +6940,7 @@ public class PlanningStateServiceTest {
         when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
                 .thenReturn(stored);
 
-        CompensationPreviewDTO preview = planningStateService.previewCompensation(1L, 1L);
+        CompensationPreviewDTO preview = planningStateService.runReview(1L, 1L).getCompensationPreview();
         assertEquals("empty", preview.getStatus());
         assertEquals(Integer.valueOf(0), preview.getTotalActions());
         assertTrue(preview.getActions().isEmpty());
@@ -6924,6 +7198,37 @@ public class PlanningStateServiceTest {
         assertEquals(400, ex.getStatus());
         assertTrue(ex.getMessage().contains("暂不支持自动应用")
                 || ex.getMessage().contains("不可应用"));
+    }
+
+    private FixProposalApplyReq userGoalApplyReq(FixProposalDTO proposal, UserGoalFixProposalReq userGoalRequest) {
+        FixProposalApplyReq applyReq = new FixProposalApplyReq();
+        applyReq.setProposalId(proposal.getProposalId());
+        applyReq.setProposalSource("user_goal");
+        applyReq.setSourceVersionGuard(proposal.getSourceVersionGuard());
+        applyReq.setUserGoalRequest(userGoalRequest);
+        return applyReq;
+    }
+
+    private UserGoalFixProposalReq userGoalReq(String goalType,
+                                               Integer sourceVersionGuard,
+                                               UserGoalFixProposalReq.ScopeDTO scope,
+                                               boolean negativeScope) {
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType(goalType);
+        req.setSourceVersionGuard(sourceVersionGuard);
+        if (negativeScope) {
+            req.getNegativeScopes().add(scope);
+        } else {
+            req.getTargetScopes().add(scope);
+        }
+        return req;
+    }
+
+    private UserGoalFixProposalReq.ScopeDTO userGoalScope(String entityType, String normalizedName) {
+        UserGoalFixProposalReq.ScopeDTO scope = new UserGoalFixProposalReq.ScopeDTO();
+        scope.setEntityType(entityType);
+        scope.setNormalizedName(normalizedName);
+        return scope;
     }
 
     private ReviewStateDTO buildFailedReviewState(String code,

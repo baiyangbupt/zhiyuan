@@ -1,9 +1,8 @@
 """对话阶段状态机 + 统一待确认协议。
 
-3.0.3 起主状态源是后端 ``pendingConfirmation``。卡片确认是主入口；
+主状态源是后端 ``pendingConfirmation``。卡片确认是主入口；
 短文本确认只作为 active pending 的兜底入口，必须经过服务端 pending
-状态、类型和版本校验后才能执行意向或方案更新。旧 ``pending_plan_action``
-与 ``planEditCache`` 只作为历史会话 adapter，不能再作为新链路的确认主源。
+状态、类型和版本校验后才能执行意向或方案更新。
 """
 
 from __future__ import annotations
@@ -78,10 +77,6 @@ _VALID_TRANSITIONS: set[tuple[PhaseState, PhaseState]] = {
 class PendingConfirmation(BaseModel):
     """统一的待确认操作模型。
 
-    替代现有的：
-    - pending_plan_action: dict（Plan 层）
-    - pending_intent_change: bool + planEditCache（Intent 层）
-
     一次只能有一个 pending，新 pending 会覆盖旧 pending。
     """
 
@@ -113,107 +108,6 @@ class PendingConfirmation(BaseModel):
     # 它只用于运行态上下文、预览说明和审计，不参与实际 apply 权限判断。
     composite_proposal: dict[str, Any] = Field(default_factory=dict)
 
-    @classmethod
-    def from_legacy_plan_action(cls, legacy: dict) -> PendingConfirmation | None:
-        """从旧格式 pending_plan_action dict 转换。
-
-        旧格式：{"action_family": ..., "summary": ..., "plan_payload": str|dict}
-        """
-        if not legacy or not isinstance(legacy, dict):
-            return None
-        action_family = legacy.get("action_family", "")
-        if not action_family:
-            return None
-        if action_family == "apply_fix_proposal":
-            raw_payload = legacy.get("execution_payload") or legacy.get("executionPayload") or legacy
-            execution_payload = raw_payload if isinstance(raw_payload, dict) else {}
-            created_turn = _as_int(legacy.get("created_turn"))
-            source_backend_version = _as_int(
-                legacy.get("source_backend_version")
-                or legacy.get("planning_version")
-                or execution_payload.get("sourceVersionGuard")
-                or execution_payload.get("source_version_guard")
-            )
-            raw_composite = legacy.get("composite_proposal") or legacy.get("compositeProposal")
-            composite_proposal = raw_composite if isinstance(raw_composite, dict) else {}
-            return cls(
-                kind="plan_mutation",
-                action_family=action_family,
-                preview_summary=legacy.get("summary", ""),
-                execution_payload=execution_payload,
-                affected_scope=legacy.get("affected_scope", ""),
-                created_turn=created_turn,
-                source_backend_version=source_backend_version,
-                composite_proposal=composite_proposal,
-            )
-        raw_payload = legacy.get("plan_payload", {})
-        if isinstance(raw_payload, str):
-            import json
-            try:
-                raw_payload = json.loads(raw_payload) if raw_payload.strip() else {}
-            except Exception:
-                raw_payload = {}
-        payload_version = raw_payload.get("planning_version") if isinstance(raw_payload, dict) else 0
-        created_turn = _as_int(legacy.get("created_turn"))
-        source_backend_version = _as_int(
-            legacy.get("source_backend_version")
-            or legacy.get("planning_version")
-            or payload_version
-        )
-        composite_proposal: dict[str, Any] = {}
-        if isinstance(raw_payload, dict):
-            raw_composite = raw_payload.get("composite_proposal") or raw_payload.get("compositeProposal")
-            if isinstance(raw_composite, dict):
-                composite_proposal = raw_composite
-        if not composite_proposal:
-            raw_composite = legacy.get("composite_proposal") or legacy.get("compositeProposal")
-            if isinstance(raw_composite, dict):
-                composite_proposal = raw_composite
-        return cls(
-            kind="plan_mutation",
-            action_family=action_family,
-            preview_summary=legacy.get("summary", ""),
-            execution_payload=raw_payload if isinstance(raw_payload, dict) else {},
-            affected_scope=legacy.get("affected_scope", ""),
-            created_turn=created_turn,
-            source_backend_version=source_backend_version,
-            composite_proposal=composite_proposal,
-        )
-
-    @classmethod
-    def from_legacy_intent_change(
-        cls,
-        intent_cache: dict | None = None,
-        action_family: str = "set_preference",
-    ) -> PendingConfirmation | None:
-        """从旧格式 intent change cache 转换。"""
-        if not intent_cache:
-            return None
-        raw_composite = intent_cache.get("composite_proposal") or intent_cache.get("compositeProposal")
-        composite_proposal = raw_composite if isinstance(raw_composite, dict) else {}
-        return cls(
-            kind="intent_change",
-            action_family=action_family,
-            preview_summary=intent_cache.get("summary", ""),
-            execution_payload=intent_cache,
-            composite_proposal=composite_proposal,
-        )
-
-    def to_legacy_plan_action(self) -> dict:
-        """转回旧格式，兼容现有消费方。"""
-        legacy = {
-            "action_family": self.action_family,
-            "summary": self.preview_summary,
-            "plan_payload": self.execution_payload,
-            "execution_payload": self.execution_payload,
-            "affected_scope": self.affected_scope,
-            "created_turn": self.created_turn,
-            "source_backend_version": self.source_backend_version,
-        }
-        if self.composite_proposal:
-            legacy["composite_proposal"] = self.composite_proposal
-        return legacy
-
 
 class ConversationPhase(BaseModel):
     """对话阶段状态机。
@@ -225,13 +119,8 @@ class ConversationPhase(BaseModel):
     - 确认协议根据 pending 判断是否允许 apply
     - 版本乐观锁根据 last_backend_version 判断 stale
 
-    兼容策略：
-    - Phase 3 之前，该模型不会被注入到 RequestContext
-    - 从旧字段推断初始值：
-      - pending_plan_action 非空 → PLAN_PREVIEWING
-      - pending_intent_confirmation 非空 → INTENT_PREVIEWING
-      - planning_summary 非空 → PLAN_IDLE
-      - 否则 → EXPLORE
+    新会话和历史恢复后的活动状态都由后端 active pendingConfirmation
+    构建 ``conversation_phase.pending``。
     """
 
     state: PhaseState = PhaseState.EXPLORE
@@ -277,48 +166,39 @@ class ConversationPhase(BaseModel):
         return (current_turn - self.pending.created_turn) > max_age
 
     @classmethod
-    def from_legacy_context(
+    def from_pending_confirmation(
         cls,
-        pending_plan_action: dict | None = None,
-        pending_intent_confirmation: PendingConfirmation | None = None,
-        pending_intent_change: bool = False,
+        pending_confirmation: PendingConfirmation | None = None,
+        *,
         planning_summary: Any = None,
         turn_count: int = 0,
-    ) -> ConversationPhase:
-        """从旧的 RequestContext 字段推断初始状态。
+    ) -> "ConversationPhase":
+        """Build phase state from the unified backend pendingConfirmation.
 
-        新会话应由后端 pendingConfirmation 注入
-        ``pending_intent_confirmation``。旧字段仅用于历史会话兼容。
+        This is the main path for live sessions and recovered history.
         """
-        pending: PendingConfirmation | None = None
-        state = PhaseState.EXPLORE
-
-        if pending_plan_action and isinstance(pending_plan_action, dict):
-            pending = PendingConfirmation.from_legacy_plan_action(pending_plan_action)
-            if pending is not None and pending.created_turn == 0 and turn_count > 0:
-                pending = pending.model_copy(update={"created_turn": turn_count})
-            state = PhaseState.PLAN_PREVIEWING
-        elif pending_intent_confirmation is not None:
-            pending = pending_intent_confirmation
-            if pending.created_turn == 0 and turn_count > 0:
-                pending = pending.model_copy(update={"created_turn": turn_count})
-            state = PhaseState.INTENT_PREVIEWING
-        elif pending_intent_change:
-            pending = PendingConfirmation(
-                kind="intent_change",
-                action_family="set_preference",
-                preview_summary="（从旧格式恢复的意向变更）",
-                created_turn=turn_count,
+        if pending_confirmation is None:
+            state = PhaseState.PLAN_IDLE if planning_summary is not None else PhaseState.EXPLORE
+            return cls(
+                state=state,
+                pending=None,
+                turn_count=turn_count,
+                last_backend_version=_planning_summary_version(planning_summary),
             )
-            state = PhaseState.INTENT_PREVIEWING
-        elif planning_summary is not None:
-            state = PhaseState.PLAN_IDLE
 
-        if pending is not None and pending.source_backend_version > 0:
-            last_backend_version = pending.source_backend_version
-        else:
-            last_backend_version = _planning_summary_version(planning_summary)
-
+        pending = pending_confirmation
+        if pending.created_turn == 0 and turn_count > 0:
+            pending = pending.model_copy(update={"created_turn": turn_count})
+        state = (
+            PhaseState.INTENT_PREVIEWING
+            if pending.kind == "intent_change"
+            else PhaseState.PLAN_PREVIEWING
+        )
+        last_backend_version = (
+            pending.source_backend_version
+            if pending.source_backend_version > 0
+            else _planning_summary_version(planning_summary)
+        )
         return cls(
             state=state,
             pending=pending,

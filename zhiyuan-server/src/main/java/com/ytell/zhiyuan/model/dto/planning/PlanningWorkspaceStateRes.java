@@ -23,7 +23,6 @@ public class PlanningWorkspaceStateRes {
     private DraftPlanStateDTO workingPlanState = new DraftPlanStateDTO();
     private OrderedPlanStateDTO orderedPlanState = new OrderedPlanStateDTO();
     private ReviewStateDTO reviewState = new ReviewStateDTO();
-    private List<CompensationActionDTO> pendingActions = Lists.newArrayList();
     private List<OperationLogDTO> operationLogs = Lists.newArrayList();
 
     /**

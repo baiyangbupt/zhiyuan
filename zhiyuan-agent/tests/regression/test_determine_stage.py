@@ -2,7 +2,7 @@
 
 逻辑优先级：
 1. current_stage 已经是 analyze/preview/apply/review → 直接透传
-2. query_state / query_draft / query_ordered / query_candidates / analyze_adjustment / preview_fix_proposal → apply
+2. query_state / query_ordered / query_candidates / analyze_adjustment / preview_fix_proposal → apply
 3. missing_inputs → analyze
 4. review_plan → review
 5. user_confirmed → apply
@@ -45,7 +45,6 @@ class TestQueryActionsAlwaysApply:
 
     @pytest.mark.parametrize("action_family", [
         "query_state",
-        "query_draft",
         "query_ordered",
         "query_candidates",
         "analyze_adjustment",

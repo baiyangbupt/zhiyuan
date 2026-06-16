@@ -139,7 +139,7 @@ async def test_query_volunteer_plan_returns_current_plan_hits_first():
 
     with (
         patch("app.tools.plan_query_tool.get_planning_ordered_plan", new=AsyncMock(return_value=ordered_result)),
-        patch("app.tools.plan_query_tool.get_planning_draft", new=AsyncMock(return_value={"code": 0, "data": {"items": []}})),
+        patch("app.tools.plan_query_tool.get_working_plan", new=AsyncMock(return_value={"code": 0, "data": {"items": []}})),
         patch("app.tools.plan_query_tool.query_planning_candidate_pool", new=AsyncMock()) as candidate_mock,
     ):
         result = await query_volunteer_plan(_ctx(), "看看生物工程")
@@ -168,7 +168,7 @@ async def test_query_volunteer_plan_matches_school_and_major_across_group_name()
 
     with (
         patch("app.tools.plan_query_tool.get_planning_ordered_plan", new=AsyncMock(return_value=ordered_result)),
-        patch("app.tools.plan_query_tool.get_planning_draft", new=AsyncMock(return_value={"code": 0, "data": {"items": []}})),
+        patch("app.tools.plan_query_tool.get_working_plan", new=AsyncMock(return_value={"code": 0, "data": {"items": []}})),
         patch("app.tools.plan_query_tool.query_planning_candidate_pool", new=AsyncMock()) as candidate_mock,
     ):
         result = await query_volunteer_plan(_ctx(), "当前方案里有没有广西师范大学工业设计")
@@ -197,7 +197,7 @@ async def test_query_volunteer_plan_structured_school_and_major_filters_support_
 
     with (
         patch("app.tools.plan_query_tool.get_planning_ordered_plan", new=AsyncMock(return_value=ordered_result)),
-        patch("app.tools.plan_query_tool.get_planning_draft", new=AsyncMock(return_value={"code": 0, "data": {"items": []}})),
+        patch("app.tools.plan_query_tool.get_working_plan", new=AsyncMock(return_value={"code": 0, "data": {"items": []}})),
         patch("app.tools.plan_query_tool.get_planning_state", new=AsyncMock(return_value={"code": 0, "data": {"candidatePoolState": {"items": []}}})),
         patch("app.tools.plan_query_tool.query_planning_candidate_pool", new=AsyncMock()) as candidate_mock,
     ):
@@ -233,7 +233,7 @@ async def test_query_volunteer_plan_alias_school_match_overrides_conflicting_reg
 
     with (
         patch("app.tools.plan_query_tool.get_planning_ordered_plan", new=AsyncMock(return_value=ordered_result)),
-        patch("app.tools.plan_query_tool.get_planning_draft", new=AsyncMock(return_value={"code": 0, "data": {"items": []}})),
+        patch("app.tools.plan_query_tool.get_working_plan", new=AsyncMock(return_value={"code": 0, "data": {"items": []}})),
         patch("app.tools.plan_query_tool.get_planning_state", new=AsyncMock(return_value={"code": 0, "data": {"candidatePoolState": {"items": []}}})),
         patch("app.tools.plan_query_tool.query_planning_candidate_pool", new=AsyncMock()) as candidate_mock,
     ):
@@ -271,7 +271,7 @@ async def test_query_volunteer_plan_alias_school_match_recovers_city_extraction_
 
     with (
         patch("app.tools.plan_query_tool.get_planning_ordered_plan", new=AsyncMock(return_value=ordered_result)),
-        patch("app.tools.plan_query_tool.get_planning_draft", new=AsyncMock(return_value={"code": 0, "data": {"items": []}})),
+        patch("app.tools.plan_query_tool.get_working_plan", new=AsyncMock(return_value={"code": 0, "data": {"items": []}})),
         patch("app.tools.plan_query_tool.get_planning_state", new=AsyncMock(return_value={"code": 0, "data": {"candidatePoolState": {"items": []}}})),
         patch("app.tools.plan_query_tool.query_planning_candidate_pool", new=AsyncMock()) as candidate_mock,
     ):
@@ -306,7 +306,7 @@ async def test_query_volunteer_plan_raw_query_uses_current_plan_school_alias_wit
 
     with (
         patch("app.tools.plan_query_tool.get_planning_ordered_plan", new=AsyncMock(return_value=ordered_result)),
-        patch("app.tools.plan_query_tool.get_planning_draft", new=AsyncMock(return_value={"code": 0, "data": {"items": []}})),
+        patch("app.tools.plan_query_tool.get_working_plan", new=AsyncMock(return_value={"code": 0, "data": {"items": []}})),
         patch("app.tools.plan_query_tool.query_planning_candidate_pool", new=AsyncMock()) as candidate_mock,
     ):
         result = await query_volunteer_plan(_ctx(), "青城那个是不是放多了，能查下")
@@ -335,7 +335,7 @@ async def test_query_volunteer_plan_matches_major_query_with_related_major_suffi
 
     with (
         patch("app.tools.plan_query_tool.get_planning_ordered_plan", new=AsyncMock(return_value=ordered_result)),
-        patch("app.tools.plan_query_tool.get_planning_draft", new=AsyncMock(return_value={"code": 0, "data": {"items": []}})),
+        patch("app.tools.plan_query_tool.get_working_plan", new=AsyncMock(return_value={"code": 0, "data": {"items": []}})),
         patch("app.tools.plan_query_tool.query_planning_candidate_pool", new=AsyncMock()) as candidate_mock,
     ):
         result = await query_volunteer_plan(_ctx(), "当前方案里有没有网络与新媒体相关专业", scope="plan")
@@ -388,7 +388,7 @@ async def test_query_volunteer_plan_structured_region_and_major_filters_use_cand
 
     with (
         patch("app.tools.plan_query_tool.get_planning_ordered_plan", new=AsyncMock(return_value=ordered_result)),
-        patch("app.tools.plan_query_tool.get_planning_draft", new=AsyncMock(return_value={"code": 0, "data": {"items": []}})),
+        patch("app.tools.plan_query_tool.get_working_plan", new=AsyncMock(return_value={"code": 0, "data": {"items": []}})),
         patch("app.tools.plan_query_tool.get_planning_state", new=AsyncMock(return_value=planning_state)),
         patch("app.tools.plan_query_tool.query_planning_candidate_pool", new=AsyncMock()) as candidate_mock,
     ):
@@ -467,7 +467,7 @@ async def test_query_volunteer_plan_falls_back_to_draft_when_ordered_plan_is_emp
 
     with (
         patch("app.tools.plan_query_tool.get_planning_ordered_plan", new=AsyncMock(return_value=ordered_result)) as ordered_mock,
-        patch("app.tools.plan_query_tool.get_planning_draft", new=AsyncMock(return_value=draft_result)) as draft_mock,
+        patch("app.tools.plan_query_tool.get_working_plan", new=AsyncMock(return_value=draft_result)) as draft_mock,
         patch("app.tools.plan_query_tool.query_planning_candidate_pool", new=AsyncMock()) as candidate_mock,
     ):
         result = await query_volunteer_plan(_ctx(), "当前方案里有没有生物工程")
@@ -512,7 +512,7 @@ async def test_query_volunteer_plan_falls_back_to_candidate_opportunities_when_p
 
     with (
         patch("app.tools.plan_query_tool.get_planning_ordered_plan", new=AsyncMock(return_value=ordered_result)),
-        patch("app.tools.plan_query_tool.get_planning_draft", new=AsyncMock(return_value={"code": 0, "data": {"items": []}})),
+        patch("app.tools.plan_query_tool.get_working_plan", new=AsyncMock(return_value={"code": 0, "data": {"items": []}})),
         patch("app.tools.plan_query_tool.query_planning_candidate_pool", new=AsyncMock(return_value=candidate_result)),
     ):
         result = await query_volunteer_plan(_ctx(), "看看生物工程")
@@ -542,7 +542,7 @@ async def test_query_volunteer_plan_uses_candidate_scope_when_explicit():
 
     with (
         patch("app.tools.plan_query_tool.get_planning_ordered_plan", new=AsyncMock()) as ordered_mock,
-        patch("app.tools.plan_query_tool.get_planning_draft", new=AsyncMock()) as draft_mock,
+        patch("app.tools.plan_query_tool.get_working_plan", new=AsyncMock()) as draft_mock,
         patch("app.tools.plan_query_tool.query_planning_candidate_pool", new=AsyncMock(return_value=candidate_result)) as candidate_mock,
     ):
         result = await query_volunteer_plan(_ctx(), "候选里还有什么生物工程")
@@ -571,7 +571,7 @@ async def test_query_volunteer_plan_explicit_plan_scope_does_not_fall_back_to_ca
 
     with (
         patch("app.tools.plan_query_tool.get_planning_ordered_plan", new=AsyncMock(return_value=ordered_result)),
-        patch("app.tools.plan_query_tool.get_planning_draft", new=AsyncMock(return_value={"code": 0, "data": {"items": []}})),
+        patch("app.tools.plan_query_tool.get_working_plan", new=AsyncMock(return_value={"code": 0, "data": {"items": []}})),
         patch("app.tools.plan_query_tool.query_planning_candidate_pool", new=AsyncMock()) as candidate_mock,
     ):
         result = await query_volunteer_plan(_ctx(), "候选里还有什么生物工程", scope="plan")
@@ -600,7 +600,7 @@ async def test_query_volunteer_plan_explicit_candidate_scope_overrides_query_tex
 
     with (
         patch("app.tools.plan_query_tool.get_planning_ordered_plan", new=AsyncMock()) as ordered_mock,
-        patch("app.tools.plan_query_tool.get_planning_draft", new=AsyncMock()) as draft_mock,
+        patch("app.tools.plan_query_tool.get_working_plan", new=AsyncMock()) as draft_mock,
         patch("app.tools.plan_query_tool.query_planning_candidate_pool", new=AsyncMock(return_value=candidate_result)) as candidate_mock,
     ):
         result = await query_volunteer_plan(_ctx(), "当前方案里有没有生物工程", scope="candidate")

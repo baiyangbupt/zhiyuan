@@ -119,7 +119,6 @@ class TestAllowsMutatingApply:
         """mutating + apply + 无 pending → 不允许。"""
         ctx = make_run_context(
             volunteer_model=volunteer_model,
-            pending_plan_action=None,
             chat_history=[{"role": "user", "content": "确认"}],
         )
         plan = make_plan_action_plan(action_family=action_family, stage="apply")
@@ -130,7 +129,7 @@ class TestAllowsMutatingApply:
         """mutating + apply + pending action_family 不匹配 → 不允许。"""
         ctx = make_run_context(
             volunteer_model=volunteer_model,
-            pending_plan_action={"action_family": "remove_units"},
+            pending_action_family="remove_units",
             chat_history=[{"role": "user", "content": "确认"}],
         )
         plan = make_plan_action_plan(action_family="add_units", stage="apply")
@@ -141,7 +140,7 @@ class TestAllowsMutatingApply:
         """mutating + apply + pending 匹配但文本非短确认 → 不允许。"""
         ctx = make_run_context(
             volunteer_model=volunteer_model,
-            pending_plan_action={"action_family": "add_units"},
+            pending_action_family="add_units",
             chat_history=[{"role": "user", "content": "帮我加几个志愿"}],
         )
         plan = make_plan_action_plan(action_family="add_units", stage="apply")
@@ -153,7 +152,7 @@ class TestAllowsMutatingApply:
         """mutating + apply + pending 匹配 + 自然语言确认 → 仍不允许。"""
         ctx = make_run_context(
             volunteer_model=volunteer_model,
-            pending_plan_action={"action_family": "add_units"},
+            pending_action_family="add_units",
             chat_history=[{"role": "user", "content": confirm_text}],
         )
         plan = make_plan_action_plan(action_family="add_units", stage="apply")
@@ -164,7 +163,7 @@ class TestAllowsMutatingApply:
         """mutating + apply + pending 匹配 + 服务端卡片确认上下文 → 允许。"""
         ctx = make_run_context(
             volunteer_model=volunteer_model,
-            pending_plan_action={"action_family": "add_units"},
+            pending_action_family="add_units",
             chat_history=[],
             confirmed_via_card=True,
         )
@@ -176,7 +175,7 @@ class TestAllowsMutatingApply:
         """mutating + apply + pending 匹配 + 服务端统一 pending 确认上下文 → 允许。"""
         ctx = make_run_context(
             volunteer_model=volunteer_model,
-            pending_plan_action={"action_family": "add_units"},
+            pending_action_family="add_units",
             chat_history=[],
             confirmed_via_pending=True,
             confirmation_entry="short_text",

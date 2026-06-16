@@ -1,7 +1,7 @@
-"""回归基线：_execute_plan_action_model 的 apply 阶段行为（16 种 action）。
+"""回归基线：_execute_plan_action_model 的 apply 阶段行为（15 种 active action）。
 
 覆盖：
-1. query_state, query_draft, query_ordered, query_candidates → 只读查询
+1. query_state, query_ordered, query_candidates → 只读查询
 2. generate_plan → 生成方案
 3. analyze_adjustment → 分析调整
 4. preview_fix_proposal → 修复建议预览
@@ -37,7 +37,7 @@ def _confirmed_ctx(*, volunteer_model: str = "major", action_family: str = "add_
     """构造已确认的 RunContext（pending 匹配 + 卡片确认上下文）。"""
     return make_run_context(
         volunteer_model=volunteer_model,
-        pending_plan_action={"action_family": action_family},
+        pending_action_family=action_family,
         chat_history=[],
         confirmed_via_card=True,
     )
@@ -64,21 +64,6 @@ class TestQueryStateApply:
         assert result.applied is True
         assert result.result_kind == "status_overview"
         assert result.workspace_refresh_targets == []
-
-
-# ---------------------------------------------------------------------------
-# query_draft
-# ---------------------------------------------------------------------------
-
-class TestQueryDraftApply:
-    @pytest.mark.parametrize("volunteer_model", ["major", "majorGroup"])
-    async def test_query_draft_basic(self, volunteer_model: str, patch_backend, patch_planning):
-        patch_planning.query_planning_draft.return_value = "草稿方案概览..."
-        ctx = _confirmed_ctx(volunteer_model=volunteer_model, action_family="query_draft")
-        plan = make_plan_action_plan(action_family="query_draft", stage="apply")
-        result = await _execute_plan_action_model(ctx, plan)
-        assert result.applied is True
-        assert result.result_kind == "draft_snapshot"
 
 
 # ---------------------------------------------------------------------------
@@ -157,7 +142,8 @@ class TestGeneratePlanApply:
 class TestAnalyzeAdjustmentApply:
     @pytest.mark.parametrize("volunteer_model", ["major", "majorGroup"])
     async def test_analyze_adjustment_basic(self, volunteer_model: str, patch_backend, patch_planning):
-        patch_backend.analyze_planning_plan_adjustment.return_value = {"code": 0, "data": {}}
+        patch_backend.run_planning_review.return_value = {"code": 0, "data": {}}
+        patch_backend.generate_planning_fix_proposals.return_value = {"code": 0, "data": {}}
         patch_backend.get_planning_state.return_value = {
             "code": 0,
             "data": make_planning_state_response(ordered_total=30),
@@ -168,6 +154,8 @@ class TestAnalyzeAdjustmentApply:
         result = await _execute_plan_action_model(ctx, plan)
         assert result.applied is True
         assert result.result_kind == "adjustment_analysis"
+        patch_backend.run_planning_review.assert_awaited()
+        patch_backend.generate_planning_fix_proposals.assert_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -235,6 +223,21 @@ class TestAddUnitsApply:
 # ---------------------------------------------------------------------------
 
 class TestRemoveUnitsApply:
+    @pytest.mark.parametrize("volunteer_model", ["major", "majorGroup"])
+    async def test_remove_units_without_atomic_actions_returns_error(self, volunteer_model: str, patch_backend, patch_planning):
+        ctx = _confirmed_ctx(volunteer_model=volunteer_model, action_family="remove_units")
+        plan = make_plan_action_plan(
+            action_family="remove_units",
+            stage="apply",
+            atomic_actions=[],
+        )
+
+        result = await _execute_plan_action_model(ctx, plan)
+
+        assert result.applied is False
+        assert result.result_kind == "error"
+        assert "needs_volunteer_selection" in result.reply_focus
+
     @pytest.mark.parametrize("volunteer_model", ["major", "majorGroup"])
     async def test_remove_units_by_ids(self, volunteer_model: str, patch_backend, patch_planning):
         patch_planning.remove_planning_ordered_items.return_value = "已移除2个志愿。"

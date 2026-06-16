@@ -35,13 +35,13 @@ public class UserGoalProposalBuilderTest {
         FixProposalDTO proposal = proposalState.getProposals().get(0);
 
         assertEquals("user_goal", proposalState.getProposalSource());
-        assertEquals("preview_only", proposalState.getStatus());
+        assertEquals("ready", proposalState.getStatus());
         assertEquals("user_goal", proposal.getProposalSource());
-        assertEquals("preview_only", proposal.getStatus());
+        assertEquals("ready", proposal.getStatus());
         assertEquals("only_keep_scope", proposal.getStrategy());
-        assertFalse(proposal.getRequiresConfirmation());
+        assertTrue(proposal.getRequiresConfirmation());
         assertTrue(proposal.getSummary().contains("当前方案中有 1 条符合"));
-        assertTrue(proposal.getSummary().contains("已先形成 1 组"));
+        assertTrue(proposal.getSummary().contains("本次能替换 1 条"));
         assertEquals(1, proposal.getActions().size());
         assertEquals("replace_volunteers", proposal.getActions().get(0).getActionType());
         assertEquals("v2", proposal.getActions().get(0).getRemoveVolunteerIds().get(0));
@@ -49,7 +49,11 @@ public class UserGoalProposalBuilderTest {
         ReplacementPairDTO pair = proposal.getActions().get(0).getReplacementPairs().get(0);
         assertEquals("v2", pair.getFromVolunteerId());
         assertEquals("v3", pair.getToVolunteerId());
-        assertEquals("preview_only", proposal.getDryRunResult().getStatus());
+        assertEquals("ready", proposal.getDryRunResult().getStatus());
+        assertFalse(proposal.getImpact().contains("只读"));
+        assertFalse(proposal.getDryRunResult().getMessage().contains("只读"));
+        assertFalse(proposal.getDryRunResult().getMessage().contains("当前不会修改方案"));
+        assertTrue(proposal.getDryRunResult().getWarnings().isEmpty());
     }
 
     @Test
@@ -97,7 +101,8 @@ public class UserGoalProposalBuilderTest {
 
         FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
 
-        assertEquals("preview_only", proposal.getStatus());
+        assertEquals("ready", proposal.getStatus());
+        assertTrue(proposal.getRequiresConfirmation());
         assertEquals("must_include_scope", proposal.getStrategy());
         assertEquals(1, proposal.getActions().size());
         assertEquals("add_volunteers", proposal.getActions().get(0).getActionType());
@@ -117,12 +122,16 @@ public class UserGoalProposalBuilderTest {
 
         FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
 
-        assertEquals("preview_only", proposal.getStatus());
+        assertEquals("ready", proposal.getStatus());
+        assertTrue(proposal.getRequiresConfirmation());
         assertEquals(1, proposal.getActions().size());
         FixProposalActionDTO action = proposal.getActions().get(0);
         assertEquals("replace_volunteers", action.getActionType());
         assertEquals("v1", action.getRemoveVolunteerIds().get(0));
         assertEquals("v2", action.getCandidateVolunteerIds().get(0));
+        assertFalse(proposal.getImpact().contains("只读"));
+        assertFalse(proposal.getDryRunResult().getMessage().contains("当前不会修改方案"));
+        assertTrue(proposal.getDryRunResult().getWarnings().isEmpty());
         assertEquals("v1", action.getReplacementPairs().get(0).getFromVolunteerId());
         assertEquals("v2", action.getReplacementPairs().get(0).getToVolunteerId());
     }
@@ -140,7 +149,8 @@ public class UserGoalProposalBuilderTest {
 
         FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
 
-        assertEquals("preview_only", proposal.getStatus());
+        assertEquals("ready", proposal.getStatus());
+        assertTrue(proposal.getRequiresConfirmation());
         assertEquals("exclude_scope", proposal.getStrategy());
         assertTrue(proposal.getSummary().contains("有 1 条命中"));
         FixProposalActionDTO action = proposal.getActions().get(0);
@@ -161,12 +171,87 @@ public class UserGoalProposalBuilderTest {
 
         FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
 
-        assertEquals("preview_only", proposal.getStatus());
+        assertEquals("ready", proposal.getStatus());
+        assertTrue(proposal.getRequiresConfirmation());
         assertEquals(1, proposal.getActions().size());
         FixProposalActionDTO action = proposal.getActions().get(0);
         assertEquals("replace_volunteers", action.getActionType());
         assertEquals("v1", action.getRemoveVolunteerIds().get(0));
         assertEquals("v3", action.getCandidateVolunteerIds().get(0));
+        assertFalse(proposal.getImpact().contains("只读"));
+        assertFalse(proposal.getDryRunResult().getMessage().contains("当前不会修改方案"));
+        assertTrue(proposal.getDryRunResult().getWarnings().isEmpty());
+    }
+
+    @Test
+    void shouldBuildTuitionBudgetReplacementPreviewFromCurrentPlanAndCandidatePool() {
+        PlanningStateDTO state = state(12);
+        CandidateItemDTO expensive = candidate("v1", "学校A", "金融学", "经济学", 91D);
+        expensive.setTuitionPerYear(30000);
+        CandidateItemDTO kept = candidate("v2", "学校B", "汉语言文学", "文学", 88D);
+        kept.setTuitionPerYear(12000);
+        CandidateItemDTO affordable = candidate("v3", "学校C", "法学", "法学", 86D);
+        affordable.setTuitionPerYear(18000);
+        state.getCandidatePoolState().getItems().add(expensive);
+        state.getCandidatePoolState().getItems().add(kept);
+        state.getCandidatePoolState().getItems().add(affordable);
+        state.getOrderedPlanState().getItems().add(ordered("v1", "学校A", "金融学", false));
+        state.getOrderedPlanState().getItems().add(ordered("v2", "学校B", "汉语言文学", false));
+
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("tuition_budget_scope");
+        req.setSourceVersionGuard(12);
+        req.setUserOriginalText("预算上限20000元，超过的先移除再补充");
+        req.setContext(java.util.Collections.singletonMap("maxTuitionPerYear", 20000));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        assertTrue(proposal.getRequiresConfirmation());
+        assertEquals("tuition_budget_scope", proposal.getStrategy());
+        assertTrue(proposal.getSummary().contains("学费超过 20000 元/年"));
+        FixProposalActionDTO action = proposal.getActions().get(0);
+        assertEquals("replace_volunteers", action.getActionType());
+        assertEquals("v1", action.getRemoveVolunteerIds().get(0));
+        assertEquals("v3", action.getCandidateVolunteerIds().get(0));
+        assertEquals("v1", action.getReplacementPairs().get(0).getFromVolunteerId());
+        assertEquals("v3", action.getReplacementPairs().get(0).getToVolunteerId());
+    }
+
+    @Test
+    void shouldBuildInfoWhenTuitionBudgetAlreadySatisfied() {
+        PlanningStateDTO state = state(12);
+        CandidateItemDTO affordable = candidate("v1", "学校A", "金融学", "经济学", 91D);
+        affordable.setTuitionPerYear(18000);
+        state.getCandidatePoolState().getItems().add(affordable);
+        state.getOrderedPlanState().getItems().add(ordered("v1", "学校A", "金融学", false));
+
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("tuition_budget_scope");
+        req.setSourceVersionGuard(12);
+        req.setContext(java.util.Collections.singletonMap("maxTuitionPerYear", 20000));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("info", proposal.getStatus());
+        assertEquals("tuition_budget_scope", proposal.getStrategy());
+        assertTrue(proposal.getSummary().contains("没有发现学费超过 20000 元/年"));
+        assertTrue(proposal.getActions().isEmpty());
+    }
+
+    @Test
+    void shouldBlockTuitionBudgetWhenMaxTuitionMissing() {
+        PlanningStateDTO state = state(12);
+        UserGoalFixProposalReq req = new UserGoalFixProposalReq();
+        req.setGoalType("tuition_budget_scope");
+        req.setSourceVersionGuard(12);
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("blocked", proposal.getStatus());
+        assertEquals("tuition_budget_scope", proposal.getStrategy());
+        assertEquals("user_goal_unclear", proposal.getBlockingReasonCodes().get(0));
+        assertTrue(proposal.getSummary().contains("学费上限"));
     }
 
     @Test
@@ -186,7 +271,8 @@ public class UserGoalProposalBuilderTest {
 
         FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
 
-        assertEquals("preview_only", proposal.getStatus());
+        assertEquals("ready", proposal.getStatus());
+        assertTrue(proposal.getRequiresConfirmation());
         assertEquals("exclude_scope", proposal.getStrategy());
         assertEquals("v1", proposal.getActions().get(0).getRemoveVolunteerIds().get(0));
         assertEquals("u1", proposal.getActions().get(0).getRemoveUnitIds().get(0));
@@ -211,7 +297,8 @@ public class UserGoalProposalBuilderTest {
 
         FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
 
-        assertEquals("preview_only", proposal.getStatus());
+        assertEquals("ready", proposal.getStatus());
+        assertTrue(proposal.getRequiresConfirmation());
         FixProposalActionDTO action = proposal.getActions().get(0);
         assertEquals("replace_volunteers", action.getActionType());
         assertEquals("u1", action.getRemoveUnitIds().get(0));
@@ -241,7 +328,8 @@ public class UserGoalProposalBuilderTest {
 
         FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
 
-        assertEquals("preview_only", proposal.getStatus());
+        assertEquals("ready", proposal.getStatus());
+        assertTrue(proposal.getRequiresConfirmation());
         FixProposalActionDTO action = proposal.getActions().get(0);
         assertEquals("replace_volunteers", action.getActionType());
         assertEquals("v3", action.getCandidateVolunteerIds().get(0));

@@ -124,15 +124,6 @@ export interface HistoryScore {
   enrollNum: number | null;
 }
 
-export interface PlanningPendingAction {
-  type?: string;
-  level?: string;
-  summary?: string;
-  detail?: string;
-  sourceCheckCode?: string;
-  volunteerIds?: string[];
-}
-
 export interface PlanningCompensationAction {
   type?: string;
   level?: string;
@@ -863,7 +854,6 @@ export interface PlanningStateRes {
     checks?: PlanningReviewCheck[];
     compensationPreview?: PlanningCompensationPreview;
   };
-  pendingActions?: PlanningPendingAction[];
   workflowStatus?: {
     candidateStatus?: string;
     candidateMessage?: string;
@@ -905,7 +895,6 @@ export type PlanningWorkspaceStateRes = Pick<
   | 'draftPlanState'
   | 'orderedPlanState'
   | 'reviewState'
-  | 'pendingActions'
   | 'operationLogs'
   | 'workflowStatus'
 >;

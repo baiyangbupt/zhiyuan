@@ -288,13 +288,50 @@ async def test_run_stops_repeated_query_tool_loop_generically():
 
     reply, new_messages, all_messages, usage = await agent.run_with_message_deltas("候选里还有没有更稳一点的会计审计", deps=deps)
 
-    assert "没有稳定收敛" in reply
+    assert "当前方案里命中了 1 条相关机会" in reply
+    assert "不会改动方案" in reply
+    assert "没有稳定收敛" not in reply
     assert deps.agent_observability["toolLoopGuarded"] is True
     assert deps.agent_observability["guardedToolName"] == "query_volunteer_plan"
+    assert deps.agent_observability["guardUsedRecentToolReturn"] is True
     assert usage.tool_calls == 2
     assert isinstance(all_messages[-1], ModelResponse)
     assert getattr(all_messages[-1], "model_name", "") == "tool-loop-guard"
     assert new_messages[-1].parts[0].content == reply
+
+
+async def test_run_repeated_query_tool_loop_falls_back_when_recent_return_failed():
+    async def query_volunteer_plan() -> str:
+        return "查询失败：后端接口返回异常。"
+
+    async def looping_model(messages, agent_info):  # noqa: ARG001
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="query_volunteer_plan",
+                    args={},
+                    tool_call_id=f"query-call-{len(messages)}",
+                )
+            ]
+        )
+
+    class QueryLoopGuardAgent(BaseAgent[str]):
+        def __init__(self):
+            super().__init__(
+                llm_client=SimpleNamespace(model=FunctionModel(looping_model), model_settings={}),
+                instructions="test",
+                tools=[query_volunteer_plan],
+            )
+
+    deps = SimpleNamespace(agent_observability={})
+    agent = QueryLoopGuardAgent()
+
+    reply, _, _, _ = await agent.run_with_message_deltas("候选里还有没有更稳一点的会计审计", deps=deps)
+
+    assert "没有稳定收敛" in reply
+    assert "后端接口返回异常" not in reply
+    assert deps.agent_observability["toolLoopGuarded"] is True
+    assert "guardUsedRecentToolReturn" not in deps.agent_observability
 
 
 def test_record_exception_observability_keeps_provider_error_details(client, mocker):

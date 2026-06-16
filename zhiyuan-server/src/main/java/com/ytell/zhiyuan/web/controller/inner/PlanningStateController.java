@@ -435,14 +435,6 @@ public class PlanningStateController {
         return BaseResponse.success(planningStateService.runReviewWorkflow(tenantId, chatSessionId));
     }
 
-    @PostMapping("/session/compensation/preview")
-    @ApiOperation("预览补偿建议")
-    public BaseResponse<CompensationPreviewDTO> previewCompensation(@PathVariable("tenantId") Long tenantId,
-                                                                    @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId) {
-        log.info("previewCompensation: tenantId={}, chatSessionId={}", tenantId, chatSessionId);
-        return BaseResponse.success(planningStateService.previewCompensation(tenantId, chatSessionId));
-    }
-
     @PostMapping("/session/fix-proposals/generate")
     @ApiOperation("生成风险修复建议")
     public BaseResponse<FixProposalStateDTO> generateFixProposals(@PathVariable("tenantId") Long tenantId,
@@ -471,13 +463,4 @@ public class PlanningStateController {
         return BaseResponse.success(planningStateService.applyFixProposal(tenantId, chatSessionId, req));
     }
 
-    @PostMapping("/session/compensation/apply")
-    @ApiOperation("兼容应用低风险补偿建议，结构修复请使用 fix-proposals/apply")
-    public BaseResponse<PlanningStateDTO> applyCompensation(@PathVariable("tenantId") Long tenantId,
-                                                            @ApiParam("会话ID") @RequestParam("chatSessionId") Long chatSessionId,
-                                                            @RequestBody(required = false) CompensationApplyReq req) {
-        log.info("applyCompensation: tenantId={}, chatSessionId={}", tenantId, chatSessionId);
-        return BaseResponse.success(planningStateService.applyCompensation(tenantId, chatSessionId,
-                req == null ? new CompensationApplyReq() : req));
-    }
 }

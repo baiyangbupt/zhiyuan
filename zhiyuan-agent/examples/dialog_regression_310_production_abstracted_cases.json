@@ -6,6 +6,8 @@
     "privacy": "Synthetic prompts only; do not copy exact personal identifiers, exact scores, exact ranks, or family details from production transcripts."
   },
   "defaults": {
+    "cloneBackendStateFromSessionId": "17",
+    "clearBackendPlanningIntentState": true,
     "coverage": [
       "release_3_1_0",
       "production_dialogue_abstracted",

@@ -1,6 +1,6 @@
 """查询类 handler。
 
-覆盖 action_family: query_state, query_draft, query_ordered, query_candidates。
+覆盖 action_family: query_state, query_ordered, query_candidates。
 只读 handler，不涉及 apply 副作用。
 """
 
@@ -26,7 +26,6 @@ from app.tools.planning_workflow_tool import (
     _build_plan_status_overview_facts,
     merge_planning_state_with_user_profile,
     query_planning_candidate_pool,
-    query_planning_draft,
     query_planning_ordered_plan,
 )
 from app.tools.plan_query_tool import _enrich_plan_items_with_candidate_metadata, query_volunteer_plan
@@ -245,8 +244,6 @@ def _build_status_overview_summary(facts: dict[str, Any]) -> tuple[str, list[str
     tier_text = _tier_counts_text(facts.get("tier_counts"))
     gap_hint = str(facts.get("count_gap_hint") or "").strip()
     reminder_text = _compact_list_text(facts.get("main_reminders"))
-    pending_count = int(facts.get("pending_action_count") or 0)
-    pending_text = _compact_list_text(facts.get("pending_action_summaries"))
     top_items = facts.get("top_items") or []
     intent_relation = facts.get("intent_relation") or {}
     school_nature_distribution = facts.get("school_nature_distribution") or {}
@@ -289,9 +286,6 @@ def _build_status_overview_summary(facts: dict[str, Any]) -> tuple[str, list[str
         count_text = f"，影响约 {freshness_count} 项" if freshness_count > 0 else ""
         action_text = "建议先刷新候选池并重新审查。" if data_freshness.get("requires_review") else "建议先刷新候选池。"
         lines.append(f"- 数据更新：{freshness_summary}{count_text}，{action_text}")
-    if pending_count > 0 and pending_text:
-        lines.append(f"- 待处理建议：{pending_count} 项，主要是{pending_text}。")
-
     if top_items:
         item_lines = []
         for item in top_items[:5]:
@@ -332,8 +326,6 @@ def _build_status_overview_summary(facts: dict[str, Any]) -> tuple[str, list[str
         reply_focus.append("intent_match")
     if gap_hint:
         reply_focus.append("count_gap")
-    if pending_count > 0:
-        reply_focus.append("pending_actions")
     if candidate_supply_text:
         reply_focus.append("candidate_supply")
     if data_freshness:
@@ -344,8 +336,6 @@ def _build_status_overview_summary(facts: dict[str, Any]) -> tuple[str, list[str
         next_step_hints.append("如果用户继续追问风险或不合理处，优先展开审查结果或调整分析。")
     if gap_hint:
         next_step_hints.append("如果用户关心数量是否够用，先解释当前目标数量与缺口。")
-    if pending_count > 0:
-        next_step_hints.append("如果用户想继续优化，可先解释待处理建议，再决定是否补偿或重排。")
     if data_freshness:
         next_step_hints.append("如果用户问数据更新影响，先说明这是外部招生计划数据变化提示；当前不自动改方案，建议刷新候选池或重新审查。")
     missing_supply_tiers = []
@@ -401,11 +391,11 @@ async def handle_query_state(
     planning_state = await _get_planning_state_with_latest_profile(session_id)
 
     ordered_state: dict[str, Any] | None = None
-    draft_state: dict[str, Any] | None = None
+    working_state: dict[str, Any] | None = None
     ordered_total = summary_total(
         ((planning_state.get("orderedPlanState") or {}).get("summary") or {})
     )
-    draft_total = summary_total(get_working_plan_summary(planning_state))
+    working_total = summary_total(get_working_plan_summary(planning_state))
     if ordered_total > 0:
         ordered_result = await _get_planning_ordered_plan_request(session_id)
         if ordered_result.get("code") == 0:
@@ -414,19 +404,19 @@ async def handle_query_state(
             if ordered_items and not _has_school_nature_metadata(ordered_items):
                 ordered_state = dict(ordered_state)
                 ordered_state["items"] = await _enrich_plan_items_with_candidate_metadata(session_id, ordered_items)
-    elif draft_total > 0:
-        draft_result = await _get_working_plan_request(session_id)
-        if draft_result.get("code") == 0:
-            draft_state = draft_result.get("data") or {}
-            draft_items = draft_state.get("items") or []
-            if draft_items and not _has_school_nature_metadata(draft_items):
-                draft_state = dict(draft_state)
-                draft_state["items"] = await _enrich_plan_items_with_candidate_metadata(session_id, draft_items)
+    elif working_total > 0:
+        working_result = await _get_working_plan_request(session_id)
+        if working_result.get("code") == 0:
+            working_state = working_result.get("data") or {}
+            working_items = working_state.get("items") or []
+            if working_items and not _has_school_nature_metadata(working_items):
+                working_state = dict(working_state)
+                working_state["items"] = await _enrich_plan_items_with_candidate_metadata(session_id, working_items)
 
     facts = _build_plan_status_overview_facts(
         planning_state,
         ordered_state=ordered_state,
-        draft_state=draft_state,
+        working_state=working_state,
     )
     state_summary, reply_focus, next_step_hints = _build_status_overview_summary(facts)
 
@@ -445,28 +435,38 @@ async def handle_query_state(
     )
 
 
-@register_handler("query_draft")
-async def handle_query_draft(
-    ctx: RunContext[RequestContext], plan: PlanActionPlan
-) -> PlanExecutionResult:
-    state_summary = await query_planning_draft(ctx)
-    return PlanExecutionResult(
-        applied=True,
-        action_family="query_draft",
-        stage=plan.stage,
-        result_kind="draft_snapshot",
-        workspace_refresh_targets=["draft"],
-        context_summary=plan.context_summary,
-        state_summary=state_summary,
-        summary=state_summary,
-        reply_focus=["draft_snapshot"],
-    )
-
-
 @register_handler("query_ordered")
 async def handle_query_ordered(
     ctx: RunContext[RequestContext], plan: PlanActionPlan
 ) -> PlanExecutionResult:
+    atomic = plan.atomic_actions[0] if plan.atomic_actions else None
+    query_filters = await _build_candidate_query_filters(ctx, plan, atomic)
+    if any(query_filters.get(key) for key in query_filters):
+        state_summary = await query_volunteer_plan(
+            ctx,
+            plan.user_goal,
+            scope="plan",
+            tiers=query_filters.get("tiers") or None,
+            province_names=query_filters.get("province_names") or None,
+            city_names=query_filters.get("city_names") or None,
+            school_keywords=query_filters.get("school_keywords") or None,
+            major_keywords=query_filters.get("major_keywords") or None,
+            school_tags=query_filters.get("school_tags") or None,
+            major_tags=query_filters.get("major_tags") or None,
+            match_mode="and",
+        )
+        return PlanExecutionResult(
+            applied=True,
+            action_family="query_ordered",
+            stage=plan.stage,
+            result_kind="ordered_snapshot",
+            workspace_refresh_targets=[],
+            context_summary=plan.context_summary,
+            state_summary=state_summary,
+            summary=state_summary,
+            reply_focus=["ordered_snapshot", "local_plan_query"],
+            facts={"query_filters": query_filters},
+        )
     state_summary = await query_planning_ordered_plan(ctx)
     return PlanExecutionResult(
         applied=True,

@@ -218,6 +218,20 @@ async def create_chat_session(
     )
 
 
+async def update_session_tuition_range(
+    thread_id: Union[str, int],
+    *,
+    min_tuition: int = 0,
+    max_tuition: int,
+) -> Dict[str, Any]:
+    """Update the session tuition range used by candidate filtering."""
+    return await http_client.post(
+        endpoint=f"/gaotu-assistant-bot/inner/chat/1/session/update-tuition-range?chatSessionId={thread_id}",
+        json_data={"min": int(min_tuition or 0), "max": int(max_tuition)},
+        error_msg="更新会话学费区间失败",
+    )
+
+
 async def catalog_lookup_school(name: str) -> Dict[str, Any]:
     return await http_client.get(
         endpoint="/gaotu-assistant-bot/inner/catalog/lookup/school",
@@ -589,7 +603,7 @@ async def generate_user_goal_planning_fix_proposals(
     chat_session_id: Union[str, int],
     payload: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """按结构化用户复合目标生成只读方案调整预览。"""
+    """按结构化用户复合目标生成后端方案调整提案。"""
     return await http_client.post(
         endpoint=(
             f"/gaotu-assistant-bot/inner/planning/{tenant_id}/session/fix-proposals/user-goal/generate"
@@ -607,19 +621,25 @@ async def apply_planning_fix_proposal(
     source_version_guard: int,
     regenerate_ordered_plan: bool = True,
     rerun_review: bool = True,
+    proposal_source: str = "review_check",
+    user_goal_request: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """应用后端统一风险修复建议。"""
+    """应用后端统一方案处理建议。"""
+    payload: Dict[str, Any] = {
+        "proposalId": proposal_id,
+        "proposalSource": proposal_source or "review_check",
+        "sourceVersionGuard": source_version_guard,
+        "regenerateOrderedPlan": regenerate_ordered_plan,
+        "rerunReview": rerun_review,
+    }
+    if user_goal_request:
+        payload["userGoalRequest"] = user_goal_request
     return await http_client.post(
         endpoint=(
             f"/gaotu-assistant-bot/inner/planning/{tenant_id}/session/fix-proposals/apply"
             f"?chatSessionId={chat_session_id}"
         ),
-        json_data={
-            "proposalId": proposal_id,
-            "sourceVersionGuard": source_version_guard,
-            "regenerateOrderedPlan": regenerate_ordered_plan,
-            "rerunReview": rerun_review,
-        },
+        json_data=payload,
         error_msg="应用规划修复建议失败",
     )
 
@@ -631,11 +651,6 @@ async def get_working_plan(thread_id: Union[str, int]) -> Dict[str, Any]:
         params={"chatSessionId": thread_id},
         error_msg="获取方案失败",
     )
-
-
-async def get_planning_draft(thread_id: Union[str, int]) -> Dict[str, Any]:
-    """Deprecated compatibility alias. New code should use get_working_plan."""
-    return await get_working_plan(thread_id)
 
 
 async def get_planning_ordered_plan(thread_id: Union[str, int]) -> Dict[str, Any]:
@@ -675,39 +690,6 @@ async def remove_working_plan_items(
     )
 
 
-async def remove_planning_draft_items(
-    thread_id: Union[str, int],
-    volunteer_ids: list[str],
-) -> Dict[str, Any]:
-    """Deprecated compatibility alias. New code should use remove_working_plan_items."""
-    return await remove_working_plan_items(thread_id, volunteer_ids)
-
-
-async def lock_working_plan_items(
-    thread_id: Union[str, int],
-    volunteer_ids: list[str],
-    locked: bool = True,
-) -> Dict[str, Any]:
-    """锁定或解锁统一规划方案项。"""
-    return await http_client.post(
-        endpoint=f"/gaotu-assistant-bot/inner/planning/1/session/working-plan/lock?chatSessionId={thread_id}",
-        json_data={
-            "volunteerIds": volunteer_ids,
-            "locked": locked,
-        },
-        error_msg="锁定方案失败",
-    )
-
-
-async def lock_planning_draft_items(
-    thread_id: Union[str, int],
-    volunteer_ids: list[str],
-    locked: bool = True,
-) -> Dict[str, Any]:
-    """Deprecated compatibility alias. New code should use lock_working_plan_items."""
-    return await lock_working_plan_items(thread_id, volunteer_ids, locked=locked)
-
-
 async def ban_working_plan_items(
     thread_id: Union[str, int],
     volunteer_ids: list[str],
@@ -718,14 +700,6 @@ async def ban_working_plan_items(
         json_data={"volunteerIds": volunteer_ids},
         error_msg="禁用方案候选失败",
     )
-
-
-async def ban_planning_draft_items(
-    thread_id: Union[str, int],
-    volunteer_ids: list[str],
-) -> Dict[str, Any]:
-    """Deprecated compatibility alias. New code should use ban_working_plan_items."""
-    return await ban_working_plan_items(thread_id, volunteer_ids)
 
 
 # ── 对话状态 ──────────────────────────────────────────────────────
@@ -893,7 +867,7 @@ async def get_school_majors_recommend(
     )
 
 
-# ── 意向变更缓存 ──────────────────────────────────────────────────
+# ── 旧意向变更缓存清理 ───────────────────────────────────────────────
 
 
 async def save_intent_change_cache(
@@ -901,9 +875,11 @@ async def save_intent_change_cache(
     data_value: Dict[str, Any],
     version: int = 0,
 ) -> Dict[str, Any]:
-    """Store pending intent-change confirmation data.
+    """Clear legacy intent-change cache data.
 
-    The backend data key remains ``planEditCache`` for protocol compatibility.
+    New confirmation flows must use ``pendingConfirmation``. The backend key
+    remains ``planEditCache`` only so new pending/apply paths can clear stale
+    legacy data.
     """
     payload = {
         "chatSessionId": chat_session_id,
@@ -918,13 +894,6 @@ async def save_intent_change_cache(
         json_data=payload,
         error_msg="存储意向变更缓存失败",
     )
-
-
-async def get_intent_change_cache(
-    chat_session_id: Union[str, int], version: int = 0
-) -> Dict[str, Any]:
-    """Fetch pending intent-change confirmation data."""
-    return await get_extra_data(chat_session_id, "planEditCache", version)
 
 
 # ── 待确认卡片 ────────────────────────────────────────────────────
@@ -1302,16 +1271,6 @@ async def select_working_plan_items(
     )
 
 
-async def select_planning_draft_items(
-    tenant_id: Union[str, int],
-    chat_session_id: Union[str, int],
-    volunteer_ids: List[str],
-    source: str = "agent_planning_action",
-) -> Dict[str, Any]:
-    """Deprecated compatibility alias. New code should use select_working_plan_items."""
-    return await select_working_plan_items(tenant_id, chat_session_id, volunteer_ids, source=source)
-
-
 async def generate_planning_ordered_plan(
     tenant_id: Union[str, int],
     chat_session_id: Union[str, int],
@@ -1411,20 +1370,6 @@ async def run_planning_review(
         ),
         json_data={},
         error_msg="执行审查失败",
-    )
-
-
-async def analyze_planning_plan_adjustment(
-    tenant_id: Union[str, int],
-    chat_session_id: Union[str, int],
-) -> Dict[str, Any]:
-    return await http_client.post(
-        endpoint=(
-            f"/gaotu-assistant-bot/inner/planning/{tenant_id}/session/plan-adjustment/analyze"
-            f"?chatSessionId={chat_session_id}"
-        ),
-        json_data={},
-        error_msg="分析方案调整建议失败",
     )
 
 

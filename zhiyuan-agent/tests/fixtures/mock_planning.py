@@ -24,32 +24,24 @@ _QUERY_HANDLER_MODULE = "app.handlers.query_handlers"
 _WORKFLOW_FUNCTIONS = [
     "query_planning_state",
     "query_planning_plan_overview",
-    "query_planning_draft",
     "query_planning_candidate_pool",
     "query_planning_ordered_plan",
-    "select_planning_draft_items",
     "select_planning_ordered_items",
-    "remove_planning_draft_items",
     "remove_planning_ordered_items",
-    "lock_planning_draft_items",
-    "ban_planning_draft_items",
     "generate_planning_ordered_plan",
     "generate_planning_initial_plan",
     "move_planning_ordered_item",
     "run_planning_review",
-    "analyze_planning_plan_adjustment",
 ]
 
 _EXECUTION_TOOL_ALIASES = {
     "query_planning_plan_overview",
-    "query_planning_draft",
     "query_planning_candidate_pool",
     "query_planning_ordered_plan",
     "select_planning_ordered_items",
     "remove_planning_ordered_items",
     "move_planning_ordered_item",
     "run_planning_review",
-    "analyze_planning_plan_adjustment",
 }
 
 _MUTATION_HANDLER_ALIASES = {
@@ -60,7 +52,6 @@ _MUTATION_HANDLER_ALIASES = {
 
 _QUERY_HANDLER_ALIASES = {
     "query_planning_candidate_pool",
-    "query_planning_draft",
     "query_planning_ordered_plan",
 }
 
@@ -68,8 +59,6 @@ _QUERY_HANDLER_ALIASES = {
 _FACTS_FUNCTIONS = [
     "_build_plan_status_overview_facts",
     "_build_review_result_facts",
-    "_build_compensation_preview_facts",
-    "_build_plan_adjustment_facts",
     "_build_plan_intent_relation_lines",
 ]
 

@@ -42,8 +42,6 @@ def test_build_instructions_includes_planning_summary():
                 review_warn_count=2,
                 review_risk_count=1,
                 risk_summaries=["保区占比过低"],
-                pending_action_count=1,
-                pending_action_summaries=["补充保区志愿"],
             ),
         )
     )
@@ -53,7 +51,7 @@ def test_build_instructions_includes_planning_summary():
     assert "当前会话已存在统一规划状态" in instructions
     assert "用户当前方案已有 20 个志愿" in instructions
     assert "主要问题：保区占比过低" in instructions
-    assert "待处理建议：补充保区志愿" in instructions
+    assert "待处理建议" not in instructions
 
 
 def test_build_instructions_includes_planning_tool_policy():
@@ -153,17 +151,22 @@ def test_build_instructions_includes_plan_orchestration_boundaries():
     assert "单纯方案审查 `review_plan` 不要先调用 `collect_plan_context_inputs` 或 `plan_next_action`" in instructions
 
 
-def test_build_instructions_includes_pending_plan_action_confirmation_payload():
+def test_build_instructions_includes_plan_mutation_confirmation_payload():
+    from app.models.conversation_phase import ConversationPhase, PendingConfirmation, PhaseState
+
     ctx = SimpleNamespace(
         deps=RequestContext(
             userid="u1",
             sessionid="s2",
-            pending_plan_action={
-                "action_family": "regenerate_order",
-                "user_goal": "整体重排当前方案",
-                "summary": "会整体重排当前方案。",
-                "plan_payload": '{"stage":"apply","action_family":"regenerate_order"}',
-            },
+            conversation_phase=ConversationPhase(
+                state=PhaseState.PLAN_PREVIEWING,
+                pending=PendingConfirmation(
+                    kind="plan_mutation",
+                    action_family="regenerate_order",
+                    preview_summary="会整体重排当前方案。",
+                    execution_payload={"stage": "apply", "action_family": "regenerate_order"},
+                ),
+            ),
         )
     )
 

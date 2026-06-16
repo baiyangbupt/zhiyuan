@@ -31,15 +31,12 @@ from app.tools.plan_orchestration_models import (
 )
 from app.tools.review_issue_registry import build_review_issue_scopes, get_review_issue_rule
 from app.tools.planning_workflow_tool import (
-    _build_plan_adjustment_facts,
     _build_plan_intent_relation_lines,
     _build_plan_status_overview_facts,
     _build_review_result_facts,
-    analyze_planning_plan_adjustment,
     merge_planning_state_with_user_profile,
     move_planning_ordered_item,
     query_planning_candidate_pool,
-    query_planning_draft,
     query_planning_ordered_plan,
     query_planning_plan_overview,
     remove_planning_ordered_items,
@@ -48,7 +45,6 @@ from app.tools.planning_workflow_tool import (
 )
 from app.util.planning_state_compat import get_working_plan_items, get_working_plan_state, get_working_plan_summary
 from app.util.internal_client import (
-    analyze_planning_plan_adjustment as _analyze_planning_plan_adjustment_request,
     generate_planning_candidate_pool as _generate_planning_candidate_pool_request,
     generate_planning_initial_plan as _generate_planning_initial_plan_request,
     generate_planning_ordered_plan as _generate_planning_ordered_plan_request,
@@ -82,7 +78,6 @@ _MUTATING_ACTION_FAMILIES = {
 }
 _READONLY_HANDLER_ACTION_FAMILIES = {
     "query_state",
-    "query_draft",
     "query_ordered",
     "query_candidates",
     "analyze_adjustment",
@@ -91,6 +86,7 @@ _READONLY_HANDLER_ACTION_FAMILIES = {
 }
 _RECENT_PLAN_EXECUTION_TTL_SECONDS = 180.0
 _RECENT_PLAN_EXECUTION_RESULTS: dict[tuple[str, str], dict[str, Any]] = {}
+_RECENT_PLAN_ACTION_PLANS: dict[tuple[str, str], dict[str, Any]] = {}
 _PLAN_MAJOR_SCOPE_FILTER_KEYS = (
     "major_keyword",
     "major_tags",
@@ -106,6 +102,16 @@ _PLAN_MAJOR_LEVEL_FILTER_KEYS = {
     "negative_level2": "major_level2",
     "negative_level3": "major_level3",
 }
+_PROGRAM_TYPE_FILTER_KEYS = (
+    "program_type",
+    "program_types",
+    "admission_type",
+    "admission_types",
+    "project_type",
+    "project_types",
+    "enrollment_type",
+    "enrollment_types",
+)
 
 
 def _append_missing_json_closers(raw: str) -> str | None:
@@ -160,6 +166,66 @@ def _load_plan_payload(plan_payload: str) -> tuple[dict[str, Any], bool]:
     return normalize_plan_action_payload(loaded), True
 
 
+def _has_sort_field_payload(payload: dict[str, Any]) -> bool:
+    for key in ("sort_field", "sortField", "field"):
+        if str(payload.get(key) or "").strip():
+            return True
+    for action in payload.get("atomic_actions") or []:
+        if not isinstance(action, dict):
+            continue
+        filters = action.get("filters")
+        if not isinstance(filters, dict):
+            continue
+        for key in ("sort_field", "sortField", "field"):
+            if str(filters.get(key) or "").strip():
+                return True
+    return False
+
+
+def _merge_recent_plan_action_plan_if_compatible(
+    ctx: RunContext[RequestContext],
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Recover fields dropped while copying plan_next_action output.
+
+    This does not infer from natural language. It only reuses the complete
+    plan_next_action output cached for the same session and user turn when the
+    current execute payload names the same action family but is less complete.
+    """
+    action_family = str(payload.get("action_family") or "").strip()
+    if not action_family:
+        return payload
+    recent_plan = _recent_plan_action_plan(ctx)
+    if not recent_plan:
+        return payload
+    if str(recent_plan.get("action_family") or "").strip() != action_family:
+        return payload
+    merged = copy.deepcopy(payload)
+    if not merged.get("atomic_actions") and recent_plan.get("atomic_actions"):
+        merged["atomic_actions"] = copy.deepcopy(recent_plan.get("atomic_actions"))
+    if action_family == "sort_ordered_plan" and not _has_sort_field_payload(merged):
+        if _has_sort_field_payload(recent_plan):
+            merged["atomic_actions"] = copy.deepcopy(recent_plan.get("atomic_actions") or [])
+    for key in (
+        "requires_confirmation",
+        "should_rerun_review",
+        "should_refresh_workspace",
+        "context_summary",
+        "planning_version",
+        "intent_relation",
+        "missing_inputs",
+        "rationale",
+        "composite_proposal",
+        "preview_summary",
+    ):
+        value = merged.get(key)
+        if value in (None, "", [], {}):
+            recent_value = recent_plan.get(key)
+            if recent_value not in (None, "", [], {}):
+                merged[key] = copy.deepcopy(recent_value)
+    return normalize_plan_action_payload(merged)
+
+
 def _planning_version_from_context(ctx: RunContext[RequestContext]) -> int:
     planning_summary = getattr(ctx.deps, "planning_summary", None)
     try:
@@ -177,6 +243,26 @@ def _facts_with_planning_version(
     if planning_version > 0:
         result.setdefault("planning_version", planning_version)
     return result
+
+
+def _has_generation_prerequisite_context(ctx: RunContext[RequestContext]) -> bool:
+    score = getattr(ctx.deps, "score_detail", None)
+    if score is None:
+        return False
+    if int(getattr(score, "total_score", 0) or 0) <= 0:
+        return False
+    if not str(getattr(score, "province", "") or "").strip():
+        return False
+    if not list(getattr(score, "subject_list", []) or []):
+        return False
+    planning_summary = getattr(ctx.deps, "planning_summary", None)
+    if planning_summary is None:
+        return False
+    return bool(
+        int(getattr(planning_summary, "candidate_target_total", 0) or 0) > 0
+        or int(getattr(planning_summary, "working_target_total", 0) or 0) > 0
+        or int(getattr(planning_summary, "ordered_target_total", 0) or 0) > 0
+    )
 
 
 def _latest_user_text(ctx: RunContext[RequestContext]) -> str:
@@ -203,6 +289,13 @@ def _prune_recent_plan_execution_results(now: float | None = None) -> None:
     ]
     for key in expired_keys:
         _RECENT_PLAN_EXECUTION_RESULTS.pop(key, None)
+    expired_plan_keys = [
+        key
+        for key, payload in _RECENT_PLAN_ACTION_PLANS.items()
+        if current - float(payload.get("stored_at") or 0.0) > _RECENT_PLAN_EXECUTION_TTL_SECONDS
+    ]
+    for key in expired_plan_keys:
+        _RECENT_PLAN_ACTION_PLANS.pop(key, None)
 
 
 def clear_recent_plan_execution_result(session_id: str, user_prompt: str | None = None) -> None:
@@ -212,9 +305,13 @@ def clear_recent_plan_execution_result(session_id: str, user_prompt: str | None 
         for key in list(_RECENT_PLAN_EXECUTION_RESULTS.keys()):
             if key[0] == session_key:
                 _RECENT_PLAN_EXECUTION_RESULTS.pop(key, None)
+        for key in list(_RECENT_PLAN_ACTION_PLANS.keys()):
+            if key[0] == session_key:
+                _RECENT_PLAN_ACTION_PLANS.pop(key, None)
         return
     key = (str(session_id or "").strip(), _normalize_prompt_key(user_prompt))
     _RECENT_PLAN_EXECUTION_RESULTS.pop(key, None)
+    _RECENT_PLAN_ACTION_PLANS.pop(key, None)
 
 
 def consume_recent_plan_execution_result(session_id: str, user_prompt: str | None) -> dict[str, Any] | None:
@@ -237,6 +334,36 @@ def _remember_recent_plan_execution_result(ctx: RunContext[RequestContext], resu
         "stored_at": time.monotonic(),
         "result": copy.deepcopy(result),
     }
+
+
+def remember_recent_plan_action_plan(ctx: RunContext[RequestContext], plan_payload: dict[str, Any]) -> None:
+    """Cache the full plan_next_action output for the current user turn.
+
+    The model sometimes calls execute_plan_action with a hand-written minimal
+    payload after plan_next_action already produced the complete structured
+    plan.  This cache lets execute_plan_action recover missing fields from the
+    immediately preceding structured plan without inferring from user text.
+    """
+    session_id = str(ctx.deps.sessionid or "").strip()
+    prompt_key = _normalize_prompt_key(_latest_user_text(ctx))
+    if not session_id or not prompt_key:
+        return
+    _prune_recent_plan_execution_results()
+    _RECENT_PLAN_ACTION_PLANS[(session_id, prompt_key)] = {
+        "stored_at": time.monotonic(),
+        "plan": copy.deepcopy(plan_payload),
+    }
+
+
+def _recent_plan_action_plan(ctx: RunContext[RequestContext]) -> dict[str, Any] | None:
+    _prune_recent_plan_execution_results()
+    session_id = str(ctx.deps.sessionid or "").strip()
+    prompt_key = _normalize_prompt_key(_latest_user_text(ctx))
+    payload = _RECENT_PLAN_ACTION_PLANS.get((session_id, prompt_key))
+    if not payload:
+        return None
+    plan = payload.get("plan")
+    return copy.deepcopy(plan) if isinstance(plan, dict) else None
 
 
 def _first_atomic_action(plan_model: PlanActionPlan) -> Any | None:
@@ -443,15 +570,20 @@ async def _build_move_ordered_unit_preview_summary(
         state = (state_resp or {}).get("data") or {}
         ordered_state = state.get("orderedPlanState") or {}
         units = _ordered_visible_units(ordered_state, str(state.get("volunteerModel") or state.get("volunteer_model") or ""))
+        position_refs = _extract_unit_source_positions(plan_model)
+        source_position = position_refs[0] if position_refs else None
         if not units:
+            requested_move = (
+                f"第{source_position}个移到第{int(target_position)}位"
+                if source_position and target_position is not None
+                else "按位置移动"
+            )
             return (
-                "当前方案里还没有可移动的志愿，所以不能预览“第8个移到第12位”这类排序调整。"
+                f"当前方案里还没有可移动的志愿，所以不能预览“{requested_move}”这类排序调整。"
                 "需要先生成或加入志愿后，才能按位置移动。",
                 {"position_semantics": "ordered_unit_position", "position_resolution": "empty_plan"},
             )
         unit_ids = _extract_unit_ids(plan_model)
-        position_refs = _extract_unit_source_positions(plan_model)
-        source_position = position_refs[0] if position_refs else None
         source_unit: dict[str, Any] | None = None
         source_unit_id = ""
 
@@ -492,11 +624,26 @@ async def _build_move_ordered_unit_preview_summary(
         count_text = f"，组内共 {major_count} 个专业" if label == "专业组" and major_count > 0 else ""
         source_text = f"第 {source_position} 个{label}" if source_position else f"当前定位到的{label}"
         target_text = f"第 {int(target_position)} 个{label}位置"
+        if source_position is not None and int(source_position) == int(target_position):
+            return (
+                f"{unit_name} 已经在第{int(target_position)}位，本次不需要移动。"
+                "如果想调整它的位置，可以告诉我新的目标位置。",
+                {
+                    "source_unit_id": source_unit_id,
+                    "source_unit_name": unit_name,
+                    "source_unit_position": source_position,
+                    "target_unit_position": int(target_position),
+                    "source_unit_major_count": major_count,
+                    "unit_kind": label,
+                    "position_semantics": _unit_position_semantics(source_unit),
+                    "position_resolution": "already_at_target",
+                },
+            )
         explanation = _unit_position_explanation(source_unit)
         summary = (
             "预览如下：\n\n"
             f"- 源{label}：{source_text} — {unit_name}{count_text}\n"
-            f"- 目标位置：{target_text}\n"
+            f"- 目标位置：第{int(target_position)}位（{target_text}）\n"
             f"- 移动方式：{'整组移动，组内专业顺序保持不变' if label == '专业组' else '移动该志愿，其他志愿按顺序衔接'}\n\n"
             f"{explanation}"
         )
@@ -684,7 +831,16 @@ def _has_filter_selection_scope(filters: dict[str, Any]) -> bool:
     return False
 
 
-def _execution_missing_inputs(plan_model: PlanActionPlan) -> list[str]:
+def _execution_missing_inputs(ctx: RunContext[RequestContext], plan_model: PlanActionPlan) -> list[str]:
+    if plan_model.action_family == "generate_plan" and not _has_generation_prerequisite_context(ctx):
+        return ["generation_profile"]
+    if plan_model.action_family == "sort_ordered_plan":
+        if plan_model.stage not in {"preview", "apply"}:
+            return []
+        sort_field = _infer_ordered_sort_field(plan_model, default="")
+        if not sort_field:
+            return ["sort_field"]
+        return []
     if plan_model.action_family == "add_units":
         if plan_model.stage not in {"preview", "apply"}:
             return []
@@ -724,6 +880,40 @@ def _review_issue_replacement_scope_guidance(
 
 def _execution_missing_inputs_message(plan_model: PlanActionPlan, missing_inputs: list[str]) -> str:
     missing = {str(item or "").strip() for item in missing_inputs if str(item or "").strip()}
+    if "existing_plan" in missing and plan_model.action_family in {"move_ordered_unit", "remove_ordered_unit", "move_unit", "remove_units"}:
+        atomic = _first_atomic_action(plan_model)
+        source_position = getattr(atomic, "source_position", None) if atomic is not None else None
+        target_position = getattr(atomic, "target_position", None) if atomic is not None else None
+        try:
+            source_position_int = int(source_position) if source_position is not None else None
+        except (TypeError, ValueError):
+            source_position_int = None
+        try:
+            target_position_int = int(target_position) if target_position is not None else None
+        except (TypeError, ValueError):
+            target_position_int = None
+        if plan_model.action_family in {"move_ordered_unit", "move_unit"}:
+            move_scope = (
+                f"第{source_position_int}个移动到第{target_position_int}位"
+                if source_position_int and target_position_int
+                else "这个位置移动"
+            )
+            return (
+                f"当前还没有正式方案，找不到可移动的{f'第{source_position_int}个志愿' if source_position_int else '志愿'}，"
+                f"所以不能生成“{move_scope}”的调整预览。"
+                "需要先生成或加入志愿后，才能按位置移动。"
+            )
+        remove_scope = f"第{source_position_int}个志愿" if source_position_int else "指定志愿"
+        return (
+            f"当前还没有正式方案，找不到要删除的{remove_scope}，所以不能生成删除预览。"
+            "需要先生成或加入志愿后，才能按位置删除。"
+        )
+    if plan_model.action_family == "generate_plan" and "generation_profile" in missing:
+        return (
+            "要生成志愿方案，还需要先补全基础信息。"
+            "请先确认省份、分数、位次、选科、批次，以及主要专业或地域想法；"
+            "信息补齐后我再帮你生成方案。"
+        )
     if plan_model.action_family == "add_units" and "selection_scope" in missing:
         return (
             "这次还没定位到要加入方案的候选志愿。"
@@ -745,6 +935,11 @@ def _execution_missing_inputs_message(plan_model: PlanActionPlan, missing_inputs
                 "这次替换还缺少新志愿的筛选方向。"
                 "请说明想换成哪个专业、院校或地域范围，我会先给你一版可确认的预览。"
             )
+    if plan_model.action_family == "sort_ordered_plan" and "sort_field" in missing:
+        return (
+            "这次排序还缺少排序依据。"
+            "请明确是按录取率、院校层次，还是推荐系数来排；我会先给你一版可确认的预览。"
+        )
     return "这次操作还缺少必要信息，请补充清楚后我再继续。"
 
 
@@ -779,6 +974,10 @@ def _with_confirmation_hint(summary: str) -> str:
     if "确认" in text and ("执行" in text or "后" in text):
         return text
     return f"{text} 需要你确认后才会执行。"
+
+
+def _is_downgraded_unconfirmed_apply(plan_model: PlanActionPlan) -> bool:
+    return bool((getattr(plan_model, "facts", {}) or {}).get("downgraded_unconfirmed_apply"))
 
 
 def _normalize_keywords(value: str | None) -> list[str]:
@@ -1379,6 +1578,10 @@ def _filter_scope_values(action: PlanAtomicAction | None, *keys: str) -> list[st
     return list(dict.fromkeys(value for value in values if value))
 
 
+def _remove_scope_program_types(action: PlanAtomicAction | None) -> list[str]:
+    return _filter_scope_values(action, *_PROGRAM_TYPE_FILTER_KEYS)
+
+
 def _remove_scope_major_names(action: PlanAtomicAction | None, batch: str | None = "01") -> list[str]:
     names_by_level = _remove_scope_major_names_by_level(action, batch)
     return list(
@@ -1449,7 +1652,59 @@ def _has_structured_remove_scope(action: PlanAtomicAction | None, batch: str | N
         _remove_scope_major_names(action, batch)
         or _remove_scope_school_names(action, batch)
         or _remove_scope_region_names(action)
+        or _remove_scope_program_types(action)
     )
+
+
+def _iter_scope_text_values(value: Any):
+    if value is None:
+        return
+    if isinstance(value, str):
+        if value.strip():
+            yield value.strip()
+        return
+    if isinstance(value, (int, float, bool)):
+        yield str(value)
+        return
+    if isinstance(value, list):
+        for child in value:
+            yield from _iter_scope_text_values(child)
+        return
+    if isinstance(value, dict):
+        for child in value.values():
+            yield from _iter_scope_text_values(child)
+
+
+_PROGRAM_SCOPE_TEXT_KEYS = (
+    "schoolName",
+    "displaySchoolName",
+    "majorName",
+    "unitName",
+    "majorUnitName",
+    "schoolNature",
+    "schoolCategory",
+    "schoolBatch",
+    "majorPlanTags",
+    "majorRankTags",
+    "schoolRankTags",
+    "schoolBasicTags",
+    "schoolPopupTags",
+    "reasonCodes",
+    "riskFlags",
+    "tags",
+    "labels",
+    "majorItems",
+    "candidate",
+)
+
+
+def _program_type_matches_item(item: dict[str, Any], targets: list[str]) -> bool:
+    if not targets:
+        return True
+    values: list[str] = []
+    for key in _PROGRAM_SCOPE_TEXT_KEYS:
+        values.extend(_iter_scope_text_values(item.get(key)) or [])
+    return any(_compact_match_contains(value, target) for value in values for target in targets)
 
 
 def _ordered_item_matches_remove_scope(
@@ -1462,6 +1717,7 @@ def _ordered_item_matches_remove_scope(
     major_targets = _remove_scope_major_names(action, batch)
     school_targets = _remove_scope_school_names(action, batch)
     region_targets = _remove_scope_region_names(action)
+    program_type_targets = _remove_scope_program_types(action)
     tier_values = _filter_scope_values(action, "tier")
     if tier_values:
         item_tier = str(item.get("tier") or "").strip()
@@ -1487,7 +1743,9 @@ def _ordered_item_matches_remove_scope(
             for field in region_fields
         ):
             return False
-    return bool(major_targets or school_targets or region_targets or tier_values)
+    if program_type_targets and not _program_type_matches_item(item, program_type_targets):
+        return False
+    return bool(major_targets or school_targets or region_targets or program_type_targets or tier_values)
 
 
 def _ordered_item_scope_volunteer_ids(
@@ -1537,6 +1795,7 @@ def _remove_scope_label(action: PlanAtomicAction | None, batch: str | None = "01
     major_names_by_level = _remove_scope_major_names_by_level(action, batch)
     school_names = _remove_scope_school_names(action, batch)
     region_names = _remove_scope_region_names(action)
+    program_types = _remove_scope_program_types(action)
     if major_names_by_level.get("negative_level3"):
         parts.append("具体专业：" + "、".join(major_names_by_level["negative_level3"][:3]))
     if major_names_by_level.get("negative_level2"):
@@ -1547,6 +1806,8 @@ def _remove_scope_label(action: PlanAtomicAction | None, batch: str | None = "01
         parts.append("院校：" + "、".join(school_names[:3]))
     if region_names:
         parts.append("地域：" + "、".join(region_names[:3]))
+    if program_types:
+        parts.append("项目类型：" + "、".join(program_types[:3]))
     return "；".join(parts) or "指定范围"
 
 
@@ -1558,6 +1819,7 @@ def _build_constraint_intent_update_from_remove_scope(
     major_names_by_level = _remove_scope_major_names_by_level(action, batch)
     school_names = _remove_scope_school_names(action, batch)
     region_names_by_level = _remove_scope_region_names_by_level(action)
+    program_types = _remove_scope_program_types(action)
     if major_names_by_level:
         selected.append({"major_intents": major_names_by_level})
     if school_names:
@@ -1569,6 +1831,8 @@ def _build_constraint_intent_update_from_remove_scope(
         city_intents["negative_city"] = region_names_by_level["city"]
     if city_intents:
         selected.append({"city_intents": city_intents})
+    if program_types:
+        selected.append({"physical_constraints": {"special_limits": [f"不接受{value}" for value in program_types]}})
     if not selected:
         return {}
     return {
@@ -2105,11 +2369,11 @@ def _internal_mutation_ok(result: Any) -> bool:
 
 def _append_intent_relation_summary(base_text: str, planning_state: dict[str, Any] | None) -> str:
     ordered_state = (planning_state or {}).get("orderedPlanState") or {}
-    draft_state = get_working_plan_state(planning_state)
+    working_state = get_working_plan_state(planning_state)
     ordered_items = ordered_state.get("items") or []
-    draft_items = draft_state.get("items") or []
-    plan_items = ordered_items or draft_items
-    plan_summary = (ordered_state.get("summary") or {}) if ordered_items else (draft_state.get("summary") or {})
+    working_items = working_state.get("items") or []
+    plan_items = ordered_items or working_items
+    plan_summary = (ordered_state.get("summary") or {}) if ordered_items else (working_state.get("summary") or {})
     relation_lines = _build_plan_intent_relation_lines(
         planning_state,
         plan_items,
@@ -2407,12 +2671,12 @@ async def _apply_candidate_volunteer_ids_into_plan(
     session_id = ctx.deps.sessionid
     try:
         before_ordered_total = 0
-        before_draft_total = 0
+        before_working_total = 0
         try:
             before_state_result = await _get_planning_state_request(session_id)
             before_state = before_state_result.get("data") or {} if before_state_result.get("code") == 0 else {}
             before_ordered_total = _summary_total(((before_state.get("orderedPlanState") or {}).get("summary") or {}))
-            before_draft_total = _summary_total(get_working_plan_summary(before_state))
+            before_working_total = _summary_total(get_working_plan_summary(before_state))
         except Exception:
             logger.warning("failed to read planning totals before selecting candidates: session_id=%s", session_id, exc_info=True)
 
@@ -2435,18 +2699,18 @@ async def _apply_candidate_volunteer_ids_into_plan(
 
         latest_state = await _refresh_review_and_state(session_id) or (ordered_result.get("data") or {})
         ordered_summary = ((latest_state.get("orderedPlanState") or {}).get("summary") or {})
-        draft_summary = get_working_plan_summary(latest_state)
+        working_summary = get_working_plan_summary(latest_state)
         current_total = _summary_total(ordered_summary)
-        draft_total = _summary_total(draft_summary)
+        working_total = _summary_total(working_summary)
         target_total = ordered_summary.get("targetUnitCount") or ordered_summary.get("targetCount") or 0
         review_summary = ((latest_state.get("reviewState") or {}).get("summary") or {})
         ordered_increase = max(0, current_total - before_ordered_total) if before_ordered_total else 0
-        draft_increase = max(0, draft_total - before_draft_total) if before_draft_total else 0
+        working_increase = max(0, working_total - before_working_total) if before_working_total else 0
         if ordered_increase > 0:
             lead_text = f"已按你的要求加入 {ordered_increase} 个候选志愿，并同步更新当前方案。"
-        elif draft_increase > 0:
+        elif working_increase > 0:
             lead_text = (
-                f"已把 {draft_increase} 个候选志愿加入方案，但当前排序方案数量仍是 "
+                f"已把 {working_increase} 个候选志愿加入方案，但当前排序方案数量仍是 "
                 f"{current_total}/{target_total or current_total}，需要继续检查是否已被排序采纳。"
             )
         elif before_ordered_total:
@@ -2563,14 +2827,14 @@ _SORT_FIELD_DIRECTIONS = {
     "finalScore": "降序（系统综合推荐系数更高的机会优先）",
 }
 
-def _infer_ordered_sort_field(plan_model: PlanActionPlan) -> str:
+def _infer_ordered_sort_field(plan_model: PlanActionPlan, *, default: str = "admissionRatio") -> str:
     atomic = plan_model.atomic_actions[0] if plan_model.atomic_actions else None
     if atomic:
         for key in ("sort_field", "sortField", "field"):
             raw_value = str((atomic.filters or {}).get(key) or "").strip()
             if raw_value in _SORT_FIELD_ALIASES:
                 return _SORT_FIELD_ALIASES[raw_value]
-    return "admissionRatio"
+    return default
 
 
 _SORT_VALUE_ALIASES: dict[str, tuple[str, ...]] = {
@@ -2993,10 +3257,18 @@ async def _execute_plan_action_model(
         return broad_replace_review_issue_preview
 
     missing_inputs = list(plan_model.missing_inputs or [])
-    for item in _execution_missing_inputs(plan_model):
-        if item not in missing_inputs:
-            missing_inputs.append(item)
-    if missing_inputs:
+    if not _is_downgraded_unconfirmed_apply(plan_model):
+        for item in _execution_missing_inputs(ctx, plan_model):
+            if item not in missing_inputs:
+                missing_inputs.append(item)
+    if missing_inputs and not _is_downgraded_unconfirmed_apply(plan_model):
+        reply_focus = [
+            str(item or "").strip()
+            for item in list(plan_model.reply_focus or [])
+            if str(item or "").strip()
+        ]
+        if "missing_inputs" not in reply_focus:
+            reply_focus.append("missing_inputs")
         return PlanExecutionResult(
             applied=False,
             action_family=plan_model.action_family,
@@ -3004,9 +3276,12 @@ async def _execute_plan_action_model(
             result_kind="error",
             context_summary=plan_model.context_summary,
             summary=_execution_missing_inputs_message(plan_model, missing_inputs),
-            reply_focus=["missing_inputs"],
+            reply_focus=reply_focus,
             reply_strategy="direct_blocking",
             next_step_hints=["先补齐缺失输入，再继续执行当前方案动作。"],
+            facts={
+                "requested_reply_focus": list(plan_model.reply_focus or []),
+            },
         )
 
     if plan_model.action_family in _READONLY_HANDLER_ACTION_FAMILIES:
@@ -3020,6 +3295,20 @@ async def _execute_plan_action_model(
         if plan_model.action_family == "move_ordered_unit":
             resolved_summary, resolved_facts = await _build_move_ordered_unit_preview_summary(ctx, plan_model)
             if resolved_summary:
+                if str(resolved_facts.get("position_resolution") or "").strip() == "already_at_target":
+                    return PlanExecutionResult(
+                        applied=False,
+                        action_family=plan_model.action_family,
+                        stage=plan_model.stage,
+                        result_kind="no_change",
+                        context_summary=plan_model.context_summary,
+                        summary=resolved_summary,
+                        state_summary=resolved_summary,
+                        reply_focus=["already_at_target"],
+                        reply_strategy="direct_reply",
+                        next_step_hints=["当前排序项已经在目标位置；不要生成确认卡，也不要提示已移动。"],
+                        facts=_facts_with_planning_version(resolved_facts, ctx),
+                    )
                 preview_summary = resolved_summary
                 preview_facts = resolved_facts
         elif plan_model.action_family == "remove_ordered_unit":
@@ -3262,7 +3551,7 @@ async def _execute_plan_action_model(
             if review_issue and expanded_ids:
                 unit_count = _count_ordered_units_for_ids(ordered_items, expanded_ids)
                 issue_label = str(review_issue.get("label") or review_issue.get("code") or "问题项").strip()
-                if _is_replacement_first_review_issue(review_issue):
+                if _is_replacement_first_review_issue(review_issue) and plan_model.action_family != "remove_units":
                     preview_summary = (
                         f"已定位到当前方案里当前审查命中的{issue_label}："
                         f"共 {unit_count} 个专业组，涉及 {len(expanded_ids)} 条志愿。"
@@ -3330,6 +3619,24 @@ async def _execute_plan_action_model(
                 getattr(atomic, "target_position", None),
             )
             if resolved_summary:
+                if (
+                    resolved_facts.get("source_position") is not None
+                    and resolved_facts.get("target_position") is not None
+                    and int(resolved_facts["source_position"]) == int(resolved_facts["target_position"])
+                ):
+                    return PlanExecutionResult(
+                        applied=False,
+                        action_family=plan_model.action_family,
+                        stage=plan_model.stage,
+                        result_kind="no_change",
+                        context_summary=plan_model.context_summary,
+                        summary=resolved_summary,
+                        state_summary=resolved_summary,
+                        reply_focus=["already_at_target"],
+                        reply_strategy="direct_reply",
+                        next_step_hints=["当前志愿已经在目标位置；不要生成确认卡，也不要提示已移动。"],
+                        facts=_facts_with_planning_version(resolved_facts, ctx),
+                    )
                 plan_model = plan_model.model_copy(
                     update={
                         "preview_summary": resolved_summary,
@@ -3412,6 +3719,20 @@ async def _execute_plan_action_model(
         if plan_model.action_family == "move_ordered_unit":
             resolved_summary, resolved_facts = await _build_move_ordered_unit_preview_summary(ctx, plan_model)
             if resolved_summary:
+                if str(resolved_facts.get("position_resolution") or "").strip() == "already_at_target":
+                    return PlanExecutionResult(
+                        applied=False,
+                        action_family=plan_model.action_family,
+                        stage=plan_model.stage,
+                        result_kind="no_change",
+                        context_summary=plan_model.context_summary,
+                        summary=resolved_summary,
+                        state_summary=resolved_summary,
+                        reply_focus=["already_at_target"],
+                        reply_strategy="direct_reply",
+                        next_step_hints=["当前排序项已经在目标位置；不要生成确认卡，也不要提示已移动。"],
+                        facts=_facts_with_planning_version(resolved_facts, ctx),
+                    )
                 preview_summary = resolved_summary
                 preview_facts = resolved_facts
         elif plan_model.action_family == "remove_ordered_unit":
@@ -3501,6 +3822,7 @@ async def execute_plan_action(
     logger.info("execute_plan_action: session_id=%s", ctx.deps.sessionid)
     try:
         data, repaired_payload = _load_plan_payload(plan_payload)
+        data = _merge_recent_plan_action_plan_if_compatible(ctx, data)
     except Exception:
         fallback = PlanExecutionResult(
             applied=False,

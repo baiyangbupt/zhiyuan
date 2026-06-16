@@ -15,6 +15,8 @@ import asyncio
 import importlib.util
 import json
 import os
+import shutil
+import subprocess
 import sqlite3
 import statistics
 import time
@@ -29,7 +31,93 @@ DEFAULT_URL = "ws://127.0.0.1:8000/gaotu-assistant-agent/plus/chat/1/bot/test/do
 DEFAULT_USER_ID = "dialog-regression-user"
 DEFAULT_HISTORY_DB = Path(__file__).resolve().parents[1] / "data" / "chat_history.db"
 DEFAULT_INTERNAL_SERVICE_URL = os.environ.get("INTERNAL_SERVICE_URL") or "http://127.0.0.1:8080"
+DEFAULT_BACKEND_DB_HOST = os.environ.get("ZHIYUAN_REGRESSION_DB_HOST") or "127.0.0.1"
+DEFAULT_BACKEND_DB_PORT = os.environ.get("ZHIYUAN_REGRESSION_DB_PORT") or "3306"
+DEFAULT_BACKEND_DB_USER = os.environ.get("ZHIYUAN_REGRESSION_DB_USER") or "root"
+DEFAULT_BACKEND_DB_NAME = os.environ.get("ZHIYUAN_REGRESSION_DB_NAME") or "sales_bot"
+DEFAULT_BACKEND_DB_PASSWORD = os.environ.get("ZHIYUAN_REGRESSION_DB_PASSWORD") or os.environ.get("MYSQL_PWD") or ""
+DEFAULT_BACKEND_VOLUNTEER_DATA_DIR = (
+    os.environ.get("ZHIYUAN_REGRESSION_VOLUNTEER_DATA_DIR")
+    or str(Path(__file__).resolve().parents[2] / "zhiyuan-server" / "data" / "tmp")
+)
 PENDING_STATE_KEYS = ("pendingConfirmation", "planEditCache")
+BACKEND_STATE_CLONE_KEYS = ("planningState", "userprofile", "userScoreDetail")
+BACKEND_VOLUNTEER_FILE_SUFFIXES = ("", "_temp", "_final", "_temp_summary", "_final_summary")
+
+EMPTY_CONSTRAINT_STATE = {
+    "hardConstraints": {
+        "mustIncludeRegions": [],
+        "mustExcludeRegions": [],
+        "mustIncludeMajors": [],
+        "mustExcludeMajors": [],
+        "mustIncludeSchools": [],
+        "mustExcludeSchools": [],
+    },
+    "softPreferences": {
+        "preferRegions": [],
+        "preferMajors": [],
+        "preferSchools": [],
+        "avoidRegions": [],
+        "avoidMajors": [],
+        "avoidSchools": [],
+    },
+    "derivedPreferences": {
+        "recommendedMajorClusters": [],
+        "riskToleranceInferred": None,
+        "tuitionFlexibilityInferred": None,
+        "employmentOrientationInferred": [],
+    },
+}
+
+EMPTY_EXPLICIT_PROFILE = {
+    "positiveSchools": [],
+    "negativeSchools": [],
+    "positiveMajors": [],
+    "negativeMajors": [],
+    "positiveRegions": [],
+    "negativeRegions": [],
+}
+
+EMPTY_USER_PROFILE_INTENT_FIELDS = {
+    "major_intent": {
+        "level1": [],
+        "level2": [],
+        "level3": [],
+        "level1_emotion": [],
+        "level2_emotion": [],
+        "level3_emotion": [],
+    },
+    "negative_major_intent": {
+        "level1": [],
+        "level2": [],
+        "level3": [],
+        "level1_emotion": [],
+        "level2_emotion": [],
+        "level3_emotion": [],
+    },
+    "college_info": {
+        "values": [],
+        "values_emotion": [],
+    },
+    "negative_college_info": {
+        "values": [],
+        "values_emotion": [],
+    },
+    "city_info": {
+        "province": [],
+        "province_emotion": [],
+        "city": [],
+        "city_emotion": [],
+        "area": [],
+    },
+    "negative_city_info": {
+        "province": [],
+        "province_emotion": [],
+        "city": [],
+        "city_emotion": [],
+        "area": [],
+    },
+}
 
 DEFAULT_CASES: list[dict[str, Any]] = [
     {
@@ -259,7 +347,22 @@ def _apply_session_offset(cases: list[dict[str, Any]], session_offset: int) -> l
         original_session_id = case["sessionId"]
         case["sessionId"] = _offset_session_id(original_session_id, session_offset)
         case["baseSessionId"] = str(original_session_id)
+        if "cloneBackendStateFromSessionId" not in case and case.get("sourceSessionId"):
+            case["cloneBackendStateFromSessionId"] = str(case["sourceSessionId"])
     return adjusted
+
+
+def _filter_cases_by_name(cases: list[dict[str, Any]], names: list[str] | None) -> list[dict[str, Any]]:
+    expected = [str(name).strip() for name in names or [] if str(name).strip()]
+    if not expected:
+        return cases
+    expected_set = set(expected)
+    filtered = [case for case in cases if str(case.get("name") or "") in expected_set]
+    found = {str(case.get("name") or "") for case in filtered}
+    missing = [name for name in expected if name not in found]
+    if missing:
+        raise ValueError(f"--case-name did not match any case: {', '.join(missing)}")
+    return filtered
 
 
 def _case_session_ids(cases: list[dict[str, Any]]) -> list[str]:
@@ -336,6 +439,363 @@ def _clear_backend_pending_state(
                 result["error"] = f"{type(exc).__name__}: {exc}"
             results.append(result)
     return results
+
+
+def _http_get_json(url: str, *, timeout_seconds: float = 5) -> dict[str, Any]:
+    req = request.Request(
+        url,
+        headers={
+            "Accept": "application/json",
+        },
+        method="GET",
+    )
+    with request.urlopen(req, timeout=timeout_seconds) as response:
+        raw = response.read().decode("utf-8")
+    if not raw:
+        return {}
+    parsed = json.loads(raw)
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _write_backend_extra_data(
+    base_url: str,
+    session_id: str,
+    key: str,
+    value: dict[str, Any],
+    *,
+    timeout_seconds: float = 5,
+) -> dict[str, Any]:
+    normalized_base_url = str(base_url or "").rstrip("/")
+    payload = {
+        "chatSessionId": session_id,
+        "dataKey": key,
+        "dataType": "JSON_OBJECT",
+        "dataValue": value,
+        "version": 0,
+    }
+    req = request.Request(
+        f"{normalized_base_url}/gaotu-assistant-bot/inner/chat/1/session/add-extra-data",
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+        method="POST",
+    )
+    with request.urlopen(req, timeout=timeout_seconds) as response:
+        raw = response.read().decode("utf-8")
+    result: dict[str, Any] = {"status": response.status}
+    if raw:
+        try:
+            result["response"] = json.loads(raw)
+        except Exception:
+            result["response"] = raw[:200]
+    return result
+
+
+def _get_backend_extra_data(
+    base_url: str,
+    session_id: str,
+    key: str,
+    *,
+    timeout_seconds: float = 5,
+) -> dict[str, Any]:
+    normalized_base_url = str(base_url or "").rstrip("/")
+    data = _http_get_json(
+        f"{normalized_base_url}/gaotu-assistant-bot/inner/chat/1/session/get-extra-data"
+        f"?chatSessionId={session_id}&keyList={key}&version=0",
+        timeout_seconds=timeout_seconds,
+    )
+    payload = data.get("data") if isinstance(data.get("data"), dict) else {}
+    value = payload.get(key) if isinstance(payload, dict) else None
+    return value if isinstance(value, dict) else {}
+
+
+def _clear_profile_intent_fields(profile: dict[str, Any]) -> dict[str, Any]:
+    cleaned = deepcopy(profile) if isinstance(profile, dict) else {}
+    for key, value in EMPTY_USER_PROFILE_INTENT_FIELDS.items():
+        cleaned[key] = deepcopy(value)
+    return cleaned
+
+
+def _clear_planning_intent_fields(planning_state: dict[str, Any]) -> dict[str, Any]:
+    cleaned = deepcopy(planning_state) if isinstance(planning_state, dict) else {}
+    profile_state = cleaned.setdefault("profileState", {})
+    if not isinstance(profile_state, dict):
+        profile_state = {}
+        cleaned["profileState"] = profile_state
+    explicit_profile = profile_state.setdefault("explicitProfile", {})
+    if not isinstance(explicit_profile, dict):
+        explicit_profile = {}
+        profile_state["explicitProfile"] = explicit_profile
+    explicit_profile.update(deepcopy(EMPTY_EXPLICIT_PROFILE))
+    cleaned["constraintState"] = deepcopy(EMPTY_CONSTRAINT_STATE)
+    return cleaned
+
+
+def _clear_backend_planning_intent_state(
+    base_url: str,
+    session_ids: list[str],
+    *,
+    timeout_seconds: float = 5,
+) -> list[dict[str, Any]]:
+    """Clear accepted intent/preference state while preserving plan data.
+
+    Some live regression cases intentionally reuse real sessions that already
+    have candidate/ordered/review state. A clean-dialog intent case should not
+    inherit previously accepted preferences from the same session, so this
+    helper resets only the profile/constraint intent fields.
+    """
+    results: list[dict[str, Any]] = []
+    normalized_base_url = str(base_url or "").rstrip("/")
+    if not normalized_base_url:
+        return results
+    for session_id in session_ids:
+        result: dict[str, Any] = {"session": session_id, "ok": False, "keys": []}
+        try:
+            planning_state = _get_backend_extra_data(
+                normalized_base_url,
+                session_id,
+                "planningState",
+                timeout_seconds=timeout_seconds,
+            )
+            if planning_state:
+                cleaned_planning_state = _clear_planning_intent_fields(planning_state)
+                write_result = _write_backend_extra_data(
+                    normalized_base_url,
+                    session_id,
+                    "planningState",
+                    cleaned_planning_state,
+                    timeout_seconds=timeout_seconds,
+                )
+                result["keys"].append("planningState")
+                result["planningStateStatus"] = write_result.get("status")
+
+            user_profile = _get_backend_extra_data(
+                normalized_base_url,
+                session_id,
+                "userprofile",
+                timeout_seconds=timeout_seconds,
+            )
+            if user_profile:
+                cleaned_user_profile = _clear_profile_intent_fields(user_profile)
+                write_result = _write_backend_extra_data(
+                    normalized_base_url,
+                    session_id,
+                    "userprofile",
+                    cleaned_user_profile,
+                    timeout_seconds=timeout_seconds,
+                )
+                result["keys"].append("userprofile")
+                result["userprofileStatus"] = write_result.get("status")
+            result["ok"] = True
+        except (OSError, error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            result["error"] = f"{type(exc).__name__}: {exc}"
+        results.append(result)
+    return results
+
+
+def _clone_backend_session_state(
+    base_url: str,
+    *,
+    source_session_id: str,
+    target_session_id: str,
+    keys: tuple[str, ...] = BACKEND_STATE_CLONE_KEYS,
+    timeout_seconds: float = 5,
+) -> list[dict[str, Any]]:
+    """Clone backend extra-data state for destructive live regression cases."""
+    results: list[dict[str, Any]] = []
+    normalized_base_url = str(base_url or "").rstrip("/")
+    if not normalized_base_url:
+        return results
+    for key in keys:
+        result: dict[str, Any] = {
+            "sourceSession": source_session_id,
+            "targetSession": target_session_id,
+            "key": key,
+            "ok": False,
+        }
+        try:
+            value = _get_backend_extra_data(
+                normalized_base_url,
+                source_session_id,
+                key,
+                timeout_seconds=timeout_seconds,
+            )
+            if not value:
+                result["skipped"] = "source_empty"
+                result["ok"] = True
+                results.append(result)
+                continue
+            cloned_value = deepcopy(value)
+            if key == "planningState":
+                cloned_value["sessionId"] = int(target_session_id) if target_session_id.isdigit() else target_session_id
+            write_result = _write_backend_extra_data(
+                normalized_base_url,
+                target_session_id,
+                key,
+                cloned_value,
+                timeout_seconds=timeout_seconds,
+            )
+            result["status"] = write_result.get("status")
+            result["ok"] = 200 <= int(write_result.get("status") or 0) < 300
+        except (OSError, error.URLError, TimeoutError, json.JSONDecodeError, ValueError) as exc:
+            result["error"] = f"{type(exc).__name__}: {exc}"
+        results.append(result)
+    return results
+
+
+def _clone_backend_chat_session_row(
+    *,
+    source_session_id: str,
+    target_session_id: str,
+    db_host: str,
+    db_port: str,
+    db_user: str,
+    db_password: str,
+    db_name: str,
+    timeout_seconds: float = 5,
+) -> dict[str, Any]:
+    """Clone assistant_chat_session row for live destructive regression sessions.
+
+    Extra-data cloning is not sufficient for apply flows that refresh
+    recommendation data through ChatSession. Keep this test-runner-only and
+    explicit via --clone-backend-chat-session.
+    """
+
+    result: dict[str, Any] = {
+        "sourceSession": source_session_id,
+        "targetSession": target_session_id,
+        "table": "assistant_chat_session",
+        "ok": False,
+    }
+    if not str(source_session_id).isdigit() or not str(target_session_id).isdigit():
+        result["error"] = "source and target session ids must be numeric"
+        return result
+    sql = (
+        "INSERT INTO assistant_chat_session "
+        "(id, tenant_id, user_id, bot_id, mobile, user_name, session_status, start_time, end_time, create_time, update_time) "
+        "SELECT {target_id}, tenant_id, user_id, bot_id, mobile, "
+        "CONCAT(COALESCE(user_name, ''), '-regression-{target_id}'), session_status, start_time, end_time, NOW(), NOW() "
+        "FROM assistant_chat_session src "
+        "WHERE src.id = {source_id} "
+        "AND NOT EXISTS (SELECT 1 FROM assistant_chat_session dst WHERE dst.id = {target_id}); "
+        "SELECT ROW_COUNT();"
+    ).format(source_id=int(source_session_id), target_id=int(target_session_id))
+    cmd = [
+        "mysql",
+        f"-h{db_host}",
+        f"-P{db_port}",
+        f"-u{db_user}",
+        "-N",
+        "-B",
+        db_name,
+        "-e",
+        sql,
+    ]
+    env = os.environ.copy()
+    if db_password:
+        env["MYSQL_PWD"] = db_password
+    try:
+        proc = subprocess.run(
+            cmd,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError, TimeoutError) as exc:
+        result["error"] = f"{type(exc).__name__}: {exc}"
+        return result
+    result["returnCode"] = proc.returncode
+    if proc.stderr.strip():
+        result["stderr"] = proc.stderr.strip()
+    if proc.stdout.strip():
+        result["stdout"] = proc.stdout.strip()
+    if proc.returncode != 0:
+        result["error"] = proc.stderr.strip() or f"mysql exited {proc.returncode}"
+        return result
+    inserted = 0
+    for line in reversed([item.strip() for item in proc.stdout.splitlines() if item.strip()]):
+        try:
+            inserted = int(line)
+            break
+        except ValueError:
+            continue
+    result["insertedRows"] = inserted
+    result["ok"] = True
+    result["skipped"] = "target_exists" if inserted == 0 else None
+    return result
+
+
+def _clone_backend_volunteer_data_files(
+    *,
+    source_session_id: str,
+    target_session_id: str,
+    data_dir: str | Path,
+    suffixes: tuple[str, ...] = BACKEND_VOLUNTEER_FILE_SUFFIXES,
+) -> dict[str, Any]:
+    """Clone local session_volunteer files for live apply-flow regressions.
+
+    Java apply flows refresh recommendation overlays from the original
+    session_volunteer_{session}.json source file. Disposable cloned sessions
+    need the same local source files, otherwise apply fails before reaching
+    business logic.
+    """
+
+    result: dict[str, Any] = {
+        "sourceSession": source_session_id,
+        "targetSession": target_session_id,
+        "dataDir": str(data_dir),
+        "ok": False,
+        "files": [],
+    }
+    if not str(source_session_id).isdigit() or not str(target_session_id).isdigit():
+        result["error"] = "source and target session ids must be numeric"
+        return result
+
+    root = Path(data_dir)
+    copied = 0
+    original_present = False
+    for suffix in suffixes:
+        source = root / f"session_volunteer_{source_session_id}{suffix}.json"
+        target = root / f"session_volunteer_{target_session_id}{suffix}.json"
+        file_result: dict[str, Any] = {
+            "suffix": suffix,
+            "source": str(source),
+            "target": str(target),
+            "ok": False,
+        }
+        if not source.exists():
+            file_result["skipped"] = "source_missing"
+            file_result["ok"] = True
+            result["files"].append(file_result)
+            continue
+        if suffix == "":
+            original_present = True
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+            copied += 1
+            file_result["ok"] = True
+            file_result["copied"] = True
+            file_result["bytes"] = target.stat().st_size
+        except OSError as exc:
+            file_result["error"] = f"{type(exc).__name__}: {exc}"
+        result["files"].append(file_result)
+
+    failed = [item for item in result["files"] if not item.get("ok")]
+    result["copiedFiles"] = copied
+    if failed:
+        result["error"] = "some files failed to copy"
+        return result
+    if not original_present:
+        result["error"] = "source original session_volunteer file missing"
+        return result
+    result["ok"] = True
+    return result
 
 
 def _load_history_json(db_path: Path, session_id: str) -> list[dict[str, Any]]:
@@ -571,6 +1031,15 @@ def _followup_summary(followups: list[dict[str, Any]]) -> tuple[list[str], list[
     return targets, refreshes, types
 
 
+def _as_string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    text = str(value).strip()
+    return [text] if text else []
+
+
 def _summarize_primary(messages: list[dict[str, Any]]) -> str:
     text_parts = [m.get("content", "") for m in messages if m.get("type") == "text"]
     thinking_parts = [m.get("content", "") for m in messages if m.get("type") == "thinking"]
@@ -643,11 +1112,18 @@ def _check_content_assertions(
     assert_followup_refresh = step.get("assertFollowupRefresh")
     assert_followup_type = step.get("assertFollowupType")
     assert_followup_count = step.get("assertFollowupCount")
+    assert_actionable_followup_types = _as_string_list(step.get("assertActionableFollowupTypes"))
+    assert_actionable_followup_targets = _as_string_list(step.get("assertActionableFollowupTargets"))
+    assert_actionable_followup_count = step.get("assertActionableFollowupCount")
     assert_no_followups = bool(step.get("assertNoFollowups"))
     visible_followups = [
-        item for item in followups if not _is_silent_workspace_action_message(item)
+        item
+        for item in followups
+        if str(item.get("type") or "").strip() != "thinking"
+        and not _is_silent_workspace_action_message(item)
     ]
     actionable_followups = followups
+    actionable_followup_targets, _, actionable_followup_types = _followup_summary(actionable_followups)
 
     followup_user_text = _extract_followup_user_text(visible_followups)
     searchable_text = "\n".join(part for part in (text, followup_user_text) if part).strip()
@@ -723,6 +1199,28 @@ def _check_content_assertions(
             violations.append(
                 f"{case_name} session={session_id} prompt={prompt_label}: "
                 f"assertFollowupCount FAILED — expected {expected_count} followups but got {len(visible_followups)}"
+            )
+    for expected_type in assert_actionable_followup_types:
+        if expected_type not in actionable_followup_types:
+            violations.append(
+                f"{case_name} session={session_id} prompt={prompt_label}: "
+                f"assertActionableFollowupTypes FAILED — expected type='{expected_type}' not in actionable followups"
+            )
+    for expected_target in assert_actionable_followup_targets:
+        if expected_target not in actionable_followup_targets:
+            violations.append(
+                f"{case_name} session={session_id} prompt={prompt_label}: "
+                f"assertActionableFollowupTargets FAILED — expected targetView='{expected_target}' not in actionable followups"
+            )
+    if assert_actionable_followup_count is not None:
+        try:
+            expected_actionable_count = int(assert_actionable_followup_count)
+        except (TypeError, ValueError):
+            expected_actionable_count = None
+        if expected_actionable_count is not None and len(actionable_followups) != expected_actionable_count:
+            violations.append(
+                f"{case_name} session={session_id} prompt={prompt_label}: "
+                f"assertActionableFollowupCount FAILED — expected {expected_actionable_count} actionable followups but got {len(actionable_followups)}"
             )
     if assert_no_followups and visible_followups:
         violations.append(
@@ -975,7 +1473,15 @@ async def _run_cases(
     keep_response_text: bool = False,
     clear_history_per_case: bool = False,
     clear_backend_pending_per_case: bool = False,
+    clear_backend_planning_intent_per_case: bool = False,
     internal_service_url: str = DEFAULT_INTERNAL_SERVICE_URL,
+    clone_backend_chat_session: bool = False,
+    backend_db_host: str = DEFAULT_BACKEND_DB_HOST,
+    backend_db_port: str = DEFAULT_BACKEND_DB_PORT,
+    backend_db_user: str = DEFAULT_BACKEND_DB_USER,
+    backend_db_password: str = DEFAULT_BACKEND_DB_PASSWORD,
+    backend_db_name: str = DEFAULT_BACKEND_DB_NAME,
+    backend_volunteer_data_dir: str = DEFAULT_BACKEND_VOLUNTEER_DATA_DIR,
 ) -> None:
     failures: list[str] = []
     warnings: list[str] = []
@@ -983,6 +1489,81 @@ async def _run_cases(
     for case in cases:
         name = str(case.get("name") or f"session-{case.get('sessionId')}")
         session_id = str(case["sessionId"])
+        clone_source_session_id = str(case.get("cloneBackendStateFromSessionId") or "").strip()
+        if clone_source_session_id:
+            if clone_backend_chat_session:
+                session_clone_result = _clone_backend_chat_session_row(
+                    source_session_id=clone_source_session_id,
+                    target_session_id=session_id,
+                    db_host=backend_db_host,
+                    db_port=backend_db_port,
+                    db_user=backend_db_user,
+                    db_password=backend_db_password,
+                    db_name=backend_db_name,
+                )
+                print(
+                    "clonedCaseBackendChatSession="
+                    + json.dumps(
+                        {
+                            "dbHost": backend_db_host,
+                            "dbName": backend_db_name,
+                            "sourceSession": clone_source_session_id,
+                            "targetSession": session_id,
+                            "result": session_clone_result,
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+                if not session_clone_result.get("ok"):
+                    warnings.append(
+                        f"{name} session={session_id}: backend chat session clone failed: "
+                        + json.dumps(session_clone_result, ensure_ascii=False)
+                    )
+                volunteer_file_clone_result = _clone_backend_volunteer_data_files(
+                    source_session_id=clone_source_session_id,
+                    target_session_id=session_id,
+                    data_dir=backend_volunteer_data_dir,
+                )
+                print(
+                    "clonedCaseBackendVolunteerData="
+                    + json.dumps(
+                        {
+                            "dataDir": backend_volunteer_data_dir,
+                            "sourceSession": clone_source_session_id,
+                            "targetSession": session_id,
+                            "result": volunteer_file_clone_result,
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+                if not volunteer_file_clone_result.get("ok"):
+                    warnings.append(
+                        f"{name} session={session_id}: backend volunteer data clone failed: "
+                        + json.dumps(volunteer_file_clone_result, ensure_ascii=False)
+                    )
+            clone_results = _clone_backend_session_state(
+                internal_service_url,
+                source_session_id=clone_source_session_id,
+                target_session_id=session_id,
+            )
+            print(
+                "clonedCaseBackendState="
+                + json.dumps(
+                    {
+                        "baseUrl": internal_service_url,
+                        "sourceSession": clone_source_session_id,
+                        "targetSession": session_id,
+                        "results": clone_results,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            failed_clones = [item for item in clone_results if not item.get("ok")]
+            if failed_clones:
+                warnings.append(
+                    f"{name} session={session_id}: backend state clone had failures: "
+                    + json.dumps(failed_clones, ensure_ascii=False)
+                )
         if clear_history_per_case and history_db:
             deleted = _clear_history(Path(history_db), [session_id])
             print(
@@ -1014,6 +1595,29 @@ async def _run_cases(
                 warnings.append(
                     f"{name} session={session_id}: backend pending clear had failures: "
                     + json.dumps(failed_pending_clears, ensure_ascii=False)
+                )
+        should_clear_planning_intent = (
+            clear_backend_planning_intent_per_case
+            or bool(case.get("clearBackendPlanningIntentState"))
+        )
+        if should_clear_planning_intent:
+            planning_intent_results = _clear_backend_planning_intent_state(internal_service_url, [session_id])
+            print(
+                "clearedCaseBackendPlanningIntent="
+                + json.dumps(
+                    {
+                        "baseUrl": internal_service_url,
+                        "session": session_id,
+                        "results": planning_intent_results,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            failed_planning_intent_clears = [item for item in planning_intent_results if not item.get("ok")]
+            if failed_planning_intent_clears:
+                warnings.append(
+                    f"{name} session={session_id}: backend planning intent clear had failures: "
+                    + json.dumps(failed_planning_intent_clears, ensure_ascii=False)
                 )
         case_assert_style = bool(case.get("assertPlanStyle", assert_plan_style))
         base_session_id = str(case.get("baseSessionId") or "")
@@ -1182,6 +1786,7 @@ def main() -> None:
     parser.add_argument("--url", default=DEFAULT_URL, help="compat websocket URL")
     parser.add_argument("--user-id", default=DEFAULT_USER_ID, help="user id used in requests")
     parser.add_argument("--cases", help="JSON file containing a case array")
+    parser.add_argument("--case-name", action="append", help="run only the named case; can be passed multiple times")
     parser.add_argument("--session", help="run an ad hoc session id")
     parser.add_argument("--prompts", nargs="*", help="ad hoc prompts for --session")
     parser.add_argument("--assert-plan-style", action="store_true", help="fail when plan replies contain severe forced-choice or internal wording")
@@ -1225,9 +1830,29 @@ def main() -> None:
         help="clear backend pendingConfirmation and legacy planEditCache for a case session before each case",
     )
     parser.add_argument(
+        "--clear-backend-planning-intent-per-case",
+        action="store_true",
+        help="clear accepted planning profile/constraint intent fields for each case while keeping plan/candidate data",
+    )
+    parser.add_argument(
         "--internal-service-url",
         default=DEFAULT_INTERNAL_SERVICE_URL,
         help="backend base URL used by --clear-backend-pending options",
+    )
+    parser.add_argument(
+        "--clone-backend-chat-session",
+        action="store_true",
+        help="when a case clones backend extra-data, also clone assistant_chat_session row through MySQL",
+    )
+    parser.add_argument("--backend-db-host", default=DEFAULT_BACKEND_DB_HOST)
+    parser.add_argument("--backend-db-port", default=DEFAULT_BACKEND_DB_PORT)
+    parser.add_argument("--backend-db-user", default=DEFAULT_BACKEND_DB_USER)
+    parser.add_argument("--backend-db-password", default=DEFAULT_BACKEND_DB_PASSWORD)
+    parser.add_argument("--backend-db-name", default=DEFAULT_BACKEND_DB_NAME)
+    parser.add_argument(
+        "--backend-volunteer-data-dir",
+        default=DEFAULT_BACKEND_VOLUNTEER_DATA_DIR,
+        help="local zhiyuan-server data/tmp directory used with --clone-backend-chat-session",
     )
     args = parser.parse_args()
 
@@ -1236,6 +1861,7 @@ def main() -> None:
         cases = [{"name": "ad-hoc", "sessionId": args.session, "prompts": prompts}]
     else:
         cases = _load_cases(args.cases)
+    cases = _filter_cases_by_name(cases, args.case_name)
     cases = _apply_session_offset(cases, args.session_offset)
     if args.clear_history:
         session_ids = _case_session_ids(cases)
@@ -1279,7 +1905,15 @@ def main() -> None:
             keep_response_text=args.keep_response_text,
             clear_history_per_case=args.clear_history_per_case,
             clear_backend_pending_per_case=args.clear_backend_pending_per_case,
+            clear_backend_planning_intent_per_case=args.clear_backend_planning_intent_per_case,
             internal_service_url=args.internal_service_url,
+            clone_backend_chat_session=args.clone_backend_chat_session,
+            backend_db_host=args.backend_db_host,
+            backend_db_port=args.backend_db_port,
+            backend_db_user=args.backend_db_user,
+            backend_db_password=args.backend_db_password,
+            backend_db_name=args.backend_db_name,
+            backend_volunteer_data_dir=args.backend_volunteer_data_dir,
         )
     )
 

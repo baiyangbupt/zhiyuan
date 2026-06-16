@@ -29,6 +29,8 @@ class PlanningSummary:
     phase: str = ""
     version: int = 0
     candidate_target_total: int = 0
+    working_total: int = 0
+    working_target_total: int = 0
     draft_total: int = 0
     draft_target_total: int = 0
     ordered_total: int = 0
@@ -36,8 +38,6 @@ class PlanningSummary:
     review_warn_count: int = 0
     review_risk_count: int = 0
     risk_summaries: list[str] = field(default_factory=list)
-    pending_action_count: int = 0
-    pending_action_summaries: list[str] = field(default_factory=list)
     tier_counts: dict[str, int] = field(default_factory=dict)
     sample_schools: list[str] = field(default_factory=list)
     positive_regions: list[str] = field(default_factory=list)
@@ -52,7 +52,6 @@ class PlanningSummary:
 
         review_state = data.get("reviewState") or {}
         checks = review_state.get("checks") or []
-        pending_actions = data.get("pendingActions") or []
 
         risk_summaries: list[str] = []
         for check in checks:
@@ -63,12 +62,6 @@ class PlanningSummary:
                 risk_summaries.append(summary)
             if len(risk_summaries) >= 2:
                 break
-
-        pending_action_summaries: list[str] = []
-        for action in pending_actions[:2]:
-            summary = action.get("summary")
-            if summary:
-                pending_action_summaries.append(summary)
 
         ordered_state = data.get("orderedPlanState") or {}
         ordered_summary = ordered_state.get("summary") or {}
@@ -95,10 +88,10 @@ class PlanningSummary:
             phase=data.get("phase") or "",
             version=data.get("version") or 0,
             candidate_target_total=((data.get("candidatePoolState") or {}).get("requiredCount") or 0),
-            draft_total=working_plan_summary.get("unitTotal")
+            working_total=working_plan_summary.get("unitTotal")
             or working_plan_summary.get("total")
             or 0,
-            draft_target_total=working_plan_summary.get("targetUnitCount")
+            working_target_total=working_plan_summary.get("targetUnitCount")
             or working_plan_summary.get("targetCount")
             or ((data.get("candidatePoolState") or {}).get("requiredCount") or 0),
             ordered_total=((data.get("orderedPlanState") or {}).get("summary") or {}).get("unitTotal")
@@ -110,14 +103,22 @@ class PlanningSummary:
             review_warn_count=((review_state.get("summary") or {}).get("warnCount") or 0),
             review_risk_count=((review_state.get("summary") or {}).get("riskCount") or 0),
             risk_summaries=risk_summaries,
-            pending_action_count=len(pending_actions),
-            pending_action_summaries=pending_action_summaries,
             tier_counts=tier_counts,
             sample_schools=seen_schools,
             positive_regions=positive_regions[:5],
             positive_majors=positive_majors[:5],
             constraint_state=data.get("constraintState") or {},
         )
+
+    def __post_init__(self) -> None:
+        if self.working_total <= 0 and self.draft_total > 0:
+            self.working_total = self.draft_total
+        elif self.draft_total <= 0 and self.working_total > 0:
+            self.draft_total = self.working_total
+        if self.working_target_total <= 0 and self.draft_target_total > 0:
+            self.working_target_total = self.draft_target_total
+        elif self.draft_target_total <= 0 and self.working_target_total > 0:
+            self.draft_target_total = self.working_target_total
 
 
 @dataclass
@@ -131,8 +132,6 @@ class RequestContext:
     score_detail: ScoreDetail | None = None  # 学生高考成绩详情
     init_profile: UserProfile | None = None  # flowconfig 预填的意向数据
     planning_summary: PlanningSummary | None = None  # planningState 轻量摘要
-    pending_plan_action: dict | None = None  # 上一轮待确认的 Plan 动作摘要与 apply payload (deprecated, 用 conversation_phase.pending)
-    pending_intent_change: bool = False  # 当前轮开始前是否已有待确认的 Intent 变更 (deprecated, 用 conversation_phase.pending)
     conversation_phase: ConversationPhase | None = None  # Phase 3 新增：统一对话阶段状态
     progress_callback: Callable[[str], Awaitable[None]] | None = None
     allow_explore_inner_llm: bool = True  # 正式聊天主链路可关闭 Explore 工具内二次生成，由主模型统一组织最终回复
@@ -146,34 +145,10 @@ class RequestContext:
 
 
 def resolve_pending_confirmation(deps: Any) -> "PendingConfirmation | None":
-    """Resolve the active pending confirmation from unified state first.
-
-    ``conversation_phase.pending`` is built from backend ``pendingConfirmation``
-    for new sessions. Legacy ``pending_plan_action`` / ``pending_intent_change``
-    only serve as compatibility fallbacks for older call sites that have not
-    injected a phase object yet.
-    """
+    """Resolve the active pending confirmation from unified state."""
     phase = getattr(deps, "conversation_phase", None)
     if phase is not None:
         return getattr(phase, "pending", None)
-
-    pending_plan_action = getattr(deps, "pending_plan_action", None)
-    if isinstance(pending_plan_action, dict) and pending_plan_action:
-        from app.models.conversation_phase import PendingConfirmation
-
-        legacy_pending = PendingConfirmation.from_legacy_plan_action(pending_plan_action)
-        if legacy_pending is not None:
-            return legacy_pending
-
-    if bool(getattr(deps, "pending_intent_change", False)):
-        from app.models.conversation_phase import PendingConfirmation
-
-        return PendingConfirmation(
-            kind="intent_change",
-            action_family="set_preference",
-            preview_summary="（从旧格式恢复的意向变更）",
-        )
-
     return None
 
 
@@ -190,21 +165,6 @@ def resolve_pending_plan_payload_text(deps: Any) -> str:
                 return json.dumps(payload, ensure_ascii=False)
         return ""
 
-    pending = resolve_pending_confirmation(deps)
-    if pending is not None and pending.kind == "plan_mutation":
-        payload = pending.execution_payload
-        if isinstance(payload, str):
-            return payload
-        if isinstance(payload, dict):
-            return json.dumps(payload, ensure_ascii=False)
-
-    pending_plan_action = getattr(deps, "pending_plan_action", None)
-    if isinstance(pending_plan_action, dict):
-        raw_payload = pending_plan_action.get("plan_payload")
-        if isinstance(raw_payload, str):
-            return raw_payload
-        if isinstance(raw_payload, dict):
-            return json.dumps(raw_payload, ensure_ascii=False)
     return ""
 
 
@@ -218,4 +178,4 @@ def has_pending_intent_confirmation(deps: Any) -> bool:
     pending = resolve_pending_confirmation(deps)
     if pending is not None:
         return pending.kind == "intent_change"
-    return bool(getattr(deps, "pending_intent_change", False))
+    return False

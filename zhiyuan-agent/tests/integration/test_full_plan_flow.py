@@ -75,8 +75,6 @@ def _make_run_context(
     volunteer_model: str = "major",
     planning_phase: str = "",
     ordered_total: int = 0,
-    pending_plan_action: dict | None = None,
-    pending_intent_change: bool = False,
     chat_history: list[dict] | None = None,
     conversation_phase: ConversationPhase | None = None,
 ) -> SimpleNamespace:
@@ -84,10 +82,8 @@ def _make_run_context(
         volunteer_model=volunteer_model,
         planning_phase=planning_phase,
         planning_ordered_total=ordered_total,
-        pending_plan_action=pending_plan_action,
-        pending_intent_change=pending_intent_change,
+        conversation_phase=conversation_phase,
     )
-    ctx.conversation_phase = conversation_phase
     ctx.chat_history = chat_history or []
     return SimpleNamespace(deps=ctx)
 
@@ -566,16 +562,21 @@ class TestInstructionsIntegration:
     """验证 Instructions assembler 正确集成 pending 信息。"""
 
     def test_instructions_include_pending_info(self, volunteer_model):
-        """pending_plan_action 信息出现在指令中。"""
+        """conversation_phase.pending 信息出现在指令中。"""
+        phase = ConversationPhase(
+            state=PhaseState.PLAN_PREVIEWING,
+            pending=PendingConfirmation(
+                kind="plan_mutation",
+                action_family="remove_units",
+                preview_summary="将移除5个高收费志愿",
+                execution_payload={"action_family": "remove_units", "stage": "apply"},
+            ),
+        )
         ctx = _make_run_context(
             volunteer_model=volunteer_model,
             planning_phase="ordered",
             ordered_total=30,
-            pending_plan_action={
-                "action_family": "remove_units",
-                "summary": "将移除5个高收费志愿",
-                "plan_payload": '{"action_family":"remove_units","stage":"apply"}',
-            },
+            conversation_phase=phase,
             chat_history=[{"role": "user", "content": "好的"}],
         )
         instructions = build_instructions(ctx)
@@ -615,70 +616,7 @@ class TestInstructionsIntegration:
 
 
 # ---------------------------------------------------------------------------
-# 场景 8: Legacy 兼容
-# ---------------------------------------------------------------------------
-
-
-class TestLegacyCompat:
-    """旧格式到新格式的兼容转换。"""
-
-    def test_legacy_pending_plan_action_converts(self, volunteer_model):
-        """旧 pending_plan_action dict 可转为 PendingConfirmation。"""
-        legacy = {
-            "action_family": "remove_units",
-            "summary": "将移除3个志愿",
-            "plan_payload": {"action_family": "remove_units", "stage": "apply"},
-            "affected_scope": "涉及3个志愿",
-        }
-        pending = PendingConfirmation.from_legacy_plan_action(legacy)
-        assert pending is not None
-        assert pending.kind == "plan_mutation"
-        assert pending.action_family == "remove_units"
-        assert pending.preview_summary == "将移除3个志愿"
-        assert pending.affected_scope == "涉及3个志愿"
-
-    def test_legacy_context_builds_phase(self, volunteer_model):
-        """从旧 RequestContext 字段推断 ConversationPhase。"""
-        # 有 pending_plan_action
-        phase = ConversationPhase.from_legacy_context(
-            pending_plan_action={"action_family": "add_units", "summary": "添加"},
-        )
-        assert phase.state == PhaseState.PLAN_PREVIEWING
-        assert phase.pending is not None
-        assert phase.pending.action_family == "add_units"
-
-        # 有 pending_intent_change
-        phase2 = ConversationPhase.from_legacy_context(
-            pending_intent_change=True,
-        )
-        assert phase2.state == PhaseState.INTENT_PREVIEWING
-
-        # 仅有 planning_summary
-        phase3 = ConversationPhase.from_legacy_context(
-            planning_summary=make_planning_summary(version=3),
-        )
-        assert phase3.state == PhaseState.PLAN_IDLE
-
-        # 空状态
-        phase4 = ConversationPhase.from_legacy_context()
-        assert phase4.state == PhaseState.EXPLORE
-
-    def test_legacy_to_new_roundtrip(self, volunteer_model):
-        """PendingConfirmation 旧→新→旧 roundtrip。"""
-        original = {
-            "action_family": "generate_plan",
-            "summary": "生成96个志愿的方案",
-            "plan_payload": {"stage": "apply"},
-            "affected_scope": "",
-        }
-        pending = PendingConfirmation.from_legacy_plan_action(original)
-        back = pending.to_legacy_plan_action()
-        assert back["action_family"] == original["action_family"]
-        assert back["summary"] == original["summary"]
-
-
-# ---------------------------------------------------------------------------
-# 场景 9: Handler registry 与 resolver 联动
+# 场景 8: Handler registry 与 resolver 联动
 # ---------------------------------------------------------------------------
 
 

@@ -5,7 +5,7 @@
 - verb → action_family 映射
 - query verb 的 topic 细分
 - review issue override 规则
-- normalization 5 条降级规则
+- structured normalization 规则
 - missing inputs 检测
 - stage 判定
 - confirmation flag
@@ -266,11 +266,11 @@ class TestReviewIssueOverride:
 
 
 # ---------------------------------------------------------------------------
-# Step 3: normalization（5 条降级规则）
+# Step 3: normalization（结构化、非旧补偿旁路）
 # ---------------------------------------------------------------------------
 
 class TestNormalization:
-    """对应旧 _normalize_adjustment_action_family 的 5 条规则。"""
+    """结构化动作归一化。"""
 
     def test_rule1_generate_to_analyze(self, resolver):
         """规则1: generate + 已有方案 + verb 是 analyze → analyze_adjustment。"""
@@ -280,31 +280,31 @@ class TestNormalization:
         result = resolver.resolve(frame, ctx)
         assert result.action_family == "analyze_adjustment"
 
-    def test_rule2_compensation_to_add_units(self, resolver):
-        """规则2: compensation + 方案未满 + 稳/保方向 → add_units。"""
+    def test_compensation_keeps_fix_proposal_when_plan_not_full(self, resolver):
+        """补齐/补稳保持 FixProposal 入口，不在 resolver 里改写成 add_units。"""
         frame = _frame(verb="compensate", tier="保")
         ctx = _ctx(ordered_count=50, target_count=96)
         result = resolver.resolve(frame, ctx)
-        assert result.action_family == "add_units"
-        assert "preview_fix_proposal → add_units" in result.normalization_applied
+        assert result.action_family == "preview_fix_proposal"
+        assert result.normalization_applied == ""
 
-    def test_rule2_no_trigger_when_plan_full(self, resolver):
-        """规则2: 方案已满时不触发。"""
+    def test_compensation_keeps_fix_proposal_when_plan_full(self, resolver):
+        """方案已满也保持 FixProposal 入口，由后端判断替换/候选不足。"""
         frame = _frame(verb="compensate", tier="保")
         ctx = _ctx(ordered_count=96, target_count=96)
         result = resolver.resolve(frame, ctx)
-        # Rule 4 triggers instead
-        assert result.action_family == "analyze_adjustment"
+        assert result.action_family == "preview_fix_proposal"
+        assert result.normalization_applied == ""
 
-    def test_rule2_no_trigger_without_tier(self, resolver):
-        """规则2: 无 tier 时不触发。"""
+    def test_compensation_without_tier_keeps_fix_proposal(self, resolver):
+        """无 tier 时也保持 FixProposal 入口。"""
         frame = _frame(verb="compensate")
         ctx = _ctx(ordered_count=50, target_count=96)
         result = resolver.resolve(frame, ctx)
         assert result.action_family == "preview_fix_proposal"
 
-    def test_rule3_reorder_to_replace(self, resolver):
-        """规则3: regenerate_order + 有 tier + 非明确 reorder → replace_units。"""
+    def test_rule2_reorder_to_replace(self, resolver):
+        """规则2: regenerate_order + 有 tier + 非明确 reorder → replace_units。"""
         # 用 analyze verb 进入，但由于 analyze 直接映射成 analyze_adjustment 不是 regenerate_order
         # 需要直接设置 verb=compensate 或其他方式得到 regenerate_order
         # 实际场景：verb 是某些能产生 regenerate_order 的，但 tier 不为空
@@ -317,16 +317,8 @@ class TestNormalization:
         # verb=reorder 不会触发 rule3（因为条件是 frame.verb != "reorder"）
         assert result.action_family == "regenerate_order"
 
-    def test_rule4_compensation_to_analyze_when_full(self, resolver):
-        """规则4: compensation + 方案已满 → analyze_adjustment。"""
-        frame = _frame(verb="compensate")
-        ctx = _ctx(ordered_count=96, target_count=96)
-        result = resolver.resolve(frame, ctx)
-        assert result.action_family == "analyze_adjustment"
-        assert "preview_fix_proposal → analyze_adjustment" in result.normalization_applied
-
-    def test_rule5_no_trigger_when_explicit_reorder(self, resolver):
-        """规则5: 明确 reorder verb 时不降级。"""
+    def test_rule3_no_trigger_when_explicit_reorder(self, resolver):
+        """规则3: 明确 reorder verb 时不降级。"""
         frame = _frame(verb="reorder")
         ctx = _ctx(ordered_count=50)
         result = resolver.resolve(frame, ctx)
@@ -434,14 +426,13 @@ class TestStageDetermination:
     """stage 决策树。"""
 
     @pytest.mark.parametrize("family", [
-        "query_state", "query_draft", "query_ordered", "query_candidates",
+        "query_state", "query_ordered", "query_candidates",
         "analyze_adjustment", "preview_fix_proposal",
     ])
     def test_readonly_actions_direct_apply(self, resolver, family):
         """只读动作直接 apply。"""
         verb_map = {
             "query_state": ("query", "plan"),
-            "query_draft": ("query", "plan"),
             "query_ordered": ("query", "school"),
             "query_candidates": ("query", "region"),
             "analyze_adjustment": ("analyze", "general"),
@@ -493,14 +484,13 @@ class TestConfirmationFlag:
     """确认标志。"""
 
     @pytest.mark.parametrize("family", [
-        "query_state", "query_draft", "query_ordered", "query_candidates",
+        "query_state", "query_ordered", "query_candidates",
         "analyze_adjustment", "preview_fix_proposal", "review_plan",
     ])
     def test_no_confirmation_for_readonly(self, resolver, family):
         """只读动作不需要确认。"""
         verb_map = {
             "query_state": "query",
-            "query_draft": "query",
             "query_ordered": "query",
             "query_candidates": "query",
             "analyze_adjustment": "analyze",
@@ -805,12 +795,12 @@ class TestEndToEndScenarios:
         assert result.requires_confirmation is False
 
     def test_scenario_add_stable_candidates(self, resolver):
-        """"帮我补几个更稳的" → add_units（via normalization rule 2）。"""
+        """"帮我补几个更稳的" → preview_fix_proposal。"""
         frame = _frame(verb="compensate", tier="保", raw_utterance="帮我补几个更稳的")
         ctx = _ctx(ordered_count=50, target_count=96)
         result = resolver.resolve(frame, ctx)
-        assert result.action_family == "add_units"
-        assert result.normalization_applied == "preview_fix_proposal → add_units"
+        assert result.action_family == "preview_fix_proposal"
+        assert result.normalization_applied == ""
 
     def test_scenario_remove_high_tuition(self, resolver):
         """"把高收费的都去掉" → remove_units (显式删除仍保留)。"""
@@ -845,12 +835,12 @@ class TestEndToEndScenarios:
         assert result.action_family == "analyze_adjustment"
         assert result.stage == "apply"
 
-    def test_scenario_compensation_when_full_redirects(self, resolver):
-        """"补齐方案" + 方案已满 → analyze_adjustment（rule 4）。"""
+    def test_scenario_compensation_when_full_keeps_fix_proposal(self, resolver):
+        """"补齐方案" + 方案已满 → preview_fix_proposal。"""
         frame = _frame(verb="compensate", raw_utterance="补齐方案")
         ctx = _ctx(ordered_count=96, target_count=96)
         result = resolver.resolve(frame, ctx)
-        assert result.action_family == "analyze_adjustment"
+        assert result.action_family == "preview_fix_proposal"
 
     def test_scenario_reorder_explicit(self, resolver):
         """"重新排一下" → regenerate_order。"""

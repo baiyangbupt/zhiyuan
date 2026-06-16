@@ -1238,7 +1238,7 @@
       "prompts": [
         {
           "prompt": "确认",
-          "assertContainsAny": ["没有待确认", "没有上一轮待确认", "没有待执行", "不会改动", "可以继续"],
+          "assertContainsAny": ["没有待确认", "没有上一轮待确认", "没有上一轮正在等待采纳或执行的内容", "没有待执行", "不会改动", "可以继续"],
           "expectedKeyPoints": ["没有待确认", "没有上一轮待确认", "不会改动方案", "下一步"],
           "expectedNoAction": true,
           "assertNoFollowups": true,

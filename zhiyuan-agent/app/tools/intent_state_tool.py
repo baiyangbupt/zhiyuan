@@ -67,7 +67,6 @@ from app.util.code_enrichment import (
     resolve_major_names_async,
 )
 from app.util.internal_client import (
-    get_intent_change_cache,
     get_planning_state,
     mark_planning_intent_change_stale,
     get_message_by_id,
@@ -307,6 +306,12 @@ def _normalize_constraint_type_for_payload(value: str | None, merged: dict[str, 
     return normalized
 
 
+def _coerce_intent_mode_for_constraint_type(intent_mode: str, constraint_intent_type: str) -> str:
+    if constraint_intent_type in {CONSTRAINT_INTENT_ONLY_KEEP, CONSTRAINT_INTENT_MUST_HAVE}:
+        return INTENT_MODE_CONSTRAINT
+    return intent_mode
+
+
 def _constraint_type_from_semantic_decision(
     semantic_decision: IntentSideEffectDecision | None,
     *,
@@ -391,31 +396,6 @@ def _existing_intent_item(content: str, value: dict[str, Any]) -> dict[str, Any]
         "value": value,
         "selected": False,
     }
-
-
-async def _merge_cache_data_with_existing_pending(session_id: str, current_cache: dict[str, Any]) -> dict[str, Any]:
-    existing_merged, _ = await _load_cached_intents(session_id)
-    merged_major = _dedupe_major_intent_payload_across_levels(
-        _merge_intent_payload_dict(existing_merged.get("major_intents"), current_cache.get("major_intents"))
-    )
-    merged_school = _merge_intent_payload_dict(existing_merged.get("school_intents"), current_cache.get("school_intents"))
-    merged_city = _merge_intent_payload_dict(existing_merged.get("city_intents"), current_cache.get("city_intents"))
-    merged_career = _merge_intent_payload_dict(existing_merged.get("career_intents"), current_cache.get("career_intents"))
-    merged_mode = _classify_intent_mode(
-        merged_major,
-        merged_school,
-        merged_city,
-        merged_career,
-        explicit_intent_mode=None,
-    )
-    return _build_cache_data(
-        merged_major,
-        merged_school,
-        merged_city,
-        merged_career,
-        merged_mode,
-        current_cache.get("constraint_intent_type"),
-    )
 
 
 def _merge_list_with_emotion(
@@ -1497,6 +1477,17 @@ def _is_negative_only_preference(
     )
 
 
+def _has_entity_intent_payload(
+    major_intents: dict | None,
+    school_intents: dict | None,
+    city_intents: dict | None,
+    latest_utterance: str,
+) -> bool:
+    if _has_any_intent_payload(major_intents, school_intents, None):
+        return True
+    return bool(city_intents) and contains_concrete_region_mention(latest_utterance)
+
+
 _SOFT_NEGATIVE_PREFERENCE_MARKERS = (
     "不太想",
     "不是很想",
@@ -1607,12 +1598,11 @@ async def _maybe_downgrade_intent_preview_by_semantics(
     intent_mode: str,
     analysis_stage: str,
     confirm_enabled: bool,
-    persist_cache: bool | None,
-) -> tuple[str, bool, bool | None, IntentSideEffectDecision | None]:
+) -> tuple[str, bool, IntentSideEffectDecision | None]:
     if analysis_stage == ANALYSIS_STAGE_INTEREST or not confirm_enabled:
-        return analysis_stage, confirm_enabled, persist_cache, None
+        return analysis_stage, confirm_enabled, None
     if not bool(getattr(ctx.deps, "enable_intent_side_effect_arbitration", False)):
-        return analysis_stage, confirm_enabled, persist_cache, None
+        return analysis_stage, confirm_enabled, None
     try:
         decision = await _classify_intent_side_effect(
             latest_utterance=latest_utterance,
@@ -1628,13 +1618,27 @@ async def _maybe_downgrade_intent_preview_by_semantics(
             getattr(ctx.deps, "sessionid", ""),
             exc_info=True,
         )
-        return analysis_stage, confirm_enabled, persist_cache, None
+        return analysis_stage, confirm_enabled, None
 
     observability = getattr(ctx.deps, "agent_observability", None)
     if isinstance(observability, dict):
         observability["intentSideEffectDecision"] = decision.model_dump()
 
     if decision.decision in {"analysis_only", "mixed_answer_then_ask"} and decision.confidence >= 0.7:
+        if (
+            _has_entity_intent_payload(major_intents, school_intents, city_intents, latest_utterance)
+            and not _latest_utterance_allows_intent_downgrade(latest_utterance)
+        ):
+            if isinstance(observability, dict) and isinstance(observability.get("intentSideEffectDecision"), dict):
+                observability["intentSideEffectDecision"]["honored"] = False
+            logger.info(
+                "Intent side-effect arbitration downgrade ignored for explicit entity intent: session_id=%s decision=%s confidence=%s reason=%s",
+                getattr(ctx.deps, "sessionid", ""),
+                decision.decision,
+                decision.confidence,
+                decision.reason,
+            )
+            return analysis_stage, confirm_enabled, decision
         if decision.decision == "mixed_answer_then_ask":
             logger.info(
                 "Intent preview downgraded to mixed answer by semantic arbitration: session_id=%s decision=%s confidence=%s reason=%s",
@@ -1645,7 +1649,7 @@ async def _maybe_downgrade_intent_preview_by_semantics(
             )
             if isinstance(observability, dict) and isinstance(observability.get("intentSideEffectDecision"), dict):
                 observability["intentSideEffectDecision"]["honored"] = True
-            return ANALYSIS_STAGE_INTEREST, False, False, decision
+            return ANALYSIS_STAGE_INTEREST, False, decision
         if city_intents and not any((major_intents, school_intents, career_intents)) and not contains_concrete_region_mention(latest_utterance):
             logger.info(
                 "Intent preview downgraded to abstract region analysis by semantic arbitration: session_id=%s decision=%s confidence=%s reason=%s",
@@ -1656,7 +1660,7 @@ async def _maybe_downgrade_intent_preview_by_semantics(
             )
             if isinstance(observability, dict) and isinstance(observability.get("intentSideEffectDecision"), dict):
                 observability["intentSideEffectDecision"]["honored"] = True
-            return ANALYSIS_STAGE_INTEREST, False, False, decision
+            return ANALYSIS_STAGE_INTEREST, False, decision
         if not _latest_utterance_allows_intent_downgrade(latest_utterance):
             if isinstance(observability, dict) and isinstance(observability.get("intentSideEffectDecision"), dict):
                 observability["intentSideEffectDecision"]["honored"] = False
@@ -1667,7 +1671,7 @@ async def _maybe_downgrade_intent_preview_by_semantics(
                 decision.confidence,
                 decision.reason,
             )
-            return analysis_stage, confirm_enabled, persist_cache, decision
+            return analysis_stage, confirm_enabled, decision
         logger.info(
             "Intent preview downgraded to interest analysis by semantic arbitration: session_id=%s decision=%s confidence=%s reason=%s",
             getattr(ctx.deps, "sessionid", ""),
@@ -1677,9 +1681,9 @@ async def _maybe_downgrade_intent_preview_by_semantics(
         )
         if isinstance(observability, dict) and isinstance(observability.get("intentSideEffectDecision"), dict):
             observability["intentSideEffectDecision"]["honored"] = True
-        return ANALYSIS_STAGE_INTEREST, False, False, decision
+        return ANALYSIS_STAGE_INTEREST, False, decision
 
-    return analysis_stage, confirm_enabled, persist_cache, decision
+    return analysis_stage, confirm_enabled, decision
 
 
 def _latest_utterance_allows_intent_downgrade(text: str) -> bool:
@@ -1926,6 +1930,28 @@ def _normalize_intent_inputs(
             allowed_keys=_CAREER_POSITIVE_KEYS + _CAREER_NEGATIVE_KEYS,
         ),
     )
+
+
+def _restrict_intents_to_recovery_scope(
+    major_intents: dict | None,
+    school_intents: dict | None,
+    city_intents: dict | None,
+    career_intents: dict | None,
+    *,
+    recovery_scope: str | None,
+) -> tuple[dict | None, dict | None, dict | None, dict | None]:
+    """Keep theme-specific preview tools from carrying unrelated model guesses."""
+
+    normalized_scope = str(recovery_scope or "").strip().lower()
+    if normalized_scope == "major":
+        return major_intents, None, None, None
+    if normalized_scope in {"school", "college"}:
+        return None, school_intents, None, None
+    if normalized_scope in {"region", "city"}:
+        return None, None, city_intents, None
+    if normalized_scope == "career_preference":
+        return None, None, None, career_intents
+    return major_intents, school_intents, city_intents, career_intents
 
 
 def _merge_intents_from_preview_items(items: Any) -> tuple[dict | None, dict | None, dict | None, dict | None]:
@@ -2556,6 +2582,53 @@ def _drop_provinces_implied_by_area_alias(
     return cleaned
 
 
+_REGION_AREA_EXPLICIT_ALIASES: dict[str, tuple[str, ...]] = {
+    "南方": ("南方", "南方地区", "南边"),
+    "北方": ("北方", "北方地区", "北边"),
+    "华东": ("华东", "华东地区", "江浙沪", "长三角", "江浙", "江南"),
+    "华北": ("华北", "华北地区", "京津冀", "北京周边", "环京地区"),
+    "华中": ("华中", "华中地区", "中南"),
+    "华南": ("华南", "华南地区"),
+    "东北": ("东北", "东北地区", "东三省"),
+    "西南": ("西南", "西南地区"),
+    "西北": ("西北", "西北地区"),
+    "东南": ("东南", "东南地区"),
+    "中南": ("中南", "中南地区"),
+    "偏远地区": ("偏远地区", "偏远", "边远地区"),
+    "北上广": ("北上广",),
+    "北上广深": ("北上广深",),
+}
+
+
+def _region_area_explicitly_mentioned(value: str, latest_utterance: str) -> bool:
+    compact_utterance = compact_region_text(latest_utterance)
+    if not compact_utterance:
+        return False
+    compact_value = compact_region_text(value)
+    if compact_value and compact_value in compact_utterance:
+        return True
+    aliases = _REGION_AREA_EXPLICIT_ALIASES.get(str(value or "").strip(), ())
+    return any(compact_region_text(alias) in compact_utterance for alias in aliases if str(alias or "").strip())
+
+
+def _prune_inferred_region_area_values(
+    city_payload: dict[str, Any],
+    *,
+    latest_utterance: str,
+) -> dict[str, Any]:
+    if not city_payload:
+        return city_payload
+    cleaned = {key: list(_as_string_list(value)) for key, value in city_payload.items()}
+    for key in ("area", "negative_area"):
+        values = _as_string_list(cleaned.get(key))
+        kept = [value for value in values if _region_area_explicitly_mentioned(value, latest_utterance)]
+        if kept:
+            cleaned[key] = kept
+        else:
+            cleaned.pop(key, None)
+    return cleaned
+
+
 def _normalize_region_area_values_from_extractor(
     payload: dict[str, Any] | None,
 ) -> dict[str, list[str]]:
@@ -2592,6 +2665,8 @@ def _normalize_region_area_polarity_payloads(
     negative = _normalize_region_area_values_from_extractor(
         {f"negative_{key}" if not str(key).startswith("negative_") else key: value for key, value in negative_payload.items()}
     )
+    positive = _prune_inferred_region_area_values(positive, latest_utterance=latest_utterance)
+    negative = _prune_inferred_region_area_values(negative, latest_utterance=latest_utterance)
     area_payload = {
         "area": positive.get("area", []),
         "negative_area": negative.get("negative_area", []),
@@ -2815,19 +2890,6 @@ async def _mark_intent_change_stale_best_effort(session_id: str, intent_mode: st
         return False
 
 
-async def _load_cached_intents(session_id: str) -> tuple[dict[str, Any], str]:
-    cache_result = await get_intent_change_cache(session_id)
-    cache_data = (cache_result or {}).get("data", {}).get("planEditCache") or {}
-    merged = {
-        "major_intents": cache_data.get("major_intents") or {},
-        "school_intents": cache_data.get("school_intents") or {},
-        "city_intents": cache_data.get("city_intents") or {},
-        "career_intents": cache_data.get("career_intents") or {},
-    }
-    intent_mode = cache_data.get("intent_mode") or INTENT_MODE_PREFERENCE
-    return merged, intent_mode
-
-
 def _constraint_state_preference_payloads(
     merged: dict[str, Any],
 ) -> tuple[dict[str, list[str]] | None, dict[str, list[str]] | None, dict[str, list[str]] | None]:
@@ -3014,7 +3076,12 @@ async def _apply_intents(
         merged=merged,
         intent_mode=intent_mode,
     )
-    await save_intent_change_cache(int(session_id), {})
+    try:
+        session_id_int = int(str(session_id).strip())
+    except (TypeError, ValueError):
+        session_id_int = None
+    if session_id_int is not None:
+        await save_intent_change_cache(session_id_int, {})
 
     if intent_mode == INTENT_MODE_CONSTRAINT:
         stale_mark_success = await _mark_intent_change_stale_best_effort(session_id, intent_mode)
@@ -3074,11 +3141,10 @@ async def analyze_volunteer_intent_change(
     confirm_enabled: bool = True,
     intent_mode: str | None = None,
     constraint_intent_type: str | None = None,
-    persist_cache: bool | None = None,
 ) -> str:
     """Analyze intent changes and return structured facts as JSON.
 
-    This tool only prepares structured analysis data and caches pending intents.
+    This tool only prepares structured analysis data.
     It does not execute profile/planning updates.
     Do not use it for read-only fit questions like "电子信息工程适合我吗" or
     "网络与新媒体适不适合我" unless you are intentionally asking for interest-stage
@@ -3102,14 +3168,19 @@ async def analyze_volunteer_intent_change(
             )
         analysis_stage = ANALYSIS_STAGE_INTEREST
         confirm_enabled = False
-        if persist_cache is None:
-            persist_cache = False
 
     major_intents, school_intents, city_intents, career_intents = _normalize_intent_inputs(
         major_intents,
         school_intents,
         city_intents,
         career_intents,
+    )
+    major_intents, school_intents, city_intents, career_intents = _restrict_intents_to_recovery_scope(
+        major_intents,
+        school_intents,
+        city_intents,
+        career_intents,
+        recovery_scope=recovery_scope,
     )
     major_intents = _refine_major_intents_with_local_latest_utterance(
         major_intents,
@@ -3150,6 +3221,13 @@ async def analyze_volunteer_intent_change(
             school_intents,
             city_intents,
             career_intents,
+        )
+        major_intents, school_intents, city_intents, career_intents = _restrict_intents_to_recovery_scope(
+            major_intents,
+            school_intents,
+            city_intents,
+            career_intents,
+            recovery_scope=recovery_scope,
         )
         major_intents = await _normalize_major_intent_names_for_batch(major_intents, batch)
         major_intents = _refine_major_intents_by_explicit_mentions(
@@ -3194,7 +3272,7 @@ async def analyze_volunteer_intent_change(
         explicit_intent_mode=intent_mode,
         latest_utterance=latest_utterance,
     )
-    analysis_stage, confirm_enabled, persist_cache, semantic_decision = await _maybe_downgrade_intent_preview_by_semantics(
+    analysis_stage, confirm_enabled, semantic_decision = await _maybe_downgrade_intent_preview_by_semantics(
         ctx,
         latest_utterance=latest_utterance,
         major_intents=major_intents,
@@ -3204,7 +3282,6 @@ async def analyze_volunteer_intent_change(
         intent_mode=resolved_intent_mode,
         analysis_stage=analysis_stage,
         confirm_enabled=confirm_enabled,
-        persist_cache=persist_cache,
     )
     if _should_return_abstract_region_interest_payload(
         latest_utterance=latest_utterance,
@@ -3305,35 +3382,23 @@ async def analyze_volunteer_intent_change(
         merged=merged_for_constraint_type,
     )
     if (
-        resolved_intent_mode == INTENT_MODE_CONSTRAINT
-        and resolved_constraint_intent_type == CONSTRAINT_INTENT_DEFAULT
+        resolved_constraint_intent_type == CONSTRAINT_INTENT_DEFAULT
         and semantic_constraint_intent_type != CONSTRAINT_INTENT_DEFAULT
     ):
         resolved_constraint_intent_type = semantic_constraint_intent_type
-
-    cache_data = _build_cache_data(
-        major_intents,
-        school_intents,
-        city_intents,
-        career_intents,
+    resolved_intent_mode = _coerce_intent_mode_for_constraint_type(
         resolved_intent_mode,
         resolved_constraint_intent_type,
     )
+
     status = "existing_only" if not items else "ready"
-    # 3.0.3 后，新待确认意向以 pendingConfirmation 为主状态源。
-    # planEditCache 仅保留为旧会话 adapter，除非调用方显式要求兼容写入。
-    should_persist_cache = bool(persist_cache) and status != "existing_only"
-    if should_persist_cache:
-        cache_data = await _merge_cache_data_with_existing_pending(session_id, cache_data)
-        await save_intent_change_cache(int(session_id), cache_data)
-    else:
-        logger.info(
-            "Skipping intent change cache persistence: session_id=%s analysis_stage=%s status=%s utterance=%s",
-            session_id,
-            analysis_stage,
-            status,
-            latest_utterance,
-        )
+    logger.info(
+        "Skipping legacy intent cache persistence: session_id=%s analysis_stage=%s status=%s utterance=%s",
+        session_id,
+        analysis_stage,
+        status,
+        latest_utterance,
+    )
 
     payload = IntentAnalysisPayload(
         status=status,
@@ -3348,7 +3413,22 @@ async def analyze_volunteer_intent_change(
         impactText=impact_text,
         impactAnalysis=impact_analysis,
     )
-    return serialize_intent_analysis_payload(payload)
+    payload_text = serialize_intent_analysis_payload(payload)
+    if (
+        analysis_stage == ANALYSIS_STAGE_CONFIRMED
+        and status in {"ready", "existing_only"}
+    ):
+        observability = getattr(ctx.deps, "agent_observability", None)
+        if isinstance(observability, dict):
+            try:
+                observability["latestIntentPreviewPayload"] = json.loads(payload_text)
+            except Exception:
+                logger.warning(
+                    "Failed to cache latest intent preview payload: session_id=%s",
+                    session_id,
+                    exc_info=True,
+                )
+    return payload_text
 
 
 async def apply_selected_intents(

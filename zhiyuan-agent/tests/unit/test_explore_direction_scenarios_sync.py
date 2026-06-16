@@ -823,3 +823,20 @@ def test_generic_direction_explore_skips_inner_llm_when_chat_service_disables_it
     assert "泛方向" not in resp
     assert "你的当前选科是物理、化学、生物" in resp
     assert "计算机类" in resp
+
+
+def test_integrated_interest_profile_preserves_open_user_signals_in_tool_reply():
+    text = "我对医学有些排斥，但对航天、能源、心理学都感兴趣，想要工资高一点、和人交流少一点的工作"
+    request_context = _request_context(session_id="406c", text=text)
+    request_context.allow_explore_inner_llm = False
+
+    with (
+        patch("app.tools.explore_direction_tool.get_planning_workspace_state", new=AsyncMock(return_value=_planning_state_with_direction_examples())),
+        patch("app.tools.explore_direction_tool.query_planning_candidate_pool", new=AsyncMock(return_value={"data": {"items": []}})),
+    ):
+        resp = _run(preview_generic_direction_analysis_from_request(request_context))
+
+    assert "医学有些排斥" in resp
+    assert "航天、能源、心理学" in resp
+    assert "工资高一点" in resp
+    assert "交流少一点" in resp

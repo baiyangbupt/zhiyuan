@@ -16,13 +16,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 public class RepairApplyMutationBuilderTest {
 
     @Test
-    void shouldApplyCompensationActionsWithLegacyCandidateResolutionAndBannedSkip() {
+    void shouldApplyWorkingPlanAdditionActionsWithLegacyCandidateResolutionAndBannedSkip() {
         PlanningStateDTO state = new PlanningStateDTO();
         state.getWorkingPlanState().getBannedVolunteerIds().add("unit_b_major_old");
         CompensationActionDTO action = compensationAction("fill_total_count",
                 Lists.newArrayList("unit_a_major_old", "unit_b_major_new"));
 
-        RepairApplyMutationBuilder.MutationResult result = RepairApplyMutationBuilder.applyCompensationActions(
+        RepairApplyMutationBuilder.MutationResult result = RepairApplyMutationBuilder.applyWorkingPlanAdditionActions(
                 state,
                 Lists.newArrayList(
                         candidate("unit_a_major_new", "unit_a", "稳", 70D, 40D),
@@ -33,7 +33,7 @@ public class RepairApplyMutationBuilderTest {
         assertEquals("unit_a_major_new", state.getWorkingPlanState().getItems().get(0).getVolunteerId());
         assertEquals(Lists.newArrayList("unit_a_major_new"), result.getAddedVolunteerIds());
         assertEquals(1, result.getAppliedCompensationActions().size());
-        assertEquals("compensation_apply", state.getOperationLogs().get(0).getType());
+        assertEquals("fix_add_items", state.getOperationLogs().get(0).getType());
     }
 
     @Test
@@ -68,7 +68,7 @@ public class RepairApplyMutationBuilderTest {
         assertEquals(Integer.valueOf(2), state.getWorkingPlanState().getSummary().getTotal());
         assertTrue(state.getWorkingPlanState().getItems().stream().noneMatch(item -> "risk_1".equals(item.getVolunteerId())));
         assertTrue(state.getWorkingPlanState().getItems().stream().anyMatch(item -> "fill_1".equals(item.getVolunteerId())));
-        assertEquals("compensation_apply", state.getOperationLogs().get(0).getType());
+        assertEquals("fix_add_items", state.getOperationLogs().get(0).getType());
         assertEquals("fix_remove_risk_items", state.getOperationLogs().get(1).getType());
     }
 

@@ -129,7 +129,8 @@ check_local_processes() {
 
 check_local_http() {
   http_check "web local" "http://127.0.0.1:${WEB_PORT}${WEB_HEALTH_PATH}"
-  http_check "server local" "http://127.0.0.1:${SERVER_PORT}/gaotu-assistant-bot/base-data/province-city"
+  http_check "server local" "http://127.0.0.1:${SERVER_PORT}/gaotu-assistant-bot/inner/ops/health"
+  http_check "server local data" "http://127.0.0.1:${SERVER_PORT}/gaotu-assistant-bot/base-data/province-city"
   http_check "agent local" "http://127.0.0.1:${AGENT_PORT}/health"
   http_check "rank local" "http://127.0.0.1:${RANK_PORT}/health"
 }
@@ -138,7 +139,8 @@ check_remote_http() {
   local base="${BASE_URL%/}"
   http_check "web remote" "${base}/assistant-pc/customer"
   http_check "web v2 remote" "${base}/assistant-pc/sessionDetailV2"
-  http_check "server remote" "${base}/gaotu-assistant-bot/base-data/province-city"
+  http_check "server remote" "${base}/gaotu-assistant-bot/inner/ops/health"
+  http_check "server remote data" "${base}/gaotu-assistant-bot/base-data/province-city"
   http_check "agent remote" "${base}/gaotu-assistant-agent/health"
   http_check "rank remote" "${base}/gaokao-volunteer-rank/recommend"
 }

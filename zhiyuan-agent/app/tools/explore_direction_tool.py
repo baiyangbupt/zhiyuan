@@ -344,6 +344,8 @@ def _get_direction_analysis_agent() -> Agent[None, str]:
                 "你的任务不是给出确定结论，而是基于提供的学生背景、初始画像、当前方案承接情况、候选机会样本，生成自然、克制、面向用户的分析。"
                 "优先顺序：先看学生本人是否适合/值得重点了解，再看方案承接，最后再提候选机会。"
                 "如果给了学生适配事实，必须优先吸收这些事实，不要把回答退化成学校/专业列表。"
+                "如果当前用户原话同时包含多个兴趣、排斥方向、收入、稳定性、沟通强度或工作方式期待，"
+                "必须在回答中保留这些具体信号，不要压缩成一个笼统方向标签。"
                 "不要把回答写成技术状态说明，不要复述系统字段名，不要输出代码块。"
                 "可以引用给定的学校/专业样本，但不能编造未提供的样本。"
                 "如果信息不足，要明确说明只是初步判断。"
@@ -756,7 +758,7 @@ def _build_request_context_summary(request_context: RequestContext) -> list[str]
     if planning:
         parts.append(
             "当前方案摘要："
-            f"phase={planning.phase or 'unknown'}；ordered_total={planning.ordered_total}；draft_total={planning.draft_total}；"
+            f"phase={planning.phase or 'unknown'}；ordered_total={planning.ordered_total}；working_total={planning.working_total}；"
             f"review_risk={planning.review_risk_count}；review_warn={planning.review_warn_count}"
         )
     return parts
@@ -876,6 +878,8 @@ async def _generate_generic_direction_analysis_content(
         (
             "生成要求："
             "这是泛方向问题，先分析学生本人当前更值得重点看的专业方向，再看当前方案承接，最后再提候选机会。"
+            "当前用户原话是本轮分析事实的一部分；如果里面有多个兴趣、排斥方向、收入期待、沟通强度或工作方式期待，"
+            "输出必须保留这些具体点，不能只概括成“市场化就业”“泛方向”之类的大标签。"
             "不要把回答退化成学校名单或单纯的方案复读。"
             "如果事实不足，要明确这是初步判断。"
             "可以提到 2 到 4 类方向，但不要机械编号，也不要写成长清单。"
@@ -1199,8 +1203,12 @@ async def preview_generic_direction_analysis_from_request(
             "Skip generic direction inner LLM generation: session_id=%s",
             session_id,
         )
+    latest_user_text = _latest_user_text(request_context).strip()
+    intro_lines = ["你这句更像是在问自己现阶段更适合优先看哪类方向，我先按这个思路帮你做个初步判断。"]
+    if latest_user_text:
+        intro_lines.append(f"我会把你刚才提到的这些具体点一起看：{latest_user_text}")
     return _format_text_sections(
-        ("分析结论", ["你这句更像是在问自己现阶段更适合优先看哪类方向，我先按这个思路帮你做个初步判断。"]),
+        ("分析结论", intro_lines),
         ("当前判断", _build_impact_preview_from_analysis(analysis)),
         ("下一步", list(analysis.get("nextActionHints") or [])),
     )

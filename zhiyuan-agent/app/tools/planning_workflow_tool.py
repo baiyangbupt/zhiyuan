@@ -21,7 +21,6 @@ from app.domain.career_slots import CAREER_LABEL_MAP
 from app.tools.explore_direction_tool import _item_matches_direction_slot
 from app.util.planning_state_compat import get_working_plan_items, get_working_plan_state, get_working_plan_summary
 from app.util.internal_client import (
-    analyze_planning_plan_adjustment as _analyze_planning_plan_adjustment_request,
     apply_planning_fix_proposal as _apply_planning_fix_proposal_request,
     ban_working_plan_items as _ban_working_plan_items_request,
     generate_planning_fix_proposals as _generate_planning_fix_proposals_request,
@@ -65,43 +64,6 @@ def _collect_action_summaries(actions: list[dict[str, Any]], limit: int = 3) -> 
         if summary:
             summaries.append(summary)
     return summaries
-
-
-def _sum_volunteer_ids(actions: list[dict[str, Any]]) -> int:
-    total = 0
-    for action in actions:
-        total += len(action.get("volunteerIds") or [])
-    return total
-
-
-def _sum_compensation_fill_count(actions: list[dict[str, Any]]) -> int:
-    total = 0
-    for action in actions:
-        unit_ids = action.get("unitIds") or []
-        if unit_ids:
-            total += len(unit_ids)
-            continue
-        total += len(action.get("volunteerIds") or [])
-    return total
-
-
-def _compensation_action_is_legacy_add(action: dict[str, Any]) -> bool:
-    if not isinstance(action, dict):
-        return False
-    if action.get("removeVolunteerIds") or action.get("removeUnitIds"):
-        return False
-    if action.get("candidateVolunteerIds") or action.get("candidateUnitIds"):
-        return False
-    if action.get("replacementPairs") or action.get("orderedVolunteerIds") or action.get("orderedUnitIds"):
-        return False
-    action_type = str(action.get("actionType") or action.get("type") or "").strip().lower()
-    if action_type and action_type not in {"add", "fill", "fill_total_count", "add_volunteers", "compensation_add"}:
-        return False
-    return bool(action.get("unitIds") or action.get("volunteerIds") or action.get("fillCount"))
-
-
-def _legacy_add_compensation_actions(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [action for action in actions if _compensation_action_is_legacy_add(action)]
 
 
 def _format_tier_counts(tier_counts: dict[str, Any]) -> str:
@@ -829,12 +791,12 @@ def _pick_relation_plan_items(
     planning_state: dict[str, Any] | None,
     *,
     ordered_state: dict[str, Any] | None = None,
-    draft_state: dict[str, Any] | None = None,
+    working_state: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     if ordered_state and ordered_state.get("items"):
         return list(ordered_state.get("items") or [])
-    if draft_state and draft_state.get("items"):
-        return list(draft_state.get("items") or [])
+    if working_state and working_state.get("items"):
+        return list(working_state.get("items") or [])
     return list(
         ((planning_state or {}).get("orderedPlanState") or {}).get("items")
         or get_working_plan_items(planning_state)
@@ -845,12 +807,12 @@ def _pick_relation_plan_summary(
     planning_state: dict[str, Any] | None,
     *,
     ordered_state: dict[str, Any] | None = None,
-    draft_state: dict[str, Any] | None = None,
+    working_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if ordered_state and ordered_state.get("summary"):
         return ordered_state.get("summary") or {}
-    if draft_state and draft_state.get("summary"):
-        return draft_state.get("summary") or {}
+    if working_state and working_state.get("summary"):
+        return working_state.get("summary") or {}
     ordered_summary = ((planning_state or {}).get("orderedPlanState") or {}).get("summary") or {}
     if ordered_summary:
         return ordered_summary
@@ -918,21 +880,19 @@ def _build_review_result_facts(
     planning_state: dict[str, Any] | None = None,
     *,
     ordered_state: dict[str, Any] | None = None,
-    draft_state: dict[str, Any] | None = None,
+    working_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     summary = review_state.get("summary") or {}
     checks = review_state.get("checks") or []
-    compensation_preview = review_state.get("compensationPreview") or {}
-    preview_actions = compensation_preview.get("actions") or []
     plan_items = _pick_relation_plan_items(
         planning_state,
         ordered_state=ordered_state,
-        draft_state=draft_state,
+        working_state=working_state,
     )
     plan_summary = _pick_relation_plan_summary(
         planning_state,
         ordered_state=ordered_state,
-        draft_state=draft_state,
+        working_state=working_state,
     )
     return {
         "risk_count": int(summary.get("riskCount") or 0),
@@ -940,8 +900,6 @@ def _build_review_result_facts(
         "passed_count": int(summary.get("passedCount") or 0),
         "main_problems": _collect_non_passed_summaries(checks),
         "issue_hit_plan_examples": _collect_issue_hit_plan_examples(checks, plan_items),
-        "compensation_action_count": len(preview_actions),
-        "compensation_summaries": _collect_action_summaries(preview_actions),
         "intent_relation": _build_plan_intent_relation_facts(
             planning_state,
             plan_items,
@@ -1026,106 +984,6 @@ def _fix_proposal_facts(proposal_state: dict[str, Any] | None) -> dict[str, Any]
         "blocked_count": status_counts.get("blocked", 0),
     }
 
-
-def _build_compensation_preview_facts(preview: dict[str, Any]) -> dict[str, Any]:
-    actions = preview.get("actions") or []
-    add_actions = _legacy_add_compensation_actions(actions)
-    return {
-        "action_count": len(actions),
-        "action_summaries": _collect_action_summaries(actions),
-        "estimated_fill_count": _sum_compensation_fill_count(actions),
-        "estimated_volunteer_count": _sum_volunteer_ids(actions),
-        "legacy_add_action_count": len(add_actions),
-        "legacy_add_estimated_fill_count": _sum_compensation_fill_count(add_actions),
-    }
-
-
-def _is_plan_adjustment_suggestion_actionable(suggestion: dict[str, Any] | None, suggestion_type: str) -> bool:
-    data = suggestion or {}
-    normalized_type = str(suggestion_type or "").strip()
-    if normalized_type == "add":
-        return bool(data.get("candidateVolunteerIds") or data.get("candidateUnitIds"))
-    if normalized_type == "reorder":
-        return bool(data.get("orderedVolunteerIds") or data.get("orderedUnitIds"))
-    if normalized_type == "replace":
-        return bool(
-            data.get("replacementPairs")
-            or (data.get("removeVolunteerIds") and data.get("candidateVolunteerIds"))
-            or (data.get("removeUnitIds") and data.get("candidateUnitIds"))
-        )
-    if normalized_type == "remove":
-        return bool(data.get("removeVolunteerIds") or data.get("removeUnitIds"))
-    return False
-
-
-def _build_plan_adjustment_facts(
-    adjustment_state: dict[str, Any],
-    planning_state: dict[str, Any] | None = None,
-    *,
-    ordered_state: dict[str, Any] | None = None,
-    draft_state: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    analysis = adjustment_state.get("analysis") or {}
-    suggestions = adjustment_state.get("suggestions") or {}
-    rules = analysis.get("rules") or []
-    hit_rules = [rule for rule in rules if rule.get("hit") is True]
-    add_suggestions = suggestions.get("addSuggestions") or []
-    reorder_suggestions = suggestions.get("reorderSuggestions") or []
-    replace_suggestions = suggestions.get("replaceSuggestions") or []
-    remove_suggestions = suggestions.get("removeSuggestions") or []
-    actionable_counts = {
-        "add": sum(1 for item in add_suggestions if _is_plan_adjustment_suggestion_actionable(item, "add")),
-        "reorder": sum(1 for item in reorder_suggestions if _is_plan_adjustment_suggestion_actionable(item, "reorder")),
-        "replace": sum(1 for item in replace_suggestions if _is_plan_adjustment_suggestion_actionable(item, "replace")),
-        "remove": sum(1 for item in remove_suggestions if _is_plan_adjustment_suggestion_actionable(item, "remove")),
-    }
-    plan_items = _pick_relation_plan_items(
-        planning_state,
-        ordered_state=ordered_state,
-        draft_state=draft_state,
-    )
-    plan_summary = _pick_relation_plan_summary(
-        planning_state,
-        ordered_state=ordered_state,
-        draft_state=draft_state,
-    )
-    review_checks = (((planning_state or {}).get("reviewState") or {}).get("checks") or [])
-    return {
-        "summary_text": analysis.get("summaryText") or "",
-        "hit_rules": [
-            {
-                "summary": rule.get("summary") or rule.get("ruleCode") or "结构问题",
-                "suggestion_types": rule.get("suggestionTypes") or [],
-            }
-            for rule in hit_rules[:5]
-        ],
-        "suggestion_counts": {
-            "add": len(add_suggestions),
-            "reorder": len(reorder_suggestions),
-            "replace": len(replace_suggestions),
-            "remove": len(remove_suggestions),
-        },
-        "actionable_suggestion_counts": actionable_counts,
-        "has_actionable_suggestions": any(actionable_counts.values()),
-        "example_suggestions": [
-            {
-                "title": suggestion.get("title") or "调整建议",
-                "description": suggestion.get("description") or "",
-            }
-            for suggestion in (add_suggestions + reorder_suggestions + replace_suggestions + remove_suggestions)[:5]
-        ],
-        "review_issue_hit_plan_examples": _collect_issue_hit_plan_examples(review_checks, plan_items),
-        "intent_relation": _build_plan_intent_relation_facts(
-            planning_state,
-            plan_items,
-            plan_summary=plan_summary,
-            include_position=True,
-        ),
-        "candidate_supply": _build_candidate_supply_facts(planning_state),
-        "data_freshness": _build_data_freshness_facts(planning_state),
-    }
-
-
 def _flatten_text_values(value: Any) -> list[str]:
     if value is None:
         return []
@@ -1205,26 +1063,28 @@ def _build_data_freshness_facts(planning_state: dict[str, Any] | None) -> dict[s
 def _build_plan_status_overview_facts(
     planning_state: dict[str, Any],
     ordered_state: dict[str, Any] | None = None,
-    draft_state: dict[str, Any] | None = None,
+    working_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     summary = PlanningSummary.from_backend_state(planning_state)
     if summary is None:
         return {}
 
-    active_plan_state = ordered_state or draft_state or {}
+    active_plan_state = ordered_state or working_state or {}
     active_summary = active_plan_state.get("summary") or {}
     active_items = active_plan_state.get("items") or []
     tier_counts = active_summary.get("unitTierCounts") or active_summary.get("tierCounts") or {}
-    current_total = summary.ordered_total if summary.ordered_total > 0 else summary.draft_total
-    target_total = summary.ordered_target_total if summary.ordered_total > 0 else summary.draft_target_total
+    current_total = summary.ordered_total if summary.ordered_total > 0 else summary.working_total
+    target_total = summary.ordered_target_total if summary.ordered_total > 0 else summary.working_target_total
     school_nature_distribution = _build_school_nature_distribution(active_items)
     return {
         "phase": summary.phase,
         "has_ordered_plan": bool(summary.ordered_total > 0),
         "ordered_total": summary.ordered_total,
         "ordered_target_total": summary.ordered_target_total,
-        "draft_total": summary.draft_total,
-        "draft_target_total": summary.draft_target_total,
+        "working_total": summary.working_total,
+        "working_target_total": summary.working_target_total,
+        "draft_total": summary.working_total,
+        "draft_target_total": summary.working_target_total,
         "current_total": current_total,
         "target_total": target_total,
         "count_gap_hint": _build_count_gap_hint(current_total, target_total),
@@ -1239,8 +1099,6 @@ def _build_plan_status_overview_facts(
             _format_plan_item_brief(item, include_position=bool(ordered_state))
             for item in active_items[:5]
         ],
-        "pending_action_count": summary.pending_action_count,
-        "pending_action_summaries": summary.pending_action_summaries,
         "intent_relation": _build_plan_intent_relation_facts(
             planning_state,
             active_items,
@@ -1261,16 +1119,16 @@ async def _load_visible_plan_states(
         return None, None
 
     ordered_state: dict[str, Any] | None = None
-    draft_state: dict[str, Any] | None = None
+    working_state: dict[str, Any] | None = None
     if summary.ordered_total > 0:
         ordered_result = await _get_planning_ordered_plan_request(session_id)
         if ordered_result.get("code") == 0:
             ordered_state = ordered_result.get("data") or {}
-    elif summary.draft_total > 0:
-        draft_result = await _get_working_plan_request(session_id)
-        if draft_result.get("code") == 0:
-            draft_state = draft_result.get("data") or {}
-    return ordered_state, draft_state
+    elif summary.working_total > 0:
+        working_result = await _get_working_plan_request(session_id)
+        if working_result.get("code") == 0:
+            working_state = working_result.get("data") or {}
+    return ordered_state, working_state
 
 
 def _build_plan_intent_relation_lines(
@@ -1393,12 +1251,10 @@ def _format_review_result(
     planning_state: dict[str, Any] | None = None,
     *,
     ordered_state: dict[str, Any] | None = None,
-    draft_state: dict[str, Any] | None = None,
+    working_state: dict[str, Any] | None = None,
 ) -> str:
     summary = review_state.get("summary") or {}
     checks = review_state.get("checks") or []
-    compensation_preview = review_state.get("compensationPreview") or {}
-
     lines = ["已完成当前方案审查。"]
     lines.append(
         f"- 审查结果：风险{summary.get('riskCount') or 0}项，提醒{summary.get('warnCount') or 0}项，通过{summary.get('passedCount') or 0}项"
@@ -1413,22 +1269,16 @@ def _format_review_result(
         _pick_relation_plan_items(
             planning_state,
             ordered_state=ordered_state,
-            draft_state=draft_state,
+            working_state=working_state,
         ),
         plan_summary=_pick_relation_plan_summary(
             planning_state,
             ordered_state=ordered_state,
-            draft_state=draft_state,
+            working_state=working_state,
         ),
         include_position=True,
     )
     lines.extend(relation_lines)
-
-    preview_actions = compensation_preview.get("actions") or []
-    if preview_actions:
-        lines.append(
-            f"- 可参考补齐方向：{len(preview_actions)}项，主要为{'；'.join(_collect_action_summaries(preview_actions))}"
-        )
 
     lines.append("如果你想继续处理，我会优先按后端修复建议给出调整预览，确认前不会改动方案。")
     return "\n".join(lines)
@@ -1624,35 +1474,77 @@ def _format_fix_proposal_preview(proposal_state: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+_FIX_PREVIEW_BOUNDARY_MARKERS = (
+    "这是只读替换预览",
+    "这是只读调整预览",
+    "这是目标调整预览",
+    "当前不会直接修改方案",
+    "当前不会修改方案",
+)
+
+
+def _normalize_fix_apply_user_text(value: str) -> str:
+    normalized = _normalize_fix_proposal_user_line(str(value or "").strip())
+    if not normalized:
+        return ""
+    replacements = (
+        ("已先形成", "本次已找到"),
+        ("可参考替换", "可替换方案"),
+        ("确认后会先处理已能处理的部分，剩余部分需要", "本次已处理能处理的部分；剩余部分还需要"),
+        ("确认后会先处理已能处理的部分", "本次已处理能处理的部分"),
+        ("确认后会按预览调整当前方案", "确认后会按这版预览调整当前方案"),
+        ("已应用处理建议，并刷新当前方案状态", "已完成这次调整并刷新方案状态"),
+        ("处理后仍存在相关风险或审查结果未刷新，需要继续检查", "调整后仍建议再看一次审查结果"),
+        ("审查结果未刷新", "还需要再看一次审查结果"),
+    )
+    for source, target in replacements:
+        normalized = normalized.replace(source, target)
+    normalized = re.sub(r"确认后会[^。；;]*", "", normalized)
+    normalized = re.sub(r"确认后[^。；;]*", "", normalized)
+    normalized = re.sub(r"[；;，, ]+$", "", normalized).strip()
+    return normalized.strip("。；;，, ：:").strip()
+
+
+def _clean_fix_apply_note(text: Any) -> str | None:
+    value = str(text or "").strip()
+    if not value:
+        return None
+    if not any(marker in value for marker in _FIX_PREVIEW_BOUNDARY_MARKERS):
+        return _normalize_fix_apply_user_text(value) or None
+    parts = [part.strip(" ；;。") for part in re.split(r"[；;。]+", value) if part.strip(" ；;。")]
+    kept = [
+        part
+        for part in parts
+        if not any(marker in part for marker in _FIX_PREVIEW_BOUNDARY_MARKERS)
+    ]
+    if not kept:
+        return None
+    return _normalize_fix_apply_user_text("；".join(kept)) or None
+
+
 def _format_fix_proposal_apply_result(result: dict[str, Any]) -> str:
     status = str(result.get("status") or "").strip()
     report = result.get("repairReport") or {}
     if status != "applied":
         message = str(result.get("message") or "").strip()
         return message or "这次处理建议没有执行成功，请重新查看方案审查结果后再试。"
-    strategy = str(report.get("strategy") or "").strip()
-    title = str(report.get("proposalTitle") or "").strip()
-    title = title.replace("修复建议", "处理建议").replace("修复", "处理")
-    summary = str(report.get("proposalSummary") or "").strip()
-    impact = str(report.get("proposalImpact") or "").strip()
-    dry_run_message = str(report.get("dryRunMessage") or "").strip()
-    dry_run_message = (
-        dry_run_message
+    title = _normalize_fix_apply_user_text(
+        str(report.get("proposalTitle") or "").strip()
         .replace("修复建议", "处理建议")
-        .replace("修复方案", "处理方案")
         .replace("修复", "处理")
-        .replace("应用前", "正式处理前")
-    )
+        .replace("调整预览", "")
+        .replace("处理预览", "")
+    ).rstrip("的").strip()
+    summary = _clean_fix_apply_note(report.get("proposalSummary"))
+    impact = _clean_fix_apply_note(report.get("proposalImpact"))
     added = int(report.get("addedVolunteerCount") or 0)
     removed = int(report.get("removedVolunteerCount") or 0)
     post_passed = report.get("postValidationPassed")
-    lines = ["已按处理建议更新方案，并刷新当前方案状态。"]
+    lines = ["已更新方案，并刷新当前方案状态。"]
     if title:
         lines.append(f"- 处理内容：{title}")
     if summary:
         lines.append(f"- 对应问题：{summary}")
-    if strategy:
-        lines.append(f"- 处理方式：{strategy}")
     change_counts = _format_change_count_parts(removed, added)
     if change_counts:
         lines.append(f"- 调整结果：{change_counts}")
@@ -1662,91 +1554,20 @@ def _format_fix_proposal_apply_result(result: dict[str, Any]) -> str:
         lines.append("- 检查结果：这次对应的问题已通过检查。")
     elif post_passed is False:
         lines.append("- 检查结果：还需要继续关注相关风险。")
-    if dry_run_message:
-        lines.append(f"- 处理前预览：{dry_run_message}")
-    messages = [str(item).strip() for item in (report.get("messages") or []) if str(item).strip()]
+    messages = [
+        cleaned
+        for item in (report.get("messages") or [])
+        if (cleaned := _clean_fix_apply_note(item))
+    ]
     if messages:
         lines.append(f"- 说明：{'；'.join(messages[:2])}")
-    warnings = [str(item).strip() for item in (report.get("warnings") or []) if str(item).strip()]
+    warnings = [
+        cleaned
+        for item in (report.get("warnings") or [])
+        if (cleaned := _clean_fix_apply_note(item))
+    ]
     if warnings:
         lines.append(f"- 需注意：{'；'.join(warnings[:2])}")
-    return "\n".join(lines)
-
-
-def _format_plan_adjustment_result(
-    adjustment_state: dict[str, Any],
-    planning_state: dict[str, Any] | None = None,
-    *,
-    ordered_state: dict[str, Any] | None = None,
-    draft_state: dict[str, Any] | None = None,
-) -> str:
-    analysis = adjustment_state.get("analysis") or {}
-    suggestions = adjustment_state.get("suggestions") or {}
-    rules = analysis.get("rules") or []
-    hit_rules = [rule for rule in rules if rule.get("hit") is True]
-
-    add_suggestions = suggestions.get("addSuggestions") or []
-    reorder_suggestions = suggestions.get("reorderSuggestions") or []
-    replace_suggestions = suggestions.get("replaceSuggestions") or []
-    remove_suggestions = suggestions.get("removeSuggestions") or []
-
-    lines = ["我先从当前方案里帮你看了一遍可优化的地方。"]
-    summary_text = analysis.get("summaryText")
-    if summary_text:
-        lines.append(f"- 总体判断：{summary_text}")
-
-    if hit_rules:
-        rule_snippets: list[str] = []
-        for rule in hit_rules[:3]:
-            summary = rule.get("summary") or rule.get("ruleCode") or "结构问题"
-            suggestion_types = rule.get("suggestionTypes") or []
-            if suggestion_types:
-                summary = f"{summary}（建议：{' / '.join(suggestion_types)}）"
-            rule_snippets.append(summary)
-        lines.append(f"- 主要问题：{'；'.join(rule_snippets)}")
-    else:
-        lines.append("- 主要问题：当前没发现需要立刻处理的结构性问题。")
-
-    suggestion_parts: list[str] = []
-    if add_suggestions:
-        suggestion_parts.append(f"补充建议 {len(add_suggestions)} 条")
-    if reorder_suggestions:
-        suggestion_parts.append(f"顺序调整 {len(reorder_suggestions)} 条")
-    if replace_suggestions:
-        suggestion_parts.append(f"替换建议 {len(replace_suggestions)} 条")
-    if remove_suggestions:
-        suggestion_parts.append(f"移除建议 {len(remove_suggestions)} 条")
-    if suggestion_parts:
-        lines.append(f"- 建议概览：{'，'.join(suggestion_parts)}")
-
-    example_suggestions: list[str] = []
-    for suggestion in (add_suggestions + reorder_suggestions + replace_suggestions + remove_suggestions)[:3]:
-        title = suggestion.get("title") or "调整建议"
-        description = suggestion.get("description") or ""
-        example_suggestions.append(f"{title}：{description}" if description else title)
-    if example_suggestions:
-        lines.append(f"- 具体建议：{'；'.join(example_suggestions)}")
-
-    relation_lines = _build_plan_intent_relation_lines(
-        planning_state,
-        _pick_relation_plan_items(
-            planning_state,
-            ordered_state=ordered_state,
-            draft_state=draft_state,
-        ),
-        plan_summary=_pick_relation_plan_summary(
-            planning_state,
-            ordered_state=ordered_state,
-            draft_state=draft_state,
-        ),
-        include_position=True,
-    )
-    lines.extend(relation_lines)
-
-    if suggestion_parts:
-        lines.append("如果你想继续，我可以按某一类建议继续细化，例如只看补哪些更稳、哪些需要调顺序，或者先挑一条建议展开。")
-    else:
-        lines.append("如果你担心某一块，比如保底、梯度或者顺序，我也可以只针对那一部分继续细看。")
     return "\n".join(lines)
 
 
@@ -1754,7 +1575,7 @@ def _format_state_result(
     planning_state: dict[str, Any],
     *,
     ordered_state: dict[str, Any] | None = None,
-    draft_state: dict[str, Any] | None = None,
+    working_state: dict[str, Any] | None = None,
 ) -> str:
     summary = PlanningSummary.from_backend_state(planning_state)
     if summary is None:
@@ -1772,7 +1593,7 @@ def _format_state_result(
     lines = ["当前规划状态概览："]
     lines.append(f"- 当前阶段：{summary.phase}")
     lines.append(f"- 状态版本：{summary.version}")
-    lines.append(f"- 已加入方案数：{_format_total_with_target(summary.draft_total, summary.draft_target_total)}")
+    lines.append(f"- 已加入方案数：{_format_total_with_target(summary.working_total, summary.working_target_total)}")
     lines.append(f"- 当前方案数：{_format_total_with_target(summary.ordered_total, summary.ordered_target_total)}")
     count_gap_hint = _build_count_gap_hint(summary.ordered_total, summary.ordered_target_total)
     if count_gap_hint:
@@ -1780,22 +1601,18 @@ def _format_state_result(
     lines.append(f"- 风险与提醒：风险{summary.review_risk_count}项，提醒{summary.review_warn_count}项")
     if summary.risk_summaries:
         lines.append(f"- 当前主要风险：{'；'.join(summary.risk_summaries)}")
-    if summary.pending_action_count > 0:
-        lines.append(
-            f"- 当前待处理建议：{summary.pending_action_count}项，主要为{'；'.join(summary.pending_action_summaries)}"
-        )
     lines.extend(
         _build_plan_intent_relation_lines(
             planning_state,
             _pick_relation_plan_items(
                 planning_state,
                 ordered_state=ordered_state,
-                draft_state=draft_state,
+                working_state=working_state,
             ),
             plan_summary=_pick_relation_plan_summary(
                 planning_state,
                 ordered_state=ordered_state,
-                draft_state=draft_state,
+                working_state=working_state,
             ),
             include_position=True,
         )
@@ -1803,32 +1620,6 @@ def _format_state_result(
     if stale_parts:
         lines.append(f"- 待刷新状态：{'；'.join(stale_parts)}")
     return "\n".join(lines)
-
-
-def _format_draft_result(draft_state: dict[str, Any]) -> str:
-    summary = draft_state.get("summary") or {}
-    items = draft_state.get("items") or []
-    unit_total = summary.get("unitTotal") or summary.get("total") or 0
-    target_total = summary.get("targetUnitCount") or summary.get("targetCount") or 0
-    tier_counts = summary.get("unitTierCounts") or summary.get("tierCounts") or {}
-    lines = ["已加入方案概况："]
-    lines.append(f"- 已加入方案数：{_format_total_with_target(unit_total, target_total)}")
-    lines.append(f"- 区间分布：{_format_tier_counts(tier_counts)}")
-    count_gap_hint = _build_count_gap_hint(unit_total, target_total)
-    if count_gap_hint:
-        lines.append(f"- 数量检查：{count_gap_hint}")
-    lines.append(f"- 已禁用志愿数：{len(draft_state.get('bannedVolunteerIds') or [])}")
-    item_text = _format_plan_items(items, include_position=False)
-    if item_text:
-        lines.append(f"- 方案示例：{item_text}")
-    return "\n".join(lines)
-
-
-def _format_draft_state_with_prefix(prefix: str, planning_state: dict[str, Any]) -> str:
-    draft_state = get_working_plan_state(planning_state)
-    if not draft_state:
-        return prefix
-    return prefix + "\n" + _format_draft_result(draft_state)
 
 
 def _format_ordered_result(ordered_state: dict[str, Any], planning_state: dict[str, Any] | None = None) -> str:
@@ -1869,7 +1660,7 @@ def _format_ordered_result(ordered_state: dict[str, Any], planning_state: dict[s
 def _format_plan_status_overview(
     planning_state: dict[str, Any],
     ordered_state: dict[str, Any] | None = None,
-    draft_state: dict[str, Any] | None = None,
+    working_state: dict[str, Any] | None = None,
 ) -> str:
     summary = PlanningSummary.from_backend_state(planning_state)
     if summary is None:
@@ -1882,20 +1673,20 @@ def _format_plan_status_overview(
         lines.append(
             f"- 当前已有排序方案：{_format_total_with_target(summary.ordered_total, summary.ordered_target_total)}个志愿"
         )
-    elif summary.draft_total > 0:
+    elif summary.working_total > 0:
         lines.append(
-            f"- 当前已加入方案：{_format_total_with_target(summary.draft_total, summary.draft_target_total)}个志愿，尚未形成最终排序"
+            f"- 当前已加入方案：{_format_total_with_target(summary.working_total, summary.working_target_total)}个志愿，尚未形成最终排序"
         )
     else:
         lines.append("- 当前还没有形成方案")
 
-    active_current_total = summary.ordered_total if summary.ordered_total > 0 else summary.draft_total
-    active_target_total = summary.ordered_target_total if summary.ordered_total > 0 else summary.draft_target_total
+    active_current_total = summary.ordered_total if summary.ordered_total > 0 else summary.working_total
+    active_target_total = summary.ordered_target_total if summary.ordered_total > 0 else summary.working_target_total
     count_gap_hint = _build_count_gap_hint(active_current_total, active_target_total)
     if count_gap_hint:
         lines.append(f"- 数量检查：{count_gap_hint}")
 
-    active_plan_state = ordered_state or draft_state or {}
+    active_plan_state = ordered_state or working_state or {}
     active_summary = active_plan_state.get("summary") or {}
     tier_counts = active_summary.get("unitTierCounts") or active_summary.get("tierCounts") or {}
     if tier_counts:
@@ -1921,11 +1712,6 @@ def _format_plan_status_overview(
     if item_text:
         prefix = "方案前列" if ordered_state else "已加入方案示例"
         lines.append(f"- {prefix}：{item_text}")
-
-    if summary.pending_action_count > 0:
-        lines.append(
-            f"- 当前待处理建议：{summary.pending_action_count}项，主要为{'；'.join(summary.pending_action_summaries)}"
-        )
 
     lines.extend(
         _build_plan_intent_relation_lines(
@@ -1995,11 +1781,11 @@ async def query_planning_state(ctx: RunContext[RequestContext]) -> str:
     planning_state = await _get_planning_state_with_latest_profile(session_id)
     if not planning_state:
         return "获取当前规划状态失败，请稍后重试。"
-    ordered_state, draft_state = await _load_visible_plan_states(session_id, planning_state)
+    ordered_state, working_state = await _load_visible_plan_states(session_id, planning_state)
     return _format_state_result(
         planning_state,
         ordered_state=ordered_state,
-        draft_state=draft_state,
+        working_state=working_state,
     )
 
 
@@ -2015,24 +1801,13 @@ async def query_planning_plan_overview(ctx: RunContext[RequestContext]) -> str:
     if summary is None:
         return "当前还没有读取到明确的方案状态。"
 
-    ordered_state, draft_state = await _load_visible_plan_states(session_id, planning_state)
+    ordered_state, working_state = await _load_visible_plan_states(session_id, planning_state)
 
     return _format_plan_status_overview(
         planning_state,
         ordered_state=ordered_state,
-        draft_state=draft_state,
+        working_state=working_state,
     )
-
-
-async def query_planning_draft(ctx: RunContext[RequestContext]) -> str:
-    """Legacy tool name for querying the current working plan."""
-    session_id = ctx.deps.sessionid
-    logger.info("query_planning_draft called: session_id=%s", session_id)
-
-    result = await _get_working_plan_request(session_id)
-    if result.get("code") != 0:
-        return "获取当前方案失败，请稍后重试。"
-    return _format_draft_result(result.get("data") or {})
 
 
 async def query_planning_candidate_pool(
@@ -2087,34 +1862,6 @@ async def query_planning_candidate_pool(
     return _format_candidate_pool_result(result.get("data") or {})
 
 
-async def select_planning_draft_items(
-    ctx: RunContext[RequestContext],
-    volunteer_ids: list[str],
-    source: str = "user_agent",
-) -> str:
-    """Legacy tool name for adding candidates to the current working plan."""
-    session_id = ctx.deps.sessionid
-    logger.info(
-        "select_planning_draft_items called: session_id=%s volunteer_ids=%s source=%s",
-        session_id,
-        volunteer_ids,
-        source,
-    )
-
-    result = await _select_working_plan_items_request(
-        _DEFAULT_TENANT_ID,
-        session_id,
-        volunteer_ids,
-        source=source,
-    )
-    if result.get("code") != 0:
-        return "加入方案失败，请稍后重试。"
-    return _format_draft_state_with_prefix(
-        f"已加入{len(volunteer_ids)}个志愿到方案。",
-        result.get("data") or {},
-    )
-
-
 async def select_planning_ordered_items(
     ctx: RunContext[RequestContext],
     volunteer_ids: list[str],
@@ -2154,27 +1901,6 @@ async def select_planning_ordered_items(
     return (
         f"已把{len(volunteer_ids)}个志愿加入当前方案，并同步刷新排序结果。\n"
         + _format_ordered_result(ordered_state)
-    )
-
-
-async def remove_planning_draft_items(
-    ctx: RunContext[RequestContext],
-    volunteer_ids: list[str],
-) -> str:
-    """Legacy tool name for removing items from the current working plan."""
-    session_id = ctx.deps.sessionid
-    logger.info(
-        "remove_planning_draft_items called: session_id=%s volunteer_ids=%s",
-        session_id,
-        volunteer_ids,
-    )
-
-    result = await _remove_working_plan_items_request(session_id, volunteer_ids)
-    if result.get("code") != 0:
-        return "移出方案失败，请稍后重试。"
-    return _format_draft_state_with_prefix(
-        f"已从方案移出{len(volunteer_ids)}个志愿。",
-        result.get("data") or {},
     )
 
 
@@ -2286,44 +2012,6 @@ async def remove_planning_ordered_items(
     return "\n".join(lines)
 
 
-async def lock_planning_draft_items(
-    ctx: RunContext[RequestContext],
-    volunteer_ids: list[str],
-    locked: bool = True,
-) -> str:
-    """Legacy tool name: the new workspace no longer exposes user-side locking."""
-    session_id = ctx.deps.sessionid
-    logger.info(
-        "lock_planning_draft_items called: session_id=%s volunteer_ids=%s locked=%s",
-        session_id,
-        volunteer_ids,
-        locked,
-    )
-
-    return "新版工作台暂不提供固定/锁定志愿入口。可以改用移动到指定位置或方案排序。"
-
-
-async def ban_planning_draft_items(
-    ctx: RunContext[RequestContext],
-    volunteer_ids: list[str],
-) -> str:
-    """Legacy tool name for banning candidates and removing them from the working plan."""
-    session_id = ctx.deps.sessionid
-    logger.info(
-        "ban_planning_draft_items called: session_id=%s volunteer_ids=%s",
-        session_id,
-        volunteer_ids,
-    )
-
-    result = await _ban_working_plan_items_request(session_id, volunteer_ids)
-    if result.get("code") != 0:
-        return "禁用候选项失败，请稍后重试。"
-    return _format_draft_state_with_prefix(
-        f"已禁用{len(volunteer_ids)}个候选志愿，并同步更新当前方案。",
-        result.get("data") or {},
-    )
-
-
 async def query_planning_ordered_plan(ctx: RunContext[RequestContext]) -> str:
     """读取当前会话的排序方案摘要。"""
     session_id = ctx.deps.sessionid
@@ -2379,7 +2067,7 @@ async def generate_planning_initial_plan(
     planning = getattr(ctx.deps, "planning_summary", None)
     has_existing_plan = bool(
         planning
-        and ((planning.draft_total or 0) > 0 or (planning.ordered_total or 0) > 0)
+        and ((planning.working_total or 0) > 0 or (planning.ordered_total or 0) > 0)
     )
     logger.info(
         "generate_planning_initial_plan called: session_id=%s confirmed=%s force=%s regroup=%s overwrite=%s existing=%s",
@@ -2459,30 +2147,12 @@ async def run_planning_review(ctx: RunContext[RequestContext]) -> str:
     if result.get("code") != 0:
         return "执行方案审查失败，请稍后重试。"
     planning_state = await _get_planning_state_with_latest_profile(session_id)
-    ordered_state, draft_state = await _load_visible_plan_states(session_id, planning_state)
+    ordered_state, working_state = await _load_visible_plan_states(session_id, planning_state)
     return _format_review_result(
         result.get("data") or {},
         planning_state=planning_state,
         ordered_state=ordered_state,
-        draft_state=draft_state,
-    )
-
-
-async def analyze_planning_plan_adjustment(ctx: RunContext[RequestContext]) -> str:
-    """分析当前方案的可调整建议，但不直接改动方案。"""
-    session_id = ctx.deps.sessionid
-    logger.info("analyze_planning_plan_adjustment called: session_id=%s", session_id)
-
-    result = await _analyze_planning_plan_adjustment_request(_DEFAULT_TENANT_ID, session_id)
-    if result.get("code") != 0:
-        return "分析当前方案的调整建议失败，请稍后重试。"
-    planning_state = await _get_planning_state_with_latest_profile(session_id)
-    ordered_state, draft_state = await _load_visible_plan_states(session_id, planning_state)
-    return _format_plan_adjustment_result(
-        result.get("data") or {},
-        planning_state=planning_state,
-        ordered_state=ordered_state,
-        draft_state=draft_state,
+        working_state=working_state,
     )
 
 
@@ -2504,6 +2174,8 @@ async def apply_planning_fix_proposal(
     user_confirmed: bool = False,
     regenerate_ordered_plan: bool = True,
     rerun_review: bool = True,
+    proposal_source: str = "review_check",
+    user_goal_request: dict[str, Any] | None = None,
 ) -> str:
     """在用户明确确认后应用某个统一修复建议。"""
     session_id = ctx.deps.sessionid
@@ -2526,6 +2198,8 @@ async def apply_planning_fix_proposal(
         source_version_guard=source_version_guard,
         regenerate_ordered_plan=regenerate_ordered_plan,
         rerun_review=rerun_review,
+        proposal_source=proposal_source,
+        user_goal_request=user_goal_request,
     )
     if result.get("code") != 0:
         return str(result.get("msg") or "应用处理建议失败，请重新生成处理建议后再试。")

@@ -1,6 +1,34 @@
 # 下一轮会话接续摘要
 
-更新时间：2026-04-30
+更新时间：2026-06-16
+
+## 2026-06-16 本轮新增收口
+
+- 这轮先处理了两个真实回归里最明确的产品问题：
+  - 地域意向里，用户只明确说“只考虑江苏浙江 / 不想去天津”这类省份条件时，不再把模型抽到的宏观区域（如华东/华北）回填进确认卡片。
+  - 职业方向的确认摘要继续沿结构化值输出，不再退回空泛标题。
+- 代码修复：
+  - `app/tools/intent_state_tool.py`
+    - 新增 `_prune_inferred_region_area_values(...)`
+    - 区域 `area/negative_area` 只在用户原话显式提到华东/华北/南方/北方/东三省/京津冀/长三角等宏观区域时保留
+    - 只说省份时，卡片不再额外带出大区
+  - `app/tools/intent_preview_tool.py`
+    - `preview_current_region_intent_confirmation(...)` 统一先做区域保真归一化，再交给 intent analysis
+  - `tests/unit/test_intent_state_tool.py`
+    - 新增“只考虑江苏浙江”不再抬成“华东”的单测
+  - `tests/unit/test_chat_service_history_persistence.py`
+    - 新增职业方向摘要断言，确认会输出“体制内/考公导向”“不优先发展方向”等结构化结果
+- 这轮验证：
+  - `tests/unit/test_intent_state_tool.py` 相关最小回归：`5 passed`
+  - `tests/unit/test_chat_service_history_persistence.py` 相关最小回归：`2 passed`
+  - `examples/dialog_regression_runner.py --cases examples/dialog_regression_303_dialogue_derived_cases.json --case-name 303-dialogue-region-south-only --case-name 303-dialogue-region-beijing-tianjin-safety --case-name 303-dialogue-career-civil-service-major --case-name 303-dialogue-career-stability-vs-interest --response-timeout 120 --clear-history-per-case --clear-backend-pending-per-case --assert-plan-style`
+    - 4/4 通过
+  - `examples/dialog_regression_runner.py --cases examples/dialog_regression_310_constraint_plan_action_cases.json --case-name 310-constraint-only-keep-major-preview-and-apply --case-name 310-constraint-tuition-budget-preview --response-timeout 120 --clear-history-per-case --clear-backend-pending-per-case --assert-plan-style`
+    - 2/2 通过
+- 真实回归里顺带确认：
+  - `only_keep_constraint` 仍能稳定生成并应用确认卡
+  - `tuition_budget` 仍能稳定生成预算调整预览
+  - 本轮改动没有打散现有 plan / intent 主协议
 
 ## 2026-04-30 换 thread 前最新状态
 
@@ -48,7 +76,7 @@
     - `analyze_adjustment`
     - `regenerate_order`
   - 但 `regenerate_order` 后结构性问题并没有改善，说明“更稳”这类诉求当前仍更接近“替换/补稳”而不是单纯重排
-  - 另一个需要继续盯的点：
+- 另一个需要继续盯的点：
     - `帮我补几个更稳的` 在 `30/30` 满额场景下会先解释“没有名额缺口，需要替换调整”
     - 旧问题是：前一轮实际只做了 `preview_compensation(0项)`，但文字却转成“要不要做替换调整”，服务层仍把旧 `apply_compensation` 留成 pending，下一轮 `确认` 会错误直执行到补齐分支
     - 这轮已修：
@@ -58,6 +86,13 @@
       - `tests/unit/test_chat_service_history_persistence.py`
         - 已新增 `0 项动作 / 预计补入 0 个志愿` 不生成 pending 的测试
         - 已新增空补齐预览不再留下假确认边界的测试
+
+- 2026-06-16 这轮继续收口 intent 确认链路：
+  - 修复 `pendingConfirmationCard` 恢复分支在 intent 场景下把 `reply` 清空的问题，恢复后会补回用户可读的主回复，不再出现“卡片有了但正文空白”。
+  - 修复旧 `planEditCache` 清理对字符串 `session_id` 的 `int(...)` 强转异常，避免 `"toolless-no-plan-only-keep-session"` 这类测试/业务会话触发 warning。
+  - `app/service.py` 新增 `_intent_card_primary_reply_from_card()`，用于从恢复出的卡片 payload 重新生成主回复。
+  - `zhiyuan-agent/tests/unit/test_chat_service_history_persistence.py` 新增字符串会话号跳过旧缓存清理的最小回归断言。
+  - 本次只改“输出和兼容清理”，确认协议、intent 路由和 pending 状态机边界保持不变；后续再扩文案时，仍要保住“卡片主回复必须可读、旧缓存清理不能被字符串 session 卡死”这两个约束。
     - 真实验证：
       - fresh session `82`
         - `帮我补几个更稳的`

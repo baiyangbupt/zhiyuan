@@ -627,7 +627,6 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const workingPlanItems = workingPlanState?.items || [];
   const orderedItems = planningState?.orderedPlanState?.items || [];
   const reviewChecks = planningState?.reviewState?.checks || [];
-  const pendingActions = planningState?.pendingActions || [];
   const reviewCompensationPreview = planningState?.reviewState?.compensationPreview;
   const summary = planningState?.candidatePoolState?.summary;
   const requiredTierCounts = planningState?.candidatePoolState?.requiredTierCounts || {};
@@ -2672,17 +2671,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       check.passed === false &&
       (check.level === 'risk' || check.level === 'warn')
   );
-  const actionableReviewCheckCodes = new Set(
-    actionableReviewChecks.map(check => check.code).filter(Boolean)
-  );
-  const actionablePendingActions = pendingActions.filter(
-    action =>
-      Boolean((action.summary || '').trim() || (action.detail || '').trim()) &&
-      (!action.sourceCheckCode || !actionableReviewCheckCodes.has(action.sourceCheckCode))
-  );
   const isReviewStale = workflowStatus?.reviewStatus === 'stale' || planningState?.staleFlags?.review === true;
-  const hasActionableReviewChecks =
-    !isReviewStale && (actionableReviewChecks.length > 0 || actionablePendingActions.length > 0);
+  const hasActionableReviewChecks = !isReviewStale && actionableReviewChecks.length > 0;
   const getReviewCheckDisplayLabel = (check: PlanningReviewCheck) => {
     switch (check.code) {
       case 'safety_guard':
@@ -3420,11 +3410,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     });
   };
 
-  const renderReviewAlertTooltip = (
-    checks: PlanningReviewCheck[],
-    actions: NonNullable<PlanningStateRes['pendingActions']>
-  ) => {
-    if (!checks.length && !actions.length) {
+  const renderReviewAlertTooltip = (checks: PlanningReviewCheck[]) => {
+    if (!checks.length) {
       return <div className={style.reviewTooltipEmpty}>当前没有需要关注的问题</div>;
     }
     return (
@@ -3434,16 +3421,6 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
             <div className={style.reviewTooltipItemTitle}>{getReviewCheckDisplayLabel(check)}</div>
             <div className={style.reviewTooltipItemDetail}>
               {getReviewTooltipText(check) || '请留意当前方案中的对应问题'}
-            </div>
-          </div>
-        ))}
-        {actions.slice(0, Math.max(0, 8 - checks.length)).map((action, index) => (
-          <div key={`${action.type || action.summary || 'pending'}-${index}`} className={style.reviewTooltipItem}>
-            <div className={style.reviewTooltipItemTitle}>
-              {normalizePlanActionTextForUser(action.summary) || '其他提醒'}
-            </div>
-            <div className={style.reviewTooltipItemDetail}>
-              {normalizePlanActionTextForUser(action.detail) || '可结合当前方案情况继续查看'}
             </div>
           </div>
         ))}
@@ -3751,33 +3728,6 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     );
   };
 
-  const renderPendingReviewActionCard = (
-    action: NonNullable<PlanningStateRes['pendingActions']>[number],
-    index: number
-  ) => {
-    const affectedCount = (action.volunteerIds || []).length;
-    return (
-      <div key={`${action.type || action.summary || 'pending'}-${index}`} className={style.reviewIssueCard}>
-        <div className={style.reviewIssueHeader}>
-          <div className={style.reviewIssueTitleBlock}>
-            <div className={style.reviewIssueTitle}>
-              {normalizePlanActionTextForUser(action.summary) || '其他提醒'}
-            </div>
-            <div className={style.reviewIssueTags}>
-              <Tag color={action.level === 'risk' ? 'red' : 'orange'}>
-                {action.level === 'risk' ? '风险' : '提醒'}
-              </Tag>
-              {affectedCount > 0 ? <Tag bordered={false}>影响 {affectedCount} 项</Tag> : null}
-            </div>
-          </div>
-        </div>
-        {action.detail ? (
-          <div className={style.reviewIssueDetail}>{normalizePlanActionTextForUser(action.detail)}</div>
-        ) : null}
-      </div>
-    );
-  };
-
   const renderUnmatchedProposalIssueCard = (proposals: PlanningFixProposal[]) => {
     const issueKey = '__unmatched_fix_proposals__';
     const proposalsExpanded = expandedReviewIssueKeys.includes(issueKey);
@@ -3847,7 +3797,6 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       });
       return renderReviewIssueCard(check, relatedProposals, index);
     });
-    const pendingActionNodes = actionablePendingActions.map(renderPendingReviewActionCard);
     const unmatchedProposals = proposals.filter(proposal => {
       if (proposal.proposalId) {
         return !matchedProposalIds.has(proposal.proposalId);
@@ -3858,7 +3807,6 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     });
     const hasContent =
       issueNodes.length > 0 ||
-      pendingActionNodes.length > 0 ||
       unmatchedProposals.length > 0 ||
       Boolean(lastRepairReport);
     if (!hasContent) {
@@ -3872,7 +3820,6 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       <div className={style.fixProposalList}>
         {renderRepairReportSummary()}
         {issueNodes}
-        {pendingActionNodes}
         {unmatchedProposals.length > 0 ? renderUnmatchedProposalIssueCard(unmatchedProposals) : null}
       </div>
     );
@@ -5335,7 +5282,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                       {hasActionableReviewChecks ? (
                         <Tooltip
                           placement="bottomRight"
-                          title={renderReviewAlertTooltip(actionableReviewChecks, actionablePendingActions)}
+                          title={renderReviewAlertTooltip(actionableReviewChecks)}
                           overlayClassName={style.reviewTooltipOverlay}
                         >
                           <button

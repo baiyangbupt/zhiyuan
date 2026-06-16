@@ -122,9 +122,40 @@ _REVIEW_ISSUE_RULES: dict[str, ReviewIssueRule] = {
     ),
 }
 
+_REVIEW_ISSUE_STRUCTURED_VALUE_ALIASES: dict[str, str] = {
+    "高收费": "high_tuition",
+    "高学费": "high_tuition",
+    "学费高": "high_tuition",
+    "高收费专业": "high_tuition",
+    "中外合作": "cooperative_program",
+    "中外合作办学": "cooperative_program",
+    "合作办学": "cooperative_program",
+    "国际项目": "cooperative_program",
+    "限报": "admission_limit",
+    "限报条件": "admission_limit",
+    "体检限报": "admission_limit",
+    "特殊招生": "special_enrollment",
+    "特殊类型招生": "special_enrollment",
+}
+
 
 def get_review_issue_rule(code: str | None) -> ReviewIssueRule | None:
     return _REVIEW_ISSUE_RULES.get(str(code or "").strip())
+
+
+def normalize_structured_review_issue_value(value: Any) -> str | None:
+    """Map already-structured scope values to review issue codes.
+
+    This intentionally does not inspect the original user utterance. It is used
+    only after an LLM/tool caller has placed a value into a structured scope
+    field, where certain controlled risk labels are not valid majors/schools.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text in _REVIEW_ISSUE_RULES:
+        return text
+    return _REVIEW_ISSUE_STRUCTURED_VALUE_ALIASES.get(text)
 
 
 def review_issue_label(code: str | None, summary: str | None = None) -> str:

@@ -38,8 +38,13 @@ final class RepairProposalApplyPolicy {
     }
 
     static void validateProposalForApply(FixProposalApplyReq req, FixProposalDTO proposal) {
-        if (!RepairProposalTaxonomy.isReviewCheckSource(proposal.getProposalSource())) {
+        if (!RepairProposalTaxonomy.isReviewCheckSource(proposal.getProposalSource())
+                && !RepairProposalTaxonomy.isUserGoalSource(proposal.getProposalSource())) {
             throw new BusinessException(400, "当前处理建议暂不支持在此入口应用");
+        }
+        if (RepairProposalTaxonomy.isUserGoalSource(proposal.getProposalSource())) {
+            validateUserGoalProposalForApply(req, proposal);
+            return;
         }
         if (RepairProposalTaxonomy.isPreviewOnlyStatus(proposal.getStatus())
                 && !isSupportedStrategy(proposal.getStrategy())) {
@@ -54,6 +59,22 @@ final class RepairProposalApplyPolicy {
         }
         if (!isSupportedStrategy(proposal.getStrategy())) {
             throw new BusinessException(400, "当前修复建议暂不支持自动应用");
+        }
+    }
+
+    private static void validateUserGoalProposalForApply(FixProposalApplyReq req, FixProposalDTO proposal) {
+        if (req == null || req.getUserGoalRequest() == null) {
+            throw new BusinessException(400, "缺少用户目标调整请求");
+        }
+        if (!RepairProposalTaxonomy.isReadyStatus(proposal.getStatus())) {
+            throw new BusinessException(400, "当前调整预览不可应用");
+        }
+        Integer sourceVersionGuard = req.getSourceVersionGuard();
+        if (sourceVersionGuard == null || !sourceVersionGuard.equals(proposal.getSourceVersionGuard())) {
+            throw new BusinessException(409, "调整预览版本已变化，请重新确认");
+        }
+        if (!RepairProposalTaxonomy.isUserGoalApplyableStrategy(proposal.getStrategy())) {
+            throw new BusinessException(400, "当前调整预览暂不支持自动应用");
         }
     }
 

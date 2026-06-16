@@ -52,6 +52,7 @@ final class RepairProposalTaxonomy {
         static final String ONLY_KEEP_SCOPE = "only_keep_scope";
         static final String MUST_INCLUDE_SCOPE = "must_include_scope";
         static final String EXCLUDE_SCOPE = "exclude_scope";
+        static final String TUITION_BUDGET_SCOPE = "tuition_budget_scope";
         static final String NO_OP = "no_op";
         static final String CANNOT_SATISFY = "cannot_satisfy";
 
@@ -90,13 +91,21 @@ final class RepairProposalTaxonomy {
             Strategy.ADJUST_MAJOR_GROUP_INNER_SAFETY
     );
 
+    private static final Set<String> USER_GOAL_APPLYABLE_STRATEGIES = unmodifiableSet(
+            Strategy.ONLY_KEEP_SCOPE,
+            Strategy.MUST_INCLUDE_SCOPE,
+            Strategy.EXCLUDE_SCOPE,
+            Strategy.TUITION_BUDGET_SCOPE
+    );
+
     private static final Set<String> PREVIEW_ONLY_STRATEGIES = unmodifiableSet(
             Strategy.ADD_SAFETY_ITEMS,
             Strategy.REBALANCE_TIER_RATIO,
             Strategy.FILL_PROBABILITY_GAP,
             Strategy.ONLY_KEEP_SCOPE,
             Strategy.MUST_INCLUDE_SCOPE,
-            Strategy.EXCLUDE_SCOPE
+            Strategy.EXCLUDE_SCOPE,
+            Strategy.TUITION_BUDGET_SCOPE
     );
 
     private static final Map<String, String> STRATEGY_ALIASES = buildStrategyAliases();
@@ -169,6 +178,10 @@ final class RepairProposalTaxonomy {
 
     static boolean isApplyableStrategy(String strategy) {
         return APPLYABLE_STRATEGIES.contains(normalizeStrategy(strategy));
+    }
+
+    static boolean isUserGoalApplyableStrategy(String strategy) {
+        return USER_GOAL_APPLYABLE_STRATEGIES.contains(normalizeStrategy(strategy));
     }
 
     static boolean isPreviewOnlyStrategy(String strategy) {
@@ -258,6 +271,7 @@ final class RepairProposalTaxonomy {
         result.put(Strategy.ONLY_KEEP_SCOPE, unmodifiableSet(ActionType.REMOVE_VOLUNTEERS, ActionType.ADD_VOLUNTEERS));
         result.put(Strategy.MUST_INCLUDE_SCOPE, unmodifiableSet(ActionType.ADD_VOLUNTEERS, ActionType.REPLACE_VOLUNTEERS));
         result.put(Strategy.EXCLUDE_SCOPE, unmodifiableSet(ActionType.REMOVE_VOLUNTEERS, ActionType.REPLACE_VOLUNTEERS));
+        result.put(Strategy.TUITION_BUDGET_SCOPE, unmodifiableSet(ActionType.REMOVE_VOLUNTEERS, ActionType.REPLACE_VOLUNTEERS));
         result.put(Strategy.NO_OP, unmodifiableSet(ActionType.NO_OP));
         result.put(Strategy.CANNOT_SATISFY, unmodifiableSet(ActionType.NO_OP));
         return Collections.unmodifiableMap(result);

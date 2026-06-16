@@ -20,6 +20,8 @@
 
 ### Fixed
 
+- 意向确认卡恢复链路补齐主回复：`pendingConfirmationCard` 相关恢复分支不再把回复清空，恢复后的意向卡会补出用户可读的主文本；同时旧 `planEditCache` 清理改为仅在数字会话号上执行，避免字符串 session 触发 `int(...)` 异常。
+- 这次修复只收口输出与兼容清理，不改 intent 路由或确认协议；后续若再扩文本净化词表，仍需保留“卡片主回复必须可读、旧缓存清理不应因字符串 session 报错”的边界。
 - 工具直返策略继续收紧：`reply_strategy=direct_reply` 不再被全局信任，Policy / 适配匹配 / 局部方案查询等只读工具即使返回摘要，也默认交回主模型综合；保留直返的只剩意向确认预览、受控阻断、无变化和方案变更预览等协议级结果，避免工具片段截断多意图问题或把偏好表达误答成命中列表。
 - 方案高副作用 apply 门禁改为只认服务端 pending confirmation 上下文：卡片点击会带 `confirmed_via_card=true`，active pending 短文本兜底会带 `confirmation_entry=short_text`，两者都必须通过 pending 状态和 action family 校验；无 active pending 的自然语言“确认 / 好的 / 执行吧”不会作为执行层放行条件。
 - `query_state` 的院校局部查询重定向不再携带 `direct_reply`，只保留 `local_plan_query` 事实，由主模型结合原问题判断是列表查询、院校取舍还是方案风险解释，避免类似“不太想去江苏”这类表达被局部命中结果截断。

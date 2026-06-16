@@ -9,7 +9,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, ToolCallPart, ToolReturnPart, UserPromptPart
 
-import app.service as service_module
 from app.data.history_store import ChatHistoryStore
 from app.service import ChatService, ChatServiceResponseEnvelope
 
@@ -22,10 +21,6 @@ RELEASE_302_READONLY_REAL_SESSION_CASES_PATH = Path(__file__).resolve().parents[
 RELEASE_310_REVIEW_REPAIR_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_310_review_repair_cases.json"
 RELEASE_310_PRODUCTION_ABSTRACTED_CASES_PATH = Path(__file__).resolve().parents[2] / "examples" / "dialog_regression_310_production_abstracted_cases.json"
 
-# Service no longer imports the legacy planEditCache reader. Keep a test-only
-# placeholder for older scenario patches that assert it is not used.
-if not hasattr(service_module, "get_intent_change_cache"):
-    service_module.get_intent_change_cache = AsyncMock()
 
 
 def _run(coro):
@@ -42,7 +37,9 @@ class _ScenarioAgent:
             {
                 "user_prompt": user_prompt,
                 "message_history_len": len(message_history or []),
-                "pending_plan_action": deps.pending_plan_action if deps else None,
+                "pending_confirmation": (
+                    deps.conversation_phase.pending if deps and deps.conversation_phase else None
+                ),
                 "planning_summary": deps.planning_summary if deps else None,
             }
         )
@@ -80,6 +77,88 @@ def _workspace_targets(reply: ChatServiceResponseEnvelope) -> list[str]:
 
 def _semantic_pending(action: str, confidence: float = 0.95, reason: str = "test"):
     return MagicMock(action=action, confidence=confidence, reason=reason)
+
+
+def _semantic_composite_goal(action: str = "none", confidence: float = 0.2, reason: str = "test"):
+    return MagicMock(
+        action=action,
+        confidence=confidence,
+        reason=reason,
+        scopeType="major",
+        targetValues=[],
+        negativeValues=["会计"],
+        maxTuitionPerYear=None,
+        constraintIntentType="default" if action == "none" else "default",
+    )
+
+
+def _planning_state_response(version: int = 12) -> dict:
+    return {"code": 0, "data": {"version": version}}
+
+
+def _user_goal_fix_proposal_response(
+    *,
+    proposal_id: str,
+    strategy: str,
+    source_version: int,
+    title: str,
+    summary: str,
+    action_summaries: list[str] | None = None,
+) -> dict:
+    return {
+        "code": 0,
+        "data": {
+            "proposalSource": "user_goal",
+            "proposals": [
+                {
+                    "proposalId": proposal_id,
+                    "strategy": strategy,
+                    "sourceVersionGuard": source_version,
+                    "title": title,
+                    "summary": summary,
+                    "actionSummaries": action_summaries or [summary],
+                    "confidence": "high",
+                    "feasibility": "ready",
+                    "requiresConfirmation": True,
+                    "selected": True,
+                }
+            ],
+        },
+    }
+
+
+def _user_goal_fix_proposal_facts_response(
+    *,
+    proposal_id: str,
+    strategy: str,
+    source_version: int,
+    title: str,
+    summary: str,
+) -> dict:
+    return {
+        "code": 0,
+        "data": {
+            "sourceVersionGuard": source_version,
+            "proposalSource": "user_goal",
+            "proposals": [
+                {
+                    "proposalId": proposal_id,
+                    "proposalSource": "user_goal",
+                    "sourceVersion": source_version,
+                    "sourceVersionGuard": source_version,
+                    "strategy": strategy,
+                    "status": "ready",
+                    "title": title,
+                    "summary": summary,
+                    "impact": "确认后会同步调整当前方案。",
+                    "actionSummaries": [summary],
+                    "requiresConfirmation": True,
+                    "actions": [{"actionType": "remove_volunteers", "removeVolunteerIds": ["v-1"]}],
+                    "dryRunResult": {"status": "ready"},
+                }
+            ],
+        },
+    }
 
 
 def _build_service(tmp_path, agent: _ScenarioAgent) -> ChatService:
@@ -824,6 +903,32 @@ def test_mainline_dialog_negative_accounting_then_confirm_plan_adjustment_uses_m
     )
 
     pending_state: dict[str, object] = {"value": None}
+    intent_apply_result = json.dumps(
+        {
+            "action": "apply_selected",
+            "sessionId": "session-mainline-adjust",
+            "intentMode": "constraint",
+            "applied": True,
+            "messageCode": "constraint_applied",
+            "message": "要求已采纳",
+        },
+        ensure_ascii=False,
+    )
+    apply_result = {
+        "code": 0,
+        "data": {
+            "status": "applied",
+            "repairReport": {
+                "strategy": "exclude_scope",
+                "proposalTitle": "排除会计相关志愿",
+                "proposalSummary": "当前方案里会计相关志愿较多，需要先移出。",
+                "dryRunMessage": "移出会计相关志愿。",
+                "removedVolunteerCount": 2,
+                "addedVolunteerCount": 2,
+                "postValidationPassed": True,
+            },
+        },
+    }
 
     async def save_pending_mock(session_id, pending):
         pending_state["value"] = pending
@@ -836,11 +941,20 @@ def test_mainline_dialog_negative_accounting_then_confirm_plan_adjustment_uses_m
         patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})),
         patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})),
         patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})),
-        patch("app.service.get_intent_change_cache", AsyncMock(return_value={"data": {"planEditCache": None}})),
         patch("app.service.save_pending_confirmation", AsyncMock(side_effect=save_pending_mock)),
         patch("app.service.get_pending_confirmation", AsyncMock(side_effect=get_pending_mock)),
+        patch("app.service._apply_selected_intents", AsyncMock(return_value=intent_apply_result)),
+        patch("app.service.get_planning_state", AsyncMock(return_value=_planning_state_response(19))),
         patch("app.service.classify_pending_confirmation_action", AsyncMock(return_value=_semantic_pending("confirm_pending"))),
-        patch("app.service.execute_plan_action", AsyncMock(return_value=execution_result)) as execute_mock,
+        patch("app.service.classify_composite_goal_action", AsyncMock(return_value=_semantic_composite_goal("exclude_scope", confidence=0.95))),
+        patch("app.service.generate_user_goal_planning_fix_proposals", AsyncMock(return_value=_user_goal_fix_proposal_facts_response(
+            proposal_id="ug-negative-accounting",
+            strategy="exclude_scope",
+            source_version=18,
+            title="排除会计相关志愿",
+            summary="当前方案里会计相关志愿较多，需要先移出。",
+        ))) as proposal_mock,
+        patch("app.service.apply_planning_fix_proposal", AsyncMock(return_value=apply_result)) as apply_mock,
     ):
         intent_reply = _run(service.handle_message("session-mainline-adjust", "user-57", "不想学会计"))
         preview_reply = _run(service.handle_message("session-mainline-adjust", "user-57", "那帮我替换掉"))
@@ -852,19 +966,23 @@ def test_mainline_dialog_negative_accounting_then_confirm_plan_adjustment_uses_m
     assert "这轮还没有生成可执行的调整内容" in intent_reply
     assert "待确认排除要求" not in intent_reply
     assert isinstance(preview_reply, ChatServiceResponseEnvelope)
-    assert preview_reply.primary == ""
+    assert "确认前不会改动当前方案" in preview_reply.primary
+    assert "会计" in preview_reply.primary
     pending_cards = [item for item in preview_reply.followups if item.type == "pendingConfirmationCard"]
     assert pending_cards
     pending_card_payload = json.loads(pending_cards[0].content)
     assert "确认前不会改动当前方案" in pending_card_payload["impact"]
     assert "会计" in pending_card_payload["content"]
     assert isinstance(text_confirm_reply, ChatServiceResponseEnvelope)
-    assert text_confirm_reply.primary.startswith("已移出不匹配志愿")
-    assert "跨境电子商务" in text_confirm_reply.primary
-    assert execute_mock.await_count == 1
-    assert _workspace_targets(text_confirm_reply) == ["ordered", "review"]
+    assert "已更新方案，并刷新当前方案状态" in text_confirm_reply.primary
+    assert "会计相关志愿" in text_confirm_reply.primary
+    proposal_mock.assert_awaited()
+    apply_mock.assert_awaited_once()
+    workspace_targets = _workspace_targets(text_confirm_reply)
+    assert "ordered" in workspace_targets
+    assert "review" in workspace_targets
     assert len(agent.calls) == 2
-    assert agent.calls[1]["pending_plan_action"] is None
+    assert agent.calls[1]["pending_confirmation"] is None
 
 
 def test_mainline_dialog_review_result_keeps_informative_summary_and_review_workspace(tmp_path):

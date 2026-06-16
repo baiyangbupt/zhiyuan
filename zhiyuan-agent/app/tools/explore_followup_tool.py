@@ -16,7 +16,6 @@ from app.tools.intent_response_tool import (
 )
 from app.util.code_enrichment import normalize_candidate_filters_async
 from app.util.internal_client import (
-    get_intent_change_cache,
     get_pending_confirmation,
     get_planning_state,
     query_planning_candidate_pool,
@@ -103,9 +102,9 @@ async def _query_candidate_base_total(session_id: str) -> int | None:
 async def _load_cached_intents(session_id: str) -> tuple[dict[str, Any], str]:
     """Load the intent payload for legacy explore follow-up actions.
 
-    Active pendingConfirmation is authoritative. planEditCache is only a
-    fallback for older explore action cards that were created before the unified
-    pending card protocol.
+    Active pendingConfirmation is the only executable source. Older explore
+    action cards without active pending are treated as expired and must be
+    regenerated from a fresh user utterance.
     """
     try:
         pending_result = await get_pending_confirmation(session_id)
@@ -133,16 +132,7 @@ async def _load_cached_intents(session_id: str) -> tuple[dict[str, Any], str]:
     except Exception:
         logger.warning("Load pendingConfirmation intents failed: session_id=%s", session_id, exc_info=True)
 
-    cache_result = await get_intent_change_cache(session_id)
-    cache_data = (cache_result or {}).get("data", {}).get("planEditCache") or {}
-    merged = {
-        "major_intents": cache_data.get("major_intents") or {},
-        "school_intents": cache_data.get("school_intents") or {},
-        "city_intents": cache_data.get("city_intents") or {},
-        "career_intents": cache_data.get("career_intents") or {},
-    }
-    intent_mode = cache_data.get("intent_mode") or "preference"
-    return merged, intent_mode
+    return {}, "preference"
 
 
 def _has_any_intent_payload(

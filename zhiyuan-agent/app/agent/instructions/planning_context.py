@@ -19,8 +19,8 @@ def build_planning_context(deps: RequestContext) -> str:
     # 方案总况
     if planning.ordered_total > 0:
         lines.append(f"用户当前方案已有 {planning.ordered_total} 个志愿（目标 {planning.ordered_target_total} 个）。")
-    elif planning.draft_total > 0:
-        lines.append(f"用户当前已加入方案 {planning.draft_total} 个志愿（目标 {planning.draft_target_total} 个），尚未生成正式顺序。")
+    elif planning.working_total > 0:
+        lines.append(f"用户当前已加入方案 {planning.working_total} 个志愿（目标 {planning.working_target_total} 个），尚未生成正式顺序。")
     else:
         lines.append("用户尚未生成方案。")
 
@@ -50,10 +50,6 @@ def build_planning_context(deps: RequestContext) -> str:
             lines.append(f"主要问题：{'；'.join(planning.risk_summaries[:3])}。")
     elif planning.ordered_total > 0:
         lines.append("审查情况：暂无明显风险。")
-
-    # 待处理建议
-    if planning.pending_action_count > 0 and planning.pending_action_summaries:
-        lines.append(f"待处理建议：{'；'.join(planning.pending_action_summaries[:2])}。")
 
     stale_notice = str(getattr(deps, "stale_pending_notice", "") or "").strip()
     if stale_notice:

@@ -34,6 +34,9 @@ from app.tools.intent_state_tool import (
     ANALYSIS_STAGE_INTEREST,
     INTENT_MODE_PREFERENCE,
     analyze_volunteer_intent_change,
+    _normalize_region_area_values_from_extractor,
+    _drop_provinces_implied_by_area_alias,
+    _prune_inferred_region_area_values,
 )
 from app.tools.major_compare_tool import compare_majors
 
@@ -52,6 +55,31 @@ def _payload_from_model(model_cls: type[BaseModel], value: BaseModel | dict | No
     model = value if isinstance(value, model_cls) else model_cls.model_validate(value)
     payload = model.model_dump()
     normalized = {key: item for key, item in payload.items() if item}
+    return normalized or None
+
+
+def _normalize_city_preview_payload(
+    payload: dict | None,
+    *,
+    latest_utterance: str,
+) -> dict | None:
+    if not isinstance(payload, dict) or not payload:
+        return payload
+    normalized = _normalize_region_area_values_from_extractor(payload)
+    area_payload = {
+        "area": normalized.get("area", []),
+        "negative_area": normalized.get("negative_area", []),
+    }
+    if area_payload["area"] or area_payload["negative_area"]:
+        normalized = _drop_provinces_implied_by_area_alias(
+            normalized,
+            local_area_payload=area_payload,
+            latest_utterance=latest_utterance,
+        )
+    normalized = _prune_inferred_region_area_values(
+        normalized,
+        latest_utterance=latest_utterance,
+    )
     return normalized or None
 
 
@@ -150,7 +178,6 @@ async def analyze_current_interest(
             recovery_scope=recovery_scope,
             confirm_enabled=False,
             intent_mode=intent_mode,
-            persist_cache=False,
         )
     )
 
@@ -369,7 +396,6 @@ async def preview_interest_analysis_from_request(
             analysis_stage=ANALYSIS_STAGE_INTEREST,
             recovery_scope=recovery_scope,
             confirm_enabled=False,
-            persist_cache=False,
         )
     )
 
@@ -392,12 +418,17 @@ async def preview_current_intent_confirmation(
     If you already know the explicit structured intent from the current turn,
     pass it in directly so the tool can skip another extraction round.
     """
+    city_payload = _payload_from_model(CityIntentPreviewInput, city_intents)
+    city_payload = _normalize_city_preview_payload(
+        city_payload,
+        latest_utterance=_latest_user_text(ctx.deps),
+    )
     return _render_structured_preview_tool_payload(
         await analyze_volunteer_intent_change(
             ctx,
             _payload_from_model(MajorIntentPreviewInput, major_intents),
             _payload_from_model(SchoolIntentPreviewInput, school_intents),
-            _payload_from_model(CityIntentPreviewInput, city_intents),
+            city_payload,
             None,
             analysis_stage=ANALYSIS_STAGE_CONFIRMED,
             career_intents=_payload_from_model(CareerIntentPreviewInput, career_intents),

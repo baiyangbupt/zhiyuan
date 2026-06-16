@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from app.agent.context import PlanningSummary, RequestContext, ScoreDetail
+from app.models.conversation_phase import ConversationPhase, PendingConfirmation, PhaseState
 from app.schemas.user_profile import UserProfile
 from app.tools.plan_orchestration_models import (
     PlanActionPlan,
@@ -59,8 +60,8 @@ def make_request_context(
     planning_draft_total: int = 0,
     planning_risk_count: int = 0,
     planning_warn_count: int = 0,
-    pending_plan_action: dict | None = None,
-    pending_intent_change: bool = False,
+    pending_action_family: str | None = None,
+    conversation_phase: ConversationPhase | None = None,
     init_profile: UserProfile | None = None,
     confirmed_via_card: bool = False,
     confirmed_via_pending: bool = False,
@@ -76,6 +77,14 @@ def make_request_context(
             review_risk_count=planning_risk_count,
             review_warn_count=planning_warn_count,
         )
+    if conversation_phase is None and pending_action_family:
+        conversation_phase = ConversationPhase(
+            state=PhaseState.PLAN_PREVIEWING,
+            pending=PendingConfirmation(
+                kind="plan_mutation",
+                action_family=pending_action_family,
+            ),
+        )
     return RequestContext(
         userid=userid,
         sessionid=sessionid,
@@ -84,8 +93,7 @@ def make_request_context(
         score_detail=score,
         init_profile=init_profile,
         planning_summary=planning_summary,
-        pending_plan_action=pending_plan_action,
-        pending_intent_change=pending_intent_change,
+        conversation_phase=conversation_phase,
         confirmed_via_card=confirmed_via_card,
         confirmed_via_pending=confirmed_via_pending,
         confirmation_entry=confirmation_entry,
@@ -240,8 +248,6 @@ def make_planning_summary(
     review_warn_count: int = 0,
     review_risk_count: int = 0,
     risk_summaries: list[str] | None = None,
-    pending_action_count: int = 0,
-    pending_action_summaries: list[str] | None = None,
 ) -> PlanningSummary:
     return PlanningSummary(
         phase=phase,
@@ -254,8 +260,6 @@ def make_planning_summary(
         review_warn_count=review_warn_count,
         review_risk_count=review_risk_count,
         risk_summaries=risk_summaries or [],
-        pending_action_count=pending_action_count,
-        pending_action_summaries=pending_action_summaries or [],
     )
 
 
@@ -323,7 +327,6 @@ def make_planning_state_response(
     risk_count: int = 0,
     warn_count: int = 0,
     checks: list[dict] | None = None,
-    pending_actions: list[dict] | None = None,
 ) -> dict[str, Any]:
     """构造 backend get_planning_state 返回的 data 部分。"""
     working_plan_state = {
@@ -359,5 +362,4 @@ def make_planning_state_response(
             },
             "checks": checks or [],
         },
-        "pendingActions": pending_actions or [],
     }
