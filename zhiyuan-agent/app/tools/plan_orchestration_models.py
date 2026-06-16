@@ -341,11 +341,13 @@ _MUTATING_ACTION_FAMILIES = {
 def normalize_plan_action_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
     normalized = dict(payload or {})
     action_family = str(normalized.get("action_family") or "").strip()
-    current_stage = str(normalized.get("current_stage") or normalized.get("stage") or "").strip()
+    current_stage = str(normalized.get("current_stage") or "").strip()
+    explicit_stage = str(normalized.get("stage") or "").strip()
+    effective_stage = explicit_stage if explicit_stage in {"analyze", "preview", "apply", "review"} else current_stage
     has_user_confirmed = "user_confirmed" in normalized
     user_confirmed = bool(normalized.get("user_confirmed"))
-    if current_stage in {"analyze", "preview", "apply", "review"}:
-        stage = current_stage
+    if effective_stage in {"analyze", "preview", "apply", "review"}:
+        stage = effective_stage
         if (
             stage == "apply"
             and action_family in _MUTATING_ACTION_FAMILIES

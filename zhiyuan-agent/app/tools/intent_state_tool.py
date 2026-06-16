@@ -73,6 +73,7 @@ from app.util.internal_client import (
     query_planning_candidate_pool,
     save_intent_change_cache,
     update_planning_constraint_state,
+    update_planning_physical_constraints,
     update_planning_latent_profile,
     update_message,
 )
@@ -2960,6 +2961,21 @@ def _split_constraint_state_payload_by_polarity(
     return positive, negative
 
 
+def _physical_special_limits_from_payload(payload: dict[str, Any] | None) -> list[str]:
+    if not isinstance(payload, dict):
+        return []
+    physical = payload.get("physical_constraints") or payload.get("physicalConstraints")
+    if not isinstance(physical, dict):
+        return []
+    raw_values = (
+        physical.get("special_limits")
+        if "special_limits" in physical
+        else physical.get("specialLimits")
+    )
+    values = _as_string_list(raw_values)
+    return list(dict.fromkeys(value for value in values if value))
+
+
 async def _sync_constraint_state_best_effort(
     *,
     session_id: str,
@@ -3015,7 +3031,22 @@ async def _sync_constraint_state_best_effort(
                 exc_info=True,
             )
     if not synced_any:
-        return True
+        success = True
+    special_limits = _physical_special_limits_from_payload(merged)
+    if special_limits:
+        try:
+            resp = await update_planning_physical_constraints(
+                session_id,
+                special_limits=special_limits,
+            )
+            success = success and isinstance(resp, dict) and (resp.get("code") in {0, "0"} or resp.get("success") is True)
+        except Exception:
+            success = False
+            logger.warning(
+                "Intent physical constraints sync failed: session_id=%s",
+                session_id,
+                exc_info=True,
+            )
     return success
 
 

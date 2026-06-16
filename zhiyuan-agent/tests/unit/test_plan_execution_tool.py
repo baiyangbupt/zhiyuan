@@ -1195,6 +1195,114 @@ def test_execute_plan_action_repairs_truncated_remove_preview_payload():
     assert "missing_plan_payload" not in data["reply_focus"]
 
 
+def test_execute_plan_action_remove_program_type_scope_preview_and_intent_update():
+    payload = {
+        "stage": "preview",
+        "action_family": "remove_units",
+        "user_goal": "中外合作的都排除掉，当前方案里有的话先移出去",
+        "context_summary": "阶段=ordered；方案=30/30",
+        "missing_inputs": [],
+        "atomic_actions": [
+            {
+                "action_type": "remove_units",
+                "volunteer_ids": [],
+                "filters": {"program_types": ["中外合作办学"], "limit": "5"},
+                "reason": "中外合作的都排除掉，当前方案里有的话先移出去",
+            }
+        ],
+    }
+    ordered_items = [
+        {
+            "position": 1,
+            "volunteerId": "coop-1",
+            "schoolName": "青岛理工大学",
+            "majorName": "建筑学(中外合作办学)",
+            "tier": "冲",
+        },
+        {
+            "position": 2,
+            "volunteerId": "normal-1",
+            "schoolName": "湖南师范大学",
+            "majorName": "汉语言文学",
+            "tier": "稳",
+        },
+    ]
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
+        new=AsyncMock(return_value={"code": 0, "data": {"items": ordered_items}}),
+    ):
+        result = asyncio.run(execute_plan_action(_ctx(), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["result_kind"] == "preview_only"
+    assert "项目类型：中外合作办学" in data["summary"]
+    assert "青岛理工大学 · 建筑学(中外合作办学)" in data["summary"]
+    assert data["facts"]["matched_count"] == 1
+    assert data["facts"]["resolved_apply_payload"]["atomic_actions"][0]["volunteer_ids"] == ["coop-1"]
+    assert data["facts"]["intent_update"]["selected"] == [
+        {"physical_constraints": {"special_limits": ["不接受中外合作办学"]}}
+    ]
+
+
+def test_execute_plan_action_remove_apply_uses_preview_resolved_payload():
+    payload = {
+        "stage": "apply",
+        "action_family": "remove_units",
+        "user_goal": "中外合作的都排除掉，当前方案里有的话先移出去",
+        "context_summary": "阶段=ordered；方案=30/30",
+        "missing_inputs": [],
+        "should_rerun_review": True,
+        "should_refresh_workspace": True,
+        "atomic_actions": [
+            {
+                "action_type": "remove_units",
+                "volunteer_ids": [],
+                "filters": {"program_types": ["中外合作办学"], "limit": "5"},
+                "reason": "中外合作的都排除掉，当前方案里有的话先移出去",
+            }
+        ],
+        "facts": {
+            "resolved_apply_payload": {
+                "atomic_actions": [
+                    {
+                        "action_type": "remove_units",
+                        "volunteer_ids": ["coop-1", "coop-2"],
+                        "filters": {"program_types": ["中外合作办学"], "limit": "5"},
+                        "reason": "中外合作的都排除掉，当前方案里有的话先移出去",
+                    }
+                ]
+            },
+            "intent_update": {
+                "selected": [
+                    {"physical_constraints": {"special_limits": ["不接受中外合作办学"]}}
+                ]
+            },
+        },
+    }
+
+    with patch(
+        "app.handlers.mutation_handlers.remove_planning_ordered_items",
+        new=AsyncMock(return_value="remove ok"),
+    ) as mock_remove, patch(
+        "app.tools.plan_execution_tool.run_planning_review",
+        new=AsyncMock(return_value="review ok"),
+    ) as mock_review:
+        result = asyncio.run(
+            execute_plan_action(
+                _ctx_with_pending("remove_units"),
+                json.dumps(payload, ensure_ascii=False),
+            )
+        )
+
+    data = json.loads(result)
+    assert data["applied"] is True
+    assert data["affected_volunteer_ids"] == ["coop-1", "coop-2"]
+    mock_remove.assert_awaited_once()
+    assert mock_remove.await_args.args[1] == ["coop-1", "coop-2"]
+    assert mock_review.await_count == 1
+
+
 def test_execute_plan_action_rejects_incomplete_replace_preview_payload():
     payload = {
         "stage": "preview",
@@ -1272,6 +1380,50 @@ def test_execute_plan_action_normalizes_simplified_unconfirmed_move_payload_to_p
     assert data["facts"]["resolved_apply_payload"]["atomic_actions"][0]["volunteer_ids"] == ["qdcs-media-20"]
     assert "确认后才会执行" in data["summary"]
     mock_move.assert_not_awaited()
+
+
+def test_execute_plan_action_apply_stage_wins_over_legacy_current_stage_preview():
+    payload = {
+        "stage": "apply",
+        "current_stage": "preview",
+        "action_family": "remove_units",
+        "user_goal": "排除中外合作项目，把当前方案中的中外合作项目移出",
+        "context_summary": "阶段=ordered；方案=94/96",
+        "preview_summary": "",
+        "missing_inputs": [],
+        "should_rerun_review": True,
+        "intent_relation": "support",
+        "atomic_actions": [
+            {
+                "action_type": "remove_units",
+                "volunteer_ids": ["coop-1", "coop-2"],
+                "target_position": None,
+                "filters": {"program_types": ["中外合作办学"], "limit": "5"},
+                "reason": "排除中外合作项目，把当前方案中的中外合作项目移出",
+            }
+        ],
+    }
+
+    with patch(
+        "app.handlers.mutation_handlers.remove_planning_ordered_items",
+        new=AsyncMock(return_value="remove ok"),
+    ) as mock_remove, patch(
+        "app.tools.plan_execution_tool.run_planning_review",
+        new=AsyncMock(return_value="review ok"),
+    ):
+        result = asyncio.run(
+            execute_plan_action(
+                _ctx_with_pending("remove_units"),
+                json.dumps(payload, ensure_ascii=False),
+            )
+        )
+
+    data = json.loads(result)
+    assert data["applied"] is True
+    assert data["stage"] == "apply"
+    assert data["result_kind"] == "mutation_result"
+    mock_remove.assert_awaited_once()
+    assert mock_remove.await_args.args[1] == ["coop-1", "coop-2"]
 
 
 def test_execute_plan_action_simplified_move_payload_still_blocks_ambiguous_ref_before_confirmation():

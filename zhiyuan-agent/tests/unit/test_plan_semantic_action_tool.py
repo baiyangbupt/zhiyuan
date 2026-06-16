@@ -31,3 +31,25 @@ def test_composite_goal_decision_accepts_empty_optional_scope_fields():
     assert normalized.scopeType is None
     assert normalized.maxTuitionPerYear is None
     assert normalized.confidence == 0.35
+
+
+def test_composite_goal_decision_accepts_program_type_scope():
+    raw = json.dumps(
+        {
+            "action": "exclude_scope",
+            "confidence": 0.92,
+            "reason": "用户要求排除招生项目类型",
+            "scopeType": "program_type",
+            "targetValues": [],
+            "negativeValues": ["中外合作办学"],
+            "constraintIntentType": "default",
+        },
+        ensure_ascii=False,
+    )
+
+    decision = parse_extraction_json(raw, CompositeGoalDecision)
+    normalized = _normalize_composite_goal_decision(decision)
+
+    assert normalized.action == "exclude_scope"
+    assert normalized.scopeType == "program_type"
+    assert normalized.negativeValues == ["中外合作办学"]

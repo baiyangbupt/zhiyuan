@@ -22,6 +22,7 @@ import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -934,6 +935,15 @@ final class UserGoalProposalBuilder {
         return defaultList(texts).stream().anyMatch(text -> containsLoose(text, value));
     }
 
+    private static boolean containsAny(String value, String... texts) {
+        for (String text : texts) {
+            if (containsLoose(text, value)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static final class ScopeMatcher {
         private final String entityType;
         private final String value;
@@ -980,6 +990,13 @@ final class UserGoalProposalBuilder {
             if ("school".equals(entityType)) {
                 return containsLoose(item.getSchoolName(), value);
             }
+            if ("program_type".equals(entityType)) {
+                return matchesProgramType(
+                        value,
+                        item.getSchoolName(),
+                        item.getMajorName(),
+                        candidate);
+            }
             return false;
         }
 
@@ -1012,10 +1029,66 @@ final class UserGoalProposalBuilder {
                         || containsAny(candidate.getMajorPlanTags(), value)
                         || containsAny(candidate.getMajorRankTags(), value);
             }
+            if ("program_type".equals(entityType)) {
+                return matchesProgramType(
+                        value,
+                        candidate.getSchoolName(),
+                        candidate.getDisplaySchoolName(),
+                        candidate.getMajorName(),
+                        candidate.getSchoolNature(),
+                        candidate.getSchoolCategory(),
+                        candidate.getSchoolBatch(),
+                        candidate.getReasonCodes(),
+                        candidate.getRiskFlags(),
+                        candidate.getSchoolRankTags(),
+                        candidate.getSchoolBasicTags(),
+                        candidate.getSchoolPopupTags(),
+                        candidate.getMajorPlanTags(),
+                        candidate.getMajorRankTags());
+            }
             return containsLoose(candidate.getMajorName(), value)
                     || containsLoose(candidate.getSchoolName(), value)
                     || containsLoose(candidate.getProvinceName(), value)
                     || containsLoose(candidate.getCityName(), value);
+        }
+
+        private static boolean matchesProgramType(String value, String schoolName, String majorName, CandidateItemDTO candidate) {
+            if (candidate == null) {
+                return containsAny(value, schoolName, majorName);
+            }
+            return matchesProgramType(
+                    value,
+                    schoolName,
+                    candidate.getDisplaySchoolName(),
+                    majorName,
+                    candidate.getSchoolNature(),
+                    candidate.getSchoolCategory(),
+                    candidate.getSchoolBatch(),
+                    candidate.getReasonCodes(),
+                    candidate.getRiskFlags(),
+                    candidate.getSchoolRankTags(),
+                    candidate.getSchoolBasicTags(),
+                    candidate.getSchoolPopupTags(),
+                    candidate.getMajorPlanTags(),
+                    candidate.getMajorRankTags());
+        }
+
+        private static boolean matchesProgramType(String value, Object... fields) {
+            for (Object field : fields) {
+                if (field instanceof String && containsLoose((String) field, value)) {
+                    return true;
+                }
+                if (field instanceof List<?>) {
+                    List<String> values = ((List<?>) field).stream()
+                            .filter(Objects::nonNull)
+                            .map(String::valueOf)
+                            .collect(Collectors.toList());
+                    if (containsAny(values, value)) {
+                        return true;
+                    }
+                }
+            }
+            return false;
         }
 
         private static String normalizeEntityType(String type) {
@@ -1036,6 +1109,11 @@ final class UserGoalProposalBuilder {
             if ("review_issue".equals(text)) {
                 return "risk";
             }
+            if ("project_type".equals(text) || "admission_type".equals(text)
+                    || "enrollment_type".equals(text) || "program".equals(text)
+                    || "project".equals(text)) {
+                return "program_type";
+            }
             return text;
         }
 
@@ -1044,7 +1122,8 @@ final class UserGoalProposalBuilder {
                     || "school".equals(type)
                     || "region".equals(type)
                     || "tag".equals(type)
-                    || "risk".equals(type);
+                    || "risk".equals(type)
+                    || "program_type".equals(type);
         }
 
         private static String firstNonEmpty(String... values) {

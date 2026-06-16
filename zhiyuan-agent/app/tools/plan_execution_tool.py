@@ -226,6 +226,39 @@ def _merge_recent_plan_action_plan_if_compatible(
     return normalize_plan_action_payload(merged)
 
 
+def _merge_resolved_apply_payload_if_available(payload: dict[str, Any]) -> dict[str, Any]:
+    """Use preview-resolved execution targets on the confirmation turn.
+
+    Preview may resolve user-facing refs or structured scopes into stable
+    volunteer/unit ids. Apply must execute those resolved ids instead of
+    reinterpreting the original natural language or broad filter.
+    """
+    if str(payload.get("stage") or "").strip() != "apply":
+        return payload
+    facts = payload.get("facts")
+    if not isinstance(facts, dict):
+        return payload
+    resolved = facts.get("resolved_apply_payload")
+    if not isinstance(resolved, dict) or not resolved:
+        return payload
+
+    merged = copy.deepcopy(payload)
+    for key, value in resolved.items():
+        if key == "facts":
+            continue
+        if key == "action_family":
+            resolved_family = str(value or "").strip()
+            if resolved_family:
+                merged["action_family"] = resolved_family
+            continue
+        if key == "stage":
+            continue
+        if value not in (None, "", [], {}):
+            merged[key] = copy.deepcopy(value)
+    merged["stage"] = "apply"
+    return normalize_plan_action_payload(merged)
+
+
 def _planning_version_from_context(ctx: RunContext[RequestContext]) -> int:
     planning_summary = getattr(ctx.deps, "planning_summary", None)
     try:
@@ -3823,6 +3856,7 @@ async def execute_plan_action(
     try:
         data, repaired_payload = _load_plan_payload(plan_payload)
         data = _merge_recent_plan_action_plan_if_compatible(ctx, data)
+        data = _merge_resolved_apply_payload_if_available(data)
     except Exception:
         fallback = PlanExecutionResult(
             applied=False,

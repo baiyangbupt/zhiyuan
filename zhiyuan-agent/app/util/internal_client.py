@@ -542,6 +542,21 @@ async def update_planning_constraint_state(
     )
 
 
+async def update_planning_physical_constraints(
+    thread_id: Union[str, int],
+    special_limits: Optional[list[str]] = None,
+) -> Dict[str, Any]:
+    """更新 planning 身体/特殊限制状态。"""
+    payload: Dict[str, Any] = {}
+    if special_limits is not None:
+        payload["specialLimits"] = special_limits
+    return await http_client.patch(
+        endpoint=f"/gaotu-assistant-bot/inner/planning/1/session/profile/physical?chatSessionId={thread_id}",
+        json_data=payload,
+        error_msg="更新 planning 特殊限制失败",
+    )
+
+
 async def update_planning_latent_profile(
     thread_id: Union[str, int],
     future_development: Optional[Dict[str, Any]] = None,

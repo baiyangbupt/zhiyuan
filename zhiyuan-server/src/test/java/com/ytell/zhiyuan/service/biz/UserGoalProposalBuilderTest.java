@@ -184,6 +184,33 @@ public class UserGoalProposalBuilderTest {
     }
 
     @Test
+    void shouldBuildExcludePreviewForProgramTypeScope() {
+        PlanningStateDTO state = state(12);
+        CandidateItemDTO coop = candidate("v1", "青岛理工大学", "建筑学(中外合作办学)", "建筑类", 91D);
+        coop.getReasonCodes().add("中外合作办学");
+        CandidateItemDTO normal = candidate("v2", "湖南师范大学", "汉语言文学", "文学", 88D);
+        CandidateItemDTO replacement = candidate("v3", "湘潭大学", "法学", "法学", 86D);
+        state.getCandidatePoolState().getItems().add(coop);
+        state.getCandidatePoolState().getItems().add(normal);
+        state.getCandidatePoolState().getItems().add(replacement);
+        state.getOrderedPlanState().getItems().add(ordered("v1", "青岛理工大学", "建筑学(中外合作办学)", false));
+        state.getOrderedPlanState().getItems().add(ordered("v2", "湖南师范大学", "汉语言文学", false));
+
+        UserGoalFixProposalReq req = req("exclude_scope", 12, negativeScope("program_type", "中外合作办学"));
+        req.setUserOriginalText("中外合作的都排除掉，当前方案里有的话先移出去");
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        assertTrue(proposal.getRequiresConfirmation());
+        assertEquals("exclude_scope", proposal.getStrategy());
+        FixProposalActionDTO action = proposal.getActions().get(0);
+        assertEquals("replace_volunteers", action.getActionType());
+        assertEquals("v1", action.getRemoveVolunteerIds().get(0));
+        assertEquals("v3", action.getCandidateVolunteerIds().get(0));
+    }
+
+    @Test
     void shouldBuildTuitionBudgetReplacementPreviewFromCurrentPlanAndCandidatePool() {
         PlanningStateDTO state = state(12);
         CandidateItemDTO expensive = candidate("v1", "学校A", "金融学", "经济学", 91D);

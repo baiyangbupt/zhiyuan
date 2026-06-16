@@ -3612,6 +3612,61 @@ cd zhiyuan-agent
 
 结果：通过。新增边界确认：模型漏传 `volunteer_ids` 且没有结构化筛选范围时，`plan_next_action` 和 `execute_plan_action` 都会以缺少 `selection_scope` / 缺少候选范围阻断；显式传入 `volunteer_ids` 的候选引用仍可解析为真实候选 ID 并生成确认预览。旧 `handle_planning_request(candidate_select)` 已删除，不再作为兼容验证入口。
 
+项目/招生类型 scope 长期收口：
+
+背景：
+
+- 回归发现“中外合作的都排除掉，当前方案里有的话先移出去”不能继续靠短期别名补丁处理。
+- `中外合作` 在不同语境里可能是“审查里的中外合作提醒”，也可能是用户明确报考条件“不接受中外合作项目”。
+- 如果一律映射到 `review_issue_code="cooperative_program"`，会把长期报考要求和审查修复问题混在一起；如果一律当专业名，又会出现“具体专业：中外合作”。
+
+本轮已按长期结构实现：
+
+- 新增 canonical scope：`program_type`，兼容 `admission_type`、`project_type`、`enrollment_type`、`program`、`project`。
+- `program_type` 表示招生项目或培养项目类型，例如中外合作办学、国际项目、校企合作、单列专业等。
+- 用户表达“不接受/排除/移出中外合作项目”时，上游模型应输出：
+
+```json
+{
+  "plan_goal_type": "exclude_scope",
+  "goal_negative_scopes": [
+    {"entity_type": "program_type", "values": ["中外合作办学"]}
+  ]
+}
+```
+
+- `plan_next_action` 会把该 scope 合并到 `remove_units` 的结构化 filters：`program_types=["中外合作办学"]`。
+- `execute_plan_action` 按结构化项目类型匹配当前方案项，匹配院校名、专业名、专业组/候选标签、风险标记、原因 code 等字段；命中后生成确认预览，确认前不改方案。
+- 确认后除执行当前方案调整外，还会把 `physical_constraints.special_limits=["不接受中外合作办学"]` 写入规划状态，作为后续报考参考。
+- Java `UserGoalProposalBuilder.ScopeMatcher` 同步支持 `program_type`，用户目标型 `FixProposal` 按同一范围匹配当前方案和候选。
+
+审查 issue 边界：
+
+- 只有模型显式输出 `review_issue_code="cooperative_program"`，或上下文明确是“处理审查里的中外合作提醒/风险”时，才走审查问题链路。
+- 没有显式 `review_issue_code` 时，编排层不再从中文片段自动猜 `cooperative_program` / `high_tuition`。
+- 高收费仍按语义区分：有明确预算上限时走 `tuition_budget_scope`；承接审查高收费提醒时走 `review_issue_code="high_tuition"`；普通结构化标签不会被编排层偷换成审查 issue。
+
+本轮新增保护：
+
+- `test_plan_next_action_exclude_program_type_builds_executable_remove_scope`
+- `test_execute_plan_action_remove_program_type_scope_preview_and_intent_update`
+- `test_composite_goal_decision_accepts_program_type_scope`
+- `UserGoalProposalBuilderTest.shouldBuildExcludePreviewForProgramTypeScope`
+- 旧“结构化字段自动归一到审查 issue”的测试已改为防回退测试，确保没有显式 `review_issue_code` 时不会自动偷换语义。
+
+本轮聚焦验证：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest tests/unit/test_plan_orchestration_tool.py tests/unit/test_plan_execution_tool.py tests/unit/test_plan_semantic_action_tool.py -q
+.venv/bin/python -m pytest tests/unit/test_chat_service_history_persistence.py tests/unit/test_intent_state_tool.py tests/unit/test_dialog_regression_runner.py -q
+
+cd ../zhiyuan-server
+mvn -q -Dtest=UserGoalProposalBuilderTest test
+```
+
+结果：Agent 方案编排/执行/semantic 聚焦回归 `195 passed`；服务层和意向/pending 相关回归 `532 passed`；Server `UserGoalProposalBuilderTest` 通过。
+
 初始推荐取舍说明补充回归：
 
 ```bash
@@ -4144,3 +4199,52 @@ AGENT_DIALOG_E2E_METRICS_OUTPUT=/private/tmp/zhiyuan_310_effect_perf_after_guard
 
 - 本轮修复未放宽高副作用动作确认协议，也未新增字符串匹配路由；主要是异常收束、回归脚本口径和结构化输出健壮性。
 - 当前 effect/perf 主回归已可作为 3.1.0 发布前质量基线之一；后续仍需继续跑 `310_review_repair`、`310_constraint_plan_action`、`303_open_quality`、`303_dialogue_derived`、`310_production_abstracted` 等积累场景，确认审查修复、复合方案动作和真实对话派生 case 没有回退。
+
+## 18. 方案动作 pending 来源收口
+
+2026-06-16 回归 `310_constraint_plan_action` 时再次发现“中外合作的都排除掉，当前方案里有的话先移出去”在整组回归中偶发生成泛化确认卡，确认后又回到自然语言/空引用解析，报“没有唯一匹配到这条志愿”。
+
+原因不是 `program_type` scope 本身失效，而是 service 仍保留了旧旁路：`plan_next_action` 返回 `stage=preview` 后，可以直接被 `_extract_plan_confirmation_candidate()` 提取成 `pendingConfirmation`。这会绕过 `execute_plan_action` 的执行层解析，导致 `facts.resolved_apply_payload` 没有写入 pending，后续确认只能拿泛化 payload 重新解析。
+
+本轮收口：
+
+- `plan_next_action` 只保留编排职责：输出 `PlanActionPlan`、结构化 scope、原子动作草案和可行性说明；它不是可确认预览结果。
+- `pendingConfirmation(kind=plan_mutation)` 只能来自 `execute_plan_action` 的执行层 preview 结果，或 Java `FixProposal` pending 桥。
+- 如果 full agent 只调用了 `plan_next_action` 但漏掉 `execute_plan_action`，service 会用同一份结构化计划补跑 `execute_plan_action(stage=preview)`；只有补跑得到 `preview_only` 且可执行范围完整时，才生成确认卡。
+- 结构化删除范围，例如 `filters.program_types=["中外合作办学"]`，必须先由执行层读取当前方案并解析成稳定 `volunteer_ids`，写入 `facts.resolved_apply_payload`；确认 apply 时消费这份稳定 ID，不再按用户自然语言或泛化 summary 重猜范围。
+- `plan_next_action` 的结果仍可作为执行 payload 的补全参考：如果模型把完整结构给了 `plan_next_action`，但传给 `execute_plan_action` 的 payload 较薄，pending 构造会合并完整结构；但 pending 的来源仍是执行层返回。
+- 旧测试里“plan_next_action 单独 preview 也能创建 pending”的预期已删除，改为防回退断言。
+- pending 里保存的是确认态执行 payload，只能以 canonical `stage` 为准；`current_stage/user_confirmed` 这类旧输入兼容字段不能进入 pending apply payload，避免 `current_stage=preview` 在确认 turn 把 `stage=apply` 重新降级成 preview。
+- `handle_pending_confirmation()` 的成功判定必须看执行层 `applied=true`。`preview_only/no_change/error` 都不能把 pending 标成 `applied`，否则会出现“用户看到已确认，但方案没有实际变化”的假成功。
+
+新增/调整保护：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest \
+  tests/unit/test_chat_service_history_persistence.py::test_extract_plan_confirmation_candidate_ignores_plan_next_action_preview_result_without_execute \
+  tests/unit/test_chat_service_history_persistence.py::test_chat_service_completes_plan_next_action_preview_before_pending_card \
+  tests/unit/test_chat_service_history_persistence.py::test_chat_service_applies_completed_plan_next_preview_on_short_text_confirm \
+  tests/unit/test_chat_service_history_persistence.py::test_chat_service_plan_next_structured_remove_scope_pending_uses_execute_resolved_ids \
+  tests/unit/test_chat_service_history_persistence.py::test_chat_service_pending_confirm_preserves_plan_next_sort_field_when_execute_payload_is_thin -q
+
+.venv/bin/python -m pytest tests/unit/test_plan_execution_tool.py -q
+.venv/bin/python -m pytest \
+  tests/unit/test_chat_service_history_persistence.py \
+  tests/unit/test_intent_state_tool.py \
+  tests/unit/test_plan_semantic_action_tool.py \
+  tests/unit/test_plan_orchestration_tool.py \
+  tests/unit/test_plan_execution_tool.py -q
+```
+
+结果：
+
+- focused service tests：`5 passed`。
+- Plan execution tool：`130 passed`。
+- Agent 服务/意向/语义动作/编排/执行组合回归：`681 passed`。
+
+发布约束：
+
+- 后续新增方案动作时，不允许把 `plan_next_action.preview_summary` 直接展示为确认卡内容。
+- 任何高副作用动作都必须先经过执行层解析、版本保护和 pending 确认；执行层不能拿模型自然语言回复作为 apply 范围。
+- 对 “中外合作/高收费/预算/仅保留/必须有/排除” 这类多语境诉求，仍按结构化 goal/scope 或 Java user-goal proposal 处理，不再恢复关键词式快补丁。

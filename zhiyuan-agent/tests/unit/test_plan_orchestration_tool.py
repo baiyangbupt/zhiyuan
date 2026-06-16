@@ -239,6 +239,37 @@ def test_plan_next_action_supports_query_ordered_for_scoped_move_without_positio
     assert data["should_rerun_review"] is False
 
 
+def test_plan_next_action_exclude_program_type_builds_executable_remove_scope():
+    with patch(
+        "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
+        new=AsyncMock(return_value=_context_inputs(summary="阶段=ordered；方案=48/48")),
+    ):
+        result = asyncio.run(
+            plan_next_action(
+                _ctx(),
+                user_goal="中外合作的都排除掉，当前方案里有的话先移出去",
+                action_family="remove_units",
+                current_stage="preview",
+                plan_goal_type="exclude_scope",
+                plan_goal_confidence="high",
+                goal_negative_scopes=[
+                    {"entity_type": "program_type", "values": ["中外合作办学"]}
+                ],
+                user_confirmed=False,
+            )
+        )
+
+    data = json.loads(result)
+    assert data["stage"] == "preview"
+    assert data["action_family"] == "remove_units"
+    assert data["missing_inputs"] == []
+    assert data["requires_confirmation"] is True
+    assert data["atomic_actions"][0]["filters"]["program_types"] == ["中外合作办学"]
+    goal = _proposal_goal(data)
+    assert goal["goal_type"] == "exclude_scope"
+    assert goal["negative_scopes"] == [{"entity_type": "program_type", "values": ["中外合作办学"]}]
+
+
 def test_plan_next_action_requires_add_units_selection_scope_when_no_ids():
     with patch(
         "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
@@ -1401,7 +1432,7 @@ def test_plan_next_action_does_not_recover_cooperative_program_issue_from_goal_t
     assert data["atomic_actions"] == []
 
 
-def test_plan_next_action_normalizes_structured_cooperative_program_scope_to_review_issue():
+def test_plan_next_action_does_not_promote_cooperative_program_text_scope_to_review_issue():
     with patch(
         "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
         new=AsyncMock(
@@ -1438,14 +1469,12 @@ def test_plan_next_action_normalizes_structured_cooperative_program_scope_to_rev
     assert data["action_family"] == "remove_units"
     assert data["stage"] == "preview"
     assert data["requires_confirmation"] is True
-    assert data["atomic_actions"][0]["source_major_names"] == []
-    assert data["atomic_actions"][0]["filters"]["major_tags"] == "[]"
-    assert data["atomic_actions"][0]["review_issue_target"]["code"] == "cooperative_program"
-    assert data["atomic_actions"][0]["review_issue_target"]["scope_mode"] == "full_issue"
-    assert any("不按具体专业或院校名处理" in line for line in data["rationale"])
+    assert data["atomic_actions"][0]["source_major_names"] == ["中外合作"]
+    assert data["atomic_actions"][0].get("review_issue_target") is None
+    assert not any("不按具体专业或院校名处理" in line for line in data["rationale"])
 
 
-def test_plan_next_action_normalizes_structured_high_tuition_scope_to_review_issue():
+def test_plan_next_action_does_not_promote_high_tuition_tag_to_review_issue_without_code():
     with patch(
         "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
         new=AsyncMock(
@@ -1480,8 +1509,48 @@ def test_plan_next_action_normalizes_structured_high_tuition_scope_to_review_iss
     data = json.loads(result)
     assert data["action_family"] == "remove_units"
     assert data["stage"] == "preview"
-    assert data["atomic_actions"][0]["filters"]["major_tags"] == "[]"
-    assert data["atomic_actions"][0]["review_issue_target"]["code"] == "high_tuition"
+    assert data["atomic_actions"][0]["filters"]["major_tags"] == '["高收费"]'
+    assert data["atomic_actions"][0].get("review_issue_target") is None
+
+
+def test_plan_next_action_explicit_review_issue_code_still_uses_review_scope():
+    with patch(
+        "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
+        new=AsyncMock(
+            return_value=_context_inputs(
+                summary="阶段=reviewed；方案=30/30；风险=0；提醒=4",
+                draft_count=30,
+                ordered_count=30,
+                review_issues=[
+                    {
+                        "code": "cooperative_program",
+                        "label": "中外合作",
+                        "scope_kind": "item_replacement",
+                        "default_action_family": "review_plan",
+                        "affected_unit_count": 3,
+                        "affected_volunteer_count": 8,
+                        "scope_fingerprint": "issue-coop-1",
+                    },
+                ],
+            )
+        ),
+    ):
+        result = asyncio.run(
+            plan_next_action(
+                _ctx(),
+                user_goal="处理审查里的中外合作提醒",
+                action_family="remove_units",
+                review_issue_code="cooperative_program",
+                review_issue_scope_mode="full_issue",
+                user_confirmed=False,
+            )
+        )
+
+    data = json.loads(result)
+    assert data["action_family"] == "remove_units"
+    assert data["stage"] == "preview"
+    assert data["atomic_actions"][0]["review_issue_target"]["code"] == "cooperative_program"
+    assert data["atomic_actions"][0]["review_issue_target"]["scope_mode"] == "full_issue"
 
 
 def test_plan_next_action_coerces_structural_review_issue_to_default_action():
