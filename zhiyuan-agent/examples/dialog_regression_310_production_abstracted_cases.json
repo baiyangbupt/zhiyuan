@@ -153,7 +153,8 @@
       "prompts": [
         {
           "prompt": "只要电气和气象，其他方向都不要",
-          "assertContainsAny": ["电气", "气象", "只保留", "采纳"],
+          "assertContains": ["电气", "气象"],
+          "assertContainsAny": ["只保留", "采纳"],
           "assertNotContains": ["排除电气", "排除气象", "排除专业门类：哲学", "排除专业门类：工学", "哲学、经济学、法学", "医学、管理学、艺术学"],
           "expectedKeyPoints": ["电气", "气象", "只保留", "采纳前不生效"]
         }

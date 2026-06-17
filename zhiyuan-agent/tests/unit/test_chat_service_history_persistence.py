@@ -20,6 +20,7 @@ from app.service import (
     _build_plan_timeout_fallback_reply,
     _intent_card_primary_reply_from_preview_payload,
     _create_pending_intent_confirmation_from_preview_payload,
+    _pending_confirmation_primary_reply_from_card,
     build_runtime_history,
     build_timeout_fallback_from_recent_plan_execution,
     _extract_plan_confirmation_candidate,
@@ -44,11 +45,15 @@ from app.service import (
     _fallback_plan_confirmation_candidate_summary,
     _format_fix_proposal_card_content,
     _latest_plan_semantic_route_context,
+    _ready_fix_proposal_id_for_strategies,
     _selected_data_with_existing_positive_context,
+    _select_ready_fix_proposal,
     _select_conversation_action_family,
     _semantic_preview_fix_proposal_route_allowed,
+    _semantic_intent_decision_requires_readonly,
     _extract_recent_intent_analysis_payload,
     _guard_unbacked_plan_confirmation_reply,
+    _current_turn_workspace_refresh_targets,
     _tool_calls_include_plan_workspace_refresh,
 )
 from app.tools.intent_response_tool import IntentStateUpdateResult, render_intent_state_update
@@ -101,6 +106,23 @@ def _semantic_plan_recovery(action_family: str, confidence: float = 0.95, reason
         reason=reason,
         **defaults,
     )
+
+
+def test_semantic_intent_readonly_respects_explicit_entity_override():
+    assert _semantic_intent_decision_requires_readonly(
+        {
+            "decision": "mixed_answer_then_ask",
+            "confidence": 0.9,
+            "honored": False,
+        }
+    ) is False
+    assert _semantic_intent_decision_requires_readonly(
+        {
+            "decision": "mixed_answer_then_ask",
+            "confidence": 0.9,
+            "honored": True,
+        }
+    ) is True
 
 
 def _semantic_composite_goal(
@@ -231,6 +253,23 @@ def test_format_intent_card_impact_treats_only_keep_as_constraint_even_if_mode_i
 
     assert "只保留这个范围" in reply
     assert "排得更靠前" not in reply
+
+
+def test_format_intent_card_impact_uses_constraint_plan_fallback_when_no_preview():
+    reply = _format_intent_card_impact(
+        {
+            "intentMode": "constraint",
+            "constraintIntentType": "only_keep",
+            "major_intents": {"level3": ["临床医学"]},
+        },
+        intent_mode="constraint",
+        fallback_mechanism_line="采纳后先把这条条件记下来；当前没有可直接执行的方案调整。",
+        fallback_detail_lines=["当前方案和候选池里暂时都没有找到“临床医学”相关选择。"],
+    )
+
+    assert "当前没有可直接执行的方案调整" in reply
+    assert "当前方案和候选池里暂时都没有找到" in reply
+    assert "只保留这个范围" not in reply
 
 
 def test_summarize_intent_values_uses_constraint_specific_positive_labels():
@@ -2104,6 +2143,207 @@ def test_chat_service_recovers_only_keep_goal_when_agent_skips_tools(tmp_path, m
     proposal_mock.assert_awaited_once()
 
 
+def test_chat_service_falls_back_to_intent_card_when_only_keep_plan_proposal_blocked(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    fake_agent = _FakeAgent(["这轮还没有生成可执行的调整内容，所以不会改动当前方案。"])
+    pending_state, save_pending_mock, get_pending_mock = _pending_confirmation_store()
+    blocked_preview = {
+        "code": 0,
+        "data": {
+            "status": "blocked_or_info",
+            "proposalSource": "user_goal",
+            "sourceVersionGuard": 673,
+            "proposals": [
+                {
+                    "proposalId": "ug-only-keep-clinical-blocked",
+                    "proposalSource": "user_goal",
+                    "sourceVersionGuard": 673,
+                    "status": "blocked",
+                    "strategy": "only_keep_scope",
+                    "title": "只保留范围的方案调整暂不自动执行",
+                    "summary": "当前方案和候选池里暂时都没有找到“临床医学”相关选择，不能直接生成只保留这个方向的调整预览。",
+                    "blockingReasonCodes": ["user_goal_target_not_found"],
+                    "requiresConfirmation": False,
+                    "actions": [],
+                    "dryRunResult": {"status": "blocked"},
+                }
+            ],
+        },
+    }
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 0, "data": {"userScoreDetail": {"batch": "01"}}})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={
+                "code": 0,
+                "data": {
+                    "phase": "profile_ready",
+                    "version": 673,
+                    "draftPlanState": {"summary": {"total": 94}},
+                    "orderedPlanState": {"summary": {"total": 94}},
+                    "reviewState": {"summary": {"warnCount": 5, "riskCount": 3}, "checks": []},
+                },
+            })), \
+            patch("app.service.classify_plan_recovery_action", AsyncMock(return_value=_semantic_plan_recovery("none"))) as action_classifier_mock, \
+            patch("app.service.classify_composite_goal_action", AsyncMock(return_value=_semantic_composite_goal(
+                "only_keep_scope",
+                scope_type="major",
+                target_values=["临床医学"],
+                constraint_intent_type="only_keep",
+            ))) as composite_classifier_mock, \
+            patch("app.service.generate_user_goal_planning_fix_proposals", AsyncMock(return_value=blocked_preview)) as proposal_mock, \
+            patch("app.service.save_pending_confirmation", save_pending_mock), \
+            patch("app.service.get_pending_confirmation", get_pending_mock):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(
+            service.handle_message("9903101", "user-1", "我只想学临床医学，其他专业先不要")
+        )
+
+    assert isinstance(reply, ChatServiceResponseEnvelope)
+    assert "还没有生成可执行" not in reply.primary
+    card_payloads = [json.loads(item.content) for item in reply.followups if item.type == "pendingConfirmationCard"]
+    assert len(card_payloads) == 1
+    assert card_payloads[0]["kind"] == "intent_change"
+    assert card_payloads[0]["actionFamily"] == "apply_selected_intents"
+    assert card_payloads[0]["constraintIntentType"] == "only_keep"
+    assert "临床医学" in card_payloads[0]["summary"]
+    assert "只保留" in card_payloads[0]["summary"]
+    assert "当前没有可直接执行的方案调整" in card_payloads[0]["impact"]
+    assert "当前方案和候选志愿里暂时都没有找到" in card_payloads[0]["impact"]
+    assert "采纳后只保留这个范围" not in card_payloads[0]["impact"]
+    assert pending_state["value"]["kind"] == "intent_change"
+    execution_payload = pending_state["value"]["executionPayload"]
+    assert execution_payload["constraintIntentType"] == "only_keep"
+    assert execution_payload["selectedData"]["selected"] == [{"major_intents": {"level3": ["临床医学"]}}]
+    action_classifier_mock.assert_awaited_once()
+    composite_classifier_mock.assert_awaited_once()
+    proposal_mock.assert_awaited_once()
+
+
+def test_chat_service_prefers_recovered_intent_card_over_unrelated_fix_card(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    plan_payload = {
+        "stage": "apply",
+        "action_family": "preview_fix_proposal",
+        "user_goal": "方案里必须有法学，其他专业可以先保留",
+        "requires_confirmation": False,
+        "planning_version": 41,
+    }
+    preview_result = {
+        "applied": False,
+        "action_family": "preview_fix_proposal",
+        "stage": "apply",
+        "result_kind": "fix_proposal_preview",
+        "summary": "已整理处理录取率倒挂的预览。",
+        "facts": {
+            "fix_proposals": {
+                "source_version_guard": 41,
+                "proposals": [
+                    {
+                        "proposal_id": "fp_sort_unrelated",
+                        "status": "ready",
+                        "strategy": "sort_by_probability",
+                        "title": "处理录取率倒挂",
+                        "summary": "建议检查相邻志愿顺序。",
+                    }
+                ],
+            }
+        },
+    }
+    fake_agent = _FakeAgentWithToolCalls(
+        "已列出这条调整预览：处理录取率倒挂。",
+        [
+            ToolCallPart(
+                tool_name="plan_next_action",
+                args={"user_goal": "方案里必须有法学，其他专业可以先保留", "action_family": "preview_fix_proposal"},
+                tool_call_id="must-have-wrong-plan",
+            ),
+            ToolCallPart(
+                tool_name="execute_plan_action",
+                args={"plan_payload": json.dumps(plan_payload, ensure_ascii=False)},
+                tool_call_id="must-have-wrong-execute",
+            ),
+        ],
+        [
+            ToolReturnPart(
+                tool_name="plan_next_action",
+                content=json.dumps(plan_payload, ensure_ascii=False),
+                tool_call_id="must-have-wrong-plan",
+            ),
+            ToolReturnPart(
+                tool_name="execute_plan_action",
+                content=json.dumps(preview_result, ensure_ascii=False),
+                tool_call_id="must-have-wrong-execute",
+            ),
+        ],
+    )
+    blocked_preview = {
+        "code": 0,
+        "data": {
+            "status": "blocked_or_info",
+            "proposalSource": "user_goal",
+            "sourceVersionGuard": 41,
+            "proposals": [
+                {
+                    "proposalId": "ug-must-have-law-blocked",
+                    "proposalSource": "user_goal",
+                    "sourceVersionGuard": 41,
+                    "status": "blocked",
+                    "strategy": "must_include_scope",
+                    "summary": "当前方案和候选池里暂时都没有找到“法学”相关选择。",
+                    "blockingReasonCodes": ["user_goal_target_not_found"],
+                    "requiresConfirmation": False,
+                    "actions": [],
+                    "dryRunResult": {"status": "blocked"},
+                }
+            ],
+        },
+    }
+    pending_state, save_pending_mock, get_pending_mock = _pending_confirmation_store()
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 0, "data": {"userScoreDetail": {"batch": "01"}}})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={
+                "code": 0,
+                "data": {
+                    "phase": "reviewed",
+                    "version": 41,
+                    "draftPlanState": {"summary": {"total": 45}},
+                    "orderedPlanState": {"summary": {"total": 45}},
+                    "reviewState": {"summary": {"warnCount": 1, "riskCount": 0}, "checks": []},
+                },
+            })), \
+            patch("app.service.classify_composite_goal_action", AsyncMock(return_value=_semantic_composite_goal(
+                "must_include_scope",
+                scope_type="major",
+                target_values=["法学"],
+                constraint_intent_type="must_have",
+            ))) as composite_classifier_mock, \
+            patch("app.service.generate_user_goal_planning_fix_proposals", AsyncMock(return_value=blocked_preview)) as proposal_mock, \
+            patch("app.service.save_pending_confirmation", save_pending_mock), \
+            patch("app.service.get_pending_confirmation", get_pending_mock):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(
+            service.handle_message("must-have-unrelated-fix-session", "user-1", "方案里必须有法学，其他专业可以先保留")
+        )
+
+    assert isinstance(reply, ChatServiceResponseEnvelope)
+    card_payloads = [json.loads(item.content) for item in reply.followups if item.type == "pendingConfirmationCard"]
+    assert len(card_payloads) == 1
+    assert card_payloads[0]["kind"] == "intent_change"
+    assert card_payloads[0]["actionFamily"] == "apply_selected_intents"
+    assert card_payloads[0]["constraintIntentType"] == "must_have"
+    assert "法学" in card_payloads[0]["summary"]
+    assert "录取率倒挂" not in card_payloads[0]["summary"]
+    assert pending_state["value"]["kind"] == "intent_change"
+    assert pending_state["value"]["executionPayload"]["constraintIntentType"] == "must_have"
+    composite_classifier_mock.assert_awaited_once()
+    proposal_mock.assert_awaited_once()
+
+
 def test_chat_service_existing_only_only_keep_goal_still_builds_plan_preview(tmp_path, mock_llm_client):
     db_path = tmp_path / "history.db"
     store = ChatHistoryStore(str(db_path))
@@ -2369,6 +2609,119 @@ def test_chat_service_recovers_only_keep_goal_when_agent_misroutes_to_remove_uni
     assert execution_payload["userGoalRequest"]["goalType"] == "only_keep_scope"
     assert execution_payload["userGoalRequest"]["targetScopes"][0]["normalizedName"] == "英语"
     classify_mock.assert_awaited_once()
+    proposal_mock.assert_awaited_once()
+
+
+def test_chat_service_overrides_confirmable_remove_preview_for_only_keep_goal(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    plan_payload = {
+        "stage": "preview",
+        "action_family": "remove_units",
+        "user_goal": "我只想学临床医学，其他专业先不要",
+        "requires_confirmation": True,
+        "preview_summary": "会从当前方案移出指定志愿。",
+        "planning_version": 41,
+        "atomic_actions": [
+            {
+                "action_type": "remove_units",
+                "source_major_names": ["建筑学", "土地资源管理"],
+                "reason": "我只想学临床医学，其他专业先不要",
+            }
+        ],
+    }
+    plan_result = {
+        "applied": False,
+        "action_family": "remove_units",
+        "stage": "preview",
+        "result_kind": "preview_only",
+        "summary": "将移出建筑学、土地资源管理等志愿。",
+        "facts": {"planning_version": 41},
+    }
+    fake_agent = _FakeAgentWithToolCalls(
+        "已列出调整预览：将移出建筑学、土地资源管理等志愿。",
+        [
+            ToolCallPart(
+                tool_name="plan_next_action",
+                args={"user_goal": "我只想学临床医学，其他专业先不要", "action_family": "remove_units"},
+                tool_call_id="confirmable-misroute-plan",
+            ),
+            ToolCallPart(
+                tool_name="execute_plan_action",
+                args={"plan_payload": json.dumps(plan_payload, ensure_ascii=False)},
+                tool_call_id="confirmable-misroute-execute",
+            ),
+        ],
+        [
+            ToolReturnPart(
+                tool_name="plan_next_action",
+                content=json.dumps(plan_payload, ensure_ascii=False),
+                tool_call_id="confirmable-misroute-plan",
+            ),
+            ToolReturnPart(
+                tool_name="execute_plan_action",
+                content=json.dumps(plan_result, ensure_ascii=False),
+                tool_call_id="confirmable-misroute-execute",
+            ),
+        ],
+    )
+    pending_state, save_pending_mock, get_pending_mock = _pending_confirmation_store()
+    backend_preview = _user_goal_fix_proposal_response(
+        proposal_id="ug-only-keep-clinical-override",
+        strategy="only_keep_scope",
+        source_version=41,
+        title="只保留临床医学",
+        summary="当前方案会围绕临床医学调整。",
+        action_summaries=["移出不符合条件的志愿"],
+    )
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 0, "data": {"userScoreDetail": {"batch": "01"}}})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={
+                "code": 0,
+                "data": {
+                    "phase": "reviewed",
+                    "version": 41,
+                    "draftPlanState": {"summary": {"total": 45}},
+                    "orderedPlanState": {"summary": {"total": 45}},
+                    "reviewState": {"summary": {"warnCount": 0, "riskCount": 0}, "checks": []},
+                },
+            })), \
+            patch("app.service.classify_composite_goal_action", AsyncMock(return_value=_semantic_composite_goal(
+                "only_keep_scope",
+                scope_type="major",
+                target_values=["临床医学"],
+                constraint_intent_type="only_keep",
+            ))) as classify_mock, \
+            patch("app.service.generate_user_goal_planning_fix_proposals", AsyncMock(return_value=backend_preview)) as proposal_mock, \
+            patch("app.service.save_pending_confirmation", save_pending_mock), \
+            patch("app.service.get_pending_confirmation", get_pending_mock):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(
+            service.handle_message("only-keep-confirmable-misroute-session", "user-1", "我只想学临床医学，其他专业先不要")
+        )
+
+    assert isinstance(reply, ChatServiceResponseEnvelope)
+    assert "临床医学" in reply.primary
+    assert "建筑学" not in reply.primary
+    card_payloads = [json.loads(item.content) for item in reply.followups if item.type == "pendingConfirmationCard"]
+    assert len(card_payloads) == 1
+    assert card_payloads[0]["kind"] == "plan_mutation"
+    assert card_payloads[0]["actionFamily"] == "apply_fix_proposal"
+    assert card_payloads[0]["proposalId"] == "ug-only-keep-clinical-override"
+    assert "临床医学" in card_payloads[0]["summary"]
+    assert "建筑学" not in card_payloads[0]["summary"]
+    pending = pending_state["value"]
+    assert pending["kind"] == "plan_mutation"
+    execution_payload = pending["executionPayload"]
+    assert execution_payload["proposalSource"] == "user_goal"
+    assert execution_payload["intentPayload"]["constraintIntentType"] == "only_keep"
+    assert execution_payload["userGoalRequest"]["goalType"] == "only_keep_scope"
+    assert execution_payload["userGoalRequest"]["targetScopes"][0]["normalizedName"] == "临床医学"
+    classify_mock.assert_awaited_once()
+    classify_kwargs = classify_mock.await_args.kwargs
+    assert classify_kwargs["attempted_action_family"] == "remove_units"
     proposal_mock.assert_awaited_once()
 
 
@@ -5612,6 +5965,110 @@ def test_execute_plan_action_error_return_does_not_infer_workspace_refresh():
     ]
 
     assert _tool_calls_include_plan_workspace_refresh(messages) == []
+
+
+def test_current_turn_execute_plan_error_does_not_reuse_previous_workspace_refresh():
+    current_messages = [
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="execute_plan_action",
+                    content=json.dumps(
+                        {
+                            "applied": False,
+                            "action_family": "remove_units",
+                            "stage": "preview",
+                            "result_kind": "error",
+                            "summary": "没有唯一定位到要移除的志愿。",
+                            "workspace_refresh_targets": [],
+                        },
+                        ensure_ascii=False,
+                    ),
+                    tool_call_id="current-remove-error",
+                )
+            ]
+        )
+    ]
+    all_messages = [
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="execute_plan_action",
+                    content=json.dumps(
+                        {
+                            "applied": True,
+                            "action_family": "sort_ordered_plan",
+                            "stage": "apply",
+                            "result_kind": "mutation_result",
+                            "workspace_refresh_targets": ["ordered", "review"],
+                        },
+                        ensure_ascii=False,
+                    ),
+                    tool_call_id="previous-sort-apply",
+                )
+            ]
+        ),
+        *current_messages,
+    ]
+
+    targets = _current_turn_workspace_refresh_targets(
+        tool_context_messages=current_messages,
+        new_messages=current_messages,
+        all_messages=all_messages,
+        content="把河南农大建筑去掉",
+    )
+
+    assert targets == []
+
+
+def test_current_turn_readonly_query_does_not_reuse_previous_workspace_refresh():
+    current_messages = [
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="query_volunteer_plan",
+                    content=json.dumps(
+                        {
+                            "status": "success_plan_hit",
+                            "results": [{"school": "青岛城市学院", "major": "法语"}],
+                        },
+                        ensure_ascii=False,
+                    ),
+                    tool_call_id="current-query-plan",
+                )
+            ]
+        )
+    ]
+    all_messages = [
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="execute_plan_action",
+                    content=json.dumps(
+                        {
+                            "applied": True,
+                            "action_family": "move_ordered_unit",
+                            "stage": "apply",
+                            "result_kind": "mutation_result",
+                            "workspace_refresh_targets": ["ordered", "review"],
+                        },
+                        ensure_ascii=False,
+                    ),
+                    tool_call_id="previous-move-apply",
+                )
+            ]
+        ),
+        *current_messages,
+    ]
+
+    targets = _current_turn_workspace_refresh_targets(
+        tool_context_messages=current_messages,
+        new_messages=current_messages,
+        all_messages=all_messages,
+        content="青岛城市学院相关专业是不是有多个，先帮我判断一下，不要直接改方案",
+    )
+
+    assert targets == []
 
 
 def test_extract_plan_confirmation_candidate_ignores_legacy_compensation_preview():
@@ -9803,6 +10260,65 @@ def test_chat_service_applies_active_plan_pending_on_short_text_confirm(tmp_path
     assert fake_agent.calls == []
 
 
+def test_chat_service_directly_applies_active_plan_pending_when_classifier_misses_short_confirm(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    execution_result = json.dumps(
+        {
+            "applied": True,
+            "action_family": "sort_ordered_plan",
+            "stage": "apply",
+            "result_kind": "mutation_result",
+            "summary": "已按院校层次重新排序当前方案。",
+            "workspace_refresh_targets": ["ordered"],
+        },
+        ensure_ascii=False,
+    )
+    plan_payload = json.dumps(
+        {
+            "stage": "apply",
+            "action_family": "sort_ordered_plan",
+            "user_goal": "按院校层次排序",
+            "requires_confirmation": False,
+            "missing_inputs": [],
+        },
+        ensure_ascii=False,
+    )
+    pending_state, save_pending_mock, get_pending_mock = _pending_confirmation_store(
+        {
+            "type": "pendingConfirmation",
+            "pendingId": "pending-plan-short-text-missed",
+            "sessionId": "session-plan-short-text-missed",
+            "kind": "plan_mutation",
+            "status": "active",
+            "actionFamily": "sort_ordered_plan",
+            "summary": "会按院校层次重新排序当前方案。",
+            "executionPayload": {
+                "toolName": "execute_plan_action",
+                "planPayload": plan_payload,
+            },
+        }
+    )
+    fake_agent = _FakeAgent(["不应该调用模型"])
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.save_pending_confirmation", save_pending_mock), \
+            patch("app.service.get_pending_confirmation", get_pending_mock), \
+            patch("app.service.classify_pending_confirmation_action", AsyncMock(return_value=_semantic_pending("none", confidence=0.2))), \
+            patch("app.service.execute_plan_action", AsyncMock(return_value=execution_result)) as execute_mock:
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(service.handle_message("session-plan-short-text-missed", "user-1", "确认执行"))
+
+    assert isinstance(reply, ChatServiceResponseEnvelope)
+    assert reply.primary == "已按院校层次重新排序当前方案。"
+    execute_mock.assert_awaited_once()
+    assert pending_state["value"]["status"] == "applied"
+    assert fake_agent.calls == []
+
+
 def test_chat_service_logs_pending_event_for_short_text_confirm(tmp_path, mock_llm_client):
     db_path = tmp_path / "history.db"
     store = ChatHistoryStore(str(db_path))
@@ -11433,6 +11949,84 @@ def test_chat_service_recovers_semantic_intent_preview_without_tool_call(tmp_pat
     assert recover_mock.await_args.kwargs["recovery_scope"] == "major"
 
 
+def test_chat_service_recovers_confirmable_intent_payload_from_interest_tool(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    interest_payload = {
+        "status": "ready",
+        "sessionId": "9905102",
+        "title": "确认这条要求",
+        "intentMode": "constraint",
+        "analysisStage": "confirmed",
+        "items": [
+            {
+                "content": "偏好专业：会计学、审计学",
+                "selected": True,
+                "value": {"major_intents": {"level3": ["会计学", "审计学"]}},
+            },
+            {
+                "content": "排除专业：土木工程",
+                "selected": True,
+                "value": {"major_intents": {"negative_level3": ["土木工程"]}},
+            },
+        ],
+    }
+    fake_agent = _FakeAgentWithToolCalls(
+        "会计学和审计学可以继续看，当前方案里有土木工程相关志愿。",
+        [
+            ToolCallPart(
+                tool_name="analyze_current_major_interest",
+                args={"intent_mode": "preference"},
+                tool_call_id="major-interest-confirmable",
+            )
+        ],
+        [
+            ToolReturnPart(
+                tool_name="analyze_current_major_interest",
+                content=json.dumps(interest_payload, ensure_ascii=False),
+                tool_call_id="major-interest-confirmable",
+            )
+        ],
+    )
+    pending_state, save_pending_mock, get_pending_mock = _pending_confirmation_store()
+    generate_user_goal_mock = AsyncMock(
+        return_value=_user_goal_fix_proposal_response(
+            proposal_id="ug-exclude-civil",
+            strategy="exclude_scope",
+            source_version=12,
+            title="避开土木工程",
+            summary="当前方案中有土木工程方向，需要同步调整。",
+            action_summaries=["移出土木工程相关志愿"],
+        )
+    )
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 0, "data": {"userScoreDetail": {"batch": "01"}}})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_state", AsyncMock(return_value=_planning_state_response(12))), \
+            patch("app.service.generate_user_goal_planning_fix_proposals", generate_user_goal_mock), \
+            patch("app.service.save_pending_confirmation", save_pending_mock), \
+            patch("app.service.get_pending_confirmation", get_pending_mock):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(service.handle_message("9905102", "user-57", "我倾向会计学和审计学，但土木工程不要"))
+
+    assert isinstance(reply, ChatServiceResponseEnvelope)
+    assert "采纳" in reply.primary
+    assert len(reply.followups) == 1
+    card_payload = json.loads(reply.followups[0].content)
+    assert card_payload["kind"] == "intent_change"
+    assert card_payload["confirmText"] == "采纳"
+    assert "土木工程" in card_payload["content"]
+    assert "会计学" in card_payload["content"]
+    assert pending_state["value"]["kind"] == "intent_change"
+    assert pending_state["value"]["executionPayload"]["selectedData"]["selected"] == [
+        {"major_intents": {"level3": ["会计学", "审计学"]}},
+        {"major_intents": {"negative_level3": ["土木工程"]}},
+    ]
+    generate_user_goal_mock.assert_not_awaited()
+
+
 def test_chat_service_recovers_prepared_direction_text_without_tool_call(tmp_path, mock_llm_client):
     db_path = tmp_path / "history.db"
     store = ChatHistoryStore(str(db_path))
@@ -12461,6 +13055,91 @@ def test_intent_card_primary_reply_from_preview_payload_uses_summary():
     assert "不会生效" in reply
 
 
+def test_intent_card_primary_reply_preserves_user_facing_major_alias():
+    preview_payload = {
+        "status": "ready",
+        "sessionId": "35",
+        "title": "确认这次报考条件",
+        "intentMode": "constraint",
+        "constraintIntentType": "only_keep",
+        "analysisStage": "confirmed",
+        "items": [
+            {
+                "content": "把气象（大气科学）记成明确要满足的具体专业要求，后面看候选和方案时会按这个范围来。",
+                "selected": True,
+                "value": {"major_intents": {"level3": ["大气科学"]}},
+            },
+            {
+                "content": "把电气（电气工程及其自动化）记成明确要满足的具体专业要求，后面看候选和方案时会按这个范围来。",
+                "selected": True,
+                "value": {"major_intents": {"level3": ["电气工程及其自动化"]}},
+            },
+        ],
+    }
+
+    reply = _intent_card_primary_reply_from_preview_payload(preview_payload)
+
+    assert "气象" in reply
+    assert "大气科学" in reply
+    assert "电气" in reply
+    assert "电气工程及其自动化" in reply
+
+
+def test_plan_mutation_card_intent_summary_preserves_user_facing_major_alias():
+    preview_payload = {
+        "status": "ready",
+        "sessionId": "35-plan",
+        "title": "确认这次报考条件",
+        "intentMode": "constraint",
+        "constraintIntentType": "only_keep",
+        "analysisStage": "confirmed",
+        "items": [
+            {
+                "content": "把气象（大气科学）记成明确要满足的具体专业要求，后面看候选和方案时会按这个范围来。",
+                "selected": True,
+                "value": {"major_intents": {"level3": ["大气科学"]}},
+            },
+            {
+                "content": "把电气（电气工程及其自动化）记成明确要满足的具体专业要求，后面看候选和方案时会按这个范围来。",
+                "selected": True,
+                "value": {"major_intents": {"level3": ["电气工程及其自动化"]}},
+            },
+        ],
+    }
+    backend_preview = _user_goal_fix_proposal_response(
+        proposal_id="ug-only-keep-weather-electric",
+        strategy="only_keep_scope",
+        source_version=12,
+        title="只保留电气和气象方向",
+        summary="当前方案需要按这个范围调整。",
+        action_summaries=["移出不在范围内的志愿"],
+    )
+    pending_state, save_pending_mock, get_pending_mock = _pending_confirmation_store()
+
+    with patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 0, "data": {"userScoreDetail": {"batch": "01"}}})), \
+            patch("app.service.get_planning_state", AsyncMock(return_value=_planning_state_response(12))), \
+            patch("app.service.generate_user_goal_planning_fix_proposals", AsyncMock(return_value=backend_preview)), \
+            patch("app.service.save_pending_confirmation", save_pending_mock), \
+            patch("app.service.get_pending_confirmation", get_pending_mock):
+        card = asyncio.run(_create_pending_intent_confirmation_from_preview_payload("35-plan", preview_payload))
+
+    assert isinstance(card, WSResponse)
+    payload = json.loads(card.content)
+    assert payload["kind"] == "plan_mutation"
+    assert "气象（大气科学）" in payload["content"]
+    assert "电气（电气工程及其自动化）" in payload["content"]
+    intent_payload = pending_state["value"]["executionPayload"]["intentPayload"]
+    assert intent_payload["selected"] == [
+        {"major_intents": {"level3": ["大气科学"]}},
+        {"major_intents": {"level3": ["电气工程及其自动化"]}},
+    ]
+    assert "只保留专业" in intent_payload["displaySummary"]
+    assert "气象（大气科学）" in intent_payload["displaySummary"]
+    assert "电气（电气工程及其自动化）" in intent_payload["displaySummary"]
+    req = pending_state["value"]["executionPayload"]["userGoalRequest"]
+    assert [scope["normalizedName"] for scope in req["targetScopes"]] == ["大气科学", "电气工程及其自动化"]
+
+
 @pytest.mark.asyncio
 async def test_clear_legacy_plan_edit_cache_skips_non_numeric_session_id():
     from app.service import _clear_legacy_plan_edit_cache_best_effort
@@ -12513,6 +13192,10 @@ def test_chat_service_constraint_preview_with_plan_hit_becomes_plan_mutation_car
     assert payload["confirmText"] == "确认执行"
     assert "采纳内容" in payload["content"]
     assert "排除专业：经济与金融" in payload["content"]
+    primary_reply = _pending_confirmation_primary_reply_from_card(card)
+    assert "确认执行" in primary_reply
+    assert "确认前不会改动当前方案" in primary_reply
+    assert "点“采纳”" not in primary_reply
     assert pending_state["value"]["kind"] == "plan_mutation"
     execution_payload = pending_state["value"]["executionPayload"]
     assert execution_payload["toolName"] == "apply_planning_fix_proposal"
@@ -14012,10 +14695,20 @@ def test_chat_service_selects_fix_proposal_by_ordered_target_strategy(tmp_path, 
                 AsyncMock(
                     return_value=_semantic_plan(
                         "preview_fix_proposal",
-                        target_strategies=["adjust_major_group_inner_safety", "sort_by_probability"],
+                        target_strategies=["sort_by_probability", "adjust_major_group_inner_safety"],
                     )
                 ),
-            ), \
+            ) as classify_mock, \
+            patch(
+                "app.service.select_fix_proposal_candidate",
+                AsyncMock(
+                    return_value=MagicMock(
+                        proposalId="fp_safety_1",
+                        confidence=0.91,
+                        reason="用户要先补更安全的组内专业",
+                    )
+                ),
+            ) as select_mock, \
             patch("app.service.execute_plan_action", AsyncMock(return_value=json.dumps(preview_result, ensure_ascii=False))), \
             patch(
                 "app.service._synthesize_semantic_plan_action_reply",
@@ -14038,6 +14731,148 @@ def test_chat_service_selects_fix_proposal_by_ordered_target_strategy(tmp_path, 
     card_payloads = [json.loads(item.content) for item in reply.followups if item.type == "pendingConfirmationCard"]
     assert card_payloads[0]["proposalId"] == "fp_safety_1"
     assert pending_state["value"]["executionPayload"]["proposalId"] == "fp_safety_1"
+    classify_mock.assert_awaited_once()
+    select_mock.assert_awaited_once()
+
+
+def test_select_ready_fix_proposal_requires_target_strategy_match():
+    facts = {
+        "fix_proposals": {
+            "proposals": [
+                {
+                    "proposal_id": "fp_count",
+                    "status": "ready",
+                    "title": "处理数量校验",
+                    "strategy": "fill_missing_count",
+                },
+                {
+                    "proposal_id": "fp_gap",
+                    "status": "preview_only",
+                    "title": "处理录取率梯度断层",
+                    "strategy": "fill_probability_gap",
+                },
+            ],
+        }
+    }
+
+    assert (
+        _select_ready_fix_proposal(
+            facts,
+            target_strategies=["rebalance_tier_ratio", "fill_probability_gap"],
+        )
+        is None
+    )
+    assert _ready_fix_proposal_id_for_strategies(
+        facts,
+        ["rebalance_tier_ratio", "fill_probability_gap"],
+    ) == ""
+    assert _select_ready_fix_proposal(facts)["proposal_id"] == "fp_count"
+
+
+def test_chat_service_does_not_create_unrelated_fix_card_when_target_strategy_has_no_ready_match(
+    tmp_path,
+    mock_llm_client,
+):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    preview_result = {
+        "applied": False,
+        "action_family": "preview_fix_proposal",
+        "stage": "apply",
+        "result_kind": "fix_proposal_preview",
+        "summary": "已整理当前方案的处理建议，风险相关方向暂时只能先作为参考。",
+        "facts": {
+            "fix_proposals": {
+                "proposal_source": "review_check",
+                "source_version_guard": 34,
+                "ready_count": 1,
+                "blocked_count": 0,
+                "preview_only_count": 1,
+                "proposals": [
+                    {
+                        "proposal_id": "fp_count",
+                        "proposal_source": "review_check",
+                        "status": "ready",
+                        "title": "处理数量校验",
+                        "summary": "当前方案数量不足，可以补齐数量。",
+                        "strategy": "fill_missing_count",
+                    },
+                    {
+                        "proposal_id": "fp_gap",
+                        "proposal_source": "review_check",
+                        "status": "preview_only",
+                        "title": "处理录取率梯度断层",
+                        "summary": "当前候选里缺少断层区间的可用志愿。",
+                        "strategy": "fill_probability_gap",
+                    },
+                ],
+            },
+        },
+        "reply_focus": ["fix_proposal_preview", "fix_proposals"],
+    }
+    fake_agent = _FakeAgentWithToolCalls(
+        "当前方案偏冒险的问题可以先看，但这轮还没有可直接执行的调稳预览。",
+        [
+            ToolCallPart(
+                tool_name="execute_plan_action",
+                args={
+                    "plan_payload": json.dumps(
+                        {
+                            "stage": "apply",
+                            "action_family": "preview_fix_proposal",
+                            "target_strategies": ["rebalance_tier_ratio", "fill_probability_gap"],
+                        },
+                        ensure_ascii=False,
+                    )
+                },
+                tool_call_id="targeted-risk-preview-with-count-ready",
+            )
+        ],
+        [
+            ToolReturnPart(
+                tool_name="execute_plan_action",
+                content=json.dumps(preview_result, ensure_ascii=False),
+                tool_call_id="targeted-risk-preview-with-count-ready",
+            )
+        ],
+    )
+    pending_state, save_pending_mock, get_pending_mock = _pending_confirmation_store()
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
+            patch(
+                "app.service.classify_plan_semantic_action",
+                AsyncMock(
+                    return_value=_semantic_plan(
+                        "preview_fix_proposal",
+                        target_strategies=["rebalance_tier_ratio", "fill_probability_gap"],
+                    )
+                ),
+            ) as classify_mock, \
+            patch("app.service.classify_composite_goal_action", AsyncMock(return_value=_semantic_composite_goal("none", confidence=0.2))) as composite_mock, \
+            patch("app.service.save_pending_confirmation", save_pending_mock), \
+            patch("app.service.get_pending_confirmation", get_pending_mock):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(
+            service.handle_message(
+                "fix-proposal-no-target-ready-session",
+                "user-1",
+                "就按别太冒险的思路把这版调稳点，先给我看看会怎么动",
+            )
+        )
+
+    if isinstance(reply, ChatServiceResponseEnvelope):
+        assert not [item for item in reply.followups if item.type == "pendingConfirmationCard"]
+        assert "数量校验" not in reply.primary
+    else:
+        assert isinstance(reply, str)
+        assert "数量校验" not in reply
+    assert pending_state == {}
+    save_pending_mock.assert_not_awaited()
+    classify_mock.assert_not_awaited()
+    composite_mock.assert_awaited_once()
 
 
 def test_chat_service_full_agent_fix_preview_infers_target_strategy_for_card(tmp_path, mock_llm_client):

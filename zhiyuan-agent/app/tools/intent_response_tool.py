@@ -506,11 +506,16 @@ def _sanitize_user_facing_intent_text(text: str) -> str:
     return sanitized
 
 
-def _render_major_intent_item(major_intents: dict[str, Any], *, intent_mode: str = "preference") -> str | None:
+def _render_major_intent_item(
+    major_intents: dict[str, Any],
+    *,
+    intent_mode: str = "preference",
+    constraint_intent_type: str = "default",
+) -> str | None:
     labels = {
-        "level1": "偏好专业门类",
-        "level2": "偏好专业类",
-        "level3": "偏好专业",
+        "level1": _positive_label("偏好专业门类", constraint_intent_type=constraint_intent_type),
+        "level2": _positive_label("偏好专业类", constraint_intent_type=constraint_intent_type),
+        "level3": _positive_label("偏好专业", constraint_intent_type=constraint_intent_type),
         "negative_level1": _negative_label("排除专业门类", intent_mode=intent_mode),
         "negative_level2": _negative_label("排除专业类", intent_mode=intent_mode),
         "negative_level3": _negative_label("排除专业", intent_mode=intent_mode),
@@ -522,10 +527,42 @@ def _render_major_intent_item(major_intents: dict[str, Any], *, intent_mode: str
     return None
 
 
-def _render_intent_preview_item(item: dict[str, Any], *, intent_mode: str = "preference") -> str:
+def _display_target_from_preview_content(content: str) -> str:
+    text = _sanitize_user_facing_intent_text(str(content or "").strip())
+    if not text:
+        return ""
+    text = re.sub(r"^(把|将)", "", text)
+    text = re.split(r"(记成|更新为|设为|从|作为|，|,)", text, maxsplit=1)[0].strip()
+    return text
+
+
+def _render_intent_preview_item(
+    item: dict[str, Any],
+    *,
+    intent_mode: str = "preference",
+    constraint_intent_type: str = "default",
+) -> str:
     value = item.get("value")
     if isinstance(value, dict):
-        major_text = _render_major_intent_item(value.get("major_intents") or {}, intent_mode=intent_mode)
+        major_intents = value.get("major_intents") or {}
+        display_target = _display_target_from_preview_content(str(item.get("content") or ""))
+        if display_target and isinstance(major_intents, dict):
+            label_specs = (
+                ("level3", _positive_label("偏好专业", constraint_intent_type=constraint_intent_type)),
+                ("level2", _positive_label("偏好专业类", constraint_intent_type=constraint_intent_type)),
+                ("level1", _positive_label("偏好专业门类", constraint_intent_type=constraint_intent_type)),
+                ("negative_level3", _negative_label("排除专业", intent_mode=intent_mode)),
+                ("negative_level2", _negative_label("排除专业类", intent_mode=intent_mode)),
+                ("negative_level1", _negative_label("排除专业门类", intent_mode=intent_mode)),
+            )
+            for key, label in label_specs:
+                if _format_values(major_intents.get(key)):
+                    return f"{label}：{display_target}"
+        major_text = _render_major_intent_item(
+            major_intents,
+            intent_mode=intent_mode,
+            constraint_intent_type=constraint_intent_type,
+        )
         if major_text:
             return major_text
         school_intents = value.get("school_intents") or {}
@@ -732,6 +769,7 @@ def render_intent_analysis_text(
     impact_text: str,
     analysis_stage: str,
     intent_mode: str,
+    constraint_intent_type: str = "default",
     items: list[dict[str, Any]] | None = None,
     existing_items: list[dict[str, Any]] | None = None,
     impact_analysis: dict[str, Any] | None = None,
@@ -747,8 +785,28 @@ def render_intent_analysis_text(
         if boundary_notes:
             impact_lines = boundary_notes + impact_lines
         return format_text_sections(
-            ("点击采纳后生效", [_render_intent_preview_item(item, intent_mode=intent_mode) for item in (items or [])]),
-            ("当前已记录的报考参考", [_render_intent_preview_item(item, intent_mode=intent_mode) for item in (existing_items or [])]),
+            (
+                "点击采纳后生效",
+                [
+                    _render_intent_preview_item(
+                        item,
+                        intent_mode=intent_mode,
+                        constraint_intent_type=constraint_intent_type,
+                    )
+                    for item in (items or [])
+                ],
+            ),
+            (
+                "当前已记录的报考参考",
+                [
+                    _render_intent_preview_item(
+                        item,
+                        intent_mode=intent_mode,
+                        constraint_intent_type=constraint_intent_type,
+                    )
+                    for item in (existing_items or [])
+                ],
+            ),
             ("影响", impact_lines[:2]),
         )
 
@@ -774,7 +832,19 @@ def render_intent_analysis_text(
         ("当前情况", resolved_impact),
     ]
     if items:
-        sections.append(("这次识别到的参考范围", [_render_intent_preview_item(item, intent_mode=intent_mode) for item in items]))
+        sections.append(
+            (
+                "这次识别到的参考范围",
+                [
+                    _render_intent_preview_item(
+                        item,
+                        intent_mode=intent_mode,
+                        constraint_intent_type=constraint_intent_type,
+                    )
+                    for item in items
+                ],
+            )
+        )
     if existing_items:
         sections.append(("当前已记录的报考参考", [item.get("content", "") for item in existing_items]))
 
@@ -799,11 +869,12 @@ def render_intent_analysis_payload(payload_text: str) -> str:
             return render_intent_analysis_text(
                 title=payload.title,
                 impact_text=payload.impactText,
-            analysis_stage=payload.analysisStage,
-            intent_mode=payload.intentMode,
-            existing_items=[item.model_dump() for item in payload.existingItems],
-            impact_analysis=payload.impactAnalysis,
-        )
+                analysis_stage=payload.analysisStage,
+                intent_mode=payload.intentMode,
+                constraint_intent_type=payload.constraintIntentType,
+                existing_items=[item.model_dump() for item in payload.existingItems],
+                impact_analysis=payload.impactAnalysis,
+            )
         all_existing_text = (
             "这个想法当前已经在报考参考里，本轮不用重复采纳。"
             "我也可以继续帮你看看现在这份方案和它有多匹配。"
@@ -817,6 +888,7 @@ def render_intent_analysis_payload(payload_text: str) -> str:
         impact_text=payload.impactText,
         analysis_stage=payload.analysisStage,
         intent_mode=payload.intentMode,
+        constraint_intent_type=payload.constraintIntentType,
         items=[item.model_dump() for item in payload.items],
         existing_items=[item.model_dump() for item in payload.existingItems],
         impact_analysis=payload.impactAnalysis,

@@ -113,6 +113,7 @@ class PlanRecoveryActionDecision(BaseModel):
     unitIds: list[str] = Field(default_factory=list)
     sourceMajorNames: list[str] = Field(default_factory=list)
     sourcePosition: int | None = None
+    positionScope: Literal["single", "after"] = "single"
     targetPosition: int | None = None
     sortField: PlanRecoverySortField | None = None
     tier: str | None = None
@@ -146,6 +147,12 @@ class PlanRecoveryActionDecision(BaseModel):
             return int(value)  # type: ignore[arg-type]
         except (TypeError, ValueError):
             return None
+
+    @field_validator("positionScope", mode="before")
+    @classmethod
+    def _coerce_position_scope(cls, value: object) -> str:
+        text = str(value or "").strip()
+        return text if text in {"single", "after"} else "single"
 
     @field_validator("limit", mode="before")
     @classmethod
@@ -388,6 +395,8 @@ def _get_plan_recovery_action_agent() -> Agent[None, str]:
                 "如果用户只用位置表达，如“第8个移到第12位/第8条放到第12”，没有学校专业名，"
                 "使用 move_ordered_unit，sourcePosition 填 8，targetPosition 填 12。"
                 "如果用户明确删除第 N 个/第 N 个专业组且没有学校专业名，使用 remove_ordered_unit，sourcePosition 填 N。"
+                "如果用户明确删除第 N 位之后/后面的当前方案展示单元，使用 remove_ordered_unit，"
+                "sourcePosition 填 N，positionScope 填 after；如果还限定冲/稳/保或数量，同时填写 tier 和 limit。"
                 "如果用户明确要求按录取率/院校层次/推荐系数整体排序，使用 sort_ordered_plan，"
                 "sortField 分别填 admissionRatio、schoolRank、finalScore；局部筛选查看不要判成排序。"
                 "替换动作必须同时能看出要替换当前方案里的对象和新方向；否则输出 none 或低置信。"
@@ -396,7 +405,7 @@ def _get_plan_recovery_action_agent() -> Agent[None, str]:
                 "高副作用真正执行不在这里决定；这里只恢复预览链路。"
                 "只有很确定时 confidence >= 0.85；不确定时 actionFamily=none 或 confidence < 0.85。"
                 "输出 JSON 字段：actionFamily, confidence, reason, volunteerIds, unitIds, sourceMajorNames, "
-                "sourcePosition, targetPosition, sortField, tier, provinceKeyword, schoolKeyword, majorKeyword, "
+                "sourcePosition, positionScope, targetPosition, sortField, tier, provinceKeyword, schoolKeyword, majorKeyword, "
                 "schoolTags, majorTags, preserveCount, limit。"
             ),
             model_settings=_get_plan_action_llm_client().model_settings,
@@ -556,6 +565,7 @@ def _normalize_plan_recovery_action_decision(decision: PlanRecoveryActionDecisio
         unitIds=_normalize_list_values(decision.unitIds),
         sourceMajorNames=_normalize_list_values(decision.sourceMajorNames),
         sourcePosition=decision.sourcePosition,
+        positionScope=decision.positionScope,
         targetPosition=decision.targetPosition,
         sortField=sort_field or None,  # type: ignore[arg-type]
         tier=str(decision.tier or "").strip() or None,

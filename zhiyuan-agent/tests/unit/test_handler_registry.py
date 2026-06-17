@@ -260,6 +260,41 @@ class TestAnalysisHandlerTargetFiltering:
         assert filtered["main_problems"] == []
         assert filtered["fix_proposals"]["proposals"] == []
 
+    def test_filter_review_facts_treats_matching_fix_proposal_as_target_hit(self):
+        from app.handlers.analysis_handlers import _filter_review_facts_for_targets
+
+        facts = {
+            "summary_text": "当前方案暂时没有明显风险或提醒。",
+            "main_problems": [],
+            "hit_rules": [],
+            "issue_hit_plan_examples": [],
+            "candidate_supply": {"summary": "候选池共 431 个，冲120 / 稳130 / 保181"},
+            "fix_proposals": {
+                "proposals": [
+                    {
+                        "proposal_id": "fp_fee",
+                        "status": "blocked",
+                        "title": "处理高收费",
+                        "strategy": "replace_risk_items",
+                        "source_check_codes": ["high_tuition"],
+                    }
+                ],
+            },
+        }
+
+        filtered = _filter_review_facts_for_targets(
+            facts,
+            ["replace_risk_items"],
+            ["high_tuition"],
+        )
+
+        assert filtered.get("target_match_empty") is not True
+        assert filtered["main_problems"] == ["处理高收费"]
+        assert filtered["hit_rules"] == [{"summary": "处理高收费", "suggestion_types": []}]
+        assert "处理高收费" in filtered["summary_text"]
+        assert filtered["candidate_supply"] == facts["candidate_supply"]
+        assert [item["proposal_id"] for item in filtered["fix_proposals"]["proposals"]] == ["fp_fee"]
+
 
 class TestSharedUtils:
     """shared.py 工具函数。"""

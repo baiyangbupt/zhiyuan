@@ -108,6 +108,11 @@ def _normalize_tier_count_map(value: Any) -> dict[str, int]:
     }
 
 
+def _is_major_group_model(volunteer_model: str) -> bool:
+    normalized = re.sub(r"[\s_-]+", "", str(volunteer_model or "")).lower()
+    return normalized in {"majorgroup", "group", "schoolmajorgroup"}
+
+
 def _candidate_pool_total(candidate_state: dict[str, Any]) -> int:
     summary = candidate_state.get("summary") or {}
     for value in (
@@ -125,9 +130,17 @@ def _candidate_pool_total(candidate_state: dict[str, Any]) -> int:
 
 def _candidate_tier_counts(candidate_state: dict[str, Any], volunteer_model: str) -> dict[str, int]:
     summary = candidate_state.get("summary") or {}
+    unit_total = _coerce_non_negative_int(summary.get("unitTotal") or candidate_state.get("unitTotal"))
+    entry_total = _coerce_non_negative_int(
+        summary.get("entryTotal")
+        or candidate_state.get("entryTotal")
+        or summary.get("total")
+        or candidate_state.get("total")
+    )
+    has_distinct_unit_total = unit_total > 0 and entry_total > 0 and unit_total != entry_total
     preferred_keys = (
         ("unitTierCounts", "tierCounts", "entryTierCounts")
-        if volunteer_model == "majorGroup"
+        if _is_major_group_model(volunteer_model) or has_distinct_unit_total
         else ("tierCounts", "entryTierCounts", "unitTierCounts")
     )
     for key in preferred_keys:

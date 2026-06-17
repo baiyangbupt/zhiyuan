@@ -598,6 +598,53 @@ def test_build_plan_status_overview_facts_includes_candidate_supply_shortage():
     assert "当前没有可直接补入的稳、保区候选" in supply["summary"]
 
 
+def test_build_candidate_supply_uses_unit_tier_counts_for_major_group_alias():
+    planning_state = {
+        "volunteerModel": "major_group",
+        "candidatePoolState": {
+            "requiredCount": 96,
+            "requiredTierCounts": {"冲": 32, "稳": 32, "保": 32},
+            "summary": {
+                "unitTotal": 431,
+                "total": 1470,
+                "unitTierCounts": {"冲": 120, "稳": 130, "保": 181},
+                "tierCounts": {"冲": 459, "稳": 238, "保": 773},
+            },
+        },
+    }
+
+    facts = _build_plan_status_overview_facts(planning_state)
+
+    supply = facts["candidate_supply"]
+    assert supply["candidate_total"] == 431
+    assert supply["candidate_tier_counts"] == {"冲": 120, "稳": 130, "保": 181}
+    assert supply["summary"] == "候选池共 431 个，冲120 / 稳130 / 保181"
+
+
+def test_build_candidate_supply_prefers_unit_tier_counts_when_unit_and_entry_totals_differ():
+    planning_state = {
+        "candidatePoolState": {
+            "requiredCount": 45,
+            "requiredTierCounts": {"冲": 13, "稳": 13, "保": 19},
+            "summary": {
+                "entryTotal": 1470,
+                "unitTotal": 431,
+                "total": 1470,
+                "entryTierCounts": {"冲": 459, "稳": 238, "保": 773},
+                "unitTierCounts": {"冲": 125, "稳": 68, "保": 238},
+                "tierCounts": {"冲": 459, "稳": 238, "保": 773},
+            },
+        },
+    }
+
+    facts = _build_plan_status_overview_facts(planning_state)
+
+    supply = facts["candidate_supply"]
+    assert supply["candidate_total"] == 431
+    assert supply["candidate_tier_counts"] == {"冲": 125, "稳": 68, "保": 238}
+    assert supply["summary"] == "候选池共 431 个，冲125 / 稳68 / 保238"
+
+
 def test_query_planning_candidate_pool_uses_filters_and_formats_result():
     ctx = _make_ctx("candidate-session")
     response = {

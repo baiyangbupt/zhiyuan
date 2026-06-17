@@ -167,19 +167,37 @@ async def analyze_current_interest(
     is suitable or worth understanding first. This path must not create pending
     intent state or ask the user to confirm a preference update.
     """
-    return render_intent_analysis_payload(
-        await analyze_volunteer_intent_change(
-            ctx,
-            _payload_from_model(MajorIntentPreviewInput, major_intents),
-            None,
-            None,
-            None,
-            analysis_stage=ANALYSIS_STAGE_INTEREST,
-            recovery_scope=recovery_scope,
-            confirm_enabled=False,
-            intent_mode=intent_mode,
-        )
+    side_effect_arbitration_enabled = bool(
+        getattr(ctx.deps, "enable_intent_side_effect_arbitration", False)
     )
+    payload_text = await analyze_volunteer_intent_change(
+        ctx,
+        _payload_from_model(MajorIntentPreviewInput, major_intents),
+        None,
+        None,
+        None,
+        analysis_stage=ANALYSIS_STAGE_CONFIRMED if side_effect_arbitration_enabled else ANALYSIS_STAGE_INTEREST,
+        recovery_scope=recovery_scope,
+        confirm_enabled=side_effect_arbitration_enabled,
+        intent_mode=intent_mode,
+    )
+    rendered = render_intent_analysis_payload(payload_text)
+    try:
+        payload = parse_intent_analysis_payload(payload_text)
+    except Exception:
+        return rendered
+    observability = getattr(ctx.deps, "agent_observability", None)
+    if (
+        isinstance(observability, dict)
+        and isinstance(observability.get("latestIntentPreviewPayload"), dict)
+        and payload.analysisStage == ANALYSIS_STAGE_CONFIRMED
+        and payload.status in {"ready", "existing_only"}
+    ):
+        data = payload.model_dump()
+        data["reply_strategy"] = "continue_model"
+        data["message"] = rendered
+        return json.dumps(data, ensure_ascii=False)
+    return rendered
 
 
 async def analyze_current_interest_profile(

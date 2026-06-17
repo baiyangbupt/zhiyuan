@@ -403,6 +403,13 @@ def _first_atomic_action(plan_model: PlanActionPlan) -> Any | None:
     return plan_model.atomic_actions[0] if plan_model.atomic_actions else None
 
 
+def _atomic_position_scope(atomic: Any | None) -> str:
+    if atomic is None:
+        return "single"
+    scope = str(getattr(atomic, "position_scope", None) or getattr(atomic, "positionScope", None) or "single").strip()
+    return scope if scope in {"single", "after"} else "single"
+
+
 def _extract_unit_ids(plan_model: PlanActionPlan) -> list[str]:
     unit_ids: list[str] = []
     for action in plan_model.atomic_actions or []:
@@ -440,6 +447,23 @@ def _extract_unit_source_positions(plan_model: PlanActionPlan) -> list[int]:
         if value > 0 and value not in positions:
             positions.append(value)
     return positions
+
+
+def _extract_unit_position_limit(plan_model: PlanActionPlan) -> int:
+    for action in plan_model.atomic_actions or []:
+        raw_value = getattr(action, "filters", None)
+        if not isinstance(raw_value, dict):
+            continue
+        limit_value = raw_value.get("limit")
+        if limit_value in (None, ""):
+            continue
+        try:
+            limit = int(limit_value)
+        except (TypeError, ValueError):
+            continue
+        if limit > 0:
+            return limit
+    return 0
 
 
 def _ordered_visible_unit_id_for_item(item: dict[str, Any] | None) -> str:
@@ -509,6 +533,11 @@ async def _resolve_ordered_unit_ids(ctx: RunContext[RequestContext], plan_model:
         state = (state_resp or {}).get("data") or {}
         ordered_state = state.get("orderedPlanState") or {}
         units = _ordered_visible_units(ordered_state, str(state.get("volunteerModel") or state.get("volunteer_model") or ""))
+        action = _first_atomic_action(plan_model)
+        if _atomic_position_scope(action) == "after":
+            matched_units, _ = _resolve_ordered_visible_units_from_position_scope(plan_model, units)
+            resolved_range = [_unit_id_from_visible_unit(unit) for unit in matched_units]
+            return [unit_id for unit_id in resolved_range if unit_id]
         resolved: list[str] = []
         for position in positions:
             index = position - 1
@@ -577,6 +606,20 @@ def _unit_kind_label(unit: dict[str, Any] | None) -> str:
     return "志愿"
 
 
+def _unit_tier_label(unit: dict[str, Any] | None) -> str:
+    unit = unit or {}
+    tier = str(unit.get("tier") or unit.get("bucket") or "").strip()
+    if tier:
+        return tier
+    majors = _unit_major_items(unit)
+    for major in majors:
+        for key in ("tier", "bucket"):
+            tier = str((major or {}).get(key) or "").strip()
+            if tier:
+                return tier
+    return ""
+
+
 def _unit_position_semantics(unit: dict[str, Any] | None) -> str:
     return "unit_position_not_item_position" if _unit_kind_label(unit) == "专业组" else "ordered_item_position"
 
@@ -588,6 +631,90 @@ def _unit_position_explanation(unit: dict[str, Any] | None) -> str:
             "执行后该组内专业会保持连续。"
         )
     return "位置说明：这里的“第几个”按当前方案展示顺序计算，确认后会影响方案顺序和导出顺序。"
+
+
+def _unit_id_from_visible_unit(unit: dict[str, Any] | None) -> str:
+    unit = unit or {}
+    unit_id = str(unit.get("unitId") or unit.get("id") or "").strip()
+    if unit_id:
+        return unit_id
+    major_items = unit.get("majorItems") or unit.get("items") or []
+    if major_items:
+        return _ordered_unit_id_for_item(major_items[0] or {})
+    return ""
+
+
+def _resolve_ordered_visible_units_from_position_scope(
+    plan_model: PlanActionPlan,
+    units: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    action = _first_atomic_action(plan_model)
+    position_scope = _atomic_position_scope(action)
+    position_refs = _extract_unit_source_positions(plan_model)
+    source_position = position_refs[0] if position_refs else None
+    facts: dict[str, Any] = {
+        "position_scope": position_scope,
+        "source_unit_position": source_position,
+    }
+    if position_scope != "after":
+        if source_position is not None and 0 < source_position <= len(units):
+            return [units[source_position - 1] or {}], facts
+        return [], facts
+    if source_position is None:
+        return [], facts
+    if source_position < 0:
+        return [], facts
+    if source_position >= len(units):
+        facts["position_resolution"] = "range_empty"
+        return [], facts
+
+    filters = getattr(action, "filters", None) if action is not None else None
+    filters = filters if isinstance(filters, dict) else {}
+    tier = str(filters.get("tier") or "").strip()
+    limit = _extract_unit_position_limit(plan_model)
+    matched: list[dict[str, Any]] = []
+    for unit in units[source_position:]:
+        if tier and _unit_tier_label(unit) != tier:
+            continue
+        matched.append(unit)
+        if limit > 0 and len(matched) >= limit:
+            break
+    facts.update(
+        {
+            "position_resolution": "range_resolved" if matched else "range_empty",
+            "position_scope_tier": tier,
+            "position_scope_limit": limit,
+            "position_scope_matched_count": len(matched),
+        }
+    )
+    return matched, facts
+
+
+def _resolved_payload_for_ordered_visible_units(
+    plan_model: PlanActionPlan,
+    units: list[dict[str, Any]],
+) -> tuple[dict[str, Any], list[str], list[str]]:
+    if not units:
+        return {}, [], []
+    if all(_unit_kind_label(unit) == "志愿" for unit in units):
+        volunteer_ids = [_unit_volunteer_id(unit) for unit in units]
+        volunteer_ids = [value for value in volunteer_ids if value]
+        if not volunteer_ids:
+            return {}, [], []
+        return (
+            _build_resolved_apply_payload(
+                plan_model,
+                volunteer_ids=volunteer_ids,
+                action_family="remove_units",
+            ),
+            volunteer_ids,
+            [],
+        )
+    unit_ids = [_unit_id_from_visible_unit(unit) for unit in units]
+    unit_ids = [value for value in unit_ids if value]
+    if not unit_ids:
+        return {}, [], []
+    return _build_resolved_apply_payload(plan_model, unit_ids=unit_ids), [], unit_ids
 
 
 async def _build_move_ordered_unit_preview_summary(
@@ -726,6 +853,83 @@ async def _build_remove_ordered_unit_preview_summary(
         unit_ids = _extract_unit_ids(plan_model)
         position_refs = _extract_unit_source_positions(plan_model)
         source_position = position_refs[0] if position_refs else None
+        action = _first_atomic_action(plan_model)
+        if not unit_ids and _atomic_position_scope(action) == "after":
+            matched_units, range_facts = _resolve_ordered_visible_units_from_position_scope(plan_model, units)
+            if source_position is None:
+                return (
+                    "这次还没定位到从第几位之后开始删除。请补充起始位置，我会先给你删除预览。",
+                    {
+                        "position_semantics": "ordered_unit_position",
+                        "position_resolution": "missing_source_position",
+                        "ordered_unit_count": len(units),
+                        **range_facts,
+                    },
+                )
+            if not matched_units:
+                tier = str(range_facts.get("position_scope_tier") or "").strip()
+                tier_text = f"且属于“{tier}”区间的" if tier else ""
+                if source_position is not None and source_position >= len(units):
+                    return (
+                        f"当前方案只有 {len(units)} 个可排序项，第 {source_position} 位之后没有可删除的内容。",
+                        {
+                            "position_semantics": "ordered_unit_position",
+                            "position_resolution": "range_empty",
+                            "ordered_unit_count": len(units),
+                            "source_unit_position": source_position,
+                            **range_facts,
+                        },
+                    )
+                return (
+                    f"当前方案里第 {source_position} 位之后暂时没有匹配{tier_text}内容，所以这次不需要按这个范围删除。",
+                    {
+                        "position_semantics": "ordered_unit_position",
+                        "position_resolution": "range_empty",
+                        "ordered_unit_count": len(units),
+                        "source_unit_position": source_position,
+                        **range_facts,
+                    },
+                )
+
+            label = _unit_kind_label(matched_units[0])
+            examples = "；".join(
+                f"第 {idx} 个{_unit_kind_label(unit)}：{_unit_display_name(unit)}"
+                for idx, unit in [
+                    (unit_index + 1, unit)
+                    for unit_index, unit in enumerate(units)
+                    if unit in matched_units
+                ][:5]
+            )
+            total_major_count = sum(_unit_major_count(unit) for unit in matched_units)
+            tier = str(range_facts.get("position_scope_tier") or "").strip()
+            tier_text = f"、属于“{tier}”区间" if tier else ""
+            limit = int(range_facts.get("position_scope_limit") or 0)
+            limit_text = f"、最多 {limit} 个" if limit > 0 else ""
+            resolved_payload, volunteer_ids, resolved_unit_ids = _resolved_payload_for_ordered_visible_units(plan_model, matched_units)
+            if label == "专业组":
+                remove_count_text = f"{total_major_count} 个专业 / {len(matched_units)} 个专业组"
+                method_text = "执行后这些专业组会整体移出，后续专业组前移。"
+            else:
+                remove_count_text = f"{len(matched_units)} 个志愿"
+                method_text = "执行后后续志愿前移。"
+            summary = (
+                f"会删除第 {source_position} 位之后{tier_text}{limit_text}的 {len(matched_units)} 个{label}。"
+                f"本次将减少 {remove_count_text}。"
+                f"命中项包括：{examples}。"
+                f"{method_text}"
+            )
+            return summary, {
+                "position_semantics": _unit_position_semantics(matched_units[0]),
+                "unit_kind": label,
+                "source_unit_position": source_position,
+                "source_unit_major_count": total_major_count,
+                "matched_unit_count": len(matched_units),
+                "matched_unit_names": [_unit_display_name(unit) for unit in matched_units[:10]],
+                "resolved_unit_ids": resolved_unit_ids,
+                "resolved_volunteer_ids": volunteer_ids,
+                "resolved_apply_payload": resolved_payload,
+                **range_facts,
+            }
         source_unit: dict[str, Any] | None = None
         source_unit_id = ""
 
@@ -3347,6 +3551,20 @@ async def _execute_plan_action_model(
         elif plan_model.action_family == "remove_ordered_unit":
             resolved_summary, resolved_facts = await _build_remove_ordered_unit_preview_summary(ctx, plan_model)
             if resolved_summary:
+                if str(resolved_facts.get("position_resolution") or "").strip() in {"range_empty", "missing_source_position"}:
+                    return PlanExecutionResult(
+                        applied=False,
+                        action_family=plan_model.action_family,
+                        stage=plan_model.stage,
+                        result_kind="no_change",
+                        context_summary=plan_model.context_summary,
+                        summary=resolved_summary,
+                        state_summary=resolved_summary,
+                        reply_focus=["no_matching_ordered_items"],
+                        reply_strategy="direct_reply",
+                        next_step_hints=["当前范围没有命中可删除项；不要生成确认卡，也不要提示需要确认执行。"],
+                        facts=_facts_with_planning_version(resolved_facts, ctx),
+                    )
                 preview_summary = resolved_summary
                 preview_facts = resolved_facts
         elif plan_model.action_family in {"remove_units", "move_unit", "replace_units"}:
@@ -3771,6 +3989,20 @@ async def _execute_plan_action_model(
         elif plan_model.action_family == "remove_ordered_unit":
             resolved_summary, resolved_facts = await _build_remove_ordered_unit_preview_summary(ctx, plan_model)
             if resolved_summary:
+                if str(resolved_facts.get("position_resolution") or "").strip() in {"range_empty", "missing_source_position"}:
+                    return PlanExecutionResult(
+                        applied=False,
+                        action_family=plan_model.action_family,
+                        stage=plan_model.stage,
+                        result_kind="no_change",
+                        context_summary=plan_model.context_summary,
+                        summary=resolved_summary,
+                        state_summary=resolved_summary,
+                        reply_focus=["no_matching_ordered_items"],
+                        reply_strategy="direct_reply",
+                        next_step_hints=["当前范围没有命中可删除项；不要生成确认卡，也不要提示需要确认执行。"],
+                        facts=_facts_with_planning_version(resolved_facts, ctx),
+                    )
                 preview_summary = resolved_summary
                 preview_facts = resolved_facts
         elif plan_model.stage == "preview" and plan_model.action_family in {"remove_units", "move_unit", "replace_units"}:

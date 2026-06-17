@@ -439,6 +439,166 @@ def test_execute_plan_action_remove_ordered_unit_preview_groups_items_for_major_
     assert data["facts"]["resolved_apply_payload"]["atomic_actions"][0]["unit_ids"] == ["u1"]
 
 
+def test_execute_plan_action_remove_ordered_unit_preview_resolves_after_range_for_major_groups():
+    payload = {
+        "stage": "preview",
+        "action_family": "remove_ordered_unit",
+        "user_goal": "把第2位之后的两个保删掉",
+        "context_summary": "阶段=ordered；方案=6/6",
+        "preview_summary": "会删除当前方案排序区里的指定范围。",
+        "missing_inputs": [],
+        "atomic_actions": [
+            {
+                "action_type": "remove_ordered_unit",
+                "unit_ids": [],
+                "source_position": 2,
+                "position_scope": "after",
+                "target_position": None,
+                "filters": {"tier": "保", "limit": "2"},
+                "reason": "把第2位之后的两个保删掉",
+            }
+        ],
+    }
+    state = {
+        "volunteerModel": "majorGroup",
+        "orderedPlanState": {
+            "units": [
+                {"unitId": "unit-1", "schoolName": "A大学第101组", "tier": "冲", "majorItems": [{"majorName": "英语"}]},
+                {"unitId": "unit-2", "schoolName": "B大学第102组", "tier": "稳", "majorItems": [{"majorName": "计算机"}]},
+                {"unitId": "unit-3", "schoolName": "C大学第103组", "tier": "保", "majorItems": [{"majorName": "会计学"}, {"majorName": "财务管理"}]},
+                {"unitId": "unit-4", "schoolName": "D大学第104组", "tier": "保", "majorItems": [{"majorName": "审计学"}]},
+                {"unitId": "unit-5", "schoolName": "E大学第105组", "tier": "冲", "majorItems": [{"majorName": "法学"}]},
+            ]
+        },
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_state_request",
+        new=AsyncMock(return_value={"code": 0, "data": state}),
+    ) as mock_state, patch(
+        "app.tools.plan_execution_tool._remove_planning_ordered_plan_units_request",
+        new=AsyncMock(),
+    ) as mock_remove:
+        result = asyncio.run(execute_plan_action(_ctx(), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["applied"] is False
+    assert data["result_kind"] == "preview_only"
+    assert "第 2 位之后" in data["summary"]
+    assert "属于“保”区间" in data["summary"]
+    assert "2 个专业组" in data["summary"]
+    assert "C大学第103组" in data["summary"]
+    assert "D大学第104组" in data["summary"]
+    assert data["facts"]["position_scope"] == "after"
+    assert data["facts"]["position_scope_tier"] == "保"
+    assert data["facts"]["matched_unit_count"] == 2
+    assert data["facts"]["resolved_unit_ids"] == ["unit-3", "unit-4"]
+    assert data["facts"]["resolved_apply_payload"]["atomic_actions"][0]["unit_ids"] == ["unit-3", "unit-4"]
+    assert "unit_position_preview" in data["reply_focus"]
+    mock_state.assert_awaited_once()
+    mock_remove.assert_not_awaited()
+
+
+def test_execute_plan_action_remove_ordered_unit_preview_resolves_after_range_to_volunteer_removal():
+    payload = {
+        "stage": "preview",
+        "action_family": "remove_ordered_unit",
+        "user_goal": "把第2个之后的保删掉",
+        "context_summary": "阶段=ordered；方案=5/5",
+        "preview_summary": "会删除当前方案排序区里的指定范围。",
+        "missing_inputs": [],
+        "atomic_actions": [
+            {
+                "action_type": "remove_ordered_unit",
+                "unit_ids": [],
+                "source_position": 2,
+                "position_scope": "after",
+                "target_position": None,
+                "filters": {"tier": "保", "limit": "2"},
+                "reason": "把第2个之后的保删掉",
+            }
+        ],
+    }
+    state = {
+        "volunteerModel": "schoolMajor",
+        "orderedPlanState": {
+            "units": [],
+            "items": [
+                {"volunteerId": "v1", "schoolName": "A大学", "majorName": "英语", "tier": "冲", "position": 1},
+                {"volunteerId": "v2", "schoolName": "B大学", "majorName": "计算机", "tier": "稳", "position": 2},
+                {"volunteerId": "v3", "schoolName": "C大学", "majorName": "会计学", "tier": "保", "position": 3},
+                {"volunteerId": "v4", "schoolName": "D大学", "majorName": "审计学", "tier": "保", "position": 4},
+                {"volunteerId": "v5", "schoolName": "E大学", "majorName": "法学", "tier": "冲", "position": 5},
+            ],
+        },
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_state_request",
+        new=AsyncMock(return_value={"code": 0, "data": state}),
+    ):
+        result = asyncio.run(execute_plan_action(_ctx(), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["applied"] is False
+    assert data["result_kind"] == "preview_only"
+    assert "2 个志愿" in data["summary"]
+    assert "C大学 · 会计学" in data["summary"]
+    assert "D大学 · 审计学" in data["summary"]
+    assert data["facts"]["unit_kind"] == "志愿"
+    assert data["facts"]["resolved_volunteer_ids"] == ["v3", "v4"]
+    assert data["facts"]["resolved_apply_payload"]["action_family"] == "remove_units"
+    action = data["facts"]["resolved_apply_payload"]["atomic_actions"][0]
+    assert action["action_type"] == "remove_units"
+    assert action["volunteer_ids"] == ["v3", "v4"]
+
+
+def test_execute_plan_action_remove_ordered_unit_after_range_without_matches_is_no_change():
+    payload = {
+        "stage": "preview",
+        "action_family": "remove_ordered_unit",
+        "user_goal": "删掉第40位之后的几个保的学校",
+        "context_summary": "阶段=ordered；方案=45/45",
+        "preview_summary": "会删除当前方案排序区里的指定范围。",
+        "missing_inputs": [],
+        "atomic_actions": [
+            {
+                "action_type": "remove_ordered_unit",
+                "unit_ids": [],
+                "source_position": 40,
+                "position_scope": "after",
+                "target_position": None,
+                "filters": {"tier": "保", "limit": "5"},
+                "reason": "删掉第40位之后的几个保的学校",
+            }
+        ],
+    }
+    state = {
+        "volunteerModel": "majorGroup",
+        "orderedPlanState": {
+            "units": [
+                {"unitId": f"unit-{idx}", "schoolName": f"{idx}大学第101组", "tier": "冲" if idx > 40 else "稳", "majorItems": [{"majorName": "英语"}]}
+                for idx in range(1, 46)
+            ]
+        },
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_state_request",
+        new=AsyncMock(return_value={"code": 0, "data": state}),
+    ):
+        result = asyncio.run(execute_plan_action(_ctx(), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["applied"] is False
+    assert data["result_kind"] == "no_change"
+    assert "暂时没有匹配" in data["summary"]
+    assert "需要你确认" not in data["summary"]
+    assert data["reply_focus"] == ["no_matching_ordered_items"]
+    assert data["facts"]["position_resolution"] == "range_empty"
+    assert data["facts"]["position_scope"] == "after"
+
+
 def test_execute_plan_action_regenerate_order_does_not_infer_structural_rebalance_from_text():
     payload = {
         "stage": "preview",
@@ -6908,3 +7068,56 @@ def test_execute_plan_action_removes_major_group_unit_by_explicit_unit_id():
     assert data["executed_actions"] == [{"action": "remove_ordered_unit", "unitIds": ["unit-9"]}]
     assert data["summary"] == "remove ok"
     mock_remove.assert_awaited_once_with(1, "exec-1", ["unit-9"])
+
+
+def test_execute_plan_action_remove_ordered_unit_apply_uses_preview_resolved_after_range_unit_ids():
+    payload = {
+        "stage": "apply",
+        "action_family": "remove_ordered_unit",
+        "user_goal": "把第2位之后的两个保删掉",
+        "context_summary": "阶段=ordered；方案=6/6",
+        "facts": {
+            "resolved_apply_payload": {
+                "atomic_actions": [
+                    {
+                        "action_type": "remove_ordered_unit",
+                        "unit_ids": ["unit-3", "unit-4"],
+                        "source_position": 2,
+                        "position_scope": "after",
+                        "target_position": None,
+                        "filters": {"tier": "保", "limit": "2"},
+                        "reason": "把第2位之后的两个保删掉",
+                    }
+                ]
+            }
+        },
+        "missing_inputs": [],
+        "atomic_actions": [
+            {
+                "action_type": "remove_ordered_unit",
+                "unit_ids": [],
+                "source_position": 2,
+                "position_scope": "after",
+                "target_position": None,
+                "filters": {"tier": "保", "limit": "2"},
+                "reason": "把第2位之后的两个保删掉",
+            }
+        ],
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_state_request",
+        new=AsyncMock(),
+    ) as mock_state, patch(
+        "app.tools.plan_execution_tool._remove_planning_ordered_plan_units_request",
+        new=AsyncMock(return_value={"code": 0, "data": {"message": "range remove ok"}}),
+    ) as mock_remove:
+        result = asyncio.run(execute_plan_action(_ctx_with_pending("remove_ordered_unit"), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["applied"] is True
+    assert data["action_family"] == "remove_ordered_unit"
+    assert data["executed_actions"] == [{"action": "remove_ordered_unit", "unitIds": ["unit-3", "unit-4"]}]
+    assert data["summary"] == "range remove ok"
+    mock_state.assert_not_awaited()
+    mock_remove.assert_awaited_once_with(1, "exec-1", ["unit-3", "unit-4"])

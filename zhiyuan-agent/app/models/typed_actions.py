@@ -200,6 +200,7 @@ class RemoveOrderedUnitAction(_ActionBase):
     action_type: Literal["remove_ordered_unit"] = "remove_ordered_unit"
     unit_ids: list[str] = Field(default_factory=list)
     source_position: int | None = None
+    position_scope: Literal["single", "after"] = "single"
 
 
 class ReplaceUnitsAction(_ActionBase):

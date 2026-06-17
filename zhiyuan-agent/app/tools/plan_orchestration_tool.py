@@ -764,6 +764,7 @@ async def _plan_next_action_model(
     unit_ids: list[str] | None = None,
     source_major_names: list[str] | None = None,
     source_position: int | None = None,
+    position_scope: Literal["single", "after"] = "single",
     target_position: int | None = None,
     sort_field: Literal["admissionRatio", "schoolRank", "finalScore"] | None = None,
     review_issue_code: str | None = None,
@@ -790,6 +791,8 @@ async def _plan_next_action_model(
     except (TypeError, ValueError):
         planning_version = 0
     review_issues = _context_review_issues(context_inputs)
+    if position_scope not in {"single", "after"}:
+        position_scope = "single"
     base_filters = {
         "tier": tier or "",
         "province_keyword": province_keyword or "",
@@ -962,6 +965,7 @@ async def _plan_next_action_model(
                 unit_ids=unit_ids or [],
                 source_major_names=source_major_names or [],
                 source_position=source_position,
+                position_scope=position_scope,
                 target_position=target_position,
                 filters={k: v for k, v in filters.items() if v},
                 reason=user_goal,
@@ -1109,6 +1113,7 @@ async def plan_next_action(
     unit_ids: list[str] | None = None,
     source_major_names: list[str] | None = None,
     source_position: int | None = None,
+    position_scope: Literal["single", "after"] = "single",
     target_position: int | None = None,
     sort_field: Literal["admissionRatio", "schoolRank", "finalScore"] | None = None,
     review_issue_code: str | None = None,
@@ -1152,6 +1157,10 @@ async def plan_next_action(
     - 专业组整体移动：`action_family="move_ordered_unit"`，优先填写真实 `unit_ids`；
       如果用户只说“第N个专业组”，同样显式填写 `source_position=N` 和
       `target_position=M`，执行层会按当前专业组顺序解析。
+    - 排序区范围删除：如果用户表达删除第 N 位之后/后面的展示单元，使用
+      `action_family="remove_ordered_unit"`，填写 `source_position=N`、
+      `position_scope="after"`；如果还限定“保/稳/冲”或数量，同时填写 `tier`
+      和 `limit`。执行层会按当前方案展示单元顺序、结构化层级和数量生成预览。
     对单条志愿移动不要只把目标和位置写在 `user_goal` 里；缺少 `volunteer_ids`
     或 `target_position` 时，本工具会要求补充信息。按字段排序时必须显式填写
     `sort_field`：录取率=`admissionRatio`，院校层次=`schoolRank`，推荐系数=`finalScore`。
@@ -1182,6 +1191,7 @@ async def plan_next_action(
         unit_ids=unit_ids,
         source_major_names=source_major_names,
         source_position=source_position,
+        position_scope=position_scope,
         target_position=target_position,
         sort_field=sort_field,
         review_issue_code=review_issue_code,

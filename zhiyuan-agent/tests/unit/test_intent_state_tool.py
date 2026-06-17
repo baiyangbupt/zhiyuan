@@ -46,6 +46,7 @@ from app.tools.intent_state_tool import (
     IntentSideEffectDecision,
     _major_relation_notes_from_latest_utterance,
     _normalize_region_area_polarity_payloads,
+    _preserve_only_keep_positive_major_scope,
     _prune_generated_negative_complements_for_only_keep,
     _remove_unstated_positive_major_conflicts,
     _recover_polarity_major_intent_locally_from_latest_utterance,
@@ -1051,6 +1052,61 @@ def test_analyze_current_interest_wrapper_defaults_to_generic_recovery_scope():
     )
 
 
+def test_analyze_current_interest_wrapper_returns_structured_payload_when_semantic_recovery_enabled():
+    from app.agent.context import RequestContext
+
+    request_context = RequestContext(
+        userid="u1",
+        sessionid="s1",
+        chat_history=[{"role": "user", "content": "我倾向会计学和审计学，但土木工程不要"}],
+        batch="01",
+        enable_intent_side_effect_arbitration=True,
+        agent_observability={
+            "latestIntentPreviewPayload": {
+                "status": "ready",
+                "sessionId": "s1",
+                "analysisStage": ANALYSIS_STAGE_CONFIRMED,
+            }
+        },
+    )
+    ctx = SimpleNamespace(deps=request_context)
+    payload_text = json.dumps(
+        {
+            "status": "ready",
+            "sessionId": "s1",
+            "intentMode": INTENT_MODE_CONSTRAINT,
+            "analysisStage": ANALYSIS_STAGE_CONFIRMED,
+            "items": [
+                {
+                    "content": "排除专业：土木工程",
+                    "selected": True,
+                    "value": {"major_intents": {"negative_level3": ["土木工程"]}},
+                }
+            ],
+        },
+        ensure_ascii=False,
+    )
+
+    with patch("app.tools.intent_preview_tool.analyze_volunteer_intent_change", new=AsyncMock(return_value=payload_text)) as mock_edit:
+        resp = asyncio.run(analyze_current_interest(ctx, recovery_scope="major"))
+
+    data = json.loads(resp)
+    assert data["analysisStage"] == ANALYSIS_STAGE_CONFIRMED
+    assert data["reply_strategy"] == "continue_model"
+    assert data["items"][0]["value"] == {"major_intents": {"negative_level3": ["土木工程"]}}
+    mock_edit.assert_awaited_once_with(
+        ctx,
+        None,
+        None,
+        None,
+        None,
+        analysis_stage=ANALYSIS_STAGE_CONFIRMED,
+        recovery_scope="major",
+        confirm_enabled=True,
+        intent_mode=INTENT_MODE_PREFERENCE,
+    )
+
+
 def test_analyze_current_school_interest_wrapper_uses_school_scope():
     from app.agent.context import RequestContext
 
@@ -1314,6 +1370,66 @@ async def test_analyze_intent_change_semantic_arbitration_downgrades_boundary_qu
     assert payload["analysisStage"] == ANALYSIS_STAGE_INTEREST
     assert payload["items"][0]["value"] == {"major_intents": {"negative_level2": ["教育学类"]}}
     assert ctx.deps.agent_observability["intentSideEffectDecision"]["decision"] == "analysis_only"
+    classifier_mock.assert_awaited_once()
+    save_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_analyze_intent_change_semantic_arbitration_honors_high_confidence_region_analysis(empty_profile):
+    ctx = SimpleNamespace(
+        deps=SimpleNamespace(
+            userid="u1",
+            sessionid="7581",
+            batch="01",
+            chat_history=[{"role": "user", "content": "天津和河北有哪些学校机会可以看看"}],
+            enable_intent_side_effect_arbitration=True,
+            agent_observability={},
+        )
+    )
+
+    with (
+        patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
+        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()) as save_mock,
+        patch(
+            "app.tools.intent_state_tool._classify_intent_side_effect",
+            new=AsyncMock(
+                return_value=IntentSideEffectDecision(
+                    decision="analysis_only",
+                    confidence=0.9,
+                    reason="用户在咨询地域机会，不是要求写入地域偏好。",
+                )
+            ),
+        ) as classifier_mock,
+        patch(
+            "app.tools.intent_state_tool._enrich_plan_relation_analysis_from_state",
+            new=AsyncMock(
+                return_value={
+                    "summaryTitle": "先看地域机会",
+                    "currentPlanFit": [],
+                    "currentPlanConflict": [],
+                    "candidateOpportunity": ["可以先了解天津和河北的院校机会。"],
+                    "nextActionHints": ["如果要作为后续参考，再列出来采纳。"],
+                }
+            ),
+        ),
+    ):
+        mock_pm = mock_pm_cls.return_value
+        mock_pm.get_current_profile = AsyncMock(return_value=empty_profile)
+
+        payload_text = await analyze_volunteer_intent_change(
+            ctx,
+            city_intents={"province": ["天津", "河北"]},
+            analysis_stage=ANALYSIS_STAGE_CONFIRMED,
+            recovery_scope="region",
+            confirm_enabled=True,
+        )
+
+    payload = json.loads(payload_text)
+    assert payload["analysisStage"] == ANALYSIS_STAGE_INTEREST
+    assert payload["status"] == "ready"
+    assert payload["items"][0]["value"] == {"city_intents": {"province": ["天津"]}}
+    assert payload["items"][1]["value"] == {"city_intents": {"province": ["河北"]}}
+    assert ctx.deps.agent_observability["intentSideEffectDecision"]["honored"] is True
     classifier_mock.assert_awaited_once()
     save_mock.assert_not_awaited()
 
@@ -2264,6 +2380,45 @@ async def test_recover_major_intent_from_context_recovers_mixed_polarity_locally
     extract_negative_mock.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_recover_major_scope_drops_recent_analysis_career_payload():
+    from app.agent.context import RequestContext
+
+    ctx = SimpleNamespace(
+        deps=RequestContext(
+            userid="u1",
+            sessionid="57",
+            chat_history=[{"role": "user", "content": "确认这个专业想法"}],
+            batch="01",
+        )
+    )
+    ctx.deps.recent_intent_analysis = {
+        "items": [
+            {
+                "value": {
+                    "major_intents": {"level3": ["法学"], "negative_level3": ["护理学"]},
+                    "career_intents": {"negative": ["system_public_service"]},
+                }
+            }
+        ]
+    }
+
+    with (
+        patch("app.tools.major_intent_tool.extract_major_intents_with_polarity", new=AsyncMock(return_value="{}")),
+        patch("app.tools.major_intent_tool.extract_major_intent", new=AsyncMock(return_value="{}")),
+        patch("app.tools.major_intent_tool.extract_negative_major_intent", new=AsyncMock(return_value="{}")),
+    ):
+        major_intents, school_intents, city_intents, career_intents = await intent_state_tool_module._recover_intents_from_context(
+            ctx,
+            recovery_scope="major",
+        )
+
+    assert major_intents == {"level3": ["法学"], "negative_level3": ["护理学"]}
+    assert school_intents is None
+    assert city_intents is None
+    assert career_intents is None
+
+
 def test_local_major_recovery_keeps_positive_tendency_and_negative_constraint():
     payload = _recover_polarity_major_intent_locally_from_latest_utterance(
         "我倾向法学和财政学但护理不要",
@@ -3132,6 +3287,31 @@ def test_render_intent_analysis_text_uses_light_markdown_sections():
     assert "上海建桥学院(01)-网络与新媒体" in text
     assert "还可以再看看的机会" not in text
     assert "\n\n**下一步**\n" not in text
+
+
+def test_render_intent_analysis_text_preserves_user_facing_major_alias():
+    text = render_intent_analysis_text(
+        title="确认这次报考条件",
+        impact_text="",
+        analysis_stage=ANALYSIS_STAGE_CONFIRMED,
+        intent_mode=INTENT_MODE_CONSTRAINT,
+        constraint_intent_type="only_keep",
+        items=[
+            {
+                "content": "把气象（大气科学）记成明确要满足的具体专业要求，后面看候选和方案时会按这个范围来。",
+                "value": {"major_intents": {"level3": ["大气科学"]}},
+                "selected": True,
+            },
+            {
+                "content": "把电气（电气工程及其自动化）记成明确要满足的具体专业要求，后面看候选和方案时会按这个范围来。",
+                "value": {"major_intents": {"level3": ["电气工程及其自动化"]}},
+                "selected": True,
+            },
+        ],
+    )
+
+    assert "只保留专业：气象（大气科学）" in text
+    assert "只保留专业：电气（电气工程及其自动化）" in text
 
 
 def test_render_intent_analysis_text_hides_internal_major_levels():
@@ -5446,6 +5626,18 @@ def test_only_keep_major_payload_keeps_explicit_negative_scope():
     )
 
     assert pruned == {"level1": ["医学"], "negative_level1": ["工学"]}
+
+
+def test_only_keep_major_payload_recovers_explicit_positive_scope_from_latest_utterance():
+    preserved = _preserve_only_keep_positive_major_scope(
+        {
+            "negative_level1": ["经济学", "文学", "理学", "工学", "管理学", "法学", "教育学", "历史学", "哲学", "艺术学", "农学", "医学"],
+        },
+        latest_utterance="只要电气和气象，其他方向都不要",
+        batch="01",
+    )
+
+    assert preserved == {"level3": ["电气工程及其自动化", "大气科学"]}
 
 
 def test_region_area_normalization_uses_extractor_polarity_not_user_phrase_rules():

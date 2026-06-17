@@ -1031,6 +1031,11 @@ def _followup_summary(followups: list[dict[str, Any]]) -> tuple[list[str], list[
     return targets, refreshes, types
 
 
+def _followup_content_dict(followup: dict[str, Any]) -> dict[str, Any]:
+    content = followup.get("content")
+    return content if isinstance(content, dict) else {}
+
+
 def _as_string_list(value: Any) -> list[str]:
     if value is None:
         return []
@@ -1165,7 +1170,7 @@ def _check_content_assertions(
         )
     if assert_followup_target:
         found_target = any(
-            f.get("content", {}).get("targetView") == assert_followup_target
+            _followup_content_dict(f).get("targetView") == assert_followup_target
             for f in actionable_followups
         )
         if not found_target:
@@ -1175,7 +1180,7 @@ def _check_content_assertions(
             )
     if assert_followup_refresh is not None:
         found_refresh = any(
-            f.get("content", {}).get("refresh") == assert_followup_refresh
+            _followup_content_dict(f).get("refresh") == assert_followup_refresh
             for f in actionable_followups
         )
         if not found_refresh:

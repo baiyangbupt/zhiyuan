@@ -223,6 +223,11 @@ class TestMutationActions:
         assert a.action_type == "remove_ordered_unit"
         assert a.unit_ids == ["unit-1", "unit-2"]
 
+    def test_remove_ordered_unit_supports_position_range_scope(self):
+        a = RemoveOrderedUnitAction(source_position=40, position_scope="after")
+        assert a.source_position == 40
+        assert a.position_scope == "after"
+
     def test_replace_units(self):
         a = ReplaceUnitsAction(
             remove_ids=["v1", "v2"],

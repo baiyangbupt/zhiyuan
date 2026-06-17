@@ -71,6 +71,7 @@ class PlanAtomicAction(BaseModel):
     unit_ids: list[str] = Field(default_factory=list)
     source_major_names: list[str] = Field(default_factory=list)
     source_position: int | None = None
+    position_scope: Literal["single", "after"] = "single"
     target_position: int | None = None
     filters: dict[str, Any] = Field(default_factory=dict)
     reason: str = ""
@@ -82,6 +83,17 @@ class PlanAtomicAction(BaseModel):
         if isinstance(value, str):
             normalized = str(value or "").strip()
             return {"code": normalized} if normalized else None
+        return value
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_position_scope_alias(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        if "position_scope" not in value and "positionScope" in value:
+            normalized = dict(value)
+            normalized["position_scope"] = normalized.get("positionScope")
+            return normalized
         return value
 
 
@@ -400,6 +412,13 @@ def normalize_plan_action_payload(payload: dict[str, Any] | None) -> dict[str, A
     reason = str(normalized.get("reason") or normalized.get("user_goal") or "").strip()
     target_position = normalized.get("target_position")
     source_position = normalized.get("source_position")
+    position_scope = str(
+        normalized.get("position_scope")
+        or normalized.get("positionScope")
+        or "single"
+    ).strip()
+    if position_scope not in {"single", "after"}:
+        position_scope = "single"
     review_issue_target = normalized.get("review_issue_target")
     if not isinstance(review_issue_target, dict):
         review_issue_code = str(normalized.get("review_issue_code") or "").strip()
@@ -431,6 +450,7 @@ def normalize_plan_action_payload(payload: dict[str, Any] | None) -> dict[str, A
             "unit_ids": unit_ids,
             "source_major_names": source_major_names,
             "source_position": source_position,
+            "position_scope": position_scope,
             "target_position": target_position,
             "filters": filters,
             "reason": reason,

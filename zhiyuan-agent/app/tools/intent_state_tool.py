@@ -376,8 +376,64 @@ def _prune_generated_negative_complements_for_only_keep(
             latest_utterance,
             payload,
             pruned,
-        )
+    )
     return pruned or None
+
+
+def _preserve_only_keep_positive_major_scope(
+    payload: dict[str, Any] | None,
+    *,
+    latest_utterance: str,
+    batch: str,
+) -> dict[str, Any] | None:
+    """Recover explicit positive major targets before pruning only-keep complements.
+
+    The model may understand the utterance as only-keep but pass only the
+    generated "other directions" exclusions to the tool. Once semantic
+    arbitration confirms only-keep, the source of truth for target majors is the
+    catalog-backed entity resolver over the current utterance, not an inferred
+    broad negative complement.
+    """
+
+    normalized = _normalize_intent_payload(
+        payload,
+        allowed_keys=_MAJOR_POSITIVE_KEYS + _MAJOR_NEGATIVE_KEYS,
+    ) or {}
+    explicit_positive: dict[str, list[str]] = {}
+    for mention in resolve_major_mentions_from_text(latest_utterance, batch):
+        level = str(mention.level or "")
+        name = str(mention.canonical_name or "").strip()
+        if level not in _MAJOR_POSITIVE_KEYS or not name:
+            continue
+        bucket = explicit_positive.setdefault(level, [])
+        if name not in bucket:
+            bucket.append(name)
+    if explicit_positive:
+        normalized = _merge_major_intent_payloads(normalized, explicit_positive) or normalized
+    normalized = _prune_generated_negative_complements_for_only_keep(
+        normalized,
+        latest_utterance=latest_utterance,
+        batch=batch,
+    )
+    return normalized
+
+
+def _major_display_name_from_latest_utterance(
+    *,
+    level: str,
+    name: str,
+    latest_utterance: str,
+    batch: str,
+) -> str:
+    for mention in resolve_major_mentions_from_text(latest_utterance, batch):
+        if str(mention.level or "") != level:
+            continue
+        if str(mention.canonical_name or "").strip() != name:
+            continue
+        raw_text = str(getattr(mention, "raw_text", "") or "").strip()
+        if raw_text and raw_text != name:
+            return f"{raw_text}（{name}）"
+    return name
 
 
 def _positive_major_covered_by_negative_scope(
@@ -949,6 +1005,7 @@ def _build_select_items(
     analysis_stage: str = ANALYSIS_STAGE_CONFIRMED,
     batch: str = "01",
     constraint_state: dict[str, Any] | None = None,
+    latest_utterance: str = "",
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Generate structured items for selective adoption popup.
 
@@ -975,6 +1032,12 @@ def _build_select_items(
                 continue
             existing = getattr(current_profile.major, level, [])
             for name in names:
+                display_name = _major_display_name_from_latest_utterance(
+                    level=level,
+                    name=name,
+                    latest_utterance=latest_utterance,
+                    batch=batch,
+                )
                 _, already = _diff_list(existing, [name])
                 label = _LABEL_MAP[f"major_intents.{level}"]
                 hard_existing = _constraint_state_contains(
@@ -1003,18 +1066,18 @@ def _build_select_items(
                 )
                 if hard_existing and positive_intent_mode == INTENT_MODE_CONSTRAINT:
                     existing_items.append(_existing_intent_item(
-                        _existing_item_content(label, name, intent_mode=INTENT_MODE_CONSTRAINT, polarity="positive"),
+                        _existing_item_content(label, display_name, intent_mode=INTENT_MODE_CONSTRAINT, polarity="positive"),
                         {"major_intents": {level: [name]}},
                     ))
                 elif (already or soft_existing or hard_existing) and not has_opposite_conflict and positive_intent_mode != INTENT_MODE_CONSTRAINT:
                     existing_items.append(_existing_intent_item(
-                        _existing_item_content(label, name, intent_mode=INTENT_MODE_PREFERENCE, polarity="positive"),
+                        _existing_item_content(label, display_name, intent_mode=INTENT_MODE_PREFERENCE, polarity="positive"),
                         {"major_intents": {level: [name]}},
                     ))
                 else:
                     items.append({
                         "content": _positive_select_item_content(
-                            name,
+                            display_name,
                             label,
                             intent_mode=positive_intent_mode,
                             already=bool(already),
@@ -1742,14 +1805,22 @@ async def _maybe_downgrade_intent_preview_by_semantics(
         observability["intentSideEffectDecision"] = decision.model_dump()
 
     if decision.decision in {"analysis_only", "mixed_answer_then_ask"} and decision.confidence >= 0.7:
-        if (
-            _has_entity_intent_payload(major_intents, school_intents, city_intents, latest_utterance)
-            and not _latest_utterance_allows_intent_downgrade(latest_utterance)
-        ):
+        if _latest_utterance_allows_intent_downgrade(latest_utterance):
+            logger.info(
+                "Intent preview downgraded to analysis by semantic arbitration: session_id=%s decision=%s confidence=%s reason=%s",
+                getattr(ctx.deps, "sessionid", ""),
+                decision.decision,
+                decision.confidence,
+                decision.reason,
+            )
+            if isinstance(observability, dict) and isinstance(observability.get("intentSideEffectDecision"), dict):
+                observability["intentSideEffectDecision"]["honored"] = True
+            return ANALYSIS_STAGE_INTEREST, False, decision
+        if _has_entity_intent_payload(major_intents, school_intents, city_intents, latest_utterance):
             if isinstance(observability, dict) and isinstance(observability.get("intentSideEffectDecision"), dict):
                 observability["intentSideEffectDecision"]["honored"] = False
             logger.info(
-                "Intent side-effect arbitration downgrade ignored for explicit entity intent: session_id=%s decision=%s confidence=%s reason=%s",
+                "Intent side-effect arbitration kept explicit entity update: session_id=%s decision=%s confidence=%s reason=%s",
                 getattr(ctx.deps, "sessionid", ""),
                 decision.decision,
                 decision.confidence,
@@ -1764,38 +1835,14 @@ async def _maybe_downgrade_intent_preview_by_semantics(
                 decision.confidence,
                 decision.reason,
             )
-            if isinstance(observability, dict) and isinstance(observability.get("intentSideEffectDecision"), dict):
-                observability["intentSideEffectDecision"]["honored"] = True
-            return ANALYSIS_STAGE_INTEREST, False, decision
-        if city_intents and not any((major_intents, school_intents, career_intents)) and not contains_concrete_region_mention(latest_utterance):
+        else:
             logger.info(
-                "Intent preview downgraded to abstract region analysis by semantic arbitration: session_id=%s decision=%s confidence=%s reason=%s",
+                "Intent preview downgraded to interest analysis by semantic arbitration: session_id=%s decision=%s confidence=%s reason=%s",
                 getattr(ctx.deps, "sessionid", ""),
                 decision.decision,
                 decision.confidence,
                 decision.reason,
             )
-            if isinstance(observability, dict) and isinstance(observability.get("intentSideEffectDecision"), dict):
-                observability["intentSideEffectDecision"]["honored"] = True
-            return ANALYSIS_STAGE_INTEREST, False, decision
-        if not _latest_utterance_allows_intent_downgrade(latest_utterance):
-            if isinstance(observability, dict) and isinstance(observability.get("intentSideEffectDecision"), dict):
-                observability["intentSideEffectDecision"]["honored"] = False
-            logger.info(
-                "Intent side-effect arbitration downgrade ignored for explicit update wording: session_id=%s decision=%s confidence=%s reason=%s",
-                getattr(ctx.deps, "sessionid", ""),
-                decision.decision,
-                decision.confidence,
-                decision.reason,
-            )
-            return analysis_stage, confirm_enabled, decision
-        logger.info(
-            "Intent preview downgraded to interest analysis by semantic arbitration: session_id=%s decision=%s confidence=%s reason=%s",
-            getattr(ctx.deps, "sessionid", ""),
-            decision.decision,
-            decision.confidence,
-            decision.reason,
-        )
         if isinstance(observability, dict) and isinstance(observability.get("intentSideEffectDecision"), dict):
             observability["intentSideEffectDecision"]["honored"] = True
         return ANALYSIS_STAGE_INTEREST, False, decision
@@ -1811,6 +1858,9 @@ def _latest_utterance_allows_intent_downgrade(text: str) -> bool:
     analysis_markers = (
         "先看看",
         "先看",
+        "看看",
+        "有哪些",
+        "可以看看",
         "看看影响",
         "看影响",
         "影响",
@@ -2947,7 +2997,13 @@ async def _recover_intents_from_context(
                 ctx.deps.sessionid,
                 recovery_scope,
             )
-    return major, school, city, career
+    return _restrict_intents_to_recovery_scope(
+        major,
+        school,
+        city,
+        career,
+        recovery_scope=recovery_scope,
+    )
 
 
 async def _refresh_recommendation_overlay_best_effort(session_id: str) -> bool:
@@ -3459,6 +3515,46 @@ async def analyze_volunteer_intent_change(
             )
         )
 
+    merged_for_constraint_type = {
+        "major_intents": major_intents or {},
+        "school_intents": school_intents or {},
+        "city_intents": city_intents or {},
+        "career_intents": career_intents or {},
+    }
+    resolved_constraint_intent_type = _normalize_constraint_type_for_payload(
+        resolved_constraint_intent_type,
+        merged_for_constraint_type,
+    )
+    semantic_constraint_intent_type = _constraint_type_from_semantic_decision(
+        semantic_decision,
+        merged=merged_for_constraint_type,
+    )
+    if (
+        resolved_constraint_intent_type == CONSTRAINT_INTENT_DEFAULT
+        and semantic_constraint_intent_type != CONSTRAINT_INTENT_DEFAULT
+    ):
+        resolved_constraint_intent_type = semantic_constraint_intent_type
+    if resolved_constraint_intent_type == CONSTRAINT_INTENT_ONLY_KEEP:
+        major_intents = _preserve_only_keep_positive_major_scope(
+            major_intents,
+            latest_utterance=latest_utterance,
+            batch=batch,
+        )
+        merged_for_constraint_type = {
+            "major_intents": major_intents or {},
+            "school_intents": school_intents or {},
+            "city_intents": city_intents or {},
+            "career_intents": career_intents or {},
+        }
+        resolved_constraint_intent_type = _normalize_constraint_type_for_payload(
+            resolved_constraint_intent_type,
+            merged_for_constraint_type,
+        )
+    resolved_intent_mode = _coerce_intent_mode_for_constraint_type(
+        resolved_intent_mode,
+        resolved_constraint_intent_type,
+    )
+
     pm = ProfileManager(int(session_id), batch)
     current_profile = await pm.get_current_profile()
     planning_summary = getattr(ctx.deps, "planning_summary", None)
@@ -3474,6 +3570,7 @@ async def analyze_volunteer_intent_change(
         analysis_stage=analysis_stage,
         batch=batch,
         constraint_state=constraint_state,
+        latest_utterance=latest_utterance,
     )
     items = [IntentPreviewItem.model_validate(item) for item in items_raw]
     existing_items = [IntentPreviewItem.model_validate(item) for item in existing_items_raw]
@@ -3523,30 +3620,6 @@ async def analyze_volunteer_intent_change(
                 message=no_effect_message,
             )
         )
-
-    merged_for_constraint_type = {
-        "major_intents": major_intents or {},
-        "school_intents": school_intents or {},
-        "city_intents": city_intents or {},
-        "career_intents": career_intents or {},
-    }
-    resolved_constraint_intent_type = _normalize_constraint_type_for_payload(
-        resolved_constraint_intent_type,
-        merged_for_constraint_type,
-    )
-    semantic_constraint_intent_type = _constraint_type_from_semantic_decision(
-        semantic_decision,
-        merged=merged_for_constraint_type,
-    )
-    if (
-        resolved_constraint_intent_type == CONSTRAINT_INTENT_DEFAULT
-        and semantic_constraint_intent_type != CONSTRAINT_INTENT_DEFAULT
-    ):
-        resolved_constraint_intent_type = semantic_constraint_intent_type
-    resolved_intent_mode = _coerce_intent_mode_for_constraint_type(
-        resolved_intent_mode,
-        resolved_constraint_intent_type,
-    )
 
     status = "existing_only" if not items else "ready"
     logger.info(

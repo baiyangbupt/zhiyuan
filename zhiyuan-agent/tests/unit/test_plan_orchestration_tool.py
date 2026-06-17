@@ -510,6 +510,34 @@ def test_plan_next_action_coerces_structured_unit_remove_to_ordered_unit():
     assert data["atomic_actions"][0]["unit_ids"] == ["unit-3"]
 
 
+def test_plan_next_action_builds_range_remove_ordered_unit_from_structured_scope():
+    with patch(
+        "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
+        new=AsyncMock(return_value=_context_inputs(summary="阶段=ordered；方案=45/45")),
+    ):
+        result = asyncio.run(
+            plan_next_action(
+                _ctx(),
+                user_goal="把第40位之后的几个保删掉",
+                action_family="remove_ordered_unit",
+                source_position=40,
+                position_scope="after",
+                tier="保",
+                limit=3,
+            )
+        )
+
+    data = json.loads(result)
+    assert data["stage"] == "preview"
+    assert data["action_family"] == "remove_ordered_unit"
+    assert data["missing_inputs"] == []
+    action = data["atomic_actions"][0]
+    assert action["source_position"] == 40
+    assert action["position_scope"] == "after"
+    assert action["filters"]["tier"] == "保"
+    assert action["filters"]["limit"] == "3"
+
+
 def test_plan_next_action_public_actions_do_not_expose_pin_unpin():
     action_literal = get_type_hints(plan_next_action)["action_family"]
     assert "pin_unit" not in action_literal.__args__

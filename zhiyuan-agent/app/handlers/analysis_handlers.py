@@ -346,16 +346,32 @@ def _filter_review_facts_for_targets(
             target_strategies,
             normalized_issue_codes,
         )
+    filtered_fix_proposals = filtered.get("fix_proposals") if isinstance(filtered.get("fix_proposals"), dict) else {}
+    matched_fix_proposals = [
+        proposal
+        for proposal in (filtered_fix_proposals.get("proposals") or [])
+        if isinstance(proposal, dict)
+    ]
+    proposal_problem_titles: list[str] = []
+    if not examples and matched_fix_proposals:
+        for proposal in matched_fix_proposals:
+            title = _normalize_fix_proposal_title_for_user(
+                str(proposal.get("title") or proposal.get("summary") or "").strip()
+            )
+            if title and title != "处理建议" and title not in proposal_problem_titles:
+                proposal_problem_titles.append(title)
     filtered["main_problems"] = [
         str(item.get("summary") or "").strip()
         for item in examples
         if isinstance(item, dict) and str(item.get("summary") or "").strip()
-    ]
+    ] or proposal_problem_titles[:3]
     filtered["hit_rules"] = [
         {"summary": item, "suggestion_types": []}
         for item in filtered["main_problems"]
     ]
-    if not examples and normalized_issue_codes:
+    if not examples and matched_fix_proposals and filtered["main_problems"]:
+        filtered["summary_text"] = "当前审查里有你关注的处理方向：" + "；".join(filtered["main_problems"][:3])
+    if not examples and normalized_issue_codes and not matched_fix_proposals:
         filtered["target_match_empty"] = True
         filtered["summary_text"] = "当前审查里暂时没有看到你点名的这类提醒。"
         filtered["review_issue_hit_plan_examples"] = []

@@ -1,6 +1,6 @@
 # Release 3.1.0 Review And Repair Requirements
 
-更新时间：2026-06-12
+更新时间：2026-06-16
 
 本文先聚焦 3.1.0 中「方案审查」和「审查后修复」能力的需求调研。目标不是马上改代码，而是把 3.0.3 已有能力、遗留不足、3.1.0 需要补齐的工作流和外部触发协议先定义清楚。
 
@@ -4248,3 +4248,408 @@ cd zhiyuan-agent
 - 后续新增方案动作时，不允许把 `plan_next_action.preview_summary` 直接展示为确认卡内容。
 - 任何高副作用动作都必须先经过执行层解析、版本保护和 pending 确认；执行层不能拿模型自然语言回复作为 apply 范围。
 - 对 “中外合作/高收费/预算/仅保留/必须有/排除” 这类多语境诉求，仍按结构化 goal/scope 或 Java user-goal proposal 处理，不再恢复关键词式快补丁。
+
+## 19. 负向约束语义反转修复与约束动作回归
+
+2026-06-16 继续跑 `310_constraint_plan_action` 时发现一个比断言通过更严重的语义问题：
+
+- 用户输入“不要英语相关专业，当前方案里有的话也删掉”。
+- 主模型调用 `preview_current_major_intent_confirmation` 时同时传入：
+  - 负向：`negative_level3=[英语, 商务英语, 翻译, ...]`
+  - 正向父级：`level1=文学`、`level2=外国语言文学类`
+  - `constraint_intent_type=only_keep`
+- 结果确认卡显示“只保留专业：英语；排除专业：英语”，确认后按 `only_keep_scope` 执行，移除了 88 条非英语志愿。
+
+根因：
+
+- 这不是用户话术匹配问题，而是结构化意向 payload 内部出现正负极性冲突。
+- 既有 only-keep 补偿只处理“正向只保留 + 模型臆造负向补集”的情况；没有处理“负向排除 + 模型臆造正向父级/同名项”的反向错误。
+- 后续 Java `FixProposal` 按结构化 goal 正确执行，所以错误一旦进入 pending，就会被稳定地执行成错误结果。
+
+本轮收口：
+
+- 在专业意向归一化层新增正负极性冲突净化：
+  - 如果正向专业/专业类/门类只是负向范围的同名项、父级或覆盖范围，且用户原话没有明确正向表达该范围，则删除这个正向项。
+  - 负向排除场景清理后没有正向值时，`only_keep/must_have` 自动降级为 `default`，不能进入 `only_keep_scope`。
+  - 显式正负混合仍保留，例如“我倾向会计学和审计学，但土木工程不要”仍输出正向会计/审计 + 负向土木。
+- `resolved_apply_payload` 允许作为父 payload 的增量补全：
+  - 执行层 preview 可能只在 `facts.resolved_apply_payload.atomic_actions` 里返回稳定 `volunteer_ids`。
+  - service 构造 pending 前会把 resolved payload 继承父级 `action_family/stage/user_goal` 后再校验可执行性。
+  - 这样不会因为 resolved payload 没重复带 `action_family` 而丢掉确认卡。
+- 对 `310-constraint-exclude-major-preview-and-apply` 的回归断言加严：
+  - 第一轮和确认执行结果禁止出现“只保留/only_keep”。
+  - 确认结果禁止再次出现“移除88”这类 only-keep 式错误。
+
+新增/调整保护：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest \
+  tests/unit/test_intent_state_tool.py::test_remove_unstated_positive_major_conflicts_prefers_negative_scope \
+  tests/unit/test_intent_state_tool.py::test_remove_unstated_positive_major_conflicts_keeps_explicit_positive_scope \
+  tests/unit/test_intent_state_tool.py::test_analyze_intent_change_downgrades_unstated_only_keep_for_negative_major \
+  tests/unit/test_chat_service_history_persistence.py::test_extract_plan_confirmation_candidate_accepts_incremental_resolved_apply_payload \
+  tests/unit/test_chat_service_history_persistence.py::test_chat_service_recovers_exclude_goal_when_agent_misroutes_to_remove_units -q
+
+.venv/bin/python -m pytest \
+  tests/unit/test_plan_execution_tool.py \
+  tests/unit/test_plan_orchestration_tool.py \
+  tests/unit/test_plan_semantic_action_tool.py -q
+```
+
+结果：
+
+- Focused unit tests：`5 passed`。
+- Plan execution/orchestration/semantic action tests：`197 passed`。
+
+Live 回归：
+
+```bash
+cd zhiyuan-agent
+PYTHONPATH=. .venv/bin/python examples/dialog_regression_runner.py \
+  --url ws://127.0.0.1:8000/gaotu-assistant-agent/plus/chat/1/bot/test/do \
+  --cases examples/dialog_regression_310_constraint_plan_action_cases.json \
+  --response-timeout 180 \
+  --clear-history-per-case \
+  --clear-backend-pending-per-case \
+  --clear-backend-planning-intent-per-case \
+  --keep-response-text \
+  --assert-plan-style \
+  --metrics-output /private/tmp/zhiyuan_310_constraint_plan_action_after_intent_polarity_fix.json
+```
+
+结果：
+
+- `310_constraint_plan_action`：`9 steps / 9 successfulSteps / failedSteps=0`。
+- “不要英语相关专业”已变为 `exclude_scope`：
+  - 预览：当前方案命中英语 6 条，本次可替换 5 条。
+  - 确认：移除 6 条、补入 5 条。
+  - 不再出现“只保留英语”或大规模移除非英语志愿。
+- “中外合作的都排除掉”仍走 `remove_units` 执行层 preview，确认后移出 4 条中外合作志愿，并同步后续报考参考。
+- “学费控制在两万以内”走 `tuition_budget_scope` 的 Java user-goal proposal，生成可确认调整预览。
+
+非阻断观察：
+
+- 本组存在模型请求长尾：
+  - 学费预算预览：`50.4s`。
+  - 中外合作预览：`41.5s`。
+  - 英语排除预览：`20.1s`。
+- 长尾主要来自 full agent 多轮模型请求和最终整合，不是工具执行失败；当前通过 thinking hint 缓解等待感。
+- 后续优化应优先减少不必要的多轮模型请求或让高置信复合目标更稳定进入结构化 proposal 链路，但不能牺牲回复质量或绕开确认协议。
+
+## 20. 审查修复链路回归结果
+
+2026-06-16 在负向约束反转修复后复跑 `310_review_repair`：
+
+```bash
+cd zhiyuan-agent
+PYTHONPATH=. .venv/bin/python examples/dialog_regression_runner.py \
+  --url ws://127.0.0.1:8000/gaotu-assistant-agent/plus/chat/1/bot/test/do \
+  --cases examples/dialog_regression_310_review_repair_cases.json \
+  --response-timeout 180 \
+  --clear-history-per-case \
+  --clear-backend-pending-per-case \
+  --clear-backend-planning-intent-per-case \
+  --keep-response-text \
+  --assert-plan-style \
+  --metrics-output /private/tmp/zhiyuan_310_review_repair_after_polarity_fix.json
+```
+
+结果：
+
+- `310_review_repair`：`9 steps / 9 successfulSteps / failedSteps=0`。
+- 审查总结、候选不足说明、可修复/不可修复分层、专业组兜底预览、旧审查结果重新审查等场景均未出现结构化字段泄露或直接改方案。
+- 不可直接处理的提醒已能转成用户可理解的取舍方向，例如高收费/中外合作先确认接受范围，冲稳保/梯度问题先说明候选不足或需要放宽条件。
+
+非阻断观察：
+
+- 审查类链路仍有明显长尾：
+  - 审查提醒分层：`48.4s`。
+  - 手动移动后重新审查：`40.1s`。
+  - 审查总结：`37.8s`。
+  - 兜底专业预览：`30.9s`。
+  - 候选不足说明：`30.4s`。
+- 这些长尾多为 full agent 首轮/末轮模型整合叠加 Java 审查耗时。当前正确性可接受，但 3.1.0 发布前仍需要在完整回归里继续观察是否出现 180s 超时。
+- 话术层面仍有少量抽象表达，例如“兜底专业不足”“需要你先取舍或放宽条件”。本轮不作为阻断项，后续统一进入用户语言润色清单。
+
+## 21. Open Quality 回归与目标策略保护
+
+2026-06-16 继续复跑 `303_open_quality` 时发现“就按别太冒险的思路把这版调稳点，先给我看看会怎么动”会被语义路由识别为 `preview_fix_proposal`，目标策略为 `rebalance_tier_ratio / fill_probability_gap`，但后端同轮返回的 `ready` proposal 只有 `fill_missing_count`，风险相关的 `fill_probability_gap` 仍是 `preview_only`。旧选择逻辑在目标策略没有 ready 命中时，会兜底选择第一个 ready proposal，导致给用户生成“处理数量校验”的确认卡，偏离“调稳/风险”的真实目标。
+
+本轮修复：
+
+- `_select_ready_fix_proposal()` 在显式 `target_strategies` 存在时，只能选择策略匹配的 ready proposal；没有命中时返回 `None`，不能退回第一个 ready proposal。
+- full agent 自行调用 `execute_plan_action` 的后处理链路，会从本轮工具调用的 `plan_payload.target_strategies` 读取结构化目标，并写回 `latest_plan_result.target_strategies`，确保 service pending 生成逻辑和 semantic route 逻辑使用同一套目标策略。
+- `_select_ready_fix_proposal_for_reply()` 和 `_select_ready_fix_proposal_for_user_goal()` 只在目标策略候选范围内做回复语义仲裁；模型仲裁不能把无关 proposal 选回来。
+- `_ready_fix_proposal_id_for_strategies()` 同步返回空，避免后续 `selectedProposalId` 误指向无关 ready 项。
+- 这不是用户话术关键词匹配，而是复用语义路由/规划层已经产生的结构化 `target_strategies`，符合 `Scenario -> PlanGoal/ReviewCheck -> Strategy -> Proposal -> Action` 分层。
+
+新增保护：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest \
+  tests/unit/test_chat_service_history_persistence.py::test_select_ready_fix_proposal_requires_target_strategy_match \
+  tests/unit/test_chat_service_history_persistence.py::test_chat_service_does_not_create_unrelated_fix_card_when_target_strategy_has_no_ready_match \
+  tests/unit/test_chat_service_history_persistence.py::test_chat_service_selects_fix_proposal_by_ordered_target_strategy \
+  tests/unit/test_chat_service_history_persistence.py::test_chat_service_full_agent_fix_preview_infers_target_strategy_for_card \
+  tests/unit/test_chat_service_history_persistence.py::test_chat_service_full_agent_fix_preview_uses_reply_focus_when_strategy_missing \
+  tests/unit/test_intent_state_tool.py::test_analyze_current_interest_wrapper_returns_structured_payload_when_semantic_recovery_enabled \
+  tests/unit/test_chat_service_history_persistence.py::test_chat_service_recovers_confirmable_intent_payload_from_interest_tool -q
+```
+
+结果：`7 passed`。
+
+Live 回归：
+
+```bash
+cd zhiyuan-agent
+PYTHONPATH=. .venv/bin/python examples/dialog_regression_runner.py \
+  --url ws://127.0.0.1:8000/gaotu-assistant-agent/plus/chat/1/bot/test/do \
+  --cases examples/dialog_regression_303_open_quality_cases.json \
+  --response-timeout 180 \
+  --clear-history-per-case \
+  --clear-backend-pending-per-case \
+  --clear-backend-planning-intent-per-case \
+  --keep-response-text \
+  --assert-plan-style \
+  --metrics-output /private/tmp/zhiyuan_303_open_quality_after_target_strategy_guard.json
+```
+
+结果：
+
+- `303_open_quality`：`23 steps / 23 successfulSteps / failedSteps=0`。
+- “调稳点，先给我看看会怎么动”不再生成 `fill_missing_count` 确认卡；回复改为解释风险相关的 `fill_probability_gap` 和数量补齐两个方向，并明确风险相关方向需要先定取舍范围，没有 active pending。
+- 混合软硬意向、无 pending 后确认保护、专业简称对比、职业方向只读分析、方案查询只读、排序预览确认边界均未回退。
+
+非阻断观察：
+
+- 本组长尾仍明显：median `20.5s`，p95 `43.2s`，max `54.9s`。
+- 最慢场景为“中外合作 + 预算一般 + 大白话风险分析”，回复正确保持只读，但内容焦点偏向通用审查摘要，没有充分围绕中外合作数量、费用压力、可替换/不可替换边界展开。该问题记录为回复质量遗留，后续应通过审查结果聚焦和大模型整合提示优化，不用字符串匹配用户话术。
+- 候选查询类场景仍有 9-11s 的条件抽取耗时；职业方向多维分析和最终整合也有 30s 级长尾。当前发布前不以牺牲回复质量为代价做快路由，继续通过 thinking hint 缓解等待感，并在后续版本做结构化事实复用和模型调用收敛。
+
+同轮复跑 `310_constraint_plan_action`，确认目标策略保护没有影响约束方案动作：
+
+```bash
+cd zhiyuan-agent
+PYTHONPATH=. .venv/bin/python examples/dialog_regression_runner.py \
+  --url ws://127.0.0.1:8000/gaotu-assistant-agent/plus/chat/1/bot/test/do \
+  --cases examples/dialog_regression_310_constraint_plan_action_cases.json \
+  --response-timeout 180 \
+  --clear-history-per-case \
+  --clear-backend-pending-per-case \
+  --clear-backend-planning-intent-per-case \
+  --keep-response-text \
+  --assert-plan-style \
+  --metrics-output /private/tmp/zhiyuan_310_constraint_plan_action_after_target_strategy_guard.json
+```
+
+结果：
+
+- `310_constraint_plan_action`：`9 steps / 9 successfulSteps / failedSteps=0`。
+- `only_keep` 与 `must_have` 仍只先写入待采纳报考条件，并提示后续如需改方案会再给调整预览。
+- “不要英语相关专业，当前方案里有的话也删掉”仍走 `exclude_scope` 的 plan mutation，确认后移除 6 条、补入 5 条，没有回到 only-keep 语义反转。
+- “中外合作的都排除掉”仍走执行层 `remove_units` 预览，确认后移出 4 条并同步后续报考参考。
+- “学费最好控制在两万以内”生成 `tuition_budget_scope` 的 user-goal 调整预览，确认前不改方案。
+
+观察：
+
+- 约束组 median `19.5s`，p95/max `38.3s`，最慢为中外合作删除预览。慢点主要来自 full agent 多轮模型请求，不是工具执行失败。
+- 预算场景的语义分类 `reason` 中出现“应交给完整 Agent/不应判为 preview”的自我纠正文字，但最终结构化输出仍成功生成预算 user-goal proposal。该现象作为模型裁决解释质量问题记录，执行层仍以结构化 action/result 和 pending 为准。
+
+同轮复跑 `310_review_repair`，确认审查修复链路仍保持统一协议：
+
+```bash
+cd zhiyuan-agent
+PYTHONPATH=. .venv/bin/python examples/dialog_regression_runner.py \
+  --url ws://127.0.0.1:8000/gaotu-assistant-agent/plus/chat/1/bot/test/do \
+  --cases examples/dialog_regression_310_review_repair_cases.json \
+  --response-timeout 180 \
+  --clear-history-per-case \
+  --clear-backend-pending-per-case \
+  --clear-backend-planning-intent-per-case \
+  --keep-response-text \
+  --assert-plan-style \
+  --metrics-output /private/tmp/zhiyuan_310_review_repair_after_target_strategy_guard.json
+```
+
+结果：
+
+- `310_review_repair`：`9 steps / 9 successfulSteps / failedSteps=0`。
+- 审查总结、候选不足说明、费用/中外合作不可直接处理解释、专业组内安全垫预览、重新审查和专业模式导出口径均未出现结构化字段泄露或直接改方案。
+- 专业组安全垫场景仍能选择 `adjust_major_group_inner_safety` 的 ready proposal 生成 `apply_fix_proposal` 确认卡，未被策略 guard 误拦截。
+
+待排查/优化：
+
+- `310-review-shortage-honesty` 的回复出现“可选志愿共431个（冲459/稳238/保773）”这种总数与分项不一致的表达。需要确认是模型把不同口径字段混写，还是后端 candidate facts 的 `total/tierCounts` 本身有口径问题。发布前至少要避免输出自相矛盾数字。
+- `310-review-fix-preview-then-apply` 在 session 130 下回复“高收费和中外合作没有触发这类提醒”，而其他同 session 审查/移动后审查显示存在相关提醒。需要确认 case 清理后的 planning state 是否不同，或 `analyze_adjustment(targetStrategies=replace_risk_items)` 的 facts 过滤过窄。
+- 本组性能仍偏慢：median `30.1s`，p95/max `56.4s`；最慢为“审查提醒分层”和“手动移动后重新审查”。当前正确性可接受，但 long-tail 继续纳入发布观察。
+
+## 22. 候选供给口径与处理建议仲裁修复
+
+2026-06-16 继续排查第 21 节遗留问题，确认 `310-review-shortage-honesty` 的矛盾数字来自 Agent 事实层口径混用，而不是用户话术或最终回复渲染：
+
+- session 132 的 `candidatePoolState.summary` 同时包含：
+  - `unitTotal=431`、`unitTierCounts=冲125/稳68/保238`。
+  - `entryTotal/total=1470`、`tierCounts=冲459/稳238/保773`。
+- 当前会话的 `volunteerModel` 为空，旧逻辑总数优先取 `unitTotal`，分层在模式缺失时取 `tierCounts`，因此给模型的事实变成“431 个候选，冲459/稳238/保773”，属于 Agent 结构化事实错误。
+
+修复：
+
+- `_build_candidate_supply_facts()` 下的候选供给统计新增模式归一：
+  - `majorGroup / major_group / group / schoolMajorGroup` 等别名都按专业组单元口径处理。
+  - 即使 `volunteerModel` 缺失，只要上游同时给出不同的 `unitTotal` 与 `entryTotal/total`，就认为存在单元/条目双口径，优先使用 `unitTierCounts`，保证总数和冲稳保分项来自同一口径。
+- `_filter_review_facts_for_targets()` 修复目标过滤边界：
+  - 如果 review examples 没有命中，但 matching `fix_proposals` 已命中用户点名目标，不再把该目标误判为 `target_match_empty`。
+  - 这避免“有后端处理建议，但回复说当前没有这类提醒”的错误分支。
+- `preview_fix_proposal` 的 ready proposal 选择统一走 `_select_ready_fix_proposal_for_user_goal()`：
+  - 只在显式 `selected_proposal_id` 已存在时直接按 ID 选。
+  - 多个 ready proposal 同时匹配目标策略时，不再按 `targetStrategies` 顺序拿第一个，而是复用小模型仲裁，从候选 proposal 的 `title/summary/strategy/sourceCheckCodes` 与用户本轮诉求中选择最贴近的一项。
+  - 例如“专业组里太悬，补一个安全一点的专业，先看预览”同时涉及 `sort_by_probability` 和 `adjust_major_group_inner_safety` 时，应选择“补兜底专业/组内安全垫”而不是“录取率倒挂排序”。
+
+新增/更新保护：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest \
+  tests/unit/test_planning_workflow_tool.py::test_build_candidate_supply_uses_unit_tier_counts_for_major_group_alias \
+  tests/unit/test_planning_workflow_tool.py::test_build_candidate_supply_prefers_unit_tier_counts_when_unit_and_entry_totals_differ \
+  tests/unit/test_handler_registry.py::TestAnalysisHandlerTargetFiltering \
+  tests/unit/test_chat_service_history_persistence.py::test_chat_service_selects_fix_proposal_by_ordered_target_strategy \
+  tests/unit/test_chat_service_history_persistence.py::test_select_ready_fix_proposal_requires_target_strategy_match \
+  tests/unit/test_chat_service_history_persistence.py::test_chat_service_does_not_create_unrelated_fix_card_when_target_strategy_has_no_ready_match -q
+```
+
+结果：
+
+- 候选供给与 target filtering 相关测试：`7 passed`。
+- fix proposal 选择相关测试：`3 passed`。
+
+Live 验证：
+
+```bash
+cd zhiyuan-agent
+PYTHONPATH=. .venv/bin/python examples/dialog_regression_runner.py \
+  --url ws://127.0.0.1:8000/gaotu-assistant-agent/plus/chat/1/bot/test/do \
+  --cases examples/dialog_regression_310_review_repair_cases.json \
+  --response-timeout 180 \
+  --clear-history-per-case \
+  --clear-backend-pending-per-case \
+  --clear-backend-planning-intent-per-case \
+  --keep-response-text \
+  --assert-plan-style \
+  --metrics-output /private/tmp/zhiyuan_310_review_repair_after_candidate_supply_fix_v2.json
+```
+
+结果：
+
+- `310_review_repair`：`9 steps / 9 successfulSteps / failedSteps=0`。
+- `310-review-shortage-honesty` 不再输出“431 个候选但冲稳保分项相加超过总数”的矛盾数字；回复改为说明当前没有识别出稳/保数量不足，不承诺强行补齐。
+- `310-review-fix-unavailable-guidance` 只围绕高收费和中外合作这两类 matching target 展开，没有混入非目标提醒。
+- session 130 现场复查显示当前本地状态下确实没有 `high_tuition/cooperative_program` 审查命中，只有 `probability_gap` 和 `major_group_safety_intent_alignment`；因此该 case 的“没有高收费或中外合作提醒”属于会话事实差异，不作为代码误判。
+
+单条真实验证：
+
+```bash
+cd zhiyuan-agent
+PYTHONPATH=. .venv/bin/python examples/dialog_regression_runner.py \
+  --url ws://127.0.0.1:8000/gaotu-assistant-agent/plus/chat/1/bot/test/do \
+  --session 131 \
+  --prompts 专业组里面有没有录取率太悬的？能不能补一个安全一点的专业，先给我看预览 \
+  --response-timeout 180 \
+  --clear-history-per-case \
+  --clear-backend-pending-per-case \
+  --clear-backend-planning-intent-per-case \
+  --keep-response-text \
+  --assert-plan-style \
+  --metrics-output /private/tmp/zhiyuan_310_major_group_safety_arbitration_probe.json
+```
+
+结果：
+
+- `1 step / 1 successfulStep / failedSteps=0`。
+- 回复与确认卡选择 `adjust_major_group_inner_safety`，标题为“处理兜底专业不足”，卡片内容包含“补入兜底专业”，不再误选“处理录取率倒挂”。
+
+仲裁修复后完整回归：
+
+```bash
+cd zhiyuan-agent
+PYTHONPATH=. .venv/bin/python examples/dialog_regression_runner.py \
+  --url ws://127.0.0.1:8000/gaotu-assistant-agent/plus/chat/1/bot/test/do \
+  --cases examples/dialog_regression_310_review_repair_cases.json \
+  --response-timeout 180 \
+  --clear-history-per-case \
+  --clear-backend-pending-per-case \
+  --clear-backend-planning-intent-per-case \
+  --keep-response-text \
+  --assert-plan-style \
+  --metrics-output /private/tmp/zhiyuan_310_review_repair_after_arbitration_fix.json
+```
+
+结果：
+
+- `310_review_repair`：`9 steps / 9 successfulSteps / failedSteps=0`。
+- `310-review-shortage-honesty` 继续保持同一口径候选供给事实，没有再出现总数与冲稳保分项自相矛盾。
+- `310-review-major-group-inner-safety` 在完整回归中仍选择 `adjust_major_group_inner_safety`，没有被 `sort_by_probability` 或目标策略顺序误导。
+- `310-review-fix-preview-then-apply` 在当前 session 130 本地状态下仍正确按审查事实说明没有高收费/中外合作命中，不再因为目标过滤为空而混入其他审查问题。
+
+剩余观察：
+
+- review/repair 真实回归仍有长尾：最新完整回归 median `25.966s`，p95/max `52.475s`；超过 30s 的场景包括审查总结、候选不足说明、专业组安全垫预览和手动移动后重新审查。
+- 当前长尾主要来自 full agent 多轮模型请求和最终整合；本轮不以牺牲回复质量为代价做快路由，继续用 thinking hint 缓解等待感。
+
+## 23. 位置范围删除结构化落地
+
+2026-06-17 继续扩大生产抽象场景回归时，`310-prod-plan-range-remove-safe-zone` 暴露出一个原子动作粒度不足的问题：
+
+- 用户表达的是“第 40 位之后的几个保”，真实目标包含起始位置、方向范围、冲稳保层级和数量。
+- 旧 `remove_ordered_unit` 只能表达单个 `source_position`，即便 live 场景通过，也只是删除第 41 个展示单元，不能覆盖“之后 + tier + 多个”的完整语义。
+- 这个问题不能通过用户话术字符串匹配解决；需要让模型/恢复器输出结构化范围字段，再由执行层读取当前方案展示单元并解析成稳定 ID。
+
+本轮实现：
+
+- `PlanAtomicAction` 新增 `position_scope`，当前支持：
+  - `single`：默认单点位置，保持旧行为。
+  - `after`：从 `source_position` 之后开始选取展示单元。
+- `plan_next_action` 和 semantic recovery decision 同步支持 `position_scope / positionScope`，并要求范围删除时结构化传入：
+  - `action_family="remove_ordered_unit"`
+  - `source_position=N`
+  - `position_scope="after"`
+  - 可选 `tier` 和 `limit`
+- 执行层 `_build_remove_ordered_unit_preview_summary()` 负责读取当前 `orderedPlanState`：
+  - 院校专业组模式下解析为多个 `unit_ids`，确认后仍走 `remove_ordered_unit`。
+  - 专业+大学模式下解析为多个 `volunteer_ids`，preview facts 写入 `resolved_apply_payload(action_family="remove_units")`，确认后执行志愿删除。
+  - `resolved_apply_payload` 是确认态唯一可执行范围，确认时不再根据用户原话或模型回复重猜。
+  - 范围解析没有命中可删除项时返回 `no_change`，不生成确认卡。
+- ChatAgent dispatch 规则只补结构字段要求，不增加用户话术关键词路由。
+
+新增保护：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest \
+  tests/unit/test_plan_orchestration_tool.py \
+  tests/unit/test_plan_execution_tool.py \
+  tests/unit/models/test_typed_actions.py \
+  tests/unit/test_instructions.py -q
+```
+
+结果：`311 passed`。
+
+追加修复：
+
+- 首次 live 复验中，`position_scope=after / tier=保 / limit=5` 已进入 payload，但如果当前 cloned state 的第 40 位之后没有匹配项，执行层仍返回 `preview_only`，service 会误生成确认卡。
+- 已将 `range_empty / missing_source_position` 收敛为 `no_change`，并在 service pending 创建兜底里阻断这类不可执行位置范围。
+- Focused 回归：`4 passed`，覆盖范围空命中不出确认、范围命中专业组/志愿解析和 no-change 不建 pending。
+
+同轮 targeted production 抽象回归前置结果：
+
+- `310-prod-only-keep-clinical-medicine`：通过，不再把“只保留临床医学”误路由成删除临床医学。
+- `310-prod-only-keep-multiple-majors`：通过，断言已加严为同时覆盖“电气”和“气象”，避免只识别一个实体也通过。
+- `310-prod-negative-major-then-fill`：通过，“从候选中选择 7 所放入方案里”进入 `add_units`，不再误走 repair proposal。
+- `310-prod-plan-range-remove-safe-zone`：复跑通过；当前 cloned state 下生成 `remove_ordered_unit` preview，命中第 41-45 位共 5 个专业组，预览披露“减少 24 个专业 / 5 个专业组”，不再单删第 41 项。
+
+后续回归要求：
+
+- 继续补充范围删除确认后的 apply 验证，重点确认 pending 中消费 `resolved_apply_payload`，不重新解释自然语言。
+- 继续跑 `310_constraint_plan_action`、`310_review_repair`、`303_open_quality`、`303_dialogue_derived`；如果出现超时，优先记录模型请求长尾和 thinking hint 表现，不能为了速度绕开确认协议或降低回复质量。

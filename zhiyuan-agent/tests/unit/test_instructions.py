@@ -242,6 +242,7 @@ class TestToolDispatchRules:
         assert "query_volunteer_plan" in result
         assert "remove_units" in result
         assert "唯一性校验" in result
+        assert 'position_scope="after"' in result
 
     def test_explore_tool_boundaries_reduce_redundant_tool_chains(self):
         result = build_tool_dispatch_rules()
