@@ -87,11 +87,13 @@ def _resolution_note(
     }.get(entity_type, "范围")
     if ambiguity == "unknown":
         return f"我还没能把“{raw_text}”对应到明确的{label}，需要先补充更准确的名称。"
-    candidate_names = [
-        str(item.get("canonical_name") or "").strip()
-        for item in candidates[:5]
-        if str(item.get("canonical_name") or "").strip()
-    ]
+    candidate_names = list(
+        dict.fromkeys(
+            str(item.get("canonical_name") or "").strip()
+            for item in candidates[:5]
+            if str(item.get("canonical_name") or "").strip()
+        )
+    )
     suffix = f"可能对应：{'、'.join(candidate_names)}。" if candidate_names else ""
     return f"“{raw_text}”有多个可能的{label}范围，{suffix}需要先确认按哪个范围处理。"
 
@@ -107,6 +109,10 @@ def _entity_resolution_from_result(
         ambiguity: Literal["none", "multiple_match", "unknown"] = "none"
         canonical_name = result.best.canonical_name
         canonical_level = result.best.level or ""
+    elif result.candidates and len({candidate.canonical_name for candidate in result.candidates}) == 1:
+        ambiguity = "none"
+        canonical_name = result.candidates[0].canonical_name
+        canonical_level = ""
     elif result.candidates:
         ambiguity = "multiple_match"
         canonical_name = ""

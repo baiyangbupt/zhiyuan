@@ -10243,10 +10243,28 @@ def test_chat_service_applies_active_plan_pending_on_short_text_confirm(tmp_path
             patch("app.service.classify_pending_confirmation_action", AsyncMock(return_value=_semantic_pending("confirm_pending"))), \
             patch("app.service.execute_plan_action", AsyncMock(return_value=execution_result)) as execute_mock:
         service = ChatService(mock_llm_client, store)
-        reply = asyncio.run(service.handle_message("session-plan-short-text-confirm", "user-1", "确认"))
+        service._EARLY_CONTEXT_PROGRESS_DELAY_SECONDS = 0.001
+
+        async def _run_with_progress():
+            hints: list[str] = []
+
+            async def on_progress(hint: str) -> None:
+                hints.append(hint)
+
+            result = await service.handle_message(
+                "session-plan-short-text-confirm",
+                "user-1",
+                "确认",
+                on_progress=on_progress,
+            )
+            await asyncio.sleep(0.01)
+            return result, hints
+
+        reply, hints = asyncio.run(_run_with_progress())
 
     assert isinstance(reply, ChatServiceResponseEnvelope)
     assert reply.primary == "已按院校层次重新排序当前方案。"
+    assert hints == []
     payloads = [json.loads(item.content) for item in reply.followups]
     assert [payload["targetView"] for payload in payloads] == ["ordered"]
     assert payloads[0]["preserveView"] is True
@@ -12027,6 +12045,146 @@ def test_chat_service_recovers_confirmable_intent_payload_from_interest_tool(tmp
     generate_user_goal_mock.assert_not_awaited()
 
 
+def test_chat_service_recovers_confirmable_intent_after_readonly_compare_misroute(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    fake_agent = _FakeAgentWithToolCalls(
+        (
+            "会计学和审计学属于后续可以纳入考虑的方向，土木工程则可以直接排除。"
+            "如果你确定，我可以把会计学、审计学作为后续推荐和方案调整的参考。"
+        ),
+        [
+            ToolCallPart(
+                tool_name="compare_major_options",
+                args={"major_names": ["会计学", "审计学", "土木工程"]},
+                tool_call_id="major-compare-misroute",
+            )
+        ],
+        [
+            ToolReturnPart(
+                tool_name="compare_major_options",
+                content="专业对比结果",
+                tool_call_id="major-compare-misroute",
+            )
+        ],
+    )
+    recovered_payload = {
+        "status": "ready",
+        "sessionId": "9905103",
+        "title": "待采纳报考想法",
+        "intentMode": "preference",
+        "analysisStage": "confirmed",
+        "items": [
+            {
+                "content": "偏好专业：会计学、审计学",
+                "selected": True,
+                "value": {"major_intents": {"level3": ["会计学", "审计学"]}},
+            },
+            {
+                "content": "不优先专业：土木工程",
+                "selected": True,
+                "value": {"major_intents": {"negative_level3": ["土木工程"]}},
+            },
+        ],
+        "existingItems": [],
+    }
+    pending_state, save_pending_mock, get_pending_mock = _pending_confirmation_store()
+    recover_mock = AsyncMock(return_value=json.dumps(recovered_payload, ensure_ascii=False))
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 0, "data": {"userScoreDetail": {"batch": "01"}}})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.analyze_volunteer_intent_change", recover_mock), \
+            patch("app.service.save_pending_confirmation", save_pending_mock), \
+            patch("app.service.get_pending_confirmation", get_pending_mock):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(service.handle_message("9905103", "user-57", "我倾向会计学和审计学，但土木工程不要"))
+
+    assert isinstance(reply, ChatServiceResponseEnvelope)
+    assert "采纳" in reply.primary
+    assert len(reply.followups) == 1
+    card_payload = json.loads(reply.followups[0].content)
+    assert card_payload["kind"] == "intent_change"
+    assert "会计学" in card_payload["content"]
+    assert "审计学" in card_payload["content"]
+    assert "土木工程" in card_payload["content"]
+    assert pending_state["value"]["kind"] == "intent_change"
+    assert pending_state["value"]["executionPayload"]["selectedData"]["selected"] == [
+        {"major_intents": {"level3": ["会计学", "审计学"]}},
+        {"major_intents": {"negative_level3": ["土木工程"]}},
+    ]
+    recover_mock.assert_awaited_once()
+    assert recover_mock.await_args.kwargs["recovery_scope"] == "generic"
+
+
+def test_chat_service_no_tool_explicit_intent_prefers_intent_card_before_composite_goal(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    fake_agent = _FakeAgent([
+        (
+            "会计学和审计学可以作为后续推荐和方案调整的参考，土木工程可以排除。"
+            "如果你确定，我再按这个方向继续。"
+        )
+    ])
+    recovered_payload = {
+        "status": "ready",
+        "sessionId": "9905104",
+        "title": "待采纳报考想法",
+        "intentMode": "preference",
+        "analysisStage": "confirmed",
+        "items": [
+            {
+                "content": "偏好专业：会计学、审计学",
+                "selected": True,
+                "value": {"major_intents": {"level3": ["会计学", "审计学"]}},
+            },
+            {
+                "content": "不优先专业：土木工程",
+                "selected": True,
+                "value": {"major_intents": {"negative_level3": ["土木工程"]}},
+            },
+        ],
+        "existingItems": [],
+    }
+    pending_state, save_pending_mock, get_pending_mock = _pending_confirmation_store()
+    recover_mock = AsyncMock(return_value=json.dumps(recovered_payload, ensure_ascii=False))
+    composite_mock = AsyncMock(return_value=_semantic_plan_recovery("none"))
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 0, "data": {"userScoreDetail": {"batch": "01"}}})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={
+                "code": 0,
+                "data": {
+                    "phase": "reviewed",
+                    "version": 18,
+                    "draftPlanState": {"summary": {"total": 30}},
+                    "orderedPlanState": {"summary": {"total": 30}},
+                    "reviewState": {"summary": {"warnCount": 1, "riskCount": 0}, "checks": []},
+                },
+            })), \
+            patch("app.service.analyze_volunteer_intent_change", recover_mock), \
+            patch("app.service.classify_composite_goal_action", composite_mock), \
+            patch("app.service.save_pending_confirmation", save_pending_mock), \
+            patch("app.service.get_pending_confirmation", get_pending_mock):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(service.handle_message("9905104", "user-57", "我倾向会计学和审计学，但土木工程不要"))
+
+    assert isinstance(reply, ChatServiceResponseEnvelope)
+    assert "采纳" in reply.primary
+    card_payload = json.loads(reply.followups[0].content)
+    assert card_payload["kind"] == "intent_change"
+    assert card_payload["actionFamily"] == "apply_selected_intents"
+    assert pending_state["value"]["kind"] == "intent_change"
+    assert pending_state["value"]["executionPayload"]["selectedData"]["selected"] == [
+        {"major_intents": {"level3": ["会计学", "审计学"]}},
+        {"major_intents": {"negative_level3": ["土木工程"]}},
+    ]
+    recover_mock.assert_awaited_once()
+    composite_mock.assert_not_awaited()
+
+
 def test_chat_service_recovers_prepared_direction_text_without_tool_call(tmp_path, mock_llm_client):
     db_path = tmp_path / "history.db"
     store = ChatHistoryStore(str(db_path))
@@ -13138,6 +13296,58 @@ def test_plan_mutation_card_intent_summary_preserves_user_facing_major_alias():
     assert "电气（电气工程及其自动化）" in intent_payload["displaySummary"]
     req = pending_state["value"]["executionPayload"]["userGoalRequest"]
     assert [scope["normalizedName"] for scope in req["targetScopes"]] == ["大气科学", "电气工程及其自动化"]
+
+
+def test_plan_mutation_card_drops_excluded_major_from_only_keep_target_scopes():
+    preview_payload = {
+        "status": "ready",
+        "sessionId": "35-conflict",
+        "title": "确认这次报考条件",
+        "intentMode": "constraint",
+        "constraintIntentType": "only_keep",
+        "analysisStage": "confirmed",
+        "items": [
+            {
+                "content": "只保留专业门类：医学",
+                "selected": True,
+                "value": {"major_intents": {"level1": ["医学"]}},
+            },
+            {
+                "content": "只保留专业门类：工学",
+                "selected": True,
+                "value": {"major_intents": {"level1": ["工学"]}},
+            },
+            {
+                "content": "排除专业门类：工学",
+                "selected": True,
+                "value": {"major_intents": {"negative_level1": ["工学"]}},
+            },
+        ],
+    }
+    backend_preview = _user_goal_fix_proposal_response(
+        proposal_id="ug-only-keep-medical-no-engineering",
+        strategy="only_keep_scope",
+        source_version=12,
+        title="只保留医学方向",
+        summary="当前方案需要按这个范围调整。",
+        action_summaries=["移出不在范围内的志愿"],
+    )
+    pending_state, save_pending_mock, get_pending_mock = _pending_confirmation_store()
+
+    with patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 0, "data": {"userScoreDetail": {"batch": "01"}}})), \
+            patch("app.service.get_planning_state", AsyncMock(return_value=_planning_state_response(12))), \
+            patch("app.service.generate_user_goal_planning_fix_proposals", AsyncMock(return_value=backend_preview)) as proposal_mock, \
+            patch("app.service.save_pending_confirmation", save_pending_mock), \
+            patch("app.service.get_pending_confirmation", get_pending_mock):
+        card = asyncio.run(_create_pending_intent_confirmation_from_preview_payload("35-conflict", preview_payload))
+
+    assert isinstance(card, WSResponse)
+    user_goal_req = proposal_mock.await_args.args[2]
+    assert [scope["normalizedName"] for scope in user_goal_req["targetScopes"]] == ["医学"]
+    assert [scope["normalizedName"] for scope in user_goal_req["negativeScopes"]] == []
+    req = pending_state["value"]["executionPayload"]["userGoalRequest"]
+    assert [scope["normalizedName"] for scope in req["targetScopes"]] == ["医学"]
+    assert "工学" not in [scope["normalizedName"] for scope in req["targetScopes"]]
 
 
 @pytest.mark.asyncio
@@ -17011,6 +17221,70 @@ def test_chat_service_semantic_plan_route_resolves_issue_codes_from_review_conte
     assert [payload["action_family"] for payload in payloads] == ["review_plan", "analyze_adjustment"]
     assert payloads[1]["target_strategies"] == ["replace_risk_items"]
     assert payloads[1]["target_issue_codes"] == ["high_tuition", "cooperative_program"]
+
+
+def test_chat_service_semantic_plan_route_bypasses_readonly_candidate_query(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    fake_agent = _FakeAgent(["候选里有更稳一点的会计审计机会；这轮只是查看，不会直接加入方案。"])
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={
+                "code": 0,
+                "data": {
+                    "phase": "reviewed",
+                    "version": 18,
+                    "draftPlanState": {"summary": {"total": 30}},
+                    "orderedPlanState": {"summary": {"total": 30}},
+                    "reviewState": {"summary": {"warnCount": 1, "riskCount": 0}, "checks": []},
+                },
+            })), \
+            patch(
+                "app.service.classify_plan_semantic_action",
+                AsyncMock(
+                    return_value=_semantic_plan(
+                        "analyze_adjustment",
+                        confidence=0.9,
+                        target_strategies=["rebalance_tier_ratio"],
+                        reply_focus=["shortage_boundary"],
+                    )
+                ),
+            ) as classify_mock, \
+            patch(
+                "app.service.extract_candidate_query_filters_async",
+                AsyncMock(
+                    return_value={
+                        "should_query_candidate": True,
+                        "confidence": 0.91,
+                        "filters": {
+                            "tiers": ["稳"],
+                            "province_names": [],
+                            "city_names": [],
+                            "school_keywords": [],
+                            "major_keywords": ["会计学", "审计学"],
+                            "school_tags": [],
+                            "major_tags": [],
+                        },
+                    }
+                ),
+            ) as candidate_extract_mock, \
+            patch("app.service.execute_plan_action", AsyncMock()) as execute_mock:
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(
+            service.handle_message(
+                "semantic-candidate-bypass-session",
+                "user-1",
+                "候选里还有没有更稳一点的会计审计，别直接加",
+            )
+        )
+
+    assert reply == "候选里有更稳一点的会计审计机会；这轮只是查看，不会直接加入方案。"
+    classify_mock.assert_awaited_once()
+    candidate_extract_mock.assert_awaited_once()
+    execute_mock.assert_not_awaited()
+    assert len(fake_agent.calls) == 1
 
 
 def test_chat_service_semantic_preview_reviews_first_when_context_missing(tmp_path, mock_llm_client):

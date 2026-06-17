@@ -399,6 +399,83 @@ def _preserve_only_keep_positive_major_scope(
         payload,
         allowed_keys=_MAJOR_POSITIVE_KEYS + _MAJOR_NEGATIVE_KEYS,
     ) or {}
+    explicit_positive = _only_keep_positive_major_targets_from_latest_utterance(
+        latest_utterance,
+        batch,
+    )
+    if explicit_positive:
+        normalized = _merge_major_intent_payloads(normalized, explicit_positive) or normalized
+    normalized = _prune_generated_negative_complements_for_only_keep(
+        normalized,
+        latest_utterance=latest_utterance,
+        batch=batch,
+    )
+    normalized = _remove_positive_major_targets_excluded_by_negative_scope(
+        normalized,
+        batch=batch,
+    )
+    return normalized
+
+
+def _only_keep_positive_major_targets_from_latest_utterance(
+    latest_utterance: str,
+    batch: str,
+) -> dict[str, list[str]]:
+    local_payload = _recover_polarity_major_intent_locally_from_latest_utterance(
+        latest_utterance,
+        batch,
+    ) or {}
+    local_positive = {
+        key: _as_string_list(local_payload.get(key))
+        for key in _MAJOR_POSITIVE_KEYS
+        if _as_string_list(local_payload.get(key))
+    }
+    if local_positive:
+        return local_positive
+
+    local_negative = {
+        key: set(_as_string_list(local_payload.get(key)))
+        for key in _MAJOR_NEGATIVE_KEYS
+    }
+    explicit_positive: dict[str, list[str]] = {}
+    for mention in resolve_major_mentions_from_text(latest_utterance, batch):
+        level = str(mention.level or "")
+        name = str(mention.canonical_name or "").strip()
+        if level not in _MAJOR_POSITIVE_KEYS or not name:
+            continue
+        negative_key = f"negative_{level}"
+        if name in local_negative.get(negative_key, set()):
+            continue
+        bucket = explicit_positive.setdefault(level, [])
+        if name not in bucket:
+            bucket.append(name)
+    return explicit_positive
+
+
+def _recover_only_keep_positive_scope_from_generated_complement(
+    payload: dict[str, Any] | None,
+    *,
+    latest_utterance: str,
+    batch: str,
+) -> dict[str, Any] | None:
+    """Recover only-keep targets when the extractor only returned a broad complement.
+
+    This handles the structural failure mode where "只要 A 和 B，其他方向不要"
+    becomes "exclude every discipline" with no positive target. We only recover
+    when the negative side is a broad discipline-level complement and the catalog
+    resolver finds explicit major targets in the latest utterance.
+    """
+
+    normalized = _normalize_intent_payload(
+        payload,
+        allowed_keys=_MAJOR_POSITIVE_KEYS + _MAJOR_NEGATIVE_KEYS,
+    ) or {}
+    if not normalized or _has_positive_major_values(normalized):
+        return payload
+    negative_level1 = _as_string_list(normalized.get("negative_level1"))
+    if len(negative_level1) < 6:
+        return payload
+
     explicit_positive: dict[str, list[str]] = {}
     for mention in resolve_major_mentions_from_text(latest_utterance, batch):
         level = str(mention.level or "")
@@ -408,14 +485,23 @@ def _preserve_only_keep_positive_major_scope(
         bucket = explicit_positive.setdefault(level, [])
         if name not in bucket:
             bucket.append(name)
-    if explicit_positive:
-        normalized = _merge_major_intent_payloads(normalized, explicit_positive) or normalized
-    normalized = _prune_generated_negative_complements_for_only_keep(
-        normalized,
+    if not explicit_positive:
+        return payload
+
+    recovered = _merge_major_intent_payloads(normalized, explicit_positive) or normalized
+    recovered = _prune_generated_negative_complements_for_only_keep(
+        recovered,
         latest_utterance=latest_utterance,
         batch=batch,
     )
-    return normalized
+    if recovered != payload:
+        logger.info(
+            "Recovered only-keep positive major targets from broad negative complement: latest=%s before=%s after=%s",
+            latest_utterance,
+            payload,
+            recovered,
+        )
+    return recovered
 
 
 def _major_display_name_from_latest_utterance(
@@ -477,6 +563,91 @@ def _positive_major_covered_by_negative_scope(
             or (parent_level1 and parent_level1 in negative_level1)
         )
     return False
+
+
+def _positive_major_excluded_by_negative_scope(
+    *,
+    level: str,
+    name: str,
+    negative_level1: set[str],
+    negative_level2: set[str],
+    negative_level3: set[str],
+    level2_to_level1: dict[str, str],
+    level3_to_level2: dict[str, str],
+) -> bool:
+    if level == "level1":
+        return name in negative_level1
+    if level == "level2":
+        parent_level1 = level2_to_level1.get(name)
+        return name in negative_level2 or bool(parent_level1 and parent_level1 in negative_level1)
+    if level == "level3":
+        parent_level2 = level3_to_level2.get(name)
+        parent_level1 = level2_to_level1.get(parent_level2 or "")
+        return bool(
+            name in negative_level3
+            or (parent_level2 and parent_level2 in negative_level2)
+            or (parent_level1 and parent_level1 in negative_level1)
+        )
+    return False
+
+
+def _remove_positive_major_targets_excluded_by_negative_scope(
+    payload: dict[str, Any] | None,
+    *,
+    batch: str,
+) -> dict[str, Any] | None:
+    """Keep target scopes and excluded scopes structurally consistent.
+
+    For only-keep/must-have plan goals, positive targets must not include an
+    entity that is also excluded in the same structured payload. Equal or broader
+    negative scopes win; narrower negative child scopes do not erase a broader
+    positive target such as "只考虑医学，但护理不要".
+    """
+
+    if not isinstance(payload, dict) or not payload:
+        return payload
+    if not _has_positive_major_values(payload) or not _has_negative_major_values(payload):
+        return payload
+
+    mappings = major_parent_mappings_for_batch(batch)
+    level2_to_level1 = mappings.get("level2_to_level1", {})
+    level3_to_level2 = mappings.get("level3_to_level2", {})
+    negative_level1 = set(_as_string_list(payload.get("negative_level1")))
+    negative_level2 = set(_as_string_list(payload.get("negative_level2")))
+    negative_level3 = set(_as_string_list(payload.get("negative_level3")))
+
+    cleaned: dict[str, Any] = {}
+    changed = False
+    for key, values in payload.items():
+        if key not in _MAJOR_POSITIVE_KEYS:
+            cleaned[key] = values
+            continue
+        kept: list[str] = []
+        for name in _as_string_list(values):
+            if _positive_major_excluded_by_negative_scope(
+                level=key,
+                name=name,
+                negative_level1=negative_level1,
+                negative_level2=negative_level2,
+                negative_level3=negative_level3,
+                level2_to_level1=level2_to_level1,
+                level3_to_level2=level3_to_level2,
+            ):
+                changed = True
+                continue
+            kept.append(name)
+        if kept:
+            cleaned[key] = kept
+        elif _as_string_list(values):
+            changed = True
+
+    if changed:
+        logger.info(
+            "Removed positive major targets excluded by negative scopes: before=%s after=%s",
+            payload,
+            cleaned,
+        )
+    return cleaned or None
 
 
 def _remove_unstated_positive_major_conflicts(
@@ -3529,6 +3700,31 @@ async def analyze_volunteer_intent_change(
         semantic_decision,
         merged=merged_for_constraint_type,
     )
+    if (
+        resolved_constraint_intent_type == CONSTRAINT_INTENT_DEFAULT
+        and semantic_constraint_intent_type == CONSTRAINT_INTENT_DEFAULT
+        and semantic_decision is not None
+        and semantic_decision.decision == "intent_preview"
+        and semantic_decision.confidence >= 0.7
+        and _normalize_constraint_intent_type(semantic_decision.constraintIntentType) == CONSTRAINT_INTENT_ONLY_KEEP
+    ):
+        recovered_major_intents = _recover_only_keep_positive_scope_from_generated_complement(
+            major_intents,
+            latest_utterance=latest_utterance,
+            batch=batch,
+        )
+        if recovered_major_intents != major_intents:
+            major_intents = recovered_major_intents
+            merged_for_constraint_type = {
+                "major_intents": major_intents or {},
+                "school_intents": school_intents or {},
+                "city_intents": city_intents or {},
+                "career_intents": career_intents or {},
+            }
+            semantic_constraint_intent_type = _constraint_type_from_semantic_decision(
+                semantic_decision,
+                merged=merged_for_constraint_type,
+            )
     if (
         resolved_constraint_intent_type == CONSTRAINT_INTENT_DEFAULT
         and semantic_constraint_intent_type != CONSTRAINT_INTENT_DEFAULT

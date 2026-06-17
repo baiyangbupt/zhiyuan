@@ -44,6 +44,7 @@ from app.tools.plan_execution_tool import (
     consume_recent_plan_execution_result,
     execute_plan_action,
 )
+from app.tools.candidate_filter_extraction_tool import extract_candidate_query_filters_async
 from app.tools.plan_orchestration_tool import plan_next_action
 from app.tools.plan_semantic_action_tool import (
     classify_composite_goal_action,
@@ -66,6 +67,7 @@ from app.tools.intent_state_tool import (
     analyze_volunteer_intent_change,
     merge_selected_values,
     _normalize_constraint_type_for_payload,
+    _remove_positive_major_targets_excluded_by_negative_scope,
 )
 from app.tools.intent_response_tool import (
     parse_intent_analysis_payload,
@@ -1693,7 +1695,11 @@ def _scope_payload(entity_type: str, values: list[str]) -> dict[str, Any] | None
 
 
 def _positive_goal_scopes_from_intents(merged: dict[str, Any], batch: str | None = "01") -> list[dict[str, Any]]:
-    major_intents = merged.get("major_intents") if isinstance(merged.get("major_intents"), dict) else {}
+    raw_major_intents = merged.get("major_intents") if isinstance(merged.get("major_intents"), dict) else {}
+    major_intents = _remove_positive_major_targets_excluded_by_negative_scope(
+        raw_major_intents,
+        batch=batch or "01",
+    ) or {}
     school_intents = merged.get("school_intents") if isinstance(merged.get("school_intents"), dict) else {}
     city_intents = merged.get("city_intents") if isinstance(merged.get("city_intents"), dict) else {}
     scopes: list[dict[str, Any]] = []
@@ -2624,6 +2630,134 @@ async def _recover_unbacked_intent_confirmation(
         )
         return None
     return await _create_pending_intent_confirmation_from_preview_payload(session_id, preview_payload)
+
+
+def _tool_calls_are_readonly_explore_or_compare(messages: list[Any] | None) -> bool:
+    tool_names = [str(part.tool_name or "").strip() for part in _iter_tool_call_parts(messages)]
+    if not tool_names:
+        return False
+    readonly_tools = set(_INTENT_INTEREST_ANALYSIS_TOOL_NAMES) | {
+        "compare_major_options",
+        "compare_majors",
+        "compare_majors_adhoc",
+        "compare_schools",
+        "compare_schools_adhoc",
+        "get_major_introduction",
+        "get_major_introductions",
+        "get_school_introduction",
+    }
+    return all(name in readonly_tools for name in tool_names)
+
+
+def _reply_leaves_explicit_intent_as_future_reference(reply: str) -> bool:
+    compact = _compact_plan_reply_text(reply)
+    if not compact:
+        return False
+    if any(
+        marker in compact
+        for marker in (
+            "先只分析不要记",
+            "不要记偏好",
+            "别记偏好",
+            "先不要记",
+            "先别记",
+            "不会写入后续参考",
+            "不会写入后续报考参考",
+            "不生成待采纳",
+            "只是分析",
+            "只做分析",
+        )
+    ):
+        return False
+    has_future_reference = any(
+        marker in compact
+        for marker in (
+            "后续推荐",
+            "方案调整",
+            "方案生成",
+            "纳入考虑",
+            "作为后续参考",
+            "作为后续推荐",
+            "作为优先方向",
+            "直接排除",
+            "可以排除",
+            "优先保留",
+            "过滤掉",
+        )
+    )
+    has_confirmation_or_choice = any(
+        marker in compact
+        for marker in (
+            "如果确定",
+            "如果你确定",
+            "如果确认",
+            "你现在是想",
+            "是否",
+            "要不要",
+            "想把",
+            "作为优先方向",
+            "还是只想了解",
+        )
+    )
+    return has_future_reference and has_confirmation_or_choice
+
+
+async def _recover_confirmable_intent_from_readonly_tool_misroute(
+    session_id: str,
+    request_context: RequestContext,
+    *,
+    reply: str,
+    tool_context_messages: list[Any] | None,
+) -> WSResponse | None:
+    """Recover pending intent when a readonly analysis tool swallowed explicit intent.
+
+    The recovery is triggered by the tool path and reply protocol, but entity
+    extraction remains delegated to `analyze_volunteer_intent_change` over the
+    latest user turn. This keeps the main path model-first without string
+    enumerating user utterances.
+    """
+
+    if not isinstance(reply, str) or not _tool_calls_are_readonly_explore_or_compare(tool_context_messages):
+        return None
+    if not _reply_leaves_explicit_intent_as_future_reference(reply):
+        return None
+    return await _recover_unbacked_intent_confirmation(
+        session_id,
+        request_context,
+        reply=reply,
+        force=True,
+    )
+
+
+async def _recover_confirmable_intent_from_no_tool_turn(
+    session_id: str,
+    request_context: RequestContext,
+    *,
+    reply: str,
+    tool_context_messages: list[Any] | None,
+) -> WSResponse | None:
+    """Recover explicit intent when the model answered without any tool call.
+
+    No-tool composite recovery is allowed later for true high-side-effect plan
+    goals. Ordinary "prefer A / avoid B" updates must first pass through the
+    Intent preview path so the user sees a consistent adoption card and does not
+    get an accidental plan mutation.
+    """
+
+    if list(_iter_tool_call_parts(tool_context_messages)):
+        return None
+    if not (
+        _reply_leaves_explicit_intent_as_future_reference(reply)
+        or _reply_looks_like_unbacked_intent_preview(reply)
+        or _reply_claims_intent_recorded_without_pending(reply)
+    ):
+        return None
+    return await _recover_unbacked_intent_confirmation(
+        session_id,
+        request_context,
+        reply=reply,
+        force=True,
+    )
 
 
 def _intent_recovery_scope_from_pending_context(request_context: RequestContext) -> str:
@@ -4361,6 +4495,53 @@ def _tool_calls_include_plan_chain(messages: list[Any] | None) -> bool:
     return any(part.tool_name in plan_tool_names for part in _iter_tool_call_parts(messages))
 
 
+async def _candidate_query_should_bypass_semantic_plan_action(
+    content: str,
+    *,
+    request_context: RequestContext,
+) -> bool:
+    """Let read-only candidate opportunity queries stay on the local query path.
+
+    This uses the shared LLM-backed candidate filter extractor instead of a
+    phrase shortcut. The semantic plan-action shortcut is only for review and
+    repair explanations; candidate opportunity lookup should be answered by
+    `query_volunteer_plan(scope="candidate")` in the full agent path.
+    """
+
+    try:
+        result = await extract_candidate_query_filters_async(
+            content,
+            batch=getattr(request_context, "batch", None),
+        )
+    except Exception:
+        logger.warning(
+            "Candidate query semantic bypass extraction failed: session_id=%s",
+            getattr(request_context, "sessionid", ""),
+            exc_info=True,
+        )
+        return False
+    if not bool((result or {}).get("should_query_candidate")):
+        return False
+    try:
+        confidence = float((result or {}).get("confidence") or 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    if confidence < 0.7:
+        return False
+    filters = (result or {}).get("filters") if isinstance(result, dict) else {}
+    if not isinstance(filters, dict):
+        return False
+    return any(bool(filters.get(key)) for key in (
+        "tiers",
+        "province_names",
+        "city_names",
+        "school_keywords",
+        "major_keywords",
+        "school_tags",
+        "major_tags",
+    ))
+
+
 def _tool_calls_include_intent_preview(messages: list[Any] | None) -> bool:
     return any(part.tool_name in _INTENT_PREVIEW_TOOL_NAMES for part in _iter_tool_call_parts(messages))
 
@@ -4530,6 +4711,12 @@ def _build_existing_only_no_plan_reply(payload: dict[str, Any] | None) -> str:
 def _tool_returns_interest_stage_intent_analysis(messages: list[Any] | None) -> bool:
     for part in _iter_tool_return_parts(messages):
         if part.tool_name in _INTENT_INTEREST_ANALYSIS_TOOL_NAMES:
+            data = _parse_tool_return_json(part.content)
+            if isinstance(data, dict):
+                analysis_stage = str(data.get("analysisStage") or "").strip()
+                status = str(data.get("status") or "").strip()
+                if analysis_stage == ANALYSIS_STAGE_CONFIRMED and status in {"ready", "existing_only"}:
+                    continue
             return True
         if part.tool_name not in _INTENT_PREVIEW_TOOL_NAMES:
             continue
@@ -8414,6 +8601,12 @@ class ChatService:
 
         action_family = str(getattr(decision, "actionFamily", "none") or "none")
         confidence = float(getattr(decision, "confidence", 0.0) or 0.0)
+        if action_family == "analyze_adjustment" and confidence >= _SEMANTIC_PLAN_ACTION_CONFIDENCE_THRESHOLD:
+            if await _candidate_query_should_bypass_semantic_plan_action(
+                content,
+                request_context=request_context,
+            ):
+                return None
         if (
             confidence >= _SEMANTIC_PLAN_ACTION_CONFIDENCE_THRESHOLD
             and _requests_profile_change_replan(decision)
@@ -9991,6 +10184,12 @@ class ChatService:
         if on_progress is not None:
             context_progress_task = asyncio.create_task(delayed_context_progress())
 
+        async def finish_context_progress() -> None:
+            if context_progress_task is not None:
+                context_progress_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await context_progress_task
+
         history_task = asyncio.create_task(self.history_store.load(session_id))
         pending_state_task = asyncio.create_task(_load_pending_confirmation_state(session_id))
         try:
@@ -10010,6 +10209,8 @@ class ChatService:
             if isinstance(backend_pending_state, Exception):
                 logger.warning("Failed to load pending confirmation state: session_id=%s", session_id, exc_info=True)
                 backend_pending_state = None
+        if isinstance(backend_pending_state, dict) and str(backend_pending_state.get("status") or "").strip() == "active":
+            await finish_context_progress()
 
         logger.info(
             "ChatService handling message: session_id=%s user_id=%s content_len=%d history_len=%d",
@@ -10184,7 +10385,7 @@ class ChatService:
         backend_pending_status = str((backend_pending_state or {}).get("status") or "").strip()
         if backend_pending_id and backend_pending_status == "active":
             if _is_direct_pending_confirmation_turn(content, backend_pending_kind):
-                return await self.handle_pending_confirmation(
+                reply = await self.handle_pending_confirmation(
                     session_id,
                     user_id,
                     json.dumps(
@@ -10198,6 +10399,8 @@ class ChatService:
                     confirmation_entry="short_text",
                     user_prompt_content=content,
                 )
+                await finish_context_progress()
+                return reply
             pending_route_decision = None
             try:
                 pending_route_decision = await classify_pending_confirmation_action(
@@ -10215,7 +10418,7 @@ class ChatService:
             pending_route_confidence = float(getattr(pending_route_decision, "confidence", 0.0) or 0.0)
             if pending_route_confidence >= _SEMANTIC_PENDING_CONFIRMATION_CONFIDENCE_THRESHOLD:
                 if pending_route_action == "confirm_pending":
-                    return await self.handle_pending_confirmation(
+                    reply = await self.handle_pending_confirmation(
                         session_id,
                         user_id,
                         json.dumps(
@@ -10229,8 +10432,10 @@ class ChatService:
                         confirmation_entry="short_text",
                         user_prompt_content=content,
                     )
+                    await finish_context_progress()
+                    return reply
                 if pending_route_action == "reject_pending":
-                    return await self.handle_pending_confirmation(
+                    reply = await self.handle_pending_confirmation(
                         session_id,
                         user_id,
                         json.dumps(
@@ -10244,6 +10449,8 @@ class ChatService:
                         confirmation_entry="short_text",
                         user_prompt_content=content,
                     )
+                    await finish_context_progress()
+                    return reply
             if (
                 pending_route_action == "ask_pending_impact"
                 and pending_route_confidence >= _SEMANTIC_PENDING_CONFIRMATION_CONFIDENCE_THRESHOLD
@@ -10271,6 +10478,7 @@ class ChatService:
                     status="success",
                     errorType=None,
                 )
+                await finish_context_progress()
                 return reply
 
         if active_pending is None and _latest_turn_looks_readonly(history) and _is_readonly_closure_ack(content):
@@ -10296,6 +10504,7 @@ class ChatService:
                 status="success",
                 errorType=None,
             )
+            await finish_context_progress()
             return reply
 
         if (
@@ -10323,6 +10532,7 @@ class ChatService:
                 status="success",
                 errorType=None,
             )
+            await finish_context_progress()
             return reply
 
         semantic_plan_action_reply = await self._maybe_handle_semantic_plan_action(
@@ -10335,6 +10545,7 @@ class ChatService:
             on_progress=on_progress,
         )
         if semantic_plan_action_reply is not None:
+            await finish_context_progress()
             return semantic_plan_action_reply
 
         progress_sent = False
@@ -10867,6 +11078,54 @@ class ChatService:
                         _replace_text_reply(new_messages, reply, recovered_pending_intent_reply)
                         _replace_text_reply(all_messages, reply, recovered_pending_intent_reply)
                         reply = recovered_pending_intent_reply
+        if (
+            recovered_pending_intent_card is None
+            and plan_confirmation_candidate is None
+            and isinstance(reply, str)
+            and not plan_chain_used
+            and not intent_preview_used
+            and not intent_preview_downgraded
+            and not readonly_prompt
+            and resolve_pending_confirmation(request_context) is None
+        ):
+            recovered_pending_intent_card = await _recover_confirmable_intent_from_readonly_tool_misroute(
+                session_id,
+                request_context,
+                reply=reply,
+                tool_context_messages=tool_context_messages,
+            )
+            if recovered_pending_intent_card is not None:
+                recovered_pending_intent_reply = _intent_card_primary_reply_from_card(
+                    recovered_pending_intent_card
+                )
+                if recovered_pending_intent_reply:
+                        _replace_text_reply(new_messages, reply, recovered_pending_intent_reply)
+                        _replace_text_reply(all_messages, reply, recovered_pending_intent_reply)
+                        reply = recovered_pending_intent_reply
+        if (
+            recovered_pending_intent_card is None
+            and plan_confirmation_candidate is None
+            and isinstance(reply, str)
+            and not plan_chain_used
+            and not intent_preview_used
+            and not intent_preview_downgraded
+            and not readonly_prompt
+            and resolve_pending_confirmation(request_context) is None
+        ):
+            recovered_pending_intent_card = await _recover_confirmable_intent_from_no_tool_turn(
+                session_id,
+                request_context,
+                reply=reply,
+                tool_context_messages=tool_context_messages,
+            )
+            if recovered_pending_intent_card is not None:
+                recovered_pending_intent_reply = _intent_card_primary_reply_from_card(
+                    recovered_pending_intent_card
+                )
+                if recovered_pending_intent_reply:
+                    _replace_text_reply(new_messages, reply, recovered_pending_intent_reply)
+                    _replace_text_reply(all_messages, reply, recovered_pending_intent_reply)
+                    reply = recovered_pending_intent_reply
         composite_goal_preview = _latest_composite_goal_plan_preview(tool_context_messages)
         composite_goal_clarification_reply = _composite_goal_clarification_reply(composite_goal_preview)
         if composite_goal_clarification_reply:
@@ -10985,6 +11244,7 @@ class ChatService:
         if (
             plan_action_recovery_route is None
             and plan_confirmation_candidate is None
+            and recovered_pending_intent_card is None
             and pending_fix_proposal_card is None
             and isinstance(reply, str)
             and not composite_goal_clarification_reply

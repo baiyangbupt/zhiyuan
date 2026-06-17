@@ -814,6 +814,36 @@ def test_plan_next_action_blocks_ambiguous_major_scope_before_intent_update():
     assert any("财会" in line and "需要先确认" in line for line in proposal["impact_summary"])
 
 
+def test_plan_next_action_allows_same_name_cross_level_major_scope():
+    with patch(
+        "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
+        new=AsyncMock(return_value=_context_inputs(summary="阶段=ordered；方案=30/30")),
+    ):
+        result = asyncio.run(
+            plan_next_action(
+                _ctx(),
+                user_goal="方案里必须有法学，其他专业可以先保留",
+                action_family="add_units",
+                constraint_intent_type="must_have",
+                major_keyword="法学",
+            )
+        )
+
+    data = json.loads(result)
+    proposal = _proposal(data)
+    goal = _proposal_goal(data)
+    resolution = goal["entity_resolutions"][0]
+    assert resolution["raw_text"] == "法学"
+    assert resolution["entity_type"] == "major"
+    assert resolution["canonical_name"] == "法学"
+    assert resolution["ambiguity"] == "none"
+    assert len(resolution["matched_candidate_items"]) >= 2
+    assert goal["needs_clarification"] is False
+    assert goal["target_scopes"] == [{"entity_type": "major", "values": ["法学"]}]
+    assert proposal["intent_updates"][0]["constraintIntentType"] == "must_have"
+    assert proposal["requires_confirmation"] is True
+
+
 def test_plan_next_action_resolves_structured_region_scope_alias():
     with patch(
         "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",

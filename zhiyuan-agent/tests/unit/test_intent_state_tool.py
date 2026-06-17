@@ -48,6 +48,8 @@ from app.tools.intent_state_tool import (
     _normalize_region_area_polarity_payloads,
     _preserve_only_keep_positive_major_scope,
     _prune_generated_negative_complements_for_only_keep,
+    _recover_only_keep_positive_scope_from_generated_complement,
+    _remove_positive_major_targets_excluded_by_negative_scope,
     _remove_unstated_positive_major_conflicts,
     _recover_polarity_major_intent_locally_from_latest_utterance,
     _recover_intents_from_context,
@@ -5628,6 +5630,43 @@ def test_only_keep_major_payload_keeps_explicit_negative_scope():
     assert pruned == {"level1": ["医学"], "negative_level1": ["工学"]}
 
 
+def test_only_keep_major_payload_drops_excluded_positive_target():
+    preserved = _preserve_only_keep_positive_major_scope(
+        {
+            "level1": ["医学", "工学"],
+            "negative_level1": ["工学"],
+        },
+        latest_utterance="不考虑工科，只考虑医学类",
+        batch="01",
+    )
+
+    assert preserved == {"level1": ["医学"], "negative_level1": ["工学"]}
+
+
+def test_only_keep_major_conflict_cleanup_keeps_broader_positive_with_negative_child():
+    cleaned = _remove_positive_major_targets_excluded_by_negative_scope(
+        {
+            "level1": ["医学"],
+            "negative_level3": ["护理学"],
+        },
+        batch="01",
+    )
+
+    assert cleaned == {"level1": ["医学"], "negative_level3": ["护理学"]}
+
+
+def test_only_keep_major_conflict_cleanup_drops_child_covered_by_negative_parent():
+    cleaned = _remove_positive_major_targets_excluded_by_negative_scope(
+        {
+            "level3": ["软件工程", "临床医学"],
+            "negative_level1": ["工学"],
+        },
+        batch="01",
+    )
+
+    assert cleaned == {"level3": ["临床医学"], "negative_level1": ["工学"]}
+
+
 def test_only_keep_major_payload_recovers_explicit_positive_scope_from_latest_utterance():
     preserved = _preserve_only_keep_positive_major_scope(
         {
@@ -5638,6 +5677,18 @@ def test_only_keep_major_payload_recovers_explicit_positive_scope_from_latest_ut
     )
 
     assert preserved == {"level3": ["电气工程及其自动化", "大气科学"]}
+
+
+def test_only_keep_major_payload_recovers_positive_scope_from_broad_generated_complement():
+    recovered = _recover_only_keep_positive_scope_from_generated_complement(
+        {
+            "negative_level1": ["哲学", "经济学", "法学", "教育学", "文学", "历史学", "理学", "工学", "农学", "医学", "管理学", "艺术学"],
+        },
+        latest_utterance="只要电气和气象，其他方向都不要",
+        batch="01",
+    )
+
+    assert recovered == {"level3": ["电气工程及其自动化", "大气科学"]}
 
 
 def test_region_area_normalization_uses_extractor_polarity_not_user_phrase_rules():
