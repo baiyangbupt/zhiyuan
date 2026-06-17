@@ -109,6 +109,7 @@ class PlanRecoveryActionDecision(BaseModel):
     actionFamily: PlanRecoveryAction = "none"
     confidence: float = 0.0
     reason: str = ""
+    reviewIssueCode: str | None = None
     volunteerIds: list[str] = Field(default_factory=list)
     unitIds: list[str] = Field(default_factory=list)
     sourceMajorNames: list[str] = Field(default_factory=list)
@@ -394,6 +395,9 @@ def _get_plan_recovery_action_agent() -> Agent[None, str]:
                 "这属于意向/条件预览，不在本恢复器里处理，输出 none。"
                 "如果用户明确说要从当前方案中删掉某专业、某院校、某地域或某类风险，"
                 "使用 remove_units，并把专业名放 sourceMajorNames，院校放 schoolKeyword，地域放 provinceKeyword。"
+                "如果对象是当前方案审查已经识别出的风险或提醒类型，例如高收费、中外合作、限报条件、特殊招生，"
+                "不要把它当成专业名；使用 remove_units 或 replace_units，并把对应审查 code 放 reviewIssueCode，"
+                "例如高收费=high_tuition，中外合作=cooperative_program，限报条件=admission_limit，特殊类型招生=special_enrollment。"
                 "如果用户明确说要加入或补齐某类候选，使用 add_units，并把筛选条件放 majorKeyword、schoolKeyword、provinceKeyword、tier 或 tags。"
                 "如果用户明确说把某条学校+专业移动到第 N 位，使用 move_unit，volunteerIds 填用户原始引用，targetPosition 填 N。"
                 "如果用户只用位置表达，如“第8个移到第12位/第8条放到第12”，没有学校专业名，"
@@ -408,7 +412,7 @@ def _get_plan_recovery_action_agent() -> Agent[None, str]:
                 "limit 只在用户明确数量时填写，否则默认 5。"
                 "高副作用真正执行不在这里决定；这里只恢复预览链路。"
                 "只有很确定时 confidence >= 0.85；不确定时 actionFamily=none 或 confidence < 0.85。"
-                "输出 JSON 字段：actionFamily, confidence, reason, volunteerIds, unitIds, sourceMajorNames, "
+                "输出 JSON 字段：actionFamily, confidence, reason, reviewIssueCode, volunteerIds, unitIds, sourceMajorNames, "
                 "sourcePosition, positionScope, targetPosition, sortField, tier, provinceKeyword, schoolKeyword, majorKeyword, "
                 "schoolTags, majorTags, preserveCount, limit。"
             ),
@@ -565,6 +569,7 @@ def _normalize_plan_recovery_action_decision(decision: PlanRecoveryActionDecisio
         actionFamily=action_family,  # type: ignore[arg-type]
         confidence=max(0.0, min(1.0, float(decision.confidence or 0.0))),
         reason=str(decision.reason or "").strip(),
+        reviewIssueCode=str(decision.reviewIssueCode or "").strip() or None,
         volunteerIds=_normalize_list_values(decision.volunteerIds),
         unitIds=_normalize_list_values(decision.unitIds),
         sourceMajorNames=_normalize_list_values(decision.sourceMajorNames),

@@ -5413,3 +5413,73 @@ median=32856ms, p95=71865ms, max=71865ms
 - 机制正确性通过，未发现审查修复确认卡、候选不足说明、重新审查刷新链路失败。
 - 慢点集中在审查解释类问题，最大 `71865ms`。模型 agent run 内部约 `27s`，外层完整 websocket 响应约 `72s`，需要继续观察消息结束/前端等待链路。
 - 部分标题仍偏硬，例如“处理兜底专业不足”，后续做统一文案压缩时再处理，不作为本轮安全阻断。
+
+## 34. 无工具边界回复不能吞掉意向变化，审查后处理预览必须有明确问题目标
+
+2026-06-17 继续 303 对话积累场景回归时发现两类收敛问题：
+
+- 当前报考参考里已有 `偏好地域：上海、安徽、山东、江苏、江西`，用户输入 `不想去安徽`，模型可能没有调用 Intent 工具，而是直接回复“这轮还没有生成可执行的调整内容，所以不会改动当前方案”。这会让明确的地域意向变化被方案调整兜底吞掉。
+- 用户输入 `把太贵的那几个先去掉看看` 时，full agent 可能只执行 `review_plan` 并返回审查摘要。用户这轮不是单纯问风险，而是希望继续处理高收费/预算压力问题，应从结构化 review issue / fix proposal 进入可确认预览。
+
+本轮修复原则：
+
+- 不新增用户话术关键词路由。
+- 意向恢复仍由 `analyze_volunteer_intent_change` 负责实体抽取和结构化判定；service 只在“无工具 + 无卡片 + 模型给出无可执行调整边界”时触发一次结构化恢复，抽不到 `ready/items` 就不出卡。
+- 审查后处理预览不靠回复文案承诺。只有语义分类器在当前 review/fix proposal 上下文中给出高置信 `preview_fix_proposal`，或给出 `review_plan/analyze_adjustment + 明确 targetIssueCodes` 时，才允许转入 `preview_fix_proposal`。
+- 仅有 `targetStrategies` 不足以从“是否需要重新审查/当前审查是否过期”这类问题生成处理卡，避免把只读审查问题误升级成修复动作。
+- 当 `review_check` / `preview_fix_proposal` 已经带着显式 `targetStrategies` 或 `targetIssueCodes`，但当前 `ready` proposal 为空或不匹配时，service 只保留这条结构化结果和 `target_match_empty`，不再回退到第一条无关 ready proposal，也不再额外问模型猜目标。
+
+实现落点：
+
+- `_recover_confirmable_intent_from_no_tool_turn()` 将 `_reply_looks_like_plan_action_recovery_boundary()` 纳入触发条件，但最终是否生成卡仍取决于 Intent 工具结构化 payload。
+- `_maybe_recover_fix_preview_after_review()` 支持 `review_plan/analyze_adjustment` 的高置信目标恢复，但非 `preview_fix_proposal` 时必须带 `targetIssueCodes`，从而锚定到具体审查问题对象，例如 `high_tuition`。
+- `_maybe_recover_unbacked_composite_goal_without_tools()` 在复合目标恢复失败时保留结构化 intent fallback，但只对无可执行边界回复触发。
+- `_maybe_recover_atomic_preview_after_agent_interruption()` 处理完整 Agent 在首轮模型请求阶段挂起、还没有任何工具调用的情况。它只调用 `classify_plan_recovery_action` 做结构化动作恢复；高收费/中外合作/限报等审查问题必须输出 `reviewIssueCode`，再回到 `plan_next_action -> execute_plan_action` 生成执行层预览和 pending card。低置信、只读问题、普通意向变化或已有 active pending 时不触发，继续走原有安全兜底。
+
+已验证单测：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest tests/unit/test_chat_service_history_persistence.py \
+  -k "recovers_region_intent_from_no_executable_boundary_without_tools or recovers_explicit_high_fee_removal_after_review_to_fix_preview or recovers_region_intent_before_unbacked_plan_confirmation_guard or recovers_fix_preview_after_review_then_atomic_remove_error or falls_back_to_intent_card_when_only_keep_plan_proposal_blocked or recovers_toolless_exclude_goal_boundary_to_user_goal_proposal or recovers_toolless_only_keep_without_plan_to_intent_card or structured_exclude_goal_falls_back_to_user_goal_proposal or does_not_recover_fix_preview_for_stale_review_question" -q
+```
+
+结果：`9 passed`。
+
+审查修复邻近回归：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest tests/unit/test_chat_service_history_persistence.py \
+  -k "fix_preview or fix_proposal or review_repair" -q
+```
+
+结果：`34 passed`。
+
+首轮模型中断恢复补充验证：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest tests/unit/test_chat_service_history_persistence.py \
+  -k "interrupts_before_tools or interrupts_after_tool_preview or interrupted_readonly or returns_safe_fallback or high_tuition" -q
+```
+
+结果：`6 passed`。
+
+邻近恢复/审查修复回归：
+
+```bash
+cd zhiyuan-agent
+.venv/bin/python -m pytest tests/unit/test_chat_service_history_persistence.py \
+  -k "fix_preview or fix_proposal or review_repair or high_tuition or interruption or interrupted or plan_action_recovery" -q
+```
+
+结果：`40 passed`。
+
+后续回归重点：
+
+- `不想去安徽` 一类地域/专业/院校意向变化，在模型未调用 Intent 工具时仍应出现待采纳卡。
+- `把太贵的那几个先去掉看看` 一类明确处理高收费/中外合作的问题，应优先锚定 `high_tuition/cooperative_program` 等 review issue；如果 full agent 首轮模型挂起，也应尝试结构化恢复到对应原子预览；如果没有匹配 ready proposal，应说明需要取舍或放宽条件，不得生成无关倒挂/安全垫卡。
+- 如果工具结果已经带着明确 target，但没有匹配到 ready proposal，也应直接说明“当前没有可直接执行的调整项”，不要为了凑一张卡而回退到别的 ready 项。
+- 如果 full agent 只给出了 `review_plan` 的审查摘要，但用户语义明显是在继续处理高收费/中外合作等问题，后续恢复仍必须先把问题锚定到具体 review issue code，再进入 `preview_fix_proposal`。如果 issue code 抽不出来，就只保留审查摘要，不要勉强升格成修复卡。
+- `我刚移动过，现在审查结果还准吗` 仍是重新审查/只读问题，不应因为存在 ready fix proposal 就生成处理卡。

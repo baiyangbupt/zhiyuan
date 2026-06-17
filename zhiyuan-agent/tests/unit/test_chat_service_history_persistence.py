@@ -85,6 +85,7 @@ def _semantic_plan(
 
 def _semantic_plan_recovery(action_family: str, confidence: float = 0.95, reason: str = "test", **kwargs):
     defaults = {
+        "reviewIssueCode": None,
         "volunteerIds": [],
         "unitIds": [],
         "sourceMajorNames": [],
@@ -1390,6 +1391,129 @@ def test_chat_service_recovers_plan_preview_card_when_model_interrupts_after_too
     assert saved_payload["atomic_actions"][0]["review_issue_target"]["code"] == "high_tuition"
 
 
+def test_chat_service_recovers_plan_preview_card_when_model_interrupts_before_tools(
+    tmp_path,
+    mock_llm_client,
+):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    plan_payload = {
+        "stage": "preview",
+        "action_family": "remove_units",
+        "user_goal": "把太贵的那几个先去掉看看",
+        "requires_confirmation": True,
+        "missing_inputs": [],
+        "planning_version": 926,
+        "atomic_actions": [
+            {
+                "action_type": "remove_units",
+                "volunteer_ids": [],
+                "unit_ids": [],
+                "source_major_names": [],
+                "filters": {},
+                "reason": "把太贵的那几个先去掉看看",
+                "review_issue_target": {
+                    "code": "high_tuition",
+                    "scope_mode": "full_issue",
+                    "scope_fingerprint": "high-fee-current",
+                    "label": "高收费",
+                    "scope_kind": "item_removal",
+                    "default_action_family": "remove_units",
+                    "narrowed_refs": [],
+                    "narrowed_filters": {},
+                },
+            }
+        ],
+        "preview_summary": "会按当前审查命中的整批高收费项执行移除，并在执行后重新审查整体结构。",
+    }
+    execute_result = {
+        "applied": False,
+        "action_family": "remove_units",
+        "stage": "preview",
+        "result_kind": "preview_only",
+        "summary": "已定位到当前方案里当前审查命中的高收费项：共 3 个专业组，涉及 8 条志愿。确认后我会移出这些项，并重新审查。",
+        "facts": {
+            "planning_version": 926,
+            "source_backend_version": 926,
+            "resolved_apply_payload": {
+                "stage": "apply",
+                "action_family": "remove_units",
+                "user_goal": "把太贵的那几个先去掉看看",
+                "atomic_actions": plan_payload["atomic_actions"],
+                "planning_version": 926,
+            },
+        },
+    }
+    pending_state, save_pending_mock, get_pending_mock = _pending_confirmation_store()
+
+    with patch("app.service.ChatAgent", return_value=_InterruptedAgent()), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={
+                "code": 0,
+                "data": {
+                    "phase": "reviewed",
+                    "version": 926,
+                    "draftPlanState": {"summary": {"total": 45}},
+                    "orderedPlanState": {"summary": {"total": 45}},
+                    "reviewState": {
+                        "summary": {"riskCount": 1, "warnCount": 0},
+                        "checks": [
+                            {
+                                "code": "high_tuition",
+                                "label": "高收费",
+                                "severity": "risk",
+                                "affectedUnitCount": 3,
+                                "affectedVolunteerCount": 8,
+                            }
+                        ],
+                    },
+                },
+            })), \
+            patch("app.service.consume_recent_plan_execution_result", return_value=None), \
+            patch("app.service.classify_plan_recovery_action", AsyncMock(return_value=_semantic_plan_recovery(
+                "remove_units",
+                reviewIssueCode="high_tuition",
+                limit=5,
+            ))) as recovery_classifier_mock, \
+            patch("app.service.plan_next_action", AsyncMock(return_value=json.dumps(plan_payload, ensure_ascii=False))) as plan_next_mock, \
+            patch("app.service.execute_plan_action", AsyncMock(return_value=json.dumps(execute_result, ensure_ascii=False))) as execute_mock, \
+            patch("app.service.save_pending_confirmation", save_pending_mock), \
+            patch("app.service.get_pending_confirmation", get_pending_mock):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(
+            service.handle_message(
+                "session-interrupted-before-tools-plan-preview",
+                "user-1",
+                "把太贵的那几个先去掉看看",
+            )
+        )
+
+    assert isinstance(reply, ChatServiceResponseEnvelope)
+    assert "模型服务中断" not in reply.primary
+    assert "确认前不会改动当前方案" in reply.primary
+    card = _assert_pending_card_envelope(reply, "", "remove_units")
+    assert card["title"] == "确认移出志愿"
+    assert "高收费" in card["content"]
+    saved_payload = json.loads(pending_state["value"]["executionPayload"]["planPayload"])
+    assert saved_payload["stage"] == "apply"
+    assert saved_payload["action_family"] == "remove_units"
+    assert saved_payload["atomic_actions"][0]["review_issue_target"]["code"] == "high_tuition"
+    recovery_classifier_mock.assert_awaited_once()
+    recovery_kwargs = recovery_classifier_mock.await_args.kwargs
+    assert recovery_kwargs["recent_plan_context"] == {}
+    plan_next_args = plan_next_mock.await_args.kwargs
+    assert plan_next_args["action_family"] == "remove_units"
+    assert plan_next_args["review_issue_code"] == "high_tuition"
+    execute_mock.assert_awaited_once()
+    saved = asyncio.run(store.load("session-interrupted-before-tools-plan-preview"))
+    assert any(
+        isinstance(message, ModelResponse)
+        and message.model_name == "plan-action-recovery"
+        for message in saved
+    )
+
+
 def test_chat_service_recovers_intent_preview_card_when_model_interrupts_after_tool_preview(
     tmp_path,
     mock_llm_client,
@@ -2210,6 +2334,7 @@ def test_chat_service_falls_back_to_intent_card_when_only_keep_plan_proposal_blo
     assert card_payloads[0]["constraintIntentType"] == "only_keep"
     assert "临床医学" in card_payloads[0]["summary"]
     assert "只保留" in card_payloads[0]["summary"]
+    assert "只保留专业：临床医学" in card_payloads[0]["content"]
     assert "当前没有可直接执行的方案调整" in card_payloads[0]["impact"]
     assert "当前方案和候选志愿里暂时都没有找到" in card_payloads[0]["impact"]
     assert "采纳后只保留这个范围" not in card_payloads[0]["impact"]
@@ -2220,6 +2345,7 @@ def test_chat_service_falls_back_to_intent_card_when_only_keep_plan_proposal_blo
     action_classifier_mock.assert_awaited_once()
     composite_classifier_mock.assert_awaited_once()
     proposal_mock.assert_awaited_once()
+    assert "这轮还没有生成可执行的调整内容" not in reply.primary
 
 
 def test_chat_service_prefers_recovered_intent_card_over_unrelated_fix_card(tmp_path, mock_llm_client):
@@ -11931,6 +12057,63 @@ def test_chat_service_recovers_region_intent_before_unbacked_plan_confirmation_g
     assert recover_mock.await_args.kwargs["recovery_scope"] == "generic"
 
 
+def test_chat_service_recovers_region_intent_from_no_executable_boundary_without_tools(
+    tmp_path,
+    mock_llm_client,
+):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    fake_agent = _FakeAgent(["这轮还没有生成可执行的调整内容，所以不会改动当前方案。"])
+    recovered_payload = {
+        "status": "ready",
+        "sessionId": "990506-boundary",
+        "title": "待确认地域想法",
+        "intentMode": "preference",
+        "analysisStage": "confirmed",
+        "items": [
+            {
+                "content": "不优先省份：安徽",
+                "value": {"city_intents": {"negative_province": ["安徽"]}},
+                "selected": True,
+            },
+        ],
+        "existingItems": [
+            {
+                "content": "偏好地域：上海、安徽、山东、江苏、江西",
+                "value": {"city_intents": {"province": ["上海", "安徽", "山东", "江苏", "江西"]}},
+                "selected": True,
+            },
+        ],
+    }
+    pending_state, save_pending_mock, get_pending_mock = _pending_confirmation_store()
+    recover_mock = AsyncMock(return_value=json.dumps(recovered_payload, ensure_ascii=False))
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 0, "data": {"userScoreDetail": {"batch": "01"}}})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.classify_composite_goal_action", AsyncMock(return_value=_semantic_composite_goal("none", confidence=0.2))) as composite_mock, \
+            patch("app.service.analyze_volunteer_intent_change", recover_mock), \
+            patch("app.service.save_intent_change_cache", AsyncMock(return_value={"code": 0})), \
+            patch("app.service.save_pending_confirmation", save_pending_mock), \
+            patch("app.service.get_pending_confirmation", get_pending_mock):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(service.handle_message("990506-boundary", "user-57", "不想去安徽"))
+
+    assert isinstance(reply, ChatServiceResponseEnvelope)
+    assert "这轮还没有生成可执行的调整内容" not in reply.primary
+    card_payloads = [json.loads(item.content) for item in reply.followups if item.type == "pendingConfirmationCard"]
+    assert len(card_payloads) == 1
+    assert card_payloads[0]["kind"] == "intent_change"
+    assert "安徽" in card_payloads[0]["content"]
+    assert pending_state["value"]["kind"] == "intent_change"
+    assert pending_state["value"]["executionPayload"]["selectedData"]["selected"] == [
+        {"city_intents": {"negative_province": ["安徽"]}},
+    ]
+    composite_mock.assert_not_awaited()
+    recover_mock.assert_awaited_once()
+
+
 def test_chat_service_recovers_recorded_intent_claim_after_plan_chain_to_pending_card(tmp_path, mock_llm_client):
     db_path = tmp_path / "history.db"
     store = ChatHistoryStore(str(db_path))
@@ -14694,6 +14877,147 @@ def test_chat_service_does_not_create_fix_proposal_card_for_blocked_preview(tmp_
     save_pending_mock.assert_not_awaited()
 
 
+def test_chat_service_recovers_high_tuition_remove_when_fix_preview_has_no_matching_ready_card(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    generic_preview_result = {
+        "applied": False,
+        "action_family": "preview_fix_proposal",
+        "stage": "apply",
+        "result_kind": "fix_proposal_preview",
+        "summary": "已整理当前方案的处理建议。",
+        "facts": {
+            "fix_proposals": {
+                "source_version_guard": 18,
+                "ready_count": 1,
+                "preview_only_count": 1,
+                "proposals": [
+                    {
+                        "proposal_id": "fp_sort_ready",
+                        "status": "ready",
+                        "title": "处理录取率倒挂",
+                        "strategy": "sort_by_probability",
+                        "source_check_codes": ["probability_inversion"],
+                    },
+                    {
+                        "proposal_id": "fp_high_fee_preview_only",
+                        "status": "preview_only",
+                        "title": "处理高收费",
+                        "strategy": "replace_risk_items",
+                        "source_check_codes": ["high_tuition"],
+                        "summary": "建议结合家庭经济状况确认是否保留相关志愿。",
+                    },
+                ],
+            }
+        },
+    }
+    remove_plan_payload = {
+        "stage": "preview",
+        "action_family": "remove_units",
+        "user_goal": "把太贵的那几个先去掉看看",
+        "requires_confirmation": True,
+        "planning_version": 18,
+        "atomic_actions": [
+            {
+                "action_type": "remove_units",
+                "volunteer_ids": [],
+                "review_issue_target": {
+                    "code": "high_tuition",
+                    "scope_mode": "full_issue",
+                    "label": "高收费",
+                    "scope_kind": "item_replacement",
+                    "default_action_family": "review_plan",
+                },
+            }
+        ],
+        "preview_summary": "会按当前审查命中的整批高收费项执行移除，并在执行后重新审查整体结构。",
+    }
+    remove_preview_result = {
+        "applied": False,
+        "action_family": "remove_units",
+        "stage": "preview",
+        "result_kind": "preview_only",
+        "summary": "已定位到当前方案里当前审查命中的高收费：共 3 个专业组，涉及 5 条志愿。确认前不会改动当前方案。",
+        "planning_version": 18,
+        "facts": {
+            "planning_version": 18,
+            "resolved_apply_payload": {
+                "stage": "apply",
+                "action_family": "remove_units",
+                "requires_confirmation": False,
+                "atomic_actions": [
+                    {
+                        "action_type": "remove_units",
+                        "volunteer_ids": ["v-high-1", "v-high-2", "v-high-3", "v-high-4", "v-high-5"],
+                    }
+                ],
+            },
+        },
+        "reply_focus": ["preview_only", "review_issue_batch_scope"],
+    }
+    fake_agent = _FakeAgentWithToolCalls(
+        "目前系统能直接帮你处理高收费相关项，确认后我可以生成具体调整预览。",
+        [
+            ToolCallPart(
+                tool_name="execute_plan_action",
+                args={
+                    "plan_payload": json.dumps(
+                        {"stage": "apply", "action_family": "preview_fix_proposal"},
+                        ensure_ascii=False,
+                    )
+                },
+                tool_call_id="generic-fix-preview",
+            )
+        ],
+        [
+            ToolReturnPart(
+                tool_name="execute_plan_action",
+                content=json.dumps(generic_preview_result, ensure_ascii=False),
+                tool_call_id="generic-fix-preview",
+            )
+        ],
+    )
+    pending_state, save_pending_mock, get_pending_mock = _pending_confirmation_store()
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.classify_plan_semantic_action", AsyncMock(return_value=_semantic_plan(
+                "preview_fix_proposal",
+                target_strategies=["remove_risk_items"],
+                target_issue_codes=["high_tuition"],
+            ))), \
+            patch("app.service.classify_plan_recovery_action", AsyncMock(return_value=_semantic_plan_recovery(
+                "remove_units",
+                reviewIssueCode="high_tuition",
+            ))) as recovery_mock, \
+            patch("app.service.plan_next_action", AsyncMock(return_value=json.dumps(remove_plan_payload, ensure_ascii=False))) as plan_mock, \
+            patch("app.service.execute_plan_action", AsyncMock(return_value=json.dumps(remove_preview_result, ensure_ascii=False))) as execute_mock, \
+            patch("app.service.save_pending_confirmation", save_pending_mock), \
+            patch("app.service.get_pending_confirmation", get_pending_mock):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(service.handle_message("high-fee-recover-session", "user-1", "把太贵的那几个先去掉看看"))
+
+    assert isinstance(reply, ChatServiceResponseEnvelope)
+    assert "高收费" in reply.primary
+    card_payload = _assert_pending_card_envelope(reply, "", "remove_units")
+    assert "高收费" in card_payload["content"]
+    assert pending_state["value"]["actionFamily"] == "remove_units"
+    saved_payload = json.loads(pending_state["value"]["executionPayload"]["planPayload"])
+    assert saved_payload["action_family"] == "remove_units"
+    assert saved_payload["atomic_actions"][0]["volunteer_ids"] == [
+        "v-high-1",
+        "v-high-2",
+        "v-high-3",
+        "v-high-4",
+        "v-high-5",
+    ]
+    recovery_mock.assert_awaited_once()
+    assert plan_mock.await_args.kwargs["review_issue_code"] == "high_tuition"
+    execute_mock.assert_awaited_once()
+
+
 def test_chat_service_does_not_create_fix_card_or_refresh_when_user_rejects_previous_replacement(tmp_path, mock_llm_client):
     db_path = tmp_path / "history.db"
     store = ChatHistoryStore(str(db_path))
@@ -16125,6 +16449,108 @@ def test_chat_service_recovers_fix_preview_after_review_then_atomic_remove_error
     assert execute_payload["action_family"] == "preview_fix_proposal"
     assert execute_payload["target_issue_codes"] == ["high_tuition"]
     classify_mock.assert_awaited()
+
+
+def test_chat_service_recovers_explicit_high_fee_removal_after_review_to_fix_preview(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    review_result = {
+        "applied": True,
+        "action_family": "review_plan",
+        "stage": "review",
+        "result_kind": "review_result",
+        "summary": "当前方案有高收费提醒。",
+        "facts": {
+            "fix_proposals": {
+                "proposal_source": "review_check",
+                "source_version_guard": 36,
+                "ready_count": 1,
+                "blocked_count": 0,
+                "preview_only_count": 0,
+                "proposals": [
+                    {
+                        "proposal_id": "fp_fee_2",
+                        "proposal_source": "review_check",
+                        "status": "ready",
+                        "title": "处理高收费",
+                        "summary": "建议替换或移出高收费志愿。",
+                        "strategy": "replace_risk_items",
+                        "source_check_codes": ["high_tuition"],
+                        "action_summaries": ["替换高收费志愿"],
+                    }
+                ],
+            },
+        },
+        "reply_focus": ["review_result", "fix_proposals"],
+    }
+    preview_result = {
+        "applied": False,
+        "action_family": "preview_fix_proposal",
+        "stage": "apply",
+        "result_kind": "fix_proposal_preview",
+        "summary": "已整理当前方案的高收费处理预览。",
+        "facts": review_result["facts"],
+        "reply_focus": ["fix_proposal_preview", "ready_fix_proposals"],
+    }
+    fake_agent = _FakeAgentWithToolCalls(
+        "我先看了费用压力，当前高收费方向可以先看处理预览。",
+        [
+            ToolCallPart(
+                tool_name="execute_plan_action",
+                args={"plan_payload": json.dumps({"stage": "review", "action_family": "review_plan"}, ensure_ascii=False)},
+                tool_call_id="fee-explicit-review",
+            )
+        ],
+        [
+            ToolReturnPart(
+                tool_name="execute_plan_action",
+                content=json.dumps(review_result, ensure_ascii=False),
+                tool_call_id="fee-explicit-review",
+            )
+        ],
+    )
+    pending_state, save_pending_mock, get_pending_mock = _pending_confirmation_store()
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
+            patch(
+                "app.service.classify_plan_semantic_action",
+                AsyncMock(
+                    return_value=_semantic_plan(
+                        "review_plan",
+                        target_strategies=["replace_risk_items", "remove_risk_items"],
+                        target_issue_codes=["high_tuition"],
+                    )
+                ),
+            ) as classify_mock, \
+            patch("app.service.execute_plan_action", AsyncMock(return_value=json.dumps(preview_result, ensure_ascii=False))) as execute_mock, \
+            patch(
+                "app.service._synthesize_semantic_plan_action_reply",
+                AsyncMock(return_value=("我已把高收费相关的调整预览列出来了，确认前不会改动当前方案。", None)),
+            ), \
+            patch("app.service.save_pending_confirmation", save_pending_mock), \
+            patch("app.service.get_pending_confirmation", get_pending_mock):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(
+            service.handle_message(
+                "fee-explicit-review-session",
+                "user-1",
+                "把太贵的那几个先去掉看看",
+            )
+        )
+
+    assert isinstance(reply, ChatServiceResponseEnvelope)
+    assert "高收费" in reply.primary
+    card_payloads = [json.loads(item.content) for item in reply.followups if item.type == "pendingConfirmationCard"]
+    assert len(card_payloads) == 1
+    assert card_payloads[0]["proposalId"] == "fp_fee_2"
+    assert pending_state["value"]["executionPayload"]["proposalId"] == "fp_fee_2"
+    execute_payload = json.loads(execute_mock.await_args.args[1])
+    assert execute_payload["action_family"] == "preview_fix_proposal"
+    assert execute_payload["target_issue_codes"] == ["high_tuition"]
+    classify_mock.assert_awaited_once()
 
 
 def test_chat_service_recovers_fix_preview_card_after_legacy_generate_tool(tmp_path, mock_llm_client):
