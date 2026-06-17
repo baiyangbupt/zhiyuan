@@ -1274,6 +1274,8 @@ def _selected_data_with_existing_positive_context(
         return selected_data
     augmented = dict(selected_data)
     augmented["selected"] = [*selected, existing_positive]
+    augmented.pop("displaySummary", None)
+    augmented.pop("display_summary", None)
     return augmented
 
 
@@ -1348,13 +1350,39 @@ def _intent_summary_from_item_content(
             group = value.get(category)
             if not isinstance(group, dict) or not group.get(key):
                 continue
+            structured_values = _as_text_list(group.get(key))
             content = str(raw_item.get("content") or "").strip()
             if not content:
+                for structured_value in structured_values:
+                    if structured_value and structured_value not in values:
+                        values.append(structured_value)
                 continue
             content = re.sub(r"^(把|将)", "", content)
             content = re.split(r"(记成|更新为|设为|从|作为|，|,)", content, maxsplit=1)[0].strip()
-            if content and content not in values:
-                values.append(content)
+            content = re.sub(r"^当前已有参考", "", content).strip()
+            content = re.sub(
+                r"^(只保留专业门类|只保留专业类|只保留专业|至少保留专业门类|至少保留专业类|至少保留专业|偏好专业门类|偏好专业类|偏好专业|排除专业门类|排除专业类|排除专业|不优先专业门类|不优先专业类|不优先专业)[:：]",
+                "",
+                content,
+            ).strip()
+            content_values = [
+                item.strip()
+                for item in re.split(r"[、/，,]", content)
+                if item.strip()
+            ]
+            if len(structured_values) == 1 and structured_values[0] and structured_values[0] in content:
+                candidate_values = [content]
+            elif (
+                content_values
+                and len(content_values) == len(structured_values)
+                and set(content_values) == set(structured_values)
+            ):
+                candidate_values = content_values
+            else:
+                candidate_values = structured_values
+            for content in candidate_values:
+                if content and content not in values:
+                    values.append(content)
         return values
 
     replacements = [
@@ -1459,8 +1487,6 @@ def _pending_confirmation_primary_reply_from_card(card: WSResponse | None) -> st
 
 def _semantic_intent_decision_requires_readonly(decision: dict[str, Any] | None) -> bool:
     if not isinstance(decision, dict):
-        return False
-    if decision.get("honored") is False:
         return False
     return (
         str(decision.get("decision") or "").strip() in {"analysis_only", "mixed_answer_then_ask"}
@@ -2515,20 +2541,15 @@ async def _create_pending_intent_confirmation_from_preview_payload(
     )
     if selected_display_summary:
         selected_data["displaySummary"] = selected_display_summary
-    mixed_soft_hard_constraint = (
-        intent_mode == "constraint"
-        and constraint_intent_type == "default"
-        and _intent_payload_has_positive_value(merged)
-        and _intent_payload_has_negative_value(merged)
-    )
     plan_attempt = _ConstraintPlanConfirmationAttempt()
-    if intent_mode == "constraint" and not mixed_soft_hard_constraint:
+    plan_selected_data = _selected_data_with_existing_positive_context(
+        selected_data,
+        existing_merged,
+    )
+    if intent_mode == "constraint":
         plan_attempt = await _maybe_create_plan_confirmation_from_constraint_preview(
             session_id,
-            selected_data=_selected_data_with_existing_positive_context(
-                selected_data,
-                existing_merged,
-            ),
+            selected_data=plan_selected_data,
             merged=merged,
             batch=batch,
             summary=summary,
@@ -2948,6 +2969,27 @@ def _normalized_fix_proposal_target_strategies(
     return normalized
 
 
+def _normalized_fix_proposal_target_issue_codes(
+    target_issue_codes: set[str] | list[str] | tuple[str, ...] | None,
+) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for code in (target_issue_codes or []):
+        text = str(code or "").strip()
+        if text and text not in seen:
+            normalized.append(text)
+            seen.add(text)
+    return normalized
+
+
+def _fix_proposal_source_issue_codes(proposal: dict[str, Any]) -> set[str]:
+    return {
+        str(code or "").strip()
+        for code in (proposal.get("source_check_codes") or proposal.get("sourceCheckCodes") or [])
+        if str(code or "").strip()
+    }
+
+
 def _fix_proposal_matches_target_strategies(
     proposal: dict[str, Any],
     target_strategies: list[str],
@@ -2956,6 +2998,20 @@ def _fix_proposal_matches_target_strategies(
         return True
     strategy = str(proposal.get("strategy") or "").strip()
     return strategy in set(target_strategies)
+
+
+def _fix_proposal_matches_target_scope(
+    proposal: dict[str, Any],
+    target_strategies: list[str],
+    target_issue_codes: list[str],
+) -> bool:
+    if target_strategies and not _fix_proposal_matches_target_strategies(proposal, target_strategies):
+        return False
+    if target_issue_codes:
+        proposal_issue_codes = _fix_proposal_source_issue_codes(proposal)
+        if not proposal_issue_codes or not (proposal_issue_codes & set(target_issue_codes)):
+            return False
+    return bool(target_strategies or target_issue_codes)
 
 
 def _filter_ready_fix_proposals_by_target_strategies(
@@ -2971,11 +3027,26 @@ def _filter_ready_fix_proposals_by_target_strategies(
     ]
 
 
+def _filter_ready_fix_proposals_by_target_scope(
+    ready: list[dict[str, Any]],
+    target_strategies: list[str],
+    target_issue_codes: list[str],
+) -> list[dict[str, Any]]:
+    if not target_strategies and not target_issue_codes:
+        return ready
+    return [
+        proposal
+        for proposal in ready
+        if _fix_proposal_matches_target_scope(proposal, target_strategies, target_issue_codes)
+    ]
+
+
 def _select_ready_fix_proposal(
     facts: dict[str, Any] | None,
     *,
     selected_proposal_id: str = "",
     target_strategies: set[str] | list[str] | tuple[str, ...] | None = None,
+    target_issue_codes: set[str] | list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any] | None:
     ready = _ready_fix_proposals(facts)
     if not ready:
@@ -2988,11 +3059,23 @@ def _select_ready_fix_proposal(
                 return proposal
         return None
     normalized_strategies = _normalized_fix_proposal_target_strategies(target_strategies)
-    if normalized_strategies:
+    normalized_issue_codes = _normalized_fix_proposal_target_issue_codes(target_issue_codes)
+    if normalized_strategies or normalized_issue_codes:
         for target_strategy in normalized_strategies:
             for proposal in ready:
-                strategy = str(proposal.get("strategy") or "").strip()
-                if strategy == target_strategy:
+                if _fix_proposal_matches_target_scope(
+                    proposal,
+                    [target_strategy],
+                    normalized_issue_codes,
+                ):
+                    return proposal
+        if not normalized_strategies:
+            for proposal in ready:
+                if _fix_proposal_matches_target_scope(
+                    proposal,
+                    [],
+                    normalized_issue_codes,
+                ):
                     return proposal
         return None
     return ready[0]
@@ -3015,11 +3098,17 @@ def _select_ready_fix_proposal_for_reply(
     *,
     reply: str,
     target_strategies: set[str] | list[str] | tuple[str, ...] | None = None,
+    target_issue_codes: set[str] | list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any] | None:
-    selected = _select_ready_fix_proposal(facts, target_strategies=target_strategies)
-    ready = _filter_ready_fix_proposals_by_target_strategies(
+    selected = _select_ready_fix_proposal(
+        facts,
+        target_strategies=target_strategies,
+        target_issue_codes=target_issue_codes,
+    )
+    ready = _filter_ready_fix_proposals_by_target_scope(
         _ready_fix_proposals(facts),
         _normalized_fix_proposal_target_strategies(target_strategies),
+        _normalized_fix_proposal_target_issue_codes(target_issue_codes),
     )
     if len(ready) <= 1:
         return selected
@@ -3092,18 +3181,26 @@ async def _select_ready_fix_proposal_for_user_goal(
     reply: str,
     request_context: RequestContext,
     target_strategies: set[str] | list[str] | tuple[str, ...] | None = None,
+    target_issue_codes: set[str] | list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any] | None:
     normalized_strategies = _normalized_fix_proposal_target_strategies(target_strategies)
-    ready = _filter_ready_fix_proposals_by_target_strategies(
+    normalized_issue_codes = _normalized_fix_proposal_target_issue_codes(target_issue_codes)
+    ready = _filter_ready_fix_proposals_by_target_scope(
         _ready_fix_proposals(facts),
         normalized_strategies,
+        normalized_issue_codes,
     )
     if len(ready) <= 1:
-        return _select_ready_fix_proposal(facts, target_strategies=target_strategies)
+        return _select_ready_fix_proposal(
+            facts,
+            target_strategies=target_strategies,
+            target_issue_codes=target_issue_codes,
+        )
     selected = _select_ready_fix_proposal_for_reply(
         facts,
         reply=reply,
         target_strategies=target_strategies,
+        target_issue_codes=target_issue_codes,
     )
     candidates = _compact_ready_fix_proposals_for_selection(facts)
     if len(candidates) <= 1:
@@ -3122,7 +3219,14 @@ async def _select_ready_fix_proposal_for_user_goal(
     proposal_id = str(getattr(decision, "proposalId", "") or "").strip()
     if proposal_id and confidence >= _SEMANTIC_PLAN_ACTION_CONFIDENCE_THRESHOLD:
         matched = _select_ready_fix_proposal(facts, selected_proposal_id=proposal_id)
-        if matched is not None and _fix_proposal_matches_target_strategies(matched, normalized_strategies):
+        if matched is not None and (
+            (not normalized_strategies and not normalized_issue_codes)
+            or _fix_proposal_matches_target_scope(
+                matched,
+                normalized_strategies,
+                normalized_issue_codes,
+            )
+        ):
             return matched
     return selected
 
@@ -3319,19 +3423,46 @@ async def _infer_fix_proposal_target_strategies(
     does not route user text to a new action and it does not execute anything.
     """
 
+    strategies, _issue_codes, _has_explicit_target = await _infer_fix_proposal_target_scope(
+        content=content,
+        request_context=request_context,
+        latest_plan_result=latest_plan_result,
+    )
+    return strategies
+
+
+async def _infer_fix_proposal_target_scope(
+    *,
+    content: str,
+    request_context: RequestContext,
+    latest_plan_result: dict[str, Any],
+) -> tuple[list[str], list[str], bool]:
+    """Infer the user's repair target and whether that target was explicit.
+
+    Non-empty strategy/issue-code lists are used to select the matching ready
+    proposal. The boolean distinguishes "no explicit target" from "explicit
+    target exists, but no ready proposal can satisfy it"; the latter must not
+    fall back to the first unrelated ready proposal.
+    """
+
     explicit_targets = _normalized_fix_proposal_target_strategies(
         latest_plan_result.get("target_strategies")
         or latest_plan_result.get("targetStrategies")
         or []
     )
-    if explicit_targets:
-        return explicit_targets
+    explicit_issue_codes = _normalized_fix_proposal_target_issue_codes(
+        latest_plan_result.get("target_issue_codes")
+        or latest_plan_result.get("targetIssueCodes")
+        or []
+    )
+    if explicit_targets or explicit_issue_codes:
+        return explicit_targets, explicit_issue_codes, True
     facts = latest_plan_result.get("facts") if isinstance(latest_plan_result.get("facts"), dict) else {}
     ready = _ready_fix_proposals(facts)
-    if len(ready) <= 1:
-        return []
+    if not ready:
+        return [], [], False
     if _selected_fix_proposal_id(latest_plan_result, facts):
-        return []
+        return [], [], False
     context = _latest_plan_semantic_route_context(
         [
             ModelRequest(
@@ -3346,7 +3477,7 @@ async def _infer_fix_proposal_target_strategies(
         ]
     )
     if not context:
-        return []
+        return [], [], False
     try:
         decision = await classify_plan_semantic_action(
             content,
@@ -3358,29 +3489,41 @@ async def _infer_fix_proposal_target_strategies(
             "Fix proposal target strategy inference failed",
             exc_info=True,
         )
-        return []
+        return [], [], False
     if str(getattr(decision, "actionFamily", "") or "").strip() not in {
         "preview_fix_proposal",
         "review_plan",
         "analyze_adjustment",
     }:
-        return []
+        return [], [], False
     confidence = float(getattr(decision, "confidence", 0.0) or 0.0)
     if confidence < _SEMANTIC_PLAN_ACTION_CONFIDENCE_THRESHOLD:
-        return []
+        return [], [], False
     strategies = [
         str(strategy or "").strip()
         for strategy in list(getattr(decision, "targetStrategies", []) or [])
         if str(strategy or "").strip()
     ]
-    if not strategies:
-        return []
+    issue_codes = [
+        str(code or "").strip()
+        for code in list(getattr(decision, "targetIssueCodes", []) or [])
+        if str(code or "").strip()
+    ]
+    if not strategies and not issue_codes:
+        return [], [], False
     proposal_strategies = {
         str(proposal.get("strategy") or "").strip()
         for proposal in ready
         if str(proposal.get("strategy") or "").strip()
     }
-    return [strategy for strategy in strategies if strategy in proposal_strategies]
+    proposal_issue_codes = {
+        code
+        for proposal in ready
+        for code in _fix_proposal_source_issue_codes(proposal)
+    }
+    matched_strategies = [strategy for strategy in strategies if strategy in proposal_strategies]
+    matched_issue_codes = [code for code in issue_codes if code in proposal_issue_codes]
+    return matched_strategies, matched_issue_codes, True
 
 
 def _build_fix_proposal_pending_state(
@@ -4185,6 +4328,13 @@ def _latest_fix_proposal_confirmation_source(
             or data.get("targetStrategies")
             or []
         )
+        target_issue_codes = _normalized_fix_proposal_target_issue_codes(
+            plan_payload.get("target_issue_codes")
+            or plan_payload.get("targetIssueCodes")
+            or data.get("target_issue_codes")
+            or data.get("targetIssueCodes")
+            or []
+        )
         facts = data.get("facts") if isinstance(data.get("facts"), dict) else {}
         selected_proposal_id = _selected_fix_proposal_id(data, facts)
         if (
@@ -4192,6 +4342,7 @@ def _latest_fix_proposal_confirmation_source(
                 facts,
                 selected_proposal_id=selected_proposal_id,
                 target_strategies=target_strategies,
+                target_issue_codes=target_issue_codes,
             )
             is None
         ):
@@ -4202,6 +4353,9 @@ def _latest_fix_proposal_confirmation_source(
             if target_strategies and "target_strategies" not in data and "targetStrategies" not in data:
                 data = dict(data)
                 data["target_strategies"] = target_strategies
+            if target_issue_codes and "target_issue_codes" not in data and "targetIssueCodes" not in data:
+                data = dict(data)
+                data["target_issue_codes"] = target_issue_codes
             latest = data
     return latest
 
@@ -4414,6 +4568,50 @@ def _latest_plan_semantic_route_context(messages: list[Any] | None) -> dict[str,
     return {}
 
 
+def _latest_review_fix_proposal_route_context(messages: list[Any] | None) -> dict[str, Any]:
+    """Return the latest review/analysis context that carries fix proposals.
+
+    A later failed atomic mutation can appear after a successful review in the
+    same model turn. For repair recovery we still need the review facts; the
+    failed mutation should not erase the structured review issue scope.
+    """
+
+    for part in reversed(_iter_tool_return_parts(messages)):
+        if part.tool_name != "execute_plan_action":
+            continue
+        data = _parse_tool_return_json(part.content)
+        if not isinstance(data, dict):
+            continue
+        action_family = str(data.get("action_family") or "").strip()
+        result_kind = str(data.get("result_kind") or "").strip()
+        if action_family not in {"review_plan", "analyze_adjustment", "preview_fix_proposal"}:
+            continue
+        if result_kind not in {"review_result", "adjustment_analysis", "fix_proposal_preview"}:
+            continue
+        context = _latest_plan_semantic_route_context(
+            [
+                ModelRequest(
+                    parts=[
+                        ToolReturnPart(
+                            tool_name="execute_plan_action",
+                            content=json.dumps(data, ensure_ascii=False, default=str),
+                            tool_call_id="review-fix-proposal-route-context",
+                        )
+                    ]
+                )
+            ]
+        )
+        fix_facts = context.get("fixProposals") if isinstance(context, dict) else None
+        if isinstance(fix_facts, dict) and (
+            _as_int(fix_facts.get("readyCount")) > 0
+            or _as_int(fix_facts.get("blockedCount")) > 0
+            or _as_int(fix_facts.get("previewOnlyCount")) > 0
+            or bool(fix_facts.get("proposals"))
+        ):
+            return context
+    return {}
+
+
 def _has_plan_semantic_route_context(
     planning_summary: PlanningSummary | None,
     recent_plan_context: dict[str, Any] | None,
@@ -4483,6 +4681,20 @@ def _semantic_preview_fix_proposal_route_allowed(
         if str(strategy or "").strip()
     )
     return not proposal_strategies or bool(requested_strategies & proposal_strategies)
+
+
+def _plan_context_has_fix_proposals(context: dict[str, Any] | None) -> bool:
+    if not isinstance(context, dict) or not context:
+        return False
+    fix_facts = context.get("fixProposals")
+    if not isinstance(fix_facts, dict):
+        return False
+    return (
+        _as_int(fix_facts.get("readyCount")) > 0
+        or _as_int(fix_facts.get("blockedCount")) > 0
+        or _as_int(fix_facts.get("previewOnlyCount")) > 0
+        or bool(fix_facts.get("proposals"))
+    )
 
 
 def _tool_calls_include_plan_chain(messages: list[Any] | None) -> bool:
@@ -5851,8 +6063,20 @@ def _non_actionable_plan_preview_boundary(result: dict[str, Any] | None) -> str:
     if _requests_profile_change_replan(result):
         return _build_profile_change_replan_reply(None)
     action_family = str(result.get("action_family") or "").strip()
+    result_kind = str(result.get("result_kind") or "").strip()
     reply_focus = {str(item or "").strip() for item in (result.get("reply_focus") or []) if str(item or "").strip()}
     facts = result.get("facts") if isinstance(result.get("facts"), dict) else {}
+    if action_family == "preview_fix_proposal" and result_kind == "fix_proposal_preview" and facts:
+        return _sanitize_reply_for_user(
+            _normalize_user_facing_terms(
+                "\n".join(
+                    _build_fix_proposal_preview_fallback_lines(
+                        facts,
+                        summary=str(result.get("summary") or "").strip(),
+                    )
+                )
+            )
+        )
     position_resolution = str(facts.get("position_resolution") or "").strip()
     if action_family in {"move_ordered_unit", "move_unit"} and position_resolution in {"empty_plan", "source_position_out_of_range"}:
         return (
@@ -7369,12 +7593,15 @@ def _append_plan_preview_confirmation_boundary(
     asks_confirmation = _reply_has_plan_confirmation_request(reply)
     if not confirmation_candidate:
         non_actionable_result = _latest_non_actionable_plan_result(new_messages)
+        fix_proposal_preview_result = _latest_fix_proposal_preview_result(new_messages)
         if asks_confirmation:
-            if not non_actionable_result and not _tool_returns_plan_mutation_context(new_messages):
+            if not non_actionable_result and not fix_proposal_preview_result and not _tool_returns_plan_mutation_context(new_messages):
                 return reply
             reply = _remove_unbacked_plan_confirmation_copy(reply)
             boundary = _non_actionable_plan_preview_boundary(
-                non_actionable_result or _latest_non_actionable_plan_mutation_result(new_messages)
+                non_actionable_result
+                or fix_proposal_preview_result
+                or _latest_non_actionable_plan_mutation_result(new_messages)
             )
             stripped_reply = reply.strip()
             if not stripped_reply:
@@ -7430,6 +7657,166 @@ def _plan_confirmation_candidate_unit_kind(confirmation_candidate: dict[str, Any
     facts = data.get("facts") if isinstance(data.get("facts"), dict) else {}
     unit_kind = str(facts.get("unit_kind") or facts.get("unitKind") or "").strip()
     return unit_kind if unit_kind in {"志愿", "专业组"} else ""
+
+
+def _plan_confirmation_candidate_is_explicit_atomic_target(
+    confirmation_candidate: dict[str, Any] | None,
+) -> bool:
+    if not isinstance(confirmation_candidate, dict):
+        return False
+    action_family = str(confirmation_candidate.get("action_family") or "").strip()
+    if action_family not in {"add_units", "remove_units", "replace_units"}:
+        return False
+    payload = confirmation_candidate.get("plan_payload")
+    if not isinstance(payload, str) or not payload.strip():
+        return False
+    try:
+        data = json.loads(payload)
+    except Exception:
+        return False
+    if not isinstance(data, dict):
+        return False
+    if data.get("composite_proposal") or data.get("compositeProposal"):
+        return False
+    if isinstance(data.get("intent_update"), dict) or isinstance(data.get("intentUpdate"), dict):
+        return False
+    atomic_actions = data.get("atomic_actions") if isinstance(data.get("atomic_actions"), list) else []
+    for action in atomic_actions:
+        if not isinstance(action, dict):
+            continue
+        volunteer_ids = _as_text_list(action.get("volunteer_ids") or action.get("volunteerIds"))
+        if volunteer_ids:
+            return True
+    return False
+
+
+def _pending_state_constraint_intent_type(pending_state: dict[str, Any] | None) -> str:
+    if not isinstance(pending_state, dict):
+        return ""
+    direct = str(
+        pending_state.get("constraintIntentType")
+        or pending_state.get("constraint_intent_type")
+        or ""
+    ).strip()
+    if direct:
+        return direct
+    execution_payload = pending_state.get("executionPayload")
+    if not isinstance(execution_payload, dict):
+        return ""
+    for source in (
+        execution_payload,
+        execution_payload.get("selectedData"),
+        execution_payload.get("intentPayload"),
+    ):
+        if not isinstance(source, dict):
+            continue
+        value = str(
+            source.get("constraintIntentType")
+            or source.get("constraint_intent_type")
+            or ""
+        ).strip()
+        if value:
+            return value
+    return ""
+
+
+def _plan_confirmation_candidate_payload(
+    confirmation_candidate: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not isinstance(confirmation_candidate, dict):
+        return {}
+    payload = confirmation_candidate.get("plan_payload")
+    if not isinstance(payload, str) or not payload.strip():
+        return {}
+    try:
+        parsed = json.loads(payload)
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _plan_candidate_intent_update(
+    confirmation_candidate: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not isinstance(confirmation_candidate, dict):
+        return {}
+    direct = confirmation_candidate.get("intent_update") or confirmation_candidate.get("intentUpdate")
+    if isinstance(direct, dict) and direct:
+        return direct
+    payload = _plan_confirmation_candidate_payload(confirmation_candidate)
+    if not payload:
+        return {}
+    for source in (
+        payload,
+        payload.get("facts") if isinstance(payload.get("facts"), dict) else None,
+    ):
+        if not isinstance(source, dict):
+            continue
+        value = source.get("intent_update") or source.get("intentUpdate")
+        if isinstance(value, dict) and value:
+            return value
+    return {}
+
+
+def _plan_candidate_structured_goal_type(
+    confirmation_candidate: dict[str, Any] | None,
+) -> str:
+    payload = _plan_confirmation_candidate_payload(confirmation_candidate)
+    if not payload:
+        return ""
+    composite = payload.get("composite_proposal") or payload.get("compositeProposal")
+    if not isinstance(composite, dict):
+        return ""
+    goal = composite.get("goal")
+    if not isinstance(goal, dict):
+        return ""
+    return str(goal.get("goal_type") or goal.get("goalType") or "").strip()
+
+
+def _merged_selected_intent_payload(intent_payload: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(intent_payload, dict):
+        return {}
+    merged = _merge_selected_intent_payload(intent_payload)
+    return merged if merged else intent_payload
+
+
+def _plain_plan_candidate_conflicts_with_active_only_keep_intent(
+    pending_state: dict[str, Any] | None,
+    confirmation_candidate: dict[str, Any] | None,
+) -> bool:
+    """Prevent an active only-keep intent from being replaced by a derived removal list.
+
+    The unified path for only-keep goals is Intent/UserGoal -> Java FixProposal.
+    A plain execute_plan_action/remove_units card that only carries generated
+    negative complements is a model-side expansion, not a safe replacement for
+    the active pending only-keep state.
+    """
+    if not isinstance(pending_state, dict) or not isinstance(confirmation_candidate, dict):
+        return False
+    if str(pending_state.get("status") or "").strip() != "active":
+        return False
+    if str(pending_state.get("kind") or "").strip() != "intent_change":
+        return False
+    if _pending_state_constraint_intent_type(pending_state) != "only_keep":
+        return False
+    if _plan_candidate_structured_goal_type(confirmation_candidate) == "only_keep_scope":
+        return False
+
+    action_family = str(confirmation_candidate.get("action_family") or "").strip()
+    if action_family not in {"remove_units", "replace_units", "add_units", "generate_plan"}:
+        return False
+    intent_update = _plan_candidate_intent_update(confirmation_candidate)
+    if not intent_update:
+        return False
+    candidate_constraint_type = str(
+        intent_update.get("constraintIntentType")
+        or intent_update.get("constraint_intent_type")
+        or ""
+    ).strip()
+    if candidate_constraint_type == "only_keep":
+        return False
+    merged_intent = _merged_selected_intent_payload(intent_update)
+    return _intent_payload_has_negative_value(merged_intent) and not _intent_payload_has_positive_value(merged_intent)
 
 
 def _compact_plan_reply_text(reply: str) -> str:
@@ -8032,6 +8419,48 @@ def _build_adjustment_analysis_fallback_lines(facts: dict[str, Any]) -> list[str
     return lines
 
 
+def _build_fix_proposal_preview_fallback_lines(
+    facts: dict[str, Any],
+    *,
+    summary: str = "",
+) -> list[str]:
+    fix_facts = facts.get("fix_proposals") if isinstance(facts.get("fix_proposals"), dict) else {}
+    ready_lines, needs_decision_lines = _review_fallback_fix_proposal_lines(fix_facts)
+    supply = facts.get("candidate_supply") if isinstance(facts.get("candidate_supply"), dict) else {}
+    missing_tiers = [
+        str(item or "").strip()
+        for item in (
+            supply.get("missing_supply_tiers")
+            or supply.get("missingSupplyTiers")
+            or []
+        )
+        if str(item or "").strip()
+    ]
+
+    lines: list[str] = []
+    if ready_lines:
+        lines.extend(["我看了当前方案，下面这些方向可以先出调整预览："])
+        for item in ready_lines[:3]:
+            lines.append(f"- {item}。")
+    else:
+        lines.extend(["我看了能不能直接补齐或调整，当前还没有足够合适的可执行预览。"])
+
+    if missing_tiers:
+        lines.append(f"- 当前缺口主要在：{'、'.join(dict.fromkeys(missing_tiers))}。")
+    if needs_decision_lines:
+        lines.extend(["", "暂时不能直接处理的原因："])
+        for item in needs_decision_lines[:4]:
+            lines.append(f"- {item}。")
+    elif summary:
+        lines.extend(["", _clean_review_fallback_text(summary)])
+
+    lines.extend([
+        "",
+        "下一步可以先放宽地域、专业、院校层次或预算等条件，再重新审查可补机会；如果你愿意明确取舍，我再按新的范围列调整预览。确认前不会改动当前方案。",
+    ])
+    return lines
+
+
 def _review_reply_needs_structured_fallback(reply: str, result: dict[str, Any] | None) -> bool:
     if not isinstance(result, dict) or not isinstance(reply, str):
         return False
@@ -8043,6 +8472,35 @@ def _review_reply_needs_structured_fallback(reply: str, result: dict[str, Any] |
         return True
     compact = _compact_plan_reply_text(reply)
     return compact.count("当前候选志愿里") >= 3 or compact.count("建议你先") >= 4
+
+
+def _review_reply_overclaims_admission_safety(reply: str, result: dict[str, Any] | None) -> bool:
+    """审查/调整分析结果不能被表述成录取安全承诺。"""
+    if not isinstance(result, dict) or not isinstance(reply, str):
+        return False
+    if str(result.get("result_kind") or "").strip() not in {"review_result", "adjustment_analysis"}:
+        return False
+    compact = _compact_plan_reply_text(reply)
+    if not compact:
+        return False
+    if re.search(r"(?:不能|无法|不|并不|不是)(?:保证|代表|说明|等于|意味着|说)?不会滑档", compact):
+        return False
+    absolute_safety = (
+        re.search(r"(不会|不可能|避免|杜绝)(?:出现)?滑档", compact) is not None
+        or re.search(r"不会(?:导致|造成|引发|有)?滑档", compact) is not None
+        or re.search(r"没有(?:会)?导致滑档", compact) is not None
+        or re.search(r"(保证|确保|一定|肯定)(?:不会)?(?:录取|不滑档|稳录|安全)", compact) is not None
+        or "不会退档" in compact
+        or "没有滑档风险" in compact
+        or "零滑档风险" in compact
+        or "整体结构是安全" in compact
+        or "方案结构是安全" in compact
+        or "整体结构安全" in compact
+        or "方案结构安全" in compact
+    )
+    if not absolute_safety:
+        return False
+    return True
 
 
 def _review_reply_needs_boundary(reply: str, result: dict[str, Any] | None) -> bool:
@@ -8178,6 +8636,8 @@ def _build_plan_timeout_fallback_reply(result: dict[str, Any], *, user_prompt: s
             lines = _build_review_unavailable_guidance_fallback_lines(facts)
         else:
             lines = _build_adjustment_analysis_fallback_lines(facts)
+    elif result_kind == "fix_proposal_preview" and bool(facts):
+        lines = _build_fix_proposal_preview_fallback_lines(facts, summary=summary)
     else:
         lines = [lead_map.get(result_kind, "这轮方案分析已经执行完了，我先把核心结果直接给你："), "", summary]
     if coverage and not rendered_status_overview and not rendered_review_result:
@@ -8927,6 +9387,13 @@ class ChatService:
                     facts,
                     selected_proposal_id=selected_proposal_id,
                 )
+            elif (target_strategies or target_issue_codes) and not _filter_ready_fix_proposals_by_target_scope(
+                _ready_fix_proposals(facts),
+                _normalized_fix_proposal_target_strategies(target_strategies),
+                _normalized_fix_proposal_target_issue_codes(target_issue_codes),
+            ):
+                ready_proposal = None
+                latest_plan_result["target_match_empty"] = True
             else:
                 ready_proposal = await _select_ready_fix_proposal_for_user_goal(
                     facts,
@@ -8934,6 +9401,7 @@ class ChatService:
                     reply=reply,
                     request_context=request_context,
                     target_strategies=target_strategies,
+                    target_issue_codes=target_issue_codes,
                 )
             source_version_guard = _as_int(
                 fix_facts.get("source_version_guard")
@@ -9234,6 +9702,8 @@ class ChatService:
         if _extract_plan_confirmation_candidate(tool_context_messages) is not None:
             return None
         current_plan_context = _latest_plan_semantic_route_context(tool_context_messages)
+        if not _plan_context_has_fix_proposals(current_plan_context):
+            current_plan_context = _latest_review_fix_proposal_route_context(tool_context_messages)
         if not current_plan_context:
             return None
         last_action_family = str(current_plan_context.get("lastActionFamily") or "").strip()
@@ -9316,6 +9786,7 @@ class ChatService:
             reply="",
             request_context=request_context,
             target_strategies=target_strategies,
+            target_issue_codes=target_issue_codes,
         )
         selected_proposal_id = ""
         if isinstance(selected_proposal, dict):
@@ -9363,6 +9834,7 @@ class ChatService:
                 "route": "preview_fix_proposal",
                 "reason": str(getattr(decision, "reason", "") or ""),
                 "targetStrategies": list(target_strategies),
+                "targetIssueCodes": list(target_issue_codes),
             },
         )
 
@@ -9564,17 +10036,20 @@ class ChatService:
         ):
             return None
         facts = latest_result.get("facts") if isinstance(latest_result.get("facts"), dict) else {}
-        target_strategies = await _infer_fix_proposal_target_strategies(
+        target_strategies, target_issue_codes, target_scope_explicit = await _infer_fix_proposal_target_scope(
             content=content,
             request_context=request_context,
             latest_plan_result=latest_result,
         )
+        if target_scope_explicit and not target_strategies and not target_issue_codes:
+            return None
         ready_proposal = await _select_ready_fix_proposal_for_user_goal(
             facts,
             content=content,
             reply=reply,
             request_context=request_context,
             target_strategies=target_strategies,
+            target_issue_codes=target_issue_codes,
         )
         if ready_proposal is None:
             return None
@@ -9603,11 +10078,12 @@ class ChatService:
         request_context: RequestContext,
         tool_context_messages: list[Any] | None,
         allow_actionable_fix_preview: bool = False,
+        allow_intent_preview_mixed_path: bool = False,
     ) -> WSResponse | None:
         pending = resolve_pending_confirmation(request_context)
         if pending is not None and getattr(pending, "kind", None) != "intent_change":
             return None
-        if _tool_calls_include_intent_preview(tool_context_messages):
+        if _tool_calls_include_intent_preview(tool_context_messages) and not allow_intent_preview_mixed_path:
             return None
         if _extract_plan_confirmation_candidate(tool_context_messages) is not None:
             return None
@@ -9618,6 +10094,10 @@ class ChatService:
             if allow_actionable_fix_preview
             else None
         )
+        if not isinstance(attempted_result, dict) and allow_intent_preview_mixed_path:
+            attempted_result = _latest_non_actionable_plan_result(tool_context_messages)
+        if not isinstance(attempted_result, dict) and allow_intent_preview_mixed_path:
+            attempted_result = _latest_review_plan_result(tool_context_messages)
         if not isinstance(attempted_result, dict):
             attempted_result = _latest_plan_mutation_attempt_result(tool_context_messages)
         if not isinstance(attempted_result, dict):
@@ -9656,6 +10136,12 @@ class ChatService:
                 session_id,
                 exc_info=True,
             )
+            return None
+        if (
+            allow_intent_preview_mixed_path
+            and _tool_calls_include_intent_preview(tool_context_messages)
+            and str(getattr(decision, "action", "") or "").strip() != "tuition_budget_scope"
+        ):
             return None
 
         return await self._create_composite_goal_recovery_card(
@@ -11137,7 +11623,36 @@ class ChatService:
                 _replace_text_reply(new_messages, reply, clean_clarification_reply)
                 _replace_text_reply(all_messages, reply, clean_clarification_reply)
                 reply = clean_clarification_reply
-        if plan_confirmation_candidate is None and isinstance(reply, str):
+        if (
+            recovered_pending_intent_card is None
+            and plan_confirmation_candidate is None
+            and pending_fix_proposal_card is None
+            and isinstance(reply, str)
+            and not intent_preview_used
+            and not intent_preview_downgraded
+            and not readonly_prompt
+            and resolve_pending_confirmation(request_context) is None
+            and _reply_looks_like_unbacked_plan_confirmation(reply)
+        ):
+            recovered_pending_intent_card = await _recover_unbacked_intent_confirmation(
+                session_id,
+                request_context,
+                reply=reply,
+                force=True,
+            )
+            if recovered_pending_intent_card is not None:
+                recovered_pending_intent_reply = _intent_card_primary_reply_from_card(
+                    recovered_pending_intent_card
+                )
+                if recovered_pending_intent_reply:
+                    _replace_text_reply(new_messages, reply, recovered_pending_intent_reply)
+                    _replace_text_reply(all_messages, reply, recovered_pending_intent_reply)
+                    reply = recovered_pending_intent_reply
+        if (
+            recovered_pending_intent_card is None
+            and plan_confirmation_candidate is None
+            and isinstance(reply, str)
+        ):
             guarded_reply = _guard_unbacked_plan_confirmation_reply(reply)
             if guarded_reply != reply:
                 if intent_interest_stage_result and not plan_chain_used:
@@ -11158,6 +11673,8 @@ class ChatService:
                             guarded_reply = _READONLY_ANALYSIS_NO_PLAN_PREVIEW_REPLY
                 else:
                     readonly_plan_result = _latest_readonly_plan_execution_result(tool_context_messages)
+                    if readonly_plan_result is None:
+                        readonly_plan_result = _latest_fix_proposal_preview_result(tool_context_messages)
                     if readonly_plan_result is not None:
                         guarded_reply = _build_plan_timeout_fallback_reply(
                             readonly_plan_result,
@@ -11611,6 +12128,7 @@ class ChatService:
                 request_context=request_context,
                 tool_context_messages=tool_context_messages,
                 allow_actionable_fix_preview=True,
+                allow_intent_preview_mixed_path=True,
             )
             if composite_goal_card is not None:
                 composite_goal_card_kind = _pending_card_kind(composite_goal_card)
@@ -11674,8 +12192,10 @@ class ChatService:
                     fix_facts = facts.get("fix_proposals") if isinstance(facts.get("fix_proposals"), dict) else {}
                     selected_proposal_id = _selected_fix_proposal_id(latest_plan_result, facts)
                     target_strategies: list[str] = []
+                    target_issue_codes: list[str] = []
+                    target_scope_explicit = False
                     if not selected_proposal_id:
-                        target_strategies = await _infer_fix_proposal_target_strategies(
+                        target_strategies, target_issue_codes, target_scope_explicit = await _infer_fix_proposal_target_scope(
                             content=content,
                             request_context=request_context,
                             latest_plan_result=latest_plan_result,
@@ -11685,6 +12205,9 @@ class ChatService:
                             facts,
                             selected_proposal_id=selected_proposal_id,
                         )
+                    elif target_scope_explicit and not target_strategies and not target_issue_codes:
+                        ready_proposal = None
+                        latest_plan_result["target_match_empty"] = True
                     else:
                         ready_proposal = await _select_ready_fix_proposal_for_user_goal(
                             facts,
@@ -11692,7 +12215,10 @@ class ChatService:
                             reply=reply,
                             request_context=request_context,
                             target_strategies=target_strategies,
+                            target_issue_codes=target_issue_codes,
                         )
+                        if ready_proposal is None and target_scope_explicit:
+                            latest_plan_result["target_match_empty"] = True
                     if ready_proposal is not None:
                         latest_plan_result["selected_proposal_id"] = str(
                             ready_proposal.get("proposal_id") or ready_proposal.get("proposalId") or ""
@@ -11780,6 +12306,7 @@ class ChatService:
             and pending_fix_proposal_card is None
             and recovered_pending_intent_card is None
             and not composite_goal_clarification_reply
+            and not _plan_confirmation_candidate_is_explicit_atomic_target(plan_confirmation_candidate)
         ):
             composite_override_card = await self._maybe_override_plan_confirmation_with_composite_goal(
                 session_id=session_id,
@@ -11833,6 +12360,26 @@ class ChatService:
                     "confidence": "semantic",
                     "route": "user_goal_proposal",
                 }
+        if (
+            plan_confirmation_candidate
+            and _plain_plan_candidate_conflicts_with_active_only_keep_intent(
+                backend_pending_state if isinstance(backend_pending_state, dict) else None,
+                plan_confirmation_candidate,
+            )
+        ):
+            plan_confirmation_candidate = None
+            pending_context_reply = _build_pending_readonly_impact_reply(
+                backend_pending_state if isinstance(backend_pending_state, dict) else {}
+            )
+            if isinstance(reply, str):
+                guarded_pending_reply = (
+                    pending_context_reply.rstrip()
+                    + "\n\n如果这就是你想采用的方向，请先点“采纳”；采纳后我再按这条参考检查或调整当前方案。"
+                )
+                guarded_pending_reply = _sanitize_reply_for_user(guarded_pending_reply)
+                _replace_text_reply(new_messages, reply, guarded_pending_reply)
+                _replace_text_reply(all_messages, reply, guarded_pending_reply)
+                reply = guarded_pending_reply
         if plan_confirmation_candidate:
             plan_card_includes_intent_update = bool(
                 isinstance(plan_confirmation_candidate.get("intent_update"), dict)
@@ -11913,6 +12460,16 @@ class ChatService:
                 latest_review_result is not None
                 and _result_needs_unavailable_guidance_fallback(latest_review_result, user_prompt=content)
             ):
+                structured_review_reply = _build_plan_timeout_fallback_reply(
+                    latest_review_result,
+                    user_prompt=content,
+                ) or reply
+                structured_review_reply = _sanitize_reply_for_user(structured_review_reply)
+                if structured_review_reply != reply:
+                    _replace_text_reply(new_messages, reply, structured_review_reply)
+                    _replace_text_reply(all_messages, reply, structured_review_reply)
+                    reply = structured_review_reply
+            elif _review_reply_overclaims_admission_safety(reply, latest_review_result):
                 structured_review_reply = _build_plan_timeout_fallback_reply(
                     latest_review_result,
                     user_prompt=content,
