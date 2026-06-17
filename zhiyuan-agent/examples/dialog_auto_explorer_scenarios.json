@@ -1,0 +1,93 @@
+{
+  "metadata": {
+    "purpose": "LLM-driven exploratory dialog scenarios for 3.1.0 local standard test validation.",
+    "notes": "Default scenarios reuse an existing session unless --create-session-payload is provided. Keep generated reports outside the repo."
+  },
+  "defaults": {
+    "goals": [
+      "Use natural Chinese user messages.",
+      "Continue until the assistant exposes a concrete issue or the flow is sufficiently covered.",
+      "Prefer probing action boundaries: explain first, preview before apply, do not silently mutate plans unless the product flow requires it."
+    ],
+    "issueFocus": [
+      "internal field leakage",
+      "wrong action boundary",
+      "missing or unclear next step",
+      "contradiction with current workspace state",
+      "server or websocket error surfaced to user"
+    ]
+  },
+  "scenarios": [
+    {
+      "name": "overview-to-plan-review",
+      "description": "Open from an existing planning session, ask for current plan status, then request review and user-friendly risk explanation.",
+      "persona": "A parent who wants a concise but reliable explanation before making changes.",
+      "coverage": ["plan_status", "review", "readonly_boundary"],
+      "seedPrompts": [
+        "先看下当前方案整体怎么样，冲稳保和风险说清楚一点",
+        "这版方案帮我审查一下，先不要改，风险和提醒说人话一点"
+      ],
+      "goals": [
+        "Assistant should summarize current plan without exposing internal fields.",
+        "Review response should be user-facing and should not auto-apply changes."
+      ]
+    },
+    {
+      "name": "candidate-filter-and-refresh",
+      "description": "Probe candidate area behavior after user asks for region and major preferences, especially candidate refresh and filter explanation.",
+      "persona": "A student who wants to narrow candidates by city and major preference.",
+      "coverage": ["candidate_pool", "filters", "major_preference"],
+      "seedPrompts": [
+        "候选里优先看北京和江浙的学校，计算机和新媒体方向都可以",
+        "如果候选不够，哪些条件需要放宽？不要直接改方案，先分析"
+      ],
+      "issueFocus": [
+        "claiming candidate refresh succeeded when backend failed",
+        "overstating exact counts without evidence"
+      ]
+    },
+    {
+      "name": "review-repair-preview-confirm",
+      "description": "Ask the assistant to repair review problems and verify it previews before applying changes.",
+      "persona": "A parent who is willing to adjust the plan but needs confirmation before mutation.",
+      "coverage": ["review_repair", "preview_before_apply", "confirmation"],
+      "seedPrompts": [
+        "如果方案里稳和保不够，能不能给我一个调整建议？先不要直接改",
+        "如果要替换，先告诉我会换掉什么、补什么，再让我确认"
+      ],
+      "goals": [
+        "Assistant should not directly apply repair without confirmation.",
+        "If candidates are insufficient, assistant should be honest instead of promising impossible fixes."
+      ]
+    },
+    {
+      "name": "data-freshness-volunteer",
+      "description": "Probe 3.1.0 data freshness wording and candidate/review next actions for a VOLUNTEER session.",
+      "persona": "A user who sees a data update hint and asks what it means.",
+      "coverage": ["release_3_1_0", "data_freshness", "volunteer"],
+      "seedPrompts": [
+        "页面提示志愿数据有更新，这是什么意思？我需要做什么",
+        "如果数据更新了，候选和审查分别什么时候会刷新？"
+      ],
+      "issueFocus": [
+        "exposing mock wording as if it were production truth",
+        "telling user to manually click a removed check-update button",
+        "confusing candidate refresh with review rerun"
+      ]
+    },
+    {
+      "name": "major-group-count-and-plan-detail",
+      "description": "Ask about professional-group plan details and verify the assistant explains group total vs selected majors correctly.",
+      "persona": "A detail-oriented user comparing major groups in the plan.",
+      "coverage": ["major_group", "plan_detail", "group_total_count"],
+      "seedPrompts": [
+        "专业组标题里该组总共多少个专业是什么意思？和我方案里选的专业数量一样吗",
+        "候选里的组内数量和方案里的专业数量不一致时，应该怎么看"
+      ],
+      "issueFocus": [
+        "confusing selected majors with full major-group total",
+        "incorrectly claiming candidate and plan counts must always match"
+      ]
+    }
+  ]
+}
