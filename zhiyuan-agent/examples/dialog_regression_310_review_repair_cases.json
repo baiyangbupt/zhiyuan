@@ -223,7 +223,7 @@
       "coverage": [
         "majorGroup_model",
         "major_group_inner_safety",
-        "compensation_preview",
+        "no_unrelated_preview",
         "preview_confirm_apply",
         "review_workspace"
       ],
@@ -240,16 +240,16 @@
           ],
           "assertNotContains": [
             "已直接补入",
-            "已直接调整"
+            "已直接调整",
+            "录取率重排"
           ],
           "assertFollowupType": "pendingConfirmationCard",
           "assertFollowupCount": 1,
           "expectedKeyPoints": [
             "专业组",
+            "安全垫",
             "录取率",
-            "安全",
-            "补入",
-            "确认前"
+            "不会改动"
           ],
           "expectedKeyPointGroups": [
             {

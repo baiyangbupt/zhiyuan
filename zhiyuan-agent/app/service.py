@@ -339,10 +339,20 @@ def _semantic_current_plan_analysis_allowed(value: Any) -> bool:
     Generic questions such as "这版值不值得/偏专业还是学校/省外是不是多"
     need richer plan reading by the full agent.  The semantic route should only
     take first-turn analysis when the classifier explicitly marks a bounded
-    shortage/unavailable-guidance scenario.
+    shortage/unavailable-guidance scenario and the user is actually asking for
+    that boundary explanation.
     """
 
     return bool(_reply_focus_set(value) & {"shortage_boundary", "unavailable_guidance"})
+
+
+def _semantic_current_plan_analysis_matches_prompt(value: Any, user_prompt: str | None) -> bool:
+    focus = _reply_focus_set(value)
+    if "shortage_boundary" in focus:
+        return True
+    if "unavailable_guidance" in focus:
+        return _review_prompt_prefers_unavailable_guidance(user_prompt)
+    return False
 
 
 def _build_profile_change_replan_reply(
@@ -1485,13 +1495,21 @@ def _pending_confirmation_primary_reply_from_card(card: WSResponse | None) -> st
     return ""
 
 
-def _semantic_intent_decision_requires_readonly(decision: dict[str, Any] | None) -> bool:
+def _semantic_intent_decision_suggests_readonly(decision: dict[str, Any] | None) -> bool:
     if not isinstance(decision, dict):
         return False
     return (
         str(decision.get("decision") or "").strip() in {"analysis_only", "mixed_answer_then_ask"}
         and float(decision.get("confidence") or 0.0) >= 0.7
     )
+
+
+def _semantic_intent_decision_requires_readonly(decision: dict[str, Any] | None) -> bool:
+    if not _semantic_intent_decision_suggests_readonly(decision):
+        return False
+    if isinstance(decision, dict) and decision.get("honored") is False:
+        return False
+    return True
 
 
 def _merge_selected_intent_payload(intent_payload: dict[str, Any] | None) -> dict[str, Any]:
@@ -3520,19 +3538,7 @@ async def _infer_fix_proposal_target_scope(
     ]
     if not strategies and not issue_codes:
         return [], [], False
-    proposal_strategies = {
-        str(proposal.get("strategy") or "").strip()
-        for proposal in ready
-        if str(proposal.get("strategy") or "").strip()
-    }
-    proposal_issue_codes = {
-        code
-        for proposal in ready
-        for code in _fix_proposal_source_issue_codes(proposal)
-    }
-    matched_strategies = [strategy for strategy in strategies if strategy in proposal_strategies]
-    matched_issue_codes = [code for code in issue_codes if code in proposal_issue_codes]
-    return matched_strategies, matched_issue_codes, True
+    return _normalized_fix_proposal_target_strategies(strategies), _normalized_fix_proposal_target_issue_codes(issue_codes), True
 
 
 def _build_fix_proposal_pending_state(
@@ -4052,6 +4058,10 @@ def _latest_readonly_tool_reply(messages: list[Any] | None) -> str | None:
     return None
 
 
+def _turn_has_readonly_explore_result(messages: list[Any] | None) -> bool:
+    return bool(_latest_readonly_explore_reply(messages))
+
+
 def _reply_contains_readonly_plan_query_facts(reply: str) -> bool:
     compact = _compact_plan_reply_text(reply)
     if not compact:
@@ -4471,6 +4481,35 @@ def _latest_unexecuted_plan_next_payload(
     return latest_payload
 
 
+def _latest_plan_next_missing_inputs_payload(
+    messages: list[Any] | None,
+    *,
+    action_family: str | None = None,
+) -> dict[str, Any] | None:
+    target_family = str(action_family or "").strip()
+    latest_payload: dict[str, Any] | None = None
+    for part in _iter_tool_return_parts(messages):
+        if part.tool_name != "plan_next_action":
+            continue
+        data = _parse_tool_return_json(part.content)
+        if not isinstance(data, dict):
+            continue
+        family = str(data.get("action_family") or "").strip()
+        if target_family and family != target_family:
+            continue
+        missing_inputs = [
+            str(item or "").strip()
+            for item in (data.get("missing_inputs") or data.get("missingInputs") or [])
+            if str(item or "").strip()
+        ]
+        if not missing_inputs:
+            continue
+        normalized = normalize_plan_action_payload(dict(data))
+        normalized["missing_inputs"] = missing_inputs
+        latest_payload = normalized
+    return latest_payload
+
+
 def _latest_turn_allows_plan_followup_confirmation(messages: list[Any] | None) -> bool:
     """Whether a short confirmation should continue a structured plan follow-up.
 
@@ -4704,27 +4743,11 @@ def _semantic_decision_requests_fix_preview(
 ) -> bool:
     action_family = str(getattr(decision, "actionFamily", "none") or "none").strip()
     confidence = float(getattr(decision, "confidence", 0.0) or 0.0)
-    if action_family not in {"preview_fix_proposal", "review_plan", "analyze_adjustment"}:
+    if action_family != "preview_fix_proposal":
         return False
     if confidence < _SEMANTIC_PLAN_ACTION_CONFIDENCE_THRESHOLD:
         return False
-    if action_family == "preview_fix_proposal":
-        return True
-    target_issue_codes = [
-        str(code or "").strip()
-        for code in list(getattr(decision, "targetIssueCodes", []) or [])
-        if str(code or "").strip()
-    ]
-    if target_issue_codes:
-        return True
-    if require_issue_code_for_non_preview:
-        return False
-    target_strategies = [
-        str(strategy or "").strip()
-        for strategy in list(getattr(decision, "targetStrategies", []) or [])
-        if str(strategy or "").strip()
-    ]
-    return bool(target_strategies)
+    return True
 
 
 def _plan_context_has_fix_proposals(context: dict[str, Any] | None) -> bool:
@@ -6070,6 +6093,20 @@ def _latest_non_actionable_plan_result(messages: list[Any] | None) -> dict[str, 
             continue
         data = _parse_tool_return_json(part.content)
         if _plan_execution_result_is_non_actionable(data):
+            return data
+    return None
+
+
+def _latest_readonly_plan_query_misroute_candidate(messages: list[Any] | None) -> dict[str, Any] | None:
+    for part in reversed(_iter_tool_return_parts(messages)):
+        if part.tool_name != "execute_plan_action":
+            continue
+        data = _parse_tool_return_json(part.content)
+        if not isinstance(data, dict):
+            continue
+        action_family = str(data.get("action_family") or "").strip()
+        result_kind = str(data.get("result_kind") or "").strip()
+        if action_family == "query_state" and result_kind == "status_overview":
             return data
     return None
 
@@ -7638,7 +7675,13 @@ def _append_plan_preview_confirmation_boundary(
     if not confirmation_candidate:
         non_actionable_result = _latest_non_actionable_plan_result(new_messages)
         fix_proposal_preview_result = _latest_fix_proposal_preview_result(new_messages)
+        readonly_explore_reply = _latest_readonly_explore_reply(new_messages)
         if asks_confirmation:
+            if readonly_explore_reply:
+                compact_explore = _compact_plan_reply_text(readonly_explore_reply)
+                if "不会改动当前方案" not in compact_explore and "不会直接改" not in compact_explore:
+                    return f"{readonly_explore_reply.rstrip()}\n\n{_READONLY_ANALYSIS_NO_PLAN_PREVIEW_REPLY}"
+                return readonly_explore_reply
             if not non_actionable_result and not fix_proposal_preview_result and not _tool_returns_plan_mutation_context(new_messages):
                 return reply
             reply = _remove_unbacked_plan_confirmation_copy(reply)
@@ -8505,6 +8548,79 @@ def _build_fix_proposal_preview_fallback_lines(
     return lines
 
 
+def _fix_proposal_matches_any_target_scope(
+    proposal: dict[str, Any],
+    target_strategies: list[str],
+    target_issue_codes: list[str],
+) -> bool:
+    strategy = str(proposal.get("strategy") or "").strip()
+    if target_strategies and strategy in set(target_strategies):
+        return True
+    if target_issue_codes and (_fix_proposal_source_issue_codes(proposal) & set(target_issue_codes)):
+        return True
+    return False
+
+
+def _targeted_fix_proposal_unavailable_reply(
+    result: dict[str, Any],
+    *,
+    target_strategies: list[str] | None = None,
+    target_issue_codes: list[str] | None = None,
+) -> str:
+    facts = result.get("facts") if isinstance(result.get("facts"), dict) else {}
+    fix_facts = facts.get("fix_proposals") if isinstance(facts.get("fix_proposals"), dict) else {}
+    proposals = fix_facts.get("proposals") if isinstance(fix_facts.get("proposals"), list) else []
+    normalized_strategies = _normalized_fix_proposal_target_strategies(
+        target_strategies
+        or result.get("target_strategies")
+        or result.get("targetStrategies")
+        or []
+    )
+    normalized_issue_codes = _normalized_fix_proposal_target_issue_codes(
+        target_issue_codes
+        or result.get("target_issue_codes")
+        or result.get("targetIssueCodes")
+        or []
+    )
+    matched = [
+        proposal
+        for proposal in proposals
+        if isinstance(proposal, dict)
+        and _fix_proposal_matches_any_target_scope(
+            proposal,
+            normalized_strategies,
+            normalized_issue_codes,
+        )
+    ]
+    if not matched:
+        return ""
+
+    ready = [
+        proposal
+        for proposal in matched
+        if str(proposal.get("status") or "").strip() == "ready"
+    ]
+    if ready:
+        return ""
+
+    proposal = matched[0]
+    title = _clean_review_fallback_text(proposal.get("title")) or "你想处理的这类问题"
+    strategy = _FIX_PROPOSAL_STRATEGY_TEXT.get(str(proposal.get("strategy") or "").strip(), "")
+    reason = _review_fallback_proposal_reason(proposal)
+    next_step = _review_fallback_proposal_next_step(proposal)
+    label = strategy or title
+    lines = [
+        f"我看了你想处理的“{label}”，这轮还没有足够合适的可执行预览，所以不会改动当前方案。",
+        "",
+        f"- 当前看到的问题：{title}。",
+        f"- 主要原因：{reason}。",
+        f"- 可以怎么推进：{next_step}。",
+        "",
+        "如果你愿意放宽范围或接受对应取舍，我再按新的范围重新列调整预览；确认前不会改动当前方案。",
+    ]
+    return _sanitize_reply_for_user(_normalize_user_facing_terms("\n".join(lines)))
+
+
 def _review_reply_needs_structured_fallback(reply: str, result: dict[str, Any] | None) -> bool:
     if not isinstance(result, dict) or not isinstance(reply, str):
         return False
@@ -9176,6 +9292,7 @@ class ChatService:
             and not recent_plan_context
             and has_existing_plan_context
             and _semantic_current_plan_analysis_allowed(decision)
+            and _semantic_current_plan_analysis_matches_prompt(decision, content)
         )
         if (
             action_family != "preview_fix_proposal"
@@ -9463,6 +9580,15 @@ class ChatService:
                 if primary_reply:
                     _replace_text_reply(new_messages, reply, primary_reply)
                     reply = primary_reply
+            elif latest_plan_result.get("target_match_empty"):
+                targeted_unavailable_reply = _targeted_fix_proposal_unavailable_reply(
+                    latest_plan_result,
+                    target_strategies=target_strategies,
+                    target_issue_codes=target_issue_codes,
+                )
+                if targeted_unavailable_reply:
+                    _replace_text_reply(new_messages, reply, targeted_unavailable_reply)
+                    reply = targeted_unavailable_reply
 
         if pending_fix_proposal_card is None:
             composite_goal_card = await self._maybe_recover_composite_goal_after_plan_attempt(
@@ -10093,6 +10219,69 @@ class ChatService:
             recent_plan_context=synthetic_context,
         )
         if decision is None:
+            return None
+        return await self._execute_recovered_plan_action(
+            session_id=session_id,
+            content=content,
+            request_context=request_context,
+            decision=decision,
+        )
+
+    async def _maybe_recover_atomic_preview_after_non_actionable_plan_attempt(
+        self,
+        *,
+        session_id: str,
+        content: str,
+        request_context: RequestContext,
+        tool_context_messages: list[Any] | None,
+    ) -> _PlanActionRecoveryResult | None:
+        """Recover an explicit atomic edit after the model tried the wrong plan path."""
+
+        # An active old pending card must not consume this turn, but it also
+        # should not block a clearly new plan action when the model picked the
+        # wrong plan path.  Recovery still re-enters the normal preview/apply
+        # guards and cannot confirm the old pending by itself.
+        if _extract_plan_confirmation_candidate(tool_context_messages) is not None:
+            return None
+        if not _tool_calls_include_plan_chain(tool_context_messages):
+            return None
+
+        attempted_result = _latest_non_actionable_plan_result(tool_context_messages)
+        if not isinstance(attempted_result, dict):
+            attempted_result = _latest_readonly_plan_query_misroute_candidate(tool_context_messages)
+        if not isinstance(attempted_result, dict):
+            return None
+        attempted_action_family = str(attempted_result.get("action_family") or "").strip()
+        if attempted_action_family not in {
+            "query_state",
+            "preview_fix_proposal",
+            "add_units",
+            "remove_units",
+            "replace_units",
+        }:
+            return None
+
+        recent_plan_context = _latest_plan_semantic_route_context(tool_context_messages)
+        if not recent_plan_context:
+            recent_plan_context = _latest_plan_semantic_route_context(
+                getattr(request_context, "chat_history", None)
+            )
+        if not _plan_recovery_has_context(request_context, recent_plan_context):
+            return None
+
+        decision = await self._classify_plan_action_recovery(
+            session_id=session_id,
+            content=content,
+            request_context=request_context,
+            recent_plan_context=recent_plan_context,
+        )
+        if decision is None:
+            return None
+
+        recovered_action_family = str(getattr(decision, "actionFamily", "none") or "none").strip()
+        if recovered_action_family not in {"add_units", "remove_units", "move_unit", "move_ordered_unit", "replace_units", "remove_ordered_unit", "sort_ordered_plan"}:
+            return None
+        if recovered_action_family == attempted_action_family:
             return None
         return await self._execute_recovered_plan_action(
             session_id=session_id,
@@ -11460,11 +11649,21 @@ class ChatService:
         intent_non_pending = _tool_returns_intent_non_pending(tool_context_messages)
         intent_side_effect_decision = request_context.agent_observability.get("intentSideEffectDecision")
         intent_interest_stage_result = _tool_returns_interest_stage_intent_analysis(tool_context_messages)
+        semantic_intent_readonly_suggested = _semantic_intent_decision_suggests_readonly(
+            intent_side_effect_decision if isinstance(intent_side_effect_decision, dict) else None
+        )
+        semantic_intent_readonly_honored = _semantic_intent_decision_requires_readonly(
+            intent_side_effect_decision if isinstance(intent_side_effect_decision, dict) else None
+        )
+        readonly_interest_analysis_used = bool(
+            semantic_intent_readonly_suggested
+            and not intent_preview_used_current_turn
+            and _tool_calls_are_readonly_explore_or_compare(tool_context_messages)
+        )
+        has_readonly_explore_result = _turn_has_readonly_explore_result(tool_context_messages)
         intent_preview_downgraded = (
             intent_interest_stage_result
-            or _semantic_intent_decision_requires_readonly(
-                intent_side_effect_decision if isinstance(intent_side_effect_decision, dict) else None
-            )
+            or semantic_intent_readonly_honored
         )
         if intent_preview_downgraded and getattr(request_context, "conversation_phase", None) is not None:
             request_context.conversation_phase.clear_pending()
@@ -11739,6 +11938,7 @@ class ChatService:
             and not plan_chain_used
             and not intent_preview_used
             and not intent_preview_downgraded
+            and not readonly_interest_analysis_used
             and not readonly_prompt
             and resolve_pending_confirmation(request_context) is None
         ):
@@ -11765,6 +11965,7 @@ class ChatService:
             and not plan_chain_used
             and not intent_preview_used
             and not intent_preview_downgraded
+            and not readonly_interest_analysis_used
             and not readonly_prompt
             and resolve_pending_confirmation(request_context) is None
         ):
@@ -11868,6 +12069,8 @@ class ChatService:
                             guarded_reply = _READONLY_ANALYSIS_NO_PLAN_PREVIEW_REPLY
                 else:
                     readonly_plan_result = _latest_readonly_plan_execution_result(tool_context_messages)
+                    if has_readonly_explore_result:
+                        readonly_plan_result = None
                     if readonly_plan_result is None:
                         readonly_plan_result = _latest_fix_proposal_preview_result(tool_context_messages)
                     if readonly_plan_result is not None:
@@ -11953,6 +12156,87 @@ class ChatService:
                 action_family = _select_conversation_action_family(tool_returns)
                 plan_confirmation_candidate = _extract_plan_confirmation_candidate(tool_context_messages)
                 plan_action_recovery_route = recovered_plan_action.route_decision
+        if (
+            plan_action_recovery_route is None
+            and plan_confirmation_candidate is None
+            and pending_fix_proposal_card is None
+            and recovered_pending_intent_card is None
+            and isinstance(reply, str)
+            and not readonly_prompt
+            and not negative_plan_ack
+            and not composite_goal_clarification_reply
+        ):
+            recovered_plan_action = await self._maybe_recover_atomic_preview_after_non_actionable_plan_attempt(
+                session_id=session_id,
+                content=content,
+                request_context=request_context,
+                tool_context_messages=tool_context_messages,
+            )
+            if recovered_plan_action is not None:
+                reply = recovered_plan_action.reply
+                new_messages = recovered_plan_action.messages
+                all_messages = list(runtime_history.model_history or []) + list(new_messages)
+                tool_context_messages = _select_current_tool_context_messages(
+                    new_messages,
+                    all_messages,
+                    runtime_history,
+                )
+                plan_chain_used = _tool_calls_include_plan_chain(tool_context_messages)
+                intent_preview_used_current_turn = _tool_calls_include_intent_preview(tool_context_messages)
+                intent_preview_used = intent_preview_used_current_turn
+                intent_non_pending = _tool_returns_intent_non_pending(tool_context_messages)
+                latest_turn_readonly = _latest_turn_looks_readonly(tool_context_messages)
+                has_pending_intent_context = False
+                workspace_refresh_targets = _current_turn_workspace_refresh_targets(
+                    tool_context_messages=tool_context_messages,
+                    new_messages=new_messages,
+                    all_messages=all_messages,
+                    content=content,
+                )
+                workspace_view_targets = _tool_calls_include_plan_view_targets(tool_context_messages)
+                workspace_view_targets = _strip_workspace_targets_for_readonly_prompt(workspace_view_targets, content)
+                tool_calls = _iter_tool_call_parts(tool_context_messages)
+                tool_returns = _iter_tool_return_parts(tool_context_messages)
+                called_tool_names = [part.tool_name for part in tool_calls]
+                observed_tool_calls = _summarize_tool_calls_for_observability(tool_calls, tool_returns)
+                full_agent_tool_trial = _summarize_full_agent_tool_trial(called_tool_names)
+                scene = "plan"
+                action_family = _select_conversation_action_family(tool_returns)
+                plan_confirmation_candidate = _extract_plan_confirmation_candidate(tool_context_messages)
+                plan_action_recovery_route = recovered_plan_action.route_decision
+        if (
+            plan_confirmation_candidate is None
+            and pending_fix_proposal_card is None
+            and recovered_pending_intent_card is None
+            and isinstance(reply, str)
+            and plan_chain_used
+        ):
+            missing_plan_next_payload = _latest_plan_next_missing_inputs_payload(
+                tool_context_messages,
+            )
+            if missing_plan_next_payload is not None:
+                missing_plan_reply = _non_actionable_plan_preview_boundary(
+                    {
+                        "applied": False,
+                        "action_family": missing_plan_next_payload.get("action_family"),
+                        "stage": missing_plan_next_payload.get("stage"),
+                        "result_kind": "error",
+                        "summary": missing_plan_next_payload.get("summary")
+                        or missing_plan_next_payload.get("preview_summary")
+                        or "",
+                        "reply_focus": [
+                            "missing_inputs",
+                            *[
+                                "needs_candidate_selection"
+                                for item in (missing_plan_next_payload.get("missing_inputs") or [])
+                                if str(item or "").strip() == "selection_scope"
+                            ],
+                        ],
+                    }
+                )
+                _replace_text_reply(new_messages, reply, missing_plan_reply)
+                _replace_text_reply(all_messages, reply, missing_plan_reply)
+                reply = missing_plan_reply
         composite_goal_card: WSResponse | None = None
         if (
             plan_action_recovery_route is None
@@ -12514,6 +12798,55 @@ class ChatService:
                             action_family = _select_conversation_action_family(tool_returns)
                             plan_confirmation_candidate = _extract_plan_confirmation_candidate(tool_context_messages)
                             plan_action_recovery_route = recovered_atomic_action.route_decision
+                        elif isinstance(reply, str):
+                            targeted_unavailable_reply = _targeted_fix_proposal_unavailable_reply(
+                                latest_plan_result,
+                                target_strategies=target_strategies,
+                                target_issue_codes=target_issue_codes,
+                            )
+                            if targeted_unavailable_reply:
+                                _replace_text_reply(new_messages, reply, targeted_unavailable_reply)
+                                _replace_text_reply(all_messages, reply, targeted_unavailable_reply)
+                                reply = targeted_unavailable_reply
+                    elif pending_fix_proposal_card is None and _latest_non_actionable_plan_result(tool_context_messages) is not None:
+                        recovered_atomic_action = await self._maybe_recover_atomic_preview_after_non_actionable_plan_attempt(
+                            session_id=session_id,
+                            content=content,
+                            request_context=request_context,
+                            tool_context_messages=tool_context_messages,
+                        )
+                        if recovered_atomic_action is not None:
+                            reply = recovered_atomic_action.reply
+                            new_messages = recovered_atomic_action.messages
+                            all_messages = list(runtime_history.model_history or []) + list(new_messages)
+                            tool_context_messages = _select_current_tool_context_messages(
+                                new_messages,
+                                all_messages,
+                                runtime_history,
+                            )
+                            plan_chain_used = _tool_calls_include_plan_chain(tool_context_messages)
+                            intent_preview_used_current_turn = _tool_calls_include_intent_preview(tool_context_messages)
+                            intent_preview_used = intent_preview_used_current_turn
+                            intent_non_pending = _tool_returns_intent_non_pending(tool_context_messages)
+                            latest_turn_readonly = _latest_turn_looks_readonly(tool_context_messages)
+                            has_pending_intent_context = False
+                            workspace_refresh_targets = _current_turn_workspace_refresh_targets(
+                                tool_context_messages=tool_context_messages,
+                                new_messages=new_messages,
+                                all_messages=all_messages,
+                                content=content,
+                            )
+                            workspace_view_targets = _tool_calls_include_plan_view_targets(tool_context_messages)
+                            workspace_view_targets = _strip_workspace_targets_for_readonly_prompt(workspace_view_targets, content)
+                            tool_calls = _iter_tool_call_parts(tool_context_messages)
+                            tool_returns = _iter_tool_return_parts(tool_context_messages)
+                            called_tool_names = [part.tool_name for part in tool_calls]
+                            observed_tool_calls = _summarize_tool_calls_for_observability(tool_calls, tool_returns)
+                            full_agent_tool_trial = _summarize_full_agent_tool_trial(called_tool_names)
+                            scene = "plan"
+                            action_family = _select_conversation_action_family(tool_returns)
+                            plan_confirmation_candidate = _extract_plan_confirmation_candidate(tool_context_messages)
+                            plan_action_recovery_route = recovered_atomic_action.route_decision
                     elif pending_fix_proposal_card is None:
                         clarification_reply = _composite_goal_clarification_reply(latest_plan_result)
                         if clarification_reply:
@@ -12707,9 +13040,9 @@ class ChatService:
                     _replace_text_reply(new_messages, reply, primary_budget_reply)
                     _replace_text_reply(all_messages, reply, primary_budget_reply)
                     reply = primary_budget_reply
-        if intent_preview_used and not intent_preview_downgraded and not plan_card_includes_intent_update:
+        if intent_preview_used_current_turn and not intent_preview_downgraded and not plan_card_includes_intent_update:
             preview_payload = _extract_recent_intent_analysis_payload(tool_context_messages)
-            if not preview_payload:
+            if not preview_payload and not plan_chain_used:
                 preview_payload = _extract_recent_intent_analysis_payload(all_messages)
             if pending_fix_proposal_card is None:
                 pending_intent_card = await _create_pending_intent_confirmation_from_preview_payload(
@@ -12732,6 +13065,7 @@ class ChatService:
             latest_review_result = _latest_readonly_plan_execution_result(tool_context_messages)
             if (
                 latest_review_result is not None
+                and not has_readonly_explore_result
                 and _result_needs_unavailable_guidance_fallback(latest_review_result, user_prompt=content)
             ):
                 structured_review_reply = _build_plan_timeout_fallback_reply(
@@ -12743,7 +13077,7 @@ class ChatService:
                     _replace_text_reply(new_messages, reply, structured_review_reply)
                     _replace_text_reply(all_messages, reply, structured_review_reply)
                     reply = structured_review_reply
-            elif _review_reply_overclaims_admission_safety(reply, latest_review_result):
+            elif latest_review_result is not None and not has_readonly_explore_result and _review_reply_overclaims_admission_safety(reply, latest_review_result):
                 structured_review_reply = _build_plan_timeout_fallback_reply(
                     latest_review_result,
                     user_prompt=content,
@@ -12753,7 +13087,7 @@ class ChatService:
                     _replace_text_reply(new_messages, reply, structured_review_reply)
                     _replace_text_reply(all_messages, reply, structured_review_reply)
                     reply = structured_review_reply
-            elif _review_reply_needs_structured_fallback(reply, latest_review_result):
+            elif latest_review_result is not None and not has_readonly_explore_result and _review_reply_needs_structured_fallback(reply, latest_review_result):
                 structured_review_reply = _build_plan_timeout_fallback_reply(
                     latest_review_result,
                     user_prompt=content,
@@ -12763,7 +13097,7 @@ class ChatService:
                     _replace_text_reply(new_messages, reply, structured_review_reply)
                     _replace_text_reply(all_messages, reply, structured_review_reply)
                     reply = structured_review_reply
-            elif _review_reply_needs_boundary(reply, latest_review_result):
+            elif latest_review_result is not None and not has_readonly_explore_result and _review_reply_needs_boundary(reply, latest_review_result):
                 bounded_review_reply = _sanitize_reply_for_user(
                     f"已完成方案审查。\n\n{reply.lstrip()}"
                 )
@@ -12772,7 +13106,11 @@ class ChatService:
                     _replace_text_reply(all_messages, reply, bounded_review_reply)
                     reply = bounded_review_reply
             latest_adjustment_result = _latest_readonly_plan_execution_result(tool_context_messages)
-            if _adjustment_reply_needs_structured_fallback(reply, latest_adjustment_result):
+            if (
+                latest_adjustment_result is not None
+                and not has_readonly_explore_result
+                and _adjustment_reply_needs_structured_fallback(reply, latest_adjustment_result)
+            ):
                 structured_adjustment_reply = _build_plan_timeout_fallback_reply(
                     latest_adjustment_result,
                     user_prompt=content,

@@ -149,6 +149,13 @@ class PlanRecoveryActionDecision(BaseModel):
         except (TypeError, ValueError):
             return None
 
+    @field_validator("sortField", mode="before")
+    @classmethod
+    def _coerce_optional_sort_field(cls, value: object) -> object | None:
+        if value in (None, ""):
+            return None
+        return value
+
     @field_validator("positionScope", mode="before")
     @classmethod
     def _coerce_position_scope(cls, value: object) -> str:
@@ -268,11 +275,17 @@ def _get_plan_action_agent() -> Agent[None, str]:
                 "高收费会不会影响保底、医学护理里中医算不算、候选里有没有某类更稳机会，"
                 "应 actionFamily=none，让完整 Agent 按方案、候选和专业事实回答；"
                 "不要因为文本提到了高收费、中外合作、医学、保底、某专业，就改写成审查修复分析。"
+                "当用户只是说帮我用大白话看风险、风险大不大、是不是有点多、家里预算一般、先别动，"
+                "本质仍是当前方案的只读风险解释，应 actionFamily=none；"
+                "不要填 unavailable_guidance，也不要因为提到费用/合作办学就生成 replace_risk_items。"
                 "用户问当前方案能不能补稳/补保/补齐、候选是否足够、候选不够时怎么办、为什么不能补齐，"
                 "如果只是要判断可行性、解释边界或给调整思路，而不是要求立刻生成可确认调整清单，可判为 analyze_adjustment，"
                 "但 replyFocus 必须包含 shortage_boundary；"
                 "不要判成 query_state；query_state 只适合单纯查看现状统计。"
                 "没有最近审查结果或处理建议时，analyze_adjustment 的快捷入口只适合 shortage_boundary 或 unavailable_guidance；"
+                "其中 unavailable_guidance 只适合用户明确追问已经出现的提醒为什么不能处理、为什么不能直接改、"
+                "或让系统解释这些处理建议该如何取舍；"
+                "不能把普通风险解释、价值判断、白话分析、先别动看一眼归为 unavailable_guidance。"
                 "不要仅因为你能推断出 targetStrategies/targetIssueCodes 就判为 analyze_adjustment。"
                 "preview_fix_proposal 只表示用户正在承接最近一次审查/处理建议，"
                 "希望把这些已识别的问题整理成一版可确认的调整预览；"
@@ -302,8 +315,14 @@ def _get_plan_action_agent() -> Agent[None, str]:
                 "shortage_boundary 表示用户重点关注候选不足、补稳/补保是否可行；target_issue_only 表示只围绕用户点名的某类问题展开。"
                 "只要用户的问题明确聚焦当前方案中的某一类审查提醒、风险来源或处理方向，就必须填写 targetStrategies，"
                 "不要把它留空；同时尽量填写 targetIssueCodes。targetIssueCodes 用来约束后续分析只围绕用户点名的那类问题展开。"
+                "审查修复目标要按用户想让系统怎么动来判，不要只按用户提到的风险依据来判："
+                "如果用户说录取率太悬/不够安全，但动作是补入、加入、保留一个更安全/更稳的专业，"
+                "这类目标是补专业组内安全垫，不是排序。"
                 "当用户承接审查结果要求在专业组里补更安全/更稳的专业、补兜底专业、处理非意向托底或组内安全垫时，"
-                "targetStrategies 优先填写 adjust_major_group_inner_safety，targetIssueCodes 填 major_group_safety_intent_alignment 或 group_inner_safety_guard；"
+                "targetStrategies 只填写 adjust_major_group_inner_safety，targetIssueCodes 填 major_group_safety_intent_alignment 或 group_inner_safety_guard；"
+                "不要同时填写 sort_by_probability 或 rebalance_tier_ratio，除非用户还明确要求重排顺序或调整冲稳保比例。"
+                "sort_by_probability 只用于用户要求处理录取率倒挂、按录取率重新排序、调整前后顺序或修正风险梯度顺序；"
+                "用户要求补更安全专业时不要用 sort_by_probability，即使问题里提到录取率。"
                 "当用户要求处理录取率倒挂或按录取率重排时填写 sort_by_probability，targetIssueCodes 填 probability_inversion；"
                 "当用户要求补录取概率断层时填写 fill_probability_gap，targetIssueCodes 填 probability_gap；"
                 "当用户泛泛要求补稳/调冲稳保比例时填写 rebalance_tier_ratio。"

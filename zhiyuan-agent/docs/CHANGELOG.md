@@ -20,6 +20,12 @@
 
 ### Fixed
 
+- 3.1.0 审查修复语义路由补强：用户问“专业组里录取率太悬，能不能补一个安全一点的专业，先看预览”时，语义判定按用户想执行的动作归入 `adjust_major_group_inner_safety`，不再因为句中提到“录取率”误路由到 `sort_by_probability` 或冲稳保比例调整；`examples/dialog_regression_310_review_repair_cases.json` 复跑 9/9 通过，关键 case 生成“补兜底专业”确认卡。
+- 3.1.0 预算/中外合作只读解释边界补强：用户说“中外合作是不是有点多、家里预算一般、用大白话看风险、先别动”时，不再因为提到费用风险被语义快捷入口抢到 `analyze_adjustment/replace_risk_items`，而是回到完整 Agent 读取当前方案事实做只读风险解释；`unavailable_guidance` 只保留给“为什么这些提醒处理不了/怎么取舍”的明确追问。
+- 审查处理预览的目标一致性修复：当用户明确要看某一类处理预览（如“组内补安全垫”），但该目标在后端 `FixProposal` 中是 `blocked/preview_only` 或没有 matching ready proposal 时，Agent 不再退到其他 ready 处理建议（如录取率重排）生成无关确认卡，而是聚焦说明当前目标为什么不能直接处理、需要放宽或取舍什么；对应回归用例更新为 `target_unavailable_boundary / no_unrelated_preview`。
+- 方案预览与意向预览同轮冲突修复：full agent 先产出意向预览、随后服务层恢复出 `preview_fix_proposal` 时，最终 follow-up 只保留方案调整卡；不会再从旧 `latestIntentPreviewPayload` 回捞出意向采纳卡，避免正文说“方案调整预览”但卡片变成“发展方向/偏好采纳”。
+- 方案调整误路由恢复收口：当 full agent 先落到只读 `query_state/status_overview`，但用户实际是在要求补齐、增删或替换方案时，服务层会复用 `classify_plan_recovery_action` 重新进入 `plan_next_action -> execute_plan_action` 的统一调整链；若恢复后仍缺少候选范围，则保留 `selection_scope` 级别的具体缺参提示，而不是返回泛化的“没有可执行预览”。
+- 只读方向分析回复合成修复：同轮已经调用 `analyze_current_career_direction` 等探索工具时，最终回复优先保留方向分析和“不改方案”边界，不再被 `review_result`、`adjustment_analysis` 或非动作预览兜底覆盖成纯审查概览。
 - 意向确认卡恢复链路补齐主回复：`pendingConfirmationCard` 相关恢复分支不再把回复清空，恢复后的意向卡会补出用户可读的主文本；同时旧 `planEditCache` 清理改为仅在数字会话号上执行，避免字符串 session 触发 `int(...)` 异常。
 - 这次修复只收口输出与兼容清理，不改 intent 路由或确认协议；后续若再扩文本净化词表，仍需保留“卡片主回复必须可读、旧缓存清理不应因字符串 session 报错”的边界。
 - 工具直返策略继续收紧：`reply_strategy=direct_reply` 不再被全局信任，Policy / 适配匹配 / 局部方案查询等只读工具即使返回摘要，也默认交回主模型综合；保留直返的只剩意向确认预览、受控阻断、无变化和方案变更预览等协议级结果，避免工具片段截断多意图问题或把偏好表达误答成命中列表。

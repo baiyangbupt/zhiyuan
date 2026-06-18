@@ -5,7 +5,9 @@ import json
 from app.tools.extraction_json import parse_extraction_json
 from app.tools.plan_semantic_action_tool import (
     CompositeGoalDecision,
+    PlanRecoveryActionDecision,
     _normalize_composite_goal_decision,
+    _normalize_plan_recovery_action_decision,
 )
 
 
@@ -53,3 +55,25 @@ def test_composite_goal_decision_accepts_program_type_scope():
     assert normalized.action == "exclude_scope"
     assert normalized.scopeType == "program_type"
     assert normalized.negativeValues == ["中外合作办学"]
+
+
+def test_plan_recovery_decision_accepts_empty_optional_sort_field():
+    raw = json.dumps(
+        {
+            "actionFamily": "none",
+            "confidence": 0.4,
+            "reason": "用户只是继续看方向分析",
+            "sortField": "",
+            "sourcePosition": "",
+            "targetPosition": "",
+        },
+        ensure_ascii=False,
+    )
+
+    decision = parse_extraction_json(raw, PlanRecoveryActionDecision)
+    normalized = _normalize_plan_recovery_action_decision(decision)
+
+    assert normalized.actionFamily == "none"
+    assert normalized.sortField is None
+    assert normalized.sourcePosition is None
+    assert normalized.targetPosition is None

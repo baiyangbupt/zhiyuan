@@ -450,8 +450,10 @@ Plan 层最终执行的不是“自然语言动作”，而是受控原子动作
 - 不直接改动方案
 - 只消费 Java `FixProposal` facts
 - 只有 `status=ready` 且带有 `proposalId/sourceVersionGuard` 的后端 proposal 才能被 `ChatService` 转成 `pendingConfirmationCard`
+- 如果语义路由已经带出 `targetStrategies/targetIssueCodes`，候选 proposal 必须匹配该目标；目标没有 matching ready proposal 时只能说明该目标当前不能直接处理以及需要放宽/取舍的原因，不能退到其他 ready proposal 生成无关确认卡
 - `blocked` 和 `preview_only` 只作为只读说明，不生成执行卡，也不能被 Agent 翻译成普通增删替换绕过后端 apply policy
 - 正式应用 proposal 必须经过 active pending 确认；模型本身不能调用 apply
+- 同轮若同时出现意向预览和方案预览，方案预览恢复成功后以方案 pending 为准；旧 Agent 观测里的 `latestIntentPreviewPayload` 不得在后处理阶段再生成独立意向卡。只有方案卡自身显式携带 `intent_update` 时，意向变化才作为同一张方案调整卡的一部分生效。
 
 ## 7. 中间结构设计
 
@@ -638,6 +640,7 @@ class PlanGoal(BaseModel):
 - `PlanActionPlan.action_family` 仍只表示 Agent 当前工具动作 envelope，例如 `review_plan`、`preview_fix_proposal`、`replace_units`、`sort_ordered_plan`。它不能替代 Repair strategy。
 - 当前可自动 apply 的 repair strategy 由 Java `RepairProposalTaxonomy` 和 `RepairProposalApplyPolicy` 判定。`add_safety_items`、`rebalance_tier_ratio`、`fill_probability_gap` 默认保持 preview only；`source=user_goal` 的 `only_keep_scope/must_include_scope/exclude_scope` 只能通过 service pending 桥受控 apply。
 - 后端运行期对应统一定义为 `RepairProposalTaxonomy`，覆盖 `Strategy`、`ActionType`、`CompensationActionType`、apply 白名单、preview-only 策略和旧补偿别名映射。Agent 不能重新发明 strategy/action，也不能把 preview-only repair 翻译成普通 `replace_units` 去绕过后端 apply policy。
+- 审查修复的语义目标按“用户希望系统做什么”确定，而不是只按用户提到的风险词确定。例如用户说“专业组里录取率太悬，补一个安全一点的专业”，`录取率太悬` 是风险依据，真正目标是补组内安全垫，应进入 `adjust_major_group_inner_safety`；只有用户明确要求按录取率重排、修正前后顺序或处理倒挂时，才进入 `sort_by_probability`。
 
 验证场景应覆盖高层情景，而不只覆盖底层 action：
 
@@ -1311,7 +1314,7 @@ preview 必须基于当前 state 给出真正影响，而不是一句“会修�
 - `review_plan`：进入后端 `runReview()`，再读取 `fix-proposals/generate`，把 review summary、proposal status、处理方向和阻塞原因交给模型组织回复。
 - `analyze_adjustment`：同样基于 `runReview()` 和 `fix-proposals/generate` 输出只读解释，用于回答“怎么调/为什么暂时不能处理/先看哪些方向”；不走旧 `plan-adjustment/analyze`。
 - `generate_planning_fix_proposals`：作为只读工具暴露给 ChatAgent，用于解释 Java Server 已生成的处理建议。
-- `review_plan/preview_fix_proposal -> pendingConfirmationCard -> apply_planning_fix_proposal`：ChatAgent 只生成审查或预览事实；ChatService 从本轮 `ToolReturnPart` 读取 `fix_proposal_preview`，以及用户明确想“先看怎么处理/怎么调整”时的 `review_result`。只有 `review_check` 来源、`status=ready` 且带 `proposalId/sourceVersionGuard` 的 proposal 才保存 active `pendingConfirmation(kind=plan_mutation, actionFamily=apply_fix_proposal)`。普通“只审查/先不要改”的 `review_result` 不生成确认卡。卡片点击或短文本确认命中同一个 pending 后，service 内部调用 Java `fix-proposals/apply`，返回 `RepairReport` 并刷新排序方案。
+- `review_plan/preview_fix_proposal -> pendingConfirmationCard -> apply_planning_fix_proposal`：ChatAgent 只生成审查或预览事实；ChatService 从本轮 `ToolReturnPart` 读取 `fix_proposal_preview`，以及用户明确想“先看怎么处理/怎么调整”时的 `review_result`。只有 `review_check` 来源、`status=ready` 且带 `proposalId/sourceVersionGuard` 的 proposal 才保存 active `pendingConfirmation(kind=plan_mutation, actionFamily=apply_fix_proposal)`。如果用户语义指定了某类处理目标，确认卡只能使用匹配该目标的 ready proposal；目标不可执行时返回只读原因和放宽方向，不能用其他 ready proposal 冒充。普通“只审查/先不要改”的 `review_result` 不生成确认卡。卡片点击或短文本确认命中同一个 pending 后，service 内部调用 Java `fix-proposals/apply`，返回 `RepairReport` 并刷新排序方案。
 - 工作台前端：使用同一套 Java `fix-proposals/generate/apply` 协议，让用户在审查结果弹窗里确认 `ready` proposal。
 
 未开放：
@@ -1338,6 +1341,25 @@ preview 必须基于当前 state 给出真正影响，而不是一句“会修�
 - P0：Agent action family 已移除 `preview_compensation/apply_compensation`。历史会话里的旧 compensation preview/apply 只作为 legacy 输入被忽略或拒绝，不能生成新的 pending，也不能绕过 Java `FixProposal` 与 `RepairProposalApplyPolicy`。
 - P1：不把 `apply_planning_fix_proposal` 注册给 ChatAgent；后续如果要扩大 apply 范围，只扩 service pending bridge 和 Java apply policy，不让模型直接执行高副作用工具。
 - P1：Java compensationPreview 仍可作为 `fill_missing_count/add_safety_items` proposal 的内部素材；Agent 用户侧不再读取或展示旧 compensation facts，审查/调整只通过 `FixProposalState` 披露处理方向。
+
+### 16.10 模型误路由后的结构化恢复边界
+
+Plan 主链仍以模型理解为入口，但模型可能在两类情况下走到错误的只读或非动作路径：
+
+- 用户明确要调整方案，模型却先调用 `query_state` 并按方案概览回复。
+- 用户明确要补齐、增删或替换方案，模型却调用了 `preview_fix_proposal` 等不匹配的非动作入口，最后没有形成确认预览。
+
+这类问题不能用用户话术字符串兜底，也不能新增第二套执行路径。服务层统一按以下边界恢复：
+
+1. 当前轮没有 active `pendingConfirmation`，也没有已经形成的方案确认卡。
+2. 当前轮确实调用过 Plan 链路工具，且最新结果是 `query_state/status_overview` 或非动作错误结果。
+3. 服务层只调用 `classify_plan_recovery_action` 做语义恢复；分类器高置信输出 `add_units / remove_units / replace_units / move_unit / move_ordered_unit / remove_ordered_unit / sort_ordered_plan` 之一时，才重新进入 `plan_next_action -> execute_plan_action`。
+4. 恢复后仍遵守原执行层门禁：缺少候选范围、缺少当前方案目标、候选不足或版本不一致时，只返回具体缺参/阻断说明，不生成 pending，也不刷新工作台。
+5. 如果 `plan_next_action` 已经返回 `missing_inputs=["selection_scope"]`，即使模型后续又传了一个较薄的 `execute_plan_action` payload，也要保留这个缺参事实，向用户提示需要补充学校、专业、地域等范围或先在候选里选中目标。
+6. 同一轮如果已经产出 `analyze_current_career_direction` 这类只读探索结果，最终回复合成要优先保留它，再补“不改方案/先看分析”的边界；不能再被 `review_result`、`adjustment_analysis` 或“没有形成可执行预览”的通用兜底覆盖成纯审查概览。
+7. 无最近审查结果或处理建议时，`analyze_adjustment` 只允许承接两类明确边界：候选供给不足/补稳补保可行性，以及用户明确追问已知提醒为什么处理不了、需要如何取舍。普通只读风险解释，如“中外合作是不是多、预算一般、说人话看风险、先别动”，即使能推断出高收费或中外合作 issue，也应交回完整 Agent 读取方案事实回答，不能升级成修复不可用说明或替换建议。
+
+这个恢复逻辑只修正“模型选错工具入口”的框架问题，不改变用户确认协议，不允许模型绕过确认卡或 Java proposal apply policy。
 
 ## 17. 推荐落地顺序
 
