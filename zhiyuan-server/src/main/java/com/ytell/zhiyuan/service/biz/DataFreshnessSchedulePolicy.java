@@ -15,12 +15,13 @@ public final class DataFreshnessSchedulePolicy {
     private DataFreshnessSchedulePolicy() {
     }
 
-    public static boolean isVolunteerPrepareType(String prepareType) {
-        return "VOLUNTEER".equalsIgnoreCase(trim(prepareType));
+    public static boolean isSupportedPrepareType(String prepareType) {
+        String normalized = trim(prepareType);
+        return "VOLUNTEER".equalsIgnoreCase(normalized);
     }
 
     public static boolean isBackgroundEligible(String prepareType, String sessionStatus) {
-        if (!isVolunteerPrepareType(prepareType)) {
+        if (!isSupportedPrepareType(prepareType)) {
             return false;
         }
         String status = trim(sessionStatus);

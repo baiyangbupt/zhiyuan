@@ -20,6 +20,7 @@ import com.ytell.zhiyuan.model.dto.planning.CompensationActionDTO;
 import com.ytell.zhiyuan.model.dto.planning.CompensationPreviewDTO;
 import com.ytell.zhiyuan.model.dto.planning.DataFreshnessCheckReq;
 import com.ytell.zhiyuan.model.dto.planning.DataFreshnessCheckRes;
+import com.ytell.zhiyuan.model.dto.planning.DataFreshnessStateDTO;
 import com.ytell.zhiyuan.model.dto.planning.ConstraintDeriveRes;
 import com.ytell.zhiyuan.model.dto.planning.CandidateItemDTO;
 import com.ytell.zhiyuan.model.dto.planning.DraftPlanReorderReq;
@@ -64,8 +65,10 @@ import com.ytell.zhiyuan.model.dto.planning.UserGoalFixProposalReq;
 import com.ytell.zhiyuan.model.dto.planning.InitialRecommendationGenerateReq;
 import com.ytell.zhiyuan.model.dto.planning.MarkPlanningIntentStaleReq;
 import com.ytell.zhiyuan.model.dto.planning.PlanningBehaviorEventDTO;
+import com.ytell.zhiyuan.model.entity.biz.ChatSession;
 import com.ytell.zhiyuan.model.entity.biz.ChatSessionExtraData;
 import com.ytell.zhiyuan.model.entity.biz.PlanningDataFreshnessScheduleEntity;
+import com.ytell.zhiyuan.model.enums.SessionStatus;
 import com.ytell.zhiyuan.model.enums.VolunteerModel;
 import com.ytell.zhiyuan.model.vo.SchoolVO;
 import com.ytell.zhiyuan.service.shared.ChatSessionExtraDataSharedService;
@@ -85,6 +88,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Comparator;
+import java.util.Date;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -238,6 +242,43 @@ public class PlanningStateServiceTest {
     }
 
     @Test
+    void shouldKeepPredictDataFreshnessStaticWhenFetchLatestRequested() {
+        bindPlanningStateStore();
+        PlanningStateDTO initial = new PlanningStateDTO();
+        CandidateItemDTO item = new CandidateItemDTO();
+        item.setVolunteerId("v1");
+        item.setPlanSchoolDataId("u1");
+        item.setSchoolName("学校A");
+        item.setMajorName("专业A");
+        item.setTier("稳");
+        initial.getCandidatePoolState().getItems().add(item);
+        initial.getDataFreshnessState().setPrepareType("PREDICT");
+        initial.getDataFreshnessState().setStatusCode("current");
+        saveStateToStore(1L, initial);
+
+        PlanningDataFreshnessScheduleEntity schedule = new PlanningDataFreshnessScheduleEntity();
+        schedule.setChatSessionId(1L);
+        schedule.setPrepareType("PREDICT");
+        schedule.setEnabled(false);
+        when(planningDataFreshnessScheduleSharedService.saveOrUpdateSchedule(any(PlanningDataFreshnessScheduleEntity.class)))
+                .thenReturn(schedule);
+        when(planningDataFreshnessScheduleSharedService.getByChatSessionId(1L)).thenReturn(schedule);
+
+        DataFreshnessCheckReq req = new DataFreshnessCheckReq();
+        req.setFetchLatest(true);
+        DataFreshnessCheckRes res = planningStateService.checkDataFreshness(1L, 1L, req);
+
+        assertEquals("current", res.getDataFreshnessState().getStatusCode());
+        assertEquals("none", res.getDataFreshnessState().getChangeLevel());
+        assertEquals("PREDICT", res.getDataFreshnessState().getPrepareType());
+        assertFalse(Boolean.TRUE.equals(res.getDataFreshnessState().getShouldNotify()));
+        assertFalse(Boolean.TRUE.equals(res.getDataFreshnessState().getRequiresCandidateRefresh()));
+        assertFalse(staleCandidatePool(res.getStaleFlags()));
+        verify(volunteerSourceDataSyncService, never()).fetchLatestSourceData(any(), any(), anyBoolean());
+        verify(volunteerBizService, never()).recommendVolunteerListWithSourceData(any(), any(), anyBoolean(), any());
+    }
+
+    @Test
     void shouldMarkPlanningStateStaleWhenVolunteerDataHashChanges() {
         bindPlanningStateStore();
         PlanningStateDTO initial = new PlanningStateDTO();
@@ -354,6 +395,49 @@ public class PlanningStateServiceTest {
         assertTrue(staleCandidatePool(res.getStaleFlags()));
     }
 
+
+    @Test
+    void shouldNotImportLegacyPlanWhenCheckingDataFreshnessForPredictSession() {
+        CreateSessionReq scoreDetail = buildScoreDetail();
+        CreateSessionReq.PrepareType prepareType = new CreateSessionReq.PrepareType();
+        prepareType.setCode("PREDICT");
+        prepareType.setDesc("模拟填报");
+        scoreDetail.setPrepareType(prepareType);
+        ChatSessionExtraData scoreData = new ChatSessionExtraData();
+        scoreData.setChatSessionId(1L);
+        scoreData.setDataKey(ChatSessionExtraDataConstants.USER_SCORE_KEY);
+        scoreData.setDataValue(JSONObject.toJSONString(scoreDetail));
+        when(chatSessionSharedService.getById(1L)).thenReturn(ChatSession.builder()
+                .id(1L)
+                .tenantId(1L)
+                .sessionStatus(SessionStatus.GOING)
+                .createTime(new Date())
+                .build());
+        when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.USER_SCORE_KEY)))
+                .thenReturn(scoreData);
+        when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
+                .thenReturn(null);
+        VolunteerRecommendListResponse legacy = new VolunteerRecommendListResponse();
+        legacy.setBaseData(buildBaseData(1, 1, 0, 0));
+        legacy.setUserScoreDetail(scoreDetail);
+        legacy.setSprints(java.util.Arrays.asList(buildSchool(
+                "ps1", "s1", "学校A", "北京", 1, buildMajorWithRatio("m1", "专业A", "50"))));
+        when(volunteerBizService.loadOriginalVolunteerData(1L)).thenReturn(legacy);
+
+        DataFreshnessCheckReq req = new DataFreshnessCheckReq();
+        req.setFetchLatest(true);
+        DataFreshnessCheckRes checkRes = planningStateService.checkDataFreshness(1L, 1L, req);
+        DataFreshnessStateDTO stateRes = planningStateService.getDataFreshnessState(1L, 1L);
+
+        assertEquals("PREDICT", checkRes.getDataFreshnessState().getPrepareType());
+        assertEquals("PREDICT", stateRes.getPrepareType());
+        verify(volunteerSourceDataSyncService, never()).fetchLatestSourceData(any(), any(), anyBoolean());
+        verify(volunteerBizService, never()).loadFinalSubmitVolunteerData(1L);
+        verify(volunteerBizService, never()).loadCachedRecommendData(1L);
+        verify(volunteerBizService, never()).loadOriginalVolunteerData(1L);
+        verify(chatSessionExtraDataSharedService, never()).save(any(ChatSessionExtraData.class));
+        verify(chatSessionExtraDataSharedService, never()).updateById(any(ChatSessionExtraData.class));
+    }
 
     @Test
     void shouldNotDowngradeDetailedDataFreshnessChangeWhenMergingScheduleState() {

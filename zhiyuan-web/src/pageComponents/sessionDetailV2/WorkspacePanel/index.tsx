@@ -186,6 +186,7 @@ interface WorkspacePanelProps {
   routerParams: IUserInfoParams;
   fetchFlag: number;
   examYear?: number | string | null;
+  prepareTypeCode?: string | null;
   prepareTypeDesc?: string;
   workspaceIntent?: PlanningWorkspaceIntent | null;
   onWorkspaceIntentConsumed?: () => void;
@@ -201,6 +202,20 @@ const getWorkspaceViewStorageKey = (chatSessionId?: string) =>
 
 const DATA_FRESHNESS_AUTO_CHECK_INTERVAL_MS = 60 * 60 * 1000;
 
+const normalizePrepareTypeCode = (code?: string | null, desc?: string) => {
+  const normalized = `${code || ''} ${desc || ''}`.toUpperCase();
+  if (normalized.includes('VOLUNTEER') || normalized.includes('智能填报')) {
+    return 'VOLUNTEER';
+  }
+  if (normalized.includes('PREDICT') || normalized.includes('模拟填报')) {
+    return 'PREDICT';
+  }
+  return '';
+};
+
+const isVolunteerPrepareType = (code?: string | null, desc?: string) =>
+  normalizePrepareTypeCode(code, desc) === 'VOLUNTEER';
+
 const parseDateTimeValue = (value?: string) => {
   if (!value) {
     return 0;
@@ -208,11 +223,6 @@ const parseDateTimeValue = (value?: string) => {
   const normalizedValue = value.includes('T') ? value : value.replace(' ', 'T');
   const time = new Date(normalizedValue).getTime();
   return Number.isNaN(time) ? 0 : time;
-};
-
-const isVolunteerPrepareType = (state?: PlanningDataFreshnessState, prepareTypeDesc?: string) => {
-  const prepareType = `${state?.prepareType || ''} ${prepareTypeDesc || ''}`.toUpperCase();
-  return prepareType.includes('VOLUNTEER') || prepareType.includes('智能填报');
 };
 
 const shouldAutoCheckDataFreshness = (state?: PlanningDataFreshnessState) => {
@@ -533,6 +543,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   routerParams,
   fetchFlag,
   examYear,
+  prepareTypeCode,
   prepareTypeDesc,
   workspaceIntent,
   onWorkspaceIntentConsumed,
@@ -575,7 +586,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     loadedEntryCount: 0,
     loadedUnitCount: 0,
   });
-  const planYear = Number(examYear) || new Date().getFullYear();
+  const normalizedPrepareTypeCode = normalizePrepareTypeCode(prepareTypeCode, prepareTypeDesc);
+  const planYear = normalizedPrepareTypeCode === 'PREDICT' ? 2025 : Number(examYear) || 2026;
   const planYearTitle = `${planYear}招生计划`;
   const [candidatePoolLoading, setCandidatePoolLoading] = useState(false);
   const [candidateCacheVersion, setCandidateCacheVersion] = useState(0);
@@ -1501,7 +1513,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
 
   const runDataFreshnessCheck = async () => {
     if (dataFreshnessCheckInFlightRef.current) {
-      return false;
+      return null;
     }
     dataFreshnessCheckInFlightRef.current = true;
     setDataFreshnessChecking(true);
@@ -1517,7 +1529,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         } else if (data.dataFreshnessState) {
           setPlanningState(prev => prev ? ({ ...prev, dataFreshnessState: data.dataFreshnessState }) : prev);
         }
-        return true;
+        return data;
       }
     } catch (error) {
       console.warn('静默检查招生计划更新失败', error);
@@ -1525,10 +1537,13 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       dataFreshnessCheckInFlightRef.current = false;
       setDataFreshnessChecking(false);
     }
-    return false;
+    return null;
   };
 
   const shouldRefreshLatestCandidateOnEnter = () => {
+    if (!isVolunteerPrepareType(dataFreshnessState?.prepareType || prepareTypeCode, prepareTypeDesc)) {
+      return false;
+    }
     return Boolean(
       dataFreshnessState?.requiresCandidateRefresh ||
       (
@@ -2258,7 +2273,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     if (!routerParams.tenantId || !routerParams.chatSessionId || !planningState?.sessionId) {
       return;
     }
-    if (!isVolunteerPrepareType(dataFreshnessState, prepareTypeDesc)) {
+    if (!isVolunteerPrepareType(dataFreshnessState?.prepareType || prepareTypeCode, prepareTypeDesc)) {
       return;
     }
     if (!shouldAutoCheckDataFreshness(dataFreshnessState)) {
@@ -2277,6 +2292,38 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     dataFreshnessState?.prepareType,
     dataFreshnessState?.lastCheckedAt,
     dataFreshnessState?.nextCheckAt,
+    prepareTypeCode,
+    prepareTypeDesc,
+  ]);
+
+  useEffect(() => {
+    if (!routerParams.tenantId || !routerParams.chatSessionId || !planningState?.sessionId) {
+      return;
+    }
+    if (!isVolunteerPrepareType(dataFreshnessState?.prepareType || prepareTypeCode, prepareTypeDesc)) {
+      return;
+    }
+    if (dataFreshnessState?.statusCode !== 'changed' || !dataFreshnessState?.requiresCandidateRefresh) {
+      return;
+    }
+    const refreshKey = getCandidateSourceRefreshKey();
+    if (candidateSourceRefreshKeyRef.current === refreshKey) {
+      return;
+    }
+    candidateSourceRefreshKeyRef.current = refreshKey;
+    refreshCandidatePool(true, true);
+  }, [
+    routerParams.tenantId,
+    routerParams.chatSessionId,
+    planningState?.sessionId,
+    dataFreshnessState?.requiresCandidateRefresh,
+    dataFreshnessState?.latestSourceDataHash,
+    dataFreshnessState?.sourceDataHash,
+    dataFreshnessState?.dataHash,
+    dataFreshnessState?.lastCheckedAt,
+    dataFreshnessState?.statusCode,
+    planningState?.version,
+    prepareTypeCode,
     prepareTypeDesc,
   ]);
 
@@ -2369,6 +2416,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     planningState?.staleFlags?.candidatePool,
     planningState?.staleFlags?.reasonCode,
     planningState?.version,
+    prepareTypeCode,
+    prepareTypeDesc,
   ]);
 
   useEffect(() => {

@@ -243,6 +243,14 @@
   color: #6f7d90;
 }
 
+.dataFreshnessNoticeBody {
+  display: grid;
+  gap: 8px;
+  color: #4f403a;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
 .metaBadgeActive {
   background: #ecfbf2;
   color: #1f8d52;

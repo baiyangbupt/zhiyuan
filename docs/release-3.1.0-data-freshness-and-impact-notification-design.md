@@ -71,10 +71,11 @@
 
 刷新原则：
 
-- 只刷新 `prepareType=VOLUNTEER` 的智能填报会话。
+- `prepareType=PREDICT` 模拟填报固定使用 2025 年志愿数据，不参与招生计划自动同步和变化弹窗；`prepareType=VOLUNTEER` 智能填报使用 2026 年招生计划，纳入数据更新机制。
 - 优先刷新 `GOING`、近期开启或正在编辑的会话；已完成或明显过期会话只在用户访问时兜底。
 - 对同一 `chatSessionId` 做互斥锁，避免重复刷新。
 - 后台检查只更新快照和通知状态，不直接覆盖候选池、排序方案或用户确认结果。
+- 数据更新查询和巡检不得触发 3.0.x legacy planningState 导入；没有现成工作区状态的历史会话只返回巡检状态，不创建新的方案状态。
 
 ## 6. 变化影响分析
 
@@ -376,7 +377,9 @@
 
 前端实现：
 
-- 工作区打开后对 `VOLUNTEER` 会话按 `nextCheckAt/lastCheckedAt` 进行节流式静默检查，调用 `data-freshness/check` 时传 `{ fetchLatest: true }`；检查过程只在顶部弱提示中显示「志愿数据同步中」，不弹 toast，不暴露完整 diff。
+- 无真实数据变化时只做静默同步：更新检查时间和下次预计检查时间，不弹窗、不 toast、不展示变化摘要。
+- 只有 `VOLUNTEER` 会话在检测到 `statusCode=changed` 后，用户首次访问该数据版本时弹出一次摘要提示；同一数据版本通过本地标记避免重复弹窗。
+- 工作区打开后仅对 `VOLUNTEER` 会话按 `nextCheckAt/lastCheckedAt` 进行节流式静默检查，调用 `data-freshness/check` 时传 `{ fetchLatest: true }`；检查过程只在顶部弱提示中显示「志愿数据同步中」，不弹 toast，不暴露完整 diff。`PREDICT` 会话只展示「数据为2025年的志愿数据」。
 - 顶部弱提示仅给出引导动作，例如「志愿数据有更新，可刷新候选或重新审查」；不展示候选级影响数量、变化明细或初始推荐内部修复说明。
 - 需要使用最新源数据时，用户进入候选区自动触发候选池生成接口并传 `refreshSourceData=true`；不额外展示刷新按钮，审查仍由方案区「审查/重新审查」按钮触发。
 - 普通候选池查询和其他历史入口不传 `refreshSourceData`，保持原行为。
@@ -385,7 +388,7 @@
 
 - 初始方案生成阶段的结构修复、候选替换和取舍说明属于内部策略报告，暂不在用户界面展示，避免和数据更新提醒混在一起。
 - 数据更新提醒不放在工作台卡片区，不使用强提示条；统一放在会话详情顶部 meta 区，位置在「智能/模拟填报」标签左侧，样式弱化。
-- 顶部弱提示只承载三类状态：最新同步时间、同步中、有更新后的下一步动作引导；更新时间旁保留弱化 info icon，hover 时展示最新同步时间、预计下次同步时间、更新摘要、变化数量和详细说明；当 `statusCode=changed/shouldNotify=true` 时提示常驻，直到候选自动刷新或后续检查确认状态恢复。
+- 顶部弱提示只承载三类主状态：静态数据说明、数据同步时间/同步中、有真实更新后的下一步动作引导；常态主文案保持「数据同步于 xxxx」的弱提示格式，更新时间旁保留弱化 info icon，hover 时展示最新同步时间、预计下次同步时间、更新摘要、变化数量和详细说明；只有 `statusCode=changed` 才提示更新并弹一次摘要，无真实变化时静默更新检查时间，不弹窗、不常驻更新提示。
 - 候选刷新由进入候选区自动承接，审查由方案区「审查/重新审查」按钮承接；数据检查本身不需要用户感知为一个可点击动作。
 
 Agent 影响：
@@ -435,7 +438,7 @@ Agent 影响：
 
 后台巡检目标：
 
-- 只处理 `prepareType=VOLUNTEER` 的智能填报会话。
+- 仅 `prepareType=VOLUNTEER` 的进行中/等待中会话纳入后台巡检；`PREDICT` 会话固定使用 2025 年数据，不入巡检队列。
 - 单会话最长检查间隔不超过 5 小时，即任一纳入巡检范围的会话在 5 小时内必须完成一次源数据检查。
 - 可以做阶梯调度，但 `checkIntervalMinutes` 必须小于等于 300。
 - 后台检查只做源数据 hash 级变化感知，不自动刷新候选池、不自动重排、不自动修改方案。
@@ -561,15 +564,15 @@ Agent 影响：
 
 单会话接口：
 
-- 用已知 `VOLUNTEER` 会话调用 `GET /gaotu-assistant-bot/inner/planning/{tenantId}/session/data-freshness/schedule?chatSessionId={chatSessionId}`，确认返回 `prepareType=VOLUNTEER`、`provinceCode`、`enabled=true`、`checkIntervalMinutes<=300`、`nextCheckAt`。
-- 用 `PREDICT` 或已结束会话调用同一接口，确认不会被纳入后台巡检，`enabled=false` 或无有效 `nextCheckAt`。
+- 用已知 `VOLUNTEER` 会话调用 `GET /gaotu-assistant-bot/inner/planning/{tenantId}/session/data-freshness/schedule?chatSessionId={chatSessionId}`，确认返回 `prepareType=VOLUNTEER`、`provinceCode`、`enabled=true`、`checkIntervalMinutes<=300`、`nextCheckAt`。用 `PREDICT` 会话调用同一接口，确认 `enabled=false` 且不触发真实高途重拉。
+- 用已结束会话或缺少有效 `prepareType`/成绩上下文的会话调用同一接口，确认不会被纳入后台巡检，`enabled=false` 或无有效 `nextCheckAt`。
 - 对不存在或无工作区数据的会话调用接口，确认返回可理解的错误或空状态，不触发异常堆栈和重复重试。
 
 工作区展示：
 
 - 在巡检索引中模拟 `lastCheckStatus=changed`，打开工作区确认会在顶部弱提示中给出动作引导，但不会自动刷新候选池、不会修改方案、不会重新排序。
 - 在巡检索引中模拟 `lastCheckStatus=failed`，确认工作区能展示检查失败或稍后重试提示，不阻塞用户继续查看和编辑方案。
-- 确认前端打开工作区时只对 `VOLUNTEER` 会话按 `nextCheckAt/lastCheckedAt` 节流发起静默检查；`PREDICT` 会话不触发真实高途重拉。
+- 确认前端打开工作区时仅 `VOLUNTEER` 会话按 `nextCheckAt/lastCheckedAt` 节流发起静默检查；`PREDICT` 会话只展示 2025 静态数据说明，不触发真实高途重拉。
 
 手动刷新链路：
 
@@ -656,7 +659,7 @@ curl -X POST 'http://127.0.0.1:18090/gaotu-assistant-bot/inner/planning/{tenantI
 前端验收点：
 
 - 打开工作区后，顶部「智能/模拟填报」标签左侧能看到弱提示；有更新时只展示动作引导，不展示变化级别、变化数量和详细摘要。
-- `VOLUNTEER` 会话打开后，如果已到 `nextCheckAt` 或超过兜底检查间隔，会静默调用 `{ fetchLatest: true }` 进入真实高途重拉和候选级影响分析；检查中只显示「志愿数据同步中」。
+- `VOLUNTEER` 会话打开后，如果已到 `nextCheckAt` 或超过兜底检查间隔，会静默调用 `{ fetchLatest: true }` 进入真实高途重拉和候选级影响分析；检查中只显示「志愿数据同步中」。`PREDICT` 会话不触发该链路。
 - 数据更新后进入候选区会自动调用候选池生成接口，并传 `refreshSourceData=true`，此时才允许覆盖本地源数据并重建候选池。
 - 点击「重新审查」只基于当前候选池/方案状态运行审查，不应由 mock 请求自动触发。
 - mock 标记后，在用户进入候选区或点击方案区审查前，方案条目数量、排序、专业组内专业数量和用户编辑内容必须保持不变。
@@ -671,7 +674,7 @@ curl -X POST 'http://127.0.0.1:18090/gaotu-assistant-bot/inner/planning/{tenantI
 
 恢复当前状态的验证方式：
 
-- 调用 `{ fetchLatest: true }` 做真实检查；如果高途数据与当前快照一致，状态会回到 `current`。
+- 对 `VOLUNTEER` 调用 `{ fetchLatest: true }` 做真实检查；如果高途数据与当前快照一致，状态会回到 `current`，只更新检查时间，不弹窗。
 - 或在刷新候选后重新生成快照，`dataFreshnessState.dataHash/sourceDataHash` 会更新为当前候选池和源数据摘要。
 - 不建议直接手工清空 `planningState` 中的 `dataFreshnessState`，避免绕过真实迁移和兼容逻辑。
 
@@ -777,7 +780,7 @@ Agent 与 Rank：
 3. 调用接口级 mock 标记 `medium`，确认顶部弱提示引导刷新候选或重新审查且方案不自动变化。
 4. 切换进入候选区，确认自动请求携带 `refreshSourceData=true`，候选池重新生成后状态更新。
 5. 在方案区点击「重新审查」，确认审查结果基于刷新后的候选池和当前方案。
-6. 需要真实验证时，使用 `VOLUNTEER` 会话等待或构造到期 `nextCheckAt` 触发静默 `{ fetchLatest: true }`，观察高途接口耗时和返回结构。
+6. 需要真实验证时，使用 `VOLUNTEER` 会话等待或构造到期 `nextCheckAt` 触发静默 `{ fetchLatest: true }`，观察高途接口耗时和返回结构；`PREDICT` 会话验证为不触发重拉、只展示 2025 静态数据说明。
 
 验收完成标准：
 

@@ -3168,6 +3168,8 @@ async def _recover_intents_from_context(
                 ctx.deps.sessionid,
                 recovery_scope,
             )
+    if school_scope and city:
+        return None, school, city, None
     return _restrict_intents_to_recovery_scope(
         major,
         school,

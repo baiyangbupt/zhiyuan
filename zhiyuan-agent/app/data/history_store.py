@@ -80,19 +80,26 @@ class ChatHistoryStore:
     def _save_payload(self, session_id: str, payload: str) -> None:
         now = datetime.now(timezone.utc).isoformat()
         with self._connect() as conn:
-            conn.execute(
+            cursor = conn.execute(
                 """
-                INSERT INTO chat_session_history (
-                    session_id, history_json, schema_version, created_at, updated_at
-                )
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(session_id) DO UPDATE SET
-                    history_json = excluded.history_json,
-                    schema_version = excluded.schema_version,
-                    updated_at = excluded.updated_at
+                UPDATE chat_session_history
+                SET history_json = ?,
+                    schema_version = ?,
+                    updated_at = ?
+                WHERE session_id = ?
                 """,
-                (session_id, payload, SCHEMA_VERSION, now, now),
+                (payload, SCHEMA_VERSION, now, session_id),
             )
+            if cursor.rowcount == 0:
+                conn.execute(
+                    """
+                    INSERT INTO chat_session_history (
+                        session_id, history_json, schema_version, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (session_id, payload, SCHEMA_VERSION, now, now),
+                )
             conn.commit()
 
     def _delete_payload(self, session_id: str) -> None:

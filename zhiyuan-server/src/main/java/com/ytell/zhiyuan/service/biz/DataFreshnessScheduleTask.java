@@ -48,7 +48,7 @@ public class DataFreshnessScheduleTask {
             return;
         }
         try {
-            seedRecentVolunteerSchedules();
+            seedRecentSupportedSchedules();
             executeDueChecks();
         } finally {
             running.set(false);
@@ -82,7 +82,7 @@ public class DataFreshnessScheduleTask {
         }
     }
 
-    private void seedRecentVolunteerSchedules() {
+    private void seedRecentSupportedSchedules() {
         int seedBatchSize = Math.max(1, defaultInteger(properties.getSeedBatchSize(), 10));
         ChatSessionPageQuery req = new ChatSessionPageQuery();
         req.setPage(seedPageCursor);

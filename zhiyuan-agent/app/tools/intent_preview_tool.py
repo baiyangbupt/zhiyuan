@@ -43,6 +43,12 @@ from app.tools.major_compare_tool import compare_majors
 logger = logging.getLogger(__name__)
 IntentMode = Literal["preference", "constraint"]
 ConstraintIntentType = Literal["default", "only_keep", "must_have"]
+CareerDirectionSlot = Literal[
+    "system_public_service",
+    "stable_employment",
+    "further_study",
+    "market_employment",
+]
 
 
 def _session_id(request_context: RequestContext) -> str:
@@ -281,7 +287,7 @@ async def analyze_current_region_interest(
 
 async def analyze_current_career_direction(
     ctx: RunContext[RequestContext],
-    career_directions: list[Literal[*CAREER_SLOT_VALUES]] | None = None,
+    career_directions: list[CareerDirectionSlot] | None = None,
     generic_direction: bool = False,
 ) -> str:
     """Read-only Explore analysis for career direction tradeoffs.

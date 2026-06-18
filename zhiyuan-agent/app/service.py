@@ -351,7 +351,10 @@ def _semantic_current_plan_analysis_matches_prompt(value: Any, user_prompt: str 
     if "shortage_boundary" in focus:
         return True
     if "unavailable_guidance" in focus:
-        return _review_prompt_prefers_unavailable_guidance(user_prompt)
+        return (
+            _review_prompt_prefers_unavailable_guidance(user_prompt)
+            or _prompt_requests_plan_constraint_adjustment(user_prompt)
+        )
     return False
 
 
@@ -6176,8 +6179,8 @@ def _non_actionable_plan_preview_boundary(result: dict[str, Any] | None) -> str:
         )
     if "needs_candidate_selection" in reply_focus:
         return (
-            "这轮还没有定位到要加入方案的具体候选，不会改动方案。"
-            "可以补充学校、专业、地域等范围，或先在候选里选中目标。"
+            "这轮还没有定位到要加入方案的具体候选志愿，不会改动方案。"
+            "可以补充学校、专业、地域等范围，我再给你确认预览；或先在候选里选中目标。"
         )
     if "needs_volunteer_selection" in reply_focus:
         return (
@@ -8702,9 +8705,33 @@ def _review_prompt_prefers_unavailable_guidance(user_prompt: str | None) -> bool
     compact = _compact_plan_reply_text(str(user_prompt or ""))
     if not compact:
         return False
-    wants_reason = any(marker in compact for marker in ("为什么", "原因", "处理不了", "不能处理", "没法处理", "怎么调", "怎么改"))
+    wants_reason = any(marker in compact for marker in ("为什么", "原因", "处理不了", "不能处理", "没法处理", "怎么处理", "怎么调", "怎么改"))
     repair_context = any(marker in compact for marker in ("提醒", "审查", "风险", "处理", "调整", "修复"))
     return wants_reason and repair_context
+
+
+def _prompt_requests_plan_constraint_adjustment(user_prompt: str | None) -> bool:
+    compact = _compact_plan_reply_text(str(user_prompt or ""))
+    if not compact:
+        return False
+    return any(
+        marker in compact
+        for marker in (
+            "别放",
+            "不要放",
+            "不放",
+            "避开",
+            "排除",
+            "去掉",
+            "拿掉",
+            "换掉",
+            "控制在",
+            "限制在",
+            "不超过",
+            "低于",
+            "以内",
+        )
+    )
 
 
 def _result_prefers_unavailable_guidance(result: dict[str, Any], *, user_prompt: str | None = None) -> bool:

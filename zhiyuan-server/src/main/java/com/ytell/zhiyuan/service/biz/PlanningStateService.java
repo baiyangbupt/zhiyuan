@@ -4799,6 +4799,16 @@ public class PlanningStateService {
         return loadPlanningState(chatSessionId, true);
     }
 
+    private PlanningStateDTO loadPlanningStateReadOnly(Long chatSessionId) {
+        ChatSessionExtraData extraData = chatSessionExtraDataSharedService.getBySessionIdAndDataKey(
+                chatSessionId, ChatSessionExtraDataConstants.PLANNING_STATE_KEY);
+        PlanningStateDTO state = extraData == null || Strings.isNullOrEmpty(extraData.getDataValue())
+                ? new PlanningStateDTO()
+                : JSONObject.parseObject(extraData.getDataValue(), PlanningStateDTO.class);
+        normalizePlanningStateDefaults(chatSessionId, state);
+        return state;
+    }
+
     private PlanningStateDTO loadPlanningState(Long chatSessionId, boolean allowLegacyImport) {
         ChatSessionExtraData extraData = chatSessionExtraDataSharedService.getBySessionIdAndDataKey(
                 chatSessionId, ChatSessionExtraDataConstants.PLANNING_STATE_KEY);
@@ -4814,9 +4824,22 @@ public class PlanningStateService {
         } else {
             state = JSONObject.parseObject(extraData.getDataValue(), PlanningStateDTO.class);
         }
-        if (state == null) {
-            state = new PlanningStateDTO();
+        normalizePlanningStateDefaults(chatSessionId, state);
+        backfillLegacyProfileState(chatSessionId, state);
+        boolean planEditCacheNoticeAdded = appendPlanEditCacheNotice(chatSessionId, state);
+        boolean dataFreshnessBackfilled = backfillDataFreshnessState(chatSessionId, state);
+        backfillLegacySummaryFields(state);
+        if (planEditCacheNoticeAdded || dataFreshnessBackfilled) {
+            savePlanningState(chatSessionId, state);
         }
+        return state;
+    }
+
+    private void normalizePlanningStateDefaults(Long chatSessionId, PlanningStateDTO state) {
+        if (state == null) {
+            return;
+        }
+        state.setSessionId(chatSessionId);
         if (state.getProfileState() == null) {
             state.setProfileState(new ProfileStateDTO());
         }
@@ -4835,8 +4858,8 @@ public class PlanningStateService {
         if (state.getInitialRecommendationState() == null) {
             state.setInitialRecommendationState(new InitialRecommendationStateDTO());
         }
-        if (state.getDraftPlanState() == null) {
-        state.setWorkingPlanState(new DraftPlanStateDTO());
+        if (state.getWorkingPlanState() == null) {
+            state.setWorkingPlanState(new DraftPlanStateDTO());
         }
         if (state.getOrderedPlanState() == null) {
             state.setOrderedPlanState(new OrderedPlanStateDTO());
@@ -4850,14 +4873,6 @@ public class PlanningStateService {
         if (state.getOperationLogs() == null) {
             state.setOperationLogs(Lists.newArrayList());
         }
-        backfillLegacyProfileState(chatSessionId, state);
-        boolean planEditCacheNoticeAdded = appendPlanEditCacheNotice(chatSessionId, state);
-        boolean dataFreshnessBackfilled = backfillDataFreshnessState(chatSessionId, state);
-        backfillLegacySummaryFields(state);
-        if (planEditCacheNoticeAdded || dataFreshnessBackfilled) {
-            savePlanningState(chatSessionId, state);
-        }
-        return state;
     }
 
     private PlanningStateDTO tryImportLegacyPlanningState(Long chatSessionId) {
@@ -5181,7 +5196,15 @@ public class PlanningStateService {
     }
 
     public DataFreshnessCheckRes checkDataFreshness(Long tenantId, Long chatSessionId, DataFreshnessCheckReq req) {
-        PlanningStateDTO state = loadPlanningState(chatSessionId);
+        PlanningDataFreshnessScheduleEntity schedule = touchDataFreshnessSchedule(tenantId, chatSessionId, null, true, false);
+        PlanningStateDTO state = loadPlanningStateReadOnly(chatSessionId);
+        if (isEmptyPlanningWorkspaceState(state)) {
+            DataFreshnessCheckRes res = new DataFreshnessCheckRes();
+            res.setDataFreshnessState(buildScheduleOnlyDataFreshnessState(schedule));
+            return res;
+        }
+        String existingPrepareType = normalizeText(state.getDataFreshnessState() == null
+                ? null : state.getDataFreshnessState().getPrepareType());
         boolean changed = false;
         if (backfillDataFreshnessState(chatSessionId, state)) {
             changed = true;
@@ -5192,7 +5215,15 @@ public class PlanningStateService {
             state.setDataFreshnessState(freshness);
             changed = true;
         }
+        if (Strings.isNullOrEmpty(freshness.getPrepareType()) && !Strings.isNullOrEmpty(existingPrepareType)) {
+            freshness.setPrepareType(existingPrepareType);
+        }
         DataFreshnessCheckReq safeReq = req == null ? new DataFreshnessCheckReq() : req;
+        String prepareType = resolveDataFreshnessPrepareType(schedule, freshness);
+        if (!Strings.isNullOrEmpty(prepareType) && !DataFreshnessSchedulePolicy.isSupportedPrepareType(prepareType)) {
+            DataFreshnessCheckRes res = markUnsupportedDataFreshnessCurrent(tenantId, chatSessionId, state, freshness, safeReq, prepareType);
+            return res;
+        }
         if (Boolean.TRUE.equals(safeReq.getFetchLatest())) {
             populateLatestDataFreshnessRequest(tenantId, chatSessionId, state, safeReq);
         }
@@ -5225,6 +5256,43 @@ public class PlanningStateService {
         if (changed) {
             savePlanningState(chatSessionId, state);
         }
+        state.setSessionId(chatSessionId);
+        touchDataFreshnessSchedule(tenantId, chatSessionId, state, true, true);
+        DataFreshnessCheckRes res = new DataFreshnessCheckRes();
+        res.setVersion(state.getVersion());
+        res.setStaleFlags(state.getStaleFlags());
+        res.setDataFreshnessState(state.getDataFreshnessState());
+        res.setWorkspaceState(buildPlanningWorkspaceStateRes(tenantId, state));
+        return res;
+    }
+
+    private String resolveDataFreshnessPrepareType(PlanningDataFreshnessScheduleEntity schedule,
+                                                    DataFreshnessStateDTO freshness) {
+        String schedulePrepareType = normalizeText(schedule == null ? null : schedule.getPrepareType());
+        if (!Strings.isNullOrEmpty(schedulePrepareType)) {
+            return schedulePrepareType;
+        }
+        return normalizeText(freshness == null ? null : freshness.getPrepareType());
+    }
+
+    private DataFreshnessCheckRes markUnsupportedDataFreshnessCurrent(Long tenantId,
+                                                                       Long chatSessionId,
+                                                                       PlanningStateDTO state,
+                                                                       DataFreshnessStateDTO freshness,
+                                                                       DataFreshnessCheckReq req,
+                                                                       String prepareType) {
+        String now = OffsetDateTime.now().toString();
+        String currentHash = normalizeCurrentCandidateDataHash(state, freshness);
+        markDataFreshnessCurrent(freshness, currentHash, req);
+        freshness.setLastCheckedAt(now);
+        if (!Strings.isNullOrEmpty(prepareType)) {
+            freshness.setPrepareType(prepareType);
+        }
+        freshness.setSummary("PREDICT".equalsIgnoreCase(normalizeText(prepareType))
+                ? "模拟填报使用2025年的志愿数据，不参与招生计划自动同步。"
+                : "当前会话暂不参与招生计划自动同步。");
+        clearDataFreshnessStaleFlags(state);
+        savePlanningState(chatSessionId, state);
         state.setSessionId(chatSessionId);
         touchDataFreshnessSchedule(tenantId, chatSessionId, state, true, true);
         DataFreshnessCheckRes res = new DataFreshnessCheckRes();
@@ -5806,14 +5874,17 @@ public class PlanningStateService {
 
 
     public DataFreshnessStateDTO getDataFreshnessState(Long tenantId, Long chatSessionId) {
-        PlanningStateDTO state = getPlanningState(chatSessionId);
+        PlanningDataFreshnessScheduleEntity schedule = touchDataFreshnessSchedule(tenantId, chatSessionId, null, true, false);
+        PlanningStateDTO state = loadPlanningStateReadOnly(chatSessionId);
+        if (isEmptyPlanningWorkspaceState(state)) {
+            return buildScheduleOnlyDataFreshnessState(schedule);
+        }
         touchDataFreshnessSchedule(tenantId, chatSessionId, state, true, false);
         return mergeScheduleDataFreshnessState(tenantId, state);
     }
 
     public DataFreshnessScheduleDTO getDataFreshnessSchedule(Long tenantId, Long chatSessionId) {
-        PlanningStateDTO state = getPlanningState(chatSessionId);
-        PlanningDataFreshnessScheduleEntity entity = touchDataFreshnessSchedule(tenantId, chatSessionId, state, true, false);
+        PlanningDataFreshnessScheduleEntity entity = touchDataFreshnessSchedule(tenantId, chatSessionId, null, true, false);
         return planningDataFreshnessScheduleSharedService.toDto(entity);
     }
 
@@ -5866,6 +5937,9 @@ public class PlanningStateService {
         }
         ChatSession session = chatSessionSharedService.getById(chatSessionId);
         CreateSessionReq scoreDetail = loadCreateSessionReq(chatSessionId);
+        if (session == null || scoreDetail == null) {
+            return null;
+        }
         DataFreshnessStateDTO freshness = state == null ? null : state.getDataFreshnessState();
         PlanningDataFreshnessScheduleEntity entity = buildDataFreshnessScheduleEntity(tenantId, chatSessionId, session,
                 scoreDetail, freshness, markAccess, syncFreshnessState);
@@ -5933,6 +6007,33 @@ public class PlanningStateService {
         }
         applyScheduleToFreshnessState(merged, schedule);
         return merged;
+    }
+
+    private boolean isEmptyPlanningWorkspaceState(PlanningStateDTO state) {
+        return state == null
+                || (defaultCandidates(state.getCandidatePoolState() == null ? null : state.getCandidatePoolState().getItems()).isEmpty()
+                && defaultDraftItems(state.getDraftPlanState() == null ? null : state.getDraftPlanState().getItems()).isEmpty()
+                && defaultOrderedItems(state.getOrderedPlanState() == null ? null : state.getOrderedPlanState().getItems()).isEmpty());
+    }
+
+    private DataFreshnessStateDTO buildScheduleOnlyDataFreshnessState(PlanningDataFreshnessScheduleEntity schedule) {
+        DataFreshnessStateDTO state = new DataFreshnessStateDTO();
+        state.setStatusCode("current");
+        state.setChangeLevel("none");
+        state.setShouldNotify(false);
+        state.setRequiresCandidateRefresh(false);
+        state.setRequiresReview(false);
+        if (schedule == null) {
+            return state;
+        }
+        state.setPrepareType(schedule.getPrepareType());
+        state.setProvince(schedule.getProvinceName());
+        state.setExamYear(schedule.getExamYear() == null ? null : String.valueOf(schedule.getExamYear()));
+        applyScheduleToFreshnessState(state, schedule);
+        if (!Boolean.TRUE.equals(schedule.getEnabled())) {
+            state.setSummary("当前会话暂不参与招生计划自动同步。");
+        }
+        return state;
     }
 
     private DataFreshnessStateDTO cloneDataFreshnessState(DataFreshnessStateDTO source) {

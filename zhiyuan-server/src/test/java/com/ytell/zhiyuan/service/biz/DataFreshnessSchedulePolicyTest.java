@@ -33,10 +33,13 @@ class DataFreshnessSchedulePolicyTest {
     }
 
     @Test
-    void shouldOnlyEnableVolunteerGoingOrWaitSessions() {
+    void shouldEnableOnlyVolunteerGoingOrWaitSessions() {
         assertTrue(DataFreshnessSchedulePolicy.isBackgroundEligible("VOLUNTEER", "GOING"));
         assertTrue(DataFreshnessSchedulePolicy.isBackgroundEligible("volunteer", "WAIT"));
         assertFalse(DataFreshnessSchedulePolicy.isBackgroundEligible("PREDICT", "GOING"));
+        assertFalse(DataFreshnessSchedulePolicy.isBackgroundEligible("predict", "WAIT"));
+        assertFalse(DataFreshnessSchedulePolicy.isBackgroundEligible(null, "GOING"));
+        assertFalse(DataFreshnessSchedulePolicy.isBackgroundEligible("OTHER", "GOING"));
         assertFalse(DataFreshnessSchedulePolicy.isBackgroundEligible("VOLUNTEER", "FINISHED"));
     }
 }

@@ -2327,6 +2327,30 @@ cd zhiyuan-agent
 
 这意味着 Agent 当前不会再规划 `preview_compensation` / `apply_compensation`。补齐数量、补保底、梯度断层、安全垫等诉求统一进入 `preview_fix_proposal`，由后端 `FixProposal` 披露 `fill_missing_count/add_safety_items/fill_probability_gap` 等 strategy 的可处理性、候选不足和阻塞原因。
 
+#### 10.6.1 2026-06-17 回归发现：从候选池自动补齐数量的产品边界
+
+回归用例 `310-prod-negative-major-then-fill` 第二步「从候选中选择7所放入方案里，先补齐志愿数量」暴露了一个边界问题：当前语义如果落到 `add_units`，但没有候选 `volunteerId`、学校/专业/地域/冲稳保等明确筛选范围，执行层会按缺少 `selection_scope` 阻断，返回「未定位到要加入方案的候选志愿」。这是现有 `add_units` 的产品边界，不是冲突修复引入的新问题。
+
+需要明确区分两类能力：
+
+- `add_units`：用于用户已经点名候选、点名学校专业，或给出明确筛选范围后的补入。该路径不应在无范围时自动从候选池前 N 个里猜选，避免绕过硬约束、风险过滤、专业组去重、dry-run 和版本门禁。
+- `fill_missing_count` / `preview_fix_proposal`：用于「补齐数量」「从候选池自动补满」「先补足缺口」这类结构补齐诉求。候选选择由 Java `FixProposal`/`RepairCandidateSelector` 负责，输出可确认预览，确认前不改方案。
+
+候选选择策略以 Java 为准：
+
+- 排除当前已选、禁用和专业组模式下已选 unit。
+- 过滤不满足已确认硬要求的候选。
+- 过滤高收费、中外合作、专项、公费、定向、单科/语种/性别限制和明确风险标记等不适合作为默认补齐的候选。
+- 数量缺口优先按 `requiredCount - currentCount` 补齐；如果用户说「7个」，实际最多只能补当前缺口数量，不应超容量追加。
+- 优先补当前最缺的冲/稳/保 tier；当缺口在保区时优先本省保底；随后按推荐分、录取率、意向分、tier 内排序等质量因子排序。
+- 专业组模式按专业组/unit 级补齐，用户口径里的「7所」应在回复里解释为「7个专业组/方案展示单元」，不能按组内专业数计算。
+
+后续修复方向：
+
+- Agent 路由层应把「从候选中自动选 N 个补齐」「还差几个帮我补满」归一到 `preview_fix_proposal`，并携带 `targetStrategies=[fill_missing_count]`、`targetIssueCodes=[count_validation]`。
+- 如果模型或恢复器仍生成无 ID/无筛选范围的 `add_units`，执行层继续阻断是正确行为，但回复应引导「可以按数量缺口生成补齐预览」，而不是让用户误以为只能手工点选。
+- 回归断言不应要求该用例进入 `add_units`；正确预期是进入补齐 proposal 预览，并明确「确认前不改」「不保证一定补齐」「候选不足会说明缺口」。
+
 Agent 本地审查 issue fallback 对齐：
 
 - 背景：正常链路应优先消费后端 `ReviewCheckDTO` 的 `scopeKind/defaultFixStrategy/supportedFixStrategies`；但老会话、测试 fixture 或后端缺字段时，Agent 仍会回退到本地 `review_issue_registry.py`。

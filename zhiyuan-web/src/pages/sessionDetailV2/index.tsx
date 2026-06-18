@@ -1,6 +1,6 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Head from 'next/head';
-import { Button, Drawer, Spin, Tooltip, message } from 'antd';
+import { Button, Drawer, Modal, Spin, Tooltip, message } from 'antd';
 import {
   AuditOutlined,
   ArrowLeftOutlined,
@@ -72,14 +72,74 @@ const formatFreshnessTime = (value?: string) => {
   return value.slice(0, 16).replace('T', ' ');
 };
 
+const padFreshnessTime = (value: number) => String(value).padStart(2, '0');
+
+const formatLocalFreshnessDateTime = (date: Date) =>
+  `${date.getFullYear()}-${padFreshnessTime(date.getMonth() + 1)}-${padFreshnessTime(date.getDate())} ${padFreshnessTime(date.getHours())}:${padFreshnessTime(date.getMinutes())}`;
+
+const addMinutesToFreshnessTime = (value?: string, minutes?: number) => {
+  if (!value || !minutes) {
+    return '';
+  }
+  const timestamp = new Date(value).getTime();
+  if (Number.isNaN(timestamp)) {
+    return '';
+  }
+  return formatLocalFreshnessDateTime(new Date(timestamp + minutes * 60 * 1000));
+};
+
+const resolveFreshnessSyncedAt = (state: PlanningDataFreshnessState | null) =>
+  state?.lastCheckedAt || state?.fetchTime || '';
+
+const resolveNextFreshnessCheckAt = (state: PlanningDataFreshnessState | null) =>
+  state?.nextCheckAt ||
+  addMinutesToFreshnessTime(resolveFreshnessSyncedAt(state), state?.checkIntervalMinutes);
+
+const normalizePrepareTypeCode = (code?: string | null, desc?: string) => {
+  const normalized = `${code || ''} ${desc || ''}`.toUpperCase();
+  if (normalized.includes('VOLUNTEER') || normalized.includes('智能填报')) {
+    return 'VOLUNTEER';
+  }
+  if (normalized.includes('PREDICT') || normalized.includes('模拟填报')) {
+    return 'PREDICT';
+  }
+  return '';
+};
+
+const isPredictPrepareType = (code?: string | null, desc?: string) =>
+  normalizePrepareTypeCode(code, desc) === 'PREDICT';
+
+const isVolunteerPrepareType = (code?: string | null, desc?: string) =>
+  normalizePrepareTypeCode(code, desc) === 'VOLUNTEER';
+
+const buildDataFreshnessNoticeKey = (
+  chatSessionId: string,
+  state: PlanningDataFreshnessState | null
+) => [
+  'session_detail_v2_data_freshness_notice',
+  chatSessionId || 'unknown',
+  state?.latestSourceDataHash || state?.latestDataHash || state?.dataHash || '',
+  state?.lastCheckedAt || '',
+  state?.changedCount || 0,
+  state?.removedCount || 0,
+  state?.updatedCount || 0,
+  state?.addedCount || 0,
+].join(':');
+
+
 const buildDataFreshnessTip = (
   state: PlanningDataFreshnessState | null,
-  checking: boolean
+  checking: boolean,
+  prepareTypeCode?: string | null,
+  prepareTypeDesc?: string
 ) => {
+  if (isPredictPrepareType(prepareTypeCode, prepareTypeDesc)) {
+    return '数据为2025年的志愿数据';
+  }
   if (checking) {
     return '志愿数据同步中';
   }
-  const hasChanged = Boolean(state?.shouldNotify || state?.statusCode === 'changed');
+  const hasChanged = state?.statusCode === 'changed';
   if (hasChanged) {
     const actions = [
       state?.requiresCandidateRefresh ? '刷新候选' : '',
@@ -89,27 +149,33 @@ const buildDataFreshnessTip = (
       ? `志愿数据有更新，可${actions.join('或')}`
       : '志愿数据有更新，建议复核方案';
   }
-  const checkedAt = formatFreshnessTime(state?.lastCheckedAt);
-  return checkedAt ? `志愿数据最后更新 ${checkedAt}` : '';
+  const checkedAt = formatFreshnessTime(resolveFreshnessSyncedAt(state));
+  return checkedAt ? `数据同步于 ${checkedAt}` : '';
 };
 
 const buildDataFreshnessTooltipLines = (
   state: PlanningDataFreshnessState | null,
-  checking: boolean
+  checking: boolean,
+  prepareTypeCode?: string | null,
+  prepareTypeDesc?: string
 ) => {
   const lines: string[] = [];
+  if (isPredictPrepareType(prepareTypeCode, prepareTypeDesc)) {
+    lines.push('模拟填报使用2025年的志愿数据，不参与招生计划自动同步。');
+    return lines;
+  }
   if (checking) {
     lines.push('正在检查最新志愿数据');
   }
-  const checkedAt = formatFreshnessTime(state?.lastCheckedAt);
+  const checkedAt = formatFreshnessTime(resolveFreshnessSyncedAt(state));
   if (checkedAt) {
     lines.push(`最新同步时间：${checkedAt}`);
   }
-  const nextCheckAt = formatFreshnessTime(state?.nextCheckAt);
+  const nextCheckAt = formatFreshnessTime(resolveNextFreshnessCheckAt(state));
   if (nextCheckAt) {
     lines.push(`预计下次同步：${nextCheckAt}`);
   }
-  if (state?.statusCode === 'changed' || state?.shouldNotify) {
+  if (state?.statusCode === 'changed') {
     lines.push(state.summary || '检测到招生计划数据有更新');
     if (state.detail && state.detail !== state.summary) {
       lines.push(state.detail);
@@ -156,6 +222,7 @@ const SessionDetailV2 = () => {
   const [infoSummary, setInfoSummary] = useState<string>('');
   const [studentName, setStudentName] = useState<string>('');
   const [prepareTypeDesc, setPrepareTypeDesc] = useState<string>('');
+  const [prepareTypeCode, setPrepareTypeCode] = useState<string>('');
   const [examYear, setExamYear] = useState<number | string | null>(null);
   const [doChatRights, setDoChatRights] = useState<{ canOperate: boolean; reason?: string } | null>(
     null
@@ -173,6 +240,7 @@ const SessionDetailV2 = () => {
   const [dataFreshnessState, setDataFreshnessState] = useState<PlanningDataFreshnessState | null>(null);
   const [dataFreshnessChecking, setDataFreshnessChecking] = useState(false);
   const [fetchFlag, setFetchFlag] = useState(1);
+  const dataFreshnessNoticeKeyRef = useRef('');
 
   useEffect(() => {
     setChatSessionId(getValueFromUrlBykey('chatSessionId') || '');
@@ -378,6 +446,7 @@ const SessionDetailV2 = () => {
         setInfoSummary(data.infoSummary || '');
         setStudentName(String(data.userName || '').trim());
         setPrepareTypeDesc(data.prepareType?.desc || '');
+        setPrepareTypeCode(data.prepareType?.code || '');
         setExamYear(data.examYear || null);
         if (data.studentSummary) {
           setPlanningWorkspaceState(prev => ({
@@ -428,6 +497,56 @@ const SessionDetailV2 = () => {
     };
     verifyRights();
   }, [isInitialized, tenantId, chatSessionId]);
+
+  useEffect(() => {
+    if (!chatSessionId || !isVolunteerPrepareType(prepareTypeCode, prepareTypeDesc)) {
+      return;
+    }
+    if (!dataFreshnessState || dataFreshnessState.statusCode !== 'changed') {
+      return;
+    }
+    const noticeKey = buildDataFreshnessNoticeKey(chatSessionId, dataFreshnessState);
+    if (!noticeKey || dataFreshnessNoticeKeyRef.current === noticeKey) {
+      return;
+    }
+    if (typeof window !== 'undefined' && window.localStorage.getItem(noticeKey) === '1') {
+      dataFreshnessNoticeKeyRef.current = noticeKey;
+      return;
+    }
+    dataFreshnessNoticeKeyRef.current = noticeKey;
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(noticeKey, '1');
+    }
+    const changeParts = [
+      dataFreshnessState.addedCount ? `新增 ${dataFreshnessState.addedCount} 项` : '',
+      dataFreshnessState.updatedCount ? `更新 ${dataFreshnessState.updatedCount} 项` : '',
+      dataFreshnessState.removedCount ? `下线 ${dataFreshnessState.removedCount} 项` : '',
+      dataFreshnessState.invalidCount ? `失效 ${dataFreshnessState.invalidCount} 项` : '',
+    ].filter(Boolean);
+    const contentLines = [
+      dataFreshnessState.summary || '检测到2026年招生计划数据有更新。',
+      dataFreshnessState.detail || '',
+      changeParts.length ? changeParts.join(' / ') : '',
+      dataFreshnessState.removedCount || dataFreshnessState.invalidCount
+        ? '部分志愿可能已失效或被上游清理，方案和审查结果需要重新确认。'
+        : '',
+      dataFreshnessState.requiresCandidateRefresh
+        ? '系统已在工作区内刷新候选和推荐系数；进入候选区可查看最新候选。'
+        : '',
+      dataFreshnessState.requiresReview ? '建议重新审查当前方案。' : '',
+    ].filter(Boolean);
+    Modal.info({
+      title: '2026年招生计划数据已更新',
+      content: (
+        <div className={style.dataFreshnessNoticeBody}>
+          {contentLines.map((line, index) => (
+            <div key={`${line}-${index}`}>{line}</div>
+          ))}
+        </div>
+      ),
+      okText: '知道了',
+    });
+  }, [chatSessionId, dataFreshnessState, prepareTypeCode, prepareTypeDesc]);
 
   const handleWorkspaceIntent = (intent: Omit<PlanningWorkspaceIntent, 'nonce'>) => {
     const shouldRefreshWorkspace = Boolean(
@@ -529,6 +648,7 @@ const SessionDetailV2 = () => {
         routerParams={routerParams}
         fetchFlag={fetchFlag}
         examYear={examYear}
+        prepareTypeCode={prepareTypeCode}
         prepareTypeDesc={prepareTypeDesc}
         workspaceIntent={workspaceIntent}
         onWorkspaceIntentConsumed={() => setWorkspaceIntent(null)}
@@ -541,10 +661,17 @@ const SessionDetailV2 = () => {
     </div>
   );
 
-  const dataFreshnessTip = buildDataFreshnessTip(dataFreshnessState, dataFreshnessChecking);
+  const dataFreshnessTip = buildDataFreshnessTip(
+    dataFreshnessState,
+    dataFreshnessChecking,
+    prepareTypeCode,
+    prepareTypeDesc
+  );
   const dataFreshnessTooltipLines = buildDataFreshnessTooltipLines(
     dataFreshnessState,
-    dataFreshnessChecking
+    dataFreshnessChecking,
+    prepareTypeCode,
+    prepareTypeDesc
   );
 
   return (
@@ -582,6 +709,30 @@ const SessionDetailV2 = () => {
                   </div>
                 </div>
                 <div className={style.headerMeta}>
+                  {dataFreshnessTip ? (
+                    <span
+                      className={`${style.dataFreshnessTip} ${
+                        dataFreshnessChecking ? style.dataFreshnessTipSyncing : ''
+                      } ${
+                        dataFreshnessState?.statusCode === 'changed' ? style.dataFreshnessTipChanged : ''
+                      }`}
+                    >
+                      <span className={style.dataFreshnessTipText}>{dataFreshnessTip}</span>
+                      {dataFreshnessTooltipLines.length > 0 ? (
+                        <Tooltip
+                          title={
+                            <div className={style.dataFreshnessTooltip}>
+                              {dataFreshnessTooltipLines.map((line, index) => (
+                                <div key={`${line}-${index}`}>{line}</div>
+                              ))}
+                            </div>
+                          }
+                        >
+                          <InfoCircleOutlined className={style.dataFreshnessInfoIcon} />
+                        </Tooltip>
+                      ) : null}
+                    </span>
+                  ) : null}
                   {prepareTypeDesc && <span className={style.metaBadge}>{prepareTypeDesc}</span>}
                   {sessionStatus && (
                     <span
@@ -595,30 +746,6 @@ const SessionDetailV2 = () => {
                 </div>
               </div>
               <div className={style.headerActions}>
-                {dataFreshnessTip ? (
-                  <span
-                    className={`${style.dataFreshnessTip} ${
-                      dataFreshnessChecking ? style.dataFreshnessTipSyncing : ''
-                    } ${
-                      dataFreshnessState?.statusCode === 'changed' ? style.dataFreshnessTipChanged : ''
-                    }`}
-                  >
-                    <span className={style.dataFreshnessTipText}>{dataFreshnessTip}</span>
-                    {dataFreshnessTooltipLines.length > 0 ? (
-                      <Tooltip
-                        title={
-                          <div className={style.dataFreshnessTooltip}>
-                            {dataFreshnessTooltipLines.map((line, index) => (
-                              <div key={`${line}-${index}`}>{line}</div>
-                            ))}
-                          </div>
-                        }
-                      >
-                        <InfoCircleOutlined className={style.dataFreshnessInfoIcon} />
-                      </Tooltip>
-                    ) : null}
-                  </span>
-                ) : null}
                 <Button
                   className={style.sessionListButton}
                   type="primary"

@@ -180,7 +180,8 @@ public class PlanningDataFreshnessScheduleSharedService extends ServiceImpl<Plan
                 now
         );
         entity.setCheckIntervalMinutes(Math.min(interval, DataFreshnessSchedulePolicy.MAX_INTERVAL_MINUTES));
-        if (entity.getNextCheckAt() == null) {
+        if (entity.getNextCheckAt() == null
+                || (entity.getLastCheckedAt() != null && !entity.getNextCheckAt().after(entity.getLastCheckedAt()))) {
             entity.setNextCheckAt(DataFreshnessSchedulePolicy.calculateNextCheckAt(entity.getLastCheckedAt(), interval, now));
         }
         if (entity.getLastCheckStatus() == null) {
