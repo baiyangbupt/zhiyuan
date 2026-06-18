@@ -35,12 +35,19 @@ from tests.factories import (
 
 def _confirmed_ctx(*, volunteer_model: str = "major", action_family: str = "add_units"):
     """构造已确认的 RunContext（pending 匹配 + 卡片确认上下文）。"""
-    return make_run_context(
-        volunteer_model=volunteer_model,
-        pending_action_family=action_family,
-        chat_history=[],
-        confirmed_via_card=True,
-    )
+    kwargs = {
+        "volunteer_model": volunteer_model,
+        "pending_action_family": action_family,
+        "chat_history": [],
+        "confirmed_via_card": True,
+    }
+    if action_family == "generate_plan":
+        kwargs.update(
+            planning_phase="ordered",
+            planning_ordered_total=0,
+            planning_ordered_target_total=30,
+        )
+    return make_run_context(**kwargs)
 
 
 # ---------------------------------------------------------------------------

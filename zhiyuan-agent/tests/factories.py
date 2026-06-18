@@ -57,6 +57,7 @@ def make_request_context(
     volunteer_model: str = "major",
     planning_phase: str = "",
     planning_ordered_total: int = 0,
+    planning_ordered_target_total: int = 0,
     planning_draft_total: int = 0,
     planning_risk_count: int = 0,
     planning_warn_count: int = 0,
@@ -73,6 +74,7 @@ def make_request_context(
         planning_summary = PlanningSummary(
             phase=planning_phase,
             ordered_total=planning_ordered_total,
+            ordered_target_total=planning_ordered_target_total,
             draft_total=planning_draft_total,
             review_risk_count=planning_risk_count,
             review_warn_count=planning_warn_count,

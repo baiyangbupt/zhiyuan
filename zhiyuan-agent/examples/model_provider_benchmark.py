@@ -432,10 +432,11 @@ async def _ask_agent_once(
             if message.get("end") is True:
                 final_at = now
                 break
-        while True:
+        terminal_error = any(item.get("type") == "error" and item.get("end") is True for item in primary)
+        while not terminal_error:
             try:
                 raw = await asyncio.wait_for(ws.recv(), timeout=2)
-            except asyncio.TimeoutError:
+            except (asyncio.TimeoutError, TimeoutError):
                 break
             followups.append(json.loads(raw))
     text = "\n".join(str(item.get("content", "")) for item in primary if item.get("type") == "text").strip()

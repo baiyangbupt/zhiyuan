@@ -26,7 +26,10 @@ from tests.factories import (
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _run_ctx(*, volunteer_model: str = "major", **kwargs):
+def _run_ctx(*, volunteer_model: str = "major", action_family: str | None = None, **kwargs):
+    if action_family == "generate_plan":
+        kwargs.setdefault("planning_phase", "ordered")
+        kwargs.setdefault("planning_ordered_target_total", 30)
     return make_run_context(volunteer_model=volunteer_model, **kwargs)
 
 
@@ -95,7 +98,7 @@ class TestMissingInputsEarlyExit:
     ])
     @pytest.mark.parametrize("volunteer_model", ["major", "majorGroup"])
     async def test_missing_inputs_returns_error(self, action_family: str, volunteer_model: str):
-        ctx = _run_ctx(volunteer_model=volunteer_model)
+        ctx = _run_ctx(volunteer_model=volunteer_model, action_family=action_family)
         plan = make_plan_action_plan(
             action_family=action_family,
             stage="preview",
@@ -150,6 +153,7 @@ class TestMutatingApplyGuard:
         """没有 pending 匹配 + 短确认 → 不允许 apply，降级为 preview。"""
         ctx = _run_ctx(
             volunteer_model=volunteer_model,
+            action_family=action_family,
             chat_history=[{"role": "user", "content": "帮我加几个志愿"}],
         )
         plan = make_plan_action_plan(
@@ -205,7 +209,7 @@ class TestGenericPreviewAnalyzeFallback:
     @pytest.mark.parametrize("stage", ["preview", "analyze"])
     @pytest.mark.parametrize("volunteer_model", ["major", "majorGroup"])
     async def test_generic_fallback(self, action_family: str, stage: str, volunteer_model: str):
-        ctx = _run_ctx(volunteer_model=volunteer_model)
+        ctx = _run_ctx(volunteer_model=volunteer_model, action_family=action_family)
         plan = make_plan_action_plan(
             action_family=action_family,
             stage=stage,
@@ -277,7 +281,7 @@ class TestGenericPreviewAnalyzeFallback:
         """只读 action 即使 stage=preview，也应走注册 handler，不落 generic preview fallback。"""
         patch_planning.query_planning_ordered_plan.return_value = "排序方案概览"
         patch_planning.query_planning_candidate_pool.return_value = "候选池概览"
-        ctx = _run_ctx(volunteer_model=volunteer_model)
+        ctx = _run_ctx(volunteer_model=volunteer_model, action_family=action_family)
         plan = make_plan_action_plan(
             action_family=action_family,
             stage="preview",
