@@ -1492,6 +1492,66 @@ async def test_analyze_intent_change_semantic_arbitration_keeps_school_preferenc
 
 
 @pytest.mark.asyncio
+async def test_analyze_intent_change_semantic_arbitration_downgrades_positive_fit_question(empty_profile):
+    ctx = SimpleNamespace(
+        deps=SimpleNamespace(
+            userid="u1",
+            sessionid="7591",
+            batch="01",
+            chat_history=[{"role": "user", "content": "物理不太好但选了物化地，计算机还现实吗"}],
+            enable_intent_side_effect_arbitration=True,
+            agent_observability={},
+        )
+    )
+
+    with (
+        patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
+        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()) as save_mock,
+        patch(
+            "app.tools.intent_state_tool._classify_intent_side_effect",
+            new=AsyncMock(
+                return_value=IntentSideEffectDecision(
+                    decision="analysis_only",
+                    confidence=0.95,
+                    reason="用户是在问计算机方向是否适合，不是在要求记录计算机偏好。",
+                )
+            ),
+        ) as classifier_mock,
+        patch(
+            "app.tools.intent_state_tool._enrich_plan_relation_analysis_from_state",
+            new=AsyncMock(
+                return_value={
+                    "summaryTitle": "先看计算机方向适配",
+                    "currentPlanFit": ["需要结合数学、编程兴趣和院校层次判断。"],
+                    "currentPlanConflict": [],
+                    "candidateOpportunity": [],
+                    "nextActionHints": ["如果确定要优先计算机，再列出来采纳。"],
+                }
+            ),
+        ),
+    ):
+        mock_pm = mock_pm_cls.return_value
+        mock_pm.get_current_profile = AsyncMock(return_value=empty_profile)
+
+        payload_text = await analyze_volunteer_intent_change(
+            ctx,
+            major_intents={"level2": ["计算机类"]},
+            analysis_stage=ANALYSIS_STAGE_CONFIRMED,
+            recovery_scope="major",
+            confirm_enabled=True,
+        )
+
+    payload = json.loads(payload_text)
+    assert payload["analysisStage"] == ANALYSIS_STAGE_INTEREST
+    assert payload["status"] == "ready"
+    assert payload["items"][0]["value"] == {"major_intents": {"level2": ["计算机类"]}}
+    assert "更新为" not in json.dumps(payload["items"], ensure_ascii=False)
+    assert ctx.deps.agent_observability["intentSideEffectDecision"]["honored"] is True
+    classifier_mock.assert_awaited_once()
+    save_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_analyze_intent_change_semantic_arbitration_downgrades_impact_first_request(empty_profile):
     ctx = SimpleNamespace(
         deps=SimpleNamespace(
@@ -2720,6 +2780,30 @@ def test_preview_current_region_intent_confirmation_normalizes_area_payload_from
     assert mock_edit.await_args.args[3] == {"area": ["南方"], "negative_area": ["北方"]}
 
 
+def test_preview_current_region_intent_confirmation_recovers_area_when_model_only_passes_implied_provinces():
+    from app.agent.context import RequestContext
+
+    request_context = RequestContext(
+        userid="u1",
+        sessionid="s1",
+        chat_history=[{"role": "user", "content": "孩子就想去南方，北方先别考虑"}],
+        batch="01",
+    )
+    ctx = SimpleNamespace(deps=request_context)
+    city_payload = {
+        "province": ["广东", "广西", "海南"],
+        "negative_province": ["内蒙古", "北京", "天津", "山西", "河北"],
+    }
+
+    with patch("app.tools.intent_preview_tool.analyze_volunteer_intent_change", new=AsyncMock(return_value='{"status":"empty","sessionId":"s1","message":"ok"}')) as mock_edit:
+        resp = asyncio.run(preview_current_region_intent_confirmation(ctx, city_intents=city_payload))
+
+    resp_payload = json.loads(resp)
+    assert resp_payload["status"] == "empty"
+    mock_edit.assert_awaited_once()
+    assert mock_edit.await_args.args[3] == {"area": ["南方"], "negative_area": ["北方"]}
+
+
 def test_preview_current_region_intent_confirmation_drops_inferred_area_when_user_only_names_provinces():
     from app.agent.context import RequestContext
 
@@ -3438,7 +3522,7 @@ async def test_semantic_constraint_type_upgrades_positive_constraint_preview(emp
 
 
 @pytest.mark.asyncio
-async def test_analyze_intent_change_downgrades_unstated_only_keep_for_negative_major(empty_profile):
+async def test_analyze_intent_change_blocks_unstated_only_keep_for_negative_major(empty_profile):
     ctx = SimpleNamespace(
         deps=SimpleNamespace(
             userid="u1",
@@ -3496,14 +3580,12 @@ async def test_analyze_intent_change_downgrades_unstated_only_keep_for_negative_
         )
 
     payload = json.loads(payload_text)
-    assert payload["status"] == "ready"
+    assert payload["status"] == "empty"
+    assert payload["analysisStage"] == ANALYSIS_STAGE_INTEREST
     assert payload["intentMode"] == INTENT_MODE_CONSTRAINT
-    assert payload["constraintIntentType"] == "default"
-    assert [item["value"] for item in payload["items"]] == [
-        {"major_intents": {"negative_level3": ["英语"]}},
-        {"major_intents": {"negative_level3": ["商务英语"]}},
-        {"major_intents": {"negative_level3": ["翻译"]}},
-    ]
+    assert payload["constraintIntentType"] == "only_keep"
+    assert payload["items"] == []
+    assert "要保留的范围" in payload["message"]
     assert "只保留专业" not in payload.get("message", "")
     save_mock.assert_not_awaited()
 
@@ -3563,6 +3645,143 @@ async def test_semantic_only_keep_coerces_preference_mode_to_constraint(empty_pr
     payload = json.loads(payload_text)
     assert payload["intentMode"] == INTENT_MODE_CONSTRAINT
     assert payload["constraintIntentType"] == "only_keep"
+
+
+@pytest.mark.asyncio
+async def test_semantic_only_keep_region_recovers_missing_positive_area(empty_profile):
+    ctx = SimpleNamespace(
+        deps=SimpleNamespace(
+            userid="u1",
+            sessionid="7661",
+            batch="01",
+            chat_history=[{"role": "user", "content": "孩子就想去南方，北方先别考虑"}],
+            enable_intent_side_effect_arbitration=True,
+            agent_observability={},
+        )
+    )
+
+    with (
+        patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
+        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
+        patch(
+            "app.tools.intent_state_tool._classify_intent_side_effect",
+            new=AsyncMock(
+                return_value=IntentSideEffectDecision(
+                    decision="intent_preview",
+                    confidence=0.95,
+                    constraintIntentType="only_keep",
+                    reason="用户明确要求只考虑南方并先不考虑北方。",
+                )
+            ),
+        ),
+        patch(
+            "app.tools.intent_state_tool._recover_intents_from_context",
+            new=AsyncMock(return_value=(None, None, {"area": ["南方"], "negative_area": ["北方"]}, None)),
+        ) as recover_mock,
+        patch(
+            "app.tools.intent_state_tool._enrich_plan_relation_analysis_from_state",
+            new=AsyncMock(
+                return_value={
+                    "summaryTitle": "",
+                    "currentPlanFit": [],
+                    "currentPlanConflict": [],
+                    "candidateOpportunity": [],
+                    "nextActionHints": [],
+                }
+            ),
+        ),
+    ):
+        mock_pm = mock_pm_cls.return_value
+        mock_pm.get_current_profile = AsyncMock(return_value=empty_profile)
+
+        payload_text = await analyze_volunteer_intent_change(
+            ctx,
+            city_intents={"negative_area": ["北方"]},
+            intent_mode=INTENT_MODE_CONSTRAINT,
+            analysis_stage=ANALYSIS_STAGE_CONFIRMED,
+            recovery_scope="region",
+            confirm_enabled=True,
+        )
+
+    payload = json.loads(payload_text)
+    assert payload["status"] == "ready"
+    assert payload["intentMode"] == INTENT_MODE_CONSTRAINT
+    assert payload["constraintIntentType"] == "only_keep"
+    values = [item["value"] for item in payload["items"]]
+    assert {"city_intents": {"area": ["南方"]}} in values
+    assert {"city_intents": {"negative_area": ["北方"]}} in values
+    recover_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_negative_only_region_constraint_not_blocked_by_semantic_only_keep_label(empty_profile):
+    ctx = SimpleNamespace(
+        deps=SimpleNamespace(
+            userid="u1",
+            sessionid="7662",
+            batch="01",
+            chat_history=[{"role": "user", "content": "东北西北都不要，必须避开"}],
+            enable_intent_side_effect_arbitration=True,
+            agent_observability={},
+            planning_summary=SimpleNamespace(constraint_state={}),
+        )
+    )
+
+    with (
+        patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
+        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()),
+        patch(
+            "app.tools.intent_state_tool._classify_intent_side_effect",
+            new=AsyncMock(
+                return_value=IntentSideEffectDecision(
+                    decision="intent_preview",
+                    confidence=0.95,
+                    constraintIntentType="only_keep",
+                    reason="模型误把强排除地域标成 only_keep。",
+                )
+            ),
+        ),
+        patch(
+            "app.tools.intent_state_tool._recover_intents_from_context",
+            new=AsyncMock(return_value=(None, None, {"negative_area": ["东北", "西北"]}, None)),
+        ) as recover_mock,
+        patch(
+            "app.tools.intent_state_tool._enrich_plan_relation_analysis_from_state",
+            new=AsyncMock(
+                return_value={
+                    "summaryTitle": "",
+                    "currentPlanFit": [],
+                    "currentPlanConflict": [],
+                    "candidateOpportunity": [],
+                    "nextActionHints": [],
+                }
+            ),
+        ),
+    ):
+        mock_pm = mock_pm_cls.return_value
+        mock_pm.get_current_profile = AsyncMock(return_value=empty_profile)
+
+        payload_text = await analyze_volunteer_intent_change(
+            ctx,
+            city_intents={"negative_area": ["东北", "西北"]},
+            intent_mode=INTENT_MODE_CONSTRAINT,
+            analysis_stage=ANALYSIS_STAGE_CONFIRMED,
+            recovery_scope="region",
+            confirm_enabled=True,
+        )
+
+    payload = json.loads(payload_text)
+    assert payload["status"] == "ready"
+    assert payload["intentMode"] == INTENT_MODE_CONSTRAINT
+    assert payload["constraintIntentType"] == "default"
+    assert "要保留的范围" not in payload.get("message", "")
+    assert [item["value"] for item in payload["items"]] == [
+        {"city_intents": {"negative_area": ["东北"]}},
+        {"city_intents": {"negative_area": ["西北"]}},
+    ]
+    assert "东北" in payload["items"][0]["content"]
+    assert "明确不考虑" in payload["items"][0]["content"] or "排除地域" in payload["items"][0]["content"]
+    recover_mock.assert_not_awaited()
 
 
 def test_refine_major_intents_supplements_model_omitted_major_alias():
@@ -5702,6 +5921,25 @@ def test_region_area_normalization_uses_extractor_polarity_not_user_phrase_rules
             "province": ["黑龙江", "吉林", "辽宁", "内蒙古", "新疆", "西藏", "青海", "甘肃", "宁夏", "陕西", "山西", "山东", "河北", "北京", "天津"],
             "city": [],
             "area": ["北方"],
+        },
+        latest_utterance="孩子就想去南方，北方先别考虑",
+    )
+
+    assert positive == {"area": ["南方"]}
+    assert negative == {"negative_area": ["北方"]}
+
+
+def test_region_area_normalization_recovers_area_from_implied_province_only_payload():
+    positive, negative = _normalize_region_area_polarity_payloads(
+        {
+            "province": ["广东", "广西", "海南"],
+            "city": [],
+            "area": [],
+        },
+        {
+            "province": ["内蒙古", "北京", "天津", "山西", "河北"],
+            "city": [],
+            "area": [],
         },
         latest_utterance="孩子就想去南方，北方先别考虑",
     )

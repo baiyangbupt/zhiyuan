@@ -307,6 +307,19 @@ def _normalize_constraint_type_for_payload(value: str | None, merged: dict[str, 
     return normalized
 
 
+def _payload_is_negative_only_region(merged: dict[str, Any] | None) -> bool:
+    if not isinstance(merged, dict):
+        return False
+    major = merged.get("major_intents") if isinstance(merged.get("major_intents"), dict) else None
+    school = merged.get("school_intents") if isinstance(merged.get("school_intents"), dict) else None
+    city = merged.get("city_intents") if isinstance(merged.get("city_intents"), dict) else None
+    career = merged.get("career_intents") if isinstance(merged.get("career_intents"), dict) else None
+    return bool(city) and _has_negative_intents(None, None, city, None) and not (
+        _has_positive_intents(major, school, city, career)
+        or _has_negative_intents(major, school, None, career)
+    )
+
+
 def _coerce_intent_mode_for_constraint_type(intent_mode: str, constraint_intent_type: str) -> str:
     if constraint_intent_type in {CONSTRAINT_INTENT_ONLY_KEEP, CONSTRAINT_INTENT_MUST_HAVE}:
         return INTENT_MODE_CONSTRAINT
@@ -317,13 +330,114 @@ def _constraint_type_from_semantic_decision(
     semantic_decision: IntentSideEffectDecision | None,
     *,
     merged: dict[str, Any] | None,
+    allow_negative_only_region: bool = False,
 ) -> str:
     """Use the semantic arbiter's structured constraint type only when confident."""
     if semantic_decision is None:
         return CONSTRAINT_INTENT_DEFAULT
     if semantic_decision.decision != "intent_preview" or semantic_decision.confidence < 0.7:
         return CONSTRAINT_INTENT_DEFAULT
-    return _normalize_constraint_type_for_payload(semantic_decision.constraintIntentType, merged)
+    normalized = _normalize_constraint_intent_type(semantic_decision.constraintIntentType)
+    if (
+        normalized in {CONSTRAINT_INTENT_ONLY_KEEP, CONSTRAINT_INTENT_MUST_HAVE}
+        and allow_negative_only_region
+        and _payload_is_negative_only_region(merged)
+    ):
+        return normalized
+    return _normalize_constraint_type_for_payload(normalized, merged)
+
+
+def _missing_positive_constraint_message(constraint_intent_type: str) -> str:
+    if constraint_intent_type == CONSTRAINT_INTENT_MUST_HAVE:
+        return "我理解你是想让方案里至少保留某个方向，但这次没有稳定识别出具体要保留的专业、院校或地域。请直接补充要保留的范围，我再给你列出可采纳内容。"
+    return "我理解你是想把后续范围收紧，但这次没有稳定识别出具体要保留的专业、院校或地域。请直接补充要保留的范围，我再给你列出可采纳内容。"
+
+
+async def _recover_positive_scope_for_positive_constraint(
+    ctx: RunContext[RequestContext],
+    *,
+    major_intents: dict | None,
+    school_intents: dict | None,
+    city_intents: dict | None,
+    career_intents: dict | None,
+    recovery_scope: str | None,
+    batch: str,
+    latest_utterance: str,
+) -> tuple[dict | None, dict | None, dict | None, dict | None]:
+    """Recover missing positive scope for only-keep / must-have constraints.
+
+    The tool model can occasionally pass only the negative half of a positive
+    constraint, e.g. "北方先别考虑" for "只去南方". Reuse the existing semantic
+    extractors once and merge only positive fields so we do not invent broad
+    exclusion complements.
+    """
+
+    recovered_major, recovered_school, recovered_city, recovered_career = await _recover_intents_from_context(
+        ctx,
+        recovery_scope=recovery_scope,
+    )
+    if recovered_major:
+        positive_major = _normalize_intent_payload(
+            recovered_major,
+            allowed_keys=_MAJOR_POSITIVE_KEYS,
+        )
+        if positive_major:
+            major_intents = _merge_major_intent_payloads(major_intents, positive_major)
+            major_intents = await _normalize_major_intent_names_for_batch(major_intents, batch)
+            major_intents = _refine_major_intents_by_explicit_mentions(
+                major_intents,
+                latest_utterance=latest_utterance,
+                batch=batch,
+            )
+    if recovered_school:
+        positive_school = _normalize_intent_payload(
+            recovered_school,
+            allowed_keys=_SCHOOL_POSITIVE_KEYS,
+        )
+        if positive_school:
+            school_intents = _merge_intent_payload_dict(school_intents, positive_school)
+    if recovered_city:
+        positive_city = _normalize_intent_payload(
+            recovered_city,
+            allowed_keys=_CITY_POSITIVE_KEYS,
+        )
+        if positive_city:
+            city_intents = _merge_city_intent_payloads(city_intents, positive_city)
+    if recovered_career:
+        positive_career = _normalize_intent_payload(
+            recovered_career,
+            allowed_keys=_CAREER_POSITIVE_KEYS,
+        )
+        if positive_career:
+            career_intents = _merge_intent_payload_dict(career_intents, positive_career)
+    return major_intents, school_intents, city_intents, career_intents
+
+
+def _latest_utterance_has_positive_scope_signal(text: str, recovery_scope: str | None) -> bool:
+    compact = re.sub(r"\s+", "", str(text or ""))
+    if not compact:
+        return False
+    positive_markers = (
+        "只去",
+        "只考虑",
+        "只看",
+        "只要",
+        "就想去",
+        "想去",
+        "希望去",
+        "考虑",
+        "接受",
+        "优先",
+        "保留",
+        "要",
+        "放",
+        "看",
+    )
+    if not any(marker in compact for marker in positive_markers):
+        return False
+    if (recovery_scope or "").strip().lower() in {"region", "city"}:
+        return contains_concrete_region_mention(compact)
+    return True
 
 
 def _prune_generated_negative_complements_for_only_keep(
@@ -676,6 +790,7 @@ def _remove_unstated_positive_major_conflicts(
         "level2": set(_as_string_list(polarity_mentions.get("level2"))),
         "level3": set(_as_string_list(polarity_mentions.get("level3"))),
     }
+    explicit_positive_any = any(explicit_positive_mentions.values())
     mappings = major_parent_mappings_for_batch(batch)
     level2_to_level1 = mappings.get("level2_to_level1", {})
     level3_to_level2 = mappings.get("level3_to_level2", {})
@@ -693,8 +808,14 @@ def _remove_unstated_positive_major_conflicts(
         explicit_positive = explicit_positive_mentions.get(level, set())
         kept: list[str] = []
         for name in _as_string_list(values):
-            if name in explicit_positive:
-                kept.append(name)
+            if not explicit_positive_any:
+                changed = True
+                continue
+            if explicit_positive_any:
+                if name in explicit_positive:
+                    kept.append(name)
+                else:
+                    changed = True
                 continue
             if _positive_major_covered_by_negative_scope(
                 level=level,
@@ -1828,15 +1949,20 @@ def _is_negative_only_preference(
     )
 
 
-def _has_entity_intent_payload(
+def _has_confirmable_entity_update_override(
     major_intents: dict | None,
     school_intents: dict | None,
     city_intents: dict | None,
+    career_intents: dict | None,
     latest_utterance: str,
 ) -> bool:
-    if _has_any_intent_payload(major_intents, school_intents, None):
+    # A concrete entity mention alone is not enough to override a high-confidence
+    # readonly semantic decision: questions like "计算机还现实吗" also contain a
+    # concrete major. Only preserve the confirmable path when the structured
+    # payload already carries an explicit negative/exclusion requirement.
+    if _has_negative_intents(major_intents, school_intents, city_intents, career_intents):
         return True
-    return bool(city_intents) and contains_concrete_region_mention(latest_utterance)
+    return False
 
 
 _SOFT_NEGATIVE_PREFERENCE_MARKERS = (
@@ -1987,7 +2113,13 @@ async def _maybe_downgrade_intent_preview_by_semantics(
             if isinstance(observability, dict) and isinstance(observability.get("intentSideEffectDecision"), dict):
                 observability["intentSideEffectDecision"]["honored"] = True
             return ANALYSIS_STAGE_INTEREST, False, decision
-        if _has_entity_intent_payload(major_intents, school_intents, city_intents, latest_utterance):
+        if _has_confirmable_entity_update_override(
+            major_intents,
+            school_intents,
+            city_intents,
+            career_intents,
+            latest_utterance,
+        ):
             if isinstance(observability, dict) and isinstance(observability.get("intentSideEffectDecision"), dict):
                 observability["intentSideEffectDecision"]["honored"] = False
             logger.info(
@@ -2284,7 +2416,7 @@ def _restrict_intents_to_recovery_scope(
     if normalized_scope == "major":
         return major_intents, None, None, None
     if normalized_scope in {"school", "college"}:
-        return None, school_intents, None, None
+        return None, school_intents, city_intents, None
     if normalized_scope in {"region", "city"}:
         return None, None, city_intents, None
     if normalized_scope == "career_preference":
@@ -2949,6 +3081,54 @@ def _region_area_explicitly_mentioned(value: str, latest_utterance: str) -> bool
     return any(compact_region_text(alias) in compact_utterance for alias in aliases if str(alias or "").strip())
 
 
+def _explicit_region_areas_from_utterance(latest_utterance: str) -> list[str]:
+    areas: list[str] = []
+    for area in _REGION_AREA_EXPLICIT_ALIASES:
+        if _region_area_explicitly_mentioned(area, latest_utterance) and area not in areas:
+            areas.append(area)
+    return areas
+
+
+def _recover_explicit_region_area_from_implied_provinces(
+    city_payload: dict[str, Any],
+    *,
+    latest_utterance: str,
+) -> dict[str, Any]:
+    """Recover abstract region groups when the model only passed implied provinces.
+
+    For utterances like "只去南方，北方先别考虑", the model may put several
+    southern / northern provinces into province buckets instead of using the
+    area fields. Preserve the user's level of abstraction for confirmation and
+    downstream goal construction, while keeping provinces that the user named
+    explicitly.
+    """
+
+    if not city_payload:
+        return city_payload
+    explicit_areas = _explicit_region_areas_from_utterance(latest_utterance)
+    if not explicit_areas:
+        return city_payload
+
+    recovered = {key: list(_as_string_list(value)) for key, value in city_payload.items()}
+    for area in explicit_areas:
+        implied = set(REGION_AREA_PROVINCES.get(area, ()))
+        if not implied:
+            continue
+        for area_key, province_key in (("area", "province"), ("negative_area", "negative_province")):
+            province_values = set(_as_string_list(recovered.get(province_key)))
+            if not province_values.intersection(implied):
+                continue
+            area_bucket = recovered.setdefault(area_key, [])
+            if area not in area_bucket:
+                area_bucket.append(area)
+            recovered = _drop_provinces_implied_by_area_alias(
+                recovered,
+                local_area_payload={area_key: [area]},
+                latest_utterance=latest_utterance,
+            )
+    return recovered
+
+
 def _prune_inferred_region_area_values(
     city_payload: dict[str, Any],
     *,
@@ -3002,6 +3182,14 @@ def _normalize_region_area_polarity_payloads(
     positive = _normalize_region_area_values_from_extractor(positive_payload)
     negative = _normalize_region_area_values_from_extractor(
         {f"negative_{key}" if not str(key).startswith("negative_") else key: value for key, value in negative_payload.items()}
+    )
+    positive = _recover_explicit_region_area_from_implied_provinces(
+        positive,
+        latest_utterance=latest_utterance,
+    )
+    negative = _recover_explicit_region_area_from_implied_provinces(
+        negative,
+        latest_utterance=latest_utterance,
     )
     positive = _prune_inferred_region_area_values(positive, latest_utterance=latest_utterance)
     negative = _prune_inferred_region_area_values(negative, latest_utterance=latest_utterance)
@@ -3701,6 +3889,12 @@ async def analyze_volunteer_intent_change(
     semantic_constraint_intent_type = _constraint_type_from_semantic_decision(
         semantic_decision,
         merged=merged_for_constraint_type,
+        allow_negative_only_region=(str(recovery_scope or "").strip().lower() in {"region", "city"}),
+    )
+    original_semantic_constraint_type = (
+        _normalize_constraint_intent_type(semantic_decision.constraintIntentType)
+        if semantic_decision is not None and semantic_decision.decision == "intent_preview" and semantic_decision.confidence >= 0.7
+        else CONSTRAINT_INTENT_DEFAULT
     )
     if (
         resolved_constraint_intent_type == CONSTRAINT_INTENT_DEFAULT
@@ -3708,7 +3902,7 @@ async def analyze_volunteer_intent_change(
         and semantic_decision is not None
         and semantic_decision.decision == "intent_preview"
         and semantic_decision.confidence >= 0.7
-        and _normalize_constraint_intent_type(semantic_decision.constraintIntentType) == CONSTRAINT_INTENT_ONLY_KEEP
+        and original_semantic_constraint_type == CONSTRAINT_INTENT_ONLY_KEEP
     ):
         recovered_major_intents = _recover_only_keep_positive_scope_from_generated_complement(
             major_intents,
@@ -3729,6 +3923,33 @@ async def analyze_volunteer_intent_change(
             )
     if (
         resolved_constraint_intent_type == CONSTRAINT_INTENT_DEFAULT
+        and semantic_constraint_intent_type == CONSTRAINT_INTENT_DEFAULT
+        and original_semantic_constraint_type in {CONSTRAINT_INTENT_ONLY_KEEP, CONSTRAINT_INTENT_MUST_HAVE}
+        and _has_negative_intents(major_intents, school_intents, city_intents, career_intents)
+        and not _has_positive_values_in_payload(merged_for_constraint_type)
+        and not _payload_is_negative_only_region(merged_for_constraint_type)
+    ):
+        logger.info(
+            "Intent preview blocked semantic positive constraint without positive scope: session_id=%s constraint=%s utterance=%s payload=%s",
+            session_id,
+            original_semantic_constraint_type,
+            latest_utterance,
+            merged_for_constraint_type,
+        )
+        return serialize_intent_analysis_payload(
+            IntentAnalysisPayload(
+                status="empty",
+                sessionId=session_id,
+                title="先补充要保留的范围",
+                intentMode=INTENT_MODE_CONSTRAINT,
+                constraintIntentType=original_semantic_constraint_type,
+                analysisStage=ANALYSIS_STAGE_INTEREST,
+                editFlag=edit_flag,
+                message=_missing_positive_constraint_message(original_semantic_constraint_type),
+            )
+        )
+    if (
+        resolved_constraint_intent_type == CONSTRAINT_INTENT_DEFAULT
         and semantic_constraint_intent_type != CONSTRAINT_INTENT_DEFAULT
     ):
         resolved_constraint_intent_type = semantic_constraint_intent_type
@@ -3747,6 +3968,65 @@ async def analyze_volunteer_intent_change(
         resolved_constraint_intent_type = _normalize_constraint_type_for_payload(
             resolved_constraint_intent_type,
             merged_for_constraint_type,
+        )
+    if (
+        semantic_constraint_intent_type in {CONSTRAINT_INTENT_ONLY_KEEP, CONSTRAINT_INTENT_MUST_HAVE}
+        and not _has_positive_values_in_payload(merged_for_constraint_type)
+        and _latest_utterance_has_positive_scope_signal(latest_utterance, recovery_scope)
+    ):
+        major_intents, school_intents, city_intents, career_intents = await _recover_positive_scope_for_positive_constraint(
+            ctx,
+            major_intents=major_intents,
+            school_intents=school_intents,
+            city_intents=city_intents,
+            career_intents=career_intents,
+            recovery_scope=recovery_scope,
+            batch=batch,
+            latest_utterance=latest_utterance,
+        )
+        if semantic_constraint_intent_type == CONSTRAINT_INTENT_ONLY_KEEP:
+            major_intents = _preserve_only_keep_positive_major_scope(
+                major_intents,
+                latest_utterance=latest_utterance,
+                batch=batch,
+            )
+        merged_for_constraint_type = {
+            "major_intents": major_intents or {},
+            "school_intents": school_intents or {},
+            "city_intents": city_intents or {},
+            "career_intents": career_intents or {},
+        }
+        if _has_positive_values_in_payload(merged_for_constraint_type):
+            resolved_constraint_intent_type = semantic_constraint_intent_type
+    if (
+        resolved_constraint_intent_type == CONSTRAINT_INTENT_DEFAULT
+        and semantic_constraint_intent_type in {CONSTRAINT_INTENT_ONLY_KEEP, CONSTRAINT_INTENT_MUST_HAVE}
+        and _has_negative_intents(major_intents, school_intents, city_intents, career_intents)
+        and not _has_positive_values_in_payload(merged_for_constraint_type)
+    ):
+        semantic_constraint_intent_type = CONSTRAINT_INTENT_DEFAULT
+    if (
+        semantic_constraint_intent_type in {CONSTRAINT_INTENT_ONLY_KEEP, CONSTRAINT_INTENT_MUST_HAVE}
+        and not _has_positive_values_in_payload(merged_for_constraint_type)
+    ):
+        logger.info(
+            "Intent preview blocked missing positive scope for positive constraint: session_id=%s constraint=%s utterance=%s payload=%s",
+            session_id,
+            semantic_constraint_intent_type,
+            latest_utterance,
+            merged_for_constraint_type,
+        )
+        return serialize_intent_analysis_payload(
+            IntentAnalysisPayload(
+                status="empty",
+                sessionId=session_id,
+                title="先补充要保留的范围",
+                intentMode=INTENT_MODE_CONSTRAINT,
+                constraintIntentType=semantic_constraint_intent_type,
+                analysisStage=ANALYSIS_STAGE_INTEREST,
+                editFlag=edit_flag,
+                message=_missing_positive_constraint_message(semantic_constraint_intent_type),
+            )
         )
     resolved_intent_mode = _coerce_intent_mode_for_constraint_type(
         resolved_intent_mode,

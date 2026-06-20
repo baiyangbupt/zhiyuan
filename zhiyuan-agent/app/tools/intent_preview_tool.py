@@ -37,6 +37,7 @@ from app.tools.intent_state_tool import (
     _normalize_region_area_values_from_extractor,
     _drop_provinces_implied_by_area_alias,
     _prune_inferred_region_area_values,
+    _recover_explicit_region_area_from_implied_provinces,
 )
 from app.tools.major_compare_tool import compare_majors
 
@@ -72,6 +73,10 @@ def _normalize_city_preview_payload(
     if not isinstance(payload, dict) or not payload:
         return payload
     normalized = _normalize_region_area_values_from_extractor(payload)
+    normalized = _recover_explicit_region_area_from_implied_provinces(
+        normalized,
+        latest_utterance=latest_utterance,
+    )
     area_payload = {
         "area": normalized.get("area", []),
         "negative_area": normalized.get("negative_area", []),

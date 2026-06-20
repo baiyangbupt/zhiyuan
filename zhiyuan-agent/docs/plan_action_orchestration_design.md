@@ -600,6 +600,7 @@ class PlanGoal(BaseModel):
 - `only_keep_scope` 和 `must_include_scope` 只是 `PlanGoal.goal_type` 的两个值，不再作为独立特殊链路扩展。
 - 不能用固定关键词直接决定 goal type；模型根据上下文输出结构，系统只校验结果是否可执行。
 - 执行层不能因为 `goal_type=only_keep_scope` 自动生成所有“其他专业门类”的负向 intent；只处理用户明确实体和当前方案/候选事实。
+- 正向约束必须有正向对象：`only_keep_scope / must_include_scope` 如果只抽到负向对象，不能降级成普通排除，也不能生成可点击生效卡片；系统应先复用结构化抽取补齐正向目标，补不齐则进入澄清。
 - 有歧义时不能直接执行，应进入 `needs_clarification` 或在预览中显式披露用户确认的理解。
 
 当前落地状态：
@@ -625,6 +626,7 @@ class PlanGoal(BaseModel):
 与 Repair 链路的统一关系：
 
 - Repair 是审查问题触发的复合计划实践，不是 Plan 之外的旁路。
+- 审查不是复合链路的终点。`review_plan` 只是在复合计划中补充证据的一类步骤，用于定位 `review issue`、受影响志愿、可用 `FixProposal`、候选缺口和风险边界；随后仍应回到统一的 `CompositePlanProposal -> preview/pending -> apply` 协议。不能因为本轮已经执行了 `review_plan`，就把用户“继续调整”的诉求截断成一段审查说明。
 - `ReviewCheck` 对应系统侧发现的目标来源，`FixProposal.strategy` 对应策略层，`FixProposal.actions` 对应动作计划层，`RepairDryRunSimulator` 对应预执行验证，`RepairProposalApplyPolicy` 对应执行门禁，`RepairReport` 对应执行闭环。
 - Java Server 是上述 repair proposal 和原子动作语义的权威来源。Python Agent 只负责把用户自然语言整理成 `Scenario / PlanGoal / targetScopes / tradeoffGuards / sourceReviewIssue`，或通过 service pending 桥请求 Java proposal；不能在 Python 里自行生成最终 `replacementPairs`、可应用状态、dry-run 结论或真实 mutation 方案。
 - Web 和 Agent 使用同一套 Java `FixProposal` 协议。当前 `FixProposal` 同时支持 `source=review_check` 和第一阶段 `source=user_goal`：审查问题由 review check 触发，用户复合目标由 `UserGoalFixProposalReq` 触发；两者都复用 Java proposal engine，而不是在 Agent 侧新建并行 repair 执行框架。
@@ -632,6 +634,30 @@ class PlanGoal(BaseModel):
 - 用户表达的粒度不可控，系统内部才需要分层。用户可能宽泛地说“让方案整体更偏体制内”，也可能具体到“把第 8 个志愿移到第 12 位”；前者进入 `Scenario -> PlanGoal -> Strategy`，后者可以直接靠近 `PlanAtomicAction`，但两者都不能绕过预览、确认、版本检查、dry-run 和 apply policy。
 - `reduce_risk` 可链接 `replace_risk_items/remove_risk_items`，`rebalance_structure` 可链接 `rebalance_tier_ratio/fill_probability_gap/add_safety_items/fill_missing_count`，但这些是底层子策略，不是高层情景分类。
 - repair 里当前只允许预览、不允许落盘的策略，在复合计划里也不能绕过 apply policy。
+
+后续结构性优化中，审查型复合链路的目标路径：
+
+```text
+用户表达
+  -> Scenario / PlanGoal
+  -> 如信息不足，先执行 review_plan 或读取既有 review issues
+  -> 把 review issue 作为 evidence/sourceReviewIssue 写入 CompositePlanProposal
+  -> 由 Java proposal engine 或受控原子动作生成统一预览
+  -> pendingConfirmation
+  -> 用户确认后 apply
+  -> 自动刷新方案和复审
+```
+
+因此下面两类问题必须区分：
+
+- 只读审查咨询：例如“高收费多吗，会不会影响保底”，目标是解释风险，停在 `review_plan(target_issue_only)` 即可，不生成调整卡。
+- 审查驱动调整：例如“把太贵的那几个先去掉看看”“把中外合作换成正常收费的”，`review_plan` 只是定位作用范围，后续必须继续形成 `CompositePlanProposal` 或受控原子预览，不能只返回审查概览。
+
+当前遗留缺口和版本边界：
+
+- 普通复合目标已经通过 `source=user_goal` 进入 Java proposal/apply 主链路；审查驱动复合目标仍部分依赖 `review_plan -> preview_fix_proposal` 和 service 后处理恢复，尚未完全统一为 `Scenario / PlanGoal / sourceReviewIssue -> CompositePlanProposal`。
+- 这会导致模型一旦走了 `review_plan`，系统容易把本轮视为完成，而不是把审查事实继续作为复合计划输入。
+- 3.1.1 不做该链路的大规模替换，仍沿着现有 Java `FixProposal`、`UserGoalFixProposalReq`、`pendingConfirmation` 和 Plan action 链路做低风险修补与回归；动态计划、统一 DSL 和 compiler 放到 3.2.0 后续工作。
 
 统一 taxonomy：
 
@@ -1314,7 +1340,7 @@ preview 必须基于当前 state 给出真正影响，而不是一句“会修�
 - `review_plan`：进入后端 `runReview()`，再读取 `fix-proposals/generate`，把 review summary、proposal status、处理方向和阻塞原因交给模型组织回复。
 - `analyze_adjustment`：同样基于 `runReview()` 和 `fix-proposals/generate` 输出只读解释，用于回答“怎么调/为什么暂时不能处理/先看哪些方向”；不走旧 `plan-adjustment/analyze`。
 - `generate_planning_fix_proposals`：作为只读工具暴露给 ChatAgent，用于解释 Java Server 已生成的处理建议。
-- `review_plan/preview_fix_proposal -> pendingConfirmationCard -> apply_planning_fix_proposal`：ChatAgent 只生成审查或预览事实；ChatService 从本轮 `ToolReturnPart` 读取 `fix_proposal_preview`，以及用户明确想“先看怎么处理/怎么调整”时的 `review_result`。只有 `review_check` 来源、`status=ready` 且带 `proposalId/sourceVersionGuard` 的 proposal 才保存 active `pendingConfirmation(kind=plan_mutation, actionFamily=apply_fix_proposal)`。如果用户语义指定了某类处理目标，确认卡只能使用匹配该目标的 ready proposal；目标不可执行时返回只读原因和放宽方向，不能用其他 ready proposal 冒充。普通“只审查/先不要改”的 `review_result` 不生成确认卡。卡片点击或短文本确认命中同一个 pending 后，service 内部调用 Java `fix-proposals/apply`，返回 `RepairReport` 并刷新排序方案。
+- `review_plan/preview_fix_proposal -> pendingConfirmationCard -> apply_planning_fix_proposal`：ChatAgent 只生成审查或预览事实；ChatService 从本轮 `ToolReturnPart` 读取 `fix_proposal_preview`，以及用户明确想“先看怎么处理/怎么调整”时的 `review_result`。只有 `review_check` 来源、`status=ready` 且带 `proposalId/sourceVersionGuard` 的 proposal 才保存 active `pendingConfirmation(kind=plan_mutation, actionFamily=apply_fix_proposal)`。如果用户语义指定了某类处理目标，确认卡只能使用匹配该目标的 ready proposal；目标不可执行时返回只读原因和放宽方向，不能用其他 ready proposal 冒充。普通“只审查/先不要改/帮我解释提醒”的 `review_result` 不生成确认卡，也不进入修复预览恢复分类；只有结构化结果明确带 `reply_focus=fix_proposal_preview/ready_fix_proposals`，或用户目标已进入 `preview_fix_proposal`，才允许进入确认卡桥。卡片点击或短文本确认命中同一个 pending 后，service 内部调用 Java `fix-proposals/apply`，返回 `RepairReport` 并刷新排序方案。
 - 工作台前端：使用同一套 Java `fix-proposals/generate/apply` 协议，让用户在审查结果弹窗里确认 `ready` proposal。
 
 未开放：
@@ -1348,16 +1374,21 @@ Plan 主链仍以模型理解为入口，但模型可能在两类情况下走到
 
 - 用户明确要调整方案，模型却先调用 `query_state` 并按方案概览回复。
 - 用户明确要补齐、增删或替换方案，模型却调用了 `preview_fix_proposal` 等不匹配的非动作入口，最后没有形成确认预览。
+- 用户明确要移出/替换某类当前审查问题，模型却只调用 `review_plan` 并停在审查说明，没有继续形成原子调整预览。
 
 这类问题不能用用户话术字符串兜底，也不能新增第二套执行路径。服务层统一按以下边界恢复：
 
 1. 当前轮没有 active `pendingConfirmation`，也没有已经形成的方案确认卡。
-2. 当前轮确实调用过 Plan 链路工具，且最新结果是 `query_state/status_overview` 或非动作错误结果。
+2. 当前轮确实调用过 Plan 链路工具，且最新结果是 `query_state/status_overview`、非动作错误结果，或带有 `fixProposals` 结构化上下文的 `review_plan/review_result`。
 3. 服务层只调用 `classify_plan_recovery_action` 做语义恢复；分类器高置信输出 `add_units / remove_units / replace_units / move_unit / move_ordered_unit / remove_ordered_unit / sort_ordered_plan` 之一时，才重新进入 `plan_next_action -> execute_plan_action`。
 4. 恢复后仍遵守原执行层门禁：缺少候选范围、缺少当前方案目标、候选不足或版本不一致时，只返回具体缺参/阻断说明，不生成 pending，也不刷新工作台。
 5. 如果 `plan_next_action` 已经返回 `missing_inputs=["selection_scope"]`，即使模型后续又传了一个较薄的 `execute_plan_action` payload，也要保留这个缺参事实，向用户提示需要补充学校、专业、地域等范围或先在候选里选中目标。
 6. 同一轮如果已经产出 `analyze_current_career_direction` 这类只读探索结果，最终回复合成要优先保留它，再补“不改方案/先看分析”的边界；不能再被 `review_result`、`adjustment_analysis` 或“没有形成可执行预览”的通用兜底覆盖成纯审查概览。
 7. 无最近审查结果或处理建议时，`analyze_adjustment` 只允许承接两类明确边界：候选供给不足/补稳补保可行性，以及用户明确追问已知提醒为什么处理不了、需要如何取舍。普通只读风险解释，如“中外合作是不是多、预算一般、说人话看风险、先别动”，即使能推断出高收费或中外合作 issue，也应交回完整 Agent 读取方案事实回答，不能升级成修复不可用说明或替换建议。
+8. `shortage_boundary` 只回答“当前可补供给、缺口在哪、能否直接补上、下一步如何放宽或审查”，不得把 Java/Repair 的内部 proposal 标题直接透给用户，例如“处理数量校验 / 处理录取率梯度断层”。
+9. 纯结构缺口必须由结构化 `replyFocus` 双重确认：只有同时包含 `shortage_boundary` 和 `plan_structure_shortage_only` 时，服务层才允许走语义快捷处理。地域、城市、学校、专业、职业方向上的安全感/取舍表达，即使包含“别滑档、保底、稳一点”等词，也不能仅凭这些词进入 shortage fallback，应交给 full agent 结合用户真实取舍回答。
+10. 当前方案的定向审查必须带结构化目标：只有 `review_plan` 同时提供 `targetIssueCodes/target_issue_codes` 和 `replyFocus=["target_issue_only"]` 时，服务层才允许围绕高收费、中外合作等单一问题快速回答数量、命中项和处理边界；没有明确结构化目标时，不得用泛审查事实覆盖用户原问题。
+11. 预算/费用类复合目标必须区分“只读咨询”和“要改方案”。`CompositeGoalDecision.requiresPlanMutation` 是生成确认卡的硬门禁：用户只是问贵不贵、预算够不够、数量多不多、影响大不大时，`action=none` 且不创建 pending；用户明确要求按预算删除、替换、补位或后续按预算控制时，才允许输出 `tuition_budget_scope` 并进入统一 preview -> confirm -> apply 链。
 
 这个恢复逻辑只修正“模型选错工具入口”的框架问题，不改变用户确认协议，不允许模型绕过确认卡或 Java proposal apply policy。
 

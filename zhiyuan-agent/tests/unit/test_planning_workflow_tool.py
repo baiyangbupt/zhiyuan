@@ -1185,6 +1185,7 @@ def test_generate_planning_fix_proposals_formats_status_and_warnings():
                         {
                             "actionType": "replace_volunteers",
                             "summary": "替换风险志愿",
+                            "detail": "预计替换 1 组。具体预览：学校A-金融学 -> 学校B-法学。",
                             "replacementPairs": [{"fromVolunteerId": "v1", "toVolunteerId": "v2"}],
                         }
                     ],
@@ -1251,6 +1252,10 @@ def test_generate_planning_fix_proposals_formats_status_and_warnings():
     facts = _fix_proposal_facts(response["data"])
     assert facts["proposal_source"] == "review_check"
     assert facts["proposals"][0]["proposal_source"] == "review_check"
+    assert facts["proposals"][0]["actions"][0]["detail"] == "预计替换 1 组。具体预览：学校A-金融学 -> 学校B-法学"
+    assert facts["proposals"][0]["actions"][0]["replacementPairs"] == [
+        {"fromUnitId": "", "fromVolunteerId": "v1", "toUnitId": "", "toVolunteerId": "v2"}
+    ]
     assert facts["proposals"][2]["blocking_reason_codes"] == ["probability_gap_candidate_insufficient"]
     assert facts["proposals"][2]["candidate_shortages"][0]["scope"] == "candidate_pool"
     assert facts["proposals"][2]["candidate_shortages"][0]["reason_code"] == "probability_gap_candidate_insufficient"

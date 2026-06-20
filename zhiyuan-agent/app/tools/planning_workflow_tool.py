@@ -972,6 +972,7 @@ def _fix_proposal_facts(proposal_state: dict[str, Any] | None) -> dict[str, Any]
                 for action in actions[:3]
                 if isinstance(action, dict)
             ],
+            "actions": _compact_fix_proposal_actions(actions),
             "remove_volunteer_count": _coerce_non_negative_int(dry_run.get("removeVolunteerCount")),
             "add_volunteer_count": _coerce_non_negative_int(dry_run.get("addVolunteerCount")),
             "remove_unit_count": _coerce_non_negative_int(dry_run.get("removeUnitCount")),
@@ -1316,6 +1317,48 @@ def _fix_proposal_action_summary(action: dict[str, Any]) -> str:
     return action_type or "修复动作"
 
 
+def _normalize_replacement_pair(pair: dict[str, Any]) -> dict[str, str]:
+    return {
+        "fromUnitId": str(pair.get("fromUnitId") or pair.get("from_unit_id") or "").strip(),
+        "fromVolunteerId": str(pair.get("fromVolunteerId") or pair.get("from_volunteer_id") or "").strip(),
+        "toUnitId": str(pair.get("toUnitId") or pair.get("to_unit_id") or "").strip(),
+        "toVolunteerId": str(pair.get("toVolunteerId") or pair.get("to_volunteer_id") or "").strip(),
+    }
+
+
+def _compact_fix_proposal_actions(actions: list[dict[str, Any]], limit: int = 3) -> list[dict[str, Any]]:
+    compacted: list[dict[str, Any]] = []
+    for action in actions[:limit]:
+        if not isinstance(action, dict):
+            continue
+        replacement_pairs = [
+            normalized
+            for pair in (action.get("replacementPairs") or action.get("replacement_pairs") or [])
+            if isinstance(pair, dict)
+            if (normalized := _normalize_replacement_pair(pair))
+            if normalized["fromVolunteerId"] or normalized["fromUnitId"] or normalized["toVolunteerId"] or normalized["toUnitId"]
+        ]
+        compacted.append(
+            {
+                "actionType": str(action.get("actionType") or action.get("action_type") or "").strip(),
+                "summary": _normalize_fix_proposal_user_line(str(action.get("summary") or "").strip()),
+                "detail": _normalize_fix_proposal_user_line(str(action.get("detail") or "").strip()),
+                "removeVolunteerIds": [
+                    str(item or "").strip()
+                    for item in (action.get("removeVolunteerIds") or action.get("remove_volunteer_ids") or [])
+                    if str(item or "").strip()
+                ][:5],
+                "candidateVolunteerIds": [
+                    str(item or "").strip()
+                    for item in (action.get("candidateVolunteerIds") or action.get("candidate_volunteer_ids") or [])
+                    if str(item or "").strip()
+                ][:5],
+                "replacementPairs": replacement_pairs[:5],
+            }
+        )
+    return compacted
+
+
 _FIX_PROPOSAL_BLOCKING_GUIDANCE = {
     "candidate_pool_insufficient": "当前可用于规划的候选里没有足够可补项，建议先放宽条件，或接受当前数量风险",
     "safety_candidate_insufficient": "当前候选里缺少更稳的可补项，暂时不建议直接补安全垫",
@@ -1451,6 +1494,11 @@ def _format_fix_proposal_preview(proposal_state: dict[str, Any]) -> str:
             _fix_proposal_action_summary(action)
             for action in (proposal.get("actions") or [])[:2]
         )
+        action_details = [
+            _normalize_fix_proposal_user_line(str(action.get("detail") or "").strip())
+            for action in (proposal.get("actions") or [])[:2]
+            if isinstance(action, dict) and str(action.get("detail") or "").strip()
+        ]
         detail_parts = []
         status_label = status_labels.get(status, "")
         if status_label:
@@ -1460,6 +1508,7 @@ def _format_fix_proposal_preview(proposal_state: dict[str, Any]) -> str:
             detail_parts.append(f"预计{change_counts}")
         if action_text:
             detail_parts.append(action_text)
+        detail_parts.extend(action_details[:1])
         if impact:
             detail_parts.append(impact)
         line = f"- {title}"

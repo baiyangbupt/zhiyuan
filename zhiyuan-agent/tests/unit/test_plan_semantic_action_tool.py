@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import inspect
 import json
 
 from app.tools.extraction_json import parse_extraction_json
 from app.tools.plan_semantic_action_tool import (
     CompositeGoalDecision,
     PlanRecoveryActionDecision,
+    _get_plan_action_agent,
     _normalize_composite_goal_decision,
     _normalize_plan_recovery_action_decision,
 )
@@ -77,3 +79,11 @@ def test_plan_recovery_decision_accepts_empty_optional_sort_field():
     assert normalized.sortField is None
     assert normalized.sourcePosition is None
     assert normalized.targetPosition is None
+
+
+def test_plan_semantic_action_instructions_keep_direct_sort_out_of_fix_preview():
+    instructions = inspect.getsource(_get_plan_action_agent)
+
+    assert "直接说按录取率从高到低/从低到高排一下" in instructions
+    assert "本质也是 sort_ordered_plan 排序动作，不是审查修复建议" in instructions
+    assert "处理录取率倒挂、按录取率重排" not in instructions

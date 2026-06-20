@@ -49,11 +49,46 @@ public class UserGoalProposalBuilderTest {
         ReplacementPairDTO pair = proposal.getActions().get(0).getReplacementPairs().get(0);
         assertEquals("v2", pair.getFromVolunteerId());
         assertEquals("v3", pair.getToVolunteerId());
+        assertTrue(proposal.getActions().get(0).getDetail().contains("湖南师范大学-汉语言文学"));
+        assertTrue(proposal.getActions().get(0).getDetail().contains("南华大学-临床医学"));
+        assertTrue(proposal.getActions().get(0).getDetail().contains("->"));
         assertEquals("ready", proposal.getDryRunResult().getStatus());
         assertFalse(proposal.getImpact().contains("只读"));
         assertFalse(proposal.getDryRunResult().getMessage().contains("只读"));
         assertFalse(proposal.getDryRunResult().getMessage().contains("当前不会修改方案"));
         assertTrue(proposal.getDryRunResult().getWarnings().isEmpty());
+    }
+
+    @Test
+    void shouldBuildOnlyKeepPreviewForRegionAreaScope() {
+        PlanningStateDTO state = state(12);
+        CandidateItemDTO southCurrent = candidate("v1", "广州新华学院", "金融工程", "金融学类", 92D);
+        southCurrent.setProvinceName("广东");
+        CandidateItemDTO northCurrent = candidate("v2", "天津仁爱学院", "金融工程", "金融学类", 88D);
+        northCurrent.setProvinceName("天津");
+        CandidateItemDTO southCandidate = candidate("v3", "海南热带海洋学院", "汉语言文学", "文学", 90D);
+        southCandidate.setProvinceName("海南");
+        state.getCandidatePoolState().getItems().add(southCurrent);
+        state.getCandidatePoolState().getItems().add(northCurrent);
+        state.getCandidatePoolState().getItems().add(southCandidate);
+        state.getOrderedPlanState().getItems().add(ordered("v1", "广州新华学院", "金融工程", false));
+        state.getOrderedPlanState().getItems().add(ordered("v2", "天津仁爱学院", "金融工程", false));
+
+        UserGoalFixProposalReq.ScopeDTO scope = scope("region", "南方");
+        scope.setScopeLevel("area");
+        UserGoalFixProposalReq req = req("only_keep_scope", 12, scope);
+        req.setUserOriginalText("孩子就想去南方，北方先别考虑");
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        assertEquals("only_keep_scope", proposal.getStrategy());
+        assertTrue(proposal.getSummary().contains("符合“南方”"));
+        assertFalse(proposal.getSummary().contains("广东、广西、海南"));
+        FixProposalActionDTO action = proposal.getActions().get(0);
+        assertEquals("replace_volunteers", action.getActionType());
+        assertEquals("v2", action.getRemoveVolunteerIds().get(0));
+        assertEquals("v3", action.getCandidateVolunteerIds().get(0));
     }
 
     @Test
@@ -110,6 +145,30 @@ public class UserGoalProposalBuilderTest {
     }
 
     @Test
+    void shouldPreferIntentScoreForMustIncludeCandidatePreview() {
+        PlanningStateDTO state = state(12);
+        CandidateItemDTO current = candidate("v1", "湖南师范大学", "汉语言文学", "文学", 88D);
+        CandidateItemDTO highRecommendLowIntent = candidate("v2", "学校A", "法学", "法学类", 98D);
+        highRecommendLowIntent.setIntentScore(20D);
+        highRecommendLowIntent.setAdmissionRatio(80D);
+        CandidateItemDTO lowerRecommendHighIntent = candidate("v3", "学校B", "法学", "法学类", 86D);
+        lowerRecommendHighIntent.setIntentScore(95D);
+        lowerRecommendHighIntent.setAdmissionRatio(70D);
+        state.getCandidatePoolState().getItems().add(current);
+        state.getCandidatePoolState().getItems().add(highRecommendLowIntent);
+        state.getCandidatePoolState().getItems().add(lowerRecommendHighIntent);
+        state.getOrderedPlanState().getItems().add(ordered("v1", "湖南师范大学", "汉语言文学", false));
+
+        UserGoalFixProposalReq req = req("must_include_scope", 12, scope("major", "法学"));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        assertEquals("add_volunteers", proposal.getActions().get(0).getActionType());
+        assertEquals("v3", proposal.getActions().get(0).getCandidateVolunteerIds().get(0));
+    }
+
+    @Test
     void shouldBuildMustIncludeReplacementPreviewWhenCurrentPlanIsFull() {
         PlanningStateDTO state = state(12);
         state.getCandidatePoolState().setVolunteerModel("major");
@@ -134,6 +193,38 @@ public class UserGoalProposalBuilderTest {
         assertTrue(proposal.getDryRunResult().getWarnings().isEmpty());
         assertEquals("v1", action.getReplacementPairs().get(0).getFromVolunteerId());
         assertEquals("v2", action.getReplacementPairs().get(0).getToVolunteerId());
+    }
+
+    @Test
+    void shouldPreferIntentScoreForFullPlanReplacementPreviewAfterHardMatch() {
+        PlanningStateDTO state = state(12);
+        state.getCandidatePoolState().setVolunteerModel("major");
+        state.getCandidatePoolState().setRequiredCount(1);
+        CandidateItemDTO current = candidate("v1", "湖南师范大学", "汉语言文学", "文学", 88D);
+        current.setIntentScore(70D);
+        CandidateItemDTO highRecommendLowIntent = candidate("v2", "学校A", "法学", "法学类", 99D);
+        highRecommendLowIntent.setIntentScore(20D);
+        highRecommendLowIntent.setAdmissionRatio(90D);
+        CandidateItemDTO lowerRecommendHighIntent = candidate("v3", "学校B", "法学", "法学类", 86D);
+        lowerRecommendHighIntent.setIntentScore(95D);
+        lowerRecommendHighIntent.setAdmissionRatio(70D);
+        state.getCandidatePoolState().getItems().add(current);
+        state.getCandidatePoolState().getItems().add(highRecommendLowIntent);
+        state.getCandidatePoolState().getItems().add(lowerRecommendHighIntent);
+        state.getOrderedPlanState().getItems().add(ordered("v1", "湖南师范大学", "汉语言文学", false));
+
+        UserGoalFixProposalReq req = req("must_include_scope", 12, scope("major", "法学"));
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        FixProposalActionDTO action = proposal.getActions().get(0);
+        assertEquals("replace_volunteers", action.getActionType());
+        assertEquals("v3", action.getCandidateVolunteerIds().get(0));
+        assertEquals("v3", action.getReplacementPairs().get(0).getToVolunteerId());
+        assertTrue(action.getDetail().contains("湖南师范大学-汉语言文学"));
+        assertTrue(action.getDetail().contains("学校B-法学"));
+        assertTrue(action.getDetail().contains("->"));
     }
 
     @Test

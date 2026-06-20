@@ -1054,12 +1054,33 @@ def test_metrics_summary_reports_latency_distribution_and_slowest_steps():
             {"case": "b", "sessionId": "17", "prompt": "p2", "elapsedMs": 3000},
             {"case": "c", "sessionId": "16", "prompt": "p3", "elapsedMs": 2000},
             {"case": "d", "sessionId": "16", "prompt": "p4", "elapsedMs": 500, "error": "Timeout"},
+            {
+                "case": "e",
+                "sessionId": "16",
+                "prompt": "p5",
+                "elapsedMs": 800,
+                "contentViolations": ["missing answer"],
+            },
+            {
+                "case": "f",
+                "sessionId": "16",
+                "prompt": "p6",
+                "elapsedMs": 900,
+                "toolViolations": ["wrong tool"],
+                "performanceViolations": ["too slow"],
+            },
         ]
     )
 
-    assert summary["steps"] == 4
+    assert summary["steps"] == 6
     assert summary["successfulSteps"] == 3
-    assert summary["failedSteps"] == 1
+    assert summary["failedSteps"] == 3
+    assert summary["failedByReason"] == {
+        "request": 1,
+        "content": 1,
+        "tool": 1,
+        "performance": 1,
+    }
     assert summary["elapsed"]["medianMs"] == 2000
     assert summary["slowest"][0]["case"] == "b"
 

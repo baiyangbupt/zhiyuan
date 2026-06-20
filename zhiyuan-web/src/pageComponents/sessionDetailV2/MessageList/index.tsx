@@ -1376,28 +1376,41 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
                                       effectiveContentObj?.status || ''
                                     );
                                   let statusText = '';
+                                  let badgeText = '待确认';
                                   if (effectiveContentObj?.status === 'applied' || effectiveContentObj?.clicked) {
                                     statusText =
                                       effectiveContentObj?.kind === 'intent_change' ? '已采纳' : '已确认';
+                                    badgeText =
+                                      effectiveContentObj?.kind === 'intent_change' ? '已采纳' : '已生效';
                                   } else if (effectiveContentObj?.status === 'cancelled') {
                                     statusText =
                                       effectiveContentObj?.kind === 'intent_change' ? '未采纳' : '已取消';
+                                    badgeText =
+                                      effectiveContentObj?.kind === 'intent_change' ? '未采纳' : '已取消';
                                   } else if (effectiveContentObj?.status === 'replaced') {
                                     statusText = '已被新的确认卡替代';
+                                    badgeText = '已替代';
                                   } else if (effectiveContentObj?.status === 'expired') {
                                     statusText = '已失效';
+                                    badgeText = '已失效';
                                   }
                                   return (
                                     <div className={style.pendingConfirmationCard}>
                                       <div className={style.pendingConfirmationHeader}>
-                                        <span className={style.pendingConfirmationBadge}>待确认</span>
+                                        <span className={style.pendingConfirmationBadge}>{badgeText}</span>
                                         <div className={style.pendingConfirmationTitle}>
                                           {effectiveContentObj.title || '请确认本次方案调整'}
                                         </div>
                                       </div>
-                                      {(effectiveContentObj.summary || effectiveContentObj.content) ? (
+                                      {effectiveContentObj.summary ? (
                                         <div className={style.pendingConfirmationContent}>
-                                          {effectiveContentObj.summary || effectiveContentObj.content}
+                                          {effectiveContentObj.summary}
+                                        </div>
+                                      ) : null}
+                                      {effectiveContentObj.content &&
+                                      effectiveContentObj.content !== effectiveContentObj.summary ? (
+                                        <div className={style.pendingConfirmationContent}>
+                                          {effectiveContentObj.content}
                                         </div>
                                       ) : null}
                                       {renderImpactBlock(effectiveContentObj.impact, effectiveContentObj.impactTitle)}

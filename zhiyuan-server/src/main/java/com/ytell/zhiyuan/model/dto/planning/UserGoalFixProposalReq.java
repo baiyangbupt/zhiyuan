@@ -26,6 +26,7 @@ public class UserGoalFixProposalReq {
         private String name;
         private String normalizedName;
         private String entityType;
+        private String scopeLevel;
         private String resolutionStatus;
         private String rawText;
         private Map<String, Object> evidence;

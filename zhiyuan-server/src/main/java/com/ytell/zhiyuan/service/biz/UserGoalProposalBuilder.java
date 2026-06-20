@@ -19,6 +19,9 @@ import com.ytell.zhiyuan.model.dto.planning.UserGoalFixProposalReq;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Comparator;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.Map;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -35,6 +38,7 @@ final class UserGoalProposalBuilder {
     private static final String REASON_TARGET_NOT_FOUND = "user_goal_target_not_found";
     private static final String REASON_ENTITY_NEEDS_CLARIFICATION = "user_goal_entity_needs_clarification";
     private static final int PREVIEW_CANDIDATE_LIMIT = 5;
+    private static final Map<String, List<String>> REGION_AREA_PROVINCES = buildRegionAreaProvinces();
 
     private UserGoalProposalBuilder() {
     }
@@ -466,7 +470,7 @@ final class UserGoalProposalBuilder {
         action.setActionType(RepairProposalTaxonomy.ActionType.REPLACE_VOLUNTEERS);
         action.setLevel("volunteer");
         action.setSummary(summary);
-        action.setDetail("预计替换 " + pairs.size() + " 组。");
+        action.setDetail(buildReplacementActionDetail(pairs));
         action.setRemoveVolunteerIds(pairs.stream()
                 .map(pair -> pair.source.getVolunteerId())
                 .filter(value -> !Strings.isNullOrEmpty(value))
@@ -493,6 +497,119 @@ final class UserGoalProposalBuilder {
             action.getReplacementPairs().add(buildReplacementPair(pair, majorGroupMode));
         }
         return action;
+    }
+
+    private static String buildReplacementActionDetail(List<ReplacementPreviewPair> pairs) {
+        List<String> previews = defaultList(pairs).stream()
+                .limit(3)
+                .map(UserGoalProposalBuilder::formatReplacementPreviewPair)
+                .filter(value -> !Strings.isNullOrEmpty(value))
+                .collect(Collectors.toList());
+        String base = "预计替换 " + defaultList(pairs).size() + " 组。";
+        if (previews.isEmpty()) {
+            return base;
+        }
+        int remainingCount = defaultList(pairs).size() - previews.size();
+        String suffix = remainingCount > 0 ? "；另有 " + remainingCount + " 组未展开" : "";
+        return base + " 具体预览：" + String.join("；", previews) + suffix + "。";
+    }
+
+    private static String formatReplacementPreviewPair(ReplacementPreviewPair pair) {
+        if (pair == null) {
+            return "";
+        }
+        String fromText = formatPlanVolunteerBrief(pair.source);
+        String toText = formatCandidateBrief(pair.candidate);
+        if (Strings.isNullOrEmpty(fromText) || Strings.isNullOrEmpty(toText)) {
+            return "";
+        }
+        String changeText = formatChangeSummary(pair.source == null ? null : pair.source.getCandidate(), pair.candidate);
+        return fromText + " -> " + toText + (Strings.isNullOrEmpty(changeText) ? "" : "（" + changeText + "）");
+    }
+
+    private static String formatPlanVolunteerBrief(PlanVolunteer volunteer) {
+        if (volunteer == null) {
+            return "";
+        }
+        if (volunteer.getCandidate() != null) {
+            return formatCandidateBrief(volunteer.getCandidate());
+        }
+        String label = buildSchoolMajorLabel(volunteer.getSchoolName(), volunteer.getMajorName());
+        return Strings.isNullOrEmpty(label) ? firstNonEmpty(volunteer.getUnitId(), volunteer.getVolunteerId()) : label;
+    }
+
+    private static String formatCandidateBrief(CandidateItemDTO candidate) {
+        if (candidate == null) {
+            return "";
+        }
+        String label = buildSchoolMajorLabel(candidate.getSchoolName(), candidate.getMajorName());
+        if (Strings.isNullOrEmpty(label)) {
+            label = firstNonEmpty(
+                    RepairCandidateSelector.resolveInitialRecommendationUnitId(candidate),
+                    candidate.getVolunteerId());
+        }
+        List<String> tags = Lists.newArrayList(
+                candidate.getTier(),
+                candidate.getAdmissionRatio() == null ? "" : "录取率" + formatNumber(candidate.getAdmissionRatio()) + "%",
+                candidate.getIntentScore() == null ? "" : "匹配" + formatNumber(candidate.getIntentScore()),
+                candidate.getFinalScore() == null ? "" : "推荐" + formatNumber(candidate.getFinalScore()),
+                candidate.getSchoolRank() == null ? "" : "院校排名" + candidate.getSchoolRank());
+        String tagText = tags.stream()
+                .filter(value -> !Strings.isNullOrEmpty(value))
+                .collect(Collectors.joining("/"));
+        return Strings.isNullOrEmpty(tagText) ? label : label + "（" + tagText + "）";
+    }
+
+    private static String buildSchoolMajorLabel(String schoolName, String majorName) {
+        String school = Strings.nullToEmpty(schoolName).trim();
+        String major = Strings.nullToEmpty(majorName).trim();
+        if (Strings.isNullOrEmpty(school)) {
+            return major;
+        }
+        if (Strings.isNullOrEmpty(major)) {
+            return school;
+        }
+        return school + "-" + major;
+    }
+
+    private static String formatChangeSummary(CandidateItemDTO from, CandidateItemDTO to) {
+        if (from == null || to == null) {
+            return "";
+        }
+        List<String> changes = Lists.newArrayList(
+                formatDelta("录取率", from.getAdmissionRatio(), to.getAdmissionRatio()),
+                formatDelta("匹配", from.getIntentScore(), to.getIntentScore()),
+                formatDelta("推荐", from.getFinalScore(), to.getFinalScore()),
+                formatRankDelta(from.getSchoolRank(), to.getSchoolRank()));
+        return changes.stream()
+                .filter(value -> !Strings.isNullOrEmpty(value))
+                .collect(Collectors.joining("，"));
+    }
+
+    private static String formatDelta(String label, Double from, Double to) {
+        if (from == null || to == null) {
+            return "";
+        }
+        double delta = to - from;
+        if (Math.abs(delta) < 0.05D) {
+            return "";
+        }
+        return label + (delta > 0 ? "+" : "") + formatNumber(delta);
+    }
+
+    private static String formatRankDelta(Integer from, Integer to) {
+        if (from == null || from <= 0 || to == null || to <= 0 || from.equals(to)) {
+            return "";
+        }
+        int delta = to - from;
+        return delta > 0 ? "院校排名下降" + delta : "院校排名提升" + Math.abs(delta);
+    }
+
+    private static String formatNumber(Double value) {
+        if (value == null) {
+            return "";
+        }
+        return String.format(Locale.ROOT, "%.1f", value);
     }
 
     private static ReplacementPairDTO buildReplacementPair(ReplacementPreviewPair previewPair,
@@ -556,8 +673,7 @@ final class UserGoalProposalBuilder {
                     .filter(candidate -> !usedCandidateVolunteerIds.contains(candidate.getVolunteerId()))
                     .filter(candidate -> !majorGroupMode || isCandidateUnitAvailableForReplacement(
                             candidate, source.getUnitId(), currentUnitIds, usedCandidateUnitIds))
-                    .min((left, right) -> RepairReplacementTradeoffSupport.compareTradeoff(
-                            source.getCandidate(), left, source.getCandidate(), right))
+                    .min((left, right) -> compareUserGoalReplacementTradeoff(source.getCandidate(), left, right))
                     .orElse(null);
             if (best == null) {
                 continue;
@@ -589,6 +705,57 @@ final class UserGoalProposalBuilder {
             }
         }
         return result;
+    }
+
+    private static int compareUserGoalReplacementTradeoff(CandidateItemDTO source,
+                                                          CandidateItemDTO left,
+                                                          CandidateItemDTO right) {
+        int compare = Integer.compare(
+                RepairReplacementTradeoffSupport.majorSimilarityLevel(source, left),
+                RepairReplacementTradeoffSupport.majorSimilarityLevel(source, right));
+        if (compare != 0) {
+            return compare;
+        }
+        compare = Integer.compare(
+                RepairReplacementTradeoffSupport.schoolRankDowngradePenalty(source, left),
+                RepairReplacementTradeoffSupport.schoolRankDowngradePenalty(source, right));
+        if (compare != 0) {
+            return compare;
+        }
+        compare = Double.compare(
+                RepairReplacementTradeoffSupport.scoreLossPenalty(source == null ? null : source.getIntentScore(),
+                        left == null ? null : left.getIntentScore()),
+                RepairReplacementTradeoffSupport.scoreLossPenalty(source == null ? null : source.getIntentScore(),
+                        right == null ? null : right.getIntentScore()));
+        if (compare != 0) {
+            return compare;
+        }
+        compare = Double.compare(
+                RepairReplacementTradeoffSupport.scoreLossPenalty(source == null ? null : source.getFinalScore(),
+                        left == null ? null : left.getFinalScore()),
+                RepairReplacementTradeoffSupport.scoreLossPenalty(source == null ? null : source.getFinalScore(),
+                        right == null ? null : right.getFinalScore()));
+        if (compare != 0) {
+            return compare;
+        }
+        compare = compareNullableDoubleDesc(left == null ? null : left.getIntentScore(), right == null ? null : right.getIntentScore());
+        if (compare != 0) {
+            return compare;
+        }
+        compare = compareNullableDoubleDesc(left == null ? null : left.getAdmissionRatio(), right == null ? null : right.getAdmissionRatio());
+        if (compare != 0) {
+            return compare;
+        }
+        compare = compareNullableDoubleDesc(left == null ? null : left.getFinalScore(), right == null ? null : right.getFinalScore());
+        if (compare != 0) {
+            return compare;
+        }
+        compare = compareNullableIntegerAsc(left == null ? null : left.getSchoolRank(), right == null ? null : right.getSchoolRank());
+        if (compare != 0) {
+            return compare;
+        }
+        return Strings.nullToEmpty(left == null ? null : left.getVolunteerId())
+                .compareTo(Strings.nullToEmpty(right == null ? null : right.getVolunteerId()));
     }
 
     private static boolean isCandidateUnitAvailableForReplacement(CandidateItemDTO candidate,
@@ -884,11 +1051,37 @@ final class UserGoalProposalBuilder {
 
     private static Comparator<CandidateItemDTO> buildCandidatePreviewComparator() {
         return Comparator
-                .comparing((CandidateItemDTO item) -> item.getFinalScore(), Comparator.nullsLast(Comparator.reverseOrder()))
+                .comparing((CandidateItemDTO item) -> item.getIntentScore(), Comparator.nullsLast(Comparator.reverseOrder()))
                 .thenComparing(item -> item.getAdmissionRatio(), Comparator.nullsLast(Comparator.reverseOrder()))
-                .thenComparing(item -> item.getIntentScore(), Comparator.nullsLast(Comparator.reverseOrder()))
+                .thenComparing(item -> item.getFinalScore(), Comparator.nullsLast(Comparator.reverseOrder()))
                 .thenComparing(item -> item.getSchoolRank(), Comparator.nullsLast(Integer::compareTo))
                 .thenComparing(CandidateItemDTO::getVolunteerId, Comparator.nullsLast(String::compareTo));
+    }
+
+    private static int compareNullableDoubleDesc(Double left, Double right) {
+        if (left == null && right == null) {
+            return 0;
+        }
+        if (left == null) {
+            return 1;
+        }
+        if (right == null) {
+            return -1;
+        }
+        return Double.compare(right, left);
+    }
+
+    private static int compareNullableIntegerAsc(Integer left, Integer right) {
+        if (left == null && right == null) {
+            return 0;
+        }
+        if (left == null) {
+            return 1;
+        }
+        if (right == null) {
+            return -1;
+        }
+        return Integer.compare(left, right);
     }
 
     private static String buildProposalId(PlanningStateDTO state, UserGoalFixProposalReq req, String reasonCode) {
@@ -899,6 +1092,17 @@ final class UserGoalProposalBuilder {
                 String.valueOf(req == null ? null : req.getUserOriginalText()),
                 String.valueOf(reasonCode));
         return "ugp_" + UUID.nameUUIDFromBytes(raw.getBytes(StandardCharsets.UTF_8)).toString().replace("-", "").substring(0, 16);
+    }
+
+    private static Map<String, List<String>> buildRegionAreaProvinces() {
+        java.util.Map<String, List<String>> map = new java.util.LinkedHashMap<String, List<String>>();
+        map.put("南方", Arrays.asList(
+                "浙江", "上海", "湖南", "湖北", "江西", "福建", "云南", "贵州",
+                "四川", "重庆", "广东", "广西", "海南", "江苏", "安徽"));
+        map.put("北方", Arrays.asList(
+                "黑龙江", "吉林", "辽宁", "内蒙古", "新疆", "西藏", "青海", "甘肃",
+                "宁夏", "陕西", "山西", "山东", "河北", "北京", "天津"));
+        return Collections.unmodifiableMap(map);
     }
 
     private static <T> List<T> defaultList(List<T> values) {
@@ -947,21 +1151,27 @@ final class UserGoalProposalBuilder {
     private static final class ScopeMatcher {
         private final String entityType;
         private final String value;
+        private final String scopeLevel;
         private final String resolutionStatus;
 
-        private ScopeMatcher(String entityType, String value, String resolutionStatus) {
+        private ScopeMatcher(String entityType, String value, String scopeLevel, String resolutionStatus) {
             this.entityType = entityType;
             this.value = value;
+            this.scopeLevel = scopeLevel;
             this.resolutionStatus = resolutionStatus;
         }
 
         static ScopeMatcher from(UserGoalFixProposalReq.ScopeDTO scope) {
             if (scope == null) {
-                return new ScopeMatcher("", "", "");
+                return new ScopeMatcher("", "", "", "");
             }
             String entityType = normalizeEntityType(firstNonEmpty(scope.getEntityType(), scope.getScopeType()));
             String value = firstNonEmpty(scope.getNormalizedName(), scope.getName(), scope.getRawText());
-            return new ScopeMatcher(entityType, value, Strings.nullToEmpty(scope.getResolutionStatus()).trim());
+            String scopeLevel = firstNonEmpty(
+                    scope.getScopeLevel(),
+                    scope.getEvidence() == null ? null : String.valueOf(scope.getEvidence().get("scopeLevel")));
+            return new ScopeMatcher(entityType, value, normalizeScopeLevel(scopeLevel),
+                    Strings.nullToEmpty(scope.getResolutionStatus()).trim());
         }
 
         String getValue() {
@@ -1017,8 +1227,7 @@ final class UserGoalProposalBuilder {
                         || containsLoose(candidate.getSchoolName(), value);
             }
             if ("region".equals(entityType)) {
-                return containsLoose(candidate.getProvinceName(), value)
-                        || containsLoose(candidate.getCityName(), value);
+                return matchesRegion(candidate);
             }
             if ("tag".equals(entityType) || "risk".equals(entityType)) {
                 return containsAny(candidate.getReasonCodes(), value)
@@ -1049,6 +1258,28 @@ final class UserGoalProposalBuilder {
             return containsLoose(candidate.getMajorName(), value)
                     || containsLoose(candidate.getSchoolName(), value)
                     || containsLoose(candidate.getProvinceName(), value)
+                    || containsLoose(candidate.getCityName(), value);
+        }
+
+        private boolean matchesRegion(CandidateItemDTO candidate) {
+            if (candidate == null) {
+                return false;
+            }
+            if ("area".equals(scopeLevel)) {
+                List<String> provinces = REGION_AREA_PROVINCES.get(value);
+                if (provinces == null || provinces.isEmpty()) {
+                    return containsLoose(candidate.getProvinceName(), value)
+                            || containsLoose(candidate.getCityName(), value);
+                }
+                return containsAny(provinces, candidate.getProvinceName());
+            }
+            if ("province".equals(scopeLevel)) {
+                return containsLoose(candidate.getProvinceName(), value);
+            }
+            if ("city".equals(scopeLevel)) {
+                return containsLoose(candidate.getCityName(), value);
+            }
+            return containsLoose(candidate.getProvinceName(), value)
                     || containsLoose(candidate.getCityName(), value);
         }
 
@@ -1115,6 +1346,14 @@ final class UserGoalProposalBuilder {
                 return "program_type";
             }
             return text;
+        }
+
+        private static String normalizeScopeLevel(String level) {
+            String text = Strings.nullToEmpty(level).trim().toLowerCase(Locale.ROOT);
+            if ("province".equals(text) || "city".equals(text) || "area".equals(text)) {
+                return text;
+            }
+            return "";
         }
 
         private static boolean isSupportedEntityType(String type) {

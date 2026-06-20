@@ -206,6 +206,10 @@ _UNBACKED_PLAN_CONFIRMATION_REPLY = (
     "如果你要继续调整，请再发一次具体要求，我会重新定位影响范围并列出调整预览；"
     "只有你点“确认执行”或直接确认当前有效预览后才会执行。"
 )
+_NO_TOOL_NO_ACTION_BOUNDARY_REPLY = (
+    "可以，先按这次思路保留和讨论；这轮不会改动当前方案，也不会写入后续报考参考里的偏好或要求，更不会自动执行调整。"
+    "下一步如果要正式采用新的想法或调整方案，我会先把要采用的内容或调整预览列清楚，你确认前不会执行。"
+)
 _ROUTE_OBSERVABILITY_MODEL_NAME = "route-observability"
 _SEMANTIC_PLAN_ACTION_CONFIDENCE_THRESHOLD = 0.8
 _SEMANTIC_PENDING_CONFIRMATION_CONFIDENCE_THRESHOLD = 0.85
@@ -240,7 +244,7 @@ _PLAN_ACTION_REPLY_SYNTHESIS_INSTRUCTIONS = """\
 - 不要说“系统给了/系统能执行/系统没法执行/暂时动不了/卡在哪/我立刻处理/给我明确态度我就能处理”。
 - 统一用“你”，不要用“您”。
 - 不要照抄 summary/state_summary；它们只是事实摘要。
-- 如果已有可确认的调整预览，说明“我已把可执行的处理内容列出来，确认前不会改方案”，并点出核心处理内容。
+- 如果已有可确认的调整预览，说明“我已把可确认的处理内容列出来，确认前不会改方案”，并点出核心处理内容。
 - 如果某些建议暂时不能直接处理，用用户能理解的原因说清楚，例如“没有足够相近且风险更低的可替换志愿”“需要你先决定是否接受降层次或换专业范围”。
 - 没有当前轮可确认的调整预览时，不要让用户直接“确认就执行”；应表达为“我可以先列出调整预览，确认前不会改方案”。
 - 回复可以结构化，但要简洁，优先用 2-4 个短要点；不要堆叠多层标题。
@@ -333,6 +337,16 @@ def _requests_profile_change_replan(value: Any) -> bool:
     return _PROFILE_CHANGE_REPLAN_REPLY_FOCUS in _reply_focus_set(value)
 
 
+def _semantic_decision_has_target_scope(value: Any) -> bool:
+    if isinstance(value, dict):
+        strategies = value.get("target_strategies") or value.get("targetStrategies") or []
+        issue_codes = value.get("target_issue_codes") or value.get("targetIssueCodes") or []
+    else:
+        strategies = getattr(value, "targetStrategies", []) or []
+        issue_codes = getattr(value, "targetIssueCodes", []) or []
+    return any(str(item or "").strip() for item in list(strategies or []) + list(issue_codes or []))
+
+
 def _semantic_current_plan_analysis_allowed(value: Any) -> bool:
     """Whether semantic quick route may answer analysis without review context.
 
@@ -343,19 +357,153 @@ def _semantic_current_plan_analysis_allowed(value: Any) -> bool:
     that boundary explanation.
     """
 
-    return bool(_reply_focus_set(value) & {"shortage_boundary", "unavailable_guidance"})
+    focus = _reply_focus_set(value)
+    if "unavailable_guidance" in focus:
+        return True
+    return "shortage_boundary" in focus and "plan_structure_shortage_only" in focus
 
 
 def _semantic_current_plan_analysis_matches_prompt(value: Any, user_prompt: str | None) -> bool:
     focus = _reply_focus_set(value)
     if "shortage_boundary" in focus:
-        return True
+        return "plan_structure_shortage_only" in focus
     if "unavailable_guidance" in focus:
-        return (
-            _review_prompt_prefers_unavailable_guidance(user_prompt)
-            or _prompt_requests_plan_constraint_adjustment(user_prompt)
-        )
+        return _review_prompt_prefers_unavailable_guidance(user_prompt) or _prompt_requests_plan_constraint_adjustment(user_prompt)
     return False
+
+
+def _semantic_targeted_review_allowed(value: Any) -> bool:
+    issue_codes = [
+        str(code or "").strip()
+        for code in list(getattr(value, "targetIssueCodes", []) or [])
+        if str(code or "").strip()
+    ]
+    return bool(issue_codes) and "target_issue_only" in _reply_focus_set(value)
+
+
+def _plan_result_reply_focus_set(value: Any) -> set[str]:
+    if not isinstance(value, dict):
+        return set()
+    focus: list[Any] = []
+    raw_focus = value.get("reply_focus")
+    if isinstance(raw_focus, list):
+        focus.extend(raw_focus)
+    facts = value.get("facts") if isinstance(value.get("facts"), dict) else {}
+    requested_focus = facts.get("requested_reply_focus") if isinstance(facts, dict) else None
+    if isinstance(requested_focus, list):
+        focus.extend(requested_focus)
+    return {str(item or "").strip() for item in focus if str(item or "").strip()}
+
+
+def _plan_result_requests_fix_preview(value: Any) -> bool:
+    focus = _plan_result_reply_focus_set(value)
+    return bool(focus & {"fix_proposal_preview", "ready_fix_proposals"})
+
+
+def _plan_result_has_fix_proposals(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    facts = value.get("facts") if isinstance(value.get("facts"), dict) else {}
+    fix_facts = facts.get("fix_proposals") if isinstance(facts.get("fix_proposals"), dict) else {}
+    if not isinstance(fix_facts, dict):
+        return False
+    if any(_as_int(fix_facts.get(key)) > 0 for key in ("ready_count", "blocked_count", "preview_only_count")):
+        return True
+    proposals = fix_facts.get("proposals")
+    return isinstance(proposals, list) and bool(proposals)
+
+
+def _plan_result_has_ready_fix_proposals(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    facts = value.get("facts") if isinstance(value.get("facts"), dict) else {}
+    fix_facts = facts.get("fix_proposals") if isinstance(facts.get("fix_proposals"), dict) else {}
+    if not isinstance(fix_facts, dict):
+        return False
+    if _as_int(fix_facts.get("ready_count") or fix_facts.get("readyCount")) > 0:
+        return True
+    proposals = fix_facts.get("proposals") if isinstance(fix_facts.get("proposals"), list) else []
+    return any(
+        isinstance(proposal, dict) and str(proposal.get("status") or "").strip() == "ready"
+        for proposal in proposals
+    )
+
+
+def _plan_route_context_requests_fix_preview(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    focus = value.get("replyFocus")
+    return isinstance(focus, list) and any(
+        str(item or "").strip() in {"fix_proposal_preview", "ready_fix_proposals"}
+        for item in focus
+    )
+
+
+def _plan_route_context_has_fix_proposals(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    fix_facts = value.get("fixProposals")
+    if not isinstance(fix_facts, dict):
+        return False
+    if any(_as_int(fix_facts.get(key)) > 0 for key in ("readyCount", "blockedCount", "previewOnlyCount")):
+        return True
+    proposals = fix_facts.get("proposals")
+    return isinstance(proposals, list) and bool(proposals)
+
+
+def _structured_review_context_is_readonly(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    if str(value.get("lastActionFamily") or "").strip() != "review_plan":
+        return False
+    if str(value.get("lastResultKind") or "").strip() != "review_result":
+        return False
+    if _plan_route_context_requests_fix_preview(value):
+        return False
+    return _plan_route_context_has_fix_proposals(value)
+
+
+def _structured_review_result_is_readonly(value: Any) -> bool:
+    """A review result that should be explained, not promoted into a mutation.
+
+    This only inspects structured tool output.  When the review result explicitly
+    requests a fix preview, recovery is still allowed; otherwise a review result
+    with proposals is treated as a read-only explanation/listing boundary.
+    """
+
+    if not isinstance(value, dict):
+        return False
+    if str(value.get("action_family") or "").strip() != "review_plan":
+        return False
+    if str(value.get("result_kind") or "").strip() != "review_result":
+        return False
+    if _plan_result_requests_fix_preview(value):
+        return False
+    focus = _plan_result_reply_focus_set(value)
+    return _plan_result_has_fix_proposals(value) and (
+        not focus or bool(focus & {"review_result", "fix_proposals", "unavailable_guidance"})
+    )
+
+
+def _prompt_asks_review_explanation_only(content: str | None) -> bool:
+    compact = _compact_plan_reply_text(str(content or ""))
+    if not compact:
+        return False
+    has_review_context = any(marker in compact for marker in ("审查", "提醒", "风险", "自动处理", "只是看看"))
+    has_explanation_request = any(
+        marker in compact
+        for marker in (
+            "看不懂",
+            "帮我分一下",
+            "分一下",
+            "哪些只是看看",
+            "哪些可以自动处理",
+            "哪些可以先出调整预览",
+            "哪些需要人工",
+            "解释一下",
+        )
+    )
+    return has_review_context and has_explanation_request
 
 
 def _build_profile_change_replan_reply(
@@ -441,12 +589,46 @@ def _compact_plan_action_result_for_reply_synthesis(result: dict[str, Any]) -> d
         for proposal in (fix_facts.get("proposals") or [])[:6]
         if isinstance(proposal, dict)
     ]
+    issue_examples: list[dict[str, Any]] = []
+    for issue in (facts.get("issue_hit_plan_examples") or facts.get("review_issue_hit_plan_examples") or [])[:6]:
+        if not isinstance(issue, dict):
+            continue
+        issue_examples.append(
+            {
+                "code": str(issue.get("code") or "").strip(),
+                "summary": _normalize_user_facing_terms(_normalize_fix_proposal_user_text(str(issue.get("summary") or "").strip())),
+                "count_text": str(issue.get("count_text") or issue.get("countText") or "").strip(),
+                "items": [
+                    _normalize_user_facing_terms(_normalize_fix_proposal_user_text(str(item or "").strip()))
+                    for item in (issue.get("items") or [])[:4]
+                    if str(item or "").strip()
+                ],
+            }
+        )
     return {
         "action_family": str(result.get("action_family") or "").strip(),
         "result_kind": str(result.get("result_kind") or "").strip(),
         "summary": _normalize_user_facing_terms(_normalize_fix_proposal_user_text(str(result.get("summary") or "").strip())),
         "state_summary": _normalize_user_facing_terms(_normalize_fix_proposal_user_text(str(result.get("state_summary") or "").strip())),
         "reply_focus": result.get("reply_focus") if isinstance(result.get("reply_focus"), list) else [],
+        "review": {
+            "plan_total": _as_int(facts.get("plan_total")),
+            "target_total": _as_int(facts.get("target_total")),
+            "risk_count": _as_int(facts.get("risk_count")),
+            "warn_count": _as_int(facts.get("warn_count")),
+            "tier_counts": facts.get("tier_counts") if isinstance(facts.get("tier_counts"), dict) else {},
+            "main_problems": [
+                _normalize_user_facing_terms(_normalize_fix_proposal_user_text(str(item or "").strip()))
+                for item in (facts.get("main_problems") or [])[:6]
+                if str(item or "").strip()
+            ],
+            "issue_examples": issue_examples,
+            "target_issue_codes": [
+                str(code or "").strip()
+                for code in (facts.get("target_issue_codes") or facts.get("targetIssueCodes") or [])
+                if str(code or "").strip()
+            ],
+        },
         "fix_proposals": {
             "total": _as_int(fix_facts.get("total") or len(proposals)),
             "ready_count": _as_int(fix_facts.get("ready_count")),
@@ -1204,14 +1386,33 @@ def _summarize_intent_values(
     )
     add(
         _positive_intent_label("发展方向", constraint_intent_type=constraint_intent_type),
-        to_career_labels(career_intents.get("positive")),
+        to_career_labels(career_intents.get("positive")) or _as_text_list(career_intents.get("positive")),
     )
     add(
         _soft_negative_label("排除方向", intent_mode=intent_mode),
-        to_career_labels(career_intents.get("negative")),
+        to_career_labels(career_intents.get("negative")) or _as_text_list(career_intents.get("negative")),
     )
     add("避开项目", _as_text_list(physical_constraints.get("special_limits")) + _as_text_list(physical_constraints.get("specialLimits")))
     return "；".join(parts)
+
+
+def _reply_with_pending_intent_summary(reply: str, state_result: Any | None, pending_state: dict[str, Any]) -> str:
+    summary = str((pending_state or {}).get("summary") or "").strip()
+    if not summary:
+        return reply
+    message_code = str(getattr(state_result, "messageCode", "") or "").strip()
+    if message_code not in {"constraint_applied", "preference_applied"}:
+        return reply
+    normalized_reply = reply or ""
+    concrete_terms = [
+        term
+        for term in re.findall(r"[\u4e00-\u9fffA-Za-z0-9]+", summary)
+        if len(term) >= 2
+    ]
+    if concrete_terms and any(term in normalized_reply for term in concrete_terms):
+        return reply
+    base_reply = normalized_reply.strip() or "已采纳。"
+    return f"{base_reply}\n本次内容：{summary}。"
 
 
 def _as_text_list(values: Any) -> list[str]:
@@ -1404,6 +1605,11 @@ def _intent_summary_from_item_content(
         ("偏好专业：", "major_intents", "level3"),
         ("排除专业：", "major_intents", "negative_level3"),
         ("不优先专业：", "major_intents", "negative_level3"),
+        ("只保留发展方向：", "career_intents", "positive"),
+        ("至少保留发展方向：", "career_intents", "positive"),
+        ("发展方向：", "career_intents", "positive"),
+        ("排除方向：", "career_intents", "negative"),
+        ("不优先发展方向：", "career_intents", "negative"),
     ]
     rewritten: list[str] = []
     for part in parts:
@@ -1625,6 +1831,58 @@ def _intent_payload_has_negative_value(payload: dict[str, Any] | None) -> bool:
     )
 
 
+def _constraint_payload_has_required_scope(
+    merged: dict[str, Any] | None,
+    *,
+    constraint_intent_type: str,
+) -> bool:
+    normalized = str(constraint_intent_type or "default").strip()
+    if normalized in {"only_keep", "must_have"}:
+        return _intent_payload_has_positive_value(merged)
+    return _intent_payload_has_positive_value(merged) or _intent_payload_has_negative_value(merged)
+
+
+def _intent_preview_missing_required_constraint_scope(payload: dict[str, Any] | None) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    try:
+        preview = parse_intent_analysis_payload(
+            json.dumps(_normalize_intent_preview_payload_for_parse(payload), ensure_ascii=False)
+        )
+    except Exception:
+        return False
+    raw_constraint_type = str(getattr(preview, "constraintIntentType", "") or "").strip()
+    if raw_constraint_type not in {"only_keep", "must_have"}:
+        return False
+    selected_values = [
+        item.value
+        for item in preview.items
+        if item.selected and isinstance(item.value, dict) and item.value
+    ]
+    if not selected_values and preview.status != "existing_only":
+        return True
+    if not selected_values:
+        selected_values = [
+            item.value
+            for item in preview.existingItems
+            if isinstance(item.value, dict) and item.value
+        ]
+    try:
+        merged = merge_selected_values(selected_values)
+    except Exception:
+        return True
+    return not _intent_payload_has_positive_value(merged)
+
+
+def _intent_preview_incomplete_constraint_reply(payload: dict[str, Any] | None) -> str:
+    constraint_type = ""
+    if isinstance(payload, dict):
+        constraint_type = str(payload.get("constraintIntentType") or payload.get("constraint_intent_type") or "").strip()
+    if constraint_type == "must_have":
+        return "我理解你是想让方案里至少保留某个方向，但这次没有稳定识别出具体要保留的专业、院校或地域。请直接补充要保留的范围，我再给你列出可采纳内容。"
+    return "我理解你是想把后续范围收紧，但这次没有稳定识别出具体要保留的专业、院校或地域。请直接补充要保留的范围，我再给你列出可采纳内容。"
+
+
 def _intent_confirmation_mechanism_line(
     intent_mode: str,
     payload: dict[str, Any] | None = None,
@@ -1734,11 +1992,14 @@ def _major_values_from_positive_intents(major_intents: dict[str, Any]) -> list[s
     return values
 
 
-def _scope_payload(entity_type: str, values: list[str]) -> dict[str, Any] | None:
+def _scope_payload(entity_type: str, values: list[str], *, scope_level: str | None = None) -> dict[str, Any] | None:
     deduped = list(dict.fromkeys(str(value or "").strip() for value in values if str(value or "").strip()))
     if not deduped:
         return None
-    return {"entity_type": entity_type, "values": deduped}
+    payload: dict[str, Any] = {"entity_type": entity_type, "values": deduped}
+    if scope_level:
+        payload["scope_level"] = scope_level
+    return payload
 
 
 def _positive_goal_scopes_from_intents(merged: dict[str, Any], batch: str | None = "01") -> list[dict[str, Any]]:
@@ -1752,13 +2013,22 @@ def _positive_goal_scopes_from_intents(merged: dict[str, Any], batch: str | None
     scopes: list[dict[str, Any]] = []
     major_scope = _scope_payload("major", _major_values_from_positive_intents(major_intents))
     school_scope = _scope_payload("school", _normalize_school_intent_names(school_intents.get("colleges"), batch))
-    region_scope = _scope_payload(
+    region_province_scope = _scope_payload(
         "region",
-        normalize_region_names(city_intents.get("province"), expected_level="province")
-        + normalize_region_names(city_intents.get("city"), expected_level="city")
-        + normalize_region_names(city_intents.get("area"), expected_level="area"),
+        normalize_region_names(city_intents.get("province"), expected_level="province"),
+        scope_level="province",
     )
-    for scope in (major_scope, school_scope, region_scope):
+    region_city_scope = _scope_payload(
+        "region",
+        normalize_region_names(city_intents.get("city"), expected_level="city"),
+        scope_level="city",
+    )
+    region_area_scope = _scope_payload(
+        "region",
+        normalize_region_names(city_intents.get("area"), expected_level="area"),
+        scope_level="area",
+    )
+    for scope in (major_scope, school_scope, region_province_scope, region_city_scope, region_area_scope):
         if scope is not None:
             scopes.append(scope)
     return scopes
@@ -1776,13 +2046,22 @@ def _negative_goal_scopes_from_intents(merged: dict[str, Any], batch: str | None
         + _as_text_list(major_intents.get("negative_level1")),
     )
     school_scope = _scope_payload("school", _normalize_school_intent_names(school_intents.get("negative_colleges"), batch))
-    region_scope = _scope_payload(
+    region_province_scope = _scope_payload(
         "region",
-        normalize_region_names(city_intents.get("negative_province"), expected_level="province")
-        + normalize_region_names(city_intents.get("negative_city"), expected_level="city")
-        + normalize_region_names(city_intents.get("negative_area"), expected_level="area"),
+        normalize_region_names(city_intents.get("negative_province"), expected_level="province"),
+        scope_level="province",
     )
-    for scope in (major_scope, school_scope, region_scope):
+    region_city_scope = _scope_payload(
+        "region",
+        normalize_region_names(city_intents.get("negative_city"), expected_level="city"),
+        scope_level="city",
+    )
+    region_area_scope = _scope_payload(
+        "region",
+        normalize_region_names(city_intents.get("negative_area"), expected_level="area"),
+        scope_level="area",
+    )
+    for scope in (major_scope, school_scope, region_province_scope, region_city_scope, region_area_scope):
         if scope is not None:
             scopes.append(scope)
     return scopes
@@ -1892,6 +2171,7 @@ def _user_goal_req_scopes_for_scope(
 ) -> list[dict[str, Any]]:
     values = scope_value_list(scope)
     entity_type = scope_entity_type(scope) or "unknown"
+    scope_level = str(scope.get("scope_level") or scope.get("scopeLevel") or "").strip()
     return [
         {
             "scopeType": entity_type,
@@ -1900,9 +2180,11 @@ def _user_goal_req_scopes_for_scope(
             "normalizedName": value,
             "rawText": value,
             "resolutionStatus": "resolved",
+            **({"scopeLevel": scope_level} if scope_level else {}),
             "evidence": {
                 "source": evidence_source,
                 "values": values,
+                **({"scopeLevel": scope_level} if scope_level else {}),
             },
         }
         for value in values
@@ -2350,9 +2632,23 @@ async def _maybe_create_intent_confirmation_from_structured_goal(
     intent_mode = str(intent_payload.get("intentMode") or "constraint").strip()
     if intent_mode not in {"preference", "constraint"}:
         intent_mode = "constraint"
-    constraint_intent_type = _normalize_constraint_type_for_payload(
+    raw_constraint_intent_type = (
         intent_payload.get("constraintIntentType")
-        or intent_payload.get("constraint_intent_type"),
+        or intent_payload.get("constraint_intent_type")
+    )
+    if not _constraint_payload_has_required_scope(
+        merged,
+        constraint_intent_type=str(raw_constraint_intent_type or "default"),
+    ):
+        logger.info(
+            "Skip structured goal intent fallback with incomplete raw constraint scope: session_id=%s constraint=%s merged=%s",
+            session_id,
+            raw_constraint_intent_type,
+            merged,
+        )
+        return None
+    constraint_intent_type = _normalize_constraint_type_for_payload(
+        raw_constraint_intent_type,
         merged,
     )
     if constraint_intent_type in {"only_keep", "must_have"}:
@@ -2391,8 +2687,20 @@ async def _create_pending_intent_confirmation_response(
 ) -> ChatServiceResponseEnvelope:
     replaced_pending = await _load_pending_confirmation_state(session_id)
     mode_text = "要求" if intent_mode == "constraint" else "偏好"
+    raw_constraint_intent_type = selected_data.get("constraintIntentType") or selected_data.get("constraint_intent_type")
+    if not _constraint_payload_has_required_scope(
+        merged,
+        constraint_intent_type=str(raw_constraint_intent_type or "default"),
+    ):
+        logger.info(
+            "Skip pending intent confirmation with incomplete raw constraint scope: session_id=%s constraint=%s merged=%s",
+            session_id,
+            raw_constraint_intent_type,
+            merged,
+        )
+        return ChatServiceResponseEnvelope(primary="", followups=[])
     constraint_intent_type = _normalize_constraint_type_for_payload(
-        selected_data.get("constraintIntentType") or selected_data.get("constraint_intent_type"),
+        raw_constraint_intent_type,
         merged,
     )
     summary = _display_summary_from_intent_payload(selected_data) or _summarize_intent_values(
@@ -2525,8 +2833,20 @@ async def _create_pending_intent_confirmation_from_preview_payload(
     intent_mode = str(preview.intentMode or "preference").strip()
     if intent_mode not in {"preference", "constraint"}:
         intent_mode = "preference"
+    raw_constraint_intent_type = getattr(preview, "constraintIntentType", "default")
+    if not _constraint_payload_has_required_scope(
+        merged,
+        constraint_intent_type=str(raw_constraint_intent_type or "default"),
+    ):
+        logger.info(
+            "Skip intent preview card with incomplete raw constraint scope: session_id=%s constraint=%s merged=%s",
+            session_id,
+            raw_constraint_intent_type,
+            merged,
+        )
+        return None
     constraint_intent_type = _normalize_constraint_type_for_payload(
-        getattr(preview, "constraintIntentType", "default"),
+        raw_constraint_intent_type,
         merged,
     )
     if constraint_intent_type in {"only_keep", "must_have"}:
@@ -3299,6 +3619,8 @@ async def _user_requested_fix_proposal_preview(
     facts = latest_plan_result.get("facts") if isinstance(latest_plan_result.get("facts"), dict) else {}
     if not _ready_fix_proposals(facts):
         return False
+    if _structured_review_result_is_readonly(latest_plan_result):
+        return False
     context = _latest_plan_semantic_route_context(
         [
             ModelRequest(
@@ -3593,7 +3915,61 @@ def _build_fix_proposal_pending_state(
 
 
 def _normalize_fix_proposal_user_text(text: str) -> str:
-    return str(text or "").replace("修复建议", "处理建议").replace("修复", "处理").strip()
+    normalized = str(text or "").replace("修复建议", "处理建议").replace("修复", "处理").strip()
+    replacements = (
+        ("处理高收费志愿", "高收费志愿"),
+        ("处理高收费", "高收费志愿"),
+        ("处理中外合作办学项目", "中外合作项目"),
+        ("处理中外合作", "中外合作项目"),
+        ("处理非意向托底专业", "非意向兜底专业"),
+        ("处理非意向托底", "非意向兜底专业"),
+        ("处理数量校验", "补足志愿数量"),
+        ("处理录取率梯度断层", "补齐录取率梯度"),
+        ("处理录取率倒挂", "调整录取率顺序"),
+        ("处理兜底专业不足", "补兜底专业"),
+        ("处理组内安全垫不足", "补兜底专业"),
+        ("数量校验", "志愿数量"),
+        ("冲稳保配比暂时无法自动处理", "冲稳保结构暂时还调不齐"),
+        ("录取率梯度断层暂时无法自动处理", "录取率梯度暂时还补不齐"),
+        ("暂时无法自动补齐", "暂时还补不齐"),
+        ("暂时无法自动处理", "暂时还不能直接处理"),
+    )
+    for source, target in replacements:
+        normalized = normalized.replace(source, target)
+    return normalized
+
+
+def _clean_fix_proposal_title(value: Any) -> str:
+    title = _clean_review_fallback_text(value)
+    title = re.sub(r"(?:需要你先取舍或放宽条件|需要你先决定取舍或放宽条件)$", "", title).strip()
+    title = re.sub(r"(?:暂时还?不能直接处理|暂时还?补不齐|暂时无法自动处理|暂时无法自动补齐)$", "", title).strip()
+    title = re.sub(r"(?:暂时|当前)$", "", title).strip()
+    if title in {"补足志愿数量", "志愿数量"}:
+        return "志愿数量"
+    if title in {"补兜底专业", "兜底专业", "兜底"}:
+        return "兜底专业"
+    return title
+
+
+def _fix_proposal_action_details(proposal: dict[str, Any], limit: int = 2) -> list[str]:
+    details: list[str] = []
+    seen: set[str] = set()
+    for action in proposal.get("actions") or []:
+        if not isinstance(action, dict):
+            continue
+        detail = _normalize_user_facing_terms(
+            _normalize_fix_proposal_user_text(str(action.get("detail") or "").strip())
+        )
+        if not detail or "->" not in detail:
+            continue
+        compact = _compact_plan_reply_text(detail)
+        if compact in seen:
+            continue
+        details.append(detail)
+        seen.add(compact)
+        if len(details) >= limit:
+            break
+    return details
 
 
 def _format_fix_proposal_card_content(
@@ -3643,6 +4019,9 @@ def _format_fix_proposal_card_content(
         lines.append(f"- 对应提醒：{summary}")
     if deduped_action_summaries:
         lines.append(f"- 调整方式：{'；'.join(deduped_action_summaries[:2])}")
+    action_details = _fix_proposal_action_details(proposal)
+    if action_details:
+        lines.append(f"- 替换预览：{'；'.join(action_details)}")
     if impact:
         lines.append(f"- 影响范围：{impact}")
     return "\n".join(lines).strip() or "确认后会按这条处理建议调整当前方案。"
@@ -3759,16 +4138,8 @@ _LOW_PRIORITY_LOG_ACTION_FAMILIES = {
 
 
 def _extract_execute_plan_action_family(part: ToolCallPart) -> str | None:
-    if part.tool_name != "execute_plan_action":
-        return None
-    args = _parse_tool_call_args(part.args)
-    plan_payload = args.get("plan_payload")
-    if not isinstance(plan_payload, str) or not plan_payload.strip():
-        return None
-    try:
-        payload = json.loads(plan_payload)
-    except Exception:
-        logger.warning("Failed to parse execute_plan_action payload for workspace refresh inference", exc_info=True)
+    payload = _extract_execute_plan_payload(part)
+    if not isinstance(payload, dict):
         return None
     return str(payload.get("action_family") or "").strip() or None
 
@@ -3779,6 +4150,14 @@ def _extract_execute_plan_payload(part: ToolCallPart) -> dict[str, Any] | None:
     args = _parse_tool_call_args(part.args)
     plan_payload = args.get("plan_payload")
     if not isinstance(plan_payload, str) or not plan_payload.strip():
+        raw_args = getattr(part, "args", None)
+        if isinstance(raw_args, str) and raw_args.strip():
+            try:
+                direct_payload = json.loads(raw_args)
+            except Exception:
+                direct_payload = None
+            if isinstance(direct_payload, dict) and str(direct_payload.get("action_family") or "").strip():
+                return direct_payload
         return None
     try:
         payload = json.loads(plan_payload)
@@ -4484,6 +4863,57 @@ def _latest_unexecuted_plan_next_payload(
     return latest_payload
 
 
+def _latest_mismatched_plan_next_preview_payload(
+    messages: list[Any] | None,
+) -> dict[str, Any] | None:
+    """Return a preview payload when the model executed a different action.
+
+    This uses only the structured plan_next_action and execute_plan_action
+    families from the same turn. It fixes copy/dispatch mistakes such as
+    planning a remove preview and then executing a broad review payload.
+    """
+
+    latest_payload: dict[str, Any] | None = None
+    latest_family = ""
+    mismatched = False
+    for part in _iter_tool_return_parts(messages):
+        if part.tool_name == "plan_next_action":
+            data = _parse_tool_return_json(part.content)
+            if not isinstance(data, dict):
+                continue
+            family = str(data.get("action_family") or "").strip()
+            if family not in _PENDING_PLAN_ACTION_FAMILIES:
+                latest_payload = None
+                latest_family = ""
+                mismatched = False
+                continue
+            normalized = normalize_plan_action_payload(dict(data))
+            if str(normalized.get("stage") or "").strip() != "preview":
+                latest_payload = None
+                latest_family = ""
+                mismatched = False
+                continue
+            latest_payload = normalized
+            latest_family = family
+            mismatched = False
+            continue
+        if part.tool_name != "execute_plan_action" or latest_payload is None:
+            continue
+        data = _parse_tool_return_json(part.content)
+        if not isinstance(data, dict):
+            continue
+        executed_family = str(data.get("action_family") or "").strip()
+        if executed_family == latest_family:
+            latest_payload = None
+            latest_family = ""
+            mismatched = False
+        elif executed_family:
+            mismatched = True
+    if latest_payload is None or not mismatched:
+        return None
+    return latest_payload
+
+
 def _latest_plan_next_missing_inputs_payload(
     messages: list[Any] | None,
     *,
@@ -4777,6 +5207,47 @@ def _tool_calls_include_plan_chain(messages: list[Any] | None) -> bool:
     return any(part.tool_name in plan_tool_names for part in _iter_tool_call_parts(messages))
 
 
+def _turn_has_structured_plan_result(messages: list[Any] | None) -> bool:
+    """Whether the latest turn already has structured Plan facts.
+
+    This is used only by post-processing recovery guards. When a review or
+    adjustment tool has returned structured facts, we should not start an
+    unrelated Intent recovery just because the model used confirmation-like
+    wording in its final prose.
+    """
+
+    turn_messages = _messages_after_index(messages, _latest_user_turn_boundary(messages))
+    if not turn_messages:
+        turn_messages = list(messages or [])
+    for part in _iter_tool_return_parts(turn_messages):
+        if part.tool_name not in {"plan_next_action", "execute_plan_action"}:
+            continue
+        data = _parse_tool_return_json(part.content)
+        if not isinstance(data, dict):
+            continue
+        action_family = str(data.get("action_family") or "").strip()
+        result_kind = str(data.get("result_kind") or "").strip()
+        if action_family in {
+            "review_plan",
+            "analyze_adjustment",
+            "preview_fix_proposal",
+            "query_state",
+            "query_ordered",
+            "query_candidates",
+        }:
+            return True
+        if result_kind in {
+            "review_result",
+            "adjustment_analysis",
+            "fix_proposal_preview",
+            "status_overview",
+            "ordered_query",
+            "candidate_query",
+        }:
+            return True
+    return False
+
+
 async def _candidate_query_should_bypass_semantic_plan_action(
     content: str,
     *,
@@ -5039,9 +5510,18 @@ def _normalize_unbacked_recorded_wording(reply: str) -> str:
         ("这个判断可以先记下来", "这个判断可以先作为当前分析结论参考"),
         ("这个结论可以先记下来", "这个结论可以先作为当前分析结论参考"),
         ("这个方向可以先记下来", "这个方向可以先作为当前讨论方向参考"),
+        ("我先帮你把思路记下来", "我先把这个思路作为当前对话参考"),
+        ("我先帮你把这个思路记下来", "我先把这个思路作为当前对话参考"),
+        ("我先把思路记下来", "我先把这个思路作为当前对话参考"),
+        ("我先把这个思路记下来", "我先把这个思路作为当前对话参考"),
+        ("把思路记下来", "把这个思路作为当前对话参考"),
+        ("帮你把思路记下来", "把这个思路作为当前对话参考"),
+        ("记下来，不会自动修改你的方案", "作为当前对话参考，不会改动当前方案"),
+        ("不会自动修改你的方案", "不会改动当前方案"),
         ("先记下来", "先作为当前结论参考"),
         ("我先记下来", "我先按当前结论理解"),
         ("我会先记下来", "我会先按当前结论理解"),
+        ("确认采纳前都不会生效", "如果要正式采用，我会先列出要采用的内容或调整预览；确认前不会执行"),
     )
     for source, target in replacements:
         normalized = normalized.replace(source, target)
@@ -5256,9 +5736,22 @@ def _normalize_general_confirmation_protocol_wording(reply: str) -> str:
         and not has_confirmation_boundary
         and _reply_discusses_changeable_intent_or_plan(normalized)
     ):
+        compact_normalized = _compact_plan_reply_text(normalized)
+        explicit_unadopted_impact = any(
+            marker in compact_normalized
+            for marker in (
+                "影响当前方案",
+                "需要替换",
+                "需要补充",
+                "需要移除",
+                "需要删除",
+            )
+        )
+        boundary_prefix = "采纳/确认前不会生效，" if explicit_unadopted_impact else ""
         normalized = (
             normalized.rstrip()
-            + "\n\n如果要正式更新想法、报考条件或方案，我会先列出要采用的内容或调整预览；采纳/确认前不会生效。"
+            + "\n\n如果后面要正式更新想法、报考条件或方案，可以直接说清楚要采用的内容；"
+            f"{boundary_prefix}我会先列明具体影响或调整预览，再让你决定是否采用。"
         )
     return _normalize_user_facing_terms(normalized)
 
@@ -5629,7 +6122,7 @@ def _append_pending_intent_boundary(reply: str, *, has_pending_intent: bool) -> 
         return reply
     return (
         reply.rstrip()
-        + "\n\n补充说明：这次内容还没有采纳，点“采纳”前不会写入后续报考参考；"
+        + "\n\n补充说明：这次内容还没有采纳，点“采纳”前不会写入后续报考参考，采纳/确认前不会生效；"
         "如果要正式采用，请点击“采纳”。"
     )
 
@@ -6092,9 +6585,23 @@ def _plan_execution_result_is_non_actionable(data: dict[str, Any] | None) -> boo
 
 def _latest_non_actionable_plan_result(messages: list[Any] | None) -> dict[str, Any] | None:
     for part in reversed(_iter_tool_return_parts(messages)):
-        if part.tool_name != "execute_plan_action":
+        if part.tool_name not in {"execute_plan_action", "plan_next_action"}:
             continue
         data = _parse_tool_return_json(part.content)
+        if part.tool_name == "plan_next_action" and isinstance(data, dict):
+            action_family = str(data.get("action_family") or "").strip()
+            missing_inputs = [
+                str(item or "").strip()
+                for item in (data.get("missing_inputs") or data.get("missingInputs") or [])
+                if str(item or "").strip()
+            ]
+            if action_family in _PENDING_PLAN_ACTION_FAMILIES and missing_inputs:
+                normalized = normalize_plan_action_payload(dict(data))
+                normalized["result_kind"] = "error"
+                normalized["missing_inputs"] = missing_inputs
+                normalized.setdefault("reply_focus", ["missing_inputs"])
+                return normalized
+            continue
         if _plan_execution_result_is_non_actionable(data):
             return data
     return None
@@ -6161,6 +6668,15 @@ def _non_actionable_plan_preview_boundary(result: dict[str, Any] | None) -> str:
                 )
             )
         )
+    if action_family == "review_plan" and result_kind == "error":
+        summary = _clean_review_fallback_text(result.get("summary"))
+        lines = [
+            "这轮没有拿到完整的方案审查结果，当前方案不会因为这次回复发生变化。",
+        ]
+        if summary and "调整预览" not in summary:
+            lines.append(summary)
+        lines.append("你可以稍后重新审查，或直接说想重点看哪类风险，我再按当前方案重新检查。")
+        return _sanitize_reply_for_user(_normalize_user_facing_terms("\n".join(lines)))
     position_resolution = str(facts.get("position_resolution") or "").strip()
     if action_family in {"move_ordered_unit", "move_unit"} and position_resolution in {"empty_plan", "source_position_out_of_range"}:
         return (
@@ -6198,6 +6714,24 @@ def _non_actionable_plan_preview_boundary(result: dict[str, Any] | None) -> str:
             "可以放宽地域、专业、院校层次或风险要求后再试。"
         )
     if "missing_inputs" in reply_focus:
+        missing_inputs = {
+            str(item or "").strip()
+            for item in (result.get("missing_inputs") or result.get("missingInputs") or [])
+            if str(item or "").strip()
+        }
+        if action_family in {"move_unit", "move_ordered_unit"} and "target_position" in missing_inputs:
+            scope_label = _plan_action_scope_label_from_payload(result)
+            target_text = f"“{scope_label}”" if scope_label else "这批志愿"
+            return (
+                f"我理解你想调整{target_text}的位置，但还需要明确移动到哪里，"
+                "比如放到第几位、某个志愿前后，或按录取率/推荐系数整体重排。"
+                "这轮不会改动方案；你补充规则后，我再列出调整预览。"
+            )
+        if action_family in {"move_unit", "move_ordered_unit"} and missing_inputs:
+            return (
+                "这轮还没有唯一定位到要移动的志愿，或者还缺少目标位置，不会改动方案。"
+                "可以补充学校专业、专业组位置，以及要移动到哪里，我再给你预览。"
+            )
         summary = str(result.get("summary") or "").strip()
         if summary:
             return "这轮信息还不够完整，不会改动方案。你可以补充缺少的信息后，我再给你预览。"
@@ -6247,6 +6781,59 @@ def _plan_action_has_filter_selection_scope(filters: Any) -> bool:
         if str(value or "").strip():
             return True
     return False
+
+
+def _plan_action_scope_label_from_payload(payload: dict[str, Any]) -> str:
+    """Build a short user-visible label from structured action scope only."""
+    if not isinstance(payload, dict):
+        return ""
+    atomic_actions = payload.get("atomic_actions") or payload.get("atomicActions") or []
+    if not isinstance(atomic_actions, list):
+        atomic_actions = []
+
+    labels: list[str] = []
+
+    def add(value: Any, suffix: str = "") -> None:
+        text = str(value or "").strip()
+        if not text:
+            return
+        label = f"{text}{suffix}"
+        if label not in labels:
+            labels.append(label)
+
+    def add_list(value: Any, suffix: str = "") -> None:
+        if isinstance(value, list):
+            values: list[Any] = value
+        else:
+            text = str(value or "").strip()
+            if not text:
+                return
+            values = [text]
+            if text.startswith("["):
+                with contextlib.suppress(Exception):
+                    parsed = json.loads(text)
+                    if isinstance(parsed, list):
+                        values = parsed
+        for item in values:
+            add(item, suffix)
+
+    for atomic in atomic_actions:
+        if not isinstance(atomic, dict):
+            continue
+        filters = atomic.get("filters")
+        if isinstance(filters, dict):
+            add(filters.get("province_keyword") or filters.get("province"), "志愿")
+            add(filters.get("city_keyword") or filters.get("city"), "志愿")
+            add(filters.get("school_keyword") or filters.get("school"), "相关志愿")
+            add(filters.get("major_keyword") or filters.get("major"), "相关志愿")
+            add(filters.get("tier"), "区志愿")
+            add_list(filters.get("school_tags"), "相关志愿")
+            add_list(filters.get("major_tags"), "相关志愿")
+            add_list(filters.get("program_types") or filters.get("program_type"), "相关志愿")
+        add_list(atomic.get("source_major_names") or atomic.get("sourceMajorNames"), "相关志愿")
+        add_list(atomic.get("volunteer_ids") or atomic.get("volunteerIds"))
+        add_list(atomic.get("unit_ids") or atomic.get("unitIds"))
+    return "、".join(labels[:3])
 
 
 def _replace_plan_payload_lacks_replacement_scope(payload: dict[str, Any]) -> bool:
@@ -6307,7 +6894,12 @@ def _atomic_action_has_execution_scope(action_family: str, atomic: Any) -> bool:
     if action_family == "add_units":
         return bool(_atomic_volunteer_ids(atomic)) or _atomic_has_filter_scope(atomic)
     if action_family == "remove_units":
-        return bool(_atomic_volunteer_ids(atomic)) or _atomic_has_review_issue_target(atomic) or _atomic_has_filter_scope(atomic)
+        return (
+            bool(_atomic_volunteer_ids(atomic))
+            or bool(_atomic_source_major_names(atomic))
+            or _atomic_has_review_issue_target(atomic)
+            or _atomic_has_filter_scope(atomic)
+        )
     if action_family == "move_unit":
         return bool(_atomic_volunteer_ids(atomic)) and _atomic_has_position(atomic, "target_position", "targetPosition")
     if action_family == "move_ordered_unit":
@@ -6482,14 +7074,7 @@ def _extract_plan_confirmation_candidate(messages: list[Any] | None) -> dict[str
             for part in getattr(message, "parts", []) or []:
                 if not isinstance(part, ToolCallPart) or part.tool_name != "execute_plan_action":
                     continue
-                args = _parse_tool_call_args(part.args)
-                raw_payload = args.get("plan_payload")
-                if not isinstance(raw_payload, str) or not raw_payload.strip():
-                    continue
-                try:
-                    payload = json.loads(raw_payload)
-                except Exception:
-                    continue
+                payload = _extract_execute_plan_payload(part)
                 if not isinstance(payload, dict):
                     continue
                 call_id = str(part.tool_call_id or "")
@@ -6987,6 +7572,133 @@ def _prompt_explicitly_readonly(content: str | None) -> bool:
     return any(marker in compact for marker in _READONLY_USER_PROMPT_MARKERS)
 
 
+def _prompt_is_score_batch_risk_policy_question(content: str | None) -> bool:
+    compact = re.sub(r"\s+", "", str(content or "").strip())
+    if not compact:
+        return False
+    has_score_boundary = any(
+        marker in compact
+        for marker in (
+            "本科线",
+            "批次线",
+            "压线",
+            "刚过线",
+            "刚压",
+            "过线不多",
+            "只高一点",
+        )
+    )
+    has_risk_request = any(
+        marker in compact
+        for marker in (
+            "别给我画大饼",
+            "不要画大饼",
+            "画大饼",
+            "保底",
+            "兜底",
+            "保本科",
+            "滑档",
+            "风险",
+        )
+    )
+    return has_score_boundary and has_risk_request
+
+
+def _prompt_is_major_group_keep_safest_policy_question(content: str | None) -> bool:
+    compact = re.sub(r"\s+", "", str(content or "").strip())
+    if not compact:
+        return False
+    has_group_anchor = any(marker in compact for marker in ("专业组", "组内", "这一组", "这个组"))
+    has_keep_safest = any(marker in compact for marker in ("只保留", "保留")) and any(
+        marker in compact for marker in ("最稳", "更稳", "稳的专业", "安全垫")
+    )
+    has_question = any(marker in compact for marker in ("行不行", "可不可以", "能不能", "是否", "要不要"))
+    explicit_apply = any(marker in compact for marker in ("直接执行", "确认执行", "现在就改", "直接改", "就这么改"))
+    return has_group_anchor and has_keep_safest and has_question and not explicit_apply
+
+
+def _prompt_requires_readonly_policy_answer(content: str | None) -> bool:
+    return _prompt_is_score_batch_risk_policy_question(content) or _prompt_is_major_group_keep_safest_policy_question(content)
+
+
+def _build_score_batch_risk_policy_reply() -> str:
+    return (
+        "如果分数刚压本科线，不能按“能上本科”乐观处理，要按压线风险来做预案。"
+        "建议把目标拆成三层：第一层少量冲本科批里过线要求低、招生计划稳定的机会；第二层重点放稳妥保本科，优先看往年位次、录取最低分和计划变化，不只看分数；"
+        "第三层准备兜底方案，包括能接受的民办本科、中外合作或高质量专科，避免只押一个本科批结果导致滑档。"
+        "保底位要留足安全垫，专业也要现实一些，不能只放热门专业。下一步需要核对所在省当年本科线、一分一段位次、批次规则和当前方案里的冲稳保比例，再决定本科和专科兜底怎么配。"
+    )
+
+
+def _build_major_group_keep_safest_policy_reply() -> str:
+    return (
+        "专业组里只保留最稳的专业，可以作为降低组内风险的思路，但不能直接当成长期就业偏好。"
+        "在院校专业组模式下，要先看这个专业组的投档规则、组内专业录取率、计划数、专业备注和是否服从调剂；"
+        "如果只保留最稳的专业，可能降低被不想读专业分配的风险，但也可能减少组内可选空间，影响专业满足率或让这个专业组不再值得保留。"
+        "更稳妥的做法是先读取具体专业组，判断哪些专业是安全垫、哪些专业风险偏高，再决定是保留一个兜底专业、删掉高风险专业，还是生成可确认的调整预览。"
+        "确认前不应改动当前方案，也不应写成后续报考参考里的职业或专业偏好。"
+    )
+
+
+def _score_batch_policy_reply_is_sufficient(reply: str | None) -> bool:
+    compact = _compact_plan_reply_text(str(reply or ""))
+    if not compact:
+        return False
+    has_boundary = "本科线" in compact or "批次线" in compact
+    has_pressure = any(marker in compact for marker in ("压线", "刚过线", "过线不多", "只高一点"))
+    has_floor = any(marker in compact for marker in ("保底", "兜底", "保本科", "滑档"))
+    return has_boundary and has_pressure and has_floor and "风险" in compact
+
+
+def _major_group_policy_reply_is_sufficient(reply: str | None) -> bool:
+    compact = _compact_plan_reply_text(str(reply or ""))
+    if not compact:
+        return False
+    has_group = "专业组" in compact and "专业" in compact
+    has_safety = any(marker in compact for marker in ("录取率", "最稳", "更稳", "安全垫", "兜底"))
+    has_boundary = any(marker in compact for marker in ("风险", "调剂", "确认", "当前方案"))
+    return has_group and has_safety and has_boundary
+
+
+def _reply_is_readonly_policy_misroute(reply: str | None) -> bool:
+    compact = _compact_plan_reply_text(str(reply or ""))
+    if not compact:
+        return True
+    if any(
+        marker in compact
+        for marker in (
+            "不会写入后续报考参考",
+            "还没有生成可执行的调整内容",
+            "没有生成可执行的调整内容",
+            "这轮还没有生成可点击的方案待采纳内容",
+            "待确认内容",
+            "待采纳内容",
+            "稳定就业导向",
+        )
+    ):
+        return True
+    return _reply_looks_like_unbacked_intent_preview(str(reply or "")) or _reply_looks_like_plan_action_recovery_boundary(str(reply or ""))
+
+
+def _readonly_policy_fallback_reply_for_prompt(
+    content: str | None,
+    reply: str | None,
+    tool_context_messages: list[Any] | None,
+) -> str | None:
+    if _prompt_is_score_batch_risk_policy_question(content):
+        if _score_batch_policy_reply_is_sufficient(reply) and not _reply_is_readonly_policy_misroute(reply):
+            return None
+        tool_reply = _latest_readonly_tool_reply(tool_context_messages)
+        if _score_batch_policy_reply_is_sufficient(tool_reply):
+            return tool_reply
+        return _build_score_batch_risk_policy_reply()
+    if _prompt_is_major_group_keep_safest_policy_question(content):
+        if _major_group_policy_reply_is_sufficient(reply) and not _reply_is_readonly_policy_misroute(reply):
+            return None
+        return _build_major_group_keep_safest_policy_reply()
+    return None
+
+
 def _prompt_rejects_current_plan_action(content: str | None) -> bool:
     compact = re.sub(r"\s+", "", str(content or "").strip())
     if not compact:
@@ -7343,6 +8055,9 @@ def _normalize_user_facing_terms(reply: str) -> str:
         ("系统暂时没法", "当前还不能"),
         ("系统给了", "我整理出"),
         ("系统给出", "我整理出"),
+        ("系统能直接处理的是", "可以先看调整预览的是"),
+        ("系统能直接处理的", "可以先看调整预览的"),
+        ("系统能直接处理", "可以先看调整预览"),
         ("系统能直接执行", "可以先列出调整预览"),
         ("系统能执行", "可以先列出调整预览"),
         ("系统没法自动执行", "这类情况需要你先取舍"),
@@ -7370,6 +8085,13 @@ def _normalize_user_facing_terms(reply: str) -> str:
         ("自动修复", "直接处理"),
         ("自动处理", "直接处理"),
         ("可立即处理", "可以先列出调整预览"),
+        ("可执行的调整预览", "可确认的调整预览"),
+        ("可执行的处理预览", "可确认的处理预览"),
+        ("可执行的替换预览", "可确认的替换预览"),
+        ("可执行的移除预览", "可确认的移除预览"),
+        ("可执行的补充预览", "可确认的补充预览"),
+        ("可执行预览", "调整预览"),
+        ("可执行的处理内容", "可确认的处理内容"),
         ("可以直接处理", "可以先列出调整预览"),
         ("可以自动处理", "可以先列出调整预览"),
         ("哪些可以自动处理", "哪些可以先出调整预览"),
@@ -7383,6 +8105,20 @@ def _normalize_user_facing_terms(reply: str) -> str:
         ("修复结果", "处理结果"),
         ("修复方向", "处理方向"),
         ("修复", "处理"),
+        ("处理高收费志愿", "高收费志愿"),
+        ("处理高收费", "高收费志愿"),
+        ("处理中外合作办学项目", "中外合作项目"),
+        ("处理中外合作", "中外合作项目"),
+        ("处理非意向托底专业", "非意向兜底专业"),
+        ("处理非意向托底", "非意向兜底专业"),
+        ("处理数量校验", "补足志愿数量"),
+        ("处理录取率梯度断层", "补齐录取率梯度"),
+        ("处理录取率倒挂", "调整录取率顺序"),
+        ("处理兜底专业不足", "补兜底专业"),
+        ("处理组内安全垫不足", "补兜底专业"),
+        ("数量校验", "志愿数量"),
+        ("冲稳保配比暂时无法自动处理", "冲稳保结构暂时还调不齐"),
+        ("录取率梯度断层暂时无法自动处理", "录取率梯度暂时还补不齐"),
         ("预览参考状态", "处理方向参考"),
         ("被卡住了", "需要你先决定"),
         ("被卡住", "需要你先决定"),
@@ -7497,12 +8233,19 @@ def _normalize_user_facing_terms(reply: str) -> str:
     normalized = normalized.replace("需要你先决定原因", "需要你先决定")
     normalized = normalized.replace("暂被阻塞", "暂时不能直接处理")
     normalized = normalized.replace("被阻塞", "暂时不能直接处理")
+    normalized = normalized.replace("暂时还不可以先看调整预览", "暂时需要你先取舍或放宽条件")
     normalized = normalized.replace("直接处理方向", "处理方向")
     normalized = normalized.replace("直接处理建议", "处理建议")
     normalized = normalized.replace("可以直接处理的有", "可以先看调整预览的有")
     normalized = normalized.replace("可以立即处理的有", "可以先看调整预览的有")
+    normalized = normalized.replace("能直接处理的有", "可以先看调整预览的有")
+    normalized = normalized.replace("能直接处理的", "可以先看调整预览的")
+    normalized = normalized.replace("能直接处理", "可以先看调整预览")
     normalized = normalized.replace("可以直接处理", "可以先列出调整预览")
     normalized = normalized.replace("可以立即处理", "可以先列出调整预览")
+    normalized = normalized.replace("能自动的", "可以先看调整预览的")
+    normalized = normalized.replace("能自动", "可以先看调整预览")
+    normalized = normalized.replace("暂时自动不了", "需要你先取舍或放宽条件")
     normalized = normalized.replace("我可以直接帮你", "我可以帮你")
     normalized = normalized.replace("我直接帮你生成", "我先列出")
     normalized = normalized.replace("直接帮你生成", "先列出")
@@ -7559,7 +8302,23 @@ def _normalize_user_facing_terms(reply: str) -> str:
         r"当前还缺少足够条件处理\1",
         normalized,
     )
+    normalized = re.sub(
+        r"当前还缺少足够条件处理(?:帮你)?(?:保底|补保底|补几个保底志愿|补充保区候选)",
+        "当前还缺少合适的保底志愿",
+        normalized,
+    )
     normalized = normalized.replace("当前还缺少足够条件处理冲区志愿", "当前还缺少足够合适的志愿来调整冲稳保结构")
+    normalized = re.sub(
+        r"当前还缺少足够条件处理([^，。！？\n]{1,24})",
+        r"当前还缺少足够条件来处理\1",
+        normalized,
+    )
+    normalized = normalized.replace("当前还缺少足够条件处理", "当前还缺少足够条件来处理")
+    normalized = re.sub(
+        r"可执行的([^，。！？\n]{0,12}?)(?:调整|处理|替换|移除|补充)?方案",
+        lambda match: f"可确认的{match.group(1)}调整预览",
+        normalized,
+    )
     normalized = re.sub(
         r"(?:当前还缺少合适的补位选择|当前还不能补不进)(?:更合适的)?兜底专业",
         "当前还缺少更合适的兜底专业",
@@ -7582,6 +8341,7 @@ def _normalize_user_facing_terms(reply: str) -> str:
     normalized = normalized.replace("你现在的可选范围里", "当前候选志愿里")
     normalized = normalized.replace("当前可用于规划的可选范围里", "当前候选志愿里")
     normalized = normalized.replace("可选范围里", "候选志愿里")
+    normalized = normalized.replace("暂时还不可以先看调整预览", "暂时需要你先取舍或放宽条件")
     normalized = re.sub(r"[✅⏳📝⚠️❗️⭐️]+", "", normalized)
     normalized = normalized.replace("您", "你")
     if any(token in normalized for token in ("方案", "志愿", "候选")):
@@ -8084,6 +8844,11 @@ def _line_looks_like_unbacked_plan_confirmation(compact: str) -> bool:
         for marker in (
             "确认后会执行",
             "确认后执行",
+            "确认后我就调整",
+            "确认后就调整",
+            "确认后我来调整",
+            "确认后我再调整",
+            "确认后再调整",
             "点击确认后生效",
             "确认后生效",
             "确认即可执行",
@@ -8206,6 +8971,24 @@ def _guard_unbacked_plan_confirmation_reply(reply: str) -> str:
     return f"{stripped}\n\n{_UNBACKED_PLAN_CONFIRMATION_REPLY}"
 
 
+def _normalize_unbacked_no_tool_action_boundary(reply: str) -> str:
+    """Use a neutral no-change boundary when no executable action was created.
+
+    `_UNBACKED_PLAN_CONFIRMATION_REPLY` is appropriate while the service is
+    still trying to recover a missing Plan preview. If all recovery paths end
+    with no tools, no pending card, and no preview, surfacing that text reads as
+    an execution failure even when the user only set a discussion boundary.
+    """
+    if not _reply_looks_like_plan_action_recovery_boundary(reply):
+        return reply
+    compact = _compact_plan_reply_text(reply)
+    if any(marker in compact for marker in ("志愿", "专业组", "候选")) and any(
+        marker in compact for marker in ("还没有生成可执行的调整内容", "没有生成可执行的调整内容")
+    ):
+        return reply
+    return _NO_TOOL_NO_ACTION_BOUNDARY_REPLY
+
+
 def _clean_review_fallback_text(value: Any) -> str:
     text = _normalize_user_facing_terms(_normalize_fix_proposal_user_text(str(value or "").strip()))
     text = text.replace("压根找不到", "暂时没找到")
@@ -8297,6 +9080,68 @@ def _review_fallback_examples_text(values: Any, *, limit: int = 2) -> str:
     return "；".join(lines)
 
 
+def _review_fallback_target_issue_labels(facts: dict[str, Any]) -> list[str]:
+    labels = {
+        "high_tuition": "高收费",
+        "cooperative_program": "中外合作",
+        "admission_limit": "限报条件",
+        "special_enrollment": "特殊招生",
+        "probability_inversion": "录取率倒挂",
+        "probability_gap": "录取率梯度断层",
+        "major_group_safety_intent_alignment": "非意向托底专业",
+        "group_inner_safety_guard": "组内安全垫",
+        "safety_guard": "保底安全垫",
+        "edge_score": "边缘分风险",
+        "count_validation": "志愿数量",
+    }
+    result: list[str] = []
+    issue_codes = facts.get("target_issue_codes") or facts.get("targetIssueCodes") or []
+    for code in issue_codes:
+        label = labels.get(str(code or "").strip())
+        if label and label not in result:
+            result.append(label)
+    return result
+
+
+def _build_target_issue_review_fallback_lines(facts: dict[str, Any]) -> list[str]:
+    explicit_target_issue_codes = facts.get("target_issue_codes") or facts.get("targetIssueCodes") or []
+    if not explicit_target_issue_codes:
+        return []
+
+    issue_labels = _review_fallback_target_issue_labels(facts)
+    examples = _review_fallback_examples_text(facts.get("issue_hit_plan_examples"), limit=3)
+    problems = _review_fallback_problem_text(facts.get("main_problems"), limit=3)
+    fix_facts = facts.get("fix_proposals") if isinstance(facts.get("fix_proposals"), dict) else {}
+    ready_lines, needs_decision_lines = _review_fallback_fix_proposal_lines(fix_facts, limit=2)
+
+    if not issue_labels and not examples and not problems:
+        return []
+
+    label_text = "、".join(issue_labels) if issue_labels else "这类问题"
+    lines = [f"我按你关注的{label_text}看了一下：", ""]
+    if examples:
+        lines.append(f"- 当前方案里有命中项：{examples}。")
+    elif problems:
+        lines.append(f"- 当前看到的问题：{problems}。")
+    else:
+        lines.append("- 当前审查里暂时没有看到明确命中的志愿。")
+
+    if ready_lines:
+        lines.extend(["", "可以先看调整预览的："])
+        for item in ready_lines[:2]:
+            lines.append(f"- {item}。")
+    if needs_decision_lines:
+        lines.extend(["", "需要先取舍的："])
+        for item in needs_decision_lines[:2]:
+            lines.append(f"- {item}。")
+
+    lines.extend([
+        "",
+        "如果要正式调整，我会先列出预览，确认前不会改动当前方案。",
+    ])
+    return lines
+
+
 def _review_fallback_fix_proposal_lines(fix_facts: dict[str, Any], *, limit: int = 3) -> tuple[list[str], list[str]]:
     ready: list[str] = []
     needs_decision: list[str] = []
@@ -8304,9 +9149,7 @@ def _review_fallback_fix_proposal_lines(fix_facts: dict[str, Any], *, limit: int
     for proposal in proposals:
         if not isinstance(proposal, dict):
             continue
-        title = _clean_review_fallback_text(proposal.get("title")) or "处理方向"
-        title = re.sub(r"(需要你先取舍或放宽条件|需要你先决定取舍或放宽条件)$", "", title).strip()
-        title = title or "处理方向"
+        title = _clean_fix_proposal_title(proposal.get("title")) or "处理方向"
         status = str(proposal.get("status") or "").strip()
         strategy = _FIX_PROPOSAL_STRATEGY_TEXT.get(str(proposal.get("strategy") or "").strip(), "")
         summary = _clean_review_fallback_text(proposal.get("summary"))
@@ -8410,8 +9253,7 @@ def _build_review_unavailable_guidance_fallback_lines(facts: dict[str, Any]) -> 
 
     lines = ["我看了一下，不能直接处理的点主要卡在“取舍范围还没定”或“可替换机会不够”。", ""]
     for index, proposal in enumerate(blocked[:4], start=1):
-        title = _clean_review_fallback_text(proposal.get("title")) or "这条提醒"
-        title = re.sub(r"(需要你先取舍或放宽条件|需要你先决定取舍或放宽条件)$", "", title).strip() or title
+        title = _clean_fix_proposal_title(proposal.get("title")) or "这条提醒"
         reason = _review_fallback_proposal_reason(proposal)
         next_step = _review_fallback_proposal_next_step(proposal)
         lines.append(f"{index}. **{title}**")
@@ -8424,6 +9266,10 @@ def _build_review_unavailable_guidance_fallback_lines(facts: dict[str, Any]) -> 
 
 
 def _build_review_result_fallback_lines(facts: dict[str, Any]) -> list[str]:
+    targeted_lines = _build_target_issue_review_fallback_lines(facts)
+    if targeted_lines:
+        return targeted_lines
+
     risk_count = _as_int(facts.get("risk_count"))
     warn_count = _as_int(facts.get("warn_count"))
     plan_total = _as_int(facts.get("plan_total"))
@@ -8463,6 +9309,14 @@ def _build_review_result_fallback_lines(facts: dict[str, Any]) -> list[str]:
 
 
 def _build_adjustment_analysis_fallback_lines(facts: dict[str, Any]) -> list[str]:
+    requested_focus = {
+        str(item or "").strip()
+        for item in (facts.get("requested_reply_focus") or [])
+        if str(item or "").strip()
+    }
+    if "shortage_boundary" in requested_focus:
+        return _build_shortage_boundary_fallback_lines(facts)
+
     lines = ["我看了当前方案的优化空间和可处理方向，先说结论：", ""]
     fix_facts = facts.get("fix_proposals") if isinstance(facts.get("fix_proposals"), dict) else {}
     ready_lines, needs_decision_lines = _review_fallback_fix_proposal_lines(fix_facts)
@@ -8507,6 +9361,87 @@ def _build_adjustment_analysis_fallback_lines(facts: dict[str, Any]) -> list[str
         "如果你想继续处理，可以先明确最想动的一类；我会先列出调整预览，确认前不会改动当前方案。",
     ])
     return lines
+
+
+def _build_shortage_boundary_fallback_lines(facts: dict[str, Any]) -> list[str]:
+    lines = ["我看了当前方案和可补机会，先说结论：", ""]
+    supply = facts.get("candidate_supply") if isinstance(facts.get("candidate_supply"), dict) else {}
+    tier_counts = supply.get("tier_counts") or supply.get("tierCounts") or facts.get("tier_counts")
+    tier_text = _format_status_tier_counts(tier_counts)
+    missing_tiers = [
+        str(item or "").strip()
+        for item in (
+            supply.get("missing_supply_tiers")
+            or supply.get("missingSupplyTiers")
+            or []
+        )
+        if str(item or "").strip()
+    ]
+    total = _as_int(supply.get("total") or supply.get("candidate_total") or supply.get("candidateTotal"))
+
+    if tier_text:
+        lines.append(f"- 当前可选范围里的冲稳保供给大致是：{tier_text}。")
+    if total > 0:
+        lines.append(f"- 当前可用于规划的候选志愿约 {total} 个。")
+    if missing_tiers:
+        lines.append(f"- 主要缺口在 {'、'.join(missing_tiers)} 区间，说明不是简单把比例调一下就能补上。")
+
+    fix_facts = facts.get("fix_proposals") if isinstance(facts.get("fix_proposals"), dict) else {}
+    ready_lines, needs_decision_lines = _shortage_boundary_fix_proposal_lines(fix_facts)
+    if ready_lines:
+        lines.extend(["", "可以先看预览的方向："])
+        for item in ready_lines[:2]:
+            lines.append(f"- {item}。")
+    if needs_decision_lines:
+        lines.extend(["", "暂时补不上的原因："])
+        for item in needs_decision_lines[:2]:
+            lines.append(f"- {item}。")
+
+    if not tier_text and total <= 0 and not missing_tiers and not ready_lines and not needs_decision_lines:
+        problems = _review_fallback_problem_text(facts.get("main_problems"), limit=2)
+        if problems:
+            lines.append(f"- 当前主要卡在：{problems}。")
+        else:
+            lines.append("- 这轮先拿到的是能不能补齐的边界判断，还没有形成可以直接执行的完整调整清单。")
+
+    lines.extend([
+        "",
+        "如果你想继续处理，可以先放宽地域、专业或院校层次范围后再让我重新审查；需要改方案时，我会先列出预览，确认前不会改动当前方案。",
+    ])
+    return lines
+
+
+def _shortage_boundary_fix_proposal_lines(fix_facts: dict[str, Any]) -> tuple[list[str], list[str]]:
+    ready: list[str] = []
+    needs_decision: list[str] = []
+    proposals = fix_facts.get("proposals") if isinstance(fix_facts.get("proposals"), list) else []
+    for proposal in proposals:
+        if not isinstance(proposal, dict):
+            continue
+        strategy = str(proposal.get("strategy") or "").strip()
+        strategy_label = _FIX_PROPOSAL_STRATEGY_TEXT.get(strategy, "")
+        if strategy == "fill_probability_gap":
+            strategy_label = "补一段更合适的录取概率区间"
+        if not strategy_label:
+            strategy_label = "这个方向"
+        status = str(proposal.get("status") or "").strip()
+        detail = ""
+        if status == "ready":
+            action_summaries = [
+                _clean_review_fallback_text(item)
+                for item in (proposal.get("action_summaries") or proposal.get("actionSummaries") or [])[:1]
+                if _clean_review_fallback_text(item)
+            ]
+            detail = action_summaries[0] if action_summaries else _clean_review_fallback_text(proposal.get("summary"))
+        else:
+            detail = _review_fallback_proposal_reason(proposal)
+        line = strategy_label
+        if detail and _compact_plan_reply_text(detail) != _compact_plan_reply_text(strategy_label):
+            line += f"：{detail}"
+        target = ready if status == "ready" else needs_decision
+        if line not in target:
+            target.append(line)
+    return ready[:2], needs_decision[:2]
 
 
 def _build_fix_proposal_preview_fallback_lines(
@@ -8607,7 +9542,7 @@ def _targeted_fix_proposal_unavailable_reply(
         return ""
 
     proposal = matched[0]
-    title = _clean_review_fallback_text(proposal.get("title")) or "你想处理的这类问题"
+    title = _clean_fix_proposal_title(proposal.get("title")) or "你想处理的这类问题"
     strategy = _FIX_PROPOSAL_STRATEGY_TEXT.get(str(proposal.get("strategy") or "").strip(), "")
     reason = _review_fallback_proposal_reason(proposal)
     next_step = _review_fallback_proposal_next_step(proposal)
@@ -8634,7 +9569,29 @@ def _review_reply_needs_structured_fallback(reply: str, result: dict[str, Any] |
     if any(marker in reply for marker in _REVIEW_REPLY_QUALITY_MARKERS):
         return True
     compact = _compact_plan_reply_text(reply)
-    return compact.count("当前候选志愿里") >= 3 or compact.count("建议你先") >= 4
+    if compact.count("当前候选志愿里") >= 3 or compact.count("建议你先") >= 4:
+        return True
+    facts = result.get("facts") if isinstance(result.get("facts"), dict) else {}
+    explicit_target_issue_codes = facts.get("target_issue_codes") or facts.get("targetIssueCodes") or []
+    if explicit_target_issue_codes:
+        return False
+    risk_count = _as_int(facts.get("risk_count"))
+    warn_count = _as_int(facts.get("warn_count"))
+    main_problems = [
+        _clean_review_fallback_text(item)
+        for item in (facts.get("main_problems") or [])
+        if _clean_review_fallback_text(item)
+    ]
+    if risk_count + warn_count > 1:
+        has_review_count = bool(re.search(r"风险\s*\d+\s*项", reply) and re.search(r"提醒\s*\d+\s*项", reply))
+        mentioned_problem_count = 0
+        for problem in main_problems[:4]:
+            problem_compact = _compact_plan_reply_text(problem)
+            if problem_compact and problem_compact in compact:
+                mentioned_problem_count += 1
+        if not has_review_count and main_problems and mentioned_problem_count < min(2, len(main_problems)):
+            return True
+    return False
 
 
 def _review_reply_overclaims_admission_safety(reply: str, result: dict[str, Any] | None) -> bool:
@@ -8770,6 +9727,8 @@ def _result_needs_unavailable_guidance_fallback(result: dict[str, Any], *, user_
 
 def _build_plan_timeout_fallback_reply(result: dict[str, Any], *, user_prompt: str | None = None) -> str | None:
     result_kind = str(result.get("result_kind") or "").strip()
+    if str(result.get("action_family") or "").strip() == "review_plan" and result_kind == "error":
+        return _non_actionable_plan_preview_boundary(result)
     if result_kind not in {
         "review_result",
         "adjustment_analysis",
@@ -9305,14 +10264,19 @@ class ChatService:
             and bool(recent_plan_context)
             and len(str(content or "").strip()) <= 12
         )
+        has_existing_plan_context = _has_plan_semantic_route_context(
+            getattr(request_context, "planning_summary", None),
+            None,
+        )
+        targeted_review = (
+            action_family == "review_plan"
+            and has_existing_plan_context
+            and _semantic_targeted_review_allowed(decision)
+        )
         review_analysis_followup = (
             action_family == "analyze_adjustment"
             and bool(recent_plan_context)
             and isinstance(recent_plan_context.get("fixProposals"), dict)
-        )
-        has_existing_plan_context = _has_plan_semantic_route_context(
-            getattr(request_context, "planning_summary", None),
-            None,
         )
         current_plan_analysis = (
             action_family == "analyze_adjustment"
@@ -9326,6 +10290,7 @@ class ChatService:
             and not review_analysis_followup
             and not current_plan_analysis
             and not short_review_followup
+            and not targeted_review
         ) or confidence < _SEMANTIC_PLAN_ACTION_CONFIDENCE_THRESHOLD:
             return None
         needs_review_before_preview = False
@@ -9344,6 +10309,7 @@ class ChatService:
             for item in list(getattr(decision, "replyFocus", []) or [])
             if str(item or "").strip()
         ]
+        use_target_scope_for_payload = action_family != "review_plan" or targeted_review
         if action_family == "preview_fix_proposal":
             preview_allowed = _semantic_preview_fix_proposal_route_allowed(
                 decision,
@@ -9371,11 +10337,11 @@ class ChatService:
             "user_goal": content,
             "requires_confirmation": False,
         }
-        if target_strategies:
+        if target_strategies and use_target_scope_for_payload:
             plan_payload["target_strategies"] = target_strategies
-        if target_issue_codes:
+        if target_issue_codes and use_target_scope_for_payload:
             plan_payload["target_issue_codes"] = target_issue_codes
-        if requested_reply_focus:
+        if requested_reply_focus and use_target_scope_for_payload:
             plan_payload["reply_focus"] = requested_reply_focus
         if getattr(request_context, "planning_summary", None) is not None:
             try:
@@ -9477,6 +10443,7 @@ class ChatService:
             reply = _build_plan_timeout_fallback_reply(result, user_prompt=content) or reply
         elif _adjustment_reply_needs_structured_fallback(reply, result):
             reply = _build_plan_timeout_fallback_reply(result, user_prompt=content) or reply
+        reply = _sanitize_reply_for_user(_normalize_user_facing_terms(reply))
         if synthesis_usage is not None:
             tracker = self._usage_trackers.get(session_id)
             if tracker is None:
@@ -9828,6 +10795,8 @@ class ChatService:
             return None
         if not _reply_looks_like_plan_action_recovery_boundary(reply):
             return None
+        if _turn_has_structured_plan_result(tool_context_messages):
+            return None
         if list(_iter_tool_call_parts(tool_context_messages)):
             return None
         recent_plan_context = _latest_plan_semantic_route_context(getattr(request_context, "chat_history", None))
@@ -9912,6 +10881,8 @@ class ChatService:
             return None
         fix_facts = current_plan_context.get("fixProposals")
         if not isinstance(fix_facts, dict) or not isinstance(fix_facts.get("proposals"), list):
+            return None
+        if _prompt_asks_review_explanation_only(content):
             return None
 
         try:
@@ -10015,6 +10986,15 @@ class ChatService:
             reply = _build_plan_timeout_fallback_reply(result, user_prompt=content) or str(result.get("summary") or "").strip()
         if not reply:
             reply = "我已把可以处理的调整预览列出来，确认前不会改动当前方案。"
+        result_updated = False
+        if target_strategies and "target_strategies" not in result and "targetStrategies" not in result:
+            result["target_strategies"] = target_strategies
+            result_updated = True
+        if target_issue_codes and "target_issue_codes" not in result and "targetIssueCodes" not in result:
+            result["target_issue_codes"] = target_issue_codes
+            result_updated = True
+        if result_updated:
+            result_text = json.dumps(result, ensure_ascii=False, default=str)
         reply = _sanitize_reply_for_user(_normalize_user_facing_terms(reply))
         messages = _build_direct_plan_action_messages(
             content,
@@ -10147,6 +11127,8 @@ class ChatService:
             return None
         plan_payload = _latest_unexecuted_plan_next_payload(tool_context_messages)
         if not isinstance(plan_payload, dict):
+            plan_payload = _latest_mismatched_plan_next_preview_payload(tool_context_messages)
+        if not isinstance(plan_payload, dict):
             return None
         action_family = str(plan_payload.get("action_family") or "").strip()
         if action_family not in _PENDING_PLAN_ACTION_FAMILIES:
@@ -10154,9 +11136,27 @@ class ChatService:
         if str(plan_payload.get("stage") or "").strip() != "preview":
             return None
         if plan_payload.get("missing_inputs"):
-            return None
+            recovered_payload = await self._recover_mutating_plan_payload_scope(
+                session_id=session_id,
+                content=content,
+                request_context=request_context,
+                plan_payload=plan_payload,
+                tool_context_messages=tool_context_messages,
+            )
+            if recovered_payload is None:
+                return None
+            plan_payload = recovered_payload
         if not _plan_payload_has_executable_mutation_scope(plan_payload):
-            return None
+            recovered_payload = await self._recover_mutating_plan_payload_scope(
+                session_id=session_id,
+                content=content,
+                request_context=request_context,
+                plan_payload=plan_payload,
+                tool_context_messages=tool_context_messages,
+            )
+            if recovered_payload is None:
+                return None
+            plan_payload = recovered_payload
 
         plan_payload = normalize_plan_action_payload(dict(plan_payload))
         plan_payload["stage"] = "preview"
@@ -10210,6 +11210,174 @@ class ChatService:
                 "route": action_family,
             },
         )
+
+    async def _maybe_refocus_broad_review_result(
+        self,
+        *,
+        session_id: str,
+        content: str,
+        request_context: RequestContext,
+        tool_context_messages: list[Any] | None,
+    ) -> _PlanActionRecoveryResult | None:
+        """Re-run broad review with semantic target scope for narrow read-only questions."""
+
+        if resolve_pending_confirmation(request_context) is not None:
+            return None
+        if _latest_unexecuted_plan_next_payload(tool_context_messages) is not None:
+            return None
+        if _latest_mismatched_plan_next_preview_payload(tool_context_messages) is not None:
+            return None
+        latest_review = _latest_review_plan_result(tool_context_messages)
+        if not isinstance(latest_review, dict):
+            return None
+        if _prompt_asks_review_explanation_only(content):
+            return None
+        facts = latest_review.get("facts") if isinstance(latest_review.get("facts"), dict) else {}
+        if facts.get("target_issue_codes") or facts.get("targetIssueCodes"):
+            return None
+        context = _latest_plan_semantic_route_context(tool_context_messages)
+        try:
+            decision = await classify_plan_semantic_action(
+                content,
+                request_context=request_context,
+                recent_plan_context=context,
+            )
+        except Exception:
+            logger.warning(
+                "Review refocus classification failed: session_id=%s",
+                session_id,
+                exc_info=True,
+            )
+            return None
+        if not _semantic_targeted_review_allowed(decision):
+            return None
+        confidence = float(getattr(decision, "confidence", 0.0) or 0.0)
+        if confidence < _SEMANTIC_PLAN_ACTION_CONFIDENCE_THRESHOLD:
+            return None
+        target_issue_codes = [
+            str(code or "").strip()
+            for code in list(getattr(decision, "targetIssueCodes", []) or [])
+            if str(code or "").strip()
+        ]
+        if not target_issue_codes:
+            return None
+        plan_payload = {
+            "stage": "review",
+            "action_family": "review_plan",
+            "user_goal": content,
+            "requires_confirmation": False,
+            "target_issue_codes": target_issue_codes,
+            "reply_focus": ["target_issue_only"],
+        }
+        target_strategies = [
+            str(strategy or "").strip()
+            for strategy in list(getattr(decision, "targetStrategies", []) or [])
+            if str(strategy or "").strip()
+        ]
+        if target_strategies:
+            plan_payload["target_strategies"] = target_strategies
+        if getattr(request_context, "planning_summary", None) is not None:
+            with contextlib.suppress(TypeError, ValueError):
+                plan_payload["planning_version"] = int(request_context.planning_summary.version or 0)
+        if on_progress := getattr(request_context, "progress_callback", None):
+            with contextlib.suppress(Exception):
+                await on_progress("正在按你关注的这类问题重新检查方案...")
+        result_text, result, _duration_ms = await self._execute_semantic_plan_payload(
+            request_context=request_context,
+            plan_payload=plan_payload,
+        )
+        reply = ""
+        try:
+            reply, _usage = await _synthesize_semantic_plan_action_reply(
+                self.llm_client,
+                user_prompt=content,
+                result=result,
+                recent_plan_context=context,
+            )
+        except Exception:
+            logger.warning(
+                "Review refocus reply synthesis failed: session_id=%s",
+                session_id,
+                exc_info=True,
+            )
+        if not reply:
+            reply = _build_plan_timeout_fallback_reply(result, user_prompt=content) or str(result.get("summary") or "").strip()
+        if not reply:
+            return None
+        reply = _sanitize_reply_for_user(_normalize_user_facing_terms(reply))
+        messages = _build_direct_plan_action_messages(
+            content,
+            tool_call_id=f"refocus-review-{uuid.uuid4().hex[:8]}",
+            plan_payload=plan_payload,
+            result_text=result_text,
+            reply=reply,
+            model_name="review-target-refocus",
+        )
+        return _PlanActionRecoveryResult(
+            reply=reply,
+            messages=messages,
+            route_decision={
+                "source": "review_target_refocus",
+                "matched": True,
+                "confidence": confidence,
+                "route": "review_plan",
+                "targetIssueCodes": target_issue_codes,
+            },
+        )
+
+    async def _recover_mutating_plan_payload_scope(
+        self,
+        *,
+        session_id: str,
+        content: str,
+        request_context: RequestContext,
+        plan_payload: dict[str, Any],
+        tool_context_messages: list[Any] | None,
+    ) -> dict[str, Any] | None:
+        """Recover missing mutation scope through the structured recovery model."""
+
+        recent_plan_context = _latest_plan_semantic_route_context(tool_context_messages)
+        if not recent_plan_context:
+            recent_plan_context = _latest_plan_semantic_route_context(
+                getattr(request_context, "chat_history", None)
+            )
+        if not _plan_recovery_has_context(request_context, recent_plan_context):
+            return None
+        decision = await self._classify_plan_action_recovery(
+            session_id=session_id,
+            content=content,
+            request_context=request_context,
+            recent_plan_context=recent_plan_context,
+        )
+        if decision is None:
+            return None
+        recovered_action_family = str(getattr(decision, "actionFamily", "none") or "none").strip()
+        payload_family = str(plan_payload.get("action_family") or "").strip()
+        if recovered_action_family != payload_family:
+            return None
+        ctx = SimpleNamespace(deps=request_context)
+        plan_next_args = _plan_recovery_decision_to_tool_args(decision, content)
+        plan_next_args["current_stage"] = "preview"
+        try:
+            recovered_payload_text = await plan_next_action(ctx, **plan_next_args)
+            recovered_payload = normalize_plan_action_payload(json.loads(recovered_payload_text))
+        except Exception:
+            logger.warning(
+                "Recover mutating plan payload scope failed: session_id=%s action_family=%s",
+                session_id,
+                payload_family,
+                exc_info=True,
+            )
+            return None
+        if str(recovered_payload.get("action_family") or "").strip() != payload_family:
+            return None
+        if str(recovered_payload.get("stage") or "").strip() != "preview":
+            return None
+        if recovered_payload.get("missing_inputs"):
+            return None
+        if not _plan_payload_has_executable_mutation_scope(recovered_payload):
+            return None
+        return recovered_payload
 
     async def _maybe_recover_atomic_preview_from_unmatched_fix_proposal(
         self,
@@ -10277,10 +11445,20 @@ class ChatService:
         if not isinstance(attempted_result, dict):
             attempted_result = _latest_readonly_plan_query_misroute_candidate(tool_context_messages)
         if not isinstance(attempted_result, dict):
+            latest_review_result = _latest_review_plan_result(tool_context_messages)
+            latest_review_context = _latest_review_fix_proposal_route_context(tool_context_messages)
+            if (
+                isinstance(latest_review_result, dict)
+                and _plan_context_has_fix_proposals(latest_review_context)
+                and not _plan_result_has_ready_fix_proposals(latest_review_result)
+            ):
+                attempted_result = latest_review_result
+        if not isinstance(attempted_result, dict):
             return None
         attempted_action_family = str(attempted_result.get("action_family") or "").strip()
         if attempted_action_family not in {
             "query_state",
+            "review_plan",
             "preview_fix_proposal",
             "add_units",
             "remove_units",
@@ -10485,6 +11663,8 @@ class ChatService:
         if not isinstance(attempted_result, dict):
             attempted_result = _latest_review_plan_result(tool_context_messages)
         if not isinstance(attempted_result, dict):
+            return None
+        if _structured_review_result_is_readonly(attempted_result):
             return None
         attempted_action_family = str(attempted_result.get("action_family") or "").strip()
         attempted_result_kind = str(attempted_result.get("result_kind") or "").strip()
@@ -10721,6 +11901,8 @@ class ChatService:
             return None
         if str(getattr(decision, "action", "") or "").strip() != "none":
             return None
+        if _turn_has_structured_plan_result(tool_context_messages):
+            return None
         return await _recover_unbacked_intent_confirmation(
             session_id,
             request_context,
@@ -10872,6 +12054,8 @@ class ChatService:
         confidence = float(getattr(decision, "confidence", 0.0) or 0.0)
         scope_type = str(getattr(decision, "scopeType", "") or "").strip()
         if action not in {"only_keep_scope", "must_include_scope", "exclude_scope", "tuition_budget_scope"} or confidence < 0.85:
+            return None
+        if not bool(getattr(decision, "requiresPlanMutation", False)):
             return None
         if action == "tuition_budget_scope":
             max_tuition_per_year = _as_int(getattr(decision, "maxTuitionPerYear", None))
@@ -11570,6 +12754,25 @@ class ChatService:
                         with contextlib.suppress(asyncio.CancelledError):
                             await context_progress_task
                     return ChatServiceResponseEnvelope(primary=primary_text, followups=[recovered_intent_card])
+                if _intent_preview_missing_required_constraint_scope(recent_intent_payload):
+                    primary_text = _intent_preview_incomplete_constraint_reply(recent_intent_payload)
+                    recovery_messages = [
+                        ModelRequest(parts=[UserPromptPart(content=content)]),
+                        ModelResponse(
+                            parts=[TextPart(content=primary_text)],
+                            model_name="agent-interruption-intent-preview-guard",
+                        ),
+                    ]
+                    with contextlib.suppress(Exception, asyncio.CancelledError):
+                        await self.history_store.save(
+                            session_id,
+                            list(history or []) + _append_route_observability_message(recovery_messages, turn_event),
+                        )
+                    if context_progress_task is not None:
+                        context_progress_task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await context_progress_task
+                    return primary_text
             if recent_plan_fallback is not None:
                 recovery_messages = [
                     ModelRequest(parts=[UserPromptPart(content=content)]),
@@ -11691,12 +12894,16 @@ class ChatService:
         intent_preview_downgraded = (
             intent_interest_stage_result
             or semantic_intent_readonly_honored
+            or readonly_interest_analysis_used
         )
         if intent_preview_downgraded and getattr(request_context, "conversation_phase", None) is not None:
             request_context.conversation_phase.clear_pending()
             active_pending_kind = ""
         readonly_prompt = _prompt_explicitly_readonly(content)
+        readonly_policy_prompt = _prompt_requires_readonly_policy_answer(content)
         negative_plan_ack = _prompt_rejects_current_plan_action(content)
+        if readonly_policy_prompt:
+            readonly_prompt = True
         readonly_mutation_preview_guarded = False
         if (readonly_prompt or negative_plan_ack) and _tool_returns_mutating_plan_preview(tool_context_messages):
             _remove_current_turn_mutating_plan_preview(new_messages)
@@ -11768,6 +12975,12 @@ class ChatService:
             and not plan_chain_used
             and _is_pending_intent_followup_turn(content, reply)
         )
+        if readonly_policy_prompt and intent_preview_used_current_turn:
+            intent_preview_downgraded = True
+            has_pending_intent_context = False
+            if getattr(request_context, "conversation_phase", None) is not None:
+                request_context.conversation_phase.clear_pending()
+                active_pending_kind = ""
         if isinstance(reply, str) and (_reply_is_existing_only_intent_notice(reply) or intent_non_pending):
             has_pending_intent_context = False
         semantic_intent_recovery_detected = False
@@ -11810,6 +13023,7 @@ class ChatService:
         unbacked_intent_preview_detected = (
             isinstance(reply, str)
             and not intent_preview_used
+            and not readonly_policy_prompt
             and (not has_pending_intent_context or _reply_claims_clickable_intent_card(reply))
             and allow_unbacked_intent_recovery
             and _reply_looks_like_unbacked_intent_preview(reply)
@@ -11820,6 +13034,7 @@ class ChatService:
             and not intent_preview_used
             and not plan_chain_used
             and not latest_turn_readonly
+            and not readonly_policy_prompt
             and allow_unbacked_intent_recovery
             and _reply_looks_like_unbacked_intent_preview(reply)
         )
@@ -12054,6 +13269,7 @@ class ChatService:
             and not intent_preview_used
             and not intent_preview_downgraded
             and not readonly_prompt
+            and not _turn_has_structured_plan_result(tool_context_messages)
             and resolve_pending_confirmation(request_context) is None
             and _reply_looks_like_unbacked_plan_confirmation(reply)
         ):
@@ -12141,13 +13357,15 @@ class ChatService:
             _replace_text_reply(all_messages, reply, pending_context_reply)
             reply = pending_context_reply
         if plan_confirmation_candidate is None and isinstance(reply, str):
-            recovered_plan_action = await self._maybe_recover_unbacked_plan_action(
-                session_id=session_id,
-                content=content,
-                reply=reply,
-                tool_context_messages=tool_context_messages,
-                request_context=request_context,
-            )
+            recovered_plan_action = None
+            if not intent_preview_downgraded:
+                recovered_plan_action = await self._maybe_recover_unbacked_plan_action(
+                    session_id=session_id,
+                    content=content,
+                    reply=reply,
+                    tool_context_messages=tool_context_messages,
+                    request_context=request_context,
+                )
             if recovered_plan_action is not None:
                 reply = recovered_plan_action.reply
                 new_messages = recovered_plan_action.messages
@@ -12191,9 +13409,59 @@ class ChatService:
             and isinstance(reply, str)
             and not readonly_prompt
             and not negative_plan_ack
+            and not intent_preview_downgraded
             and not composite_goal_clarification_reply
         ):
             recovered_plan_action = await self._maybe_recover_atomic_preview_after_non_actionable_plan_attempt(
+                session_id=session_id,
+                content=content,
+                request_context=request_context,
+                tool_context_messages=tool_context_messages,
+            )
+            if recovered_plan_action is not None:
+                reply = recovered_plan_action.reply
+                new_messages = recovered_plan_action.messages
+                all_messages = list(runtime_history.model_history or []) + list(new_messages)
+                tool_context_messages = _select_current_tool_context_messages(
+                    new_messages,
+                    all_messages,
+                    runtime_history,
+                )
+                plan_chain_used = _tool_calls_include_plan_chain(tool_context_messages)
+                intent_preview_used_current_turn = _tool_calls_include_intent_preview(tool_context_messages)
+                intent_preview_used = intent_preview_used_current_turn
+                intent_non_pending = _tool_returns_intent_non_pending(tool_context_messages)
+                latest_turn_readonly = _latest_turn_looks_readonly(tool_context_messages)
+                has_pending_intent_context = False
+                workspace_refresh_targets = _current_turn_workspace_refresh_targets(
+                    tool_context_messages=tool_context_messages,
+                    new_messages=new_messages,
+                    all_messages=all_messages,
+                    content=content,
+                )
+                workspace_view_targets = _tool_calls_include_plan_view_targets(tool_context_messages)
+                workspace_view_targets = _strip_workspace_targets_for_readonly_prompt(workspace_view_targets, content)
+                tool_calls = _iter_tool_call_parts(tool_context_messages)
+                tool_returns = _iter_tool_return_parts(tool_context_messages)
+                called_tool_names = [part.tool_name for part in tool_calls]
+                observed_tool_calls = _summarize_tool_calls_for_observability(tool_calls, tool_returns)
+                full_agent_tool_trial = _summarize_full_agent_tool_trial(called_tool_names)
+                scene = "plan"
+                action_family = _select_conversation_action_family(tool_returns)
+                plan_confirmation_candidate = _extract_plan_confirmation_candidate(tool_context_messages)
+                plan_action_recovery_route = recovered_plan_action.route_decision
+        if (
+            plan_action_recovery_route is None
+            and plan_confirmation_candidate is None
+            and pending_fix_proposal_card is None
+            and recovered_pending_intent_card is None
+            and isinstance(reply, str)
+            and plan_chain_used
+            and not readonly_prompt
+            and not negative_plan_ack
+            and not intent_preview_downgraded
+        ):
+            recovered_plan_action = await self._maybe_refocus_broad_review_result(
                 session_id=session_id,
                 content=content,
                 request_context=request_context,
@@ -12237,6 +13505,7 @@ class ChatService:
             and recovered_pending_intent_card is None
             and isinstance(reply, str)
             and plan_chain_used
+            and _latest_mismatched_plan_next_preview_payload(tool_context_messages) is None
         ):
             missing_plan_next_payload = _latest_plan_next_missing_inputs_payload(
                 tool_context_messages,
@@ -12248,6 +13517,8 @@ class ChatService:
                         "action_family": missing_plan_next_payload.get("action_family"),
                         "stage": missing_plan_next_payload.get("stage"),
                         "result_kind": "error",
+                        "missing_inputs": missing_plan_next_payload.get("missing_inputs") or [],
+                        "atomic_actions": missing_plan_next_payload.get("atomic_actions") or [],
                         "summary": missing_plan_next_payload.get("summary")
                         or missing_plan_next_payload.get("preview_summary")
                         or "",
@@ -12272,6 +13543,7 @@ class ChatService:
             and pending_fix_proposal_card is None
             and isinstance(reply, str)
             and not composite_goal_clarification_reply
+            and not intent_preview_downgraded
             and not intent_preview_used_current_turn
         ):
             composite_goal_card = None
@@ -12332,6 +13604,7 @@ class ChatService:
             and plan_confirmation_candidate is None
             and isinstance(reply, str)
             and not intent_preview_used_current_turn
+            and not intent_preview_downgraded
             and not composite_goal_clarification_reply
         ):
             recovered_pending_intent_card = await _recover_confirmable_intent_from_no_tool_turn(
@@ -12354,6 +13627,7 @@ class ChatService:
             and pending_fix_proposal_card is None
             and isinstance(reply, str)
             and intent_preview_used_current_turn
+            and not intent_preview_downgraded
             and not composite_goal_clarification_reply
         ):
             existing_intent_goal_card = await self._maybe_recover_existing_intent_composite_goal(
@@ -12392,6 +13666,7 @@ class ChatService:
             and pending_fix_proposal_card is None
             and isinstance(reply, str)
             and intent_preview_used_current_turn
+            and not intent_preview_downgraded
             and _latest_existing_only_intent_payload(tool_context_messages) is not None
             and not _has_plan_semantic_route_context(
                 getattr(request_context, "planning_summary", None),
@@ -12410,6 +13685,7 @@ class ChatService:
             and pending_fix_proposal_card is None
             and isinstance(reply, str)
             and not composite_goal_clarification_reply
+            and not intent_preview_downgraded
         ):
             allow_empty_intent_composite_recovery = (
                 intent_non_pending
@@ -12476,6 +13752,7 @@ class ChatService:
             plan_action_recovery_route is None
             and plan_confirmation_candidate is None
             and intent_preview_used_current_turn
+            and not intent_preview_downgraded
         ):
             recovered_plan_action = await self._maybe_recover_plan_action_from_intent_preview(
                 session_id=session_id,
@@ -12521,6 +13798,7 @@ class ChatService:
         if (
             plan_action_recovery_route is None
             and plan_confirmation_candidate is None
+            and not intent_preview_downgraded
         ):
             recovered_plan_action = await self._maybe_complete_unexecuted_fix_preview_plan_next(
                 session_id=session_id,
@@ -12566,6 +13844,7 @@ class ChatService:
         if (
             plan_action_recovery_route is None
             and plan_confirmation_candidate is None
+            and not intent_preview_downgraded
         ):
             recovered_plan_action = await self._maybe_complete_unexecuted_mutating_plan_next_preview(
                 session_id=session_id,
@@ -12611,6 +13890,7 @@ class ChatService:
         if (
             plan_action_recovery_route is None
             and plan_confirmation_candidate is None
+            and not intent_preview_downgraded
         ):
             recovered_plan_action = await self._maybe_recover_fix_preview_after_review(
                 session_id=session_id,
@@ -12653,7 +13933,7 @@ class ChatService:
                 action_family = _select_conversation_action_family(tool_returns)
                 plan_confirmation_candidate = _extract_plan_confirmation_candidate(tool_context_messages)
                 plan_action_recovery_route = recovered_plan_action.route_decision
-        if plan_confirmation_candidate is None and not composite_goal_clarification_reply:
+        if plan_confirmation_candidate is None and not composite_goal_clarification_reply and not intent_preview_downgraded:
             composite_goal_card = await self._maybe_recover_composite_goal_after_plan_attempt(
                 session_id=session_id,
                 content=content,
@@ -12904,6 +14184,7 @@ class ChatService:
             and pending_fix_proposal_card is None
             and recovered_pending_intent_card is None
             and not composite_goal_clarification_reply
+            and not intent_preview_downgraded
         ):
             structured_goal_preview = _latest_structured_goal_plan_preview(tool_context_messages)
             pending_fix_proposal_card = await _maybe_create_plan_confirmation_from_structured_goal(
@@ -12940,6 +14221,7 @@ class ChatService:
             and pending_fix_proposal_card is None
             and recovered_pending_intent_card is None
             and not composite_goal_clarification_reply
+            and not intent_preview_downgraded
             and not _plan_confirmation_candidate_is_explicit_atomic_target(plan_confirmation_candidate)
         ):
             composite_override_card = await self._maybe_override_plan_confirmation_with_composite_goal(
@@ -13014,6 +14296,8 @@ class ChatService:
                 _replace_text_reply(new_messages, reply, guarded_pending_reply)
                 _replace_text_reply(all_messages, reply, guarded_pending_reply)
                 reply = guarded_pending_reply
+        if plan_confirmation_candidate and intent_preview_downgraded:
+            plan_confirmation_candidate = None
         if plan_confirmation_candidate:
             plan_card_includes_intent_update = bool(
                 isinstance(plan_confirmation_candidate.get("intent_update"), dict)
@@ -13083,6 +14367,33 @@ class ChatService:
                 _replace_text_reply(new_messages, reply, "")
                 _replace_text_reply(all_messages, reply, "")
                 reply = primary_text
+            elif (
+                pending_intent_card is None
+                and isinstance(reply, str)
+                and _intent_preview_missing_required_constraint_scope(preview_payload)
+            ):
+                fallback_reply = _intent_preview_incomplete_constraint_reply(preview_payload)
+                _replace_text_reply(new_messages, reply, fallback_reply)
+                _replace_text_reply(all_messages, reply, fallback_reply)
+                reply = fallback_reply
+        if isinstance(reply, str) and readonly_policy_prompt:
+            readonly_policy_reply = _readonly_policy_fallback_reply_for_prompt(
+                content,
+                reply,
+                tool_context_messages,
+            )
+            if readonly_policy_reply:
+                readonly_policy_reply = _sanitize_reply_for_user(readonly_policy_reply)
+                _replace_text_reply(new_messages, reply, readonly_policy_reply)
+                _replace_text_reply(all_messages, reply, readonly_policy_reply)
+                reply = readonly_policy_reply
+                pending_intent_card = None
+                recovered_pending_intent_card = None
+                plan_confirmation_card = None
+                pending_fix_proposal_card = None
+                plan_confirmation_candidate = None
+                plan_action_recovery_route = None
+                workspace_refresh_targets = []
         if isinstance(reply, str):
             final_user_reply = _sanitize_reply_for_user(reply)
             if final_user_reply != reply:
@@ -13147,6 +14458,22 @@ class ChatService:
                     _replace_text_reply(new_messages, reply, structured_adjustment_reply)
                     _replace_text_reply(all_messages, reply, structured_adjustment_reply)
                     reply = structured_adjustment_reply
+        if (
+            plan_action_recovery_route is None
+            and plan_confirmation_card is None
+            and plan_confirmation_candidate is None
+            and pending_fix_proposal_card is None
+            and pending_intent_card is None
+            and recovered_pending_intent_card is None
+            and isinstance(reply, str)
+            and _reply_looks_like_plan_action_recovery_boundary(reply)
+            and not list(_iter_tool_call_parts(tool_context_messages))
+        ):
+            no_action_reply = _normalize_unbacked_no_tool_action_boundary(reply)
+            if no_action_reply != reply:
+                _replace_text_reply(new_messages, reply, no_action_reply)
+                _replace_text_reply(all_messages, reply, no_action_reply)
+                reply = no_action_reply
         pending_type = "plan" if active_pending_kind == "plan_mutation" else "intent" if active_pending_kind == "intent_change" else None
         turn_event = {
             "sessionId": session_id,
@@ -13455,6 +14782,7 @@ class ChatService:
             try:
                 state_result = parse_intent_state_update_result(result_json)
                 reply = render_intent_state_update(state_result)
+                reply = _reply_with_pending_intent_summary(reply, state_result, pending_state)
             except Exception:
                 logger.warning("Failed to parse pending intent confirmation result: session_id=%s", session_id, exc_info=True)
                 state_result = None

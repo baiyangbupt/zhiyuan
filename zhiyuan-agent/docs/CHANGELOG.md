@@ -20,8 +20,14 @@
 
 ### Fixed
 
+- 3.1.0 审查/修复只读边界继续收口：普通 `review_plan/review_result` 即使带有后端 `FixProposal`，只要结构化 `reply_focus` 不是 `fix_proposal_preview/ready_fix_proposals`，服务层不再额外调用修复预览恢复分类器，也不生成处理确认卡；只有用户明确要求“先看怎么处理/调整预览”的结果才进入 `preview_fix_proposal -> pendingConfirmationCard` 桥。同步规范化审查 proposal 标题，避免“志愿数量暂时：...”这类状态词残留到用户回复里。
+- 3.1.0 只读费用/定向审查边界补强：复合目标分类新增 `requiresPlanMutation`，仅当用户明确要求删除、替换、补位、只保留或写入预算口径时才生成方案调整待确认；“两三万预算够不够、贵不贵、多不多”等只读询问不会再变成 `tuition_budget_scope` 确认卡。当前方案内高收费/中外合作数量类问题可走语义 `review_plan` 快捷入口，但必须同时带 `targetIssueCodes` 和 `replyFocus=["target_issue_only"]`，否则交回 full agent 综合回答。
+- 3.1.0 结构缺口与取舍问题分流收口：`shortage_boundary` 快捷入口要求 `replyFocus` 同时包含 `plan_structure_shortage_only`，只承接补稳、补保、数量缺口、候选供给不足等纯方案结构问题；地域、专业、院校、职业取舍类表达继续走 full agent/Explore，不再被泛化成候选不足或修复不可用说明。
+- 3.1.0 真实历史对话回归补强：88 个 3.0.3 衍生对话 case 复跑后，修复两类实质退化：`保底够不够，别最后滑档` 的 `shortage_boundary` fallback 改为基于结构化候选供给/冲稳保缺口回答，不再透出“处理数量校验 / 处理梯度断层”等内部处理名；`把太贵的那几个先去掉看看` 在 full agent 只做 `review_plan` 时，会基于当前轮结构化 review/fix context 调用 `classify_plan_recovery_action`，恢复到 `remove_units -> execute_plan_action` 的确认预览链路，不再停留在只读审查。
+- 3.1.0 回归断言稳健性修复：`303-dialogue-near-batch-line-no-overpromise` 的内容断言补充 `压线 / 兜底 / 保本科` 等同义表达，避免语义正确但未命中固定词导致误报；仍保留“风险/下一步”质量要求。
 - 3.1.0 审查修复语义路由补强：用户问“专业组里录取率太悬，能不能补一个安全一点的专业，先看预览”时，语义判定按用户想执行的动作归入 `adjust_major_group_inner_safety`，不再因为句中提到“录取率”误路由到 `sort_by_probability` 或冲稳保比例调整；`examples/dialog_regression_310_review_repair_cases.json` 复跑 9/9 通过，关键 case 生成“补兜底专业”确认卡。
 - 3.1.0 预算/中外合作只读解释边界补强：用户说“中外合作是不是有点多、家里预算一般、用大白话看风险、先别动”时，不再因为提到费用风险被语义快捷入口抢到 `analyze_adjustment/replace_risk_items`，而是回到完整 Agent 读取当前方案事实做只读风险解释；`unavailable_guidance` 只保留给“为什么这些提醒处理不了/怎么取舍”的明确追问。
+- 3.1.0 正向约束完整性补强：`only_keep / must_have` 必须带明确正向对象，不能因为抽取器只返回负向对象而降级成普通排除卡。例如“孩子就想去南方，北方先别考虑”若工具只返回 `negative_area=北方`，服务层会先复用现有语义抽取补回 `area=南方`；补不回时不生成可生效卡片，只提示用户补充要保留的范围，避免“只保留南方”被弱化成“排除北方”。
 - 审查处理预览的目标一致性修复：当用户明确要看某一类处理预览（如“组内补安全垫”），但该目标在后端 `FixProposal` 中是 `blocked/preview_only` 或没有 matching ready proposal 时，Agent 不再退到其他 ready 处理建议（如录取率重排）生成无关确认卡，而是聚焦说明当前目标为什么不能直接处理、需要放宽或取舍什么；对应回归用例更新为 `target_unavailable_boundary / no_unrelated_preview`。
 - 方案预览与意向预览同轮冲突修复：full agent 先产出意向预览、随后服务层恢复出 `preview_fix_proposal` 时，最终 follow-up 只保留方案调整卡；不会再从旧 `latestIntentPreviewPayload` 回捞出意向采纳卡，避免正文说“方案调整预览”但卡片变成“发展方向/偏好采纳”。
 - 方案调整误路由恢复收口：当 full agent 先落到只读 `query_state/status_overview`，但用户实际是在要求补齐、增删或替换方案时，服务层会复用 `classify_plan_recovery_action` 重新进入 `plan_next_action -> execute_plan_action` 的统一调整链；若恢复后仍缺少候选范围，则保留 `selection_scope` 级别的具体缺参提示，而不是返回泛化的“没有可执行预览”。

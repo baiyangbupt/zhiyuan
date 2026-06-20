@@ -183,6 +183,7 @@ class CompositeGoalDecision(BaseModel):
     negativeValues: list[str] = Field(default_factory=list)
     maxTuitionPerYear: int | None = None
     constraintIntentType: Literal["default", "only_keep", "must_have"] = "default"
+    requiresPlanMutation: bool = False
 
     @field_validator("confidence", mode="before")
     @classmethod
@@ -215,6 +216,14 @@ class CompositeGoalDecision(BaseModel):
             return int(value)  # type: ignore[arg-type]
         except (TypeError, ValueError):
             return None
+
+    @field_validator("requiresPlanMutation", mode="before")
+    @classmethod
+    def _coerce_requires_plan_mutation(cls, value: object) -> bool:
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            return normalized in {"true", "1", "yes", "y", "是", "需要", "修改", "调整"}
+        return bool(value)
 
 
 class PendingSemanticActionDecision(BaseModel):
@@ -275,12 +284,19 @@ def _get_plan_action_agent() -> Agent[None, str]:
                 "高收费会不会影响保底、医学护理里中医算不算、候选里有没有某类更稳机会，"
                 "应 actionFamily=none，让完整 Agent 按方案、候选和专业事实回答；"
                 "不要因为文本提到了高收费、中外合作、医学、保底、某专业，就改写成审查修复分析。"
+                "但当用户明确是在问当前方案里某一类审查风险或提醒的命中数量、占比、有没有或多不多，"
+                "例如费用预算、高收费、中外合作、限报条件、特殊招生这类当前方案风险，"
+                "可以判为 review_plan，并必须填写 targetIssueCodes 和 replyFocus=[\"target_issue_only\"]；"
+                "这种场景只读审查，不生成调整预览，也不要填写 unavailable_guidance。"
                 "当用户只是说帮我用大白话看风险、风险大不大、是不是有点多、家里预算一般、先别动，"
                 "本质仍是当前方案的只读风险解释，应 actionFamily=none；"
                 "不要填 unavailable_guidance，也不要因为提到费用/合作办学就生成 replace_risk_items。"
                 "用户问当前方案能不能补稳/补保/补齐、候选是否足够、候选不够时怎么办、为什么不能补齐，"
                 "如果只是要判断可行性、解释边界或给调整思路，而不是要求立刻生成可确认调整清单，可判为 analyze_adjustment，"
-                "但 replyFocus 必须包含 shortage_boundary；"
+                "但 replyFocus 必须同时包含 shortage_boundary 和 plan_structure_shortage_only；"
+                "plan_structure_shortage_only 只用于纯方案结构缺口，例如补稳、补保、补齐数量、候选供给不足、保底够不够。"
+                "如果用户问题绑定地域/城市、专业方向、学校层次、职业路径或生活取舍，例如“想去北京天津但别没学上”，"
+                "这不是纯结构缺口，actionFamily=none，交给完整 Agent 做综合分析。"
                 "不要判成 query_state；query_state 只适合单纯查看现状统计。"
                 "没有最近审查结果或处理建议时，analyze_adjustment 的快捷入口只适合 shortage_boundary 或 unavailable_guidance；"
                 "其中 unavailable_guidance 只适合用户明确追问已经出现的提醒为什么不能处理、为什么不能直接改、"
@@ -293,11 +309,13 @@ def _get_plan_action_agent() -> Agent[None, str]:
                 "如果 planningSummary 显示已有当前方案，且用户同一轮明确要求检查某类方案提醒并先看可确认的调整预览，"
                 "也可以判为 preview_fix_proposal，由服务层先重新审查再生成预览。"
                 "当用户已经明确说“先给我看预览/先看调整预览/给我一版预览/列出可确认的调整”，"
-                "并且目标属于审查处理建议（例如补兜底专业、按录取率重排、替换高收费/中外合作、补断层），"
+                "并且目标属于审查处理建议（例如处理录取率倒挂、补兜底专业、替换高收费/中外合作、补断层），"
                 "应优先判为 preview_fix_proposal；不要只判为 review_plan 或 analyze_adjustment。"
                 "只有用户只是问“有没有问题/能怎么处理/为什么/说人话/怎么取舍”，没有要求预览时，才判为 review_plan 或 analyze_adjustment。"
                 "用户直接提出新的方案动作时不要判为 preview_fix_proposal，例如按推荐系数/院校层次/录取率排序、"
                 "移动、删除、加入、替换、只保留某专业、排除某地域、更新偏好或要求；这些应交给完整 Agent 生成具体动作计划。"
+                "尤其是用户直接说按录取率从高到低/从低到高排一下、按录取概率排序、按推荐系数或院校层次排序，"
+                "即使说了“先看预览”，本质也是 sort_ordered_plan 排序动作，不是审查修复建议；actionFamily 应为 none。"
                 "用户只是问是否太冲、先看看影响、说人话、解释为什么、列命中项、怎么取舍、还没有要求生成可确认调整内容时，"
                 "通常是 analyze_adjustment 或 none，不要生成预览。"
                 "如果用户提出的是基础报考资料变化后的重新规划，例如分数、位次、省份、选科、批次等变化后要重新按新条件规划，"
@@ -312,7 +330,8 @@ def _get_plan_action_agent() -> Agent[None, str]:
                 "probability_inversion、probability_gap、major_group_safety_intent_alignment、group_inner_safety_guard、"
                 "admission_limit、special_enrollment、count_validation、edge_score、safety_guard。"
                 "replyFocus 可选填回复展示重点，例如 unavailable_guidance 表示用户想知道为什么某些提醒不能直接处理以及自己可以怎么调；"
-                "shortage_boundary 表示用户重点关注候选不足、补稳/补保是否可行；target_issue_only 表示只围绕用户点名的某类问题展开。"
+                "shortage_boundary 表示用户重点关注候选不足、补稳/补保是否可行；plan_structure_shortage_only 表示它是纯方案结构缺口而非地域/专业/学校/职业取舍；"
+                "target_issue_only 表示只围绕用户点名的某类问题展开。"
                 "只要用户的问题明确聚焦当前方案中的某一类审查提醒、风险来源或处理方向，就必须填写 targetStrategies，"
                 "不要把它留空；同时尽量填写 targetIssueCodes。targetIssueCodes 用来约束后续分析只围绕用户点名的那类问题展开。"
                 "审查修复目标要按用户想让系统怎么动来判，不要只按用户提到的风险依据来判："
@@ -321,9 +340,9 @@ def _get_plan_action_agent() -> Agent[None, str]:
                 "当用户承接审查结果要求在专业组里补更安全/更稳的专业、补兜底专业、处理非意向托底或组内安全垫时，"
                 "targetStrategies 只填写 adjust_major_group_inner_safety，targetIssueCodes 填 major_group_safety_intent_alignment 或 group_inner_safety_guard；"
                 "不要同时填写 sort_by_probability 或 rebalance_tier_ratio，除非用户还明确要求重排顺序或调整冲稳保比例。"
-                "sort_by_probability 只用于用户要求处理录取率倒挂、按录取率重新排序、调整前后顺序或修正风险梯度顺序；"
+                "sort_by_probability 只用于用户要求处理录取率倒挂、修正当前审查指出的顺序倒挂、调整前后顺序或修正风险梯度顺序；"
                 "用户要求补更安全专业时不要用 sort_by_probability，即使问题里提到录取率。"
-                "当用户要求处理录取率倒挂或按录取率重排时填写 sort_by_probability，targetIssueCodes 填 probability_inversion；"
+                "当用户要求处理录取率倒挂或修正审查里的录取率顺序问题时填写 sort_by_probability，targetIssueCodes 填 probability_inversion；"
                 "当用户要求补录取概率断层时填写 fill_probability_gap，targetIssueCodes 填 probability_gap；"
                 "当用户泛泛要求补稳/调冲稳保比例时填写 rebalance_tier_ratio。"
                 "当用户围绕学费预算压力、收费偏高、合作办学、国际项目等当前方案里的费用/项目风险询问怎么处理、"
@@ -462,7 +481,10 @@ def _get_composite_goal_agent() -> Agent[None, str]:
                 "只有用户明确承接最近审查结果说处理审查里的中外合作提醒时，才交给审查修复链路；本判定器应输出 none。"
                 "targetValues 放 only_keep_scope / must_include_scope 的正向对象，negativeValues 放 exclude_scope 的排除对象。"
                 "tuition_budget_scope 必须填写 maxTuitionPerYear 为整数元/年，scopeType 填 tuition，不要把数字放到 targetValues。"
-                "用户只是询问影响、适不适合、要不要、能不能、政策、学校/专业介绍、对比分析、只读审查时，必须 action=none。"
+                "requiresPlanMutation 表示用户本轮是否明确要求改变当前方案或后续推荐口径；只有要生成可确认调整、写入条件、移出、替换、补位、只保留或至少保留时才为 true。"
+                "用户只是询问影响、适不适合、要不要、能不能、政策、学校/专业介绍、对比分析、数量、占比、有没有、多不多、风险大不大、只读审查时，必须 action=none，requiresPlanMutation=false。"
+                "学费预算场景要特别区分：用户给出预算上限并问当前方案有没有/多不多/风险多大，只是只读审查，输出 none；"
+                "只有用户要求按预算上限删除、替换、调整、不要超预算、后续按预算控制时，才输出 tuition_budget_scope 且 requiresPlanMutation=true。"
                 "用户明确说只保留/只要/仅限/限定某方向，即使还提到'其他不要'，也应输出 only_keep_scope，"
                 "且只把用户明确点名的正向对象放 targetValues，不要把未点名的其他方向展开成 negativeValues。"
                 "用户明确说必须有/至少有/保留一个某方向，且其他方向可以保留，输出 must_include_scope。"
@@ -472,7 +494,7 @@ def _get_composite_goal_agent() -> Agent[None, str]:
                 "如果对象无法归入专业、院校、地域、职业或项目类型，或无法提取清楚具体对象，输出 none 或低置信。"
                 "只有很确定时 confidence >= 0.85；不确定时 action=none 或 confidence < 0.85。"
                 "constraintIntentType 对 only_keep_scope 填 only_keep，对 must_include_scope 填 must_have，其他填 default。"
-                "输出 JSON：action, confidence, reason, scopeType, targetValues, negativeValues, maxTuitionPerYear, constraintIntentType。"
+                "输出 JSON：action, confidence, reason, scopeType, targetValues, negativeValues, maxTuitionPerYear, constraintIntentType, requiresPlanMutation。"
             ),
             model_settings=_get_plan_action_llm_client().model_settings,
         )
@@ -634,6 +656,7 @@ def _normalize_composite_goal_decision(decision: CompositeGoalDecision) -> Compo
         negativeValues=_normalize_list_values(decision.negativeValues),
         maxTuitionPerYear=decision.maxTuitionPerYear if isinstance(decision.maxTuitionPerYear, int) and decision.maxTuitionPerYear > 0 else None,
         constraintIntentType=constraint_intent_type,  # type: ignore[arg-type]
+        requiresPlanMutation=bool(decision.requiresPlanMutation),
     )
 
 

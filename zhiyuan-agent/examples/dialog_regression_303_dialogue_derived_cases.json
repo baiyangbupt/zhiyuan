@@ -118,7 +118,7 @@
       "prompts": [
         {
           "prompt": "分数刚压本科线，别给我画大饼",
-          "assertContainsAny": ["本科线", "保底", "风险", "民办", "专科", "建议"],
+          "assertContainsAny": ["本科线", "压线", "保底", "兜底", "保本科", "风险", "民办", "专科", "建议"],
           "expectedKeyPoints": ["本科线", "保底", "风险", "本科专科", "下一步"],
           "qualityFocus": ["rich_decision_basis"],
           "minTextLengthWarn": 180

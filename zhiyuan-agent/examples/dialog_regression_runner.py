@@ -1380,11 +1380,37 @@ def _duration_summary(values: list[int]) -> dict[str, int | None]:
     }
 
 
+def _record_failure_reasons(record: dict[str, Any]) -> list[str]:
+    reasons: list[str] = []
+    if record.get("error"):
+        reasons.append("request")
+    if record.get("wsError"):
+        reasons.append("ws")
+    if record.get("styleViolations"):
+        reasons.append("style")
+    if record.get("contentViolations"):
+        reasons.append("content")
+    if record.get("toolViolations"):
+        reasons.append("tool")
+    if record.get("performanceViolations"):
+        reasons.append("performance")
+    return reasons
+
+
 def _build_metrics_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
+    failed_records = [
+        record
+        for record in records
+        if _record_failure_reasons(record)
+    ]
+    failed_by_reason: dict[str, int] = {}
+    for record in failed_records:
+        for reason in _record_failure_reasons(record):
+            failed_by_reason[reason] = failed_by_reason.get(reason, 0) + 1
     elapsed_values = [
         int(record["elapsedMs"])
         for record in records
-        if isinstance(record.get("elapsedMs"), int) and not record.get("error") and not record.get("wsError")
+        if isinstance(record.get("elapsedMs"), int) and not _record_failure_reasons(record)
     ]
     slowest = sorted(
         (
@@ -1398,7 +1424,8 @@ def _build_metrics_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "steps": len(records),
         "successfulSteps": len(elapsed_values),
-        "failedSteps": sum(1 for record in records if record.get("error") or record.get("wsError")),
+        "failedSteps": len(failed_records),
+        "failedByReason": failed_by_reason,
         "elapsed": _duration_summary(elapsed_values),
         "slowest": [
             {
@@ -1709,6 +1736,7 @@ async def _run_cases(
             if case_assert_style:
                 violations = _check_plan_reply_style(text)
                 if violations:
+                    record["styleViolations"] = violations
                     failures.append(f"{name} session={session_id} prompt={prompt}: {'; '.join(violations)}")
             content_violations = _check_content_assertions(
                 text,

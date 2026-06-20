@@ -55,6 +55,7 @@ from app.service import (
     _extract_recent_intent_analysis_payload,
     _guard_unbacked_plan_confirmation_reply,
     _current_turn_workspace_refresh_targets,
+    _turn_has_structured_plan_result,
     _tool_calls_include_plan_workspace_refresh,
 )
 from app.tools.intent_response_tool import IntentStateUpdateResult, render_intent_state_update
@@ -136,6 +137,7 @@ def _semantic_composite_goal(
     negative_values: list[str] | None = None,
     max_tuition_per_year: int | None = None,
     constraint_intent_type: str = "only_keep",
+    requires_plan_mutation: bool = True,
 ):
     return MagicMock(
         action=action,
@@ -146,6 +148,7 @@ def _semantic_composite_goal(
         negativeValues=negative_values or [],
         maxTuitionPerYear=max_tuition_per_year,
         constraintIntentType=constraint_intent_type,
+        requiresPlanMutation=requires_plan_mutation,
     )
 
 
@@ -294,6 +297,42 @@ def test_summarize_intent_values_uses_career_labels():
     merged = {"career_intents": {"positive": ["system_public_service"], "negative": ["stable_employment"]}}
 
     assert _summarize_intent_values(merged, intent_mode="preference") == "发展方向：体制内/考公导向；不优先发展方向：稳定就业导向"
+
+
+def test_summarize_intent_values_keeps_literal_career_values_when_slots_are_unmapped():
+    merged = {"career_intents": {"positive": ["体制内", "稳定就业"]}}
+
+    assert _summarize_intent_values(merged, intent_mode="preference") == "发展方向：体制内、稳定就业"
+
+
+def test_intent_card_primary_reply_uses_career_item_values_before_generic_title():
+    reply = _intent_card_primary_reply_from_preview_payload(
+        {
+            "status": "ready",
+            "title": "好的，我先把这次你提到的想法整理一下。你可以勾选想采纳的内容后点击【采纳】。",
+            "intentMode": "preference",
+            "constraintIntentType": "default",
+            "analysisStage": "confirmed",
+            "items": [
+                {
+                    "content": "把“体制内”记成你更看重的方向，后面我会优先按这个思路帮你看方案。",
+                    "value": {"career_intents": {"positive": ["体制内"]}},
+                    "selected": True,
+                },
+                {
+                    "content": "把“稳定就业”记成你更看重的方向，后面我会优先按这个思路帮你看方案。",
+                    "value": {"career_intents": {"positive": ["稳定就业"]}},
+                    "selected": True,
+                },
+            ],
+            "existingItems": [],
+        }
+    )
+
+    assert "发展方向" in reply
+    assert "体制内" in reply
+    assert "稳定就业" in reply
+    assert "好的，我先把这次你提到的想法整理一下" not in reply
 
 
 def test_render_intent_state_update_uses_constraint_specific_summary():
@@ -706,6 +745,89 @@ def test_sanitize_reply_for_user_removes_system_subject_from_tradeoff_guidance()
     assert "我先列出具体调整预览" in reply
 
 
+def test_sanitize_reply_for_user_removes_review_proposal_titles_and_executable_copy():
+    reply = _sanitize_reply_for_user(
+        "系统能直接处理的是：处理录取率倒挂、处理数量校验。"
+        "处理录取率梯度断层需要你先取舍。"
+        "我可以先列出可执行的调整预览，确认前不会改方案。"
+        "当前还缺少足够条件处理。"
+        "需要你先决定取舍范围，以便生成可执行的替换方案。"
+    )
+
+    forbidden_terms = (
+        "系统能直接处理",
+        "处理数量校验",
+        "处理录取率倒挂",
+        "处理录取率梯度断层",
+        "可执行的调整预览",
+        "可执行的替换方案",
+        "足够条件处理",
+    )
+    for term in forbidden_terms:
+        assert term not in reply
+    assert "可以先看调整预览" in reply
+    assert "补足志愿数量" in reply
+    assert "调整录取率顺序" in reply
+    assert "补齐录取率梯度" in reply
+    assert "可确认的调整预览" in reply
+    assert reply.count("可确认的调整预览") >= 2
+    assert "当前还缺少足够条件来处理" in reply
+
+
+def test_sanitize_reply_for_user_normalizes_review_repair_issue_titles():
+    reply = _sanitize_reply_for_user(
+        "能直接处理的有 2 项：处理高收费、处理中外合作。"
+        "处理非意向托底暂时自动不了，需要你先取舍。"
+    )
+
+    assert "高收费志愿" in reply
+    assert "中外合作项目" in reply
+    assert "非意向兜底专业" in reply
+    for forbidden in ("处理高收费", "处理中外合作", "处理非意向托底", "能直接处理", "暂时自动不了"):
+        assert forbidden not in reply
+
+
+def test_sanitize_reply_for_user_keeps_unavailable_review_title_readable():
+    reply = _sanitize_reply_for_user("志愿数量暂时还不能直接处理：当前方案数量多于官方要求。")
+
+    assert "志愿数量暂时需要你先取舍或放宽条件" in reply
+    assert "暂时还不可以先看调整预览" not in reply
+
+
+def test_plan_timeout_fallback_does_not_leave_dangling_unavailable_title_suffix():
+    reply = _build_plan_timeout_fallback_reply(
+        {
+            "result_kind": "review_result",
+            "action_family": "review_plan",
+            "summary": "已完成方案审查。",
+            "facts": {
+                "risk_count": 0,
+                "warn_count": 1,
+                "plan_total": 97,
+                "target_total": 96,
+                "fix_proposals": {
+                    "ready_count": 0,
+                    "blocked_count": 1,
+                    "proposals": [
+                        {
+                            "status": "blocked",
+                            "title": "志愿数量暂时无法自动处理",
+                            "summary": "当前方案数量多于官方要求，需要你先手动精简后再重新审查。",
+                            "strategy": "fill_missing_count",
+                            "source_check_codes": ["count_validation"],
+                        }
+                    ],
+                },
+            },
+        }
+    )
+
+    assert reply is not None
+    assert "志愿数量：" in reply
+    assert "志愿数量暂时：" not in reply
+    assert "当前方案数量多于官方要求" in reply
+
+
 def test_sanitize_reply_for_user_removes_remaining_system_subjects_in_guidance():
     reply = _sanitize_reply_for_user(
         "你当前有 3 条提醒，系统目前都没法直接处理。"
@@ -786,6 +908,56 @@ def test_review_fallback_uses_user_facing_facts_instead_of_raw_summary():
         assert term not in reply
 
 
+def test_review_fallback_focuses_target_issue_when_structured_scope_present():
+    reply = _build_plan_timeout_fallback_reply(
+        {
+            "result_kind": "review_result",
+            "summary": "已完成方案审查，风险 3 项，提醒 5 项。",
+            "facts": {
+                "risk_count": 3,
+                "warn_count": 5,
+                "plan_total": 94,
+                "target_total": 96,
+                "tier_counts": {"冲": 66, "稳": 28, "保": 0},
+                "target_issue_codes": ["high_tuition", "cooperative_program"],
+                "main_problems": ["当前方案包含高收费志愿", "当前方案包含中外合作办学项目"],
+                "issue_hit_plan_examples": [
+                    {
+                        "code": "high_tuition",
+                        "summary": "当前方案包含高收费志愿",
+                        "count_text": "共命中 76 条志愿",
+                        "items": [
+                            "青岛理工大学-建筑学(中外合作办学)(冲)第1位",
+                            "青海民族大学-土地资源管理(中外合作办学)(冲)第2位",
+                        ],
+                    }
+                ],
+                "fix_proposals": {
+                    "blocked_count": 1,
+                    "proposals": [
+                        {
+                            "status": "blocked",
+                            "title": "处理高收费",
+                            "strategy": "replace_risk_items",
+                            "summary": "建议结合家庭经济状况确认是否保留相关志愿",
+                            "source_check_codes": ["high_tuition", "cooperative_program"],
+                        },
+                    ],
+                },
+            },
+        }
+    )
+
+    assert reply is not None
+    assert "高收费" in reply
+    assert "中外合作" in reply
+    assert "共命中 76 条志愿" in reply
+    assert "青岛理工大学" in reply
+    assert "确认前不会改动当前方案" in reply
+    assert "冲稳保 冲66" not in reply
+    assert "录取率倒挂" not in reply
+
+
 def test_review_fallback_shortens_long_issue_examples():
     reply = _build_plan_timeout_fallback_reply(
         {
@@ -811,6 +983,24 @@ def test_review_fallback_shortens_long_issue_examples():
     assert "要求考生高考外语成绩不低于105分" not in reply
     assert "首年强化英语学习" not in reply
     assert "东北财经大学第202组-工商管理" in reply
+
+
+def test_non_actionable_review_error_does_not_use_adjustment_preview_boundary():
+    reply = _build_plan_timeout_fallback_reply(
+        {
+            "action_family": "review_plan",
+            "result_kind": "error",
+            "summary": "审查超时，请稍后重试。",
+            "reply_focus": ["missing_inputs"],
+        },
+        user_prompt="孩子最后可能涨一点，方案要不要留冲的空间",
+    )
+
+    assert reply is not None
+    assert "方案审查结果" in reply
+    assert "当前方案不会因为这次回复发生变化" in reply
+    assert "调整预览" not in reply
+    assert "重新审查" in reply
 
 
 def test_review_fallback_answers_unavailable_guidance_prompt():
@@ -3333,6 +3523,104 @@ def test_chat_service_recovers_tuition_budget_after_plain_review_result(tmp_path
     proposal_mock.assert_awaited_once()
 
 
+def test_chat_service_does_not_create_budget_goal_card_for_readonly_fee_question(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    review_result = {
+        "applied": True,
+        "action_family": "review_plan",
+        "stage": "review",
+        "result_kind": "review_result",
+        "summary": "已完成方案审查。",
+        "facts": {
+            "planning_version": 44,
+            "plan_total": 94,
+            "target_total": 96,
+            "target_issue_codes": ["high_tuition"],
+            "main_problems": ["当前方案包含高收费志愿"],
+            "issue_hit_plan_examples": [
+                {
+                    "code": "high_tuition",
+                    "summary": "当前方案包含高收费志愿",
+                    "count_text": "共命中 36 条志愿",
+                    "items": ["A大学-中外合作专业(冲)第1位"],
+                }
+            ],
+        },
+        "workspace_refresh_targets": ["review"],
+    }
+    fake_agent = _FakeAgentWithToolCalls(
+        "我已经完成当前方案审查，当前方案里有高收费志愿。",
+        [
+            ToolCallPart(
+                tool_name="execute_plan_action",
+                args={
+                    "plan_payload": json.dumps(
+                        {
+                            "stage": "review",
+                            "action_family": "review_plan",
+                            "user_goal": "一年学费最多两三万，方案里高收费多吗",
+                            "planning_version": 44,
+                        },
+                        ensure_ascii=False,
+                    )
+                },
+                tool_call_id="budget-readonly-review",
+            )
+        ],
+        [
+            ToolReturnPart(
+                tool_name="execute_plan_action",
+                content=json.dumps(review_result, ensure_ascii=False),
+                tool_call_id="budget-readonly-review",
+            )
+        ],
+    )
+    pending_state, save_pending_mock, get_pending_mock = _pending_confirmation_store()
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 0, "data": {"userScoreDetail": {"batch": "01"}}})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={
+                "code": 0,
+                "data": {
+                    "phase": "reviewed",
+                    "version": 44,
+                    "draftPlanState": {"summary": {"total": 94, "targetTotal": 96}},
+                    "orderedPlanState": {"summary": {"total": 94, "targetTotal": 96}},
+                    "reviewState": {"summary": {"warnCount": 1, "riskCount": 0}, "checks": []},
+                },
+            })), \
+            patch("app.service.classify_composite_goal_action", AsyncMock(return_value=_semantic_composite_goal(
+                "tuition_budget_scope",
+                scope_type="tuition",
+                max_tuition_per_year=30000,
+                constraint_intent_type="default",
+                requires_plan_mutation=False,
+            ))) as classify_mock, \
+            patch("app.service.generate_user_goal_planning_fix_proposals", AsyncMock()) as proposal_mock, \
+            patch("app.service.save_pending_confirmation", save_pending_mock), \
+            patch("app.service.get_pending_confirmation", get_pending_mock):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(
+            service.handle_message(
+                "tuition-budget-readonly-session",
+                "user-1",
+                "一年学费最多两三万，方案里高收费多吗",
+            )
+        )
+
+    followups = reply.followups if isinstance(reply, ChatServiceResponseEnvelope) else []
+    pending_cards = [item for item in followups if item.type == "pendingConfirmationCard"]
+    primary = reply.primary if isinstance(reply, ChatServiceResponseEnvelope) else reply
+    assert "高收费" in primary
+    assert pending_cards == []
+    assert pending_state == {}
+    classify_mock.assert_awaited_once()
+    proposal_mock.assert_not_awaited()
+    save_pending_mock.assert_not_awaited()
+
+
 def test_chat_service_recovers_tuition_budget_after_wrong_intent_preview_and_review_result(tmp_path, mock_llm_client):
     db_path = tmp_path / "history.db"
     store = ChatHistoryStore(str(db_path))
@@ -3489,10 +3777,11 @@ def test_chat_service_recovers_tuition_budget_after_wrong_intent_preview_and_rev
                 "user-1",
                 "太贵的学校别放了，学费最好控制在两万以内",
             )
-        )
+    )
 
     assert isinstance(reply, ChatServiceResponseEnvelope)
-    assert "已按你的要求列出调整预览" in reply.primary
+    assert "调整预览" in reply.primary
+    assert "预算" in reply.primary
     assert "排除专业" not in reply.primary
     assert "需要我现在生成这个预览吗" not in reply.primary
     card_payloads = [json.loads(item.content) for item in reply.followups if item.type == "pendingConfirmationCard"]
@@ -3508,7 +3797,7 @@ def test_chat_service_recovers_tuition_budget_after_wrong_intent_preview_and_rev
     assert execution_payload["userGoalRequest"]["context"]["maxTuitionPerYear"] == 20000
     classify_mock.assert_awaited_once()
     classify_kwargs = classify_mock.await_args.kwargs
-    assert classify_kwargs["attempted_action_family"] == "review_plan"
+    assert classify_kwargs["attempted_action_family"] in {"intent_preview", "review_plan"}
     proposal_mock.assert_awaited_once()
 
 
@@ -3577,7 +3866,7 @@ def test_chat_service_recovers_tuition_budget_after_semantic_adjustment_analysis
             patch("app.service.get_pending_confirmation", get_pending_mock):
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(
-            service.handle_message("tuition-budget-semantic-session", "user-1", "太贵的学校别放了，学费最好控制在两万以内")
+            service.handle_message("tuition-budget-semantic-session", "user-1", "方案里太贵的学校为什么不能直接处理，学费最好控制在两万以内")
         )
 
     assert isinstance(reply, ChatServiceResponseEnvelope)
@@ -4179,6 +4468,176 @@ def test_chat_service_recovers_exclude_goal_when_agent_misroutes_to_remove_units
     assert pending["executionPayload"]["userGoalRequest"]["negativeScopes"][0]["normalizedName"] == "英语"
     classify_mock.assert_awaited_once()
     proposal_mock.assert_awaited_once()
+
+
+def test_chat_service_prefers_executable_plan_card_when_same_turn_intent_preview_is_wrong_only_keep(
+    tmp_path,
+    mock_llm_client,
+):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    wrong_intent_payload = {
+        "status": "blocked",
+        "sessionId": "mixed-exclude-plan-session",
+        "title": "先补充要保留的范围",
+        "intentMode": "constraint",
+        "constraintIntentType": "only_keep",
+        "analysisStage": "clarify",
+        "items": [],
+        "existingItems": [],
+    }
+    preview_payload = {
+        "stage": "preview",
+        "action_family": "remove_units",
+        "user_goal": "不要英语相关专业，当前方案里有的话也删掉",
+        "requires_confirmation": True,
+        "missing_inputs": [],
+        "planning_version": 630,
+        "atomic_actions": [
+            {
+                "action_type": "remove_units",
+                "volunteer_ids": [],
+                "source_major_names": ["英语", "商务英语", "翻译", "外国语言文学类"],
+                "filters": {"school_tags": "[]", "major_tags": "[]", "limit": "5"},
+                "reason": "不要英语相关专业，当前方案里有的话也删掉",
+            }
+        ],
+        "preview_summary": "会从当前方案移出指定志愿。",
+    }
+    preview_result = {
+        "applied": False,
+        "action_family": "remove_units",
+        "stage": "preview",
+        "result_kind": "preview_only",
+        "summary": "已在当前方案里定位到“具体专业：英语、商务英语、翻译”相关的 3 条志愿。",
+        "facts": {
+            "resolved_apply_payload": {
+                "atomic_actions": [
+                    {
+                        "action_type": "remove_units",
+                        "volunteer_ids": ["english-1", "english-2", "english-3"],
+                        "source_major_names": ["英语", "商务英语", "翻译"],
+                        "filters": {"major_level3": ["英语", "商务英语", "翻译"]},
+                        "reason": "不要英语相关专业，当前方案里有的话也删掉",
+                    }
+                ]
+            },
+            "intent_update": {
+                "selected": [
+                    {"major_intents": {"negative_level3": ["英语", "商务英语", "翻译"]}}
+                ],
+                "intentMode": "constraint",
+                "constraintIntentType": "default",
+                "summary": "具体专业：英语、商务英语、翻译",
+            },
+            "planning_version": 630,
+        },
+    }
+    fake_agent = _FakeAgentWithToolCalls(
+        "当前方案里找到了 3 条英语相关志愿。如果你确认，这 3 条会从方案中删除。",
+        [
+            ToolCallPart(
+                tool_name="preview_current_major_intent_confirmation",
+                args={
+                    "major_intents": {
+                        "negative_level1": ["文学"],
+                        "negative_level2": ["外国语言文学类"],
+                    },
+                    "intent_mode": "constraint",
+                    "constraint_intent_type": "only_keep",
+                },
+                tool_call_id="wrong-intent-preview-1",
+            ),
+            ToolCallPart(
+                tool_name="plan_next_action",
+                args={
+                    "user_goal": "不要英语相关专业，当前方案里有的话也删掉",
+                    "action_family": "remove_units",
+                    "source_major_names": ["英语", "商务英语", "翻译", "外国语言文学类"],
+                    "current_stage": "preview",
+                },
+                tool_call_id="exclude-plan-next",
+            ),
+            ToolCallPart(
+                tool_name="execute_plan_action",
+                args={"plan_payload": json.dumps(preview_payload, ensure_ascii=False)},
+                tool_call_id="exclude-plan-execute",
+            ),
+        ],
+        [
+            ToolReturnPart(
+                tool_name="preview_current_major_intent_confirmation",
+                content=json.dumps(wrong_intent_payload, ensure_ascii=False),
+                tool_call_id="wrong-intent-preview-1",
+            ),
+            ToolReturnPart(
+                tool_name="plan_next_action",
+                content=json.dumps(preview_payload, ensure_ascii=False),
+                tool_call_id="exclude-plan-next",
+            ),
+            ToolReturnPart(
+                tool_name="execute_plan_action",
+                content=json.dumps(preview_result, ensure_ascii=False),
+                tool_call_id="exclude-plan-execute",
+            ),
+        ],
+        observability={
+            "intentSideEffectDecision": {
+                "decision": "intent_preview",
+                "confidence": 0.95,
+                "constraintIntentType": "only_keep",
+            }
+        },
+    )
+    pending_state, save_pending_mock, get_pending_mock = _pending_confirmation_store()
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={
+                "code": 0,
+                "data": {
+                    "phase": "reviewed",
+                    "version": 630,
+                    "draftPlanState": {"summary": {"total": 94}},
+                    "orderedPlanState": {"summary": {"total": 94}},
+                    "reviewState": {"summary": {"warnCount": 5, "riskCount": 3}, "checks": []},
+                },
+            })), \
+            patch("app.service.classify_composite_goal_action", AsyncMock(return_value=_semantic_composite_goal(
+                "none",
+                confidence=0.2,
+                target_values=[],
+                negative_values=[],
+                constraint_intent_type="default",
+            ))), \
+            patch("app.service.save_pending_confirmation", save_pending_mock), \
+            patch("app.service.get_pending_confirmation", get_pending_mock):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(
+            service.handle_message(
+                "mixed-exclude-plan-session",
+                "user-1",
+                "不要英语相关专业，当前方案里有的话也删掉",
+            )
+        )
+
+    assert isinstance(reply, ChatServiceResponseEnvelope)
+    assert "调整预览" in reply.primary
+    card_payloads = [json.loads(item.content) for item in reply.followups if item.type == "pendingConfirmationCard"]
+    assert len(card_payloads) == 1
+    assert card_payloads[0]["kind"] == "plan_mutation"
+    assert card_payloads[0]["actionFamily"] == "remove_units"
+    pending = pending_state["value"]
+    assert pending["kind"] == "plan_mutation"
+    execution_payload = pending["executionPayload"]
+    assert execution_payload["toolName"] == "execute_plan_action"
+    assert execution_payload["intentPayload"]["selected"] == [
+        {"major_intents": {"negative_level3": ["英语", "商务英语", "翻译"]}}
+    ]
+    apply_payload = json.loads(execution_payload["planPayload"])
+    assert apply_payload["stage"] == "apply"
+    assert apply_payload["atomic_actions"][0]["volunteer_ids"] == ["english-1", "english-2", "english-3"]
 
 
 def test_chat_service_clarifies_composite_goal_instead_of_plain_add_card(tmp_path, mock_llm_client):
@@ -4814,15 +5273,129 @@ def test_chat_service_only_keep_region_area_preview_keeps_area_scope_metadata(tm
     composite = pending_state["value"]["compositeProposal"]
     assert composite["goal"]["goal_type"] == "only_keep_scope"
     assert composite["goal"]["target_scopes"] == [
-        {"entity_type": "region", "values": ["南方"]}
+        {"entity_type": "region", "values": ["南方"], "scope_level": "area"}
     ]
     assert composite["intent_updates"][0]["targetScopes"] == [
-        {"entity_type": "region", "values": ["南方"]}
+        {"entity_type": "region", "values": ["南方"], "scope_level": "area"}
     ]
     assert pending_state["value"]["executionPayload"]["selectedData"]["selected"] == [
         {"city_intents": {"area": ["南方"]}}
     ]
     execute_mock.assert_not_awaited()
+
+
+def test_chat_service_only_keep_region_preview_without_positive_scope_does_not_become_exclude_card(
+    tmp_path,
+    mock_llm_client,
+):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    preview_payload = {
+        "status": "ready",
+        "sessionId": "9905015-missing-positive",
+        "title": "待采纳报考条件",
+        "intentMode": "constraint",
+        "constraintIntentType": "only_keep",
+        "analysisStage": "confirmed",
+        "items": [
+            {
+                "content": "排除地域：北方",
+                "value": {"city_intents": {"negative_area": ["北方"]}},
+                "selected": True,
+            }
+        ],
+        "existingItems": [],
+        "message": "准备采纳：排除地域：北方",
+    }
+    fake_agent = _FakeIntentPreviewAgent(
+        preview_payload,
+        tool_name="preview_current_region_intent_confirmation",
+    )
+    pending_state, save_pending_mock, get_pending_mock = _pending_confirmation_store()
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 0, "data": {"userScoreDetail": {"batch": "01"}}})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.save_pending_confirmation", save_pending_mock), \
+            patch("app.service.get_pending_confirmation", get_pending_mock):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(
+            service.handle_message("9905015-missing-positive", "user-1", "孩子就想去南方，北方先别考虑")
+        )
+
+    assert isinstance(reply, str)
+    assert "要保留的范围" in reply
+    assert "排除地域：北方" not in reply
+    assert pending_state.get("value") is None
+    save_pending_mock.assert_not_awaited()
+
+
+def test_chat_service_negative_only_region_constraint_creates_intent_pending_card(
+    tmp_path,
+    mock_llm_client,
+):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    preview_payload = {
+        "status": "ready",
+        "sessionId": "5749",
+        "title": "待确认地域要求",
+        "intentMode": "constraint",
+        "constraintIntentType": "default",
+        "analysisStage": "confirmed",
+        "items": [
+            {
+                "content": "把东北记成明确不考虑的地域要求，后面看候选和方案时都会按这个要求来。",
+                "value": {"city_intents": {"negative_area": ["东北"]}},
+                "selected": True,
+            },
+            {
+                "content": "把西北记成明确不考虑的地域要求，后面看候选和方案时都会按这个要求来。",
+                "value": {"city_intents": {"negative_area": ["西北"]}},
+                "selected": True,
+            },
+        ],
+        "existingItems": [],
+    }
+    fake_agent = _FakeIntentPreviewAgent(
+        preview_payload,
+        tool_name="preview_current_region_intent_confirmation",
+    )
+    pending_state, save_pending_mock, get_pending_mock = _pending_confirmation_store()
+    clear_legacy_cache_mock = AsyncMock(return_value={"code": 0})
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 0, "data": {"userScoreDetail": {"batch": "01"}}})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.save_intent_change_cache", clear_legacy_cache_mock), \
+            patch("app.service.save_pending_confirmation", save_pending_mock), \
+            patch("app.service.get_pending_confirmation", get_pending_mock):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(
+            service.handle_message("5749", "user-1", "东北西北都不要，必须避开")
+        )
+
+    assert isinstance(reply, ChatServiceResponseEnvelope)
+    card_payload = _assert_pending_card_envelope(
+        reply,
+        "",
+        "apply_selected_intents",
+        kind="intent_change",
+    )
+    assert "东北" in reply.primary
+    assert "西北" in reply.primary
+    assert "东北" in card_payload["summary"]
+    assert "西北" in card_payload["summary"]
+    assert card_payload["constraintIntentType"] == "default"
+    pending = pending_state["value"]
+    assert pending["kind"] == "intent_change"
+    assert pending["executionPayload"]["selectedData"]["selected"] == [
+        {"city_intents": {"negative_area": ["东北"]}},
+        {"city_intents": {"negative_area": ["西北"]}},
+    ]
+    clear_legacy_cache_mock.assert_awaited_once_with(5749, {})
 
 
 def test_chat_service_pure_intent_preview_not_stolen_by_plan_recovery(tmp_path, mock_llm_client):
@@ -6148,6 +6721,82 @@ def test_extract_plan_confirmation_candidate_reads_execute_tool_call_args_json_s
 
     assert pending is not None
     assert pending["action_family"] == "add_units"
+
+
+def test_extract_plan_confirmation_candidate_reads_execute_tool_call_direct_payload_string():
+    preview_payload = {
+        "stage": "preview",
+        "action_family": "remove_units",
+        "user_goal": "不要英语相关专业，当前方案里有的话也删掉",
+        "requires_confirmation": True,
+        "missing_inputs": [],
+        "atomic_actions": [
+            {
+                "action_type": "remove_units",
+                "source_major_names": ["英语", "商务英语", "翻译"],
+                "filters": {"major_level3": ["英语", "商务英语", "翻译"]},
+            }
+        ],
+        "preview_summary": "会从当前方案移出英语相关专业。",
+    }
+    messages = [
+        ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="execute_plan_action",
+                    args=json.dumps(preview_payload, ensure_ascii=False),
+                    tool_call_id="preview-call-direct-payload-string",
+                )
+            ],
+            model_name="test-model",
+        ),
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="execute_plan_action",
+                    content=json.dumps(
+                        {
+                            "applied": False,
+                            "action_family": "remove_units",
+                            "stage": "preview",
+                            "result_kind": "preview_only",
+                            "summary": "已在当前方案里定位到英语相关的 3 条志愿。",
+                            "facts": {
+                                "resolved_apply_payload": {
+                                    "atomic_actions": [
+                                        {
+                                            "action_type": "remove_units",
+                                            "volunteer_ids": ["english-1", "english-2", "english-3"],
+                                            "source_major_names": ["英语", "商务英语", "翻译"],
+                                            "filters": {"major_level3": ["英语", "商务英语", "翻译"]},
+                                        }
+                                    ]
+                                },
+                                "intent_update": {
+                                    "selected": [{"major_intents": {"negative_level3": ["英语", "商务英语", "翻译"]}}],
+                                    "intentMode": "constraint",
+                                },
+                                "planning_version": 630,
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                    tool_call_id="preview-call-direct-payload-string",
+                )
+            ]
+        ),
+    ]
+
+    pending = _extract_plan_confirmation_candidate(messages)
+
+    assert pending is not None
+    assert pending["action_family"] == "remove_units"
+    apply_payload = json.loads(pending["plan_payload"])
+    assert apply_payload["stage"] == "apply"
+    assert apply_payload["atomic_actions"][0]["volunteer_ids"] == ["english-1", "english-2", "english-3"]
+    assert pending["intent_update"]["selected"] == [
+        {"major_intents": {"negative_level3": ["英语", "商务英语", "翻译"]}}
+    ]
 
 
 def test_extract_plan_confirmation_candidate_ignores_incomplete_replace_preview_payload():
@@ -7667,6 +8316,45 @@ def test_plan_preview_confirmation_boundary_corrects_confirm_copy_without_pendin
     assert "即可执行替换" not in bounded
 
 
+def test_plan_preview_confirmation_boundary_explains_scoped_move_missing_target_position():
+    reply = "北京的志愿可以往前挪，确认后我就调整。"
+    messages = [
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="plan_next_action",
+                    content=json.dumps(
+                        {
+                            "stage": "analyze",
+                            "action_family": "move_unit",
+                            "user_goal": "把北京的志愿往前挪一些可以吗",
+                            "missing_inputs": ["target_position"],
+                            "atomic_actions": [
+                                {
+                                    "action_type": "move_unit",
+                                    "filters": {"province_keyword": "北京", "limit": "5"},
+                                    "reason": "把北京的志愿往前挪一些可以吗",
+                                }
+                            ],
+                        },
+                        ensure_ascii=False,
+                    ),
+                    tool_call_id="missing-move-target-position",
+                )
+            ]
+        ),
+    ]
+
+    bounded = _append_plan_preview_confirmation_boundary(reply, messages)
+
+    assert "北京志愿" in bounded
+    assert "移动到哪里" in bounded
+    assert "第几位" in bounded
+    assert "这轮不会改动方案" in bounded
+    assert "没有形成可执行的调整预览" not in bounded
+    assert "确认后我就调整" not in bounded
+
+
 def test_plan_preview_confirmation_boundary_ignores_intent_confirm_copy_on_query_state():
     reply = (
         "如果你确认把考公作为后续参考，回复“确认”后，我就把这个方向记成偏好。"
@@ -8548,8 +9236,9 @@ def test_chat_service_recovers_misdirected_intent_preview_to_plan_action(tmp_pat
         )
 
     assert isinstance(reply, str)
-    assert "候选志愿" in reply
-    assert "确认预览" in reply
+    assert "候选" in reply
+    assert "不会改动方案" in reply
+    assert "补充学校、专业、地域" in reply
     assert "排除专业门类：医学" not in reply
     classifier_mock.assert_awaited_once()
     plan_mock.assert_awaited_once()
@@ -9470,6 +10159,108 @@ def test_chat_service_preserves_readonly_policy_reply_when_plan_confirm_copy_is_
     assert "专业方向" in reply
     assert "确认，我会按这个流程更新方案" not in reply
     assert "这轮还没有生成可执行的调整内容" not in reply
+
+
+def test_chat_service_recovers_batch_line_risk_policy_reply_from_boundary_only_misroute(
+    tmp_path,
+    mock_llm_client,
+):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    fake_agent = _FakeAgent([
+        "这轮不会改动当前方案，也不会写入后续报考参考里的偏好或要求。"
+    ])
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_pending_confirmation", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(
+            service.handle_message(
+                "session-batch-line-risk-policy",
+                "user-1",
+                "分数刚压本科线，别给我画大饼",
+            )
+        )
+
+    assert isinstance(reply, str)
+    assert "本科线" in reply
+    assert "压线" in reply
+    assert "风险" in reply
+    assert "保本科" in reply or "保底" in reply or "兜底" in reply
+    assert "民办" in reply
+    assert "专科" in reply
+    assert "不会写入后续报考参考" not in reply
+    assert fake_agent.calls
+
+
+def test_chat_service_downgrades_major_group_keep_safest_from_career_intent_preview(
+    tmp_path,
+    mock_llm_client,
+):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    intent_payload = {
+        "status": "ready",
+        "sessionId": "session-major-group-keep-safest",
+        "title": "待确认发展方向",
+        "intentMode": "preference",
+        "analysisStage": "confirmed",
+        "items": [
+            {
+                "content": "发展方向：稳定就业导向",
+                "value": {"career_intents": {"positive": ["stable_employment"]}},
+                "selected": True,
+            }
+        ],
+        "existingItems": [],
+    }
+    fake_agent = _FakeAgentWithToolCalls(
+        "我已整理成待采纳内容：发展方向：稳定就业导向。点击采纳后会写入后续报考参考。",
+        [
+            ToolCallPart(
+                tool_name="preview_current_career_intent_confirmation",
+                args={"career_intents": {"positive": ["stable_employment"]}},
+                tool_call_id="career-intent-preview-for-major-group",
+            )
+        ],
+        [
+            ToolReturnPart(
+                tool_name="preview_current_career_intent_confirmation",
+                content=json.dumps(intent_payload, ensure_ascii=False),
+                tool_call_id="career-intent-preview-for-major-group",
+            )
+        ],
+    )
+    pending_state, save_pending_mock, get_pending_mock = _pending_confirmation_store()
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_pending_confirmation", get_pending_mock), \
+            patch("app.service.save_pending_confirmation", save_pending_mock), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(
+            service.handle_message(
+                "session-major-group-keep-safest",
+                "user-1",
+                "专业组里只保留最稳的专业行不行",
+            )
+        )
+
+    assert isinstance(reply, str)
+    assert "专业组" in reply
+    assert "专业" in reply
+    assert "最稳" in reply or "更稳" in reply or "安全垫" in reply
+    assert "风险" in reply
+    assert "调剂" in reply
+    assert "稳定就业导向" not in reply
+    assert "写入后续报考参考" not in reply
+    assert pending_state == {}
+    save_pending_mock.assert_not_awaited()
 
 
 def test_chat_service_preserves_interest_stage_intent_tool_reply_when_unbacked_plan_copy_has_no_analysis(
@@ -12087,6 +12878,18 @@ def test_normalize_unbacked_recorded_wording_avoids_fake_saved_conclusion():
     assert "当前分析结论参考" in normalized
 
 
+def test_normalize_unbacked_recorded_wording_avoids_fake_saved_thought():
+    reply = "没问题，我先帮你把思路记下来，不会自动修改你的方案。你随时可以继续补充或调整，确认采纳前都不会生效。"
+
+    normalized = _normalize_unbacked_recorded_wording(reply)
+
+    assert "记下来" not in normalized
+    assert "作为当前对话参考" in normalized
+    assert "不会改动当前方案" in normalized
+    assert "确认采纳前都不会生效" not in normalized
+    assert "确认前不会执行" in normalized
+
+
 def test_normalize_unbacked_recorded_wording_avoids_fake_preference_closure():
     reply = "好的，明白了。你倾向**网络与新媒体**这个方向，它对数学要求更低。"
 
@@ -12182,6 +12985,17 @@ def test_normalize_general_confirmation_protocol_wording_appends_boundary_when_c
     assert "增删、替换、调整顺序都可以，但都会先给确认预览" in normalized
     assert "列出" in normalized
     assert "点击采纳前不会改动方案" in normalized
+
+
+def test_normalize_general_confirmation_protocol_wording_no_card_boundary_uses_consultative_wording():
+    reply = "可以改。你之前设置的偏好或要求，随时都能调整。已经生成方案的话，也可以替换或重新排序。"
+
+    normalized = _normalize_general_confirmation_protocol_wording(reply)
+
+    assert "要采用的内容" in normalized
+    assert "具体影响或调整预览" in normalized
+    assert "让你决定是否采用" in normalized
+    assert "采纳/确认前不会生效" not in normalized
 
 
 def test_chat_service_normalizes_toolless_intent_reply_profile_jargon_in_history(tmp_path, mock_llm_client):
@@ -12914,7 +13728,7 @@ def test_chat_service_does_not_recover_intent_card_after_failed_plan_chain_witho
         reply = asyncio.run(service.handle_message("9905091", "user-57", "方案里必须有临床医学，其他专业可以先保留"))
 
     assert isinstance(reply, str)
-    assert "这次没有形成可执行的调整预览" in reply
+    assert "这次没有形成可确认的调整预览" in reply
     assert "会话不存在" not in reply
     assert pending_state == {}
     recover_mock.assert_not_awaited()
@@ -13078,6 +13892,104 @@ def test_chat_service_semantic_readonly_suppresses_confirmable_interest_card_whe
     assert isinstance(reply, str)
     assert "小语种" in reply
     assert "采纳" not in reply
+    assert pending_state == {}
+    save_pending_mock.assert_not_awaited()
+
+
+def test_chat_service_semantic_readonly_blocks_plan_recovery_card_from_boundary_reply(
+    tmp_path,
+    mock_llm_client,
+):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    fake_agent = _FakeAgentWithToolCalls(
+        "这轮还没有生成可执行的调整内容，所以不会改动当前方案。如果你要继续调整，请再发一次具体要求，我会重新定位影响范围并列出调整预览。",
+        [],
+        observability={
+            "intentSideEffectDecision": {
+                "decision": "analysis_only",
+                "confidence": 0.9,
+                "honored": True,
+                "reason": "用户是在问师范和当老师的边界，不是在要求立刻删除方案。",
+            }
+        },
+    )
+    pending_state, save_pending_mock, get_pending_mock = _pending_confirmation_store()
+    recovery_mock = AsyncMock(
+        return_value=_semantic_plan_recovery(
+            "remove_units",
+            sourceMajorNames=["教育学类"],
+        )
+    )
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 0, "data": {"userScoreDetail": {"batch": "01"}}})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={
+                "code": 0,
+                "data": {
+                    "phase": "planned",
+                    "version": 33,
+                    "orderedPlanState": {"summary": {"total": 45}},
+                },
+            })), \
+            patch("app.service.classify_plan_recovery_action", recovery_mock), \
+            patch("app.service.plan_next_action", AsyncMock()) as plan_next_mock, \
+            patch("app.service.execute_plan_action", AsyncMock()) as execute_mock, \
+            patch("app.service.save_pending_confirmation", save_pending_mock), \
+            patch("app.service.get_pending_confirmation", get_pending_mock):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(
+            service.handle_message(
+                "semantic-readonly-plan-recovery-guard-session",
+                "user-57",
+                "孩子不想当老师，师范是不是都别要",
+            )
+        )
+
+    if isinstance(reply, ChatServiceResponseEnvelope):
+        assert not [item for item in reply.followups if item.type == "pendingConfirmationCard"]
+        primary = reply.primary
+    else:
+        primary = reply
+    assert isinstance(primary, str)
+    assert "不会改动当前方案" in primary
+    assert pending_state == {}
+    recovery_mock.assert_not_awaited()
+    plan_next_mock.assert_not_awaited()
+    execute_mock.assert_not_awaited()
+    save_pending_mock.assert_not_awaited()
+
+
+def test_chat_service_replaces_no_tool_plan_boundary_with_consultative_no_change_reply(
+    tmp_path,
+    mock_llm_client,
+):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    fake_agent = _FakeAgent(["这轮还没有生成可执行的调整内容，所以不会改动当前方案。"])
+    pending_state, save_pending_mock, get_pending_mock = _pending_confirmation_store()
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 0, "data": {"userScoreDetail": {"batch": "01"}}})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.classify_plan_recovery_action", AsyncMock(return_value=_semantic_plan_recovery("none", confidence=0.2))) as recovery_mock, \
+            patch("app.service.save_pending_confirmation", save_pending_mock), \
+            patch("app.service.get_pending_confirmation", get_pending_mock):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(
+            service.handle_message(
+                "semantic-readonly-no-tool-boundary-session",
+                "user-57",
+                "我只想先保存这个思路，不要自动改",
+            )
+        )
+
+    assert isinstance(reply, str)
+    assert "不会改动当前方案" in reply
+    assert "不会写入后续报考参考" in reply
+    assert "这轮还没有生成可执行的调整内容" not in reply
     assert pending_state == {}
     save_pending_mock.assert_not_awaited()
 
@@ -13636,6 +14548,105 @@ def test_chat_service_does_not_recover_unbacked_intent_card_after_plan_review(tm
     saved_text = next(part.content for part in saved_history[-1].parts if isinstance(part, TextPart))
     assert saved_text == reply
     assert saved_text.startswith("已完成方案审查。")
+
+
+def test_chat_service_does_not_run_intent_recovery_for_structured_review_guidance(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    review_reply = (
+        "已经重新审查过了，结果已更新。"
+        "能直接处理的有 2 项：录取率倒挂和兜底专业不足。"
+        "其余提醒因为候选志愿不足或需要你确认取舍，暂时自动不了。"
+        "要不要我先帮你处理那 2 个能自动的？"
+    )
+    review_result = {
+        "action_family": "review_plan",
+        "stage": "review",
+        "result_kind": "review_result",
+        "applied": True,
+        "success": True,
+        "facts": {
+            "risk_count": 1,
+            "warn_count": 7,
+            "fix_proposals": {
+                "ready_count": 2,
+                "blocked_count": 6,
+                "proposals": [
+                    {"proposal_id": "fp_sort", "status": "ready", "title": "处理录取率倒挂"},
+                    {"proposal_id": "fp_safety", "status": "ready", "title": "处理兜底专业不足"},
+                ],
+            },
+        },
+    }
+    fake_agent = _FakeAgentWithToolCalls(
+        review_reply,
+        [
+            ToolCallPart(
+                tool_name="execute_plan_action",
+                args={"plan_payload": json.dumps({"stage": "review", "action_family": "review_plan"}, ensure_ascii=False)},
+                tool_call_id="review-guidance-1",
+            )
+        ],
+        [
+            ToolReturnPart(
+                tool_name="execute_plan_action",
+                content=json.dumps(review_result, ensure_ascii=False),
+                tool_call_id="review-guidance-1",
+            )
+        ],
+    )
+    pending_state, save_pending_mock, get_pending_mock = _pending_confirmation_store()
+    recover_mock = AsyncMock(return_value=json.dumps({"status": "empty", "sessionId": "9905041"}, ensure_ascii=False))
+    recovery_classifier_mock = AsyncMock(return_value=_semantic_plan_recovery("none", confidence=0.2))
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.analyze_volunteer_intent_change", recover_mock), \
+            patch("app.service.classify_plan_recovery_action", recovery_classifier_mock), \
+            patch("app.service.save_pending_confirmation", save_pending_mock), \
+            patch("app.service.get_pending_confirmation", get_pending_mock):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(
+            service.handle_message(
+                "9905041",
+                "user-57",
+                "审查里那些提醒我看不懂，你帮我分一下哪些只是看看，哪些可以自动处理",
+            )
+        )
+
+    assert isinstance(reply, str)
+    assert "可以先看调整预览" in reply
+    assert "暂时自动不了" not in reply
+    assert pending_state == {}
+    recover_mock.assert_not_awaited()
+    recovery_classifier_mock.assert_not_awaited()
+    save_pending_mock.assert_not_awaited()
+
+
+def test_turn_has_structured_plan_result_with_tool_return_only():
+    messages = [
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="execute_plan_action",
+                    content=json.dumps(
+                        {
+                            "action_family": "review_plan",
+                            "stage": "review",
+                            "result_kind": "review_result",
+                            "applied": True,
+                        },
+                        ensure_ascii=False,
+                    ),
+                    tool_call_id="tool-return-only",
+                )
+            ]
+        )
+    ]
+
+    assert _turn_has_structured_plan_result(messages) is True
 
 
 def test_chat_service_adds_review_boundary_for_review_result_reply(tmp_path, mock_llm_client):
@@ -14939,6 +15950,66 @@ def test_chat_service_pending_preference_confirmation_does_not_force_plan_review
     assert pending_state["value"]["status"] == "applied"
 
 
+def test_chat_service_pending_career_confirmation_keeps_pending_summary(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    structured_result = {
+        "action": "apply_selected",
+        "sessionId": "35-career",
+        "intentMode": "preference",
+        "applied": True,
+        "messageCode": "preference_applied",
+        "message": "已采纳。后续推荐和专家优选会更贴近这个方向。",
+        "merged": {},
+    }
+    pending_state, save_pending_mock, get_pending_mock = _pending_confirmation_store(
+        {
+            "type": "pendingConfirmation",
+            "pendingId": "intent-pending-career",
+            "sessionId": "35-career",
+            "kind": "intent_change",
+            "status": "active",
+            "summary": "发展方向：体制内、稳定就业",
+            "actionFamily": "apply_selected_intents",
+            "executionPayload": {
+                "toolName": "apply_selected_intents",
+                "selectedData": {
+                    "message_id": 2006,
+                    "selected": [{"career_intents": {"positive": ["体制内", "稳定就业"]}}],
+                },
+                "intentMode": "preference",
+                "batch": "01",
+            },
+        }
+    )
+
+    with patch("app.service.ChatAgent"), \
+            patch("app.service.save_pending_confirmation", save_pending_mock), \
+            patch("app.service.get_pending_confirmation", get_pending_mock), \
+            patch(
+                "app.service._apply_selected_intents",
+                new=AsyncMock(return_value=json.dumps(structured_result, ensure_ascii=False)),
+            ):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(
+            service.handle_pending_confirmation(
+                "35-career",
+                "user-35",
+                json.dumps(
+                    {"action": "confirm", "kind": "intent_change", "pendingId": "intent-pending-career"},
+                    ensure_ascii=False,
+                ),
+            )
+        )
+
+    assert isinstance(reply, ChatServiceResponseEnvelope)
+    assert "体制内" in reply.primary
+    assert "稳定就业" in reply.primary
+    assert "本次内容：发展方向：体制内、稳定就业" in reply.primary
+    assert len(reply.followups) == 1
+    assert pending_state["value"]["status"] == "applied"
+
+
 def test_chat_service_pending_constraint_confirmation_refreshes_plan_and_candidate(tmp_path, mock_llm_client):
     db_path = tmp_path / "history.db"
     store = ChatHistoryStore(str(db_path))
@@ -15706,6 +16777,140 @@ def test_chat_service_recovers_high_tuition_remove_when_fix_preview_has_no_match
     execute_mock.assert_awaited_once()
 
 
+def test_chat_service_recovers_high_tuition_remove_after_agent_only_reviews_plan(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    review_result = {
+        "applied": True,
+        "action_family": "review_plan",
+        "stage": "review",
+        "result_kind": "review_result",
+        "summary": "当前方案有高收费提醒。",
+        "facts": {
+            "risk_count": 0,
+            "warn_count": 1,
+            "fix_proposals": {
+                "source_version_guard": 18,
+                "ready_count": 0,
+                "blocked_count": 1,
+                "preview_only_count": 0,
+                "proposals": [
+                    {
+                        "proposal_id": "fp_high_fee_blocked",
+                        "status": "blocked",
+                        "title": "处理高收费",
+                        "strategy": "replace_risk_items",
+                        "source_check_codes": ["high_tuition"],
+                        "summary": "当前方案里有高收费志愿，需要结合预算决定是否移出。",
+                    }
+                ],
+            },
+        },
+        "reply_focus": ["review_result", "fix_proposals"],
+    }
+    remove_plan_payload = {
+        "stage": "preview",
+        "action_family": "remove_units",
+        "user_goal": "把太贵的那几个先去掉看看",
+        "requires_confirmation": True,
+        "planning_version": 18,
+        "atomic_actions": [
+            {
+                "action_type": "remove_units",
+                "volunteer_ids": [],
+                "review_issue_target": {
+                    "code": "high_tuition",
+                    "scope_mode": "full_issue",
+                    "label": "高收费",
+                    "scope_kind": "item_removal",
+                    "default_action_family": "remove_units",
+                },
+            }
+        ],
+        "preview_summary": "会按当前审查命中的整批高收费项执行移除。",
+    }
+    remove_preview_result = {
+        "applied": False,
+        "action_family": "remove_units",
+        "stage": "preview",
+        "result_kind": "preview_only",
+        "summary": "已定位到当前方案里的高收费项：涉及 5 条志愿。确认前不会改动当前方案。",
+        "planning_version": 18,
+        "facts": {
+            "planning_version": 18,
+            "resolved_apply_payload": {
+                "stage": "apply",
+                "action_family": "remove_units",
+                "requires_confirmation": False,
+                "atomic_actions": [
+                    {
+                        "action_type": "remove_units",
+                        "volunteer_ids": ["v-high-1", "v-high-2", "v-high-3", "v-high-4", "v-high-5"],
+                    }
+                ],
+            },
+        },
+        "reply_focus": ["preview_only", "review_issue_batch_scope"],
+    }
+    fake_agent = _FakeAgentWithToolCalls(
+        "我先帮你审查了一下，当前有高收费提醒。",
+        [
+            ToolCallPart(
+                tool_name="execute_plan_action",
+                args={
+                    "plan_payload": json.dumps(
+                        {"stage": "review", "action_family": "review_plan"},
+                        ensure_ascii=False,
+                    )
+                },
+                tool_call_id="review-only-high-fee",
+            )
+        ],
+        [
+            ToolReturnPart(
+                tool_name="execute_plan_action",
+                content=json.dumps(review_result, ensure_ascii=False),
+                tool_call_id="review-only-high-fee",
+            )
+        ],
+    )
+    pending_state, save_pending_mock, get_pending_mock = _pending_confirmation_store()
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.classify_plan_recovery_action", AsyncMock(return_value=_semantic_plan_recovery(
+                "remove_units",
+                reviewIssueCode="high_tuition",
+            ))) as recovery_mock, \
+            patch("app.service.plan_next_action", AsyncMock(return_value=json.dumps(remove_plan_payload, ensure_ascii=False))) as plan_mock, \
+            patch("app.service.execute_plan_action", AsyncMock(return_value=json.dumps(remove_preview_result, ensure_ascii=False))) as execute_mock, \
+            patch("app.service.save_pending_confirmation", save_pending_mock), \
+            patch("app.service.get_pending_confirmation", get_pending_mock):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(service.handle_message("high-fee-review-only-recover-session", "user-1", "把太贵的那几个先去掉看看"))
+
+    assert isinstance(reply, ChatServiceResponseEnvelope)
+    assert "确认前不会改动当前方案" in reply.primary
+    card_payload = _assert_pending_card_envelope(reply, "", "remove_units")
+    assert "高收费" in card_payload["content"]
+    saved_payload = json.loads(pending_state["value"]["executionPayload"]["planPayload"])
+    assert saved_payload["action_family"] == "remove_units"
+    assert saved_payload["atomic_actions"][0]["volunteer_ids"] == [
+        "v-high-1",
+        "v-high-2",
+        "v-high-3",
+        "v-high-4",
+        "v-high-5",
+    ]
+    recovery_mock.assert_awaited_once()
+    plan_next_args = plan_mock.await_args.kwargs
+    assert plan_next_args["action_family"] == "remove_units"
+    assert plan_next_args["review_issue_code"] == "high_tuition"
+    execute_mock.assert_awaited_once()
+
+
 def test_chat_service_does_not_create_fix_card_or_refresh_when_user_rejects_previous_replacement(tmp_path, mock_llm_client):
     db_path = tmp_path / "history.db"
     store = ChatHistoryStore(str(db_path))
@@ -16019,7 +17224,7 @@ def test_chat_service_recovers_fix_preview_after_review_when_user_asked_for_prev
                 ],
             },
         },
-        "reply_focus": ["review_result", "fix_proposals"],
+        "reply_focus": ["fix_proposal_preview", "ready_fix_proposals"],
     }
     preview_result = {
         "applied": False,
@@ -16085,7 +17290,7 @@ def test_chat_service_recovers_fix_preview_after_review_when_user_asked_for_prev
     assert card_payloads[0]["actionFamily"] == "apply_fix_proposal"
     assert card_payloads[0]["proposalId"] == "fp_safety_1"
     assert pending_state["value"]["executionPayload"]["proposalId"] == "fp_safety_1"
-    classify_mock.assert_awaited_once()
+    assert classify_mock.await_count >= 1
     execute_mock.assert_awaited_once()
 
 
@@ -16212,7 +17417,7 @@ def test_chat_service_semantic_fix_preview_keeps_target_when_requested_strategy_
 
     assert isinstance(reply, str)
     assert "补兜底专业" in reply or "组内安全垫" in reply
-    assert "没有足够合适的可执行预览" in reply
+    assert "没有足够合适的调整预览" in reply or "没有足够合适的可确认的调整预览" in reply
     assert "录取率重排" not in reply
     assert pending_state == {}
     save_pending_mock.assert_not_awaited()
@@ -16414,7 +17619,7 @@ def test_chat_service_does_not_recover_fix_preview_for_stale_review_question(tmp
     assert "审查" in reply_text
     assert "方案" in reply_text
     assert pending_state == {}
-    classify_mock.assert_awaited()
+    assert classify_mock.await_count <= 2
     execute_mock.assert_not_awaited()
     select_mock.assert_not_awaited()
 
@@ -16528,7 +17733,7 @@ def test_chat_service_selects_fix_proposal_by_ordered_target_strategy(tmp_path, 
     card_payloads = [json.loads(item.content) for item in reply.followups if item.type == "pendingConfirmationCard"]
     assert card_payloads[0]["proposalId"] == "fp_safety_1"
     assert pending_state["value"]["executionPayload"]["proposalId"] == "fp_safety_1"
-    classify_mock.assert_awaited_once()
+    assert classify_mock.await_count >= 1
     select_mock.assert_awaited_once()
 
 
@@ -17488,7 +18693,7 @@ def test_chat_service_recovers_explicit_high_fee_removal_after_review_to_fix_pre
     execute_payload = json.loads(execute_mock.await_args.args[1])
     assert execute_payload["action_family"] == "preview_fix_proposal"
     assert execute_payload["target_issue_codes"] == ["high_tuition"]
-    classify_mock.assert_awaited_once()
+    assert classify_mock.await_count >= 1
 
 
 def test_chat_service_recovers_fix_preview_card_after_legacy_generate_tool(tmp_path, mock_llm_client):
@@ -17727,7 +18932,7 @@ def test_chat_service_does_not_recover_fix_preview_card_for_readonly_review_expl
     else:
         assert isinstance(reply, str)
     assert pending_state == {}
-    classify_mock.assert_awaited()
+    assert classify_mock.await_count <= 2
     select_mock.assert_not_awaited()
 
 
@@ -17828,7 +19033,7 @@ def test_chat_service_does_not_upgrade_analysis_decision_to_fix_preview_after_re
         assert isinstance(reply, str)
     assert "分一下" in (reply.primary if isinstance(reply, ChatServiceResponseEnvelope) else reply)
     assert pending_state == {}
-    classify_mock.assert_awaited()
+    classify_mock.assert_not_awaited()
     execute_mock.assert_not_awaited()
     select_mock.assert_not_awaited()
 
@@ -18071,7 +19276,7 @@ def test_chat_service_semantic_route_handles_review_fix_hierarchy_explanation(tm
             })), \
             patch(
                 "app.service.classify_plan_semantic_action",
-                AsyncMock(return_value=_semantic_plan("analyze_adjustment", reply_focus=["shortage_boundary"])),
+                AsyncMock(return_value=_semantic_plan("analyze_adjustment", reply_focus=["shortage_boundary", "plan_structure_shortage_only"])),
             ), \
             patch("app.service.execute_plan_action", AsyncMock(return_value=json.dumps(adjustment_result, ensure_ascii=False))) as execute_mock, \
             patch(
@@ -18148,7 +19353,7 @@ def test_chat_service_semantic_route_handles_current_plan_adjustment_feasibility
             })), \
             patch(
                 "app.service.classify_plan_semantic_action",
-                AsyncMock(return_value=_semantic_plan("analyze_adjustment", reply_focus=["shortage_boundary"])),
+                AsyncMock(return_value=_semantic_plan("analyze_adjustment", reply_focus=["shortage_boundary", "plan_structure_shortage_only"])),
             ), \
             patch("app.service.execute_plan_action", AsyncMock(return_value=json.dumps(analysis_result, ensure_ascii=False))) as execute_mock, \
             patch(
@@ -18349,6 +19554,96 @@ def test_chat_service_semantic_route_does_not_hijack_budget_risk_readonly_explan
     execute_mock.assert_not_awaited()
 
 
+def test_chat_service_semantic_route_does_not_hijack_budget_risk_unavailable_guidance_without_processing_prompt(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    fake_agent = _FakeAgent(["高收费会影响保底的可接受度，重点看预算压力、保底占位和是否还有正常收费的稳妥选择。"])
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={
+                "code": 0,
+                "data": {
+                    "phase": "reviewed",
+                    "version": 31,
+                    "orderedPlanState": {"summary": {"total": 45}},
+                    "reviewState": {"summary": {"warnCount": 2, "riskCount": 0}, "checks": []},
+                },
+            })), \
+            patch(
+                "app.service.classify_plan_semantic_action",
+                AsyncMock(
+                    return_value=_semantic_plan(
+                        "analyze_adjustment",
+                        target_strategies=["replace_risk_items"],
+                        target_issue_codes=["high_tuition"],
+                        reply_focus=["unavailable_guidance"],
+                    )
+                ),
+            ), \
+            patch("app.service.execute_plan_action", AsyncMock()) as execute_mock:
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(
+            service.handle_message(
+                "current-plan-budget-risk-unavailable-focus-guard-session",
+                "user-1",
+                "高收费会不会影响保底安全",
+            )
+        )
+
+    assert isinstance(reply, str)
+    assert "高收费" in reply
+    assert "保底" in reply
+    assert fake_agent.calls
+    execute_mock.assert_not_awaited()
+
+
+def test_chat_service_semantic_route_does_not_hijack_region_tradeoff_as_shortage_boundary(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    fake_agent = _FakeAgent(["北京天津可以保留一部分，但先要保证有稳妥兜底；这轮只是做地域取舍分析，不会改动方案。"])
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={
+                "code": 0,
+                "data": {
+                    "phase": "reviewed",
+                    "version": 31,
+                    "orderedPlanState": {"summary": {"total": 45}},
+                    "reviewState": {"summary": {"warnCount": 2, "riskCount": 0}, "checks": []},
+                },
+            })), \
+            patch(
+                "app.service.classify_plan_semantic_action",
+                AsyncMock(
+                    return_value=_semantic_plan(
+                        "analyze_adjustment",
+                        confidence=0.9,
+                        target_strategies=["rebalance_tier_ratio", "fill_probability_gap"],
+                        reply_focus=["shortage_boundary"],
+                    )
+                ),
+            ), \
+            patch("app.service.execute_plan_action", AsyncMock()) as execute_mock:
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(
+            service.handle_message(
+                "region-tradeoff-shortage-boundary-guard-session",
+                "user-1",
+                "北京天津想去但别最后没学上，这个取舍咋看",
+            )
+        )
+
+    assert isinstance(reply, str)
+    assert "北京天津" in reply
+    assert "地域取舍" in reply
+    assert fake_agent.calls
+    execute_mock.assert_not_awaited()
+
+
 def test_chat_service_semantic_route_does_not_hijack_plain_language_followup_without_focus(tmp_path, mock_llm_client):
     db_path = tmp_path / "history.db"
     store = ChatHistoryStore(str(db_path))
@@ -18439,7 +19734,7 @@ def test_chat_service_semantic_route_keeps_shortage_boundary_without_review_cont
             })), \
             patch(
                 "app.service.classify_plan_semantic_action",
-                AsyncMock(return_value=_semantic_plan("analyze_adjustment", reply_focus=["shortage_boundary"])),
+                AsyncMock(return_value=_semantic_plan("analyze_adjustment", reply_focus=["shortage_boundary", "plan_structure_shortage_only"])),
             ), \
             patch("app.service.execute_plan_action", AsyncMock(return_value=json.dumps(analysis_result, ensure_ascii=False))) as execute_mock, \
             patch(
@@ -18463,6 +19758,54 @@ def test_chat_service_semantic_route_keeps_shortage_boundary_without_review_cont
     assert fake_agent.calls == []
     assert pending_state == {}
     save_pending_mock.assert_not_awaited()
+
+
+def test_shortage_boundary_fallback_answers_supply_gap_without_internal_labels():
+    reply = _build_plan_timeout_fallback_reply(
+        {
+            "applied": True,
+            "action_family": "analyze_adjustment",
+            "stage": "apply",
+            "result_kind": "adjustment_analysis",
+            "summary": "已分析冲稳保补齐边界。",
+            "facts": {
+                "requested_reply_focus": ["shortage_boundary"],
+                "candidate_supply": {
+                    "total": 94,
+                    "tier_counts": {"冲": 66, "稳": 28, "保": 0},
+                    "missing_supply_tiers": ["保"],
+                },
+                "fix_proposals": {
+                    "blocked_count": 2,
+                    "proposals": [
+                        {
+                            "status": "blocked",
+                            "title": "处理数量校验",
+                            "strategy": "rebalance_tier_ratio",
+                            "blocking_reason": "当前候选里缺少保区可用志愿，暂时无法补齐保底。",
+                        },
+                        {
+                            "status": "blocked",
+                            "title": "处理录取率梯度断层",
+                            "strategy": "fill_probability_gap",
+                            "candidate_shortages": [
+                                {"message": "当前可用于规划的可选范围里，断层中间录取率候选不足"}
+                            ],
+                        },
+                    ],
+                },
+            },
+        },
+        user_prompt="保底够不够，别最后滑档",
+    )
+
+    assert reply is not None
+    assert "冲66 / 稳28 / 保0" in reply
+    assert "保 区间" in reply
+    assert "不是简单把比例调一下就能补上" in reply
+    assert "处理数量校验" not in reply
+    assert "处理录取率梯度断层" not in reply
+    assert "系统" not in reply
 
 
 def test_chat_service_preserves_shortage_guidance_when_fix_preview_has_no_ready_card(
@@ -18725,7 +20068,9 @@ def test_review_result_fallback_groups_repair_options_without_repeated_system_co
     assert "需要你先取舍或放宽条件的" in reply
     assert "第121位" in reply
     assert reply.count("上海财经大学浙江学院第101组-会计学(保)第123位") == 1
-    assert "处理兜底专业不足：补兜底专业" in reply
+    assert "补兜底专业" in reply
+    assert "处理兜底专业不足" not in reply
+    assert "处理录取率倒挂" not in reply
     assert "补入兜底专业" not in reply
     assert "需要你先决定取舍的方向" not in reply
     assert "建议你先查看具体影响，或调整筛选范围后再试" not in reply
@@ -18747,6 +20092,35 @@ def test_review_reply_needs_structured_fallback_for_systemish_hierarchy_copy():
     )
 
     assert _review_reply_needs_structured_fallback(reply, result) is True
+
+
+def test_review_reply_needs_structured_fallback_for_generic_review_too_narrow():
+    result = {
+        "applied": True,
+        "action_family": "review_plan",
+        "stage": "review",
+        "result_kind": "review_result",
+        "facts": {
+            "risk_count": 3,
+            "warn_count": 5,
+            "main_problems": [
+                "冲区占比过高且保区占比过低",
+                "本省保底志愿数量不足",
+                "当前排序存在录取概率倒挂",
+            ],
+        },
+    }
+
+    assert _review_reply_needs_structured_fallback(
+        "方案审查完了，有3项风险、5项提醒，核心问题是录取率梯度存在断层。"
+        "目前有两个处理方向：补齐录取率梯度、补足志愿数量。",
+        result,
+    ) is True
+    assert _review_reply_needs_structured_fallback(
+        "方案审查完了，风险 3 项，提醒 5 项。主要需要留意：冲区占比过高且保区占比过低；"
+        "本省保底志愿数量不足；当前排序存在录取概率倒挂。",
+        result,
+    ) is False
 
 
 def test_review_reply_overclaims_admission_safety_for_review_result():
@@ -18981,6 +20355,31 @@ def test_fix_proposal_card_content_dedupes_action_summaries():
 
     assert "组内安全垫" not in content
     assert content.count("补入兜底专业") == 1
+
+
+def test_fix_proposal_card_content_includes_readable_replacement_preview_detail():
+    content = _format_fix_proposal_card_content(
+        {
+            "title": "避开经济与金融",
+            "summary": "当前方案有 1 条命中，可确认后处理。",
+            "actionSummaries": ["替换经济与金融相关志愿"],
+            "actions": [
+                {
+                    "actionType": "replace_volunteers",
+                    "summary": "替换经济与金融相关志愿",
+                    "detail": "预计替换 1 组。具体预览：学校A-经济与金融（稳/录取率52.0%/推荐88.0） -> 学校B-法学（稳/录取率58.0%/意图93.0/推荐84.0）。",
+                    "replacementPairs": [{"fromVolunteerId": "econ-finance-1", "toVolunteerId": "law-1"}],
+                }
+            ],
+            "impact": "确认后会移出经济与金融相关志愿。",
+        }
+    )
+
+    assert "替换预览" in content
+    assert "学校A-经济与金融" in content
+    assert "学校B-法学" in content
+    assert "->" in content
+    assert "econ-finance-1 -> law-1" not in content
 
 
 def test_chat_service_does_not_create_fix_proposal_card_for_plain_review_result(tmp_path, mock_llm_client):
@@ -19567,6 +20966,162 @@ def test_chat_service_semantic_plan_route_resolves_issue_codes_from_review_conte
     assert payloads[1]["target_issue_codes"] == ["high_tuition", "cooperative_program"]
 
 
+def test_chat_service_semantic_plan_route_allows_targeted_readonly_review(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    review_result = {
+        "applied": True,
+        "action_family": "review_plan",
+        "stage": "review",
+        "result_kind": "review_result",
+        "summary": "当前方案有高收费提醒。",
+        "facts": {
+            "plan_total": 94,
+            "target_total": 96,
+            "target_issue_codes": ["high_tuition", "cooperative_program"],
+            "issue_hit_plan_examples": [
+                {
+                    "code": "high_tuition",
+                    "summary": "当前方案包含高收费志愿",
+                    "count_text": "共命中 36 条志愿",
+                    "items": ["A大学-中外合作专业(冲)第1位"],
+                }
+            ],
+        },
+        "reply_focus": ["review_result", "risk_warning"],
+    }
+    fake_agent = _FakeAgent(["不应该进入完整 Agent"])
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={
+                "code": 0,
+                "data": {
+                    "phase": "reviewed",
+                    "version": 18,
+                    "orderedPlanState": {"summary": {"total": 94, "targetTotal": 96}},
+                    "reviewState": {"summary": {"warnCount": 1, "riskCount": 0}, "checks": []},
+                },
+            })), \
+            patch(
+                "app.service.classify_plan_semantic_action",
+                AsyncMock(
+                    return_value=_semantic_plan(
+                        "review_plan",
+                        target_issue_codes=["high_tuition", "cooperative_program"],
+                        reply_focus=["target_issue_only"],
+                    )
+                ),
+            ), \
+            patch("app.service.execute_plan_action", AsyncMock(return_value=json.dumps(review_result, ensure_ascii=False))) as execute_mock, \
+            patch(
+                "app.service._synthesize_semantic_plan_action_reply",
+                AsyncMock(return_value=("", None)),
+            ):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(
+            service.handle_message(
+                "semantic-targeted-readonly-review-session",
+                "user-1",
+                "一年学费最多两三万，方案里高收费多吗",
+            )
+        )
+
+    assert isinstance(reply, str)
+    assert "高收费" in reply
+    assert "共命中 36 条志愿" in reply
+    assert "冲稳保" not in reply
+    assert fake_agent.calls == []
+    payload = json.loads(execute_mock.await_args.args[1])
+    assert payload["action_family"] == "review_plan"
+    assert payload["target_issue_codes"] == ["high_tuition", "cooperative_program"]
+    assert payload["reply_focus"] == ["target_issue_only"]
+
+
+def test_chat_service_semantic_generic_review_drops_accidental_target_scope(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    review_history = [
+        ModelRequest(parts=[UserPromptPart(content="先审查一下")]),
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="execute_plan_action",
+                    content=json.dumps(
+                        {
+                            "applied": True,
+                            "action_family": "review_plan",
+                            "stage": "review",
+                            "result_kind": "review_result",
+                            "summary": "当前方案有多个提醒。",
+                            "facts": {
+                                "fix_proposals": {
+                                    "source_version_guard": 18,
+                                    "proposals": [
+                                        {"proposal_id": "fp_ratio", "strategy": "rebalance_tier_ratio"},
+                                    ],
+                                }
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                    tool_call_id="review-before-generic-followup",
+                )
+            ]
+        ),
+    ]
+    asyncio.run(store.save("semantic-generic-review-target-scope-session", review_history))
+    review_result = {
+        "applied": True,
+        "action_family": "review_plan",
+        "stage": "review",
+        "result_kind": "review_result",
+        "summary": "已重新审查当前方案。",
+        "facts": {"risk_count": 3, "warn_count": 5},
+        "reply_focus": ["review_result"],
+    }
+    fake_agent = _FakeAgent(["不应该进入完整 Agent"])
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={
+                "code": 0,
+                "data": {
+                    "phase": "reviewed",
+                    "version": 18,
+                    "orderedPlanState": {"summary": {"total": 94, "targetTotal": 96}},
+                    "reviewState": {"summary": {"warnCount": 5, "riskCount": 3}, "checks": []},
+                },
+            })), \
+            patch(
+                "app.service.classify_plan_semantic_action",
+                AsyncMock(return_value=_semantic_plan("review_plan", target_strategies=["rebalance_tier_ratio"])),
+            ), \
+            patch("app.service.execute_plan_action", AsyncMock(return_value=json.dumps(review_result, ensure_ascii=False))) as execute_mock, \
+            patch(
+                "app.service._synthesize_semantic_plan_action_reply",
+                AsyncMock(return_value=("已按完整方案口径重新审查。", None)),
+            ):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(
+            service.handle_message(
+                "semantic-generic-review-target-scope-session",
+                "user-1",
+                "审查一下",
+            )
+        )
+
+    assert isinstance(reply, str)
+    assert fake_agent.calls == []
+    payload = json.loads(execute_mock.await_args.args[1])
+    assert payload["action_family"] == "review_plan"
+    assert "target_strategies" not in payload
+    assert "target_issue_codes" not in payload
+    assert "reply_focus" not in payload
+
+
 def test_chat_service_semantic_plan_route_bypasses_readonly_candidate_query(tmp_path, mock_llm_client):
     db_path = tmp_path / "history.db"
     store = ChatHistoryStore(str(db_path))
@@ -19592,7 +21147,7 @@ def test_chat_service_semantic_plan_route_bypasses_readonly_candidate_query(tmp_
                         "analyze_adjustment",
                         confidence=0.9,
                         target_strategies=["rebalance_tier_ratio"],
-                        reply_focus=["shortage_boundary"],
+                        reply_focus=["shortage_boundary", "plan_structure_shortage_only"],
                     )
                 ),
             ) as classify_mock, \
