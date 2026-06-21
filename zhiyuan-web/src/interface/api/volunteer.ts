@@ -874,7 +874,13 @@ export interface PlanningStateRes {
 
 export type OrderedPlanActionRes = Pick<
   PlanningStateRes,
-  'sessionId' | 'version' | 'phase' | 'staleFlags' | 'orderedPlanState'
+  | 'sessionId'
+  | 'version'
+  | 'phase'
+  | 'staleFlags'
+  | 'workingPlanState'
+  | 'draftPlanState'
+  | 'orderedPlanState'
 >;
 
 export type PlanningWorkspaceStateRes = Pick<

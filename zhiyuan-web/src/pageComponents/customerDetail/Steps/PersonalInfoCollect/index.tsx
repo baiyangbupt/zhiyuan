@@ -18,6 +18,7 @@ import { getPositionRangeApi, getEthnicityListApi } from '@/service/apis/custome
 import ModalImage from '../../Components/ModalImage';
 import { flushSync } from 'react-dom';
 import { buildCreateSessionBatchPayload } from '@/utils/customerDetailSession';
+import { HAINAN_PROVINCE_CODE, resolveSubjectScoreMax as resolveProvinceSubjectScoreMax, resolveTotalScoreLabel, validateHainanTotalScore } from '@/utils/scoreRules.mjs';
 const CheckboxGroup = Checkbox.Group;
 
 interface ICollectflowProps {
@@ -55,7 +56,7 @@ const PersonalInfoCollect = (props: ICollectflowProps) => {
   const [subjectType, setSubjectType] = useState<any>(null); // 学科类型-首选科目
   const [subjectSecondList, setSubjectSecondList] = useState<any>(); // 学科类型-次选科目
   const [formStates, setFormStates] = useState<IFormState[]>([]);
-  const [totalScore, setTotalScore] = useState(0);
+  const [totalScore, setTotalScore] = useState<number | undefined>(undefined);
   const [bonusPolicy, setBonusPolicy] = useState(false);
   // 在组件顶部添加状态
   const [allFormValues, setAllFormValues] = useState<Record<number, any>>({});
@@ -70,6 +71,7 @@ const PersonalInfoCollect = (props: ICollectflowProps) => {
   // const userInfo = JSON.parse(storedUserInfo);
 
   const [userInfo, setUserInfo] = useState<any>(null);
+  const isHainanProvince = userInfo?.userScoreOb?.province?.code === HAINAN_PROVINCE_CODE;
   useEffect(() => {
     const storedUserInfo: any = getStorage('userInfo') || null;
     const userInfoData = JSON.parse(storedUserInfo);
@@ -351,6 +353,10 @@ const PersonalInfoCollect = (props: ICollectflowProps) => {
 
   const hasSavedScalarValue = (key: string) => {
     if (!Object.prototype.hasOwnProperty.call(savedValues || {}, key)) return false;
+    if (key === 'totalScore') {
+      const value = savedValues?.[key];
+      return value !== undefined && value !== null && value !== '' && Number(value) > 0;
+    }
     return isMeaningfulSavedValue(savedValues?.[key]);
   };
 
@@ -509,6 +515,8 @@ const PersonalInfoCollect = (props: ICollectflowProps) => {
               initialValues[key] = score;
             }
           });
+        } else if (field.fieldId === 'totalScore' && isHainanProvince) {
+          initialValues[field.fieldId] = undefined;
         } else {
           initialValues[field.fieldId] = field.defaultValue;
         }
@@ -546,9 +554,12 @@ const PersonalInfoCollect = (props: ICollectflowProps) => {
 
     setAllFormValues(restoredValues);
     setTotalScore(
-      Object.prototype.hasOwnProperty.call(savedValues || {}, 'totalScore')
-        ? Number(savedValues.totalScore) || 0
-        : 0
+      Object.prototype.hasOwnProperty.call(savedValues || {}, 'totalScore') &&
+        savedValues.totalScore !== undefined &&
+        savedValues.totalScore !== null &&
+        savedValues.totalScore !== ''
+        ? Number(savedValues.totalScore) || undefined
+        : undefined
     );
     setBonusPolicy(Boolean(savedValues?.bonusPolicy));
 
@@ -786,6 +797,9 @@ const PersonalInfoCollect = (props: ICollectflowProps) => {
     
     // 获取省份code和batch level
     const provinceCode = userInfo?.userScoreOb?.province?.code;
+    if (provinceCode === HAINAN_PROVINCE_CODE) {
+      return Number(allValues.totalScore) || undefined;
+    }
     const batchId = allValues.batch || (index !== undefined ? formsRef.current[index]?.getFieldValue('batch') : null);
     const batchLevel = batchId
       ? optionList?.find((item: any) => String(item.id) === String(batchId))?.level?.key
@@ -874,13 +888,26 @@ const PersonalInfoCollect = (props: ICollectflowProps) => {
       return acc;
     }, {});
 
+    const batchValue = currentValues.batch || scoreForm.getFieldValue('batch');
+    if (isHainanProvince) {
+      const rawTotalScore = currentValues.totalScore;
+      const manualTotalScore =
+        rawTotalScore === undefined || rawTotalScore === null || rawTotalScore === ''
+          ? undefined
+          : Number(rawTotalScore);
+      setTotalScore(Number.isFinite(manualTotalScore) ? manualTotalScore : undefined);
+      if (manualTotalScore !== undefined && manualTotalScore >= 100 && manualTotalScore <= 900 && batchValue) {
+        getPositionRange({ ...currentValues, batch: batchValue }, manualTotalScore, optionList);
+      }
+      return;
+    }
+
     const newTotalScore = calculateTotalScore(scoreMutiInputData, currentValues, 0, optionList);
     setTotalScore(newTotalScore);
     scoreForm.setFieldsValue({
       totalScore: newTotalScore,
     });
 
-    const batchValue = currentValues.batch || scoreForm.getFieldValue('batch');
     if (newTotalScore && batchValue) {
       getPositionRange({ ...currentValues, batch: batchValue }, newTotalScore, optionList);
     }
@@ -933,6 +960,12 @@ const PersonalInfoCollect = (props: ICollectflowProps) => {
       },
     },
   ];
+
+  const resolveSubjectScoreMax = (subjectCode: string) => {
+    const provinceCode = userInfo?.userScoreOb?.province?.code;
+    const subjectGroup = ['08', '10', '11'].includes(subjectCode) ? 'main' : 'elective';
+    return resolveProvinceSubjectScoreMax(provinceCode, subjectGroup);
+  };
 
   // 渲染表单字段
   const renderFormField = (field: any, currentForm: FormInstance) => {
@@ -1004,7 +1037,7 @@ const PersonalInfoCollect = (props: ICollectflowProps) => {
                     required: true,
                     message: '请输入',
                   },
-                  ...gradesRules(['08', '10', '11'].includes(inp.subject) ? 150 : 100),
+                  ...gradesRules(resolveSubjectScoreMax(inp.subject)),
                 ]}
               >
                 <Input placeholder={inp.subjectName} disabled={!field.editable} />
@@ -1038,7 +1071,20 @@ const PersonalInfoCollect = (props: ICollectflowProps) => {
         if (currentForm.getFieldValue('bonusPolicy') && field.fieldId === 'bonusScore') {
           return <Input placeholder="请输入加分" disabled={!bonusPolicy} />;
         } else if (field.fieldId === 'totalScore') {
-          return <Input placeholder="总分" disabled value={totalScore} readOnly />;
+          return (
+            <Input
+              placeholder={isHainanProvince ? '请输入最终总分' : '总分'}
+              disabled={!isHainanProvince}
+              value={totalScore}
+              readOnly={!isHainanProvince}
+              onChange={event => {
+                const rawValue = event.target.value.replace(/\D/g, '');
+                const value = rawValue ? Number(rawValue) : undefined;
+                setTotalScore(value);
+                currentForm.setFieldValue('totalScore', value);
+              }}
+            />
+          );
         } else if (field.fieldType === 'apiGet' && field.fieldId === 'totalScorePos') {
           return <Input placeholder={field.validation.required} disabled readOnly />;
         } else if (field.fieldType === 'input' && field.fieldId === 'height') {
@@ -1111,9 +1157,15 @@ const PersonalInfoCollect = (props: ICollectflowProps) => {
                 return (
                   <Form.Item
                     key={field.fieldId}
-                    label={field.fieldName}
+                    label={field.fieldId === 'totalScore' ? resolveTotalScoreLabel(userInfo?.userScoreOb?.province?.code, field.fieldName) : field.fieldName}
                     name={isOuterValidatedField ? field.fieldId : undefined}
-                    initialValue={isOuterValidatedField ? field.defaultValue : undefined}
+                    initialValue={
+                      isOuterValidatedField
+                        ? field.fieldId === 'totalScore' && isHainanProvince
+                          ? undefined
+                          : field.defaultValue
+                        : undefined
+                    }
                     rules={
                       isOuterValidatedField
                         ? [
@@ -1121,11 +1173,24 @@ const PersonalInfoCollect = (props: ICollectflowProps) => {
                               required: field.required,
                               message: field.validation?.required,
                             },
+                            {
+                              validator: (_: any, value: any) => {
+                                if (field.fieldId !== 'totalScore' || !isHainanProvince) {
+                                  return Promise.resolve();
+                                }
+                                const error = validateHainanTotalScore(value);
+                                return error ? Promise.reject(new Error(error)) : Promise.resolve();
+                              },
+                            },
                           ]
                         : undefined
                     }
                     extra={
-                      field.helpConfig ? (
+                      field.fieldId === 'totalScore' && isHainanProvince ? (
+                        <span style={{ color: '#919296', fontSize: 12 }}>
+                          请填写转换/赋分后用于投档和查位次的最终总成绩，不是各科成绩相加。
+                        </span>
+                      ) : field.helpConfig ? (
                         <>
                           {field.helpConfig?.showFieldHelp ? (
                             <span style={{ color: '#919296', fontSize: 12 }}>

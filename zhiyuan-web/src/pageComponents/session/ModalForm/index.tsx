@@ -149,6 +149,8 @@ const ModalForm = forwardRef<IRefParams>((_, ref) => {
   const [regionProvinceList, setRegionProvinceList] = useState<any[]>([]); // 按大区分组的省份列表
   const [unAcceptableMajorsOptions, setUnAcceptableMajorsOptions] = useState<any[]>([]); // 不能接受的专业列表
   const tuitionRangeFormValue = Form.useWatch('tuitionRange', form); // 学费区间（从表单获取）
+  const provinceValue = Form.useWatch('areaId', form);
+  const isHainanProvince = provinceValue === HAINAN_PROVINCE_CODE;
   const [tuitionRange, setTuitionRange] = useState<[number, number]>([0, 100000]); // 学费区间状态（用于Slider显示）
 
   const {
@@ -382,10 +384,28 @@ const ModalForm = forwardRef<IRefParams>((_, ref) => {
   // 加分
   const handleBonusScoreChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     console.log('e.target.value', e.target.value);
+    if (isHainanProvince) {
+      return;
+    }
     const bonusScore = Number(e.target.value) || 0;
     const score = baseScoreRef.current + bonusScore;
     form.setFieldsValue({ totalScore: score });
     setTotalScore(score);
+  };
+
+  const handleTotalScoreChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value.replace(/\D/g, '');
+    const score = value ? Number(value) : undefined;
+    setTotalScore(score);
+    form.setFieldsValue({ totalScore: score });
+  };
+
+  const validateHainanFinalScore = (_: any, value: any) => {
+    if (!isHainanProvince) {
+      return Promise.resolve();
+    }
+    const error = validateHainanTotalScore(value);
+    return error ? Promise.reject(new Error(error)) : Promise.resolve();
   };
   
   // 重新计算总分（当批次或省份变化时）
@@ -397,6 +417,9 @@ const ModalForm = forwardRef<IRefParams>((_, ref) => {
     
     // 获取省份code和批次level
     const provinceCode = form.getFieldValue('areaId');
+    if (provinceCode === HAINAN_PROVINCE_CODE) {
+      return;
+    }
     const batchLevel = batchChoose?.level;
     
     // 判断是否是北京/天津/上海 + 专科批（level = '02'）
@@ -457,10 +480,16 @@ const ModalForm = forwardRef<IRefParams>((_, ref) => {
   useEffect(() => {
     // 当 totalScore 和 batch 都存在时，调用 getPositionRange
     if (totalScoreValue && batchValue) {
+      if (isHainanProvince) {
+        const score = Number(totalScoreValue);
+        if (Number.isNaN(score) || score < 100 || score > 900) {
+          return;
+        }
+      }
       const allValues = form.getFieldsValue(['totalScore', 'batch']);
       getPositionRange(allValues);
     }
-  }, [totalScoreValue, batchValue]);
+  }, [totalScoreValue, batchValue, isHainanProvince]);
 
   useEffect(() => {
     // 当批次变化时，重新获取专业列表和不能接受的专业列表
@@ -473,12 +502,11 @@ const ModalForm = forwardRef<IRefParams>((_, ref) => {
   }, [batchValue, batchChoose?.level]);
   
   // 监听省份变化，重新计算总分
-  const provinceValue = Form.useWatch('areaId', form);
   useEffect(() => {
-    if (provinceValue && subjectScoreListRef.current?.length > 0) {
+    if (provinceValue && subjectScoreListRef.current?.length > 0 && !isHainanProvince) {
       recalculateTotalScore();
     }
-  }, [provinceValue]);
+  }, [provinceValue, isHainanProvince]);
 
   // 获取成绩位次
   const getPositionRange = async (allValues: any) => {
@@ -611,6 +639,18 @@ const ModalForm = forwardRef<IRefParams>((_, ref) => {
       const mainSubjects = ['08', '10', '11']; // 语文、数学、英语
       
       // 计算总分
+      if (provinceCode === HAINAN_PROVINCE_CODE) {
+        form.setFieldsValue({ grades: concatenatedString });
+        setGrades(concatenatedString);
+        setScoreOpen(false);
+        const subjectStrengthList = subjectScoreList?.map(item => ({
+          label: item.subjectName,
+          value: item.subject,
+        }));
+        setStrengthSubjectOptions(subjectStrengthList);
+        return;
+      }
+
       let totalScore = 0;
       if (isSpecialProvinceJuniorCollege) {
         // 如果是专科批（北京/天津/上海），只计算语数外三科
@@ -1110,12 +1150,22 @@ const ModalForm = forwardRef<IRefParams>((_, ref) => {
         </Form.Item>
         <Form.Item
           key="totalScore"
-          label="高考总成绩"
+          label={resolveTotalScoreLabel(provinceValue, '高考总成绩')}
           name="totalScore"
-          rules={[{ required: true }]}
+          rules={[{ required: true }, { validator: validateHainanFinalScore }]}
+          extra={
+            isHainanProvince
+              ? '请填写转换/赋分后用于投档和查位次的最终总成绩，不是各科成绩相加。'
+              : undefined
+          }
         >
           <div>
-            <Input readOnly value={totalScore} placeholder="自动计算" />
+            <Input
+              readOnly={!isHainanProvince}
+              value={totalScore}
+              placeholder={isHainanProvince ? '请输入最终总分' : '自动计算'}
+              onChange={isHainanProvince ? handleTotalScoreChange : undefined}
+            />
           </div>
         </Form.Item>
         <Form.Item key="batch" label="填报批次" rules={[{ required: true }]} name="batch">

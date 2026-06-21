@@ -365,9 +365,9 @@
 
 - 新增 `VolunteerSourceDataSyncService`，复用建会话时的 `queryAllProgramData -> cleanJsonDataWithStringProcessing -> session_volunteer` 规则，保证重拉数据结构与初始会话一致。
 - `DataFreshnessCheckReq` 增加 `fetchLatest` / `syncSourceData`：
-  - `fetchLatest=true`：按当前会话成绩、批次、选科、年份、prepareType 重新请求高途全量招生计划，只做内存态比对。
+  - `fetchLatest=true`：按当前会话成绩、批次、选科、年份、prepareType 重新请求高途全量招生计划，并用最新源数据重新跑推荐流水线生成候选快照。
   - `syncSourceData=true`：在重拉后覆盖本机 `session_volunteer` 原始文件，并异步上传 OSS；该开关只在用户确认刷新候选时使用。
-- `checkDataFreshness(tenantId, chatSessionId, req)` 在 `fetchLatest=true` 时会用最新源数据重新跑推荐流水线，但不保存候选池、不重排方案、不修改用户方案。
+- `checkDataFreshness(tenantId, chatSessionId, req)` 在 `fetchLatest=true` 时会基于最新候选快照计算差异；当接口用于真实同步或确认当前快照一致时，会同步 `candidatePoolState`、`recommendationOverlayState`，并用最新候选清理工作台方案和排序方案中的失效志愿引用，但不自动生成新的用户方案、不替用户执行重排或替换决策。
 - 比对维度基于候选志愿稳定 key 和候选核心字段，输出 `addedCount/removedCount/updatedCount/invalidCount/affectedVolunteerIds/affectedUnitIds/changeLevel`。
 - 数据变化后：
   - `minor`：标记候选池、初始推荐、方案调整 stale，不强制审查 stale。
@@ -703,6 +703,32 @@ curl -X POST 'http://127.0.0.1:18090/gaotu-assistant-bot/inner/planning/{tenantI
 - 问题：`POST /session/data-freshness/check` 返回的 `medium/requiresReview=true` 正确，但再次打开工作区时，`mergeScheduleDataFreshnessState` 会根据巡检索引 `lastCheckStatus=changed` 把状态覆盖成后台轻量检查语义的 `minor/requiresReview=false`。
 - 修复：当工作区已持久化明确的 `statusCode=changed` 且 `changeLevel!=none` 时，巡检索引只合并 `lastCheckedAt/nextCheckAt/sourceDataHash/latestSourceDataHash/failCount/lastError` 等后台元数据，不再覆盖候选级影响分析结果。
 - 回归测试：`PlanningStateServiceTest#shouldNotDowngradeDetailedDataFreshnessChangeWhenMergingScheduleState`。
+
+#### 15.9.2 2026-06-21 海南 VOLUNTEER 会话 133-136 接口回归记录
+
+验证背景：海南已切换到 `VOLUNTEER` 智能填报测试数据，使用会话 133-136 覆盖 500/580/640/659 分段，验证数据更新后候选、方案和推荐结果是否一致。测试只通过本机标准后端 `18090` 的内部接口执行，不直接改库。
+
+接口级 mock 和状态回滚：
+
+- 对 133-136 调用 `POST /session/data-freshness/check` 注入 `medium` 变化，确认 `statusCode=changed`、`shouldNotify=true`、`requiresCandidateRefresh=true`、`requiresReview=true`，候选/推荐/审查 stale 置位。
+- 再使用当前 `dataHash/sourceDataHash` 回滚为 `current`，确认 `shouldNotify=false`、`requiresCandidateRefresh=false`、`requiresReview=false`，数据 stale 标记全 false。
+- 清理本次 mock 产生的 `volunteer_data_change_detected` 测试日志；保留 134-136 真实数据更新摘要日志，用于 hover 展示最近真实变更概要。
+- 状态报告：`/tmp/zhiyuan-data-freshness-133-136-20260621-203949-effective.json`。
+
+候选、方案和推荐一致性：
+
+- 首次一致性校验发现 136 的工作台方案和排序方案仍引用 3 个当前候选池不存在的志愿：`46120261000853_46120262003640`、`46120261000853_46120262003641`、`46120261090005_46120262090007`。
+- 这 3 个残留分别出现在 `workingPlanState.items/units` 和 `orderedPlanState.items/units`，且推荐/分数字段为 `null`，说明旧方案引用没有被最新候选快照彻底清理。
+- 对 136 调用正式 `{fetchLatest:true, syncSourceData:false}` 后，接口返回 `current/none`，最新源数据与当前候选快照一致；同步过程清理了失效方案引用。
+- 清理后 136 工作台/排序方案从 113 项 33 组变为 111 项 32 组，3 个失效志愿不再出现在方案中。
+- 最终一致性回归 36/36 通过：候选查询总数与 `candidatePoolState.items` 一致，`recommendationOverlayState` 与候选池 ID 完全一致，工作台方案、排序方案和初始推荐中的 `volunteerId` 都能在最新候选池或专业组单元中找到。
+- 最终报告：`/tmp/zhiyuan-data-sync-plan-candidate-reco-133-136-after-resync-20260621-211550.json`。
+
+验收口径更新：
+
+- 不能只看 `dataFreshnessState.statusCode=current`；还必须校验候选池、推荐 overlay、工作台方案、排序方案和初始推荐之间的引用一致性。
+- 真实 `fetchLatest` 同步成功后，如果上游已删除或替换志愿，方案中对应旧志愿必须被清理，不能保留 `finalScore/intentScore/rankInTier=null` 的旧专业项。
+- 推荐结果验收以 `recommendationOverlayState` 和候选查询合并结果为准，overlay ID 必须与最新候选池 ID 完全一致。
 
 ### 15.10 源数据级 mock 方案边界
 

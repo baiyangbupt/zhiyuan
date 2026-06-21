@@ -1,4 +1,5 @@
 import { ISubjectTypeAndExamObject } from '@/interface/api/updateBaseInfo';
+import { resolveSubjectScoreMax } from '@/utils/scoreRules.mjs';
 import {Form, FormInstance, Input} from 'antd';
 import {forwardRef, useImperativeHandle} from 'react';
 
@@ -15,24 +16,12 @@ export interface IRefParams {
   };
 }
 
-let MAX_GRADES_MAIN = 150;
-let MIN_GRADES_MAIN = 100;
-
-interface ISubjectScoresProps {
-    selectedSubjects: string[];
-    areaId: string;
-}
-
 const SubjectScores = forwardRef<IRefParams, ISubjectScoresProps>((props: ISubjectScoresProps,
     ref: any) => {
     const {selectedSubjects, areaId} = props;
     const [form] = Form.useForm();
-    if (areaId === '310000') {
-        MIN_GRADES_MAIN = 70;
-    }
-    if (areaId === '460000') {
-        MAX_GRADES_MAIN = 300;
-    }
+    const mainSubjectMax = resolveSubjectScoreMax(areaId, 'main');
+    const electiveSubjectMax = resolveSubjectScoreMax(areaId, 'elective');
 
     const gradesRules = (max: any) => [
         {
@@ -57,7 +46,7 @@ const SubjectScores = forwardRef<IRefParams, ISubjectScoresProps>((props: ISubje
                 label="语文"
                 rules={[
                     {required: true, message: '请填写'},
-                    ...gradesRules(MAX_GRADES_MAIN)
+                    ...gradesRules(mainSubjectMax)
                 ]}
             >
                 <Input
@@ -69,7 +58,7 @@ const SubjectScores = forwardRef<IRefParams, ISubjectScoresProps>((props: ISubje
                 label="数学"
                 rules={[
                     {required: true, message: '请填写'},
-                    ...gradesRules(MAX_GRADES_MAIN)
+                    ...gradesRules(mainSubjectMax)
                 ]}
             >
                 <Input placeholder="请填写" />
@@ -79,7 +68,7 @@ const SubjectScores = forwardRef<IRefParams, ISubjectScoresProps>((props: ISubje
                 label="英语"
                 rules={[
                     {required: true, message: '请填写'},
-                    ...gradesRules(MAX_GRADES_MAIN)
+                    ...gradesRules(mainSubjectMax)
                 ]}
             >
                 <Input placeholder="请填写" />
@@ -92,7 +81,7 @@ const SubjectScores = forwardRef<IRefParams, ISubjectScoresProps>((props: ISubje
                         label={subject}
                         rules={[
                             {required: true, message: '请填写'},
-                            ...gradesRules(MIN_GRADES_MAIN)
+                            ...gradesRules(electiveSubjectMax)
                         ]}
                     >
                         <Input placeholder="请填写" />

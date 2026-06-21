@@ -55,7 +55,7 @@ public final class ReviewInvalidationPolicy {
         state.getStaleFlags().setOrderedPlan(true);
         state.getStaleFlags().setPlanAdjustment(true);
         state.getStaleFlags().setReview(true);
-        markReason(state, "candidate_pool_refreshed", "候选池已刷新，推荐、方案和审查需要重新计算。", CANDIDATE_POOL_REVIEW_CODES);
+        markReason(state, "candidate_pool_refreshed", "候选池和专家推荐已刷新，当前方案未自动调整，建议重新审查确认。", CANDIDATE_POOL_REVIEW_CODES);
     }
 
     public static void markPreferenceIntentStale(PlanningStateDTO state) {
@@ -67,7 +67,7 @@ public final class ReviewInvalidationPolicy {
         state.getStaleFlags().setOrderedPlan(true);
         state.getStaleFlags().setPlanAdjustment(true);
         state.getStaleFlags().setReview(true);
-        markReason(state, "preference_intent_changed", "报考偏好已调整，推荐系数、排序方案和审查建议需要重新计算。", PREFERENCE_REVIEW_CODES);
+        markReason(state, "preference_intent_changed", "报考偏好已调整，专家推荐、排序方案和审查建议需要重新计算。", PREFERENCE_REVIEW_CODES);
     }
 
     public static void markConstraintIntentStale(PlanningStateDTO state) {

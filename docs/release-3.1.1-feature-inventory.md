@@ -48,6 +48,14 @@
 - 当前修补仍遵守：不新增用户话术字符串路由、不新增多套确认卡路径、不让 Python 绕过 Java repair apply policy。
 - 需要继续观察审查/修复、普通原子方案动作、复合用户目标之间的边界问题，并把无法低风险修补的内容移入 3.2.0 结构性优化。
 
+### 2.8 数据更新、候选和方案一致性
+
+- 数据更新链路继续沿用 3.1.0 的 `VOLUNTEER` 数据新鲜度机制，3.1.1 补充前端展示、候选刷新、方案状态和推荐 overlay 的一致性保护。
+- `fetchLatest=true` 真实检查返回当前快照一致时，状态必须保持 `current`，不弹窗、不标记候选/推荐/审查 stale；如果同步过程中发现方案仍引用已下线志愿，应通过最新候选快照清理工作台方案和排序方案引用。
+- 推荐结果以 `recommendationOverlayState` 和候选查询合并结果为准，验收时必须确认 overlay ID 与候选池 ID 完全一致，不能存在多余或缺失的推荐记录。
+- 工作台方案、排序方案和初始推荐中的 `volunteerId` 必须都能在最新候选池或专业组单元中找到；已删除或失效的志愿不能继续留在方案 `items/units` 中。
+- 海南测试会话 133-136 已作为本机数据更新回归样本，覆盖 500/580/640/659 分段；其中 136 曾发现 3 个已失效福州大学相关志愿残留，已通过正式 `fetchLatest` 同步清理并完成回归。
+
 ## 3. 验证结论
 
 3.1.1 封版前已完成：
@@ -62,6 +70,10 @@
 - 封版单元验证：
   - `zhiyuan-agent` 定向单测 662/662。
   - `zhiyuan-server` `UserGoalProposalBuilderTest` 通过。
+- 数据更新接口级回归：
+  - 会话 133-136 mock `medium` 变化、候选查询、状态回滚有效状态通过；最终 `statusCode=current`，`shouldNotify=false`，`requiresCandidateRefresh=false`，`requiresReview=false`，数据 stale 标记全 false。
+  - 会话 133-136 候选/方案/推荐一致性回归 36/36 通过：候选查询总数与候选池一致，`recommendationOverlayState` 与候选池 ID 完全一致，工作台方案、排序方案和初始推荐无缺失引用。
+  - 136 通过正式 `{fetchLatest:true, syncSourceData:false}` 重新同步后，工作台/排序方案从 113 项 33 组清理为 111 项 32 组，已下线志愿不再出现在方案中。
 
 封版口径：
 
@@ -97,5 +109,6 @@
 | [release-3.2.0-structural-plan-framework-analysis.md](./release-3.2.0-structural-plan-framework-analysis.md) | 3.2.0 Plan 结构性框架问题、历史补丁和动态计划落地边界；3.1.1 仅作为后续储备 |
 | [release-3.1.0-feature-inventory.md](./release-3.1.0-feature-inventory.md) | 3.1.0 基线能力和遗留 |
 | [release-3.1.0-summary-and-upgrade-plan.md](./release-3.1.0-summary-and-upgrade-plan.md) | 3.1.0 发布收口 |
+| [release-3.1.0-data-freshness-and-impact-notification-design.md](./release-3.1.0-data-freshness-and-impact-notification-design.md) | 数据更新机制、133-136 本机接口验证和真实 fetchLatest 同步记录 |
 | [plan_action_orchestration_design.md](../zhiyuan-agent/docs/plan_action_orchestration_design.md) | 统一方案动作框架 |
 | [semantic_layer_structure.md](../zhiyuan-agent/docs/semantic_layer_structure.md) | 语义分层边界 |

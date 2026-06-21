@@ -307,6 +307,7 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
   const pageRef = useRef(1);
   const fetchQueueRef = useRef<{ enqueue: (page?: number) => Promise<void> } | null>(null);
   const optimisticMessageSeqRef = useRef(0);
+  const activeChatSessionIdRef = useRef(routerParams.chatSessionId);
 
   const [checkedMap, setCheckedMap] = useState<Record<number, boolean[]>>({});
 
@@ -359,6 +360,7 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
     async (tempPage?: number) => {
       if (!fetchQueueRef.current) {
         fetchQueueRef.current = createFetchQueue(async (queuedPage?: number) => {
+          const requestChatSessionId = routerParams.chatSessionId;
           const currentPage = queuedPage ?? pageRef.current;
 
           setIsLoading(true);
@@ -369,7 +371,7 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
           const prevScrollTop = container?.scrollTop || 0;
           try {
             const { data, code } = await getMessageListApi(routerParams.tenantId, {
-              chatSessionId: +routerParams.chatSessionId,
+              chatSessionId: +requestChatSessionId,
               orderBy: [
                 // 排序规则
                 { isAsc: false, orderBy: 'id' },
@@ -377,6 +379,9 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
               page: currentPage,
               pageSize: 10,
             });
+            if (activeChatSessionIdRef.current !== requestChatSessionId) {
+              return;
+            }
             if (code === 0 && data) {
               const reverseList = data.records
                 .filter(record => !isStructuredIntentSelectEcho(record))
@@ -645,8 +650,27 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
   }, [isConnected, reconnect, sendMessage]);
 
   useEffect(() => {
-    fetchMessageList();
+    activeChatSessionIdRef.current = routerParams.chatSessionId;
+    fetchQueueRef.current = null;
+    prevMessageListRef.current = [];
+    pageRef.current = 1;
+    itemRefs.current = [];
+    optimisticMessageSeqRef.current = 0;
+    setMessageList([]);
+    setWsMessageList([]);
+    setCheckedMap({});
+    setPage(1);
+    setTotal(0);
+    setIsMore(false);
+    setIsReachBottom(true);
+    setAutoScroll(true);
+    setUserInput('');
+    setEntityCardList?.({});
+    resetAnswerLoading();
+    fetchMessageList(1);
+  }, [routerParams.chatSessionId, routerParams.tenantId]);
 
+  useEffect(() => {
     // 清理函数
     return () => {
       disconnect?.();

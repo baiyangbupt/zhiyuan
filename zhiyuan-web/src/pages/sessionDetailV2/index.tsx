@@ -26,6 +26,7 @@ import { checkUserRightsApi } from '@/service/apis/user';
 import { getStorage, getValueFromUrlBykey } from '@/utils/tool';
 import { navigateTo } from '@/utils/router';
 import useAuthParams from '@/hooks/useAuthParams';
+import { hasDataFreshnessChangeSummary, shouldShowDataFreshnessNotice } from '@/utils/planningDataFreshness.mjs';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
 import style from './style.module.scss';
 
@@ -119,7 +120,6 @@ const buildDataFreshnessNoticeKey = (
   'session_detail_v2_data_freshness_notice',
   chatSessionId || 'unknown',
   state?.latestSourceDataHash || state?.latestDataHash || state?.dataHash || '',
-  state?.lastCheckedAt || '',
   state?.changedCount || 0,
   state?.removedCount || 0,
   state?.updatedCount || 0,
@@ -153,6 +153,16 @@ const buildDataFreshnessTip = (
   return checkedAt ? `数据同步于 ${checkedAt}` : '';
 };
 
+const splitDataFreshnessDetailLines = (detail?: string, summary?: string) => {
+  if (!detail || detail === summary) {
+    return [];
+  }
+  return detail
+    .split(/\n+/)
+    .map(line => line.trim())
+    .filter(Boolean);
+};
+
 const buildDataFreshnessTooltipLines = (
   state: PlanningDataFreshnessState | null,
   checking: boolean,
@@ -175,25 +185,28 @@ const buildDataFreshnessTooltipLines = (
   if (nextCheckAt) {
     lines.push(`预计下次同步：${nextCheckAt}`);
   }
-  if (state?.statusCode === 'changed') {
-    lines.push(state.summary || '检测到招生计划数据有更新');
-    if (state.detail && state.detail !== state.summary) {
-      lines.push(state.detail);
-    }
+  if (state?.statusCode === 'changed' || hasDataFreshnessChangeSummary(state)) {
+    const isCurrentSummary = state?.statusCode !== 'changed';
+    lines.push(
+      isCurrentSummary
+        ? `最近更新：${state?.summary || '检测到招生计划数据有更新'}`
+        : state?.summary || '检测到招生计划数据有更新'
+    );
+    splitDataFreshnessDetailLines(state?.detail, state?.summary).forEach(line => lines.push(line));
     const changedCount =
-      state.changedCount ||
-      state.updatedCount ||
-      state.affectedVolunteerIds?.length ||
-      state.affectedUnitIds?.length ||
+      state?.changedCount ||
+      state?.updatedCount ||
+      state?.affectedVolunteerIds?.length ||
+      state?.affectedUnitIds?.length ||
       0;
     if (changedCount > 0) {
       lines.push(`影响 ${changedCount} 项`);
     }
     const changeParts = [
-      state.addedCount ? `新增 ${state.addedCount}` : '',
-      state.removedCount ? `下线 ${state.removedCount}` : '',
-      state.updatedCount ? `更新 ${state.updatedCount}` : '',
-      state.invalidCount ? `失效 ${state.invalidCount}` : '',
+      state?.addedCount ? `新增 ${state.addedCount}` : '',
+      state?.removedCount ? `下线 ${state.removedCount}` : '',
+      state?.updatedCount ? `更新 ${state.updatedCount}` : '',
+      state?.invalidCount ? `失效 ${state.invalidCount}` : '',
     ].filter(Boolean);
     if (changeParts.length > 0) {
       lines.push(changeParts.join(' / '));
@@ -238,6 +251,7 @@ const SessionDetailV2 = () => {
   const [planningWorkspaceState, setPlanningWorkspaceState] = useState<PlanningStateRes | null>(null);
   const [intentExpanded, setIntentExpanded] = useState(false);
   const [dataFreshnessState, setDataFreshnessState] = useState<PlanningDataFreshnessState | null>(null);
+  const [dataFreshnessNoticeState, setDataFreshnessNoticeState] = useState<PlanningDataFreshnessState | null>(null);
   const [dataFreshnessChecking, setDataFreshnessChecking] = useState(false);
   const [fetchFlag, setFetchFlag] = useState(1);
   const dataFreshnessNoticeKeyRef = useRef('');
@@ -499,18 +513,21 @@ const SessionDetailV2 = () => {
   }, [isInitialized, tenantId, chatSessionId]);
 
   useEffect(() => {
-    if (!chatSessionId || !isVolunteerPrepareType(prepareTypeCode, prepareTypeDesc)) {
+    const noticeState = dataFreshnessNoticeState;
+    if (!chatSessionId || !isVolunteerPrepareType(noticeState?.prepareType || prepareTypeCode, prepareTypeDesc)) {
       return;
     }
-    if (!dataFreshnessState || dataFreshnessState.statusCode !== 'changed') {
+    if (!noticeState || !shouldShowDataFreshnessNotice(noticeState)) {
       return;
     }
-    const noticeKey = buildDataFreshnessNoticeKey(chatSessionId, dataFreshnessState);
+    const noticeKey = buildDataFreshnessNoticeKey(chatSessionId, noticeState);
     if (!noticeKey || dataFreshnessNoticeKeyRef.current === noticeKey) {
+      setDataFreshnessNoticeState(null);
       return;
     }
     if (typeof window !== 'undefined' && window.localStorage.getItem(noticeKey) === '1') {
       dataFreshnessNoticeKeyRef.current = noticeKey;
+      setDataFreshnessNoticeState(null);
       return;
     }
     dataFreshnessNoticeKeyRef.current = noticeKey;
@@ -518,22 +535,23 @@ const SessionDetailV2 = () => {
       window.localStorage.setItem(noticeKey, '1');
     }
     const changeParts = [
-      dataFreshnessState.addedCount ? `新增 ${dataFreshnessState.addedCount} 项` : '',
-      dataFreshnessState.updatedCount ? `更新 ${dataFreshnessState.updatedCount} 项` : '',
-      dataFreshnessState.removedCount ? `下线 ${dataFreshnessState.removedCount} 项` : '',
-      dataFreshnessState.invalidCount ? `失效 ${dataFreshnessState.invalidCount} 项` : '',
+      noticeState.addedCount ? `新增 ${noticeState.addedCount} 项` : '',
+      noticeState.updatedCount ? `更新 ${noticeState.updatedCount} 项` : '',
+      noticeState.removedCount ? `下线 ${noticeState.removedCount} 项` : '',
+      noticeState.invalidCount ? `失效 ${noticeState.invalidCount} 项` : '',
     ].filter(Boolean);
+    const detailLines = splitDataFreshnessDetailLines(noticeState.detail, noticeState.summary);
     const contentLines = [
-      dataFreshnessState.summary || '检测到2026年招生计划数据有更新。',
-      dataFreshnessState.detail || '',
+      noticeState.summary || '检测到2026年招生计划数据有更新。',
+      ...detailLines,
       changeParts.length ? changeParts.join(' / ') : '',
-      dataFreshnessState.removedCount || dataFreshnessState.invalidCount
+      noticeState.removedCount || noticeState.invalidCount
         ? '部分志愿可能已失效或被上游清理，方案和审查结果需要重新确认。'
         : '',
-      dataFreshnessState.requiresCandidateRefresh
-        ? '系统已在工作区内刷新候选和推荐系数；进入候选区可查看最新候选。'
-        : '',
-      dataFreshnessState.requiresReview ? '建议重新审查当前方案。' : '',
+      noticeState.requiresCandidateRefresh
+        ? '系统会在工作区内刷新候选和专家推荐；进入候选区可查看最新候选。'
+        : '系统已刷新候选和专家推荐；当前方案未自动调整，请按需复核。',
+      noticeState.requiresReview ? '建议重新审查当前方案。' : '',
     ].filter(Boolean);
     Modal.info({
       title: '2026年招生计划数据已更新',
@@ -546,7 +564,8 @@ const SessionDetailV2 = () => {
       ),
       okText: '知道了',
     });
-  }, [chatSessionId, dataFreshnessState, prepareTypeCode, prepareTypeDesc]);
+    setDataFreshnessNoticeState(null);
+  }, [chatSessionId, dataFreshnessNoticeState, prepareTypeCode, prepareTypeDesc]);
 
   const handleWorkspaceIntent = (intent: Omit<PlanningWorkspaceIntent, 'nonce'>) => {
     const shouldRefreshWorkspace = Boolean(
@@ -655,22 +674,26 @@ const SessionDetailV2 = () => {
         onPlanningStateChange={handlePlanningStateChange}
         onDataFreshnessStateChange={(state, checking) => {
           setDataFreshnessState(state);
+          if (shouldShowDataFreshnessNotice(state)) {
+            setDataFreshnessNoticeState(state);
+          }
           setDataFreshnessChecking(checking);
         }}
       />
     </div>
   );
 
+  const effectiveFreshnessPrepareTypeCode = dataFreshnessState?.prepareType || prepareTypeCode;
   const dataFreshnessTip = buildDataFreshnessTip(
     dataFreshnessState,
     dataFreshnessChecking,
-    prepareTypeCode,
+    effectiveFreshnessPrepareTypeCode,
     prepareTypeDesc
   );
   const dataFreshnessTooltipLines = buildDataFreshnessTooltipLines(
     dataFreshnessState,
     dataFreshnessChecking,
-    prepareTypeCode,
+    effectiveFreshnessPrepareTypeCode,
     prepareTypeDesc
   );
 

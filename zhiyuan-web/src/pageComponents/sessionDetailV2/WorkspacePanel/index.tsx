@@ -54,6 +54,7 @@ import {
   PlanningWorkingPlanUnit,
   PlanningWorkspaceIntent,
 } from '@/interface/api/volunteer';
+import { resolveCandidateRefreshMode } from '@/utils/planningDataFreshness.mjs';
 import style from './style.module.scss';
 import { MAJOR_CATEGORY_TO_DISCIPLINES } from './majorCategoryMap';
 
@@ -70,6 +71,7 @@ type CandidateSortField =
   | 'salaryAvg';
 type CandidateSortOrder = 'asc' | 'desc';
 type CandidateTier = '' | '冲' | '稳' | '保';
+type OrderedActionType = 'up' | 'down' | 'move' | 'remove' | 'sort';
 type CandidateFilterOptionGroup = NonNullable<PlanningCandidateFilterOptionsRes['groups']>[number];
 type FilterTokenField =
   | 'provinceNames'
@@ -93,6 +95,12 @@ type FixProposalShortage = NonNullable<PlanningFixProposal['candidateShortages']
 type FixProposalReplacementPair = NonNullable<
   NonNullable<PlanningFixProposal['actions']>[number]['replacementPairs']
 >[number];
+
+const getOrderedItemActionKey = (volunteerId: string | undefined, action: OrderedActionType) =>
+  volunteerId ? `ordered-item:${volunteerId}:${action}` : '';
+
+const getOrderedUnitActionKey = (groupKey: string | undefined, action: OrderedActionType) =>
+  groupKey ? `ordered-unit:${groupKey}:${action}` : '';
 
 interface CandidateGroup {
   key: string;
@@ -573,7 +581,9 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const [fixProposalLoading, setFixProposalLoading] = useState(false);
   const [fixProposalApplyingId, setFixProposalApplyingId] = useState<string | null>(null);
   const [lastRepairReport, setLastRepairReport] = useState<PlanningRepairReport | null>(null);
-  const [orderedActionVolunteerId, setOrderedActionVolunteerId] = useState<string | null>(null);
+  const [workingPlanActionVolunteerId, setWorkingPlanActionVolunteerId] = useState<string | null>(null);
+  const [workingPlanActionGroupKey, setWorkingPlanActionGroupKey] = useState<string | null>(null);
+  const [orderedActionKey, setOrderedActionKey] = useState<string | null>(null);
   const [exportLoading, setExportLoading] = useState(false);
   const [activeView, setActiveView] = useState<WorkspaceView>(initialActiveView);
   const [draftExpanded, setDraftExpanded] = useState(false);
@@ -601,6 +611,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const [orderedUnitMoveModal, setOrderedUnitMoveModal] = useState<OrderedUnitMoveModalState | null>(null);
   const [orderedUnitMoveTargetPosition, setOrderedUnitMoveTargetPosition] = useState<number>(1);
   const candidateQueryInFlightPagesRef = useRef<Set<string>>(new Set());
+  const latestCandidateQuerySignatureRef = useRef('');
   const [filterPanelOpen, setFilterPanelOpen] = useState(false);
   const [filterSearchKeyword, setFilterSearchKeyword] = useState('');
   const [expandedFilterGroupKeys, setExpandedFilterGroupKeys] = useState<string[]>([]);
@@ -628,6 +639,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const dataFreshnessCheckInFlightRef = useRef(false);
   const dataFreshnessAutoCheckKeyRef = useRef('');
   const candidateSourceRefreshKeyRef = useRef('');
+  const previousWorkspaceViewKeyRef = useRef(`${routerParams.chatSessionId}:${initialActiveView}`);
   const initialFiltersAppliedRef = useRef(false);
   const candidateViewStateHydratedRef = useRef(false);
   const lastSavedCandidateViewStateRef = useRef('');
@@ -1500,15 +1512,20 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const mergeWorkspaceState = (data: PlanningStateRes) => {
     const normalizedData = normalizePlanningState(data);
     mergeCandidateItemsToCache(normalizedData.candidatePoolState?.items);
-    setPlanningState(prev => ({
-      ...(prev || {}),
-      ...normalizedData,
-      candidatePoolState: {
-        ...(prev?.candidatePoolState || {}),
-        ...(normalizedData.candidatePoolState || {}),
-        items: [],
-      },
-    }));
+    setPlanningState(prev => {
+      const nextState: PlanningStateRes = {
+        ...(prev || {}),
+        ...normalizedData,
+      };
+      if (normalizedData.candidatePoolState) {
+        nextState.candidatePoolState = {
+          ...(prev?.candidatePoolState || {}),
+          ...normalizedData.candidatePoolState,
+          items: [],
+        };
+      }
+      return nextState;
+    });
   };
 
   const runDataFreshnessCheck = async () => {
@@ -1556,12 +1573,12 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const getCandidateSourceRefreshKey = () => {
     return [
       routerParams.chatSessionId,
-      dataFreshnessState?.latestSourceDataHash || '',
-      dataFreshnessState?.sourceDataHash || '',
-      dataFreshnessState?.dataHash || '',
-      dataFreshnessState?.lastCheckedAt || '',
-      dataFreshnessState?.statusCode || '',
-      planningState?.version || '',
+      dataFreshnessState?.latestSourceDataHash || dataFreshnessState?.latestDataHash || '',
+      dataFreshnessState?.sourceDataHash || dataFreshnessState?.dataHash || '',
+      dataFreshnessState?.changedCount || 0,
+      dataFreshnessState?.removedCount || 0,
+      dataFreshnessState?.updatedCount || 0,
+      dataFreshnessState?.addedCount || 0,
     ].join(':');
   };
 
@@ -1690,7 +1707,21 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   };
 
   const queryCandidatePool = async (page: number = 1, append: boolean = false) => {
-    const requestKey = `${append ? 'append' : 'replace'}:${page}`;
+    const queryPayload = buildCandidateQuery(page);
+    const querySignature = JSON.stringify({
+      filters: queryPayload.filters,
+      sort: queryPayload.sort,
+      pageSize: queryPayload.pageSize,
+    });
+    const requestKey = `${append ? 'append' : 'replace'}:${page}:${querySignature}`;
+    if (!append) {
+      latestCandidateQuerySignatureRef.current = querySignature;
+    } else if (
+      latestCandidateQuerySignatureRef.current &&
+      latestCandidateQuerySignatureRef.current !== querySignature
+    ) {
+      return;
+    }
     if (candidateQueryInFlightPagesRef.current.has(requestKey)) {
       return;
     }
@@ -1700,9 +1731,12 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       const { data, code } = await queryPlanningCandidatePoolApi(
         routerParams.tenantId,
         routerParams.chatSessionId,
-        buildCandidateQuery(page)
+        queryPayload
       );
       if (code === 0 && data) {
+        if (latestCandidateQuerySignatureRef.current !== querySignature) {
+          return;
+        }
         setCandidatePoolResult(prev => {
           const nextItems = append ? [...(prev.items || []), ...(data.items || [])] : data.items || [];
           const mergedItems = nextItems.filter((item, index, array) => {
@@ -1765,6 +1799,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       return;
     }
     setActionLoading('workingPlan');
+    setWorkingPlanActionVolunteerId(volunteerId);
+    setWorkingPlanActionGroupKey(null);
     try {
       const { data, code } = await selectPlanningWorkingPlanItemsApi(
         routerParams.tenantId,
@@ -1779,16 +1815,15 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         } else {
           await fetchWorkspaceState();
         }
-        if (volunteerId) {
-          setFocusVolunteerIds([volunteerId]);
-        }
       } else {
         message.error('加入方案失败');
       }
     } catch (error) {
       message.error('加入方案异常，请稍后重试');
+    } finally {
+      setWorkingPlanActionVolunteerId(null);
+      setActionLoading(null);
     }
-    setActionLoading(null);
   };
 
   const handleRemoveWorkingPlanItem = async (volunteerId?: string) => {
@@ -1796,6 +1831,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       return;
     }
     setActionLoading('workingPlan');
+    setWorkingPlanActionVolunteerId(volunteerId);
+    setWorkingPlanActionGroupKey(null);
     try {
       const { data, code } = await removePlanningWorkingPlanItemsApi(
         routerParams.tenantId,
@@ -1814,8 +1851,10 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       }
     } catch (error) {
       message.error('移出方案异常，请稍后重试');
+    } finally {
+      setWorkingPlanActionVolunteerId(null);
+      setActionLoading(null);
     }
-    setActionLoading(null);
   };
 
   const handleRemoveWorkingPlanGroup = async (group: WorkingPlanGroup) => {
@@ -1826,6 +1865,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       return;
     }
     setActionLoading('workingPlan');
+    setWorkingPlanActionVolunteerId(null);
+    setWorkingPlanActionGroupKey(group.key);
     try {
       const { data, code } = await removePlanningWorkingPlanItemsApi(
         routerParams.tenantId,
@@ -1844,15 +1885,18 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       }
     } catch (error) {
       message.error('移出专业组异常，请稍后重试');
+    } finally {
+      setWorkingPlanActionGroupKey(null);
+      setActionLoading(null);
     }
-    setActionLoading(null);
   };
 
   const applyMoveOrderedItem = async (
     item: PlanningOrderedItem,
     targetPosition: number,
     loadingText: string,
-    successText?: string
+    successText?: string,
+    actionKey?: string
   ) => {
     if (!item?.volunteerId || actionLoading) {
       return;
@@ -1863,7 +1907,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       return;
     }
     setActionLoading('ordered');
-    setOrderedActionVolunteerId(item.volunteerId);
+    setOrderedActionKey(actionKey || getOrderedItemActionKey(item.volunteerId, 'move'));
     const hideLoading = message.loading(loadingText, 0);
     try {
       const { data, code } = await movePlanningOrderedItemApi(
@@ -1877,21 +1921,18 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
           message.success(successText);
         }
         if (data) {
-          setPlanningState(prev => ({
-            ...(prev || {}),
-            ...data,
-            orderedPlanState: data.orderedPlanState || prev?.orderedPlanState,
-          }));
+          mergeWorkspaceState(data);
         }
       } else {
         message.error('更新排序位置失败');
       }
     } catch (error) {
       message.error('更新排序位置异常，请稍后重试');
+    } finally {
+      hideLoading();
+      setActionLoading(null);
+      setOrderedActionKey(null);
     }
-    hideLoading();
-    setActionLoading(null);
-    setOrderedActionVolunteerId(null);
   };
 
   const handleMoveOrderedItem = async (
@@ -1910,7 +1951,9 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     await applyMoveOrderedItem(
       item,
       targetPosition,
-      direction === 'up' ? '正在上移志愿...' : '正在下移志愿...'
+      direction === 'up' ? '正在上移志愿...' : '正在下移志愿...',
+      undefined,
+      getOrderedItemActionKey(item.volunteerId, direction)
     );
   };
 
@@ -1941,7 +1984,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       orderedMoveModal.item,
       orderedMoveTargetPosition,
       '正在移动志愿...',
-      '方案位置已更新'
+      '方案位置已更新',
+      getOrderedItemActionKey(orderedMoveModal.item.volunteerId, 'move')
     );
     setOrderedMoveModal(null);
   };
@@ -1950,7 +1994,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     group: OrderedGroup,
     targetPosition: number,
     loadingText: string,
-    successText?: string
+    successText?: string,
+    actionKey?: string
   ) => {
     if (!group?.key || actionLoading) {
       return;
@@ -1961,7 +2006,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       return;
     }
     setActionLoading('ordered');
-    setOrderedActionVolunteerId(group.key);
+    setOrderedActionKey(actionKey || getOrderedUnitActionKey(group.key, 'move'));
     const hideLoading = message.loading(loadingText, 0);
     try {
       const { data, code } = await movePlanningOrderedUnitApi(
@@ -1975,21 +2020,18 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
           message.success(successText);
         }
         if (data) {
-          setPlanningState(prev => ({
-            ...(prev || {}),
-            ...data,
-            orderedPlanState: data.orderedPlanState || prev?.orderedPlanState,
-          }));
+          mergeWorkspaceState(data);
         }
       } else {
         message.error('更新专业组位置失败');
       }
     } catch (error) {
       message.error('更新专业组位置异常，请稍后重试');
+    } finally {
+      hideLoading();
+      setActionLoading(null);
+      setOrderedActionKey(null);
     }
-    hideLoading();
-    setActionLoading(null);
-    setOrderedActionVolunteerId(null);
   };
 
   const handleMoveOrderedUnit = async (
@@ -2005,7 +2047,9 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     await applyMoveOrderedUnit(
       group,
       targetPosition,
-      direction === 'up' ? '正在上移专业组...' : '正在下移专业组...'
+      direction === 'up' ? '正在上移专业组...' : '正在下移专业组...',
+      undefined,
+      getOrderedUnitActionKey(group.key, direction)
     );
   };
 
@@ -2036,7 +2080,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       orderedUnitMoveModal.group,
       orderedUnitMoveTargetPosition,
       '正在移动专业组...',
-      '专业组位置已更新'
+      '专业组位置已更新',
+      getOrderedUnitActionKey(orderedUnitMoveModal.group.key, 'move')
     );
     setOrderedUnitMoveModal(null);
   };
@@ -2046,7 +2091,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       return;
     }
     setActionLoading('ordered');
-    setOrderedActionVolunteerId(group.key);
+    setOrderedActionKey(getOrderedUnitActionKey(group.key, 'remove'));
     try {
       const { data, code } = await removePlanningOrderedUnitApi(
         routerParams.tenantId,
@@ -2056,11 +2101,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       if (code === 0) {
         message.success('已移出该专业组');
         if (data) {
-          setPlanningState(prev => ({
-            ...(prev || {}),
-            ...data,
-            orderedPlanState: data.orderedPlanState || prev?.orderedPlanState,
-          }));
+          mergeWorkspaceState(data);
         } else {
           await fetchWorkspaceState();
         }
@@ -2069,9 +2110,10 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       }
     } catch (error) {
       message.error('移出专业组异常，请稍后重试');
+    } finally {
+      setActionLoading(null);
+      setOrderedActionKey(null);
     }
-    setActionLoading(null);
-    setOrderedActionVolunteerId(null);
   };
 
   const handleExportOrderedPlan = async () => {
@@ -2230,6 +2272,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       return;
     }
     setActionLoading('ordered');
+    setOrderedActionKey('ordered:sort');
     try {
       const { code, data } = await sortPlanningOrderedPlanApi(
         routerParams.tenantId,
@@ -2240,11 +2283,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         message.success('方案顺序已排序');
         setSortModalOpen(false);
         if (data) {
-          setPlanningState(prev => ({
-            ...(prev || {}),
-            ...data,
-            orderedPlanState: data.orderedPlanState || prev?.orderedPlanState,
-          }));
+          mergeWorkspaceState(data);
         } else {
           await fetchWorkspaceState();
         }
@@ -2253,8 +2292,10 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       }
     } catch (error) {
       message.error('方案排序异常，请稍后重试');
+    } finally {
+      setActionLoading(null);
+      setOrderedActionKey(null);
     }
-    setActionLoading(null);
   };
 
   useEffect(() => {
@@ -2279,7 +2320,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     if (!shouldAutoCheckDataFreshness(dataFreshnessState)) {
       return;
     }
-    const autoCheckKey = `${routerParams.chatSessionId}:${dataFreshnessState?.lastCheckedAt || 'never'}:${dataFreshnessState?.nextCheckAt || 'none'}`;
+    const autoCheckKey = `${routerParams.chatSessionId}:${dataFreshnessState?.nextCheckAt || dataFreshnessState?.latestSourceDataHash || dataFreshnessState?.dataHash || 'none'}`;
     if (dataFreshnessAutoCheckKeyRef.current === autoCheckKey) {
       return;
     }
@@ -2303,7 +2344,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     if (!isVolunteerPrepareType(dataFreshnessState?.prepareType || prepareTypeCode, prepareTypeDesc)) {
       return;
     }
-    if (dataFreshnessState?.statusCode !== 'changed' || !dataFreshnessState?.requiresCandidateRefresh) {
+    const refreshMode = resolveCandidateRefreshMode(dataFreshnessState);
+    if (refreshMode === 'none') {
       return;
     }
     const refreshKey = getCandidateSourceRefreshKey();
@@ -2311,6 +2353,14 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       return;
     }
     candidateSourceRefreshKeyRef.current = refreshKey;
+    if (refreshMode === 'local_query') {
+      candidateQueryInFlightPagesRef.current.clear();
+      latestCandidateQuerySignatureRef.current = '';
+      candidateItemCacheRef.current = {};
+      setCandidateCacheVersion(version => version + 1);
+      queryCandidatePool(1);
+      return;
+    }
     refreshCandidatePool(true, true);
   }, [
     routerParams.tenantId,
@@ -2322,6 +2372,11 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     dataFreshnessState?.dataHash,
     dataFreshnessState?.lastCheckedAt,
     dataFreshnessState?.statusCode,
+    dataFreshnessState?.changedCount,
+    dataFreshnessState?.addedCount,
+    dataFreshnessState?.removedCount,
+    dataFreshnessState?.updatedCount,
+    dataFreshnessState?.invalidCount,
     planningState?.version,
     prepareTypeCode,
     prepareTypeDesc,
@@ -2335,6 +2390,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     orderedCollapseInitializedRef.current = false;
     previousOrderedCollapseKeysRef.current = [];
     candidateQueryInFlightPagesRef.current.clear();
+    latestCandidateQuerySignatureRef.current = '';
     candidateItemCacheRef.current = {};
     dataFreshnessAutoCheckKeyRef.current = '';
     candidateSourceRefreshKeyRef.current = '';
@@ -2403,8 +2459,6 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         refreshCandidatePool(false);
       }
     }
-    workspaceBodyRef.current?.scrollTo({ top: 0 });
-    setShowBackTop(false);
   }, [
     activeView,
     dataFreshnessState?.requiresCandidateRefresh,
@@ -2419,6 +2473,16 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     prepareTypeCode,
     prepareTypeDesc,
   ]);
+
+  useEffect(() => {
+    const workspaceViewKey = `${routerParams.chatSessionId}:${activeView}`;
+    if (previousWorkspaceViewKeyRef.current === workspaceViewKey) {
+      return;
+    }
+    previousWorkspaceViewKeyRef.current = workspaceViewKey;
+    workspaceBodyRef.current?.scrollTo({ top: 0 });
+    setShowBackTop(false);
+  }, [activeView, routerParams.chatSessionId]);
 
   useEffect(() => {
     if (!routerParams.tenantId || !routerParams.chatSessionId) {
@@ -5292,8 +5356,20 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                       <Button
                                         type={isSelected ? 'default' : 'primary'}
                                         icon={<PlusOutlined />}
-                                        disabled={isSelected || !item.volunteerId}
-                                        loading={actionLoading === 'workingPlan' && !isSelected}
+                                        disabled={
+                                          isSelected ||
+                                          !item.volunteerId ||
+                                          (Boolean(actionLoading) &&
+                                            !(
+                                              actionLoading === 'workingPlan' &&
+                                              workingPlanActionVolunteerId === item.volunteerId
+                                            ))
+                                        }
+                                        loading={
+                                          actionLoading === 'workingPlan' &&
+                                          workingPlanActionVolunteerId === item.volunteerId &&
+                                          !isSelected
+                                        }
                                         onClick={() => handleAddCandidateToWorkingPlan(item.volunteerId)}
                                       >
                                         {isSelected ? '已加入方案' : '加入方案'}
@@ -5358,9 +5434,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                         className={style.reviewActionButton}
                         size="small"
                         icon={<SortAscendingOutlined />}
-                        loading={actionLoading === 'ordered'}
                         onClick={() => setSortModalOpen(true)}
-                        disabled={!orderedItems.length}
+                        disabled={!orderedItems.length || Boolean(actionLoading)}
                       >
                         排序
                       </Button>
@@ -5438,8 +5513,15 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                   <Tooltip title="整组上移">
                                     <Button
                                       icon={<VerticalAlignTopOutlined />}
-                                      loading={orderedActionVolunteerId === group.key && actionLoading === 'ordered'}
-                                      disabled={groupIndex === 0 || (actionLoading === 'ordered' && orderedActionVolunteerId !== group.key)}
+                                      loading={
+                                        actionLoading === 'ordered' &&
+                                        orderedActionKey === getOrderedUnitActionKey(group.key, 'up')
+                                      }
+                                      disabled={
+                                        groupIndex === 0 ||
+                                        (Boolean(actionLoading) &&
+                                          orderedActionKey !== getOrderedUnitActionKey(group.key, 'up'))
+                                      }
                                       onClick={event => {
                                         event.stopPropagation();
                                         handleMoveOrderedUnit(group, groupIndex, 'up');
@@ -5449,8 +5531,15 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                   <Tooltip title="整组下移">
                                     <Button
                                       icon={<VerticalAlignBottomOutlined />}
-                                      loading={orderedActionVolunteerId === group.key && actionLoading === 'ordered'}
-                                      disabled={groupIndex === groupedOrderedList.length - 1 || (actionLoading === 'ordered' && orderedActionVolunteerId !== group.key)}
+                                      loading={
+                                        actionLoading === 'ordered' &&
+                                        orderedActionKey === getOrderedUnitActionKey(group.key, 'down')
+                                      }
+                                      disabled={
+                                        groupIndex === groupedOrderedList.length - 1 ||
+                                        (Boolean(actionLoading) &&
+                                          orderedActionKey !== getOrderedUnitActionKey(group.key, 'down'))
+                                      }
                                       onClick={event => {
                                         event.stopPropagation();
                                         handleMoveOrderedUnit(group, groupIndex, 'down');
@@ -5460,8 +5549,15 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                   <Tooltip title="整组移动到指定位置">
                                     <Button
                                       icon={<SwapOutlined />}
-                                      loading={orderedActionVolunteerId === group.key && actionLoading === 'ordered'}
-                                      disabled={groupedOrderedList.length <= 1 || (actionLoading === 'ordered' && orderedActionVolunteerId !== group.key)}
+                                      loading={
+                                        actionLoading === 'ordered' &&
+                                        orderedActionKey === getOrderedUnitActionKey(group.key, 'move')
+                                      }
+                                      disabled={
+                                        groupedOrderedList.length <= 1 ||
+                                        (Boolean(actionLoading) &&
+                                          orderedActionKey !== getOrderedUnitActionKey(group.key, 'move'))
+                                      }
                                       onClick={event => {
                                         event.stopPropagation();
                                         openOrderedUnitMoveModal(group, groupIndex);
@@ -5472,8 +5568,14 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                     <Button
                                       danger
                                       icon={<DeleteOutlined />}
-                                      loading={orderedActionVolunteerId === group.key && actionLoading === 'ordered'}
-                                      disabled={actionLoading === 'ordered' && orderedActionVolunteerId !== group.key}
+                                      loading={
+                                        actionLoading === 'ordered' &&
+                                        orderedActionKey === getOrderedUnitActionKey(group.key, 'remove')
+                                      }
+                                      disabled={
+                                        Boolean(actionLoading) &&
+                                        orderedActionKey !== getOrderedUnitActionKey(group.key, 'remove')
+                                      }
                                       onClick={event => {
                                         event.stopPropagation();
                                         handleRemoveOrderedUnit(group);
@@ -5496,24 +5598,48 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                       <Tooltip title="上移">
                                         <Button
                                           icon={<VerticalAlignTopOutlined />}
-                                          loading={orderedActionVolunteerId === item.volunteerId && actionLoading === 'ordered'}
-                                          disabled={absoluteIndex <= 0 || (actionLoading === 'ordered' && orderedActionVolunteerId !== item.volunteerId)}
+                                          loading={
+                                            actionLoading === 'ordered' &&
+                                            orderedActionKey === getOrderedItemActionKey(item.volunteerId, 'up')
+                                          }
+                                          disabled={
+                                            !item.volunteerId ||
+                                            absoluteIndex <= 0 ||
+                                            (Boolean(actionLoading) &&
+                                              orderedActionKey !== getOrderedItemActionKey(item.volunteerId, 'up'))
+                                          }
                                           onClick={() => handleMoveOrderedItem(item, absoluteIndex, 'up')}
                                         />
                                       </Tooltip>
                                       <Tooltip title="下移">
                                         <Button
                                           icon={<VerticalAlignBottomOutlined />}
-                                          loading={orderedActionVolunteerId === item.volunteerId && actionLoading === 'ordered'}
-                                          disabled={absoluteIndex === orderedItems.length - 1 || (actionLoading === 'ordered' && orderedActionVolunteerId !== item.volunteerId)}
+                                          loading={
+                                            actionLoading === 'ordered' &&
+                                            orderedActionKey === getOrderedItemActionKey(item.volunteerId, 'down')
+                                          }
+                                          disabled={
+                                            !item.volunteerId ||
+                                            absoluteIndex === orderedItems.length - 1 ||
+                                            (Boolean(actionLoading) &&
+                                              orderedActionKey !== getOrderedItemActionKey(item.volunteerId, 'down'))
+                                          }
                                           onClick={() => handleMoveOrderedItem(item, absoluteIndex, 'down')}
                                         />
                                       </Tooltip>
                                       <Tooltip title="移动到指定位置">
                                         <Button
                                           icon={<SwapOutlined />}
-                                          loading={orderedActionVolunteerId === item.volunteerId && actionLoading === 'ordered'}
-                                          disabled={orderedItems.length <= 1 || (actionLoading === 'ordered' && orderedActionVolunteerId !== item.volunteerId)}
+                                          loading={
+                                            actionLoading === 'ordered' &&
+                                            orderedActionKey === getOrderedItemActionKey(item.volunteerId, 'move')
+                                          }
+                                          disabled={
+                                            !item.volunteerId ||
+                                            orderedItems.length <= 1 ||
+                                            (Boolean(actionLoading) &&
+                                              orderedActionKey !== getOrderedItemActionKey(item.volunteerId, 'move'))
+                                          }
                                           onClick={() => openOrderedMoveModal(item, absoluteIndex)}
                                         />
                                       </Tooltip>
@@ -5521,7 +5647,18 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                         <Button
                                           danger
                                           icon={<DeleteOutlined />}
-                                          loading={actionLoading === 'workingPlan' || actionLoading === 'ordered'}
+                                          loading={
+                                            actionLoading === 'workingPlan' &&
+                                            workingPlanActionVolunteerId === item.volunteerId
+                                          }
+                                          disabled={
+                                            !item.volunteerId ||
+                                            (Boolean(actionLoading) &&
+                                              !(
+                                                actionLoading === 'workingPlan' &&
+                                                workingPlanActionVolunteerId === item.volunteerId
+                                              ))
+                                          }
                                           onClick={() => handleRemoveWorkingPlanItem(item.volunteerId)}
                                         />
                                       </Tooltip>
@@ -5572,24 +5709,48 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                               <Tooltip title="上移">
                                 <Button
                                   icon={<VerticalAlignTopOutlined />}
-                                  loading={orderedActionVolunteerId === item.volunteerId && actionLoading === 'ordered'}
-                                  disabled={index === 0 || (actionLoading === 'ordered' && orderedActionVolunteerId !== item.volunteerId)}
+                                  loading={
+                                    actionLoading === 'ordered' &&
+                                    orderedActionKey === getOrderedItemActionKey(item.volunteerId, 'up')
+                                  }
+                                  disabled={
+                                    !item.volunteerId ||
+                                    index === 0 ||
+                                    (Boolean(actionLoading) &&
+                                      orderedActionKey !== getOrderedItemActionKey(item.volunteerId, 'up'))
+                                  }
                                   onClick={() => handleMoveOrderedItem(item, index, 'up')}
                                 />
                               </Tooltip>
                               <Tooltip title="下移">
                                 <Button
                                   icon={<VerticalAlignBottomOutlined />}
-                                  loading={orderedActionVolunteerId === item.volunteerId && actionLoading === 'ordered'}
-                                  disabled={index === orderedItems.length - 1 || (actionLoading === 'ordered' && orderedActionVolunteerId !== item.volunteerId)}
+                                  loading={
+                                    actionLoading === 'ordered' &&
+                                    orderedActionKey === getOrderedItemActionKey(item.volunteerId, 'down')
+                                  }
+                                  disabled={
+                                    !item.volunteerId ||
+                                    index === orderedItems.length - 1 ||
+                                    (Boolean(actionLoading) &&
+                                      orderedActionKey !== getOrderedItemActionKey(item.volunteerId, 'down'))
+                                  }
                                   onClick={() => handleMoveOrderedItem(item, index, 'down')}
                                 />
                               </Tooltip>
                               <Tooltip title="移动到指定位置">
                                 <Button
                                   icon={<SwapOutlined />}
-                                  loading={orderedActionVolunteerId === item.volunteerId && actionLoading === 'ordered'}
-                                  disabled={orderedItems.length <= 1 || (actionLoading === 'ordered' && orderedActionVolunteerId !== item.volunteerId)}
+                                  loading={
+                                    actionLoading === 'ordered' &&
+                                    orderedActionKey === getOrderedItemActionKey(item.volunteerId, 'move')
+                                  }
+                                  disabled={
+                                    !item.volunteerId ||
+                                    orderedItems.length <= 1 ||
+                                    (Boolean(actionLoading) &&
+                                      orderedActionKey !== getOrderedItemActionKey(item.volunteerId, 'move'))
+                                  }
                                   onClick={() => openOrderedMoveModal(item, index)}
                                 />
                               </Tooltip>
@@ -5597,7 +5758,18 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                 <Button
                                   danger
                                   icon={<DeleteOutlined />}
-                                  loading={actionLoading === 'workingPlan' || actionLoading === 'ordered'}
+                                  loading={
+                                    actionLoading === 'workingPlan' &&
+                                    workingPlanActionVolunteerId === item.volunteerId
+                                  }
+                                  disabled={
+                                    !item.volunteerId ||
+                                    (Boolean(actionLoading) &&
+                                      !(
+                                        actionLoading === 'workingPlan' &&
+                                        workingPlanActionVolunteerId === item.volunteerId
+                                      ))
+                                  }
                                   onClick={() => handleRemoveWorkingPlanItem(item.volunteerId)}
                                 />
                               </Tooltip>
@@ -5735,7 +5907,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         open={sortModalOpen}
         okText="确认排序"
         cancelText="取消"
-        confirmLoading={actionLoading === 'ordered'}
+        confirmLoading={actionLoading === 'ordered' && orderedActionKey === 'ordered:sort'}
         onOk={handleSortOrderedPlan}
         onCancel={() => setSortModalOpen(false)}
       >
@@ -5766,7 +5938,10 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         open={Boolean(orderedMoveModal)}
         okText="确认移动"
         cancelText="取消"
-        confirmLoading={actionLoading === 'ordered'}
+        confirmLoading={
+          actionLoading === 'ordered' &&
+          orderedActionKey === getOrderedItemActionKey(orderedMoveModal?.item?.volunteerId, 'move')
+        }
         onOk={() => handleMoveOrderedItemToTarget()}
         onCancel={closeOrderedMoveModal}
       >
@@ -5809,7 +5984,10 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         open={Boolean(orderedUnitMoveModal)}
         okText="确认移动"
         cancelText="取消"
-        confirmLoading={actionLoading === 'ordered'}
+        confirmLoading={
+          actionLoading === 'ordered' &&
+          orderedActionKey === getOrderedUnitActionKey(orderedUnitMoveModal?.group?.key, 'move')
+        }
         onOk={() => handleMoveOrderedUnitToTarget()}
         onCancel={closeOrderedUnitMoveModal}
       >
@@ -5895,6 +6073,17 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                               size="small"
                               danger
                               icon={<DeleteOutlined />}
+                              loading={
+                                actionLoading === 'workingPlan' &&
+                                workingPlanActionGroupKey === group.key
+                              }
+                              disabled={
+                                Boolean(actionLoading) &&
+                                !(
+                                  actionLoading === 'workingPlan' &&
+                                  workingPlanActionGroupKey === group.key
+                                )
+                              }
                               onClick={() => handleRemoveWorkingPlanGroup(group)}
                             />
                           </Tooltip>
@@ -5923,6 +6112,18 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                   size="small"
                                   danger
                                   icon={<DeleteOutlined />}
+                                  loading={
+                                    actionLoading === 'workingPlan' &&
+                                    workingPlanActionVolunteerId === draftItem.volunteerId
+                                  }
+                                  disabled={
+                                    !draftItem.volunteerId ||
+                                    (Boolean(actionLoading) &&
+                                      !(
+                                        actionLoading === 'workingPlan' &&
+                                        workingPlanActionVolunteerId === draftItem.volunteerId
+                                      ))
+                                  }
                                   onClick={() => handleRemoveWorkingPlanItem(draftItem.volunteerId)}
                                 />
                               </Tooltip>
@@ -5960,6 +6161,18 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                               size="small"
                               danger
                               icon={<DeleteOutlined />}
+                              loading={
+                                actionLoading === 'workingPlan' &&
+                                workingPlanActionVolunteerId === item.volunteerId
+                              }
+                              disabled={
+                                !item.volunteerId ||
+                                (Boolean(actionLoading) &&
+                                  !(
+                                    actionLoading === 'workingPlan' &&
+                                    workingPlanActionVolunteerId === item.volunteerId
+                                  ))
+                              }
                               onClick={() => handleRemoveWorkingPlanItem(item.volunteerId)}
                             />
                           </Tooltip>

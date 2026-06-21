@@ -312,7 +312,7 @@ public class PlanningStateServiceTest {
     }
 
     @Test
-    void shouldFetchLatestVolunteerDataAndMarkChangedWithoutPersistingPlan() {
+    void shouldFetchLatestVolunteerDataAndSyncCandidateSnapshot() {
         bindPlanningStateStore();
         PlanningStateDTO initial = new PlanningStateDTO();
         CandidateItemDTO item = new CandidateItemDTO();
@@ -335,6 +335,7 @@ public class PlanningStateServiceTest {
         DataFreshnessCheckReq req = new DataFreshnessCheckReq();
         req.setFetchLatest(true);
         DataFreshnessCheckRes res = planningStateService.checkDataFreshness(1L, 1L, req);
+        PlanningStateDTO stored = planningStateService.getPlanningState(1L);
 
         assertEquals("changed", res.getDataFreshnessState().getStatusCode());
         assertEquals("minor", res.getDataFreshnessState().getChangeLevel());
@@ -343,8 +344,172 @@ public class PlanningStateServiceTest {
         assertEquals("source-v2", res.getDataFreshnessState().getLatestDataVersion());
         assertTrue(Boolean.TRUE.equals(res.getDataFreshnessState().getRequiresCandidateRefresh()));
         assertFalse(Boolean.TRUE.equals(res.getDataFreshnessState().getRequiresReview()));
-        assertTrue(staleCandidatePool(res.getStaleFlags()));
-        assertEquals("volunteer_data_minor_changed", res.getStaleFlags().getReasonCode());
+        assertFalse(staleCandidatePool(res.getStaleFlags()));
+        assertFalse(staleRecommendationOverlay(res.getStaleFlags()));
+        assertEquals(Integer.valueOf(12), stored.getCandidatePoolState().getItems().get(0).getPlanNum());
+        assertEquals(res.getDataFreshnessState().getLatestDataHash(), stored.getDataFreshnessState().getDataHash());
+    }
+
+    @Test
+    void shouldSyncLatestVolunteerDataIntoMajorGroupPlanAndCandidates() {
+        bindPlanningStateStore();
+        PlanningStateDTO initial = new PlanningStateDTO();
+        initial.getCandidatePoolState().setVolunteerModel(VolunteerModel.majorGroup.name());
+        CandidateItemDTO removedBio = buildCandidateItem("north_bio", "north", "north-school", "中北大学（物化）", "稳", "生物工程", 55D, 80D, 55D, false);
+        removedBio.setMajorId("bio");
+        CandidateItemDTO removedShip = buildCandidateItem("north_ship", "north", "north-school", "中北大学（物化）", "稳", "船舶与海洋工程", 56D, 79D, 55D, false);
+        removedShip.setMajorId("ship");
+        CandidateItemDTO renamedLaw = buildCandidateItem("police_law", "police", "police-school", "海南警察学院（不限）", "保", "法学", 75D, 70D, 75D, false);
+        renamedLaw.setMajorId("law");
+        initial.getCandidatePoolState().getItems().add(removedBio);
+        initial.getCandidatePoolState().getItems().add(removedShip);
+        initial.getCandidatePoolState().getItems().add(renamedLaw);
+        initial.getWorkingPlanState().getItems().add(buildDraftItem("north_bio", "中北大学（物化）", "生物工程", "稳"));
+        initial.getWorkingPlanState().getItems().add(buildDraftItem("north_ship", "中北大学（物化）", "船舶与海洋工程", "稳"));
+        initial.getWorkingPlanState().getItems().add(buildDraftItem("police_law", "海南警察学院（不限）", "法学", "保"));
+        ReflectionTestUtils.invokeMethod(planningStateService, "syncWorkingPlanUnitsWithItems", initial.getWorkingPlanState(), initial.getCandidatePoolState().getItems(), initial.getCandidatePoolState());
+        initial.getOrderedPlanState().getItems().add(buildOrderedItem("north_bio", "中北大学（物化）", "生物工程", "稳", 1));
+        initial.getOrderedPlanState().getItems().add(buildOrderedItem("north_ship", "中北大学（物化）", "船舶与海洋工程", "稳", 2));
+        initial.getOrderedPlanState().getItems().add(buildOrderedItem("police_law", "海南警察学院（不限）", "法学", "保", 3));
+        initial.getOrderedPlanState().setUnits(ReflectionTestUtils.invokeMethod(planningStateService,
+                "buildOrderedUnitsFromOrderedItems", initial.getOrderedPlanState().getItems(), initial.getWorkingPlanState(), initial.getCandidatePoolState().getItems()));
+        saveStateToStore(1L, initial);
+
+        VolunteerSourceDataSnapshot snapshot = new VolunteerSourceDataSnapshot();
+        snapshot.setSourceDataHash("source-major-group-v2");
+        snapshot.setVolunteerData(new com.ytell.zhiyuan.model.dto.inner.VolunteerDataDTO());
+        when(volunteerSourceDataSyncService.fetchLatestSourceData(eq(1L), eq(1L), eq(false))).thenReturn(snapshot);
+        when(volunteerBizService.recommendVolunteerListWithSourceData(eq(1L), eq(1L), eq(false), any()))
+                .thenReturn(buildMajorGroupFreshnessResponse());
+
+        DataFreshnessCheckReq req = new DataFreshnessCheckReq();
+        req.setFetchLatest(true);
+        DataFreshnessCheckRes res = planningStateService.checkDataFreshness(1L, 1L, req);
+        PlanningStateDTO stored = planningStateService.getPlanningState(1L);
+
+        assertEquals("changed", res.getDataFreshnessState().getStatusCode());
+        assertEquals(Integer.valueOf(4), res.getDataFreshnessState().getChangedCount());
+        assertEquals(Integer.valueOf(1), res.getDataFreshnessState().getAddedCount());
+        assertEquals(Integer.valueOf(1), res.getDataFreshnessState().getUpdatedCount());
+        assertEquals(Integer.valueOf(2), res.getDataFreshnessState().getRemovedCount());
+        assertTrue(Boolean.TRUE.equals(res.getDataFreshnessState().getRequiresReview()));
+        assertTrue(staleReview(res.getStaleFlags()));
+        assertFalse(staleCandidatePool(res.getStaleFlags()));
+        assertEquals(2, stored.getCandidatePoolState().getItems().size());
+        assertTrue(stored.getCandidatePoolState().getItems().stream().anyMatch(item -> "police_law".equals(item.getVolunteerId()) && "法学（改）".equals(item.getMajorName())));
+        assertTrue(stored.getCandidatePoolState().getItems().stream().anyMatch(item -> "luosang_tourism".equals(item.getVolunteerId())));
+        assertFalse(stored.getWorkingPlanState().getItems().stream().anyMatch(item -> item.getVolunteerId().startsWith("north_")));
+        assertEquals(1, stored.getWorkingPlanState().getItems().size());
+        assertEquals("法学（改）", stored.getWorkingPlanState().getItems().get(0).getMajorName());
+        assertFalse(stored.getOrderedPlanState().getItems().stream().anyMatch(item -> item.getVolunteerId().startsWith("north_")));
+        assertEquals(1, stored.getOrderedPlanState().getItems().size());
+        assertEquals("法学（改）", stored.getOrderedPlanState().getItems().get(0).getMajorName());
+        assertEquals(1, stored.getOrderedPlanState().getUnits().size());
+        assertEquals("法学（改）", stored.getOrderedPlanState().getUnits().get(0).getMajorItems().get(0).getMajorName());
+    }
+
+    @Test
+    void shouldSyncSamePendingFreshnessChangeOnceLatestSnapshotIsAvailable() {
+        bindPlanningStateStore();
+        PlanningStateDTO initial = new PlanningStateDTO();
+        CandidateItemDTO stale = new CandidateItemDTO();
+        stale.setVolunteerId("school-1_major-1");
+        stale.setPlanSchoolDataId("school-1");
+        stale.setSchoolName("学校A");
+        stale.setMajorName("专业A");
+        stale.setTier("稳");
+        stale.setPlanNum(10);
+        initial.getCandidatePoolState().getItems().add(stale);
+        initial.getWorkingPlanState().getItems().add(buildDraftItem("school-1_major-1", "学校A", "专业A", "稳"));
+        initial.getOrderedPlanState().getItems().add(buildOrderedItem("school-1_major-1", "学校A", "专业A", "稳", 1));
+        initial.getDataFreshnessState().setStatusCode("changed");
+        initial.getDataFreshnessState().setChangeLevel("minor");
+        initial.getDataFreshnessState().setShouldNotify(true);
+        initial.getDataFreshnessState().setRequiresCandidateRefresh(true);
+        initial.getDataFreshnessState().setLatestSourceDataHash("source-v2");
+        initial.getDataFreshnessState().setLatestDataHash("pending-hash");
+        initial.getDataFreshnessState().setSummary("招生计划数据已变化：更新 1 项。");
+        initial.getDataFreshnessState().setChangedCount(1);
+        initial.getDataFreshnessState().setUpdatedCount(1);
+        saveStateToStore(1L, initial);
+
+        VolunteerRecommendListResponse latest = buildLatestVolunteerResponse("school-1", "major-1", "专业A（改）", 12);
+        CandidatePoolStateDTO latestPool = ReflectionTestUtils.invokeMethod(
+                planningStateService, "buildCandidatePoolStateFromResponse", 1L, initial, latest);
+        String latestHash = ReflectionTestUtils.invokeMethod(planningStateService, "buildCandidateDataHash", latestPool);
+        VolunteerSourceDataSnapshot snapshot = new VolunteerSourceDataSnapshot();
+        snapshot.setSourceDataHash("source-v2");
+        snapshot.setVolunteerData(new com.ytell.zhiyuan.model.dto.inner.VolunteerDataDTO());
+        when(volunteerSourceDataSyncService.fetchLatestSourceData(eq(1L), eq(1L), eq(false))).thenReturn(snapshot);
+        when(volunteerBizService.recommendVolunteerListWithSourceData(eq(1L), eq(1L), eq(false), any()))
+                .thenReturn(latest);
+        initial.getDataFreshnessState().setLatestDataHash(latestHash);
+        saveStateToStore(1L, initial);
+
+        DataFreshnessCheckReq req = new DataFreshnessCheckReq();
+        req.setFetchLatest(true);
+        DataFreshnessCheckRes res = planningStateService.checkDataFreshness(1L, 1L, req);
+        PlanningStateDTO stored = planningStateService.getPlanningState(1L);
+
+        assertEquals("changed", res.getDataFreshnessState().getStatusCode());
+        assertEquals("专业A（改）", stored.getCandidatePoolState().getItems().get(0).getMajorName());
+        assertEquals("专业A（改）", stored.getWorkingPlanState().getItems().get(0).getMajorName());
+        assertEquals("专业A（改）", stored.getOrderedPlanState().getItems().get(0).getMajorName());
+        assertEquals(latestHash, stored.getDataFreshnessState().getDataHash());
+    }
+
+    @Test
+    void shouldSyncPlanDetailsEvenWhenLatestCandidateHashIsAlreadyCurrent() {
+        bindPlanningStateStore();
+        PlanningStateDTO initial = new PlanningStateDTO();
+        initial.getCandidatePoolState().setVolunteerModel(VolunteerModel.majorGroup.name());
+
+        VolunteerRecommendListResponse latest = buildMajorGroupFreshnessResponse();
+        CandidatePoolStateDTO latestPool = ReflectionTestUtils.invokeMethod(
+                planningStateService, "buildCandidatePoolStateFromResponse", 1L, initial, latest);
+        String latestHash = ReflectionTestUtils.invokeMethod(planningStateService, "buildCandidateDataHash", latestPool);
+        initial.setCandidatePoolState(latestPool);
+        initial.getDataFreshnessState().setStatusCode("current");
+        initial.getDataFreshnessState().setDataHash(latestHash);
+        initial.getDataFreshnessState().setLatestDataHash(latestHash);
+        initial.getDataFreshnessState().setSourceDataHash("source-major-group-v2");
+        initial.getDataFreshnessState().setLatestSourceDataHash("source-major-group-v2");
+        initial.getWorkingPlanState().getItems().add(buildDraftItem("north_bio", "中北大学（物化）", "生物工程", "稳"));
+        initial.getWorkingPlanState().getItems().add(buildDraftItem("north_ship", "中北大学（物化）", "船舶与海洋工程", "稳"));
+        initial.getWorkingPlanState().getItems().add(buildDraftItem("police_law", "海南警察学院（不限）", "法学", "保"));
+        ReflectionTestUtils.invokeMethod(planningStateService, "syncWorkingPlanUnitsWithItems",
+                initial.getWorkingPlanState(), initial.getCandidatePoolState().getItems(), initial.getCandidatePoolState());
+        initial.getOrderedPlanState().getItems().add(buildOrderedItem("north_bio", "中北大学（物化）", "生物工程", "稳", 1));
+        initial.getOrderedPlanState().getItems().add(buildOrderedItem("north_ship", "中北大学（物化）", "船舶与海洋工程", "稳", 2));
+        initial.getOrderedPlanState().getItems().add(buildOrderedItem("police_law", "海南警察学院（不限）", "法学", "保", 3));
+        initial.getOrderedPlanState().setUnits(ReflectionTestUtils.invokeMethod(planningStateService,
+                "buildOrderedUnitsFromOrderedItems", initial.getOrderedPlanState().getItems(),
+                initial.getWorkingPlanState(), initial.getCandidatePoolState().getItems()));
+        saveStateToStore(1L, initial);
+
+        VolunteerSourceDataSnapshot snapshot = new VolunteerSourceDataSnapshot();
+        snapshot.setSourceDataHash("source-major-group-v2");
+        snapshot.setVolunteerData(new com.ytell.zhiyuan.model.dto.inner.VolunteerDataDTO());
+        when(volunteerSourceDataSyncService.fetchLatestSourceData(eq(1L), eq(1L), eq(false))).thenReturn(snapshot);
+        when(volunteerBizService.recommendVolunteerListWithSourceData(eq(1L), eq(1L), eq(false), any()))
+                .thenReturn(latest);
+
+        DataFreshnessCheckReq req = new DataFreshnessCheckReq();
+        req.setFetchLatest(true);
+        DataFreshnessCheckRes res = planningStateService.checkDataFreshness(1L, 1L, req);
+        PlanningStateDTO stored = planningStateService.getPlanningState(1L);
+
+        assertEquals("current", res.getDataFreshnessState().getStatusCode());
+        assertFalse(Boolean.TRUE.equals(res.getDataFreshnessState().getShouldNotify()));
+        assertFalse(Boolean.TRUE.equals(res.getDataFreshnessState().getRequiresCandidateRefresh()));
+        assertFalse(stored.getWorkingPlanState().getItems().stream().anyMatch(item -> item.getVolunteerId().startsWith("north_")));
+        assertEquals(1, stored.getWorkingPlanState().getItems().size());
+        assertEquals("法学（改）", stored.getWorkingPlanState().getItems().get(0).getMajorName());
+        assertFalse(stored.getOrderedPlanState().getItems().stream().anyMatch(item -> item.getVolunteerId().startsWith("north_")));
+        assertEquals(1, stored.getOrderedPlanState().getItems().size());
+        assertEquals("法学（改）", stored.getOrderedPlanState().getItems().get(0).getMajorName());
+        assertEquals(1, stored.getOrderedPlanState().getUnits().size());
+        assertEquals("法学（改）", stored.getOrderedPlanState().getUnits().get(0).getMajorItems().get(0).getMajorName());
     }
 
     @Test
@@ -388,11 +553,18 @@ public class PlanningStateServiceTest {
         DataFreshnessCheckReq req = new DataFreshnessCheckReq();
         req.setFetchLatest(true);
         DataFreshnessCheckRes res = planningStateService.checkDataFreshness(1L, 1L, req);
+        PlanningStateDTO stored = planningStateService.getPlanningState(1L);
 
         assertEquals("changed", res.getDataFreshnessState().getStatusCode());
         assertEquals(Integer.valueOf(1), res.getDataFreshnessState().getUpdatedCount());
         assertTrue(res.getDataFreshnessState().getAffectedVolunteerIds().contains("school-1_major-1"));
-        assertTrue(staleCandidatePool(res.getStaleFlags()));
+        assertFalse(staleCandidatePool(res.getStaleFlags()));
+        assertEquals(Integer.valueOf(60), stored.getCandidatePoolState().getItems().get(0).getSchoolRank());
+        assertEquals("公办", stored.getCandidatePoolState().getItems().get(0).getSchoolNature());
+        assertEquals("省重点", stored.getCandidatePoolState().getItems().get(0).getSchoolLevel());
+        assertEquals(Double.valueOf(0.12D), stored.getCandidatePoolState().getItems().get(0).getBaoyanRatio());
+        assertEquals(Integer.valueOf(20), stored.getCandidatePoolState().getItems().get(0).getMasterCount());
+        assertEquals(Integer.valueOf(8), stored.getCandidatePoolState().getItems().get(0).getDoctorCount());
     }
 
 
@@ -7569,6 +7741,27 @@ public class PlanningStateServiceTest {
         major.setEnroll_ratio("80%");
         school.setMajors(java.util.Arrays.asList(major));
         response.setSafes(java.util.Arrays.asList(school));
+        return response;
+    }
+
+    private VolunteerRecommendListResponse buildMajorGroupFreshnessResponse() {
+        VolunteerRecommendListResponse response = new VolunteerRecommendListResponse();
+        VolunteerRecommendListResponse.BaseData baseData = new VolunteerRecommendListResponse.BaseData();
+        baseData.setNeed_count(2);
+        CreateSessionReq.VolunteerCount volunteerCount = new CreateSessionReq.VolunteerCount();
+        volunteerCount.setSchoolCount(2);
+        volunteerCount.setMajorCount(2);
+        baseData.setVolunteerCount(volunteerCount);
+        baseData.setVolunteerModel(VolunteerModel.majorGroup);
+        response.setBaseData(baseData);
+
+        VolunteerRecommendListResponse.VolunteerSchool police = buildSchool(
+                "police", "police-school", "海南警察学院（不限）", "海南", 1,
+                buildMajorWithRatio("law", "法学（改）", "75"));
+        VolunteerRecommendListResponse.VolunteerSchool luosang = buildSchool(
+                "luosang", "luosang-school", "海南洛桑旅游大学（不限）", "海南", 2,
+                buildMajorWithRatio("tourism", "旅游管理", "78"));
+        response.setProtects(java.util.Arrays.asList(police, luosang));
         return response;
     }
 
