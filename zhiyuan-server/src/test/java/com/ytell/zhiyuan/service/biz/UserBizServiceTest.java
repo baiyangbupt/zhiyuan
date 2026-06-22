@@ -137,6 +137,29 @@ public class UserBizServiceTest {
     }
 
     @Test
+    void shouldRejectOriginVolunteerCreateSessionWithoutFreeTrial() {
+        User user = buildOriginUser(10L, 5);
+        when(userMapper.selectById(10L)).thenReturn(user);
+
+        CheckRightsResVo result = userBizService.checkRights(10L, OperateCheckPoint.CreateSession, buildPrepareType("VOLUNTEER"));
+
+        assertFalse(result.getCanOperate());
+        assertEquals("普通用户暂不支持智能填报，请开通志愿服务权益后使用", result.getReason());
+        verify(chatSessionSharedService, never()).lambdaQuery();
+    }
+
+    @Test
+    void shouldAllowOriginPredictCreateSessionBeforeLimit() {
+        User user = buildOriginUser(11L, 5);
+        when(userMapper.selectById(11L)).thenReturn(user);
+        mockCreatedSessionCount(0L);
+
+        CheckRightsResVo result = userBizService.checkRights(11L, OperateCheckPoint.CreateSession, buildPrepareType("PREDICT"));
+
+        assertTrue(result.getCanOperate());
+    }
+
+    @Test
     void shouldRejectNonSuperVipVolunteerCreateSessionAtDailyLimit() {
         User user = buildVipUser(6L, 500);
         when(userMapper.selectById(6L)).thenReturn(user);
@@ -192,6 +215,18 @@ public class UserBizServiceTest {
         user.setExpiredDate(DateUtil.offsetDay(DateUtil.date(), -1));
         LimitSettingsOb limitSettingsOb = new LimitSettingsOb();
         limitSettingsOb.setCreateSessionLimit(5);
+        user.setLimitSettings(com.alibaba.fastjson.JSONObject.toJSONString(limitSettingsOb));
+        return user;
+    }
+
+    private User buildOriginUser(Long userId, Integer createSessionLimit) {
+        User user = new User();
+        user.setId(userId);
+        user.setMobile("13000000000");
+        user.setUserLevel(UserLevel.ORIGIN);
+        user.setExpiredDate(DateUtil.offsetDay(DateUtil.date(), 7));
+        LimitSettingsOb limitSettingsOb = new LimitSettingsOb();
+        limitSettingsOb.setCreateSessionLimit(createSessionLimit);
         user.setLimitSettings(com.alibaba.fastjson.JSONObject.toJSONString(limitSettingsOb));
         return user;
     }

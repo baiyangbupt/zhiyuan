@@ -54,6 +54,8 @@ import java.util.UUID;
 public class UserBizService {
     private static final int TEMP_CREATE_SESSION_LIMIT_FLOOR = 100;
     private static final int VOLUNTEER_DAILY_CREATE_SESSION_LIMIT = 2;
+    private static final String PREPARE_TYPE_VOLUNTEER = "VOLUNTEER";
+    private static final String ORIGIN_VOLUNTEER_DENY_REASON = "普通用户暂不支持智能填报，请开通志愿服务权益后使用";
     private static final Long DEFAULT_TENANT_ID = 1L;
     private static final Long DEFAULT_BOT_ID = 1L;
     private static final String DEFAULT_CHANNEL = "ytell";
@@ -452,12 +454,19 @@ public class UserBizService {
             return vo;
         }
         if (OperateCheckPoint.CreateSession.equals(checkPoint)) {
-            if (isVolunteerPrepareType(prepareType) && !UserLevel.SUPER_VIP.equals(userVo.getUserLevel())) {
-                int createdToday = countTodayCreatedSessions(userId, "VOLUNTEER");
-                if (createdToday >= VOLUNTEER_DAILY_CREATE_SESSION_LIMIT) {
+            if (isVolunteerPrepareType(prepareType)) {
+                if (UserLevel.ORIGIN.equals(userVo.getUserLevel())) {
                     vo.setCanOperate(false);
-                    vo.setReason(String.format("智能填报期间，非SUPER_VIP用户每天最多创建%d个智能填报会话", VOLUNTEER_DAILY_CREATE_SESSION_LIMIT));
+                    vo.setReason(ORIGIN_VOLUNTEER_DENY_REASON);
                     return vo;
+                }
+                if (!UserLevel.SUPER_VIP.equals(userVo.getUserLevel())) {
+                    int createdToday = countTodayCreatedSessions(userId, PREPARE_TYPE_VOLUNTEER);
+                    if (createdToday >= VOLUNTEER_DAILY_CREATE_SESSION_LIMIT) {
+                        vo.setCanOperate(false);
+                        vo.setReason(String.format("智能填报期间，非SUPER_VIP用户每天最多创建%d个智能填报会话", VOLUNTEER_DAILY_CREATE_SESSION_LIMIT));
+                        return vo;
+                    }
                 }
             }
             // 针对用户进行次数校验控制，校验创建会话总次数
@@ -508,7 +517,7 @@ public class UserBizService {
     }
 
     private boolean isVolunteerPrepareType(CreateSessionReq.PrepareType prepareType) {
-        return prepareType != null && "VOLUNTEER".equals(prepareType.getCode());
+        return prepareType != null && PREPARE_TYPE_VOLUNTEER.equalsIgnoreCase(prepareType.getCode());
     }
 
     private int countTodayCreatedSessions(Long userId, String prepareTypeCode) {

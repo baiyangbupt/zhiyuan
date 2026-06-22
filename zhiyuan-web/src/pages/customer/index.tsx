@@ -154,6 +154,7 @@ const Customer: React.FC = () => {
                     try {
                       const { code, data, msg } = await checkUserRightsApi({
                         checkPoint: 'CreateSession',
+                        prepareType: 'VOLUNTEER',
                       });
                       if (code === 0 && data?.canOperate) {
                         if (isMinip) {

@@ -36,6 +36,11 @@ import {
   getRegionProvinceApi,
   getUnacceptableMajorsListApi,
 } from '@/service/apis/customerDetail';
+import {
+  HAINAN_PROVINCE_CODE,
+  resolveTotalScoreLabel,
+  validateHainanTotalScore,
+} from '@/utils/scoreRules.mjs';
 import styles from './style.module.scss';
 
 const CheckboxGroup = Checkbox.Group;

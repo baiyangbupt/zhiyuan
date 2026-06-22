@@ -120,6 +120,7 @@ const SessionListDrawer: React.FC<SessionListDrawerProps> = ({
     try {
       const { code, data, msg } = await checkUserRightsApi({
         checkPoint: 'CreateSession',
+        prepareType: 'VOLUNTEER',
       });
       if (code === 0 && data?.canOperate) {
         onClose();

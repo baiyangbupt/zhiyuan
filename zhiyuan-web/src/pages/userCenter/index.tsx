@@ -82,15 +82,13 @@ const RIGHTS_DESCRIPTION_MAP: Record<
     ],
   },
   ORIGIN: {
-    intro: '普通用户可体验基础志愿服务，VIP权益试用期 7 天。',
+    intro: '普通用户可查看基础信息，智能填报需开通志愿服务权益。',
     privileges: [
-      '最多创建 5 次 AI 对话或志愿方案',
-      '最多可修改成绩信息 2 次',
       '基础志愿政策解读',
     ],
     limitations: [
+      '智能填报需开通志愿服务权益后使用',
       '高级功能需开通VIP会员后使用',
-      '权益期满后自动失效',
     ],
   },
   DEFAULT: {
