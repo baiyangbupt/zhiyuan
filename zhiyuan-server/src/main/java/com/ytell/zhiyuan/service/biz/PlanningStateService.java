@@ -5227,7 +5227,11 @@ public class PlanningStateService {
         }
         CandidatePoolStateDTO latestCandidatePool = null;
         if (Boolean.TRUE.equals(safeReq.getFetchLatest())) {
-            latestCandidatePool = populateLatestDataFreshnessRequest(tenantId, chatSessionId, state, safeReq);
+            try {
+                latestCandidatePool = populateLatestDataFreshnessRequest(tenantId, chatSessionId, state, safeReq);
+            } catch (Exception ex) {
+                return handleLatestDataFreshnessFetchFailure(tenantId, chatSessionId, state, ex);
+            }
         }
 
         String now = OffsetDateTime.now().toString();
@@ -5274,6 +5278,21 @@ public class PlanningStateService {
         res.setVersion(state.getVersion());
         res.setStaleFlags(state.getStaleFlags());
         res.setDataFreshnessState(state.getDataFreshnessState());
+        res.setWorkspaceState(buildPlanningWorkspaceStateRes(tenantId, state));
+        return res;
+    }
+
+    private DataFreshnessCheckRes handleLatestDataFreshnessFetchFailure(Long tenantId,
+                                                                         Long chatSessionId,
+                                                                         PlanningStateDTO state,
+                                                                         Exception ex) {
+        String error = ex == null ? "检查最新招生计划失败" : ex.getMessage();
+        log.warn("dataFreshness latest fetch failed tenantId={} chatSessionId={}", tenantId, chatSessionId, ex);
+        planningDataFreshnessScheduleSharedService.markFailure(chatSessionId, "interactive", error, new Date());
+        DataFreshnessCheckRes res = new DataFreshnessCheckRes();
+        res.setVersion(state == null ? null : state.getVersion());
+        res.setStaleFlags(state == null ? null : state.getStaleFlags());
+        res.setDataFreshnessState(mergeScheduleDataFreshnessState(tenantId, state));
         res.setWorkspaceState(buildPlanningWorkspaceStateRes(tenantId, state));
         return res;
     }

@@ -312,6 +312,7 @@ export const checkPlanningDataFreshnessApi = (
     url: `/gaotu-assistant-bot/inner/planning/${tenantId}/session/data-freshness/check?chatSessionId=${chatSessionId}`,
     method: 'post',
     data,
+    special: [84009],
   });
 
 export const getPlanningDataFreshnessScheduleApi = (tenantId: string, chatSessionId: string) =>

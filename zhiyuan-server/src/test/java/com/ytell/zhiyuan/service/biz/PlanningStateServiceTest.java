@@ -279,6 +279,61 @@ public class PlanningStateServiceTest {
     }
 
     @Test
+    void shouldKeepWorkspaceCurrentWhenLatestVolunteerDataFetchFails() {
+        bindPlanningStateStore();
+        PlanningStateDTO initial = new PlanningStateDTO();
+        initial.setVersion(4);
+        CandidateItemDTO item = new CandidateItemDTO();
+        item.setVolunteerId("v1");
+        item.setPlanSchoolDataId("u1");
+        item.setSchoolName("学校A");
+        item.setMajorName("专业A");
+        item.setTier("稳");
+        initial.getCandidatePoolState().getItems().add(item);
+        initial.getDataFreshnessState().setPrepareType("VOLUNTEER");
+        initial.getDataFreshnessState().setStatusCode("current");
+        initial.getDataFreshnessState().setChangeLevel("none");
+        initial.getDataFreshnessState().setShouldNotify(false);
+        saveStateToStore(1L, initial);
+
+        PlanningDataFreshnessScheduleEntity schedule = new PlanningDataFreshnessScheduleEntity();
+        schedule.setChatSessionId(1L);
+        schedule.setPrepareType("VOLUNTEER");
+        schedule.setEnabled(true);
+        schedule.setLastCheckStatus("current");
+        when(planningDataFreshnessScheduleSharedService.getByChatSessionId(1L)).thenReturn(schedule);
+        doAnswer(invocation -> {
+            schedule.setLastCheckSource(invocation.getArgument(1));
+            schedule.setLastCheckStatus("failed");
+            schedule.setFailCount(1);
+            schedule.setLastError(invocation.getArgument(2));
+            schedule.setLastFailedAt(invocation.getArgument(3));
+            schedule.setNextCheckAt(new Date(System.currentTimeMillis() + 30L * 60L * 1000L));
+            return null;
+        }).when(planningDataFreshnessScheduleSharedService)
+                .markFailure(eq(1L), eq("interactive"), eq("当前策略已失效"), any(Date.class));
+        when(volunteerSourceDataSyncService.fetchLatestSourceData(eq(1L), eq(1L), eq(false)))
+                .thenThrow(new BusinessException(84009, "当前策略已失效"));
+
+        DataFreshnessCheckReq req = new DataFreshnessCheckReq();
+        req.setFetchLatest(true);
+        DataFreshnessCheckRes res = planningStateService.checkDataFreshness(1L, 1L, req);
+
+        assertEquals(Integer.valueOf(4), res.getVersion());
+        assertEquals("current", res.getDataFreshnessState().getStatusCode());
+        assertEquals("failed", res.getDataFreshnessState().getLastCheckStatus());
+        assertEquals("当前策略已失效", res.getDataFreshnessState().getLastError());
+        assertEquals(Integer.valueOf(1), res.getDataFreshnessState().getFailCount());
+        assertFalse(Boolean.TRUE.equals(res.getDataFreshnessState().getShouldNotify()));
+        assertFalse(staleCandidatePool(res.getStaleFlags()));
+        assertFalse(staleReview(res.getStaleFlags()));
+        assertNotNull(res.getWorkspaceState());
+        verify(planningDataFreshnessScheduleSharedService)
+                .markFailure(eq(1L), eq("interactive"), eq("当前策略已失效"), any(Date.class));
+        verify(volunteerBizService, never()).recommendVolunteerListWithSourceData(any(), any(), anyBoolean(), any());
+    }
+
+    @Test
     void shouldMarkPlanningStateStaleWhenVolunteerDataHashChanges() {
         bindPlanningStateStore();
         PlanningStateDTO initial = new PlanningStateDTO();
