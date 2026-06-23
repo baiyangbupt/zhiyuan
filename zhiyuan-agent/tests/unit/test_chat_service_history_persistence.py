@@ -23831,6 +23831,16 @@ def test_chat_service_semantic_route_handles_profile_change_replan_boundary(tmp_
                     profile_scenario="current_student_update",
                     proposed_profile={"score": 515},
                 )),
+            ) as semantic_mock, \
+            patch(
+                "app.service.classify_turn_decision",
+                AsyncMock(return_value=_runtime_turn_decision(
+                    task_layer="plan",
+                    side_effect="readonly",
+                    scope_anchor="current_plan",
+                    scenario="plan_review_or_repair_preview",
+                    confidence=0.4,
+                )),
             ), \
             patch("app.service.execute_plan_action", AsyncMock()) as execute_mock:
         service = ChatService(mock_llm_client, store)
@@ -23849,6 +23859,7 @@ def test_chat_service_semantic_route_handles_profile_change_replan_boundary(tmp_
     assert "确认前" in reply
     assert "缺少必要信息" not in reply
     assert fake_agent.calls == []
+    semantic_mock.assert_awaited_once()
     execute_mock.assert_not_awaited()
 
 
@@ -23904,7 +23915,7 @@ def test_chat_service_turn_decision_profile_replan_fallback_when_semantic_route_
     assert "当前方案仍按原来的信息保留" in reply
     assert "确认前" in reply
     assert fake_agent.calls == []
-    semantic_mock.assert_awaited_once()
+    semantic_mock.assert_not_awaited()
     assert turn_decision_mock.await_count >= 1
     execute_mock.assert_not_awaited()
     saved = asyncio.run(store.load("profile-change-replan-turn-decision-session"))
@@ -23919,7 +23930,7 @@ def test_chat_service_turn_decision_profile_replan_fallback_when_semantic_route_
 def test_chat_service_does_not_persist_adhoc_profile_replan_as_profile_change(tmp_path, mock_llm_client):
     db_path = tmp_path / "history.db"
     store = ChatHistoryStore(str(db_path))
-    fake_agent = _FakeAgent(["这是临时按 515 分测算，不会改你的当前资料或方案。"])
+    fake_agent = _FakeAgent(["不应该进入完整 Agent"])
 
     with patch("app.service.ChatAgent", return_value=fake_agent), \
             patch("app.service.get_user_score_detail", AsyncMock(return_value={
@@ -23944,7 +23955,20 @@ def test_chat_service_does_not_persist_adhoc_profile_replan_as_profile_change(tm
                     profile_scenario="adhoc_scenario",
                     proposed_profile={"score": 515},
                 )),
-            ):
+            ) as semantic_mock, \
+            patch(
+                "app.service.classify_turn_decision",
+                AsyncMock(return_value=_runtime_turn_decision(
+                    task_layer="plan",
+                    side_effect="profile_replan_adhoc",
+                    scope_anchor="current_profile",
+                    scenario="profile_adhoc_replan",
+                    profile_scenario="adhoc_scenario",
+                    proposed_profile={"score": 515},
+                    confidence=0.95,
+                )),
+            ) as turn_decision_mock, \
+            patch("app.service.execute_plan_action", AsyncMock()) as execute_mock:
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(
             service.handle_message(
@@ -23954,13 +23978,85 @@ def test_chat_service_does_not_persist_adhoc_profile_replan_as_profile_change(tm
             )
         )
 
-    assert reply == "这是临时按 515 分测算，不会改你的当前资料或方案。"
-    assert fake_agent.calls
+    assert isinstance(reply, str)
+    assert "515 分" in reply
+    assert "临时场景" in reply
+    assert "不会更新当前学生资料" in reply
+    assert "不会让当前方案按这组资料失效" in reply
+    assert fake_agent.calls == []
+    turn_decision_mock.assert_awaited_once()
+    semantic_mock.assert_not_awaited()
+    execute_mock.assert_not_awaited()
     saved = asyncio.run(store.load("profile-replan-adhoc-session"))
     assert all(
         ((event.get("routeDecision") or {}).get("profileChangeReplanDsl") or {}).get("type") != "ProfileChangeReplan"
         for event in _route_observability_events(saved)
     )
+    latest_event = _route_observability_events(saved)[-1]
+    assert latest_event["routingPath"] == "turn_decision_profile_replan_adhoc"
+    dsl = latest_event["routeDecision"]["profileChangeReplanDsl"]
+    assert dsl["type"] == "ProfileReplanAdhoc"
+    assert dsl["stalePlanPolicy"]["formalPlan"] == "do_not_invalidate_current_plan"
+
+
+def test_chat_service_turn_decision_profile_replan_ambiguous_asks_scope_without_mutation(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    fake_agent = _FakeAgent(["不应该进入完整 Agent"])
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={
+                "code": 0,
+                "data": {"userScoreDetail": {"totalScore": 537, "province": "湖南", "subjectList": ["历史", "生物", "政治"]}},
+            })), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={
+                "code": 0,
+                "data": {
+                    "phase": "reviewed",
+                    "version": 31,
+                    "orderedPlanState": {"summary": {"total": 45}},
+                    "reviewState": {"summary": {"warnCount": 1, "riskCount": 0}, "checks": []},
+                },
+            })), \
+            patch("app.service.classify_plan_semantic_action", AsyncMock()) as semantic_mock, \
+            patch(
+                "app.service.classify_turn_decision",
+                AsyncMock(return_value=_runtime_turn_decision(
+                    task_layer="plan",
+                    side_effect="profile_replan_ambiguous",
+                    scope_anchor="current_profile",
+                    scenario="profile_scope_ambiguous",
+                    profile_scenario="ambiguous",
+                    proposed_profile={"rank": 24000, "province": "湖北"},
+                    confidence=0.95,
+                )),
+            ) as turn_decision_mock, \
+            patch("app.service.execute_plan_action", AsyncMock()) as execute_mock:
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(
+            service.handle_message(
+                "profile-replan-ambiguous-session",
+                "user-1",
+                "那按湖北两万四这个位次看看",
+            )
+        )
+
+    assert isinstance(reply, str)
+    assert "不能确定" in reply
+    assert "临时测算" in reply
+    assert "更新当前学生资料" in reply
+    assert "不会更新当前资料" in reply
+    assert fake_agent.calls == []
+    turn_decision_mock.assert_awaited_once()
+    semantic_mock.assert_not_awaited()
+    execute_mock.assert_not_awaited()
+    saved = asyncio.run(store.load("profile-replan-ambiguous-session"))
+    latest_event = _route_observability_events(saved)[-1]
+    assert latest_event["routingPath"] == "turn_decision_profile_replan_ambiguous"
+    dsl = latest_event["routeDecision"]["profileChangeReplanDsl"]
+    assert dsl["type"] == "ProfileReplanAmbiguous"
+    assert dsl["stalePlanPolicy"]["formalPlan"] == "do_not_invalidate_current_plan"
 
 
 def test_chat_service_answers_profile_change_state_query_from_structured_replan_state(tmp_path, mock_llm_client):

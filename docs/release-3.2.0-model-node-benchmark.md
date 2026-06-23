@@ -277,6 +277,8 @@ cd zhiyuan-agent
 
 2026-06-23 profile-change 状态追问也进入 TurnDecision：已有历史 `ProfileChangeReplan` DSL 时，用户追问“现在方案是不是按新资料算”应输出 `scenario=profile_change_state_query`、`scopeAnchor=current_profile`、`sideEffect=readonly/readonly_while_pending`。service 只消费 TurnDecision 场景和历史 DSL；旧 `plan_semantic_action.replyFocus=profile_change_state_query` 仅保留为过渡 fallback。fixture 复跑 `/private/tmp/model_node_320_fixture_after_profile_state_turn_decision.json` 为 42/42 通过，`turn_side_effect=13/13`。
 
+同日补齐 profile replan scope 节点约束：`TurnDecision` 必须区分当前学生资料更新、临时测算和范围不清三类场景。`current_student_update` 输出 `profile_change_replan/profile_update_replan`，`adhoc_scenario` 输出 `profile_replan_adhoc/profile_adhoc_replan`，`ambiguous` 输出 `profile_replan_ambiguous/profile_scope_ambiguous`；三者都必须携带结构化 `proposedProfile`。fixture 增加 adhoc/ambiguous 两个 case 后，离线 `/private/tmp/model_node_320_after_profile_replan_scope.json` 为 44/44 通过，`turn_side_effect=15/15`。runtime 只消费这些结构化字段，不能由 service 按中文原句补判。
+
 `reply_focus_binding` 与 `reply_generation_grounding` 通过 `reply_profile_tool` 直接输出 reply profile 字段。该工具只用于 benchmark/profile，不生成用户可见回复，不接 runtime service。
 
 `provider_precheck`、`latency_profile` 仍是离线/recorded case 或 3.2.0 新协议目标，后续按实现进度逐步接 adapter。

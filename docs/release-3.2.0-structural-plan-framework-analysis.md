@@ -1591,7 +1591,7 @@ gate 的结论不是“下游已经接完 runtime”，而是把接入边界固�
 | --- | --- | --- |
 | G26 PlanQuery 切片查询 | “保底最后几个”被抽成 `专业:保`，多次 query 后仍答空结果 | 这不是内容润色问题，而是 plan projection/slice 结构缺失；需要 `tier=bao / slice=tail / fields=[school, major, admissionProbability]` 的 DSL 和 deterministic query mapper |
 | G16 锁定/固定位置 | “锁定第1个和第2个冲档”被误走 `move_ordered_unit`，返回“已在第1位，不需要移动” | unsupported local action 与可执行 move 没分开；必须先输出 `unsupportedAction=pin_or_lock_unit` 或一等 pin/lock DSL，不能用 move/no-change 消解 |
-| G22/G31 profile 变更后重来 | 用户明确“基于620湖北物化生重来”后应先识别为当前学生资料变更；临时测算/帮别人问不能污染当前 profile；后续追问“现在是不是按新资料算”不能继续读成普通方案状态 | 已先落 `profileScenario=current_student_update/adhoc_scenario/ambiguous` 结构化契约和 TurnDecision `profile_change_state_query` 场景：compiler 只消费 `profileScenario/proposedProfile/profile_change_state_query`，不从用户原话匹配“基于/重来/重新”；当前 update 会记录旧方案未按新资料重算，adhoc/ambiguous 不让旧方案失效。仍缺后续可执行状态机：确认资料更新、清理或继承旧 pending、触发候选和方案重算 |
+| G22/G31 profile 变更后重来 | 用户明确“基于620湖北物化生重来”后应先识别为当前学生资料变更；临时测算/帮别人问不能污染当前 profile；后续追问“现在是不是按新资料算”不能继续读成普通方案状态 | 已落 `TurnDecision -> compile_profile_change_replan_source` 主路径：`current_student_update` 产生 `ProfileChangeReplan` 和 stale-state；`adhoc_scenario` 产生 `ProfileReplanAdhoc`，不更新 profile、不让旧方案失效；`ambiguous` 产生 `ProfileReplanAmbiguous`，只澄清范围。compiler 只消费 `profileScenario/proposedProfile/profile_change_state_query`，不从用户原话匹配“基于/重来/重新/临时”。状态追问进入 TurnDecision `profile_change_state_query` 主路径。仍缺后续可执行状态机：确认资料更新、清理或继承旧 pending、触发候选和方案重算 |
 | G17 tier-local reorder | 能出 `move_unit` pending，但链路重复 `plan_next_action/execute_plan_action/query_volunteer_plan`，耗时 23s+ | tier-local selector、ordinal binding、ordered refresh 没被同一个 EvidencePlan/Compiler 接管，仍依赖 full-agent 自由工具循环 |
 | G29 preference strength 展示 | 用户说“优先/也可以考虑”，卡片 summary 曾只显示平铺偏好专业 | 已定位为 display gap：runtime pending payload 的 `selectedData.entityProfile.preferenceStrength` 保留 `primary/acceptable`，但 `displaySummary` 过去由扁平 `major_intents` 汇总。当前已改为从结构化 `preferenceStrength/entityPolaritySpans` 生成用户可见摘要，例如 `优先专业：网络与新媒体；可以考虑专业：跨境电子商务`，执行 payload 不变 |
 
@@ -1614,7 +1614,7 @@ gate 的结论不是“下游已经接完 runtime”，而是把接入边界固�
 下一步客观优先级：
 
 1. 用下一轮全量 G1-G32 验证 G26/G27 PlanQuery grammar 后是否继续 clean，并把 PlanQuery DSL 字段补进 compiler/profile gate。
-2. 为 `profile_change_replan` 定义一等动作和状态策略，明确旧方案/旧 pending 是否废弃、是否需要用户确认、如何触发重算。当前已完成语义/编译边界收口：`current_student_update` 才能产生 `ProfileChangeReplan` 和 stale-state，`adhoc_scenario` 只能作为临时测算，`ambiguous` 只澄清范围；状态追问已进入 TurnDecision `profile_change_state_query` 主路径，service 只消费结构化场景和历史 DSL，旧 `plan_semantic_action.replyFocus` 仅作兼容 fallback。后续 profile update/replan 的可执行动作不能退回 service 文本匹配；单字段纠错与承接式“按这组资料重来”也应继续收进 TurnDecision/profile node，由 compiler 统一裁决副作用与状态机。
+2. 为 `profile_change_replan` 定义一等动作和状态策略，明确旧方案/旧 pending 是否废弃、是否需要用户确认、如何触发重算。当前已完成 TurnDecision/编译边界收口：`current_student_update` 才能产生 `ProfileChangeReplan` 和 stale-state，`adhoc_scenario` 只能作为临时测算，`ambiguous` 只澄清范围；这三类均先于 PlanQuery/local action/semantic plan 处理，状态追问已进入 TurnDecision `profile_change_state_query` 主路径。service 只消费结构化场景和历史 DSL，旧 `plan_semantic_action.replyFocus` 仅作兼容 fallback。后续 profile update/replan 的可执行动作不能退回 service 文本匹配；单字段纠错与承接式“按这组资料重来”也应继续收进 TurnDecision/profile node，由 compiler 统一裁决副作用与状态机。
 3. 把 G16 pin/lock 从 move action 中拆出，未支持时返回受控 unsupported clarification；支持时进入 planActionDsl。
 4. 压缩 G17/G30/G7 的自由工具循环：EvidencePlan 明确 required inputs、tool budget、batchable query 和 replyPlan。
 5. 核对 G29 runtime pending payload 的 `preferenceStrength`，确认是 display gap 还是 schema gap。

@@ -543,7 +543,45 @@ def _build_profile_change_replan_reply(
 ) -> str:
     score_values = _score_like_values_for_reply(user_prompt)
     dsl = profile_change_dsl if isinstance(profile_change_dsl, dict) else None
+    dsl_type = str((dsl or {}).get("type") or "").strip()
     proposed_summary = _profile_replan_summary_for_reply(dsl)
+    if dsl_type == "ProfileReplanAdhoc":
+        score_text = proposed_summary or (f"{score_values[0]} 分" if score_values else "这组临时资料")
+        missing_fields = [
+            str(item or "").strip()
+            for item in ((dsl or {}).get("missingProfileFields") or [])
+            if str(item or "").strip()
+        ]
+        missing_line = ""
+        if missing_fields:
+            missing_text = "、".join(
+                {
+                    "score_or_rank": "分数或位次",
+                    "province": "省份",
+                    "subjects": "选科",
+                }.get(item, item)
+                for item in missing_fields
+            )
+            missing_line = f"\n- 如果要进一步临时测算候选或方案，还需要补充：{missing_text}。"
+        return _sanitize_reply_for_user(_normalize_user_facing_terms(
+            "\n".join([
+                f"可以先按 {score_text} 当作临时场景看，但这不会更新当前学生资料，也不会让当前方案按这组资料失效。",
+                "",
+                "- 当前方案、候选池和待采纳内容都会保持原状态；这轮只作为临时测算口径。",
+                "- 如果你要把这组资料改成当前学生资料，需要明确确认后再重新计算候选和方案。",
+            ])
+            + missing_line
+        ))
+    if dsl_type == "ProfileReplanAmbiguous":
+        score_text = proposed_summary or (f"{score_values[0]} 分" if score_values else "这组资料")
+        return _sanitize_reply_for_user(_normalize_user_facing_terms(
+            "\n".join([
+                f"我还不能确定 {score_text} 是只做临时测算，还是要更新当前学生资料后重新规划。",
+                "",
+                "- 在你确认前，我不会更新当前资料，也不会让当前方案失效。",
+                "- 如果只是临时看看，可以直接说明“只是临时测算”；如果要按这组资料重算当前学生方案，请明确说“更新当前资料并重算”。",
+            ])
+        ))
     score_text = proposed_summary or (f"{score_values[0]} 分" if score_values else "新的成绩信息")
     current_score = None
     if request_context is not None:
@@ -695,16 +733,49 @@ def _semantic_decision_is_current_student_profile_replan(decision: Any) -> bool:
     return str(getattr(decision, "profileScenario", "none") or "none").strip() == "current_student_update"
 
 
+def _semantic_decision_is_profile_replan(decision: Any) -> bool:
+    if not _requests_profile_change_replan(decision):
+        return False
+    return str(getattr(decision, "profileScenario", "none") or "none").strip() in {
+        "current_student_update",
+        "adhoc_scenario",
+        "ambiguous",
+    }
+
+
 def _turn_decision_is_current_student_profile_replan(decision: Any) -> bool:
+    if not _turn_decision_is_profile_replan(decision):
+        return False
+    return str(getattr(decision, "profileScenario", "none") or "none").strip() == "current_student_update"
+
+
+def _turn_decision_is_profile_replan(decision: Any) -> bool:
     confidence = float(getattr(decision, "confidence", 0.0) or 0.0)
+    profile_scenario = str(getattr(decision, "profileScenario", "none") or "none").strip()
+    expected = {
+        "current_student_update": ("profile_change_replan", "profile_update_replan"),
+        "adhoc_scenario": ("profile_replan_adhoc", "profile_adhoc_replan"),
+        "ambiguous": ("profile_replan_ambiguous", "profile_scope_ambiguous"),
+    }.get(profile_scenario)
+    if expected is None:
+        return False
+    expected_side_effect, expected_scenario = expected
     return (
         confidence >= _SEMANTIC_PLAN_ACTION_CONFIDENCE_THRESHOLD
         and str(getattr(decision, "taskLayer", "") or "").strip() == "plan"
-        and str(getattr(decision, "sideEffect", "") or "").strip() == "profile_change_replan"
+        and str(getattr(decision, "sideEffect", "") or "").strip() == expected_side_effect
         and str(getattr(decision, "scopeAnchor", "") or "").strip() == "current_profile"
-        and str(getattr(decision, "scenario", "") or "").strip() == "profile_update_replan"
-        and str(getattr(decision, "profileScenario", "none") or "none").strip() == "current_student_update"
+        and str(getattr(decision, "scenario", "") or "").strip() == expected_scenario
     )
+
+
+def _profile_replan_routing_path(source: proposal_compiler.ProfileChangeReplanCompiledSource, *, prefix: str) -> str:
+    side_effect = str(getattr(source, "side_effect", "") or "").strip()
+    if side_effect == "profile_replan_adhoc":
+        return f"{prefix}_profile_replan_adhoc"
+    if side_effect == "profile_replan_ambiguous":
+        return f"{prefix}_profile_replan_ambiguous"
+    return f"{prefix}_profile_change_replan"
 
 
 def _turn_decision_is_profile_change_state_query(
@@ -12021,29 +12092,33 @@ class ChatService:
         )
         if (
             confidence >= _SEMANTIC_PLAN_ACTION_CONFIDENCE_THRESHOLD
-            and _semantic_decision_is_current_student_profile_replan(decision)
+            and _semantic_decision_is_profile_replan(decision)
             and profile_replan_source.matched
-            and profile_replan_source.side_effect == "profile_change_replan"
         ):
             reply = _build_profile_change_replan_reply(
                 content,
                 request_context=request_context,
                 profile_change_dsl=profile_replan_source.profile_change_dsl,
             )
+            routing_path = _profile_replan_routing_path(
+                profile_replan_source,
+                prefix="semantic",
+            )
             new_messages = [
                 ModelRequest(parts=[UserPromptPart(content=content)]),
-                ModelResponse(parts=[TextPart(content=reply)], model_name="semantic-profile-change-replan"),
+                ModelResponse(parts=[TextPart(content=reply)], model_name=routing_path.replace("_", "-")),
             ]
             turn_event = {
                 "sessionId": session_id,
                 "userId": user_id,
                 "scene": "plan",
-                "routingPath": "semantic_profile_change_replan",
+                "routingPath": routing_path,
                 "routeDecision": {
                     "source": "semantic_plan_action",
                     "matched": True,
                     "confidence": confidence,
                     "route": action_family,
+                    "sideEffect": profile_replan_source.side_effect,
                     "reason": str(getattr(decision, "reason", "") or ""),
                     "replyFocus": list(getattr(decision, "replyFocus", []) or []),
                     "profileScenario": str(getattr(decision, "profileScenario", "none") or "none"),
@@ -12057,7 +12132,7 @@ class ChatService:
                 "toolCallCount": 0,
                 "totalDurationMs": int((time.monotonic() - turn_started_at) * 1000),
                 "toolCalls": [],
-                "postProcessingApplied": ["semantic_profile_change_replan"],
+                "postProcessingApplied": [routing_path],
                 "status": "success",
                 "errorType": None,
             }
@@ -12484,37 +12559,38 @@ class ChatService:
                 exc_info=True,
             )
             return None
-        if not _turn_decision_is_current_student_profile_replan(decision):
+        if not _turn_decision_is_profile_replan(decision):
             return None
         profile_replan_source = _compile_profile_replan_from_decision(
             decision,
             request_context=request_context,
         )
-        if not (
-            profile_replan_source.matched
-            and profile_replan_source.side_effect == "profile_change_replan"
-        ):
+        if not profile_replan_source.matched:
             return None
         reply = _build_profile_change_replan_reply(
             content,
             request_context=request_context,
             profile_change_dsl=profile_replan_source.profile_change_dsl,
         )
+        routing_path = _profile_replan_routing_path(
+            profile_replan_source,
+            prefix="turn_decision",
+        )
         new_messages = [
             ModelRequest(parts=[UserPromptPart(content=content)]),
-            ModelResponse(parts=[TextPart(content=reply)], model_name="turn-decision-profile-change-replan"),
+            ModelResponse(parts=[TextPart(content=reply)], model_name=routing_path.replace("_", "-")),
         ]
         turn_event = {
             "sessionId": session_id,
             "userId": user_id,
             "scene": "plan",
-            "routingPath": "turn_decision_profile_change_replan",
+            "routingPath": routing_path,
             "routeDecision": {
                 "source": "turn_decision+proposal_compiler",
                 "matched": True,
                 "confidence": float(getattr(decision, "confidence", 0.0) or 0.0),
                 "taskLayer": str(getattr(decision, "taskLayer", "") or "").strip(),
-                "sideEffect": "profile_change_replan",
+                "sideEffect": profile_replan_source.side_effect,
                 "scopeAnchor": "current_profile",
                 "scenario": str(getattr(decision, "scenario", "") or "").strip(),
                 "reason": str(getattr(decision, "reason", "") or ""),
@@ -12529,7 +12605,7 @@ class ChatService:
             "toolCallCount": 0,
             "totalDurationMs": int((time.monotonic() - turn_started_at) * 1000),
             "toolCalls": ["turn_decision"],
-            "postProcessingApplied": ["turn_decision_profile_change_replan"],
+            "postProcessingApplied": [routing_path],
             "status": "success",
             "errorType": None,
         }
@@ -13431,6 +13507,19 @@ class ChatService:
                     await finish_context_progress()
                     return runtime_intent_hard_cut_reply
 
+            profile_replan_turn_reply = await self._maybe_handle_profile_replan_turn_decision(
+                session_id=session_id,
+                user_id=user_id,
+                content=content,
+                history=history,
+                request_context=request_context,
+                pending_state=backend_pending_state if isinstance(backend_pending_state, dict) else None,
+                turn_started_at=turn_started_at,
+            )
+            if profile_replan_turn_reply is not None:
+                await finish_context_progress()
+                return profile_replan_turn_reply
+
             if (
                 int(getattr(parsed_planning_summary, "ordered_total", 0) or 0) > 0
                 or int(getattr(parsed_planning_summary, "working_total", 0) or 0) > 0
@@ -13491,20 +13580,6 @@ class ChatService:
         if semantic_plan_action_reply is not None:
             await finish_context_progress()
             return semantic_plan_action_reply
-
-        if active_pending is None:
-            profile_replan_turn_reply = await self._maybe_handle_profile_replan_turn_decision(
-                session_id=session_id,
-                user_id=user_id,
-                content=content,
-                history=history,
-                request_context=request_context,
-                pending_state=backend_pending_state if isinstance(backend_pending_state, dict) else None,
-                turn_started_at=turn_started_at,
-            )
-            if profile_replan_turn_reply is not None:
-                await finish_context_progress()
-                return profile_replan_turn_reply
 
         progress_sent = False
         tool_progress_sent = False

@@ -1836,6 +1836,103 @@
     ]
   },
   {
+    "caseId": "node-turn-side-effect-profile-replan-adhoc",
+    "node": "turn_side_effect",
+    "source": "3.2.0 profile replan boundary",
+    "priority": "P0",
+    "prompt": "如果按515分临时看看能报什么",
+    "input": {
+      "planningStateProfile": {
+        "formalPlanPresent": true,
+        "pendingExists": false
+      }
+    },
+    "expected": {
+      "taskLayer": "plan",
+      "sideEffect": "profile_replan_adhoc",
+      "scopeAnchor": "current_profile",
+      "scenario": "profile_adhoc_replan",
+      "profileScenario": "adhoc_scenario",
+      "proposedProfile": {
+        "score": 515
+      }
+    },
+    "actual": {
+      "taskLayer": "plan",
+      "sideEffect": "profile_replan_adhoc",
+      "scopeAnchor": "current_profile",
+      "scenario": "profile_adhoc_replan",
+      "profileScenario": "adhoc_scenario",
+      "proposedProfile": {
+        "score": 515
+      }
+    },
+    "assert": {
+      "exact": [
+        "taskLayer",
+        "sideEffect",
+        "scopeAnchor",
+        "scenario",
+        "profileScenario",
+        "proposedProfile.score"
+      ]
+    },
+    "metricsTags": [
+      "profile_replan_scope_accuracy",
+      "adhoc_profile_non_mutation"
+    ]
+  },
+  {
+    "caseId": "node-turn-side-effect-profile-replan-ambiguous",
+    "node": "turn_side_effect",
+    "source": "3.2.0 profile replan boundary",
+    "priority": "P0",
+    "prompt": "那按湖北两万四这个位次看看",
+    "input": {
+      "planningStateProfile": {
+        "formalPlanPresent": true,
+        "pendingExists": false
+      }
+    },
+    "expected": {
+      "taskLayer": "plan",
+      "sideEffect": "profile_replan_ambiguous",
+      "scopeAnchor": "current_profile",
+      "scenario": "profile_scope_ambiguous",
+      "profileScenario": "ambiguous",
+      "proposedProfile": {
+        "rank": 24000,
+        "province": "湖北"
+      }
+    },
+    "actual": {
+      "taskLayer": "plan",
+      "sideEffect": "profile_replan_ambiguous",
+      "scopeAnchor": "current_profile",
+      "scenario": "profile_scope_ambiguous",
+      "profileScenario": "ambiguous",
+      "proposedProfile": {
+        "rank": 24000,
+        "province": "湖北"
+      }
+    },
+    "assert": {
+      "exact": [
+        "taskLayer",
+        "sideEffect",
+        "scopeAnchor",
+        "scenario",
+        "profileScenario",
+        "proposedProfile.rank",
+        "proposedProfile.province"
+      ]
+    },
+    "metricsTags": [
+      "profile_replan_scope_accuracy",
+      "profile_replan_clarification"
+    ]
+  },
+  {
     "caseId": "node-plan-query-profile-tuition-threshold",
     "node": "plan_query_profile",
     "source": "3.2.0 plan query profile",
