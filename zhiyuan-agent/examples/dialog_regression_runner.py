@@ -204,6 +204,40 @@ STRUCTURED_FOLLOWUP_TYPES = {
     "intentConfirmPopup",
 }
 
+PENDING_APPLY_ROUTING_PATHS = {
+    "direct_pending_plan_confirm",
+    "direct_pending_intent_confirm",
+    "pending_plan_short_text_confirm",
+    "pending_intent_short_text_confirm",
+    "plan_confirmation_card_confirm",
+    "intent_confirmation_card_confirm",
+}
+
+READONLY_APPLIED_ACTION_FAMILIES = {
+    "analyze_adjustment",
+    "query_ordered",
+    "query_state",
+    "review_plan",
+}
+
+READONLY_APPLIED_RESULT_KINDS = {
+    "adjustment_analysis",
+    "ordered_snapshot",
+    "review_result",
+    "status_overview",
+}
+
+PENDING_APPLY_ACTION_FAMILIES = {
+    "apply_existing_pending",
+    "apply_fix_proposal",
+    "apply_selected_intents",
+}
+
+PENDING_APPLY_MESSAGE_CODES = {
+    "constraint_applied",
+    "preference_applied",
+}
+
 FOLLOWUP_USER_TEXT_FIELDS = (
     "title",
     "summary",
@@ -893,6 +927,7 @@ def _summarize_turn_observability(turn_messages: list[dict[str, Any]]) -> dict[s
     routing_paths: list[str] = []
     semantic_router_shadow: dict[str, Any] | None = None
     route_decision: dict[str, Any] | None = None
+    event_timings: dict[str, Any] = {}
 
     for message in turn_messages:
         if not isinstance(message, dict):
@@ -941,6 +976,9 @@ def _summarize_turn_observability(turn_messages: list[dict[str, Any]]) -> dict[s
                     raw_route_decision = data.get("routeDecision")
                     if isinstance(raw_route_decision, dict):
                         route_decision = raw_route_decision
+                    for key in ("totalDurationMs", "llmDurationMs", "toolDurationMs", "toolCallCount"):
+                        if data.get(key) is not None:
+                            event_timings[key] = data.get(key)
 
     for item in tool_calls:
         call_id = str(item.get("toolCallId") or "")
@@ -978,8 +1016,13 @@ def _summarize_turn_observability(turn_messages: list[dict[str, Any]]) -> dict[s
             summary["routingPathCandidates"] = routing_paths
     if semantic_router_shadow:
         summary["semanticRouterShadow"] = semantic_router_shadow
+    if event_timings:
+        summary["eventTimings"] = event_timings
     if route_decision:
         summary["routeDecision"] = route_decision
+        post_apply_evidence_plan = route_decision.get("postApplyEvidencePlan")
+        if isinstance(post_apply_evidence_plan, dict):
+            summary["postApplyEvidencePlan"] = post_apply_evidence_plan
         agent_run = route_decision.get("agentRun")
         if isinstance(agent_run, dict):
             failed_node = str(agent_run.get("failedNode") or "").strip()
@@ -1033,7 +1076,390 @@ def _followup_summary(followups: list[dict[str, Any]]) -> tuple[list[str], list[
 
 def _followup_content_dict(followup: dict[str, Any]) -> dict[str, Any]:
     content = followup.get("content")
-    return content if isinstance(content, dict) else {}
+    if isinstance(content, dict):
+        return content
+    parsed = _parse_json_object(content)
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _followup_type(followup: dict[str, Any]) -> str:
+    content = _followup_content_dict(followup)
+    return str(followup.get("type") or content.get("type") or "").strip()
+
+
+def _runtime_shadow_case_id(case: dict[str, Any], step: dict[str, Any], step_count: int) -> str:
+    for source in (step,):
+        for key in ("profileCaseId", "shadowCaseId", "runtimeShadowCaseId", "caseId", "goldenCaseId"):
+            value = str(source.get(key) or "").strip()
+            if value:
+                return value
+    if step_count == 1:
+        for key in ("profileCaseId", "shadowCaseId", "runtimeShadowCaseId", "caseId", "goldenCaseId"):
+            value = str(case.get(key) or "").strip()
+            if value:
+                return value
+    return ""
+
+
+def _infer_pending_kind_from_card(content: dict[str, Any]) -> str:
+    kind = str(content.get("kind") or "").strip()
+    if kind in {"intent_change", "plan_mutation"}:
+        return kind
+    action_family = str(content.get("actionFamily") or "").strip()
+    if action_family == "apply_selected_intents":
+        return "intent_change"
+    if action_family:
+        return "plan_mutation"
+    return kind or "unknown_pending"
+
+
+def _execution_kind_for_pending(pending_kind: str) -> str:
+    if pending_kind == "plan_mutation":
+        return "pending_plan_mutation"
+    if pending_kind == "intent_change":
+        return "pending_intent_change"
+    return ""
+
+
+def _pending_cards_from_followups(followups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    cards: list[dict[str, Any]] = []
+    for followup in followups:
+        if _followup_type(followup) != "pendingConfirmationCard":
+            continue
+        content = _followup_content_dict(followup)
+        kind = _infer_pending_kind_from_card(content)
+        card: dict[str, Any] = {"kind": kind}
+        for source_key, target_key in (
+            ("pendingId", "pendingId"),
+            ("actionFamily", "actionFamily"),
+            ("targetView", "targetView"),
+        ):
+            value = str(content.get(source_key) or "").strip()
+            if value:
+                card[target_key] = value
+        execution_kind = _execution_kind_for_pending(kind)
+        if execution_kind:
+            card["executionPayload"] = {"kind": execution_kind}
+        cards.append(card)
+    return cards
+
+
+def _workspace_refresh_targets_from_followups(followups: list[dict[str, Any]]) -> list[str]:
+    targets: list[str] = []
+    for followup in followups:
+        if _followup_type(followup) != "planningWorkspaceAction":
+            continue
+        content = _followup_content_dict(followup)
+        if content.get("refresh") is False:
+            continue
+        _add_unique(targets, content.get("targetView"))
+    return targets
+
+
+def _turn_applied_existing_pending(turn_observability: dict[str, Any]) -> bool:
+    routing_path = str(turn_observability.get("routingPath") or "").strip()
+    if routing_path in PENDING_APPLY_ROUTING_PATHS:
+        return True
+    for item in turn_observability.get("toolCalls") or []:
+        if not isinstance(item, dict) or item.get("applied") is not True:
+            continue
+        action_family = str(item.get("actionFamily") or "").strip()
+        result_kind = str(item.get("resultKind") or "").strip()
+        message_code = str(item.get("messageCode") or "").strip()
+        if action_family in READONLY_APPLIED_ACTION_FAMILIES or result_kind in READONLY_APPLIED_RESULT_KINDS:
+            continue
+        if action_family in PENDING_APPLY_ACTION_FAMILIES or message_code in PENDING_APPLY_MESSAGE_CODES:
+            return True
+    return False
+
+
+def _turn_has_post_apply_evidence_plan(turn_observability: dict[str, Any]) -> bool:
+    if isinstance(turn_observability.get("postApplyEvidencePlan"), dict):
+        return True
+    route_decision = turn_observability.get("routeDecision")
+    return isinstance(route_decision, dict) and isinstance(route_decision.get("postApplyEvidencePlan"), dict)
+
+
+def _turn_route_decision_route(turn_observability: dict[str, Any]) -> str:
+    route_decision = turn_observability.get("routeDecision")
+    if not isinstance(route_decision, dict):
+        return ""
+    return str(route_decision.get("route") or route_decision.get("sideEffect") or "").strip()
+
+
+def _runtime_reply_focus(turn_observability: dict[str, Any]) -> list[str]:
+    focus_values: list[str] = []
+    for value in _as_string_list(turn_observability.get("replyFocus")):
+        _add_unique(focus_values, value)
+    route_decision = turn_observability.get("routeDecision")
+    if isinstance(route_decision, dict) and route_decision.get("unsupportedAction"):
+        _add_unique(focus_values, str(route_decision.get("unsupportedAction") or ""))
+    for item in turn_observability.get("toolCalls") or []:
+        if not isinstance(item, dict):
+            continue
+        for value in _as_string_list(item.get("replyFocus")):
+            _add_unique(focus_values, value)
+    return focus_values
+
+
+def _runtime_route_presentation(turn_observability: dict[str, Any]) -> str:
+    route_decision = turn_observability.get("routeDecision")
+    if not isinstance(route_decision, dict):
+        return ""
+    display_payload = route_decision.get("displayPayload")
+    if isinstance(display_payload, dict):
+        value = str(display_payload.get("presentation") or "").strip()
+        if value:
+            return value
+    return str(route_decision.get("displayPresentation") or route_decision.get("presentation") or "").strip()
+
+
+def _runtime_observation_profile(case: dict[str, Any], step: dict[str, Any]) -> dict[str, Any]:
+    for source in (step, case):
+        value = source.get("runtimeObservationProfile")
+        if isinstance(value, dict):
+            return dict(value)
+        text = str(value or "").strip()
+        if text:
+            return {"type": text}
+    return {}
+
+
+def _runtime_latency_profile_payload(record: dict[str, Any], turn_observability: dict[str, Any]) -> dict[str, Any]:
+    route_decision = turn_observability.get("routeDecision")
+    if not isinstance(route_decision, dict):
+        route_decision = {}
+    event_timings = turn_observability.get("eventTimings")
+    if not isinstance(event_timings, dict):
+        event_timings = {}
+    agent_run = route_decision.get("agentRun")
+    if not isinstance(agent_run, dict):
+        agent_run = {}
+    node_timings = [
+        item
+        for item in (agent_run.get("nodeTimings") or [])
+        if isinstance(item, dict)
+    ]
+    model_node_count = sum(
+        1
+        for item in node_timings
+        if "model" in str(item.get("node") or "").lower()
+    )
+    tool_node_count = sum(
+        1
+        for item in node_timings
+        if "tool" in str(item.get("node") or "").lower()
+    )
+    return {
+        "profileType": "latency_profile",
+        "decompose": ["model_planning", "tool_calls", "final_reply_generation"],
+        "elapsedMs": record.get("elapsedMs"),
+        "firstMessageMs": record.get("firstMessageMs"),
+        "finalMessageMs": record.get("finalMessageMs"),
+        "toolCallCount": turn_observability.get("toolCallCount") or event_timings.get("toolCallCount"),
+        "toolReturnCount": turn_observability.get("toolReturnCount"),
+        "toolDurationMs": route_decision.get("toolDurationMs") or event_timings.get("toolDurationMs"),
+        "llmDurationMs": route_decision.get("llmDurationMs") or event_timings.get("llmDurationMs"),
+        "routeTotalDurationMs": route_decision.get("totalDurationMs") or event_timings.get("totalDurationMs"),
+        "modelNodeCount": model_node_count or None,
+        "toolNodeCount": tool_node_count or None,
+        "agentRun": agent_run if agent_run else None,
+    }
+
+
+def _runtime_side_effect_and_output(
+    *,
+    pending_cards: list[dict[str, Any]],
+    workspace_targets: list[str],
+    turn_observability: dict[str, Any],
+    planning_profile: dict[str, Any],
+    record: dict[str, Any],
+) -> tuple[str, str, str, str]:
+    if record.get("error") or record.get("wsError"):
+        return "error", "error", "none", ""
+    route = _turn_route_decision_route(turn_observability)
+    route_decision = turn_observability.get("routeDecision")
+    if isinstance(route_decision, dict):
+        route_side_effect = str(route_decision.get("sideEffect") or "").strip()
+        route_action_family = str(route_decision.get("actionFamily") or "").strip()
+        if (
+            route == "local_plan_action_unsupported"
+            or route_side_effect == "plan_preview_or_clarification"
+        ):
+            return (
+                route_side_effect or "plan_preview_or_clarification",
+                "plan_mutation_or_unsupported",
+                "none",
+                "conditional_plan_mutation",
+            )
+        if route_action_family == "pin_or_lock_unit" and route_decision.get("unsupportedAction"):
+            return (
+                "plan_preview_or_clarification",
+                "plan_mutation_or_unsupported",
+                "none",
+                "conditional_plan_mutation",
+            )
+    if route == "apply_pending_then_new_request":
+        pending_type = "none"
+        if len(pending_cards) == 1:
+            pending_type = str(pending_cards[0].get("kind") or "unknown_pending").strip()
+        elif len(pending_cards) > 1:
+            pending_type = "multiple"
+        return (
+            "apply_pending_then_new_request",
+            "composite",
+            pending_type,
+            "apply_existing_pending_then_followup",
+        )
+    if route == "needs_plan_first":
+        return "needs_plan_first", "readonly", "none", ""
+    if len(pending_cards) > 1:
+        return "multiple_pending", "multiple_pending", "multiple", ""
+    if len(pending_cards) == 1:
+        pending_type = str(pending_cards[0].get("kind") or "unknown_pending").strip()
+        execution_kind = _execution_kind_for_pending(pending_type)
+        if pending_type == "intent_change":
+            return "intent_pending", "intent_change", pending_type, execution_kind
+        if pending_type == "plan_mutation":
+            return "plan_preview", "plan_mutation", pending_type, execution_kind
+        return "unknown_pending", "unknown_pending", pending_type, execution_kind
+    if _turn_applied_existing_pending(turn_observability):
+        if route == "apply_pending_then_readonly" or _turn_has_post_apply_evidence_plan(turn_observability):
+            return (
+                "apply_pending_then_readonly",
+                "apply_then_readonly",
+                "none",
+                "apply_existing_pending_then_readonly",
+            )
+        return "apply_existing_pending", "apply_then_readonly", "none", "apply_existing_pending_then_readonly"
+    if bool(planning_profile.get("pendingExists")):
+        return "readonly_while_pending", "readonly", "unchanged_existing_pending", ""
+    return "readonly", "readonly", "none", ""
+
+
+def _build_runtime_shadow_observation(
+    case: dict[str, Any],
+    step: dict[str, Any],
+    record: dict[str, Any],
+    followups: list[dict[str, Any]],
+    step_count: int,
+) -> dict[str, Any] | None:
+    case_id = _runtime_shadow_case_id(case, step, step_count)
+    if not case_id:
+        return None
+    turn_observability = record.get("turnObservability")
+    if not isinstance(turn_observability, dict):
+        turn_observability = {}
+    planning_profile = case.get("planningStateProfile")
+    if not isinstance(planning_profile, dict):
+        planning_profile = {}
+    pending_cards = _pending_cards_from_followups(followups)
+    workspace_targets = _workspace_refresh_targets_from_followups(followups)
+    side_effect, output_type, pending_type, execution_kind = _runtime_side_effect_and_output(
+        pending_cards=pending_cards,
+        workspace_targets=workspace_targets,
+        turn_observability=turn_observability,
+        planning_profile=planning_profile,
+        record=record,
+    )
+    if pending_type == "multiple":
+        presentation = "multiple_cards"
+    elif pending_type in {"intent_change", "plan_mutation"}:
+        presentation = "confirmation_card"
+    elif output_type == "error":
+        presentation = "error"
+    elif output_type == "plan_mutation_or_unsupported":
+        presentation = "conditional_options"
+    else:
+        presentation = "readonly_answer"
+    route_presentation = _runtime_route_presentation(turn_observability)
+    if route_presentation:
+        presentation = route_presentation
+
+    runtime: dict[str, Any] = {
+        "sideEffect": side_effect,
+        "outputType": output_type,
+        "pendingType": pending_type,
+        "displayPayload": {"presentation": presentation},
+        "replyFocus": _runtime_reply_focus(turn_observability),
+        "workspaceRefreshTargets": workspace_targets,
+    }
+    observation_profile = _runtime_observation_profile(case, step)
+    if (
+        str(observation_profile.get("type") or "").strip() == "latency_profile"
+        and not record.get("error")
+        and not record.get("wsError")
+    ):
+        latency_profile = _runtime_latency_profile_payload(record, turn_observability)
+        runtime["outputType"] = "latency_profile"
+        runtime["displayPayload"] = {"presentation": "diagnostic"}
+        runtime["diagnosticPayload"] = latency_profile
+        runtime["evidenceContract"] = {
+            "requiredInputs": ["agent_observability"],
+            "steps": ["decompose_model_planning", "decompose_tool_calls", "decompose_final_reply"],
+            "toolBudget": observation_profile.get("toolBudget") if isinstance(observation_profile.get("toolBudget"), dict) else {},
+        }
+        for value in _as_string_list(observation_profile.get("replyFocus") or observation_profile.get("targetIssue")):
+            _add_unique(runtime["replyFocus"], value)
+    if execution_kind:
+        runtime["executionPayload"] = {"kind": execution_kind}
+    if pending_cards:
+        runtime["pendingCards"] = pending_cards
+    if turn_observability:
+        runtime["turnObservability"] = {
+            key: turn_observability[key]
+            for key in (
+                "routingPath",
+                "routingPathCandidates",
+                "toolCallCount",
+                "toolReturnCount",
+                "actionFamilies",
+                "resultKinds",
+                "replyFocus",
+                "postApplyEvidencePlan",
+                "routeDecision",
+                "eventTimings",
+            )
+            if key in turn_observability
+        }
+    post_apply_evidence_plan = turn_observability.get("postApplyEvidencePlan")
+    if not isinstance(post_apply_evidence_plan, dict):
+        route_decision = turn_observability.get("routeDecision")
+        if isinstance(route_decision, dict):
+            post_apply_evidence_plan = route_decision.get("postApplyEvidencePlan")
+    if isinstance(post_apply_evidence_plan, dict):
+        runtime["postApplyEvidencePlan"] = post_apply_evidence_plan
+        runtime.setdefault("turnObservability", {})["postApplyEvidencePlan"] = post_apply_evidence_plan
+    if record.get("error"):
+        runtime["error"] = record.get("error")
+    if record.get("wsError"):
+        runtime["wsError"] = record.get("wsError")
+    return {
+        "caseId": case_id,
+        "actualSource": "dialog_regression_runner",
+        "case": record.get("case"),
+        "stepIndex": record.get("stepIndex"),
+        "sessionId": record.get("sessionId"),
+        "prompt": record.get("prompt"),
+        "elapsedMs": record.get("elapsedMs"),
+        "runtime": runtime,
+    }
+
+
+def _build_runtime_shadow_summary(observations: list[dict[str, Any]]) -> dict[str, Any]:
+    by_side_effect: dict[str, int] = {}
+    by_pending_type: dict[str, int] = {}
+    for observation in observations:
+        runtime = observation.get("runtime") if isinstance(observation, dict) else {}
+        if not isinstance(runtime, dict):
+            continue
+        _bump(by_side_effect, runtime.get("sideEffect"))
+        _bump(by_pending_type, runtime.get("pendingType"))
+    return {
+        "observations": len(observations),
+        "bySideEffect": by_side_effect,
+        "byPendingType": by_pending_type,
+    }
 
 
 def _as_string_list(value: Any) -> list[str]:
@@ -1257,7 +1683,35 @@ def _check_tool_assertions(
     """Check tool-chain assertions from the case step definition."""
     violations: list[str] = []
     prompt_label = step.get("prompt") or step.get("text") or ""
+    turn_observability = turn_observability if isinstance(turn_observability, dict) else {}
     tool_names = _tool_names_from_observability(turn_observability)
+
+    expected_routing_path = str(step.get("expectedRoutingPath") or "").strip()
+    if expected_routing_path:
+        actual_routing_path = str(turn_observability.get("routingPath") or "").strip()
+        if actual_routing_path != expected_routing_path:
+            violations.append(
+                f"{case_name} session={session_id} prompt={prompt_label}: "
+                f"expectedRoutingPath FAILED — expected {expected_routing_path} got {actual_routing_path}"
+            )
+
+    required_action_families = [str(item) for item in step.get("assertActionFamiliesContain") or []]
+    action_families = [str(item) for item in turn_observability.get("actionFamilies") or []]
+    missing_action_families = [name for name in required_action_families if name not in action_families]
+    if missing_action_families:
+        violations.append(
+            f"{case_name} session={session_id} prompt={prompt_label}: "
+            f"assertActionFamiliesContain FAILED — missing {missing_action_families} from {action_families}"
+        )
+
+    required_result_kinds = [str(item) for item in step.get("assertResultKindsContain") or []]
+    result_kinds = [str(item) for item in turn_observability.get("resultKinds") or []]
+    missing_result_kinds = [name for name in required_result_kinds if name not in result_kinds]
+    if missing_result_kinds:
+        violations.append(
+            f"{case_name} session={session_id} prompt={prompt_label}: "
+            f"assertResultKindsContain FAILED — missing {missing_result_kinds} from {result_kinds}"
+        )
 
     expected_tool_names = [str(item) for item in step.get("expectedToolNames") or []]
     if expected_tool_names and tool_names != expected_tool_names:
@@ -1397,6 +1851,33 @@ def _record_failure_reasons(record: dict[str, Any]) -> list[str]:
     return reasons
 
 
+def _fixture_type_from_contract(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        return str(value.get("type") or "").strip()
+    return ""
+
+
+def _add_fixture_and_root_cause_fields(
+    record: dict[str, Any],
+    case: dict[str, Any],
+    step: dict[str, Any] | None = None,
+) -> None:
+    fixture_contract = case.get("fixtureContract")
+    fixture_type = _fixture_type_from_contract(fixture_contract)
+    if fixture_type:
+        record["fixtureType"] = fixture_type
+        if isinstance(fixture_contract, dict):
+            record["fixtureContract"] = fixture_contract
+    root_cause = ""
+    if step:
+        root_cause = str(step.get("expectedRootCause") or "").strip()
+    root_cause = root_cause or str(case.get("expectedRootCause") or case.get("rootCause") or "").strip()
+    if root_cause:
+        record["expectedRootCause"] = root_cause
+
+
 def _build_metrics_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
     failed_records = [
         record
@@ -1407,6 +1888,18 @@ def _build_metrics_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
     for record in failed_records:
         for reason in _record_failure_reasons(record):
             failed_by_reason[reason] = failed_by_reason.get(reason, 0) + 1
+    by_fixture: dict[str, int] = {}
+    by_expected_root_cause: dict[str, int] = {}
+    failed_by_expected_root_cause: dict[str, int] = {}
+    for record in records:
+        fixture_type = str(record.get("fixtureType") or "").strip()
+        if fixture_type:
+            by_fixture[fixture_type] = by_fixture.get(fixture_type, 0) + 1
+        root_cause = str(record.get("expectedRootCause") or "").strip()
+        if root_cause:
+            by_expected_root_cause[root_cause] = by_expected_root_cause.get(root_cause, 0) + 1
+            if _record_failure_reasons(record):
+                failed_by_expected_root_cause[root_cause] = failed_by_expected_root_cause.get(root_cause, 0) + 1
     elapsed_values = [
         int(record["elapsedMs"])
         for record in records
@@ -1426,6 +1919,9 @@ def _build_metrics_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
         "successfulSteps": len(elapsed_values),
         "failedSteps": len(failed_records),
         "failedByReason": failed_by_reason,
+        "byFixture": by_fixture,
+        "byExpectedRootCause": by_expected_root_cause,
+        "failedByExpectedRootCause": failed_by_expected_root_cause,
         "elapsed": _duration_summary(elapsed_values),
         "slowest": [
             {
@@ -1514,10 +2010,12 @@ async def _run_cases(
     backend_db_password: str = DEFAULT_BACKEND_DB_PASSWORD,
     backend_db_name: str = DEFAULT_BACKEND_DB_NAME,
     backend_volunteer_data_dir: str = DEFAULT_BACKEND_VOLUNTEER_DATA_DIR,
+    runtime_shadow_output: str | None = None,
 ) -> None:
     failures: list[str] = []
     warnings: list[str] = []
     metrics_records: list[dict[str, Any]] = []
+    runtime_shadow_observations: list[dict[str, Any]] = []
     for case in cases:
         name = str(case.get("name") or f"session-{case.get('sessionId')}")
         session_id = str(case["sessionId"])
@@ -1665,6 +2163,7 @@ async def _run_cases(
                 steps.append(item)
             else:
                 steps.append({"prompt": str(item)})
+        step_count = len(steps)
 
         for step_index, step in enumerate(steps, start=1):
             prompt = str(step.get("prompt") or step.get("text") or "")
@@ -1690,6 +2189,7 @@ async def _run_cases(
                     "elapsedMs": elapsed_ms,
                     "error": f"{type(exc).__name__}: {exc}",
                 }
+                _add_fixture_and_root_cause_fields(error_record, case, step)
                 if history_db:
                     history = _load_history_json(Path(history_db), session_id)
                     turn_observability = _summarize_turn_observability(
@@ -1697,6 +2197,16 @@ async def _run_cases(
                     )
                     if turn_observability.get("historyMessages"):
                         error_record["turnObservability"] = turn_observability
+                shadow_observation = _build_runtime_shadow_observation(
+                    case,
+                    step,
+                    error_record,
+                    [],
+                    step_count,
+                )
+                if shadow_observation:
+                    error_record["runtimeShadowCaseId"] = shadow_observation["caseId"]
+                    runtime_shadow_observations.append(shadow_observation)
                 metrics_records.append(error_record)
                 print(f"error={type(exc).__name__}: {exc} elapsedMs={elapsed_ms}")
                 continue
@@ -1713,6 +2223,7 @@ async def _run_cases(
                 "thinkingMessages": sum(1 for message in primary if message.get("type") == "thinking"),
                 "followupMessages": len(followups),
             }
+            _add_fixture_and_root_cause_fields(record, case, step)
             if keep_response_text:
                 record["responseText"] = _extract_text(primary)
                 record["thinkingText"] = _extract_thinking(primary)
@@ -1773,6 +2284,16 @@ async def _run_cases(
                 record["performanceViolations"] = perf_failures
             if perf_warnings:
                 record["performanceWarnings"] = perf_warnings
+            shadow_observation = _build_runtime_shadow_observation(
+                case,
+                step,
+                record,
+                followups,
+                step_count,
+            )
+            if shadow_observation:
+                record["runtimeShadowCaseId"] = shadow_observation["caseId"]
+                runtime_shadow_observations.append(shadow_observation)
             metrics_records.append(record)
             print(
                 "metrics="
@@ -1786,8 +2307,12 @@ async def _run_cases(
                 print("followups=" + json.dumps(followups, ensure_ascii=False))
         print()
     summary = _build_metrics_summary(metrics_records)
+    runtime_shadow_summary = _build_runtime_shadow_summary(runtime_shadow_observations)
     print("=== METRICS SUMMARY ===")
     print(json.dumps(summary, ensure_ascii=False, indent=2))
+    if runtime_shadow_observations:
+        print("=== RUNTIME SHADOW SUMMARY ===")
+        print(json.dumps(runtime_shadow_summary, ensure_ascii=False, indent=2))
     if warnings:
         print("=== WARNINGS ===")
         for warning in warnings:
@@ -1798,8 +2323,23 @@ async def _run_cases(
                 {
                     "records": metrics_records,
                     "summary": summary,
+                    "runtimeShadowSummary": runtime_shadow_summary,
                     "warnings": warnings,
                     "failures": failures,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    if runtime_shadow_output:
+        Path(runtime_shadow_output).write_text(
+            json.dumps(
+                {
+                    "observations": runtime_shadow_observations,
+                    "summary": runtime_shadow_summary,
+                    "source": "dialog_regression_runner",
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -1826,6 +2366,10 @@ def main() -> None:
     parser.add_argument("--open-timeout", type=float, default=30, help="websocket opening handshake timeout in seconds")
     parser.add_argument("--response-timeout", type=float, default=120, help="timeout in seconds while waiting for each prompt response")
     parser.add_argument("--metrics-output", help="write per-step latency and assertion summary to JSON")
+    parser.add_argument(
+        "--runtime-shadow-output",
+        help="write readonly runtime observations for runtime_shadow_diff.py; does not change dialog behavior",
+    )
     parser.add_argument(
         "--session-offset",
         type=int,
@@ -1947,6 +2491,7 @@ def main() -> None:
             backend_db_password=args.backend_db_password,
             backend_db_name=args.backend_db_name,
             backend_volunteer_data_dir=args.backend_volunteer_data_dir,
+            runtime_shadow_output=args.runtime_shadow_output,
         )
     )
 

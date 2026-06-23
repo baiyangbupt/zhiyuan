@@ -1,0 +1,25 @@
+{
+  "expected": {
+    "summary": {
+      "total": 8,
+      "missing": 0,
+      "legacyRiskCount": 0,
+      "deleteAfterCutCount": 0,
+      "byKind": {
+        "sink_keep": 1,
+        "compiler_sink_after_cut": 4,
+        "compiler_entry_after_cut": 2,
+        "execution_keep": 1
+      }
+    }
+  },
+  "assert": {
+    "exact": [
+      "summary.total",
+      "summary.missing",
+      "summary.legacyRiskCount",
+      "summary.deleteAfterCutCount",
+      "summary.byKind"
+    ]
+  }
+}

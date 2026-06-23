@@ -99,6 +99,10 @@ class IntentSideEffectDecision(BaseModel):
     decision: str = Field(default="intent_preview")
     confidence: float = Field(default=0.0)
     constraintIntentType: str = Field(default=CONSTRAINT_INTENT_DEFAULT)
+    preferenceStrength: dict[str, list[str]] = Field(default_factory=dict)
+    preferenceScope: str | None = None
+    entityPolaritySpans: list[dict[str, Any]] = Field(default_factory=list)
+    admissionPath: str | None = None
     reason: str = ""
 
     @field_validator("confidence", mode="before")
@@ -113,6 +117,48 @@ class IntentSideEffectDecision(BaseModel):
             if normalized in {"low", "低", "低置信"}:
                 return 0.35
         return value
+
+    @field_validator("preferenceStrength", mode="before")
+    @classmethod
+    def _coerce_preference_strength(cls, value: Any) -> dict[str, list[str]]:
+        if not isinstance(value, dict):
+            return {}
+        result: dict[str, list[str]] = {}
+        for key, raw_values in value.items():
+            name = str(key or "").strip()
+            if not name:
+                continue
+            values = _as_string_list(raw_values)
+            deduped: list[str] = []
+            for item in values:
+                text = str(item or "").strip()
+                if text and text not in deduped:
+                    deduped.append(text)
+            if deduped:
+                result[name] = deduped
+        return result
+
+    @field_validator("entityPolaritySpans", mode="before")
+    @classmethod
+    def _coerce_entity_polarity_spans(cls, value: Any) -> list[dict[str, Any]]:
+        if not isinstance(value, list):
+            return []
+        result: list[dict[str, Any]] = []
+        for item in value:
+            if isinstance(item, dict):
+                result.append(dict(item))
+        return result
+
+    @field_validator("preferenceScope", "admissionPath", mode="before")
+    @classmethod
+    def _coerce_optional_text(cls, value: Any) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, list):
+            values = _as_string_list(value)
+            return values[0] if values else None
+        text = str(value or "").strip()
+        return text or None
 
 
 def _get_intent_side_effect_llm_client() -> LLMClient:
@@ -143,13 +189,41 @@ def _get_intent_side_effect_agent() -> Agent[None, str]:
                 "这类话术通常需要先做适配分析和取舍澄清，不能把所有兴趣陈述都当作写入请求。"
                 "如果用户是在要求系统以后对某个具体专业、院校、地域或方向多看、多关注、优先看、后续多给机会，"
                 "这属于改变后续推荐口径，应判为 intent_preview；不要因为句子里有征询语气就降级。"
-                "同时给出 constraintIntentType：only_keep 表示只保留/只要/限定在某个范围，其他不要；"
+                "同时给出 3.2.0 profile 字段：preferenceStrength、preferenceScope、entityPolaritySpans、admissionPath。"
+                "preferenceStrength 必须是“强度 -> 实体列表”的对象，禁止输出“实体 -> 强度列表”。"
+                "正确示例：{\"primary\":[\"网络与新媒体\"],\"acceptable\":[\"跨境电子商务\"]}；"
+                "错误示例：{\"网络与新媒体\":[\"primary\"],\"跨境电子商务\":[\"acceptable\"]}。"
+                "preferenceStrength 的 key 只能用 primary、preferred、acceptable、must_have、only_keep、exclude_soft、exclude_hard；"
+                "primary 只表示用户明确说优先、首选、重点、最想要；preferred 表示普通偏好、感兴趣、加到意向或加入后续参考；"
+                "acceptable 表示也可以、也可以考虑、也能接受、作为备选可以，must_have 表示方案里至少要有，"
+                "only_keep 表示只保留/限定范围，exclude_hard 表示明确不要，exclude_soft 表示不太倾向。"
+                "“加到意向/加意向/记到意向”本身不是 primary，除非同一句还明确说优先、首选、重点。"
+                "“也可以考虑/也可以/也能接受”本身不是 preferred，必须归到 acceptable。"
+                "preferenceScope 只在用户把偏好限定到冲/稳/保/保底等方案层级时填写。"
+                "entityPolaritySpans 记录用户原文里的实体极性，元素包含 entity、entityType、polarity、strength；"
+                "entityPolaritySpans 中的 entity 应使用规范实体名；例如“跨境电商”写成“跨境电子商务”，“口腔”写成“口腔医学”。"
+                "输入里的 structuredIntents 是本轮已经抽取出的实体候选；当 decision=intent_preview 时，"
+                "必须把 positiveMajors/positiveSchools/positive region/career 等正向实体保留到 preferenceStrength 中，"
+                "没有更强语义时放 preferred，不要只输出抽象类型词而丢掉这些实体。"
+                "如果 structuredIntents.school.positiveSchools 非空，这些具体院校名必须原样进入 preferenceStrength.preferred；"
+                "不能解释为“没有更强语义支撑所以不输出”，也不能用“公办/民办”等抽象性质替代具体院校。"
+                "例如 structuredIntents.school.positiveSchools=[\"合肥工业大学\",\"南京邮电大学\"] 且用户说“保底要公办不要民办”，"
+                "应输出 preferenceStrength.preferred=[\"合肥工业大学\",\"南京邮电大学\"]，preferenceStrength.exclude_hard=[\"民办\"]，preferenceScope=\"保底\"。"
+                "该例中禁止输出 preferenceStrength.only_keep=[\"公办\"]，也禁止 constraintIntentType=only_keep；"
+                "只有用户明确说“只要公办/只保留公办/仅限公办/其他不要”时，才可把公办归为 only_keep。"
+                "但“保底要公办不要民办”这类已经是在要求改变后续推荐口径，decision 必须是 intent_preview；"
+                "不要因为公办是否 only_keep 存在边界就降级为 mixed_answer_then_ask 或 analysis_only。"
+                "只有用户问“公办和民办怎么取舍/要不要公办/只要公办会怎样”等分析问题时，才先解释或追问。"
+                "公办/民办这类院校性质可以作为 value 输出，但不要把 key 写成 schoolNature、school_type，也不要把“民办”改写成“民办高校”。"
+                "admissionPath 只在强基、综评、专项等特殊录取路径明确出现时填写。"
+                "不要只输出旧字段替代这些字段，不能用 constraintIntentType 代替 preferenceStrength。"
+                "为了当前运行兼容，仍同时给出 constraintIntentType：only_keep 表示只保留/只要/限定在某个范围，其他不要；"
                 "must_have 表示方案里至少要有这个方向，但其他方向可以保留；"
                 "default 表示普通偏好或排除，不要猜测。只有用户语义明确时才输出 only_keep 或 must_have。"
                 "decision 只能是 intent_preview、analysis_only、mixed_answer_then_ask。"
                 "intent_preview 表示可以生成待采纳内容；analysis_only 表示只应回答分析；"
                 "mixed_answer_then_ask 表示先解释边界，再自然询问是否需要记录，不能直接写待确认。"
-                "输出 JSON：decision, confidence, constraintIntentType, reason。"
+                "输出 JSON：decision, confidence, constraintIntentType, preferenceStrength, preferenceScope, entityPolaritySpans, admissionPath, reason。"
             ),
         )
     return _intent_side_effect_agent
@@ -164,6 +238,10 @@ def _normalize_intent_side_effect_decision(decision: IntentSideEffectDecision) -
         decision=normalized,
         confidence=confidence,
         constraintIntentType=_normalize_constraint_intent_type(decision.constraintIntentType),
+        preferenceStrength=decision.preferenceStrength,
+        preferenceScope=str(decision.preferenceScope or "").strip() or None,
+        entityPolaritySpans=decision.entityPolaritySpans,
+        admissionPath=str(decision.admissionPath or "").strip() or None,
         reason=decision.reason,
     )
 _INTENT_CONFIRM_UTTERANCE_PHRASES = {
@@ -2587,8 +2665,17 @@ _LOCAL_MAJOR_COMPARE_SUFFIX_PATTERNS = (
     r"(?:哪个更适合我|哪个更适合|哪个更值得继续看|哪个更值得学|哪个更好|哪个好)$",
     r"(?:怎么选|怎么兼顾)$",
 )
-_LOCAL_MAJOR_CLAUSE_SPLIT_PATTERN = re.compile(r"[，,。；;！？?!\n]+|(?:但是|但|不过|然后|同时)")
+_LOCAL_MAJOR_CLAUSE_SPLIT_PATTERN = re.compile(
+    r"[，,。；;！？?!\n]+|(?:但是|但|不过|然后|同时)|\s+(?=排除)|(?<=意向)(?=排除)"
+)
 _LOCAL_MAJOR_POSITIVE_MARKERS = (
+    "加到意向",
+    "加入意向",
+    "加进意向",
+    "记到意向",
+    "记进意向",
+    "加意向",
+    "作为意向",
     "能接受",
     "可以接受",
     "还能接受",

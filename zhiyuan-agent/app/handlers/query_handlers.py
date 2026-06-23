@@ -103,6 +103,118 @@ def _clean_plan_item_for_user(value: Any) -> str:
     return re.sub(r"@(\d+)", r"第\1位", text).strip()
 
 
+def _ordered_plan_items_from_state(planning_state: dict[str, Any]) -> list[dict[str, Any]]:
+    ordered_state = (planning_state.get("orderedPlanState") or {}) if isinstance(planning_state, dict) else {}
+    items = ordered_state.get("items") or ordered_state.get("units") or []
+    return [item for item in items if isinstance(item, dict)]
+
+
+def _normalize_ordered_tier(value: Any) -> str:
+    text = str(value or "").strip()
+    aliases = {
+        "保底": "保",
+        "保区": "保",
+        "兜底": "保",
+        "冲档": "冲",
+        "冲区": "冲",
+        "稳档": "稳",
+        "稳区": "稳",
+    }
+    return aliases.get(text, text)
+
+
+def _ordered_item_tier(item: dict[str, Any]) -> str:
+    for key in ("tier", "subTier", "majorTier", "bucket"):
+        tier = _normalize_ordered_tier(item.get(key))
+        if tier:
+            return tier
+    for nested in item.get("majorItems") or item.get("selectedMajors") or item.get("items") or []:
+        if not isinstance(nested, dict):
+            continue
+        tier = _ordered_item_tier(nested)
+        if tier:
+            return tier
+    return ""
+
+
+def _format_probability(value: Any) -> str:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return "-"
+    if numeric < 0:
+        return "-"
+    return f"{int(numeric)}%" if numeric.is_integer() else f"{numeric:.1f}%"
+
+
+def _ordered_item_probability(item: dict[str, Any]) -> Any:
+    for key in ("admissionRatio", "schoolEnrollRatio", "enrollRatio", "admissionProbability"):
+        if item.get(key) is not None:
+            return item.get(key)
+    values: list[Any] = []
+    for nested in item.get("majorItems") or item.get("selectedMajors") or item.get("items") or []:
+        if not isinstance(nested, dict):
+            continue
+        value = _ordered_item_probability(nested)
+        if value is not None:
+            values.append(value)
+    return values[0] if values else None
+
+
+def _ordered_item_position(item: dict[str, Any]) -> str:
+    value = item.get("position") or item.get("rank") or item.get("order")
+    try:
+        position = int(value)
+    except (TypeError, ValueError):
+        return ""
+    return f"，第{position}位" if position > 0 else ""
+
+
+def _ordered_slice_item_snippet(item: dict[str, Any]) -> str:
+    school_name = str(item.get("schoolName") or "未知院校").strip()
+    major_name = str(item.get("majorName") or item.get("majorNames") or "未知专业").strip()
+    tier = _ordered_item_tier(item) or "未知"
+    ratio = _format_probability(_ordered_item_probability(item))
+    name = f"{school_name}-{major_name}" if major_name else school_name
+    return f"{name}（{tier}，录取率{ratio}{_ordered_item_position(item)}）"
+
+
+async def _build_ordered_slice_summary(
+    ctx: RunContext[RequestContext],
+    filters: dict[str, Any],
+) -> tuple[str, dict[str, Any]]:
+    session_id = ctx.deps.sessionid
+    planning_state = await _get_planning_state_with_latest_profile(session_id)
+    items = _ordered_plan_items_from_state(planning_state)
+    enriched_items = await _enrich_plan_items_with_candidate_metadata(session_id, items)
+    tier = _normalize_ordered_tier(filters.get("tier"))
+    matched = [item for item in enriched_items if not tier or _ordered_item_tier(item) == tier]
+    slice_mode = str(filters.get("slice") or "head").strip().lower()
+    try:
+        limit = int(filters.get("limit") or 5)
+    except (TypeError, ValueError):
+        limit = 5
+    limit = max(1, min(10, limit))
+    selected = matched[-limit:] if slice_mode == "tail" else matched[:limit]
+    direction_text = "最后" if slice_mode == "tail" else "前"
+    tier_text = f"{tier}档" if tier else "当前方案"
+    facts = {
+        "tier": tier,
+        "slice": slice_mode,
+        "limit": limit,
+        "matched_count": len(matched),
+        "selected_count": len(selected),
+        "items": selected,
+    }
+    if not matched:
+        return f"当前方案里暂时没有命中{tier_text}志愿。", facts
+    snippets = "；".join(_ordered_slice_item_snippet(item) for item in selected)
+    return (
+        f"当前方案里共命中 {len(matched)} 条{tier_text}志愿。"
+        f"下面展示{direction_text} {len(selected)} 条：{snippets}"
+    ), facts
+
+
 def _parse_filter_list(value: Any) -> list[str]:
     if not value:
         return []
@@ -158,6 +270,8 @@ def _filter_payload_from_atomic_filters(filters: dict[str, Any]) -> dict[str, An
         "major_keywords": [filters.get("major_keyword")] if filters.get("major_keyword") else [],
         "school_tags": _parse_filter_list(filters.get("school_tags")),
         "major_tags": _parse_filter_list(filters.get("major_tags")),
+        "min_tuition_per_year": filters.get("min_tuition_per_year"),
+        "max_tuition_per_year": filters.get("max_tuition_per_year"),
     }
 
 
@@ -165,7 +279,7 @@ async def _build_candidate_query_filters(
     ctx: RunContext[RequestContext],
     plan: PlanActionPlan,
     atomic: Any | None,
-) -> dict[str, list[str]]:
+) -> dict[str, Any]:
     batch = getattr(ctx.deps, "batch", None) or "01"
     atomic_filters = dict(atomic.filters if atomic else {})
     normalized = await normalize_candidate_query_filters_async(
@@ -179,7 +293,7 @@ async def _build_candidate_query_filters(
         logger.warning("candidate query filter extraction failed in query_candidates", exc_info=True)
         extracted = {}
     extracted_filters = (extracted or {}).get("filters") or {}
-    return {
+    merged: dict[str, Any] = {
         key: _merge_filter_lists(normalized.get(key) or [], extracted_filters.get(key) or [])
         for key in (
             "tiers",
@@ -191,6 +305,9 @@ async def _build_candidate_query_filters(
             "major_tags",
         )
     }
+    for key in ("min_tuition_per_year", "max_tuition_per_year"):
+        merged[key] = atomic_filters.get(key) or normalized.get(key) or extracted_filters.get(key)
+    return merged
 
 
 def _candidate_query_failed(state_summary: str) -> bool:
@@ -440,6 +557,21 @@ async def handle_query_ordered(
     ctx: RunContext[RequestContext], plan: PlanActionPlan
 ) -> PlanExecutionResult:
     atomic = plan.atomic_actions[0] if plan.atomic_actions else None
+    atomic_filters = dict(atomic.filters if atomic else {})
+    if atomic_filters.get("slice"):
+        state_summary, facts = await _build_ordered_slice_summary(ctx, atomic_filters)
+        return PlanExecutionResult(
+            applied=True,
+            action_family="query_ordered",
+            stage=plan.stage,
+            result_kind="ordered_snapshot",
+            workspace_refresh_targets=["ordered"],
+            context_summary=plan.context_summary,
+            state_summary=state_summary,
+            summary=state_summary,
+            reply_focus=["ordered_snapshot", "local_plan_query", "plan_slice_query"],
+            facts=facts,
+        )
     query_filters = await _build_candidate_query_filters(ctx, plan, atomic)
     if any(query_filters.get(key) for key in query_filters):
         state_summary = await query_volunteer_plan(
@@ -453,6 +585,8 @@ async def handle_query_ordered(
             major_keywords=query_filters.get("major_keywords") or None,
             school_tags=query_filters.get("school_tags") or None,
             major_tags=query_filters.get("major_tags") or None,
+            min_tuition_per_year=query_filters.get("min_tuition_per_year") or None,
+            max_tuition_per_year=query_filters.get("max_tuition_per_year") or None,
             match_mode="and",
         )
         return PlanExecutionResult(

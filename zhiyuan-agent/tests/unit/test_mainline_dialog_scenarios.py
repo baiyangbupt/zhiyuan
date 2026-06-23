@@ -882,6 +882,20 @@ def test_mainline_dialog_negative_accounting_then_confirm_plan_adjustment_uses_m
                             "result_kind": "preview_only",
                             "summary": "会移出会计和审计相关志愿，再补入更匹配的新方向。",
                             "planning_version": 18,
+                            "facts": {
+                                "planning_version": 18,
+                                "resolved_apply_payload": {
+                                    "stage": "apply",
+                                    "action_family": "replace_units",
+                                    "atomic_actions": [
+                                        {
+                                            "action_type": "replace_units",
+                                            "volunteer_ids": ["v-accounting-1", "v-audit-1"],
+                                            "filters": {"major_keyword": "跨境电子商务 网络与新媒体"},
+                                        }
+                                    ],
+                                },
+                            },
                         },
                         "preview-replace",
                     )
@@ -903,33 +917,6 @@ def test_mainline_dialog_negative_accounting_then_confirm_plan_adjustment_uses_m
     )
 
     pending_state: dict[str, object] = {"value": None}
-    intent_apply_result = json.dumps(
-        {
-            "action": "apply_selected",
-            "sessionId": "session-mainline-adjust",
-            "intentMode": "constraint",
-            "applied": True,
-            "messageCode": "constraint_applied",
-            "message": "要求已采纳",
-        },
-        ensure_ascii=False,
-    )
-    apply_result = {
-        "code": 0,
-        "data": {
-            "status": "applied",
-            "repairReport": {
-                "strategy": "exclude_scope",
-                "proposalTitle": "排除会计相关志愿",
-                "proposalSummary": "当前方案里会计相关志愿较多，需要先移出。",
-                "dryRunMessage": "移出会计相关志愿。",
-                "removedVolunteerCount": 2,
-                "addedVolunteerCount": 2,
-                "postValidationPassed": True,
-            },
-        },
-    }
-
     async def save_pending_mock(session_id, pending):
         pending_state["value"] = pending
         return {"code": 0, "data": {"pendingConfirmation": pending}}
@@ -943,18 +930,8 @@ def test_mainline_dialog_negative_accounting_then_confirm_plan_adjustment_uses_m
         patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})),
         patch("app.service.save_pending_confirmation", AsyncMock(side_effect=save_pending_mock)),
         patch("app.service.get_pending_confirmation", AsyncMock(side_effect=get_pending_mock)),
-        patch("app.service._apply_selected_intents", AsyncMock(return_value=intent_apply_result)),
         patch("app.service.get_planning_state", AsyncMock(return_value=_planning_state_response(19))),
-        patch("app.service.classify_pending_confirmation_action", AsyncMock(return_value=_semantic_pending("confirm_pending"))),
-        patch("app.service.classify_composite_goal_action", AsyncMock(return_value=_semantic_composite_goal("exclude_scope", confidence=0.95))),
-        patch("app.service.generate_user_goal_planning_fix_proposals", AsyncMock(return_value=_user_goal_fix_proposal_facts_response(
-            proposal_id="ug-negative-accounting",
-            strategy="exclude_scope",
-            source_version=18,
-            title="排除会计相关志愿",
-            summary="当前方案里会计相关志愿较多，需要先移出。",
-        ))) as proposal_mock,
-        patch("app.service.apply_planning_fix_proposal", AsyncMock(return_value=apply_result)) as apply_mock,
+        patch("app.service.execute_plan_action", AsyncMock(return_value=execution_result)) as execute_mock,
     ):
         intent_reply = _run(service.handle_message("session-mainline-adjust", "user-57", "不想学会计"))
         preview_reply = _run(service.handle_message("session-mainline-adjust", "user-57", "那帮我替换掉"))
@@ -974,10 +951,9 @@ def test_mainline_dialog_negative_accounting_then_confirm_plan_adjustment_uses_m
     assert "确认前不会改动当前方案" in pending_card_payload["impact"]
     assert "会计" in pending_card_payload["content"]
     assert isinstance(text_confirm_reply, ChatServiceResponseEnvelope)
-    assert "已更新方案，并刷新当前方案状态" in text_confirm_reply.primary
-    assert "会计相关志愿" in text_confirm_reply.primary
-    proposal_mock.assert_awaited()
-    apply_mock.assert_awaited_once()
+    assert "已移出不匹配志愿" in text_confirm_reply.primary
+    assert "新的补入方向" in text_confirm_reply.primary
+    execute_mock.assert_awaited_once()
     workspace_targets = _workspace_targets(text_confirm_reply)
     assert "ordered" in workspace_targets
     assert "review" in workspace_targets

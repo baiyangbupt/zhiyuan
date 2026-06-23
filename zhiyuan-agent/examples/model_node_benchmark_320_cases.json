@@ -1,0 +1,1993 @@
+[
+  {
+    "caseId": "node-turn-side-effect-G1",
+    "node": "turn_side_effect",
+    "source": "3.1.1 P0-3",
+    "priority": "P0",
+    "prompt": "不要英语相关专业，当前方案里有的话也删掉",
+    "input": {
+      "planningStateProfile": {
+        "formalPlanPresent": true,
+        "pendingExists": false
+      }
+    },
+    "expected": {
+      "taskLayer": "plan",
+      "sideEffect": "plan_preview",
+      "scopeAnchor": "current_plan",
+      "scenario": "atomic_mutation"
+    },
+    "actual": {
+      "taskLayer": "plan",
+      "sideEffect": "plan_preview",
+      "scopeAnchor": "current_plan",
+      "scenario": "atomic_mutation"
+    },
+    "assert": {
+      "exact": [
+        "taskLayer",
+        "sideEffect",
+        "scopeAnchor",
+        "scenario"
+      ]
+    },
+    "metricsTags": [
+      "mixed_intent_plan",
+      "pending_protocol",
+      "sideEffect_accuracy"
+    ]
+  },
+  {
+    "caseId": "node-turn-side-effect-G3",
+    "node": "turn_side_effect",
+    "source": "3.2.0 structural analysis 2.8",
+    "priority": "P0",
+    "prompt": "先不确认，当前方案里有没有护理或者中医学",
+    "input": {
+      "planningStateProfile": {
+        "formalPlanPresent": true,
+        "pendingExists": true
+      }
+    },
+    "expected": {
+      "taskLayer": "plan",
+      "sideEffect": "readonly_while_pending",
+      "scopeAnchor": "current_plan",
+      "scenario": "plan_query"
+    },
+    "actual": {
+      "taskLayer": "plan",
+      "sideEffect": "readonly_while_pending",
+      "scopeAnchor": "current_plan",
+      "scenario": "plan_query"
+    },
+    "assert": {
+      "exact": [
+        "taskLayer",
+        "sideEffect",
+        "scopeAnchor",
+        "scenario"
+      ]
+    },
+    "metricsTags": [
+      "pending_context",
+      "readonly_query",
+      "sideEffect_accuracy"
+    ]
+  },
+  {
+    "caseId": "node-intent-side-effect-G4",
+    "node": "intent_side_effect",
+    "source": "3.2.0 model profile G4",
+    "priority": "P0",
+    "prompt": "那把网络与新媒体作为优先方向，跨境电商也可以考虑",
+    "input": {
+      "majorIntents": {
+        "positiveMajors": [
+          "网络与新媒体",
+          "跨境电子商务"
+        ]
+      },
+      "intentMode": "preference",
+      "planningStateProfile": {
+        "formalPlanPresent": false,
+        "pendingExists": false
+      }
+    },
+    "expected": {
+      "decision": "intent_preview",
+      "preferenceStrength": {
+        "primary": [
+          "网络与新媒体"
+        ],
+        "acceptable": [
+          "跨境电子商务"
+        ]
+      }
+    },
+    "actual": {
+      "decision": "intent_preview",
+      "constraintIntentType": "default",
+      "preferenceStrength": {
+        "primary": [
+          "网络与新媒体"
+        ],
+        "acceptable": [
+          "跨境电子商务"
+        ]
+      }
+    },
+    "assert": {
+      "exact": [
+        "decision"
+      ],
+      "contains": {
+        "preferenceStrength.primary": [
+          "网络与新媒体"
+        ],
+        "preferenceStrength.acceptable": [
+          "跨境电子商务"
+        ]
+      },
+      "notContains": {
+        "preferenceStrength.must_have": [
+          "网络与新媒体",
+          "跨境电子商务"
+        ],
+        "preferenceStrength.only_keep": [
+          "网络与新媒体",
+          "跨境电子商务"
+        ]
+      }
+    },
+    "metricsTags": [
+      "intent_side_effect",
+      "preference_strength"
+    ]
+  },
+  {
+    "caseId": "node-composite-goal-G5",
+    "node": "composite_goal",
+    "source": "3.1.1 P0-5",
+    "priority": "P0",
+    "prompt": "东北西北都不要，必须避开",
+    "input": {
+      "attemptedActionFamily": "remove_units",
+      "attemptedResult": {
+        "resultKind": "empty",
+        "summary": "未定位到具体单条志愿"
+      },
+      "planningStateProfile": {
+        "formalPlanPresent": true,
+        "pendingExists": false
+      }
+    },
+    "expected": {
+      "action": "exclude_scope",
+      "scopeType": "region",
+      "constraintIntentType": "default",
+      "requiresPlanMutation": true,
+      "negativeValues": [
+        "东北",
+        "西北"
+      ]
+    },
+    "actual": {
+      "action": "exclude_scope",
+      "scopeType": "region",
+      "constraintIntentType": "default",
+      "requiresPlanMutation": true,
+      "negativeValues": [
+        "东北",
+        "西北"
+      ]
+    },
+    "assert": {
+      "exact": [
+        "action",
+        "scopeType",
+        "constraintIntentType",
+        "requiresPlanMutation"
+      ],
+      "contains": {
+        "negativeValues": [
+          "东北",
+          "西北"
+        ]
+      }
+    },
+    "metricsTags": [
+      "composite_goal",
+      "negative_only",
+      "region_exclusion"
+    ]
+  },
+  {
+    "caseId": "node-plan-semantic-action-G7",
+    "node": "plan_semantic_action",
+    "source": "3.2.0 structural analysis 2.14",
+    "priority": "P0",
+    "prompt": "方案里中外合作是不是有点多，家里预算一般，帮我用大白话看下风险，先别动",
+    "input": {
+      "recentPlanContext": {
+        "reviewIssueCodes": [
+          "cooperative_program",
+          "high_tuition"
+        ],
+        "instructionBoundary": "readonly_no_apply"
+      },
+      "planningStateProfile": {
+        "formalPlanPresent": true,
+        "pendingExists": false,
+        "reviewRiskCount": 2,
+        "riskSummaries": [
+          "中外合作项目较多",
+          "部分志愿学费偏高"
+        ]
+      }
+    },
+    "expected": {
+      "actionFamily": "none",
+      "replyFocus": [
+        "target_issue_only"
+      ],
+      "targetIssueCodes": [
+        "cooperative_program",
+        "high_tuition"
+      ]
+    },
+    "actual": {
+      "actionFamily": "none",
+      "replyFocus": [
+        "target_issue_only"
+      ],
+      "targetIssueCodes": [
+        "cooperative_program",
+        "high_tuition"
+      ]
+    },
+    "assert": {
+      "exact": [
+        "actionFamily"
+      ],
+      "contains": {
+        "replyFocus": [
+          "target_issue_only"
+        ],
+        "targetIssueCodes": [
+          "cooperative_program"
+        ]
+      },
+      "notContains": {
+        "replyFocus": [
+          "unavailable_guidance"
+        ]
+      }
+    },
+    "metricsTags": [
+      "review_focus",
+      "readonly_to_pending_false_positive_rate"
+    ]
+  },
+  {
+    "caseId": "node-reply-focus-binding-G7",
+    "node": "reply_focus_binding",
+    "source": "3.2.0 structural analysis 2.14",
+    "priority": "P0",
+    "prompt": "方案里中外合作是不是有点多，家里预算一般，帮我用大白话看下风险，先别动",
+    "expected": {
+      "answerFocusFirst": true,
+      "targetIssue": [
+        "cooperative_program",
+        "tuition_budget"
+      ],
+      "sideEffectBoundary": "readonly_no_apply"
+    },
+    "actual": {
+      "answerFocusFirst": true,
+      "targetIssue": [
+        "cooperative_program",
+        "tuition_budget"
+      ],
+      "sideEffectBoundary": "readonly_no_apply"
+    },
+    "assert": {
+      "exact": [
+        "answerFocusFirst",
+        "sideEffectBoundary"
+      ],
+      "contains": {
+        "targetIssue": [
+          "cooperative_program",
+          "tuition_budget"
+        ]
+      }
+    },
+    "metricsTags": [
+      "reply_focus_binding",
+      "focus_preservation_rate"
+    ]
+  },
+  {
+    "caseId": "node-turn-side-effect-G2",
+    "node": "turn_side_effect",
+    "source": "3.2.0 model profile G2",
+    "priority": "P1",
+    "prompt": "方案里高收费或者中外合作风险大的，先看看能怎么处理，别直接动",
+    "input": {
+      "planningStateProfile": {
+        "formalPlanPresent": true,
+        "pendingExists": false,
+        "reviewRiskCount": 2
+      }
+    },
+    "expected": {
+      "taskLayer": "plan",
+      "sideEffect": "readonly_or_plan_preview",
+      "scopeAnchor": "current_plan",
+      "scenario": "plan_review_or_repair_preview"
+    },
+    "actual": {
+      "taskLayer": "plan",
+      "sideEffect": "readonly_or_plan_preview",
+      "scopeAnchor": "current_plan",
+      "scenario": "plan_review_or_repair_preview"
+    },
+    "assert": {
+      "exact": [
+        "taskLayer",
+        "sideEffect",
+        "scopeAnchor",
+        "scenario"
+      ]
+    },
+    "metricsTags": [
+      "review_endpoint_boundary",
+      "tuition",
+      "cooperative_program"
+    ]
+  },
+  {
+    "caseId": "node-turn-side-effect-G6",
+    "node": "turn_side_effect",
+    "source": "3.2.0 model profile G6",
+    "priority": "P0",
+    "prompt": "我是湖北物化生，想看看候选里计算机和数据科学方向多不多",
+    "input": {
+      "planningStateProfile": {
+        "scoreReady": false,
+        "formalPlanPresent": false,
+        "candidatePoolPresent": false,
+        "pendingExists": false
+      }
+    },
+    "expected": {
+      "taskLayer": "plan",
+      "sideEffect": "readonly",
+      "scopeAnchor": "candidate_pool",
+      "missingInfo": [
+        "score_or_rank"
+      ]
+    },
+    "actual": {
+      "taskLayer": "plan",
+      "sideEffect": "readonly",
+      "scopeAnchor": "candidate_pool",
+      "missingInfo": [
+        "score_or_rank"
+      ]
+    },
+    "assert": {
+      "exact": [
+        "taskLayer",
+        "sideEffect",
+        "scopeAnchor"
+      ],
+      "contains": {
+        "missingInfo": [
+          "score_or_rank"
+        ]
+      }
+    },
+    "metricsTags": [
+      "missingInfo_accuracy",
+      "grounded_reply_rate"
+    ]
+  },
+  {
+    "caseId": "node-turn-side-effect-G8",
+    "node": "turn_side_effect",
+    "source": "3.2.0 model profile G8",
+    "priority": "P0",
+    "prompt": "我倾向会计学和审计学，但土木工程不要",
+    "input": {
+      "planningStateProfile": {
+        "formalPlanPresent": true,
+        "pendingExists": false
+      }
+    },
+    "expected": {
+      "taskLayer": "intent",
+      "sideEffect": "intent_pending",
+      "scopeAnchor": "future_reference",
+      "scenario": "intent_update"
+    },
+    "actual": {
+      "taskLayer": "intent",
+      "sideEffect": "intent_pending",
+      "scopeAnchor": "future_reference",
+      "scenario": "intent_update"
+    },
+    "assert": {
+      "exact": [
+        "taskLayer",
+        "sideEffect",
+        "scopeAnchor",
+        "scenario"
+      ]
+    },
+    "metricsTags": [
+      "unsafe_side_effect_rate",
+      "preference_strength_accuracy"
+    ]
+  },
+  {
+    "caseId": "node-turn-side-effect-G9",
+    "node": "turn_side_effect",
+    "source": "3.2.0 model profile G9",
+    "priority": "P0",
+    "prompt": "专业组里只保留最稳的专业行不行",
+    "input": {
+      "planningStateProfile": {
+        "formalPlanPresent": true,
+        "majorGroupPlanPresent": true,
+        "pendingExists": false
+      }
+    },
+    "expected": {
+      "taskLayer": "plan",
+      "sideEffect": "readonly",
+      "scopeAnchor": "current_major_group",
+      "scenario": "major_group_local_policy_query"
+    },
+    "actual": {
+      "taskLayer": "plan",
+      "sideEffect": "readonly",
+      "scopeAnchor": "current_major_group",
+      "scenario": "major_group_local_policy_query"
+    },
+    "assert": {
+      "exact": [
+        "taskLayer",
+        "sideEffect",
+        "scopeAnchor",
+        "scenario"
+      ]
+    },
+    "metricsTags": [
+      "scopeAnchor_accuracy",
+      "intent_false_positive_rate"
+    ]
+  },
+  {
+    "caseId": "node-pending-action-G10",
+    "node": "pending_action",
+    "source": "3.2.0 model profile G10",
+    "priority": "P0",
+    "prompt": "确认",
+    "input": {
+      "pendingState": null,
+      "planningStateProfile": {
+        "formalPlanPresent": false,
+        "pendingExists": false
+      }
+    },
+    "expected": {
+      "action": "none"
+    },
+    "actual": {
+      "action": "none"
+    },
+    "assert": {
+      "exact": [
+        "action"
+      ]
+    },
+    "metricsTags": [
+      "pending_action_accuracy",
+      "no_pending_guard_accuracy"
+    ]
+  },
+  {
+    "caseId": "node-provider-precheck-G11",
+    "node": "provider_precheck",
+    "source": "3.2.0 model profile G11",
+    "priority": "P0",
+    "prompt": "precheck siliconflow glm 5.2",
+    "expected": {
+      "precheckRequired": true,
+      "qualityExcludedOnProviderError": true,
+      "requiredChecks": [
+        "model_id",
+        "auth",
+        "quota",
+        "direct_smoke"
+      ]
+    },
+    "actual": {
+      "precheckRequired": true,
+      "qualityExcludedOnProviderError": true,
+      "requiredChecks": [
+        "model_id",
+        "auth",
+        "quota",
+        "direct_smoke"
+      ]
+    },
+    "assert": {
+      "exact": [
+        "precheckRequired",
+        "qualityExcludedOnProviderError"
+      ],
+      "contains": {
+        "requiredChecks": [
+          "model_id",
+          "auth",
+          "quota"
+        ]
+      }
+    },
+    "metricsTags": [
+      "provider_env_excluded_count",
+      "provider_precheck_accuracy"
+    ]
+  },
+  {
+    "caseId": "node-latency-profile-G12",
+    "node": "latency_profile",
+    "source": "3.2.0 model profile G12",
+    "priority": "P0",
+    "prompt": "高收费的志愿占比多少 能不能换成便宜的",
+    "expected": {
+      "decompose": [
+        "model_planning",
+        "tool_calls",
+        "final_generation",
+        "runner_overhead"
+      ],
+      "excludeProviderEnv": true
+    },
+    "actual": {
+      "decompose": [
+        "model_planning",
+        "tool_calls",
+        "final_generation",
+        "runner_overhead"
+      ],
+      "excludeProviderEnv": true
+    },
+    "assert": {
+      "exact": [
+        "excludeProviderEnv"
+      ],
+      "contains": {
+        "decompose": [
+          "model_planning",
+          "tool_calls",
+          "final_generation"
+        ]
+      }
+    },
+    "metricsTags": [
+      "latency_longtail",
+      "tool_budget_accuracy"
+    ]
+  },
+  {
+    "caseId": "node-intent-side-effect-G13",
+    "node": "intent_side_effect",
+    "source": "3.2.0 model profile G13",
+    "priority": "P0",
+    "prompt": "把计算机类加到意向",
+    "input": {
+      "majorIntents": {
+        "positiveMajors": [
+          "计算机类"
+        ]
+      },
+      "intentMode": "preference",
+      "planningStateProfile": {
+        "formalPlanPresent": false,
+        "pendingExists": false
+      }
+    },
+    "expected": {
+      "decision": "intent_preview",
+      "preferenceStrength": {
+        "preferred": [
+          "计算机类"
+        ]
+      }
+    },
+    "actual": {
+      "decision": "intent_preview",
+      "constraintIntentType": "default",
+      "preferenceStrength": {
+        "preferred": [
+          "计算机类"
+        ]
+      }
+    },
+    "assert": {
+      "exact": [
+        "decision"
+      ],
+      "contains": {
+        "preferenceStrength.preferred": [
+          "计算机类"
+        ]
+      },
+      "notContains": {
+        "preferenceStrength.must_have": [
+          "计算机类"
+        ],
+        "preferenceStrength.only_keep": [
+          "计算机类"
+        ]
+      }
+    },
+    "metricsTags": [
+      "preference_strength_accuracy",
+      "must_have_false_positive_rate"
+    ]
+  },
+  {
+    "caseId": "node-turn-side-effect-G14",
+    "node": "turn_side_effect",
+    "source": "3.2.0 model profile G14",
+    "priority": "P0",
+    "prompt": "现在基于这些出方案",
+    "input": {
+      "planningStateProfile": {
+        "formalPlanPresent": false,
+        "candidatePoolPresent": true,
+        "pendingExists": true
+      },
+      "pendingState": {
+        "kind": "intent_change",
+        "actionFamily": "set_constraint"
+      }
+    },
+    "expected": {
+      "taskLayer": "mixed",
+      "sideEffect": "apply_pending_then_new_request",
+      "scopeAnchor": "future_reference",
+      "scenario": "apply_intent_then_generate_plan"
+    },
+    "actual": {
+      "taskLayer": "mixed",
+      "sideEffect": "apply_pending_then_new_request",
+      "scopeAnchor": "future_reference",
+      "scenario": "apply_intent_then_generate_plan"
+    },
+    "assert": {
+      "exact": [
+        "taskLayer",
+        "sideEffect",
+        "scopeAnchor",
+        "scenario"
+      ]
+    },
+    "metricsTags": [
+      "apply_pending_then_new_request_accuracy",
+      "composite_turn_accuracy"
+    ]
+  },
+  {
+    "caseId": "node-pending-action-G15",
+    "node": "pending_action",
+    "source": "3.2.0 model profile G15",
+    "priority": "P1",
+    "prompt": "确认",
+    "input": {
+      "pendingState": null,
+      "planningStateProfile": {
+        "formalPlanPresent": false,
+        "pendingExists": false
+      },
+      "lastTurnSideEffect": "mixed_answer_then_ask",
+      "selectableProposal": null
+    },
+    "expected": {
+      "action": "none"
+    },
+    "actual": {
+      "action": "none"
+    },
+    "assert": {
+      "exact": [
+        "action"
+      ]
+    },
+    "metricsTags": [
+      "confirm_transition_accuracy",
+      "selectable_option_gap"
+    ]
+  },
+  {
+    "caseId": "node-plan-recovery-action-G16",
+    "node": "plan_recovery_action",
+    "source": "3.2.0 model profile G16",
+    "priority": "P1",
+    "prompt": "帮我把方案里第1个和第2个冲档锁定 位置不要动",
+    "input": {
+      "recentPlanContext": {
+        "tiers": [
+          "冲",
+          "稳",
+          "保"
+        ]
+      },
+      "planningStateProfile": {
+        "formalPlanPresent": true,
+        "pendingExists": false
+      }
+    },
+    "expected": {
+      "actionFamily": "none",
+      "unsupportedAction": "pin_or_lock_unit"
+    },
+    "actual": {
+      "actionFamily": "none",
+      "unsupportedAction": "pin_or_lock_unit"
+    },
+    "assert": {
+      "exact": [
+        "actionFamily",
+        "unsupportedAction"
+      ]
+    },
+    "metricsTags": [
+      "plan_action_accuracy",
+      "unsupported_boundary_accuracy"
+    ]
+  },
+  {
+    "caseId": "node-plan-recovery-action-G17",
+    "node": "plan_recovery_action",
+    "source": "3.2.0 model profile G17",
+    "priority": "P0",
+    "prompt": "保底区里录取率最高的调到保底第一位",
+    "input": {
+      "recentPlanContext": {
+        "tiers": [
+          "冲",
+          "稳",
+          "保"
+        ],
+        "sortField": "admissionRatio"
+      },
+      "planningStateProfile": {
+        "formalPlanPresent": true,
+        "pendingExists": false
+      }
+    },
+    "expected": {
+      "actionFamily": "move_ordered_unit",
+      "tier": "保底",
+      "targetPosition": 1,
+      "sortField": "admissionRatio",
+      "positionScope": "single"
+    },
+    "actual": {
+      "actionFamily": "move_ordered_unit",
+      "tier": "保底",
+      "targetPosition": 1,
+      "sortField": "admissionRatio",
+      "positionScope": "single"
+    },
+    "assert": {
+      "exact": [
+        "actionFamily",
+        "tier",
+        "targetPosition",
+        "sortField",
+        "positionScope"
+      ]
+    },
+    "metricsTags": [
+      "scopeAnchor_accuracy",
+      "ordinal_binding_accuracy"
+    ]
+  },
+  {
+    "caseId": "node-local-plan-action-dsl-G17",
+    "node": "local_plan_action_dsl",
+    "source": "3.2.0 local plan action DSL G17",
+    "priority": "P0",
+    "prompt": "保底区里录取率最高的调到保底第一位",
+    "input": {
+      "recentPlanContext": {
+        "tiers": [
+          "冲",
+          "稳",
+          "保"
+        ],
+        "sortField": "admissionRatio"
+      },
+      "planningStateProfile": {
+        "formalPlanPresent": true,
+        "pendingExists": false
+      }
+    },
+    "expected": {
+      "actionFamily": "move_ordered_unit",
+      "tier": "保底",
+      "sortField": "admissionRatio",
+      "rank": "highest",
+      "targetOrdinal": 1
+    },
+    "actual": {
+      "actionFamily": "move_ordered_unit",
+      "tier": "保底",
+      "sortField": "admissionRatio",
+      "rank": "highest",
+      "targetOrdinal": 1
+    },
+    "assert": {
+      "exact": [
+        "actionFamily",
+        "tier",
+        "sortField",
+        "rank",
+        "targetOrdinal"
+      ]
+    },
+    "metricsTags": [
+      "local_plan_action_dsl",
+      "ordinal_binding_accuracy"
+    ]
+  },
+  {
+    "caseId": "node-local-plan-action-dsl-steady-score",
+    "node": "local_plan_action_dsl",
+    "source": "3.2.0 local plan action DSL variant",
+    "priority": "P1",
+    "prompt": "把稳档里推荐系数最高的专业组放到稳档第一位",
+    "input": {
+      "recentPlanContext": {
+        "tiers": [
+          "冲",
+          "稳",
+          "保"
+        ],
+        "sortField": "finalScore"
+      },
+      "planningStateProfile": {
+        "formalPlanPresent": true,
+        "pendingExists": false
+      }
+    },
+    "expected": {
+      "actionFamily": "move_ordered_unit",
+      "tier": "稳档",
+      "sortField": "finalScore",
+      "rank": "highest",
+      "targetOrdinal": 1
+    },
+    "actual": {
+      "actionFamily": "move_ordered_unit",
+      "tier": "稳档",
+      "sortField": "finalScore",
+      "rank": "highest",
+      "targetOrdinal": 1
+    },
+    "assert": {
+      "exact": [
+        "actionFamily",
+        "tier",
+        "sortField",
+        "rank",
+        "targetOrdinal"
+      ]
+    },
+    "metricsTags": [
+      "local_plan_action_dsl",
+      "metric_binding_accuracy"
+    ]
+  },
+  {
+    "caseId": "node-local-plan-action-dsl-safe-tail",
+    "node": "local_plan_action_dsl",
+    "source": "3.2.0 local plan action DSL variant",
+    "priority": "P1",
+    "prompt": "把保底录取率最低的放到保底最后",
+    "input": {
+      "recentPlanContext": {
+        "tiers": [
+          "冲",
+          "稳",
+          "保"
+        ],
+        "sortField": "admissionRatio"
+      },
+      "planningStateProfile": {
+        "formalPlanPresent": true,
+        "pendingExists": false
+      }
+    },
+    "expected": {
+      "actionFamily": "move_ordered_unit",
+      "tier": "保底",
+      "sortField": "admissionRatio",
+      "rank": "lowest",
+      "targetRank": "last"
+    },
+    "actual": {
+      "actionFamily": "move_ordered_unit",
+      "tier": "保底",
+      "sortField": "admissionRatio",
+      "rank": "lowest",
+      "targetRank": "last"
+    },
+    "assert": {
+      "exact": [
+        "actionFamily",
+        "tier",
+        "sortField",
+        "rank",
+        "targetRank"
+      ]
+    },
+    "metricsTags": [
+      "local_plan_action_dsl",
+      "target_scope_accuracy"
+    ]
+  },
+  {
+    "caseId": "node-local-plan-action-dsl-safe-best-paraphrase",
+    "node": "local_plan_action_dsl",
+    "source": "3.2.0 local plan action DSL paraphrase",
+    "priority": "P1",
+    "prompt": "保底里面最有把握的那个先提到保底最前面",
+    "input": {
+      "recentPlanContext": {
+        "tiers": [
+          "冲",
+          "稳",
+          "保"
+        ],
+        "sortField": "admissionRatio"
+      },
+      "planningStateProfile": {
+        "formalPlanPresent": true,
+        "pendingExists": false
+      }
+    },
+    "expected": {
+      "actionFamily": "move_ordered_unit",
+      "tier": "保底",
+      "sortField": "admissionRatio",
+      "rank": "highest",
+      "targetOrdinal": 1
+    },
+    "actual": {
+      "actionFamily": "move_ordered_unit",
+      "tier": "保底",
+      "sortField": "admissionRatio",
+      "rank": "highest",
+      "targetOrdinal": 1
+    },
+    "assert": {
+      "exact": [
+        "actionFamily",
+        "tier",
+        "sortField",
+        "rank",
+        "targetOrdinal"
+      ]
+    },
+    "metricsTags": [
+      "local_plan_action_dsl",
+      "paraphrase_binding_accuracy",
+      "metric_binding_accuracy"
+    ]
+  },
+  {
+    "caseId": "node-local-plan-action-dsl-school-rank-paraphrase",
+    "node": "local_plan_action_dsl",
+    "source": "3.2.0 local plan action DSL paraphrase",
+    "priority": "P1",
+    "prompt": "冲档里学校档次最好的那个放到冲档第二个",
+    "input": {
+      "recentPlanContext": {
+        "tiers": [
+          "冲",
+          "稳",
+          "保"
+        ],
+        "sortField": "schoolRank"
+      },
+      "planningStateProfile": {
+        "formalPlanPresent": true,
+        "pendingExists": false
+      }
+    },
+    "expected": {
+      "actionFamily": "move_ordered_unit",
+      "tier": "冲档",
+      "sortField": "schoolRank",
+      "rank": "best",
+      "targetOrdinal": 2
+    },
+    "actual": {
+      "actionFamily": "move_ordered_unit",
+      "tier": "冲档",
+      "sortField": "schoolRank",
+      "rank": "best",
+      "targetOrdinal": 2
+    },
+    "assert": {
+      "exact": [
+        "actionFamily",
+        "tier",
+        "sortField",
+        "rank",
+        "targetOrdinal"
+      ]
+    },
+    "metricsTags": [
+      "local_plan_action_dsl",
+      "paraphrase_binding_accuracy",
+      "metric_binding_accuracy"
+    ]
+  },
+  {
+    "caseId": "node-local-plan-action-dsl-unsupported-lock",
+    "node": "local_plan_action_dsl",
+    "source": "3.2.0 local plan action DSL negative control",
+    "priority": "P1",
+    "prompt": "保底第一个先锁住别动，其他的再调整",
+    "input": {
+      "recentPlanContext": {
+        "tiers": [
+          "冲",
+          "稳",
+          "保"
+        ]
+      },
+      "planningStateProfile": {
+        "formalPlanPresent": true,
+        "pendingExists": false
+      }
+    },
+    "expected": {
+      "actionFamily": "none",
+      "unsupportedAction": "pin_or_lock_unit"
+    },
+    "actual": {
+      "actionFamily": "none",
+      "unsupportedAction": "pin_or_lock_unit"
+    },
+    "assert": {
+      "exact": [
+        "actionFamily",
+        "unsupportedAction"
+      ]
+    },
+    "metricsTags": [
+      "local_plan_action_dsl",
+      "unsupported_action_boundary",
+      "pin_lock_boundary"
+    ]
+  },
+  {
+    "caseId": "node-intent-side-effect-G18",
+    "node": "intent_side_effect",
+    "source": "3.2.0 model profile G18",
+    "priority": "P0",
+    "prompt": "保底要公办不要民办",
+    "input": {
+      "schoolIntents": {
+        "positiveSchools": [
+          "合肥工业大学",
+          "南京邮电大学"
+        ]
+      },
+      "majorIntents": null,
+      "cityIntents": null,
+      "intentMode": "constraint",
+      "planningStateProfile": {
+        "formalPlanPresent": true,
+        "pendingExists": false
+      }
+    },
+    "expected": {
+      "decision": "intent_preview",
+      "preferenceScope": "保底",
+      "preferenceStrength": {
+        "preferred": [
+          "合肥工业大学",
+          "南京邮电大学"
+        ],
+        "exclude_hard": [
+          "民办"
+        ]
+      }
+    },
+    "actual": {
+      "decision": "intent_preview",
+      "constraintIntentType": "default",
+      "preferenceScope": "保底",
+      "preferenceStrength": {
+        "preferred": [
+          "合肥工业大学",
+          "南京邮电大学"
+        ],
+        "exclude_hard": [
+          "民办"
+        ]
+      }
+    },
+    "assert": {
+      "exact": [
+        "decision",
+        "preferenceScope"
+      ],
+      "contains": {
+        "preferenceStrength.preferred": [
+          "合肥工业大学",
+          "南京邮电大学"
+        ],
+        "preferenceStrength.exclude_hard": [
+          "民办"
+        ]
+      },
+      "notContains": {
+        "preferenceStrength.only_keep": [
+          "合肥工业大学",
+          "南京邮电大学"
+        ]
+      }
+    },
+    "metricsTags": [
+      "intent_merge_accuracy",
+      "preference_strength_accuracy"
+    ]
+  },
+  {
+    "caseId": "node-turn-side-effect-G19",
+    "node": "turn_side_effect",
+    "source": "3.2.0 model profile G19",
+    "priority": "P0",
+    "prompt": "刚那个方案民办能少点不",
+    "input": {
+      "planningStateProfile": {
+        "formalPlanPresent": false,
+        "pendingExists": false
+      }
+    },
+    "expected": {
+      "taskLayer": "plan",
+      "sideEffect": "needs_plan_first",
+      "scopeAnchor": "current_plan",
+      "referenceResolution": "no_referent"
+    },
+    "actual": {
+      "taskLayer": "plan",
+      "sideEffect": "needs_plan_first",
+      "scopeAnchor": "current_plan",
+      "referenceResolution": "no_referent"
+    },
+    "assert": {
+      "exact": [
+        "taskLayer",
+        "sideEffect",
+        "scopeAnchor",
+        "referenceResolution"
+      ]
+    },
+    "metricsTags": [
+      "reference_resolution_accuracy",
+      "needs_plan_first_accuracy"
+    ]
+  },
+  {
+    "caseId": "node-reply-generation-grounding-G20",
+    "node": "reply_generation_grounding",
+    "source": "3.2.0 model profile G20",
+    "priority": "P1",
+    "prompt": "我美术生文化课580联考250综合多少能上啥",
+    "expected": {
+      "mustGroundFormula": true,
+      "missingInfo": [
+        "province",
+        "art_formula"
+      ],
+      "forbidPreciseScore": true
+    },
+    "actual": {
+      "mustGroundFormula": true,
+      "missingInfo": [
+        "province",
+        "art_formula"
+      ],
+      "forbidPreciseScore": true
+    },
+    "assert": {
+      "exact": [
+        "mustGroundFormula",
+        "forbidPreciseScore"
+      ],
+      "contains": {
+        "missingInfo": [
+          "province",
+          "art_formula"
+        ]
+      }
+    },
+    "metricsTags": [
+      "grounded_reply_rate",
+      "formula_uncertainty_accuracy"
+    ]
+  },
+  {
+    "caseId": "node-plan-semantic-action-G21",
+    "node": "plan_semantic_action",
+    "source": "3.2.0 model profile G21",
+    "priority": "P0",
+    "prompt": "现在这版强基+普通批方案合理不",
+    "input": {
+      "recentPlanContext": {
+        "specialPath": [
+          "strongbase",
+          "regular_batch"
+        ]
+      },
+      "planningStateProfile": {
+        "formalPlanPresent": false,
+        "pendingExists": false
+      }
+    },
+    "expected": {
+      "actionFamily": "query_state",
+      "replyFocus": [
+        "state_explanation",
+        "review_boundary"
+      ]
+    },
+    "actual": {
+      "actionFamily": "query_state",
+      "replyFocus": [
+        "state_explanation",
+        "review_boundary"
+      ]
+    },
+    "assert": {
+      "exact": [
+        "actionFamily"
+      ],
+      "contains": {
+        "replyFocus": [
+          "state_explanation"
+        ]
+      }
+    },
+    "metricsTags": [
+      "readonly_to_pending_false_positive_rate",
+      "needs_plan_first_accuracy"
+    ]
+  },
+  {
+    "caseId": "node-turn-side-effect-G22",
+    "node": "turn_side_effect",
+    "source": "3.2.0 model profile G22",
+    "priority": "P0",
+    "prompt": "现在方案是按620湖北算的吧",
+    "input": {
+      "planningStateProfile": {
+        "formalPlanPresent": true,
+        "pendingExists": true
+      }
+    },
+    "expected": {
+      "taskLayer": "plan",
+      "sideEffect": "readonly_while_pending",
+      "scopeAnchor": "current_profile",
+      "scenario": "profile_change_state_query"
+    },
+    "actual": {
+      "taskLayer": "plan",
+      "sideEffect": "readonly_while_pending",
+      "scopeAnchor": "current_profile",
+      "scenario": "profile_change_state_query"
+    },
+    "assert": {
+      "exact": [
+        "taskLayer",
+        "sideEffect",
+        "scopeAnchor",
+        "scenario"
+      ]
+    },
+    "metricsTags": [
+      "pending_context_accuracy",
+      "readonly_query_accuracy"
+    ]
+  },
+  {
+    "caseId": "node-intent-entity-extraction-G23",
+    "node": "intent_entity_extraction",
+    "source": "3.2.0 model profile G23",
+    "priority": "P0",
+    "prompt": "城市优先长三角",
+    "expected": {
+      "entityType": "region",
+      "regionValues": [
+        "长三角"
+      ],
+      "majorValues": [],
+      "preferenceStrength": {
+        "primary": [
+          "长三角"
+        ]
+      }
+    },
+    "actual": {
+      "entityType": "region",
+      "regionValues": [
+        "长三角"
+      ],
+      "majorValues": [],
+      "preferenceStrength": {
+        "primary": [
+          "长三角"
+        ]
+      }
+    },
+    "assert": {
+      "exact": [
+        "entityType"
+      ],
+      "contains": {
+        "regionValues": [
+          "长三角"
+        ],
+        "preferenceStrength.primary": [
+          "长三角"
+        ]
+      },
+      "notContains": {
+        "majorValues": [
+          "城市管理"
+        ]
+      }
+    },
+    "metricsTags": [
+      "entity_type_accuracy",
+      "preference_strength_accuracy"
+    ]
+  },
+  {
+    "caseId": "node-turn-side-effect-G24",
+    "node": "turn_side_effect",
+    "source": "3.2.0 model profile G24",
+    "priority": "P0",
+    "prompt": "冲档太冒险了删掉一个",
+    "input": {
+      "pendingState": {
+        "kind": "plan_mutation",
+        "actionFamily": "generate_plan"
+      },
+      "planningStateProfile": {
+        "formalPlanPresent": false,
+        "pendingExists": true
+      }
+    },
+    "expected": {
+      "taskLayer": "plan",
+      "sideEffect": "conflict_with_existing_pending",
+      "scopeAnchor": "current_plan",
+      "scenario": "pending_conflict_new_mutation"
+    },
+    "actual": {
+      "taskLayer": "plan",
+      "sideEffect": "conflict_with_existing_pending",
+      "scopeAnchor": "current_plan",
+      "scenario": "pending_conflict_new_mutation"
+    },
+    "assert": {
+      "exact": [
+        "taskLayer",
+        "sideEffect",
+        "scopeAnchor",
+        "scenario"
+      ]
+    },
+    "metricsTags": [
+      "pending_conflict_accuracy",
+      "single_active_pending_accuracy"
+    ]
+  },
+  {
+    "caseId": "node-intent-entity-extraction-G25",
+    "node": "intent_entity_extraction",
+    "source": "3.2.0 model profile G25",
+    "priority": "P0",
+    "prompt": "把生物医学工程和智能医学工程加意向 排除临床医学和口腔",
+    "expected": {
+      "preferenceStrength": {
+        "preferred": [
+          "生物医学工程",
+          "智能医学工程"
+        ],
+        "exclude_hard": [
+          "临床医学",
+          "口腔医学"
+        ]
+      },
+      "entityPolaritySpans": [
+        {
+          "entity": "生物医学工程",
+          "entityType": "major",
+          "polarity": "positive",
+          "strength": "preferred"
+        },
+        {
+          "entity": "智能医学工程",
+          "entityType": "major",
+          "polarity": "positive",
+          "strength": "preferred"
+        },
+        {
+          "entity": "临床医学",
+          "entityType": "major",
+          "polarity": "negative",
+          "strength": "exclude_hard"
+        },
+        {
+          "entity": "口腔医学",
+          "entityType": "major",
+          "polarity": "negative",
+          "strength": "exclude_hard"
+        }
+      ]
+    },
+    "actual": {
+      "preferenceStrength": {
+        "preferred": [
+          "生物医学工程",
+          "智能医学工程"
+        ],
+        "exclude_hard": [
+          "临床医学",
+          "口腔医学"
+        ]
+      },
+      "entityPolaritySpans": [
+        {
+          "entity": "生物医学工程",
+          "entityType": "major",
+          "polarity": "positive",
+          "strength": "preferred"
+        },
+        {
+          "entity": "智能医学工程",
+          "entityType": "major",
+          "polarity": "positive",
+          "strength": "preferred"
+        },
+        {
+          "entity": "临床医学",
+          "entityType": "major",
+          "polarity": "negative",
+          "strength": "exclude_hard"
+        },
+        {
+          "entity": "口腔医学",
+          "entityType": "major",
+          "polarity": "negative",
+          "strength": "exclude_hard"
+        }
+      ]
+    },
+    "assert": {
+      "contains": {
+        "preferenceStrength.preferred": [
+          "生物医学工程",
+          "智能医学工程"
+        ],
+        "preferenceStrength.exclude_hard": [
+          "临床医学",
+          "口腔医学"
+        ],
+        "entityPolaritySpans": [
+          {
+            "entity": "生物医学工程",
+            "entityType": "major",
+            "polarity": "positive"
+          },
+          {
+            "entity": "智能医学工程",
+            "entityType": "major",
+            "polarity": "positive"
+          },
+          {
+            "entity": "临床医学",
+            "entityType": "major",
+            "polarity": "negative"
+          },
+          {
+            "entity": "口腔医学",
+            "entityType": "major",
+            "polarity": "negative"
+          }
+        ]
+      }
+    },
+    "metricsTags": [
+      "polarity_binding_accuracy",
+      "intent_schema_valid_rate"
+    ]
+  },
+  {
+    "caseId": "node-candidate-filter-extraction-G26",
+    "node": "candidate_filter_extraction",
+    "source": "3.2.0 model profile G26",
+    "priority": "P0",
+    "prompt": "保底最后几个是什么学校 录取率多少",
+    "expected": {
+      "scope": "tier_segment",
+      "tier": "保底",
+      "slice": "tail",
+      "fields": [
+        "school",
+        "admissionProbability"
+      ]
+    },
+    "actual": {
+      "scope": "tier_segment",
+      "tier": "保底",
+      "slice": "tail",
+      "fields": [
+        "school",
+        "admissionProbability"
+      ]
+    },
+    "assert": {
+      "exact": [
+        "scope",
+        "tier",
+        "slice"
+      ],
+      "contains": {
+        "fields": [
+          "school",
+          "admissionProbability"
+        ]
+      }
+    },
+    "metricsTags": [
+      "plan_projection_accuracy",
+      "readonly_query_accuracy"
+    ]
+  },
+  {
+    "caseId": "node-turn-side-effect-G27",
+    "node": "turn_side_effect",
+    "source": "3.2.0 model profile G27",
+    "priority": "P0",
+    "prompt": "删完了再帮我看看还剩多少个 梯度有没有问题",
+    "input": {
+      "pendingState": {
+        "kind": "plan_mutation",
+        "actionFamily": "remove_units"
+      },
+      "planningStateProfile": {
+        "formalPlanPresent": true,
+        "pendingExists": true
+      }
+    },
+    "expected": {
+      "taskLayer": "mixed",
+      "sideEffect": "apply_pending_then_readonly",
+      "scopeAnchor": "current_plan",
+      "scenario": "apply_pending_then_readonly_query"
+    },
+    "actual": {
+      "taskLayer": "mixed",
+      "sideEffect": "apply_pending_then_readonly",
+      "scopeAnchor": "current_plan",
+      "scenario": "apply_pending_then_readonly_query"
+    },
+    "assert": {
+      "exact": [
+        "taskLayer",
+        "sideEffect",
+        "scopeAnchor",
+        "scenario"
+      ]
+    },
+    "metricsTags": [
+      "apply_pending_then_readonly_accuracy",
+      "answers_user_question_rate"
+    ]
+  },
+  {
+    "caseId": "node-latency-profile-G28",
+    "node": "latency_profile",
+    "source": "3.2.0 model profile G28",
+    "priority": "P0",
+    "prompt": "如果强基没录上 普通批我这个分能冲什么学校",
+    "expected": {
+      "decompose": [
+        "model_requests",
+        "tool_calls",
+        "runner_overhead"
+      ],
+      "toolBudgetRequired": true
+    },
+    "actual": {
+      "decompose": [
+        "model_requests",
+        "tool_calls",
+        "runner_overhead"
+      ],
+      "toolBudgetRequired": true
+    },
+    "assert": {
+      "exact": [
+        "toolBudgetRequired"
+      ],
+      "contains": {
+        "decompose": [
+          "model_requests",
+          "tool_calls",
+          "runner_overhead"
+        ]
+      }
+    },
+    "metricsTags": [
+      "latency_longtail",
+      "runner_overhead_accuracy"
+    ]
+  },
+  {
+    "caseId": "node-intent-side-effect-G29",
+    "node": "intent_side_effect",
+    "source": "3.2.0 model profile G29",
+    "priority": "P0",
+    "prompt": "网络与新媒体优先，跨境电商也可以考虑",
+    "input": {
+      "majorIntents": {
+        "positiveMajors": [
+          "网络与新媒体",
+          "跨境电子商务"
+        ]
+      },
+      "intentMode": "preference",
+      "planningStateProfile": {
+        "formalPlanPresent": false,
+        "pendingExists": false
+      }
+    },
+    "expected": {
+      "decision": "intent_preview",
+      "preferenceStrength": {
+        "primary": [
+          "网络与新媒体"
+        ],
+        "acceptable": [
+          "跨境电子商务"
+        ]
+      }
+    },
+    "actual": {
+      "decision": "intent_preview",
+      "constraintIntentType": "default",
+      "preferenceStrength": {
+        "primary": [
+          "网络与新媒体"
+        ],
+        "acceptable": [
+          "跨境电子商务"
+        ]
+      }
+    },
+    "assert": {
+      "exact": [
+        "decision"
+      ],
+      "contains": {
+        "preferenceStrength.primary": [
+          "网络与新媒体"
+        ],
+        "preferenceStrength.acceptable": [
+          "跨境电子商务"
+        ]
+      },
+      "notContains": {
+        "preferenceStrength.must_have": [
+          "网络与新媒体",
+          "跨境电子商务"
+        ],
+        "preferenceStrength.only_keep": [
+          "网络与新媒体",
+          "跨境电子商务"
+        ]
+      }
+    },
+    "metricsTags": [
+      "preference_strength_accuracy",
+      "fallback_preservation_rate"
+    ]
+  },
+  {
+    "caseId": "node-intent-entity-extraction-G30",
+    "node": "intent_entity_extraction",
+    "source": "3.2.0 model profile G30",
+    "priority": "P0",
+    "prompt": "清华北大复旦的强基都加进意向",
+    "expected": {
+      "schools": [
+        "清华大学",
+        "北京大学",
+        "复旦大学"
+      ],
+      "admissionPath": "strongbase"
+    },
+    "actual": {
+      "schools": [
+        "清华大学",
+        "北京大学",
+        "复旦大学"
+      ],
+      "admissionPath": "strongbase"
+    },
+    "assert": {
+      "exact": [
+        "admissionPath"
+      ],
+      "contains": {
+        "schools": [
+          "清华大学",
+          "北京大学",
+          "复旦大学"
+        ]
+      }
+    },
+    "metricsTags": [
+      "special_path_preservation_rate",
+      "entity_type_accuracy"
+    ]
+  },
+  {
+    "caseId": "node-turn-side-effect-G31",
+    "node": "turn_side_effect",
+    "source": "3.2.0 model profile G31",
+    "priority": "P0",
+    "prompt": "再给我看下保底学校",
+    "input": {
+      "planningStateProfile": {
+        "formalPlanPresent": true,
+        "pendingExists": true
+      }
+    },
+    "expected": {
+      "taskLayer": "plan",
+      "sideEffect": "readonly_while_pending",
+      "scopeAnchor": "current_plan",
+      "scenario": "plan_query_while_pending"
+    },
+    "actual": {
+      "taskLayer": "plan",
+      "sideEffect": "readonly_while_pending",
+      "scopeAnchor": "current_plan",
+      "scenario": "plan_query_while_pending"
+    },
+    "assert": {
+      "exact": [
+        "taskLayer",
+        "sideEffect",
+        "scopeAnchor",
+        "scenario"
+      ]
+    },
+    "metricsTags": [
+      "readonly_while_pending_accuracy",
+      "answers_user_question_rate"
+    ]
+  },
+  {
+    "caseId": "node-turn-side-effect-G32",
+    "node": "turn_side_effect",
+    "source": "3.2.0 model profile G32",
+    "priority": "P0",
+    "prompt": "方案里有没有民办的",
+    "input": {
+      "planningStateProfile": {
+        "formalPlanPresent": false,
+        "pendingExists": false
+      }
+    },
+    "expected": {
+      "taskLayer": "plan",
+      "sideEffect": "needs_plan_first",
+      "scopeAnchor": "current_plan",
+      "scenario": "no_plan_fact_query"
+    },
+    "actual": {
+      "taskLayer": "plan",
+      "sideEffect": "needs_plan_first",
+      "scopeAnchor": "current_plan",
+      "scenario": "no_plan_fact_query"
+    },
+    "assert": {
+      "exact": [
+        "taskLayer",
+        "sideEffect",
+        "scopeAnchor",
+        "scenario"
+      ]
+    },
+    "metricsTags": [
+      "needs_plan_first_accuracy",
+      "grounded_reply_rate"
+    ]
+  },
+  {
+    "caseId": "node-plan-query-profile-tuition-threshold",
+    "node": "plan_query_profile",
+    "source": "3.2.0 plan query profile",
+    "priority": "P0",
+    "prompt": "两万以上的都算贵，帮我看看有几个",
+    "input": {
+      "planningStateProfile": {
+        "formalPlanPresent": true,
+        "pendingExists": false
+      }
+    },
+    "expected": {
+      "queryType": "readonly_plan_query",
+      "scopeAnchor": "current_plan",
+      "dimensions": [
+        "tuition"
+      ],
+      "filters": {
+        "min_tuition_per_year": 20000
+      }
+    },
+    "actual": {
+      "queryType": "readonly_plan_query",
+      "scopeAnchor": "current_plan",
+      "dimensions": [
+        "tuition"
+      ],
+      "filters": {
+        "min_tuition_per_year": 20000
+      }
+    },
+    "assert": {
+      "exact": [
+        "queryType",
+        "scopeAnchor",
+        "filters.min_tuition_per_year"
+      ],
+      "contains": {
+        "dimensions": [
+          "tuition"
+        ]
+      }
+    },
+    "metricsTags": [
+      "readonly_query_accuracy",
+      "plan_query_profile_accuracy",
+      "tuition_threshold_accuracy"
+    ]
+  },
+  {
+    "caseId": "node-plan-query-profile-tier-tail",
+    "node": "plan_query_profile",
+    "source": "3.2.0 plan query profile",
+    "priority": "P0",
+    "prompt": "保底最后几个是什么学校，录取率多少",
+    "input": {
+      "planningStateProfile": {
+        "formalPlanPresent": true,
+        "pendingExists": false
+      }
+    },
+    "expected": {
+      "queryType": "readonly_plan_slice_query",
+      "scopeAnchor": "current_plan",
+      "dimensions": [
+        "tier_segment"
+      ],
+      "filters": {
+        "tier": "保",
+        "slice": "tail"
+      }
+    },
+    "actual": {
+      "queryType": "readonly_plan_slice_query",
+      "scopeAnchor": "current_plan",
+      "dimensions": [
+        "tier_segment"
+      ],
+      "filters": {
+        "tier": "保",
+        "slice": "tail"
+      }
+    },
+    "assert": {
+      "exact": [
+        "queryType",
+        "scopeAnchor",
+        "filters.tier",
+        "filters.slice"
+      ],
+      "contains": {
+        "dimensions": [
+          "tier_segment"
+        ]
+      }
+    },
+    "metricsTags": [
+      "readonly_query_accuracy",
+      "plan_query_profile_accuracy",
+      "tier_slice_accuracy"
+    ]
+  },
+  {
+    "caseId": "node-plan-query-profile-pending-reference",
+    "node": "plan_query_profile",
+    "source": "3.2.0 plan query profile",
+    "priority": "P0",
+    "prompt": "先不确认，当前方案里有没有相关专业",
+    "input": {
+      "planningStateProfile": {
+        "formalPlanPresent": true,
+        "pendingExists": true
+      },
+      "pendingState": {
+        "kind": "intent_change"
+      }
+    },
+    "expected": {
+      "queryType": "readonly_pending_reference_query",
+      "scopeAnchor": "pending_reference",
+      "sideEffect": "readonly_while_pending",
+      "dimensions": [
+        "pending_reference"
+      ],
+      "pendingReferenceType": "major"
+    },
+    "actual": {
+      "queryType": "readonly_pending_reference_query",
+      "scopeAnchor": "pending_reference",
+      "sideEffect": "readonly_while_pending",
+      "dimensions": [
+        "pending_reference"
+      ],
+      "pendingReferenceType": "major"
+    },
+    "assert": {
+      "exact": [
+        "queryType",
+        "scopeAnchor",
+        "sideEffect",
+        "pendingReferenceType"
+      ],
+      "contains": {
+        "dimensions": [
+          "pending_reference"
+        ]
+      }
+    },
+    "metricsTags": [
+      "readonly_while_pending_accuracy",
+      "plan_query_profile_accuracy",
+      "pending_reference_accuracy"
+    ]
+  }
+]

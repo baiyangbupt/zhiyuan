@@ -3498,6 +3498,387 @@ def test_execute_plan_action_runs_query_ordered_scope_as_local_lookup():
     assert mock_local.await_args.kwargs["province_names"] == ["北京"]
 
 
+def test_execute_plan_action_query_ordered_supports_tier_tail_slice():
+    payload = {
+        "stage": "apply",
+        "action_family": "query_ordered",
+        "user_goal": "保底最后几个是什么学校 录取率多少",
+        "context_summary": "阶段=ordered；方案=20/30",
+        "preview_summary": "",
+        "missing_inputs": [],
+        "should_rerun_review": False,
+        "intent_relation": "unknown",
+        "atomic_actions": [
+            {
+                "action_type": "query_ordered",
+                "filters": {"tier": "保", "slice": "tail", "limit": 2},
+                "reason": "保底最后几个是什么学校 录取率多少",
+            }
+        ],
+    }
+    ordered_items = [
+        {"schoolName": "A大学", "majorName": "计算机", "tier": "冲", "position": 1, "admissionRatio": 10},
+        {"schoolName": "B大学", "majorName": "电子信息", "tier": "保", "position": 28, "admissionRatio": 70},
+        {"schoolName": "C大学", "majorName": "软件工程", "tier": "保", "position": 29, "admissionRatio": 80},
+        {"schoolName": "D大学", "majorName": "通信工程", "tier": "保", "position": 30, "admissionRatio": 90},
+    ]
+
+    with patch(
+        "app.handlers.query_handlers._get_planning_state_with_latest_profile",
+        new=AsyncMock(return_value={"orderedPlanState": {"items": ordered_items}}),
+    ) as mock_state, patch(
+        "app.handlers.query_handlers._enrich_plan_items_with_candidate_metadata",
+        new=AsyncMock(return_value=ordered_items),
+    ) as mock_enrich:
+        result = asyncio.run(execute_plan_action(_ctx_with_pending("query_ordered"), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["result_kind"] == "ordered_snapshot"
+    assert data["workspace_refresh_targets"] == ["ordered"]
+    assert "共命中 3 条保档志愿" in data["summary"]
+    assert "最后 2 条" in data["summary"]
+    assert "C大学-软件工程（保，录取率80%，第29位）" in data["summary"]
+    assert "D大学-通信工程（保，录取率90%，第30位）" in data["summary"]
+    assert "B大学" not in data["summary"]
+    assert data["reply_focus"] == ["ordered_snapshot", "local_plan_query", "plan_slice_query"]
+    assert data["facts"]["tier"] == "保"
+    assert data["facts"]["slice"] == "tail"
+    mock_state.assert_awaited_once()
+    mock_enrich.assert_awaited_once()
+
+
+def test_execute_plan_action_query_ordered_supports_tuition_threshold_filter():
+    payload = {
+        "stage": "apply",
+        "action_family": "query_ordered",
+        "user_goal": "两万以上的都算贵 帮我看看有几个",
+        "context_summary": "阶段=ordered；方案=20/30",
+        "preview_summary": "",
+        "missing_inputs": [],
+        "should_rerun_review": False,
+        "intent_relation": "unknown",
+        "atomic_actions": [
+            {
+                "action_type": "query_ordered",
+                "filters": {"min_tuition_per_year": 20000},
+                "reason": "两万以上的都算贵 帮我看看有几个",
+            }
+        ],
+    }
+    ordered_items = [
+        {"schoolName": "A大学", "majorName": "计算机", "tier": "冲", "position": 1, "admissionRatio": 10, "tuitionPerYear": 5000},
+        {"schoolName": "B大学", "majorName": "小学教育", "tier": "稳", "position": 2, "admissionRatio": 62, "tuitionPerYear": 23500},
+        {"schoolName": "C大学", "majorName": "汉语言文学", "tier": "保", "position": 3, "admissionRatio": 80, "majorPlanTags": ["学费：24600/年"]},
+        {"schoolName": "D大学", "majorName": "审计学", "tier": "保", "position": 4, "admissionRatio": 90, "tuitionPerYear": 12000},
+    ]
+
+    with patch(
+        "app.tools.plan_query_tool.get_planning_ordered_plan",
+        new=AsyncMock(return_value={"code": 0, "data": {"items": ordered_items}}),
+    ), patch(
+        "app.tools.plan_query_tool._enrich_plan_items_with_candidate_metadata",
+        new=AsyncMock(return_value=ordered_items),
+    ):
+        result = asyncio.run(execute_plan_action(_ctx_with_pending("query_ordered"), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["result_kind"] == "ordered_snapshot"
+    assert "共命中了 2 条符合“学费不少于20000元/年”的志愿" in data["summary"]
+    assert "B大学-小学教育" in data["summary"]
+    assert "C大学-汉语言文学" in data["summary"]
+    assert "A大学" not in data["summary"]
+    assert data["reply_focus"] == ["ordered_snapshot", "local_plan_query"]
+    assert data["facts"]["query_filters"]["min_tuition_per_year"] == 20000
+
+
+def test_execute_plan_action_move_ordered_unit_preview_resolves_tier_local_selector():
+    payload = {
+        "stage": "preview",
+        "action_family": "move_ordered_unit",
+        "user_goal": "把保底区里录取率最高的调到保底第一位",
+        "context_summary": "阶段=ordered；方案=30/30",
+        "missing_inputs": [],
+        "should_rerun_review": True,
+        "atomic_actions": [
+            {
+                "action_type": "move_ordered_unit",
+                "filters": {"tier": "保底", "sortBy": "admission_probability", "rank": "max"},
+                "reason": "保底区内按录取率选择后局部调序",
+            }
+        ],
+    }
+    ordered_units = [
+        {
+            "unitId": "rush-1",
+            "schoolName": "A大学(01)",
+            "tier": "冲",
+            "unitKind": "专业组",
+            "majorItems": [{"volunteerId": "rush-1-a", "majorName": "计算机", "admissionRatio": 40}],
+        },
+        {
+            "unitId": "safe-low",
+            "schoolName": "B大学(02)",
+            "tier": "保",
+            "unitKind": "专业组",
+            "majorItems": [{"volunteerId": "safe-low-a", "majorName": "会计学", "admissionRatio": 76}],
+        },
+        {
+            "unitId": "safe-high",
+            "schoolName": "C大学(03)",
+            "tier": "保",
+            "unitKind": "专业组",
+            "majorItems": [{"volunteerId": "safe-high-a", "majorName": "审计学", "admissionRatio": 92}],
+        },
+    ]
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_state_request",
+        new=AsyncMock(return_value={"code": 0, "data": {"orderedPlanState": {"units": ordered_units}}}),
+    ):
+        result = asyncio.run(execute_plan_action(_ctx(), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["result_kind"] == "preview_only"
+    assert data["action_family"] == "move_ordered_unit"
+    assert "保档内录取率最高" in data["summary"]
+    assert "C大学(03)" in data["summary"]
+    assert data["facts"]["selector"] == "tier_local_max_admissionRatio"
+    assert data["facts"]["source_unit_id"] == "safe-high"
+    assert data["facts"]["source_unit_position"] == 3
+    assert data["facts"]["target_unit_position"] == 2
+    apply_payload = data["facts"]["resolved_apply_payload"]
+    assert apply_payload["atomic_actions"][0]["unit_ids"] == ["safe-high"]
+    assert apply_payload["atomic_actions"][0]["target_position"] == 2
+
+
+def test_execute_plan_action_move_ordered_unit_preview_resolves_metric_rank_variants():
+    payload = {
+        "stage": "preview",
+        "action_family": "move_ordered_unit",
+        "user_goal": "把稳档里推荐系数最高的专业组放到稳档第一位",
+        "context_summary": "阶段=ordered；方案=30/30",
+        "missing_inputs": [],
+        "should_rerun_review": True,
+        "atomic_actions": [
+            {
+                "action_type": "move_ordered_unit",
+                "filters": {"tier": "稳", "sortBy": "finalScore", "rank": "highest", "targetOrdinal": 1},
+                "reason": "稳档内按推荐系数选择后局部调序",
+            }
+        ],
+    }
+    ordered_units = [
+        {
+            "unitId": "rush-1",
+            "schoolName": "A大学(01)",
+            "tier": "冲",
+            "unitKind": "专业组",
+            "majorItems": [{"volunteerId": "rush-1-a", "majorName": "计算机", "finalScore": 70}],
+        },
+        {
+            "unitId": "steady-low",
+            "schoolName": "B大学(02)",
+            "tier": "稳",
+            "unitKind": "专业组",
+            "majorItems": [{"volunteerId": "steady-low-a", "majorName": "会计学", "finalScore": 65}],
+        },
+        {
+            "unitId": "steady-high",
+            "schoolName": "C大学(03)",
+            "tier": "稳",
+            "unitKind": "专业组",
+            "majorItems": [{"volunteerId": "steady-high-a", "majorName": "审计学", "finalScore": 91}],
+        },
+    ]
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_state_request",
+        new=AsyncMock(return_value={"code": 0, "data": {"orderedPlanState": {"units": ordered_units}}}),
+    ):
+        result = asyncio.run(execute_plan_action(_ctx(), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["result_kind"] == "preview_only"
+    assert "稳档内推荐系数最高" in data["summary"]
+    assert data["facts"]["selector"] == "tier_local_max_finalScore"
+    assert data["facts"]["source_unit_id"] == "steady-high"
+    assert data["facts"]["target_unit_position"] == 2
+
+
+def test_execute_plan_action_move_ordered_unit_preview_resolves_lowest_to_tier_tail():
+    payload = {
+        "stage": "preview",
+        "action_family": "move_ordered_unit",
+        "user_goal": "把保底录取率最低的放到保底最后",
+        "context_summary": "阶段=ordered；方案=30/30",
+        "missing_inputs": [],
+        "should_rerun_review": True,
+        "atomic_actions": [
+            {
+                "action_type": "move_ordered_unit",
+                "filters": {"tier": "保", "sortBy": "admission_probability", "rank": "lowest", "targetRank": "last"},
+                "reason": "保底内按录取率最低选择后放到档内最后",
+            }
+        ],
+    }
+    ordered_units = [
+        {
+            "unitId": "safe-low",
+            "schoolName": "B大学(02)",
+            "tier": "保",
+            "unitKind": "专业组",
+            "majorItems": [{"volunteerId": "safe-low-a", "majorName": "会计学", "admissionRatio": 76}],
+        },
+        {
+            "unitId": "safe-high",
+            "schoolName": "C大学(03)",
+            "tier": "保",
+            "unitKind": "专业组",
+            "majorItems": [{"volunteerId": "safe-high-a", "majorName": "审计学", "admissionRatio": 92}],
+        },
+        {
+            "unitId": "stable-1",
+            "schoolName": "D大学(04)",
+            "tier": "稳",
+            "unitKind": "专业组",
+            "majorItems": [{"volunteerId": "stable-1-a", "majorName": "金融学", "admissionRatio": 68}],
+        },
+    ]
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_state_request",
+        new=AsyncMock(return_value={"code": 0, "data": {"orderedPlanState": {"units": ordered_units}}}),
+    ):
+        result = asyncio.run(execute_plan_action(_ctx(), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["result_kind"] == "preview_only"
+    assert "保档内录取率最低" in data["summary"]
+    assert data["facts"]["selector"] == "tier_local_min_admissionRatio"
+    assert data["facts"]["source_unit_id"] == "safe-low"
+    assert data["facts"]["target_unit_position"] == 2
+
+
+def test_execute_plan_action_move_ordered_unit_preview_noops_when_tier_selector_has_no_match():
+    payload = {
+        "stage": "preview",
+        "action_family": "move_ordered_unit",
+        "user_goal": "把保底区里录取率最高的调到保底第一位",
+        "context_summary": "阶段=ordered；方案=30/30",
+        "missing_inputs": [],
+        "should_rerun_review": True,
+        "atomic_actions": [
+            {
+                "action_type": "move_ordered_unit",
+                "filters": {"tier": "保底", "sortBy": "admission_probability", "rank": "max"},
+                "reason": "保底区内按录取率选择后局部调序",
+            }
+        ],
+    }
+    ordered_units = [
+        {
+            "unitId": "rush-1",
+            "schoolName": "A大学(01)",
+            "tier": "冲",
+            "unitKind": "专业组",
+            "majorItems": [{"volunteerId": "rush-1-a", "majorName": "计算机", "admissionRatio": 40}],
+        }
+    ]
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_state_request",
+        new=AsyncMock(return_value={"code": 0, "data": {"orderedPlanState": {"units": ordered_units}}}),
+    ):
+        result = asyncio.run(execute_plan_action(_ctx(), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["result_kind"] == "no_change"
+    assert data["applied"] is False
+    assert data["facts"]["position_resolution"] == "tier_selector_no_match"
+    assert "resolved_apply_payload" not in data["facts"]
+
+
+def test_execute_plan_action_move_unit_preview_resolves_tier_local_selector():
+    payload = {
+        "stage": "preview",
+        "action_family": "move_unit",
+        "user_goal": "把保底区里录取率最高的调到保底第一位",
+        "context_summary": "阶段=ordered；方案=30/30",
+        "missing_inputs": [],
+        "should_rerun_review": True,
+        "atomic_actions": [
+            {
+                "action_type": "move_unit",
+                "filters": {"tier": "保底", "sortBy": "admission_probability", "rank": "max"},
+                "reason": "保底区内按录取率选择后局部调序",
+            }
+        ],
+    }
+    ordered_items = [
+        {"position": 1, "volunteerId": "rush-1", "schoolName": "A大学", "majorName": "计算机", "tier": "冲", "admissionRatio": 40},
+        {"position": 5, "volunteerId": "safe-low", "schoolName": "B大学", "majorName": "会计学", "tier": "保", "admissionRatio": 76},
+        {"position": 6, "volunteerId": "safe-high", "schoolName": "C大学", "majorName": "审计学", "tier": "保", "admissionRatio": 92},
+    ]
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
+        new=AsyncMock(return_value={"code": 0, "data": {"items": ordered_items}}),
+    ):
+        result = asyncio.run(execute_plan_action(_ctx(), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["result_kind"] == "preview_only"
+    assert "C大学 · 审计学" in data["summary"]
+    assert data["facts"]["source_volunteer_id"] == "safe-high"
+    assert data["facts"]["source_position"] == 6
+    assert data["facts"]["target_position"] == 5
+    apply_payload = data["facts"]["resolved_apply_payload"]
+    assert apply_payload["atomic_actions"][0]["volunteer_ids"] == ["safe-high"]
+    assert apply_payload["atomic_actions"][0]["target_position"] == 5
+
+
+def test_execute_plan_action_move_unit_preview_rebinds_tier_local_first_target():
+    payload = {
+        "stage": "preview",
+        "action_family": "move_unit",
+        "user_goal": "把C大学审计学调到保底第一位",
+        "context_summary": "阶段=ordered；方案=30/30",
+        "missing_inputs": [],
+        "should_rerun_review": True,
+        "atomic_actions": [
+            {
+                "action_type": "move_unit",
+                "volunteer_ids": ["C大学审计学"],
+                "target_position": 1,
+                "filters": {},
+                "reason": "把C大学审计学调到保底第一位",
+            }
+        ],
+    }
+    ordered_items = [
+        {"position": 1, "volunteerId": "rush-1", "schoolName": "A大学", "majorName": "计算机", "tier": "冲", "admissionRatio": 40},
+        {"position": 5, "volunteerId": "safe-low", "schoolName": "B大学", "majorName": "会计学", "tier": "保", "admissionRatio": 76},
+        {"position": 6, "volunteerId": "safe-high", "schoolName": "C大学", "majorName": "审计学", "tier": "保", "admissionRatio": 92},
+    ]
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
+        new=AsyncMock(return_value={"code": 0, "data": {"items": ordered_items}}),
+    ):
+        result = asyncio.run(execute_plan_action(_ctx(), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["result_kind"] == "preview_only"
+    assert "第 5 位" in data["summary"]
+    assert "第 1 位" not in data["summary"]
+    assert data["facts"]["selector"] == "tier_local_first_target_position"
+    assert data["facts"]["original_target_position"] == 1
+    assert data["facts"]["target_position"] == 5
+    apply_payload = data["facts"]["resolved_apply_payload"]
+    assert apply_payload["atomic_actions"][0]["volunteer_ids"] == ["safe-high"]
+    assert apply_payload["atomic_actions"][0]["target_position"] == 5
+
+
 def test_execute_plan_action_redirects_school_status_query_to_local_plan_lookup():
     payload = {
         "stage": "apply",
@@ -5529,6 +5910,209 @@ def test_execute_plan_action_remove_preview_resolves_source_major_scope_and_inte
     assert facts["intent_update"]["selected"] == [
         {"major_intents": {"negative_level3": ["汉语言文学"]}}
     ]
+
+
+def test_execute_plan_action_remove_preview_matches_tuition_and_unrelated_preference_scope():
+    payload = {
+        "stage": "preview",
+        "action_family": "remove_units",
+        "context_summary": "阶段=reviewed；方案=30/30",
+        "preview_summary": "会从当前方案移出指定志愿。",
+        "missing_inputs": [],
+        "should_rerun_review": True,
+        "intent_relation": "unknown",
+        "atomic_actions": [
+            {
+                "action_type": "remove_units",
+                "volunteer_ids": [],
+                "filters": {
+                    "min_tuition_per_year": "20000",
+                    "preference_fit": "unrelated",
+                },
+                "reason": "把两万以上且跟我意向不沾边的先删掉",
+            }
+        ],
+    }
+    ordered_items = [
+        {
+            "position": 1,
+            "volunteerId": "law-high",
+            "schoolName": "A大学",
+            "majorName": "法学",
+            "tuitionPerYear": 23000,
+        },
+        {
+            "position": 2,
+            "volunteerId": "hotel-high",
+            "schoolName": "B大学",
+            "majorName": "酒店管理",
+            "tuitionPerYear": 26000,
+        },
+        {
+            "position": 3,
+            "volunteerId": "nursing-high",
+            "schoolName": "C大学",
+            "majorName": "护理学",
+            "tuitionPerYear": 28000,
+        },
+        {
+            "position": 4,
+            "volunteerId": "audit-low",
+            "schoolName": "D大学",
+            "majorName": "审计学",
+            "tuitionPerYear": 12000,
+        },
+    ]
+    planning_state = {
+        "profileState": {
+            "explicitProfile": {
+                "positiveMajors": ["法学", "财政学"],
+                "negativeMajors": ["护理学"],
+            }
+        }
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
+        new=AsyncMock(return_value={"code": 0, "data": {"items": ordered_items}}),
+    ), patch(
+        "app.tools.plan_execution_tool._get_planning_state_with_latest_profile",
+        new=AsyncMock(return_value=planning_state),
+    ):
+        result = asyncio.run(execute_plan_action(_ctx(), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    action = data["facts"]["resolved_apply_payload"]["atomic_actions"][0]
+    assert data["result_kind"] == "preview_only"
+    assert action["volunteer_ids"] == ["hotel-high"]
+    assert data["facts"]["matched_count"] == 1
+    assert "学费不少于20000元/年" in data["summary"]
+    assert "与已确认意向不匹配" in data["summary"]
+    assert "后续报考参考" not in data["summary"]
+
+
+def test_execute_plan_action_remove_preview_preference_fit_ignores_career_only_alignment():
+    payload = {
+        "stage": "preview",
+        "action_family": "remove_units",
+        "context_summary": "阶段=reviewed；方案=30/30",
+        "preview_summary": "会从当前方案移出指定志愿。",
+        "missing_inputs": [],
+        "should_rerun_review": True,
+        "intent_relation": "unknown",
+        "atomic_actions": [
+            {
+                "action_type": "remove_units",
+                "volunteer_ids": [],
+                "filters": {
+                    "min_tuition_per_year": "20000",
+                    "preference_fit": "unrelated",
+                },
+                "reason": "把两万以上且跟我意向不沾边的先删掉",
+            }
+        ],
+    }
+    ordered_items = [
+        {
+            "position": 1,
+            "volunteerId": "education-high",
+            "schoolName": "A大学",
+            "majorName": "小学教育",
+            "tuitionPerYear": 23500,
+        },
+        {
+            "position": 2,
+            "volunteerId": "literature-high",
+            "schoolName": "B大学",
+            "majorName": "汉语言文学",
+            "tuitionPerYear": 24600,
+        },
+    ]
+    planning_state = {
+        "profileState": {
+            "explicitProfile": {
+                "positiveMajors": ["中国语言文学类"],
+                "negativeMajors": [],
+            },
+            "latentProfile": {
+                "futureDevelopment": {"careerTypes": ["体制内/考公导向"]},
+            },
+        }
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
+        new=AsyncMock(return_value={"code": 0, "data": {"items": ordered_items}}),
+    ), patch(
+        "app.tools.plan_execution_tool._get_planning_state_with_latest_profile",
+        new=AsyncMock(return_value=planning_state),
+    ):
+        result = asyncio.run(execute_plan_action(_ctx(), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    action = data["facts"]["resolved_apply_payload"]["atomic_actions"][0]
+    assert data["result_kind"] == "preview_only"
+    assert action["volunteer_ids"] == ["education-high"]
+    assert data["facts"]["matched_count"] == 1
+
+
+def test_execute_plan_action_remove_apply_resolves_structured_scope_before_mutation():
+    payload = {
+        "stage": "apply",
+        "action_family": "remove_units",
+        "context_summary": "阶段=reviewed；方案=30/30",
+        "preview_summary": "",
+        "missing_inputs": [],
+        "should_rerun_review": True,
+        "intent_relation": "unknown",
+        "atomic_actions": [
+            {
+                "action_type": "remove_units",
+                "volunteer_ids": [],
+                "filters": {
+                    "min_tuition_per_year": "20000",
+                    "preference_fit": "unrelated",
+                },
+                "reason": "把两万以上且跟我意向不沾边的先删掉",
+            }
+        ],
+    }
+    ordered_items = [
+        {"volunteerId": "law-high", "schoolName": "A大学", "majorName": "法学", "tuitionPerYear": 23000},
+        {"volunteerId": "hotel-high", "schoolName": "B大学", "majorName": "酒店管理", "tuitionPerYear": 26000},
+        {"volunteerId": "audit-low", "schoolName": "D大学", "majorName": "审计学", "tuitionPerYear": 12000},
+    ]
+    planning_state = {
+        "profileState": {
+            "explicitProfile": {
+                "positiveMajors": ["法学", "财政学"],
+                "negativeMajors": [],
+            }
+        }
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
+        new=AsyncMock(return_value={"code": 0, "data": {"items": ordered_items}}),
+    ), patch(
+        "app.handlers.mutation_handlers._get_planning_state_with_latest_profile",
+        new=AsyncMock(return_value=planning_state),
+    ), patch(
+        "app.handlers.mutation_handlers.remove_planning_ordered_items",
+        new=AsyncMock(return_value="remove ok"),
+    ) as mock_remove, patch(
+        "app.tools.plan_execution_tool.run_planning_review",
+        new=AsyncMock(return_value="review ok"),
+    ):
+        result = asyncio.run(execute_plan_action(_ctx_with_pending("remove_units"), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["applied"] is True
+    assert data["result_kind"] == "mutation_result"
+    assert data["affected_volunteer_ids"] == ["hotel-high"]
+    assert data["executed_actions"][0]["filters"]["preference_fit"] == "unrelated"
+    mock_remove.assert_awaited_once()
+    assert mock_remove.await_args.args[1] == ["hotel-high"]
 
 
 def test_execute_plan_action_remove_preview_matches_exact_level3_major_without_widening():

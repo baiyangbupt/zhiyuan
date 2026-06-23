@@ -124,6 +124,181 @@ def _duration_stats(values: list[float]) -> dict[str, float | None]:
     }
 
 
+def _classify_provider_error(status_code: int | None, body: str) -> str:
+    text = str(body or "").lower()
+    if "insufficient balance" in text or "insufficient_balance" in text:
+        return "insufficient_balance"
+    if "model does not exist" in text or "model not found" in text:
+        return "model_not_found"
+    if "quota" in text or "rate limit" in text or "rate_limit" in text:
+        return "quota_or_rate_limited"
+    if status_code is None:
+        return "request_error"
+    if status_code in {401, 403}:
+        return "auth_or_permission_error"
+    if status_code == 404:
+        return "not_found"
+    if status_code >= 500:
+        return "provider_server_error"
+    if status_code >= 400:
+        return "http_error"
+    return "ok"
+
+
+def _extract_model_ids(payload: Any) -> list[str]:
+    if not isinstance(payload, dict):
+        return []
+    raw_items = payload.get("data")
+    if not isinstance(raw_items, list):
+        return []
+    result: list[str] = []
+    for item in raw_items:
+        model_id = item.get("id") if isinstance(item, dict) else item
+        text = str(model_id or "").strip()
+        if text:
+            result.append(text)
+    return result
+
+
+def _precheck_smoke_payload(provider: ProviderConfig) -> dict[str, Any]:
+    return {
+        "model": provider.model,
+        "messages": [{"role": "user", "content": "请只回复 OK"}],
+        "temperature": 0,
+        "max_tokens": max(1, min(int(provider.max_tokens or 16), 16)),
+    }
+
+
+async def _run_provider_precheck(provider: ProviderConfig, *, timeout: float) -> dict[str, Any]:
+    """Check provider availability without exposing API key values."""
+    record: dict[str, Any] = {
+        "provider": provider.name,
+        "model": provider.model,
+        "base_url": provider.base_url,
+        "api_key_env": provider.api_key_env,
+        "api_key_present": False,
+        "models_endpoint": None,
+        "direct_smoke": None,
+        "status": "unknown",
+        "quality_matrix_eligible": False,
+        "excluded_reason": None,
+    }
+    try:
+        api_key = provider.api_key()
+    except RuntimeError:
+        record["status"] = "missing_api_key"
+        record["excluded_reason"] = "missing_api_key"
+        return record
+    record["api_key_present"] = True
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        models_started = time.perf_counter()
+        models_record: dict[str, Any] = {}
+        try:
+            response = await client.get(f"{provider.base_url}/models", headers=headers)
+            models_record.update(
+                {
+                    "status": response.status_code,
+                    "total_seconds": round(time.perf_counter() - models_started, 3),
+                }
+            )
+            if response.status_code >= 400:
+                body = response.text[:500]
+                models_record["error_category"] = _classify_provider_error(response.status_code, body)
+                models_record["error"] = body
+            else:
+                try:
+                    model_ids = _extract_model_ids(response.json())
+                except ValueError:
+                    model_ids = []
+                    models_record["error_category"] = "invalid_json"
+                models_record["model_count"] = len(model_ids)
+                models_record["model_listed"] = provider.model in model_ids if model_ids else None
+        except Exception as exc:
+            models_record.update(
+                {
+                    "total_seconds": round(time.perf_counter() - models_started, 3),
+                    "error_category": "request_error",
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            )
+        record["models_endpoint"] = models_record
+
+        smoke_started = time.perf_counter()
+        smoke_record: dict[str, Any] = {}
+        try:
+            response = await client.post(
+                f"{provider.base_url}/chat/completions",
+                headers=headers,
+                json=_precheck_smoke_payload(provider),
+            )
+            smoke_record.update(
+                {
+                    "status": response.status_code,
+                    "total_seconds": round(time.perf_counter() - smoke_started, 3),
+                    "response_bytes": len(response.content),
+                }
+            )
+            if response.status_code >= 400:
+                body = response.text[:500]
+                smoke_record["error_category"] = _classify_provider_error(response.status_code, body)
+                smoke_record["error"] = body
+        except Exception as exc:
+            smoke_record.update(
+                {
+                    "total_seconds": round(time.perf_counter() - smoke_started, 3),
+                    "error_category": "request_error",
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            )
+        record["direct_smoke"] = smoke_record
+
+    if (record.get("direct_smoke") or {}).get("status") and int((record["direct_smoke"] or {}).get("status")) < 400:
+        record["status"] = "ok"
+        record["quality_matrix_eligible"] = True
+        return record
+    direct_category = str((record.get("direct_smoke") or {}).get("error_category") or "").strip()
+    models_category = str((record.get("models_endpoint") or {}).get("error_category") or "").strip()
+    record["status"] = direct_category or models_category or "unavailable"
+    record["excluded_reason"] = record["status"]
+    return record
+
+
+async def run_provider_prechecks(
+    providers: list[ProviderConfig],
+    *,
+    timeout: float,
+) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for provider in providers:
+        print(f"[precheck] provider={provider.name} model={provider.model}")
+        result = await _run_provider_precheck(provider, timeout=timeout)
+        results.append(result)
+        print(
+            "  status={status} eligible={eligible} reason={reason}".format(
+                status=result.get("status"),
+                eligible=result.get("quality_matrix_eligible"),
+                reason=result.get("excluded_reason") or "",
+            )
+        )
+    return results
+
+
+def _filter_prechecked_providers(
+    providers: list[ProviderConfig],
+    prechecks: list[dict[str, Any]],
+) -> list[ProviderConfig]:
+    eligible = {
+        str(item.get("provider") or "")
+        for item in prechecks
+        if item.get("quality_matrix_eligible") is True
+    }
+    return [provider for provider in providers if provider.name in eligible]
+
+
 def _direct_payload(provider: ProviderConfig, prompt: str, *, stream: bool) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "model": provider.model,
@@ -721,10 +896,24 @@ async def async_main(args: argparse.Namespace) -> None:
     output: dict[str, Any] = {
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "providers": [provider.name for provider in providers],
+        "active_providers": [provider.name for provider in providers],
+        "provider_precheck": None,
         "direct": None,
         "agent": None,
         "agent_summary": None,
     }
+    if not args.skip_precheck:
+        prechecks = await run_provider_prechecks(
+            providers,
+            timeout=args.precheck_timeout,
+        )
+        output["provider_precheck"] = prechecks
+        if args.skip_unavailable_providers:
+            providers = _filter_prechecked_providers(providers, prechecks)
+            output["active_providers"] = [provider.name for provider in providers]
+            if not providers:
+                _write_results(args.output, output)
+                return
     if not args.agent_only:
         output["direct"] = await run_direct_benchmark(
             providers,
@@ -763,6 +952,13 @@ def main() -> None:
     parser.add_argument("--output", help="write JSON results to this path")
     parser.add_argument("--direct-only", action="store_true", help="only run direct model API benchmark")
     parser.add_argument("--agent-only", action="store_true", help="only run agent scenario benchmark")
+    parser.add_argument("--skip-precheck", action="store_true", help="skip provider availability precheck")
+    parser.add_argument("--precheck-timeout", type=float, default=30)
+    parser.add_argument(
+        "--skip-unavailable-providers",
+        action="store_true",
+        help="after precheck, exclude providers whose direct smoke is unavailable from direct/agent quality runs",
+    )
     parser.add_argument("--direct-runs", type=int, default=DEFAULT_DIRECT_RUNS)
     parser.add_argument("--direct-timeout", type=float, default=90)
     parser.add_argument("--cases", default=DEFAULT_CASES)

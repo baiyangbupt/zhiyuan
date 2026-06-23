@@ -1,6 +1,12 @@
 # Release 3.2.0 Model Capability Profile Plan
 
-本文定义 3.2.0 主路径重构前必须完成的模型理解与生成能力评估。它不是运行时 shadow，不进入生产链路，也不作为长期兼容桥接；它只用于在 3.2.0 实现前量化模型能力边界，为 `TurnDecision -> ScenarioCompiler -> ToolPlan -> Proposal/Pending` 的防御性设计提供依据。
+本文定义 3.2.0 主路径重构前必须完成的模型理解与生成能力评估。它不是运行时 shadow，不进入生产链路，也不作为长期兼容桥接；它只用于在 3.2.0 实现前量化模型能力边界，为 `TurnDecision -> ScenarioCompiler -> ToolPlan -> Proposal/Pending` 的防御性设计提供依据。后续 runtime 可复用这些 case 做只读 shadow diff，但 shadow 输出不能参与裁决、不能创建 pending、不能写业务状态。
+
+3.2.0 总体执行顺序、benchmark 分层、fixture 契约、runtime 硬切和 explorer 闭环见 [release-3.2.0-execution-roadmap.md](./release-3.2.0-execution-roadmap.md)。本文只定义模型能力 profile 的评估对象、golden 候选、指标和验收门槛。
+
+Profile case 契约见 [release-3.2.0-profile-case-schema.md](./release-3.2.0-profile-case-schema.md)。当前已落地首批 G1-G8 golden 样例：[dialog_profile_320_golden_cases.json](../zhiyuan-agent/examples/dialog_profile_320_golden_cases.json)。
+
+模型依赖节点的独立 benchmark 见 [release-3.2.0-model-node-benchmark.md](./release-3.2.0-model-node-benchmark.md)。该体系区别于端到端 runner，用于评估 `turn_side_effect`、`intent_side_effect`、`plan_semantic_action`、`composite_goal`、`pending_action`、`reply_focus_binding` 等关键节点。
 
 ## 1. 目标
 
@@ -740,11 +746,14 @@ Profile 价值：
 Observed：
 
 - 2026-06-20 `comprehensive-existing-plan-deep-query-26` round2 中，系统读取方案后仍没有列出保底末尾学校和录取率。
+- 2026-06-23 G1-G32 full clean shadow 中，G26 仍失败：`保底最后几个是什么学校 录取率多少` 被 full-agent 查询链路误解析成“专业:保”，最终回复“当前方案里暂时没有命中符合‘专业:保’的志愿”。这说明模型/工具没有稳定输出 `tier=保底`、`slice=tail`、`fields=[school, admissionProbability]`。
+- 2026-06-23 focused runtime 修复后，同一句命中 `direct_readonly_plan_slice_query`，结构化为 `query_ordered(tier=保, slice=tail, limit=5)`，返回最后 5 条保底志愿及录取率，报告 `/private/tmp/dialog_regression_320_g26_after_plan_slice_fix_metrics.json` 为 1/1 successful。
 
 Profile 价值：
 
 - 衡量模型能否把用户自然语言查询编译成 plan projection，而不是泛化解释。
 - 为 PlanQuery DSL 的 slice/sort/field 输出提供 golden。
+- 后续 profile/golden 需要把 `scope=tier_segment`、`slice=tail`、`fields` 做字段级断言；只比 sideEffect/pending 不足以发现 G26 这类内容实体错误。
 
 ### G27 apply pending then readonly follow-up
 
@@ -766,6 +775,8 @@ Profile 价值：
 Observed：
 
 - 2026-06-20 `comprehensive-existing-plan-mutation-chain-35` round2 中只执行 apply 和刷新，没有回答剩余数量/梯度问题。
+- 2026-06-22 focused G27 runtime 验证中，上一轮“那把两万以上且跟我意向不沾边的先删掉”已能形成 `remove_units` 结构化 pending；本轮“删完了再帮我看看还剩多少个 梯度有没有问题”走 `apply_pending_then_readonly`，先 apply，再基于刷新后的 ordered/review 回答剩余数量与梯度。报告：`/private/tmp/zhiyuan_320_g27_after_structured_remove_metrics.json`。
+- 2026-06-23 full G1-G32 shadow 复跑中，G27 已不再是内容失败；第三轮能生成 `remove_units` pending，第四轮 `routingPath=pending_plan_short_text_confirm`，执行后刷新 `ordered/review` 并回答剩余数量和梯度。diff 中剩余差异是 expected 命名和 workspace refresh 期望比 runtime 更窄，不再是业务链路断裂。
 
 Profile 价值：
 
@@ -932,6 +943,7 @@ Profile 价值：
 3.2.0 做：
 
 - 按 profile 结果实现唯一主控链路。
+- 硬切前可增加短期只读 shadow diff，用于观测旧路径与 compiler output 差异；shadow 不参与裁决、不创建 pending、不写业务状态。
 - 切换后删除旧恢复分支、旧 prompt 调度主路径和 legacy 兼容入口。
 - 验证通过后不保留双路径。
 

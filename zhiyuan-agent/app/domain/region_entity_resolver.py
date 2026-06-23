@@ -195,6 +195,69 @@ def normalize_region_names(values: Any, expected_level: str | None = None) -> li
     return normalized
 
 
+def resolve_region_mentions_from_text(text: Any, expected_level: str | None = None) -> list[EntityResolutionCandidate]:
+    """Find concrete province/city mentions in free text using the region catalog."""
+
+    raw_text = str(text or "").strip()
+    compact = compact_region_text(raw_text)
+    if not compact:
+        return []
+    provinces, cities = _province_city_name_sets()
+    raw_matches: list[tuple[int, int, EntityResolutionCandidate]] = []
+
+    def append(raw_name: str, canonical_name: str, level: str, source: str) -> None:
+        if expected_level and level != expected_level:
+            return
+        variants = {
+            compact_region_text(raw_name),
+            compact_region_text(_strip_region_suffix(raw_name)),
+        }
+        for variant in variants:
+            if not variant:
+                continue
+            start = compact.find(variant)
+            if start < 0:
+                continue
+            raw_matches.append(
+                (
+                    start,
+                    len(variant),
+                    _candidate(
+                        raw_text=raw_name,
+                        canonical_name=canonical_name,
+                        level=level,
+                        source=source,
+                    ),
+                )
+            )
+
+    for alias, canonical_name in _PROVINCE_ALIASES.items():
+        if canonical_name in provinces:
+            append(alias, canonical_name, "province", "alias")
+    for alias, canonical_name in _AREA_ALIASES.items():
+        append(alias, canonical_name, "area", "alias")
+    for province in provinces:
+        append(province, province, "province", "exact")
+    for city in cities:
+        append(city, city, "city", "exact")
+
+    raw_matches.sort(key=lambda item: (item[0], -item[1], item[2].level or "", item[2].canonical_name))
+    result: list[EntityResolutionCandidate] = []
+    seen: set[tuple[str, str]] = set()
+    occupied: list[tuple[int, int]] = []
+    for start, length, candidate in raw_matches:
+        end = start + length
+        if any(not (end <= used_start or start >= used_end) for used_start, used_end in occupied):
+            continue
+        key = (candidate.level or "", candidate.canonical_name)
+        if key in seen:
+            continue
+        seen.add(key)
+        occupied.append((start, end))
+        result.append(candidate)
+    return result
+
+
 def contains_concrete_region_mention(text: Any) -> bool:
     """Return whether free text names a concrete province/city from the catalog."""
 

@@ -39,6 +39,9 @@
 | --- | --- |
 | [release-3.1.1-dialogue-known-issues.md](./release-3.1.1-dialogue-known-issues.md) | 3.1.1 当前对话待处理问题 |
 | [release-3.1.1-dialogue-benchmark.md](./release-3.1.1-dialogue-benchmark.md) | 3.1.1 对话 benchmark 和 assets 索引 |
+| [release-3.2.0-execution-roadmap.md](./release-3.2.0-execution-roadmap.md) | 3.2.0 执行总路线：profile、fixture、compiler、runtime 硬切、旧路径删除和 explorer 闭环 |
+| [release-3.2.0-profile-case-schema.md](./release-3.2.0-profile-case-schema.md) | 3.2.0 profile/fixture/compiler golden 共用 case 契约 |
+| [release-3.2.0-model-node-benchmark.md](./release-3.2.0-model-node-benchmark.md) | 3.2.0 模型依赖关键节点 benchmark，区别于 WebSocket 端到端 runner |
 | [release-3.2.0-structural-plan-framework-analysis.md](./release-3.2.0-structural-plan-framework-analysis.md) | Plan 结构性框架问题、历史补丁和动态计划落地边界；3.1.1 仅作为后续储备 |
 | [release-3.2.0-model-capability-profile-plan.md](./release-3.2.0-model-capability-profile-plan.md) | 3.2.0 前置模型理解/生成能力 profile 计划；离线评估，不进入 3.1.1 runtime shadow |
 

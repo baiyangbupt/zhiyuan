@@ -1674,6 +1674,81 @@ async def test_analyze_intent_change_semantic_arbitration_keeps_explicit_mixed_m
 
 
 @pytest.mark.asyncio
+async def test_analyze_intent_change_keeps_add_intent_positive_majors_with_exclusions(empty_profile):
+    ctx = SimpleNamespace(
+        deps=SimpleNamespace(
+            userid="u1",
+            sessionid="7602",
+            batch="01",
+            chat_history=[{"role": "user", "content": "把生物医学工程和智能医学工程加意向 排除临床医学和口腔"}],
+            enable_intent_side_effect_arbitration=True,
+            agent_observability={},
+        )
+    )
+
+    with (
+        patch("app.tools.intent_state_tool.ProfileManager") as mock_pm_cls,
+        patch("app.tools.intent_state_tool.save_intent_change_cache", new=AsyncMock()) as save_mock,
+        patch(
+            "app.tools.intent_state_tool._classify_intent_side_effect",
+            new=AsyncMock(
+                return_value=IntentSideEffectDecision(
+                    decision="intent_preview",
+                    confidence=0.95,
+                    preferenceStrength={
+                        "preferred": ["生物医学工程", "智能医学工程"],
+                        "exclude_hard": ["临床医学", "口腔医学"],
+                    },
+                    entityPolaritySpans=[
+                        {"entity": "生物医学工程", "entityType": "major", "polarity": "positive", "strength": "preferred"},
+                        {"entity": "智能医学工程", "entityType": "major", "polarity": "positive", "strength": "preferred"},
+                        {"entity": "临床医学", "entityType": "major", "polarity": "negative", "strength": "exclude_hard"},
+                        {"entity": "口腔医学", "entityType": "major", "polarity": "negative", "strength": "exclude_hard"},
+                    ],
+                )
+            ),
+        ) as classifier_mock,
+        patch(
+            "app.tools.intent_state_tool._enrich_plan_relation_analysis_from_state",
+            new=AsyncMock(
+                return_value={
+                    "summaryTitle": "",
+                    "currentPlanFit": [],
+                    "currentPlanConflict": [],
+                    "candidateOpportunity": [],
+                    "nextActionHints": [],
+                }
+            ),
+        ),
+    ):
+        mock_pm = mock_pm_cls.return_value
+        mock_pm.get_current_profile = AsyncMock(return_value=empty_profile)
+
+        payload_text = await analyze_volunteer_intent_change(
+            ctx,
+            major_intents={
+                "level3": ["生物医学工程", "智能医学工程"],
+                "negative_level2": ["临床医学", "口腔医学"],
+            },
+            analysis_stage=ANALYSIS_STAGE_CONFIRMED,
+            recovery_scope="major",
+            confirm_enabled=True,
+        )
+
+    payload = json.loads(payload_text)
+    values = [item["value"] for item in payload["items"]]
+    assert payload["status"] == "ready"
+    assert {"major_intents": {"level3": ["生物医学工程"]}} in values
+    assert {"major_intents": {"level3": ["智能医学工程"]}} in values
+    assert {"major_intents": {"negative_level3": ["临床医学"]}} in values
+    assert {"major_intents": {"negative_level3": ["口腔医学"]}} in values
+    assert {"major_intents": {"negative_level3": ["生物医学工程"]}} not in values
+    assert {"major_intents": {"negative_level3": ["智能医学工程"]}} not in values
+    classifier_mock.assert_awaited_once()
+    save_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_analyze_intent_change_semantic_arbitration_keeps_explicit_negative_major_preference(empty_profile):
     ctx = SimpleNamespace(
         deps=SimpleNamespace(
@@ -2490,6 +2565,18 @@ def test_local_major_recovery_keeps_positive_tendency_and_negative_constraint():
     assert payload == {
         "level3": ["法学", "财政学"],
         "negative_level3": ["护理学"],
+    }
+
+
+def test_local_major_recovery_splits_add_intent_and_exclude_actions():
+    payload = _recover_polarity_major_intent_locally_from_latest_utterance(
+        "把生物医学工程和智能医学工程加意向 排除临床医学和口腔",
+        "01",
+    )
+
+    assert payload == {
+        "level3": ["生物医学工程", "智能医学工程"],
+        "negative_level3": ["临床医学", "口腔医学"],
     }
 
 
@@ -3459,6 +3546,50 @@ def test_intent_side_effect_decision_normalizes_constraint_type():
     )
 
     assert decision.constraintIntentType == "only_keep"
+
+
+def test_intent_side_effect_decision_preserves_320_profile_fields():
+    decision = intent_state_tool_module._normalize_intent_side_effect_decision(
+        IntentSideEffectDecision.model_validate(
+            {
+                "decision": "intent_preview",
+                "confidence": "high",
+                "constraintIntentType": "default",
+                "preferenceStrength": {
+                    "primary": ["网络与新媒体", "网络与新媒体"],
+                    "acceptable": "跨境电子商务",
+                    "": ["ignored"],
+                },
+                "preferenceScope": " 保底 ",
+                "entityPolaritySpans": [
+                    {
+                        "entity": "网络与新媒体",
+                        "entityType": "major",
+                        "polarity": "positive",
+                        "strength": "primary",
+                    },
+                    "bad-shape",
+                ],
+                "admissionPath": [" strongbase "],
+                "reason": "用户明确给出优先和可接受层级。",
+            }
+        )
+    )
+
+    assert decision.preferenceStrength == {
+        "primary": ["网络与新媒体"],
+        "acceptable": ["跨境电子商务"],
+    }
+    assert decision.preferenceScope == "保底"
+    assert decision.entityPolaritySpans == [
+        {
+            "entity": "网络与新媒体",
+            "entityType": "major",
+            "polarity": "positive",
+            "strength": "primary",
+        }
+    ]
+    assert decision.admissionPath == "strongbase"
 
 
 @pytest.mark.asyncio

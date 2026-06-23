@@ -1,0 +1,104 @@
+[
+  {
+    "caseId": "I1-preference-major-select",
+    "batch": "01",
+    "selectedData": {
+      "intentMode": "preference",
+      "selected": [
+        {"major_intents": {"level3": ["计算机科学与技术", "软件工程"]}}
+      ]
+    },
+    "expected": {
+      "pendingType": "intent_change",
+      "requiresConfirmation": true,
+      "executionPayload": {"kind": "pending_intent_change"},
+      "intentPayload": {
+        "intentMode": "preference",
+        "constraintIntentType": "default",
+        "batch": "01",
+        "merged": {
+          "major_intents": {"level3": ["计算机科学与技术", "软件工程"]}
+        }
+      },
+      "displayPayload": {"presentation": "confirmation_card"}
+    },
+    "assert": {
+      "exact": [
+        "pendingType",
+        "requiresConfirmation",
+        "executionPayload.kind",
+        "intentPayload.intentMode",
+        "intentPayload.constraintIntentType",
+        "intentPayload.batch",
+        "intentPayload.merged",
+        "displayPayload.presentation"
+      ]
+    }
+  },
+  {
+    "caseId": "I2-constraint-only-keep-major-select",
+    "batch": "01",
+    "selectedData": {
+      "intentMode": "constraint",
+      "constraintIntentType": "only_keep",
+      "selected": [
+        {"major_intents": {"level3": ["临床医学"]}}
+      ]
+    },
+    "expected": {
+      "pendingType": "intent_change",
+      "requiresConfirmation": true,
+      "intentPayload": {
+        "intentMode": "constraint",
+        "constraintIntentType": "only_keep",
+        "merged": {
+          "major_intents": {"level3": ["临床医学"]}
+        }
+      }
+    },
+    "assert": {
+      "exact": [
+        "pendingType",
+        "requiresConfirmation",
+        "intentPayload.intentMode",
+        "intentPayload.constraintIntentType",
+        "intentPayload.merged"
+      ]
+    }
+  },
+  {
+    "caseId": "I3-empty-selected-blocked",
+    "batch": "01",
+    "selectedData": {
+      "intentMode": "preference",
+      "selected": []
+    },
+    "expected": {
+      "pendingType": "none",
+      "requiresConfirmation": false
+    },
+    "assert": {
+      "exact": ["pendingType", "requiresConfirmation"],
+      "containsBlockingReasons": ["intent_select_requires_selected_values"]
+    }
+  },
+  {
+    "caseId": "I4-only-keep-without-scope-blocked",
+    "batch": "01",
+    "selectedData": {
+      "intentMode": "constraint",
+      "constraintIntentType": "only_keep",
+      "selected": [
+        {"career_intents": {"careers": ["医生"]}}
+      ]
+    },
+    "expected": {
+      "pendingType": "none",
+      "requiresConfirmation": false
+    },
+    "assert": {
+      "exact": ["pendingType", "requiresConfirmation"],
+      "containsBlockingReasons": ["constraint_intent_requires_scope"]
+    }
+  }
+]

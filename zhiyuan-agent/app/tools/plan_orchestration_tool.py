@@ -775,6 +775,9 @@ async def _plan_next_action_model(
     major_keyword: str | None = None,
     school_tags: list[str] | None = None,
     major_tags: list[str] | None = None,
+    min_tuition_per_year: int | None = None,
+    max_tuition_per_year: int | None = None,
+    preference_fit: Literal["aligned", "unrelated", "conflict"] | None = None,
     preserve_count: bool = False,
     limit: int = 5,
     user_confirmed: bool = False,
@@ -802,6 +805,12 @@ async def _plan_next_action_model(
         "major_tags": json.dumps(major_tags or [], ensure_ascii=False),
         "limit": str(limit),
     }
+    if min_tuition_per_year is not None and min_tuition_per_year > 0:
+        base_filters["min_tuition_per_year"] = str(int(min_tuition_per_year))
+    if max_tuition_per_year is not None and max_tuition_per_year > 0:
+        base_filters["max_tuition_per_year"] = str(int(max_tuition_per_year))
+    if preference_fit:
+        base_filters["preference_fit"] = preference_fit
     if preserve_count:
         base_filters["preserve_count"] = "true"
     if action_family == "sort_ordered_plan" and sort_field:
@@ -1124,6 +1133,9 @@ async def plan_next_action(
     major_keyword: str | None = None,
     school_tags: list[str] | None = None,
     major_tags: list[str] | None = None,
+    min_tuition_per_year: int | None = None,
+    max_tuition_per_year: int | None = None,
+    preference_fit: Literal["aligned", "unrelated", "conflict"] | None = None,
     preserve_count: bool = False,
     limit: int = 5,
     user_confirmed: bool = False,
@@ -1175,6 +1187,11 @@ async def plan_next_action(
     `source_major_names=["汉语言文学"]` 或对应专业名列表；不要只把源范围写进
     `user_goal`。如果用户要按院校、地域或候选范围处理当前方案，使用结构化
     `school_keyword`、`province_keyword`、`major_keyword` 等字段承载范围。
+    如果用户明确要求删除当前方案里“学费两万以上/超过预算”且“不贴合意向/
+    跟意向不沾边”的志愿，使用 `action_family="remove_units"`、
+    `current_stage="preview"`、`min_tuition_per_year=20000` 和
+    `preference_fit="unrelated"`；不要改走 `preview_fix_proposal`，也不要只把
+    这些条件写在 `user_goal`。
 
     对复合目标不要靠 user_goal 文本推断。用户表达“只保留/至少要有/排除/优先”
     这类会同时影响方案和后续报考参考的诉求时，必须显式传
@@ -1202,6 +1219,9 @@ async def plan_next_action(
         major_keyword=major_keyword,
         school_tags=school_tags,
         major_tags=major_tags,
+        min_tuition_per_year=min_tuition_per_year,
+        max_tuition_per_year=max_tuition_per_year,
+        preference_fit=preference_fit,
         preserve_count=preserve_count,
         limit=limit,
         user_confirmed=user_confirmed,

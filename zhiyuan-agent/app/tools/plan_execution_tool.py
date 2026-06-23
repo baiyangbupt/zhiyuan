@@ -34,6 +34,9 @@ from app.tools.planning_workflow_tool import (
     _build_plan_intent_relation_lines,
     _build_plan_status_overview_facts,
     _build_review_result_facts,
+    _extract_plan_intent_state,
+    _item_matches_career_labels,
+    _item_matches_keyword,
     merge_planning_state_with_user_profile,
     move_planning_ordered_item,
     query_planning_candidate_pool,
@@ -76,6 +79,17 @@ _MUTATING_ACTION_FAMILIES = {
     "sort_ordered_plan",
     "regenerate_order",
 }
+_MUTATING_PREVIEW_WORKSPACE_TARGETS = {
+    "generate_plan": ["ordered"],
+    "add_units": ["ordered"],
+    "remove_units": ["ordered"],
+    "move_unit": ["ordered"],
+    "move_ordered_unit": ["ordered"],
+    "replace_units": ["ordered"],
+    "remove_ordered_unit": ["ordered"],
+    "sort_ordered_plan": ["ordered"],
+    "regenerate_order": ["ordered"],
+}
 _READONLY_HANDLER_ACTION_FAMILIES = {
     "query_state",
     "query_ordered",
@@ -111,6 +125,26 @@ _PROGRAM_TYPE_FILTER_KEYS = (
     "project_types",
     "enrollment_type",
     "enrollment_types",
+)
+_MIN_TUITION_FILTER_KEYS = (
+    "min_tuition_per_year",
+    "minTuitionPerYear",
+    "tuition_min_per_year",
+    "tuitionMinPerYear",
+)
+_MAX_TUITION_FILTER_KEYS = (
+    "max_tuition_per_year",
+    "maxTuitionPerYear",
+    "tuition_cap",
+    "tuitionCap",
+    "max_tuition",
+    "maxTuition",
+)
+_PREFERENCE_FIT_FILTER_KEYS = (
+    "preference_fit",
+    "preferenceFit",
+    "intent_relation",
+    "intentRelation",
 )
 
 
@@ -723,13 +757,25 @@ async def _build_move_ordered_unit_preview_summary(
 ) -> tuple[str | None, dict[str, Any]]:
     action = _first_atomic_action(plan_model)
     target_position = getattr(action, "target_position", None)
-    if target_position is None:
+    filters = getattr(action, "filters", None) if action is not None else None
+    filters = filters if isinstance(filters, dict) else {}
+    has_tier_local_selector = bool(
+        filters.get("tier")
+        or filters.get("target_tier")
+        or filters.get("targetTier")
+    )
+    if target_position is None and not has_tier_local_selector:
         return None, {}
     try:
         state_resp = await _get_planning_state_request(ctx.deps.sessionid)
         state = (state_resp or {}).get("data") or {}
         ordered_state = state.get("orderedPlanState") or {}
         units = _ordered_visible_units(ordered_state, str(state.get("volunteerModel") or state.get("volunteer_model") or ""))
+        selector_units = [
+            {**unit, "_visible_position": index}
+            for index, unit in enumerate(units, start=1)
+            if isinstance(unit, dict)
+        ]
         position_refs = _extract_unit_source_positions(plan_model)
         source_position = position_refs[0] if position_refs else None
         if not units:
@@ -746,6 +792,7 @@ async def _build_move_ordered_unit_preview_summary(
         unit_ids = _extract_unit_ids(plan_model)
         source_unit: dict[str, Any] | None = None
         source_unit_id = ""
+        selector_facts: dict[str, Any] = {}
 
         if unit_ids:
             source_unit_id = unit_ids[0]
@@ -758,6 +805,19 @@ async def _build_move_ordered_unit_preview_summary(
         elif source_position is not None and 0 < source_position <= len(units):
             source_unit = units[source_position - 1] or {}
             source_unit_id = str(source_unit.get("unitId") or source_unit.get("id") or "").strip()
+        elif has_tier_local_selector:
+            selected_unit, selector_target_position, selector_facts, selector_message = _resolve_tier_local_move_selector(
+                selector_units,
+                filters,
+            )
+            if selected_unit is not None and selector_target_position is not None:
+                source_unit = selected_unit
+                source_position = _ordered_item_position_value(selected_unit)
+                target_position = selector_target_position
+                source_unit_id = _unit_id_from_visible_unit(selected_unit)
+            elif selector_message:
+                selector_facts["position_resolution"] = "tier_selector_no_match"
+                return selector_message, selector_facts
 
         if source_unit is None:
             if source_position is not None:
@@ -775,6 +835,11 @@ async def _build_move_ordered_unit_preview_summary(
                 "会移动当前方案排序区里的指定项，目标是移动到新的方案位置。"
                 "这里的“第几个”按当前方案展示顺序计算，确认后会影响方案顺序和导出顺序。",
                 {"position_semantics": "ordered_unit_position"},
+            )
+        if target_position is None:
+            return (
+                "已定位到当前方案里的排序项，但还缺少明确的目标位置，所以这次不能生成移动预览。",
+                {"position_semantics": "ordered_unit_position", "position_resolution": "missing_target_position"},
             )
 
         label = _unit_kind_label(source_unit)
@@ -799,15 +864,27 @@ async def _build_move_ordered_unit_preview_summary(
                     "position_resolution": "already_at_target",
                 },
             )
+        selector_reason = ""
+        if has_tier_local_selector:
+            tier = _normalize_tier_filter(filters.get("tier") or filters.get("target_tier") or filters.get("targetTier"))
+            sort_field = _SORT_FIELD_ALIASES.get(
+                str(filters.get("sort_field") or filters.get("sortField") or filters.get("sort_by") or filters.get("sortBy") or "").strip(),
+                "admissionRatio",
+            )
+            sort_label = _SORT_FIELD_LABELS.get(sort_field, sort_field)
+            rank_label = _tier_local_rank_label(sort_field, str(filters.get("rank") or filters.get("rankMode") or filters.get("select") or "").strip())
+            sort_value = _item_sort_value(source_unit, sort_field)
+            value_text = f"，{sort_label}{_format_sort_value(sort_value, sort_field)}" if sort_value is not None else ""
+            selector_reason = f"（按{tier}档内{sort_label}{rank_label}选择{value_text}）"
         explanation = _unit_position_explanation(source_unit)
         summary = (
             "预览如下：\n\n"
-            f"- 源{label}：{source_text} — {unit_name}{count_text}\n"
+            f"- 源{label}：{source_text} — {unit_name}{count_text}{selector_reason}\n"
             f"- 目标位置：第{int(target_position)}位（{target_text}）\n"
             f"- 移动方式：{'整组移动，组内专业顺序保持不变' if label == '专业组' else '移动该志愿，其他志愿按顺序衔接'}\n\n"
             f"{explanation}"
         )
-        return summary, {
+        facts = {
             "source_unit_id": source_unit_id,
             "source_unit_name": unit_name,
             "source_unit_position": source_position,
@@ -820,16 +897,36 @@ async def _build_move_ordered_unit_preview_summary(
                     plan_model,
                     volunteer_ids=[source_volunteer_id],
                     action_family="move_unit",
+                    target_position=int(target_position),
                 )
                 if label == "志愿" and source_volunteer_id
                 else _build_resolved_apply_payload(
                     plan_model,
                     unit_ids=[source_unit_id],
+                    target_position=int(target_position),
                 )
                 if source_unit_id
                 else {}
             ),
         }
+        if has_tier_local_selector:
+            sort_field = _SORT_FIELD_ALIASES.get(
+                str(filters.get("sort_field") or filters.get("sortField") or filters.get("sort_by") or filters.get("sortBy") or "").strip(),
+                "admissionRatio",
+            )
+            facts.update(selector_facts)
+            facts.update(
+                {
+                    "selector": f"tier_local_{_normalize_tier_local_selection_mode(sort_field, str(filters.get('rank') or filters.get('rankMode') or filters.get('select') or '').strip())}_{sort_field}",
+                    "tier": _normalize_tier_filter(filters.get("tier") or filters.get("target_tier") or filters.get("targetTier")),
+                    "sort_field": sort_field,
+                    "sort_label": _SORT_FIELD_LABELS.get(sort_field, sort_field),
+                    "sort_value": _item_sort_value(source_unit, sort_field),
+                }
+            )
+            if sort_field == "admissionRatio":
+                facts["admission_ratio"] = _item_sort_value(source_unit, "admissionRatio")
+        return summary, facts
     except Exception:
         logger.exception("_build_move_ordered_unit_preview_summary failed: session_id=%s", ctx.deps.sessionid)
         return None, {}
@@ -1037,6 +1134,10 @@ def _is_short_plan_confirmation(text: str) -> bool:
     }:
         return True
     return normalized.startswith(("确认", "执行")) and len(normalized) <= 8
+
+
+def _mutating_preview_workspace_targets(action_family: str) -> list[str]:
+    return list(_MUTATING_PREVIEW_WORKSPACE_TARGETS.get(str(action_family or "").strip(), []))
 
 
 
@@ -1819,6 +1920,64 @@ def _remove_scope_program_types(action: PlanAtomicAction | None) -> list[str]:
     return _filter_scope_values(action, *_PROGRAM_TYPE_FILTER_KEYS)
 
 
+def _remove_scope_min_tuition(action: PlanAtomicAction | None) -> int | None:
+    values = _filter_scope_values(action, *_MIN_TUITION_FILTER_KEYS)
+    for value in values:
+        try:
+            parsed = int(float(str(value).strip()))
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            return parsed
+    return None
+
+
+def _remove_scope_max_tuition(action: PlanAtomicAction | None) -> int | None:
+    values = _filter_scope_values(action, *_MAX_TUITION_FILTER_KEYS)
+    for value in values:
+        try:
+            parsed = int(float(str(value).strip()))
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            return parsed
+    return None
+
+
+def _remove_scope_preference_fit(action: PlanAtomicAction | None) -> list[str]:
+    normalized: list[str] = []
+    aliases = {
+        "non_intent": "unrelated",
+        "not_intent": "unrelated",
+        "not_aligned": "unrelated",
+        "not_preferred": "unrelated",
+        "unrelated": "unrelated",
+        "irrelevant": "unrelated",
+        "不沾边": "unrelated",
+        "非意向": "unrelated",
+        "不相关": "unrelated",
+        "不匹配": "unrelated",
+        "conflict": "conflict",
+        "negative": "conflict",
+        "excluded": "conflict",
+        "排除": "conflict",
+        "冲突": "conflict",
+        "aligned": "aligned",
+        "preferred": "aligned",
+        "positive": "aligned",
+        "意向": "aligned",
+        "匹配": "aligned",
+    }
+    for value in _filter_scope_values(action, *_PREFERENCE_FIT_FILTER_KEYS):
+        text = str(value or "").strip()
+        if not text:
+            continue
+        mapped = aliases.get(text, aliases.get(text.lower(), ""))
+        if mapped and mapped not in normalized:
+            normalized.append(mapped)
+    return normalized
+
+
 def _remove_scope_major_names(action: PlanAtomicAction | None, batch: str | None = "01") -> list[str]:
     names_by_level = _remove_scope_major_names_by_level(action, batch)
     return list(
@@ -1890,6 +2049,9 @@ def _has_structured_remove_scope(action: PlanAtomicAction | None, batch: str | N
         or _remove_scope_school_names(action, batch)
         or _remove_scope_region_names(action)
         or _remove_scope_program_types(action)
+        or _remove_scope_min_tuition(action) is not None
+        or _remove_scope_max_tuition(action) is not None
+        or _remove_scope_preference_fit(action)
     )
 
 
@@ -1944,10 +2106,93 @@ def _program_type_matches_item(item: dict[str, Any], targets: list[str]) -> bool
     return any(_compact_match_contains(value, target) for value in values for target in targets)
 
 
+def _ordered_item_tuition_per_year(item: dict[str, Any]) -> int | None:
+    return _candidate_item_tuition_per_year(item)
+
+
+def _tuition_scope_matches_item(
+    item: dict[str, Any],
+    *,
+    min_tuition: int | None,
+    max_tuition: int | None,
+) -> bool:
+    if min_tuition is None and max_tuition is None:
+        return True
+    tuition = _ordered_item_tuition_per_year(item)
+    if tuition is None:
+        return False
+    if min_tuition is not None and tuition < min_tuition:
+        return False
+    if max_tuition is not None and tuition > max_tuition:
+        return False
+    return True
+
+
+def _item_matches_any_positive_intent(
+    item: dict[str, Any],
+    planning_state: dict[str, Any] | None,
+    *,
+    include_career_types: bool = True,
+) -> bool:
+    intent_state = _extract_plan_intent_state(planning_state)
+    positive_majors = intent_state["positiveMajors"]
+    positive_schools = intent_state["positiveSchools"]
+    positive_regions = intent_state["positiveRegions"]
+    career_types = intent_state["careerTypes"]
+    if not (positive_majors or positive_schools or positive_regions or (career_types if include_career_types else [])):
+        return False
+    return bool(
+        _item_matches_keyword(item, positive_majors, fields=("majorName", "majorCategory", "majorDiscipline"))
+        or _item_matches_keyword(item, positive_schools, fields=("schoolName",))
+        or _item_matches_keyword(item, positive_regions, fields=("provinceName", "cityName", "areaName"))
+        or (include_career_types and _item_matches_career_labels(item, career_types))
+    )
+
+
+def _item_matches_any_negative_intent(
+    item: dict[str, Any],
+    planning_state: dict[str, Any] | None,
+) -> bool:
+    intent_state = _extract_plan_intent_state(planning_state)
+    negative_majors = intent_state["negativeMajors"]
+    negative_schools = intent_state["negativeSchools"]
+    negative_regions = intent_state["negativeRegions"]
+    if not (negative_majors or negative_schools or negative_regions):
+        return False
+    return bool(
+        _item_matches_keyword(item, negative_majors, fields=("majorName", "majorCategory", "majorDiscipline"))
+        or _item_matches_keyword(item, negative_schools, fields=("schoolName",))
+        or _item_matches_keyword(item, negative_regions, fields=("provinceName", "cityName", "areaName"))
+    )
+
+
+def _preference_fit_matches_item(
+    item: dict[str, Any],
+    targets: list[str],
+    planning_state: dict[str, Any] | None,
+) -> bool:
+    if not targets:
+        return True
+    # preference_fit represents explicit user intent fit. Career direction is a
+    # weaker planning signal and must not make unrelated explicit-intent filters
+    # silently keep items such as generic education/public-service-adjacent majors.
+    positive_match = _item_matches_any_positive_intent(item, planning_state, include_career_types=False)
+    negative_match = _item_matches_any_negative_intent(item, planning_state)
+    for target in targets:
+        if target == "aligned" and positive_match and not negative_match:
+            return True
+        if target == "unrelated" and not positive_match and not negative_match:
+            return True
+        if target == "conflict" and negative_match:
+            return True
+    return False
+
+
 def _ordered_item_matches_remove_scope(
     item: dict[str, Any],
     action: PlanAtomicAction | None,
     batch: str | None = "01",
+    planning_state: dict[str, Any] | None = None,
 ) -> bool:
     if action is None:
         return False
@@ -1955,6 +2200,9 @@ def _ordered_item_matches_remove_scope(
     school_targets = _remove_scope_school_names(action, batch)
     region_targets = _remove_scope_region_names(action)
     program_type_targets = _remove_scope_program_types(action)
+    min_tuition = _remove_scope_min_tuition(action)
+    max_tuition = _remove_scope_max_tuition(action)
+    preference_fit_targets = _remove_scope_preference_fit(action)
     tier_values = _filter_scope_values(action, "tier")
     if tier_values:
         item_tier = str(item.get("tier") or "").strip()
@@ -1978,11 +2226,24 @@ def _ordered_item_matches_remove_scope(
             _compact_match_contains(field, target)
             for target in region_targets
             for field in region_fields
-        ):
+            ):
             return False
     if program_type_targets and not _program_type_matches_item(item, program_type_targets):
         return False
-    return bool(major_targets or school_targets or region_targets or program_type_targets or tier_values)
+    if not _tuition_scope_matches_item(item, min_tuition=min_tuition, max_tuition=max_tuition):
+        return False
+    if not _preference_fit_matches_item(item, preference_fit_targets, planning_state):
+        return False
+    return bool(
+        major_targets
+        or school_targets
+        or region_targets
+        or program_type_targets
+        or tier_values
+        or min_tuition is not None
+        or max_tuition is not None
+        or preference_fit_targets
+    )
 
 
 def _ordered_item_scope_volunteer_ids(
@@ -2011,11 +2272,12 @@ def _resolve_ordered_ids_by_remove_scope(
     items: list[dict[str, Any]],
     action: PlanAtomicAction | None,
     batch: str | None = "01",
+    planning_state: dict[str, Any] | None = None,
 ) -> tuple[list[str], list[dict[str, Any]]]:
     matched_items: list[dict[str, Any]] = []
     ids: list[str] = []
     for item in items:
-        if not _ordered_item_matches_remove_scope(item, action, batch):
+        if not _ordered_item_matches_remove_scope(item, action, batch, planning_state):
             continue
         matched_ids = _ordered_item_scope_volunteer_ids(item, action, batch)
         if not matched_ids:
@@ -2033,6 +2295,9 @@ def _remove_scope_label(action: PlanAtomicAction | None, batch: str | None = "01
     school_names = _remove_scope_school_names(action, batch)
     region_names = _remove_scope_region_names(action)
     program_types = _remove_scope_program_types(action)
+    min_tuition = _remove_scope_min_tuition(action)
+    max_tuition = _remove_scope_max_tuition(action)
+    preference_fit = _remove_scope_preference_fit(action)
     if major_names_by_level.get("negative_level3"):
         parts.append("具体专业：" + "、".join(major_names_by_level["negative_level3"][:3]))
     if major_names_by_level.get("negative_level2"):
@@ -2045,6 +2310,16 @@ def _remove_scope_label(action: PlanAtomicAction | None, batch: str | None = "01
         parts.append("地域：" + "、".join(region_names[:3]))
     if program_types:
         parts.append("项目类型：" + "、".join(program_types[:3]))
+    if min_tuition is not None:
+        parts.append(f"学费不少于{min_tuition}元/年")
+    if max_tuition is not None:
+        parts.append(f"学费不超过{max_tuition}元/年")
+    if "unrelated" in preference_fit:
+        parts.append("与已确认意向不匹配")
+    if "conflict" in preference_fit:
+        parts.append("命中已排除要求")
+    if "aligned" in preference_fit:
+        parts.append("贴近已确认意向")
     return "；".join(parts) or "指定范围"
 
 
@@ -2085,15 +2360,22 @@ def _build_remove_units_preview_summary_from_scope(
     volunteer_ids: list[str],
     action: PlanAtomicAction | None,
     batch: str | None = "01",
+    *,
+    include_intent_update: bool = False,
 ) -> str:
     scope_label = _remove_scope_label(action, batch)
     unit_count = _count_ordered_units_for_ids(items, volunteer_ids)
     examples = "；".join(_ordered_item_display_name(item) for item in matched_items[:5])
     example_text = f"示例：{examples}。" if examples else ""
+    intent_text = (
+        "同时把这条要求写入后续报考参考，用于刷新推荐系数和专家优选；"
+        if include_intent_update
+        else ""
+    )
     return (
         f"已在当前方案里定位到“{scope_label}”相关的 {len(volunteer_ids)} 条志愿"
         f"（约 {unit_count} 个专业组）。{example_text}"
-        "确认后会把这些志愿移出当前方案，同时把这条要求写入后续报考参考，用于刷新推荐系数和专家优选；"
+        f"确认后会把这些志愿移出当前方案，{intent_text}"
         "执行后会重新审查方案。"
     )
 
@@ -2102,12 +2384,22 @@ def _build_move_unit_preview_summary_from_items(
     items: list[dict[str, Any]],
     volunteer_ids: list[str],
     target_position: int | None,
+    *,
+    context_text: str = "",
 ) -> tuple[str | None, dict[str, Any]]:
     if target_position is None or not volunteer_ids:
         return None, {}
     item_by_id = {str(item.get("volunteerId") or "").strip(): item for item in items if str(item.get("volunteerId") or "").strip()}
     source_item = item_by_id.get(str(volunteer_ids[0] or "").strip())
     if not source_item:
+        return None, {}
+    target_position, target_facts = _resolve_tier_local_first_target_position(
+        items,
+        source_item,
+        target_position,
+        context_text,
+    )
+    if target_position is None:
         return None, {}
     current_position_raw = source_item.get("position")
     try:
@@ -2133,7 +2425,207 @@ def _build_move_unit_preview_summary_from_items(
         "source_display_name": display_name,
         "source_position": current_position,
         "target_position": int(target_position),
+        **target_facts,
     }
+
+
+def _normalize_tier_filter(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if text in {"保底", "保档", "保"}:
+        return "保"
+    if text in {"冲刺", "冲档", "冲"}:
+        return "冲"
+    if text in {"稳妥", "稳档", "稳"}:
+        return "稳"
+    return text
+
+
+def _ordered_item_position_value(item: dict[str, Any]) -> int | None:
+    try:
+        value = int(item.get("_visible_position") or item.get("position") or item.get("rank") or item.get("order"))
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def _text_mentions_tier_local_first(text: str, tier: str) -> bool:
+    compact = _compact_ref_text(text)
+    if not compact:
+        return False
+    normalized_tier = _normalize_tier_filter(tier)
+    tier_markers = {
+        "保": ("保", "保底", "保档", "保区", "兜底"),
+        "稳": ("稳", "稳妥", "稳档", "稳区"),
+        "冲": ("冲", "冲刺", "冲档", "冲区"),
+    }.get(normalized_tier, (normalized_tier,))
+    if not any(_compact_ref_text(marker) in compact for marker in tier_markers if marker):
+        return False
+    return any(marker in compact for marker in ("第一位", "第1位", "第一", "置顶", "最前"))
+
+
+def _resolve_tier_local_first_target_position(
+    ordered_items: list[dict[str, Any]],
+    source_item: dict[str, Any],
+    requested_target_position: int | None,
+    context_text: str,
+) -> tuple[int | None, dict[str, Any]]:
+    if requested_target_position != 1:
+        return requested_target_position, {}
+    tier = _normalize_tier_filter(source_item.get("tier") or source_item.get("bucket"))
+    if not tier or not _text_mentions_tier_local_first(context_text, tier):
+        return requested_target_position, {}
+    tier_positions = [
+        position
+        for item in ordered_items
+        if _normalize_tier_filter(item.get("tier") or item.get("bucket")) == tier
+        for position in [_ordered_item_position_value(item)]
+        if position is not None
+    ]
+    if not tier_positions:
+        return requested_target_position, {}
+    target_position = min(tier_positions)
+    return target_position, {
+        "selector": "tier_local_first_target_position",
+        "tier": tier,
+        "original_target_position": requested_target_position,
+        "target_position": target_position,
+    }
+
+
+_TIER_LOCAL_HIGH_RANK_ALIASES = {"max", "highest", "top", "best", "最高", "最大", "靠前", "最靠前"}
+_TIER_LOCAL_LOW_RANK_ALIASES = {"min", "lowest", "bottom", "worst", "最低", "最小", "靠后", "最靠后"}
+
+
+def _normalize_tier_local_selection_mode(sort_field: str, rank: str) -> str:
+    normalized = str(rank or "").strip().lower()
+    if normalized in _TIER_LOCAL_HIGH_RANK_ALIASES:
+        return "min" if sort_field == "schoolRank" else "max"
+    if normalized in _TIER_LOCAL_LOW_RANK_ALIASES:
+        return "max" if sort_field == "schoolRank" else "min"
+    return ""
+
+
+def _tier_local_rank_label(sort_field: str, rank: str) -> str:
+    mode = _normalize_tier_local_selection_mode(sort_field, rank)
+    if sort_field == "schoolRank":
+        return "最靠前" if mode == "min" else "最靠后"
+    return "最高" if mode == "max" else "最低"
+
+
+def _resolve_tier_local_target_position(
+    positioned: list[tuple[dict[str, Any], int | None]],
+    filters: dict[str, Any],
+) -> tuple[int | None, dict[str, Any], str | None]:
+    positions = sorted({position for _item, position in positioned if position is not None})
+    if not positions:
+        return None, {}, "missing_tier_positions"
+
+    target_ordinal_raw = (
+        filters.get("targetOrdinal")
+        or filters.get("target_ordinal")
+        or filters.get("ordinal")
+    )
+    target_rank = str(
+        filters.get("targetRank")
+        or filters.get("target_rank")
+        or filters.get("target")
+        or ""
+    ).strip().lower()
+
+    if target_ordinal_raw not in (None, ""):
+        try:
+            target_ordinal = int(target_ordinal_raw)
+        except (TypeError, ValueError):
+            target_ordinal = 0
+        if target_ordinal <= 0:
+            return None, {"target_ordinal": target_ordinal_raw}, "invalid_target_ordinal"
+        if target_ordinal > len(positions):
+            return None, {"target_ordinal": target_ordinal, "tier_position_count": len(positions)}, "target_ordinal_out_of_range"
+        return positions[target_ordinal - 1], {"target_ordinal": target_ordinal}, None
+
+    if target_rank in {"last", "tail", "bottom", "最后", "末位"}:
+        return positions[-1], {"target_rank": "last"}, None
+    return positions[0], {"target_rank": "first", "target_ordinal": 1}, None
+
+
+def _resolve_tier_local_move_selector(
+    ordered_items: list[dict[str, Any]],
+    filters: dict[str, Any],
+) -> tuple[dict[str, Any] | None, int | None, dict[str, Any], str | None]:
+    tier = _normalize_tier_filter(
+        filters.get("tier") or filters.get("target_tier") or filters.get("targetTier")
+    )
+    sort_field = _SORT_FIELD_ALIASES.get(
+        str(filters.get("sort_field") or filters.get("sortField") or filters.get("sort_by") or filters.get("sortBy") or "").strip(),
+        "",
+    )
+    rank = str(filters.get("rank") or filters.get("rankMode") or filters.get("select") or "").strip().lower()
+    selection_mode = _normalize_tier_local_selection_mode(sort_field, rank)
+    if not tier or not sort_field or not selection_mode:
+        return None, None, {}, None
+
+    matched = [
+        item
+        for item in ordered_items
+        if _normalize_tier_filter(item.get("tier") or item.get("bucket") or _unit_tier_label(item)) == tier
+    ]
+    if not matched:
+        return None, None, {"tier": tier, "matched_count": 0}, f"当前方案里暂时没有{tier}档志愿，无法生成调序预览。"
+
+    positioned = [
+        (item, _ordered_item_position_value(item))
+        for item in matched
+    ]
+    target_position, target_facts, target_error = _resolve_tier_local_target_position(positioned, filters)
+    if target_position is None:
+        facts = {"tier": tier, "matched_count": len(matched), **target_facts}
+        if target_error == "target_ordinal_out_of_range":
+            return None, None, facts, f"当前{tier}档只有 {target_facts.get('tier_position_count', 0)} 个可排序项，无法移动到档内第 {target_facts.get('target_ordinal')} 位。"
+        return None, None, {"tier": tier, "matched_count": len(matched)}, f"当前{tier}档志愿缺少稳定位置，无法生成调序预览。"
+
+    valued: list[tuple[dict[str, Any], float, int]] = []
+    for item in matched:
+        value = _item_sort_value(item, sort_field)
+        if value is None:
+            continue
+        position = _ordered_item_position_value(item) or 10**9
+        valued.append((item, value, position))
+    if not valued:
+        label = _SORT_FIELD_LABELS.get(sort_field, sort_field)
+        return (
+            None,
+            None,
+            {"tier": tier, "matched_count": len(matched), "sort_field": sort_field},
+            f"当前{tier}档志愿缺少可比较的{label}数据，无法生成调序预览。",
+        )
+
+    if selection_mode == "max":
+        selected, selected_value, _selected_position = max(valued, key=lambda row: (row[1], -row[2]))
+    else:
+        selected, selected_value, _selected_position = min(valued, key=lambda row: (row[1], row[2]))
+    volunteer_id = str(selected.get("volunteerId") or "").strip()
+    sort_label = _SORT_FIELD_LABELS.get(sort_field, sort_field)
+    rank_label = _tier_local_rank_label(sort_field, rank)
+    facts = {
+        "selector": f"tier_local_{selection_mode}_{sort_field}",
+        "tier": tier,
+        "matched_count": len(matched),
+        "sort_field": sort_field,
+        "sort_label": sort_label,
+        "rank": rank,
+        "rank_label": rank_label,
+        "source_volunteer_id": volunteer_id,
+        "source_display_name": _ordered_item_display_name(selected),
+        "source_position": _ordered_item_position_value(selected),
+        "target_position": target_position,
+        "sort_value": selected_value,
+        **target_facts,
+    }
+    if sort_field == "admissionRatio":
+        facts["admission_ratio"] = selected_value
+    return selected, target_position, facts, None
 
 
 def _build_resolved_apply_payload(
@@ -2142,6 +2634,7 @@ def _build_resolved_apply_payload(
     volunteer_ids: list[str] | None = None,
     unit_ids: list[str] | None = None,
     action_family: str | None = None,
+    target_position: int | None = None,
 ) -> dict[str, Any]:
     """Keep preview-resolved execution targets stable for the confirm turn."""
     if not plan_model.atomic_actions:
@@ -2156,6 +2649,8 @@ def _build_resolved_apply_payload(
                 action_data["volunteer_ids"] = [str(item) for item in volunteer_ids if str(item or "").strip()]
             if unit_ids is not None:
                 action_data["unit_ids"] = [str(item) for item in unit_ids if str(item or "").strip()]
+            if target_position is not None:
+                action_data["target_position"] = int(target_position)
         resolved_actions.append(action_data)
     payload = {"atomic_actions": resolved_actions} if resolved_actions else {}
     if action_family:
@@ -3037,6 +3532,8 @@ async def _regenerate_ordered_plan(ctx: RunContext[RequestContext]) -> str:
 _SORT_FIELD_ALIASES = {
     "admissionRatio": "admissionRatio",
     "admission_ratio": "admissionRatio",
+    "admission_probability": "admissionRatio",
+    "admissionProbability": "admissionRatio",
     "录取率": "admissionRatio",
     "schoolRank": "schoolRank",
     "school_rank": "schoolRank",
@@ -3532,7 +4029,11 @@ async def _execute_plan_action_model(
         if plan_model.action_family == "move_ordered_unit":
             resolved_summary, resolved_facts = await _build_move_ordered_unit_preview_summary(ctx, plan_model)
             if resolved_summary:
-                if str(resolved_facts.get("position_resolution") or "").strip() == "already_at_target":
+                if str(resolved_facts.get("position_resolution") or "").strip() in {
+                    "already_at_target",
+                    "tier_selector_no_match",
+                    "missing_target_position",
+                }:
                     return PlanExecutionResult(
                         applied=False,
                         action_family=plan_model.action_family,
@@ -3541,9 +4042,9 @@ async def _execute_plan_action_model(
                         context_summary=plan_model.context_summary,
                         summary=resolved_summary,
                         state_summary=resolved_summary,
-                        reply_focus=["already_at_target"],
+                        reply_focus=["already_at_target"] if str(resolved_facts.get("position_resolution") or "").strip() == "already_at_target" else ["no_matching_ordered_items"],
                         reply_strategy="direct_reply",
-                        next_step_hints=["当前排序项已经在目标位置；不要生成确认卡，也不要提示已移动。"],
+                        next_step_hints=["当前排序项已经在目标位置或缺少可移动目标；不要生成确认卡，也不要提示已移动。"],
                         facts=_facts_with_planning_version(resolved_facts, ctx),
                     )
                 preview_summary = resolved_summary
@@ -3571,7 +4072,53 @@ async def _execute_plan_action_model(
             atomic = plan_model.atomic_actions[0] if plan_model.atomic_actions else None
             refs = list(atomic.volunteer_ids or []) if atomic else []
             resolved_ids, _ = await _resolve_ordered_volunteer_refs(ctx, refs)
-            if resolved_ids:
+            if plan_model.action_family == "move_unit" and not resolved_ids and atomic is not None:
+                ordered_items = await _load_ordered_items(ctx)
+                selected_item, selector_target_position, selector_facts, selector_message = _resolve_tier_local_move_selector(
+                    ordered_items,
+                    atomic.filters or {},
+                )
+                selected_id = str((selected_item or {}).get("volunteerId") or "").strip() if selected_item else ""
+                if selected_id and selector_target_position is not None:
+                    resolved_ids = [selected_id]
+                    resolved_summary, resolved_position_facts = _build_move_unit_preview_summary_from_items(
+                        ordered_items,
+                        resolved_ids,
+                        selector_target_position,
+                        context_text=" ".join(
+                            part
+                            for part in (
+                                str(plan_model.user_goal or "").strip(),
+                                str(getattr(atomic, "reason", "") or "").strip(),
+                            )
+                            if part
+                        ),
+                    )
+                    if resolved_summary:
+                        preview_summary = resolved_summary
+                        preview_facts.update(selector_facts)
+                        preview_facts.update(resolved_position_facts)
+                        preview_facts["resolved_apply_payload"] = _build_resolved_apply_payload(
+                            plan_model,
+                            volunteer_ids=resolved_ids,
+                            target_position=selector_target_position,
+                        )
+                elif selector_message:
+                    selector_facts["position_resolution"] = "tier_selector_no_match"
+                    return PlanExecutionResult(
+                        applied=False,
+                        action_family=plan_model.action_family,
+                        stage="preview",
+                        result_kind="no_change",
+                        context_summary=plan_model.context_summary,
+                        summary=selector_message,
+                        state_summary=selector_message,
+                        reply_focus=["no_matching_ordered_items"],
+                        reply_strategy="direct_reply",
+                        next_step_hints=["当前方案没有命中 tier-local 调序范围；不要生成确认卡，也不要提示已移动。"],
+                        facts=_facts_with_planning_version(selector_facts, ctx),
+                    )
+            if resolved_ids and "resolved_apply_payload" not in preview_facts:
                 preview_facts["resolved_apply_payload"] = _build_resolved_apply_payload(
                     plan_model,
                     volunteer_ids=resolved_ids,
@@ -3713,10 +4260,12 @@ async def _execute_plan_action_model(
         batch = getattr(ctx.deps, "batch", None) or "01"
         if not refs and review_issue_target is None and _has_structured_remove_scope(atomic, batch):
             ordered_items = await _load_ordered_items(ctx)
+            planning_state = await _get_planning_state_with_latest_profile(ctx.deps.sessionid)
             scoped_ids, matched_items = _resolve_ordered_ids_by_remove_scope(
                 ordered_items,
                 atomic,
                 batch,
+                planning_state,
             )
             scope_label = _remove_scope_label(atomic, batch)
             if not scoped_ids:
@@ -3746,6 +4295,12 @@ async def _execute_plan_action_model(
                 scoped_ids,
                 atomic,
                 batch,
+                include_intent_update=bool(
+                    _build_constraint_intent_update_from_remove_scope(
+                        atomic,
+                        getattr(ctx.deps, "batch", None) or "01",
+                    ).get("selected")
+                ),
             )
             return PlanExecutionResult(
                 applied=False,
@@ -3868,6 +4423,14 @@ async def _execute_plan_action_model(
                 ordered_items,
                 resolved_ids,
                 getattr(atomic, "target_position", None),
+                context_text=" ".join(
+                    part
+                    for part in (
+                        str(plan_model.user_goal or "").strip(),
+                        str(getattr(atomic, "reason", "") or "").strip(),
+                    )
+                    if part
+                ),
             )
             if resolved_summary:
                 if (
@@ -3897,9 +4460,80 @@ async def _execute_plan_action_model(
                             "resolved_apply_payload": _build_resolved_apply_payload(
                                 plan_model,
                                 volunteer_ids=resolved_ids,
+                                target_position=resolved_facts.get("target_position"),
                             ),
                         },
                     }
+                )
+        elif atomic is not None:
+            ordered_items = await _load_ordered_items(ctx)
+            selected_item, selector_target_position, selector_facts, selector_message = _resolve_tier_local_move_selector(
+                ordered_items,
+                atomic.filters or {},
+            )
+            selected_id = str((selected_item or {}).get("volunteerId") or "").strip() if selected_item else ""
+            if selected_id and selector_target_position is not None:
+                resolved_summary, resolved_facts = _build_move_unit_preview_summary_from_items(
+                    ordered_items,
+                    [selected_id],
+                    selector_target_position,
+                    context_text=" ".join(
+                        part
+                        for part in (
+                            str(plan_model.user_goal or "").strip(),
+                            str(getattr(atomic, "reason", "") or "").strip(),
+                        )
+                        if part
+                    ),
+                )
+                if resolved_summary:
+                    if (
+                        resolved_facts.get("source_position") is not None
+                        and resolved_facts.get("target_position") is not None
+                        and int(resolved_facts["source_position"]) == int(resolved_facts["target_position"])
+                    ):
+                        return PlanExecutionResult(
+                            applied=False,
+                            action_family=plan_model.action_family,
+                            stage=plan_model.stage,
+                            result_kind="no_change",
+                            context_summary=plan_model.context_summary,
+                            summary=resolved_summary,
+                            state_summary=resolved_summary,
+                            reply_focus=["already_at_target"],
+                            reply_strategy="direct_reply",
+                            next_step_hints=["当前志愿已经在目标位置；不要生成确认卡，也不要提示已移动。"],
+                            facts=_facts_with_planning_version({**selector_facts, **resolved_facts}, ctx),
+                        )
+                    plan_model = plan_model.model_copy(
+                        update={
+                            "preview_summary": resolved_summary,
+                            "facts": {
+                                **(getattr(plan_model, "facts", {}) or {}),
+                                **selector_facts,
+                                **resolved_facts,
+                                "resolved_apply_payload": _build_resolved_apply_payload(
+                                    plan_model,
+                                    volunteer_ids=[selected_id],
+                                    target_position=selector_target_position,
+                                ),
+                            },
+                        }
+                    )
+            elif selector_message:
+                selector_facts["position_resolution"] = "tier_selector_no_match"
+                return PlanExecutionResult(
+                    applied=False,
+                    action_family=plan_model.action_family,
+                    stage=plan_model.stage,
+                    result_kind="no_change",
+                    context_summary=plan_model.context_summary,
+                    summary=selector_message,
+                    state_summary=selector_message,
+                    reply_focus=["no_matching_ordered_items"],
+                    reply_strategy="direct_reply",
+                    next_step_hints=["当前方案没有命中 tier-local 调序范围；不要生成确认卡，也不要提示已移动。"],
+                    facts=_facts_with_planning_version(selector_facts, ctx),
                 )
 
     if plan_model.stage == "preview" and plan_model.action_family == "add_units":
@@ -3970,7 +4604,11 @@ async def _execute_plan_action_model(
         if plan_model.action_family == "move_ordered_unit":
             resolved_summary, resolved_facts = await _build_move_ordered_unit_preview_summary(ctx, plan_model)
             if resolved_summary:
-                if str(resolved_facts.get("position_resolution") or "").strip() == "already_at_target":
+                if str(resolved_facts.get("position_resolution") or "").strip() in {
+                    "already_at_target",
+                    "tier_selector_no_match",
+                    "missing_target_position",
+                }:
                     return PlanExecutionResult(
                         applied=False,
                         action_family=plan_model.action_family,
@@ -3979,9 +4617,9 @@ async def _execute_plan_action_model(
                         context_summary=plan_model.context_summary,
                         summary=resolved_summary,
                         state_summary=resolved_summary,
-                        reply_focus=["already_at_target"],
+                        reply_focus=["already_at_target"] if str(resolved_facts.get("position_resolution") or "").strip() == "already_at_target" else ["no_matching_ordered_items"],
                         reply_strategy="direct_reply",
-                        next_step_hints=["当前排序项已经在目标位置；不要生成确认卡，也不要提示已移动。"],
+                        next_step_hints=["当前排序项已经在目标位置或缺少可移动目标；不要生成确认卡，也不要提示已移动。"],
                         facts=_facts_with_planning_version(resolved_facts, ctx),
                     )
                 preview_summary = resolved_summary
@@ -4209,6 +4847,15 @@ async def execute_plan_action(
             )
 
     result = guard_result or await _execute_plan_action_model(ctx, plan_model)
+    if (
+        result.result_kind == "preview_only"
+        and str(result.stage or "").strip() == "preview"
+        and result.action_family in _MUTATING_ACTION_FAMILIES
+        and not result.workspace_refresh_targets
+    ):
+        result = result.model_copy(
+            update={"workspace_refresh_targets": _mutating_preview_workspace_targets(result.action_family)}
+        )
     result_data = result.model_dump()
     cached_result_data = copy.deepcopy(result_data)
     effective_action_family = str(result_data.get("action_family") or "").strip()

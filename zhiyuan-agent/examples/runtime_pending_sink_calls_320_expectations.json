@@ -1,0 +1,35 @@
+{
+  "expected": {
+      "summary": {
+      "expected": 16,
+      "actual": 16,
+      "present": 16,
+      "missing": 0,
+      "unexpected": 0,
+      "legacyDirectCreateCount": 0,
+      "compilerOnlySinkCallCount": 10,
+      "compilerEntryCallCount": 0,
+      "statusUpdateKeepCount": 6,
+      "byKind": {
+        "status_update_keep": 6,
+        "compiler_sink_call": 10
+      },
+      "legacyDirectCreateByPhase4Action": {}
+    }
+  },
+  "assert": {
+    "exact": [
+      "summary.expected",
+      "summary.actual",
+      "summary.present",
+      "summary.missing",
+      "summary.unexpected",
+      "summary.legacyDirectCreateCount",
+      "summary.compilerOnlySinkCallCount",
+      "summary.compilerEntryCallCount",
+      "summary.statusUpdateKeepCount",
+      "summary.byKind",
+      "summary.legacyDirectCreateByPhase4Action"
+    ]
+  }
+}

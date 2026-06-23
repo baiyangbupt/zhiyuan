@@ -973,6 +973,7 @@ def _fix_proposal_facts(proposal_state: dict[str, Any] | None) -> dict[str, Any]
                 if isinstance(action, dict)
             ],
             "actions": _compact_fix_proposal_actions(actions),
+            "dryRunObservation": dry_run,
             "remove_volunteer_count": _coerce_non_negative_int(dry_run.get("removeVolunteerCount")),
             "add_volunteer_count": _coerce_non_negative_int(dry_run.get("addVolunteerCount")),
             "remove_unit_count": _coerce_non_negative_int(dry_run.get("removeUnitCount")),

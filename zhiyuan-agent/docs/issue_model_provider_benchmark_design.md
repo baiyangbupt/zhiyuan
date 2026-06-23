@@ -64,6 +64,15 @@ examples/model_provider_benchmark_e2e_cases.json
 
 它只用于定位 provider 网络、模型调度、首 token 和解码速度，不替代端到端效果判断。
 
+3.2.0 profile 前需要先运行 provider precheck。precheck 只记录环境状态，不记录 API key 值：
+
+- API key 环境变量是否存在。
+- `/models` 是否可访问，目标 model id 是否出现在列表中。
+- 最小 `/chat/completions` smoke 是否成功。
+- 400/401/403/404 等错误分类，例如 `model_not_found`、`auth_or_permission_error`、`insufficient_balance`。
+
+provider precheck 失败时，该 provider 不能进入模型质量矩阵；错误应归类为 `provider_env`，不能把系统兜底回复或 400/403 后的低延迟当作模型效果。
+
 ## 5. Provider 配置
 
 不提交真实 API Key。配置文件只写环境变量名：
@@ -120,6 +129,17 @@ export SILICONFLOW_API_KEY="..."
 .venv/bin/python examples/model_provider_benchmark.py \
   --config examples/model_provider_benchmark.providers.example.json \
   --direct-only \
+  --output examples/model_provider_benchmark_results.json
+```
+
+### 6.4 先做 provider precheck 并跳过不可用 provider
+
+```bash
+.venv/bin/python examples/model_provider_benchmark.py \
+  --config examples/model_provider_benchmark.providers.example.json \
+  --direct-only \
+  --direct-runs 1 \
+  --skip-unavailable-providers \
   --output examples/model_provider_benchmark_results.json
 ```
 

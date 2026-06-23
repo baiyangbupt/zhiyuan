@@ -1,0 +1,275 @@
+[
+  {
+    "caseId": "adapter-ready-user-goal-replacement",
+    "source": "3.2.0 downstream adapter dry-run",
+    "priority": "P0",
+    "fixProposalResponse": {
+      "code": 0,
+      "data": {
+        "proposalSource": "user_goal",
+        "proposals": [
+          {
+            "proposalId": "fp-ready-1",
+            "proposalSource": "user_goal",
+            "status": "ready",
+            "strategy": "only_keep_scope",
+            "requiresConfirmation": true,
+            "actions": [
+              {
+                "actionType": "replace_volunteers",
+                "removeVolunteerIds": ["p1"],
+                "candidateVolunteerIds": ["c1"],
+                "replacementPairs": [
+                  {
+                    "fromVolunteerId": "p1",
+                    "toVolunteerId": "c1"
+                  }
+                ]
+              }
+            ],
+            "dryRunResult": {
+              "status": "ready",
+              "removeVolunteerCount": 1,
+              "addVolunteerCount": 1,
+              "warnings": []
+            }
+          }
+        ]
+      }
+    },
+    "expected": {
+      "proposalCount": 1,
+      "statusCounts": {"ready": 1},
+      "capacityStatuses": {"satisfied": 1},
+      "contractGapCounts": {},
+      "observations": [
+        {
+          "proposalId": "fp-ready-1",
+          "status": "ready",
+          "strategy": "only_keep_scope",
+          "replacementCandidateIds": ["p1"],
+          "candidateVolunteerIds": ["c1"],
+          "capacityStatus": "satisfied",
+          "selectedCount": 1,
+          "removedCount": 1,
+          "contractGaps": []
+        }
+      ]
+    },
+    "assert": {
+      "exact": [
+        "proposalCount",
+        "statusCounts",
+        "capacityStatuses",
+        "contractGapCounts",
+        "observations.0.proposalId",
+        "observations.0.status",
+        "observations.0.strategy",
+        "observations.0.replacementCandidateIds",
+        "observations.0.candidateVolunteerIds",
+        "observations.0.capacityStatus",
+        "observations.0.selectedCount",
+        "observations.0.removedCount",
+        "observations.0.contractGaps"
+      ]
+    }
+  },
+  {
+    "caseId": "adapter-blocked-candidate-shortage",
+    "source": "3.2.0 downstream adapter dry-run",
+    "priority": "P0",
+    "fixProposalResponse": {
+      "code": 0,
+      "data": {
+        "proposalSource": "review_check",
+        "proposals": [
+          {
+            "proposalId": "fp-blocked-1",
+            "proposalSource": "review_check",
+            "status": "blocked",
+            "strategy": "fill_probability_gap",
+            "requiresConfirmation": false,
+            "blockingReasonCodes": ["probability_gap_candidate_insufficient"],
+            "candidateShortages": [
+              {
+                "strategy": "fill_probability_gap",
+                "scope": "candidate_pool",
+                "reasonCode": "probability_gap_candidate_insufficient",
+                "requiredCount": 2,
+                "currentCount": 0,
+                "shortageCount": 2,
+                "availableCount": 0,
+                "message": "候选不足"
+              }
+            ],
+            "dryRunResult": {
+              "status": "blocked",
+              "message": "候选不足"
+            }
+          }
+        ]
+      }
+    },
+    "expected": {
+      "statusCounts": {"blocked": 1},
+      "capacityStatuses": {"no_result": 1},
+      "contractGapCounts": {},
+      "observations": [
+        {
+          "capacityStatus": "no_result",
+          "noResultReason": "probability_gap_candidate_insufficient",
+          "shortageCount": 2,
+          "availableCount": 0,
+          "blockingReasonCodes": ["probability_gap_candidate_insufficient"],
+          "contractGaps": []
+        }
+      ]
+    },
+    "assert": {
+      "exact": [
+        "statusCounts",
+        "capacityStatuses",
+        "contractGapCounts",
+        "observations.0.capacityStatus",
+        "observations.0.noResultReason",
+        "observations.0.shortageCount",
+        "observations.0.availableCount",
+        "observations.0.blockingReasonCodes",
+        "observations.0.contractGaps"
+      ]
+    }
+  },
+  {
+    "caseId": "adapter-must-include-ready",
+    "source": "3.2.0 downstream adapter dry-run",
+    "priority": "P0",
+    "fixProposalResponse": {
+      "proposals": [
+        {
+          "proposalId": "fp-must-1",
+          "proposalSource": "user_goal",
+          "status": "ready",
+          "strategy": "must_include_scope",
+          "targetValues": ["法学"],
+          "requiresConfirmation": true,
+          "actions": [
+            {
+              "actionType": "add_volunteers",
+              "candidateVolunteerIds": ["law-c1"]
+            }
+          ],
+          "dryRunResult": {
+            "status": "ready",
+            "addVolunteerCount": 1
+          }
+        }
+      ]
+    },
+    "expected": {
+      "capacityStatuses": {"satisfied": 1},
+      "observations": [
+        {
+          "capacityStatus": "satisfied",
+          "requiredMustCover": ["法学"],
+          "missingMustCover": [],
+          "mustCoverSatisfied": true,
+          "candidateVolunteerIds": ["law-c1"]
+        }
+      ]
+    },
+    "assert": {
+      "exact": [
+        "capacityStatuses",
+        "observations.0.capacityStatus",
+        "observations.0.requiredMustCover",
+        "observations.0.missingMustCover",
+        "observations.0.mustCoverSatisfied",
+        "observations.0.candidateVolunteerIds"
+      ]
+    }
+  },
+  {
+    "caseId": "adapter-must-include-blocked",
+    "source": "3.2.0 downstream adapter dry-run",
+    "priority": "P0",
+    "fixProposalResponse": {
+      "proposals": [
+        {
+          "proposalId": "fp-must-blocked-1",
+          "proposalSource": "user_goal",
+          "status": "blocked",
+          "strategy": "must_include_scope",
+          "targetValues": ["法学"],
+          "requiresConfirmation": false,
+          "blockingReasonCodes": ["user_goal_target_not_found"],
+          "candidateShortages": [
+            {
+              "strategy": "must_include_scope",
+              "reasonCode": "user_goal_target_not_found",
+              "shortageCount": 1,
+              "availableCount": 0
+            }
+          ],
+          "dryRunResult": {
+            "status": "blocked",
+            "message": "候选池里暂时没有找到合适补入选择"
+          }
+        }
+      ]
+    },
+    "expected": {
+      "capacityStatuses": {"no_result": 1},
+      "observations": [
+        {
+          "capacityStatus": "no_result",
+          "noResultReason": "user_goal_target_not_found",
+          "requiredMustCover": ["法学"],
+          "missingMustCover": ["法学"],
+          "mustCoverSatisfied": false
+        }
+      ]
+    },
+    "assert": {
+      "exact": [
+        "capacityStatuses",
+        "observations.0.capacityStatus",
+        "observations.0.noResultReason",
+        "observations.0.requiredMustCover",
+        "observations.0.missingMustCover",
+        "observations.0.mustCoverSatisfied"
+      ]
+    }
+  },
+  {
+    "caseId": "adapter-contract-gap-ready-without-actions",
+    "source": "3.2.0 downstream adapter dry-run",
+    "priority": "P1",
+    "fixProposalResponse": {
+      "proposals": [
+        {
+          "proposalId": "fp-gap-1",
+          "status": "ready",
+          "strategy": "exclude_scope",
+          "requiresConfirmation": true,
+          "dryRunResult": {
+            "status": "ready"
+          }
+        }
+      ]
+    },
+    "expected": {
+      "contractGapCounts": {"ready_without_actions": 1},
+      "observations": [
+        {
+          "contractGaps": ["ready_without_actions"]
+        }
+      ]
+    },
+    "assert": {
+      "exact": [
+        "contractGapCounts",
+        "observations.0.contractGaps"
+      ]
+    }
+  }
+]

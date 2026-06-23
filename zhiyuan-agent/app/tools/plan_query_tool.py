@@ -107,6 +107,8 @@ _PLAN_ACTION_QUERY_HINTS = (
     "加入方案",
     "放进方案",
 )
+_TUITION_PER_YEAR_RE = re.compile(r"(?:学费[:：]?\s*)?(\d{4,6})\s*(?:元|/年)")
+_NUMERIC_FILTER_KEYS = ("min_tuition_per_year", "max_tuition_per_year")
 
 
 def _compact_text(value: str) -> str:
@@ -273,8 +275,68 @@ def _append_query_observability(
     )
 
 
-def _filter_keys(filters: dict[str, list[str]]) -> list[str]:
+def _filter_keys(filters: dict[str, Any]) -> list[str]:
     return [key for key, values in filters.items() if values]
+
+
+def _normalize_optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        numeric = int(value)
+        return numeric if numeric > 0 else None
+    text = str(value or "").strip()
+    if not text:
+        return None
+    match = re.search(r"\d{4,6}", text)
+    if not match:
+        return None
+    numeric = int(match.group(0))
+    return numeric if numeric > 0 else None
+
+
+def _plan_item_tuition_per_year(item: dict[str, Any]) -> int | None:
+    raw_value = item.get("tuitionPerYear")
+    parsed = _normalize_optional_int(raw_value)
+    if parsed is not None:
+        return parsed
+    text_sources: list[str] = [
+        str(item.get("majorName") or ""),
+        *(str(value or "") for value in (item.get("majorPlanTags") or [])),
+        *(str(value or "") for value in (item.get("reasonCodes") or [])),
+    ]
+    for text in text_sources:
+        match = _TUITION_PER_YEAR_RE.search(text)
+        if match:
+            return _normalize_optional_int(match.group(1))
+    return None
+
+
+def _matches_tuition_range(
+    item: dict[str, Any],
+    *,
+    min_tuition: int | None,
+    max_tuition: int | None,
+) -> bool:
+    if min_tuition is None and max_tuition is None:
+        return True
+    tuition = _plan_item_tuition_per_year(item)
+    if tuition is None:
+        return False
+    if min_tuition is not None and tuition < min_tuition:
+        return False
+    if max_tuition is not None and tuition > max_tuition:
+        return False
+    return True
+
+
+def _has_tuition_range_filter(filters: dict[str, Any]) -> bool:
+    return (
+        _normalize_optional_int(filters.get("min_tuition_per_year")) is not None
+        or _normalize_optional_int(filters.get("max_tuition_per_year")) is not None
+    )
 
 
 async def _timed_async_step(
@@ -411,7 +473,7 @@ def _school_alias_matches_from_query(
     return matched, matched_names, matched_sources
 
 
-def _has_structured_filters(filters: dict[str, list[str]]) -> bool:
+def _has_structured_filters(filters: dict[str, Any]) -> bool:
     return any(filters.get(key) for key in (
         "tiers",
         "province_names",
@@ -420,6 +482,8 @@ def _has_structured_filters(filters: dict[str, list[str]]) -> bool:
         "major_keywords",
         "school_tags",
         "major_tags",
+        "min_tuition_per_year",
+        "max_tuition_per_year",
     ))
 
 
@@ -437,7 +501,7 @@ def _match_values(haystacks: list[str], needles: list[str]) -> bool:
 
 def _matches_structured_filters(
     item: dict[str, Any],
-    filters: dict[str, list[str]],
+    filters: dict[str, Any],
     *,
     match_mode: str,
 ) -> bool:
@@ -484,6 +548,10 @@ def _matches_structured_filters(
         checks.append(_match_values(major_tag_values, filters["major_tags"]))
     if filters.get("tiers"):
         checks.append(_match_values(tier_values, filters["tiers"]))
+    min_tuition = _normalize_optional_int(filters.get("min_tuition_per_year"))
+    max_tuition = _normalize_optional_int(filters.get("max_tuition_per_year"))
+    if min_tuition is not None or max_tuition is not None:
+        checks.append(_matches_tuition_range(item, min_tuition=min_tuition, max_tuition=max_tuition))
 
     if not checks:
         return False
@@ -506,7 +574,7 @@ def _merge_plan_item(plan_item: dict[str, Any], candidate_item: dict[str, Any] |
     return merged or dict(plan_item or {})
 
 
-def _describe_structured_filters(filters: dict[str, list[str]], fallback_query: str) -> str:
+def _describe_structured_filters(filters: dict[str, Any], fallback_query: str) -> str:
     parts: list[str] = []
     if filters.get("school_keywords"):
         parts.append("院校:" + "、".join(filters["school_keywords"]))
@@ -522,6 +590,12 @@ def _describe_structured_filters(filters: dict[str, list[str]], fallback_query: 
         parts.append("专业标签:" + "、".join(filters["major_tags"]))
     if filters.get("tiers"):
         parts.append("层级:" + "、".join(filters["tiers"]))
+    min_tuition = _normalize_optional_int(filters.get("min_tuition_per_year"))
+    max_tuition = _normalize_optional_int(filters.get("max_tuition_per_year"))
+    if min_tuition is not None:
+        parts.append(f"学费不少于{min_tuition}元/年")
+    if max_tuition is not None:
+        parts.append(f"学费不超过{max_tuition}元/年")
     if parts:
         return "；".join(parts)
     return fallback_query or "当前筛选条件"
@@ -604,8 +678,10 @@ async def _normalize_local_query_filters_async(
     major_keywords: list[str] | None = None,
     school_tags: list[str] | None = None,
     major_tags: list[str] | None = None,
-) -> dict[str, list[str]]:
-    return await normalize_candidate_query_filters_async(
+    min_tuition_per_year: int | None = None,
+    max_tuition_per_year: int | None = None,
+) -> dict[str, Any]:
+    normalized = await normalize_candidate_query_filters_async(
         {
             "tiers": tiers,
             "province_names": province_names,
@@ -617,13 +693,16 @@ async def _normalize_local_query_filters_async(
         },
         batch=batch,
     )
+    normalized["min_tuition_per_year"] = _normalize_optional_int(min_tuition_per_year)
+    normalized["max_tuition_per_year"] = _normalize_optional_int(max_tuition_per_year)
+    return normalized
 
 
 def _merge_structured_filters(
-    primary: dict[str, list[str]],
-    supplemental: dict[str, list[str]],
-) -> dict[str, list[str]]:
-    merged: dict[str, list[str]] = {}
+    primary: dict[str, Any],
+    supplemental: dict[str, Any],
+) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
     for key in (
         "tiers",
         "province_names",
@@ -639,6 +718,8 @@ def _merge_structured_filters(
             if text and text not in values:
                 values.append(text)
         merged[key] = values
+    for key in _NUMERIC_FILTER_KEYS:
+        merged[key] = _normalize_optional_int(primary.get(key)) or _normalize_optional_int(supplemental.get(key))
     return merged
 
 
@@ -966,6 +1047,8 @@ async def query_volunteer_plan(
     major_keywords: list[str] | None = None,
     school_tags: list[str] | None = None,
     major_tags: list[str] | None = None,
+    min_tuition_per_year: int | None = None,
+    max_tuition_per_year: int | None = None,
     match_mode: PlanQueryMatchMode = _MATCH_MODE_AND,
 ) -> str:
     """围绕当前方案与候选机会进行局部命中查询。
@@ -984,7 +1067,9 @@ async def query_volunteer_plan(
     - `plan`
     - `candidate`
     - `plan_then_candidate`
-    - 以及结构化 filters，如 `province_names / school_keywords / major_keywords / school_tags / major_tags`
+    - 以及结构化 filters，如 `province_names / school_keywords / major_keywords / school_tags / major_tags`。
+      `min_tuition_per_year / max_tuition_per_year` 当前用于本地 current plan 查询；候选池学费过滤需要后端
+      contract 支持后再打开。
     """
     session_id = ctx.deps.sessionid
     batch = getattr(ctx.deps, "batch", None) or "01"
@@ -1022,6 +1107,8 @@ async def query_volunteer_plan(
         major_keywords=major_keywords,
         school_tags=school_tags,
         major_tags=major_tags,
+        min_tuition_per_year=min_tuition_per_year,
+        max_tuition_per_year=max_tuition_per_year,
     )
     has_structured_filters = _has_structured_filters(structured_filters)
     normalized_match_mode = _normalize_match_mode(match_mode)
@@ -1051,6 +1138,19 @@ async def query_volunteer_plan(
             batch=batch,
         )
         has_structured_filters = _has_structured_filters(structured_filters)
+    if normalized_scope == _CANDIDATE_SCOPE and _has_tuition_range_filter(structured_filters):
+        _append_query_observability(
+            ctx,
+            session_id=session_id,
+            requested_scope=requested_scope,
+            resolved_scope=normalized_scope,
+            has_structured_filters=has_structured_filters,
+            filter_keys=_filter_keys(structured_filters),
+            timings=timings,
+            total_duration_ms=int((time.perf_counter() - tool_started_at) * 1000),
+            status="unsupported_candidate_tuition_range_filter",
+        )
+        return "候选池暂时不能按学费区间做精确筛选；这类学费范围查询目前可以先在当前方案里看命中数量和示例。"
     filter_description = _describe_structured_filters(structured_filters, (query or "").strip())
 
     try:

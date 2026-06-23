@@ -210,6 +210,65 @@ def test_default_cases_are_end_to_end_benchmark_cases():
     assert benchmark.DEFAULT_CASES == "examples/model_provider_benchmark_e2e_cases.json"
 
 
+def test_provider_error_classification_separates_env_failures():
+    assert benchmark._classify_provider_error(403, "insufficient balance") == "insufficient_balance"
+    assert benchmark._classify_provider_error(400, "Model does not exist") == "model_not_found"
+    assert benchmark._classify_provider_error(401, "unauthorized") == "auth_or_permission_error"
+
+
+def test_extract_model_ids_from_openai_compatible_payload():
+    payload = {"data": [{"id": "model-a"}, {"id": "model-b"}, "model-c"]}
+
+    assert benchmark._extract_model_ids(payload) == ["model-a", "model-b", "model-c"]
+
+
+def test_provider_precheck_missing_api_key_does_not_expose_secret(monkeypatch):
+    provider = benchmark.ProviderConfig(
+        name="provider-a",
+        provider="openai_compatible",
+        model="model-a",
+        base_url="https://example.com/v1",
+        api_key_env="MISSING_MODEL_PROVIDER_KEY",
+    )
+    monkeypatch.delenv("MISSING_MODEL_PROVIDER_KEY", raising=False)
+
+    result = asyncio.run(benchmark._run_provider_precheck(provider, timeout=0.1))
+
+    assert result["status"] == "missing_api_key"
+    assert result["quality_matrix_eligible"] is False
+    assert result["api_key_present"] is False
+    assert "api_key" not in result
+
+
+def test_filter_prechecked_providers_keeps_only_quality_eligible():
+    providers = [
+        benchmark.ProviderConfig(
+            name="ok-provider",
+            provider="openai_compatible",
+            model="model-a",
+            base_url="https://example.com/v1",
+            api_key_env="KEY_A",
+        ),
+        benchmark.ProviderConfig(
+            name="bad-provider",
+            provider="openai_compatible",
+            model="model-b",
+            base_url="https://example.com/v1",
+            api_key_env="KEY_B",
+        ),
+    ]
+
+    filtered = benchmark._filter_prechecked_providers(
+        providers,
+        [
+            {"provider": "ok-provider", "quality_matrix_eligible": True},
+            {"provider": "bad-provider", "quality_matrix_eligible": False},
+        ],
+    )
+
+    assert [provider.name for provider in filtered] == ["ok-provider"]
+
+
 def test_start_agent_uses_configured_host(monkeypatch):
     provider = benchmark.ProviderConfig(
         name="provider-a",

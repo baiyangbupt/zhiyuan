@@ -24,16 +24,21 @@ from app.tools.plan_execution_tool import (
     _count_ordered_units_for_ids,
     _candidate_ref_resolution_message,
     _extract_source_major_names,
+    _get_planning_state_with_latest_profile,
+    _has_structured_remove_scope,
     _infer_ordered_sort_field,
+    _load_ordered_items,
     _move_ordered_unit,
     _ordered_ref_resolution_message,
     _parse_filter_list,
     _preview_or_block_replace_by_candidate_capacity,
     _regenerate_ordered_plan,
     _remove_ordered_units,
+    _remove_scope_label,
     _replace_no_add_clarification,
     _resolve_ordered_volunteer_refs,
     _resolve_candidate_volunteer_refs,
+    _resolve_ordered_ids_by_remove_scope,
     _resolve_ordered_unit_ids,
     _resolve_review_issue_action_scope,
     _select_candidates_by_filters_into_plan,
@@ -210,6 +215,46 @@ async def handle_remove_units(
             and effective_ids
             and str(getattr(review_issue_target, "scope_mode", "") or "") in {"full_issue", "narrowed_issue"}
         )
+        if (
+            not effective_ids
+            and not atomic.volunteer_ids
+            and review_issue_target is None
+            and _has_structured_remove_scope(atomic, getattr(ctx.deps, "batch", None) or "01")
+        ):
+            batch = getattr(ctx.deps, "batch", None) or "01"
+            ordered_items = await _load_ordered_items(ctx)
+            planning_state = await _get_planning_state_with_latest_profile(ctx.deps.sessionid)
+            effective_ids, matched_items = _resolve_ordered_ids_by_remove_scope(
+                ordered_items,
+                atomic,
+                batch,
+                planning_state,
+            )
+            if not effective_ids:
+                scope_label = _remove_scope_label(atomic, batch)
+                state_summary = f"当前方案里没有匹配“{scope_label}”的志愿，本次无需移除。"
+                return PlanExecutionResult(
+                    applied=False,
+                    action_family="remove_units",
+                    stage=plan.stage,
+                    result_kind="no_change",
+                    executed_actions=[
+                        {
+                            "action": "remove_units",
+                            "volunteerIds": [],
+                            "filters": dict(atomic.filters or {}),
+                            "matchedCount": 0,
+                        }
+                    ],
+                    affected_volunteer_ids=[],
+                    workspace_refresh_targets=[],
+                    context_summary=plan.context_summary,
+                    state_summary=state_summary,
+                    summary=state_summary,
+                    reply_focus=["no_matching_ordered_items"],
+                    reply_strategy="direct_reply",
+                    next_step_hints=["告诉用户当前方案没有命中该移除范围，不要说已经删除。"],
+                )
         if (missing_refs and not ignore_missing_refs) or not effective_ids:
             missing_text = "、".join(missing_refs[:5]) if missing_refs else "要移除的志愿"
             result_kind = "error"
@@ -224,6 +269,7 @@ async def handle_remove_units(
                     "action": "remove_units",
                     "volunteerIds": effective_ids,
                     "requestedVolunteerRefs": atomic.volunteer_ids,
+                    "filters": dict(atomic.filters or {}),
                 }
             )
             affected_volunteer_ids.extend(effective_ids)

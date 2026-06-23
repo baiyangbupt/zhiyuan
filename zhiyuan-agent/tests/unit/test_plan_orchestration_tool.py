@@ -270,6 +270,33 @@ def test_plan_next_action_exclude_program_type_builds_executable_remove_scope():
     assert goal["negative_scopes"] == [{"entity_type": "program_type", "values": ["中外合作办学"]}]
 
 
+def test_plan_next_action_builds_remove_scope_for_tuition_and_preference_fit():
+    with patch(
+        "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
+        new=AsyncMock(return_value=_context_inputs(summary="阶段=ordered；方案=48/48")),
+    ):
+        result = asyncio.run(
+            plan_next_action(
+                _ctx(),
+                user_goal="那把两万以上且跟我意向不沾边的先删掉",
+                action_family="remove_units",
+                current_stage="preview",
+                min_tuition_per_year=20000,
+                preference_fit="unrelated",
+                user_confirmed=False,
+            )
+        )
+
+    data = json.loads(result)
+    filters = data["atomic_actions"][0]["filters"]
+    assert data["stage"] == "preview"
+    assert data["action_family"] == "remove_units"
+    assert data["missing_inputs"] == []
+    assert data["requires_confirmation"] is True
+    assert filters["min_tuition_per_year"] == "20000"
+    assert filters["preference_fit"] == "unrelated"
+
+
 def test_plan_next_action_requires_add_units_selection_scope_when_no_ids():
     with patch(
         "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",

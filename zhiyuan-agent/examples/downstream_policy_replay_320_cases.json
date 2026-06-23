@@ -1,0 +1,536 @@
+[
+  {
+    "caseId": "replay-G4-primary-acceptable-selection",
+    "compiledCaseId": "G4-primary-and-acceptable-preference-strength",
+    "source": "3.2.0 downstream policy G4",
+    "priority": "P0",
+    "selectionLimit": 3,
+    "fixture": {
+      "candidateItems": [
+        {
+          "volunteerId": "g4-c1",
+          "schoolName": "甲大学",
+          "majorName": "网络与新媒体",
+          "tier": "稳",
+          "admissionRatio": 70,
+          "baseScore": 70
+        },
+        {
+          "volunteerId": "g4-c2",
+          "schoolName": "乙大学",
+          "majorName": "跨境电子商务",
+          "tier": "稳",
+          "admissionRatio": 95,
+          "baseScore": 95
+        },
+        {
+          "volunteerId": "g4-c3",
+          "schoolName": "丙大学",
+          "majorName": "市场营销",
+          "tier": "稳",
+          "admissionRatio": 99,
+          "baseScore": 99
+        }
+      ],
+      "currentPlanItems": []
+    },
+    "expected": {
+      "selectedCandidateIds": ["g4-c1", "g4-c2", "g4-c3"]
+    },
+    "assert": {
+      "exact": ["selectedCandidateIds"]
+    },
+    "metricsTags": ["rank_boost", "acceptable_fallback"]
+  },
+  {
+    "caseId": "replay-G18-scope-hard-exclude-replacement",
+    "compiledCaseId": "G18-merge-new-negative-with-history-preference",
+    "source": "3.2.0 downstream policy G18",
+    "priority": "P0",
+    "selectionLimit": 3,
+    "fixture": {
+      "candidateItems": [
+        {
+          "volunteerId": "g18-c1",
+          "schoolName": "合肥工业大学",
+          "majorName": "自动化",
+          "tier": "保底",
+          "schoolType": "公办",
+          "baseScore": 50
+        },
+        {
+          "volunteerId": "g18-c2",
+          "schoolName": "南京邮电大学",
+          "majorName": "通信工程",
+          "tier": "稳",
+          "schoolType": "公办",
+          "baseScore": 100
+        },
+        {
+          "volunteerId": "g18-c3",
+          "schoolName": "民办科技学院",
+          "majorName": "计算机科学与技术",
+          "tier": "保底",
+          "schoolType": "民办",
+          "baseScore": 120
+        },
+        {
+          "volunteerId": "g18-c4",
+          "schoolName": "湖北工业大学",
+          "majorName": "电子信息",
+          "tier": "保底",
+          "schoolType": "公办",
+          "baseScore": 80
+        }
+      ],
+      "currentPlanItems": [
+        {
+          "volunteerId": "g18-p1",
+          "schoolName": "民办科技学院",
+          "majorName": "计算机科学与技术",
+          "tier": "保底",
+          "schoolType": "民办"
+        },
+        {
+          "volunteerId": "g18-p2",
+          "schoolName": "合肥工业大学",
+          "majorName": "自动化",
+          "tier": "保底",
+          "schoolType": "公办"
+        },
+        {
+          "volunteerId": "g18-p3",
+          "schoolName": "南京邮电大学",
+          "majorName": "通信工程",
+          "tier": "稳",
+          "schoolType": "公办"
+        }
+      ]
+    },
+    "expected": {
+      "selectedCandidateIds": ["g18-c1", "g18-c4"],
+      "excludedCandidateIds": ["g18-c2", "g18-c3"],
+      "replacementCandidateIds": ["g18-p1"],
+      "protectedPlanItemIds": ["g18-p2"]
+    },
+    "assert": {
+      "exact": ["selectedCandidateIds", "excludedCandidateIds", "replacementCandidateIds", "protectedPlanItemIds"]
+    },
+    "metricsTags": ["hard_exclude", "scope_binding", "replacement_priority"]
+  },
+  {
+    "caseId": "replay-G25-mixed-polarity-replace-and-fill",
+    "compiledCaseId": "G25-mixed-positive-negative-intent-polarity",
+    "source": "3.2.0 downstream policy G25",
+    "priority": "P0",
+    "selectionLimit": 3,
+    "fixture": {
+      "candidateItems": [
+        {
+          "volunteerId": "g25-c1",
+          "schoolName": "甲大学",
+          "majorName": "生物医学工程",
+          "tier": "稳",
+          "baseScore": 70
+        },
+        {
+          "volunteerId": "g25-c2",
+          "schoolName": "乙大学",
+          "majorName": "智能医学工程",
+          "tier": "稳",
+          "baseScore": 65
+        },
+        {
+          "volunteerId": "g25-c3",
+          "schoolName": "丙大学",
+          "majorName": "临床医学",
+          "tier": "稳",
+          "baseScore": 120
+        },
+        {
+          "volunteerId": "g25-c4",
+          "schoolName": "丁大学",
+          "majorName": "口腔医学",
+          "tier": "稳",
+          "baseScore": 115
+        }
+      ],
+      "currentPlanItems": [
+        {
+          "volunteerId": "g25-p1",
+          "schoolName": "丙大学",
+          "majorName": "临床医学",
+          "tier": "稳"
+        },
+        {
+          "volunteerId": "g25-p2",
+          "schoolName": "甲大学",
+          "majorName": "生物医学工程",
+          "tier": "稳"
+        }
+      ]
+    },
+    "expected": {
+      "selectedCandidateIds": ["g25-c1", "g25-c2"],
+      "excludedCandidateIds": ["g25-c3", "g25-c4"],
+      "replacementCandidateIds": ["g25-p1"],
+      "protectedPlanItemIds": ["g25-p2"]
+    },
+    "assert": {
+      "exact": ["selectedCandidateIds", "excludedCandidateIds", "replacementCandidateIds", "protectedPlanItemIds"]
+    },
+    "metricsTags": ["mixed_polarity", "hard_exclude", "primary_fill"]
+  },
+  {
+    "caseId": "replay-G30-admission-path-filter",
+    "compiledCaseId": "G30-special-admission-path-preservation",
+    "source": "3.2.0 downstream policy G30",
+    "priority": "P0",
+    "selectionLimit": 3,
+    "fixture": {
+      "candidateItems": [
+        {
+          "volunteerId": "g30-c1",
+          "schoolName": "清华大学",
+          "majorName": "强基计划数学类",
+          "admissionPath": "strongbase",
+          "baseScore": 80
+        },
+        {
+          "volunteerId": "g30-c2",
+          "schoolName": "北京大学",
+          "majorName": "强基计划物理类",
+          "admissionPath": "strongbase",
+          "baseScore": 75
+        },
+        {
+          "volunteerId": "g30-c3",
+          "schoolName": "复旦大学",
+          "majorName": "强基计划基础医学",
+          "admissionPath": "strongbase",
+          "baseScore": 70
+        },
+        {
+          "volunteerId": "g30-c4",
+          "schoolName": "清华大学",
+          "majorName": "计算机类",
+          "admissionPath": "regular_batch",
+          "baseScore": 100
+        }
+      ],
+      "currentPlanItems": []
+    },
+    "expected": {
+      "selectedCandidateIds": ["g30-c1", "g30-c2", "g30-c3"],
+      "excludedCandidateIds": ["g30-c4"]
+    },
+    "assert": {
+      "exact": ["selectedCandidateIds", "excludedCandidateIds"]
+    },
+    "metricsTags": ["admission_path", "path_filter"]
+  },
+  {
+    "caseId": "replay-inline-only-keep-scope-capacity",
+    "source": "3.2.0 downstream policy replay-only",
+    "priority": "P0",
+    "selectionLimit": 2,
+    "downstreamPolicy": {
+      "scope": "future_reference",
+      "candidateSelection": {
+        "hardFilterBeforeRanking": true,
+        "onlyKeep": ["临床医学"],
+        "hardExclude": [],
+        "mustCover": [],
+        "rankBoost": [],
+        "softAvoid": []
+      },
+      "replacementPolicy": {
+        "replaceFirst": [
+          {
+            "reason": "outside_only_keep_scope",
+            "keepValues": ["临床医学"],
+            "policy": "remove_or_replace_out_of_scope_items"
+          }
+        ],
+        "fillPriority": [],
+        "protectFromReplacement": []
+      }
+    },
+    "fixture": {
+      "candidateItems": [
+        {
+          "volunteerId": "ok-c1",
+          "schoolName": "甲医科大学",
+          "majorName": "临床医学",
+          "baseScore": 70
+        },
+        {
+          "volunteerId": "ok-c2",
+          "schoolName": "乙医科大学",
+          "majorName": "口腔医学",
+          "baseScore": 120
+        }
+      ],
+      "currentPlanItems": [
+        {
+          "volunteerId": "ok-p1",
+          "schoolName": "甲医科大学",
+          "majorName": "临床医学"
+        },
+        {
+          "volunteerId": "ok-p2",
+          "schoolName": "乙医科大学",
+          "majorName": "护理学"
+        }
+      ]
+    },
+    "expected": {
+      "policySource": "inline",
+      "selectedCandidateIds": ["ok-c1"],
+      "excludedCandidateIds": ["ok-c2"],
+      "replacementCandidateIds": ["ok-p2"],
+      "capacityStatus": "insufficient_candidates",
+      "shortageCount": 1
+    },
+    "assert": {
+      "exact": ["policySource", "selectedCandidateIds", "excludedCandidateIds", "replacementCandidateIds", "capacityStatus", "shortageCount"]
+    },
+    "metricsTags": ["only_keep", "capacity_insufficient", "replacement_priority"]
+  },
+  {
+    "caseId": "replay-inline-must-cover-not-only-keep",
+    "source": "3.2.0 downstream policy replay-only",
+    "priority": "P0",
+    "selectionLimit": 2,
+    "downstreamPolicy": {
+      "scope": "future_reference",
+      "candidateSelection": {
+        "hardFilterBeforeRanking": true,
+        "onlyKeep": [],
+        "hardExclude": [],
+        "mustCover": ["计算机类", "法学"],
+        "rankBoost": [],
+        "softAvoid": []
+      },
+      "replacementPolicy": {
+        "replaceFirst": [],
+        "fillPriority": [
+          {
+            "strength": "must_have",
+            "values": ["计算机类", "法学"],
+            "policy": "cover_at_least_one_without_dropping_unrelated_items"
+          }
+        ],
+        "protectFromReplacement": []
+      }
+    },
+    "fixture": {
+      "candidateItems": [
+        {
+          "volunteerId": "mc-c1",
+          "schoolName": "甲大学",
+          "majorName": "计算机类",
+          "baseScore": 1
+        },
+        {
+          "volunteerId": "mc-c2",
+          "schoolName": "乙大学",
+          "majorName": "工商管理",
+          "baseScore": 200
+        }
+      ],
+      "currentPlanItems": [
+        {
+          "volunteerId": "mc-p1",
+          "schoolName": "乙大学",
+          "majorName": "工商管理"
+        }
+      ]
+    },
+    "expected": {
+      "selectedCandidateIds": ["mc-c1", "mc-c2"],
+      "mustCoverSatisfied": false,
+      "missingMustCover": ["法学"],
+      "capacityStatus": "satisfied"
+    },
+    "assert": {
+      "exact": ["selectedCandidateIds", "mustCoverSatisfied", "missingMustCover", "capacityStatus"]
+    },
+    "metricsTags": ["must_cover", "not_only_keep", "missing_must_cover"]
+  },
+  {
+    "caseId": "replay-inline-soft-avoid-demotion",
+    "source": "3.2.0 downstream policy replay-only",
+    "priority": "P1",
+    "selectionLimit": 2,
+    "downstreamPolicy": {
+      "scope": "future_reference",
+      "candidateSelection": {
+        "hardFilterBeforeRanking": true,
+        "onlyKeep": [],
+        "hardExclude": [],
+        "mustCover": [],
+        "rankBoost": [],
+        "softAvoid": ["高收费"],
+        "softAvoidPenalty": 50
+      },
+      "replacementPolicy": {
+        "replaceFirst": [],
+        "fillPriority": [],
+        "protectFromReplacement": []
+      }
+    },
+    "fixture": {
+      "candidateItems": [
+        {
+          "volunteerId": "sa-c1",
+          "schoolName": "甲大学",
+          "majorName": "软件工程",
+          "tags": ["高收费"],
+          "baseScore": 100
+        },
+        {
+          "volunteerId": "sa-c2",
+          "schoolName": "乙大学",
+          "majorName": "计算机类",
+          "tags": ["普通收费"],
+          "baseScore": 60
+        }
+      ],
+      "currentPlanItems": []
+    },
+    "expected": {
+      "selectedCandidateIds": ["sa-c2", "sa-c1"],
+      "excludedCandidateIds": [],
+      "capacityStatus": "satisfied"
+    },
+    "assert": {
+      "exact": ["selectedCandidateIds", "excludedCandidateIds", "capacityStatus"]
+    },
+    "metricsTags": ["avoid_soft", "rank_penalty", "not_hard_exclude"]
+  },
+  {
+    "caseId": "replay-inline-tuition-cap-replace-first",
+    "source": "3.2.0 downstream policy replay-only",
+    "priority": "P0",
+    "selectionLimit": 2,
+    "downstreamPolicy": {
+      "scope": "future_reference",
+      "candidateSelection": {
+        "hardFilterBeforeRanking": true,
+        "onlyKeep": [],
+        "hardExclude": [],
+        "mustCover": [],
+        "rankBoost": [],
+        "softAvoid": [],
+        "maxTuitionPerYear": 30000
+      },
+      "replacementPolicy": {
+        "replaceFirst": [
+          {
+            "reason": "tuition_cap_exceeded",
+            "maxTuitionPerYear": 30000,
+            "policy": "replace_items_over_budget_first"
+          }
+        ],
+        "fillPriority": [],
+        "protectFromReplacement": []
+      }
+    },
+    "fixture": {
+      "candidateItems": [
+        {
+          "volunteerId": "tc-c1",
+          "schoolName": "甲大学",
+          "majorName": "软件工程",
+          "tuitionPerYear": 48000,
+          "baseScore": 120
+        },
+        {
+          "volunteerId": "tc-c2",
+          "schoolName": "乙大学",
+          "majorName": "计算机类",
+          "tuitionPerYear": 6500,
+          "baseScore": 70
+        }
+      ],
+      "currentPlanItems": [
+        {
+          "volunteerId": "tc-p1",
+          "schoolName": "甲大学",
+          "majorName": "软件工程",
+          "tuitionPerYear": 48000
+        },
+        {
+          "volunteerId": "tc-p2",
+          "schoolName": "乙大学",
+          "majorName": "计算机类",
+          "tuitionPerYear": 6500
+        }
+      ]
+    },
+    "expected": {
+      "selectedCandidateIds": ["tc-c2"],
+      "excludedCandidateIds": ["tc-c1"],
+      "replacementCandidateIds": ["tc-p1"],
+      "capacityStatus": "insufficient_candidates",
+      "noResultReason": "capacity_insufficient_after_filters"
+    },
+    "assert": {
+      "exact": ["selectedCandidateIds", "excludedCandidateIds", "replacementCandidateIds", "capacityStatus", "noResultReason"]
+    },
+    "metricsTags": ["tuition_cap", "budget", "replacement_priority", "capacity_insufficient"]
+  },
+  {
+    "caseId": "replay-inline-no-result-after-hard-filter",
+    "source": "3.2.0 downstream policy replay-only",
+    "priority": "P0",
+    "selectionLimit": 2,
+    "downstreamPolicy": {
+      "scope": "future_reference",
+      "candidateSelection": {
+        "hardFilterBeforeRanking": true,
+        "onlyKeep": [],
+        "hardExclude": ["民办"],
+        "mustCover": [],
+        "rankBoost": [],
+        "softAvoid": []
+      },
+      "replacementPolicy": {
+        "replaceFirst": [],
+        "fillPriority": [],
+        "protectFromReplacement": []
+      }
+    },
+    "fixture": {
+      "candidateItems": [
+        {
+          "volunteerId": "nr-c1",
+          "schoolName": "甲科技学院",
+          "schoolType": "民办",
+          "majorName": "计算机类",
+          "baseScore": 90
+        },
+        {
+          "volunteerId": "nr-c2",
+          "schoolName": "乙工程学院",
+          "schoolType": "民办",
+          "majorName": "电子信息",
+          "baseScore": 80
+        }
+      ],
+      "currentPlanItems": []
+    },
+    "expected": {
+      "selectedCandidateIds": [],
+      "excludedCandidateIds": ["nr-c1", "nr-c2"],
+      "capacityStatus": "no_result",
+      "noResultReason": "all_candidates_filtered",
+      "shortageCount": 2
+    },
+    "assert": {
+      "exact": ["selectedCandidateIds", "excludedCandidateIds", "capacityStatus", "noResultReason", "shortageCount"]
+    },
+    "metricsTags": ["hard_exclude", "no_result", "capacity_insufficient"]
+  }
+]
