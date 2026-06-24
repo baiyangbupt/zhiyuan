@@ -1637,6 +1637,14 @@ gate 的结论不是“下游已经接完 runtime”，而是把接入边界固�
 - action-scoped confirm focused WebSocket 初版 `/private/tmp/zhiyuan_320_confirm_generate_after_fix.json` 为 10/10 successful，median `8433ms`、p95/max `24972ms`。actionFamily 绑定改造后复跑 `/private/tmp/zhiyuan_320_confirm_generate_after_actionfamily_fix.json` 为 10/10 successful，median `6648ms`、p95/max `10772ms`。最新结果显示两类边界都正确：无 active plan pending 时 `确认生成` 进入 no-pending guard；存在 active `generate_plan` pending 时 `确认生成` 才按 pending 执行，执行层因基础信息不足返回补全信息要求。两者都没有重新进入 full-agent 生成预览。
 - 仍需保留的结构问题：连续 intent pending 当前为单 active 替换语义，缺 append/replace/conflict 一等裁决；空方案/无数据时 workspace refresh 与 evidence 有不一致；apply 后 review 偶发“执行成功但复审说失败”；职业负向方向如“不想走体制内”还缺 career-direction intent schema；G12/G7 等 long tail 需进入 EvidencePlan/tool budget，不作为文案风格问题处理。
 
+2026-06-24 G27 结构化预览被同轮只读查询覆盖的补充定性：
+
+- 真实失败链路不是“没有理解两万以上/意向不相关”，也不是需要在 service 里重新按中文原句解析。模型已经先通过 `plan_next_action` 产出结构化 `remove_units` preview，`atomic_actions.filters` 中包含 `min_tuition_per_year=20000` 和 `preference_fit=unrelated`，并带有 `planning_version`。随后同一轮又调用只读 `execute_plan_action(query_ordered)`，旧候选抽取逻辑把最终焦点让给只读结果；同时 `composite_proposal.goal.needs_clarification=true` 又会压掉可执行 atomic mutation scope，导致本该进入 pending 的删除预览被澄清/查询分支覆盖。
+- 本轮修复只调整结构化候选优先级：如果 `plan_next_action` payload 已有可执行 atomic mutation scope，`composite_proposal.needs_clarification` 不能覆盖它；如果同一 turn 后续出现 `query_state/query_ordered/query_candidates` 这类只读结果，service 保留最近的可执行 `plan_next_action` preview 作为 PlanAction pending candidate。候选仍由结构化 `action_family/atomic_actions/filters/planning_version` 构造，不读取 raw user text，不恢复 `classify_plan_recovery_action`，也不让单独 `plan_next_action` 在没有可执行 scope 时补卡。
+- 这个修复和 2026-06-23 的 PlanQuery gate 是互补关系：只读费用查询仍走 `TurnDecision -> plan_query_profile -> query_ordered`，不生成 pending；费用阈值 + 意向贴合删除仍走 action DSL 的 `remove_units` preview/apply。二者靠结构化 `sideEffect/queryType/action_family` 互斥，不靠中文字符串区分。
+- 与 Java 侧统一查询能力的关系：当前没有实施 Java ordered-plan query 下推，也没有在 Python 内继续扩完整筛选器。后续如要统一，应定义 `PlanQueryCondition`，对齐 Java `CandidatePoolQueryReq.Filters` 并补齐 ordered scope、tuition range、preference-fit，再交由 Java 查询/筛选能力执行；本轮只修 runtime pending 候选抽取优先级。
+- 已验证的最小门禁：`test_extract_plan_confirmation_candidate_keeps_preview_after_readonly_query_result`、`test_extract_plan_confirmation_candidate_keeps_filter_remove_preview_after_readonly_query`、`test_extract_plan_confirmation_candidate_ignores_plan_next_action_preview_result_without_execute`、`test_extract_plan_confirmation_candidate_clears_plan_next_preview_after_execute_error` 通过；`test_runtime_hard_cut_audit.py`、runtime compiler selection 关键子集、plan orchestration/execution 的 tuition + preference-fit selector 子集通过。后续还需要在 fresh `8000` 上重跑 focused G27，再跑 G1-G32 两轮和更大范围回归，确认平均性能、shadow diff 和内容断言没有回退。
+
 ### 11.7 回归资产先修契约，再修业务
 
 `full_journey` 三轮 47 个失败里，大部分来自隐含 session state 不成立。3.2.0 前要把 case 分成：

@@ -9634,7 +9634,117 @@ def test_extract_plan_confirmation_candidate_keeps_preview_after_readonly_query_
         ),
     ]
 
-    assert _extract_plan_confirmation_candidate(messages) is None
+    pending = _extract_plan_confirmation_candidate(messages)
+
+    assert pending is not None
+    assert pending["action_family"] == "move_ordered_unit"
+    apply_payload = json.loads(pending["plan_payload"])
+    assert apply_payload["stage"] == "apply"
+    assert apply_payload["requires_confirmation"] is False
+    atomic = apply_payload["atomic_actions"][0]
+    assert atomic["action_type"] == "move_ordered_unit"
+    assert atomic["source_position"] == 3
+    assert atomic["target_position"] == 5
+
+
+def test_extract_plan_confirmation_candidate_keeps_filter_remove_preview_after_readonly_query():
+    preview_payload = {
+        "stage": "preview",
+        "action_family": "remove_units",
+        "user_goal": "把两万以上且跟我意向不沾边的先删掉",
+        "requires_confirmation": True,
+        "missing_inputs": [],
+        "planning_version": 378,
+        "atomic_actions": [
+            {
+                "action_type": "remove_units",
+                "volunteer_ids": [],
+                "unit_ids": [],
+                "source_major_names": [],
+                "filters": {
+                    "school_tags": "[]",
+                    "major_tags": "[]",
+                    "limit": "5",
+                    "min_tuition_per_year": "20000",
+                    "preference_fit": "unrelated",
+                },
+                "reason": "把两万以上且跟我意向不沾边的先删掉",
+            }
+        ],
+        "composite_proposal": {
+            "goal": {
+                "goal_type": "exclude_scope",
+                "needs_clarification": True,
+                "clarification_questions": ["请补充要调整的专业、院校、地域或风险范围。"],
+            },
+            "feasibility": "needs_clarification",
+        },
+        "preview_summary": "会从当前方案移出指定志愿，并在执行后重新审查整体结构。",
+    }
+    query_payload = {
+        "stage": "apply",
+        "action_family": "query_ordered",
+        "user_goal": "把两万以上且跟我意向不沾边的先删掉",
+        "requires_confirmation": False,
+        "atomic_actions": [
+            {
+                "action_type": "query_ordered",
+                "filters": {"limit": 5, "min_tuition_per_year": 20000},
+                "reason": "把两万以上且跟我意向不沾边的先删掉",
+            }
+        ],
+    }
+    messages = [
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="plan_next_action",
+                    content=json.dumps(preview_payload, ensure_ascii=False),
+                    tool_call_id="tuition-unrelated-plan-next",
+                )
+            ]
+        ),
+        ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="execute_plan_action",
+                    args={"plan_payload": json.dumps(query_payload, ensure_ascii=False)},
+                    tool_call_id="tuition-unrelated-readonly-query",
+                )
+            ],
+            model_name="test-model",
+        ),
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="execute_plan_action",
+                    content=json.dumps(
+                        {
+                            "applied": True,
+                            "action_family": "query_ordered",
+                            "stage": "apply",
+                            "result_kind": "ordered_snapshot",
+                            "summary": "当前方案里共命中了 3 条符合学费条件的志愿。",
+                        },
+                        ensure_ascii=False,
+                    ),
+                    tool_call_id="tuition-unrelated-readonly-query",
+                )
+            ]
+        ),
+    ]
+
+    pending = _extract_plan_confirmation_candidate(messages)
+
+    assert pending is not None
+    assert pending["action_family"] == "remove_units"
+    assert pending["source_backend_version"] == 378
+    apply_payload = json.loads(pending["plan_payload"])
+    assert apply_payload["stage"] == "apply"
+    atomic = apply_payload["atomic_actions"][0]
+    assert atomic["action_type"] == "remove_units"
+    assert atomic["filters"]["min_tuition_per_year"] == "20000"
+    assert atomic["filters"]["preference_fit"] == "unrelated"
 
 
 def test_plan_preview_confirmation_boundary_corrects_confirm_copy_without_pending_payload():

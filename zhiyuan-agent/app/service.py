@@ -8314,6 +8314,15 @@ def _plan_payload_has_executable_mutation_scope(payload: dict[str, Any]) -> bool
     return False
 
 
+def _plan_payload_has_executable_atomic_mutation_scope(payload: dict[str, Any]) -> bool:
+    action_family = str(payload.get("action_family") or "").strip()
+    atomic_actions = payload.get("atomic_actions")
+    return isinstance(atomic_actions, list) and any(
+        _atomic_action_has_execution_scope(action_family, item)
+        for item in atomic_actions
+    )
+
+
 def _plan_payload_lacks_position_target(payload: dict[str, Any]) -> bool:
     if str(payload.get("action_family") or "").strip() not in {"move_ordered_unit", "remove_ordered_unit"}:
         return False
@@ -8325,7 +8334,10 @@ def _plan_payload_lacks_position_target(payload: dict[str, Any]) -> bool:
 
 def _build_plan_confirmation_candidate_from_payload(payload: dict[str, Any], summary: str | None = None) -> dict[str, Any] | None:
     payload = normalize_plan_action_payload(payload)
-    if _composite_goal_needs_clarification(payload):
+    if (
+        _composite_goal_needs_clarification(payload)
+        and not _plan_payload_has_executable_atomic_mutation_scope(payload)
+    ):
         return None
     preview_action_family = str(payload.get("action_family") or "").strip()
     action_family = preview_action_family
@@ -8513,6 +8525,24 @@ def _extract_plan_confirmation_candidate(messages: list[Any] | None) -> dict[str
             call_action_family = str(call_payload.get("action_family") or "").strip()
             effective_action_family = action_family or call_action_family
             call_stage = str(call_payload.get("stage") or "").strip()
+            if (
+                not is_preview_result
+                and effective_action_family in _EXECUTE_PLAN_ACTION_VIEW_FAMILIES
+                and isinstance(latest_plan_next_payload, dict)
+            ):
+                candidate = _build_plan_confirmation_candidate_from_payload(
+                    latest_plan_next_payload,
+                    summary=latest_plan_next_payload.get("preview_summary")
+                    or latest_plan_next_payload.get("summary")
+                    or "",
+                )
+                if candidate is not None:
+                    if current_user_turn > 0:
+                        candidate["created_turn"] = current_user_turn
+                    latest_candidate = candidate
+                    user_turns_since_candidate = 0
+                pending_calls.clear()
+                continue
             if not is_preview_result and (
                 result.get("applied") is True
                 or call_stage == "apply"
@@ -14307,8 +14337,7 @@ class ChatService:
                 workspace_view_targets = []
         composite_goal_preview = _latest_composite_goal_plan_preview(tool_context_messages)
         composite_goal_clarification_reply = _composite_goal_clarification_reply(composite_goal_preview)
-        if composite_goal_clarification_reply:
-            plan_confirmation_candidate = None
+        if composite_goal_clarification_reply and plan_confirmation_candidate is None:
             if isinstance(reply, str):
                 clean_clarification_reply = _sanitize_reply_for_user(
                     composite_goal_clarification_reply
