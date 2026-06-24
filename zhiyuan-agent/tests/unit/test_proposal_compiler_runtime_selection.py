@@ -819,6 +819,75 @@ def test_pending_turn_resolution_routes_plan_short_confirmation_without_model_de
     assert resolution.requires_model_decision is False
 
 
+def test_pending_turn_resolution_routes_plan_action_scoped_confirmation_without_model_decision():
+    pairs = (
+        ("确认生成", "generate_plan"),
+        ("确认生成方案", "generate_plan"),
+        ("确认移动专业组", "move_ordered_unit"),
+        ("确认删除", "remove_units"),
+        ("确认加入", "add_units"),
+        ("确认重排方案", "regenerate_order"),
+    )
+    for prompt, action_family in pairs:
+        resolution = proposal_compiler.resolve_pending_turn_action(
+            prompt,
+            pending_state={
+                "status": "active",
+                "kind": "plan_mutation",
+                "actionFamily": action_family,
+            },
+        )
+
+        assert resolution.action == "confirm_pending"
+        assert resolution.side_effect == "apply_existing_pending"
+        assert resolution.pending_type == "plan"
+        assert resolution.requires_model_decision is False
+
+
+def test_pending_turn_resolution_routes_action_scoped_confirmation_from_plan_payload():
+    resolution = proposal_compiler.resolve_pending_turn_action(
+        "确认生成方案",
+        pending_state={
+            "status": "active",
+            "kind": "plan_mutation",
+            "executionPayload": {
+                "planPayload": json.dumps({"action_family": "generate_plan"}),
+            },
+        },
+    )
+
+    assert resolution.action == "confirm_pending"
+    assert resolution.side_effect == "apply_existing_pending"
+    assert resolution.pending_type == "plan"
+    assert resolution.requires_model_decision is False
+
+
+def test_pending_turn_resolution_does_not_apply_mismatched_plan_action_confirmation():
+    resolution = proposal_compiler.resolve_pending_turn_action(
+        "确认生成方案",
+        pending_state={
+            "status": "active",
+            "kind": "plan_mutation",
+            "actionFamily": "remove_units",
+        },
+    )
+
+    assert resolution.action != "confirm_pending"
+    assert resolution.side_effect != "apply_existing_pending"
+    assert resolution.pending_type == "plan"
+
+
+def test_pending_turn_resolution_does_not_apply_intent_pending_for_plan_action_confirmation():
+    resolution = proposal_compiler.resolve_pending_turn_action(
+        "确认生成",
+        pending_state={"status": "active", "kind": "intent_change"},
+    )
+
+    assert resolution.action == "none"
+    assert resolution.pending_type == "intent"
+    assert resolution.requires_model_decision is True
+
+
 def test_pending_turn_resolution_routes_intent_short_confirmation_without_model_decision():
     resolution = proposal_compiler.resolve_pending_turn_action(
         "确认这个偏好",

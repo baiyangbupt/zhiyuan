@@ -1299,6 +1299,14 @@ def _runtime_side_effect_and_output(
                 "none",
                 "conditional_plan_mutation",
             )
+        if route_side_effect == "readonly_or_plan_preview":
+            return (
+                "readonly_or_plan_preview",
+                str(route_decision.get("outputType") or "readonly_or_plan_mutation").strip()
+                or "readonly_or_plan_mutation",
+                "none",
+                "conditional_plan_mutation",
+            )
     if route == "apply_pending_then_new_request":
         pending_type = "none"
         if len(pending_cards) == 1:

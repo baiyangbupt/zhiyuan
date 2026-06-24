@@ -248,6 +248,26 @@ _PENDING_DIRECT_PLAN_CONFIRM_ACKS = frozenset(
     )
 )
 
+_PENDING_PLAN_ACTION_CONFIRM_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "generate_plan": ("生成", "补齐"),
+    "add_units": ("加入", "加到", "添加", "补入"),
+    "remove_units": ("删除", "移出", "删掉", "去掉", "剔除"),
+    "remove_ordered_unit": ("删除", "移出", "删掉", "去掉", "剔除"),
+    "move_unit": ("移动", "调整", "挪动"),
+    "move_ordered_unit": ("移动", "调整", "挪动"),
+    "replace_units": ("替换", "换掉", "换成"),
+    "sort_ordered_plan": ("排序", "重排", "调整"),
+    "regenerate_order": ("重排", "排序", "重新排", "调整"),
+}
+
+_PENDING_PLAN_ACTION_CONFIRM_PREFIXES = (
+    "确认执行",
+    "确认",
+    "执行",
+    "开始执行",
+    "应用",
+)
+
 _PENDING_DIRECT_INTENT_CONFIRM_ACKS = frozenset(
     (
         *_PENDING_DIRECT_CONFIRM_COMMON_ACKS,
@@ -1035,13 +1055,69 @@ def pending_turn_looks_readonly_impact(content: str | None) -> bool:
     return has_readonly_marker and has_impact_marker
 
 
-def pending_turn_looks_direct_confirmation(content: str | None, pending_kind: str | None) -> bool:
+def _pending_plan_action_family_from_state(pending_state: dict[str, Any] | None) -> str:
+    if not isinstance(pending_state, dict):
+        return ""
+    action_family = str(pending_state.get("actionFamily") or pending_state.get("action_family") or "").strip()
+    if action_family:
+        return action_family
+    execution_payload = pending_state.get("executionPayload")
+    if not isinstance(execution_payload, dict):
+        return ""
+    plan_payload = execution_payload.get("planPayload") or execution_payload.get("plan_payload")
+    if isinstance(plan_payload, dict):
+        return str(plan_payload.get("action_family") or plan_payload.get("actionFamily") or "").strip()
+    if isinstance(plan_payload, str) and plan_payload.strip():
+        try:
+            parsed = json.loads(plan_payload)
+        except Exception:
+            return ""
+        if isinstance(parsed, dict):
+            return str(parsed.get("action_family") or parsed.get("actionFamily") or "").strip()
+    return ""
+
+
+def _pending_turn_looks_plan_action_scoped_confirmation(
+    content: str | None,
+    pending_state: dict[str, Any] | None,
+) -> bool:
+    normalized = _normalize_confirmation_only_text(content, strip_fullwidth_question=True)
+    if not normalized or normalized in _READONLY_CLOSURE_ACK_PHRASES:
+        return False
+    prefix = ""
+    for candidate in sorted(_PENDING_PLAN_ACTION_CONFIRM_PREFIXES, key=len, reverse=True):
+        if normalized.startswith(candidate):
+            prefix = candidate
+            break
+    if not prefix:
+        return False
+    action_phrase = normalized[len(prefix):]
+    if not action_phrase:
+        return False
+    action_family = _pending_plan_action_family_from_state(pending_state)
+    if action_family not in PENDING_PLAN_ACTION_FAMILIES:
+        return False
+    action_keywords = _PENDING_PLAN_ACTION_CONFIRM_KEYWORDS.get(action_family, ())
+    if not action_keywords:
+        return False
+    return any(keyword in action_phrase for keyword in action_keywords)
+
+
+def pending_turn_looks_direct_confirmation(
+    content: str | None,
+    pending_kind: str | None,
+    *,
+    pending_state: dict[str, Any] | None = None,
+) -> bool:
     normalized = _normalize_confirmation_only_text(content, strip_fullwidth_question=True)
     if not normalized or normalized in _READONLY_CLOSURE_ACK_PHRASES:
         return False
     pending_kind = str(pending_kind or "").strip()
     if pending_kind == "plan_mutation":
-        return normalized in _PENDING_DIRECT_PLAN_CONFIRM_ACKS
+        return (
+            normalized in _PENDING_DIRECT_PLAN_CONFIRM_ACKS
+            or _pending_turn_looks_plan_action_scoped_confirmation(content, pending_state)
+        )
     if pending_kind == "intent_change":
         return normalized in _PENDING_DIRECT_INTENT_CONFIRM_ACKS
     return False
@@ -1963,7 +2039,7 @@ def resolve_pending_turn_action(
             pending_type=pending_type,
             requires_model_decision=False,
         )
-    if pending_turn_looks_direct_confirmation(content, pending_kind):
+    if pending_turn_looks_direct_confirmation(content, pending_kind, pending_state=pending_state):
         return PendingTurnResolution(
             action="confirm_pending",
             side_effect="apply_existing_pending",

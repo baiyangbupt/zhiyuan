@@ -1102,6 +1102,15 @@ apply 成功后的结果应成为后续只读查询的 evidence；不能只 appl
 
 2026-06-22 当前 runtime 已完成这条链路的最小收口：active pending 回合先由 `proposal_compiler.resolve_pending_turn_action` 识别 `reject_pending`、`ask_pending_impact`、`confirm_pending`、`apply_pending_then_readonly`、`apply_pending_then_new_request` 和 `conflict_with_existing_pending`。`ask_pending_impact` 保持 pending 不变并返回影响说明；`confirm_pending` 只覆盖短文本确定性协议；`apply_pending_then_readonly` 会先按现有 pending 校验并执行 apply，普通 plan apply 成功后读取最新 workspace，并基于刷新后的 `ordered/review` 状态回答剩余数量、冲稳保梯度和风险审查，刷新失败或字段缺失时才保留 evidence 边界；`apply_pending_then_new_request` 在 active intent pending 下会先采纳待采纳内容，再由 `proposal_compiler.compile_apply_then_generate_plan_source` 生成 `generate_plan` plan confirmation candidate，并通过统一 plan sink 创建新的“确认生成方案”卡，确认后才正式生成方案；`conflict_with_existing_pending` 会在已有 active pending 时阻断删除、加入、替换、只保留、排除、补齐、生成、重排等新高副作用诉求，不调用模型、不创建第二张卡、不覆盖旧 pending。该路径不调用模型或 pending classifier；apply 失败时只返回失败/失效结果，不追加只读结论。runtime 已删除 `classify_pending_confirmation_action` 调用，也删除了 service 本地 active pending direct-confirm 白名单；无 active pending 的短文本确认 guard 也迁入 `proposal_compiler.pending_turn_looks_no_active_pending_confirmation`。active pending 的采纳/取消只允许 compiler 确定性 resolution 或卡片确认触发。长文本重复目标、细化目标或新诉求不再自动 apply。剩余工作是把 intent_change 采纳后的独立影响评估节点，以及 pending merge/replace/放弃后重建接入完整 TurnDecision/EvidencePlan，而不是恢复 classifier 作为桥接实现。
 
+2026-06-23 继续收紧 action-scoped 短确认：`确认生成/确认删除/确认移动/确认加入` 不再作为全局短语白名单直接 apply。compiler 只在 active pending 为 `plan_mutation` 时读取 pending state 的 `actionFamily` 或 `executionPayload.planPayload.action_family`，再判断用户短确认是否与当前 action family 同类。边界如下：
+
+- 通用 `确认/确认执行/执行` 仍是 pending 协议确认。
+- `确认生成方案` 只会确认当前 `generate_plan` pending；如果 active pending 是 `remove_units`，不会执行删除。
+- active pending 为 `intent_change` 时，`确认生成` 不会采纳意向；它会回到模型判断或后续冲突/无 pending guard。
+- 无 active pending 时，确认类短句仍进入 no-pending guard，不会反向制造 plan action。
+
+这不是新增业务话术路由，而是把短确认解释权绑定到 active pending 的结构化元数据。后续新增 plan action 时，应扩展 action family 的确认语义表，并保持错配不 apply 的单测边界，不能把更多中文短句散落到 service 分支。
+
 ### 10.4 性能 profile 要拆分 agent、tool、runner/WS 三层
 
 `comprehensive_r2` 显示两类长尾同时存在：
@@ -1620,6 +1629,13 @@ gate 的结论不是“下游已经接完 runtime”，而是把接入边界固�
 5. 核对 G29 runtime pending payload 的 `preferenceStrength`，确认是 display gap 还是 schema gap。
 
 2026-06-23 G29 复核结论：这是 display gap，不是 schema gap。`intent_entity_profile` 输出和 pending `selectedData.entityProfile` 均保留 `preferenceStrength.primary/acceptable`；service 现在只在展示层基于结构化 profile strength 生成 `displaySummary`，不从用户原文匹配“优先/也可以考虑”，也不改写后端 apply payload。
+
+2026-06-23 review/repair preview bridge 与 action-scoped confirm 复核：
+
+- G1-G32 golden 在 review/repair bridge 后跑两轮：round1 `/private/tmp/zhiyuan_320_g1_g32_round1_after_review_repair_bridge_metrics.json` 为 52 step、51 successful、1 个 style failure；round2 `/private/tmp/zhiyuan_320_g1_g32_round2_after_style_fix_metrics.json` 为 52 step、51 successful、1 个 performance failure，G12 `182070ms > 180000`。两轮 shadow 均为 32 total、21 observed、21 clean、0 blocking/major/minor、11 missing observation。
+- mainline extended regression `/private/tmp/zhiyuan_320_mainline_after_review_repair_bridge.json` 为 123/123 successful，median `9671ms`、p95 `22180ms`、max `34744ms`。唯一重复工具观察为 `explore-region-to-region-intent-to-plan`，重复 `analyze_current_region_interest` 和 `analyze_current_interest_profile`。
+- action-scoped confirm focused WebSocket 初版 `/private/tmp/zhiyuan_320_confirm_generate_after_fix.json` 为 10/10 successful，median `8433ms`、p95/max `24972ms`。actionFamily 绑定改造后复跑 `/private/tmp/zhiyuan_320_confirm_generate_after_actionfamily_fix.json` 为 10/10 successful，median `6648ms`、p95/max `10772ms`。最新结果显示两类边界都正确：无 active plan pending 时 `确认生成` 进入 no-pending guard；存在 active `generate_plan` pending 时 `确认生成` 才按 pending 执行，执行层因基础信息不足返回补全信息要求。两者都没有重新进入 full-agent 生成预览。
+- 仍需保留的结构问题：连续 intent pending 当前为单 active 替换语义，缺 append/replace/conflict 一等裁决；空方案/无数据时 workspace refresh 与 evidence 有不一致；apply 后 review 偶发“执行成功但复审说失败”；职业负向方向如“不想走体制内”还缺 career-direction intent schema；G12/G7 等 long tail 需进入 EvidencePlan/tool budget，不作为文案风格问题处理。
 
 ### 11.7 回归资产先修契约，再修业务
 

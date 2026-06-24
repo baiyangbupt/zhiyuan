@@ -36,3 +36,21 @@ def test_plan_query_profile_normalizer_rejects_unknown_enums_without_inventing_f
     assert normalized.dimensions == ["tuition"]
     assert normalized.pendingReferenceType == "major"
     assert normalized.confidence == 0.9
+
+
+def test_plan_query_profile_normalizer_defaults_structured_query_to_high_confidence():
+    normalized = _normalize_plan_query_profile(
+        PlanQueryProfileResult(
+            queryType="readonly_plan_query",
+            scopeAnchor="current_plan",
+            sideEffect="readonly",
+            dimensions=["tuition"],
+            filters={"min_tuition_per_year": 20000},
+            projection={"mode": "count_with_examples", "limit": 5},
+            confidence=0,
+        )
+    )
+
+    assert normalized.queryType == "readonly_plan_query"
+    assert normalized.dimensions == ["tuition"]
+    assert normalized.confidence == 0.9

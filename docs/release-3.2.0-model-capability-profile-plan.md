@@ -454,18 +454,22 @@ Profile 价值：
 - expected reply：
   - 明确上一轮意向已采纳。
   - 同时处理或明确承接“出方案”诉求，而不是把它丢掉。
+  - 若后续生成方案进入待确认状态，下一轮 `确认生成/确认生成方案` 必须绑定 active `plan_mutation.actionFamily=generate_plan`，不能只因短句包含“生成”就执行任意 pending。
 - forbidden：
   - 只采纳 pending，完全不回应“出方案”。
   - 采纳 pending 后直接生成正式方案而没有 plan preview/confirmation 边界。
+  - active pending 是 `intent_change` 或其它 plan action 时，把 `确认生成` 当作可直接 apply 的通用确认。
 
 Observed：
 
 - 2026-06-20 `robust-resume-mid-conversation` 中 `现在基于这些出方案` 只触发 pending apply，未继续处理出方案。
+- 2026-06-23 runtime 已把 action-scoped 短确认收口到 `proposal_compiler.resolve_pending_turn_action`：`确认生成` 只有在 active plan pending 的 `actionFamily` 或 `executionPayload.planPayload.action_family` 为 `generate_plan` 时才会走 `apply_existing_pending`。actionFamily 绑定后 focused `/private/tmp/zhiyuan_320_confirm_generate_after_actionfamily_fix.json` 为 10/10 successful；无 active plan pending 时返回 no-pending guard，有 active `generate_plan` pending 时执行 pending，并在基础信息不足时返回 missing-info 边界，不重新进入 full-agent 生成预览。
 
 Profile 价值：
 
 - 测试短确认/复合请求是否能被拆成状态动作和新业务动作。
 - 为 3.2.0 `apply_existing_pending_then_new_request` 状态机设计提供样本。
+- 固定 action-scoped confirmation 的协议边界：确认副作用由 active pending 元数据决定，不由用户短句单独决定。
 
 ### G15 analysis/mixed 后的确认 transition
 
@@ -768,20 +772,24 @@ Profile 价值：
   - apply 成功后读取最新方案状态。
   - 回答剩余数量和梯度/冲稳保风险。
   - 不创建第二个 mutation pending。
+  - 直接短确认必须检查 active pending 的 `kind/actionFamily`；`确认生成方案` 不能误执行当前 `remove_units` pending，`确认删除` 也不能误执行 `generate_plan` pending。
 - forbidden：
   - apply 后直接结束，只刷新 workspace 不回答后半句。
   - 将后半句误当新的 mutation。
+  - 只靠确认短句文本决定 apply，而不核对 active pending 元数据。
 
 Observed：
 
 - 2026-06-20 `comprehensive-existing-plan-mutation-chain-35` round2 中只执行 apply 和刷新，没有回答剩余数量/梯度问题。
 - 2026-06-22 focused G27 runtime 验证中，上一轮“那把两万以上且跟我意向不沾边的先删掉”已能形成 `remove_units` 结构化 pending；本轮“删完了再帮我看看还剩多少个 梯度有没有问题”走 `apply_pending_then_readonly`，先 apply，再基于刷新后的 ordered/review 回答剩余数量与梯度。报告：`/private/tmp/zhiyuan_320_g27_after_structured_remove_metrics.json`。
 - 2026-06-23 full G1-G32 shadow 复跑中，G27 已不再是内容失败；第三轮能生成 `remove_units` pending，第四轮 `routingPath=pending_plan_short_text_confirm`，执行后刷新 `ordered/review` 并回答剩余数量和梯度。diff 中剩余差异是 expected 命名和 workspace refresh 期望比 runtime 更窄，不再是业务链路断裂。
+- 2026-06-23 action-scoped 确认单测已覆盖：匹配 `generate_plan/add_units/remove_units/move_ordered_unit/regenerate_order` 时可直接 confirm；从 plan payload 回读 `action_family` 可 confirm；`remove_units` active pending 下 `确认生成方案` 不会执行。
 
 Profile 价值：
 
 - 测试复合 turn 拆解：pending apply 不应吞掉同轮明确只读查询。
 - 为 TurnDecision 的 composite action 验收提供样本。
+- 为 pending confirmation grammar 提供错配样本，防止确认短句重新退化成全局字符串白名单。
 
 ### G28 latency decomposition profile
 

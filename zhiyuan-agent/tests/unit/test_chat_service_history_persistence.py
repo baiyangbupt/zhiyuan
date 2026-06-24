@@ -101,6 +101,7 @@ def _runtime_turn_decision(
     side_effect: str = "intent_pending",
     scope_anchor: str = "future_reference",
     scenario: str = "intent_update",
+    target_issue: list[str] | None = None,
     profile_scenario: str = "none",
     proposed_profile: dict | None = None,
     confidence: float = 0.9,
@@ -110,6 +111,7 @@ def _runtime_turn_decision(
         sideEffect=side_effect,
         scopeAnchor=scope_anchor,
         scenario=scenario,
+        targetIssue=target_issue or [],
         profileScenario=profile_scenario,
         proposedProfile=proposed_profile or {},
         confidence=confidence,
@@ -1170,7 +1172,7 @@ def test_chat_service_pending_readonly_tuition_count_query_keeps_pending_active(
                 "app.service.classify_turn_decision",
                 AsyncMock(return_value=_runtime_turn_decision(
                     task_layer="plan",
-                    side_effect="readonly_while_pending",
+                    side_effect="readonly",
                     scope_anchor="current_plan",
                     scenario="plan_query",
                 )),
@@ -1954,6 +1956,18 @@ def test_sanitize_reply_for_user_softens_review_repair_overpromises():
     assert "需要你先取舍" in reply
     assert "当前符合条件的可选志愿已经不多" in reply
     assert "先列出调整预览" in reply
+
+
+def test_sanitize_reply_for_user_removes_forced_choice_closure_outside_plan_chain():
+    reply = _sanitize_reply_for_user(
+        "计算机更适合互联网软件岗。\n\n"
+        "最后问你一句：你是更想稳稳进大厂写代码，还是对芯片、智能硬件也有兴趣？"
+        "这决定你选哪个方向。"
+    )
+
+    assert "计算机更适合互联网软件岗" in reply
+    assert "你是更想稳稳进大厂写代码" in reply
+    assert "你选哪个" not in reply
 
 
 def test_sanitize_reply_for_user_removes_system_subject_in_review_copy():
@@ -13277,6 +13291,67 @@ def test_chat_service_directly_applies_active_plan_pending_when_classifier_misse
     assert fake_agent.calls == []
 
 
+def test_chat_service_directly_applies_active_generate_plan_pending_for_action_scoped_confirm(
+    tmp_path,
+    mock_llm_client,
+):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    execution_result = json.dumps(
+        {
+            "applied": True,
+            "action_family": "generate_plan",
+            "stage": "apply",
+            "result_kind": "mutation_result",
+            "summary": "已根据当前候选和报考信息生成方案。",
+            "workspace_refresh_targets": ["ordered"],
+        },
+        ensure_ascii=False,
+    )
+    plan_payload = json.dumps(
+        {
+            "stage": "apply",
+            "action_family": "generate_plan",
+            "user_goal": "直接生成一版方案",
+            "requires_confirmation": False,
+            "missing_inputs": [],
+        },
+        ensure_ascii=False,
+    )
+    pending_state, save_pending_mock, get_pending_mock = _pending_confirmation_store(
+        {
+            "type": "pendingConfirmation",
+            "pendingId": "pending-generate-plan",
+            "sessionId": "session-generate-plan",
+            "kind": "plan_mutation",
+            "status": "active",
+            "actionFamily": "generate_plan",
+            "summary": "根据当前候选和当前报考信息生成或补齐方案。",
+            "executionPayload": {
+                "toolName": "execute_plan_action",
+                "planPayload": plan_payload,
+            },
+        }
+    )
+    fake_agent = _FakeAgent(["不应该调用模型"])
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.save_pending_confirmation", save_pending_mock), \
+            patch("app.service.get_pending_confirmation", get_pending_mock), \
+            patch("app.service.execute_plan_action", AsyncMock(return_value=execution_result)) as execute_mock:
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(service.handle_message("session-generate-plan", "user-1", "确认生成"))
+
+    assert isinstance(reply, ChatServiceResponseEnvelope)
+    assert reply.primary == "已根据当前候选和报考信息生成方案。"
+    execute_mock.assert_awaited_once()
+    assert pending_state["value"]["status"] == "applied"
+    assert fake_agent.calls == []
+
+
 def test_chat_service_logs_pending_event_for_short_text_confirm(tmp_path, mock_llm_client):
     db_path = tmp_path / "history.db"
     store = ChatHistoryStore(str(db_path))
@@ -22554,6 +22629,133 @@ def test_chat_service_semantic_plan_route_passes_target_strategies_to_payload(tm
                 route_events.append(data)
     assert route_events
     assert route_events[-1]["routeDecision"]["displayPayload"] == {"presentation": "conditional_options"}
+
+
+def test_chat_service_turn_decision_review_repair_preview_bridges_analysis_to_review(
+    tmp_path,
+    mock_llm_client,
+):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    review_result = {
+        "applied": True,
+        "action_family": "review_plan",
+        "stage": "review",
+        "result_kind": "review_result",
+        "summary": "当前方案有高收费和中外合作风险，可以先看处理边界。",
+        "facts": {
+            "fix_proposals": {
+                "source_version_guard": 18,
+                "ready_count": 0,
+                "blocked_count": 1,
+                "preview_only_count": 0,
+                "proposals": [
+                    {
+                        "proposal_id": "fp_fee_1",
+                        "status": "blocked",
+                        "title": "处理高收费和中外合作",
+                        "summary": "需要结合预算、地域和专业范围决定是否替换或移出。",
+                        "strategy": "replace_risk_items",
+                        "source_check_codes": ["high_tuition", "cooperative_program"],
+                    }
+                ],
+            }
+        },
+        "reply_focus": ["review_result", "fix_proposals"],
+    }
+    fake_agent = _FakeAgent(["不应该进入完整 Agent"])
+    pending_state, save_pending_mock, get_pending_mock = _pending_confirmation_store()
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={
+                "code": 0,
+                "data": {
+                    "phase": "reviewed",
+                    "version": 18,
+                    "orderedPlanState": {"summary": {"unitTotal": 30, "targetUnitCount": 30}},
+                    "reviewState": {"summary": {"warnCount": 1, "riskCount": 0}, "checks": []},
+                },
+            })), \
+            patch(
+                "app.service.classify_turn_decision",
+                AsyncMock(
+                    return_value=_runtime_turn_decision(
+                        task_layer="plan",
+                        side_effect="readonly_or_plan_preview",
+                        scope_anchor="current_plan",
+                        scenario="plan_review_or_repair_preview",
+                        target_issue=["tuition", "cooperative_program"],
+                    )
+                ),
+            ) as turn_decision_mock, \
+            patch(
+                "app.service.classify_local_plan_action_dsl",
+                AsyncMock(return_value=MagicMock(actionFamily="none", confidence=0.0, unsupportedAction="")),
+            ), \
+            patch(
+                "app.service.classify_plan_semantic_action",
+                AsyncMock(
+                    return_value=_semantic_plan(
+                        "analyze_adjustment",
+                        confidence=0.9,
+                        target_strategies=["replace_risk_items"],
+                        target_issue_codes=["high_tuition", "cooperative_program"],
+                    )
+                ),
+            ), \
+            patch("app.service.execute_plan_action", AsyncMock(return_value=json.dumps(review_result, ensure_ascii=False))) as execute_mock, \
+            patch(
+                "app.service._synthesize_semantic_plan_action_reply",
+                AsyncMock(return_value=("我先看高收费和中外合作这类风险能处理到什么程度，本轮不会直接动方案。", None)),
+            ), \
+            patch("app.service.save_pending_confirmation", save_pending_mock), \
+            patch("app.service.get_pending_confirmation", get_pending_mock):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(
+            service.handle_message(
+                "turn-decision-review-repair-preview-session",
+                "user-1",
+                "方案里高收费或者中外合作风险大的，先看看能怎么处理，别直接动",
+            )
+        )
+
+    assert isinstance(reply, ChatServiceResponseEnvelope)
+    assert "不会改动当前方案" in reply.primary
+    assert fake_agent.calls == []
+    assert pending_state == {}
+    save_pending_mock.assert_not_awaited()
+    _assert_no_pending_cards(reply)
+    _assert_silent_workspace_refresh_targets(reply, ["review"])
+    payload = json.loads(execute_mock.await_args.args[1])
+    assert payload["action_family"] == "review_plan"
+    assert payload["target_strategies"] == ["replace_risk_items"]
+    assert payload["target_issue_codes"] == ["high_tuition", "cooperative_program"]
+    assert turn_decision_mock.await_count >= 2
+
+    saved_history = asyncio.run(store.load("turn-decision-review-repair-preview-session"))
+    route_events = []
+    for message in saved_history or []:
+        for part in getattr(message, "parts", []) or []:
+            if not isinstance(part, TextPart):
+                continue
+            try:
+                data = json.loads(part.content)
+            except Exception:
+                continue
+            if isinstance(data, dict) and data.get("type") == "routeObservability":
+                route_events.append(data)
+    assert route_events
+    route_decision = route_events[-1]["routeDecision"]
+    assert route_decision["route"] == "review_plan"
+    assert route_decision["originalRoute"] == "analyze_adjustment"
+    assert route_decision["sideEffect"] == "readonly_or_plan_preview"
+    assert route_decision["outputType"] == "readonly_or_plan_mutation"
+    assert route_decision["replyFocus"] == ["tuition", "cooperative_program"]
+    assert route_decision["displayPayload"] == {"presentation": "conditional_options"}
+    assert route_events[-1]["replyFocus"] == ["tuition", "cooperative_program"]
+    assert "turn_decision_review_repair_preview_bridge" in route_events[-1]["postProcessingApplied"]
 
 
 def test_chat_service_semantic_plan_route_uses_unavailable_guidance_reply_focus(tmp_path, mock_llm_client):

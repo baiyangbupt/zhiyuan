@@ -235,6 +235,9 @@ def _normalize_plan_query_profile(result: PlanQueryProfileResult) -> PlanQueryPr
     pending_reference_type = str(result.pendingReferenceType or "none").strip()
     if pending_reference_type not in set(PENDING_REFERENCE_TYPE_VALUES):
         pending_reference_type = "none"
+    confidence = _coerce_confidence(result.confidence)
+    if query_type != "none" and confidence <= 0:
+        confidence = 0.9
     return PlanQueryProfileResult(
         queryType=query_type,
         scopeAnchor=scope_anchor,
@@ -245,7 +248,7 @@ def _normalize_plan_query_profile(result: PlanQueryProfileResult) -> PlanQueryPr
         projection=dict(result.projection or {}),
         replyFocus=result.replyFocus,
         pendingReferenceType=pending_reference_type,
-        confidence=_coerce_confidence(result.confidence),
+        confidence=confidence,
         reason=result.reason,
     )
 

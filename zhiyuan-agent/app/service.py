@@ -122,6 +122,19 @@ _PLAN_STYLE_SEVERE_MARKERS = (
     "选 A、B、C",
 )
 _PLAN_STYLE_DANGLING_EXACT_LINES = {"你。", "只有。", "请。"}
+_USER_REPLY_FORCED_CHOICE_MARKERS = (
+    "你现在必须决定",
+    "你必须决定",
+    "必须做出选择",
+    "必须做一个选择",
+    "必须选一个",
+    "没有第三个选项",
+    "你选哪个",
+    "请选一个",
+    "请明确回复",
+    "回复 A 或 B",
+    "回复A或B",
+)
 _PLAN_STYLE_GUARD_PROMPT_KEYWORDS = (
     "方案",
     "志愿",
@@ -365,6 +378,37 @@ def _semantic_targeted_review_allowed(value: Any) -> bool:
         if str(code or "").strip()
     ]
     return bool(issue_codes) and "target_issue_only" in _reply_focus_set(value)
+
+
+def _turn_decision_is_plan_review_or_repair_preview(decision: Any) -> bool:
+    try:
+        confidence = float(getattr(decision, "confidence", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    if confidence < _SEMANTIC_PLAN_ACTION_CONFIDENCE_THRESHOLD:
+        return False
+    return (
+        str(getattr(decision, "taskLayer", "") or "").strip() == "plan"
+        and str(getattr(decision, "sideEffect", "") or "").strip() == "readonly_or_plan_preview"
+        and str(getattr(decision, "scopeAnchor", "") or "").strip() == "current_plan"
+        and str(getattr(decision, "scenario", "") or "").strip() == "plan_review_or_repair_preview"
+    )
+
+
+def _turn_decision_snapshot(decision: Any) -> dict[str, Any]:
+    return {
+        "taskLayer": str(getattr(decision, "taskLayer", "") or "").strip(),
+        "sideEffect": str(getattr(decision, "sideEffect", "") or "").strip(),
+        "scopeAnchor": str(getattr(decision, "scopeAnchor", "") or "").strip(),
+        "scenario": str(getattr(decision, "scenario", "") or "").strip(),
+        "targetIssue": [
+            str(item or "").strip()
+            for item in list(getattr(decision, "targetIssue", []) or [])
+            if str(item or "").strip()
+        ],
+        "confidence": float(getattr(decision, "confidence", 0.0) or 0.0),
+        "reason": str(getattr(decision, "reason", "") or ""),
+    }
 
 
 def _semantic_query_state_should_run_review(content: str | None) -> bool:
@@ -7029,8 +7073,9 @@ def _turn_decision_allows_plan_query_profile(
         return False
     if scenario not in {"plan_query", "plan_query_while_pending"}:
         return False
-    expected_side_effect = "readonly_while_pending" if pending_exists else "readonly"
-    return side_effect == expected_side_effect
+    if pending_exists:
+        return side_effect in {"readonly", "readonly_while_pending"}
+    return side_effect == "readonly"
 
 
 async def _classify_plan_query_turn_decision(
@@ -8688,6 +8733,22 @@ def _sanitize_reply_for_user(reply: str) -> str:
     reply = re.sub(r'\n?\[LLM_INTERNAL\][^\n]*', '', reply)
     # 移除行内的 [LLM_INTERNAL] 标记
     reply = re.sub(r'\[LLM_INTERNAL\]\s*', '', reply)
+    if any(marker in reply for marker in _USER_REPLY_FORCED_CHOICE_MARKERS):
+        cleaned_lines: list[str] = []
+        for line in reply.splitlines():
+            if not any(marker in line for marker in _USER_REPLY_FORCED_CHOICE_MARKERS):
+                cleaned_lines.append(line)
+                continue
+            sentence_parts = re.findall(r"[^。！？.!?\n]+[。！？.!?]?", line)
+            kept = [
+                part
+                for part in sentence_parts
+                if not any(marker in part for marker in _USER_REPLY_FORCED_CHOICE_MARKERS)
+            ]
+            cleaned_line = "".join(kept).strip()
+            if cleaned_line:
+                cleaned_lines.append(cleaned_line)
+        reply = "\n".join(cleaned_lines)
     # 3.0.3 确认协议下，采纳偏好/要求不会把基础候选池永久改小。
     # 旧兼容路径或模型复述里可能残留“按要求过滤后候选还剩多少”的句子，
     # 这类统计只允许出现在显式候选查询结果里，不应作为采纳确认后的后续使用说明。
@@ -11046,12 +11107,24 @@ def _semantic_plan_display_payload(
     action_family: str,
     result: dict[str, Any] | None,
     pending_card_created: bool,
+    prefer_conditional_options: bool = False,
 ) -> dict[str, Any]:
     if pending_card_created:
         presentation = "confirmation_card"
     else:
         result_kind = str((result or {}).get("result_kind") or "").strip() if isinstance(result, dict) else ""
-        if (
+        if prefer_conditional_options and action_family in {
+            "review_plan",
+            "analyze_adjustment",
+            "preview_fix_proposal",
+        } and result_kind in {
+            "review_result",
+            "adjustment_analysis",
+            "fix_proposal_preview",
+            "preview_only",
+        }:
+            presentation = "conditional_options"
+        elif (
             action_family in {"analyze_adjustment", "preview_fix_proposal"}
             and result_kind in {"adjustment_analysis", "fix_proposal_preview", "preview_only"}
             and _plan_result_has_fix_proposal_options(result)
@@ -12065,7 +12138,20 @@ class ChatService:
             return None
 
         action_family = str(getattr(decision, "actionFamily", "none") or "none")
+        original_action_family = action_family
         confidence = float(getattr(decision, "confidence", 0.0) or 0.0)
+        turn_decision = getattr(request_context, "_turn_decision_object", None)
+        framework_review_or_repair_preview = _turn_decision_is_plan_review_or_repair_preview(turn_decision)
+        framework_turn_decision = (
+            _turn_decision_snapshot(turn_decision)
+            if framework_review_or_repair_preview
+            else {}
+        )
+        framework_reply_focus = [
+            str(item or "").strip()
+            for item in (framework_turn_decision.get("targetIssue") or [])
+            if str(item or "").strip()
+        ]
         semantic_promoted_query_state_to_review = False
         if (
             action_family == "query_state"
@@ -12074,7 +12160,11 @@ class ChatService:
         ):
             action_family = "review_plan"
             semantic_promoted_query_state_to_review = True
-        if action_family == "analyze_adjustment" and confidence >= _SEMANTIC_PLAN_ACTION_CONFIDENCE_THRESHOLD:
+        if (
+            action_family == "analyze_adjustment"
+            and not framework_review_or_repair_preview
+            and confidence >= _SEMANTIC_PLAN_ACTION_CONFIDENCE_THRESHOLD
+        ):
             if await _candidate_query_should_bypass_semantic_plan_action(
                 content,
                 request_context=request_context,
@@ -12179,8 +12269,17 @@ class ChatService:
             and _semantic_current_plan_analysis_allowed(decision)
             and _semantic_current_plan_analysis_matches_prompt(decision, content)
         )
+        framework_review_or_repair_preview_route = (
+            framework_review_or_repair_preview
+            and has_existing_plan_context
+            and action_family in {"review_plan", "analyze_adjustment"}
+            and confidence >= _SEMANTIC_PLAN_ACTION_CONFIDENCE_THRESHOLD
+        )
+        if framework_review_or_repair_preview_route and action_family == "analyze_adjustment":
+            action_family = "review_plan"
         if (
             action_family != "preview_fix_proposal"
+            and not framework_review_or_repair_preview_route
             and not review_analysis_followup
             and not current_plan_analysis
             and not current_state_query
@@ -12205,7 +12304,11 @@ class ChatService:
             for item in list(getattr(decision, "replyFocus", []) or [])
             if str(item or "").strip()
         ]
-        use_target_scope_for_payload = action_family != "review_plan" or targeted_review
+        use_target_scope_for_payload = (
+            action_family != "review_plan"
+            or targeted_review
+            or framework_review_or_repair_preview_route
+        )
         if action_family == "preview_fix_proposal":
             preview_allowed = _semantic_preview_fix_proposal_route_allowed(
                 decision,
@@ -12437,6 +12540,7 @@ class ChatService:
             action_family=action_family,
             result=result,
             pending_card_created=compiled_fix_pending_card is not None,
+            prefer_conditional_options=framework_review_or_repair_preview_route,
         )
         turn_event = {
             "sessionId": session_id,
@@ -12448,14 +12552,28 @@ class ChatService:
                     "matched": True,
                     "confidence": confidence,
                     "route": action_family,
-                    "originalRoute": str(getattr(decision, "actionFamily", "none") or "none"),
+                    "originalRoute": original_action_family,
+                    "sideEffect": (
+                        "readonly_or_plan_preview"
+                        if framework_review_or_repair_preview_route
+                        else "readonly"
+                    ),
+                    "outputType": (
+                        "readonly_or_plan_mutation"
+                        if framework_review_or_repair_preview_route
+                        else "readonly"
+                    ),
                     "reason": str(getattr(decision, "reason", "") or ""),
                     "targetStrategies": list(getattr(decision, "targetStrategies", []) or []),
+                    "targetIssueCodes": list(getattr(decision, "targetIssueCodes", []) or []),
+                    "replyFocus": framework_reply_focus,
+                    **({"turnDecision": framework_turn_decision} if framework_turn_decision else {}),
                     "recentPlanContext": recent_plan_context,
                     "displayPayload": display_payload,
                 },
             "pendingType": None,
             "actionFamily": action_family_result,
+            "replyFocus": framework_reply_focus,
             "modelProvider": _llm_config_value(self.llm_client, "provider"),
             "modelName": _llm_config_value(self.llm_client, "model_name"),
             "llmRequests": getattr(synthesis_usage, "requests", None),
@@ -12472,6 +12590,11 @@ class ChatService:
                 *(
                     ["semantic_query_state_promoted_to_review"]
                     if semantic_promoted_query_state_to_review
+                    else []
+                ),
+                *(
+                    ["turn_decision_review_repair_preview_bridge"]
+                    if framework_review_or_repair_preview_route
                     else []
                 ),
                 "llm_reply_synthesis" if synthesis_applied else "fallback_reply",
@@ -12559,6 +12682,9 @@ class ChatService:
                 exc_info=True,
             )
             return None
+        if isinstance(getattr(request_context, "agent_observability", None), dict):
+            request_context.agent_observability["turnDecision"] = _turn_decision_snapshot(decision)
+        setattr(request_context, "_turn_decision_object", decision)
         if not _turn_decision_is_profile_replan(decision):
             return None
         profile_replan_source = _compile_profile_replan_from_decision(
