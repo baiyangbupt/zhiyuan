@@ -1613,7 +1613,7 @@ async def test_analyze_intent_change_semantic_arbitration_downgrades_impact_firs
 
 
 @pytest.mark.asyncio
-async def test_analyze_intent_change_semantic_arbitration_keeps_explicit_mixed_major_update(empty_profile):
+async def test_analyze_intent_change_semantic_arbitration_does_not_override_mixed_answer_major_payload(empty_profile):
     ctx = SimpleNamespace(
         deps=SimpleNamespace(
             userid="u1",
@@ -1634,7 +1634,7 @@ async def test_analyze_intent_change_semantic_arbitration_keeps_explicit_mixed_m
                 return_value=IntentSideEffectDecision(
                     decision="mixed_answer_then_ask",
                     confidence=0.9,
-                    reason="模型误判为应先分析。",
+                    reason="先分析再询问是否记录。",
                 )
             ),
         ) as classifier_mock,
@@ -1663,12 +1663,12 @@ async def test_analyze_intent_change_semantic_arbitration_keeps_explicit_mixed_m
         )
 
     payload = json.loads(payload_text)
-    assert payload["analysisStage"] == ANALYSIS_STAGE_CONFIRMED
+    assert payload["analysisStage"] == ANALYSIS_STAGE_INTEREST
     assert payload["status"] == "ready"
     assert {"major_intents": {"level3": ["法学"]}} in [item["value"] for item in payload["items"]]
     assert {"major_intents": {"level3": ["财政学"]}} in [item["value"] for item in payload["items"]]
     assert {"major_intents": {"negative_level3": ["护理学"]}} in [item["value"] for item in payload["items"]]
-    assert ctx.deps.agent_observability["intentSideEffectDecision"]["honored"] is False
+    assert ctx.deps.agent_observability["intentSideEffectDecision"]["honored"] is True
     classifier_mock.assert_awaited_once()
     save_mock.assert_not_awaited()
 
@@ -1749,7 +1749,7 @@ async def test_analyze_intent_change_keeps_add_intent_positive_majors_with_exclu
 
 
 @pytest.mark.asyncio
-async def test_analyze_intent_change_semantic_arbitration_keeps_explicit_negative_major_preference(empty_profile):
+async def test_analyze_intent_change_semantic_arbitration_does_not_override_analysis_only_negative_payload(empty_profile):
     ctx = SimpleNamespace(
         deps=SimpleNamespace(
             userid="u1",
@@ -1800,12 +1800,13 @@ async def test_analyze_intent_change_semantic_arbitration_keeps_explicit_negativ
         )
 
     payload = json.loads(payload_text)
-    assert payload["analysisStage"] == ANALYSIS_STAGE_CONFIRMED
+    assert payload["analysisStage"] == ANALYSIS_STAGE_INTEREST
     assert payload["status"] == "ready"
     assert payload["items"][0]["value"] == {"major_intents": {"negative_level3": ["秘书学"]}}
-    assert "不优先具体专业" in payload["items"][0]["content"]
-    assert "偏好" not in payload["items"][0]["content"]
-    assert ctx.deps.agent_observability["intentSideEffectDecision"]["honored"] is False
+    assert "可整理成待确认偏好" in payload["items"][0]["content"]
+    assert "记成" not in payload["items"][0]["content"]
+    assert "已经记录" not in payload["items"][0]["content"]
+    assert ctx.deps.agent_observability["intentSideEffectDecision"]["honored"] is True
     classifier_mock.assert_awaited_once()
     save_mock.assert_not_awaited()
 

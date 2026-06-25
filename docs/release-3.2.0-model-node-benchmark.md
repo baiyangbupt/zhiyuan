@@ -26,9 +26,7 @@
 | `turn_side_effect` | 3.2.0 新 TurnDecision | taskLayer、sideEffect、scopeAnchor、missingInfo |
 | `intent_side_effect` | `intent_state_tool._classify_intent_side_effect` | intent 是否直接 pending，普通分析是否被过强写入 |
 | `plan_semantic_action` | `classify_plan_semantic_action` | query/review/analyze/preview 边界 |
-| `plan_recovery_action` | `classify_plan_recovery_action` | 模型误路由后是否能恢复成结构化动作，是否过度恢复 |
-| `composite_goal` | `classify_composite_goal_action` | only_keep/must_have/exclude/tuition 目标和 requiresPlanMutation |
-| `pending_action` | `classify_pending_confirmation_action` | confirm/reject/ask impact/new topic |
+| `local_plan_action_dsl` | `classify_local_plan_action_dsl` | 当前方案档内局部移动 DSL |
 | `plan_query_profile` | `plan_query_profile_tool` | 当前方案只读查询的 queryType、dimensions、filters、projection |
 | `candidate_filter_extraction` | `candidate_filter_extraction_tool` | 候选查询筛选条件、missingInfo/noResultReason |
 | `intent_entity_extraction` | `intent_entity_profile_tool` | entity、polarity、preference strength、admissionPath |
@@ -47,15 +45,15 @@ Benchmark 默认不调用线上链路。默认模式只用统一 case/actual/exp
 - `intent_entity_extraction`
 - `candidate_filter_extraction`
 - `plan_semantic_action`
-- `plan_recovery_action`
-- `composite_goal`
-- `pending_action`
+- `local_plan_action_dsl`
 - `plan_query_profile`
 - `proposal_selection`
 - `reply_focus_binding`
 - `reply_generation_grounding`
 
 尚未接入的节点必须输出 `unsupported_live_node`，不能静默跳过或误记为模型质量失败。
+
+2026-06-24 后，旧 `plan_recovery_action` 和 `composite_goal` 模型节点已从代码、benchmark adapter 和 3.2.0 case 集删除。当前方案变更恢复不再作为独立 profile 目标维护：原子方案动作进入 action DSL/compiler，长期意向进入 TurnDecision/intent entity profile，复合 user-goal 只能消费已有结构化 tool result。
 
 ## 3. Case 契约
 
@@ -133,7 +131,7 @@ Benchmark 默认不调用线上链路。默认模式只用统一 case/actual/exp
 - `scopeAnchor_accuracy`
 - `preference_strength_accuracy`
 - `requiresPlanMutation_accuracy`
-- `pending_action_accuracy`
+- `pending_protocol_accuracy`
 - `focus_preservation_rate`
 - `grounded_reply_rate`
 
@@ -172,7 +170,7 @@ Model node benchmark 要做：
 
 - `turn_side_effect`：G1/G3/G8/G19/G22/G27/G31/G32，重点看状态权威、pending/formalPlan 不能被用户话术覆盖。
 - `intent_entity_extraction`：G4/G23/G25/G29/G30，重点看 `preferenceStrength`、`entityPolaritySpans`、`admissionPath`。
-- `plan_recovery_action` / `plan_semantic_action`：G2/G7/G16/G17/G21/G27，重点看局部动作 DSL、review focus 和 unsupported action。
+- `plan_semantic_action` / `local_plan_action_dsl`：G2/G7/G16/G17/G21/G27，重点看局部动作 DSL、review focus 和 unsupported action。
 - `reply_focus_binding` / `reply_generation_grounding`：G7/G20/G21/G32，重点看是否回答问题、是否编造证据、是否泄露内部字段。
 
 横评报告必须包含：
@@ -204,9 +202,9 @@ Model node benchmark 要做：
 - `turn_side_effect`：G1/G2/G3/G6/G8/G9/G14/G19/G22/G24/G27/G31/G32。
 - `intent_side_effect`：G4/G13/G18/G29。
 - `plan_semantic_action`：G7/G21。
-- `plan_recovery_action`：G16/G17。
-- `composite_goal`：G5。
-- `pending_action`：G10/G15。
+- `local_plan_action_dsl`：G17。
+- 旧 `plan_recovery_action` / `composite_goal` 模型节点：2026-06-24 已删除；G16/G17/G5 不再通过旧恢复 classifier 维护。
+- 旧 pending 模型节点：G10/G15，2026-06-24 已删除，相关 case 转入 TurnDecision/no-pending guard/pending compiler。
 - `candidate_filter_extraction`：G26。
 - `intent_entity_extraction`：G23/G25/G30。
 - `reply_focus_binding`：G7。
@@ -248,7 +246,7 @@ cd zhiyuan-agent
 ./.venv/bin/python examples/model_node_benchmark.py \
   --cases examples/model_node_benchmark_320_cases.json \
   --actual-source live-node \
-  --nodes intent_side_effect,plan_semantic_action,composite_goal \
+  --nodes intent_side_effect,plan_semantic_action,local_plan_action_dsl \
   --repeat 3 \
   --output /private/tmp/model_node_320_live_node_report.json
 ```
@@ -265,7 +263,9 @@ cd zhiyuan-agent
 - `stability.stablePassedGroups`：所有重复轮次均通过的 case 数。
 - `stability.stablePassRate`：重复 case 的稳定通过率。
 
-当前 G1-G32 节点 case 中，`turn_side_effect`、`intent_side_effect`、`intent_entity_extraction`、`candidate_filter_extraction`、`plan_query_profile`、`plan_semantic_action`、`plan_recovery_action`、`composite_goal`、`pending_action`、`proposal_selection` 可通过 live-node adapter 直接调用节点函数。
+当前 G1-G32 节点 case 中，`turn_side_effect`、`intent_side_effect`、`intent_entity_extraction`、`candidate_filter_extraction`、`plan_query_profile`、`plan_semantic_action`、`local_plan_action_dsl`、`proposal_selection` 可通过 live-node adapter 直接调用节点函数。
+
+2026-06-24 后旧 pending 模型节点已删除，不再保留 benchmark-only classifier。active pending 的协议级短确认/取消由 `proposal_compiler.resolve_pending_turn_action` 处理；业务语义由 `TurnDecision` 输出 `sideEffect/scenario/scopeAnchor`，再交给 `proposal_compiler.compile_runtime_pending_turn_decision_source` 编译。pending 影响查询使用 `scenario=pending_impact_query` 和 `scopeAnchor=pending_reference`，不再通过独立 pending 模型节点判断。
 
 `intent_entity_extraction` 不复用旧的 major/school/city/career 抽取结果拼装 profile，而是通过 `intent_entity_profile_tool` 直接输出 3.2.0 schema。这样能单独衡量模型对 `preferenceStrength`、`entityPolaritySpans`、`admissionPath` 的理解能力，避免旧字段改名后掩盖 schema 缺口。
 
@@ -334,7 +334,7 @@ stablePassRate: 0.1818
 | --- | ---: | ---: | ---: | --- |
 | `composite_goal` | 3 | 3 | 0 | G5 negative-only region 在现有节点上稳定通过 |
 | `intent_side_effect` | 12 | 5 | 7 | 软偏好/历史偏好合并仍常被升为 `must_have/only_keep` |
-| `pending_action` | 6 | 1 | 5 | 无 pending 的“确认”被误判为 `confirm_pending`，说明节点缺少 pending 存在性硬门禁 |
+| 旧 pending 模型节点 | 6 | 1 | 5 | 无 pending 的“确认”被误判为 `confirm_pending`，说明节点缺少 pending 存在性硬门禁；该节点后续已删除 |
 | `plan_semantic_action` | 6 | 0 | 6 | `replyFocus/targetIssueCodes` 基本未产出，当前 schema/prompt 不足以支撑 G7/G21 |
 | `plan_recovery_action` | 6 | 0 | 6 | 锁定动作、tier-local reorder 和局部 ordinal 仍不稳定 |
 
@@ -352,7 +352,7 @@ stablePassRate: 0.1818
 初步定性：
 
 - 这轮没有 provider/env 排除，失败是现有模型节点能力、schema 或 prompt 与 3.2.0 目标不对齐。
-- `pending_action` 不能只靠模型判断确认语义，必须先由 deterministic guard 注入“无 active pending 则不可 confirm”。
+- 旧 pending 模型节点不能只靠模型判断确认语义，必须先由 deterministic guard 注入“无 active pending 则不可 confirm”；该节点后续已删除。
 - `intent_side_effect` 的 `constraintIntentType` 过强，3.2.0 需要 preference strength schema 和 compiler guard，而不是让该节点直接决定 must-have/only-keep。
 - `plan_semantic_action` 目前 actionFamily 可保守，但没有稳定输出 reply focus；reply focus 应进入 TurnDecision/replyPlan 的显式字段。
 - `plan_recovery_action` 不适合作为 3.2.0 局部方案动作的最终编译器；tier-local action 应由 deterministic DSL/compiler 承接，模型只给意图和选择器。
@@ -381,7 +381,7 @@ maxMs: 4396
 节点结论：
 
 - `composite_goal`：G5 通过，negative-only region 仍是现有节点中最稳定的结构化判断。
-- `pending_action`：G15 通过，但 G10 no-pending confirm 仍会把空 pending 下的“确认”判为 `confirm_pending`。这必须由 deterministic guard 前置拦截。
+- 旧 pending 模型节点：G15 通过，但 G10 no-pending confirm 仍会把空 pending 下的“确认”判为 `confirm_pending`。这必须由 deterministic guard 前置拦截；该节点后续已删除。
 - `intent_side_effect`：4/4 失败；主要不是 provider 问题，而是 live-node 仍只输出 `constraintIntentType`，缺少 `preferenceStrength/preferenceScope`，且会把 G4/G29 软偏好升成 `must_have`、把 G18 “保底公办不要民办”升成 `only_keep`。
 - `plan_semantic_action`：2/2 失败；actionFamily 在 G7 保守为 none 是可接受的，但 `replyFocus/targetIssueCodes` 未产出；G21 强基+普通批合理性查询没有进入 `query_state/state_explanation`。
 - `plan_recovery_action`：2/2 失败；G16 缺 `unsupportedAction=pin_or_lock_unit`，G17 把 tier-local move 误成局部 sort，且 targetPosition 缺失。
@@ -556,7 +556,7 @@ latency.maxMs: 9811
 
 2026-06-22 继续把旧 live-node adapter 的协议缺口补齐：
 
-- `pending_action`：无 active pending 时直接返回 `action=none`，不再让模型把裸“确认”误判为 confirm。runtime 已删除该 classifier 调用；该工具仅保留给 benchmark/profile。
+- 旧 pending 模型节点：当时仅保留为 benchmark/profile 的过渡节点；2026-06-24 已正式删除。no-active-pending 短确认由 `proposal_compiler.pending_turn_looks_no_active_pending_confirmation` 和 `resolve_pending_turn_action` 覆盖，pending impact/apply/conflict 由 `TurnDecision -> compile_runtime_pending_turn_decision_source` 覆盖。
 - `plan_semantic_action`：允许 `actionFamily=none` 同时输出 `replyFocus/targetIssueCodes`，固定 G7 只读风险解释的 `target_issue_only`；G21 强基+普通批合理性查询进入 `query_state/state_explanation/review_boundary`。
 - `plan_recovery_action`：新增 `unsupportedAction` profile 字段，固定 G16 `pin_or_lock_unit`；补 G17 tier-local ordered move，输出 `move_ordered_unit/tier=保底/targetPosition=1/sortField=admissionRatio`。
 - `intent_side_effect`：strength 规则收紧为 `primary=明确优先/首选/重点`、`preferred=普通偏好/加意向`、`acceptable=也可以考虑/备选可接受`；G18 明确保留 `structuredIntents.school.positiveSchools` 到 `preferred`，禁止用 `only_keep=公办` 替代具体院校。
@@ -590,7 +590,7 @@ latency.maxMs: 11733
 
 ```text
 report: /private/tmp/model_node_320_live_supported_all_after_g24_fix_r1.json
-nodes: turn_side_effect,intent_side_effect,intent_entity_extraction,candidate_filter_extraction,plan_semantic_action,plan_recovery_action,composite_goal,pending_action,reply_focus_binding,reply_generation_grounding
+nodes: turn_side_effect,intent_side_effect,intent_entity_extraction,candidate_filter_extraction,plan_semantic_action,local_plan_action_dsl,reply_focus_binding,reply_generation_grounding
 rawTotal: 30
 passed: 30
 failed: 0
@@ -645,7 +645,7 @@ latency.p95Ms: 12387
 latency.maxMs: 21405
 ```
 
-最终 by-node 结果：
+以下为删除旧恢复节点前的历史 by-node 结果，仅保留作复盘依据；当前 live-node 集合不再包含 `plan_recovery_action` 和 `composite_goal`：
 
 ```text
 turn_side_effect: 39/39
@@ -655,12 +655,20 @@ candidate_filter_extraction: 3/3
 plan_semantic_action: 6/6
 plan_recovery_action: 6/6
 composite_goal: 3/3
-pending_action: 6/6
 reply_focus_binding: 3/3
 reply_generation_grounding: 3/3
 ```
 
 当前判断：已接 live-node adapter 的 3.2.0 schema 可以收敛到稳定三轮全绿。剩余重点不再是继续在 service 中补兼容桥，而是把已验证的 TurnDecision、intent profile、reply profile 输出接到 ProposalCompiler/replyPlan/displayPayload contract，并在 hard-cut 前用只读 replay 验证 runtime 行为。
+
+2026-06-24 runtime hard-cut prompt/regression 补充：
+
+- G31/G21 暴露的不是 intent entity extraction 能力问题，而是 active pending + current-plan 上下文下的 `TurnDecision` scope/sideEffect mis-anchor。用户表达新的未来参考偏好时，即使历史里存在 `intent_change` pending，也不能默认输出 `pending_conflict_new_mutation`；只要目标仍是未来参考，就应输出 `intent_pending/future_reference/intent_update`，后续由 compiler 决定刷新/替换/合并 pending。
+- `turn_decision_tool` prompt 已补边界：active `intent_change` pending 加新的未来偏好、排除或特殊路径更新，不等价于当前方案 mutation；当前方案删除、替换、生成、重排等才进入 conflict/apply/new mutation 裁决。
+- runtime intent hard-cut 对 `sideEffect=plan_preview/readonly_or_plan_preview` 且 `scenario=intent_update/region_preference_update` 的结果只做 soft candidate 处理，目的是允许后续 `intent_entity_profile` 和 side-effect arbitration 修正 scope mis-anchor。高置信 `scenario=atomic_mutation` 仍必须留在 plan path，不能由 entity profile fallback 直接变成 intent card。它不改变 TurnDecision 节点 benchmark 目标，也不让 runtime 从用户原话补判 intent。
+- 新增/更新单测固定 prompt 文本和 service 行为：`test_turn_decision_prompt_keeps_new_intent_update_out_of_active_pending_conflict`、`test_chat_service_runtime_intent_hard_cut_recovers_plan_preview_misanchored_school_intent` 和 `test_chat_service_runtime_intent_hard_cut_does_not_eat_current_plan_atomic_mutation`。相关 focused 子集已通过：`test_turn_decision_tool + test_runtime_hard_cut_audit` 7/7，runtime intent hard-cut 子集 9/9。此前 broader agent suite 为 880 通过。
+- isolated live 验证：G31 focused 6/6 successful，G19/G21/G31 组合 16/16 successful。运行时观测能持久化 `routingPath=runtime_intent_hard_cut`，避免只看最终文本时无法区分 full-agent 与结构化 hard-cut。
+- 剩余评估重点：继续扩大 G1-G32/full regression，观察 soft candidate 是否在更多表达中保持 precision；同时把 profile update/replan、特殊路径 review 和 replyPlan/displayPayload 接入更完整的 compiler contract。latency 和文案 polish 暂不作为本轮语义正确性门槛。
 
 ## 9. Compiler Golden
 
@@ -1059,7 +1067,8 @@ zhiyuan-agent/examples/runtime_shadow_diff_320_observations.example.json
 ```bash
 cd zhiyuan-agent
 PYTHONPATH=. ./.venv/bin/python examples/dialog_regression_runner.py \
-  --url ws://127.0.0.1:8000/gaotu-assistant-agent/plus/chat/1/bot/test/do \
+  --url ws://127.0.0.1:18291/gaotu-assistant-agent/plus/chat/1/bot/test/do \
+  --internal-service-url http://127.0.0.1:18290 \
   --cases examples/<mapped_g1_g32_dialog_cases>.json \
   --clear-history-per-case \
   --clear-backend-pending-per-case \
@@ -1120,7 +1129,7 @@ G21, G22, G23, G25, G26, G27, G29, G30, G31, G32
 
 | Case | 暂不映射原因 |
 | --- | --- |
-| G5 | negative-only region 需要稳定的 score profile fixture，当前先用 node/composite_goal 覆盖 |
+| G5 | negative-only region 需要稳定的 score profile fixture；当前由 TurnDecision、intent entity profile 和 compiler golden 覆盖，不再使用旧 composite_goal 节点 |
 | G6 | missing score/rank + candidate query 需要专门空分数 fixture |
 | G9 | current-major-group local operation 需要可定位专业组内部行 fixture |
 | G11 | provider availability 是 provider precheck，不适合 WebSocket shadow |
@@ -1270,7 +1279,7 @@ byKind:
 
 - `compiler_sink_after_cut`：可以保留函数，但只允许消费 `CompiledProposal` 输出。
 - `compiler_entry_after_cut`：主流程 plan/fix pending 创建已收口到统一 runtime compiled entry；候选解析可以存在，但不能直接越过 compiled entry 和 sink contract 保存 pending。
-- `delete_after_cut`：hard cut 后必须删除；当前无结构化候选的自然语言承诺恢复、只读误路由恢复、no-tool intent 恢复、composite goal recovery、预算/学费误路由 recovery 和主流程 `recovered_pending_intent_card` 变量路径均已删除。
+- `delete_after_cut`：hard cut 后必须删除；当前无结构化候选的自然语言承诺恢复、只读误路由恢复、composite goal recovery、预算/学费误路由 recovery、主流程 `recovered_pending_intent_card` 变量路径和 full-agent 后处理 no-tool explicit intent fallback 均已删除。仍保留的 `runtime_intent_hard_cut` 只能在模型前经过 TurnDecision、实体 profile 和 compiler sink 创建 intent pending，不能作为 full-agent 后处理桥。
 - `execution_keep`：保留 apply 入口和 pending id/status/version/policy guard。
 - `legacyRiskCount` 只统计直接创建或恢复 pending/card 的路径；evidence-only 读取不计入业务卡风险，但仍必须在 hard cut 中限制调用方式。
 
@@ -1305,7 +1314,7 @@ statusUpdateKeepCount: 6
 - `compiler_entry_call=0`：旧 plan/fix 中层 pending wrapper 已删除，runtime compiled entry 直接消费 compiled proposal 后调用低层 sink。
 - `status_update_keep=6`：保留 pending apply/cancel/expire/fail 状态更新，不参与新 pending 创建。
 
-这说明 sink 调用层和主流程 plan/fix call-source 都已收口到 compiled entry，并且旧 wrapper 不再保留。runtime compiled proposal/contract、deterministic fix proposal arbitration、target-scope 归一/过滤和 blocking reason 已抽到 `app/domain/proposal_compiler.py`；下一步不是恢复旧入口，而是把模型 target-scope 调用本身和 TurnDecision 输入替换为正式 ProposalCompiler 输出。`composite_goal` 仍可作为离线模型节点 benchmark，但 runtime 不再调用 `classify_composite_goal_action` 补 pending/card。
+这说明 sink 调用层和主流程 plan/fix call-source 都已收口到 compiled entry，并且旧 wrapper 不再保留。runtime compiled proposal/contract、deterministic fix proposal arbitration、target-scope 归一/过滤和 blocking reason 已抽到 `app/domain/proposal_compiler.py`；下一步不是恢复旧入口，而是把模型 target-scope 调用本身和 TurnDecision 输入替换为正式 ProposalCompiler 输出。`plan_recovery_action` 和 `composite_goal` 已删除，不再作为离线 benchmark 节点或 runtime 补卡入口维护。
 
 补充 runtime hard-cut forbidden symbol 单测：
 
@@ -1313,7 +1322,7 @@ statusUpdateKeepCount: 6
 zhiyuan-agent/tests/unit/test_runtime_hard_cut_audit.py
 ```
 
-该测试扫描 `app/service.py`，防止 runtime 重新引用 `classify_plan_recovery_action`、`classify_composite_goal_action`、旧 plan/fix pending wrapper、`recovered_pending_intent_card`、旧 plan recovery 死代码和旧 `select_fix_proposal_candidate` 调用。`classify_*` 工具函数仍保留在模型节点 benchmark/profile 中，用于评估模型能力，不作为运行时兜底或补卡路径。
+该测试扫描 `app/service.py`，防止 runtime 重新引用 `classify_plan_recovery_action`、`classify_composite_goal_action`、旧 plan/fix pending wrapper、旧 card-only intent/fix wrapper、旧 no-tool intent fallback、`recovered_pending_intent_card` / `recovered_intent_card`、旧 plan recovery 死代码、旧 `plan_action_recovery` 观测名和旧 `select_fix_proposal_candidate` 调用。2026-06-24 后两个旧 classifier 工具函数本身也已从 `plan_semantic_action_tool.py` 和 benchmark adapter 删除。
 
 ## 12. Compiled Pending Sink Contract
 
@@ -1381,5 +1390,5 @@ blockingReasons:
 runtime 状态：
 
 - `ChatService.handle_intent_select` direct selectedData 分支始终先生成 compiled intent proposal，并通过 intent sink contract 校验，再复用 intent pending sink 创建同样 pending card。
-- `actionType/prefer_confirm/constrain_confirm` followup 会经 `_create_pending_intent_confirmation_from_preview_payload` 编译为 intent pending；constraint 命中 Java user-goal ready proposal 时转 compiled fix proposal。
+- `actionType/prefer_confirm/constrain_confirm` followup 会经 `_create_pending_intent_confirmation_result_from_preview_payload` 编译为 intent pending；constraint 命中 Java user-goal ready proposal 时转 compiled fix proposal，并保留 workspace refresh targets 与 blocking reasons。
 - 单测已覆盖 direct select、prefer confirm、constraint confirm 和 Java ready-without-actions 阻断。

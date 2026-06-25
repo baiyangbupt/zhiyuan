@@ -11,6 +11,17 @@ if TYPE_CHECKING:
     from app.schemas.user_profile import UserProfile
 
 
+def _first_positive_int(*values: Any) -> int:
+    for value in values:
+        try:
+            parsed = int(value or 0)
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            return parsed
+    return 0
+
+
 @dataclass
 class ScoreDetail:
     """学生高考成绩详情。"""
@@ -29,6 +40,8 @@ class PlanningSummary:
     phase: str = ""
     version: int = 0
     candidate_target_total: int = 0
+    candidate_available_total: int = 0
+    candidate_status: str = ""
     working_total: int = 0
     working_target_total: int = 0
     draft_total: int = 0
@@ -83,11 +96,32 @@ class PlanningSummary:
         positive_regions = explicit.get("positiveRegions") or []
         positive_majors = explicit.get("positiveMajors") or []
 
+        candidate_state = data.get("candidatePoolState") or {}
+        candidate_summary = candidate_state.get("summary") or {}
+        candidate_source_summary = candidate_state.get("sourceSummary") or {}
+        candidate_items = candidate_state.get("units") or candidate_state.get("items") or []
+        candidate_available_total = _first_positive_int(
+            candidate_summary.get("unitTotal"),
+            candidate_summary.get("total"),
+            candidate_summary.get("entryTotal"),
+            candidate_state.get("unitTotal"),
+            candidate_state.get("total"),
+            candidate_source_summary.get("normalizedUnitTotal"),
+            candidate_source_summary.get("normalizedEntryTotal"),
+            len(candidate_items) if isinstance(candidate_items, list) else 0,
+        )
+        candidate_target_total = _first_positive_int(
+            candidate_state.get("requiredUnitCount"),
+            candidate_state.get("requiredCount"),
+        )
+
         working_plan_summary = get_working_plan_summary(data)
         return cls(
             phase=data.get("phase") or "",
             version=data.get("version") or 0,
-            candidate_target_total=((data.get("candidatePoolState") or {}).get("requiredCount") or 0),
+            candidate_target_total=candidate_target_total,
+            candidate_available_total=candidate_available_total,
+            candidate_status=str(candidate_state.get("statusCode") or "").strip(),
             working_total=working_plan_summary.get("unitTotal")
             or working_plan_summary.get("total")
             or 0,
@@ -137,6 +171,7 @@ class RequestContext:
     allow_explore_inner_llm: bool = True  # 正式聊天主链路可关闭 Explore 工具内二次生成，由主模型统一组织最终回复
     enable_intent_side_effect_arbitration: bool = False  # 主链路用于拦截误触发的意向待确认副作用
     recent_intent_analysis: dict[str, Any] | None = None  # 最近一次 Intent 工具结构化结果，供指代追问恢复上下文
+    latest_profile_change_replan_dsl: dict[str, Any] | None = None  # 最近一次结构化资料重规划 DSL，供多轮纠错合并使用
     agent_observability: dict[str, Any] = field(default_factory=dict)  # 本轮 Agent 节点耗时与失败定位信息
     confirmed_via_card: bool = False  # 服务端确认卡片点击链路，方案 apply 只能由该结构化上下文放行
     confirmed_via_pending: bool = False  # 服务端统一 pending 确认链路，包含卡片点击和短文本兜底

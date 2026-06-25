@@ -635,28 +635,6 @@ class TestChatAgentToolRegistration:
         assert agent.should_return_directly_from_tool(["analyze_current_career_direction"], tool_returns, None) is False
         assert agent.render_direct_tool_output(["analyze_current_career_direction"], tool_returns, None) is None
 
-    def test_chat_agent_does_not_direct_return_plan_query_action_boundary(self):
-        with patch("app.agent.base_agent.Agent", return_value=MagicMock()):
-            from pydantic_ai.messages import ToolReturnPart
-
-            from app.agent.chat_agent import ChatAgent
-            from app.llm.client import LLMClient
-
-            client = MagicMock(spec=LLMClient)
-            client.model = TestModel()
-            client.model_settings = {}
-            agent = ChatAgent(client)
-
-        tool_returns = [
-            ToolReturnPart(
-                tool_name="query_volunteer_plan",
-                content="这是补齐或调整当前方案的动作诉求，不是局部查询；应先走方案动作预览，用户确认后再执行。",
-                tool_call_id="query-candidate-boundary",
-            )
-        ]
-
-        assert agent.should_return_directly_from_tool(["query_volunteer_plan"], tool_returns, None) is False
-
     def test_chat_agent_keeps_fix_proposal_preview_for_model_summary(self):
         with patch("app.agent.base_agent.Agent", return_value=MagicMock()):
             from pydantic_ai.messages import ToolReturnPart

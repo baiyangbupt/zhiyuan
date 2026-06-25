@@ -1,0 +1,630 @@
+{
+  "records": [
+    {
+      "case": "320-shadow-G27-apply-pending-then-readonly-followup",
+      "stepIndex": 1,
+      "sessionId": "9903235",
+      "prompt": "方案里学费贵的太多了 能不能帮我换成便宜的",
+      "elapsedMs": 66319,
+      "firstMessageMs": 1224,
+      "finalMessageMs": 64317,
+      "primaryMessages": 8,
+      "thinkingMessages": 7,
+      "followupMessages": 0,
+      "fixtureType": "formal_plan_present",
+      "fixtureContract": {
+        "type": "formal_plan_present",
+        "sessionTemplate": "formal_plan_then_plan_mutation_pending",
+        "requiredState": [
+          "orderedPlan"
+        ],
+        "forbiddenState": [
+          "activePending"
+        ]
+      },
+      "responseText": "已完成方案审查。\n\n针对你想降低学费的需求，目前方案里可以先看调整预览的是这个：\n\n- **南京航空航天大学(05)-人工智能(中外合作办学)**，学费约 75000 元/年，这是方案中唯一的中外合作项目。\n\n我已把可确认的处理内容列出来，确认前不会改方案：\n\n**核心处理内容**：将该志愿移出，换入一个普通类专业（同层次或相近层次、录取概率相当的非中外合作专业）。替换后该位置学费会显著降低。\n\n---\n\n如果你还想进一步降低其他志愿的学费，需要你先确认几点：\n- 是否接受**换到层次稍低但学费更低的学校**？\n- 是否接受**调整专业范围**（比如从热门工科转向普通工科或理科）？\n\n因为当前方案中其他志愿的学费差异，主要受学校层次和专业类型影响，没有足够相近且风险更低的\"便宜版\"直接替换项。你可以告诉我能接受多大范围的调整，我再帮你进一步筛选。",
+      "thinkingText": "正在读取当前会话信息...\n正在根据当前方案提醒整理调整预览...\n正在理解你的问题，并结合当前信息整理回答...\n正在处理你的方案，请稍等...\n还在处理，这轮需要结合当前信息整理结论，请稍等...\n这轮分析耗时较长，我会继续等待结果，并尽量给出已确认的信息和下一步建议...\n正在按你关注的这类问题重新检查方案...",
+      "turnObservability": {
+        "historyMessages": 5,
+        "toolCallCount": 1,
+        "toolReturnCount": 1,
+        "toolCalls": [
+          {
+            "name": "execute_plan_action",
+            "toolCallId": "refocus-review-2eff98dd",
+            "actionFamily": "review_plan",
+            "stage": "review",
+            "resultKind": "review_result",
+            "applied": true,
+            "success": true
+          }
+        ],
+        "actionFamilies": [
+          "review_plan"
+        ],
+        "resultKinds": [
+          "review_result"
+        ],
+        "routingPath": "full_agent",
+        "eventTimings": {
+          "totalDurationMs": 64183,
+          "llmDurationMs": 34661,
+          "toolCallCount": 1
+        },
+        "routeDecision": {
+          "source": "full_agent",
+          "matched": true,
+          "confidence": "model",
+          "route": "plan",
+          "fallbackReason": "structured_plan_reroute",
+          "structuredReroute": {
+            "source": "review_target_refocus",
+            "matched": true,
+            "confidence": 0.92,
+            "route": "review_plan",
+            "targetIssueCodes": [
+              "high_tuition",
+              "cooperative_program"
+            ]
+          },
+          "toolTrial": {
+            "toolNames": [
+              "execute_plan_action"
+            ],
+            "toolNameCounts": {
+              "execute_plan_action": 1
+            },
+            "repeatedToolNames": [],
+            "hasRepeatedToolCalls": false,
+            "hasToolCalls": true
+          },
+          "agentRun": {
+            "promptLength": 21,
+            "historyLength": 0,
+            "nodeTimings": [
+              {
+                "index": 1,
+                "node": "UserPromptNode",
+                "durationMs": 0,
+                "status": "success"
+              },
+              {
+                "index": 2,
+                "node": "ModelRequestNode",
+                "durationMs": 2685,
+                "status": "success"
+              },
+              {
+                "index": 3,
+                "node": "CallToolsNode",
+                "durationMs": 350,
+                "status": "success",
+                "toolNames": [
+                  "execute_plan_action"
+                ]
+              },
+              {
+                "index": 4,
+                "node": "ModelRequestNode",
+                "durationMs": 31622,
+                "status": "success"
+              },
+              {
+                "index": 5,
+                "node": "CallToolsNode",
+                "durationMs": 0,
+                "status": "success"
+              }
+            ],
+            "firstToolCallAtMs": 2687,
+            "completed": true,
+            "currentNode": "CallToolsNode",
+            "currentNodeIndex": 5,
+            "firstToolNames": [
+              "execute_plan_action"
+            ],
+            "toolNameCounts": {
+              "execute_plan_action": 1
+            },
+            "totalDurationMs": 34660,
+            "requests": 2,
+            "toolCalls": 1
+          }
+        }
+      },
+      "performanceWarnings": [
+        "320-shadow-G27-apply-pending-then-readonly-followup session=9903235 prompt=方案里学费贵的太多了 能不能帮我换成便宜的: latency warning — elapsedMs=66319 > warnElapsedMs=60000"
+      ]
+    },
+    {
+      "case": "320-shadow-G27-apply-pending-then-readonly-followup",
+      "stepIndex": 2,
+      "sessionId": "9903235",
+      "prompt": "两万以上的都算贵 帮我看看有几个",
+      "elapsedMs": 23621,
+      "firstMessageMs": 1264,
+      "finalMessageMs": 21618,
+      "primaryMessages": 2,
+      "thinkingMessages": 1,
+      "followupMessages": 0,
+      "fixtureType": "formal_plan_present",
+      "fixtureContract": {
+        "type": "formal_plan_present",
+        "sessionTemplate": "formal_plan_then_plan_mutation_pending",
+        "requiredState": [
+          "orderedPlan"
+        ],
+        "forbiddenState": [
+          "activePending"
+        ]
+      },
+      "responseText": "你的方案情况如下：\n\n当前方案里共命中了 1 条符合“学费不少于20000元/年”的志愿。下面仅展示前 1 条示例：南京航空航天大学(05)-人工智能(中外合作办学)(学费待定，拟按75000元/年收费)(专业办学地点：一、二、三年级在南京市将军路校区就读，四年级学习地点根据培养计划具体安排)（冲，录取率26%）",
+      "thinkingText": "正在读取当前会话信息...",
+      "turnObservability": {
+        "historyMessages": 5,
+        "toolCallCount": 1,
+        "toolReturnCount": 1,
+        "toolCalls": [
+          {
+            "name": "execute_plan_action",
+            "toolCallId": "direct-readonly-query_ordered",
+            "actionFamily": "query_ordered",
+            "stage": "apply",
+            "resultKind": "ordered_snapshot",
+            "applied": true,
+            "success": true
+          }
+        ],
+        "actionFamilies": [
+          "query_ordered"
+        ],
+        "resultKinds": [
+          "ordered_snapshot"
+        ],
+        "routingPath": "direct_readonly_plan_query",
+        "eventTimings": {
+          "totalDurationMs": 21451,
+          "toolDurationMs": 4171,
+          "toolCallCount": 1
+        },
+        "routeDecision": {
+          "source": "proposal_compiler",
+          "matched": true,
+          "route": "readonly_plan_query",
+          "sideEffect": "readonly",
+          "actionFamily": "query_ordered",
+          "turnDecision": {
+            "taskLayer": "plan",
+            "sideEffect": "readonly",
+            "scopeAnchor": "current_plan",
+            "scenario": "plan_query",
+            "confidence": 0.85
+          },
+          "queryProfile": {
+            "queryType": "readonly_plan_query",
+            "scopeAnchor": "current_plan",
+            "sideEffect": "readonly",
+            "dimensions": [
+              "tuition"
+            ],
+            "condition": {
+              "target": "ordered_plan",
+              "filters": {
+                "minTuitionPerYear": 20000
+              },
+              "sort": {
+                "field": "position",
+                "order": "asc"
+              },
+              "page": 1,
+              "pageSize": 5
+            },
+            "filters": {
+              "limit": 5,
+              "min_tuition_per_year": 20000
+            },
+            "projection": {
+              "mode": "count_with_examples",
+              "limit": 5
+            },
+            "replyFocus": [
+              "ordered_snapshot",
+              "local_plan_query",
+              "plan_filter_query",
+              "tuition"
+            ],
+            "pendingReferenceType": "none",
+            "confidence": 1.0,
+            "reason": "用户要求查看当前正式方案中学费两万以上的项目数量，属于只读查询当前方案，按学费阈值过滤"
+          },
+          "planQueryDsl": {
+            "type": "PlanQuery",
+            "scopeAnchor": "current_plan",
+            "sideEffect": "readonly",
+            "queryType": "readonly_plan_query",
+            "dimensions": [
+              "tuition"
+            ],
+            "filters": {
+              "limit": 5,
+              "min_tuition_per_year": 20000
+            },
+            "projection": {
+              "mode": "count_with_examples",
+              "limit": 5
+            },
+            "sourceVersionGuard": 8
+          }
+        }
+      },
+      "runtimeShadowCaseId": "D-G27-tuition-threshold-readonly-count-query"
+    },
+    {
+      "case": "320-shadow-G27-apply-pending-then-readonly-followup",
+      "stepIndex": 3,
+      "sessionId": "9903235",
+      "prompt": "那把两万以上且跟我意向不沾边的先删掉",
+      "elapsedMs": 42830,
+      "firstMessageMs": 1264,
+      "finalMessageMs": 40809,
+      "primaryMessages": 6,
+      "thinkingMessages": 5,
+      "followupMessages": 2,
+      "fixtureType": "formal_plan_present",
+      "fixtureContract": {
+        "type": "formal_plan_present",
+        "sessionTemplate": "formal_plan_then_plan_mutation_pending",
+        "requiredState": [
+          "orderedPlan"
+        ],
+        "forbiddenState": [
+          "activePending"
+        ]
+      },
+      "responseText": "已列出调整预览：已在当前方案里定位到“学费不少于20000元/年；与已确认意向不匹配”相关的 1 条志愿（约 1 个专业组）。示例：南京航空航天大学(05) · 人工智能(中外合作办学)(学费待定，拟按75000元/年收费)(专业办学地点：一、二、三年级在南京市将军路校区就读，四年级学习地点根据培养计划具体安排)。确认后会把这些志愿移出当前方案，执行后会重新审查方案。\n\n确认前不会改动当前方案。",
+      "thinkingText": "正在读取当前会话信息...\n正在理解你的问题，并结合当前信息整理回答...\n正在读取当前方案并整理这次请求...\n还在处理，这轮需要结合当前信息整理结论，请稍等...\n正在处理你的方案，请稍等...",
+      "turnObservability": {
+        "historyMessages": 7,
+        "toolCallCount": 2,
+        "toolReturnCount": 2,
+        "toolCalls": [
+          {
+            "name": "plan_next_action",
+            "toolCallId": "functions.plan_next_action:2",
+            "actionFamily": "remove_units",
+            "stage": "preview",
+            "success": true
+          },
+          {
+            "name": "execute_plan_action",
+            "toolCallId": "functions.execute_plan_action:3",
+            "actionFamily": "remove_units",
+            "stage": "preview",
+            "resultKind": "preview_only",
+            "applied": false,
+            "success": true
+          }
+        ],
+        "actionFamilies": [
+          "remove_units"
+        ],
+        "resultKinds": [
+          "preview_only"
+        ],
+        "routingPath": "full_agent",
+        "eventTimings": {
+          "totalDurationMs": 40617,
+          "llmDurationMs": 21242,
+          "toolCallCount": 2
+        },
+        "routeDecision": {
+          "source": "full_agent",
+          "matched": true,
+          "confidence": "model",
+          "route": "plan",
+          "fallbackReason": "no_direct_route",
+          "structuredReroute": null,
+          "toolTrial": {
+            "toolNames": [
+              "plan_next_action",
+              "execute_plan_action"
+            ],
+            "toolNameCounts": {
+              "plan_next_action": 1,
+              "execute_plan_action": 1
+            },
+            "repeatedToolNames": [],
+            "hasRepeatedToolCalls": false,
+            "hasToolCalls": true
+          },
+          "agentRun": {
+            "promptLength": 18,
+            "historyLength": 8,
+            "nodeTimings": [
+              {
+                "index": 1,
+                "node": "UserPromptNode",
+                "durationMs": 0,
+                "status": "success"
+              },
+              {
+                "index": 2,
+                "node": "ModelRequestNode",
+                "durationMs": 3045,
+                "status": "success"
+              },
+              {
+                "index": 3,
+                "node": "CallToolsNode",
+                "durationMs": 154,
+                "status": "success",
+                "toolNames": [
+                  "plan_next_action"
+                ]
+              },
+              {
+                "index": 4,
+                "node": "ModelRequestNode",
+                "durationMs": 11405,
+                "status": "success"
+              },
+              {
+                "index": 5,
+                "node": "CallToolsNode",
+                "durationMs": 151,
+                "status": "success",
+                "toolNames": [
+                  "execute_plan_action"
+                ]
+              },
+              {
+                "index": 6,
+                "node": "ModelRequestNode",
+                "durationMs": 6483,
+                "status": "success"
+              },
+              {
+                "index": 7,
+                "node": "CallToolsNode",
+                "durationMs": 0,
+                "status": "success"
+              }
+            ],
+            "firstToolCallAtMs": 3046,
+            "completed": true,
+            "currentNode": "CallToolsNode",
+            "currentNodeIndex": 7,
+            "firstToolNames": [
+              "plan_next_action"
+            ],
+            "toolNameCounts": {
+              "plan_next_action": 1,
+              "execute_plan_action": 1
+            },
+            "totalDurationMs": 21242,
+            "requests": 3,
+            "toolCalls": 2
+          }
+        }
+      },
+      "followupCount": 2,
+      "followupTargets": [
+        "ordered"
+      ],
+      "followupRefreshes": [
+        true
+      ],
+      "followupTypes": [
+        "planningWorkspaceAction",
+        "pendingConfirmationCard"
+      ]
+    },
+    {
+      "case": "320-shadow-G27-apply-pending-then-readonly-followup",
+      "stepIndex": 4,
+      "sessionId": "9903235",
+      "prompt": "删完了再帮我看看还剩多少个 梯度有没有问题",
+      "elapsedMs": 3096,
+      "firstMessageMs": 1076,
+      "finalMessageMs": 1076,
+      "primaryMessages": 1,
+      "thinkingMessages": 0,
+      "followupMessages": 2,
+      "fixtureType": "formal_plan_present",
+      "fixtureContract": {
+        "type": "formal_plan_present",
+        "sessionTemplate": "formal_plan_then_plan_mutation_pending",
+        "requiredState": [
+          "orderedPlan"
+        ],
+        "forbiddenState": [
+          "activePending"
+        ]
+      },
+      "responseText": "已从当前方案移出1个志愿，并同步刷新排序方案。\n移出的志愿：南京航空航天大学(05)-人工智能(中外合作办学)(学费待定，拟按75000元/年收费)(专业办学地点：一、二、三年级在南京市将军路校区就读，四年级学习地点根据培养计划具体安排)（冲）\n方案志愿概况：\n- 排序总数：29/30\n- 区间分布：冲8 / 稳9 / 保12\n- 录取率梯度是否达标：否\n- 保底是否达标：是\n- 复审结果：风险1项，提醒3项\n- 主要提醒：当前录取概率梯度存在断层；当前志愿数量少于官方要求；存在专业组缺少兜底专业\n- 数量检查：当前志愿数量不足，还差 1 个。\n- 排序前列：山东大学威海分校(02)-电子信息类(智能工程新工科实验班)(6600元，含计算机科学与技术、电子科学与技术、机器人工程)(冲)@1[锁定]；上海财经大学(04)-统计学类(7000元，含经济统计学(金融统计与风险管理)、统计学(实验班)、数据科学)(冲)@2[锁定]；上海财经大学(04)-数学与应用数学(双学士学位、数学与应用数学和经济学)(7000元)(冲)@3[锁定]；上海财经大学(04)-人工智能(7000元)(冲)@4[锁定]；上海财经大学(04)-数据科学与大数据技术(工学)(7000元)(冲)@5[锁定]\n\n复审结果：\n已完成当前方案审查。\n- 审查结果：风险1项，提醒3项，通过10项\n- 主要问题：当前录取概率梯度存在断层；当前志愿数量少于官方要求；存在专业组缺少兜底专业\n如果你想继续处理，我会优先按后端处理建议给出调整预览，确认前不会改动方案。\n\n已先执行这项待确认调整。基于执行后刷新到的当前方案：\n- 当前方案 29 个志愿（目标 30 个）。\n- 梯度分布：冲 8 个、稳 9 个、保 12 个。",
+      "thinkingText": "",
+      "turnObservability": {
+        "historyMessages": 5,
+        "toolCallCount": 1,
+        "toolReturnCount": 1,
+        "toolCalls": [
+          {
+            "name": "execute_plan_action",
+            "toolCallId": "short_text-remove_units-confirmation",
+            "actionFamily": "remove_units",
+            "stage": "apply",
+            "resultKind": "mutation_result",
+            "applied": true,
+            "success": true
+          }
+        ],
+        "actionFamilies": [
+          "remove_units"
+        ],
+        "resultKinds": [
+          "mutation_result"
+        ],
+        "routingPath": "pending_plan_short_text_confirm",
+        "eventTimings": {
+          "totalDurationMs": 873,
+          "toolCallCount": 0
+        },
+        "routeDecision": {
+          "source": "proposal_compiler",
+          "matched": true,
+          "route": "apply_pending_then_readonly",
+          "postApplyEvidencePlan": {
+            "type": "EvidencePlan",
+            "trigger": "apply_pending_then_readonly",
+            "scopeAnchor": "current_plan",
+            "targetIssues": [
+              "remaining_count",
+              "tier_distribution"
+            ],
+            "requiredInputs": [
+              "active_pending",
+              "formal_ordered_plan_after_apply"
+            ],
+            "steps": [
+              {
+                "step": "apply_existing_pending",
+                "purpose": "apply_active_pending_before_readonly_followup",
+                "requiresAppliedPending": true
+              },
+              {
+                "step": "read_latest_plan_summary",
+                "purpose": "answer_post_apply_plan_state",
+                "requiresAppliedPending": true
+              }
+            ],
+            "workspaceRefreshTargets": [
+              "ordered",
+              "review"
+            ],
+            "toolBudget": {
+              "maxToolCalls": 3,
+              "batchPreferred": true
+            },
+            "noResultReason": "post_apply_plan_requires_refreshed_evidence",
+            "mustNotAnswerWithoutEvidence": true
+          }
+        },
+        "postApplyEvidencePlan": {
+          "type": "EvidencePlan",
+          "trigger": "apply_pending_then_readonly",
+          "scopeAnchor": "current_plan",
+          "targetIssues": [
+            "remaining_count",
+            "tier_distribution"
+          ],
+          "requiredInputs": [
+            "active_pending",
+            "formal_ordered_plan_after_apply"
+          ],
+          "steps": [
+            {
+              "step": "apply_existing_pending",
+              "purpose": "apply_active_pending_before_readonly_followup",
+              "requiresAppliedPending": true
+            },
+            {
+              "step": "read_latest_plan_summary",
+              "purpose": "answer_post_apply_plan_state",
+              "requiresAppliedPending": true
+            }
+          ],
+          "workspaceRefreshTargets": [
+            "ordered",
+            "review"
+          ],
+          "toolBudget": {
+            "maxToolCalls": 3,
+            "batchPreferred": true
+          },
+          "noResultReason": "post_apply_plan_requires_refreshed_evidence",
+          "mustNotAnswerWithoutEvidence": true
+        }
+      },
+      "followupCount": 2,
+      "followupTargets": [
+        "ordered",
+        "review"
+      ],
+      "followupRefreshes": [
+        true,
+        true
+      ],
+      "followupTypes": [
+        "planningWorkspaceAction"
+      ],
+      "runtimeShadowCaseId": "G27-apply-pending-then-readonly-followup"
+    }
+  ],
+  "summary": {
+    "steps": 4,
+    "successfulSteps": 4,
+    "failedSteps": 0,
+    "failedByReason": {},
+    "byFixture": {
+      "formal_plan_present": 4
+    },
+    "byExpectedRootCause": {},
+    "failedByExpectedRootCause": {},
+    "elapsed": {
+      "count": 4,
+      "minMs": 3096,
+      "medianMs": 33225,
+      "p95Ms": 66319,
+      "maxMs": 66319
+    },
+    "slowest": [
+      {
+        "case": "320-shadow-G27-apply-pending-then-readonly-followup",
+        "sessionId": "9903235",
+        "prompt": "方案里学费贵的太多了 能不能帮我换成便宜的",
+        "elapsedMs": 66319
+      },
+      {
+        "case": "320-shadow-G27-apply-pending-then-readonly-followup",
+        "sessionId": "9903235",
+        "prompt": "那把两万以上且跟我意向不沾边的先删掉",
+        "elapsedMs": 42830
+      },
+      {
+        "case": "320-shadow-G27-apply-pending-then-readonly-followup",
+        "sessionId": "9903235",
+        "prompt": "两万以上的都算贵 帮我看看有几个",
+        "elapsedMs": 23621
+      },
+      {
+        "case": "320-shadow-G27-apply-pending-then-readonly-followup",
+        "sessionId": "9903235",
+        "prompt": "删完了再帮我看看还剩多少个 梯度有没有问题",
+        "elapsedMs": 3096
+      }
+    ],
+    "fastRouteArbitration": {
+      "observed": 0,
+      "semanticArbitrationNeeded": 0,
+      "semanticArbitrationNotNeeded": 0,
+      "selectedPaths": {},
+      "neededReasons": {},
+      "candidatePaths": {},
+      "neededExamples": []
+    }
+  },
+  "runtimeShadowSummary": {
+    "observations": 2,
+    "bySideEffect": {
+      "readonly": 1,
+      "apply_pending_then_readonly": 1
+    },
+    "byPendingType": {
+      "none": 2
+    }
+  },
+  "warnings": [
+    "320-shadow-G27-apply-pending-then-readonly-followup session=9903235 prompt=方案里学费贵的太多了 能不能帮我换成便宜的: latency warning — elapsedMs=66319 > warnElapsedMs=60000"
+  ],
+  "failures": []
+}

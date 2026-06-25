@@ -14,6 +14,24 @@ sys.modules[SPEC.name] = explorer
 SPEC.loader.exec_module(explorer)
 
 
+def test_auto_explorer_defaults_use_isolated_320_debug_ports(monkeypatch):
+    for name in (
+        "ZHIYUAN_REGRESSION_AGENT_URL",
+        "AGENT_DIALOG_E2E_URL",
+        "ZHIYUAN_REGRESSION_BACKEND_URL",
+        "INTERNAL_SERVICE_URL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    spec = importlib.util.spec_from_file_location("dialog_auto_explorer_default_ports", MODULE_PATH)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+
+    assert module.DEFAULT_AGENT_URL == "ws://127.0.0.1:18291/gaotu-assistant-agent/plus/chat/1/bot/test/do"
+    assert module.DEFAULT_BACKEND_URL == "http://127.0.0.1:18290"
+
+
 def test_load_scenario_payload_merges_defaults(tmp_path):
     path = tmp_path / "scenarios.json"
     path.write_text(

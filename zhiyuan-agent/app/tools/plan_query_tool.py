@@ -95,18 +95,6 @@ _PROVINCES = (
     "湖北", "湖南", "广东", "广西", "海南", "重庆", "四川", "贵州",
     "云南", "西藏", "陕西", "甘肃", "青海", "宁夏", "新疆",
 )
-_PLAN_ACTION_QUERY_HINTS = (
-    "补几个",
-    "补几",
-    "补满",
-    "补齐",
-    "还差",
-    "缺的志愿",
-    "缺几个",
-    "加几个",
-    "加入方案",
-    "放进方案",
-)
 _TUITION_PER_YEAR_RE = re.compile(r"(?:学费[:：]?\s*)?(\d{4,6})\s*(?:元|/年)")
 _NUMERIC_FILTER_KEYS = ("min_tuition_per_year", "max_tuition_per_year")
 
@@ -161,10 +149,6 @@ def _city_college_short_alias(name: str) -> str:
         return ""
     prefix = match.group(1).strip()
     return f"{prefix[0]}城" if prefix else ""
-
-
-def _looks_like_plan_action_query(query: str) -> bool:
-    return any(hint in (query or "") for hint in _PLAN_ACTION_QUERY_HINTS)
 
 
 def _normalize_query_text(query: str) -> str:
@@ -1057,8 +1041,8 @@ async def query_volunteer_plan(
     用户用院校简称、专业简称、模糊代称或口语化局部查看时（如“青城那个是不是放多了，能查下”
     “会计审计还有吗”“北京那几个多不多”），也应把原始 query 传给本工具；工具会结合当前方案真实名称、
     候选筛选和别名变体做局部命中查询。不要把这类局部查看改成整体 `query_state` 概览，也不要自行猜测简称含义。
-    不适合回答“还差几个怎么补、补几个更稳的、怎么补满、加入方案”这类会改变方案或规划补齐动作的问题；
-    这类问题应走 Plan 主链路规划 preview_fix_proposal/add_units，并在用户确认后执行。
+    不适合回答会改变方案或规划补齐动作的问题；这类问题应由上游结构化路由走 Plan 主链路规划
+    preview_fix_proposal/add_units，并在用户确认后执行。
     也不适合在移动/删除前作为“定位 ID”的前置步骤；`move_unit/remove_units/add_units`
     的 `volunteer_ids` 可以直接填写用户原始学校+专业引用，执行层会解析真实 ID 并处理歧义。
 
@@ -1080,20 +1064,6 @@ async def query_volunteer_plan(
     has_structured_filters = False
     structured_filters: dict[str, list[str]] = {}
     logger.info("query_volunteer_plan called: session_id=%s, query=%s, scope=%s", session_id, query, scope)
-
-    if _looks_like_plan_action_query(query):
-        _append_query_observability(
-            ctx,
-            session_id=session_id,
-            requested_scope=requested_scope,
-            resolved_scope="plan_action_rejected",
-            has_structured_filters=False,
-            filter_keys=[],
-            timings=timings,
-            total_duration_ms=int((time.perf_counter() - tool_started_at) * 1000),
-            status="rejected_plan_action_query",
-        )
-        return "这是补齐或调整当前方案的动作诉求，不是局部查询；应先走方案动作预览，用户确认后再执行。"
 
     structured_filters = await _timed_async_step(
         timings,

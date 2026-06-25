@@ -194,10 +194,10 @@ def test_model_node_benchmark_guard_cases_report_expected_failures():
         [
             {
                 "caseId": "no-pending-confirm",
-                "node": "pending_action",
-                "actual": {"action": "confirm_pending"},
-                "expected": {"action": "none"},
-                "assert": {"exact": ["action"]},
+                "node": "turn_side_effect",
+                "actual": {"sideEffect": "apply_existing_pending"},
+                "expected": {"sideEffect": "readonly"},
+                "assert": {"exact": ["sideEffect"]},
                 "metricsTags": ["no_pending_guard_accuracy"],
             },
             {
@@ -221,8 +221,7 @@ def test_model_node_benchmark_guard_cases_report_expected_failures():
 
     assert report["summary"]["failed"] == 3
     assert report["summary"]["fieldFailures"] == {
-        "action": 1,
-        "sideEffect": 2,
+        "sideEffect": 3,
         "pendingType": 1,
         "referenceResolution": 1,
     }
@@ -332,10 +331,10 @@ def test_model_node_benchmark_filters_cases_by_nodes():
     cases = [
         {"caseId": "a", "node": "intent_side_effect"},
         {"caseId": "b", "node": "plan_semantic_action"},
-        {"caseId": "c", "node": "composite_goal"},
+        {"caseId": "c", "node": "local_plan_action_dsl"},
     ]
 
-    selected = benchmark._filter_cases_by_nodes(cases, "intent_side_effect, composite_goal")
+    selected = benchmark._filter_cases_by_nodes(cases, "intent_side_effect, local_plan_action_dsl")
 
     assert [case["caseId"] for case in selected] == ["a", "c"]
 

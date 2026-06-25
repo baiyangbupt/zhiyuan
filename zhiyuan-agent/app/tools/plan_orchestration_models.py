@@ -503,6 +503,7 @@ class PlanActionPlan(BaseModel):
     atomic_actions: list[PlanAtomicAction] = Field(default_factory=list)
     composite_proposal: CompositePlanProposal | None = None
     preview_summary: str = ""
+    facts: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("intent_relation", mode="before")
     @classmethod

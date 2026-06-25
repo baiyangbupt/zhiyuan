@@ -1,0 +1,971 @@
+{
+  "records": [
+    {
+      "case": "310-review-summary-user-friendly",
+      "stepIndex": 1,
+      "sessionId": "132",
+      "prompt": "这版方案帮我审查一下，风险和提醒说人话一点，先不要改",
+      "elapsedMs": 40275,
+      "firstMessageMs": 1227,
+      "finalMessageMs": 38273,
+      "primaryMessages": 3,
+      "thinkingMessages": 2,
+      "followupMessages": 0,
+      "responseText": "我已经完成当前方案审查，先说结论：\n\n- 方案 31/30 个志愿，风险 0 项，提醒 6 项，冲稳保 冲10 / 稳9 / 保12。\n- 主要需要留意：当前排序存在录取概率倒挂；当前录取概率梯度存在断层；当前志愿数量多于官方要求。\n- 典型例子：当前排序存在录取概率倒挂，共命中 12 条志愿，例如：海南热带海洋学院-计算机科学与技术(保)第96位；海南热带海洋学院-软件工程(保)第97位；当前方案包含高收费专业，共命中 7 条志愿，例如：华东交通大学-计算机科学与技术(与英国切斯特大学2+2/3+1双学位联合培养；四年均须向中方大学缴纳学费，赴外期间须向外方大学缴纳学费；具体查阅；华东交通大学-软件工程(与英国切斯特大学2+2/3+1双学位联合培养；四年均须向中方大学缴纳学费，赴外期间须向外方大学缴纳学费；具体查阅学校官网。\n\n可以先看调整预览的：\n- 调整录取率顺序：按录取率重排。\n\n需要你先取舍或放宽条件的：\n- 录取率梯度：当前候选志愿里缺少断层区间的可用志愿，当前还缺少足够合适的志愿来补齐录取率梯度。\n- 志愿数量：当前方案数量多于官方要求，需要你先手动精简后再重新审查。\n- 高收费志愿：替换可能会影响整组志愿的搭配，需要你先确认哪些一定不要、哪些可以接受。\n\n如果你想继续处理，可以先选一类让我展开影响；需要改方案时，我会先列出预览，确认前不会改动当前方案。",
+      "thinkingText": "正在读取当前会话信息...\n正在重新检查当前方案...",
+      "turnObservability": {
+        "historyMessages": 5,
+        "toolCallCount": 1,
+        "toolReturnCount": 1,
+        "toolCalls": [
+          {
+            "name": "execute_plan_action",
+            "toolCallId": "semantic-review_plan",
+            "actionFamily": "review_plan",
+            "stage": "review",
+            "resultKind": "review_result",
+            "applied": true,
+            "success": true
+          }
+        ],
+        "actionFamilies": [
+          "review_plan"
+        ],
+        "resultKinds": [
+          "review_result"
+        ],
+        "routingPath": "semantic_plan_action",
+        "eventTimings": {
+          "totalDurationMs": 37808,
+          "llmDurationMs": 10953,
+          "toolDurationMs": 4694,
+          "toolCallCount": 1
+        },
+        "routeDecision": {
+          "source": "semantic_plan_action",
+          "matched": true,
+          "confidence": 0.9,
+          "route": "review_plan",
+          "originalRoute": "review_plan",
+          "sideEffect": "readonly_or_plan_preview",
+          "outputType": "readonly_or_plan_mutation",
+          "reason": "用户明确要求'审查一下'，并要求'风险和提醒说人话一点'，属于典型的方案风险审查请求。用户还附加了'先不要改'，表明当前只要求审查/查看，不要求生成调整预览。由于recentPlanContext为空，没有已有的reviewIssueCodes，但用户主动发起审查请求，应判为review_plan。",
+          "targetStrategies": [],
+          "targetIssueCodes": [],
+          "replyFocus": [
+            "risk_review",
+            "wording_review"
+          ],
+          "turnDecision": {
+            "taskLayer": "plan",
+            "sideEffect": "readonly_or_plan_preview",
+            "scopeAnchor": "current_plan",
+            "scenario": "plan_review_or_repair_preview",
+            "targetIssue": [
+              "risk_review",
+              "wording_review"
+            ],
+            "confidence": 0.95,
+            "reason": "用户要求审查当前方案，明确要求'风险和提醒说人话一点'，属于方案审阅/修复预览需求；用户说'先不要改'，确认是只读预览而非直接修改。当前有正式方案(formalPlanPresent=true)，无pending(pendingExists=false)，符合plan_review_or_repair_preview场景。"
+          },
+          "recentPlanContext": {},
+          "displayPayload": {
+            "presentation": "conditional_options"
+          }
+        }
+      },
+      "performanceWarnings": [
+        "310-review-summary-user-friendly session=132 prompt=这版方案帮我审查一下，风险和提醒说人话一点，先不要改: latency warning — elapsedMs=40275 > warnElapsedMs=30000"
+      ]
+    },
+    {
+      "case": "310-review-shortage-honesty",
+      "stepIndex": 1,
+      "sessionId": "132",
+      "prompt": "如果稳和保不够，能不能直接帮我补齐？候选不够也要直接说",
+      "elapsedMs": 51211,
+      "firstMessageMs": 1213,
+      "finalMessageMs": 49209,
+      "primaryMessages": 5,
+      "thinkingMessages": 4,
+      "followupMessages": 0,
+      "responseText": "从当前状态来看，你的方案已经填满了31个志愿（目标30个），**稳和保的数量是够的**——稳9个、保12个，候选志愿里稳档还有175个、保档还有465个可选，供给并不紧张。\n\n但有两个结构性问题需要处理：\n\n1. **录取概率倒挂**：排序靠前的位置放了录取率只有1%的\"冲\"档志愿，靠后的位置反而可能有更稳的，这会导致高分低录的风险。\n2. **梯度断层**：冲、稳、保之间的概率衔接不连续，中间有断档。\n\n如果你希望我把稳和保补得更扎实、同时处理排序和梯度问题，我可以帮你做一轮**补齐建议预览**。这会基于你当前的偏好（财政学类、金融学类、法学类、内蒙古/北京/天津/山西/河北等），把概率衔接更顺、更稳的志愿补进来，并重新梳理排序。\n\n需要我现在就生成这个补齐建议吗？",
+      "thinkingText": "正在读取当前会话信息...\n正在理解你的问题，并结合当前信息整理回答...\n正在处理你的方案，请稍等...\n还在处理，这轮需要结合当前信息整理结论，请稍等...",
+      "turnObservability": {
+        "historyMessages": 5,
+        "toolCallCount": 1,
+        "toolReturnCount": 1,
+        "toolCalls": [
+          {
+            "name": "execute_plan_action",
+            "toolCallId": "functions.execute_plan_action:0",
+            "actionFamily": "query_state",
+            "stage": "apply",
+            "resultKind": "status_overview",
+            "applied": true,
+            "success": true
+          }
+        ],
+        "actionFamilies": [
+          "query_state"
+        ],
+        "resultKinds": [
+          "status_overview"
+        ],
+        "routingPath": "full_agent",
+        "eventTimings": {
+          "totalDurationMs": 48866,
+          "llmDurationMs": 23737,
+          "toolCallCount": 1
+        },
+        "routeDecision": {
+          "source": "full_agent",
+          "matched": true,
+          "confidence": "model",
+          "route": "plan",
+          "fallbackReason": "no_direct_route",
+          "structuredReroute": null,
+          "toolTrial": {
+            "toolNames": [
+              "execute_plan_action"
+            ],
+            "toolNameCounts": {
+              "execute_plan_action": 1
+            },
+            "repeatedToolNames": [],
+            "hasRepeatedToolCalls": false,
+            "hasToolCalls": true
+          },
+          "agentRun": {
+            "promptLength": 27,
+            "historyLength": 0,
+            "nodeTimings": [
+              {
+                "index": 1,
+                "node": "UserPromptNode",
+                "durationMs": 0,
+                "status": "success"
+              },
+              {
+                "index": 2,
+                "node": "ModelRequestNode",
+                "durationMs": 3288,
+                "status": "success"
+              },
+              {
+                "index": 3,
+                "node": "CallToolsNode",
+                "durationMs": 1565,
+                "status": "success",
+                "toolNames": [
+                  "execute_plan_action"
+                ]
+              },
+              {
+                "index": 4,
+                "node": "ModelRequestNode",
+                "durationMs": 18881,
+                "status": "success"
+              },
+              {
+                "index": 5,
+                "node": "CallToolsNode",
+                "durationMs": 0,
+                "status": "success"
+              }
+            ],
+            "firstToolCallAtMs": 3290,
+            "completed": true,
+            "currentNode": "CallToolsNode",
+            "currentNodeIndex": 5,
+            "firstToolNames": [
+              "execute_plan_action"
+            ],
+            "toolNameCounts": {
+              "execute_plan_action": 1
+            },
+            "totalDurationMs": 23737,
+            "requests": 2,
+            "toolCalls": 1
+          }
+        }
+      },
+      "performanceWarnings": [
+        "310-review-shortage-honesty session=132 prompt=如果稳和保不够，能不能直接帮我补齐？候选不够也要直接说: latency warning — elapsedMs=51211 > warnElapsedMs=30000"
+      ]
+    },
+    {
+      "case": "310-review-fix-preview-then-apply",
+      "stepIndex": 1,
+      "sessionId": "130",
+      "prompt": "方案里高收费或者中外合作风险大的，先看看能怎么处理，别直接动",
+      "elapsedMs": 35747,
+      "firstMessageMs": 1213,
+      "finalMessageMs": 33744,
+      "primaryMessages": 3,
+      "thinkingMessages": 2,
+      "followupMessages": 0,
+      "responseText": "我已经看完你的方案，整体情况如下：\n\n- **方案概况**：共 30 个志愿，冲/稳/保分别为 9/9/12，结构比较均衡\n- **风险与提醒**：没有高风险项，有 1 项提醒\n\n关于你关心的**高收费或中外合作**问题，目前审查结果显示只有 1 项相关提醒，但没有自动生成可替换的调整方案。\n\n这通常是因为：**没有足够相近且风险更低的可替换志愿**——要么同层次、同专业方向的非高收费选项很少，要么替换后录取概率或层次会明显下降。\n\n如果你想处理这个提醒，我可以先列出调整预览，确认前不会改方案。你可以先告诉我：\n- 是否接受适当降层次或换专业范围来避开高收费/中外合作？\n- 还是说你只是想先了解情况，保持现状也可以？",
+      "thinkingText": "正在读取当前会话信息...\n正在重新检查当前方案...",
+      "turnObservability": {
+        "historyMessages": 5,
+        "toolCallCount": 1,
+        "toolReturnCount": 1,
+        "toolCalls": [
+          {
+            "name": "execute_plan_action",
+            "toolCallId": "semantic-review_plan",
+            "actionFamily": "review_plan",
+            "stage": "review",
+            "resultKind": "review_result",
+            "applied": true,
+            "success": true
+          }
+        ],
+        "actionFamilies": [
+          "review_plan"
+        ],
+        "resultKinds": [
+          "review_result"
+        ],
+        "routingPath": "semantic_plan_action",
+        "eventTimings": {
+          "totalDurationMs": 33469,
+          "llmDurationMs": 6536,
+          "toolDurationMs": 1510,
+          "toolCallCount": 1
+        },
+        "routeDecision": {
+          "source": "semantic_plan_action",
+          "matched": true,
+          "confidence": 0.85,
+          "route": "review_plan",
+          "originalRoute": "analyze_adjustment",
+          "sideEffect": "readonly_or_plan_preview",
+          "outputType": "readonly_or_plan_mutation",
+          "reason": "用户明确询问'高收费或中外合作风险大的'怎么处理，属于当前方案中特定风险类型的处理方向咨询；用户说'先看看'、'别直接动'，表明处于理解问题和比较处理方向的阶段，尚未要求生成可确认的调整预览，符合 analyze_adjustment 定义。用户语义聚焦费用/合作办学风险的处理方式，需要解释可行方案和影响，而非直接生成预览或仅查看状态。",
+          "targetStrategies": [
+            "replace_risk_items",
+            "remove_risk_items"
+          ],
+          "targetIssueCodes": [
+            "high_tuition",
+            "cooperative_program"
+          ],
+          "replyFocus": [
+            "high_fee",
+            "sino_foreign_cooperation_risk"
+          ],
+          "turnDecision": {
+            "taskLayer": "plan",
+            "sideEffect": "readonly_or_plan_preview",
+            "scopeAnchor": "current_plan",
+            "scenario": "plan_review_or_repair_preview",
+            "targetIssue": [
+              "high_fee",
+              "sino_foreign_cooperation_risk"
+            ],
+            "confidence": 0.95,
+            "reason": "用户要求查看方案中高收费和中外合作风险大的项目如何处理，明确表示'别直接动'，属于先预览/查看处理方式的请求。formalPlanPresent=true，pendingExists=false，符合plan_review_or_repair_preview场景。"
+          },
+          "recentPlanContext": {},
+          "displayPayload": {
+            "presentation": "conditional_options"
+          }
+        }
+      },
+      "performanceWarnings": [
+        "310-review-fix-preview-then-apply session=130 prompt=方案里高收费或者中外合作风险大的，先看看能怎么处理，别直接动: latency warning — elapsedMs=35747 > warnElapsedMs=30000"
+      ]
+    },
+    {
+      "case": "310-review-major-group-inner-safety",
+      "stepIndex": 1,
+      "sessionId": "131",
+      "prompt": "专业组里面有没有录取率太悬的？能不能补一个安全一点的专业，先给我看预览",
+      "elapsedMs": 33221,
+      "firstMessageMs": 1210,
+      "finalMessageMs": 31207,
+      "primaryMessages": 3,
+      "thinkingMessages": 2,
+      "followupMessages": 1,
+      "responseText": "已列出这条调整预览：补兜底专业。\n\n这条建议主要是：建议在对应专业组内至少保留一个录取率高于组整体录取率的专业。\n\n具体调整内容在下面卡片里。确认前不会改动当前方案；点“确认执行”后，我会按这条建议处理，并重新刷新方案和审查结果。",
+      "thinkingText": "正在读取当前会话信息...\n正在根据当前方案提醒整理调整预览...",
+      "turnObservability": {
+        "historyMessages": 5,
+        "toolCallCount": 2,
+        "toolReturnCount": 2,
+        "toolCalls": [
+          {
+            "name": "execute_plan_action",
+            "toolCallId": "semantic-review_plan-0",
+            "actionFamily": "review_plan",
+            "stage": "review",
+            "resultKind": "review_result",
+            "applied": true,
+            "success": true
+          },
+          {
+            "name": "execute_plan_action",
+            "toolCallId": "semantic-preview_fix_proposal-1",
+            "actionFamily": "preview_fix_proposal",
+            "stage": "apply",
+            "resultKind": "fix_proposal_preview",
+            "applied": false,
+            "success": true
+          }
+        ],
+        "actionFamilies": [
+          "review_plan",
+          "preview_fix_proposal"
+        ],
+        "resultKinds": [
+          "review_result",
+          "fix_proposal_preview"
+        ],
+        "routingPath": "semantic_plan_action",
+        "eventTimings": {
+          "totalDurationMs": 30780,
+          "llmDurationMs": 5126,
+          "toolDurationMs": 4616,
+          "toolCallCount": 2
+        },
+        "routeDecision": {
+          "source": "semantic_plan_action",
+          "matched": true,
+          "confidence": 0.85,
+          "route": "preview_fix_proposal",
+          "originalRoute": "preview_fix_proposal",
+          "sideEffect": "readonly",
+          "outputType": "readonly",
+          "reason": "用户明确要求'补一个安全一点的专业'并'先给我看预览'，这是承接审查意图后要求生成可确认的调整预览。虽然recentPlanContext中没有明确的审查结果，但用户主动提出了'录取率太悬'和'补安全专业'的处理方向，且明确要求预览，符合preview_fix_proposal的判定标准。用户的核心动作是要求系统基于'补安全专业'这一处理建议生成可确认的调整预览。",
+          "targetStrategies": [
+            "adjust_major_group_inner_safety"
+          ],
+          "targetIssueCodes": [
+            "group_inner_safety_guard",
+            "major_group_safety_intent_alignment"
+          ],
+          "replyFocus": [],
+          "recentPlanContext": {
+            "lastActionFamily": "review_plan",
+            "lastResultKind": "review_result",
+            "summary": "已完成方案审查，风险 0 项，提醒 5 项；主要问题是 部分专业组缺少组内安全垫专业；已整理 2 个处理方向。",
+            "replyFocus": [
+              "review_result",
+              "risk_warning",
+              "main_problems",
+              "issue_hit_plan_examples",
+              "candidate_supply",
+              "fix_proposals"
+            ],
+            "fixProposals": {
+              "readyCount": 1,
+              "blockedCount": 1,
+              "previewOnlyCount": 0,
+              "proposalSource": "review_check",
+              "strategyCounts": {
+                "adjust_major_group_inner_safety": 2
+              },
+              "strategies": [
+                "adjust_major_group_inner_safety"
+              ],
+              "proposals": [
+                {
+                  "proposalId": "fp_f4b5e9798442ad7e",
+                  "status": "ready",
+                  "strategy": "adjust_major_group_inner_safety",
+                  "sourceCheckCodes": [
+                    "group_inner_safety_guard"
+                  ],
+                  "title": "补兜底专业",
+                  "summary": "建议在对应专业组内至少保留一个录取率高于组整体录取率的专业"
+                },
+                {
+                  "proposalId": "fp_6050665050f0c1c6",
+                  "status": "blocked",
+                  "strategy": "adjust_major_group_inner_safety",
+                  "sourceCheckCodes": [
+                    "major_group_safety_intent_alignment"
+                  ],
+                  "title": "非意向兜底专业",
+                  "summary": "建议确认这些专业组是否接受用非核心意向专业换取更稳妥的录取安全垫"
+                }
+              ]
+            }
+          },
+          "displayPayload": {
+            "presentation": "confirmation_card"
+          }
+        }
+      },
+      "followupCount": 1,
+      "followupTargets": [],
+      "followupRefreshes": [],
+      "followupTypes": [
+        "pendingConfirmationCard"
+      ],
+      "performanceWarnings": [
+        "310-review-major-group-inner-safety session=131 prompt=专业组里面有没有录取率太悬的？能不能补一个安全一点的专业，先给我看预览: latency warning — elapsedMs=33221 > warnElapsedMs=30000"
+      ]
+    },
+    {
+      "case": "310-review-fix-unavailable-guidance",
+      "stepIndex": 1,
+      "sessionId": "132",
+      "prompt": "那些现在处理不了的提醒，别给我系统话，告诉我为什么处理不了以及我该怎么调",
+      "elapsedMs": 43917,
+      "firstMessageMs": 1213,
+      "finalMessageMs": 41915,
+      "primaryMessages": 3,
+      "thinkingMessages": 2,
+      "followupMessages": 0,
+      "responseText": "我看了一下，不可以先看调整预览的点主要卡在“取舍范围还没定”或“可替换机会不够”。\n\n1. **录取率梯度**\n- 为什么现在不直接改：当前候选志愿里缺少断层区间的可用志愿，当前还缺少足够合适的志愿来补齐录取率梯度。\n- 你可以怎么调：先告诉我你能接受哪些取舍，我再列调整预览。\n\n2. **志愿数量**\n- 为什么现在不直接改：当前方案数量多于官方要求，需要你先手动精简后再重新审查。\n- 你可以怎么调：先手动精简 1 个最不想去的志愿，再重新审查。\n\n3. **高收费志愿**\n- 为什么现在不直接改：替换可能会影响整组志愿的搭配，需要你先确认哪些一定不要、哪些可以接受。\n- 你可以怎么调：先确认高收费项目是全部不要、部分保留，还是预算可以接受。\n\n4. **兜底专业**\n- 为什么现在不直接改：只有部分专业组找到了兜底专业，暂不直接执行。\n- 你可以怎么调：先确认更看重学校层次还是专业匹配；如果排斥这类兜底专业，再看是否整组替换。\n\n你可以先选最想处理的一类，我会先列出调整预览，确认前不会改动当前方案。",
+      "thinkingText": "正在读取当前会话信息...\n正在重新检查当前方案...",
+      "turnObservability": {
+        "historyMessages": 5,
+        "toolCallCount": 1,
+        "toolReturnCount": 1,
+        "toolCalls": [
+          {
+            "name": "execute_plan_action",
+            "toolCallId": "semantic-review_plan",
+            "actionFamily": "review_plan",
+            "stage": "review",
+            "resultKind": "review_result",
+            "applied": true,
+            "success": true
+          }
+        ],
+        "actionFamilies": [
+          "review_plan"
+        ],
+        "resultKinds": [
+          "review_result"
+        ],
+        "routingPath": "semantic_plan_action",
+        "eventTimings": {
+          "totalDurationMs": 41460,
+          "llmDurationMs": 11579,
+          "toolDurationMs": 4013,
+          "toolCallCount": 1
+        },
+        "routeDecision": {
+          "source": "semantic_plan_action",
+          "matched": true,
+          "confidence": 0.85,
+          "route": "review_plan",
+          "originalRoute": "analyze_adjustment",
+          "sideEffect": "readonly_or_plan_preview",
+          "outputType": "readonly_or_plan_mutation",
+          "reason": "用户明确追问当前方案中'处理不了的提醒'（即reviewWarnCount=6的警告项），要求解释'为什么处理不了'以及'我该怎么调'。这属于用户想理解问题原因、知道不能自动处理的理由、以及获取手动调整指导，但并未要求系统生成一版可确认的调整预览。符合analyze_adjustment中'unavailable_guidance'的定义：用户追问已经出现的提醒为什么不能处理、让系统解释这些处理建议该如何取舍。",
+          "targetStrategies": [],
+          "targetIssueCodes": [],
+          "replyFocus": [
+            "unprocessable_reminders"
+          ],
+          "turnDecision": {
+            "taskLayer": "plan",
+            "sideEffect": "readonly_or_plan_preview",
+            "scopeAnchor": "current_plan",
+            "scenario": "plan_review_or_repair_preview",
+            "targetIssue": [
+              "unprocessable_reminders"
+            ],
+            "confidence": 0.85,
+            "reason": "用户要求不要系统化处理不了的提醒，而是解释为什么处理不了以及如何调整。这是要求先查看/审查当前方案中的问题（风险、冲突、不可处理项），属于'先看看怎么处理、别直接动'的plan_review_or_repair_preview场景。用户明确要求review而非直接mutation，且当前有正式方案(formalPlanPresent=true)，无pending(pendingExists=false)，scopeAnchor应为current_plan。"
+          },
+          "recentPlanContext": {},
+          "displayPayload": {
+            "presentation": "conditional_options"
+          }
+        }
+      },
+      "performanceWarnings": [
+        "310-review-fix-unavailable-guidance session=132 prompt=那些现在处理不了的提醒，别给我系统话，告诉我为什么处理不了以及我该怎么调: latency warning — elapsedMs=43917 > warnElapsedMs=30000"
+      ]
+    },
+    {
+      "case": "310-review-professional-mode-export-boundary",
+      "stepIndex": 1,
+      "sessionId": "130",
+      "prompt": "专业模式导出是不是一条志愿一行？不要按学校聚合，这个给我确认下",
+      "elapsedMs": 30368,
+      "firstMessageMs": 1213,
+      "finalMessageMs": 28365,
+      "primaryMessages": 3,
+      "thinkingMessages": 2,
+      "followupMessages": 0,
+      "responseText": "是的，确认一下：\n\n- **专业+大学模式导出**：每条“学校 + 专业”志愿**独立一行**，不按学校聚合。\n- **院校专业组模式**：按专业组作为导出单元，组内专业明细保留。\n\n导出顺序跟随当前方案排序，移动或排序会影响导出顺序。\n\n如果你现在想导出方案，可以直接去工作台操作。",
+      "thinkingText": "正在读取当前会话信息...\n正在理解你的问题，并结合当前信息整理回答...",
+      "turnObservability": {
+        "historyMessages": 3,
+        "toolCallCount": 0,
+        "toolReturnCount": 0,
+        "toolCalls": [],
+        "actionFamilies": [],
+        "resultKinds": [],
+        "routingPath": "full_agent",
+        "eventTimings": {
+          "totalDurationMs": 27956,
+          "llmDurationMs": 4143,
+          "toolCallCount": 0
+        },
+        "routeDecision": {
+          "source": "full_agent",
+          "matched": true,
+          "confidence": "model",
+          "route": "unknown",
+          "fallbackReason": "no_direct_route",
+          "structuredReroute": null,
+          "toolTrial": {
+            "toolNames": [],
+            "toolNameCounts": {},
+            "repeatedToolNames": [],
+            "hasRepeatedToolCalls": false,
+            "hasToolCalls": false
+          },
+          "agentRun": {
+            "promptLength": 31,
+            "historyLength": 0,
+            "nodeTimings": [
+              {
+                "index": 1,
+                "node": "UserPromptNode",
+                "durationMs": 0,
+                "status": "success"
+              },
+              {
+                "index": 2,
+                "node": "ModelRequestNode",
+                "durationMs": 4141,
+                "status": "success"
+              },
+              {
+                "index": 3,
+                "node": "CallToolsNode",
+                "durationMs": 0,
+                "status": "success"
+              }
+            ],
+            "firstToolCallAtMs": null,
+            "completed": true,
+            "currentNode": "CallToolsNode",
+            "currentNodeIndex": 3,
+            "totalDurationMs": 4143,
+            "requests": 1,
+            "toolCalls": 0
+          }
+        }
+      },
+      "performanceWarnings": [
+        "310-review-professional-mode-export-boundary session=130 prompt=专业模式导出是不是一条志愿一行？不要按学校聚合，这个给我确认下: latency warning — elapsedMs=30368 > warnElapsedMs=30000"
+      ]
+    },
+    {
+      "case": "310-review-fix-explain-hierarchy",
+      "stepIndex": 1,
+      "sessionId": "131",
+      "prompt": "审查里那些提醒我看不懂，你帮我分一下哪些只是看看，哪些可以自动处理",
+      "elapsedMs": 39668,
+      "firstMessageMs": 1211,
+      "finalMessageMs": 37667,
+      "primaryMessages": 3,
+      "thinkingMessages": 2,
+      "followupMessages": 0,
+      "responseText": "我已经完成当前方案审查，先说结论：\n\n- 方案 31/30 个志愿，风险 0 项，提醒 5 项，冲稳保 冲10 / 稳9 / 保12。\n- 主要需要留意：当前志愿数量多于官方要求；当前方案包含高收费专业；当前方案包含中外合作办学项目。\n- 典型例子：当前方案包含高收费专业，共命中 7 条志愿，例如：华东交通大学-计算机科学与技术(与英国切斯特大学2+2/3+1双学位联合培养；四年均须向中方大学缴纳学费，赴外期间须向外方大学缴纳学费；具体查阅；华东交通大学-软件工程(与英国切斯特大学2+2/3+1双学位联合培养；四年均须向中方大学缴纳学费，赴外期间须向外方大学缴纳学费；具体查阅学校官网；当前方案包含中外合作办学项目，共命中 2 条志愿，例如：长江大学-电气工程及其自动化(保)第83位；南宁师范大学-电子信息工程(保)第89位。\n\n可以先看调整预览的：\n- 中外合作项目：替换风险项；替换风险志愿。\n- 兜底专业：补兜底专业。\n\n需要你先取舍或放宽条件的：\n- 志愿数量：当前方案数量多于官方要求，需要你先手动精简后再重新审查。\n- 高收费志愿：替换可能会影响整组志愿的搭配，需要你先确认哪些一定不要、哪些可以接受。\n- 非意向兜底专业：只有部分专业组找到了兜底专业，暂不直接执行。\n\n如果你想继续处理，可以先选一类让我展开影响；需要改方案时，我会先列出预览，确认前不会改动当前方案。",
+      "thinkingText": "正在读取当前会话信息...\n正在重新检查当前方案...",
+      "turnObservability": {
+        "historyMessages": 5,
+        "toolCallCount": 1,
+        "toolReturnCount": 1,
+        "toolCalls": [
+          {
+            "name": "execute_plan_action",
+            "toolCallId": "semantic-review_plan",
+            "actionFamily": "review_plan",
+            "stage": "review",
+            "resultKind": "review_result",
+            "applied": true,
+            "success": true
+          }
+        ],
+        "actionFamilies": [
+          "review_plan"
+        ],
+        "resultKinds": [
+          "review_result"
+        ],
+        "routingPath": "semantic_plan_action",
+        "eventTimings": {
+          "totalDurationMs": 37244,
+          "llmDurationMs": 8609,
+          "toolDurationMs": 3639,
+          "toolCallCount": 1
+        },
+        "routeDecision": {
+          "source": "semantic_plan_action",
+          "matched": true,
+          "confidence": 0.85,
+          "route": "review_plan",
+          "originalRoute": "analyze_adjustment",
+          "sideEffect": "readonly_or_plan_preview",
+          "outputType": "readonly_or_plan_mutation",
+          "reason": "用户明确要求理解审查提醒的分类——哪些只是看看、哪些可以自动处理。这是在追问已出现的审查/处理建议的处置边界和取舍逻辑，属于'为什么某些提醒不能直接处理'以及'该如何处理'的解释需求。上下文显示有reviewWarnCount=5，包含'当前志愿数量多于官方要求'和'当前方案包含高收费专业'等提醒，用户需要理解这些提醒的处理权限和自动化程度，而非要求生成可确认的调整预览。",
+          "targetStrategies": [],
+          "targetIssueCodes": [],
+          "replyFocus": [],
+          "turnDecision": {
+            "taskLayer": "plan",
+            "sideEffect": "readonly_or_plan_preview",
+            "scopeAnchor": "current_plan",
+            "scenario": "plan_review_or_repair_preview",
+            "targetIssue": [],
+            "confidence": 0.9,
+            "reason": "用户要求区分审查提醒中哪些只是看看、哪些可以自动处理，属于要求先看怎么处理风险、别直接动，符合 plan_review_or_repair_preview 场景。当前有正式方案(formalPlanPresent=true)，无pending(pendingExists=false)，scopeAnchor为current_plan。"
+          },
+          "recentPlanContext": {},
+          "displayPayload": {
+            "presentation": "conditional_options"
+          }
+        }
+      },
+      "performanceWarnings": [
+        "310-review-fix-explain-hierarchy session=131 prompt=审查里那些提醒我看不懂，你帮我分一下哪些只是看看，哪些可以自动处理: latency warning — elapsedMs=39668 > warnElapsedMs=30000"
+      ]
+    },
+    {
+      "case": "310-review-repair-after-manual-move-stale",
+      "stepIndex": 1,
+      "sessionId": "131",
+      "prompt": "我刚手动移动过志愿，现在审查结果还准吗？需要重新看就直接说",
+      "elapsedMs": 68585,
+      "firstMessageMs": 1217,
+      "finalMessageMs": 66584,
+      "primaryMessages": 4,
+      "thinkingMessages": 3,
+      "followupMessages": 0,
+      "responseText": "我已经完成当前方案审查，先说结论：\n\n- 方案 31/30 个志愿，风险 0 项，提醒 5 项，冲稳保 冲10 / 稳9 / 保12。\n- 主要需要留意：当前志愿数量多于官方要求；当前方案包含高收费专业；当前方案包含中外合作办学项目。\n- 典型例子：当前方案包含高收费专业，共命中 7 条志愿，例如：华东交通大学-计算机科学与技术(与英国切斯特大学2+2/3+1双学位联合培养；四年均须向中方大学缴纳学费，赴外期间须向外方大学缴纳学费；具体查阅；华东交通大学-软件工程(与英国切斯特大学2+2/3+1双学位联合培养；四年均须向中方大学缴纳学费，赴外期间须向外方大学缴纳学费；具体查阅学校官网；当前方案包含中外合作办学项目，共命中 2 条志愿，例如：长江大学-电气工程及其自动化(保)第83位；南宁师范大学-电子信息工程(保)第89位。\n\n可以先看调整预览的：\n- 中外合作项目：替换风险项；替换风险志愿。\n- 兜底专业：补兜底专业。\n\n需要你先取舍或放宽条件的：\n- 志愿数量：当前方案数量多于官方要求，需要你先手动精简后再重新审查。\n- 高收费志愿：替换可能会影响整组志愿的搭配，需要你先确认哪些一定不要、哪些可以接受。\n- 非意向兜底专业：只有部分专业组找到了兜底专业，暂不直接执行。\n\n如果你想继续处理，可以先选一类让我展开影响；需要改方案时，我会先列出预览，确认前不会改动当前方案。",
+      "thinkingText": "正在读取当前会话信息...\n正在理解你的问题，并结合当前信息整理回答...\n正在处理你的方案，请稍等...",
+      "turnObservability": {
+        "historyMessages": 5,
+        "toolCallCount": 1,
+        "toolReturnCount": 1,
+        "toolCalls": [
+          {
+            "name": "execute_plan_action",
+            "toolCallId": "functions.execute_plan_action:0",
+            "actionFamily": "review_plan",
+            "stage": "review",
+            "resultKind": "review_result",
+            "applied": true,
+            "success": true
+          }
+        ],
+        "actionFamilies": [
+          "review_plan"
+        ],
+        "resultKinds": [
+          "review_result"
+        ],
+        "routingPath": "full_agent",
+        "eventTimings": {
+          "totalDurationMs": 66236,
+          "llmDurationMs": 20745,
+          "toolCallCount": 1
+        },
+        "routeDecision": {
+          "source": "full_agent",
+          "matched": true,
+          "confidence": "model",
+          "route": "plan",
+          "fallbackReason": "no_direct_route",
+          "structuredReroute": null,
+          "toolTrial": {
+            "toolNames": [
+              "execute_plan_action"
+            ],
+            "toolNameCounts": {
+              "execute_plan_action": 1
+            },
+            "repeatedToolNames": [],
+            "hasRepeatedToolCalls": false,
+            "hasToolCalls": true
+          },
+          "agentRun": {
+            "promptLength": 29,
+            "historyLength": 0,
+            "nodeTimings": [
+              {
+                "index": 1,
+                "node": "UserPromptNode",
+                "durationMs": 0,
+                "status": "success"
+              },
+              {
+                "index": 2,
+                "node": "ModelRequestNode",
+                "durationMs": 4457,
+                "status": "success"
+              },
+              {
+                "index": 3,
+                "node": "CallToolsNode",
+                "durationMs": 3332,
+                "status": "success",
+                "toolNames": [
+                  "execute_plan_action"
+                ]
+              },
+              {
+                "index": 4,
+                "node": "ModelRequestNode",
+                "durationMs": 12952,
+                "status": "success"
+              },
+              {
+                "index": 5,
+                "node": "CallToolsNode",
+                "durationMs": 0,
+                "status": "success"
+              }
+            ],
+            "firstToolCallAtMs": 4459,
+            "completed": true,
+            "currentNode": "CallToolsNode",
+            "currentNodeIndex": 5,
+            "firstToolNames": [
+              "execute_plan_action"
+            ],
+            "toolNameCounts": {
+              "execute_plan_action": 1
+            },
+            "totalDurationMs": 20745,
+            "requests": 2,
+            "toolCalls": 1
+          }
+        }
+      },
+      "performanceWarnings": [
+        "310-review-repair-after-manual-move-stale session=131 prompt=我刚手动移动过志愿，现在审查结果还准吗？需要重新看就直接说: latency warning — elapsedMs=68585 > warnElapsedMs=30000"
+      ]
+    },
+    {
+      "case": "310-review-repair-after-manual-move-stale",
+      "stepIndex": 2,
+      "sessionId": "131",
+      "prompt": "那重新审查一下",
+      "elapsedMs": 43116,
+      "firstMessageMs": 1251,
+      "finalMessageMs": 41114,
+      "primaryMessages": 3,
+      "thinkingMessages": 2,
+      "followupMessages": 0,
+      "responseText": "我已经完成当前方案审查，先说结论：\n\n- 方案 31/30 个志愿，风险 0 项，提醒 5 项，冲稳保 冲10 / 稳9 / 保12。\n- 主要需要留意：当前志愿数量多于官方要求；当前方案包含高收费专业；当前方案包含中外合作办学项目。\n- 典型例子：当前方案包含高收费专业，共命中 7 条志愿，例如：华东交通大学-计算机科学与技术(与英国切斯特大学2+2/3+1双学位联合培养；四年均须向中方大学缴纳学费，赴外期间须向外方大学缴纳学费；具体查阅；华东交通大学-软件工程(与英国切斯特大学2+2/3+1双学位联合培养；四年均须向中方大学缴纳学费，赴外期间须向外方大学缴纳学费；具体查阅学校官网；当前方案包含中外合作办学项目，共命中 2 条志愿，例如：长江大学-电气工程及其自动化(保)第83位；南宁师范大学-电子信息工程(保)第89位。\n\n可以先看调整预览的：\n- 中外合作项目：替换风险项；替换风险志愿。\n- 兜底专业：补兜底专业。\n\n需要你先取舍或放宽条件的：\n- 志愿数量：当前方案数量多于官方要求，需要你先手动精简后再重新审查。\n- 高收费志愿：替换可能会影响整组志愿的搭配，需要你先确认哪些一定不要、哪些可以接受。\n- 非意向兜底专业：只有部分专业组找到了兜底专业，暂不直接执行。\n\n如果你想继续处理，可以先选一类让我展开影响；需要改方案时，我会先列出预览，确认前不会改动当前方案。",
+      "thinkingText": "正在读取当前会话信息...\n正在重新检查当前方案...",
+      "turnObservability": {
+        "historyMessages": 5,
+        "toolCallCount": 1,
+        "toolReturnCount": 1,
+        "toolCalls": [
+          {
+            "name": "execute_plan_action",
+            "toolCallId": "semantic-review_plan",
+            "actionFamily": "review_plan",
+            "stage": "review",
+            "resultKind": "review_result",
+            "applied": true,
+            "success": true
+          }
+        ],
+        "actionFamilies": [
+          "review_plan"
+        ],
+        "resultKinds": [
+          "review_result"
+        ],
+        "routingPath": "semantic_plan_action",
+        "eventTimings": {
+          "totalDurationMs": 40692,
+          "llmDurationMs": 7853,
+          "toolDurationMs": 3933,
+          "toolCallCount": 1
+        },
+        "routeDecision": {
+          "source": "semantic_plan_action",
+          "matched": true,
+          "confidence": 0.85,
+          "route": "review_plan",
+          "originalRoute": "review_plan",
+          "sideEffect": "readonly",
+          "outputType": "readonly",
+          "reason": "用户说'重新审查一下'，明确是要求对方案进行重新审查。recentPlanContext 显示上一轮已完成审查并有审查结果，但用户主动要求'重新审查'，属于重新触发审查流程，应判为 review_plan。这不是单纯的查询状态（query_state），也不是要求生成可确认调整预览（preview_fix_proposal），因为用户没有要求看预览或调整清单。",
+          "targetStrategies": [],
+          "targetIssueCodes": [],
+          "replyFocus": [],
+          "recentPlanContext": {
+            "lastActionFamily": "review_plan",
+            "lastResultKind": "review_result",
+            "summary": "已完成方案审查，风险 0 项，提醒 5 项；主要问题是 当前志愿数量多于官方要求；当前方案包含高收费专业；已整理 5 个处理方向。",
+            "replyFocus": [
+              "review_result",
+              "risk_warning",
+              "main_problems",
+              "issue_hit_plan_examples",
+              "candidate_supply",
+              "fix_proposals"
+            ],
+            "fixProposals": {
+              "readyCount": 2,
+              "blockedCount": 3,
+              "previewOnlyCount": 0,
+              "proposalSource": "review_check",
+              "strategyCounts": {
+                "cannot_satisfy": 1,
+                "replace_risk_items": 2,
+                "adjust_major_group_inner_safety": 2
+              },
+              "strategies": [
+                "cannot_satisfy",
+                "replace_risk_items",
+                "adjust_major_group_inner_safety"
+              ],
+              "proposals": [
+                {
+                  "proposalId": "fp_535d398d85557a85",
+                  "status": "ready",
+                  "strategy": "replace_risk_items",
+                  "sourceCheckCodes": [
+                    "cooperative_program"
+                  ],
+                  "title": "中外合作项目",
+                  "summary": "若不接受中外合作办学，可将相关志愿移出方案，或把它作为后续必须避开的报考条件"
+                },
+                {
+                  "proposalId": "fp_e7fcc209234288a9",
+                  "status": "ready",
+                  "strategy": "adjust_major_group_inner_safety",
+                  "sourceCheckCodes": [
+                    "group_inner_safety_guard"
+                  ],
+                  "title": "补兜底专业",
+                  "summary": "建议在对应专业组内至少保留一个录取率高于组整体录取率的专业"
+                },
+                {
+                  "proposalId": "fp_3cef82b71a0d6e8f",
+                  "status": "blocked",
+                  "strategy": "cannot_satisfy",
+                  "sourceCheckCodes": [
+                    "count_validation"
+                  ],
+                  "title": "志愿数量暂时还不能直接处理",
+                  "summary": "当前方案数量多于官方要求，需要先人工精简后再重新审查"
+                },
+                {
+                  "proposalId": "fp_d22c4876f15ef4b6",
+                  "status": "blocked",
+                  "strategy": "replace_risk_items",
+                  "sourceCheckCodes": [
+                    "high_tuition"
+                  ],
+                  "title": "高收费志愿",
+                  "summary": "建议结合家庭经济状况确认是否保留相关志愿"
+                },
+                {
+                  "proposalId": "fp_3cfe06c6ddbd51ff",
+                  "status": "blocked",
+                  "strategy": "adjust_major_group_inner_safety",
+                  "sourceCheckCodes": [
+                    "major_group_safety_intent_alignment"
+                  ],
+                  "title": "非意向兜底专业",
+                  "summary": "建议确认这些专业组是否接受用非核心意向专业换取更稳妥的录取安全垫"
+                }
+              ]
+            }
+          },
+          "displayPayload": {
+            "presentation": "readonly_answer"
+          }
+        }
+      },
+      "performanceWarnings": [
+        "310-review-repair-after-manual-move-stale session=131 prompt=那重新审查一下: latency warning — elapsedMs=43116 > warnElapsedMs=30000"
+      ]
+    }
+  ],
+  "summary": {
+    "steps": 9,
+    "successfulSteps": 9,
+    "failedSteps": 0,
+    "failedByReason": {},
+    "byFixture": {},
+    "byExpectedRootCause": {},
+    "failedByExpectedRootCause": {},
+    "elapsed": {
+      "count": 9,
+      "minMs": 30368,
+      "medianMs": 40275,
+      "p95Ms": 68585,
+      "maxMs": 68585
+    },
+    "slowest": [
+      {
+        "case": "310-review-repair-after-manual-move-stale",
+        "sessionId": "131",
+        "prompt": "我刚手动移动过志愿，现在审查结果还准吗？需要重新看就直接说",
+        "elapsedMs": 68585
+      },
+      {
+        "case": "310-review-shortage-honesty",
+        "sessionId": "132",
+        "prompt": "如果稳和保不够，能不能直接帮我补齐？候选不够也要直接说",
+        "elapsedMs": 51211
+      },
+      {
+        "case": "310-review-fix-unavailable-guidance",
+        "sessionId": "132",
+        "prompt": "那些现在处理不了的提醒，别给我系统话，告诉我为什么处理不了以及我该怎么调",
+        "elapsedMs": 43917
+      },
+      {
+        "case": "310-review-repair-after-manual-move-stale",
+        "sessionId": "131",
+        "prompt": "那重新审查一下",
+        "elapsedMs": 43116
+      },
+      {
+        "case": "310-review-summary-user-friendly",
+        "sessionId": "132",
+        "prompt": "这版方案帮我审查一下，风险和提醒说人话一点，先不要改",
+        "elapsedMs": 40275
+      }
+    ],
+    "fastRouteArbitration": {
+      "observed": 0,
+      "semanticArbitrationNeeded": 0,
+      "semanticArbitrationNotNeeded": 0,
+      "selectedPaths": {},
+      "neededReasons": {},
+      "candidatePaths": {},
+      "neededExamples": []
+    }
+  },
+  "runtimeShadowSummary": {
+    "observations": 0,
+    "bySideEffect": {},
+    "byPendingType": {}
+  },
+  "warnings": [
+    "310-review-summary-user-friendly session=132 prompt=这版方案帮我审查一下，风险和提醒说人话一点，先不要改: latency warning — elapsedMs=40275 > warnElapsedMs=30000",
+    "310-review-shortage-honesty session=132 prompt=如果稳和保不够，能不能直接帮我补齐？候选不够也要直接说: latency warning — elapsedMs=51211 > warnElapsedMs=30000",
+    "310-review-fix-preview-then-apply session=130 prompt=方案里高收费或者中外合作风险大的，先看看能怎么处理，别直接动: latency warning — elapsedMs=35747 > warnElapsedMs=30000",
+    "310-review-major-group-inner-safety session=131 prompt=专业组里面有没有录取率太悬的？能不能补一个安全一点的专业，先给我看预览: latency warning — elapsedMs=33221 > warnElapsedMs=30000",
+    "310-review-fix-unavailable-guidance session=132 prompt=那些现在处理不了的提醒，别给我系统话，告诉我为什么处理不了以及我该怎么调: latency warning — elapsedMs=43917 > warnElapsedMs=30000",
+    "310-review-professional-mode-export-boundary session=130 prompt=专业模式导出是不是一条志愿一行？不要按学校聚合，这个给我确认下: latency warning — elapsedMs=30368 > warnElapsedMs=30000",
+    "310-review-fix-explain-hierarchy session=131 prompt=审查里那些提醒我看不懂，你帮我分一下哪些只是看看，哪些可以自动处理: latency warning — elapsedMs=39668 > warnElapsedMs=30000",
+    "310-review-repair-after-manual-move-stale session=131 prompt=我刚手动移动过志愿，现在审查结果还准吗？需要重新看就直接说: latency warning — elapsedMs=68585 > warnElapsedMs=30000",
+    "310-review-repair-after-manual-move-stale session=131 prompt=那重新审查一下: latency warning — elapsedMs=43116 > warnElapsedMs=30000"
+  ],
+  "failures": []
+}

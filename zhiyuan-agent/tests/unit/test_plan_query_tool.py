@@ -10,7 +10,6 @@ import pytest
 from app.tools.plan_query_tool import (
     _build_query_keywords,
     _infer_query_focus,
-    _looks_like_plan_action_query,
     _matches_query,
     _normalize_query_text,
     _normalize_scope,
@@ -48,12 +47,6 @@ def test_resolve_query_scope_prefers_candidate_when_explicit():
     assert _resolve_query_scope("看看生物工程") == "plan_then_candidate"
 
 
-def test_plan_action_query_hint_is_not_local_plan_lookup():
-    assert _looks_like_plan_action_query("帮我补几个更稳的")
-    assert _looks_like_plan_action_query("还差的几个怎么补")
-    assert not _looks_like_plan_action_query("候选里还有什么生物工程")
-
-
 def test_normalize_scope_accepts_explicit_values_and_falls_back_to_auto():
     assert _normalize_scope("plan") == "plan"
     assert _normalize_scope("candidate") == "candidate"
@@ -69,13 +62,19 @@ def test_infer_query_focus_routes_major_school_and_province_keywords():
 
 
 @pytest.mark.asyncio
-async def test_query_volunteer_plan_rejects_plan_action_query_without_fetching_plan():
-    with patch("app.tools.plan_query_tool.get_planning_ordered_plan", new=AsyncMock()) as mock_ordered:
+async def test_query_volunteer_plan_does_not_route_plan_action_wording_by_prompt_hints():
+    ordered_result = {"code": 0, "data": {"items": []}}
+    with (
+        patch("app.tools.plan_query_tool.extract_candidate_query_filters_async", new=AsyncMock(return_value={})),
+        patch("app.tools.plan_query_tool.get_planning_ordered_plan", new=AsyncMock(return_value=ordered_result)) as mock_ordered,
+        patch("app.tools.plan_query_tool.get_working_plan", new=AsyncMock(return_value={"code": 0, "data": {"items": []}})),
+        patch("app.tools.plan_query_tool.query_planning_candidate_pool", new=AsyncMock(return_value={"code": 0, "data": {"items": [], "total": 0}})),
+    ):
         result = await query_volunteer_plan(_ctx(), "帮我补几个更稳的")
 
-    assert "不是局部查询" in result
-    assert "方案动作预览" in result
-    mock_ordered.assert_not_awaited()
+    assert "不是局部查询" not in result
+    assert "候选里暂时没有筛到" in result
+    mock_ordered.assert_awaited_once()
 
 
 def test_matches_query_checks_text_fields_and_rank_tags():

@@ -1,0 +1,2946 @@
+{
+  "records": [
+    {
+      "case": "correctness-query-state-35",
+      "stepIndex": 1,
+      "sessionId": "35",
+      "prompt": "我现在的方案是什么情况",
+      "elapsedMs": 26943,
+      "firstMessageMs": 1228,
+      "finalMessageMs": 24942,
+      "primaryMessages": 3,
+      "thinkingMessages": 2,
+      "followupMessages": 0,
+      "responseText": "我看了当前方案，核心情况如下：\n\n- 完整度：28/30 个志愿。\n- 冲稳保：冲7 / 稳9 / 保12。\n- 审查：风险 1 项，提醒 4 项。\n- 前排示例：厦门大学(马来西亚分校)(02)-计算机科学与技术(2.9万林吉特)(专业要求外语成绩不低于120分；收费标准币种为马来西亚林吉特，以实际汇率为准；全英文授课，非英语语种考生慎重填报，入学第一学年内获得专业要求的达标英语成绩后开始学位课程学习；办学地点：马来西亚雪邦)(冲)录取率30%第1位；厦门大学(马来西亚分校)(02)-自动化(3万林吉特)(专业要求外语成绩不低于120分；收费标准币种为马来西亚林吉特，以实际汇率为准；全英文授课，非英语语种考生慎重填报，入学第一学年内获得专业要求的达标英语成绩后开始学位课程学习；办学地点：马来西亚雪邦)(冲)录取率46%第2位；厦门大学(马来西亚分校)(02)-电子信息工程(2.9万林吉特)(专业要求外语成绩不低于120分；收费标准币种为马来西亚林吉特，以实际汇率为准；全英文授课，非英语语种考生慎重填报，入学第一学年内获得专业要求的达标英语成绩后开始学位课程学习；办学地点：马来西亚雪邦)(冲)录取率18%第3位。\n- 重点提醒：当前排序存在录取概率倒挂；当前录取概率梯度存在断层。\n\n下一步可以继续看审查明细，或直接告诉我想往更稳、某个地域、某类专业方向调整。",
+      "thinkingText": "正在读取当前会话信息...\n正在根据当前方案提醒整理调整预览...",
+      "turnObservability": {
+        "historyMessages": 5,
+        "toolCallCount": 1,
+        "toolReturnCount": 1,
+        "toolCalls": [
+          {
+            "name": "execute_plan_action",
+            "toolCallId": "semantic-query_state",
+            "actionFamily": "query_state",
+            "stage": "apply",
+            "resultKind": "status_overview",
+            "applied": true,
+            "success": true
+          }
+        ],
+        "actionFamilies": [
+          "query_state"
+        ],
+        "resultKinds": [
+          "status_overview"
+        ],
+        "routingPath": "semantic_plan_action",
+        "eventTimings": {
+          "totalDurationMs": 24836,
+          "toolDurationMs": 265,
+          "toolCallCount": 1
+        },
+        "routeDecision": {
+          "source": "semantic_plan_action",
+          "matched": true,
+          "confidence": 0.95,
+          "route": "query_state",
+          "originalRoute": "query_state",
+          "sideEffect": "readonly",
+          "outputType": "readonly",
+          "reason": "用户问'我现在的方案是什么情况'，这是典型的查看当前方案整体状态和概况的查询，想了解方案的基本信息、数量、分布和当前所处阶段。planningSummary显示已有完整方案（28个志愿，已排序），且存在1个风险和4个警告，但用户并未要求审查具体内容、分析调整或生成修复预览，只是询问整体状态。",
+          "targetStrategies": [],
+          "targetIssueCodes": [],
+          "replyFocus": [],
+          "recentPlanContext": {},
+          "displayPayload": {
+            "presentation": "readonly_answer"
+          }
+        }
+      }
+    },
+    {
+      "case": "correctness-query-state-35",
+      "stepIndex": 2,
+      "sessionId": "35",
+      "prompt": "冲稳保各有几个",
+      "elapsedMs": 28442,
+      "firstMessageMs": 1243,
+      "finalMessageMs": 26440,
+      "primaryMessages": 3,
+      "thinkingMessages": 2,
+      "followupMessages": 0,
+      "responseText": "我看了当前方案，核心情况如下：\n\n- 完整度：28/30 个志愿。\n- 冲稳保：冲7 / 稳9 / 保12。\n- 审查：风险 1 项，提醒 4 项。\n- 前排示例：厦门大学(马来西亚分校)(02)-计算机科学与技术(2.9万林吉特)(专业要求外语成绩不低于120分；收费标准币种为马来西亚林吉特，以实际汇率为准；全英文授课，非英语语种考生慎重填报，入学第一学年内获得专业要求的达标英语成绩后开始学位课程学习；办学地点：马来西亚雪邦)(冲)录取率30%第1位；厦门大学(马来西亚分校)(02)-自动化(3万林吉特)(专业要求外语成绩不低于120分；收费标准币种为马来西亚林吉特，以实际汇率为准；全英文授课，非英语语种考生慎重填报，入学第一学年内获得专业要求的达标英语成绩后开始学位课程学习；办学地点：马来西亚雪邦)(冲)录取率46%第2位；厦门大学(马来西亚分校)(02)-电子信息工程(2.9万林吉特)(专业要求外语成绩不低于120分；收费标准币种为马来西亚林吉特，以实际汇率为准；全英文授课，非英语语种考生慎重填报，入学第一学年内获得专业要求的达标英语成绩后开始学位课程学习；办学地点：马来西亚雪邦)(冲)录取率18%第3位。\n- 重点提醒：当前排序存在录取概率倒挂；当前录取概率梯度存在断层。\n\n下一步可以继续看审查明细，或直接告诉我想往更稳、某个地域、某类专业方向调整。",
+      "thinkingText": "正在读取当前会话信息...\n正在根据当前方案提醒整理调整预览...",
+      "turnObservability": {
+        "historyMessages": 5,
+        "toolCallCount": 1,
+        "toolReturnCount": 1,
+        "toolCalls": [
+          {
+            "name": "execute_plan_action",
+            "toolCallId": "semantic-query_state",
+            "actionFamily": "query_state",
+            "stage": "apply",
+            "resultKind": "status_overview",
+            "applied": true,
+            "success": true
+          }
+        ],
+        "actionFamilies": [
+          "query_state"
+        ],
+        "resultKinds": [
+          "status_overview"
+        ],
+        "routingPath": "semantic_plan_action",
+        "eventTimings": {
+          "totalDurationMs": 26291,
+          "toolDurationMs": 367,
+          "toolCallCount": 1
+        },
+        "routeDecision": {
+          "source": "semantic_plan_action",
+          "matched": true,
+          "confidence": 0.95,
+          "route": "query_state",
+          "originalRoute": "query_state",
+          "sideEffect": "readonly",
+          "outputType": "readonly",
+          "reason": "用户直接询问'冲稳保各有几个'，这是典型的方案状态查询，想了解当前方案的梯度分布数量统计。planningSummary 中已明确 tierCounts（冲7/稳9/保12），且 recentPlanContext 的 lastActionFamily 也是 query_state。用户没有要求审查风险、分析调整或生成预览，只是单纯查看现状数据。",
+          "targetStrategies": [],
+          "targetIssueCodes": [],
+          "replyFocus": [],
+          "recentPlanContext": {
+            "lastActionFamily": "query_state",
+            "lastResultKind": "status_overview",
+            "summary": "方案已经有了，目前有 28/30 个志愿。\n- 梯度分布：冲7 / 稳9 / 保12。\n- 院校性质：公办 83 个，民办 0 个，已知院校性质里公办占比约 100.0%。\n- 审查提醒：风险 1 项，提醒 4 项。\n- 数量缺口：当前志愿数量不足，还差 2 个。\n- 需要关注：当前排序存在录取概率倒挂；当前录取概率梯度存在断层。\n- 候选供给：候选池共 75 个，冲24 / 稳24 / 保27。\n- 前排示例：厦门大学(马来西亚分校)(02)-计算机科学与技术(2.9万林吉特)(专业要求外语成绩不低于120分；收费标准币种为马来西亚林吉特，以实际汇率为准；全英文授课，非英语语种考生慎重填报，入学第一学年内获得专业要求的达标英语成绩后开始学位课程学习；办学地点：马来西亚雪邦)(冲)录取率30%第1位；厦门大学(马来西亚分校)(02)-自动化(3万林吉特)(专业要求外语成绩不低于120分；收费标准币种为马来西亚林吉特，以实际汇率为准；全英文授课，非英语语种考生慎重填报，入学第一学年内获得专业要求的达标英语成绩后开始学位课程学习；办学地点：马来西亚雪邦)(冲)录取率46%第2位；厦门大学(马来西亚分校)(02)-电子信息工程(2.9万林吉特)(专业要求外语成绩不低于120分；收费标准币种为马来西亚林吉特，以实际汇率为准；全英文授课，非英语语种考生慎重填报，入学第一学年内获得专业要求的达标英语成绩后开始学位课程学习；办学地点：马来西亚雪邦)(冲)录取率18%第3位。\n你可以继续看审查详情，或者告诉我想按地域、专业、稳妥程度怎么调。",
+            "replyFocus": [
+              "current_state",
+              "count_target",
+              "risk_warning",
+              "tier_distribution",
+              "school_nature_distribution",
+              "sample_items",
+              "intent_match",
+              "count_gap",
+              "candidate_supply"
+            ],
+            "fixProposals": {
+              "readyCount": 0,
+              "blockedCount": 0,
+              "previewOnlyCount": 0,
+              "proposalSource": "",
+              "strategyCounts": {},
+              "strategies": [],
+              "proposals": []
+            }
+          },
+          "displayPayload": {
+            "presentation": "readonly_answer"
+          }
+        }
+      }
+    },
+    {
+      "case": "correctness-query-ordered-26",
+      "stepIndex": 1,
+      "sessionId": "26",
+      "prompt": "给我看看方案里都有哪些学校",
+      "elapsedMs": 39287,
+      "firstMessageMs": 1217,
+      "finalMessageMs": 37285,
+      "primaryMessages": 3,
+      "thinkingMessages": 2,
+      "followupMessages": 0,
+      "responseText": "我看了当前方案，核心情况如下：\n\n- 完整度：96/96 个志愿。\n- 冲稳保：冲38 / 稳28 / 保30。\n- 审查：暂时没有明显风险。\n- 前排示例：烟台大学-材料科学与工程(中外合作办学)(与韩国檀国大学合作，专业核心课程为英语教学，非英语语种考生谨慎报考)(冲)录取率42%第1位；北部湾大学-电子信息工程(中外合作办学)(高学费专业。有关要求、费用等务必详见2025年北部湾大学招生章程，波兰华沙理工大学)(冲)录取率42%第2位；泰山学院-数学与应用数学(师范类)(冲)录取率42%第3位。\n\n下一步可以继续看审查明细，或直接告诉我想往更稳、某个地域、某类专业方向调整。",
+      "thinkingText": "正在读取当前会话信息...\n正在根据当前方案提醒整理调整预览...",
+      "turnObservability": {
+        "historyMessages": 5,
+        "toolCallCount": 1,
+        "toolReturnCount": 1,
+        "toolCalls": [
+          {
+            "name": "execute_plan_action",
+            "toolCallId": "semantic-query_state",
+            "actionFamily": "query_state",
+            "stage": "apply",
+            "resultKind": "status_overview",
+            "applied": true,
+            "success": true
+          }
+        ],
+        "actionFamilies": [
+          "query_state"
+        ],
+        "resultKinds": [
+          "status_overview"
+        ],
+        "routingPath": "semantic_plan_action",
+        "eventTimings": {
+          "totalDurationMs": 37154,
+          "toolDurationMs": 537,
+          "toolCallCount": 1
+        },
+        "routeDecision": {
+          "source": "semantic_plan_action",
+          "matched": true,
+          "confidence": 0.95,
+          "route": "query_state",
+          "originalRoute": "query_state",
+          "sideEffect": "readonly",
+          "outputType": "readonly",
+          "reason": "用户明确要求查看当前方案中包含的学校列表，属于对方案概况、内容和分布状态的直接查询，不涉及风险审查、调整分析或修复预览。",
+          "targetStrategies": [],
+          "targetIssueCodes": [],
+          "replyFocus": [],
+          "recentPlanContext": {},
+          "displayPayload": {
+            "presentation": "readonly_answer"
+          }
+        }
+      }
+    },
+    {
+      "case": "correctness-query-ordered-26",
+      "stepIndex": 2,
+      "sessionId": "26",
+      "prompt": "排在最前面的冲档是哪个学校",
+      "elapsedMs": 35448,
+      "firstMessageMs": 1250,
+      "finalMessageMs": 33445,
+      "primaryMessages": 2,
+      "thinkingMessages": 1,
+      "followupMessages": 0,
+      "responseText": "你的方案情况如下：\n\n当前方案里共命中 38 条冲档志愿。下面展示前 5 条：烟台大学-材料科学与工程(中外合作办学)(与韩国檀国大学合作，专业核心课程为英语教学，非英语语种考生谨慎报考)（冲，录取率42%，第1位）；北部湾大学-电子信息工程(中外合作办学)(高学费专业。有关要求、费用等务必详见2025年北部湾大学招生章程，波兰华沙理工大学)（冲，录取率42%，第2位）；泰山学院-数学与应用数学(师范类)（冲，录取率42%，第3位）；百色学院-数据科学与大数据技术（冲，录取率42%，第4位）；淮南师范学院-智慧交通（冲，录取率42%，第5位）",
+      "thinkingText": "正在读取当前会话信息...",
+      "turnObservability": {
+        "historyMessages": 5,
+        "toolCallCount": 1,
+        "toolReturnCount": 1,
+        "toolCalls": [
+          {
+            "name": "execute_plan_action",
+            "toolCallId": "direct-readonly-query_ordered",
+            "actionFamily": "query_ordered",
+            "stage": "apply",
+            "resultKind": "ordered_snapshot",
+            "applied": true,
+            "success": true
+          }
+        ],
+        "actionFamilies": [
+          "query_ordered"
+        ],
+        "resultKinds": [
+          "ordered_snapshot"
+        ],
+        "routingPath": "direct_readonly_plan_slice_query",
+        "eventTimings": {
+          "totalDurationMs": 33141,
+          "toolDurationMs": 601,
+          "toolCallCount": 1
+        },
+        "routeDecision": {
+          "source": "proposal_compiler",
+          "matched": true,
+          "route": "readonly_plan_slice_query",
+          "sideEffect": "readonly",
+          "actionFamily": "query_ordered",
+          "turnDecision": {
+            "taskLayer": "plan",
+            "sideEffect": "readonly",
+            "scopeAnchor": "current_plan",
+            "scenario": "plan_query",
+            "confidence": 0.95
+          },
+          "queryProfile": {
+            "queryType": "readonly_plan_slice_query",
+            "scopeAnchor": "current_plan",
+            "sideEffect": "readonly",
+            "dimensions": [
+              "tier_segment"
+            ],
+            "condition": {
+              "target": "ordered_plan",
+              "filters": {
+                "tiers": [
+                  "冲"
+                ]
+              },
+              "sort": {
+                "field": "position",
+                "order": "asc"
+              },
+              "page": 1,
+              "pageSize": 5
+            },
+            "filters": {
+              "limit": 5,
+              "tier": "冲",
+              "slice": "head",
+              "include_fields": [
+                "school",
+                "major",
+                "admission_probability"
+              ]
+            },
+            "projection": {
+              "mode": "slice_examples",
+              "limit": 5,
+              "fields": [
+                "school",
+                "major",
+                "admission_probability"
+              ]
+            },
+            "replyFocus": [
+              "ordered_snapshot",
+              "local_plan_query",
+              "plan_slice_query"
+            ],
+            "pendingReferenceType": "none",
+            "confidence": 0.95,
+            "reason": "用户询问当前正式方案中排在最前面的冲档学校，属于只读查询方案中的冲档切片，需返回学校、专业及录取率信息"
+          },
+          "planQueryDsl": {
+            "type": "PlanQuery",
+            "scopeAnchor": "current_plan",
+            "sideEffect": "readonly",
+            "queryType": "readonly_plan_slice_query",
+            "dimensions": [
+              "tier_segment"
+            ],
+            "filters": {
+              "limit": 5,
+              "tier": "冲",
+              "slice": "head",
+              "include_fields": [
+                "school",
+                "major",
+                "admission_probability"
+              ]
+            },
+            "projection": {
+              "mode": "slice_examples",
+              "limit": 5,
+              "fields": [
+                "school",
+                "major",
+                "admission_probability"
+              ]
+            },
+            "sourceVersionGuard": 2
+          }
+        }
+      }
+    },
+    {
+      "case": "correctness-query-candidates-keyword-35",
+      "stepIndex": 1,
+      "sessionId": "35",
+      "prompt": "帮我看看候选里有哪些计算机类的机会",
+      "elapsedMs": 46745,
+      "firstMessageMs": 1216,
+      "finalMessageMs": 44742,
+      "primaryMessages": 5,
+      "thinkingMessages": 4,
+      "followupMessages": 0,
+      "responseText": "候选里目前共有 **56 条计算机类机会**，覆盖了计算机科学与技术、信息安全、计算机类大类等方向。\n\n从前几条示例来看，可以大致分为这几档：\n\n- **偏稳/保底**：如江南大学（保，83%）、南京邮电大学（稳，70%），录取概率较高，学费在 6000 多元，性价比较好。\n- **偏冲/机会型**：如深圳大学（稳，18%）、上海大学电子信息类（冲，46%），地域更好或层次更高，但录取概率相对低一些。\n- **高收费/特殊项目**：如厦门大学马来西亚分校（冲，30%），全英文授课，学费按林吉特结算，需要外语成绩达标。\n\n如果你想进一步缩小范围，可以告诉我：\n- 有没有特别想去的城市或省份？\n- 对学费有没有上限（比如排除中外合作或高收费项目）？\n- 是更想冲一冲，还是优先稳和保？\n\n我也可以帮你按这些条件再筛一遍。",
+      "thinkingText": "正在读取当前会话信息...\n正在理解你的问题，并结合当前信息整理回答...\n正在查当前方案和候选里的相关结果...\n还在处理，这轮需要结合当前信息整理结论，请稍等...",
+      "turnObservability": {
+        "historyMessages": 5,
+        "toolCallCount": 1,
+        "toolReturnCount": 1,
+        "toolCalls": [
+          {
+            "name": "query_volunteer_plan",
+            "toolCallId": "functions.query_volunteer_plan:0"
+          }
+        ],
+        "actionFamilies": [],
+        "resultKinds": [],
+        "routingPath": "full_agent",
+        "eventTimings": {
+          "totalDurationMs": 44605,
+          "llmDurationMs": 15154,
+          "toolCallCount": 1
+        },
+        "routeDecision": {
+          "source": "full_agent",
+          "matched": true,
+          "confidence": "model",
+          "route": "plan",
+          "fallbackReason": "no_direct_route",
+          "structuredReroute": null,
+          "toolTrial": {
+            "toolNames": [
+              "query_volunteer_plan"
+            ],
+            "toolNameCounts": {
+              "query_volunteer_plan": 1
+            },
+            "repeatedToolNames": [],
+            "hasRepeatedToolCalls": false,
+            "hasToolCalls": true
+          },
+          "agentRun": {
+            "promptLength": 17,
+            "historyLength": 0,
+            "nodeTimings": [
+              {
+                "index": 1,
+                "node": "UserPromptNode",
+                "durationMs": 0,
+                "status": "success"
+              },
+              {
+                "index": 2,
+                "node": "ModelRequestNode",
+                "durationMs": 3730,
+                "status": "success"
+              },
+              {
+                "index": 3,
+                "node": "CallToolsNode",
+                "durationMs": 2896,
+                "status": "success",
+                "toolNames": [
+                  "query_volunteer_plan"
+                ]
+              },
+              {
+                "index": 4,
+                "node": "ModelRequestNode",
+                "durationMs": 8524,
+                "status": "success"
+              },
+              {
+                "index": 5,
+                "node": "CallToolsNode",
+                "durationMs": 0,
+                "status": "success"
+              }
+            ],
+            "firstToolCallAtMs": 3732,
+            "completed": true,
+            "currentNode": "CallToolsNode",
+            "currentNodeIndex": 5,
+            "firstToolNames": [
+              "query_volunteer_plan"
+            ],
+            "toolNameCounts": {
+              "query_volunteer_plan": 1
+            },
+            "toolInternalTimings": [
+              {
+                "tool": "query_volunteer_plan",
+                "sessionId": "35",
+                "requestedScope": "candidate",
+                "resolvedScope": "candidate",
+                "status": "success",
+                "durationMs": 2895,
+                "hasStructuredFilters": true,
+                "filterKeys": [
+                  "major_keywords"
+                ],
+                "steps": [
+                  {
+                    "step": "normalize_explicit_filters",
+                    "durationMs": 1
+                  },
+                  {
+                    "step": "extract_candidate_filters",
+                    "durationMs": 2793
+                  },
+                  {
+                    "step": "query_candidate_with_filters",
+                    "durationMs": 94
+                  }
+                ]
+              }
+            ],
+            "totalDurationMs": 15154,
+            "requests": 2,
+            "toolCalls": 1
+          }
+        }
+      }
+    },
+    {
+      "case": "correctness-query-candidates-tier-35",
+      "stepIndex": 1,
+      "sessionId": "35",
+      "prompt": "候选里稳档的有哪些",
+      "elapsedMs": 115617,
+      "firstMessageMs": 1215,
+      "finalMessageMs": 113614,
+      "primaryMessages": 2,
+      "thinkingMessages": 1,
+      "followupMessages": 0,
+      "responseText": "候选机会查询结果：\n\n候选志愿查询结果：\n- 命中数量：87\n- 当前筛选视图：87条 / 24个志愿单元；完整可选范围：275条 / 75个志愿单元\n- 当前页：第1页，每页5条\n- 候选示例：南京邮电大学(01)-电子信息工程(6380元)(专业办学地点：仙林校区)(稳/江苏/录取率64%/公办/学费6380元/年) 分值85.1114274477123；南京邮电大学(01)-通信工程(6380元)(专业办学地点：仙林校区)(稳/江苏/录取率64%/公办/学费6380元/年) 分值85.1114274477123；南京邮电大学(01)-信息安全(6380元)(专业办学地点：仙林校区)(稳/江苏/录取率70%/公办/学费6380元/年) 分值85.1114274477123；深圳大学(02)-计算机科学与技术(6853元)(专业办学地点：粤海校区)(稳/广东/录取率18%/公办/学费6853元/年) 分值81.56374249052358；深圳大学(02)-自动化(6230元)(专业办学地点：粤海校区)(稳/广东/录取率68%/公办/学费6230元/年) 分值81.56374249052358",
+      "thinkingText": "正在读取当前会话信息...",
+      "turnObservability": {
+        "historyMessages": 5,
+        "toolCallCount": 1,
+        "toolReturnCount": 1,
+        "toolCalls": [
+          {
+            "name": "execute_plan_action",
+            "toolCallId": "direct-readonly-query_candidates",
+            "actionFamily": "query_candidates",
+            "stage": "apply",
+            "resultKind": "candidate_snapshot",
+            "applied": true,
+            "success": true
+          }
+        ],
+        "actionFamilies": [
+          "query_candidates"
+        ],
+        "resultKinds": [
+          "candidate_snapshot"
+        ],
+        "routingPath": "direct_readonly_plan_slice_query",
+        "eventTimings": {
+          "totalDurationMs": 113518,
+          "toolDurationMs": 3224,
+          "toolCallCount": 1
+        },
+        "routeDecision": {
+          "source": "proposal_compiler",
+          "matched": true,
+          "route": "readonly_plan_slice_query",
+          "sideEffect": "readonly",
+          "actionFamily": "query_candidates",
+          "turnDecision": {
+            "taskLayer": "plan",
+            "sideEffect": "readonly",
+            "scopeAnchor": "candidate_pool",
+            "scenario": "plan_query",
+            "confidence": 0.9
+          },
+          "queryProfile": {
+            "queryType": "readonly_plan_slice_query",
+            "scopeAnchor": "candidate_pool",
+            "sideEffect": "readonly",
+            "dimensions": [
+              "tier_segment"
+            ],
+            "condition": {
+              "target": "candidate_pool",
+              "filters": {
+                "tiers": [
+                  "稳"
+                ]
+              },
+              "sort": {
+                "field": "recommendation",
+                "order": "desc"
+              },
+              "page": 1,
+              "pageSize": 5
+            },
+            "filters": {
+              "limit": 5,
+              "tier": "稳",
+              "slice": "head",
+              "include_fields": [
+                "school",
+                "major",
+                "admission_probability"
+              ]
+            },
+            "projection": {
+              "mode": "slice_examples",
+              "limit": 5,
+              "fields": [
+                "school",
+                "major",
+                "admission_probability"
+              ]
+            },
+            "replyFocus": [
+              "candidate_snapshot",
+              "local_candidate_query",
+              "candidate_slice_query"
+            ],
+            "pendingReferenceType": "none",
+            "confidence": 1.0,
+            "reason": "用户询问候选池（候选里）中稳档的有哪些，属于只读查询候选池的稳档切片，不涉及任何修改操作。"
+          },
+          "planQueryDsl": {
+            "type": "PlanQuery",
+            "scopeAnchor": "candidate_pool",
+            "sideEffect": "readonly",
+            "queryType": "readonly_plan_slice_query",
+            "dimensions": [
+              "tier_segment"
+            ],
+            "filters": {
+              "limit": 5,
+              "tier": "稳",
+              "slice": "head",
+              "include_fields": [
+                "school",
+                "major",
+                "admission_probability"
+              ]
+            },
+            "projection": {
+              "mode": "slice_examples",
+              "limit": 5,
+              "fields": [
+                "school",
+                "major",
+                "admission_probability"
+              ]
+            },
+            "sourceVersionGuard": 23
+          }
+        }
+      }
+    },
+    {
+      "case": "correctness-review-plan-26",
+      "stepIndex": 1,
+      "sessionId": "26",
+      "prompt": "帮我审查一下这个方案有什么问题",
+      "elapsedMs": 43766,
+      "firstMessageMs": 1213,
+      "finalMessageMs": 41763,
+      "primaryMessages": 4,
+      "thinkingMessages": 3,
+      "followupMessages": 0,
+      "responseText": "当前方案已完成审查，**风险 0 项，提醒 0 项**，暂无明显问题。\n\n从结构上看：\n- 总量：96 个志愿，已填满目标数\n- 冲稳保分布：冲 38、稳 28、保 30，层次比较均衡\n- 可选范围支撑：可选志愿共 2127 个，冲/稳/保各段都有充足候选\n\n如果你还想进一步看看有没有可以优化的空间，比如：\n- 某些志愿录取概率是否偏低、排序是否合理\n- 有没有高收费或中外合作项目需要注意\n- 地域、专业分布是否符合你的偏好\n\n可以直接告诉我，我帮你做调整分析。",
+      "thinkingText": "正在读取当前会话信息...\n正在理解你的问题，并结合当前信息整理回答...\n正在处理你的方案，请稍等...",
+      "turnObservability": {
+        "historyMessages": 5,
+        "toolCallCount": 1,
+        "toolReturnCount": 1,
+        "toolCalls": [
+          {
+            "name": "execute_plan_action",
+            "toolCallId": "functions.execute_plan_action:0",
+            "actionFamily": "review_plan",
+            "stage": "review",
+            "resultKind": "review_result",
+            "applied": true,
+            "success": true
+          }
+        ],
+        "actionFamilies": [
+          "review_plan"
+        ],
+        "resultKinds": [
+          "review_result"
+        ],
+        "routingPath": "full_agent",
+        "eventTimings": {
+          "totalDurationMs": 41554,
+          "llmDurationMs": 9866,
+          "toolCallCount": 1
+        },
+        "routeDecision": {
+          "source": "full_agent",
+          "matched": true,
+          "confidence": "model",
+          "route": "plan",
+          "fallbackReason": "no_direct_route",
+          "structuredReroute": null,
+          "toolTrial": {
+            "toolNames": [
+              "execute_plan_action"
+            ],
+            "toolNameCounts": {
+              "execute_plan_action": 1
+            },
+            "repeatedToolNames": [],
+            "hasRepeatedToolCalls": false,
+            "hasToolCalls": true
+          },
+          "agentRun": {
+            "promptLength": 15,
+            "historyLength": 0,
+            "nodeTimings": [
+              {
+                "index": 1,
+                "node": "UserPromptNode",
+                "durationMs": 0,
+                "status": "success"
+              },
+              {
+                "index": 2,
+                "node": "ModelRequestNode",
+                "durationMs": 3040,
+                "status": "success"
+              },
+              {
+                "index": 3,
+                "node": "CallToolsNode",
+                "durationMs": 602,
+                "status": "success",
+                "toolNames": [
+                  "execute_plan_action"
+                ]
+              },
+              {
+                "index": 4,
+                "node": "ModelRequestNode",
+                "durationMs": 6220,
+                "status": "success"
+              },
+              {
+                "index": 5,
+                "node": "CallToolsNode",
+                "durationMs": 0,
+                "status": "success"
+              }
+            ],
+            "firstToolCallAtMs": 3042,
+            "completed": true,
+            "currentNode": "CallToolsNode",
+            "currentNodeIndex": 5,
+            "firstToolNames": [
+              "execute_plan_action"
+            ],
+            "toolNameCounts": {
+              "execute_plan_action": 1
+            },
+            "totalDurationMs": 9866,
+            "requests": 2,
+            "toolCalls": 1
+          }
+        }
+      }
+    },
+    {
+      "case": "correctness-review-safety-26",
+      "stepIndex": 1,
+      "sessionId": "26",
+      "prompt": "保底够稳吗 会不会滑档",
+      "elapsedMs": 19228,
+      "firstMessageMs": 1214,
+      "finalMessageMs": 17225,
+      "primaryMessages": 2,
+      "thinkingMessages": 1,
+      "followupMessages": 0,
+      "responseText": "你的方案情况如下：\n\n当前方案里共命中 30 条保档志愿。下面展示最后 5 条：青岛城市学院-人工智能（保，录取率99%，第92位）；广州华立学院-计算机科学与技术（保，录取率99%，第93位）；广州华立学院-计算机科学与技术(全英语授课)（保，录取率99%，第94位）；广东理工学院-电气工程及其自动化（保，录取率99%，第95位）；广东理工学院-计算机科学与技术（保，录取率99%，第96位）",
+      "thinkingText": "正在读取当前会话信息...",
+      "turnObservability": {
+        "historyMessages": 5,
+        "toolCallCount": 1,
+        "toolReturnCount": 1,
+        "toolCalls": [
+          {
+            "name": "execute_plan_action",
+            "toolCallId": "direct-readonly-query_ordered",
+            "actionFamily": "query_ordered",
+            "stage": "apply",
+            "resultKind": "ordered_snapshot",
+            "applied": true,
+            "success": true
+          }
+        ],
+        "actionFamilies": [
+          "query_ordered"
+        ],
+        "resultKinds": [
+          "ordered_snapshot"
+        ],
+        "routingPath": "direct_readonly_plan_slice_query",
+        "eventTimings": {
+          "totalDurationMs": 17071,
+          "toolDurationMs": 496,
+          "toolCallCount": 1
+        },
+        "routeDecision": {
+          "source": "proposal_compiler",
+          "matched": true,
+          "route": "readonly_plan_slice_query",
+          "sideEffect": "readonly",
+          "actionFamily": "query_ordered",
+          "turnDecision": {
+            "taskLayer": "plan",
+            "sideEffect": "readonly",
+            "scopeAnchor": "current_plan",
+            "scenario": "plan_query",
+            "confidence": 0.85
+          },
+          "queryProfile": {
+            "queryType": "readonly_plan_slice_query",
+            "scopeAnchor": "current_plan",
+            "sideEffect": "readonly",
+            "dimensions": [
+              "tier_segment"
+            ],
+            "condition": {
+              "target": "ordered_plan",
+              "filters": {
+                "tiers": [
+                  "保"
+                ]
+              },
+              "sort": {
+                "field": "position",
+                "order": "asc"
+              },
+              "page": 1,
+              "pageSize": 5
+            },
+            "filters": {
+              "limit": 5,
+              "tier": "保",
+              "slice": "tail",
+              "include_fields": [
+                "school",
+                "major",
+                "admission_probability"
+              ]
+            },
+            "projection": {
+              "mode": "slice_examples",
+              "limit": 5,
+              "fields": [
+                "school",
+                "major",
+                "admission_probability"
+              ]
+            },
+            "replyFocus": [
+              "ordered_snapshot",
+              "local_plan_query",
+              "plan_slice_query"
+            ],
+            "pendingReferenceType": "none",
+            "confidence": 0.9,
+            "reason": "用户询问保底是否够稳、会不会滑档，属于只读查看当前方案中保底切片的情况，需要查看保底末尾几个志愿的学校、专业和录取率，以评估保底稳定性。"
+          },
+          "planQueryDsl": {
+            "type": "PlanQuery",
+            "scopeAnchor": "current_plan",
+            "sideEffect": "readonly",
+            "queryType": "readonly_plan_slice_query",
+            "dimensions": [
+              "tier_segment"
+            ],
+            "filters": {
+              "limit": 5,
+              "tier": "保",
+              "slice": "tail",
+              "include_fields": [
+                "school",
+                "major",
+                "admission_probability"
+              ]
+            },
+            "projection": {
+              "mode": "slice_examples",
+              "limit": 5,
+              "fields": [
+                "school",
+                "major",
+                "admission_probability"
+              ]
+            },
+            "sourceVersionGuard": 2
+          }
+        }
+      }
+    },
+    {
+      "case": "correctness-tier-count-26",
+      "stepIndex": 1,
+      "sessionId": "26",
+      "prompt": "方案里冲档几个稳档几个保底几个",
+      "elapsedMs": 29206,
+      "firstMessageMs": 1214,
+      "finalMessageMs": 27205,
+      "primaryMessages": 3,
+      "thinkingMessages": 2,
+      "followupMessages": 0,
+      "responseText": "我看了当前方案，核心情况如下：\n\n- 完整度：96/96 个志愿。\n- 冲稳保：冲38 / 稳28 / 保30。\n- 审查：暂时没有明显风险。\n- 前排示例：烟台大学-材料科学与工程(中外合作办学)(与韩国檀国大学合作，专业核心课程为英语教学，非英语语种考生谨慎报考)(冲)录取率42%第1位；北部湾大学-电子信息工程(中外合作办学)(高学费专业。有关要求、费用等务必详见2025年北部湾大学招生章程，波兰华沙理工大学)(冲)录取率42%第2位；泰山学院-数学与应用数学(师范类)(冲)录取率42%第3位。\n\n下一步可以继续看审查明细，或直接告诉我想往更稳、某个地域、某类专业方向调整。",
+      "thinkingText": "正在读取当前会话信息...\n正在根据当前方案提醒整理调整预览...",
+      "turnObservability": {
+        "historyMessages": 5,
+        "toolCallCount": 1,
+        "toolReturnCount": 1,
+        "toolCalls": [
+          {
+            "name": "execute_plan_action",
+            "toolCallId": "semantic-query_state",
+            "actionFamily": "query_state",
+            "stage": "apply",
+            "resultKind": "status_overview",
+            "applied": true,
+            "success": true
+          }
+        ],
+        "actionFamilies": [
+          "query_state"
+        ],
+        "resultKinds": [
+          "status_overview"
+        ],
+        "routingPath": "semantic_plan_action",
+        "eventTimings": {
+          "totalDurationMs": 27051,
+          "toolDurationMs": 514,
+          "toolCallCount": 1
+        },
+        "routeDecision": {
+          "source": "semantic_plan_action",
+          "matched": true,
+          "confidence": 0.95,
+          "route": "query_state",
+          "originalRoute": "query_state",
+          "sideEffect": "readonly",
+          "outputType": "readonly",
+          "reason": "用户明确询问当前方案中冲档、稳档、保底的数量分布，属于单纯查看现状统计，不涉及风险审查、分析调整或生成处理预览。planningSummary中已有完整的tierCounts数据（冲38、稳28、保30），用户只是要求查看这些统计信息。",
+          "targetStrategies": [],
+          "targetIssueCodes": [],
+          "replyFocus": [],
+          "recentPlanContext": {},
+          "displayPayload": {
+            "presentation": "readonly_answer"
+          }
+        }
+      }
+    },
+    {
+      "case": "correctness-total-count-35",
+      "stepIndex": 1,
+      "sessionId": "35",
+      "prompt": "方案一共有多少个志愿",
+      "elapsedMs": 27371,
+      "firstMessageMs": 1222,
+      "finalMessageMs": 25368,
+      "primaryMessages": 3,
+      "thinkingMessages": 2,
+      "followupMessages": 0,
+      "responseText": "我看了当前方案，核心情况如下：\n\n- 完整度：28/30 个志愿。\n- 冲稳保：冲7 / 稳9 / 保12。\n- 审查：风险 1 项，提醒 4 项。\n- 前排示例：厦门大学(马来西亚分校)(02)-计算机科学与技术(2.9万林吉特)(专业要求外语成绩不低于120分；收费标准币种为马来西亚林吉特，以实际汇率为准；全英文授课，非英语语种考生慎重填报，入学第一学年内获得专业要求的达标英语成绩后开始学位课程学习；办学地点：马来西亚雪邦)(冲)录取率30%第1位；厦门大学(马来西亚分校)(02)-自动化(3万林吉特)(专业要求外语成绩不低于120分；收费标准币种为马来西亚林吉特，以实际汇率为准；全英文授课，非英语语种考生慎重填报，入学第一学年内获得专业要求的达标英语成绩后开始学位课程学习；办学地点：马来西亚雪邦)(冲)录取率46%第2位；厦门大学(马来西亚分校)(02)-电子信息工程(2.9万林吉特)(专业要求外语成绩不低于120分；收费标准币种为马来西亚林吉特，以实际汇率为准；全英文授课，非英语语种考生慎重填报，入学第一学年内获得专业要求的达标英语成绩后开始学位课程学习；办学地点：马来西亚雪邦)(冲)录取率18%第3位。\n- 重点提醒：当前排序存在录取概率倒挂；当前录取概率梯度存在断层。\n\n下一步可以继续看审查明细，或直接告诉我想往更稳、某个地域、某类专业方向调整。",
+      "thinkingText": "正在读取当前会话信息...\n正在根据当前方案提醒整理调整预览...",
+      "turnObservability": {
+        "historyMessages": 5,
+        "toolCallCount": 1,
+        "toolReturnCount": 1,
+        "toolCalls": [
+          {
+            "name": "execute_plan_action",
+            "toolCallId": "semantic-query_state",
+            "actionFamily": "query_state",
+            "stage": "apply",
+            "resultKind": "status_overview",
+            "applied": true,
+            "success": true
+          }
+        ],
+        "actionFamilies": [
+          "query_state"
+        ],
+        "resultKinds": [
+          "status_overview"
+        ],
+        "routingPath": "semantic_plan_action",
+        "eventTimings": {
+          "totalDurationMs": 25255,
+          "toolDurationMs": 353,
+          "toolCallCount": 1
+        },
+        "routeDecision": {
+          "source": "semantic_plan_action",
+          "matched": true,
+          "confidence": 0.95,
+          "route": "query_state",
+          "originalRoute": "query_state",
+          "sideEffect": "readonly",
+          "outputType": "readonly",
+          "reason": "用户明确询问当前方案志愿总数，属于单纯查看现状统计信息，不涉及风险审查、分析调整或生成预览。planningSummary 已提供完整的方案结构数据，用户只需了解当前方案状态。",
+          "targetStrategies": [],
+          "targetIssueCodes": [],
+          "replyFocus": [],
+          "recentPlanContext": {},
+          "displayPayload": {
+            "presentation": "readonly_answer"
+          }
+        }
+      }
+    },
+    {
+      "case": "correctness-no-plan-honesty",
+      "stepIndex": 1,
+      "sessionId": "99901501",
+      "prompt": "我600湖南物化生",
+      "elapsedMs": 9170,
+      "firstMessageMs": 1214,
+      "finalMessageMs": 7167,
+      "primaryMessages": 4,
+      "thinkingMessages": 3,
+      "followupMessages": 0,
+      "responseText": "你好！湖南600分、物化生，这个分数段选择空间还是比较大的。\n\n目前你还没有生成正式方案，我们可以先从几个方向聊起来：\n\n- **想往哪类方向发展？** 比如偏科研深造（数学、物理、生物等基础学科）、工程技术（计算机、电子信息、自动化）、还是医学相关？\n- **对地域有什么偏好？** 省内还是外省，一线城市还是家乡附近？\n- **有没有特别想读或特别不想读的专业方向？**\n\n你直接说想法就行，我帮你分析适合的学校和专业，之后可以在工作台生成完整方案。",
+      "thinkingText": "正在读取当前会话信息...\n正在理解你的问题，并结合当前信息整理回答...\n正在结合你的情况筛选适合重点看的专业...",
+      "turnObservability": {
+        "historyMessages": 5,
+        "toolCallCount": 1,
+        "toolReturnCount": 1,
+        "toolCalls": [
+          {
+            "name": "get_major_recommendations",
+            "toolCallId": "functions.get_major_recommendations:0"
+          }
+        ],
+        "actionFamilies": [],
+        "resultKinds": [],
+        "routingPath": "full_agent",
+        "eventTimings": {
+          "totalDurationMs": 6929,
+          "llmDurationMs": 6928,
+          "toolCallCount": 1
+        },
+        "routeDecision": {
+          "source": "full_agent",
+          "matched": true,
+          "confidence": "model",
+          "route": "unknown",
+          "fallbackReason": "no_direct_route",
+          "structuredReroute": null,
+          "toolTrial": {
+            "toolNames": [
+              "get_major_recommendations"
+            ],
+            "toolNameCounts": {
+              "get_major_recommendations": 1
+            },
+            "repeatedToolNames": [],
+            "hasRepeatedToolCalls": false,
+            "hasToolCalls": true
+          },
+          "agentRun": {
+            "promptLength": 9,
+            "historyLength": 0,
+            "nodeTimings": [
+              {
+                "index": 1,
+                "node": "UserPromptNode",
+                "durationMs": 0,
+                "status": "success"
+              },
+              {
+                "index": 2,
+                "node": "ModelRequestNode",
+                "durationMs": 2277,
+                "status": "success"
+              },
+              {
+                "index": 3,
+                "node": "CallToolsNode",
+                "durationMs": 53,
+                "status": "success",
+                "toolNames": [
+                  "get_major_recommendations"
+                ]
+              },
+              {
+                "index": 4,
+                "node": "ModelRequestNode",
+                "durationMs": 4594,
+                "status": "success"
+              },
+              {
+                "index": 5,
+                "node": "CallToolsNode",
+                "durationMs": 0,
+                "status": "success"
+              }
+            ],
+            "firstToolCallAtMs": 2279,
+            "completed": true,
+            "currentNode": "CallToolsNode",
+            "currentNodeIndex": 5,
+            "firstToolNames": [
+              "get_major_recommendations"
+            ],
+            "toolNameCounts": {
+              "get_major_recommendations": 1
+            },
+            "totalDurationMs": 6928,
+            "requests": 2,
+            "toolCalls": 1
+          }
+        }
+      }
+    },
+    {
+      "case": "correctness-no-plan-honesty",
+      "stepIndex": 2,
+      "sessionId": "99901501",
+      "prompt": "方案有了么 保底稳不稳",
+      "elapsedMs": 36237,
+      "firstMessageMs": 1245,
+      "finalMessageMs": 34235,
+      "primaryMessages": 4,
+      "thinkingMessages": 3,
+      "followupMessages": 0,
+      "responseText": "目前还没有正式方案，可选范围也还没有生成，所以暂时谈不上“保底稳不稳”。\n\n以你湖南600分、物化生的条件来看，这个分数属于中上水平，省内外都有不少选择空间。要判断保底稳不稳，需要先：\n\n1. **生成候选志愿**——系统会根据你的分数、位次和选科，匹配一批“冲、稳、保”的学校和专业；\n2. **组建正式方案**——从中筛选出你认可的学校和专业，排成方案；\n3. **审查风险**——检查保底是否充足、梯度是否合理、有没有明显风险点。\n\n如果你现在就想看看能报哪些学校和专业，我可以先帮你生成推荐，之后你再挑感兴趣的加入方案。\n\n**你这边有没有特别想读的专业方向，或者特别想去的城市/省份？** 这样推荐会更精准。",
+      "thinkingText": "正在读取当前会话信息...\n正在理解你的问题，并结合当前信息整理回答...\n正在处理你的方案，请稍等...",
+      "turnObservability": {
+        "historyMessages": 5,
+        "toolCallCount": 1,
+        "toolReturnCount": 1,
+        "toolCalls": [
+          {
+            "name": "execute_plan_action",
+            "toolCallId": "functions.execute_plan_action:1",
+            "actionFamily": "query_state",
+            "stage": "apply",
+            "resultKind": "status_overview",
+            "applied": true,
+            "success": true
+          }
+        ],
+        "actionFamilies": [
+          "query_state"
+        ],
+        "resultKinds": [
+          "status_overview"
+        ],
+        "routingPath": "full_agent",
+        "eventTimings": {
+          "totalDurationMs": 34040,
+          "llmDurationMs": 8474,
+          "toolCallCount": 1
+        },
+        "routeDecision": {
+          "source": "full_agent",
+          "matched": true,
+          "confidence": "model",
+          "route": "plan",
+          "fallbackReason": "no_direct_route",
+          "structuredReroute": null,
+          "toolTrial": {
+            "toolNames": [
+              "execute_plan_action"
+            ],
+            "toolNameCounts": {
+              "execute_plan_action": 1
+            },
+            "repeatedToolNames": [],
+            "hasRepeatedToolCalls": false,
+            "hasToolCalls": true
+          },
+          "agentRun": {
+            "promptLength": 11,
+            "historyLength": 4,
+            "nodeTimings": [
+              {
+                "index": 1,
+                "node": "UserPromptNode",
+                "durationMs": 0,
+                "status": "success"
+              },
+              {
+                "index": 2,
+                "node": "ModelRequestNode",
+                "durationMs": 2367,
+                "status": "success"
+              },
+              {
+                "index": 3,
+                "node": "CallToolsNode",
+                "durationMs": 64,
+                "status": "success",
+                "toolNames": [
+                  "execute_plan_action"
+                ]
+              },
+              {
+                "index": 4,
+                "node": "ModelRequestNode",
+                "durationMs": 6038,
+                "status": "success"
+              },
+              {
+                "index": 5,
+                "node": "CallToolsNode",
+                "durationMs": 0,
+                "status": "success"
+              }
+            ],
+            "firstToolCallAtMs": 2370,
+            "completed": true,
+            "currentNode": "CallToolsNode",
+            "currentNodeIndex": 5,
+            "firstToolNames": [
+              "execute_plan_action"
+            ],
+            "toolNameCounts": {
+              "execute_plan_action": 1
+            },
+            "totalDurationMs": 8474,
+            "requests": 2,
+            "toolCalls": 1
+          }
+        }
+      }
+    },
+    {
+      "case": "correctness-generate-needs-info",
+      "stepIndex": 1,
+      "sessionId": "99901599",
+      "prompt": "帮我出一版志愿方案",
+      "elapsedMs": 12008,
+      "firstMessageMs": 1214,
+      "finalMessageMs": 10006,
+      "primaryMessages": 7,
+      "thinkingMessages": 6,
+      "followupMessages": 0,
+      "responseText": "要生成志愿方案，还需要先补全基础信息。请先确认省份、分数、位次、选科、批次，以及主要专业或地域想法；信息补齐后我再帮你生成方案。",
+      "thinkingText": "正在读取当前会话信息...\n正在读取你的方案、偏好和审查结果...\n正在结合你的情况筛选适合重点看的专业...\n正在结合你的情况筛选适合重点看的院校...\n正在读取当前方案并整理这次请求...\n正在处理你的方案，请稍等...",
+      "turnObservability": {
+        "historyMessages": 13,
+        "toolCallCount": 5,
+        "toolReturnCount": 5,
+        "toolCalls": [
+          {
+            "name": "collect_plan_context_inputs",
+            "toolCallId": "functions.collect_plan_context_inputs:0",
+            "success": true
+          },
+          {
+            "name": "get_major_recommendations",
+            "toolCallId": "functions.get_major_recommendations:1"
+          },
+          {
+            "name": "get_school_recommendations",
+            "toolCallId": "functions.get_school_recommendations:2"
+          },
+          {
+            "name": "plan_next_action",
+            "toolCallId": "functions.plan_next_action:3",
+            "actionFamily": "generate_plan",
+            "stage": "preview",
+            "success": true
+          },
+          {
+            "name": "execute_plan_action",
+            "toolCallId": "functions.execute_plan_action:4",
+            "actionFamily": "generate_plan",
+            "stage": "preview",
+            "resultKind": "error",
+            "applied": false,
+            "success": false
+          }
+        ],
+        "actionFamilies": [
+          "generate_plan"
+        ],
+        "resultKinds": [
+          "error"
+        ],
+        "routingPath": "full_agent",
+        "eventTimings": {
+          "totalDurationMs": 9905,
+          "llmDurationMs": 9904,
+          "toolCallCount": 5
+        },
+        "routeDecision": {
+          "source": "full_agent",
+          "matched": true,
+          "confidence": "model",
+          "route": "plan",
+          "fallbackReason": "no_direct_route",
+          "structuredReroute": null,
+          "toolTrial": {
+            "toolNames": [
+              "collect_plan_context_inputs",
+              "get_major_recommendations",
+              "get_school_recommendations",
+              "plan_next_action",
+              "execute_plan_action"
+            ],
+            "toolNameCounts": {
+              "collect_plan_context_inputs": 1,
+              "get_major_recommendations": 1,
+              "get_school_recommendations": 1,
+              "plan_next_action": 1,
+              "execute_plan_action": 1
+            },
+            "repeatedToolNames": [],
+            "hasRepeatedToolCalls": false,
+            "hasToolCalls": true
+          },
+          "agentRun": {
+            "promptLength": 9,
+            "historyLength": 0,
+            "nodeTimings": [
+              {
+                "index": 1,
+                "node": "UserPromptNode",
+                "durationMs": 0,
+                "status": "success"
+              },
+              {
+                "index": 2,
+                "node": "ModelRequestNode",
+                "durationMs": 1211,
+                "status": "success"
+              },
+              {
+                "index": 3,
+                "node": "CallToolsNode",
+                "durationMs": 39,
+                "status": "success",
+                "toolNames": [
+                  "collect_plan_context_inputs"
+                ]
+              },
+              {
+                "index": 4,
+                "node": "ModelRequestNode",
+                "durationMs": 1609,
+                "status": "success"
+              },
+              {
+                "index": 5,
+                "node": "CallToolsNode",
+                "durationMs": 7,
+                "status": "success",
+                "toolNames": [
+                  "get_major_recommendations"
+                ]
+              },
+              {
+                "index": 6,
+                "node": "ModelRequestNode",
+                "durationMs": 2079,
+                "status": "success"
+              },
+              {
+                "index": 7,
+                "node": "CallToolsNode",
+                "durationMs": 11,
+                "status": "success",
+                "toolNames": [
+                  "get_school_recommendations"
+                ]
+              },
+              {
+                "index": 8,
+                "node": "ModelRequestNode",
+                "durationMs": 2919,
+                "status": "success"
+              },
+              {
+                "index": 9,
+                "node": "CallToolsNode",
+                "durationMs": 87,
+                "status": "success",
+                "toolNames": [
+                  "plan_next_action"
+                ]
+              },
+              {
+                "index": 10,
+                "node": "ModelRequestNode",
+                "durationMs": 1931,
+                "status": "success"
+              },
+              {
+                "index": 11,
+                "node": "CallToolsNode",
+                "durationMs": 1,
+                "status": "success",
+                "toolNames": [
+                  "execute_plan_action"
+                ]
+              }
+            ],
+            "firstToolCallAtMs": 1214,
+            "completed": true,
+            "currentNode": "CallToolsNode",
+            "currentNodeIndex": 11,
+            "firstToolNames": [
+              "collect_plan_context_inputs"
+            ],
+            "toolNameCounts": {
+              "collect_plan_context_inputs": 1,
+              "get_major_recommendations": 1,
+              "get_school_recommendations": 1,
+              "plan_next_action": 1,
+              "execute_plan_action": 1
+            },
+            "directToolReturn": true,
+            "totalDurationMs": 9904,
+            "requests": 5,
+            "toolCalls": 5
+          }
+        }
+      }
+    },
+    {
+      "case": "correctness-move-unit-26",
+      "stepIndex": 1,
+      "sessionId": "26",
+      "prompt": "把方案里第10个往前移到第3位",
+      "elapsedMs": 33162,
+      "firstMessageMs": 1216,
+      "finalMessageMs": 31148,
+      "primaryMessages": 5,
+      "thinkingMessages": 4,
+      "followupMessages": 1,
+      "responseText": "已列出调整预览：预览如下：\n\n- 源专业组：第 10 个专业组 — 江苏科技大学苏州理工学院，组内共 1 个专业\n- 目标位置：第3位（第 3 个专业组位置）\n- 移动方式：整组移动，组内专业顺序保持不变\n\n位置说明：这里的“第几个”按专业组顺序计算，不是按单条志愿位置计算；执行后该组内专业会保持连续。\n\n确认前不会改动当前方案。",
+      "thinkingText": "正在读取当前会话信息...\n正在理解你的问题，并结合当前信息整理回答...\n正在读取当前方案并整理这次请求...\n正在处理你的方案，请稍等...",
+      "turnObservability": {
+        "historyMessages": 7,
+        "toolCallCount": 2,
+        "toolReturnCount": 2,
+        "toolCalls": [
+          {
+            "name": "plan_next_action",
+            "toolCallId": "functions.plan_next_action:0",
+            "actionFamily": "move_ordered_unit",
+            "stage": "preview",
+            "success": true
+          },
+          {
+            "name": "execute_plan_action",
+            "toolCallId": "functions.execute_plan_action:1",
+            "actionFamily": "move_ordered_unit",
+            "stage": "preview",
+            "resultKind": "preview_only",
+            "applied": false,
+            "success": true
+          }
+        ],
+        "actionFamilies": [
+          "move_ordered_unit"
+        ],
+        "resultKinds": [
+          "preview_only"
+        ],
+        "routingPath": "full_agent",
+        "eventTimings": {
+          "totalDurationMs": 30989,
+          "llmDurationMs": 11501,
+          "toolCallCount": 2
+        },
+        "routeDecision": {
+          "source": "full_agent",
+          "matched": true,
+          "confidence": "model",
+          "route": "plan",
+          "fallbackReason": "no_direct_route",
+          "structuredReroute": null,
+          "toolTrial": {
+            "toolNames": [
+              "plan_next_action",
+              "execute_plan_action"
+            ],
+            "toolNameCounts": {
+              "plan_next_action": 1,
+              "execute_plan_action": 1
+            },
+            "repeatedToolNames": [],
+            "hasRepeatedToolCalls": false,
+            "hasToolCalls": true
+          },
+          "agentRun": {
+            "promptLength": 15,
+            "historyLength": 0,
+            "nodeTimings": [
+              {
+                "index": 1,
+                "node": "UserPromptNode",
+                "durationMs": 0,
+                "status": "success"
+              },
+              {
+                "index": 2,
+                "node": "ModelRequestNode",
+                "durationMs": 2443,
+                "status": "success"
+              },
+              {
+                "index": 3,
+                "node": "CallToolsNode",
+                "durationMs": 282,
+                "status": "success",
+                "toolNames": [
+                  "plan_next_action"
+                ]
+              },
+              {
+                "index": 4,
+                "node": "ModelRequestNode",
+                "durationMs": 8554,
+                "status": "success"
+              },
+              {
+                "index": 5,
+                "node": "CallToolsNode",
+                "durationMs": 218,
+                "status": "success",
+                "toolNames": [
+                  "execute_plan_action"
+                ]
+              }
+            ],
+            "firstToolCallAtMs": 2444,
+            "completed": true,
+            "currentNode": "CallToolsNode",
+            "currentNodeIndex": 5,
+            "firstToolNames": [
+              "plan_next_action"
+            ],
+            "toolNameCounts": {
+              "plan_next_action": 1,
+              "execute_plan_action": 1
+            },
+            "directToolReturn": true,
+            "totalDurationMs": 11500,
+            "requests": 2,
+            "toolCalls": 2
+          }
+        }
+      },
+      "followupCount": 1,
+      "followupTargets": [],
+      "followupRefreshes": [],
+      "followupTypes": [
+        "pendingConfirmationCard"
+      ]
+    },
+    {
+      "case": "correctness-move-unit-26",
+      "stepIndex": 2,
+      "sessionId": "26",
+      "prompt": "确认移动",
+      "elapsedMs": 3036,
+      "firstMessageMs": 1020,
+      "finalMessageMs": 1020,
+      "primaryMessages": 1,
+      "thinkingMessages": 0,
+      "followupMessages": 1,
+      "responseText": "已将该专业组移动到第 3 位，方案顺序已更新。\n\n复审结果：\n执行方案审查失败，请稍后重试。",
+      "thinkingText": "",
+      "turnObservability": {
+        "historyMessages": 5,
+        "toolCallCount": 1,
+        "toolReturnCount": 1,
+        "toolCalls": [
+          {
+            "name": "execute_plan_action",
+            "toolCallId": "short_text-move_ordered_unit-confirmation",
+            "actionFamily": "move_ordered_unit",
+            "stage": "apply",
+            "resultKind": "mutation_result",
+            "applied": true,
+            "success": true
+          }
+        ],
+        "actionFamilies": [
+          "move_ordered_unit"
+        ],
+        "resultKinds": [
+          "mutation_result"
+        ],
+        "routingPath": "pending_plan_short_text_confirm",
+        "eventTimings": {
+          "totalDurationMs": 583,
+          "toolCallCount": 0
+        },
+        "routeDecision": {
+          "source": "proposal_compiler",
+          "matched": true,
+          "route": "apply_existing_pending"
+        }
+      },
+      "followupCount": 1,
+      "followupTargets": [
+        "ordered"
+      ],
+      "followupRefreshes": [
+        true
+      ],
+      "followupTypes": [
+        "planningWorkspaceAction"
+      ]
+    },
+    {
+      "case": "correctness-query-specific-school-26",
+      "stepIndex": 1,
+      "sessionId": "26",
+      "prompt": "方案里有没有南京航空航天大学的",
+      "elapsedMs": 32733,
+      "firstMessageMs": 1214,
+      "finalMessageMs": 30731,
+      "primaryMessages": 3,
+      "thinkingMessages": 2,
+      "followupMessages": 0,
+      "responseText": "当前还没有生成正式方案。\n\n你可以直接说“帮我生成一版方案”，我会按你的成绩和偏好先生成方案，再继续做审查和调整。",
+      "thinkingText": "正在读取当前会话信息...\n正在根据当前方案提醒整理调整预览...",
+      "turnObservability": {
+        "historyMessages": 5,
+        "toolCallCount": 1,
+        "toolReturnCount": 1,
+        "toolCalls": [
+          {
+            "name": "execute_plan_action",
+            "toolCallId": "semantic-query_state",
+            "actionFamily": "query_state",
+            "stage": "apply",
+            "resultKind": "status_overview",
+            "applied": true,
+            "success": true
+          }
+        ],
+        "actionFamilies": [
+          "query_state"
+        ],
+        "resultKinds": [
+          "status_overview"
+        ],
+        "routingPath": "semantic_plan_action",
+        "eventTimings": {
+          "totalDurationMs": 30580,
+          "toolDurationMs": 502,
+          "toolCallCount": 1
+        },
+        "routeDecision": {
+          "source": "semantic_plan_action",
+          "matched": true,
+          "confidence": 0.85,
+          "route": "query_state",
+          "originalRoute": "query_state",
+          "sideEffect": "readonly",
+          "outputType": "readonly",
+          "reason": "用户询问当前方案中是否包含南京航空航天大学，这是一个关于方案内容是否包含特定学校的查询，属于查看当前方案状态和构成的范畴。用户没有要求审查风险、分析调整或生成处理预览，只是想知道某所学校是否在方案中。",
+          "targetStrategies": [],
+          "targetIssueCodes": [],
+          "replyFocus": [],
+          "recentPlanContext": {},
+          "displayPayload": {
+            "presentation": "readonly_answer"
+          }
+        }
+      },
+      "contentViolations": [
+        "correctness-query-specific-school-26 session=26 prompt=方案里有没有南京航空航天大学的: assertContains FAILED — expected '南京航空航天' not found in response"
+      ]
+    },
+    {
+      "case": "correctness-analyze-adjustment-35",
+      "stepIndex": 1,
+      "sessionId": "35",
+      "prompt": "帮我分析一下方案还有什么可以优化的",
+      "elapsedMs": 71576,
+      "firstMessageMs": 1216,
+      "finalMessageMs": 69575,
+      "primaryMessages": 3,
+      "thinkingMessages": 2,
+      "followupMessages": 0,
+      "responseText": "根据审查结果，你的方案目前还有这些优化空间：\n\n**核心问题**\n- 录取概率倒挂：部分志愿排序与实际录取概率反向，涉及 2 个专业组、11 条志愿\n- 概率梯度断层：冲/稳/保之间缺少过渡，风险衔接不连续\n\n**两个处理方向**\n\n1. **调整录取率顺序** — 我可以先列出调整预览，确认前不会改方案。主要是把相邻专业组按真实录取概率重新理顺。\n\n2. **补齐录取率梯度** — 这个需要你决定取舍范围。因为当前缺少风险更低、且与你目标匹配的可替换志愿，需要你先确认是否接受降层次或放宽专业范围，我才能补充合适的过渡志愿。\n\n你想先看哪个方向的调整预览？",
+      "thinkingText": "正在读取当前会话信息...\n正在重新检查当前方案...",
+      "turnObservability": {
+        "historyMessages": 5,
+        "toolCallCount": 1,
+        "toolReturnCount": 1,
+        "toolCalls": [
+          {
+            "name": "execute_plan_action",
+            "toolCallId": "semantic-review_plan",
+            "actionFamily": "review_plan",
+            "stage": "review",
+            "resultKind": "review_result",
+            "applied": true,
+            "success": true
+          }
+        ],
+        "actionFamilies": [
+          "review_plan"
+        ],
+        "resultKinds": [
+          "review_result"
+        ],
+        "routingPath": "semantic_plan_action",
+        "eventTimings": {
+          "totalDurationMs": 69434,
+          "llmDurationMs": 5290,
+          "toolDurationMs": 406,
+          "toolCallCount": 1
+        },
+        "routeDecision": {
+          "source": "semantic_plan_action",
+          "matched": true,
+          "confidence": 0.85,
+          "route": "review_plan",
+          "originalRoute": "analyze_adjustment",
+          "sideEffect": "readonly_or_plan_preview",
+          "outputType": "readonly_or_plan_mutation",
+          "reason": "用户要求'分析还有什么可以优化'，这是一个开放性的优化方向询问，属于想理解问题、比较处理方向，但尚未明确要求生成一版可确认的调整内容。上下文显示方案已通过审查，存在1个风险和4个警告，包括录取概率倒挂和概率梯度断层。用户没有说'生成预览'或'给我一版可确认的调整'，因此不是preview_fix_proposal；也不是单纯查看状态(query_state)或重新审查(review_plan)。用户想要的是优化方向的分析和建议，符合analyze_adjustment的定义。",
+          "targetStrategies": [
+            "sort_by_probability",
+            "fill_probability_gap",
+            "rebalance_tier_ratio"
+          ],
+          "targetIssueCodes": [
+            "probability_inversion",
+            "probability_gap"
+          ],
+          "replyFocus": [],
+          "turnDecision": {
+            "taskLayer": "plan",
+            "sideEffect": "readonly_or_plan_preview",
+            "scopeAnchor": "current_plan",
+            "scenario": "plan_review_or_repair_preview",
+            "targetIssue": [],
+            "confidence": 0.95,
+            "reason": "用户在有正式方案且无pending的情况下，请求分析当前方案还有哪些可优化之处，属于方案审查与改进预览，并未要求直接执行修改。"
+          },
+          "recentPlanContext": {},
+          "displayPayload": {
+            "presentation": "conditional_options"
+          }
+        }
+      }
+    },
+    {
+      "case": "correctness-state-then-review-chain-35",
+      "stepIndex": 1,
+      "sessionId": "35",
+      "prompt": "方案有多少个志愿",
+      "elapsedMs": 27228,
+      "firstMessageMs": 1211,
+      "finalMessageMs": 25225,
+      "primaryMessages": 3,
+      "thinkingMessages": 2,
+      "followupMessages": 0,
+      "responseText": "我看了当前方案，核心情况如下：\n\n- 完整度：28/30 个志愿。\n- 冲稳保：冲7 / 稳9 / 保12。\n- 审查：风险 1 项，提醒 4 项。\n- 前排示例：厦门大学(马来西亚分校)(02)-计算机科学与技术(2.9万林吉特)(专业要求外语成绩不低于120分；收费标准币种为马来西亚林吉特，以实际汇率为准；全英文授课，非英语语种考生慎重填报，入学第一学年内获得专业要求的达标英语成绩后开始学位课程学习；办学地点：马来西亚雪邦)(冲)录取率30%第1位；厦门大学(马来西亚分校)(02)-自动化(3万林吉特)(专业要求外语成绩不低于120分；收费标准币种为马来西亚林吉特，以实际汇率为准；全英文授课，非英语语种考生慎重填报，入学第一学年内获得专业要求的达标英语成绩后开始学位课程学习；办学地点：马来西亚雪邦)(冲)录取率46%第2位；厦门大学(马来西亚分校)(02)-电子信息工程(2.9万林吉特)(专业要求外语成绩不低于120分；收费标准币种为马来西亚林吉特，以实际汇率为准；全英文授课，非英语语种考生慎重填报，入学第一学年内获得专业要求的达标英语成绩后开始学位课程学习；办学地点：马来西亚雪邦)(冲)录取率18%第3位。\n- 重点提醒：当前排序存在录取概率倒挂；当前录取概率梯度存在断层。\n\n下一步可以继续看审查明细，或直接告诉我想往更稳、某个地域、某类专业方向调整。",
+      "thinkingText": "正在读取当前会话信息...\n正在根据当前方案提醒整理调整预览...",
+      "turnObservability": {
+        "historyMessages": 5,
+        "toolCallCount": 1,
+        "toolReturnCount": 1,
+        "toolCalls": [
+          {
+            "name": "execute_plan_action",
+            "toolCallId": "semantic-query_state",
+            "actionFamily": "query_state",
+            "stage": "apply",
+            "resultKind": "status_overview",
+            "applied": true,
+            "success": true
+          }
+        ],
+        "actionFamilies": [
+          "query_state"
+        ],
+        "resultKinds": [
+          "status_overview"
+        ],
+        "routingPath": "semantic_plan_action",
+        "eventTimings": {
+          "totalDurationMs": 25133,
+          "toolDurationMs": 226,
+          "toolCallCount": 1
+        },
+        "routeDecision": {
+          "source": "semantic_plan_action",
+          "matched": true,
+          "confidence": 0.95,
+          "route": "query_state",
+          "originalRoute": "query_state",
+          "sideEffect": "readonly",
+          "outputType": "readonly",
+          "reason": "用户明确询问当前方案的志愿数量，属于单纯查看现状统计信息，不涉及风险审查、调整分析或修复预览。planningSummary 显示 orderedTotal=28，用户问'有多少个志愿'是典型的 query_state 场景。",
+          "targetStrategies": [],
+          "targetIssueCodes": [],
+          "replyFocus": [],
+          "recentPlanContext": {},
+          "displayPayload": {
+            "presentation": "readonly_answer"
+          }
+        }
+      }
+    },
+    {
+      "case": "correctness-state-then-review-chain-35",
+      "stepIndex": 2,
+      "sessionId": "35",
+      "prompt": "然后审查一下有没有什么风险",
+      "elapsedMs": 38128,
+      "firstMessageMs": 1263,
+      "finalMessageMs": 36126,
+      "primaryMessages": 3,
+      "thinkingMessages": 2,
+      "followupMessages": 0,
+      "responseText": "已审查完毕，核心情况如下：\n\n- **风险1项，提醒4项**：主要问题是当前排序存在**录取概率倒挂**，以及**录取概率梯度存在断层**，共涉及11条志愿、2个专业组。\n\n- **可以先列出调整预览**：按录取率重排顺序。我可以先列出调整预览，确认前不会改方案。\n\n- **需要你先决定**：补齐梯度断层涉及新增志愿，需要你确认是否接受补充相关专业组，以及是否放宽地域或专业范围来填补缺口。\n\n另外，目前志愿数28个，距离目标还差2个，也可以一并考虑补齐。你想先看排序调整预览，还是先讨论怎么补这2个空缺？",
+      "thinkingText": "正在读取当前会话信息...\n正在重新检查当前方案...",
+      "turnObservability": {
+        "historyMessages": 5,
+        "toolCallCount": 1,
+        "toolReturnCount": 1,
+        "toolCalls": [
+          {
+            "name": "execute_plan_action",
+            "toolCallId": "semantic-review_plan",
+            "actionFamily": "review_plan",
+            "stage": "review",
+            "resultKind": "review_result",
+            "applied": true,
+            "success": true
+          }
+        ],
+        "actionFamilies": [
+          "review_plan"
+        ],
+        "resultKinds": [
+          "review_result"
+        ],
+        "routingPath": "semantic_plan_action",
+        "eventTimings": {
+          "totalDurationMs": 35896,
+          "llmDurationMs": 4884,
+          "toolDurationMs": 451,
+          "toolCallCount": 1
+        },
+        "routeDecision": {
+          "source": "semantic_plan_action",
+          "matched": true,
+          "confidence": 0.9,
+          "route": "review_plan",
+          "originalRoute": "review_plan",
+          "sideEffect": "readonly",
+          "outputType": "readonly",
+          "reason": "用户明确说'审查一下有没有什么风险'，这是典型的重新审查风险、查看审查结论的请求。planningSummary.phase为reviewed，已有审查结果（riskSummaries显示录取概率倒挂和断层），且recentPlanContext.lastActionFamily为query_state，用户现在主动要求审查，属于review_plan范畴。用户没有要求生成可确认的调整预览，也没有问为什么或怎么取舍，只是要求审查风险。",
+          "targetStrategies": [],
+          "targetIssueCodes": [
+            "probability_inversion",
+            "probability_gap"
+          ],
+          "replyFocus": [],
+          "recentPlanContext": {
+            "lastActionFamily": "query_state",
+            "lastResultKind": "status_overview",
+            "summary": "方案已经有了，目前有 28/30 个志愿。\n- 梯度分布：冲7 / 稳9 / 保12。\n- 院校性质：公办 83 个，民办 0 个，已知院校性质里公办占比约 100.0%。\n- 审查提醒：风险 1 项，提醒 4 项。\n- 数量缺口：当前志愿数量不足，还差 2 个。\n- 需要关注：当前排序存在录取概率倒挂；当前录取概率梯度存在断层。\n- 候选供给：候选池共 75 个，冲24 / 稳24 / 保27。\n- 前排示例：厦门大学(马来西亚分校)(02)-计算机科学与技术(2.9万林吉特)(专业要求外语成绩不低于120分；收费标准币种为马来西亚林吉特，以实际汇率为准；全英文授课，非英语语种考生慎重填报，入学第一学年内获得专业要求的达标英语成绩后开始学位课程学习；办学地点：马来西亚雪邦)(冲)录取率30%第1位；厦门大学(马来西亚分校)(02)-自动化(3万林吉特)(专业要求外语成绩不低于120分；收费标准币种为马来西亚林吉特，以实际汇率为准；全英文授课，非英语语种考生慎重填报，入学第一学年内获得专业要求的达标英语成绩后开始学位课程学习；办学地点：马来西亚雪邦)(冲)录取率46%第2位；厦门大学(马来西亚分校)(02)-电子信息工程(2.9万林吉特)(专业要求外语成绩不低于120分；收费标准币种为马来西亚林吉特，以实际汇率为准；全英文授课，非英语语种考生慎重填报，入学第一学年内获得专业要求的达标英语成绩后开始学位课程学习；办学地点：马来西亚雪邦)(冲)录取率18%第3位。\n你可以继续看审查详情，或者告诉我想按地域、专业、稳妥程度怎么调。",
+            "replyFocus": [
+              "current_state",
+              "count_target",
+              "risk_warning",
+              "tier_distribution",
+              "school_nature_distribution",
+              "sample_items",
+              "intent_match",
+              "count_gap",
+              "candidate_supply"
+            ],
+            "fixProposals": {
+              "readyCount": 0,
+              "blockedCount": 0,
+              "previewOnlyCount": 0,
+              "proposalSource": "",
+              "strategyCounts": {},
+              "strategies": [],
+              "proposals": []
+            }
+          },
+          "displayPayload": {
+            "presentation": "readonly_answer"
+          }
+        }
+      }
+    },
+    {
+      "case": "correctness-sort-by-school-rank-major-group-35",
+      "stepIndex": 1,
+      "sessionId": "35",
+      "prompt": "按院校层次给当前方案排序",
+      "elapsedMs": 26863,
+      "firstMessageMs": 1215,
+      "finalMessageMs": 24851,
+      "primaryMessages": 4,
+      "thinkingMessages": 3,
+      "followupMessages": 1,
+      "responseText": "已列出调整预览：会按院校层次重新排序当前方案，排序方向是升序（院校排名/层次更靠前的机会优先）。当前方案共 28/30 个；当前冲稳保为：冲7 / 稳9 / 保12。按这个口径预览，前几项大致会变成：厦门大学(马来西亚分校)(02)（冲，院校层次37，原第1位）；南京航空航天大学(03)（冲，院校层次43，原第7位）；南京理工大学(03)（冲，院校层次53，原第12位）；山东大学威海分校(02)（冲，院校层次61，原第15位）；中国传媒大学(05)（稳，院校层次72，原第16位）。这会实际改变方案顺序和导出顺序，并让审查状态进入待重新审查。\n\n确认前不会改动当前方案。",
+      "thinkingText": "正在读取当前会话信息...\n正在理解你的问题，并结合当前信息整理回答...\n正在处理你的方案，请稍等...",
+      "turnObservability": {
+        "historyMessages": 5,
+        "toolCallCount": 1,
+        "toolReturnCount": 1,
+        "toolCalls": [
+          {
+            "name": "execute_plan_action",
+            "toolCallId": "functions.execute_plan_action:0",
+            "actionFamily": "sort_ordered_plan",
+            "stage": "preview",
+            "resultKind": "preview_only",
+            "applied": false,
+            "success": true
+          }
+        ],
+        "actionFamilies": [
+          "sort_ordered_plan"
+        ],
+        "resultKinds": [
+          "preview_only"
+        ],
+        "routingPath": "full_agent",
+        "eventTimings": {
+          "totalDurationMs": 24757,
+          "llmDurationMs": 3638,
+          "toolCallCount": 1
+        },
+        "routeDecision": {
+          "source": "full_agent",
+          "matched": true,
+          "confidence": "model",
+          "route": "plan",
+          "fallbackReason": "no_direct_route",
+          "structuredReroute": null,
+          "toolTrial": {
+            "toolNames": [
+              "execute_plan_action"
+            ],
+            "toolNameCounts": {
+              "execute_plan_action": 1
+            },
+            "repeatedToolNames": [],
+            "hasRepeatedToolCalls": false,
+            "hasToolCalls": true
+          },
+          "agentRun": {
+            "promptLength": 12,
+            "historyLength": 0,
+            "nodeTimings": [
+              {
+                "index": 1,
+                "node": "UserPromptNode",
+                "durationMs": 0,
+                "status": "success"
+              },
+              {
+                "index": 2,
+                "node": "ModelRequestNode",
+                "durationMs": 3506,
+                "status": "success"
+              },
+              {
+                "index": 3,
+                "node": "CallToolsNode",
+                "durationMs": 130,
+                "status": "success",
+                "toolNames": [
+                  "execute_plan_action"
+                ]
+              }
+            ],
+            "firstToolCallAtMs": 3508,
+            "completed": true,
+            "currentNode": "CallToolsNode",
+            "currentNodeIndex": 3,
+            "firstToolNames": [
+              "execute_plan_action"
+            ],
+            "toolNameCounts": {
+              "execute_plan_action": 1
+            },
+            "directToolReturn": true,
+            "totalDurationMs": 3638,
+            "requests": 1,
+            "toolCalls": 1
+          }
+        }
+      },
+      "followupCount": 1,
+      "followupTargets": [],
+      "followupRefreshes": [],
+      "followupTypes": [
+        "pendingConfirmationCard"
+      ]
+    },
+    {
+      "case": "correctness-sort-by-school-rank-major-group-35",
+      "stepIndex": 2,
+      "sessionId": "35",
+      "prompt": "确认",
+      "elapsedMs": 2701,
+      "firstMessageMs": 681,
+      "finalMessageMs": 681,
+      "primaryMessages": 1,
+      "thinkingMessages": 0,
+      "followupMessages": 2,
+      "responseText": "已按院校层次重新排序当前方案，当前方案共 28/30 个。排序会影响导出顺序，方案已经进入待重新审查状态，建议再点一次审查看看风险是否变化。\n\n复审结果：\n已完成当前方案审查。\n- 审查结果：风险1项，提醒4项，通过9项\n- 主要问题：当前排序存在录取概率倒挂；当前录取概率梯度存在断层；当前志愿数量少于官方要求\n如果你想继续处理，我会优先按后端处理建议给出调整预览，确认前不会改动方案。",
+      "thinkingText": "",
+      "turnObservability": {
+        "historyMessages": 5,
+        "toolCallCount": 1,
+        "toolReturnCount": 1,
+        "toolCalls": [
+          {
+            "name": "execute_plan_action",
+            "toolCallId": "short_text-sort_ordered_plan-confirmation",
+            "actionFamily": "sort_ordered_plan",
+            "stage": "apply",
+            "resultKind": "mutation_result",
+            "applied": true,
+            "success": true
+          }
+        ],
+        "actionFamilies": [
+          "sort_ordered_plan"
+        ],
+        "resultKinds": [
+          "mutation_result"
+        ],
+        "routingPath": "pending_plan_short_text_confirm",
+        "eventTimings": {
+          "totalDurationMs": 452,
+          "toolCallCount": 0
+        },
+        "routeDecision": {
+          "source": "proposal_compiler",
+          "matched": true,
+          "route": "apply_existing_pending"
+        }
+      },
+      "followupCount": 2,
+      "followupTargets": [
+        "ordered",
+        "review"
+      ],
+      "followupRefreshes": [
+        true,
+        true
+      ],
+      "followupTypes": [
+        "planningWorkspaceAction"
+      ]
+    },
+    {
+      "case": "correctness-sort-by-admission-ratio-major-26",
+      "stepIndex": 1,
+      "sessionId": "26",
+      "prompt": "按录取率给当前方案排序",
+      "elapsedMs": 36624,
+      "firstMessageMs": 1214,
+      "finalMessageMs": 34608,
+      "primaryMessages": 6,
+      "thinkingMessages": 5,
+      "followupMessages": 1,
+      "responseText": "已列出调整预览：会按录取率重新排序当前方案，排序方向是升序（录取率低的冲档机会会更靠前，录取率高的保底机会会更靠后）。当前方案共 96/96 个；当前冲稳保为：冲38 / 稳28 / 保30。按这个口径预览，前几项大致会变成：北部湾大学（冲，录取率42%，原第3位）；百色学院（冲，录取率42%，原第8位）；淮南师范学院（冲，录取率42%，原第9位）；萍乡学院（冲，录取率42%，原第10位）；枣庄学院（冲，录取率42%，原第11位）。这会实际改变方案顺序和导出顺序，并让审查状态进入待重新审查。\n\n确认前不会改动当前方案。",
+      "thinkingText": "正在读取当前会话信息...\n正在理解你的问题，并结合当前信息整理回答...\n正在读取当前方案并整理这次请求...\n还在处理，这轮需要结合当前信息整理结论，请稍等...\n正在处理你的方案，请稍等...",
+      "turnObservability": {
+        "historyMessages": 7,
+        "toolCallCount": 2,
+        "toolReturnCount": 2,
+        "toolCalls": [
+          {
+            "name": "plan_next_action",
+            "toolCallId": "functions.plan_next_action:0",
+            "actionFamily": "sort_ordered_plan",
+            "stage": "preview",
+            "success": true
+          },
+          {
+            "name": "execute_plan_action",
+            "toolCallId": "functions.execute_plan_action:1",
+            "actionFamily": "sort_ordered_plan",
+            "stage": "preview",
+            "resultKind": "preview_only",
+            "applied": false,
+            "success": true
+          }
+        ],
+        "actionFamilies": [
+          "sort_ordered_plan"
+        ],
+        "resultKinds": [
+          "preview_only"
+        ],
+        "routingPath": "full_agent",
+        "eventTimings": {
+          "totalDurationMs": 34449,
+          "llmDurationMs": 12545,
+          "toolCallCount": 2
+        },
+        "routeDecision": {
+          "source": "full_agent",
+          "matched": true,
+          "confidence": "model",
+          "route": "plan",
+          "fallbackReason": "no_direct_route",
+          "structuredReroute": null,
+          "toolTrial": {
+            "toolNames": [
+              "plan_next_action",
+              "execute_plan_action"
+            ],
+            "toolNameCounts": {
+              "plan_next_action": 1,
+              "execute_plan_action": 1
+            },
+            "repeatedToolNames": [],
+            "hasRepeatedToolCalls": false,
+            "hasToolCalls": true
+          },
+          "agentRun": {
+            "promptLength": 11,
+            "historyLength": 0,
+            "nodeTimings": [
+              {
+                "index": 1,
+                "node": "UserPromptNode",
+                "durationMs": 0,
+                "status": "success"
+              },
+              {
+                "index": 2,
+                "node": "ModelRequestNode",
+                "durationMs": 2687,
+                "status": "success"
+              },
+              {
+                "index": 3,
+                "node": "CallToolsNode",
+                "durationMs": 362,
+                "status": "success",
+                "toolNames": [
+                  "plan_next_action"
+                ]
+              },
+              {
+                "index": 4,
+                "node": "ModelRequestNode",
+                "durationMs": 9267,
+                "status": "success"
+              },
+              {
+                "index": 5,
+                "node": "CallToolsNode",
+                "durationMs": 225,
+                "status": "success",
+                "toolNames": [
+                  "execute_plan_action"
+                ]
+              }
+            ],
+            "firstToolCallAtMs": 2689,
+            "completed": true,
+            "currentNode": "CallToolsNode",
+            "currentNodeIndex": 5,
+            "firstToolNames": [
+              "plan_next_action"
+            ],
+            "toolNameCounts": {
+              "plan_next_action": 1,
+              "execute_plan_action": 1
+            },
+            "directToolReturn": true,
+            "totalDurationMs": 12545,
+            "requests": 2,
+            "toolCalls": 2
+          }
+        }
+      },
+      "followupCount": 1,
+      "followupTargets": [],
+      "followupRefreshes": [],
+      "followupTypes": [
+        "pendingConfirmationCard"
+      ]
+    },
+    {
+      "case": "correctness-sort-by-admission-ratio-major-26",
+      "stepIndex": 2,
+      "sessionId": "26",
+      "prompt": "确认排序",
+      "elapsedMs": 2960,
+      "firstMessageMs": 946,
+      "finalMessageMs": 946,
+      "primaryMessages": 1,
+      "thinkingMessages": 0,
+      "followupMessages": 1,
+      "responseText": "已按录取率重新排序当前方案，当前方案共 96/96 个。排序会影响导出顺序，方案已经进入待重新审查状态，建议再点一次审查看看风险是否变化。\n\n复审结果：\n执行方案审查失败，请稍后重试。",
+      "thinkingText": "",
+      "turnObservability": {
+        "historyMessages": 5,
+        "toolCallCount": 1,
+        "toolReturnCount": 1,
+        "toolCalls": [
+          {
+            "name": "execute_plan_action",
+            "toolCallId": "short_text-sort_ordered_plan-confirmation",
+            "actionFamily": "sort_ordered_plan",
+            "stage": "apply",
+            "resultKind": "mutation_result",
+            "applied": true,
+            "success": true
+          }
+        ],
+        "actionFamilies": [
+          "sort_ordered_plan"
+        ],
+        "resultKinds": [
+          "mutation_result"
+        ],
+        "routingPath": "pending_plan_short_text_confirm",
+        "eventTimings": {
+          "totalDurationMs": 577,
+          "toolCallCount": 0
+        },
+        "routeDecision": {
+          "source": "proposal_compiler",
+          "matched": true,
+          "route": "apply_existing_pending"
+        }
+      },
+      "followupCount": 1,
+      "followupTargets": [
+        "ordered"
+      ],
+      "followupRefreshes": [
+        true
+      ],
+      "followupTypes": [
+        "planningWorkspaceAction"
+      ]
+    },
+    {
+      "case": "correctness-pin-disabled-in-301-35",
+      "stepIndex": 1,
+      "sessionId": "35",
+      "prompt": "把第一个志愿锁定在第一位",
+      "elapsedMs": 18795,
+      "firstMessageMs": 1212,
+      "finalMessageMs": 16794,
+      "primaryMessages": 2,
+      "thinkingMessages": 1,
+      "followupMessages": 0,
+      "responseText": "你这次的诉求是：把第一个志愿锁定在第一位\n\n这属于锁定/固定当前方案位置的动作。当前还没有可执行的锁定动作，所以不会创建确认卡，也不会改动方案。\n\n你可以先核对当前位置；后续如果要做已支持的排序调整，可以说明目标档位和目标位置。",
+      "thinkingText": "正在读取当前会话信息...",
+      "turnObservability": {
+        "historyMessages": 3,
+        "toolCallCount": 0,
+        "toolReturnCount": 0,
+        "toolCalls": [],
+        "actionFamilies": [],
+        "resultKinds": [],
+        "routingPath": "direct_local_plan_action_unsupported",
+        "eventTimings": {
+          "totalDurationMs": 16640,
+          "toolDurationMs": 0,
+          "toolCallCount": 0
+        },
+        "routeDecision": {
+          "source": "proposal_compiler",
+          "matched": true,
+          "route": "local_plan_action_unsupported",
+          "sideEffect": "plan_preview_or_clarification",
+          "actionFamily": "pin_or_lock_unit",
+          "unsupportedAction": "pin_or_lock_unit",
+          "confidence": 0.95,
+          "reason": "用户要求'锁定在第一位'，这是锁定/固定(pin/lock)操作，不是移动操作；当前不支持锁定功能，应输出 unsupportedAction=pin_or_lock_unit"
+        }
+      }
+    },
+    {
+      "case": "correctness-candidate-filter-visible-constraint-35",
+      "stepIndex": 1,
+      "sessionId": "35",
+      "prompt": "不去上海，看看候选",
+      "elapsedMs": 100768,
+      "firstMessageMs": 1216,
+      "finalMessageMs": 98751,
+      "primaryMessages": 6,
+      "thinkingMessages": 5,
+      "followupMessages": 1,
+      "responseText": "已列出这次报考想法预览：排除地域：上海。\n\n点“采纳”前不会生效。",
+      "thinkingText": "正在读取当前会话信息...\n正在理解你的问题，并结合当前信息整理回答...\n正在整理这个地域想法的影响和边界...\n正在查当前方案和候选里的相关结果...\n还在处理，这轮需要结合当前信息整理结论，请稍等...",
+      "turnObservability": {
+        "historyMessages": 5,
+        "toolCallCount": 2,
+        "toolReturnCount": 2,
+        "toolCalls": [
+          {
+            "name": "preview_current_region_intent_confirmation",
+            "toolCallId": "functions.preview_current_region_intent_confirmation:0",
+            "success": true
+          },
+          {
+            "name": "query_volunteer_plan",
+            "toolCallId": "functions.query_volunteer_plan:1"
+          }
+        ],
+        "actionFamilies": [],
+        "resultKinds": [],
+        "routingPath": "full_agent",
+        "eventTimings": {
+          "totalDurationMs": 98647,
+          "llmDurationMs": 14621,
+          "toolCallCount": 2
+        },
+        "routeDecision": {
+          "source": "full_agent",
+          "matched": true,
+          "confidence": "model",
+          "route": "plan",
+          "fallbackReason": "no_direct_route",
+          "structuredReroute": null,
+          "toolTrial": {
+            "toolNames": [
+              "preview_current_region_intent_confirmation",
+              "query_volunteer_plan"
+            ],
+            "toolNameCounts": {
+              "preview_current_region_intent_confirmation": 1,
+              "query_volunteer_plan": 1
+            },
+            "repeatedToolNames": [],
+            "hasRepeatedToolCalls": false,
+            "hasToolCalls": true
+          },
+          "agentRun": {
+            "promptLength": 9,
+            "historyLength": 0,
+            "nodeTimings": [
+              {
+                "index": 1,
+                "node": "UserPromptNode",
+                "durationMs": 0,
+                "status": "success"
+              },
+              {
+                "index": 2,
+                "node": "ModelRequestNode",
+                "durationMs": 2794,
+                "status": "success"
+              },
+              {
+                "index": 3,
+                "node": "CallToolsNode",
+                "durationMs": 6533,
+                "status": "success",
+                "toolNames": [
+                  "preview_current_region_intent_confirmation",
+                  "query_volunteer_plan"
+                ]
+              },
+              {
+                "index": 4,
+                "node": "ModelRequestNode",
+                "durationMs": 5291,
+                "status": "success"
+              },
+              {
+                "index": 5,
+                "node": "CallToolsNode",
+                "durationMs": 0,
+                "status": "success"
+              }
+            ],
+            "firstToolCallAtMs": 2795,
+            "completed": true,
+            "currentNode": "CallToolsNode",
+            "currentNodeIndex": 5,
+            "firstToolNames": [
+              "preview_current_region_intent_confirmation",
+              "query_volunteer_plan"
+            ],
+            "toolNameCounts": {
+              "preview_current_region_intent_confirmation": 1,
+              "query_volunteer_plan": 1
+            },
+            "toolInternalTimings": [
+              {
+                "tool": "query_volunteer_plan",
+                "sessionId": "35",
+                "requestedScope": "candidate",
+                "resolvedScope": "candidate",
+                "status": "success",
+                "durationMs": 3436,
+                "hasStructuredFilters": true,
+                "filterKeys": [
+                  "province_names",
+                  "city_names"
+                ],
+                "steps": [
+                  {
+                    "step": "normalize_explicit_filters",
+                    "durationMs": 0
+                  },
+                  {
+                    "step": "extract_candidate_filters",
+                    "durationMs": 3343
+                  },
+                  {
+                    "step": "query_candidate_with_filters",
+                    "durationMs": 92
+                  }
+                ]
+              }
+            ],
+            "intentSideEffectDecision": {
+              "decision": "intent_preview",
+              "confidence": 0.95,
+              "constraintIntentType": "default",
+              "preferenceStrength": {
+                "exclude_hard": [
+                  "上海"
+                ]
+              },
+              "preferenceScope": null,
+              "entityPolaritySpans": [
+                {
+                  "entity": "上海",
+                  "entityType": "region",
+                  "polarity": "negative",
+                  "strength": "exclude_hard"
+                }
+              ],
+              "admissionPath": null,
+              "reason": "用户明确使用'不去上海'，这是一个直接的排除指令，要求将上海从候选中移除，属于改变后续推荐口径。'看看候选'表明用户希望基于这一排除条件查看后续推荐，系统应生成待确认偏好卡片记录'排除上海'这一约束，以便后续推荐口径据此调整。不是询问边界利弊的分析性问题。"
+            },
+            "latestIntentPreviewPayload": {
+              "status": "ready",
+              "sessionId": "35",
+              "title": "好的，我先把这次你提到的要求整理一下。你可以勾选想采纳的内容后点击【采纳】。采纳后，候选结果会按这个要求一起收紧，我也能继续帮你看现在的方案要不要调整。",
+              "intentMode": "constraint",
+              "constraintIntentType": "default",
+              "analysisStage": "confirmed",
+              "editFlag": null,
+              "items": [
+                {
+                  "content": "把上海记成明确不考虑的省份要求，后面看候选和方案时都会按这个要求来。",
+                  "value": {
+                    "city_intents": {
+                      "negative_province": [
+                        "上海"
+                      ]
+                    }
+                  },
+                  "selected": true
+                }
+              ],
+              "existingItems": [],
+              "impactText": "**影响**\n- 现在这份方案里，还需要你特别留意的有：上海大学(02)-电子信息类(7000元，含电子信息工程、通信工程、微电子科学与工程、光电信息科学与工程、电子信息科学与技术、人工智能、计算机科学与技术、数字媒体技术、智能科学与技术、数据科学与大数据技术、网络空间安全，不招色盲、单色识别能力异常，该专业代表理学工学Ⅲ类；按大类招生，原则上第一学年内进行专业分流)(专业办学地点：宝山校区)（冲/上海）、东华大学(02)-物理学类(集成电路与新能源)(7000元，含应用物理学(集成电路与新能源)、光电信息科学与工程)(专业办学地点：松江校区)（保/上海）、东华大学(02)-人工智能(7000元)(专业办学地点：松江校区)（保/上海）、东华大学(02)-数据科学与大数据技术(7000元)(专业办学地点：松江校区)（保/上海）、东华大学(02)-智能科学与技术(7000元)(专业办学地点：松江校区)（保/上海）",
+              "impactAnalysis": {
+                "stage": "confirmed",
+                "summaryTitle": "结合当前方案给你的提醒",
+                "currentPlanFit": [],
+                "currentPlanConflict": [
+                  "现在这份方案里，还需要你特别留意的有：上海大学(02)-电子信息类(7000元，含电子信息工程、通信工程、微电子科学与工程、光电信息科学与工程、电子信息科学与技术、人工智能、计算机科学与技术、数字媒体技术、智能科学与技术、数据科学与大数据技术、网络空间安全，不招色盲、单色识别能力异常，该专业代表理学工学Ⅲ类；按大类招生，原则上第一学年内进行专业分流)(专业办学地点：宝山校区)（冲/上海）、东华大学(02)-物理学类(集成电路与新能源)(7000元，含应用物理学(集成电路与新能源)、光电信息科学与工程)(专业办学地点：松江校区)（保/上海）、东华大学(02)-人工智能(7000元)(专业办学地点：松江校区)（保/上海）、东华大学(02)-数据科学与大数据技术(7000元)(专业办学地点：松江校区)（保/上海）、东华大学(02)-智能科学与技术(7000元)(专业办学地点：松江校区)（保/上海）"
+                ],
+                "candidateOpportunity": [],
+                "nextActionHints": []
+              },
+              "message": ""
+            },
+            "totalDurationMs": 14621,
+            "requests": 2,
+            "toolCalls": 2
+          }
+        }
+      },
+      "followupCount": 1,
+      "followupTargets": [],
+      "followupRefreshes": [],
+      "followupTypes": [
+        "pendingConfirmationCard"
+      ]
+    },
+    {
+      "case": "correctness-candidate-filter-visible-constraint-35",
+      "stepIndex": 2,
+      "sessionId": "35",
+      "prompt": "确认",
+      "elapsedMs": 2707,
+      "firstMessageMs": 681,
+      "finalMessageMs": 681,
+      "primaryMessages": 1,
+      "thinkingMessages": 0,
+      "followupMessages": 2,
+      "responseText": "已采纳。\n本次内容：排除地域：上海。\n后续推荐、方案检查和调整会按这个条件处理；需要改当前方案时，会先给你看预览。\n下一步可以继续查看当前方案，或让我按这条条件整理调整预览。",
+      "thinkingText": "",
+      "turnObservability": {
+        "historyMessages": 3,
+        "toolCallCount": 0,
+        "toolReturnCount": 0,
+        "toolCalls": [],
+        "actionFamilies": [],
+        "resultKinds": [],
+        "routingPath": "pending_intent_short_text_confirm",
+        "eventTimings": {
+          "totalDurationMs": 510,
+          "toolCallCount": 0
+        },
+        "routeDecision": {
+          "source": "proposal_compiler",
+          "matched": true,
+          "route": "apply_existing_pending"
+        }
+      },
+      "followupCount": 2,
+      "followupTargets": [
+        "ordered",
+        "candidate"
+      ],
+      "followupRefreshes": [
+        true,
+        true
+      ],
+      "followupTypes": [
+        "planningWorkspaceAction"
+      ]
+    },
+    {
+      "case": "correctness-major-group-unit-move-35",
+      "stepIndex": 1,
+      "sessionId": "35",
+      "prompt": "把第3个专业组移到第5位",
+      "elapsedMs": 40546,
+      "firstMessageMs": 1214,
+      "finalMessageMs": 38532,
+      "primaryMessages": 6,
+      "thinkingMessages": 5,
+      "followupMessages": 1,
+      "responseText": "已列出调整预览：预览如下：\n\n- 源专业组：第 3 个专业组 — 南京理工大学(03)，组内共 3 个专业\n- 目标位置：第5位（第 5 个专业组位置）\n- 移动方式：整组移动，组内专业顺序保持不变\n\n位置说明：这里的“第几个”按专业组顺序计算，不是按单条志愿位置计算；执行后该组内专业会保持连续。\n\n确认前不会改动当前方案。",
+      "thinkingText": "正在读取当前会话信息...\n正在理解你的问题，并结合当前信息整理回答...\n正在读取当前方案并整理这次请求...\n还在处理，这轮需要结合当前信息整理结论，请稍等...\n正在处理你的方案，请稍等...",
+      "turnObservability": {
+        "historyMessages": 7,
+        "toolCallCount": 2,
+        "toolReturnCount": 2,
+        "toolCalls": [
+          {
+            "name": "plan_next_action",
+            "toolCallId": "functions.plan_next_action:0",
+            "actionFamily": "move_ordered_unit",
+            "stage": "preview",
+            "success": true
+          },
+          {
+            "name": "execute_plan_action",
+            "toolCallId": "functions.execute_plan_action:1",
+            "actionFamily": "move_ordered_unit",
+            "stage": "preview",
+            "resultKind": "preview_only",
+            "applied": false,
+            "success": true
+          }
+        ],
+        "actionFamilies": [
+          "move_ordered_unit"
+        ],
+        "resultKinds": [
+          "preview_only"
+        ],
+        "routingPath": "full_agent",
+        "eventTimings": {
+          "totalDurationMs": 38403,
+          "llmDurationMs": 17176,
+          "toolCallCount": 2
+        },
+        "routeDecision": {
+          "source": "full_agent",
+          "matched": true,
+          "confidence": "model",
+          "route": "plan",
+          "fallbackReason": "no_direct_route",
+          "structuredReroute": null,
+          "toolTrial": {
+            "toolNames": [
+              "plan_next_action",
+              "execute_plan_action"
+            ],
+            "toolNameCounts": {
+              "plan_next_action": 1,
+              "execute_plan_action": 1
+            },
+            "repeatedToolNames": [],
+            "hasRepeatedToolCalls": false,
+            "hasToolCalls": true
+          },
+          "agentRun": {
+            "promptLength": 12,
+            "historyLength": 0,
+            "nodeTimings": [
+              {
+                "index": 1,
+                "node": "UserPromptNode",
+                "durationMs": 0,
+                "status": "success"
+              },
+              {
+                "index": 2,
+                "node": "ModelRequestNode",
+                "durationMs": 2359,
+                "status": "success"
+              },
+              {
+                "index": 3,
+                "node": "CallToolsNode",
+                "durationMs": 164,
+                "status": "success",
+                "toolNames": [
+                  "plan_next_action"
+                ]
+              },
+              {
+                "index": 4,
+                "node": "ModelRequestNode",
+                "durationMs": 14547,
+                "status": "success"
+              },
+              {
+                "index": 5,
+                "node": "CallToolsNode",
+                "durationMs": 102,
+                "status": "success",
+                "toolNames": [
+                  "execute_plan_action"
+                ]
+              }
+            ],
+            "firstToolCallAtMs": 2360,
+            "completed": true,
+            "currentNode": "CallToolsNode",
+            "currentNodeIndex": 5,
+            "firstToolNames": [
+              "plan_next_action"
+            ],
+            "toolNameCounts": {
+              "plan_next_action": 1,
+              "execute_plan_action": 1
+            },
+            "directToolReturn": true,
+            "totalDurationMs": 17175,
+            "requests": 2,
+            "toolCalls": 2
+          }
+        }
+      },
+      "followupCount": 1,
+      "followupTargets": [],
+      "followupRefreshes": [],
+      "followupTypes": [
+        "pendingConfirmationCard"
+      ]
+    },
+    {
+      "case": "correctness-major-group-unit-move-35",
+      "stepIndex": 2,
+      "sessionId": "35",
+      "prompt": "确认",
+      "elapsedMs": 2821,
+      "firstMessageMs": 796,
+      "finalMessageMs": 796,
+      "primaryMessages": 1,
+      "thinkingMessages": 0,
+      "followupMessages": 2,
+      "responseText": "已将该专业组移动到第 5 位，方案顺序已更新。\n\n复审结果：\n已完成当前方案审查。\n- 审查结果：风险1项，提醒4项，通过9项\n- 主要问题：当前排序存在录取概率倒挂；当前录取概率梯度存在断层；当前志愿数量少于官方要求\n如果你想继续处理，我会优先按后端处理建议给出调整预览，确认前不会改动方案。",
+      "thinkingText": "",
+      "turnObservability": {
+        "historyMessages": 5,
+        "toolCallCount": 1,
+        "toolReturnCount": 1,
+        "toolCalls": [
+          {
+            "name": "execute_plan_action",
+            "toolCallId": "short_text-move_ordered_unit-confirmation",
+            "actionFamily": "move_ordered_unit",
+            "stage": "apply",
+            "resultKind": "mutation_result",
+            "applied": true,
+            "success": true
+          }
+        ],
+        "actionFamilies": [
+          "move_ordered_unit"
+        ],
+        "resultKinds": [
+          "mutation_result"
+        ],
+        "routingPath": "pending_plan_short_text_confirm",
+        "eventTimings": {
+          "totalDurationMs": 533,
+          "toolCallCount": 0
+        },
+        "routeDecision": {
+          "source": "proposal_compiler",
+          "matched": true,
+          "route": "apply_existing_pending"
+        }
+      },
+      "followupCount": 2,
+      "followupTargets": [
+        "ordered",
+        "review"
+      ],
+      "followupRefreshes": [
+        true,
+        true
+      ],
+      "followupTypes": [
+        "planningWorkspaceAction"
+      ]
+    },
+    {
+      "case": "correctness-major-group-unit-remove-35",
+      "stepIndex": 1,
+      "sessionId": "35",
+      "prompt": "删除第5个专业组",
+      "elapsedMs": 34698,
+      "firstMessageMs": 1211,
+      "finalMessageMs": 32684,
+      "primaryMessages": 6,
+      "thinkingMessages": 5,
+      "followupMessages": 1,
+      "responseText": "已列出调整预览：会删除第 5 个专业组：南京理工大学(03)，组内共 3 个专业。位置说明：这里的“第几个”按专业组顺序计算，不是按单条志愿位置计算；执行后该组内专业会保持连续。执行后该组内专业会一并移出，后续专业组前移，方案数量将减少 3 个专业 / 1 个专业组。\n\n确认前不会改动当前方案。",
+      "thinkingText": "正在读取当前会话信息...\n正在理解你的问题，并结合当前信息整理回答...\n正在读取当前方案并整理这次请求...\n还在处理，这轮需要结合当前信息整理结论，请稍等...\n正在处理你的方案，请稍等...",
+      "turnObservability": {
+        "historyMessages": 7,
+        "toolCallCount": 2,
+        "toolReturnCount": 2,
+        "toolCalls": [
+          {
+            "name": "plan_next_action",
+            "toolCallId": "functions.plan_next_action:0",
+            "actionFamily": "remove_ordered_unit",
+            "stage": "preview",
+            "success": true
+          },
+          {
+            "name": "execute_plan_action",
+            "toolCallId": "functions.execute_plan_action:1",
+            "actionFamily": "remove_ordered_unit",
+            "stage": "preview",
+            "resultKind": "preview_only",
+            "applied": false,
+            "success": true
+          }
+        ],
+        "actionFamilies": [
+          "remove_ordered_unit"
+        ],
+        "resultKinds": [
+          "preview_only"
+        ],
+        "routingPath": "full_agent",
+        "eventTimings": {
+          "totalDurationMs": 32584,
+          "llmDurationMs": 14128,
+          "toolCallCount": 2
+        },
+        "routeDecision": {
+          "source": "full_agent",
+          "matched": true,
+          "confidence": "model",
+          "route": "plan",
+          "fallbackReason": "no_direct_route",
+          "structuredReroute": null,
+          "toolTrial": {
+            "toolNames": [
+              "plan_next_action",
+              "execute_plan_action"
+            ],
+            "toolNameCounts": {
+              "plan_next_action": 1,
+              "execute_plan_action": 1
+            },
+            "repeatedToolNames": [],
+            "hasRepeatedToolCalls": false,
+            "hasToolCalls": true
+          },
+          "agentRun": {
+            "promptLength": 8,
+            "historyLength": 0,
+            "nodeTimings": [
+              {
+                "index": 1,
+                "node": "UserPromptNode",
+                "durationMs": 0,
+                "status": "success"
+              },
+              {
+                "index": 2,
+                "node": "ModelRequestNode",
+                "durationMs": 2623,
+                "status": "success"
+              },
+              {
+                "index": 3,
+                "node": "CallToolsNode",
+                "durationMs": 137,
+                "status": "success",
+                "toolNames": [
+                  "plan_next_action"
+                ]
+              },
+              {
+                "index": 4,
+                "node": "ModelRequestNode",
+                "durationMs": 11218,
+                "status": "success"
+              },
+              {
+                "index": 5,
+                "node": "CallToolsNode",
+                "durationMs": 147,
+                "status": "success",
+                "toolNames": [
+                  "execute_plan_action"
+                ]
+              }
+            ],
+            "firstToolCallAtMs": 2624,
+            "completed": true,
+            "currentNode": "CallToolsNode",
+            "currentNodeIndex": 5,
+            "firstToolNames": [
+              "plan_next_action"
+            ],
+            "toolNameCounts": {
+              "plan_next_action": 1,
+              "execute_plan_action": 1
+            },
+            "directToolReturn": true,
+            "totalDurationMs": 14128,
+            "requests": 2,
+            "toolCalls": 2
+          }
+        }
+      },
+      "followupCount": 1,
+      "followupTargets": [],
+      "followupRefreshes": [],
+      "followupTypes": [
+        "pendingConfirmationCard"
+      ]
+    },
+    {
+      "case": "correctness-major-group-unit-remove-35",
+      "stepIndex": 2,
+      "sessionId": "35",
+      "prompt": "确认",
+      "elapsedMs": 2629,
+      "firstMessageMs": 611,
+      "finalMessageMs": 611,
+      "primaryMessages": 1,
+      "thinkingMessages": 0,
+      "followupMessages": 2,
+      "responseText": "已从方案中删除 1 个专业组，方案顺序已更新。\n\n复审结果：\n已完成当前方案审查。\n- 审查结果：风险1项，提醒4项，通过9项\n- 主要问题：当前排序存在录取概率倒挂；当前录取概率梯度存在断层；当前志愿数量少于官方要求\n如果你想继续处理，我会优先按后端处理建议给出调整预览，确认前不会改动方案。",
+      "thinkingText": "",
+      "turnObservability": {
+        "historyMessages": 5,
+        "toolCallCount": 1,
+        "toolReturnCount": 1,
+        "toolCalls": [
+          {
+            "name": "execute_plan_action",
+            "toolCallId": "short_text-remove_ordered_unit-confirmation",
+            "actionFamily": "remove_ordered_unit",
+            "stage": "apply",
+            "resultKind": "mutation_result",
+            "applied": true,
+            "success": true
+          }
+        ],
+        "actionFamilies": [
+          "remove_ordered_unit"
+        ],
+        "resultKinds": [
+          "mutation_result"
+        ],
+        "routingPath": "pending_plan_short_text_confirm",
+        "eventTimings": {
+          "totalDurationMs": 390,
+          "toolCallCount": 0
+        },
+        "routeDecision": {
+          "source": "proposal_compiler",
+          "matched": true,
+          "route": "apply_existing_pending"
+        }
+      },
+      "followupCount": 2,
+      "followupTargets": [
+        "ordered",
+        "review"
+      ],
+      "followupRefreshes": [
+        true,
+        true
+      ],
+      "followupTypes": [
+        "planningWorkspaceAction"
+      ]
+    }
+  ],
+  "summary": {
+    "steps": 30,
+    "successfulSteps": 29,
+    "failedSteps": 1,
+    "failedByReason": {
+      "content": 1
+    },
+    "byFixture": {},
+    "byExpectedRootCause": {},
+    "failedByExpectedRootCause": {},
+    "elapsed": {
+      "count": 29,
+      "minMs": 2629,
+      "medianMs": 28442,
+      "p95Ms": 100768,
+      "maxMs": 115617
+    },
+    "slowest": [
+      {
+        "case": "correctness-query-candidates-tier-35",
+        "sessionId": "35",
+        "prompt": "候选里稳档的有哪些",
+        "elapsedMs": 115617
+      },
+      {
+        "case": "correctness-candidate-filter-visible-constraint-35",
+        "sessionId": "35",
+        "prompt": "不去上海，看看候选",
+        "elapsedMs": 100768
+      },
+      {
+        "case": "correctness-analyze-adjustment-35",
+        "sessionId": "35",
+        "prompt": "帮我分析一下方案还有什么可以优化的",
+        "elapsedMs": 71576
+      },
+      {
+        "case": "correctness-query-candidates-keyword-35",
+        "sessionId": "35",
+        "prompt": "帮我看看候选里有哪些计算机类的机会",
+        "elapsedMs": 46745
+      },
+      {
+        "case": "correctness-review-plan-26",
+        "sessionId": "26",
+        "prompt": "帮我审查一下这个方案有什么问题",
+        "elapsedMs": 43766
+      }
+    ],
+    "fastRouteArbitration": {
+      "observed": 0,
+      "semanticArbitrationNeeded": 0,
+      "semanticArbitrationNotNeeded": 0,
+      "selectedPaths": {},
+      "neededReasons": {},
+      "candidatePaths": {},
+      "neededExamples": []
+    }
+  },
+  "runtimeShadowSummary": {
+    "observations": 0,
+    "bySideEffect": {},
+    "byPendingType": {}
+  },
+  "warnings": [],
+  "failures": [
+    "correctness-query-specific-school-26 session=26 prompt=方案里有没有南京航空航天大学的: assertContains FAILED — expected '南京航空航天' not found in response"
+  ]
+}

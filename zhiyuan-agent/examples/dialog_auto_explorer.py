@@ -28,8 +28,16 @@ import aiohttp
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLES = ROOT / "examples"
 DEFAULT_SCENARIOS = EXAMPLES / "dialog_auto_explorer_scenarios.json"
-DEFAULT_AGENT_URL = "ws://127.0.0.1:18091/gaotu-assistant-agent/plus/chat/1/bot/test/do"
-DEFAULT_BACKEND_URL = os.environ.get("INTERNAL_SERVICE_URL") or "http://127.0.0.1:18090"
+DEFAULT_AGENT_URL = (
+    os.environ.get("ZHIYUAN_REGRESSION_AGENT_URL")
+    or os.environ.get("AGENT_DIALOG_E2E_URL")
+    or "ws://127.0.0.1:18291/gaotu-assistant-agent/plus/chat/1/bot/test/do"
+)
+DEFAULT_BACKEND_URL = (
+    os.environ.get("ZHIYUAN_REGRESSION_BACKEND_URL")
+    or os.environ.get("INTERNAL_SERVICE_URL")
+    or "http://127.0.0.1:18290"
+)
 DEFAULT_HISTORY_DB = ROOT / "data" / "chat_history.db"
 DEFAULT_OUTPUT_DIR = Path(os.environ.get("DIALOG_AUTO_EXPLORER_OUTPUT_DIR") or "/tmp/zhiyuan-dialog-auto-explorer")
 DEFAULT_USER_ID = "dialog-auto-explorer"

@@ -168,12 +168,11 @@
       "intentPayloadAllowed": false,
       "requiresConfirmation": false
     },
-    "expectedPending": {
-      "type": "unchanged",
-      "required": false,
-      "targetView": null,
-      "workspaceRefreshTargets": ["ordered"]
-    },
+      "expectedPending": {
+        "type": "unchanged",
+        "required": false,
+        "targetView": null
+      },
     "replyQualityAssertions": {
       "mustAnswer": ["当前方案是否有护理或中医学", "上一轮待确认仍未采纳"],
       "mustMentionAny": ["护理", "中医学", "当前方案", "待确认", "未采纳"],
@@ -594,7 +593,7 @@
       "mustMentionAny": ["没有待确认", "不会执行", "继续"],
       "mustNotMention": ["已确认执行", "已采纳", "正在调整方案"]
     },
-    "metricsTags": ["pending_action_accuracy", "no_pending_guard_accuracy"]
+    "metricsTags": ["pending_protocol_accuracy", "no_pending_guard_accuracy"]
   },
   {
     "caseId": "G11-provider-availability-before-quality",

@@ -334,6 +334,174 @@ async def test_run_repeated_query_tool_loop_falls_back_when_recent_return_failed
     assert "guardUsedRecentToolReturn" not in deps.agent_observability
 
 
+async def test_run_repeated_readonly_explore_tool_loop_reuses_recent_return():
+    async def analyze_current_interest_profile() -> str:
+        return '{"message":"这轮只做分析，不会改动方案。可以先补全分数、省份和选科后再生成方案。"}'
+
+    async def looping_model(messages, agent_info):  # noqa: ARG001
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="analyze_current_interest_profile",
+                    args={},
+                    tool_call_id=f"profile-call-{len(messages)}",
+                )
+            ]
+        )
+
+    class ExploreLoopGuardAgent(BaseAgent[str]):
+        def __init__(self):
+            super().__init__(
+                llm_client=SimpleNamespace(model=FunctionModel(looping_model), model_settings={}),
+                instructions="test",
+                tools=[analyze_current_interest_profile],
+            )
+
+    deps = SimpleNamespace(agent_observability={})
+    agent = ExploreLoopGuardAgent()
+
+    reply, new_messages, all_messages, usage = await agent.run_with_message_deltas("我600湖南物化生", deps=deps)
+
+    assert "这轮只做分析，不会改动方案" in reply
+    assert '{"message"' not in reply
+    assert deps.agent_observability["toolLoopGuarded"] is True
+    assert deps.agent_observability["guardedToolName"] == "analyze_current_interest_profile"
+    assert deps.agent_observability["guardUsedRecentToolReturn"] is True
+    assert usage.tool_calls == 2
+    assert getattr(all_messages[-1], "model_name", "") == "tool-loop-guard"
+    assert new_messages[-1].parts[0].content == reply
+
+
+async def test_run_stops_repeated_score_line_tool_loop_before_request_limit():
+    async def query_score_line() -> str:
+        return "北京大学近三年录取分和位次如下。"
+
+    async def looping_model(messages, agent_info):  # noqa: ARG001
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="query_score_line",
+                    args={},
+                    tool_call_id=f"score-line-call-{len(messages)}",
+                )
+            ]
+        )
+
+    class ScoreLineLoopGuardAgent(BaseAgent[str]):
+        def __init__(self):
+            super().__init__(
+                llm_client=SimpleNamespace(model=FunctionModel(looping_model), model_settings={}),
+                instructions="test",
+                tools=[query_score_line],
+            )
+
+    deps = SimpleNamespace(agent_observability={})
+    agent = ScoreLineLoopGuardAgent()
+
+    reply, new_messages, all_messages, usage = await agent.run_with_message_deltas("我655分江苏物化生想冲强基", deps=deps)
+
+    assert "北京大学近三年录取分和位次如下" in reply
+    assert "不会改动方案" in reply
+    assert "不会写入偏好" in reply
+    assert deps.agent_observability["toolLoopGuarded"] is True
+    assert deps.agent_observability["guardedToolName"] == "query_score_line"
+    assert deps.agent_observability["guardedToolCount"] == 4
+    assert deps.agent_observability["guardUsedRecentToolReturn"] is True
+    assert usage.tool_calls == 3
+    assert getattr(all_messages[-1], "model_name", "") == "tool-loop-guard"
+    assert new_messages[-1].parts[0].content == reply
+
+
+async def test_run_stops_repeated_admission_score_tool_loop_before_request_limit():
+    async def query_admission_score() -> str:
+        return "南京大学在江苏物化生附近有若干录取机会。"
+
+    async def looping_model(messages, agent_info):  # noqa: ARG001
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="query_admission_score",
+                    args={},
+                    tool_call_id=f"admission-score-call-{len(messages)}",
+                )
+            ]
+        )
+
+    class AdmissionScoreLoopGuardAgent(BaseAgent[str]):
+        def __init__(self):
+            super().__init__(
+                llm_client=SimpleNamespace(model=FunctionModel(looping_model), model_settings={}),
+                instructions="test",
+                tools=[query_admission_score],
+            )
+
+    deps = SimpleNamespace(agent_observability={})
+    agent = AdmissionScoreLoopGuardAgent()
+
+    reply, new_messages, all_messages, usage = await agent.run_with_message_deltas("我655分江苏物化生想冲强基", deps=deps)
+
+    assert "南京大学在江苏物化生附近有若干录取机会" in reply
+    assert "不会改动方案" in reply
+    assert "不会写入偏好" in reply
+    assert deps.agent_observability["toolLoopGuarded"] is True
+    assert deps.agent_observability["guardedToolName"] == "query_admission_score"
+    assert deps.agent_observability["guardedToolCount"] == 4
+    assert deps.agent_observability["guardUsedRecentToolReturn"] is True
+    assert usage.tool_calls == 3
+    assert getattr(all_messages[-1], "model_name", "") == "tool-loop-guard"
+    assert new_messages[-1].parts[0].content == reply
+
+
+async def test_run_repeated_official_source_loop_renders_json_as_user_text():
+    async def search_official_admission_sources() -> str:
+        return (
+            '{"reply_strategy":"continue_model","result_kind":"official_source_search","status":"ok",'
+            '"summary":"已检索到 1 条可能相关的官方来源。","source_scope":"general_official",'
+            '"query":"强基计划 招生简章 官方",'
+            '"results":[{"title":"清华大学强基计划招生简章","site_name":"清华大学本科招生网",'
+            '"url":"https://admission.tsinghua.edu.cn/demo","summary":"简章说明报名和校测安排。"}],'
+            '"raw_result_count":3}'
+        )
+
+    async def looping_model(messages, agent_info):  # noqa: ARG001
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="search_official_admission_sources",
+                    args={},
+                    tool_call_id=f"official-source-call-{len(messages)}",
+                )
+            ]
+        )
+
+    class OfficialSourceLoopGuardAgent(BaseAgent[str]):
+        def __init__(self):
+            super().__init__(
+                llm_client=SimpleNamespace(model=FunctionModel(looping_model), model_settings={}),
+                instructions="test",
+                tools=[search_official_admission_sources],
+            )
+
+    deps = SimpleNamespace(agent_observability={})
+    agent = OfficialSourceLoopGuardAgent()
+
+    reply, new_messages, all_messages, usage = await agent.run_with_message_deltas("我655分江苏物化生想冲强基", deps=deps)
+
+    assert "已检索到 1 条可能相关的官方来源" in reply
+    assert "清华大学强基计划招生简章" in reply
+    assert "https://admission.tsinghua.edu.cn/demo" in reply
+    assert "reply_strategy" not in reply
+    assert "raw_result_count" not in reply
+    assert '"results"' not in reply
+    assert deps.agent_observability["toolLoopGuarded"] is True
+    assert deps.agent_observability["guardedToolName"] == "search_official_admission_sources"
+    assert deps.agent_observability["guardedToolCount"] == 3
+    assert deps.agent_observability["guardUsedRecentToolReturn"] is True
+    assert usage.tool_calls == 2
+    assert getattr(all_messages[-1], "model_name", "") == "tool-loop-guard"
+    assert new_messages[-1].parts[0].content == reply
+
+
 def test_record_exception_observability_keeps_provider_error_details(client, mocker):
     mocker.patch("app.agent.base_agent.Agent")
     agent = BaseAgent(llm_client=client, instructions="test")

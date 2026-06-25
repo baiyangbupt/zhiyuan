@@ -44,6 +44,7 @@ SCOPE_ANCHOR_VALUES = [
     "current_major_group",
     "candidate_pool",
     "future_reference",
+    "pending_reference",
 ]
 SCENARIO_VALUES = [
     "atomic_mutation",
@@ -54,6 +55,7 @@ SCENARIO_VALUES = [
     "apply_intent_then_generate_plan",
     "pending_conflict_new_mutation",
     "apply_pending_then_readonly_query",
+    "pending_impact_query",
     "state_query_while_pending",
     "profile_change_state_query",
     "plan_query_while_pending",
@@ -150,15 +152,18 @@ def _build_prompt(latest_utterance: str, payload: dict[str, Any] | None = None) 
                 "formalPlanPresent=false 时，即使用户说“刚那个方案/当前方案/方案里”，也必须判断为没有可引用的正式方案；不能把这些话术反推成 formalPlanPresent=true。",
                 "pendingExists=false 时，禁止在 reason 或输出中说当前存在 pending，也禁止输出 conflict_with_existing_pending、apply_pending_then_new_request、apply_pending_then_readonly、readonly_while_pending。",
                 "pendingExists=true 时，只能在用户明确要求确认/执行已有 pending 时 apply；普通查询不能 apply。",
-                "pendingExists=true 且用户提出新的删除、加入、替换、减少、生成、重排等高副作用诉求时，active pending 冲突优先于 formalPlanPresent 判断，必须输出 conflict_with_existing_pending。",
-                "referenceResolution 使用 current_plan、current_profile、current_major_group、candidate_pool、future_reference、no_referent 等短 ID。",
+                "pendingExists=true 且用户提出新的删除、替换、减少、移动、重排等当前方案 mutation 时，active pending 冲突优先于 formalPlanPresent 判断，必须输出 conflict_with_existing_pending。",
+                "pendingExists=true 且 pendingState.kind=intent_change 时，用户提出新的未来偏好、排除、关注院校/专业/地域或特殊录取路径更新，不属于当前方案 mutation；输出 intent_pending/future_reference/intent_update，用新的 intent pending 替换或刷新旧 intent pending。",
+                "referenceResolution 使用 current_plan、current_profile、current_major_group、candidate_pool、future_reference、pending_reference、no_referent 等短 ID。",
                 "taskLayer=explore 只用于非方案、非候选池、非偏好写入的泛兴趣闲聊；候选池机会查询属于 plan 层。",
                 "taskLayer=policy 只用于不绑定当前方案、当前专业组或个人 profile 的通用招生政策问答；当前专业组策略问题属于 plan 层。",
             ],
             "hardRules": [
                 "formalPlanPresent=false 时，当前方案事实查询、删除、减少、替换、查看方案内民办等必须是 needs_plan_first；referenceResolution=no_referent。",
                 "pendingExists=true 且用户只是问有没有、多少、看下、是不是按某条件算，必须 readonly_while_pending，不能 apply/cancel pending。",
+                "pendingExists=true 且用户询问当前这条待采纳内容、偏好或调整预览会有什么影响、确认前后有什么变化，输出 readonly_while_pending、scopeAnchor=pending_reference、scenario=pending_impact_query。",
                 "pendingExists=true 且用户提出新的当前方案 mutation，必须 conflict_with_existing_pending，不能创建第二个 pending。",
+                "pendingExists=true 且 pendingState.kind=intent_change，用户提出新的未来报考意向更新时，不能误判为 pending_conflict_new_mutation，也不能误判为 atomic_mutation/current_plan。",
                 "pendingExists=true 且用户说先执行已有 pending 再查询结果，例如“删完了再看看”，输出 taskLayer=mixed、sideEffect=apply_pending_then_readonly、scenario=apply_pending_then_readonly_query。",
                 "pendingState.kind=intent_change 且用户说基于这些出方案，输出 taskLayer=mixed、sideEffect=apply_pending_then_new_request、scopeAnchor=future_reference、scenario=apply_intent_then_generate_plan。",
                 "用户明确设置未来偏好/排除，例如倾向某专业但不要某专业，输出 taskLayer=intent、sideEffect=intent_pending、scopeAnchor=future_reference、scenario=intent_update；即使 formalPlanPresent=true 也不能改成 taskLayer=plan。",
@@ -176,6 +181,7 @@ def _build_prompt(latest_utterance: str, payload: dict[str, Any] | None = None) 
             "scenarioGuide": {
                 "atomic_mutation": "有正式方案、无 pending，用户要求对当前方案做删除/替换/减少/新增等 mutation，输出 plan_preview/current_plan。",
                 "plan_query": "有 pending 时，用户问当前方案里有没有/是否包含某类、某专业、某风险，输出 readonly_while_pending/current_plan。",
+                "pending_impact_query": "已有 pending，用户询问这条 pending 本身的影响、确认前是否生效、会怎么影响当前方案或后续参考，输出 readonly_while_pending/pending_reference。",
                 "plan_review_or_repair_preview": "用户要求先看怎么处理风险、别直接动，输出 readonly_or_plan_preview/current_plan。",
                 "intent_update": "用户设置未来偏好/排除，不是修改当前方案，输出 intent_pending/future_reference。",
                 "major_group_local_policy_query": "用户问专业组内部策略是否可行，语气是“行不行/可不可以”，输出 readonly/current_major_group。",
@@ -382,6 +388,10 @@ def _normalize_turn_decision(
             side_effect = "readonly"
         if scenario == "plan_query_while_pending":
             scenario = "plan_query"
+        if scenario == "pending_impact_query":
+            scenario = "plan_query"
+            if scope_anchor == "pending_reference":
+                scope_anchor = "current_plan"
     return TurnDecisionResult(
         taskLayer=task_layer,
         sideEffect=side_effect,

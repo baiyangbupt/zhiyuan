@@ -2027,22 +2027,6 @@ def _is_negative_only_preference(
     )
 
 
-def _has_confirmable_entity_update_override(
-    major_intents: dict | None,
-    school_intents: dict | None,
-    city_intents: dict | None,
-    career_intents: dict | None,
-    latest_utterance: str,
-) -> bool:
-    # A concrete entity mention alone is not enough to override a high-confidence
-    # readonly semantic decision: questions like "计算机还现实吗" also contain a
-    # concrete major. Only preserve the confirmable path when the structured
-    # payload already carries an explicit negative/exclusion requirement.
-    if _has_negative_intents(major_intents, school_intents, city_intents, career_intents):
-        return True
-    return False
-
-
 _SOFT_NEGATIVE_PREFERENCE_MARKERS = (
     "不太想",
     "不是很想",
@@ -2180,34 +2164,6 @@ async def _maybe_downgrade_intent_preview_by_semantics(
         observability["intentSideEffectDecision"] = decision.model_dump()
 
     if decision.decision in {"analysis_only", "mixed_answer_then_ask"} and decision.confidence >= 0.7:
-        if _latest_utterance_allows_intent_downgrade(latest_utterance):
-            logger.info(
-                "Intent preview downgraded to analysis by semantic arbitration: session_id=%s decision=%s confidence=%s reason=%s",
-                getattr(ctx.deps, "sessionid", ""),
-                decision.decision,
-                decision.confidence,
-                decision.reason,
-            )
-            if isinstance(observability, dict) and isinstance(observability.get("intentSideEffectDecision"), dict):
-                observability["intentSideEffectDecision"]["honored"] = True
-            return ANALYSIS_STAGE_INTEREST, False, decision
-        if _has_confirmable_entity_update_override(
-            major_intents,
-            school_intents,
-            city_intents,
-            career_intents,
-            latest_utterance,
-        ):
-            if isinstance(observability, dict) and isinstance(observability.get("intentSideEffectDecision"), dict):
-                observability["intentSideEffectDecision"]["honored"] = False
-            logger.info(
-                "Intent side-effect arbitration kept explicit entity update: session_id=%s decision=%s confidence=%s reason=%s",
-                getattr(ctx.deps, "sessionid", ""),
-                decision.decision,
-                decision.confidence,
-                decision.reason,
-            )
-            return analysis_stage, confirm_enabled, decision
         if decision.decision == "mixed_answer_then_ask":
             logger.info(
                 "Intent preview downgraded to mixed answer by semantic arbitration: session_id=%s decision=%s confidence=%s reason=%s",
@@ -2229,33 +2185,6 @@ async def _maybe_downgrade_intent_preview_by_semantics(
         return ANALYSIS_STAGE_INTEREST, False, decision
 
     return analysis_stage, confirm_enabled, decision
-
-
-def _latest_utterance_allows_intent_downgrade(text: str) -> bool:
-    """Only honor semantic downgrade when the user is asking to analyze first."""
-    compact = re.sub(r"\s+", "", str(text or ""))
-    if not compact:
-        return False
-    analysis_markers = (
-        "先看看",
-        "先看",
-        "看看",
-        "有哪些",
-        "可以看看",
-        "看看影响",
-        "看影响",
-        "影响",
-        "边界",
-        "要不要",
-        "是不是",
-        "适合",
-        "适不适合",
-        "算不算",
-        "能不能",
-        "该不该",
-        "值不值得",
-    )
-    return any(marker in compact for marker in analysis_markers)
 
 
 def _should_return_abstract_region_interest_payload(

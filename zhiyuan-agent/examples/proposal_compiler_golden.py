@@ -100,16 +100,24 @@ def _is_pending_created(pending_type: str) -> bool:
         "unchanged",
         "unchanged_existing_pending",
         "none_or_plan_mutation",
+        "plan_mutation_or_none",
     }
 
 
-def _workspace_refresh_targets(target_view: Any, expected_pending: dict[str, Any] | None = None) -> list[str]:
+def _workspace_refresh_targets(
+    target_view: Any,
+    expected_pending: dict[str, Any] | None = None,
+    *,
+    pending_type: str = "none",
+) -> list[str]:
     configured = None
-    if isinstance(expected_pending, dict) and "workspaceRefreshTargets" in expected_pending:
-        configured = expected_pending.get("workspaceRefreshTargets")
-    else:
+    if isinstance(expected_pending, dict):
+        if "workspaceRefreshTargets" in expected_pending:
+            configured = expected_pending.get("workspaceRefreshTargets")
+        elif _is_pending_created(pending_type):
+            configured = expected_pending.get("targetView")
+    if configured is None and _is_pending_created(pending_type):
         configured = target_view
-
     targets: list[str] = []
     for value in _list_str(configured):
         if value in {"ordered", "review", "candidate"} and value not in targets:
@@ -808,7 +816,11 @@ def _compile_case(case: dict[str, Any]) -> dict[str, Any]:
         "downstreamPolicy": downstream_policy,
         "proposalCandidates": proposal_candidates,
         "candidateArbitration": candidate_arbitration,
-        "workspaceRefreshTargets": _workspace_refresh_targets(target_view, expected_pending),
+        "workspaceRefreshTargets": _workspace_refresh_targets(
+            target_view,
+            expected_pending,
+            pending_type=pending_type,
+        ),
         "blockingReasons": blocking_reasons,
         "pendingRequirementOk": pending_requirement_ok,
     }

@@ -6,7 +6,7 @@
 
 Profile case 契约见 [release-3.2.0-profile-case-schema.md](./release-3.2.0-profile-case-schema.md)。当前已落地首批 G1-G8 golden 样例：[dialog_profile_320_golden_cases.json](../zhiyuan-agent/examples/dialog_profile_320_golden_cases.json)。
 
-模型依赖节点的独立 benchmark 见 [release-3.2.0-model-node-benchmark.md](./release-3.2.0-model-node-benchmark.md)。该体系区别于端到端 runner，用于评估 `turn_side_effect`、`intent_side_effect`、`plan_semantic_action`、`composite_goal`、`pending_action`、`reply_focus_binding` 等关键节点。
+模型依赖节点的独立 benchmark 见 [release-3.2.0-model-node-benchmark.md](./release-3.2.0-model-node-benchmark.md)。该体系区别于端到端 runner，用于评估 `turn_side_effect`、`intent_side_effect`、`plan_semantic_action`、`local_plan_action_dsl`、`reply_focus_binding` 等关键节点。旧 `plan_recovery_action/composite_goal` 独立节点已删除；active pending 语义也不再是独立模型节点，已并入 `TurnDecision -> PendingTurn compiler`。
 
 ## 1. 目标
 
@@ -31,7 +31,7 @@ Profile case 契约见 [release-3.2.0-profile-case-schema.md](./release-3.2.0-pr
 - `taskLayer`: `pending / policy / explore / intent / plan`
 - `sideEffect`: `readonly / intent_pending / plan_preview / apply_existing_pending`
 - `scopeAnchor`: `general / current_plan / current_major_group / candidate_pool / future_reference`
-- `scenario`: `policy_explain / explore_analysis / intent_update / plan_query / plan_review / repair_preview / atomic_mutation / composite_goal / profile_change_replan`
+- `scenario`: `policy_explain / explore_analysis / intent_update / plan_query / plan_review / repair_preview / atomic_mutation / profile_change_replan`
 - `expectedPending`: `none / intent_change / plan_mutation`
 - `missingInfo`
 
@@ -143,7 +143,7 @@ Profile 结果必须直接反馈到 3.2.0 设计：
 - expected taskLayer：`plan`
 - expected sideEffect：`plan_preview`
 - expected scopeAnchor：`current_plan`
-- expected scenario：`atomic_mutation` 或 `composite_goal`
+- expected scenario：`atomic_mutation`
 - expected pending：`plan_mutation`
 - expected intent side effect：可作为 plan pending 的附带 `intent_update`，确认后同步写入后续报考参考；不能单独生成 intent card 覆盖 plan card。
 - forbidden：
@@ -287,7 +287,7 @@ Profile 价值：
 ### G8 偏好表达不能默认升级为当前方案替换执行
 
 - prompt：`我倾向会计学和审计学，但土木工程不要`
-- expected taskLayer：`intent` 或 `composite_goal`，取决于当前方案是否有冲突和用户是否明确要求处理当前方案。
+- expected taskLayer：`intent` 或 `plan`，取决于当前方案是否有冲突和用户是否明确要求处理当前方案。
 - expected default sideEffect：`intent_pending`
 - expected scopeAnchor：`future_reference`
 - allowed evidence：读取当前方案影响，说明当前是否命中土木工程。

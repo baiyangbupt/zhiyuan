@@ -1,0 +1,939 @@
+{
+  "records": [
+    {
+      "case": "310-constraint-only-keep-major-preview-boundary",
+      "stepIndex": 1,
+      "sessionId": "9903101",
+      "prompt": "我只想学临床医学，其他专业先不要",
+      "elapsedMs": 34420,
+      "firstMessageMs": 1224,
+      "finalMessageMs": 32407,
+      "primaryMessages": 4,
+      "thinkingMessages": 3,
+      "followupMessages": 1,
+      "responseText": "已列出这次报考想法预览：只保留专业：临床医学。\n\n点“采纳”前不会生效。",
+      "thinkingText": "正在读取当前会话信息...\n正在理解你的问题，并结合当前信息整理回答...\n正在整理这个专业想法的影响和边界...",
+      "turnObservability": {
+        "historyMessages": 5,
+        "toolCallCount": 1,
+        "toolReturnCount": 1,
+        "toolCalls": [
+          {
+            "name": "preview_current_major_intent_confirmation",
+            "toolCallId": "functions.preview_current_major_intent_confirmation:0",
+            "success": true
+          }
+        ],
+        "actionFamilies": [],
+        "resultKinds": [],
+        "routingPath": "full_agent",
+        "eventTimings": {
+          "totalDurationMs": 32282,
+          "llmDurationMs": 12427,
+          "toolCallCount": 1
+        },
+        "routeDecision": {
+          "source": "full_agent",
+          "matched": true,
+          "confidence": "model",
+          "route": "intent",
+          "fallbackReason": "no_direct_route",
+          "structuredReroute": null,
+          "toolTrial": {
+            "toolNames": [
+              "preview_current_major_intent_confirmation"
+            ],
+            "toolNameCounts": {
+              "preview_current_major_intent_confirmation": 1
+            },
+            "repeatedToolNames": [],
+            "hasRepeatedToolCalls": false,
+            "hasToolCalls": true
+          },
+          "agentRun": {
+            "promptLength": 16,
+            "historyLength": 0,
+            "nodeTimings": [
+              {
+                "index": 1,
+                "node": "UserPromptNode",
+                "durationMs": 0,
+                "status": "success"
+              },
+              {
+                "index": 2,
+                "node": "ModelRequestNode",
+                "durationMs": 5118,
+                "status": "success"
+              },
+              {
+                "index": 3,
+                "node": "CallToolsNode",
+                "durationMs": 7307,
+                "status": "success",
+                "toolNames": [
+                  "preview_current_major_intent_confirmation"
+                ]
+              }
+            ],
+            "firstToolCallAtMs": 5119,
+            "completed": true,
+            "currentNode": "CallToolsNode",
+            "currentNodeIndex": 3,
+            "firstToolNames": [
+              "preview_current_major_intent_confirmation"
+            ],
+            "toolNameCounts": {
+              "preview_current_major_intent_confirmation": 1
+            },
+            "intentSideEffectDecision": {
+              "decision": "intent_preview",
+              "confidence": 0.95,
+              "constraintIntentType": "only_keep",
+              "preferenceStrength": {
+                "only_keep": [
+                  "临床医学"
+                ]
+              },
+              "preferenceScope": null,
+              "entityPolaritySpans": [
+                {
+                  "entity": "临床医学",
+                  "entityType": "major",
+                  "polarity": "positive",
+                  "strength": "only_keep"
+                }
+              ],
+              "admissionPath": null,
+              "reason": "用户明确使用'只想学''其他专业先不要'，属于典型的限定范围、排除其他的表述，是在要求系统后续只推荐临床医学，改变后续推荐口径，应判为 intent_preview 并生成待确认卡片。'先不要'虽有时间副词，但结合'只想'整体语义是排除其他专业，而非询问边界或要求分析。"
+            },
+            "latestIntentPreviewPayload": {
+              "status": "ready",
+              "sessionId": "9903101",
+              "title": "好的，我先把这次你提到的要求整理一下。你可以勾选想采纳的内容后点击【采纳】。采纳后，候选结果会按这个要求一起收紧，我也能继续帮你看现在的方案要不要调整。",
+              "intentMode": "constraint",
+              "constraintIntentType": "only_keep",
+              "analysisStage": "confirmed",
+              "editFlag": null,
+              "items": [
+                {
+                  "content": "把临床医学记成明确要满足的具体专业要求，后面看候选和方案时会按这个范围来。",
+                  "value": {
+                    "major_intents": {
+                      "level3": [
+                        "临床医学"
+                      ]
+                    }
+                  },
+                  "selected": true
+                }
+              ],
+              "existingItems": [],
+              "impactText": "**影响**\n- 现在这份方案里暂时没有直接贴近 临床医学 的志愿。",
+              "impactAnalysis": {
+                "stage": "confirmed",
+                "summaryTitle": "结合当前方案给你的提醒",
+                "currentPlanFit": [
+                  "现在这份方案里暂时没有直接贴近 临床医学 的志愿。"
+                ],
+                "currentPlanConflict": [],
+                "candidateOpportunity": [],
+                "nextActionHints": []
+              },
+              "message": ""
+            },
+            "directToolReturn": true,
+            "totalDurationMs": 12427,
+            "requests": 1,
+            "toolCalls": 1
+          }
+        }
+      },
+      "followupCount": 1,
+      "followupTargets": [],
+      "followupRefreshes": [],
+      "followupTypes": [
+        "pendingConfirmationCard"
+      ]
+    },
+    {
+      "case": "310-constraint-only-keep-major-preview-boundary",
+      "stepIndex": 2,
+      "sessionId": "9903101",
+      "prompt": "确认",
+      "elapsedMs": 2948,
+      "firstMessageMs": 916,
+      "finalMessageMs": 916,
+      "primaryMessages": 1,
+      "thinkingMessages": 0,
+      "followupMessages": 2,
+      "responseText": "已采纳。\n本次内容：只保留专业：临床医学。\n后续会只按这个范围看。当前方案如果需要删减或替换，我会先给你看调整预览，确认后再改。\n下一步可以继续查看当前方案，或让我按这个范围整理一版调整预览。",
+      "thinkingText": "",
+      "turnObservability": {
+        "historyMessages": 3,
+        "toolCallCount": 0,
+        "toolReturnCount": 0,
+        "toolCalls": [],
+        "actionFamilies": [],
+        "resultKinds": [],
+        "routingPath": "pending_intent_short_text_confirm",
+        "eventTimings": {
+          "totalDurationMs": 690,
+          "toolCallCount": 0
+        },
+        "routeDecision": {
+          "source": "proposal_compiler",
+          "matched": true,
+          "route": "apply_existing_pending"
+        }
+      },
+      "followupCount": 2,
+      "followupTargets": [
+        "ordered",
+        "candidate"
+      ],
+      "followupRefreshes": [
+        true,
+        true
+      ],
+      "followupTypes": [
+        "planningWorkspaceAction"
+      ]
+    },
+    {
+      "case": "310-constraint-must-have-major-preview-boundary",
+      "stepIndex": 1,
+      "sessionId": "9903102",
+      "prompt": "方案里必须有法学，其他专业可以先保留",
+      "elapsedMs": 55485,
+      "firstMessageMs": 1211,
+      "finalMessageMs": 53484,
+      "primaryMessages": 6,
+      "thinkingMessages": 5,
+      "followupMessages": 0,
+      "responseText": "这次没有形成可确认的调整预览，方案不会因为这轮回复而改变。如果还需要处理这类问题，可以重新说明要调整的目标，我会按最新方案重新给出预览。",
+      "thinkingText": "正在读取当前会话信息...\n正在理解你的问题，并结合当前信息整理回答...\n正在读取当前方案并整理这次请求...\n这轮分析耗时较长，我会继续等待结果，并尽量给出已确认的信息和下一步建议...\n正在处理你的方案，请稍等...",
+      "turnObservability": {
+        "historyMessages": 7,
+        "toolCallCount": 2,
+        "toolReturnCount": 2,
+        "toolCalls": [
+          {
+            "name": "plan_next_action",
+            "toolCallId": "functions.plan_next_action:0",
+            "actionFamily": "preview_fix_proposal",
+            "stage": "apply",
+            "success": true
+          },
+          {
+            "name": "execute_plan_action",
+            "toolCallId": "functions.execute_plan_action:1",
+            "actionFamily": "preview_fix_proposal",
+            "stage": "apply",
+            "resultKind": "error",
+            "applied": false,
+            "success": false
+          }
+        ],
+        "actionFamilies": [
+          "preview_fix_proposal"
+        ],
+        "resultKinds": [
+          "error"
+        ],
+        "routingPath": "full_agent",
+        "eventTimings": {
+          "totalDurationMs": 53378,
+          "llmDurationMs": 28195,
+          "toolCallCount": 2
+        },
+        "routeDecision": {
+          "source": "full_agent",
+          "matched": true,
+          "confidence": "model",
+          "route": "plan",
+          "fallbackReason": "no_direct_route",
+          "structuredReroute": null,
+          "toolTrial": {
+            "toolNames": [
+              "plan_next_action",
+              "execute_plan_action"
+            ],
+            "toolNameCounts": {
+              "plan_next_action": 1,
+              "execute_plan_action": 1
+            },
+            "repeatedToolNames": [],
+            "hasRepeatedToolCalls": false,
+            "hasToolCalls": true
+          },
+          "agentRun": {
+            "promptLength": 18,
+            "historyLength": 0,
+            "nodeTimings": [
+              {
+                "index": 1,
+                "node": "UserPromptNode",
+                "durationMs": 0,
+                "status": "success"
+              },
+              {
+                "index": 2,
+                "node": "ModelRequestNode",
+                "durationMs": 4377,
+                "status": "success"
+              },
+              {
+                "index": 3,
+                "node": "CallToolsNode",
+                "durationMs": 232,
+                "status": "success",
+                "toolNames": [
+                  "plan_next_action"
+                ]
+              },
+              {
+                "index": 4,
+                "node": "ModelRequestNode",
+                "durationMs": 23403,
+                "status": "success"
+              },
+              {
+                "index": 5,
+                "node": "CallToolsNode",
+                "durationMs": 179,
+                "status": "success",
+                "toolNames": [
+                  "execute_plan_action"
+                ]
+              }
+            ],
+            "firstToolCallAtMs": 4379,
+            "completed": true,
+            "currentNode": "CallToolsNode",
+            "currentNodeIndex": 5,
+            "firstToolNames": [
+              "plan_next_action"
+            ],
+            "toolNameCounts": {
+              "plan_next_action": 1,
+              "execute_plan_action": 1
+            },
+            "directToolReturn": true,
+            "totalDurationMs": 28194,
+            "requests": 2,
+            "toolCalls": 2
+          }
+        }
+      },
+      "contentViolations": [
+        "310-constraint-must-have-major-preview-boundary session=9903102 prompt=方案里必须有法学，其他专业可以先保留: assertFollowupType FAILED — expected type='pendingConfirmationCard' not in followups",
+        "310-constraint-must-have-major-preview-boundary session=9903102 prompt=方案里必须有法学，其他专业可以先保留: assertFollowupCount FAILED — expected 1 followups but got 0"
+      ]
+    },
+    {
+      "case": "310-constraint-must-have-major-preview-boundary",
+      "stepIndex": 2,
+      "sessionId": "9903102",
+      "prompt": "确认",
+      "elapsedMs": 2177,
+      "firstMessageMs": 174,
+      "finalMessageMs": 174,
+      "primaryMessages": 1,
+      "thinkingMessages": 0,
+      "followupMessages": 0,
+      "responseText": "我这边没有上一轮正在等待采纳或执行的内容，也没有待确认的方案调整或报考想法。你可以直接说想审查方案、生成调整预览、调整排序，或说明要保留/避开的方向；涉及正式更新时，我会先列出内容或预览，确认前不会改方案。",
+      "thinkingText": "",
+      "turnObservability": {
+        "historyMessages": 2,
+        "toolCallCount": 0,
+        "toolReturnCount": 0,
+        "toolCalls": [],
+        "actionFamilies": [],
+        "resultKinds": []
+      }
+    },
+    {
+      "case": "310-constraint-exclude-major-preview-and-apply",
+      "stepIndex": 1,
+      "sessionId": "9903103",
+      "prompt": "不要英语相关专业，当前方案里有的话也删掉",
+      "elapsedMs": 31489,
+      "firstMessageMs": 1213,
+      "finalMessageMs": 29469,
+      "primaryMessages": 5,
+      "thinkingMessages": 4,
+      "followupMessages": 2,
+      "responseText": "已列出调整预览：已在当前方案里定位到“具体专业：英语”相关的 3 条志愿（约 3 个专业组）。示例：安徽大学006专业组 · 英语(5500元/年;只招英语语种考生)；华东政法大学003专业组 · 英语(涉外法商)(6500元/年)；安徽师范大学041专业组 · 英语(师范)(5390元/年;外语语种须为英语)。确认后会把这些志愿移出当前方案，同时把这条要求写入后续报考参考，用于刷新推荐系数和专家优选；执行后会重新审查方案。\n\n确认前不会改动当前方案。",
+      "thinkingText": "正在读取当前会话信息...\n正在理解你的问题，并结合当前信息整理回答...\n正在读取当前方案并整理这次请求...\n正在处理你的方案，请稍等...",
+      "turnObservability": {
+        "historyMessages": 7,
+        "toolCallCount": 2,
+        "toolReturnCount": 2,
+        "toolCalls": [
+          {
+            "name": "plan_next_action",
+            "toolCallId": "functions.plan_next_action:0",
+            "actionFamily": "remove_units",
+            "stage": "preview",
+            "success": true
+          },
+          {
+            "name": "execute_plan_action",
+            "toolCallId": "functions.execute_plan_action:1",
+            "actionFamily": "remove_units",
+            "stage": "preview",
+            "resultKind": "preview_only",
+            "applied": false,
+            "success": true
+          }
+        ],
+        "actionFamilies": [
+          "remove_units"
+        ],
+        "resultKinds": [
+          "preview_only"
+        ],
+        "routingPath": "full_agent",
+        "eventTimings": {
+          "totalDurationMs": 29360,
+          "llmDurationMs": 10988,
+          "toolCallCount": 2
+        },
+        "routeDecision": {
+          "source": "full_agent",
+          "matched": true,
+          "confidence": "model",
+          "route": "plan",
+          "fallbackReason": "no_direct_route",
+          "structuredReroute": null,
+          "toolTrial": {
+            "toolNames": [
+              "plan_next_action",
+              "execute_plan_action"
+            ],
+            "toolNameCounts": {
+              "plan_next_action": 1,
+              "execute_plan_action": 1
+            },
+            "repeatedToolNames": [],
+            "hasRepeatedToolCalls": false,
+            "hasToolCalls": true
+          },
+          "agentRun": {
+            "promptLength": 20,
+            "historyLength": 0,
+            "nodeTimings": [
+              {
+                "index": 1,
+                "node": "UserPromptNode",
+                "durationMs": 0,
+                "status": "success"
+              },
+              {
+                "index": 2,
+                "node": "ModelRequestNode",
+                "durationMs": 2424,
+                "status": "success"
+              },
+              {
+                "index": 3,
+                "node": "CallToolsNode",
+                "durationMs": 209,
+                "status": "success",
+                "toolNames": [
+                  "plan_next_action"
+                ]
+              },
+              {
+                "index": 4,
+                "node": "ModelRequestNode",
+                "durationMs": 3289,
+                "status": "success"
+              },
+              {
+                "index": 5,
+                "node": "CallToolsNode",
+                "durationMs": 334,
+                "status": "success",
+                "toolNames": [
+                  "execute_plan_action"
+                ]
+              },
+              {
+                "index": 6,
+                "node": "ModelRequestNode",
+                "durationMs": 4727,
+                "status": "success"
+              },
+              {
+                "index": 7,
+                "node": "CallToolsNode",
+                "durationMs": 0,
+                "status": "success"
+              }
+            ],
+            "firstToolCallAtMs": 2426,
+            "completed": true,
+            "currentNode": "CallToolsNode",
+            "currentNodeIndex": 7,
+            "firstToolNames": [
+              "plan_next_action"
+            ],
+            "toolNameCounts": {
+              "plan_next_action": 1,
+              "execute_plan_action": 1
+            },
+            "totalDurationMs": 10988,
+            "requests": 3,
+            "toolCalls": 2
+          }
+        }
+      },
+      "followupCount": 2,
+      "followupTargets": [
+        "ordered"
+      ],
+      "followupRefreshes": [
+        true
+      ],
+      "followupTypes": [
+        "planningWorkspaceAction",
+        "pendingConfirmationCard"
+      ]
+    },
+    {
+      "case": "310-constraint-exclude-major-preview-and-apply",
+      "stepIndex": 2,
+      "sessionId": "9903103",
+      "prompt": "确认执行",
+      "elapsedMs": 3640,
+      "firstMessageMs": 1617,
+      "finalMessageMs": 1617,
+      "primaryMessages": 1,
+      "thinkingMessages": 0,
+      "followupMessages": 2,
+      "responseText": "已从当前方案移除对应志愿，但刷新排序方案失败，请稍后重试。\n\n复审结果：\n执行方案审查失败，请稍后重试。\n\n后续报考参考已同步更新，推荐系数和专家优选会按这条要求重新考虑。",
+      "thinkingText": "",
+      "turnObservability": {
+        "historyMessages": 5,
+        "toolCallCount": 1,
+        "toolReturnCount": 1,
+        "toolCalls": [
+          {
+            "name": "execute_plan_action",
+            "toolCallId": "short_text-remove_units-confirmation",
+            "actionFamily": "remove_units",
+            "stage": "apply",
+            "resultKind": "mutation_result",
+            "applied": true,
+            "success": true
+          }
+        ],
+        "actionFamilies": [
+          "remove_units"
+        ],
+        "resultKinds": [
+          "mutation_result"
+        ],
+        "routingPath": "pending_plan_short_text_confirm",
+        "eventTimings": {
+          "totalDurationMs": 1289,
+          "toolCallCount": 0
+        },
+        "routeDecision": {
+          "source": "proposal_compiler",
+          "matched": true,
+          "route": "apply_existing_pending"
+        }
+      },
+      "followupCount": 2,
+      "followupTargets": [
+        "ordered",
+        "review"
+      ],
+      "followupRefreshes": [
+        true,
+        true
+      ],
+      "followupTypes": [
+        "planningWorkspaceAction"
+      ]
+    },
+    {
+      "case": "310-constraint-exclude-cooperative-program-preview-and-apply",
+      "stepIndex": 1,
+      "sessionId": "9903105",
+      "prompt": "中外合作的都排除掉，当前方案里有的话先移出去",
+      "elapsedMs": 25395,
+      "firstMessageMs": 1215,
+      "finalMessageMs": 23392,
+      "primaryMessages": 5,
+      "thinkingMessages": 4,
+      "followupMessages": 0,
+      "responseText": "这轮信息还不够完整，不会改动方案。你可以补充缺少的信息后，我再给你预览。",
+      "thinkingText": "正在读取当前会话信息...\n正在理解你的问题，并结合当前信息整理回答...\n正在读取当前方案并整理这次请求...\n正在处理你的方案，请稍等...",
+      "turnObservability": {
+        "historyMessages": 7,
+        "toolCallCount": 2,
+        "toolReturnCount": 2,
+        "toolCalls": [
+          {
+            "name": "plan_next_action",
+            "toolCallId": "functions.plan_next_action:0",
+            "actionFamily": "remove_units",
+            "stage": "preview",
+            "success": true
+          },
+          {
+            "name": "execute_plan_action",
+            "toolCallId": "functions.execute_plan_action:1",
+            "actionFamily": "remove_units",
+            "stage": "preview",
+            "resultKind": "error",
+            "applied": false,
+            "success": false
+          }
+        ],
+        "actionFamilies": [
+          "remove_units"
+        ],
+        "resultKinds": [
+          "error"
+        ],
+        "routingPath": "full_agent",
+        "eventTimings": {
+          "totalDurationMs": 23255,
+          "llmDurationMs": 4750,
+          "toolCallCount": 2
+        },
+        "routeDecision": {
+          "source": "full_agent",
+          "matched": true,
+          "confidence": "model",
+          "route": "plan",
+          "fallbackReason": "no_direct_route",
+          "structuredReroute": null,
+          "toolTrial": {
+            "toolNames": [
+              "plan_next_action",
+              "execute_plan_action"
+            ],
+            "toolNameCounts": {
+              "plan_next_action": 1,
+              "execute_plan_action": 1
+            },
+            "repeatedToolNames": [],
+            "hasRepeatedToolCalls": false,
+            "hasToolCalls": true
+          },
+          "agentRun": {
+            "promptLength": 22,
+            "historyLength": 0,
+            "nodeTimings": [
+              {
+                "index": 1,
+                "node": "UserPromptNode",
+                "durationMs": 0,
+                "status": "success"
+              },
+              {
+                "index": 2,
+                "node": "ModelRequestNode",
+                "durationMs": 2331,
+                "status": "success"
+              },
+              {
+                "index": 3,
+                "node": "CallToolsNode",
+                "durationMs": 202,
+                "status": "success",
+                "toolNames": [
+                  "plan_next_action"
+                ]
+              },
+              {
+                "index": 4,
+                "node": "ModelRequestNode",
+                "durationMs": 2213,
+                "status": "success"
+              },
+              {
+                "index": 5,
+                "node": "CallToolsNode",
+                "durationMs": 1,
+                "status": "success",
+                "toolNames": [
+                  "execute_plan_action"
+                ]
+              }
+            ],
+            "firstToolCallAtMs": 2333,
+            "completed": true,
+            "currentNode": "CallToolsNode",
+            "currentNodeIndex": 5,
+            "firstToolNames": [
+              "plan_next_action"
+            ],
+            "toolNameCounts": {
+              "plan_next_action": 1,
+              "execute_plan_action": 1
+            },
+            "directToolReturn": true,
+            "totalDurationMs": 4750,
+            "requests": 2,
+            "toolCalls": 2
+          }
+        }
+      },
+      "contentViolations": [
+        "310-constraint-exclude-cooperative-program-preview-and-apply session=9903105 prompt=中外合作的都排除掉，当前方案里有的话先移出去: assertContainsAny FAILED — none of ['中外合作', '排除', '移出', '确认'] found in response",
+        "310-constraint-exclude-cooperative-program-preview-and-apply session=9903105 prompt=中外合作的都排除掉，当前方案里有的话先移出去: assertFollowupType FAILED — expected type='pendingConfirmationCard' not in followups",
+        "310-constraint-exclude-cooperative-program-preview-and-apply session=9903105 prompt=中外合作的都排除掉，当前方案里有的话先移出去: assertFollowupCount FAILED — expected 1 followups but got 0"
+      ]
+    },
+    {
+      "case": "310-constraint-exclude-cooperative-program-preview-and-apply",
+      "stepIndex": 2,
+      "sessionId": "9903105",
+      "prompt": "确认执行",
+      "elapsedMs": 2191,
+      "firstMessageMs": 189,
+      "finalMessageMs": 189,
+      "primaryMessages": 1,
+      "thinkingMessages": 0,
+      "followupMessages": 0,
+      "responseText": "我这边没有上一轮正在等待采纳或执行的内容，也没有待确认的方案调整或报考想法。你可以直接说想审查方案、生成调整预览、调整排序，或说明要保留/避开的方向；涉及正式更新时，我会先列出内容或预览，确认前不会改方案。",
+      "thinkingText": "",
+      "turnObservability": {
+        "historyMessages": 2,
+        "toolCallCount": 0,
+        "toolReturnCount": 0,
+        "toolCalls": [],
+        "actionFamilies": [],
+        "resultKinds": []
+      }
+    },
+    {
+      "case": "310-constraint-tuition-budget-preview",
+      "stepIndex": 1,
+      "sessionId": "9903106",
+      "prompt": "太贵的学校别放了，学费最好控制在两万以内",
+      "elapsedMs": 40713,
+      "firstMessageMs": 1212,
+      "finalMessageMs": 38690,
+      "primaryMessages": 5,
+      "thinkingMessages": 4,
+      "followupMessages": 2,
+      "responseText": "已列出调整预览：已在当前方案里定位到“学费不超过20000元/年”相关的 156 条志愿（约 43 个专业组）。示例：安徽大学005专业组 · 法学(5500元/年)；安徽大学005专业组 · 汉语言文学(5000元/年)；上海大学002专业组 · 经济学类(6500元/年;含经济学、金融学、国际经济与贸易、工商管理、会计学、档案学、信息资源管理、管理科学、信息管理与信息系统、工程管理；该专业代表经济管理类;按类招生,原则上第一学年内进行专业分流)；合肥工业大学004专业组 · 会计学(5500元/年;专业体检要求详见《合肥工业大学2025年全日制普通本科招生章程》)；合肥工业大学004专业组 · 大数据管理与应用(6600元/年;专业体检要求详见《合肥工业大学2025年全日制普通本科招生章程》)。确认后会把这些志愿移出当前方案，执行后会重新审查方案。\n\n确认前不会改动当前方案。",
+      "thinkingText": "正在读取当前会话信息...\n正在理解你的问题，并结合当前信息整理回答...\n正在读取当前方案并整理这次请求...\n正在处理你的方案，请稍等...",
+      "turnObservability": {
+        "historyMessages": 7,
+        "toolCallCount": 2,
+        "toolReturnCount": 2,
+        "toolCalls": [
+          {
+            "name": "plan_next_action",
+            "toolCallId": "functions.plan_next_action:0",
+            "actionFamily": "remove_units",
+            "stage": "preview",
+            "success": true
+          },
+          {
+            "name": "execute_plan_action",
+            "toolCallId": "functions.execute_plan_action:1",
+            "actionFamily": "remove_units",
+            "stage": "preview",
+            "resultKind": "preview_only",
+            "applied": false,
+            "success": true
+          }
+        ],
+        "actionFamilies": [
+          "remove_units"
+        ],
+        "resultKinds": [
+          "preview_only"
+        ],
+        "routingPath": "full_agent",
+        "eventTimings": {
+          "totalDurationMs": 38578,
+          "llmDurationMs": 18496,
+          "toolCallCount": 2
+        },
+        "routeDecision": {
+          "source": "full_agent",
+          "matched": true,
+          "confidence": "model",
+          "route": "plan",
+          "fallbackReason": "no_direct_route",
+          "structuredReroute": null,
+          "toolTrial": {
+            "toolNames": [
+              "plan_next_action",
+              "execute_plan_action"
+            ],
+            "toolNameCounts": {
+              "plan_next_action": 1,
+              "execute_plan_action": 1
+            },
+            "repeatedToolNames": [],
+            "hasRepeatedToolCalls": false,
+            "hasToolCalls": true
+          },
+          "agentRun": {
+            "promptLength": 20,
+            "historyLength": 0,
+            "nodeTimings": [
+              {
+                "index": 1,
+                "node": "UserPromptNode",
+                "durationMs": 0,
+                "status": "success"
+              },
+              {
+                "index": 2,
+                "node": "ModelRequestNode",
+                "durationMs": 3049,
+                "status": "success"
+              },
+              {
+                "index": 3,
+                "node": "CallToolsNode",
+                "durationMs": 211,
+                "status": "success",
+                "toolNames": [
+                  "plan_next_action"
+                ]
+              },
+              {
+                "index": 4,
+                "node": "ModelRequestNode",
+                "durationMs": 8416,
+                "status": "success"
+              },
+              {
+                "index": 5,
+                "node": "CallToolsNode",
+                "durationMs": 289,
+                "status": "success",
+                "toolNames": [
+                  "execute_plan_action"
+                ]
+              },
+              {
+                "index": 6,
+                "node": "ModelRequestNode",
+                "durationMs": 6527,
+                "status": "success"
+              },
+              {
+                "index": 7,
+                "node": "CallToolsNode",
+                "durationMs": 0,
+                "status": "success"
+              }
+            ],
+            "firstToolCallAtMs": 3051,
+            "completed": true,
+            "currentNode": "CallToolsNode",
+            "currentNodeIndex": 7,
+            "firstToolNames": [
+              "plan_next_action"
+            ],
+            "toolNameCounts": {
+              "plan_next_action": 1,
+              "execute_plan_action": 1
+            },
+            "totalDurationMs": 18495,
+            "requests": 3,
+            "toolCalls": 2
+          }
+        }
+      },
+      "followupCount": 2,
+      "followupTargets": [
+        "ordered"
+      ],
+      "followupRefreshes": [
+        true
+      ],
+      "followupTypes": [
+        "planningWorkspaceAction",
+        "pendingConfirmationCard"
+      ]
+    }
+  ],
+  "summary": {
+    "steps": 9,
+    "successfulSteps": 7,
+    "failedSteps": 2,
+    "failedByReason": {
+      "content": 2
+    },
+    "byFixture": {},
+    "byExpectedRootCause": {},
+    "failedByExpectedRootCause": {},
+    "elapsed": {
+      "count": 7,
+      "minMs": 2177,
+      "medianMs": 3640,
+      "p95Ms": 40713,
+      "maxMs": 40713
+    },
+    "slowest": [
+      {
+        "case": "310-constraint-must-have-major-preview-boundary",
+        "sessionId": "9903102",
+        "prompt": "方案里必须有法学，其他专业可以先保留",
+        "elapsedMs": 55485
+      },
+      {
+        "case": "310-constraint-tuition-budget-preview",
+        "sessionId": "9903106",
+        "prompt": "太贵的学校别放了，学费最好控制在两万以内",
+        "elapsedMs": 40713
+      },
+      {
+        "case": "310-constraint-only-keep-major-preview-boundary",
+        "sessionId": "9903101",
+        "prompt": "我只想学临床医学，其他专业先不要",
+        "elapsedMs": 34420
+      },
+      {
+        "case": "310-constraint-exclude-major-preview-and-apply",
+        "sessionId": "9903103",
+        "prompt": "不要英语相关专业，当前方案里有的话也删掉",
+        "elapsedMs": 31489
+      },
+      {
+        "case": "310-constraint-exclude-cooperative-program-preview-and-apply",
+        "sessionId": "9903105",
+        "prompt": "中外合作的都排除掉，当前方案里有的话先移出去",
+        "elapsedMs": 25395
+      }
+    ],
+    "fastRouteArbitration": {
+      "observed": 0,
+      "semanticArbitrationNeeded": 0,
+      "semanticArbitrationNotNeeded": 0,
+      "selectedPaths": {},
+      "neededReasons": {},
+      "candidatePaths": {},
+      "neededExamples": []
+    }
+  },
+  "runtimeShadowSummary": {
+    "observations": 0,
+    "bySideEffect": {},
+    "byPendingType": {}
+  },
+  "warnings": [],
+  "failures": [
+    "310-constraint-must-have-major-preview-boundary session=9903102 prompt=方案里必须有法学，其他专业可以先保留: assertFollowupType FAILED — expected type='pendingConfirmationCard' not in followups",
+    "310-constraint-must-have-major-preview-boundary session=9903102 prompt=方案里必须有法学，其他专业可以先保留: assertFollowupCount FAILED — expected 1 followups but got 0",
+    "310-constraint-exclude-cooperative-program-preview-and-apply session=9903105 prompt=中外合作的都排除掉，当前方案里有的话先移出去: assertContainsAny FAILED — none of ['中外合作', '排除', '移出', '确认'] found in response",
+    "310-constraint-exclude-cooperative-program-preview-and-apply session=9903105 prompt=中外合作的都排除掉，当前方案里有的话先移出去: assertFollowupType FAILED — expected type='pendingConfirmationCard' not in followups",
+    "310-constraint-exclude-cooperative-program-preview-and-apply session=9903105 prompt=中外合作的都排除掉，当前方案里有的话先移出去: assertFollowupCount FAILED — expected 1 followups but got 0"
+  ]
+}

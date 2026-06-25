@@ -79,17 +79,6 @@ _MUTATING_ACTION_FAMILIES = {
     "sort_ordered_plan",
     "regenerate_order",
 }
-_MUTATING_PREVIEW_WORKSPACE_TARGETS = {
-    "generate_plan": ["ordered"],
-    "add_units": ["ordered"],
-    "remove_units": ["ordered"],
-    "move_unit": ["ordered"],
-    "move_ordered_unit": ["ordered"],
-    "replace_units": ["ordered"],
-    "remove_ordered_unit": ["ordered"],
-    "sort_ordered_plan": ["ordered"],
-    "regenerate_order": ["ordered"],
-}
 _READONLY_HANDLER_ACTION_FAMILIES = {
     "query_state",
     "query_ordered",
@@ -146,6 +135,20 @@ _PREFERENCE_FIT_FILTER_KEYS = (
     "intent_relation",
     "intentRelation",
 )
+
+
+def _review_rerun_succeeded(review_summary: str | None) -> bool:
+    """Return true unless the review helper returned its failure boundary text."""
+    text = str(review_summary or "").strip()
+    if not text:
+        return False
+    failure_markers = (
+        "执行方案审查失败",
+        "审查失败",
+        "无法完成方案审查",
+        "暂时不能审查",
+    )
+    return not any(marker in text for marker in failure_markers)
 
 
 def _append_missing_json_closers(raw: str) -> str | None:
@@ -312,24 +315,49 @@ def _facts_with_planning_version(
     return result
 
 
-def _has_generation_prerequisite_context(ctx: RunContext[RequestContext]) -> bool:
+def _positive_int(value: Any) -> int:
+    try:
+        parsed = int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, parsed)
+
+
+def _generation_missing_inputs(ctx: RunContext[RequestContext]) -> list[str]:
+    missing: list[str] = []
     score = getattr(ctx.deps, "score_detail", None)
     if score is None:
-        return False
-    if int(getattr(score, "total_score", 0) or 0) <= 0:
-        return False
+        return ["generation_profile"]
+    if _positive_int(getattr(score, "total_score", 0)) <= 0:
+        missing.append("generation_profile")
     if not str(getattr(score, "province", "") or "").strip():
-        return False
+        if "generation_profile" not in missing:
+            missing.append("generation_profile")
     if not list(getattr(score, "subject_list", []) or []):
-        return False
+        if "generation_profile" not in missing:
+            missing.append("generation_profile")
     planning_summary = getattr(ctx.deps, "planning_summary", None)
     if planning_summary is None:
-        return False
-    return bool(
-        int(getattr(planning_summary, "candidate_target_total", 0) or 0) > 0
-        or int(getattr(planning_summary, "working_target_total", 0) or 0) > 0
-        or int(getattr(planning_summary, "ordered_target_total", 0) or 0) > 0
-    )
+        if "generation_candidate_pool" not in missing:
+            missing.append("generation_candidate_pool")
+        return missing
+    candidate_status = str(getattr(planning_summary, "candidate_status", "") or "").strip()
+    if candidate_status in {"empty", "failed"}:
+        if "generation_candidate_pool" not in missing:
+            missing.append("generation_candidate_pool")
+        return missing
+    if not (
+        _positive_int(getattr(planning_summary, "candidate_available_total", 0)) > 0
+        or _positive_int(getattr(planning_summary, "working_total", 0)) > 0
+        or _positive_int(getattr(planning_summary, "ordered_total", 0)) > 0
+    ):
+        if "generation_candidate_pool" not in missing:
+            missing.append("generation_candidate_pool")
+    return missing
+
+
+def _has_generation_prerequisite_context(ctx: RunContext[RequestContext]) -> bool:
+    return not _generation_missing_inputs(ctx)
 
 
 def _latest_user_text(ctx: RunContext[RequestContext]) -> str:
@@ -1136,21 +1164,16 @@ def _is_short_plan_confirmation(text: str) -> bool:
     return normalized.startswith(("确认", "执行")) and len(normalized) <= 8
 
 
-def _mutating_preview_workspace_targets(action_family: str) -> list[str]:
-    return list(_MUTATING_PREVIEW_WORKSPACE_TARGETS.get(str(action_family or "").strip(), []))
-
-
-
 def _allows_mutating_apply(ctx: RunContext[RequestContext], plan_model: PlanActionPlan) -> bool:
     if plan_model.stage != "apply" or plan_model.action_family not in _MUTATING_ACTION_FAMILIES:
         return True
     pending = resolve_pending_confirmation(ctx.deps)
-    pending_action_family = (
+    active_pending_family = (
         pending.action_family
         if pending is not None and pending.kind == "plan_mutation"
         else ""
     )
-    if pending_action_family == plan_model.action_family and (
+    if active_pending_family == plan_model.action_family and (
         bool(getattr(ctx.deps, "confirmed_via_pending", False))
         or bool(getattr(ctx.deps, "confirmed_via_card", False))
     ):
@@ -1170,8 +1193,8 @@ def _has_filter_selection_scope(filters: dict[str, Any]) -> bool:
 
 
 def _execution_missing_inputs(ctx: RunContext[RequestContext], plan_model: PlanActionPlan) -> list[str]:
-    if plan_model.action_family == "generate_plan" and not _has_generation_prerequisite_context(ctx):
-        return ["generation_profile"]
+    if plan_model.action_family == "generate_plan":
+        return _generation_missing_inputs(ctx)
     if plan_model.action_family == "sort_ordered_plan":
         if plan_model.stage not in {"preview", "apply"}:
             return []
@@ -1246,11 +1269,22 @@ def _execution_missing_inputs_message(plan_model: PlanActionPlan, missing_inputs
             f"当前还没有正式方案，找不到要删除的{remove_scope}，所以不能生成删除预览。"
             "需要先生成或加入志愿后，才能按位置删除。"
         )
+    if plan_model.action_family == "generate_plan" and {"generation_profile", "generation_candidate_pool"}.issubset(missing):
+        return (
+            "要生成志愿方案，还需要先补全基础信息。"
+            "请先确认省份、分数、位次、选科、批次，以及主要专业或地域想法；"
+            "信息补齐并计算出候选池后，我再帮你生成方案。"
+        )
     if plan_model.action_family == "generate_plan" and "generation_profile" in missing:
         return (
             "要生成志愿方案，还需要先补全基础信息。"
             "请先确认省份、分数、位次、选科、批次，以及主要专业或地域想法；"
             "信息补齐后我再帮你生成方案。"
+        )
+    if plan_model.action_family == "generate_plan" and "generation_candidate_pool" in missing:
+        return (
+            "当前还没有可用于生成方案的候选池或工作方案，不能直接列出生成方案确认卡。"
+            "需要先按已确认的基础信息计算候选；如果省份、分数、选科或批次还没确认，请先补齐这些信息。"
         )
     if plan_model.action_family == "add_units" and "selection_scope" in missing:
         return (
@@ -3930,13 +3964,15 @@ async def _post_process_handler_result(
         and plan_model.action_family != "review_plan"
     ):
         review_summary = await run_planning_review(ctx)
-        review_rerun = True
+        review_rerun = _review_rerun_succeeded(review_summary)
         if "review_result" not in reply_focus:
             reply_focus.append("review_rerun")
         if not next_step_hints:
             next_step_hints.append("如果用户继续追问风险，可以结合复审结果继续解释。")
-        if "review" not in workspace_targets:
+        if review_rerun and "review" not in workspace_targets:
             workspace_targets.append("review")
+        elif not review_rerun:
+            workspace_targets = [target for target in workspace_targets if target != "review"]
 
     summary = result.state_summary or result.summary
     if review_summary and review_summary != summary:
@@ -4847,15 +4883,6 @@ async def execute_plan_action(
             )
 
     result = guard_result or await _execute_plan_action_model(ctx, plan_model)
-    if (
-        result.result_kind == "preview_only"
-        and str(result.stage or "").strip() == "preview"
-        and result.action_family in _MUTATING_ACTION_FAMILIES
-        and not result.workspace_refresh_targets
-    ):
-        result = result.model_copy(
-            update={"workspace_refresh_targets": _mutating_preview_workspace_targets(result.action_family)}
-        )
     result_data = result.model_dump()
     cached_result_data = copy.deepcopy(result_data)
     effective_action_family = str(result_data.get("action_family") or "").strip()

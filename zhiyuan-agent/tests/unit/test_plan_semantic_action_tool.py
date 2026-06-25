@@ -5,63 +5,18 @@ import json
 
 from app.tools.extraction_json import parse_extraction_json
 from app.tools.plan_semantic_action_tool import (
-    CompositeGoalDecision,
+    PlanActionDslDecision,
+    PlanAtomicActionDslDecision,
     PlanSemanticActionDecision,
-    PlanRecoveryActionDecision,
+    _get_plan_atomic_action_dsl_agent,
     _get_plan_action_agent,
-    _normalize_composite_goal_decision,
+    _normalize_plan_action_dsl_decision,
+    _normalize_plan_atomic_action_dsl_decision,
     _normalize_plan_semantic_action_decision,
-    _normalize_plan_recovery_action_decision,
 )
 
 
-def test_composite_goal_decision_accepts_empty_optional_scope_fields():
-    raw = json.dumps(
-        {
-            "action": "none",
-            "confidence": "low",
-            "reason": "用户只是查看审查结果",
-            "scopeType": "",
-            "targetValues": [],
-            "negativeValues": [],
-            "maxTuitionPerYear": "",
-            "constraintIntentType": "default",
-        },
-        ensure_ascii=False,
-    )
-
-    decision = parse_extraction_json(raw, CompositeGoalDecision)
-    normalized = _normalize_composite_goal_decision(decision)
-
-    assert normalized.action == "none"
-    assert normalized.scopeType is None
-    assert normalized.maxTuitionPerYear is None
-    assert normalized.confidence == 0.35
-
-
-def test_composite_goal_decision_accepts_program_type_scope():
-    raw = json.dumps(
-        {
-            "action": "exclude_scope",
-            "confidence": 0.92,
-            "reason": "用户要求排除招生项目类型",
-            "scopeType": "program_type",
-            "targetValues": [],
-            "negativeValues": ["中外合作办学"],
-            "constraintIntentType": "default",
-        },
-        ensure_ascii=False,
-    )
-
-    decision = parse_extraction_json(raw, CompositeGoalDecision)
-    normalized = _normalize_composite_goal_decision(decision)
-
-    assert normalized.action == "exclude_scope"
-    assert normalized.scopeType == "program_type"
-    assert normalized.negativeValues == ["中外合作办学"]
-
-
-def test_plan_recovery_decision_accepts_empty_optional_sort_field():
+def test_plan_action_dsl_decision_accepts_empty_optional_sort_field():
     raw = json.dumps(
         {
             "actionFamily": "none",
@@ -74,8 +29,8 @@ def test_plan_recovery_decision_accepts_empty_optional_sort_field():
         ensure_ascii=False,
     )
 
-    decision = parse_extraction_json(raw, PlanRecoveryActionDecision)
-    normalized = _normalize_plan_recovery_action_decision(decision)
+    decision = parse_extraction_json(raw, PlanActionDslDecision)
+    normalized = _normalize_plan_action_dsl_decision(decision)
 
     assert normalized.actionFamily == "none"
     assert normalized.sortField is None
@@ -83,7 +38,7 @@ def test_plan_recovery_decision_accepts_empty_optional_sort_field():
     assert normalized.targetPosition is None
 
 
-def test_plan_recovery_decision_accepts_null_optional_collection_fields():
+def test_plan_action_dsl_decision_accepts_null_optional_collection_fields():
     raw = json.dumps(
         {
             "actionFamily": "none",
@@ -100,8 +55,8 @@ def test_plan_recovery_decision_accepts_null_optional_collection_fields():
         ensure_ascii=False,
     )
 
-    decision = parse_extraction_json(raw, PlanRecoveryActionDecision)
-    normalized = _normalize_plan_recovery_action_decision(decision)
+    decision = parse_extraction_json(raw, PlanActionDslDecision)
+    normalized = _normalize_plan_action_dsl_decision(decision)
 
     assert normalized.actionFamily == "none"
     assert normalized.unsupportedAction == "pin_or_lock_unit"
@@ -111,6 +66,36 @@ def test_plan_recovery_decision_accepts_null_optional_collection_fields():
     assert normalized.schoolTags == []
     assert normalized.majorTags == []
     assert normalized.preserveCount is False
+
+
+def test_plan_atomic_action_dsl_decision_preserves_tuition_preference_scope():
+    raw = json.dumps(
+        {
+            "actionFamily": "remove_units",
+            "confidence": 0.96,
+            "reason": "用户要求删除当前方案里费用阈值且不贴合意向的志愿",
+            "minTuitionPerYear": "20000",
+            "preferenceFit": "unrelated",
+            "limit": "",
+        },
+        ensure_ascii=False,
+    )
+
+    decision = parse_extraction_json(raw, PlanAtomicActionDslDecision)
+    normalized = _normalize_plan_atomic_action_dsl_decision(decision)
+
+    assert normalized.actionFamily == "remove_units"
+    assert normalized.minTuitionPerYear == 20000
+    assert normalized.preferenceFit == "unrelated"
+    assert normalized.limit == 5
+
+
+def test_plan_atomic_action_dsl_instructions_expose_structured_tuition_preference_fields():
+    instructions = inspect.getsource(_get_plan_atomic_action_dsl_agent)
+
+    assert "minTuitionPerYear" in instructions
+    assert "preferenceFit=unrelated" in instructions
+    assert "不回复用户、不执行工具、不创建 pending" in instructions
 
 
 def test_plan_semantic_action_instructions_keep_direct_sort_out_of_fix_preview():

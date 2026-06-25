@@ -624,7 +624,7 @@ async def _run_live_node_case(case: dict[str, Any]) -> dict[str, Any]:
             "raw": raw,
         }
 
-    if node in {"plan_semantic_action", "local_plan_action_dsl", "plan_recovery_action", "composite_goal", "pending_action", "proposal_selection"}:
+    if node in {"plan_semantic_action", "local_plan_action_dsl", "proposal_selection"}:
         from app.tools import plan_semantic_action_tool
 
         if node == "plan_semantic_action":
@@ -639,28 +639,6 @@ async def _run_live_node_case(case: dict[str, Any]) -> dict[str, Any]:
                 prompt,
                 request_context=request_context,
                 recent_plan_context=payload.get("recentPlanContext") if isinstance(payload.get("recentPlanContext"), dict) else None,
-            )
-            return _model_to_dict(result)
-        if node == "plan_recovery_action":
-            result = await plan_semantic_action_tool.classify_plan_recovery_action(
-                prompt,
-                request_context=request_context,
-                recent_plan_context=payload.get("recentPlanContext") if isinstance(payload.get("recentPlanContext"), dict) else None,
-            )
-            return _model_to_dict(result)
-        if node == "composite_goal":
-            result = await plan_semantic_action_tool.classify_composite_goal_action(
-                prompt,
-                request_context=request_context,
-                attempted_action_family=str(payload.get("attemptedActionFamily") or "") or None,
-                attempted_result=payload.get("attemptedResult") if isinstance(payload.get("attemptedResult"), dict) else None,
-            )
-            return _model_to_dict(result)
-        if node == "pending_action":
-            result = await plan_semantic_action_tool.classify_pending_confirmation_action(
-                prompt,
-                pending_state=payload.get("pendingState") if isinstance(payload.get("pendingState"), dict) else None,
-                request_context=request_context,
             )
             return _model_to_dict(result)
         result = await plan_semantic_action_tool.select_fix_proposal_candidate(

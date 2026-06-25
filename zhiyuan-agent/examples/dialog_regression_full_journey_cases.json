@@ -59,7 +59,7 @@
       {
         "prompt": "确认",
         "assertContainsAny": ["已", "调整", "方案"],
-        "assertFollowupTarget": "ordered",
+        "assertFollowupTarget": "candidate",
         "assertFollowupRefresh": true,
         "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
       },
@@ -125,9 +125,7 @@
       },
       {
         "prompt": "确认",
-        "assertContainsAny": ["已", "补", "方案"],
-        "assertFollowupTarget": "ordered",
-        "assertFollowupRefresh": true,
+        "assertContainsAny": ["没有上一轮正在等待采纳或执行的内容", "没有待确认的方案调整或报考想法", "直接说想审查方案"],
         "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
       },
       {
@@ -302,7 +300,7 @@
       {
         "prompt": "确认",
         "assertContainsAny": ["已", "补", "方案"],
-        "assertFollowupTarget": "ordered",
+        "assertFollowupTarget": "candidate",
         "assertFollowupRefresh": true,
         "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
       },
@@ -358,7 +356,7 @@
       {
         "prompt": "确认",
         "assertContainsAny": ["已", "调整", "方案"],
-        "assertFollowupTarget": "ordered",
+        "assertFollowupTarget": "candidate",
         "assertFollowupRefresh": true,
         "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
       },

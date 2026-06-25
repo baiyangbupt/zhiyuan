@@ -29,7 +29,7 @@ PlanSemanticAction = Literal[
     "analyze_adjustment",
     "preview_fix_proposal",
 ]
-PlanRecoveryAction = Literal[
+PlanActionFamily = Literal[
     "none",
     "generate_plan",
     "add_units",
@@ -41,20 +41,10 @@ PlanRecoveryAction = Literal[
     "sort_ordered_plan",
     "regenerate_order",
 ]
-PlanRecoverySortField = Literal["admissionRatio", "schoolRank", "finalScore"]
-CompositeGoalAction = Literal["none", "only_keep_scope", "must_include_scope", "exclude_scope", "tuition_budget_scope"]
-CompositeGoalScopeType = Literal["major", "school", "region", "career", "program_type", "tuition"]
+PlanActionSortField = Literal["admissionRatio", "schoolRank", "finalScore"]
 LocalPlanAction = Literal["none", "move_ordered_unit"]
 LocalPlanRank = Literal["highest", "lowest", "best", "worst"]
 LocalPlanTargetRank = Literal["first", "last"]
-PendingSemanticAction = Literal[
-    "none",
-    "confirm_pending",
-    "reject_pending",
-    "ask_pending_impact",
-]
-
-
 class PlanSemanticActionDecision(BaseModel):
     actionFamily: PlanSemanticAction = "none"
     confidence: float = 0.0
@@ -121,8 +111,8 @@ class FixProposalSelectionDecision(BaseModel):
         return float(value or 0.0)
 
 
-class PlanRecoveryActionDecision(BaseModel):
-    actionFamily: PlanRecoveryAction = "none"
+class PlanActionDslDecision(BaseModel):
+    actionFamily: PlanActionFamily = "none"
     confidence: float = 0.0
     reason: str = ""
     unsupportedAction: str | None = None
@@ -133,7 +123,7 @@ class PlanRecoveryActionDecision(BaseModel):
     sourcePosition: int | None = None
     positionScope: Literal["single", "after"] = "single"
     targetPosition: int | None = None
-    sortField: PlanRecoverySortField | None = None
+    sortField: PlanActionSortField | None = None
     tier: str | None = None
     provinceKeyword: str | None = None
     schoolKeyword: str | None = None
@@ -218,75 +208,29 @@ class PlanRecoveryActionDecision(BaseModel):
         return bool(value)
 
 
-class CompositeGoalDecision(BaseModel):
-    action: CompositeGoalAction = "none"
-    confidence: float = 0.0
-    reason: str = ""
-    scopeType: CompositeGoalScopeType | None = None
-    targetValues: list[str] = Field(default_factory=list)
-    negativeValues: list[str] = Field(default_factory=list)
+class PlanAtomicActionDslDecision(PlanActionDslDecision):
+    minTuitionPerYear: int | None = None
     maxTuitionPerYear: int | None = None
-    constraintIntentType: Literal["default", "only_keep", "must_have"] = "default"
-    requiresPlanMutation: bool = False
+    preferenceFit: Literal["aligned", "unrelated", "conflict"] | None = None
 
-    @field_validator("confidence", mode="before")
-    @classmethod
-    def _coerce_confidence(cls, value: object) -> float:
-        if isinstance(value, str):
-            normalized = value.strip().lower()
-            if normalized in {"high", "高", "高置信"}:
-                return 0.9
-            if normalized in {"medium", "中", "中等", "中置信"}:
-                return 0.65
-            if normalized in {"low", "低", "低置信"}:
-                return 0.35
-        return float(value or 0.0)
-
-    @field_validator("scopeType", mode="before")
-    @classmethod
-    def _coerce_optional_scope_type(cls, value: object) -> object | None:
-        if value is None:
-            return None
-        if isinstance(value, str) and not value.strip():
-            return None
-        return value
-
-    @field_validator("maxTuitionPerYear", mode="before")
+    @field_validator("minTuitionPerYear", "maxTuitionPerYear", mode="before")
     @classmethod
     def _coerce_optional_tuition(cls, value: object) -> int | None:
         if value in (None, ""):
             return None
         try:
-            return int(value)  # type: ignore[arg-type]
+            amount = int(value)  # type: ignore[arg-type]
         except (TypeError, ValueError):
             return None
+        return amount if amount > 0 else None
 
-    @field_validator("requiresPlanMutation", mode="before")
+    @field_validator("preferenceFit", mode="before")
     @classmethod
-    def _coerce_requires_plan_mutation(cls, value: object) -> bool:
-        if isinstance(value, str):
-            normalized = value.strip().lower()
-            return normalized in {"true", "1", "yes", "y", "是", "需要", "修改", "调整"}
-        return bool(value)
-
-
-class PendingSemanticActionDecision(BaseModel):
-    action: PendingSemanticAction = "none"
-    confidence: float = 0.0
-    reason: str = ""
-
-    @field_validator("confidence", mode="before")
-    @classmethod
-    def _coerce_confidence(cls, value: object) -> float:
-        if isinstance(value, str):
-            normalized = value.strip().lower()
-            if normalized in {"high", "高", "高置信"}:
-                return 0.9
-            if normalized in {"medium", "中", "中等", "中置信"}:
-                return 0.65
-            if normalized in {"low", "低", "低置信"}:
-                return 0.35
-        return float(value or 0.0)
+    def _coerce_preference_fit(cls, value: object) -> object | None:
+        text = str(value or "").strip()
+        if text in {"aligned", "unrelated", "conflict"}:
+            return text
+        return None
 
 
 class LocalPlanActionDslDecision(BaseModel):
@@ -294,7 +238,7 @@ class LocalPlanActionDslDecision(BaseModel):
     confidence: float = 0.0
     reason: str = ""
     tier: str | None = None
-    sortField: PlanRecoverySortField | None = None
+    sortField: PlanActionSortField | None = None
     rank: LocalPlanRank | None = None
     targetOrdinal: int | None = None
     targetRank: LocalPlanTargetRank | None = None
@@ -344,10 +288,8 @@ class LocalPlanActionDslDecision(BaseModel):
 _plan_action_llm_client: LLMClient | None = None
 _plan_action_agent: Agent[None, str] | None = None
 _fix_proposal_selection_agent: Agent[None, str] | None = None
+_plan_atomic_action_dsl_agent: Agent[None, str] | None = None
 _local_plan_action_dsl_agent: Agent[None, str] | None = None
-_plan_recovery_action_agent: Agent[None, str] | None = None
-_composite_goal_agent: Agent[None, str] | None = None
-_pending_action_agent: Agent[None, str] | None = None
 
 
 def _get_plan_action_llm_client() -> LLMClient:
@@ -542,132 +484,51 @@ def _get_local_plan_action_dsl_agent() -> Agent[None, str]:
     return _local_plan_action_dsl_agent
 
 
-def _get_pending_action_agent() -> Agent[None, str]:
-    global _pending_action_agent
-    if _pending_action_agent is None:
-        _pending_action_agent = Agent(
+def _get_plan_atomic_action_dsl_agent() -> Agent[None, str]:
+    global _plan_atomic_action_dsl_agent
+    if _plan_atomic_action_dsl_agent is None:
+        _plan_atomic_action_dsl_agent = Agent(
             model=_get_plan_action_llm_client().model,
             output_type=str,
             instructions=(
-                "你是高考志愿对话的待处理内容判定器，只输出 JSON。"
-                "任务是判断当前用户回复与当前 active pending 内容的关系，不负责回复用户，也不执行动作。"
-                "不要依据固定关键词、固定短语或模板做判断，要基于用户语义、当前待处理内容和上下文一致性判断。"
-                "action 只能是 none、confirm_pending、reject_pending、ask_pending_impact。"
-                "confirm_pending 表示用户清楚地接受当前等待采纳/确认的内容，并希望继续执行或正式采用；"
-                "只有回复对象和 pendingState 的摘要/类型一致时才可以确认。"
-                "reject_pending 表示用户明确否定当前等待处理的内容，或明确取消/放弃这条预览。"
-                "ask_pending_impact 表示用户没有确认或拒绝，只是在追问这条内容的影响、范围、命中项、当前方案关系或后果。"
-                "none 表示用户在开启新问题、做只读分析、表达不清、转到别的主题，或无法判断是否针对当前待处理内容。"
-                "用户问“这版是不是太冲”“说人话”“先看看影响”“候选里还有吗”等新问题，不要判成 reject_pending；"
-                "除非用户明确说不要当前预览、取消这次、先不执行当前这条。"
-                "如果用户重复、加强或换一种说法表达 pendingState 里同一个待采纳目标，"
-                "并且没有提出新的冲突范围，应判为 confirm_pending；这表示用户是在确认当前待采纳内容，"
-                "不是让系统另起一个无关方案动作。"
-                "用户说“这个方案还是不行”“还是不对”并继续提出新的保留、排除、必须有、只保留等目标时，"
-                "若目标与 pendingState 不一致，这是新诉求或对原诉求的细化，不是取消当前 pending；应判为 none，让主 Agent 重新理解。"
-                "若目标与 pendingState 一致，只是继续强调同一个保留/排除/必须有范围，应判为 confirm_pending。"
-                "只有用户明确把当前待处理内容作为对象并说不要它、取消它、暂不采纳它、别按这条来，才可 reject_pending。"
-                "如果用户的回复可能与当前待处理内容不一致、可能是在确认别的内容，必须 action=none 或低置信。"
-                "只有很确定时 confidence >= 0.85；不确定时 confidence < 0.85。"
-                "输出 JSON：action, confidence, reason。"
-            ),
-            model_settings=_get_plan_action_llm_client().model_settings,
-        )
-    return _pending_action_agent
-
-
-def _get_plan_recovery_action_agent() -> Agent[None, str]:
-    global _plan_recovery_action_agent
-    if _plan_recovery_action_agent is None:
-        _plan_recovery_action_agent = Agent(
-            model=_get_plan_action_llm_client().model,
-            output_type=str,
-            instructions=(
-                "你是高考志愿方案对话的结构化恢复判定器，只输出 JSON。"
-                "这个判定只在完整 Agent 没有调用工具、也没有生成可执行预览时使用；"
-                "任务是判断用户是否已经明确提出一个方案层动作，并提取 plan_next_action 需要的结构化字段。"
-                "不要依据固定关键词或模板做判断，要基于语义、上下文、动作副作用和用户是否给足对象/范围来判断。"
+                "你是高考志愿方案对话的当前方案原子动作 DSL 判定器，只输出 JSON。"
+                "任务是判断用户本轮是否明确要求对当前方案生成一个可确认的原子变更预览；"
+                "不回复用户、不执行工具、不创建 pending。"
+                "不要依据固定关键词或模板做判断，要基于语义、上下文、动作副作用和结构化范围是否足够来判断。"
                 "actionFamily 只能是 none、generate_plan、add_units、remove_units、move_unit、move_ordered_unit、"
                 "replace_units、remove_ordered_unit、sort_ordered_plan、regenerate_order。"
                 "只有用户明确要生成、补入、删除、移动、替换、排序或重排当前方案时，才输出非 none；"
-                "只是在问原因、问影响、闲聊、专业/学校咨询、政策咨询、对比分析、偏好记录或报考条件变更时输出 none。"
-                "如果用户只是表达想去/不想去、想学/不想学、只保留/必须有某方向，但没有明确要求立刻调整当前方案，"
-                "这属于意向/条件预览，不在本恢复器里处理，输出 none。"
-                "如果用户明确说要从当前方案中删掉某专业、某院校、某地域或某类风险，"
-                "使用 remove_units，并把专业名放 sourceMajorNames，院校放 schoolKeyword，地域放 provinceKeyword。"
+                "只是在问数量、有没有、原因、影响、适不适合、风险、政策、学校/专业介绍、对比分析、偏好记录或报考条件变更时输出 none。"
+                "如果用户只是表达想去/不想去、想学/不想学、只保留/必须有某方向，但没有明确要求调整当前方案，输出 none。"
+                "如果用户明确说要从当前方案中删掉某专业、某院校、某地域或某类风险，使用 remove_units，"
+                "并把专业名放 sourceMajorNames，院校放 schoolKeyword，地域放 provinceKeyword。"
                 "如果对象是当前方案审查已经识别出的风险或提醒类型，例如高收费、中外合作、限报条件、特殊招生，"
                 "不要把它当成专业名；使用 remove_units 或 replace_units，并把对应审查 code 放 reviewIssueCode，"
                 "例如高收费=high_tuition，中外合作=cooperative_program，限报条件=admission_limit，特殊类型招生=special_enrollment。"
+                "如果用户明确删除当前方案里超过某个学费阈值的志愿，填写 minTuitionPerYear；"
+                "如果用户明确要求预算上限或不超过某个费用，填写 maxTuitionPerYear。"
+                "如果用户同时限定不贴合意向、跟意向不沾边或与偏好冲突，填写 preferenceFit=unrelated 或 conflict。"
                 "如果用户明确说要加入或补齐某类候选，使用 add_units，并把筛选条件放 majorKeyword、schoolKeyword、provinceKeyword、tier 或 tags。"
                 "如果用户明确说把某条学校+专业移动到第 N 位，使用 move_unit，volunteerIds 填用户原始引用，targetPosition 填 N。"
                 "如果用户只用位置表达，如“第8个移到第12位/第8条放到第12”，没有学校专业名，"
                 "使用 move_ordered_unit，sourcePosition 填 8，targetPosition 填 12。"
-                "如果用户要求锁定、固定、保护某个位置或某个冲/稳/保分区内的位置不要动，"
-                "当前恢复器不能执行 pin/lock；应 actionFamily=none，unsupportedAction=pin_or_lock_unit，"
-                "不要把它当成普通 none 丢失语义。"
-                "如果用户要求把某个分区里录取率最高/最低、院校层次最高等排序选择项放到该分区第一位，"
-                "这是 tier-local ordered move；使用 move_ordered_unit，tier 填完整中文分区名如 保底，"
-                "targetPosition=1，sortField 按依据填写 admissionRatio/schoolRank/finalScore。"
-                "例如“把保底里录取率最高的放到保底第一位”输出 actionFamily=move_ordered_unit、tier=保底、targetPosition=1、sortField=admissionRatio。"
                 "如果用户明确删除第 N 个/第 N 个专业组且没有学校专业名，使用 remove_ordered_unit，sourcePosition 填 N。"
                 "如果用户明确删除第 N 位之后/后面的当前方案展示单元，使用 remove_ordered_unit，"
                 "sourcePosition 填 N，positionScope 填 after；如果还限定冲/稳/保或数量，同时填写 tier 和 limit。"
                 "如果用户明确要求按录取率/院校层次/推荐系数整体排序，使用 sort_ordered_plan，"
-                "sortField 分别填 admissionRatio、schoolRank、finalScore；局部筛选查看不要判成排序。"
+                "sortField 分别填 admissionRatio、schoolRank、finalScore。"
                 "替换动作必须同时能看出要替换当前方案里的对象和新方向；否则输出 none 或低置信。"
                 "preserveCount 只在用户明确要求数量不变、补齐、保持满额时为 true。"
                 "limit 只在用户明确数量时填写，否则默认 5。"
-                "高副作用真正执行不在这里决定；这里只恢复预览链路。"
+                "高副作用真正执行不在这里决定；这里只编译预览链路。"
                 "只有很确定时 confidence >= 0.85；不确定时 actionFamily=none 或 confidence < 0.85。"
-                "输出 JSON 字段：actionFamily, confidence, reason, unsupportedAction, reviewIssueCode, volunteerIds, unitIds, sourceMajorNames, "
-                "sourcePosition, positionScope, targetPosition, sortField, tier, provinceKeyword, schoolKeyword, majorKeyword, "
-                "schoolTags, majorTags, preserveCount, limit。"
+                "输出 JSON 字段：actionFamily, confidence, reason, unsupportedAction, reviewIssueCode, volunteerIds, unitIds, "
+                "sourceMajorNames, sourcePosition, positionScope, targetPosition, sortField, tier, provinceKeyword, schoolKeyword, "
+                "majorKeyword, schoolTags, majorTags, minTuitionPerYear, maxTuitionPerYear, preferenceFit, preserveCount, limit。"
             ),
             model_settings=_get_plan_action_llm_client().model_settings,
         )
-    return _plan_recovery_action_agent
-
-
-def _get_composite_goal_agent() -> Agent[None, str]:
-    global _composite_goal_agent
-    if _composite_goal_agent is None:
-        _composite_goal_agent = Agent(
-            model=_get_plan_action_llm_client().model,
-            output_type=str,
-            instructions=(
-                "你是高考志愿对话的复合报考目标判定器，只输出 JSON。"
-                "这个判定只在完整 Agent 已经尝试普通方案动作、但没有形成待确认内容时使用；"
-                "任务是判断用户原话本质上是否在提出长期报考条件与当前方案调整的复合目标。"
-                "不要依据固定关键词或模板做判断，要基于语义、宾语、当前方案副作用和用户是否要求改变后续推荐口径来判断。"
-                "action 只能是 none、only_keep_scope、must_include_scope、exclude_scope、tuition_budget_scope。"
-                "only_keep_scope 表示用户要求范围限定为某些专业/院校/地域/职业方向/项目类型，其他方向不要；"
-                "must_include_scope 表示用户要求方案至少保留某些方向，但其他方向可以继续保留；"
-                "exclude_scope 表示用户要求避开、排除或移出某些方向或项目类型。"
-                "tuition_budget_scope 表示用户给出每年学费/费用预算上限，并要求当前方案中超出预算的志愿移出、替换或补位。"
-                "scopeType 只能是 major、school、region、career、program_type、tuition；只在实体范围清楚时填写。"
-                "program_type 表示招生项目或培养项目类型，例如中外合作办学、国际项目、校企合作、单列专业等；"
-                "如果用户表达“不接受/排除/移出中外合作项目”，这是 program_type，不要当成专业名。"
-                "只有用户明确承接最近审查结果说处理审查里的中外合作提醒时，才交给审查修复链路；本判定器应输出 none。"
-                "targetValues 放 only_keep_scope / must_include_scope 的正向对象，negativeValues 放 exclude_scope 的排除对象。"
-                "tuition_budget_scope 必须填写 maxTuitionPerYear 为整数元/年，scopeType 填 tuition，不要把数字放到 targetValues。"
-                "requiresPlanMutation 表示用户本轮是否明确要求改变当前方案或后续推荐口径；只有要生成可确认调整、写入条件、移出、替换、补位、只保留或至少保留时才为 true。"
-                "用户只是询问影响、适不适合、要不要、能不能、政策、学校/专业介绍、对比分析、数量、占比、有没有、多不多、风险大不大、只读审查时，必须 action=none，requiresPlanMutation=false。"
-                "学费预算场景要特别区分：用户给出预算上限并问当前方案有没有/多不多/风险多大，只是只读审查，输出 none；"
-                "只有用户要求按预算上限删除、替换、调整、不要超预算、后续按预算控制时，才输出 tuition_budget_scope 且 requiresPlanMutation=true。"
-                "用户明确说只保留/只要/仅限/限定某方向，即使还提到'其他不要'，也应输出 only_keep_scope，"
-                "且只把用户明确点名的正向对象放 targetValues，不要把未点名的其他方向展开成 negativeValues。"
-                "用户明确说必须有/至少有/保留一个某方向，且其他方向可以保留，输出 must_include_scope。"
-                "用户明确说不要/不考虑/排除/删掉当前方案里的某方向，输出 exclude_scope。"
-                "如果用户明确删除第几个志愿、移动第几个志愿、或点名某个具体学校+专业作为当前方案里的单条志愿，"
-                "这是原子方案动作，不是复合报考目标，输出 none。"
-                "如果对象无法归入专业、院校、地域、职业或项目类型，或无法提取清楚具体对象，输出 none 或低置信。"
-                "只有很确定时 confidence >= 0.85；不确定时 action=none 或 confidence < 0.85。"
-                "constraintIntentType 对 only_keep_scope 填 only_keep，对 must_include_scope 填 must_have，其他填 default。"
-                "输出 JSON：action, confidence, reason, scopeType, targetValues, negativeValues, maxTuitionPerYear, constraintIntentType, requiresPlanMutation。"
-            ),
-            model_settings=_get_plan_action_llm_client().model_settings,
-        )
-    return _composite_goal_agent
+    return _plan_atomic_action_dsl_agent
 
 
 def _planning_summary_payload(summary: PlanningSummary | None) -> dict[str, object]:
@@ -684,25 +545,6 @@ def _planning_summary_payload(summary: PlanningSummary | None) -> dict[str, obje
         "reviewWarnCount": summary.review_warn_count,
         "riskSummaries": summary.risk_summaries,
         "tierCounts": summary.tier_counts,
-    }
-
-
-def _pending_state_payload(pending_state: dict[str, object] | None) -> dict[str, object]:
-    if not isinstance(pending_state, dict):
-        return {}
-    execution_payload = pending_state.get("executionPayload")
-    if not isinstance(execution_payload, dict):
-        execution_payload = {}
-    return {
-        "kind": pending_state.get("kind") or "",
-        "status": pending_state.get("status") or "",
-        "actionFamily": pending_state.get("actionFamily") or "",
-        "summary": pending_state.get("summary") or "",
-        "userGoal": pending_state.get("userGoal") or "",
-        "proposalTitle": execution_payload.get("proposalTitle") or "",
-        "proposalSummary": execution_payload.get("proposalSummary") or "",
-        "intentMode": execution_payload.get("intentMode") or "",
-        "constraintIntentType": execution_payload.get("constraintIntentType") or "",
     }
 
 
@@ -785,7 +627,7 @@ def _normalize_list_values(values: object) -> list[str]:
     return result
 
 
-def _normalize_plan_recovery_action_decision(decision: PlanRecoveryActionDecision) -> PlanRecoveryActionDecision:
+def _normalize_plan_action_dsl_decision(decision: PlanActionDslDecision) -> PlanActionDslDecision:
     action_family = str(decision.actionFamily or "none").strip()
     allowed = {
         "none",
@@ -810,7 +652,7 @@ def _normalize_plan_recovery_action_decision(decision: PlanRecoveryActionDecisio
     limit = decision.limit if isinstance(decision.limit, int) else 5
     if limit <= 0:
         limit = 5
-    return PlanRecoveryActionDecision(
+    return PlanActionDslDecision(
         actionFamily=action_family,  # type: ignore[arg-type]
         confidence=max(0.0, min(1.0, float(decision.confidence or 0.0))),
         reason=str(decision.reason or "").strip(),
@@ -834,49 +676,35 @@ def _normalize_plan_recovery_action_decision(decision: PlanRecoveryActionDecisio
     )
 
 
-def _normalize_composite_goal_decision(decision: CompositeGoalDecision) -> CompositeGoalDecision:
-    action = str(decision.action or "none").strip()
-    if action not in {"none", "only_keep_scope", "must_include_scope", "exclude_scope", "tuition_budget_scope"}:
-        action = "none"
-    scope_type = str(decision.scopeType or "").strip()
-    if scope_type not in {"major", "school", "region", "career", "program_type", "tuition"}:
-        scope_type = ""
-    constraint_intent_type = str(decision.constraintIntentType or "default").strip()
-    if constraint_intent_type not in {"default", "only_keep", "must_have"}:
-        constraint_intent_type = "default"
-    if action == "only_keep_scope":
-        constraint_intent_type = "only_keep"
-    elif action == "must_include_scope":
-        constraint_intent_type = "must_have"
-    elif action == "exclude_scope":
-        constraint_intent_type = "default"
-    elif action == "tuition_budget_scope":
-        constraint_intent_type = "default"
-    return CompositeGoalDecision(
-        action=action,  # type: ignore[arg-type]
-        confidence=max(0.0, min(1.0, float(decision.confidence or 0.0))),
-        reason=str(decision.reason or "").strip(),
-        scopeType=scope_type or None,  # type: ignore[arg-type]
-        targetValues=_normalize_list_values(decision.targetValues),
-        negativeValues=_normalize_list_values(decision.negativeValues),
-        maxTuitionPerYear=decision.maxTuitionPerYear if isinstance(decision.maxTuitionPerYear, int) and decision.maxTuitionPerYear > 0 else None,
-        constraintIntentType=constraint_intent_type,  # type: ignore[arg-type]
-        requiresPlanMutation=bool(decision.requiresPlanMutation),
-    )
-
-
-def _normalize_pending_semantic_action_decision(
-    decision: PendingSemanticActionDecision,
-) -> PendingSemanticActionDecision:
-    action = str(decision.action or "none").strip()
-    allowed = {"none", "confirm_pending", "reject_pending", "ask_pending_impact"}
-    if action not in allowed:
-        action = "none"
-    confidence = max(0.0, min(1.0, float(decision.confidence or 0.0)))
-    return PendingSemanticActionDecision(
-        action=action,  # type: ignore[arg-type]
-        confidence=confidence,
-        reason=str(decision.reason or "").strip(),
+def _normalize_plan_atomic_action_dsl_decision(decision: PlanAtomicActionDslDecision) -> PlanAtomicActionDslDecision:
+    base = _normalize_plan_action_dsl_decision(decision)
+    preference_fit = str(decision.preferenceFit or "").strip()
+    if preference_fit not in {"aligned", "unrelated", "conflict"}:
+        preference_fit = ""
+    return PlanAtomicActionDslDecision(
+        actionFamily=base.actionFamily,
+        confidence=base.confidence,
+        reason=base.reason,
+        unsupportedAction=base.unsupportedAction,
+        reviewIssueCode=base.reviewIssueCode,
+        volunteerIds=list(base.volunteerIds),
+        unitIds=list(base.unitIds),
+        sourceMajorNames=list(base.sourceMajorNames),
+        sourcePosition=base.sourcePosition,
+        positionScope=base.positionScope,
+        targetPosition=base.targetPosition,
+        sortField=base.sortField,
+        tier=base.tier,
+        provinceKeyword=base.provinceKeyword,
+        schoolKeyword=base.schoolKeyword,
+        majorKeyword=base.majorKeyword,
+        schoolTags=list(base.schoolTags),
+        majorTags=list(base.majorTags),
+        preserveCount=base.preserveCount,
+        limit=base.limit,
+        minTuitionPerYear=decision.minTuitionPerYear,
+        maxTuitionPerYear=decision.maxTuitionPerYear,
+        preferenceFit=preference_fit or None,  # type: ignore[arg-type]
     )
 
 
@@ -899,6 +727,28 @@ async def classify_plan_semantic_action(
     result = await _get_plan_action_agent().run(prompt)
     return _normalize_plan_semantic_action_decision(
         parse_extraction_json(result.output, PlanSemanticActionDecision)
+    )
+
+
+async def classify_plan_atomic_action_dsl(
+    latest_utterance: str,
+    *,
+    request_context: RequestContext,
+    recent_plan_context: dict[str, object] | None = None,
+) -> PlanAtomicActionDslDecision:
+    prompt = json.dumps(
+        {
+            "latestUserText": latest_utterance,
+            "planningSummary": _planning_summary_payload(getattr(request_context, "planning_summary", None)),
+            "activePending": bool(getattr(getattr(request_context, "conversation_phase", None), "pending", None)),
+            "recentPlanContext": recent_plan_context or {},
+            "decisionQuestion": "当前用户是否明确提出了可编译为 AtomicPlanActionDsl 的当前方案变更预览动作？",
+        },
+        ensure_ascii=False,
+    )
+    result = await _get_plan_atomic_action_dsl_agent().run(prompt)
+    return _normalize_plan_atomic_action_dsl_decision(
+        parse_extraction_json(result.output, PlanAtomicActionDslDecision)
     )
 
 
@@ -944,78 +794,4 @@ async def select_fix_proposal_candidate(
     result = await _get_fix_proposal_selection_agent().run(prompt)
     return _normalize_fix_proposal_selection_decision(
         parse_extraction_json(result.output, FixProposalSelectionDecision)
-    )
-
-
-async def classify_plan_recovery_action(
-    latest_utterance: str,
-    *,
-    request_context: RequestContext,
-    recent_plan_context: dict[str, object] | None = None,
-) -> PlanRecoveryActionDecision:
-    prompt = json.dumps(
-        {
-            "latestUserText": latest_utterance,
-            "planningSummary": _planning_summary_payload(getattr(request_context, "planning_summary", None)),
-            "activePending": bool(getattr(getattr(request_context, "conversation_phase", None), "pending", None)),
-            "recentPlanContext": recent_plan_context or {},
-            "decisionQuestion": "完整 Agent 没有生成可执行预览时，是否可把用户原话恢复为一个结构化方案调整预览动作？",
-        },
-        ensure_ascii=False,
-    )
-    result = await _get_plan_recovery_action_agent().run(prompt)
-    return _normalize_plan_recovery_action_decision(
-        parse_extraction_json(result.output, PlanRecoveryActionDecision)
-    )
-
-
-async def classify_composite_goal_action(
-    latest_utterance: str,
-    *,
-    request_context: RequestContext,
-    attempted_action_family: str | None = None,
-    attempted_result: dict[str, object] | None = None,
-) -> CompositeGoalDecision:
-    prompt = json.dumps(
-        {
-            "latestUserText": latest_utterance,
-            "planningSummary": _planning_summary_payload(getattr(request_context, "planning_summary", None)),
-            "activePending": bool(getattr(getattr(request_context, "conversation_phase", None), "pending", None)),
-            "attemptedPlanAction": attempted_action_family or "",
-            "attemptedResultKind": (attempted_result or {}).get("result_kind") or (attempted_result or {}).get("resultKind") or "",
-            "attemptedSummary": (attempted_result or {}).get("summary") or "",
-            "decisionQuestion": "用户原话是否应恢复为复合报考目标，而不是普通删除/加入/替换动作？",
-        },
-        ensure_ascii=False,
-    )
-    result = await _get_composite_goal_agent().run(prompt)
-    return _normalize_composite_goal_decision(
-        parse_extraction_json(result.output, CompositeGoalDecision)
-    )
-
-
-async def classify_pending_confirmation_action(
-    latest_utterance: str,
-    *,
-    pending_state: dict[str, object] | None,
-    request_context: RequestContext,
-) -> PendingSemanticActionDecision:
-    if not isinstance(pending_state, dict) or not pending_state:
-        return PendingSemanticActionDecision(
-            action="none",
-            confidence=1.0,
-            reason="no active pending state",
-        )
-    prompt = json.dumps(
-        {
-            "latestUserText": latest_utterance,
-            "pendingState": _pending_state_payload(pending_state),
-            "planningSummary": _planning_summary_payload(getattr(request_context, "planning_summary", None)),
-            "decisionQuestion": "当前用户回复是在确认、拒绝、追问当前待处理内容，还是开启了其他话题？",
-        },
-        ensure_ascii=False,
-    )
-    result = await _get_pending_action_agent().run(prompt)
-    return _normalize_pending_semantic_action_decision(
-        parse_extraction_json(result.output, PendingSemanticActionDecision)
     )

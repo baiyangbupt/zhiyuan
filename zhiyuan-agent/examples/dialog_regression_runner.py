@@ -27,10 +27,18 @@ from urllib import error, request
 
 import websockets
 
-DEFAULT_URL = "ws://127.0.0.1:8000/gaotu-assistant-agent/plus/chat/1/bot/test/do"
+DEFAULT_URL = (
+    os.environ.get("ZHIYUAN_REGRESSION_AGENT_URL")
+    or os.environ.get("AGENT_DIALOG_E2E_URL")
+    or "ws://127.0.0.1:18291/gaotu-assistant-agent/plus/chat/1/bot/test/do"
+)
 DEFAULT_USER_ID = "dialog-regression-user"
 DEFAULT_HISTORY_DB = Path(__file__).resolve().parents[1] / "data" / "chat_history.db"
-DEFAULT_INTERNAL_SERVICE_URL = os.environ.get("INTERNAL_SERVICE_URL") or "http://127.0.0.1:8080"
+DEFAULT_INTERNAL_SERVICE_URL = (
+    os.environ.get("ZHIYUAN_REGRESSION_BACKEND_URL")
+    or os.environ.get("INTERNAL_SERVICE_URL")
+    or "http://127.0.0.1:18290"
+)
 DEFAULT_BACKEND_DB_HOST = os.environ.get("ZHIYUAN_REGRESSION_DB_HOST") or "127.0.0.1"
 DEFAULT_BACKEND_DB_PORT = os.environ.get("ZHIYUAN_REGRESSION_DB_PORT") or "3306"
 DEFAULT_BACKEND_DB_USER = os.environ.get("ZHIYUAN_REGRESSION_DB_USER") or "root"
@@ -411,6 +419,40 @@ def _case_session_ids(cases: list[dict[str, Any]]) -> list[str]:
     return result
 
 
+def _case_requires_active_pending(case: dict[str, Any]) -> bool:
+    contract = case.get("fixtureContract")
+    if not isinstance(contract, dict):
+        return False
+    required_state = {
+        str(item or "").strip()
+        for item in (contract.get("requiredState") or [])
+        if str(item or "").strip()
+    }
+    return "activePending" in required_state
+
+
+def _backend_state_clone_keys_for_case(case: dict[str, Any]) -> tuple[str, ...]:
+    keys = list(BACKEND_STATE_CLONE_KEYS)
+    if _case_requires_active_pending(case):
+        for key in PENDING_STATE_KEYS:
+            if key not in keys:
+                keys.append(key)
+    return tuple(keys)
+
+
+def _clone_results_have_active_pending(clone_results: list[dict[str, Any]]) -> bool:
+    for item in clone_results:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("key") or "").strip() != "pendingConfirmation":
+            continue
+        if item.get("ok") is not True or item.get("skipped"):
+            continue
+        if str(item.get("sourcePendingStatus") or "").strip() == "active":
+            return True
+    return False
+
+
 def _clear_history(db_path: Path, session_ids: list[str]) -> int:
     if not session_ids or not db_path.exists():
         return 0
@@ -664,6 +706,9 @@ def _clone_backend_session_state(
             cloned_value = deepcopy(value)
             if key == "planningState":
                 cloned_value["sessionId"] = int(target_session_id) if target_session_id.isdigit() else target_session_id
+            elif key == "pendingConfirmation":
+                result["sourcePendingStatus"] = str(value.get("status") or "").strip()
+                result["sourcePendingKind"] = str(value.get("kind") or "").strip()
             write_result = _write_backend_extra_data(
                 normalized_base_url,
                 target_session_id,
@@ -1702,6 +1747,14 @@ def _check_tool_assertions(
                 f"{case_name} session={session_id} prompt={prompt_label}: "
                 f"expectedRoutingPath FAILED — expected {expected_routing_path} got {actual_routing_path}"
             )
+    expected_routing_paths = [str(item).strip() for item in step.get("expectedRoutingPathAny") or [] if str(item).strip()]
+    if expected_routing_paths:
+        actual_routing_path = str(turn_observability.get("routingPath") or "").strip()
+        if actual_routing_path not in expected_routing_paths:
+            violations.append(
+                f"{case_name} session={session_id} prompt={prompt_label}: "
+                f"expectedRoutingPathAny FAILED — expected one of {expected_routing_paths} got {actual_routing_path}"
+            )
 
     required_action_families = [str(item) for item in step.get("assertActionFamiliesContain") or []]
     action_families = [str(item) for item in turn_observability.get("actionFamilies") or []]
@@ -1719,6 +1772,16 @@ def _check_tool_assertions(
         violations.append(
             f"{case_name} session={session_id} prompt={prompt_label}: "
             f"assertResultKindsContain FAILED — missing {missing_result_kinds} from {result_kinds}"
+        )
+    accepted_result_kinds = [
+        str(item).strip()
+        for item in step.get("assertResultKindsContainAny") or []
+        if str(item).strip()
+    ]
+    if accepted_result_kinds and not any(name in result_kinds for name in accepted_result_kinds):
+        violations.append(
+            f"{case_name} session={session_id} prompt={prompt_label}: "
+            f"assertResultKindsContainAny FAILED — expected one of {accepted_result_kinds} in {result_kinds}"
         )
 
     expected_tool_names = [str(item) for item in step.get("expectedToolNames") or []]
@@ -1844,6 +1907,9 @@ def _duration_summary(values: list[int]) -> dict[str, int | None]:
 
 def _record_failure_reasons(record: dict[str, Any]) -> list[str]:
     reasons: list[str] = []
+    if str(record.get("failureReason") or "").strip() == "environment":
+        reasons.append("environment")
+        return reasons
     if record.get("error"):
         reasons.append("request")
     if record.get("wsError"):
@@ -2027,7 +2093,9 @@ async def _run_cases(
     for case in cases:
         name = str(case.get("name") or f"session-{case.get('sessionId')}")
         session_id = str(case["sessionId"])
+        case_env_failures: list[str] = []
         clone_source_session_id = str(case.get("cloneBackendStateFromSessionId") or "").strip()
+        clone_results: list[dict[str, Any]] = []
         if clone_source_session_id:
             if clone_backend_chat_session:
                 session_clone_result = _clone_backend_chat_session_row(
@@ -2083,6 +2151,7 @@ async def _run_cases(
                 internal_service_url,
                 source_session_id=clone_source_session_id,
                 target_session_id=session_id,
+                keys=_backend_state_clone_keys_for_case(case),
             )
             print(
                 "clonedCaseBackendState="
@@ -2098,9 +2167,17 @@ async def _run_cases(
             )
             failed_clones = [item for item in clone_results if not item.get("ok")]
             if failed_clones:
-                warnings.append(
-                    f"{name} session={session_id}: backend state clone had failures: "
-                    + json.dumps(failed_clones, ensure_ascii=False)
+                case_env_failures.append(
+                    "backend state clone had failures: "
+                    + json.dumps(
+                        {
+                            "baseUrl": internal_service_url,
+                            "sourceSession": clone_source_session_id,
+                            "targetSession": session_id,
+                            "failures": failed_clones,
+                        },
+                        ensure_ascii=False,
+                    )
                 )
         if clear_history_per_case and history_db:
             deleted = _clear_history(Path(history_db), [session_id])
@@ -2115,7 +2192,24 @@ async def _run_cases(
                     ensure_ascii=False,
                 )
             )
-        if clear_backend_pending_per_case:
+        preserve_cloned_active_pending = (
+            clear_backend_pending_per_case
+            and _case_requires_active_pending(case)
+            and _clone_results_have_active_pending(clone_results)
+        )
+        if preserve_cloned_active_pending:
+            print(
+                "skippedCaseBackendPendingClear="
+                + json.dumps(
+                    {
+                        "baseUrl": internal_service_url,
+                        "session": session_id,
+                        "reason": "cloned_source_active_pending",
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        elif clear_backend_pending_per_case:
             pending_results = _clear_backend_pending_state(internal_service_url, [session_id])
             print(
                 "clearedCaseBackendPending="
@@ -2130,9 +2224,16 @@ async def _run_cases(
             )
             failed_pending_clears = [item for item in pending_results if not item.get("ok")]
             if failed_pending_clears:
-                warnings.append(
-                    f"{name} session={session_id}: backend pending clear had failures: "
-                    + json.dumps(failed_pending_clears, ensure_ascii=False)
+                case_env_failures.append(
+                    "backend pending clear had failures: "
+                    + json.dumps(
+                        {
+                            "baseUrl": internal_service_url,
+                            "session": session_id,
+                            "failures": failed_pending_clears,
+                        },
+                        ensure_ascii=False,
+                    )
                 )
         should_clear_planning_intent = (
             clear_backend_planning_intent_per_case
@@ -2153,9 +2254,16 @@ async def _run_cases(
             )
             failed_planning_intent_clears = [item for item in planning_intent_results if not item.get("ok")]
             if failed_planning_intent_clears:
-                warnings.append(
-                    f"{name} session={session_id}: backend planning intent clear had failures: "
-                    + json.dumps(failed_planning_intent_clears, ensure_ascii=False)
+                case_env_failures.append(
+                    "backend planning intent clear had failures: "
+                    + json.dumps(
+                        {
+                            "baseUrl": internal_service_url,
+                            "session": session_id,
+                            "failures": failed_planning_intent_clears,
+                        },
+                        ensure_ascii=False,
+                    )
                 )
         case_assert_style = bool(case.get("assertPlanStyle", assert_plan_style))
         base_session_id = str(case.get("baseSessionId") or "")
@@ -2172,6 +2280,27 @@ async def _run_cases(
             else:
                 steps.append({"prompt": str(item)})
         step_count = len(steps)
+
+        if case_env_failures:
+            for env_failure in case_env_failures:
+                failure = f"{name} session={session_id}: environment setup failed: {env_failure}"
+                failures.append(failure)
+                print(f"  ENV_SETUP_FAIL: {failure}")
+            record = {
+                "case": name,
+                "stepIndex": 0,
+                "sessionId": session_id,
+                "prompt": "",
+                "elapsedMs": 0,
+                "error": "; ".join(case_env_failures),
+                "failureReason": "environment",
+                "environmentFailures": list(case_env_failures),
+            }
+            _add_fixture_and_root_cause_fields(record, case, {})
+            metrics_records.append(record)
+            print("metrics=" + json.dumps(record, ensure_ascii=False))
+            print()
+            continue
 
         for step_index, step in enumerate(steps, start=1):
             prompt = str(step.get("prompt") or step.get("text") or "")

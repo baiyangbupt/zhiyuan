@@ -179,6 +179,20 @@ def _ordered_slice_item_snippet(item: dict[str, Any]) -> str:
     return f"{name}（{tier}，录取率{ratio}{_ordered_item_position(item)}）"
 
 
+def _merge_plan_query_facts(plan: PlanActionPlan, facts: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(facts or {})
+    plan_facts = getattr(plan, "facts", {}) if isinstance(getattr(plan, "facts", {}), dict) else {}
+    plan_query_dsl = plan_facts.get("plan_query_dsl") if isinstance(plan_facts.get("plan_query_dsl"), dict) else None
+    if plan_query_dsl:
+        merged.setdefault("plan_query_dsl", plan_query_dsl)
+    requested_focus = plan_facts.get("requested_reply_focus")
+    if isinstance(requested_focus, list):
+        merged.setdefault("requested_reply_focus", requested_focus)
+    if plan.reply_focus:
+        merged.setdefault("requested_reply_focus", list(plan.reply_focus))
+    return merged
+
+
 async def _build_ordered_slice_summary(
     ctx: RunContext[RequestContext],
     filters: dict[str, Any],
@@ -560,6 +574,7 @@ async def handle_query_ordered(
     atomic_filters = dict(atomic.filters if atomic else {})
     if atomic_filters.get("slice"):
         state_summary, facts = await _build_ordered_slice_summary(ctx, atomic_filters)
+        reply_focus = list(plan.reply_focus or ["ordered_snapshot", "local_plan_query", "plan_slice_query"])
         return PlanExecutionResult(
             applied=True,
             action_family="query_ordered",
@@ -569,8 +584,8 @@ async def handle_query_ordered(
             context_summary=plan.context_summary,
             state_summary=state_summary,
             summary=state_summary,
-            reply_focus=["ordered_snapshot", "local_plan_query", "plan_slice_query"],
-            facts=facts,
+            reply_focus=reply_focus,
+            facts=_merge_plan_query_facts(plan, facts),
         )
     query_filters = await _build_candidate_query_filters(ctx, plan, atomic)
     if any(query_filters.get(key) for key in query_filters):
@@ -598,8 +613,8 @@ async def handle_query_ordered(
             context_summary=plan.context_summary,
             state_summary=state_summary,
             summary=state_summary,
-            reply_focus=["ordered_snapshot", "local_plan_query"],
-            facts={"query_filters": query_filters},
+            reply_focus=list(plan.reply_focus or ["ordered_snapshot", "local_plan_query"]),
+            facts=_merge_plan_query_facts(plan, {"query_filters": query_filters}),
         )
     state_summary = await query_planning_ordered_plan(ctx)
     return PlanExecutionResult(
@@ -611,7 +626,8 @@ async def handle_query_ordered(
         context_summary=plan.context_summary,
         state_summary=state_summary,
         summary=state_summary,
-        reply_focus=["ordered_snapshot"],
+        reply_focus=list(plan.reply_focus or ["ordered_snapshot"]),
+        facts=_merge_plan_query_facts(plan, {}),
     )
 
 
@@ -651,9 +667,10 @@ async def handle_query_candidates(
             next_step_hints=["候选查询失败时不要编造候选列表，也不要继续提示确认执行方案修改。"],
             facts={
                 "raw_error": state_summary,
-                "query_filters": query_filters,
+                **_merge_plan_query_facts(plan, {"query_filters": query_filters}),
             },
         )
+    reply_focus = list(plan.reply_focus or ["candidate_snapshot"])
     return PlanExecutionResult(
         applied=True,
         action_family="query_candidates",
@@ -663,5 +680,6 @@ async def handle_query_candidates(
         context_summary=plan.context_summary,
         state_summary=state_summary,
         summary=state_summary,
-        reply_focus=["candidate_snapshot"],
+        reply_focus=reply_focus,
+        facts=_merge_plan_query_facts(plan, {"query_filters": query_filters}),
     )

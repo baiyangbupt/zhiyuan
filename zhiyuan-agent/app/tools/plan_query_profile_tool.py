@@ -29,7 +29,15 @@ QUERY_TYPE_VALUES = [
 ]
 SCOPE_ANCHOR_VALUES = ["current_plan", "pending_reference", "candidate_pool", "general"]
 SIDE_EFFECT_VALUES = ["readonly", "readonly_while_pending", "none"]
-DIMENSION_VALUES = ["tuition", "tier_segment", "pending_reference"]
+DIMENSION_VALUES = [
+    "tuition",
+    "tier_segment",
+    "pending_reference",
+    "count_summary",
+    "item_list",
+    "school_presence",
+    "safety_check",
+]
 FIELD_VALUES = ["school", "major", "admission_probability"]
 PENDING_REFERENCE_TYPE_VALUES = ["major", "school", "none"]
 
@@ -106,7 +114,7 @@ def _build_prompt(latest_utterance: str, payload: dict[str, Any] | None = None) 
             "planningStateProfile": payload.get("planningStateProfile") or {},
             "pendingState": payload.get("pendingState") or {},
             "task": (
-                "判断用户是否在只读查询当前正式方案或当前待采纳内容影响到的方案项。"
+                "判断用户是否在只读查询当前正式方案、候选池机会，或当前待采纳内容影响到的方案项。"
                 "只输出 PlanQueryProfile JSON，不执行任何动作。"
             ),
             "allowedValues": {
@@ -121,6 +129,7 @@ def _build_prompt(latest_utterance: str, payload: dict[str, Any] | None = None) 
                 "最终回答必须只包含一个 JSON object，禁止 markdown。",
                 "用户要求删除、加入、替换、重排、生成方案、确认或执行时，queryType=none。",
                 "只读查看方案内数量、名单、录取率、保底/稳/冲切片、费用阈值时，queryType 不能是 none。",
+                "用户明确说候选、候选里、候选池、可选机会、推荐里，并且只是问有哪些/多少/看看/列出时，scopeAnchor=candidate_pool；不要改写成 current_plan。",
                 "filters.limit 是 1-10 的整数；没明确数量时填 5。",
                 "学费阈值必须结构化成 min_tuition_per_year 或 max_tuition_per_year，单位是元/年。",
                 "同时必须输出 condition。condition 是统一查询合同，字段名对齐 Java CandidatePoolQueryReq：condition.filters.tiers/provinceNames/negativeProvinceNames/cityNames/negativeCityNames/schoolKeywords/negativeSchoolKeywords/majorKeywords/negativeMajorKeywords/schoolTags/negativeSchoolTags/majorTags/negativeMajorTags/minTuitionPerYear/maxTuitionPerYear，condition.sort.field/order，condition.page/pageSize。",
@@ -128,6 +137,11 @@ def _build_prompt(latest_utterance: str, payload: dict[str, Any] | None = None) 
                 "“两万以上/超过两万/不低于两万”使用 min_tuition_per_year=20000；“两万以内/不超过两万”使用 max_tuition_per_year=20000。",
                 "保底、稳档、冲档切片使用 filters.tier=保/稳/冲；最后/末尾/靠后使用 filters.slice=tail，否则 head。",
                 "需要展示学校、专业或录取率时，把 school、major、admission_probability 放入 filters.include_fields 和 projection.fields。",
+                "候选池里的保底/稳档/冲档机会同样使用 queryType=readonly_plan_slice_query、scopeAnchor=candidate_pool、dimensions=[tier_segment]，condition.target=candidate_pool。",
+                "只问当前方案总数、冲稳保数量、缺口等统计时，queryType=readonly_plan_query、scopeAnchor=current_plan、dimensions=[count_summary]，projection.mode=count_summary，replyFocus 包含 count_summary。",
+                "只问方案里学校/院校名单时，queryType=readonly_plan_query、scopeAnchor=current_plan、dimensions=[item_list]，filters.item_type=school，projection.mode=school_list，replyFocus 包含 school_list_query。",
+                "只问当前方案是否包含某所学校时，queryType=readonly_plan_query、scopeAnchor=current_plan、dimensions=[school_presence]，把学校放入 condition.filters.schoolKeywords 和 filters.school_keyword，projection.mode=school_presence，replyFocus 包含 school_presence_query。",
+                "询问保底是否够稳、是否滑档等安全性问题时，如果聚焦保底/稳/冲切片，使用 dimensions=[tier_segment,safety_check]，replyFocus 包含 safety_check；不要直接输出调整/确认。",
                 "已有 pending 时，用户问“相关专业/这些学校/这个意向在当前方案里有没有”，queryType=readonly_pending_reference_query，并填写 pendingReferenceType=major 或 school；不要把待采纳内容自动生效。",
                 "只问待采纳会有什么影响但没有要求查当前方案名单/数量时，queryType=none。",
             ],
@@ -178,6 +192,95 @@ def _build_prompt(latest_utterance: str, payload: dict[str, Any] | None = None) 
                             "fields": ["school", "major", "admission_probability"],
                         },
                         "replyFocus": ["ordered_snapshot", "local_plan_query", "plan_slice_query"],
+                        "pendingReferenceType": "none",
+                    },
+                },
+                {
+                    "latestUserText": "候选里稳档的有哪些",
+                    "output": {
+                        "queryType": "readonly_plan_slice_query",
+                        "scopeAnchor": "candidate_pool",
+                        "sideEffect": "readonly",
+                        "dimensions": ["tier_segment"],
+                        "condition": {
+                            "target": "candidate_pool",
+                            "filters": {"tiers": ["稳"]},
+                            "sort": {"field": "recommendation", "order": "desc"},
+                            "page": 1,
+                            "pageSize": 5,
+                        },
+                        "filters": {
+                            "limit": 5,
+                            "tier": "稳",
+                            "slice": "head",
+                            "include_fields": ["school", "major", "admission_probability"],
+                        },
+                        "projection": {
+                            "mode": "slice_examples",
+                            "limit": 5,
+                            "fields": ["school", "major", "admission_probability"],
+                        },
+                        "replyFocus": ["candidate_snapshot", "local_candidate_query", "candidate_slice_query"],
+                        "pendingReferenceType": "none",
+                    },
+                },
+                {
+                    "latestUserText": "方案里冲档几个稳档几个保底几个",
+                    "output": {
+                        "queryType": "readonly_plan_query",
+                        "scopeAnchor": "current_plan",
+                        "sideEffect": "readonly",
+                        "dimensions": ["count_summary"],
+                        "condition": {
+                            "target": "ordered_plan",
+                            "filters": {},
+                            "sort": {"field": "position", "order": "asc"},
+                            "page": 1,
+                            "pageSize": 5,
+                        },
+                        "filters": {"limit": 5},
+                        "projection": {"mode": "count_summary", "limit": 5},
+                        "replyFocus": ["current_state", "count_summary"],
+                        "pendingReferenceType": "none",
+                    },
+                },
+                {
+                    "latestUserText": "方案里都有哪些学校",
+                    "output": {
+                        "queryType": "readonly_plan_query",
+                        "scopeAnchor": "current_plan",
+                        "sideEffect": "readonly",
+                        "dimensions": ["item_list"],
+                        "condition": {
+                            "target": "ordered_plan",
+                            "filters": {},
+                            "sort": {"field": "position", "order": "asc"},
+                            "page": 1,
+                            "pageSize": 20,
+                        },
+                        "filters": {"limit": 20, "item_type": "school"},
+                        "projection": {"mode": "school_list", "limit": 20},
+                        "replyFocus": ["ordered_snapshot", "local_plan_query", "school_list_query"],
+                        "pendingReferenceType": "none",
+                    },
+                },
+                {
+                    "latestUserText": "方案里有没有南京航空航天大学的",
+                    "output": {
+                        "queryType": "readonly_plan_query",
+                        "scopeAnchor": "current_plan",
+                        "sideEffect": "readonly",
+                        "dimensions": ["school_presence"],
+                        "condition": {
+                            "target": "ordered_plan",
+                            "filters": {"schoolKeywords": ["南京航空航天大学"]},
+                            "sort": {"field": "position", "order": "asc"},
+                            "page": 1,
+                            "pageSize": 5,
+                        },
+                        "filters": {"limit": 5, "school_keyword": "南京航空航天大学"},
+                        "projection": {"mode": "school_presence", "limit": 5},
+                        "replyFocus": ["ordered_snapshot", "local_plan_query", "school_presence_query"],
                         "pendingReferenceType": "none",
                     },
                 },

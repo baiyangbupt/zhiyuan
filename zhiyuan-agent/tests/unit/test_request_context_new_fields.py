@@ -111,6 +111,7 @@ class TestRequestContextNewFields:
         assert summary.phase == "reviewed"
         assert summary.version == 5
         assert summary.candidate_target_total == 30
+        assert summary.candidate_available_total == 0
         assert summary.draft_total == 12
         assert summary.draft_target_total == 30
         assert summary.ordered_total == 10
@@ -136,6 +137,29 @@ class TestRequestContextNewFields:
         assert summary.draft_target_total == 30
         assert summary.ordered_total == 24
         assert summary.ordered_target_total == 30
+
+    def test_planning_summary_separates_candidate_target_from_available_count(self):
+        """requiredCount is a target, not proof that candidate pool exists."""
+        raw_state = {
+            "phase": "profile_ready",
+            "version": 8,
+            "candidatePoolState": {
+                "statusCode": "not_generated",
+                "requiredCount": 45,
+                "items": [],
+                "summary": {"unitTotal": 0, "total": 0},
+            },
+            "workingPlanState": {"summary": {"unitTotal": 0, "targetUnitCount": 0}},
+            "orderedPlanState": {"summary": {"unitTotal": 0, "targetUnitCount": 0}},
+            "reviewState": {"summary": {}},
+        }
+
+        summary = PlanningSummary.from_backend_state(raw_state)
+
+        assert summary is not None
+        assert summary.candidate_status == "not_generated"
+        assert summary.candidate_target_total == 45
+        assert summary.candidate_available_total == 0
 
     def test_planning_summary_reads_working_plan_state(self):
         """Test parsing planning summary from the new workingPlanState field."""

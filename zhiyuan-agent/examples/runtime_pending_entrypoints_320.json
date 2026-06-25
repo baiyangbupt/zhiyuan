@@ -16,12 +16,12 @@
     "rationale": "可作为 compiled intent_change 的落库/渲染 sink；当前仍可被 intent preview/recovery 直接调用。"
   },
   {
-    "id": "legacy-intent-preview-to-pending",
-    "symbol": "_create_pending_intent_confirmation_from_preview_payload",
+    "id": "compiled-intent-preview-result-to-pending",
+    "symbol": "_create_pending_intent_confirmation_result_from_preview_payload",
     "kind": "compiler_sink_after_cut",
     "phase4Action": "compiled_intent_preview_candidate_sink",
     "risk": "medium",
-    "rationale": "intent preview 工具输出先构造 candidate/CompiledProposal 并通过 intent sink contract 后才能创建 pending。"
+    "rationale": "intent preview 工具输出先构造 candidate/CompiledProposal 并通过 intent sink contract 后才能创建 pending；入口返回 result，保留卡片、刷新目标和阻断原因。"
   },
   {
     "id": "sink-plan-confirmation",

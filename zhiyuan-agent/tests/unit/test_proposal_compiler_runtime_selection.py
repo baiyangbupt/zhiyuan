@@ -11,11 +11,30 @@ class _Decision:
         confidence: float = 0.9,
         target_strategies=None,
         target_issue_codes=None,
+        reply_focus=None,
     ):
         self.actionFamily = action_family
         self.confidence = confidence
         self.targetStrategies = target_strategies or []
         self.targetIssueCodes = target_issue_codes or []
+        self.replyFocus = reply_focus or []
+
+
+class _TurnDecision:
+    def __init__(
+        self,
+        *,
+        task_layer: str = "explore",
+        side_effect: str = "readonly",
+        scope_anchor: str = "general",
+        scenario: str = "atomic_mutation",
+        confidence: float = 0.9,
+    ):
+        self.taskLayer = task_layer
+        self.sideEffect = side_effect
+        self.scopeAnchor = scope_anchor
+        self.scenario = scenario
+        self.confidence = confidence
 
 
 def _proposal(proposal_id: str, *, strategy: str = "", status: str = "ready", issue_codes=None):
@@ -39,6 +58,82 @@ def _latest_result(*proposals, selected_proposal_id: str = ""):
     if selected_proposal_id:
         result["selected_proposal_id"] = selected_proposal_id
     return result
+
+
+def test_intent_preview_turn_decision_arbitration_allows_soft_readonly_aligned_preview():
+    source = proposal_compiler.compile_runtime_intent_preview_turn_decision_arbitration_source(
+        turn_decision=_TurnDecision(),
+        turn_decision_blocks_intent_pending=True,
+        semantic_intent_preview_requested=True,
+        semantic_entity_kinds={"major"},
+        preview_payload_entity_kinds={"major"},
+        preview_candidate_valid=True,
+    )
+
+    assert source.matched is True
+    assert source.allow_intent_pending is True
+    assert source.route == "turn_decision_intent_preview_arbitration"
+    assert source.blocking_reasons == []
+    assert source.arbitration_dsl["sourceInputs"] == [
+        "turn_decision",
+        "intent_side_effect_decision",
+        "intent_preview_payload",
+        "intent_preview_candidate",
+    ]
+
+
+def test_intent_preview_turn_decision_arbitration_blocks_current_plan_atomic_mutation():
+    source = proposal_compiler.compile_runtime_intent_preview_turn_decision_arbitration_source(
+        turn_decision=_TurnDecision(
+            task_layer="plan",
+            side_effect="plan_preview",
+            scope_anchor="current_plan",
+            scenario="atomic_mutation",
+        ),
+        turn_decision_blocks_intent_pending=True,
+        semantic_intent_preview_requested=True,
+        semantic_entity_kinds={"major"},
+        preview_payload_entity_kinds={"major"},
+        preview_candidate_valid=True,
+    )
+
+    assert source.allow_intent_pending is False
+    assert "current_plan_atomic_mutation_requires_plan_route" in source.blocking_reasons
+
+
+def test_intent_preview_turn_decision_arbitration_blocks_plan_query_scope():
+    source = proposal_compiler.compile_runtime_intent_preview_turn_decision_arbitration_source(
+        turn_decision=_TurnDecision(
+            task_layer="plan",
+            side_effect="readonly",
+            scope_anchor="current_plan",
+            scenario="plan_query",
+        ),
+        turn_decision_blocks_intent_pending=True,
+        semantic_intent_preview_requested=True,
+        semantic_entity_kinds={"major"},
+        preview_payload_entity_kinds={"major"},
+        preview_candidate_valid=True,
+    )
+
+    assert source.allow_intent_pending is False
+    assert "unsupported_turn_decision_scope_anchor_for_intent_override" in source.blocking_reasons
+    assert "plan_query_turn_decision_cannot_be_intent_override" in source.blocking_reasons
+
+
+def test_intent_preview_turn_decision_arbitration_blocks_mismatched_or_invalid_preview():
+    source = proposal_compiler.compile_runtime_intent_preview_turn_decision_arbitration_source(
+        turn_decision=_TurnDecision(),
+        turn_decision_blocks_intent_pending=True,
+        semantic_intent_preview_requested=True,
+        semantic_entity_kinds={"school"},
+        preview_payload_entity_kinds={"major"},
+        preview_candidate_valid=False,
+    )
+
+    assert source.allow_intent_pending is False
+    assert "invalid_intent_preview_candidate" in source.blocking_reasons
+    assert "semantic_payload_entity_kind_mismatch" in source.blocking_reasons
 
 
 def test_runtime_fix_selection_uses_selected_ready_proposal_id():
@@ -309,6 +404,104 @@ def test_select_user_goal_fix_proposal_blocks_missing_goal_type():
     assert selection.blocking_reasons == ["missing_user_goal_type"]
 
 
+def test_compile_structured_user_goal_fix_request_source_builds_java_request_and_intent_payload():
+    source = {
+        "composite_proposal": {
+            "source_version": 12,
+            "goal": {
+                "goal_type": "exclude_scope",
+                "user_original_text": "避开经济与金融",
+                "negative_scopes": [
+                    {"entity_type": "major", "values": ["经济与金融"]},
+                ],
+                "confidence": "high",
+            },
+        },
+    }
+
+    compiled = proposal_compiler.compile_structured_user_goal_fix_request_source(
+        source=source,
+        context_source="plan_next_action_structured_goal",
+    )
+
+    assert compiled.matched is True
+    assert compiled.goal_type == "exclude_scope"
+    assert compiled.source_version_guard == 12
+    assert compiled.user_goal_request["goalType"] == "exclude_scope"
+    assert compiled.user_goal_request["sourceVersionGuard"] == 12
+    assert compiled.user_goal_request["context"] == {"source": "plan_next_action_structured_goal"}
+    assert compiled.user_goal_request["negativeScopes"][0]["entityType"] == "major"
+    assert compiled.user_goal_request["negativeScopes"][0]["normalizedName"] == "经济与金融"
+    assert compiled.intent_payload == {
+        "selected": [{"major_intents": {"negative_level3": ["经济与金融"]}}],
+        "intentMode": "constraint",
+        "constraintIntentType": "default",
+    }
+    assert compiled.blocking_reasons == []
+
+
+def test_compile_structured_user_goal_fix_request_source_blocks_without_version_guard():
+    source = {
+        "composite_proposal": {
+            "goal": {
+                "goal_type": "only_keep_scope",
+                "target_scopes": [
+                    {"entity_type": "school", "values": ["厦门大学"]},
+                ],
+            },
+        },
+    }
+
+    compiled = proposal_compiler.compile_structured_user_goal_fix_request_source(
+        source=source,
+        context_source="plan_next_action_structured_goal",
+    )
+
+    assert compiled.matched is False
+    assert compiled.goal_type == "only_keep_scope"
+    assert compiled.user_goal_request == {}
+    assert compiled.blocking_reasons == ["missing_source_version_guard"]
+
+
+def test_compile_structured_goal_intent_input_source_preserves_override_payload():
+    override = {
+        "selected": [{"school_intents": {"colleges": ["厦门大学"]}}],
+        "intentMode": "constraint",
+        "constraintIntentType": "only_keep",
+    }
+
+    compiled = proposal_compiler.compile_structured_goal_intent_input_source(
+        source={"composite_proposal": {"goal": {"goal_type": "exclude_scope"}}},
+        intent_payload_override=override,
+    )
+
+    assert compiled.matched is True
+    assert compiled.intent_payload is override
+    assert compiled.selected_values == [{"school_intents": {"colleges": ["厦门大学"]}}]
+    assert compiled.intent_mode == "constraint"
+    assert compiled.raw_constraint_intent_type == "only_keep"
+
+
+def test_resolve_structured_goal_clarification_returns_questions_and_scope_values():
+    resolution = proposal_compiler.resolve_structured_goal_clarification(
+        {
+            "compositeProposal": {
+                "feasibility": "needs_clarification",
+                "goal": {
+                    "goalType": "only_keep_scope",
+                    "clarificationQuestions": ["按专业类还是具体专业处理？"],
+                    "targetScopes": [{"entityType": "major", "values": ["计算机类"]}],
+                },
+            }
+        }
+    )
+
+    assert resolution.needed is True
+    assert resolution.questions == ["按专业类还是具体专业处理？"]
+    assert resolution.scope_values == ["计算机类"]
+    assert resolution.blocking_reasons == []
+
+
 def test_resolve_intent_select_input_allows_preference_scope():
     resolution = proposal_compiler.resolve_intent_select_input(
         selected_values=[{"major_intents": {"level3": ["软件工程"]}}],
@@ -575,6 +768,139 @@ def test_semantic_decision_issue_codes_drop_when_strategy_conflicts_with_expecte
     assert result == []
 
 
+def _review_context(*proposals):
+    return {
+        "lastActionFamily": "review_plan",
+        "lastResultKind": "review_result",
+        "fixProposals": {
+            "readyCount": len(proposals),
+            "blockedCount": 0,
+            "previewOnlyCount": 0,
+            "proposals": list(proposals),
+        },
+    }
+
+
+def test_compile_runtime_review_refocus_source_builds_targeted_review_payload():
+    latest_review = {
+        "action_family": "review_plan",
+        "result_kind": "review_result",
+        "facts": {"risk_count": 1},
+    }
+
+    source = proposal_compiler.compile_runtime_review_refocus_source(
+        content="一年学费最多两三万，方案里高收费多吗",
+        latest_review_result=latest_review,
+        recent_plan_context=_review_context(_proposal("fp-fee", strategy="replace_risk_items")),
+        decision=_Decision(
+            action_family="review_plan",
+            target_issue_codes=["high_tuition", "cooperative_program"],
+            target_strategies=["replace_risk_items"],
+            reply_focus=["target_issue_only"],
+        ),
+        planning_version=18,
+    )
+
+    assert source.matched is True
+    assert source.route == "review_target_refocus"
+    assert source.side_effect == "readonly"
+    assert source.target_issue_codes == ["high_tuition", "cooperative_program"]
+    assert source.plan_payload == {
+        "stage": "review",
+        "action_family": "review_plan",
+        "user_goal": "一年学费最多两三万，方案里高收费多吗",
+        "requires_confirmation": False,
+        "target_issue_codes": ["high_tuition", "cooperative_program"],
+        "reply_focus": ["target_issue_only"],
+        "target_strategies": ["replace_risk_items"],
+        "planning_version": 18,
+    }
+    assert source.evidence_plan["trigger"] == "review_target_refocus"
+    assert source.evidence_plan["sourceInputs"] == [
+        "latest_review_result",
+        "plan_semantic_action",
+    ]
+
+
+def test_compile_runtime_review_refocus_source_blocks_already_targeted_review():
+    latest_review = {
+        "action_family": "review_plan",
+        "result_kind": "review_result",
+        "facts": {"target_issue_codes": ["high_tuition"]},
+    }
+
+    source = proposal_compiler.compile_runtime_review_refocus_source(
+        content="再看高收费",
+        latest_review_result=latest_review,
+        recent_plan_context={},
+        decision=_Decision(
+            action_family="review_plan",
+            target_issue_codes=["high_tuition"],
+            reply_focus=["target_issue_only"],
+        ),
+    )
+
+    assert source.matched is False
+    assert source.blocking_reasons == ["review_result_already_targeted"]
+
+
+def test_compile_runtime_review_to_fix_preview_source_builds_preview_payload_with_target_scope():
+    context = _review_context(
+        _proposal("fp-fee", strategy="replace_risk_items", issue_codes=["high_tuition"]),
+    )
+
+    source = proposal_compiler.compile_runtime_review_to_fix_preview_source(
+        content="高收费的先给我看处理预览",
+        current_plan_context=context,
+        decision=_Decision(
+            action_family="preview_fix_proposal",
+            target_strategies=["replace_risk_items"],
+            target_issue_codes=["high_tuition"],
+        ),
+        planning_version=18,
+    )
+
+    assert source.matched is True
+    assert source.route == "post_review_fix_preview"
+    assert source.side_effect == "plan_preview"
+    assert source.target_scope_explicit is True
+    assert source.plan_payload == {
+        "stage": "apply",
+        "action_family": "preview_fix_proposal",
+        "user_goal": "高收费的先给我看处理预览",
+        "requires_confirmation": False,
+        "target_strategies": ["replace_risk_items"],
+        "target_issue_codes": ["high_tuition"],
+        "planning_version": 18,
+    }
+
+
+def test_compile_runtime_review_to_fix_preview_source_blocks_missing_review_proposals():
+    source = proposal_compiler.compile_runtime_review_to_fix_preview_source(
+        content="给我看处理预览",
+        current_plan_context={
+            "lastActionFamily": "review_plan",
+            "lastResultKind": "review_result",
+            "fixProposals": {},
+        },
+        decision=_Decision(action_family="preview_fix_proposal"),
+    )
+
+    assert source.matched is False
+    assert source.blocking_reasons == ["missing_review_fix_proposals"]
+
+
+def test_compile_runtime_review_to_fix_preview_source_blocks_low_confidence_decision():
+    source = proposal_compiler.compile_runtime_review_to_fix_preview_source(
+        content="给我看处理预览",
+        current_plan_context=_review_context(_proposal("fp-fee", strategy="replace_risk_items")),
+        decision=_Decision(action_family="preview_fix_proposal", confidence=0.2),
+    )
+
+    assert source.matched is False
+    assert source.blocking_reasons == ["semantic_decision_not_fix_preview"]
+
+
 def test_resolve_plan_confirmation_candidate_allows_apply_payload_and_version_guard():
     candidate = {
         "action_family": "add_units",
@@ -741,30 +1067,43 @@ def test_plan_candidate_resolution_blocks_non_apply_stage():
     ]
 
 
-def test_pending_turn_resolution_routes_readonly_impact_without_model_decision():
+def test_pending_turn_resolution_compiles_readonly_impact_from_turn_decision():
     resolution = proposal_compiler.resolve_pending_turn_action(
         "先不确认，看看这个偏好会影响当前方案吗",
         pending_state={"status": "active", "kind": "intent_change"},
     )
 
-    assert resolution.action == "ask_pending_impact"
-    assert resolution.side_effect == "readonly_while_pending"
+    assert resolution.action == "none"
+    assert resolution.side_effect == "none"
     assert resolution.pending_type == "intent"
-    assert resolution.requires_model_decision is False
+    assert resolution.requires_model_decision is True
 
-
-def test_pending_turn_resolution_detects_apply_then_readonly_as_composite_candidate():
-    resolution = proposal_compiler.resolve_pending_turn_action(
-        "删完了再看还剩多少，梯度还稳不稳",
-        pending_state={"status": "active", "kind": "plan_mutation"},
+    compiled = proposal_compiler.compile_runtime_pending_turn_decision_source(
+        "先不确认，看看这个偏好会影响当前方案吗",
+        pending_state={"status": "active", "kind": "intent_change"},
+        turn_decision=_TurnDecision(
+            task_layer="pending",
+            side_effect="readonly_while_pending",
+            scope_anchor="pending_reference",
+            scenario="pending_impact_query",
+            confidence=0.92,
+        ),
     )
 
-    assert resolution.action == "apply_pending_then_readonly"
-    assert resolution.side_effect == "apply_pending_then_readonly"
-    assert resolution.pending_type == "plan"
-    assert resolution.requires_model_decision is False
-    assert resolution.blocking_reasons == []
-    assert resolution.post_apply_evidence_plan == {
+    assert compiled.action == "ask_pending_impact"
+    assert compiled.side_effect == "readonly_while_pending"
+    assert compiled.pending_type == "intent"
+    assert compiled.requires_model_decision is False
+
+
+def test_post_apply_readonly_evidence_plan_uses_structured_target_issues():
+    evidence_plan = proposal_compiler.compile_post_apply_readonly_evidence_plan(
+        "删完了再看还剩多少，梯度还稳不稳",
+        pending_state={"status": "active", "kind": "plan_mutation"},
+        target_issues=["remaining_count", "tier_distribution", "risk_review"],
+    )
+
+    assert evidence_plan == {
         "type": "EvidencePlan",
         "trigger": "apply_pending_then_readonly",
         "scopeAnchor": "current_plan",
@@ -794,17 +1133,302 @@ def test_pending_turn_resolution_detects_apply_then_readonly_as_composite_candid
     }
 
 
-def test_pending_turn_resolution_detects_apply_then_new_plan_request():
+def test_compile_readonly_workspace_evidence_plan_from_prior_plan_attempt():
+    source = proposal_compiler.compile_runtime_readonly_workspace_evidence_plan_source(
+        current_result={
+            "action_family": "query_state",
+            "result_kind": "status_overview",
+            "reply_focus": ["current_state", "tier_distribution"],
+            "facts": {"risk_count": 1},
+        },
+        prior_plan_attempt_result={
+            "action_family": "remove_units",
+            "result_kind": "no_change",
+        },
+    )
+
+    assert source.matched is True
+    assert source.route == "post_plan_attempt_readonly_workspace_evidence"
+    assert source.workspace_refresh_targets == ["ordered", "review"]
+    assert source.evidence_plan["trigger"] == "post_plan_attempt_readonly_status_overview"
+    assert source.evidence_plan["sourceInputs"] == [
+        "current_execute_plan_action_result",
+        "prior_plan_mutation_attempt_result",
+    ]
+    assert source.evidence_plan["priorAttempt"] == {
+        "actionFamily": "remove_units",
+        "resultKind": "no_change",
+    }
+
+
+def test_compile_readonly_workspace_evidence_plan_blocks_apply_pending_without_pending_entrypoint():
+    source = proposal_compiler.compile_runtime_readonly_workspace_evidence_plan_source(
+        current_result={
+            "action_family": "query_state",
+            "result_kind": "status_overview",
+            "reply_focus": ["current_state"],
+            "facts": {},
+        },
+        turn_decision=_TurnDecision(
+            task_layer="mixed",
+            side_effect="apply_pending_then_readonly",
+            scope_anchor="current_plan",
+            scenario="apply_pending_then_readonly_query",
+            confidence=0.95,
+        ),
+    )
+
+    assert source.matched is False
+    assert "apply_pending_then_readonly_requires_active_pending_entrypoint" in source.blocking_reasons
+    assert "missing_prior_plan_mutation_attempt" in source.blocking_reasons
+    assert source.workspace_refresh_targets == []
+
+
+def test_compile_workspace_presentation_refreshes_mutating_preview_result():
+    source = proposal_compiler.compile_runtime_workspace_presentation_source(
+        execute_plan_results=[
+            {
+                "applied": False,
+                "action_family": "move_unit",
+                "stage": "preview",
+                "result_kind": "preview_only",
+                "workspace_refresh_targets": ["ordered", "review"],
+            }
+        ]
+    )
+
+    assert source.matched is True
+    assert source.route == "execute_plan_result_refresh"
+    assert source.workspace_refresh_targets == ["ordered", "review"]
+    assert source.workspace_view_targets == []
+    assert source.result_is_readonly_no_refresh is False
+
+
+def test_compile_workspace_presentation_blocks_readonly_review_refresh():
+    source = proposal_compiler.compile_runtime_workspace_presentation_source(
+        execute_plan_results=[
+            {
+                "applied": True,
+                "action_family": "review_plan",
+                "stage": "review",
+                "result_kind": "review_result",
+                "workspace_refresh_targets": ["review"],
+            }
+        ]
+    )
+
+    assert source.matched is True
+    assert source.route == "execute_plan_result_no_refresh"
+    assert source.workspace_refresh_targets == []
+    assert source.result_is_readonly_no_refresh is True
+
+
+def test_compile_workspace_presentation_strips_explanation_only_initial_refresh():
+    source = proposal_compiler.compile_runtime_workspace_presentation_source(
+        initial_refresh_targets=["ordered", "review"],
+        execute_plan_results=[
+            {
+                "applied": False,
+                "action_family": "preview_fix_proposal",
+                "stage": "preview",
+                "result_kind": "fix_proposal_preview",
+                "workspace_refresh_targets": ["ordered", "review"],
+            }
+        ],
+    )
+
+    assert source.matched is True
+    assert source.route == "explanation_only_result_no_refresh"
+    assert source.workspace_refresh_targets == []
+    assert source.latest_result_is_explanation_only is True
+
+
+def test_compile_workspace_presentation_keeps_explanation_refresh_when_explicitly_allowed():
+    source = proposal_compiler.compile_runtime_workspace_presentation_source(
+        initial_refresh_targets=["review"],
+        execute_plan_results=[
+            {
+                "applied": False,
+                "action_family": "analyze_adjustment",
+                "stage": "analysis",
+                "result_kind": "adjustment_analysis",
+            }
+        ],
+        allow_explanation_refresh=True,
+    )
+
+    assert source.matched is True
+    assert source.workspace_refresh_targets == ["review"]
+    assert source.latest_result_is_explanation_only is True
+
+
+def test_compile_workspace_presentation_uses_structured_tool_call_fallback():
+    source = proposal_compiler.compile_runtime_workspace_presentation_source(
+        tool_call_names=["execute_plan_action"],
+        execute_plan_action_call_families=["move_ordered_unit"],
+    )
+
+    assert source.matched is True
+    assert source.route == "execute_plan_call_family"
+    assert source.workspace_refresh_targets == ["ordered", "review"]
+
+
+def test_compile_workspace_presentation_opens_view_after_prior_plan_attempt():
+    source = proposal_compiler.compile_runtime_workspace_presentation_source(
+        execute_plan_results=[
+            {
+                "action_family": "query_state",
+                "result_kind": "status_overview",
+                "reply_focus": ["current_state", "tier_distribution"],
+                "facts": {"risk_count": 1},
+            }
+        ],
+        include_result_view_targets=False,
+        include_post_plan_attempt_view=True,
+        prior_plan_attempt_result={
+            "action_family": "remove_units",
+            "result_kind": "no_change",
+        },
+    )
+
+    assert source.matched is True
+    assert source.workspace_refresh_targets == []
+    assert source.workspace_view_targets == ["ordered", "review"]
+    assert source.evidence_plan["trigger"] == "post_plan_attempt_readonly_status_overview"
+
+
+def test_compile_semantic_plan_display_confirmation_card():
+    source = proposal_compiler.compile_runtime_semantic_plan_display_source(
+        action_family="preview_fix_proposal",
+        result={"result_kind": "fix_proposal_preview"},
+        pending_card_created=True,
+    )
+
+    assert source.matched is True
+    assert source.route == "semantic_plan_confirmation_card"
+    assert source.display_payload == {
+        "presentation": "confirmation_card",
+        "pendingCardType": "pendingConfirmationCard",
+    }
+    assert source.reply_plan["focus"] == ["confirmable_plan_mutation"]
+
+
+def test_compile_semantic_plan_display_framework_conditional_options():
+    source = proposal_compiler.compile_runtime_semantic_plan_display_source(
+        action_family="review_plan",
+        result={"result_kind": "review_result", "facts": {}},
+        pending_card_created=False,
+        prefer_conditional_options=True,
+    )
+
+    assert source.matched is True
+    assert source.route == "semantic_plan_conditional_options"
+    assert source.display_payload == {"presentation": "conditional_options"}
+
+
+def test_compile_semantic_plan_display_conditional_options_from_fix_proposals():
+    source = proposal_compiler.compile_runtime_semantic_plan_display_source(
+        action_family="analyze_adjustment",
+        result={
+            "result_kind": "adjustment_analysis",
+            "facts": {
+                "fix_proposals": {
+                    "blocked_count": 1,
+                    "proposals": [{"proposal_id": "fp_1", "status": "blocked"}],
+                }
+            },
+        },
+        pending_card_created=False,
+    )
+
+    assert source.matched is True
+    assert source.display_payload == {"presentation": "conditional_options"}
+    assert source.reply_plan == {
+        "mode": ["conditional_options"],
+        "focus": ["review_or_repair_options"],
+    }
+
+
+def test_compile_semantic_plan_display_readonly_answer_without_options():
+    source = proposal_compiler.compile_runtime_semantic_plan_display_source(
+        action_family="review_plan",
+        result={"result_kind": "review_result", "facts": {}},
+        pending_card_created=False,
+    )
+
+    assert source.matched is True
+    assert source.route == "semantic_plan_readonly_answer"
+    assert source.display_payload == {"presentation": "readonly_answer"}
+
+
+def test_compile_reply_guard_blocks_unbacked_plan_confirmation():
+    source = proposal_compiler.compile_runtime_reply_guard_source(
+        reply=(
+            "已在当前方案里定位到汉语言文学相关志愿。\n\n"
+            "确认后会执行以下操作：将这些志愿从当前方案中移除。"
+        ),
+        guard_context="plan_confirmation",
+    )
+
+    assert source.matched is True
+    assert source.route == "unbacked_plan_confirmation_reply_guard"
+    assert source.guard_type == "unbacked_plan_confirmation"
+    assert "确认后会执行" not in source.stripped_reply
+    assert source.display_payload == {"presentation": "readonly_boundary"}
+
+
+def test_compile_reply_guard_ignores_intent_only_confirmation_copy():
+    source = proposal_compiler.compile_runtime_reply_guard_source(
+        reply="我可以把法学作为后续报考参考整理出来，请确认是否采纳这条偏好。",
+        guard_context="plan_confirmation",
+    )
+
+    assert source.matched is False
+    assert "reply_guard_not_needed" in source.blocking_reasons
+
+
+def test_compile_reply_guard_detects_plan_preview_without_card():
+    source = proposal_compiler.compile_runtime_reply_guard_source(
+        reply="已列出调整预览：替换当前方案里的高收费志愿。确认前不会改动当前方案。",
+        guard_context="plan_preview_without_card",
+    )
+
+    assert source.matched is True
+    assert source.route == "plan_preview_without_card_reply_guard"
+    assert source.guard_type == "plan_preview_without_card"
+
+
+def test_compile_reply_guard_detects_recorded_intent_without_pending():
+    source = proposal_compiler.compile_runtime_reply_guard_source(
+        reply="已把优先网络与新媒体作为后续报考参考记下来，后续生成或调整方案会优先保证。",
+        guard_context="recorded_intent_without_pending",
+    )
+
+    assert source.matched is True
+    assert source.route == "recorded_intent_without_pending_reply_guard"
+    assert source.reply_plan["focus"] == ["no_pending_intent_boundary"]
+
+
+def test_compile_reply_guard_detects_no_tool_action_boundary():
+    source = proposal_compiler.compile_runtime_reply_guard_source(
+        reply="这轮还没有生成可执行的调整内容，所以不会改动当前方案。",
+        guard_context="no_tool_action_boundary",
+    )
+
+    assert source.matched is True
+    assert source.route == "no_tool_action_boundary_reply_guard"
+
+
+def test_pending_turn_resolution_leaves_apply_then_new_plan_to_structured_decision():
     resolution = proposal_compiler.resolve_pending_turn_action(
         "现在基于这些出方案",
         pending_state={"status": "active", "kind": "intent_change"},
     )
 
-    assert resolution.action == "apply_pending_then_new_request"
-    assert resolution.side_effect == "apply_pending_then_new_request"
+    assert resolution.action == "none"
+    assert resolution.side_effect == "none"
     assert resolution.pending_type == "intent"
-    assert resolution.requires_model_decision is False
-    assert resolution.blocking_reasons == []
+    assert resolution.requires_model_decision is True
 
 
 def test_pending_turn_resolution_routes_plan_short_confirmation_without_model_decision():
@@ -916,97 +1540,9 @@ def test_pending_turn_resolution_does_not_cancel_soft_non_execution_query():
         pending_state={"status": "active", "kind": "plan_mutation"},
     )
 
-    assert resolution.action == "ask_pending_impact"
-    assert resolution.side_effect == "readonly_while_pending"
-    assert resolution.requires_model_decision is False
-
-
-def test_pending_plan_fact_query_is_not_pending_impact_reply():
-    assert proposal_compiler.pending_turn_looks_plan_query_while_pending(
-        "先不确认，当前方案里有没有相关专业"
-    )
-    assert proposal_compiler.pending_turn_looks_plan_query_while_pending(
-        "再给我看下保底学校"
-    )
-    assert not proposal_compiler.pending_turn_looks_readonly_impact(
-        "先不确认，当前方案里有没有相关专业"
-    )
-    assert proposal_compiler.pending_turn_looks_readonly_impact(
-        "先不执行，看看这次调整会影响哪些候选"
-    )
-
-
-def test_pending_tuition_count_query_is_plan_query_not_pending_impact():
-    assert proposal_compiler.pending_turn_looks_plan_query_while_pending(
-        "两万以上的都算贵 帮我看看有几个"
-    )
-    assert not proposal_compiler.pending_turn_looks_readonly_impact(
-        "两万以上的都算贵 帮我看看有几个"
-    )
-
-
-def test_runtime_plan_query_compiler_builds_tuition_count_query_payload():
-    compiled = proposal_compiler.compile_runtime_plan_query_source(
-        content="两万以上的都算贵 帮我看看有几个",
-        planning_version=12,
-        pending_exists=True,
-    )
-
-    assert compiled.matched is True
-    assert compiled.route == "readonly_plan_query"
-    assert compiled.side_effect == "readonly_while_pending"
-    assert compiled.plan_query_dsl == {
-        "type": "PlanQuery",
-        "scopeAnchor": "current_plan",
-        "sideEffect": "readonly_while_pending",
-        "queryType": "readonly_plan_query",
-        "dimensions": ["tuition"],
-        "filters": {"limit": 5, "min_tuition_per_year": 20000},
-        "projection": {"mode": "count_with_examples", "limit": 5},
-        "sourceVersionGuard": 12,
-    }
-    payload = compiled.plan_payload
-    assert payload["action_family"] == "query_ordered"
-    assert payload["requires_confirmation"] is False
-    assert payload["atomic_actions"][0]["filters"] == {"limit": 5, "min_tuition_per_year": 20000}
-    assert "tuition" in payload["reply_focus"]
-
-
-def test_runtime_plan_query_compiler_builds_tier_slice_query_payload():
-    compiled = proposal_compiler.compile_runtime_plan_query_source(
-        content="保底最后几个是什么学校 录取率多少",
-        planning_version=20,
-        pending_exists=False,
-    )
-
-    assert compiled.matched is True
-    assert compiled.route == "readonly_plan_slice_query"
-    assert compiled.side_effect == "readonly"
-    assert compiled.plan_query_dsl == {
-        "type": "PlanQuery",
-        "scopeAnchor": "current_plan",
-        "sideEffect": "readonly",
-        "queryType": "readonly_plan_slice_query",
-        "dimensions": ["tier_segment"],
-        "filters": {
-            "limit": 5,
-            "tier": "保",
-            "slice": "tail",
-            "include_fields": ["school", "major", "admission_probability"],
-        },
-        "projection": {
-            "mode": "slice_examples",
-            "limit": 5,
-            "fields": ["school", "major", "admission_probability"],
-        },
-        "sourceVersionGuard": 20,
-    }
-    payload = compiled.plan_payload
-    assert payload["action_family"] == "query_ordered"
-    assert payload["requires_confirmation"] is False
-    assert payload["atomic_actions"][0]["filters"]["tier"] == "保"
-    assert payload["atomic_actions"][0]["filters"]["slice"] == "tail"
-    assert "plan_slice_query" in payload["reply_focus"]
+    assert resolution.action == "none"
+    assert resolution.side_effect == "none"
+    assert resolution.requires_model_decision is True
 
 
 def test_runtime_plan_query_profile_compiler_builds_tuition_query_payload():
@@ -1028,6 +1564,103 @@ def test_runtime_plan_query_profile_compiler_builds_tuition_query_payload():
     assert compiled.side_effect == "readonly_while_pending"
     assert compiled.plan_query_dsl["filters"] == {"limit": 5, "min_tuition_per_year": 20000}
     assert compiled.plan_payload["atomic_actions"][0]["filters"] == {"limit": 5, "min_tuition_per_year": 20000}
+
+
+def test_runtime_plan_query_profile_compiler_builds_candidate_slice_query_payload():
+    compiled = proposal_compiler.compile_runtime_plan_query_profile_source(
+        content="候选里稳档的有哪些",
+        query_profile={
+            "queryType": "readonly_plan_slice_query",
+            "scopeAnchor": "candidate_pool",
+            "dimensions": ["tier_segment"],
+            "filters": {
+                "limit": 5,
+                "tier": "稳",
+                "slice": "head",
+                "include_fields": ["school", "major", "admission_probability"],
+            },
+            "projection": {
+                "mode": "slice_examples",
+                "limit": 5,
+                "fields": ["school", "major", "admission_probability"],
+            },
+            "replyFocus": ["candidate_snapshot", "local_candidate_query", "candidate_slice_query"],
+        },
+        planning_version=12,
+    )
+
+    assert compiled.matched is True
+    assert compiled.route == "readonly_plan_slice_query"
+    assert compiled.action_family == "query_candidates"
+    assert compiled.plan_query_dsl == {
+        "type": "PlanQuery",
+        "scopeAnchor": "candidate_pool",
+        "sideEffect": "readonly",
+        "queryType": "readonly_plan_slice_query",
+        "dimensions": ["tier_segment"],
+        "filters": {
+            "limit": 5,
+            "tier": "稳",
+            "slice": "head",
+            "include_fields": ["school", "major", "admission_probability"],
+        },
+        "projection": {
+            "mode": "slice_examples",
+            "limit": 5,
+            "fields": ["school", "major", "admission_probability"],
+        },
+        "sourceVersionGuard": 12,
+    }
+    payload = compiled.plan_payload
+    assert payload["action_family"] == "query_candidates"
+    assert payload["atomic_actions"][0]["action_type"] == "query_candidates"
+    assert payload["atomic_actions"][0]["filters"]["tier"] == "稳"
+    assert "candidate_slice_query" in payload["reply_focus"]
+
+
+def test_runtime_plan_query_profile_compiler_builds_count_summary_payload_from_structured_profile():
+    compiled = proposal_compiler.compile_runtime_plan_query_profile_source(
+        content="任意用户原话不参与编译判断",
+        query_profile={
+            "queryType": "readonly_plan_query",
+            "scopeAnchor": "current_plan",
+            "dimensions": ["count_summary"],
+            "filters": {"limit": 5},
+            "projection": {"mode": "count_summary", "limit": 5},
+            "replyFocus": ["current_state", "count_summary"],
+        },
+        planning_version=13,
+    )
+
+    assert compiled.matched is True
+    assert compiled.route == "readonly_plan_query"
+    assert compiled.action_family == "query_state"
+    assert compiled.plan_query_dsl["dimensions"] == ["count_summary"]
+    assert compiled.plan_query_dsl["projection"]["mode"] == "count_summary"
+    assert compiled.plan_payload["action_family"] == "query_state"
+    assert compiled.plan_payload["facts"]["plan_query_dsl"]["projection"]["mode"] == "count_summary"
+
+
+def test_runtime_plan_query_profile_compiler_builds_school_presence_payload_from_condition():
+    compiled = proposal_compiler.compile_runtime_plan_query_profile_source(
+        content="任意用户原话不参与编译判断",
+        query_profile={
+            "queryType": "readonly_plan_query",
+            "scopeAnchor": "current_plan",
+            "dimensions": ["school_presence"],
+            "condition": {"filters": {"schoolKeywords": ["南京航空航天大学"]}},
+            "filters": {"limit": 5},
+            "projection": {"mode": "school_presence", "limit": 5},
+            "replyFocus": ["ordered_snapshot", "local_plan_query", "school_presence_query"],
+        },
+        planning_version=13,
+    )
+
+    assert compiled.matched is True
+    assert compiled.action_family == "query_ordered"
+    assert compiled.plan_query_dsl["filters"]["school_keyword"] == "南京航空航天大学"
+    assert compiled.plan_payload["atomic_actions"][0]["filters"]["school_keyword"] == "南京航空航天大学"
+    assert "school_presence_query" in compiled.plan_payload["reply_focus"]
 
 
 def test_runtime_plan_query_profile_compiler_resolves_pending_major_reference_from_state():
@@ -1071,15 +1704,15 @@ def test_runtime_plan_query_profile_compiler_rejects_none_profile():
     assert compiled.blocking_reasons == ["unsupported_plan_query_profile_type"]
 
 
-def test_runtime_plan_query_compiler_rejects_mutation_wording():
-    compiled = proposal_compiler.compile_runtime_plan_query_source(
+def test_runtime_plan_query_profile_compiler_rejects_mutation_as_none_profile():
+    compiled = proposal_compiler.compile_runtime_plan_query_profile_source(
         content="那把两万以上且跟我意向不沾边的先删掉",
+        query_profile={"queryType": "none", "confidence": 0.9},
         planning_version=12,
-        pending_exists=False,
     )
 
     assert compiled.matched is False
-    assert "mutation_request_not_plan_query" in compiled.blocking_reasons
+    assert compiled.blocking_reasons == ["unsupported_plan_query_profile_type"]
 
 
 def test_pending_turn_resolution_allows_new_intent_exclusion_with_active_intent_pending():
@@ -1104,40 +1737,17 @@ def test_pending_turn_resolution_still_cancels_explicit_pending_reject():
     assert resolution.requires_model_decision is False
 
 
-def test_explicit_intent_update_detector_covers_priority_and_region_cases():
-    assert proposal_compiler.prompt_looks_explicit_intent_update(
-        "那把网络与新媒体作为优先方向，跨境电商也可以考虑"
-    )
-    assert proposal_compiler.prompt_looks_explicit_intent_update(
-        "网络与新媒体优先，跨境电商也可以考虑"
-    )
-    assert proposal_compiler.prompt_looks_explicit_intent_update(
-        "那就加计算机和电子信息吧 以后想进互联网大厂"
-    )
-    assert proposal_compiler.prompt_looks_explicit_intent_update(
-        "那把南大和上交大的强基也补上"
-    )
-    assert proposal_compiler.prompt_looks_explicit_intent_update("城市优先长三角")
-    assert proposal_compiler.explicit_intent_recovery_scope("城市优先长三角") == "region"
-
-
-def test_explicit_intent_update_detector_skips_readonly_questions():
-    assert not proposal_compiler.prompt_looks_explicit_intent_update("网络与新媒体适合我吗")
-    assert not proposal_compiler.prompt_looks_explicit_intent_update("帮我看看候选里计算机多不多")
-    assert not proposal_compiler.prompt_looks_explicit_intent_update("帮我加一个志愿到方案")
-
-
-def test_pending_turn_resolution_blocks_new_mutation_request_with_active_pending():
+def test_pending_turn_resolution_leaves_new_mutation_conflict_to_structured_decision():
     resolution = proposal_compiler.resolve_pending_turn_action(
         "这个方案还是不行，只要医学",
         pending_state={"status": "active", "kind": "intent_change"},
     )
 
-    assert resolution.action == "conflict_with_existing_pending"
-    assert resolution.side_effect == "conflict_with_existing_pending"
+    assert resolution.action == "none"
+    assert resolution.side_effect == "none"
     assert resolution.pending_type == "intent"
-    assert resolution.requires_model_decision is False
-    assert resolution.blocking_reasons == ["active_pending_blocks_new_mutation_request"]
+    assert resolution.requires_model_decision is True
+    assert resolution.blocking_reasons == []
 
 
 def test_pending_turn_resolution_allows_new_explicit_intent_with_active_intent_pending():
@@ -1159,9 +1769,9 @@ def test_pending_turn_resolution_allows_soft_discussion_with_active_pending():
         pending_state={"status": "active", "kind": "intent_change"},
     )
 
-    assert resolution.action == "ask_pending_impact"
-    assert resolution.side_effect == "readonly_while_pending"
-    assert resolution.requires_model_decision is False
+    assert resolution.action == "none"
+    assert resolution.side_effect == "none"
+    assert resolution.requires_model_decision is True
 
 
 def test_pending_turn_resolution_blocks_without_active_pending():
@@ -1312,3 +1922,125 @@ def test_resolve_profile_change_replan_state_query_requires_structured_query_sce
     assert resolved.matched is True
     assert resolved.route == "profile_change_stale_plan_state_query"
     assert resolved.side_effect == "readonly"
+
+
+def _current_plan_atomic_turn_decision(**overrides):
+    data = {
+        "taskLayer": "plan",
+        "sideEffect": "plan_preview",
+        "scopeAnchor": "current_plan",
+        "scenario": "atomic_mutation",
+        "confidence": 0.95,
+    }
+    data.update(overrides)
+    return data
+
+
+def test_compile_current_plan_mutation_from_intent_preview_builds_remove_units_payload():
+    source = proposal_compiler.compile_runtime_current_plan_mutation_from_intent_preview_source(
+        content="不要这些专业",
+        turn_decision=_current_plan_atomic_turn_decision(),
+        merged_intent={
+            "major_intents": {
+                "negative_level3": ["英语"],
+                "negative_level2": ["外国语言文学类"],
+            }
+        },
+        intent_mode="constraint",
+        constraint_intent_type="exclude_hard",
+        summary="排除专业：英语",
+        planning_version=4,
+    )
+
+    assert source.matched is True
+    assert source.route == "current_plan_remove_preview"
+    assert source.action_family == "remove_units"
+    assert source.source_version_guard == 4
+    assert source.mutation_dsl["type"] == "CurrentPlanMutation"
+    assert source.mutation_dsl["selector"]["sourceMajorNames"] == ["英语", "外国语言文学类"]
+    payload = source.plan_payload
+    assert payload["stage"] == "preview"
+    assert payload["action_family"] == "remove_units"
+    assert payload["planning_version"] == 4
+    assert payload["atomic_actions"][0]["filters"] == {
+        "negative_level3": ["英语"],
+        "negative_level2": ["外国语言文学类"],
+    }
+    assert payload["facts"]["currentPlanMutationDsl"]["actionFamily"] == "remove_units"
+
+
+def test_compile_current_plan_mutation_blocks_future_reference_intent_scope():
+    source = proposal_compiler.compile_runtime_current_plan_mutation_from_intent_preview_source(
+        content="后面不要英语",
+        turn_decision=_current_plan_atomic_turn_decision(scopeAnchor="future_reference"),
+        merged_intent={"major_intents": {"negative_level3": ["英语"]}},
+        intent_mode="constraint",
+    )
+
+    assert source.matched is False
+    assert source.blocking_reasons == ["unsupported_current_plan_mutation_scope_anchor"]
+
+
+def test_compile_current_plan_mutation_blocks_readonly_or_non_atomic_turn():
+    source = proposal_compiler.compile_runtime_current_plan_mutation_from_intent_preview_source(
+        content="看看英语相关的影响",
+        turn_decision=_current_plan_atomic_turn_decision(sideEffect="readonly", scenario="plan_query"),
+        merged_intent={"major_intents": {"negative_level3": ["英语"]}},
+        intent_mode="constraint",
+    )
+
+    assert source.matched is False
+    assert source.blocking_reasons == [
+        "unsupported_current_plan_mutation_side_effect",
+        "unsupported_current_plan_mutation_scenario",
+    ]
+
+
+def test_compile_current_plan_mutation_requires_constraint_negative_major_scope():
+    source = proposal_compiler.compile_runtime_current_plan_mutation_from_intent_preview_source(
+        content="当前方案处理一下",
+        turn_decision=_current_plan_atomic_turn_decision(),
+        merged_intent={"major_intents": {"level3": ["英语"]}},
+        intent_mode="preference",
+    )
+
+    assert source.matched is False
+    assert source.blocking_reasons == [
+        "current_plan_mutation_requires_constraint_intent",
+        "missing_current_plan_negative_major_scope",
+    ]
+
+
+def test_compile_atomic_plan_action_builds_plan_next_action_args_for_tuition_preference_scope():
+    source = proposal_compiler.compile_runtime_atomic_plan_action_source(
+        content="把两万以上且跟意向不沾边的先删掉",
+        action_family="remove_units",
+        confidence=0.95,
+        min_tuition_per_year=20000,
+        preference_fit="unrelated",
+        planning_version=8,
+    )
+
+    assert source.matched is True
+    assert source.route == "atomic_plan_action_preview"
+    assert source.action_family == "remove_units"
+    assert source.plan_next_action_args["action_family"] == "remove_units"
+    assert source.plan_next_action_args["current_stage"] == "preview"
+    assert source.plan_next_action_args["min_tuition_per_year"] == 20000
+    assert source.plan_next_action_args["preference_fit"] == "unrelated"
+    assert "planning_version" not in source.plan_next_action_args
+    assert source.plan_action_dsl["type"] == "AtomicPlanActionDsl"
+    assert source.plan_action_dsl["selector"]["min_tuition_per_year"] == 20000
+    assert source.plan_action_dsl["selector"]["preference_fit"] == "unrelated"
+    assert source.plan_action_dsl["sourceVersionGuard"] == 8
+
+
+def test_compile_atomic_plan_action_blocks_unscoped_remove():
+    source = proposal_compiler.compile_runtime_atomic_plan_action_source(
+        content="删掉一些",
+        action_family="remove_units",
+        confidence=0.95,
+    )
+
+    assert source.matched is False
+    assert source.blocking_reasons == ["missing_atomic_plan_action_scope"]

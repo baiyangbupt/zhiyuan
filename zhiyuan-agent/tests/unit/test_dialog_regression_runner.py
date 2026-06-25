@@ -15,6 +15,23 @@ runner = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(runner)
 
 
+def test_runner_defaults_use_isolated_320_debug_ports(monkeypatch):
+    for name in (
+        "ZHIYUAN_REGRESSION_AGENT_URL",
+        "AGENT_DIALOG_E2E_URL",
+        "ZHIYUAN_REGRESSION_BACKEND_URL",
+        "INTERNAL_SERVICE_URL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    spec = importlib.util.spec_from_file_location("dialog_regression_runner_default_ports", RUNNER_PATH)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert module.DEFAULT_URL == "ws://127.0.0.1:18291/gaotu-assistant-agent/plus/chat/1/bot/test/do"
+    assert module.DEFAULT_INTERNAL_SERVICE_URL == "http://127.0.0.1:18290"
+
+
 def test_plan_reply_style_accepts_markdown_sections_and_lists():
     text = (
         "**审查结论**\n\n"
@@ -121,6 +138,46 @@ def test_filter_cases_by_name_rejects_missing_case():
 
     with pytest.raises(ValueError, match="case-b"):
         runner._filter_cases_by_name(cases, ["case-b"])
+
+
+def test_backend_state_clone_keys_include_pending_only_for_active_pending_fixture():
+    active_pending_case = {
+        "fixtureContract": {
+            "type": "pending_exists",
+            "requiredState": ["activePending", "orderedPlan"],
+        }
+    }
+    normal_case = {
+        "fixtureContract": {
+            "type": "formal_plan_present",
+            "requiredState": ["orderedPlan"],
+        }
+    }
+
+    assert runner._backend_state_clone_keys_for_case(active_pending_case) == (
+        "planningState",
+        "userprofile",
+        "userScoreDetail",
+        "pendingConfirmation",
+        "planEditCache",
+    )
+    assert runner._backend_state_clone_keys_for_case(normal_case) == (
+        "planningState",
+        "userprofile",
+        "userScoreDetail",
+    )
+
+
+def test_clone_results_have_active_pending_requires_non_empty_active_source():
+    assert runner._clone_results_have_active_pending(
+        [{"key": "pendingConfirmation", "ok": True, "sourcePendingStatus": "active"}]
+    )
+    assert not runner._clone_results_have_active_pending(
+        [{"key": "pendingConfirmation", "ok": True, "skipped": "source_empty"}]
+    )
+    assert not runner._clone_results_have_active_pending(
+        [{"key": "pendingConfirmation", "ok": True, "sourcePendingStatus": "applied"}]
+    )
 
 
 def test_apply_session_offset_rejects_non_numeric_session_id():
@@ -454,6 +511,126 @@ def test_run_cases_supports_per_case_backend_pending_clear(monkeypatch, tmp_path
     )
 
     assert calls == [("http://backend.test", ["17"])]
+
+
+def test_run_cases_keeps_cloned_active_backend_pending(monkeypatch, tmp_path, capsys):
+    clear_calls = []
+    clone_calls = []
+
+    async def fake_ask_once(*args, **kwargs):
+        return ([{"type": "text", "content": "方案已经有了。"}], [], {"firstMessageMs": 1, "finalMessageMs": 1})
+
+    def fake_clear_backend_pending_state(base_url, session_ids):
+        clear_calls.append((base_url, session_ids))
+        return [{"session": session_ids[0], "key": "pendingConfirmation", "ok": True}]
+
+    def fake_clone_backend_session_state(base_url, *, source_session_id, target_session_id, keys):
+        clone_calls.append((base_url, source_session_id, target_session_id, keys))
+        return [
+            {
+                "sourceSession": source_session_id,
+                "targetSession": target_session_id,
+                "key": "pendingConfirmation",
+                "ok": True,
+                "sourcePendingStatus": "active",
+                "sourcePendingKind": "plan_mutation",
+            }
+        ]
+
+    monkeypatch.setattr(runner, "_ask_once", fake_ask_once)
+    monkeypatch.setattr(runner, "_clear_backend_pending_state", fake_clear_backend_pending_state)
+    monkeypatch.setattr(runner, "_clone_backend_session_state", fake_clone_backend_session_state)
+
+    asyncio.run(
+        runner._run_cases(
+            "ws://test",
+            "user",
+            [
+                {
+                    "name": "case-pending",
+                    "sessionId": "9903235",
+                    "cloneBackendStateFromSessionId": "35",
+                    "fixtureContract": {
+                        "type": "pending_exists",
+                        "requiredState": ["activePending", "orderedPlan"],
+                    },
+                    "prompts": [{"prompt": "看看方案", "assertContains": ["方案"]}],
+                }
+            ],
+            history_db=str(tmp_path / "missing.db"),
+            clear_backend_pending_per_case=True,
+            internal_service_url="http://backend.test",
+        )
+    )
+
+    assert clear_calls == []
+    assert clone_calls == [
+        (
+            "http://backend.test",
+            "35",
+            "9903235",
+            ("planningState", "userprofile", "userScoreDetail", "pendingConfirmation", "planEditCache"),
+        )
+    ]
+    output = capsys.readouterr().out
+    assert "skippedCaseBackendPendingClear=" in output
+    assert "cloned_source_active_pending" in output
+
+
+def test_run_cases_fails_fast_when_backend_clone_fails(monkeypatch, tmp_path):
+    metrics_path = tmp_path / "metrics.json"
+    ask_calls = []
+
+    async def fake_ask_once(*args, **kwargs):
+        ask_calls.append(args)
+        return ([{"type": "text", "content": "不应该进入 websocket"}], [], {"firstMessageMs": 1, "finalMessageMs": 1})
+
+    def fake_clone_backend_session_state(base_url, *, source_session_id, target_session_id, keys):
+        assert base_url == "http://backend.test"
+        assert source_session_id == "35"
+        assert target_session_id == "9903235"
+        assert keys == ("planningState", "userprofile", "userScoreDetail")
+        return [
+            {
+                "sourceSession": source_session_id,
+                "targetSession": target_session_id,
+                "key": "planningState",
+                "ok": False,
+                "error": "HTTPError: HTTP Error 404",
+            }
+        ]
+
+    monkeypatch.setattr(runner, "_ask_once", fake_ask_once)
+    monkeypatch.setattr(runner, "_clone_backend_session_state", fake_clone_backend_session_state)
+
+    with pytest.raises(SystemExit) as exc_info:
+        asyncio.run(
+            runner._run_cases(
+                "ws://test",
+                "user",
+                [
+                    {
+                        "name": "case-clone",
+                        "sessionId": "9903235",
+                        "cloneBackendStateFromSessionId": "35",
+                        "fixtureContract": {"type": "pending_exists", "requiredState": ["orderedPlan"]},
+                        "prompts": [{"prompt": "看看方案"}],
+                    }
+                ],
+                history_db=str(tmp_path / "missing.db"),
+                metrics_output=str(metrics_path),
+                internal_service_url="http://backend.test",
+            )
+        )
+
+    assert exc_info.value.code == 1
+    assert ask_calls == []
+    payload = json.loads(metrics_path.read_text(encoding="utf-8"))
+    assert payload["summary"]["failedByReason"] == {"environment": 1}
+    record = payload["records"][0]
+    assert record["failureReason"] == "environment"
+    assert record["fixtureType"] == "pending_exists"
+    assert "backend state clone had failures" in record["error"]
 
 
 def test_run_cases_writes_runtime_shadow_output(monkeypatch, tmp_path):
@@ -1601,6 +1778,80 @@ def test_tool_assertions_report_repeated_or_forbidden_tools():
     assert any("assertToolNamesNotContain FAILED" in item for item in violations)
     assert any("maxToolCallCount FAILED" in item for item in violations)
     assert any("assertNoRepeatedToolNames FAILED" in item for item in violations)
+
+
+def test_tool_assertions_accept_any_expected_routing_path():
+    violations = runner._check_tool_assertions(
+        {
+            "routingPath": "pending_readonly_plan_query",
+            "actionFamilies": ["query_ordered"],
+            "resultKinds": ["ordered_snapshot"],
+            "toolCalls": [{"name": "execute_plan_action"}],
+        },
+        {
+            "prompt": "两万以上的都算贵",
+            "expectedRoutingPathAny": ["direct_readonly_plan_query", "pending_readonly_plan_query"],
+            "assertActionFamiliesContain": ["query_ordered"],
+            "assertResultKindsContain": ["ordered_snapshot"],
+        },
+        "case-tools",
+        "9903235",
+    )
+
+    assert violations == []
+
+
+def test_tool_assertions_accept_any_expected_result_kind():
+    violations = runner._check_tool_assertions(
+        {
+            "routingPath": "direct_atomic_plan_action",
+            "actionFamilies": ["remove_units"],
+            "resultKinds": ["no_change"],
+            "toolCalls": [{"name": "plan_next_action"}, {"name": "execute_plan_action"}],
+        },
+        {
+            "prompt": "两万以上且不贴合意向的删掉",
+            "assertActionFamiliesContain": ["remove_units"],
+            "assertResultKindsContainAny": ["preview_only", "no_change"],
+        },
+        "case-tools",
+        "9903235",
+    )
+
+    assert violations == []
+
+
+def test_tool_assertions_report_any_expected_result_kind_mismatch():
+    violations = runner._check_tool_assertions(
+        {
+            "routingPath": "direct_atomic_plan_action",
+            "actionFamilies": ["remove_units"],
+            "resultKinds": ["error"],
+            "toolCalls": [{"name": "plan_next_action"}, {"name": "execute_plan_action"}],
+        },
+        {
+            "prompt": "两万以上且不贴合意向的删掉",
+            "assertResultKindsContainAny": ["preview_only", "no_change"],
+        },
+        "case-tools",
+        "9903235",
+    )
+
+    assert any("assertResultKindsContainAny FAILED" in item for item in violations)
+
+
+def test_tool_assertions_report_any_expected_routing_path_mismatch():
+    violations = runner._check_tool_assertions(
+        {"routingPath": "full_agent", "toolCalls": []},
+        {
+            "prompt": "两万以上的都算贵",
+            "expectedRoutingPathAny": ["direct_readonly_plan_query", "pending_readonly_plan_query"],
+        },
+        "case-tools",
+        "9903235",
+    )
+
+    assert any("expectedRoutingPathAny FAILED" in item for item in violations)
 
 
 def test_case_metrics_can_store_response_text_when_enabled():

@@ -34,8 +34,12 @@ def _ctx_for_generate_ready(session_id: str = "exec-1") -> SimpleNamespace:
             ),
             planning_summary=SimpleNamespace(
                 candidate_target_total=30,
+                candidate_available_total=30,
+                candidate_status="ready",
                 working_target_total=30,
+                working_total=30,
                 ordered_target_total=0,
+                ordered_total=0,
                 version=1,
             ),
         )
@@ -128,6 +132,7 @@ def test_execute_plan_action_returns_preview_without_mutation():
     assert data["result_kind"] == "preview_only"
     assert data["summary"] == "会整体重排当前方案。 需要你确认后才会执行。"
     assert data["reply_focus"] == ["preview_only"]
+    assert data["workspace_refresh_targets"] == []
 
 
 def test_execute_plan_action_move_ordered_unit_preview_uses_unit_position_language():
@@ -1706,6 +1711,42 @@ def test_execute_plan_action_runs_remove_and_review():
     assert mock_review.await_count == 1
 
 
+def test_execute_plan_action_apply_keeps_ordered_refresh_when_review_rerun_fails():
+    payload = {
+        "stage": "apply",
+        "action_family": "remove_units",
+        "context_summary": "阶段=ordered；方案=20/30",
+        "preview_summary": "",
+        "missing_inputs": [],
+        "should_rerun_review": True,
+        "intent_relation": "support",
+        "atomic_actions": [
+            {
+                "action_type": "remove_units",
+                "volunteer_ids": ["v1"],
+                "target_position": None,
+                "filters": {},
+                "reason": "删掉这个学校",
+            }
+        ],
+    }
+
+    with patch(
+        "app.handlers.mutation_handlers.remove_planning_ordered_items",
+        new=AsyncMock(return_value="remove ok"),
+    ), patch(
+        "app.tools.plan_execution_tool.run_planning_review",
+        new=AsyncMock(return_value="执行方案审查失败，请稍后重试。"),
+    ):
+        result = asyncio.run(execute_plan_action(_ctx_with_pending("remove_units"), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["applied"] is True
+    assert data["review_rerun"] is False
+    assert "执行方案审查失败" in data["summary"]
+    assert data["workspace_refresh_targets"] == ["ordered"]
+
+
 def test_execute_plan_action_remove_expands_broad_high_tuition_issue_scope_on_apply():
     payload = {
         "stage": "apply",
@@ -3184,6 +3225,49 @@ def test_execute_plan_action_generate_plan_requires_basic_profile_context():
     assert "分数" in data["summary"]
 
 
+def test_execute_plan_action_generate_plan_does_not_treat_required_count_as_candidate_ready():
+    payload = {
+        "stage": "preview",
+        "action_family": "generate_plan",
+        "context_summary": "阶段=profile_ready；方案=0/45；候选池尚未生成",
+        "preview_summary": "会生成一版基础方案。",
+        "missing_inputs": [],
+        "should_rerun_review": True,
+        "intent_relation": "unknown",
+        "atomic_actions": [],
+    }
+    ctx = SimpleNamespace(
+        deps=RequestContext(
+            userid="u1",
+            sessionid="exec-empty-candidate",
+            score_detail=SimpleNamespace(
+                province="湖北",
+                total_score=520,
+                subject_list=["物理", "化学", "生物"],
+            ),
+            planning_summary=SimpleNamespace(
+                candidate_target_total=45,
+                candidate_available_total=0,
+                candidate_status="not_generated",
+                working_total=0,
+                working_target_total=0,
+                ordered_total=0,
+                ordered_target_total=0,
+                version=1,
+            ),
+        )
+    )
+
+    result = asyncio.run(execute_plan_action(ctx, json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["applied"] is False
+    assert data["result_kind"] == "error"
+    assert data["reply_focus"] == ["missing_inputs"]
+    assert "候选池" in data["summary"]
+    assert "确认前不会改动" not in data["summary"]
+
+
 def test_execute_plan_action_allows_mutating_apply_with_pending_context():
     payload = {
         "stage": "apply",
@@ -4007,7 +4091,10 @@ def test_execute_plan_action_runs_generate_plan_and_returns_structured_facts():
                 "profileState": {"explicitProfile": {"positiveMajors": ["网络与新媒体"]}},
             }
         ),
-    ) as mock_state:
+    ) as mock_state, patch(
+        "app.tools.plan_execution_tool.run_planning_review",
+        new=AsyncMock(return_value="方案审查已完成，暂无高风险项。"),
+    ):
         ctx = _ctx_for_generate_ready()
         pending_ctx = _ctx_with_pending("generate_plan")
         ctx.deps.conversation_phase = pending_ctx.deps.conversation_phase

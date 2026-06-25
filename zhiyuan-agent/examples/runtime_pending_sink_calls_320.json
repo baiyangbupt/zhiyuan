@@ -20,11 +20,11 @@
   {
     "id": "sink-compiled-user-goal-fix-card",
     "target": "_create_pending_fix_proposal_confirmation_response",
-    "caller": "_create_pending_fix_confirmation_from_user_goal_candidate",
+    "caller": "_create_pending_fix_confirmation_result_from_user_goal_candidate",
     "kind": "compiler_sink_call",
     "phase4Action": "compiled_java_user_goal_candidate_sink",
     "risk": "medium",
-    "rationale": "user-goal fix candidate 先编译为 CompiledProposal 并通过 fix sink contract 后才调用底层 sink；contract gap 不创建 pending。"
+    "rationale": "user-goal fix candidate 先编译为 CompiledProposal 并通过 fix sink contract 后才调用底层 sink；返回 result 保留卡片、刷新目标和阻断原因，contract gap 不创建 pending。"
   },
   {
     "id": "sink-compiled-structured-goal-intent-card",
@@ -38,11 +38,11 @@
   {
     "id": "sink-compiled-intent-preview-card",
     "target": "_create_pending_intent_confirmation_response",
-    "caller": "_create_pending_intent_confirmation_from_preview_payload",
+    "caller": "_create_pending_intent_confirmation_result_from_preview_payload",
     "kind": "compiler_sink_call",
     "phase4Action": "compiled_intent_preview_candidate_sink",
     "risk": "medium",
-    "rationale": "intent preview payload 先编译为 CompiledProposal 并通过 intent sink contract 后才调用底层 sink；包括显式 follow-up 和 legacy recovery 的当前受控落点。"
+    "rationale": "intent preview payload 先编译为 CompiledProposal 并通过 intent sink contract 后才调用底层 sink；返回 result 保留卡片、刷新目标和阻断原因。"
   },
   {
     "id": "sink-runtime-intent-entity-profile-card",

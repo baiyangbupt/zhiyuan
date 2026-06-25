@@ -132,6 +132,38 @@ def test_compiler_keeps_readonly_while_pending_unchanged():
     assert record["executionPayload"] is None
     assert record["replyPlan"]["pendingReminder"] is True
     assert record["displayPayload"]["presentation"] == "readonly_answer"
+    assert record["workspaceRefreshTargets"] == []
+
+
+def test_compiler_treats_plan_mutation_or_none_as_unsupported_clarification():
+    case = _base_case(
+        planningStateProfile={"formalPlanPresent": True, "pendingExists": False},
+        expectedTurnDecision={
+            "taskLayer": "plan",
+            "sideEffect": "plan_preview_or_clarification",
+            "scopeAnchor": "current_plan",
+            "scenario": "atomic_mutation",
+            "missingInfo": [],
+        },
+        expectedProposal={
+            "type": "plan_mutation_or_unsupported",
+            "pendingType": "plan_mutation_or_none",
+            "actionFamilies": ["pin_or_lock_unit"],
+            "requiresConfirmation": True,
+        },
+        expectedPending={
+            "type": "pendingConfirmationCard_or_none",
+            "required": False,
+            "targetView": "ordered",
+        },
+    )
+
+    record = compiler._evaluate_case(case)
+
+    assert record["passed"] is True
+    assert record["pendingType"] == "plan_mutation_or_none"
+    assert record["displayPayload"]["presentation"] == "conditional_options"
+    assert record["workspaceRefreshTargets"] == []
 
 
 def test_compiler_allows_negative_only_intent_pending():

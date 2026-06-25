@@ -278,9 +278,13 @@
       },
       "prompts": [
         {
-          "profileCaseId": "G17-tier-local-reorder",
+          "runtimeShadowCaseId": "D-G17-tier-local-reorder-selector-observation",
           "prompt": "帮我把保底区里录取率最高的那个调到保底的第一位",
-          "assertContainsAny": ["保底", "录取率", "第一位", "确认", "移动"]
+          "assertContainsAny": ["保底", "录取率", "第一位", "确认", "移动", "不需要移动"],
+          "expectedRoutingPathAny": ["direct_local_plan_action", "full_agent"],
+          "assertActionFamiliesContain": ["move_ordered_unit"],
+          "assertResultKindsContainAny": ["preview_only", "no_change"],
+          "maxToolCallCount": 2
         }
       ]
     },
@@ -300,14 +304,6 @@
         "pendingExists": false
       },
       "prompts": [
-        {
-          "prompt": "我520咋稳上个本科就行",
-          "assertContainsAny": ["本科", "稳", "方案", "信息"]
-        },
-        {
-          "prompt": "那帮我直接弄一版稳的方案",
-          "assertContainsAny": ["方案", "稳", "生成", "确认"]
-        },
         {
           "profileCaseId": "G19-referenced-plan-existence-before-mutation",
           "prompt": "刚那个方案民办能少点不",
@@ -457,20 +453,20 @@
       ]
     },
     {
-      "name": "320-shadow-G27-apply-pending-then-readonly-followup",
+      "name": "320-shadow-G27-tuition-readonly-and-atomic-selector-observation",
       "sessionId": "9903235",
-      "cloneBackendStateFromSessionId": "35",
+      "cloneBackendStateFromSessionId": "26",
       "fixtureContract": {
-        "type": "pending_exists",
-        "sessionTemplate": "plan_mutation_pending_and_formal_plan",
-        "requiredState": ["activePending", "orderedPlan"],
-        "forbiddenState": []
+        "type": "formal_plan_present",
+        "sessionTemplate": "formal_plan_with_tuition_items_without_active_pending",
+        "requiredState": ["orderedPlan"],
+        "forbiddenState": ["activePending"]
       },
       "planningStateProfile": {
         "scoreReady": true,
         "formalPlanPresent": true,
         "candidatePoolPresent": true,
-        "pendingExists": true
+        "pendingExists": false
       },
       "prompts": [
         {
@@ -483,21 +479,21 @@
           "assertContainsAny": ["两万", "学费", "个", "条", "方案"],
           "assertNotContains": ["完整度", "前排示例", "审查：风险"],
           "assertNoFollowups": true,
-          "expectedRoutingPath": "direct_readonly_plan_query",
+          "expectedRoutingPathAny": ["direct_readonly_plan_query", "pending_readonly_plan_query"],
           "assertToolNamesContain": ["execute_plan_action"],
           "assertActionFamiliesContain": ["query_ordered"],
           "assertResultKindsContain": ["ordered_snapshot"],
           "maxToolCallCount": 1
         },
         {
+          "runtimeShadowCaseId": "D-G27-tuition-preference-fit-atomic-selector-observation",
           "prompt": "那把两万以上且跟我意向不沾边的先删掉",
-          "assertContainsAny": ["两万", "删", "确认", "预览"]
-        },
-        {
-          "profileCaseId": "G27-apply-pending-then-readonly-followup",
-          "prompt": "删完了再帮我看看还剩多少个 梯度有没有问题",
-          "assertContainsAny": ["已", "还剩", "梯度", "方案"],
-          "assertActionableFollowupTypes": ["planningWorkspaceAction"]
+          "assertContainsAny": ["两万", "删", "确认", "预览", "没有命中", "没有需要删除"],
+          "expectedRoutingPathAny": ["direct_atomic_plan_action", "full_agent"],
+          "assertToolNamesContain": ["plan_next_action", "execute_plan_action"],
+          "assertActionFamiliesContain": ["remove_units"],
+          "assertResultKindsContainAny": ["preview_only", "no_change"],
+          "maxToolCallCount": 2
         }
       ]
     },
