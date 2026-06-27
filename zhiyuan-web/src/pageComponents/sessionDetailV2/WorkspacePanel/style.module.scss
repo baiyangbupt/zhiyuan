@@ -1008,6 +1008,14 @@
   background: #fffdfc;
 }
 
+.orderedDesktopMetrics {
+  display: flex;
+}
+
+.orderedMobileMetrics {
+  display: none;
+}
+
 .focusedCard {
   border-color: #ff8d67;
   box-shadow: 0 0 0 2px rgba(255, 141, 103, 0.15);
@@ -2480,5 +2488,354 @@
     left: 0;
     right: 0;
     max-height: min(60vh, 420px);
+  }
+
+  .workspacePanel.mobileOptimized {
+    min-width: 0;
+    height: 100%;
+    overflow: hidden;
+    border-radius: 0;
+  }
+
+  .mobileOptimized {
+    .stageHeader {
+      padding: 10px 12px;
+    }
+
+    .metricsGrid {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 6px;
+      margin-bottom: 8px;
+    }
+
+    .metricCard {
+      min-width: 0;
+      padding: 8px 6px;
+      border-radius: 10px;
+    }
+
+    .metricValue {
+      font-size: 17px;
+    }
+
+    .metricLabel {
+      margin-top: 4px;
+      font-size: 11px;
+    }
+
+    .metricMeta {
+      margin-top: 2px;
+      font-size: 10px;
+      line-height: 1.25;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .metricHint {
+      display: none;
+    }
+
+    .orderedActions {
+      width: auto;
+      min-width: 0;
+      flex-wrap: wrap;
+      justify-content: flex-start;
+      gap: 6px;
+
+      :global(.ant-btn) {
+        width: 32px;
+        min-width: 32px;
+        height: 32px;
+        padding: 0;
+      }
+    }
+
+    .orderedGroupActions,
+    .orderedHeaderActions {
+      grid-column: 1 / -1;
+      width: 100%;
+      justify-content: flex-start;
+    }
+
+    .orderedHeaderActions {
+      margin-top: 10px;
+
+      .orderedActions {
+        justify-content: flex-start;
+      }
+    }
+
+    .orderedMobileActions {
+      width: 100%;
+      margin-top: 10px;
+      justify-content: flex-start;
+    }
+
+    .orderedMajorActionCell .orderedActions,
+    .orderedMobileActions .orderedActions {
+      flex-wrap: wrap;
+      justify-content: flex-start;
+    }
+
+    .reviewSummaryBar {
+      min-height: 0;
+      align-items: stretch;
+      flex-direction: column;
+      gap: 8px;
+      padding: 0 0 4px;
+    }
+
+    .reviewSummaryHint {
+      white-space: normal;
+      overflow: visible;
+      text-overflow: clip;
+    }
+
+    .reviewSummaryAction {
+      width: 100%;
+      min-width: 0;
+      display: flex;
+      align-items: stretch;
+      gap: 6px;
+    }
+
+    .reviewAlertButton {
+      flex: 0 0 32px;
+      width: 32px;
+      height: 32px;
+    }
+
+    .reviewActionButton {
+      flex: 1 1 0;
+      min-width: 0;
+      padding-inline: 6px;
+    }
+
+    .orderedMain {
+      grid-template-columns: auto minmax(0, 1fr);
+    }
+
+    .candidateView,
+    .orderedView {
+      padding: 12px 12px calc(88px + env(safe-area-inset-bottom, 0px));
+    }
+
+    .tierTabs {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      overflow: visible;
+    }
+
+    .tierTab {
+      width: 100%;
+      min-width: 0;
+      padding: 0 8px;
+    }
+
+    .candidateCard,
+    .orderedCard {
+      padding: 12px;
+      border-radius: 14px;
+    }
+
+    .orderedGroupMajorList,
+    .orderedSingleMajorDetail {
+      margin-top: 10px;
+    }
+
+    .mobileMajorTop {
+      align-items: center;
+      justify-content: flex-start;
+      gap: 8px;
+    }
+
+    .mobileMajorTitle {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 6px;
+      min-height: 0;
+    }
+
+    .mobileMajorTitle .majorName {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .mobileMajorRatioTag {
+      flex: 0 0 auto;
+      padding: 2px 7px;
+      border-radius: 999px;
+      background: #fff1ea;
+      font-size: 11px;
+      font-weight: 700;
+      line-height: 1.35;
+    }
+
+    .mobileMajorRatioTag.tierSprint {
+      color: #ff5a2f;
+      background: #fff1ea;
+    }
+
+    .mobileMajorRatioTag.tierSafe {
+      color: #d78614;
+      background: #fff7e8;
+    }
+
+    .mobileMajorRatioTag.tierProtect {
+      color: #258a58;
+      background: #edf9f2;
+    }
+
+    .orderedMajorTableCard {
+      overflow: visible;
+    }
+
+    .orderedMajorTableCard .mobileMajorCard {
+      border-radius: 12px;
+    }
+
+    .orderedMajorTableCard .mobileMajorTop {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 10px;
+    }
+
+    .orderedMajorTableCard .mobileMajorTitle {
+      width: 100%;
+      flex: none;
+      word-break: normal;
+      overflow-wrap: anywhere;
+    }
+
+    .orderedMajorTableCard .majorName {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 2px;
+    }
+
+    .orderedMajorTableCard .majorNameMain,
+    .orderedMajorTableCard .majorNameExtra {
+      max-width: 100%;
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
+
+    .orderedMajorTableCard .orderedMobileActions {
+      width: 100%;
+      margin-top: 0;
+    }
+
+    .orderedDesktopMetrics {
+      display: none;
+    }
+
+    .orderedMobileMetrics {
+      display: flex;
+      margin-top: 10px;
+    }
+
+    .mobileMajorInfoGrid {
+      margin-top: 8px;
+      display: flex;
+      align-items: center;
+      gap: 0;
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+
+    .mobileMajorInfoGrid::-webkit-scrollbar {
+      display: none;
+    }
+
+    .mobileMajorInfoGrid > div {
+      min-width: 0;
+      flex: 0 0 auto;
+      max-width: 38%;
+      padding: 0 8px;
+      border-right: 1px solid #eaded8;
+      background: transparent;
+      border-radius: 0;
+      border-top: none;
+      border-bottom: none;
+      border-left: none;
+      display: inline-flex;
+      flex-direction: row;
+      align-items: baseline;
+      gap: 3px;
+    }
+
+    .mobileMajorInfoGrid > div:first-child {
+      padding-left: 0;
+    }
+
+    .mobileMajorInfoGrid > div:last-child {
+      padding-right: 0;
+      border-right: none;
+    }
+
+    .mobileMajorInfoGrid span {
+      flex: 0 0 auto;
+      font-size: 10px;
+    }
+
+    .mobileMajorInfoGrid strong {
+      min-width: 0;
+      font-size: 11px;
+      line-height: 1.2;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      word-break: normal;
+    }
+
+    .mobileMajorSubject {
+      margin-top: 6px;
+      font-size: 11px;
+      line-height: 1.35;
+    }
+
+    .draftBasket {
+      display: none;
+    }
+
+    .draftPanel {
+      bottom: 58px;
+      max-height: min(58vh, 420px);
+    }
+
+    .draftHeader {
+      padding: 12px;
+    }
+
+    .draftList {
+      min-height: 0;
+      padding: 10px 12px;
+    }
+
+    .draftItem,
+    .draftGroupRow {
+      align-items: flex-start;
+    }
+
+    .draftItemMain,
+    .draftGroupHeaderMain,
+    .draftGroupRowMain {
+      min-width: 0;
+      flex: 1;
+    }
+
+    .draftSchool,
+    .draftMajor {
+      overflow-wrap: anywhere;
+    }
+
+    .draftGroupItems {
+      padding-left: 0;
+    }
   }
 }
