@@ -28,6 +28,8 @@ import { navigateTo } from '@/utils/router';
 import useAuthParams from '@/hooks/useAuthParams';
 import { hasDataFreshnessChangeSummary, shouldShowDataFreshnessNotice } from '@/utils/planningDataFreshness.mjs';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
+import { useIsMinip } from '@/hooks/useIsMinip';
+import { formatSubjectShortText } from '@/utils/subjectText';
 import style from './style.module.scss';
 
 const uniqueStrings = (values: Array<string | null | undefined>) =>
@@ -224,6 +226,8 @@ const buildDataFreshnessTooltipLines = (
 
 const SessionDetailV2 = () => {
   const isMobile = useMediaQuery(768);
+  const isMinip = useIsMinip();
+  const isMinipMobile = isMobile && isMinip;
   const { botId, tenantId } = useAuthParams();
   const [chatSessionId, setChatSessionId] = useState('');
   const [userId, setUserId] = useState('');
@@ -310,6 +314,34 @@ const SessionDetailV2 = () => {
       (studentSummary?.strengthSubjects || []).length
         ? `优势学科${(studentSummary?.strengthSubjects || []).join('、')}`
         : '',
+    ]
+      .filter(Boolean)
+      .join('/');
+  }, [studentSummary]);
+  const mobileStudentInfoText = useMemo(() => {
+    const scoreText =
+      studentSummary?.score !== undefined && studentSummary?.score !== null
+        ? `${studentSummary.score}分`
+        : '';
+    const rankText =
+      studentSummary?.rank !== undefined && studentSummary?.rank !== null
+        ? `${studentSummary.rank}位次`
+        : '';
+    const batchName = studentSummary?.batchName || '';
+    const batchScore = studentSummary?.batchScore;
+    const batchText = batchName
+      ? `${batchName}${
+          batchScore !== undefined && batchScore !== null && !batchName.includes('批次线')
+            ? `(批次线${batchScore}分)`
+            : ''
+        }`
+      : '';
+    return [
+      scoreText,
+      rankText,
+      batchText,
+      studentSummary?.provinceName,
+      formatSubjectShortText(studentSummary?.subjects),
     ]
       .filter(Boolean)
       .join('/');
@@ -679,6 +711,7 @@ const SessionDetailV2 = () => {
           }
           setDataFreshnessChecking(checking);
         }}
+        mobileLayoutMode={isMinipMobile ? 'minip' : 'default'}
       />
     </div>
   );
@@ -696,9 +729,13 @@ const SessionDetailV2 = () => {
     effectiveFreshnessPrepareTypeCode,
     prepareTypeDesc
   );
+  const sessionStatusText =
+    ({ GOING: '进行中', FINISHED: '已完成', WAIT: '等待中', CLOSE: '已关闭' } as Record<string, string>)[sessionStatus] ||
+    sessionStatus;
+  const headerSummaryText = isMinipMobile ? mobileStudentInfoText : studentInfoText;
 
   return (
-    <div className={style.sessionDetailV2}>
+    <div className={`${style.sessionDetailV2} ${isMinipMobile ? style.minipMobile : ''}`}>
       <Head>
         <title>高途AI志愿填报-会话详情 V2</title>
       </Head>
@@ -708,13 +745,27 @@ const SessionDetailV2 = () => {
             <div className={style.headerTopRow}>
               <div className={style.headerMain}>
                 <div className={style.titleBlock}>
-                  <div className={style.titleLine}>
-                    {studentName ? <span className={style.studentNameInline}>{studentName}的</span> : null}
-                    <span className={style.title}>志愿规划工作台</span>
+                  <div className={style.titleMetaRow}>
+                    <div className={style.titleLine}>
+                      {studentName ? <span className={style.studentNameInline}>{studentName}的</span> : null}
+                      <span className={style.title}>志愿规划工作台</span>
+                    </div>
+                    <div className={style.mobileHeaderMeta}>
+                      {prepareTypeDesc && <span className={style.metaBadge}>{prepareTypeDesc}</span>}
+                      {sessionStatus && (
+                        <span
+                          className={`${style.metaBadge} ${
+                            sessionStatus === 'GOING' ? style.metaBadgeActive : ''
+                          }`}
+                        >
+                          {sessionStatusText}
+                        </span>
+                      )}
+                    </div>
                   </div>
                   <div className={style.profileLine}>
-                    <div className={style.summary} title={studentInfoText || infoSummary}>
-                      {studentInfoText || infoSummary || '正在读取会话信息'}
+                    <div className={style.summary} title={headerSummaryText || infoSummary}>
+                      {headerSummaryText || infoSummary || '正在读取会话信息'}
                     </div>
                     <button
                       type="button"
@@ -732,7 +783,7 @@ const SessionDetailV2 = () => {
                   </div>
                 </div>
                 <div className={style.headerMeta}>
-                  {dataFreshnessTip ? (
+                  {!isMinipMobile && dataFreshnessTip ? (
                     <span
                       className={`${style.dataFreshnessTip} ${
                         dataFreshnessChecking ? style.dataFreshnessTipSyncing : ''
@@ -756,28 +807,30 @@ const SessionDetailV2 = () => {
                       ) : null}
                     </span>
                   ) : null}
-                  {prepareTypeDesc && <span className={style.metaBadge}>{prepareTypeDesc}</span>}
-                  {sessionStatus && (
+                  {!isMinipMobile && prepareTypeDesc && <span className={style.metaBadge}>{prepareTypeDesc}</span>}
+                  {!isMinipMobile && sessionStatus && (
                     <span
                       className={`${style.metaBadge} ${
                         sessionStatus === 'GOING' ? style.metaBadgeActive : ''
                       }`}
                     >
-                      {({ GOING: '进行中', FINISHED: '已完成', WAIT: '等待中', CLOSE: '已关闭' } as Record<string, string>)[sessionStatus] || sessionStatus}
+                      {sessionStatusText}
                     </span>
                   )}
                 </div>
               </div>
-              <div className={style.headerActions}>
-                <Button
-                  className={style.sessionListButton}
-                  type="primary"
-                  icon={<ArrowLeftOutlined />}
-                  onClick={handleOpenSessionList}
-                >
-                  {isMobile ? '会话列表' : '返回会话列表'}
-                </Button>
-              </div>
+              {!isMinipMobile ? (
+                <div className={style.headerActions}>
+                  <Button
+                    className={style.sessionListButton}
+                    type="primary"
+                    icon={<ArrowLeftOutlined />}
+                    onClick={handleOpenSessionList}
+                  >
+                    {isMobile ? '会话列表' : '返回会话列表'}
+                  </Button>
+                </div>
+              ) : null}
             </div>
             {intentExpanded ? (
               <div className={style.intentSummaryRow}>
@@ -816,7 +869,8 @@ const SessionDetailV2 = () => {
           width="100%"
           open={workspaceDrawerVisible}
           onClose={() => setWorkspaceDrawerVisible(false)}
-          styles={{ body: { padding: isMobile ? '0 12px' : 0, height: '100%' } }}
+          rootClassName={isMinipMobile ? style.mobileWorkspaceDrawer : undefined}
+          styles={{ body: { padding: isMinipMobile ? 0 : isMobile ? '0 12px' : 0, height: '100%' } }}
         >
           {renderWorkspacePanel(true)}
         </Drawer>

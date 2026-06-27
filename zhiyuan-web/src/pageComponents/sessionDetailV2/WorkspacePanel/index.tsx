@@ -55,6 +55,7 @@ import {
   PlanningWorkspaceIntent,
 } from '@/interface/api/volunteer';
 import { resolveCandidateRefreshMode } from '@/utils/planningDataFreshness.mjs';
+import { formatSubjectShortText } from '@/utils/subjectText';
 import style from './style.module.scss';
 import { MAJOR_CATEGORY_TO_DISCIPLINES } from './majorCategoryMap';
 
@@ -196,6 +197,7 @@ interface WorkspacePanelProps {
   examYear?: number | string | null;
   prepareTypeCode?: string | null;
   prepareTypeDesc?: string;
+  mobileLayoutMode?: 'default' | 'minip';
   workspaceIntent?: PlanningWorkspaceIntent | null;
   onWorkspaceIntentConsumed?: () => void;
   onPlanningStateChange?: (state: PlanningStateRes | null) => void;
@@ -553,11 +555,13 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   examYear,
   prepareTypeCode,
   prepareTypeDesc,
+  mobileLayoutMode = 'default',
   workspaceIntent,
   onWorkspaceIntentConsumed,
   onPlanningStateChange,
   onDataFreshnessStateChange,
 }) => {
+  const isMinipMobileLayout = mobileLayoutMode === 'minip';
   const initialActiveView = (() => {
     if (typeof window === 'undefined') {
       return 'ordered' as WorkspaceView;
@@ -4065,7 +4069,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
             </div>
           </div>
         </div>
-        <div className={style.majorActionBar}>
+        <div className={`${style.majorActionBar} ${style.orderedDesktopMetrics}`}>
           <div className={style.cardMetrics}>
             <span>推荐系数 {formatNumber(candidateItem?.finalScore)}</span>
             <span>区间位次 #{formatNumber(candidateItem?.rankInTier)}</span>
@@ -4083,7 +4087,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
           </div>
           <div className={style.mobileMajorInfoGrid}>
             <div>
-              <span>计划数</span>
+              <span>{isMinipMobileLayout ? '计划' : '计划数'}</span>
               <strong>{formatNumber(candidateItem?.planNum)}</strong>
             </div>
             <div>
@@ -4099,9 +4103,18 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
               <strong>{candidateItem?.majorCode || '-'}</strong>
             </div>
           </div>
+          <div className={`${style.cardMetrics} ${style.orderedMobileMetrics}`}>
+            <span>专业录取率 {formatPercent(candidateItem?.admissionRatio)}</span>
+            <span>推荐系数 {formatNumber(candidateItem?.finalScore)}</span>
+            <span>区间位次 #{formatNumber(candidateItem?.rankInTier)}</span>
+            <span>专业热度 {formatNumber(candidateItem?.hotIndex)}</span>
+            <Tooltip title={SALARY_AVG_TOOLTIP}>
+              <span>薪酬指数 {formatNumber(candidateItem?.salaryAvg)}</span>
+            </Tooltip>
+          </div>
           {candidateItem?.mustSubjects?.length ? (
             <div className={style.mobileMajorSubject}>
-              选科：{candidateItem.mustSubjects.join(' / ')}
+              选科：{isMinipMobileLayout ? formatSubjectShortText(candidateItem.mustSubjects) : candidateItem.mustSubjects.join(' / ')}
             </div>
           ) : null}
           {historyYears.length > 0 ? (
@@ -4836,7 +4849,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   };
 
   return (
-    <div className={style.workspacePanel}>
+    <div className={`${style.workspacePanel} ${isMinipMobileLayout ? style.mobileOptimized : ''}`}>
       <div className={`${style.stageHeader} ${overviewCollapsed ? style.stageHeaderCollapsed : ''}`}>
         <div className={`${style.metricsGrid} ${overviewCollapsed ? style.metricsGridCollapsed : ''}`}>
           <div className={style.metricCard}>
@@ -5287,10 +5300,16 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                         <div className={style.mobileMajorTitle}>
                                           {renderMajorName(item.majorName)}
                                         </div>
-                                        <div className={`${style.majorRatioBadge} ${getTierClassName(getMajorTierLabel(item))}`}>
-                                          <span>{formatPercent(item.admissionRatio) || '--'}</span>
-                                          <span>{getMajorTierLabel(item)}</span>
-                                        </div>
+                                        {isMinipMobileLayout ? (
+                                          <span className={`${style.mobileMajorRatioTag} ${getTierClassName(getMajorTierLabel(item))}`}>
+                                            {formatPercent(item.admissionRatio) || '--'} {getMajorTierLabel(item)}
+                                          </span>
+                                        ) : (
+                                          <div className={`${style.majorRatioBadge} ${getTierClassName(getMajorTierLabel(item))}`}>
+                                            <span>{formatPercent(item.admissionRatio) || '--'}</span>
+                                            <span>{getMajorTierLabel(item)}</span>
+                                          </div>
+                                        )}
                                       </div>
                                       <div className={style.reasonTags}>
                                         {isSelected ? (
@@ -5306,7 +5325,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                       </div>
                                       <div className={style.mobileMajorInfoGrid}>
                                         <div>
-                                          <span>计划数</span>
+                                          <span>{isMinipMobileLayout ? '计划' : '计划数'}</span>
                                           <strong>{formatNumber(item.planNum)}</strong>
                                         </div>
                                         <div>
@@ -5324,7 +5343,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                       </div>
                                       {item.mustSubjects?.length ? (
                                         <div className={style.mobileMajorSubject}>
-                                          选科：{item.mustSubjects.join(' / ')}
+                                          选科：{isMinipMobileLayout ? formatSubjectShortText(item.mustSubjects) : item.mustSubjects.join(' / ')}
                                         </div>
                                       ) : null}
                                       {historyYears.length > 0 ? (
