@@ -9,7 +9,7 @@ from app.domain.major_entity_resolver import (
     resolve_major_mentions_from_text,
 )
 from app.domain.region_entity_resolver import contains_concrete_region_mention, resolve_region_entity
-from app.domain.school_entity_resolver import resolve_school_entity
+from app.domain.school_entity_resolver import resolve_school_entity, resolve_school_mention_spans_from_text
 from app.domain.school_major_ref_resolver import resolve_school_major_ref
 
 
@@ -128,6 +128,12 @@ def test_resolve_school_entity_marks_ambiguous_short_alias():
     assert result.ambiguous is True
     assert "湖北工程学院" in result.canonical_names
     assert "湖北工业大学" in result.canonical_names
+
+
+def test_resolve_school_mention_spans_keeps_school_name_boundary():
+    spans = resolve_school_mention_spans_from_text("别排除江西财经大学，但江西地区还是排除", "01")
+
+    assert spans == [("江西财经大学", 3, 9)]
 
 
 def test_resolve_region_entity_handles_common_province_alias():

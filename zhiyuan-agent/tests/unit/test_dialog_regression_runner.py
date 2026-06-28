@@ -105,6 +105,27 @@ def test_apply_session_offset_uses_source_session_as_backend_clone_source():
     assert "cloneBackendStateFromSessionId" not in cases[0]
 
 
+def test_apply_session_offset_clones_formal_plan_fixture_from_base_session():
+    cases = [
+        {
+            "name": "case-formal-plan",
+            "sessionId": "26",
+            "fixtureContract": {
+                "type": "formal_plan_present",
+                "requiredState": ["orderedPlan"],
+            },
+            "prompts": ["帮我把保底区里录取率最高的那个调到保底的第一位"],
+        }
+    ]
+
+    adjusted = runner._apply_session_offset(cases, 22400000)
+
+    assert adjusted[0]["sessionId"] == "22400026"
+    assert adjusted[0]["baseSessionId"] == "26"
+    assert adjusted[0]["cloneBackendStateFromSessionId"] == "26"
+    assert "cloneBackendStateFromSessionId" not in cases[0]
+
+
 def test_apply_session_offset_keeps_explicit_backend_clone_source():
     cases = [
         {
@@ -1033,6 +1054,22 @@ def test_summarize_turn_observability_extracts_route_event_timings():
                             "totalDurationMs": 28000,
                             "llmDurationMs": 4200,
                             "toolDurationMs": 900,
+                            "classificationDurationMs": 12000,
+                            "preSemanticRouteDurationMs": 14000,
+                            "preFullAgentDurationMs": 9000,
+                            "historyLoadDurationMs": 110,
+                            "pendingLoadDurationMs": 70,
+                            "initialStateLoadDurationMs": 130,
+                            "runtimeHistoryBuildDurationMs": 40,
+                            "backendContextLoadDurationMs": 850,
+                            "requestContextBuildDurationMs": 30,
+                            "guardPipelineDurationMs": 7900,
+                            "turnDecisionDurationMs": 5100,
+                            "turnDecisionCacheHitCount": 1,
+                            "intentEntityProfileDurationMs": 1700,
+                            "intentSideEffectDurationMs": 900,
+                            "postFullAgentDurationMs": 1900,
+                            "unattributedDurationMs": 10900,
                             "toolCallCount": 1,
                         },
                         ensure_ascii=False,
@@ -1049,8 +1086,65 @@ def test_summarize_turn_observability_extracts_route_event_timings():
         "totalDurationMs": 28000,
         "llmDurationMs": 4200,
         "toolDurationMs": 900,
+        "classificationDurationMs": 12000,
+        "preSemanticRouteDurationMs": 14000,
+        "preFullAgentDurationMs": 9000,
+        "historyLoadDurationMs": 110,
+        "pendingLoadDurationMs": 70,
+        "initialStateLoadDurationMs": 130,
+        "runtimeHistoryBuildDurationMs": 40,
+        "backendContextLoadDurationMs": 850,
+        "requestContextBuildDurationMs": 30,
+        "guardPipelineDurationMs": 7900,
+        "turnDecisionDurationMs": 5100,
+        "turnDecisionCacheHitCount": 1,
+        "intentEntityProfileDurationMs": 1700,
+        "intentSideEffectDurationMs": 900,
+        "postFullAgentDurationMs": 1900,
+        "unattributedDurationMs": 10900,
         "toolCallCount": 1,
     }
+
+
+def test_summarize_turn_observability_extracts_action_family_from_route_event_tool_calls():
+    turn_messages = [
+        {"parts": [{"part_kind": "user-prompt", "content": "把高收费的换成正常收费的看看"}]},
+        {
+            "model_name": "route-observability",
+            "parts": [
+                {
+                    "part_kind": "text",
+                    "content": json.dumps(
+                        {
+                            "type": "routeObservability",
+                            "event": "conversation_turn_event",
+                            "routingPath": "direct_atomic_plan_action",
+                            "actionFamily": "replace_units",
+                            "toolCalls": [
+                                {
+                                    "name": "plan_next_action",
+                                    "actionFamily": "replace_units",
+                                    "stage": "preview",
+                                },
+                                {
+                                    "name": "execute_plan_action",
+                                    "actionFamily": "replace_units",
+                                    "resultKind": "preview_only",
+                                },
+                            ],
+                        },
+                        ensure_ascii=False,
+                    ),
+                }
+            ],
+        },
+    ]
+
+    observed = runner._summarize_turn_observability(turn_messages)
+
+    assert observed["routingPath"] == "direct_atomic_plan_action"
+    assert observed["actionFamilies"] == ["replace_units"]
+    assert observed["resultKinds"] == ["preview_only"]
 
 
 def test_followup_summary_extracts_targets_and_refresh_flags():
@@ -1169,6 +1263,22 @@ def test_runtime_shadow_observation_builds_latency_profile_diagnostic():
                     "totalDurationMs": 28000,
                     "llmDurationMs": 4200,
                     "toolDurationMs": 900,
+                    "classificationDurationMs": 12000,
+                    "preSemanticRouteDurationMs": 14000,
+                    "preFullAgentDurationMs": 9000,
+                    "historyLoadDurationMs": 110,
+                    "pendingLoadDurationMs": 70,
+                    "initialStateLoadDurationMs": 130,
+                    "runtimeHistoryBuildDurationMs": 40,
+                    "backendContextLoadDurationMs": 850,
+                    "requestContextBuildDurationMs": 30,
+                    "guardPipelineDurationMs": 7900,
+                    "turnDecisionDurationMs": 5100,
+                    "turnDecisionCacheHitCount": 1,
+                    "intentEntityProfileDurationMs": 1700,
+                    "intentSideEffectDurationMs": 900,
+                    "postFullAgentDurationMs": 1900,
+                    "unattributedDurationMs": 10900,
                     "agentRun": {
                         "completed": True,
                         "nodeTimings": [
@@ -1206,6 +1316,22 @@ def test_runtime_shadow_observation_builds_latency_profile_diagnostic():
         "final_reply_generation",
     ]
     assert runtime["diagnosticPayload"]["toolCallCount"] == 1
+    assert runtime["diagnosticPayload"]["classificationDurationMs"] == 12000
+    assert runtime["diagnosticPayload"]["preSemanticRouteDurationMs"] == 14000
+    assert runtime["diagnosticPayload"]["preFullAgentDurationMs"] == 9000
+    assert runtime["diagnosticPayload"]["historyLoadDurationMs"] == 110
+    assert runtime["diagnosticPayload"]["pendingLoadDurationMs"] == 70
+    assert runtime["diagnosticPayload"]["initialStateLoadDurationMs"] == 130
+    assert runtime["diagnosticPayload"]["runtimeHistoryBuildDurationMs"] == 40
+    assert runtime["diagnosticPayload"]["backendContextLoadDurationMs"] == 850
+    assert runtime["diagnosticPayload"]["requestContextBuildDurationMs"] == 30
+    assert runtime["diagnosticPayload"]["guardPipelineDurationMs"] == 7900
+    assert runtime["diagnosticPayload"]["turnDecisionDurationMs"] == 5100
+    assert runtime["diagnosticPayload"]["turnDecisionCacheHitCount"] == 1
+    assert runtime["diagnosticPayload"]["intentEntityProfileDurationMs"] == 1700
+    assert runtime["diagnosticPayload"]["intentSideEffectDurationMs"] == 900
+    assert runtime["diagnosticPayload"]["postFullAgentDurationMs"] == 1900
+    assert runtime["diagnosticPayload"]["unattributedDurationMs"] == 10900
     assert runtime["evidenceContract"]["toolBudget"] == {"maxToolCalls": 8, "batchPreferred": True}
 
 

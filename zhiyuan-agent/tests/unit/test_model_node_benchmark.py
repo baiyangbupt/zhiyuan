@@ -189,6 +189,33 @@ def test_model_node_benchmark_flags_mixed_polarity_regression():
     ]
 
 
+def test_model_node_benchmark_flags_career_direction_as_major_regression():
+    case = {
+        "caseId": "career-direction-bucket-regression",
+        "node": "intent_entity_extraction",
+        "expected": {
+            "entityType": "career",
+            "careerValues": ["体制内/考公导向"],
+        },
+        "actual": {
+            "entityType": "major",
+            "majorValues": ["体制内"],
+            "careerValues": [],
+        },
+        "assert": {
+            "exact": ["entityType"],
+            "contains": {"careerValues": ["体制内/考公导向"]},
+            "notContains": {"majorValues": ["体制内"]},
+        },
+    }
+
+    record = benchmark._evaluate_case(case)
+
+    assert record["passed"] is False
+    failure_fields = [failure["field"] for failure in record["failures"]]
+    assert failure_fields == ["entityType", "careerValues", "majorValues"]
+
+
 def test_model_node_benchmark_guard_cases_report_expected_failures():
     report = benchmark.build_report(
         [
@@ -339,6 +366,25 @@ def test_model_node_benchmark_filters_cases_by_nodes():
     assert [case["caseId"] for case in selected] == ["a", "c"]
 
 
+def test_model_node_benchmark_filters_cases_by_ids():
+    cases = [
+        {"caseId": "node-turn-side-effect-G50-tier-ratio-future-preference", "node": "turn_side_effect"},
+        {"caseId": "node-intent-entity-extraction-G51-tier-ratio-schema-gap", "node": "intent_entity_extraction"},
+        {"caseId": "node-intent-entity-extraction-G52-strategy-words-not-major", "node": "intent_entity_extraction"},
+    ]
+
+    selected = benchmark._filter_cases_by_ids(
+        cases,
+        "node-turn-side-effect-G50-tier-ratio-future-preference,"
+        " node-intent-entity-extraction-G52-strategy-words-not-major",
+    )
+
+    assert [case["caseId"] for case in selected] == [
+        "node-turn-side-effect-G50-tier-ratio-future-preference",
+        "node-intent-entity-extraction-G52-strategy-words-not-major",
+    ]
+
+
 def test_model_node_benchmark_excludes_provider_env_errors_from_quality_matrix():
     report = benchmark.build_report(
         [
@@ -396,6 +442,41 @@ async def test_model_node_benchmark_excludes_provider_connection_errors_from_qua
     assert report["summary"]["total"] == 0
     assert report["summary"]["providerEnvExcluded"] == 1
     assert report["summary"]["providerEnvExcludedByReason"] == {"provider_connection_error": 1}
+    assert report["failureExamples"] == []
+
+
+@pytest.mark.asyncio
+async def test_model_node_benchmark_excludes_live_node_timeout_from_quality_matrix():
+    async def slow_extract(*_args, **_kwargs):
+        import asyncio
+
+        await asyncio.sleep(1)
+        return {"entityType": "region"}
+
+    with patch(
+        "app.tools.intent_entity_profile_tool.extract_intent_entity_profile",
+        new=AsyncMock(side_effect=slow_extract),
+    ):
+        report = await benchmark.build_report_async(
+            [
+                {
+                    "caseId": "provider-timeout",
+                    "node": "intent_entity_extraction",
+                    "prompt": "城市优先长三角",
+                    "expected": {"entityType": "region"},
+                    "assert": {"exact": ["entityType"]},
+                }
+            ],
+            actual_source="live-node",
+            live_case_timeout_seconds=0.01,
+        )
+
+    record = report["records"][0]
+    assert record["actualSource"] == "provider_env"
+    assert record["qualityExcluded"] is True
+    assert record["liveError"]["type"] == "timeout"
+    assert report["summary"]["total"] == 0
+    assert report["summary"]["providerEnvExcludedByReason"] == {"timeout": 1}
     assert report["failureExamples"] == []
 
 
@@ -513,6 +594,56 @@ async def test_model_node_benchmark_live_node_turn_side_effect_uses_turn_decisio
         "先不确认，当前方案里有没有护理或者中医学",
         payload={"planningStateProfile": {"formalPlanPresent": True, "pendingExists": True}},
     )
+
+
+@pytest.mark.asyncio
+async def test_model_node_benchmark_live_node_plan_atomic_action_dsl_uses_plan_tool():
+    fake_result = MagicMock()
+    fake_result.model_dump.return_value = {
+        "actionFamily": "add_units",
+        "confidence": 0.96,
+        "schoolKeyword": "湖北工程学院",
+        "majorKeyword": "计算机科学与技术",
+    }
+
+    with patch(
+        "app.tools.plan_semantic_action_tool.classify_plan_atomic_action_dsl",
+        new=AsyncMock(return_value=fake_result),
+    ) as classify_mock:
+        report = await benchmark.build_report_async(
+            [
+                {
+                    "caseId": "plan-atomic-action",
+                    "node": "plan_atomic_action_dsl",
+                    "prompt": "把湖北工程学院的计算机科学与技术加进来",
+                    "input": {
+                        "planningStateProfile": {
+                            "formalPlanPresent": True,
+                            "candidatePoolPresent": True,
+                            "pendingExists": False,
+                        }
+                    },
+                    "expected": {
+                        "actionFamily": "add_units",
+                        "schoolKeyword": "湖北工程学院",
+                        "majorKeyword": "计算机科学与技术",
+                    },
+                    "assert": {
+                        "exact": ["actionFamily"],
+                        "contains": {
+                            "schoolKeyword": ["湖北工程学院"],
+                            "majorKeyword": ["计算机科学与技术"],
+                        },
+                    },
+                }
+            ],
+            actual_source="live-node",
+        )
+
+    record = report["records"][0]
+    assert record["passed"] is True
+    assert record["actualSource"] == "live_node"
+    classify_mock.assert_awaited_once()
 
 
 @pytest.mark.asyncio

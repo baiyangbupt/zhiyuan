@@ -122,7 +122,7 @@
       "plan_apply"
     ],
     "assertPlanStyle": true,
-    "cloneBackendStateFromSessionId": "17",
+    "cloneBackendStateFromSessionId": "26",
     "clearBackendPlanningIntentState": true,
     "prompts": [
       {

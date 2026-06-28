@@ -30,3 +30,12 @@ def test_normalize_career_slots_filters_invalid_and_deduplicates():
         CAREER_SYSTEM_PUBLIC_SERVICE,
         CAREER_STABLE_EMPLOYMENT,
     ]
+
+
+def test_normalize_career_slots_accepts_common_direction_aliases():
+    assert normalize_career_slots(["体制内", "考公", "稳定就业", "读研", "企业就业"]) == [
+        CAREER_SYSTEM_PUBLIC_SERVICE,
+        CAREER_STABLE_EMPLOYMENT,
+        CAREER_FURTHER_STUDY,
+        CAREER_MARKET_EMPLOYMENT,
+    ]

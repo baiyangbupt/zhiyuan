@@ -275,13 +275,38 @@ def _merge_filter_lists(base: list[str], extra: list[str]) -> list[str]:
     return merged
 
 
+def _filter_list_with_single(
+    filters: dict[str, Any],
+    *,
+    list_key: str,
+    single_key: str,
+) -> list[str]:
+    values = _parse_filter_list(filters.get(list_key))
+    single_value = str(filters.get(single_key) or "").strip()
+    if single_value:
+        values = _merge_filter_lists(values, [single_value])
+    return values
+
+
 def _filter_payload_from_atomic_filters(filters: dict[str, Any]) -> dict[str, Any]:
     return {
-        "tiers": [filters.get("tier")] if filters.get("tier") else [],
-        "province_names": [filters.get("province_keyword")] if filters.get("province_keyword") else [],
-        "city_names": [filters.get("city_keyword")] if filters.get("city_keyword") else [],
-        "school_keywords": [filters.get("school_keyword")] if filters.get("school_keyword") else [],
-        "major_keywords": [filters.get("major_keyword")] if filters.get("major_keyword") else [],
+        "tiers": _filter_list_with_single(filters, list_key="tiers", single_key="tier"),
+        "province_names": _filter_list_with_single(
+            filters,
+            list_key="province_names",
+            single_key="province_keyword",
+        ),
+        "city_names": _filter_list_with_single(filters, list_key="city_names", single_key="city_keyword"),
+        "school_keywords": _filter_list_with_single(
+            filters,
+            list_key="school_keywords",
+            single_key="school_keyword",
+        ),
+        "major_keywords": _filter_list_with_single(
+            filters,
+            list_key="major_keywords",
+            single_key="major_keyword",
+        ),
         "school_tags": _parse_filter_list(filters.get("school_tags")),
         "major_tags": _parse_filter_list(filters.get("major_tags")),
         "min_tuition_per_year": filters.get("min_tuition_per_year"),

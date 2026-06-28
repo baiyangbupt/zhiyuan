@@ -1,0 +1,244 @@
+{
+  "metadata": {
+    "release": "3.2.0",
+    "purpose": "Micro regression set promoted from assets/production-dialogue-cases-since-20260614-043817-20260621-1601.json for framework-level quality/performance probing.",
+    "source": "assets production-visible dialogue candidates, manually selected for budget, career, reference and plan-generation boundaries.",
+    "privacy": "Source prompts are already redacted by the production export; keep assertions weak until each case is manually reviewed."
+  },
+  "defaults": {
+    "coverage": [
+      "release_3_2_0",
+      "production_asset_micro",
+      "needs_manual_review"
+    ],
+    "assertPlanStyle": true,
+    "promptDefaults": {
+      "assertNotContains": [
+        "payload",
+        "action_family",
+        "volunteerId",
+        "@1"
+      ],
+      "assertThinkingNotContains": [
+        "payload",
+        "action_family",
+        "volunteerId"
+      ],
+      "forbiddenPatterns": [
+        "已直接删除",
+        "已直接调整",
+        "payload",
+        "action_family"
+      ],
+      "warnElapsedSeconds": 45,
+      "maxElapsedSeconds": 120,
+      "minTextLengthWarn": 60
+    }
+  },
+  "cases": [
+    {
+      "name": "320-prod-micro-hard-negative-major",
+      "sessionId": "3812",
+      "sourceSessionId": "3812",
+      "flow": [
+        "intent",
+        "constraint"
+      ],
+      "coverage": [
+        "production_dialogue_source",
+        "major_preference",
+        "hard_constraint"
+      ],
+      "prompts": [
+        {
+          "prompt": "生物医学公安环境不要 土木的不要",
+          "assertContainsAny": [
+            "生物",
+            "医学",
+            "公安",
+            "环境",
+            "土木",
+            "采纳",
+            "排除",
+            "不优先"
+          ],
+          "qualityFocus": [
+            "real_user_language",
+            "structured_negative_intent",
+            "pending_boundary"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "320-prod-micro-budget-high-tuition",
+      "sessionId": "3812",
+      "sourceSessionId": "3812",
+      "flow": [
+        "budget_tuition",
+        "plan_boundary"
+      ],
+      "coverage": [
+        "production_dialogue_source",
+        "budget_tuition",
+        "colloquial_typo"
+      ],
+      "prompts": [
+        {
+          "prompt": "那如果我不接受稿费呢高高学费",
+          "assertContainsAny": [
+            "学费",
+            "高收费",
+            "预算",
+            "民办",
+            "中外合作",
+            "确认",
+            "采纳"
+          ],
+          "qualityFocus": [
+            "real_user_language",
+            "tuition_budget_boundary",
+            "typo_robustness"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "320-prod-micro-career-stable-system",
+      "sessionId": "3753",
+      "sourceSessionId": "3753",
+      "flow": [
+        "career_direction",
+        "future_reference"
+      ],
+      "coverage": [
+        "production_dialogue_source",
+        "career_direction",
+        "stable_employment"
+      ],
+      "prompts": [
+        {
+          "prompt": "我想要优先稳定体制内",
+          "assertContainsAny": [
+            "体制内",
+            "稳定",
+            "就业",
+            "考公",
+            "采纳",
+            "偏好"
+          ],
+          "qualityFocus": [
+            "real_user_language",
+            "career_intent_profile",
+            "pending_boundary"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "320-prod-micro-school-reference-admission-check",
+      "sessionId": "3740",
+      "sourceSessionId": "3740",
+      "flow": [
+        "school_query",
+        "context_reference"
+      ],
+      "coverage": [
+        "production_dialogue_source",
+        "school_presence_query",
+        "context_reference"
+      ],
+      "prompts": [
+        {
+          "prompt": "电力，铁道，航空职业技术学院，在海南招生的有哪几个学校呢",
+          "assertContainsAny": [
+            "海南",
+            "招生",
+            "学校",
+            "电力",
+            "铁道",
+            "航空"
+          ],
+          "qualityFocus": [
+            "real_user_language",
+            "school_query_grounding"
+          ]
+        },
+        {
+          "prompt": "这些学校你确定在海南招生吗",
+          "assertContainsAny": [
+            "这些学校",
+            "海南",
+            "招生",
+            "确认",
+            "查询",
+            "核对"
+          ],
+          "qualityFocus": [
+            "context_reference",
+            "grounded_followup"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "320-prod-micro-region-add-and-readonly",
+      "sessionId": "3813",
+      "sourceSessionId": "3813",
+      "flow": [
+        "region_preference",
+        "confirmation_followup",
+        "readonly_after_intent"
+      ],
+      "coverage": [
+        "production_dialogue_source",
+        "region_preference",
+        "pending_confirmation"
+      ],
+      "prompts": [
+        {
+          "prompt": "加入广东和江西",
+          "assertContainsAny": [
+            "广东",
+            "江西",
+            "采纳",
+            "偏好",
+            "地域"
+          ],
+          "qualityFocus": [
+            "real_user_language",
+            "region_intent_pending"
+          ]
+        },
+        {
+          "prompt": "好的",
+          "assertContainsAny": [
+            "已",
+            "采纳",
+            "确认",
+            "广东",
+            "江西"
+          ],
+          "qualityFocus": [
+            "short_confirmation",
+            "pending_apply"
+          ]
+        },
+        {
+          "prompt": "江西的大学有哪些适合我",
+          "assertContainsAny": [
+            "江西",
+            "大学",
+            "适合",
+            "学校",
+            "候选"
+          ],
+          "qualityFocus": [
+            "readonly_after_intent",
+            "candidate_query"
+          ]
+        }
+      ]
+    }
+  ]
+}

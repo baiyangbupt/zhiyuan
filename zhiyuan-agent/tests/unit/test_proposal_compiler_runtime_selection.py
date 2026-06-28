@@ -101,6 +101,28 @@ def test_intent_preview_turn_decision_arbitration_blocks_current_plan_atomic_mut
     assert "current_plan_atomic_mutation_requires_plan_route" in source.blocking_reasons
 
 
+def test_intent_preview_turn_decision_arbitration_allows_current_plan_durable_constraint_intent():
+    source = proposal_compiler.compile_runtime_intent_preview_turn_decision_arbitration_source(
+        turn_decision=_TurnDecision(
+            task_layer="plan",
+            side_effect="plan_preview",
+            scope_anchor="current_plan",
+            scenario="atomic_mutation",
+        ),
+        turn_decision_blocks_intent_pending=True,
+        semantic_intent_preview_requested=True,
+        semantic_entity_kinds={"major"},
+        preview_payload_entity_kinds={"major"},
+        preview_candidate_valid=True,
+        constraint_intent_type="must_have",
+    )
+
+    assert source.allow_intent_pending is True
+    assert source.blocking_reasons == []
+    assert source.arbitration_dsl["constraintIntentType"] == "must_have"
+    assert source.arbitration_dsl["durableConstraintIntent"] is True
+
+
 def test_intent_preview_turn_decision_arbitration_blocks_plan_query_scope():
     source = proposal_compiler.compile_runtime_intent_preview_turn_decision_arbitration_source(
         turn_decision=_TurnDecision(
@@ -134,6 +156,43 @@ def test_intent_preview_turn_decision_arbitration_blocks_mismatched_or_invalid_p
     assert source.allow_intent_pending is False
     assert "invalid_intent_preview_candidate" in source.blocking_reasons
     assert "semantic_payload_entity_kind_mismatch" in source.blocking_reasons
+
+
+def test_current_plan_mutation_anchor_includes_unsupported_pin_lock_actions():
+    assert proposal_compiler.content_has_current_plan_mutation_anchor("把第一个志愿锁定在第一位") is True
+    assert proposal_compiler.content_has_current_plan_mutation_anchor("冲档第一位固定不要动") is True
+    assert proposal_compiler.content_has_current_plan_mutation_anchor("以后想考公但也怕太卷，先看看") is False
+
+
+def test_compile_no_plan_atomic_action_boundary_uses_structured_action_family():
+    source = proposal_compiler.compile_no_plan_atomic_action_boundary_source(
+        "把广西师大统计加进来",
+        action_family="add_units",
+    )
+
+    assert source.side_effect == "needs_plan_first"
+    assert source.target_issues == ["plan_add_without_referent"]
+    assert source.blocking_reasons == ["missing_formal_plan"]
+    assert "加入当前方案的候选志愿" in source.primary_reply
+
+    unmatched = proposal_compiler.compile_no_plan_atomic_action_boundary_source(
+        "加入广东和江西",
+        action_family="none",
+    )
+    assert unmatched.side_effect == "none"
+
+
+def test_future_reference_anchor_does_not_treat_preference_fit_as_intent_write():
+    assert proposal_compiler.content_has_future_reference_anchor("那把两万以上且跟我意向不沾边的先删掉") is False
+    assert proposal_compiler.content_has_future_reference_anchor("把华中科技大学加到意向") is True
+    assert proposal_compiler.content_has_future_reference_anchor("以后少推荐民办，优先公办") is True
+
+
+def test_readonly_school_or_candidate_query_anchor_blocks_region_intent_fast_path():
+    assert proposal_compiler.content_has_readonly_school_or_candidate_query_anchor("江西的大学有哪些适合我") is True
+    assert proposal_compiler.content_has_readonly_school_or_candidate_query_anchor("候选里有哪些计算机机会") is True
+    assert proposal_compiler.content_has_readonly_school_or_candidate_query_anchor("加入广东和江西") is False
+    assert proposal_compiler.content_has_readonly_school_or_candidate_query_anchor("以后推荐江西的大学") is False
 
 
 def test_runtime_fix_selection_uses_selected_ready_proposal_id():
@@ -578,14 +637,38 @@ def test_resolve_intent_input_allows_constraint_negative_scope():
     assert resolution.constraint_intent_type == "exclude_hard"
 
 
+def test_resolve_intent_input_keeps_default_constraint_for_hard_exclude_with_soft_positive_scope():
+    resolution = proposal_compiler.resolve_intent_preview_input(
+        selected_values=[
+            {"major_intents": {"level3": ["网络与新媒体", "跨境电子商务"]}},
+            {"major_intents": {"negative_level3": ["土木工程"]}},
+        ],
+        merged={
+            "major_intents": {
+                "level3": ["网络与新媒体", "跨境电子商务"],
+                "negative_level3": ["土木工程"],
+            }
+        },
+        intent_mode="constraint",
+        raw_constraint_intent_type="default",
+    )
+
+    assert resolution.allowed is True
+    assert resolution.intent_mode == "constraint"
+    assert resolution.constraint_intent_type == "default"
+    assert resolution.blocking_reasons == []
+
+
 def test_intent_payload_scope_helpers_detect_positive_and_negative_values():
     positive = {"major_intents": {"level3": ["软件工程"]}}
     negative = {"city_intents": {"negative_province": ["安徽"]}}
+    budget = {"tuition_budget": {"max_tuition_per_year": [20000]}}
 
     assert proposal_compiler.intent_payload_has_positive_value(positive) is True
     assert proposal_compiler.intent_payload_has_negative_value(positive) is False
     assert proposal_compiler.intent_payload_has_positive_value(negative) is False
     assert proposal_compiler.intent_payload_has_negative_value(negative) is True
+    assert proposal_compiler.intent_payload_has_positive_value(budget) is True
     assert proposal_compiler.intent_payload_has_required_constraint_scope(
         positive,
         constraint_intent_type="only_keep",
@@ -597,6 +680,10 @@ def test_intent_payload_scope_helpers_detect_positive_and_negative_values():
     assert proposal_compiler.intent_payload_has_required_constraint_scope(
         negative,
         constraint_intent_type="exclude_hard",
+    ) is True
+    assert proposal_compiler.intent_payload_has_required_constraint_scope(
+        budget,
+        constraint_intent_type="default",
     ) is True
 
 
@@ -1419,6 +1506,82 @@ def test_compile_reply_guard_detects_no_tool_action_boundary():
     assert source.route == "no_tool_action_boundary_reply_guard"
 
 
+def test_compile_blocked_intent_preview_for_plan_route_reply_preserves_selected_items():
+    source = proposal_compiler.compile_blocked_intent_preview_for_plan_route_reply_source(
+        turn_decision={
+            "taskLayer": "plan",
+            "sideEffect": "plan_preview",
+            "scopeAnchor": "current_plan",
+            "scenario": "atomic_mutation",
+            "confidence": 0.95,
+        },
+        preview_payload={
+            "intentMode": "constraint",
+            "constraintIntentType": "must_have",
+            "items": [
+                {
+                    "content": "把临床医学记成明确要满足的具体专业要求",
+                    "selected": True,
+                    "value": {"major_intents": {"level3": ["临床医学"]}},
+                }
+            ],
+        },
+    )
+
+    assert source.matched is True
+    assert source.route == "blocked_intent_preview_for_current_plan_mutation"
+    assert "临床医学" in source.primary_reply
+    assert "没有形成可执行的调整内容" in source.primary_reply
+    assert source.display_payload["selectedItems"] == ["临床医学"]
+    assert source.reply_plan["focus"] == ["current_plan_mutation_requires_plan_preview"]
+
+
+def test_resolve_conditional_candidate_readonly_boundary_for_selection_scope():
+    resolution = proposal_compiler.resolve_conditional_candidate_readonly_boundary(
+        result={
+            "action_family": "add_units",
+            "result_kind": "error",
+            "reply_focus": ["missing_inputs", "needs_candidate_selection"],
+            "missing_inputs": ["selection_scope"],
+        }
+    )
+
+    assert resolution.matched is True
+    assert resolution.route == "conditional_candidate_selection_scope_boundary"
+    assert resolution.reason_code == "selection_scope"
+    assert resolution.missing_inputs == ["selection_scope"]
+
+
+def test_resolve_conditional_candidate_readonly_boundary_for_missing_inputs():
+    resolution = proposal_compiler.resolve_conditional_candidate_readonly_boundary(
+        result={
+            "action_family": "add_units",
+            "result_kind": "error",
+            "reply_focus": ["missing_inputs"],
+            "missing_inputs": ["province", "score", "subjects"],
+        }
+    )
+
+    assert resolution.matched is True
+    assert resolution.route == "conditional_candidate_missing_inputs_boundary"
+    assert resolution.reason_code == "missing_inputs"
+    assert resolution.missing_inputs == ["province", "score", "subjects"]
+
+
+def test_resolve_conditional_candidate_readonly_boundary_ignores_non_add_units():
+    resolution = proposal_compiler.resolve_conditional_candidate_readonly_boundary(
+        result={
+            "action_family": "replace_units",
+            "result_kind": "error",
+            "reply_focus": ["missing_inputs"],
+            "missing_inputs": ["selection_scope"],
+        }
+    )
+
+    assert resolution.matched is False
+    assert "unsupported_candidate_boundary_action_family" in resolution.blocking_reasons
+
+
 def test_pending_turn_resolution_leaves_apply_then_new_plan_to_structured_decision():
     resolution = proposal_compiler.resolve_pending_turn_action(
         "现在基于这些出方案",
@@ -1663,6 +1826,42 @@ def test_runtime_plan_query_profile_compiler_builds_school_presence_payload_from
     assert "school_presence_query" in compiled.plan_payload["reply_focus"]
 
 
+def test_runtime_plan_query_profile_compiler_preserves_candidate_pool_condition_filters():
+    compiled = proposal_compiler.compile_runtime_plan_query_profile_source(
+        content="电力，铁道，航空职业技术学院，在海南招生的有哪几个学校呢",
+        query_profile={
+            "queryType": "readonly_plan_query",
+            "scopeAnchor": "candidate_pool",
+            "dimensions": ["item_list"],
+            "condition": {
+                "target": "candidate_pool",
+                "filters": {
+                    "provinceNames": ["海南"],
+                    "schoolKeywords": ["电力", "铁道", "航空"],
+                },
+                "sort": {"field": "recommendation", "order": "desc"},
+                "page": 1,
+                "pageSize": 5,
+            },
+            "filters": {"limit": 5, "item_type": "school"},
+            "projection": {"mode": "school_list", "limit": 5},
+            "replyFocus": ["candidate_snapshot", "local_candidate_query", "school_list_query"],
+        },
+        planning_version=13,
+    )
+
+    assert compiled.matched is True
+    assert compiled.action_family == "query_candidates"
+    assert compiled.plan_query_dsl["filters"]["province_names"] == ["海南"]
+    assert compiled.plan_query_dsl["filters"]["province_keyword"] == "海南"
+    assert compiled.plan_query_dsl["filters"]["school_keywords"] == ["电力", "铁道", "航空"]
+    assert compiled.plan_query_dsl["filters"]["school_keyword"] == "电力"
+    action_filters = compiled.plan_payload["atomic_actions"][0]["filters"]
+    assert action_filters["province_names"] == ["海南"]
+    assert action_filters["school_keywords"] == ["电力", "铁道", "航空"]
+    assert "school_list_query" in compiled.plan_payload["reply_focus"]
+
+
 def test_runtime_plan_query_profile_compiler_resolves_pending_major_reference_from_state():
     compiled = proposal_compiler.compile_runtime_plan_query_profile_source(
         content="先不确认，当前方案里有没有相关专业",
@@ -1796,6 +1995,71 @@ def test_needs_plan_first_guard_blocks_current_plan_reference_without_formal_pla
     assert resolution.requires_model_decision is False
     assert resolution.target_issues == ["college_type"]
     assert resolution.blocking_reasons == ["missing_formal_plan"]
+
+
+def test_needs_plan_first_guard_blocks_plan_mutation_without_formal_plan_referent():
+    resolution = proposal_compiler.resolve_needs_plan_first_guard(
+        "把会计审计相关替换成新媒体或跨境电商相关",
+        planning_summary={"ordered_total": 0, "working_total": 0},
+    )
+
+    assert resolution.side_effect == "needs_plan_first"
+    assert resolution.reference_resolution == "no_referent"
+    assert resolution.requires_model_decision is False
+    assert resolution.target_issues == ["plan_mutation_without_referent"]
+    assert resolution.blocking_reasons == ["missing_formal_plan"]
+
+
+def test_needs_plan_first_guard_blocks_implicit_sort_without_formal_plan_referent():
+    resolution = proposal_compiler.resolve_needs_plan_first_guard(
+        "按好学校排下看看",
+        planning_summary={"ordered_total": 0, "working_total": 0},
+    )
+
+    assert resolution.side_effect == "needs_plan_first"
+    assert resolution.reference_resolution == "no_referent"
+    assert resolution.requires_model_decision is False
+    assert resolution.target_issues == ["plan_mutation_without_referent"]
+    assert "当前还没有生成正式方案" in resolution.primary_reply
+    assert "不会改动当前方案" in resolution.primary_reply
+    assert resolution.blocking_reasons == ["missing_formal_plan"]
+
+
+def test_needs_plan_first_guard_preserves_career_direction_focus_without_formal_plan():
+    resolution = proposal_compiler.resolve_needs_plan_first_guard(
+        "当前方案对体制内稳定就业方向承接得怎么样，先不要改方案",
+        planning_summary={"ordered_total": 0, "working_total": 0},
+    )
+
+    assert resolution.side_effect == "needs_plan_first"
+    assert resolution.reference_resolution == "no_referent"
+    assert resolution.target_issues == ["career_direction_support"]
+    assert "体制内/考公导向" in resolution.primary_reply
+    assert "稳定就业导向" in resolution.primary_reply
+    assert "承接" in resolution.primary_reply
+    assert "不会改动当前方案" in resolution.primary_reply
+    assert resolution.display_payload["presentation"] == "readonly_boundary"
+    assert resolution.display_payload["focusLabel"] == "体制内/考公导向、稳定就业导向的方案承接"
+    assert resolution.reply_plan["focus"] == ["career_direction_support"]
+
+
+def test_needs_plan_first_guard_preserves_recent_intent_conflict_focus():
+    resolution = proposal_compiler.resolve_needs_plan_first_guard(
+        "现在方案里哪些和这些要求冲突",
+        planning_summary={"ordered_total": 0, "working_total": 0},
+        recent_intent_summary="偏好专业类：财经类；排除专业：护理学、中西医结合类",
+    )
+
+    assert resolution.side_effect == "needs_plan_first"
+    assert resolution.reference_resolution == "no_referent"
+    assert resolution.target_issues == ["intent_conflict_check_without_referent"]
+    assert "财经类" in resolution.primary_reply
+    assert "护理学" in resolution.primary_reply
+    assert "中西医结合类" in resolution.primary_reply
+    assert "逐项判断哪些志愿冲突或不符合" in resolution.primary_reply
+    assert "冲稳保或风险" not in resolution.primary_reply
+    assert resolution.display_payload["recentIntentSummary"] == "偏好专业类：财经类；排除专业：护理学、中西医结合类"
+    assert resolution.reply_plan["focus"] == ["intent_conflict_check_without_referent"]
 
 
 def test_no_formal_plan_review_boundary_blocks_special_path_review_generation():
@@ -1969,6 +2233,54 @@ def test_compile_current_plan_mutation_from_intent_preview_builds_remove_units_p
     assert payload["facts"]["currentPlanMutationDsl"]["actionFamily"] == "remove_units"
 
 
+def test_compile_current_plan_mutation_from_intent_preview_builds_review_issue_replace_payload():
+    source = proposal_compiler.compile_runtime_current_plan_mutation_from_intent_preview_source(
+        content="把高收费的换成正常收费的看看",
+        turn_decision=_current_plan_atomic_turn_decision(),
+        merged_intent={"physical_constraints": {"special_limits": ["高收费"]}},
+        intent_mode="constraint",
+        constraint_intent_type="default",
+        summary="避开项目：高收费",
+        planning_version=9,
+    )
+
+    assert source.matched is True
+    assert source.route == "current_plan_review_issue_preview"
+    assert source.action_family == "replace_units"
+    assert source.mutation_dsl["selector"]["reviewIssueCode"] == "high_tuition"
+    payload = source.plan_payload
+    assert payload["stage"] == "preview"
+    assert payload["action_family"] == "replace_units"
+    assert payload["planning_version"] == 9
+    assert payload["atomic_actions"][0]["review_issue_target"] == {
+        "code": "high_tuition",
+        "scope_mode": "full_issue",
+        "label": "高收费",
+    }
+    assert payload["facts"]["currentPlanMutationDsl"]["actionFamily"] == "replace_units"
+
+
+def test_compile_current_plan_mutation_from_intent_preview_builds_cooperative_program_payload():
+    source = proposal_compiler.compile_runtime_current_plan_mutation_from_intent_preview_source(
+        content="去掉中外合作",
+        turn_decision=_current_plan_atomic_turn_decision(),
+        merged_intent={"physical_constraints": {"special_limits": ["中外合作"]}},
+        intent_mode="constraint",
+        constraint_intent_type="default",
+        summary="避开项目：中外合作",
+        planning_version=3,
+    )
+
+    assert source.matched is True
+    assert source.route == "current_plan_review_issue_preview"
+    assert source.action_family == "replace_units"
+    assert source.mutation_dsl["selector"]["reviewIssueCode"] == "cooperative_program"
+    payload = source.plan_payload
+    assert payload["action_family"] == "replace_units"
+    assert payload["atomic_actions"][0]["review_issue_target"]["code"] == "cooperative_program"
+    assert payload["atomic_actions"][0]["review_issue_target"]["label"] == "中外合作"
+
+
 def test_compile_current_plan_mutation_blocks_future_reference_intent_scope():
     source = proposal_compiler.compile_runtime_current_plan_mutation_from_intent_preview_source(
         content="后面不要英语",
@@ -2007,7 +2319,7 @@ def test_compile_current_plan_mutation_requires_constraint_negative_major_scope(
     assert source.matched is False
     assert source.blocking_reasons == [
         "current_plan_mutation_requires_constraint_intent",
-        "missing_current_plan_negative_major_scope",
+        "missing_current_plan_mutation_scope",
     ]
 
 
@@ -2033,6 +2345,62 @@ def test_compile_atomic_plan_action_builds_plan_next_action_args_for_tuition_pre
     assert source.plan_action_dsl["selector"]["min_tuition_per_year"] == 20000
     assert source.plan_action_dsl["selector"]["preference_fit"] == "unrelated"
     assert source.plan_action_dsl["sourceVersionGuard"] == 8
+
+
+def test_compile_atomic_move_unit_bridges_school_major_selector_to_volunteer_ref():
+    source = proposal_compiler.compile_runtime_atomic_plan_action_source(
+        content="把青岛城市学院的国际经济与贸易改到第3位",
+        action_family="move_unit",
+        confidence=0.95,
+        source_major_names=["国际经济与贸易"],
+        school_keyword="青岛城市学院",
+        target_position=3,
+        planning_version=8,
+    )
+
+    assert source.matched is True
+    assert source.action_family == "move_unit"
+    assert source.plan_next_action_args["volunteer_ids"] == ["青岛城市学院的国际经济与贸易"]
+    assert source.plan_next_action_args["school_keyword"] == "青岛城市学院"
+    assert source.plan_next_action_args["source_major_names"] == ["国际经济与贸易"]
+    assert source.plan_next_action_args["target_position"] == 3
+    assert source.plan_action_dsl["selector"]["volunteer_ids"] == ["青岛城市学院的国际经济与贸易"]
+    assert source.plan_action_dsl["selector"]["school_keyword"] == "青岛城市学院"
+    assert source.plan_action_dsl["selector"]["source_major_names"] == ["国际经济与贸易"]
+
+
+def test_compile_atomic_add_units_bridges_school_major_selector_to_volunteer_ref():
+    source = proposal_compiler.compile_runtime_atomic_plan_action_source(
+        content="把湖北工程学院的计算机科学与技术加进来",
+        action_family="add_units",
+        confidence=0.95,
+        school_keyword="湖北工程学院",
+        major_keyword="计算机科学与技术",
+        planning_version=8,
+    )
+
+    assert source.matched is True
+    assert source.action_family == "add_units"
+    assert source.plan_next_action_args["volunteer_ids"] == ["湖北工程学院的计算机科学与技术"]
+    assert source.plan_next_action_args["school_keyword"] == "湖北工程学院"
+    assert source.plan_next_action_args["major_keyword"] == "计算机科学与技术"
+    assert source.plan_action_dsl["selector"]["volunteer_ids"] == ["湖北工程学院的计算机科学与技术"]
+    assert source.plan_action_dsl["selector"]["school_keyword"] == "湖北工程学院"
+    assert source.plan_action_dsl["selector"]["major_keyword"] == "计算机科学与技术"
+
+
+def test_compile_atomic_plan_action_blocks_pin_lock_noop_move():
+    source = proposal_compiler.compile_runtime_atomic_plan_action_source(
+        content="把第一个志愿锁定在第一位",
+        action_family="move_ordered_unit",
+        confidence=0.95,
+        source_position=1,
+        target_position=1,
+        position_scope="single",
+    )
+
+    assert source.matched is False
+    assert "unsupported_atomic_plan_action_pin_or_lock" in source.blocking_reasons
 
 
 def test_compile_atomic_plan_action_blocks_unscoped_remove():

@@ -25,6 +25,7 @@ from app.domain.career_slots import (
     CAREER_STABLE_EMPLOYMENT,
     CAREER_SYSTEM_PUBLIC_SERVICE,
     is_career_slot,
+    normalize_career_slots,
     to_career_label,
     to_career_labels,
 )
@@ -37,12 +38,15 @@ from app.domain.major_entity_resolver import (
     refine_major_intent_payload_by_explicit_mentions,
     resolve_major_mentions_from_text,
 )
+from app.domain.intent_polarity import parse_constraint_polarity_operation
 from app.domain.region_entity_resolver import (
     REGION_AREA_PROVINCES,
     compact_region_text,
     contains_concrete_region_mention,
     resolve_region_entity,
+    resolve_region_mentions_from_text,
 )
+from app.domain.school_entity_resolver import resolve_school_mention_spans_from_text
 from app.services.profile_manager import ProfileManager, _normalize_batch
 from app.tools.intent_relation_tool import (
     build_impact_preview_from_analysis as _build_impact_preview_from_analysis,
@@ -58,6 +62,7 @@ from app.tools.intent_response_tool import (
     serialize_intent_analysis_payload,
     serialize_intent_state_update_result,
 )
+from app.tools.intent_entity_profile_tool import _negative_constraint_reversal_targets
 from app.tools.extraction_json import parse_extraction_json
 from app.llm.client import LLMClient
 from app.util.code_enrichment import (
@@ -75,6 +80,7 @@ from app.util.internal_client import (
     update_planning_constraint_state,
     update_planning_physical_constraints,
     update_planning_latent_profile,
+    update_session_tuition_range,
     update_message,
 )
 from app.util.structured_log import log_event
@@ -189,6 +195,10 @@ def _get_intent_side_effect_agent() -> Agent[None, str]:
                 "这类话术通常需要先做适配分析和取舍澄清，不能把所有兴趣陈述都当作写入请求。"
                 "如果用户是在要求系统以后对某个具体专业、院校、地域或方向多看、多关注、优先看、后续多给机会，"
                 "这属于改变后续推荐口径，应判为 intent_preview；不要因为句子里有征询语气就降级。"
+                "如果用户问某地大学/学校/院校/候选机会有哪些、哪几个适合我、推荐哪些学校，"
+                "这是只读候选或学校查询；即使 structuredIntents 里抽到了地域，也应判为 analysis_only 或 mixed_answer_then_ask，"
+                "不能直接把地域写成待采纳偏好。"
+                "只有用户明确说加入、记下、优先、以后推荐、作为偏好或后续参考时，才把这类地域/学校表达判为 intent_preview。"
                 "同时给出 3.2.0 profile 字段：preferenceStrength、preferenceScope、entityPolaritySpans、admissionPath。"
                 "preferenceStrength 必须是“强度 -> 实体列表”的对象，禁止输出“实体 -> 强度列表”。"
                 "正确示例：{\"primary\":[\"网络与新媒体\"],\"acceptable\":[\"跨境电子商务\"]}；"
@@ -495,7 +505,7 @@ def _latest_utterance_has_positive_scope_signal(text: str, recovery_scope: str |
     compact = re.sub(r"\s+", "", str(text or ""))
     if not compact:
         return False
-    positive_markers = (
+    strong_positive_markers = (
         "只去",
         "只考虑",
         "只看",
@@ -507,6 +517,21 @@ def _latest_utterance_has_positive_scope_signal(text: str, recovery_scope: str |
         "接受",
         "优先",
         "保留",
+    )
+    negative_markers = (
+        "不要",
+        "别要",
+        "不考虑",
+        "不接受",
+        "排除",
+        "避开",
+        "必须避开",
+        "都不要",
+    )
+    if any(marker in compact for marker in negative_markers) and not any(marker in compact for marker in strong_positive_markers):
+        return False
+    positive_markers = (
+        *strong_positive_markers,
         "要",
         "放",
         "看",
@@ -1882,13 +1907,75 @@ def merge_selected_values(selected_values: list[dict[str, Any]]) -> dict[str, An
             for sub_key, values in sub_dict.items():
                 if sub_key not in merged[category]:
                     merged[category][sub_key] = []
+                raw_values = values if isinstance(values, list) else [values] if values is not None else []
                 # Deduplicate while preserving order
                 existing_set = set(merged[category][sub_key])
-                for v in values:
+                for v in raw_values:
                     if v not in existing_set:
                         merged[category][sub_key].append(v)
                         existing_set.add(v)
     return merged
+
+
+def _as_positive_int(value: Any) -> int:
+    try:
+        amount = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return amount if amount > 0 else 0
+
+
+def _first_positive_int(values: Any) -> int:
+    raw_values = values if isinstance(values, list) else [values] if values is not None else []
+    for value in raw_values:
+        amount = _as_positive_int(value)
+        if amount > 0:
+            return amount
+    return 0
+
+
+def _tuition_budget_bounds(merged: dict[str, Any]) -> tuple[int, int]:
+    budget = merged.get("tuition_budget") or merged.get("tuitionBudget")
+    if not isinstance(budget, dict):
+        return 0, 0
+    min_tuition = _first_positive_int(budget.get("min_tuition_per_year") or budget.get("minTuitionPerYear"))
+    max_tuition = _first_positive_int(budget.get("max_tuition_per_year") or budget.get("maxTuitionPerYear"))
+    if min_tuition > 0 and max_tuition > 0 and min_tuition > max_tuition:
+        return 0, 0
+    return min_tuition, max_tuition
+
+
+async def _sync_tuition_budget_best_effort(session_id: str, merged: dict[str, Any]) -> dict[str, Any] | None:
+    min_tuition, max_tuition = _tuition_budget_bounds(merged)
+    if min_tuition <= 0 and max_tuition <= 0:
+        return None
+    try:
+        resp = await update_session_tuition_range(
+            session_id,
+            min_tuition=min_tuition,
+            max_tuition=max_tuition,
+        )
+    except Exception:
+        logger.warning(
+            "Failed to update session tuition range after intent apply: session_id=%s min_tuition=%s max_tuition=%s",
+            session_id,
+            min_tuition,
+            max_tuition,
+            exc_info=True,
+        )
+        return {
+            "triggered": True,
+            "success": False,
+            "minTuitionPerYear": min_tuition,
+            "maxTuitionPerYear": max_tuition,
+        }
+    success = isinstance(resp, dict) and str(resp.get("code")) == "0"
+    return {
+        "triggered": True,
+        "success": success,
+        "minTuitionPerYear": min_tuition,
+        "maxTuitionPerYear": max_tuition,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -2409,6 +2496,177 @@ def _normalize_intent_inputs(
     )
 
 
+def _remove_payload_values(payload: dict[str, Any] | None, keys: tuple[str, ...], values: list[str]) -> dict[str, Any] | None:
+    if not isinstance(payload, dict) or not payload or not values:
+        return payload
+    blocked = set(_as_string_list(values))
+    cleaned: dict[str, list[str]] = {}
+    changed = False
+    for key, raw_values in payload.items():
+        normalized_values = _as_string_list(raw_values)
+        if key in keys:
+            kept = [value for value in normalized_values if value not in blocked]
+            if kept != normalized_values:
+                changed = True
+            if kept:
+                cleaned[key] = kept
+            continue
+        if normalized_values:
+            cleaned[key] = normalized_values
+    if changed:
+        return cleaned or None
+    return payload
+
+
+def _append_payload_values(payload: dict[str, Any] | None, key: str, values: list[str]) -> dict[str, list[str]] | None:
+    if not values:
+        return payload
+    merged: dict[str, list[str]] = {
+        payload_key: _as_string_list(payload_values)
+        for payload_key, payload_values in (payload or {}).items()
+        if _as_string_list(payload_values)
+    }
+    bucket = merged.setdefault(key, [])
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in bucket:
+            bucket.append(text)
+    return merged or None
+
+
+def _region_payload_key_for_value(value: str, *, negative: bool) -> tuple[str, str]:
+    try:
+        resolved = resolve_region_entity(value)
+        best = resolved.best
+    except Exception:
+        best = None
+    if best is not None and str(best.level or "") in {"province", "city", "area"}:
+        level = str(best.level or "").strip()
+        return f"{'negative_' if negative else ''}{level}", str(best.canonical_name or value).strip()
+    return ("negative_area" if negative else "area"), str(value or "").strip()
+
+
+def _major_target_level_for_value(value: str, batch: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    available = major_name_sets_for_batch(batch)
+    for level in ("level3", "level2", "level1"):
+        if text in available.get(level, set()):
+            return level
+    return ""
+
+
+def _explicit_region_values_outside_school_names(
+    latest_utterance: str,
+    *,
+    batch: str,
+) -> set[str]:
+    school_spans = [
+        (start, end)
+        for _name, start, end in resolve_school_mention_spans_from_text(latest_utterance, batch)
+    ]
+    compact = compact_region_text(latest_utterance)
+    values: set[str] = set()
+    for mention in resolve_region_mentions_from_text(latest_utterance):
+        entity = str(mention.canonical_name or "").strip()
+        raw_text = str(getattr(mention, "raw_text", "") or entity).strip()
+        compact_mention = compact_region_text(raw_text) or compact_region_text(entity)
+        if not entity or not compact_mention:
+            continue
+        search_start = 0
+        while True:
+            start = compact.find(compact_mention, search_start)
+            if start < 0:
+                break
+            end = start + len(compact_mention)
+            search_start = start + 1
+            if any(start >= school_start and end <= school_end for school_start, school_end in school_spans):
+                continue
+            values.add(entity)
+    return values
+
+
+def _remove_unstated_region_payload_after_school_reversal(
+    city_intents: dict | None,
+    *,
+    latest_utterance: str,
+    batch: str,
+) -> dict | None:
+    if not city_intents:
+        return city_intents
+    explicit_region_values = _explicit_region_values_outside_school_names(latest_utterance, batch=batch)
+    cleaned = city_intents
+    for key, values in city_intents.items():
+        if key not in _CITY_POSITIVE_KEYS + _CITY_NEGATIVE_KEYS:
+            continue
+        for value in _as_string_list(values):
+            _payload_key, normalized_value = _region_payload_key_for_value(
+                value,
+                negative=str(key).startswith("negative_"),
+            )
+            if normalized_value in explicit_region_values:
+                continue
+            cleaned = _remove_payload_values(cleaned, (key,), [value])
+    return cleaned
+
+
+def _apply_negative_constraint_reversal_to_intent_payloads(
+    major_intents: dict | None,
+    school_intents: dict | None,
+    city_intents: dict | None,
+    career_intents: dict | None,
+    *,
+    latest_utterance: str,
+    batch: str,
+) -> tuple[dict | None, dict | None, dict | None, dict | None]:
+    targets = _negative_constraint_reversal_targets(latest_utterance, batch)
+    if not targets:
+        return major_intents, school_intents, city_intents, career_intents
+
+    major_targets_by_level: dict[str, list[str]] = {}
+    for name in targets.get("major", []):
+        level = _major_target_level_for_value(name, batch)
+        if not name or level not in _MAJOR_POSITIVE_KEYS:
+            continue
+        bucket = major_targets_by_level.setdefault(level, [])
+        if name not in bucket:
+            bucket.append(name)
+    for level, values in major_targets_by_level.items():
+        negative_key = f"negative_{level}"
+        major_intents = _remove_payload_values(major_intents, (negative_key,), values)
+        major_intents = _append_payload_values(major_intents, level, values)
+
+    school_values = targets.get("school", [])
+    if school_values:
+        school_intents = _remove_payload_values(school_intents, ("negative_colleges",), school_values)
+        school_intents = _append_payload_values(school_intents, "colleges", school_values)
+        if not targets.get("region"):
+            city_intents = _remove_unstated_region_payload_after_school_reversal(
+                city_intents,
+                latest_utterance=latest_utterance,
+                batch=batch,
+            )
+
+    for value in targets.get("region", []):
+        positive_key, normalized_value = _region_payload_key_for_value(value, negative=False)
+        negative_key, _negative_value = _region_payload_key_for_value(value, negative=True)
+        city_intents = _remove_payload_values(city_intents, (negative_key,), [normalized_value])
+        city_intents = _append_payload_values(city_intents, positive_key, [normalized_value])
+
+    career_values: list[str] = []
+    for value in targets.get("career", []):
+        slots = normalize_career_slots([value])
+        for slot in slots:
+            if slot not in career_values:
+                career_values.append(slot)
+    if career_values:
+        career_intents = _remove_payload_values(career_intents, ("negative",), career_values)
+        career_intents = _append_payload_values(career_intents, "positive", career_values)
+
+    return major_intents, school_intents, city_intents, career_intents
+
+
 def _restrict_intents_to_recovery_scope(
     major_intents: dict | None,
     school_intents: dict | None,
@@ -2716,8 +2974,17 @@ def _recover_polarity_major_intent_locally_from_latest_utterance(
             continue
         if any(marker in clause for marker in _LOCAL_MAJOR_READONLY_OR_CLARIFICATION_MARKERS):
             continue
+        polarity_operation = parse_constraint_polarity_operation(clause)
+        is_negative_reversal = (
+            polarity_operation is not None
+            and polarity_operation.operation == "remove_negative_constraint"
+            and polarity_operation.replacement_polarity == "positive"
+        )
         has_negative = any(marker in clause for marker in _LOCAL_MAJOR_NEGATIVE_MARKERS)
         has_positive = any(marker in clause for marker in _LOCAL_MAJOR_POSITIVE_MARKERS)
+        if is_negative_reversal:
+            has_negative = False
+            has_positive = True
         if has_negative == has_positive:
             continue
         mentions = resolve_major_mentions_from_text(clause, batch)
@@ -3656,6 +3923,7 @@ async def _apply_intents(
         merged=merged,
         intent_mode=intent_mode,
     )
+    tuition_budget_sync = await _sync_tuition_budget_best_effort(session_id, merged)
     try:
         session_id_int = int(str(session_id).strip())
     except (TypeError, ValueError):
@@ -3681,6 +3949,7 @@ async def _apply_intents(
                 "mode": "overlay_best_effort",
                 "staleMarked": stale_mark_success,
                 "constraintStateSynced": constraint_state_sync_success,
+                "tuitionBudgetSynced": tuition_budget_sync,
             },
         )
         result.message = render_intent_state_update(result)
@@ -3703,6 +3972,7 @@ async def _apply_intents(
             "mode": "overlay_best_effort",
             "staleMarked": stale_mark_success,
             "constraintStateSynced": constraint_state_sync_success,
+            "tuitionBudgetSynced": tuition_budget_sync,
         },
     )
     result.message = render_intent_state_update(result)
@@ -3755,6 +4025,14 @@ async def analyze_volunteer_intent_change(
         city_intents,
         career_intents,
     )
+    major_intents, school_intents, city_intents, career_intents = _apply_negative_constraint_reversal_to_intent_payloads(
+        major_intents,
+        school_intents,
+        city_intents,
+        career_intents,
+        latest_utterance=latest_utterance,
+        batch=batch,
+    )
     major_intents, school_intents, city_intents, career_intents = _restrict_intents_to_recovery_scope(
         major_intents,
         school_intents,
@@ -3806,6 +4084,14 @@ async def analyze_volunteer_intent_change(
             school_intents,
             city_intents,
             career_intents,
+        )
+        major_intents, school_intents, city_intents, career_intents = _apply_negative_constraint_reversal_to_intent_payloads(
+            major_intents,
+            school_intents,
+            city_intents,
+            career_intents,
+            latest_utterance=latest_utterance,
+            batch=batch,
         )
         major_intents, school_intents, city_intents, career_intents = _restrict_intents_to_recovery_scope(
             major_intents,

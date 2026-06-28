@@ -286,6 +286,10 @@
     "flow": ["query_state", "query_ordered", "query_candidates", "analyze"],
     "coverage": ["deep_query_chain", "state_consistency", "candidate_explore", "adjustment_analysis"],
     "assertPlanStyle": true,
+    "fixtureContract": {
+      "type": "formal_plan_present",
+      "requiredState": ["orderedPlan", "formalPlan", "candidatePool"]
+    },
     "prompts": [
       {
         "prompt": "现在方案总共多少个 冲稳保各多少",

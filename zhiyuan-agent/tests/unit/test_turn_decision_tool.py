@@ -113,6 +113,73 @@ def test_turn_decision_prompt_keeps_new_intent_update_out_of_active_pending_conf
     assert "不能误判为 atomic_mutation/current_plan" in rule_text
 
 
+def test_turn_decision_prompt_routes_school_nature_update_while_intent_pending():
+    prompt = json.loads(
+        _build_prompt(
+            "我的意思是能加点公办院校可以考虑吗你这全是民办院校",
+            {
+                "planningStateProfile": {"formalPlanPresent": False, "pendingExists": True},
+                "pendingState": {"kind": "intent_change", "actionFamily": "apply_selected_intents"},
+            },
+        )
+    )
+
+    rule_text = "\n".join(
+        [
+            *prompt["schemaRules"],
+            *prompt["hardRules"],
+            json.dumps(prompt["examples"], ensure_ascii=False),
+        ]
+    )
+    assert "院校性质" in rule_text
+    assert "公办" in rule_text
+    assert "民办" in rule_text
+    assert "intent_pending/future_reference/intent_update" in rule_text
+    assert "我的意思是能加点公办院校可以考虑吗你这全是民办院校" in rule_text
+
+
+def test_turn_decision_prompt_routes_bare_region_add_as_future_intent():
+    prompt = json.loads(
+        _build_prompt(
+            "加入广东和江西",
+            {"planningStateProfile": {"formalPlanPresent": False, "pendingExists": False}},
+        )
+    )
+
+    rule_text = "\n".join(
+        [
+            *prompt["hardRules"],
+            json.dumps(prompt["examples"], ensure_ascii=False),
+        ]
+    )
+    assert "加入/加上/记上某省份、城市、地域" in rule_text
+    assert "不能输出 add_units/plan_preview" in rule_text
+    assert "加入广东和江西" in rule_text
+    assert "intent_pending" in rule_text
+    assert "future_reference" in rule_text
+
+
+def test_turn_decision_prompt_routes_high_tuition_typo_as_future_intent():
+    prompt = json.loads(
+        _build_prompt(
+            "那如果我不接受稿费呢高高学费",
+            {"planningStateProfile": {"formalPlanPresent": True, "pendingExists": False}},
+        )
+    )
+
+    rule_text = "\n".join(
+        [
+            *prompt["hardRules"],
+            json.dumps(prompt["examples"], ensure_ascii=False),
+        ]
+    )
+    assert "稿费" in rule_text
+    assert "高高学费" in rule_text
+    assert "高收费" in rule_text
+    assert "intent_pending" in rule_text
+    assert "future_reference" in rule_text
+
+
 def test_turn_decision_preserves_profile_change_state_query():
     raw = json.dumps(
         {

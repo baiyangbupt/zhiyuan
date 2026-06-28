@@ -182,6 +182,35 @@ class PlanActionDslDecision(BaseModel):
             return None
         return value
 
+    @field_validator("unsupportedAction", "reviewIssueCode", mode="before")
+    @classmethod
+    def _coerce_optional_text(cls, value: object) -> str | None:
+        if value is None or value is False:
+            return None
+        if value is True:
+            return None
+        if isinstance(value, (list, tuple, set)):
+            for item in value:
+                text = str(item or "").strip()
+                if text:
+                    return text
+            return None
+        text = str(value).strip()
+        return text or None
+
+    @field_validator("provinceKeyword", "schoolKeyword", "majorKeyword", mode="before")
+    @classmethod
+    def _coerce_optional_keyword(cls, value: object) -> str | None:
+        if value is None or value is False:
+            return None
+        if value is True:
+            return None
+        if isinstance(value, (list, tuple, set)):
+            normalized = _normalize_list_values(value)
+            return " ".join(normalized) if normalized else None
+        text = str(value).strip()
+        return text or None
+
     @field_validator("positionScope", mode="before")
     @classmethod
     def _coerce_position_scope(cls, value: object) -> str:
@@ -283,6 +312,16 @@ class LocalPlanActionDslDecision(BaseModel):
         if isinstance(value, str) and not value.strip():
             return None
         return value
+
+    @field_validator("unsupportedAction", mode="before")
+    @classmethod
+    def _coerce_optional_text(cls, value: object) -> str | None:
+        if value is None or value is False:
+            return None
+        if value is True:
+            return None
+        text = str(value).strip()
+        return text or None
 
 
 _plan_action_llm_client: LLMClient | None = None
@@ -499,16 +538,30 @@ def _get_plan_atomic_action_dsl_agent() -> Agent[None, str]:
                 "replace_units、remove_ordered_unit、sort_ordered_plan、regenerate_order。"
                 "只有用户明确要生成、补入、删除、移动、替换、排序或重排当前方案时，才输出非 none；"
                 "只是在问数量、有没有、原因、影响、适不适合、风险、政策、学校/专业介绍、对比分析、偏好记录或报考条件变更时输出 none。"
+                "如果用户要求锁定/固定/保护不动/位置不要动，当前 AtomicPlanActionDsl 不支持这类动作，必须输出 actionFamily=none、unsupportedAction=pin_or_lock_unit；"
+                "不要把'锁定在第一位/固定第一位'解释成 move_ordered_unit，也不要输出 sourcePosition=1,targetPosition=1 的 no-op 移动。"
                 "如果用户只是表达想去/不想去、想学/不想学、只保留/必须有某方向，但没有明确要求调整当前方案，输出 none。"
+                "只保留/仅保留/只看/必须有/至少保留某专业、院校或地域，默认是报考条件变更，不是当前方案删除；"
+                "除非用户同时明确说把当前方案里不符合的删掉/移出/替换/生成调整预览，否则输出 none。"
                 "如果用户明确说要从当前方案中删掉某专业、某院校、某地域或某类风险，使用 remove_units，"
                 "并把专业名放 sourceMajorNames，院校放 schoolKeyword，地域放 provinceKeyword。"
+                "remove_units 的 sourceMajorNames/schoolKeyword/provinceKeyword 表示要移除的对象，不表示要保留的对象；"
+                "不能把“仅保留江苏”编译成 remove_units provinceKeyword=江苏。"
                 "如果对象是当前方案审查已经识别出的风险或提醒类型，例如高收费、中外合作、限报条件、特殊招生，"
                 "不要把它当成专业名；使用 remove_units 或 replace_units，并把对应审查 code 放 reviewIssueCode，"
                 "例如高收费=high_tuition，中外合作=cooperative_program，限报条件=admission_limit，特殊类型招生=special_enrollment。"
                 "如果用户明确删除当前方案里超过某个学费阈值的志愿，填写 minTuitionPerYear；"
                 "如果用户明确要求预算上限或不超过某个费用，填写 maxTuitionPerYear。"
                 "如果用户同时限定不贴合意向、跟意向不沾边或与偏好冲突，填写 preferenceFit=unrelated 或 conflict。"
-                "如果用户明确说要加入或补齐某类候选，使用 add_units，并把筛选条件放 majorKeyword、schoolKeyword、provinceKeyword、tier 或 tags。"
+                "如果用户明确说要把某类候选或当前候选池中的结果加入/补齐当前方案，使用 add_units，"
+                "并把筛选条件放 majorKeyword、schoolKeyword、provinceKeyword、tier 或 tags。"
+                "裸地域、城市、院校或专业偏好表达，例如“加入广东和江西”“加入公办”“加入计算机方向”，"
+                "没有候选/方案/专业组/当前方案增补语义时，输出 none，交给意向偏好流程；"
+                "如果用户点名学校+专业、学校简称+专业或候选志愿，并说加进来/加入方案/放进方案/补进来，必须输出 add_units；"
+                "schoolKeyword 放院校规范名或原始学校名，majorKeyword 放专业名或专业类名。"
+                "例如“把湖北工程学院的计算机科学与技术加进来”输出 actionFamily=add_units, schoolKeyword=湖北工程学院, majorKeyword=计算机科学与技术；"
+                "“把广西师大统计加进来”输出 actionFamily=add_units, schoolKeyword=广西师范大学, majorKeyword=统计。"
+                "只有用户明确说加到意向、后续参考、以后推荐按这个考虑，才不是当前方案原子动作。"
                 "如果用户明确说把某条学校+专业移动到第 N 位，使用 move_unit，volunteerIds 填用户原始引用，targetPosition 填 N。"
                 "如果用户只用位置表达，如“第8个移到第12位/第8条放到第12”，没有学校专业名，"
                 "使用 move_ordered_unit，sourcePosition 填 8，targetPosition 填 12。"
@@ -627,6 +680,11 @@ def _normalize_list_values(values: object) -> list[str]:
     return result
 
 
+def _join_keyword_values(value: object) -> str | None:
+    values = _normalize_list_values(value)
+    return " ".join(values) if values else None
+
+
 def _normalize_plan_action_dsl_decision(decision: PlanActionDslDecision) -> PlanActionDslDecision:
     action_family = str(decision.actionFamily or "none").strip()
     allowed = {
@@ -666,9 +724,9 @@ def _normalize_plan_action_dsl_decision(decision: PlanActionDslDecision) -> Plan
         targetPosition=decision.targetPosition,
         sortField=sort_field or None,  # type: ignore[arg-type]
         tier=tier or None,
-        provinceKeyword=str(decision.provinceKeyword or "").strip() or None,
-        schoolKeyword=str(decision.schoolKeyword or "").strip() or None,
-        majorKeyword=str(decision.majorKeyword or "").strip() or None,
+        provinceKeyword=_join_keyword_values(decision.provinceKeyword),
+        schoolKeyword=_join_keyword_values(decision.schoolKeyword),
+        majorKeyword=_join_keyword_values(decision.majorKeyword),
         schoolTags=_normalize_list_values(decision.schoolTags),
         majorTags=_normalize_list_values(decision.majorTags),
         preserveCount=bool(decision.preserveCount),

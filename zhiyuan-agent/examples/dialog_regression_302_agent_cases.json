@@ -59,6 +59,10 @@
     "flow": ["remove_units", "confirm"],
     "coverage": ["release_3_0_2", "major_model", "name_match", "abbrev_tolerant", "preview_confirm_apply"],
     "assertPlanStyle": true,
+    "fixtureContract": {
+      "type": "formal_plan_present",
+      "requiredState": ["orderedPlan", "formalPlan"]
+    },
     "prompts": [
       {
         "prompt": "把河南农大建筑去掉",
@@ -79,6 +83,10 @@
     "flow": ["query_state"],
     "coverage": ["release_3_0_2", "post_mutation_status", "stale_review_hint"],
     "assertPlanStyle": true,
+    "fixtureContract": {
+      "type": "formal_plan_present",
+      "requiredState": ["orderedPlan", "formalPlan"]
+    },
     "prompts": [
       {
         "prompt": "调整后现在方案怎么样",

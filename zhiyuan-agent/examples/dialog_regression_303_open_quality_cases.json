@@ -368,6 +368,10 @@
       "side_effect_explained"
     ],
     "assertPlanStyle": true,
+    "fixtureContract": {
+      "type": "formal_plan_present",
+      "requiredState": ["orderedPlan", "formalPlan"]
+    },
     "prompts": [
       {
         "prompt": "这版按推荐系数重新排一下，先给我看会怎么动",

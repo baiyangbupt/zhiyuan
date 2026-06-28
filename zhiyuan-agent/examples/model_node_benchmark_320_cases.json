@@ -1633,6 +1633,109 @@
     ]
   },
   {
+    "caseId": "node-intent-entity-extraction-G33",
+    "node": "intent_entity_extraction",
+    "source": "3.2.0 production micro career direction bucket",
+    "priority": "P0",
+    "prompt": "我想要优先稳定体制内",
+    "expected": {
+      "entityType": "career",
+      "careerValues": [
+        "体制内/考公导向",
+        "稳定就业导向"
+      ],
+      "majorValues": [],
+      "preferenceStrength": {
+        "primary": [
+          "体制内/考公导向"
+        ],
+        "preferred": [
+          "稳定就业导向"
+        ]
+      },
+      "entityPolaritySpans": [
+        {
+          "entity": "体制内/考公导向",
+          "entityType": "career",
+          "polarity": "positive"
+        },
+        {
+          "entity": "稳定就业导向",
+          "entityType": "career",
+          "polarity": "positive"
+        }
+      ]
+    },
+    "actual": {
+      "entityType": "career",
+      "careerValues": [
+        "体制内/考公导向",
+        "稳定就业导向"
+      ],
+      "majorValues": [],
+      "preferenceStrength": {
+        "primary": [
+          "体制内/考公导向"
+        ],
+        "preferred": [
+          "稳定就业导向"
+        ]
+      },
+      "entityPolaritySpans": [
+        {
+          "entity": "体制内/考公导向",
+          "entityType": "career",
+          "polarity": "positive"
+        },
+        {
+          "entity": "稳定就业导向",
+          "entityType": "career",
+          "polarity": "positive"
+        }
+      ]
+    },
+    "assert": {
+      "exact": [
+        "entityType"
+      ],
+      "contains": {
+        "careerValues": [
+          "体制内/考公导向",
+          "稳定就业导向"
+        ],
+        "preferenceStrength.primary": [
+          "体制内/考公导向"
+        ],
+        "preferenceStrength.preferred": [
+          "稳定就业导向"
+        ],
+        "entityPolaritySpans": [
+          {
+            "entity": "体制内/考公导向",
+            "entityType": "career",
+            "polarity": "positive"
+          },
+          {
+            "entity": "稳定就业导向",
+            "entityType": "career",
+            "polarity": "positive"
+          }
+        ]
+      },
+      "notContains": {
+        "majorValues": [
+          "体制内",
+          "稳定就业"
+        ]
+      }
+    },
+    "metricsTags": [
+      "entity_type_accuracy",
+      "career_direction_bucket_accuracy",
+      "preference_strength_accuracy"
+    ]
+  },
+  {
     "caseId": "node-turn-side-effect-profile-replan-adhoc",
     "node": "turn_side_effect",
     "source": "3.2.0 profile replan boundary",
@@ -1882,6 +1985,1478 @@
       "readonly_while_pending_accuracy",
       "plan_query_profile_accuracy",
       "pending_reference_accuracy"
+    ]
+  },
+  {
+    "caseId": "node-turn-side-effect-G34-high-tuition-typo",
+    "node": "turn_side_effect",
+    "source": "3.2.0 production asset quality",
+    "priority": "P0",
+    "prompt": "那如果我不接受稿费呢高高学费",
+    "input": {
+      "planningStateProfile": {
+        "formalPlanPresent": true,
+        "pendingExists": false
+      }
+    },
+    "expected": {
+      "taskLayer": "intent",
+      "sideEffect": "intent_pending",
+      "scopeAnchor": "future_reference",
+      "scenario": "intent_update",
+      "targetIssue": [
+        "tuition",
+        "high_tuition"
+      ]
+    },
+    "actual": {
+      "taskLayer": "intent",
+      "sideEffect": "intent_pending",
+      "scopeAnchor": "future_reference",
+      "scenario": "intent_update",
+      "targetIssue": [
+        "tuition",
+        "high_tuition"
+      ]
+    },
+    "assert": {
+      "exact": [
+        "taskLayer",
+        "sideEffect",
+        "scopeAnchor",
+        "scenario"
+      ],
+      "contains": {
+        "targetIssue": [
+          "tuition"
+        ]
+      },
+      "notContains": {
+        "targetIssue": [
+          "major"
+        ]
+      }
+    },
+    "metricsTags": [
+      "production_semantic_typo",
+      "tuition_issue_accuracy",
+      "sideEffect_accuracy"
+    ]
+  },
+  {
+    "caseId": "node-intent-entity-extraction-G35-high-tuition-typo",
+    "node": "intent_entity_extraction",
+    "source": "3.2.0 production asset quality",
+    "priority": "P0",
+    "prompt": "那如果我不接受稿费呢高高学费",
+    "expected": {
+      "entityType": "budget",
+      "physicalConstraints": {
+        "specialLimits": [
+          "高收费"
+        ]
+      },
+      "preferenceStrength": {
+        "exclude_hard": [
+          "高收费"
+        ]
+      }
+    },
+    "actual": {
+      "entityType": "budget",
+      "physicalConstraints": {
+        "specialLimits": [
+          "高收费"
+        ]
+      },
+      "preferenceStrength": {
+        "exclude_hard": [
+          "高收费"
+        ]
+      }
+    },
+    "assert": {
+      "exact": [
+        "entityType"
+      ],
+      "contains": {
+        "physicalConstraints.specialLimits": [
+          "高收费"
+        ],
+        "preferenceStrength.exclude_hard": [
+          "高收费"
+        ]
+      },
+      "notContains": {
+        "majorValues": [
+          "稿费",
+          "高收费"
+        ]
+      }
+    },
+    "metricsTags": [
+      "production_semantic_typo",
+      "entity_type_accuracy",
+      "tuition_issue_accuracy"
+    ]
+  },
+  {
+    "caseId": "node-intent-entity-extraction-G36-school-nature-positive-negative",
+    "node": "intent_entity_extraction",
+    "source": "3.2.0 production asset quality",
+    "priority": "P0",
+    "prompt": "我的意思是能加点公办院校可以考虑吗你这全是民办院校",
+    "expected": {
+      "schools": [
+        "公办",
+        "民办"
+      ],
+      "preferenceStrength": {
+        "preferred": [
+          "公办"
+        ],
+        "exclude_hard": [
+          "民办"
+        ]
+      },
+      "entityPolaritySpans": [
+        {
+          "entity": "公办",
+          "entityType": "school",
+          "polarity": "positive",
+          "strength": "preferred"
+        },
+        {
+          "entity": "民办",
+          "entityType": "school",
+          "polarity": "negative",
+          "strength": "exclude_hard"
+        }
+      ]
+    },
+    "actual": {
+      "schools": [
+        "公办",
+        "民办"
+      ],
+      "preferenceStrength": {
+        "preferred": [
+          "公办"
+        ],
+        "exclude_hard": [
+          "民办"
+        ]
+      },
+      "entityPolaritySpans": [
+        {
+          "entity": "公办",
+          "entityType": "school",
+          "polarity": "positive",
+          "strength": "preferred"
+        },
+        {
+          "entity": "民办",
+          "entityType": "school",
+          "polarity": "negative",
+          "strength": "exclude_hard"
+        }
+      ]
+    },
+    "assert": {
+      "contains": {
+        "schools": [
+          "公办",
+          "民办"
+        ],
+        "preferenceStrength.preferred": [
+          "公办"
+        ],
+        "preferenceStrength.exclude_hard": [
+          "民办"
+        ],
+        "entityPolaritySpans": [
+          {
+            "entity": "公办",
+            "entityType": "school",
+            "polarity": "positive",
+            "strength": "preferred"
+          },
+          {
+            "entity": "民办",
+            "entityType": "school",
+            "polarity": "negative",
+            "strength": "exclude_hard"
+          }
+        ]
+      },
+      "notContains": {
+        "physicalConstraints.specialLimits": [
+          "公办",
+          "民办"
+        ],
+        "majorValues": [
+          "公办",
+          "民办"
+        ]
+      }
+    },
+    "metricsTags": [
+      "production_semantic_school_nature",
+      "entity_type_accuracy",
+      "polarity_accuracy"
+    ]
+  },
+  {
+    "caseId": "node-intent-entity-extraction-G37-negative-constraint-reversal",
+    "node": "intent_entity_extraction",
+    "source": "3.2.0 production semantic negative constraint reversal",
+    "priority": "P0",
+    "prompt": "不要排除经济学类啊",
+    "expected": {
+      "entityType": "major",
+      "majorValues": [
+        "经济学类"
+      ],
+      "preferenceStrength": {
+        "acceptable": [
+          "经济学类"
+        ]
+      },
+      "entityPolaritySpans": [
+        {
+          "entity": "经济学类",
+          "entityType": "major",
+          "polarity": "positive",
+          "strength": "acceptable"
+        }
+      ]
+    },
+    "actual": {
+      "entityType": "major",
+      "majorValues": [
+        "经济学类"
+      ],
+      "preferenceStrength": {
+        "acceptable": [
+          "经济学类"
+        ]
+      },
+      "entityPolaritySpans": [
+        {
+          "entity": "经济学类",
+          "entityType": "major",
+          "polarity": "positive",
+          "strength": "acceptable"
+        }
+      ]
+    },
+    "assert": {
+      "exact": [
+        "entityType"
+      ],
+      "contains": {
+        "majorValues": [
+          "经济学类"
+        ],
+        "preferenceStrength.acceptable": [
+          "经济学类"
+        ],
+        "entityPolaritySpans": [
+          {
+            "entity": "经济学类",
+            "entityType": "major",
+            "polarity": "positive",
+            "strength": "acceptable"
+          }
+        ]
+      },
+      "notContains": {
+        "preferenceStrength.exclude_hard": [
+          "经济学类"
+        ],
+        "entityPolaritySpans": [
+          {
+            "entity": "经济学类",
+            "entityType": "major",
+            "polarity": "negative"
+          }
+        ]
+      }
+    },
+    "metricsTags": [
+      "production_semantic_negative_constraint_reversal",
+      "entity_type_accuracy",
+      "polarity_accuracy"
+    ]
+  },
+  {
+    "caseId": "node-intent-entity-extraction-G38-negative-constraint-reversal-school-nature",
+    "node": "intent_entity_extraction",
+    "source": "3.2.0 production semantic negative constraint reversal extension",
+    "priority": "P0",
+    "prompt": "不要排除民办",
+    "expected": {
+      "entityType": "school",
+      "schools": [
+        "民办"
+      ],
+      "preferenceStrength": {
+        "acceptable": [
+          "民办"
+        ]
+      },
+      "entityPolaritySpans": [
+        {
+          "entity": "民办",
+          "entityType": "school",
+          "polarity": "positive",
+          "strength": "acceptable"
+        }
+      ]
+    },
+    "actual": {
+      "entityType": "school",
+      "schools": [
+        "民办"
+      ],
+      "preferenceStrength": {
+        "acceptable": [
+          "民办"
+        ]
+      },
+      "entityPolaritySpans": [
+        {
+          "entity": "民办",
+          "entityType": "school",
+          "polarity": "positive",
+          "strength": "acceptable"
+        }
+      ]
+    },
+    "assert": {
+      "exact": [
+        "entityType"
+      ],
+      "contains": {
+        "schools": [
+          "民办"
+        ],
+        "preferenceStrength.acceptable": [
+          "民办"
+        ],
+        "entityPolaritySpans": [
+          {
+            "entity": "民办",
+            "entityType": "school",
+            "polarity": "positive",
+            "strength": "acceptable"
+          }
+        ]
+      },
+      "notContains": {
+        "preferenceStrength.exclude_hard": [
+          "民办"
+        ],
+        "physicalConstraints.specialLimits": [
+          "民办"
+        ],
+        "majorValues": [
+          "民办"
+        ]
+      }
+    },
+    "metricsTags": [
+      "production_semantic_negative_constraint_reversal",
+      "school_nature_accuracy",
+      "polarity_accuracy"
+    ]
+  },
+  {
+    "caseId": "node-intent-entity-extraction-G39-negative-constraint-reversal-school-no-region-leak",
+    "node": "intent_entity_extraction",
+    "source": "3.2.0 production semantic negative constraint reversal extension",
+    "priority": "P0",
+    "prompt": "别排除江西财经大学",
+    "expected": {
+      "entityType": "school",
+      "schools": [
+        "江西财经大学"
+      ],
+      "regionValues": [],
+      "preferenceStrength": {
+        "acceptable": [
+          "江西财经大学"
+        ]
+      },
+      "entityPolaritySpans": [
+        {
+          "entity": "江西财经大学",
+          "entityType": "school",
+          "polarity": "positive",
+          "strength": "acceptable"
+        }
+      ]
+    },
+    "actual": {
+      "entityType": "school",
+      "schools": [
+        "江西财经大学"
+      ],
+      "regionValues": [],
+      "preferenceStrength": {
+        "acceptable": [
+          "江西财经大学"
+        ]
+      },
+      "entityPolaritySpans": [
+        {
+          "entity": "江西财经大学",
+          "entityType": "school",
+          "polarity": "positive",
+          "strength": "acceptable"
+        }
+      ]
+    },
+    "assert": {
+      "exact": [
+        "entityType"
+      ],
+      "contains": {
+        "schools": [
+          "江西财经大学"
+        ],
+        "preferenceStrength.acceptable": [
+          "江西财经大学"
+        ],
+        "entityPolaritySpans": [
+          {
+            "entity": "江西财经大学",
+            "entityType": "school",
+            "polarity": "positive",
+            "strength": "acceptable"
+          }
+        ]
+      },
+      "notContains": {
+        "regionValues": [
+          "江西",
+          "南昌"
+        ],
+        "entityPolaritySpans": [
+          {
+            "entityType": "region"
+          }
+        ]
+      }
+    },
+    "metricsTags": [
+      "production_semantic_negative_constraint_reversal",
+      "school_region_boundary",
+      "polarity_accuracy"
+    ]
+  },
+  {
+    "caseId": "node-intent-entity-extraction-G40-negative-constraint-reversal-region",
+    "node": "intent_entity_extraction",
+    "source": "3.2.0 production semantic negative constraint reversal extension",
+    "priority": "P0",
+    "prompt": "别避开东北",
+    "expected": {
+      "entityType": "region",
+      "regionValues": [
+        "东北"
+      ],
+      "preferenceStrength": {
+        "acceptable": [
+          "东北"
+        ]
+      },
+      "entityPolaritySpans": [
+        {
+          "entity": "东北",
+          "entityType": "region",
+          "polarity": "positive",
+          "strength": "acceptable"
+        }
+      ]
+    },
+    "actual": {
+      "entityType": "region",
+      "regionValues": [
+        "东北"
+      ],
+      "preferenceStrength": {
+        "acceptable": [
+          "东北"
+        ]
+      },
+      "entityPolaritySpans": [
+        {
+          "entity": "东北",
+          "entityType": "region",
+          "polarity": "positive",
+          "strength": "acceptable"
+        }
+      ]
+    },
+    "assert": {
+      "exact": [
+        "entityType"
+      ],
+      "contains": {
+        "regionValues": [
+          "东北"
+        ],
+        "preferenceStrength.acceptable": [
+          "东北"
+        ],
+        "entityPolaritySpans": [
+          {
+            "entity": "东北",
+            "entityType": "region",
+            "polarity": "positive",
+            "strength": "acceptable"
+          }
+        ]
+      },
+      "notContains": {
+        "preferenceStrength.exclude_hard": [
+          "东北"
+        ]
+      }
+    },
+    "metricsTags": [
+      "production_semantic_negative_constraint_reversal",
+      "region_accuracy",
+      "polarity_accuracy"
+    ]
+  },
+  {
+    "caseId": "node-intent-entity-extraction-G41-negative-constraint-reversal-career",
+    "node": "intent_entity_extraction",
+    "source": "3.2.0 production semantic negative constraint reversal extension",
+    "priority": "P0",
+    "prompt": "不要排除体制内",
+    "expected": {
+      "entityType": "career",
+      "careerValues": [
+        "体制内/考公导向"
+      ],
+      "preferenceStrength": {
+        "acceptable": [
+          "体制内/考公导向"
+        ]
+      },
+      "entityPolaritySpans": [
+        {
+          "entity": "体制内/考公导向",
+          "entityType": "career",
+          "polarity": "positive",
+          "strength": "acceptable"
+        }
+      ]
+    },
+    "actual": {
+      "entityType": "career",
+      "careerValues": [
+        "体制内/考公导向"
+      ],
+      "preferenceStrength": {
+        "acceptable": [
+          "体制内/考公导向"
+        ]
+      },
+      "entityPolaritySpans": [
+        {
+          "entity": "体制内/考公导向",
+          "entityType": "career",
+          "polarity": "positive",
+          "strength": "acceptable"
+        }
+      ]
+    },
+    "assert": {
+      "exact": [
+        "entityType"
+      ],
+      "contains": {
+        "careerValues": [
+          "体制内/考公导向"
+        ],
+        "preferenceStrength.acceptable": [
+          "体制内/考公导向"
+        ],
+        "entityPolaritySpans": [
+          {
+            "entity": "体制内/考公导向",
+            "entityType": "career",
+            "polarity": "positive",
+            "strength": "acceptable"
+          }
+        ]
+      },
+      "notContains": {
+        "majorValues": [
+          "体制内"
+        ],
+        "preferenceStrength.exclude_hard": [
+          "体制内",
+          "体制内/考公导向"
+        ]
+      }
+    },
+    "metricsTags": [
+      "production_semantic_negative_constraint_reversal",
+      "career_bucket_accuracy",
+      "polarity_accuracy"
+    ]
+  },
+  {
+    "caseId": "node-intent-entity-extraction-G42-negative-constraint-reversal-budget-schema-gap",
+    "node": "intent_entity_extraction",
+    "source": "3.2.0 production semantic negative constraint reversal extension",
+    "priority": "P1",
+    "prompt": "不要排除高收费",
+    "expected": {
+      "entityType": "none",
+      "frameworkGap": "current downstream schema supports budget specialLimits as negative constraints only; do not synthesize exclude_hard for a reversal"
+    },
+    "actual": {
+      "entityType": "none",
+      "physicalConstraints": {},
+      "preferenceStrength": {},
+      "entityPolaritySpans": []
+    },
+    "assert": {
+      "exact": [
+        "entityType"
+      ],
+      "notContains": {
+        "physicalConstraints.specialLimits": [
+          "高收费"
+        ],
+        "preferenceStrength.exclude_hard": [
+          "高收费"
+        ],
+        "entityPolaritySpans": [
+          {
+            "entity": "高收费",
+            "entityType": "budget",
+            "polarity": "negative"
+          }
+        ]
+      }
+    },
+    "metricsTags": [
+      "production_semantic_negative_constraint_reversal",
+      "budget_schema_gap",
+      "polarity_accuracy"
+    ]
+  },
+  {
+    "caseId": "node-intent-entity-extraction-G43-negative-reversal-clause-boundary",
+    "node": "intent_entity_extraction",
+    "source": "3.2.0 semantic polarity clause-boundary guard",
+    "priority": "P0",
+    "prompt": "不要排除经济学类，但临床医学还是排除",
+    "expected": {
+      "entityType": "major",
+      "majorValues": [
+        "经济学类",
+        "临床医学"
+      ],
+      "preferenceStrength": {
+        "acceptable": [
+          "经济学类"
+        ],
+        "exclude_hard": [
+          "临床医学"
+        ]
+      },
+      "entityPolaritySpans": [
+        {
+          "entity": "经济学类",
+          "entityType": "major",
+          "polarity": "positive",
+          "strength": "acceptable"
+        },
+        {
+          "entity": "临床医学",
+          "entityType": "major",
+          "polarity": "negative",
+          "strength": "exclude_hard"
+        }
+      ]
+    },
+    "actual": {
+      "entityType": "major",
+      "majorValues": [
+        "经济学类",
+        "临床医学"
+      ],
+      "preferenceStrength": {
+        "acceptable": [
+          "经济学类"
+        ],
+        "exclude_hard": [
+          "临床医学"
+        ]
+      },
+      "entityPolaritySpans": [
+        {
+          "entity": "经济学类",
+          "entityType": "major",
+          "polarity": "positive",
+          "strength": "acceptable"
+        },
+        {
+          "entity": "临床医学",
+          "entityType": "major",
+          "polarity": "negative",
+          "strength": "exclude_hard"
+        }
+      ]
+    },
+    "assert": {
+      "exact": [
+        "entityType"
+      ],
+      "contains": {
+        "majorValues": [
+          "经济学类",
+          "临床医学"
+        ],
+        "preferenceStrength.acceptable": [
+          "经济学类"
+        ],
+        "preferenceStrength.exclude_hard": [
+          "临床医学"
+        ],
+        "entityPolaritySpans": [
+          {
+            "entity": "经济学类",
+            "entityType": "major",
+            "polarity": "positive",
+            "strength": "acceptable"
+          },
+          {
+            "entity": "临床医学",
+            "entityType": "major",
+            "polarity": "negative",
+            "strength": "exclude_hard"
+          }
+        ]
+      },
+      "notContains": {
+        "preferenceStrength.acceptable": [
+          "临床医学"
+        ],
+        "preferenceStrength.exclude_hard": [
+          "经济学类"
+        ],
+        "entityPolaritySpans": [
+          {
+            "entity": "临床医学",
+            "entityType": "major",
+            "polarity": "positive"
+          },
+          {
+            "entity": "经济学类",
+            "entityType": "major",
+            "polarity": "negative"
+          }
+        ]
+      }
+    },
+    "metricsTags": [
+      "production_semantic_negative_constraint_reversal",
+      "polarity_clause_boundary",
+      "polarity_accuracy"
+    ]
+  },
+  {
+    "caseId": "node-turn-side-effect-G44-readonly-region-school-query",
+    "node": "turn_side_effect",
+    "source": "3.2.0 production asset readonly candidate query",
+    "priority": "P0",
+    "prompt": "江西的大学有哪些适合我",
+    "input": {
+      "planningStateProfile": {
+        "formalPlanPresent": true,
+        "pendingExists": false
+      }
+    },
+    "expected": {
+      "taskLayer": "plan",
+      "sideEffect": "readonly",
+      "scopeAnchor": "candidate_pool",
+      "scenario": "plan_query"
+    },
+    "actual": {
+      "taskLayer": "plan",
+      "sideEffect": "readonly",
+      "scopeAnchor": "candidate_pool",
+      "scenario": "plan_query"
+    },
+    "assert": {
+      "exact": [
+        "taskLayer",
+        "sideEffect",
+        "scopeAnchor",
+        "scenario"
+      ]
+    },
+    "metricsTags": [
+      "production_region_school_query",
+      "readonly_candidate_query",
+      "sideEffect_accuracy"
+    ]
+  },
+  {
+    "caseId": "node-intent-side-effect-G45-readonly-region-school-query",
+    "node": "intent_side_effect",
+    "source": "3.2.0 production asset readonly candidate query",
+    "priority": "P0",
+    "prompt": "江西的大学有哪些适合我",
+    "input": {
+      "cityIntents": {
+        "province": [
+          "江西"
+        ]
+      },
+      "intentMode": "preference",
+      "planningStateProfile": {
+        "formalPlanPresent": true,
+        "pendingExists": false
+      }
+    },
+    "expected": {
+      "decision": "analysis_only"
+    },
+    "actual": {
+      "decision": "analysis_only"
+    },
+    "assert": {
+      "exact": [
+        "decision"
+      ],
+      "notContains": {
+        "decision": [
+          "intent_preview"
+        ]
+      }
+    },
+    "metricsTags": [
+      "production_region_school_query",
+      "readonly_candidate_query",
+      "intent_side_effect_accuracy"
+    ]
+  },
+  {
+    "caseId": "node-turn-side-effect-G46-school-major-add-current-plan",
+    "node": "turn_side_effect",
+    "source": "3.2.0 full regression add_units misroute",
+    "priority": "P0",
+    "prompt": "把湖北工程学院的计算机科学与技术加进来",
+    "input": {
+      "planningStateProfile": {
+        "formalPlanPresent": true,
+        "candidatePoolPresent": true,
+        "pendingExists": false
+      }
+    },
+    "expected": {
+      "taskLayer": "plan",
+      "sideEffect": "plan_preview",
+      "scopeAnchor": "current_plan",
+      "scenario": "atomic_mutation"
+    },
+    "actual": {
+      "taskLayer": "plan",
+      "sideEffect": "plan_preview",
+      "scopeAnchor": "current_plan",
+      "scenario": "atomic_mutation"
+    },
+    "assert": {
+      "exact": [
+        "taskLayer",
+        "sideEffect",
+        "scopeAnchor",
+        "scenario"
+      ],
+      "notContains": {
+        "sideEffect": [
+          "intent_pending"
+        ],
+        "scopeAnchor": [
+          "future_reference"
+        ]
+      }
+    },
+    "metricsTags": [
+      "add_units_route",
+      "current_plan_mutation",
+      "future_intent_false_positive_rate"
+    ]
+  },
+  {
+    "caseId": "node-plan-atomic-action-G47-school-major-add-current-plan",
+    "node": "plan_atomic_action_dsl",
+    "source": "3.2.0 full regression add_units misroute",
+    "priority": "P0",
+    "prompt": "把湖北工程学院的计算机科学与技术加进来",
+    "input": {
+      "planningStateProfile": {
+        "formalPlanPresent": true,
+        "candidatePoolPresent": true,
+        "pendingExists": false
+      }
+    },
+    "expected": {
+      "actionFamily": "add_units",
+      "schoolKeyword": "湖北工程学院",
+      "majorKeyword": "计算机科学与技术"
+    },
+    "actual": {
+      "actionFamily": "add_units",
+      "schoolKeyword": "湖北工程学院",
+      "majorKeyword": "计算机科学与技术"
+    },
+    "assert": {
+      "exact": [
+        "actionFamily"
+      ],
+      "contains": {
+        "schoolKeyword": [
+          "湖北工程学院"
+        ],
+        "majorKeyword": [
+          "计算机科学与技术"
+        ]
+      },
+      "notContains": {
+        "actionFamily": [
+          "none",
+          "intent_update"
+        ]
+      }
+    },
+    "metricsTags": [
+      "add_units_dsl",
+      "school_major_ref",
+      "current_plan_mutation"
+    ]
+  },
+  {
+    "caseId": "node-plan-atomic-action-G48-school-major-alias-add-current-plan",
+    "node": "plan_atomic_action_dsl",
+    "source": "3.2.0 full regression add_units alias misroute",
+    "priority": "P0",
+    "prompt": "把广西师大统计加进来",
+    "input": {
+      "planningStateProfile": {
+        "formalPlanPresent": true,
+        "candidatePoolPresent": true,
+        "pendingExists": false
+      }
+    },
+    "expected": {
+      "actionFamily": "add_units",
+      "schoolKeyword": "广西师范大学",
+      "majorKeyword": "统计"
+    },
+    "actual": {
+      "actionFamily": "add_units",
+      "schoolKeyword": "广西师范大学",
+      "majorKeyword": "统计"
+    },
+    "assert": {
+      "exact": [
+        "actionFamily"
+      ],
+      "contains": {
+        "schoolKeyword": [
+          "广西师范大学"
+        ],
+        "majorKeyword": [
+          "统计"
+        ]
+      }
+    },
+    "metricsTags": [
+      "add_units_dsl",
+      "school_major_alias_ref",
+      "current_plan_mutation"
+    ]
+  },
+  {
+    "caseId": "node-plan-atomic-action-G49-school-major-add-list-keywords",
+    "node": "plan_atomic_action_dsl",
+    "source": "3.2.0 DSL schema list keyword regression",
+    "priority": "P0",
+    "prompt": "把河南农业大学的建筑类加进来",
+    "input": {
+      "planningStateProfile": {
+        "formalPlanPresent": true,
+        "candidatePoolPresent": true,
+        "pendingExists": false
+      }
+    },
+    "expected": {
+      "actionFamily": "add_units",
+      "schoolKeyword": "河南农业大学",
+      "majorKeyword": "建筑类"
+    },
+    "actual": {
+      "actionFamily": "add_units",
+      "schoolKeyword": "河南农业大学",
+      "majorKeyword": "建筑类"
+    },
+    "assert": {
+      "exact": [
+        "actionFamily"
+      ],
+      "contains": {
+        "schoolKeyword": [
+          "河南农业大学"
+        ],
+        "majorKeyword": [
+          "建筑类"
+        ]
+      }
+    },
+    "metricsTags": [
+      "add_units_dsl",
+      "keyword_schema_normalization",
+      "current_plan_mutation"
+    ]
+  },
+  {
+    "caseId": "node-turn-side-effect-G50-tier-ratio-future-preference",
+    "node": "turn_side_effect",
+    "source": "3.2.0 production raw R31",
+    "priority": "P1",
+    "prompt": "冲50%，稳30%，保20%",
+    "input": {
+      "planningStateProfile": {
+        "formalPlanPresent": false,
+        "pendingExists": true
+      }
+    },
+    "expected": {
+      "taskLayer": "intent",
+      "sideEffect": "intent_pending",
+      "scopeAnchor": "future_reference",
+      "scenario": "intent_update"
+    },
+    "actual": {
+      "taskLayer": "intent",
+      "sideEffect": "intent_pending",
+      "scopeAnchor": "future_reference",
+      "scenario": "intent_update"
+    },
+    "assert": {
+      "exact": [
+        "taskLayer",
+        "sideEffect",
+        "scopeAnchor",
+        "scenario"
+      ],
+      "notContains": {
+        "sideEffect": [
+          "plan_preview"
+        ],
+        "scopeAnchor": [
+          "current_plan"
+        ]
+      }
+    },
+    "metricsTags": [
+      "tier_ratio_preference",
+      "sideEffect_accuracy",
+      "production_raw_gap"
+    ]
+  },
+  {
+    "caseId": "node-intent-entity-extraction-G51-tier-ratio-schema-gap",
+    "node": "intent_entity_extraction",
+    "source": "3.2.0 production raw R31",
+    "priority": "P1",
+    "prompt": "冲50%，稳30%，保20%",
+    "expected": {
+      "entityType": "strategy",
+      "tierRatioPreference": {
+        "冲": 50,
+        "稳": 30,
+        "保": 20
+      },
+      "riskPreference": [
+        "冲稳保比例偏好"
+      ],
+      "majorValues": [],
+      "schools": [],
+      "regionValues": []
+    },
+    "actual": {
+      "entityType": "strategy",
+      "tierRatioPreference": {
+        "冲": 50,
+        "稳": 30,
+        "保": 20
+      },
+      "riskPreference": [
+        "冲稳保比例偏好"
+      ],
+      "majorValues": [],
+      "schools": [],
+      "regionValues": []
+    },
+    "assert": {
+      "exact": [
+        "entityType"
+      ],
+      "contains": {
+        "riskPreference": [
+          "冲稳保比例偏好"
+        ]
+      },
+      "notContains": {
+        "majorValues": [
+          "冲",
+          "稳",
+          "保",
+          "冲50",
+          "稳30",
+          "保20"
+        ],
+        "schools": [
+          "冲",
+          "稳",
+          "保"
+        ],
+        "regionValues": [
+          "冲",
+          "稳",
+          "保"
+        ]
+      }
+    },
+    "metricsTags": [
+      "tier_ratio_preference",
+      "strategy_schema_gap",
+      "entity_type_accuracy"
+    ]
+  },
+  {
+    "caseId": "node-intent-entity-extraction-G52-strategy-words-not-major",
+    "node": "intent_entity_extraction",
+    "source": "3.2.0 production raw R32",
+    "priority": "P1",
+    "prompt": "不挑专业也不挑地域，只为了保本，更希望公办学校",
+    "expected": {
+      "entityType": "mixed_intent",
+      "schools": [
+        "公办"
+      ],
+      "riskPreference": [
+        "保本/安全优先"
+      ],
+      "flexibilityPreference": [
+        "不限定专业",
+        "不限定地域"
+      ],
+      "majorValues": [],
+      "regionValues": [],
+      "preferenceStrength": {
+        "preferred": [
+          "公办"
+        ]
+      },
+      "entityPolaritySpans": [
+        {
+          "entity": "公办",
+          "entityType": "school",
+          "polarity": "positive",
+          "strength": "preferred"
+        },
+        {
+          "entity": "保本/安全优先",
+          "entityType": "strategy",
+          "polarity": "positive",
+          "strength": "preferred"
+        }
+      ]
+    },
+    "actual": {
+      "entityType": "mixed_intent",
+      "schools": [
+        "公办"
+      ],
+      "riskPreference": [
+        "保本/安全优先"
+      ],
+      "flexibilityPreference": [
+        "不限定专业",
+        "不限定地域"
+      ],
+      "majorValues": [],
+      "regionValues": [],
+      "preferenceStrength": {
+        "preferred": [
+          "公办"
+        ]
+      },
+      "entityPolaritySpans": [
+        {
+          "entity": "公办",
+          "entityType": "school",
+          "polarity": "positive",
+          "strength": "preferred"
+        },
+        {
+          "entity": "保本/安全优先",
+          "entityType": "strategy",
+          "polarity": "positive",
+          "strength": "preferred"
+        }
+      ]
+    },
+    "assert": {
+      "contains": {
+        "schools": [
+          "公办"
+        ],
+        "riskPreference": [
+          "保本/安全优先"
+        ],
+        "flexibilityPreference": [
+          "不限定专业",
+          "不限定地域"
+        ],
+        "preferenceStrength.preferred": [
+          "公办"
+        ]
+      },
+      "notContains": {
+        "majorValues": [
+          "保本",
+          "不挑专业",
+          "不挑地域",
+          "公办"
+        ],
+        "regionValues": [
+          "不挑地域",
+          "公办"
+        ]
+      }
+    },
+    "metricsTags": [
+      "strategy_schema_gap",
+      "school_nature_accuracy",
+      "entity_type_accuracy"
+    ]
+  },
+  {
+    "caseId": "node-intent-entity-extraction-G53-quality-strategy-not-literal-major",
+    "node": "intent_entity_extraction",
+    "source": "3.2.0 production raw R32",
+    "priority": "P1",
+    "prompt": "核心主流：各类优质工科专业（冲刺段重点筛选985院校干净专业组工科）；特色重点：飞行器设计、智能无人系统相关专业，优先纳入填报序列",
+    "expected": {
+      "entityType": "mixed_intent",
+      "majorValues": [
+        "工学类",
+        "飞行器设计与工程",
+        "智能无人系统技术"
+      ],
+      "schools": [
+        "985院校"
+      ],
+      "schoolQualityPreference": [
+        "优质",
+        "干净专业组"
+      ],
+      "preferenceStrength": {
+        "preferred": [
+          "工学类",
+          "飞行器设计与工程",
+          "智能无人系统技术",
+          "985院校"
+        ]
+      }
+    },
+    "actual": {
+      "entityType": "mixed_intent",
+      "majorValues": [
+        "工学类",
+        "飞行器设计与工程",
+        "智能无人系统技术"
+      ],
+      "schools": [
+        "985院校"
+      ],
+      "schoolQualityPreference": [
+        "优质",
+        "干净专业组"
+      ],
+      "preferenceStrength": {
+        "preferred": [
+          "工学类",
+          "飞行器设计与工程",
+          "智能无人系统技术",
+          "985院校"
+        ]
+      }
+    },
+    "assert": {
+      "contains": {
+        "majorValues": [
+          "工学类",
+          "飞行器设计与工程",
+          "智能无人系统技术"
+        ],
+        "schools": [
+          "985院校"
+        ],
+        "schoolQualityPreference": [
+          "优质",
+          "干净专业组"
+        ]
+      },
+      "notContains": {
+        "majorValues": [
+          "优质工科专业",
+          "干净专业组工科",
+          "冲刺段重点筛选985院校干净专业组工科"
+        ]
+      }
+    },
+    "metricsTags": [
+      "strategy_schema_gap",
+      "major_entity_normalization",
+      "school_quality_preference"
+    ]
+  },
+  {
+    "caseId": "node-turn-side-effect-G54-no-plan-plan-add-boundary",
+    "node": "turn_side_effect",
+    "source": "3.2.0 production raw R33",
+    "priority": "P1",
+    "prompt": "方案要增加动物医学专业",
+    "input": {
+      "planningStateProfile": {
+        "formalPlanPresent": false,
+        "pendingExists": false
+      }
+    },
+    "expected": {
+      "taskLayer": "plan",
+      "sideEffect": "needs_plan_first",
+      "scopeAnchor": "current_plan",
+      "scenario": "needs_plan_first"
+    },
+    "actual": {
+      "taskLayer": "plan",
+      "sideEffect": "needs_plan_first",
+      "scopeAnchor": "current_plan",
+      "scenario": "needs_plan_first"
+    },
+    "assert": {
+      "exact": [
+        "taskLayer",
+        "sideEffect",
+        "scopeAnchor",
+        "scenario"
+      ],
+      "notContains": {
+        "sideEffect": [
+          "plan_preview",
+          "intent_pending"
+        ]
+      }
+    },
+    "metricsTags": [
+      "needs_plan_first_accuracy",
+      "no_plan_plan_mutation_boundary"
+    ]
+  },
+  {
+    "caseId": "node-intent-entity-extraction-G55-no-plan-preserve-future-intent",
+    "node": "intent_entity_extraction",
+    "source": "3.2.0 production raw R33",
+    "priority": "P1",
+    "prompt": "希望通过生物科学和化学这样的专业保住院校层次，在方案中增加湖南的湘潭大学、长沙理工、湖南科技大学、吉首大学、湖南农业大学、延边大学的工科专业组。去掉",
+    "expected": {
+      "entityType": "mixed_intent",
+      "majorValues": [
+        "生物科学",
+        "化学",
+        "工学类"
+      ],
+      "schools": [
+        "湘潭大学",
+        "长沙理工大学",
+        "湖南科技大学",
+        "吉首大学",
+        "湖南农业大学",
+        "延边大学"
+      ],
+      "riskPreference": [
+        "保住院校层次"
+      ],
+      "regionValues": [
+        "湖南"
+      ]
+    },
+    "actual": {
+      "entityType": "mixed_intent",
+      "majorValues": [
+        "生物科学",
+        "化学",
+        "工学类"
+      ],
+      "schools": [
+        "湘潭大学",
+        "长沙理工大学",
+        "湖南科技大学",
+        "吉首大学",
+        "湖南农业大学",
+        "延边大学"
+      ],
+      "riskPreference": [
+        "保住院校层次"
+      ],
+      "regionValues": [
+        "湖南"
+      ]
+    },
+    "assert": {
+      "contains": {
+        "majorValues": [
+          "生物科学",
+          "化学",
+          "工学类"
+        ],
+        "schools": [
+          "湘潭大学",
+          "长沙理工大学",
+          "湖南科技大学",
+          "吉首大学",
+          "湖南农业大学",
+          "延边大学"
+        ],
+        "riskPreference": [
+          "保住院校层次"
+        ],
+        "regionValues": [
+          "湖南"
+        ]
+      }
+    },
+    "metricsTags": [
+      "no_plan_dual_track",
+      "future_intent_preservation",
+      "multi_entity_extraction"
     ]
   }
 ]

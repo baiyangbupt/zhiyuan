@@ -43,6 +43,10 @@
     "flow": ["review", "analyze", "suggest_remove"],
     "coverage": ["user_delegates_decision", "agent_recommends_removal", "fuzzy_optimization_goal"],
     "assertPlanStyle": true,
+    "fixtureContract": {
+      "type": "formal_plan_present",
+      "requiredState": ["orderedPlan", "formalPlan", "candidatePool", "reviewState"]
+    },
     "prompts": [
       {
         "prompt": "方案太多了96个 你觉得哪些应该删掉",

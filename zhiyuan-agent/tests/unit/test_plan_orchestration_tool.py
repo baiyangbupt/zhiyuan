@@ -1117,7 +1117,7 @@ def test_plan_next_action_passes_structured_replace_source_major_names():
     assert data["atomic_actions"][0]["filters"]["major_keyword"] == "网络与新媒体"
 
 
-def test_plan_next_action_keeps_broad_replacement_first_issue_as_review_plan():
+def test_plan_next_action_preserves_broad_structured_replacement_first_issue_request():
     with patch(
         "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
         new=AsyncMock(
@@ -1150,11 +1150,11 @@ def test_plan_next_action_keeps_broad_replacement_first_issue_as_review_plan():
         )
 
     data = json.loads(result)
-    assert data["action_family"] == "review_plan"
-    assert data["stage"] == "review"
+    assert data["action_family"] == "replace_units"
+    assert data["stage"] == "analyze"
     assert data["requires_confirmation"] is False
-    assert data["missing_inputs"] == []
-    assert data["atomic_actions"] == []
+    assert data["missing_inputs"] == ["replacement_scope"]
+    assert data["atomic_actions"][0]["review_issue_target"]["code"] == "high_tuition"
 
 
 def test_plan_next_action_respects_structured_high_tuition_remove_request():
@@ -1196,7 +1196,7 @@ def test_plan_next_action_respects_structured_high_tuition_remove_request():
     assert data["atomic_actions"][0]["review_issue_target"]["code"] == "high_tuition"
 
 
-def test_plan_next_action_downgrades_unscoped_high_tuition_replace_to_review():
+def test_plan_next_action_preserves_structured_high_tuition_replace_request():
     with patch(
         "app.tools.plan_orchestration_tool._collect_plan_context_inputs_model",
         new=AsyncMock(
@@ -1229,10 +1229,11 @@ def test_plan_next_action_downgrades_unscoped_high_tuition_replace_to_review():
         )
 
     data = json.loads(result)
-    assert data["action_family"] == "review_plan"
-    assert data["stage"] == "review"
+    assert data["action_family"] == "replace_units"
+    assert data["stage"] == "analyze"
     assert data["requires_confirmation"] is False
-    assert data["atomic_actions"] == []
+    assert data["missing_inputs"] == ["replacement_scope"]
+    assert data["atomic_actions"][0]["review_issue_target"]["code"] == "high_tuition"
 
 
 def test_plan_next_action_does_not_recover_missing_high_tuition_issue_from_goal_text():

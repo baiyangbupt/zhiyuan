@@ -872,9 +872,7 @@ async def _plan_next_action_model(
         default_action_family = str(matched_review_issue.get("default_action_family") or "").strip()
         replacement_requested = _has_selection_scope(base_filters)
         if scope_kind == "item_replacement":
-            if action_family == "replace_units" and not replacement_requested and default_action_family:
-                action_family = default_action_family  # type: ignore[assignment]
-            elif action_family not in {"review_plan", "remove_units", "replace_units"} and default_action_family:
+            if action_family not in {"review_plan", "remove_units", "replace_units"} and default_action_family:
                 action_family = default_action_family  # type: ignore[assignment]
         elif scope_kind == "item_removal":
             if action_family == "replace_units" and not replacement_requested:

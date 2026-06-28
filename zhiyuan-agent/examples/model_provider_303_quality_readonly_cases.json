@@ -40,9 +40,14 @@
     "sessionId": "17",
     "prompts": [
       {
-        "prompt": "把河南农业大学的建筑类加进来",
-        "assertContains": ["确认", "河南农业大学", "建筑类"],
+        "prompt": "把华中农业大学的建筑类加进来",
+        "assertContains": ["确认", "华中农业大学", "建筑类"],
         "assertContainsAny": ["加入", "加入当前方案", "候选"],
+        "expectedRoutingPath": "direct_atomic_plan_action",
+        "assertActionFamiliesContain": ["add_units"],
+        "assertResultKindsContain": ["preview_only"],
+        "assertFollowupType": "pendingConfirmationCard",
+        "assertFollowupCount": 1,
         "assertNotContains": ["已直接加入", "payload", "stage", "action_family", "volunteerId", "草稿"]
       }
     ]

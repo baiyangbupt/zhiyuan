@@ -90,6 +90,50 @@ def test_plan_atomic_action_dsl_decision_preserves_tuition_preference_scope():
     assert normalized.limit == 5
 
 
+def test_plan_atomic_action_dsl_decision_accepts_false_optional_text_fields():
+    raw = json.dumps(
+        {
+            "actionFamily": "sort_ordered_plan",
+            "confidence": 0.96,
+            "reason": "用户要求按院校层次重排当前方案",
+            "unsupportedAction": False,
+            "reviewIssueCode": False,
+            "sortField": "schoolRank",
+        },
+        ensure_ascii=False,
+    )
+
+    decision = parse_extraction_json(raw, PlanAtomicActionDslDecision)
+    normalized = _normalize_plan_atomic_action_dsl_decision(decision)
+
+    assert normalized.actionFamily == "sort_ordered_plan"
+    assert normalized.unsupportedAction is None
+    assert normalized.reviewIssueCode is None
+    assert normalized.sortField == "schoolRank"
+
+
+def test_plan_atomic_action_dsl_decision_accepts_list_keyword_fields():
+    raw = json.dumps(
+        {
+            "actionFamily": "add_units",
+            "confidence": 0.96,
+            "reason": "用户要求把点名学校和专业加入当前方案",
+            "schoolKeyword": ["河南农业大学"],
+            "majorKeyword": ["建筑类"],
+            "provinceKeyword": [],
+        },
+        ensure_ascii=False,
+    )
+
+    decision = parse_extraction_json(raw, PlanAtomicActionDslDecision)
+    normalized = _normalize_plan_atomic_action_dsl_decision(decision)
+
+    assert normalized.actionFamily == "add_units"
+    assert normalized.schoolKeyword == "河南农业大学"
+    assert normalized.majorKeyword == "建筑类"
+    assert normalized.provinceKeyword is None
+
+
 def test_plan_atomic_action_dsl_instructions_expose_structured_tuition_preference_fields():
     instructions = inspect.getsource(_get_plan_atomic_action_dsl_agent)
 

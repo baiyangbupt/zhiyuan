@@ -38,6 +38,10 @@
     "flow": ["plan", "confirm"],
     "coverage": ["release_3_0_2", "effect_quality", "performance_smoke", "major_model", "move_operation", "preview_confirm_apply"],
     "assertPlanStyle": true,
+    "fixtureContract": {
+      "type": "formal_plan_present",
+      "requiredState": ["orderedPlan", "formalPlan"]
+    },
     "prompts": [
       {
         "prompt": "把第2个志愿移到第4位",

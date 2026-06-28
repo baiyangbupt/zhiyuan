@@ -115,6 +115,31 @@ def _collect_major_summary_values(major_intents: dict[str, Any], keys: tuple[str
     return result
 
 
+def _first_positive_int(values: Any) -> int:
+    raw_values = values if isinstance(values, list) else [values] if values is not None else []
+    for value in raw_values:
+        try:
+            amount = int(value)
+        except (TypeError, ValueError):
+            continue
+        if amount > 0:
+            return amount
+    return 0
+
+
+def _format_tuition_budget_summary(tuition_budget: dict[str, Any]) -> str:
+    min_tuition = _first_positive_int(tuition_budget.get("min_tuition_per_year") or tuition_budget.get("minTuitionPerYear"))
+    max_tuition = _first_positive_int(tuition_budget.get("max_tuition_per_year") or tuition_budget.get("maxTuitionPerYear"))
+    if min_tuition > 0 and max_tuition > 0 and min_tuition > max_tuition:
+        return ""
+    parts: list[str] = []
+    if min_tuition > 0:
+        parts.append(f"每年不低于 {min_tuition} 元")
+    if max_tuition > 0:
+        parts.append(f"每年不超过 {max_tuition} 元")
+    return "，".join(parts)
+
+
 def _negative_label(label: str, *, intent_mode: str) -> str:
     if intent_mode == "constraint":
         return label
@@ -199,6 +224,11 @@ def _format_confirmed_intent_summary(
             summary.append(f"{label}：{'、'.join(preferred_careers)}")
         if negative_careers:
             summary.append(f"{_negative_label('排除发展方向', intent_mode=intent_mode)}：{'、'.join(negative_careers)}")
+    tuition_budget = merged.get("tuition_budget") or {}
+    if isinstance(tuition_budget, dict):
+        budget_summary = _format_tuition_budget_summary(tuition_budget)
+        if budget_summary:
+            summary.append(f"学费预算：{budget_summary}")
     return summary
 
 
@@ -585,6 +615,11 @@ def _render_intent_preview_item(
             return f"偏好发展方向：{career}"
         if career := _format_values(to_career_labels(career_intents.get("negative"))):
             return f"{_negative_label('排除发展方向', intent_mode=intent_mode)}：{career}"
+        tuition_budget = value.get("tuition_budget") or {}
+        if isinstance(tuition_budget, dict):
+            budget_summary = _format_tuition_budget_summary(tuition_budget)
+            if budget_summary:
+                return f"学费预算：{budget_summary}"
     return _sanitize_user_facing_intent_text(str(item.get("content") or "").strip())
 
 

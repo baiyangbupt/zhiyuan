@@ -290,7 +290,7 @@ async def test_run_stops_repeated_query_tool_loop_generically():
 
     assert "当前方案里命中了 1 条相关机会" in reply
     assert "不会改动方案" in reply
-    assert "没有稳定收敛" not in reply
+    assert "没有得到可直接引用" not in reply
     assert deps.agent_observability["toolLoopGuarded"] is True
     assert deps.agent_observability["guardedToolName"] == "query_volunteer_plan"
     assert deps.agent_observability["guardUsedRecentToolReturn"] is True
@@ -328,7 +328,7 @@ async def test_run_repeated_query_tool_loop_falls_back_when_recent_return_failed
 
     reply, _, _, _ = await agent.run_with_message_deltas("候选里还有没有更稳一点的会计审计", deps=deps)
 
-    assert "没有稳定收敛" in reply
+    assert "没有得到可直接引用的稳定结果" in reply
     assert "后端接口返回异常" not in reply
     assert deps.agent_observability["toolLoopGuarded"] is True
     assert "guardUsedRecentToolReturn" not in deps.agent_observability

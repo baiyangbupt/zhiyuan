@@ -40,6 +40,7 @@
 | [release-3.1.1-dialogue-known-issues.md](./release-3.1.1-dialogue-known-issues.md) | 3.1.1 当前对话待处理问题 |
 | [release-3.1.1-dialogue-benchmark.md](./release-3.1.1-dialogue-benchmark.md) | 3.1.1 对话 benchmark 和 assets 索引 |
 | [release-3.2.0-current-framework-review.md](./release-3.2.0-current-framework-review.md) | 3.2.0 当前对话框架复盘：初始设计对齐、模块职责、场景覆盖、异常路径和剩余 service 过渡区 |
+| [release-3.2.0-dialogue-residual-issues.md](./release-3.2.0-dialogue-residual-issues.md) | 3.2.0 对话潜在遗留问题台账：生产回捞验证、框架缺口、回复质量风险和后续回归关闭标准 |
 | [release-3.2.0-execution-roadmap.md](./release-3.2.0-execution-roadmap.md) | 3.2.0 执行总路线：profile、fixture、compiler、runtime 硬切、旧路径删除和 explorer 闭环 |
 | [release-3.2.0-profile-case-schema.md](./release-3.2.0-profile-case-schema.md) | 3.2.0 profile/fixture/compiler golden 共用 case 契约 |
 | [release-3.2.0-model-node-benchmark.md](./release-3.2.0-model-node-benchmark.md) | 3.2.0 模型依赖关键节点 benchmark，区别于 WebSocket 端到端 runner |

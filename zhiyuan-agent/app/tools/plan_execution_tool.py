@@ -1466,11 +1466,66 @@ def _canonicalize_plan_major_scopes(
 def _derive_candidate_major_keywords(
     major_keyword: str | None,
     major_tags: list[str] | None,
+    batch: str | None = "01",
 ) -> list[str]:
     explicit_keywords = _normalize_keywords(major_keyword)
     if explicit_keywords:
-        return explicit_keywords
-    return [str(item or "").strip() for item in (major_tags or []) if str(item or "").strip()]
+        return _expand_candidate_major_query_keywords(explicit_keywords, batch)
+    return _expand_candidate_major_query_keywords(
+        [str(item or "").strip() for item in (major_tags or []) if str(item or "").strip()],
+        batch,
+    )
+
+
+def _children_for_major_scope(level: str, name: str, batch: str | None = "01") -> list[str]:
+    if not name:
+        return []
+    mappings = major_parent_mappings_for_batch(_major_scope_batch(batch))
+    level3_to_level2 = mappings.get("level3_to_level2", {})
+    level2_to_level1 = mappings.get("level2_to_level1", {})
+    if level == "level2":
+        return [major for major, parent in level3_to_level2.items() if parent == name]
+    if level == "level1":
+        level2_children = [level2 for level2, parent in level2_to_level1.items() if parent == name]
+        children: list[str] = []
+        for level2 in level2_children:
+            children.extend(major for major, parent in level3_to_level2.items() if parent == level2)
+        return children
+    return []
+
+
+def _candidate_major_query_terms_for_keyword(keyword: str, batch: str | None = "01") -> list[str]:
+    text = str(keyword or "").strip()
+    if not text:
+        return []
+    try:
+        resolved = resolve_major_entity(text, _major_scope_batch(batch))
+    except Exception:
+        return [text]
+
+    candidates = [
+        (str(candidate.level or ""), str(candidate.canonical_name or "").strip())
+        for candidate in resolved.candidates
+        if str(candidate.level or "") in {"level1", "level2", "level3"} and str(candidate.canonical_name or "").strip()
+    ]
+    unique_candidates = list(dict.fromkeys(candidates))
+    if len(unique_candidates) != 1:
+        return [text]
+
+    level, name = unique_candidates[0]
+    if level == "level3":
+        return [name]
+    children = _children_for_major_scope(level, name, batch)
+    return list(dict.fromkeys([name, *children])) or [name]
+
+
+def _expand_candidate_major_query_keywords(keywords: list[str], batch: str | None = "01") -> list[str]:
+    expanded: list[str] = []
+    for keyword in keywords:
+        for term in _candidate_major_query_terms_for_keyword(keyword, batch):
+            if term and term not in expanded:
+                expanded.append(term)
+    return expanded
 
 
 def _compact_ref_text(value: Any) -> str:
@@ -2971,6 +3026,41 @@ def _resolve_review_issue_scope_ids(
     ]
 
 
+def _ordered_item_matches_review_issue_fallback(item: dict[str, Any], issue_code: str) -> bool:
+    """Fallback only for structured review issue targets with missing affected ids."""
+    normalized_code = str(issue_code or "").strip()
+    if normalized_code == "cooperative_program":
+        return _program_type_matches_item(item, ["中外合作", "中外合作办学", "合作办学", "国际项目"])
+    if normalized_code == "high_tuition":
+        tuition = _ordered_item_tuition_per_year(item)
+        return tuition is not None and tuition > 20000
+    return False
+
+
+def _resolve_review_issue_scope_ids_from_ordered_items(
+    issue: dict[str, Any] | None,
+    ordered_items: list[dict[str, Any]],
+    review_issue_target: Any | None,
+) -> list[str]:
+    if not issue or not review_issue_target:
+        return []
+    if not _is_item_review_issue(issue):
+        return []
+    issue_code = str(getattr(review_issue_target, "code", None) or issue.get("code") or "").strip()
+    if not issue_code:
+        return []
+    if str(getattr(review_issue_target, "scope_mode", "") or "full_issue").strip() != "full_issue":
+        return []
+    resolved: list[str] = []
+    for item in ordered_items:
+        volunteer_id = str(item.get("volunteerId") or "").strip()
+        if not volunteer_id or volunteer_id in resolved:
+            continue
+        if _ordered_item_matches_review_issue_fallback(item, issue_code):
+            resolved.append(volunteer_id)
+    return resolved
+
+
 async def _resolve_review_issue_action_scope(
     ctx: RunContext[RequestContext],
     plan_model: PlanActionPlan,
@@ -3006,6 +3096,12 @@ async def _resolve_review_issue_action_scope(
         else:
             return resolved_ids, ordered_items, review_issue_target, None
     effective_ids = _resolve_review_issue_scope_ids(issue, ordered_items, resolved_ids, review_issue_target)
+    if not effective_ids:
+        effective_ids = _resolve_review_issue_scope_ids_from_ordered_items(
+            issue,
+            ordered_items,
+            review_issue_target,
+        )
     return effective_ids or resolved_ids, ordered_items, review_issue_target, issue
 
 
@@ -3055,6 +3151,29 @@ async def _build_broad_replace_review_issue_preview(
 
     unit_count = _count_ordered_units_for_ids(ordered_items, effective_ids)
     issue_label = str(review_issue.get("label") or review_issue.get("code") or "这类问题").strip()
+    if not effective_ids:
+        return PlanExecutionResult(
+            applied=False,
+            action_family=plan_model.action_family,
+            stage="analyze",
+            result_kind="no_change",
+            context_summary=plan_model.context_summary,
+            summary=f"当前方案里没有定位到需要按{issue_label}处理的志愿，因此这次不生成替换预览，也不会改动方案。",
+            reply_focus=["no_matching_review_issue_items"],
+            reply_strategy="direct_reply",
+            next_step_hints=[
+                "明确说明当前方案没有命中该审查问题范围；不要提示用户确认替换，也不要声称已生成预览。",
+            ],
+            facts=_facts_with_planning_version(
+                {
+                    "review_issue_code": getattr(review_issue_target, "code", None),
+                    "review_issue_label": issue_label,
+                    "affected_unit_count": 0,
+                    "affected_volunteer_count": 0,
+                },
+                ctx,
+            ),
+        )
     if _is_replacement_first_review_issue(review_issue):
         summary = _review_issue_replacement_scope_guidance(issue_label, unit_count, len(effective_ids))
         return PlanExecutionResult(
@@ -3181,6 +3300,122 @@ def _candidate_selection_capacity(query_result: dict[str, Any]) -> int:
     if query_result.get("dedupe_by_unit") and total_units > 0:
         return total_units
     return total_units or total_entries
+
+
+def _add_units_filter_limit(filters: dict[str, Any]) -> int:
+    try:
+        return max(1, min(int(filters.get("limit") or 3), 100))
+    except (TypeError, ValueError):
+        return 3
+
+
+def _add_units_filter_summary(filters: dict[str, Any]) -> str:
+    parts: list[str] = []
+    tier = str(filters.get("tier") or "").strip()
+    province = str(filters.get("province_keyword") or "").strip()
+    school = str(filters.get("school_keyword") or "").strip()
+    major = str(filters.get("major_keyword") or "").strip()
+    school_tags = _parse_filter_list(filters.get("school_tags"))
+    major_tags = _parse_filter_list(filters.get("major_tags"))
+    if tier:
+        parts.append(f"{tier}档")
+    if province:
+        parts.append(province)
+    if school:
+        parts.append(school)
+    if major:
+        parts.append(major)
+    if school_tags:
+        parts.append("、".join(school_tags[:3]))
+    if major_tags:
+        parts.append("、".join(major_tags[:3]))
+    return "、".join(part for part in parts if part) or "当前条件"
+
+
+async def _build_add_units_filter_preview(
+    ctx: RunContext[RequestContext],
+    plan_model: PlanActionPlan,
+    filters: dict[str, Any],
+) -> PlanExecutionResult:
+    limit = _add_units_filter_limit(filters)
+    query_result = await _query_candidate_pool_selection(
+        ctx,
+        tier=filters.get("tier") or None,
+        province_keyword=filters.get("province_keyword") or None,
+        school_keyword=filters.get("school_keyword") or None,
+        major_keyword=filters.get("major_keyword") or None,
+        school_tags=_parse_filter_list(filters.get("school_tags")),
+        major_tags=_parse_filter_list(filters.get("major_tags")),
+        limit=limit,
+        exclude_current_units=True,
+    )
+    scope_text = _add_units_filter_summary(filters)
+    if query_result.get("error"):
+        return PlanExecutionResult(
+            applied=False,
+            action_family="add_units",
+            stage=plan_model.stage,
+            result_kind="error",
+            context_summary=plan_model.context_summary,
+            summary=f"当前还没法按“{scope_text}”确认可加入候选，因为候选池查询失败。请稍后重试，或先缩小候选范围。",
+            reply_focus=["candidate_query_failed"],
+            reply_strategy="direct_blocking",
+            next_step_hints=["候选池查询失败；不要生成确认卡，也不要声称已找到可加入志愿。"],
+            facts=_facts_with_planning_version(
+                {"candidate_filter_scope": scope_text, "candidate_query_error": query_result.get("error")},
+                ctx,
+            ),
+        )
+    volunteer_ids = [
+        str(item or "").strip()
+        for item in (query_result.get("candidate_volunteer_ids") or [])
+        if str(item or "").strip()
+    ]
+    facts = {
+        "candidate_filter_scope": scope_text,
+        "candidate_available_count": int(query_result.get("available_count") or 0),
+        "candidate_total_entries": int(query_result.get("total_entries") or 0),
+        "candidate_total_units": int(query_result.get("total_units") or 0),
+    }
+    if not volunteer_ids:
+        summary = f"当前按“{scope_text}”没有找到可加入方案的候选志愿，所以这次不生成加入预览，也不会改动方案。"
+        return PlanExecutionResult(
+            applied=False,
+            action_family="add_units",
+            stage=plan_model.stage,
+            result_kind="no_change",
+            context_summary=plan_model.context_summary,
+            state_summary=summary,
+            summary=summary,
+            reply_focus=["no_candidates", "needs_candidate_selection"],
+            reply_strategy="direct_reply",
+            next_step_hints=["当前结构化条件没有候选命中；不要生成确认卡。"],
+            facts=_facts_with_planning_version(facts, ctx),
+        )
+    preview_summary = (
+        f"已按“{scope_text}”在候选池里定位到 {len(volunteer_ids)} 个可加入方案的候选。"
+        "确认后会加入当前方案，并同步刷新方案顺序和审查状态。"
+    )
+    facts.update(
+        {
+            "resolved_candidate_ids": volunteer_ids,
+            "resolved_apply_payload": _build_resolved_apply_payload(
+                plan_model,
+                volunteer_ids=volunteer_ids,
+            ),
+        }
+    )
+    return PlanExecutionResult(
+        applied=False,
+        action_family="add_units",
+        stage=plan_model.stage,
+        result_kind="preview_only",
+        context_summary=plan_model.context_summary,
+        summary=_with_confirmation_hint(preview_summary),
+        reply_focus=["preview_only", "confirmation_required"],
+        next_step_hints=["先说明候选筛选范围和将加入数量；用户确认后再执行加入方案。"],
+        facts=_facts_with_planning_version(facts, ctx),
+    )
 
 
 async def _preview_or_block_replace_by_candidate_capacity(
@@ -3339,6 +3574,7 @@ async def _query_candidate_pool_selection(
     replacement_issue_code: str | None = None,
 ) -> dict[str, Any]:
     session_id = ctx.deps.sessionid
+    batch = getattr(ctx.deps, "batch", None) or "01"
     desired_count = max(1, min(int(limit or 0), 100))
     page_size = max(20, min(max(desired_count * 4, desired_count), 100))
     await _generate_planning_candidate_pool_request(_DEFAULT_TENANT_ID, session_id, True)
@@ -3375,7 +3611,7 @@ async def _query_candidate_pool_selection(
             tiers=[tier] if tier else [],
             province_names=_normalize_keywords(province_keyword),
             school_keywords=_normalize_keywords(school_keyword),
-            major_keywords=_derive_candidate_major_keywords(major_keyword, major_tags),
+            major_keywords=_derive_candidate_major_keywords(major_keyword, major_tags, batch),
             school_tags=school_tags or [],
             major_tags=major_tags or [],
             page=page,
@@ -4377,6 +4613,11 @@ async def _execute_plan_action_model(
                 plan_model,
                 resolved_ids,
             )
+            if expanded_ids:
+                resolved_apply_payload = _build_resolved_apply_payload(
+                    plan_model,
+                    volunteer_ids=expanded_ids,
+                )
             if review_issue and str(review_issue.get("scope_kind") or "").strip() == "structural":
                 summary, hints = _structural_review_issue_guidance(review_issue)
                 return PlanExecutionResult(
@@ -4598,6 +4839,9 @@ async def _execute_plan_action_model(
                     facts=_facts_with_planning_version({"requested_refs": refs, "already_in_plan_ids": existing_ids}, ctx),
                 )
             if missing_refs or not resolved_ids:
+                filters = atomic.filters or {}
+                if _has_filter_selection_scope(filters):
+                    return await _build_add_units_filter_preview(ctx, plan_model, filters)
                 missing_text = "、".join(missing_refs[:5]) if missing_refs else "要加入的候选志愿"
                 return PlanExecutionResult(
                     applied=False,

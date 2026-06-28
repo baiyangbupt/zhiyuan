@@ -128,6 +128,7 @@ def _build_prompt(latest_utterance: str, payload: dict[str, Any] | None = None) 
             "schemaRules": [
                 "最终回答必须只包含一个 JSON object，禁止 markdown。",
                 "用户要求删除、加入、替换、重排、生成方案、确认或执行时，queryType=none。",
+                "用户要求按录取率、院校层次、学校质量、推荐分等规则重新排列当前方案，例如“按好学校排下看看/按院校层次排序/按录取率重排”，这是可确认的方案变更预览，不是只读名单查询；queryType=none。",
                 "只读查看方案内数量、名单、录取率、保底/稳/冲切片、费用阈值时，queryType 不能是 none。",
                 "用户明确说候选、候选里、候选池、可选机会、推荐里，并且只是问有哪些/多少/看看/列出时，scopeAnchor=candidate_pool；不要改写成 current_plan。",
                 "filters.limit 是 1-10 的整数；没明确数量时填 5。",
@@ -241,6 +242,20 @@ def _build_prompt(latest_utterance: str, payload: dict[str, Any] | None = None) 
                         "filters": {"limit": 5},
                         "projection": {"mode": "count_summary", "limit": 5},
                         "replyFocus": ["current_state", "count_summary"],
+                        "pendingReferenceType": "none",
+                    },
+                },
+                {
+                    "latestUserText": "按好学校排下看看",
+                    "output": {
+                        "queryType": "none",
+                        "scopeAnchor": "current_plan",
+                        "sideEffect": "none",
+                        "dimensions": [],
+                        "condition": {},
+                        "filters": {},
+                        "projection": {},
+                        "replyFocus": [],
                         "pendingReferenceType": "none",
                     },
                 },

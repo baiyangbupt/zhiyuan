@@ -13,10 +13,15 @@ import argparse
 import asyncio
 import json
 import statistics
+import sys
 import time
 from dataclasses import fields
 from pathlib import Path
 from typing import Any
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 
 def _load_cases(path: str) -> list[dict[str, Any]]:
@@ -41,6 +46,19 @@ def _filter_cases_by_nodes(cases: list[dict[str, Any]], nodes: str | None) -> li
     if not allowed:
         return cases
     return [case for case in cases if str(case.get("node") or "").strip() in allowed]
+
+
+def _filter_cases_by_ids(cases: list[dict[str, Any]], case_ids: str | None) -> list[dict[str, Any]]:
+    if not case_ids:
+        return cases
+    allowed = {
+        item.strip()
+        for item in str(case_ids).split(",")
+        if item.strip()
+    }
+    if not allowed:
+        return cases
+    return [case for case in cases if str(case.get("caseId") or "").strip() in allowed]
 
 
 def _get_path(data: Any, path: str) -> Any:
@@ -500,6 +518,8 @@ def _build_request_context(case: dict[str, Any]) -> Any:
 
 
 def _live_error_type(exc: BaseException) -> str:
+    if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
+        return "timeout"
     text = str(exc).lower()
     if "llm_api_key" in text or "api_key" in text and ("missing" in text or "required" in text):
         return "missing_api_key"
@@ -624,11 +644,18 @@ async def _run_live_node_case(case: dict[str, Any]) -> dict[str, Any]:
             "raw": raw,
         }
 
-    if node in {"plan_semantic_action", "local_plan_action_dsl", "proposal_selection"}:
+    if node in {"plan_semantic_action", "plan_atomic_action_dsl", "local_plan_action_dsl", "proposal_selection"}:
         from app.tools import plan_semantic_action_tool
 
         if node == "plan_semantic_action":
             result = await plan_semantic_action_tool.classify_plan_semantic_action(
+                prompt,
+                request_context=request_context,
+                recent_plan_context=payload.get("recentPlanContext") if isinstance(payload.get("recentPlanContext"), dict) else None,
+            )
+            return _model_to_dict(result)
+        if node == "plan_atomic_action_dsl":
+            result = await plan_semantic_action_tool.classify_plan_atomic_action_dsl(
                 prompt,
                 request_context=request_context,
                 recent_plan_context=payload.get("recentPlanContext") if isinstance(payload.get("recentPlanContext"), dict) else None,
@@ -652,11 +679,21 @@ async def _run_live_node_case(case: dict[str, Any]) -> dict[str, Any]:
     raise NotImplementedError(f"live-node adapter is not implemented for node: {node}")
 
 
-async def _materialize_live_actual(case: dict[str, Any]) -> dict[str, Any]:
+async def _materialize_live_actual(
+    case: dict[str, Any],
+    *,
+    timeout_seconds: float | None = None,
+) -> dict[str, Any]:
     materialized = dict(case)
     start = time.perf_counter()
     try:
-        materialized["actual"] = await _run_live_node_case(case)
+        if timeout_seconds and timeout_seconds > 0:
+            materialized["actual"] = await asyncio.wait_for(
+                _run_live_node_case(case),
+                timeout=timeout_seconds,
+            )
+        else:
+            materialized["actual"] = await _run_live_node_case(case)
         materialized["actualSource"] = "live_node"
     except Exception as exc:  # noqa: BLE001 - benchmark reports tool/provider failure classes.
         error_type = _live_error_type(exc)
@@ -694,13 +731,17 @@ async def build_report_async(
     actual_source: str = "fixture",
     sample_limit: int = 20,
     repeat: int = 1,
+    live_case_timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
     if repeat < 1:
         raise ValueError("repeat must be greater than or equal to 1")
     materialized_cases = cases
     if actual_source == "live-node":
         materialized_cases = _repeat_cases(cases, repeat)
-        materialized_cases = [await _materialize_live_actual(case) for case in materialized_cases]
+        materialized_cases = [
+            await _materialize_live_actual(case, timeout_seconds=live_case_timeout_seconds)
+            for case in materialized_cases
+        ]
     return build_report(materialized_cases, sample_limit=sample_limit)
 
 
@@ -710,17 +751,21 @@ def main() -> None:
     parser.add_argument("--output", help="write JSON report to this path")
     parser.add_argument("--actual-source", choices=["fixture", "live-node"], default="fixture")
     parser.add_argument("--nodes", help="comma-separated node names to include")
+    parser.add_argument("--case-ids", help="comma-separated case IDs to include")
     parser.add_argument("--repeat", type=int, default=1, help="repeat each case N times in live-node mode")
+    parser.add_argument("--case-timeout-seconds", type=float, help="per-case timeout in live-node mode")
     parser.add_argument("--sample-limit", type=int, default=20)
     args = parser.parse_args()
 
     cases = _filter_cases_by_nodes(_load_cases(args.cases), args.nodes)
+    cases = _filter_cases_by_ids(cases, args.case_ids)
     report = asyncio.run(
         build_report_async(
             cases,
             actual_source=args.actual_source,
             sample_limit=args.sample_limit,
             repeat=args.repeat,
+            live_case_timeout_seconds=args.case_timeout_seconds,
         )
     )
     text = json.dumps(report, ensure_ascii=False, indent=2)

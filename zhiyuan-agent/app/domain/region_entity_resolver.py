@@ -28,6 +28,30 @@ _PROVINCE_ALIASES = {
 }
 
 _AREA_ALIASES = {
+    "长三角": "长三角",
+    "长三角地区": "长三角",
+    "珠三角": "珠三角",
+    "珠三角地区": "珠三角",
+    "江浙沪": "长三角",
+    "华东": "华东",
+    "华东地区": "华东",
+    "华北": "华北",
+    "华北地区": "华北",
+    "华中": "华中",
+    "华中地区": "华中",
+    "华南": "华南",
+    "华南地区": "华南",
+    "东北": "东北",
+    "东北地区": "东北",
+    "东三省": "东北",
+    "西北": "西北",
+    "西北地区": "西北",
+    "西南": "西南",
+    "西南地区": "西南",
+    "东南": "东南",
+    "东南地区": "东南",
+    "中南": "中南",
+    "中南地区": "中南",
     "南方": "南方",
     "南方地区": "南方",
     "南边": "南方",
@@ -215,21 +239,24 @@ def resolve_region_mentions_from_text(text: Any, expected_level: str | None = No
         for variant in variants:
             if not variant:
                 continue
-            start = compact.find(variant)
-            if start < 0:
-                continue
-            raw_matches.append(
-                (
-                    start,
-                    len(variant),
-                    _candidate(
-                        raw_text=raw_name,
-                        canonical_name=canonical_name,
-                        level=level,
-                        source=source,
-                    ),
+            search_start = 0
+            while True:
+                start = compact.find(variant, search_start)
+                if start < 0:
+                    break
+                raw_matches.append(
+                    (
+                        start,
+                        len(variant),
+                        _candidate(
+                            raw_text=raw_name,
+                            canonical_name=canonical_name,
+                            level=level,
+                            source=source,
+                        ),
+                    )
                 )
-            )
+                search_start = start + 1
 
     for alias, canonical_name in _PROVINCE_ALIASES.items():
         if canonical_name in provinces:

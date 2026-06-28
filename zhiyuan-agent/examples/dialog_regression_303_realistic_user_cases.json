@@ -150,6 +150,10 @@
       "readonly_no_workspace_card"
     ],
     "assertPlanStyle": true,
+    "fixtureContract": {
+      "type": "formal_plan_present",
+      "requiredState": ["orderedPlan", "formalPlan"]
+    },
     "prompts": [
       {
         "prompt": "青城那个是不是放多了",
@@ -219,6 +223,10 @@
       "preview_confirm_boundary"
     ],
     "assertPlanStyle": true,
+    "fixtureContract": {
+      "type": "formal_plan_present",
+      "requiredState": ["orderedPlan", "formalPlan"]
+    },
     "prompts": [
       {
         "prompt": "按好学校排下看看",
@@ -232,9 +240,8 @@
           "导出顺序",
           "待重新审查"
         ],
-        "assertThinkingContains": [
-          "正在读取当前方案并整理这次请求"
-        ],
+        "expectedRoutingPathAny": ["direct_atomic_plan_action", "full_agent"],
+        "assertActionFamiliesContain": ["sort_ordered_plan"],
         "assertNotContains": [
           "已直接排序",
           "已直接调整",

@@ -10,6 +10,7 @@ from app.models.conversation_phase import ConversationPhase, PendingConfirmation
 from app.tools.plan_execution_tool import (
     _select_candidates_by_filters_into_plan,
     _append_intent_relation_summary,
+    _derive_candidate_major_keywords,
     clear_recent_plan_execution_result,
     consume_recent_plan_execution_result,
     execute_plan_action,
@@ -1234,6 +1235,85 @@ def test_execute_plan_action_remove_preview_uses_review_issue_target_without_sam
     assert "review_issue_batch_scope" in data["reply_focus"]
 
 
+def test_execute_plan_action_remove_preview_falls_back_to_ordered_text_for_cooperative_issue():
+    payload = {
+        "stage": "preview",
+        "action_family": "remove_units",
+        "user_goal": "中外合作的都排除掉，当前方案里有的话先移出去",
+        "context_summary": "阶段=reviewed；方案=96/96",
+        "preview_summary": "会按当前审查命中的整批中外合作项执行移除。",
+        "missing_inputs": [],
+        "atomic_actions": [
+            {
+                "action_type": "remove_units",
+                "volunteer_ids": [],
+                "target_position": None,
+                "filters": {},
+                "reason": "中外合作的都排除掉，当前方案里有的话先移出去",
+                "review_issue_target": {
+                    "code": "cooperative_program",
+                    "scope_mode": "full_issue",
+                    "label": "中外合作",
+                    "scope_kind": "item_replacement",
+                    "default_action_family": "review_plan",
+                },
+            }
+        ],
+    }
+
+    ordered_items = [
+        {
+            "position": 1,
+            "volunteerId": "coop-1",
+            "schoolName": "烟台大学",
+            "majorName": "材料科学与工程(中外合作办学)",
+            "tier": "冲",
+        },
+        {
+            "position": 2,
+            "volunteerId": "plain-1",
+            "schoolName": "山东大学",
+            "majorName": "电子信息类",
+            "tier": "冲",
+        },
+        {
+            "position": 3,
+            "volunteerId": "coop-2",
+            "schoolName": "北部湾大学",
+            "majorName": "电子信息工程(与波兰华沙理工大学合作办学)",
+            "tier": "稳",
+        },
+    ]
+    planning_state = {
+        "reviewState": {
+            "checks": [
+                {
+                    "code": "cooperative_program",
+                    "passed": False,
+                    "summary": "当前方案包含中外合作办学项目",
+                    "affectedVolunteerIds": [],
+                }
+            ]
+        }
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
+        new=AsyncMock(return_value={"code": 0, "data": {"items": ordered_items}}),
+    ), patch(
+        "app.tools.plan_execution_tool._get_planning_state_request",
+        new=AsyncMock(return_value={"code": 0, "data": planning_state}),
+    ):
+        result = asyncio.run(execute_plan_action(_ctx(), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["result_kind"] == "preview_only"
+    assert "共 2 个专业组，涉及 2 条志愿" in data["summary"]
+    assert "review_issue_batch_scope" in data["reply_focus"]
+    action = data["facts"]["resolved_apply_payload"]["atomic_actions"][0]
+    assert action["volunteer_ids"] == ["coop-1", "coop-2"]
+
+
 def test_execute_plan_action_remove_preview_refreshes_review_when_issue_scope_missing():
     payload = {
         "stage": "preview",
@@ -2388,6 +2468,50 @@ def test_execute_plan_action_query_candidates_merges_explicit_and_extracted_filt
     assert mock_query.await_args.kwargs["major_tags"] is None
 
 
+def test_execute_plan_action_query_candidates_uses_structured_filter_lists():
+    payload = {
+        "stage": "apply",
+        "action_family": "query_candidates",
+        "user_goal": "电力，铁道，航空职业技术学院，在海南招生的有哪几个学校呢",
+        "context_summary": "阶段=ordered；方案=20/30",
+        "preview_summary": "",
+        "missing_inputs": [],
+        "should_rerun_review": False,
+        "intent_relation": "unknown",
+        "atomic_actions": [
+            {
+                "action_type": "query_candidates",
+                "volunteer_ids": [],
+                "target_position": None,
+                "filters": {
+                    "province_names": ["海南"],
+                    "school_keywords": ["电力", "铁道", "航空"],
+                    "limit": "5",
+                },
+                "reason": "电力，铁道，航空职业技术学院，在海南招生的有哪几个学校呢",
+            }
+        ],
+    }
+
+    with patch(
+        "app.handlers.query_handlers.extract_candidate_query_filters_async",
+        new=AsyncMock(return_value={"should_query_candidate": True, "filters": {}}),
+    ), patch(
+        "app.handlers.query_handlers.query_planning_candidate_pool",
+        new=AsyncMock(return_value="candidate ok"),
+    ) as mock_query:
+        result = asyncio.run(execute_plan_action(_ctx_with_pending("add_units"), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["applied"] is True
+    assert data["result_kind"] == "candidate_snapshot"
+    mock_query.assert_awaited_once()
+    assert mock_query.await_args.kwargs["province_names"] == ["海南"]
+    assert mock_query.await_args.kwargs["school_keywords"] == ["电力", "铁道", "航空"]
+    assert data["facts"]["query_filters"]["province_names"] == ["海南"]
+    assert data["facts"]["query_filters"]["school_keywords"] == ["电力", "铁道", "航空"]
+
+
 def test_execute_plan_action_query_candidates_returns_error_when_candidate_pool_fails():
     payload = {
         "stage": "apply",
@@ -2635,6 +2759,144 @@ def test_execute_plan_action_add_units_preview_resolves_candidate_ref_without_ap
     assert "confirmation_required" in data["reply_focus"]
     assert data["facts"]["resolved_candidate_ids"] == ["cand-hbgc-cs"]
     assert data["facts"]["resolved_apply_payload"]["atomic_actions"][0]["volunteer_ids"] == ["cand-hbgc-cs"]
+    mock_select.assert_not_awaited()
+
+
+def test_execute_plan_action_add_units_preview_falls_back_to_structured_filters_when_ref_unresolved():
+    payload = {
+        "stage": "preview",
+        "action_family": "add_units",
+        "context_summary": "阶段=ordered；方案=20/30",
+        "preview_summary": "",
+        "missing_inputs": [],
+        "should_rerun_review": False,
+        "intent_relation": "support",
+        "atomic_actions": [
+            {
+                "action_type": "add_units",
+                "volunteer_ids": ["河南农业大学的建筑类"],
+                "target_position": None,
+                "filters": {
+                    "school_keyword": "河南农业大学",
+                    "major_keyword": "建筑类",
+                    "limit": "5",
+                },
+                "reason": "把河南农业大学的建筑类加进来",
+            }
+        ],
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
+        new=AsyncMock(return_value={"code": 0, "data": {"items": []}}),
+    ), patch(
+        "app.tools.plan_execution_tool._get_planning_state_request",
+        new=AsyncMock(return_value={"code": 0, "data": {"candidatePoolState": {"items": []}}}),
+    ), patch(
+        "app.tools.plan_execution_tool._generate_planning_candidate_pool_request",
+        new=AsyncMock(return_value={"code": 0, "data": {}}),
+    ) as mock_generate, patch(
+        "app.tools.plan_execution_tool._query_planning_candidate_pool_request",
+        new=AsyncMock(
+            side_effect=[
+                {"code": 0, "data": {"items": []}},
+                {
+                    "code": 0,
+                    "data": {
+                        "total": 1,
+                        "totalUnitCount": 1,
+                        "items": [
+                            {
+                                "volunteerId": "hnny-arch-candidate",
+                                "schoolName": "河南农业大学",
+                                "majorName": "建筑类(城乡规划、风景园林)",
+                            }
+                        ],
+                    },
+                },
+            ]
+        ),
+    ) as mock_query, patch(
+        "app.handlers.mutation_handlers.select_planning_ordered_items",
+        new=AsyncMock(return_value="should not apply"),
+    ) as mock_select:
+        result = asyncio.run(execute_plan_action(_ctx_with_pending("add_units"), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["applied"] is False
+    assert data["result_kind"] == "preview_only"
+    assert "河南农业大学" in data["summary"]
+    assert "建筑类" in data["summary"]
+    assert "confirmation_required" in data["reply_focus"]
+    assert data["facts"]["resolved_candidate_ids"] == ["hnny-arch-candidate"]
+    assert data["facts"]["resolved_apply_payload"]["atomic_actions"][0]["volunteer_ids"] == ["hnny-arch-candidate"]
+    mock_generate.assert_awaited_once()
+    assert mock_query.await_count == 2
+    assert mock_query.await_args.kwargs["school_keywords"] == ["河南农业大学"]
+    assert mock_query.await_args.kwargs["major_keywords"][:2] == ["建筑类", "建筑学"]
+    assert "城乡规划" in mock_query.await_args.kwargs["major_keywords"]
+    mock_select.assert_not_awaited()
+
+
+def test_derive_candidate_major_keywords_expands_catalog_level2_to_concrete_majors():
+    keywords = _derive_candidate_major_keywords("建筑类", None)
+
+    assert keywords[:2] == ["建筑类", "建筑学"]
+    assert "城乡规划" in keywords
+    assert "风景园林" in keywords
+
+
+def test_derive_candidate_major_keywords_canonicalizes_unique_plain_alias():
+    assert _derive_candidate_major_keywords("会计", None) == ["会计学"]
+
+
+def test_execute_plan_action_add_units_preview_filter_fallback_no_candidates_is_no_change():
+    payload = {
+        "stage": "preview",
+        "action_family": "add_units",
+        "context_summary": "阶段=ordered；方案=20/30",
+        "preview_summary": "",
+        "missing_inputs": [],
+        "should_rerun_review": False,
+        "intent_relation": "support",
+        "atomic_actions": [
+            {
+                "action_type": "add_units",
+                "volunteer_ids": ["河南农业大学的建筑类"],
+                "target_position": None,
+                "filters": {
+                    "school_keyword": "河南农业大学",
+                    "major_keyword": "建筑类",
+                    "limit": "5",
+                },
+                "reason": "把河南农业大学的建筑类加进来",
+            }
+        ],
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
+        new=AsyncMock(return_value={"code": 0, "data": {"items": []}}),
+    ), patch(
+        "app.tools.plan_execution_tool._get_planning_state_request",
+        new=AsyncMock(return_value={"code": 0, "data": {"candidatePoolState": {"items": []}}}),
+    ), patch(
+        "app.tools.plan_execution_tool._generate_planning_candidate_pool_request",
+        new=AsyncMock(return_value={"code": 0, "data": {}}),
+    ), patch(
+        "app.tools.plan_execution_tool._query_planning_candidate_pool_request",
+        new=AsyncMock(return_value={"code": 0, "data": {"total": 0, "totalUnitCount": 0, "items": []}}),
+    ), patch(
+        "app.handlers.mutation_handlers.select_planning_ordered_items",
+        new=AsyncMock(return_value="should not apply"),
+    ) as mock_select:
+        result = asyncio.run(execute_plan_action(_ctx_with_pending("add_units"), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["applied"] is False
+    assert data["result_kind"] == "no_change"
+    assert "不生成加入预览" in data["summary"]
+    assert "resolved_apply_payload" not in data["facts"]
     mock_select.assert_not_awaited()
 
 
@@ -3061,10 +3323,14 @@ def test_select_candidates_by_filters_prefers_unique_candidate_units_in_major_gr
                 major_tags=["电子信息类", "自动化类"],
                 limit=2,
             )
-        )
+    )
 
     assert "加入 2 个候选志愿" in result
-    assert mock_query.await_args.kwargs["major_keywords"] == ["电子信息类", "自动化类"]
+    major_keywords = mock_query.await_args.kwargs["major_keywords"]
+    assert "电子信息类" in major_keywords
+    assert "电子信息工程" in major_keywords
+    assert "自动化类" in major_keywords
+    assert "自动化" in major_keywords
     assert mock_select.await_args.args[2] == ["g1_a", "g2_a"]
 
 
@@ -3129,7 +3395,9 @@ def test_select_candidates_by_filters_skips_high_tuition_candidates_for_high_tui
         )
 
     assert "加入 2 个候选志愿" in result
-    assert mock_query.await_args.kwargs["major_keywords"] == ["计算机类"]
+    major_keywords = mock_query.await_args.kwargs["major_keywords"]
+    assert "计算机类" in major_keywords
+    assert "计算机科学与技术" in major_keywords
     assert mock_select.await_args.args[2] == ["ok-1", "ok-2"]
 
 
@@ -5382,6 +5650,64 @@ def test_execute_plan_action_replace_broad_high_tuition_without_scope_does_not_c
     assert "共 1 个专业组，涉及 2 条志愿" in data["summary"]
     assert "当前阶段仅分析或预览" not in data["summary"]
     assert "系统阻塞" not in data["summary"]
+
+
+def test_execute_plan_action_replace_broad_high_tuition_without_hits_is_no_change():
+    payload = {
+        "stage": "analyze",
+        "action_family": "replace_units",
+        "user_goal": "把高收费的都换掉",
+        "context_summary": "阶段=reviewed；方案=45/45",
+        "missing_inputs": ["replacement_scope"],
+        "review_issue_code": "high_tuition",
+        "review_issue_scope_mode": "full_issue",
+        "atomic_actions": [
+            {
+                "action_type": "replace_units",
+                "volunteer_ids": [],
+                "filters": {},
+                "reason": "把高收费的都换掉",
+                "review_issue_target": {
+                    "code": "high_tuition",
+                    "scope_mode": "full_issue",
+                    "label": "高收费",
+                },
+            }
+        ],
+    }
+    ordered_items = [
+        {"position": 1, "volunteerId": "ok-1", "schoolName": "A大学(01)", "majorName": "计算机科学与技术", "tuitionPerYear": 12000},
+    ]
+    planning_state = {
+        "reviewState": {
+            "checks": [
+                {
+                    "code": "high_tuition",
+                    "passed": False,
+                    "summary": "当前方案包含高收费专业",
+                    "affectedVolunteerIds": [],
+                }
+            ]
+        }
+    }
+
+    with patch(
+        "app.tools.plan_execution_tool._get_planning_ordered_plan_request",
+        new=AsyncMock(return_value={"code": 0, "data": {"items": ordered_items}}),
+    ), patch(
+        "app.tools.plan_execution_tool._get_planning_state_request",
+        new=AsyncMock(return_value={"code": 0, "data": planning_state}),
+    ):
+        result = asyncio.run(execute_plan_action(_ctx(), json.dumps(payload, ensure_ascii=False)))
+
+    data = json.loads(result)
+    assert data["applied"] is False
+    assert data["action_family"] == "replace_units"
+    assert data["result_kind"] == "no_change"
+    assert data["reply_strategy"] == "direct_reply"
+    assert data["reply_focus"] == ["no_matching_review_issue_items"]
+    assert "没有定位到需要按高收费处理的志愿" in data["summary"]
+    assert "共 0 个专业组" not in data["summary"]
 
 
 def test_execute_plan_action_replace_protection_flags_do_not_count_as_replacement_scope():

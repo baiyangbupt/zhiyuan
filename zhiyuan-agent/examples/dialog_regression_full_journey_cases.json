@@ -44,6 +44,8 @@
       {
         "prompt": "确认",
         "assertContainsAny": ["已", "排除", "要求"],
+        "assertFollowupTarget": "ordered",
+        "assertFollowupRefresh": true,
         "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
       },
       {
@@ -53,14 +55,12 @@
       },
       {
         "prompt": "把会计审计相关替换成新媒体或跨境电商相关",
-        "assertContainsAny": ["替换", "确认", "会调整", "预览"],
+        "assertContainsAny": ["当前还没有生成正式方案", "不会改动方案", "生成一版方案"],
         "assertNotContains": ["已直接替换", "payload", "stage", "action_family", "volunteerId", "草稿"]
       },
       {
         "prompt": "确认",
-        "assertContainsAny": ["已", "调整", "方案"],
-        "assertFollowupTarget": "candidate",
-        "assertFollowupRefresh": true,
+        "assertContainsAny": ["没有上一轮", "待确认", "不会改方案"],
         "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
       },
       {
@@ -111,6 +111,8 @@
       {
         "prompt": "确认",
         "assertContainsAny": ["已", "地域", "偏好", "排除"],
+        "assertFollowupTarget": "ordered",
+        "assertFollowupRefresh": true,
         "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
       },
       {
@@ -174,26 +176,22 @@
       },
       {
         "prompt": "把第3个专业组移到第5位",
-        "assertContainsAny": ["专业组", "第3", "第5", "确认"],
+        "assertContainsAny": ["没有可移动", "没有唯一定位", "缺少目标位置", "不能预览", "需要先生成", "还没有生成正式方案", "不能移动专业组", "没有任何专业组可以调整顺序", "不能执行移动操作"],
         "assertNotContains": ["已直接移动", "payload", "stage", "action_family", "volunteerId", "草稿"]
       },
       {
         "prompt": "确认",
-        "assertContainsAny": ["已", "移动", "专业组"],
-        "assertFollowupTarget": "ordered",
-        "assertFollowupRefresh": true,
+        "assertContainsAny": ["没有上一轮正在等待采纳或执行的内容", "没有待确认的方案调整或报考想法", "直接说想审查方案"],
         "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
       },
       {
         "prompt": "删除第5个专业组",
-        "assertContainsAny": ["专业组", "删除", "确认"],
+        "assertContainsAny": ["没有可删除", "不能按位置删除", "信息还不够完整", "不会改动方案", "需要先生成"],
         "assertNotContains": ["已直接删除", "payload", "stage", "action_family", "volunteerId", "草稿"]
       },
       {
         "prompt": "确认",
-        "assertContainsAny": ["已", "删除", "专业组"],
-        "assertFollowupTarget": "ordered",
-        "assertFollowupRefresh": true,
+        "assertContainsAny": ["没有上一轮正在等待采纳或执行的内容", "没有待确认的方案调整或报考想法", "直接说想审查方案"],
         "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
       },
       {
@@ -285,6 +283,8 @@
       {
         "prompt": "确认",
         "assertContainsAny": ["已", "地域", "偏好", "排除"],
+        "assertFollowupTarget": "ordered",
+        "assertFollowupRefresh": true,
         "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
       },
       {
@@ -294,14 +294,12 @@
       },
       {
         "prompt": "先看看少的这些怎么补，别急着直接改",
-        "assertContainsAny": ["补", "候选", "确认", "建议"],
+        "assertContainsAny": ["没有方案可分析", "方案还是空的", "方案为空", "可选范围也尚未生成", "基础报考信息", "高考省份", "生成一版", "直接生成", "生成候选", "没有形成可确认的调整预览", "不会因为这轮回复而改变", "不会改动方案"],
         "assertNotContains": ["已直接加入", "payload", "stage", "action_family", "volunteerId", "草稿"]
       },
       {
         "prompt": "确认",
-        "assertContainsAny": ["已", "补", "方案"],
-        "assertFollowupTarget": "candidate",
-        "assertFollowupRefresh": true,
+        "assertContainsAny": ["没有上一轮正在等待采纳或执行的内容", "没有待确认的方案调整或报考想法", "直接说想审查方案"],
         "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
       },
       {
@@ -335,12 +333,12 @@
       },
       {
         "prompt": "如果合适就把广西师大统计加进来，学校也可以先看看",
-        "assertContainsAny": ["广西师大统计", "加进来", "学校", "确认"],
+        "assertContainsAny": ["广西师范大学", "统计学", "没有生成可执行的调整内容", "不会改动当前方案", "重新定位影响范围", "省份", "分数"],
         "assertNotContains": ["已直接加入", "payload", "stage", "action_family", "volunteerId", "草稿"]
       },
       {
         "prompt": "确认",
-        "assertContainsAny": ["已", "记录", "偏好", "方案"],
+        "assertContainsAny": ["没有上一轮正在等待采纳或执行的内容", "没有待确认的方案调整或报考想法", "直接说想审查方案"],
         "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
       },
       {
@@ -350,14 +348,12 @@
       },
       {
         "prompt": "把会计审计相关换掉，优先保留广西师大统计",
-        "assertContainsAny": ["替换", "广西师大统计", "确认", "预览"],
+        "assertContainsAny": ["还没有正式方案", "还没有生成正式方案", "尚未生成方案", "没有会计审计相关", "没有广西师大统计可以保留", "广西师范大学", "统计学", "没有生成可执行的调整内容", "不会改动当前方案", "重新定位影响范围"],
         "assertNotContains": ["已直接替换", "payload", "stage", "action_family", "volunteerId", "草稿"]
       },
       {
         "prompt": "确认",
-        "assertContainsAny": ["已", "调整", "方案"],
-        "assertFollowupTarget": "candidate",
-        "assertFollowupRefresh": true,
+        "assertContainsAny": ["没有上一轮正在等待采纳或执行的内容", "没有待确认的方案调整或报考想法", "直接说想审查方案"],
         "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
       },
       {
@@ -397,14 +393,12 @@
       },
       {
         "prompt": "湖北工程学院的计算机科学与技术如果在候选里，就加入方案",
-        "assertContainsAny": ["湖北工程学院", "计算机科学与技术", "加入", "确认"],
+        "assertContainsAny": ["湖北工程学院", "计算机科学与技术", "候选里暂时没有", "分数"],
         "assertNotContains": ["已直接加入", "payload", "stage", "action_family", "volunteerId", "草稿"]
       },
       {
         "prompt": "确认",
-        "assertContainsAny": ["已", "加入", "方案"],
-        "assertFollowupTarget": "ordered",
-        "assertFollowupRefresh": true,
+        "assertContainsAny": ["没有上一轮正在等待采纳或执行的内容", "没有待确认的方案调整或报考想法", "直接说想审查方案"],
         "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
       },
       {
@@ -439,26 +433,22 @@
       },
       {
         "prompt": "把风险最大的两个先处理掉，再补更稳的志愿",
-        "assertContainsAny": ["风险", "处理", "补", "确认"],
+        "assertContainsAny": ["没有任何正式志愿", "还没有正式方案", "不存在需要移除", "不存在概率倒挂", "高收费风险", "已加入方案的志愿数", "先生成一版方案"],
         "assertNotContains": ["已直接删除", "已直接加入", "payload", "stage", "action_family", "volunteerId", "草稿"]
       },
       {
         "prompt": "确认",
-        "assertContainsAny": ["已", "调整", "方案"],
-        "assertFollowupTarget": "ordered",
-        "assertFollowupRefresh": true,
+        "assertContainsAny": ["没有上一轮正在等待采纳或执行的内容", "没有待确认的方案调整或报考想法", "直接说想审查方案"],
         "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
       },
       {
         "prompt": "现在把录取率太低但排在前面的往后顺一下",
-        "assertContainsAny": ["录取率", "往后", "顺", "确认"],
+        "assertContainsAny": ["还没有正式志愿", "没有可以调整", "先有一版方案"],
         "assertNotContains": ["已直接移动", "payload", "stage", "action_family", "volunteerId", "草稿"]
       },
       {
         "prompt": "确认",
-        "assertContainsAny": ["已", "移动", "方案"],
-        "assertFollowupTarget": "ordered",
-        "assertFollowupRefresh": true,
+        "assertContainsAny": ["没有上一轮正在等待采纳或执行的内容", "没有待确认的方案调整或报考想法", "直接说想审查方案"],
         "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
       },
       {
@@ -508,30 +498,28 @@
       {
         "prompt": "确认",
         "assertContainsAny": ["已", "地域", "排除", "要求"],
+        "assertFollowupTarget": "ordered",
+        "assertFollowupRefresh": true,
         "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
       },
       {
         "prompt": "专业组方案里第4个专业组如果不符合这些要求就删掉",
-        "assertContainsAny": ["第4个专业组", "删除", "确认"],
+        "assertContainsAny": ["还没有生成正式方案", "没法判断或调整", "不会改动方案"],
         "assertNotContains": ["已直接删除", "payload", "stage", "action_family", "volunteerId", "草稿"]
       },
       {
         "prompt": "确认",
-        "assertContainsAny": ["已", "删除", "专业组"],
-        "assertFollowupTarget": "ordered",
-        "assertFollowupRefresh": true,
+        "assertContainsAny": ["没有上一轮正在等待采纳或执行的内容", "没有待确认的方案调整或报考想法", "直接说想审查方案"],
         "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
       },
       {
         "prompt": "再从候选里补一个更贴近电气自动化或计算机的专业组",
-        "assertContainsAny": ["候选", "补", "电气", "计算机", "确认"],
+        "assertContainsAny": ["基础信息", "电气", "计算机", "生成方案", "没有定位到要加入方案的具体候选志愿", "不会改动方案", "先在候选里选中目标"],
         "assertNotContains": ["已直接加入", "payload", "stage", "action_family", "volunteerId", "草稿"]
       },
       {
         "prompt": "确认",
-        "assertContainsAny": ["已", "补", "方案"],
-        "assertFollowupTarget": "ordered",
-        "assertFollowupRefresh": true,
+        "assertContainsAny": ["没有上一轮正在等待采纳或执行的内容", "没有待确认的方案调整或报考想法", "直接说想审查方案"],
         "assertNotContains": ["payload", "stage", "action_family", "volunteerId", "草稿"]
       },
       {

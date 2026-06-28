@@ -110,6 +110,46 @@ def school_alias_index_for_batch(batch: str | None = "01") -> dict[str, tuple[st
     }
 
 
+def resolve_school_mention_spans_from_text(text: str, batch: str | None = "01") -> list[tuple[str, int, int]]:
+    compact = compact_school_text(text)
+    if not compact:
+        return []
+    raw_matches: list[tuple[int, int, str]] = []
+
+    def add_match(raw_token: str, canonical_name: str) -> None:
+        compact_token = compact_school_text(raw_token)
+        if not compact_token:
+            return
+        start = compact.find(compact_token)
+        if start < 0:
+            return
+        raw_matches.append((start, len(compact_token), canonical_name))
+
+    for school_name in school_name_set_for_batch(batch):
+        add_match(school_name, school_name)
+    for alias, canonical_names in school_alias_index_for_batch(batch).items():
+        if not alias or alias not in compact:
+            continue
+        for canonical_name in canonical_names:
+            add_match(alias, canonical_name)
+
+    raw_matches.sort(key=lambda item: (item[0], -item[1], item[2]))
+    matches: list[tuple[str, int, int]] = []
+    occupied: list[tuple[int, int]] = []
+    for start, length, school_name in raw_matches:
+        end = start + length
+        if any(not (end <= used_start or start >= used_end) for used_start, used_end in occupied):
+            continue
+        if school_name not in {name for name, _, _ in matches}:
+            matches.append((school_name, start, end))
+        occupied.append((start, end))
+    return matches
+
+
+def resolve_school_mentions_from_text(text: str, batch: str | None = "01") -> list[str]:
+    return [name for name, _, _ in resolve_school_mention_spans_from_text(text, batch)]
+
+
 def _candidate(
     *,
     raw_text: str,
@@ -170,4 +210,3 @@ def resolve_school_entity(text: str, batch: str | None = "01") -> EntityResoluti
         candidates=tuple(candidates),
         ambiguous=len(candidates) > 1,
     )
-

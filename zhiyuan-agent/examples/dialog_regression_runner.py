@@ -391,6 +391,8 @@ def _apply_session_offset(cases: list[dict[str, Any]], session_offset: int) -> l
         case["baseSessionId"] = str(original_session_id)
         if "cloneBackendStateFromSessionId" not in case and case.get("sourceSessionId"):
             case["cloneBackendStateFromSessionId"] = str(case["sourceSessionId"])
+        if "cloneBackendStateFromSessionId" not in case and _case_requires_backend_state_clone(case):
+            case["cloneBackendStateFromSessionId"] = str(original_session_id)
     return adjusted
 
 
@@ -429,6 +431,32 @@ def _case_requires_active_pending(case: dict[str, Any]) -> bool:
         if str(item or "").strip()
     }
     return "activePending" in required_state
+
+
+def _case_requires_backend_state_clone(case: dict[str, Any]) -> bool:
+    contract = case.get("fixtureContract")
+    if not isinstance(contract, dict):
+        return False
+    required_state = {
+        str(item or "").strip()
+        for item in (contract.get("requiredState") or [])
+        if str(item or "").strip()
+    }
+    if required_state & {
+        "orderedPlan",
+        "formalPlan",
+        "candidatePool",
+        "reviewState",
+        "specialPathContext",
+        "activePending",
+    }:
+        return True
+    fixture_type = str(contract.get("type") or "").strip()
+    return fixture_type in {
+        "formal_plan_present",
+        "pending_exists",
+        "special_path_profile",
+    }
 
 
 def _backend_state_clone_keys_for_case(case: dict[str, Any]) -> tuple[str, ...]:
@@ -1018,10 +1046,38 @@ def _summarize_turn_observability(turn_messages: list[dict[str, Any]]) -> dict[s
                 data = _parse_json_object(part.get("content"))
                 if data.get("event") == "conversation_turn_event":
                     _add_unique(routing_paths, data.get("routingPath"))
+                    _add_unique(action_families, data.get("actionFamily"))
+                    _add_unique(result_kinds, data.get("resultKind"))
+                    for observed_tool in data.get("toolCalls") or []:
+                        if not isinstance(observed_tool, dict):
+                            continue
+                        _add_unique(action_families, observed_tool.get("actionFamily"))
+                        _add_unique(result_kinds, observed_tool.get("resultKind"))
                     raw_route_decision = data.get("routeDecision")
                     if isinstance(raw_route_decision, dict):
                         route_decision = raw_route_decision
-                    for key in ("totalDurationMs", "llmDurationMs", "toolDurationMs", "toolCallCount"):
+                    for key in (
+                        "totalDurationMs",
+                        "llmDurationMs",
+                        "toolDurationMs",
+                        "classificationDurationMs",
+                        "preSemanticRouteDurationMs",
+                        "preFullAgentDurationMs",
+                        "historyLoadDurationMs",
+                        "pendingLoadDurationMs",
+                        "initialStateLoadDurationMs",
+                        "runtimeHistoryBuildDurationMs",
+                        "backendContextLoadDurationMs",
+                        "requestContextBuildDurationMs",
+                        "guardPipelineDurationMs",
+                        "turnDecisionDurationMs",
+                        "turnDecisionCacheHitCount",
+                        "intentEntityProfileDurationMs",
+                        "intentSideEffectDurationMs",
+                        "postFullAgentDurationMs",
+                        "unattributedDurationMs",
+                        "toolCallCount",
+                    ):
                         if data.get(key) is not None:
                             event_timings[key] = data.get(key)
 
@@ -1305,6 +1361,22 @@ def _runtime_latency_profile_payload(record: dict[str, Any], turn_observability:
         "toolReturnCount": turn_observability.get("toolReturnCount"),
         "toolDurationMs": route_decision.get("toolDurationMs") or event_timings.get("toolDurationMs"),
         "llmDurationMs": route_decision.get("llmDurationMs") or event_timings.get("llmDurationMs"),
+        "classificationDurationMs": route_decision.get("classificationDurationMs") or event_timings.get("classificationDurationMs"),
+        "preSemanticRouteDurationMs": route_decision.get("preSemanticRouteDurationMs") or event_timings.get("preSemanticRouteDurationMs"),
+        "preFullAgentDurationMs": route_decision.get("preFullAgentDurationMs") or event_timings.get("preFullAgentDurationMs"),
+        "historyLoadDurationMs": route_decision.get("historyLoadDurationMs") or event_timings.get("historyLoadDurationMs"),
+        "pendingLoadDurationMs": route_decision.get("pendingLoadDurationMs") or event_timings.get("pendingLoadDurationMs"),
+        "initialStateLoadDurationMs": route_decision.get("initialStateLoadDurationMs") or event_timings.get("initialStateLoadDurationMs"),
+        "runtimeHistoryBuildDurationMs": route_decision.get("runtimeHistoryBuildDurationMs") or event_timings.get("runtimeHistoryBuildDurationMs"),
+        "backendContextLoadDurationMs": route_decision.get("backendContextLoadDurationMs") or event_timings.get("backendContextLoadDurationMs"),
+        "requestContextBuildDurationMs": route_decision.get("requestContextBuildDurationMs") or event_timings.get("requestContextBuildDurationMs"),
+        "guardPipelineDurationMs": route_decision.get("guardPipelineDurationMs") or event_timings.get("guardPipelineDurationMs"),
+        "turnDecisionDurationMs": route_decision.get("turnDecisionDurationMs") or event_timings.get("turnDecisionDurationMs"),
+        "turnDecisionCacheHitCount": route_decision.get("turnDecisionCacheHitCount") or event_timings.get("turnDecisionCacheHitCount"),
+        "intentEntityProfileDurationMs": route_decision.get("intentEntityProfileDurationMs") or event_timings.get("intentEntityProfileDurationMs"),
+        "intentSideEffectDurationMs": route_decision.get("intentSideEffectDurationMs") or event_timings.get("intentSideEffectDurationMs"),
+        "postFullAgentDurationMs": route_decision.get("postFullAgentDurationMs") or event_timings.get("postFullAgentDurationMs"),
+        "unattributedDurationMs": route_decision.get("unattributedDurationMs") or event_timings.get("unattributedDurationMs"),
         "routeTotalDurationMs": route_decision.get("totalDurationMs") or event_timings.get("totalDurationMs"),
         "modelNodeCount": model_node_count or None,
         "toolNodeCount": tool_node_count or None,

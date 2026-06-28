@@ -36,6 +36,7 @@ from app.tools.intent_preview_tool import (
 )
 from app.tools.explore_followup_tool import handle_interest_analysis_action_result
 from app.tools.intent_state_tool import (
+    _apply_negative_constraint_reversal_to_intent_payloads,
     _apply_intents,
     _build_impact_preview_from_analysis,
     _build_preview_title,
@@ -2579,6 +2580,90 @@ def test_local_major_recovery_splits_add_intent_and_exclude_actions():
         "level3": ["生物医学工程", "智能医学工程"],
         "negative_level3": ["临床医学", "口腔医学"],
     }
+
+
+def test_local_major_recovery_treats_negative_constraint_reversal_as_positive_scope():
+    payload = _recover_polarity_major_intent_locally_from_latest_utterance(
+        "不要排除经济学类啊",
+        "01",
+    )
+
+    assert payload == {"level2": ["经济学类"]}
+
+
+def test_refine_major_intents_replaces_model_negative_when_user_reverses_exclusion():
+    payload = _refine_major_intents_with_local_latest_utterance(
+        {"negative_level2": ["经济学类"]},
+        latest_utterance="不要排除经济学类啊",
+        batch="01",
+        recovery_scope="major",
+    )
+
+    assert payload == {"level2": ["经济学类"]}
+
+
+def test_negative_constraint_reversal_payload_rewrites_school_region_and_career():
+    major, school, city, career = _apply_negative_constraint_reversal_to_intent_payloads(
+        None,
+        {"negative_colleges": ["民办"]},
+        {"negative_area": ["东北"]},
+        {"negative": ["system_public_service"]},
+        latest_utterance="不要排除民办，别避开东北，也不要排除体制内",
+        batch="01",
+    )
+
+    assert major is None
+    assert school == {"colleges": ["民办"]}
+    assert city == {"area": ["东北"]}
+    assert career == {"positive": ["system_public_service"]}
+
+
+def test_negative_constraint_reversal_payload_does_not_leak_school_region():
+    major, school, city, career = _apply_negative_constraint_reversal_to_intent_payloads(
+        None,
+        {"negative_colleges": ["江西财经大学"]},
+        {"negative_province": ["江西"], "negative_city": ["南昌"]},
+        None,
+        latest_utterance="别排除江西财经大学",
+        batch="01",
+    )
+
+    assert major is None
+    assert school == {"colleges": ["江西财经大学"]}
+    assert city is None
+    assert career is None
+
+
+def test_negative_constraint_reversal_payload_only_rewrites_covered_major_clause():
+    major, school, city, career = _apply_negative_constraint_reversal_to_intent_payloads(
+        {"negative_level2": ["经济学类"], "negative_level3": ["临床医学"]},
+        None,
+        None,
+        None,
+        latest_utterance="不要排除经济学类，但临床医学还是排除",
+        batch="01",
+    )
+
+    assert major == {"negative_level3": ["临床医学"], "level2": ["经济学类"]}
+    assert school is None
+    assert city is None
+    assert career is None
+
+
+def test_negative_constraint_reversal_payload_keeps_explicit_region_exclusion_after_school_reversal():
+    major, school, city, career = _apply_negative_constraint_reversal_to_intent_payloads(
+        None,
+        {"negative_colleges": ["江西财经大学"]},
+        {"negative_province": ["江西"], "negative_city": ["南昌"]},
+        None,
+        latest_utterance="别排除江西财经大学，但江西地区还是排除",
+        batch="01",
+    )
+
+    assert major is None
+    assert school == {"colleges": ["江西财经大学"]}
+    assert city == {"negative_province": ["江西"]}
+    assert career is None
 
 
 def test_refine_major_intents_dedupes_same_name_across_levels():
@@ -5702,6 +5787,7 @@ async def test_apply_preference_intents_refreshes_recommendation_overlay_without
         "mode": "overlay_best_effort",
         "staleMarked": True,
         "constraintStateSynced": True,
+        "tuitionBudgetSynced": None,
     }
     assert "已采纳" in resp.message
     assert "后续推荐和专家优选" in resp.message
