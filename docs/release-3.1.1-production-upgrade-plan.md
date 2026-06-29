@@ -634,3 +634,50 @@ Cannot connect to host host.docker.internal:8090 ssl:default [Name or service no
 
 - 使用用户提供 token 验证时，该 token 对应用户为 `ORIGIN`，但同时命中内置权益白名单，因此 `VOLUNTEER` 和 `PREDICT` 都返回 `canOperate=true`，符合白名单优先放行逻辑。
 - 普通非白名单 `ORIGIN + VOLUNTEER` 的生产接口验证仍待使用非白名单测试 token 补充；代码层面已有单测覆盖。
+
+### 10.11 移动端反馈问题热修
+
+时间：`2026-06-29 08:14 - 08:45 CST`。
+
+上线内容：
+
+- 后端：主站返回 `用户选科信息不存在` 时，`110` 错误提示改为 `请在首页完善高考省份和选科信息后再进入AI智能填报`。
+- 后端：候选池筛选补充“中外合作/中外合作办学”标签识别，覆盖学校名、展示学校名、院校性质、院校类型、专业名、学校/专业标签、推荐原因和风险标记等来源；支持在院校性质/招生类型筛选中排除中外合作。
+- 后端：`generateAllExpertAIProgram` 增加 `gaotu.zhiyuan.program-data-url` 配置，生产配置继续统一走 `https://internal.gaotuzhiyuan.com`。
+- 前端：从候选池“加入方案”后保留候选分组展开状态和相对滚动位置，避免加入后页面折叠或跳离当前志愿。
+
+验证记录：
+
+- 后端定向回归：`mvn -Dtest=GaotuServiceTest,PlanningStateServiceTest#shouldDeriveCooperativeTagsFromCandidateProgramText,PlanningStateServiceTest#shouldFilterCandidatePoolBySchoolAndMajorKeywords,PlanningStateServiceTest#shouldReturnCandidateFilterOptionsFromBackend test`，`4` 个测试通过。
+- 后端打包：`mvn -DskipTests package` 成功。
+- 前端构建：`npm run build:prod` 成功；仅有既有 Next env 缺省提示和 `customerDetail/style.module.scss` autoprefixer warning。
+- `git diff --check HEAD` 通过。
+
+部署过程：
+
+1. 当前生产配置 `/apps/zhiyuan-server-prod/application-online.yml` 已确认：
+   - `gaotu.zhiyuan.zhiyuan-Url=https://internal.gaotuzhiyuan.com`
+   - `gaotu.zhiyuan.program-data-Url=https://internal.gaotuzhiyuan.com`
+   - `gaotu.zhiyuan.user-url=https://internal-user.gaotu100.com`
+2. 后端旧 JAR 备份后替换 `/apps/releases/zhiyuan/3.1.1/server/zhiyuan-server.jar`。
+3. 通过 `systemctl restart zhiyuan-server-3.1.1-prod.service` 重启后端服务。
+4. 前端先给旧镜像打回滚标签，再基于当前生产镜像覆盖本次 `.next` 产物构建新镜像，避免在生产机器重新安装依赖。
+5. 新前端镜像先以临时容器映射 `28689:28688` 冒烟，Next 启动正常后，停止并重命名旧生产容器，再以原容器名和端口 `88:28688` 启动新容器。
+
+产物与回滚信息：
+
+- 后端新 JAR sha256：`8ca083474f977f043015a17fd9040189a762f6a4cabec282a15d04fa54f80f2b`。
+- 后端旧 JAR sha256：`d362343a851782c3d19fc64ff1e62e2d1080127b5166d760aec82a2c78746031`。
+- 后端旧 JAR 备份：`/apps/releases/zhiyuan/3.1.1/server/zhiyuan-server.jar.before-feedback-hotfix-20260629-083527`。
+- 前端新镜像：`zhiyuan-web:prod-3.1.1-hotfix-mobile`，image id `114e97292e78`。
+- 前端回滚镜像：`zhiyuan-web:prod-3.1.1-hotfix-mobile-before-feedback-20260629-083527`，image id `a44d99ea4f1e`。
+- 前端回滚容器：`zhiyuan-web-3.1.1-prod-before-feedback-20260629-083527`。
+
+上线后健康检查：
+
+- 后端服务：`zhiyuan-server-3.1.1-prod.service active (running)`，新进程 PID `7860`。
+- 后端本机接口：`GET http://127.0.0.1:8090/gaotu-assistant-bot/base-data/ethnicity-list` 返回 `200`。
+- 后端上线后日志中 `workspace-state`、`candidate-pool/filter-options`、`candidate-pool/query`、`working-plan/select` 等接口均有 `200` 响应。
+- 前端容器：`zhiyuan-web-3.1.1-prod Up`，端口 `0.0.0.0:88->28688/tcp`。
+- 前端 Next 日志：`Ready in 541ms`。
+- 前端根路径 `/` 返回 `404`，与部署前表现一致。

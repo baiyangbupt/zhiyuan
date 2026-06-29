@@ -434,8 +434,13 @@ public class GaotuService {
     public UserInfoByTokenRes getUserInfoByToken(String token) {
         log.info("开始根据token查询用户信息, 请求参数: {}", token);
         ResponseDTO<UserInfoByTokenRes> response = gaotuClient.getUserInfoByToken(token);
-        if (response.getCode() != 0 || response.getData() == null) {
-            log.error("开始根据token查询用户信息失败:code:{},msg:{}", response.getCode(), response.getMsg());
+        if (response == null || response.getCode() != 0 || response.getData() == null) {
+            String responseMsg = response == null ? null : response.getMsg();
+            log.error("开始根据token查询用户信息失败:code:{},msg:{}",
+                    response == null ? null : response.getCode(), responseMsg);
+            if ("用户选科信息不存在".equals(responseMsg)) {
+                throw new BusinessException(110, "请在首页完善高考省份和选科信息后再进入AI智能填报");
+            }
             throw new BusinessException(110, "链接已经失效，请尝试重新点击进入");
         }
         log.info("getUserInfoByToken:返回:{}",JSON.toJSONString(response));
