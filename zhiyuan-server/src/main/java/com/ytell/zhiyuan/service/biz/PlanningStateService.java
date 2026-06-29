@@ -55,6 +55,9 @@ public class PlanningStateService {
     private static final String OTHER_MAJOR_FILTER_LABEL = "其他专业";
     private static final int DEFAULT_INITIAL_PLAN_TARGET_COUNT = 45;
 
+    private static final String COOPERATIVE_SCHOOL_TAG = "\u4e2d\u5916\u5408\u4f5c";
+    private static final String COOPERATIVE_MAJOR_TAG = "\u4e2d\u5916\u5408\u4f5c\u529e\u5b66";
+
     private static final Set<String> MACRO_REGION_TAGS = new HashSet<String>() {{
         add("华东");
         add("华北");
@@ -7940,6 +7943,9 @@ public class PlanningStateService {
         tags.add(item.getSchoolNature());
         tags.add(item.getSchoolCategory());
         tags.add(item.getSchoolLevel());
+        if (isCooperativeCandidate(item)) {
+            tags.add(COOPERATIVE_SCHOOL_TAG);
+        }
         return normalizeCandidateSchoolTags(item, tags);
     }
 
@@ -7953,7 +7959,62 @@ public class PlanningStateService {
         tags.addAll(defaultList(item.getMajorRankTags()));
         tags.addAll(defaultList(item.getMajorPlanTags()));
         tags.addAll(extractConstraintTags(item));
+        if (isCooperativeCandidate(item)) {
+            tags.add(COOPERATIVE_MAJOR_TAG);
+        }
         return tags;
+    }
+
+    private boolean isCooperativeCandidate(CandidateItemDTO item) {
+        if (item == null) {
+            return false;
+        }
+        List<String> values = Lists.newArrayList();
+        values.add(item.getSchoolName());
+        values.add(item.getDisplaySchoolName());
+        values.add(item.getSchoolNature());
+        values.add(item.getSchoolCategory());
+        values.add(item.getMajorName());
+        values.addAll(defaultList(item.getSchoolBasicTags()));
+        values.addAll(defaultList(item.getSchoolRankTags()));
+        values.addAll(defaultList(item.getSchoolPopupTags()));
+        values.addAll(defaultList(item.getMajorRankTags()));
+        values.addAll(defaultList(item.getMajorPlanTags()));
+        values.addAll(defaultList(item.getReasonCodes()));
+        values.addAll(defaultList(item.getRiskFlags()));
+
+        String joined = values.stream()
+                .filter(value -> !Strings.isNullOrEmpty(value))
+                .collect(Collectors.joining(" "));
+        if (Strings.isNullOrEmpty(joined)) {
+            return false;
+        }
+        if (containsAny(joined,
+                COOPERATIVE_SCHOOL_TAG,
+                COOPERATIVE_MAJOR_TAG,
+                "\u5408\u4f5c\u529e\u5b66",
+                "\u4e2d\u5916\u9ad8\u6c34\u5e73",
+                "\u4e2d\u5916\u9ad8\u6c34\u5e73\u5927\u5b66\u5b66\u751f\u4ea4\u6d41\u8ba1\u5212",
+                "\u5b66\u5206\u4e92\u8ba4",
+                "\u6e2f\u6fb3\u53f0\u5730\u533a\u5408\u4f5c\u529e\u5b66")) {
+            return true;
+        }
+        boolean hasForeignSignal = containsAny(joined,
+                "\u5916\u65b9\u5927\u5b66",
+                "\u5916\u65b9\u5b66\u6821",
+                "\u5916\u65b9\u6559\u5b66",
+                "\u56fd\u5916\u5927\u5b66",
+                "\u5883\u5916\u5927\u5b66",
+                "\u6fb3\u5143/\u5b66\u5e74",
+                "\u6fb3\u5e01/\u5b66\u5e74");
+        boolean hasCooperativeMode = containsAny(joined,
+                "2+2",
+                "3+1",
+                "3+2",
+                "4+0",
+                "\u8054\u5408\u57f9\u517b",
+                "\u53cc\u5b66\u4f4d");
+        return hasForeignSignal && hasCooperativeMode;
     }
 
     private String resolveMajorDiscipline(CandidateItemDTO item) {

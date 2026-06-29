@@ -5507,6 +5507,57 @@ public class PlanningStateServiceTest {
     }
 
     @Test
+    void shouldDeriveCooperativeTagsFromCandidateProgramText() {
+        when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
+                .thenReturn(null);
+
+        String cooperativeSchoolTag = "\u4e2d\u5916\u5408\u4f5c";
+        String cooperativeMajorTag = "\u4e2d\u5916\u5408\u4f5c\u529e\u5b66";
+        String cooperativeMajorName = "CS(\u4e2d\u5916\u9ad8\u6c34\u5e73\u5927\u5b66\u5b66\u751f\u4ea4\u6d41\u8ba1\u5212,2+2\u8054\u5408\u57f9\u517b,\u5916\u65b9\u5927\u5b66,\u5b66\u5206\u4e92\u8ba4)";
+
+        VolunteerRecommendListResponse.VolunteerSchool cooperativeSchool = buildSchool(
+                "ps1", "s1", "SchoolA", "Beijing", 1, buildMajor("m1", cooperativeMajorName));
+        cooperativeSchool.setSchool_nature("\u516c\u529e");
+
+        VolunteerRecommendListResponse.VolunteerMajor domesticMajor = buildMajor("m2", "Software Engineering");
+        domesticMajor.setPlanTagList(java.util.Arrays.asList("\u8054\u5408\u57f9\u517b"));
+        VolunteerRecommendListResponse.VolunteerSchool domesticSchool = buildSchool(
+                "ps2", "s2", "SchoolB", "Shanghai", 2, domesticMajor);
+        domesticSchool.setSchool_nature("\u516c\u529e");
+
+        VolunteerRecommendListResponse response = new VolunteerRecommendListResponse();
+        response.setSafes(java.util.Arrays.asList(cooperativeSchool, domesticSchool));
+        response.setSprints(java.util.Collections.emptyList());
+        response.setProtects(java.util.Collections.emptyList());
+        when(volunteerBizService.recommendVolunteerList(1L, 1L, false, false)).thenReturn(response);
+
+        planningStateService.generateCandidatePool(1L, 1L, new CandidatePoolGenerateReq());
+        ChatSessionExtraData stored = latestStoredStateFromSave();
+        when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
+                .thenReturn(stored);
+
+        CandidateFilterOptionsDTO options = planningStateService.getCandidateFilterOptions(1L, 1L);
+        assertTrue(options.getSchoolTags().contains(cooperativeSchoolTag));
+        assertTrue(options.getMajorTags().contains(cooperativeMajorTag));
+        assertTrue(options.getGroups().stream().anyMatch(group ->
+                "school.nature".equals(group.getGroupCode()) && group.getValues().contains(cooperativeSchoolTag)));
+        assertTrue(options.getGroups().stream().anyMatch(group ->
+                "admission.type".equals(group.getGroupCode()) && group.getValues().contains(cooperativeMajorTag)));
+
+        CandidatePoolQueryReq schoolExcludeReq = new CandidatePoolQueryReq();
+        schoolExcludeReq.getFilters().setNegativeSchoolTags(java.util.Arrays.asList(cooperativeSchoolTag));
+        CandidatePoolQueryRes schoolExcludeRes = planningStateService.queryCandidatePool(1L, 1L, schoolExcludeReq);
+        assertEquals(Integer.valueOf(1), schoolExcludeRes.getTotal());
+        assertEquals("SchoolB", schoolExcludeRes.getItems().get(0).getSchoolName());
+
+        CandidatePoolQueryReq majorExcludeReq = new CandidatePoolQueryReq();
+        majorExcludeReq.getFilters().setNegativeMajorTags(java.util.Arrays.asList(cooperativeMajorTag));
+        CandidatePoolQueryRes majorExcludeRes = planningStateService.queryCandidatePool(1L, 1L, majorExcludeReq);
+        assertEquals(Integer.valueOf(1), majorExcludeRes.getTotal());
+        assertEquals("SchoolB", majorExcludeRes.getItems().get(0).getSchoolName());
+    }
+
+    @Test
     void shouldUseDisplaySchoolNameForMajorGroupSchoolNameFilter() {
         when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.PLANNING_STATE_KEY)))
                 .thenReturn(null);
