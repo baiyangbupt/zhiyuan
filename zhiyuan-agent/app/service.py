@@ -1098,6 +1098,7 @@ def _pending_confirmation_from_state(state: dict[str, Any] | None) -> PendingCon
         or state.get("planningVersion")
         or state.get("planning_version")
     )
+    pending_id = str(state.get("pendingId") or state.get("pending_id") or "").strip()
     if kind == "plan_mutation":
         if action_family == "apply_fix_proposal":
             payload = dict(execution_payload)
@@ -1113,6 +1114,7 @@ def _pending_confirmation_from_state(state: dict[str, Any] | None) -> PendingCon
             except Exception:
                 payload = {}
         pending = PendingConfirmation(
+            pending_id=pending_id,
             kind="plan_mutation",
             action_family=action_family,
             preview_summary=str(state.get("summary") or ""),
@@ -1132,6 +1134,7 @@ def _pending_confirmation_from_state(state: dict[str, Any] | None) -> PendingCon
     if not isinstance(intent_payload, dict) or not intent_payload:
         return None
     pending = PendingConfirmation(
+        pending_id=pending_id,
         kind="intent_change",
         action_family=action_family,
         preview_summary=str(state.get("summary") or ""),
@@ -1249,11 +1252,21 @@ async def _clear_legacy_plan_edit_cache_best_effort(session_id: str) -> None:
         logger.warning("Failed to clear legacy planEditCache: session_id=%s", session_id, exc_info=True)
 
 
+def _pending_confirmation_id(pending: Any) -> str:
+    if isinstance(pending, dict):
+        return str(pending.get("pendingId") or pending.get("pending_id") or "").strip()
+    return str(
+        getattr(pending, "pending_id", None)
+        or getattr(pending, "pendingId", None)
+        or ""
+    ).strip()
+
+
 def _build_plan_pending_state(
     session_id: str,
     confirmation_candidate: dict[str, Any],
     *,
-    replaced_pending: dict[str, Any] | None = None,
+    replaced_pending: Any | None = None,
 ) -> dict[str, Any]:
     pending_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
@@ -1296,8 +1309,9 @@ def _build_plan_pending_state(
     intent_update = confirmation_candidate.get("intent_update")
     if isinstance(intent_update, dict) and intent_update.get("selected"):
         state["executionPayload"]["intentPayload"] = intent_update
-    if replaced_pending and replaced_pending.get("pendingId"):
-        state["replacesPendingId"] = replaced_pending.get("pendingId")
+    replaced_pending_id = _pending_confirmation_id(replaced_pending)
+    if replaced_pending_id:
+        state["replacesPendingId"] = replaced_pending_id
     return state
 
 
@@ -2217,7 +2231,7 @@ def _build_intent_pending_state(
     batch: str,
     summary: str,
     constraint_intent_type: str = "default",
-    replaced_pending: dict[str, Any] | None = None,
+    replaced_pending: Any | None = None,
 ) -> dict[str, Any]:
     pending_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
@@ -2240,8 +2254,9 @@ def _build_intent_pending_state(
         "createdAt": now,
         "updatedAt": now,
     }
-    if replaced_pending and replaced_pending.get("pendingId"):
-        state["replacesPendingId"] = replaced_pending.get("pendingId")
+    replaced_pending_id = _pending_confirmation_id(replaced_pending)
+    if replaced_pending_id:
+        state["replacesPendingId"] = replaced_pending_id
     if constraint_intent_type and constraint_intent_type != "default":
         state["constraintIntentType"] = constraint_intent_type
     if intent_mode == "constraint":
@@ -2959,8 +2974,11 @@ async def _create_pending_intent_confirmation_response(
     batch: str,
     fallback_mechanism_line: str = "",
     fallback_detail_lines: list[str] | None = None,
+    replaced_pending: Any | None = None,
 ) -> ChatServiceResponseEnvelope:
-    replaced_pending = await _load_pending_confirmation_state(session_id)
+    if replaced_pending is None:
+        loaded_pending = await _load_pending_confirmation_state(session_id)
+        replaced_pending = loaded_pending if isinstance(loaded_pending, dict) else None
     mode_text = "要求" if intent_mode == "constraint" else "偏好"
     raw_constraint_intent_type = selected_data.get("constraintIntentType") or selected_data.get("constraint_intent_type")
     if not _constraint_payload_has_required_scope(
@@ -2993,7 +3011,7 @@ async def _create_pending_intent_confirmation_response(
         batch=batch,
         summary=summary,
         constraint_intent_type=constraint_intent_type,
-        replaced_pending=replaced_pending if isinstance(replaced_pending, dict) else None,
+        replaced_pending=replaced_pending,
     )
     await _save_pending_confirmation_state(session_id, pending_state)
     await _clear_legacy_plan_edit_cache_best_effort(session_id)
@@ -4149,7 +4167,7 @@ def _build_fix_proposal_pending_state(
     proposal_source: str = "review_check",
     user_goal_request: dict[str, Any] | None = None,
     intent_payload: dict[str, Any] | None = None,
-    replaced_pending: dict[str, Any] | None = None,
+    replaced_pending: Any | None = None,
 ) -> dict[str, Any]:
     pending_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
@@ -4184,8 +4202,9 @@ def _build_fix_proposal_pending_state(
         state["executionPayload"]["userGoalRequest"] = user_goal_request
     if isinstance(intent_payload, dict) and intent_payload.get("selected"):
         state["executionPayload"]["intentPayload"] = intent_payload
-    if replaced_pending and replaced_pending.get("pendingId"):
-        state["replacesPendingId"] = replaced_pending.get("pendingId")
+    replaced_pending_id = _pending_confirmation_id(replaced_pending)
+    if replaced_pending_id:
+        state["replacesPendingId"] = replaced_pending_id
     return state
 
 
@@ -12592,6 +12611,7 @@ class ChatService:
                 merged=merged,
                 intent_mode="constraint",
                 batch=batch,
+                replaced_pending=resolve_pending_confirmation(request_context),
             )
             for followup in intent_response.followups:
                 if isinstance(followup, WSResponse) and followup.type == "pendingConfirmationCard":
