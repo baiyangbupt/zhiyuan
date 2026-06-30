@@ -17,6 +17,7 @@ import com.ytell.zhiyuan.model.entity.biz.ChatSession;
 import com.ytell.zhiyuan.model.entity.biz.ChatSessionExtraData;
 import com.ytell.zhiyuan.model.entity.biz.PlanningDataFreshnessScheduleEntity;
 import com.ytell.zhiyuan.model.enums.DataType;
+import com.ytell.zhiyuan.model.enums.VolunteerModel;
 import com.ytell.zhiyuan.model.vo.MajorExtraDataVO;
 import com.ytell.zhiyuan.model.vo.SchoolVO;
 import com.ytell.zhiyuan.service.shared.PlanningBehaviorEventSharedService;
@@ -1077,7 +1078,7 @@ public class PlanningStateService {
         CandidatePoolStateDTO candidatePoolState = new CandidatePoolStateDTO();
         candidatePoolState.setGeneratedAt(OffsetDateTime.now().toString());
         candidatePoolState.setSourceVersion((state.getVersion() == null ? 0 : state.getVersion()) + 1);
-        candidatePoolState.setRequiredCount(response.getBaseData() != null ? response.getBaseData().getNeed_count() : null);
+        candidatePoolState.setRequiredCount(resolveRequiredPlanCount(chatSessionId, response));
         fillRequiredTierCounts(chatSessionId, candidatePoolState, response);
         candidatePoolState.setRequiredUnitCount(response.getBaseData() != null && response.getBaseData().getVolunteerCount() != null
                 ? response.getBaseData().getVolunteerCount().getSchoolCount() : null);
@@ -1164,7 +1165,7 @@ public class PlanningStateService {
         if (response == null || response.getBaseData() == null) {
             return requiredTierCounts;
         }
-        Integer requiredCount = resolveRequiredPlanCount(response);
+        Integer requiredCount = resolveRequiredPlanCount(chatSessionId, response);
         CreateSessionReq userScoreDetail = resolveTierTargetScoreDetail(chatSessionId, response);
         CreateSessionReq.StrategyType strategyType = resolveExplicitRequiredTierStrategy(userScoreDetail);
         if (requiredCount != null && requiredCount > 0 && strategyType != null) {
@@ -1209,9 +1210,17 @@ public class PlanningStateService {
         return requiredTierCounts;
     }
 
-    private Integer resolveRequiredPlanCount(VolunteerRecommendListResponse response) {
+    private Integer resolveRequiredPlanCount(Long chatSessionId, VolunteerRecommendListResponse response) {
         if (response == null || response.getBaseData() == null) {
             return null;
+        }
+        Integer sessionTargetCount = resolveRequiredPlanCountFromScoreDetail(
+                resolveTierTargetScoreDetail(chatSessionId, response),
+                response.getBaseData().getVolunteerModel());
+        boolean responseHasExplicitCountContext = response.getBaseData().getVolunteerCount() != null
+                && response.getBaseData().getVolunteerModel() != null;
+        if (!responseHasExplicitCountContext && sessionTargetCount != null && sessionTargetCount > 0) {
+            return sessionTargetCount;
         }
         Integer requiredCount = response.getBaseData().getNeed_count();
         if (requiredCount != null && requiredCount > 0) {
@@ -1225,7 +1234,25 @@ public class PlanningStateService {
                 return modelCount;
             }
         }
+        if (sessionTargetCount != null && sessionTargetCount > 0) {
+            return sessionTargetCount;
+        }
         return DEFAULT_INITIAL_PLAN_TARGET_COUNT;
+    }
+
+    private Integer resolveRequiredPlanCountFromScoreDetail(CreateSessionReq scoreDetail,
+                                                            VolunteerModel fallbackModel) {
+        if (scoreDetail == null || scoreDetail.getVolunteerCount() == null) {
+            return null;
+        }
+        VolunteerModel model = scoreDetail.getVolunteerModel() != null ? scoreDetail.getVolunteerModel() : fallbackModel;
+        if (VolunteerModel.majorGroup.equals(model)) {
+            return scoreDetail.getVolunteerCount().getSchoolCount();
+        }
+        if (VolunteerModel.major.equals(model)) {
+            return scoreDetail.getVolunteerCount().getMajorCount();
+        }
+        return null;
     }
 
     private boolean isMajorGroupVolunteerModel(VolunteerRecommendListResponse response) {
@@ -4976,7 +5003,7 @@ public class PlanningStateService {
         CandidatePoolStateDTO candidatePoolState = new CandidatePoolStateDTO();
         candidatePoolState.setGeneratedAt(OffsetDateTime.now().toString());
         candidatePoolState.setSourceVersion(0);
-        candidatePoolState.setRequiredCount(response.getBaseData() != null ? response.getBaseData().getNeed_count() : null);
+        candidatePoolState.setRequiredCount(resolveRequiredPlanCount(chatSessionId, response));
         fillRequiredTierCounts(chatSessionId, candidatePoolState, response);
         candidatePoolState.setRequiredUnitCount(response.getBaseData() != null && response.getBaseData().getVolunteerCount() != null
                 ? response.getBaseData().getVolunteerCount().getSchoolCount() : null);

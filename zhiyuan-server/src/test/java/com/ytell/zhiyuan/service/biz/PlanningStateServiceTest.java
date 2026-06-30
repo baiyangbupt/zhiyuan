@@ -782,6 +782,85 @@ public class PlanningStateServiceTest {
     }
 
     @Test
+    void shouldUseStoredMajorCountWhenLegacyImportBaseDataHasInflatedNeedCount() {
+        bindPlanningStateStore();
+        CreateSessionReq scoreDetail = buildScoreDetail();
+        scoreDetail.setVolunteerModel(VolunteerModel.major);
+        CreateSessionReq.VolunteerCount volunteerCount = new CreateSessionReq.VolunteerCount();
+        volunteerCount.setMajorCount(96);
+        volunteerCount.setSchoolCount(0);
+        scoreDetail.setVolunteerCount(volunteerCount);
+        CreateSessionReq.StrategyType strategyType = new CreateSessionReq.StrategyType();
+        strategyType.setCode("aggressive");
+        scoreDetail.setStrategyType(strategyType);
+        ChatSessionExtraData scoreData = new ChatSessionExtraData();
+        scoreData.setDataKey(ChatSessionExtraDataConstants.USER_SCORE_KEY);
+        scoreData.setDataValue(JSONObject.toJSONString(scoreDetail));
+        when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.USER_SCORE_KEY)))
+                .thenReturn(scoreData);
+
+        VolunteerRecommendListResponse legacy = new VolunteerRecommendListResponse();
+        legacy.setBaseData(buildBaseData(8374, 4000, 2500, 1874));
+        legacy.setSprints(java.util.Arrays.asList(buildSchool(
+                "ps1", "s1", "学校A", "北京", 1, buildMajorWithRatio("m1", "专业A", "18"))));
+        legacy.setSafes(java.util.Arrays.asList(buildSchool(
+                "ps2", "s2", "学校B", "天津", 1, buildMajorWithRatio("m2", "专业B", "52"))));
+        legacy.setProtects(java.util.Arrays.asList(buildSchool(
+                "ps3", "s3", "学校C", "河北", 1, buildMajorWithRatio("m3", "专业C", "82"))));
+        when(volunteerBizService.loadFinalSubmitVolunteerData(1L)).thenThrow(new RuntimeException("missing final"));
+        when(volunteerBizService.loadCachedRecommendData(1L)).thenThrow(new RuntimeException("missing temp"));
+        when(volunteerBizService.loadOriginalVolunteerData(1L)).thenReturn(legacy);
+
+        PlanningStateDTO state = planningStateService.getPlanningState(1L);
+
+        assertEquals(Integer.valueOf(96), state.getCandidatePoolState().getRequiredCount());
+        assertEquals(Integer.valueOf(38), state.getCandidatePoolState().getRequiredTierCounts().get("冲"));
+        assertEquals(Integer.valueOf(28), state.getCandidatePoolState().getRequiredTierCounts().get("稳"));
+        assertEquals(Integer.valueOf(30), state.getCandidatePoolState().getRequiredTierCounts().get("保"));
+    }
+
+    @Test
+    void shouldUseStoredSchoolCountWhenLegacyImportIsMajorGroup() {
+        bindPlanningStateStore();
+        CreateSessionReq scoreDetail = buildScoreDetail();
+        scoreDetail.setVolunteerModel(VolunteerModel.majorGroup);
+        CreateSessionReq.VolunteerCount volunteerCount = new CreateSessionReq.VolunteerCount();
+        volunteerCount.setMajorCount(6);
+        volunteerCount.setSchoolCount(45);
+        scoreDetail.setVolunteerCount(volunteerCount);
+        CreateSessionReq.StrategyType strategyType = new CreateSessionReq.StrategyType();
+        strategyType.setCode("aggressive");
+        scoreDetail.setStrategyType(strategyType);
+        ChatSessionExtraData scoreData = new ChatSessionExtraData();
+        scoreData.setDataKey(ChatSessionExtraDataConstants.USER_SCORE_KEY);
+        scoreData.setDataValue(JSONObject.toJSONString(scoreDetail));
+        when(chatSessionExtraDataSharedService.getBySessionIdAndDataKey(eq(1L), eq(ChatSessionExtraDataConstants.USER_SCORE_KEY)))
+                .thenReturn(scoreData);
+
+        VolunteerRecommendListResponse legacy = new VolunteerRecommendListResponse();
+        legacy.setBaseData(buildBaseData(8374, 4000, 2500, 1874));
+        VolunteerRecommendListResponse.VolunteerSchool sprint = buildSchool(
+                "ps1", "s1", "学校A01组", "北京", 1, buildMajorWithRatio("m1", "专业A", "18"));
+        VolunteerRecommendListResponse.VolunteerSchool safe = buildSchool(
+                "ps2", "s2", "学校B01组", "天津", 1, buildMajorWithRatio("m2", "专业B", "52"));
+        VolunteerRecommendListResponse.VolunteerSchool protect = buildSchool(
+                "ps3", "s3", "学校C01组", "河北", 1, buildMajorWithRatio("m3", "专业C", "82"));
+        legacy.setSprints(java.util.Arrays.asList(sprint));
+        legacy.setSafes(java.util.Arrays.asList(safe));
+        legacy.setProtects(java.util.Arrays.asList(protect));
+        when(volunteerBizService.loadFinalSubmitVolunteerData(1L)).thenThrow(new RuntimeException("missing final"));
+        when(volunteerBizService.loadCachedRecommendData(1L)).thenThrow(new RuntimeException("missing temp"));
+        when(volunteerBizService.loadOriginalVolunteerData(1L)).thenReturn(legacy);
+
+        PlanningStateDTO state = planningStateService.getPlanningState(1L);
+
+        assertEquals(Integer.valueOf(45), state.getCandidatePoolState().getRequiredCount());
+        assertEquals(Integer.valueOf(18), state.getCandidatePoolState().getRequiredTierCounts().get("冲"));
+        assertEquals(Integer.valueOf(13), state.getCandidatePoolState().getRequiredTierCounts().get("稳"));
+        assertEquals(Integer.valueOf(14), state.getCandidatePoolState().getRequiredTierCounts().get("保"));
+    }
+
+    @Test
     void shouldImportMajorModeTempPlanByMajorEntries() {
         bindPlanningStateStore();
         VolunteerRecommendListResponse legacy = new VolunteerRecommendListResponse();
