@@ -87,6 +87,7 @@ gaotu:
   zhiyuan:
     evn: grayTest
     zhiyuan-url: https://www.gaotuzhiyuan.com
+    program-data-url: https://internal.gaotuzhiyuan.com
     user-url: https://internal-user.gaotu100.com
     risk-url: https://risk.gaotu100.com
     risk-open: false

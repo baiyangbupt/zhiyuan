@@ -17,6 +17,7 @@ import com.ytell.zhiyuan.model.entity.biz.ChatSession;
 import com.ytell.zhiyuan.model.entity.biz.ChatSessionExtraData;
 import com.ytell.zhiyuan.model.entity.biz.PlanningDataFreshnessScheduleEntity;
 import com.ytell.zhiyuan.model.enums.DataType;
+import com.ytell.zhiyuan.model.enums.VolunteerModel;
 import com.ytell.zhiyuan.model.vo.MajorExtraDataVO;
 import com.ytell.zhiyuan.model.vo.SchoolVO;
 import com.ytell.zhiyuan.service.shared.PlanningBehaviorEventSharedService;
@@ -54,6 +55,9 @@ public class PlanningStateService {
 
     private static final String OTHER_MAJOR_FILTER_LABEL = "其他专业";
     private static final int DEFAULT_INITIAL_PLAN_TARGET_COUNT = 45;
+
+    private static final String COOPERATIVE_SCHOOL_TAG = "\u4e2d\u5916\u5408\u4f5c";
+    private static final String COOPERATIVE_MAJOR_TAG = "\u4e2d\u5916\u5408\u4f5c\u529e\u5b66";
 
     private static final Set<String> MACRO_REGION_TAGS = new HashSet<String>() {{
         add("华东");
@@ -1074,7 +1078,7 @@ public class PlanningStateService {
         CandidatePoolStateDTO candidatePoolState = new CandidatePoolStateDTO();
         candidatePoolState.setGeneratedAt(OffsetDateTime.now().toString());
         candidatePoolState.setSourceVersion((state.getVersion() == null ? 0 : state.getVersion()) + 1);
-        candidatePoolState.setRequiredCount(response.getBaseData() != null ? response.getBaseData().getNeed_count() : null);
+        candidatePoolState.setRequiredCount(resolveRequiredPlanCount(chatSessionId, response));
         fillRequiredTierCounts(chatSessionId, candidatePoolState, response);
         candidatePoolState.setRequiredUnitCount(response.getBaseData() != null && response.getBaseData().getVolunteerCount() != null
                 ? response.getBaseData().getVolunteerCount().getSchoolCount() : null);
@@ -1161,7 +1165,7 @@ public class PlanningStateService {
         if (response == null || response.getBaseData() == null) {
             return requiredTierCounts;
         }
-        Integer requiredCount = resolveRequiredPlanCount(response);
+        Integer requiredCount = resolveRequiredPlanCount(chatSessionId, response);
         CreateSessionReq userScoreDetail = resolveTierTargetScoreDetail(chatSessionId, response);
         CreateSessionReq.StrategyType strategyType = resolveExplicitRequiredTierStrategy(userScoreDetail);
         if (requiredCount != null && requiredCount > 0 && strategyType != null) {
@@ -1206,9 +1210,17 @@ public class PlanningStateService {
         return requiredTierCounts;
     }
 
-    private Integer resolveRequiredPlanCount(VolunteerRecommendListResponse response) {
+    private Integer resolveRequiredPlanCount(Long chatSessionId, VolunteerRecommendListResponse response) {
         if (response == null || response.getBaseData() == null) {
             return null;
+        }
+        Integer sessionTargetCount = resolveRequiredPlanCountFromScoreDetail(
+                resolveTierTargetScoreDetail(chatSessionId, response),
+                response.getBaseData().getVolunteerModel());
+        boolean responseHasExplicitCountContext = response.getBaseData().getVolunteerCount() != null
+                && response.getBaseData().getVolunteerModel() != null;
+        if (!responseHasExplicitCountContext && sessionTargetCount != null && sessionTargetCount > 0) {
+            return sessionTargetCount;
         }
         Integer requiredCount = response.getBaseData().getNeed_count();
         if (requiredCount != null && requiredCount > 0) {
@@ -1222,7 +1234,25 @@ public class PlanningStateService {
                 return modelCount;
             }
         }
+        if (sessionTargetCount != null && sessionTargetCount > 0) {
+            return sessionTargetCount;
+        }
         return DEFAULT_INITIAL_PLAN_TARGET_COUNT;
+    }
+
+    private Integer resolveRequiredPlanCountFromScoreDetail(CreateSessionReq scoreDetail,
+                                                            VolunteerModel fallbackModel) {
+        if (scoreDetail == null || scoreDetail.getVolunteerCount() == null) {
+            return null;
+        }
+        VolunteerModel model = scoreDetail.getVolunteerModel() != null ? scoreDetail.getVolunteerModel() : fallbackModel;
+        if (VolunteerModel.majorGroup.equals(model)) {
+            return scoreDetail.getVolunteerCount().getSchoolCount();
+        }
+        if (VolunteerModel.major.equals(model)) {
+            return scoreDetail.getVolunteerCount().getMajorCount();
+        }
+        return null;
     }
 
     private boolean isMajorGroupVolunteerModel(VolunteerRecommendListResponse response) {
@@ -4973,7 +5003,7 @@ public class PlanningStateService {
         CandidatePoolStateDTO candidatePoolState = new CandidatePoolStateDTO();
         candidatePoolState.setGeneratedAt(OffsetDateTime.now().toString());
         candidatePoolState.setSourceVersion(0);
-        candidatePoolState.setRequiredCount(response.getBaseData() != null ? response.getBaseData().getNeed_count() : null);
+        candidatePoolState.setRequiredCount(resolveRequiredPlanCount(chatSessionId, response));
         fillRequiredTierCounts(chatSessionId, candidatePoolState, response);
         candidatePoolState.setRequiredUnitCount(response.getBaseData() != null && response.getBaseData().getVolunteerCount() != null
                 ? response.getBaseData().getVolunteerCount().getSchoolCount() : null);
@@ -7940,6 +7970,9 @@ public class PlanningStateService {
         tags.add(item.getSchoolNature());
         tags.add(item.getSchoolCategory());
         tags.add(item.getSchoolLevel());
+        if (isCooperativeCandidate(item)) {
+            tags.add(COOPERATIVE_SCHOOL_TAG);
+        }
         return normalizeCandidateSchoolTags(item, tags);
     }
 
@@ -7953,7 +7986,62 @@ public class PlanningStateService {
         tags.addAll(defaultList(item.getMajorRankTags()));
         tags.addAll(defaultList(item.getMajorPlanTags()));
         tags.addAll(extractConstraintTags(item));
+        if (isCooperativeCandidate(item)) {
+            tags.add(COOPERATIVE_MAJOR_TAG);
+        }
         return tags;
+    }
+
+    private boolean isCooperativeCandidate(CandidateItemDTO item) {
+        if (item == null) {
+            return false;
+        }
+        List<String> values = Lists.newArrayList();
+        values.add(item.getSchoolName());
+        values.add(item.getDisplaySchoolName());
+        values.add(item.getSchoolNature());
+        values.add(item.getSchoolCategory());
+        values.add(item.getMajorName());
+        values.addAll(defaultList(item.getSchoolBasicTags()));
+        values.addAll(defaultList(item.getSchoolRankTags()));
+        values.addAll(defaultList(item.getSchoolPopupTags()));
+        values.addAll(defaultList(item.getMajorRankTags()));
+        values.addAll(defaultList(item.getMajorPlanTags()));
+        values.addAll(defaultList(item.getReasonCodes()));
+        values.addAll(defaultList(item.getRiskFlags()));
+
+        String joined = values.stream()
+                .filter(value -> !Strings.isNullOrEmpty(value))
+                .collect(Collectors.joining(" "));
+        if (Strings.isNullOrEmpty(joined)) {
+            return false;
+        }
+        if (containsAny(joined,
+                COOPERATIVE_SCHOOL_TAG,
+                COOPERATIVE_MAJOR_TAG,
+                "\u5408\u4f5c\u529e\u5b66",
+                "\u4e2d\u5916\u9ad8\u6c34\u5e73",
+                "\u4e2d\u5916\u9ad8\u6c34\u5e73\u5927\u5b66\u5b66\u751f\u4ea4\u6d41\u8ba1\u5212",
+                "\u5b66\u5206\u4e92\u8ba4",
+                "\u6e2f\u6fb3\u53f0\u5730\u533a\u5408\u4f5c\u529e\u5b66")) {
+            return true;
+        }
+        boolean hasForeignSignal = containsAny(joined,
+                "\u5916\u65b9\u5927\u5b66",
+                "\u5916\u65b9\u5b66\u6821",
+                "\u5916\u65b9\u6559\u5b66",
+                "\u56fd\u5916\u5927\u5b66",
+                "\u5883\u5916\u5927\u5b66",
+                "\u6fb3\u5143/\u5b66\u5e74",
+                "\u6fb3\u5e01/\u5b66\u5e74");
+        boolean hasCooperativeMode = containsAny(joined,
+                "2+2",
+                "3+1",
+                "3+2",
+                "4+0",
+                "\u8054\u5408\u57f9\u517b",
+                "\u53cc\u5b66\u4f4d");
+        return hasForeignSignal && hasCooperativeMode;
     }
 
     private String resolveMajorDiscipline(CandidateItemDTO item) {
