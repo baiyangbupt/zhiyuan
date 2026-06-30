@@ -621,6 +621,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const [expandedFilterGroupKeys, setExpandedFilterGroupKeys] = useState<string[]>([]);
   const [expandedReviewIssueKeys, setExpandedReviewIssueKeys] = useState<string[]>([]);
   const [collapsedOrderedGroupKeys, setCollapsedOrderedGroupKeys] = useState<string[]>([]);
+  const [expandedCandidateGroupKeys, setExpandedCandidateGroupKeys] = useState<string[]>([]);
   const [candidateFilterOptions, setCandidateFilterOptions] = useState<PlanningCandidateFilterOptionsRes>({
     ...EMPTY_CANDIDATE_FILTER_OPTIONS,
   });
@@ -629,6 +630,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const [focusVolunteerIds, setFocusVolunteerIds] = useState<string[]>([]);
   const [schoolHistoryModal, setSchoolHistoryModal] = useState<SchoolHistoryModalState | null>(null);
   const candidateItemRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const candidateScrollAnchorRef = useRef<{ volunteerId: string; groupKey?: string; topOffset: number } | null>(null);
+  const candidateScrollRestoredVolunteerIdRef = useRef<string | null>(null);
   const orderedItemRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const draftItemRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const draftBasketRef = useRef<HTMLDivElement | null>(null);
@@ -643,6 +646,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const dataFreshnessCheckInFlightRef = useRef(false);
   const dataFreshnessAutoCheckKeyRef = useRef('');
   const candidateSourceRefreshKeyRef = useRef('');
+  const suppressNextCandidateRefreshRef = useRef(false);
   const previousWorkspaceViewKeyRef = useRef(`${routerParams.chatSessionId}:${initialActiveView}`);
   const initialFiltersAppliedRef = useRef(false);
   const candidateViewStateHydratedRef = useRef(false);
@@ -1798,9 +1802,22 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     }
   };
 
-  const handleAddCandidateToWorkingPlan = async (volunteerId?: string) => {
+  const handleAddCandidateToWorkingPlan = async (volunteerId?: string, candidateGroupKey?: string) => {
     if (!volunteerId || actionLoading) {
       return;
+    }
+    const container = workspaceBodyRef.current;
+    const targetElement = candidateItemRefs.current[volunteerId];
+    candidateScrollRestoredVolunteerIdRef.current = null;
+    candidateScrollAnchorRef.current = container && targetElement
+      ? {
+          volunteerId,
+          groupKey: candidateGroupKey,
+          topOffset: targetElement.getBoundingClientRect().top - container.getBoundingClientRect().top,
+        }
+      : null;
+    if (candidateGroupKey) {
+      setExpandedCandidateGroupKeys(prev => (prev.includes(candidateGroupKey) ? prev : [...prev, candidateGroupKey]));
     }
     setActionLoading('workingPlan');
     setWorkingPlanActionVolunteerId(volunteerId);
@@ -1813,17 +1830,21 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         'manual_workspace_v2'
       );
       if (code === 0) {
-        message.success('已加入方案');
+        message.success('\u5df2\u52a0\u5165\u65b9\u6848');
+        suppressNextCandidateRefreshRef.current = true;
+        setFocusVolunteerIds([volunteerId]);
         if (data) {
           applyPlanningState(data);
         } else {
           await fetchWorkspaceState();
         }
       } else {
-        message.error('加入方案失败');
+        candidateScrollAnchorRef.current = null;
+        message.error('\u52a0\u5165\u65b9\u6848\u5931\u8d25');
       }
     } catch (error) {
-      message.error('加入方案异常，请稍后重试');
+      candidateScrollAnchorRef.current = null;
+      message.error('\u52a0\u5165\u65b9\u6848\u5f02\u5e38\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5');
     } finally {
       setWorkingPlanActionVolunteerId(null);
       setActionLoading(null);
@@ -2416,6 +2437,10 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     setFilterSearchKeyword('');
     setFilterPanelOpen(false);
     setCollapsedOrderedGroupKeys([]);
+    setExpandedCandidateGroupKeys([]);
+    candidateScrollAnchorRef.current = null;
+    candidateScrollRestoredVolunteerIdRef.current = null;
+    suppressNextCandidateRefreshRef.current = false;
     setFocusVolunteerIds([]);
     setExpandedSchoolMetaKeys([]);
     setDraftExpanded(false);
@@ -2451,6 +2476,10 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
 
   useEffect(() => {
     if (activeView === 'candidate') {
+      if (suppressNextCandidateRefreshRef.current) {
+        suppressNextCandidateRefreshRef.current = false;
+        return;
+      }
       if (shouldRefreshLatestCandidateOnEnter()) {
         const refreshKey = getCandidateSourceRefreshKey();
         if (candidateSourceRefreshKeyRef.current !== refreshKey) {
@@ -2735,6 +2764,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         });
       }
     }
+    candidateScrollRestoredVolunteerIdRef.current = null;
     setFocusVolunteerIds(workspaceIntent.volunteerIds || []);
     if (workspaceIntent.refresh && nextView === 'candidate') {
       refreshCandidatePool(shouldRefreshLatestCandidateOnEnter(), shouldRefreshLatestCandidateOnEnter());
@@ -2748,6 +2778,25 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     }
     const targetVolunteerId = focusVolunteerIds[0];
     const nextAnimationFrame = window.requestAnimationFrame(() => {
+      const anchor = candidateScrollAnchorRef.current;
+      if (activeView === 'candidate' && anchor?.volunteerId === targetVolunteerId) {
+        if (anchor.groupKey && !expandedCandidateGroupKeys.includes(anchor.groupKey)) {
+          setExpandedCandidateGroupKeys(prev => (prev.includes(anchor.groupKey!) ? prev : [...prev, anchor.groupKey!]));
+          return;
+        }
+        const container = workspaceBodyRef.current;
+        const targetElement = candidateItemRefs.current[targetVolunteerId];
+        if (container && targetElement) {
+          const nextTopOffset = targetElement.getBoundingClientRect().top - container.getBoundingClientRect().top;
+          container.scrollTo({ top: container.scrollTop + nextTopOffset - anchor.topOffset });
+          candidateScrollAnchorRef.current = null;
+          candidateScrollRestoredVolunteerIdRef.current = targetVolunteerId;
+          return;
+        }
+      }
+      if (activeView === 'candidate' && candidateScrollRestoredVolunteerIdRef.current === targetVolunteerId) {
+        return;
+      }
       const targetElement =
         (activeView === 'ordered'
           ? orderedItemRefs.current[targetVolunteerId]
@@ -2759,7 +2808,15 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       });
     });
     return () => window.cancelAnimationFrame(nextAnimationFrame);
-  }, [activeView, draftExpanded, focusVolunteerIds, candidatePoolResult.items, orderedItems.length, workingPlanItems.length]);
+  }, [
+    activeView,
+    draftExpanded,
+    focusVolunteerIds,
+    expandedCandidateGroupKeys,
+    candidatePoolResult.items,
+    orderedItems.length,
+    workingPlanItems.length,
+  ]);
 
   useEffect(() => {
     if (!draftExpanded) {
@@ -3220,6 +3277,10 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const formatFixProposalActionDetail = (action: NonNullable<PlanningFixProposal['actions']>[number]) => {
     const fallback = normalizePlanActionTextForUser(action.detail || action.summary);
     if (action.actionType === 'replace_volunteers' && (action.replacementPairs || []).length > 0) {
+      const totalPairCount = Math.max(
+        action.totalReplacementPairCount || 0,
+        (action.replacementPairs || []).length
+      );
       const pairTexts = (action.replacementPairs || [])
         .slice(0, 3)
         .map(pair => {
@@ -3233,14 +3294,19 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         .filter(Boolean);
       const visiblePairCount = Math.min((action.replacementPairs || []).length, 3);
       if (pairTexts.length === visiblePairCount && pairTexts.length > 0) {
-        const remainCount = (action.replacementPairs || []).length - pairTexts.length;
-        return `建议替换：${pairTexts.join('；')}${remainCount > 0 ? `；另有 ${remainCount} 组未展开` : ''}。`;
+        const remainCount = totalPairCount - pairTexts.length;
+        const countText = totalPairCount > pairTexts.length ? `共 ${totalPairCount} 组，` : '';
+        return `建议替换：${countText}${pairTexts.join('；')}${remainCount > 0 ? `；另有 ${remainCount} 组未展开` : ''}。`;
       }
     }
     if (action.actionType === 'remove_volunteers') {
       const removeText = formatVolunteerListBrief(action.removeVolunteerIds || action.volunteerIds);
       if (removeText) {
-        return `建议移出：${removeText}。`;
+        const totalCount = Math.max(
+          action.totalVolunteerCount || 0,
+          (action.removeVolunteerIds || action.volunteerIds || []).length
+        );
+        return `建议移出：${totalCount > 3 ? `共 ${totalCount} 条，` : ''}${removeText}。`;
       }
     }
     if (['fill_total_count', 'add_local_protect', 'rebalance_protect_ratio', 'fill_probability_gap'].includes(action.actionType || '')) {
@@ -3248,16 +3314,20 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       const volunteerText = formatVolunteerListBrief(action.candidateVolunteerIds || action.volunteerIds);
       const targetText = unitText || volunteerText;
       if (targetText) {
+        const totalCount = unitText
+          ? Math.max(action.totalUnitCount || 0, (action.candidateUnitIds || action.unitIds || []).length)
+          : Math.max(action.totalVolunteerCount || 0, (action.candidateVolunteerIds || action.volunteerIds || []).length);
+        const countPrefix = totalCount > 3 ? `共 ${totalCount} ${unitText ? '组' : '条'}，` : '';
         if (action.actionType === 'add_local_protect') {
-          return `建议补入保底候选：${targetText}。`;
+          return `建议补入保底候选：${countPrefix}${targetText}。`;
         }
         if (action.actionType === 'rebalance_protect_ratio') {
-          return `建议补入保区候选，改善冲稳保结构：${targetText}。`;
+          return `建议补入保区候选，改善冲稳保结构：${countPrefix}${targetText}。`;
         }
         if (action.actionType === 'fill_probability_gap') {
-          return `建议补入中间梯度候选：${targetText}。`;
+          return `建议补入中间梯度候选：${countPrefix}${targetText}。`;
         }
-        return `建议补足方案数量：${targetText}。`;
+        return `建议补足方案数量：${countPrefix}${targetText}。`;
       }
     }
     if (action.actionType === 'sort_by_probability') {
@@ -3637,12 +3707,18 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     const actionDetails = (isBlocked ? [] : proposal.actions || [])
       .map(action => formatFixProposalActionDetail(action))
       .filter(Boolean);
+    const visibleActionDetailCount = Math.min(actionDetails.length, 5);
     const replacementPairTexts = uniqueStrings(
       (isBlocked ? [] : proposal.actions || [])
         .flatMap(action => action.replacementPairs || [])
         .map(formatReplacementPairReadableText)
         .filter(Boolean)
     );
+    const totalReplacementPairCount = Math.max(
+      replacementPairTexts.length,
+      ...(isBlocked ? [] : proposal.actions || []).map(action => action.totalReplacementPairCount || 0)
+    );
+    const visibleReplacementPairCount = Math.min(replacementPairTexts.length, 5);
     const shouldShowReplacementPairs = replacementPairTexts.length > 0 && actionDetails.length === 0;
     const shortages = proposal.candidateShortages || [];
     const visibleShortages = isBlocked ? shortages.slice(0, 1) : shortages.slice(0, 4);
@@ -3711,11 +3787,16 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
             ) : null}
             {actionDetails.length > 0 ? (
               <div className={style.fixProposalPreviewDetails}>
-                {actionDetails.slice(0, 5).map((detail, detailIndex) => (
+                {actionDetails.slice(0, visibleActionDetailCount).map((detail, detailIndex) => (
                   <div key={`${proposal.proposalId || index}-action-${detailIndex}`}>
                     {detail}
                   </div>
                 ))}
+                {actionDetails.length > visibleActionDetailCount ? (
+                  <div className={style.fixProposalMoreText}>
+                    当前展开 {visibleActionDetailCount} 条动作，另有 {actionDetails.length - visibleActionDetailCount} 条未展开
+                  </div>
+                ) : null}
               </div>
             ) : null}
             {canApply ? applyButton : null}
@@ -3723,8 +3804,10 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
         ) : null}
         {!isBlocked && !isInfo && shouldShowReplacementPairs ? (
           <div className={style.fixProposalPairList}>
-            <div className={style.fixProposalSectionTitle}>可能的替换方式</div>
-            {replacementPairTexts.slice(0, 5).map((pairText, pairIndex) => (
+            <div className={style.fixProposalSectionTitle}>
+              可能的替换方式{totalReplacementPairCount > 0 ? `（共 ${totalReplacementPairCount} 组）` : ''}
+            </div>
+            {replacementPairTexts.slice(0, visibleReplacementPairCount).map((pairText, pairIndex) => (
               <div
                 key={`${proposal.proposalId || index}-pair-${pairIndex}`}
                 className={style.fixProposalPairItem}
@@ -3732,8 +3815,10 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                 <span>{pairText}</span>
               </div>
             ))}
-            {replacementPairTexts.length > 5 ? (
-              <div className={style.fixProposalMoreText}>还有 {replacementPairTexts.length - 5} 个替换配对未展开</div>
+            {totalReplacementPairCount > visibleReplacementPairCount ? (
+              <div className={style.fixProposalMoreText}>
+                当前展开 {visibleReplacementPairCount} 组，另有 {totalReplacementPairCount - visibleReplacementPairCount} 组未展开
+              </div>
             ) : null}
           </div>
         ) : null}
@@ -5071,11 +5156,22 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                   {groupedCandidateList.length > 0 ? (
                     groupedCandidateList.map((group, groupIndex) => {
                       const groupSelected = group.items.some(item => isCandidateSelected(item));
+                      const groupExpanded = expandedCandidateGroupKeys.includes(group.key);
                       return (
                       <div key={group.key} className={style.candidateTierSection}>
                         <Collapse
                           ghost
-                          defaultActiveKey={[]}
+                          activeKey={groupExpanded ? [group.key] : []}
+                          onChange={keys => {
+                            const activeKeys = Array.isArray(keys) ? keys : [keys];
+                            const shouldExpand = activeKeys.includes(group.key);
+                            setExpandedCandidateGroupKeys(prev => {
+                              if (shouldExpand) {
+                                return prev.includes(group.key) ? prev : [...prev, group.key];
+                              }
+                              return prev.filter(key => key !== group.key);
+                            });
+                          }}
                           className={style.candidateCollapse}
                         >
                           <Panel
@@ -5389,7 +5485,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                                           workingPlanActionVolunteerId === item.volunteerId &&
                                           !isSelected
                                         }
-                                        onClick={() => handleAddCandidateToWorkingPlan(item.volunteerId)}
+                                        onClick={() => handleAddCandidateToWorkingPlan(item.volunteerId, group.key)}
                                       >
                                         {isSelected ? '已加入方案' : '加入方案'}
                                       </Button>

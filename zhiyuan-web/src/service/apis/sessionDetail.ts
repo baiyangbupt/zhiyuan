@@ -148,6 +148,7 @@ export const getMessageListApi = (tenantId: string, data: IMessageListParams) =>
     url: `/gaotu-assistant-bot/chat/${tenantId}/message/page`,
     method: 'post',
     data,
+    special: [800],
   });
 
 // 保存消息

@@ -19,15 +19,20 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.Assert;
 
 import java.math.BigDecimal;
+import java.net.SocketTimeoutException;
 import java.util.Collections;
 import java.util.Date;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
 @Slf4j
 @Service
 public class GaotuService {
+
+    private static final int VOLUNTEER_DATA_TIMEOUT_STATUS = 110;
+    private static final String VOLUNTEER_DATA_TIMEOUT_MESSAGE = "志愿数据获取超时";
 
     @Autowired
     GaotuProperties gaotuProperties;
@@ -81,6 +86,9 @@ public class GaotuService {
             } catch (BusinessException e) {
                 querySuccess = false;
                 log.error("queryAndSaveProgram:查询方案报错:attempt:{},code:{},msg:{}", attempt, e.getStatus(), e.getMessage());
+                if (isVolunteerDataTimeoutException(e)) {
+                    throw e;
+                }
                 if (attempt == 0) {
                     // 第一次失败：移除专业过滤
                     req.setMajorIdList(Lists.newArrayList());
@@ -211,7 +219,13 @@ public class GaotuService {
         }
 
         log.info("开始查询志愿方案数据, 请求参数: {}", req);
-        ResponseDTO<ProgramPageDTO> response = gaotuClient.getProgramList(req);
+        ResponseDTO<ProgramPageDTO> response;
+        try {
+            response = gaotuClient.getProgramList(req);
+        } catch (RuntimeException e) {
+            throwVolunteerDataTimeoutIfNeeded(e);
+            throw e;
+        }
         log.debug("查询志愿方案数据完成, 响应结果: {}", JSON.toJSONString(response));
 
         if (response.getCode() != 0) {
@@ -244,7 +258,13 @@ public class GaotuService {
         }
 
         log.info("查询志愿方案-全量接口-方案数据, 请求参数: {}", req);
-        ResponseDTO<JSONObject> response = gaotuClient.getProgramFullList(req);
+        ResponseDTO<JSONObject> response;
+        try {
+            response = gaotuClient.getProgramFullList(req);
+        } catch (RuntimeException e) {
+            throwVolunteerDataTimeoutIfNeeded(e);
+            throw e;
+        }
         log.debug("查询志愿方案-全量接口-数据完成, 响应结果: {}", JSON.toJSONString(response));
 
         if (response.getCode() != 0) {
@@ -302,7 +322,13 @@ public class GaotuService {
 
     public RecommendNumResponse getRecommendProgramNum(RecommendNumReq req) {
         log.info("查询院校专业数量数据:req:{}", JSONObject.toJSONString(req));
-        ResponseDTO<RecommendNumResponse> response = gaotuClient.getRecommendProgramNum(req);
+        ResponseDTO<RecommendNumResponse> response;
+        try {
+            response = gaotuClient.getRecommendProgramNum(req);
+        } catch (RuntimeException e) {
+            throwVolunteerDataTimeoutIfNeeded(e);
+            throw e;
+        }
         if (response.getCode() != 0 || response.getData() == null) {
             log.error("查询院校专业数量数据失败:code:{},msg:{}", response.getCode(), response.getMsg());
             throw new BusinessException(110, response.getMsg());
@@ -434,8 +460,13 @@ public class GaotuService {
     public UserInfoByTokenRes getUserInfoByToken(String token) {
         log.info("开始根据token查询用户信息, 请求参数: {}", token);
         ResponseDTO<UserInfoByTokenRes> response = gaotuClient.getUserInfoByToken(token);
-        if (response.getCode() != 0 || response.getData() == null) {
-            log.error("开始根据token查询用户信息失败:code:{},msg:{}", response.getCode(), response.getMsg());
+        if (response == null || response.getCode() != 0 || response.getData() == null) {
+            String responseMsg = response == null ? null : response.getMsg();
+            log.error("开始根据token查询用户信息失败:code:{},msg:{}",
+                    response == null ? null : response.getCode(), responseMsg);
+            if ("用户选科信息不存在".equals(responseMsg)) {
+                throw new BusinessException(110, "请在首页完善高考省份和选科信息后再进入AI智能填报");
+            }
             throw new BusinessException(110, "链接已经失效，请尝试重新点击进入");
         }
         log.info("getUserInfoByToken:返回:{}",JSON.toJSONString(response));
@@ -452,5 +483,31 @@ public class GaotuService {
         log.info("getUserRights:返回:{}",JSON.toJSONString(response));
         return response.getData();
     }
-}
 
+    private static void throwVolunteerDataTimeoutIfNeeded(RuntimeException e) {
+        if (isVolunteerDataTimeoutException(e)) {
+            throw new BusinessException(VOLUNTEER_DATA_TIMEOUT_STATUS, VOLUNTEER_DATA_TIMEOUT_MESSAGE);
+        }
+    }
+
+    private static boolean isVolunteerDataTimeoutException(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof SocketTimeoutException) {
+                return true;
+            }
+            String message = current.getMessage();
+            if (VOLUNTEER_DATA_TIMEOUT_MESSAGE.equals(message)) {
+                return true;
+            }
+            if (message != null) {
+                String lowerMessage = message.toLowerCase(Locale.ROOT);
+                if (lowerMessage.contains("timeout") || lowerMessage.contains("timed out")) {
+                    return true;
+                }
+            }
+            current = current.getCause();
+        }
+        return false;
+    }
+}

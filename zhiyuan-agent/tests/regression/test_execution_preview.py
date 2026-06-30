@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, patch
 from app.tools.plan_execution_tool import _execute_plan_action_model
 from tests.factories import (
     make_plan_action_plan,
+    make_planning_summary,
     make_request_context,
     make_run_context,
 )
@@ -324,7 +325,85 @@ class TestPreviewNextStepHints:
 
 
 # ---------------------------------------------------------------------------
-# 6. apply stage result.applied 计算
+# 6. review issue preview uses current backend version
+# ---------------------------------------------------------------------------
+
+class TestReviewIssuePreviewVersion:
+    """审查问题预览必须保存本次读取到的 planningState 版本，避免确认时误判过期。"""
+
+    @pytest.mark.parametrize("volunteer_model", ["major", "majorGroup"])
+    async def test_remove_units_review_issue_preview_uses_loaded_planning_version(
+        self,
+        volunteer_model: str,
+        patch_backend,
+    ):
+        ordered_items = [
+            {
+                "volunteerId": "vol-high-1",
+                "unitId": "unit-high-1",
+                "schoolName": "北京示例大学",
+                "majorName": "临床医学",
+            },
+            {
+                "volunteerId": "vol-high-2",
+                "unitId": "unit-high-2",
+                "schoolName": "上海示例大学",
+                "majorName": "口腔医学",
+            },
+        ]
+        patch_backend.get_planning_state.return_value = {
+            "code": 0,
+            "data": {
+                "phase": "reviewed",
+                "version": 20,
+                "orderedPlanState": {"items": ordered_items},
+                "reviewState": {
+                    "checks": [
+                        {
+                            "code": "high_tuition",
+                            "label": "高收费",
+                            "summary": "存在高收费志愿",
+                            "passed": False,
+                            "affectedVolunteerIds": ["vol-high-1", "vol-high-2"],
+                        }
+                    ]
+                },
+            },
+        }
+        patch_backend.get_planning_ordered_plan.return_value = {
+            "code": 0,
+            "data": {"items": ordered_items},
+        }
+        request_context = make_request_context(volunteer_model=volunteer_model)
+        request_context.planning_summary = make_planning_summary(version=19)
+        ctx = make_run_context(request_context=request_context)
+        plan = make_plan_action_plan(
+            action_family="remove_units",
+            stage="preview",
+            user_goal="把学费高的志愿移出",
+            atomic_actions=[
+                {
+                    "action_type": "remove_units",
+                    "review_issue_target": {
+                        "code": "high_tuition",
+                        "scope_mode": "full_issue",
+                    },
+                }
+            ],
+        )
+
+        result = await _execute_plan_action_model(ctx, plan)
+
+        assert result.result_kind == "preview_only"
+        assert result.facts["planning_version"] == 20
+        assert result.facts["review_issue_code"] == "high_tuition"
+        assert result.facts["affected_volunteer_count"] == 2
+        resolved_payload = result.facts["resolved_apply_payload"]
+        assert resolved_payload["atomic_actions"][0]["volunteer_ids"] == ["vol-high-1", "vol-high-2"]
+
+
+# ---------------------------------------------------------------------------
+# 7. apply stage result.applied 计算
 # ---------------------------------------------------------------------------
 
 class TestAppliedComputation:

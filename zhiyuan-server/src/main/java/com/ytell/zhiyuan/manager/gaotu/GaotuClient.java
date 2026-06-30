@@ -170,7 +170,8 @@ public class GaotuClient {
      * @return 志愿方案列表
      */
     public ResponseDTO<JSONObject> getProgramFullList(ProgramPageReq req) {
-        String url = gaotuProperties.getZhiyuanUrl() + PROGRAM_LIST_ALL_PATH;
+        String baseUrl = Strings.isNullOrEmpty(gaotuProperties.getProgramDataUrl()) ? gaotuProperties.getZhiyuanUrl() : gaotuProperties.getProgramDataUrl();
+        String url = baseUrl + PROGRAM_LIST_ALL_PATH;
         return JsonHttpUtil.post(url, req, getHeader(), new TypeReference<ResponseDTO<JSONObject>>() {
         });
     }

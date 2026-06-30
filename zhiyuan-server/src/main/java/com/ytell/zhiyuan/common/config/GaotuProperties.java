@@ -7,6 +7,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 @ConfigurationProperties(prefix = "gaotu.zhiyuan")
 public class GaotuProperties {
     private String zhiyuanUrl;
+    private String programDataUrl;
     private String userUrl;
     private String riskUrl;
     private String evn;

@@ -52,7 +52,8 @@ class Request {
         this.abortControllerMap.delete(url);
 
         // 先做错误码判断
-        if (res.data?.code === 800) {
+        const specialCodes = (res.config as any).special || [];
+        if (res.data?.code === 800 && !specialCodes.includes(800)) {
           const channel = getStorage('channel'); // 根据你现有业务取channel
           if (channel === 'gaotu') {
             window.location.href = 'https://www.gaotuzhiyuan.com/';
@@ -74,7 +75,11 @@ class Request {
       (err: any) => {
         // 如果后端用 HTTP 状态码也会走这里
         const status = err?.response?.status;
-        if (status === 800 || err?.response?.data?.code === 800) {
+        const specialCodes = err?.config?.special || err?.response?.config?.special || [];
+        if (
+          (status === 800 || err?.response?.data?.code === 800) &&
+          !specialCodes.includes(800)
+        ) {
           const channel = getStorage('channel');
           if (channel === 'gaotu') {
             window.location.href = 'https://www.gaotuzhiyuan.com/';

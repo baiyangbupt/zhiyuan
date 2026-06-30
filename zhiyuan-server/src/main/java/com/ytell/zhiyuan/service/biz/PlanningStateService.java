@@ -9679,6 +9679,7 @@ public class PlanningStateService {
             RepairProposalStateBuilder.addBlockingReasonCode(proposal,
                     RepairProposalStateBuilder.resolveBlockingReasonCode(check));
         }
+        RepairProposalStateBuilder.populateActionTotals(proposal);
         RepairProposalStateBuilder.suppressInvalidBlockedActionPreview(proposal);
         RepairProposalStateBuilder.populateCandidateShortages(state, check, proposal);
         return proposal;

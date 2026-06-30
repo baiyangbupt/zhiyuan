@@ -18,6 +18,8 @@ from app.service import (
     ChatServiceResponseEnvelope,
     _append_plan_preview_confirmation_boundary,
     _build_plan_timeout_fallback_reply,
+    _explicit_only_keep_goal_decision_from_text,
+    _explicit_tuition_budget_from_text,
     _intent_card_primary_reply_from_preview_payload,
     _create_pending_intent_confirmation_from_preview_payload,
     _pending_confirmation_primary_reply_from_card,
@@ -2392,6 +2394,161 @@ def test_chat_service_only_keep_major_preview_removes_non_matching_plan_items(tm
     execute_mock.assert_not_awaited()
 
 
+def test_chat_service_directs_explicit_only_keep_region_to_plan_goal(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    fake_agent = _FakeAgent(["不应该进入完整 Agent"])
+    pending_state, save_pending_mock, get_pending_mock = _pending_confirmation_store()
+    backend_preview = _user_goal_fix_proposal_response(
+        proposal_id="ug-only-keep-beijing",
+        strategy="only_keep_scope",
+        source_version=44,
+        title="只保留北京学校",
+        summary="当前方案会围绕北京学校调整。",
+        action_summaries=["移出不符合地域条件的志愿"],
+    )
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 0, "data": {"userScoreDetail": {"batch": "14"}}})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={
+                "code": 0,
+                "data": {
+                    "phase": "profile_ready",
+                    "version": 44,
+                    "draftPlanState": {"summary": {"total": 45}},
+                    "orderedPlanState": {"summary": {"total": 45}},
+                    "reviewState": {"summary": {"warnCount": 0, "riskCount": 0}, "checks": []},
+                },
+            })), \
+            patch("app.service.generate_user_goal_planning_fix_proposals", AsyncMock(return_value=backend_preview)) as proposal_mock, \
+            patch("app.service.save_pending_confirmation", save_pending_mock), \
+            patch("app.service.get_pending_confirmation", get_pending_mock):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(
+            service.handle_message("only-keep-beijing-session", "user-1", "只看北京的学校")
+        )
+
+    assert isinstance(reply, ChatServiceResponseEnvelope)
+    assert "已按你的要求列出调整预览" in reply.primary
+    card_payloads = [json.loads(item.content) for item in reply.followups if item.type == "pendingConfirmationCard"]
+    assert len(card_payloads) == 1
+    assert card_payloads[0]["kind"] == "plan_mutation"
+    assert card_payloads[0]["actionFamily"] == "apply_fix_proposal"
+    assert card_payloads[0]["proposalId"] == "ug-only-keep-beijing"
+    execution_payload = pending_state["value"]["executionPayload"]
+    user_goal_request = execution_payload["userGoalRequest"]
+    assert user_goal_request["goalType"] == "only_keep_scope"
+    assert user_goal_request["sourceVersionGuard"] == 44
+    assert user_goal_request["targetScopes"][0]["entityType"] == "region"
+    assert user_goal_request["targetScopes"][0]["normalizedName"] == "北京"
+    assert execution_payload["intentPayload"]["constraintIntentType"] == "only_keep"
+    assert execution_payload["intentPayload"]["selected"] == [
+        {"city_intents": {"province": ["北京"]}}
+    ]
+    proposal_mock.assert_awaited_once()
+    assert fake_agent.calls == []
+
+
+def test_chat_service_recovers_explicit_only_keep_from_mixed_intent_preview(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    preview_payload = {
+        "status": "ready",
+        "sessionId": "9905012-mixed",
+        "title": "待采纳报考条件",
+        "intentMode": "constraint",
+        "constraintIntentType": "default",
+        "analysisStage": "confirmed",
+        "items": [
+            {
+                "content": "避开项目：不接受中外合作办学",
+                "value": {"physical_constraints": {"special_limits": ["不接受中外合作办学"]}},
+                "selected": True,
+            }
+        ],
+        "existingItems": [],
+        "message": "准备采纳：避开项目：不接受中外合作办学",
+    }
+    fake_agent = _FakeIntentPreviewAgent(preview_payload)
+    pending_state, save_pending_mock, get_pending_mock = _pending_confirmation_store()
+    backend_preview = _user_goal_fix_proposal_response(
+        proposal_id="ug-only-keep-mixed-1",
+        strategy="only_keep_scope",
+        source_version=31,
+        title="只保留临床医学",
+        summary="当前方案会围绕临床医学调整。",
+        action_summaries=["移出不符合条件的志愿"],
+    )
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 0, "data": {"userScoreDetail": {"batch": "01"}}})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={
+                "code": 0,
+                "data": {
+                    "phase": "ordered",
+                    "version": 31,
+                    "draftPlanState": {"summary": {"total": 45}},
+                    "orderedPlanState": {"summary": {"total": 45}},
+                    "reviewState": {"summary": {"warnCount": 0, "riskCount": 0}, "checks": []},
+                },
+            })), \
+            patch("app.service.generate_user_goal_planning_fix_proposals", AsyncMock(return_value=backend_preview)) as proposal_mock, \
+            patch("app.service.classify_composite_goal_action", AsyncMock(return_value=_semantic_composite_goal(
+                "exclude_scope",
+                scope_type="program_type",
+                target_values=[],
+                negative_values=["中外合作办学"],
+                constraint_intent_type="default",
+            ))) as classify_mock, \
+            patch("app.service.save_intent_change_cache", AsyncMock(return_value={"code": 0})), \
+            patch("app.service.save_pending_confirmation", save_pending_mock), \
+            patch("app.service.get_pending_confirmation", get_pending_mock):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(
+            service.handle_message(
+                "9905012-mixed",
+                "user-1",
+                "仅保留临床医学，不要中外合作，不要学费高的，只看北京的学校",
+            )
+        )
+
+    assert isinstance(reply, ChatServiceResponseEnvelope)
+    assert "已按你的要求列出调整预览" in reply.primary
+    card_payload = json.loads(reply.followups[0].content)
+    assert card_payload["kind"] == "plan_mutation"
+    assert card_payload["actionFamily"] == "apply_fix_proposal"
+    assert card_payload["proposalId"] == "ug-only-keep-mixed-1"
+    assert "临床医学" in card_payload["content"]
+    pending = pending_state["value"]
+    assert pending["kind"] == "plan_mutation"
+    execution_payload = pending["executionPayload"]
+    assert execution_payload["proposalSource"] == "user_goal"
+    assert execution_payload["intentPayload"]["constraintIntentType"] == "only_keep"
+    user_goal_request = execution_payload["userGoalRequest"]
+    assert user_goal_request["goalType"] == "only_keep_scope"
+    target_pairs = {
+        (scope["entityType"], scope["normalizedName"])
+        for scope in user_goal_request["targetScopes"]
+    }
+    assert ("major", "临床医学") in target_pairs
+    assert ("region", "北京") in target_pairs
+    proposal_mock.assert_awaited_once()
+    classify_mock.assert_not_awaited()
+    assert fake_agent.calls == []
+
+
+def test_explicit_only_keep_goal_decision_extracts_non_beishangguang_region():
+    decision = _explicit_only_keep_goal_decision_from_text("去掉非北上广地区的院校", batch="01")
+
+    assert decision is not None
+    assert decision.action == "only_keep_scope"
+    assert decision.scopeType == "region"
+    assert decision.targetValues == ["北京", "上海", "广东"]
+    assert decision.constraintIntentType == "only_keep"
+
+
 def test_chat_service_recovers_only_keep_goal_when_agent_skips_tools(tmp_path, mock_llm_client):
     db_path = tmp_path / "history.db"
     store = ChatHistoryStore(str(db_path))
@@ -2925,7 +3082,7 @@ def test_chat_service_recovers_only_keep_goal_when_agent_misroutes_to_remove_uni
     assert execution_payload["intentPayload"]["constraintIntentType"] == "only_keep"
     assert execution_payload["userGoalRequest"]["goalType"] == "only_keep_scope"
     assert execution_payload["userGoalRequest"]["targetScopes"][0]["normalizedName"] == "英语"
-    classify_mock.assert_awaited_once()
+    classify_mock.assert_not_awaited()
     proposal_mock.assert_awaited_once()
 
 
@@ -3042,6 +3199,118 @@ def test_chat_service_overrides_confirmable_remove_preview_for_only_keep_goal(tm
     proposal_mock.assert_awaited_once()
 
 
+def test_chat_service_prefers_explicit_only_keep_after_plan_attempt_over_classifier(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    plan_payload = {
+        "stage": "apply",
+        "action_family": "preview_fix_proposal",
+        "user_goal": "仅保留临床医学，不要中外合作，不要学费高的，只看北京的学校",
+        "requires_confirmation": False,
+        "planning_version": 51,
+    }
+    plan_result = {
+        "applied": False,
+        "action_family": "preview_fix_proposal",
+        "stage": "apply",
+        "result_kind": "error",
+        "summary": "当前方案已经变化，需要重新读取方案后再生成调整预览。",
+        "facts": {"planning_version": 51},
+    }
+    fake_agent = _FakeAgentWithToolCalls(
+        "已列出这次报考想法预览：只保留专业：临床医学；排除专业：中外合作办学。",
+        [
+            ToolCallPart(
+                tool_name="plan_next_action",
+                args={"user_goal": plan_payload["user_goal"], "action_family": "preview_fix_proposal"},
+                tool_call_id="compound-only-keep-plan",
+            ),
+            ToolCallPart(
+                tool_name="execute_plan_action",
+                args={"plan_payload": json.dumps(plan_payload, ensure_ascii=False)},
+                tool_call_id="compound-only-keep-execute",
+            ),
+        ],
+        [
+            ToolReturnPart(
+                tool_name="plan_next_action",
+                content=json.dumps(plan_payload, ensure_ascii=False),
+                tool_call_id="compound-only-keep-plan",
+            ),
+            ToolReturnPart(
+                tool_name="execute_plan_action",
+                content=json.dumps(plan_result, ensure_ascii=False),
+                tool_call_id="compound-only-keep-execute",
+            ),
+        ],
+    )
+    pending_state, save_pending_mock, get_pending_mock = _pending_confirmation_store()
+    backend_preview = _user_goal_fix_proposal_response(
+        proposal_id="ug-compound-only-keep-clinical",
+        strategy="only_keep_scope",
+        source_version=51,
+        title="只保留临床医学",
+        summary="当前方案会围绕临床医学调整。",
+        action_summaries=["移出不符合条件的志愿"],
+    )
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 0, "data": {"userScoreDetail": {"batch": "01"}}})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={
+                "code": 0,
+                "data": {
+                    "phase": "profile_ready",
+                    "version": 51,
+                    "draftPlanState": {"summary": {"total": 45}},
+                    "orderedPlanState": {"summary": {"total": 45}},
+                    "reviewState": {"summary": {"warnCount": 0, "riskCount": 0}, "checks": []},
+                },
+            })), \
+            patch("app.service.classify_composite_goal_action", AsyncMock(return_value=_semantic_composite_goal(
+                "exclude_scope",
+                scope_type="program_type",
+                target_values=[],
+                negative_values=["中外合作办学"],
+                constraint_intent_type="default",
+            ))) as classify_mock, \
+            patch("app.service.generate_user_goal_planning_fix_proposals", AsyncMock(return_value=backend_preview)) as proposal_mock, \
+            patch("app.service.save_pending_confirmation", save_pending_mock), \
+            patch("app.service.get_pending_confirmation", get_pending_mock):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(
+            service.handle_message(
+                "compound-only-keep-after-plan-attempt-session",
+                "user-1",
+                "仅保留临床医学，不要中外合作，不要学费高的，只看北京的学校",
+            )
+        )
+
+    assert isinstance(reply, ChatServiceResponseEnvelope)
+    assert "已按你的要求列出调整预览" in reply.primary
+    card_payloads = [json.loads(item.content) for item in reply.followups if item.type == "pendingConfirmationCard"]
+    assert len(card_payloads) == 1
+    assert card_payloads[0]["kind"] == "plan_mutation"
+    assert card_payloads[0]["actionFamily"] == "apply_fix_proposal"
+    assert card_payloads[0]["proposalId"] == "ug-compound-only-keep-clinical"
+    pending = pending_state["value"]
+    assert pending["kind"] == "plan_mutation"
+    execution_payload = pending["executionPayload"]
+    assert execution_payload["proposalSource"] == "user_goal"
+    assert execution_payload["intentPayload"]["constraintIntentType"] == "only_keep"
+    user_goal_request = execution_payload["userGoalRequest"]
+    assert user_goal_request["goalType"] == "only_keep_scope"
+    target_pairs = {
+        (scope["entityType"], scope["normalizedName"])
+        for scope in user_goal_request["targetScopes"]
+    }
+    assert ("major", "临床医学") in target_pairs
+    assert ("region", "北京") in target_pairs
+    assert user_goal_request["sourceVersionGuard"] == 51
+    classify_mock.assert_not_awaited()
+    proposal_mock.assert_awaited_once()
+
+
 def test_chat_service_recovers_tuition_budget_goal_to_user_goal_fix_proposal(tmp_path, mock_llm_client):
     db_path = tmp_path / "history.db"
     store = ChatHistoryStore(str(db_path))
@@ -3142,7 +3411,7 @@ def test_chat_service_recovers_tuition_budget_goal_to_user_goal_fix_proposal(tmp
     user_goal_request = execution_payload["userGoalRequest"]
     assert user_goal_request["goalType"] == "tuition_budget_scope"
     assert user_goal_request["context"]["maxTuitionPerYear"] == 20000
-    classify_mock.assert_awaited_once()
+    classify_mock.assert_not_awaited()
     proposal_mock.assert_awaited_once()
 
 
@@ -3242,8 +3511,116 @@ def test_chat_service_recovers_colloquial_tuition_budget_goal_with_plan(tmp_path
     execution_payload = pending["executionPayload"]
     assert execution_payload["strategy"] == "tuition_budget_scope"
     assert execution_payload["userGoalRequest"]["context"]["maxTuitionPerYear"] == 20000
-    classify_mock.assert_awaited_once()
+    classify_mock.assert_not_awaited()
     proposal_mock.assert_awaited_once()
+
+
+def test_chat_service_overrides_atomic_remove_preview_for_explicit_tuition_budget(tmp_path, mock_llm_client):
+    db_path = tmp_path / "history.db"
+    store = ChatHistoryStore(str(db_path))
+    plan_payload = {
+        "stage": "preview",
+        "action_family": "remove_units",
+        "user_goal": "取消学费超过20000元的志愿",
+        "requires_confirmation": True,
+        "planning_version": 51,
+        "atomic_actions": [
+            {
+                "action_type": "remove_units",
+                "volunteer_ids": ["high-tuition-1", "high-tuition-2"],
+                "filters": {"review_issue_code": "high_tuition"},
+            }
+        ],
+    }
+    plan_result = {
+        "applied": False,
+        "action_family": "remove_units",
+        "stage": "preview",
+        "result_kind": "preview_only",
+        "summary": "已定位到当前方案里当前审查命中的高收费：共 2 条志愿。",
+        "facts": {"planning_version": 51},
+    }
+    fake_agent = _FakeAgentWithToolCalls(
+        "已列出调整预览：确认后我会先移出这些项。",
+        [
+            ToolCallPart(
+                tool_name="plan_next_action",
+                args={"user_goal": "取消学费超过20000元的志愿", "action_family": "remove_units"},
+                tool_call_id="budget-remove-plan",
+            ),
+            ToolCallPart(
+                tool_name="execute_plan_action",
+                args={"plan_payload": json.dumps(plan_payload, ensure_ascii=False)},
+                tool_call_id="budget-remove-execute",
+            ),
+        ],
+        [
+            ToolReturnPart(
+                tool_name="plan_next_action",
+                content=json.dumps(plan_payload, ensure_ascii=False),
+                tool_call_id="budget-remove-plan",
+            ),
+            ToolReturnPart(
+                tool_name="execute_plan_action",
+                content=json.dumps(plan_result, ensure_ascii=False),
+                tool_call_id="budget-remove-execute",
+            ),
+        ],
+    )
+    pending_state, save_pending_mock, get_pending_mock = _pending_confirmation_store()
+    backend_preview = _user_goal_fix_proposal_response(
+        proposal_id="ug-budget-atomic-remove",
+        strategy="tuition_budget_scope",
+        source_version=51,
+        title="控制学费上限",
+        summary="当前方案有学费超出预算的志愿，已按预算条件列出调整预览。",
+        action_summaries=["处理学费超出预算的志愿"],
+    )
+
+    with patch("app.service.ChatAgent", return_value=fake_agent), \
+            patch("app.service.get_user_score_detail", AsyncMock(return_value={"code": 0, "data": {"userScoreDetail": {"batch": "01"}}})), \
+            patch("app.service.get_user_init_profile", AsyncMock(return_value={"code": 1})), \
+            patch("app.service.get_planning_workspace_state", AsyncMock(return_value={
+                "code": 0,
+                "data": {
+                    "phase": "reviewed",
+                    "version": 51,
+                    "draftPlanState": {"summary": {"total": 45}},
+                    "orderedPlanState": {"summary": {"total": 45}},
+                    "reviewState": {"summary": {"warnCount": 1, "riskCount": 0}, "checks": []},
+                },
+            })), \
+            patch("app.service.classify_composite_goal_action", AsyncMock()) as classify_mock, \
+            patch("app.service.generate_user_goal_planning_fix_proposals", AsyncMock(return_value=backend_preview)) as proposal_mock, \
+            patch("app.service.save_pending_confirmation", save_pending_mock), \
+            patch("app.service.get_pending_confirmation", get_pending_mock):
+        service = ChatService(mock_llm_client, store)
+        reply = asyncio.run(
+            service.handle_message("tuition-budget-atomic-remove-session", "user-1", "取消学费超过20000元的志愿")
+        )
+
+    assert isinstance(reply, ChatServiceResponseEnvelope)
+    assert "已按你的要求列出调整预览" in reply.primary
+    assert "确认后我会先移出这些项" not in reply.primary
+    card_payloads = [json.loads(item.content) for item in reply.followups if item.type == "pendingConfirmationCard"]
+    assert len(card_payloads) == 1
+    assert card_payloads[0]["kind"] == "plan_mutation"
+    assert card_payloads[0]["actionFamily"] == "apply_fix_proposal"
+    assert card_payloads[0]["proposalId"] == "ug-budget-atomic-remove"
+    assert card_payloads[0]["strategy"] == "tuition_budget_scope"
+    execution_payload = pending_state["value"]["executionPayload"]
+    assert execution_payload["proposalSource"] == "user_goal"
+    assert execution_payload["strategy"] == "tuition_budget_scope"
+    assert execution_payload["userGoalRequest"]["goalType"] == "tuition_budget_scope"
+    assert execution_payload["userGoalRequest"]["context"]["maxTuitionPerYear"] == 20000
+    classify_mock.assert_not_awaited()
+    proposal_mock.assert_awaited_once()
+
+
+def test_explicit_tuition_budget_parser_requires_actionable_budget_text():
+    assert _explicit_tuition_budget_from_text("取消学费超过20000元的志愿") == 20000
+    assert _explicit_tuition_budget_from_text("学费最好控制在两万以内") == 20000
+    assert _explicit_tuition_budget_from_text("一年学费最多两三万，方案里高收费多吗") == 0
 
 
 def test_chat_service_recovers_tuition_budget_after_empty_intent_preview(tmp_path, mock_llm_client):
@@ -3423,9 +3800,7 @@ def test_chat_service_overrides_wrong_major_intent_preview_for_tuition_budget(tm
     assert execution_payload["userGoalRequest"]["goalType"] == "tuition_budget_scope"
     assert execution_payload["userGoalRequest"]["context"]["maxTuitionPerYear"] == 20000
     assert "intentPayload" not in execution_payload
-    classify_mock.assert_awaited_once()
-    classify_kwargs = classify_mock.await_args.kwargs
-    assert classify_kwargs["attempted_action_family"] == "intent_preview"
+    classify_mock.assert_not_awaited()
     proposal_mock.assert_awaited_once()
 
 
@@ -3517,9 +3892,7 @@ def test_chat_service_recovers_tuition_budget_after_plain_review_result(tmp_path
     execution_payload = pending["executionPayload"]
     assert execution_payload["strategy"] == "tuition_budget_scope"
     assert execution_payload["userGoalRequest"]["context"]["maxTuitionPerYear"] == 20000
-    classify_mock.assert_awaited_once()
-    classify_kwargs = classify_mock.await_args.kwargs
-    assert classify_kwargs["attempted_action_family"] == "review_plan"
+    classify_mock.assert_not_awaited()
     proposal_mock.assert_awaited_once()
 
 
@@ -3795,9 +4168,7 @@ def test_chat_service_recovers_tuition_budget_after_wrong_intent_preview_and_rev
     assert execution_payload["strategy"] == "tuition_budget_scope"
     assert execution_payload["userGoalRequest"]["goalType"] == "tuition_budget_scope"
     assert execution_payload["userGoalRequest"]["context"]["maxTuitionPerYear"] == 20000
-    classify_mock.assert_awaited_once()
-    classify_kwargs = classify_mock.await_args.kwargs
-    assert classify_kwargs["attempted_action_family"] in {"intent_preview", "review_plan"}
+    classify_mock.assert_not_awaited()
     proposal_mock.assert_awaited_once()
 
 
@@ -3879,9 +4250,7 @@ def test_chat_service_recovers_tuition_budget_after_semantic_adjustment_analysis
     assert execution_payload["strategy"] == "tuition_budget_scope"
     assert execution_payload["userGoalRequest"]["context"]["maxTuitionPerYear"] == 20000
     plan_classify_mock.assert_awaited_once()
-    composite_classify_mock.assert_awaited_once()
-    composite_kwargs = composite_classify_mock.await_args.kwargs
-    assert composite_kwargs["attempted_action_family"] == "analyze_adjustment"
+    composite_classify_mock.assert_not_awaited()
     proposal_mock.assert_awaited_once()
     execute_mock.assert_awaited_once()
 
@@ -4037,10 +4406,7 @@ def test_chat_service_semantic_fix_preview_overridden_by_tuition_budget_goal(tmp
     assert execution_payload["userGoalRequest"]["goalType"] == "tuition_budget_scope"
     assert execution_payload["userGoalRequest"]["context"]["maxTuitionPerYear"] == 20000
     assert execution_payload["proposalId"] != "fp_sort_wrong"
-    composite_classify_mock.assert_awaited_once()
-    composite_kwargs = composite_classify_mock.await_args.kwargs
-    assert composite_kwargs["attempted_action_family"] == "preview_fix_proposal"
-    assert composite_kwargs["attempted_result"]["result_kind"] == "fix_proposal_preview"
+    composite_classify_mock.assert_not_awaited()
     proposal_mock.assert_awaited_once()
     execute_mock.assert_awaited_once()
 
@@ -4192,7 +4558,7 @@ def test_chat_service_semantic_fix_preview_without_ready_proposal_recovers_tuiti
     assert execution_payload["strategy"] == "tuition_budget_scope"
     assert execution_payload["userGoalRequest"]["context"]["maxTuitionPerYear"] == 20000
     assert execution_payload["userGoalRequest"]["sourceVersionGuard"] == 46
-    composite_classify_mock.assert_awaited_once()
+    composite_classify_mock.assert_not_awaited()
     proposal_mock.assert_awaited_once()
     assert proposal_mock.await_args.args[2]["sourceVersionGuard"] == 46
 
@@ -6383,6 +6749,84 @@ def test_extract_plan_confirmation_candidate_preserves_preview_resolved_apply_pa
     apply_payload = json.loads(pending["plan_payload"])
     assert apply_payload["stage"] == "apply"
     assert apply_payload["atomic_actions"][0]["volunteer_ids"] == ["hnny-arch-4"]
+
+
+def test_extract_plan_confirmation_candidate_keeps_review_issue_resolved_payload_version():
+    preview_payload = {
+        "stage": "preview",
+        "action_family": "remove_units",
+        "user_goal": "把学费高的志愿移出",
+        "requires_confirmation": True,
+        "should_rerun_review": False,
+        "should_refresh_workspace": False,
+        "missing_inputs": [],
+        "atomic_actions": [
+            {
+                "action_type": "remove_units",
+                "volunteer_ids": [],
+                "filters": {},
+                "review_issue_target": {
+                    "code": "high_tuition",
+                    "scope_mode": "full_issue",
+                },
+            }
+        ],
+        "preview_summary": "会按当前审查命中的整批高收费项移出。",
+    }
+    messages = [
+        ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="execute_plan_action",
+                    args={"plan_payload": json.dumps(preview_payload, ensure_ascii=False)},
+                    tool_call_id="preview-call-review-issue-version",
+                )
+            ],
+            model_name="test-model",
+        ),
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="execute_plan_action",
+                    content=json.dumps(
+                        {
+                            "applied": False,
+                            "action_family": "remove_units",
+                            "stage": "preview",
+                            "result_kind": "preview_only",
+                            "summary": "已定位到当前方案里当前审查命中的高收费：共 2 个专业组，涉及 2 条志愿。",
+                            "facts": {
+                                "planning_version": 20,
+                                "resolved_apply_payload": {
+                                    "atomic_actions": [
+                                        {
+                                            "action_type": "remove_units",
+                                            "volunteer_ids": ["vol-high-1", "vol-high-2"],
+                                            "filters": {},
+                                            "review_issue_target": {
+                                                "code": "high_tuition",
+                                                "scope_mode": "full_issue",
+                                            },
+                                        }
+                                    ]
+                                },
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                    tool_call_id="preview-call-review-issue-version",
+                )
+            ]
+        ),
+    ]
+
+    pending = _extract_plan_confirmation_candidate(messages)
+
+    assert pending is not None
+    assert pending["source_backend_version"] == 20
+    apply_payload = json.loads(pending["plan_payload"])
+    assert apply_payload["planning_version"] == 20
+    assert apply_payload["atomic_actions"][0]["volunteer_ids"] == ["vol-high-1", "vol-high-2"]
 
 
 def test_extract_plan_confirmation_candidate_accepts_incremental_resolved_apply_payload():

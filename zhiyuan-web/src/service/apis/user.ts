@@ -61,7 +61,8 @@ export const getLoginByTokenApi = ({ channel, token }: { channel: string; token:
 
 export const checkUserRightsApi = (data: { checkPoint: OperateCheckPoint; prepareType?: string }) =>
   request<{ checkPoint: OperateCheckPoint; prepareType?: string }, ICheckRightsRes>({
-    url: `/gaotu-assistant-bot/chat/user/check-rights`,
+    url: `/gaotu-assistant-bot/chat/user/check-rights?checkPoint=${data.checkPoint}${
+      data.prepareType ? `&prepareType=${data.prepareType}` : ''
+    }`,
     method: 'get',
-    data,
   });

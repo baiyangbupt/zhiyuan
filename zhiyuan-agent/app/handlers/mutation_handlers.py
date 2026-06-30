@@ -192,7 +192,7 @@ async def handle_remove_units(
             next_step_hints=["先定位当前方案里的真实 volunteerId，再执行移除。"],
         )
     resolved_ids, missing_refs = await _resolve_ordered_volunteer_refs(ctx, atomic.volunteer_ids)
-    expanded_ids, _, review_issue_target, review_issue = await _resolve_review_issue_action_scope(
+    expanded_ids, _, review_issue_target, review_issue, _ = await _resolve_review_issue_action_scope(
         ctx, plan, resolved_ids,
     )
     effective_ids = expanded_ids or resolved_ids
@@ -310,7 +310,7 @@ async def handle_replace_units(
         atomic.volunteer_ids,
         source_major_names=_extract_source_major_names(plan),
     )
-    effective_ids, ordered_items, review_issue_target, review_issue = await _resolve_review_issue_action_scope(
+    effective_ids, ordered_items, review_issue_target, review_issue, _ = await _resolve_review_issue_action_scope(
         ctx, plan, resolved_ids,
     )
     executed_actions: list[dict[str, object]] = []

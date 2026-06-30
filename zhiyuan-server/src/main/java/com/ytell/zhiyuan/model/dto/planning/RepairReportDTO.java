@@ -49,5 +49,8 @@ public class RepairReportDTO {
         private List<String> candidateUnitIds = Lists.newArrayList();
         private List<String> candidateVolunteerIds = Lists.newArrayList();
         private List<ReplacementPairDTO> replacementPairs = Lists.newArrayList();
+        private Integer totalUnitCount;
+        private Integer totalVolunteerCount;
+        private Integer totalReplacementPairCount;
     }
 }

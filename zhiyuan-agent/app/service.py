@@ -1420,6 +1420,281 @@ def _as_text_list(values: Any) -> list[str]:
     return [str(value or "").strip() for value in raw_values if str(value or "").strip()]
 
 
+_ONLY_KEEP_MAJOR_MARKERS = (
+    "严格只保留",
+    "只保留",
+    "仅保留",
+    "只要",
+    "仅要",
+    "只限",
+    "仅限",
+    "限定为",
+    "限定在",
+)
+_ONLY_KEEP_REGION_MARKERS = (
+    *_ONLY_KEEP_MAJOR_MARKERS,
+    "只看",
+    "仅看",
+)
+_ONLY_KEEP_READONLY_MARKERS = (
+    "有哪些",
+    "有多少",
+    "多少",
+    "几所",
+    "几条",
+    "列出",
+    "查看",
+    "查询",
+    "显示",
+    "占比",
+    "多不多",
+    "有没有",
+    "吗",
+    "？",
+    "?",
+)
+_ONLY_KEEP_PROVINCE_KEYWORDS = (
+    "黑龙江",
+    "内蒙古",
+    "北京",
+    "天津",
+    "河北",
+    "山西",
+    "辽宁",
+    "吉林",
+    "上海",
+    "江苏",
+    "浙江",
+    "安徽",
+    "福建",
+    "江西",
+    "山东",
+    "河南",
+    "湖北",
+    "湖南",
+    "广东",
+    "广西",
+    "海南",
+    "重庆",
+    "四川",
+    "贵州",
+    "云南",
+    "西藏",
+    "陕西",
+    "甘肃",
+    "青海",
+    "宁夏",
+    "新疆",
+    "香港",
+    "澳门",
+    "台湾",
+)
+_TUITION_BUDGET_MUTATION_MARKERS = (
+    "取消",
+    "去掉",
+    "删掉",
+    "移出",
+    "剔除",
+    "不要",
+    "不放",
+    "别放",
+    "控制",
+    "上限",
+    "不超过",
+    "不高于",
+    "以内",
+    "以下",
+)
+_TUITION_BUDGET_CONTEXT_MARKERS = (
+    "学费",
+    "费用",
+    "收费",
+    "预算",
+    "太贵",
+    "贵的",
+    "高收费",
+    "高学费",
+)
+_CHINESE_NUMBER_DIGITS = {
+    "一": 1,
+    "二": 2,
+    "两": 2,
+    "三": 3,
+    "四": 4,
+    "五": 5,
+    "六": 6,
+    "七": 7,
+    "八": 8,
+    "九": 9,
+}
+
+
+def _compact_dialog_text(value: Any) -> str:
+    return re.sub(r"\s+", "", str(value or "").strip())
+
+
+def _has_only_keep_marker(text: str, *, allow_view_marker: bool = False) -> bool:
+    compact = _compact_dialog_text(text)
+    if not compact:
+        return False
+    if any(marker in compact for marker in _ONLY_KEEP_MAJOR_MARKERS):
+        return True
+    if allow_view_marker and any(marker in compact for marker in ("只看", "仅看")):
+        return not any(marker in compact for marker in _ONLY_KEEP_READONLY_MARKERS)
+    return False
+
+
+def _extract_only_keep_major_values(content: str, batch: str | None) -> list[str]:
+    values: list[str] = []
+    clauses = [
+        str(clause or "").strip()
+        for clause in re.split(r"[，,。；;\n]+", str(content or ""))
+        if str(clause or "").strip()
+    ]
+    for clause in clauses or [content]:
+        if not _has_only_keep_marker(clause):
+            continue
+        for mention in resolve_major_mentions_from_text(clause, batch or "01"):
+            if mention.level not in {"level1", "level2", "level3"}:
+                continue
+            name = str(mention.canonical_name or "").strip()
+            if name and name not in values:
+                values.append(name)
+    if values:
+        return values
+    if not _has_only_keep_marker(content):
+        return []
+    for mention in resolve_major_mentions_from_text(content, batch or "01"):
+        if mention.level not in {"level1", "level2", "level3"}:
+            continue
+        name = str(mention.canonical_name or "").strip()
+        if name and name not in values:
+            values.append(name)
+    return values
+
+
+def _region_values_from_text_fragment(fragment: str) -> list[str]:
+    compact = _compact_dialog_text(fragment)
+    values: list[str] = []
+    if "北上广" in compact:
+        values.extend(["北京", "上海", "广东"])
+    elif "北上" in compact:
+        values.extend(["北京", "上海"])
+    for keyword in _ONLY_KEEP_PROVINCE_KEYWORDS:
+        if keyword in compact and keyword not in values:
+            values.append(keyword)
+    return normalize_region_names(values, expected_level="province")
+
+
+def _extract_only_keep_region_values(content: str) -> list[str]:
+    compact = _compact_dialog_text(content)
+    if not compact:
+        return []
+    for match in re.finditer(
+        r"(?:去掉|排除|删掉|移出|剔除|不要|不看|不考虑)非(.{1,18}?)(?:地区|院校|学校|城市|省份|专业组|志愿|$)",
+        compact,
+    ):
+        values = _region_values_from_text_fragment(match.group(1))
+        if values:
+            return values
+    if not _has_only_keep_marker(content, allow_view_marker=True):
+        return []
+    return _region_values_from_text_fragment(content)
+
+
+def _explicit_only_keep_goal_decision_from_text(
+    content: str,
+    *,
+    batch: str | None = "01",
+) -> Any | None:
+    if not str(content or "").strip():
+        return None
+    major_values = _extract_only_keep_major_values(content, batch)
+    region_values = _extract_only_keep_region_values(content)
+    if major_values or region_values:
+        target_scopes: list[dict[str, Any]] = []
+        if major_values:
+            target_scopes.append({"entity_type": "major", "values": major_values})
+        if region_values:
+            target_scopes.append({"entity_type": "region", "values": region_values, "scope_level": "province"})
+        primary_scope_type = "major" if major_values else "region"
+        primary_target_values = major_values or region_values
+        return SimpleNamespace(
+            action="only_keep_scope",
+            confidence=0.95,
+            reason="用户原话明确要求只保留具体范围",
+            scopeType=primary_scope_type,
+            targetValues=primary_target_values,
+            targetScopes=target_scopes,
+            negativeValues=[],
+            maxTuitionPerYear=None,
+            constraintIntentType="only_keep",
+            requiresPlanMutation=True,
+        )
+    return None
+
+
+def _parse_simple_chinese_number(value: str) -> int:
+    text = _compact_dialog_text(value)
+    if not text:
+        return 0
+    if text in _CHINESE_NUMBER_DIGITS:
+        return _CHINESE_NUMBER_DIGITS[text]
+    if text == "十":
+        return 10
+    if "十" in text:
+        left, _, right = text.partition("十")
+        left_value = _CHINESE_NUMBER_DIGITS.get(left, 1 if not left else 0)
+        right_value = _CHINESE_NUMBER_DIGITS.get(right, 0) if right else 0
+        if left_value > 0:
+            return left_value * 10 + right_value
+    return 0
+
+
+def _explicit_tuition_budget_from_text(content: str) -> int:
+    compact = _compact_dialog_text(content)
+    if not compact:
+        return 0
+    if not any(marker in compact for marker in _TUITION_BUDGET_CONTEXT_MARKERS):
+        return 0
+    if not any(marker in compact for marker in _TUITION_BUDGET_MUTATION_MARKERS):
+        return 0
+    amounts: list[int] = []
+    for match in re.finditer(r"(\d+(?:\.\d+)?)(万|w|W|万元|元)?", compact):
+        raw_number = match.group(1)
+        unit = str(match.group(2) or "")
+        try:
+            numeric = float(raw_number)
+        except ValueError:
+            continue
+        amount = int(numeric * 10000) if unit in {"万", "w", "W", "万元"} else int(numeric)
+        if amount >= 1000:
+            amounts.append(amount)
+    for match in re.finditer(r"([一二两三四五六七八九十]{1,3})万", compact):
+        number = _parse_simple_chinese_number(match.group(1))
+        if number > 0:
+            amounts.append(number * 10000)
+    valid_amounts = [amount for amount in amounts if 1000 <= amount <= 300000]
+    return min(valid_amounts) if valid_amounts else 0
+
+
+def _explicit_tuition_budget_goal_decision_from_text(content: str) -> Any | None:
+    max_tuition = _explicit_tuition_budget_from_text(content)
+    if max_tuition <= 0:
+        return None
+    return SimpleNamespace(
+        action="tuition_budget_scope",
+        confidence=0.95,
+        reason="用户原话明确给出学费预算上限并要求调整当前方案",
+        scopeType="tuition",
+        targetValues=[],
+        negativeValues=[],
+        maxTuitionPerYear=max_tuition,
+        constraintIntentType="default",
+        requiresPlanMutation=True,
+    )
+
+
 def _normalize_school_intent_names(values: Any, batch: str | None = "01") -> list[str]:
     normalized: list[str] = []
     for value in _as_text_list(values):
@@ -10171,6 +10446,112 @@ class ChatService:
         duration_ms = int((time.monotonic() - started_at) * 1000)
         return result_text, _parse_tool_return_json(result_text) or {}, duration_ms
 
+    async def _maybe_handle_explicit_plan_goal(
+        self,
+        *,
+        session_id: str,
+        user_id: str,
+        content: str,
+        history: list[Any] | None,
+        request_context: RequestContext,
+        turn_started_at: float,
+    ) -> ChatServiceResponseEnvelope | None:
+        if resolve_pending_confirmation(request_context) is not None:
+            return None
+        if _prompt_requires_readonly_policy_answer(content):
+            return None
+        planning_summary = getattr(request_context, "planning_summary", None)
+        planning_version = _as_int(getattr(planning_summary, "version", None))
+        if planning_version <= 0:
+            return None
+        decision = _explicit_only_keep_goal_decision_from_text(
+            content,
+            batch=getattr(request_context, "batch", None),
+        )
+        if decision is None:
+            return None
+        card = await self._create_composite_goal_recovery_card(
+            session_id=session_id,
+            content=content,
+            request_context=request_context,
+            decision=decision,
+            attempted_action_family="explicit_plan_goal",
+            attempted_result={
+                "result_kind": "explicit_plan_goal",
+                "planning_version": planning_version,
+            },
+            context_source="explicit_plan_goal_direct",
+        )
+        if _pending_card_kind(card) != "plan_mutation":
+            return None
+        card_payload = _parse_tool_return_json(getattr(card, "content", "") or "")
+        card_summary = (
+            str((card_payload or {}).get("summary") or "").strip()
+            if isinstance(card_payload, dict)
+            else ""
+        )
+        strategy = (
+            str((card_payload or {}).get("strategy") or "").strip()
+            if isinstance(card_payload, dict)
+            else ""
+        )
+        is_budget_goal = strategy == "tuition_budget_scope"
+        primary_reply = "已按你的预算要求列出调整预览。" if is_budget_goal else "已按你的要求列出调整预览。"
+        if card_summary:
+            prefix = "已按你的预算要求列出调整预览" if is_budget_goal else "已按你的要求列出调整预览"
+            primary_reply = f"{prefix}：{card_summary}。"
+        primary_reply += (
+            "确认前不会改动当前方案；确认后会按预算上限处理当前方案，并同步刷新候选参考。"
+            if is_budget_goal
+            else "确认前不会改动当前方案；确认后会同步更新后续报考参考，并按预览调整当前方案。"
+        )
+        primary_reply = _sanitize_reply_for_user(primary_reply)
+        new_messages = [
+            ModelRequest(parts=[UserPromptPart(content=content)]),
+            ModelResponse(
+                parts=[TextPart(content=primary_reply)],
+                model_name="explicit-plan-goal-direct",
+            ),
+        ]
+        target_scopes = list(getattr(decision, "targetScopes", []) or [])
+        if not target_scopes:
+            scope_type = str(getattr(decision, "scopeType", "") or "").strip()
+            target_values = _as_text_list(getattr(decision, "targetValues", []) or [])
+            if scope_type and target_values:
+                target_scopes = [{"entity_type": scope_type, "values": target_values}]
+        turn_event = {
+            "sessionId": session_id,
+            "userId": user_id,
+            "scene": "plan",
+            "routingPath": "explicit_plan_goal_direct",
+            "routeDecision": {
+                "source": "explicit_goal_parser",
+                "matched": True,
+                "confidence": "deterministic",
+                "route": "user_goal_proposal",
+                "action": str(getattr(decision, "action", "") or ""),
+                "targetScopes": target_scopes,
+            },
+            "pendingType": "plan",
+            "actionFamily": "apply_fix_proposal",
+            "modelProvider": _llm_config_value(self.llm_client, "provider"),
+            "modelName": _llm_config_value(self.llm_client, "model_name"),
+            "toolCallCount": 0,
+            "totalDurationMs": int((time.monotonic() - turn_started_at) * 1000),
+            "toolCalls": [],
+            "postProcessingApplied": ["explicit_plan_goal_direct"],
+            "status": "success",
+            "errorType": None,
+        }
+        _log_conversation_turn_event(**turn_event)
+        try:
+            history_to_save = list(history or [])
+            history_to_save.extend(_append_route_observability_message(new_messages, turn_event))
+            await self.history_store.save(session_id, history_to_save)
+        except Exception:
+            logger.exception("Failed to save explicit plan-goal history: session_id=%s", session_id)
+        return ChatServiceResponseEnvelope(primary=primary_reply, followups=[card])
+
     async def _maybe_handle_semantic_plan_action(
         self,
         *,
@@ -11683,6 +12064,25 @@ class ChatService:
                 )
                 if not actionable_fix_preview_allowed and not review_result_allowed:
                     return None
+        explicit_decision = (
+            _explicit_tuition_budget_goal_decision_from_text(content)
+            or _explicit_only_keep_goal_decision_from_text(
+                content,
+                batch=getattr(request_context, "batch", None),
+            )
+        )
+        if explicit_decision is not None:
+            card = await self._create_composite_goal_recovery_card(
+                session_id=session_id,
+                content=content,
+                request_context=request_context,
+                decision=explicit_decision,
+                attempted_action_family=attempted_action_family,
+                attempted_result=attempted_result,
+                context_source="explicit_goal_recovery_after_plan_attempt",
+            )
+            if _pending_card_kind(card) == "plan_mutation":
+                return card
         try:
             decision = await classify_composite_goal_action(
                 content,
@@ -11733,20 +12133,32 @@ class ChatService:
             intent_update = plan_confirmation_candidate.get("intent_update") or {}
             if intent_update.get("selected"):
                 return None
+        attempted_result = {
+            "action_family": attempted_action_family,
+            "result_kind": "preview_only",
+            "summary": str(plan_confirmation_candidate.get("summary") or "").strip(),
+            "planning_version": _as_int(
+                plan_confirmation_candidate.get("planning_version")
+                or plan_confirmation_candidate.get("source_backend_version")
+            ),
+        }
+        decision = _explicit_tuition_budget_goal_decision_from_text(content)
+        if decision is not None:
+            return await self._create_composite_goal_recovery_card(
+                session_id=session_id,
+                content=content,
+                request_context=request_context,
+                decision=decision,
+                attempted_action_family=attempted_action_family,
+                attempted_result=attempted_result,
+                context_source="explicit_tuition_budget_override_plan_confirmation",
+            )
         try:
             decision = await classify_composite_goal_action(
                 content,
                 request_context=request_context,
                 attempted_action_family=attempted_action_family,
-                attempted_result={
-                    "action_family": attempted_action_family,
-                    "result_kind": "preview_only",
-                    "summary": str(plan_confirmation_candidate.get("summary") or "").strip(),
-                    "planning_version": _as_int(
-                        plan_confirmation_candidate.get("planning_version")
-                        or plan_confirmation_candidate.get("source_backend_version")
-                    ),
-                },
+                attempted_result=attempted_result,
             )
         except Exception:
             logger.warning(
@@ -11762,15 +12174,7 @@ class ChatService:
             request_context=request_context,
             decision=decision,
             attempted_action_family=attempted_action_family,
-            attempted_result={
-                "action_family": attempted_action_family,
-                "result_kind": "preview_only",
-                "summary": str(plan_confirmation_candidate.get("summary") or "").strip(),
-                "planning_version": _as_int(
-                    plan_confirmation_candidate.get("planning_version")
-                    or plan_confirmation_candidate.get("source_backend_version")
-                ),
-            },
+            attempted_result=attempted_result,
             context_source="composite_goal_override_plan_confirmation",
         )
 
@@ -11974,7 +12378,7 @@ class ChatService:
             return None
         return card
 
-    async def _maybe_recover_tuition_budget_from_intent_preview(
+    async def _maybe_recover_plan_goal_from_intent_preview(
         self,
         *,
         session_id: str,
@@ -11982,12 +12386,15 @@ class ChatService:
         request_context: RequestContext,
         tool_context_messages: list[Any] | None,
     ) -> WSResponse | None:
-        """Route budget constraints to user-goal plan proposals, not major intent.
+        """Route actionable goal constraints to user-goal plan proposals.
 
         Tuition budget is not a major/school/region preference dimension. If the
         full agent produced a generic intent preview for such a turn, recover
         through the existing semantic composite-goal classifier and Java
         user-goal proposal path before persisting an incorrect intent card.
+        The deterministic only-keep extraction handles compound turns where the
+        intent preview kept only one later constraint and dropped the explicit
+        plan-scoped "only keep" target from the user's original text.
         """
         if resolve_pending_confirmation(request_context) is not None:
             return None
@@ -12003,6 +12410,35 @@ class ChatService:
         preview_payload = _extract_recent_intent_analysis_payload(tool_context_messages)
         if not isinstance(preview_payload, dict):
             return None
+        decision = _explicit_tuition_budget_goal_decision_from_text(content)
+        if decision is not None:
+            card = await self._create_composite_goal_recovery_card(
+                session_id=session_id,
+                content=content,
+                request_context=request_context,
+                decision=decision,
+                attempted_action_family="intent_preview",
+                attempted_result={"result_kind": "intent_preview"},
+                context_source="explicit_tuition_budget_recovery_from_intent_preview",
+            )
+            if _pending_card_kind(card) == "plan_mutation":
+                return card
+        decision = _explicit_only_keep_goal_decision_from_text(
+            content,
+            batch=getattr(request_context, "batch", None),
+        )
+        if decision is not None:
+            card = await self._create_composite_goal_recovery_card(
+                session_id=session_id,
+                content=content,
+                request_context=request_context,
+                decision=decision,
+                attempted_action_family="intent_preview",
+                attempted_result={"result_kind": "intent_preview"},
+                context_source="explicit_only_keep_recovery_from_intent_preview",
+            )
+            if _pending_card_kind(card) == "plan_mutation":
+                return card
         try:
             decision = await classify_composite_goal_action(
                 content,
@@ -12015,7 +12451,7 @@ class ChatService:
             )
         except Exception:
             logger.warning(
-                "Tuition budget composite recovery from intent preview failed: session_id=%s",
+                "Plan goal composite recovery from intent preview failed: session_id=%s",
                 session_id,
                 exc_info=True,
             )
@@ -12068,9 +12504,19 @@ class ChatService:
             return None
         target_values = _as_text_list(getattr(decision, "targetValues", []) or [])
         negative_values = _as_text_list(getattr(decision, "negativeValues", []) or [])
-        if action in {"only_keep_scope", "must_include_scope"} and not target_values:
+        explicit_target_scopes = [
+            scope
+            for scope in list(getattr(decision, "targetScopes", []) or [])
+            if isinstance(scope, dict) and scope_value_list(scope)
+        ]
+        explicit_negative_scopes = [
+            scope
+            for scope in list(getattr(decision, "negativeScopes", []) or [])
+            if isinstance(scope, dict) and scope_value_list(scope)
+        ]
+        if action in {"only_keep_scope", "must_include_scope"} and not target_values and not explicit_target_scopes:
             return None
-        if action == "exclude_scope" and not negative_values:
+        if action == "exclude_scope" and not negative_values and not explicit_negative_scopes:
             return None
         if scope_type == "career":
             # Current Java user-goal proposal supports plan-scoped major/school/region
@@ -12169,8 +12615,8 @@ class ChatService:
         goal = PlanGoal(
             goal_type=action,  # type: ignore[arg-type]
             user_original_text=content,
-            target_scopes=[{"entity_type": scope_type, "values": target_values}] if target_values else [],
-            negative_scopes=[{"entity_type": scope_type, "values": negative_values}] if negative_values else [],
+            target_scopes=explicit_target_scopes or ([{"entity_type": scope_type, "values": target_values}] if target_values else []),
+            negative_scopes=explicit_negative_scopes or ([{"entity_type": scope_type, "values": negative_values}] if negative_values else []),
             max_tuition_per_year=max_tuition_per_year if action == "tuition_budget_scope" else None,
             confidence="high",
         )
@@ -12180,10 +12626,10 @@ class ChatService:
                 "intentMode": "constraint",
                 "constraintIntentType": constraint_intent_type,
             }
-            if target_values:
-                intent_update["targetScopes"] = [{"entity_type": scope_type, "values": target_values}]
-            if negative_values:
-                intent_update["negativeScopes"] = [{"entity_type": scope_type, "values": negative_values}]
+            if explicit_target_scopes or target_values:
+                intent_update["targetScopes"] = explicit_target_scopes or [{"entity_type": scope_type, "values": target_values}]
+            if explicit_negative_scopes or negative_values:
+                intent_update["negativeScopes"] = explicit_negative_scopes or [{"entity_type": scope_type, "values": negative_values}]
             intent_updates.append(intent_update)
         composite = CompositePlanProposal(
             source_version=planning_version,
@@ -12593,6 +13039,18 @@ class ChatService:
             )
             await finish_context_progress()
             return reply
+
+        explicit_plan_goal_reply = await self._maybe_handle_explicit_plan_goal(
+            session_id=session_id,
+            user_id=user_id,
+            content=content,
+            history=history,
+            request_context=request_context,
+            turn_started_at=turn_started_at,
+        )
+        if explicit_plan_goal_reply is not None:
+            await finish_context_progress()
+            return explicit_plan_goal_reply
 
         semantic_plan_action_reply = await self._maybe_handle_semantic_plan_action(
             session_id=session_id,
@@ -14222,7 +14680,10 @@ class ChatService:
             and recovered_pending_intent_card is None
             and not composite_goal_clarification_reply
             and not intent_preview_downgraded
-            and not _plan_confirmation_candidate_is_explicit_atomic_target(plan_confirmation_candidate)
+            and (
+                not _plan_confirmation_candidate_is_explicit_atomic_target(plan_confirmation_candidate)
+                or _explicit_tuition_budget_goal_decision_from_text(content) is not None
+            )
         ):
             composite_override_card = await self._maybe_override_plan_confirmation_with_composite_goal(
                 session_id=session_id,
@@ -14320,33 +14781,49 @@ class ChatService:
             and not intent_preview_downgraded
             and not plan_card_includes_intent_update
         ):
-            tuition_budget_card = await self._maybe_recover_tuition_budget_from_intent_preview(
+            recovered_goal_card = await self._maybe_recover_plan_goal_from_intent_preview(
                 session_id=session_id,
                 content=content,
                 request_context=request_context,
                 tool_context_messages=tool_context_messages,
             )
-            if tuition_budget_card is not None:
-                pending_fix_proposal_card = tuition_budget_card
+            if recovered_goal_card is not None:
+                pending_fix_proposal_card = recovered_goal_card
+                recovered_goal_payload = _parse_tool_return_json(
+                    getattr(recovered_goal_card, "content", "") or ""
+                )
+                recovered_goal_strategy = (
+                    str((recovered_goal_payload or {}).get("strategy") or "").strip()
+                    if isinstance(recovered_goal_payload, dict)
+                    else ""
+                )
+                is_budget_goal = recovered_goal_strategy == "tuition_budget_scope"
                 plan_action_recovery_route = {
-                    "source": "tuition_budget_recovery_from_intent_preview",
+                    "source": (
+                        "tuition_budget_recovery_from_intent_preview"
+                        if is_budget_goal
+                        else "plan_goal_recovery_from_intent_preview"
+                    ),
                     "matched": True,
-                    "confidence": "semantic",
+                    "confidence": "semantic" if is_budget_goal else "deterministic",
                     "route": "user_goal_proposal",
                 }
                 if isinstance(reply, str):
-                    card_payload = _parse_tool_return_json(
-                        getattr(tuition_budget_card, "content", "") or ""
-                    )
+                    card_payload = recovered_goal_payload
                     card_summary = (
                         str((card_payload or {}).get("summary") or "").strip()
                         if isinstance(card_payload, dict)
                         else ""
                     )
-                    primary_budget_reply = "已按你的预算要求列出调整预览。"
+                    primary_budget_reply = "已按你的预算要求列出调整预览。" if is_budget_goal else "已按你的要求列出调整预览。"
                     if card_summary:
-                        primary_budget_reply = f"已按你的预算要求列出调整预览：{card_summary}。"
-                    primary_budget_reply += "确认前不会改动当前方案；确认后会按预算上限处理当前方案，并同步刷新候选参考。"
+                        prefix = "已按你的预算要求列出调整预览" if is_budget_goal else "已按你的要求列出调整预览"
+                        primary_budget_reply = f"{prefix}：{card_summary}。"
+                    primary_budget_reply += (
+                        "确认前不会改动当前方案；确认后会按预算上限处理当前方案，并同步刷新候选参考。"
+                        if is_budget_goal
+                        else "确认前不会改动当前方案；确认后会同步更新后续报考参考，并按预览调整当前方案。"
+                    )
                     primary_budget_reply = _sanitize_reply_for_user(primary_budget_reply)
                     _replace_text_reply(new_messages, reply, primary_budget_reply)
                     _replace_text_reply(all_messages, reply, primary_budget_reply)

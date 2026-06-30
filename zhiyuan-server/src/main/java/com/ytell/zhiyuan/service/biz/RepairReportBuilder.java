@@ -83,6 +83,9 @@ final class RepairReportBuilder {
             detail.setReplacementPairs(action.getReplacementPairs() == null
                     ? Lists.<ReplacementPairDTO>newArrayList()
                     : Lists.newArrayList(action.getReplacementPairs()));
+            detail.setTotalUnitCount(action.getTotalUnitCount());
+            detail.setTotalVolunteerCount(action.getTotalVolunteerCount());
+            detail.setTotalReplacementPairCount(action.getTotalReplacementPairCount());
             details.add(detail);
         }
         return details;

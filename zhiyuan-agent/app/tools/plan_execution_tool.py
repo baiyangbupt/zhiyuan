@@ -267,14 +267,25 @@ def _planning_version_from_context(ctx: RunContext[RequestContext]) -> int:
         return 0
 
 
+def _planning_version_from_state(planning_state: dict[str, Any] | None) -> int:
+    if not isinstance(planning_state, dict):
+        return 0
+    try:
+        return int(planning_state.get("version") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _facts_with_planning_version(
     facts: dict[str, Any] | None,
     ctx: RunContext[RequestContext],
+    *,
+    planning_version: int | None = None,
 ) -> dict[str, Any]:
     result = dict(facts or {})
-    planning_version = _planning_version_from_context(ctx)
-    if planning_version > 0:
-        result.setdefault("planning_version", planning_version)
+    effective_version = planning_version if planning_version is not None and planning_version > 0 else _planning_version_from_context(ctx)
+    if effective_version > 0:
+        result.setdefault("planning_version", effective_version)
     return result
 
 
@@ -2446,16 +2457,20 @@ async def _resolve_review_issue_action_scope(
     ctx: RunContext[RequestContext],
     plan_model: PlanActionPlan,
     resolved_ids: list[str],
-) -> tuple[list[str], list[dict[str, Any]], Any | None, dict[str, Any] | None]:
-    review_issues, ordered_items, _ = await _load_current_review_issue_scopes(ctx)
+) -> tuple[list[str], list[dict[str, Any]], Any | None, dict[str, Any] | None, int]:
+    review_issues, ordered_items, planning_state = await _load_current_review_issue_scopes(ctx)
+    planning_version = _planning_version_from_state(planning_state)
     review_issue_target = _review_issue_target_from_plan(plan_model, review_issues)
     if review_issue_target is None:
-        return resolved_ids, ordered_items, None, None
+        return resolved_ids, ordered_items, None, None, planning_version
     issue = _find_review_issue_by_code(review_issues, getattr(review_issue_target, "code", None))
     if issue is None:
         try:
             await run_planning_review(ctx)
-            review_issues, ordered_items, _ = await _load_current_review_issue_scopes(ctx)
+            review_issues, ordered_items, planning_state = await _load_current_review_issue_scopes(ctx)
+            refreshed_version = _planning_version_from_state(planning_state)
+            if refreshed_version > 0:
+                planning_version = refreshed_version
             issue = _find_review_issue_by_code(review_issues, getattr(review_issue_target, "code", None))
         except Exception:
             logger.warning(
@@ -2475,9 +2490,11 @@ async def _resolve_review_issue_action_scope(
                 "affected_volunteer_ids": resolved_ids,
             }
         else:
-            return resolved_ids, ordered_items, review_issue_target, None
+            return resolved_ids, ordered_items, review_issue_target, None, planning_version
     effective_ids = _resolve_review_issue_scope_ids(issue, ordered_items, resolved_ids, review_issue_target)
-    return effective_ids or resolved_ids, ordered_items, review_issue_target, issue
+    if planning_version > 0:
+        issue.setdefault("planning_version", planning_version)
+    return effective_ids or resolved_ids, ordered_items, review_issue_target, issue, planning_version
 
 
 def _structural_review_issue_guidance(issue: dict[str, Any]) -> tuple[str, list[str]]:
@@ -2516,7 +2533,7 @@ async def _build_broad_replace_review_issue_preview(
         return None
     refs = list(atomic.volunteer_ids or [])
     resolved_ids, _ = await _resolve_ordered_volunteer_refs(ctx, refs)
-    effective_ids, ordered_items, review_issue_target, review_issue = await _resolve_review_issue_action_scope(
+    effective_ids, ordered_items, review_issue_target, review_issue, planning_version = await _resolve_review_issue_action_scope(
         ctx,
         plan_model,
         resolved_ids,
@@ -2549,6 +2566,7 @@ async def _build_broad_replace_review_issue_preview(
                     "affected_volunteer_count": len(effective_ids),
                 },
                 ctx,
+                planning_version=planning_version,
             ),
         )
 
@@ -2573,6 +2591,7 @@ async def _build_broad_replace_review_issue_preview(
                 "affected_volunteer_count": len(effective_ids),
             },
             ctx,
+            planning_version=planning_version,
         ),
     )
 
@@ -3608,7 +3627,7 @@ async def _execute_plan_action_model(
         atomic = plan_model.atomic_actions[0] if plan_model.atomic_actions else None
         refs = list(atomic.volunteer_ids or []) if atomic else []
         resolved_ids, missing_refs = await _resolve_ordered_volunteer_refs(ctx, refs)
-        effective_ids, ordered_items, review_issue_target, review_issue = await _resolve_review_issue_action_scope(
+        effective_ids, ordered_items, review_issue_target, review_issue, planning_version = await _resolve_review_issue_action_scope(
             ctx,
             plan_model,
             resolved_ids,
@@ -3624,7 +3643,7 @@ async def _execute_plan_action_model(
                 summary=summary,
                 reply_focus=["preview_only", "review_issue_structural"],
                 next_step_hints=hints,
-                facts=_facts_with_planning_version({}, ctx),
+                facts=_facts_with_planning_version({}, ctx, planning_version=planning_version),
             )
         if (
             review_issue
@@ -3653,7 +3672,7 @@ async def _execute_plan_action_model(
                     reply_focus=["replacement_scope_required", "review_issue_batch_scope"],
                     reply_strategy="direct_blocking",
                     next_step_hints=["先让用户补充替换范围；不要把替换优先风险自动改成整批删除。"],
-                    facts=_facts_with_planning_version({}, ctx),
+                    facts=_facts_with_planning_version({}, ctx, planning_version=planning_version),
                 )
             preview_summary = (
                 f"已定位到当前方案里当前审查命中的{issue_label}："
@@ -3671,7 +3690,7 @@ async def _execute_plan_action_model(
                 summary=_with_confirmation_hint(preview_summary),
                 reply_focus=["preview_only", "review_issue_batch_scope"],
                 next_step_hints=["如果用户确认执行，再按当前审查命中的整批问题项做移除。"],
-                facts=_facts_with_planning_version({}, ctx),
+                facts=_facts_with_planning_version({}, ctx, planning_version=planning_version),
             )
         if (missing_refs or not resolved_ids) and review_issue_target is None:
             missing_text = "、".join(missing_refs[:5]) if missing_refs else "要替换的志愿"
@@ -3780,8 +3799,7 @@ async def _execute_plan_action_model(
             )
         if refs or review_issue_target is not None:
             resolved_ids, missing_refs = await _resolve_ordered_volunteer_refs(ctx, refs)
-            resolved_apply_payload = _build_resolved_apply_payload(plan_model, volunteer_ids=resolved_ids) if resolved_ids else {}
-            expanded_ids, ordered_items, _, review_issue = await _resolve_review_issue_action_scope(
+            expanded_ids, ordered_items, review_issue_target, review_issue, planning_version = await _resolve_review_issue_action_scope(
                 ctx,
                 plan_model,
                 resolved_ids,
@@ -3797,7 +3815,7 @@ async def _execute_plan_action_model(
                     summary=summary,
                     reply_focus=["preview_only", "review_issue_structural"],
                     next_step_hints=hints,
-                    facts=_facts_with_planning_version({}, ctx),
+                    facts=_facts_with_planning_version({}, ctx, planning_version=planning_version),
                 )
             if review_issue and expanded_ids:
                 unit_count = _count_ordered_units_for_ids(ordered_items, expanded_ids)
@@ -3827,8 +3845,18 @@ async def _execute_plan_action_model(
                     reply_focus=["preview_only", "review_issue_batch_scope"],
                     next_step_hints=["如果用户确认执行，再按当前审查命中的整批问题项做移除。"],
                     facts=_facts_with_planning_version(
-                        {"resolved_apply_payload": resolved_apply_payload} if resolved_apply_payload else {},
+                        {
+                            "resolved_apply_payload": _build_resolved_apply_payload(
+                                plan_model,
+                                volunteer_ids=expanded_ids,
+                            ),
+                            "review_issue_code": getattr(review_issue_target, "code", None),
+                            "review_issue_label": issue_label,
+                            "affected_unit_count": unit_count,
+                            "affected_volunteer_count": len(expanded_ids),
+                        },
                         ctx,
+                        planning_version=planning_version,
                     ),
                 )
             if missing_refs or not resolved_ids:

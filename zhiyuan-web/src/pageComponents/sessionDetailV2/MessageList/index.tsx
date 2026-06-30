@@ -39,6 +39,10 @@ interface IOptimisticMessage extends IMessage {
   optimisticAfterId?: number;
 }
 
+interface ITransientAgentMessage extends IMessage {
+  transient?: boolean;
+}
+
 const isOptimisticUserMessage = (record: IMessage): record is IOptimisticMessage =>
   record.messageFrom === '1' &&
   record.contentType === 'TEXT' &&
@@ -55,6 +59,18 @@ const hasMatchingRealUserMessage = (optimistic: IOptimisticMessage, records: IMe
       (record.content || '') === (optimistic.content || '')
   );
 };
+
+const isTransientAgentMessage = (record: IMessage): record is ITransientAgentMessage =>
+  record.messageFrom === '0' && Boolean((record as ITransientAgentMessage).transient);
+
+const hasMatchingRealAgentMessage = (transient: ITransientAgentMessage, records: IMessage[]) =>
+  records.some(
+    record =>
+      record.id < OPTIMISTIC_MESSAGE_ID_BASE &&
+      record.messageFrom === '0' &&
+      record.contentType === transient.contentType &&
+      (record.content || '') === (transient.content || '')
+  );
 
 interface IQuickReplyAction {
   label: string;
@@ -393,8 +409,14 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
               setMessageList(prevList => {
                 const prevWithoutMatchedOptimistic = prevList.filter(
                   record =>
-                    !isOptimisticUserMessage(record) ||
-                    !hasMatchingRealUserMessage(record, dealReverseList)
+                    (
+                      !isOptimisticUserMessage(record) ||
+                      !hasMatchingRealUserMessage(record, dealReverseList)
+                    ) &&
+                    (
+                      !isTransientAgentMessage(record) ||
+                      !hasMatchingRealAgentMessage(record, dealReverseList)
+                    )
                 );
                 const merged = [...dealReverseList, ...prevWithoutMatchedOptimistic]
                   .reduce((acc: IMessage[], current: IMessage) => {
@@ -424,8 +446,10 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
               }
             } else {
               setPage(page => Math.max(1, page - 1));
-              message.error('获取消息列表失败');
+              console.warn('获取消息列表失败', { code, data });
             }
+          } catch (error) {
+            console.warn('获取消息列表失败', error);
           } finally {
             setIsLoading(false);
           }
@@ -454,10 +478,14 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
   const [answerLoading, setAnswerLoading] = useState<boolean>(false);
   const [isTimeout, setIsTimeout] = useState<boolean>(false); // 是否已超时
   const [thinkingHints, setThinkingHints] = useState<string[]>([]);
-  // const websocketUrl = `/gaotu-assistant-agent/plus/chat/${tenantId}/bot/${botId}/do`;
-  const wsBase =
+  const configuredWsBase =
     process.env.NEXT_PUBLIC_AGENT_WS_BASE_OVERRIDE || process.env.NEXT_PUBLIC_AGENT_WS_BASE || '';
-  const websocketUrl = `${wsBase}/gaotu-assistant-agent/plus/chat/${tenantId}/bot/${botId}/do`;
+  const sameOriginWsBase =
+    typeof window === 'undefined'
+      ? ''
+      : `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`;
+  const wsBase = configuredWsBase || sameOriginWsBase;
+  const websocketUrl = `${wsBase}/gaotu-assistant-agent/plus/chat/${tenantId}/bot/${botId}/do?chatSessionId=${routerParams.chatSessionId}`;
 
   // 心跳相关配置
   const HEARTBEAT_INTERVAL = 5000; // 心跳发送间隔：5秒
@@ -514,6 +542,49 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
     [routerParams.chatSessionId]
   );
 
+  const appendAgentWsMessage = useCallback(
+    (data: WebSocketMessage | string) => {
+      const wsData = typeof data === 'string' ? { type: 'text', content: data } : data;
+      const type = typeof wsData?.type === 'string' ? wsData.type : 'text';
+      if (type === 'pong' || type === 'thinking') {
+        return;
+      }
+      const contentValue = (wsData as any)?.content;
+      if (contentValue === undefined || contentValue === null || contentValue === '') {
+        return;
+      }
+      const contentType = ['pendingConfirmationCard', 'planningWorkspaceAction'].includes(type) ? 'CARD' : 'TEXT';
+      const content =
+        contentType === 'CARD' && typeof contentValue !== 'string'
+          ? JSON.stringify(contentValue)
+          : String(contentValue);
+      optimisticMessageSeqRef.current += 1;
+      const transientMessage: ITransientAgentMessage = {
+        id: OPTIMISTIC_MESSAGE_ID_BASE + Date.now() + optimisticMessageSeqRef.current,
+        chatSessionId: +routerParams.chatSessionId,
+        messageFrom: '0',
+        contentType,
+        content,
+        nerList: [],
+        contentSegments: contentType === 'TEXT' ? [{ type: 'text', content }] : [],
+        transient: true,
+      };
+      setMessageList(prevList => {
+        const exists = prevList.some(
+          item =>
+            item.messageFrom === transientMessage.messageFrom &&
+            item.contentType === transientMessage.contentType &&
+            (item.content || '') === transientMessage.content
+        );
+        if (exists) {
+          return prevList;
+        }
+        return [...prevList, transientMessage].sort((a: IMessage, b: IMessage) => a.id - b.id);
+      });
+    },
+    [routerParams.chatSessionId]
+  );
+
   // 重置回答加载状态
   const resetAnswerLoading = useCallback(() => {
     setAnswerLoading(false);
@@ -558,6 +629,7 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
       }
 
       // 其他消息才需要重新拉取消息列表和更新加载状态
+      appendAgentWsMessage(data);
       fetchLatestMessageList();
       resetAnswerLoading();
     },
@@ -780,8 +852,6 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
         message.warning('等待回复超时，您可以继续等待或放弃等待');
       }, ANSWER_TIMEOUT);
 
-      await fetchLatestMessageList();
-
       // 使用 scrollToBottom 替代 scrollIntoView，避免移动端 overflow 容器内滚动失效
       scrollToBottom();
     }
@@ -822,7 +892,6 @@ const MessageList = forwardRef<IMessageParams, IMessageListProps>((props, ref) =
       setIsTimeout(true);
       message.warning('等待回复超时，您可以继续等待或放弃等待');
     }, ANSWER_TIMEOUT);
-    await fetchLatestMessageList();
     scrollToBottom();
   };
 

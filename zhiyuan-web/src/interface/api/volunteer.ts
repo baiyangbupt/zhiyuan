@@ -162,6 +162,9 @@ export interface PlanningFixProposalAction {
   candidateUnitIds?: string[];
   candidateVolunteerIds?: string[];
   replacementPairs?: PlanningReplacementPair[];
+  totalUnitCount?: number;
+  totalVolunteerCount?: number;
+  totalReplacementPairCount?: number;
 }
 
 export interface PlanningCandidateShortage {
@@ -282,6 +285,9 @@ export interface PlanningRepairReport {
     candidateUnitIds?: string[];
     candidateVolunteerIds?: string[];
     replacementPairs?: PlanningReplacementPair[];
+    totalUnitCount?: number;
+    totalVolunteerCount?: number;
+    totalReplacementPairCount?: number;
   }>;
   messages?: string[];
   warnings?: string[];
