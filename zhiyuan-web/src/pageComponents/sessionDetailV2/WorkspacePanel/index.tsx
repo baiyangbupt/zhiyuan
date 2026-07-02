@@ -226,6 +226,17 @@ const normalizePrepareTypeCode = (code?: string | null, desc?: string) => {
 const isVolunteerPrepareType = (code?: string | null, desc?: string) =>
   normalizePrepareTypeCode(code, desc) === 'VOLUNTEER';
 
+const resolvePlanYear = (prepareTypeCode?: string | null, prepareTypeDesc?: string, examYear?: number | string | null) => {
+  const normalizedPrepareTypeCode = normalizePrepareTypeCode(prepareTypeCode, prepareTypeDesc);
+  if (normalizedPrepareTypeCode === 'PREDICT') {
+    return 2025;
+  }
+  if (normalizedPrepareTypeCode === 'VOLUNTEER') {
+    return 2026;
+  }
+  return Number(examYear) || 2026;
+};
+
 const parseDateTimeValue = (value?: string) => {
   if (!value) {
     return 0;
@@ -601,7 +612,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     loadedUnitCount: 0,
   });
   const normalizedPrepareTypeCode = normalizePrepareTypeCode(prepareTypeCode, prepareTypeDesc);
-  const planYear = normalizedPrepareTypeCode === 'PREDICT' ? 2025 : Number(examYear) || 2026;
+  const planYear = resolvePlanYear(prepareTypeCode, prepareTypeDesc, examYear);
   const planYearTitle = `${planYear}招生计划`;
   const [candidatePoolLoading, setCandidatePoolLoading] = useState(false);
   const [candidateCacheVersion, setCandidateCacheVersion] = useState(0);
@@ -636,6 +647,8 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
   const draftItemRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const draftBasketRef = useRef<HTMLDivElement | null>(null);
   const workspaceBodyRef = useRef<HTMLDivElement | null>(null);
+  const filterPanelTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const filterPanelDropdownRef = useRef<HTMLDivElement | null>(null);
   const candidateSummaryRef = useRef<HTMLDivElement | null>(null);
   const reviewSummaryRef = useRef<HTMLDivElement | null>(null);
   const workspaceTouchStartYRef = useRef<number | null>(null);
@@ -1795,6 +1808,30 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
     }
   };
 
+  const maybeLoadNextCandidatePage = () => {
+    if (activeView !== 'candidate' || candidatePoolLoading) {
+      return false;
+    }
+    if (!latestCandidateQuerySignatureRef.current || candidateQueryInFlightPagesRef.current.size > 0) {
+      return false;
+    }
+    const currentPage = candidatePoolResult.page || 1;
+    if (currentPage >= candidateTotalPages) {
+      return false;
+    }
+    const container = workspaceBodyRef.current;
+    if (!container) {
+      return false;
+    }
+    const distanceToBottom =
+      container.scrollHeight - container.scrollTop - container.clientHeight;
+    if (distanceToBottom > 180) {
+      return false;
+    }
+    queryCandidatePool(currentPage + 1, true);
+    return true;
+  };
+
   const refreshCandidatePool = async (forceRegenerate: boolean = false, refreshSourceData: boolean = false) => {
     const ready = await ensureCandidatePoolReady(forceRegenerate, refreshSourceData);
     if (ready) {
@@ -2712,23 +2749,38 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       return;
     }
     const handleScroll = () => {
-      if (candidatePoolLoading) {
-        return;
-      }
-      const currentPage = candidatePoolResult.page || 1;
-      if (currentPage >= candidateTotalPages) {
-        return;
-      }
-      const distanceToBottom =
-        container.scrollHeight - container.scrollTop - container.clientHeight;
-      if (distanceToBottom > 180) {
-        return;
-      }
-      queryCandidatePool(currentPage + 1, true);
+      maybeLoadNextCandidatePage();
     };
     container.addEventListener('scroll', handleScroll);
     return () => container.removeEventListener('scroll', handleScroll);
-  }, [activeView, candidatePoolLoading, candidatePoolResult.page, candidateTotalPages]);
+  }, [
+    activeView,
+    candidatePoolLoading,
+    candidatePoolResult.page,
+    candidatePoolResult.items?.length,
+    candidatePoolResult.total,
+    candidatePoolResult.pageSize,
+    candidateTotalPages,
+  ]);
+
+  useEffect(() => {
+    if (activeView !== 'candidate') {
+      return undefined;
+    }
+    const timer = window.setTimeout(() => {
+      maybeLoadNextCandidatePage();
+    }, 80);
+    return () => window.clearTimeout(timer);
+  }, [
+    activeView,
+    candidatePoolLoading,
+    candidatePoolResult.page,
+    candidatePoolResult.items?.length,
+    candidatePoolResult.total,
+    candidatePoolResult.pageSize,
+    candidateTotalPages,
+    expandedCandidateGroupKeys.length,
+  ]);
 
   useEffect(() => {
     if (!workspaceIntent) {
@@ -2839,6 +2891,38 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
       document.removeEventListener('touchstart', handlePointerDown);
     };
   }, [draftExpanded]);
+
+  useEffect(() => {
+    if (!filterPanelOpen) {
+      return undefined;
+    }
+    const handlePointerDown = (event: MouseEvent | TouchEvent) => {
+      const target = event.target as Node | null;
+      if (!target) {
+        return;
+      }
+      if (
+        filterPanelTriggerRef.current?.contains(target) ||
+        filterPanelDropdownRef.current?.contains(target)
+      ) {
+        return;
+      }
+      setFilterPanelOpen(false);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setFilterPanelOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('touchstart', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('touchstart', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [filterPanelOpen]);
 
   const actionableReviewChecks = reviewChecks.filter(
     check =>
@@ -5020,7 +5104,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                   open={filterPanelOpen}
                   onOpenChange={open => setFilterPanelOpen(open)}
                   dropdownRender={() => (
-                    <div className={style.filterPanelDropdown}>
+                    <div ref={filterPanelDropdownRef} className={style.filterPanelDropdown}>
                       <div className={style.filterPanelSearchRow}>
                         <input
                           className={style.filterPanelSearchInput}
@@ -5049,7 +5133,7 @@ const WorkspacePanel: React.FC<WorkspacePanelProps> = ({
                     </div>
                   )}
                 >
-                  <button type="button" className={style.tagFilterInput}>
+                  <button ref={filterPanelTriggerRef} type="button" className={style.tagFilterInput}>
                     <span className={style.tagFilterInputText}>{attributeFilterTriggerText}</span>
                     <DownOutlined className={style.tagFilterInputIcon} />
                   </button>

@@ -50,12 +50,21 @@ interface MajorSub {
   majorSubName: string;
 }
 
+interface MajorOption {
+  id: string;
+  label: string;
+  children?: MajorOption[];
+}
+
 interface RegionSub {
   provinceId: string;
   provinceName: string;
 }
 
 const MAX_NAME_LENGTH = 5;
+const TUITION_RANGE_MIN = 0;
+const TUITION_RANGE_MAX = 200000;
+const createDefaultTuitionRange = (): [number, number] => [TUITION_RANGE_MIN, TUITION_RANGE_MAX];
 const LSubject = ['物理', '化学', '生物'];
 const WSubject = ['政治', '历史', '地理'];
 const sexOptions = [
@@ -150,13 +159,13 @@ const ModalForm = forwardRef<IRefParams>((_, ref) => {
   const selectedStrengthSubjects = Form.useWatch('strengthSubjectList', form) || [];
   const colorValues = Form.useWatch('colorSistuation', form) || []; // 色觉情况
   const [ethnicityOptions, setEthnicityOptions] = useState<any[]>([]); // 民族列表
-  const [majorsListData, setMajorsListData] = useState<any[]>([]); // 意向专业列表
+  const [majorsListData, setMajorsListData] = useState<MajorOption[]>([]); // 意向专业列表
   const [regionProvinceList, setRegionProvinceList] = useState<any[]>([]); // 按大区分组的省份列表
   const [unAcceptableMajorsOptions, setUnAcceptableMajorsOptions] = useState<any[]>([]); // 不能接受的专业列表
   const tuitionRangeFormValue = Form.useWatch('tuitionRange', form); // 学费区间（从表单获取）
   const provinceValue = Form.useWatch('areaId', form);
   const isHainanProvince = provinceValue === HAINAN_PROVINCE_CODE;
-  const [tuitionRange, setTuitionRange] = useState<[number, number]>([0, 100000]); // 学费区间状态（用于Slider显示）
+  const [tuitionRange, setTuitionRange] = useState<[number, number]>(createDefaultTuitionRange); // 学费区间状态（用于Slider显示）
 
   const {
     setSelectedSecondSubject,
@@ -922,8 +931,9 @@ const ModalForm = forwardRef<IRefParams>((_, ref) => {
     getEthnicityList();
     getRegionProvinceList();
     // 初始化学费区间
-    form.setFieldsValue({ tuitionRange: [0, 100000] });
-    setTuitionRange([0, 100000]);
+    const defaultTuitionRange = createDefaultTuitionRange();
+    form.setFieldsValue({ tuitionRange: defaultTuitionRange });
+    setTuitionRange(defaultTuitionRange);
     // 专业列表需要等批次选择后再获取，所以不在这里调用
   }, []);
 
@@ -943,8 +953,8 @@ const ModalForm = forwardRef<IRefParams>((_, ref) => {
     setActiveMajor(majorId);
   };
 
-  const majorList = useMemo(() => {
-    return majorsListData?.find(major => major.id === activeMajor)?.children;
+  const majorList = useMemo<MajorOption[]>(() => {
+    return majorsListData?.find(major => major.id === activeMajor)?.children || [];
   }, [activeMajor, majorsListData]);
 
   return (
@@ -1308,8 +1318,8 @@ const ModalForm = forwardRef<IRefParams>((_, ref) => {
           <div>
             <Slider
               range
-              min={0}
-              max={100000}
+              min={TUITION_RANGE_MIN}
+              max={TUITION_RANGE_MAX}
               step={1000}
               value={tuitionRange}
               onChange={(value) => {
@@ -1317,8 +1327,8 @@ const ModalForm = forwardRef<IRefParams>((_, ref) => {
                 form.setFieldsValue({ tuitionRange: value });
               }}
               marks={{
-                0: '0元/年',
-                100000: '10万/年',
+                [TUITION_RANGE_MIN]: '0元/年',
+                [TUITION_RANGE_MAX]: '20万/年',
               }}
               tooltip={{ formatter: (val) => {
                 if (val === undefined) return '';

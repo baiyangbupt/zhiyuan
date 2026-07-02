@@ -30,6 +30,9 @@ import java.util.stream.Collectors;
 @Component
 public class VolunteerResponseBuilder {
 
+    private static final int DEFAULT_TUITION_RANGE_MIN = 0;
+    private static final int DEFAULT_TUITION_RANGE_MAX = 200000;
+    private static final int DEFAULT_TUITION_RANGE_STEP = 1000;
 
     @Autowired
     private VolunteerUtils volunteerUtils;
@@ -101,13 +104,15 @@ public class VolunteerResponseBuilder {
         baseData.setPrepareType(userScoreDetail.getPrepareType());
 
         // 学费区间：当前会话生效中的区间直接来自 userScoreDetail
-        baseData.setTuitionRange(userScoreDetail.getTuitionRange() == null ? new CreateSessionReq.TuitionRange(0, 100000) : userScoreDetail.getTuitionRange());
+        baseData.setTuitionRange(userScoreDetail.getTuitionRange() == null
+                ? new CreateSessionReq.TuitionRange(DEFAULT_TUITION_RANGE_MIN, DEFAULT_TUITION_RANGE_MAX)
+                : userScoreDetail.getTuitionRange());
 
         // 学费区间配置：暂定一个较宽的默认区间和步长，后续可根据省份/批次做个性化
         VolunteerRecommendListResponse.TuitionRangeConfig tuitionRangeConfig = new VolunteerRecommendListResponse.TuitionRangeConfig();
-        tuitionRangeConfig.setMin(0);
-        tuitionRangeConfig.setMax(100000);
-        tuitionRangeConfig.setStep(1000);
+        tuitionRangeConfig.setMin(DEFAULT_TUITION_RANGE_MIN);
+        tuitionRangeConfig.setMax(DEFAULT_TUITION_RANGE_MAX);
+        tuitionRangeConfig.setStep(DEFAULT_TUITION_RANGE_STEP);
         baseData.setTuitionRangeConfig(tuitionRangeConfig);
 
         // 设置各区间录取率范围
