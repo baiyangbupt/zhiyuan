@@ -48,14 +48,14 @@ final class RepairCandidateEligibility {
             return true;
         }
         if (matchesAnyText(defaultList(hard.getMustExcludeRegions()), unit.getProvinceName(), unit.getCityName())
-                || matchesAnyText(defaultList(hard.getMustExcludeSchools()), unit.getSchoolName())
+                || matchesAnyPlanningUnitSchool(unit, hard.getMustExcludeSchools())
                 || matchesAnyPlanningUnitMajor(unit, hard.getMustExcludeMajors())) {
             return false;
         }
         return (defaultList(hard.getMustIncludeRegions()).isEmpty()
                 || matchesAnyText(hard.getMustIncludeRegions(), unit.getProvinceName(), unit.getCityName()))
                 && (defaultList(hard.getMustIncludeSchools()).isEmpty()
-                || matchesAnyText(hard.getMustIncludeSchools(), unit.getSchoolName()))
+                || matchesAnyPlanningUnitSchool(unit, hard.getMustIncludeSchools()))
                 && (defaultList(hard.getMustIncludeMajors()).isEmpty()
                 || matchesAnyPlanningUnitMajor(unit, hard.getMustIncludeMajors()));
     }
@@ -94,11 +94,11 @@ final class RepairCandidateEligibility {
     }
 
     private static boolean matchesAnySchool(CandidateItemDTO item, List<String> values) {
-        return item != null && matchesAnyText(values, item.getSchoolName());
+        return item != null && matchesAnySchoolScope(values, item);
     }
 
     private static boolean matchesAnyMajor(CandidateItemDTO item, List<String> values) {
-        return item != null && matchesAnyText(values, item.getMajorName(), item.getMajorCategory(), item.getMajorDiscipline());
+        return item != null && matchesAnyMajorScope(values, item);
     }
 
     private static boolean matchesAnyPlanningUnitMajor(PlanningUnitDTO unit, List<String> values) {
@@ -108,11 +108,52 @@ final class RepairCandidateEligibility {
         List<PlanningUnitMajorDTO> majors = !defaultList(unit.getSelectedMajors()).isEmpty()
                 ? unit.getSelectedMajors() : unit.getAllMajors();
         for (PlanningUnitMajorDTO major : defaultList(majors)) {
-            if (major != null && matchesAnyText(values, major.getMajorName())) {
+            if (major != null && matchesAnyMajorScope(values, planningUnitMajorAsCandidate(unit, major))) {
                 return true;
             }
         }
         return false;
+    }
+
+    private static boolean matchesAnyPlanningUnitSchool(PlanningUnitDTO unit, List<String> values) {
+        if (unit == null) {
+            return false;
+        }
+        if (matchesAnySchoolScope(values, planningUnitAsCandidate(unit))) {
+            return true;
+        }
+        List<PlanningUnitMajorDTO> majors = !defaultList(unit.getSelectedMajors()).isEmpty()
+                ? unit.getSelectedMajors() : unit.getAllMajors();
+        for (PlanningUnitMajorDTO major : defaultList(majors)) {
+            if (major != null && matchesAnySchoolScope(values, planningUnitMajorAsCandidate(unit, major))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static CandidateItemDTO planningUnitAsCandidate(PlanningUnitDTO unit) {
+        CandidateItemDTO item = new CandidateItemDTO();
+        if (unit == null) {
+            return item;
+        }
+        item.setSchoolName(unit.getSchoolName());
+        item.setProvinceName(unit.getProvinceName());
+        item.setCityName(unit.getCityName());
+        item.setSchoolLevel(unit.getSchoolLevel());
+        item.setSchoolNature(unit.getSchoolNature());
+        item.setSchoolCategory(unit.getSchoolCategory());
+        return item;
+    }
+
+    private static CandidateItemDTO planningUnitMajorAsCandidate(PlanningUnitDTO unit, PlanningUnitMajorDTO major) {
+        CandidateItemDTO item = planningUnitAsCandidate(unit);
+        if (major != null) {
+            item.setMajorName(major.getMajorName());
+            item.setReasonCodes(defaultList(major.getReasonCodes()));
+            item.setMajorPlanTags(defaultList(major.getMajorPlanTags()));
+        }
+        return item;
     }
 
     private static boolean matchesAnyText(List<String> values, String... fields) {
@@ -121,6 +162,122 @@ final class RepairCandidateEligibility {
                 if (textMatches(field, value)) {
                     return true;
                 }
+            }
+        }
+        return false;
+    }
+
+    private static boolean matchesAnySchoolScope(List<String> values, CandidateItemDTO item) {
+        for (String value : defaultList(values)) {
+            if (matchesSchoolScope(value, item)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean matchesSchoolScope(String value, CandidateItemDTO item) {
+        if (item == null || Strings.isNullOrEmpty(value)) {
+            return false;
+        }
+        String scope = value.trim();
+        if (textMatches(item.getSchoolName(), scope)) {
+            return true;
+        }
+        int split = scope.indexOf(':');
+        if (split < 0) {
+            split = scope.indexOf('：');
+        }
+        if (split < 0) {
+            return textMatches(item.getSchoolNature(), scope)
+                    || textMatches(item.getSchoolCategory(), scope)
+                    || textMatches(item.getSchoolLevel(), scope)
+                    || matchesAnyText(Lists.newArrayList(scope), defaultList(item.getSchoolRankTags()).toArray(new String[0]))
+                    || matchesAnyText(Lists.newArrayList(scope), defaultList(item.getSchoolBasicTags()).toArray(new String[0]))
+                    || matchesAnyText(Lists.newArrayList(scope), defaultList(item.getSchoolPopupTags()).toArray(new String[0]))
+                    || matchesAnyText(Lists.newArrayList(scope), defaultList(item.getReasonCodes()).toArray(new String[0]));
+        }
+        String label = scope.substring(0, split).trim();
+        String pattern = scope.substring(split + 1).trim();
+        if (Strings.isNullOrEmpty(pattern)) {
+            return false;
+        }
+        if (containsAny(label, "性质", "办学")) {
+            return textMatches(item.getSchoolNature(), pattern);
+        }
+        if (containsAny(label, "招生类型", "项目", "限制")) {
+            return textMatches(item.getMajorName(), pattern)
+                    || matchesAnyText(Lists.newArrayList(pattern), defaultList(item.getMajorPlanTags()).toArray(new String[0]))
+                    || matchesAnyText(Lists.newArrayList(pattern), defaultList(item.getReasonCodes()).toArray(new String[0]));
+        }
+        if (containsAny(label, "院校类型", "学校类型") || "类型".equals(label)) {
+            return textMatches(item.getSchoolCategory(), pattern);
+        }
+        if (containsAny(label, "层次", "级别")) {
+            return textMatches(item.getSchoolLevel(), pattern)
+                    || matchesAnyText(Lists.newArrayList(pattern), defaultList(item.getSchoolRankTags()).toArray(new String[0]));
+        }
+        if (containsAny(label, "标签")) {
+            return matchesAnyText(Lists.newArrayList(pattern), defaultList(item.getSchoolRankTags()).toArray(new String[0]))
+                    || matchesAnyText(Lists.newArrayList(pattern), defaultList(item.getSchoolBasicTags()).toArray(new String[0]))
+                    || matchesAnyText(Lists.newArrayList(pattern), defaultList(item.getSchoolPopupTags()).toArray(new String[0]));
+        }
+        return false;
+    }
+
+    private static boolean matchesAnyMajorScope(List<String> values, CandidateItemDTO item) {
+        for (String value : defaultList(values)) {
+            if (matchesMajorScope(value, item)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean matchesMajorScope(String value, CandidateItemDTO item) {
+        if (item == null || Strings.isNullOrEmpty(value)) {
+            return false;
+        }
+        String scope = value.trim();
+        if (matchesAnyText(Lists.newArrayList(scope), item.getMajorName(), item.getMajorCategory(), item.getMajorDiscipline())) {
+            return true;
+        }
+        int split = scope.indexOf(':');
+        if (split < 0) {
+            split = scope.indexOf('：');
+        }
+        if (split < 0) {
+            return matchesAnyText(Lists.newArrayList(scope), defaultList(item.getMajorRankTags()).toArray(new String[0]))
+                    || matchesAnyText(Lists.newArrayList(scope), defaultList(item.getMajorPlanTags()).toArray(new String[0]))
+                    || matchesAnyText(Lists.newArrayList(scope), defaultList(item.getReasonCodes()).toArray(new String[0]));
+        }
+        String label = scope.substring(0, split).trim();
+        String pattern = scope.substring(split + 1).trim();
+        if (Strings.isNullOrEmpty(pattern)) {
+            return false;
+        }
+        if (containsAny(label, "专业门类", "专业类", "门类")) {
+            return matchesAnyText(Lists.newArrayList(pattern), item.getMajorCategory(), item.getMajorDiscipline());
+        }
+        if (containsAny(label, "专业标签", "标签")) {
+            return matchesAnyText(Lists.newArrayList(pattern), defaultList(item.getMajorRankTags()).toArray(new String[0]))
+                    || matchesAnyText(Lists.newArrayList(pattern), defaultList(item.getMajorPlanTags()).toArray(new String[0]));
+        }
+        if (containsAny(label, "招生类型", "项目", "限制")) {
+            return textMatches(item.getMajorName(), pattern)
+                    || matchesAnyText(Lists.newArrayList(pattern), defaultList(item.getMajorPlanTags()).toArray(new String[0]))
+                    || matchesAnyText(Lists.newArrayList(pattern), defaultList(item.getReasonCodes()).toArray(new String[0]));
+        }
+        return false;
+    }
+
+    private static boolean containsAny(String text, String... needles) {
+        if (Strings.isNullOrEmpty(text) || needles == null) {
+            return false;
+        }
+        for (String needle : needles) {
+            if (!Strings.isNullOrEmpty(needle) && text.contains(needle)) {
+                return true;
             }
         }
         return false;

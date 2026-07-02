@@ -1,0 +1,459 @@
+{
+  "metadata": {
+    "release": "4.0.0",
+    "purpose": "Realistic spoken/elliptical user style cases for ZhiyuanAgent shadow validation.",
+    "notes": "Keep formal written cases, but validate everyday short utterances, references, and abbreviated follow-ups. Run with ZHIYUAN_AGENT_POC_SHADOW=1 to assert the 4.0 agent shadow tool choice."
+  },
+  "defaults": {
+    "flow": [
+      "plan",
+      "review",
+      "intent"
+    ],
+    "coverage": [
+      "release_4_0_0",
+      "realistic_user_input",
+      "spoken_style",
+      "ellipsis",
+      "zhiyuan_agent_shadow"
+    ],
+    "assertPlanStyle": true,
+    "cloneBackendStateFromSessionId": "26",
+    "clearBackendPlanningIntentState": true,
+    "promptDefaults": {
+      "assertNotContains": [
+        "payload",
+        "stage",
+        "action_family",
+        "volunteerId",
+        "level1",
+        "level2",
+        "level3",
+        "约束",
+        "硬约束",
+        "软偏好",
+        "草稿"
+      ],
+      "assertThinkingNotContains": [
+        "payload",
+        "stage",
+        "action_family",
+        "volunteerId",
+        "level1",
+        "level2",
+        "level3"
+      ],
+      "qualityFocus": [
+        "realistic_user_input",
+        "user_language",
+        "tool_choice_stability"
+      ],
+      "warnElapsedSeconds": 60,
+      "maxElapsedSeconds": 180,
+      "expectedZhiyuanAgentPocStatus": "success",
+      "maxZhiyuanAgentPocToolCallCount": 2
+    }
+  },
+  "cases": [
+    {
+      "name": "400-realistic-review-problem-and-solution-short",
+      "sessionId": "9904001",
+      "coverage": [
+        "review_readonly",
+        "spoken_review_request",
+        "no_side_effect"
+      ],
+      "prompts": [
+        {
+          "prompt": "有啥问题，咋弄",
+          "assertContainsAny": [
+            "问题",
+            "风险",
+            "处理",
+            "可以先",
+            "建议"
+          ],
+          "assertNoFollowups": true,
+          "expectedZhiyuanAgentPocFirstToolNames": [
+            "review_plan"
+          ],
+          "expectedZhiyuanAgentPocNextSteps": [
+            "respond"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-realistic-remove-expensive-after-review-reference",
+      "sessionId": "9904002",
+      "coverage": [
+        "review_then_plan_action",
+        "short_followup_reference",
+        "high_tuition_remove"
+      ],
+      "prompts": [
+        {
+          "prompt": "有啥问题，咋弄",
+          "assertContainsAny": [
+            "高收费",
+            "中外合作",
+            "风险",
+            "问题",
+            "处理"
+          ],
+          "assertNoFollowups": true,
+          "expectedZhiyuanAgentPocFirstToolNames": [
+            "review_plan"
+          ],
+          "expectedZhiyuanAgentPocNextSteps": [
+            "respond"
+          ]
+        },
+        {
+          "prompt": "那高收费的别要了",
+          "assertContainsAny": [
+            "高收费",
+            "移出",
+            "确认",
+            "采纳"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedZhiyuanAgentPocFirstToolNames": [
+            "preview_plan_action"
+          ],
+          "expectedZhiyuanAgentPocNextSteps": [
+            "confirm"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-realistic-intent-private-short",
+      "sessionId": "9904003",
+      "coverage": [
+        "intent_change",
+        "school_nature",
+        "bare_constraint",
+        "short_negative_expression"
+      ],
+      "prompts": [
+        {
+          "prompt": "民办的不要",
+          "assertContainsAny": [
+            "民办",
+            "确认",
+            "采纳",
+            "排除",
+            "避开"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedZhiyuanAgentPocFirstToolNames": [
+            "preview_intent_change"
+          ],
+          "expectedZhiyuanAgentPocNextSteps": [
+            "confirm"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-realistic-intent-private-current-plan-anchor",
+      "sessionId": "9904011",
+      "coverage": [
+        "plan_action",
+        "attribute_filter_remove",
+        "school_nature",
+        "current_plan_adjustment",
+        "current_plan_anchor",
+        "short_negative_expression"
+      ],
+      "prompts": [
+        {
+          "prompt": "方案里的民办不要了",
+          "assertContainsAny": [
+            "民办",
+            "移出",
+            "调整",
+            "确认",
+            "采纳"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedZhiyuanAgentPocFirstToolNames": [
+            "preview_plan_action"
+          ],
+          "expectedZhiyuanAgentPocNextSteps": [
+            "confirm"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-realistic-query-private-short",
+      "sessionId": "9904004",
+      "coverage": [
+        "plan_query",
+        "school_nature",
+        "short_question"
+      ],
+      "prompts": [
+        {
+          "prompt": "里面有民办没",
+          "assertContainsAny": [
+            "民办",
+            "当前方案",
+            "有",
+            "没有"
+          ],
+          "assertNoFollowups": true,
+          "expectedZhiyuanAgentPocFirstToolNames": [
+            "query_plan"
+          ],
+          "expectedZhiyuanAgentPocNextSteps": [
+            "respond"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-realistic-readonly-fix-options-short",
+      "sessionId": "9904005",
+      "coverage": [
+        "review_fix_options",
+        "readonly_boundary",
+        "spoken_style"
+      ],
+      "prompts": [
+        {
+          "prompt": "贵的合作的这些怎么处理，先别动",
+          "assertContainsAny": [
+            "高收费",
+            "中外合作",
+            "处理",
+            "风险",
+            "先"
+          ],
+          "assertNoFollowups": true,
+          "expectedZhiyuanAgentPocFirstToolNames": [
+            "review_plan"
+          ],
+          "expectedZhiyuanAgentPocNextSteps": [
+            "respond"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-realistic-intent-cooperative-short",
+      "sessionId": "9904006",
+      "coverage": [
+        "intent_change",
+        "program_type",
+        "cooperative_program",
+        "bare_constraint",
+        "short_negative_expression"
+      ],
+      "prompts": [
+        {
+          "prompt": "中外合作都不要了",
+          "assertContainsAny": [
+            "中外合作",
+            "确认",
+            "采纳",
+            "排除",
+            "避开"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedZhiyuanAgentPocFirstToolNames": [
+            "preview_intent_change"
+          ],
+          "expectedZhiyuanAgentPocNextSteps": [
+            "confirm"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-realistic-intent-cooperative-current-plan-anchor",
+      "sessionId": "9904012",
+      "coverage": [
+        "plan_action",
+        "attribute_filter_remove",
+        "program_type",
+        "cooperative_program",
+        "current_plan_adjustment",
+        "current_plan_anchor",
+        "short_negative_expression"
+      ],
+      "prompts": [
+        {
+          "prompt": "当前这些中外合作都移出去",
+          "assertContainsAny": [
+            "中外合作",
+            "移出",
+            "调整",
+            "确认",
+            "采纳"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedZhiyuanAgentPocFirstToolNames": [
+            "preview_plan_action"
+          ],
+          "expectedZhiyuanAgentPocNextSteps": [
+            "confirm"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-realistic-remove-specific-position-short",
+      "sessionId": "9904013",
+      "coverage": [
+        "plan_action",
+        "specific_item",
+        "position_reference",
+        "short_negative_expression"
+      ],
+      "prompts": [
+        {
+          "prompt": "第3个不要了",
+          "assertContainsAny": [
+            "第3",
+            "移出",
+            "确认",
+            "采纳"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedZhiyuanAgentPocFirstToolNames": [
+            "preview_plan_action"
+          ],
+          "expectedZhiyuanAgentPocNextSteps": [
+            "confirm"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-realistic-intent-no-plan-action-school-attribute",
+      "sessionId": "9904007",
+      "cloneBackendStateFromSessionId": "35",
+      "coverage": [
+        "intent_change",
+        "school_nature",
+        "no_formal_plan",
+        "short_negative_expression"
+      ],
+      "prompts": [
+        {
+          "prompt": "民办就算了",
+          "assertContainsAny": [
+            "民办",
+            "确认",
+            "采纳",
+            "排除"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedZhiyuanAgentPocFirstToolNames": [
+            "preview_intent_change"
+          ],
+          "expectedZhiyuanAgentPocNextSteps": [
+            "confirm"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-realistic-policy-vs-mutation-short",
+      "sessionId": "9904008",
+      "coverage": [
+        "policy_readonly",
+        "tuition_budget",
+        "no_side_effect",
+        "spoken_style"
+      ],
+      "prompts": [
+        {
+          "prompt": "太贵是不是就不建议冲",
+          "assertContainsAny": [
+            "学费",
+            "预算",
+            "风险",
+            "取舍"
+          ],
+          "assertNoFollowups": true,
+          "expectedZhiyuanAgentPocFirstToolNames": [
+            "answer_policy"
+          ],
+          "expectedZhiyuanAgentPocNextSteps": [
+            "respond"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-realistic-double-negation-short",
+      "sessionId": "9904009",
+      "cloneBackendStateFromSessionId": "17",
+      "coverage": [
+        "intent_change",
+        "double_negation",
+        "spoken_style"
+      ],
+      "prompts": [
+        {
+          "prompt": "经济学别给我排掉",
+          "assertContainsAny": [
+            "经济学",
+            "确认",
+            "采纳",
+            "保留"
+          ],
+          "assertNotContains": [
+            "排除经济学"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedZhiyuanAgentPocFirstToolNames": [
+            "preview_intent_change"
+          ],
+          "expectedZhiyuanAgentPocNextSteps": [
+            "confirm"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-realistic-career-short",
+      "sessionId": "9904010",
+      "coverage": [
+        "career_explore",
+        "spoken_style",
+        "no_intent_side_effect"
+      ],
+      "prompts": [
+        {
+          "prompt": "考公这条路靠谱吗",
+          "assertContainsAny": [
+            "考公",
+            "职业",
+            "专业",
+            "适合"
+          ],
+          "assertNoFollowups": true,
+          "expectedZhiyuanAgentPocFirstToolNames": [
+            "explore_topic"
+          ],
+          "expectedZhiyuanAgentPocNextSteps": [
+            "respond"
+          ]
+        }
+      ]
+    }
+  ]
+}

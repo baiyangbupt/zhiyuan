@@ -1,0 +1,203 @@
+{
+  "metadata": {
+    "release": "4.0.0",
+    "purpose": "Real service direct-route confirmation execution checks for structured 4.0 pending.",
+    "notes": "Each case first creates a 4.0 direct pending card, then confirms it through the service pending bridge."
+  },
+  "defaults": {
+    "flow": [
+      "release_4_0_0",
+      "direct_route",
+      "confirm_pending"
+    ],
+    "coverage": [
+      "release_4_0_0",
+      "structured_pending",
+      "confirm_execution"
+    ],
+    "assertPlanStyle": true,
+    "cloneBackendStateFromSessionId": "26",
+    "clearBackendPlanningIntentState": true,
+    "promptDefaults": {
+      "assertNotContains": [
+        "payload",
+        "stage",
+        "action_family",
+        "volunteerId",
+        "level1",
+        "level2",
+        "level3",
+        "约束",
+        "硬约束",
+        "软偏好",
+        "草稿"
+      ],
+      "assertThinkingNotContains": [
+        "payload",
+        "stage",
+        "action_family",
+        "volunteerId",
+        "level1",
+        "level2",
+        "level3"
+      ],
+      "warnElapsedSeconds": 60,
+      "maxElapsedSeconds": 180
+    }
+  },
+  "cases": [
+    {
+      "name": "400-direct-confirm-plan-remove-position",
+      "sessionId": "9904301",
+      "coverage": [
+        "plan_mutation",
+        "remove_units",
+        "confirm_execution"
+      ],
+      "prompts": [
+        {
+          "prompt": "第3个不要了",
+          "assertContainsAny": [
+            "第3",
+            "移出",
+            "确认",
+            "采纳"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
+          "expectedToolNames": [
+            "preview_plan_action"
+          ],
+          "expectedZhiyuanAgentPocStatus": "success",
+          "expectedZhiyuanAgentPocFirstToolNames": [
+            "preview_plan_action"
+          ],
+          "expectedZhiyuanAgentPocNextSteps": [
+            "confirm"
+          ],
+          "maxToolCallCount": 1,
+          "maxZhiyuanAgentPocToolCallCount": 2
+        },
+        {
+          "prompt": "确认执行",
+          "assertContainsAny": [
+            "已移出",
+            "已执行",
+            "已更新",
+            "刷新"
+          ],
+          "assertNoFollowups": true,
+          "assertActionableFollowupTypes": [
+            "planningWorkspaceAction"
+          ],
+          "assertActionableFollowupTargets": [
+            "ordered",
+            "review"
+          ],
+          "assertActionableFollowupCount": 2,
+          "expectedRoutingPathAny": [
+            "direct_pending_plan_confirm",
+            "pending_plan_short_text_confirm",
+            "pending_plan_structured_short_text_confirm"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "applied"
+            },
+            {
+              "key": "planningState",
+              "path": "version",
+              "greaterThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "orderedPlanState.units",
+              "lengthChangedBy": -1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-direct-confirm-intent-private-school",
+      "sessionId": "9904302",
+      "coverage": [
+        "intent_change",
+        "school_nature",
+        "confirm_execution",
+        "plan_regeneration"
+      ],
+      "prompts": [
+        {
+          "prompt": "民办就算了",
+          "assertContainsAny": [
+            "民办",
+            "采纳",
+            "确认",
+            "报考条件"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedRoutingPath": "zhiyuan_agent_direct",
+          "expectedToolNames": [
+            "preview_intent_change"
+          ],
+          "expectedZhiyuanAgentPocStatus": "success",
+          "expectedZhiyuanAgentPocFirstToolNames": [
+            "preview_intent_change"
+          ],
+          "expectedZhiyuanAgentPocNextSteps": [
+            "confirm"
+          ],
+          "maxToolCallCount": 1,
+          "maxZhiyuanAgentPocToolCallCount": 2
+        },
+        {
+          "prompt": "采纳",
+          "assertContainsAny": [
+            "已采纳",
+            "重新调整",
+            "当前方案",
+            "报考要求"
+          ],
+          "assertNoFollowups": true,
+          "assertActionableFollowupTypes": [
+            "planningWorkspaceAction"
+          ],
+          "assertActionableFollowupTargets": [
+            "ordered",
+            "review"
+          ],
+          "assertActionableFollowupCount": 2,
+          "expectedRoutingPathAny": [
+            "direct_pending_intent_confirm",
+            "pending_intent_short_text_confirm",
+            "pending_intent_structured_short_text_confirm"
+          ],
+          "maxToolCallCount": 1,
+          "assertBackendExtraData": [
+            {
+              "key": "pendingConfirmation",
+              "path": "status",
+              "equals": "applied"
+            },
+            {
+              "key": "planningState",
+              "path": "version",
+              "greaterThanBefore": true
+            },
+            {
+              "key": "planningState",
+              "path": "constraintState.hardConstraints.mustExcludeSchools",
+              "contains": "院校性质:民办"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

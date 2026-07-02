@@ -1,0 +1,326 @@
+{
+  "metadata": {
+    "release": "4.0.0",
+    "purpose": "Direct-route subset of 3.2 G cases that still match the explicit 4.0 intent/action semantics.",
+    "notes": "Do not include removed soft-preference strength cases. This file validates 4.0 direct route tool boundaries on representative G scenarios."
+  },
+  "defaults": {
+    "flow": [
+      "release_4_0_0",
+      "direct_route",
+      "g_case_subset"
+    ],
+    "coverage": [
+      "release_4_0_0",
+      "g_case_subset",
+      "zhiyuan_agent_direct"
+    ],
+    "assertPlanStyle": true,
+    "promptDefaults": {
+      "assertNotContains": [
+        "payload",
+        "stage",
+        "action_family",
+        "volunteerId",
+        "level1",
+        "level2",
+        "level3",
+        "约束",
+        "硬约束",
+        "软偏好",
+        "草稿"
+      ],
+      "assertThinkingNotContains": [
+        "payload",
+        "stage",
+        "action_family",
+        "volunteerId",
+        "level1",
+        "level2",
+        "level3"
+      ],
+      "expectedRoutingPath": "zhiyuan_agent_direct",
+      "expectedZhiyuanAgentPocStatus": "success",
+      "maxToolCallCount": 1,
+      "maxZhiyuanAgentPocToolCallCount": 2,
+      "warnElapsedSeconds": 60,
+      "maxElapsedSeconds": 180
+    }
+  },
+  "cases": [
+    {
+      "name": "400-g2-review-fix-preview-boundary",
+      "sessionId": "9904202",
+      "cloneBackendStateFromSessionId": "35",
+      "coverage": [
+        "G2",
+        "review_readonly",
+        "tuition",
+        "cooperative_program",
+        "no_side_effect"
+      ],
+      "prompts": [
+        {
+          "profileCaseId": "G2-tuition-cooperative-how-to-handle-preview-boundary",
+          "prompt": "方案里高收费或者中外合作风险大的，先看看能怎么处理，别直接动",
+          "assertContainsAny": [
+            "高收费",
+            "中外合作",
+            "风险",
+            "处理",
+            "学费"
+          ],
+          "assertNoFollowups": true,
+          "expectedToolNames": [
+            "review_plan"
+          ],
+          "expectedZhiyuanAgentPocFirstToolNames": [
+            "review_plan"
+          ],
+          "expectedZhiyuanAgentPocNextSteps": [
+            "respond"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-g7-focused-review-cooperative-budget-readonly",
+      "sessionId": "9904207",
+      "cloneBackendStateFromSessionId": "17",
+      "coverage": [
+        "G7",
+        "focused_review",
+        "cooperative_program",
+        "budget",
+        "no_side_effect"
+      ],
+      "prompts": [
+        {
+          "profileCaseId": "G7-focused-review-cooperative-budget-readonly",
+          "prompt": "方案里中外合作是不是有点多，家里预算一般，帮我用大白话看下风险，先别动",
+          "assertContainsAny": [
+            "中外合作",
+            "预算",
+            "学费",
+            "风险",
+            "高收费"
+          ],
+          "assertNoFollowups": true,
+          "expectedToolNames": [
+            "review_plan"
+          ],
+          "expectedZhiyuanAgentPocFirstToolNames": [
+            "review_plan"
+          ],
+          "expectedZhiyuanAgentPocNextSteps": [
+            "respond"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-g16-plan-local-pin-or-lock-action",
+      "sessionId": "9904216",
+      "cloneBackendStateFromSessionId": "26",
+      "coverage": [
+        "G16",
+        "plan_action",
+        "unsupported_pin_lock",
+        "no_pending"
+      ],
+      "prompts": [
+        {
+          "profileCaseId": "G16-plan-local-pin-or-lock-action",
+          "prompt": "帮我把方案里第1个和第2个冲档锁定 位置不要动",
+          "assertContainsAny": [
+            "锁定",
+            "位置",
+            "暂不支持",
+            "不能"
+          ],
+          "assertNoFollowups": true,
+          "expectedToolNames": [
+            "preview_plan_action"
+          ],
+          "expectedZhiyuanAgentPocFirstToolNames": [
+            "preview_plan_action"
+          ],
+          "expectedZhiyuanAgentPocNextSteps": [
+            "respond"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-g17-tier-local-reorder",
+      "sessionId": "9904217",
+      "cloneBackendStateFromSessionId": "26",
+      "coverage": [
+        "G17",
+        "plan_action",
+        "tier_local_reorder"
+      ],
+      "prompts": [
+        {
+          "profileCaseId": "G17-tier-local-reorder",
+          "prompt": "帮我把保底区里录取率最高的那个调到保底的第一位",
+          "assertContainsAny": [
+            "保底",
+            "录取率",
+            "第一位",
+            "移动",
+            "确认"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedToolNames": [
+            "preview_plan_action"
+          ],
+          "expectedZhiyuanAgentPocFirstToolNames": [
+            "preview_plan_action"
+          ],
+          "expectedZhiyuanAgentPocNextSteps": [
+            "confirm"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-g21-readonly-review-must-not-auto-generate-plan",
+      "sessionId": "9904221",
+      "cloneBackendStateFromSessionId": "26",
+      "coverage": [
+        "G21",
+        "readonly_review",
+        "no_auto_generate"
+      ],
+      "prompts": [
+        {
+          "profileCaseId": "G21-readonly-review-must-not-auto-generate-plan",
+          "prompt": "现在这版强基+普通批方案合理不",
+          "assertContainsAny": [
+            "强基",
+            "普通批",
+            "方案",
+            "合理",
+            "审查"
+          ],
+          "assertNoFollowups": true,
+          "expectedToolNames": [
+            "review_plan"
+          ],
+          "expectedZhiyuanAgentPocFirstToolNames": [
+            "review_plan"
+          ],
+          "expectedZhiyuanAgentPocNextSteps": [
+            "respond"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-g25-mixed-positive-negative-intent-polarity",
+      "sessionId": "9904225",
+      "cloneBackendStateFromSessionId": "17",
+      "coverage": [
+        "G25",
+        "intent_change",
+        "mixed_positive_negative"
+      ],
+      "prompts": [
+        {
+          "profileCaseId": "G25-mixed-positive-negative-intent-polarity",
+          "prompt": "把生物医学工程和智能医学工程加意向 排除临床医学和口腔",
+          "assertContainsAny": [
+            "生物医学工程",
+            "智能医学工程",
+            "临床医学",
+            "口腔",
+            "采纳"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedToolNames": [
+            "preview_intent_change"
+          ],
+          "expectedZhiyuanAgentPocFirstToolNames": [
+            "preview_intent_change"
+          ],
+          "expectedZhiyuanAgentPocNextSteps": [
+            "confirm"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-g30-special-admission-path-preservation",
+      "sessionId": "9904230",
+      "cloneBackendStateFromSessionId": "65501205",
+      "cloneBackendScoreFromSessionId": "17",
+      "coverage": [
+        "G30",
+        "intent_change",
+        "strongbase",
+        "program_type"
+      ],
+      "prompts": [
+        {
+          "profileCaseId": "G30-special-admission-path-preservation",
+          "prompt": "清华北大复旦的强基都加进意向",
+          "assertContainsAny": [
+            "清华",
+            "北大",
+            "复旦",
+            "强基",
+            "采纳"
+          ],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "expectedToolNames": [
+            "preview_intent_change"
+          ],
+          "expectedZhiyuanAgentPocFirstToolNames": [
+            "preview_intent_change"
+          ],
+          "expectedZhiyuanAgentPocNextSteps": [
+            "confirm"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "400-g32-no-plan-referenced-plan-defensive-reply",
+      "sessionId": "9904232",
+      "cloneBackendStateFromSessionId": "55001413",
+      "cloneBackendScoreFromSessionId": "26",
+      "coverage": [
+        "G32",
+        "no_plan",
+        "defensive_reply",
+        "no_pending"
+      ],
+      "prompts": [
+        {
+          "profileCaseId": "G32-no-plan-referenced-plan-defensive-reply",
+          "prompt": "方案里有没有民办的",
+          "assertContainsAny": [
+            "方案",
+            "还没",
+            "生成",
+            "民办"
+          ],
+          "assertNoFollowups": true,
+          "expectedToolNames": [
+            "query_plan"
+          ],
+          "expectedZhiyuanAgentPocFirstToolNames": [
+            "query_plan"
+          ],
+          "expectedZhiyuanAgentPocNextSteps": [
+            "respond"
+          ]
+        }
+      ]
+    }
+  ]
+}

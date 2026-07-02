@@ -281,9 +281,10 @@
           "runtimeShadowCaseId": "D-G17-tier-local-reorder-selector-observation",
           "prompt": "帮我把保底区里录取率最高的那个调到保底的第一位",
           "assertContainsAny": ["保底", "录取率", "第一位", "确认", "移动", "不需要移动"],
-          "expectedRoutingPathAny": ["direct_local_plan_action", "full_agent"],
+          "expectedRoutingPathAny": ["zhiyuan_agent_direct"],
+          "assertToolNamesContain": ["preview_plan_action"],
           "assertActionFamiliesContain": ["move_ordered_unit"],
-          "assertResultKindsContainAny": ["preview_only", "no_change"],
+          "assertFollowupType": "pendingConfirmationCard",
           "maxToolCallCount": 2
         }
       ]
@@ -419,7 +420,7 @@
         {
           "profileCaseId": "G25-mixed-positive-negative-intent-polarity",
           "prompt": "把生物医学工程和智能医学工程加意向 排除临床医学和口腔",
-          "assertContains": ["偏好专业", "排除专业", "生物医学工程", "智能医学工程", "临床医学", "口腔医学"],
+          "assertContains": ["专业要求", "要", "不要", "生物医学工程", "智能医学工程", "临床医学", "口腔医学"],
           "assertContainsAny": ["生物医学工程", "智能医学工程", "临床医学", "口腔", "确认"],
           "assertFollowupType": "pendingConfirmationCard",
           "assertFollowupCount": 1
@@ -471,7 +472,13 @@
       "prompts": [
         {
           "prompt": "方案里学费贵的太多了 能不能帮我换成便宜的",
-          "assertContainsAny": ["学费", "贵", "便宜", "方案"]
+          "assertContainsAny": ["学费", "贵", "便宜", "方案", "预览", "确认"],
+          "expectedRoutingPathAny": ["zhiyuan_agent_direct"],
+          "assertToolNamesContain": ["preview_plan_action"],
+          "assertActionFamiliesContain": ["replace_units"],
+          "assertFollowupType": "pendingConfirmationCard",
+          "assertFollowupCount": 1,
+          "maxToolCallCount": 1
         },
         {
           "runtimeShadowCaseId": "D-G27-tuition-threshold-readonly-count-query",
@@ -488,12 +495,10 @@
         {
           "runtimeShadowCaseId": "D-G27-tuition-preference-fit-atomic-selector-observation",
           "prompt": "那把两万以上且跟我意向不沾边的先删掉",
-          "assertContainsAny": ["两万", "删", "确认", "预览", "没有命中", "没有需要删除"],
-          "expectedRoutingPathAny": ["direct_atomic_plan_action", "full_agent"],
-          "assertToolNamesContain": ["plan_next_action", "execute_plan_action"],
-          "assertActionFamiliesContain": ["remove_units"],
-          "assertResultKindsContainAny": ["preview_only", "no_change"],
-          "maxToolCallCount": 2
+          "assertContainsAny": ["等待确认", "确认执行", "取消", "放弃当前", "重新提新的调整"],
+          "expectedRoutingPathAny": ["pending_conflict_new_request_guard"],
+          "assertNoFollowups": true,
+          "maxToolCallCount": 0
         }
       ]
     },

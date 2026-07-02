@@ -942,6 +942,13 @@ async def get_pending_confirmation(
     return await get_extra_data(chat_session_id, "pendingConfirmation", version)
 
 
+async def get_last_pending_confirmation(
+    chat_session_id: Union[str, int],
+) -> Dict[str, Any]:
+    """Fetch the latest-version pending confirmation card state."""
+    return await get_last_extra_data(chat_session_id, "pendingConfirmation")
+
+
 # ── 方案参数校验 ──────────────────────────────────────────────────
 
 

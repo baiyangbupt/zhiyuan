@@ -16,6 +16,9 @@ public class OrderedUnitDTO {
     private String schoolName;
     private String provinceName;
     private String cityName;
+    private String schoolLevel;
+    private String schoolNature;
+    private String schoolCategory;
     private String source;
     private Boolean locked = false;
     private Boolean pinned = false;

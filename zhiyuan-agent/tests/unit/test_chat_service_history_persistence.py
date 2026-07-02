@@ -29,6 +29,8 @@ from app.service import (
     _compile_runtime_plan_query_from_profile,
     _turn_decision_allows_plan_query_profile,
     _pending_confirmation_primary_reply_from_card,
+    _load_pending_confirmation_state,
+    _save_pending_confirmation_state,
     build_runtime_history,
     build_timeout_fallback_from_recent_plan_execution,
     _extract_plan_confirmation_candidate,
@@ -75,6 +77,68 @@ from app.tools.intent_state_tool import IntentSideEffectDecision
 from app.tools.intent_state_tool import apply_selected_intents
 from app.tools.intent_response_tool import IntentStateUpdateResult, render_intent_state_update
 from app.tools.plan_query_profile_tool import PlanQueryProfileResult
+
+
+def test_pending_confirmation_loads_latest_version_and_saves_same_version():
+    latest_response = {
+        "code": 0,
+        "data": {
+            "chatSessionId": 9904301,
+            "dataKey": "pendingConfirmation",
+            "dataType": "JSON_OBJECT",
+            "dataVersion": 248,
+            "dataValue": json.dumps(
+                {
+                    "type": "pendingConfirmation",
+                    "pendingId": "pending-versioned",
+                    "kind": "plan_mutation",
+                    "status": "active",
+                    "actionFamily": "remove_units",
+                    "executionPayload": {
+                        "action_family": "remove_units",
+                        "atomic_actions": [{"action_type": "remove_units", "unit_ids": ["u1"]}],
+                    },
+                    "sourceBackendVersion": 248,
+                },
+                ensure_ascii=False,
+            ),
+        },
+    }
+    save_mock = AsyncMock(return_value={"code": 0})
+
+    with patch("app.service.get_last_pending_confirmation", AsyncMock(return_value=latest_response)), \
+            patch("app.service.save_pending_confirmation", save_mock):
+        state = asyncio.run(_load_pending_confirmation_state("9904301"))
+        assert state is not None
+        assert state["pendingId"] == "pending-versioned"
+        assert state["_extraDataVersion"] == 248
+        applied_state = dict(state)
+        applied_state["status"] = "applied"
+        asyncio.run(_save_pending_confirmation_state("9904301", applied_state))
+
+    save_mock.assert_awaited_once()
+    assert save_mock.await_args.args[:2] == ("9904301", applied_state)
+    assert save_mock.await_args.kwargs["version"] == 248
+
+
+def test_pending_confirmation_load_falls_back_to_version_zero():
+    pending = {
+        "type": "pendingConfirmation",
+        "pendingId": "pending-v0",
+        "kind": "intent_change",
+        "status": "active",
+        "actionFamily": "apply_selected_intents",
+        "executionPayload": {"merged": {"school_intents": {"negative_school_nature": ["民办"]}}},
+    }
+
+    with patch("app.service.get_last_pending_confirmation", AsyncMock(return_value={"code": 0, "data": {}})), \
+            patch(
+                "app.service.get_pending_confirmation",
+                AsyncMock(return_value={"code": 0, "data": {"pendingConfirmation": pending}}),
+            ):
+        state = asyncio.run(_load_pending_confirmation_state("9904302"))
+
+    assert state == pending
 
 
 
@@ -6621,7 +6685,10 @@ def test_chat_service_does_not_recover_composite_goal_for_low_confidence_atomic_
     card_payloads = [json.loads(item.content) for item in reply.followups if item.type == "pendingConfirmationCard"]
     assert len(card_payloads) == 1
     assert card_payloads[0]["actionFamily"] == "remove_units"
-    assert pending_state["value"]["executionPayload"]["toolName"] == "execute_plan_action"
+    execution_payload = pending_state["value"]["executionPayload"]
+    assert execution_payload["toolName"] == "confirm_pending"
+    assert execution_payload["action_family"] == "remove_units"
+    assert "planPayload" not in execution_payload
     classify_mock.assert_not_awaited()
     proposal_mock.assert_not_awaited()
 
@@ -6761,7 +6828,8 @@ def test_chat_service_direct_atomic_plan_action_creates_remove_units_pending(
     assert pending_state["value"]["kind"] == "plan_mutation"
     assert pending_state["value"]["status"] == "active"
     assert pending_state["value"]["actionFamily"] == "remove_units"
-    stored_plan_payload = json.loads(pending_state["value"]["executionPayload"]["planPayload"])
+    stored_plan_payload = pending_state["value"]["executionPayload"]
+    assert "planPayload" not in stored_plan_payload
     assert stored_plan_payload["stage"] == "apply"
     assert stored_plan_payload["action_family"] == "remove_units"
     assert stored_plan_payload["atomic_actions"][0]["volunteer_ids"] == ["v-fee-1", "v-fee-2", "v-fee-3"]
@@ -7301,11 +7369,13 @@ def test_chat_service_prefers_executable_plan_card_when_same_turn_intent_preview
     pending = pending_state["value"]
     assert pending["kind"] == "plan_mutation"
     execution_payload = pending["executionPayload"]
-    assert execution_payload["toolName"] == "execute_plan_action"
+    assert execution_payload["toolName"] == "confirm_pending"
+    assert execution_payload["action_family"] == "remove_units"
+    assert "planPayload" not in execution_payload
     assert execution_payload["intentPayload"]["selected"] == [
         {"major_intents": {"negative_level3": ["英语", "商务英语", "翻译"]}}
     ]
-    apply_payload = json.loads(execution_payload["planPayload"])
+    apply_payload = execution_payload
     assert apply_payload["stage"] == "apply"
     assert apply_payload["atomic_actions"][0]["volunteer_ids"] == ["english-1", "english-2", "english-3"]
 
@@ -15789,10 +15859,9 @@ def test_chat_service_directly_applies_active_plan_pending_when_classifier_misse
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-plan-short-text-missed", "user-1", "确认执行"))
 
-    assert isinstance(reply, ChatServiceResponseEnvelope)
-    assert reply.primary == "已按院校层次重新排序当前方案。"
-    execute_mock.assert_awaited_once()
-    assert pending_state["value"]["status"] == "applied"
+    assert reply == "这次方案调整缺少可执行内容，请重新生成预览。"
+    execute_mock.assert_not_awaited()
+    assert pending_state["value"]["status"] == "expired"
     assert fake_agent.calls == []
 
 
@@ -15850,10 +15919,9 @@ def test_chat_service_directly_applies_active_generate_plan_pending_for_action_s
         service = ChatService(mock_llm_client, store)
         reply = asyncio.run(service.handle_message("session-generate-plan", "user-1", "确认生成"))
 
-    assert isinstance(reply, ChatServiceResponseEnvelope)
-    assert reply.primary == "已根据当前候选和报考信息生成方案。"
-    execute_mock.assert_awaited_once()
-    assert pending_state["value"]["status"] == "applied"
+    assert reply == "这次方案调整缺少可执行内容，请重新生成预览。"
+    execute_mock.assert_not_awaited()
+    assert pending_state["value"]["status"] == "expired"
     assert fake_agent.calls == []
 
 
@@ -19792,7 +19860,9 @@ def test_chat_service_runtime_intent_hard_cut_reroutes_high_tuition_to_plan_muta
     assert pending_state["value"]["kind"] == "plan_mutation"
     assert pending_state["value"]["actionFamily"] == "replace_units"
     execution_payload = pending_state["value"]["executionPayload"]
-    plan_payload = json.loads(execution_payload["planPayload"])
+    assert execution_payload["toolName"] == "confirm_pending"
+    assert "planPayload" not in execution_payload
+    plan_payload = execution_payload
     assert plan_payload["atomic_actions"][0]["review_issue_target"]["code"] == "high_tuition"
     assert fake_agent.calls == []
     assert decision_mock.await_count >= 1
@@ -19923,7 +19993,9 @@ def test_chat_service_direct_atomic_plan_action_handles_intent_misclassified_mut
     assert "高收费" in card_payload["content"]
     assert pending_state["value"]["kind"] == "plan_mutation"
     assert pending_state["value"]["actionFamily"] == "replace_units"
-    stored_plan_payload = json.loads(pending_state["value"]["executionPayload"]["planPayload"])
+    stored_plan_payload = pending_state["value"]["executionPayload"]
+    assert stored_plan_payload["toolName"] == "confirm_pending"
+    assert "planPayload" not in stored_plan_payload
     assert stored_plan_payload["atomic_actions"][0]["review_issue_target"]["code"] == "high_tuition"
     assert fake_agent.calls == []
     assert decision_mock.await_count == 1

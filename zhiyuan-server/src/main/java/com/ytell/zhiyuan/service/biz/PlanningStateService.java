@@ -3764,6 +3764,9 @@ public class PlanningStateService {
         unit.setSchoolName(representative.getSchoolName());
         unit.setProvinceName(representative.getProvinceName());
         unit.setCityName(representative.getCityName());
+        unit.setSchoolLevel(representative.getSchoolLevel());
+        unit.setSchoolNature(representative.getSchoolNature());
+        unit.setSchoolCategory(representative.getSchoolCategory());
         unit.setTier(representative.getTier());
         unit.setSchoolEnrollRatio(representative.getSchoolEnrollRatio());
         unit.setFinalScore(representative.getFinalScore());
@@ -3816,6 +3819,8 @@ public class PlanningStateService {
         major.setSafetyMajor(safetyMajor);
         major.setTuitionPerYear(candidate.getTuitionPerYear());
         major.setRankInTier(candidate.getRankInTier());
+        major.setReasonCodes(defaultList(candidate.getReasonCodes()));
+        major.setMajorPlanTags(defaultList(candidate.getMajorPlanTags()));
         return major;
     }
 
@@ -3847,6 +3852,9 @@ public class PlanningStateService {
         representative.setSchoolName(unit.getSchoolName());
         representative.setProvinceName(unit.getProvinceName());
         representative.setCityName(unit.getCityName());
+        representative.setSchoolLevel(unit.getSchoolLevel());
+        representative.setSchoolNature(unit.getSchoolNature());
+        representative.setSchoolCategory(unit.getSchoolCategory());
         representative.setTier(unit.getTier());
         representative.setSchoolEnrollRatio(unit.getSchoolEnrollRatio());
         representative.setFinalScore(unit.getFinalScore());
@@ -4172,6 +4180,9 @@ public class PlanningStateService {
         copy.setSchoolName(source.getSchoolName());
         copy.setProvinceName(source.getProvinceName());
         copy.setCityName(source.getCityName());
+        copy.setSchoolLevel(source.getSchoolLevel());
+        copy.setSchoolNature(source.getSchoolNature());
+        copy.setSchoolCategory(source.getSchoolCategory());
         copy.setSource(source.getSource());
         copy.setLocked(source.getLocked());
         copy.setPinned(source.getPinned());
@@ -10330,6 +10341,9 @@ public class PlanningStateService {
             if (candidate != null) {
                 unit.setProvinceName(candidate.getProvinceName());
                 unit.setCityName(candidate.getCityName());
+                unit.setSchoolLevel(candidate.getSchoolLevel());
+                unit.setSchoolNature(candidate.getSchoolNature());
+                unit.setSchoolCategory(candidate.getSchoolCategory());
                 unit.setAdmissionRatio(candidate.getSchoolEnrollRatio());
                 unit.setFinalScore(candidate.getFinalScore());
                 unit.setSchoolEnrollRatio(candidate.getSchoolEnrollRatio());
@@ -10361,6 +10375,15 @@ public class PlanningStateService {
         }
         if (Strings.isNullOrEmpty(unit.getSchoolUnitCode())) {
             unit.setSchoolUnitCode(candidate.getSchoolUnitCode());
+        }
+        if (Strings.isNullOrEmpty(unit.getSchoolLevel())) {
+            unit.setSchoolLevel(candidate.getSchoolLevel());
+        }
+        if (Strings.isNullOrEmpty(unit.getSchoolNature())) {
+            unit.setSchoolNature(candidate.getSchoolNature());
+        }
+        if (Strings.isNullOrEmpty(unit.getSchoolCategory())) {
+            unit.setSchoolCategory(candidate.getSchoolCategory());
         }
         Integer totalMajorCount = resolveMajorGroupTotalMajorCount(candidate, unitMajorCountMap);
         if (totalMajorCount != null && totalMajorCount > 0
@@ -10494,6 +10517,15 @@ public class PlanningStateService {
         }
         if (Strings.isNullOrEmpty(unit.getCityName())) {
             unit.setCityName(initialUnit.getCityName());
+        }
+        if (Strings.isNullOrEmpty(unit.getSchoolLevel())) {
+            unit.setSchoolLevel(initialUnit.getSchoolLevel());
+        }
+        if (Strings.isNullOrEmpty(unit.getSchoolNature())) {
+            unit.setSchoolNature(initialUnit.getSchoolNature());
+        }
+        if (Strings.isNullOrEmpty(unit.getSchoolCategory())) {
+            unit.setSchoolCategory(initialUnit.getSchoolCategory());
         }
         if (unit.getSchoolEnrollRatio() == null) {
             unit.setSchoolEnrollRatio(initialUnit.getSchoolEnrollRatio());

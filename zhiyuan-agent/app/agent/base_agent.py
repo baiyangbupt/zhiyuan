@@ -344,7 +344,16 @@ class BaseAgent(Generic[T]):
                     and direct_tool_returns
                     and self.should_return_directly_from_tool(tool_names, direct_tool_returns, deps)
                 ):
-                    direct_output = self.render_direct_tool_output(tool_names, direct_tool_returns, deps)
+                    partial_messages = await self._resolve_messages(agent_run.all_messages())
+                    tool_request = getattr(node, "request", None)
+                    render_tool_returns = self._extract_tool_returns_from_messages(partial_messages)
+                    if isinstance(tool_request, ModelRequest):
+                        render_tool_returns.extend(
+                            part for part in tool_request.parts if isinstance(part, ToolReturnPart)
+                        )
+                    if not render_tool_returns:
+                        render_tool_returns = list(direct_tool_returns)
+                    direct_output = self.render_direct_tool_output(tool_names, render_tool_returns, deps)
                     if direct_output:
                         output = self._sanitize_model_output(direct_output)
                         usage = agent_run.usage()
@@ -356,8 +365,6 @@ class BaseAgent(Generic[T]):
                         observability["requests"] = usage.requests
                         observability["toolCalls"] = usage.tool_calls
 
-                        partial_messages = await self._resolve_messages(agent_run.all_messages())
-                        tool_request = getattr(node, "request", None)
                         direct_response = ModelResponse(
                             parts=[TextPart(content=output)],
                             model_name="direct-tool-result",
@@ -426,6 +433,13 @@ class BaseAgent(Generic[T]):
         if not isinstance(request, ModelRequest):
             return []
         return [part for part in request.parts if isinstance(part, ToolReturnPart)]
+
+    def _extract_tool_returns_from_messages(self, messages: list[Any]) -> list[ToolReturnPart]:
+        returns: list[ToolReturnPart] = []
+        for message in messages or []:
+            parts = list(getattr(message, "parts", []) or [])
+            returns.extend(part for part in parts if isinstance(part, ToolReturnPart))
+        return returns
 
     def _init_observability(
         self,

@@ -13,6 +13,9 @@ public class PlanningUnitDTO {
     private String schoolName;
     private String provinceName;
     private String cityName;
+    private String schoolLevel;
+    private String schoolNature;
+    private String schoolCategory;
     private String tier;
     private Double schoolEnrollRatio;
     private Double finalScore;

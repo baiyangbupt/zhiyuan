@@ -3,7 +3,6 @@
 验证 app/agent/instructions/ 各模块的输出正确性。
 """
 
-import json
 import pytest
 from unittest.mock import MagicMock, patch
 from dataclasses import dataclass, field
@@ -14,7 +13,6 @@ from app.agent.context import (
     ScoreDetail,
     has_pending_intent_confirmation,
     resolve_pending_confirmation,
-    resolve_pending_plan_payload_text,
 )
 from app.agent.instructions.identity import build_identity
 from app.agent.instructions.planning_context import build_planning_context
@@ -146,7 +144,8 @@ class TestPendingContext:
         deps = _make_deps(pending=pending)
         result = build_pending_context(deps)
         assert "generate_plan" in result
-        assert "execute_plan_action" in result
+        assert "pendingConfirmation" in result
+        assert "payload" not in result
         assert "追问审查解释、处理分类、影响范围、候选不足原因或当前方案状态" in result
         assert "按只读问题正常调用相应 Plan 工具或基于已知审查事实回答" in result
 
@@ -155,7 +154,6 @@ class TestPendingContext:
         deps.conversation_phase = ConversationPhase(state=PhaseState.PLAN_IDLE)
 
         assert resolve_pending_confirmation(deps) is None
-        assert resolve_pending_plan_payload_text(deps) == ""
         assert not has_pending_intent_confirmation(deps)
 
     def test_resolve_pending_confirmation_prefers_phase(self):
@@ -172,7 +170,7 @@ class TestPendingContext:
 
         assert pending is not None
         assert pending.action_family == "remove_units"
-        assert json.loads(resolve_pending_plan_payload_text(deps))["action_family"] == "remove_units"
+        assert pending.execution_payload["action_family"] == "remove_units"
 
     def test_has_pending_intent_confirmation_reads_phase(self):
         deps = _make_deps(

@@ -123,24 +123,130 @@ _REVIEW_ISSUE_RULES: dict[str, ReviewIssueRule] = {
 }
 
 _REVIEW_ISSUE_STRUCTURED_VALUE_ALIASES: dict[str, str] = {
+    "high_tuition_risk": "high_tuition",
+    "tuition_risk": "high_tuition",
+    "expensive": "high_tuition",
+    "over_budget": "high_tuition",
+    "high_fee": "high_tuition",
     "高收费": "high_tuition",
     "高学费": "high_tuition",
     "学费高": "high_tuition",
+    "费用高": "high_tuition",
+    "太贵": "high_tuition",
     "高收费专业": "high_tuition",
+    "cooperative": "cooperative_program",
+    "cooperative_program_risk": "cooperative_program",
+    "sino_foreign": "cooperative_program",
+    "sino_foreign_program": "cooperative_program",
+    "joint_program": "cooperative_program",
     "中外合作": "cooperative_program",
+    "中外合办": "cooperative_program",
     "中外合作办学": "cooperative_program",
     "合作办学": "cooperative_program",
     "国际项目": "cooperative_program",
+    "admission_limit_risk": "admission_limit",
+    "limited_admission": "admission_limit",
+    "restricted_admission": "admission_limit",
     "限报": "admission_limit",
     "限报条件": "admission_limit",
     "体检限报": "admission_limit",
+    "受限": "admission_limit",
+    "special_enrollment_risk": "special_enrollment",
+    "special_type_enrollment": "special_enrollment",
+    "special_admission": "special_enrollment",
     "特殊招生": "special_enrollment",
     "特殊类型招生": "special_enrollment",
+    "专项招生": "special_enrollment",
+    "probability_inversion_risk": "probability_inversion",
+    "admission_probability_inversion": "probability_inversion",
+    "admission_ratio_inversion": "probability_inversion",
+    "录取率倒挂": "probability_inversion",
+    "概率倒挂": "probability_inversion",
+    "位次倒挂": "probability_inversion",
+    "排序倒挂": "probability_inversion",
+    "probability_gap_risk": "probability_gap",
+    "admission_probability_gap": "probability_gap",
+    "admission_ratio_gap": "probability_gap",
+    "录取率梯度断层": "probability_gap",
+    "录取率断层": "probability_gap",
+    "概率断层": "probability_gap",
+    "count_validation_risk": "count_validation",
+    "count_gap": "count_validation",
+    "count_mismatch": "count_validation",
+    "志愿数量": "count_validation",
+    "数量校验": "count_validation",
+    "数量不足": "count_validation",
+    "数量缺口": "count_validation",
+    "edge_score_risk": "edge_score",
+    "score_edge": "edge_score",
+    "borderline_score": "edge_score",
+    "边缘分风险": "edge_score",
+    "边缘分": "edge_score",
+    "分数边缘": "edge_score",
+    "压线": "edge_score",
+    "safety_guard_risk": "safety_guard",
+    "local_safety_guard": "safety_guard",
+    "本省保底不足": "safety_guard",
+    "本省保底": "safety_guard",
+    "major_group_safety_intent_alignment_risk": "major_group_safety_intent_alignment",
+    "intent_safety_mismatch": "major_group_safety_intent_alignment",
+    "非意向托底": "major_group_safety_intent_alignment",
+    "意向托底不匹配": "major_group_safety_intent_alignment",
+    "专业意向不匹配": "major_group_safety_intent_alignment",
+    "group_inner_safety_guard_risk": "group_inner_safety_guard",
+    "inner_safety_guard": "group_inner_safety_guard",
+    "组内安全垫不足": "group_inner_safety_guard",
+    "组内保底不足": "group_inner_safety_guard",
+    "组内安全垫": "group_inner_safety_guard",
+    "tier_gap": "tier_gap",
+    "tier_balance": "tier_gap",
+    "distribution_gap": "tier_gap",
+    "梯度": "tier_gap",
+    "断层": "tier_gap",
+    "冲稳保": "tier_gap",
+    "稳保承接": "tier_gap",
+    "low_safety": "low_safety",
+    "safety": "low_safety",
+    "safe_guard": "low_safety",
+    "保底不足": "low_safety",
+    "保底偏少": "low_safety",
+    "安全垫": "low_safety",
+    "career_mismatch": "career_mismatch",
+    "career_fit": "career_mismatch",
+    "intent_mismatch": "career_mismatch",
+    "专业适配": "career_mismatch",
+    "职业适配": "career_mismatch",
+    "偏好不匹配": "career_mismatch",
 }
 
 
 def get_review_issue_rule(code: str | None) -> ReviewIssueRule | None:
     return _REVIEW_ISSUE_RULES.get(str(code or "").strip())
+
+
+def _compact_review_issue_text(value: Any) -> str:
+    return str(value or "").strip().lower().replace("-", "_").replace(" ", "").replace("/", "_")
+
+
+def normalize_review_issue_code(value: Any) -> str | None:
+    """Normalize backend review codes, aliases, and compact summaries.
+
+    Semantic aliases such as ``tier_gap`` and ``low_safety`` remain valid user
+    side handles. They intentionally do not overwrite concrete backend rule
+    codes such as ``ratio_distribution`` when those codes are supplied.
+    """
+    text = _compact_review_issue_text(value)
+    if not text:
+        return None
+    if text in _REVIEW_ISSUE_RULES:
+        return text
+    if text in _REVIEW_ISSUE_STRUCTURED_VALUE_ALIASES:
+        return _REVIEW_ISSUE_STRUCTURED_VALUE_ALIASES[text]
+    for alias, code in _REVIEW_ISSUE_STRUCTURED_VALUE_ALIASES.items():
+        compact_alias = _compact_review_issue_text(alias)
+        if compact_alias and (text == compact_alias or compact_alias in text):
+            return code
+    return text
 
 
 def normalize_structured_review_issue_value(value: Any) -> str | None:
@@ -150,12 +256,7 @@ def normalize_structured_review_issue_value(value: Any) -> str | None:
     only after an LLM/tool caller has placed a value into a structured scope
     field, where certain controlled risk labels are not valid majors/schools.
     """
-    text = str(value or "").strip()
-    if not text:
-        return None
-    if text in _REVIEW_ISSUE_RULES:
-        return text
-    return _REVIEW_ISSUE_STRUCTURED_VALUE_ALIASES.get(text)
+    return normalize_review_issue_code(value)
 
 
 def review_issue_label(code: str | None, summary: str | None = None) -> str:

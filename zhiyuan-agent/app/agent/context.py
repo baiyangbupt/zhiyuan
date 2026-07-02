@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
@@ -9,6 +8,7 @@ from app.util.planning_state_compat import get_working_plan_summary
 if TYPE_CHECKING:
     from app.models.conversation_phase import ConversationPhase, PendingConfirmation
     from app.schemas.user_profile import UserProfile
+    from app.zhiyuan_agent.sandbox import SandboxFileCache
 
 
 def _first_positive_int(*values: Any) -> int:
@@ -166,6 +166,7 @@ class RequestContext:
     score_detail: ScoreDetail | None = None  # 学生高考成绩详情
     init_profile: UserProfile | None = None  # flowconfig 预填的意向数据
     planning_summary: PlanningSummary | None = None  # planningState 轻量摘要
+    sandbox: SandboxFileCache | None = None  # Release 4.0 ZhiyuanAgent 虚拟文件缓存
     conversation_phase: ConversationPhase | None = None  # Phase 3 新增：统一对话阶段状态
     progress_callback: Callable[[str], Awaitable[None]] | None = None
     allow_explore_inner_llm: bool = True  # 正式聊天主链路可关闭 Explore 工具内二次生成，由主模型统一组织最终回复
@@ -177,6 +178,7 @@ class RequestContext:
     confirmed_via_pending: bool = False  # 服务端统一 pending 确认链路，包含卡片点击和短文本兜底
     confirmation_entry: str = ""  # "card" | "short_text"，仅用于审计和执行链路观测
     stale_pending_notice: str = ""  # 本轮开始时失效的待确认操作提示，供模型重新生成预览而不是复述旧确认
+    dry_run_state_mutations: bool = False  # Shadow/评估链路只观测工具选择，不写入或执行状态变更
 
 
 def resolve_pending_confirmation(deps: Any) -> "PendingConfirmation | None":
@@ -185,22 +187,6 @@ def resolve_pending_confirmation(deps: Any) -> "PendingConfirmation | None":
     if phase is not None:
         return getattr(phase, "pending", None)
     return None
-
-
-def resolve_pending_plan_payload_text(deps: Any) -> str:
-    """Return the confirmable plan payload as JSON text, if any."""
-    phase = getattr(deps, "conversation_phase", None)
-    if phase is not None:
-        pending = getattr(phase, "pending", None)
-        if pending is not None and pending.kind == "plan_mutation":
-            payload = pending.execution_payload
-            if isinstance(payload, str):
-                return payload
-            if isinstance(payload, dict):
-                return json.dumps(payload, ensure_ascii=False)
-        return ""
-
-    return ""
 
 
 def has_pending_intent_confirmation(deps: Any) -> bool:

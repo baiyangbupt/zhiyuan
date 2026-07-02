@@ -23,7 +23,7 @@ import time
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
-from urllib import error, request
+from urllib import error, parse, request
 
 import websockets
 
@@ -511,37 +511,60 @@ def _clear_backend_pending_state(
         return results
     for session_id in session_ids:
         for key in PENDING_STATE_KEYS:
-            payload = {
-                "chatSessionId": session_id,
-                "dataKey": key,
-                "dataType": "JSON_OBJECT",
-                "dataValue": {},
-                "version": 0,
-            }
-            req = request.Request(
-                f"{normalized_base_url}/gaotu-assistant-bot/inner/chat/1/session/add-extra-data",
-                data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-                headers={
-                    "Content-Type": "application/json",
-                    "Accept": "application/json",
-                },
-                method="POST",
+            versions = {0}
+            latest_url = (
+                f"{normalized_base_url}/gaotu-assistant-bot/inner/chat/1/session/get-extra-data-last-version"
+                f"?chatSessionId={parse.quote(str(session_id))}&key={parse.quote(str(key))}"
             )
-            result: dict[str, Any] = {"session": session_id, "key": key, "ok": False}
             try:
-                with request.urlopen(req, timeout=timeout_seconds) as response:
+                with request.urlopen(latest_url, timeout=timeout_seconds) as response:
                     raw = response.read().decode("utf-8")
-                result["status"] = response.status
-                result["ok"] = 200 <= int(response.status) < 300
                 if raw:
-                    try:
-                        parsed = json.loads(raw)
-                    except Exception:
-                        parsed = raw[:200]
-                    result["response"] = parsed
-            except (OSError, error.URLError, TimeoutError) as exc:
-                result["error"] = f"{type(exc).__name__}: {exc}"
-            results.append(result)
+                    parsed = json.loads(raw)
+                    if isinstance(parsed, dict):
+                        data = parsed.get("data")
+                        version = data.get("dataVersion") if isinstance(data, dict) else None
+                        try:
+                            version_int = int(version)
+                        except (TypeError, ValueError):
+                            version_int = 0
+                        if version_int > 0:
+                            versions.add(version_int)
+            except (OSError, error.URLError, TimeoutError, ValueError, json.JSONDecodeError):
+                pass
+
+            for version in sorted(versions):
+                payload = {
+                    "chatSessionId": session_id,
+                    "dataKey": key,
+                    "dataType": "JSON_OBJECT",
+                    "dataValue": {},
+                    "version": version,
+                }
+                req = request.Request(
+                    f"{normalized_base_url}/gaotu-assistant-bot/inner/chat/1/session/add-extra-data",
+                    data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                    headers={
+                        "Content-Type": "application/json",
+                        "Accept": "application/json",
+                    },
+                    method="POST",
+                )
+                result: dict[str, Any] = {"session": session_id, "key": key, "version": version, "ok": False}
+                try:
+                    with request.urlopen(req, timeout=timeout_seconds) as response:
+                        raw = response.read().decode("utf-8")
+                    result["status"] = response.status
+                    result["ok"] = 200 <= int(response.status) < 300
+                    if raw:
+                        try:
+                            parsed = json.loads(raw)
+                        except Exception:
+                            parsed = raw[:200]
+                        result["response"] = parsed
+                except (OSError, error.URLError, TimeoutError) as exc:
+                    result["error"] = f"{type(exc).__name__}: {exc}"
+                results.append(result)
     return results
 
 
@@ -613,6 +636,313 @@ def _get_backend_extra_data(
     payload = data.get("data") if isinstance(data.get("data"), dict) else {}
     value = payload.get(key) if isinstance(payload, dict) else None
     return value if isinstance(value, dict) else {}
+
+
+def _get_backend_latest_extra_data(
+    base_url: str,
+    session_id: str,
+    key: str,
+    *,
+    timeout_seconds: float = 5,
+) -> dict[str, Any]:
+    normalized_base_url = str(base_url or "").rstrip("/")
+    data = _http_get_json(
+        f"{normalized_base_url}/gaotu-assistant-bot/inner/chat/1/session/get-extra-data-last-version"
+        f"?chatSessionId={session_id}&key={parse.quote(key)}",
+        timeout_seconds=timeout_seconds,
+    )
+    payload = data.get("data") if isinstance(data.get("data"), dict) else {}
+    value = payload.get("dataValue") if isinstance(payload, dict) else None
+    result = value if isinstance(value, dict) else {}
+    version = payload.get("dataVersion") if isinstance(payload, dict) else None
+    if result and version not in (None, ""):
+        result.setdefault("_extraDataVersion", version)
+        result.setdefault("dataVersion", version)
+    return result
+
+
+def _get_backend_planning_state(
+    base_url: str,
+    session_id: str,
+    *,
+    timeout_seconds: float = 5,
+) -> dict[str, Any]:
+    normalized_base_url = str(base_url or "").rstrip("/")
+    data = _http_get_json(
+        f"{normalized_base_url}/gaotu-assistant-bot/inner/planning/1/session/state"
+        f"?chatSessionId={session_id}",
+        timeout_seconds=timeout_seconds,
+    )
+    value = data.get("data") if isinstance(data.get("data"), dict) else {}
+    return value if isinstance(value, dict) else {}
+
+
+def _get_backend_assertion_data(
+    base_url: str,
+    session_id: str,
+    key: str,
+    *,
+    timeout_seconds: float = 5,
+) -> dict[str, Any]:
+    if key == "planningState":
+        return _get_backend_planning_state(base_url, session_id, timeout_seconds=timeout_seconds)
+    if key == "pendingConfirmation":
+        latest = _get_backend_latest_extra_data(base_url, session_id, key, timeout_seconds=timeout_seconds)
+        return latest or _get_backend_extra_data(base_url, session_id, key, timeout_seconds=timeout_seconds)
+    return _get_backend_extra_data(base_url, session_id, key, timeout_seconds=timeout_seconds)
+
+
+_JSON_PATH_MISSING = object()
+
+
+def _backend_extra_data_assertions(step: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = step.get("assertBackendExtraData") or step.get("backendExtraDataAssertions") or []
+    if isinstance(raw, dict):
+        raw = [raw]
+    return [item for item in raw if isinstance(item, dict)]
+
+
+def _backend_assertion_keys(step: dict[str, Any]) -> list[str]:
+    keys: list[str] = []
+    for assertion in _backend_extra_data_assertions(step):
+        key = str(assertion.get("key") or assertion.get("dataKey") or "").strip()
+        if key and key not in keys:
+            keys.append(key)
+    return keys
+
+
+def _capture_backend_extra_data_snapshot(
+    base_url: str,
+    session_id: str,
+    keys: list[str],
+    *,
+    timeout_seconds: float = 5,
+) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    snapshot: dict[str, dict[str, Any]] = {}
+    errors: list[str] = []
+    normalized_base_url = str(base_url or "").rstrip("/")
+    if not normalized_base_url:
+        return snapshot, ["backend base URL is empty"] if keys else []
+    for key in keys:
+        try:
+            snapshot[key] = _get_backend_assertion_data(
+                normalized_base_url,
+                session_id,
+                key,
+                timeout_seconds=timeout_seconds,
+            )
+        except (OSError, error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            errors.append(f"{key}: {type(exc).__name__}: {exc}")
+    return snapshot, errors
+
+
+def _resolve_json_path(value: Any, path: str) -> Any:
+    text = str(path or "").strip()
+    if not text or text == "$":
+        return value
+    if text.startswith("$."):
+        text = text[2:]
+    current: Any = value
+    for part in [item for item in text.split(".") if item]:
+        if isinstance(current, dict):
+            if part not in current:
+                return _JSON_PATH_MISSING
+            current = current.get(part)
+            continue
+        if isinstance(current, list) and part.isdigit():
+            index = int(part)
+            if index < 0 or index >= len(current):
+                return _JSON_PATH_MISSING
+            current = current[index]
+            continue
+        return _JSON_PATH_MISSING
+    return current
+
+
+def _json_value_contains(actual: Any, expected: Any) -> bool:
+    if actual is _JSON_PATH_MISSING:
+        return False
+    if isinstance(expected, list):
+        return all(_json_value_contains(actual, item) for item in expected)
+    if isinstance(actual, list):
+        return any(item == expected or _json_value_contains(item, expected) for item in actual)
+    if isinstance(actual, dict):
+        if isinstance(expected, dict):
+            return all(key in actual and _json_value_contains(actual[key], value) for key, value in expected.items())
+        return any(value == expected or _json_value_contains(value, expected) for value in actual.values())
+    if isinstance(actual, str):
+        return str(expected) in actual
+    return actual == expected
+
+
+def _json_value_length(value: Any) -> int | None:
+    if value is _JSON_PATH_MISSING:
+        return None
+    if isinstance(value, (dict, list, str)):
+        return len(value)
+    return None
+
+
+def _json_value_empty(value: Any) -> bool:
+    return value is _JSON_PATH_MISSING or value is None or value == "" or value == [] or value == {}
+
+
+def _as_comparable_number(value: Any) -> float | None:
+    if isinstance(value, bool) or value is _JSON_PATH_MISSING:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    try:
+        return float(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _format_json_assert_value(value: Any) -> str:
+    if value is _JSON_PATH_MISSING:
+        return "<missing>"
+    return repr(value)
+
+
+def _check_single_backend_assertion(
+    assertion: dict[str, Any],
+    *,
+    actual_root: dict[str, Any],
+    before_root: dict[str, Any] | None,
+) -> tuple[bool, list[str]]:
+    path = str(assertion.get("path") or "").strip()
+    actual = _resolve_json_path(actual_root, path)
+    before = _resolve_json_path(before_root or {}, path) if before_root is not None else _JSON_PATH_MISSING
+    failures: list[str] = []
+
+    if "exists" in assertion:
+        expected_exists = bool(assertion.get("exists"))
+        actual_exists = actual is not _JSON_PATH_MISSING
+        if actual_exists != expected_exists:
+            failures.append(f"exists expected {expected_exists} got {actual_exists}")
+    if "isEmpty" in assertion:
+        expected_empty = bool(assertion.get("isEmpty"))
+        actual_empty = _json_value_empty(actual)
+        if actual_empty != expected_empty:
+            failures.append(f"isEmpty expected {expected_empty} got {actual_empty}")
+    if "equals" in assertion and actual != assertion.get("equals"):
+        failures.append(f"equals expected {assertion.get('equals')!r} got {_format_json_assert_value(actual)}")
+    if "notEquals" in assertion and actual == assertion.get("notEquals"):
+        failures.append(f"notEquals forbidden {assertion.get('notEquals')!r}")
+    if "contains" in assertion and not _json_value_contains(actual, assertion.get("contains")):
+        failures.append(f"contains expected {assertion.get('contains')!r} got {_format_json_assert_value(actual)}")
+    if "notContains" in assertion and _json_value_contains(actual, assertion.get("notContains")):
+        failures.append(f"notContains forbidden {assertion.get('notContains')!r} found in {_format_json_assert_value(actual)}")
+
+    actual_length = _json_value_length(actual)
+    before_length = _json_value_length(before)
+    if "lengthEquals" in assertion:
+        expected = int(assertion.get("lengthEquals"))
+        if actual_length != expected:
+            failures.append(f"lengthEquals expected {expected} got {actual_length}")
+    if "minLength" in assertion:
+        expected = int(assertion.get("minLength"))
+        if actual_length is None or actual_length < expected:
+            failures.append(f"minLength expected >= {expected} got {actual_length}")
+    if "maxLength" in assertion:
+        expected = int(assertion.get("maxLength"))
+        if actual_length is None or actual_length > expected:
+            failures.append(f"maxLength expected <= {expected} got {actual_length}")
+    if "lengthChangedBy" in assertion:
+        expected_delta = int(assertion.get("lengthChangedBy"))
+        actual_delta = None if actual_length is None or before_length is None else actual_length - before_length
+        if actual_delta != expected_delta:
+            failures.append(f"lengthChangedBy expected {expected_delta} got {actual_delta}")
+    if "lengthLessThanBefore" in assertion and bool(assertion.get("lengthLessThanBefore")):
+        if actual_length is None or before_length is None or actual_length >= before_length:
+            failures.append(f"lengthLessThanBefore expected true got before={before_length} after={actual_length}")
+    if "lengthGreaterThanBefore" in assertion and bool(assertion.get("lengthGreaterThanBefore")):
+        if actual_length is None or before_length is None or actual_length <= before_length:
+            failures.append(f"lengthGreaterThanBefore expected true got before={before_length} after={actual_length}")
+    if "changedFromBefore" in assertion:
+        expected_changed = bool(assertion.get("changedFromBefore"))
+        actual_changed = before is not _JSON_PATH_MISSING and actual != before
+        if actual_changed != expected_changed:
+            failures.append(f"changedFromBefore expected {expected_changed} got {actual_changed}")
+    if "unchangedFromBefore" in assertion:
+        expected_unchanged = bool(assertion.get("unchangedFromBefore"))
+        actual_unchanged = before is not _JSON_PATH_MISSING and actual == before
+        if actual_unchanged != expected_unchanged:
+            failures.append(f"unchangedFromBefore expected {expected_unchanged} got {actual_unchanged}")
+
+    actual_number = _as_comparable_number(actual)
+    before_number = _as_comparable_number(before)
+    if "greaterThanBefore" in assertion and bool(assertion.get("greaterThanBefore")):
+        if actual_number is None or before_number is None or actual_number <= before_number:
+            failures.append(
+                "greaterThanBefore expected true got "
+                f"before={_format_json_assert_value(before)} after={_format_json_assert_value(actual)}"
+            )
+    if "lessThanBefore" in assertion and bool(assertion.get("lessThanBefore")):
+        if actual_number is None or before_number is None or actual_number >= before_number:
+            failures.append(
+                "lessThanBefore expected true got "
+                f"before={_format_json_assert_value(before)} after={_format_json_assert_value(actual)}"
+            )
+
+    return not failures, failures
+
+
+def _check_backend_extra_data_assertions(
+    base_url: str,
+    session_id: str,
+    step: dict[str, Any],
+    case_name: str,
+    *,
+    before_snapshot: dict[str, dict[str, Any]] | None = None,
+    before_errors: list[str] | None = None,
+) -> tuple[list[str], list[dict[str, Any]]]:
+    assertions = _backend_extra_data_assertions(step)
+    if not assertions:
+        return [], []
+    keys = _backend_assertion_keys(step)
+    after_snapshot, after_errors = _capture_backend_extra_data_snapshot(base_url, session_id, keys)
+    prompt_label = step.get("prompt") or step.get("text") or ""
+    violations: list[str] = []
+    results: list[dict[str, Any]] = []
+    for fetch_error in before_errors or []:
+        violations.append(
+            f"{case_name} session={session_id} prompt={prompt_label}: "
+            f"assertBackendExtraData FAILED — before fetch failed: {fetch_error}"
+        )
+    for fetch_error in after_errors:
+        violations.append(
+            f"{case_name} session={session_id} prompt={prompt_label}: "
+            f"assertBackendExtraData FAILED — after fetch failed: {fetch_error}"
+        )
+    for index, assertion in enumerate(assertions, start=1):
+        key = str(assertion.get("key") or assertion.get("dataKey") or "").strip()
+        path = str(assertion.get("path") or "").strip()
+        result = {"key": key, "path": path, "passed": False}
+        if not key:
+            message = "missing key"
+            result["error"] = message
+            violations.append(
+                f"{case_name} session={session_id} prompt={prompt_label}: "
+                f"assertBackendExtraData[{index}] FAILED — {message}"
+            )
+            results.append(result)
+            continue
+        passed, assertion_failures = _check_single_backend_assertion(
+            assertion,
+            actual_root=after_snapshot.get(key, {}),
+            before_root=(before_snapshot or {}).get(key),
+        )
+        result["passed"] = passed
+        if assertion_failures:
+            result["failures"] = assertion_failures
+            violations.append(
+                f"{case_name} session={session_id} prompt={prompt_label}: "
+                f"assertBackendExtraData[{index}] FAILED — key={key} path={path or '$'}; "
+                + "; ".join(assertion_failures)
+            )
+        results.append(result)
+    return violations, results
 
 
 def _clear_profile_intent_fields(profile: dict[str, Any]) -> dict[str, Any]:
@@ -953,6 +1283,46 @@ def _latest_turn_messages(history: list[dict[str, Any]], prompt: str) -> list[di
     return history[start_index:]
 
 
+def _latest_shadow_status(history: list[dict[str, Any]], prompt: str) -> str:
+    shadow = _summarize_turn_observability(_latest_turn_messages(history, prompt)).get("zhiyuanAgentPocShadow")
+    if not isinstance(shadow, dict):
+        return ""
+    return str(shadow.get("status") or "").strip()
+
+
+def _load_history_json_waiting_for_shadow(
+    db_path: Path,
+    session_id: str,
+    prompt: str,
+    *,
+    attempts: int = 10,
+    interval_seconds: float = 0.5,
+) -> list[dict[str, Any]]:
+    history = _load_history_json(db_path, session_id)
+    for _ in range(max(0, attempts - 1)):
+        status = _latest_shadow_status(history, prompt)
+        if status and status != "running":
+            break
+        time.sleep(interval_seconds)
+        latest = _load_history_json(db_path, session_id)
+        if latest:
+            history = latest
+    return history
+
+
+def _step_requires_zhiyuan_agent_poc_shadow(step: dict[str, Any]) -> bool:
+    return any(
+        step.get(key) is not None
+        for key in (
+            "expectedZhiyuanAgentPocStatus",
+            "expectedZhiyuanAgentPocFirstToolNames",
+            "expectedZhiyuanAgentPocToolNames",
+            "expectedZhiyuanAgentPocNextSteps",
+            "maxZhiyuanAgentPocToolCallCount",
+        )
+    )
+
+
 def _plan_payload_fields_from_call_args(args: dict[str, Any]) -> dict[str, Any]:
     raw_payload = args.get("plan_payload")
     if not isinstance(raw_payload, str) or not raw_payload.strip():
@@ -999,6 +1369,7 @@ def _summarize_turn_observability(turn_messages: list[dict[str, Any]]) -> dict[s
     result_kinds: list[str] = []
     routing_paths: list[str] = []
     semantic_router_shadow: dict[str, Any] | None = None
+    zhiyuan_agent_poc_shadow: dict[str, Any] | None = None
     route_decision: dict[str, Any] | None = None
     event_timings: dict[str, Any] = {}
 
@@ -1056,6 +1427,9 @@ def _summarize_turn_observability(turn_messages: list[dict[str, Any]]) -> dict[s
                     raw_route_decision = data.get("routeDecision")
                     if isinstance(raw_route_decision, dict):
                         route_decision = raw_route_decision
+                    raw_poc_shadow = data.get("zhiyuanAgentPocShadow")
+                    if isinstance(raw_poc_shadow, dict):
+                        zhiyuan_agent_poc_shadow = raw_poc_shadow
                     for key in (
                         "totalDurationMs",
                         "llmDurationMs",
@@ -1080,6 +1454,10 @@ def _summarize_turn_observability(turn_messages: list[dict[str, Any]]) -> dict[s
                     ):
                         if data.get(key) is not None:
                             event_timings[key] = data.get(key)
+                elif data.get("event") == "zhiyuan_agent_poc_shadow_event":
+                    raw_poc_shadow = data.get("zhiyuanAgentPocShadow") or data.get("shadow")
+                    if isinstance(raw_poc_shadow, dict):
+                        zhiyuan_agent_poc_shadow = raw_poc_shadow
 
     for item in tool_calls:
         call_id = str(item.get("toolCallId") or "")
@@ -1117,6 +1495,8 @@ def _summarize_turn_observability(turn_messages: list[dict[str, Any]]) -> dict[s
             summary["routingPathCandidates"] = routing_paths
     if semantic_router_shadow:
         summary["semanticRouterShadow"] = semantic_router_shadow
+    if zhiyuan_agent_poc_shadow:
+        summary["zhiyuanAgentPocShadow"] = zhiyuan_agent_poc_shadow
     if event_timings:
         summary["eventTimings"] = event_timings
     if route_decision:
@@ -1544,6 +1924,7 @@ def _build_runtime_shadow_observation(
                 "postApplyEvidencePlan",
                 "routeDecision",
                 "eventTimings",
+                "zhiyuanAgentPocShadow",
             )
             if key in turn_observability
         }
@@ -1799,6 +2180,89 @@ def _tool_names_from_observability(turn_observability: dict[str, Any] | None) ->
     return names
 
 
+def _zhiyuan_agent_poc_shadow(turn_observability: dict[str, Any]) -> dict[str, Any]:
+    shadow = turn_observability.get("zhiyuanAgentPocShadow")
+    return shadow if isinstance(shadow, dict) else {}
+
+
+def _check_zhiyuan_agent_poc_shadow_assertions(
+    turn_observability: dict[str, Any],
+    step: dict[str, Any],
+    case_name: str,
+    session_id: str,
+) -> list[str]:
+    violations: list[str] = []
+    prompt_label = step.get("prompt") or step.get("text") or ""
+    shadow = _zhiyuan_agent_poc_shadow(turn_observability)
+
+    expected_status = str(step.get("expectedZhiyuanAgentPocStatus") or "").strip()
+    expected_first_tool_names = _as_string_list(step.get("expectedZhiyuanAgentPocFirstToolNames"))
+    expected_tool_names = _as_string_list(step.get("expectedZhiyuanAgentPocToolNames"))
+    expected_next_steps = _as_string_list(step.get("expectedZhiyuanAgentPocNextSteps"))
+    max_tool_call_count = step.get("maxZhiyuanAgentPocToolCallCount")
+    if not any(
+        [
+            expected_status,
+            expected_first_tool_names,
+            expected_tool_names,
+            expected_next_steps,
+            max_tool_call_count is not None,
+        ]
+    ):
+        return violations
+
+    if not shadow:
+        return [
+            f"{case_name} session={session_id} prompt={prompt_label}: "
+            "zhiyuanAgentPocShadow FAILED — no shadow result in turn observability"
+        ]
+
+    if expected_status:
+        actual_status = str(shadow.get("status") or "").strip()
+        if actual_status != expected_status:
+            violations.append(
+                f"{case_name} session={session_id} prompt={prompt_label}: "
+                f"expectedZhiyuanAgentPocStatus FAILED — expected {expected_status} got {actual_status}"
+            )
+
+    actual_first_tool_names = [str(item) for item in shadow.get("firstToolNames") or []]
+    if expected_first_tool_names and actual_first_tool_names != expected_first_tool_names:
+        violations.append(
+            f"{case_name} session={session_id} prompt={prompt_label}: "
+            f"expectedZhiyuanAgentPocFirstToolNames FAILED — expected {expected_first_tool_names} got {actual_first_tool_names}"
+        )
+
+    actual_tool_names = [str(item) for item in shadow.get("toolCallNames") or []]
+    if expected_tool_names and actual_tool_names != expected_tool_names:
+        violations.append(
+            f"{case_name} session={session_id} prompt={prompt_label}: "
+            f"expectedZhiyuanAgentPocToolNames FAILED — expected {expected_tool_names} got {actual_tool_names}"
+        )
+
+    actual_next_steps = [str(item) for item in shadow.get("nextSteps") or []]
+    if expected_next_steps and actual_next_steps != expected_next_steps:
+        violations.append(
+            f"{case_name} session={session_id} prompt={prompt_label}: "
+            f"expectedZhiyuanAgentPocNextSteps FAILED — expected {expected_next_steps} got {actual_next_steps}"
+        )
+
+    if max_tool_call_count is not None:
+        try:
+            max_count = int(max_tool_call_count)
+        except (TypeError, ValueError):
+            max_count = None
+        actual_count = _shadow_int(shadow.get("toolCallCount"))
+        if actual_count is None:
+            actual_count = len(actual_tool_names)
+        if max_count is not None and actual_count > max_count:
+            violations.append(
+                f"{case_name} session={session_id} prompt={prompt_label}: "
+                f"maxZhiyuanAgentPocToolCallCount FAILED — toolCallCount={actual_count} > {max_count}"
+            )
+
+    return violations
+
+
 def _check_tool_assertions(
     turn_observability: dict[str, Any] | None,
     step: dict[str, Any],
@@ -1810,6 +2274,7 @@ def _check_tool_assertions(
     prompt_label = step.get("prompt") or step.get("text") or ""
     turn_observability = turn_observability if isinstance(turn_observability, dict) else {}
     tool_names = _tool_names_from_observability(turn_observability)
+    violations.extend(_check_zhiyuan_agent_poc_shadow_assertions(turn_observability, step, case_name, session_id))
 
     expected_routing_path = str(step.get("expectedRoutingPath") or "").strip()
     if expected_routing_path:
@@ -1992,6 +2457,8 @@ def _record_failure_reasons(record: dict[str, Any]) -> list[str]:
         reasons.append("content")
     if record.get("toolViolations"):
         reasons.append("tool")
+    if record.get("backendViolations"):
+        reasons.append("backend")
     if record.get("performanceViolations"):
         reasons.append("performance")
     return reasons
@@ -2079,6 +2546,7 @@ def _build_metrics_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
             for record in slowest
         ],
         "fastRouteArbitration": _build_fast_route_arbitration_summary(records),
+        "zhiyuanAgentPocShadow": _build_zhiyuan_agent_poc_shadow_summary(records),
     }
 
 
@@ -2087,6 +2555,80 @@ def _bump(counter: dict[str, int], key: Any) -> None:
     if not text:
         return
     counter[text] = counter.get(text, 0) + 1
+
+
+def _shadow_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    return None
+
+
+def _build_zhiyuan_agent_poc_shadow_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
+    observed = 0
+    statuses: dict[str, int] = {}
+    first_tools: dict[str, int] = {}
+    tool_names: dict[str, int] = {}
+    next_steps: dict[str, int] = {}
+    durations: list[int] = []
+    total_tokens: list[int] = []
+    tool_counts: list[int] = []
+    error_examples: list[dict[str, Any]] = []
+
+    for record in records:
+        turn = record.get("turnObservability")
+        if not isinstance(turn, dict):
+            continue
+        shadow = turn.get("zhiyuanAgentPocShadow")
+        if not isinstance(shadow, dict):
+            continue
+        observed += 1
+        status = str(shadow.get("status") or "").strip() or "unknown"
+        _bump(statuses, status)
+        for item in shadow.get("firstToolNames") or []:
+            _bump(first_tools, item)
+        for item in shadow.get("toolCallNames") or []:
+            _bump(tool_names, item)
+        for item in shadow.get("nextSteps") or []:
+            _bump(next_steps, item)
+
+        duration = _shadow_int(shadow.get("durationMs"))
+        if duration is not None:
+            durations.append(duration)
+        tokens = _shadow_int(shadow.get("totalTokens"))
+        if tokens is not None:
+            total_tokens.append(tokens)
+        tool_count = _shadow_int(shadow.get("toolCallCount"))
+        if tool_count is None:
+            names = shadow.get("toolCallNames")
+            tool_count = len(names) if isinstance(names, list) else None
+        if tool_count is not None:
+            tool_counts.append(tool_count)
+
+        if status != "success" and len(error_examples) < 10:
+            error_examples.append(
+                {
+                    "case": record.get("case"),
+                    "sessionId": record.get("sessionId"),
+                    "prompt": record.get("prompt"),
+                    "status": status,
+                    "errorType": shadow.get("errorType"),
+                    "errorMessage": shadow.get("errorMessage"),
+                }
+            )
+
+    return {
+        "observed": observed,
+        "statuses": statuses,
+        "firstTools": first_tools,
+        "toolNames": tool_names,
+        "nextSteps": next_steps,
+        "duration": _duration_summary(durations),
+        "toolCallCount": _duration_summary(tool_counts),
+        "totalTokens": _duration_summary(total_tokens),
+        "errorExamples": error_examples,
+    }
 
 
 def _build_fast_route_arbitration_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
@@ -2157,6 +2699,7 @@ async def _run_cases(
     backend_db_name: str = DEFAULT_BACKEND_DB_NAME,
     backend_volunteer_data_dir: str = DEFAULT_BACKEND_VOLUNTEER_DATA_DIR,
     runtime_shadow_output: str | None = None,
+    poc_shadow_wait_seconds: float = 25.0,
 ) -> None:
     failures: list[str] = []
     warnings: list[str] = []
@@ -2167,7 +2710,9 @@ async def _run_cases(
         session_id = str(case["sessionId"])
         case_env_failures: list[str] = []
         clone_source_session_id = str(case.get("cloneBackendStateFromSessionId") or "").strip()
+        clone_score_source_session_id = str(case.get("cloneBackendScoreFromSessionId") or "").strip()
         clone_results: list[dict[str, Any]] = []
+        all_clone_results: list[dict[str, Any]] = []
         if clone_source_session_id:
             if clone_backend_chat_session:
                 session_clone_result = _clone_backend_chat_session_row(
@@ -2225,6 +2770,7 @@ async def _run_cases(
                 target_session_id=session_id,
                 keys=_backend_state_clone_keys_for_case(case),
             )
+            all_clone_results.extend(clone_results)
             print(
                 "clonedCaseBackendState="
                 + json.dumps(
@@ -2237,20 +2783,41 @@ async def _run_cases(
                     ensure_ascii=False,
                 )
             )
-            failed_clones = [item for item in clone_results if not item.get("ok")]
-            if failed_clones:
-                case_env_failures.append(
-                    "backend state clone had failures: "
-                    + json.dumps(
-                        {
-                            "baseUrl": internal_service_url,
-                            "sourceSession": clone_source_session_id,
-                            "targetSession": session_id,
-                            "failures": failed_clones,
-                        },
-                        ensure_ascii=False,
-                    )
+        if clone_score_source_session_id:
+            score_clone_results = _clone_backend_session_state(
+                internal_service_url,
+                source_session_id=clone_score_source_session_id,
+                target_session_id=session_id,
+                keys=("userScoreDetail",),
+            )
+            all_clone_results.extend(score_clone_results)
+            print(
+                "clonedCaseBackendScoreState="
+                + json.dumps(
+                    {
+                        "baseUrl": internal_service_url,
+                        "sourceSession": clone_score_source_session_id,
+                        "targetSession": session_id,
+                        "results": score_clone_results,
+                    },
+                    ensure_ascii=False,
                 )
+            )
+        failed_clones = [item for item in all_clone_results if not item.get("ok")]
+        if failed_clones:
+            case_env_failures.append(
+                "backend state clone had failures: "
+                + json.dumps(
+                    {
+                        "baseUrl": internal_service_url,
+                        "sourceSession": clone_source_session_id,
+                        "scoreSourceSession": clone_score_source_session_id,
+                        "targetSession": session_id,
+                        "failures": failed_clones,
+                    },
+                    ensure_ascii=False,
+                )
+            )
         if clear_history_per_case and history_db:
             deleted = _clear_history(Path(history_db), [session_id])
             print(
@@ -2377,6 +2944,15 @@ async def _run_cases(
         for step_index, step in enumerate(steps, start=1):
             prompt = str(step.get("prompt") or step.get("text") or "")
             print(f">>> {prompt}")
+            backend_assertion_keys = _backend_assertion_keys(step)
+            backend_before_snapshot: dict[str, dict[str, Any]] = {}
+            backend_before_errors: list[str] = []
+            if backend_assertion_keys:
+                backend_before_snapshot, backend_before_errors = _capture_backend_extra_data_snapshot(
+                    internal_service_url,
+                    session_id,
+                    backend_assertion_keys,
+                )
             started_at = time.perf_counter()
             try:
                 primary, followups, timing = await _ask_once(
@@ -2400,7 +2976,16 @@ async def _run_cases(
                 }
                 _add_fixture_and_root_cause_fields(error_record, case, step)
                 if history_db:
-                    history = _load_history_json(Path(history_db), session_id)
+                    if _step_requires_zhiyuan_agent_poc_shadow(step):
+                        history = _load_history_json_waiting_for_shadow(
+                            Path(history_db),
+                            session_id,
+                            prompt,
+                            attempts=max(1, int(poc_shadow_wait_seconds / 0.5)),
+                            interval_seconds=0.5,
+                        )
+                    else:
+                        history = _load_history_json(Path(history_db), session_id)
                     turn_observability = _summarize_turn_observability(
                         _latest_turn_messages(history, prompt)
                     )
@@ -2440,7 +3025,16 @@ async def _run_cases(
             if error_text:
                 record["wsError"] = error_text
             if history_db:
-                history = _load_history_json(Path(history_db), session_id)
+                if _step_requires_zhiyuan_agent_poc_shadow(step):
+                    history = _load_history_json_waiting_for_shadow(
+                        Path(history_db),
+                        session_id,
+                        prompt,
+                        attempts=max(1, int(poc_shadow_wait_seconds / 0.5)),
+                        interval_seconds=0.5,
+                    )
+                else:
+                    history = _load_history_json(Path(history_db), session_id)
                 turn_observability = _summarize_turn_observability(
                     _latest_turn_messages(history, prompt)
                 )
@@ -2480,6 +3074,20 @@ async def _run_cases(
                 for v in tool_violations:
                     print(f"  TOOL_ASSERT_FAIL: {v}")
                 failures.extend(tool_violations)
+            backend_violations, backend_results = _check_backend_extra_data_assertions(
+                internal_service_url,
+                session_id,
+                step,
+                name,
+                before_snapshot=backend_before_snapshot,
+                before_errors=backend_before_errors,
+            )
+            if backend_results:
+                record["backendAssertions"] = backend_results
+            if backend_violations:
+                for v in backend_violations:
+                    print(f"  BACKEND_ASSERT_FAIL: {v}")
+                failures.extend(backend_violations)
             perf_failures, perf_warnings = _check_performance_assertions(elapsed_ms, step, name, session_id)
             for warning in perf_warnings:
                 print(f"  LATENCY_WARN: {warning}")
@@ -2489,6 +3097,8 @@ async def _run_cases(
                 record["contentViolations"] = content_violations
             if tool_violations:
                 record["toolViolations"] = tool_violations
+            if backend_violations:
+                record["backendViolations"] = backend_violations
             if perf_failures:
                 record["performanceViolations"] = perf_failures
             if perf_warnings:
@@ -2578,6 +3188,12 @@ def main() -> None:
     parser.add_argument(
         "--runtime-shadow-output",
         help="write readonly runtime observations for runtime_shadow_diff.py; does not change dialog behavior",
+    )
+    parser.add_argument(
+        "--poc-shadow-wait-seconds",
+        type=float,
+        default=25.0,
+        help="wait this long for zhiyuanAgentPocShadow completion on shadow-asserted steps before reading history",
     )
     parser.add_argument(
         "--session-offset",
@@ -2701,6 +3317,7 @@ def main() -> None:
             backend_db_name=args.backend_db_name,
             backend_volunteer_data_dir=args.backend_volunteer_data_dir,
             runtime_shadow_output=args.runtime_shadow_output,
+            poc_shadow_wait_seconds=args.poc_shadow_wait_seconds,
         )
     )
 

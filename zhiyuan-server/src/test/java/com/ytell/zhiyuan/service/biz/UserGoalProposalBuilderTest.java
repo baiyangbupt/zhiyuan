@@ -302,6 +302,37 @@ public class UserGoalProposalBuilderTest {
     }
 
     @Test
+    void shouldNotLimitReplacementPairsByPreviewCandidateLimitForProgramTypeScope() {
+        PlanningStateDTO state = state(12);
+        for (int index = 1; index <= 6; index++) {
+            String volunteerId = "coop" + index;
+            CandidateItemDTO coop = candidate(volunteerId, "中外合作学校" + index,
+                    "专业" + index + "(中外合作办学)", "工学", 90D - index);
+            coop.getReasonCodes().add("中外合作办学");
+            state.getCandidatePoolState().getItems().add(coop);
+            state.getOrderedPlanState().getItems().add(ordered(volunteerId, coop.getSchoolName(), coop.getMajorName(), false));
+        }
+        for (int index = 1; index <= 6; index++) {
+            state.getCandidatePoolState().getItems().add(candidate("normal" + index, "普通学校" + index,
+                    "普通专业" + index, "工学", 80D - index));
+        }
+
+        UserGoalFixProposalReq req = req("exclude_scope", 12, negativeScope("program_type", "中外合作办学"));
+        req.setUserOriginalText("不要中外合作");
+
+        FixProposalDTO proposal = UserGoalProposalBuilder.build(state, req).getProposals().get(0);
+
+        assertEquals("ready", proposal.getStatus());
+        assertTrue(proposal.getSummary().contains("当前方案里有 6 条命中"));
+        assertTrue(proposal.getSummary().contains("本次能替换 6 条"));
+        FixProposalActionDTO action = proposal.getActions().get(0);
+        assertEquals("replace_volunteers", action.getActionType());
+        assertEquals(6, action.getReplacementPairs().size());
+        assertEquals(6, action.getRemoveVolunteerIds().size());
+        assertEquals(6, action.getCandidateVolunteerIds().size());
+    }
+
+    @Test
     void shouldBuildTuitionBudgetReplacementPreviewFromCurrentPlanAndCandidatePool() {
         PlanningStateDTO state = state(12);
         CandidateItemDTO expensive = candidate("v1", "学校A", "金融学", "经济学", 91D);

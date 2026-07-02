@@ -982,7 +982,7 @@ async def _plan_next_action_model(
     preview_summary = ""
     if stage == "preview":
         if action_family == "generate_plan":
-            preview_summary = "会基于当前报考参考信息、约束和候选范围生成一版方案，并在执行后自动复审。"
+            preview_summary = "会基于当前报考参考信息、报考要求和可选范围生成一版方案，并在执行后自动复审。"
         elif action_family == "regenerate_order":
             preview_summary = "会基于当前方案重新生成整体顺序，并在执行后自动复审。"
         elif action_family == "sort_ordered_plan":

@@ -329,7 +329,7 @@ def _render_major_comparison_facts(
     if has_weight:
         lines.append(f"当前有可参考的个性化量化指标，下面按{gender_flag}相关指数、满意度、薪酬、热度和综合评分做对照。")
     else:
-        lines.append("当前缺少完整个性化量化评分，所以先给出可用于判断的专业类、就业路径和指标空缺说明；最终建议需要结合分数、选科、地域和家庭约束再判断。")
+        lines.append("当前缺少完整个性化量化评分，所以先给出可用于判断的专业类、就业路径和指标空缺说明；最终建议需要结合分数、选科、地域和家庭诉求再判断。")
 
     lines.extend(
         [

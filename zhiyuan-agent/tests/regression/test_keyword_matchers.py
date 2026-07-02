@@ -10,6 +10,7 @@ import pytest
 from app.models.intent_frame import IntentFrame, ScopeSpec, TargetSpec
 from app.resolver.action_resolver import ActionResolver
 from app.tools.review_issue_registry import (
+    normalize_review_issue_code,
     review_issue_default_action_family,
     review_issue_label,
     review_issue_scope_kind,
@@ -107,6 +108,24 @@ def test_review_issue_registry_is_code_based(
     assert review_issue_scope_kind(code) == expected_kind
     assert review_issue_default_action_family(code) == expected_default
     assert review_issue_supported_action_families(code) == expected_supported
+
+
+@pytest.mark.parametrize(
+    "value,expected_code",
+    [
+        ("HIGH_TUITION_RISK", "high_tuition"),
+        ("cooperative", "cooperative_program"),
+        ("sino_foreign", "cooperative_program"),
+        ("限报条件涉及1个志愿", "admission_limit"),
+        ("特殊类型招生项目费用较高", "special_enrollment"),
+        ("录取率倒挂，建议按概率重新排序", "probability_inversion"),
+        ("冲区数量偏多，稳保承接不足", "tier_gap"),
+        ("本省保底不足", "safety_guard"),
+        ("组内安全垫不足", "group_inner_safety_guard"),
+    ],
+)
+def test_review_issue_registry_normalizes_aliases(value: str, expected_code: str):
+    assert normalize_review_issue_code(value) == expected_code
 
 
 @pytest.mark.parametrize("volunteer_model", ["major", "majorGroup"])

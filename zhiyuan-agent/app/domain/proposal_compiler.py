@@ -857,17 +857,7 @@ def _pending_plan_action_family_from_state(pending_state: dict[str, Any] | None)
     execution_payload = pending_state.get("executionPayload")
     if not isinstance(execution_payload, dict):
         return ""
-    plan_payload = execution_payload.get("planPayload") or execution_payload.get("plan_payload")
-    if isinstance(plan_payload, dict):
-        return str(plan_payload.get("action_family") or plan_payload.get("actionFamily") or "").strip()
-    if isinstance(plan_payload, str) and plan_payload.strip():
-        try:
-            parsed = json.loads(plan_payload)
-        except Exception:
-            return ""
-        if isinstance(parsed, dict):
-            return str(parsed.get("action_family") or parsed.get("actionFamily") or "").strip()
-    return ""
+    return str(execution_payload.get("action_family") or execution_payload.get("actionFamily") or "").strip()
 
 
 def _pending_turn_looks_plan_action_scoped_confirmation(
@@ -1943,7 +1933,7 @@ def compile_blocked_intent_preview_for_plan_route_reply_source(
     elif constraint_type == "only_keep":
         first_line = f"我识别到你想让当前方案只保留：{focus_label}。"
     elif intent_mode == "constraint":
-        first_line = f"我识别到你这轮是约束当前方案范围：{focus_label}。"
+        first_line = f"我识别到你这轮的诉求是调整当前方案范围：{focus_label}。"
 
     reply = (
         f"{first_line}\n\n"
@@ -4081,6 +4071,63 @@ def _parse_plan_confirmation_payload(value: Any) -> tuple[dict[str, Any], str, l
 
 def _plan_payload_action_family(payload: dict[str, Any]) -> str:
     return str(payload.get("action_family") or payload.get("actionFamily") or "").strip()
+
+
+def ensure_structured_plan_payload(
+    payload: dict[str, Any] | None,
+    *,
+    action_family: str = "",
+) -> dict[str, Any]:
+    """Normalize a Release 4.0 plan pending payload.
+
+    New pending execution is driven by ``action_family`` + ``atomic_actions``.
+    This helper keeps transitional producers from storing opaque planPayload
+    while preserving concrete structured fields already resolved by preview.
+    """
+    if not isinstance(payload, dict):
+        return {}
+    normalized = dict(payload)
+    if "planPayload" in normalized or "plan_payload" in normalized:
+        return {}
+    family = str(action_family or _plan_payload_action_family(normalized) or "").strip()
+    if family:
+        normalized["action_family"] = family
+    actions = normalized.get("atomic_actions") or normalized.get("atomicActions")
+    if isinstance(actions, list) and any(isinstance(item, dict) for item in actions):
+        normalized["atomic_actions"] = [dict(item) for item in actions if isinstance(item, dict)]
+        normalized.pop("atomicActions", None)
+        return normalized
+    if not family:
+        return normalized
+    atomic: dict[str, Any] = {"action_type": family}
+    for key in (
+        "unit_ids",
+        "unitIds",
+        "volunteer_ids",
+        "volunteerIds",
+        "target_position",
+        "targetPosition",
+        "sort_field",
+        "sortField",
+        "filters",
+        "review_issue_target",
+        "reviewIssueTarget",
+    ):
+        value = normalized.get(key)
+        if value not in (None, "", [], {}):
+            atomic[key] = value
+    if "reason" not in atomic and str(normalized.get("user_goal") or normalized.get("userGoal") or "").strip():
+        atomic["reason"] = str(normalized.get("user_goal") or normalized.get("userGoal") or "").strip()
+    normalized["atomic_actions"] = [atomic]
+    return normalized
+
+
+def is_structured_plan_payload(payload: dict[str, Any] | None) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    family = _plan_payload_action_family(payload)
+    actions = payload.get("atomic_actions") or payload.get("atomicActions")
+    return bool(family and isinstance(actions, list) and any(isinstance(item, dict) for item in actions))
 
 
 def _plan_payload_target_view(payload: dict[str, Any]) -> str | None:

@@ -37,7 +37,6 @@ final class UserGoalProposalBuilder {
     private static final String REASON_GOAL_UNCLEAR = "user_goal_unclear";
     private static final String REASON_TARGET_NOT_FOUND = "user_goal_target_not_found";
     private static final String REASON_ENTITY_NEEDS_CLARIFICATION = "user_goal_entity_needs_clarification";
-    private static final int PREVIEW_CANDIDATE_LIMIT = 5;
     private static final Map<String, List<String>> REGION_AREA_PROVINCES = buildRegionAreaProvinces();
 
     private UserGoalProposalBuilder() {
@@ -144,7 +143,6 @@ final class UserGoalProposalBuilder {
                 .filter(RepairCandidateSelector::isCompensationSafeCandidate)
                 .filter(candidate -> RepairCandidateEligibility.isEligibleForConfirmedHardConstraints(candidate, state))
                 .sorted(buildCandidatePreviewComparator())
-                .limit(PREVIEW_CANDIDATE_LIMIT)
                 .collect(Collectors.toList());
         List<CandidateItemDTO> candidateNonMatches = candidates.stream()
                 .filter(candidate -> candidate != null && !Strings.isNullOrEmpty(candidate.getVolunteerId()))
@@ -153,7 +151,6 @@ final class UserGoalProposalBuilder {
                 .filter(RepairCandidateSelector::isCompensationSafeCandidate)
                 .filter(candidate -> RepairCandidateEligibility.isEligibleForConfirmedHardConstraints(candidate, state))
                 .sorted(buildCandidatePreviewComparator())
-                .limit(PREVIEW_CANDIDATE_LIMIT)
                 .collect(Collectors.toList());
 
         if (RepairProposalTaxonomy.Strategy.ONLY_KEEP_SCOPE.equals(goalType)) {
@@ -260,7 +257,6 @@ final class UserGoalProposalBuilder {
                 .filter(RepairCandidateSelector::isCompensationSafeCandidate)
                 .filter(candidate -> RepairCandidateEligibility.isEligibleForConfirmedHardConstraints(candidate, state))
                 .sorted(buildCandidatePreviewComparator())
-                .limit(PREVIEW_CANDIDATE_LIMIT)
                 .collect(Collectors.toList());
 
         boolean majorGroupMode = isMajorGroupMode(state);

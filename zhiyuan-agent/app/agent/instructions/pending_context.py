@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from app.agent.context import resolve_pending_confirmation, resolve_pending_plan_payload_text
+from app.agent.context import resolve_pending_confirmation
 
 if TYPE_CHECKING:
     from app.agent.context import RequestContext
@@ -19,14 +19,12 @@ def build_pending_context(deps: RequestContext) -> str:
     if pending is None or pending.kind != "plan_mutation":
         return ""
 
-    plan_payload = resolve_pending_plan_payload_text(deps)
     return (
         "当前存在上一轮待确认的方案动作：\n"
         f"- 动作类型：{pending.action_family}\n"
         f"- 预览摘要：{pending.preview_summary}\n"
         f"- 影响范围：{pending.affected_scope}\n"
-        f"- 用户确认后执行 payload：{plan_payload}\n"
-        "不要在模型回复里自行调用 `execute_plan_action` 执行这个 payload。"
+        "不要在模型回复里自行执行这个待确认动作。"
         "明确的短文本确认会由服务端统一 pendingConfirmation 链路校验并执行；"
         "如果本轮仍进入模型，说明当前表达没有安全命中确认兜底。"
         "若用户是在追问审查解释、处理分类、影响范围、候选不足原因或当前方案状态，"

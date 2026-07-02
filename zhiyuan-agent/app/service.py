@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import os
+import random
 import re
 import time
 import uuid
@@ -23,8 +25,10 @@ from app.agent.context import (
     RequestContext,
     ScoreDetail,
     resolve_pending_confirmation,
-    resolve_pending_plan_payload_text,
 )
+from app.zhiyuan_agent.agent import ZhiyuanAgent
+from app.zhiyuan_agent.sandbox import DEFAULT_WARM_PATHS, build_request_sandbox
+from app.zhiyuan_agent.tools import confirm_pending as zhiyuan_agent_confirm_pending
 from app.models.conversation_phase import ConversationPhase, PendingConfirmation
 from app.agent.usage_tracker import UsageTracker
 from app.config import HistoryConfig
@@ -84,6 +88,7 @@ from app.tools.turn_decision_tool import classify_turn_decision
 from app.util.internal_client import (
     apply_planning_fix_proposal,
     generate_user_goal_planning_fix_proposals,
+    get_last_pending_confirmation,
     get_message_by_id,
     get_pending_confirmation,
     get_planning_state,
@@ -110,7 +115,32 @@ def _env_float(name: str, default: float) -> float:
     return default
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    normalized = str(raw).strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off"}:
+        return False
+    logger.warning("Invalid %s=%r; using default %s", name, raw, default)
+    return default
+
+
 _TURN_DECISION_TIMEOUT_SECONDS = max(0.0, _env_float("TURN_DECISION_TIMEOUT_SECONDS", 25.0))
+_ZHIYUAN_AGENT_POC_SHADOW_TIMEOUT_SECONDS = max(
+    0.0,
+    _env_float("ZHIYUAN_AGENT_POC_SHADOW_TIMEOUT_SECONDS", 30.0),
+)
+_ZHIYUAN_AGENT_POC_SHADOW_SAMPLE_RATE = min(
+    1.0,
+    max(0.0, _env_float("ZHIYUAN_AGENT_SHADOW_SAMPLE_RATE", 1.0)),
+)
+_ZHIYUAN_AGENT_DIRECT_TIMEOUT_SECONDS = max(
+    0.0,
+    _env_float("ZHIYUAN_AGENT_DIRECT_TIMEOUT_SECONDS", 30.0),
+)
 
 _PLAN_STYLE_SEVERE_MARKERS = (
     "你必须决定",
@@ -1067,6 +1097,10 @@ def _log_conversation_turn_event(**fields: Any) -> None:
     log_event("conversation_turn_event", **fields)
 
 
+def _log_zhiyuan_agent_poc_shadow_event(**fields: Any) -> None:
+    log_event("zhiyuan_agent_poc_shadow_event", **fields)
+
+
 def _log_pending_confirmation_event(**fields: Any) -> None:
     log_event("pending_confirmation_event", **fields)
 
@@ -1101,6 +1135,102 @@ def _append_route_observability_message(messages: list[Any], turn_event: dict[st
             result.insert(index, observability_message)
             return result
     return [*result, observability_message]
+
+
+def _append_completed_poc_shadow_observability_message(
+    messages: list[Any],
+    *,
+    request_context: RequestContext | None,
+    session_id: str,
+    user_id: str,
+    prompt_length: int,
+) -> list[Any]:
+    if request_context is None:
+        return messages
+    shadow = getattr(request_context, "_zhiyuan_agent_poc_shadow", None)
+    if not isinstance(shadow, dict):
+        return messages
+    if str(shadow.get("status") or "").strip() == "running":
+        return messages
+    message = _shadow_observability_message(
+        session_id=session_id,
+        user_id=user_id,
+        prompt_length=prompt_length,
+        shadow=shadow,
+    )
+    if message is None:
+        return messages
+    return [*messages, message]
+
+
+def _append_turn_observability_messages(
+    messages: list[Any],
+    turn_event: dict[str, Any] | None,
+    *,
+    request_context: RequestContext | None = None,
+    session_id: str = "",
+    user_id: str = "",
+    prompt_length: int = 0,
+) -> list[Any]:
+    result = _append_route_observability_message(messages, turn_event)
+    return _append_completed_poc_shadow_observability_message(
+        result,
+        request_context=request_context,
+        session_id=session_id,
+        user_id=user_id,
+        prompt_length=prompt_length,
+    )
+
+
+def _shadow_observability_message(
+    *,
+    session_id: str,
+    user_id: str,
+    prompt_length: int,
+    shadow: dict[str, Any],
+) -> ModelResponse | None:
+    try:
+        content = json.dumps(
+            {
+                "type": "routeObservability",
+                "event": "zhiyuan_agent_poc_shadow_event",
+                "sessionId": session_id,
+                "userId": user_id,
+                "promptLength": prompt_length,
+                "shadow": shadow,
+                "zhiyuanAgentPocShadow": shadow,
+            },
+            ensure_ascii=False,
+        )
+    except Exception:
+        return None
+    return ModelResponse(parts=[TextPart(content=content)], model_name=_ROUTE_OBSERVABILITY_MODEL_NAME)
+
+
+async def _append_zhiyuan_agent_poc_shadow_history(
+    history_store: ChatHistoryStore,
+    *,
+    session_id: str,
+    user_id: str,
+    prompt_length: int,
+    shadow: dict[str, Any],
+) -> None:
+    message = _shadow_observability_message(
+        session_id=session_id,
+        user_id=user_id,
+        prompt_length=prompt_length,
+        shadow=shadow,
+    )
+    if message is None:
+        return
+    for _ in range(20):
+        history = await history_store.load(session_id)
+        if history:
+            history.append(message)
+            await history_store.save(session_id, history)
+            return
+        await asyncio.sleep(0.25)
+    await history_store.save(session_id, [message])
 
 
 def _is_route_observability_message(message: Any) -> bool:
@@ -1484,16 +1614,50 @@ def _extract_extra_data_value(response: dict[str, Any] | None, key: str) -> dict
     value = data.get(key)
     if value is None:
         value = data.get("dataValue")
-    return value if isinstance(value, dict) else None
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (TypeError, ValueError):
+            parsed = None
+        value = parsed
+    if not isinstance(value, dict):
+        return None
+    result = dict(value)
+    data_version = _as_int(data.get("dataVersion") or data.get("version"))
+    if data_version > 0:
+        result.setdefault("_extraDataVersion", data_version)
+        result.setdefault("dataVersion", data_version)
+    return result
 
 
 async def _load_pending_confirmation_state(session_id: str) -> dict[str, Any] | None:
+    try:
+        response = await get_last_pending_confirmation(session_id)
+    except Exception:
+        logger.warning("Failed to load latest pending confirmation state: session_id=%s", session_id, exc_info=True)
+        response = None
+    state = _extract_extra_data_value(response, "pendingConfirmation")
+    if state:
+        return state
     try:
         response = await get_pending_confirmation(session_id)
     except Exception:
         logger.warning("Failed to load pending confirmation state: session_id=%s", session_id, exc_info=True)
         return None
     return _extract_extra_data_value(response, "pendingConfirmation")
+
+
+def _pending_extra_data_version(state: dict[str, Any] | None) -> int:
+    if not isinstance(state, dict):
+        return 0
+    return _as_int(
+        state.get("_extraDataVersion")
+        or state.get("dataVersion")
+        or state.get("sourceBackendVersion")
+        or state.get("source_backend_version")
+        or state.get("planningVersion")
+        or state.get("planning_version")
+    )
 
 
 def _pending_confirmation_from_state(state: dict[str, Any] | None) -> PendingConfirmation | None:
@@ -1522,16 +1686,12 @@ def _pending_confirmation_from_state(state: dict[str, Any] | None) -> PendingCon
         if action_family == "apply_fix_proposal":
             payload = dict(execution_payload)
         else:
-            plan_payload = execution_payload.get("planPayload")
-            if not isinstance(plan_payload, str) or not plan_payload.strip():
+            payload = proposal_compiler.ensure_structured_plan_payload(
+                execution_payload,
+                action_family=action_family,
+            )
+            if not proposal_compiler.is_structured_plan_payload(payload):
                 return None
-            payload: dict[str, Any] = {}
-            try:
-                parsed_payload = json.loads(plan_payload)
-                if isinstance(parsed_payload, dict):
-                    payload = parsed_payload
-            except Exception:
-                payload = {}
         pending = PendingConfirmation(
             kind="plan_mutation",
             action_family=action_family,
@@ -1618,7 +1778,7 @@ def _recent_intent_summary_for_no_plan_guard(
 
 async def _save_pending_confirmation_state(session_id: str, state: dict[str, Any]) -> None:
     try:
-        await save_pending_confirmation(session_id, state)
+        await save_pending_confirmation(session_id, state, version=_pending_extra_data_version(state))
     except Exception:
         logger.warning("Failed to save pending confirmation state: session_id=%s", session_id, exc_info=True)
 
@@ -1731,9 +1891,18 @@ def _build_plan_pending_state(
     now = datetime.now(timezone.utc).isoformat()
     resolution = proposal_compiler.resolve_plan_confirmation_candidate(confirmation_candidate)
     action_family = resolution.action_family
-    plan_payload = resolution.plan_payload_text
-    payload_data = resolution.plan_payload
+    payload_data = proposal_compiler.ensure_structured_plan_payload(
+        resolution.plan_payload,
+        action_family=action_family,
+    )
     source_backend_version = resolution.source_version_guard
+    execution_payload = dict(payload_data)
+    execution_payload["toolName"] = "confirm_pending"
+    execution_payload["action_family"] = action_family
+    execution_payload.setdefault("stage", "apply")
+    execution_payload.setdefault("requires_confirmation", False)
+    execution_payload.setdefault("should_refresh_workspace", True)
+    execution_payload.setdefault("should_rerun_review", True)
     state = {
         "type": "pendingConfirmation",
         "pendingId": pending_id,
@@ -1743,10 +1912,7 @@ def _build_plan_pending_state(
         "actionFamily": action_family,
         "summary": str(confirmation_candidate.get("summary") or "").strip(),
         "userGoal": str(confirmation_candidate.get("user_goal") or "").strip(),
-        "executionPayload": {
-            "toolName": "execute_plan_action",
-            "planPayload": plan_payload,
-        },
+        "executionPayload": execution_payload,
         "createdAt": now,
         "updatedAt": now,
         "sourceBackendVersion": source_backend_version,
@@ -1958,25 +2124,6 @@ def _intent_profile_strength_summary_can_cover_merged(merged: dict[str, Any]) ->
         if any(_as_text_list(raw_values) for raw_values in value.values()):
             return False
     return True
-
-
-def _reply_with_pending_intent_summary(reply: str, state_result: Any | None, pending_state: dict[str, Any]) -> str:
-    summary = str((pending_state or {}).get("summary") or "").strip()
-    if not summary:
-        return reply
-    message_code = str(getattr(state_result, "messageCode", "") or "").strip()
-    if message_code not in {"constraint_applied", "preference_applied"}:
-        return reply
-    normalized_reply = reply or ""
-    concrete_terms = [
-        term
-        for term in re.findall(r"[\u4e00-\u9fffA-Za-z0-9]+", summary)
-        if len(term) >= 2
-    ]
-    if concrete_terms and any(term in normalized_reply for term in concrete_terms):
-        return reply
-    base_reply = normalized_reply.strip() or "已采纳。"
-    return f"{base_reply}\n本次内容：{summary}。"
 
 
 def _as_text_list(values: Any) -> list[str]:
@@ -3521,6 +3668,20 @@ def _parse_score_detail_from_backend(raw_data: dict[str, Any]) -> ScoreDetail:
     )
 
 
+def _coerce_score_detail(raw_score_detail: Any) -> ScoreDetail | None:
+    if isinstance(raw_score_detail, ScoreDetail):
+        return raw_score_detail
+    if not isinstance(raw_score_detail, dict) or not raw_score_detail:
+        return None
+    raw_data = raw_score_detail.get("userScoreDetail")
+    nested_data = raw_score_detail.get("data")
+    if not isinstance(raw_data, dict) and isinstance(nested_data, dict):
+        raw_data = nested_data.get("userScoreDetail")
+    if not isinstance(raw_data, dict):
+        raw_data = raw_score_detail
+    return _parse_score_detail_from_backend(raw_data)
+
+
 async def _create_pending_intent_confirmation_result_from_preview_payload(
     session_id: str,
     payload: dict[str, Any] | None,
@@ -4958,10 +5119,11 @@ def _increment_observability_counter(
     observability[key] = int(current) + 1 if isinstance(current, (int, float)) else 1
 
 
-def _observability_timing_fields(request_context: RequestContext) -> dict[str, int]:
+def _observability_timing_fields(request_context: RequestContext) -> dict[str, Any]:
     observability = getattr(request_context, "agent_observability", None)
+    fields: dict[str, Any] = {}
     if not isinstance(observability, dict):
-        return {}
+        observability = {}
     timing_keys = (
         "turnDecisionDurationMs",
         "turnDecisionCacheHitCount",
@@ -4969,11 +5131,25 @@ def _observability_timing_fields(request_context: RequestContext) -> dict[str, i
         "intentEntityProfileDurationMs",
         "intentSideEffectDurationMs",
     )
-    return {
-        key: int(observability[key])
-        for key in timing_keys
-        if isinstance(observability.get(key), (int, float))
-    }
+    fields.update(
+        {
+            key: int(observability[key])
+            for key in timing_keys
+            if isinstance(observability.get(key), (int, float))
+        }
+    )
+    shadow_task = getattr(request_context, "_zhiyuan_agent_poc_shadow_task", None)
+    if isinstance(shadow_task, asyncio.Task) and shadow_task.done():
+        if shadow_task.cancelled():
+            return fields
+        with contextlib.suppress(Exception):
+            task_shadow = shadow_task.result()
+            if isinstance(task_shadow, dict):
+                setattr(request_context, "_zhiyuan_agent_poc_shadow", task_shadow)
+    shadow = getattr(request_context, "_zhiyuan_agent_poc_shadow", None)
+    if isinstance(shadow, dict):
+        fields["zhiyuanAgentPocShadow"] = shadow
+    return fields
 
 
 async def _classify_turn_decision_cached(
@@ -6277,6 +6453,8 @@ async def _maybe_handle_runtime_intent_hard_cut(
                 primary_text,
                 model_name="runtime-intent-hard-cut",
                 turn_event=turn_event,
+                request_context=request_context,
+                user_id=user_id,
             )
             _log_conversation_turn_event(**turn_event)
             return ChatServiceResponseEnvelope(primary=primary_text, followups=[card])
@@ -6344,6 +6522,8 @@ async def _maybe_handle_runtime_intent_hard_cut(
                     reply_text,
                     model_name="needs-plan-first-atomic-action-guard",
                     turn_event=turn_event,
+                    request_context=request_context,
+                    user_id=user_id,
                 )
                 _log_conversation_turn_event(**turn_event)
                 return ChatServiceResponseEnvelope(primary=reply_text)
@@ -6508,6 +6688,8 @@ async def _maybe_handle_runtime_intent_hard_cut(
         primary_text,
         model_name="runtime-intent-hard-cut",
         turn_event=turn_event,
+        request_context=request_context,
+        user_id=user_id,
     )
     _log_conversation_turn_event(**turn_event)
     return ChatServiceResponseEnvelope(primary=primary_text, followups=[card])
@@ -6711,7 +6893,15 @@ def _summarize_tool_calls_for_observability(
         if call_id:
             item["toolCallId"] = call_id
 
-        action_family = str(args.get("action_family") or returned.get("action_family") or "").strip()
+        returned_data = returned.get("data") if isinstance(returned.get("data"), dict) else {}
+        returned_result = returned_data.get("result") if isinstance(returned_data.get("result"), dict) else {}
+        action_family = str(
+            args.get("action_family")
+            or returned.get("action_family")
+            or returned_data.get("action_family")
+            or returned_result.get("action_family")
+            or ""
+        ).strip()
         stage = str(args.get("current_stage") or returned.get("stage") or "").strip()
         if part.tool_name == "execute_plan_action":
             raw_payload = args.get("plan_payload")
@@ -6742,6 +6932,51 @@ def _summarize_tool_calls_for_observability(
 
         summarized.append(item)
     return summarized
+
+
+def _latest_confirm_pending_tool_result(
+    tool_calls: list[ToolCallPart],
+    tool_returns: list[ToolReturnPart],
+) -> dict[str, Any]:
+    returns_by_call_id: dict[str, dict[str, Any]] = {}
+    for part in tool_returns:
+        call_id = str(part.tool_call_id or "")
+        if not call_id:
+            continue
+        data = _parse_tool_return_json(part.content)
+        if data:
+            returns_by_call_id[call_id] = data
+    for part in reversed(tool_calls):
+        if str(part.tool_name or "") != "confirm_pending":
+            continue
+        result = returns_by_call_id.get(str(part.tool_call_id or ""))
+        return result if isinstance(result, dict) else {}
+    return {}
+
+
+def _direct_confirm_routing_path(confirm_result: dict[str, Any]) -> str:
+    data = confirm_result.get("data") if isinstance(confirm_result.get("data"), dict) else {}
+    if str(data.get("action") or "").strip() != "confirm":
+        return "zhiyuan_agent_direct"
+    kind = str(data.get("kind") or "").strip()
+    if kind == "plan_mutation":
+        return "direct_pending_plan_confirm"
+    if kind == "intent_change":
+        return "direct_pending_intent_confirm"
+    return "zhiyuan_agent_direct"
+
+
+def _direct_confirm_workspace_refresh_targets(confirm_result: dict[str, Any]) -> list[str]:
+    data = confirm_result.get("data") if isinstance(confirm_result.get("data"), dict) else {}
+    if str(data.get("action") or "").strip() != "confirm" or data.get("applied") is not True:
+        return []
+    kind = str(data.get("kind") or "").strip()
+    result = data.get("result") if isinstance(data.get("result"), dict) else {}
+    if kind in {"plan_mutation", "plan_generation"}:
+        return ["ordered", "review"]
+    if kind == "intent_change" and (result.get("has_plan") is True or result.get("plan_regenerated") is True):
+        return ["ordered", "review"]
+    return []
 
 
 def _summarize_full_agent_tool_trial(tool_names: list[str]) -> dict[str, Any]:
@@ -8785,33 +9020,6 @@ def _planning_summary_has_formal_plan(planning_summary: PlanningSummary | None) 
     )
 
 
-def _workspace_targets_allowed_by_planning_summary(
-    targets: list[str],
-    planning_summary: PlanningSummary | None,
-) -> list[str]:
-    """Filter workspace actions that require concrete current-plan evidence."""
-
-    if planning_summary is not None and _planning_summary_has_formal_plan(planning_summary):
-        return _dedupe_workspace_targets(targets)
-    return _dedupe_workspace_targets(
-        [target for target in targets if target not in {"ordered", "review"}]
-    )
-
-
-async def _post_apply_intent_workspace_targets(
-    session_id: str,
-    evidence_plan: dict[str, Any] | None,
-    fallback_targets: list[str] | None = None,
-) -> list[str]:
-    targets = _post_apply_evidence_workspace_targets(evidence_plan, fallback_targets)
-    if not targets:
-        return []
-    if isinstance(evidence_plan, dict):
-        return targets
-    post_apply_summary = await _load_post_apply_planning_summary(session_id)
-    return _workspace_targets_allowed_by_planning_summary(targets, post_apply_summary)
-
-
 def _workspace_targets_from_followups(followups: list[WSResponse]) -> set[str]:
     targets: set[str] = set()
     for item in followups:
@@ -8978,30 +9186,6 @@ def _append_pending_apply_then_readonly_result(
             return base
         return f"{base}\n\n{evidence_reply}"
     return _append_pending_apply_then_readonly_followup(reply, pending_state, evidence_plan)
-
-
-def _append_pending_apply_then_new_request_followup(
-    reply: str,
-    pending_state: dict[str, Any],
-) -> str:
-    kind = str((pending_state or {}).get("kind") or "").strip()
-    if kind == "intent_change":
-        followup = (
-            "已先采纳上一轮待采纳内容。你刚才还要求“基于这些出方案”，"
-            "下一步进入新的生成方案确认流程，确认后再正式生成；"
-            "这轮不会直接生成正式方案。"
-        )
-    else:
-        followup = (
-            "已先处理上一轮待确认内容。你刚才还提出了新的方案诉求，"
-            "下一步需要进入新的预览和确认流程；这轮不会直接执行新的方案动作。"
-        )
-    base = str(reply or "").strip()
-    if not base:
-        return followup
-    if followup in base:
-        return base
-    return f"{base}\n\n{followup}"
 
 
 def _append_pending_apply_then_readonly_followup(
@@ -9332,15 +9516,6 @@ def _pending_confirmation_type_mismatch_reply(active_kind: str, requested_kind: 
     if active_kind == "intent_change" and requested_kind == "plan_mutation":
         return "当前等待确认的是想法或报考条件更新，不是方案调整。如果要采纳这次内容，可以点“采纳”或只回复“确认”；如果要调整方案，请重新说明具体动作。"
     return "当前等待确认的内容和这次确认的对象不一致，请点最新内容里的按钮，或重新说明要确认的内容。"
-
-
-def _plan_confirmation_card_applied_reply(action_family: str, result: dict[str, Any]) -> str:
-    default_reply = "已按你的确认执行上一轮方案调整。"
-    return str(result.get("summary") or default_reply)
-
-
-def _plan_confirmation_apply_succeeded(result: dict[str, Any]) -> bool:
-    return bool(isinstance(result, dict) and result.get("applied") is True)
 
 
 def _readonly_closure_ack_reply() -> str:
@@ -10296,6 +10471,8 @@ async def _save_direct_guard_history(
     *,
     model_name: str,
     turn_event: dict[str, Any] | None = None,
+    request_context: RequestContext | None = None,
+    user_id: str = "",
 ) -> None:
     new_messages = [
         ModelRequest(parts=[UserPromptPart(content=content)]),
@@ -10303,7 +10480,15 @@ async def _save_direct_guard_history(
     ]
     try:
         history_to_save = list(history or [])
-        history_to_save.extend(_append_route_observability_message(new_messages, turn_event))
+        saved_messages = _append_turn_observability_messages(
+            new_messages,
+            turn_event,
+            request_context=request_context,
+            session_id=session_id,
+            user_id=user_id,
+            prompt_length=len(content or ""),
+        )
+        history_to_save.extend(saved_messages)
         await history_store.save(session_id, history_to_save)
     except Exception:
         logger.exception("Failed to save direct guard history: session_id=%s model=%s", session_id, model_name)
@@ -10927,11 +11112,12 @@ def _normalize_user_facing_terms(reply: str) -> str:
         ("点击卡片", "点“采纳”"),
         ("卡片采纳后", "采纳后"),
         ("卡片确认", "确认"),
-        ("硬性要求", "必须满足或必须避开的报考条件"),
-        ("硬要求", "必须满足或必须避开的报考条件"),
-        ("硬约束", "必须满足或必须避开的报考条件"),
+        ("硬性要求", "报考要求"),
+        ("硬要求", "报考要求"),
+        ("硬约束", "报考要求"),
         ("软偏好", "优先考虑的方向"),
         ("软意向", "优先考虑的方向"),
+        ("约束", "要求"),
         ("志愿组", "专业组"),
         ("加入画像", "记成后续报考参考"),
         ("纳入画像", "纳入后续报考参考"),
@@ -12904,6 +13090,325 @@ def _reply_looks_like_unbacked_plan_action_boundary(reply: str) -> bool:
     return proposal_compiler.runtime_reply_looks_like_unbacked_plan_action_boundary(reply)
 
 
+def _compact_zhiyuan_agent_poc_reply(reply: Any, *, limit: int = 500) -> str:
+    text = str(reply or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)] + "..."
+
+
+def _zhiyuan_agent_poc_next_steps(tool_returns: list[ToolReturnPart]) -> list[str]:
+    next_steps: list[str] = []
+    for part in tool_returns:
+        data = _parse_tool_return_json(part.content)
+        if not isinstance(data, dict):
+            continue
+        next_step = str(data.get("next_step") or "").strip()
+        if next_step and next_step not in next_steps:
+            next_steps.append(next_step)
+    return next_steps
+
+
+def _zhiyuan_agent_poc_first_tool_args(tool_calls: list[ToolCallPart]) -> dict[str, Any]:
+    if not tool_calls:
+        return {}
+    args = _parse_tool_call_args(tool_calls[0].args)
+    result: dict[str, Any] = {}
+    for key in ("intent_type", "topic_type", "scope", "path", "constraint_type"):
+        value = args.get(key)
+        if value not in (None, "", [], {}):
+            result[key] = value
+    if isinstance(args.get("positive"), dict) and args["positive"]:
+        result["positive"] = args["positive"]
+    if isinstance(args.get("negative"), dict) and args["negative"]:
+        result["negative"] = args["negative"]
+    if isinstance(args.get("filters"), dict) and args["filters"]:
+        result["filters"] = args["filters"]
+    return result
+
+
+def _summarize_zhiyuan_agent_poc_shadow(
+    *,
+    reply: Any,
+    messages: list[Any],
+    usage: Any,
+    duration_ms: int,
+) -> dict[str, Any]:
+    tool_calls = _iter_tool_call_parts(messages)
+    tool_returns = _iter_tool_return_parts(messages)
+    tool_names = [str(part.tool_name or "") for part in tool_calls if str(part.tool_name or "")]
+    return {
+        "enabled": True,
+        "status": "success",
+        "routingPath": "zhiyuan_agent_poc",
+        "firstToolNames": tool_names[:1],
+        "toolCallNames": tool_names,
+        "toolCallCount": getattr(usage, "tool_calls", None),
+        "llmRequests": getattr(usage, "requests", None),
+        "inputTokens": getattr(usage, "input_tokens", None),
+        "outputTokens": getattr(usage, "output_tokens", None),
+        "totalTokens": getattr(usage, "total_tokens", None),
+        "nextSteps": _zhiyuan_agent_poc_next_steps(tool_returns),
+        "firstToolArgs": _zhiyuan_agent_poc_first_tool_args(tool_calls),
+        "durationMs": duration_ms,
+        "replyPreview": _compact_zhiyuan_agent_poc_reply(reply),
+    }
+
+
+def _zhiyuan_agent_poc_shadow_error(exc: BaseException, *, duration_ms: int) -> dict[str, Any]:
+    return {
+        "enabled": True,
+        "status": "error",
+        "routingPath": "zhiyuan_agent_poc",
+        "durationMs": duration_ms,
+        "errorType": type(exc).__name__,
+        "errorMessage": _compact_zhiyuan_agent_poc_reply(str(exc), limit=240),
+    }
+
+
+def _zhiyuan_agent_direct_rollout_bucket(session_id: str, user_id: str = "") -> float:
+    seed = f"{session_id}:{user_id}".encode("utf-8", errors="ignore")
+    digest = hashlib.sha256(seed).hexdigest()[:8]
+    return int(digest, 16) % 10000 / 100.0
+
+
+def _score_available_for_zhiyuan_agent_direct(request_context: RequestContext) -> bool:
+    sandbox = getattr(request_context, "sandbox", None)
+    score = sandbox.peek("score.json") if sandbox is not None else None
+    if isinstance(score, dict):
+        return bool(
+            score.get("available")
+            and str(score.get("province") or "").strip()
+            and _as_int(score.get("total_score")) > 0
+        )
+    score_detail = getattr(request_context, "score_detail", None)
+    return bool(
+        score_detail is not None
+        and str(getattr(score_detail, "province", "") or "").strip()
+        and _as_int(getattr(score_detail, "total_score", 0)) > 0
+    )
+
+
+def _latest_direct_confirm_pending_payload(
+    messages: list[Any] | None,
+) -> tuple[dict[str, Any], str] | None:
+    for part in reversed(_iter_tool_return_parts(messages)):
+        tool_name = str(part.tool_name or "").strip()
+        payload = _parse_tool_return_json(part.content)
+        if not isinstance(payload, dict):
+            continue
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        if str(payload.get("next_step") or "").strip() != "confirm":
+            continue
+        if not data.get("pending_created"):
+            continue
+        pending_id = str(data.get("pending_id") or data.get("pendingId") or "").strip()
+        if not pending_id:
+            continue
+        return payload, tool_name
+    return None
+
+
+def _pending_id_from_tool_payload(payload: dict[str, Any] | None) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    return str(data.get("pending_id") or data.get("pendingId") or "").strip()
+
+
+def _pending_state_from_sandbox(
+    request_context: RequestContext,
+    *,
+    pending_id: str,
+) -> dict[str, Any] | None:
+    sandbox = getattr(request_context, "sandbox", None)
+    if sandbox is None:
+        return None
+    pending_file = sandbox.peek("pending.json")
+    if not isinstance(pending_file, dict):
+        return None
+    raw = pending_file.get("raw")
+    if not isinstance(raw, dict):
+        return None
+    if str(raw.get("status") or "").strip() != "active":
+        return None
+    raw_pending_id = str(raw.get("pendingId") or raw.get("pending_id") or "").strip()
+    if pending_id and raw_pending_id and raw_pending_id != pending_id:
+        return None
+    return raw
+
+
+def _clean_structured_pending_card_text(text: str) -> str:
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        return ""
+    cleaned = re.sub(r"[\s。；;，,]*(?:采纳/)?确认前不会生效[。.!！]*", "", cleaned).strip()
+    cleaned = re.sub(r"[\s。；;，,]*点[“\"]?采纳[”\"]?前不会生效[。.!！]*", "", cleaned).strip()
+    cleaned = re.sub(r"[\s。；;，,]*确认后我会执行这次方案调整[。.!！]*", "", cleaned).strip()
+    return cleaned
+
+
+def _build_structured_intent_pending_card(
+    session_id: str,
+    pending_state: dict[str, Any],
+    *,
+    fallback_summary: str = "",
+) -> WSResponse | None:
+    if not isinstance(pending_state, dict):
+        return None
+    pending_id = str(pending_state.get("pendingId") or pending_state.get("pending_id") or "").strip()
+    if not pending_id:
+        return None
+    if str(pending_state.get("kind") or "").strip() != "intent_change":
+        return None
+    execution_payload = pending_state.get("executionPayload")
+    if not isinstance(execution_payload, dict):
+        execution_payload = {}
+    selected_data = execution_payload.get("selectedData")
+    if not isinstance(selected_data, dict):
+        selected_data = {}
+    intent_mode = str(
+        execution_payload.get("intentMode")
+        or selected_data.get("intentMode")
+        or "constraint"
+    ).strip() or "constraint"
+    if intent_mode != "constraint":
+        intent_mode = "constraint"
+    constraint_intent_type = str(
+        execution_payload.get("constraintIntentType")
+        or execution_payload.get("constraint_intent_type")
+        or selected_data.get("constraintIntentType")
+        or selected_data.get("constraint_intent_type")
+        or "default"
+    ).strip() or "default"
+    summary = _clean_structured_pending_card_text(
+        str(pending_state.get("summary") or fallback_summary or "").strip()
+    )
+    if not summary:
+        merged = execution_payload.get("merged")
+        if isinstance(merged, dict):
+            summary = _clean_structured_pending_card_text(
+                _summarize_intent_values(
+                    merged,
+                    intent_mode=intent_mode,
+                    constraint_intent_type=constraint_intent_type,
+                )
+            )
+    if not summary:
+        summary = "本次选择的报考要求。"
+    impact_payload = execution_payload.get("merged") if isinstance(execution_payload.get("merged"), dict) else {}
+    if constraint_intent_type:
+        impact_payload = {
+            **impact_payload,
+            "constraintIntentType": constraint_intent_type,
+        }
+    payload = {
+        "type": "pendingConfirmationCard",
+        "pendingId": pending_id,
+        "kind": "intent_change",
+        "actionFamily": str(pending_state.get("actionFamily") or "apply_selected_intents").strip()
+        or "apply_selected_intents",
+        "intentMode": "constraint",
+        "title": "采纳这次报考条件",
+        "summary": summary,
+        "content": _format_intent_card_content(summary),
+        "constraintIntentType": constraint_intent_type,
+        "clickable": True,
+        "status": "active",
+        "confirmText": "采纳",
+        "cancelText": "暂不采纳",
+        "impactTitle": "采纳后的作用",
+        "impact": _format_intent_card_impact(
+            impact_payload,
+            intent_mode=intent_mode,
+        ),
+    }
+    return WSResponse(
+        type="pendingConfirmationCard",
+        session_id=session_id,
+        content=json.dumps(payload, ensure_ascii=False),
+    )
+
+
+def _build_structured_plan_pending_card(
+    session_id: str,
+    pending_state: dict[str, Any],
+    *,
+    fallback_summary: str = "",
+) -> WSResponse | None:
+    if not isinstance(pending_state, dict):
+        return None
+    pending_id = str(pending_state.get("pendingId") or pending_state.get("pending_id") or "").strip()
+    if not pending_id:
+        return None
+    kind = str(pending_state.get("kind") or "").strip()
+    if kind != "plan_mutation":
+        return None
+    action_family = str(pending_state.get("actionFamily") or pending_state.get("action_family") or "").strip()
+    summary = _clean_structured_pending_card_text(
+        str(pending_state.get("summary") or fallback_summary or "").strip()
+    )
+    affected_scope = _clean_structured_pending_card_text(
+        str(pending_state.get("affectedScope") or pending_state.get("affected_scope") or "").strip()
+    )
+    content = summary or affected_scope or "确认后会执行本次方案调整。"
+    if affected_scope and affected_scope not in content:
+        content = f"{content}\n\n影响范围：{affected_scope}"
+    title_by_action = {
+        "add_units": "确认加入方案",
+        "remove_units": "确认移出志愿",
+        "remove_ordered_unit": "确认移出志愿",
+        "replace_units": "确认替换志愿",
+        "move_unit": "确认移动志愿",
+        "move_ordered_unit": "确认移动志愿",
+        "sort_ordered_plan": "确认方案排序",
+        "regenerate_order": "确认重排方案",
+        "generate_plan": "确认生成方案",
+    }
+    payload = {
+        "type": "pendingConfirmationCard",
+        "pendingId": pending_id,
+        "kind": "plan_mutation",
+        "actionFamily": action_family,
+        "title": title_by_action.get(action_family) or "请确认本次方案调整",
+        "summary": summary or "确认后会执行本次方案调整。",
+        "content": content,
+        "impactTitle": "确认说明",
+        "impact": "确认前不会改动当前方案；点“确认执行”后才会按这次预览处理。",
+        "clickable": True,
+        "status": "active",
+        "confirmText": "确认执行",
+        "cancelText": "暂不执行",
+    }
+    return WSResponse(
+        type="pendingConfirmationCard",
+        session_id=session_id,
+        content=json.dumps(payload, ensure_ascii=False),
+    )
+
+
+def _build_structured_pending_card(
+    session_id: str,
+    pending_state: dict[str, Any],
+    *,
+    fallback_summary: str = "",
+) -> WSResponse | None:
+    kind = str((pending_state or {}).get("kind") or "").strip()
+    if kind == "intent_change":
+        return _build_structured_intent_pending_card(
+            session_id,
+            pending_state,
+            fallback_summary=fallback_summary,
+        )
+    if kind == "plan_mutation":
+        return _build_structured_plan_pending_card(
+            session_id,
+            pending_state,
+            fallback_summary=fallback_summary,
+        )
+    return None
+
+
 class ChatService:
     """会话管理 + Agent 编排。SQLite 持久化会话历史。"""
 
@@ -12929,6 +13434,21 @@ class ChatService:
     def __init__(self, llm_client: LLMClient, history_store: ChatHistoryStore):
         self.llm_client = llm_client
         self.agent = ChatAgent(llm_client)
+        self._zhiyuan_agent_poc_shadow_enabled = _env_bool("ZHIYUAN_AGENT_POC_SHADOW", False)
+        self._zhiyuan_agent_direct_enabled = _env_bool("ZHIYUAN_AGENT_ENABLED", False)
+        self._zhiyuan_agent_rollout_percent = min(
+            100.0,
+            max(0.0, _env_float("ZHIYUAN_AGENT_ROLLOUT_PERCENT", 0.0)),
+        )
+        self.zhiyuan_agent_poc: ZhiyuanAgent | None = (
+            ZhiyuanAgent(llm_client)
+            if (
+                self._zhiyuan_agent_poc_shadow_enabled
+                or self._zhiyuan_agent_direct_enabled
+                or self._zhiyuan_agent_rollout_percent > 0
+            )
+            else None
+        )
         self.history_store = history_store
         self.history_config = HistoryConfig()
         self._usage_trackers: dict[str, UsageTracker] = {}
@@ -12943,6 +13463,370 @@ class ChatService:
     def get_usage_tracker(self, session_id: str) -> UsageTracker | None:
         """获取指定 session 的 UsageTracker 实例。"""
         return self._usage_trackers.get(session_id)
+
+    async def _maybe_run_zhiyuan_agent_poc_shadow(
+        self,
+        *,
+        session_id: str,
+        user_id: str,
+        content: str,
+        request_context: RequestContext,
+        message_history: list[Any] | None,
+    ) -> dict[str, Any] | None:
+        if not self._zhiyuan_agent_poc_shadow_enabled or self.zhiyuan_agent_poc is None:
+            return None
+        if _ZHIYUAN_AGENT_POC_SHADOW_SAMPLE_RATE <= 0:
+            return None
+        if _ZHIYUAN_AGENT_POC_SHADOW_SAMPLE_RATE < 1.0 and random.random() >= _ZHIYUAN_AGENT_POC_SHADOW_SAMPLE_RATE:
+            shadow = {
+                "enabled": True,
+                "status": "sampled_out",
+                "routingPath": "zhiyuan_agent_poc",
+                "sampleRate": _ZHIYUAN_AGENT_POC_SHADOW_SAMPLE_RATE,
+            }
+            setattr(request_context, "_zhiyuan_agent_poc_shadow", shadow)
+            return shadow
+
+        shadow_context = replace(
+            request_context,
+            conversation_phase=(
+                request_context.conversation_phase.model_copy(deep=True)
+                if request_context.conversation_phase is not None
+                else None
+            ),
+            progress_callback=None,
+            agent_observability={},
+            allow_explore_inner_llm=False,
+            enable_intent_side_effect_arbitration=False,
+            dry_run_state_mutations=True,
+            sandbox=build_request_sandbox(
+                session_id=session_id,
+                batch=getattr(request_context, "batch", None),
+                score_detail=getattr(request_context, "score_detail", None),
+                init_profile=getattr(request_context, "init_profile", None),
+                planning_summary=getattr(request_context, "planning_summary", None),
+                pending=getattr(getattr(request_context, "conversation_phase", None), "pending", None),
+            ),
+        )
+
+        shadow = {
+            "enabled": True,
+            "status": "running",
+            "routingPath": "zhiyuan_agent_poc",
+            "sampleRate": _ZHIYUAN_AGENT_POC_SHADOW_SAMPLE_RATE,
+        }
+        setattr(request_context, "_zhiyuan_agent_poc_shadow", shadow)
+        task = asyncio.create_task(
+            self._run_zhiyuan_agent_poc_shadow_task(
+                session_id=session_id,
+                user_id=user_id,
+                content=content,
+                request_context=request_context,
+                shadow_context=shadow_context,
+                message_history=message_history,
+            )
+        )
+        setattr(request_context, "_zhiyuan_agent_poc_shadow_task", task)
+        return shadow
+
+    async def _run_zhiyuan_agent_poc_shadow_task(
+        self,
+        *,
+        session_id: str,
+        user_id: str,
+        content: str,
+        request_context: RequestContext,
+        shadow_context: RequestContext,
+        message_history: list[Any] | None,
+    ) -> dict[str, Any]:
+        if self.zhiyuan_agent_poc is None:
+            shadow = {
+                "enabled": True,
+                "status": "disabled",
+                "routingPath": "zhiyuan_agent_poc",
+            }
+            setattr(request_context, "_zhiyuan_agent_poc_shadow", shadow)
+            return shadow
+        started_at = time.monotonic()
+        try:
+            run_coro = self.zhiyuan_agent_poc.run_with_message_deltas(
+                user_prompt=content,
+                message_history=message_history,
+                deps=shadow_context,
+            )
+            if _ZHIYUAN_AGENT_POC_SHADOW_TIMEOUT_SECONDS > 0:
+                reply, new_messages, _all_messages, usage = await asyncio.wait_for(
+                    run_coro,
+                    timeout=_ZHIYUAN_AGENT_POC_SHADOW_TIMEOUT_SECONDS,
+                )
+            else:
+                reply, new_messages, _all_messages, usage = await run_coro
+            shadow = _summarize_zhiyuan_agent_poc_shadow(
+                reply=reply,
+                messages=new_messages,
+                usage=usage,
+                duration_ms=int((time.monotonic() - started_at) * 1000),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            shadow = _zhiyuan_agent_poc_shadow_error(
+                exc,
+                duration_ms=int((time.monotonic() - started_at) * 1000),
+            )
+            logger.warning(
+                "ZhiyuanAgent PoC shadow failed: session_id=%s error=%s",
+                session_id,
+                type(exc).__name__,
+                exc_info=not isinstance(exc, asyncio.TimeoutError),
+            )
+
+        setattr(request_context, "_zhiyuan_agent_poc_shadow", shadow)
+        _log_zhiyuan_agent_poc_shadow_event(
+            sessionId=session_id,
+            userId=user_id,
+            promptLength=len(content or ""),
+            shadow=shadow,
+        )
+        with contextlib.suppress(Exception):
+            await _append_zhiyuan_agent_poc_shadow_history(
+                self.history_store,
+                session_id=session_id,
+                user_id=user_id,
+                prompt_length=len(content or ""),
+                shadow=shadow,
+            )
+        return shadow
+
+    def _should_use_zhiyuan_agent_direct(self, *, session_id: str, user_id: str) -> bool:
+        if bool(getattr(self, "_zhiyuan_agent_direct_enabled", False)):
+            return True
+        rollout_percent = float(getattr(self, "_zhiyuan_agent_rollout_percent", 0.0) or 0.0)
+        if rollout_percent <= 0:
+            return False
+        return _zhiyuan_agent_direct_rollout_bucket(session_id, user_id) < rollout_percent
+
+    async def _pending_state_for_direct_card(
+        self,
+        *,
+        session_id: str,
+        request_context: RequestContext,
+        pending_id: str,
+    ) -> dict[str, Any] | None:
+        pending_state = _pending_state_from_sandbox(request_context, pending_id=pending_id)
+        if isinstance(pending_state, dict):
+            return pending_state
+        pending_state = await _load_pending_confirmation_state(session_id)
+        if not isinstance(pending_state, dict):
+            return None
+        if str(pending_state.get("status") or "").strip() != "active":
+            return None
+        loaded_pending_id = str(pending_state.get("pendingId") or pending_state.get("pending_id") or "").strip()
+        if pending_id and loaded_pending_id and pending_id != loaded_pending_id:
+            return None
+        return pending_state
+
+    async def _maybe_handle_zhiyuan_agent_direct_route(
+        self,
+        *,
+        session_id: str,
+        user_id: str,
+        content: str,
+        history: list[Any] | None,
+        request_context: RequestContext,
+        message_history: list[Any] | None,
+        turn_started_at: float,
+        on_progress: ProgressCallback | None,
+    ) -> str | ChatServiceResponseEnvelope | None:
+        if not self._should_use_zhiyuan_agent_direct(session_id=session_id, user_id=user_id):
+            return None
+        if self.zhiyuan_agent_poc is None:
+            return None
+        if not _score_available_for_zhiyuan_agent_direct(request_context):
+            return None
+
+        direct_started_at = time.monotonic()
+        try:
+            run_coro = self.zhiyuan_agent_poc.run_with_message_deltas(
+                user_prompt=content,
+                message_history=message_history,
+                deps=request_context,
+                on_progress=on_progress,
+            )
+            if _ZHIYUAN_AGENT_DIRECT_TIMEOUT_SECONDS > 0:
+                reply, new_messages, all_messages, usage = await asyncio.wait_for(
+                    run_coro,
+                    timeout=_ZHIYUAN_AGENT_DIRECT_TIMEOUT_SECONDS,
+                )
+            else:
+                reply, new_messages, all_messages, usage = await run_coro
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            total_duration_ms = int((time.monotonic() - turn_started_at) * 1000)
+            safe_reply = "这轮处理没有完成，请稍后重试。没有明确确认前，不会改动报考条件或方案。"
+            new_messages = [
+                ModelRequest(parts=[UserPromptPart(content=content)]),
+                ModelResponse(parts=[TextPart(content=safe_reply)], model_name="zhiyuan-agent-direct-error"),
+            ]
+            turn_event = {
+                "sessionId": session_id,
+                "userId": user_id,
+                "scene": "unknown",
+                "routingPath": "zhiyuan_agent_direct",
+                "routeDecision": {
+                    "source": "zhiyuan_agent",
+                    "matched": True,
+                    "route": "direct",
+                    "error": type(exc).__name__,
+                },
+                "pendingType": None,
+                "actionFamily": None,
+                "modelProvider": _llm_config_value(self.llm_client, "provider"),
+                "modelName": _llm_config_value(self.llm_client, "model_name"),
+                "totalDurationMs": total_duration_ms,
+                "directAgentDurationMs": int((time.monotonic() - direct_started_at) * 1000),
+                **_observability_timing_fields(request_context),
+                "toolCalls": [],
+                "postProcessingApplied": ["zhiyuan_agent_direct"],
+                "status": "error",
+                "errorType": type(exc).__name__,
+            }
+            _log_conversation_turn_event(**turn_event)
+            try:
+                history_to_save = list(history or [])
+                history_to_save.extend(
+                    _append_turn_observability_messages(
+                        new_messages,
+                        turn_event,
+                        request_context=request_context,
+                        session_id=session_id,
+                        user_id=user_id,
+                        prompt_length=len(content or ""),
+                    )
+                )
+                await self.history_store.save(session_id, history_to_save)
+            except Exception:
+                logger.exception("Failed to save ZhiyuanAgent direct error history: session_id=%s", session_id)
+            logger.warning(
+                "ZhiyuanAgent direct route failed: session_id=%s error=%s",
+                session_id,
+                type(exc).__name__,
+                exc_info=not isinstance(exc, asyncio.TimeoutError),
+            )
+            return safe_reply
+
+        tracker = self._usage_trackers.get(session_id)
+        if tracker is None:
+            tracker = UsageTracker(session_id=session_id)
+            self._usage_trackers[session_id] = tracker
+        tracker.record(usage)
+
+        pending_card: WSResponse | None = None
+        pending_state: dict[str, Any] | None = None
+        pending_payload_info = _latest_direct_confirm_pending_payload(new_messages)
+        pending_tool_name = ""
+        if pending_payload_info is not None:
+            pending_payload, pending_tool_name = pending_payload_info
+            pending_id = _pending_id_from_tool_payload(pending_payload)
+            pending_state = await self._pending_state_for_direct_card(
+                session_id=session_id,
+                request_context=request_context,
+                pending_id=pending_id,
+            )
+            if isinstance(pending_state, dict):
+                pending_card = _build_structured_pending_card(
+                    session_id,
+                    pending_state,
+                    fallback_summary=str(pending_payload.get("message") or ""),
+                )
+
+        final_reply = str(reply or "").strip()
+        if pending_card is not None:
+            primary_from_card = _pending_confirmation_primary_reply_from_card(pending_card)
+            use_card_primary = final_reply in {"", "已完成处理。", "已完成处理"}
+            if primary_from_card and use_card_primary:
+                if final_reply:
+                    _replace_text_reply(new_messages, final_reply, primary_from_card)
+                    _replace_text_reply(all_messages, final_reply, primary_from_card)
+                final_reply = primary_from_card
+        final_reply = _sanitize_reply_for_user(final_reply or "已完成处理。")
+
+        tool_calls = _iter_tool_call_parts(new_messages)
+        tool_returns = _iter_tool_return_parts(new_messages)
+        observed_tool_calls = _summarize_tool_calls_for_observability(tool_calls, tool_returns)
+        confirm_pending_result = _latest_confirm_pending_tool_result(tool_calls, tool_returns)
+        direct_routing_path = _direct_confirm_routing_path(confirm_pending_result)
+        direct_workspace_refresh_targets = _direct_confirm_workspace_refresh_targets(confirm_pending_result)
+        pending_kind = str((pending_state or {}).get("kind") or "").strip()
+        if not pending_kind and isinstance(confirm_pending_result.get("data"), dict):
+            pending_kind = str(confirm_pending_result["data"].get("kind") or "").strip()
+        action_family = str((pending_state or {}).get("actionFamily") or "").strip() or None
+        if not action_family and isinstance(confirm_pending_result.get("data"), dict):
+            action_family = str(confirm_pending_result["data"].get("action_family") or "").strip() or None
+        scene = "plan" if pending_kind == "plan_mutation" else "intent" if pending_kind == "intent_change" else "unknown"
+        total_duration_ms = int((time.monotonic() - turn_started_at) * 1000)
+        turn_event = {
+            "sessionId": session_id,
+            "userId": user_id,
+            "scene": scene,
+            "routingPath": direct_routing_path,
+            "routeDecision": {
+                "source": "zhiyuan_agent",
+                "matched": True,
+                "route": "direct_confirm_pending" if direct_routing_path != "zhiyuan_agent_direct" else "direct",
+                "firstToolNames": [part.tool_name for part in tool_calls[:1]],
+                "confirmToolName": pending_tool_name or None,
+                "agentRun": dict(getattr(request_context, "agent_observability", {}) or {}),
+            },
+            "pendingType": "plan" if pending_kind == "plan_mutation" else "intent" if pending_kind == "intent_change" else None,
+            "actionFamily": action_family,
+            "modelProvider": _llm_config_value(self.llm_client, "provider"),
+            "modelName": _llm_config_value(self.llm_client, "model_name"),
+            "llmRequests": getattr(usage, "requests", None),
+            "inputTokens": getattr(usage, "input_tokens", None),
+            "outputTokens": getattr(usage, "output_tokens", None),
+            "totalTokens": getattr(usage, "total_tokens", None),
+            "toolCallCount": getattr(usage, "tool_calls", None),
+            "totalDurationMs": total_duration_ms,
+            "directAgentDurationMs": int((time.monotonic() - direct_started_at) * 1000),
+            **_observability_timing_fields(request_context),
+            "toolCalls": observed_tool_calls,
+            "postProcessingApplied": ["zhiyuan_agent_direct"],
+            "status": "success",
+            "errorType": None,
+        }
+        _log_conversation_turn_event(**turn_event)
+        try:
+            history_to_save = list(history or [])
+            history_to_save.extend(
+                _append_turn_observability_messages(
+                    list(new_messages),
+                    turn_event,
+                    request_context=request_context,
+                    session_id=session_id,
+                    user_id=user_id,
+                    prompt_length=len(content or ""),
+                )
+            )
+            await self.history_store.save(session_id, history_to_save)
+        except Exception:
+            logger.exception("Failed to save ZhiyuanAgent direct history: session_id=%s", session_id)
+
+        if pending_card is not None:
+            return ChatServiceResponseEnvelope(
+                primary=final_reply,
+                followups=[pending_card],
+            )
+        if direct_workspace_refresh_targets:
+            return ChatServiceResponseEnvelope(
+                primary=final_reply,
+                followups=[
+                    _build_silent_workspace_refresh_response(session_id, target)
+                    for target in _dedupe_workspace_targets(direct_workspace_refresh_targets)
+                ],
+            )
+        return final_reply
 
     async def _execute_semantic_plan_payload(
         self,
@@ -13094,6 +13978,8 @@ class ChatService:
             reply,
             model_name="profile-change-replan-state-query",
             turn_event=turn_event,
+            request_context=request_context,
+            user_id=user_id,
         )
         return reply
 
@@ -13200,7 +14086,16 @@ class ChatService:
         _log_conversation_turn_event(**turn_event)
         try:
             history_to_save = list(history or [])
-            history_to_save.extend(_append_route_observability_message(new_messages, turn_event))
+            history_to_save.extend(
+                _append_turn_observability_messages(
+                    new_messages,
+                    turn_event,
+                    request_context=request_context,
+                    session_id=session_id,
+                    user_id=user_id,
+                    prompt_length=len(content or ""),
+                )
+            )
             await self.history_store.save(session_id, history_to_save)
         except Exception:
             logger.exception("Failed to save pending readonly plan query history: session_id=%s", session_id)
@@ -13312,7 +14207,16 @@ class ChatService:
         _log_conversation_turn_event(**turn_event)
         try:
             history_to_save = list(history or [])
-            history_to_save.extend(_append_route_observability_message(new_messages, turn_event))
+            history_to_save.extend(
+                _append_turn_observability_messages(
+                    new_messages,
+                    turn_event,
+                    request_context=request_context,
+                    session_id=session_id,
+                    user_id=user_id,
+                    prompt_length=len(content or ""),
+                )
+            )
             await self.history_store.save(session_id, history_to_save)
         except Exception:
             logger.exception("Failed to save direct readonly plan slice query history: session_id=%s", session_id)
@@ -13393,7 +14297,16 @@ class ChatService:
             _log_conversation_turn_event(**turn_event)
             try:
                 history_to_save = list(history or [])
-                history_to_save.extend(_append_route_observability_message(new_messages, turn_event))
+                history_to_save.extend(
+                    _append_turn_observability_messages(
+                        new_messages,
+                        turn_event,
+                        request_context=request_context,
+                        session_id=session_id,
+                        user_id=user_id,
+                        prompt_length=len(content or ""),
+                    )
+                )
                 await self.history_store.save(session_id, history_to_save)
             except Exception:
                 logger.exception("Failed to save direct local unsupported plan action history: session_id=%s", session_id)
@@ -13496,7 +14409,16 @@ class ChatService:
         _log_conversation_turn_event(**turn_event)
         try:
             history_to_save = list(history or [])
-            history_to_save.extend(_append_route_observability_message(new_messages, turn_event))
+            history_to_save.extend(
+                _append_turn_observability_messages(
+                    new_messages,
+                    turn_event,
+                    request_context=request_context,
+                    session_id=session_id,
+                    user_id=user_id,
+                    prompt_length=len(content or ""),
+                )
+            )
             await self.history_store.save(session_id, history_to_save)
         except Exception:
             logger.exception("Failed to save direct local plan action history: session_id=%s", session_id)
@@ -13736,7 +14658,16 @@ class ChatService:
         _log_conversation_turn_event(**turn_event)
         try:
             history_to_save = list(history or [])
-            history_to_save.extend(_append_route_observability_message(new_messages, turn_event))
+            history_to_save.extend(
+                _append_turn_observability_messages(
+                    new_messages,
+                    turn_event,
+                    request_context=request_context,
+                    session_id=session_id,
+                    user_id=user_id,
+                    prompt_length=len(content or ""),
+                )
+            )
             await self.history_store.save(session_id, history_to_save)
         except Exception:
             logger.exception("Failed to save direct atomic plan action history: session_id=%s", session_id)
@@ -13907,7 +14838,16 @@ class ChatService:
         _log_conversation_turn_event(**turn_event)
         try:
             history_to_save = list(history or [])
-            history_to_save.extend(_append_route_observability_message(reroute.messages, turn_event))
+            history_to_save.extend(
+                _append_turn_observability_messages(
+                    reroute.messages,
+                    turn_event,
+                    request_context=request_context,
+                    session_id=session_id,
+                    user_id=user_id,
+                    prompt_length=len(content or ""),
+                )
+            )
             await self.history_store.save(session_id, history_to_save)
         except Exception:
             logger.exception("Failed to save runtime intent profile plan reroute history: session_id=%s", session_id)
@@ -14051,7 +14991,16 @@ class ChatService:
             _log_conversation_turn_event(**turn_event)
             try:
                 history_to_save = list(history or [])
-                history_to_save.extend(_append_route_observability_message(new_messages, turn_event))
+                history_to_save.extend(
+                    _append_turn_observability_messages(
+                        new_messages,
+                        turn_event,
+                        request_context=request_context,
+                        session_id=session_id,
+                        user_id=user_id,
+                        prompt_length=len(content or ""),
+                    )
+                )
                 await self.history_store.save(session_id, history_to_save)
             except Exception:
                 logger.exception("Failed to save profile change replan history: session_id=%s", session_id)
@@ -14442,7 +15391,16 @@ class ChatService:
 
         try:
             history_to_save = list(history or [])
-            history_to_save.extend(_append_route_observability_message(new_messages, turn_event))
+            history_to_save.extend(
+                _append_turn_observability_messages(
+                    new_messages,
+                    turn_event,
+                    request_context=request_context,
+                    session_id=session_id,
+                    user_id=user_id,
+                    prompt_length=len(content or ""),
+                )
+            )
             await self.history_store.save(session_id, history_to_save)
         except Exception:
             logger.exception("Failed to save semantic plan action history: session_id=%s", session_id)
@@ -14577,7 +15535,16 @@ class ChatService:
         _log_conversation_turn_event(**turn_event)
         try:
             history_to_save = list(history or [])
-            history_to_save.extend(_append_route_observability_message(new_messages, turn_event))
+            history_to_save.extend(
+                _append_turn_observability_messages(
+                    new_messages,
+                    turn_event,
+                    request_context=request_context,
+                    session_id=session_id,
+                    user_id=user_id,
+                    prompt_length=len(content or ""),
+                )
+            )
             await self.history_store.save(session_id, history_to_save)
         except Exception:
             logger.exception("Failed to save TurnDecision profile change replan history: session_id=%s", session_id)
@@ -14939,9 +15906,10 @@ class ChatService:
         )
 
         # 获取用户成绩详情
-        parsed_score_detail = None
+        parsed_score_detail = _coerce_score_detail(score_detail)
         parsed_init_profile = None
         parsed_planning_summary = None
+        planning_data: dict[str, Any] | None = None
         score_response = None
         init_response = None
         planning_response = None
@@ -15059,6 +16027,16 @@ class ChatService:
             score_detail=parsed_score_detail,
             init_profile=parsed_init_profile,
             planning_summary=parsed_planning_summary,
+            sandbox=build_request_sandbox(
+                session_id=session_id,
+                batch=batch,
+                score_detail=parsed_score_detail,
+                init_profile=parsed_init_profile,
+                planning_state=planning_data if isinstance(planning_data, dict) else None,
+                planning_summary=parsed_planning_summary,
+                pending_state=backend_pending_state if isinstance(backend_pending_state, dict) else None,
+                pending=backend_pending,
+            ),
             conversation_phase=conversation_phase,
             progress_callback=on_progress,
             allow_explore_inner_llm=False,
@@ -15071,8 +16049,29 @@ class ChatService:
         )
         active_pending = resolve_pending_confirmation(request_context)
         active_pending_kind = str(getattr(active_pending, "kind", "") or "").strip()
-        active_plan_payload_text = resolve_pending_plan_payload_text(request_context)
+        if request_context.sandbox is not None:
+            await request_context.sandbox.warm(DEFAULT_WARM_PATHS)
         request_context_build_duration_ms = int((time.monotonic() - request_context_build_started_at) * 1000)
+        await self._maybe_run_zhiyuan_agent_poc_shadow(
+            session_id=session_id,
+            user_id=user_id,
+            content=content,
+            request_context=request_context,
+            message_history=runtime_history.model_history,
+        )
+        zhiyuan_agent_direct_reply = await self._maybe_handle_zhiyuan_agent_direct_route(
+            session_id=session_id,
+            user_id=user_id,
+            content=content,
+            history=history if isinstance(history, list) else None,
+            request_context=request_context,
+            message_history=runtime_history.model_history,
+            turn_started_at=turn_started_at,
+            on_progress=on_progress,
+        )
+        if zhiyuan_agent_direct_reply is not None:
+            await finish_context_progress()
+            return zhiyuan_agent_direct_reply
         guard_pipeline_started_at = time.monotonic()
 
         async def runtime_intent_profile_plan_reroute(
@@ -15250,6 +16249,8 @@ class ChatService:
                     reply,
                     model_name="pending-conflict-new-request-guard",
                     turn_event=turn_event,
+                    request_context=request_context,
+                    user_id=user_id,
                 )
                 _log_conversation_turn_event(**turn_event)
                 await finish_context_progress()
@@ -15289,6 +16290,8 @@ class ChatService:
                     reply,
                     model_name="pending-readonly-impact",
                     turn_event=turn_event,
+                    request_context=request_context,
+                    user_id=user_id,
                 )
                 _log_conversation_turn_event(**turn_event)
                 await finish_context_progress()
@@ -15345,6 +16348,8 @@ class ChatService:
                     reply,
                     model_name="no-formal-plan-review-boundary",
                     turn_event=turn_event,
+                    request_context=request_context,
+                    user_id=user_id,
                 )
                 _log_conversation_turn_event(**turn_event)
                 await finish_context_progress()
@@ -15389,6 +16394,8 @@ class ChatService:
                 content,
                 reply,
                 model_name="no-pending-confirmation-guard",
+                request_context=request_context,
+                user_id=user_id,
             )
             _log_conversation_turn_event(
                 sessionId=session_id,
@@ -15439,6 +16446,8 @@ class ChatService:
                     reply,
                     model_name="no-formal-plan-review-boundary",
                     turn_event=turn_event,
+                    request_context=request_context,
+                    user_id=user_id,
                 )
                 _log_conversation_turn_event(**turn_event)
                 await finish_context_progress()
@@ -15483,6 +16492,8 @@ class ChatService:
                     reply,
                     model_name="needs-plan-first-guard",
                     turn_event=turn_event,
+                    request_context=request_context,
+                    user_id=user_id,
                 )
                 _log_conversation_turn_event(**turn_event)
                 await finish_context_progress()
@@ -15710,9 +16721,13 @@ class ChatService:
             with contextlib.suppress(Exception, asyncio.CancelledError):
                 failed_history = list(history or [])
                 failed_history.extend(
-                    _append_route_observability_message(
+                    _append_turn_observability_messages(
                         [ModelRequest(parts=[UserPromptPart(content=content)])],
                         turn_event,
+                        request_context=request_context,
+                        session_id=session_id,
+                        user_id=user_id,
+                        prompt_length=len(content or ""),
                     )
                 )
                 await self.history_store.save(session_id, failed_history)
@@ -15760,7 +16775,15 @@ class ChatService:
                     with contextlib.suppress(Exception, asyncio.CancelledError):
                         await self.history_store.save(
                             session_id,
-                            list(history or []) + _append_route_observability_message(recovery_messages, turn_event),
+                            list(history or [])
+                            + _append_turn_observability_messages(
+                                recovery_messages,
+                                turn_event,
+                                request_context=request_context,
+                                session_id=session_id,
+                                user_id=user_id,
+                                prompt_length=len(content or ""),
+                            ),
                         )
                     if context_progress_task is not None:
                         context_progress_task.cancel()
@@ -15788,7 +16811,15 @@ class ChatService:
                     with contextlib.suppress(Exception, asyncio.CancelledError):
                         await self.history_store.save(
                             session_id,
-                            list(history or []) + _append_route_observability_message(recovery_messages, turn_event),
+                            list(history or [])
+                            + _append_turn_observability_messages(
+                                recovery_messages,
+                                turn_event,
+                                request_context=request_context,
+                                session_id=session_id,
+                                user_id=user_id,
+                                prompt_length=len(content or ""),
+                            ),
                         )
                     if context_progress_task is not None:
                         context_progress_task.cancel()
@@ -15806,7 +16837,15 @@ class ChatService:
                 with contextlib.suppress(Exception, asyncio.CancelledError):
                     await self.history_store.save(
                         session_id,
-                        list(history or []) + _append_route_observability_message(recovery_messages, turn_event),
+                        list(history or [])
+                        + _append_turn_observability_messages(
+                            recovery_messages,
+                            turn_event,
+                            request_context=request_context,
+                            session_id=session_id,
+                            user_id=user_id,
+                            prompt_length=len(content or ""),
+                        ),
                     )
                 if context_progress_task is not None:
                     context_progress_task.cancel()
@@ -15832,7 +16871,15 @@ class ChatService:
                 with contextlib.suppress(Exception, asyncio.CancelledError):
                     await self.history_store.save(
                         session_id,
-                        list(history or []) + _append_route_observability_message(fallback_messages, turn_event),
+                        list(history or [])
+                        + _append_turn_observability_messages(
+                            fallback_messages,
+                            turn_event,
+                            request_context=request_context,
+                            session_id=session_id,
+                            user_id=user_id,
+                            prompt_length=len(content or ""),
+                        ),
                     )
                 if context_progress_task is not None:
                     context_progress_task.cancel()
@@ -17173,19 +18220,49 @@ class ChatService:
         try:
             history_to_save = list(history or [])
             if history_to_save and new_messages:
-                history_to_save.extend(_append_route_observability_message(new_messages, turn_event))
+                history_to_save.extend(
+                    _append_turn_observability_messages(
+                        new_messages,
+                        turn_event,
+                        request_context=request_context,
+                        session_id=session_id,
+                        user_id=user_id,
+                        prompt_length=len(content or ""),
+                    )
+                )
             elif new_messages:
-                history_to_save = _append_route_observability_message(list(new_messages), turn_event)
+                history_to_save = _append_turn_observability_messages(
+                    list(new_messages),
+                    turn_event,
+                    request_context=request_context,
+                    session_id=session_id,
+                    user_id=user_id,
+                    prompt_length=len(content or ""),
+                )
             else:
                 runtime_len = len(runtime_history.model_history or [])
                 inferred_new_messages = list(all_messages[runtime_len:]) if len(all_messages) >= runtime_len else []
-                inferred_new_messages = _append_route_observability_message(inferred_new_messages, turn_event)
+                inferred_new_messages = _append_turn_observability_messages(
+                    inferred_new_messages,
+                    turn_event,
+                    request_context=request_context,
+                    session_id=session_id,
+                    user_id=user_id,
+                    prompt_length=len(content or ""),
+                )
                 if history_to_save and inferred_new_messages:
                     history_to_save.extend(inferred_new_messages)
                 elif inferred_new_messages:
                     history_to_save = inferred_new_messages
                 elif not history_to_save:
-                    history_to_save = _append_route_observability_message(list(all_messages), turn_event)
+                    history_to_save = _append_turn_observability_messages(
+                        list(all_messages),
+                        turn_event,
+                        request_context=request_context,
+                        session_id=session_id,
+                        user_id=user_id,
+                        prompt_length=len(content or ""),
+                    )
 
             await self.history_store.save(session_id, history_to_save)
         except Exception:
@@ -17373,6 +18450,192 @@ class ChatService:
             compiled_sink_metadata=compiled_sink_metadata,
         )
 
+    async def _handle_structured_pending_confirmation(
+        self,
+        *,
+        session_id: str,
+        user_id: str,
+        pending_state: dict[str, Any],
+        pending_id: str,
+        message_id: Any,
+        confirmation_entry: str,
+        user_prompt_content: str | None,
+        confirmation_history: list[Any] | None,
+        turn_started_at: float,
+        post_apply_intent: str,
+        post_apply_evidence_plan: dict[str, Any] | None,
+        emit_pending_event: Callable[..., None],
+    ) -> str | ChatServiceResponseEnvelope | None:
+        execution_payload = pending_state.get("executionPayload")
+        if not isinstance(execution_payload, dict):
+            return None
+        action_family = str(pending_state.get("actionFamily") or "").strip()
+        tool_name = str(execution_payload.get("toolName") or "").strip()
+        active_pending = _pending_confirmation_from_state(pending_state)
+        if active_pending is None:
+            return None
+        if active_pending.kind == "plan_mutation":
+            if action_family == "apply_fix_proposal" or tool_name == "apply_planning_fix_proposal":
+                return None
+
+        workspace_data: dict[str, Any] | None = None
+        parsed_planning_summary: PlanningSummary | None = None
+        try:
+            workspace_response = await get_planning_workspace_state(session_id)
+        except Exception:
+            logger.warning(
+                "Failed to fetch workspace before structured pending confirmation: session_id=%s",
+                session_id,
+                exc_info=True,
+            )
+            workspace_response = None
+        if isinstance(workspace_response, dict) and workspace_response.get("code") == 0:
+            raw_workspace = workspace_response.get("data")
+            if isinstance(raw_workspace, dict):
+                workspace_data = raw_workspace
+                parsed_planning_summary = PlanningSummary.from_backend_state(workspace_data)
+
+        conversation_phase = ConversationPhase.from_pending_confirmation(
+            active_pending,
+            planning_summary=parsed_planning_summary,
+        )
+        request_context = RequestContext(
+            userid=user_id,
+            sessionid=session_id,
+            chat_history=[],
+            batch=str(execution_payload.get("batch") or "01"),
+            planning_summary=parsed_planning_summary,
+            sandbox=build_request_sandbox(
+                session_id=session_id,
+                batch=str(execution_payload.get("batch") or "01"),
+                planning_state=workspace_data,
+                planning_summary=parsed_planning_summary,
+                pending_state=pending_state,
+                pending=active_pending,
+            ),
+            conversation_phase=conversation_phase,
+            allow_explore_inner_llm=False,
+            confirmed_via_card=confirmation_entry == "card",
+            confirmed_via_pending=True,
+            confirmation_entry=confirmation_entry,
+        )
+
+        result_text = await zhiyuan_agent_confirm_pending(
+            SimpleNamespace(deps=request_context),
+            action="confirm",
+        )
+        result = _parse_tool_return_json(result_text) or {}
+        result_data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        apply_result = result_data.get("result") if isinstance(result_data.get("result"), dict) else {}
+        applied = bool(result_data.get("applied"))
+        reply = str(result.get("message") or "").strip() or (
+            "已执行这次方案调整。" if applied else "这次方案调整没有执行成功，请重新生成预览后再确认。"
+        )
+        if post_apply_intent == "apply_pending_then_readonly" and applied:
+            post_apply_planning_summary = await _load_post_apply_planning_summary(session_id)
+            reply = _append_pending_apply_then_readonly_result(
+                reply,
+                pending_state,
+                post_apply_evidence_plan,
+                post_apply_planning_summary,
+            )
+        reply = _sanitize_reply_for_user(reply)
+
+        await _mark_pending_confirmation_message_status(
+            session_id,
+            message_id,
+            pending_id=pending_id,
+            status="applied" if applied else "expired",
+        )
+
+        result_code = (
+            "applied"
+            if applied
+            else str(apply_result.get("reason") or result_data.get("error") or "structured_pending_apply_failed")
+        )
+        emit_pending_event(
+            result="applied" if applied else "failed",
+            result_code=result_code,
+        )
+
+        pending_type = "intent" if active_pending.kind == "intent_change" else "plan"
+        scene = pending_type
+        tool_call_id = f"{confirmation_entry}-{action_family or pending_type}-structured-confirm"
+        new_messages = [
+            ModelRequest(parts=[UserPromptPart(content=user_prompt_content or "[待确认内容]")]),
+            ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="confirm_pending",
+                        args={"action": "confirm"},
+                        tool_call_id=tool_call_id,
+                    )
+                ],
+                model_name=f"pending-confirmation-{confirmation_entry}",
+            ),
+            ModelRequest(
+                parts=[
+                    ToolReturnPart(
+                        tool_name="confirm_pending",
+                        content=result_text,
+                        tool_call_id=tool_call_id,
+                    )
+                ]
+            ),
+            ModelResponse(parts=[TextPart(content=reply)], model_name=f"pending-confirmation-{confirmation_entry}"),
+        ]
+        turn_event = _pending_apply_turn_event(
+            session_id=session_id,
+            user_id=user_id,
+            scene=scene,
+            routing_path=(
+                f"pending_{pending_type}_structured_short_text_confirm"
+                if confirmation_entry == "short_text"
+                else f"{pending_type}_structured_confirmation_card_confirm"
+            ),
+            pending_type=pending_type,
+            action_family=action_family,
+            started_at=turn_started_at,
+            status="success" if applied else "error",
+            error_type=None if applied else result_code,
+            post_apply_evidence_plan=post_apply_evidence_plan if applied else None,
+        )
+        try:
+            history = confirmation_history if confirmation_history is not None else await self.history_store.load(session_id) or []
+            history_to_save = list(history)
+            history_to_save.extend(
+                _append_turn_observability_messages(
+                    new_messages,
+                    turn_event,
+                    request_context=request_context,
+                    session_id=session_id,
+                    user_id=user_id,
+                    prompt_length=len(user_prompt_content or ""),
+                )
+            )
+            await self.history_store.save(session_id, history_to_save)
+        except Exception:
+            logger.exception("Failed to save structured pending confirmation history: session_id=%s", session_id)
+
+        _log_conversation_turn_event(**turn_event)
+
+        followups: list[WSResponse] = []
+        if applied:
+            if active_pending.kind == "intent_change":
+                fallback_targets = ["ordered", "review"]
+            elif action_family in {"add_units", "replace_units"}:
+                fallback_targets = ["ordered", "candidate", "review"]
+            else:
+                fallback_targets = ["ordered", "review"]
+            for target in _post_apply_evidence_workspace_targets(
+                post_apply_evidence_plan,
+                fallback_targets,
+            ):
+                followups.append(_build_silent_workspace_refresh_response(session_id, target))
+        if followups:
+            return ChatServiceResponseEnvelope(primary=reply, followups=followups)
+        return reply
+
     async def handle_pending_confirmation(
         self,
         session_id: str,
@@ -17492,192 +18755,28 @@ class ChatService:
                 emit_pending_event(result="blocked", result_code=blocked_reason)
                 return reply
 
+        if active_kind not in {"intent_change", "plan_mutation"}:
+            return "这类待采纳内容暂时还不能在这里处理，请刷新后重试。"
+
+        structured_pending_reply = await self._handle_structured_pending_confirmation(
+            session_id=session_id,
+            user_id=user_id,
+            pending_state=pending_state,
+            pending_id=pending_id,
+            message_id=message_id,
+            confirmation_entry=confirmation_entry,
+            user_prompt_content=user_prompt_content,
+            confirmation_history=confirmation_history,
+            turn_started_at=turn_started_at,
+            post_apply_intent=post_apply_intent,
+            post_apply_evidence_plan=post_apply_evidence_plan,
+            emit_pending_event=emit_pending_event,
+        )
+        if structured_pending_reply is not None:
+            return structured_pending_reply
         if active_kind == "intent_change":
-            execution_payload = pending_state.get("executionPayload")
-            if not isinstance(execution_payload, dict):
-                return "这次待采纳内容缺少可执行内容，请重新生成。"
-            selected_data = execution_payload.get("selectedData")
-            if not isinstance(selected_data, dict):
-                return "这次待采纳内容缺少可执行内容，请重新生成。"
-            result_json = await _apply_selected_intents(
-                session_id=session_id,
-                batch=str(execution_payload.get("batch") or "01"),
-                selected_data=selected_data,
-            )
-            try:
-                state_result = parse_intent_state_update_result(result_json)
-                reply = render_intent_state_update(state_result)
-                reply = _reply_with_pending_intent_summary(reply, state_result, pending_state)
-                if post_apply_intent == "apply_pending_then_readonly" and getattr(state_result, "applied", False):
-                    reply = _append_pending_apply_then_readonly_followup(
-                        reply,
-                        pending_state,
-                        post_apply_evidence_plan,
-                    )
-                elif post_apply_intent == "apply_pending_then_new_request" and getattr(state_result, "applied", False):
-                    reply = _append_pending_apply_then_new_request_followup(
-                        reply,
-                        pending_state,
-                    )
-            except Exception:
-                logger.warning("Failed to parse pending intent confirmation result: session_id=%s", session_id, exc_info=True)
-                state_result = None
-                reply = "处理这一步时发生错误，请稍后重试。"
-            applied_state = dict(pending_state)
-            applied_state["status"] = "applied"
-            applied_state["updatedAt"] = datetime.now(timezone.utc).isoformat()
-            applied_state["resultCode"] = getattr(state_result, "messageCode", None) if state_result else None
-            if post_apply_evidence_plan is not None and state_result and getattr(state_result, "applied", False):
-                applied_state["postApplyEvidencePlan"] = post_apply_evidence_plan
-            await _save_pending_confirmation_state(session_id, applied_state)
-            await _mark_pending_confirmation_message_status(
-                session_id,
-                message_id,
-                pending_id=pending_id,
-                status="applied",
-            )
-            emit_pending_event(
-                result="applied",
-                result_code=getattr(state_result, "messageCode", None) if state_result else None,
-            )
-            apply_then_generate_plan_result: _RuntimeCompiledPendingResult | None = None
-            if (
-                post_apply_intent == "apply_pending_then_new_request"
-                and state_result
-                and getattr(state_result, "applied", False)
-            ):
-                apply_then_generate_plan_result = await _create_apply_then_generate_plan_pending_result(
-                    session_id=session_id,
-                    user_prompt=user_prompt_content or content,
-                    applied_pending_state=applied_state,
-                )
-                if apply_then_generate_plan_result.card is None:
-                    blocked = set(apply_then_generate_plan_result.blocked_reasons)
-                    if "missing_generate_plan_score_detail" in blocked:
-                        base_reply = render_intent_state_update(state_result)
-                        base_reply = _reply_with_pending_intent_summary(base_reply, state_result, pending_state)
-                        reply = (
-                            f"{base_reply}\n\n"
-                            "已先采纳上一轮待采纳内容。你刚才还要求“基于这些出方案”，"
-                            "但当前还缺少生成方案所需的省份、分数/位次、选科等基础信息，"
-                            "所以这轮不会创建生成方案确认卡，也不会直接生成正式方案。"
-                            "补充这些信息后，我再给你生成方案预览。"
-                        )
-            if confirmation_entry == "short_text":
-                new_messages = [
-                    ModelRequest(parts=[UserPromptPart(content=user_prompt_content or content)]),
-                    ModelResponse(parts=[TextPart(content=reply)], model_name="pending-intent-short-text-confirm"),
-                ]
-                try:
-                    history = confirmation_history if confirmation_history is not None else await self.history_store.load(session_id) or []
-                    history_to_save = list(history)
-                    turn_event = _pending_apply_turn_event(
-                        session_id=session_id,
-                        user_id=user_id,
-                        scene="intent",
-                        routing_path="pending_intent_short_text_confirm",
-                        pending_type="intent",
-                        action_family="apply_selected_intents",
-                        started_at=turn_started_at,
-                        status="success",
-                        post_apply_evidence_plan=post_apply_evidence_plan
-                        if state_result and getattr(state_result, "applied", False)
-                        else None,
-                    )
-                    if post_apply_intent == "apply_pending_then_new_request" and state_result and getattr(state_result, "applied", False):
-                        turn_event = _pending_apply_turn_event(
-                            session_id=session_id,
-                            user_id=user_id,
-                            scene="intent",
-                            routing_path="pending_intent_short_text_confirm",
-                            pending_type="intent",
-                            action_family="apply_pending_then_new_request",
-                            started_at=turn_started_at,
-                            status="success",
-                        )
-                    history_to_save.extend(_append_route_observability_message(new_messages, turn_event))
-                    await self.history_store.save(session_id, history_to_save)
-                except Exception:
-                    logger.exception("Failed to save short-text pending intent confirmation history: session_id=%s", session_id)
-            if state_result and state_result.intentMode == "constraint":
-                followups: list[WSResponse] = []
-                if post_apply_intent == "apply_pending_then_new_request":
-                    if (
-                        apply_then_generate_plan_result is not None
-                        and apply_then_generate_plan_result.card is not None
-                    ):
-                        followups.append(apply_then_generate_plan_result.card)
-                    target_order = _post_apply_evidence_workspace_targets(
-                        post_apply_evidence_plan,
-                        ["candidate"],
-                    )
-                else:
-                    target_order = await _post_apply_intent_workspace_targets(
-                        session_id,
-                        post_apply_evidence_plan,
-                        ["ordered", "candidate"],
-                    )
-                for target in target_order:
-                    if target == "ordered":
-                        followups.append(
-                            _build_silent_workspace_refresh_response(
-                                session_id,
-                                "ordered",
-                                extra_payload={
-                                    "title": "请查看方案",
-                                    "content": "这次要求已采纳，当前方案可能需要重新审查或调整。",
-                                    "actionText": "查看方案",
-                                },
-                            )
-                        )
-                    elif target == "candidate":
-                        followups.append(
-                            _build_silent_workspace_refresh_response(
-                                session_id,
-                                "candidate",
-                                extra_payload={
-                                    "preserveView": True,
-                                    "title": "候选推荐已更新",
-                                    "content": "这次报考条件已采纳，候选和推荐信息会按新的条件刷新。",
-                                    "actionText": "查看候选",
-                                },
-                            )
-                        )
-                    elif target == "review":
-                        followups.append(_build_silent_workspace_refresh_response(session_id, "review"))
-                return ChatServiceResponseEnvelope(
-                    primary=reply,
-                    followups=followups,
-                )
-            if state_result and state_result.intentMode == "preference":
-                followups: list[WSResponse] = []
-                if (
-                    apply_then_generate_plan_result is not None
-                    and apply_then_generate_plan_result.card is not None
-                ):
-                    followups.append(apply_then_generate_plan_result.card)
-                followups.extend(
-                    (
-                        _build_silent_workspace_refresh_response(
-                            session_id,
-                            "candidate",
-                            extra_payload={
-                                "preserveView": True,
-                                "title": "候选推荐已更新",
-                                "content": "这次偏好已采纳，候选和推荐信息会按新的偏好刷新。",
-                                "actionText": "查看候选",
-                            },
-                        )
-                        if target == "candidate"
-                        else _build_silent_workspace_refresh_response(session_id, target)
-                    )
-                    for target in _post_apply_evidence_workspace_targets(post_apply_evidence_plan, ["candidate"])
-                )
-                return ChatServiceResponseEnvelope(
-                    primary=reply,
-                    followups=followups,
-                )
-            return reply
+            return "这次待采纳内容缺少可执行内容，请重新生成。"
+
         if active_kind != "plan_mutation":
             return "这类待采纳内容暂时还不能在这里处理，请刷新后重试。"
 
@@ -18042,238 +19141,12 @@ class ChatService:
                 followups=followups,
             )
 
-        plan_payload = execution_payload.get("planPayload")
-        if not isinstance(plan_payload, str) or not plan_payload.strip():
-            return "这次方案调整缺少可执行内容，请重新生成预览。"
-        intent_payload = execution_payload.get("intentPayload")
-        history_task = None
-        if confirmation_history is None:
-            history_task = asyncio.create_task(self.history_store.load(session_id))
-        score_task = asyncio.create_task(get_user_score_detail(session_id))
-        profile_task = asyncio.create_task(get_user_init_profile(session_id))
-        workspace_task = asyncio.create_task(get_planning_workspace_state(session_id))
-
-        history = confirmation_history if confirmation_history is not None else []
-        if history_task is not None:
-            try:
-                history_result = await history_task
-                history = history_result or []
-            except Exception:
-                logger.exception("Failed to load history for pending confirmation: session_id=%s", session_id)
-                history = []
-
-        score_response, profile_response, workspace_response = await asyncio.gather(
-            score_task,
-            profile_task,
-            workspace_task,
-            return_exceptions=True,
-        )
-
-        parsed_score_detail = None
-        parsed_init_profile = None
-        parsed_planning_summary = None
-        batch = None
-        if isinstance(score_response, Exception):
-            logger.warning("Failed to fetch score detail for pending confirmation: session_id=%s", session_id, exc_info=True)
-        elif isinstance(score_response, dict) and score_response.get("code") == 0:
-            raw_data = score_response.get("data", {}).get("userScoreDetail", {})
-            if raw_data:
-                parsed_score_detail = _parse_score_detail_from_backend(raw_data)
-                batch = _normalize_batch(raw_data.get("batch") or batch)
-        if isinstance(profile_response, Exception):
-            logger.warning("Failed to fetch init profile for pending confirmation: session_id=%s", session_id, exc_info=True)
-        elif isinstance(profile_response, dict) and profile_response.get("code") == 0:
-            raw_profile = profile_response.get("data", {})
-            if raw_profile:
-                parsed_init_profile = UserProfile.from_backend_format(raw_profile)
-        if isinstance(workspace_response, Exception):
-            logger.warning("Failed to fetch planning workspace for pending confirmation: session_id=%s", session_id, exc_info=True)
-        elif isinstance(workspace_response, dict) and workspace_response.get("code") == 0:
-            parsed_planning_summary = PlanningSummary.from_backend_state(workspace_response.get("data", {}))
-
-        active_plan_pending = _pending_confirmation_from_state(pending_state)
-        if active_plan_pending is None or active_plan_pending.kind != "plan_mutation":
-            return "这次方案调整缺少可执行内容，请重新生成预览。"
-        conversation_phase = ConversationPhase.from_pending_confirmation(
-            active_plan_pending,
-            planning_summary=parsed_planning_summary,
-        )
-        request_context = RequestContext(
-            userid=user_id,
-            sessionid=session_id,
-            chat_history=[],
-            batch=batch,
-            score_detail=parsed_score_detail,
-            init_profile=parsed_init_profile,
-            planning_summary=parsed_planning_summary,
-            conversation_phase=conversation_phase,
-            allow_explore_inner_llm=False,
-            confirmed_via_card=confirmation_entry == "card",
-            confirmed_via_pending=True,
-            confirmation_entry=confirmation_entry,
-        )
-
-        started_at = time.monotonic()
-        intent_state_result = None
-        intent_apply_note = ""
-        if isinstance(intent_payload, dict) and intent_payload.get("selected"):
-            effective_batch = _normalize_batch(batch or intent_payload.get("batch") or "01")
-            selected_data_for_apply = {
-                "selected": intent_payload.get("selected") or [],
-                "intentMode": str(intent_payload.get("intentMode") or "constraint").strip() or "constraint",
-                "constraintIntentType": str(
-                    intent_payload.get("constraintIntentType")
-                    or intent_payload.get("constraint_intent_type")
-                    or "default"
-                ).strip() or "default",
-                "batch": effective_batch,
-            }
-            result_json = await _apply_selected_intents(
-                session_id=session_id,
-                batch=effective_batch,
-                selected_data=selected_data_for_apply,
-            )
-            try:
-                intent_state_result = parse_intent_state_update_result(result_json)
-            except Exception:
-                logger.warning(
-                    "Failed to parse combined plan/intent confirmation result: session_id=%s",
-                    session_id,
-                    exc_info=True,
-                )
-                await _mark_pending_confirmation_failed(
-                    session_id,
-                    pending_state,
-                    message_id,
-                    pending_id=pending_id,
-                    result_code="intent_apply_parse_failed",
-                )
-                return "这次报考条件没有写入成功，方案暂不调整。请稍后重试，或重新列出待采纳内容。"
-            if not getattr(intent_state_result, "applied", False):
-                await _mark_pending_confirmation_failed(
-                    session_id,
-                    pending_state,
-                    message_id,
-                    pending_id=pending_id,
-                    result_code=str(getattr(intent_state_result, "messageCode", None) or "intent_apply_failed"),
-                )
-                return "这次报考条件没有写入成功，方案暂不调整。请稍后重试，或重新列出待采纳内容。"
-            intent_apply_note = "后续报考参考已同步更新，推荐系数和专家优选会按这条要求重新考虑。"
-
-        result_text = await execute_plan_action(SimpleNamespace(deps=request_context), plan_payload)
-        result = _parse_tool_return_json(result_text) or {}
-        reply = _plan_confirmation_card_applied_reply(action_family, result)
-        tool_success = _plan_confirmation_apply_succeeded(result)
-        if not tool_success:
-            result_kind = str(result.get("result_kind") or "plan_apply_not_applied").strip() or "plan_apply_not_applied"
-            await _mark_pending_confirmation_failed(
-                session_id,
-                pending_state,
-                message_id,
-                pending_id=pending_id,
-                result_code=result_kind,
-            )
-            emit_pending_event(result="failed", result_code=result_kind)
-            _log_conversation_turn_event(
-                sessionId=session_id,
-                userId=user_id,
-                scene="plan",
-                routingPath="pending_plan_short_text_confirm" if confirmation_entry == "short_text" else "plan_confirmation_card_confirm",
-                pendingType="plan",
-                actionFamily=action_family or result.get("action_family"),
-                totalDurationMs=int((time.monotonic() - started_at) * 1000),
-                status="error",
-                errorType=result_kind,
-            )
-            return _sanitize_reply_for_user(reply or "这次调整没有执行成功，请按当前方案重新生成调整预览后再确认。")
-        if intent_apply_note:
-            reply = f"{reply}\n\n{intent_apply_note}"
-        if post_apply_intent == "apply_pending_then_readonly":
-            post_apply_planning_summary = await _load_post_apply_planning_summary(session_id)
-            reply = _append_pending_apply_then_readonly_result(
-                reply,
-                pending_state,
-                post_apply_evidence_plan,
-                post_apply_planning_summary,
-            )
-        applied_state = dict(pending_state)
-        applied_state["status"] = "applied"
-        applied_state["updatedAt"] = datetime.now(timezone.utc).isoformat()
-        applied_state["resultKind"] = result.get("result_kind")
-        if post_apply_evidence_plan is not None:
-            applied_state["postApplyEvidencePlan"] = post_apply_evidence_plan
-        await _save_pending_confirmation_state(session_id, applied_state)
-        await _mark_pending_confirmation_message_status(
+        await _mark_pending_confirmation_failed(
             session_id,
+            pending_state,
             message_id,
             pending_id=pending_id,
-            status="applied",
+            result_code="missing_structured_plan_payload",
         )
-
-        new_messages = [
-            ModelRequest(parts=[UserPromptPart(content=user_prompt_content or "[待采纳内容]")]),
-            ModelResponse(
-                parts=[
-                    ToolCallPart(
-                        tool_name="execute_plan_action",
-                        args={"plan_payload": plan_payload},
-                        tool_call_id=f"{confirmation_entry}-{action_family or 'plan'}-confirmation",
-                    )
-                ],
-                model_name=f"pending-confirmation-{confirmation_entry}",
-            ),
-            ModelRequest(
-                parts=[
-                    ToolReturnPart(
-                        tool_name="execute_plan_action",
-                        content=result_text,
-                        tool_call_id=f"{confirmation_entry}-{action_family or 'plan'}-confirmation",
-                    )
-                ]
-            ),
-            ModelResponse(parts=[TextPart(content=reply)], model_name=f"pending-confirmation-{confirmation_entry}"),
-        ]
-        turn_event = _pending_apply_turn_event(
-            session_id=session_id,
-            user_id=user_id,
-            scene="plan",
-            routing_path="pending_plan_short_text_confirm" if confirmation_entry == "short_text" else "plan_confirmation_card_confirm",
-            pending_type="plan",
-            action_family=action_family or result.get("action_family"),
-            started_at=started_at,
-            status="success" if tool_success else "error",
-            error_type=result.get("result_kind") if result.get("result_kind") == "error" else None,
-            post_apply_evidence_plan=post_apply_evidence_plan,
-        )
-        try:
-            history_to_save = list(history)
-            history_to_save.extend(_append_route_observability_message(new_messages, turn_event))
-            await self.history_store.save(session_id, history_to_save)
-        except Exception:
-            logger.exception("Failed to save pending confirmation card execution history: session_id=%s", session_id)
-
-        _log_conversation_turn_event(**turn_event)
-        emit_pending_event(
-            result="applied" if tool_success else "failed",
-            result_code=str(result.get("result_kind") or "") or None,
-        )
-        workspace_refresh_targets = _dedupe_workspace_targets(
-            [str(target) for target in (result.get("workspace_refresh_targets") or [])]
-        )
-        if post_apply_intent == "apply_pending_then_readonly":
-            workspace_refresh_targets = _post_apply_evidence_workspace_targets(
-                post_apply_evidence_plan,
-                workspace_refresh_targets,
-            )
-        if isinstance(intent_payload, dict) and intent_payload.get("selected"):
-            workspace_refresh_targets = [target for target in workspace_refresh_targets if target != "candidate"]
-        if workspace_refresh_targets:
-            reply = _sanitize_reply_for_user(reply)
-            return ChatServiceResponseEnvelope(
-                primary=reply,
-                followups=[
-                    _build_silent_workspace_refresh_response(session_id, target)
-                    for target in workspace_refresh_targets
-                ],
-            )
-        return _sanitize_reply_for_user(reply)
+        emit_pending_event(result="failed", result_code="missing_structured_plan_payload")
+        return "这次方案调整缺少可执行内容，请重新生成预览。"

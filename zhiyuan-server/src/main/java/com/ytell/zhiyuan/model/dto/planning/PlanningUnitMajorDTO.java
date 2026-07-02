@@ -1,6 +1,9 @@
 package com.ytell.zhiyuan.model.dto.planning;
 
+import com.google.common.collect.Lists;
 import lombok.Data;
+
+import java.util.List;
 
 @Data
 public class PlanningUnitMajorDTO {
@@ -19,4 +22,6 @@ public class PlanningUnitMajorDTO {
     private Boolean safetyMajor = false;
     private Integer tuitionPerYear;
     private Integer rankInTier;
+    private List<String> reasonCodes = Lists.newArrayList();
+    private List<String> majorPlanTags = Lists.newArrayList();
 }
