@@ -154,6 +154,8 @@ final class RepairApplyMutationBuilder {
         }
         Set<String> removeIds = new LinkedHashSet<String>();
         Set<String> addIds = new LinkedHashSet<String>();
+        Set<String> removeUnitIds = new LinkedHashSet<String>();
+        Set<String> addUnitIds = new LinkedHashSet<String>();
         for (FixProposalActionDTO action : defaultFixProposalActions(proposal.getActions())) {
             if (!RepairProposalTaxonomy.ActionType.REPLACE_VOLUNTEERS.equals(
                     RepairProposalTaxonomy.normalizeActionType(action.getActionType()))) {
@@ -163,12 +165,22 @@ final class RepairApplyMutationBuilder {
                 result.block("替换动作存在不完整配对");
                 return result;
             }
-            collectReplacementIds(action, removeIds, addIds);
+            collectReplacementIds(action, removeIds, addIds, removeUnitIds, addUnitIds);
         }
         if (removeIds.isEmpty() && addIds.isEmpty()) {
             return result;
         }
-        if (removeIds.isEmpty() || addIds.isEmpty() || removeIds.size() != addIds.size()) {
+        boolean unitReplacement = !removeUnitIds.isEmpty() || !addUnitIds.isEmpty();
+        if (unitReplacement
+                && (removeUnitIds.isEmpty() || addUnitIds.isEmpty() || removeUnitIds.size() != addUnitIds.size())) {
+            result.block("替换动作缺少完整的移除/补入专业组配对");
+            return result;
+        }
+        if (unitReplacement && (removeIds.isEmpty() || addIds.isEmpty())) {
+            result.block("替换动作缺少完整的专业组志愿明细");
+            return result;
+        }
+        if (!unitReplacement && (removeIds.isEmpty() || addIds.isEmpty() || removeIds.size() != addIds.size())) {
             result.block("替换动作缺少完整的移除/补入配对");
             return result;
         }
@@ -347,11 +359,19 @@ final class RepairApplyMutationBuilder {
 
     private static void collectReplacementIds(FixProposalActionDTO action,
                                               Set<String> removeIds,
-                                              Set<String> addIds) {
+                                              Set<String> addIds,
+                                              Set<String> removeUnitIds,
+                                              Set<String> addUnitIds) {
         removeIds.addAll(defaultList(action.getRemoveVolunteerIds()).stream()
                 .filter(value -> !Strings.isNullOrEmpty(value))
                 .collect(Collectors.toList()));
         addIds.addAll(defaultList(action.getCandidateVolunteerIds()).stream()
+                .filter(value -> !Strings.isNullOrEmpty(value))
+                .collect(Collectors.toList()));
+        removeUnitIds.addAll(defaultList(action.getRemoveUnitIds()).stream()
+                .filter(value -> !Strings.isNullOrEmpty(value))
+                .collect(Collectors.toList()));
+        addUnitIds.addAll(defaultList(action.getCandidateUnitIds()).stream()
                 .filter(value -> !Strings.isNullOrEmpty(value))
                 .collect(Collectors.toList()));
         defaultList(action.getReplacementPairs()).forEach(pair -> {
@@ -363,6 +383,12 @@ final class RepairApplyMutationBuilder {
             }
             if (!Strings.isNullOrEmpty(pair.getToVolunteerId())) {
                 addIds.add(pair.getToVolunteerId());
+            }
+            if (!Strings.isNullOrEmpty(pair.getFromUnitId())) {
+                removeUnitIds.add(pair.getFromUnitId());
+            }
+            if (!Strings.isNullOrEmpty(pair.getToUnitId())) {
+                addUnitIds.add(pair.getToUnitId());
             }
         });
     }

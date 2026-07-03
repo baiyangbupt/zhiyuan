@@ -89,6 +89,83 @@ async def _safe_send_text(ws: WebSocket, text: str, *, context: str) -> bool:
         return False
 
 
+class _CompatConnectionRegistry:
+    """Tracks the latest compat WebSocket per chat session for reconnect handoff."""
+
+    def __init__(self) -> None:
+        self._connections: dict[str, WebSocket] = {}
+        self._lock = asyncio.Lock()
+
+    @staticmethod
+    def _normalize_session_id(session_id: object) -> str:
+        return str(session_id or "").strip()
+
+    async def register(self, session_id: object, ws: WebSocket) -> str:
+        normalized = self._normalize_session_id(session_id)
+        if not normalized:
+            return ""
+        async with self._lock:
+            self._connections[normalized] = ws
+        return normalized
+
+    async def unregister(self, session_id: object, ws: WebSocket) -> None:
+        normalized = self._normalize_session_id(session_id)
+        if not normalized:
+            return
+        async with self._lock:
+            if self._connections.get(normalized) is ws:
+                self._connections.pop(normalized, None)
+
+    async def send_json(
+        self,
+        session_id: object,
+        data: dict,
+        *,
+        context: str,
+        exclude_ws: WebSocket | None = None,
+    ) -> bool:
+        normalized = self._normalize_session_id(session_id)
+        if not normalized:
+            return False
+        async with self._lock:
+            latest_ws = self._connections.get(normalized)
+        if latest_ws is None or latest_ws is exclude_ws:
+            return False
+
+        ok = await _safe_send_json(latest_ws, data, context=context)
+        if not ok:
+            await self.unregister(normalized, latest_ws)
+        return ok
+
+
+_compat_connections = _CompatConnectionRegistry()
+
+
+async def _safe_send_compat_json(
+    ws: WebSocket,
+    session_id: object,
+    data: dict,
+    *,
+    context: str,
+) -> bool:
+    if await _safe_send_json(ws, data, context=context):
+        return True
+
+    forwarded = await _compat_connections.send_json(
+        session_id,
+        data,
+        context=f"{context}.active_connection",
+        exclude_ws=ws,
+    )
+    if forwarded:
+        logger.info(
+            "Forwarded compat websocket message to active connection: session_id=%s context=%s",
+            session_id,
+            context,
+        )
+    return forwarded
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 配置 Logfire（必须在创建 Agent 之前）
@@ -317,6 +394,10 @@ async def ws_chat_compat(ws: WebSocket, tenant_id: str, bot_id: str):
     await ws.accept()
     logger.info("WebSocket connection accepted (compat protocol) tenant=%s bot=%s", tenant_id, bot_id)
     service: ChatService = ws.app.state.chat_service
+    registered_session_id = await _compat_connections.register(
+        ws.query_params.get("chatSessionId") or ws.query_params.get("sessionId"),
+        ws,
+    )
     try:
         while True:
             try:
@@ -357,6 +438,11 @@ async def ws_chat_compat(ws: WebSocket, tenant_id: str, bot_id: str):
                     return
                 continue
 
+            if msg.session_id and msg.session_id != registered_session_id:
+                if registered_session_id:
+                    await _compat_connections.unregister(registered_session_id, ws)
+                registered_session_id = await _compat_connections.register(msg.session_id, ws)
+
             if msg.type not in _NON_PERSISTENT_USER_MESSAGE_TYPES:
                 try:
                     await message_store.save_user_message(
@@ -385,8 +471,9 @@ async def ws_chat_compat(ws: WebSocket, tenant_id: str, bot_id: str):
                 else:
                     # 构造进度回调：推送 thinking 消息（compat 格式）
                     async def on_progress_compat(hint: str, _sid: str = msg.session_id) -> None:
-                        await _safe_send_json(
+                        await _safe_send_compat_json(
                             ws,
+                            _sid,
                             {"type": "thinking", "content": hint, "end": False},
                             context="compat.progress",
                         )
@@ -525,7 +612,7 @@ async def ws_chat_compat(ws: WebSocket, tenant_id: str, bot_id: str):
                     )
 
             if resp_data is not None:
-                if not await _safe_send_json(ws, resp_data, context="compat.reply"):
+                if not await _safe_send_compat_json(ws, msg.session_id, resp_data, context="compat.reply"):
                     return
 
             for followup in followup_responses:
@@ -552,11 +639,15 @@ async def ws_chat_compat(ws: WebSocket, tenant_id: str, bot_id: str):
                     "Sending compat followup: session_id=%s type=%s title=%s",
                     msg.session_id, followup.type, content_obj.get("title"),
                 )
-                if not await _safe_send_json(
+                if not await _safe_send_compat_json(
                     ws,
+                    msg.session_id,
                     {"type": followup.type, "content": content_obj, "end": True},
                     context="compat.followup",
                 ):
                     return
     except WebSocketDisconnect:
         logger.info("Compat WebSocket client disconnected tenant=%s", tenant_id)
+    finally:
+        if registered_session_id:
+            await _compat_connections.unregister(registered_session_id, ws)

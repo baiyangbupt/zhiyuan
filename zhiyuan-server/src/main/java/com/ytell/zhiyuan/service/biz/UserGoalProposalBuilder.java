@@ -37,7 +37,6 @@ final class UserGoalProposalBuilder {
     private static final String REASON_GOAL_UNCLEAR = "user_goal_unclear";
     private static final String REASON_TARGET_NOT_FOUND = "user_goal_target_not_found";
     private static final String REASON_ENTITY_NEEDS_CLARIFICATION = "user_goal_entity_needs_clarification";
-    private static final int PREVIEW_CANDIDATE_LIMIT = 5;
     private static final Map<String, List<String>> REGION_AREA_PROVINCES = buildRegionAreaProvinces();
 
     private UserGoalProposalBuilder() {
@@ -130,7 +129,7 @@ final class UserGoalProposalBuilder {
                 .filter(value -> !Strings.isNullOrEmpty(value))
                 .collect(Collectors.toCollection(LinkedHashSet::new));
         Set<String> selectedUnitIds = current.stream()
-                .map(PlanVolunteer::getUnitId)
+                .map(UserGoalProposalBuilder::planUnitKey)
                 .filter(value -> !Strings.isNullOrEmpty(value))
                 .collect(Collectors.toCollection(LinkedHashSet::new));
         String scopeLabel = scopeLabel(scopes);
@@ -144,7 +143,6 @@ final class UserGoalProposalBuilder {
                 .filter(RepairCandidateSelector::isCompensationSafeCandidate)
                 .filter(candidate -> RepairCandidateEligibility.isEligibleForConfirmedHardConstraints(candidate, state))
                 .sorted(buildCandidatePreviewComparator())
-                .limit(PREVIEW_CANDIDATE_LIMIT)
                 .collect(Collectors.toList());
         List<CandidateItemDTO> candidateNonMatches = candidates.stream()
                 .filter(candidate -> candidate != null && !Strings.isNullOrEmpty(candidate.getVolunteerId()))
@@ -153,7 +151,6 @@ final class UserGoalProposalBuilder {
                 .filter(RepairCandidateSelector::isCompensationSafeCandidate)
                 .filter(candidate -> RepairCandidateEligibility.isEligibleForConfirmedHardConstraints(candidate, state))
                 .sorted(buildCandidatePreviewComparator())
-                .limit(PREVIEW_CANDIDATE_LIMIT)
                 .collect(Collectors.toList());
 
         if (RepairProposalTaxonomy.Strategy.ONLY_KEEP_SCOPE.equals(goalType)) {
@@ -181,6 +178,7 @@ final class UserGoalProposalBuilder {
                 .filter(item -> !matchesAny(item, scopes))
                 .filter(item -> !item.isLocked())
                 .collect(Collectors.toList());
+        boolean majorGroupMode = isMajorGroupMode(state);
         FixProposalDTO proposal = buildUserGoalPreviewBase(state, req, RepairProposalTaxonomy.Strategy.ONLY_KEEP_SCOPE,
                 "只保留“" + scopeLabel + "”的调整预览");
         if (removable.isEmpty()) {
@@ -188,28 +186,35 @@ final class UserGoalProposalBuilder {
             proposal.setSummary("当前方案已经都在“" + scopeLabel + "”范围内，本轮不需要为了这个目标调整方案。");
             proposal.setImpact("如果还想继续提高这个方向的质量，可以再要求我按院校层次、录取率或地域偏好做进一步优化。");
             proposal.setRequiresConfirmation(false);
-            fillDryRun(proposal, current.size(), 0, 0, "当前方案已经符合这个保留方向。");
+            fillDryRun(proposal, countPlanEntries(current, majorGroupMode), 0, 0, "当前方案已经符合这个保留方向。");
             return proposal;
         }
-        boolean majorGroupMode = isMajorGroupMode(state);
         List<ReplacementPreviewPair> pairs = buildReplacementPreviewPairs(
                 removable, candidateMatches, selectedUnitIds, majorGroupMode,
-                Math.min(removable.size(), candidateMatches.size()),
+                Math.min(countPlanEntries(removable, majorGroupMode), countCandidateEntries(candidateMatches, majorGroupMode)),
                 RepairProposalTaxonomy.Strategy.ONLY_KEEP_SCOPE);
-        List<PlanVolunteer> remainingRemovable = remainingSources(removable, pairs);
-        proposal.setSummary("当前方案中有 " + currentMatches.size() + " 条符合“" + scopeLabel + "”；如果只保留这个方向，另有 "
-                + removable.size() + " 条需要处理。本次能替换 " + pairs.size() + " 条。");
+        List<PlanVolunteer> remainingRemovable = remainingSources(removable, pairs, majorGroupMode);
+        int currentMatchCount = countPlanEntries(currentMatches, majorGroupMode);
+        int removableCount = countPlanEntries(removable, majorGroupMode);
+        int pairCount = countReplacementPairs(pairs, majorGroupMode);
+        int remainingCount = countPlanEntries(remainingRemovable, majorGroupMode);
+        proposal.setSummary("当前方案中有 " + formatEntryCount(currentMatchCount, majorGroupMode)
+                + "符合“" + scopeLabel + "”；如果只保留这个方向，另有 "
+                + formatEntryCount(removableCount, majorGroupMode) + "需要处理。本次能替换 "
+                + formatEntryCount(pairCount, majorGroupMode) + "。");
         proposal.setImpact(remainingRemovable.isEmpty()
                 ? "确认前不会改动当前方案；确认后会按这次预览处理，并同步刷新方案。"
-                : "还有 " + remainingRemovable.size() + " 条暂时没有合适补位；本次会处理能替换或移出的部分，剩余部分需要放宽条件或后续再补。");
+                : "还有 " + formatEntryCount(remainingCount, majorGroupMode) + "暂时没有合适补位；本次会处理能替换或移出的部分，剩余部分需要放宽条件或后续再补。");
         if (!pairs.isEmpty()) {
-            proposal.getActions().add(replaceAction("用保留范围内的候选替换其他志愿", pairs, majorGroupMode));
+            proposal.getActions().add(replaceAction("用保留范围内的候选替换其他志愿",
+                    pairs, majorGroupMode, current, candidateMatches));
         }
         if (!remainingRemovable.isEmpty()) {
-            proposal.getActions().add(removeAction("不在保留范围内且暂未找到补位的志愿", remainingRemovable));
+            proposal.getActions().add(removeAction("不在保留范围内且暂未找到补位的志愿",
+                    remainingRemovable, majorGroupMode, current));
         }
         markReadyIfActionable(proposal);
-        fillDryRun(proposal, current.size(), removable.size(), pairs.size(), "已生成调整预览，等待确认后再执行。");
+        fillDryRun(proposal, countPlanEntries(current, majorGroupMode), removableCount, pairCount, "已生成调整预览，等待确认后再执行。");
         return proposal;
     }
 
@@ -223,12 +228,13 @@ final class UserGoalProposalBuilder {
 
         List<CandidateItemDTO> candidates = candidates(state);
         List<PlanVolunteer> current = currentPlanVolunteers(state, candidates);
+        boolean majorGroupMode = isMajorGroupMode(state);
         Set<String> selectedVolunteerIds = current.stream()
                 .map(PlanVolunteer::getVolunteerId)
                 .filter(value -> !Strings.isNullOrEmpty(value))
                 .collect(Collectors.toCollection(LinkedHashSet::new));
         Set<String> selectedUnitIds = current.stream()
-                .map(PlanVolunteer::getUnitId)
+                .map(UserGoalProposalBuilder::planUnitKey)
                 .filter(value -> !Strings.isNullOrEmpty(value))
                 .collect(Collectors.toCollection(LinkedHashSet::new));
 
@@ -246,7 +252,7 @@ final class UserGoalProposalBuilder {
             proposal.setSummary("当前方案里没有发现学费超过 " + maxTuition + " 元/年的志愿，本轮不需要为了这个预算调整方案。");
             proposal.setImpact("这条预算可以作为后续报考参考，后续看候选和方案时会继续留意学费。");
             proposal.setRequiresConfirmation(false);
-            fillDryRun(proposal, current.size(), 0, 0, "当前方案没有命中超过预算的志愿。");
+            fillDryRun(proposal, countPlanEntries(current, majorGroupMode), 0, 0, "当前方案没有命中超过预算的志愿。");
             return proposal;
         }
 
@@ -260,28 +266,32 @@ final class UserGoalProposalBuilder {
                 .filter(RepairCandidateSelector::isCompensationSafeCandidate)
                 .filter(candidate -> RepairCandidateEligibility.isEligibleForConfirmedHardConstraints(candidate, state))
                 .sorted(buildCandidatePreviewComparator())
-                .limit(PREVIEW_CANDIDATE_LIMIT)
                 .collect(Collectors.toList());
 
-        boolean majorGroupMode = isMajorGroupMode(state);
         List<ReplacementPreviewPair> pairs = buildReplacementPreviewPairs(
                 overBudget, affordableCandidates, selectedUnitIds, majorGroupMode,
-                Math.min(overBudget.size(), affordableCandidates.size()),
+                Math.min(countPlanEntries(overBudget, majorGroupMode), countCandidateEntries(affordableCandidates, majorGroupMode)),
                 RepairProposalTaxonomy.Strategy.TUITION_BUDGET_SCOPE);
-        List<PlanVolunteer> remaining = remainingSources(overBudget, pairs);
-        proposal.setSummary("当前方案里有 " + overBudget.size() + " 条学费超过 " + maxTuition + " 元/年；本次能替换 "
-                + pairs.size() + " 条。");
+        List<PlanVolunteer> remaining = remainingSources(overBudget, pairs, majorGroupMode);
+        int overBudgetCount = countPlanEntries(overBudget, majorGroupMode);
+        int pairCount = countReplacementPairs(pairs, majorGroupMode);
+        int remainingCount = countPlanEntries(remaining, majorGroupMode);
+        proposal.setSummary("当前方案里有 " + formatEntryCount(overBudgetCount, majorGroupMode)
+                + "学费超过 " + maxTuition + " 元/年；本次能替换 "
+                + formatEntryCount(pairCount, majorGroupMode) + "。");
         proposal.setImpact(remaining.isEmpty()
                 ? "确认前不会改动当前方案；确认后会按这次预览处理，并同步刷新方案。"
-                : "还有 " + remaining.size() + " 条暂时没有合适补位；本次会处理能替换或移出的部分，剩余部分需要放宽预算或后续再补。");
+                : "还有 " + formatEntryCount(remainingCount, majorGroupMode) + "暂时没有合适补位；本次会处理能替换或移出的部分，剩余部分需要放宽预算或后续再补。");
         if (!pairs.isEmpty()) {
-            proposal.getActions().add(replaceAction("用不超过预算的候选替换超预算志愿", pairs, majorGroupMode));
+            proposal.getActions().add(replaceAction("用不超过预算的候选替换超预算志愿",
+                    pairs, majorGroupMode, current, affordableCandidates));
         }
         if (!remaining.isEmpty()) {
-            proposal.getActions().add(removeAction("学费超过预算且暂未找到补位的志愿", remaining));
+            proposal.getActions().add(removeAction("学费超过预算且暂未找到补位的志愿",
+                    remaining, majorGroupMode, current));
         }
         markReadyIfActionable(proposal);
-        fillDryRun(proposal, current.size(), overBudget.size(), pairs.size(), "已生成调整预览，等待确认后再执行。");
+        fillDryRun(proposal, countPlanEntries(current, majorGroupMode), overBudgetCount, pairCount, "已生成调整预览，等待确认后再执行。");
         return proposal;
     }
 
@@ -295,11 +305,13 @@ final class UserGoalProposalBuilder {
         FixProposalDTO proposal = buildUserGoalPreviewBase(state, req, RepairProposalTaxonomy.Strategy.MUST_INCLUDE_SCOPE,
                 "至少保留“" + scopeLabel + "”的调整预览");
         if (!currentMatches.isEmpty()) {
+            boolean majorGroupMode = isMajorGroupMode(state);
             proposal.setStatus(RepairProposalTaxonomy.Status.INFO);
-            proposal.setSummary("当前方案里已经有 " + currentMatches.size() + " 条“" + scopeLabel + "”相关选择，本轮不需要为了这个目标调整方案。");
+            proposal.setSummary("当前方案里已经有 " + formatEntryCount(countPlanEntries(currentMatches, majorGroupMode), majorGroupMode)
+                    + "“" + scopeLabel + "”相关选择，本轮不需要为了这个目标调整方案。");
             proposal.setImpact("如果还想提高这个方向的优先级，可以继续要求我生成更偏这个方向的调整预览。");
             proposal.setRequiresConfirmation(false);
-            fillDryRun(proposal, current.size(), 0, 0, "当前方案已覆盖这个方向。");
+            fillDryRun(proposal, countPlanEntries(current, majorGroupMode), 0, 0, "当前方案已覆盖这个方向。");
             return proposal;
         }
         if (candidateMatches.isEmpty()) {
@@ -318,17 +330,21 @@ final class UserGoalProposalBuilder {
             if (!pairs.isEmpty()) {
                 proposal.setSummary("当前方案里还没有“" + scopeLabel + "”；方案数量已满，已先找到 1 组低优先级项替换预览。");
                 proposal.setImpact("确认前不会改动当前方案；确认后会先替换一条低优先级选择，再同步刷新方案。");
-                proposal.getActions().add(replaceAction("补入这个方向并替换低优先级志愿", pairs, majorGroupMode));
+                proposal.getActions().add(replaceAction("补入这个方向并替换低优先级志愿",
+                        pairs, majorGroupMode, current, candidateMatches));
                 markReadyIfActionable(proposal);
-                fillDryRun(proposal, current.size(), pairs.size(), pairs.size(), "已生成调整预览，等待确认后再执行。");
+                fillDryRun(proposal, countPlanEntries(current, majorGroupMode),
+                        countReplacementPairs(pairs, majorGroupMode),
+                        countReplacementPairs(pairs, majorGroupMode), "已生成调整预览，等待确认后再执行。");
                 return proposal;
             }
         }
         proposal.setSummary("当前方案里还没有“" + scopeLabel + "”；候选池里找到可参考选择，后续可以生成补入预览。");
         proposal.setImpact("确认前不会改动当前方案；确认后会把这个方向补入方案，并同步刷新方案。");
-        proposal.getActions().add(addAction("候选池中可补入的选择", Lists.newArrayList(candidateMatches.get(0))));
+        proposal.getActions().add(addAction("候选池中可补入的选择",
+                Lists.newArrayList(candidateMatches.get(0)), majorGroupMode, candidateMatches));
         markReadyIfActionable(proposal);
-        fillDryRun(proposal, current.size(), 0, 1, "已生成补入预览，等待确认后再执行。");
+        fillDryRun(proposal, countPlanEntries(current, majorGroupMode), 0, 1, "已生成补入预览，等待确认后再执行。");
         return proposal;
     }
 
@@ -341,12 +357,13 @@ final class UserGoalProposalBuilder {
                                                        Set<String> selectedUnitIds) {
         FixProposalDTO proposal = buildUserGoalPreviewBase(state, req, RepairProposalTaxonomy.Strategy.EXCLUDE_SCOPE,
                 "避开“" + scopeLabel + "”的调整预览");
+        boolean majorGroupMode = isMajorGroupMode(state);
         if (currentMatches.isEmpty()) {
             proposal.setStatus(RepairProposalTaxonomy.Status.INFO);
             proposal.setSummary("当前方案里没有发现“" + scopeLabel + "”相关选择，本轮不需要为了这个目标移出志愿。");
             proposal.setImpact("这条要求仍可作为后续报考参考，后续看候选和方案时会继续避开这个方向。");
             proposal.setRequiresConfirmation(false);
-            fillDryRun(proposal, current.size(), 0, 0, "当前方案没有命中需要避开的范围。");
+            fillDryRun(proposal, countPlanEntries(current, majorGroupMode), 0, 0, "当前方案没有命中需要避开的范围。");
             return proposal;
         }
         List<PlanVolunteer> removable = currentMatches.stream()
@@ -356,25 +373,31 @@ final class UserGoalProposalBuilder {
             return buildScopeBlockedProposal(state, req, RepairProposalTaxonomy.Strategy.EXCLUDE_SCOPE,
                     "user_goal_current_hits_locked", "当前方案里有“" + scopeLabel + "”相关选择，但这些条目暂时不能自动移出，需要人工确认后处理。");
         }
-        boolean majorGroupMode = isMajorGroupMode(state);
         List<ReplacementPreviewPair> pairs = buildReplacementPreviewPairs(
                 removable, candidateNonMatches, selectedUnitIds, majorGroupMode,
-                Math.min(removable.size(), candidateNonMatches.size()),
+                Math.min(countPlanEntries(removable, majorGroupMode), countCandidateEntries(candidateNonMatches, majorGroupMode)),
                 RepairProposalTaxonomy.Strategy.EXCLUDE_SCOPE);
-        List<PlanVolunteer> remainingRemovable = remainingSources(removable, pairs);
-        proposal.setSummary("当前方案里有 " + currentMatches.size() + " 条命中“" + scopeLabel + "”；本次能替换 "
-                + pairs.size() + " 条。");
+        List<PlanVolunteer> remainingRemovable = remainingSources(removable, pairs, majorGroupMode);
+        int currentMatchCount = countPlanEntries(currentMatches, majorGroupMode);
+        int removableCount = countPlanEntries(removable, majorGroupMode);
+        int pairCount = countReplacementPairs(pairs, majorGroupMode);
+        int remainingCount = countPlanEntries(remainingRemovable, majorGroupMode);
+        proposal.setSummary("当前方案里有 " + formatEntryCount(currentMatchCount, majorGroupMode)
+                + "命中“" + scopeLabel + "”；本次能替换 "
+                + formatEntryCount(pairCount, majorGroupMode) + "。");
         proposal.setImpact(remainingRemovable.isEmpty()
                 ? "确认前不会改动当前方案；确认后会按这次预览处理，并同步刷新方案。"
-                : "还有 " + remainingRemovable.size() + " 条暂时没有合适补位；本次会处理能替换或移出的部分，剩余部分需要放宽条件或后续再补。");
+                : "还有 " + formatEntryCount(remainingCount, majorGroupMode) + "暂时没有合适补位；本次会处理能替换或移出的部分，剩余部分需要放宽条件或后续再补。");
         if (!pairs.isEmpty()) {
-            proposal.getActions().add(replaceAction("用其他候选替换需要避开的志愿", pairs, majorGroupMode));
+            proposal.getActions().add(replaceAction("用其他候选替换需要避开的志愿",
+                    pairs, majorGroupMode, current, candidateNonMatches));
         }
         if (!remainingRemovable.isEmpty()) {
-            proposal.getActions().add(removeAction("命中避开范围且暂未找到补位的志愿", remainingRemovable));
+            proposal.getActions().add(removeAction("命中避开范围且暂未找到补位的志愿",
+                    remainingRemovable, majorGroupMode, current));
         }
         markReadyIfActionable(proposal);
-        fillDryRun(proposal, current.size(), removable.size(), pairs.size(), "已生成调整预览，等待确认后再执行。");
+        fillDryRun(proposal, countPlanEntries(current, majorGroupMode), removableCount, pairCount, "已生成调整预览，等待确认后再执行。");
         return proposal;
     }
 
@@ -419,18 +442,24 @@ final class UserGoalProposalBuilder {
         return proposal;
     }
 
-    private static FixProposalActionDTO removeAction(String summary, List<PlanVolunteer> volunteers) {
+    private static FixProposalActionDTO removeAction(String summary,
+                                                     List<PlanVolunteer> volunteers,
+                                                     boolean majorGroupMode,
+                                                     List<PlanVolunteer> current) {
         FixProposalActionDTO action = new FixProposalActionDTO();
         action.setActionType(RepairProposalTaxonomy.ActionType.REMOVE_VOLUNTEERS);
         action.setLevel("volunteer");
         action.setSummary(summary);
-        action.setDetail("预计移出 " + volunteers.size() + " 条。");
-        action.setVolunteerIds(volunteers.stream()
-                .map(PlanVolunteer::getVolunteerId)
-                .filter(value -> !Strings.isNullOrEmpty(value))
-                .collect(Collectors.toList()));
+        action.setDetail("预计移出 " + formatEntryCount(countPlanEntries(volunteers, majorGroupMode), majorGroupMode) + "。");
         action.setUnitIds(volunteers.stream()
-                .map(PlanVolunteer::getUnitId)
+                .map(UserGoalProposalBuilder::planUnitKey)
+                .filter(value -> !Strings.isNullOrEmpty(value))
+                .distinct()
+                .collect(Collectors.toList()));
+        List<PlanVolunteer> volunteerScope = majorGroupMode
+                ? planVolunteersForUnits(current, action.getUnitIds()) : volunteers;
+        action.setVolunteerIds(volunteerScope.stream()
+                .map(PlanVolunteer::getVolunteerId)
                 .filter(value -> !Strings.isNullOrEmpty(value))
                 .distinct()
                 .collect(Collectors.toList()));
@@ -438,21 +467,28 @@ final class UserGoalProposalBuilder {
         action.setRemoveUnitIds(action.getUnitIds());
         action.setCandidateVolunteerIds(Lists.newArrayList());
         action.setCandidateUnitIds(Lists.newArrayList());
+        populateActionTotals(action);
         return action;
     }
 
-    private static FixProposalActionDTO addAction(String summary, List<CandidateItemDTO> candidates) {
+    private static FixProposalActionDTO addAction(String summary,
+                                                  List<CandidateItemDTO> candidates,
+                                                  boolean majorGroupMode,
+                                                  List<CandidateItemDTO> eligibleCandidates) {
         FixProposalActionDTO action = new FixProposalActionDTO();
         action.setActionType(RepairProposalTaxonomy.ActionType.ADD_VOLUNTEERS);
         action.setLevel("volunteer");
         action.setSummary(summary);
-        action.setDetail("找到 " + candidates.size() + " 条可参考选择。");
-        action.setVolunteerIds(candidates.stream()
+        List<CandidateItemDTO> selectedCandidates = majorGroupMode
+                ? candidatesForUnits(eligibleCandidates, candidateUnitIds(candidates)) : candidates;
+        action.setDetail("找到 " + formatEntryCount(countCandidateEntries(selectedCandidates, majorGroupMode), majorGroupMode) + "可参考选择。");
+        action.setVolunteerIds(selectedCandidates.stream()
                 .map(CandidateItemDTO::getVolunteerId)
                 .filter(value -> !Strings.isNullOrEmpty(value))
+                .distinct()
                 .collect(Collectors.toList()));
-        action.setUnitIds(candidates.stream()
-                .map(RepairCandidateSelector::resolveInitialRecommendationUnitId)
+        action.setUnitIds(selectedCandidates.stream()
+                .map(UserGoalProposalBuilder::candidateUnitKey)
                 .filter(value -> !Strings.isNullOrEmpty(value))
                 .distinct()
                 .collect(Collectors.toList()));
@@ -460,35 +496,41 @@ final class UserGoalProposalBuilder {
         action.setCandidateUnitIds(action.getUnitIds());
         action.setRemoveVolunteerIds(Lists.newArrayList());
         action.setRemoveUnitIds(Lists.newArrayList());
+        populateActionTotals(action);
         return action;
     }
 
     private static FixProposalActionDTO replaceAction(String summary,
                                                       List<ReplacementPreviewPair> pairs,
-                                                      boolean majorGroupMode) {
+                                                      boolean majorGroupMode,
+                                                      List<PlanVolunteer> current,
+                                                      List<CandidateItemDTO> eligibleCandidates) {
         FixProposalActionDTO action = new FixProposalActionDTO();
         action.setActionType(RepairProposalTaxonomy.ActionType.REPLACE_VOLUNTEERS);
         action.setLevel("volunteer");
         action.setSummary(summary);
         action.setDetail(buildReplacementActionDetail(pairs));
-        action.setRemoveVolunteerIds(pairs.stream()
-                .map(pair -> pair.source.getVolunteerId())
-                .filter(value -> !Strings.isNullOrEmpty(value))
-                .collect(Collectors.toList()));
-        action.setCandidateVolunteerIds(pairs.stream()
-                .map(pair -> pair.candidate.getVolunteerId())
-                .filter(value -> !Strings.isNullOrEmpty(value))
-                .collect(Collectors.toList()));
         if (majorGroupMode) {
             action.setRemoveUnitIds(pairs.stream()
-                    .map(pair -> pair.source.getUnitId())
+                    .map(pair -> planUnitKey(pair.source))
                     .filter(value -> !Strings.isNullOrEmpty(value))
                     .distinct()
                     .collect(Collectors.toList()));
             action.setCandidateUnitIds(pairs.stream()
-                    .map(pair -> RepairCandidateSelector.resolveInitialRecommendationUnitId(pair.candidate))
+                    .map(pair -> candidateUnitKey(pair.candidate))
                     .filter(value -> !Strings.isNullOrEmpty(value))
                     .distinct()
+                    .collect(Collectors.toList()));
+            action.setRemoveVolunteerIds(planVolunteerIdsForUnits(current, action.getRemoveUnitIds()));
+            action.setCandidateVolunteerIds(candidateVolunteerIdsForUnits(eligibleCandidates, action.getCandidateUnitIds()));
+        } else {
+            action.setRemoveVolunteerIds(pairs.stream()
+                    .map(pair -> pair.source.getVolunteerId())
+                    .filter(value -> !Strings.isNullOrEmpty(value))
+                    .collect(Collectors.toList()));
+            action.setCandidateVolunteerIds(pairs.stream()
+                    .map(pair -> pair.candidate.getVolunteerId())
+                    .filter(value -> !Strings.isNullOrEmpty(value))
                     .collect(Collectors.toList()));
         }
         action.setVolunteerIds(action.getRemoveVolunteerIds());
@@ -496,6 +538,7 @@ final class UserGoalProposalBuilder {
         for (ReplacementPreviewPair pair : pairs) {
             action.getReplacementPairs().add(buildReplacementPair(pair, majorGroupMode));
         }
+        populateActionTotals(action);
         return action;
     }
 
@@ -618,11 +661,22 @@ final class UserGoalProposalBuilder {
         pair.setFromVolunteerId(previewPair.source.getVolunteerId());
         pair.setToVolunteerId(previewPair.candidate.getVolunteerId());
         if (majorGroupMode) {
-            pair.setFromUnitId(previewPair.source.getUnitId());
-            pair.setToUnitId(RepairCandidateSelector.resolveInitialRecommendationUnitId(previewPair.candidate));
+            pair.setFromUnitId(planUnitKey(previewPair.source));
+            pair.setToUnitId(candidateUnitKey(previewPair.candidate));
         }
         pair.getReasonCodes().add(previewPair.reasonCode);
         return pair;
+    }
+
+    private static void populateActionTotals(FixProposalActionDTO action) {
+        if (action == null) {
+            return;
+        }
+        action.setTotalUnitCount(Math.max(defaultList(action.getRemoveUnitIds()).size(),
+                Math.max(defaultList(action.getCandidateUnitIds()).size(), defaultList(action.getUnitIds()).size())));
+        action.setTotalVolunteerCount(Math.max(defaultList(action.getRemoveVolunteerIds()).size(),
+                Math.max(defaultList(action.getCandidateVolunteerIds()).size(), defaultList(action.getVolunteerIds()).size())));
+        action.setTotalReplacementPairCount(defaultList(action.getReplacementPairs()).size());
     }
 
     private static void fillDryRun(FixProposalDTO proposal,
@@ -659,6 +713,7 @@ final class UserGoalProposalBuilder {
                 .filter(source -> !Strings.isNullOrEmpty(source.getVolunteerId()))
                 .sorted(buildReplacementSourceComparator())
                 .collect(Collectors.toList());
+        orderedSources = distinctReplacementSources(orderedSources, majorGroupMode);
         List<CandidateItemDTO> remainingCandidates = distinctReplacementCandidates(candidates, majorGroupMode);
         Set<String> usedCandidateVolunteerIds = new LinkedHashSet<String>();
         Set<String> usedCandidateUnitIds = new LinkedHashSet<String>();
@@ -672,7 +727,7 @@ final class UserGoalProposalBuilder {
                     .filter(candidate -> !source.getVolunteerId().equals(candidate.getVolunteerId()))
                     .filter(candidate -> !usedCandidateVolunteerIds.contains(candidate.getVolunteerId()))
                     .filter(candidate -> !majorGroupMode || isCandidateUnitAvailableForReplacement(
-                            candidate, source.getUnitId(), currentUnitIds, usedCandidateUnitIds))
+                            candidate, planUnitKey(source), currentUnitIds, usedCandidateUnitIds))
                     .min((left, right) -> compareUserGoalReplacementTradeoff(source.getCandidate(), left, right))
                     .orElse(null);
             if (best == null) {
@@ -680,13 +735,30 @@ final class UserGoalProposalBuilder {
             }
             pairs.add(new ReplacementPreviewPair(source, best, reasonCode));
             usedCandidateVolunteerIds.add(best.getVolunteerId());
-            String candidateUnitId = RepairCandidateSelector.resolveInitialRecommendationUnitId(best);
+            String candidateUnitId = candidateUnitKey(best);
             if (!Strings.isNullOrEmpty(candidateUnitId)) {
                 usedCandidateUnitIds.add(candidateUnitId);
             }
             remainingCandidates.remove(best);
         }
         return pairs;
+    }
+
+    private static List<PlanVolunteer> distinctReplacementSources(List<PlanVolunteer> sources,
+                                                                  boolean majorGroupMode) {
+        if (!majorGroupMode) {
+            return defaultList(sources);
+        }
+        Set<String> seenKeys = new LinkedHashSet<String>();
+        List<PlanVolunteer> result = Lists.newArrayList();
+        for (PlanVolunteer source : defaultList(sources)) {
+            String key = planUnitKey(source);
+            if (Strings.isNullOrEmpty(key) || !seenKeys.add(key)) {
+                continue;
+            }
+            result.add(source);
+        }
+        return result;
     }
 
     private static List<CandidateItemDTO> distinctReplacementCandidates(List<CandidateItemDTO> candidates,
@@ -697,14 +769,101 @@ final class UserGoalProposalBuilder {
             if (candidate == null || Strings.isNullOrEmpty(candidate.getVolunteerId())) {
                 continue;
             }
-            String key = majorGroupMode
-                    ? firstNonEmpty(RepairCandidateSelector.resolveInitialRecommendationUnitId(candidate), candidate.getVolunteerId())
-                    : candidate.getVolunteerId();
+            String key = majorGroupMode ? candidateUnitKey(candidate) : candidate.getVolunteerId();
             if (seenKeys.add(key)) {
                 result.add(candidate);
             }
         }
         return result;
+    }
+
+    private static int countPlanEntries(List<PlanVolunteer> volunteers, boolean majorGroupMode) {
+        if (!majorGroupMode) {
+            return defaultList(volunteers).size();
+        }
+        return (int) defaultList(volunteers).stream()
+                .map(UserGoalProposalBuilder::planUnitKey)
+                .filter(value -> !Strings.isNullOrEmpty(value))
+                .distinct()
+                .count();
+    }
+
+    private static int countCandidateEntries(List<CandidateItemDTO> candidates, boolean majorGroupMode) {
+        if (!majorGroupMode) {
+            return defaultList(candidates).size();
+        }
+        return (int) defaultList(candidates).stream()
+                .map(UserGoalProposalBuilder::candidateUnitKey)
+                .filter(value -> !Strings.isNullOrEmpty(value))
+                .distinct()
+                .count();
+    }
+
+    private static int countReplacementPairs(List<ReplacementPreviewPair> pairs, boolean majorGroupMode) {
+        if (!majorGroupMode) {
+            return defaultList(pairs).size();
+        }
+        return (int) defaultList(pairs).stream()
+                .map(pair -> planUnitKey(pair.source))
+                .filter(value -> !Strings.isNullOrEmpty(value))
+                .distinct()
+                .count();
+    }
+
+    private static String formatEntryCount(int count, boolean majorGroupMode) {
+        return count + (majorGroupMode ? " 个专业组" : " 条");
+    }
+
+    private static List<PlanVolunteer> planVolunteersForUnits(List<PlanVolunteer> volunteers, List<String> unitIds) {
+        Set<String> unitIdSet = new LinkedHashSet<String>(defaultList(unitIds));
+        return defaultList(volunteers).stream()
+                .filter(volunteer -> unitIdSet.contains(planUnitKey(volunteer)))
+                .collect(Collectors.toList());
+    }
+
+    private static List<String> planVolunteerIdsForUnits(List<PlanVolunteer> volunteers, List<String> unitIds) {
+        return planVolunteersForUnits(volunteers, unitIds).stream()
+                .map(PlanVolunteer::getVolunteerId)
+                .filter(value -> !Strings.isNullOrEmpty(value))
+                .distinct()
+                .collect(Collectors.toList());
+    }
+
+    private static List<CandidateItemDTO> candidatesForUnits(List<CandidateItemDTO> candidates, List<String> unitIds) {
+        Set<String> unitIdSet = new LinkedHashSet<String>(defaultList(unitIds));
+        return defaultList(candidates).stream()
+                .filter(candidate -> unitIdSet.contains(candidateUnitKey(candidate)))
+                .collect(Collectors.toList());
+    }
+
+    private static List<String> candidateVolunteerIdsForUnits(List<CandidateItemDTO> candidates, List<String> unitIds) {
+        return candidatesForUnits(candidates, unitIds).stream()
+                .map(CandidateItemDTO::getVolunteerId)
+                .filter(value -> !Strings.isNullOrEmpty(value))
+                .distinct()
+                .collect(Collectors.toList());
+    }
+
+    private static List<String> candidateUnitIds(List<CandidateItemDTO> candidates) {
+        return defaultList(candidates).stream()
+                .map(UserGoalProposalBuilder::candidateUnitKey)
+                .filter(value -> !Strings.isNullOrEmpty(value))
+                .distinct()
+                .collect(Collectors.toList());
+    }
+
+    private static String planUnitKey(PlanVolunteer volunteer) {
+        if (volunteer == null) {
+            return "";
+        }
+        return firstNonEmpty(volunteer.getUnitId(), volunteer.getVolunteerId());
+    }
+
+    private static String candidateUnitKey(CandidateItemDTO candidate) {
+        if (candidate == null) {
+            return "";
+        }
+        return firstNonEmpty(RepairCandidateSelector.resolveInitialRecommendationUnitId(candidate), candidate.getVolunteerId());
     }
 
     private static int compareUserGoalReplacementTradeoff(CandidateItemDTO source,
@@ -762,7 +921,7 @@ final class UserGoalProposalBuilder {
                                                                   String sourceUnitId,
                                                                   Set<String> currentUnitIds,
                                                                   Set<String> usedCandidateUnitIds) {
-        String candidateUnitId = RepairCandidateSelector.resolveInitialRecommendationUnitId(candidate);
+        String candidateUnitId = candidateUnitKey(candidate);
         if (Strings.isNullOrEmpty(candidateUnitId)) {
             return false;
         }
@@ -774,13 +933,15 @@ final class UserGoalProposalBuilder {
     }
 
     private static List<PlanVolunteer> remainingSources(List<PlanVolunteer> sources,
-                                                        List<ReplacementPreviewPair> pairs) {
-        Set<String> pairedVolunteerIds = defaultList(pairs).stream()
-                .map(pair -> pair.source.getVolunteerId())
+                                                        List<ReplacementPreviewPair> pairs,
+                                                        boolean majorGroupMode) {
+        Set<String> pairedKeys = defaultList(pairs).stream()
+                .map(pair -> majorGroupMode ? planUnitKey(pair.source) : pair.source.getVolunteerId())
                 .filter(value -> !Strings.isNullOrEmpty(value))
                 .collect(Collectors.toCollection(LinkedHashSet::new));
         return defaultList(sources).stream()
-                .filter(source -> source != null && !pairedVolunteerIds.contains(source.getVolunteerId()))
+                .filter(source -> source != null)
+                .filter(source -> !pairedKeys.contains(majorGroupMode ? planUnitKey(source) : source.getVolunteerId()))
                 .collect(Collectors.toList());
     }
 
